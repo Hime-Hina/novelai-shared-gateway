@@ -49,6 +49,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
 
   const calls = [];
   let failAt = -1, failStatus = 500, officialFixed = 10000, officialV5 = 100;
+  let activeGenerations = 0, maxActiveGenerations = 0, holdNextMs = 0;
   const upstream = http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${upstreamToken}`);
     if (req.url === '/user/data') {
@@ -62,6 +63,15 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     calls.push({ pathname: req.url, payload });
+    activeGenerations++; maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
+    res.once('finish', () => { activeGenerations--; });
+    if (activeGenerations > 1) {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
+      return;
+    }
+    const delay = holdNextMs; holdNextMs = 0;
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
     if (calls.length === failAt) {
       res.writeHead(failStatus, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: failStatus === 429 ? 'Concurrent generation limit reached' : 'synthetic generation failure' }));
@@ -173,6 +183,22 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.deepEqual(events.map(event => event.event_type), ['final', 'error']); assert.equal(events[1].samp_ix, 1);
     assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
     assert.equal(calls.length, failAt);
+  });
+
+  await t.test('两位成员同时生图，第一张超过十秒时第二张仍排队，完整结束后才接续', async () => {
+    const before = [await quota(), await quota(1)], startCount = calls.length;
+    holdNextMs = 11600; maxActiveGenerations = 0;
+    const responses = await Promise.all([
+      post('/ai/generate-image-stream', body(), credentials[0].api_key),
+      post('/v1/ai/generate-image-stream', body(), credentials[1].api_key)
+    ]);
+    for (const response of responses) {
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.equal(readNativeEvents(Buffer.from(await response.arrayBuffer()))[0].event_type, 'final');
+    }
+    assert.equal(maxActiveGenerations, 1); assert.equal(calls.length - startCount, 2);
+    const cost = quoteFairRequest(parseNativeImageRequest(body()));
+    for (let member = 0; member < 2; member++) near(before[member].v5Available - (await quota(member)).v5Available, cost.amount);
   });
 
   await t.test('上游并发锁返回 429 与重试时间，预扣退回且不自动重发', async () => {

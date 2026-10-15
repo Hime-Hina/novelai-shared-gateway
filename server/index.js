@@ -1,6 +1,6 @@
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCapacitySuccess } from './shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from './native-image.js';
 import { privateAccessAllowed } from './public-hosts.js';
@@ -2526,7 +2526,7 @@ async function reserveQueuedJob(jobId) {
         account = db.accounts.find(a => a.id === state.boundAccountId);
         if (!account || account.enabled === false) throw httpError(503, '绑定的 Opus 账号未启用');
         const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account.id).length;
-        // 按本账户在途任务和持久计数共同核对槽位，错开发送并遵守上游退避。
+        // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
         const load = Math.max(running, Number(account.inFlight || 0));
         if (load >= sharedAccountConcurrency(account) || sharedAccountReadyDelay(account, Date.now(), load) > 0) return { queued: true, jobId: job.id };
         reserveFairQuota(db, getUserOrThrow(db, job.userToken), job, account);
@@ -2891,7 +2891,6 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       const user = getUserOrThrow(db, reservation.token);
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
       if (account) {
-        if (fairShareMode && !image.mock) recordSharedCapacitySuccess(account, Date.now(), reservation.job?.fairCharge?.reservedAt || Date.now());
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = new Date().toISOString();
@@ -3007,9 +3006,8 @@ async function failGeneration(reservation, error) {
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
       if (capacityError) {
-        const running = db.jobs.filter(job => job.status === 'running' && job.accountId === account.id).length;
-        recordSharedCapacityError(account, Date.now(), Math.max(running, Number(account.inFlight || 0) + 1));
-      } else if (fairShareMode && account.capacityConcurrencyLimit) account.capacitySuccesses = 0;
+        recordSharedCapacityError(account);
+      }
       if(fairShareMode&&[401,403].includes(error.upstreamStatus)&&account.token===reservation.account?.token){
         account.upstreamStatus=error.upstreamStatus===401?'invalid_key':'access_denied';
         account.quotaError=error.upstreamStatus===401?'共享 Opus Key 已失效，请管理员更新凭据':'上游拒绝访问，请管理员重新验证 Opus';

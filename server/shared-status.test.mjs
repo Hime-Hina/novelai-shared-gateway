@@ -33,14 +33,14 @@ test('负用量标记保留，零与暂停恢复不是未知，冷却只显示�
 test('队列与失败只汇总成员任务，最近失败排除一小时前与未来事件',()=>{
  const db=fixture();db.jobs=[{userToken:'member-secret',status:'running'},{userToken:'member-secret',status:'queued'},{userToken:'other-secret',status:'running'},{userToken:'other-secret',status:'queued'},
  {userToken:'member-secret',status:'failed',completedAt:NOW-3599999},{userToken:'member-secret',status:'failed',completedAt:NOW-3600001},{userToken:'member-secret',status:'failed',completedAt:NOW+1},{userToken:'other-secret',status:'failed',completedAt:NOW}];
- const s=sharedAccountStatus(db,NOW);assert.equal(s.running,1);assert.equal(s.queued,1);assert.equal(s.recentFailures,1);assert.equal(s.concurrencyLimit,4);
+ const s=sharedAccountStatus(db,NOW);assert.equal(s.running,1);assert.equal(s.queued,1);assert.equal(s.recentFailures,1);assert.equal(s.concurrencyLimit,1);
 });
 
 
-test('展示当前账户容量，持久降级不会只因时间经过就恢复四并发',()=>{
- const db=fixture();assert.equal(sharedAccountStatus(db,NOW).concurrencyLimit,4);
+test('展示固定串行容量，忽略旧版持久化的多并发配置',()=>{
+ const db=fixture();assert.equal(sharedAccountStatus(db,NOW).concurrencyLimit,1);
  db.accounts[0].capacityLimitedUntil=new Date(NOW+300000).toISOString();
  assert.equal(sharedAccountStatus(db,NOW).concurrencyLimit,1);
  db.accounts[0].capacityConcurrencyLimit=2;
- assert.equal(sharedAccountStatus(db,NOW+300001).concurrencyLimit,2);
+ assert.equal(sharedAccountStatus(db,NOW+300001).concurrencyLimit,1);
 });

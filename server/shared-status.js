@@ -20,7 +20,7 @@ export function sharedAccountStatus(db, now = Date.now()) {
   const base={status:'pending_opus',subscriptionActive:null,expiresAt:null,officialCheckedAt:null,stale:true,
     v5Percent:null,v5IsNegative:null,refillSecondsPerPercent:null,anlasFixed:null,anlasPurchased:null,
     running:jobs.filter(j=>j.status==='running').length,queued:jobs.filter(j=>j.status==='queued').length,
-    concurrencyLimit:4,cooldownUntil:null,quotaSyncError:false,
+    concurrencyLimit:sharedAccountConcurrency(),cooldownUntil:null,quotaSyncError:false,
     recentFailures:jobs.filter(j=>{const at=timestamp(j.completedAt ?? j.failedAt ?? j.updatedAt);return j.status==='failed'&&at!==null&&at<=now&&at>=now-3600000;}).length};
   // 未绑定时不挑选其他上游账户，防止把试用池资料带入共享状态。
   if(!state?.boundAccountId) return base;
