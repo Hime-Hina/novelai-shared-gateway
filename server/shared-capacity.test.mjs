@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError } from './shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
 
 const NOW = 1800000000000;
 
@@ -11,10 +11,15 @@ test('共享上游固定串行，旧学习结果、成功次数和观察期均�
   }
 });
 
-test('槽位释放后不额外等待十秒，已有冷却仍需等待', () => {
+test('完成后至少等待十秒，重启仍保留间隔且不会缩短已有冷却', () => {
   const account = { lastSharedDispatchAt: new Date(NOW).toISOString(), inFlight: 0 };
-  assert.equal(sharedAccountReadyDelay(account, NOW + 1000), 0);
+  assert.equal(sharedAccountReadyDelay(account, NOW), 0);
+  recordSharedCompletion(account, NOW);
+  assert.equal(sharedAccountReadyDelay(account, NOW + 1000), 9000);
+  assert.equal(sharedAccountReadyDelay(structuredClone(account), NOW + 9999), 1);
+  assert.equal(sharedAccountReadyDelay(account, NOW + 10000), 0);
   account.cooldownUntil = new Date(NOW + 30000).toISOString();
+  recordSharedCompletion(account, NOW + 1000);
   assert.equal(sharedAccountReadyDelay(account, NOW + 1000), 29000);
   assert.equal(sharedAccountReadyDelay(account, NOW + 30000), 0);
 });

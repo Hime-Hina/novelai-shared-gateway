@@ -1,5 +1,6 @@
 // 每份 Opus 独立控制并发；这里只保存调度状态，不改变成员额度或请求参数。
 export const SHARED_ACCOUNT_MAX_CONCURRENCY = 1;
+const SHARED_ACCOUNT_GAP_MS = 10_000;
 const count = value => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
 const timestamp = value => typeof value === 'number' ? value : Date.parse(value || '') || 0;
 
@@ -10,6 +11,12 @@ export function sharedAccountConcurrency() {
 
 export function sharedAccountReadyDelay(account, now = Date.now()) {
   return Math.max(0, timestamp(account?.cooldownUntil) - now);
+}
+
+export function recordSharedCompletion(account, now = Date.now()) {
+  if (!account) return;
+  // 复用持久冷却时间，让重启也保留完成后的间隔，并且不缩短官方限流退避。
+  account.cooldownUntil = new Date(Math.max(timestamp(account.cooldownUntil), now + SHARED_ACCOUNT_GAP_MS)).toISOString();
 }
 
 export function recordSharedCapacityError(account, now = Date.now()) {

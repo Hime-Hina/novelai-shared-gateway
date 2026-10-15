@@ -30,7 +30,7 @@ async function listen(server) {
   return server.address().port;
 }
 
-test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 60000 }, async t => {
+test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 180000 }, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
   const adminToken = randomBytes(32).toString('hex');
   const upstreamToken = 'pst-synthetic-offline-fixture-only';
@@ -62,9 +62,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    calls.push({ pathname: req.url, payload });
+    const call = { pathname: req.url, payload, startedAt: Date.now() }; calls.push(call);
     activeGenerations++; maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
-    res.once('finish', () => { activeGenerations--; });
+    res.once('finish', () => { activeGenerations--; call.finishedAt = Date.now(); });
     if (activeGenerations > 1) {
       res.writeHead(429, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
@@ -110,7 +110,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); reject(new Error(`公开版提前退出 ${code}：${runtimeOutput}`)); });
   });
-  const fetchLocal = (pathname, options = {}) => fetch(baseUrl + pathname, { ...options, signal: AbortSignal.timeout(15000) });
+  const fetchLocal = (pathname, options = {}) => fetch(baseUrl + pathname, { ...options, signal: AbortSignal.timeout(45000) });
   const post = (pathname, request, key = credentials[0].api_key) => fetchLocal(pathname, {
     method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(request)
   });
@@ -197,6 +197,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(readNativeEvents(Buffer.from(await response.arrayBuffer()))[0].event_type, 'final');
     }
     assert.equal(maxActiveGenerations, 1); assert.equal(calls.length - startCount, 2);
+    assert.ok(calls[startCount + 1].startedAt - calls[startCount].finishedAt >= 10000);
     const cost = quoteFairRequest(parseNativeImageRequest(body()));
     for (let member = 0; member < 2; member++) near(before[member].v5Available - (await quota(member)).v5Available, cost.amount);
   });

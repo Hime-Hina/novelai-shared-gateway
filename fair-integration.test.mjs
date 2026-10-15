@@ -35,6 +35,9 @@ test('两位成员同时提交，超过十秒仍等待上一张完成，不重�
   assert.equal(db.accounts[0].inFlight,1);
   assert.equal(db.jobs[1].fairCharge,undefined);
   advance(1600);await ctx.failGeneration(first,new Error('合成测试释放第一张'));
+  assert.equal((await ctx.reserveQueuedJob('second')).queued,true);
+  advance(9999);assert.equal((await ctx.reserveQueuedJob('second')).queued,true);
+  advance(1);
   assert.equal((await ctx.reserveQueuedJob('second')).job.status,'running');
   assert.equal(db.accounts[0].inFlight,1);
 });
@@ -49,6 +52,7 @@ test('同一用户多次提交也只占一个槽位，其余排队；失败退�
   await ctx.failGeneration(result[0],new Error('官方失败'));
   const refunded=db.settings.fairQuota.balances.a.v5Available;
   assert.ok(refunded>charged);ctx.refundJob(db,db.jobs[0],'重复取消');assert.equal(db.settings.fairQuota.balances.a.v5Available,refunded);
+  assert.equal((await ctx.reserveQueuedJob('1')).queued,true);advance(10000);
   assert.equal((await ctx.reserveQueuedJob('1')).job.status,'running');assert.equal(db.accounts[0].inFlight,1);
   assert.equal(db.users[0].balance,100000);assert.equal(ctx.generationCost({}),0);
 });
@@ -104,6 +108,7 @@ test('同组子账户依次使用共享槽位，未派发者不扣额度，失�
  await ctx.failGeneration(results[0],new Error('子账户失败'));const refunded=db.settings.fairQuota.balances.child_one.v5Available;
  await ctx.failGeneration(results[0],new Error('重复失败'));ctx.refundJob(db,db.jobs[0],'重复退款');assert.equal(db.settings.fairQuota.balances.child_one.v5Available,refunded);
  assert.equal(refunded,before.child_one.v5Available);
+ assert.equal((await ctx.reserveQueuedJob('child-1')).queued,true);advance(10000);
  assert.equal((await ctx.reserveQueuedJob('child-1')).job.fairCharge.userId,'child_two');
  assert.ok(Math.abs(db.settings.fairQuota.balances.child_two.v5Available-(before.child_two.v5Available-q.amount))<1e-9);
  for(const id of ['b','c','d'])assert.deepEqual(db.settings.fairQuota.balances[id],before[id]);

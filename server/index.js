@@ -1,6 +1,6 @@
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError } from './shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from './native-image.js';
 import { privateAccessAllowed } from './public-hosts.js';
@@ -1821,6 +1821,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+        if (fairShareMode) recordSharedCompletion(account, Date.now());
         account.updatedAt = new Date().toISOString();
       }
       refundJob(db, job, message);
@@ -1874,6 +1875,7 @@ async function cleanupInterruptedStartupJobs() {
       const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+        if (fairShareMode) recordSharedCompletion(account, Date.now());
         account.updatedAt = updatedAt;
       }
       refundJob(db, job, message);
@@ -2354,6 +2356,7 @@ async function cancelQueuedOrRunningJob(jobId, message, detail = message) {
     const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+      if (fairShareMode) recordSharedCompletion(account, Date.now());
       account.updatedAt = new Date().toISOString();
     }
     refundJob(db, job, publicMessage);
@@ -2892,6 +2895,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+        if (fairShareMode) recordSharedCompletion(account, Date.now());
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = new Date().toISOString();
       }
@@ -2965,6 +2969,7 @@ async function cancelReservedJob(reservation, error) {
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+      if (fairShareMode) recordSharedCompletion(account, Date.now());
       account.updatedAt = new Date().toISOString();
     }
     refundJob(db, job, message);
@@ -3005,6 +3010,7 @@ async function failGeneration(reservation, error) {
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+      if (fairShareMode) recordSharedCompletion(account, Date.now());
       if (capacityError) {
         recordSharedCapacityError(account);
       }
