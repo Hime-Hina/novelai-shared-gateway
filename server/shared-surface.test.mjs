@@ -37,3 +37,10 @@ test('Discord 登录只开放配置读取、同源发起和 GET 回调', () => {
     assert.equal(sharedSurface(path,'DELETE').allowed,false);
   }
 });
+
+test('owner 仅开放指定页面与管理接口，不能访问导出、代理设置或新增上游', () => {
+  assert.deepEqual(sharedSurface('/owner'),{allowed:true,pathname:'/owner.html'});
+  assert.equal(sharedSurface('/management.js').allowed,true);
+  for(const [path,method] of [['/api/member/owner/statistics','GET'],['/api/member/owner/member-management','POST'],['/api/member/owner/accounts/quota','POST'],['/api/member/owner/accounts/opus','PATCH']])assert.equal(sharedSurface(path,method).allowed,true);
+  for(const path of ['/api/member/owner/export','/api/member/owner/import','/api/member/owner/accounts','/owner/unknown'])assert.equal(sharedSurface(path,'POST').allowed,false);
+});

@@ -64,3 +64,7 @@ export function authenticateMemberSession(db, token, now = Date.now()) {
 }
 
 export function logoutMemberSession(token) { sessions.delete(token); }
+
+export function isOwner(user, env = process.env) {
+  return Boolean(env.OWNER_USER_ID && env.DISCORD_GUILD_ID && user?.enabled === true && user.id === env.OWNER_USER_ID && user.discord?.id && user.discord.guildId === env.DISCORD_GUILD_ID);
+}

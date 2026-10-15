@@ -8,6 +8,7 @@ import { launcherSubscription } from './launcher-subscription.js';
 import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
 import { requireDiscordMembership } from './discord-auth.js';
+import { ownerOperation } from './owner-operations.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
 import http from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -273,7 +274,8 @@ async function route(req, res) {
     // 所有管理员别名都只从本机隧道进入，不能绕过代理的路径规则。
     if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
-  if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken })) return;
+  if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken,
+    ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   if (await publicSelfUseGuard(req, res, url, method)) return;
 
   if (method === 'OPTIONS') {
@@ -4152,7 +4154,9 @@ function collectValues(value) {
 }
 
 async function serveStatic(urlPath, res, options = {}) {
-  const pathname = urlPath === '/'
+  const pathname = urlPath === '/owner.html' ? '/admin/members.html'
+    : urlPath === '/management.js' ? '/admin/members.js'
+    : urlPath === '/'
     ? '/index.html'
     : urlPath === '/admin' || urlPath === '/admin/'
       ? '/admin.html'

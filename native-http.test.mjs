@@ -132,6 +132,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal((await post(pathname, body('invalid-model'))).status, 422);
     }
     assert.equal(calls.length, 0);
+    const ownerPage=await fetchLocal('/owner');assert.equal(ownerPage.status,200);assert.match(await ownerPage.text(),/management\.js/);
+    assert.equal((await fetchLocal('/management.js')).status,200);
+    assert.equal((await fetchLocal('/api/member/owner/summary')).status,401);
     for (const pathname of ['/discord', '/auth/discord/callback', '/api/carpool/teams']) assert.equal((await fetchLocal(pathname)).status, 404);
     const cors = await new Promise((resolve, reject) => {
       const request = http.request(new URL('/ai/generate-image-stream', baseUrl), { method: 'OPTIONS', headers: { host: 'gateway.example', origin: 'https://client.example', 'access-control-request-method': 'POST', 'access-control-request-headers': 'authorization,idempotency-key' } }, response => {

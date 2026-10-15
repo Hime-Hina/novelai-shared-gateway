@@ -10,7 +10,7 @@ async function api(path, body) {
 const number = n => Number(n || 0).toLocaleString('zh-CN', {maximumFractionDigits:3});
 async function load() {
   const data = await api('me'), q=data.quota; startSharedStatus();
-  $('login').hidden=true; $('account').hidden=false; $('welcome').textContent=data.username+' · 我的额度';
+  $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
   $('status').textContent=(stateNames[q?.status] || '等待分配额度') + (q?.autoAnlasFallback ? ' · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）' : '');
   $('v5').textContent=`${number(q?.v5Available)} / ${number(q?.v5Capacity)}%`;

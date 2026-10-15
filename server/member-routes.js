@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession } from './member-auth.js';
+import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession, isOwner } from './member-auth.js';
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember } from './fair-quota.js';
 import { sharedAccountStatus } from './shared-status.js';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
@@ -46,7 +46,8 @@ export function memberPublicBaseUrl(db, env = process.env) {
 
 export async function handleMemberRoutes(req, res, url, deps) {
   const member = url.pathname.startsWith('/api/member/');
-  const admin = url.pathname === '/api/admin/member-management';
+  const ownerRoute = url.pathname.startsWith('/api/member/owner/');
+  const admin = url.pathname === '/api/admin/member-management' || url.pathname === '/api/member/owner/member-management';
   if (!member && !admin) return false;
   const env = deps.env || process.env, discordEnabled = discordLoginEnabled(env);
   // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
@@ -58,6 +59,16 @@ export async function handleMemberRoutes(req, res, url, deps) {
   }
   sameOrigin(req);
   const { store } = deps;
+  if (ownerRoute) {
+    const viewer = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
+    if (!viewer) error(401, '请先使用 Discord 登录');
+    if (!isOwner(viewer, env)) error(403, '仅 owner 可访问管理功能');
+    await requireDiscordMembership(viewer, deps);
+    if (!admin) {
+      const result = await deps.ownerOperation(url, req.method, req.method === 'GET' ? undefined : await json(req));
+      reply(res, 200, result); return true;
+    }
+  }
   if (url.pathname === '/api/member/login-options' && req.method === 'GET') {
     let config;
     try { config = discordConfig(env); } catch {}
@@ -69,16 +80,18 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps)); return true;
   }
   if (admin) {
-    // 管理 API 同时保留私有入口限制和管理员密钥校验，成员会话不参与鉴权。
-    if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || ''))) error(404, 'not found.');
-    deps.assertAdmin(req, url);
+    // 原私有管理 API 保持本机与密钥校验；owner 别名已经过独立会话鉴权。
+    if (!ownerRoute) {
+      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || ''))) error(404, 'not found.');
+      deps.assertAdmin(req, url);
+    }
     if (req.method === 'GET') {
       const payload = await store.update(db => {
         syncFairQuota(db);
         return { groups: db.settings.fairQuota?.groups || [], status: db.settings.fairQuota?.status,
           shared: sharedAccountStatus(db),autoAnlasFallback: db.settings.fairQuota?.autoAnlasFallback === true,
           configVersion: db.settings.fairQuota?.configVersion ?? 1,
-          publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled,
+          publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled, ownerUserId: env.OWNER_USER_ID || null,
           users: db.users.map(u => ({ id: u.id, username: u.memberAuth?.username || '', note: u.note || '', enabled: u.enabled !== false,
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
             quota: fairQuotaSummary(db, u), recentActivity: recentActivity(db, u) })) };
@@ -87,6 +100,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
+    if (ownerRoute && body.userId === env.OWNER_USER_ID && (['delete-member','preview-delete-member'].includes(body.action) || body.action === 'member-status' && body.enabled === false)) error(409, '不能停用或删除当前 owner');
     if (body.action === 'discord-invite') {
       if (!discordEnabled) error(409, 'Discord 登录未启用');
       const result = await store.update(db => createDiscordInvite(db, body.userId), { collections: ['users'], immediate: true });
@@ -232,7 +246,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, { apiKey: user.token, baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '' }); return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload = await store.update(db => ({ username: user.memberAuth.username, quota: fairQuotaSummary(db, user),
+    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), quota: fairQuotaSummary(db, user),
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
         model: j.request?.model || '', status: j.status, charge: j.fairCharge ? { resource: j.fairCharge.resource, amount: j.fairCharge.amount, status: j.fairCharge.status, estimated: j.fairCharge.estimated,
           billingMode: j.fairCharge.billingMode || null, v5Equivalent: j.fairCharge.v5Equivalent ?? null, upstreamBilling: j.fairCharge.upstreamBilling || null } : null }))

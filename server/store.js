@@ -523,6 +523,29 @@ export class JsonStore {
     };
   }
 
+  async readOwnerJobRows(since, until) {
+    await this.ensureLoaded();
+    await this.queue;
+    this.flushPendingPersistSync();
+    // 只取统计字段，不加载提示词、图片、Key 或 Discord 授权数据。
+    return this.sqlite.prepare(`
+      SELECT j.id, j.status, j.model, j.created_at AS createdAt,
+        COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId,
+        COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username,
+        json_extract(j.data, '$.startedAt') AS startedAt,
+        json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt,
+        json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt,
+        json_extract(j.data, '$.errorStatus') AS errorStatus,
+        json_extract(j.data, '$.fairCharge.resource') AS resource,
+        json_extract(j.data, '$.fairCharge.status') AS chargeStatus,
+        json_extract(j.data, '$.fairCharge.amount') AS amount,
+        json_extract(j.data, '$.fairCharge.fixed') AS fixed,
+        json_extract(j.data, '$.fairCharge.purchased') AS purchased
+      FROM jobs j LEFT JOIN users u ON u.token = j.user_token
+      WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC
+    `).all(since, until);
+  }
+
   async readAdminSummary(options = {}) {
     await this.ensureLoaded();
     const stats = await this.readAdminSummaryStats(options);

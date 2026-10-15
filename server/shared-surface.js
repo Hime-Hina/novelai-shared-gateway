@@ -1,10 +1,14 @@
 // 共享模式仅开放成员门户、管理与生图所需接口，旧功能及静态回退不再可达。
-const staticPaths = new Set(['/account.html', '/account.js', '/members.css', '/shared-status.js', '/admin/members.html', '/admin/members.js']);
+const staticPaths = new Set(['/account.html', '/account.js', '/members.css', '/shared-status.js', '/admin/members.html', '/admin/members.js', '/owner.html', '/management.js']);
 const routes = new Map([
   ['/api/health', ['GET', 'HEAD']],
   ['/api/member/login-options', ['GET']],
   ['/api/member/discord/start', ['POST']],
   ['/api/member/discord/callback', ['GET']],
+  ['/api/member/owner/member-management', ['GET', 'POST']],
+  ['/api/member/owner/summary', ['GET']],
+  ['/api/member/owner/statistics', ['GET']],
+  ['/api/member/owner/accounts/quota', ['POST']],
   ['/api/me/quota', ['GET']],
   ['/v1/models', ['GET']],
   ['/user/subscription', ['GET']],
@@ -32,7 +36,8 @@ const routes = new Map([
 ]);
 export function sharedSurface(pathname, method = 'GET') {
   const alias = pathname === '/' || pathname === '/index.html' ? '/account.html'
-    : ['/admin', '/admin/', '/admin.html'].includes(pathname) ? '/admin/members.html' : pathname;
+    : ['/admin', '/admin/', '/admin.html'].includes(pathname) ? '/admin/members.html'
+    : ['/owner', '/owner/'].includes(pathname) ? '/owner.html' : pathname;
   if (staticPaths.has(alias)) return { allowed: ['GET', 'HEAD'].includes(method), pathname: alias };
   let methods = routes.get(pathname);
   if (/^\/api\/member\/(login|logout)$/.test(pathname)) methods = ['POST'];
@@ -40,5 +45,6 @@ export function sharedSurface(pathname, method = 'GET') {
   if (/^\/api\/jobs\/[^/]+(?:\/content)?$/.test(pathname)) methods ||= ['GET'];
   if (/^\/api\/images\/[^/]+\/content$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/admin\/accounts\/[^/]+$/.test(pathname)) methods ||= ['PATCH'];
+  if (/^\/api\/member\/owner\/accounts\/[^/]+$/.test(pathname)) methods ||= ['PATCH'];
   return { allowed: Boolean(methods && (methods.includes(method) || method === 'OPTIONS')), pathname };
 }
