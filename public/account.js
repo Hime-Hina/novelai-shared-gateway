@@ -4,7 +4,7 @@ const stateNames = { pending_opus:'等待管理员接入有效 Opus', inactive_o
 async function api(path, body) {
   const r = await fetch('/api/member/' + path, { method: body === undefined ? 'GET' : 'POST', credentials:'same-origin', headers:body === undefined ? {} : {'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body) });
   const data = await r.json();
-  if (!r.ok) { if (r.status === 401) { stopSharedStatus(); $('login').hidden=false; $('account').hidden=true; } throw new Error(data.message || data.error || '请求失败'); }
+  if (!r.ok) { if (r.status === 401 || r.status === 403) { stopSharedStatus(); $('login').hidden=false; $('account').hidden=true; } throw new Error(data.message || data.error || '请求失败'); }
   return data;
 }
 const number = n => Number(n || 0).toLocaleString('zh-CN', {maximumFractionDigits:3});
@@ -26,9 +26,11 @@ async function load() {
 }
 function run(fn) { return async event => { event?.preventDefault(); $('message').textContent='';try { await fn(); } catch(e) { $('message').textContent=e.message; } }; }
 $('loginForm').onsubmit=run(async()=>{ await api('login',{username:$('username').value,password:$('password').value});$('password').value='';await load(); });
+$('discordForm').onsubmit=run(async()=>{const invite=$('invite').value.trim();$('discordLogin').disabled=true;try{const result=await api('discord/start',invite?{invite}:{});$('invite').value='';location.assign(result.authorizationUrl);}finally{$('discordLogin').disabled=false;}});
 $('refresh').onclick=run(load);
 $('logout').onclick=run(async()=>{await api('logout',{});stopSharedStatus();$('apiKey').value='';$('keyPanel').hidden=true;$('login').hidden=false;$('account').hidden=true;});
 $('showKey').onclick=run(async()=>{const data=await api('key');$('apiBaseUrl').value=data.baseUrl || '';$('apiKey').value=data.apiKey;$('keyPanel').hidden=false;});
 $('hideKey').onclick=()=>{$('keyPanel').hidden=true;$('apiKey').value='';};
 $('copyKey').onclick=run(async()=>{await navigator.clipboard.writeText($('apiKey').value);$('message').textContent='已复制自己的 API Key';});
-load().catch(()=>{});
+async function initialize(){const options=await api('login-options');if(options.discord&&options.origin&&location.origin!==options.origin){location.replace(options.origin+'/');return;}$('loginForm').hidden=options.discord;$('discordForm').hidden=!options.discord;$('discordLogin').disabled=!options.ready;$('loginHint').textContent=options.discord?(options.ready?'使用 Discord 身份登录；仅限受邀的指定服务器成员。':'Discord 登录尚未配置完成，请联系管理员。'):'账户由管理员创建。登录后查看个人额度和调用记录。';await load().catch(()=>{});}
+initialize().catch(error=>{$('message').textContent=error.message;});

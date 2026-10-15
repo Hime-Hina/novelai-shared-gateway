@@ -29,8 +29,8 @@ function prune(map, now) {
 
 export function checkMemberLoginRate(username, remote, now = Date.now()) {
   prune(attempts, now);
-  const keys = [`user:${normalized(username).slice(0, 128)}`, `remote:${String(remote).slice(0, 128)}`];
-  const limits = [10, 120];
+  const keys = [...(username === null ? [] : [`user:${normalized(username).slice(0, 128)}`]), `remote:${String(remote).slice(0, 128)}`];
+  const limits = username === null ? [120] : [10, 120];
   if (attempts.size >= 10000 || keys.some((key, i) => (attempts.get(key)?.count || 0) >= limits[i])) fail(429, '登录尝试过多，请 15 分钟后重试');
   // 对每次尝试计数，防止并发请求在密码校验完成前绕过限制。
   keys.forEach(key => { const a = attempts.get(key) || { count: 0, expiresAt: now + windowMs }; a.count++; attempts.set(key, a); });

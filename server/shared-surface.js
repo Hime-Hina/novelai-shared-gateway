@@ -2,6 +2,9 @@
 const staticPaths = new Set(['/account.html', '/account.js', '/members.css', '/shared-status.js', '/admin/members.html', '/admin/members.js']);
 const routes = new Map([
   ['/api/health', ['GET', 'HEAD']],
+  ['/api/member/login-options', ['GET']],
+  ['/api/member/discord/start', ['POST']],
+  ['/api/member/discord/callback', ['GET']],
   ['/api/me/quota', ['GET']],
   ['/v1/models', ['GET']],
   ['/user/subscription', ['GET']],

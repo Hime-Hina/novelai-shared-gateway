@@ -29,3 +29,11 @@ test('启动器查询别名、编码和放大只开放对应方法', () => {
     assert.equal(sharedSurface(path, 'DELETE').allowed, false);
   }
 });
+
+test('Discord 登录只开放配置读取、同源发起和 GET 回调', () => {
+  for(const [path, method] of [['/api/member/login-options','GET'],['/api/member/discord/start','POST'],['/api/member/discord/callback','GET']]) {
+    assert.equal(sharedSurface(path,method).allowed,true);
+    assert.equal(sharedSurface(path,method==='GET'?'POST':'GET').allowed,false);
+    assert.equal(sharedSurface(path,'DELETE').allowed,false);
+  }
+});

@@ -7,6 +7,7 @@ import { privateAccessAllowed } from './public-hosts.js';
 import { launcherSubscription } from './launcher-subscription.js';
 import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
+import { requireDiscordMembership } from './discord-auth.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
 import http from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -258,6 +259,7 @@ async function publicSelfUseGuard(req, res, url, method) {
   if (!token.startsWith('STA1N-')) throw httpError(401, 'Existing gateway key required.');
   const user = await store.readUserByToken(token);
   if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
+  await requireDiscordMembership(user, { store });
   return false;
 }
 

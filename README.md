@@ -2,7 +2,7 @@
 
 **共享 Opus 的自托管网关，源码可查看，仅限非商业用途。禁止售卖、付费分发、商业托管和未经许可的商用。** 新增及修改部分见 [LICENSE](LICENSE)，上游 MIT 部分见 [NOTICE.md](NOTICE.md)。这不是 NovelAI 官方项目，也不是不受限的开源许可证。
 
-此仓库发布可独立部署的基础共享框架：管理员、成员账号、额度账本、排队和生图接口。**不包含 Discord OAuth、服务器成员验证、拼车大厅、聊天、收款与续车业务，也不包含线上数据。** 最近更新见 [CHANGELOG.md](CHANGELOG.md)。
+此仓库发布可独立部署的基础共享框架：管理员、成员账号、额度账本、排队和生图接口。支持可选的 Discord OAuth、管理员邀请码和指定服务器成员验证；**不包含拼车大厅、聊天、收款与续车业务，也不包含线上数据。** 最近更新见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 功能
 
@@ -19,6 +19,22 @@
 - 不提供公开注册、兑换码、充值商城或旧图库管理。
 
 ## 管理员分配与成员管理
+
+### Discord 邀请登录
+
+在自己的 [Discord Developer Portal](https://discord.com/developers/applications) 创建应用，在 OAuth2 的 Redirects 中登记 `https://你的域名/api/member/discord/callback`。配置 `.env` 的 `DISCORD_CLIENT_ID`、`DISCORD_CLIENT_SECRET` 和 `DISCORD_GUILD_ID`，并保持 `PUBLIC_BASE_URL` 为该 HTTPS 站点地址。只需 `identify` 与 `guilds.members.read` 两个 OAuth 权限；不需要机器人、服务器管理员权限、邮箱或消息读取权限。
+
+设置任一 Discord 配置后，成员密码登录即被禁用；配置不完整会拒绝登录，不会回退密码。管理员仍使用本机入口与管理员密钥。完全不设置这三项时，保留原有账号密码模式。
+
+管理员在成员行点击“邀请码”，将一次性代码交给对应成员。代码有效期七天，只保存哈希；再次生成会立即撤销旧代码。成员首次填写邀请码后通过 Discord 授权，后端确认其属于指定服务器且已完成成员验证，才将身份绑定到这份已有钱包。绑定不改变 Key、余额和份额；同一 Discord 不能领取两份钱包，未获邀的服务器成员不能自动注册。绑定后只需 Discord 登录，不再填写邀请码。
+
+网站会话仍为十二小时。成员页面及 API Key 请求共用服务器资格检查，结果最多缓存五分钟；退服后后续校验会拒绝请求并撤销已有网页会话。Discord 故障或授权失效时，过期校验不会放行；重新登录可恢复有效授权。退出网页只结束当前会话，API Key 仍可用于客户端；管理员停用成员会同时阻止登录和调用。
+
+OAuth 回调使用五分钟、单次、绑定浏览器 Cookie 的 state，只接受配置中的回调域名。Discord access/refresh token 只保存在服务端 SQLite，不返回前端；数据库和备份均按密钥文件保护。更新部署后重启服务，再生成邀请码。不要把 Client Secret 写入网页配置、日志或 Git。
+
+参考：[Discord OAuth2](https://docs.discord.com/developers/topics/oauth2)、[当前用户的服务器成员信息](https://docs.discord.com/developers/resources/user#get-current-user-guild-member)。
+
+### 份额与余额
 
 在“分组与额度”中逐人填写 0–100% 的份额，预览后保存。0% 成员保留已有余额，但不再获得后续恢复和新增额度。直接分配默认勾选“同步分配当前剩余余额”：保留各组总额，在组内按权重重分；跨组余额转移使用成员行的“调整额度”。取消勾选则只调整未来分配，当前余额不变。
 

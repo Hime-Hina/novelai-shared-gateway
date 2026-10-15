@@ -19,3 +19,9 @@ test('登录尝试在密码验证前限流且到期可恢复',()=>{
  assert.throws(()=>auth.checkMemberLoginRate('rate-user','test-peer',1001),e=>e.statusCode===429);
  assert.doesNotThrow(()=>auth.checkMemberLoginRate('rate-user','test-peer',1000+15*60000));
 });
+
+test('OAuth 尚无用户身份时仍保留来源请求上限',()=>{
+ for(let i=0;i<120;i++)auth.checkMemberLoginRate(null,'synthetic-oauth-peer',1000);
+ assert.throws(()=>auth.checkMemberLoginRate(null,'synthetic-oauth-peer',1001),e=>e.statusCode===429);
+ assert.doesNotThrow(()=>auth.checkMemberLoginRate(null,'synthetic-oauth-peer',1000+15*60000));
+});

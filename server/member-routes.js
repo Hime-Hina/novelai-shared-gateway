@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession } from './member-auth.js';
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember } from './fair-quota.js';
 import { sharedAccountStatus } from './shared-status.js';
+import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
@@ -27,9 +28,10 @@ async function json(req) {
   if (!value || Array.isArray(value) || typeof value !== 'object') error(400, '请求内容无效');
   return value;
 }
-function setCookie(req, res, token) {
+function setCookie(req, res, token, additional = []) {
   const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''));
-  res.setHeader('Set-Cookie', `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${token ? 43200 : 0}${local ? '' : '; Secure'}`);
+  const value = `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${token ? 43200 : 0}${local ? '' : '; Secure'}`;
+  res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
 }
 
 function recentActivity(db,user) {
@@ -46,8 +48,26 @@ export async function handleMemberRoutes(req, res, url, deps) {
   const member = url.pathname.startsWith('/api/member/');
   const admin = url.pathname === '/api/admin/member-management';
   if (!member && !admin) return false;
+  const env = deps.env || process.env, discordEnabled = discordLoginEnabled(env);
+  // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
+  if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
+    const user = await finishDiscordLogin(req, res, url, deps);
+    setCookie(req, res, createMemberSession(user), [res.getHeader('Set-Cookie')]);
+    res.writeHead(303, { location: discordConfig(env).origin + '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    res.end(); return true;
+  }
   sameOrigin(req);
   const { store } = deps;
+  if (url.pathname === '/api/member/login-options' && req.method === 'GET') {
+    let config;
+    try { config = discordConfig(env); } catch {}
+    reply(res, 200, { discord: discordEnabled, ready: Boolean(config), origin: config?.origin || null }); return true;
+  }
+  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
+    const remote = req.socket?.remoteAddress || 'unknown';
+    checkMemberLoginRate(null, remote);
+    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps)); return true;
+  }
   if (admin) {
     // 管理 API 同时保留私有入口限制和管理员密钥校验，成员会话不参与鉴权。
     if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || ''))) error(404, 'not found.');
@@ -58,14 +78,20 @@ export async function handleMemberRoutes(req, res, url, deps) {
         return { groups: db.settings.fairQuota?.groups || [], status: db.settings.fairQuota?.status,
           shared: sharedAccountStatus(db),autoAnlasFallback: db.settings.fairQuota?.autoAnlasFallback === true,
           configVersion: db.settings.fairQuota?.configVersion ?? 1,
-          publicBaseUrl: memberPublicBaseUrl(db),
+          publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled,
           users: db.users.map(u => ({ id: u.id, username: u.memberAuth?.username || '', note: u.note || '', enabled: u.enabled !== false,
+            discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
             quota: fairQuotaSummary(db, u), recentActivity: recentActivity(db, u) })) };
       }, { collections: ['settings'] });
       reply(res, 200, payload); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
+    if (body.action === 'discord-invite') {
+      if (!discordEnabled) error(409, 'Discord 登录未启用');
+      const result = await store.update(db => createDiscordInvite(db, body.userId), { collections: ['users'], immediate: true });
+      reply(res, 200, result); return true;
+    }
     if (['transfer-quota','preview-delete-member','delete-member'].includes(body.action)) {
       const preview=body.action==='preview-delete-member';
       const result=await store.update(db=>manageFairMember(db,body),preview?{persist:false}:{collections:['users','settings'],immediate:true});
@@ -112,6 +138,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       reply(res,200,result);return true;
     }
     if (body.action === 'credentials') {
+      if (discordEnabled && body.userId) error(409, 'Discord 成员不使用登录密码');
       const hasGroup=body.groupId!==undefined&&body.groupId!==null&&body.groupId!=='';
       if(hasGroup&&(typeof body.groupId!=='string'||body.userId))error(400,'只有创建新成员时可以指定 groupId');
       const result = await store.update(async db => {
@@ -123,7 +150,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
             note: String(body.note || '管理员创建的成员').slice(0, 120), createdAt: new Date().toISOString() };
           userId = user.id; draft.users.push(user);
         }
-        const result = await setMemberCredentials(draft, userId, body);
+        const result = await setMemberCredentials(draft, userId, discordEnabled ? { ...body, password: randomBytes(32).toString('base64url') } : body);
         if(hasGroup){
           syncFairQuota(draft);
           const groups=structuredClone(draft.settings.fairQuota?.groups || []);
@@ -151,6 +178,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   }
 
   if (url.pathname === '/api/member/login' && req.method === 'POST') {
+    if (discordEnabled) error(403, '本站仅允许 Discord 登录');
     const body = await json(req);
     checkMemberLoginRate(body.username, req.socket?.remoteAddress || 'unknown');
     const user = await store.update(db => loginMember(db, body.username, body.password), { persist: false });
@@ -162,6 +190,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   }
   const user = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
   if (!user) error(401, '请先登录');
+  await requireDiscordMembership(user, deps);
   if (req.method !== 'GET') error(403, '成员账户没有管理权限，请联系管理员');
   if (url.pathname === '/api/member/shared-status') {
     const state = await store.update(db => sharedAccountStatus(db), { persist: false });
@@ -182,7 +211,9 @@ export async function handleMemberRoutes(req, res, url, deps) {
     res.once('close', stop); res.once('error', stop);
     const tick = async () => {
       try {
-        const state = await store.update(db => authenticateMemberSession(db, cookie(req)) ? sharedAccountStatus(db) : null, { persist: false });
+        const viewer = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
+        if (viewer) await requireDiscordMembership(viewer, deps);
+        const state = viewer ? await store.update(db => sharedAccountStatus(db), { persist: false }) : null;
         if (closed) return;
         if (!state) { res.write('event: auth-expired\ndata: {}\n\n'); res.end(); stop(); return; }
         const text = JSON.stringify(state);
