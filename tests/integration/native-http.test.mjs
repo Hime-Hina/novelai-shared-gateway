@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.js';
@@ -53,6 +54,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   let failAt = -1, failStatus = 500, officialFixed = 10000, officialV5 = 100;
   let activeGenerations = 0, maxActiveGenerations = 0, holdNextMs = 0;
   let malformedNext = false;
+  const auditReader = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true, fileMustExist: true });
+  t.after(() => auditReader.close());
+  const dispatchEvidence = [];
   const upstream = http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${upstreamToken}`);
     if (req.url === '/user/data') {
@@ -65,6 +69,12 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    // 真正收到上游调用时就检查派发证据已提交，不能只在失败后补写一个看似完整的历史。
+    const running = auditReader.prepare("SELECT data FROM jobs WHERE status = 'running'").all().map(row => JSON.parse(row.data));
+    dispatchEvidence.push(running.map(job => ({ attempt: job.generationAttempt,
+      reservation: JSON.parse(auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value).fairQuota.reservations[job.id],
+      ledger: auditReader.prepare('SELECT data FROM ledger WHERE id = ?').get(`${job.generationAttempt?.id}:generation_reserved`)?.data
+    })));
     const call = { pathname: req.url, payload, startedAt: Date.now() }; calls.push(call);
     activeGenerations++; maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
     res.once('finish', () => { activeGenerations--; call.finishedAt = Date.now(); });
@@ -380,5 +390,27 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.ok(reservations.some(charge => charge.status === 'refunded'));
     assert.ok(reservations.every(charge => charge.status !== 'reserved'));
     assert.ok(snapshot.jobs.every(job => ['done', 'failed'].includes(job.status)));
+    assert.equal(dispatchEvidence.length, calls.length);
+    for (const dispatched of dispatchEvidence) {
+      assert.equal(dispatched.length, 1);
+      assert.equal(dispatched[0].attempt.id, dispatched[0].reservation.attemptId);
+      assert.equal(dispatched[0].reservation.status, 'reserved');
+      assert.deepEqual(JSON.parse(dispatched[0].ledger).attempt, dispatched[0].attempt);
+    }
+    const audit = auditReader.prepare("SELECT data FROM ledger WHERE source LIKE 'generation_%'").all().map(row => JSON.parse(row.data));
+    for (const job of snapshot.jobs) {
+      const refunds = audit.filter(event => event.jobId === job.id && event.type === 'generation_refunded');
+      const losses = audit.filter(event => event.jobId === job.id && event.type === 'generation_loss_suspected');
+      assert.equal(refunds.length, job.fairCharge?.status === 'refunded' ? 1 : 0);
+      if (!job.fairCharge || job.status === 'done') assert.equal(losses.length, 0);
+      if (losses.length) {
+        assert.equal(losses.length, 1); assert.equal(losses[0].actualConsumed, null);
+        assert.equal(losses[0].response.upstreamHttpStatus, job.upstreamHttpStatus);
+      }
+    }
+    assert.ok(audit.some(event => event.type === 'generation_loss_suspected' && event.response.upstreamHttpStatus === 200));
+    const batch = snapshot.jobs.filter(job => job.sampleIndex === 1 && job.fairCharge?.status === 'refunded')[0];
+    assert.ok(batch?.batchId);
+    assert.ok(snapshot.jobs.some(job => job.batchId === batch.batchId && job.sampleIndex === 0 && job.status === 'done'));
   } finally { await persisted.close(); }
 });

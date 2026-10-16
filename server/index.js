@@ -775,7 +775,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
     try {
       // 计价失败必须在入队前返回，不留下无法计价的任务。
       quoteFairRequest(single);
-      const result = await runNativeQueuedRequest(token, single, deadline, diagnosticId, user.jobAdmissionVersion || 0);
+      const result = await runNativeQueuedRequest(token, single, deadline, diagnosticId, user.jobAdmissionVersion || 0, index);
       const filename = `image_${index}.${imageExtension(result.saved.mimeType || '')}`;
       entries.push({buffer: await readStoredImage(result.saved), filename});
       results.push({index, status: 'done', filename});
@@ -797,9 +797,9 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   sendImage(res, 200, 'application/zip', archive, { 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
-async function runNativeQueuedRequest(token, request, deadline, diagnosticId, admissionVersion) {
+async function runNativeQueuedRequest(token, request, deadline, diagnosticId, admissionVersion, sampleIndex = 0) {
   if (Date.now() >= deadline) throw httpError(504, '生成等待超时，请减少一次生成张数');
-  const job = await createJob(token, request, { native: true, source: 'novelai-native', deadlineAt: new Date(deadline).toISOString(), admissionVersion });
+  const job = await createJob(token, request, { native: true, source: 'novelai-native', deadlineAt: new Date(deadline).toISOString(), admissionVersion, batchId: diagnosticId, sampleIndex });
   logNativeDiagnostic(diagnosticId, 'queued', { jobId: job.id });
   const pending = waitForJobResult(job.id, deadline);
   scheduleQueueDrain();
@@ -2229,6 +2229,7 @@ async function createJob(token, body, options = {}) {
     const job = {
       id: createId('job'),
       source: options.source || 'web',
+      ...(options.batchId ? { batchId: options.batchId, sampleIndex: options.sampleIndex } : {}),
       userToken: token,
       status: 'queued',
       request,
@@ -3020,8 +3021,8 @@ async function cancelReservedJob(reservation, error) {
       if (fairShareMode) recordSharedCompletion(account, Date.now());
       account.updatedAt = new Date().toISOString();
     }
-    refundJob(db, job, message);
     Object.assign(job, reservation.upstreamTiming || {});
+    refundJob(db, job, message, { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) });
     job.status = 'failed';
     job.error = message;
     job.errorDetail = detail || 'job aborted';
@@ -3051,7 +3052,7 @@ async function failGeneration(reservation, error) {
       if (!currentJob || ['done', 'failed'].includes(currentJob.status)) return;
     }
     const user = db.users.find((item) => item.token === reservation.token);
-    if (user) {
+    if (user && !fairShareMode) {
       user.balance += Number(reservation.cost || 0);
       user.updatedAt = new Date().toISOString();
     }
@@ -3073,7 +3074,7 @@ async function failGeneration(reservation, error) {
       const job = db.jobs.find((item) => item.id === reservation.job.id);
       if (job) {
         Object.assign(job, reservation.upstreamTiming || {});
-        if (fairShareMode) settleFairQuota(db, job, false);
+        if (fairShareMode) settleFairQuota(db, job, false, Date.now(), { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) });
         job.status = 'failed';
         job.error = message;
         job.errorStatus = statusCode;
@@ -3082,7 +3083,7 @@ async function failGeneration(reservation, error) {
         job.completedAt = job.updatedAt;
       }
     }
-    db.ledger.unshift({
+    if (!fairShareMode) db.ledger.unshift({
       id: createId('log'),
       type: 'refund',
       token: reservation.token,
@@ -3735,8 +3736,10 @@ function configuredTimeoutMs(name, fallback) {
   return Math.max(60_000, Math.floor(Number(fallback) || 60_000));
 }
 
-function refundJob(db, job, note) {
-  if (fairShareMode) settleFairQuota(db, job, false);
+function refundJob(db, job, note, evidence = {}) {
+  if (fairShareMode && db.settings?.fairQuota?.reservations?.[job.id]) {
+    return settleFairQuota(db, job, false, Date.now(), evidence);
+  }
   if (job.refundedAt) return;
   const cost = Number(job.cost || 0);
   if (cost <= 0) return;

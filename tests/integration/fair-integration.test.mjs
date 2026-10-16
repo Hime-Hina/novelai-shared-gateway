@@ -20,7 +20,7 @@ function fixture(tier=3) {
     publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
-  for(const name of ['getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
+  for(const name of ['getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
     const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
@@ -173,4 +173,31 @@ test('相同提示词和种子不能在不同成员间复用缓存',()=>{
  const request={model:'nai-diffusion-4-5-full',prompt:'synthetic test',seed:42};
  assert.equal(ctx.requestCacheKey('member-a',request,42),ctx.requestCacheKey('member-a',request,42));
  assert.notEqual(ctx.requestCacheKey('member-a',request,42),ctx.requestCacheKey('member-b',request,42));
+});
+
+test('真实共享失败/取消路径保留响应证据，重复失败与成功后的取消不退款', async () => {
+  for (const cancel of [false, true]) {
+    const { db, ctx, job } = fixture();
+    job('sent'); const reservation = await ctx.reserveQueuedJob('sent');
+    reservation.upstreamTiming = { upstreamStartedAt: new Date().toISOString(), upstreamHttpStatus: 502 };
+    const finish = cancel ? ctx.cancelReservedJob : ctx.failGeneration;
+    await finish(reservation, new Error('synthetic upstream interruption'));
+    const refunded = structuredClone(db.settings.fairQuota.balances);
+    const loss = db.ledger.filter(entry => entry.type === 'generation_loss_suspected');
+    assert.equal(loss.length, 1); assert.equal(loss[0].response.upstreamHttpStatus, 502);
+    assert.equal(loss[0].response.dispatchState, 'request_started');
+    assert.equal(db.ledger.filter(entry => entry.type === 'generation_refunded').length, 1);
+    assert.equal(db.ledger.filter(entry => entry.type === 'refund').length, 0);
+    await ctx.failGeneration(reservation, new Error('duplicate')); await ctx.cancelReservedJob(reservation, new Error('duplicate'));
+    assert.deepEqual(db.settings.fairQuota.balances, refunded);
+    assert.equal(db.ledger.length, 3);
+  }
+  const { db, ctx, job } = fixture(); job('done');
+  const reservation = await ctx.reserveQueuedJob('done');
+  fair.settleFairQuota(db, db.jobs[0], true); db.jobs[0].status = 'done';
+  const settled = structuredClone(db.settings.fairQuota.balances);
+  await ctx.failGeneration(reservation, new Error('late failure'));
+  await ctx.cancelReservedJob(reservation, new Error('late cancel')); ctx.refundJob(db, db.jobs[0], 'late cleanup');
+  assert.deepEqual(db.settings.fairQuota.balances, settled);
+  assert.equal(db.ledger.length, 1); assert.equal(db.ledger[0].type, 'generation_reserved');
 });

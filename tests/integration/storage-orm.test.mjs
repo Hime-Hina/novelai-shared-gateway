@@ -170,7 +170,7 @@ test('ORM 持久预扣保持 JSON/影子列一致、重复预扣不双扣，只�
     reserveFairQuota(db, db.users[0], db.jobs[0], db.accounts[0], now);
     db.jobs[0].status = 'running'; db.jobs[0].accountId = 'opus'; db.accounts[0].inFlight = 1;
   };
-  const options = { includeSettings: true, dirtyRows: { jobs: ['queued'], accounts: ['opus'] }, immediate: true };
+  const options = { includeSettings: true, dirtyRows: { jobs: ['queued'], accounts: ['opus'], ledger: ['attempt:queued:1:generation_reserved'] }, immediate: true };
   await store.update(reserve, options);
   const balance = store.db.settings.fairQuota.balances.a.v5Available;
   await store.update(reserve, options);
@@ -178,6 +178,7 @@ test('ORM 持久预扣保持 JSON/影子列一致、重复预扣不双扣，只�
   const persisted = store.sqlite.prepare('SELECT data, status, account_id FROM jobs WHERE id=?').get(job.id);
   assert.equal(JSON.parse(persisted.data).status, persisted.status);
   assert.equal(JSON.parse(persisted.data).accountId, persisted.account_id);
+  assert.equal(store.selectItemById('ledger', 'attempt:queued:1:generation_reserved').attempt.id, JSON.parse(persisted.data).generationAttempt.id);
   const worker = new Worker(new URL('../../server/sqlite-read-worker.js', import.meta.url), { workerData: { dbPath: store.dbPath } });
   t.after(() => worker.terminate());
   const stats = await new Promise((resolve, reject) => {
@@ -205,7 +206,7 @@ test('实际 persister 在事务中退出不留半笔预扣，提交后退出则
     await store.update(db => {
       reserveFairQuota(db, db.users[0], db.jobs[0], db.accounts[0], ${now});
       db.jobs[0].status = 'running'; db.accounts[0].inFlight = 1;
-    }, { includeSettings: true, dirtyRows: { accounts: ['opus'], jobs: ['queued'] }, immediate: true });
+    }, { includeSettings: true, dirtyRows: { accounts: ['opus'], jobs: ['queued'], ledger: ['attempt:queued:1:generation_reserved'] }, immediate: true });
     process.exit(74);
   `;
   const crash = spawnSync(process.execPath, ['--input-type=module', '-e', script, store.dataDir, 'during'], { encoding: 'utf8', timeout: 15000 });
@@ -220,5 +221,6 @@ test('实际 persister 在事务中退出不留半笔预扣，提交后退出则
   assert.equal(settings().fairQuota.reservations.queued.status, 'reserved');
   assert.equal(sqlite.prepare('SELECT status FROM jobs').get().status, 'running');
   assert.equal(JSON.parse(sqlite.prepare('SELECT data FROM accounts').get().data).inFlight, 1);
+  assert.equal(JSON.parse(sqlite.prepare('SELECT data FROM ledger').get().data).attempt.id, 'attempt:queued:1');
   assert.equal(sqlite.pragma('integrity_check', { simple: true }), 'ok');
 });

@@ -77,6 +77,11 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
   t.after(() => reopened.close());
   assert.equal((await reopened.read()).users[0].acceptingJobs, false);
   assert.equal((await reopened.read()).jobs.find(job => job.id === 'queued').queueExpiresAt, before.jobs.find(job => job.id === 'queued').queueExpiresAt);
+  for (const id of ['queued', 'pending']) {
+    const refunded = reopened.selectItemById('ledger', `attempt:${id}:1:generation_refunded`);
+    assert.equal(refunded.response.dispatchState, 'not_sent');
+    assert.equal(reopened.selectItemById('ledger', `attempt:${id}:1:generation_loss_suspected`), null);
+  }
   await reopened.update(db => {
     const running = db.jobs.find(job => job.id === 'running');
     settleFairQuota(db, running, true);

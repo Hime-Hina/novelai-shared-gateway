@@ -41,8 +41,8 @@ function persistedRows(store) {
 
 for (const options of [
   { immediate: true },
-  { collections: ['settings', 'accounts', 'jobs'], immediate: true },
-  { includeSettings: true, dirtyRows: { accounts: ['opus'], jobs: ['queued'] }, immediate: true }
+  { collections: ['settings', 'accounts', 'jobs', 'ledger'], immediate: true },
+  { includeSettings: true, dirtyRows: { accounts: ['opus'], jobs: ['queued'], ledger: ['attempt:queued:1:generation_reserved'] }, immediate: true }
 ]) {
   test(`SQLite 写失败退回钱包、任务、账户及持久化索引：${JSON.stringify(options)}`, async t => {
     const store = await fixture(t);

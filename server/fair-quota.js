@@ -1,4 +1,5 @@
 import { quoteNativeRequest } from './native-pricing.js';
+import { recordGenerationAttempt, recordGenerationRefund } from './generation-accounting.js';
 // 所有修改必须在存储事务内执行；账本与任务一起持久化，避免重启后重复扣款。
 const STALE_MS = 10 * 60 * 1000;
 const number = (v) => v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
@@ -360,10 +361,11 @@ export function reserveFairQuota(db,user,job,account,now=Date.now()) {
   }
   const charge={...q,fixed,purchased,...(fallback?{billingMode:'anlas_fallback',v5Equivalent,sharedV5Reserved,upstreamBilling:'shared_or_anlas'}:{}),configVersion:s.configVersion,groupId:groupFor(s,user.id)?.id,userId:user.id,accountId:account.id,status:'reserved',reservedAt:now};
   s.reservations[job.id]=charge;job.fairCharge=charge;
+  recordGenerationAttempt(db,job,charge,readSnapshot(account),now);
   return charge;
 }
 
-export function settleFairQuota(db,job,success,now=Date.now()) {
+export function settleFairQuota(db,job,success,now=Date.now(),evidence={}) {
   const s=db.settings?.fairQuota,c=s?.reservations?.[job.id];
   if(!c || c.status!=='reserved') return c || null;
   upgradeGroups(s);
@@ -381,6 +383,8 @@ export function settleFairQuota(db,job,success,now=Date.now()) {
     else s.balances[c.userId].v5Available+=c.amount;
   }
   s.lastSettlementAt=Math.max(s.lastSettlementAt,now);job.fairCharge=c;
+  // reserved 状态迁移是持久化幂等边界，不依赖只有最近 1000 条的 ledger 内存缓存。
+  if(!success) recordGenerationRefund(db,job,c,now,evidence);
   return c;
 }
 
