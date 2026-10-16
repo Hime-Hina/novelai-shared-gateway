@@ -1,7 +1,7 @@
 const $=id=>document.getElementById(id);
 const ownerMode=location.pathname.startsWith('/owner');
 let usage=null;
-let state=null,upstream=null,publicBase='',draft=[],dirty=false,preview=null,confirmTask=null,busy=false;
+let state=null,upstream=null,publicBase='',draft=[],draftConfigVersion=null,dirty=false,preview=null,confirmTask=null,busy=false;
 let allocationMode='direct',directShares={},redistributeByMode={direct:true,advanced:false};
 const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:3});
 const percent=v=>number(Number(v||0)*100)+'%';
@@ -50,7 +50,23 @@ function tab(id){document.querySelectorAll('[data-tab]').forEach(b=>b.setAttribu
 function updateOverview(){const s=state.shared||{};$('overviewStatus').textContent=statusNames[s.status||state.status]||'待核验';$('overviewDate').textContent='官方查询 '+displayTime(s.officialCheckedAt);$('overviewV5').textContent=number(s.v5Percent)+'%';$('overviewBar').value=s.v5Percent||0;$('overviewRecovery').textContent=s.refillSecondsPerPercent>0?'每恢复 1% 约 '+number(s.refillSecondsPerPercent/60)+' 分钟':'恢复周期等待官方数据';$('overviewAnlas').textContent=number(s.anlasFixed);$('overviewPurchased').textContent='购买余额 '+number(s.anlasPurchased);$('overviewQueue').textContent=(s.running||0)+' / '+(s.queued||0);$('overviewMembers').textContent=state.users.filter(u=>u.enabled).length+' 位启用成员 · 串行，结束后间隔至少 10 秒';$('connectedHint').textContent='已连接 · 页面更新 '+new Date().toLocaleTimeString('zh-CN');}
 function renderMembers(){const query=$('search').value.trim().toLowerCase(),filter=$('filterGroup').value;const users=state.users.filter(u=>(u.username||u.note||u.id).toLowerCase().includes(query)&&(!filter||(filter==='unassigned'?!groupOf(u.id):groupOf(u.id)?.id===filter)));$('memberCount').textContent=users.length+' / '+state.users.length+' 位成员';$('members').replaceChildren();for(const u of users){const row=node('tr'),name=node('td',u.username||u.note||u.id);name.append(node('span',u.enabled?'已启用':'已停用','badge '+(u.enabled?'ok':'off')));if(state.discordLogin)name.append(node('span',u.discordId?'Discord '+u.discordId:'尚未绑定 Discord','cell-sub'));const group=node('td',groupOf(u.id)?.name||'未分组');group.append(node('span',percent(u.quota?.share),'cell-sub'));row.append(name,group,node('td',number(u.quota?.v5Available)),node('td',number(u.quota?.anlasFixedAvailable)),node('td',number(u.quota?.anlasPurchasedAvailable)));const actions=node('td'),wrap=node('div',undefined,'row-actions');for(const [text,fn] of [['分发信息',()=>delivery(u)],state.discordLogin?['邀请码',()=>inviteMember(u)]:['重置密码',()=>editMember(u)],['调整额度',()=>openTransfer(u)],['删除',()=>openDelete(u)],[u.enabled?'停用':'恢复',()=>confirmMemberStatus(u)]]){const b=node('button',text,'secondary');b.type='button';b.onclick=run(fn);if(ownerMode&&u.id===state.ownerUserId&&['删除','停用'].includes(text))b.disabled=true;if((text==='重置密码'||text==='邀请码')&&!u.enabled||text==='邀请码'&&u.discordId)b.disabled=true;wrap.append(b);}actions.append(wrap);row.append(actions);$('members').append(row);}if(!users.length){const td=node('td','没有符合条件的成员','empty');td.colSpan=6;const tr=node('tr');tr.append(td);$('members').append(tr);}}
 function renderDraft(){
- draft=structuredClone(state.groups);for(const g of draft){g.share??=.25;g.memberWeights??={};}dirty=false;preview=null;redistributeByMode={direct:true,advanced:false};$('redistribute').checked=true;updateRedistributeHint();$('draftHint').textContent='尚无修改';allocationMode='direct';$('allocationMode').value='direct';$('directAllocation').hidden=false;$('advancedAllocation').hidden=true;renderAdvancedDraft();renderDirectDraft();}
+ // 版本跟随开始编辑时的草稿，不能用后来的查询或预览响应给旧草稿换版本。
+ draftConfigVersion=state.configVersion;
+ draft=structuredClone(state.groups);
+ for(const g of draft){g.share??=.25;g.memberWeights??={};}
+ dirty=false;
+ preview=null;
+ redistributeByMode={direct:true,advanced:false};
+ $('redistribute').checked=true;
+ updateRedistributeHint();
+ $('draftHint').textContent='尚无修改';
+ allocationMode='direct';
+ $('allocationMode').value='direct';
+ $('directAllocation').hidden=false;
+ $('advancedAllocation').hidden=true;
+ renderAdvancedDraft();
+ renderDirectDraft();
+}
 function renderAdvancedDraft(){
  $('groupCards').replaceChildren();$('assignments').replaceChildren();
  for(const g of draft){const card=node('div',undefined,'group-card'),label=node('label','组名'),input=node('input');input.value=g.name;input.maxLength=60;input.setAttribute('aria-label','编辑'+g.name);input.oninput=()=>{g.name=input.value;markDirty();};label.append(input);const count=node('strong');count.dataset.countGroup=g.id;const shareLabel=node('label','总份额（%）'),share=node('input');share.type='number';share.min='0';share.max='100';share.step='any';share.value=Number((g.share*100).toFixed(8));share.setAttribute('aria-label',g.name+' 总份额百分比');share.oninput=()=>{g.share=share.value===''?NaN:Number(share.value)/100;markDirty();};shareLabel.append(share);card.append(label,count,shareLabel);$('groupCards').append(card);}
@@ -75,7 +91,31 @@ function renderDirectDraft(){directShares={};$('directRows').replaceChildren();f
 function applyDirectShares(){for(const u of state.users)if(u.enabled&&!groupOf(u.id,draft))draft[0].members.push(u.id);for(const g of draft){g.memberWeights={};let total=0;for(const id of g.members){const value=directShares[id]??0;g.memberWeights[id]=value;total+=value;}g.share=total/100;}}
 function updateDirectTotal(){const total=Object.values(directShares).reduce((n,v)=>n+v,0);$('directTotal').textContent='已分配 '+number(total)+'% / 100%'+(Number.isFinite(total)?' · '+(total<=100?'还需分配 '+number(100-total)+'%':'超出 '+number(total-100)+'%'):' · 请填写有效数字');$('directTotal').classList.toggle('danger',!Number.isFinite(total)||Math.abs(total-100)>1e-6);}
 $('allocationMode').onchange=()=>{redistributeByMode[allocationMode]=$('redistribute').checked;allocationMode=$('allocationMode').value;$('redistribute').checked=redistributeByMode[allocationMode];preview=null;updateRedistributeHint();$('directAllocation').hidden=allocationMode!=='direct';$('advancedAllocation').hidden=allocationMode!=='advanced';if(allocationMode==='direct')renderDirectDraft();else renderAdvancedDraft();};
-async function refresh({reset=true}={}){const result=await manage();state=result;$('memberHelp').textContent=state.discordLogin?'首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。':'创建、分发、重置密码，都在成员这一行完成。';state.users.sort((a,b)=>(a.username||a.id).localeCompare(b.username||b.id));$('autoFallback').checked=state.autoAnlasFallback===true;const filter=$('filterGroup').value;$('filterGroup').replaceChildren(option('','全部分组'),option('unassigned','未分组'));for(const g of state.groups)$('filterGroup').append(option(g.id,g.name));$('filterGroup').value=filter;$('dashboard').hidden=false;$('connect').hidden=true;$('topActions').hidden=false;updateOverview();renderMembers();if(reset)renderDraft();if(ownerMode&&!$('usagePanel').hidden)await loadUsage();try{await loadUpstream();}catch(e){notice('成员数据已刷新；上游状态读取失败：'+e.message,true);}}
+// 自动刷新发出后也可能开始编辑；响应回来时再次检查，保留草稿及其原版本。
+async function refresh({reset=true}={}){
+ state=await manage();
+ $('memberHelp').textContent=state.discordLogin
+  ?'首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。'
+  :'创建、分发、重置密码，都在成员这一行完成。';
+ state.users.sort((a,b)=>(a.username||a.id).localeCompare(b.username||b.id));
+ $('autoFallback').checked=state.autoAnlasFallback===true;
+ const filter=$('filterGroup').value;
+ $('filterGroup').replaceChildren(option('','全部分组'),option('unassigned','未分组'));
+ for(const g of state.groups)$('filterGroup').append(option(g.id,g.name));
+ $('filterGroup').value=filter;
+ $('dashboard').hidden=false;
+ $('connect').hidden=true;
+ $('topActions').hidden=false;
+ updateOverview();
+ renderMembers();
+ if(reset&&!dirty)renderDraft();
+ if(ownerMode&&!$('usagePanel').hidden)await loadUsage();
+ try{
+  await loadUpstream();
+ }catch(e){
+  notice('成员数据已刷新；上游状态读取失败：'+e.message,true);
+ }
+}
 async function loadUpstream(){const summary=await api('/api/admin/summary');const id=state.users.find(u=>u.quota?.boundAccountId)?.quota.boundAccountId;const a=summary.accounts?.find(a=>a.id===id);publicBase=String(state.publicBaseUrl||summary.settings?.publicBaseUrl||location.origin).replace(/\/$/,'');upstream=a?{id,enabled:a.enabled===true,tier:a.quotaTier,inFlight:Number(a.inFlight||0),fixed:a.quotaFixed,purchased:a.quotaPurchased,v5:a.v5UsagePercent,checked:a.quotaCheckedAt,error:Boolean(a.quotaError)}:null;for(const id of ['refreshUpstream','toggleUpstream','saveUpstreamPst'])$(id).disabled=!upstream;if(!upstream){$('upstreamStatus').textContent='尚未绑定共享 Opus';return;}$('upstreamStatus').textContent=(upstream.enabled?'已启用':'已暂停')+' · '+(upstream.tier===3?'Opus':'订阅待核验')+' · 正在生成 '+upstream.inFlight;$('upstreamQuota').textContent='V5 '+number(upstream.v5)+'% · 订阅 '+number(upstream.fixed)+' · 购买 '+number(upstream.purchased);$('upstreamUpdated').textContent='官方查询 '+displayTime(upstream.checked)+(upstream.error?' · 查询失败':'');$('toggleUpstream').textContent=upstream.enabled?'暂停上游':'恢复上游';}
 function requireClean(){if(dirty)throw new Error('分组有未保存修改，请先预览保存或撤销修改。');}
 async function inviteMember(user){requireClean();const invitation=await manage({action:'discord-invite',userId:user.id});const portal=String(state.publicBaseUrl||publicBase).replace(/\/$/,'');$('deliveryText').value=['成员入口：'+portal+'/','成员：'+user.username,'邀请码：'+invitation.code,'有效期：'+displayTime(invitation.expiresAt),'首次登录填写邀请码，再通过 Discord 验证指定服务器成员身份。','邀请码仅可使用一次；重新生成会撤销旧邀请码。绑定后直接使用 Discord 登录。'].join('\n');modal('deliveryDialog');}
@@ -83,7 +123,38 @@ function randomPassword(){const bytes=crypto.getRandomValues(new Uint8Array(24))
 function editMember(user){requireClean();$('passwordLabel').hidden=state.discordLogin===true;$('password').required=!state.discordLogin;$('editingId').value=user?.id||'';$('username').value=user?.username||'';$('username').readOnly=Boolean(user);$('password').value='';$('password').type='password';$('showPassword').textContent='显示';$('createGroupLabel').hidden=Boolean(user);$('createGroup').required=false;$('createGroup').replaceChildren(option('','暂不入组，稍后分配'));for(const g of state.groups){const item=option(g.id,g.name+(g.members.length?'':'（先在分组页分配份额）'));item.disabled=!g.members.length;$('createGroup').append(item);}$('memberDialogTitle').textContent=user?'重置 '+user.username+' 的密码':'创建成员';$('saveMember').textContent=user?'保存新密码':'创建并生成分发信息';$('credentialHint').textContent=user?'原 API Key 保持不变，旧登录会话将失效。':'可加入已有分组，或暂不入组。新成员当前余额为 0；要启用空组，请在分组页同时分配成员与组份额。';if(state.discordLogin){$('credentialHint').textContent='创建后生成一次性 Discord 邀请码；新成员余额为 0，份额由管理员分配。';$('saveMember').textContent='创建成员并生成邀请码';}modal('memberDialog');}
 async function delivery(user,password){const key=await manage({action:'member-key',userId:user.id});const portal=String(state.publicBaseUrl||publicBase||location.origin).replace(/\/$/,'');$('deliveryText').value=['成员入口：'+portal+'/','用户名：'+user.username,state.discordLogin?'登录方式：Discord（首次登录需要管理员邀请码）':'密码：'+(password||'使用此前分配的密码；忘记请联系管理员重置'),'API Base：'+portal+'/v1','API Key：'+key.apiKey].join('\n');modal('deliveryDialog');}
 function confirmMemberStatus(u){requireClean();$('confirmTitle').textContent=(u.enabled?'停用 ':'恢复 ')+u.username;$('confirmDescription').textContent=u.enabled?'将禁止该成员登录和新的 API 调用。余额、分组、份额保留，不会分给其他成员。':'恢复该成员登录及 API 调用，继续使用原 Key 和保留额度。';confirmTask=async()=>{await manage({action:'member-status',userId:u.id,enabled:!u.enabled});$('confirmDialog').close();await refresh();notice('成员状态已更新。');};modal('confirmDialog');}
-async function previewGroups(){if(allocationMode==='direct')applyDirectShares();validateDraft();const body={action:'preview-groups',groups:structuredClone(draft),redistributeRemaining:$('redistribute').checked};const result=await manage(body);preview={...body,action:'groups',expectedConfigVersion:result.configVersion};$('previewRows').replaceChildren();for(const u of state.users){const after=result.users.find(v=>v.id===u.id)?.quota||{},before=u.quota||{};const tr=node('tr');for(const text of [u.username||u.id,percent(before.share)+' → '+percent(after.share),number(before.v5Available)+' / '+number(before.v5Capacity)+' → '+number(after.v5Available)+' / '+number(after.v5Capacity),number(before.anlasFixedAvailable)+' → '+number(after.anlasFixedAvailable),number(before.anlasPurchasedAvailable)+' → '+number(after.anlasPurchasedAvailable)])tr.append(node('td',text));$('previewRows').append(tr);}$('previewDescription').textContent=body.redistributeRemaining?'将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。确认后按下表调整。':'仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样，不会按新份额重新分配。';modal('previewDialog');}
+async function previewGroups(){
+ if(allocationMode==='direct')applyDirectShares();
+ validateDraft();
+ const body={
+  action:'preview-groups',
+  groups:structuredClone(draft),
+  redistributeRemaining:$('redistribute').checked,
+  expectedConfigVersion:draftConfigVersion
+ };
+ preview=null;
+ const result=await manage(body);
+ // 预览与保存使用同一编辑基线；重新预览不能给过期草稿换成最新版本。
+ preview={...body,action:'groups'};
+ $('previewRows').replaceChildren();
+ for(const u of state.users){
+  const after=result.users.find(v=>v.id===u.id)?.quota||{},before=u.quota||{};
+  const tr=node('tr');
+  const values=[
+   u.username||u.id,
+   percent(before.share)+' → '+percent(after.share),
+   number(before.v5Available)+' / '+number(before.v5Capacity)+' → '+number(after.v5Available)+' / '+number(after.v5Capacity),
+   number(before.anlasFixedAvailable)+' → '+number(after.anlasFixedAvailable),
+   number(before.anlasPurchasedAvailable)+' → '+number(after.anlasPurchasedAvailable)
+  ];
+  for(const text of values)tr.append(node('td',text));
+  $('previewRows').append(tr);
+ }
+ $('previewDescription').textContent=body.redistributeRemaining
+  ?'将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。确认后按下表调整。'
+  :'仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样，不会按新份额重新分配。';
+ modal('previewDialog');
+}
 $('connect').onsubmit=run(async()=>{await refresh();if($('remember').checked)sessionStorage.setItem('nai.adminSession',$('adminToken').value);else sessionStorage.removeItem('nai.adminSession');});
 $('disconnect').onclick=()=>{if(ownerMode){location.href='/';return;}sessionStorage.removeItem('nai.adminSession');localStorage.removeItem('nai.adminToken');$('adminToken').value='';$('deliveryText').value='';$('password').value='';$('upstreamPst').value='';document.querySelectorAll('dialog[open]').forEach(d=>d.close());state=null;upstream=null;preview=null;draft=[];dirty=false;$('dashboard').hidden=true;$('topActions').hidden=true;$('connect').hidden=false;notice('已断开管理会话。');};
 $('refresh').onclick=run(async()=>{requireClean();await refresh();notice('状态已刷新。');});

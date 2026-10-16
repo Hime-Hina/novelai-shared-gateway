@@ -144,6 +144,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       if(body.redistributeRemaining!==undefined&&typeof body.redistributeRemaining!=='boolean')error(400,'redistributeRemaining 必须为布尔值');
       const result=await store.update(db=>{
         const configVersion=db.settings.fairQuota?.configVersion ?? 1;
+        if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==configVersion)error(409,'分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
         // 预览只操作独立副本，恢复、重分与审计都不能污染真实账本。
         const draft={...db,settings:structuredClone(db.settings),users:structuredClone(db.users)};
         configureFairGroups(draft,body.groups,{actorId:'administrator',redistributeRemaining:body.redistributeRemaining===true});
@@ -181,7 +182,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       if(body.redistributeRemaining!==undefined&&typeof body.redistributeRemaining!=='boolean')error(400,'redistributeRemaining 必须为布尔值');
       const result = await store.update(db => {
         const currentVersion=db.settings.fairQuota?.configVersion ?? 1;
-        if(body.expectedConfigVersion!==undefined&&(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==currentVersion))error(409,'分组已发生变化，请重新预览后保存');
+        if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==currentVersion)error(409,'分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
         configureFairGroups(db, body.groups, { actorId: 'administrator', redistributeRemaining: body.redistributeRemaining === true });
         syncFairQuota(db);
         return { groups: db.settings.fairQuota.groups, status: db.settings.fairQuota.status,configVersion:db.settings.fairQuota.configVersion };

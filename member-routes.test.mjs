@@ -43,11 +43,17 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  // 预览允许估算恢复与重分，但不能在真实账本留下余额、版本或审计变化。
  db.users.push({id:'e',token:'STA1N-e',enabled:true,balance:0});db.settings.fairQuota.balances.a.v5Available=8;db.settings.fairQuota.balances.a.anlasFixedAvailable=100;db.settings.fairQuota.balances.a.anlasAvailable=100;
  const proposed=structuredClone(db.settings.fairQuota.groups);proposed[0].members.push('e');const beforePreview=structuredClone(db);
- r=await manage({action:'preview-groups',groups:proposed,redistributeRemaining:true});assert.equal(r.status,200);const preview=await r.json();
+ // 预览和保存都必须携带编辑开始时的版本；省略版本不能绕过并发保护。
+ for(const action of ['preview-groups','groups'])for(const expectedConfigVersion of [undefined,null,'1',1.5,0]){
+  r=await manage({action,groups:proposed,redistributeRemaining:true,expectedConfigVersion});assert.equal(r.status,409);assert.deepEqual(db,beforePreview);
+ }
+ r=await manage({action:'preview-groups',groups:proposed,redistributeRemaining:true,expectedConfigVersion:beforePreview.settings.fairQuota.configVersion});assert.equal(r.status,200);const preview=await r.json();
  assert.equal(preview.configVersion,beforePreview.settings.fairQuota.configVersion);assert.equal(preview.redistributeRemaining,true);assert.equal(preview.users.find(u=>u.id==='a').quota.v5Available,4);assert.equal(preview.users.find(u=>u.id==='e').quota.anlasFixedAvailable,50);assert.deepEqual(db,beforePreview);assert.ok(!JSON.stringify(preview).includes('STA1N-'));
  r=await manage({action:'groups',groups:proposed,redistributeRemaining:true,expectedConfigVersion:preview.configVersion-1});assert.equal(r.status,409);assert.deepEqual(db,beforePreview);
  r=await manage({action:'groups',groups:proposed,redistributeRemaining:true,expectedConfigVersion:preview.configVersion});assert.equal(r.status,200);assert.equal((await r.json()).configVersion,preview.configVersion+1);
  const afterSave=structuredClone(db);r=await manage({action:'groups',groups:proposed,expectedConfigVersion:preview.configVersion});assert.equal(r.status,409);assert.deepEqual(db,afterSave);
+ // 另一个旧页面在新保存之后才请求预览，也不能拿到新版本后覆盖新配置。
+ r=await manage({action:'preview-groups',groups:beforePreview.settings.fairQuota.groups,expectedConfigVersion:preview.configVersion});assert.equal(r.status,409);assert.deepEqual(db,afterSave);
 
  // 创建成员与加入组同事务提交，密码失败、组不存在或预留冲突不会留下半个成员。
  let beforeCreate=structuredClone(db);
