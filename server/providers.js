@@ -913,7 +913,7 @@ function destroySocketQuietly(socket) {
 
 function noop() {}
 
-function buildNovelAiParameters(request) {
+export function buildNovelAiParameters(request) {
   // 原生入口已验证单图参数，保留角色提示词等官方字段，不改写为聊天模板。
   if (request.nativeParameters) {
     const parameters = structuredClone(request.nativeParameters);
