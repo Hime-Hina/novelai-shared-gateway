@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { readNativeBody } from './native-body.js';
+import { readNativeBody } from '../../server/native-body.js';
 const payload={input:'test prompt',model:'nai-diffusion-4-5-full',parameters:{width:1024,height:1024,steps:23}};
 function stream(bytes,contentType,headers={}){const req=Readable.from([bytes.subarray(0,13),bytes.subarray(13)]);req.headers={'content-type':contentType,...headers};return req;}
 async function multipart(parts){const form=new FormData();for(const [name,value] of parts)typeof value==='string'?form.append(name,value):form.append(name,value,'blob');const response=new Response(form);return {bytes:Buffer.from(await response.arrayBuffer()),contentType:response.headers.get('content-type')};}

@@ -4,10 +4,10 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { deflateRawSync, deflateSync, crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
-import { generationPrice, sizeMap } from './public/generation-pricing.js';
-import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from './server/providers.js';
-import { parseNativeAuxiliaryRequest } from './server/native-image.js';
-import { nativeImagesMsgpack } from './server/native-stream.js';
+import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
+import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.js';
+import { parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.js';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };
@@ -361,7 +361,7 @@ test('Medium 通用客户端与原生请求都按实际固定参数发往同一�
 
 
 test('模型目录提供 Medium 的唯一采样器组合，旧 High 与 5C 条目保留',()=>{
- const source=readFileSync(new URL('./server/index.js',import.meta.url),'utf8');
+ const source=readFileSync(new URL('../../server/index.js',import.meta.url),'utf8');
  const blocks=[/const openAiSamplers = \[[\s\S]*?\n\];/,/const openAiImageModels = \[[\s\S]*?\n\];/,/const openAiSizeTiers = \{[\s\S]*?\n\};/].map(pattern=>{const match=source.match(pattern);assert.ok(match);return match[0];});
  const start=source.indexOf('function openAiModelsResponse('),end=source.indexOf('\n}',start)+2;assert.ok(start>0);
  const ctx=vm.createContext({Date,Object,sizeMap,openAiFixedSteps:28,generationCost:generationPrice});

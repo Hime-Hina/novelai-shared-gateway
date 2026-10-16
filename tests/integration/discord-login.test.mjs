@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { handleMemberRoutes } from './server/member-routes.js';
-import { setMemberCredentials, createMemberSession } from './server/member-auth.js';
-import { configureFairQuota } from './server/fair-quota.js';
-import { discordConfig, discordLoginEnabled, requireDiscordMembership, createDiscordInvite } from './server/discord-auth.js';
-import { sharedSurface } from './server/shared-surface.js';
-import { privateAccessAllowed } from './server/public-hosts.js';
+import { handleMemberRoutes } from '../../server/member-routes.js';
+import { setMemberCredentials, createMemberSession } from '../../server/member-auth.js';
+import { configureFairQuota } from '../../server/fair-quota.js';
+import { discordConfig, discordLoginEnabled, requireDiscordMembership, createDiscordInvite } from '../../server/discord-auth.js';
+import { sharedSurface } from '../../server/shared-surface.js';
+import { privateAccessAllowed } from '../../server/public-hosts.js';
 
 const env = { DISCORD_CLIENT_ID:'123456789012345678', DISCORD_CLIENT_SECRET:'synthetic-client-secret', DISCORD_GUILD_ID:'1134557553011998840', PUBLIC_BASE_URL:'https://nai.example', PUBLIC_MODE:'true', PUBLIC_HOST:'nai.example' };
 async function fixture(t) {

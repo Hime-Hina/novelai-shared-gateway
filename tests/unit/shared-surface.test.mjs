@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedSurface } from './shared-surface.js';
+import { sharedSurface } from '../../server/shared-surface.js';
 
 test('首页只进入共享门户，旧静态资源与未知页面不可访问', () => {
   assert.deepEqual(sharedSurface('/'), { allowed: true, pathname: '/account.html' });

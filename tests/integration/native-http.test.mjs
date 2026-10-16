@@ -8,14 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { bootstrap } from './scripts/bootstrap.mjs';
-import { JsonStore } from './server/store.js';
-import { syncFairQuota, quoteFairRequest } from './server/fair-quota.js';
-import { parseNativeImageRequest } from './server/native-image.js';
-import { nativeImagesMsgpack } from './server/native-stream.js';
-import { readNativeEvents } from './test-support/native-stream-client.mjs';
+import { bootstrap } from '../../scripts/bootstrap.mjs';
+import { JsonStore } from '../../server/store.js';
+import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.js';
+import { parseNativeImageRequest } from '../../server/native-image.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
-const root = fileURLToPath(new URL('./', import.meta.url));
+const root = fileURLToPath(new URL('../../', import.meta.url));
 // 合成图片和新建临时数据库；测试不会读取 .env、生产数据或请求真实 NAI。
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const body = (model = 'nai-diffusion-5-full', extra = {}) => ({

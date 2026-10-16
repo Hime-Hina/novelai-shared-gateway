@@ -4,12 +4,12 @@ import http from 'node:http';
 import {mkdtemp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {handleMemberRoutes} from './server/member-routes.js';
-import {createMemberSession, isOwner} from './server/member-auth.js';
-import {ownerOperation, summarizeOwnerUsage} from './server/owner-operations.js';
-import {configureFairQuota, syncFairQuota} from './server/fair-quota.js';
-import {sharedSurface} from './server/shared-surface.js';
-import {JsonStore} from './server/store.js';
+import {handleMemberRoutes} from '../../server/member-routes.js';
+import {createMemberSession, isOwner} from '../../server/member-auth.js';
+import {ownerOperation, summarizeOwnerUsage} from '../../server/owner-operations.js';
+import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.js';
+import {sharedSurface} from '../../server/shared-surface.js';
+import {JsonStore} from '../../server/store.js';
 
 async function fixture(t) {
   const env={OWNER_USER_ID:'owner-a',DISCORD_GUILD_ID:'1134557553011998840',DISCORD_CLIENT_ID:'123456789012345678',DISCORD_CLIENT_SECRET:'synthetic-secret-only',PUBLIC_BASE_URL:'https://nai.example'};

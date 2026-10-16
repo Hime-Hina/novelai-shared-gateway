@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sharedAccountStatus} from './shared-status.js';
+import {sharedAccountStatus} from '../../server/shared-status.js';
 const NOW=1800000000000;
 function fixture(){return {settings:{fairQuota:{members:['member'],boundAccountId:'opus'}},users:[{id:'member',token:'member-secret'},{id:'other',token:'other-secret'}],accounts:[{id:'opus',token:'upstream-secret',username:'secret-name',enabled:true,subscriptionActive:true,subscriptionExpiresAt:NOW+86400000,quotaTier:3,quotaCheckedAt:NOW,v5UsagePercent:80,v5UsageIsNegative:false,v5UsageTimeUntilNextPercent:600,quotaFixed:9000,quotaPurchased:200}],jobs:[]};}
 test('白名单返回只读汇总，没有上游与成员隐私',()=>{

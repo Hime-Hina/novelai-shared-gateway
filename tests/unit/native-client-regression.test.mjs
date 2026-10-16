@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNativeImageRequest } from './native-image.js';
+import { parseNativeImageRequest } from '../../server/native-image.js';
 
 // 只复刻线上失败请求的结构，提示词和种子使用合成数据。
 function clientRequest() {
@@ -167,7 +167,7 @@ test('官网与柏宝绘的 DPM++ 2S Ancestral 采样器按原值通过，未知
 
 // 请求结构来自 novelai-image-desktop 2.5.7 的 electron/ipc/nai.ts，提示词和种子为合成值。
 // 公开源码提交：2d609393c3902874afae5200c26165d86b76055f。
-const desktopRequest = JSON.parse(readFileSync(new URL('./fixtures/novelai-image-desktop-request.json', import.meta.url), 'utf8'));
+const desktopRequest = JSON.parse(readFileSync(new URL('../fixtures/novelai-image-desktop-request.json', import.meta.url), 'utf8'));
 
 test('桌面客户端重复预设别名归一为原参数，不重复添加提示词或修改请求对象', () => {
   const input = structuredClone(desktopRequest), canonical = structuredClone(input);

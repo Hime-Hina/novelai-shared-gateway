@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {quoteNativeRequest} from './native-pricing.js';
-import {configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest} from './fair-quota.js';
+import {quoteNativeRequest} from '../../server/native-pricing.js';
+import {configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest} from '../../server/fair-quota.js';
 
 // 对照独立保存的官网报价结果；不包含官网代码或真实账户信息。
-const fixture=JSON.parse(readFileSync(new URL('./fixtures/official-image-pricing-20261009.json',import.meta.url),'utf8'));
+const fixture=JSON.parse(readFileSync(new URL('../fixtures/official-image-pricing-20261009.json',import.meta.url),'utf8'));
 const expected=(name,args)=>{
   const row=fixture.calls[name].find(item=>JSON.stringify(item.args)===JSON.stringify(args));
   assert.ok(row,`官网报价样例缺失：${name}`);

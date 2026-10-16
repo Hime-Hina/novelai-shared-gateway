@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { withQuotaRequestDeadline } from './server/quota-timeout.js';
-import { fetchNovelAiAccountQuota } from './server/providers.js';
+import { withQuotaRequestDeadline } from '../../server/quota-timeout.js';
+import { fetchNovelAiAccountQuota } from '../../server/providers.js';
 
-const source = fs.readFileSync(new URL('./server/index.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
 const quota = { tier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000, points: 10000, fixed: 10000, purchased: 0, v5UsagePercent: 80 };
 const account = id => ({ id, token: `synthetic-${id}`, enabled: true, quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: quota.subscriptionExpiresAt, quotaFixed: 9000, quotaPurchased: 0, v5UsagePercent: 80, quotaCheckedAt: new Date(Date.now() - 700000).toISOString() });
 const defer = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };

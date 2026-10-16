@@ -4,9 +4,9 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { bootstrap } from './bootstrap.mjs';
-import { setMemberCredentials, loginMember } from '../server/member-auth.js';
-import { configureFairQuota } from '../server/fair-quota.js';
+import { bootstrap } from '../../scripts/bootstrap.mjs';
+import { setMemberCredentials, loginMember } from '../../server/member-auth.js';
+import { configureFairQuota } from '../../server/fair-quota.js';
 
 // 无原生 SQLite 依赖时验证初始化边界；真实 SQLite 行为由 bootstrap.test.mjs 单独验证。
 class MemoryStore {

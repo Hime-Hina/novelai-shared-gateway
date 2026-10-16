@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import * as fair from './server/fair-quota.js';
-import * as capacity from './server/shared-capacity.js';
-const source=fs.readFileSync(new URL('./server/index.js',import.meta.url),'utf8');
+import * as fair from '../../server/fair-quota.js';
+import * as capacity from '../../server/shared-capacity.js';
+const source=fs.readFileSync(new URL('../../server/index.js',import.meta.url),'utf8');
 function fixture(tier=3) {
   let now=Date.now();
   class ClockDate extends Date { constructor(...args){super(...(args.length?args:[now]));} static now(){return now;} }

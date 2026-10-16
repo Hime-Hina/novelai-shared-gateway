@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { memberPublicBaseUrl, handleMemberRoutes } from './member-routes.js';
-import { createMemberSession, logoutMemberSession } from './member-auth.js';
+import { memberPublicBaseUrl, handleMemberRoutes } from '../../server/member-routes.js';
+import { createMemberSession, logoutMemberSession } from '../../server/member-auth.js';
 
 const response = () => ({ headers: {}, setHeader(name, value) { this.headers[name] = value; }, writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers); }, end(body) { this.body = body; } });
 

@@ -1,12 +1,12 @@
-import { quoteFairRequest } from './server/fair-quota.js';
-import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from './server/native-image.js';
-import { readNativeBody } from './server/native-body.js';
+import { quoteFairRequest } from '../../server/fair-quota.js';
+import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { readNativeBody } from '../../server/native-body.js';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
-const source = readFileSync(new URL('./server/index.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
 const section = source.slice(source.indexOf('function parseNativeImageRequest('), source.indexOf('async function handleOpenAiChatCompletion('));
 const context = vm.createContext({ parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest, quoteFairRequest, publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
 vm.runInContext(section, context);

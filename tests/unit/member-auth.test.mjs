@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as auth from './member-auth.js';
+import * as auth from '../../server/member-auth.js';
 test('密码散列、账户唯一、会话过期及重置撤销',async()=>{
  const db={users:[{id:'a',enabled:true},{id:'b',enabled:true}]};
  await auth.setMemberCredentials(db,'a',{username:'MemberOne',password:'synthetic-A-valid-test-password-123'});

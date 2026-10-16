@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nativeImagesMsgpack } from './native-stream.js';
-import { readNativeEvents } from '../test-support/native-stream-client.mjs';
+import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
 test('NAI 原生 MessagePack 由独立客户端解码，保留二进制和零号样本', () => {
   for (const length of [8, 255, 256, 65535, 65536]) {

@@ -13,8 +13,8 @@ function collect(directory) {
   }
 }
 
-// 只检查发行源码目录；不读取依赖、数据目录或部署配置。
-for (const directory of ['server', 'public', 'scripts', 'test-support']) collect(directory);
+// 只检查源码与测试目录；不读取依赖、数据目录或部署配置。
+for (const directory of ['server', 'public', 'scripts', 'tests']) collect(directory);
 for (const file of files.sort()) {
   const result = spawnSync(process.execPath, ['--check', file], { cwd: root, stdio: 'inherit' });
   if (result.error || result.status !== 0) process.exit(result.status || 1);

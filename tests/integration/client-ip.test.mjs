@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { clientIp } from './client-ip.js';
-import { checkMemberLoginRate } from './member-auth.js';
-import { handleMemberRoutes } from './member-routes.js';
+import { clientIp } from '../../server/client-ip.js';
+import { checkMemberLoginRate } from '../../server/member-auth.js';
+import { handleMemberRoutes } from '../../server/member-routes.js';
 
 const request = (peer, forwarded) => ({ socket: { remoteAddress: peer }, headers: { 'x-forwarded-for': forwarded } });
 

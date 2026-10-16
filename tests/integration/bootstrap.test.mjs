@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { bootstrap } from './bootstrap.mjs';
-import { JsonStore } from '../server/store.js';
-import { loginMember } from '../server/member-auth.js';
+import { bootstrap } from '../../scripts/bootstrap.mjs';
+import { JsonStore } from '../../server/store.js';
+import { loginMember } from '../../server/member-auth.js';
 
 const environment=dataDir=>({DATA_DIR:dataDir,ADMIN_TOKEN:'test-admin-'.repeat(5),NOVELAI_TOKEN:'pst-'+'fixture-only-'.repeat(4)});
 const freshDirectory=()=>mkdtemp(path.join(os.tmpdir(),'shared-bootstrap-test-'));

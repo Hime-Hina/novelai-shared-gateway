@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import vm from 'node:vm';
 
-const source = await readFile(new URL('../public/admin/members.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../public/admin/members.js', import.meta.url), 'utf8');
 
 function element() {
   return {

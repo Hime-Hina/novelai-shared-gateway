@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from './native-image.js';
-import { quoteNativeRequest } from './native-pricing.js';
-import { sharedSurface } from './shared-surface.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { quoteNativeRequest } from '../../server/native-pricing.js';
+import { sharedSurface } from '../../server/shared-surface.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-const fixture = name => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8'));
+const fixture = name => JSON.parse(readFileSync(new URL(`../fixtures/${name}.json`, import.meta.url), 'utf8'));
 const request = () => ({ input: 'a blue bird', model: 'nai-diffusion-4-5-full', action: 'generate',
   parameters: { width: 1024, height: 1024, steps: 28, seed: 7, n_samples: 1 } });
 

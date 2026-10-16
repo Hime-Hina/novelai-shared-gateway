@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [Primary API 文档](https://api.novelai.net/docs/)指向的 [Image API](https://image.novelai.net/docs/index.html)、[doc.json](https://image.novelai.net/docs/doc.json) | 文档列出的路径、字段、媒体类型、状态码 | 所有模型的实际支持组合、当前账户价格、历史前端模块的持续有效性 |
 | 当前源码与离线 HTTP/模块测试 | 网关实际接受、拒绝、转换和输出的行为 | 真实 NAI 会接受所有通过网关校验的参数 |
-| 三个[脱敏客户端样本](../server/fixtures/)：`novelai-image-desktop-request.json`、`littlewhitebox-v5-request.json`、`aaalice-v5-curated-request.json` | 桌面客户端别名、旧模板字段、V5 Full/Curated 请求结构的回归 | 对这些客户端所有版本、插件和功能的认证 |
+| 三个[脱敏客户端样本](../tests/fixtures/)：`novelai-image-desktop-request.json`、`littlewhitebox-v5-request.json`、`aaalice-v5-curated-request.json` | 桌面客户端别名、旧模板字段、V5 Full/Curated 请求结构的回归 | 对这些客户端所有版本、插件和功能的认证 |
 | `official-image-pricing-20261009.json` 固定报价样本及其来源摘要 | 已核对样本对应的独立预期数值 | 上游逐笔实际账单；尤其 V5 百分点仍是估计 |
 
 本次读取的 Image Swagger 为 2.0、`info.version=1.0`，原始响应 113991 字节，SHA-256：`77ee806124d7b97c60699617b7aba00f29e0287257cc665ea645753cc4eeea55`。测试不在线拉取文档；更新官方证据应另行审阅差异，不让外部变化自动扩大透传范围。
@@ -28,7 +28,7 @@
 
 四种操作成功响应均 `Cache-Control: no-store`。普通/流式生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；辅助操作没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。CORS 暴露头列表虽包含 `X-Nai-Request-Id`，当前代码未实际发送该头，客户端不能依赖它。诊断关联不是幂等保证。
 
-MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../test-support/native-stream-client.mjs)检查。
+MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../tests/helpers/native-stream-client.mjs)检查。
 
 多图 `n_samples=1..4` 拆成单图顺序入队：前一张成功后才创建下一张；第 i 张种子是 `(初始种子+i) mod 2^32`，每张重新排到当时队尾。首张失败返回错误；已有成功图时返回 `200` 与部分结果，并停止剩余张数。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；流式路径用上述 error 帧表达失败。当前未派发的剩余子任务不是一次性持久受理，连接断开可能停止后续创建；F06 会专门修正并更新生命周期测试。
 
@@ -106,7 +106,7 @@ Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message
 | encode-vibe | 2 Anlas |
 | upscale，输入≤1048576 / ≤1747627 / ≤2446678 / ≤3145728 像素 | 1 / 2 / 3 / 4 Anlas |
 
-批次每张独立核价，不等于一次上游原生多图请求的价格；例如本地两张标准 V4.5 可各为免费，而保存的官方批量样本不是这个总价。完整核价边界已由 [native-pricing.test.mjs](../server/native-pricing.test.mjs) 的独立官网报价样本覆盖。
+批次每张独立核价，不等于一次上游原生多图请求的价格；例如本地两张标准 V4.5 可各为免费，而保存的官方批量样本不是这个总价。完整核价边界已由 [native-pricing.test.mjs](../tests/unit/native-pricing.test.mjs) 的独立官网报价样本覆盖。
 
 `GET /user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription` 都返回 `200 JSON` 的本地映射：`tier/active/expiresAt/trainingStepsLeft/perks/usage`。固定/购买 Anlas 取调用者可用余额的非负整数，usage 表示本地 V5 可用量；不是共享账户原始余额，不公开 PST 或其他成员份额。活跃 Opus 还要求绑定账户、有效订阅与到期信息。不要把这个映射误当作完整 `/user/data` 透传。
 
@@ -153,15 +153,15 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 
 ## 验证入口
 
-新增 [api-contract.test.mjs](../server/api-contract.test.mjs) 使用固定客户端输入和独立常量，检查公开路由范围、归一化后的关键参数、明确拒绝及本地核价；不会启动服务、访问真实NAI或读取生产数据库。已有测试补齐外层和边界：
+新增 [api-contract.test.mjs](../tests/unit/api-contract.test.mjs) 使用固定客户端输入和独立常量，检查公开路由范围、归一化后的关键参数、明确拒绝及本地核价；不会启动服务、访问真实NAI或读取生产数据库。已有测试补齐外层和边界：
 
 | 证据 | 覆盖 |
 | --- | --- |
-| [native-http.test.mjs](../native-http.test.mjs) | 隔离网关+模拟上游的真实HTTP，身份/所有权、订阅映射、MessagePack/ZIP、部分失败退款、并发与重启；含200 HTML不能成功结算；OpenAI模型目录、鉴权错误、非流式Markdown结果领取，以及SSE chunk/stop/[DONE]与图片领取 |
-| [provider-features.test.mjs](../provider-features.test.mjs) | 请求转发、双Vibe二进制类型、上游错误、坏产物、限流读取、ZIP/MessagePack/SOCKS完整性 |
-| [native-body.test.mjs](../server/native-body.test.mjs)、[native-image.test.mjs](../server/native-image.test.mjs)、[native-client-regression.test.mjs](../server/native-client-regression.test.mjs) | multipart、参数/图片拒绝边界、客户端模板与多角色布局 |
-| [native-pricing.test.mjs](../server/native-pricing.test.mjs) | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接 |
-| [native-stream.test.mjs](../server/native-stream.test.mjs)、[native-adapter-test.mjs](../native-adapter-test.mjs) | 独立解码与既有适配回归；后者仍有源码截取测试，T01/N03迁移时应改为真实模块/HTTP，不照搬这种测试方式 |
-| [shared-surface.test.mjs](../server/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../server/launcher-subscription.test.mjs)、[member-routes.test.mjs](../member-routes.test.mjs)、[owner-management.test.mjs](../owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码 |
+| [native-http.test.mjs](../tests/integration/native-http.test.mjs) | 隔离网关+模拟上游的真实HTTP，身份/所有权、订阅映射、MessagePack/ZIP、部分失败退款、并发与重启；含200 HTML不能成功结算；OpenAI模型目录、鉴权错误、非流式Markdown结果领取，以及SSE chunk/stop/[DONE]与图片领取 |
+| [provider-features.test.mjs](../tests/unit/provider-features.test.mjs) | 请求转发、双Vibe二进制类型、上游错误、坏产物、限流读取、ZIP/MessagePack/SOCKS完整性 |
+| [native-body.test.mjs](../tests/unit/native-body.test.mjs)、[native-image.test.mjs](../tests/unit/native-image.test.mjs)、[native-client-regression.test.mjs](../tests/unit/native-client-regression.test.mjs) | multipart、参数/图片拒绝边界、客户端模板与多角色布局 |
+| [native-pricing.test.mjs](../tests/unit/native-pricing.test.mjs) | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接 |
+| [native-stream.test.mjs](../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../tests/integration/native-adapter.test.mjs) | 独立解码与既有适配回归；后者仍有源码截取测试，T01/N03迁移时应改为真实模块/HTTP，不照搬这种测试方式 |
+| [shared-surface.test.mjs](../tests/unit/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../tests/unit/launcher-subscription.test.mjs)、[member-routes.test.mjs](../tests/integration/member-routes.test.mjs)、[owner-management.test.mjs](../tests/integration/owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码 |
 
 这些是当前基线的证据组合，不是“全部官方API契约通过”。OpenAI关键成功/流式路径已在本地隔离HTTP环境覆盖；公网代理的SSE缓冲/断连行为、真实上游非零blur/新模型组合和浏览器兼容性仍需相应迁移/测试部署阶段验收。不能以纯模块测试替代真实HTTP或浏览器证据。
