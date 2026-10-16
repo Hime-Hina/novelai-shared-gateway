@@ -13,11 +13,38 @@ const MAX_STREAM_BYTES = 256 * 1024 * 1024;
 // 放大结果可达到已接受输入边长的两倍，不能复用上传图片的 8192 边长限制。
 const MAX_RESULT_DIMENSION = 16384;
 
+function retryAfterUntil(value, receivedAt) {
+  const text = String(value || '').trim();
+  let deadline;
+  if (/^\d+$/.test(text)) deadline = receivedAt + Number(text) * 1000;
+  else {
+    // HTTP-date 的三种形式；不让 Date.parse 把普通数字、ISO 或自由文本误当重试日期。
+    const imf = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+    const obsolete = /^[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT$/;
+    const asctime = /^[A-Za-z]{3} [A-Za-z]{3} (?: \d|\d{2}) \d{2}:\d{2}:\d{2} \d{4}$/;
+    if (!imf.test(text) && !obsolete.test(text) && !asctime.test(text)) return;
+    const date = new Date(Date.parse(asctime.test(text) ? text + ' GMT' : text));
+    if (!Number.isFinite(date.getTime())) return;
+    if (obsolete.test(text)) {
+      const limit = new Date(receivedAt);limit.setUTCFullYear(limit.getUTCFullYear() + 50);
+      date.setUTCFullYear(Math.floor(new Date(receivedAt).getUTCFullYear() / 100) * 100 + date.getUTCFullYear() % 100);
+      if (date > limit) date.setUTCFullYear(date.getUTCFullYear() - 100);
+    }
+    const [weekday, day, month, year, time] = date.toUTCString().split(' ');
+    const longDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()];
+    if (![date.toUTCString(), `${longDay}, ${day}-${month}-${year.slice(-2)} ${time} GMT`, `${weekday.slice(0,3)} ${month} ${String(Number(day)).padStart(2,' ')} ${time} ${year}`].includes(text)) return;
+    deadline = date.getTime();
+  }
+  if (Number.isSafeInteger(deadline) && deadline > receivedAt && deadline <= 8640000000000000) return new Date(deadline).toISOString();
+}
+
 async function fetchWithGenerationTiming(url, init, proxyUrl, options) {
   // 发起调用、收到响应头、读完响应体分别计时，不记录用户请求内容。
   options.onUpstreamTiming?.({ upstreamStartedAt: new Date().toISOString() });
   const response = await novelAiFetch(url, init, proxyUrl);
-  options.onUpstreamTiming?.({ upstreamHeadersAt: new Date().toISOString(), upstreamHttpStatus: response.status });
+  const receivedAt = Date.now(), upstreamRetryAfterUntil = retryAfterUntil(response.headers.get('retry-after'), receivedAt);
+  options.onUpstreamTiming?.({ upstreamHeadersAt: new Date(receivedAt).toISOString(), upstreamHttpStatus: response.status,
+    ...(upstreamRetryAfterUntil ? { upstreamRetryAfterUntil } : {}) });
   return response;
 }
 
@@ -133,6 +160,22 @@ function normalizeSizeName(value) {
 }
 
 export async function generateNovelAiImage(request, account, env, options = {}) {
+  const timing = {};
+  try {
+    return await generateNovelAiImageRequest(request, account, env, { ...options, onUpstreamTiming(details) {
+      Object.assign(timing, details);options.onUpstreamTiming?.(details);
+    } });
+  } catch (error) {
+    // 状态只来自本次响应头；断流或产物校验失败不能抹掉已收到的限流证据。
+    if (timing.upstreamHttpStatus !== undefined) {
+      Object.assign(error, { upstreamStatus: timing.upstreamHttpStatus,
+        ...(timing.upstreamRetryAfterUntil ? { upstreamRetryAfterUntil: timing.upstreamRetryAfterUntil } : {}) });
+    }
+    throw error;
+  }
+}
+
+async function generateNovelAiImageRequest(request, account, env, options) {
   const operation = request.operation || 'generate';
   if (!['generate', 'encode-vibe', 'upscale'].includes(operation)) {
     throw new Error('Unsupported NovelAI operation.');

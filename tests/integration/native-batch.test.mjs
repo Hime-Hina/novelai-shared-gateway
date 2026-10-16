@@ -116,10 +116,10 @@ test('物理在途与 SQL 活动父去重：逻辑失败后仍占字节和上游
   }, { immediate: true, dirtyRows: { jobs: a.jobIds } });
   assert.equal(store.activeGenerationPayloadBytes(), 0);
   assert.equal(store.activeGenerationPayloadBytes([...runningJobControls.values()]), bytes);
-  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }]), 0);
+  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }), 0);
   ctx.finishRunningJobControl(job.id, control);
   assert.equal(store.activeGenerationPayloadBytes([...runningJobControls.values()]), 0);
-  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }]), 1);
+  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }), 1);
 });
 
 test('错误日志按新父请求计算单张种子，旧 inline 已解析种子不重复偏移', () => {
@@ -157,7 +157,7 @@ test('启动未知在途和已过期父批次原子终止 pending；未过期的
   const ctx = functions({ store: reopened, console, fairShareMode: true, queuedDeadlineTimestamp, recordSharedCompletion, notifyJobWaiters() {},
     cancelWaitingBatchJobs: requests.cancelWaitingBatchJobs, publicErrorMessage: value => value,
     refundJob: (db, job) => settleFairQuota(db, job, false)
-  }, ['uniqueIds', 'mergeDirtyRows', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyJobListRows', 'isExpiredJobAt', 'cleanupInterruptedStartupJobs']);
+  }, ['uniqueIds', 'mergeDirtyRows', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyJobListRows', 'isExpiredJobAt', 'isNovelAiCapacityError', 'sharedFailureKind', 'cleanupInterruptedStartupJobs']);
   await ctx.cleanupInterruptedStartupJobs();
   assert.ok(a.jobIds.every(id => reopened.selectItemById('jobs', id).status === 'failed'));
   assert.equal(reopened.selectItemById('jobs', a.jobIds[0]).fairCharge.status, 'refunded');

@@ -2,7 +2,7 @@ import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRe
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from './native-image.js';
 import { privateAccessAllowed } from './public-hosts.js';
@@ -55,6 +55,7 @@ let queueDrainTimer = null;
 let queueDrainAt = 0;
 let queueDraining = false;
 let queueDrainRequested = false;
+let lastQueueWait = '';
 let accountQuotaRefreshTimer = null;
 let accountQuotaRefreshPromise = null;
 let accountQuotaAutoRefreshStarted = false;
@@ -138,6 +139,8 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) { res.destroy(); return; }
+    const retryAfter = cooldownRetryAfter(error.cooldownUntil);
+    if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
     if (error.requestId) res.setHeader('X-Nai-Request-Id', error.requestId);
     if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes(error.statusCode))) {
       const image = buildErrorImage(publicErrorMessage(error.message || 'Generation failed'));
@@ -146,12 +149,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (/^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(String(req.url || '').split('?')[0])) {
       const message = publicErrorMessage(error.message || 'Internal server error');
-      if (error.statusCode === 429) res.setHeader('Retry-After', '30');
       sendJson(res, error.statusCode || 500, { message, error: message });
       return;
     }
     if (req.url?.startsWith('/v1/')) {
-      if (error.statusCode === 429) res.setHeader('Retry-After', '30');
       sendOpenAiError(res, error.statusCode || 500, publicErrorMessage(error.message || 'Internal server error'), openAiErrorType(error));
       return;
     }
@@ -634,14 +635,14 @@ async function handleDirectGenerate(url, res, claim, key) {
     const result = await waitForJobResult(accepted.id, Date.now() + directGenerateTimeoutMs, res);
     if (res.destroyed) return;
     if (!result) { sendTimeoutImage(res); return; }
-    if (result.error) throw new Error(result.error);
+    if (result.error) throw Object.assign(httpError(result.statusCode || 500, result.error), { cooldownUntil: result.cooldownUntil });
     await sendStoredImage(res, 200, result.saved, { 'x-cache': accepted.cacheHit ? 'hit' : 'miss',
       'x-balance': String((accepted.replayed ? accepted.balance : result.balance) ?? '') });
   } catch (error) {
     // 响应失败不改写已受理任务；持久执行与结算由调度器负责。
     if (res.destroyed) return;
-    if (error.message === 'direct generate timeout') { sendTimeoutImage(res); return; }
-    if (isNovelAiCapacityError(error)) { sendBusyImage(res); return; }
+    if (error.statusCode === 429 || isNovelAiCapacityError(error)) { sendBusyImage(res, error.cooldownUntil); return; }
+    if (error.message === 'direct generate timeout') { sendTimeoutImage(res, error.cooldownUntil); return; }
     throw error;
   }
 }
@@ -823,7 +824,7 @@ async function waitNativeResult(jobId, deadline, res) {
   const result = await waitForJobResult(jobId, deadline, res);
   if (res.destroyed) return null;
   if (!result) throw httpError(504, 'direct generate timeout');
-  if (result.error) throw httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error);
+  if (result.error) throw Object.assign(httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error), { cooldownUntil: result.cooldownUntil });
   return result;
 }
 
@@ -912,7 +913,7 @@ async function handleOpenAiChatCompletion(req, res) {
   const result = await waitForJobResult(job.id, deadline, res);
   if (res.destroyed) return;
   if (!result) throw httpError(504, 'direct generate timeout');
-  if (result.error) throw httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error);
+  if (result.error) throw Object.assign(httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error), { cooldownUntil: result.cooldownUntil });
   sendJson(res, 200, openAiChatCompletionResponse({
     model: job.model, content: openAiImageMarkdown(req, result.saved), id: `chatcmpl-${job.id}`
   }));
@@ -1552,11 +1553,9 @@ async function resetAccountStats(body) {
     if (!accounts.length) throw httpError(404, 'no matching accounts found.');
     const now = new Date().toISOString();
     accounts.forEach((account) => {
-      account.inFlight = 0;
+      if (!fairShareMode) { account.inFlight = 0; account.cooldownUntil = ''; account.lastUsedAt = ''; }
       account.total = 0;
       account.failures = 0;
-      account.cooldownUntil = '';
-      account.lastUsedAt = '';
       account.updatedAt = now;
     });
     db.ledger.unshift({
@@ -1654,7 +1653,12 @@ async function reconcileGenerationReviews(now = Date.now()) {
     await store.update(db => {
       const job = store.loadJobForUpdate(pending.id);
       if (!job || job.generationReview?.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
-      if (localImage && job.imageId === localImage.id) return recordRecoveredGeneration(db, job, localImage.id, now);
+      if (localImage && job.imageId === localImage.id) {
+        const recovered = recordRecoveredGeneration(db, job, localImage.id, now);
+        if (recovered && fairShareMode && !localImage.mock) recordSharedCompletion(db.accounts.find(a => a.id === job.accountId), now,
+          { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil });
+        return recovered;
+      }
       return closeGenerationReview(db, job, now);
     }, { includeSettings: true, immediate: true,
       dirtyRows: (_result, db) => dirtyJobMutationRows({ jobId: pending.id }, db), shouldPersist: Boolean });
@@ -1867,8 +1871,7 @@ function isNovelAiAccountBannedError(error) {
 
 function disableNovelAiAccount(account) {
   account.enabled = false;
-  account.inFlight = 0;
-  account.cooldownUntil = '';
+  if (!fairShareMode) { account.inFlight = 0; account.cooldownUntil = ''; }
 }
 
 async function fetchNovelAiAccountQuotaWithTimeout(token, proxyUrl = '') {
@@ -1918,23 +1921,30 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       if (!isStaleActiveJob(job, now)) return;
       const detail = staleActiveJobDetail(job, now);
       const account = job.status === 'running' && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
+      let statusCode = 504;
       if (account) {
+        const execution = runningJobControls.get(job.id)?.reservation
+          || { failurePhase: job.upstreamStartedAt ? 'upstream' : 'preflight', upstreamTiming: job };
+        Object.assign(job, execution.upstreamTiming || {});
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode) recordSharedCompletion(account, Date.now());
+        const kind = sharedFailureKind(execution, new Error('direct generate timeout'));
+        if (fairShareMode) recordSharedCompletion(account, now, { job, kind, retryAfterUntil: job.upstreamRetryAfterUntil });
+        if (fairShareMode && kind === 'capacity') statusCode = 429;
         account.updatedAt = new Date().toISOString();
       }
       refundJob(db, job, message);
       job.status = 'failed';
       job.error = message;
-      job.errorStatus = 504;
+      job.errorStatus = statusCode;
       job.errorDetail = `${reason}: ${detail}`;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
-      failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, 504));
+      failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, statusCode));
     });
     return {
       changed: failedJobIds.length,
-      jobIds: failedJobIds
+      jobIds: failedJobIds,
+      failures: jobs.filter(job => failedJobIds.includes(job.id)).map(job => ({ jobId: job.id, statusCode: job.errorStatus, cooldownUntil: job.sharedCooldown?.until }))
     };
   }, {
     dirtyRows: dirtyJobListRows,
@@ -1942,7 +1952,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
   });
 
   if (!result?.changed) return result;
-  result.jobIds.forEach((jobId) => notifyJobWaiters(jobId, { error: 'direct generate timeout', statusCode: 504 }));
+  result.failures.forEach(({ jobId, ...failure }) => notifyJobWaiters(jobId, { error: 'direct generate timeout', ...failure }));
   return result;
 }
 
@@ -1973,10 +1983,12 @@ async function cleanupInterruptedStartupJobs() {
       if (isOpenAi) openai += 1;
       if (isExpired) expired += 1;
 
-      const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
+      const account = isRunning && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode) recordSharedCompletion(account, Date.now());
+        if (fairShareMode) recordSharedCompletion(account, now, { job,
+          kind: sharedFailureKind({ failurePhase: job.upstreamStartedAt ? 'upstream' : 'preflight', upstreamTiming: job }, new Error('interrupted')),
+          retryAfterUntil: job.upstreamRetryAfterUntil });
         account.updatedAt = updatedAt;
       }
       refundJob(db, job, message);
@@ -2623,6 +2635,15 @@ async function changeMemberAdmission(userId, acceptingJobs) {
 }
 
 function waitForJobResult(jobId, deadline, response) {
+  if (response && !response.generationDeliveryTracked) {
+    response.generationDeliveryTracked = true;
+    const waitingAt = Date.now();
+    const delivered = () => {
+      response.off('finish', delivered); response.off('close', delivered);
+      console.log('[queue]', JSON.stringify({ event: 'http_delivery', jobId, waitingAt, at: Date.now(), finished: response.writableFinished === true }));
+    };
+    response.once('finish', delivered); response.once('close', delivered);
+  }
   const remainingMs = Math.max(1, deadline - Date.now());
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -2639,11 +2660,11 @@ function waitForJobResult(jobId, deadline, response) {
     store.update(db => {
       const job = db.jobs.find(item => item.id === jobId) || store.selectItemById('jobs', jobId);
       if (!job) return null;
-      return { status: job.status, imageId: job.imageId, error: job.error, errorStatus: job.errorStatus,
+      return { status: job.status, imageId: job.imageId, error: job.error, errorStatus: job.errorStatus, cooldownUntil: job.sharedCooldown?.until,
         balance: db.users.find(user => user.token === job.userToken)?.balance };
     }, { persist: false }).then(async job => {
       if (job?.status === 'failed') {
-        notifyJobWaiters(jobId, { error: job.error, statusCode: job.errorStatus || 500 });
+        notifyJobWaiters(jobId, { error: job.error, statusCode: job.errorStatus || 500, cooldownUntil: job.cooldownUntil });
       } else if (job?.status === 'done') {
         const saved = await store.findImage(job.imageId);
         if (saved) notifyJobWaiters(jobId, { saved, balance: job.balance });
@@ -2771,7 +2792,8 @@ async function runJob(jobId) {
 }
 
 async function reserveQueuedJob(jobId) {
-  return store.update((db) => {
+  const requestedAt = Date.now();
+  const result = await store.update((db) => {
     const job = db.jobs.find((item) => item.id === jobId);
     if (!job) throw new Error('job not found.');
     if (job.status !== 'queued') return { skip: true, changed: false };
@@ -2847,13 +2869,19 @@ async function reserveQueuedJob(jobId) {
     dirtyRows: (result, db) => ({ ...dirtyResultJobRows(result, db), ledger: (db.ledger || []).map(entry => entry.id) }),
     shouldPersist: (result) => result?.changed !== false
   });
+  if (result.job) console.log('[queue]', JSON.stringify({ event: 'dispatch_commit', jobId, accountId: result.job.accountId,
+    createdAt: result.job.createdAt, requestedAt, startedAt: result.job.startedAt, committedAt: Date.now() }));
+  return result;
 }
 
 async function runReservedJob(reservation) {
   if (!reservation || reservation.skip || reservation.queued) return;
   const control = createRunningJobControl(reservation.job);
+  // 清理超时任务可能先于执行 catch 取得事务；复用活执行证据，不把本地提交错误当网络故障。
+  control.reservation = reservation;
   const useStreamProgress = shouldUseJobStreamProgress(reservation.job);
   if (useStreamProgress) resetJobStreamProgress(reservation.job?.id, reservation.job?.request);
+  reservation.failurePhase = 'preflight';
   try {
     // 已取消的任务不再启动新的上游请求。
     const current = await store.findJobContext(reservation.job.id);
@@ -2862,12 +2890,14 @@ async function runReservedJob(reservation) {
       ? singleGenerationRequest(store.readGenerationRequest(reservation.job.requestId), reservation.job.sampleIndex)
       : reservation.job.request;
     if (!request) throw new Error('持久生成请求不存在');
+    reservation.failurePhase = 'upstream';
     const image = await generateWithAccountRetry(reservation, request, {
       signal: control.controller.signal,
       deadline: jobDeadlineTimestamp(reservation.job),
       forceStream: useStreamProgress,
       onProgress: useStreamProgress ? (progress) => updateJobStreamProgress(reservation.job?.id, progress) : null
     });
+    reservation.failurePhase = 'commit';
     // 已拿到验证完整的产物时，即使截止时间刚到，也应保存；退款是否发生由提交时状态决定。
     if (useStreamProgress) {
       updateJobStreamProgress(reservation.job?.id, { percent: 100, step: reservation.job?.request?.steps, total: reservation.job?.request?.steps });
@@ -2974,7 +3004,7 @@ async function generateWithAccountRetry(reservation, request, options = {}) {
         onUpstreamTiming: event => {
           // 只记录时间与状态，不复制请求头、凭据、提示词或图片。
           reservation.upstreamTiming ||= {};
-          for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus']) {
+          for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil']) {
             if (event[name] !== undefined) reservation.upstreamTiming[name] = event[name];
           }
         },
@@ -3158,6 +3188,8 @@ async function tryReserveCreditAndAccount(token, request, cacheKey) {
 }
 
 async function completeGeneration(reservation, request, image, meta = {}) {
+  const commitRequestedAt = Date.now();
+  let preparedAt;
   const imageId = createId('img');
   let imageFile = null;
   const accountCost = reservationAccountCost(reservation);
@@ -3175,7 +3207,11 @@ async function completeGeneration(reservation, request, image, meta = {}) {
           const existing = db.images.find(item => item.id === currentJob.imageId) || store.selectItemById('images', currentJob.imageId);
           if (existing) {
             if (existing.token !== currentJob.userToken) throw httpError(409, '已存结果与任务归属不符');
-            if (currentJob.fairCharge.status === 'refunded') recordRecoveredGeneration(db, currentJob, existing.id);
+            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id) && !existing.mock) {
+              recordSharedCompletion(db.accounts.find(a => a.id === currentJob.accountId), Date.now(),
+                { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
+            }
+            preparedAt = Date.now();
             return { ...existing, balance: db.users.find(user => user.token === reservation.token)?.balance || 0 };
           }
         }
@@ -3188,7 +3224,8 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
       if (account) {
         if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode && !refunded) recordSharedCompletion(account, Date.now());
+        if (fairShareMode && currentJob && !image.mock) recordSharedCompletion(account, Date.now(), {
+          job: currentJob, kind: 'success', retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil });
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = new Date().toISOString();
       }
@@ -3229,6 +3266,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
         }
       }
 
+      preparedAt = Date.now();
       return { ...saved, balance: user?.balance || 0 };
     }, {
       dirtyRows: (saved, db) => ({
@@ -3238,6 +3276,8 @@ async function completeGeneration(reservation, request, image, meta = {}) {
         ledger: (db.ledger || []).filter(event => event.jobId === meta.jobId).map(event => event.id)
       })
     });
+    console.log('[queue]', JSON.stringify({ event: 'result_commit', jobId: meta.jobId || reservation.job?.id,
+      requestedAt: commitRequestedAt, preparedAt, committedAt: Date.now(), upstreamCompletedAt: reservation.upstreamTiming?.upstreamCompletedAt }));
   } catch (error) {
     if (imageFile) await removeStoredImages([{ id: imageId, file: imageFile }]);
     throw error;
@@ -3254,17 +3294,23 @@ async function completeGeneration(reservation, request, image, meta = {}) {
 }
 
 async function cancelReservedJob(reservation, error) {
+  const commitRequestedAt = Date.now();
   const detail = errorDetailMessage(error);
   const waiterMessage = error?.message || detail || 'direct generate timeout';
   const message = publicErrorMessage(waiterMessage);
   let changed = false;
+  let cooldownUntil;
+  const kind = sharedFailureKind(reservation, error);
+  const statusCode = kind === 'capacity' ? 429 : error.statusCode || 504;
   await store.update((db) => {
     const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job.id) : null;
     if (!job || ['done', 'failed'].includes(job.status)) return;
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (fairShareMode) recordSharedCompletion(account, Date.now());
+      if (fairShareMode) recordSharedCompletion(account, Date.now(), { job, kind,
+        retryAfterUntil: error.upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
+      cooldownUntil = account.cooldownUntil;
       account.updatedAt = new Date().toISOString();
     }
     Object.assign(job, reservation.upstreamTiming || {});
@@ -3272,6 +3318,7 @@ async function cancelReservedJob(reservation, error) {
     cancelWaitingBatchJobs(db, job, message);
     job.status = 'failed';
     job.error = message;
+    job.errorStatus = statusCode;
     job.errorDetail = detail || 'job aborted';
     job.updatedAt = new Date().toISOString();
     job.completedAt = job.updatedAt;
@@ -3281,18 +3328,24 @@ async function cancelReservedJob(reservation, error) {
     shouldPersist: () => changed
   });
   if (!changed) return;
+  console.log('[queue]', JSON.stringify({ event: 'cancel_commit', jobId: reservation.job?.id,
+    requestedAt: commitRequestedAt, committedAt: Date.now(), cooldownUntil, kind }));
   scheduleQueueDrain();
   if (reservation.job?.id) {
     clearJobStreamProgress(reservation.job.id);
-    notifyJobWaiters(reservation.job.id, { error: waiterMessage });
+    notifyJobWaiters(reservation.job.id, { error: waiterMessage, statusCode, cooldownUntil });
   }
 }
 
 async function failGeneration(reservation, error) {
+  const commitRequestedAt = Date.now();
   const detail = errorDetailMessage(error);
-  const capacityError = fairShareMode && isNovelAiCapacityError(error);
+  const kind = sharedFailureKind(reservation, error);
+  const capacityError = fairShareMode && kind === 'capacity';
   const statusCode = capacityError ? 429 : error.statusCode || 500;
-  const message = capacityError ? 'NAI 暂时限制此共享账户的并发，请等待至少 30 秒后再试；本次失败额度已退回。' : fairShareMode&&error?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&error?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage(error?.message || detail);
+  const message = capacityError ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。' : fairShareMode&&error?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&error?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage(error?.message || detail);
+  let cooldownUntil;
+  let changed = false;
   await store.update((db) => {
     if (fairShareMode && reservation.job?.id) {
       const currentJob = db.jobs.find(j => j.id === reservation.job.id);
@@ -3306,10 +3359,9 @@ async function failGeneration(reservation, error) {
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (fairShareMode) recordSharedCompletion(account, Date.now());
-      if (capacityError) {
-        recordSharedCapacityError(account);
-      }
+      if (fairShareMode) recordSharedCompletion(account, Date.now(), { job: db.jobs.find(j => j.id === reservation.job?.id), kind,
+        retryAfterUntil: error.upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
+      cooldownUntil = account.cooldownUntil;
       if(fairShareMode&&[401,403].includes(error.upstreamStatus)&&account.token===reservation.account?.token){
         account.upstreamStatus=error.upstreamStatus===401?'invalid_key':'access_denied';
         account.quotaError=error.upstreamStatus===401?'共享 Opus Key 已失效，请管理员更新凭据':'上游拒绝访问，请管理员重新验证 Opus';
@@ -3340,13 +3392,17 @@ async function failGeneration(reservation, error) {
       at: new Date().toISOString(),
       note: message
     });
+    changed = true;
   }, {
     dirtyRows: dirtyReservationJobRows(reservation)
   });
+  if (!changed) return;
+  console.log('[queue]', JSON.stringify({ event: 'failure_commit', jobId: reservation.job?.id,
+    requestedAt: commitRequestedAt, committedAt: Date.now(), cooldownUntil, kind }));
   scheduleQueueDrain();
   if (reservation.job?.id) {
     clearJobStreamProgress(reservation.job.id);
-    notifyJobWaiters(reservation.job.id, { error: message, statusCode });
+    notifyJobWaiters(reservation.job.id, { error: message, statusCode, cooldownUntil });
   }
 }
 
@@ -3475,8 +3531,11 @@ function physicalAccountLoad(accountId) {
 }
 
 function availableAccountSlots(accounts, settings = {}) {
-  if (fairShareMode) return accounts.reduce((total, account) => account.enabled === false || sharedAccountReadyDelay(account, Date.now()) > 0
-    ? total : total + Math.max(0, sharedAccountConcurrency(account) - Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id))), 0);
+  if (fairShareMode) {
+    const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
+    return !account || account.enabled === false || sharedAccountReadyDelay(account, Date.now()) > 0 ? 0
+      : Math.max(0, sharedAccountConcurrency(account) - Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)));
+  }
   resetStaleAccountLoads(accounts);
   const now = Date.now();
   const allEnabled = accounts.filter((account) => account.enabled !== false);
@@ -3488,13 +3547,12 @@ function availableAccountSlots(accounts, settings = {}) {
 }
 
 function nextAccountReadyDelay(accounts, settings = {}) {
-  resetStaleAccountLoads(accounts);
   if (fairShareMode) {
-    const now = Date.now();
-    const waits = accounts.filter(account => account.enabled !== false && Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) < sharedAccountConcurrency(account, now))
-      .map(account => sharedAccountReadyDelay(account, now));
-    return waits.length ? Math.min(...waits) : 1000;
+    const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
+    return !account || account.enabled === false || Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) >= sharedAccountConcurrency(account)
+      ? 1000 : sharedAccountReadyDelay(account, Date.now());
   }
+  resetStaleAccountLoads(accounts);
   const now = Date.now();
   const maxConcurrency = maxAccountConcurrency(settings);
   const enabled = accounts.filter((account) => account.enabled !== false);
@@ -3521,11 +3579,11 @@ function scheduleQueueDrain(delay = 0) {
   queueDrainTimer = setTimeout(() => {
     queueDrainTimer = null;
     queueDrainAt = 0;
-    drainQueuedJobs();
+    drainQueuedJobs(runAt);
   }, delay);
 }
 
-async function drainQueuedJobs() {
+async function drainQueuedJobs(scheduledAt = Date.now()) {
   if (queueDraining) {
     queueDrainRequested = true;
     return;
@@ -3535,8 +3593,23 @@ async function drainQueuedJobs() {
   try {
     await cleanupStaleActiveJobs('queue expiry');
     const drainPlan = await store.update((db) => {
-      if (!db.jobs.some(job => job.status === 'queued')) return { jobIds: [], delay: 0 };
+      if (!db.jobs.some(job => job.status === 'queued')) { lastQueueWait = ''; return { jobIds: [], delay: 0 }; }
       const slots = availableAccountSlots(db.accounts, db.settings);
+      if (fairShareMode) {
+        const jobId = store.queuedJobIds()[0];
+        const account = db.accounts.find(a => a.id === db.settings.fairQuota?.boundAccountId);
+        const physical = account ? physicalAccountLoad(account.id) : 0;
+        const reason = !account || account.enabled === false || db.settings.fairQuota?.status !== 'active' ? 'eligibility'
+          : physical > 0 ? 'physical_inflight' : Number(account.inFlight || 0) > 0 ? 'account_inflight'
+          : sharedAccountReadyDelay(account, Date.now()) > 0 ? 'cooldown' : 'ready';
+        const until = account && sharedAccountReadyDelay(account, Date.now()) > 0 ? account.cooldownUntil : null;
+        const signature = JSON.stringify([jobId, account?.id, reason, until]);
+        if (signature !== lastQueueWait) {
+          lastQueueWait = signature;
+          console.log('[queue]', JSON.stringify({ event: 'wait', jobId, accountId: account?.id, reason, until,
+            cooldownReason: until ? account.cooldownReason || null : null, scheduledAt, checkedAt: Date.now() }));
+        }
+      }
       if (slots <= 0) return { jobIds: [], delay: nextAccountReadyDelay(db.accounts, db.settings) };
       const activeIds = new Set(db.jobs.filter(job => isQueueActiveJob(job)).map(job => job.id));
       return {
@@ -3559,6 +3632,7 @@ async function drainQueuedJobs() {
         queueDrainRequested = true;
         return;
       }
+      console.log('[queue]', JSON.stringify({ event: 'dispatch', jobId: reservation.job?.id, scheduledAt, dispatchedAt: Date.now() }));
       runReservedJob(reservation);
     });
   } finally {
@@ -4313,8 +4387,19 @@ function isNovelAiOutOfTrialImageGenerationError(error) {
 }
 
 function isNovelAiCapacityError(error) {
+  if (Number(error?.upstreamStatus) === 429) return true;
+  if ([401, 403].includes(Number(error?.upstreamStatus))) return false;
   const text = String(error?.message || error || '');
   return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(text);
+}
+
+function sharedFailureKind(reservation, error) {
+  // 执行 catch 也包含本地文件/SQL 提交错误，不能因曾发过请求就计成网络故障。
+  if (reservation.failurePhase === 'commit' || /^(?:SQLITE|ENOSPC|EROFS|EACCES)/.test(error?.code || '')) return 'ended';
+  const status = error?.upstreamStatus ?? reservation.upstreamTiming?.upstreamHttpStatus;
+  if (status !== undefined && Number(status) >= 400 && Number(status) < 500 && Number(status) !== 429) return 'ended';
+  if (isNovelAiCapacityError(status === undefined ? error : { message: error?.message, upstreamStatus: status })) return 'capacity';
+  return reservation.failurePhase === 'upstream' && reservation.upstreamTiming?.upstreamStartedAt ? 'ordinary' : 'ended';
 }
 
 function isQuotaFailureJob(job) {
@@ -4602,22 +4687,25 @@ async function sendStoredImage(res, statusCode, image, extraHeaders = {}) {
   });
 }
 
-function sendBusyImage(res) {
+function sendBusyImage(res, cooldownUntil) {
   const image = buildErrorImage('服务器繁忙，请稍后再试');
+  const retryAfter = cooldownRetryAfter(cooldownUntil);
   sendImage(res, 200, image.mimeType, image.buffer, {
     'cache-control': 'no-store',
     'x-error': '1',
     'x-busy': '1',
-    'retry-after': '15'
+    ...(retryAfter ? { 'retry-after': String(retryAfter) } : {})
   });
 }
 
-function sendTimeoutImage(res) {
+function sendTimeoutImage(res, cooldownUntil) {
   const image = buildErrorImage('连接超时');
+  const retryAfter = cooldownRetryAfter(cooldownUntil);
   sendImage(res, 200, image.mimeType, image.buffer, {
     'cache-control': 'no-store',
     'x-error': '1',
-    'x-timeout': '1'
+    'x-timeout': '1',
+    ...(retryAfter ? { 'retry-after': String(retryAfter) } : {})
   });
 }
 

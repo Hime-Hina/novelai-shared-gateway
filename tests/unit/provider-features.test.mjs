@@ -137,6 +137,64 @@ test('未知操作或动作在联网前拒绝', async () => {
   assert.equal(calls.length, 0);
 });
 
+test('Retry-After 按收头时间解析整秒和 HTTP-date，无效或过期不输出，不截断长等待', async t => {
+  const now = Date.UTC(2026, 9, 17), future = now + 300000;
+  t.mock.method(Date, 'now', () => now);
+  const valid = [['30', now + 30000], ['300', future], ['3600', now + 3600000],
+    ['Sat, 17 Oct 2026 00:05:00 GMT', future], ['Saturday, 17-Oct-26 00:05:00 GMT', future], ['Sat Oct 17 00:05:00 2026', future]];
+  const invalid = ['', '-1', '0', '+30', '1.5', '1e3', '30, 60', 'tomorrow', '99999999999999999999',
+    '2026-10-17T00:05:00Z', 'Fri, 17 Oct 2026 00:05:00 GMT', 'Sat, 31 Feb 2099 00:05:00 GMT',
+    'Sat, 17 Oct 2026 00:00:00 GMT', 'Fri, 16 Oct 2026 23:59:59 GMT'];
+  for (const [header, deadline] of [...valid, ...invalid.map(value => [value, undefined])]) {
+    const timing = {};
+    await captured(() => generateNovelAiImage(request(), account, env, { forceStream: false, onUpstreamTiming: value => Object.assign(timing, value) }),
+      () => new Response(png, { headers: { 'content-type': 'image/png', 'retry-after': header } }));
+    assert.equal(timing.upstreamHttpStatus, 200);
+    assert.equal(timing.upstreamHeadersAt, new Date(now).toISOString());
+    assert.equal(timing.upstreamRetryAfterUntil, deadline === undefined ? undefined : new Date(deadline).toISOString(), header);
+    if (deadline === undefined) assert.equal(Object.hasOwn(timing, 'upstreamRetryAfterUntil'), false);
+  }
+});
+
+test('普通、流式、放大和编码保留收头证据，429 后断流和 200 坏产物都不丢状态/截止', async t => {
+  const start = Date.UTC(2026, 9, 17), until = new Date(start + 300000).toISOString();
+  let now = start;
+  t.mock.method(Date, 'now', () => now);
+  const encoding = Buffer.from([0, 255, 3, 4]);
+  const variants = [
+    { request: request(), forceStream: false, bytes: png, type: 'image/png' },
+    { request: request(), forceStream: true, bytes: nativeImagesMsgpack([png]), type: 'application/octet-stream' },
+    { request: { operation: 'upscale', operationParameters: {} }, bytes: png, type: 'image/png' },
+    { request: { operation: 'encode-vibe', operationParameters: {} }, bytes: encoding, type: 'application/octet-stream' }
+  ];
+  for (const variant of variants) {
+    const timing = {}, options = { forceStream: variant.forceStream, onUpstreamTiming(value) {
+      Object.assign(timing, value);
+      // 模拟响应体读取耗时，不能在错误落地时用新时钟重新计算秒数。
+      if (value.upstreamHeadersAt) now = start + 90000;
+    } };
+    const call = () => generateNovelAiImage(variant.request, account, env, options);
+    now = start;
+    const success = await captured(call, () => new Response(variant.bytes, { headers: { 'content-type': variant.type, 'retry-after': '300' } }));
+    assert.equal(success.calls.length, 1); assert.equal(timing.upstreamHttpStatus, 200); assert.equal(timing.upstreamRetryAfterUntil, until);
+    now = start;
+    await captured(() => assert.rejects(call(), error => error.upstreamStatus === 429 && error.upstreamRetryAfterUntil === until),
+      () => new Response('synthetic limit', { status: 429, headers: { 'retry-after': '300' } }));
+    now = start;
+    const broken = Object.assign(new Error('synthetic body reset', { cause: new Error('socket closed') }), { code: 'ECONNRESET' });
+    await captured(() => assert.rejects(call(), error => error === broken && error.code === 'ECONNRESET' && error.cause.message === 'socket closed'
+      && error.upstreamStatus === 429 && error.upstreamRetryAfterUntil === until),
+    () => new Response(new ReadableStream({ start(controller) { controller.error(broken); } }), { status: 429, headers: { 'retry-after': '300' } }));
+    assert.equal(timing.upstreamHttpStatus, 429); assert.equal(timing.upstreamRetryAfterUntil, until);
+    now = start;
+    await captured(() => assert.rejects(call(), error => error.upstreamStatus === 200 && error.upstreamRetryAfterUntil === until),
+      () => new Response('invalid artifact', { headers: { 'content-type': variant.type, 'retry-after': '300' } }));
+    const noHeaders = Object.freeze(new Error('synthetic network error before headers'));
+    await captured(() => assert.rejects(call(), error => error === noHeaders && error.upstreamStatus === undefined && error.upstreamRetryAfterUntil === undefined),
+      () => { throw noHeaders; });
+  }
+});
+
 function msgpack(value) {
   if (Buffer.isBuffer(value)) return Buffer.concat([Buffer.from([0xc4, value.length]), value]);
   if (typeof value === 'string') {
@@ -344,6 +402,10 @@ test('SOCKS HTTP 分块传输只有收到完整结束块才成功，拒绝超长
     [header, Buffer.from('4z\r\n')],
     [header, Buffer.concat([Buffer.from('4\r\n'), binary, Buffer.from('xx0\r\n\r\n')])]
   ]) await captured(() => assert.rejects(call(), /chunked/), () => response(chunks));
+  const retryDate = new Date(Date.now() + 300000).toUTCString(), until = new Date(retryDate).toISOString();
+  const throttled = Buffer.from(`HTTP/1.1 429 Too Many Requests\r\nRetry-After: ${retryDate}\r\nTransfer-Encoding: chunked\r\n\r\n`);
+  await captured(() => assert.rejects(call(), error => /chunked/.test(error.message) && error.upstreamStatus === 429 && error.upstreamRetryAfterUntil === until),
+    () => response([throttled, dataChunk]));
 });
 
 

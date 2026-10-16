@@ -11,6 +11,7 @@ function timestamp(value) {
 }
 const iso = value => value===null?null:new Date(value).toISOString();
 const bool = value => typeof value==='boolean'?value:null;
+const cooldownReasons = new Set(['success_gap', 'ordinary_failure', 'capacity_limit', 'upstream_retry_after', 'completion_gap']);
 
 export function sharedAccountStatus(db, now = Date.now()) {
   const state=db?.settings?.fairQuota;
@@ -21,7 +22,7 @@ export function sharedAccountStatus(db, now = Date.now()) {
     v5Percent:null,v5IsNegative:null,refillSecondsPerPercent:null,anlasFixed:null,anlasPurchased:null,
     running:jobs.filter(j=>j.status==='running').length,queued:jobs.filter(j=>j.status==='queued').length,
     pending:jobs.filter(j=>j.status==='pending').length,
-    concurrencyLimit:sharedAccountConcurrency(),cooldownUntil:null,quotaSyncError:false,
+    concurrencyLimit:sharedAccountConcurrency(),cooldownUntil:null,cooldownReason:null,quotaSyncError:false,
     recentFailures:jobs.filter(j=>{const at=timestamp(j.completedAt ?? j.failedAt ?? j.updatedAt);return j.status==='failed'&&at!==null&&at<=now&&at>=now-3600000;}).length};
   // 未绑定时不挑选其他上游账户，防止把试用池资料带入共享状态。
   if(!state?.boundAccountId) return base;
@@ -37,5 +38,6 @@ export function sharedAccountStatus(db, now = Date.now()) {
   const concurrencyLimit = sharedAccountConcurrency(account, now);
   return {...base,status,concurrencyLimit,subscriptionActive:bool(account.subscriptionActive),expiresAt:iso(expires),officialCheckedAt:iso(checked),stale,
     v5Percent:v5,v5IsNegative:bool(account.v5UsageIsNegative),refillSecondsPerPercent:number(account.v5UsageTimeUntilNextPercent),
-    anlasFixed:fixed,anlasPurchased:purchased,cooldownUntil:cooling?iso(cooldown):null,quotaSyncError};
+    anlasFixed:fixed,anlasPurchased:purchased,cooldownUntil:cooling?iso(cooldown):null,
+    cooldownReason:cooling&&cooldownReasons.has(account.cooldownReason)?account.cooldownReason:null,quotaSyncError};
 }

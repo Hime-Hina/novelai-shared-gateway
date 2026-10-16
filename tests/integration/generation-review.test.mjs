@@ -166,6 +166,10 @@ test('真实完成路径：退款前成功结算；退款后保留失败与结�
     // 迟到调用可能携带旧 reserved 快照；冷退款凭据仍是最终依据。
     if (refund) await store.update(db => { db.jobs[0].fairCharge.status = 'reserved'; }, { dirtyRows: { jobs: ['review'] } });
     store.db.accounts[0].inFlight = 1;
+    store.db.accounts[0].ordinaryStrikeCount = 3;
+    store.db.accounts[0].capacityStrikeCount = 2;
+    const originalCooldown = new Date(Date.now() + 300000).toISOString();
+    store.db.accounts[0].cooldownUntil = originalCooldown;
     const before = structuredClone(store.db.settings.fairQuota.balances), r = reservation(store.db);
     store.sqlite.prepare("UPDATE jobs SET order_value = -21.25 WHERE id = 'review'").run();
     const originalOrder = store.sqlite.prepare("SELECT order_value FROM jobs WHERE id = 'review'").get().order_value;
@@ -178,11 +182,35 @@ test('真实完成路径：退款前成功结算；退款后保留失败与结�
     assert.equal(store.db.jobs[0].status, refund ? 'failed' : 'done');
     assert.equal(store.db.jobs[0].fairCharge.status, refund ? 'refunded' : 'settled');
     assert.equal(store.db.accounts[0].inFlight, refund ? 1 : 0);
+    assert.equal(store.db.accounts[0].ordinaryStrikeCount, 0);
+    assert.equal(store.db.accounts[0].capacityStrikeCount, 0);
+    assert.equal(store.db.accounts[0].cooldownUntil, originalCooldown);
+    await store.update(db => {
+      recordSharedCompletion(db.accounts[0], Date.now(), { job: { id: 'later-task' }, kind: 'ordinary' });
+    }, { dirtyRows: { accounts: ['opus'] } });
+    await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+    assert.equal(store.db.accounts[0].ordinaryStrikeCount, 1, '旧成功重复不能重置后续失败');
+    assert.equal(store.db.accounts[0].cooldownUntil, originalCooldown);
     assert.equal(eventCount(store.db, 'generation_result_recovered'), refund ? 1 : 0);
     assert.equal(eventCount(store.db, 'generation_refunded'), refund ? 1 : 0);
     await assert.rejects(ctx.completeGeneration({ ...r, token: 'STA1N-b' }, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' }), /归属不符/);
     assert.equal(writes(), 1);
   }
+});
+
+test('迟到成功的计数清零和结果提交一起回滚，重试仅成功一次', async t => {
+  const seed = fixture(); seed.accounts[0].ordinaryStrikeCount = 3; seed.accounts[0].capacityStrikeCount = 2;
+  const store = await open(t, seed), { ctx } = await completionContext(store), r = reservation(store.db);
+  store.sqlite.exec("CREATE TEMP TRIGGER reject_success BEFORE UPDATE ON accounts BEGIN SELECT RAISE(ABORT, 'synthetic success failure'); END");
+  await assert.rejects(ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' }), /synthetic success failure/);
+  assert.equal(store.db.accounts[0].ordinaryStrikeCount, 3); assert.equal(store.db.accounts[0].capacityStrikeCount, 2);
+  assert.equal(store.selectItemById('jobs', 'review').sharedCooldown, undefined);
+  assert.equal(store.selectItemById('jobs', 'review').imageId, undefined);
+  store.sqlite.exec('DROP TRIGGER reject_success');
+  await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+  assert.equal(store.db.accounts[0].ordinaryStrikeCount, 0); assert.equal(store.db.accounts[0].capacityStrikeCount, 0);
+  assert.equal(store.selectItemById('jobs', 'review').sharedCooldown.kind, 'success');
+  assert.equal(store.readFairQuotaSettlement('review').status, 'refunded');
 });
 
 test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领取失败任务的迟到图片且不补扣', { timeout: 20000 }, async t => {

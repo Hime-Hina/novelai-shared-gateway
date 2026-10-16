@@ -38,3 +38,41 @@ test('重复拒绝保持串行，冷却从三十秒增加至两分钟且不缩�
   assert.equal(sharedAccountReadyDelay(account, NOW), 1000000);
   assert.equal(account.capacityStrikeCount, 4);
 });
+
+test('两类失败独立递增，真实成功清零，结束间隔和较长上游截止取最大', () => {
+  const account = {};
+  for (const [i, delay] of [10000, 20000, 40000, 60000, 60000].entries()) {
+    const now = NOW + i * 200000;
+    recordSharedCompletion(account, now, { job: { id: `ordinary-${i}` }, kind: 'ordinary' });
+    assert.equal(sharedAccountReadyDelay(account, now), delay);
+    assert.equal(account.cooldownReason, 'ordinary_failure');
+  }
+  assert.equal(account.ordinaryStrikeCount, 4);
+  recordSharedCapacityError(account, NOW + 1000000, { job: { id: 'capacity' } });
+  assert.equal(sharedAccountReadyDelay(account, NOW + 1000000), 30000);
+  assert.equal(account.ordinaryStrikeCount, 4); assert.equal(account.capacityStrikeCount, 1);
+  recordSharedCompletion(account, NOW + 1200000, { job: { id: 'local-end' } });
+  assert.equal(account.ordinaryStrikeCount, 4); assert.equal(account.capacityStrikeCount, 1);
+  const upstream = new Date(NOW + 1800000).toISOString();
+  recordSharedCompletion(account, NOW + 1400000, { job: { id: 'success' }, kind: 'success', retryAfterUntil: upstream });
+  assert.equal(account.cooldownUntil, upstream); assert.equal(account.cooldownReason, 'upstream_retry_after');
+  assert.equal(account.ordinaryStrikeCount, 0); assert.equal(account.capacityStrikeCount, 0);
+  recordSharedCapacityError(account, NOW + 1401000, { job: { id: 'new-capacity' } });
+  assert.equal(account.capacityStrikeCount, 1); assert.equal(account.cooldownUntil, upstream);
+  assert.equal(account.cooldownReason, 'upstream_retry_after');
+});
+
+test('同尝试重复失败和重启不延长；首次迟到成功可复位，重复成功不能清除后续故障', () => {
+  let account = {}, job = { id: 'once', generationAttempt: { id: 'attempt:once:1' } };
+  recordSharedCapacityError(account, NOW, { job });
+  const first = structuredClone(account);
+  ({ account, job } = JSON.parse(JSON.stringify({ account, job })));
+  assert.equal(recordSharedCapacityError(account, NOW + 1000, { job }), false);
+  assert.deepEqual(account, first);
+  recordSharedCompletion(account, NOW + 2000, { job, kind: 'success' });
+  assert.equal(account.capacityStrikeCount, 0); assert.equal(account.cooldownUntil, first.cooldownUntil);
+  recordSharedCompletion(account, NOW + 3000, { job: { id: 'later' }, kind: 'ordinary' });
+  const later = structuredClone(account);
+  assert.equal(recordSharedCompletion(account, NOW + 4000, { job, kind: 'success' }), false);
+  assert.deepEqual(account, later);
+});

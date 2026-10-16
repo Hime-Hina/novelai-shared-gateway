@@ -21,7 +21,7 @@ function fixture(tier=3) {
     publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
-  for(const name of ['resolveGenerationIdempotency','validateGenerationReplay','physicalAccountLoad','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
+  for(const name of ['resolveGenerationIdempotency','validateGenerationReplay','physicalAccountLoad','sharedFailureKind','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
     const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
@@ -81,7 +81,7 @@ test('同一用户多次提交也只占一个槽位，其余排队；失败退�
   const result=[];
   for(const j of db.jobs){result.push(await ctx.reserveQueuedJob(j.id));advance(10000);}
   assert.equal(result.filter(r=>r.job).length,1);assert.equal(result.filter(r=>r.queued).length,4);
-  assert.equal(db.accounts[0].inFlight,1);assert.equal(ctx.availableAccountSlots(db.accounts),0);
+  assert.equal(db.accounts[0].inFlight,1);assert.equal(ctx.availableAccountSlots(db.accounts,db.settings),0);
   const charged=db.settings.fairQuota.balances.a.v5Available;
   await ctx.failGeneration(result[0],new Error('官方失败'));
   const refunded=db.settings.fairQuota.balances.a.v5Available;

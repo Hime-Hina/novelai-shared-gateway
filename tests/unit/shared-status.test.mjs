@@ -6,7 +6,7 @@ function fixture(){return {settings:{fairQuota:{members:['member'],boundAccountI
 test('白名单返回只读汇总，没有上游与成员隐私',()=>{
  const db=fixture();db.accounts[0].quotaError='private upstream error';db.jobs.push({userToken:'member-secret',status:'failed',completedAt:NOW,error:'private prompt error',request:{prompt:'secret prompt'}});
  const before=structuredClone(db),s=sharedAccountStatus(db,NOW);assert.deepEqual(db,before);assert.equal(s.status,'quota_sync_error');assert.equal(s.quotaSyncError,true);assert.equal(s.recentFailures,1);
- assert.deepEqual(Object.keys(s).sort(),['status','subscriptionActive','expiresAt','officialCheckedAt','stale','v5Percent','v5IsNegative','refillSecondsPerPercent','anlasFixed','anlasPurchased','running','queued','pending','concurrencyLimit','cooldownUntil','quotaSyncError','recentFailures'].sort());
+ assert.deepEqual(Object.keys(s).sort(),['status','subscriptionActive','expiresAt','officialCheckedAt','stale','v5Percent','v5IsNegative','refillSecondsPerPercent','anlasFixed','anlasPurchased','running','queued','pending','concurrencyLimit','cooldownUntil','cooldownReason','quotaSyncError','recentFailures'].sort());
  for(const secret of ['upstream-secret','member-secret','other-secret','secret-name','private upstream error','secret prompt'])assert.equal(JSON.stringify(s).includes(secret),false);
 });
 test('未绑定不能展示试用池及其他上游额度',()=>{
@@ -52,4 +52,32 @@ test('pending 独立计数，不占 queued 位置，也不能调整份额', () =
   assert.equal(status.pending, 1);
   assert.equal(status.queued, 0);
   assert.equal(status.running, 0);
+});
+
+test('只暴露白名单冷却原因和统一截止，倒计时不使SSE快照每秒变化', () => {
+  for (const reason of ['success_gap', 'ordinary_failure', 'capacity_limit', 'upstream_retry_after', 'completion_gap']) {
+    const db = fixture();
+    Object.assign(db.accounts[0], { cooldownUntil: NOW + 120000, cooldownReason: reason });
+    const before = structuredClone(db), status = sharedAccountStatus(db, NOW);
+    assert.equal(status.cooldownReason, reason);
+    assert.equal(status.cooldownUntil, new Date(NOW + 120000).toISOString());
+    assert.deepEqual(sharedAccountStatus(db, NOW + 1000), status);
+    assert.deepEqual(db, before);
+    const expired = sharedAccountStatus(db, NOW + 120000);
+    assert.equal(expired.cooldownUntil, null); assert.equal(expired.cooldownReason, null);
+  }
+  for (const reason of [undefined, 'private upstream error', 'constructor']) {
+    const db = fixture(); Object.assign(db.accounts[0], { cooldownUntil: NOW + 120000, cooldownReason: reason });
+    const status = sharedAccountStatus(db, NOW);
+    assert.equal(status.status, 'cooldown'); assert.equal(status.cooldownReason, null);
+    assert.equal(JSON.stringify(status).includes('private upstream error'), false);
+  }
+});
+
+test('冷却不能覆盖订阅无效、同步异常或过期的优先状态', () => {
+  for (const [change, expected] of [[{ enabled: false }, 'inactive_opus'], [{ quotaError: 'private' }, 'quota_sync_error'],
+    [{ quotaCheckedAt: NOW - 600001 }, 'stale']]) {
+    const db = fixture(); Object.assign(db.accounts[0], { cooldownUntil: NOW + 30000, cooldownReason: 'capacity_limit' }, change);
+    assert.equal(sharedAccountStatus(db, NOW).status, expected);
+  }
 });
