@@ -10,6 +10,8 @@ export const MAX_STEPS = 50;
 export const DIRECT_URL_MAX_STEPS = 28;
 const MAX_RESULT_BYTES = 64 * 1024 * 1024;
 const MAX_STREAM_BYTES = 256 * 1024 * 1024;
+// 放大结果可达到已接受输入边长的两倍，不能复用上传图片的 8192 边长限制。
+const MAX_RESULT_DIMENSION = 16384;
 
 async function fetchWithGenerationTiming(url, init, proxyUrl, options) {
   // 发起调用、收到响应头、读完响应体分别计时，不记录用户请求内容。
@@ -67,7 +69,7 @@ async function readGenerationBody(response) {
 
 function validatedUpstreamImage(buffer, declaredType = '') {
   try {
-    const image = validateImageBytes(buffer, { maxBytes: MAX_RESULT_BYTES, label: 'NovelAI result' });
+    const image = validateImageBytes(buffer, { maxBytes: MAX_RESULT_BYTES, maxDimension: MAX_RESULT_DIMENSION, label: 'NovelAI result' });
     if (declaredType.startsWith('image/') && declaredType !== image.mimeType) throw new Error('Image media type does not match its contents.');
     return { buffer, mimeType: image.mimeType };
   } catch (cause) {
@@ -1386,7 +1388,7 @@ function readZipCentralDirectory(buffer) {
 
 function decodeDataUrl(value) {
   try {
-    const image = validateNativeImage(value, 'NovelAI result', { maxBytes: MAX_RESULT_BYTES });
+    const image = validateNativeImage(value, 'NovelAI result', { maxBytes: MAX_RESULT_BYTES, maxDimension: MAX_RESULT_DIMENSION });
     return { mimeType: image.mimeType, buffer: Buffer.from(image.base64, 'base64') };
   } catch (cause) {
     throw new Error('NovelAI returned invalid or incomplete image data.', { cause });

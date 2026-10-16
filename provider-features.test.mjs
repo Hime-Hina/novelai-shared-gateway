@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { deflateRawSync, crc32 } from 'node:zlib';
+import { deflateRawSync, deflateSync, crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { generationPrice, sizeMap } from './public/generation-pricing.js';
 import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from './server/providers.js';
+import { parseNativeAuxiliaryRequest } from './server/native-image.js';
+import { nativeImagesMsgpack } from './server/native-stream.js';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };
@@ -182,6 +184,43 @@ function imageZip(bytes, { method = 0, uncompressedSize = bytes.length } = {}) {
   end.writeUInt32LE(local.length + name.length + compressed.length, 16);
   return Buffer.concat([local, name, compressed, central, name, end]);
 }
+
+function grayscalePng(width, height) {
+  const chunk = (name, data) => {
+    const type = Buffer.from(name), length = Buffer.alloc(4), checksum = Buffer.alloc(4);
+    length.writeUInt32BE(data.length); checksum.writeUInt32BE(crc32(Buffer.concat([type, data])));
+    return Buffer.concat([length, type, data, checksum]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8;
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Buffer.alloc((width + 1) * height))), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('已接受的8192边长输入可取得两倍放大结果，上传上限和结果总像素限制不变', async () => {
+  const inputImage = grayscalePng(8192, 128), outputImage = grayscalePng(16384, 256);
+  const input = parseNativeAuxiliaryRequest({ image: inputImage.toString('base64'), scale: 2 }, 'upscale');
+  assert.equal(input.width, 8192); assert.equal(input.height, 128);
+  assert.throws(() => parseNativeAuxiliaryRequest({ image: outputImage.toString('base64') }, 'upscale'), error => error.statusCode === 422);
+  const responses = [
+    () => new Response(outputImage, { headers: { 'content-type': 'image/png' } }),
+    () => new Response(outputImage, { headers: { 'content-type': 'application/octet-stream' } }),
+    () => Response.json({ images: [{ image: outputImage.toString('base64') }] }),
+    () => Response.json({ image: 'data:image/png;base64,' + outputImage.toString('base64') }),
+    () => new Response(imageZip(outputImage), { headers: { 'content-type': 'application/zip' } })
+  ];
+  for (const response of responses) {
+    const { value } = await captured(() => generateNovelAiImage(input, account, env), response);
+    assert.deepEqual(value, { buffer: outputImage, mimeType: 'image/png' });
+  }
+  const { value } = await captured(() => generateNovelAiImage(request(), account, env),
+    () => new Response(nativeImagesMsgpack([outputImage]), { headers: { 'content-type': 'application/octet-stream' } }));
+  assert.deepEqual(value.buffer, outputImage);
+  for (const invalid of [grayscalePng(16385, 1), grayscalePng(16384, 1025)]) {
+    await captured(() => assert.rejects(generateNovelAiImage(input, account, env), /invalid or incomplete/),
+      () => new Response(invalid, { headers: { 'content-type': 'image/png' } }));
+  }
+});
 
 test('普通生成和放大统一拒绝 HTML、空内容、截断图片和伪造 JSON 图片', async () => {
   const damaged = Buffer.from(png); damaged[damaged.length - 1] ^= 1;

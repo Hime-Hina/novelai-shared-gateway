@@ -35,8 +35,8 @@ function normalizeParameterAliases(parameters) {
     delete parameters[alias];
   }
 }
-function imageDimensions(width, height) {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > MAX_IMAGE_PIXELS) fail(422, '图片尺寸过大或无效；最多 8192 像素边长、1600 万像素。');
+function imageDimensions(width, height, maxDimension) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width > maxDimension || height > maxDimension || width * height > MAX_IMAGE_PIXELS) fail(422, `图片尺寸过大或无效；最多 ${maxDimension} 像素边长、1600 万像素。`);
   return { width, height };
 }
 
@@ -62,7 +62,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
 });
 export function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]; return (crc ^ 0xffffffff) >>> 0; }
 
-function pngDimensions(bytes) {
+function pngDimensions(bytes, maxDimension) {
   let offset = 8, dimensions, depth, channels, interlace, ended = false;
   const compressed = [];
   while (offset + 12 <= bytes.length) {
@@ -71,7 +71,7 @@ function pngDimensions(bytes) {
     if (!dimensions && type !== 'IHDR') fail(422, 'PNG 缺少图像头。');
     if (type === 'IHDR') {
       if (dimensions || length !== 13) fail(422, 'PNG 图像头无效。');
-      dimensions = imageDimensions(bytes.readUInt32BE(offset + 8), bytes.readUInt32BE(offset + 12));
+      dimensions = imageDimensions(bytes.readUInt32BE(offset + 8), bytes.readUInt32BE(offset + 12), maxDimension);
       depth = bytes[offset + 16]; const color = bytes[offset + 17];
       channels = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }[color];
       const depths = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
@@ -96,7 +96,7 @@ function pngDimensions(bytes) {
   return dimensions;
 }
 
-function jpegDimensions(bytes) {
+function jpegDimensions(bytes, maxDimension) {
   if (bytes.length < 12 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) fail(422, 'JPEG 图片损坏或被截断。');
   let offset = 2, dimensions;
   while (offset + 4 <= bytes.length) {
@@ -111,7 +111,7 @@ function jpegDimensions(bytes) {
     if (length < 2 || offset + length > bytes.length) break;
     if ([0xc0, 0xc1, 0xc2].includes(marker)) {
       if (length < 8 || dimensions) break;
-      dimensions = imageDimensions(bytes.readUInt16BE(offset + 5), bytes.readUInt16BE(offset + 3));
+      dimensions = imageDimensions(bytes.readUInt16BE(offset + 5), bytes.readUInt16BE(offset + 3), maxDimension);
       if (bytes[offset + 2] !== 8 || ![1, 3, 4].includes(bytes[offset + 7]) || length !== 8 + 3 * bytes[offset + 7]) break;
     }
     offset += length;
@@ -119,7 +119,7 @@ function jpegDimensions(bytes) {
   fail(422, 'JPEG 缺少有效图像尺寸或扫描数据。');
 }
 
-function webpDimensions(bytes) {
+function webpDimensions(bytes, maxDimension) {
   if (bytes.length < 30 || bytes.readUInt32LE(4) + 8 !== bytes.length) fail(422, 'WebP 图片损坏或被截断。');
   let offset = 12, dimensions, foundPixels = false;
   while (offset + 8 <= bytes.length) {
@@ -128,14 +128,14 @@ function webpDimensions(bytes) {
     let actual;
     if (type === 'VP8X') {
       if (size !== 10 || (bytes[data] & 2)) fail(422, '不支持动画 WebP 图片。');
-      dimensions = imageDimensions(bytes.readUIntLE(data + 4, 3) + 1, bytes.readUIntLE(data + 7, 3) + 1);
+      dimensions = imageDimensions(bytes.readUIntLE(data + 4, 3) + 1, bytes.readUIntLE(data + 7, 3) + 1, maxDimension);
     } else if (type === 'VP8 ') {
       if (size < 10 || (bytes[data] & 1) || bytes.toString('hex', data + 3, data + 6) !== '9d012a') fail(422, 'WebP 图像头无效。');
-      actual = imageDimensions(bytes.readUInt16LE(data + 6) & 0x3fff, bytes.readUInt16LE(data + 8) & 0x3fff);
+      actual = imageDimensions(bytes.readUInt16LE(data + 6) & 0x3fff, bytes.readUInt16LE(data + 8) & 0x3fff, maxDimension);
     } else if (type === 'VP8L') {
       if (size < 5 || bytes[data] !== 0x2f || bytes[data + 4] >> 5) fail(422, 'WebP 图像头无效。');
       const bits = bytes.readUInt32LE(data + 1);
-      actual = imageDimensions((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+      actual = imageDimensions((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1, maxDimension);
     } else if (type === 'ANIM' || type === 'ANMF') fail(422, '不支持动画图片。');
     if (actual) {
       if (foundPixels || (dimensions && (dimensions.width !== actual.width || dimensions.height !== actual.height))) fail(422, 'WebP 图像尺寸不一致。');
@@ -147,19 +147,19 @@ function webpDimensions(bytes) {
   return dimensions;
 }
 
-export function validateImageBytes(bytes, { maxBytes = MAX_IMAGE_BYTES, label = 'image' } = {}) {
+export function validateImageBytes(bytes, { maxBytes = MAX_IMAGE_BYTES, maxDimension = 8192, label = 'image' } = {}) {
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > maxBytes) fail(422, `${label} 的图片大小无效。`);
   let actualType, dimensions;
-  if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) { actualType = 'image/png'; dimensions = pngDimensions(bytes); }
-  else if (bytes[0] === 0xff && bytes[1] === 0xd8) { actualType = 'image/jpeg'; dimensions = jpegDimensions(bytes); }
-  else if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') { actualType = 'image/webp'; dimensions = webpDimensions(bytes); }
+  if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) { actualType = 'image/png'; dimensions = pngDimensions(bytes, maxDimension); }
+  else if (bytes[0] === 0xff && bytes[1] === 0xd8) { actualType = 'image/jpeg'; dimensions = jpegDimensions(bytes, maxDimension); }
+  else if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') { actualType = 'image/webp'; dimensions = webpDimensions(bytes, maxDimension); }
   else fail(422, `${label} 不是可识别的 PNG、JPEG 或 WebP 图片。`);
   return { ...dimensions, mimeType: actualType, byteLength: bytes.length };
 }
 
-export function validateNativeImage(value, label = 'image', { maxBytes = MAX_IMAGE_BYTES } = {}) {
+export function validateNativeImage(value, label = 'image', { maxBytes = MAX_IMAGE_BYTES, maxDimension = 8192 } = {}) {
   const decoded = decodeBase64(value, label, { maxBytes });
-  const image = validateImageBytes(decoded.bytes, { maxBytes, label });
+  const image = validateImageBytes(decoded.bytes, { maxBytes, maxDimension, label });
   if (decoded.mimeType && decoded.mimeType !== image.mimeType) fail(422, `${label} 的 MIME 类型与图片内容不一致。`);
   return { ...image, base64: decoded.base64 };
 }
