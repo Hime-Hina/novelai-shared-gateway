@@ -62,7 +62,7 @@
 
 ### 实施记录
 
-每项源码修复独立提交，以下记录实际提交号。验证命令对应当时提交的文件位置，C04 后使用新的 tests 目录。这里的“完成”指代码与所列本地验证，隔离部署及生产批准仍另行验收。
+每项源码修复独立提交，以下记录实际提交号。验证命令对应当时提交的文件位置，C04 后使用新的 tests 目录。这里的“完成”指代码与所列验证，隔离部署及生产批准仍另行验收。
 
 | 工作项 | 提交 | 已完成与验证 | 部署与回滚影响 |
 | --- | --- | --- | --- |
@@ -73,7 +73,7 @@
 | F09 | [6a13444](https://github.com/Hime-Hina/novelai-shared-gateway/commit/6a13444) | 分组预览与保存强制校验编辑基线版本；owner/私有管理共用页面保留冲突草稿，后台刷新不覆盖期间开始的编辑。`node --test member-routes.test.mjs owner-management.test.mjs server/member-management-ui.test.mjs server/fair-quota.test.mjs` 76/76 通过 | 无数据迁移；旧版页面缺失版本字段时收到 409，需要重新加载页面。UI 回归执行真实脚本配合轻量 DOM 模拟，D01 仍需真实浏览器验收 |
 | C05 | [3e523de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3e523de) | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949247612) 已通过（dae4fae，含 C02 与 F07 边界补充） |
 | C02 | [dae4fae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dae4fae) | [API 契约矩阵](api-contract.md)记录官方 Swagger 摘要、支持/拒绝/网关扩展及 C03 差异；三个客户端样本连接解析与独立核价，新增 5 项纯模块通过。`node --test native-http.test.mjs` 10/10，含 OpenAI 目录、非流式/流式、鉴权及图片实际领取 | 仅文档与测试，未改变出站协议；模型全组合、Vibe 内部格式与公网 SSE 代理行为不假装已验证。C03 仍在 N03 后实施 |
-| C04 | `refactor: consolidate tests and exclude them from runtime images` | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
+| C04 | [7d08e21](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7d08e21) | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949984502) 通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
 | P01（排队部分） | [2bc6c79](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2bc6c79) | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器受控重复采样仍待完成，P01 整项未完成 |
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
