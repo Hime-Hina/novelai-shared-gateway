@@ -1,13 +1,13 @@
-# 持久请求与排队生命周期（F06-1 / F06-2）
+# 持久请求与排队生命周期（F06-1 / F06-2 / F06-3）
 
-当前已接入网页 `POST /api/jobs` 单图，以及 Native 普通、stream 多图和
-encode-vibe/upscale 单任务。direct、OpenAI 已使用持久排队序号和活动载荷
-计量，完整父请求及连接解耦仍待下一片；可选幂等、父请求查询/领取和显式
-批次取消尚未接入，不能将当前版本视为 F06 全部完成。
+当前已接入网页 `POST /api/jobs`、Native 普通/stream 多图和辅助操作、
+direct `/generate`、OpenAI JSON/SSE。各入口均使用持久父参数与统一调度，
+已受理任务独立于 HTTP 连接。可选幂等、父请求查询/领取和显式批次取消
+尚未接入，不能将当前版本视为 F06 全部完成。
 
 ## 受理与载荷
 
-网页和 Native 受理时，在同一个同步 SQLite 事务中写入不可变
+生图受理时，在同一个同步 SQLite 事务中写入不可变
 `generation_requests` 父记录、所有 `jobs` 子记录和本次账本变化。任一 SQL
 写入失败，父记录、任务和账本一起回滚。父记录保存稳定成员 ID、来源、
 操作、提交时间、完整规范化参数及 UTF-8 字节数，不保存 API Key 或原始 URL。
@@ -17,15 +17,18 @@ requestId、模型、尺寸、步数、种子等小字段，不复制 tag、完�
 负面提示词或输入图片。执行时按 requestId 冷读，按 sampleIndex 浅构造
 单张种子和 `n_samples: 1`，不为每张深拷贝 base64。单任务回包和错误详情
 按需冷读取完整提示词，不截断原 API 字段；错误种子对应实际失败子任务。
-Native 受理函数返回后结束大正文作用域，同步 handler 等整批时只持有小型
-批次元数据和已完成的输出图片。
+Native、direct 和 OpenAI 受理函数返回后结束完整正文/解析参数的作用域，
+同步 handler 只持有任务 ID、回包模型等元数据和已完成的输出图片。SSE
+进度只读取 child 摘要，不为反复展示队列状态冷读完整提示词；普通任务查询
+仍保留完整 prompt 契约。
 
-网页正文上限保持 **2 MiB**，Native wire 上限保持 **32 MiB**。规范化请求
+网页和 OpenAI 正文上限保持 **2 MiB**，Native wire 上限保持 **32 MiB**。规范化请求
 默认上限 **32 MiB**（`REQUEST_MAX_PAYLOAD_BYTES`），全局活动载荷默认
 **64 MiB**（`QUEUE_MAX_PAYLOAD_BYTES`）。按含 base64 的 JSON UTF-8 字节
 计量，不按解码图片大小或 JavaScript 字符数。两个配置均可下调验证。
 
-路由先规范化路径，再在读正文前创建临时占用。每个正文 chunk 在保留前
+路由先规范化路径，再在读正文前创建临时占用；direct 的查询串也先计临时
+字节，规范化后只存执行参数，不把含 Key 的完整 URL 写入父记录。每个正文 chunk 在保留前
 检查预算；multipart 展开附件前按预期 base64 字节检查，最后按规范化 JSON
 重新校准。提交成功后，在下一项串行受理开始前把 claim 移交为持久字节，
 携带 claim 的更新不会延迟写入；解析失败、读流断线和写入失败由 HTTP
@@ -43,8 +46,8 @@ finally 释放临时占用。没有通用提交回调机制。
 在途任务按现有未知消费/退款证据处理，不重新派发原尝试。终态释放预算，
 父参数和已保存结果继续保留；显式全库替换才原子移除无子任务引用的父记录。
 
-32/64 MiB 初值来自 Windows 合成实验，不是 bob 的内存峰值保证。未迁移
-入口的正文解析、图片解码和输出缓冲仍不受这份输入预算完整覆盖。
+32/64 MiB 初值来自 Windows 合成实验，不是 bob 的内存峰值保证。图片解码、
+解析过程中的中间对象和输出缓冲仍不能由这份输入字节预算推导出完整内存上界。
 
 ## 批次、队列与连接
 
@@ -65,8 +68,15 @@ pending 同时进入活动 SQL 索引、启动加载、容量、过期清理、�
 状态的 queued 仍表示已进入派发队列，新增 pending 表示待前图完成的意图；
 成员近期活动的等待数包括两者。pending 没有虚构的排队位置。
 
-Native 客户端断线仅移除 HTTP 等待者，不取消已受理任务。同步 HTTP 等待
-超时也不修改任务。尚未派发的 Native queued/pending 在重启后继续执行；
+客户端断线仅移除 HTTP 等待者，不取消已受理任务。同步 HTTP 等待超时也
+不修改任务：direct 保留超时图片，OpenAI JSON 返回 504，SSE 保留超时文字
+与 DONE 结束标记。响应发送失败不会把已完成任务改成失败或触发退款；缓存
+产物缺失仅在受理前回落到重新生成，已受理结果发送失败不再次入队。SSE
+close 会清除自己的轮询定时器和等待者，不改变任务。
+
+新的 direct/OpenAI 不再把 HTTP 等待截止写入任务 deadlineAt，队列仍使用
+独立业务等待期限，上游执行仍保留原执行超时。各来源尚未派发的 queued/pending
+在重启后继续执行，旧 inline direct/OpenAI 也按已保存的业务期限判断；
 已发送但结果不明的旧 running 按现有故障规则结案并终止剩余意图。旧版本
 从未持久化的后续图片无法凭空恢复。原同步 ZIP、MessagePack final/error
 帧、部分成功清单与辅助二进制响应保持；当前没有新增客户端幂等要求。
@@ -96,3 +106,14 @@ integrity 与真实 HTTP 启动。镜像为 `novelai-shared-gateway:f06-native-c
 （sha256:36a05264935e42d7fec2620dcc3a965bf44ab29054d4208f5de810346781b99e）。
 没有请求真实 NAI。Linux 检查验证功能与权限，内存峰值证据仍仅来自 Windows
 合成实验。
+
+F06-3 的独立 localhost HTTP 检查使用 100 ms 同步等待，覆盖 direct 错误
+图片、OpenAI JSON/SSE 超时后继续、三个连接形态的主动断线、全部已受理父
+请求强杀后恢复、旧 inline 队列兼容、完整大提示词冷存及 direct 缓存命中。
+小型回归检查 SSE close 清理定时器/等待者、进度不解析父 payload，以及
+结果发送失败保留任务终态和结算。
+
+本片 Linux 镜像 `novelai-shared-gateway:f06-connection-check`
+（sha256:58a67867cf44c011fa806fe42a41557b57ca2ac209b10af4f7e72d324d6ae294）
+在 UID 1000、断网、只读根目录下再次通过七迁移、冷 pending、载荷预算与
+HTTP 启动检查。完整连接行为由上述独立 localhost 合成 HTTP 用例验证。

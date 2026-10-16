@@ -1,6 +1,6 @@
 # 迁移前 API 契约基线（C02）
 
-核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录已经存在的行为；F03 分资源故障处理与 F06 网页/Native 持久受理已接入，计划中的持久会话、细粒度事件和幂等重试仍不能当作已经实现。
+核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录已经存在的行为；F03 分资源故障处理与 F06 各生成入口持久受理、连接解耦已接入，计划中的持久会话、细粒度事件和幂等重试仍不能当作已经实现。
 
 实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.js)、[输入解析](../server/native-image.js)、[multipart 解析](../server/native-body.js)、[核价](../server/native-pricing.js)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
@@ -123,10 +123,14 @@ Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message
 | OpenAI 建连前错误 | `{error:{message,type,param:null,code:type}}`；401/403 为 authentication_error、429 为 rate_limit_error、5xx 为 server_error，其余 invalid_request_error |
 | `GET /generate` | 旧查询参数接口；单图、默认可缓存，`nocache=1/true` 禁缓存；成功直接图片，含 `x-cache`。生成错误通常以 `200 image/svg+xml`、`x-error:1` 返回；公网鉴权401/403例外。不要在迁移中误改为 Native ZIP |
 | `POST /api/jobs` | 网页异步接口，JSON 受理返回 `202` 任务快照；共享模式不开放 `/api/web/jobs`。与 Native/OpenAI 的同步等待契约不同 |
-| `GET /api/jobs/:id` | 仅所属成员或管理员读取 `200 JSON`；核心字段包含 id/source/status、模型/步数/队列位置/进度、imageId/imageUrl、error 与时间；当前状态 queued/running/done/failed |
+| `GET /api/jobs/:id` | 仅所属成员或管理员读取 `200 JSON`；核心字段包含 id/source/status、模型/步数/队列位置/进度、imageId/imageUrl、error 与时间；当前状态 pending/queued/running/done/failed；pending 等待前序图片，不占派发位置 |
 | `GET /api/jobs/:id/content` | 完成时返回结果原始媒体类型；未完成409；失败返回200 SVG错误图、`x-error:1`；跨成员403 |
 | `GET /api/images/:id/content` | 所属成员、管理员或有效限时签名才能读取；不存在404、无权403。公网签名有效期15分钟且进程重启失效；签名本身是可转交的访问凭据 |
 | `GET /api/jobs/events` | 成员 Key 的 SSE 预览订阅，消息是 `{jobId,progress,preview}`；重连只能取得仍在内存的最新预览，没有完整事件历史 |
+
+OpenAI 非流式/SSE 与 direct 的 HTTP 等待期限只控制连接：direct 默认 60 秒，OpenAI 默认 10 分钟；超时分别沿用错误图片、504 JSON、含超时文字与 `[DONE]` 的 SSE。断线、等待超时或返回图片失败不取消、退款或重建已受理任务。有效的旧 inline 与新父请求 queued 任务在重启后继续；旧 running 仍按未知结果规则处理，不自动重发。新任务的排队期限与执行超时独立于 HTTP 等待期限，已完成结果可从成员任务记录领取。
+
+OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接等待者和定时器；普通 `GET /api/jobs/:id` 继续回显完整提示词。direct 明确缓存命中仍返回 `x-cache: hit`，不会为了重建连接重新生成已有结果。
 
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
@@ -154,7 +158,7 @@ F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回�
 
 读取正文先临时占用预算，提交后移交持久计数，失败或断线释放临时计数；断线不释放仍被任务持有的父载荷。pending、旧内联活动参数和尚未 finish 的执行尝试也计入，按父请求去重。各入口的 queued 使用持久 `queueSeq`，Native 下一张激活才取得新号；pending 与缓存命中完成不占号。公开状态新增独立 pending 数，queued 仍表示可派发等待任务，不把未激活图片当作已占队列位置。
 
-direct/OpenAI 本片仅接入载荷计数，完整父请求、连接解耦和重启恢复仍待后续片；可选幂等键也尚未实现。字节上限是输入预算，不是进程 RSS 保证。具体边界见[持久请求说明](request-lifecycle.md)。
+direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，direct 查询参数在解析受理阶段计入临时预算，认证 token 不进入父参数。各同步 handler 只携带等待所需的小元数据。可选幂等键、父请求查询/领取和显式批次取消尚待后续片；没有稳定键的第三方重试仍无法可靠识别为同一操作。字节上限是输入预算，不是进程 RSS 保证。具体边界见[持久请求说明](request-lifecycle.md)。
 
 ## N03 后的 C03 差异与待核实清单
 

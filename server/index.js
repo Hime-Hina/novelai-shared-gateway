@@ -135,6 +135,8 @@ const server = http.createServer(async (req, res) => {
   try {
     await route(req, res);
   } catch (error) {
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
     if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes(error.statusCode))) {
       const image = buildErrorImage(publicErrorMessage(error.message || 'Generation failed'));
       sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
@@ -280,8 +282,10 @@ async function route(req, res) {
     changeMemberAdmission,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
-  if (method === 'POST' && (['/api/jobs', '/api/web/jobs'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname))) {
+  if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
+    || (method === 'GET' && url.pathname === '/generate')) {
     req.generationPayloadClaim = generationPayloadBudget.claim();
+    if (method === 'GET') req.generationPayloadClaim.resize(Buffer.byteLength(url.search));
   }
   if (await publicSelfUseGuard(req, res, url, method)) return;
 
@@ -540,7 +544,7 @@ async function route(req, res) {
   }
 
   if (method === 'GET' && url.pathname === '/generate') {
-    await handleDirectGenerate(url, res);
+    await handleDirectGenerate(url, res, req.generationPayloadClaim);
     return;
   }
 
@@ -552,11 +556,42 @@ async function route(req, res) {
   throw httpError(404, 'not found.');
 }
 
-async function handleDirectGenerate(url, res) {
+async function acceptDirectRequest(url, claim) {
   const token = String(url.searchParams.get('token') || '').trim();
   const rawParams = Object.fromEntries(url.searchParams.entries());
+  const db = await store.readCollections(['settings', 'users']);
+  const request = normalizeNovelAiRequest(rawParams, db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+  const cacheKey = requestCacheKey(token, request, rawParams.seed);
+  const nocache = rawParams.nocache === '1' || rawParams.nocache === 'true';
+  if (!nocache) {
+    let cached = await store.findImageByCacheKey(cacheKey);
+    if (cached) {
+      try {
+        if (cached.file) await stat(imageFilePath(cached.file));
+        else await readStoredImage(cached);
+      } catch (error) {
+        console.error(`Cached image ${cached.id} is missing, regenerating:`, error);
+        cached = null;
+      }
+    }
+    if (cached) {
+      const job = await createDirectJob(token, request, cacheKey, {
+        status: 'done', accountId: cached.accountId || '', imageId: cached.id, cost: 0,
+        source: 'direct', generationPayloadClaim: claim
+      });
+      return { id: job.id, cached: { file: cached.file, base64: cached.base64, mimeType: cached.mimeType },
+        balance: getUserOrThrow(db, token).balance };
+    }
+  }
+  const job = await createDirectJob(token, request, cacheKey, { source: 'direct', generationPayloadClaim: claim });
+  scheduleQueueDrain();
+  return { id: job.id };
+}
+
+async function handleDirectGenerate(url, res, claim) {
+  const token = String(url.searchParams.get('token') || '').trim();
   if (isOfficialKey(token)) {
-    const snapshot = await createOfficialJob(token, rawParams, false, directGenerateTimeoutMs);
+    const snapshot = await createOfficialJob(token, Object.fromEntries(url.searchParams.entries()), false, directGenerateTimeoutMs);
     const job = await officialJobs.get(snapshot.id, token).done;
     if (job.status !== 'done') throw httpError(502, job.error);
     await sendStoredImage(res, 200, job.image, {
@@ -564,64 +599,23 @@ async function handleDirectGenerate(url, res) {
     });
     return;
   }
-  const db = await store.readCollections(['settings', 'users']);
-  const request = normalizeNovelAiRequest(rawParams, db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
-  const cacheKey = requestCacheKey(token, request, rawParams.seed);
-  const nocache = rawParams.nocache === '1' || rawParams.nocache === 'true';
-
-  if (!nocache) {
-    const cached = await store.findImageByCacheKey(cacheKey);
-    if (cached) {
-      try {
-        await createDirectJob(token, request, cacheKey, {
-          status: 'done',
-          accountId: cached.accountId || '',
-          imageId: cached.id,
-          cost: 0
-        });
-        await sendStoredImage(res, 200, cached, {
-          'x-cache': 'hit',
-          'x-balance': String(getUserOrThrow(db, token).balance)
-        });
-        return;
-      } catch (error) {
-        console.error(`Cached image ${cached.id} is missing, regenerating:`, error);
-      }
-    }
+  const accepted = await acceptDirectRequest(url, claim);
+  if (res.destroyed) return;
+  if (accepted.cached) {
+    await sendStoredImage(res, 200, accepted.cached, { 'x-cache': 'hit', 'x-balance': String(accepted.balance) });
+    return;
   }
-
-  const deadline = Date.now() + directGenerateTimeoutMs;
-  let directJob = null;
   try {
-    directJob = await createDirectJob(token, request, cacheKey, { deadlineAt: new Date(deadline).toISOString() });
-    scheduleQueueDrain();
-    const result = await waitForJobResult(directJob.id, deadline);
-    if (!result) {
-      await timeoutJob(directJob.id);
-      sendTimeoutImage(res);
-      return;
-    }
+    const result = await waitForJobResult(accepted.id, Date.now() + directGenerateTimeoutMs, res);
+    if (res.destroyed) return;
+    if (!result) { sendTimeoutImage(res); return; }
     if (result.error) throw new Error(result.error);
-    await sendStoredImage(res, 200, result.saved, {
-      'x-cache': 'miss',
-      'x-balance': String(result.balance ?? '')
-    });
+    await sendStoredImage(res, 200, result.saved, { 'x-cache': 'miss', 'x-balance': String(result.balance ?? '') });
   } catch (error) {
-    if (directJob) {
-      if (isInsufficientBalanceError(error)) {
-        await removeJob(directJob.id);
-      } else {
-        await markDirectJobFailed(directJob.id, error.message || 'direct generate failed.');
-      }
-    }
-    if (error.message === 'direct generate timeout') {
-      sendTimeoutImage(res);
-      return;
-    }
-    if (isNovelAiCapacityError(error)) {
-      sendBusyImage(res);
-      return;
-    }
+    // 响应失败不改写已受理任务；持久执行与结算由调度器负责。
+    if (res.destroyed) return;
+    if (error.message === 'direct generate timeout') { sendTimeoutImage(res); return; }
+    if (isNovelAiCapacityError(error)) { sendBusyImage(res); return; }
     throw error;
   }
 }
@@ -839,35 +833,34 @@ async function handleNativeAuxiliary(req, res, operation) {
   else sendImage(res, 200, 'application/zip', nativeImageZip(buffer), { 'cache-control': 'no-store' });
 }
 
-async function handleOpenAiChatCompletion(req, res) {
+async function acceptOpenAiRequest(req) {
   const token = bearerToken(req);
   if (!token) throw httpError(401, 'missing API key.');
   const body = await readJson(req);
   const settings = await store.readSettings();
   const parsed = parseOpenAiImageRequest(body, settings);
-  const deadline = Date.now() + openAiChatTimeoutMs;
   const job = await createJob(token, parsed.request, {
-    deadlineAt: new Date(deadline).toISOString(),
-    source: 'openai'
+    source: 'openai', generationPayloadClaim: req.generationPayloadClaim
   });
   scheduleQueueDrain();
+  // 完整正文和解析参数只在受理作用域保留，同步/SSE 等待仅携带小元数据。
+  return { id: job.id, model: parsed.model, stream: body.stream === true };
+}
 
-  if (body.stream === true) {
-    await streamOpenAiImageJob(req, res, job, parsed.model, deadline);
+async function handleOpenAiChatCompletion(req, res) {
+  const job = await acceptOpenAiRequest(req);
+  if (res.destroyed) return;
+  const deadline = Date.now() + openAiChatTimeoutMs;
+  if (job.stream) {
+    await streamOpenAiImageJob(req, res, job, job.model, deadline);
     return;
   }
-
-  const result = await waitForJobResult(job.id, deadline);
-  if (!result) {
-    await timeoutJob(job.id);
-    throw httpError(504, 'direct generate timeout');
-  }
+  const result = await waitForJobResult(job.id, deadline, res);
+  if (res.destroyed) return;
+  if (!result) throw httpError(504, 'direct generate timeout');
   if (result.error) throw httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error);
-
   sendJson(res, 200, openAiChatCompletionResponse({
-    model: parsed.model,
-    content: openAiImageMarkdown(req, result.saved),
-    id: `chatcmpl-${job.id}`
+    model: job.model, content: openAiImageMarkdown(req, result.saved), id: `chatcmpl-${job.id}`
   }));
 }
 
@@ -1020,8 +1013,9 @@ async function streamOpenAiImageJob(req, res, job, model, deadline = Date.now() 
   writeOpenAiChunk(res, { id: streamId, model, content: '<think>\n任务已提交，正在进入队列\n' });
   let lastLine = '';
   let reachedRunning = false;
-  while (Date.now() < deadline) {
+  while (!res.destroyed && Date.now() < deadline) {
     const snapshot = await publicJobSnapshot(job.id);
+    if (res.destroyed) return;
     if (!snapshot) {
       writeOpenAiChunk(res, { id: streamId, model, content: '任务不存在\n</think>\n任务不存在\n' });
       finishOpenAiStream(res, streamId, model);
@@ -1049,17 +1043,17 @@ async function streamOpenAiImageJob(req, res, job, model, deadline = Date.now() 
       return;
     }
 
-    await sleep(openAiQueuePollMs);
+    await waitForJobResult(job.id, Math.min(deadline, Date.now() + openAiQueuePollMs), res);
   }
 
+  if (res.destroyed) return;
   writeOpenAiChunk(res, { id: streamId, model, content: '连接超时\n</think>\n连接超时\n' });
-  await timeoutJob(job.id);
   finishOpenAiStream(res, streamId, model);
 }
 
 async function publicJobSnapshot(jobId) {
   const snapshot = await store.findJobContext(jobId);
-  return snapshot ? publicJob(snapshot.job, snapshot) : null;
+  return snapshot ? publicJob(snapshot.job, snapshot, { includePrompt: false }) : null;
 }
 
 function openAiProgressLine(job) {
@@ -1918,7 +1912,7 @@ async function cleanupInterruptedStartupJobs() {
       const isOpenAi = job.source === 'openai';
       const queueExpires = queuedDeadlineTimestamp(job);
       const isExpired = isExpiredJobAt(job, now) || Boolean(queueExpires && now >= queueExpires);
-      if (!isRunning && !isDirect && !isOpenAi && !isExpired) return;
+      if (!isRunning && !isExpired) return;
 
       if (isRunning) running += 1;
       if (isDirect) direct += 1;
@@ -1934,11 +1928,9 @@ async function cleanupInterruptedStartupJobs() {
       refundJob(db, job, message);
       job.status = 'failed';
       job.error = message;
-      job.errorDetail = isDirect || isOpenAi
-        ? 'startup: request-bound job was interrupted by server restart'
-        : isRunning
-          ? 'startup: running job was interrupted by server restart'
-          : 'startup: job deadline expired before restart completed';
+      job.errorDetail = isRunning
+        ? 'startup: running job was interrupted by server restart'
+        : 'startup: job deadline expired before restart completed';
       job.updatedAt = updatedAt;
       job.completedAt = updatedAt;
       failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, 504));
@@ -2352,7 +2344,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     const shouldCharge = !options.status && cost > 0;
     if (shouldCharge && user.balance < cost) throw httpError(402, insufficientBalanceMessage);
     if (options.generationPayloadClaim) {
-      generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
+      generationRequest = generationRequestRecord(user, request, options.source || 'direct', options.generationPayloadClaim);
     }
     const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
     if (!generationRequest && options.status !== 'done') claim.resize(payloadBytes);
@@ -2363,7 +2355,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     }
     const job = {
       id: createId('job'),
-      source: 'direct',
+      source: options.source || 'direct',
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       userToken: token,
       status: options.status || 'queued',
@@ -2419,27 +2411,6 @@ async function markDirectJobRunning(jobId, reservation) {
   }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
 }
 
-async function markDirectJobFailed(jobId, message) {
-  const detail = errorDetailMessage(message);
-  await store.update((db) => {
-    const job = db.jobs.find((item) => item.id === jobId);
-    if (!job) return;
-    job.status = 'failed';
-    job.error = publicErrorMessage(detail);
-    job.errorDetail = detail;
-    job.updatedAt = new Date().toISOString();
-    job.completedAt = job.updatedAt;
-  }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
-  clearJobStreamProgress(jobId);
-  notifyJobWaiters(jobId, { error: publicErrorMessage(detail) });
-}
-
-async function removeJob(jobId) {
-  await store.update((db) => {
-    db.jobs = db.jobs.filter((job) => job.id !== jobId);
-  }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
-}
-
 async function changeMemberAdmission(userId, acceptingJobs) {
   const result = await store.update(db => setMemberAdmission(db, userId, acceptingJobs, refundJob), {
     immediate: true,
@@ -2457,46 +2428,6 @@ async function changeMemberAdmission(userId, acceptingJobs) {
   }
   scheduleQueueDrain();
   return { ...result, cancelledCount: result.cancelledJobIds.length };
-}
-
-async function timeoutJob(jobId) {
-  const control = runningJobControls.get(jobId);
-  if (control) {
-    abortRunningJob(jobId, 'direct generate timeout');
-    await control.done;
-    return;
-  }
-  await cancelQueuedOrRunningJob(jobId, 'direct generate timeout', 'job timed out before completion');
-}
-
-async function cancelQueuedOrRunningJob(jobId, message, detail = message) {
-  let changed = false;
-  const publicMessage = publicErrorMessage(message);
-  await store.update((db) => {
-    const job = db.jobs.find((item) => item.id === jobId);
-    if (!job || ['done', 'failed'].includes(job.status)) return;
-    const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
-    if (account) {
-      account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (fairShareMode) recordSharedCompletion(account, Date.now());
-      account.updatedAt = new Date().toISOString();
-    }
-    refundJob(db, job, publicMessage);
-    cancelWaitingBatchJobs(db, job, publicMessage);
-    job.status = 'failed';
-    job.error = publicMessage;
-    job.errorDetail = detail;
-    job.updatedAt = new Date().toISOString();
-    job.completedAt = job.updatedAt;
-    changed = true;
-  }, {
-    dirtyRows: (_result, db) => dirtyJobMutationRows({ jobId }, db),
-    shouldPersist: () => changed
-  });
-  if (!changed) return;
-  scheduleQueueDrain();
-  clearJobStreamProgress(jobId);
-  notifyJobWaiters(jobId, { error: message });
 }
 
 function waitForJobResult(jobId, deadline, response) {
@@ -3749,9 +3680,9 @@ function sanitizeMigrationData(payload) {
   };
 }
 
-function publicJob(job, db = null) {
+function publicJob(job, db = null, { includePrompt = true } = {}) {
   const queue = db?.queue || store.jobQueueProgress(job);
-  const request = (job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
+  const request = (includePrompt && job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
   const account = db?.account || (db && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null);
   return {
     id: job.id,
