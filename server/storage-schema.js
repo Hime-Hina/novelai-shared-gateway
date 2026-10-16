@@ -70,6 +70,8 @@ export const jobs = sqliteTable('jobs', {
   index('idx_jobs_error_log_updated').on(sql`${table.updated_at} DESC`).where(sql`${table.error_loggable} = 1`),
   index('idx_jobs_generation_review_due').on(sql`json_extract(${table.data}, '$.generationReview.deadlineAt')`)
     .where(sql`json_extract(${table.data}, '$.generationReview.status') = 'pending'`),
+  index('idx_jobs_result_pending').on(table.id)
+    .where(sql`json_type(${table.data}, '$.resultPending') = 'object'`),
   index('idx_jobs_member_late_results').on(table.user_token, sql`json_extract(${table.data}, '$.lateResultAt') DESC`, sql`${table.id} DESC`)
     .where(sql`json_extract(${table.data}, '$.lateResultAvailable') = 1`)
 ]);

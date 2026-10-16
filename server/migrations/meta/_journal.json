@@ -64,6 +64,13 @@
       "when": 1792190801900,
       "tag": "0008_fair_quota_settlements",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792192789533,
+      "tag": "0009_pending_generation_results",
+      "breakpoints": true
     }
   ]
 }

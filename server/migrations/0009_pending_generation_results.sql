@@ -1,0 +1,1 @@
+CREATE INDEX `idx_jobs_result_pending` ON `jobs` (`id`) WHERE json_type("jobs"."data", '$.resultPending') = 'object';

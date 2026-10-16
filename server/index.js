@@ -1,5 +1,6 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
+import { describeStoredResult, publishStoredResult } from './result-files.js';
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
@@ -20,7 +21,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JobPreviews } from './job-previews.js';
 import { isOfficialKey, officialKeyOwner, officialKeyError, OfficialKeyJobs } from './official-key-jobs.js';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, defaultArtist2_5D, hashObject, legacyDefaultArtist, maskToken, normalizeDb } from './store.js';
@@ -55,11 +56,14 @@ let queueDrainTimer = null;
 let queueDrainAt = 0;
 let queueDraining = false;
 let queueDrainRequested = false;
+let queueDispatchEnabled = false;
+let runtimeClosing = false;
 let lastQueueWait = '';
 let accountQuotaRefreshTimer = null;
 let accountQuotaRefreshPromise = null;
 let accountQuotaAutoRefreshStarted = false;
 let generationReviewTimer = null;
+let generationReviewPromise = null;
 const jobWaiters = new Map();
 const runningJobControls = new Map();
 const directGenerateTimeoutMs = Number(process.env.DIRECT_GENERATE_TIMEOUT_MS || 60_000);
@@ -116,9 +120,14 @@ const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';
 
 installRuntimeSafetyHandlers();
 await store.init();
+const createdImageDirectory = await mkdir(imageDir, { recursive: true });
+if (createdImageDirectory && process.platform !== 'win32') {
+  const directory = await open(dataDir, 'r');
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+await recoverPendingGenerationResults();
 await cleanupInterruptedStartupJobs();
 await cleanupStaleActiveJobs('startup');
-await mkdir(imageDir, { recursive: true });
 await migrateInlineImages();
 await ensureAccountRouteIds();
 await applyRuntimeSettings();
@@ -135,6 +144,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
   try {
+    if (runtimeClosing) throw httpError(503, '服务正在关闭，请稍后重试。');
     await route(req, res);
   } catch (error) {
     if (res.destroyed || res.writableEnded) return;
@@ -164,6 +174,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, host, () => {
+  queueDispatchEnabled = true;
   console.log(`Nai2API listening on http://${host}:${port}`);
   startAccountQuotaAutoRefresh();
   startGenerationReviews();
@@ -1616,14 +1627,14 @@ function startAccountQuotaAutoRefresh() {
   if (accountQuotaAutoRefreshStarted) return;
   accountQuotaAutoRefreshStarted = true;
   const run = async () => {
+    if (runtimeClosing) return;
     try {
       const result = await refreshEnabledAccountQuotas();
       if (result.checked) console.log(`[runtime] account quota refresh: checked=${result.checked} ok=${result.ok} failed=${result.failed}`);
     } catch (error) {
       console.error('[runtime] account quota refresh failed:', error);
     } finally {
-      accountQuotaRefreshTimer = setTimeout(run, accountQuotaRefreshIntervalMs);
-      accountQuotaRefreshTimer.unref?.();
+      if (!runtimeClosing) { accountQuotaRefreshTimer = setTimeout(run, accountQuotaRefreshIntervalMs); accountQuotaRefreshTimer.unref?.(); }
     }
   };
   run();
@@ -1631,9 +1642,11 @@ function startAccountQuotaAutoRefresh() {
 
 function startGenerationReviews() {
   const run = async () => {
-    try { await reconcileGenerationReviews(); }
+    if (runtimeClosing) return;
+    generationReviewPromise = reconcileGenerationReviews();
+    try { await generationReviewPromise; }
     catch (error) { console.error('[fair-quota] 本地消费核对失败，下次继续:', error.message); }
-    finally { generationReviewTimer = setTimeout(run, 10000); generationReviewTimer.unref?.(); }
+    finally { generationReviewPromise = null; if (!runtimeClosing) { generationReviewTimer = setTimeout(run, 10000); generationReviewTimer.unref?.(); } }
   };
   void run();
 }
@@ -2794,6 +2807,7 @@ async function runJob(jobId) {
 async function reserveQueuedJob(jobId) {
   const requestedAt = Date.now();
   const result = await store.update((db) => {
+    if (!queueDispatchEnabled) return { skip: true, changed: false };
     const job = db.jobs.find((item) => item.id === jobId);
     if (!job) throw new Error('job not found.');
     if (job.status !== 'queued') return { skip: true, changed: false };
@@ -2915,7 +2929,7 @@ async function runReservedJob(reservation) {
     await failGeneration(reservation, error);
   } finally {
     finishRunningJobControl(reservation.job?.id, control);
-    if (fairShareMode) void refreshEnabledAccountQuotas().catch(() => console.error('[fair-quota] 余额刷新失败，将在定时刷新时重试'));
+    if (fairShareMode && !runtimeClosing) void refreshEnabledAccountQuotas().catch(() => console.error('[fair-quota] 余额刷新失败，将在定时刷新时重试'));
   }
 }
 
@@ -3187,10 +3201,76 @@ async function tryReserveCreditAndAccount(token, request, cacheKey) {
   });
 }
 
+function completionJob(db, reservation, jobId, job = store.loadJobForUpdate(jobId)) {
+  if (job) job.fairCharge = resolveFairQuotaCharge(db, job, store.readFairQuotaSettlement(jobId));
+  if (!job || !['reserved', 'refunded', 'settled'].includes(job.fairCharge?.status)) throw httpError(409, '任务结算凭据不存在');
+  if (job.userToken !== reservation.token || job.accountId !== reservation.account?.id) throw httpError(409, '生成结果与任务归属不符');
+  if (job.generationAttempt?.id !== reservation.job?.generationAttempt?.id) throw httpError(409, '生成结果与执行尝试不符');
+  if (job.generationAttempt && (job.generationAttempt.jobId !== job.id || job.generationAttempt.memberId !== job.fairCharge.userId
+    || job.generationAttempt.accountId !== job.accountId)) throw httpError(409, '任务与执行尝试归属不符');
+  return job;
+}
+
+async function prepareGenerationResult(reservation, request, image, jobId) {
+  return store.update(db => {
+    const job = completionJob(db, reservation, jobId);
+    if (job.imageId) {
+      const existing = db.images.find(item => item.id === job.imageId) || store.selectItemById('images', job.imageId);
+      if (existing) {
+        if (existing.token !== job.userToken) throw httpError(409, '已存结果与任务归属不符');
+        return null;
+      }
+    }
+    if (job.fairCharge.status === 'settled') throw httpError(409, '任务已结算但结果缺失');
+    if (!job.generationAttempt?.id) throw httpError(409, '任务执行尝试不存在');
+    const pending = { ...describeStoredResult(job.resultPending?.imageId || createId('img'), request.operation || 'generate', image),
+      attemptId: job.generationAttempt.id };
+    if (job.resultPending && Object.keys(pending).some(key => job.resultPending[key] !== pending[key])) throw httpError(409, '待保存结果与原结果不符');
+    if (store.selectItemById('images', pending.imageId)) throw httpError(409, '待保存结果 ID 已被使用');
+    Object.assign(job, reservation.upstreamTiming || {});
+    job.resultPending = pending;
+    return pending;
+  }, { dirtyRows: { jobs: [jobId] } });
+}
+
+async function recoverPendingGenerationResults() {
+  let afterId = '';
+  for (;;) {
+    const ids = await store.readPendingResultJobIds(afterId);
+    if (!ids.length) break;
+    for (const jobId of ids) {
+      afterId = jobId;
+      try {
+        const job = store.selectItemById('jobs', jobId), pending = job?.resultPending;
+        if (!pending || pending.attemptId !== job.generationAttempt?.id) throw new Error('结果与执行尝试不符');
+        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
+        if (!request || pending.operation !== (request.operation || 'generate')) throw new Error('结果与请求操作不符');
+        const existing = store.selectItemById('images', pending.imageId);
+        if (existing && (job.imageId !== pending.imageId || existing.token !== job.userToken)) throw new Error('待保存结果 ID 已被使用');
+        const reservation = { job, token: job.userToken, account: job.accountId ? { id: job.accountId } : null,
+          cost: job.cost || 0, accountCost: job.accountCost || 0, cacheKey: job.cacheKey || '',
+          upstreamTiming: Object.fromEntries(['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil']
+            .filter(key => job[key] !== undefined).map(key => [key, job[key]])) };
+        // 预检冷记录；缺失/损坏文件不能把全部历史任务重新加载进内存。
+        await store.update(db => completionJob(db, reservation, jobId, job), { persist: false });
+        const image = await publishStoredResult(dataDir, pending);
+        if (!image) { console.warn('[recovery]', JSON.stringify({ jobId, status: 'file_missing' })); continue; }
+        await completeGeneration(reservation, request, image, { jobId });
+        console.log('[recovery]', JSON.stringify({ jobId, imageId: pending.imageId, status: 'completed' }));
+      } catch (error) {
+        // 保留描述与文件，随后按既有未知结果规则退款；不猜测文件归属或重发原请求。
+        console.error('[recovery]', JSON.stringify({ jobId, status: 'unresolved', code: error.code || 'RESULT_RECOVERY_FAILED' }));
+      }
+    }
+  }
+}
+
 async function completeGeneration(reservation, request, image, meta = {}) {
   const commitRequestedAt = Date.now();
   let preparedAt;
-  const imageId = createId('img');
+  // 描述先独立提交；文件发布后结算失败或进程中断，启动仍能用原 ID 校验并续完。
+  const pending = fairShareMode && meta.jobId ? await prepareGenerationResult(reservation, request, image, meta.jobId) : null;
+  const imageId = pending?.imageId || createId('img');
   let imageFile = null;
   const accountCost = reservationAccountCost(reservation);
   let trimmedImages = [];
@@ -3199,14 +3279,16 @@ async function completeGeneration(reservation, request, image, meta = {}) {
     savedImage = await store.update(async (db) => {
       let currentJob = null, refunded = false;
       if (fairShareMode && meta.jobId) {
-        currentJob = store.loadJobForUpdate(meta.jobId);
-        if (currentJob) currentJob.fairCharge = resolveFairQuotaCharge(db, currentJob, store.readFairQuotaSettlement(meta.jobId));
-        if (!currentJob || !['reserved', 'refunded', 'settled'].includes(currentJob.fairCharge?.status)) throw httpError(409, '任务结算凭据不存在');
-        if (currentJob.userToken !== reservation.token) throw httpError(409, '生成结果与任务归属不符');
+        currentJob = completionJob(db, reservation, meta.jobId);
         if (currentJob.imageId) {
           const existing = db.images.find(item => item.id === currentJob.imageId) || store.selectItemById('images', currentJob.imageId);
           if (existing) {
             if (existing.token !== currentJob.userToken) throw httpError(409, '已存结果与任务归属不符');
+            if (currentJob.resultPending) {
+              if (currentJob.resultPending.imageId !== existing.id || currentJob.resultPending.sha256 !== existing.sha256
+                || currentJob.resultPending.byteLength !== existing.byteLength) throw httpError(409, '已存结果与待恢复证据不符');
+              delete currentJob.resultPending;
+            }
             if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id) && !existing.mock) {
               recordSharedCompletion(db.accounts.find(a => a.id === currentJob.accountId), Date.now(),
                 { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
@@ -3220,7 +3302,11 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       }
       const user = currentJob ? db.users.find(item => item.token === reservation.token) : getUserOrThrow(db, reservation.token);
       // 在串行事务中先检查既有产物，再写一次新文件；重复迟到通知不创建第二份文件。
-      imageFile = await writeStoredImage(imageId, image);
+      if (pending) {
+        if (currentJob.resultPending?.attemptId !== pending.attemptId || currentJob.resultPending?.sha256 !== pending.sha256) throw httpError(409, '待保存结果已改变');
+        await publishStoredResult(dataDir, pending, image.buffer);
+        imageFile = pending.file;
+      } else imageFile = await writeStoredImage(imageId, image);
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
       if (account) {
         if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
@@ -3247,6 +3333,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
         accountCost,
         mimeType: image.mimeType,
         file: imageFile,
+        ...(pending ? { operation: pending.operation, byteLength: pending.byteLength, sha256: pending.sha256 } : {}),
         createdAt: new Date().toISOString()
       };
       db.images.unshift(saved);
@@ -3259,6 +3346,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
           if (refunded) recordRecoveredGeneration(db, job, saved.id);
           else { job.status = 'done'; activateNextBatchJob(db, job, store.nextQueueSequence()); }
           job.imageId = saved.id;
+          delete job.resultPending;
           job.accountId = reservation.account?.id || job.accountId || '';
           if (!refunded) { job.error = ''; job.errorDetail = ''; }
           job.updatedAt = new Date().toISOString();
@@ -3279,7 +3367,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
     console.log('[queue]', JSON.stringify({ event: 'result_commit', jobId: meta.jobId || reservation.job?.id,
       requestedAt: commitRequestedAt, preparedAt, committedAt: Date.now(), upstreamCompletedAt: reservation.upstreamTiming?.upstreamCompletedAt }));
   } catch (error) {
-    if (imageFile) await removeStoredImages([{ id: imageId, file: imageFile }]);
+    if (imageFile && !pending) await removeStoredImages([{ id: imageId, file: imageFile }]);
     throw error;
   }
   if (meta.jobId) clearJobStreamProgress(meta.jobId);
@@ -3565,6 +3653,7 @@ function nextAccountReadyDelay(accounts, settings = {}) {
 }
 
 function scheduleQueueDrain(delay = 0) {
+  if (!queueDispatchEnabled) return;
   if (queueDraining) {
     queueDrainRequested = true;
     return;
@@ -3584,6 +3673,7 @@ function scheduleQueueDrain(delay = 0) {
 }
 
 async function drainQueuedJobs(scheduledAt = Date.now()) {
+  if (!queueDispatchEnabled) return;
   if (queueDraining) {
     queueDrainRequested = true;
     return;
@@ -4941,21 +5031,34 @@ function installRuntimeSafetyHandlers() {
 function installShutdownHandlers(serverInstance) {
   if (installShutdownHandlers.installed) return;
   installShutdownHandlers.installed = true;
-  let shuttingDown = false;
-  const shutdown = (signal) => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`[runtime] ${signal} received. Flushing SQLite changes before shutdown.`);
+  const shutdown = async (signal) => {
+    if (runtimeClosing) return;
+    runtimeClosing = true; queueDispatchEnabled = false;
+    const configured = Number(process.env.SHUTDOWN_GRACE_MS || 30000);
+    const graceMs = Number.isFinite(configured) && configured > 0 ? Math.min(600000, Math.floor(configured)) : 30000;
+    console.log(`[runtime] ${signal} received. Waiting up to ${graceMs}ms for active generation.`);
+    if (queueDrainTimer) clearTimeout(queueDrainTimer);
     if (accountQuotaRefreshTimer) clearTimeout(accountQuotaRefreshTimer);
     if (generationReviewTimer) clearTimeout(generationReviewTimer);
+    const connectionsClosed = new Promise(resolve => serverInstance.close(resolve));
+    // 宽限到期保留持久任务/产物证据；强制退出后的恢复不依赖信号回调。
+    const forceTimer = setTimeout(() => process.exit(0), graceMs);
     try {
+      // 已开始的派发事务先结束，随后控制对象的 done 才覆盖全部在途执行。
+      while (queueDraining) await sleep(10);
+      await Promise.all([...runningJobControls.values()].map(control => control.done));
+      await Promise.allSettled([accountQuotaRefreshPromise, generationReviewPromise].filter(Boolean));
+      await store.queue;
       store.flushSync();
+      // 完成事务早于图片 HTTP 发送结束；宽限内也让现有响应自然结束。
+      await connectionsClosed;
+      await store.close();
     } catch (error) {
       console.error('[runtime] failed to flush SQLite changes during shutdown:', error);
+      clearTimeout(forceTimer); process.exit(1); return;
     }
-    const forceTimer = setTimeout(() => process.exit(0), 5000);
-    forceTimer.unref?.();
-    serverInstance.close(() => process.exit(0));
+    clearTimeout(forceTimer);
+    process.exit(0);
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));

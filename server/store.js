@@ -273,7 +273,7 @@ export class JsonStore {
       return this.sqlite.prepare('SELECT MAX(rowid) AS value FROM jobs').get().value || 0;
     }, { shouldPersist: () => false });
     const selectBatch = this.sqlite.prepare(`
-      SELECT rowid AS cursor, id, status FROM jobs
+      SELECT rowid AS cursor, id, status, json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
       WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 200
     `);
     const deleteBatch = this.sqlite.transaction((ids) => {
@@ -286,7 +286,7 @@ export class JsonStore {
         this.flushPendingPersistSync();
         const rows = selectBatch.all(cursor, upperRow);
         cursor = rows.at(-1)?.cursor || upperRow;
-        const ids = new Set(rows.filter((row) => row.status && !['queued', 'pending', 'running'].includes(row.status)).map((row) => row.id));
+        const ids = new Set(rows.filter((row) => row.status && !row.resultPending && !['queued', 'pending', 'running'].includes(row.status)).map((row) => row.id));
         deleteBatch(ids);
         db.jobs = db.jobs.filter((job) => !ids.has(job.id));
         for (const id of ids) {
@@ -884,6 +884,16 @@ export class JsonStore {
       ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT @limit`, { now, limit });
   }
 
+  async readPendingResultJobIds(afterId = '', limit = 100) {
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    // 与部分索引使用同一谓词；失败历史保持冷存，逐个恢复时再 loadJobForUpdate。
+    return this.sqlite.prepare(`SELECT id FROM jobs INDEXED BY idx_jobs_result_pending
+      WHERE json_type(data, '$.resultPending') = 'object' AND id > @afterId
+      ORDER BY id LIMIT @limit`).all({ afterId, limit }).map(row => row.id);
+  }
+
   countRecords(collection) {
     const statement = this.statements.countRecords[collection];
     if (!statement) return 0;
@@ -920,7 +930,7 @@ export class JsonStore {
     const startedAt = Date.now();
     this.sqlite = new Database(this.dbPath);
     this.sqlite.pragma('journal_mode = WAL');
-    this.sqlite.pragma('synchronous = NORMAL');
+    this.sqlite.pragma('synchronous = FULL');
     this.sqlite.pragma('foreign_keys = ON');
     runtimeLog(`SQLite opened in ${Date.now() - startedAt}ms`);
   }
@@ -2120,7 +2130,7 @@ function trimJobs(jobs) {
   const now = Date.now();
   const retainMs = clampNumber(process.env.JOB_HISTORY_RETENTION_MS ?? 7 * 24 * 60 * 60 * 1000, 60_000, 7 * 24 * 60 * 60 * 1000);
   return jobs.filter((job) => {
-    if (['queued', 'pending', 'running'].includes(job.status)) return true;
+    if (job.resultPending || ['queued', 'pending', 'running'].includes(job.status)) return true;
     const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
     if (!updatedAt || now - updatedAt > retainMs) return false;
     return true;

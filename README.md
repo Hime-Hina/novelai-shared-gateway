@@ -153,6 +153,8 @@ V5 用量按图片像素与步数估算。官方可能只返回整数百分比�
 
 网页、Native、direct 与 OpenAI 的已受理任务不会因客户端断线或同步等待超时被取消。Native/direct/OpenAI 返回 `X-Nai-Request-Id`，成员可凭 Bearer Key 查询 `GET /api/requests/:id`，或向 `POST /api/requests/:id/cancel` 发送 `{}` 取消未派发图片；生成中的图片继续，已完成结果保留。成员页也提供批次查询、领取和取消。
 
+共享结果先保存可恢复描述，再写临时文件、同步并发布，最后提交图片记录和结算。SQLite 使用 WAL/FULL；重启可找回已完整落盘的图片或 Vibe 编码，未完整收到或损坏的结果按未知失败退款且不自动重发。记录与文件不按默认缓存数量自动删除。正常退出默认等待在途任务和 HTTP 响应 30 秒，可用 `SHUTDOWN_GRACE_MS` 调整；系统管理器应给更长停止宽限。强杀验收不代表断电零损失，详见[恢复保证与平台边界](docs/result-recovery.md)。
+
 生成接口可选提供 `Idempotency-Key`，同成员同操作同键重试复用原任务；有效参数冲突为 409，历史任务或产物缺失为 410，不自动重新生图。direct 仍使用原错误图片格式。无键客户端保持原行为，不能仅凭相同提示词判断是重试；完整约束与故障边界见[持久请求说明](docs/request-lifecycle.md)。这不保证找回 NAI 已执行但网关尚未保存的图片。
 
 F06 第一片已让网页 `POST /api/jobs` 的完整参数与任务同事务持久化，历史参数不进入热缓存，未派发任务重启后按需读取执行。网页正文仍限 2 MiB；规范化参数默认限 32 MiB，新路径活动参数合计限 64 MiB，可通过 `REQUEST_MAX_PAYLOAD_BYTES` / `QUEUE_MAX_PAYLOAD_BYTES` 调整。超出单请求限制返回 413，暂满返回 429。Native/direct/OpenAI 及其在途取消边界尚未接入这片字节预算，详见[持久请求说明](docs/request-lifecycle.md)，不能将它当作全站内存保证。

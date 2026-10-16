@@ -14,7 +14,7 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
   const db = { accounts, settings: {} };
   const context = vm.createContext({
     Date, Number, Map, Set, AbortController, setTimeout, clearTimeout, process: { env: {} }, console,
-    fairShareMode: true, accountQuotaRequestTimeoutMs: 15, accountQuotaRefreshIntervalMs: 20,
+    fairShareMode: true, runtimeClosing: false, accountQuotaRequestTimeoutMs: 15, accountQuotaRefreshIntervalMs: 20,
     accountQuotaRefreshPromise: null, accountQuotaRefreshTimer: null, accountQuotaAutoRefreshStarted: false,
     withQuotaRequestDeadline, fetchNovelAiAccountQuota: fetchQuota, publicErrorMessage: String,
     collectValues: value => value || [], publicAccount: value => value,
@@ -87,6 +87,18 @@ test('正常完成或拒绝保持原结果，并清理超时计时器', async ()
   await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(signal.aborted, false);
   const error = Object.assign(new Error('synthetic rejection'), { upstreamStatus: 401 });
   await assert.rejects(withQuotaRequestDeadline(() => { throw error; }, 10), value => value === error);
+});
+
+test('关闭期间允许本轮余额刷新结束，但不再安排下一轮', async () => {
+  const late = defer(); let calls = 0;
+  const f = runtime(async () => { calls++; return late.promise; });
+  f.context.startAccountQuotaAutoRefresh();
+  f.context.runtimeClosing = true;
+  late.resolve(quota);
+  await within(f.context.accountQuotaRefreshPromise);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls, 1); assert.equal(f.db.accounts[0].quotaFixed, 10000);
+  assert.equal(f.context.accountQuotaRefreshTimer, null);
 });
 
 test('底层吞掉取消并返回成功时，超时结果仍不能被改成成功', async () => {

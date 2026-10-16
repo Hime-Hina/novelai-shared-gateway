@@ -28,7 +28,7 @@ async function fixture(t, statuses) {
   const update = store.update.bind(store);
   store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
   const notifications = [];
-  const ctx = vm.createContext({ store, fairShareMode: true, settleFairQuota, syncFairQuota, reserveFairQuota,
+  const ctx = vm.createContext({ store, fairShareMode: true, queueDispatchEnabled: true, settleFairQuota, syncFairQuota, reserveFairQuota,
     assertMemberAcceptsJobs, queuedDeadlineTimestamp, sharedAccountConcurrency, sharedAccountReadyDelay,
     singleGenerationRequest, cancelWaitingBatchJobs, runningJobControls: new Map(), jobAccountCost: () => 0,
     staleQueuedJobMs: () => 600000, staleRunningJobMs: () => 660000,

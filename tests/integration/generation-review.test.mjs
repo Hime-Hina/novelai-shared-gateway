@@ -10,6 +10,7 @@ import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
+import { describeStoredResult, publishStoredResult } from '../../server/result-files.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.js';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.js';
 import { activateNextBatchJob } from '../../server/generation-request.js';
@@ -150,12 +151,13 @@ async function completionContext(store) {
   let writes = 0, ids = 0;
   const update = store.update.bind(store);
   store.update = (fn, options = {}) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = loadFunctions({ store, fairShareMode: true, settleFairQuota, resolveFairQuotaCharge, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
+  const ctx = loadFunctions({ store, dataDir: store.dataDir, fairShareMode: true, settleFairQuota, resolveFairQuotaCharge, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
+    describeStoredResult, publishStoredResult: async (...args) => { writes++; return publishStoredResult(...args); },
     createId: () => `image-${++ids}`, reservationAccountCost: () => 0, httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
     writeStoredImage: async (id, image) => { writes++; const file = `images/${id}.png`; await writeFile(path.join(store.dataDir, file), image.buffer); return file; },
     removeStoredImages: async () => {}, imageCacheTrimBuffer: () => 100,
     uniqueIds: values => [...new Set(values.filter(Boolean))], clearJobStreamProgress() {}, scheduleQueueDrain() {}, notifyJobWaiters() {}
-  }, ['batchJobIds', 'completeGeneration']);
+  }, ['batchJobIds', 'completionJob', 'prepareGenerationResult', 'completeGeneration', 'recoverPendingGenerationResults']);
   return { ctx, writes: () => writes };
 }
 function reservation(db) { return { job: db.jobs[0], account: db.accounts[0], token: 'STA1N-a', cost: 0 }; }
@@ -206,10 +208,49 @@ test('迟到成功的计数清零和结果提交一起回滚，重试仅成功�
   assert.equal(store.db.accounts[0].ordinaryStrikeCount, 3); assert.equal(store.db.accounts[0].capacityStrikeCount, 2);
   assert.equal(store.selectItemById('jobs', 'review').sharedCooldown, undefined);
   assert.equal(store.selectItemById('jobs', 'review').imageId, undefined);
+  const pending = store.selectItemById('jobs', 'review').resultPending;
+  assert.ok(pending?.sha256);
+  assert.deepEqual(await readFile(path.join(store.dataDir, pending.file)), png);
   store.sqlite.exec('DROP TRIGGER reject_success');
   await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+  assert.equal(store.selectItemById('jobs', 'review').imageId, pending.imageId);
+  assert.equal(store.selectItemById('jobs', 'review').resultPending, undefined);
+  assert.equal((await readdir(path.join(store.dataDir, 'images'))).length, 1);
   assert.equal(store.db.accounts[0].ordinaryStrikeCount, 0); assert.equal(store.db.accounts[0].capacityStrikeCount, 0);
   assert.equal(store.selectItemById('jobs', 'review').sharedCooldown.kind, 'success');
+  assert.equal(store.readFairQuotaSettlement('review').status, 'refunded');
+});
+
+test('产物描述提交失败不写文件；错误尝试和已占用结果ID不能保存或结算', async t => {
+  const store = await open(t, fixture(Date.now(), { refund: false })), { ctx, writes } = await completionContext(store);
+  const r = reservation(store.db), image = { buffer: png, mimeType: 'image/png' };
+  store.sqlite.exec("CREATE TEMP TRIGGER reject_descriptor BEFORE UPDATE ON jobs WHEN json_type(NEW.data, '$.resultPending') = 'object' BEGIN SELECT RAISE(ABORT, 'synthetic descriptor failure'); END");
+  await assert.rejects(ctx.completeGeneration(r, r.job.request, image, { jobId: 'review' }), /synthetic descriptor failure/);
+  assert.equal(writes(), 0); assert.equal((await readdir(path.join(store.dataDir, 'images'))).length, 0);
+  assert.equal(store.selectItemById('jobs', 'review').resultPending, undefined);
+  assert.equal(store.db.jobs[0].fairCharge.status, 'reserved');
+  store.sqlite.exec('DROP TRIGGER reject_descriptor');
+  const wrongAttempt = { ...r, job: { ...r.job, generationAttempt: { ...r.job.generationAttempt, id: 'wrong-attempt' } } };
+  await assert.rejects(ctx.completeGeneration(wrongAttempt, r.job.request, image, { jobId: 'review' }), /执行尝试不符/);
+  await store.update(db => {
+    db.jobs[0].resultPending = { ...describeStoredResult('occupied-result', 'generate', image), attemptId: db.jobs[0].generationAttempt.id };
+    db.images.push({ id: 'occupied-result', token: 'STA1N-b' });
+  }, { dirtyRows: { jobs: ['review'], images: ['occupied-result'] } });
+  await assert.rejects(ctx.completeGeneration(r, r.job.request, image, { jobId: 'review' }), /ID 已被使用/);
+  assert.equal(writes(), 0); assert.equal(store.selectItemById('images', 'occupied-result').token, 'STA1N-b');
+  assert.equal(store.db.jobs[0].fairCharge.status, 'reserved');
+});
+
+test('启动核验缺失文件的待恢复冷任务不重新热载历史或丢弃证据', async t => {
+  const store = await open(t, fixture()), { ctx } = await completionContext(store);
+  const pending = { ...describeStoredResult('missing-result', 'generate', { buffer: png, mimeType: 'image/png' }),
+    attemptId: store.db.jobs[0].generationAttempt.id };
+  await store.update(db => { db.jobs[0].resultPending = pending; }, { dirtyRows: { jobs: ['review'] } });
+  store.trimRuntimeCollection('jobs', 0);
+  assert.equal(store.db.jobs.length, 0);
+  await ctx.recoverPendingGenerationResults();
+  assert.equal(store.db.jobs.length, 0);
+  assert.deepEqual(store.selectItemById('jobs', 'review').resultPending, pending);
   assert.equal(store.readFairQuotaSettlement('review').status, 'refunded');
 });
 

@@ -13,7 +13,7 @@ function fixture(tier=3) {
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
+  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,queueDispatchEnabled:true,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
     store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
     httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
     jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),

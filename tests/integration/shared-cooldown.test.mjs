@@ -167,7 +167,7 @@ test('队首等待诊断只在原因/截止变化时记录，保留计划唤醒�
     accounts: [{ id: 'opus', inFlight: 1 }], jobs: [{ id: 'head', status: 'queued' }] };
   const controls = new Map([['previous', { accountId: 'opus' }]]);
   const ctx = context({ Date: ClockDate, console: { log: (_prefix, line) => lines.push(JSON.parse(line)) },
-    queueDraining: false, queueDrainRequested: false, lastQueueWait: '', fairShareMode: true, runningJobControls: controls,
+    queueDispatchEnabled: true, queueDraining: false, queueDrainRequested: false, lastQueueWait: '', fairShareMode: true, runningJobControls: controls,
     cleanupStaleActiveJobs: async () => {}, store: { update: fn => fn(db), queuedJobIds: () => ['head'] },
     queueRetryDelay: async () => 1000, scheduleQueueDrain() {}, isQueueActiveJob: () => true,
     reserveQueuedJob: async () => ({ job: db.jobs[0] }), runReservedJob() {}
