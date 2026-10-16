@@ -1,6 +1,6 @@
 # 共享网关改进计划
 
-状态：待用户确认。日期：2026-10-16，Asia/Taipei。
+状态：Vue 3、TypeScript、Vite 方向已确认；组件库推荐 Naive UI，理由与验收条件见下文；整体实施计划仍待确认。日期：2026-10-16，Asia/Taipei。
 
 本计划覆盖已有审计问题、登录会话、实时状态、前端组件化、调用热力图、首屏性能、排队诊断、TypeScript 迁移与测试部署。先修账本和访问隔离，再按页面替换前端；保留现有 Native、OpenAI 接口和共享账户调度规则。
 
@@ -10,8 +10,9 @@
 
 | 决策 | 建议方案 | 可选方案及影响 |
 | --- | --- | --- |
-| 前端工程化 | React、TypeScript、Vite、Mantine；保留现有 Node 后端 | Lit 与 Web Awesome 适合渐进替换；SvelteKit 适合同时统一全栈开发方式。具体比较见下文 |
-| 全栈框架 | 第一阶段不替换 HTTP 服务；如果确定要全栈统一，优先比较 React Router Framework Mode 与 SvelteKit | Next.js 可自托管，但本项目目前不需要为内容站、SEO 等场景引入额外服务端渲染与缓存机制 |
+| 前端工程化 | 已确认 Vue 3、TypeScript、Vite；保留现有 Node 后端 | React、Svelte 与 Web Components 的比较保留为选型背景，不同时引入 |
+| 组件库 | 推荐 Naive UI，统一主题、表单、表格、弹窗和热力图 | Element Plus 作为明确组件缺口时的备选；不混用两套基础组件 |
+| 全栈框架 | 第一阶段不替换 HTTP 服务；Vue 路线后续全栈候选为 Nuxt | 先验证页面、类型和数据加载收益，迁移后端作为独立决策 |
 | 会话期限 | 持久化会话；普通成员固定 7 天，owner 固定 12 小时，不无限滑动续期 | 可以先保留所有人固定 12 小时，只解决重启退出和错误提示问题 |
 | 实时更新 | 事务提交后发 SSE 变更通知，200 毫秒合并窗口，最长 1 秒发出；前端只更新受影响数据 | 页面恢复可见、SSE 重连时校准全量快照，不依靠高频整页轮询 |
 | 热力图口径 | 最近一年每日生图任务数，按提交时间与台北日期分桶；成功、失败另列 | 若要求原始 HTTP 调用次数，需要新增请求与批次关联字段，旧数据无法准确回填 |
@@ -64,7 +65,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 6. 隐藏页面停止非必要刷新，恢复可见后重连校准；保留心跳、连接数量与慢客户端限制，并定期检查会话和 Discord 资格。心跳及后台推送不延长会话。
 7. V5 连续恢复无需每秒写数据库。前端用官方快照和速度做带有“估算”标识的显示，实际额度仍以后端核价和结算为准；来源失效时停止外推。
 
-React 路线可复用 [TanStack Query 的查询失效机制](https://tanstack.com/query/latest/docs/framework/react/guides/query-invalidation)。若采用全栈框架的 loader/revalidation，则先复用该机制，避免同时维护两套同一数据的缓存。
+Vue 路线可复用 [TanStack Vue Query](https://tanstack.com/query/latest/docs/framework/vue/overview) 管理服务端数据的缓存与失效；只有确有跨页面界面状态需求时才增加 Pinia，不把钱包和任务数据复制到另一份全局状态。若后续采用 Nuxt 的数据加载能力，应明确同一份数据的缓存归属，避免维护两套更新机制。
 
 验收：在测试网络下，已提交的变更通常在一秒内可见；一百条短时间变更不会变成一百次同类 HTTP 请求；断线重连后最终状态一致，且事件不跨成员泄漏。端到端延迟目标属于待测验收目标，不是当前生产测量结果。
 
@@ -74,17 +75,38 @@ React 路线可复用 [TanStack Query 的查询失效机制](https://tanstack.co
 
 | 路线 | 适配本项目的优势 | 需要承担的工作 | 建议 |
 | --- | --- | --- | --- |
-| React 与 Vite，Mantine，TypeScript | 表单、弹窗、反馈、主题、图表可由同一组件体系提供；现有后端逐页接入 | 增加前端构建；按路由拆包，控制 React 与图表资源对首屏的影响 | 默认建议，优先减少自行实现的界面行为 |
+| Vue 3 与 Vite，TypeScript，Naive UI | 单文件组件接近现有 HTML 组织；表格、表单、主题和日历热力图可以统一复用 | 按路由拆包；校验类型、组件交互与首屏资源体积 | 框架方向已确认，Naive UI 为推荐组件库 |
+| Nuxt 与 Vue 组件库 | Vue 生态内统一路由、数据加载、服务端接口与渲染方式 | 必须保证现有队列、会话和 SQLite 写入仍有单一所有者 | 后续全栈候选，第一阶段不迁移后端 |
+| React 与 Vite，Mantine，TypeScript | 表单、弹窗、反馈、主题、图表可由同一组件体系提供；现有后端逐页接入 | 增加前端构建；按路由拆包，控制 React 与图表资源对首屏的影响 | 保留为比较方案 |
 | Lit 与 Web Awesome，TypeScript | 标准 Web Components，能逐块替换现有 DOM 页面；保留普通 HTML 使用方式 | 页面数据、路由、复杂表格与热力图仍需组合；Shadow DOM 的主题和表单交互需验证 | 适合把渐进接入和框架独立放在首位 |
 | SvelteKit 与 shadcn-svelte，Node adapter | 同一框架处理页面、类型、路由、服务端加载；组件写法简洁 | 同时迁移页面与请求入口的风险较高；复制进仓库的组件代码需要自己维护 | 如果确认同时统一全栈，作为重点备选 |
 | React Router Framework Mode 与 Mantine | 类型化路由、数据加载、自动拆包，可选择 SPA、SSR 或静态渲染 | 必须设计与现有 Node 服务、长连接和调度器的整合边界 | React 路线下的全栈首选候选；无需为了名称而立即迁移后端 |
 | Next.js 与 React 组件库 | 完整的服务端渲染、自托管和 React 生态 | 增加缓存、服务端与客户端边界管理；需要防止缓存私人响应 | 保留备选，当前需求不足以把它列为默认 |
 
-选择依据来自 [Mantine 入门与许可](https://mantine.dev/getting-started/)、[Lit](https://lit.dev/docs/)、[Web Awesome](https://github.com/shoelace-style/webawesome)、[SvelteKit Node 部署](https://svelte.dev/docs/kit/adapter-node)、[React Router 模式](https://reactrouter.com/start/modes)、[Next.js 自托管](https://nextjs.org/docs/app/guides/self-hosting)。这些项目的最新稳定版本、Node 要求与依赖兼容性在实际安装时锁定，不使用浮动 latest 或预发布版本作为部署基线。
+选择依据来自 [Vue 的 TypeScript 支持](https://vuejs.org/guide/typescript/overview.html)、[Naive UI](https://github.com/tusen-ai/naive-ui)、[Nuxt](https://github.com/nuxt/nuxt)、[Mantine 入门与许可](https://mantine.dev/getting-started/)、[Lit](https://lit.dev/docs/)、[Web Awesome](https://github.com/shoelace-style/webawesome)、[SvelteKit Node 部署](https://svelte.dev/docs/kit/adapter-node)、[React Router 模式](https://reactrouter.com/start/modes)、[Next.js 自托管](https://nextjs.org/docs/app/guides/self-hosting)。实际采用的依赖在安装时核对稳定版本、Node 要求和兼容性并锁定，不使用浮动 latest 或预发布版本作为部署基线。
 
-[Shoelace 已停止活跃开发](https://shoelace.style/)，新方案评估其后继 Web Awesome 的免费开源部分；不把 Pro 付费组件当成可直接复用资源。[shadcn/ui](https://ui.shadcn.com/docs) 与 [shadcn-svelte](https://www.shadcn-svelte.com/docs) 分发可修改的组件源码，定制自由，但不等于免维护。以“少造轮子”为优先时，先采用 Mantine 现成能力，不混装多套按钮、弹窗和表单组件库。
+[Shoelace 已停止活跃开发](https://shoelace.style/)，Web Components 比较方案使用其后继 Web Awesome 的免费开源部分；不把 Pro 付费组件当成可直接复用资源。[shadcn/ui](https://ui.shadcn.com/docs) 与 [shadcn-svelte](https://www.shadcn-svelte.com/docs) 分发可修改的组件源码，定制自由，但不等于免维护。已选 Vue 路线优先采用 Naive UI 的现成能力，不混装多套按钮、弹窗和表单组件库。
 
-无论选哪条路线，首次改造只接入一个成员页面，验证同源 Cookie、SSE、路由与资源体积，再替换管理页。单一常驻进程拥有账本、队列和 SQLite 写入；不能让 SSR 请求或开发热更新重复启动调度器。第一阶段保留生产 API 路径、状态码、ZIP 与 MessagePack 行为，不把长任务迁到有执行时限的无状态函数。
+首次改造只接入一个 Vue 成员页面，验证同源 Cookie、SSE、路由与资源体积，再替换管理页。单一常驻进程拥有账本、队列和 SQLite 写入；不能让 SSR 请求或开发热更新重复启动调度器。第一阶段保留生产 API 路径、状态码、ZIP 与 MessagePack 行为，不把长任务迁到有执行时限的无状态函数。
+
+### 推荐 Naive UI 的理由与限制
+
+推荐依据是现有页面的覆盖度与统一主题能力，而不是认定它在所有场景都优于 Element Plus。Naive UI 用 TypeScript 编写，提供可类型检查的主题覆盖，支持按需打包，使用 MIT 许可；项目无需为了使用这些基础组件再引入 Tailwind。
+
+| 项目需求 | 拟复用组件 | 保留在业务代码中的责任 |
+| --- | --- | --- |
+| 成员列表、最近任务、份额预览 | `NDataTable`、`NPagination`、`NTag` | 查询权限、分页与日期口径；新数据不能覆盖正在编辑的草稿 |
+| 额度调整、成员配置 | `NForm`、`NInputNumber`、`NSelect` | 服务端校验、份额总和、额度精度和版本冲突 |
+| 删除确认、余额转移预览 | `NModal`、`NDialog` | 确认对象、防重复提交、失败后保留输入 |
+| 全局提示、加载与空状态 | `NMessage`、`NNotification`、`NSkeleton`、`NEmpty` | 区分过期、离线、拒绝与待结算 |
+| 成员页与管理页统一主题 | `NConfigProvider`、`darkTheme`、主题覆盖 | 设计取值、信息层级、移动布局与对比度 |
+| GitHub 风格调用热力图 | `NHeatmap` | 台北日期分桶、权限、缺失历史与统计口径 |
+
+2026-10-16 核对 npm 稳定版本为 `2.45.3`，对应源码已包含上述组件。[NHeatmap 文档](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/src/heatmap/demos/enUS/index.demo-entry.md)标明它从 `2.43.0` 提供，包含 GitHub 风格主题、月份与星期标签、图例、tooltip 和最近一年布局，因此热力图也可以沿用同一组件体系。
+
+Element Plus 同样提供[深色主题](https://element-plus.org/en-US/guide/dark-mode.html)和[虚拟表格](https://element-plus.org/en-US/component/table-v2.html)，这些不是 Naive UI 独有优势。本项目目前没有复杂表格插件或现有 Element Plus 资产，选择 Naive UI 可以让所需控件、主题和热力图集中在一个库中；若验收发现关键组件能力缺口，再依据具体缺口比较替换成本。
+
+选型不等于免测。[Naive UI 2.45 系列变更记录](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/CHANGELOG.en-US.md)涉及内部构建变化和弹窗、选择框事件修复。实际引入时锁定验证过的稳定版本，用一张真实成员页和一个额度调整弹窗检查首屏体积、焦点回收、键盘操作、中文输入法、小数额度、异步提交和深浅主题；不把可按需打包当作已经测得更小或更快，也不预先包一层通用组件接口。
 
 ### 统一界面
 
@@ -102,7 +124,7 @@ React 路线可复用 [TanStack Query 的查询失效机制](https://tanstack.co
 
 成员只看本人；owner 可切换全局和成员。接口在服务端按日聚合，最多返回约 366 个日期桶，不把一整年任务或提示词送到浏览器。查询必须覆盖 SQLite 持久历史，不能只用内存中最近三千个任务。首次上线前的数据缺失区间与未来日期不伪装成零调用。
 
-React 与 Mantine 路线直接复用 [Heatmap](https://mantine.dev/charts/heatmap/)，按需加载图表资源。提供月份、星期、图例、日期详情和可访问的文字或表格替代；检查触屏、键盘操作、闰年和跨年布局。新调用或任务状态变化只触发相关日期聚合的合并刷新。
+Vue 路线优先复用 Naive UI 的 [NHeatmap](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/src/heatmap/demos/enUS/index.demo-entry.md)，按需加载。提供月份、星期、图例、日期详情和可访问的文字或表格替代；检查触屏、键盘操作、闰年和跨年布局。组件接收时间戳，服务端日期桶到显示数据的映射必须验证不同浏览器时区下不偏移，统计口径始终保持台北日期。新调用或任务状态变化只触发相关日期聚合的合并刷新。
 
 ## 浏览器网络与首屏性能
 
