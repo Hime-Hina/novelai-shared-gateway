@@ -52,11 +52,11 @@
 | 工作范围 | 对应项 | 本轮检查结果 |
 | --- | --- | --- |
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
-| 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02 已修复并验证；其余待实施，不以预留未注资阻止普通调用的策略仍待 F03 落实 |
-| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | 已入计划，独立 Nitro/systemd 与冷却规则均已确认 |
+| 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06 已实现并验证；F03 已完成证据/退款基础，差额归属和自动结案继续推进，F05 待实施 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04 已完成并验证；其余待实施，独立 Nitro/systemd 与冷却规则均已确认 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | 已入计划；首屏网络优化纳入 P01、U01/U02 和 D01 对比验收，不只有测量没有修复 |
-| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05 已完成并验证；C06 正在合成副本评估，其他迁移仍待实施 |
-| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00 已完成；P01 已开始，只读浏览器历史样本见下；D01/D02 未完成，bob 资源快照不代替性能样本 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
+| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
 
@@ -71,11 +71,14 @@
 | F07 | [497b340](https://github.com/Hime-Hina/novelai-shared-gateway/commit/497b340) | 普通/JSON/ZIP/流式图片统一校验；单产物 64 MiB、流累计 256 MiB，ZIP CRC/解压上限和 SOCKS 分块完整性检查。`node --test provider-features.test.mjs server/native-image.test.mjs server/native-stream.test.mjs native-adapter-test.mjs` 35/35、`node --test native-http.test.mjs` 9/9 通过，含 HTTP 200 HTML 失败退款 | 复用原图片验证器，无新依赖/数据迁移，出站契约不变。JPEG/WebP 为结构校验；Vibe 格式未公开，只验证媒体类型、明显错误文本及传输完整性，不宣称可验证其内部语义 |
 | F08 | [7febf31](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7febf31) | 密码及 Discord 登录只信任 `TRUSTED_PROXY_IPS` 中的精确代理 IP；从 XFF 右侧定位实际客户端，保留用户名限制。`node --test server/client-ip.test.mjs server/member-auth.test.mjs member-routes.test.mjs discord-login.test.mjs` 15/15 通过 | 默认忽略转发头；隔离部署时须按实际链路配置代理 IP，并复核来源隔离；无数据库迁移，未改生产配置 |
 | F09 | [6a13444](https://github.com/Hime-Hina/novelai-shared-gateway/commit/6a13444) | 分组预览与保存强制校验编辑基线版本；owner/私有管理共用页面保留冲突草稿，后台刷新不覆盖期间开始的编辑。`node --test member-routes.test.mjs owner-management.test.mjs server/member-management-ui.test.mjs server/fair-quota.test.mjs` 76/76 通过 | 无数据迁移；旧版页面缺失版本字段时收到 409，需要重新加载页面。UI 回归执行真实脚本配合轻量 DOM 模拟，D01 仍需真实浏览器验收 |
+| F04 | [da63d74](https://github.com/Hime-Hina/novelai-shared-gateway/commit/da63d74) | 成员 4/全局 16 个未完成任务，排队 10 分钟且取请求更早期限；入队检查与预扣同事务，派发复核接单状态。停止接单原子取消等待并退款，在途继续结算；提交后通知及串行补查避免通知竞态。完整 254/254、语法 67 文件及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38954772107) 通过，含真实 HTTP 上限/停止/恢复/旧批次部分响应、SQLite 失败回滚及重启 | 新增接单状态/代次与排队截止，默认兼容旧记录；不改变登录资格，恢复不复活旧批次。当前 Native 未创建的子任务尚不计入容量，F06 必须一次持久化全部意图并批量计数、扩展 pending 活动查询。未部署生产 |
+| F03（第 1 片） | [3411bfb](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3411bfb) | 派发事务持久化 attempt、原资源预扣和快照；退款与疑似损耗事件按资源追加，续用候选不相加、不作为确认实扣。queued/pending 或明确未发送的取消不记疑似损耗，持久 reserved→refunded 保证幂等。完整 263/263，最后边界修正后存储相关 30/30、69 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38956533113) 通过；真实 HTTP 检查上游收到请求前 SQLite 已存在证据 | 只完成证据和退款基础，不新增资金准入限制。负 Anlas 差额归属、运营资金、V5 恢复抵消、五分钟结案和迟到结果仍待后续片；F03 整项尚未完成，未部署生产 |
 | C05 | [3e523de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3e523de) | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949247612) 已通过（dae4fae，含 C02 与 F07 边界补充） |
 | C02 | [dae4fae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dae4fae) | [API 契约矩阵](api-contract.md)记录官方 Swagger 摘要、支持/拒绝/网关扩展及 C03 差异；三个客户端样本连接解析与独立核价，新增 5 项纯模块通过。`node --test native-http.test.mjs` 10/10，含 OpenAI 目录、非流式/流式、鉴权及图片实际领取 | 仅文档与测试，未改变出站协议；模型全组合、Vibe 内部格式与公网 SSE 代理行为不假装已验证。C03 仍在 N03 后实施 |
 | C04 | [7d08e21](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7d08e21) | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949984502) 通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
-| P01（排队部分） | [2bc6c79](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2bc6c79) | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器受控重复采样仍待完成，P01 整项未完成 |
-| C06（评估阶段） | `docs: document measured ORM adoption boundaries` | [ORM 评估](orm-evaluation.md)：20,000 合成任务验证 Drizzle 的读写、单事务预扣、失败/进程退出恢复、只读 worker 与重复迁移；核实自动 schema 缺漏和参数化谓词的部分索引退化 | 决定有边界采用 Drizzle 0.45.4/Kit 0.31.11，正式接入与仓库回归正在实施；原型不是交付实现，C06 整项尚未完成，未迁移生产 |
+| P01（排队部分） | [2bc6c79](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2bc6c79) | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器基线已另行完成，见下一行；历史不足七天和拒绝率缺失仍保留，不补造数据 |
+| P01（浏览器部分） | [d96665e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d96665e) | [浏览器基线](browser-baseline.md)：冻结 5437fc8，匿名/成员/owner × 桌面/移动 × HTTP 缓存禁用/启用，各 5 次共 60/60 核验；300 条同源资源、12 组指标与 14 行 API 瀑布逐项校验，CLS 按标准窗口重算。合成 helper 自检与语法通过；明确串行查询、静态 no-store 和布局优化落点 | 上游完全模拟，真实生成 0 次，测试实例已停止；不是生产分位数，历史约 29 秒 HTML TTFB 未复现。owner 默认用量页保持，后续须对比顶部概览及用量表两类 ready 时间；扩展与工具开销不能全部归因业务 |
+| C06 | [975d8b0](https://github.com/Hime-Hina/novelai-shared-gateway/commit/975d8b0) | [ORM 评估与接入](orm-evaluation.md)：Drizzle 0.45.4/Kit 0.31.11 统一 9 表 schema 与 prepared CRUD，保留原同步提交与部分索引；旧 typed/app_records/JSON 兼容。新增 10 项迁移回归，完整 244/244 通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38953276802) 通过；Linux 镜像内默认 UID 1000、只读断网、迁移/写入/关闭重开验证通过 | 首次自动验证并登记两条迁移，SQL 固定 LF，拒绝历史 hash 改写和未知更高版本；不顺带回填极老库历史统计。部署前须一致性备份并在副本验收，未来数据迁移不能仅靠切旧代码回滚；生产未迁移 |
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
@@ -226,7 +229,7 @@ Vue 路线优先复用 Naive UI 的 [NHeatmap](https://github.com/tusen-ai/naive
 
 ## 浏览器网络与首屏性能
 
-实施证据见[浏览器性能采样](browser-baseline.md)。其中已有 owner 控制台历史导航的网络时序，但不是受控重复采样，P01 尚不能据此标为完成。
+实施证据见[浏览器性能采样](browser-baseline.md)：现已完成冻结源码下的 60 次浏览器测量，并保留 owner 控制台历史导航作为独立生产证据。两类样本不混算；本机基线完成不表示生产历史长等待已经解决。
 
 先测现状，再比较同样环境中的新版本。覆盖匿名登录页、已登录成员页、owner 控制台，分别记录冷缓存和热缓存；桌面与移动视口各测试固定网络和 CPU 条件。每种场景至少五次，保存中位数、最慢样本及原始追踪。
 
