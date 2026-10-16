@@ -1,3 +1,4 @@
+import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -18,13 +19,14 @@ async function fixture(t) {
   configureFairQuota(db,db.users.map(u=>u.id));syncFairQuota(db);
   let chain=Promise.resolve(), refreshCount=0, updateCount=0, statsCount=0;
   const store={update(fn){chain=chain.catch(()=>{}).then(()=>fn(db));return chain;},async readOwnerJobRows(){statsCount++;return [];},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
+  await withMemberSessions(t,store);
   const deps={env,store,assertAdmin(){throw Object.assign(new Error('Private administrator required'),{statusCode:401});}};
   deps.ownerOperation=(url,method,body)=>ownerOperation(url,method,body,{store,
     async refreshAccountQuotas(){refreshCount++;return {checked:1,ok:1,failed:0,accounts:[account]};},
     async updateAccount(id,body){assert.equal(id,account.id);updateCount++;Object.assign(account,body);return account;}});
   const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,'https://nai.example');if(!sharedSurface(url.pathname,req.method).allowed){res.writeHead(404);res.end('{}');return;}await handleMemberRoutes(req,res,url,deps);}catch(e){res.writeHead(e.statusCode||500,{'content-type':'application/json'});res.end(JSON.stringify({error:e.message}));}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
-  const cookies=db.users.map(u=>'nai_member_session='+createMemberSession(u));
+  const cookies=await Promise.all(db.users.map(async u=>'nai_member_session='+(await createMemberSession(store,u,env)).token));
   const call=(route,{viewer=0,method,body,headers={}}={})=>new Promise((resolve,reject)=>{
     const req=http.request({hostname:'127.0.0.1',port:server.address().port,path:route,method:method||(body===undefined?'GET':'POST'),headers:{host:'nai.example',origin:'https://nai.example',...(viewer===null?{}:{cookie:cookies[viewer]}),'content-type':'application/json',...headers}},res=>{let text='';res.on('data',c=>text+=c);res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(text),text}));});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));
   });

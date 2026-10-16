@@ -54,6 +54,15 @@ export const fairQuotaSettlements = sqliteTable('fair_quota_settlements', {
   job_id: text().primaryKey(), charge: text().notNull()
 });
 
+// 会话按令牌摘要冷读，不进入业务记录热缓存或历史清理。
+export const memberSessions = sqliteTable('member_sessions', {
+  token_hash: text().primaryKey(), user_id: text().notNull(), auth_version: text().notNull(),
+  created_at: integer().notNull(), expires_at: integer().notNull(), owner_binding: text()
+}, table => [
+  index('idx_member_sessions_user').on(table.user_id),
+  index('idx_member_sessions_expiry').on(table.expires_at)
+]);
+
 export const jobs = sqliteTable('jobs', {
   ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), payload_bytes: integer().default(0).notNull(), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()

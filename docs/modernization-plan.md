@@ -53,8 +53,8 @@
 | --- | --- | --- |
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
-| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并验证：持久受理、批次公平、连接解耦、父操作/幂等、分类冷却、完整产物恢复和有限关闭宽限；F11 独立执行仍待，下一项按序为 A01 会话 |
-| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | 已入计划；首屏网络优化纳入 P01、U01/U02 和 D01 对比验收，不只有测量没有修复 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F12 已完成；F10 实现与本地 Windows/Linux 验证完成，托管 CI Native 多图超时仍待定位，不能按全绿结案。F11 独立执行仍待 |
+| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01 持久会话、固定期限、撤销和页面提示已实现并通过本地验证；下一项 R01。首屏网络优化纳入 P01、U01/U02 和 D01 对比验收 |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
@@ -85,6 +85,7 @@
 | F05 | [868be65](https://github.com/Hime-Hina/novelai-shared-gateway/commit/868be65) | 终态凭据按 job ID 冷存，归档与设置/任务/账本同事务；冲突回滚，cold 优先陈旧快照，重复扣退与终态重派被阻止，reserved 原资格保留。完整 364/364、90 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38978709933) 通过；Linux 九迁移、冷历史/预算/HTTP 启动及归档/迟到/幂等 23/23 通过 | 新增 0008 两字段冷表，旧 typed/app_records/JSON/write 均覆盖；未知 reserved 原样保留，不删除凭据。合成 10 万条：热 settings 21.4 MB→3.4 KB、摘要约 450 ms→不足 1 ms，小更新亦不足 1 ms；这不是生产延迟承诺，详见[测量边界](failure-accounting.md#结算历史归档f05)。生产未切换 |
 | F12 | [11543de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/11543de) | 两类独立退避、成功复位、尝试幂等、最大截止与上游等待同事务持久；绑定账户与物理槽、实际 Retry-After、原因/本地倒计时和有限等待日志。冻结核心全量 382/382，新增真实 HTTP 2/2，最终[托管 CI 384/384](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38980552473) 与 93 文件语法通过；Windows/Linux 验证 300 秒截止、强杀重启/重放仅一次上游、已发头 SSE 正常结束。Chrome 390px 与退出关闭 SSE 通过 | 无新迁移；Linux 九迁移、冷历史/预算/完整性/启动、44 定向及 2 HTTP 通过，详见[生命周期验证](request-lifecycle.md#验证边界)。未解释历史 138 秒长尾，未调用真实 NAI；浏览器 hidden 未实际触发，仅单元覆盖。F10 文件恢复继续实施，生产未切换 |
 | F10 | [1c7c42c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1c7c42c) | 描述先提交，wx 临时文件/文件同步/原子发布/目录同步后再结算；冷恢复校验尝试/归属/长度/hash/类型，迟到保留退款，启动三处派发保护和退出宽限。Windows 全量 411 项中 408 通过、3 平台跳过，98 文件语法通过；最终 Linux 45 专项全过，覆盖六强杀边界双重启、Native 两图、Vibe、SIGTERM、503 份冷结果领取 | 新增 0009 冷查询部分索引，WAL/FULL 与 pending 禁删，无新运行时依赖；Linux 十迁移/完整性/预算/HTTP 启动通过。[持久性、性能与限制](result-recovery.md) 明确 Windows 不做目录 fsync、容器挂载微基准不代表 bob、强杀不等于断电试验。没有上游完整结果时仍不能保证找回；生产未迁移或切换 |
+| A01 | 本分支会话提交 | 随机令牌仅存摘要，成员七天/owner 十二小时固定期限；签发、退出和 owner 变更协调持久化，启动重开保留有效会话，升权不得沿用七天 Cookie。Windows 全量 430 项中 427 通过、3 平台跳过，101 文件语法；Linux 40 专项及十一迁移/完整性/HTTP 启动通过；Chrome 390px 实测截止展示、SSE 过期返回登录并清空已展示 Key | 新增 0010 独立冷会话表与索引；首次升级旧内存会话需重新登录，此后重启保持。迟到响应不能覆盖新登录，临时 Discord/网络故障不误注销。[实现与验证边界](member-sessions.md)；托管 CI 旧 Native 多图超时单独跟进，生产未迁移或切换 |
 | C05 | [3e523de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3e523de) | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949247612) 已通过（dae4fae，含 C02 与 F07 边界补充） |
 | C02 | [dae4fae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dae4fae) | [API 契约矩阵](api-contract.md)记录官方 Swagger 摘要、支持/拒绝/网关扩展及 C03 差异；三个客户端样本连接解析与独立核价，新增 5 项纯模块通过。`node --test native-http.test.mjs` 10/10，含 OpenAI 目录、非流式/流式、鉴权及图片实际领取 | 仅文档与测试，未改变出站协议；模型全组合、Vibe 内部格式与公网 SSE 代理行为不假装已验证。C03 仍在 N03 后实施 |
 | C04 | [7d08e21](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7d08e21) | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949984502) 通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
@@ -137,15 +138,15 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 
 ## 登录状态
 
-当前代码的确会自动结束网页登录：
+改造前会话全员固定 12 小时，保存在进程内 Map，重启即失效。当前分支 A01 已改为以下规则；这次源码修改尚未部署生产：
 
-- [member-auth.js](../server/member-auth.js) 中的会话自登录起固定有效 12 小时，访问页面不会延长期限。
-- [member-routes.js](../server/member-routes.js) 设置 `Max-Age=43200`，Cookie 使用 HttpOnly、SameSite，并在公网启用 Secure。
-- 会话只保存在进程内 Map，服务重启即失效，即使浏览器 Cookie 尚未过期。
+- [member-auth.js](../server/member-auth.js) 中普通成员固定 7 天，owner 固定 12 小时；访问、余额查询和 SSE 不续期。
+- [member-routes.js](../server/member-routes.js) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
+- 随机 Cookie 只在浏览器，SQLite 冷表保存摘要、成员、版本、固定截止和签发角色绑定；重启保留有效会话。旧 Map 无法迁移，首次升级需重新登录一次。
 - 停用、删除、重置认证版本会撤销对应会话；Discord 再次登录也会更新认证版本，使该成员之前的会话失效。
-- Discord 成员资格最多缓存五分钟；资格失效或授权异常会阻止后续访问。退出网页只结束网页会话，API Key 没有随之按 12 小时过期。
+- Discord 成员资格最多缓存五分钟；资格失效或授权异常会阻止后续访问。退出网页只结束当前网页会话，不改变 API Key 的调用资格。
 
-拟改为 SQLite 持久化的不透明会话：浏览器仍只有随机 Cookie，数据库保存其摘要、用户 ID、认证版本及到期时间。复用当前成员检查和撤销规则，正常部署后保持尚未到期的会话；不把登录状态或上游凭据放到 localStorage，不把本地会话和 Discord access token 的有效期混为一谈。
+签发在串行事务中重新核对当前成员版本与绑定，SQL 失败不发成功 Cookie；退出持久撤销。复用当前成员检查，不把登录状态或上游凭据放到 localStorage，不把本地会话和 Discord access token 的有效期混为一谈。具体数据/接口与升级边界见[持久会话](member-sessions.md)。
 
 接口区分会话过期、权限不足、Discord 临时不可用和普通网络错误。页面显示到期时间；真实过期时清除敏感展示并提供重新登录入口，503 和网络中断保留页面并提示重试，避免伪装成“已退出”。如果采用框架内置 session API，使用数据库存储并继续验证成员状态，不能退回纯内存实现。
 

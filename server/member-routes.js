@@ -30,9 +30,10 @@ async function json(req) {
   if (!value || Array.isArray(value) || typeof value !== 'object') error(400, '请求内容无效');
   return value;
 }
-function setCookie(req, res, token, additional = []) {
+function setCookie(req, res, token, expiresAt = 0, additional = []) {
   const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''));
-  const value = `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${token ? 43200 : 0}${local ? '' : '; Secure'}`;
+  const maxAge = token ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0;
+  const value = `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${maxAge}; Expires=${new Date(expiresAt).toUTCString()}${local ? '' : '; Secure'}`;
   res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
 }
 
@@ -55,7 +56,8 @@ export async function handleMemberRoutes(req, res, url, deps) {
   // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
   if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
     const user = await finishDiscordLogin(req, res, url, deps);
-    setCookie(req, res, createMemberSession(user), [res.getHeader('Set-Cookie')]);
+    const session = await createMemberSession(deps.store, user, env);
+    setCookie(req, res, session.token, session.expiresAt, [res.getHeader('Set-Cookie')]);
     res.writeHead(303, { location: discordConfig(env).origin + '/', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
     res.end(); return true;
   }
@@ -63,7 +65,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   const { store } = deps;
   let actorId = 'local-admin';
   if (ownerRoute) {
-    const viewer = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
+    const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
     if (!viewer) error(401, '请先使用 Discord 登录');
     if (!isOwner(viewer, env)) error(403, '仅 owner 可访问管理功能');
     await requireDiscordMembership(viewer, deps);
@@ -228,13 +230,14 @@ export async function handleMemberRoutes(req, res, url, deps) {
     const body = await json(req);
     checkMemberLoginRate(body.username, clientIp(req, env));
     const user = await store.update(db => loginMember(db, body.username, body.password), { persist: false });
-    setCookie(req, res, createMemberSession(user));
-    reply(res, 200, { ok: true }); return true;
+    const session = await createMemberSession(store, user, env);
+    setCookie(req, res, session.token, session.expiresAt);
+    reply(res, 200, { ok: true, expiresAt: session.expiresAt }); return true;
   }
   if (url.pathname === '/api/member/logout' && req.method === 'POST') {
-    logoutMemberSession(cookie(req)); setCookie(req, res, ''); reply(res, 200, { ok: true }); return true;
+    await logoutMemberSession(store, cookie(req)); setCookie(req, res, ''); reply(res, 200, { ok: true }); return true;
   }
-  const user = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
+  const session = await authenticateMemberSession(store, cookie(req), env), user = session?.user;
   if (!user) error(401, '请先登录');
   await requireDiscordMembership(user, deps);
   const requestRoute = url.pathname.match(/^\/api\/member\/requests\/([^/]+)(\/cancel)?$/);
@@ -266,7 +269,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     res.once('close', stop); res.once('error', stop);
     const tick = async () => {
       try {
-        const viewer = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
+        const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
         if (viewer) await requireDiscordMembership(viewer, deps);
         const state = viewer ? await store.update(db => sharedAccountStatus(db), { persist: false }) : null;
         if (closed) return;
@@ -275,7 +278,13 @@ export async function handleMemberRoutes(req, res, url, deps) {
         if (text !== previous) { res.write(`event: shared-status\ndata: ${text}\n\n`); previous = text; heartbeat = Date.now(); }
         else if (Date.now() - heartbeat > 15000) { res.write(': keepalive\n\n'); heartbeat = Date.now(); }
         if (res.writableLength > 65536) { res.end(); stop(); return; }
-      } catch { if (!closed) { res.end(); stop(); } return; }
+      } catch (error) {
+        if (!closed) {
+          if ([401, 403].includes(error.statusCode)) res.write('event: auth-expired\ndata: {}\n\n');
+          res.end(); stop();
+        }
+        return;
+      }
       if (!closed) { timer = setTimeout(tick, 2000); timer.unref?.(); }
     };
     void tick();
@@ -287,7 +296,8 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, { apiKey: user.token, baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '' }); return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
+    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), sessionExpiresAt: session.expiresAt,
+      acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,
         lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
         model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))

@@ -20,11 +20,12 @@ const nodes = (element, tag) => [...(element.tagName === tag ? [element] : []), 
 const links = element => nodes(element, 'A');
 
 async function accountPage(data, extraRequest) {
-  const elements = new Map(), calls = [];
+  const elements = new Map(), calls = [], events = new Map();
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const context = vm.createContext({
     URL, location: { origin: 'https://gateway.example' },
     document: { getElementById: get, createElement: element },
+    window: { addEventListener: (name, listener) => events.set(name, listener) },
     startSharedStatus() {}, stopSharedStatus() {},
     async fetch(path, options) {
       calls.push({ path, options });
@@ -34,8 +35,32 @@ async function accountPage(data, extraRequest) {
   });
   vm.runInContext(source + '\nglobalThis.ui = {load};', context);
   await setImmediate();
-  return { get, calls, context };
+  return { get, calls, context, expire: () => events.get('member-session-expired')() };
 }
+
+test('显示固定到期时间；登录失效清除Key，迟到读取不能重新展开账户或Key', async () => {
+  let releaseKey;
+  const data = { username: 'member', quota: {}, jobs: [], sessionExpiresAt: 1800000000000 };
+  const page = await accountPage(data, () => new Promise(resolve => { releaseKey = resolve; }));
+  assert.match(page.get('sessionExpiry').textContent, /本次登录有效至.*不会自动续期/);
+  page.get('apiKey').value='synthetic-old-key';
+  const pending = page.get('showKey').onclick();
+  page.expire();
+  releaseKey({ apiKey: 'synthetic-late-key', baseUrl: 'https://gateway.example/v1' }); await pending;
+  assert.equal(page.get('apiKey').value, ''); assert.equal(page.get('apiBaseUrl').value, '');
+  assert.equal(page.get('keyPanel').hidden, true); assert.equal(page.get('account').hidden, true);
+  assert.equal(page.get('login').hidden, false); assert.match(page.get('message').textContent, /登录已失效/);
+  let releaseMe;
+  page.context.fetch = () => new Promise(resolve => { releaseMe = () => resolve({ ok: true, json: async () => data }); });
+  const refreshing = page.context.ui.load(); page.expire(); releaseMe(); await refreshing;
+  assert.equal(page.get('account').hidden, true);
+  let rejectOld;
+  page.context.fetch=()=>new Promise(resolve=>{rejectOld=()=>resolve({ok:false,status:401,json:async()=>({error:'old session'})});});
+  const stale=page.context.ui.load();
+  page.context.fetch=async()=>({ok:true,json:async()=>data}); await page.context.ui.load();
+  rejectOld(); await assert.rejects(stale,/old session/);
+  assert.equal(page.get('account').hidden,false,'旧会话的迟到401不能关闭新登录页面');
+});
 
 test('成员退款与冷历史迟到领取使用签名地址，文本不插 HTML，也不重扣额度', async () => {
   const hostile = '<img src=x onerror=alert(1)>';

@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota } from '../../server/fair-quota.js';
-import { createMemberSession } from '../../server/member-auth.js';
+import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.js';
 import { nativeImagesMsgpack } from '../../server/native-stream.js';
 
 const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
@@ -19,7 +19,7 @@ const guildId = '1134557553011998840';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir }, log() {} });
 const seed = new JsonStore(dataDir);
-let members;
+let members, roleSessions;
 await seed.init();
 try {
   await seed.update(db => {
@@ -51,6 +51,9 @@ try {
     syncFairQuota(db, now);
     members = structuredClone(db.users);
   }, { collections: ['accounts', 'users', 'jobs', 'settings'], includeSettings: true, immediate: true });
+  const sessionEnv = { OWNER_USER_ID: members[0].id, DISCORD_GUILD_ID: guildId };
+  await reconcileMemberSessionOwner(seed, sessionEnv);
+  roleSessions = { owner: await createMemberSession(seed, members[0], sessionEnv), member: await createMemberSession(seed, members[1], sessionEnv) };
 } finally { await seed.close(); }
 
 const realFetch = globalThis.fetch;
@@ -99,7 +102,7 @@ Object.assign(process.env, {
   OWNER_USER_ID: members[0].id, DISCORD_GUILD_ID: guildId, DISCORD_CLIENT_ID: '123456789012345678',
   DISCORD_CLIENT_SECRET: 'synthetic-browser-secret-only', SQLITE_BATCH_WRITES: 'false'
 });
-// Same module instance as member-routes; no production auth bypass is added.
+// 会话已在启动网关前写入合成数据库；运行期间没有第二个写入连接或认证旁路。
 await import('../../server/index.js');
 await realFetch(gatewayUrl + '/api/health');
 
@@ -109,10 +112,10 @@ const front = http.createServer((req, res) => {
   const pathname = new URL(req.url, baseUrl).pathname;
   const role = pathname.match(/^\/__baseline\/(anonymous|member|owner)$/)?.[1];
   if (role && req.method === 'GET') {
-    const session = role === 'anonymous' ? '' : createMemberSession(members[role === 'owner' ? 0 : 1]);
+    const session = role === 'anonymous' ? null : roleSessions[role];
     const destination = role === 'owner' ? '/owner' : '/';
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store',
-      'set-cookie': `nai_member_session=${session}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${session ? 43200 : 0}` });
+      'set-cookie': `nai_member_session=${session?.token || ''}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${session ? Math.max(0,Math.ceil((session.expiresAt-Date.now())/1000)) : 0}` });
     // A real same-origin click resets the navigation context; a redirect retains cross-site provenance.
     res.end(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>合成角色入口</title><h1>${role}</h1><p>仅使用本机合成数据。点击后在目标页面采样。</p><a href="${destination}">进入${role === 'owner' ? 'owner 控制台' : '成员页面'}</a></html>`); return;
   }

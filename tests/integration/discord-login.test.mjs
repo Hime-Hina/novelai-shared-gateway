@@ -1,8 +1,9 @@
+import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { handleMemberRoutes } from '../../server/member-routes.js';
-import { setMemberCredentials, createMemberSession } from '../../server/member-auth.js';
+import { setMemberCredentials, createMemberSession, authenticateMemberSession } from '../../server/member-auth.js';
 import { configureFairQuota } from '../../server/fair-quota.js';
 import { discordConfig, discordLoginEnabled, requireDiscordMembership, createDiscordInvite } from '../../server/discord-auth.js';
 import { sharedSurface } from '../../server/shared-surface.js';
@@ -15,6 +16,7 @@ async function fixture(t) {
   for(const user of db.users) await setMemberCredentials(db,user.id,{username:'member-'+user.id,password:'synthetic-password-for-'+user.id});
   let queue=Promise.resolve();
   const store={update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
+  await withMemberSessions(t,store);
   const upstream={id:'222222222222222222',member:true,pending:false,fail:false,calls:[],refreshes:0,scope:'identify guilds.members.read'};
   const deps={store,env,createId:()=> 'new-member',createPublicToken:()=> 'STA1N-new-member',assertAdmin(req){if(req.headers['x-admin-token']!=='synthetic-admin')throw Object.assign(new Error('Admin required'),{statusCode:403});},async discordFetch(url,options){
     upstream.calls.push({url,options});
@@ -52,8 +54,34 @@ async function fixture(t) {
     return {state:url.searchParams.get('state'),cookie:response.headers['set-cookie'][0].split(';')[0]};
   };
   const finish=(flow,options={})=>call('/api/member/discord/callback?code=synthetic-code&state='+flow.state,{cookie:flow.cookie,headers:{origin:'https://discord.com','sec-fetch-site':'cross-site'},...options});
-  return {db,deps,upstream,call,admin,start,finish};
+  return {db,deps,upstream,call,admin,start,finish,port:server.address().port};
 }
+
+test('SSE资格失效明确通知退出，Discord临时网络故障只关闭连接且不撤销会话', {timeout:15000}, async t=>{
+  for(const temporary of [false,true]){
+    const {db,deps,upstream,port}=await fixture(t);
+    db.users[0].discord={id:upstream.id,guildId:env.DISCORD_GUILD_ID,checkedAt:Date.now(),member:true,
+      accessToken:'synthetic-access',refreshToken:'synthetic-refresh',expiresAt:Date.now()+3600000};
+    const session=await createMemberSession(deps.store,db.users[0],env);
+    const events=await new Promise((resolve,reject)=>{
+      const req=http.get({hostname:'127.0.0.1',port,path:'/api/member/shared-events',headers:{host:'nai.example',origin:'https://nai.example',cookie:'nai_member_session='+session.token}},res=>{
+        assert.equal(res.statusCode,200);let text='',changed=false;
+        res.on('data',chunk=>{
+          text+=chunk;
+          if(!changed&&text.includes('event: shared-status')){
+            changed=true;db.users[0].discord.checkedAt=Date.now()-300001;
+            if(temporary)upstream.fail=true;else upstream.member=false;
+          }
+        });
+        res.on('end',()=>resolve(text));res.on('error',reject);
+      });
+      req.on('error',reject);req.setTimeout(6000,()=>{req.destroy();reject(new Error('synthetic SSE close timeout'));});
+    });
+    assert.match(events,/event: shared-status/);
+    if(temporary){assert.ok(!events.includes('auth-expired'));assert.ok(await authenticateMemberSession(deps.store,session.token,env));}
+    else{assert.match(events,/event: auth-expired\ndata: \{\}/);assert.equal(await authenticateMemberSession(deps.store,session.token,env),null);}
+  }
+});
 
 test('Discord 配置不完整时不能回退密码，回调只使用固定 HTTPS 地址',()=>{
   assert.equal(discordLoginEnabled({}),false);assert.equal(discordConfig({}),null);
@@ -62,7 +90,7 @@ test('Discord 配置不完整时不能回退密码，回调只使用固定 HTTPS
 
 test('邀请 + OAuth + 服务器验证绑定原钱包，纯 Discord 再登录，密码与旧会话不能绕过',async t=>{
   const {db,deps,call,admin,start,finish}=await fixture(t);
-  const oldCookie='nai_member_session='+createMemberSession(db.users[0]);
+  const oldCookie='nai_member_session='+(await createMemberSession(deps.store,db.users[0],env)).token;
   assert.equal((await call('/api/member/login',{body:{username:'member-a',password:'synthetic-password-for-a'}})).status,403);
   assert.equal((await call('/api/member/me',{cookie:oldCookie})).status,403);
   assert.equal((await call('/api/member/login-options')).data.discord,true);

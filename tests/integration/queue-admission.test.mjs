@@ -59,7 +59,7 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
     }
     db.accounts[0].inFlight = 1;
   }, { immediate: true });
-  const before = await store.read(), token = createMemberSession(before.users[0]);
+  const before = await store.read(), session = await createMemberSession(store, before.users[0]);
   store.sqlite.exec("CREATE TEMP TRIGGER reject_stop BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'injected stop failure'); END");
   await assert.rejects(store.update(db => setMemberAdmission(db, 'a', false, refund), writeOptions), /injected stop failure/);
   assert.deepEqual(await store.read(), before);
@@ -68,7 +68,7 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
   const stopped = await store.read();
   assert.equal(stopped.accounts[0].inFlight, 1);
   assert.equal(stopped.jobs.find(job => job.id === 'running').fairCharge.status, 'reserved');
-  assert.equal(authenticateMemberSession(stopped, token)?.id, 'a');
+  assert.equal((await authenticateMemberSession(store, session.token))?.user.id, 'a');
   const balance = stopped.settings.fairQuota.balances.a.v5Available;
   await store.update(db => setMemberAdmission(db, 'a', false, refund), writeOptions);
   assert.equal((await store.read()).settings.fairQuota.balances.a.v5Available, balance);

@@ -3,10 +3,18 @@ const $ = id => document.getElementById(id);
 const stateNames = { pending_opus:'等待管理员接入有效 Opus', inactive_opus:'订阅暂不可用', stale:'官方余额等待刷新', unknown_balance:'官方余额未知', ambiguous_opus:'等待管理员选择上游', active:'额度已同步' };
 const jobStatusNames={done:'成功',failed:'失败',pending:'等待前序图片',queued:'排队',running:'生成中'};
 let accountViewVersion=0;
+function clearMemberView(message = '') {
+  accountViewVersion++; stopSharedStatus();
+  $('apiKey').value=''; $('apiBaseUrl').value=''; $('keyPanel').hidden=true;
+  $('login').hidden=false; $('account').hidden=true;
+  if (message) $('message').textContent=message;
+}
+window.addEventListener('member-session-expired',()=>clearMemberView('登录已失效，请重新登录。'));
 async function api(path, body) {
+  const view = accountViewVersion;
   const r = await fetch('/api/member/' + path, { method: body === undefined ? 'GET' : 'POST', credentials:'same-origin', headers:body === undefined ? {} : {'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body) });
   const data = await r.json();
-  if (!r.ok) { if (r.status === 401 || r.status === 403) { stopSharedStatus(); $('login').hidden=false; $('account').hidden=true; } throw new Error(data.message || data.error || '请求失败'); }
+  if (!r.ok) { if (view===accountViewVersion && (r.status === 401 || r.status === 403)) clearMemberView(); throw new Error(data.message || data.error || '请求失败'); }
   return data;
 }
 const number = n => Number(n || 0).toLocaleString('zh-CN', {maximumFractionDigits:3});
@@ -66,9 +74,11 @@ function batchDetails(requestId) {
   return details;
 }
 async function load() {
-  const data = await api('me'), q=data.quota; startSharedStatus();
-  accountViewVersion++;
+  const view = ++accountViewVersion, data = await api('me'), q=data.quota;
+  if (view !== accountViewVersion) return;
+  startSharedStatus();
   $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
+  $('sessionExpiry').textContent=data.sessionExpiresAt ? `本次登录有效至 ${new Date(data.sessionExpiresAt).toLocaleString('zh-CN')}，不会自动续期。` : '';
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
   $('status').textContent=(stateNames[q?.status] || '等待分配额度') + (q?.autoAnlasFallback ? ' · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）' : '');
   if (data.acceptingJobs === false) $('status').textContent += ' · 管理员已停止接单，已有结果仍可查询和下载';
@@ -103,8 +113,8 @@ function run(fn) { return async event => { event?.preventDefault(); $('message')
 $('loginForm').onsubmit=run(async()=>{ await api('login',{username:$('username').value,password:$('password').value});$('password').value='';await load(); });
 $('discordForm').onsubmit=run(async()=>{const invite=$('invite').value.trim();$('discordLogin').disabled=true;try{const result=await api('discord/start',invite?{invite}:{});$('invite').value='';location.assign(result.authorizationUrl);}finally{$('discordLogin').disabled=false;}});
 $('refresh').onclick=run(load);
-$('logout').onclick=run(async()=>{await api('logout',{});stopSharedStatus();$('apiKey').value='';$('keyPanel').hidden=true;$('login').hidden=false;$('account').hidden=true;});
-$('showKey').onclick=run(async()=>{const data=await api('key');$('apiBaseUrl').value=data.baseUrl || '';$('apiKey').value=data.apiKey;$('keyPanel').hidden=false;});
+$('logout').onclick=run(async()=>{await api('logout',{});clearMemberView();});
+$('showKey').onclick=run(async()=>{const view=accountViewVersion,data=await api('key');if(view!==accountViewVersion)return;$('apiBaseUrl').value=data.baseUrl || '';$('apiKey').value=data.apiKey;$('keyPanel').hidden=false;});
 $('hideKey').onclick=()=>{$('keyPanel').hidden=true;$('apiKey').value='';};
 $('copyKey').onclick=run(async()=>{await navigator.clipboard.writeText($('apiKey').value);$('message').textContent='已复制自己的 API Key';});
 async function initialize(){const options=await api('login-options');if(options.discord&&options.origin&&location.origin!==options.origin){location.replace(options.origin+'/');return;}$('loginForm').hidden=options.discord;$('discordForm').hidden=!options.discord;$('discordLogin').disabled=!options.ready;$('loginHint').textContent=options.discord?(options.ready?'使用 Discord 身份登录；仅限受邀的指定服务器成员。':'Discord 登录尚未配置完成，请联系管理员。'):'账户由管理员创建。登录后查看个人额度和调用记录。';await load().catch(()=>{});}

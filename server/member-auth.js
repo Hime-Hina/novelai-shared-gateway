@@ -1,9 +1,8 @@
-import { randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 const scrypt = promisify(derive);
-const sessions = new Map();
 const attempts = new Map();
-const ttl = 12 * 60 * 60 * 1000;
+const memberTtl = 7 * 24 * 60 * 60 * 1000, ownerTtl = 12 * 60 * 60 * 1000;
 const windowMs = 15 * 60 * 1000;
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const normalized = value => String(value || '').trim().toLowerCase();
@@ -47,23 +46,55 @@ export async function loginMember(db, username, password) {
   return user;
 }
 
-export function createMemberSession(user, now = Date.now()) {
-  prune(sessions, now);
-  if (sessions.size >= 10000) fail(503, '登录会话已满，请稍后重试');
+const sessionHash = token => typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)
+  ? createHash('sha256').update(token).digest('hex') : null;
+const ownerConfig = env => ({ ownerUserId: env.OWNER_USER_ID || '', guildId: env.DISCORD_GUILD_ID || '' });
+const ownerBinding = (user, env) => isOwner(user, env) ? JSON.stringify([user.id, user.discord.id, env.DISCORD_GUILD_ID]) : null;
+
+export async function reconcileMemberSessionOwner(store, env = process.env) {
+  await store.update(() => {}, { collections: [], memberSessionOwner: ownerConfig(env), immediate: true });
+}
+
+export async function createMemberSession(store, userSnapshot, env = process.env, now) {
   const token = randomBytes(32).toString('base64url');
-  sessions.set(token, { userId: user.id, version: user.memberAuth.version, expiresAt: now + ttl });
-  return token;
+  let row;
+  return store.update(db => {
+    const at = now ?? Date.now();
+    // 密码/OAuth 校验后可能已被停用、重置或换绑，必须在签发事务内重新核对。
+    const user = db.users.find(user => user.id === userSnapshot?.id && user.enabled === true);
+    if (!user?.memberAuth?.version || user.memberAuth.version !== userSnapshot.memberAuth?.version
+      || ownerBinding(user, env) !== ownerBinding(userSnapshot, env)) fail(401, '成员认证状态已变化，请重新登录');
+    const binding = ownerBinding(user, env), expiresAt = at + (binding ? ownerTtl : memberTtl);
+    row = { token_hash: sessionHash(token), user_id: user.id, auth_version: user.memberAuth.version,
+      created_at: at, expires_at: expiresAt, owner_binding: binding };
+    return { token, expiresAt };
+  }, { collections: [], memberSession: () => row, memberSessionOwner: ownerConfig(env), immediate: true });
 }
 
-export function authenticateMemberSession(db, token, now = Date.now()) {
-  const session = sessions.get(token);
-  if (!session || session.expiresAt <= now) { sessions.delete(token); return null; }
-  const user = db.users.find(u => u.id === session.userId && u.enabled === true && u.memberAuth?.version === session.version);
-  if (!user) sessions.delete(token);
-  return user || null;
+export async function authenticateMemberSession(store, token, env = process.env, now) {
+  const tokenHash = sessionHash(token);
+  if (!tokenHash) return null;
+  const configured = ownerConfig(env);
+  let revoke;
+  return store.update(db => {
+    const at = now ?? Date.now();
+    const session = store.readMemberSession(tokenHash), previous = store.readMemberSessionOwner();
+    if (!session) return null;
+    const user = db.users.find(user => user.id === session.user_id && user.enabled === true && user.memberAuth?.version === session.auth_version);
+    // 撤销发生在提交阶段；首次观察配置变化时也不能先放行旧/新 owner 的 Cookie。
+    const ownerChanged = previous && (previous.ownerUserId !== configured.ownerUserId || previous.guildId !== configured.guildId);
+    const affected = ownerChanged && (session.owner_binding !== null || session.user_id === previous.ownerUserId || session.user_id === configured.ownerUserId);
+    if (session.expires_at <= at || !user || affected || session.owner_binding !== ownerBinding(user, env)) {
+      revoke = tokenHash; return null;
+    }
+    return { user, expiresAt: session.expires_at };
+  }, { collections: [], memberSessionDelete: () => revoke, memberSessionOwner: configured, immediate: true });
 }
 
-export function logoutMemberSession(token) { sessions.delete(token); }
+export async function logoutMemberSession(store, token) {
+  const tokenHash = sessionHash(token);
+  if (tokenHash) await store.update(() => {}, { collections: [], memberSessionDelete: tokenHash, immediate: true });
+}
 
 export function isOwner(user, env = process.env) {
   return Boolean(env.OWNER_USER_ID && env.DISCORD_GUILD_ID && user?.enabled === true && user.id === env.OWNER_USER_ID && user.discord?.id && user.discord.guildId === env.DISCORD_GUILD_ID);

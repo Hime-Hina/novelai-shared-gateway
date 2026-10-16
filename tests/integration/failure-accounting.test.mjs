@@ -124,7 +124,7 @@ async function routes(t, store) {
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { server.closeAllConnections(); server.close(); });
-  const cookies = store.db.users.map(user => 'nai_member_session=' + createMemberSession(user));
+  const cookies = await Promise.all(store.db.users.map(async user => 'nai_member_session=' + (await createMemberSession(store, user, env)).token));
   return (route, { viewer = 0, body, admin = false, origin } = {}) => new Promise((resolve, reject) => {
     const host = admin ? `127.0.0.1:${server.address().port}` : 'nai.example';
     const req = http.request({ hostname: '127.0.0.1', port: server.address().port, path: route, method: body ? 'POST' : 'GET',

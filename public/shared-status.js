@@ -29,6 +29,10 @@ function startCooldownTimer() {
 function disconnect() {
   events?.close(); events=null; clearCooldownTimer();
 }
+function sessionExpired() {
+  stopSharedStatus(); $('sharedConnection').textContent='登录已失效，请重新登录';
+  window.dispatchEvent(new Event('member-session-expired'));
+}
 function render(s) {
   snapshot=s;
   $('sharedState').textContent=labels[s.status] || s.status;
@@ -50,8 +54,14 @@ function connect() {
   if (snapshot) startCooldownTimer();
   $('sharedConnection').textContent='正在连接共享状态…';
   source.addEventListener('shared-status',event=>{if(events!==source||!active||document.hidden)return;try{render(JSON.parse(event.data));}catch{$('sharedConnection').textContent='状态数据无效，请刷新页面';}});
-  source.addEventListener('auth-expired',()=>{if(events!==source)return;stopSharedStatus();$('sharedConnection').textContent='登录已过期，请重新登录';});
-  source.onerror=()=>{if(events===source)$('sharedConnection').textContent='状态连接中断，正在重连；以下为上次接收的数据';};
+  source.addEventListener('auth-expired',()=>{if(events===source)sessionExpired();});
+  source.onerror=async()=>{
+    if(events!==source)return;
+    $('sharedConnection').textContent='状态连接中断，正在重连；以下为上次接收的数据';
+    // 初次连接的 401 无法携带 SSE 事件；仅永久关闭时核验登录，网络中断不当作注销。
+    if(source.readyState!==EventSource.CLOSED)return;
+    try { const response=await fetch('/api/member/shared-status'); if(events===source&&[401,403].includes(response.status))sessionExpired(); } catch {}
+  };
   source.onopen=()=>{if(events===source)$('sharedConnection').textContent='状态连接已建立';};
 }
 export function startSharedStatus(){active=true;connect();}

@@ -10,6 +10,7 @@ import { privateAccessAllowed } from './public-hosts.js';
 import { launcherSubscription } from './launcher-subscription.js';
 import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
+import { reconcileMemberSessionOwner } from './member-auth.js';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.js';
 import { requireDiscordMembership } from './discord-auth.js';
 import { ownerOperation } from './owner-operations.js';
@@ -120,6 +121,7 @@ const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';
 
 installRuntimeSafetyHandlers();
 await store.init();
+await reconcileMemberSessionOwner(store);
 const createdImageDirectory = await mkdir(imageDir, { recursive: true });
 if (createdImageDirectory && process.platform !== 'win32') {
   const directory = await open(dataDir, 'r');

@@ -5,26 +5,27 @@ import vm from 'node:vm';
 
 const source = (await readFile(new URL('../../public/shared-status.js', import.meta.url), 'utf8')).replaceAll('export function ', 'function ');
 const NOW = 1800000000000;
-function page() {
+function page(fetchStatus) {
   let now = NOW, nextTimer = 0;
-  const elements = new Map(), timers = new Map(), documentEvents = new Map(), windowEvents = new Map(), streams = [];
+  const elements = new Map(), timers = new Map(), documentEvents = new Map(), windowEvents = new Map(), streams = [], emitted = [], requests = [];
   const get = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, after() {} }); return elements.get(id); };
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
     static now() { return now; }
   }
   class Stream {
+    static CLOSED = 2;
     constructor(url) { this.url = url; this.listeners = new Map(); streams.push(this); }
     addEventListener(name, fn) { this.listeners.set(name, fn); }
     close() { this.closed = true; }
     emit(name, value) { this.listeners.get(name)?.({ data: JSON.stringify(value) }); }
   }
   const document = { hidden: false, getElementById: get, createElement: () => ({}), addEventListener: (name, fn) => documentEvents.set(name, fn) };
-  const context = vm.createContext({ document, window: { addEventListener: (name, fn) => windowEvents.set(name, fn) }, Date: ClockDate,
+  const context = vm.createContext({ document, window: { addEventListener: (name, fn) => windowEvents.set(name, fn), dispatchEvent: event => emitted.push(event.type) }, Date: ClockDate, Event,
     EventSource: Stream, setInterval(fn, delay) { assert.equal(delay, 1000); const id = ++nextTimer; timers.set(id, fn); return id; },
-    clearInterval: id => timers.delete(id), fetch() { assert.fail('倒计时不得额外请求'); } });
+    clearInterval: id => timers.delete(id), async fetch(url) { requests.push(url); if(!fetchStatus)assert.fail('倒计时不得额外请求'); return { status: await fetchStatus() }; } });
   vm.runInContext(source + '\nglobalThis.ui = {startSharedStatus,stopSharedStatus};', context);
-  return { get, timers, streams, ui: context.ui,
+  return { get, timers, streams, emitted, requests, ui: context.ui,
     advance(ms) { now += ms; for (const fn of [...timers.values()]) fn(); },
     visible(visible) { document.hidden = !visible; documentEvents.get('visibilitychange')(); },
     event(name) { windowEvents.get(name)(); }
@@ -87,8 +88,25 @@ test('登录过期清理倒计时，新登录等新快照；更长上游截止�
   assert.match(p.get('sharedCooldown').textContent, /按上游要求.*剩余 15 分 0 秒/);
   assert.equal(p.timers.size, 1);
   p.streams[0].emit('auth-expired'); assert.equal(p.timers.size, 0);
-  assert.equal(p.get('sharedConnection').textContent, '登录已过期，请重新登录');
+  assert.equal(p.get('sharedConnection').textContent, '登录已失效，请重新登录');
+  assert.deepEqual(p.emitted, ['member-session-expired']);
   p.ui.startSharedStatus(); assert.equal(p.timers.size, 0);
   p.streams[1].emit('shared-status', state(null, { status: 'active', cooldownUntil: null }));
   assert.equal(p.get('sharedCooldown').textContent, '当前无冷却');
+});
+
+test('首次SSE永久关闭只核验一次鉴权；网络错误不注销，旧连接结果不影响新登录', async () => {
+  let status = 401;
+  const p = page(async () => status); p.ui.startSharedStatus();
+  await p.streams[0].onerror(); assert.equal(p.requests.length, 0);
+  p.streams[0].readyState = 2; await p.streams[0].onerror();
+  assert.deepEqual(p.emitted, ['member-session-expired']);
+  assert.deepEqual(p.requests, ['/api/member/shared-status']);
+  status = 503; p.ui.startSharedStatus(); p.streams[1].readyState = 2; await p.streams[1].onerror();
+  assert.equal(p.emitted.length, 1); assert.equal(p.streams[1].closed, undefined);
+  let finish;
+  const other = page(() => new Promise(resolve => { finish = resolve; })); other.ui.startSharedStatus();
+  other.streams[0].readyState = 2; const old = other.streams[0].onerror();
+  other.ui.stopSharedStatus(); other.ui.startSharedStatus(); finish(401); await old;
+  assert.equal(other.emitted.length, 0);
 });

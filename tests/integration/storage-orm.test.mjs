@@ -57,8 +57,8 @@ test('新库的列、默认值、主键和索引方向与旧版完整 schema 一
   t.after(() => legacy.close());
   legacy.exec(legacySchema);
   const store = await openStore(t);
-  assert.deepEqual(metadata(store.sqlite).filter(table => !['generation_requests', 'generation_idempotency', 'fair_quota_settlements'].includes(table.name)).map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq', 'payload_bytes'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_result_pending', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
-  assert.equal(metadata(store.sqlite).length, 12);
+  assert.deepEqual(metadata(store.sqlite).filter(table => !['generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'member_sessions'].includes(table.name)).map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq', 'payload_bytes'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_result_pending', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
+  assert.equal(metadata(store.sqlite).length, 13);
   const partial = store.sqlite.prepare("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql LIKE '%WHERE%' ORDER BY name").all();
   assert.equal(partial.length, 8);
   assert.match(partial.find(index => index.name === 'idx_jobs_active_created').sql, /IN \('queued', 'pending', 'running'\)/);

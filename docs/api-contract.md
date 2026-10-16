@@ -1,6 +1,6 @@
 # 迁移前 API 契约基线（C02）
 
-核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录已经存在的行为；F03 分资源故障处理与 F06 各生成入口持久受理、连接解耦、可选幂等已接入，计划中的持久会话与细粒度事件仍不能当作已经实现。
+核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却和 A01 持久会话已接入，R01 细粒度事件仍待实施。
 
 实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.js)、[输入解析](../server/native-image.js)、[multipart 解析](../server/native-body.js)、[核价](../server/native-pricing.js)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
@@ -141,7 +141,9 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 
 ## 门户与管理的迁移边界
 
-成员 `/api/member/*` 使用 `nai_member_session` Cookie，`HttpOnly/SameSite=Strict/Path=/api/member`，非本机环境附 Secure；状态变更要求本站 Origin，Discord GET 回跳用独立 OAuth state 校验并303回首页。当前会话仍在进程内、固定12小时、重启失效；A01 的成员7天/owner12小时持久会话尚未实现，不能冻结旧缺陷阻止批准的变更。
+成员 `/api/member/*` 使用 `nai_member_session` Cookie，`HttpOnly/SameSite=Strict/Path=/api/member`，非本机环境附 Secure；状态变更要求本站 Origin，Discord GET 回跳用独立 OAuth state 校验并303回首页。A01 会话摘要保存在 SQLite：普通成员固定 7 天、owner 固定 12 小时，Cookie 的 Max-Age/Expires 对应同一服务器截止，GET 不续期或重发 Cookie。重启保留有效会话；退出、版本撤销、资格失效及 owner 归属变化按[会话规则](member-sessions.md)处理。旧内存会话无法迁移，首次升级需重新登录。
+
+密码登录成功回包增加 `expiresAt`（整数 Unix 毫秒），`GET /api/member/me` 增加 `sessionExpiresAt`；JSON 正文不回传会话令牌或摘要。SSE 建连时仍使用正常 HTTP 鉴权；连接内确认资格/会话失效发送 `auth-expired` 并结束，Discord 503 或网络错误只中断连接。页面在 SSE 永久关闭时最多补一次状态鉴权检查，401/403 清除密钥展示并显示重新登录，503 保留页面。
 
 `me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 的额度同步及 Discord 资格检查有持久副作用，Nuxt 迁移不能把 GET 简单当作可直接读 SQLite 的接口。
 
