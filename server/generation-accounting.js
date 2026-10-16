@@ -1,5 +1,6 @@
 // 共享模式不自动重发原任务：一个任务目前只有一次上游尝试。
 // 本模块只追加证据；钱包变更仍由 fair-quota 在同一个存储事务中执行。
+export const GENERATION_REVIEW_MS = 5 * 60 * 1000;
 function localResources(charge) {
   return {
     v5: charge.resource === 'v5' ? charge.amount : 0,
@@ -72,4 +73,46 @@ export function recordGenerationRefund(db, job, charge, now, evidence = {}) {
     actualConsumed: null, upstreamCandidates: attempt.upstreamCandidates, candidateMode: 'alternatives', response
   });
   job.generationRefund.lossEventId = loss.id;
+  job.generationReview = { status: 'pending', firstUnknownAt: now, deadlineAt: now + GENERATION_REVIEW_MS,
+    lossEventId: loss.id, closedAt: null, closureEventId: null };
+}
+
+export function closeGenerationReview(db, job, now = Date.now(), reason = 'deadline') {
+  const review = job.generationReview;
+  if (!review || review.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
+  if (reason === 'deadline' && (job.status !== 'failed' || now < review.deadlineAt)) return false;
+  const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
+  const candidates = attempt.upstreamCandidates;
+  const usable = Array.isArray(candidates) && candidates.length > 0 && candidates.every(candidate =>
+    candidate.resources && Object.values(candidate.resources).length > 0 && Object.entries(candidate.resources).every(([resource, amount]) =>
+      ['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) && typeof amount === 'number' && Number.isFinite(amount) && amount >= 0)
+    && Object.values(candidate.resources).some(amount => amount > 0));
+  const event = appendEvent(db, attempt, 'generation_loss_estimated', now, {
+    lossEventId: review.lossEventId, firstUnknownAt: review.firstUnknownAt, deadlineAt: review.deadlineAt,
+    closedAt: now, reason, evidenceLevel: 'unconfirmed_estimate', actualConsumed: null,
+    estimateAmountStatus: usable ? 'quoted_candidates' : 'unknown',
+    upstreamCandidates: usable ? candidates : null, candidateMode: 'alternatives',
+    // 按尝试记录的运营风险可能已包含在聚合缺口里；不相加作实耗，也不再次核销运营资金。
+    liability: 'operator_pending_attribution', accountingScope: 'operator_attempt_estimate_nonadditive',
+    aggregateSettlement: 'unmatched'
+  });
+  Object.assign(review, { status: 'estimated_closed', closedAt: now, closureEventId: event.id });
+  return true;
+}
+
+export function recordRecoveredGeneration(db, job, imageId, now = Date.now()) {
+  if (job.lateResultAvailable) return false;
+  closeGenerationReview(db, job, now, 'result_recovered');
+  const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
+  appendEvent(db, attempt, 'generation_result_recovered', now, {
+    imageId, lossEventId: job.generationRefund?.lossEventId || null,
+    closureEventId: job.generationReview?.closureEventId || null,
+    refundRetained: true, actualConsumed: null, evidenceLevel: 'complete_local_result',
+    // 完整图片证明执行完成，但不能从图片倒推出 NAI 单次实际扣费。
+    chargeEvidence: 'unconfirmed'
+  });
+  job.lateResultAvailable = true; job.lateResultAt = new Date(now).toISOString();
+  job.updatedAt = job.lateResultAt;
+  if (job.generationReview) Object.assign(job.generationReview, { status: 'result_recovered', resultImageId: imageId });
+  return true;
 }

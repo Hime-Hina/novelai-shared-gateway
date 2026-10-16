@@ -715,9 +715,34 @@ export class JsonStore {
     return row ? safeJson(row.data, null) : null;
   }
 
+  loadJobForUpdate(id) {
+    // 仅在串行 update 内使用：冷任务仍是旧行，必须恢复原排序及已提交快照，不能按新行分配顺序。
+    const cached = this.db.jobs.find(job => job.id === id);
+    if (cached) return cached;
+    const row = this.statements.selectById.jobs.get({ id });
+    const job = row ? safeJson(row.data, null) : null;
+    if (!job) return null;
+    const order = Number(row.orderValue);
+    this.rowState.jobs.set(id, { data: row.data, order });
+    this.orderKeys.jobs.set(id, order);
+    const index = this.db.jobs.findIndex(item => this.orderKeys.jobs.get(item.id) < order);
+    this.db.jobs.splice(index < 0 ? this.db.jobs.length : index, 0, job);
+    return job;
+  }
+
   readOperatingLossSettlements(lossEventId) {
     // 仅在已串行化的管理写事务内调用，覆盖已退出热缓存的核销历史。
     return this.selectItems('ledger', "WHERE source = 'operating_loss_covered' AND json_extract(data, '$.lossEventId') = @id", { id: lossEventId });
+  }
+
+  async readDueGenerationReviews(now, limit = 100) {
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    // 谓词与部分索引保持一致；读取持久历史，不漏掉已退出热缓存的失败任务。
+    return this.selectItems('jobs', `WHERE json_extract(data, '$.generationReview.status') = 'pending'
+      AND json_extract(data, '$.generationReview.deadlineAt') <= @now
+      ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT @limit`, { now, limit });
   }
 
   countRecords(collection) {
@@ -794,7 +819,7 @@ export class JsonStore {
       this.statements.hasTypedRecords[collection] = db.select({ value: sql`1` }).from(table).limit(1).prepare();
       this.statements.selectRecords[collection] = db.select({ id: table.id, orderValue: table.order_value, data: table.data })
         .from(table).orderBy(desc(table.order_value)).prepare();
-      this.statements.selectById[collection] = db.select({ data: table.data }).from(table)
+      this.statements.selectById[collection] = db.select({ data: table.data, orderValue: table.order_value }).from(table)
         .where(eq(table.id, sql.placeholder('id'))).limit(1).prepare();
       this.statements.countRecords[collection] = db.select({ count: count() }).from(table).prepare();
       this.statements.deleteAllRecords[collection] = db.delete(table).prepare();

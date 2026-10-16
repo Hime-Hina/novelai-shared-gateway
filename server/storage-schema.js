@@ -45,7 +45,9 @@ export const jobs = sqliteTable('jobs', {
   index('idx_jobs_updated_stats').on(table.updated_at, table.status, table.model, table.created_at, table.cost),
   index('idx_jobs_active_created').on(table.created_at).where(sql`${table.status} IN ('queued', 'running')`),
   index('idx_jobs_failed_order').on(sql`${table.order_value} DESC`).where(sql`${table.status} = 'failed'`),
-  index('idx_jobs_error_log_updated').on(sql`${table.updated_at} DESC`).where(sql`${table.error_loggable} = 1`)
+  index('idx_jobs_error_log_updated').on(sql`${table.updated_at} DESC`).where(sql`${table.error_loggable} = 1`),
+  index('idx_jobs_generation_review_due').on(sql`json_extract(${table.data}, '$.generationReview.deadlineAt')`)
+    .where(sql`json_extract(${table.data}, '$.generationReview.status') = 'pending'`)
 ]);
 export const images = sqliteTable('images', recordFields(), table => [
   ...recordIndexes('images', table),

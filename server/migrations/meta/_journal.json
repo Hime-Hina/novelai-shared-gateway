@@ -15,6 +15,13 @@
       "when": 1792177134866,
       "tag": "0001_remove_legacy_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792181008682,
+      "tag": "0002_generation_review",
+      "breakpoints": true
     }
   ]
 }

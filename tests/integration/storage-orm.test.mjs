@@ -56,10 +56,10 @@ test('新库的列、默认值、主键和索引方向与旧版完整 schema 一
   t.after(() => legacy.close());
   legacy.exec(legacySchema);
   const store = await openStore(t);
-  assert.deepEqual(metadata(store.sqlite), metadata(legacy));
+  assert.deepEqual(metadata(store.sqlite).map(table => ({ ...table, indexes: table.indexes.filter(index => index.name !== 'idx_jobs_generation_review_due') })), metadata(legacy));
   assert.equal(metadata(store.sqlite).length, 9);
   const partial = store.sqlite.prepare("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql LIKE '%WHERE%' ORDER BY name").all();
-  assert.equal(partial.length, 3);
+  assert.equal(partial.length, 4);
   assert.match(partial.find(index => index.name === 'idx_jobs_active_created').sql, /IN \('queued', 'running'\)/);
   const plan = store.sqlite.prepare(`EXPLAIN QUERY PLAN SELECT id, order_value, data FROM jobs
     WHERE status IN ('queued', 'running') ORDER BY created_at`).all();
@@ -67,7 +67,7 @@ test('新库的列、默认值、主键和索引方向与旧版完整 schema 一
   const before = metadata(store.sqlite);
   migrateStorage(store.sqlite);
   assert.deepEqual(metadata(store.sqlite), before);
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 2);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 3);
 });
 
 for (const retainedMetrics of [0, 1, 3]) {
@@ -121,7 +121,7 @@ test('旧 JSON 文件经过同一新库迁移路径导入，保护模式保留�
   const store = await openStore(t, dataDir);
   assert.deepEqual(store.selectItemById('jobs', job.id), job);
   assert.equal(await readFile(path.join(dataDir, 'library.json'), 'utf8'), source);
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 2);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 3);
 });
 
 test('不支持的旧结构或同名错误部分索引不登记基线、不留下半次补列', async t => {
@@ -146,19 +146,19 @@ test('增量迁移失败回滚、重复执行不重跑，并拒绝改写已执�
   await cp(storageMigrationsDirectory, migrations, { recursive: true });
   const journalPath = path.join(migrations, 'meta', '_journal.json');
   const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-  journal.entries.push({ idx: 2, version: '6', when: journal.entries.at(-1).when + 1, tag: '0002_test_upgrade', breakpoints: true });
+  journal.entries.push({ idx: journal.entries.length, version: '6', when: journal.entries.at(-1).when + 1, tag: '0003_test_upgrade', breakpoints: true });
   await writeFile(journalPath, JSON.stringify(journal));
-  const migrationFile = path.join(migrations, '0002_test_upgrade.sql');
+  const migrationFile = path.join(migrations, '0003_test_upgrade.sql');
   const addition = 'ALTER TABLE jobs ADD test_upgrade TEXT;';
   await writeFile(migrationFile, addition + '\n--> statement-breakpoint\nUPDATE missing_table SET value=1;');
   assert.throws(() => migrateStorage(store.sqlite, migrations), /missing_table/);
   assert.equal(store.sqlite.prepare('PRAGMA table_info(jobs)').all().some(column => column.name === 'test_upgrade'), false);
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 2);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 3);
   await writeFile(migrationFile, addition);
   migrateStorage(store.sqlite, migrations);
   migrateStorage(store.sqlite, migrations);
   assert.equal(store.sqlite.prepare('PRAGMA table_info(jobs)').all().filter(column => column.name === 'test_upgrade').length, 1);
-  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 3);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, 4);
   await writeFile(migrationFile, addition + '\n-- changed after application');
   assert.throws(() => migrateStorage(store.sqlite, migrations), /migration history differs/);
 });

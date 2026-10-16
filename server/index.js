@@ -11,6 +11,8 @@ import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDea
 import { requireDiscordMembership } from './discord-auth.js';
 import { ownerOperation } from './owner-operations.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
+import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.js';
+import { validateImageBytes } from './native-image.js';
 import http from 'node:http';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JobPreviews } from './job-previews.js';
@@ -53,6 +55,7 @@ let queueDrainRequested = false;
 let accountQuotaRefreshTimer = null;
 let accountQuotaRefreshPromise = null;
 let accountQuotaAutoRefreshStarted = false;
+let generationReviewTimer = null;
 const jobWaiters = new Map();
 const runningJobControls = new Map();
 const directGenerateTimeoutMs = Number(process.env.DIRECT_GENERATE_TIMEOUT_MS || 60_000);
@@ -153,6 +156,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(port, host, () => {
   console.log(`Nai2API listening on http://${host}:${port}`);
   startAccountQuotaAutoRefresh();
+  startGenerationReviews();
   logStartupQueueState().catch((error) => console.error('[runtime] failed to inspect startup queue:', error)).finally(() => {
     scheduleQueueDrain();
   });
@@ -1570,6 +1574,37 @@ function startAccountQuotaAutoRefresh() {
   run();
 }
 
+function startGenerationReviews() {
+  const run = async () => {
+    try { await reconcileGenerationReviews(); }
+    catch (error) { console.error('[fair-quota] 本地消费核对失败，下次继续:', error.message); }
+    finally { generationReviewTimer = setTimeout(run, 10000); generationReviewTimer.unref?.(); }
+  };
+  void run();
+}
+
+async function reconcileGenerationReviews(now = Date.now()) {
+  // 不读取 NAI、账户健康或冷却状态；离线/停用时也必须按原截止时间结束核对。
+  for (const pending of await store.readDueGenerationReviews(now)) {
+    let localImage = pending.imageId ? await store.findImage(pending.imageId) : null;
+    if (localImage?.token !== pending.userToken) localImage = null;
+    if (localImage) {
+      try {
+        const buffer = await readStoredImage(localImage);
+        if (localImage.mimeType !== 'application/octet-stream') validateImageBytes(buffer, { maxBytes: 64 * 1024 * 1024, maxDimension: 16384 });
+        else if (!buffer.length) localImage = null;
+      } catch { localImage = null; }
+    }
+    await store.update(db => {
+      const job = store.loadJobForUpdate(pending.id);
+      if (!job || job.generationReview?.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
+      if (localImage && job.imageId === localImage.id) return recordRecoveredGeneration(db, job, localImage.id, now);
+      return closeGenerationReview(db, job, now);
+    }, { includeSettings: true, immediate: true,
+      dirtyRows: (_result, db) => dirtyJobMutationRows({ jobId: pending.id }, db), shouldPersist: Boolean });
+  }
+}
+
 async function refreshEnabledAccountQuotas() {
   if (accountQuotaRefreshPromise) return accountQuotaRefreshPromise;
   accountQuotaRefreshPromise = (async () => {
@@ -2640,7 +2675,7 @@ async function runReservedJob(reservation) {
       forceStream: useStreamProgress,
       onProgress: useStreamProgress ? (progress) => updateJobStreamProgress(reservation.job?.id, progress) : null
     });
-    if (control.controller.signal.aborted) throw control.controller.signal.reason || new Error(control.reason || 'direct generate timeout');
+    // 已拿到验证完整的产物时，即使截止时间刚到，也应保存；退款是否发生由提交时状态决定。
     if (useStreamProgress) {
       updateJobStreamProgress(reservation.job?.id, { percent: 100, step: reservation.job?.request?.steps, total: reservation.job?.request?.steps });
     }
@@ -2930,22 +2965,35 @@ async function tryReserveCreditAndAccount(token, request, cacheKey) {
 
 async function completeGeneration(reservation, request, image, meta = {}) {
   const imageId = createId('img');
-  const imageFile = await writeStoredImage(imageId, image);
+  let imageFile = null;
   const accountCost = reservationAccountCost(reservation);
   let trimmedImages = [];
   let savedImage;
   try {
-    savedImage = await store.update((db) => {
-      // 已取消或已退款的任务不能被迟到的上游响应重新写成成功。
+    savedImage = await store.update(async (db) => {
+      let currentJob = null, refunded = false;
       if (fairShareMode && meta.jobId) {
-        const currentJob = db.jobs.find(j => j.id === meta.jobId);
-        if (currentJob?.status !== 'running' || currentJob.fairCharge?.status !== 'reserved') throw httpError(409, '任务已结清，忽略迟到的生成结果');
+        currentJob = store.loadJobForUpdate(meta.jobId);
+        if (!currentJob || !['reserved', 'refunded', 'settled'].includes(currentJob.fairCharge?.status)) throw httpError(409, '任务结算凭据不存在');
+        if (currentJob.userToken !== reservation.token) throw httpError(409, '生成结果与任务归属不符');
+        if (currentJob.imageId) {
+          const existing = db.images.find(item => item.id === currentJob.imageId) || store.selectItemById('images', currentJob.imageId);
+          if (existing) {
+            if (existing.token !== currentJob.userToken) throw httpError(409, '已存结果与任务归属不符');
+            if (currentJob.fairCharge.status === 'refunded') recordRecoveredGeneration(db, currentJob, existing.id);
+            return { ...existing, balance: db.users.find(user => user.token === reservation.token)?.balance || 0 };
+          }
+        }
+        refunded = currentJob.fairCharge.status === 'refunded';
+        if (!refunded && currentJob.fairCharge.status !== 'reserved') throw httpError(409, '任务已结算但结果缺失');
       }
-      const user = getUserOrThrow(db, reservation.token);
+      const user = currentJob ? db.users.find(item => item.token === reservation.token) : getUserOrThrow(db, reservation.token);
+      // 在串行事务中先检查既有产物，再写一次新文件；重复迟到通知不创建第二份文件。
+      imageFile = await writeStoredImage(imageId, image);
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
       if (account) {
-        account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode) recordSharedCompletion(account, Date.now());
+        if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+        if (fairShareMode && !refunded) recordSharedCompletion(account, Date.now());
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = new Date().toISOString();
       }
@@ -2975,30 +3023,32 @@ async function completeGeneration(reservation, request, image, meta = {}) {
         const job = db.jobs.find((item) => item.id === meta.jobId);
         if (job) {
           Object.assign(job, reservation.upstreamTiming || {});
-          if (fairShareMode) settleFairQuota(db, job, true);
-          job.status = 'done';
+          if (fairShareMode && !refunded) settleFairQuota(db, job, true);
+          if (refunded) recordRecoveredGeneration(db, job, saved.id);
+          else job.status = 'done';
           job.imageId = saved.id;
           job.accountId = reservation.account?.id || job.accountId || '';
-          job.error = '';
-          job.errorDetail = '';
+          if (!refunded) { job.error = ''; job.errorDetail = ''; }
           job.updatedAt = new Date().toISOString();
-          job.completedAt = job.updatedAt;
+          if (!refunded) job.completedAt = job.updatedAt;
         }
       }
 
-      return { ...saved, balance: user.balance };
+      return { ...saved, balance: user?.balance || 0 };
     }, {
-      dirtyRows: (saved) => ({
+      dirtyRows: (saved, db) => ({
         accounts: uniqueIds([reservation.account?.id]),
         images: uniqueIds([saved?.id]),
-        jobs: uniqueIds([meta.jobId])
+        jobs: uniqueIds([meta.jobId]),
+        ledger: (db.ledger || []).filter(event => event.jobId === meta.jobId).map(event => event.id)
       })
     });
   } catch (error) {
-    await removeStoredImages([{ id: imageId, file: imageFile }]);
+    if (imageFile) await removeStoredImages([{ id: imageId, file: imageFile }]);
     throw error;
   }
   if (meta.jobId) clearJobStreamProgress(meta.jobId);
+  if (imageFile && savedImage.id !== imageId) await removeStoredImages([{ id: imageId, file: imageFile }]);
   trimmedImages = await store.trimImageCache(null, { batchSize: imageCacheTrimBuffer() });
   await removeStoredImages(trimmedImages);
   scheduleQueueDrain();
@@ -3640,6 +3690,7 @@ function publicJob(job, db = null) {
     generationProgress: publicGenerationProgress(job),
     imageId: job.imageId || '',
     imageUrl: job.imageId ? publicImageUrl(job.imageId) : '',
+    lateResultAvailable: job.lateResultAvailable === true,
     error: publicErrorMessage(job.error || ''),
     queuePosition: queue.progress,
     queuedCount: queue.total,
@@ -4601,6 +4652,7 @@ function installShutdownHandlers(serverInstance) {
     shuttingDown = true;
     console.log(`[runtime] ${signal} received. Flushing SQLite changes before shutdown.`);
     if (accountQuotaRefreshTimer) clearTimeout(accountQuotaRefreshTimer);
+    if (generationReviewTimer) clearTimeout(generationReviewTimer);
     try {
       store.flushSync();
     } catch (error) {

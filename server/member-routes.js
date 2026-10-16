@@ -270,6 +270,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   if (url.pathname === '/api/member/me') {
     const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
+        lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
         model: j.request?.model || '', status: j.status, charge: j.fairCharge ? { resource: j.fairCharge.resource, amount: j.fairCharge.amount, status: j.fairCharge.status, estimated: j.fairCharge.estimated,
           billingMode: j.fairCharge.billingMode || null, v5Equivalent: j.fairCharge.v5Equivalent ?? null, upstreamBilling: j.fairCharge.upstreamBilling || null } : null }))
     }), { collections: ['settings', 'ledger'] });
