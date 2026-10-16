@@ -153,12 +153,18 @@ V5 用量按图片像素与步数估算。官方可能只返回整数百分比�
 
 SQLite、图片和凭据均存于 `data/`，服务重启后保留，网页登录会话需重新建立。默认不自动删除图片/历史，请自行监控磁盘并备份。公开仓库不含生产数据、真实凭据、个人地址或部署历史。
 
-本地开发使用 Node.js 22+：
+本地开发使用 Node.js 22+ 与 `pnpm 10.32.1`。版本固定在 `package.json` 的 `packageManager`，与 CI、Docker 构建一致。使用 Node.js 自带的 Corepack 时，先启用 pnpm shim；已有其他版本 pnpm 的环境也可用 `corepack pnpm` 显式运行本项目固定版本。
 
 ```sh
-npm ci
-npm run check
-npm test
+corepack enable pnpm
+pnpm --version
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm test
 ```
+
+唯一依赖锁文件为 `pnpm-lock.yaml`；新增直接依赖默认保存精确版本。包管理迁移保留原来的全部 38 个锁定依赖版本，`better-sqlite3` 固定为 `12.10.0`。其原生安装脚本已在 `package.json` 中明确允许，其他依赖不会因此获得执行安装脚本的许可；升级该原生依赖时需同时复核许可版本。不要使用 `--ignore-scripts` 跳过 SQLite 构建，也不要在 Windows 与 Linux 之间复制 `node_modules`。冻结安装失败时应查明锁文件或构建问题，不改用非冻结安装绕过。
+
+初始化和启动使用 `pnpm run bootstrap`、`pnpm start`。已有 npm 布局切换时，在测试停止后移走旧 `node_modules` 再冻结安装，保留旧目录以便回退；不混用 npm 锁文件。systemd 可继续直接运行 Node 入口，无需套包管理器。安装方式与平台要求见 [pnpm 10 官方文档](https://pnpm.io/10.x/installation)。
 
 测试使用合成账户、合成图片与临时目录，不调用官方生图。计价包含 184 个固定的官网报价样例，仓库只保存测试参数和数字结果，不依赖本机的官网脚本副本。HTTP 集成测试会启动本机模拟上游与独立网关，核对初始化、成员登录、ZIP／MessagePack、扣费、退款及持久化；临时数据保留在系统临时目录，便于复核。不要用生产数据运行初始化测试，也不要把测试临时凭据或运行日志上传。
