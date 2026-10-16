@@ -53,7 +53,7 @@
 | --- | --- | --- |
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
-| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06 已实现并验证：持久受理、批次公平、连接解耦、父查询/领取/取消与可选幂等；F10 文件发布恢复、F11 独立执行和 F12 冷却继续按序实施 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F12 已实现并验证：持久受理、批次公平、连接解耦、父操作与可选幂等、分类冷却/实际剩余等待/重启恢复；下一项 F10 文件发布恢复，F11 独立执行仍待 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | 已入计划；首屏网络优化纳入 P01、U01/U02 和 D01 对比验收，不只有测量没有修复 |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
@@ -83,6 +83,7 @@
 | F06（父请求操作片） | [fc702d7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/fc702d7) | Bearer/Cookie 共用父请求查询与取消，稳定成员 ID 授权、签名结果领取、仅取消 queued/pending；各同步入口返回父 ID，成员页提供批次详情。完整 328/328、84 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38974346425) 通过；真实 HTTP、SQLite 回滚/并发/冷历史覆盖，Chrome 完成取消和实际图片领取，390px 详情无溢出。Linux 七迁移、冷 pending、预算与 HTTP 启动通过 | 无新增 schema；running 继续，重复取消为 0，图片签发仍检查 child 归属。补齐 owner pending 独立统计。可选幂等待下一片，未调用真实 NAI，生产未切换 |
 | F06（可选幂等片） | [0d6f9b7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/0d6f9b7) | 同成员/操作/键持久去重；首次随机种子与有限默认参数保留，并发/重启/换 Key 后复用原任务，失败回放、缺失结果 410 不重生。完整 350/350、89 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38977188583) 通过；Native null 收口另过定向 9/9 和 Windows/Linux HTTP。Linux 八迁移、冷历史、映射回滚/重开、HTTP 与隔离权限通过 | 指纹 [c64424f](https://github.com/Hime-Hina/novelai-shared-gateway/commit/c64424f)、0007 映射 [c5a4f00](https://github.com/Hime-Hina/novelai-shared-gateway/commit/c5a4f00) 分别提交；不同键保留显式缓存规则、无键不猜重。中间 CI 旧连接用例一次超时未复现，[11d55d3](https://github.com/Hime-Hina/novelai-shared-gateway/commit/11d55d3) 补有限诊断且未放宽阈值。F06 完成，F10 掉电/文件恢复仍待；未调用真实 NAI、未切换生产 |
 | F05 | [868be65](https://github.com/Hime-Hina/novelai-shared-gateway/commit/868be65) | 终态凭据按 job ID 冷存，归档与设置/任务/账本同事务；冲突回滚，cold 优先陈旧快照，重复扣退与终态重派被阻止，reserved 原资格保留。完整 364/364、90 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38978709933) 通过；Linux 九迁移、冷历史/预算/HTTP 启动及归档/迟到/幂等 23/23 通过 | 新增 0008 两字段冷表，旧 typed/app_records/JSON/write 均覆盖；未知 reserved 原样保留，不删除凭据。合成 10 万条：热 settings 21.4 MB→3.4 KB、摘要约 450 ms→不足 1 ms，小更新亦不足 1 ms；这不是生产延迟承诺，详见[测量边界](failure-accounting.md#结算历史归档f05)。生产未切换 |
+| F12 | [11543de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/11543de) | 两类独立退避、成功复位、尝试幂等、最大截止与上游等待同事务持久；绑定账户与物理槽、实际 Retry-After、原因/本地倒计时和有限等待日志。冻结核心全量 382/382，新增真实 HTTP 2/2，93 文件语法通过；Windows/Linux 验证 300 秒截止、强杀重启/重放仅一次上游、已发头 SSE 正常结束。Chrome 390px 与退出关闭 SSE 通过 | 无新迁移；Linux 九迁移、冷历史/预算/完整性/启动、44 定向及 2 HTTP 通过，详见[生命周期验证](request-lifecycle.md#验证边界)。未解释历史 138 秒长尾，未调用真实 NAI；浏览器 hidden 未实际触发，仅单元覆盖。F10 文件恢复继续实施，生产未切换 |
 | C05 | [3e523de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3e523de) | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949247612) 已通过（dae4fae，含 C02 与 F07 边界补充） |
 | C02 | [dae4fae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dae4fae) | [API 契约矩阵](api-contract.md)记录官方 Swagger 摘要、支持/拒绝/网关扩展及 C03 差异；三个客户端样本连接解析与独立核价，新增 5 项纯模块通过。`node --test native-http.test.mjs` 10/10，含 OpenAI 目录、非流式/流式、鉴权及图片实际领取 | 仅文档与测试，未改变出站协议；模型全组合、Vibe 内部格式与公网 SSE 代理行为不假装已验证。C03 仍在 N03 后实施 |
 | C04 | [7d08e21](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7d08e21) | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949984502) 通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
@@ -410,7 +411,7 @@ F03 验收包括：注资后多次同步仍不进入成员钱包、重启不重�
 | NAI 429 或明确的并发容量拒绝 | 第 1/2/3 次及以后分别为 30/60/120 秒 | 复用当前容量退避，归类优先于普通网络故障 |
 | 上游给出有效的 `Retry-After` | 不早于上游要求的时间 | 与本地冷却取较晚者；可能超过上述本地上限 |
 
-普通故障与容量拒绝分别计数，均按自最近一次真实上游生图成功以来的对应失败次数累计；成功图片验证、保存与结算提交后清零，再回到完成后十秒间隔。读取余额成功、命中本地缓存、页面刷新、客户端重复提交及清理本地过期任务都不能清零或增加故障计数。当前 `recordSharedCapacityError` 已实现 30/60/120 秒，但代码尚无成功时清零 `capacityStrikeCount` 的路径，F12 一并修正。
+普通故障与容量拒绝分别计数，均按自最近一次真实上游生图成功以来的对应失败次数累计；成功图片验证、保存与结算提交后清零，再回到完成后十秒间隔。读取余额成功、命中本地缓存、页面刷新、客户端重复提交及清理本地过期任务都不能清零或增加故障计数。F12 已补齐原先缺少的成功复位路径，并防止同一次迟到成功的重复回调清掉后续故障计数。
 
 所有等待取最大截止时间，不相加：`cooldownUntil = max(已有截止时间, 本次结束时间 + 本地等待, 上游要求的截止时间)`。例如本次容量拒绝需等待 30 秒，不额外叠加正常十秒变成 40 秒；已有更长冷却不能被一次较短规则覆盖。`Retry-After` 支持秒数和 HTTP 日期，按 [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)校验；无效值忽略并使用本地规则，不伪造上游提供过该字段。
 
