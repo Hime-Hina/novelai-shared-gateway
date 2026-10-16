@@ -141,7 +141,7 @@ test('图片缓存命中也保留原批次停止代次，不能给旧请求换�
     isNoCache: () => false, requestCacheKey: () => 'synthetic-cache', dirtyResultJobRows: () => ({}),
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) });
   const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
-  for (const name of ['createJob', 'createDirectJob', 'getUserOrThrow']) {
+  for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay', 'createJob', 'createDirectJob', 'getUserOrThrow']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
   }

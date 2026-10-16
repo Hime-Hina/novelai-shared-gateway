@@ -34,7 +34,7 @@ function acceptance(store) {
     createId: prefix => `${prefix}-${++id}`, getUserOrThrow: (db, token) => db.users.find(user => user.token === token),
     assertFairMemberReady: async () => {}, cleanupStaleActiveJobs: async () => {},
     activeJobCount: jobs => jobs.filter(job => ['queued', 'running'].includes(job.status)).length
-  }, ['generationRequestRecord', 'createNativeBatch']);
+  }, ['resolveGenerationIdempotency', 'validateGenerationReplay', 'generationRequestRecord', 'createNativeBatch']);
   return (token, value = request) => {
     const claim = budget.claim();
     return ctx.createNativeBatch(token, value, 'synthetic-diagnostic', 0, claim).finally(() => claim.release());

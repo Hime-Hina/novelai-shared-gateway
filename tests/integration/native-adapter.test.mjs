@@ -14,6 +14,10 @@ const context = vm.createContext({ parseValidatedNativeImageRequest, parseNative
   queueDeadline: (now, deadline) => queueDeadline(now, deadline, {}), process: {env:{}},
   publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
 vm.runInContext(section, context);
+for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay']) {
+  const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
+  vm.runInContext((source.slice(start-6,start)==='async '?'async ':'')+source.slice(start,end),context);
+}
 vm.runInContext(source.slice(source.indexOf('function generationRequestRecord('), source.indexOf('async function createJob(')), context);
 const input = { action: 'generate', input: 'a cat', model: 'nai-diffusion-4-5-full', parameters: {width: 1024,height: 768,steps: 35, n_samples:1, seed: 4, stream: 'msgpack', v4_prompt:{caption:{base_caption:'a cat',char_captions:[{char_caption:'blue hair',centers:[{x:0.2,y:0.5}]}]}}, reference_image_multiple:[] } };
 const parsed = context.parseNativeImageRequest(input);
@@ -68,6 +72,7 @@ Object.assign(context, { bearerToken:req=>req.token||'', store, readJson:async r
   sendImage:(res,status,mime,buffer,headers)=>Object.assign(res,{status,mime,buffer,headers}) });
 await assert.rejects(context.handleNativeImageGeneration({token:'pst-invalid',body:input},{setHeader(){}}),e=>e.statusCode===401);
 const jsonHeaders={'content-type':'application/json'};
+await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:null,generationPayloadClaim:claim},{setHeader(){}}),error=>error.statusCode===400);
 const response={setHeader:()=>{}}; await context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},response);
 assert.equal(submitted.parent.source,'novelai-native');assert.equal(submitted.parent.member_id,user.id);
 assert.equal(submitted.jobs[0].requestId,submitted.parent.id);assert.equal(submitted.jobs[0].jobAdmissionVersion,7);

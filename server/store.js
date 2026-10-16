@@ -483,7 +483,7 @@ export class JsonStore {
       json_extract(j.data, '$.completedAt') AS completedAt, json_extract(j.data, '$.error') AS error,
       json_extract(j.data, '$.cancelledAt') AS cancelledAt,
       json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
-      i.id AS imageId
+      j.image_id AS referencedImageId, i.id AS imageId
       FROM jobs j LEFT JOIN images i ON i.id = j.image_id AND i.token = j.user_token
       WHERE j.request_id = ? ORDER BY sampleIndex, j.id`).all(id);
     return { ...request, jobs };

@@ -1,4 +1,5 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
+import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
@@ -137,6 +138,7 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) { res.destroy(); return; }
+    if (error.requestId) res.setHeader('X-Nai-Request-Id', error.requestId);
     if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes(error.statusCode))) {
       const image = buildErrorImage(publicErrorMessage(error.message || 'Generation failed'));
       sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
@@ -285,6 +287,7 @@ async function route(req, res) {
   if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
     || (method === 'GET' && url.pathname === '/generate')) {
     req.generationPayloadClaim = generationPayloadBudget.claim();
+    req.generationIdempotencyKey = readGenerationIdempotencyKey(req);
     if (method === 'GET') req.generationPayloadClaim.resize(Buffer.byteLength(url.search));
   }
   if (await publicSelfUseGuard(req, res, url, method)) return;
@@ -482,7 +485,8 @@ async function route(req, res) {
       sendJson(res, 202, await createOfficialJob(token, body, url.pathname === '/api/web/jobs'));
       return;
     }
-    const job = await createJob(token, body, { frontend: url.pathname === '/api/web/jobs', generationPayloadClaim: req.generationPayloadClaim });
+    const job = await createJob(token, body, { frontend: url.pathname === '/api/web/jobs', generationPayloadClaim: req.generationPayloadClaim,
+      idempotencyKey: req.generationIdempotencyKey });
     scheduleQueueDrain();
     const snapshot = await store.findJobContext(job.id);
     sendJson(res, 202, publicJob(snapshot?.job || job, snapshot));
@@ -556,7 +560,7 @@ async function route(req, res) {
   }
 
   if (method === 'GET' && url.pathname === '/generate') {
-    await handleDirectGenerate(url, res, req.generationPayloadClaim);
+    await handleDirectGenerate(url, res, req.generationPayloadClaim, req.generationIdempotencyKey);
     return;
   }
 
@@ -568,9 +572,17 @@ async function route(req, res) {
   throw httpError(404, 'not found.');
 }
 
-async function acceptDirectRequest(url, claim) {
+async function acceptDirectRequest(url, claim, key) {
   const token = String(url.searchParams.get('token') || '').trim();
   const rawParams = Object.fromEntries(url.searchParams.entries());
+  if (key) {
+    const intent = generationIntent(key, settings => normalizeNovelAiRequest(rawParams, settings, { maxSteps: DIRECT_URL_MAX_STEPS }), {
+      randomSeed: rawParams.seed === undefined || rawParams.seed === '', noCache: isNoCache(rawParams.nocache), claim
+    });
+    const job = await createDirectJob(token, null, '', { source: 'direct', generationPayloadClaim: claim, idempotency: intent });
+    scheduleQueueDrain();
+    return job;
+  }
   const db = await store.readCollections(['settings', 'users']);
   const request = normalizeNovelAiRequest(rawParams, db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
   const cacheKey = requestCacheKey(token, request, rawParams.seed);
@@ -600,7 +612,7 @@ async function acceptDirectRequest(url, claim) {
   return { id: job.id, requestId: job.requestId };
 }
 
-async function handleDirectGenerate(url, res, claim) {
+async function handleDirectGenerate(url, res, claim, key) {
   const token = String(url.searchParams.get('token') || '').trim();
   if (isOfficialKey(token)) {
     const snapshot = await createOfficialJob(token, Object.fromEntries(url.searchParams.entries()), false, directGenerateTimeoutMs);
@@ -611,7 +623,7 @@ async function handleDirectGenerate(url, res, claim) {
     });
     return;
   }
-  const accepted = await acceptDirectRequest(url, claim);
+  const accepted = await acceptDirectRequest(url, claim, key);
   if (accepted.requestId) res.setHeader('X-Nai-Request-Id', accepted.requestId);
   if (res.destroyed) return;
   if (accepted.cached) {
@@ -623,7 +635,8 @@ async function handleDirectGenerate(url, res, claim) {
     if (res.destroyed) return;
     if (!result) { sendTimeoutImage(res); return; }
     if (result.error) throw new Error(result.error);
-    await sendStoredImage(res, 200, result.saved, { 'x-cache': 'miss', 'x-balance': String(result.balance ?? '') });
+    await sendStoredImage(res, 200, result.saved, { 'x-cache': accepted.cacheHit ? 'hit' : 'miss',
+      'x-balance': String((accepted.replayed ? accepted.balance : result.balance) ?? '') });
   } catch (error) {
     // 响应失败不改写已受理任务；持久执行与结算由调度器负责。
     if (res.destroyed) return;
@@ -755,25 +768,35 @@ async function acceptNativeHttpRequest(req, diagnosticId, operation) {
   if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
   let body = await readNativeBody(req, { jsonReader: req => readJson(req, 32 * 1024 * 1024) });
   logNativeDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
-  const request = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
-  request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
+  const normalize = () => {
+    const request = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
+    request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
+    quoteFairRequest(singleGenerationRequest(request));
+    return request;
+  };
+  const intent = generationIntent(req.generationIdempotencyKey, normalize, { operation: operation || 'generate',
+    randomSeed: !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1), noCache: true, claim: req.generationPayloadClaim });
+  const batch = await createNativeBatch(token, intent ? null : normalize(), diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim, intent);
   body = null;
-  quoteFairRequest(singleGenerationRequest(request));
-  const batch = await createNativeBatch(token, request, diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim);
   scheduleQueueDrain();
   // 此函数的完整正文/参数作用域到此结束，HTTP 等待只持有下面的小型批次元数据。
   return batch;
 }
 
-async function createNativeBatch(token, request, diagnosticId, admissionVersion, claim) {
-  await assertFairMemberReady(token);
+async function createNativeBatch(token, request, diagnosticId, admissionVersion, claim, intent) {
+  const replay = await assertFairMemberReady(token, intent);
+  if (replay) { claim?.release(); return replay; }
   await cleanupStaleActiveJobs('create native batch');
-  const count = request.sampleCount || 1;
-  let parent;
+  let parent, mapping;
   return store.update(db => {
     const user = getUserOrThrow(db, token);
+    const resolved = resolveGenerationIdempotency(db, user, intent);
+    if (resolved?.replay) return resolved.replay;
+    request = resolved?.request || request;
+    mapping = resolved?.mapping;
+    const count = request.sampleCount || 1;
     assertQueueAdmission(db, user, admissionVersion, process.env, count);
-    parent = generationRequestRecord(user, request, 'novelai-native', claim);
+    parent = generationRequestRecord(user, request, 'novelai-native', claim, resolved);
     const createdAt = parent.created_at;
     const queueExpiresAt = queueDeadline(Date.parse(createdAt), '');
     const jobIds = [];
@@ -789,9 +812,11 @@ async function createNativeBatch(token, request, diagnosticId, admissionVersion,
       db.jobs.unshift(job);
       jobIds.push(job.id);
     }
-    return { id: parent.id, jobIds, count };
+    if (mapping) Object.assign(mapping, { job_id: jobIds[0], request_id: parent.id });
+    return { id: parent.id, requestId: parent.id, jobIds, count };
   }, { immediate: true, generationRequest: () => parent, generationPayloadClaim: claim,
-    dirtyRows: result => ({ jobs: result.jobIds }) });
+    generationIdempotency: () => mapping,
+    dirtyRows: result => ({ jobs: result.jobIds }) }).then(validateGenerationReplay);
 }
 
 async function waitNativeResult(jobId, deadline, res) {
@@ -806,7 +831,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const batch = await acceptNativeHttpRequest(req, diagnosticId);
-  res.setHeader('X-Nai-Request-Id', batch.id);
+  if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const deadline = Date.now() + openAiChatTimeoutMs;
   const entries = [], results = [];
   for (let index = 0; index < batch.count; index++) {
@@ -840,7 +865,7 @@ async function handleNativeAuxiliary(req, res, operation) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const batch = await acceptNativeHttpRequest(req, diagnosticId, operation);
-  res.setHeader('X-Nai-Request-Id', batch.id);
+  if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const result = await waitNativeResult(batch.jobIds[0], Date.now() + openAiChatTimeoutMs, res);
   if (!result) return;
   const buffer = await readStoredImage(result.saved);
@@ -852,6 +877,19 @@ async function acceptOpenAiRequest(req) {
   const token = bearerToken(req);
   if (!token) throw httpError(401, 'missing API key.');
   const body = await readJson(req);
+  if (req.generationIdempotencyKey) {
+    let model;
+    const intent = generationIntent(req.generationIdempotencyKey, settings => {
+      const parsed = parseOpenAiImageRequest(body, settings);
+      model = parsed.model;
+      const request = normalizeNovelAiRequest(parsed.request, settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+      request.allowPurchasedAnlas = parsed.request.allowPurchasedAnlas === true;
+      return request;
+    }, { randomSeed: true, noCache: isNoCache(body.nai?.nocache ?? body.nocache ?? '1'), claim: req.generationPayloadClaim });
+    const job = await createJob(token, null, { source: 'openai', generationPayloadClaim: req.generationPayloadClaim, idempotency: intent });
+    scheduleQueueDrain();
+    return { id: job.id, requestId: job.requestId, model, stream: body.stream === true };
+  }
   const settings = await store.readSettings();
   const parsed = parseOpenAiImageRequest(body, settings);
   const job = await createJob(token, parsed.request, {
@@ -2222,123 +2260,185 @@ function mergeDirtyRows(target, source = {}) {
   return target;
 }
 
-async function assertFairMemberReady(token) {
+function readGenerationIdempotencyKey(req) {
+  const key = req.headers['idempotency-key'];
+  if (key === undefined) return null;
+  const count = (req.rawHeaders || []).filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key').length;
+  if (count > 1 || typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) {
+    throw httpError(400, 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
+  }
+  return key;
+}
+
+function generationIntent(key, normalize, { operation = 'generate', randomSeed = false, noCache = false, claim } = {}) {
+  return key ? { keyHash: hashObject(key), operation, normalize, randomSeed, noCache, claim } : null;
+}
+
+function unavailableGenerationResult(requestId) {
+  return Object.assign(httpError(410, '原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键'), { requestId: requestId || null });
+}
+
+function resolveGenerationIdempotency(db, user, intent, { existingOnly = false } = {}) {
+  if (!intent) return null;
+  const existing = store.readGenerationIdempotency(user.id, intent.operation, intent.keyHash);
+  if (!existing && existingOnly) return null;
+  const context = existing ? JSON.parse(existing.normalization_context) : requestNormalizationDefaults(db.settings);
+  const serializedContext = JSON.stringify(context);
+  const contextBytes = Buffer.byteLength(serializedContext);
+  intent.claim?.resize(contextBytes);
+  // 最终串行受理时重新选择首调用的 context；不能沿用事务外的默认值或随机种子。
+  const request = intent.normalize(context);
+  const payload = JSON.stringify(request);
+  intent.claim?.resize(Buffer.byteLength(payload) + contextBytes);
+  const fingerprint = generationRequestFingerprint(request, intent);
+  if (!existing) return { request, payload, contextBytes, mapping: { member_id: user.id, operation: intent.operation,
+    key_hash: intent.keyHash, fingerprint, normalization_context: serializedContext,
+    job_id: '', request_id: null, created_at: new Date().toISOString() } };
+  if (existing.fingerprint !== fingerprint) throw httpError(409, '相同 Idempotency-Key 对应的请求参数不同');
+  const job = db.jobs.find(job => job.id === existing.job_id) || store.selectItemById('jobs', existing.job_id);
+  if (!job) throw unavailableGenerationResult(existing.request_id);
+  let children;
+  if (existing.request_id) {
+    const parent = store.readGenerationRequestState(existing.request_id, user.id);
+    children = parent?.jobs;
+    if (job.requestId !== existing.request_id || !children || children.length !== (request.sampleCount || 1)
+      || children.some((child, index) => child.sampleIndex !== index)) throw unavailableGenerationResult(existing.request_id);
+  } else {
+    // 旧 inline 的稳定归属由首次受理映射保存；不能因 Key 轮换把它归给新 Key 持有者。
+    children = [job];
+  }
+  const replayImages = children.filter(child => child.status === 'done' || child.lateResultAvailable || child.imageId || child.referencedImageId).map(child => {
+    if (!child.imageId) throw unavailableGenerationResult(existing.request_id);
+    return { id: child.imageId, token: existing.request_id ? null : job.userToken };
+  });
+  return { replay: { id: job.id, requestId: existing.request_id, jobIds: children.map(child => child.id), count: children.length,
+    replayed: true, cacheHit: job.status === 'done' && !job.startedAt, balance: user.balance, replayImages } };
+}
+
+async function findCachedGenerationImage(cacheKey, token) {
+  const cached = await store.findImageByCacheKey(cacheKey);
+  if (!cached || cached.token !== token) return null;
+  try {
+    if (cached.file) { if (!(await stat(imageFilePath(cached.file))).size) return null; }
+    else if (!(await readStoredImage(cached)).length) return null;
+  } catch { return null; }
+  return cached;
+}
+
+async function validateGenerationReplay(result) {
+  if (!result?.replayed) return result;
+  for (const expected of result.replayImages) {
+    const image = await store.findImage(expected.id);
+    if (!image || expected.token && image.token !== expected.token) throw unavailableGenerationResult(result.requestId);
+    try {
+      if (image.file) { if (!(await stat(imageFilePath(image.file))).size) throw new Error('empty artifact'); }
+      else if (!image.base64) throw new Error('missing artifact');
+    } catch { throw unavailableGenerationResult(result.requestId); }
+  }
+  const { replayImages, ...metadata } = result;
+  return metadata;
+}
+
+async function assertFairMemberReady(token, intent) {
   if (!fairShareMode) return;
   const result = await store.update(db => {
     const user = getUserOrThrow(db, token);
+    const resolved = resolveGenerationIdempotency(db, user, intent, { existingOnly: true });
+    if (resolved?.replay) return { replay: resolved.replay };
     const state = syncFairQuota(db);
     if (!state?.enabled) return { status: 503, message: '共享账本尚未配置' };
     if (!state.members.includes(user.id)) return { status: 403, message: '该 Key 未加入共享账本' };
     if (state.status !== 'active') return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
     return null;
-  }, { collections: ['settings', 'ledger'] });
+  }, { collections: ['settings', 'ledger'], shouldPersist: result => !result?.replay });
+  if (result?.replay) return validateGenerationReplay(result.replay);
   if (result) throw httpError(result.status, result.message);
 }
 
-function generationRequestRecord(user, request, source, claim) {
-  const payload = JSON.stringify(request);
+function generationRequestRecord(user, request, source, claim, idempotency) {
+  const payload = idempotency?.payload || JSON.stringify(request);
   const payloadBytes = Buffer.byteLength(payload);
   // 与任务准入处于同一串行 update；成功提交后由活动 child 的 SQL 查询接管占用。
-  claim.resize(payloadBytes);
+  claim.resize(payloadBytes + (idempotency?.contextBytes || 0));
   return { id: createId('req'), member_id: user.id, source, operation: request.operation || 'generate',
     created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
 }
 
 async function createJob(token, body, options = {}) {
-  let generationRequest;
-  await assertFairMemberReady(token);
-  await cleanupStaleActiveJobs('create job');
-  const normalizeRequest = (settings) => {
+  let generationRequest, mapping;
+  const normalizeRequest = settings => {
     if (options.native) return structuredClone(body);
     const input = options.frontend ? { ...body, width: undefined, height: undefined, cost: undefined } : body;
     const request = normalizeNovelAiRequest(input, settings, { maxSteps: options.frontend ? MAX_STEPS : DIRECT_URL_MAX_STEPS });
-    if (options.frontend) {
-      request.steps = Math.floor(request.steps);
-      request.cost = generationCost(request);
-    }
+    if (options.frontend) { request.steps = Math.floor(request.steps); request.cost = generationCost(request); }
     if (fairShareMode) request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
     return request;
   };
-  if (!isNoCache(body.nocache)) {
+  const intent = options.idempotency || generationIntent(options.idempotencyKey, normalizeRequest, {
+    randomSeed: body?.seed === undefined || body.seed === '', noCache: isNoCache(body?.nocache), claim: options.generationPayloadClaim
+  });
+  const replay = await assertFairMemberReady(token, intent);
+  if (replay) { options.generationPayloadClaim?.release(); return replay; }
+  await cleanupStaleActiveJobs('create job');
+  const noCache = intent ? intent.noCache : isNoCache(body.nocache);
+  if (!intent && !noCache) {
     const settings = await store.readSettings();
     const request = normalizeRequest(settings);
     const cacheKey = requestCacheKey(token, request, body.seed);
     const cached = await store.findImageByCacheKey(cacheKey);
-    if (cached) {
-      return createDirectJob(token, request, cacheKey, {
-        status: 'done',
-        admissionVersion: options.admissionVersion,
-        generationPayloadClaim: options.generationPayloadClaim,
-        source: options.source || 'web',
-        accountId: cached.accountId || '',
-        imageId: cached.id,
-        cost: 0
-      });
-    }
+    if (cached) return createDirectJob(token, request, cacheKey, {
+      status: 'done', admissionVersion: options.admissionVersion, generationPayloadClaim: options.generationPayloadClaim,
+      source: options.source || 'web', accountId: cached.accountId || '', imageId: cached.id, cost: 0
+    });
   }
   const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
-  return store.update((db) => {
+  return store.update(async db => {
     const user = getUserOrThrow(db, token);
-    const request = normalizeRequest(db.settings);
+    const resolved = resolveGenerationIdempotency(db, user, intent);
+    if (resolved?.replay) return resolved.replay;
+    const request = resolved?.request || normalizeRequest(db.settings);
+    mapping = resolved?.mapping;
     assertMemberAcceptsJobs(user, options.admissionVersion);
-    const cacheKey = requestCacheKey(token, request, body.seed);
-    if (!isNoCache(body.nocache)) {
-      const activeMatch = db.jobs.find((job) => (
-        job.userToken === token
-        && job.cacheKey === cacheKey
-        && ['queued', 'running'].includes(job.status)
-      ));
-      if (activeMatch) return options.generationPayloadClaim ? { id: activeMatch.id, requestId: activeMatch.requestId || null } : activeMatch;
+    const explicitSeed = intent ? intent.randomSeed ? undefined : request.seed : body.seed;
+    const cacheKey = requestCacheKey(token, request, explicitSeed);
+    // 有键时，缓存选择和首次 context/映射处于同一串行受理，不能绑定事务外的旧默认值。
+    const cached = intent && !noCache ? await findCachedGenerationImage(cacheKey, token) : null;
+    if (!cached && !noCache) {
+      const activeMatch = db.jobs.find(job => job.userToken === token && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status));
+      if (activeMatch) {
+        if (mapping) Object.assign(mapping, { job_id: activeMatch.id, request_id: activeMatch.requestId || null });
+        return options.generationPayloadClaim ? { id: activeMatch.id, requestId: activeMatch.requestId || null } : activeMatch;
+      }
     }
-    assertQueueAdmission(db, user, options.admissionVersion);
-    const cost = generationCost(request);
+    if (!cached) assertQueueAdmission(db, user, options.admissionVersion);
+    const cost = cached ? 0 : generationCost(request);
     if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
-    if (options.generationPayloadClaim) {
-      generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
-    }
+    if (options.generationPayloadClaim) generationRequest = generationRequestRecord(user, request, options.source || 'web', claim, resolved);
     const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
     if (!generationRequest) claim.resize(payloadBytes);
-    const queueTotal = activeJobCount(db.jobs) + 1;
     user.balance -= cost;
     user.updatedAt = new Date().toISOString();
+    const now = new Date().toISOString();
     const job = {
-      id: createId('job'),
-      source: options.source || 'web',
+      id: createId('job'), source: options.source || 'web',
       ...(options.batchId ? { batchId: options.batchId, sampleIndex: options.sampleIndex } : {}),
-      userToken: token,
-      status: 'queued',
-      queueSeq: store.nextQueueSequence(),
+      userToken: token, status: cached ? 'done' : 'queued',
+      ...(cached ? {} : { queueSeq: store.nextQueueSequence() }),
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       request: generationRequest ? webJobRequestSummary(request) : request,
-      payloadBytes,
-      cacheKey,
-      queueTotal,
-      cost,
-      accountCost: 0,
-      deadlineAt: options.deadlineAt || '',
-      queueExpiresAt: queueDeadline(Date.now(), options.deadlineAt),
+      payloadBytes, cacheKey, queueTotal: cached ? 1 : activeJobCount(db.jobs) + 1, cost, accountCost: 0,
+      ...(cached ? { accountId: cached.accountId || '', completedAt: now } : {}),
+      deadlineAt: options.deadlineAt || '', queueExpiresAt: cached ? '' : queueDeadline(Date.now(), options.deadlineAt),
       jobAdmissionVersion: user.jobAdmissionVersion || 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      imageId: '',
-      error: '',
-      errorDetail: ''
+      createdAt: now, updatedAt: now, imageId: cached?.id || '', error: '', errorDetail: ''
     };
     db.jobs.unshift(job);
-    db.ledger.unshift({
-      id: createId('log'),
-      type: 'reserve',
-      token,
-      jobId: job.id,
-      amount: -cost,
-      at: new Date().toISOString()
-    });
+    if (!cached) db.ledger.unshift({ id: createId('log'), type: 'reserve', token, jobId: job.id, amount: -cost, at: now });
+    if (mapping) Object.assign(mapping, { job_id: job.id, request_id: job.requestId || null });
     return generationRequest ? { id: job.id, requestId: generationRequest.id } : job;
-  }, {
-    dirtyRows: dirtyResultJobRows,
-    generationRequest: () => generationRequest,
-    generationPayloadClaim: claim
-  }).finally(() => claim.release());
+  }, { dirtyRows: dirtyResultJobRows, generationRequest: () => generationRequest,
+    generationIdempotency: () => mapping, generationPayloadClaim: claim
+  }).finally(() => claim.release()).then(validateGenerationReplay);
 }
 
 async function ensureAccountRouteIds() {
@@ -2348,22 +2448,33 @@ async function ensureAccountRouteIds() {
 }
 
 async function createDirectJob(token, request, cacheKey, options = {}) {
-  let generationRequest;
-  await assertFairMemberReady(token);
+  let generationRequest, mapping;
+  const replay = await assertFairMemberReady(token, options.idempotency);
+  if (replay) { options.generationPayloadClaim?.release(); return replay; }
   if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
   const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
-  return store.update((db) => {
+  return store.update(async db => {
     const user = getUserOrThrow(db, token);
+    const resolved = resolveGenerationIdempotency(db, user, options.idempotency);
+    if (resolved?.replay) return resolved.replay;
+    request = resolved?.request || request;
+    mapping = resolved?.mapping;
+    let status = options.status, imageId = options.imageId || '', accountId = options.accountId || '';
+    if (options.idempotency) {
+      cacheKey = requestCacheKey(token, request, options.idempotency.randomSeed ? undefined : request.seed);
+      const cached = !options.idempotency.noCache ? await findCachedGenerationImage(cacheKey, token) : null;
+      if (cached) { status = 'done'; imageId = cached.id; accountId = cached.accountId || ''; }
+    }
     assertMemberAcceptsJobs(user, options.admissionVersion);
-    if (options.status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
-    const cost = Number(options.cost ?? generationCost(request));
-    const shouldCharge = !options.status && cost > 0;
+    if (status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
+    const cost = status === 'done' ? Number(options.cost || 0) : Number(options.cost ?? generationCost(request));
+    const shouldCharge = !status && cost > 0;
     if (shouldCharge && user.balance < cost) throw httpError(402, insufficientBalanceMessage);
     if (options.generationPayloadClaim) {
-      generationRequest = generationRequestRecord(user, request, options.source || 'direct', options.generationPayloadClaim);
+      generationRequest = generationRequestRecord(user, request, options.source || 'direct', options.generationPayloadClaim, resolved);
     }
     const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
-    if (!generationRequest && options.status !== 'done') claim.resize(payloadBytes);
+    if (!generationRequest && status !== 'done') claim.resize(payloadBytes);
     const now = new Date().toISOString();
     if (shouldCharge) {
       user.balance -= cost;
@@ -2374,22 +2485,22 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
       source: options.source || 'direct',
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       userToken: token,
-      status: options.status || 'queued',
-      ...(options.status === 'done' ? {} : { queueSeq: store.nextQueueSequence() }),
+      status: status || 'queued',
+      ...(status === 'done' ? {} : { queueSeq: store.nextQueueSequence() }),
       request: generationRequest ? webJobRequestSummary(request) : request,
       payloadBytes,
       cacheKey,
-      queueTotal: options.status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
+      queueTotal: status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
       cost: shouldCharge ? cost : Number(options.cost || 0),
       accountCost: 0,
-      accountId: options.accountId || '',
+      accountId,
       deadlineAt: options.deadlineAt || '',
-      queueExpiresAt: options.status === 'done' ? '' : queueDeadline(Date.now(), options.deadlineAt),
+      queueExpiresAt: status === 'done' ? '' : queueDeadline(Date.now(), options.deadlineAt),
       jobAdmissionVersion: user.jobAdmissionVersion || 0,
       createdAt: now,
       updatedAt: now,
-      completedAt: options.status === 'done' ? now : '',
-      imageId: options.imageId || '',
+      completedAt: status === 'done' ? now : '',
+      imageId,
       error: '',
       errorDetail: ''
     };
@@ -2404,12 +2515,14 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
         at: now
       });
     }
-    return generationRequest ? { id: job.id, requestId: generationRequest.id } : job;
+    if (mapping) Object.assign(mapping, { job_id: job.id, request_id: job.requestId || null });
+    return generationRequest ? { id: job.id, requestId: generationRequest.id, ...(options.idempotency ? { cacheHit: status === 'done' } : {}) } : job;
   }, {
     dirtyRows: dirtyResultJobRows,
     generationRequest: () => generationRequest,
+    generationIdempotency: () => mapping,
     generationPayloadClaim: claim
-  }).finally(() => claim.release());
+  }).finally(() => claim.release()).then(validateGenerationReplay);
 }
 
 async function markDirectJobRunning(jobId, reservation) {
