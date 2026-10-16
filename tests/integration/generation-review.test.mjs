@@ -104,10 +104,21 @@ test('迟到证据追加关联调整，保留原结案、原退款及未知收�
 test('升级沿用原首次未知，JSON 部分索引查冷历史，关闭写失败回滚并可重试', async t => {
   const seed = fixture(Date.now() - 400000), first = seed.jobs[0].generationReview.firstUnknownAt;
   delete seed.jobs[0].generationReview;
-  const store = await open(t, seed), directory = store.dataDir; await store.close();
+  const directory = await mkdtemp(path.join(tmpdir(), 'nai-generation-review-legacy-'));
   const old = new Database(path.join(directory, 'library.sqlite'));
-  // 退回 review 迁移之前的结构，后续迁移的索引和 journal 也一并移除。
-  old.exec("DROP INDEX idx_jobs_generation_review_due; DROP INDEX idx_jobs_member_late_results; DROP INDEX idx_ledger_source_at; DROP INDEX idx_ledger_failure_history; DELETE FROM __drizzle_migrations WHERE created_at > (SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 1 OFFSET 1); UPDATE jobs SET order_value = -37.5 WHERE id = 'review';"); old.close();
+  try {
+    // 从冻结的真实旧 schema 建库；新增迁移不再要求测试猜测如何撤销最新结构。
+    old.exec(await readFile(new URL('../fixtures/sqlite-before-drizzle.sql', import.meta.url), 'utf8'));
+    old.prepare("INSERT INTO app_settings (key, value) VALUES ('settings', ?)").run(JSON.stringify(seed.settings));
+    for (const collection of ['users', 'accounts', 'jobs', 'ledger']) {
+      const insert = old.prepare(`INSERT INTO ${collection}
+        (id, order_value, data, status, source, user_token, account_id, at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      seed[collection].forEach((item, index) => insert.run(item.id,
+        collection === 'jobs' ? -37.5 : seed[collection].length - index, JSON.stringify(item),
+        item.status || null, item.source || null, item.userToken || null, item.accountId || null, item.at || null));
+    }
+  } finally { old.close(); }
   const reopened = new JsonStore(directory); t.after(() => reopened.close()); await reopened.init();
   reopened.trimRuntimeCollection('jobs', 0); reopened.trimRuntimeCollection('ledger', 0);
   const rows = await reopened.readDueGenerationReviews(Date.now());
@@ -121,6 +132,7 @@ test('升级沿用原首次未知，JSON 部分索引查冷历史，关闭写失
   const review = loadFunctions({ store: reopened, closeGenerationReview, recordRecoveredGeneration,
     uniqueIds: values => [...new Set(values.filter(Boolean))] }, ['dirtyJobMutationRows', 'reconcileGenerationReviews']);
   const originalOrder = reopened.sqlite.prepare("SELECT order_value FROM jobs WHERE id = 'review'").get().order_value;
+  assert.equal(originalOrder, -37.5);
   reopened.sqlite.exec("CREATE TEMP TRIGGER reject_review BEFORE INSERT ON ledger WHEN json_extract(NEW.data, '$.type') = 'generation_loss_estimated' BEGIN SELECT RAISE(ABORT, 'synthetic review failure'); END;");
   await assert.rejects(review.reconcileGenerationReviews(), /synthetic review failure/);
   assert.equal((await reopened.readDueGenerationReviews(Date.now())).length, 1);

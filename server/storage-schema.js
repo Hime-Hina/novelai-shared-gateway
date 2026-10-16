@@ -35,11 +35,19 @@ export const users = sqliteTable('users', recordFields(), table => [
 export const accounts = sqliteTable('accounts', recordFields(), table => [
   ...recordIndexes('accounts', table), index('idx_accounts_route_id').on(table.route_id)
 ]);
+// 不加入 recordTables：历史执行参数按 ID 冷读，不能进入通用全量热缓存。
+export const generationRequests = sqliteTable('generation_requests', {
+  id: text().primaryKey(), member_id: text().notNull(), source: text().notNull(),
+  operation: text().notNull(), created_at: text().notNull(),
+  payload_bytes: integer().notNull(), payload: text().notNull()
+});
+
 export const jobs = sqliteTable('jobs', {
-  ...recordFields(), cost: real().default(0).notNull(),
+  ...recordFields(), request_id: text().references(() => generationRequests.id), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()
 }, table => [
   ...recordIndexes('jobs', table),
+  index('idx_jobs_request_status').on(table.request_id, table.status),
   index('idx_jobs_user_token').on(table.user_token),
   index('idx_jobs_image_id').on(table.image_id),
   index('idx_jobs_created_stats').on(table.created_at, table.status, table.stats_excluded, table.account_id),

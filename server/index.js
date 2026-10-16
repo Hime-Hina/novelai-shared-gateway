@@ -1,3 +1,4 @@
+import { createGenerationPayloadBudget, webJobRequestSummary } from './generation-request.js';
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
@@ -42,6 +43,7 @@ process.env.PUBLIC_MODE = 'true';
 process.env.NO_AUTO_DELETE = 'true';
 process.env.MOCK_WHEN_NO_ACCOUNT = 'false';
 const store = new JsonStore(dataDir);
+const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 // 公平账本和任务状态必须同步落盘，不能使用延迟写入。
 if (fairShareMode) {
@@ -150,6 +152,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     sendJson(res, error.statusCode || 500, { error: publicErrorMessage(error.message || 'Internal server error') });
+  } finally {
+    req.generationPayloadClaim?.release();
+    delete req.publicParsedBody;
   }
 });
 
@@ -248,15 +253,7 @@ async function publicSelfUseGuard(req, res, url, method) {
   if (method === 'GET' && validPublicImageSignature(url)) return false;
   let bodyToken = '';
   if (method === 'POST' && ['/api/jobs', '/api/web/jobs', '/api/prompt/convert'].includes(url.pathname)) {
-    const chunks = [];
-    let length = 0;
-    for await (const chunk of req) {
-      length += chunk.length;
-      if (length > 2 * 1024 * 1024) throw httpError(413, 'Request body too large.');
-      chunks.push(chunk);
-    }
-    try { req.publicParsedBody = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); }
-    catch { throw httpError(400, 'invalid JSON body.'); }
+    req.publicParsedBody = await readJson(req);
     if (!req.publicParsedBody || typeof req.publicParsedBody !== 'object') throw httpError(400, 'invalid JSON body.');
     bodyToken = String(req.publicParsedBody.token || '').trim();
   }
@@ -282,6 +279,10 @@ async function route(req, res) {
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
     changeMemberAdmission,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
+  // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
+  if (method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(url.pathname)) {
+    req.generationPayloadClaim = generationPayloadBudget.claim();
+  }
   if (await publicSelfUseGuard(req, res, url, method)) return;
 
   if (method === 'OPTIONS') {
@@ -465,7 +466,7 @@ async function route(req, res) {
       sendJson(res, 202, await createOfficialJob(token, body, url.pathname === '/api/web/jobs'));
       return;
     }
-    const job = await createJob(token, body, { frontend: url.pathname === '/api/web/jobs' });
+    const job = await createJob(token, body, { frontend: url.pathname === '/api/web/jobs', generationPayloadClaim: req.generationPayloadClaim });
     scheduleQueueDrain();
     const snapshot = await store.findJobContext(job.id);
     sendJson(res, 202, publicJob(snapshot?.job || job, snapshot));
@@ -2213,7 +2214,17 @@ async function assertFairMemberReady(token) {
   if (result) throw httpError(result.status, result.message);
 }
 
+function generationRequestRecord(user, request, source, claim) {
+  const payload = JSON.stringify(request);
+  const payloadBytes = Buffer.byteLength(payload);
+  // 与任务准入处于同一串行 update；成功提交后由活动 child 的 SQL 查询接管占用。
+  claim.resize(payloadBytes);
+  return { id: createId('req'), member_id: user.id, source, operation: 'generate',
+    created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
+}
+
 async function createJob(token, body, options = {}) {
+  let generationRequest;
   await assertFairMemberReady(token);
   await cleanupStaleActiveJobs('create job');
   const normalizeRequest = (settings) => {
@@ -2236,6 +2247,8 @@ async function createJob(token, body, options = {}) {
       return createDirectJob(token, request, cacheKey, {
         status: 'done',
         admissionVersion: options.admissionVersion,
+        generationPayloadClaim: options.generationPayloadClaim,
+        source: options.source || 'web',
         accountId: cached.accountId || '',
         imageId: cached.id,
         cost: 0
@@ -2253,11 +2266,14 @@ async function createJob(token, body, options = {}) {
         && job.cacheKey === cacheKey
         && ['queued', 'running'].includes(job.status)
       ));
-      if (activeMatch) return activeMatch;
+      if (activeMatch) return options.generationPayloadClaim ? { id: activeMatch.id } : activeMatch;
     }
     assertQueueAdmission(db, user, options.admissionVersion);
     const cost = generationCost(request);
     if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (options.generationPayloadClaim) {
+      generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
+    }
     const queueTotal = activeJobCount(db.jobs) + 1;
     user.balance -= cost;
     user.updatedAt = new Date().toISOString();
@@ -2267,7 +2283,8 @@ async function createJob(token, body, options = {}) {
       ...(options.batchId ? { batchId: options.batchId, sampleIndex: options.sampleIndex } : {}),
       userToken: token,
       status: 'queued',
-      request,
+      ...(generationRequest ? { requestId: generationRequest.id } : {}),
+      request: generationRequest ? webJobRequestSummary(request) : request,
       cacheKey,
       queueTotal,
       cost,
@@ -2290,9 +2307,11 @@ async function createJob(token, body, options = {}) {
       amount: -cost,
       at: new Date().toISOString()
     });
-    return job;
+    return generationRequest ? { id: job.id } : job;
   }, {
-    dirtyRows: dirtyResultJobRows
+    dirtyRows: dirtyResultJobRows,
+    generationRequest: () => generationRequest,
+    generationPayloadClaim: options.generationPayloadClaim
   });
 }
 
@@ -2303,6 +2322,7 @@ async function ensureAccountRouteIds() {
 }
 
 async function createDirectJob(token, request, cacheKey, options = {}) {
+  let generationRequest;
   await assertFairMemberReady(token);
   if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
   return store.update((db) => {
@@ -2312,6 +2332,9 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     const cost = Number(options.cost ?? generationCost(request));
     const shouldCharge = !options.status && cost > 0;
     if (shouldCharge && user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (options.generationPayloadClaim) {
+      generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
+    }
     const now = new Date().toISOString();
     if (shouldCharge) {
       user.balance -= cost;
@@ -2320,9 +2343,10 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     const job = {
       id: createId('job'),
       source: 'direct',
+      ...(generationRequest ? { requestId: generationRequest.id } : {}),
       userToken: token,
       status: options.status || 'queued',
-      request,
+      request: generationRequest ? webJobRequestSummary(request) : request,
       cacheKey,
       queueTotal: options.status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
       cost: shouldCharge ? cost : Number(options.cost || 0),
@@ -2349,9 +2373,11 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
         at: now
       });
     }
-    return job;
+    return generationRequest ? { id: job.id } : job;
   }, {
-    dirtyRows: dirtyResultJobRows
+    dirtyRows: dirtyResultJobRows,
+    generationRequest: () => generationRequest,
+    generationPayloadClaim: options.generationPayloadClaim
   });
 }
 
@@ -2669,7 +2695,11 @@ async function runReservedJob(reservation) {
     // 已取消的任务不再启动新的上游请求。
     const current = await store.findJobContext(reservation.job.id);
     if (current?.job?.status !== 'running' || control.controller.signal.aborted) throw new Error('任务已取消');
-    const image = await generateWithAccountRetry(reservation, reservation.job.request, {
+    const request = reservation.job.requestId
+      ? store.readGenerationRequest(reservation.job.requestId)
+      : reservation.job.request;
+    if (!request) throw new Error('持久生成请求不存在');
+    const image = await generateWithAccountRetry(reservation, request, {
       signal: control.controller.signal,
       deadline: jobDeadlineTimestamp(reservation.job),
       forceStream: useStreamProgress,
@@ -2679,7 +2709,7 @@ async function runReservedJob(reservation) {
     if (useStreamProgress) {
       updateJobStreamProgress(reservation.job?.id, { percent: 100, step: reservation.job?.request?.steps, total: reservation.job?.request?.steps });
     }
-    await completeGeneration(reservation, reservation.job.request, image, { jobId: reservation.job.id });
+    await completeGeneration(reservation, request, image, { jobId: reservation.job.id });
   } catch (error) {
     if (control.controller.signal.aborted || isAbortError(error)) {
       await cancelReservedJob(reservation, error);
@@ -3673,7 +3703,7 @@ function sanitizeMigrationData(payload) {
 
 function publicJob(job, db = null) {
   const queue = db?.queue || store.jobQueueProgress(job);
-  const request = job.request || {};
+  const request = (job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
   const account = db?.account || (db && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null);
   return {
     id: job.id,
@@ -3890,7 +3920,7 @@ function isAccountErrorLogJob(job) {
 }
 
 function publicErrorLog(job, db = {}) {
-  const request = job.request || {};
+  const request = (job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
   const account = job.accountId && Array.isArray(db.accounts)
     ? db.accounts.find((item) => item.id === job.accountId)
     : null;
@@ -4300,6 +4330,7 @@ async function readJson(req, maxBytes = 2 * 1024 * 1024) {
   for await (const chunk of req) {
     bytes += chunk.length;
     if (bytes > maxBytes) throw httpError(413, '请求体超过大小限制');
+    req.generationPayloadClaim?.resize(bytes);
     chunks.push(chunk);
   }
   if (!chunks.length) return {};

@@ -6,7 +6,7 @@ import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, desc, count, getTableColumns } from 'drizzle-orm';
-import { recordTables, appSettings, appRecords, appMeta } from './storage-schema.js';
+import { recordTables, appSettings, appRecords, appMeta, generationRequests } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
 import { queryFailureAccounting } from './failure-accounting.js';
 
@@ -420,6 +420,20 @@ export class JsonStore {
     return this.partialCollections.has(collection);
   }
 
+  // 只读一份执行参数；状态、列表与容量查询不加载历史 payload。
+  readGenerationRequest(id) {
+    const row = this.statements.selectGenerationRequest.get({ id });
+    return row ? JSON.parse(row.payload) : null;
+  }
+
+  activeGenerationPayloadBytes() {
+    return Number(this.sqlite.prepare(`
+      SELECT COALESCE(SUM(payload_bytes), 0) AS bytes FROM generation_requests
+      WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created
+        WHERE status IN ('queued', 'running') AND request_id IS NOT NULL)
+    `).get().bytes);
+  }
+
   async findJobContext(id) {
     await this.ensureLoaded();
     const job = this.db.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
@@ -656,6 +670,8 @@ export class JsonStore {
             if (!scope.hasDirtyRows) trimDb(this.db, { collections: scope.full ? null : scope.collections });
             this.persistIncremental(this.db, scope);
           }
+          // 新父记录已进入活动 SQL 统计；下一项串行受理开始前移交临时正文占用。
+          if (persistOptions.generationRequest) persistOptions.generationPayloadClaim?.release();
         }
         return snapshot;
       } catch (error) {
@@ -831,6 +847,11 @@ export class JsonStore {
         .from(appRecords).where(eq(appRecords.collection, sql.placeholder('collection'))).orderBy(desc(appRecords.order_value)).prepare(),
       replaceSettings: db.insert(appSettings).values({ key: 'settings', value: sql.placeholder('value') })
         .onConflictDoUpdate({ target: appSettings.key, set: { value: sql`excluded.value` } }).prepare(),
+      insertGenerationRequest: db.insert(generationRequests).values(Object.fromEntries(
+        Object.keys(getTableColumns(generationRequests)).map(key => [key, sql.placeholder(key)])
+      )).prepare(),
+      selectGenerationRequest: db.select({ payload: generationRequests.payload }).from(generationRequests)
+        .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
       deleteAllSettings: db.delete(appSettings).prepare(),
       deleteGenericRecords: db.delete(appRecords).prepare(),
       setMeta: db.insert(appMeta).values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
@@ -963,6 +984,8 @@ export class JsonStore {
           this.statements.upsertRecord[collection].run(row.sql);
         }
       }
+      // 显式全库替换才删除失去所有任务引用的父记录；普通完成不会删除历史。
+      this.sqlite.exec('DELETE FROM generation_requests WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.request_id = generation_requests.id)');
     });
     writeAll();
     this.clearPendingPersist();
@@ -1009,9 +1032,11 @@ export class JsonStore {
       includeSettings: scope.includeSettings,
       collections: scope.full ? collections : scope.collections
     });
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest) return;
 
     const applyChanges = this.sqlite.transaction(() => {
+      // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
+      if (scope.generationRequest) this.statements.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged) this.statements.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
         this.statements.deleteRecord[change.collection].run({ id: change.id });
@@ -1103,9 +1128,11 @@ export class JsonStore {
       changes.upserts.push(...fullChanges.upserts);
     }
 
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest) return;
 
     const applyChanges = this.sqlite.transaction(() => {
+      // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
+      if (scope.generationRequest) this.statements.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged) this.statements.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
         this.statements.deleteRecord[change.collection].run({ id: change.id });
@@ -1309,13 +1336,13 @@ function shouldPersistUpdate(result, options = {}) {
 
 function shouldDeferPersist(scope, options = {}) {
   if (!sqliteBatchWritesEnabled()) return false;
-  if (options.immediate === true || options.defer === false) return false;
+  if (options.immediate === true || options.defer === false || options.generationRequest) return false;
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
 function resolvePersistenceOptions(options = {}, result, db) {
   const resolved = { ...options };
-  for (const key of ['dirtyRows', 'rows', 'changedRows']) {
+  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest']) {
     if (typeof resolved[key] === 'function') resolved[key] = resolved[key](result, db);
   }
   return resolved;
@@ -1372,11 +1399,11 @@ function clonePersistenceScope(scope) {
 }
 
 function persistenceScope(options = {}) {
-  if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
+  if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest };
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
   const dirtyCollections = Object.keys(dirtyRows);
   const raw = options.collections ?? options.changedCollections ?? (dirtyCollections.length ? dirtyCollections : undefined);
-  if (raw === undefined || raw === null) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
+  if (raw === undefined || raw === null) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest };
   const values = Array.isArray(raw) ? raw : [raw];
   const includeSettings = values.includes('settings') || options.includeSettings === true;
   const targetCollections = normalizeCollectionList([...values, ...dirtyCollections]);
@@ -1385,7 +1412,8 @@ function persistenceScope(options = {}) {
     includeSettings,
     collections: targetCollections || [],
     dirtyRows,
-    hasDirtyRows: dirtyCollections.length > 0
+    hasDirtyRows: dirtyCollections.length > 0,
+    generationRequest: options.generationRequest
   };
 }
 
@@ -1460,6 +1488,7 @@ function sqlRecord(collection, item, order, data) {
     row.token = item.token || null;
   }
   if (collection === 'jobs') {
+    row.request_id = item.requestId || null;
     row.user_token = item.userToken || null;
     row.account_id = item.accountId || null;
     row.status = item.status || null;

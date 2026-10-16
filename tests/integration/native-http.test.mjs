@@ -111,7 +111,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(name => process.env[name]).map(name => [name, process.env[name]]));
   Object.assign(env, { ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(gatewayPort),
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    PUBLIC_BASE_URL: baseUrl, PUBLIC_HOST: 'gateway.example' });
+    PUBLIC_BASE_URL: baseUrl, PUBLIC_HOST: 'gateway.example', QUEUE_MAX_PAYLOAD_BYTES: String(1024 * 1024) });
   const child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let runtimeOutput = '';
   const record = chunk => { runtimeOutput = (runtimeOutput + chunk.toString('utf8')).slice(-8000); };
@@ -191,13 +191,69 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.match(cors.headers['access-control-allow-headers'], /idempotency-key/);
   });
 
+  await t.test('网页请求原子冷存完整大提示词，202/查询/取图契约不变，正文仍限 2 MiB', async () => {
+    const prompt = '合成大提示词'.repeat(7000);
+    const before = calls.length;
+    await new Promise(resolve => {
+      const request = http.request({ hostname: '127.0.0.1', port: gatewayPort, path: '/api/jobs', method: 'POST',
+        headers: { authorization: `Bearer ${credentials[0].api_key}`, 'content-type': 'application/json' } });
+      request.on('error', resolve);
+      request.write('{"prompt":"' + 'x'.repeat(900 * 1024), () => setTimeout(() => request.destroy(), 50));
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const malformed = await fetchLocal('/api/jobs', { method: 'POST',
+      headers: { authorization: `Bearer ${credentials[0].api_key}`, 'content-type': 'application/json' },
+      body: '{"prompt":"' + 'x'.repeat(900 * 1024) });
+    assert.equal(malformed.status, 400);
+    // 原始点段路径不能绕过 route 的规范化路径所对应的载荷预算和持久父记录。
+    const response = await new Promise((resolve, reject) => {
+      const request = http.request({ hostname: '127.0.0.1', port: gatewayPort, path: '/x/../api/jobs', method: 'POST',
+        headers: { authorization: `Bearer ${credentials[0].api_key}`, 'content-type': 'application/json' } }, response => {
+        const chunks = [];
+        response.on('data', chunk => chunks.push(chunk));
+        response.on('end', () => resolve({ status: response.statusCode, json: () => JSON.parse(Buffer.concat(chunks).toString('utf8')) }));
+      });
+      request.on('error', reject);
+      request.end(JSON.stringify({ prompt, artist: 'synthetic artist', negative: 'no text',
+        model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 28, seed: 891, nocache: true }));
+    });
+    assert.equal(response.status, 202);
+    const accepted = await response.json();
+    assert.equal(accepted.prompt, prompt);
+    const stored = JSON.parse(auditReader.prepare('SELECT data FROM jobs WHERE id = ?').get(accepted.id).data);
+    assert.ok(stored.requestId);
+    assert.equal(stored.request.tag, undefined);
+    assert.equal(stored.request.prompt, undefined);
+    assert.equal(stored.request.negative, undefined);
+    const parent = auditReader.prepare('SELECT * FROM generation_requests WHERE id = ?').get(stored.requestId);
+    assert.equal(parent.member_id, credentials[0].id || JSON.parse(auditReader.prepare('SELECT data FROM users WHERE token = ?').get(credentials[0].api_key).data).id);
+    assert.equal(parent.payload_bytes, Buffer.byteLength(parent.payload));
+    assert.equal(JSON.parse(parent.payload).prompt, 'synthetic artist\n' + prompt);
+    assert.ok(!parent.payload.includes(credentials[0].api_key));
+    let result;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      result = await (await fetchLocal('/api/jobs/' + accepted.id, { headers: { authorization: `Bearer ${credentials[0].api_key}` } })).json();
+      if (['done', 'failed'].includes(result.status)) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.equal(result.status, 'done');
+    assert.equal(result.prompt, prompt);
+    assert.equal(calls[before].payload.input, 'synthetic artist\n' + prompt);
+    const content = await fetchLocal('/api/jobs/' + accepted.id + '/content', { headers: { authorization: `Bearer ${credentials[0].api_key}` } });
+    assert.deepEqual(Buffer.from(await content.arrayBuffer()), png);
+    const rejected = await post('/api/jobs', { prompt: 'x'.repeat(2 * 1024 * 1024) });
+    assert.equal(rejected.status, 413);
+    assert.equal(calls.length, before + 1);
+  });
+
   await t.test('上游 200 返回 HTML 也按失败退款，不保存为成功图片', async () => {
     const before = await quota();
+    const beforeCalls = calls.length;
     malformedNext = true;
     const response = await post('/ai/generate-image', body());
     assert.ok(response.status >= 400);
     assert.equal((await quota()).v5Available, before.v5Available);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, beforeCalls + 1);
   });
 
   await t.test('Full、5C 与 Medium 从两个流式路径返回可解码最终图，按实际参数只扣本人', async () => {
@@ -412,5 +468,54 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const batch = snapshot.jobs.filter(job => job.sampleIndex === 1 && job.fairCharge?.status === 'refunded')[0];
     assert.ok(batch?.batchId);
     assert.ok(snapshot.jobs.some(job => job.batchId === batch.batchId && job.sampleIndex === 0 && job.status === 'done'));
+    const request = { tag: 'restart queued request', prompt: 'restart queued request', artist: '', negative: '',
+      model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 28, seed: 901,
+      sampler: 'k_euler_ancestral', scale: 6, cfg: 0, noiseSchedule: 'karras' };
+    const payload = JSON.stringify(request), createdAt = new Date().toISOString();
+    let parent;
+    await persisted.update(db => {
+      const user = db.users.find(user => user.token === credentials[0].api_key);
+      parent = { id: 'request-restart', member_id: user.id, source: 'web', operation: 'generate',
+        created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload };
+      db.accounts[0].cooldownUntil = '';
+      const common = { source: 'web', status: 'queued', userToken: user.token, createdAt, updatedAt: createdAt,
+        jobAdmissionVersion: user.jobAdmissionVersion || 0, cost: 0, imageId: '',
+        queueExpiresAt: new Date(Date.now() + 60000).toISOString() };
+      db.jobs.unshift({ ...common, id: 'job-restart-cold', requestId: parent.id,
+        request: { model: request.model, width: 1024, height: 1024, steps: 28, seed: 901 } });
+      db.jobs.unshift({ ...common, id: 'job-restart-legacy', request: { ...request, seed: 902 } });
+    }, { immediate: true, generationRequest: () => parent,
+      dirtyRows: { accounts: [snapshot.accounts[0].id], jobs: ['job-restart-cold', 'job-restart-legacy'] } });
   } finally { await persisted.close(); }
+
+  await t.test('独立进程重启后继续冷存网页任务，并兼容旧无 requestId 的 queued 记录', async () => {
+    const before = calls.length;
+    const restarted = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const exited = once(restarted, 'exit');
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('重启超时')), 15000);
+        restarted.stdout.on('data', chunk => {
+          if (chunk.toString().includes('Nai2API listening')) { clearTimeout(timer); resolve(); }
+        });
+        restarted.stderr.on('data', record);
+        restarted.once('error', error => { clearTimeout(timer); reject(error); });
+      });
+      for (const id of ['job-restart-cold', 'job-restart-legacy']) {
+        let job;
+        for (let attempt = 0; attempt < 400; attempt++) {
+          job = await (await fetchLocal('/api/jobs/' + id, { headers: { authorization: `Bearer ${credentials[0].api_key}` } })).json();
+          if (['done', 'failed'].includes(job.status)) break;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        assert.equal(job.status, 'done', JSON.stringify(job));
+        assert.equal(job.prompt, 'restart queued request');
+      }
+      // 本片验证两种记录都只恢复一次；独立排队序号在批次片接入。
+      assert.deepEqual(calls.slice(before).map(call => call.payload.parameters.seed).sort((a, b) => a - b), [901, 902]);
+    } finally {
+      restarted.kill();
+      await exited;
+    }
+  });
 });
