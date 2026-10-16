@@ -715,6 +715,11 @@ export class JsonStore {
     return row ? safeJson(row.data, null) : null;
   }
 
+  readOperatingLossSettlements(lossEventId) {
+    // 仅在已串行化的管理写事务内调用，覆盖已退出热缓存的核销历史。
+    return this.selectItems('ledger', "WHERE source = 'operating_loss_covered' AND json_extract(data, '$.lossEventId') = @id", { id: lossEventId });
+  }
+
   countRecords(collection) {
     const statement = this.statements.countRecords[collection];
     if (!statement) return 0;

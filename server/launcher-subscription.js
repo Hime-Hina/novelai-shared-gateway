@@ -13,7 +13,7 @@ function expiration(value){
 // 在副本中估算恢复，查询不改变真实余额、审计或配置，也不返回任何上游标识。
 export function launcherSubscription(db,user,now=Date.now()){
   if(!user||user.enabled===false)throw Object.assign(new Error('成员未启用'),{statusCode:403});
-  const draft={...db,settings:structuredClone(db.settings || {})};
+  const draft={...db,ledger:[...(db.ledger || [])],settings:structuredClone(db.settings || {})};
   const quota=fairQuotaSummary(draft,user,now);
   if(!quota?.member)throw Object.assign(new Error('该用户未加入共享分组账本'),{statusCode:403});
   const account=rows(db.accounts).find(a=>a.id===quota.boundAccountId);

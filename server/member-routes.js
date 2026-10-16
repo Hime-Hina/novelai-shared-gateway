@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession, isOwner } from './member-auth.js';
-import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember } from './fair-quota.js';
+import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding } from './fair-quota.js';
 import { sharedAccountStatus } from './shared-status.js';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
 import { clientIp } from './client-ip.js';
@@ -96,12 +96,27 @@ export async function handleMemberRoutes(req, res, url, deps) {
             acceptingJobs: u.acceptingJobs !== false,
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
             quota: fairQuotaSummary(db, u), recentActivity: recentActivity(db, u) })) };
-      }, { collections: ['settings'] });
+      }, { collections: ['settings', 'ledger'] });
       reply(res, 200, payload); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
     if (ownerRoute && body.userId === env.OWNER_USER_ID && (['delete-member','preview-delete-member'].includes(body.action) || body.action === 'member-status' && body.enabled === false)) error(409, '不能停用或删除当前 owner');
+    if (['operating-contribute', 'operating-register-funding', 'operating-cover-loss', 'operating-reconcile-return'].includes(body.action)) {
+      // 身份来自已鉴权的 owner 配置，不接受客户端指定其他成员作为注资来源。
+      if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) error(403, '只能从运营者本人已归属份额划入');
+      const result = await store.update(db => {
+        syncFairQuota(db);
+        return manageOperatingFunding(db, body, {
+          actorId: env.OWNER_USER_ID,
+          findEvent: id => db.ledger.find(event => event.id === id) || store.selectItemById('ledger', id),
+          coveredAmount: id => [...new Map([...store.readOperatingLossSettlements(id),
+            ...db.ledger.filter(event => event.type === 'operating_loss_covered' && event.lossEventId === id)]
+            .map(event => [event.id, event])).values()].reduce((total, event) => total + event.amount, 0)
+        });
+      }, { collections: ['settings', 'ledger'], immediate: true });
+      reply(res, 200, result); return true;
+    }
     if (body.action === 'discord-invite') {
       if (!discordEnabled) error(409, 'Discord 登录未启用');
       const result = await store.update(db => createDiscordInvite(db, body.userId), { collections: ['users'], immediate: true });
@@ -109,7 +124,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     }
     if (['transfer-quota','preview-delete-member','delete-member'].includes(body.action)) {
       const preview=body.action==='preview-delete-member';
-      const result=await store.update(db=>manageFairMember(db,body),preview?{persist:false}:{collections:['users','settings'],immediate:true});
+      const result=await store.update(db=>manageFairMember(db,body),preview?{persist:false}:{collections:['users','settings','ledger'],immediate:true});
       reply(res,200,result);return true;
     }
     if (body.action === 'fallback-policy') {
@@ -152,7 +167,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
         const configVersion=db.settings.fairQuota?.configVersion ?? 1;
         if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==configVersion)error(409,'分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
         // 预览只操作独立副本，恢复、重分与审计都不能污染真实账本。
-        const draft={...db,settings:structuredClone(db.settings),users:structuredClone(db.users)};
+        const draft={...db,ledger:[...(db.ledger || [])],settings:structuredClone(db.settings),users:structuredClone(db.users)};
         configureFairGroups(draft,body.groups,{actorId:'administrator',redistributeRemaining:body.redistributeRemaining===true});
         return {groups:draft.settings.fairQuota.groups,users:draft.users.map(user=>({id:user.id,quota:fairQuotaSummary(draft,user)})),redistributeRemaining:body.redistributeRemaining===true,configVersion};
       },{persist:false});
@@ -163,7 +178,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       const hasGroup=body.groupId!==undefined&&body.groupId!==null&&body.groupId!=='';
       if(hasGroup&&(typeof body.groupId!=='string'||body.userId))error(400,'只有创建新成员时可以指定 groupId');
       const result = await store.update(async db => {
-        const draft = { ...db, users: structuredClone(db.users),settings:structuredClone(db.settings) };
+        const draft = { ...db, ledger:[...(db.ledger || [])],users: structuredClone(db.users),settings:structuredClone(db.settings) };
         let userId = body.userId;
         if (!userId) {
           if (draft.users.length >= 200) error(409, '账户数已达上限');
@@ -179,9 +194,9 @@ export async function handleMemberRoutes(req, res, url, deps) {
           group.members.push(userId);configureFairGroups(draft,groups,{actorId:'administrator'});
         }
         // 所有校验和密码派生成功后才整体提交，失败不会遗留用户或半份账本。
-        db.users = draft.users;if(hasGroup)db.settings=draft.settings;
+        db.users = draft.users;if(hasGroup){db.settings=draft.settings;db.ledger=draft.ledger;}
         return {...result,...(hasGroup?{groupId:body.groupId}:{})};
-      }, { collections: ['users',...(hasGroup?['settings']:[])], immediate: true });
+      }, { collections: ['users',...(hasGroup?['settings','ledger']:[])], immediate: true });
       reply(res, 200, result); return true;
     }
     if (body.action === 'groups') {
@@ -192,7 +207,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
         configureFairGroups(db, body.groups, { actorId: 'administrator', redistributeRemaining: body.redistributeRemaining === true });
         syncFairQuota(db);
         return { groups: db.settings.fairQuota.groups, status: db.settings.fairQuota.status,configVersion:db.settings.fairQuota.configVersion };
-      }, { collections: ['settings'], immediate: true });
+      }, { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, result); return true;
     }
     error(400, '不支持的管理操作');
@@ -257,7 +272,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
         model: j.request?.model || '', status: j.status, charge: j.fairCharge ? { resource: j.fairCharge.resource, amount: j.fairCharge.amount, status: j.fairCharge.status, estimated: j.fairCharge.estimated,
           billingMode: j.fairCharge.billingMode || null, v5Equivalent: j.fairCharge.v5Equivalent ?? null, upstreamBilling: j.fairCharge.upstreamBilling || null } : null }))
-    }), { collections: ['settings'] });
+    }), { collections: ['settings', 'ledger'] });
     reply(res, 200, payload); return true;
   }
   error(404, 'not found.');

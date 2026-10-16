@@ -47,9 +47,10 @@ test('有并发未结清时推迟校准，较早快照不当作充值',()=>{
  Object.assign(db.accounts[0],{quotaFixed:11000,quotaCheckedAt:NOW+10});syncFairQuota(db,NOW+10);assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2500);
  settleFairQuota(db,j,true,NOW+20);syncFairQuota(db,NOW+20);assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2500);
 });
-test('官方V5减少保留个人余额，Anlas仍按原规则对账，无订阅与过期拒绝',()=>{
+test('官方V5及Anlas下降保留个人权益，缺口另记，无订阅与过期拒绝',()=>{
  const db=fixture();Object.assign(db.accounts[0],{quotaFixed:8000,v5UsagePercent:40,quotaCheckedAt:NOW+1});syncFairQuota(db,NOW+1);
- assert.ok(db.settings.fairQuota.balances.a.v5Available>=20);assert.equal(db.settings.fairQuota.balances.a.anlasAvailable,2000);
+ assert.ok(db.settings.fairQuota.balances.a.v5Available>=20);assert.equal(db.settings.fairQuota.balances.a.anlasAvailable,2500);
+ assert.equal(db.settings.fairQuota.operating.unfunded.anlasFixed,2000);
  assert.throws(()=>reserveFairQuota(db,{id:'a'},job('stale'),db.accounts[0],NOW+700000),/stale/);
  db.accounts[0].subscriptionActive=false;assert.throws(()=>reserveFairQuota(db,{id:'a'},job('off'),db.accounts[0],NOW+2),/inactive/);
 });
@@ -78,7 +79,7 @@ test('固定与购买 Anlas 独立，购买余额必须明确授权且退款正�
  const j=job('allow',{...r,allowPurchasedAnlas:true});const c=reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW+1);
  assert.equal(c.fixed,0);assert.equal(c.purchased,c.amount);assert.equal(db.settings.fairQuota.balances.a.anlasPurchasedAvailable,250-c.amount);
  settleFairQuota(db,j,false,NOW+2);assert.equal(db.settings.fairQuota.balances.a.anlasPurchasedAvailable,250);
- const summary=fairQuotaSummary(db,{id:'a'},NOW+2);assert.equal(summary.anlasFixedAvailable,0);assert.equal(summary.anlasPurchasedAvailable,250);
+ const summary=fairQuotaSummary(db,{id:'a'},NOW+2);assert.equal(summary.anlasFixedAvailable,2500);assert.equal(summary.anlasPurchasedAvailable,250);
 });
 test('固定补足不影响购买余额，购买消费不计成额外充值',()=>{
  const db=fixture();Object.assign(db.accounts[0],{quotaFixed:0,quotaPurchased:1000,quotaCheckedAt:NOW+1});syncFairQuota(db,NOW+1);
@@ -103,10 +104,11 @@ test('个人固定用尽也不能绕过官方固定优先规则花其他成员�
  assert.throws(()=>reserveFairQuota(db,{id:'a'},job('wrong-pool',{...request,width:1536,allowPurchasedAnlas:true}),db.accounts[0],NOW+1),/官方固定余额完全耗尽/);
  assert.equal(db.settings.fairQuota.balances.a.anlasPurchasedAvailable,250);
 });
-test('固定与购买混合及固定池待对账时拒绝购买请求',()=>{
+test('官方固定耗尽可用纯购买池，但固定池待对账时仍拒绝',()=>{
  const db=fixture();Object.assign(db.accounts[0],{quotaFixed:0,quotaPurchased:1000,quotaCheckedAt:NOW+1});syncFairQuota(db,NOW+1);
  db.settings.fairQuota.balances.a.anlasFixedAvailable=1;db.settings.fairQuota.balances.a.anlasAvailable=251;
- const r={...request,width:1536,allowPurchasedAnlas:true};assert.throws(()=>reserveFairQuota(db,{id:'a'},job('mixed',r),db.accounts[0],NOW+1),/不支持混合/);
+ const r={...request,width:1536,allowPurchasedAnlas:true},j=job('pure-purchased',r);
+ const charge=reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW+1);assert.equal(charge.fixed,0);assert.equal(charge.purchased,charge.amount);settleFairQuota(db,j,false,NOW+1);
  db.settings.fairQuota.balances.a.anlasFixedAvailable=0;db.settings.fairQuota.balances.a.anlasAvailable=250;db.settings.fairQuota.spent.anlasFixed=1;
  assert.throws(()=>reserveFairQuota(db,{id:'a'},job('pending-fixed',r),db.accounts[0],NOW+1),/完成对账/);
 });

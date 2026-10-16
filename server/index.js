@@ -342,7 +342,7 @@ async function route(req, res) {
     const quota = await store.update(db => {
       const user = getUserOrThrow(db, tokenFrom(req, url));
       return fairQuotaSummary(db, user);
-    }, { collections: ['settings'] });
+    }, { collections: ['settings', 'ledger'] });
     sendJson(res, 200, { fairQuota: quota });
     return;
   }
@@ -356,7 +356,7 @@ async function route(req, res) {
       configureFairQuota(db, body.memberIds);
       syncFairQuota(db);
       return { status: db.settings.fairQuota.status, members: body.memberIds, globalConcurrency: 4 };
-    }, { collections: ['settings'] });
+    }, { collections: ['settings', 'ledger'] });
     sendJson(res, 200, result);
     return;
   }
@@ -1543,7 +1543,7 @@ async function refreshAccountQuotas(body) {
     });
     if (fairShareMode) syncFairQuota(db);
     return db.accounts.filter((account) => resultMap.has(account.id));
-  }, { collections: ['accounts', 'settings'], includeSettings: true });
+  }, { collections: ['accounts', 'settings', 'ledger'], includeSettings: true });
 
   return {
     checked: results.length,
@@ -2174,7 +2174,7 @@ async function assertFairMemberReady(token) {
     if (!state.members.includes(user.id)) return { status: 403, message: '该 Key 未加入共享账本' };
     if (state.status !== 'active') return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
     return null;
-  }, { collections: ['settings'] });
+  }, { collections: ['settings', 'ledger'] });
   if (result) throw httpError(result.status, result.message);
 }
 
@@ -2619,7 +2619,8 @@ async function reserveQueuedJob(jobId) {
     job.updatedAt = new Date().toISOString();
     return { job, account: account ? { ...account } : null, token: job.userToken, cost: job.cost, accountCost, cacheKey: job.cacheKey || '' };
   }, {
-    dirtyRows: dirtyResultJobRows,
+    // 同步可能先追加与单笔任务无关的资源差额；它们与派发预扣一起提交。
+    dirtyRows: (result, db) => ({ ...dirtyResultJobRows(result, db), ledger: (db.ledger || []).map(entry => entry.id) }),
     shouldPersist: (result) => result?.changed !== false
   });
 }

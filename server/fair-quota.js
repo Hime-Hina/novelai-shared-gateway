@@ -1,5 +1,6 @@
 import { quoteNativeRequest } from './native-pricing.js';
 import { recordGenerationAttempt, recordGenerationRefund } from './generation-accounting.js';
+import { operatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding } from './operating-accounting.js';
 // 所有修改必须在存储事务内执行；账本与任务一起持久化，避免重启后重复扣款。
 const STALE_MS = 10 * 60 * 1000;
 const number = (v) => v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
@@ -82,7 +83,7 @@ export function configureFairGroups(db, groups, options = {}) {
   // 先按旧份额完成当前时刻的恢复，再切换后续分配比例。
   const now=options.now ?? Date.now();
   if(!Number.isFinite(now) || now<0) fail('配置时间无效',400);
-  const draft={...db,settings:{...db.settings,fairQuota:existing}};
+  const draft={...db,ledger:[...(db.ledger || [])],settings:{...db.settings,fairQuota:existing}};
   if(existing) syncFairQuota(draft,now);
   const s=existing || configureFairQuota(draft,['__seed_1','__seed_2','__seed_3','__seed_4']);
   upgradeGroups(s);
@@ -111,13 +112,13 @@ export function configureFairGroups(db, groups, options = {}) {
   s.groups=normalized;s.members=[...members];s.balances=balances;s.version=2;s.configVersion+=1;
   s.configurationHistory.push({at:now,actorId:options.actorId || null,version:s.configVersion,before,after:structuredClone(normalized),beforeBalances,afterBalances:structuredClone(balances),redistributeRemaining:options.redistributeRemaining===true});
   s.configurationHistory=s.configurationHistory.slice(-1000);
-  totals(s);db.settings.fairQuota=s;return s;
+  totals(s);db.settings.fairQuota=s;db.ledger=draft.ledger;return s;
 }
 
 // 管理调账始终在独立副本上执行，所有验证通过才提交。
 export function manageFairMember(db, body, now=Date.now()) {
   assertFairQuotaIdle(db);
-  const draft={...db,users:structuredClone(db.users),settings:structuredClone(db.settings)};
+  const draft={...db,ledger:[...(db.ledger || [])],users:structuredClone(db.users),settings:structuredClone(db.settings)};
   const s=syncFairQuota(draft,now);
   if(!s?.enabled)fail('共享账本尚未配置',409);
   if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==s.configVersion)fail('配置已变化，请刷新后重新预览',409);
@@ -172,7 +173,7 @@ export function manageFairMember(db, body, now=Date.now()) {
   s.configurationHistory=s.configurationHistory.slice(-1000);
   const result={configVersion:s.configVersion,groups:s.groups,transferred,autoJoined,shareChanges,users:draft.users.map(user=>({id:user.id,quota:fairQuotaSummary(draft,user,now)})),...(body.action==='transfer-quota'?{fromUserId:sourceId,toUserId:targetId}:{deletedUserId:sourceId,transferToUserId:targetId})};
   if(body.action==='preview-delete-member')result.configVersion=body.expectedConfigVersion;
-  else {db.settings=draft.settings;db.users=draft.users;}
+  else {db.settings=draft.settings;db.users=draft.users;db.ledger=draft.ledger;}
   return result;
 }
 
@@ -187,11 +188,14 @@ function distribute(s, resource, delta) {
     }
     totals(s);return actual;
   }
-  // 官方余额低于账本时只削减未预留额度，不把其他人的余额变成负数。
-  const total = sum(s,field), factor = total > 0 ? Math.max(0,total+delta)/total : 0;
-  for(const b of Object.values(s.balances)) b[field] *= factor;
-  totals(s);
+  // 负差额没有成员归属证据，必须另记运营待承担，不能按份额削减钱包。
   return 0;
+}
+
+export function manageOperatingFunding(db, body, options, now = Date.now()) {
+  const { memberFunding, ...result } = applyOperatingFunding(db, body, options, now);
+  if (memberFunding) distribute(db.settings.fairQuota, memberFunding.resource, memberFunding.amount);
+  return result;
 }
 
 // 只让有份额且尚未满额的钱包参与恢复；在途预留同样占容量。
@@ -225,14 +229,16 @@ function distributeV5Recovery(db, s, delta, now) {
 }
 
 // 官方聚合差额只用于来源核对，不能据此向闲置成员扣款。
-function recordV5Reconciliation(s, incoming, now) {
-  const localAvailable=sum(s,'v5Available'), assigned=Math.max(0,incoming.v5-s.unallocatedV5);
-  const difference=assigned-Math.max(0,localAvailable-s.sharedV5Debt);
+function recordV5Reconciliation(db, s, incoming, now) {
+  const ops=operatingAccount(s),localAvailable=sum(s,'v5Available'), assigned=Math.max(0,incoming.v5-s.unallocatedV5);
+  const difference=assigned-Math.max(0,localAvailable+ops.available.v5-s.sharedV5Debt);
   const tolerance=Number.isInteger(incoming.v5)?1:0;
   const status=difference < -tolerance-1e-9?'source_below_local':difference > tolerance+1e-9?'source_above_local':'within_precision';
   const entry={at:now,sourceCheckedAt:incoming.at,officialV5:incoming.v5,localAvailable,sharedV5Debt:s.sharedV5Debt,
     unallocatedV5:s.unallocatedV5,difference,tolerance,status,personalDelta:0,policy:'personal_wallet_v1'};
   s.v5Reconciliation=entry;
+  // 整数官方快照有一个百分点的精度边界；只记录该边界之外可支持的容量差额。
+  reconcileV5Capacity(db,Math.max(0,-difference-tolerance),incoming,now);
   const history=s.v5ReconciliationHistory ||= [],previous=history.at(-1);
   // 同一差额不按每分钟刷屏；跨显示格或恢复正常时留痕，审计不包含成员身份与请求内容。
   const changed=previous?.status!==status||previous?.officialV5!==incoming.v5||Math.floor(Math.abs(previous?.difference || 0))!==Math.floor(Math.abs(difference));
@@ -267,7 +273,7 @@ export function syncFairQuota(db, now = Date.now()) {
     if(incoming.v5===null || incoming.anlas===null) {s.status='unknown_balance';return s;}
     s.snapshot=incoming;s.lastRefillAt=now;
     distribute(s,'v5',Math.max(0,incoming.v5-s.unallocatedV5));distribute(s,'anlasFixed',incoming.anlasFixed);distribute(s,'anlasPurchased',incoming.anlasPurchased);
-    recordV5Reconciliation(s,incoming,now);
+    recordV5Reconciliation(db,s,incoming,now);
     return s;
   }
   const old=s.snapshot;
@@ -278,15 +284,16 @@ export function syncFairQuota(db, now = Date.now()) {
     const projected=Math.max(0,Math.min(100,old.v5+Math.max(0,until-old.at)/1000/old.seconds)-s.unallocatedV5);
     // 本地转扣可能仍消耗共享 V5。先用恢复偿还此估算负债，不能重复发放给个人。
     const repaid=Math.min(s.sharedV5Debt,elapsed);s.sharedV5Debt-=repaid;
+    const recovered=recoverV5Capacity(db,elapsed-repaid,s.lastRefillAt,until,now);
     const reserves=sharedHeld(s);
-    const room=Math.max(0,projected-s.spent.v5-reserves-sum(s,'v5Available'));
-    s.creditedV5+=distributeV5Recovery(db,s,Math.min(elapsed-repaid,room),now);
+    const room=Math.max(0,projected-s.spent.v5-reserves-sum(s,'v5Available')-operatingAccount(s).available.v5);
+    s.creditedV5+=distributeV5Recovery(db,s,Math.min(elapsed-repaid-recovered,room),now);
   }
   s.lastRefillAt=Math.max(s.lastRefillAt,until);
   // 并发生成期间的快照无法归属消费，待全部结清且取得新快照后校准。
   if(incoming.at>old.at && incoming.at>=s.lastSettlementAt && !anyHeld(s) && incoming.v5!==null && incoming.anlas!==null) {
     // 快照用于来源核对和安全派发，不把未知消费分摊给闲置成员，也不把差额当恢复增发。
-    recordV5Reconciliation(s,incoming,now);
+    recordV5Reconciliation(db,s,incoming,now);
     for(const [resource,pool] of [['anlasFixed','fixed'],['anlasPurchased','purchased']]) {
       // 本地转扣不是已证实的上游 Anlas 消费，绝不加进普通充值校正。
       let delta=incoming[resource]-old[resource]+s.spent[resource];
@@ -295,7 +302,8 @@ export function syncFairQuota(db, now = Date.now()) {
         const matched=Math.min(s.fallbackBuffer[pool],-delta);
         s.fallbackBuffer[pool]-=matched;delta+=matched;
       }
-      distribute(s,resource,delta);
+      if(delta < -1e-9) recordAnlasGap(db,resource,-delta,old,incoming,now);
+      else if(delta > 0) distribute(s,resource,matchExternalFunding(db,resource,delta,incoming,now));
     }
     s.snapshot=incoming;s.spent={v5:0,anlas:0,anlasFixed:0,anlasPurchased:0,fallbackFixed:0,fallbackPurchased:0,fallbackV5:0};s.creditedV5=0;s.lastRefillAt=now;
   }
@@ -329,8 +337,10 @@ export function reserveFairQuota(db,user,job,account,now=Date.now()) {
   const field=q.resource==='v5'?'v5Available':'anlasAvailable';
   let fixed=0,purchased=0;
   if(q.resource==='anlas') {
-    fixed=Math.min(q.amount,s.balances[user.id].anlasFixedAvailable);purchased=q.amount-fixed;
-    if(purchased>0 && (job.request||job.requestPayload)?.allowPurchasedAnlas!==true) fail('个人固定 Anlas 不足；未经明确授权不会扣购买 Anlas');
+    // 官方固定已明确耗尽时，本地保留的固定权益不能挡住原已授权的纯购买池调用。
+    const officialFixed=readSnapshot(account).anlasFixed;
+    fixed=officialFixed===0?0:Math.min(q.amount,s.balances[user.id].anlasFixedAvailable);purchased=q.amount-fixed;
+    if(purchased>0 && (job.request||job.requestPayload)?.allowPurchasedAnlas!==true) fail(`${officialFixed===0?'官方固定 Anlas 已耗尽':'个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`);
     if(purchased>s.balances[user.id].anlasPurchasedAvailable+1e-9) fail('个人购买 Anlas 不足');
     if(purchased>0) {
       // 上游优先使用固定余额，不能指定购买池；禁止混用导致其他成员被扣款。
@@ -403,7 +413,7 @@ export function fairQuotaSummary(db,user,now=Date.now()) {
   const refillBudget=participant?participants.reduce((total,member)=>total+Math.min(member.gap,member.share*participant.gap/participant.share),0):0;
   const fullSeconds=officialRate>0?refillBudget/officialRate:null;
   // 当前来源刚好与钱包相等时仍能随时间恢复；只有最终来源容量不够才不能承诺补满。
-  const sourceCapacityRoom=Math.max(0,100-s.unallocatedV5-s.spent.v5-sharedHeld(s)-sum(s,'v5Available'));
+  const sourceCapacityRoom=Math.max(0,100-s.unallocatedV5-s.spent.v5-sharedHeld(s)-sum(s,'v5Available')-operatingAccount(s).available.v5);
   const refillLimited=s.status!=='active'||s.sharedV5Debt>1e-9||s.v5Reconciliation?.status==='source_below_local'||
     (refillRoom>1e-9&&(!refillRate||refillBudget>sourceCapacityRoom+1e-9));
   return {enabled:true,status:s.status,member:Boolean(raw),share,autoAnlasFallback:s.autoAnlasFallback===true,
