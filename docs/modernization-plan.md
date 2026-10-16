@@ -67,6 +67,7 @@
 | 工作项 | 提交主题 | 已完成与验证 | 部署与回滚影响 |
 | --- | --- | --- | --- |
 | F01 | `fix: enforce image ownership without a valid share signature` | 图片路由验证所属成员；有效限时签名与管理员访问保持。`node --test native-http.test.mjs` 8/8 通过，覆盖过期/伪造签名、本人/他人/匿名/管理员及现有生图 HTTP 回归 | 无数据迁移；未部署生产，旧版本仍存在越权缺陷 |
+| F02 | `fix: restore committed state after failed store updates` | 新变更前先提交旧延迟写，回调/SQL 失败后从已提交 SQLite 重载内存与索引；延迟写失败保留待写范围，定时器异常不终止进程。`node --test server/store.test.mjs fair-integration.test.mjs scripts/bootstrap.test.mjs` 20/20 通过，含真实 SQLite 失败、预扣回滚、部分历史及全量替换失败 | 无 schema 迁移；生产原已强制立即写。通用延迟写模式现在会在下一次 update 前刷盘，失败路径有重载开销；后续 P01 记录，不引入新事务框架 |
 | F08 | `fix: trust explicit proxy addresses for login rate limits` | 密码及 Discord 登录只信任 `TRUSTED_PROXY_IPS` 中的精确代理 IP；从 XFF 右侧定位实际客户端，保留用户名限制。`node --test server/client-ip.test.mjs server/member-auth.test.mjs member-routes.test.mjs discord-login.test.mjs` 15/15 通过 | 默认忽略转发头；隔离部署时须按实际链路配置代理 IP，并复核来源隔离；无数据库迁移，未改生产配置 |
 
 依赖安装、源码搬迁与数据库迁移按实施阶段和独立提交执行，不因 ORM 评估直接改生产数据库或启动连接生产上游的测试服务。生产地址、主机、数据目录和可用测试入口在部署阶段从实际配置核实；本文不包含真实地址或凭据。

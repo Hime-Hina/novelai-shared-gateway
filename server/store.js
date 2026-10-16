@@ -635,7 +635,7 @@ export class JsonStore {
 
   async write(db) {
     await this.ensureLoaded();
-    this.clearPendingPersist();
+    this.flushPendingPersistSync();
     const safeDb = trimDb(normalizeDb(db));
     this.replaceAll(safeDb);
     this.db = safeDb;
@@ -644,19 +644,30 @@ export class JsonStore {
   async update(mutator, options = {}) {
     this.queue = this.queue.catch(() => {}).then(async () => {
       await this.ensureLoaded();
-      const result = await mutator(this.db);
-      const persistOptions = resolvePersistenceOptions(options, result, this.db);
-      if (shouldPersistUpdate(result, persistOptions)) {
-        const scope = persistenceScope(persistOptions);
-        if (shouldDeferPersist(scope, persistOptions)) {
-          this.schedulePersist(scope);
-        } else {
-          this.flushPendingPersistSync();
-          if (!scope.hasDirtyRows) trimDb(this.db, { collections: scope.full ? null : scope.collections });
-          this.persistIncremental(this.db, scope);
+      // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
+      this.flushPendingPersistSync();
+      try {
+        const result = await mutator(this.db);
+        const persistOptions = resolvePersistenceOptions(options, result, this.db);
+        const snapshot = cloneValue(result);
+        if (shouldPersistUpdate(result, persistOptions)) {
+          const scope = persistenceScope(persistOptions);
+          if (shouldDeferPersist(scope, persistOptions)) {
+            this.schedulePersist(scope);
+          } else {
+            if (!scope.hasDirtyRows) trimDb(this.db, { collections: scope.full ? null : scope.collections });
+            this.persistIncremental(this.db, scope);
+          }
         }
+        return snapshot;
+      } catch (error) {
+        // SQL 回滚不会还原 JS 对象；只在失败时重载已提交数据，避免每次预扣复制整个热缓存。
+        // 先清空引用，若重载也失败，后续请求不得继续使用污染的内存状态。
+        this.clearPendingPersist();
+        this.db = null;
+        this.db = this.loadFromSqlite();
+        throw error;
       }
-      return cloneValue(result);
     });
     return this.queue;
   }
@@ -697,7 +708,12 @@ export class JsonStore {
     if (this.pendingPersistTimer) return;
     this.pendingPersistTimer = setTimeout(() => {
       this.pendingPersistTimer = null;
-      this.flushPendingPersistSync();
+      try {
+        this.flushPendingPersistSync();
+      } catch (error) {
+        // 保留待写变更供下次更新/关闭重试；异步写失败不能变成未捕获异常。
+        console.error('[runtime] SQLite deferred persist failed:', error);
+      }
     }, sqliteWriteDebounceMs());
     this.pendingPersistTimer.unref?.();
   }
@@ -709,9 +725,10 @@ export class JsonStore {
       this.pendingPersistTimer = null;
     }
     const scope = this.pendingPersistScope;
-    this.pendingPersistScope = null;
     if (!scope.hasDirtyRows) trimDb(this.db, { collections: scope.full ? null : scope.collections });
     this.persistIncremental(this.db, scope);
+    // 写失败时保留待写范围；下一次更新必须先重试它，不能静默丢掉已接受的延迟变更。
+    this.pendingPersistScope = null;
   }
 
   selectItems(collection, clause = 'ORDER BY order_value DESC', params = {}) {
@@ -998,8 +1015,6 @@ export class JsonStore {
   }
 
   replaceAll(db) {
-    this.clearPendingPersist();
-    this.partialCollections = new Set();
     const safeDb = trimDb(normalizeDb(db));
     const snapshot = buildSnapshotState(safeDb, emptyCollectionMaps(), { dense: true });
     const startedAt = Date.now();
@@ -1016,6 +1031,8 @@ export class JsonStore {
       }
     });
     writeAll();
+    this.clearPendingPersist();
+    this.partialCollections = new Set();
     this.adminStatsCache = null;
     this.settingsState = snapshot.settingsData;
     this.rowState = snapshot.rowState;
