@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { deflateRawSync, crc32 } from 'node:zlib';
+import { EventEmitter } from 'node:events';
 import { generationPrice, sizeMap } from './public/generation-pricing.js';
-import { generateNovelAiImage, normalizeNovelAiRequest } from './server/providers.js';
+import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from './server/providers.js';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };
@@ -161,6 +163,146 @@ test('流式预览后报错或缺失最终结果必须失败，不能把预览�
   const { value } = await captured(() => generateNovelAiImage(request('img2img'), account, env),
     () => new Response(streamBody([intermediate, { event_type: 'final', image: png }]), { headers: { 'content-type': 'application/octet-stream' } }));
   assert.deepEqual(value.buffer, png);
+});
+
+function imageZip(bytes, { method = 0, uncompressedSize = bytes.length } = {}) {
+  const name = Buffer.from('image.png');
+  const compressed = method === 8 ? deflateRawSync(bytes) : bytes;
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50); local.writeUInt16LE(method, 8);
+  local.writeUInt32LE(crc32(bytes), 14); local.writeUInt32LE(compressed.length, 18);
+  local.writeUInt32LE(uncompressedSize, 22); local.writeUInt16LE(name.length, 26);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50); central.writeUInt16LE(method, 10);
+  central.writeUInt32LE(crc32(bytes), 16); central.writeUInt32LE(compressed.length, 20);
+  central.writeUInt32LE(uncompressedSize, 24); central.writeUInt16LE(name.length, 28);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length + name.length, 12);
+  end.writeUInt32LE(local.length + name.length + compressed.length, 16);
+  return Buffer.concat([local, name, compressed, central, name, end]);
+}
+
+test('普通生成和放大统一拒绝 HTML、空内容、截断图片和伪造 JSON 图片', async () => {
+  const damaged = Buffer.from(png); damaged[damaged.length - 1] ^= 1;
+  const responses = [
+    () => new Response('<html>upstream error</html>', { headers: { 'content-type': 'text/html' } }),
+    () => new Response('<html>upstream error</html>', { headers: { 'content-type': 'image/png' } }),
+    () => new Response(null, { headers: { 'content-type': 'image/png' } }),
+    () => new Response(png.subarray(0, -4), { headers: { 'content-type': 'image/png' } }),
+    () => new Response(damaged, { headers: { 'content-type': 'image/png' } }),
+    () => Response.json({ image: 'not-an-image' }),
+    () => Response.json({ image: 'data:text/html;base64,' + Buffer.from('<html/>').toString('base64') }),
+    () => Response.json({ image: png.subarray(0, -4).toString('base64') }),
+    () => new Response(png, { headers: { 'content-type': 'image/jpeg' } })
+  ];
+  for (const input of [request(), { operation: 'upscale', operationParameters: {} }]) {
+    for (const response of responses) {
+      await captured(() => assert.rejects(generateNovelAiImage(input, account, env, { forceStream: false }), error => error.statusCode !== 422), response);
+    }
+    const { value } = await captured(() => generateNovelAiImage(input, account, env, { forceStream: false }),
+      () => Response.json({ image: 'data:image/png;base64,' + png.toString('base64') }));
+    assert.deepEqual(value.buffer, png);
+  }
+});
+
+test('ZIP 提取验证目录、CRC、解压大小和图片内容，压缩炸弹不返回成功', async () => {
+  const call = () => generateNovelAiImage(request(), account, env, { forceStream: false });
+  for (const method of [0, 8]) {
+    const bytes = imageZip(png, { method });
+    const { value } = await captured(call, () => new Response(bytes));
+    assert.deepEqual(value.buffer, png);
+  }
+  const wrongCrc = imageZip(png);
+  wrongCrc[30 + 9 + png.length + 16] ^= 1;
+  const badResponses = [
+    imageZip(Buffer.from('not an image')),
+    imageZip(png.subarray(0, -4)),
+    imageZip(png, { method: 99 }),
+    imageZip(png, { uncompressedSize: 64 * 1024 * 1024 + 1 }),
+    imageZip(png, { uncompressedSize: png.length + 1 }),
+    imageZip(png).subarray(0, -1),
+    wrongCrc,
+    imageZip(Buffer.alloc(64 * 1024 * 1024 + 1), { method: 8, uncompressedSize: png.length })
+  ];
+  for (const bytes of badResponses) await captured(() => assert.rejects(call()), () => new Response(bytes));
+});
+
+test('流式最终帧必须包含完整图片，尾部截断或帧内尾随垃圾不能成功', async () => {
+  const complete = streamBody([{ event_type: 'final', image: png }]);
+  const extraWithinFrame = Buffer.concat([complete, Buffer.from([0])]);
+  extraWithinFrame.writeUInt32BE(complete.readUInt32BE(0) + 1);
+  const oversizedFrame = Buffer.alloc(4); oversizedFrame.writeUInt32BE(64 * 1024 * 1024 + 1);
+  for (const bytes of [
+    streamBody([{ event_type: 'final', image: Buffer.from('<html>bad</html>') }]),
+    streamBody([{ event_type: 'final', image: png.subarray(0, -4) }]),
+    streamBody([{ event_type: 'final', image: 'not binary' }]),
+    Buffer.concat([complete, Buffer.from([0])]), extraWithinFrame, oversizedFrame
+  ]) {
+    // 同时覆盖真实流读取与旧 SOCKS 无 body 返回的兼容路径。
+    for (const readable of [true, false]) {
+      await captured(() => assert.rejects(generateNovelAiImage(request(), account, env)), () => readable
+        ? new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } })
+        : { ok: true, headers: new Headers(), arrayBuffer: async () => bytes });
+    }
+  }
+});
+
+test('响应大小在读取过程中限制，拒绝超长声明并取消未读完的流', async () => {
+  for (const declared of [true, false]) {
+    let cancelled = false, reads = 0;
+    const body = new ReadableStream({
+      pull(controller) { reads++; controller.enqueue(Buffer.alloc(1024 * 1024)); },
+      cancel() { cancelled = true; }
+    });
+    await captured(() => assert.rejects(generateNovelAiImage(request(), account, env, { forceStream: false }), /size limit/),
+      () => new Response(body, { headers: declared ? { 'content-length': String(64 * 1024 * 1024 + 1) } : {} }));
+    assert.equal(cancelled, true);
+    assert.ok(reads <= (declared ? 1 : 66));
+  }
+  const encoding = Buffer.from([0, 255, 3, 4]);
+  await captured(() => assert.rejects(generateNovelAiImage({ operation: 'encode-vibe', operationParameters: {} }, account, env), /Truncated/),
+    () => new Response(encoding, { headers: { 'content-type': 'application/octet-stream', 'content-length': '10' } }));
+});
+
+test('Vibe 按二进制产物验证，拒绝伪装为 octet-stream 的错误文本而不猜测魔数', async () => {
+  const call = () => generateNovelAiImage({ operation: 'encode-vibe', operationParameters: {} }, account, env);
+  for (const bytes of ['upstream error', '<html>错误</html>', '{"error":"错误"}']) {
+    await captured(() => assert.rejects(call(), /binary encoding data/),
+      () => new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } }));
+  }
+  for (const firstByte of [0, 60, 91, 123]) {
+    const binary = Buffer.from([firstByte, 255, 3, 4, 5, 128]);
+    const { value } = await captured(call, () => new Response(binary, { headers: { 'content-type': 'application/octet-stream' } }));
+    assert.deepEqual(value.buffer, binary);
+  }
+});
+
+test('SOCKS HTTP 分块传输只有收到完整结束块才成功，拒绝超长块声明', async () => {
+  const binary = Buffer.from([0, 255, 3, 4]);
+  const dataChunk = Buffer.concat([Buffer.from('4\r\n'), binary, Buffer.from('\r\n')]);
+  const header = Buffer.from('HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n');
+  const call = () => generateNovelAiImage({ operation: 'encode-vibe', operationParameters: {} }, account, env);
+  function response(chunks) {
+    const socket = new EventEmitter();
+    socket.destroy = () => {};
+    socket.write = () => queueMicrotask(() => {
+      for (const chunk of chunks) socket.emit('data', chunk);
+      socket.emit('end');
+    });
+    return __providerInternals.writeAndReadHttpResponse(socket, Buffer.alloc(0));
+  }
+  for (const ending of ['0\r\n\r\n', '0\r\nX-Diagnostic: complete\r\n\r\n']) {
+    const { value } = await captured(call, () => response([header, dataChunk, Buffer.from(ending)]));
+    assert.deepEqual(value.buffer, binary);
+  }
+  for (const chunks of [
+    [header, dataChunk],
+    [header, dataChunk, Buffer.from('0\r\n')],
+    [header, Buffer.from('4000001\r\n')],
+    [header, Buffer.from('4z\r\n')],
+    [header, Buffer.concat([Buffer.from('4\r\n'), binary, Buffer.from('xx0\r\n\r\n')])]
+  ]) await captured(() => assert.rejects(call(), /chunked/), () => response(chunks));
 });
 
 

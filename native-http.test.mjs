@@ -17,7 +17,7 @@ import { readNativeEvents } from './test-support/native-stream-client.mjs';
 
 const root = fileURLToPath(new URL('./', import.meta.url));
 // 合成图片和新建临时数据库；测试不会读取 .env、生产数据或请求真实 NAI。
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const body = (model = 'nai-diffusion-5-full', extra = {}) => ({
   input: 'a small blue paper boat', model, action: 'generate',
   parameters: { width: 1024, height: 1024, steps: 23, n_samples: 1, seed: 7, ...extra }
@@ -52,6 +52,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   const calls = [];
   let failAt = -1, failStatus = 500, officialFixed = 10000, officialV5 = 100;
   let activeGenerations = 0, maxActiveGenerations = 0, holdNextMs = 0;
+  let malformedNext = false;
   const upstream = http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${upstreamToken}`);
     if (req.url === '/user/data') {
@@ -77,6 +78,12 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     if (calls.length === failAt) {
       res.writeHead(failStatus, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: failStatus === 429 ? 'Concurrent generation limit reached' : 'synthetic generation failure' }));
+      return;
+    }
+    if (malformedNext) {
+      malformedNext = false;
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end('<html>synthetic upstream error</html>');
       return;
     }
     const cost = quoteFairRequest(parseNativeImageRequest({ input: payload.input, action: payload.action, model: payload.model, parameters: payload.parameters }));
@@ -172,6 +179,15 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     });
     assert.equal(cors.statusCode, 204); assert.equal(cors.headers['access-control-allow-origin'], '*');
     assert.match(cors.headers['access-control-allow-headers'], /idempotency-key/);
+  });
+
+  await t.test('上游 200 返回 HTML 也按失败退款，不保存为成功图片', async () => {
+    const before = await quota();
+    malformedNext = true;
+    const response = await post('/ai/generate-image', body());
+    assert.ok(response.status >= 400);
+    assert.equal((await quota()).v5Available, before.v5Available);
+    assert.equal(calls.length, 1);
   });
 
   await t.test('Full、5C 与 Medium 从两个流式路径返回可解码最终图，按实际参数只扣本人', async () => {

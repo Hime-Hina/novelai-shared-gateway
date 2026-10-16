@@ -4,9 +4,12 @@ import zlib from 'node:zlib';
 import { sizeMap } from '../public/generation-pricing.js';
 import { isV5MediumModel, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
 import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.js';
+import { crc32, validateImageBytes, validateNativeImage } from './native-image.js';
 
 export const MAX_STEPS = 50;
 export const DIRECT_URL_MAX_STEPS = 28;
+const MAX_RESULT_BYTES = 64 * 1024 * 1024;
+const MAX_STREAM_BYTES = 256 * 1024 * 1024;
 
 async function fetchWithGenerationTiming(url, init, proxyUrl, options) {
   // 发起调用、收到响应头、读完响应体分别计时，不记录用户请求内容。
@@ -18,6 +21,73 @@ async function fetchWithGenerationTiming(url, init, proxyUrl, options) {
 
 function finishGenerationTiming(options) {
   options.onUpstreamTiming?.({ upstreamCompletedAt: new Date().toISOString() });
+}
+
+function responseMediaType(response) {
+  return (response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+}
+
+async function* readGenerationChunks(response, maxBytes = MAX_RESULT_BYTES) {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (declaredLength > maxBytes) {
+    await response.body?.cancel();
+    throw new Error('NovelAI response exceeds the size limit.');
+  }
+  const reader = response.body?.getReader();
+  let received = 0;
+  try {
+    // Fetch 与 SOCKS 响应都逐块限流；不等 arrayBuffer 分配完超大响应后才检查。
+    while (true) {
+      const { value, done } = reader ? await reader.read() : { value: await response.arrayBuffer(), done: false };
+      if (done) break;
+      const chunk = Buffer.from(value);
+      received += chunk.length;
+      if (received > maxBytes) throw new Error('NovelAI response exceeds the size limit.');
+      yield chunk;
+      if (!reader) break;
+    }
+    // 原生 Fetch 会解压 HTTP 内容；只有未压缩响应才能按头部长度核对字节数。
+    const encoding = response.headers.get('content-encoding');
+    if ((!encoding || encoding === 'identity') && declaredLength > 0 && received !== declaredLength) {
+      throw new Error('Truncated NovelAI response body.');
+    }
+  } finally {
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  }
+}
+
+async function readGenerationBody(response) {
+  const chunks = [];
+  for await (const chunk of readGenerationChunks(response)) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+function validatedUpstreamImage(buffer, declaredType = '') {
+  try {
+    const image = validateImageBytes(buffer, { maxBytes: MAX_RESULT_BYTES, label: 'NovelAI result' });
+    if (declaredType.startsWith('image/') && declaredType !== image.mimeType) throw new Error('Image media type does not match its contents.');
+    return { buffer, mimeType: image.mimeType };
+  } catch (cause) {
+    // 上游坏产物不是客户端参数错误；不能把输入校验器的 422 状态带出边界。
+    throw new Error('NovelAI returned invalid or incomplete image data.', { cause });
+  }
+}
+
+function decodeImageResponse(buffer, contentType) {
+  if (contentType === 'application/json') {
+    const payload = JSON.parse(buffer.toString('utf8'));
+    const base64 = payload?.image || payload?.data || payload?.images?.[0]?.image || payload?.images?.[0];
+    if (!base64) throw new Error('NovelAI JSON response does not contain image data.');
+    return decodeDataUrl(base64);
+  }
+  if (contentType.includes('zip') || looksLikeZip(buffer)) return extractFirstImageFromZip(buffer);
+  if (contentType && !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'].includes(contentType)) {
+    throw new Error('NovelAI response does not contain image data.');
+  }
+  return validatedUpstreamImage(buffer, contentType);
 }
 
 export function normalizeNovelAiRequest(input, settings, options = {}) {
@@ -106,8 +176,8 @@ export async function generateNovelAiImage(request, account, env, options = {}) 
     })
   }, accountProxyUrl(account), options);
 
-  const contentType = response.headers.get('content-type') || '';
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const contentType = responseMediaType(response);
+  const buffer = await readGenerationBody(response);
   finishGenerationTiming(options);
 
   if (!response.ok) {
@@ -115,21 +185,7 @@ export async function generateNovelAiImage(request, account, env, options = {}) 
     throw Object.assign(new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`), { upstreamStatus: response.status });
   }
 
-  if (contentType.includes('application/json')) {
-    const payload = JSON.parse(buffer.toString('utf8'));
-    const base64 = payload.image || payload.data || payload.images?.[0]?.image || payload.images?.[0];
-    if (!base64) throw new Error('NovelAI JSON response does not contain image data.');
-    return decodeDataUrl(base64);
-  }
-
-  if (contentType.includes('zip') || looksLikeZip(buffer)) {
-    return extractFirstImageFromZip(buffer);
-  }
-
-  return {
-    mimeType: contentType.includes('jpeg') ? 'image/jpeg' : 'image/png',
-    buffer
-  };
+  return decodeImageResponse(buffer, contentType);
 }
 
 async function generateNovelAiImageOperation(request, account, env, options = {}) {
@@ -157,8 +213,8 @@ async function generateNovelAiImageOperation(request, account, env, options = {}
     // 官网仍支持 JSON 传输；入口把旧 JSON 和新版 multipart 统一为已核价参数。
     body: JSON.stringify(payload)
   }, accountProxyUrl(account), options);
-  const contentType = response.headers.get('content-type') || '';
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const contentType = responseMediaType(response);
+  const buffer = await readGenerationBody(response);
   finishGenerationTiming(options);
   if (!response.ok) {
     const text = buffer.toString('utf8').slice(0, 1000);
@@ -166,21 +222,22 @@ async function generateNovelAiImageOperation(request, account, env, options = {}
   }
   if (!buffer.length) throw new Error('NovelAI returned an empty operation result.');
   if (request.operation === 'encode-vibe') {
-    // Vibe 编码是二进制内容，不能当作图片解码，也不能把 JSON 错误当作编码发给客户端。
-    if (contentType.includes('json') || contentType.includes('text/')) {
+    // 编码格式未公开；只核验传输边界和二进制类型，不猜测图片格式或编码魔数。
+    if (contentType !== 'application/octet-stream' || looksLikeTextResponse(buffer)) {
       throw new Error('NovelAI encode-vibe response does not contain binary encoding data.');
     }
     return { buffer, mimeType: 'application/octet-stream' };
   }
-  if (contentType.includes('application/json')) {
-    const payload = JSON.parse(buffer.toString('utf8'));
-    const base64 = payload.image || payload.data || payload.images?.[0]?.image || payload.images?.[0];
-    if (!base64) throw new Error('NovelAI JSON response does not contain image data.');
-    return decodeDataUrl(base64);
+  return decodeImageResponse(buffer, contentType);
+}
+
+function looksLikeTextResponse(buffer) {
+  const text = buffer.toString('utf8').trim();
+  if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) || /^(?:<!doctype\s+html|<html\b|<\?xml)/i.test(text)) return true;
+  if (text.startsWith('{') || text.startsWith('[')) {
+    try { JSON.parse(text); return true; } catch {}
   }
-  if (contentType.includes('zip') || looksLikeZip(buffer)) return extractFirstImageFromZip(buffer);
-  if (contentType.includes('text/')) throw new Error('NovelAI upscale response does not contain image data.');
-  return { buffer, mimeType: imageMimeType(buffer) };
+  return false;
 }
 
 async function generateNovelAiImageStream(request, account, env, options = {}) {
@@ -211,22 +268,19 @@ async function generateNovelAiImageStream(request, account, env, options = {}) {
     })
   }, accountProxyUrl(account), options);
 
-  const contentType = response.headers.get('content-type') || '';
+  const contentType = responseMediaType(response);
   if (!response.ok || contentType.includes('application/json')) {
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await readGenerationBody(response);
     finishGenerationTiming(options);
     if (!response.ok) {
       const text = buffer.toString('utf8').slice(0, 1000);
       throw Object.assign(new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`), { upstreamStatus: response.status });
     }
-    const payload = JSON.parse(buffer.toString('utf8'));
-    const base64 = payload.image || payload.data || payload.images?.[0]?.image || payload.images?.[0];
-    if (!base64) throw new Error('NovelAI JSON stream response does not contain image data.');
-    return decodeDataUrl(base64);
+    return decodeImageResponse(buffer, contentType);
   }
 
   if (response.body) {
-    const image = await extractFinalImageFromNovelAiReadableStream(response.body, {
+    const image = await extractFinalImageFromNovelAiReadableStream(response, {
       request,
       onProgress: options.onProgress
     });
@@ -234,7 +288,7 @@ async function generateNovelAiImageStream(request, account, env, options = {}) {
     return image;
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = await readGenerationBody(response);
   finishGenerationTiming(options);
   return extractFinalImageFromNovelAiStream(buffer, {
     request,
@@ -557,6 +611,7 @@ function writeAndReadHttpResponse(socket, request, signal) {
         if (!responseResolved) {
           headerBuffer = Buffer.concat([headerBuffer, chunk]);
           const headerEnd = headerBuffer.indexOf('\r\n\r\n');
+          if (headerEnd > 65536 || headerEnd < 0 && headerBuffer.length > 65536) throw new Error('NovelAI HTTP headers exceed the size limit.');
           if (headerEnd < 0) return;
           const response = openHttpResponseFromHeader(headerBuffer.slice(0, headerEnd), body);
           contentLength = Number(response.headers.get('content-length') || 0);
@@ -672,25 +727,32 @@ function createChunkedBodyDecoder(enqueue, close) {
       buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const lineEnd = buffer.indexOf('\r\n');
+        if (lineEnd > 1024 || lineEnd < 0 && buffer.length > 1024) throw new Error('Invalid chunked NovelAI response header.');
         if (lineEnd < 0) return;
         const sizeText = buffer.slice(0, lineEnd).toString('latin1').split(';')[0].trim();
         const size = Number.parseInt(sizeText, 16);
-        if (!Number.isFinite(size) || size < 0) throw new Error('Invalid chunked NovelAI response.');
+        if (!/^[0-9a-f]+$/i.test(sizeText) || !Number.isSafeInteger(size) || size > MAX_RESULT_BYTES) throw new Error('Invalid or oversized chunked NovelAI response.');
         const dataStart = lineEnd + 2;
         const dataEnd = dataStart + size;
         if (buffer.length < dataEnd + 2) return;
         if (size === 0) {
+          // 零块后的空行（或完整 trailers）才结束传输；EOF 不能替代结束块。
+          if (buffer.toString('latin1', dataStart, dataStart + 2) !== '\r\n' && buffer.indexOf('\r\n\r\n', dataStart) < 0) {
+            if (buffer.length - dataStart > 65536) throw new Error('NovelAI HTTP trailers exceed the size limit.');
+            return;
+          }
           done = true;
           buffer = Buffer.alloc(0);
           close();
           return;
         }
+        if (buffer.toString('latin1', dataEnd, dataEnd + 2) !== '\r\n') throw new Error('Invalid chunked NovelAI response terminator.');
         enqueue(buffer.slice(dataStart, dataEnd));
         buffer = buffer.slice(dataEnd + 2);
       }
     },
     finish() {
-      if (!done && buffer.length) throw new Error('Truncated chunked NovelAI response.');
+      if (!done) throw new Error('Truncated chunked NovelAI response.');
     }
   };
 }
@@ -750,23 +812,15 @@ function parseHttpResponse(buffer) {
 }
 
 export const __providerInternals = {
-  openHttpResponseFromHeader
+  openHttpResponseFromHeader,
+  writeAndReadHttpResponse
 };
 
 function decodeChunkedBody(buffer) {
   const chunks = [];
-  let offset = 0;
-  while (offset < buffer.length) {
-    const lineEnd = buffer.indexOf('\r\n', offset);
-    if (lineEnd < 0) throw new Error('Invalid chunked response from NovelAI.');
-    const sizeText = buffer.slice(offset, lineEnd).toString('latin1').split(';')[0].trim();
-    const size = Number.parseInt(sizeText, 16);
-    if (!Number.isFinite(size)) throw new Error('Invalid chunk size from NovelAI.');
-    offset = lineEnd + 2;
-    if (size === 0) break;
-    chunks.push(buffer.slice(offset, offset + size));
-    offset += size + 2;
-  }
+  const decoder = createChunkedBodyDecoder(chunk => chunks.push(chunk), () => {});
+  decoder.push(buffer);
+  decoder.finish();
   return Buffer.concat(chunks);
 }
 
@@ -980,21 +1034,17 @@ function normalizeV4Sampler(sampler) {
   return supported.has(sampler) ? sampler : 'k_euler_ancestral';
 }
 
-async function extractFinalImageFromNovelAiReadableStream(readable, context = {}) {
-  const reader = readable.getReader();
+async function extractFinalImageFromNovelAiReadableStream(response, context = {}) {
   const state = createNovelAiStreamState(context);
   let pending = Buffer.alloc(0);
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (!value?.length) continue;
-    pending = Buffer.concat([pending, Buffer.from(value)]);
+  for await (const chunk of readGenerationChunks(response, MAX_STREAM_BYTES)) {
+    pending = Buffer.concat([pending, chunk]);
     let offset = 0;
 
     while (offset + 4 <= pending.length) {
       const length = pending.readUInt32BE(offset);
-      if (length <= 0) throw invalidNovelAiStreamFrameError(pending, offset);
+      if (length <= 0 || length > MAX_RESULT_BYTES) throw invalidNovelAiStreamFrameError(pending, offset);
       if (offset + 4 + length > pending.length) break;
       offset += 4;
       handleNovelAiStreamEvent(decodeMsgpack(pending.slice(offset, offset + length)), state);
@@ -1002,7 +1052,7 @@ async function extractFinalImageFromNovelAiReadableStream(readable, context = {}
     }
 
     if (offset > 0) pending = pending.slice(offset);
-    if (pending.length > 64 * 1024 * 1024) throw invalidNovelAiStreamFrameError(pending, 0);
+    if (pending.length > MAX_RESULT_BYTES) throw invalidNovelAiStreamFrameError(pending, 0);
   }
 
   if (pending.length) throw invalidNovelAiStreamFrameError(pending, 0);
@@ -1016,7 +1066,7 @@ function extractFinalImageFromNovelAiStream(buffer, context = {}) {
   while (offset + 4 <= buffer.length) {
     const length = buffer.readUInt32BE(offset);
     offset += 4;
-    if (length <= 0 || offset + length > buffer.length) {
+    if (length <= 0 || length > MAX_RESULT_BYTES || offset + length > buffer.length) {
       throw invalidNovelAiStreamFrameError(buffer, offset - 4);
     }
 
@@ -1025,6 +1075,7 @@ function extractFinalImageFromNovelAiStream(buffer, context = {}) {
     handleNovelAiStreamEvent(event, state);
   }
 
+  if (offset !== buffer.length) throw invalidNovelAiStreamFrameError(buffer, offset);
   return finalNovelAiStreamImage(state);
 }
 
@@ -1056,7 +1107,8 @@ function handleNovelAiStreamEvent(event, state) {
   }
 
   if (eventType === 'final') {
-    if (event.image) state.finalImage = Buffer.from(event.image);
+    if (!(event.image instanceof Uint8Array)) throw new Error('NovelAI final event does not contain binary image data.');
+    state.finalImage = validatedUpstreamImage(Buffer.from(event.image));
     emitNovelAiStreamProgress(event, state, true);
   }
 }
@@ -1121,13 +1173,7 @@ function normalizeNovelAiStreamProgress(event, state, isFinal) {
 function finalNovelAiStreamImage(state) {
   // 中途预览不是最终结果；遇到报错或缺少 final 必须让任务失败并退款。
   if (state.errors.length) throw new Error(`NovelAI stream error: ${state.errors.at(-1)}`);
-  const image = state.finalImage;
-  if (image) {
-    return {
-      mimeType: imageMimeType(image),
-      buffer: image
-    };
-  }
+  if (state.finalImage) return state.finalImage;
 
   throw new Error('NovelAI stream ended without a final image.');
 }
@@ -1167,7 +1213,9 @@ function decodeMsgpack(buffer) {
     }
   };
 
-  return readMsgpackValue(reader);
+  const value = readMsgpackValue(reader);
+  if (reader.offset !== buffer.length) throw new Error('Invalid trailing NovelAI msgpack data.');
+  return value;
 }
 
 function readMsgpackValue(reader) {
@@ -1277,20 +1325,21 @@ function extractFirstImageFromZip(buffer) {
   const entries = readZipCentralDirectory(buffer);
   for (const entry of entries) {
     const lowerName = entry.fileName.toLowerCase();
-    const isImage = lowerName.endsWith('.png') || lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg') || !entry.fileName.includes('.');
+    const isImage = /\.(png|jpe?g|webp)$/.test(lowerName) || !entry.fileName.includes('.');
     if (!isImage) continue;
 
-    if (buffer.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50) continue;
+    if (![0, 8].includes(entry.method) || entry.flags & 1 || entry.uncompressedSize > MAX_RESULT_BYTES) throw new Error('Unsupported or oversized NovelAI ZIP image.');
+    if (entry.localHeaderOffset + 30 > entry.directoryOffset || buffer.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50) throw new Error('Invalid NovelAI ZIP local header.');
+    if (buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method || buffer.readUInt16LE(entry.localHeaderOffset + 6) & 1) throw new Error('Invalid NovelAI ZIP image method.');
     const fileNameLength = buffer.readUInt16LE(entry.localHeaderOffset + 26);
     const extraLength = buffer.readUInt16LE(entry.localHeaderOffset + 28);
     const dataStart = entry.localHeaderOffset + 30 + fileNameLength + extraLength;
     const dataEnd = dataStart + entry.compressedSize;
+    if (dataEnd > entry.directoryOffset) throw new Error('Truncated NovelAI ZIP image.');
     const compressed = buffer.slice(dataStart, dataEnd);
-    const image = entry.method === 8 ? zlib.inflateRawSync(compressed) : compressed;
-    return {
-      mimeType: lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg') ? 'image/jpeg' : 'image/png',
-      buffer: image
-    };
+    const image = entry.method === 8 ? zlib.inflateRawSync(compressed, { maxOutputLength: MAX_RESULT_BYTES }) : compressed;
+    if (image.length !== entry.uncompressedSize || crc32(image) !== entry.crc) throw new Error('Corrupt NovelAI ZIP image.');
+    return validatedUpstreamImage(image);
   }
   throw new Error('No image file found in NovelAI ZIP response.');
 }
@@ -1308,38 +1357,40 @@ function readZipCentralDirectory(buffer) {
   if (eocdOffset === -1) throw new Error('ZIP end of central directory not found.');
 
   const entryCount = buffer.readUInt16LE(eocdOffset + 10);
-  let offset = buffer.readUInt32LE(eocdOffset + 16);
+  const directorySize = buffer.readUInt32LE(eocdOffset + 12);
+  const directoryOffset = buffer.readUInt32LE(eocdOffset + 16);
+  if (eocdOffset + 22 + buffer.readUInt16LE(eocdOffset + 20) !== buffer.length || directoryOffset + directorySize !== eocdOffset || buffer.readUInt32LE(eocdOffset + 4) !== 0 || buffer.readUInt16LE(eocdOffset + 8) !== entryCount) throw new Error('Invalid NovelAI ZIP directory.');
+  let offset = directoryOffset;
   const entries = [];
 
   for (let index = 0; index < entryCount; index += 1) {
-    if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error('Truncated NovelAI ZIP directory.');
+    const flags = buffer.readUInt16LE(offset + 8);
     const method = buffer.readUInt16LE(offset + 10);
+    const crc = buffer.readUInt32LE(offset + 16);
     const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
     const fileNameLength = buffer.readUInt16LE(offset + 28);
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
     const localHeaderOffset = buffer.readUInt32LE(offset + 42);
+    if (offset + 46 + fileNameLength + extraLength + commentLength > eocdOffset) throw new Error('Truncated NovelAI ZIP directory entry.');
     const fileName = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString('utf8');
-    entries.push({ method, compressedSize, fileName, localHeaderOffset });
+    entries.push({ flags, method, crc, compressedSize, uncompressedSize, fileName, localHeaderOffset, directoryOffset });
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
 
+  if (offset !== eocdOffset) throw new Error('Invalid NovelAI ZIP directory size.');
   return entries;
 }
 
 function decodeDataUrl(value) {
-  const text = String(value);
-  const match = text.match(/^data:([^;]+);base64,(.+)$/);
-  if (match) {
-    return {
-      mimeType: match[1],
-      buffer: Buffer.from(match[2], 'base64')
-    };
+  try {
+    const image = validateNativeImage(value, 'NovelAI result', { maxBytes: MAX_RESULT_BYTES });
+    return { mimeType: image.mimeType, buffer: Buffer.from(image.base64, 'base64') };
+  } catch (cause) {
+    throw new Error('NovelAI returned invalid or incomplete image data.', { cause });
   }
-  return {
-    mimeType: 'image/png',
-    buffer: Buffer.from(text, 'base64')
-  };
 }
 
 function looksLikeZip(buffer) {

@@ -60,7 +60,7 @@ const crcTable = Uint32Array.from({ length: 256 }, (_, value) => {
   for (let i = 0; i < 8; i++) value = (value >>> 1) ^ ((value & 1) ? 0xedb88320 : 0);
   return value >>> 0;
 });
-function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]; return (crc ^ 0xffffffff) >>> 0; }
+export function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]; return (crc ^ 0xffffffff) >>> 0; }
 
 function pngDimensions(bytes) {
   let offset = 8, dimensions, depth, channels, interlace, ended = false;
@@ -147,16 +147,21 @@ function webpDimensions(bytes) {
   return dimensions;
 }
 
-export function validateNativeImage(value, label = 'image') {
-  const decoded = decodeBase64(value, label);
-  const { bytes } = decoded;
+export function validateImageBytes(bytes, { maxBytes = MAX_IMAGE_BYTES, label = 'image' } = {}) {
+  if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > maxBytes) fail(422, `${label} 的图片大小无效。`);
   let actualType, dimensions;
   if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) { actualType = 'image/png'; dimensions = pngDimensions(bytes); }
   else if (bytes[0] === 0xff && bytes[1] === 0xd8) { actualType = 'image/jpeg'; dimensions = jpegDimensions(bytes); }
   else if (bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') { actualType = 'image/webp'; dimensions = webpDimensions(bytes); }
   else fail(422, `${label} 不是可识别的 PNG、JPEG 或 WebP 图片。`);
-  if (decoded.mimeType && decoded.mimeType !== actualType) fail(422, `${label} 的 MIME 类型与图片内容不一致。`);
-  return { ...dimensions, mimeType: actualType, base64: decoded.base64, byteLength: bytes.length };
+  return { ...dimensions, mimeType: actualType, byteLength: bytes.length };
+}
+
+export function validateNativeImage(value, label = 'image', { maxBytes = MAX_IMAGE_BYTES } = {}) {
+  const decoded = decodeBase64(value, label, { maxBytes });
+  const image = validateImageBytes(decoded.bytes, { maxBytes, label });
+  if (decoded.mimeType && decoded.mimeType !== image.mimeType) fail(422, `${label} 的 MIME 类型与图片内容不一致。`);
+  return { ...image, base64: decoded.base64 };
 }
 
 function validateCaption(value, label, maxCharacters = 24, inheritedUseCoords) {

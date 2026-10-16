@@ -19,7 +19,7 @@ for (const patch of [{action:'img2img'}, {model:'unknown'}, {parameters:{...inpu
   assert.throws(() => context.parseNativeImageRequest({...input,...patch}), error => error.statusCode===422);
 }
 assert.throws(() => context.parseNativeImageRequest({...input,input:''}), error => error.statusCode===400);
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB1kAAAAASUVORK5CYII=', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const zip = context.nativeImageZip(png);
 assert.equal(zip.readUInt32LE(0),0x04034b50); assert.equal(zip.readUInt16LE(8),0);
 const filenameLength = zip.readUInt16LE(26);
