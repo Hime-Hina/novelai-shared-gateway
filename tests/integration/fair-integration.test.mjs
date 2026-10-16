@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import * as fair from '../../server/fair-quota.js';
 import * as capacity from '../../server/shared-capacity.js';
+import * as queuePolicy from '../../server/queue-policy.js';
 const source=fs.readFileSync(new URL('../../server/index.js',import.meta.url),'utf8');
 function fixture(tier=3) {
   let now=Date.now();
@@ -11,15 +12,15 @@ function fixture(tier=3) {
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx=vm.createContext({...fair,...capacity,console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
+  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
     store:{update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
     httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
-    jobAccountCost:()=>0,isStaleActiveJob:()=>false,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
+    jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
     hasEnabledAccounts:()=>true,dirtyResultJobRows:()=>({}),dirtyReservationJobRows:()=>()=>({}),
     publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
-  for(const name of ['getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','assertFairMemberReady','generationCost','availableAccountSlots']) {
+  for(const name of ['getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
     const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
@@ -40,6 +41,38 @@ test('两位成员同时提交，超过十秒仍等待上一张完成，不重�
   advance(1);
   assert.equal((await ctx.reserveQueuedJob('second')).job.status,'running');
   assert.equal(db.accounts[0].inFlight,1);
+});
+
+test('派发事务拒绝过期队列与停止后恢复的旧任务，不预扣新额度', async () => {
+  const { db, ctx, job, advance } = fixture();
+  const expired = job('expired');
+  expired.queueExpiresAt = new Date(ctx.Date.now() + 1000).toISOString();
+  advance(1000);
+  const before = structuredClone(db.settings.fairQuota.balances);
+  assert.equal((await ctx.reserveQueuedJob(expired.id)).skip, true);
+  assert.equal(expired.status, 'failed');
+  assert.equal(expired.fairCharge, undefined);
+  assert.deepEqual(db.settings.fairQuota.balances, before);
+  const old = job('old-batch');
+  old.jobAdmissionVersion = 0;
+  db.users[0].jobAdmissionVersion = 1;
+  db.users[0].acceptingJobs = true;
+  assert.equal((await ctx.reserveQueuedJob(old.id)).statusCode, 409);
+  assert.equal(old.status, 'failed');
+  assert.equal(old.fairCharge, undefined);
+});
+
+test('旧非共享派发路径也必须遵守停止接单，不能先选号或消费', async () => {
+  const { db, ctx, job } = fixture();
+  ctx.fairShareMode = false;
+  let selected = false;
+  ctx.selectAccount = () => { selected = true; return db.accounts[0]; };
+  db.users[0].acceptingJobs = false;
+  const queued = job('legacy-stopped');
+  assert.equal((await ctx.reserveQueuedJob(queued.id)).statusCode, 403);
+  assert.equal(queued.status, 'failed');
+  assert.equal(selected, false);
+  assert.equal(db.accounts[0].inFlight, undefined);
 });
 
 test('同一用户多次提交也只占一个槽位，其余排队；失败退款只发生一次',async()=>{

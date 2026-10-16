@@ -34,10 +34,11 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
 
  // 管理新增操作使用同一私有入口；成员 Cookie 与 Key 都不能提权。
  const manage=body=>call('/api/admin/member-management',{body,headers:{'x-admin-token':'test-admin'}});
- for(const action of ['member-key','member-status','preview-groups']){r=await call('/api/admin/member-management',{body:{action,userId:'b',enabled:false,groups:[]},cookie,headers:{authorization:'Bearer STA1N-a'}});assert.equal(r.status,403);}
+ for(const action of ['member-key','member-status','member-admission','preview-groups']){r=await call('/api/admin/member-management',{body:{action,userId:'b',enabled:false,groups:[]},cookie,headers:{authorization:'Bearer STA1N-a'}});assert.equal(r.status,403);}
  r=await manage({action:'member-key',userId:'b'});assert.deepEqual(await r.json(),{apiKey:'STA1N-b'});
  r=await manage({action:'member-key',userId:'missing'});assert.equal(r.status,404);
  r=await manage({action:'member-status',userId:'b',enabled:'false'});assert.equal(r.status,400);assert.equal(db.users.find(u=>u.id==='b').enabled,true);
+ r=await manage({action:'member-admission',userId:'b',acceptingJobs:'false'});assert.equal(r.status,400);
  r=await call('/api/admin/member-management',{body:{action:'member-key',userId:'b'},headers:{'x-admin-token':'test-admin',Origin:'https://evil.invalid'}});assert.equal(r.status,403);
 
  // 预览允许估算恢复与重分，但不能在真实账本留下余额、版本或审计变化。

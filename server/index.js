@@ -7,6 +7,7 @@ import { privateAccessAllowed } from './public-hosts.js';
 import { launcherSubscription } from './launcher-subscription.js';
 import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
+import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.js';
 import { requireDiscordMembership } from './discord-auth.js';
 import { ownerOperation } from './owner-operations.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
@@ -275,6 +276,7 @@ async function route(req, res) {
     if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken,
+    changeMemberAdmission,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   if (await publicSelfUseGuard(req, res, url, method)) return;
 
@@ -773,7 +775,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
     try {
       // 计价失败必须在入队前返回，不留下无法计价的任务。
       quoteFairRequest(single);
-      const result = await runNativeQueuedRequest(token, single, deadline, diagnosticId);
+      const result = await runNativeQueuedRequest(token, single, deadline, diagnosticId, user.jobAdmissionVersion || 0);
       const filename = `image_${index}.${imageExtension(result.saved.mimeType || '')}`;
       entries.push({buffer: await readStoredImage(result.saved), filename});
       results.push({index, status: 'done', filename});
@@ -795,9 +797,9 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   sendImage(res, 200, 'application/zip', archive, { 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
-async function runNativeQueuedRequest(token, request, deadline, diagnosticId) {
+async function runNativeQueuedRequest(token, request, deadline, diagnosticId, admissionVersion) {
   if (Date.now() >= deadline) throw httpError(504, '生成等待超时，请减少一次生成张数');
-  const job = await createJob(token, request, { native: true, source: 'novelai-native', deadlineAt: new Date(deadline).toISOString() });
+  const job = await createJob(token, request, { native: true, source: 'novelai-native', deadlineAt: new Date(deadline).toISOString(), admissionVersion });
   logNativeDiagnostic(diagnosticId, 'queued', { jobId: job.id });
   const pending = waitForJobResult(job.id, deadline);
   scheduleQueueDrain();
@@ -1824,7 +1826,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
     jobs.forEach((job) => {
       if (!isStaleActiveJob(job, now)) return;
       const detail = staleActiveJobDetail(job, now);
-      const account = job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
+      const account = job.status === 'running' && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         if (fairShareMode) recordSharedCompletion(account, Date.now());
@@ -1833,6 +1835,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       refundJob(db, job, message);
       job.status = 'failed';
       job.error = message;
+      job.errorStatus = 504;
       job.errorDetail = `${reason}: ${detail}`;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
@@ -1848,7 +1851,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
   });
 
   if (!result?.changed) return result;
-  result.jobIds.forEach((jobId) => notifyJobWaiters(jobId, { error: 'direct generate timeout' }));
+  result.jobIds.forEach((jobId) => notifyJobWaiters(jobId, { error: 'direct generate timeout', statusCode: 504 }));
   return result;
 }
 
@@ -2197,6 +2200,7 @@ async function createJob(token, body, options = {}) {
     if (cached) {
       return createDirectJob(token, request, cacheKey, {
         status: 'done',
+        admissionVersion: options.admissionVersion,
         accountId: cached.accountId || '',
         imageId: cached.id,
         cost: 0
@@ -2206,6 +2210,7 @@ async function createJob(token, body, options = {}) {
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
     const request = normalizeRequest(db.settings);
+    assertMemberAcceptsJobs(user, options.admissionVersion);
     const cacheKey = requestCacheKey(token, request, body.seed);
     if (!isNoCache(body.nocache)) {
       const activeMatch = db.jobs.find((job) => (
@@ -2215,6 +2220,7 @@ async function createJob(token, body, options = {}) {
       ));
       if (activeMatch) return activeMatch;
     }
+    assertQueueAdmission(db, user, options.admissionVersion);
     const cost = generationCost(request);
     if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
     const queueTotal = activeJobCount(db.jobs) + 1;
@@ -2231,6 +2237,8 @@ async function createJob(token, body, options = {}) {
       cost,
       accountCost: 0,
       deadlineAt: options.deadlineAt || '',
+      queueExpiresAt: queueDeadline(Date.now(), options.deadlineAt),
+      jobAdmissionVersion: user.jobAdmissionVersion || 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       imageId: '',
@@ -2263,6 +2271,8 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
   if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
+    assertMemberAcceptsJobs(user, options.admissionVersion);
+    if (options.status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
     const cost = Number(options.cost ?? generationCost(request));
     const shouldCharge = !options.status && cost > 0;
     if (shouldCharge && user.balance < cost) throw httpError(402, insufficientBalanceMessage);
@@ -2283,6 +2293,8 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
       accountCost: 0,
       accountId: options.accountId || '',
       deadlineAt: options.deadlineAt || '',
+      queueExpiresAt: options.status === 'done' ? '' : queueDeadline(Date.now(), options.deadlineAt),
+      jobAdmissionVersion: user.jobAdmissionVersion || 0,
       createdAt: now,
       updatedAt: now,
       completedAt: options.status === 'done' ? now : '',
@@ -2343,6 +2355,19 @@ async function removeJob(jobId) {
   }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
 }
 
+async function changeMemberAdmission(userId, acceptingJobs) {
+  const result = await store.update(db => setMemberAdmission(db, userId, acceptingJobs, refundJob), {
+    collections: ['users', 'jobs', 'settings', 'ledger'], immediate: true
+  });
+  // 取消通知必须在事务提交之后发送；写失败不能让连接先收到“已取消”。
+  for (const jobId of result.cancelledJobIds) {
+    clearJobStreamProgress(jobId);
+    notifyJobWaiters(jobId, { error: '管理员已停止此成员接单，未派发任务已取消', statusCode: 409 });
+  }
+  scheduleQueueDrain();
+  return { ...result, cancelledCount: result.cancelledJobIds.length };
+}
+
 async function timeoutJob(jobId) {
   const control = runningJobControls.get(jobId);
   if (control) {
@@ -2392,6 +2417,20 @@ function waitForJobResult(jobId, deadline) {
     const waiter = { resolve, timer };
     if (!jobWaiters.has(jobId)) jobWaiters.set(jobId, new Set());
     jobWaiters.get(jobId).add(waiter);
+    // 先订阅再串行补查，既补上错过的取消通知，也不读取尚未提交或将回滚的状态。
+    store.update(db => {
+      const job = db.jobs.find(item => item.id === jobId);
+      if (!job) return null;
+      return { status: job.status, imageId: job.imageId, error: job.error, errorStatus: job.errorStatus,
+        balance: db.users.find(user => user.token === job.userToken)?.balance };
+    }, { persist: false }).then(async job => {
+      if (job?.status === 'failed') {
+        notifyJobWaiters(jobId, { error: job.error, statusCode: job.errorStatus || 500 });
+      } else if (job?.status === 'done') {
+        const saved = await store.findImage(job.imageId);
+        if (saved) notifyJobWaiters(jobId, { saved, balance: job.balance });
+      }
+    }).catch(() => notifyJobWaiters(jobId, { error: '任务状态暂时无法读取，请稍后查询', statusCode: 503 }));
   });
 }
 
@@ -2522,15 +2561,18 @@ async function reserveQueuedJob(jobId) {
       refundJob(db, job, '连接超时');
       job.status = 'failed';
       job.error = '连接超时';
+      job.errorStatus = 504;
       job.errorDetail = detail;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
-      return { skip: true, jobId: job.id };
+      return { skip: true, jobId: job.id, failure: job.error, statusCode: 504 };
     }
     let account;
-    if (fairShareMode) {
-      const state = syncFairQuota(db);
-      try {
+    const state = fairShareMode ? syncFairQuota(db) : null;
+    try {
+      const user = getUserOrThrow(db, job.userToken);
+      assertMemberAcceptsJobs(user, job.jobAdmissionVersion);
+      if (fairShareMode) {
         if (!state?.enabled || state.status !== 'active') throw httpError(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
         account = db.accounts.find(a => a.id === state.boundAccountId);
         if (!account || account.enabled === false) throw httpError(503, '绑定的 Opus 账号未启用');
@@ -2538,17 +2580,17 @@ async function reserveQueuedJob(jobId) {
         // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
         const load = Math.max(running, Number(account.inFlight || 0));
         if (load >= sharedAccountConcurrency(account) || sharedAccountReadyDelay(account, Date.now(), load) > 0) return { queued: true, jobId: job.id };
-        reserveFairQuota(db, getUserOrThrow(db, job.userToken), job, account);
-      } catch (error) {
-        refundJob(db, job, error.message);
-        job.status = 'failed';
-        job.error = error.message;
-        job.errorStatus = error.statusCode || 503;
-        job.updatedAt = job.completedAt = new Date().toISOString();
-        return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus };
+        reserveFairQuota(db, user, job, account);
+      } else {
+        account = selectAccount(db.accounts, db.settings, { request: job.request });
       }
-    } else {
-      account = selectAccount(db.accounts, db.settings, { request: job.request });
+    } catch (error) {
+      refundJob(db, job, error.message);
+      job.status = 'failed';
+      job.error = error.message;
+      job.errorStatus = error.statusCode || 503;
+      job.updatedAt = job.completedAt = new Date().toISOString();
+      return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus };
     }
     if (!account && hasEnabledAccounts(db.accounts)) {
       if (!hasAccountWithEnoughQuota(db.accounts, job.request)) {
@@ -3236,7 +3278,9 @@ async function drainQueuedJobs() {
   queueDraining = true;
   queueDrainRequested = false;
   try {
+    await cleanupStaleActiveJobs('queue expiry');
     const drainPlan = await store.update((db) => {
+      if (!db.jobs.some(job => job.status === 'queued')) return { jobIds: [], delay: 0 };
       const slots = availableAccountSlots(db.accounts, db.settings);
       if (slots <= 0) return { jobIds: [], delay: nextAccountReadyDelay(db.accounts, db.settings) };
       return {
@@ -3273,8 +3317,11 @@ async function drainQueuedJobs() {
 }
 
 async function queueRetryDelay() {
-  const db = await store.readCollections(['settings', 'accounts']);
-  return Math.max(fairShareMode ? 1000 : 25, nextAccountReadyDelay(db.accounts, db.settings) || 25);
+  const db = await store.readCollections(['settings', 'accounts', 'jobs']);
+  const now = Date.now();
+  const expiryDelays = db.jobs.map(job => queuedDeadlineTimestamp(job)).filter(Boolean).map(until => until - now);
+  const readyDelay = nextAccountReadyDelay(db.accounts, db.settings) || 25;
+  return Math.max(fairShareMode ? 1000 : 25, Math.min(readyDelay, ...expiryDelays));
 }
 
 function hasEnabledAccounts(accounts) {
@@ -3648,8 +3695,10 @@ function isQueueActiveJob(job, now = Date.now()) {
 }
 
 function isStaleActiveJob(job, now = Date.now()) {
-  if (!job || !['queued', 'running'].includes(job.status)) return false;
+  if (!job || !['queued', 'pending', 'running'].includes(job.status)) return false;
   if (isExpiredJobAt(job, now)) return true;
+  const queueExpires = queuedDeadlineTimestamp(job);
+  if (queueExpires && now >= queueExpires) return true;
   const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
   if (job.status === 'running') return now - updatedAt > staleRunningJobMs();
@@ -3659,6 +3708,7 @@ function isStaleActiveJob(job, now = Date.now()) {
 
 function staleActiveJobDetail(job, now = Date.now()) {
   if (isExpiredJobAt(job, now)) return 'job deadline expired';
+  if (queuedDeadlineTimestamp(job) && now >= queuedDeadlineTimestamp(job)) return 'queued job exceeded wait deadline';
   return `${job.status || 'active'} job exceeded stale timeout`;
 }
 

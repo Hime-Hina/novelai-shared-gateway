@@ -30,7 +30,7 @@ async function listen(server) {
   return server.address().port;
 }
 
-test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 180000 }, async t => {
+test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 240000 }, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
   const adminToken = randomBytes(32).toString('hex');
   const upstreamToken = 'pst-synthetic-offline-fixture-only';
@@ -307,6 +307,58 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.ok(calls[startCount + 1].startedAt - calls[startCount].finishedAt >= 10000);
     const cost = quoteFairRequest(parseNativeImageRequest(body()));
     for (let member = 0; member < 2; member++) near(before[member].v5Available - (await quota(member)).v5Available, cost.amount);
+  });
+
+  await t.test('成员上限与原子停止接单：排队取消，在途结算，恢复不续旧批次', async () => {
+    const manage = value => fetchLocal('/api/admin/member-management', {
+      method: 'POST', headers: { 'x-admin-token': adminToken, 'content-type': 'application/json', origin: baseUrl },
+      body: JSON.stringify(value)
+    });
+    const memberId = credentials[0].user_id;
+    const startCount = calls.length, before = await quota();
+    holdNextMs = 3000;
+    const batch = post('/ai/generate-image-stream', body('nai-diffusion-5-full', { n_samples: 3 }));
+    const startedDeadline = Date.now() + 20000;
+    while (calls.length === startCount && Date.now() < startedDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(calls.length, startCount + 1);
+    const queued = [];
+    const enqueue = seed => post('/api/jobs', { prompt: 'synthetic queue admission', model: 'nai-diffusion-5-full', width: 1024,
+      height: 1024, steps: 23, seed, nocache: true });
+    for (let index = 0; index < 3; index++) {
+      const response = await enqueue(900 + index);
+      assert.equal(response.status, 202, await response.clone().text());
+      queued.push((await response.json()).id);
+    }
+    const rejected = await enqueue(904);
+    assert.equal(rejected.status, 429);
+    assert.equal(typeof (await rejected.json()).error, 'string');
+    const stopped = await manage({ action: 'member-admission', userId: memberId, acceptingJobs: false });
+    assert.equal(stopped.status, 200);
+    assert.equal((await stopped.json()).cancelledCount, 3);
+    const me = await fetchLocal('/api/member/me', { headers: { cookie: cookies[0] } });
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).acceptingJobs, false);
+    const denied = await post('/ai/generate-image', body());
+    assert.equal(denied.status, 403);
+    assert.equal(typeof (await denied.json()).message, 'string');
+    assert.equal((await manage({ action: 'member-admission', userId: memberId, acceptingJobs: true })).status, 200);
+    const result = await batch;
+    assert.equal(result.status, 200);
+    assert.equal(result.headers.get('x-nai-image-count'), '1');
+    assert.equal(result.headers.get('x-nai-partial'), 'true');
+    assert.deepEqual(readNativeEvents(Buffer.from(await result.arrayBuffer())).map(event => event.event_type), ['final', 'error']);
+    assert.equal(calls.length, startCount + 1);
+    near(before.v5Available - (await quota()).v5Available, quoteFairRequest(parseNativeImageRequest(body())).amount);
+    for (const id of queued) {
+      const response = await fetchLocal('/api/jobs/' + id, { headers: { authorization: `Bearer ${credentials[0].api_key}` } });
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).status, 'failed');
+    }
+    // 恢复只接受新请求；立即再停止清理这个新排队任务，避免发出额外上游生成。
+    assert.equal((await enqueue(905)).status, 202);
+    const cleaned = await manage({ action: 'member-admission', userId: memberId, acceptingJobs: false });
+    assert.equal((await cleaned.json()).cancelledCount, 1);
+    assert.equal((await manage({ action: 'member-admission', userId: memberId, acceptingJobs: true })).status, 200);
   });
 
   await t.test('上游并发锁返回 429 与重试时间，预扣退回且不自动重发', async () => {

@@ -93,6 +93,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
           configVersion: db.settings.fairQuota?.configVersion ?? 1,
           publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled, ownerUserId: env.OWNER_USER_ID || null,
           users: db.users.map(u => ({ id: u.id, username: u.memberAuth?.username || '', note: u.note || '', enabled: u.enabled !== false,
+            acceptingJobs: u.acceptingJobs !== false,
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
             quota: fairQuotaSummary(db, u), recentActivity: recentActivity(db, u) })) };
       }, { collections: ['settings'] });
@@ -139,6 +140,11 @@ export async function handleMemberRoutes(req, res, url, deps) {
         return {id:user.id,enabled:user.enabled};
       },{collections:['users'],immediate:true});
       reply(res,200,result);return true;
+    }
+    if (body.action === 'member-admission') {
+      if (typeof body.acceptingJobs !== 'boolean') error(400, 'acceptingJobs 必须为布尔值');
+      const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs);
+      reply(res, 200, result); return true;
     }
     if (body.action === 'preview-groups') {
       if(body.redistributeRemaining!==undefined&&typeof body.redistributeRemaining!=='boolean')error(400,'redistributeRemaining 必须为布尔值');
@@ -247,7 +253,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, { apiKey: user.token, baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '' }); return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), quota: fairQuotaSummary(db, user),
+    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
         model: j.request?.model || '', status: j.status, charge: j.fairCharge ? { resource: j.fairCharge.resource, amount: j.fairCharge.amount, status: j.fairCharge.status, estimated: j.fairCharge.estimated,
           billingMode: j.fairCharge.billingMode || null, v5Equivalent: j.fairCharge.v5Equivalent ?? null, upstreamBilling: j.fairCharge.upstreamBilling || null } : null }))
