@@ -22,13 +22,6 @@ async function listen(server) {
   await once(server, 'listening');
   return server.address().port;
 }
-async function until(predicate, timeout = 45000) {
-  const end = Date.now() + timeout;
-  while (!predicate()) {
-    if (Date.now() >= end) throw new Error('synthetic state wait timed out');
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-}
 function zipEntries(buffer) {
   const result = new Map();
   let offset = 0;
@@ -56,7 +49,11 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   await store.close();
   const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
   t.after(() => audit.close());
-  const calls = [], releases = new Map();
+  const calls = [], upstreamEvents = [], releases = new Map();
+  const upstreamEvent = (seed, event, details = {}) => {
+    upstreamEvents.push({ seed, event, at: new Date().toISOString(), ...details });
+    if (upstreamEvents.length > 40) upstreamEvents.shift();
+  };
   const upstream = http.createServer(async (req, res) => {
     if (req.url === '/user/data') {
       res.setHeader('content-type', 'application/json');
@@ -70,12 +67,19 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
     const payload = JSON.parse(Buffer.concat(chunks));
     const seed = payload.parameters.seed;
     calls.push(seed);
-    if ([100, 300, 400].includes(seed)) await new Promise(resolve => releases.set(seed, resolve));
+    upstreamEvent(seed, 'received');
+    res.once('close', () => upstreamEvent(seed, 'closed', { finished: res.writableFinished }));
+    if ([100, 300, 400].includes(seed)) {
+      await new Promise(resolve => releases.set(seed, resolve));
+      upstreamEvent(seed, 'released');
+    }
     if (seed === 101) {
+      upstreamEvent(seed, 'response', { status: 500 });
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: 'synthetic second image failure' }));
       return;
     }
+    upstreamEvent(seed, 'response', { status: 200 });
     res.writeHead(200, { 'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : 'image/png' });
     res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
   });
@@ -87,18 +91,78 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(env, { ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(port),
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}` });
-  let child, exited, output = '';
+  let child, exited, output = '', fetchFailure;
+  const rows = () => audit.prepare('SELECT data FROM jobs').all().map(row => JSON.parse(row.data));
+  const redact = value => {
+    let text = String(value);
+    for (const secret of [adminToken, 'pst-synthetic-offline-batch-fixture-only', ...credentials.flatMap(member => [member.api_key, member.password])]) {
+      if (secret) text = text.replaceAll(secret, '[redacted]');
+    }
+    return text.replace(/\b(?:STA1N-|pst-)[A-Za-z0-9_-]+/g, '[redacted]');
+  };
+  const diagnosticError = (phase, error) => {
+    let state;
+    try {
+      state = {
+        at: new Date().toISOString(), phase, calls, upstreamEvents,
+        child: { exitCode: child?.exitCode, signalCode: child?.signalCode },
+        fetchFailure: fetchFailure && { seed: fetchFailure.seed, at: fetchFailure.at },
+        jobs: rows().map(job => Object.fromEntries([
+          'id', 'requestId', 'sampleIndex', 'status', 'queueSeq', 'createdAt', 'startedAt', 'updatedAt', 'completedAt',
+          'queueExpiresAt', 'deadlineAt', 'upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus',
+          'errorStatus', 'sharedCooldown', 'imageId'
+        ].map(key => [key, job[key]]).concat([['seed', job.request?.seed], ['chargeStatus', job.fairCharge?.status],
+          ['resultPending', Boolean(job.resultPending)], ['error', String(job.error || '').slice(0, 300)]]))),
+        accounts: audit.prepare('SELECT data FROM accounts').all().map(row => {
+          const account = JSON.parse(row.data);
+          return Object.fromEntries(['id', 'enabled', 'inFlight', 'cooldownUntil', 'cooldownReason', 'ordinaryStrikeCount',
+            'capacityStrikeCount', 'quotaCheckedAt', 'upstreamStatus'].map(key => [key, account[key]]));
+        })
+      };
+    } catch (readError) { state = { phase, readError: String(readError), calls, upstreamEvents }; }
+    const failure = { name: error?.name, message: error?.message || String(error), code: error?.code,
+      cause: error?.cause && { name: error.cause.name, message: error.cause.message, code: error.cause.code } };
+    return new Error(redact(`[native-batch-state] ${JSON.stringify({ failure, state })}\nchild tail:\n${output.slice(-10000)}`), { cause: error });
+  };
+  const checkWaitingState = () => {
+    if (fetchFailure) throw fetchFailure.error;
+    if (child?.exitCode !== null || child?.signalCode !== null) throw new Error('synthetic gateway exited while waiting');
+    // seed 101 的模拟失败及其未派发余图是本例预期；其他失败应立即保留现场。
+    const failed = rows().find(job => job.status === 'failed' && ![101, 102, 103].includes(job.request?.seed));
+    if (failed) throw new Error(`unexpected terminal job: ${failed.id}`);
+  };
+  const until = async (predicate, phase, timeout = 45000) => {
+    const end = Date.now() + timeout;
+    try {
+      while (!predicate()) {
+        checkWaitingState();
+        if (Date.now() >= end) throw new Error('synthetic state wait timed out');
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+    } catch (error) { throw diagnosticError(phase, error); }
+  };
+  const observed = async (promise, phase) => {
+    let timer;
+    try {
+      return await Promise.race([promise, new Promise((_, reject) => {
+        timer = setInterval(() => {
+          try { checkWaitingState(); } catch (error) { reject(error); }
+        }, 100);
+      })]);
+    } catch (error) { throw diagnosticError(phase, error); }
+    finally { clearInterval(timer); }
+  };
   const start = async () => {
     child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     exited = once(child, 'exit');
-    child.stderr.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { output = (output + chunk.toString()).slice(-16000); });
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('synthetic gateway startup timeout: ' + output)), 15000);
+      const timer = setTimeout(() => reject(diagnosticError('startup', new Error('synthetic gateway startup timeout'))), 15000);
       child.stdout.on('data', chunk => {
-        output += chunk.toString();
+        output = (output + chunk.toString()).slice(-16000);
         if (chunk.toString().includes('Nai2API listening')) { clearTimeout(timer); resolve(); }
       });
-      child.once('exit', code => { clearTimeout(timer); reject(new Error(`synthetic gateway exited ${code}: ${output}`)); });
+      child.once('exit', code => { clearTimeout(timer); reject(diagnosticError('startup', new Error(`synthetic gateway exited ${code}`))); });
     });
   };
   const stop = async (signal = 'SIGTERM') => {
@@ -112,13 +176,17 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
     await new Promise(resolve => upstream.close(resolve));
   });
   await start();
-  const rows = () => audit.prepare('SELECT data FROM jobs').all().map(row => JSON.parse(row.data));
-  const post = (value, member = 0) => fetch(base + '/ai/generate-image', { method: 'POST',
-    headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json' },
-    body: JSON.stringify(value), signal: AbortSignal.timeout(90000) });
+  const post = (value, member = 0) => {
+    const pending = fetch(base + '/ai/generate-image', { method: 'POST',
+      headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json' },
+      body: JSON.stringify(value), signal: AbortSignal.timeout(90000) });
+    // A 的响应在 B 入队后才一起等待，提前失败也不能成为无现场的未处理拒绝。
+    pending.catch(error => { fetchFailure = { seed: value.parameters.seed, at: new Date().toISOString(), error }; });
+    return pending;
+  };
 
   const a = post(body(100, 4));
-  await until(() => calls.includes(100));
+  await until(() => calls.includes(100), 'A1 reaches mock upstream');
   const first = rows().filter(job => job.request.seed === 100)[0];
   const aRows = rows().filter(job => job.requestId === first.requestId);
   assert.equal(aRows.length, 4);
@@ -126,15 +194,15 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   assert.ok(aRows.every(job => !job.request.prompt && !job.request.nativeParameters));
   assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 1);
   const b = post(body(200, 1), 1);
-  await until(() => rows().some(job => job.request.seed === 200 && job.status === 'queued'));
+  await until(() => rows().some(job => job.request.seed === 200 && job.status === 'queued'), 'B queued behind A1');
   releases.get(100)();
-  const [aResponse, bResponse] = await Promise.all([a, b]);
+  const [aResponse, bResponse] = await observed(Promise.all([a, b]), 'A/B synchronous responses');
   assert.equal(aResponse.status, 200);
   assert.equal(bResponse.status, 200);
-  await bResponse.arrayBuffer();
+  await observed(bResponse.arrayBuffer(), 'B response body');
   assert.deepEqual(calls, [100, 200, 101]);
   assert.equal(aResponse.headers.get('x-nai-partial'), 'true');
-  const entries = zipEntries(Buffer.from(await aResponse.arrayBuffer()));
+  const entries = zipEntries(Buffer.from(await observed(aResponse.arrayBuffer(), 'A partial ZIP body')));
   assert.deepEqual(entries.get('image_0.png'), png);
   const manifest = JSON.parse(entries.get('results.json'));
   assert.equal(manifest.completed, 1);
@@ -150,15 +218,15 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
     authorization: `Bearer ${credentials[0].api_key}`, 'content-type': 'application/json' } });
   disconnected.on('error', () => {});
   disconnected.end(JSON.stringify(body(300, 2)));
-  await until(() => calls.includes(300));
+  await until(() => calls.includes(300), 'disconnected batch starts');
   disconnected.destroy();
   releases.get(300)();
-  await until(() => rows().some(job => job.request.seed === 300 && job.status === 'done'));
+  await until(() => rows().some(job => job.request.seed === 300 && job.status === 'done'), 'disconnected first image completes');
   const queued = rows().find(job => job.request.seed === 301);
   assert.equal(queued.status, 'queued');
   await stop('SIGKILL');
   await start();
-  await until(() => rows().some(job => job.request.seed === 301 && job.status === 'done'));
+  await until(() => rows().some(job => job.request.seed === 301 && job.status === 'done'), 'queued second image resumes');
   assert.equal(calls.filter(seed => seed === 300).length, 1);
   assert.equal(calls.filter(seed => seed === 301).length, 1);
   assert.equal(rows().find(job => job.id === queued.id).queueSeq, queued.queueSeq);
@@ -168,12 +236,12 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   await stop();
   env.OPENAI_CHAT_TIMEOUT_MS = '100';
   await start();
-  const timedOut = await post(body(400, 1));
+  const timedOut = await observed(post(body(400, 1)), 'HTTP deadline response');
   assert.equal(timedOut.status, 504);
   await timedOut.json();
   assert.ok(['queued', 'running'].includes(rows().find(job => job.request.seed === 400).status));
-  await until(() => calls.includes(400));
+  await until(() => calls.includes(400), 'accepted job starts after HTTP deadline');
   releases.get(400)();
-  await until(() => rows().some(job => job.request.seed === 400 && job.status === 'done'));
+  await until(() => rows().some(job => job.request.seed === 400 && job.status === 'done'), 'accepted job completes after HTTP deadline');
   assert.equal(calls.filter(seed => seed === 400).length, 1);
 });
