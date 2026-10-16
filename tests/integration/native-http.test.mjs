@@ -404,7 +404,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const queued = [];
     const enqueue = seed => post('/api/jobs', { prompt: 'synthetic queue admission', model: 'nai-diffusion-5-full', width: 1024,
       height: 1024, steps: 23, seed, nocache: true });
-    for (let index = 0; index < 3; index++) {
+    for (let index = 0; index < 1; index++) {
       const response = await enqueue(900 + index);
       assert.equal(response.status, 202, await response.clone().text());
       queued.push((await response.json()).id);

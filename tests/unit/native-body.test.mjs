@@ -59,3 +59,21 @@ test('不支持的Content-Type不消费流；支持带引号boundary',async()=>{
  const req=stream(Buffer.from('secret'),'application/octet-stream');await assert.rejects(readNativeBody(req),error=>error.statusCode===415);assert.equal(req.readableEnded,false);
  const boundary='quoted-boundary';const bytes=Buffer.from('--'+boundary+'\r\nContent-Disposition: form-data; name="request"\r\n\r\n{}\r\n--'+boundary+'--\r\n');assert.deepEqual(await readNativeBody(stream(bytes,'multipart/form-data; boundary="'+boundary+'"')),{});
 });
+
+test('multipart 流和 base64 展开共享临时预算，保留容量 429', async () => {
+  const binary = Buffer.alloc(3000, 42);
+  const { bytes, contentType } = await multipart([['request', '{"image":"image"}'], ['image', new Blob([binary], { type: 'image/png' })]]);
+  const expandedBytes = Buffer.byteLength(JSON.stringify({ image: binary.toString('base64') }));
+  assert.ok(expandedBytes > bytes.length);
+  for (const limit of [12, bytes.length + 1]) {
+    const req = stream(bytes, contentType);
+    req.generationPayloadClaim = { resize(size) {
+      if (size > limit) throw Object.assign(new Error('synthetic capacity'), { statusCode: 429 });
+    } };
+    await assert.rejects(readNativeBody(req), error => error.statusCode === 429);
+  }
+  const sizes = [], req = stream(bytes, contentType);
+  req.generationPayloadClaim = { resize(size) { sizes.push(size); } };
+  assert.equal((await readNativeBody(req)).image, binary.toString('base64'));
+  assert.equal(sizes.at(-1), expandedBytes);
+});

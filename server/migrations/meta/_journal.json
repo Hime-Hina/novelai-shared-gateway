@@ -43,6 +43,13 @@
       "when": 1792184917851,
       "tag": "0005_durable_queue_sequence",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792185793052,
+      "tag": "0006_native_pending_batches",
+      "breakpoints": true
     }
   ]
 }

@@ -23,14 +23,14 @@ export function assertMemberAcceptsJobs(user, expectedVersion) {
 }
 
 // 必须和预扣、入队处于同一 store.update，不能在事务外先数队列再创建任务。
-export function assertQueueAdmission(db, user, expectedVersion, env = process.env) {
+export function assertQueueAdmission(db, user, expectedVersion, env = process.env, count = 1) {
   assertMemberAcceptsJobs(user, expectedVersion);
   const active = db.jobs.filter(job => unfinished.has(job.status));
   const limits = queuePolicy(env);
-  if (active.filter(job => job.userToken === user.token).length >= limits.member) {
+  if (active.filter(job => job.userToken === user.token).length + count > limits.member) {
     fail(429, `此成员最多保留 ${limits.member} 个未完成任务，请等待已有任务完成`);
   }
-  if (active.length >= limits.global) fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
+  if (active.length + count > limits.global) fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
 }
 
 export function queueDeadline(now, requestDeadline, env = process.env) {

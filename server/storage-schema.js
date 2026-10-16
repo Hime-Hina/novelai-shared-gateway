@@ -43,7 +43,7 @@ export const generationRequests = sqliteTable('generation_requests', {
 });
 
 export const jobs = sqliteTable('jobs', {
-  ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), cost: real().default(0).notNull(),
+  ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), payload_bytes: integer().default(0).notNull(), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()
 }, table => [
   ...recordIndexes('jobs', table),
@@ -53,7 +53,7 @@ export const jobs = sqliteTable('jobs', {
   index('idx_jobs_image_id').on(table.image_id),
   index('idx_jobs_created_stats').on(table.created_at, table.status, table.stats_excluded, table.account_id),
   index('idx_jobs_updated_stats').on(table.updated_at, table.status, table.model, table.created_at, table.cost),
-  index('idx_jobs_active_created').on(table.created_at).where(sql`${table.status} IN ('queued', 'running')`),
+  index('idx_jobs_active_created').on(table.created_at).where(sql`${table.status} IN ('queued', 'pending', 'running')`),
   index('idx_jobs_failed_order').on(sql`${table.order_value} DESC`).where(sql`${table.status} = 'failed'`),
   index('idx_jobs_error_log_updated').on(sql`${table.updated_at} DESC`).where(sql`${table.error_loggable} = 1`),
   index('idx_jobs_generation_review_due').on(sql`json_extract(${table.data}, '$.generationReview.deadlineAt')`)

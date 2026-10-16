@@ -1,6 +1,6 @@
 # 迁移前 API 契约基线（C02）
 
-核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录已经存在的行为；分资源失败退款、损耗记录与迟到结果领取已由 F03 接入，计划中的持久会话、完整批次受理、细粒度事件和幂等重试仍不能当作已经实现。
+核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录已经存在的行为；F03 分资源故障处理与 F06 网页/Native 持久受理已接入，计划中的持久会话、细粒度事件和幂等重试仍不能当作已经实现。
 
 实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.js)、[输入解析](../server/native-image.js)、[multipart 解析](../server/native-body.js)、[核价](../server/native-pricing.js)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
@@ -30,7 +30,9 @@
 
 MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../tests/helpers/native-stream-client.mjs)检查。
 
-多图 `n_samples=1..4` 拆成单图顺序入队：前一张成功后才创建下一张；第 i 张种子是 `(初始种子+i) mod 2^32`，每张重新排到当时队尾。首张失败返回错误；已有成功图时返回 `200` 与部分结果，并停止剩余张数。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；流式路径用上述 error 帧表达失败。当前未派发的剩余子任务不是一次性持久受理，连接断开可能停止后续创建；F06 会专门修正并更新生命周期测试。
+多图 `n_samples=1..4` 一次持久受理全部单图意图：首张 queued，其余 pending；前一张成功结算时，下一张在同一事务激活并排到当时队尾。第 i 张种子是 `(初始种子+i) mod 2^32`。实际失败或未知结果终止剩余未派发图片；首张失败返回错误，已有成功图时返回 `200` 与部分结果。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；流式路径用上述 error 帧表达失败。
+
+Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。HTTP 超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
 
 ### 输入范围与规范化
 
@@ -148,9 +150,11 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
-F06 首片仅接入网页 `POST /api/jobs`：保留原 `202`、任务查询、完整提示词回显和图片领取契约。新请求将参数与任务在同一事务持久化，执行时按需读取；旧内联排队记录仍可恢复。正文上限保持 2 MiB，超限为 413；规范化参数默认上限 32 MiB，新路径活动载荷默认合计 64 MiB，暂满为 429。读取正文先临时占用预算，提交后移交持久计数，失败或断线释放临时计数。Native/direct/OpenAI、多图批次与可选幂等键尚未由这一片改造，具体边界见[持久请求说明](request-lifecycle.md)。
+F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回显和图片领取契约。新请求将参数与任务在同一事务持久化，执行时按需读取；旧内联排队记录仍可恢复。网页正文上限保持 2 MiB；Native JSON/multipart 正文上限保持 32 MiB。规范化父参数默认上限 32 MiB，活动载荷默认合计 64 MiB，单次超限为 413，暂满为 429。Native 完整父参数只存一份，各图片子任务不复制输入图片；multipart 展开后仍须满足规范化上限。
 
-F06 排队顺序子片为各入口实际创建的 queued 任务增加持久 `queueSeq`，重启后仍按该顺序派发；它只替换排序依据，不改变公开队列进度的字段与含义。缓存命中直接完成不占号。Native 尚未创建的后续图片意图仍须等待批次子片，不能据此承诺完整多图请求已可恢复。
+读取正文先临时占用预算，提交后移交持久计数，失败或断线释放临时计数；断线不释放仍被任务持有的父载荷。pending、旧内联活动参数和尚未 finish 的执行尝试也计入，按父请求去重。各入口的 queued 使用持久 `queueSeq`，Native 下一张激活才取得新号；pending 与缓存命中完成不占号。公开状态新增独立 pending 数，queued 仍表示可派发等待任务，不把未激活图片当作已占队列位置。
+
+direct/OpenAI 本片仅接入载荷计数，完整父请求、连接解耦和重启恢复仍待后续片；可选幂等键也尚未实现。字节上限是输入预算，不是进程 RSS 保证。具体边界见[持久请求说明](request-lifecycle.md)。
 
 ## N03 后的 C03 差异与待核实清单
 

@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 import { assertQueueAdmission, assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.js';
+import { createGenerationPayloadBudget } from '../../server/generation-request.js';
 import { createMemberSession, authenticateMemberSession } from '../../server/member-auth.js';
 
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };
@@ -135,6 +136,7 @@ test('图片缓存命中也保留原批次停止代次，不能给旧请求换�
     db.images.push({ id: 'cached', token: 'a', cacheKey: 'synthetic-cache', mimeType: 'image/png' });
   }, { immediate: true });
   const context = vm.createContext({ store, structuredClone, assertMemberAcceptsJobs,
+    generationPayloadBudget: createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
     assertFairMemberReady: async () => {}, cleanupStaleActiveJobs: async () => {},
     isNoCache: () => false, requestCacheKey: () => 'synthetic-cache', dirtyResultJobRows: () => ({}),
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) });
@@ -145,4 +147,63 @@ test('图片缓存命中也保留原批次停止代次，不能给旧请求换�
   }
   await assert.rejects(context.createJob('a', request, { native: true, admissionVersion: 0 }), error => error.statusCode === 409);
   assert.equal((await store.read()).jobs.length, 0);
+});
+
+test('部分历史缓存下停止 pending 与恢复/零取消均只写受影响行，历史与退款保留', async t => {
+  const old = process.env.RUNTIME_JOBS_CACHE_LIMIT;
+  process.env.RUNTIME_JOBS_CACHE_LIMIT = '50';
+  t.after(() => { if (old === undefined) delete process.env.RUNTIME_JOBS_CACHE_LIMIT; else process.env.RUNTIME_JOBS_CACHE_LIMIT = old; });
+  const { store, directory } = await fixture(t);
+  await store.update(db => {
+    db.jobs = Array.from({ length: 101 }, (_, index) => ({ id: `history-${index}`, userToken: 'a', status: 'done', createdAt: new Date().toISOString() }));
+    const pending = { id: 'cold-pending', userToken: 'a', status: 'pending', request, createdAt: new Date(1).toISOString() };
+    db.jobs.push(pending);
+    reserveFairQuota(db, db.users[0], pending, db.accounts[0]);
+  }, { immediate: true });
+  await store.close();
+  const reopened = new JsonStore(directory);
+  await reopened.init();
+  t.after(() => reopened.close());
+  assert.equal(reopened.partialCollections.has('jobs'), true);
+  assert.ok(reopened.db.jobs.some(job => job.id === 'cold-pending'));
+  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function changeMemberAdmission('), end = source.indexOf('\n}', start) + 2;
+  const context = vm.createContext({ store: reopened, setMemberAdmission, refundJob: refund,
+    clearJobStreamProgress() {}, notifyJobWaiters() {}, scheduleQueueDrain() {} });
+  vm.runInContext('async ' + source.slice(start, end), context);
+  const result = await context.changeMemberAdmission('a', false);
+  assert.equal(result.cancelledCount, 1);
+  assert.equal(reopened.selectItemById('jobs', 'cold-pending').status, 'failed');
+  assert.equal(reopened.selectItemById('jobs', 'cold-pending').fairCharge.status, 'refunded');
+  assert.equal(reopened.selectItemById('users', 'a').acceptingJobs, false);
+  assert.equal(reopened.countRecords('jobs'), 102);
+  assert.ok(reopened.selectItemById('ledger', 'attempt:cold-pending:1:generation_refunded'));
+  assert.equal((await context.changeMemberAdmission('a', true)).cancelledCount, 0);
+  assert.equal((await context.changeMemberAdmission('a', false)).cancelledCount, 0);
+  assert.equal(reopened.selectItemById('jobs', 'cold-pending').status, 'failed');
+  assert.equal(reopened.countRecords('jobs'), 102);
+});
+
+test('冷历史 done/failed 的等待者补查立即返回，读取结果不把旧任务重新热载', async t => {
+  const { store } = await fixture(t);
+  await store.update(db => {
+    db.images.push({ id: 'cold-result', token: 'a', mimeType: 'image/png', base64: 'c3ludGhldGlj' });
+    db.jobs.push({ id: 'cold-done', userToken: 'a', status: 'done', imageId: 'cold-result', createdAt: new Date().toISOString() },
+      { id: 'cold-failed', userToken: 'a', status: 'failed', error: 'synthetic failed child', errorStatus: 409, createdAt: new Date().toISOString() });
+  }, { immediate: true });
+  store.trimRuntimeCollection('jobs', 0);
+  assert.equal(store.db.jobs.length, 0);
+  const jobWaiters = new Map();
+  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout });
+  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters']) {
+    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    vm.runInContext(source.slice(start, end), context);
+  }
+  const done = await context.waitForJobResult('cold-done', Date.now() + 1000);
+  assert.equal(done?.saved.id, 'cold-result');
+  const failed = await context.waitForJobResult('cold-failed', Date.now() + 1000);
+  assert.equal(failed?.statusCode, 409);
+  assert.equal(jobWaiters.size, 0);
+  assert.equal(store.db.jobs.length, 0);
 });

@@ -6,7 +6,7 @@ function fixture(){return {settings:{fairQuota:{members:['member'],boundAccountI
 test('白名单返回只读汇总，没有上游与成员隐私',()=>{
  const db=fixture();db.accounts[0].quotaError='private upstream error';db.jobs.push({userToken:'member-secret',status:'failed',completedAt:NOW,error:'private prompt error',request:{prompt:'secret prompt'}});
  const before=structuredClone(db),s=sharedAccountStatus(db,NOW);assert.deepEqual(db,before);assert.equal(s.status,'quota_sync_error');assert.equal(s.quotaSyncError,true);assert.equal(s.recentFailures,1);
- assert.deepEqual(Object.keys(s).sort(),['status','subscriptionActive','expiresAt','officialCheckedAt','stale','v5Percent','v5IsNegative','refillSecondsPerPercent','anlasFixed','anlasPurchased','running','queued','concurrencyLimit','cooldownUntil','quotaSyncError','recentFailures'].sort());
+ assert.deepEqual(Object.keys(s).sort(),['status','subscriptionActive','expiresAt','officialCheckedAt','stale','v5Percent','v5IsNegative','refillSecondsPerPercent','anlasFixed','anlasPurchased','running','queued','pending','concurrencyLimit','cooldownUntil','quotaSyncError','recentFailures'].sort());
  for(const secret of ['upstream-secret','member-secret','other-secret','secret-name','private upstream error','secret prompt'])assert.equal(JSON.stringify(s).includes(secret),false);
 });
 test('未绑定不能展示试用池及其他上游额度',()=>{
@@ -43,4 +43,13 @@ test('展示固定串行容量，忽略旧版持久化的多并发配置',()=>{
  assert.equal(sharedAccountStatus(db,NOW).concurrencyLimit,1);
  db.accounts[0].capacityConcurrencyLimit=2;
  assert.equal(sharedAccountStatus(db,NOW+300001).concurrencyLimit,1);
+});
+
+test('pending 独立计数，不占 queued 位置，也不能调整份额', () => {
+  const db = fixture();
+  db.jobs = [{ userToken: 'member-secret', status: 'pending' }, { userToken: 'other-secret', status: 'pending' }];
+  const status = sharedAccountStatus(db, NOW);
+  assert.equal(status.pending, 1);
+  assert.equal(status.queued, 0);
+  assert.equal(status.running, 0);
 });

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import * as fair from '../../server/fair-quota.js';
 import * as capacity from '../../server/shared-capacity.js';
+import * as requests from '../../server/generation-request.js';
 import * as queuePolicy from '../../server/queue-policy.js';
 const source=fs.readFileSync(new URL('../../server/index.js',import.meta.url),'utf8');
 function fixture(tier=3) {
@@ -12,7 +13,7 @@ function fixture(tier=3) {
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
+  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
     store:{update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
     httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
     jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
@@ -20,7 +21,7 @@ function fixture(tier=3) {
     publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
-  for(const name of ['getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
+  for(const name of ['physicalAccountLoad','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
     const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);

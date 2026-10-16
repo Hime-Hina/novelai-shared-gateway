@@ -27,7 +27,7 @@ function upgradeGroups(s) {
 const groupFor = (s,id) => s.groups.find(g=>g.members.includes(id));
 const weight = (s,id) => { const group=groupFor(s,id);if(!group)return 0;const total=group.members.reduce((n,member)=>n+(group.memberWeights?.[member] ?? 1),0);return total>0?(group.share ?? .25)*((group.memberWeights?.[id] ?? 1)/total):0; };
 export function assertFairQuotaIdle(db) {
-  if(anyHeld(db.settings?.fairQuota || {reservations:{}})||rows(db.jobs).some(job=>['queued','running'].includes(job.status)))fail('有排队、运行或预留额度的任务，请结清后调整',409);
+  if(anyHeld(db.settings?.fairQuota || {reservations:{}})||rows(db.jobs).some(job=>['queued','pending','running'].includes(job.status)))fail('有排队、运行或预留额度的任务，请结清后调整',409);
 }
 
 export function configureFairQuota(db, memberIds) {
@@ -316,7 +316,7 @@ export function quoteFairRequest(request = {}, options = {}) {
   return quoteNativeRequest(request, options);
 }
 
-export function reserveFairQuota(db,user,job,account,now=Date.now()) {
+export function reserveFairQuota(db,user,job,account,now=Date.now(),request=job.request||job.requestPayload) {
   const s=syncFairQuota(db,now);
   if(!s?.enabled) return null;
   if(!s.members.includes(user.id)) fail('该用户未加入共享分组账本',403);
@@ -325,7 +325,6 @@ export function reserveFairQuota(db,user,job,account,now=Date.now()) {
   if(!job.id) fail('任务缺少持久化 ID',500);
   const previous=s.reservations[job.id];
   if(previous) {if(previous.userId!==user.id) fail('任务账本归属不符',409);if(previous.status==='refunded') fail('已退款任务不能重新提交',409);job.fairCharge=previous;return previous;}
-  const request=job.request || job.requestPayload;
   let q=quoteFairRequest(request);
   let fallback=false,v5Equivalent=0,sharedV5Reserved=0;
   if(q.resource==='v5' && s.autoAnlasFallback===true && s.balances[user.id].v5Available+1e-9<q.amount) {
@@ -340,7 +339,7 @@ export function reserveFairQuota(db,user,job,account,now=Date.now()) {
     // 官方固定已明确耗尽时，本地保留的固定权益不能挡住原已授权的纯购买池调用。
     const officialFixed=readSnapshot(account).anlasFixed;
     fixed=officialFixed===0?0:Math.min(q.amount,s.balances[user.id].anlasFixedAvailable);purchased=q.amount-fixed;
-    if(purchased>0 && (job.request||job.requestPayload)?.allowPurchasedAnlas!==true) fail(`${officialFixed===0?'官方固定 Anlas 已耗尽':'个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`);
+    if(purchased>0 && request?.allowPurchasedAnlas!==true) fail(`${officialFixed===0?'官方固定 Anlas 已耗尽':'个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`);
     if(purchased>s.balances[user.id].anlasPurchasedAvailable+1e-9) fail('个人购买 Anlas 不足');
     if(purchased>0) {
       // 上游优先使用固定余额，不能指定购买池；禁止混用导致其他成员被扣款。

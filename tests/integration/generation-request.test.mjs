@@ -114,7 +114,7 @@ test('容量 SQL 从小活动索引出发查父主键，不扫描全部历史 pa
   const plan = reopened.sqlite.prepare(`EXPLAIN QUERY PLAN
     SELECT COALESCE(SUM(payload_bytes), 0) FROM generation_requests
     WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created
-      WHERE status IN ('queued', 'running') AND request_id IS NOT NULL)`).all();
+      WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)`).all();
   assert.ok(plan.some(row => /SEARCH generation_requests USING INDEX sqlite_autoindex_generation_requests_1/.test(row.detail)));
   assert.ok(plan.some(row => row.detail.includes('idx_jobs_active_created')));
   assert.ok(!plan.some(row => /SCAN generation_requests/.test(row.detail)));
@@ -157,4 +157,21 @@ test('正文临时占用按 UTF-8 字节计量，超额、解析失败与断线�
   afterFailure.resize(6);
   afterFailure.release();
   assert.deepEqual(generationPayloadLimits({}), { request: 32 * 1024 ** 2, active: 64 * 1024 ** 2 });
+});
+
+test('inline 请求 claim 与活动行同步交接，延迟写模式也不放出尚未落盘的预算', async t => {
+  const store = await fixture(t);
+  const payload = { prompt: 'x'.repeat(100) }, bytes = Buffer.byteLength(JSON.stringify(payload));
+  const budget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), { request: bytes, active: bytes });
+  const claim = budget.claim();
+  claim.resize(bytes);
+  await store.update(db => {
+    db.jobs.push({ id: 'inline', status: 'queued', request: payload, payloadBytes: bytes });
+  }, { dirtyRows: { jobs: ['inline'] }, generationPayloadClaim: claim });
+  assert.equal(store.activeGenerationPayloadBytes(), bytes);
+  assert.throws(() => budget.claim().resize(1), error => error.statusCode === 429);
+  claim.release();
+  await store.close();
+  const reopened = await fixture(t, store.dataDir);
+  assert.equal(reopened.activeGenerationPayloadBytes(), bytes);
 });

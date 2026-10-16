@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.js';
+import { activateNextBatchJob } from '../../server/generation-request.js';
 import { recordSharedCompletion } from '../../server/shared-capacity.js';
 
 const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
@@ -130,7 +131,7 @@ test('升级沿用原首次未知，JSON 部分索引查冷历史，关闭写失
     ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT 100`).all(Date.now());
   assert.ok(plan.some(row => row.detail.includes('idx_jobs_generation_review_due')));
   const review = loadFunctions({ store: reopened, closeGenerationReview, recordRecoveredGeneration,
-    uniqueIds: values => [...new Set(values.filter(Boolean))] }, ['dirtyJobMutationRows', 'reconcileGenerationReviews']);
+    uniqueIds: values => [...new Set(values.filter(Boolean))] }, ['batchJobIds', 'dirtyJobMutationRows', 'reconcileGenerationReviews']);
   const originalOrder = reopened.sqlite.prepare("SELECT order_value FROM jobs WHERE id = 'review'").get().order_value;
   assert.equal(originalOrder, -37.5);
   reopened.sqlite.exec("CREATE TEMP TRIGGER reject_review BEFORE INSERT ON ledger WHEN json_extract(NEW.data, '$.type') = 'generation_loss_estimated' BEGIN SELECT RAISE(ABORT, 'synthetic review failure'); END;");
@@ -149,12 +150,12 @@ async function completionContext(store) {
   let writes = 0, ids = 0;
   const update = store.update.bind(store);
   store.update = (fn, options = {}) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = loadFunctions({ store, fairShareMode: true, settleFairQuota, recordRecoveredGeneration, recordSharedCompletion,
+  const ctx = loadFunctions({ store, fairShareMode: true, settleFairQuota, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
     createId: () => `image-${++ids}`, reservationAccountCost: () => 0, httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
     writeStoredImage: async (id, image) => { writes++; const file = `images/${id}.png`; await writeFile(path.join(store.dataDir, file), image.buffer); return file; },
     removeStoredImages: async () => {}, imageCacheTrimBuffer: () => 100,
     uniqueIds: values => [...new Set(values.filter(Boolean))], clearJobStreamProgress() {}, scheduleQueueDrain() {}, notifyJobWaiters() {}
-  }, ['completeGeneration']);
+  }, ['batchJobIds', 'completeGeneration']);
   return { ctx, writes: () => writes };
 }
 function reservation(db) { return { job: db.jobs[0], account: db.accounts[0], token: 'STA1N-a', cost: 0 }; }
@@ -220,4 +221,25 @@ test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领�
   assert.equal(JSON.parse(reader.prepare("SELECT data FROM jobs WHERE id = 'offline-due'").get().data).generationReview.status, 'estimated_closed');
   const settings = JSON.parse(reader.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value);
   assert.deepEqual(settings.fairQuota.balances, before);
+});
+
+test('已退款的批次首图迟到找回只保存结果，不激活或复活剩余图片', async t => {
+  const seed = fixture();
+  const store = await open(t, seed);
+  const payload = JSON.stringify(seed.jobs[0].request);
+  await store.update(db => {
+    db.jobs[0].requestId = 'late-parent';
+    db.jobs.push({ id: 'cancelled-child', requestId: 'late-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'failed',
+      error: 'remaining batch cancelled', createdAt: new Date().toISOString() });
+  }, { immediate: true, generationRequest: { id: 'late-parent', member_id: 'a', source: 'novelai-native', operation: 'generate',
+    created_at: new Date().toISOString(), payload_bytes: Buffer.byteLength(payload), payload },
+    dirtyRows: { jobs: ['review', 'cancelled-child'] } });
+  const { ctx } = await completionContext(store);
+  const r = reservation(store.db);
+  await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+  assert.equal(store.selectItemById('jobs', 'review').status, 'failed');
+  assert.ok(store.selectItemById('jobs', 'review').imageId);
+  assert.equal(store.selectItemById('jobs', 'cancelled-child').status, 'failed');
+  assert.equal(store.selectItemById('jobs', 'cancelled-child').queueSeq, undefined);
+  assert.equal(store.queuedJobIds().length, 0);
 });

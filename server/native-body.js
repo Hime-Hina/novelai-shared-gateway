@@ -21,9 +21,10 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
     for await(const chunk of req){
       const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=bytes.length;
       if(size>maxBytes)fail(413,'生图请求体超过大小限制');
+      req.generationPayloadClaim?.resize(size);
       chunks.push(bytes);
     }
-  }catch(error){if(error?.statusCode===413)throw error;fail(400,'无法读取 multipart 请求体');}
+  }catch(error){if([413,429].includes(error?.statusCode))throw error;fail(400,'无法读取 multipart 请求体');}
   let form;
   try{form=await new Response(Buffer.concat(chunks),{headers:{'content-type':contentType}}).formData();}
   catch{fail(400,'multipart 请求体格式错误');}
@@ -38,6 +39,7 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
   try{parsed=JSON.parse(typeof value==='string'?value:await value.text());}
   catch{fail(400,'request 部件不是有效 JSON');}
   if(!parsed||Array.isArray(parsed)||typeof parsed!=='object')fail(400,'request 部件必须是 JSON 对象');
+  let expandedBytes=Buffer.byteLength(JSON.stringify(parsed));
   const attachments=new Map();
   for(const [name,part] of parts){
     if(name==='request')continue;
@@ -53,6 +55,8 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
     const reference=container[key];
     if(typeof reference!=='string'||!attachments.has(reference))return;
     const item=attachments.get(reference);item.used=true;
+    expandedBytes+=Math.ceil(item.part.size/3)*4-Buffer.byteLength(reference);
+    req.generationPayloadClaim?.resize(Math.max(size,expandedBytes));
     item.base64??=Buffer.from(await item.part.arrayBuffer()).toString('base64');
     container[key]=item.base64;
   };

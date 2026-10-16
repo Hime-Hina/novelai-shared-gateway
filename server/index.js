@@ -1,4 +1,4 @@
-import { createGenerationPayloadBudget, webJobRequestSummary } from './generation-request.js';
+import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { nativeImagesMsgpack } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from './shared-capacity.js';
@@ -43,7 +43,7 @@ process.env.PUBLIC_MODE = 'true';
 process.env.NO_AUTO_DELETE = 'true';
 process.env.MOCK_WHEN_NO_ACCOUNT = 'false';
 const store = new JsonStore(dataDir);
-const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
+const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes([...runningJobControls.values()]));
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 // 公平账本和任务状态必须同步落盘，不能使用延迟写入。
 if (fairShareMode) {
@@ -280,7 +280,7 @@ async function route(req, res) {
     changeMemberAdmission,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
-  if (method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(url.pathname)) {
+  if (method === 'POST' && (['/api/jobs', '/api/web/jobs'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname))) {
     req.generationPayloadClaim = generationPayloadBudget.claim();
   }
   if (await publicSelfUseGuard(req, res, url, method)) return;
@@ -741,93 +741,100 @@ function logNativeDiagnostic(id, event, details) {
   console.warn('[native-diagnostic] ' + JSON.stringify({ time: new Date().toISOString(), id, event, ...details }));
 }
 
-async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
+async function acceptNativeHttpRequest(req, diagnosticId, operation) {
   const token = bearerToken(req);
   if (!token.startsWith('STA1N-')) throw httpError(401, 'Existing gateway key required.');
   const user = await store.readUserByToken(token);
   if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
+  let body = await readNativeBody(req, { jsonReader: req => readJson(req, 32 * 1024 * 1024) });
+  logNativeDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
+  const request = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
+  request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
+  body = null;
+  quoteFairRequest(singleGenerationRequest(request));
+  const batch = await createNativeBatch(token, request, diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim);
+  scheduleQueueDrain();
+  // 此函数的完整正文/参数作用域到此结束，HTTP 等待只持有下面的小型批次元数据。
+  return batch;
+}
+
+async function createNativeBatch(token, request, diagnosticId, admissionVersion, claim) {
+  await assertFairMemberReady(token);
+  await cleanupStaleActiveJobs('create native batch');
+  const count = request.sampleCount || 1;
+  let parent;
+  return store.update(db => {
+    const user = getUserOrThrow(db, token);
+    assertQueueAdmission(db, user, admissionVersion, process.env, count);
+    parent = generationRequestRecord(user, request, 'novelai-native', claim);
+    const createdAt = parent.created_at;
+    const queueExpiresAt = queueDeadline(Date.parse(createdAt), '');
+    const jobIds = [];
+    for (let index = 0; index < count; index++) {
+      const single = singleGenerationRequest(request, index);
+      const job = { id: createId('job'), requestId: parent.id, batchId: parent.id, diagnosticId,
+        sampleIndex: index, source: 'novelai-native', userToken: token,
+        status: index === 0 ? 'queued' : 'pending',
+        ...(index === 0 ? { queueSeq: store.nextQueueSequence(), queueTotal: activeJobCount(db.jobs) + 1 } : {}),
+        request: webJobRequestSummary(single), cost: 0, accountCost: 0,
+        deadlineAt: '', queueExpiresAt, jobAdmissionVersion: user.jobAdmissionVersion || 0,
+        createdAt, updatedAt: createdAt, imageId: '', error: '', errorDetail: '' };
+      db.jobs.unshift(job);
+      jobIds.push(job.id);
+    }
+    return { id: parent.id, jobIds, count };
+  }, { immediate: true, generationRequest: () => parent, generationPayloadClaim: claim,
+    dirtyRows: result => ({ jobs: result.jobIds }) });
+}
+
+async function waitNativeResult(jobId, deadline, res) {
+  const result = await waitForJobResult(jobId, deadline, res);
+  if (res.destroyed) return null;
+  if (!result) throw httpError(504, 'direct generate timeout');
+  if (result.error) throw httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error);
+  return result;
+}
+
+async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
-  res.once?.('finish', () => logNativeDiagnostic(diagnosticId, 'finished', { status: res.statusCode }));
-  let body;
-  try { body = await readNativeBody(req, { jsonReader: req => readJson(req, 32 * 1024 * 1024) }); }
-  catch (error) {
-    logNativeDiagnostic(diagnosticId, 'rejected', { status: error.statusCode || 400, reason: 'Invalid native request body.' });
-    throw error;
-  }
-  logNativeDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
-  let request;
-  try {
-    request = parseNativeImageRequest(body);
-  } catch (error) {
-    // 参数名由请求提供，拒绝日志只保留预定义字段名或固定错误文本。
-    const reason = /^Parameter /.test(error.message || '') ? 'Unsupported image/reference parameter.' : String(error.message || 'validation failed').slice(0, 180);
-    logNativeDiagnostic(diagnosticId, 'rejected', { status: error.statusCode || 400, reason });
-    throw error;
-  }
-  request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
-  logNativeDiagnostic(diagnosticId, 'validated', { seed: request.seed, width: request.width, height: request.height, steps: request.steps });
-  const count = request.sampleCount || request.nativeParameters?.n_samples || 1;
+  const batch = await acceptNativeHttpRequest(req, diagnosticId);
   const deadline = Date.now() + openAiChatTimeoutMs;
   const entries = [], results = [];
-  // 一个多图请求最多持有一个排队任务，不能一次占满共享并发。
-  for (let index = 0; index < count; index++) {
-    if (req.aborted || res.destroyed) break;
-    const single = structuredClone(request);
-    single.sampleCount = 1; single.n_samples = 1;
-    single.seed = (request.seed + index) % 4294967296;
-    single.nativeParameters.n_samples = 1; single.nativeParameters.seed = single.seed;
+  for (let index = 0; index < batch.count; index++) {
+    if (res.destroyed) return;
     try {
-      // 计价失败必须在入队前返回，不留下无法计价的任务。
-      quoteFairRequest(single);
-      const result = await runNativeQueuedRequest(token, single, deadline, diagnosticId, user.jobAdmissionVersion || 0, index);
+      const result = await waitNativeResult(batch.jobIds[index], deadline, res);
+      if (!result) return;
       const filename = `image_${index}.${imageExtension(result.saved.mimeType || '')}`;
-      entries.push({buffer: await readStoredImage(result.saved), filename});
-      results.push({index, status: 'done', filename});
+      entries.push({ buffer: await readStoredImage(result.saved), filename });
+      results.push({ index, status: 'done', filename });
     } catch (error) {
       if (!entries.length) throw error;
-      results.push({index, status: 'failed', message: publicErrorMessage(error.message || '生成失败')});
+      results.push({ index, status: 'failed', message: publicErrorMessage(error.message || '生成失败') });
       break;
     }
   }
-  if (!entries.length) throw httpError(499, '客户端已断开，请在成员页面检查任务结果');
-  const completed = entries.length;
+  if (res.destroyed) return;
+  const count = batch.count, completed = entries.length;
   if (stream) {
     const frames = nativeImagesMsgpack(entries.map(entry => entry.buffer), results.find(result => result.status === 'failed'));
     sendImage(res, 200, 'application/octet-stream', frames, { 'cache-control': 'no-store', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
     return;
   }
-  if (count > 1) entries.push({filename: 'results.json', buffer: Buffer.from(JSON.stringify({requested:count, completed, remaining:count-completed, billing:'independent_single_images', results}), 'utf8')});
-  const archive = nativeImagesZip(entries);
-  sendImage(res, 200, 'application/zip', archive, { 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
-}
-
-async function runNativeQueuedRequest(token, request, deadline, diagnosticId, admissionVersion, sampleIndex = 0) {
-  if (Date.now() >= deadline) throw httpError(504, '生成等待超时，请减少一次生成张数');
-  const job = await createJob(token, request, { native: true, source: 'novelai-native', deadlineAt: new Date(deadline).toISOString(), admissionVersion, batchId: diagnosticId, sampleIndex });
-  logNativeDiagnostic(diagnosticId, 'queued', { jobId: job.id });
-  const pending = waitForJobResult(job.id, deadline);
-  scheduleQueueDrain();
-  const result = await pending;
-  if (!result) { await timeoutJob(job.id); throw httpError(504, 'direct generate timeout'); }
-  if (result.error) throw httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error);
-  return result;
+  if (count > 1) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify({ requested: count, completed,
+    remaining: count - completed, billing: 'independent_single_images', results }), 'utf8') });
+  sendImage(res, 200, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
+    'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
 async function handleNativeAuxiliary(req, res, operation) {
-  const token = bearerToken(req);
-  if (!token.startsWith('STA1N-')) throw httpError(401, 'Existing gateway key required.');
-  const user = await store.readUserByToken(token);
-  if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
-  const body = await readNativeBody(req, { jsonReader: req => readJson(req, 32 * 1024 * 1024) });
-  const request = parseNativeAuxiliaryRequest(body, operation);
-  request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
-  quoteFairRequest(request);
-  const result = await runNativeQueuedRequest(token, request, Date.now() + openAiChatTimeoutMs, diagnosticId);
+  const batch = await acceptNativeHttpRequest(req, diagnosticId, operation);
+  const result = await waitNativeResult(batch.jobIds[0], Date.now() + openAiChatTimeoutMs, res);
+  if (!result) return;
   const buffer = await readStoredImage(result.saved);
-  // 编码数据保持原始二进制，启动器负责转为 base64；放大保持图片 ZIP 协议。
   if (operation === 'encode-vibe') sendImage(res, 200, 'application/octet-stream', buffer, { 'cache-control': 'no-store' });
   else sendImage(res, 200, 'application/zip', nativeImageZip(buffer), { 'cache-control': 'no-store' });
 }
@@ -1175,7 +1182,7 @@ async function mergeUserBalance(sourceToken, targetToken) {
     if (source.id === target.id) throw httpError(409, '两个密钥不能相同。');
 
     const activeJob = (db.jobs || []).find((job) => (
-      job.userToken === source.token && ['queued', 'running'].includes(job.status)
+      job.userToken === source.token && ['queued', 'pending', 'running'].includes(job.status)
     ));
     if (activeJob) throw httpError(409, '当前密钥还有任务正在生成，完成后再融合。');
 
@@ -1875,7 +1882,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       job.errorDetail = `${reason}: ${detail}`;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
-      failedJobIds.push(job.id);
+      failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, 504));
     });
     return {
       changed: failedJobIds.length,
@@ -1905,11 +1912,12 @@ async function cleanupInterruptedStartupJobs() {
     let expired = 0;
 
     jobs.forEach((job) => {
-      if (!['queued', 'running'].includes(job.status)) return;
+      if (!['queued', 'pending', 'running'].includes(job.status)) return;
       const isRunning = job.status === 'running';
       const isDirect = job.source === 'direct';
       const isOpenAi = job.source === 'openai';
-      const isExpired = isExpiredJobAt(job, now);
+      const queueExpires = queuedDeadlineTimestamp(job);
+      const isExpired = isExpiredJobAt(job, now) || Boolean(queueExpires && now >= queueExpires);
       if (!isRunning && !isDirect && !isOpenAi && !isExpired) return;
 
       if (isRunning) running += 1;
@@ -1933,7 +1941,7 @@ async function cleanupInterruptedStartupJobs() {
           : 'startup: job deadline expired before restart completed';
       job.updatedAt = updatedAt;
       job.completedAt = updatedAt;
-      failedJobIds.push(job.id);
+      failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, 504));
     });
 
     return {
@@ -2154,6 +2162,11 @@ function dirtyReservationJobRows(reservation) {
   }, db);
 }
 
+function batchJobIds(db, jobId) {
+  const job = db.jobs.find(item => item.id === jobId);
+  return job?.requestId ? db.jobs.filter(item => item.requestId === job.requestId).map(item => item.id) : [jobId];
+}
+
 function dirtyJobMutationRows(source = {}, db = {}) {
   const jobId = source?.job?.id || source?.jobId || source?.id || '';
   const job = source?.job || (jobId ? db.jobs?.find((item) => item.id === jobId) : null);
@@ -2170,7 +2183,7 @@ function dirtyJobMutationRows(source = {}, db = {}) {
   ]);
   const user = token && ledgerIds.length ? db.users?.find((item) => item.token === token) : null;
   return {
-    ...(jobId ? { jobs: [jobId] } : {}),
+    ...(jobId ? { jobs: batchJobIds(db, jobId) } : {}),
     ...(user?.id ? { users: [user.id] } : {}),
     ...(accountIds.length ? { accounts: accountIds } : {}),
     ...(ledgerIds.length ? { ledger: ledgerIds } : {})
@@ -2219,7 +2232,7 @@ function generationRequestRecord(user, request, source, claim) {
   const payloadBytes = Buffer.byteLength(payload);
   // 与任务准入处于同一串行 update；成功提交后由活动 child 的 SQL 查询接管占用。
   claim.resize(payloadBytes);
-  return { id: createId('req'), member_id: user.id, source, operation: 'generate',
+  return { id: createId('req'), member_id: user.id, source, operation: request.operation || 'generate',
     created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
 }
 
@@ -2255,6 +2268,7 @@ async function createJob(token, body, options = {}) {
       });
     }
   }
+  const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
     const request = normalizeRequest(db.settings);
@@ -2274,6 +2288,8 @@ async function createJob(token, body, options = {}) {
     if (options.generationPayloadClaim) {
       generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
     }
+    const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
+    if (!generationRequest) claim.resize(payloadBytes);
     const queueTotal = activeJobCount(db.jobs) + 1;
     user.balance -= cost;
     user.updatedAt = new Date().toISOString();
@@ -2286,6 +2302,7 @@ async function createJob(token, body, options = {}) {
       queueSeq: store.nextQueueSequence(),
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       request: generationRequest ? webJobRequestSummary(request) : request,
+      payloadBytes,
       cacheKey,
       queueTotal,
       cost,
@@ -2312,8 +2329,8 @@ async function createJob(token, body, options = {}) {
   }, {
     dirtyRows: dirtyResultJobRows,
     generationRequest: () => generationRequest,
-    generationPayloadClaim: options.generationPayloadClaim
-  });
+    generationPayloadClaim: claim
+  }).finally(() => claim.release());
 }
 
 async function ensureAccountRouteIds() {
@@ -2326,6 +2343,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
   let generationRequest;
   await assertFairMemberReady(token);
   if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
+  const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
     assertMemberAcceptsJobs(user, options.admissionVersion);
@@ -2336,6 +2354,8 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     if (options.generationPayloadClaim) {
       generationRequest = generationRequestRecord(user, request, options.source || 'web', options.generationPayloadClaim);
     }
+    const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
+    if (!generationRequest && options.status !== 'done') claim.resize(payloadBytes);
     const now = new Date().toISOString();
     if (shouldCharge) {
       user.balance -= cost;
@@ -2349,6 +2369,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
       status: options.status || 'queued',
       ...(options.status === 'done' ? {} : { queueSeq: store.nextQueueSequence() }),
       request: generationRequest ? webJobRequestSummary(request) : request,
+      payloadBytes,
       cacheKey,
       queueTotal: options.status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
       cost: shouldCharge ? cost : Number(options.cost || 0),
@@ -2379,8 +2400,8 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
   }, {
     dirtyRows: dirtyResultJobRows,
     generationRequest: () => generationRequest,
-    generationPayloadClaim: options.generationPayloadClaim
-  });
+    generationPayloadClaim: claim
+  }).finally(() => claim.release());
 }
 
 async function markDirectJobRunning(jobId, reservation) {
@@ -2421,7 +2442,13 @@ async function removeJob(jobId) {
 
 async function changeMemberAdmission(userId, acceptingJobs) {
   const result = await store.update(db => setMemberAdmission(db, userId, acceptingJobs, refundJob), {
-    collections: ['users', 'jobs', 'settings', 'ledger'], immediate: true
+    immediate: true,
+    includeSettings: true,
+    dirtyRows: (result, db) => ({
+      users: [result.id],
+      jobs: result.cancelledJobIds,
+      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId)).map(entry => entry.id)
+    })
   });
   // 取消通知必须在事务提交之后发送；写失败不能让连接先收到“已取消”。
   for (const jobId of result.cancelledJobIds) {
@@ -2455,6 +2482,7 @@ async function cancelQueuedOrRunningJob(jobId, message, detail = message) {
       account.updatedAt = new Date().toISOString();
     }
     refundJob(db, job, publicMessage);
+    cancelWaitingBatchJobs(db, job, publicMessage);
     job.status = 'failed';
     job.error = publicMessage;
     job.errorDetail = detail;
@@ -2471,19 +2499,22 @@ async function cancelQueuedOrRunningJob(jobId, message, detail = message) {
   notifyJobWaiters(jobId, { error: message });
 }
 
-function waitForJobResult(jobId, deadline) {
+function waitForJobResult(jobId, deadline, response) {
   const remainingMs = Math.max(1, deadline - Date.now());
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       removeJobWaiter(jobId, waiter);
       resolve(null);
     }, remainingMs);
-    const waiter = { resolve, timer };
+    const onClose = () => { removeJobWaiter(jobId, waiter); resolve(null); };
+    const waiter = { resolve, timer, cleanup: () => response?.off('close', onClose) };
     if (!jobWaiters.has(jobId)) jobWaiters.set(jobId, new Set());
     jobWaiters.get(jobId).add(waiter);
+    if (response?.destroyed) { onClose(); return; }
+    response?.once('close', onClose);
     // 先订阅再串行补查，既补上错过的取消通知，也不读取尚未提交或将回滚的状态。
     store.update(db => {
-      const job = db.jobs.find(item => item.id === jobId);
+      const job = db.jobs.find(item => item.id === jobId) || store.selectItemById('jobs', jobId);
       if (!job) return null;
       return { status: job.status, imageId: job.imageId, error: job.error, errorStatus: job.errorStatus,
         balance: db.users.find(user => user.token === job.userToken)?.balance };
@@ -2504,6 +2535,7 @@ function notifyJobWaiters(jobId, payload) {
   jobWaiters.delete(jobId);
   waiters.forEach((waiter) => {
     clearTimeout(waiter.timer);
+    waiter.cleanup?.();
     waiter.resolve(payload);
   });
 }
@@ -2598,6 +2630,8 @@ function isTimeoutResultMessage(message) {
 }
 
 function removeJobWaiter(jobId, waiter) {
+  clearTimeout(waiter.timer);
+  waiter.cleanup?.();
   const waiters = jobWaiters.get(jobId);
   if (!waiters) return;
   waiters.delete(waiter);
@@ -2623,6 +2657,7 @@ async function reserveQueuedJob(jobId) {
     if (isStaleActiveJob(job)) {
       const detail = staleActiveJobDetail(job);
       refundJob(db, job, '连接超时');
+      cancelWaitingBatchJobs(db, job, '连接超时', 504);
       job.status = 'failed';
       job.error = '连接超时';
       job.errorStatus = 504;
@@ -2642,14 +2677,16 @@ async function reserveQueuedJob(jobId) {
         if (!account || account.enabled === false) throw httpError(503, '绑定的 Opus 账号未启用');
         const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account.id).length;
         // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
-        const load = Math.max(running, Number(account.inFlight || 0));
+        const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
         if (load >= sharedAccountConcurrency(account) || sharedAccountReadyDelay(account, Date.now(), load) > 0) return { queued: true, jobId: job.id };
-        reserveFairQuota(db, user, job, account);
+        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
+        reserveFairQuota(db, user, job, account, Date.now(), request);
       } else {
         account = selectAccount(db.accounts, db.settings, { request: job.request });
       }
     } catch (error) {
       refundJob(db, job, error.message);
+      cancelWaitingBatchJobs(db, job, error.message, error.statusCode || 503);
       job.status = 'failed';
       job.error = error.message;
       job.errorStatus = error.statusCode || 503;
@@ -2659,6 +2696,7 @@ async function reserveQueuedJob(jobId) {
     if (!account && hasEnabledAccounts(db.accounts)) {
       if (!hasAccountWithEnoughQuota(db.accounts, job.request)) {
         refundJob(db, job, '无符合本次参数的可用额度；试用限总像素1048576、28步以内');
+        cancelWaitingBatchJobs(db, job, '无符合本次参数的可用额度', 503);
         job.status = 'failed';
         job.error = '无符合本次参数的可用额度；试用限总像素1048576、28步以内';
         job.errorDetail = 'No NovelAI account has available free allowance or paid balance for this request';
@@ -2698,7 +2736,7 @@ async function runReservedJob(reservation) {
     const current = await store.findJobContext(reservation.job.id);
     if (current?.job?.status !== 'running' || control.controller.signal.aborted) throw new Error('任务已取消');
     const request = reservation.job.requestId
-      ? store.readGenerationRequest(reservation.job.requestId)
+      ? singleGenerationRequest(store.readGenerationRequest(reservation.job.requestId), reservation.job.sampleIndex)
       : reservation.job.request;
     if (!request) throw new Error('持久生成请求不存在');
     const image = await generateWithAccountRetry(reservation, request, {
@@ -2736,7 +2774,7 @@ function createRunningJobControl(job = {}) {
   const controller = new AbortController();
   let resolveDone = () => {};
   const control = {
-    controller,
+    controller, jobId: job.id, requestId: job.requestId || '', payloadBytes: job.payloadBytes || 0, accountId: job.accountId || '',
     done: new Promise((resolve) => {
       resolveDone = resolve;
     }),
@@ -2757,6 +2795,7 @@ function finishRunningJobControl(jobId, control) {
   if (control.timer) clearTimeout(control.timer);
   if (jobId && runningJobControls.get(jobId) === control) runningJobControls.delete(jobId);
   control.resolveDone();
+  scheduleQueueDrain();
 }
 
 function abortRunningJob(jobId, reason = 'direct generate timeout') {
@@ -3057,7 +3096,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
           Object.assign(job, reservation.upstreamTiming || {});
           if (fairShareMode && !refunded) settleFairQuota(db, job, true);
           if (refunded) recordRecoveredGeneration(db, job, saved.id);
-          else job.status = 'done';
+          else { job.status = 'done'; activateNextBatchJob(db, job, store.nextQueueSequence()); }
           job.imageId = saved.id;
           job.accountId = reservation.account?.id || job.accountId || '';
           if (!refunded) { job.error = ''; job.errorDetail = ''; }
@@ -3071,7 +3110,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       dirtyRows: (saved, db) => ({
         accounts: uniqueIds([reservation.account?.id]),
         images: uniqueIds([saved?.id]),
-        jobs: uniqueIds([meta.jobId]),
+        jobs: meta.jobId ? batchJobIds(db, meta.jobId) : [],
         ledger: (db.ledger || []).filter(event => event.jobId === meta.jobId).map(event => event.id)
       })
     });
@@ -3106,6 +3145,7 @@ async function cancelReservedJob(reservation, error) {
     }
     Object.assign(job, reservation.upstreamTiming || {});
     refundJob(db, job, message, { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) });
+    cancelWaitingBatchJobs(db, job, message);
     job.status = 'failed';
     job.error = message;
     job.errorDetail = detail || 'job aborted';
@@ -3158,6 +3198,7 @@ async function failGeneration(reservation, error) {
       if (job) {
         Object.assign(job, reservation.upstreamTiming || {});
         if (fairShareMode) settleFairQuota(db, job, false, Date.now(), { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) });
+        cancelWaitingBatchJobs(db, job, message, statusCode);
         job.status = 'failed';
         job.error = message;
         job.errorStatus = statusCode;
@@ -3303,9 +3344,15 @@ function maxAccountConcurrency(settings = {}, account = null) {
   return fairShareMode ? sharedAccountConcurrency(account) : 1;
 }
 
+function physicalAccountLoad(accountId) {
+  let count = 0;
+  for (const control of runningJobControls.values()) if (control.accountId === accountId) count++;
+  return count;
+}
+
 function availableAccountSlots(accounts, settings = {}) {
   if (fairShareMode) return accounts.reduce((total, account) => account.enabled === false || sharedAccountReadyDelay(account, Date.now()) > 0
-    ? total : total + Math.max(0, sharedAccountConcurrency(account) - Number(account.inFlight || 0)), 0);
+    ? total : total + Math.max(0, sharedAccountConcurrency(account) - Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id))), 0);
   resetStaleAccountLoads(accounts);
   const now = Date.now();
   const allEnabled = accounts.filter((account) => account.enabled !== false);
@@ -3320,7 +3367,7 @@ function nextAccountReadyDelay(accounts, settings = {}) {
   resetStaleAccountLoads(accounts);
   if (fairShareMode) {
     const now = Date.now();
-    const waits = accounts.filter(account => account.enabled !== false && Number(account.inFlight || 0) < sharedAccountConcurrency(account, now))
+    const waits = accounts.filter(account => account.enabled !== false && Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) < sharedAccountConcurrency(account, now))
       .map(account => sharedAccountReadyDelay(account, now));
     return waits.length ? Math.min(...waits) : 1000;
   }
@@ -3921,7 +3968,9 @@ function isAccountErrorLogJob(job) {
 }
 
 function publicErrorLog(job, db = {}) {
-  const request = (job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
+  const request = job.requestId
+    ? singleGenerationRequest(store.readGenerationRequest(job.requestId) || {}, job.sampleIndex)
+    : job.request || {};
   const account = job.accountId && Array.isArray(db.accounts)
     ? db.accounts.find((item) => item.id === job.accountId)
     : null;

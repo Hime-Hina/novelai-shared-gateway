@@ -8,6 +8,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
+import { queuedDeadlineTimestamp } from './queue-policy.js';
 import { queryFailureAccounting } from './failure-accounting.js';
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
@@ -149,7 +150,7 @@ export class JsonStore {
     const rows = this.sqlite.prepare(`
       SELECT status, source, COUNT(*) AS count
       FROM jobs INDEXED BY idx_jobs_active_created
-      WHERE status IN ('queued', 'running')
+      WHERE status IN ('queued', 'pending', 'running')
       GROUP BY status, source
     `).all();
     return rows.reduce((counts, row) => {
@@ -159,9 +160,10 @@ export class JsonStore {
         if (row.source === 'direct') counts.directQueued += count;
         if (row.source === 'openai') counts.openAiQueued += count;
       }
+      if (row.status === 'pending') counts.pending += count;
       if (row.status === 'running') counts.running += count;
       return counts;
-    }, { queued: 0, running: 0, directQueued: 0, openAiQueued: 0 });
+    }, { queued: 0, pending: 0, running: 0, directQueued: 0, openAiQueued: 0 });
   }
 
   async readImageFiles() {
@@ -283,7 +285,7 @@ export class JsonStore {
         this.flushPendingPersistSync();
         const rows = selectBatch.all(cursor, upperRow);
         cursor = rows.at(-1)?.cursor || upperRow;
-        const ids = new Set(rows.filter((row) => row.status && !['queued', 'running'].includes(row.status)).map((row) => row.id));
+        const ids = new Set(rows.filter((row) => row.status && !['queued', 'pending', 'running'].includes(row.status)).map((row) => row.id));
         deleteBatch(ids);
         db.jobs = db.jobs.filter((job) => !ids.has(job.id));
         for (const id of ids) {
@@ -434,9 +436,18 @@ export class JsonStore {
   initializeQueueSequence() {
     // 精确沿用升级前实际选择：运行缓存的任务数组过滤后 reverse。
     // 不猜测 createdAt/order_value 的排序等价关系，也不改历史 order_value。
-    const legacy = this.db.jobs.filter(job => ['queued', 'running'].includes(job.status) && !job.queueSeq).reverse();
-    for (const job of legacy) job.queueSeq = this.nextQueueSequence();
-    if (legacy.length) this.persistIncremental(this.db, { dirtyRows: { jobs: legacy.map(job => job.id) } });
+    const active = this.db.jobs.filter(job => ['queued', 'pending', 'running'].includes(job.status)).reverse();
+    const changed = [];
+    for (const job of active) {
+      let dirty = false;
+      if (job.status !== 'pending' && !job.queueSeq) { job.queueSeq = this.nextQueueSequence(); dirty = true; }
+      if (!job.requestId && !Number.isSafeInteger(job.payloadBytes)) {
+        job.payloadBytes = Buffer.byteLength(JSON.stringify(job.request || {}));
+        dirty = true;
+      }
+      if (dirty) changed.push(job.id);
+    }
+    if (changed.length) this.persistIncremental(this.db, { dirtyRows: { jobs: changed } });
   }
 
   queuedJobIds() {
@@ -458,12 +469,29 @@ export class JsonStore {
     return row ? JSON.parse(row.payload) : null;
   }
 
-  activeGenerationPayloadBytes() {
-    return Number(this.sqlite.prepare(`
-      SELECT COALESCE(SUM(payload_bytes), 0) AS bytes FROM generation_requests
+  activeGenerationPayloadBytes(inFlight = []) {
+    // 从有界活动索引出发，只取字节元数据；绝不读取所有历史 payload。
+    const held = new Map(this.sqlite.prepare(`
+      SELECT id, payload_bytes AS bytes FROM generation_requests
       WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created
-        WHERE status IN ('queued', 'running') AND request_id IS NOT NULL)
-    `).get().bytes);
+        WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)
+    `).all().map(row => [`request:${row.id}`, row.bytes]));
+    for (const row of this.sqlite.prepare(`SELECT id, payload_bytes AS bytes FROM jobs INDEXED BY idx_jobs_active_created
+      WHERE status IN ('queued', 'pending', 'running') AND request_id IS NULL`).all()) {
+      held.set(`job:${row.id}`, row.bytes);
+    }
+    // 逻辑 failed 不代表执行器已经释放输入；按父请求去重，直到 control.finish。
+    for (const attempt of inFlight) {
+      const key = attempt.requestId ? `request:${attempt.requestId}` : `job:${attempt.jobId}`;
+      if (held.has(key)) continue;
+      const bytes = attempt.requestId
+        ? this.sqlite.prepare('SELECT payload_bytes AS bytes FROM generation_requests WHERE id = ?').get(attempt.requestId)?.bytes
+        : attempt.payloadBytes;
+      held.set(key, Number(bytes || 0));
+    }
+    let total = 0;
+    for (const bytes of held.values()) total += Number(bytes || 0);
+    return total;
   }
 
   async findJobContext(id) {
@@ -703,7 +731,7 @@ export class JsonStore {
             this.persistIncremental(this.db, scope);
           }
           // 新父记录已进入活动 SQL 统计；下一项串行受理开始前移交临时正文占用。
-          if (persistOptions.generationRequest) persistOptions.generationPayloadClaim?.release();
+          persistOptions.generationPayloadClaim?.release();
         }
         return snapshot;
       } catch (error) {
@@ -969,7 +997,7 @@ export class JsonStore {
       // Read the small active index separately; OR makes SQLite scan all history.
       const active = this.sqlite.prepare(`
         SELECT id, order_value AS orderValue, data FROM ${table} INDEXED BY idx_jobs_active_created
-        WHERE status IN ('queued', 'running')
+        WHERE status IN ('queued', 'pending', 'running')
       `).all();
       const recent = this.sqlite.prepare(`
         SELECT id, order_value AS orderValue, data FROM ${table}
@@ -1229,7 +1257,7 @@ export class JsonStore {
     const retained = [];
     const removed = [];
     for (const [index, job] of (this.db.jobs || []).entries()) {
-      if (index < limit || ['queued', 'running'].includes(job.status)) {
+      if (index < limit || ['queued', 'pending', 'running'].includes(job.status)) {
         retained.push(job);
       } else {
         removed.push(job);
@@ -1372,7 +1400,7 @@ function shouldPersistUpdate(result, options = {}) {
 
 function shouldDeferPersist(scope, options = {}) {
   if (!sqliteBatchWritesEnabled()) return false;
-  if (options.immediate === true || options.defer === false || options.generationRequest) return false;
+  if (options.immediate === true || options.defer === false || options.generationRequest || options.generationPayloadClaim) return false;
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
@@ -1526,6 +1554,7 @@ function sqlRecord(collection, item, order, data) {
   if (collection === 'jobs') {
     row.request_id = item.requestId || null;
     row.queue_seq = item.queueSeq ?? null;
+    row.payload_bytes = item.requestId ? 0 : Number(item.payloadBytes || 0);
     row.user_token = item.userToken || null;
     row.account_id = item.accountId || null;
     row.status = item.status || null;
@@ -1943,8 +1972,10 @@ function isQueueActiveJob(job, now = Date.now()) {
 }
 
 function isStaleActiveJob(job, now = Date.now()) {
-  if (!job || !['queued', 'running'].includes(job.status)) return false;
+  if (!job || !['queued', 'pending', 'running'].includes(job.status)) return false;
   if (isExpiredJob(job, now)) return true;
+  const queueDeadline = queuedDeadlineTimestamp(job);
+  if (queueDeadline && now >= queueDeadline) return true;
   const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
   if (job.status === 'running') return now - updatedAt > staleRunningJobMs();
@@ -2010,7 +2041,7 @@ function trimJobs(jobs) {
   const now = Date.now();
   const retainMs = clampNumber(process.env.JOB_HISTORY_RETENTION_MS ?? 7 * 24 * 60 * 60 * 1000, 60_000, 7 * 24 * 60 * 60 * 1000);
   return jobs.filter((job) => {
-    if (['queued', 'running'].includes(job.status)) return true;
+    if (['queued', 'pending', 'running'].includes(job.status)) return true;
     const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
     if (!updatedAt || now - updatedAt > retainMs) return false;
     return true;

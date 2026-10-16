@@ -57,13 +57,13 @@ test('新库的列、默认值、主键和索引方向与旧版完整 schema 一
   t.after(() => legacy.close());
   legacy.exec(legacySchema);
   const store = await openStore(t);
-  assert.deepEqual(metadata(store.sqlite).filter(table => table.name !== 'generation_requests').map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
+  assert.deepEqual(metadata(store.sqlite).filter(table => table.name !== 'generation_requests').map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq', 'payload_bytes'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
   assert.equal(metadata(store.sqlite).length, 10);
   const partial = store.sqlite.prepare("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql LIKE '%WHERE%' ORDER BY name").all();
   assert.equal(partial.length, 7);
-  assert.match(partial.find(index => index.name === 'idx_jobs_active_created').sql, /IN \('queued', 'running'\)/);
+  assert.match(partial.find(index => index.name === 'idx_jobs_active_created').sql, /IN \('queued', 'pending', 'running'\)/);
   const plan = store.sqlite.prepare(`EXPLAIN QUERY PLAN SELECT id, order_value, data FROM jobs
-    WHERE status IN ('queued', 'running') ORDER BY created_at`).all();
+    WHERE status IN ('queued', 'pending', 'running') ORDER BY created_at`).all();
   assert.ok(plan.some(row => row.detail.includes('idx_jobs_active_created')));
   const before = metadata(store.sqlite);
   migrateStorage(store.sqlite);
@@ -86,14 +86,14 @@ for (const retainedMetrics of [0, 1, 3]) {
     sqlite.exec('CREATE INDEX idx_jobs_updated_usage ON jobs (updated_at);');
     sqlite.close();
     const store = await openStore(t, dataDir);
-    assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1 });
+    assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1, payloadBytes: Buffer.byteLength(JSON.stringify(job.request)) });
     assert.deepEqual(store.sqlite.prepare('SELECT cost, stats_excluded, error_loggable FROM jobs').get(),
       { cost: 0, stats_excluded: 0, error_loggable: 0 });
     assert.equal(store.sqlite.prepare("SELECT 1 FROM sqlite_schema WHERE name='idx_jobs_updated_usage'").get(), undefined);
     await store.close();
     const reopened = await openStore(t, dataDir);
     assert.equal(reopened.countRecords('jobs'), 1);
-    assert.deepEqual(reopened.selectItemById('jobs', job.id), { ...job, queueSeq: 1 });
+    assert.deepEqual(reopened.selectItemById('jobs', job.id), { ...job, queueSeq: 1, payloadBytes: Buffer.byteLength(JSON.stringify(job.request)) });
   });
 }
 
@@ -107,7 +107,7 @@ test('旧 app_records 在迁移后完整导入 typed tables，重复启动不重
   sqlite.close();
   const store = await openStore(t, dataDir);
   assert.equal(store.db.settings.serviceName, 'legacy-test');
-  assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1 });
+  assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1, payloadBytes: Buffer.byteLength(JSON.stringify(job.request)) });
   assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM app_records').get().n, 0);
   await store.close();
   assert.equal((await openStore(t, dataDir)).countRecords('jobs'), 1);
@@ -120,7 +120,7 @@ test('旧 JSON 文件经过同一新库迁移路径导入，保护模式保留�
   const dataDir = await directory(), source = JSON.stringify({ settings: { serviceName: 'legacy-json' }, jobs: [job] });
   await writeFile(path.join(dataDir, 'library.json'), source);
   const store = await openStore(t, dataDir);
-  assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1 });
+  assert.deepEqual(store.selectItemById('jobs', job.id), { ...job, queueSeq: 1, payloadBytes: Buffer.byteLength(JSON.stringify(job.request)) });
   assert.equal(await readFile(path.join(dataDir, 'library.json'), 'utf8'), source);
   assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM __drizzle_migrations').get().n, migrationCount);
 });

@@ -38,7 +38,7 @@ function setCookie(req, res, token, additional = []) {
 
 function recentActivity(db,user) {
   const jobs=db.jobs.filter(job=>job.userToken===user.token).slice(0,30);
-  return {total:jobs.length,done:jobs.filter(job=>job.status==='done').length,failed:jobs.filter(job=>job.status==='failed').length,queued:jobs.filter(job=>job.status==='queued').length,running:jobs.filter(job=>job.status==='running').length};
+  return {total:jobs.length,done:jobs.filter(job=>job.status==='done').length,failed:jobs.filter(job=>job.status==='failed').length,queued:jobs.filter(job=>['queued','pending'].includes(job.status)).length,running:jobs.filter(job=>job.status==='running').length};
 }
 
 // 部署配置优先于历史库内地址，成员与管理员复制到的入口保持一致。
@@ -158,7 +158,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
       if(typeof body.enabled!=='boolean')error(400,'enabled 必须为布尔值');
       const result=await store.update(db=>{
         const user=db.users.find(u=>u.id===body.userId);if(!user)error(404,'成员不存在');
-        if(!body.enabled&&(db.jobs.some(job=>job.userToken===user.token&&['queued','running'].includes(job.status))||Object.values(db.settings.fairQuota?.reservations||{}).some(charge=>charge.userId===user.id&&charge.status==='reserved')))error(409,'成员仍有排队或生成中的任务，请结清后停用');
+        if(!body.enabled&&(db.jobs.some(job=>job.userToken===user.token&&['queued','pending','running'].includes(job.status))||Object.values(db.settings.fairQuota?.reservations||{}).some(charge=>charge.userId===user.id&&charge.status==='reserved')))error(409,'成员仍有排队或生成中的任务，请结清后停用');
         user.enabled=body.enabled;user.updatedAt=new Date().toISOString();
         // 停用时改变会话版本，之后重新启用也不能复活先前登录的 Cookie。
         if(!body.enabled&&user.memberAuth)user.memberAuth={...user.memberAuth,version:randomBytes(16).toString('hex')};
