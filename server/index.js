@@ -524,6 +524,10 @@ async function route(req, res) {
     const id = decodeURIComponent(url.pathname.split('/').at(-2) || '');
     const image = await store.findImage(id);
     if (!image) throw httpError(404, 'image not found.');
+    // 签名是限时分享凭据；失效后仅图片所属成员或管理员可读取。
+    if (!validPublicImageSignature(url) && !isAdmin(req, url) && image.token !== tokenFrom(req, url)) {
+      throw httpError(403, 'forbidden.');
+    }
     await sendStoredImage(res, 200, image);
     return;
   }

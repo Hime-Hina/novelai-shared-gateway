@@ -44,7 +44,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         quotaPoints: 10000, quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100,
         v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
       syncFairQuota(db);
-    }, { collections: ['accounts', 'settings'], includeSettings: true, immediate: true });
+      db.images.push({ id: 'img-access-owner', token: credentials[0].api_key, mimeType: 'image/png', base64: png.toString('base64') });
+      db.jobs.push({ id: 'job-access-owner', userToken: credentials[0].api_key, status: 'done', imageId: 'img-access-owner', createdAt: new Date().toISOString() });
+    }, { collections: ['accounts', 'settings', 'images', 'jobs'], includeSettings: true, immediate: true });
   } finally { await seeded.close(); }
 
   const calls = [];
@@ -125,6 +127,32 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const response = await fetchLocal('/api/member/me', { headers: { cookie: cookies[member] } });
     assert.equal(response.status, 200); return (await response.json()).quota;
   };
+
+  await t.test('图片读取保留有效签名、本人及管理员访问，拒绝其他成员绕过过期签名', async () => {
+    const ownHeaders = { authorization: `Bearer ${credentials[0].api_key}` };
+    const otherHeaders = { authorization: `Bearer ${credentials[1].api_key}` };
+    const jobResponse = await fetchLocal('/api/jobs/job-access-owner', { headers: ownHeaders });
+    assert.equal(jobResponse.status, 200);
+    const signed = (await jobResponse.json()).imageUrl;
+    const unsigned = signed.split('?')[0];
+    const expired = new URL(signed, baseUrl);
+    expired.searchParams.set('expires', String(Math.floor(Date.now() / 1000) - 1));
+    const forged = new URL(signed, baseUrl);
+    forged.searchParams.set('signature', '0'.repeat(64));
+
+    for (const headers of [undefined, otherHeaders]) {
+      const response = await fetchLocal(signed, { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+    }
+    for (const pathname of [unsigned, expired.pathname + expired.search, forged.pathname + forged.search]) {
+      assert.equal((await fetchLocal(pathname)).status, 401);
+      assert.equal((await fetchLocal(pathname, { headers: otherHeaders })).status, 403);
+      assert.equal((await fetchLocal(pathname, { headers: ownHeaders })).status, 200);
+      assert.equal((await fetchLocal(pathname, { headers: { 'x-admin-token': adminToken } })).status, 200);
+    }
+    assert.equal((await fetchLocal('/api/images/img-access-owner/anything', { headers: ownHeaders })).status, 404);
+  });
 
   await t.test('路径、鉴权与跨域校验在生图前完成，私有站点业务不存在', async () => {
     for (const pathname of ['/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
