@@ -5,8 +5,8 @@ import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { sql, eq, desc, count, getTableColumns } from 'drizzle-orm';
-import { recordTables, appSettings, appRecords, appMeta, generationRequests } from './storage-schema.js';
+import { sql, eq, and, desc, count, getTableColumns } from 'drizzle-orm';
+import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
 import { queuedDeadlineTimestamp } from './queue-policy.js';
 import { queryFailureAccounting } from './failure-accounting.js';
@@ -469,6 +469,10 @@ export class JsonStore {
     return row ? JSON.parse(row.payload) : null;
   }
 
+  readGenerationIdempotency(memberId, operation, keyHash) {
+    return this.statements.selectGenerationIdempotency.get({ memberId, operation, keyHash }) || null;
+  }
+
   readGenerationRequestState(id, memberId) {
     const request = this.sqlite.prepare(`SELECT id, source, operation, created_at AS createdAt
       FROM generation_requests WHERE id = ? AND member_id = ?`).get(id, memberId);
@@ -929,6 +933,14 @@ export class JsonStore {
       )).prepare(),
       selectGenerationRequest: db.select({ payload: generationRequests.payload }).from(generationRequests)
         .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
+      insertGenerationIdempotency: db.insert(generationIdempotency).values(Object.fromEntries(
+        Object.keys(getTableColumns(generationIdempotency)).map(key => [key, sql.placeholder(key)])
+      )).prepare(),
+      selectGenerationIdempotency: db.select().from(generationIdempotency).where(and(
+        eq(generationIdempotency.member_id, sql.placeholder('memberId')),
+        eq(generationIdempotency.operation, sql.placeholder('operation')),
+        eq(generationIdempotency.key_hash, sql.placeholder('keyHash'))
+      )).prepare(),
       deleteAllSettings: db.delete(appSettings).prepare(),
       deleteGenericRecords: db.delete(appRecords).prepare(),
       setMeta: db.insert(appMeta).values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
@@ -1086,7 +1098,7 @@ export class JsonStore {
   persistIncremental(db, options = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
-    if (!scope.full && !scope.includeSettings && !scope.collections.length) return;
+    if (!scope.full && !scope.includeSettings && !scope.collections.length && !scope.generationIdempotency) return;
     if (scope.hasDirtyRows) {
       const fullCollections = scope.collections.filter((collection) => !scope.dirtyRows[collection]?.size);
       this.assertFullCollectionsAreLoaded(fullCollections);
@@ -1110,7 +1122,7 @@ export class JsonStore {
       includeSettings: scope.includeSettings,
       collections: scope.full ? collections : scope.collections
     });
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency) return;
 
     const applyChanges = this.sqlite.transaction(() => {
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1123,6 +1135,7 @@ export class JsonStore {
         this.statements.upsertRecord[change.collection].run(change.sql);
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
+      if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
     });
     applyChanges();
     if (scope.includeSettings) this.settingsState = snapshot.settingsData;
@@ -1207,7 +1220,7 @@ export class JsonStore {
       changes.upserts.push(...fullChanges.upserts);
     }
 
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency) return;
 
     const applyChanges = this.sqlite.transaction(() => {
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1220,6 +1233,7 @@ export class JsonStore {
         this.statements.upsertRecord[change.collection].run(change.sql);
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
+      if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
     });
     applyChanges();
 
@@ -1416,13 +1430,13 @@ function shouldPersistUpdate(result, options = {}) {
 
 function shouldDeferPersist(scope, options = {}) {
   if (!sqliteBatchWritesEnabled()) return false;
-  if (options.immediate === true || options.defer === false || options.generationRequest || options.generationPayloadClaim) return false;
+  if (options.immediate === true || options.defer === false || options.generationRequest || options.generationIdempotency || options.generationPayloadClaim) return false;
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
 function resolvePersistenceOptions(options = {}, result, db) {
   const resolved = { ...options };
-  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest']) {
+  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest', 'generationIdempotency']) {
     if (typeof resolved[key] === 'function') resolved[key] = resolved[key](result, db);
   }
   return resolved;
@@ -1479,11 +1493,11 @@ function clonePersistenceScope(scope) {
 }
 
 function persistenceScope(options = {}) {
-  if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest };
+  if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency };
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
   const dirtyCollections = Object.keys(dirtyRows);
   const raw = options.collections ?? options.changedCollections ?? (dirtyCollections.length ? dirtyCollections : undefined);
-  if (raw === undefined || raw === null) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest };
+  if (raw === undefined || raw === null) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency };
   const values = Array.isArray(raw) ? raw : [raw];
   const includeSettings = values.includes('settings') || options.includeSettings === true;
   const targetCollections = normalizeCollectionList([...values, ...dirtyCollections]);
@@ -1493,7 +1507,7 @@ function persistenceScope(options = {}) {
     collections: targetCollections || [],
     dirtyRows,
     hasDirtyRows: dirtyCollections.length > 0,
-    generationRequest: options.generationRequest
+    generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency
   };
 }
 

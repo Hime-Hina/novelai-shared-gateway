@@ -42,6 +42,13 @@ export const generationRequests = sqliteTable('generation_requests', {
   payload_bytes: integer().notNull(), payload: text().notNull()
 });
 
+// 去重证据独立于可清理的任务/产物；不使用级联外键，历史缺失仍保留原映射。
+export const generationIdempotency = sqliteTable('generation_idempotency', {
+  member_id: text().notNull(), operation: text().notNull(), key_hash: text().notNull(),
+  fingerprint: text().notNull(), normalization_context: text().notNull(),
+  job_id: text().notNull(), request_id: text(), created_at: text().notNull()
+}, table => [primaryKey({ columns: [table.member_id, table.operation, table.key_hash] })]);
+
 export const jobs = sqliteTable('jobs', {
   ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), payload_bytes: integer().default(0).notNull(), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()
