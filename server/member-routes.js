@@ -3,6 +3,7 @@ import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSe
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember } from './fair-quota.js';
 import { sharedAccountStatus } from './shared-status.js';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
+import { clientIp } from './client-ip.js';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
@@ -75,8 +76,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, { discord: discordEnabled, ready: Boolean(config), origin: config?.origin || null }); return true;
   }
   if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
-    const remote = req.socket?.remoteAddress || 'unknown';
-    checkMemberLoginRate(null, remote);
+    checkMemberLoginRate(null, clientIp(req, env));
     reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps)); return true;
   }
   if (admin) {
@@ -194,7 +194,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   if (url.pathname === '/api/member/login' && req.method === 'POST') {
     if (discordEnabled) error(403, '本站仅允许 Discord 登录');
     const body = await json(req);
-    checkMemberLoginRate(body.username, req.socket?.remoteAddress || 'unknown');
+    checkMemberLoginRate(body.username, clientIp(req, env));
     const user = await store.update(db => loginMember(db, body.username, body.password), { persist: false });
     setCookie(req, res, createMemberSession(user));
     reply(res, 200, { ok: true }); return true;

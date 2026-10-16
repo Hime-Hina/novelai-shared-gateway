@@ -4,6 +4,8 @@ gateway.example.com {
     respond @private 404
     reverse_proxy 127.0.0.1:18081 {
         header_up Host gateway.example.com
+        # Caddy 默认忽略外部伪造的 X-Forwarded-For 并写入连接来源。
+        # 网关另需配置 TRUSTED_PROXY_IPS，填网关实际看到的 Caddy 来源 IP。
         flush_interval -1
     }
     # 不启用包含查询参数的访问日志；兼容 URL 可能携带调用 Key。
