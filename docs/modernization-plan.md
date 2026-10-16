@@ -72,6 +72,7 @@
 | F08 | `fix: trust explicit proxy addresses for login rate limits` | 密码及 Discord 登录只信任 `TRUSTED_PROXY_IPS` 中的精确代理 IP；从 XFF 右侧定位实际客户端，保留用户名限制。`node --test server/client-ip.test.mjs server/member-auth.test.mjs member-routes.test.mjs discord-login.test.mjs` 15/15 通过 | 默认忽略转发头；隔离部署时须按实际链路配置代理 IP，并复核来源隔离；无数据库迁移，未改生产配置 |
 | F09 | `fix: bind allocation previews and saves to the editing version` | 分组预览与保存强制校验编辑基线版本；owner/私有管理共用页面保留冲突草稿，后台刷新不覆盖期间开始的编辑。`node --test member-routes.test.mjs owner-management.test.mjs server/member-management-ui.test.mjs server/fair-quota.test.mjs` 76/76 通过 | 无数据迁移；旧版页面缺失版本字段时收到 409，需要重新加载页面。UI 回归执行真实脚本配合轻量 DOM 模拟，D01 仍需真实浏览器验收 |
 | C05 | `build: migrate locked dependencies and validation to pnpm` | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；托管 CI 推送后另验 |
+| P01（排队部分） | `docs: establish a read-only production queue baseline` | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器受控重复采样仍待完成，P01 整项未完成 |
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交主题为 `fix: accept documented NovelAI vibe binary responses`，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
@@ -240,7 +241,7 @@ HAR、trace 和截图可能包含 Cookie、Authorization、Key、提示词或成
 
 ## 最近请求与排队诊断
 
-当前没有在本文填入生产请求样本，因此不把本地模拟结果称为生产排队结论。实施开始先只读提取最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识，覆盖成功、失败、取消、正在等待和超时请求。
+生产只读结果见[近期任务排队基线](queue-baseline.md)，不把本地模拟结果称为生产排队结论。以最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识统计，覆盖成功、失败、取消、正在等待和超时请求；不足七天的实际历史跨度及未落库拒绝率明确标为缺失。
 
 复用 [owner 用量统计](../server/owner-operations.js)和 [readOwnerJobRows](../server/store.js) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
 
