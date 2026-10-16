@@ -2,7 +2,7 @@
 
 日期：2026-10-17。结论：**采用 Drizzle 承担 schema、普通查询及经过审阅的增量迁移，保留 better-sqlite3、现有单写入方和必要的原生 SQL。先接入可验证的小范围，不重写整个账本，也不新增通用 Repository 或 Unit of Work。**
 
-这份报告完成的是 C06 的证据阶段。主工程尚未接入 ORM；原型在 Git 忽略的 `_private/orm-evaluation/`，只使用合成临时 SQLite，未改生产 schema、数据、服务或根依赖。正式接入必须把下面的关键断言收进仓库测试，不能把私有原型当成交付实现。
+本轮已按评估结果正式接入主工程：9 张既有表的 schema、普通 prepared 查询/upsert 和版本迁移均由 Drizzle 支持；领域投影与同步提交边界保留。正式回归位于 `tests/integration/storage-orm.test.mjs`，另继续运行 F02 的存储失败回归。以下微基准与最初 3 表实验属于评估证据，最后一节记录实际接入范围。未迁移生产数据库、未部署或替换生产服务。
 
 ## 版本与验证范围
 
@@ -119,18 +119,41 @@ store.update 排队 → await mutator 修改内存 → 计算脏行
 | 整个 data 文本与内存缓存 | 不在本次改成 JSON mode 自动序列化。当前 persister 已传 JSON 字符串，再由 ORM 当对象编码会双重序列化；F02/F05 的缓存与热状态问题仍独立处理 |
 | owner/管理统计 SQL | 保留参数化原生 SQL及其索引提示；用库不等于把清晰的聚合 SQL 改写成更多 builder 调用 |
 
-原型校准后的 3 表 schema 为 81 行，其中有重复的既有记录列；它证明正确性，**尚未证明最终净减少多少行**。正式接入先复用现有共同字段模式，最小化声明重复；提交时对比删除的字段列表、SQL 拼装和迁移代码，不能只是新增 ORM 又完整保留第二套描述长期漂移。
+原型校准后的 3 表 schema 为 81 行，其中有重复的既有记录列。正式接入改为复用一次共同字段声明：`store.js` 删除 231 行、增加 63 行，净减少 168 行；新增 schema 58 行及历史库基线/迁移适配 90 行，合计手写存储实现净减少 20 行。另有 5 行生成配置、10 项正式测试、冻结的旧 schema 测试样本以及工具生成的迁移 SQL/snapshot/锁文件；这些不能算作零成本。收益是移除重复字段清单与启动 DDL，而不是靠行数宣称架构已经简化到最优。
 
 Kysely 和 Prisma 暂不新增原型：Drizzle 已通过需要的运行时能力验证，剩余问题有明确的有限处理边界；同时安装三个库不会提高此时决策质量。若后续无法保住准确基线或同一提交边界，再根据具体失败重新比较，不能继续堆自写存储框架。
 
-## 下一步最小接入与回归要求
+## 正式接入范围与验证
 
-以下是接入建议，尚未实施；文件名以当前后端仍放 `server/` 的阶段为准，不提前建立 monorepo。
+| 文件/范围 | 已实施行为 |
+| --- | --- |
+| `package.json`、`pnpm-lock.yaml` | 精确 ORM 0.45.4、Kit 0.31.11；原有 38 个锁定版本全部保留，better-sqlite3 仍为 12.10.0；没有移动/替换运行中服务的 node_modules |
+| `server/storage-schema.js` | 用一份共同记录字段定义声明 9 张既有表、167 列、20 个显式索引；保留 3 个部分索引与原主键/默认值语义 |
+| `server/store.js` | 移除 `recordColumns/jobMetricColumns`、手工 DDL 和通用 SQL 字符串拼装；从 schema 派生空影子行、占位符与 upsert 字段。JSON 完整保存，领域投影仍在 `sqlRecord` 一处 |
+| `server/storage-migrations.js` | 首次接入以已审阅基线 SQL 建内存参考库，核对所有现存受管表的列、已存在同名索引及谓词；只补旧 jobs 曾逐步增加的 3 个度量列。补列、补建表/索引与基线登记在同一事务；后续交由 Drizzle migrator |
+| `server/migrations/` | `0000` 完整基线及 `0001` 旧冗余索引清理，保留生成 snapshot/journal；原每次启动的清理转为一次有版本迁移 |
+| `drizzle.config.mjs` | 只配置本地 schema 与迁移输出位置，没有默认生产连接，也没有运行 schema push |
+| `tests/integration/storage-orm.test.mjs` | 新增 10 项正式回归；冻结迁移前 schema 到 `tests/fixtures/sqlite-before-drizzle.sql`，以独立旧结构核对新库，避免测试仅与实现互相照抄 |
 
-1. **独立提交依赖与 schema/普通查询接入**：根 `package.json`、`pnpm-lock.yaml` 精确锁定 ORM/Kit；增加 `server/storage-schema.js`（ESM 声明，后续 T01 再纳入类型迁移），先覆盖真实 jobs/settings/account 路径。`server/store.js` 复用现有连接，在提交阶段接入已准备写语句；首次最小查询可从按 ID 读取和活跃任务读取开始。业务字段/额度行为不同时更改。
-2. **迁移基线与生成配置**：`drizzle.config.mjs`、`server/migrations/` 保存经复核的基线与增量 SQL；独立管理命令在启动接单前运行，只写目标隔离数据库。旧库结构不匹配时明确停止迁移，不能拿 push 自动“修好”；新库、现有 typed tables、legacy 导入分别验收。Kit 只在开发/CI 生成，不能在生产启动时下载或反向同步 schema。
-3. **必要运行检查纳入 `tests/integration/storage-orm.test.mjs`**：真实现有表读写，JSON/影子列一致；原子预扣；触发器失败全盘回滚且 F02 内存恢复；同任务不重复预扣；事务中/后子进程退出；readonly worker；迁移失败与重复执行；基线约束、默认值和所有部分索引比较；活跃任务 `EXPLAIN` 不退化。
-4. **保留并运行现有回归**：`tests/integration/store.test.mjs`、`fair-integration.test.mjs`、owner 统计、管理统计和 bootstrap 测试；C04 搬迁后的完整测试与语法检查。部署/构建配置需把迁移 SQL 带入运行产物，同时不携带测试数据；Linux 原生依赖及 Nuxt/Nitro 打包仍需目标环境验收。
-5. **F03/F06 写业务接入前检查事务所有者**：新表写入与旧 settings/任务预扣必须同一次提交；若仅 schema/只读查询先落地，明确标为阶段完成，不能将尚未闭合的写入边界视作 C06 后续风险已消失。
+旧 typed tables、仅旧 app_records、旧 JSON 与全新库均经过实际 JsonStore 初始化验证。原有受管表结构不匹配时，迁移明确失败，不重建表或猜测修复；事务中途失败不留下已补列。未知的外部表和额外自定义索引不删除。缺少旧 jobs 统计列时沿用原 `ensureColumn` 的 `DEFAULT 0` 语义，不在 C06 暗中从历史 JSON 回填 cost/统计标记；要校正这种极老库的历史统计，应另做明确的数据回填迁移并复用领域投影。对已经应用的迁移还比较保存的 hash，拒绝修改历史文件或用不匹配的版本打开数据库。
 
-原型执行过程为：显式 pnpm 10.32.1 安装 → `seed.mjs` 建立真实结构的合成库 → Kit pull 暴露差异 → 校准 schema 并 generate → `baseline.mjs` 比对结构/登记基线 → generate 一条合成增列 → `evaluate.mjs` 检查读写、回滚、worker、进程退出及查询计划 → `write-benchmark.mjs` → `migration-failure.mjs`。评估包、锁文件、原型与 JSON 结果暂存 `_private/orm-evaluation/`；正式可重复回归将在接入提交中提炼到 tests，原型不会直接混入生产代码。
+所有业务数据的 ORM 写入继续发生在现有 `persistIncremental/persistDirtyRows/replaceAll` 等持久提交事务内，没有在 async mutator 中提前写新表，也没有新增 Repository/UoW。图片/任务清理等原有独立同步事务同时适配 prepared 参数；活跃任务与复杂统计保留原生 SQL、静态谓词和索引提示。只读 worker 不承担迁移或写入。未来增加规范化新表时仍须对一个业务命令的新旧表写入统一事务；本次没有新增账务、队列或会话业务表。
+
+已执行：完整 `pnpm test` **244/244**（包含实际十秒间隔的 Native HTTP 用例，约 135 秒）；正式 ORM 集成 10/10；既有 store/bootstrap 11/11；语法检查 64 个文件。正式用例覆盖元数据、旧库导入、已知缺列升级、错误结构拒绝、部分索引 EXPLAIN、迁移失败/重复/hash 改写拒绝、真实预扣与 JSON/影子列一致、只读 worker、实际 persister 提交中/后进程退出。F02 测试继续验证触发器失败后的内存重载、部分历史缓存与延迟写恢复。
+
+后续 schema 变更从声明生成，审阅 SQL 后提交；已有迁移不得修改：
+
+```sh
+corepack pnpm@10.32.1 exec drizzle-kit generate --config=drizzle.config.mjs --name=描述本次变更
+corepack pnpm@10.32.1 test
+```
+
+生成与校准流程：`storage-schema.js` 是现行声明来源，先 generate，再审查 SQL 与 snapshot；首次基线只有经过审阅的 `IF NOT EXISTS` 调整，使已验证旧库可以原地登记，不能把它当成一般 schema 自动同步。后续结构变更新增迁移，不编辑 `0000/0001`；运行时会拒绝已有 hash 不匹配。`.gitattributes` 仅对迁移 SQL 固定 LF，保证 Windows checkout 与 Linux 部署的 hash 一致，不归一化其他源文件。测试样本 `sqlite-before-drizzle.sql` 是冻结的迁移前结构，不能为了让新 schema 测试通过而随意一起修改。
+
+部署前通过 SQLite 在线 backup API 或既有一致性备份流程保存数据库，同时保留需要的图片/结果文件；WAL 模式不能只复制主 `.sqlite` 文件就声称备份完整。D01 先在受保护副本运行同一发布产物，核对迁移、业务计数、索引和结果可领取，再申请生产切换。首次自动接入发现不支持的结构会停止启动，保留数据供检查，不能用 schema push 或删表绕过。
+
+没有提供自动 down migration。本次只登记基线、补原版本已有的度量列及清理原版本已移除的冗余索引，没有重建业务表或改变 JSON 编码；仍须用实际副本确认旧发行版读取能力，不能把本次情况推广为所有后续迁移都可回退。后续迁移优先向前修正；若必须恢复备份，先停止写入并核对备份之后的新任务/结果，避免回滚丢数据。生产替换及恢复操作仍按 D02 单独批准。
+
+运行时启动在接单和创建读 worker 之前执行已打包迁移，不运行 Kit，也不下载依赖。现有 Docker COPY 整个 `server/`，会包含迁移 SQL 与 metadata；本次 Docker 构建及镜像内只读根文件系统、断网、UID 1000 的真实 JsonStore 写入/关闭重开、两条迁移记录与 integrity_check 已由主代理验证通过（镜像 `sha256:d0ca0d81e9748cd14a1f6b3859bbe5b08437a79c91d33dfe30b301a6837e507a`）；生产数据副本的完整隔离验收仍归 D01，生产替换仍需另行授权。
+
+原型过程及微基准结果暂存 `_private/orm-evaluation/`；正式回归已经提炼到 tests，原型不进入运行产物。没有更换 SQLite 驱动、压缩存储历史、迁移公平额度算法或新增自动删除策略。

@@ -4,6 +4,10 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { sql, eq, desc, count, getTableColumns } from 'drizzle-orm';
+import { recordTables, appSettings, appRecords, appMeta } from './storage-schema.js';
+import { migrateStorage } from './storage-migrations.js';
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
 export const MAX_FREE_STEPS = 28;
@@ -12,45 +16,11 @@ export const defaultArtist2_5D =
 export const legacyDefaultArtist =
   'artist:ningen_mame,, noyu_(noyu23386566),, toosaka asagi,, location,\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,:,, very aesthetic, masterpiece, no text,';
 
-const collections = ['cards', 'users', 'accounts', 'jobs', 'images', 'ledger'];
+const collections = Object.keys(recordTables);
 const largeRuntimeCollections = new Set(['jobs', 'images', 'ledger']);
-const collectionTables = Object.freeze({
-  cards: 'cards',
-  users: 'users',
-  accounts: 'accounts',
-  jobs: 'jobs',
-  images: 'images',
-  ledger: 'ledger'
-});
-const recordColumns = [
-  'id',
-  'order_value',
-  'data',
-  'token',
-  'user_token',
-  'account_id',
-  'status',
-  'source',
-  'code',
-  'cache_key',
-  'image_id',
-  'created_at',
-  'updated_at',
-  'at',
-  'enabled',
-  'balance',
-  'route_id',
-  'width',
-  'height',
-  'mock',
-  'mime_type',
-  'model',
-  'prompt',
-  'full_prompt',
-  'resolution_tier',
-  'search_text'
-];
-const jobMetricColumns = ['cost', 'stats_excluded', 'error_loggable'];
+const collectionTables = Object.fromEntries(collections.map(name => [name, name]));
+const emptyRecordRows = Object.fromEntries(Object.entries(recordTables).map(([name, table]) => [name,
+  Object.fromEntries(Object.keys(getTableColumns(table)).map(column => [column, null]))]));
 
 const defaultSettings = {
   serviceName: 'Nai2API',
@@ -261,7 +231,7 @@ export class JsonStore {
 
     const applyTrim = this.sqlite.transaction(() => {
       for (const update of jobUpdates) this.statements.upsertRecord.jobs.run(update.sql);
-      for (const id of removedIds) this.statements.deleteRecord.images.run(id);
+      for (const id of removedIds) this.statements.deleteRecord.images.run({ id });
     });
     applyTrim();
 
@@ -301,7 +271,7 @@ export class JsonStore {
       WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 200
     `);
     const deleteBatch = this.sqlite.transaction((ids) => {
-      for (const id of ids) this.statements.deleteRecord.jobs.run(id);
+      for (const id of ids) this.statements.deleteRecord.jobs.run({ id });
     });
     let cursor = 0;
     let removed = 0;
@@ -470,7 +440,7 @@ export class JsonStore {
 
   async findImage(id) {
     await this.ensureLoaded();
-    const row = this.statements.selectById.images.get(id);
+    const row = this.statements.selectById.images.get({ id });
     if (row) return safeJson(row.data, null);
     const image = this.db.images.find((item) => item.id === id);
     return image ? structuredClone(image) : null;
@@ -741,7 +711,7 @@ export class JsonStore {
   selectItemById(collection, id) {
     const statement = this.statements.selectById[collection];
     if (!statement || !id) return null;
-    const row = statement.get(String(id));
+    const row = statement.get({ id: String(id) });
     return row ? safeJson(row.data, null) : null;
   }
 
@@ -788,144 +758,50 @@ export class JsonStore {
 
   createSchema() {
     const startedAt = Date.now();
-    this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS app_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS app_settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS app_records (
-        collection TEXT NOT NULL,
-        id TEXT NOT NULL,
-        order_value REAL NOT NULL,
-        data TEXT NOT NULL,
-        PRIMARY KEY (collection, id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_app_records_collection_order
-        ON app_records (collection, order_value DESC);
-    `);
-
-    for (const table of Object.values(collectionTables)) {
-      this.sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS ${table} (
-          id TEXT PRIMARY KEY,
-          order_value REAL NOT NULL,
-          data TEXT NOT NULL,
-          token TEXT,
-          user_token TEXT,
-          account_id TEXT,
-          status TEXT,
-          source TEXT,
-          code TEXT,
-          cache_key TEXT,
-          image_id TEXT,
-          created_at TEXT,
-          updated_at TEXT,
-          at TEXT,
-          enabled INTEGER,
-          balance REAL,
-          route_id INTEGER,
-          width INTEGER,
-          height INTEGER,
-          mock INTEGER,
-          mime_type TEXT,
-          model TEXT,
-          prompt TEXT,
-          full_prompt TEXT,
-          resolution_tier TEXT,
-          search_text TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_${table}_order
-          ON ${table} (order_value DESC);
-      `);
-    }
-
-    ensureColumn(this.sqlite, 'jobs', 'cost', 'REAL NOT NULL DEFAULT 0');
-    ensureColumn(this.sqlite, 'jobs', 'stats_excluded', 'INTEGER NOT NULL DEFAULT 0');
-    ensureColumn(this.sqlite, 'jobs', 'error_loggable', 'INTEGER NOT NULL DEFAULT 0');
-    dropRedundantIndexes(this.sqlite);
-
-    this.sqlite.exec(`
-      CREATE INDEX IF NOT EXISTS idx_images_cache_key
-        ON images (cache_key);
-      CREATE INDEX IF NOT EXISTS idx_images_tier_order
-        ON images (resolution_tier, order_value DESC);
-      CREATE INDEX IF NOT EXISTS idx_images_model_order
-        ON images (model, order_value DESC);
-      CREATE INDEX IF NOT EXISTS idx_images_tier_model_order
-        ON images (resolution_tier, model, order_value DESC);
-      CREATE INDEX IF NOT EXISTS idx_jobs_user_token
-        ON jobs (user_token);
-      CREATE INDEX IF NOT EXISTS idx_jobs_image_id
-        ON jobs (image_id);
-      CREATE INDEX IF NOT EXISTS idx_jobs_created_stats
-        ON jobs (created_at, status, stats_excluded, account_id);
-      CREATE INDEX IF NOT EXISTS idx_jobs_updated_stats
-        ON jobs (updated_at, status, model, created_at, cost);
-      CREATE INDEX IF NOT EXISTS idx_jobs_active_created
-        ON jobs (created_at) WHERE status IN ('queued', 'running');
-      CREATE INDEX IF NOT EXISTS idx_jobs_failed_order
-        ON jobs (order_value DESC) WHERE status = 'failed';
-      CREATE INDEX IF NOT EXISTS idx_jobs_error_log_updated
-        ON jobs (updated_at DESC) WHERE error_loggable = 1;
-      CREATE INDEX IF NOT EXISTS idx_users_token
-        ON users (token);
-      CREATE INDEX IF NOT EXISTS idx_accounts_route_id
-        ON accounts (route_id);
-    `);
-    runtimeLog(`SQLite schema checked in ${Date.now() - startedAt}ms`);
+    migrateStorage(this.sqlite);
+    runtimeLog(`SQLite migrations checked in ${Date.now() - startedAt}ms`);
   }
 
   prepareStatements() {
     if (this.statements) return;
+    const db = drizzle(this.sqlite);
     this.statements = {
-      hasSettings: this.sqlite.prepare('SELECT 1 FROM app_settings WHERE key = ? LIMIT 1'),
-      hasGenericRecords: this.sqlite.prepare('SELECT 1 FROM app_records LIMIT 1'),
-      selectSettings: this.sqlite.prepare('SELECT value FROM app_settings WHERE key = ?'),
-      selectGenericRecords: this.sqlite.prepare('SELECT id, order_value AS orderValue, data FROM app_records WHERE collection = ? ORDER BY order_value DESC'),
-      replaceSettings: this.sqlite.prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
-      deleteAllSettings: this.sqlite.prepare('DELETE FROM app_settings'),
-      deleteGenericRecords: this.sqlite.prepare('DELETE FROM app_records'),
-      setMeta: this.sqlite.prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
-      hasTypedRecords: {},
-      selectRecords: {},
-      selectById: {},
-      countRecords: {},
-      deleteAllRecords: {},
-      upsertRecord: {},
-      deleteRecord: {}
+      hasSettings: db.select({ value: sql`1` }).from(appSettings).where(eq(appSettings.key, 'settings')).limit(1).prepare(),
+      hasGenericRecords: db.select({ value: sql`1` }).from(appRecords).limit(1).prepare(),
+      selectSettings: db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, 'settings')).prepare(),
+      selectGenericRecords: db.select({ id: appRecords.id, orderValue: appRecords.order_value, data: appRecords.data })
+        .from(appRecords).where(eq(appRecords.collection, sql.placeholder('collection'))).orderBy(desc(appRecords.order_value)).prepare(),
+      replaceSettings: db.insert(appSettings).values({ key: 'settings', value: sql.placeholder('value') })
+        .onConflictDoUpdate({ target: appSettings.key, set: { value: sql`excluded.value` } }).prepare(),
+      deleteAllSettings: db.delete(appSettings).prepare(),
+      deleteGenericRecords: db.delete(appRecords).prepare(),
+      setMeta: db.insert(appMeta).values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
+        .onConflictDoUpdate({ target: appMeta.key, set: { value: sql`excluded.value` } }).prepare(),
+      hasTypedRecords: {}, selectRecords: {}, selectById: {}, countRecords: {},
+      deleteAllRecords: {}, upsertRecord: {}, deleteRecord: {}
     };
 
-    for (const [collection, table] of Object.entries(collectionTables)) {
-      const columns = collection === 'jobs' ? [...recordColumns, ...jobMetricColumns] : recordColumns;
-      const valueList = columns.map((column) => `@${column}`).join(', ');
-      const updateList = columns
-        .filter((column) => column !== 'id')
-        .map((column) => `${column} = excluded.${column}`)
-        .join(', ');
-      this.statements.hasTypedRecords[collection] = this.sqlite.prepare(`SELECT 1 FROM ${table} LIMIT 1`);
-      this.statements.selectRecords[collection] = this.sqlite.prepare(`SELECT id, order_value AS orderValue, data FROM ${table} ORDER BY order_value DESC`);
-      this.statements.selectById[collection] = this.sqlite.prepare(`SELECT data FROM ${table} WHERE id = ? LIMIT 1`);
-      this.statements.countRecords[collection] = this.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`);
-      this.statements.deleteAllRecords[collection] = this.sqlite.prepare(`DELETE FROM ${table}`);
-      this.statements.upsertRecord[collection] = this.sqlite.prepare(`
-        INSERT INTO ${table} (${columns.join(', ')})
-        VALUES (${valueList})
-        ON CONFLICT(id) DO UPDATE SET ${updateList}
-      `);
-      this.statements.deleteRecord[collection] = this.sqlite.prepare(`DELETE FROM ${table} WHERE id = ?`);
+    for (const [collection, table] of Object.entries(recordTables)) {
+      const columns = Object.keys(getTableColumns(table));
+      const values = Object.fromEntries(columns.map(column => [column, sql.placeholder(column)]));
+      const updates = Object.fromEntries(columns.filter(column => column !== 'id')
+        .map(column => [column, sql`excluded.${sql.identifier(column)}`]));
+      this.statements.hasTypedRecords[collection] = db.select({ value: sql`1` }).from(table).limit(1).prepare();
+      this.statements.selectRecords[collection] = db.select({ id: table.id, orderValue: table.order_value, data: table.data })
+        .from(table).orderBy(desc(table.order_value)).prepare();
+      this.statements.selectById[collection] = db.select({ data: table.data }).from(table)
+        .where(eq(table.id, sql.placeholder('id'))).limit(1).prepare();
+      this.statements.countRecords[collection] = db.select({ count: count() }).from(table).prepare();
+      this.statements.deleteAllRecords[collection] = db.delete(table).prepare();
+      // 准备语句不写入；所有 run 仍由既有 persister 的同步 SQLite 事务统一提交。
+      this.statements.upsertRecord[collection] = db.insert(table).values(values)
+        .onConflictDoUpdate({ target: table.id, set: updates }).prepare();
+      this.statements.deleteRecord[collection] = db.delete(table).where(eq(table.id, sql.placeholder('id'))).prepare();
     }
   }
 
   hasSqliteData() {
-    return Boolean(this.statements.hasSettings.get('settings') || this.hasTypedRecords() || this.statements.hasGenericRecords.get());
+    return Boolean(this.statements.hasSettings.get() || this.hasTypedRecords() || this.statements.hasGenericRecords.get());
   }
 
   hasTypedRecords() {
@@ -940,13 +816,13 @@ export class JsonStore {
       runtimeLog(`Loaded legacy app_records in ${Date.now() - startedAt}ms: ${formatDbCounts(db)}`);
       this.replaceAll(db);
       this.statements.deleteGenericRecords.run();
-      this.statements.setMeta.run('generic_records_migrated_at', new Date().toISOString());
+      this.statements.setMeta.run({ key: 'generic_records_migrated_at', value: new Date().toISOString() });
       runtimeLog(`Upgraded app_records to typed tables in ${Date.now() - startedAt}ms`);
       return this.loadFromSqlite();
     }
 
     const startedAt = Date.now();
-    const settingsRow = this.statements.selectSettings.get('settings');
+    const settingsRow = this.statements.selectSettings.get();
     const db = {
       ...defaultDb,
       settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
@@ -1002,13 +878,13 @@ export class JsonStore {
   }
 
   loadFromGenericRecords() {
-    const settingsRow = this.statements.selectSettings.get('settings');
+    const settingsRow = this.statements.selectSettings.get();
     const db = {
       ...defaultDb,
       settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
     };
     for (const collection of collections) {
-      const rows = this.statements.selectGenericRecords.all(collection);
+      const rows = this.statements.selectGenericRecords.all({ collection });
       db[collection] = rows.map((row) => safeJson(row.data, null)).filter(Boolean);
     }
     return normalizeDb(db);
@@ -1023,7 +899,7 @@ export class JsonStore {
       for (const collection of collections) {
         this.statements.deleteAllRecords[collection].run();
       }
-      this.statements.replaceSettings.run('settings', snapshot.settingsData);
+      this.statements.replaceSettings.run({ value: snapshot.settingsData });
       for (const collection of collections) {
         for (const [id, row] of snapshot.rowState[collection]) {
           this.statements.upsertRecord[collection].run(row.sql);
@@ -1078,9 +954,9 @@ export class JsonStore {
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length) return;
 
     const applyChanges = this.sqlite.transaction(() => {
-      if (changes.settingsChanged) this.statements.replaceSettings.run('settings', snapshot.settingsData);
+      if (changes.settingsChanged) this.statements.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
-        this.statements.deleteRecord[change.collection].run(change.id);
+        this.statements.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
         this.statements.upsertRecord[change.collection].run(change.sql);
@@ -1172,9 +1048,9 @@ export class JsonStore {
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length) return;
 
     const applyChanges = this.sqlite.transaction(() => {
-      if (changes.settingsChanged) this.statements.replaceSettings.run('settings', changes.nextSettings);
+      if (changes.settingsChanged) this.statements.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
-        this.statements.deleteRecord[change.collection].run(change.id);
+        this.statements.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
         this.statements.upsertRecord[change.collection].run(change.sql);
@@ -1292,8 +1168,8 @@ export class JsonStore {
 
   async markLegacyMigrated() {
     const migratedAt = new Date().toISOString();
-    this.statements.setMeta.run('schema_version', '1');
-    this.statements.setMeta.run('last_migrated_at', migratedAt);
+    this.statements.setMeta.run({ key: 'schema_version', value: '1' });
+    this.statements.setMeta.run({ key: 'last_migrated_at', value: migratedAt });
       // 私有部署保护：迁移后保留旧版 JSON 文件。
       if (process.env.NO_AUTO_DELETE === 'true') return;
     const deleted = [];
@@ -1307,7 +1183,7 @@ export class JsonStore {
         console.error(`Failed to delete migrated legacy JSON ${filePath}:`, error);
       }
     }
-    this.statements.setMeta.run('legacy_json_deleted', JSON.stringify(deleted));
+    this.statements.setMeta.run({ key: 'legacy_json_deleted', value: JSON.stringify(deleted) });
     if (deleted.length) console.log(`Migrated legacy JSON data to SQLite and deleted ${deleted.length} old JSON file(s).`);
   }
 }
@@ -1502,35 +1378,17 @@ function sqlRecord(collection, item, order, data) {
   const createdAt = item.createdAt || '';
   const updatedAt = item.updatedAt || '';
   const row = {
-    id: String(item.id),
-    order_value: Number(order),
-    data,
-    token: null,
-    user_token: null,
-    account_id: null,
-    status: null,
-    source: null,
-    code: null,
-    cache_key: null,
-    image_id: null,
-    created_at: createdAt || null,
-    updated_at: updatedAt || null,
-    at: item.at || null,
+    ...emptyRecordRows[collection],
+    id: String(item.id), order_value: Number(order), data,
+    created_at: createdAt || null, updated_at: updatedAt || null, at: item.at || null,
     enabled: item.enabled === undefined ? null : item.enabled !== false ? 1 : 0,
-    balance: numberOrNull(item.balance),
-    route_id: numberOrNull(item.routeId),
-    width: numberOrNull(item.width),
-    height: numberOrNull(item.height),
+    balance: numberOrNull(item.balance), route_id: numberOrNull(item.routeId),
+    width: numberOrNull(item.width), height: numberOrNull(item.height),
     mock: item.mock === undefined ? null : item.mock ? 1 : 0,
     mime_type: item.mimeType || null,
     model: item.model || item.request?.model || null,
     prompt: item.prompt || item.request?.tag || null,
-    full_prompt: item.fullPrompt || item.request?.prompt || null,
-    resolution_tier: null,
-    search_text: '',
-    cost: 0,
-    stats_excluded: 0,
-    error_loggable: 0
+    full_prompt: item.fullPrompt || item.request?.prompt || null
   };
 
   if (collection === 'cards') {
@@ -1708,32 +1566,6 @@ function trimImageCacheDeleteLimit(value) {
   const number = Number(value ?? 25);
   if (!Number.isFinite(number) || number <= 0) return 25;
   return Math.max(1, Math.floor(number));
-}
-
-function ensureColumn(sqlite, table, column, definition) {
-  const columns = sqlite.prepare(`PRAGMA table_info(${table})`).all();
-  if (columns.some((item) => item.name === column)) return;
-  sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
-
-function dropRedundantIndexes(sqlite) {
-  const names = [
-    ...collections.flatMap((table) => [
-      `idx_${table}_status_created`,
-      `idx_${table}_status_updated`,
-      `idx_${table}_account_created`,
-      ...(table === 'users' ? [] : [`idx_${table}_token`])
-    ]),
-    'idx_images_search',
-    'idx_jobs_created',
-    'idx_jobs_updated',
-    'idx_jobs_account_status_created',
-    'idx_jobs_status_order',
-    'idx_jobs_updated_speed',
-    'idx_jobs_updated_usage',
-    'idx_users_search_order'
-  ];
-  sqlite.exec(names.map((name) => `DROP INDEX IF EXISTS ${name};`).join('\n'));
 }
 
 class SqliteReadWorker {

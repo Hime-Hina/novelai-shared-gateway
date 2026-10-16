@@ -1,0 +1,2 @@
+# Migration hashes must match across Windows checkouts and Linux deployments.
+server/migrations/**/*.sql text eol=lf
