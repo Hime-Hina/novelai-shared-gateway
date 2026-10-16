@@ -219,6 +219,66 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined); assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);
   });
 
+  await t.test('OpenAI 模型目录、非流式图片领取与流式结束契约通过真实 HTTP 验证', async () => {
+    const model = 'nai-diffusion-4-5-full:k_euler_ancestral';
+    const content = '提示词: a blue paper boat\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:';
+    const request = { model, messages: [{ role: 'user', content }] };
+    const startCount = calls.length, before = await quota();
+    for (const response of [await fetchLocal('/v1/models'), await post('/v1/chat/completions', request, 'invalid')]) {
+      assert.equal(response.status, 401);
+      const failure = await response.json();
+      assert.equal(failure.error.type, 'authentication_error');
+      assert.equal(failure.error.code, 'authentication_error');
+      assert.equal(failure.error.param, null);
+    }
+    assert.equal(calls.length, startCount);
+    const models = await fetchLocal('/v1/models', { headers: { authorization: `Bearer ${credentials[0].api_key}` } });
+    assert.equal(models.status, 200);
+    const catalog = await models.json();
+    assert.equal(catalog.object, 'list');
+    assert.ok(catalog.data.some(item => item.id === model && item.object === 'model'));
+
+    const completion = await post('/v1/chat/completions', request);
+    assert.equal(completion.status, 200, await completion.clone().text());
+    assert.match(completion.headers.get('content-type'), /application\/json/);
+    const message = await completion.json();
+    assert.equal(message.object, 'chat.completion'); assert.equal(message.model, model);
+    assert.equal(message.choices[0].message.role, 'assistant');
+    assert.equal(message.choices[0].finish_reason, 'stop');
+    const claimImage = async markdown => {
+      const match = markdown.match(/!\[image\]\((https?:\/\/[^)]+)\)/);
+      assert.ok(match, '生成结果必须包含可领取的 Markdown 图片链接');
+      const imageUrl = new URL(match[1]);
+      assert.equal(imageUrl.origin, baseUrl);
+      const image = await fetchLocal(imageUrl.pathname + imageUrl.search);
+      assert.equal(image.status, 200); assert.match(image.headers.get('content-type'), /image\/png/);
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+    };
+    await claimImage(message.choices[0].message.content);
+
+    const streamed = await post('/v1/chat/completions', { ...request, stream: true });
+    assert.equal(streamed.status, 200);
+    assert.match(streamed.headers.get('content-type'), /text\/event-stream/);
+    const events = (await streamed.text()).split('\n\n').filter(event => event.startsWith('data: ')).map(event => event.slice(6));
+    assert.equal(events.at(-1), '[DONE]');
+    const chunks = events.slice(0, -1).map(event => JSON.parse(event));
+    assert.ok(chunks.length >= 3);
+    assert.ok(chunks.every(chunk => chunk.object === 'chat.completion.chunk' && chunk.model === model));
+    assert.ok(chunks.every(chunk => chunk.id === chunks[0].id));
+    assert.deepEqual(chunks.at(-1).choices, [{ index: 0, delta: {}, finish_reason: 'stop' }]);
+    assert.ok(chunks.slice(0, -1).every(chunk => chunk.choices[0].finish_reason === null));
+    await claimImage(chunks.map(chunk => chunk.choices[0].delta.content || '').join(''));
+    assert.equal(calls.length - startCount, 2);
+    for (const call of calls.slice(startCount)) {
+      assert.equal(call.payload.model, 'nai-diffusion-4-5-full');
+      assert.equal(call.payload.parameters.steps, 28);
+      assert.equal(call.payload.parameters.n_samples, 1);
+      assert.equal(call.payload.parameters.width, 1024); assert.equal(call.payload.parameters.height, 1024);
+    }
+    const after = await quota();
+    for (const field of ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable']) assert.equal(after[field], before[field]);
+  });
+
   await t.test('单图失败退款，多图部分成功只结算完成张并保留错误帧', async () => {
     let before = await quota(); failAt = calls.length + 1;
     const failed = await post('/ai/generate-image-stream', body());
