@@ -144,6 +144,10 @@ F03 在相同管理入口新增运营份额划入、明确来源注资登记、�
 
 F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产物，任务仍保留 `failed`、原失败时间和退款，既有 `imageId` / `imageUrl` 可领取结果，不再补扣；重复完成不会保存两份结果。成员 `me.jobs` 同时新增 `lateResultAvailable` 和 `imageId`。五分钟后台核对从首次未知时间固定计时，重启不重置，上游离线也会自动估计结案；它与派发冷却分开，不改变已返回的 Native/OpenAI 响应。
 
+管理入口的 `GET ?view=losses&before=<可选游标>` 提供按资源分开的候选风险、聚合新增差额、运营余额、软告警及每页 50 条审计记录；查询覆盖 SQLite 冷历史，不把不同证据相加为实耗。`POST action=loss-alert-policy` 带 `expectedVersion` 和四项阈值，返回 `{policy}`；版本冲突为 409，配置与操作者审计同事务提交。阈值与原生成准入无关，完整字段见[失败退款与资源核对](failure-accounting.md)。
+
+成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
+
 ## N03 后的 C03 差异与待核实清单
 
 | 编号 | 当前差异/不确定项 | 后续验收要求 |

@@ -3,6 +3,7 @@ const ownerMode=location.pathname.startsWith('/owner');
 let usage=null;
 let state=null,upstream=null,publicBase='',draft=[],draftConfigVersion=null,dirty=false,preview=null,confirmTask=null,busy=false;
 let allocationMode='direct',directShares={},redistributeByMode={direct:true,advanced:false};
+let losses=null,lossEvents=[],lossNextCursor=null,lossPaged=false,lossRead=0,lossPolicyVersion=null,lossPolicyDirty=false,lossPolicyEdit=0;
 const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:3});
 const percent=v=>number(Number(v||0)*100)+'%';
 const statusNames={active:'可用',pending_opus:'等待接入',inactive_opus:'已暂停',stale:'等待同步',quota_sync_error:'同步失败',cooldown:'冷却中',unknown_balance:'余额未知'};
@@ -152,6 +153,8 @@ async function refresh({reset=true}={}){
  updateOverview();
  renderMembers();
  if(reset&&!dirty)renderDraft();
+ // 损耗查询独立返回，不阻塞主要摘要和默认用量页。
+ loadLosses().catch(showLossReadError);
  if(ownerMode&&!$('usagePanel').hidden)await loadUsage();
  try{
   await loadUpstream();
@@ -214,7 +217,7 @@ async function previewGroups(){
  modal('previewDialog');
 }
 $('connect').onsubmit=run(async()=>{await refresh();if($('remember').checked)sessionStorage.setItem('nai.adminSession',$('adminToken').value);else sessionStorage.removeItem('nai.adminSession');});
-$('disconnect').onclick=()=>{if(ownerMode){location.href='/';return;}sessionStorage.removeItem('nai.adminSession');localStorage.removeItem('nai.adminToken');$('adminToken').value='';$('deliveryText').value='';$('password').value='';$('upstreamPst').value='';document.querySelectorAll('dialog[open]').forEach(d=>d.close());state=null;upstream=null;preview=null;draft=[];dirty=false;$('dashboard').hidden=true;$('topActions').hidden=true;$('connect').hidden=false;notice('已断开管理会话。');};
+$('disconnect').onclick=()=>{if(ownerMode){location.href='/';return;}sessionStorage.removeItem('nai.adminSession');localStorage.removeItem('nai.adminToken');$('adminToken').value='';$('deliveryText').value='';$('password').value='';$('upstreamPst').value='';document.querySelectorAll('dialog[open]').forEach(d=>d.close());state=null;upstream=null;preview=null;draft=[];dirty=false;lossRead++;losses=null;lossEvents=[];lossNextCursor=null;lossPaged=false;lossPolicyDirty=false;lossPolicyVersion=null;$('dashboard').hidden=true;$('topActions').hidden=true;$('connect').hidden=false;notice('已断开管理会话。');};
 $('refresh').onclick=run(async()=>{requireClean();await refresh();notice('状态已刷新。');});
 $('search').oninput=renderMembers;$('filterGroup').onchange=renderMembers;
 for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);
@@ -230,7 +233,7 @@ $('saveFallback').onclick=run(async()=>{await manage({action:'fallback-policy',e
 $('refreshUpstream').onclick=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');const result=await api('/api/admin/accounts/quota',{ids:[upstream.id]});await refresh();notice(result.failed?'官方查询失败，请检查凭据。':'已向官方刷新额度。',Boolean(result.failed));});
 $('toggleUpstream').onclick=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');const enabled=!upstream.enabled;if(enabled&&!ownerMode){const r=await api('/api/admin/accounts/quota',{ids:[upstream.id]});if(r.failed)throw new Error('官方查询失败，保持暂停。');}await api('/api/admin/accounts/'+encodeURIComponent(upstream.id),{enabled},'PATCH');await refresh();notice(enabled?'上游已恢复。':'上游已暂停。');});
 $('upstreamCredentials').onsubmit=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');if(upstream.inFlight)throw new Error('请等待在途生成完成。');const token=$('upstreamPst').value.trim();if(!/^pst-[A-Za-z0-9_-]+$/.test(token))throw new Error('请输入完整 PST');await api('/api/admin/accounts/'+encodeURIComponent(upstream.id),{token},'PATCH');$('upstreamPst').value='';await api('/api/admin/accounts/quota',{ids:[upstream.id]});await refresh();notice('PST 已更新，上游保持暂停；确认额度后手动恢复。');});
-window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(dirty||lossPolicyDirty){e.preventDefault();e.returnValue='';}});
 if(ownerMode){$('usageTab').hidden=false;$('disconnect').textContent='返回我的额度';$('connectedHint').textContent='正在验证 owner 身份…';refresh().then(()=>tab('usagePanel')).catch(e=>{notice(e.message,true);$('ownerSignin').hidden=false;});}
 else{$('connect').hidden=false;$('adminToken').value=sessionStorage.getItem('nai.adminSession')||localStorage.getItem('nai.adminToken')||'';if($('adminToken').value)refresh().catch(()=>notice('请重新连接管理端。',true));}
 
@@ -254,3 +257,112 @@ $('previewDelete').onclick=run(async()=>{requireClean();const body={action:'prev
 $('deleteConfirmName').oninput=()=>{$('confirmDelete').disabled=!deletePreview||$('deleteConfirmName').value!==$('deleteName').textContent;};
 $('confirmDelete').onclick=run(async()=>{requireClean();if(!deletePreview||$('deleteConfirmName').value!==$('deleteName').textContent)throw new Error('请输入被删除成员的完整用户名确认。');await manage(deletePreview);deletePreview=null;$('deleteDialog').close();try{await refresh();}catch{notice('成员已删除且余额已转交，但页面刷新失败，请手动刷新。',true);return;}notice('成员已删除，全部剩余余额已转交，历史记录已保留。');});
 $('deleteDialog').addEventListener('close',resetDeletePreview);
+
+const lossPolicyFields={v5Points24h:'lossPolicyV5',fixedAnlas24h:'lossPolicyFixed24',fixedAnlas30d:'lossPolicyFixed30',memberAttempts24h:'lossPolicyAttempts'};
+const lossTypes={generation_reserved:'本地预扣',generation_refunded:'本地退款',generation_loss_suspected:'疑似上游损耗',generation_loss_estimated:'估计结案（实耗未知）',generation_result_recovered:'迟到结果找回',resource_gap_observed:'聚合差额观察',v5_capacity_observed:'V5 容量差额观察',v5_capacity_recovered:'V5 容量恢复',resource_return_unattributed:'待归属入账',operating_funding_registered:'登记外部注资',operating_funding_received:'运营资金入账',operating_loss_covered:'运营承担差额',resource_gap_reconciled:'确认快照回跳',loss_alert_policy_updated:'调整软告警阈值'};
+const evidenceNames={aggregate_gap:'官方余额聚合差额',aggregate_capacity:'共享容量差额',recovery_rate_estimate:'恢复速率估计',unclassified_balance_increase:'来源待核实的余额增加',operator_attested_aggregate_correction:'运营者确认的快照修正',local_refund:'本地退款凭据',unconfirmed:'上游消费未经确认',unconfirmed_estimate:'未确认消费的估计结案',complete_local_result:'完整本地产物'};
+const lossResourceName=key=>key==='v5'?'V5 百分点':resourceNames[key]||key;
+const resourceText=resources=>Object.entries(resources||{}).map(([key,value])=>lossResourceName(key)+' '+number(value)).join(' / ')||'无资源金额';
+const policyText=p=>'V5/24h '+number(p.v5Points24h)+'；订阅/24h '+number(p.fixedAnlas24h)+'；订阅/30d '+number(p.fixedAnlas30d)+'；单成员次数/24h '+number(p.memberAttempts24h);
+function adoptLossPolicy(policy){
+ lossPolicyVersion=policy.version;lossPolicyDirty=false;
+ for(const [key,id] of Object.entries(lossPolicyFields)){$(id).value=policy[key];$(id).disabled=false;}
+ $('saveLossPolicy').disabled=false;$('resetLossPolicy').disabled=false;
+ $('lossPolicyHint').textContent='当前阈值版本 '+policy.version+' · 尚无修改';
+}
+function lossEvidence(event){
+ const parts=[];
+ if(event.upstreamCandidates?.length)parts.push('上游候选（互斥，不相加）：'+event.upstreamCandidates.map(c=>resourceText(c.resources)).join(' 或 '));
+ if(event.resources)parts.push('本地账务：'+resourceText(event.resources));
+ if(event.resource&&event.amount!==undefined)parts.push((['resource_gap_observed','resource_gap_reconciled','v5_capacity_observed'].includes(event.type)?'该次记录的聚合差额：':'记录数量：')+lossResourceName(event.resource)+' '+number(event.amount));
+ if(event.observedAmount!==undefined)parts.push('本次新增差额 '+number(event.observedAmount));
+ if(event.delta!==undefined)parts.push('本次变化 '+number(event.delta));
+ if(event.estimateAmountStatus)parts.push('金额证据：'+({quoted_candidates:'提交前报价候选，实耗未确认',unknown:'未知，不能视为零消费'}[event.estimateAmountStatus]||'待确认'));
+ if(event.evidenceLevel)parts.push('证据：'+(evidenceNames[event.evidenceLevel]||'证据类型待确认'));
+ if(event.refundRetained)parts.push('退款保留');
+ if(event.before&&event.after)parts.push('版本 '+event.before.version+' → '+event.after.version+'；原阈值 '+policyText(event.before)+'；新阈值 '+policyText(event.after));
+ if(event.receipt)parts.push('收据 '+event.receipt);
+ if(event.lossEventId)parts.push('关联差额 '+event.lossEventId);
+ return parts.join('；')||'未提供金额，不推算实耗';
+}
+function renderLosses(){
+ const {risk,operating,policy,alerts}=losses;
+ $('lossAlerts').replaceChildren(...alerts.map(a=>node('p',a.message)));$('lossAlerts').hidden=!alerts.length;
+ $('lossReadStatus').textContent='损耗数据更新 '+displayTime(losses.asOf);
+ $('lossRiskCounts').textContent='近 24 小时异常尝试 '+number(risk.last24h.attempts)+' 次，其中金额未知 '+number(risk.last24h.unknownAmounts)+' 次；近 30 天 '+number(risk.last30d.attempts)+' 次，其中金额未知 '+number(risk.last30d.unknownAmounts)+' 次。';
+ $('lossRiskRows').replaceChildren();$('lossBalanceRows').replaceChildren();
+ for(const resource of ['v5','anlasFixed','anlasPurchased']){
+  const riskRow=node('tr');for(const text of [lossResourceName(resource),number(risk.last24h.possible[resource]),number(risk.last30d.possible[resource])])riskRow.append(node('td',text));$('lossRiskRows').append(riskRow);
+  const balanceRow=node('tr');for(const text of [lossResourceName(resource),number(risk.aggregate.last24h[resource]),number(risk.aggregate.last30d[resource]),number(resource==='v5'?operating.v5CapacityGap:operating.unfunded[resource]),number(operating.available[resource]),resource==='v5'?'不适用':number(operating.unattributedReturns[resource])])balanceRow.append(node('td',text));$('lossBalanceRows').append(balanceRow);
+ }
+ if(!lossPolicyDirty)adoptLossPolicy(policy);
+ else $('lossPolicyHint').textContent='未保存草稿 · 编辑版本 '+lossPolicyVersion+'；服务器版本 '+policy.version+'。读取不会覆盖草稿；版本冲突时请保留修改内容，再主动读取最新阈值。';
+ $('lossEvents').replaceChildren();
+ for(const event of lossEvents){
+  const row=node('tr'),kind=node('td',lossTypes[event.type]||event.type),detail=node('td',lossEvidence(event));detail.style.whiteSpace='normal';detail.style.minWidth='280px';
+  kind.append(node('span',event.id,'cell-sub'));if(event.jobId)kind.append(node('span','任务 '+event.jobId,'cell-sub'));
+  row.append(node('td',displayTime(event.at)),kind,node('td',event.memberName||event.memberId||event.actorId||'共享上游'),detail);$('lossEvents').append(row);
+ }
+ if(!lossEvents.length){const row=node('tr'),cell=node('td','暂无证据记录','empty');cell.colSpan=4;row.append(cell);$('lossEvents').append(row);}
+ $('moreLossEvents').hidden=!lossNextCursor;
+ $('pendingFunding').replaceChildren(...operating.pendingExternalFunding.map(p=>node('li',p.receipt+' · '+lossResourceName(p.resource)+' 待确认 '+number(p.remaining)+' · 归属'+(p.destination==='members'?'成员':'运营'))));
+ if(!operating.pendingExternalFunding.length)$('pendingFunding').append(node('li','暂无待确认注资'));
+ $('saveOperating').disabled=false;
+}
+async function loadLosses({append=false}={}){
+ if(append&&!lossNextCursor)return;
+ const request=++lossRead,cursor=append?lossNextCursor:null;
+ let result;try{result=await api('/api/admin/member-management?view=losses'+(cursor?'&before='+encodeURIComponent(cursor):''));}catch(error){if(request!==lossRead||!state)return;throw error;}
+ if(request!==lossRead||!state)return;
+ // 翻页后保持同一段连续历史；合并新第一页可能跳过两次读取之间的记录。
+ const events=append?[...lossEvents,...result.events]:lossPaged?lossEvents:result.events;
+ lossEvents=[...new Map(events.map(e=>[e.id,e])).values()];
+ if(append||!lossPaged)lossNextCursor=result.nextCursor;
+ if(append)lossPaged=true;
+ losses=result;renderLosses();
+}
+function showLossReadError(error){if(!state)return;$('lossReadStatus').textContent='损耗读取失败，显示内容可能已过期：'+error.message;$('lossAlerts').replaceChildren(node('p','损耗告警暂不可读取，请刷新状态：'+error.message));$('lossAlerts').hidden=false;}
+for(const id of Object.values(lossPolicyFields))$(id).oninput=()=>{lossPolicyDirty=true;lossPolicyEdit++;$('lossPolicyHint').textContent='未保存草稿 · 编辑版本 '+lossPolicyVersion+'；保存会记录操作者和前后阈值。';};
+$('lossPolicyForm').onsubmit=run(async()=>{
+ if(lossPolicyVersion===null)throw new Error('请先读取告警阈值。');
+ const policy=Object.fromEntries(Object.entries(lossPolicyFields).map(([key,id])=>[key,$(id).value===''?NaN:Number($(id).value)]));
+ if(Object.entries(policy).some(([key,value])=>!Number.isFinite(value)||value<0||(key!=='v5Points24h'&&!Number.isSafeInteger(value))))throw new Error('阈值须为非负数字；Anlas 和次数须为整数。');
+ const edit=lossPolicyEdit;lossRead++;
+ const result=await manage({action:'loss-alert-policy',expectedVersion:lossPolicyVersion,policy});
+ lossPolicyVersion=result.policy.version;
+ if(edit===lossPolicyEdit)adoptLossPolicy(result.policy);
+ try{await loadLosses();}catch(e){showLossReadError(e);notice('阈值已保存，但审计记录读取失败，请刷新状态。',true);return;}
+ notice('软告警阈值已保存并记录审计；调用权限不变。'+(lossPolicyDirty?' 后续编辑仍未保存。':''));
+});
+$('resetLossPolicy').onclick=run(async()=>{await loadLosses();adoptLossPolicy(losses.policy);notice('已放弃阈值草稿并读取最新版本。');});
+$('moreLossEvents').onclick=run(()=>loadLosses({append:true}));
+$('reloadLossEvents').onclick=run(async()=>{lossPaged=false;await loadLosses();});
+const operatingHints={
+ 'operating-contribute':'仅从配置的运营者本人可用份额划入运营余额，不改变其他成员的钱包。',
+ 'operating-register-funding':'登记已实际新增的外部注资凭据，本页面不会向 NAI 付款。默认等待官方余额增加后入账；若勾选待归属入账，表示你已确认其来自这笔注资，立即按所选归属入账。',
+ 'operating-cover-loss':'用已有运营余额承担指定的当前聚合差额，不再次扣成员余额，也不累计任务的疑似或估计金额。',
+ 'operating-reconcile-return':'确认待归属入账是官方快照回跳，修正尚未承担的关联差额。这是有凭据的人工确认，不算新增注资，也不回冲已承担的损耗。'
+};
+function updateOperatingForm(){
+ const action=$('operatingAction').value,register=action==='operating-register-funding',linked=['operating-cover-loss','operating-reconcile-return'].includes(action);
+ const anlasOnly=register||action==='operating-reconcile-return';
+ if(anlasOnly&&$('operatingResource').value==='v5')$('operatingResource').value='anlasFixed';
+ for(const option of $('operatingResource').children)if(option.value==='v5')option.disabled=anlasOnly;
+ $('operatingHint').textContent=operatingHints[action];$('operatingRegisterFields').hidden=!register;$('operatingLossFields').hidden=!linked;$('operatingLossId').required=linked;
+ $('operatingAmount').step=$('operatingResource').value==='v5'?'any':'1';
+ $('operatingLossId').value=linked?(losses?.operating.gapEventIds[$('operatingResource').value]||''):'';
+}
+for(const id of ['operatingAction','operatingResource'])$(id).onchange=updateOperatingForm;
+$('useCurrentGap').onclick=()=>{$('operatingLossId').value=losses?.operating.gapEventIds[$('operatingResource').value]||'';};
+$('operatingForm').onsubmit=run(async()=>{
+ const action=$('operatingAction').value,resource=$('operatingResource').value,amount=Number($('operatingAmount').value),receipt=$('operatingReceipt').value.trim();
+ if(!Number.isFinite(amount)||amount<=0||(resource!=='v5'&&!Number.isSafeInteger(amount)))throw new Error('数量须大于 0；Anlas 须为整数。');
+ if(!/^[A-Za-z0-9_-]{8,100}$/.test(receipt))throw new Error('请填写 8–100 位唯一收据标识，只含字母、数字、下划线或连字符。');
+ const body={action,resource,amount,receipt};
+ if(['operating-cover-loss','operating-reconcile-return'].includes(action)){body.lossEventId=$('operatingLossId').value.trim();if(!body.lossEventId)throw new Error('请提供当前聚合差额记录 ID。');}
+ if(action==='operating-register-funding'){body.destination=$('operatingDestination').value;body.fromUnattributed=$('operatingFromUnattributed').checked;}
+ await manage(body);$('operatingAmount').value='';$('operatingReceipt').value='';
+ try{await loadLosses();}catch(e){showLossReadError(e);notice('账务操作已保存，但记录读取失败，请刷新状态，勿重复提交。',true);return;}
+ notice('账务操作已保存并记录收据。下一笔操作请使用新的收据标识。');
+});
+updateOperatingForm();

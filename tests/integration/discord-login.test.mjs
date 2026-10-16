@@ -14,7 +14,7 @@ async function fixture(t) {
   configureFairQuota(db,['a','b','c','d']);
   for(const user of db.users) await setMemberCredentials(db,user.id,{username:'member-'+user.id,password:'synthetic-password-for-'+user.id});
   let queue=Promise.resolve();
-  const store={update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}};
+  const store={update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
   const upstream={id:'222222222222222222',member:true,pending:false,fail:false,calls:[],refreshes:0,scope:'identify guilds.members.read'};
   const deps={store,env,createId:()=> 'new-member',createPublicToken:()=> 'STA1N-new-member',assertAdmin(req){if(req.headers['x-admin-token']!=='synthetic-admin')throw Object.assign(new Error('Admin required'),{statusCode:403});},async discordFetch(url,options){
     upstream.calls.push({url,options});

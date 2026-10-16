@@ -8,6 +8,19 @@ async function api(path, body) {
   return data;
 }
 const number = n => Number(n || 0).toLocaleString('zh-CN', {maximumFractionDigits:3});
+function textNode(tag, text) { const element=document.createElement(tag); element.textContent=text; return element; }
+function resultLink(url, label) {
+  // 只使用后端签发的领取地址，不在前端拼接成员 Key。
+  let target; try { target=new URL(url, location.origin); } catch { return null; }
+  if (!['http:', 'https:'].includes(target.protocol)) return null;
+  const link=textNode('a', label); link.href=target.href; link.referrerPolicy='no-referrer'; link.rel='noopener noreferrer'; link.target='_blank'; return link;
+}
+function chargeText(charge) {
+  if (!charge) return '—';
+  const settlement={refunded:'已退款（本站额度）',settled:'已结算',reserved:'预留'},resource={v5:'V5 百分点',anlas:'Anlas',free:'免费'};
+  const pools=charge.resource==='anlas' ? ` · 订阅 ${charge.fixed==null?'未知':number(charge.fixed)} / 购买 ${charge.purchased==null?'未知':number(charge.purchased)}` : '';
+  return `${settlement[charge.status]||charge.status} · ${number(charge.amount)} ${resource[charge.resource]||charge.resource}${pools}${charge.billingMode==='anlas_fallback'?'（V5 不足转扣）':''}${charge.estimated?'（估算）':''}`;
+}
 async function load() {
   const data = await api('me'), q=data.quota; startSharedStatus();
   $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
@@ -21,9 +34,21 @@ async function load() {
   $('fixed').textContent=number(q?.anlasFixedAvailable); $('purchased').textContent=number(q?.anlasPurchasedAvailable);
   $('fixedHeld').textContent=`预留 ${number(q?.anlasFixedReserved)}`; $('purchasedHeld').textContent=`预留 ${number(q?.anlasPurchasedReserved)}`;
   $('jobs').replaceChildren();
-  const status={done:'成功',failed:'失败',queued:'排队',running:'生成中'}, resource={v5:'V5 百分点',anlas:'Anlas',free:'免费'}, settlement={refunded:'已退款',settled:'已结算',reserved:'预留'};
-  for (const j of data.jobs) { const row=document.createElement('tr'); for (const value of [new Date(j.createdAt).toLocaleString(),j.model,status[j.status]||j.status,j.charge ? `${settlement[j.charge.status]||j.charge.status} · ${number(j.charge.amount)} ${j.charge.billingMode==='anlas_fallback'?'Anlas（V5 不足转扣）':resource[j.charge.resource]||j.charge.resource}${j.charge.estimated?'（估算）':''}` : '—']) { const cell=document.createElement('td');cell.textContent=value;row.append(cell); } $('jobs').append(row); }
+  const status={done:'成功',failed:'失败',queued:'排队',running:'生成中'};
+  for (const j of data.jobs) {
+    const row=document.createElement('tr'),result=textNode('td',status[j.status]||j.status);
+    if (j.imageUrl) { const link=resultLink(j.imageUrl,j.lateResultAvailable?'领取迟到结果（退款保留）':'领取结果'); if(link)result.append(textNode('br',''),link); }
+    row.append(textNode('td',new Date(j.createdAt).toLocaleString()),textNode('td',j.model),result,textNode('td',chargeText(j.charge))); $('jobs').append(row);
+  }
   if (!data.jobs.length) { const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.textContent='暂无调用记录';row.append(cell);$('jobs').append(row); }
+  $('lateResults').replaceChildren();
+  for (const j of data.lateResults || []) {
+    if (!j.imageUrl) continue;
+    const link=resultLink(j.imageUrl,'领取结果'); if(!link)continue;
+    const item=textNode('li',`${j.model} · 提交 ${new Date(j.createdAt).toLocaleString()} · 找回 ${new Date(j.lateResultAt).toLocaleString()} · ${chargeText(j.charge)} · `);
+    item.append(link); $('lateResults').append(item);
+  }
+  $('lateResultsPanel').hidden=!$('lateResults').children.length;
 }
 function run(fn) { return async event => { event?.preventDefault(); $('message').textContent='';try { await fn(); } catch(e) { $('message').textContent=e.message; } }; }
 $('loginForm').onsubmit=run(async()=>{ await api('login',{username:$('username').value,password:$('password').value});$('password').value='';await load(); });

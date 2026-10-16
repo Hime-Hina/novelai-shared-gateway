@@ -279,7 +279,7 @@ async function route(req, res) {
     // 所有管理员别名都只从本机隧道进入，不能绕过代理的路径规则。
     if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
-  if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken,
+  if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
     changeMemberAdmission,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   if (await publicSelfUseGuard(req, res, url, method)) return;

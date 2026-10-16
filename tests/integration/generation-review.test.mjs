@@ -106,7 +106,8 @@ test('升级沿用原首次未知，JSON 部分索引查冷历史，关闭写失
   delete seed.jobs[0].generationReview;
   const store = await open(t, seed), directory = store.dataDir; await store.close();
   const old = new Database(path.join(directory, 'library.sqlite'));
-  old.exec("DROP INDEX idx_jobs_generation_review_due; DELETE FROM __drizzle_migrations WHERE created_at = (SELECT MAX(created_at) FROM __drizzle_migrations); UPDATE jobs SET order_value = -37.5 WHERE id = 'review';"); old.close();
+  // 退回 review 迁移之前的结构，后续迁移的索引和 journal 也一并移除。
+  old.exec("DROP INDEX idx_jobs_generation_review_due; DROP INDEX idx_jobs_member_late_results; DROP INDEX idx_ledger_source_at; DROP INDEX idx_ledger_failure_history; DELETE FROM __drizzle_migrations WHERE created_at > (SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 1 OFFSET 1); UPDATE jobs SET order_value = -37.5 WHERE id = 'review';"); old.close();
   const reopened = new JsonStore(directory); t.after(() => reopened.close()); await reopened.init();
   reopened.trimRuntimeCollection('jobs', 0); reopened.trimRuntimeCollection('ledger', 0);
   const rows = await reopened.readDueGenerationReviews(Date.now());

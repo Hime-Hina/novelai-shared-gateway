@@ -4,6 +4,7 @@ import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember,
 import { sharedAccountStatus } from './shared-status.js';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
 import { clientIp } from './client-ip.js';
+import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
@@ -60,11 +61,13 @@ export async function handleMemberRoutes(req, res, url, deps) {
   }
   sameOrigin(req);
   const { store } = deps;
+  let actorId = 'local-admin';
   if (ownerRoute) {
     const viewer = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
     if (!viewer) error(401, '请先使用 Discord 登录');
     if (!isOwner(viewer, env)) error(403, '仅 owner 可访问管理功能');
     await requireDiscordMembership(viewer, deps);
+    actorId = viewer.id;
     if (!admin) {
       const result = await deps.ownerOperation(url, req.method, req.method === 'GET' ? undefined : await json(req));
       reply(res, 200, result); return true;
@@ -86,6 +89,9 @@ export async function handleMemberRoutes(req, res, url, deps) {
       deps.assertAdmin(req, url);
     }
     if (req.method === 'GET') {
+      if (url.searchParams.get('view') === 'losses') {
+        reply(res, 200, await store.readFailureAccounting(url.searchParams.get('before'))); return true;
+      }
       const payload = await store.update(db => {
         syncFairQuota(db);
         return { groups: db.settings.fairQuota?.groups || [], status: db.settings.fairQuota?.status,
@@ -101,6 +107,10 @@ export async function handleMemberRoutes(req, res, url, deps) {
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
+    if (body.action === 'loss-alert-policy') {
+      const policy = await store.update(db => updateLossAlertPolicy(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
+      reply(res, 200, { policy }); return true;
+    }
     if (ownerRoute && body.userId === env.OWNER_USER_ID && (['delete-member','preview-delete-member'].includes(body.action) || body.action === 'member-status' && body.enabled === false)) error(409, '不能停用或删除当前 owner');
     if (['operating-contribute', 'operating-register-funding', 'operating-cover-loss', 'operating-reconcile-return'].includes(body.action)) {
       // 身份来自已鉴权的 owner 配置，不接受客户端指定其他成员作为注资来源。
@@ -271,9 +281,15 @@ export async function handleMemberRoutes(req, res, url, deps) {
     const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
       jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
         lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
-        model: j.request?.model || '', status: j.status, charge: j.fairCharge ? { resource: j.fairCharge.resource, amount: j.fairCharge.amount, status: j.fairCharge.status, estimated: j.fairCharge.estimated,
-          billingMode: j.fairCharge.billingMode || null, v5Equivalent: j.fairCharge.v5Equivalent ?? null, upstreamBilling: j.fairCharge.upstreamBilling || null } : null }))
+        model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))
     }), { collections: ['settings', 'ledger'] });
+    const [ownedImages, lateResults] = await Promise.all([store.readMemberImageIds(user, payload.jobs.map(job => job.id)), store.readMemberLateResults(user)]);
+    for (const job of payload.jobs) {
+      job.imageId = ownedImages.get(job.id) || '';
+      job.imageUrl = job.imageId ? deps.publicImageUrl(job.imageId) : '';
+    }
+    payload.lateResults = lateResults.map(job => ({ id: job.id, model: job.model || '', createdAt: job.createdAt,
+      lateResultAt: job.lateResultAt, imageUrl: deps.publicImageUrl(job.imageId), charge: memberCharge(job.charge) }));
     reply(res, 200, payload); return true;
   }
   error(404, 'not found.');

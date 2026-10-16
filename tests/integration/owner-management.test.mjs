@@ -17,7 +17,7 @@ async function fixture(t) {
   const db={settings:{},accounts:[account],jobs:[],users:['owner-a','other-b','other-c','other-d'].map((id,index)=>({id,token:'STA1N-synthetic-'+id,enabled:true,balance:0,memberAuth:{username:'owner',version:id},discord:{id:String(222222222222222220n+BigInt(index)),guildId:env.DISCORD_GUILD_ID,checkedAt:Date.now(),member:true,accessToken:'synthetic-discord-secret'}}))};
   configureFairQuota(db,db.users.map(u=>u.id));syncFairQuota(db);
   let chain=Promise.resolve(), refreshCount=0, updateCount=0, statsCount=0;
-  const store={update(fn){chain=chain.catch(()=>{}).then(()=>fn(db));return chain;},async readOwnerJobRows(){statsCount++;return [];}};
+  const store={update(fn){chain=chain.catch(()=>{}).then(()=>fn(db));return chain;},async readOwnerJobRows(){statsCount++;return [];},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
   const deps={env,store,assertAdmin(){throw Object.assign(new Error('Private administrator required'),{statusCode:401});}};
   deps.ownerOperation=(url,method,body)=>ownerOperation(url,method,body,{store,
     async refreshAccountQuotas(){refreshCount++;return {checked:1,ok:1,failed:0,accounts:[account]};},

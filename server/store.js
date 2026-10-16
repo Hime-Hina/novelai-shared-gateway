@@ -8,6 +8,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
+import { queryFailureAccounting } from './failure-accounting.js';
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
 export const MAX_FREE_STEPS = 28;
@@ -514,6 +515,33 @@ export class JsonStore {
       FROM jobs j LEFT JOIN users u ON u.token = j.user_token
       WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC
     `).all(since, until);
+  }
+
+  async readFailureAccounting(before, now = Date.now()) {
+    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
+    return this.sqlite.transaction(() => queryFailureAccounting(this.sqlite, before, now)).deferred();
+  }
+
+  async readMemberLateResults(user) {
+    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
+    return this.sqlite.prepare(`SELECT j.id, j.model, j.created_at AS createdAt, j.image_id AS imageId,
+      json_extract(j.data, '$.lateResultAt') AS lateResultAt, json_extract(j.data, '$.fairCharge') AS charge
+      FROM jobs j JOIN images i ON i.id = j.image_id
+      JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1
+      WHERE j.user_token = @token AND i.token = @token
+        AND json_extract(j.data, '$.lateResultAvailable') = 1 AND json_extract(j.data, '$.lateResultAt') > ''
+      ORDER BY json_extract(j.data, '$.lateResultAt') DESC, j.id DESC LIMIT 10`).all({ userId: user.id, token: user.token })
+      .map(row => ({ ...row, charge: safeJson(row.charge, null) }));
+  }
+
+  async readMemberImageIds(user, jobIds) {
+    const ids = uniqueStrings(jobIds).slice(0, 30);
+    if (!ids.length) return new Map();
+    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
+    const rows = this.sqlite.prepare(`SELECT j.id, j.image_id AS imageId FROM jobs j JOIN images i ON i.id = j.image_id
+      JOIN users u ON u.id = ? AND u.token = j.user_token AND u.enabled = 1
+      WHERE j.user_token = ? AND i.token = ? AND j.id IN (${ids.map(() => '?').join(',')})`).all(user.id, user.token, user.token, ...ids);
+    return new Map(rows.map(row => [row.id, row.imageId]));
   }
 
   async readAdminSummary(options = {}) {

@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, real, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { FAILURE_EVENT_PREDICATE } from './failure-accounting.js';
 
 // 每张历史记录表使用同一组影子列；data 仍是已有 JSON 文本，不能再次自动编码。
 const recordFields = () => ({
@@ -47,7 +48,9 @@ export const jobs = sqliteTable('jobs', {
   index('idx_jobs_failed_order').on(sql`${table.order_value} DESC`).where(sql`${table.status} = 'failed'`),
   index('idx_jobs_error_log_updated').on(sql`${table.updated_at} DESC`).where(sql`${table.error_loggable} = 1`),
   index('idx_jobs_generation_review_due').on(sql`json_extract(${table.data}, '$.generationReview.deadlineAt')`)
-    .where(sql`json_extract(${table.data}, '$.generationReview.status') = 'pending'`)
+    .where(sql`json_extract(${table.data}, '$.generationReview.status') = 'pending'`),
+  index('idx_jobs_member_late_results').on(table.user_token, sql`json_extract(${table.data}, '$.lateResultAt') DESC`, sql`${table.id} DESC`)
+    .where(sql`json_extract(${table.data}, '$.lateResultAvailable') = 1`)
 ]);
 export const images = sqliteTable('images', recordFields(), table => [
   ...recordIndexes('images', table),
@@ -56,5 +59,8 @@ export const images = sqliteTable('images', recordFields(), table => [
   index('idx_images_model_order').on(table.model, sql`${table.order_value} DESC`),
   index('idx_images_tier_model_order').on(table.resolution_tier, table.model, sql`${table.order_value} DESC`)
 ]);
-export const ledger = sqliteTable('ledger', recordFields(), table => recordIndexes('ledger', table));
+export const ledger = sqliteTable('ledger', recordFields(), table => [
+  ...recordIndexes('ledger', table), index('idx_ledger_source_at').on(table.source, table.at),
+  index('idx_ledger_failure_history').on(sql`${table.order_value} DESC`, sql`${table.id} DESC`).where(sql.raw(FAILURE_EVENT_PREDICATE))
+]);
 export const recordTables = { cards, users, accounts, jobs, images, ledger };

@@ -7,7 +7,7 @@ import {configureFairQuota} from '../../server/fair-quota.js';
 test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失败',async t=>{
  const db={settings:{},accounts:[],jobs:[],users:['a','b','c','d'].map(id=>({id,enabled:true,token:'STA1N-'+id,balance:0}))};
  configureFairQuota(db,['a','b','c','d']);await setMemberCredentials(db,'a',{username:'test-member-a',password:'Valid-password-member-a'});await setMemberCredentials(db,'b',{username:'test-member-b',password:'Valid-password-member-b'});
- let queue=Promise.resolve();const store={update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}};
+ let queue=Promise.resolve();const store={update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
  const deps={store,assertAdmin(req){if(req.headers['x-admin-token']!=='test-admin')throw Object.assign(new Error('admin required'),{statusCode:403});},createId:()=> 'new-user',createPublicToken:()=> 'STA1N-new'};
  const server=http.createServer(async(req,res)=>{try{const done=await handleMemberRoutes(req,res,new URL(req.url,'http://localhost'),deps);if(!done){res.writeHead(404);res.end();}}catch(e){res.writeHead(e.statusCode||500,{'content-type':'application/json'});res.end(JSON.stringify({error:e.message}));}});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});const base='http://127.0.0.1:'+server.address().port;
