@@ -237,6 +237,15 @@ export async function handleMemberRoutes(req, res, url, deps) {
   const user = await store.update(db => authenticateMemberSession(db, cookie(req)), { persist: false });
   if (!user) error(401, '请先登录');
   await requireDiscordMembership(user, deps);
+  const requestRoute = url.pathname.match(/^\/api\/member\/requests\/([^/]+)(\/cancel)?$/);
+  if (requestRoute && (req.method === 'GET' && !requestRoute[2] || req.method === 'POST' && requestRoute[2])) {
+    const requestId = decodeURIComponent(requestRoute[1]);
+    if (requestRoute[2]) await json(req);
+    const result = requestRoute[2]
+      ? await deps.cancelGenerationRequest(requestId, user.id)
+      : await deps.getGenerationRequest(requestId, user.id);
+    reply(res, 200, result); return true;
+  }
   if (req.method !== 'GET') error(403, '成员账户没有管理权限，请联系管理员');
   if (url.pathname === '/api/member/shared-status') {
     const state = await store.update(db => sharedAccountStatus(db), { persist: false });
@@ -279,7 +288,7 @@ export async function handleMemberRoutes(req, res, url, deps) {
   }
   if (url.pathname === '/api/member/me') {
     const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
-      jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, createdAt: j.createdAt,
+      jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,
         lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
         model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))
     }), { collections: ['settings', 'ledger'] });

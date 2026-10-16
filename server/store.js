@@ -469,6 +469,22 @@ export class JsonStore {
     return row ? JSON.parse(row.payload) : null;
   }
 
+  readGenerationRequestState(id, memberId) {
+    const request = this.sqlite.prepare(`SELECT id, source, operation, created_at AS createdAt
+      FROM generation_requests WHERE id = ? AND member_id = ?`).get(id, memberId);
+    if (!request) return null;
+    // 父归属使用稳定成员 ID；图片仍必须属于对应 child，不能靠可轮换的当前 Key 代认。
+    const jobs = this.sqlite.prepare(`SELECT j.id, j.status, j.model, j.created_at AS createdAt, j.updated_at AS updatedAt,
+      COALESCE(json_extract(j.data, '$.sampleIndex'), 0) AS sampleIndex,
+      json_extract(j.data, '$.completedAt') AS completedAt, json_extract(j.data, '$.error') AS error,
+      json_extract(j.data, '$.cancelledAt') AS cancelledAt,
+      json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
+      i.id AS imageId
+      FROM jobs j LEFT JOIN images i ON i.id = j.image_id AND i.token = j.user_token
+      WHERE j.request_id = ? ORDER BY sampleIndex, j.id`).all(id);
+    return { ...request, jobs };
+  }
+
   activeGenerationPayloadBytes(inFlight = []) {
     // 从有界活动索引出发，只取字节元数据；绝不读取所有历史 payload。
     const held = new Map(this.sqlite.prepare(`

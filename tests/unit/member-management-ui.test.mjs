@@ -69,7 +69,7 @@ async function managementPage(pathname) {
           json: async () => conflict ? { error: '分组版本已变化，请保留草稿并刷新后重新编辑' } : structuredClone(server.state)
         };
       }
-      return { ok: true, status: 200, json: async () => path.includes('/statistics') ? { totals: { running: 0, queued: 1 }, members: [], recent: [{ createdAt: 1, username: 'a', model: 'test', status: 'pending' }, { createdAt: 1, username: 'a', model: 'test', status: 'future_state' }] } : {} };
+      return { ok: true, status: 200, json: async () => path.includes('/statistics') ? { totals: { running: 0, queued: 1, pending: 2 }, members: [], recent: [{ createdAt: 1, username: 'a', model: 'test', status: 'pending' }, { createdAt: 1, username: 'a', model: 'test', status: 'future_state' }] } : {} };
     }
   });
   vm.runInContext(source + `
@@ -138,7 +138,7 @@ const text = element => String(element.textContent ?? '') + element.children.map
 test('owner 用量记录显示等待前序图片，未知状态仍原样显示', async () => {
   const { get } = await managementPage('/owner');
   assert.deepEqual(get('usageRecent').children.map(row => row.children[3].textContent), ['等待前序图片', 'future_state']);
-  assert.equal(get('usageActive').textContent, '生成中 0 · 排队 1');
+  assert.equal(get('usageActive').textContent, '生成中 0 · 排队 1 · 等待前序图片 2');
 });
 
 for (const pathname of ['/admin', '/owner']) {

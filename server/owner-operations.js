@@ -5,10 +5,10 @@ const seconds = (start, end) => {
   const value = (Date.parse(end) - Date.parse(start)) / 1000;
   return Number.isFinite(value) && value >= 0 ? value : null;
 };
-const empty = () => ({ total:0, done:0, failed:0, queued:0, running:0, refunded:0, free:0, v5:0, fixed:0, purchased:0, waitSeconds:0, waitCount:0, generationSeconds:0, generationCount:0 });
+const empty = () => ({ total:0, done:0, failed:0, queued:0, pending:0, running:0, refunded:0, free:0, v5:0, fixed:0, purchased:0, waitSeconds:0, waitCount:0, generationSeconds:0, generationCount:0 });
 function add(total, job) {
   total.total++;
-  if (['done','failed','queued','running'].includes(job.status)) total[job.status]++;
+  if (['done','failed','queued','pending','running'].includes(job.status)) total[job.status]++;
   if (job.chargeStatus === 'refunded') total.refunded++;
   if (job.status === 'done' && job.chargeStatus === 'settled') {
     if (job.resource === 'free') total.free++;

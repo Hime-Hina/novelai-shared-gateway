@@ -1,6 +1,8 @@
 import { startSharedStatus, stopSharedStatus } from '/shared-status.js';
 const $ = id => document.getElementById(id);
 const stateNames = { pending_opus:'等待管理员接入有效 Opus', inactive_opus:'订阅暂不可用', stale:'官方余额等待刷新', unknown_balance:'官方余额未知', ambiguous_opus:'等待管理员选择上游', active:'额度已同步' };
+const jobStatusNames={done:'成功',failed:'失败',pending:'等待前序图片',queued:'排队',running:'生成中'};
+let accountViewVersion=0;
 async function api(path, body) {
   const r = await fetch('/api/member/' + path, { method: body === undefined ? 'GET' : 'POST', credentials:'same-origin', headers:body === undefined ? {} : {'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body) });
   const data = await r.json();
@@ -21,8 +23,51 @@ function chargeText(charge) {
   const pools=charge.resource==='anlas' ? ` · 订阅 ${charge.fixed==null?'未知':number(charge.fixed)} / 购买 ${charge.purchased==null?'未知':number(charge.purchased)}` : '';
   return `${settlement[charge.status]||charge.status} · ${number(charge.amount)} ${resource[charge.resource]||charge.resource}${pools}${charge.billingMode==='anlas_fallback'?'（V5 不足转扣）':''}${charge.estimated?'（估算）':''}`;
 }
+function batchDetails(requestId) {
+  const details=document.createElement('details'),body=document.createElement('div'),hint=textNode('p',''),view=accountViewVersion;
+  details.style.maxWidth='min(1012px, calc(100vw - 68px))';
+  details.append(textNode('summary','查看批次 · '+requestId),hint,body);hint.setAttribute('role','status');
+  let readVersion=0,cancelling=false;
+  const current=version=>view===accountViewVersion&&version===readVersion;
+  const path='requests/'+encodeURIComponent(requestId);
+  function render(request) {
+    const c=request.counts,list=document.createElement('ul');
+    body.replaceChildren(textNode('p',`共 ${number(c.total)} 张 · 等待前序 ${number(c.pending)} · 排队 ${number(c.queued)} · 生成中 ${number(c.running)} · 成功 ${number(c.done)} · 失败或取消 ${number(c.failed)}`));
+    for(const job of request.jobs){
+      const status=job.status==='failed'&&job.cancelled?'已取消（尚未派发）':jobStatusNames[job.status]||job.status;
+      const item=textNode('li',`第 ${job.index+1} 张 · ${job.model} · ${status}`);
+      if(job.error&&job.status==='failed'&&!job.cancelled)item.append(textNode('p',job.error));
+      if(job.imageUrl){const link=resultLink(job.imageUrl,job.lateResultAvailable?'领取迟到结果（退款保留）':'领取结果');if(link)item.append(textNode('br',''),link);}
+      list.append(item);
+    }
+    const scope=textNode('p','仅取消此批次排队或等待前序的图片。生成中的图片继续完成，已完成结果仍可领取。');scope.className='notice';
+    const refresh=textNode('button','刷新批次'),cancel=textNode('button','取消此批次尚未派发的图片');
+    for(const button of [refresh,cancel]){button.type='button';button.className='secondary';}
+    cancel.disabled=!request.cancellable;refresh.onclick=run(read);
+    cancel.onclick=run(async()=>{
+      if(cancelling||!request.cancellable||view!==accountViewVersion)return;
+      cancelling=true;cancel.disabled=true;refresh.disabled=true;readVersion++;
+      try{
+        const result=await api(path+'/cancel',{});
+        if(view===accountViewVersion){render(result);hint.textContent='';}
+        let refreshFailed=false;try{await load();}catch{refreshFailed=true;}
+        $('message').textContent=`此次取消 ${number(result.cancelledCount)} 条尚未派发任务。生成中的图片继续完成，已完成结果仍可领取。${refreshFailed?'额度和最近调用刷新失败，请手动刷新；取消操作已保存。':''}`;
+      }finally{cancelling=false;cancel.disabled=!request.cancellable;refresh.disabled=false;}
+    });
+    body.append(list,scope,refresh,textNode('span',' '),cancel);
+  }
+  async function read(){
+    if(cancelling||view!==accountViewVersion)return;
+    const version=++readVersion;hint.textContent='正在读取批次…';
+    try{const request=await api(path);if(current(version)&&details.open){render(request);hint.textContent='';}}
+    catch(error){if(current(version)){hint.textContent='批次读取失败，可重新展开或刷新重试。';throw error;}}
+  }
+  details.ontoggle=run(async()=>{if(details.open)await read();else readVersion++;});
+  return details;
+}
 async function load() {
   const data = await api('me'), q=data.quota; startSharedStatus();
+  accountViewVersion++;
   $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
   $('status').textContent=(stateNames[q?.status] || '等待分配额度') + (q?.autoAnlasFallback ? ' · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）' : '');
@@ -34,11 +79,15 @@ async function load() {
   $('fixed').textContent=number(q?.anlasFixedAvailable); $('purchased').textContent=number(q?.anlasPurchasedAvailable);
   $('fixedHeld').textContent=`预留 ${number(q?.anlasFixedReserved)}`; $('purchasedHeld').textContent=`预留 ${number(q?.anlasPurchasedReserved)}`;
   $('jobs').replaceChildren();
-  const status={done:'成功',failed:'失败',pending:'等待前序图片',queued:'排队',running:'生成中'};
+  const seenRequests=new Set();
   for (const j of data.jobs) {
-    const row=document.createElement('tr'),result=textNode('td',status[j.status]||j.status);
+    const row=document.createElement('tr'),result=textNode('td',jobStatusNames[j.status]||j.status);
     if (j.imageUrl) { const link=resultLink(j.imageUrl,j.lateResultAvailable?'领取迟到结果（退款保留）':'领取结果'); if(link)result.append(textNode('br',''),link); }
     row.append(textNode('td',new Date(j.createdAt).toLocaleString()),textNode('td',j.model),result,textNode('td',chargeText(j.charge))); $('jobs').append(row);
+    if(j.requestId&&!seenRequests.has(j.requestId)){
+      seenRequests.add(j.requestId);const batchRow=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.style.whiteSpace='normal';cell.style.overflowWrap='anywhere';
+      cell.append(batchDetails(j.requestId));batchRow.append(cell);$('jobs').append(batchRow);
+    }
   }
   if (!data.jobs.length) { const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.textContent='暂无调用记录';row.append(cell);$('jobs').append(row); }
   $('lateResults').replaceChildren();

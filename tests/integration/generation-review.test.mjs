@@ -243,3 +243,33 @@ test('已退款的批次首图迟到找回只保存结果，不激活或复活�
   assert.equal(store.selectItemById('jobs', 'cancelled-child').queueSeq, undefined);
   assert.equal(store.queuedJobIds().length, 0);
 });
+
+test('父取消与实际完成/激活并发时，成功产物照常结算，剩余 child 无论顺序都取消', async t => {
+  for (const cancelFirst of [true, false]) {
+    const seed = fixture(Date.now(), { refund: false });
+    const store = await open(t, seed), payload = JSON.stringify(seed.jobs[0].request);
+    await store.update(db => {
+      db.jobs[0].requestId = 'cancel-parent';
+      db.jobs.push({ id: 'next-child', requestId: 'cancel-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'pending',
+        request: seed.jobs[0].request, createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() });
+    }, { immediate: true, generationRequest: { id: 'cancel-parent', member_id: 'a', source: 'novelai-native', operation: 'generate',
+      created_at: new Date().toISOString(), payload_bytes: Buffer.byteLength(payload), payload }, dirtyRows: { jobs: ['review', 'next-child'] } });
+    const { ctx } = await completionContext(store);
+    ctx.publicErrorMessage = value => value;
+    ctx.publicImageUrl = id => `/signed/${id}`;
+    for (const name of ['publicGenerationRequest', 'getGenerationRequest', 'cancelGenerationRequest', 'refundJob']) {
+      const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+      vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
+    }
+    const r = reservation(store.db);
+    const complete = () => ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+    const cancel = () => ctx.cancelGenerationRequest('cancel-parent', 'a');
+    await Promise.all(cancelFirst ? [cancel(), complete()] : [complete(), cancel()]);
+    assert.equal(store.selectItemById('jobs', 'review').status, 'done');
+    assert.equal(store.selectItemById('jobs', 'review').fairCharge.status, 'settled');
+    assert.equal(store.selectItemById('jobs', 'next-child').status, 'failed');
+    assert.equal(store.selectItemById('jobs', 'next-child').cancellationReason, 'request_cancelled');
+    assert.equal(store.db.ledger.filter(event => event.type === 'generation_refunded').length, 0);
+    assert.equal((await ctx.getGenerationRequest('cancel-parent', 'a')).status, 'partial');
+  }
+});

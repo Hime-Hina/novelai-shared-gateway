@@ -44,3 +44,13 @@ test('owner 仅开放指定页面与管理接口，不能访问导出、代理�
   for(const [path,method] of [['/api/member/owner/statistics','GET'],['/api/member/owner/member-management','POST'],['/api/member/owner/accounts/quota','POST'],['/api/member/owner/accounts/opus','PATCH']])assert.equal(sharedSurface(path,method).allowed,true);
   for(const path of ['/api/member/owner/export','/api/member/owner/import','/api/member/owner/accounts','/owner/unknown'])assert.equal(sharedSurface(path,'POST').allowed,false);
 });
+
+test('父请求只开放本人查询与显式取消方法，Cookie 和 Bearer 路径一致', () => {
+  for (const prefix of ['/api/requests', '/api/member/requests']) {
+    assert.equal(sharedSurface(`${prefix}/req1`, 'GET').allowed, true);
+    assert.equal(sharedSurface(`${prefix}/req1`, 'POST').allowed, false);
+    assert.equal(sharedSurface(`${prefix}/req1/cancel`, 'POST').allowed, true);
+    assert.equal(sharedSurface(`${prefix}/req1/cancel`, 'GET').allowed, false);
+    assert.equal(sharedSurface(`${prefix}/req1/cancel`, 'DELETE').allowed, false);
+  }
+});

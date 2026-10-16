@@ -279,7 +279,7 @@ async function route(req, res) {
     if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
-    changeMemberAdmission,
+    changeMemberAdmission, getGenerationRequest, cancelGenerationRequest,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
   if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
@@ -462,6 +462,18 @@ async function route(req, res) {
     return;
   }
 
+  const requestRoute = url.pathname.match(/^\/api\/requests\/([^/]+)(\/cancel)?$/);
+  if (requestRoute && (method === 'GET' && !requestRoute[2] || method === 'POST' && requestRoute[2])) {
+    const user = await store.readUserByToken(bearerToken(req));
+    if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
+    const requestId = decodeURIComponent(requestRoute[1]);
+    if (requestRoute[2]) await readJson(req, 32768);
+    const result = requestRoute[2]
+      ? await cancelGenerationRequest(requestId, user.id)
+      : await getGenerationRequest(requestId, user.id);
+    sendJson(res, 200, result); return;
+  }
+
   if (method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(url.pathname)) {
     const body = await readJson(req);
     if (body.edit) throw httpError(400, '图片编辑功能已移除，请刷新页面后重试。');
@@ -579,13 +591,13 @@ async function acceptDirectRequest(url, claim) {
         status: 'done', accountId: cached.accountId || '', imageId: cached.id, cost: 0,
         source: 'direct', generationPayloadClaim: claim
       });
-      return { id: job.id, cached: { file: cached.file, base64: cached.base64, mimeType: cached.mimeType },
+      return { id: job.id, requestId: job.requestId, cached: { file: cached.file, base64: cached.base64, mimeType: cached.mimeType },
         balance: getUserOrThrow(db, token).balance };
     }
   }
   const job = await createDirectJob(token, request, cacheKey, { source: 'direct', generationPayloadClaim: claim });
   scheduleQueueDrain();
-  return { id: job.id };
+  return { id: job.id, requestId: job.requestId };
 }
 
 async function handleDirectGenerate(url, res, claim) {
@@ -600,6 +612,7 @@ async function handleDirectGenerate(url, res, claim) {
     return;
   }
   const accepted = await acceptDirectRequest(url, claim);
+  if (accepted.requestId) res.setHeader('X-Nai-Request-Id', accepted.requestId);
   if (res.destroyed) return;
   if (accepted.cached) {
     await sendStoredImage(res, 200, accepted.cached, { 'x-cache': 'hit', 'x-balance': String(accepted.balance) });
@@ -793,6 +806,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const batch = await acceptNativeHttpRequest(req, diagnosticId);
+  res.setHeader('X-Nai-Request-Id', batch.id);
   const deadline = Date.now() + openAiChatTimeoutMs;
   const entries = [], results = [];
   for (let index = 0; index < batch.count; index++) {
@@ -826,6 +840,7 @@ async function handleNativeAuxiliary(req, res, operation) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const batch = await acceptNativeHttpRequest(req, diagnosticId, operation);
+  res.setHeader('X-Nai-Request-Id', batch.id);
   const result = await waitNativeResult(batch.jobIds[0], Date.now() + openAiChatTimeoutMs, res);
   if (!result) return;
   const buffer = await readStoredImage(result.saved);
@@ -844,11 +859,12 @@ async function acceptOpenAiRequest(req) {
   });
   scheduleQueueDrain();
   // 完整正文和解析参数只在受理作用域保留，同步/SSE 等待仅携带小元数据。
-  return { id: job.id, model: parsed.model, stream: body.stream === true };
+  return { id: job.id, requestId: job.requestId, model: parsed.model, stream: body.stream === true };
 }
 
 async function handleOpenAiChatCompletion(req, res) {
   const job = await acceptOpenAiRequest(req);
+  if (job.requestId) res.setHeader('X-Nai-Request-Id', job.requestId);
   if (res.destroyed) return;
   const deadline = Date.now() + openAiChatTimeoutMs;
   if (job.stream) {
@@ -2272,7 +2288,7 @@ async function createJob(token, body, options = {}) {
         && job.cacheKey === cacheKey
         && ['queued', 'running'].includes(job.status)
       ));
-      if (activeMatch) return options.generationPayloadClaim ? { id: activeMatch.id } : activeMatch;
+      if (activeMatch) return options.generationPayloadClaim ? { id: activeMatch.id, requestId: activeMatch.requestId || null } : activeMatch;
     }
     assertQueueAdmission(db, user, options.admissionVersion);
     const cost = generationCost(request);
@@ -2317,7 +2333,7 @@ async function createJob(token, body, options = {}) {
       amount: -cost,
       at: new Date().toISOString()
     });
-    return generationRequest ? { id: job.id } : job;
+    return generationRequest ? { id: job.id, requestId: generationRequest.id } : job;
   }, {
     dirtyRows: dirtyResultJobRows,
     generationRequest: () => generationRequest,
@@ -2388,7 +2404,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
         at: now
       });
     }
-    return generationRequest ? { id: job.id } : job;
+    return generationRequest ? { id: job.id, requestId: generationRequest.id } : job;
   }, {
     dirtyRows: dirtyResultJobRows,
     generationRequest: () => generationRequest,
@@ -2409,6 +2425,69 @@ async function markDirectJobRunning(jobId, reservation) {
     job.errorDetail = '';
     job.updatedAt = new Date().toISOString();
   }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
+}
+
+function publicGenerationRequest(request) {
+  const jobs = request.jobs.map(job => ({
+    id: job.id, index: job.sampleIndex, status: job.status, model: job.model || '',
+    createdAt: job.createdAt || '', updatedAt: job.updatedAt || '', completedAt: job.completedAt || '',
+    error: publicErrorMessage(job.error || ''), cancelled: Boolean(job.cancelledAt),
+    lateResultAvailable: Boolean(job.lateResultAvailable), imageUrl: job.imageId ? publicImageUrl(job.imageId) : ''
+  }));
+  const counts = { total: jobs.length, queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
+  for (const job of jobs) if (Object.hasOwn(counts, job.status)) counts[job.status]++;
+  const status = counts.running ? 'running' : counts.queued ? 'queued' : counts.pending ? 'pending'
+    : !counts.total ? 'empty' : counts.done === counts.total ? 'done' : counts.done ? 'partial'
+      : jobs.every(job => job.cancelled) ? 'cancelled' : 'failed';
+  return { id: request.id, source: request.source, operation: request.operation, createdAt: request.createdAt,
+    status, cancellable: counts.queued + counts.pending > 0, counts, jobs };
+}
+
+async function getGenerationRequest(requestId, memberId) {
+  const state = await store.update(db => {
+    const user = db.users.find(user => user.id === memberId && user.enabled !== false);
+    if (!user) throw httpError(401, 'invalid member.');
+    const request = store.readGenerationRequestState(requestId, memberId);
+    if (!request) throw httpError(404, 'request not found.');
+    return request;
+  }, { persist: false });
+  return publicGenerationRequest(state);
+}
+
+async function cancelGenerationRequest(requestId, memberId) {
+  const result = await store.update(db => {
+    const user = db.users.find(user => user.id === memberId && user.enabled !== false);
+    if (!user) throw httpError(401, 'invalid member.');
+    const request = store.readGenerationRequestState(requestId, memberId);
+    if (!request) throw httpError(404, 'request not found.');
+    const cancelledJobIds = [];
+    const message = '请求已取消，未派发任务已终止';
+    const now = new Date().toISOString();
+    for (const child of request.jobs) {
+      if (!['queued', 'pending'].includes(child.status)) continue;
+      const job = store.loadJobForUpdate(child.id);
+      refundJob(db, job, message);
+      job.status = 'failed';
+      job.error = job.errorDetail = message;
+      job.errorStatus = 409;
+      job.cancellationReason = 'request_cancelled';
+      job.cancelledAt = job.completedAt = job.updatedAt = now;
+      cancelledJobIds.push(job.id);
+    }
+    return { cancelledJobIds };
+  }, { immediate: true, includeSettings: true,
+    dirtyRows: (result, db) => ({
+      users: [memberId], jobs: result.cancelledJobIds,
+      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId)).map(entry => entry.id)
+    })
+  });
+  // 只在提交后通知；与派发串行，running 不取消，重复取消不再退款。
+  for (const jobId of result.cancelledJobIds) {
+    clearJobStreamProgress(jobId);
+    notifyJobWaiters(jobId, { error: '请求已取消，未派发任务已终止', statusCode: 409 });
+  }
+  scheduleQueueDrain();
+  return { ...await getGenerationRequest(requestId, memberId), cancelledCount: result.cancelledJobIds.length };
 }
 
 async function changeMemberAdmission(userId, acceptingJobs) {
@@ -3687,6 +3766,7 @@ function publicJob(job, db = null, { includePrompt = true } = {}) {
   return {
     id: job.id,
     source: job.source || 'web',
+    requestId: job.requestId || null,
     status: job.status,
     prompt: request.tag || '',
     model: request.model || '',

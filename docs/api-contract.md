@@ -26,7 +26,7 @@
 | `/ai/encode-vibe` | `200 application/octet-stream`，保留编码原始字节 | 官方列 `201 application/binary`；对外状态/媒体类型差异留待 C03 |
 | `/ai/upscale` | `200 application/zip`，一个图片文件 | 官方列 `200`，ZIP/JSON；网关不做 JSON 内容协商 |
 
-四种操作成功响应均 `Cache-Control: no-store`。普通/流式生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；辅助操作没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。CORS 暴露头列表虽包含 `X-Nai-Request-Id`，当前代码未实际发送该头，客户端不能依赖它。诊断关联不是幂等保证。
+四种操作成功响应均 `Cache-Control: no-store`。普通/流式生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；辅助操作没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。持久受理后返回 CORS 已暴露的 `X-Nai-Request-Id` 父请求 ID，超时/部分失败响应也保留；受理前拒绝没有父 ID。诊断关联不是幂等保证。
 
 MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../tests/helpers/native-stream-client.mjs)检查。
 
@@ -158,7 +158,15 @@ F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回�
 
 读取正文先临时占用预算，提交后移交持久计数，失败或断线释放临时计数；断线不释放仍被任务持有的父载荷。pending、旧内联活动参数和尚未 finish 的执行尝试也计入，按父请求去重。各入口的 queued 使用持久 `queueSeq`，Native 下一张激活才取得新号；pending 与缓存命中完成不占号。公开状态新增独立 pending 数，queued 仍表示可派发等待任务，不把未激活图片当作已占队列位置。
 
-direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，direct 查询参数在解析受理阶段计入临时预算，认证 token 不进入父参数。各同步 handler 只携带等待所需的小元数据。可选幂等键、父请求查询/领取和显式批次取消尚待后续片；没有稳定键的第三方重试仍无法可靠识别为同一操作。字节上限是输入预算，不是进程 RSS 保证。具体边界见[持久请求说明](request-lifecycle.md)。
+direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，direct 查询参数在解析受理阶段计入临时预算，认证 token 不进入父参数。各同步 handler 只携带等待所需的小元数据，受理后同样返回 `X-Nai-Request-Id`。可选幂等键仍待后续片；没有稳定键的第三方重试仍无法可靠识别为同一操作。字节上限是输入预算，不是进程 RSS 保证。具体边界见[持久请求说明](request-lifecycle.md)。
+
+### 父请求查询、领取与取消
+
+`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
+
+DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。counts 包含 `total/queued/pending/running/done/failed`，failed 包含取消项；jobs 每项包含 `id/index/status/model/createdAt/updatedAt/completedAt/error/cancelled/lateResultAvailable/imageUrl`，index 从零开始。父状态从子任务派生为 running、queued、pending、done、partial、cancelled、failed 或 empty，不额外保存一份状态。查询不返回完整参数、提示词或认证信息。图片归属校验后签发既有下载链接，迟到完整结果也可领取。
+
+上述两条路径均提供 `POST .../:id/cancel`，JSON 正文 `{}`；Cookie 入口沿用同源 Origin/CSRF。返回同一 DTO 加本次 `cancelledCount`，重复取消为 0。只取消 queued/pending 并原子退款，running 继续完成，已完成图片保留。取消与派发串行提交，不会由迟到结果或前序成功重新激活余图。成员页提供批次详情、刷新、结果领取及取消按钮；管理员成员统计也单列 pending，不混入可派发 queued。
 
 ## N03 后的 C03 差异与待核实清单
 

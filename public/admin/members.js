@@ -22,7 +22,7 @@ async function loadUsage(){
  if(days!==$('usageDays').value)return;
  usage=result;const t=result.totals;
  $('usageDone').textContent=t.done+' / '+t.total;$('usageFree').textContent='其中免费成功 '+t.free+' 次';
- $('usageFailed').textContent=t.failed+' / '+t.refunded;$('usageActive').textContent='生成中 '+t.running+' · 排队 '+t.queued;
+ $('usageFailed').textContent=t.failed+' / '+t.refunded;$('usageActive').textContent='生成中 '+t.running+' · 排队 '+t.queued+' · 等待前序图片 '+t.pending;
  $('usageV5').textContent=number(t.v5);$('usageWait').textContent='平均排队 '+duration(t.averageWaitSeconds);
  $('usageAnlas').textContent=number(t.fixed+t.purchased);$('usagePools').textContent='订阅 '+number(t.fixed)+' · 购买 '+number(t.purchased);
  renderUsage();$('usageRecent').replaceChildren();

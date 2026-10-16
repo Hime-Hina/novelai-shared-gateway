@@ -110,13 +110,16 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   assert.match(directTimeout.headers.get('content-type'), /image\//);
   assert.equal(directTimeout.headers.get('x-error'), '1');
   assert.equal(directTimeout.headers.get('x-timeout'), '1');
+  assert.ok(directTimeout.headers.get('x-nai-request-id'));
   await directTimeout.arrayBuffer();
   const prompt = 'large JSON timeout ' + 'x'.repeat(64000);
   const jsonTimeout = await post(openAiBody(prompt));
   assert.equal(jsonTimeout.status, 504);
+  assert.ok(jsonTimeout.headers.get('x-nai-request-id'));
   assert.equal((await jsonTimeout.json()).error.type, 'server_error');
   const streamTimeout = await post(openAiBody('SSE timeout', true), 1);
   assert.equal(streamTimeout.status, 200);
+  assert.ok(streamTimeout.headers.get('x-nai-request-id'));
   const events = await streamTimeout.text();
   assert.match(events, /连接超时/);
   assert.match(events, /data: \[DONE\]/);
@@ -164,6 +167,7 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   const hit = await fetch(base + cachedPath);
   assert.equal(hit.status, 200);
   assert.equal(hit.headers.get('x-cache'), 'hit');
+  assert.ok(hit.headers.get('x-nai-request-id'));
   assert.deepEqual(Buffer.from(await hit.arrayBuffer()), png);
   assert.equal(calls.length, 8);
   assert.equal(rows().length, 9);

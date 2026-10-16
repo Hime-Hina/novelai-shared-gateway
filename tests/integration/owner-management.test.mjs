@@ -78,10 +78,18 @@ test('用量按台北日期、成员和模型汇总，退款及预扣不算消�
     {id:'v5',memberId:'a',username:'甲',model:'v5',status:'done',createdAt:'2026-10-15T16:00:00Z',startedAt:'2026-10-15T16:00:10Z',upstreamStartedAt:'2026-10-15T16:00:10Z',upstreamCompletedAt:'2026-10-15T16:00:22Z',resource:'v5',amount:.1,chargeStatus:'settled'},
     {id:'paid',memberId:'b',username:'乙',model:'v45',status:'done',createdAt:'2026-10-15T15:59:00Z',resource:'anlas',fixed:26,purchased:0,chargeStatus:'settled'},
     {id:'refund',memberId:'a',username:'甲',model:'v5',status:'failed',createdAt:'2026-10-15T15:58:00Z',resource:'v5',amount:.2,chargeStatus:'refunded'},
-    {id:'pending',memberId:'b',username:'乙',model:'v5',status:'running',createdAt:'2026-10-15T15:57:00Z',resource:'anlas',fixed:99,chargeStatus:'reserved'},
-    {id:'free',memberId:'a',username:'甲',model:'v45',status:'done',createdAt:'2026-10-15T15:56:00Z',resource:'free',amount:0,chargeStatus:'settled'}
+    {id:'running',memberId:'b',username:'乙',model:'v5',status:'running',createdAt:'2026-10-15T15:57:00Z',resource:'anlas',fixed:99,chargeStatus:'reserved'},
+    {id:'free',memberId:'a',username:'甲',model:'v45',status:'done',createdAt:'2026-10-15T15:56:00Z',resource:'free',amount:0,chargeStatus:'settled'},
+    {id:'pending',memberId:'b',username:'乙',model:'v5',status:'pending',createdAt:'2026-10-15T15:55:00Z'},
+    {id:'queued',memberId:'b',username:'乙',model:'v5',status:'queued',createdAt:'2026-10-15T15:54:00Z'}
   ];
-  const result=summarizeOwnerUsage(rows);assert.equal(result.totals.total,5);assert.equal(result.totals.done,3);assert.equal(result.totals.failed,1);assert.equal(result.totals.refunded,1);assert.equal(result.totals.free,1);assert.equal(result.totals.v5,.1);assert.equal(result.totals.fixed,26);assert.equal(result.totals.averageWaitSeconds,10);assert.equal(result.totals.averageGenerationSeconds,12);assert.equal(result.members.length,2);assert.equal(result.models.length,2);assert.deepEqual(result.days.map(d=>d.id),['2026-10-16','2026-10-15']);
+  const result=summarizeOwnerUsage(rows);assert.equal(result.totals.total,7);assert.equal(result.totals.done,3);assert.equal(result.totals.failed,1);assert.equal(result.totals.refunded,1);assert.equal(result.totals.free,1);assert.equal(result.totals.v5,.1);assert.equal(result.totals.fixed,26);assert.equal(result.totals.purchased,0);assert.equal(result.totals.averageWaitSeconds,10);assert.equal(result.totals.averageGenerationSeconds,12);assert.equal(result.members.length,2);assert.equal(result.models.length,2);assert.deepEqual(result.days.map(d=>d.id),['2026-10-16','2026-10-15']);
+  assert.equal(result.totals.pending,1);assert.equal(result.totals.queued,1);assert.equal(result.totals.running,1);
+  assert.equal(['done','failed','pending','queued','running'].reduce((sum,key)=>sum+result.totals[key],0),result.totals.total);
+  for(const group of [result.members.find(row=>row.id==='b'),result.models.find(row=>row.id==='v5'),result.days.find(row=>row.id==='2026-10-15')])assert.equal(group.pending,1);
+  assert.equal(result.members.find(row=>row.id==='b').averageWaitSeconds,null);
+  assert.equal(result.members.find(row=>row.id==='b').averageGenerationSeconds,null);
+  assert.equal(summarizeOwnerUsage([]).totals.pending,0);
 });
 
 test('SQLite 统计读取覆盖持久历史，按时间筛选且不返回任何 Key、提示词或授权数据',async()=>{

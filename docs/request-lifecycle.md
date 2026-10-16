@@ -1,9 +1,9 @@
-# 持久请求与排队生命周期（F06-1 / F06-2 / F06-3）
+# 持久请求与排队生命周期（F06-1 / F06-2 / F06-3 / F06-4）
 
 当前已接入网页 `POST /api/jobs`、Native 普通/stream 多图和辅助操作、
 direct `/generate`、OpenAI JSON/SSE。各入口均使用持久父参数与统一调度，
-已受理任务独立于 HTTP 连接。可选幂等、父请求查询/领取和显式批次取消
-尚未接入，不能将当前版本视为 F06 全部完成。
+已受理任务独立于 HTTP 连接。父请求查询、结果领取和取消未派发任务已经
+接入；可选幂等仍留下一片，不能将当前版本视为 F06 全部完成。
 
 ## 受理与载荷
 
@@ -91,6 +91,35 @@ close 会清除自己的轮询定时器和等待者，不改变任务。
 保留历史 order_value，包括并列排序时原活动索引枚举的影响。此后派发
 直接读取 queued 部分索引并按 queue_seq 排序，公开排队进度使用同一序号。
 
+## 查询、领取与取消
+
+Native、direct、OpenAI 在受理后通过已有 CORS 暴露的 `X-Nai-Request-Id`
+返回父 ID，成功响应体保持原格式，超时/部分失败响应也保留该 ID。网页
+job 回包和成员 `me.jobs[]` 增加 requestId；旧 inline 任务为 null，继续
+使用原 job 查询接口，不为历史任务批量补造父记录。
+
+Bearer 入口 `GET /api/requests/:id` 和成员 Cookie 入口
+`GET /api/member/requests/:id` 复用同一业务查询。父归属按不可变 member_id
+判断，因此本人换 Key 后仍可找回；他人成员或未知 ID 返回 404。查询仅
+返回来源、操作、时间、派生状态/计数及小型 child 信息，不读取父 payload，
+也不把冷历史重新热载。已有 request_id/status 索引满足单父查询，无新增索引。
+
+每张图的 imageUrl 都是既有签名链接；签发前必须确认 image.token 与历史
+child.userToken 一致，不能只因父请求属于本人就签发任意关联图片。失败任务
+的迟到完整图片也可领取。旧 Key 与当前成员 Key 不同不影响父 ID 归属判断。
+
+两种鉴权路径都提供 `POST .../:id/cancel`。Cookie 请求沿用同源 Origin/CSRF
+检查；成员页通过原生详情展开查询，显示结果及“取消未派发任务”。取消与
+派发使用同一串行存储事务，仅将 queued/pending 置 failed 并标记 cancelled，
+沿用幂等退款；running 继续。任务、退款账本和设置一起提交，失败回滚且不
+提前通知等待者。重复取消返回 cancelledCount: 0；取消后的余图不会被随后
+成功或迟到结果重新激活。父状态由子任务派生，不增加可漂移的父状态副本。
+
+查询返回 counts.failed 包含取消项，child.cancelled 单独区分取消。父状态
+按 running/queued/pending 优先；全成功为 done，部分成功为 partial，全取消
+为 cancelled，其余失败为 failed，无保留子记录为 empty。cancellable 仅由
+是否仍有 queued/pending 决定。取消回包复用同一 DTO，额外返回本次取消数。
+
 ## 验证边界
 
 已有测试覆盖父/子/账本写失败回滚、临时/持久字节交接、活动索引 EXPLAIN、
@@ -117,3 +146,16 @@ F06-3 的独立 localhost HTTP 检查使用 100 ms 同步等待，覆盖 direct 
 （sha256:58a67867cf44c011fa806fe42a41557b57ca2ac209b10af4f7e72d324d6ae294）
 在 UID 1000、断网、只读根目录下再次通过七迁移、冷 pending、载荷预算与
 HTTP 启动检查。完整连接行为由上述独立 localhost 合成 HTTP 用例验证。
+
+F06-4 回归覆盖真实 SQLite 冷查询、稳定成员归属、图片所有权、取消 SQL
+失败整体回滚/零通知、重复取消、部分历史持久化，以及实际 reserveQueuedJob
+和 completeGeneration 与取消的双向竞争。独立 HTTP 检查覆盖两种鉴权的
+同 DTO、Cookie CSRF、签名图片领取、跨成员拒绝和新入口请求 ID；没有真实
+NAI 请求。
+
+F06-4 全套 328/328、84 文件语法通过；Chrome 合成成员页完成批次取消、
+重复读取与真实签名图片领取，390px 视口详情宽 322px、无详情横向溢出。
+测试期间上游生图调用为零。Linux 镜像 `novelai-shared-gateway:f06-request-check`
+（sha256:cab02058050f4c77a35475068d9a5a450613641df604ebee98b355078ea1b64b）
+在 UID 1000、断网、只读根目录下通过七迁移、冷 pending、预算、SQLite
+integrity 和真实 HTTP 启动检查。未替换生产服务。
