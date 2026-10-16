@@ -49,6 +49,11 @@ export const generationIdempotency = sqliteTable('generation_idempotency', {
   job_id: text().notNull(), request_id: text(), created_at: text().notNull()
 }, table => [primaryKey({ columns: [table.member_id, table.operation, table.key_hash] })]);
 
+// 结算凭据不随任务历史清理，也不进入通用热缓存。
+export const fairQuotaSettlements = sqliteTable('fair_quota_settlements', {
+  job_id: text().primaryKey(), charge: text().notNull()
+});
+
 export const jobs = sqliteTable('jobs', {
   ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), payload_bytes: integer().default(0).notNull(), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()

@@ -3,10 +3,11 @@ import { mkdir, readFile, unlink } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, desc, count, getTableColumns } from 'drizzle-orm';
-import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency } from './storage-schema.js';
+import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
 import { queuedDeadlineTimestamp } from './queue-policy.js';
 import { queryFailureAccounting } from './failure-accounting.js';
@@ -471,6 +472,20 @@ export class JsonStore {
 
   readGenerationIdempotency(memberId, operation, keyHash) {
     return this.statements.selectGenerationIdempotency.get({ memberId, operation, keyHash }) || null;
+  }
+
+  readFairQuotaSettlement(jobId) {
+    const row = this.statements.selectFairQuotaSettlement.get({ jobId });
+    return row ? JSON.parse(row.charge) : null;
+  }
+
+  persistFairQuotaSettlements(rows) {
+    for (const row of rows) {
+      const inserted = this.statements.insertFairQuotaSettlement.run(row);
+      if (!inserted.changes && !isDeepStrictEqual(this.readFairQuotaSettlement(row.job_id), JSON.parse(row.charge))) {
+        throw Object.assign(new Error(`任务结算凭据冲突：${row.job_id}`), { statusCode: 409 });
+      }
+    }
   }
 
   readGenerationRequestState(id, memberId) {
@@ -941,6 +956,10 @@ export class JsonStore {
         eq(generationIdempotency.operation, sql.placeholder('operation')),
         eq(generationIdempotency.key_hash, sql.placeholder('keyHash'))
       )).prepare(),
+      insertFairQuotaSettlement: db.insert(fairQuotaSettlements).values({ job_id: sql.placeholder('job_id'), charge: sql.placeholder('charge') })
+        .onConflictDoNothing().prepare(),
+      selectFairQuotaSettlement: db.select({ charge: fairQuotaSettlements.charge }).from(fairQuotaSettlements)
+        .where(eq(fairQuotaSettlements.job_id, sql.placeholder('jobId'))).prepare(),
       deleteAllSettings: db.delete(appSettings).prepare(),
       deleteGenericRecords: db.delete(appRecords).prepare(),
       setMeta: db.insert(appMeta).values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
@@ -995,6 +1014,14 @@ export class JsonStore {
       ...defaultDb,
       settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
     };
+    const archive = fairQuotaArchive(db.settings);
+    if (archive.rows.length) {
+      this.sqlite.transaction(() => {
+        this.persistFairQuotaSettlements(archive.rows);
+        this.statements.replaceSettings.run({ value: JSON.stringify(archive.settings) });
+      })();
+      db.settings = archive.settings;
+    }
     const rowState = emptyCollectionMaps();
     const orderKeys = emptyCollectionMaps();
     const totalCounts = Object.fromEntries(collections.map((collection) => [collection, this.countRecords(collection)]));
@@ -1060,9 +1087,12 @@ export class JsonStore {
 
   replaceAll(db) {
     const safeDb = trimDb(normalizeDb(db));
+    const archive = fairQuotaArchive(safeDb.settings);
+    safeDb.settings = archive.settings;
     const snapshot = buildSnapshotState(safeDb, emptyCollectionMaps(), { dense: true });
     const startedAt = Date.now();
     const writeAll = this.sqlite.transaction(() => {
+      this.persistFairQuotaSettlements(archive.rows);
       this.statements.deleteAllSettings.run();
       for (const collection of collections) {
         this.statements.deleteAllRecords[collection].run();
@@ -1078,6 +1108,7 @@ export class JsonStore {
       this.sqlite.exec('DELETE FROM generation_requests WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.request_id = generation_requests.id)');
     });
     writeAll();
+    db.settings = safeDb.settings;
     this.clearPendingPersist();
     this.partialCollections = new Set();
     this.adminStatsCache = null;
@@ -1108,6 +1139,8 @@ export class JsonStore {
     }
     this.assertFullCollectionsAreLoaded(scope.full ? collections : scope.collections);
     const safeDb = trimDb(normalizeDb(db), { collections: scope.full ? null : scope.collections });
+    const archive = scope.includeSettings ? fairQuotaArchive(safeDb.settings) : { settings: safeDb.settings, rows: [] };
+    safeDb.settings = archive.settings;
     const snapshot = buildSnapshotState(safeDb, this.orderKeys, {
       collections: scope.full ? null : scope.collections,
       includeSettings: scope.includeSettings,
@@ -1122,9 +1155,10 @@ export class JsonStore {
       includeSettings: scope.includeSettings,
       collections: scope.full ? collections : scope.collections
     });
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length) return;
 
     const applyChanges = this.sqlite.transaction(() => {
+      this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged) this.statements.replaceSettings.run({ value: snapshot.settingsData });
@@ -1138,6 +1172,7 @@ export class JsonStore {
       if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
     });
     applyChanges();
+    if (scope.includeSettings) db.settings = archive.settings;
     if (scope.includeSettings) this.settingsState = snapshot.settingsData;
     for (const collection of (scope.full ? collections : scope.collections)) {
       this.rowState[collection] = snapshot.rowState[collection];
@@ -1161,9 +1196,10 @@ export class JsonStore {
       upserts: []
     };
     const fullCollections = [];
+    const archive = scope.includeSettings ? fairQuotaArchive(db.settings) : { settings: db.settings, rows: [] };
 
     if (scope.includeSettings) {
-      const nextSettings = JSON.stringify(db.settings);
+      const nextSettings = JSON.stringify(archive.settings);
       changes.settingsChanged = this.settingsState !== nextSettings;
       if (changes.settingsChanged) changes.nextSettings = nextSettings;
     }
@@ -1220,9 +1256,10 @@ export class JsonStore {
       changes.upserts.push(...fullChanges.upserts);
     }
 
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length) return;
 
     const applyChanges = this.sqlite.transaction(() => {
+      this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged) this.statements.replaceSettings.run({ value: changes.nextSettings });
@@ -1236,6 +1273,7 @@ export class JsonStore {
       if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
     });
     applyChanges();
+    if (scope.includeSettings) db.settings = archive.settings;
 
     if (changes.settingsChanged) this.settingsState = changes.nextSettings;
     for (const change of changes.deletes) {
@@ -2040,6 +2078,17 @@ function configuredTimeoutMs(name, fallback) {
   const configured = Number(process.env[name] || 0);
   if (Number.isFinite(configured) && configured > 0) return Math.max(60_000, Math.floor(configured));
   return Math.max(60_000, Math.floor(Number(fallback) || 60_000));
+}
+
+function fairQuotaArchive(settings) {
+  const entries = Object.entries(settings.fairQuota?.reservations || {});
+  const terminal = entries.filter(([, charge]) => ['settled', 'refunded'].includes(charge?.status));
+  if (!terminal.length) return { settings, rows: [] };
+  return {
+    settings: { ...settings, fairQuota: { ...settings.fairQuota,
+      reservations: Object.fromEntries(entries.filter(([, charge]) => !['settled', 'refunded'].includes(charge?.status))) } },
+    rows: terminal.map(([job_id, charge]) => ({ job_id, charge: JSON.stringify(charge) }))
+  };
 }
 
 function cloneDb(db) {

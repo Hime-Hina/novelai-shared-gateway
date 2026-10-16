@@ -14,7 +14,7 @@ function fixture(tier=3) {
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
   const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
-    store:{update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
+    store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
     httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
     jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
     hasEnabledAccounts:()=>true,dirtyResultJobRows:()=>({}),dirtyReservationJobRows:()=>()=>({}),

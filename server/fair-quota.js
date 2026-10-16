@@ -316,15 +316,29 @@ export function quoteFairRequest(request = {}, options = {}) {
   return quoteNativeRequest(request, options);
 }
 
-export function reserveFairQuota(db,user,job,account,now=Date.now(),request=job.request||job.requestPayload) {
+// 冷凭据是已提交的终态；job.fairCharge 只作归属校验/展示，不能重建可扣退的预留。
+export function resolveFairQuotaCharge(db, job, settledCharge = null, userId) {
+  const charge = settledCharge || db.settings?.fairQuota?.reservations?.[job.id];
+  if (!charge) return null;
+  const owner = job.userToken ? db.users?.find(user => user.token === job.userToken)?.id : undefined;
+  const owners = [userId, owner, job.fairCharge?.userId, job.generationAttempt?.memberId].filter(id => id !== undefined && id !== null);
+  if (owners.some(id => id !== charge.userId)) fail('任务账本归属不符', 409);
+  return charge;
+}
+
+export function reserveFairQuota(db,user,job,account,now=Date.now(),request=job.request||job.requestPayload,settledCharge=null) {
+  if(!job.id) fail('任务缺少持久化 ID',500);
+  const previous=resolveFairQuotaCharge(db,job,settledCharge,user.id);
+  if(previous && previous.status!=='reserved') fail(previous.status==='refunded'?'已退款任务不能重新提交':'已结算任务不能重新提交',409);
   const s=syncFairQuota(db,now);
   if(!s?.enabled) return null;
   if(!s.members.includes(user.id)) fail('该用户未加入共享分组账本',403);
   if(s.status!=='active') fail(`共享 Opus 额度暂不可用：${s.status}`,503);
   if(account.id!==s.boundAccountId) fail('共享账本只能使用绑定的 Opus 账号',503);
-  if(!job.id) fail('任务缺少持久化 ID',500);
-  const previous=s.reservations[job.id];
-  if(previous) {if(previous.userId!==user.id) fail('任务账本归属不符',409);if(previous.status==='refunded') fail('已退款任务不能重新提交',409);job.fairCharge=previous;return previous;}
+  if(previous) {
+    if(previous.accountId!==account.id) fail('任务账本归属不符',409);
+    job.fairCharge=previous;return previous;
+  }
   let q=quoteFairRequest(request);
   let fallback=false,v5Equivalent=0,sharedV5Reserved=0;
   if(q.resource==='v5' && s.autoAnlasFallback===true && s.balances[user.id].v5Available+1e-9<q.amount) {
@@ -374,9 +388,11 @@ export function reserveFairQuota(db,user,job,account,now=Date.now(),request=job.
   return charge;
 }
 
-export function settleFairQuota(db,job,success,now=Date.now(),evidence={}) {
-  const s=db.settings?.fairQuota,c=s?.reservations?.[job.id];
-  if(!c || c.status!=='reserved') return c || null;
+export function settleFairQuota(db,job,success,now=Date.now(),evidence={},settledCharge=null) {
+  const s=db.settings?.fairQuota,c=resolveFairQuotaCharge(db,job,settledCharge);
+  if(!c) return null;
+  job.fairCharge=c;
+  if(c.status!=='reserved') return c;
   upgradeGroups(s);
   c.status=success?'settled':'refunded';c.settledAt=now;
   if(c.resource!=='free') {

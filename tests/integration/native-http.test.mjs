@@ -455,7 +455,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   try {
     const snapshot = await persisted.readCollections(['accounts', 'jobs', 'settings']);
     assert.equal(snapshot.accounts[0].capacityConcurrencyLimit, 1);
-    const reservations = Object.values(snapshot.settings.fairQuota.reservations);
+    assert.deepEqual(snapshot.settings.fairQuota.reservations, {});
+    const reservations = persisted.sqlite.prepare('SELECT charge FROM fair_quota_settlements').all().map(row => JSON.parse(row.charge));
     assert.ok(reservations.some(charge => charge.status === 'settled'));
     assert.ok(reservations.some(charge => charge.status === 'refunded'));
     assert.ok(reservations.every(charge => charge.status !== 'reserved'));

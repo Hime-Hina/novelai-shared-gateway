@@ -12,7 +12,7 @@ import { handleMemberRoutes } from './member-routes.js';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.js';
 import { requireDiscordMembership } from './discord-auth.js';
 import { ownerOperation } from './owner-operations.js';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';
 import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.js';
 import { validateImageBytes } from './native-image.js';
 import http from 'node:http';
@@ -2803,7 +2803,7 @@ async function reserveQueuedJob(jobId) {
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
         if (load >= sharedAccountConcurrency(account) || sharedAccountReadyDelay(account, Date.now(), load) > 0) return { queued: true, jobId: job.id };
         const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
-        reserveFairQuota(db, user, job, account, Date.now(), request);
+        reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
       } else {
         account = selectAccount(db.accounts, db.settings, { request: job.request });
       }
@@ -3168,6 +3168,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       let currentJob = null, refunded = false;
       if (fairShareMode && meta.jobId) {
         currentJob = store.loadJobForUpdate(meta.jobId);
+        if (currentJob) currentJob.fairCharge = resolveFairQuotaCharge(db, currentJob, store.readFairQuotaSettlement(meta.jobId));
         if (!currentJob || !['reserved', 'refunded', 'settled'].includes(currentJob.fairCharge?.status)) throw httpError(409, '任务结算凭据不存在');
         if (currentJob.userToken !== reservation.token) throw httpError(409, '生成结果与任务归属不符');
         if (currentJob.imageId) {
@@ -3217,7 +3218,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
         const job = db.jobs.find((item) => item.id === meta.jobId);
         if (job) {
           Object.assign(job, reservation.upstreamTiming || {});
-          if (fairShareMode && !refunded) settleFairQuota(db, job, true);
+          if (fairShareMode && !refunded) settleFairQuota(db, job, true, Date.now(), {}, store.readFairQuotaSettlement(job.id));
           if (refunded) recordRecoveredGeneration(db, job, saved.id);
           else { job.status = 'done'; activateNextBatchJob(db, job, store.nextQueueSequence()); }
           job.imageId = saved.id;
@@ -3320,7 +3321,7 @@ async function failGeneration(reservation, error) {
       const job = db.jobs.find((item) => item.id === reservation.job.id);
       if (job) {
         Object.assign(job, reservation.upstreamTiming || {});
-        if (fairShareMode) settleFairQuota(db, job, false, Date.now(), { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) });
+        if (fairShareMode) settleFairQuota(db, job, false, Date.now(), { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) }, store.readFairQuotaSettlement(job.id));
         cancelWaitingBatchJobs(db, job, message, statusCode);
         job.status = 'failed';
         job.error = message;
@@ -3991,8 +3992,9 @@ function configuredTimeoutMs(name, fallback) {
 }
 
 function refundJob(db, job, note, evidence = {}) {
-  if (fairShareMode && db.settings?.fairQuota?.reservations?.[job.id]) {
-    return settleFairQuota(db, job, false, Date.now(), evidence);
+  if (fairShareMode) {
+    // 共享入口从不预扣旧 points；缺少凭据也不能猜退旧余额。
+    return settleFairQuota(db, job, false, Date.now(), evidence, store.readFairQuotaSettlement(job.id));
   }
   if (job.refundedAt) return;
   const cost = Number(job.cost || 0);

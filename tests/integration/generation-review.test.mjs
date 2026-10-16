@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.js';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.js';
 import { activateNextBatchJob } from '../../server/generation-request.js';
 import { recordSharedCompletion } from '../../server/shared-capacity.js';
@@ -150,7 +150,7 @@ async function completionContext(store) {
   let writes = 0, ids = 0;
   const update = store.update.bind(store);
   store.update = (fn, options = {}) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = loadFunctions({ store, fairShareMode: true, settleFairQuota, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
+  const ctx = loadFunctions({ store, fairShareMode: true, settleFairQuota, resolveFairQuotaCharge, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
     createId: () => `image-${++ids}`, reservationAccountCost: () => 0, httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
     writeStoredImage: async (id, image) => { writes++; const file = `images/${id}.png`; await writeFile(path.join(store.dataDir, file), image.buffer); return file; },
     removeStoredImages: async () => {}, imageCacheTrimBuffer: () => 100,
@@ -163,6 +163,8 @@ function reservation(db) { return { job: db.jobs[0], account: db.accounts[0], to
 test('真实完成路径：退款前成功结算；退款后保留失败与结果，重复迟到只写一次文件/调整且不释放别的在途槽', async t => {
   for (const refund of [false, true]) {
     const store = await open(t, fixture(Date.now(), { refund })), { ctx, writes } = await completionContext(store);
+    // 迟到调用可能携带旧 reserved 快照；冷退款凭据仍是最终依据。
+    if (refund) await store.update(db => { db.jobs[0].fairCharge.status = 'reserved'; }, { dirtyRows: { jobs: ['review'] } });
     store.db.accounts[0].inFlight = 1;
     const before = structuredClone(store.db.settings.fairQuota.balances), r = reservation(store.db);
     store.sqlite.prepare("UPDATE jobs SET order_value = -21.25 WHERE id = 'review'").run();
