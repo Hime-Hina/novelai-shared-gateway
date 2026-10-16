@@ -69,7 +69,7 @@ async function managementPage(pathname) {
           json: async () => conflict ? { error: '分组版本已变化，请保留草稿并刷新后重新编辑' } : structuredClone(server.state)
         };
       }
-      return { ok: true, status: 200, json: async () => path.includes('/statistics') ? { totals: {}, members: [], recent: [] } : {} };
+      return { ok: true, status: 200, json: async () => path.includes('/statistics') ? { totals: { running: 0, queued: 1 }, members: [], recent: [{ createdAt: 1, username: 'a', model: 'test', status: 'pending' }, { createdAt: 1, username: 'a', model: 'test', status: 'future_state' }] } : {} };
     }
   });
   vm.runInContext(source + `
@@ -134,6 +134,12 @@ test('后台刷新尚未返回时开始编辑，也不覆盖草稿或抬高编�
 });
 
 const text = element => String(element.textContent ?? '') + element.children.map(text).join(' ');
+
+test('owner 用量记录显示等待前序图片，未知状态仍原样显示', async () => {
+  const { get } = await managementPage('/owner');
+  assert.deepEqual(get('usageRecent').children.map(row => row.children[3].textContent), ['等待前序图片', 'future_state']);
+  assert.equal(get('usageActive').textContent, '生成中 0 · 排队 1');
+});
 
 for (const pathname of ['/admin', '/owner']) {
   test(`${pathname} 损耗沿用鉴权入口，阈值冲突保留草稿和版本`, async () => {

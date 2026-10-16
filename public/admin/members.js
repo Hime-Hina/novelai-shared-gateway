@@ -26,7 +26,7 @@ async function loadUsage(){
  $('usageV5').textContent=number(t.v5);$('usageWait').textContent='平均排队 '+duration(t.averageWaitSeconds);
  $('usageAnlas').textContent=number(t.fixed+t.purchased);$('usagePools').textContent='订阅 '+number(t.fixed)+' · 购买 '+number(t.purchased);
  renderUsage();$('usageRecent').replaceChildren();
- const statuses={done:'成功',failed:'失败',running:'生成中',queued:'排队'},settlements={settled:'已结算',refunded:'已退款',reserved:'预扣'};
+ const statuses={done:'成功',failed:'失败',pending:'等待前序图片',running:'生成中',queued:'排队'},settlements={settled:'已结算',refunded:'已退款',reserved:'预扣'};
  for(const j of result.recent){
   const row=node('tr'),charge=j.resource==='free'?'免费':j.resource==='v5'?number(j.amount)+' V5':j.resource==='anlas'?'订阅 '+number(j.fixed)+' / 购买 '+number(j.purchased)+' Anlas':'未扣款';
   for(const value of [displayTime(j.createdAt),j.username,j.model,statuses[j.status]||j.status,duration(j.waitSeconds),duration(j.generationSeconds),(settlements[j.chargeStatus]||'')+' '+charge+(j.errorStatus?' · HTTP '+j.errorStatus:'')])row.append(node('td',value));

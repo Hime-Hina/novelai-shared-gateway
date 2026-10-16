@@ -25,7 +25,7 @@ test('成员退款与冷历史迟到领取使用签名地址，文本不插 HTML
   const refund = { status: 'refunded', resource: 'anlas', amount: 15, fixed: 12, purchased: 3 };
   const data = {
     username: hostile, quota: {},
-    jobs: [{ id: 'recent', createdAt: 1, model: hostile, status: 'failed', charge: refund, lateResultAvailable: true, imageUrl: signed }, { id: 'invalid', createdAt: 1, model: 'test', status: 'done', imageUrl: 'javascript:alert(1)' }],
+    jobs: [{ id: 'recent', createdAt: 1, model: hostile, status: 'failed', charge: refund, lateResultAvailable: true, imageUrl: signed }, { id: 'invalid', createdAt: 1, model: 'test', status: 'done', imageUrl: 'javascript:alert(1)' }, { id: 'pending', createdAt: 1, model: 'test', status: 'pending' }],
     lateResults: [{ id: 'older-than-recent-history', createdAt: 1, lateResultAt: 2, model: hostile, imageUrl: signed, charge: refund }]
   };
   const context = vm.createContext({
@@ -42,6 +42,7 @@ test('成员退款与冷历史迟到领取使用签名地址，文本不插 HTML
   assert.equal(get('welcome').textContent, hostile + ' · 我的额度');
   assert.equal(get('lateResultsPanel').hidden, false);
   assert.ok(text(get('jobs')).includes(hostile));
+  assert.equal(get('jobs').children[2].children[2].textContent, '等待前序图片');
   assert.match(text(get('jobs')), /失败.*领取迟到结果（退款保留）.*已退款（本站额度）.*订阅 12 \/ 购买 3/);
   assert.match(text(get('lateResults')), /找回.*已退款（本站额度）/);
   assert.match(html, /退款保留，领取不另扣费/);

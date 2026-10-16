@@ -34,7 +34,7 @@ async function load() {
   $('fixed').textContent=number(q?.anlasFixedAvailable); $('purchased').textContent=number(q?.anlasPurchasedAvailable);
   $('fixedHeld').textContent=`预留 ${number(q?.anlasFixedReserved)}`; $('purchasedHeld').textContent=`预留 ${number(q?.anlasPurchasedReserved)}`;
   $('jobs').replaceChildren();
-  const status={done:'成功',failed:'失败',queued:'排队',running:'生成中'};
+  const status={done:'成功',failed:'失败',pending:'等待前序图片',queued:'排队',running:'生成中'};
   for (const j of data.jobs) {
     const row=document.createElement('tr'),result=textNode('td',status[j.status]||j.status);
     if (j.imageUrl) { const link=resultLink(j.imageUrl,j.lateResultAvailable?'领取迟到结果（退款保留）':'领取结果'); if(link)result.append(textNode('br',''),link); }
