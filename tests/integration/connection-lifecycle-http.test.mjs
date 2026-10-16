@@ -20,10 +20,10 @@ async function listen(server) {
   await once(server, 'listening');
   return server.address().port;
 }
-async function until(predicate, timeout = 100000) {
+async function until(predicate, timeout = 100000, diagnostic) {
   const end = Date.now() + timeout;
   while (!predicate()) {
-    if (Date.now() >= end) throw new Error('synthetic connection lifecycle wait timed out');
+    if (Date.now() >= end) throw new Error('synthetic connection lifecycle wait timed out' + (diagnostic ? ': ' + JSON.stringify(diagnostic()) : ''));
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
@@ -47,8 +47,10 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
   t.after(() => audit.close());
   const calls = [];
+  let quotaCalls = 0;
   const upstream = http.createServer(async (req, res) => {
     if (req.url === '/user/data') {
+      quotaCalls++;
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ subscription: { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
         trainingStepsLeft: { fixedTrainingStepsLeft: 10000, purchasedTrainingSteps: 0 },
@@ -58,7 +60,7 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks));
-    calls.push(payload.input);
+    calls.push(Date.now());
     res.writeHead(200, { 'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : 'image/png' });
     res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
   });
@@ -87,6 +89,22 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   };
   t.after(async () => { await stop(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); });
   const rows = () => audit.prepare('SELECT data FROM jobs').all().map(row => JSON.parse(row.data));
+  const safeText = (value, limit) => {
+    let text = String(value || '');
+    for (const secret of [adminToken, 'pst-synthetic-offline-connection-only', ...credentials.flatMap(member => [member.api_key, member.password])]) text = text.replaceAll(secret, '[redacted]');
+    return text.slice(-limit);
+  };
+  // 只输出合成样本的状态与时间，区分失败终态、停止派发和仍在前进；不延长等待阈值。
+  const diagnostic = () => ({ calls: calls.length, callOffsetsMs: calls.map(at => at - calls[0]), quotaCalls,
+    childExit: child?.exitCode, childSignal: child?.signalCode,
+    jobs: rows().map(job => ({ id: job.id, source: job.source, status: job.status, queueSeq: job.queueSeq,
+      error: safeText(job.error, 250), errorStatus: job.errorStatus,
+      startedAt: job.startedAt, completedAt: job.completedAt, upstreamHttpStatus: job.upstreamHttpStatus })),
+    accounts: audit.prepare('SELECT data FROM accounts').all().map(row => {
+      const account = JSON.parse(row.data);
+      return { inFlight: account.inFlight, cooldownUntil: account.cooldownUntil, quotaCheckedAt: account.quotaCheckedAt,
+        quotaError: safeText(account.quotaError, 250) };
+    }), outputTail: safeText(output, 5000) });
   const post = (body, member = 0) => fetch(base + '/v1/chat/completions', { method: 'POST', signal: AbortSignal.timeout(5000),
     headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json' }, body: typeof body === 'string' ? body : JSON.stringify(body) });
   const direct = (label, seed, member = 0) => '/generate?' + new URLSearchParams({ token: credentials[member].api_key,
@@ -159,7 +177,11 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   }, { immediate: true, dirtyRows: { jobs: ['legacy-direct', 'legacy-openai'], accounts: [legacy.db.accounts[0].id] } });
   await legacy.close();
   await start();
-  await until(() => rows().length === 8 && rows().every(job => job.status === 'done'));
+  await until(() => {
+    const jobs = rows();
+    if (jobs.some(job => job.status === 'failed')) assert.fail('synthetic connection lifecycle job failed: ' + JSON.stringify(diagnostic()));
+    return jobs.length === 8 && jobs.every(job => job.status === 'done');
+  }, 100000, diagnostic);
   assert.equal(calls.length, 8);
   assert.ok(acceptedIds.every(id => rows().find(job => job.id === id)?.imageId));
   assert.equal(rows().find(job => job.id === 'legacy-direct').requestId, undefined);
