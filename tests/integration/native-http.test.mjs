@@ -71,7 +71,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     // 真正收到上游调用时就检查派发证据已提交，不能只在失败后补写一个看似完整的历史。
     const running = auditReader.prepare("SELECT data FROM jobs WHERE status = 'running'").all().map(row => JSON.parse(row.data));
-    dispatchEvidence.push(running.map(job => ({ attempt: job.generationAttempt,
+    dispatchEvidence.push(running.map(job => ({ queueSeq: job.queueSeq, attempt: job.generationAttempt,
       reservation: JSON.parse(auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value).fairQuota.reservations[job.id],
       ledger: auditReader.prepare('SELECT data FROM ledger WHERE id = ?').get(`${job.generationAttempt?.id}:generation_reserved`)?.data
     })));
@@ -222,6 +222,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(accepted.prompt, prompt);
     const stored = JSON.parse(auditReader.prepare('SELECT data FROM jobs WHERE id = ?').get(accepted.id).data);
     assert.ok(stored.requestId);
+    assert.ok(Number.isSafeInteger(stored.queueSeq) && stored.queueSeq > 0);
     assert.equal(stored.request.tag, undefined);
     assert.equal(stored.request.prompt, undefined);
     assert.equal(stored.request.negative, undefined);
@@ -254,6 +255,19 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.ok(response.status >= 400);
     assert.equal((await quota()).v5Available, before.v5Available);
     assert.equal(calls.length, beforeCalls + 1);
+  });
+
+  await t.test('direct 生图仍返回原图片，实际派发使用持久排队序号', async () => {
+    const before = calls.length;
+    const query = new URLSearchParams({ token: credentials[0].api_key, prompt: 'direct queue sequence',
+      artist: '', model: 'nai-diffusion-4-5-full', width: '1024', height: '1024', steps: '28', seed: '893', nocache: '1' });
+    const response = await fetchLocal('/generate?' + query);
+    assert.equal(response.status, 200);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+    assert.equal(calls.length, before + 1);
+    const row = auditReader.prepare("SELECT data, queue_seq FROM jobs WHERE source = 'direct' ORDER BY order_value DESC LIMIT 1").get();
+    assert.ok(Number.isSafeInteger(row.queue_seq) && row.queue_seq > 0);
+    assert.equal(JSON.parse(row.data).queueSeq, row.queue_seq);
   });
 
   await t.test('Full、5C 与 Medium 从两个流式路径返回可解码最终图，按实际参数只扣本人', async () => {
@@ -449,6 +463,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(dispatchEvidence.length, calls.length);
     for (const dispatched of dispatchEvidence) {
       assert.equal(dispatched.length, 1);
+      assert.ok(Number.isSafeInteger(dispatched[0].queueSeq) && dispatched[0].queueSeq > 0);
       assert.equal(dispatched[0].attempt.id, dispatched[0].reservation.attemptId);
       assert.equal(dispatched[0].reservation.status, 'reserved');
       assert.deepEqual(JSON.parse(dispatched[0].ledger).attempt, dispatched[0].attempt);
@@ -481,11 +496,13 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       const common = { source: 'web', status: 'queued', userToken: user.token, createdAt, updatedAt: createdAt,
         jobAdmissionVersion: user.jobAdmissionVersion || 0, cost: 0, imageId: '',
         queueExpiresAt: new Date(Date.now() + 60000).toISOString() };
-      db.jobs.unshift({ ...common, id: 'job-restart-cold', requestId: parent.id,
+      db.jobs.unshift({ ...common, id: 'job-restart-cold', requestId: parent.id, queueSeq: persisted.nextQueueSequence(),
         request: { model: request.model, width: 1024, height: 1024, steps: 28, seed: 901 } });
-      db.jobs.unshift({ ...common, id: 'job-restart-legacy', request: { ...request, seed: 902 } });
+      db.jobs.unshift({ ...common, id: 'job-restart-legacy', queueSeq: persisted.nextQueueSequence(), request: { ...request, seed: 902 } });
     }, { immediate: true, generationRequest: () => parent,
       dirtyRows: { accounts: [snapshot.accounts[0].id], jobs: ['job-restart-cold', 'job-restart-legacy'] } });
+    // 故意令历史顺序与排队顺序相反；重启后的真实派发仍须使用持久 queueSeq。
+    persisted.sqlite.exec("UPDATE jobs SET order_value = 1000 WHERE id = 'job-restart-cold'; UPDATE jobs SET order_value = -1000 WHERE id = 'job-restart-legacy';");
   } finally { await persisted.close(); }
 
   await t.test('独立进程重启后继续冷存网页任务，并兼容旧无 requestId 的 queued 记录', async () => {
@@ -511,8 +528,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         assert.equal(job.status, 'done', JSON.stringify(job));
         assert.equal(job.prompt, 'restart queued request');
       }
-      // 本片验证两种记录都只恢复一次；独立排队序号在批次片接入。
-      assert.deepEqual(calls.slice(before).map(call => call.payload.parameters.seed).sort((a, b) => a - b), [901, 902]);
+      assert.deepEqual(calls.slice(before).map(call => call.payload.parameters.seed), [901, 902]);
     } finally {
       restarted.kill();
       await exited;

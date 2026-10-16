@@ -36,6 +36,13 @@
       "when": 1792183442744,
       "tag": "0004_durable_web_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792184917851,
+      "tag": "0005_durable_queue_sequence",
+      "breakpoints": true
     }
   ]
 }

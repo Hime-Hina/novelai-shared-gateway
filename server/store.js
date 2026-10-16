@@ -107,12 +107,14 @@ export class JsonStore {
       this.replaceAll(safeDb);
       await this.markLegacyMigrated();
       this.db = safeDb;
+      this.initializeQueueSequence();
       runtimeLog(`SQLite store init completed in ${Date.now() - startedAt}ms: ${formatDbCounts(this.db)}`);
       return;
     }
 
     runtimeLog('SQLite data found. Loading tables into runtime cache.');
     this.db = this.loadFromSqlite();
+    this.initializeQueueSequence();
     this.db.accounts.forEach((account) => {
       account.inFlight = 0;
     });
@@ -418,6 +420,36 @@ export class JsonStore {
 
   hasPartialCollection(collection) {
     return this.partialCollections.has(collection);
+  }
+
+  nextQueueSequence() {
+    // 元数据保留历史最高号；热任务还包含同一事务内刚分配、尚未提交的号。
+    let maximum = Number(this.statements.readQueueSequence.get()?.value || 0);
+    for (const job of this.db.jobs) maximum = Math.max(maximum, Number(job.queueSeq) || 0);
+    const next = maximum + 1;
+    if (!Number.isSafeInteger(next)) throw new Error('排队序号已达到安全整数上限');
+    return next;
+  }
+
+  initializeQueueSequence() {
+    // 精确沿用升级前实际选择：运行缓存的任务数组过滤后 reverse。
+    // 不猜测 createdAt/order_value 的排序等价关系，也不改历史 order_value。
+    const legacy = this.db.jobs.filter(job => ['queued', 'running'].includes(job.status) && !job.queueSeq).reverse();
+    for (const job of legacy) job.queueSeq = this.nextQueueSequence();
+    if (legacy.length) this.persistIncremental(this.db, { dirtyRows: { jobs: legacy.map(job => job.id) } });
+  }
+
+  queuedJobIds() {
+    return this.sqlite.prepare(`SELECT id FROM jobs INDEXED BY idx_jobs_queued_sequence
+      WHERE status = 'queued' ORDER BY queue_seq ASC`).all().map(row => row.id);
+  }
+
+  persistQueueSequence(rows) {
+    let maximum = 0;
+    for (const row of rows) maximum = Math.max(maximum, Number(row.queue_seq) || 0);
+    if (maximum > Number(this.statements.readQueueSequence.get()?.value || 0)) {
+      this.statements.setMeta.run({ key: 'queue_sequence', value: String(maximum) });
+    }
   }
 
   // 只读一份执行参数；状态、列表与容量查询不加载历史 payload。
@@ -842,6 +874,7 @@ export class JsonStore {
     this.statements = {
       hasSettings: db.select({ value: sql`1` }).from(appSettings).where(eq(appSettings.key, 'settings')).limit(1).prepare(),
       hasGenericRecords: db.select({ value: sql`1` }).from(appRecords).limit(1).prepare(),
+      readQueueSequence: db.select({ value: appMeta.value }).from(appMeta).where(eq(appMeta.key, 'queue_sequence')).prepare(),
       selectSettings: db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, 'settings')).prepare(),
       selectGenericRecords: db.select({ id: appRecords.id, orderValue: appRecords.order_value, data: appRecords.data })
         .from(appRecords).where(eq(appRecords.collection, sql.placeholder('collection'))).orderBy(desc(appRecords.order_value)).prepare(),
@@ -984,6 +1017,7 @@ export class JsonStore {
           this.statements.upsertRecord[collection].run(row.sql);
         }
       }
+      this.persistQueueSequence([...snapshot.rowState.jobs.values()].map(row => row.sql));
       // 显式全库替换才删除失去所有任务引用的父记录；普通完成不会删除历史。
       this.sqlite.exec('DELETE FROM generation_requests WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.request_id = generation_requests.id)');
     });
@@ -1044,6 +1078,7 @@ export class JsonStore {
       for (const change of changes.upserts) {
         this.statements.upsertRecord[change.collection].run(change.sql);
       }
+      this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
     });
     applyChanges();
     if (scope.includeSettings) this.settingsState = snapshot.settingsData;
@@ -1140,6 +1175,7 @@ export class JsonStore {
       for (const change of changes.upserts) {
         this.statements.upsertRecord[change.collection].run(change.sql);
       }
+      this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
     });
     applyChanges();
 
@@ -1489,6 +1525,7 @@ function sqlRecord(collection, item, order, data) {
   }
   if (collection === 'jobs') {
     row.request_id = item.requestId || null;
+    row.queue_seq = item.queueSeq ?? null;
     row.user_token = item.userToken || null;
     row.account_id = item.accountId || null;
     row.status = item.status || null;
@@ -1890,8 +1927,8 @@ function jobQueueProgress(job, jobs) {
   }
   const now = Date.now();
   let ahead = 0;
-  for (let index = jobs.length - 1; index >= 0; index--) {
-    const item = jobs[index];
+  const ordered = [...jobs].reverse().sort((a, b) => (Number(a.queueSeq) || 0) - (Number(b.queueSeq) || 0));
+  for (const item of ordered) {
     if (item.id === job.id) break;
     if (isQueueActiveJob(item, now)) ahead++;
   }

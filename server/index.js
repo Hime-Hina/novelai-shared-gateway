@@ -2283,6 +2283,7 @@ async function createJob(token, body, options = {}) {
       ...(options.batchId ? { batchId: options.batchId, sampleIndex: options.sampleIndex } : {}),
       userToken: token,
       status: 'queued',
+      queueSeq: store.nextQueueSequence(),
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       request: generationRequest ? webJobRequestSummary(request) : request,
       cacheKey,
@@ -2346,6 +2347,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
       ...(generationRequest ? { requestId: generationRequest.id } : {}),
       userToken: token,
       status: options.status || 'queued',
+      ...(options.status === 'done' ? {} : { queueSeq: store.nextQueueSequence() }),
       request: generationRequest ? webJobRequestSummary(request) : request,
       cacheKey,
       queueTotal: options.status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
@@ -3365,12 +3367,11 @@ async function drainQueuedJobs() {
       if (!db.jobs.some(job => job.status === 'queued')) return { jobIds: [], delay: 0 };
       const slots = availableAccountSlots(db.accounts, db.settings);
       if (slots <= 0) return { jobIds: [], delay: nextAccountReadyDelay(db.accounts, db.settings) };
+      const activeIds = new Set(db.jobs.filter(job => isQueueActiveJob(job)).map(job => job.id));
       return {
-        jobIds: db.jobs
-          .filter((job) => job.status === 'queued' && isQueueActiveJob(job))
-          .reverse()
-          .slice(0, slots)
-          .map((job) => job.id),
+        jobIds: store.queuedJobIds()
+          .filter(id => activeIds.has(id))
+          .slice(0, slots),
         delay: 0
       };
     }, { collections: ['accounts'], persist: false });

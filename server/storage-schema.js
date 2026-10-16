@@ -43,11 +43,12 @@ export const generationRequests = sqliteTable('generation_requests', {
 });
 
 export const jobs = sqliteTable('jobs', {
-  ...recordFields(), request_id: text().references(() => generationRequests.id), cost: real().default(0).notNull(),
+  ...recordFields(), request_id: text().references(() => generationRequests.id), queue_seq: integer(), cost: real().default(0).notNull(),
   stats_excluded: integer().default(0).notNull(), error_loggable: integer().default(0).notNull()
 }, table => [
   ...recordIndexes('jobs', table),
   index('idx_jobs_request_status').on(table.request_id, table.status),
+  index('idx_jobs_queued_sequence').on(table.queue_seq).where(sql`${table.status} = 'queued'`),
   index('idx_jobs_user_token').on(table.user_token),
   index('idx_jobs_image_id').on(table.image_id),
   index('idx_jobs_created_stats').on(table.created_at, table.status, table.stats_excluded, table.account_id),
