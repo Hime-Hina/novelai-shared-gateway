@@ -223,7 +223,7 @@ async function generateNovelAiImageOperation(request, account, env, options = {}
   if (!buffer.length) throw new Error('NovelAI returned an empty operation result.');
   if (request.operation === 'encode-vibe') {
     // 编码格式未公开；只核验传输边界和二进制类型，不猜测图片格式或编码魔数。
-    if (contentType !== 'application/octet-stream' || looksLikeTextResponse(buffer)) {
+    if (!['application/octet-stream', 'application/binary'].includes(contentType) || looksLikeTextResponse(buffer)) {
       throw new Error('NovelAI encode-vibe response does not contain binary encoding data.');
     }
     return { buffer, mimeType: 'application/octet-stream' };

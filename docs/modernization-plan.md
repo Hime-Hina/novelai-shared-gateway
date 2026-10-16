@@ -72,6 +72,8 @@
 | F08 | `fix: trust explicit proxy addresses for login rate limits` | 密码及 Discord 登录只信任 `TRUSTED_PROXY_IPS` 中的精确代理 IP；从 XFF 右侧定位实际客户端，保留用户名限制。`node --test server/client-ip.test.mjs server/member-auth.test.mjs member-routes.test.mjs discord-login.test.mjs` 15/15 通过 | 默认忽略转发头；隔离部署时须按实际链路配置代理 IP，并复核来源隔离；无数据库迁移，未改生产配置 |
 | F09 | `fix: bind allocation previews and saves to the editing version` | 分组预览与保存强制校验编辑基线版本；owner/私有管理共用页面保留冲突草稿，后台刷新不覆盖期间开始的编辑。`node --test member-routes.test.mjs owner-management.test.mjs server/member-management-ui.test.mjs server/fair-quota.test.mjs` 76/76 通过 | 无数据迁移；旧版页面缺失版本字段时收到 409，需要重新加载页面。UI 回归执行真实脚本配合轻量 DOM 模拟，D01 仍需真实浏览器验收 |
 
+F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交主题为 `fix: accept documented NovelAI vibe binary responses`，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
+
 依赖安装、源码搬迁与数据库迁移按实施阶段和独立提交执行，不因 ORM 评估直接改生产数据库或启动连接生产上游的测试服务。生产地址、主机、数据目录和可用测试入口在部署阶段从实际配置核实；本文不包含真实地址或凭据。
 
 ## 仓库与现状

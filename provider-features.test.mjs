@@ -273,8 +273,10 @@ test('Vibe 按二进制产物验证，拒绝伪装为 octet-stream 的错误文�
   }
   for (const firstByte of [0, 60, 91, 123]) {
     const binary = Buffer.from([firstByte, 255, 3, 4, 5, 128]);
-    const { value } = await captured(call, () => new Response(binary, { headers: { 'content-type': 'application/octet-stream' } }));
-    assert.deepEqual(value.buffer, binary);
+    for (const contentType of ['application/octet-stream', 'application/binary']) {
+      const { value } = await captured(call, () => new Response(binary, { headers: { 'content-type': contentType } }));
+      assert.deepEqual(value, { buffer: binary, mimeType: 'application/octet-stream' });
+    }
   }
 });
 
