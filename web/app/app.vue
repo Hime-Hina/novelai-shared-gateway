@@ -25,5 +25,9 @@ h2 { font-size: 19px; } h3 { font-size: 16px; } h2, h3 { margin: 0; }
 .n-data-table { font-variant-numeric: tabular-nums; }
 .n-message-container .n-message { max-width: min(420px, calc(100vw - 32px)); font-size: 13px; line-height: 1.6; }
 .n-message-container .n-message__content { overflow-wrap: anywhere; }
-@media (max-width: 600px) { .section-toolbar { align-items: flex-start; } .table-search { width: 210px; } }
+@media (max-width: 600px) {
+  .section-toolbar { align-items: flex-start; }
+  .table-search { width: 210px; }
+  .n-data-table .n-pagination { flex-wrap: wrap; max-width: 100%; row-gap: 8px; justify-content: flex-start; }
+}
 </style>
