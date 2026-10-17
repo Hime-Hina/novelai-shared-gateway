@@ -10,7 +10,7 @@ enableAutoUnmount(afterEach)
 const counts: ManagementUsageCounts = { total: 10, done: 3, failed: 2, queued: 1, pending: 3, running: 1,
   refunded: 2, free: 1, v5: 1.25, fixed: 6, purchased: 4, averageWaitSeconds: null, averageGenerationSeconds: 0 }
 function usage(): Usage {
-  return { since: '2026-10-10T16:00:00Z', until: '2026-10-17T03:00:00Z', timezone: 'Asia/Taipei', totals: { ...counts },
+  return { since: '2026-10-10T16:00:00Z', until: '2026-10-17T03:00:00Z', timezone: 'Asia/Shanghai', totals: { ...counts },
     members: [{ id: 'member', label: '合成成员', ...counts }], models: [{ id: 'model', label: '合成模型', ...counts }],
     days: [{ id: '2026-10-17', label: '2026-10-17', ...counts }], recent: [
       { id: 'free', memberId: 'member', username: '合成成员', model: '免费模型', status: 'done', createdAt: '2026-10-17T03:00:00Z',

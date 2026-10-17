@@ -47,7 +47,7 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
 <template>
   <section id="usagePanel" aria-labelledby="usageTitle" :aria-busy="loading" class="usage-panel">
     <header class="section-toolbar">
-      <div><h2 id="usageTitle">用量概览</h2><p class="section-caption">按台北提交日统计 · 每张图片计一次 · V5 为估算百分点</p></div>
+      <div><h2 id="usageTitle">用量概览</h2><p class="section-caption">按上海提交日统计 · 每张图片计一次 · V5 为估算百分点</p></div>
       <div class="toolbar-controls"><NSelect id="usageDays" :value="days" :options="ranges" aria-label="时间范围" @update:value="emit('update:days', $event)" /><NButton id="retryUsage" :loading="loading" @click="emit('retry')">刷新</NButton></div>
     </header>
     <div class="refresh-status" role="status">{{ loading ? data ? '正在更新 · 以下为上次读取的结果' : '正在读取用量…' : data ? '更新于 ' + date(data.until) : '尚未读取用量统计，请重新读取。' }}</div>

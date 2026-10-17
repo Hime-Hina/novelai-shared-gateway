@@ -62,7 +62,7 @@ test('成员归属父表优先，旧attempt/凭据其次；未知只进全局，
   for (const secret of ['key-a', 'key-b', 'old-secret', 'rotated-key', 'memberId']) assert.ok(!serialized.includes(secret));
 });
 
-test('精确毫秒左闭右开、台北午夜、合法ISO偏移与非法日期，不用字符串边界误漏', async t => {
+test('精确毫秒左闭右开、上海午夜、合法ISO偏移与非法日期，不用字符串边界误漏', async t => {
   const store = await open(t);
   const values = [
     '2026-10-15T16:00:00.000Z', '2026-10-16T00:00:00+08:00', '2026-10-15T00:01:00-23:59',

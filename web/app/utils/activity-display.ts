@@ -12,8 +12,8 @@ export function activityDates(from: string, to: string): string[] {
   for (const date = activityDate(from); date <= end; date.setDate(date.getDate() + 1)) days.push(activityDateKey(date))
   return days
 }
-export function taipeiDay(now = Date.now()): string {
-  const parts = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now)
+export function shanghaiDay(now = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now)
   const value = (type: string) => parts.find(part => part.type === type)!.value
   return `${value('year')}-${value('month')}-${value('day')}`
 }

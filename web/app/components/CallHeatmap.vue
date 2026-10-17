@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { NButton, NCard, NHeatmap, NSelect, NRadioGroup, NRadioButton, NTooltip, NPopover } from 'naive-ui'
 import type { MemberApi } from '../types/member'
 import type { ActivityDay, ActivityInvalidation, ActivityOperation, ActivitySnapshot } from '../types/activity'
-import { activityDate, activityDateKey, activityDates, aggregateActivity, taipeiDay } from '../utils/activity-display'
+import { activityDate, activityDateKey, activityDates, aggregateActivity, shanghaiDay } from '../utils/activity-display'
 
 const props = withDefaults(defineProps<{
   api: MemberApi; endpoint: string; members?: { id: string; username: string }[]
@@ -103,23 +103,23 @@ function reset() {
 }
 function calibrateDay() {
   if (!mounted) return
-  const day = taipeiDay()
+  const day = shanghaiDay()
   if (day !== lastDay) { lastDay = day; request() }
 }
-function visibility() { if (!document.hidden) { lastDay = taipeiDay(); request() } }
+function visibility() { if (!document.hidden) { lastDay = shanghaiDay(); request() } }
 watch([operation, memberId, () => props.endpoint, () => props.api], reset)
 watch(() => props.members, members => { if (!members?.some(member => member.id === memberId.value)) memberId.value = '' })
 watch(() => props.invalidation?.version, () => {
   if (!props.invalidation) return
-  const day = taipeiDay(), crossedDay = mounted && day !== lastDay
+  const day = shanghaiDay(), crossedDay = mounted && day !== lastDay
   lastDay = day
   request(crossedDay ? null : props.invalidation.dates)
 }, { flush: 'sync' })
 watch(() => props.refreshVersion, calibrateDay)
 watch(aggregation, async () => { await nextTick(); if (chart.value) chart.value.scrollLeft = chart.value.scrollWidth })
-watch(() => props.active, active => { if (active) { lastDay = taipeiDay(); request() } })
+watch(() => props.active, active => { if (active) { lastDay = shanghaiDay(); request() } })
 onMounted(() => {
-  mounted = true; lastDay = taipeiDay()
+  mounted = true; lastDay = shanghaiDay()
   document.addEventListener('visibilitychange', visibility)
   request()
 })
@@ -132,7 +132,7 @@ onBeforeUnmount(() => {
 <template>
   <NCard id="callHeatmap" size="small" :aria-busy="loading">
     <header class="section-toolbar">
-      <div><h2>调用活动 <span class="count-badge">{{ snapshot ? total.toLocaleString() + ' 次' : '—' }}</span></h2><p class="section-caption">最近一年 · 台北时间 · 每张生图计一次</p></div>
+      <div><h2>调用活动 <span class="count-badge">{{ snapshot ? total.toLocaleString() + ' 次' : '—' }}</span></h2><p class="section-caption">最近一年 · 上海时间 · 每张生图计一次</p></div>
       <NRadioGroup v-model:value="aggregation" name="activity-aggregation" size="small" aria-label="热力图聚合方式"><NRadioButton v-for="item in aggregations" :key="item.value" :value="item.value">{{ item.label }}</NRadioButton></NRadioGroup>
     </header>
     <div class="heatmap-filters">

@@ -33,7 +33,7 @@ type PendingRequest = { path: string; init?: RequestInit; done: boolean; reply: 
 let requests: PendingRequest[], portal: ReturnType<typeof useManagementPortal>, wrapper: VueWrapper | undefined, hidden = false
 const counts: ManagementUsageCounts = { total: 3, done: 2, failed: 1, queued: 0, pending: 0, running: 0,
   refunded: 1, free: 2, v5: 0, fixed: 0, purchased: 0, averageWaitSeconds: 2, averageGenerationSeconds: 3 }
-const usage = (label = 'seven days'): ManagementUsage => ({ days: [], since: label, until: '2026-10-18', timezone: 'Asia/Taipei',
+const usage = (label = 'seven days'): ManagementUsage => ({ days: [], since: label, until: '2026-10-18', timezone: 'Asia/Shanghai',
   totals: { ...counts }, members: [], models: [], recent: [] })
 const state = (name = 'Alice'): ManagementState => ({ groups: [], configVersion: 1, publicBaseUrl: 'https://gateway.example',
   discordLogin: true, ownerUserId: 'owner', autoAnlasFallback: false,

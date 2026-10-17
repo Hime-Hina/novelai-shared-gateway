@@ -81,7 +81,7 @@ export async function ownerOperation(url: URL, method: string | undefined, body:
     if (![0,1,7,30,365].includes(days)) fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
     const now = Date.now(), since = days === 0 ? '' : new Date(Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs).toISOString();
     // 既有响应的 days 是逐日统计数组，会覆盖查询范围的天数；保持键顺序和输出形态。
-    const range = { days, since, until:new Date(now).toISOString(), timezone:'Asia/Taipei' };
+    const range = { days, since, until:new Date(now).toISOString(), timezone:'Asia/Shanghai' };
     return { ...range, ...summarizeOwnerUsage(await store.readOwnerJobRows(since,new Date(now).toISOString())) };
   }
   const account = await store.update(db => sharedAccount(db), {persist:false});

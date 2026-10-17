@@ -16,7 +16,7 @@ beforeEach(() => vi.spyOn(document, 'hidden', 'get').mockReturnValue(false))
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const day = (date: string, total = 2): ActivityDay => ({ date, total, done: 1, failed: 0, cancelled: 1, queued: 0, pending: 0, running: 0, other: 0 })
 function snapshot(days = [day('2026-10-16')], overrides: Partial<ActivitySnapshot> = {}): ActivitySnapshot {
-  return { timezone: 'Asia/Taipei', from: '2026-10-15', to: '2026-10-17', asOf: '2026-10-17T03:00:00Z', memberId: 'self',
+  return { timezone: 'Asia/Shanghai', from: '2026-10-15', to: '2026-10-17', asOf: '2026-10-17T03:00:00Z', memberId: 'self',
     operation: 'generate', coverage: 'retained-records', days, ...overrides }
 }
 function deferred<T>() {
@@ -184,18 +184,18 @@ describe('CallHeatmap', () => {
 
   it('真实Node时区中日历坐标不偏一天，跨DST与闰年范围完整', () => {
     const moduleUrl = pathToFileURL(resolve('app/utils/activity-display.ts')).href
-    const code = `import { activityDate, activityDateKey, activityDates, taipeiDay } from ${JSON.stringify(moduleUrl)};
+    const code = `import { activityDate, activityDateKey, activityDates, shanghaiDay } from ${JSON.stringify(moduleUrl)};
       const date = activityDate('2024-02-29');
       console.log(JSON.stringify({ key:activityDateKey(date), month:date.getMonth()+1, day:date.getDate(), offset:date.getTimezoneOffset(),
         dst:activityDates('2024-03-09','2024-03-11'), leap:activityDates('2023-03-01','2024-02-29').length,
-        normal:activityDates('2024-03-01','2025-02-28').length, taipei:taipeiDay(Date.parse('2026-10-16T16:00:00Z')) }));`
+        normal:activityDates('2024-03-01','2025-02-28').length, shanghai:shanghaiDay(Date.parse('2026-10-16T16:00:00Z')) }));`
     const offsets = []
-    for (const TZ of ['America/Los_Angeles', 'Asia/Taipei', 'Pacific/Kiritimati']) {
+    for (const TZ of ['America/Los_Angeles', 'Asia/Shanghai', 'Pacific/Kiritimati']) {
       const result = JSON.parse(execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', code],
         { env: { ...process.env, TZ }, encoding: 'utf8', windowsHide: true }))
       offsets.push(result.offset)
       expect(result).toMatchObject({ key: '2024-02-29', month: 2, day: 29, dst: ['2024-03-09', '2024-03-10', '2024-03-11'],
-        leap: 366, normal: 365, taipei: '2026-10-17' })
+        leap: 366, normal: 365, shanghai: '2026-10-17' })
     }
     expect(offsets).toEqual([480, -480, -840])
   })

@@ -13,7 +13,7 @@ export interface ActivityDay {
 }
 
 export interface ActivitySnapshot {
-  timezone: 'Asia/Taipei';
+  timezone: 'Asia/Shanghai';
   from: string;
   to: string;
   asOf: string;
@@ -83,6 +83,6 @@ export async function readActivityHeatmap(
   }
   const days = await store.readActivityDays({ since: range.since, until: range.until, memberId, operation, dates });
   // 旧版本曾裁剪历史，手工清理仍可删除；没有记录不能证明当天没有调用。
-  return { timezone: 'Asia/Taipei', from: range.from, to: range.to, asOf: new Date(now).toISOString(),
+  return { timezone: 'Asia/Shanghai', from: range.from, to: range.to, asOf: new Date(now).toISOString(),
     memberId, operation, coverage: 'retained-records', days };
 }

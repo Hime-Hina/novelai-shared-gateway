@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityDate, activityRange, readActivityHeatmap } from '../../server/activity-heatmap.ts';
 
-test('activity dates use Taipei submission days and reject ambiguous or invalid timestamps', () => {
+test('activity dates use Shanghai submission days and reject ambiguous or invalid timestamps', () => {
   assert.equal(activityDate('2026-10-16T15:59:59.999Z'), '2026-10-16');
   assert.equal(activityDate('2026-10-16T16:00:00Z'), '2026-10-17');
   assert.equal(activityDate('2026-10-17T00:00:00+08:00'), '2026-10-17');
@@ -28,6 +28,7 @@ test('activity query keeps authorized member scope and never fills missing histo
   const store = { readActivityDays: async value => { query = value; return days; } };
   const now = Date.parse('2026-10-17T02:00:00Z');
   const result = await readActivityHeatmap(store, new URLSearchParams(), { memberId: 'alice' }, now);
+  assert.equal(result.timezone, 'Asia/Shanghai');
   assert.equal(query.memberId, 'alice'); assert.equal(query.operation, 'generate'); assert.equal(query.dates, null);
   assert.equal(result.coverage, 'retained-records'); assert.deepEqual(result.days, days); assert.equal(result.days.length, 1);
   await assert.rejects(readActivityHeatmap(store, new URLSearchParams(), {}, now), { statusCode: 400 });

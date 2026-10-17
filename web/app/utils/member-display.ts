@@ -1,7 +1,7 @@
 import type { MemberCharge } from '../types/member'
 
 export const number = (value: number | null | undefined) => value == null ? '未知' : value.toLocaleString('zh-CN', { maximumFractionDigits: 3 })
-export const date = (value: string | number | null | undefined) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Taipei' }) : '未知'
+export const date = (value: string | number | null | undefined) => value ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未知'
 const statuses: Record<string, string> = { done: '成功', failed: '失败', pending: '等待前序图片', queued: '排队', running: '生成中' }
 export const jobStatus = (status: string) => statuses[status] || status
 export function resultUrl(value?: string) {

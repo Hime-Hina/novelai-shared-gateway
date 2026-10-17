@@ -77,7 +77,7 @@ test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key�
   assert.equal((await call('/api/member/owner/statistics?days=999')).status,400);
 });
 
-test('用量按台北日期、成员和模型汇总，退款及预扣不算消耗，缺失耗时不算零',()=>{
+test('用量按上海日期、成员和模型汇总，退款及预扣不算消耗，缺失耗时不算零',()=>{
   const rows=[
     {id:'v5',memberId:'a',username:'甲',model:'v5',status:'done',createdAt:'2026-10-15T16:00:00Z',startedAt:'2026-10-15T16:00:10Z',upstreamStartedAt:'2026-10-15T16:00:10Z',upstreamCompletedAt:'2026-10-15T16:00:22Z',resource:'v5',amount:.1,chargeStatus:'settled'},
     {id:'paid',memberId:'b',username:'乙',model:'v45',status:'done',createdAt:'2026-10-15T15:59:00Z',resource:'anlas',fixed:26,purchased:0,chargeStatus:'settled'},
