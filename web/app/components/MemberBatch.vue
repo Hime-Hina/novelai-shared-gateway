@@ -70,7 +70,7 @@ onBeforeUnmount(() => { active = false; viewVersion++; readVersion++; pending = 
 <template>
   <NCollapse class="member-batch" :expanded-names="expanded ? [requestId] : []" @update:expanded-names="toggle">
     <NCollapseItem :name="requestId" :title="'查看批次 · ' + requestId">
-      <p v-if="loading" role="status">正在读取批次…</p>
+      <div class="refresh-status" role="status">{{ loading ? '正在读取批次…' : '展开时随调用记录自动更新' }}</div>
       <NAlert v-if="error" type="error">{{ error }}</NAlert>
       <template v-if="batch">
         <p>共 {{ number(batch.counts.total) }} 张 · 等待前序 {{ number(batch.counts.pending) }} · 排队 {{ number(batch.counts.queued) }} · 生成中 {{ number(batch.counts.running) }} · 成功 {{ number(batch.counts.done) }} · 失败或取消 {{ number(batch.counts.failed) }}</p>
@@ -84,7 +84,7 @@ onBeforeUnmount(() => { active = false; viewVersion++; readVersion++; pending = 
         <NAlert type="info">仅取消此批次排队或等待前序的图片。生成中的图片继续完成，已完成结果仍可领取。</NAlert>
       </template>
       <div class="batch-actions">
-        <NButton secondary :loading="loading" :disabled="cancelling" @click="read">刷新批次</NButton>
+        <NButton v-if="error" secondary :loading="loading" :disabled="cancelling" @click="read">重新核实批次</NButton>
         <NButton v-if="batch" secondary :loading="cancelling" :disabled="!batch.cancellable" @click="cancel">取消此批次尚未派发的图片</NButton>
       </div>
       <p v-if="message" role="status">{{ message }}</p>

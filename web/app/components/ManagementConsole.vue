@@ -3,15 +3,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { NAlert, NButton, NCard, NCheckbox, NInput, NSkeleton, NSpace, NTabPane, NTabs, NPopover, NTag } from 'naive-ui'
 import type { ManagementAlert, ManagementMode } from '../types/management'
 import { useManagementPortal } from '../composables/useManagementPortal'
-import { date } from '../utils/member-display'
 
 const props = defineProps<{ mode: ManagementMode }>()
 const { state, shared, panel, days, usage, usageLoading, busy, connecting, adminToken, remember, sessionVersion,
   message, messageError, messageVersion, readError, usageError, updatedAt, connection, refreshVersion, activityInvalidation,
-  api, run, notify, changed, connect, disconnect, refresh, loadUsage } = useManagementPortal(props.mode)
+  refreshing, api, run, notify, changed, connect, disconnect, refreshPage, loadUsage } = useManagementPortal(props.mode)
 const groupsDirty = ref(false), policyDirty = ref(false), alerts = ref<ManagementAlert[]>([])
 const hint = computed(() => !state.value ? (connecting.value ? '正在验证管理身份…' : props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作')
-  : (props.mode === 'admin' ? '已连接 · 定时读取' : connection.value === 'open' ? '已连接 · 实时更新' : '实时更新正在连接，当前显示上次数据') + ' · 管理摘要更新 ' + date(updatedAt.value))
+  : '成员、分组与共享账户管理')
 function changedSession() { groupsDirty.value = false; policyDirty.value = false; alerts.value = [] }
 watch(sessionVersion, changedSession)
 function beforeUnload(event: BeforeUnloadEvent) {
@@ -26,7 +25,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     <header class="management-header">
       <div><h1>共享账户控制台</h1><p id="connectedHint" class="muted" role="status">{{ hint }}</p></div>
       <NSpace v-if="state" id="topActions">
-        <NButton id="refresh" :disabled="busy" @click="refresh(true)">刷新状态</NButton>
         <NButton v-if="mode === 'owner'" id="disconnect" tag="a" href="/">返回我的额度</NButton>
         <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
       </NSpace>
@@ -35,6 +33,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     <PortalToast :message="readError" type="warning" />
     <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"><NSkeleton text :repeat="5" /></NCard>
     <section v-if="state" id="dashboard" :key="sessionVersion" class="dashboard">
+      <PortalRefresh :connection="connection" :loading="refreshing" :disabled="busy" :updated-at="updatedAt" summary="管理摘要更新于" @refresh="refreshPage" />
       <div class="account-strip">
         <div class="toolbar-controls"><NTag size="small" :bordered="false">{{ state.users.filter(user => user.enabled).length }} 位成员</NTag><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span></div>
         <NPopover trigger="click" style="max-width: 380px"><template #trigger><NButton size="small" quaternary :type="alerts.length ? 'warning' : 'default'">{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton></template><div id="lossAlerts"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p><p v-if="!alerts.length">当前没有财务风险告警。</p><NButton size="small" @click="panel = 'settings'">查看上游与策略</NButton></div></NPopover>

@@ -139,9 +139,8 @@ onBeforeUnmount(() => {
       <NSelect id="heatmapOperation" v-model:value="operation" :options="operations" aria-label="调用操作" size="small" />
       <NSelect id="heatmapStatus" v-model:value="status" :options="statuses" aria-label="任务状态" size="small" />
       <NSelect v-if="members !== undefined" id="heatmapMember" v-model:value="memberId" :options="memberOptions" filterable aria-label="统计成员" size="small" />
-      <NButton id="retryHeatmap" :loading="loading" size="small" quaternary @click="request()">刷新</NButton>
     </div>
-    <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在读取调用记录…' : snapshot ? `${snapshot.from} — ${snapshot.to}` + (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '') : '等待记录') }}</div>
+    <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在读取调用记录…' : snapshot ? `${snapshot.from} — ${snapshot.to}` + (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '') : '等待记录') }} <NButton v-if="error" id="retryHeatmap" :loading="loading" size="tiny" text @click="request()">重试</NButton></div>
     <div class="heatmap-chart">
       <div v-if="aggregation === 'day' || aggregation === 'cumulative'" ref="chart" class="heatmap-scroll" role="region" aria-label="每日调用热力图，可横向滚动" tabindex="0">
         <NHeatmap :data="cells" :loading="!snapshot" :first-day-of-week="6" :minimum-color="colors[0]" :active-colors="colors.slice(1)" :x-gap="4" :y-gap="4" :theme-overrides="{ rectSizeMedium: 'clamp(11px, calc((100cqw - 250px) / 53), 18px)' }" tooltip>

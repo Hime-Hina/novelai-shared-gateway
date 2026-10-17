@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { ManagementApi, ManagementMode, ManagementRun, ManagementState, ManagementUsage } from '../types/management'
 import type { SharedStatus, StateInvalidation } from '../types/member'
 
@@ -142,6 +142,12 @@ export function useManagementPortal(mode: ManagementMode) {
     })().finally(() => { if (current === epoch) usageTask = null })
     return usageTask
   }
+  function refreshPage() {
+    if (disposed || busy.value || document.hidden || !stateQuery.data.value) return Promise.resolve()
+    activityInvalidation.dates = null; activityInvalidation.version++
+    return Promise.all([refresh(), panel.value === 'usage' ? loadUsage() : Promise.resolve()])
+  }
+  const refreshing = computed(() => stateQuery.pending.value || (panel.value === 'usage' && usageQuery.pending.value))
   function requestRefresh() {
     if (!stateQuery.data.value || disposed) return
     pending = true
@@ -201,5 +207,5 @@ export function useManagementPortal(mode: ManagementMode) {
   })
   return { state: stateQuery.data, shared, panel, days, usage: usageQuery.data, usageLoading: usageQuery.pending,
     busy, connecting, adminToken, remember, sessionVersion, message, messageError, messageVersion, readError, usageError,
-    updatedAt, connection, refreshVersion, activityInvalidation, api, run, notify, changed, connect, disconnect, refresh, loadUsage }
+    updatedAt, connection, refreshVersion, activityInvalidation, refreshing, api, run, notify, changed, connect, disconnect, refresh, refreshPage, loadUsage }
 }

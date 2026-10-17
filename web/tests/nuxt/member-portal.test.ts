@@ -112,6 +112,20 @@ afterEach(async () => {
 })
 
 describe('真实 Nuxt useAsyncData 成员会话', () => {
+  it('页首刷新校准完整活动并通知调用列表，不读取 API Key，成功后清除过时读取错误', async () => {
+    const stream = await authenticated()
+    stream.onopen?.()
+    const failed = portal.refresh()
+    pending('me').reply(503, { error: 'offline' }); await failed
+    const version = portal.refreshVersion.value, activityVersion = portal.activityInvalidation.version
+    const reading = portal.refreshPage()
+    expect(portal.activityInvalidation).toEqual({ version: activityVersion + 1, dates: null })
+    pending('me').reply(200, profile('Fresh')); await reading; await settle()
+    expect(portal.refreshVersion.value).toBe(version + 1)
+    expect(portal.error.value).toBe('')
+    expect(requests.every(request => request.path === 'me')).toBe(true)
+  })
+
   it('公开登录配置与私有 me 并行，匿名401不会丢弃后到的公开配置', async () => {
     await mount()
     expect(publicFetch).toHaveBeenCalledWith('/api/member/login-options', { retry: 0, credentials: 'same-origin' })

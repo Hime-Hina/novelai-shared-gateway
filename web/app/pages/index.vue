@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { NButton, NCard, NSkeleton, NSpace, NCollapse, NCollapseItem } from 'naive-ui'
 import { useMemberPortal } from '../composables/useMemberPortal'
-import { date } from '../utils/member-display'
 
 const { profile, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion, activityInvalidation,
-  initialize, refresh, login, startDiscord, logout, api } = useMemberPortal()
+  refreshing, initialize, refresh, refreshPage, login, startDiscord, logout, api } = useMemberPortal()
 </script>
 <template>
   <main class="portal">
@@ -21,11 +20,11 @@ const { profile, loginOptions, shared, connection, initializing, working, error,
       <div class="loading-cards"><NCard v-for="n in 3" :key="n"><NSkeleton height="112px" /></NCard></div>
     </section>
     <section v-else-if="profile && loginOptions" id="account" class="account-content">
+      <PortalRefresh :connection="connection" :loading="refreshing" :updated-at="updatedAt" summary="额度更新于" @refresh="refreshPage" />
       <LazyCallHeatmap :api="api" endpoint="heatmap" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
       <MemberQuota :profile="profile" />
       <NCard size="small"><NCollapse><NCollapseItem :title="`共享账户 · 生成中 ${shared?.running ?? '—'} / 1 · 排队 ${shared?.queued ?? '—'}`" name="shared"><SharedAccountStatus :state="shared" :connection="connection" /></NCollapseItem></NCollapse></NCard>
       <div class="member-tools">
-        <NSpace align="center"><NButton id="refresh" @click="refresh">刷新额度</NButton><span id="memberUpdated" class="muted">个人额度与调用更新于 {{ date(updatedAt) }}</span></NSpace>
         <MemberApiKey :api="api" />
       </div>
       <LazyMemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />

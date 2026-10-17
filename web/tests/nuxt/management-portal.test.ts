@@ -108,6 +108,25 @@ afterEach(async () => {
 })
 
 describe('真实 Nuxt useAsyncData 管理会话', () => {
+  it('页首手动刷新同时重读摘要、当前用量和完整热力图，不触发上游操作', async () => {
+    const stream = (await connected())!
+    stream.onopen?.()
+    const version = portal.activityInvalidation.version
+    const reading = portal.refreshPage()
+    expect(portal.activityInvalidation).toEqual({ version: version + 1, dates: null })
+    pending(summaryPath('owner')).reply(200, state('Fresh'))
+    pending(statisticsPath()).reply(200, usage('Fresh usage'))
+    await reading; await settle()
+    expect(portal.state.value?.users[0]?.username).toBe('Fresh')
+    expect(portal.usage.value?.since).toBe('Fresh usage')
+    expect(requests.every(request => !request.init?.method || request.init.method === 'GET')).toBe(true)
+    portal.panel.value = 'members'; await settle()
+    const previous = count(statisticsPath())
+    const next = portal.refreshPage()
+    pending(summaryPath('owner')).reply(200, state()); await next
+    expect(count(statisticsPath())).toBe(previous)
+  })
+
   it('owner 摘要与默认七天统计并行，私有数据不写入可序列化 payload', async () => {
     await mount('owner')
     expect(requests.map(request => request.path)).toEqual([summaryPath('owner'), statisticsPath()])

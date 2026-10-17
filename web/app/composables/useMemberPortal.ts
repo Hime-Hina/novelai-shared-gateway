@@ -45,6 +45,7 @@ export function useMemberPortal() {
     try {
       const value = await api<MemberProfile>('me')
       updatedAt.value = Date.now(); refreshVersion.value++
+      if (error.value.startsWith('额度读取失败，保留上次结果：')) error.value = ''
       if (connection.value !== 'open') { activityInvalidation.dates = null; activityInvalidation.version++ }
       return value
     } catch (failure) {
@@ -87,6 +88,11 @@ export function useMemberPortal() {
       await start()
     })().finally(() => { refreshTask = null })
     return refreshTask
+  }
+  function refreshPage() {
+    if (disposed || !profileQuery.data.value || document.hidden) return Promise.resolve()
+    activityInvalidation.dates = null; activityInvalidation.version++
+    return refresh()
   }
   async function initialize() {
     initializing.value = true; error.value = ''
@@ -135,5 +141,5 @@ export function useMemberPortal() {
     window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', visible)
   })
   return { profile: profileQuery.data, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion, activityInvalidation,
-    initialize, refresh, login, startDiscord, logout, api }
+    refreshing: profileQuery.pending, initialize, refresh, refreshPage, login, startDiscord, logout, api }
 }

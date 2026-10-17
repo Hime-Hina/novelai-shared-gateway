@@ -88,14 +88,14 @@ onBeforeUnmount(() => { disposed = true; pending = false; pst.value = ''; accoun
   <section class="upstream-settings">
     <NCard title="共享 Opus">
       <NAlert v-if="error" type="warning" role="status">{{ error }} <NButton text @click="load">重试读取</NButton></NAlert>
-      <p v-if="loading" role="status">正在读取上游状态…</p>
+      <div class="refresh-status" role="status">{{ loading ? '正在读取上游状态…' : '随页面数据自动更新' }}</div>
       <template v-if="account">
         <p id="upstreamStatus">{{ account.enabled ? '已启用' : '已暂停' }} · {{ account.quotaTier === 3 ? 'Opus' : '订阅待核验' }} · 正在生成 {{ account.inFlight }}</p>
         <p id="upstreamQuota">V5 {{ number(account.v5UsagePercent) }}% · 订阅 {{ number(account.quotaFixed) }} · 购买 {{ number(account.quotaPurchased) }}</p>
         <p id="upstreamUpdated" class="muted">官方查询 {{ date(account.quotaCheckedAt) }}{{ account.quotaError ? ' · 查询失败' : '' }}</p>
       </template>
       <p v-else-if="!loading">尚未绑定共享 Opus</p>
-      <NSpace><NButton id="refreshUpstream" :disabled="busy || !account" @click="refreshQuota">向官方刷新额度</NButton>
+      <NSpace><NButton id="refreshUpstream" :disabled="busy || !account" @click="refreshQuota">向官方查询余额</NButton>
         <NButton id="toggleUpstream" :disabled="busy || !account" @click="toggle">{{ account?.enabled ? '暂停上游' : '恢复上游' }}</NButton></NSpace>
     </NCard>
     <NCard title="V5 额度用完后">

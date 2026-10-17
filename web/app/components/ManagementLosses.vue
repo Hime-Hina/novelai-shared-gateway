@@ -196,7 +196,7 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
 
 <template>
   <section v-show="active" class="management-losses" aria-label="损耗与运营账务">
-    <NSpace align="center"><NButton id="refreshLosses" :loading="loading" @click="load()">刷新损耗</NButton><span id="lossReadStatus">{{ losses ? '损耗数据更新 ' + date(losses.asOf) : '正在读取损耗数据…' }}</span></NSpace>
+    <div id="lossReadStatus" class="refresh-status" role="status">{{ loading ? '正在更新损耗数据…' : losses ? '损耗数据更新 ' + date(losses.asOf) : '尚未读取损耗数据' }}</div>
     <NAlert v-if="readError" type="warning" role="status">{{ readError }}</NAlert>
     <NAlert type="info">疑似尝试风险与官方聚合差额可能重叠，分别展示，不相加为已确认消费。告警不停止调用或退款。</NAlert>
     <template v-if="losses">
