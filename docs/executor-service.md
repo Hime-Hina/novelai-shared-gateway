@@ -84,6 +84,10 @@ docker build -f executor/Dockerfile -t novelai-shared-gateway-executor:check .
 父进程只读审计。已有根包和前端版本保持，锁文件仅新增 executor 与它的 Nitro
 依赖实例；离线冻结安装通过，没有顺带升级或去重旧版本。
 
+提交 `85dc265` 的[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38999790224)
+已通过：后端 477/477、前端 80/80、执行器认证 3/3、类型检查、三个 Docker
+构建及最终 Linux 执行器产物 HTTP 3/3。该验证范围仍为单独执行器。
+
 ## 尚未完成的验收
 
 单独执行器的实现与测试不等于 F11 完成。还须通过真实 Nuxt 与执行器双进程验证：

@@ -53,7 +53,7 @@
 | --- | --- | --- |
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
-| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过最新托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 独立执行继续实施 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分与受保护的 Nitro 候选产物，本地真实 HTTP 验收通过；Nuxt 双进程故障隔离、内部受理重试与部署仍待，未按整体完成结案 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；当前80项前端、474项后端、两个Docker通过。U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。下一项 F11；F11/N01 两段事件链路仍待 |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
@@ -103,6 +103,8 @@ CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novela
 U02 已提交 [7af8e3e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7af8e3e)，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38993426014) 后端458/458、前端63/63、语法/类型检查及两个Docker均通过。owner Cookie/SSE 与私有 admin Token/可见30秒刷新保持分开，两个薄路由复用同一控制台；分组、调额、告警阈值保留编辑版本，业务403先核验授权，409保留草稿且不自动重试写入。Naive UI 标签页首次访问才挂载表单、访问后保留草稿，损耗告警独立后台读取；没有自写键盘增强或新增依赖。Caddy示例增加仅绑定回环的18082私有同源入口，保留SSH本地Host/Origin，公开管理拒绝规则保持，Nuxt不新增生产业务代理。浏览器功能、真实别名与20条性能复测见[管理页验收](nuxt-management-portal.md)：默认统计提前，冷缓存连接提示较慢及268KB首次资源代价均保留；无schema变更，尚未部署或替换生产。
 
 U03 已提交 [96bf52a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/96bf52a)，Naive 月份对齐补丁 [b9ac32c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b9ac32c) 和匿名预取修复 [731d62c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/731d62c) 分别提交；[最终 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38996693842) 后端474/474、前端80/80、109文件语法、类型与两个Docker通过。[热力图验收](call-heatmap.md)记录全年冷历史SQL聚合、成员隔离、缺失日期不冒充零、SSE授权日期合并，以及真实Chrome时区/移动/成功取消增量验证；无新schema或依赖。匿名提前下载减少58368B，60条矩阵及17条同会话对照完整保留；关键DOM、用量和热力图分别记录，耗时改善仍待D01可控环境验收，不宣称生产长等待已解决。下一项F11确立独立执行与唯一写入所有者，再推进N01–N03；生产保持原版本。
+
+F11 首片分别提交 [a81fc38](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a81fc38) 修复长期 SSE 退出循环等待、[d9119ff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d9119ff) 抽取同一运行时、[85dc265](https://github.com/Hime-Hina/novelai-shared-gateway/commit/85dc265) 加入独立 Nitro 2.13.4 listener 与内部密钥边界。旧 CLI 继续复用同一恢复/派发/关闭逻辑；执行器打包保留 SQLite worker、迁移与业务文件树，默认回环、要求绝对 DATA_DIR。[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38999790224) 后端477/477、前端80/80、执行器认证3/3、类型与三个Docker构建全部通过，最终Linux候选产物HTTP 3/3验证鉴权、worker、11迁移、一次模拟生成、跨格式幂等及结果领取/退出。详情与剩余范围见[独立执行服务](executor-service.md)；不能把单服务验证当作 Nuxt 双进程故障验收。未改生产配置、数据或服务。
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
@@ -514,6 +516,7 @@ pnpm 是包管理器，systemd 运行编译后的服务仍可直接调用固定�
 | `tests/integration/` | HTTP、SQLite、登录、账本、启动和中断恢复测试 |
 | `tests/fixtures/`、`tests/helpers/` | 经确认只供测试使用的样本、模拟上游和客户端辅助函数，保留第三方许可文件 |
 | `web/` | 第一阶段 Nuxt 项目，包含自身的 `app/`、`server/`、`public/`；与当前后端同名目录隔离 |
+| `executor/` | 独立 Nitro 构建、内部鉴权及进程入口；自身测试分 unit/integration，不重复维护业务源码 |
 | `server/` | 现有后端先保持；逐步迁出 HTTP 适配，按 F11 最终保留独立执行服务与业务持久化代码 |
 | `scripts/`、`docs/` | 运维/构建脚本与文档；测试从脚本目录移走 |
 | 根目录 | 包管理、部署入口、许可证及主要说明；移除散落的测试入口，数据和敏感配置仍按现有规则隔离 |
