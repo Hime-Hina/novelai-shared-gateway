@@ -2,8 +2,10 @@
 export class JobPreviews {
   frames = new Map();
   listeners = new Map();
+  closed = false;
 
   subscribe(token, res) {
+    if (this.closed) { res.end(); return; }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
@@ -24,6 +26,14 @@ export class JobPreviews {
     });
     for (const frame of this.frames.values()) {
       if (frame.token === token) this.send(res, frame);
+    }
+  }
+
+  closeSubscriptions() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const listeners of this.listeners.values()) {
+      for (const res of listeners) if (!res.destroyed && !res.writableEnded) res.end();
     }
   }
 

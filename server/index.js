@@ -10,6 +10,7 @@ import { privateAccessAllowed } from './public-hosts.js';
 import { launcherSubscription } from './launcher-subscription.js';
 import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
+import { stateEventsFor } from './state-events.js';
 import { reconcileMemberSessionOwner } from './member-auth.js';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.js';
 import { requireDiscordMembership } from './discord-auth.js';
@@ -5038,6 +5039,9 @@ function installShutdownHandlers(serverInstance) {
   const shutdown = async (signal) => {
     if (runtimeClosing) return;
     runtimeClosing = true; queueDispatchEnabled = false;
+    // 长期订阅须先结束；否则 server.close 等连接，而订阅等 store.close，形成循环。
+    stateEventsFor(store).closeSubscriptions();
+    jobPreviews.closeSubscriptions();
     const configured = Number(process.env.SHUTDOWN_GRACE_MS || 30000);
     const graceMs = Number.isFinite(configured) && configured > 0 ? Math.min(600000, Math.floor(configured)) : 30000;
     console.log(`[runtime] ${signal} received. Waiting up to ${graceMs}ms for active generation.`);

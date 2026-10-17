@@ -205,10 +205,25 @@ test('正常SIGTERM停止新派发并等待在途落盘；超过宽限由重启�
     }
     const began = Date.now(); f.child().kill('SIGTERM');
     if (!timeout) { await delay(100); assert.equal(f.child().exitCode, null); f.release(); }
-    await f.exit(); await response;
+    await f.exit(); const delivered = await response;
     assert.ok(Date.now() - began < 5000, '关闭必须遵守有限宽限');
     assert.equal(f.generations(), 1);
-    if (!timeout) { assert.equal(f.jobs().filter(job => job.status === 'done').length, 1); assert.equal(f.jobs().filter(job => job.status === 'queued').length, 1); }
+    if (!timeout) {
+      assert.equal(delivered?.status, 200, '正常关闭必须交付完整HTTP响应');
+      const bytes = delivered.bytes;
+      assert.ok(bytes.length >= 52, 'ZIP至少包含本地头和完整EOCD');
+      assert.equal(bytes.readUInt32LE(0), 0x04034b50);
+      assert.equal(bytes.readUInt16LE(8), 0, 'fixture图片使用stored ZIP');
+      const imageAt = 30 + bytes.readUInt16LE(26) + bytes.readUInt16LE(28);
+      assert.deepEqual(bytes.subarray(imageAt, imageAt + bytes.readUInt32LE(18)), png);
+      const end = bytes.length - 22;
+      assert.equal(bytes.readUInt32LE(end), 0x06054b50, '响应末尾必须包含完整EOCD');
+      assert.equal(bytes.readUInt16LE(end + 20), 0, 'EOCD后无注释或截断数据');
+      assert.equal(bytes.readUInt16LE(end + 10), 1);
+      assert.equal(bytes.readUInt32LE(end + 16) + bytes.readUInt32LE(end + 12), end);
+      assert.equal(f.jobs().filter(job => job.status === 'done').length, 1);
+      assert.equal(f.jobs().filter(job => job.status === 'queued').length, 1);
+    }
     else {
       f.release(); await f.start();
       assert.equal(f.jobs()[0].status, 'failed'); assert.equal(f.settlement(f.jobs()[0].id).status, 'refunded'); assert.equal(f.generations(), 1);

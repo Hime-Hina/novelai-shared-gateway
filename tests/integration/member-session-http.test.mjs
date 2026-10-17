@@ -22,7 +22,7 @@ async function listen(server) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port;
 }
 
-async function fixture(t, { owner = false } = {}) {
+async function fixture(t, { owner = false, grace = 30000 } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-member-session-http-'));
   const adminToken = 'synthetic-admin-member-session-only';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: 'pst-synthetic-member-session-only', DATA_DIR: dataDir }, log() {} });
@@ -63,6 +63,7 @@ globalThis.fetch = (input, options) => {
 };\n`);
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(env, { ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(port), PUBLIC_HOST: 'session.example',
+    SHUTDOWN_GRACE_MS: String(grace),
     PUBLIC_BASE_URL: owner ? 'https://session.example' : base,
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}` });
   if (owner) Object.assign(env, { OWNER_USER_ID: members[0].user_id, DISCORD_GUILD_ID: guildId,
@@ -106,7 +107,7 @@ globalThis.fetch = (input, options) => {
     } finally { await store.close(); }
   };
   const expire = cookie => audit.prepare('UPDATE member_sessions SET expires_at = ? WHERE token_hash = ?').run(Date.now() - 1, tokenHash(cookie));
-  return { start, stop, call, login, me, createOfflineSession, expire, audit, members, adminToken,
+  return { start, stop, call, login, me, createOfflineSession, expire, audit, members, adminToken, child: () => child, exit: () => exited,
     assertNoGeneration() { assert.ok(requests.every(url => url === '/user/data')); assert.doesNotMatch(output, /External fetch blocked/); } };
 }
 
@@ -199,4 +200,46 @@ test('owner 固定十二小时，A→B→A 不复活旧会话、普通七天 Coo
   assert.equal((await gateway.call('/api/member/owner/member-management', { cookie: cookieFor(owner) })).status, 401);
   assert.equal((await gateway.me(cookieFor(unrelated))).sessionExpiresAt, unrelated.expiresAt);
   gateway.assertNoGeneration();
+});
+
+test('SIGTERM主动结束两类SSE订阅，无注销事件且不等满关闭宽限', { timeout: 30000, skip: process.platform === 'win32' }, async t => {
+  const grace = 20000, gateway = await fixture(t, { owner: true, grace });
+  const session = await gateway.createOfflineSession(0);
+  await gateway.start();
+  async function subscribe(route, headers, firstFrame) {
+    const response = await gateway.call(route, { headers });
+    assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /text\/event-stream/);
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let text = '';
+    while (!text.includes(firstFrame)) {
+      const chunk = await reader.read(); assert.equal(chunk.done, false);
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    // 立即观察EOF并收集错误，避免红测清理强杀后遗留未处理的读流拒绝。
+    const ended = (async () => {
+      for (;;) { const chunk = await reader.read(); if (chunk.done) return { text }; text += decoder.decode(chunk.value, { stream: true }); }
+    })().catch(error => ({ error }));
+    return { ended };
+  }
+  const sharedStream = await subscribe('/api/member/shared-events', { cookie: cookieFor(session) }, 'event: shared-status');
+  const previewStream = await subscribe('/api/jobs/events', { authorization: 'Bearer ' + gateway.members[0].api_key }, ': connected');
+  const counts = () => ['jobs', 'fair_quota_settlements', 'ledger'].map(table => gateway.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+  const before = counts(), started = Date.now();
+  gateway.child().kill('SIGTERM');
+  let timer;
+  try {
+    const [shared, previews, exit] = await Promise.race([
+      Promise.all([sharedStream.ended, previewStream.ended, gateway.exit()]),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('空闲SSE使SIGTERM超过5000ms，仍在等待长订阅关闭')), 5000); })
+    ]);
+    assert.equal(shared.error, undefined, '成员状态流应正常EOF');
+    assert.equal(previews.error, undefined, '任务预览流应正常EOF');
+    assert.doesNotMatch(shared.text, /auth-expired/); assert.doesNotMatch(previews.text, /auth-expired/);
+    assert.deepEqual(exit, [0, null]);
+    const shutdownMs = Date.now() - started;
+    assert.ok(shutdownMs < grace / 2);
+    assert.deepEqual(counts(), before);
+    gateway.assertNoGeneration();
+    t.diagnostic(`SIGTERM普通EOF并退出 ${shutdownMs}ms；宽限 ${grace}ms；生成与结算计数不变`);
+  } finally { clearTimeout(timer); }
 });

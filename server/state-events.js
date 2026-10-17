@@ -51,13 +51,19 @@ export function stateEventsFor(store) {
     timer = setTimeout(flush, Math.max(0, Math.min(200, firstAt + 1000 - Date.now())));
     timer.unref?.();
   };
-  const close = () => {
+  const closeSubscriptions = () => {
+    if (closed) return;
     closed = true; clearTimeout(timer); pending = undefined;
-    store.events.off('commit', commit); store.events.off('close', close);
+    store.events.off('commit', commit);
     for (const onClose of listeners.values()) { try { onClose?.(); } catch {} }
-    listeners.clear(); hubs.delete(store);
+    listeners.clear();
+    // 关闭数据库前保留已关闭的 hub，阻止尚在鉴权的请求重新开启订阅。
   };
-  const hub = { current: () => ({ bootId, version, updatedAt }),
+  const close = () => {
+    closeSubscriptions();
+    store.events.off('close', close); hubs.delete(store);
+  };
+  const hub = { current: () => ({ bootId, version, updatedAt }), closeSubscriptions,
     subscribe(listener, onClose) {
       if (closed) { onClose?.(); return () => {}; }
       listeners.set(listener, onClose);

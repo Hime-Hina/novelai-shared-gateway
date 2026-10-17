@@ -76,3 +76,26 @@ test('100个连接只占一个store监听，回调错误隔离，退订和关库
   const reopened = stateEventsFor(store); assert.notEqual(reopened.current().bootId, hub.current().bootId);
   store.events.emit('close');
 });
+
+test('先关闭订阅但不提前关库，晚到订阅立即结束且真正关库仍清理hub', t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1800000000000 });
+  const store = { events: new EventEmitter() }, hub = stateEventsFor(store);
+  t.after(() => store.events.emit('close'));
+  let delivered = 0, ended = 0, lateEnded = 0;
+  hub.subscribe(() => delivered++, () => ended++);
+  store.events.emit('commit', { collections: ['jobs'], memberIds: ['member'] });
+  hub.closeSubscriptions(); hub.closeSubscriptions();
+  assert.equal(ended, 1);
+  assert.equal(store.events.listenerCount('commit'), 0);
+  assert.equal(store.events.listenerCount('close'), 1, '仍需等待真正的store.close做最终清理');
+  assert.equal(stateEventsFor(store), hub, '关闭过程中不得创建新的可订阅hub');
+  const detach = stateEventsFor(store).subscribe(() => delivered++, () => lateEnded++);
+  assert.equal(lateEnded, 1); detach();
+  store.events.emit('commit', { collections: ['jobs'], memberIds: ['member'] });
+  t.mock.timers.tick(1000);
+  assert.equal(delivered, 0); assert.equal(hub.current().version, 0);
+  store.events.emit('close');
+  assert.equal(store.events.listenerCount('commit'), 0); assert.equal(store.events.listenerCount('close'), 0);
+  assert.equal(ended, 1); assert.equal(lateEnded, 1);
+  assert.notEqual(stateEventsFor(store).current().bootId, hub.current().bootId);
+});
