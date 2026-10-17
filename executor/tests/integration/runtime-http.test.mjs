@@ -254,12 +254,27 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
     headers: { 'Idempotency-Key': 'synthetic-unacceptable-output', accept: 'application/xml' } });
   assert.equal(unacceptable.status, 406); await unacceptable.text();
   assert.deepEqual(counts(), originalCounts); assert.equal(gateway.generations(), 1);
-  const replay = await gateway.call('/v1/ai/generate-image-stream', { body: nativeBody, member: 0, headers });
-  assert.equal(replay.status, 200); assert.match(replay.headers.get('content-type'), /application\/octet-stream/);
-  assert.equal(replay.headers.get('x-nai-image-count'), null); assert.equal(replay.headers.get('x-nai-partial'), null);
-  assert.equal(replay.headers.get('x-nai-request-id'), requestId);
-  const frames = Buffer.from(await replay.arrayBuffer()); assert.ok(frames.includes(png), 'MessagePack must retain original PNG bytes');
-  assert.ok(frames.includes(Buffer.from('event_type'))); assert.ok(frames.includes(Buffer.from('image')));
+  for (const stream of [undefined, 'sse', 'msgpack']) {
+    const sse = stream !== 'msgpack';
+    const replay = await gateway.call('/v1/ai/generate-image-stream', {
+      body: { ...nativeBody, parameters: { ...nativeBody.parameters, stream } }, member: 0,
+      headers: { ...headers, accept: sse ? 'application/msgpack' : 'text/event-stream' }
+    });
+    assert.equal(replay.status, 200); assert.equal(replay.headers.get('content-type'), sse ? 'text/event-stream' : 'application/msgpack');
+    assert.equal(replay.headers.get('x-nai-image-count'), null); assert.equal(replay.headers.get('x-nai-partial'), null);
+    assert.equal(replay.headers.get('x-nai-request-id'), requestId);
+    if (sse) {
+      const lines = (await replay.text()).split('\n');
+      assert.deepEqual([lines[0], ...lines.slice(2)], ['event: final', '', '']);
+      assert.ok(lines[1].startsWith('data: '));
+      assert.deepEqual(JSON.parse(lines[1].slice(6)), { event_type: 'final', samp_ix: 0, image: png.toString('base64') });
+    } else {
+      const frames = Buffer.from(await replay.arrayBuffer()); assert.ok(frames.includes(png), 'MessagePack must retain original PNG bytes');
+      assert.equal(frames.readUInt32BE(0), frames.length - 4);
+      assert.ok(frames.includes(Buffer.from('event_type'))); assert.ok(frames.includes(Buffer.from('image')));
+    }
+    assert.deepEqual(counts(), originalCounts); assert.equal(gateway.generations(), 1);
+  }
   const conflict = await gateway.call('/ai/generate-image', { body: { ...nativeBody, input: 'different synthetic operation' }, member: 0, headers });
   assert.equal(conflict.status, 409); await conflict.text();
   assert.deepEqual(counts(), originalCounts); assert.equal(gateway.generations(), 1);

@@ -134,6 +134,8 @@ C03-02 的 SSE 切片已提交 [d8afad8](https://github.com/Hime-Hina/novelai-sh
 
 C03-03 的独立放大blur切片仅放开官方文字列出的0、0.30、0.35、0.40、0.45、0.50；保留原缺省/null归零和四档像素报价。复用provider原值透传、结果存储与幂等指纹，不增加依赖或schema。六档解析、非列举值/类型拒绝、八个价格边界与透传等61项定向检查通过，113文件语法通过；Nuxt实际HTTP12通过加1项Linux专用跳过，验证一次放大原值转发、不同Accept同键领取以及改blur的409且五表计数不增；执行器重建通过，最终CI继续记录。非零blur只有schema及模拟验证，不宣称视觉效果或真实实扣已验证，也未发送真实收费放大请求，详见[契约](api-contract.md#c03-03-独立放大-blur-参数)。
 
+C03-02 镜像验收补修：首次[SSE CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39014853670)已通过业务/网页/类型/双进程检查和三个镜像构建，最后产物HTTP检查仍断言旧的默认octet-stream而失败。补齐同键缺省SSE、显式SSE和显式MessagePack及相反Accept，原派发与结算计数保持不增；本机产物2通过/1项Linux跳过，新建Linux最终镜像3/3通过。后续blur中间CI由这次补修后的完整检查替代，不将中间失败或取消记为通过。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
