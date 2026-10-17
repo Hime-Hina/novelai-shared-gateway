@@ -55,7 +55,7 @@
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分、受保护的 Nitro 产物及 Nuxt 内部客户端，Windows/Linux 双进程故障隔离、同键受理重试及重复恢复三场景通过；独立 systemd 部署仍待，未按整体完成结案 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。F11/N01 两段事件重连与授权校准已通过，N02登录和管理也已通过Linux CI |
-| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02/N03 已完成并通过所列回归；Nuxt统一入口、执行器唯一业务与持久化所有者。C03-01响应协商已通过Linux CI；其余C03及T01/C01仍待完成，迁入Nuxt入口不等于旧JS业务已全部类型化 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02/N03 已完成并通过所列回归；Nuxt统一入口、执行器唯一业务与持久化所有者。C03-01响应协商与C03-02实时MessagePack切片已通过Linux CI；SSE及其余C03、T01/C01仍待完成，迁入Nuxt入口不等于旧JS业务已全部类型化 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
@@ -118,7 +118,7 @@ N03 已提交 [e7b9407](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 C03-01 已提交 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e)：普通Native完整生成对齐201，放大保持200；通过negotiator按Accept协商ZIP/JSON，缺省与通配仍ZIP，不接受两者时入队前406。Vibe对齐201/application-binary且原字节不变，部分批次保留200与原账务说明；JSON按48KiB原图分块编码，实际种子在首次完成、幂等和冷历史领取中一致。固定版本的Desktop、小白盒和Aaalice源码验证接受2xx并明确各自格式要求，详见[契约与证据](api-contract.md#c03-01-响应协商与客户端证据)。新增精确negotiator1.1.0及传递content-type2.1.0，保留其余锁定依赖；没有schema变更。[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 后端482、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，112文件语法、类型和三个业务镜像构建通过，也覆盖前述冷历史队列补修。C03-02–06、T01/C01及D01/D02仍待；未调用真实NAI/Discord，生产保持原版本。
 
-C03-02 的实时 MessagePack 切片已实现：按已核实的官方网页事件字段转发预览，保存并结算后逐张发送final；复用原预览节流和持久任务，不因连接结束取消任务。Native生成加入上游流式进度，Vibe/放大排除；第一个事件前仍返回正常HTTP错误，开始后以error帧结束。流式首帧无法预知批次最终完成数，省略完成数量头，普通ZIP/JSON保持。精确引入`@msgpack/msgpack@3.1.3`替换手写值编解码，保留帧/累计/输入边界，不改其他锁定依赖与schema。详细协议、证据和限制见[流式契约](api-contract.md#c03-02-实时-messagepack-与待核实的-sse)。本地模块34/34、冷历史批次和恢复回归通过；Linux最终执行器镜像HTTP3/3通过。Native HTTP14/14、Nuxt实际链路12通过/1项Linux专用跳过，执行器本地2通过/1项Linux专用跳过；托管CI待验证；SSE字段与协商未完成，因此C03-02整体不标完成。未调用真实NAI/Discord，未部署或替换生产。
+C03-02 的实时 MessagePack 切片已提交 [d3cacff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d3cacff)：按已核实的官方网页事件字段转发预览，保存并结算后逐张发送final；复用原预览节流和持久任务，不因连接结束取消任务。Native生成加入上游流式进度，Vibe/放大排除；第一个事件前仍返回正常HTTP错误，开始后以error帧结束。流式首帧无法预知批次最终完成数，省略完成数量头，普通ZIP/JSON保持。精确引入`@msgpack/msgpack@3.1.3`替换手写值编解码，保留帧/累计/输入边界，不改其他锁定依赖与schema。详细协议、证据和限制见[流式契约](api-contract.md#c03-02-实时-messagepack-与待核实的-sse)。本地模块34/34、冷历史批次和恢复回归通过；Linux最终执行器镜像HTTP3/3通过。Native HTTP14/14、Nuxt实际链路12通过/1项Linux专用跳过，执行器本地2通过/1项Linux专用跳过；[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39010558702) 后端491、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型检查和三个业务镜像构建通过；SSE字段与协商未完成，因此C03-02整体不标完成。未调用真实NAI/Discord，未部署或替换生产。
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 

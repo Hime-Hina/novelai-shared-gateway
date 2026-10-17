@@ -108,7 +108,7 @@ systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_
 - API Base：`https://your-domain`；已有 `/v1` 后缀也兼容。
 - Key：成员门户中“查看我的 API Key”，不要给成员上游 PST 或管理员密钥。
 
-接口包括 `GET /v1/models`、`POST /v1/chat/completions`、`POST /ai/generate-image`、`POST /ai/generate-image-stream`、`POST /ai/encode-vibe` 和 `POST /ai/upscale`。上述 `/ai/` 路径均提供 `/v1/ai/` 别名。Native 生图接收 NovelAI 的 `input/model/action/parameters`，普通接口返回图片 ZIP，流式接口返回 MessagePack 最终图；Vibe 编码返回二进制。所有生成接口都要求成员 Bearer Key；具体酒馆插件的 Base 拼接方式以插件说明为准。
+接口包括 `GET /v1/models`、`POST /v1/chat/completions`、`POST /ai/generate-image`、`POST /ai/generate-image-stream`、`POST /ai/encode-vibe` 和 `POST /ai/upscale`。上述 `/ai/` 路径均提供 `/v1/ai/` 别名。Native 生图接收 NovelAI 的 `input/model/action/parameters`，普通接口按 Accept 返回图片 ZIP/JSON，流式接口返回 MessagePack 预览和逐张最终图；Vibe 编码返回二进制。所有生成接口都要求成员 Bearer Key；具体酒馆插件的 Base 拼接方式以插件说明为准。
 
 ## NAI 启动器兼容
 

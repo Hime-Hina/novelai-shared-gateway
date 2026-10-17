@@ -106,6 +106,8 @@ C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 编解码统一使用精确版本 [@msgpack/msgpack 3.1.3](https://github.com/msgpack/msgpack-javascript/tree/v3.1.3)（ISC）；保留四字节长度、64 MiB单帧和256 MiB上游累计上限。解码额外限制容器声明大小与文本长度，拒绝原型键、extension、尾随对象；安全int64进度转Number，不安全整数不舍入。只替换值编解码，不把NAI长度前缀交给通用MessagePack流解析器。
 
+源码 [d3cacff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d3cacff) 的 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39010558702)全部通过：后端491、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，无跳过。真实HTTP门闩验证预览先于上游完成、首张final先于第二张派发且已结算、批次样本编号、预览后断流退款，以及Nuxt客户端断线后付费任务继续且同键重取不重复派发/扣费。类型检查、113文件语法和三个业务镜像构建通过；没有真实NAI调用或生产切换。
+
 Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。本轮只接入上述已核实的MessagePack事件；客户端stream值与Accept协商尚未消解，C03-02整体仍未完成，也没有新增排队心跳。
 
 ## 错误与安全边界
