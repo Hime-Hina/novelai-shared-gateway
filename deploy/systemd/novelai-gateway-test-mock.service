@@ -1,0 +1,31 @@
+[Unit]
+Description=NovelAI gateway isolated synthetic upstream
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=novelai-gateway-test-mock
+Group=novelai-gateway-test-mock
+WorkingDirectory=/opt/novelai-shared-gateway-test/current/executor
+ExecStart=/opt/novelai-shared-gateway-test/current/bin/node /opt/novelai-shared-gateway-test/current/executor/.output/server/node_modules/novelai-shared-gateway/scripts/mock-novelai.mjs --port 19081 --delay-ms 1000
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=75s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+InaccessiblePaths=/var/lib/novelai-shared-gateway-test /etc/novelai-shared-gateway-test
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryHigh=128M
+MemoryMax=256M
+CPUQuota=25%
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

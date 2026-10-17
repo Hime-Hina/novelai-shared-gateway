@@ -71,7 +71,7 @@ jobs:
           cp deploy/systemd/novelai-gateway-test-*.service "$release_dir/systemd/"
           cp docs/test-deployment.md "$release_dir/docs/"
           mkdir -p "$RUNNER_TEMP/unit-check"
-          for unit in executor web; do
+          for unit in executor web mock; do
             sed "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
               "$release_dir/systemd/novelai-gateway-test-$unit.service" \
               > "$RUNNER_TEMP/unit-check/novelai-gateway-test-$unit.service"
