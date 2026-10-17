@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
 import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
 
@@ -200,7 +200,7 @@ test('实际 persister 在事务中退出不留半笔预扣，提交后退出则
   const before = structuredClone(store.db.settings);
   await store.close();
   const script = `
-    import { JsonStore } from ${JSON.stringify(new URL('../../server/store.js', import.meta.url).href)};
+    import { JsonStore } from ${JSON.stringify(new URL('../../server/store.ts', import.meta.url).href)};
     import { reserveFairQuota } from ${JSON.stringify(new URL('../../server/fair-quota.ts', import.meta.url).href)};
     const store = new JsonStore(process.argv[1]); await store.init();
     if (process.argv[2] === 'during') store.statements.upsertRecord.jobs.run = () => process.exit(73);

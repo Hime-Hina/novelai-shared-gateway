@@ -4,9 +4,9 @@ import http from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { createMemberSession } from '../../server/member-auth.ts';
-import { handleMemberRoutes } from '../../server/member-routes.js';
+import { handleMemberRoutes } from '../../server/member-routes.ts';
 import { sharedSurface } from '../../server/shared-surface.ts';
 
 async function fixture(t) {

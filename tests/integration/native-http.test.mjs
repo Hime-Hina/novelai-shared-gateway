@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore, hashObject } from '../../server/store.js';
+import { JsonStore, hashObject } from '../../server/store.ts';
 import { generationRequestFingerprint } from '../../server/request-fingerprint.ts';
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.ts';
 import { crc32, parseNativeImageRequest } from '../../server/native-image.ts';

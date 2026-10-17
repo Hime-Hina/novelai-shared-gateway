@@ -129,7 +129,7 @@ Kysely 和 Prisma 暂不新增原型：Drizzle 已通过需要的运行时能力
 | --- | --- |
 | `package.json`、`pnpm-lock.yaml` | 精确 ORM 0.45.4、Kit 0.31.11；原有 38 个锁定版本全部保留，better-sqlite3 仍为 12.10.0；没有移动/替换运行中服务的 node_modules |
 | `server/storage-schema.ts` | 用一份共同记录字段定义声明 9 张既有表、167 列、20 个显式索引；保留 3 个部分索引与原主键/默认值语义 |
-| `server/store.js` | 移除 `recordColumns/jobMetricColumns`、手工 DDL 和通用 SQL 字符串拼装；从 schema 派生空影子行、占位符与 upsert 字段。JSON 完整保存，领域投影仍在 `sqlRecord` 一处 |
+| `server/store.ts` | 移除 `recordColumns/jobMetricColumns`、手工 DDL 和通用 SQL 字符串拼装；从 schema 派生空影子行、占位符与 upsert 字段。JSON 完整保存，领域投影仍在 `sqlRecord` 一处 |
 | `server/storage-migrations.ts` | 首次接入以已审阅基线 SQL 建内存参考库，核对所有现存受管表的列、已存在同名索引及谓词；只补旧 jobs 曾逐步增加的 3 个度量列。补列、补建表/索引与基线登记在同一事务；后续交由 Drizzle migrator |
 | `server/migrations/` | `0000` 完整基线及 `0001` 旧冗余索引清理，保留生成 snapshot/journal；原每次启动的清理转为一次有版本迁移 |
 | `drizzle.config.mjs` | 只配置本地 schema 与迁移输出位置，没有默认生产连接，也没有运行 schema push |

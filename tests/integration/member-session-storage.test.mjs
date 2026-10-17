@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, cp, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
 
 async function open(t, directory) {

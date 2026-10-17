@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { loginMember } from '../../server/member-auth.ts';
 
 const environment=dataDir=>({DATA_DIR:dataDir,ADMIN_TOKEN:'test-admin-'.repeat(5),NOVELAI_TOKEN:'pst-'+'fixture-only-'.repeat(4)});

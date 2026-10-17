@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { mkdtemp, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { JsonStore, createId, hashObject } from '../../server/store.js';
+import { JsonStore, createId, hashObject } from '../../server/store.ts';
 import { normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS } from '../../server/providers.ts';
 import * as fair from '../../server/fair-quota.ts';
 import * as queue from '../../server/queue-policy.ts';

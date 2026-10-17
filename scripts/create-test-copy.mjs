@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { migrateStorage } from '../server/storage-migrations.ts';
 import { recordTables } from '../server/storage-schema.ts';
-import { sqlRecord } from '../server/store.js';
+import { sqlRecord } from '../server/store.ts';
 import { setMemberCredentials } from '../server/member-auth.ts';
 import { settleFairQuota } from '../server/fair-quota.ts';
 import { closeGenerationReview } from '../server/generation-accounting.ts';

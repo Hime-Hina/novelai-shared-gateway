@@ -1,7 +1,7 @@
 import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { memberPublicBaseUrl, handleMemberRoutes } from '../../server/member-routes.js';
+import { memberPublicBaseUrl, handleMemberRoutes } from '../../server/member-routes.ts';
 import { createMemberSession } from '../../server/member-auth.ts';
 
 const response = () => ({ headers: {}, setHeader(name, value) { this.headers[name] = value; }, writeHead(status, headers) { this.status = status; Object.assign(this.headers, headers); }, end(body) { this.body = body; } });

@@ -1,14 +1,38 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { generateNovelAiImage, NormalizedImageRequest } from './providers.ts';
+import type { JobPreviews } from './job-previews.ts';
 
-export const isOfficialKey = token => String(token || '').startsWith('pst-');
+type GeneratedImage = Awaited<ReturnType<typeof generateNovelAiImage>>;
+interface StoredImage { id: string }
+type JobStatus = 'queued' | 'running' | 'done' | 'failed';
+interface OfficialJob {
+  id: string; owner: string; userToken: string; cacheKey?: string;
+  request?: NormalizedImageRequest; token?: string; status: JobStatus;
+  createdAt: string; updatedAt: string; queueTotal: number;
+  generationProgress: { percent: number; step: number; total: number };
+  controller: AbortController; timer?: ReturnType<typeof setTimeout>;
+  done?: Promise<OfficialJob>; resolve?: (job: OfficialJob) => void;
+  image?: StoredImage; cacheHit?: boolean; error?: string;
+}
+interface OfficialKeyJobOptions {
+  generate: (request: NormalizedImageRequest, account: { token?: string },
+    options: NonNullable<Parameters<typeof generateNovelAiImage>[3]>) => Promise<GeneratedImage>;
+  saveImage: (job: OfficialJob, image: GeneratedImage) => Promise<StoredImage>;
+  findImage: (cacheKey: string | undefined) => Promise<StoredImage | null | undefined>;
+  previews: Pick<JobPreviews, 'update' | 'clear'>;
+  maxRunning?: number; maxJobs?: number; retentionMs?: number;
+}
+interface CreateOptions { cacheKey?: string; noCache?: boolean; timeoutMs?: number }
 
-export function officialKeyOwner(token) {
+export const isOfficialKey = (token: unknown): boolean => String(token || '').startsWith('pst-');
+
+export function officialKeyOwner(token: string): string {
   if (!/^pst-[A-Za-z0-9_-]{1,256}$/.test(token || '')) throw failure(401, '官方密钥格式不正确。');
   return `official:${createHash('sha256').update(token).digest('hex')}`;
 }
 
-export function officialKeyError(error) {
-  const message = String(error?.message || '');
+export function officialKeyError(error: unknown): Error & { statusCode: number } {
+  const message = String((error as { message?: unknown } | null | undefined)?.message || '');
   if (/401|403|unauthorized|invalid.*token/i.test(message)) return failure(401, '官方密钥无效或账号不可用。');
   if (/402|insufficient|out.of.trial|not enough|balance/i.test(message)) return failure(402, 'NovelAI 账号额度不足。');
   if (/429|concurrent|busy/i.test(message)) return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
@@ -17,22 +41,29 @@ export function officialKeyError(error) {
   return failure(502, 'NovelAI 请求失败，请稍后重试。');
 }
 
-function failure(statusCode, message) {
+function failure(statusCode: number, message: string): Error & { statusCode: number } {
   return Object.assign(new Error(message), { statusCode });
 }
 
 // Independent, bounded queue: no site users, account-pool reservation or billing.
 // Raw keys live only in pending requests and are discarded on completion/failure.
 export class OfficialKeyJobs {
-  jobs = new Map();
-  queue = [];
-  running = new Set();
+  jobs = new Map<string, OfficialJob>();
+  queue: OfficialJob[] = [];
+  running = new Set<string>();
+  declare generate: OfficialKeyJobOptions['generate'];
+  declare saveImage: OfficialKeyJobOptions['saveImage'];
+  declare findImage: OfficialKeyJobOptions['findImage'];
+  declare previews: OfficialKeyJobOptions['previews'];
+  declare maxRunning: number;
+  declare maxJobs: number;
+  declare retentionMs: number;
 
-  constructor({ generate, saveImage, findImage, previews, maxRunning = 16, maxJobs = 512, retentionMs = 30 * 60_000 }) {
+  constructor({ generate, saveImage, findImage, previews, maxRunning = 16, maxJobs = 512, retentionMs = 30 * 60_000 }: OfficialKeyJobOptions) {
     Object.assign(this, { generate, saveImage, findImage, previews, maxRunning, maxJobs, retentionMs });
   }
 
-  async create(token, request, { cacheKey, noCache = true, timeoutMs = 600_000 } = {}) {
+  async create(token: string, request: NormalizedImageRequest, { cacheKey, noCache = true, timeoutMs = 600_000 }: CreateOptions = {}) {
     const owner = officialKeyOwner(token);
     const cached = noCache ? null : await this.findImage(cacheKey);
     // Check again after the async cache lookup to coalesce simultaneous requests.
@@ -46,7 +77,7 @@ export class OfficialKeyJobs {
       throw failure(429, '官方密钥任务过多，请等待已有任务完成。');
     }
     const now = new Date().toISOString();
-    const job = {
+    const job: OfficialJob = {
       id: `job_pst_${randomUUID()}`, owner, userToken: owner, cacheKey,
       request, token, status: 'queued', createdAt: now, updatedAt: now,
       queueTotal: Math.max(2, this.queue.filter(item => item.owner === owner).length + (this.running.has(owner) ? 1 : 0) + 1),
@@ -70,14 +101,14 @@ export class OfficialKeyJobs {
     return this.snapshot(job);
   }
 
-  get(id, token) {
+  get(id: string, token: string): OfficialJob {
     const job = this.jobs.get(id);
     if (!job) throw failure(404, '任务已过期，请重新提交。');
     if (job.owner !== officialKeyOwner(token)) throw failure(403, '无权访问该任务。');
     return job;
   }
 
-  snapshot(job) {
+  snapshot(job: OfficialJob) {
     const ahead = this.queue.slice(0, this.queue.indexOf(job)).filter(item => item.owner === job.owner).length + (this.running.has(job.owner) ? 1 : 0);
     return {
       id: job.id, status: job.status, authMode: 'official', cost: 0,
@@ -88,7 +119,7 @@ export class OfficialKeyJobs {
     };
   }
 
-  drain() {
+  drain(): void {
     this.queue = this.queue.filter(job => job.status === 'queued');
     for (const job of [...this.queue]) {
       if (this.running.size >= this.maxRunning) break;
@@ -101,15 +132,15 @@ export class OfficialKeyJobs {
     }
   }
 
-  async run(job) {
+  async run(job: OfficialJob): Promise<void> {
     try {
-      const image = await this.generate(job.request, { token: job.token }, {
+      const image = await this.generate(job.request!, { token: job.token }, {
         signal: job.controller.signal, forceStream: true,
         onProgress: progress => {
           if (job.status !== 'running') return;
           job.generationProgress = {
             percent: Math.max(job.generationProgress.percent, Math.min(100, Number(progress.percent) || 0)),
-            step: Number(progress.step) || 0, total: job.request.steps
+            step: Number(progress.step) || 0, total: job.request!.steps
           };
           this.previews.update(job, progress);
         }
@@ -125,7 +156,7 @@ export class OfficialKeyJobs {
     }
   }
 
-  finish(job, status, result) {
+  finish(job: OfficialJob, status: 'done' | 'failed', result: Pick<OfficialJob, 'image' | 'cacheHit' | 'error'>): void {
     if (['done', 'failed'].includes(job.status)) return;
     clearTimeout(job.timer);
     Object.assign(job, result, { status, updatedAt: new Date().toISOString() });
@@ -133,11 +164,11 @@ export class OfficialKeyJobs {
     delete job.token;
     delete job.request;
     this.previews.clear(job.id);
-    job.resolve(job);
+    job.resolve!(job);
     delete job.resolve;
   }
 
-  prune() {
+  prune(): void {
     for (const [id, job] of this.jobs) {
       if (['done', 'failed'].includes(job.status) && (Date.now() - Date.parse(job.updatedAt) > this.retentionMs || this.jobs.size >= this.maxJobs)) this.jobs.delete(id);
     }

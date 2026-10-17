@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 
 function env(t, name, value) {
   const previous = process.env[name]; process.env[name] = value;

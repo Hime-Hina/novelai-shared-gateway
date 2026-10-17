@@ -7,10 +7,10 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { JsonStore } from '../../server/store.js';
-import { FAILURE_EVENT_PREDICATE, updateLossAlertPolicy } from '../../server/failure-accounting.js';
+import { JsonStore } from '../../server/store.ts';
+import { FAILURE_EVENT_PREDICATE, updateLossAlertPolicy } from '../../server/failure-accounting.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { handleMemberRoutes } from '../../server/member-routes.js';
+import { handleMemberRoutes } from '../../server/member-routes.ts';
 import { createMemberSession, setMemberCredentials } from '../../server/member-auth.ts';
 
 const day = 86400000, iso = time => new Date(time).toISOString();

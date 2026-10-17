@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
 import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';

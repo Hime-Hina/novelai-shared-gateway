@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 
 const stage = process.env.RESULT_RECOVERY_TEST_STAGE;
 const imageDir = path.resolve(process.env.DATA_DIR, 'images');

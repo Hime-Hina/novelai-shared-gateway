@@ -6,10 +6,10 @@ import { EventEmitter } from 'node:events';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import {handleMemberRoutes} from '../../server/member-routes.js';
+import {handleMemberRoutes} from '../../server/member-routes.ts';
 import {setMemberCredentials, createMemberSession, logoutMemberSession} from '../../server/member-auth.ts';
 import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.ts';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失败',async t=>{
  const db={settings:{},accounts:[],jobs:[],users:['a','b','c','d'].map(id=>({id,enabled:true,token:'STA1N-'+id,balance:0}))};
  configureFairQuota(db,['a','b','c','d']);await setMemberCredentials(db,'a',{username:'test-member-a',password:'Valid-password-member-a'});await setMemberCredentials(db,'b',{username:'test-member-b',password:'Valid-password-member-b'});

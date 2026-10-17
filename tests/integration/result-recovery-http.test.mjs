@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 

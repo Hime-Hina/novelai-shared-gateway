@@ -4,7 +4,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 
 async function open(t, directory) {
   const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-queue-sequence-')));

@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { JsonStore, sqlRecord } from '../../server/store.js';
+import { JsonStore, sqlRecord } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { setMemberCredentials, loginMember } from '../../server/member-auth.ts';
 import { fetchNovelAiAccountQuota } from '../../server/providers.ts';

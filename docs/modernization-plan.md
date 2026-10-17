@@ -196,6 +196,8 @@ T01上游与存储边界片：providers、prompt-api、generation-request、stor
 
 D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移尚未替换该测试版本。当前端口仅监听回环、上游为本地 mock，网络过滤已做允许/拒绝对照；安装和首轮验收期间生产进程保持不变。[部署与待验收范围](test-deployment.md#bob-首轮合成验收2026-10-17-19001920asiataipei)已记录，不能把首次合成部署当作最终版本交付。
 
+T01存储与业务路由片：store、failure-accounting、discord-auth、member-routes及official-key-jobs迁为严格TypeScript。复用领域模型、Drizzle行和prepared query及只读worker消息类型，保留SQL/事务/冷热缓存、OAuth刷新落盘时序、会话/SSE清理和官方密钥任务生命周期；没有新运行依赖、迁移或框架。类型擦除对照只有括号、引号与排版差异。存储89项、成员/Discord43项、故障账务4项、provider/preview28项及私有官方任务生命周期4项定向通过；根严格检查、全后端527项中523通过/4项Windows跳过、网页类型检查及执行器构建产物3通过/1项Windows跳过。最终Linux/Docker/Nuxt链路由本批完整CI继续验收，不沿用前一批结果冒称通过。server顶层34个TS、2个JS，最后的gateway-runtime/index及其真实调用类型连接仍待完成。前一上游/存储边界片已由[c759f49完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39028262970)验收成功；目标机测试仍固定0901056，未替换生产。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
@@ -238,7 +240,7 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 改造前会话全员固定 12 小时，保存在进程内 Map，重启即失效。当前分支 A01 已改为以下规则；这次源码修改尚未部署生产：
 
 - [member-auth.ts](../server/member-auth.ts) 中普通成员固定 7 天，owner 固定 12 小时；访问、余额查询和 SSE 不续期。
-- [member-routes.js](../server/member-routes.js) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
+- [member-routes.ts](../server/member-routes.ts) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
 - 随机 Cookie 只在浏览器，SQLite 冷表保存摘要、成员、版本、固定截止和签发角色绑定；重启保留有效会话。旧 Map 无法迁移，首次升级需重新登录一次。
 - 停用、删除、重置认证版本会撤销对应会话；Discord 再次登录也会更新认证版本，使该成员之前的会话失效。
 - Discord 成员资格最多缓存五分钟；资格失效或授权异常会阻止后续访问。退出网页只结束当前网页会话，不改变 API Key 的调用资格。
@@ -361,7 +363,7 @@ HAR、trace 和截图可能包含 Cookie、Authorization、Key、提示词或成
 
 生产只读结果见[近期任务排队基线](queue-baseline.md)，不把本地模拟结果称为生产排队结论。以最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识统计，覆盖成功、失败、取消、正在等待和超时请求；不足七天的实际历史跨度及未落库拒绝率明确标为缺失。
 
-复用 [owner 用量统计](../server/owner-operations.ts)和 [readOwnerJobRows](../server/store.js) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
+复用 [owner 用量统计](../server/owner-operations.ts)和 [readOwnerJobRows](../server/store.ts) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
 
 | 阶段 | 时间字段 | 能解释的问题 |
 | --- | --- | --- |

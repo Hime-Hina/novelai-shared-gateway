@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isPublicHost, privateAccessAllowed } from '../../server/public-hosts.ts';
-import { handleMemberRoutes } from '../../server/member-routes.js';
+import { handleMemberRoutes } from '../../server/member-routes.ts';
 
 const env = { PUBLIC_MODE: 'true', PUBLIC_HOST: 'old.example', PUBLIC_HOST_ALIASES: ' nai.example, nai-direct.example ' };
 const request = (host, url = '/ai/user/subscription', headers = {}) => ({ method: 'GET', url, headers: { host, ...headers } });

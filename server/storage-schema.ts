@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { sqliteTable, text, real, integer, index, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
-import { FAILURE_EVENT_PREDICATE } from './failure-accounting.js';
+import { FAILURE_EVENT_PREDICATE } from './failure-accounting.ts';
 
 // 每张历史记录表使用同一组影子列；data 仍是已有 JSON 文本，不能再次自动编码。
 const recordFields = () => ({

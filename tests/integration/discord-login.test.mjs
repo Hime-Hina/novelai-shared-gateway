@@ -2,10 +2,10 @@ import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { handleMemberRoutes } from '../../server/member-routes.js';
+import { handleMemberRoutes } from '../../server/member-routes.ts';
 import { setMemberCredentials, createMemberSession, authenticateMemberSession } from '../../server/member-auth.ts';
 import { configureFairQuota } from '../../server/fair-quota.ts';
-import { discordConfig, discordLoginEnabled, requireDiscordMembership, createDiscordInvite } from '../../server/discord-auth.js';
+import { discordConfig, discordLoginEnabled, requireDiscordMembership, createDiscordInvite } from '../../server/discord-auth.ts';
 import { sharedSurface } from '../../server/shared-surface.ts';
 import { privateAccessAllowed } from '../../server/public-hosts.ts';
 

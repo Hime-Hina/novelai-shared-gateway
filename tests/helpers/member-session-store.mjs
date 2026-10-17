@@ -1,7 +1,7 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore } from '../../server/store.ts';
 
 // 旧路由测试保留领域 fixture；会话直接复用真实 SQLite，不复制会话存储和撤销规则。
 export async function withMemberSessions(t, store) {

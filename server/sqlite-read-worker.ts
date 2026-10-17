@@ -3,11 +3,11 @@ import Database from 'better-sqlite3';
 import { activityDate, type ActivityDay, type ActivityOperation } from './activity-heatmap.ts';
 import type { images, users } from './storage-schema.ts';
 
-interface ActivityQuery { since: string; until: string; memberId?: string | null; operation?: ActivityOperation; dates?: string[] | null }
-interface AdminStatsQuery { now?: number; days?: number }
-interface PageQuery { limit?: number; offset?: number; q?: string }
-interface ImagePageQuery extends PageQuery { tier?: string; model?: string }
-type ReadTask = { id: number } & (
+export interface ActivityQuery { since: string; until: string; memberId?: string | null; operation?: ActivityOperation; dates?: string[] | null }
+export interface AdminStatsQuery { now?: number; days?: number }
+export interface PageQuery { limit?: number; offset?: number; q?: string }
+export interface ImagePageQuery extends PageQuery { tier?: string; model?: string }
+export type ReadTask = { id: number } & (
   | { type: 'adminStats'; payload?: AdminStatsQuery }
   | { type: 'activityDays'; payload: ActivityQuery }
   | { type: 'imagePage'; payload?: ImagePageQuery }
@@ -289,3 +289,5 @@ function finalizeStats(value: JobStats) {
   const total = done + failed;
   return { done, failed, total, successRate: total ? done / total : 0 };
 }
+
+export type ReadResults = { adminStats: ReturnType<typeof readAdminStats>; activityDays: ActivityDay[]; imagePage: ReturnType<typeof readImagePage>; userPage: ReturnType<typeof readUserPage> };
