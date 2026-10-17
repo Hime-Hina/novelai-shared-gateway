@@ -156,7 +156,7 @@ MessagePack 预览／最终结果、独立流解码、固定余额、凭据拒�
 继续服务及启动参数边界；`node --check` 通过。最终执行器 Linux 镜像已重建，
 在断网、只读容器中从 unit 所用的包内脚本路径启动 mock，真实 provider 的鉴权、
 额度、预览和最终图片验证通过；同镜像的执行器 HTTP 3/3 通过，无跳过。
-CI unit 校验列表已加入 mock，含 mock 的新 CI 和 bob 安装仍待完成。
+CI unit 校验列表已加入 mock，并随 0901056 的完整 CI 通过；bob 安装仍待完成。
 
 网页许可证镜像构建通过，保留 593 份匹配的许可／声明文件。使用已验证的现有
 执行器镜像与本轮网页镜像，只在断网 Linux 容器内复制、tar 压缩及重新解包，
@@ -167,5 +167,12 @@ HTTP 200 均通过；未经过 Windows 解包，未读取宿主 node_modules。
 发布包准备提交 c1885ba 的完整 [CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021213548)
 已成功，导出并上传约 52 MB 的 Linux artifact；它尚不包含本轮新增 mock。
 
-待补：包含 mock 的最终 CI artifact、bob 上 mock 常驻启动、副本脱敏、安装与实机验收；本文没有
-执行这些部署操作，也未改动生产服务。
+包含 mock 的 0901056 [完整 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021932673)
+也已通过，发布包已下载，大小 51,873,513 字节，SHA-256 为
+`c3ac4db8ffbf02f9e25e1a66b67f24a92a73be89adf5a53b27802d4ea3a81bed`。
+首次安装固定使用此版本。bob 只读预检曾确认测试端口空闲、安装权限可用、生产
+服务 active；但随后 SSH 在身份验证前关闭，传输失败，安装脚本尚未执行。
+恢复连接后须重新检查上传文件与目标机状态，再继续，不能把预检当成当前运行保证。
+
+待补：bob 上 mock 常驻启动、副本脱敏、安装与实机验收；尚未安装或启动测试服务，
+没有替换生产服务。
