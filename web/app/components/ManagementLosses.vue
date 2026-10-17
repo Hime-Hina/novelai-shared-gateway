@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { NAlert, NButton, NCard, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NTable } from 'naive-ui'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { NAlert, NButton, NCard, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NDataTable, type DataTableColumns } from 'naive-ui'
 import type { ManagementAlert, ManagementApi, ManagementLossEvent, ManagementLosses, ManagementLossPolicy, ManagementResource, ManagementResources, ManagementRun, ManagementState } from '../types/management'
 import { date, number } from '../utils/member-display'
 
@@ -170,6 +170,28 @@ function evidence(event: ManagementLossEvent) {
   if (event.lossEventId) parts.push('关联差额 ' + event.lossEventId)
   return parts.join('；') || '未提供金额，不推算实耗'
 }
+
+const pagination = { pageSize: 10, showSizePicker: true, pageSizes: [10, 25, 50] }
+const riskRows = computed(() => resources.map(key => ({ key, name: resourceNames[key],
+  candidate24: losses.value?.risk.last24h.possible[key], candidate30: losses.value?.risk.last30d.possible[key],
+  aggregate24: losses.value?.risk.aggregate.last24h[key], aggregate30: losses.value?.risk.aggregate.last30d[key],
+  gap: key === 'v5' ? losses.value?.operating.v5CapacityGap : losses.value?.operating.unfunded[key],
+  available: losses.value?.operating.available[key], returns: key === 'v5' ? null : losses.value?.operating.unattributedReturns[key]
+})))
+type RiskRow = typeof riskRows.value[number]
+const riskColumns: DataTableColumns<RiskRow> = [
+  { title: '资源', key: 'name', width: 140, sorter: 'default', filterOptions: resources.map(value => ({ label: resourceNames[value], value })), filter: (value, row) => row.key === value },
+  ...(['candidate24', 'candidate30', 'aggregate24', 'aggregate30', 'gap', 'available', 'returns'] as const).map((key, index) => ({ key,
+    title: ['候选风险 / 24h', '候选风险 / 30d', '聚合新增 / 24h', '聚合新增 / 30d', '待承担差额', '运营可用', '待归属入账'][index],
+    width: 140, align: 'right' as const, sorter: (a: RiskRow, b: RiskRow) => (a[key] ?? -1) - (b[key] ?? -1), render: (row: RiskRow) => row[key] === null ? '不适用' : number(row[key]) }))
+]
+const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
+  { title: '时间', key: 'at', width: 185, sorter: 'default', render: row => date(row.at) },
+  { title: '类型 / 标识', key: 'type', width: 260, sorter: 'default', filterOptions: [...new Set(history.value.map(row => row.type))].map(value => ({ label: eventNames[value] || value, value })), filter: (value, row) => row.type === value,
+    render: row => h('div', [eventNames[row.type] || row.type, h('small', row.id), row.jobId ? h('small', '任务 ' + row.jobId) : null]) },
+  { title: '成员 / 操作者', key: 'memberName', width: 170, sorter: 'default', render: row => row.memberName || row.memberId || row.actorId || '共享上游' },
+  { title: '证据', key: 'evidence', width: 420, render: evidence }
+])
 </script>
 
 <template>
@@ -180,9 +202,7 @@ function evidence(event: ManagementLossEvent) {
     <template v-if="losses">
       <NCard title="风险与运营余额" size="small">
         <p>近 24 小时异常尝试 {{ number(losses.risk.last24h.attempts) }} 次，其中金额未知 {{ number(losses.risk.last24h.unknownAmounts) }} 次；近 30 天 {{ number(losses.risk.last30d.attempts) }} 次，其中金额未知 {{ number(losses.risk.last30d.unknownAmounts) }} 次。</p>
-        <div class="losses-scroll"><NTable size="small" :single-line="false"><thead><tr><th>资源</th><th>候选风险 / 24h</th><th>候选风险 / 30d</th><th>聚合新增 / 24h</th><th>聚合新增 / 30d</th><th>待承担差额</th><th>运营可用</th><th>待归属入账</th></tr></thead>
-          <tbody><tr v-for="key in resources" :key="key"><td>{{ resourceNames[key] }}</td><td>{{ number(losses.risk.last24h.possible[key]) }}</td><td>{{ number(losses.risk.last30d.possible[key]) }}</td><td>{{ number(losses.risk.aggregate.last24h[key]) }}</td><td>{{ number(losses.risk.aggregate.last30d[key]) }}</td><td>{{ number(key === 'v5' ? losses.operating.v5CapacityGap : losses.operating.unfunded[key]) }}</td><td>{{ number(losses.operating.available[key]) }}</td><td>{{ key === 'v5' ? '不适用' : number(losses.operating.unattributedReturns[key]) }}</td></tr></tbody>
-        </NTable></div>
+        <div class="losses-scroll"><NDataTable :columns="riskColumns" :data="riskRows" :row-key="(row: RiskRow) => row.key" :pagination="pagination" :scroll-x="1120" size="small" /></div>
       </NCard>
       <NCard title="软告警阈值" size="small">
         <p id="lossPolicyHint">{{ policyDirty ? '未保存草稿' : '尚无修改' }} · 编辑版本 {{ policyVersion }} · 服务器版本 {{ losses.policy.version }}。后台读取不会覆盖草稿，0 表示任何正数达到阈值。购买 Anlas 有正风险即提示。</p>
@@ -205,11 +225,8 @@ function evidence(event: ManagementLossEvent) {
         <ul id="pendingFunding"><li v-for="funding in losses.operating.pendingExternalFunding" :key="funding.eventId">{{ funding.receipt }} · {{ resourceNames[funding.resource] }} 待确认 {{ number(funding.remaining) }} · 归属{{ funding.destination === 'members' ? '成员' : '运营' }}</li><li v-if="!losses.operating.pendingExternalFunding.length">暂无待确认注资</li></ul>
       </NCard>
       <NCard title="损耗证据与审计记录" size="small">
-        <p v-if="paged">正在阅读已加载的连续历史；后台只更新统计与告警，点击“读取最新记录”才重置分页。</p>
-        <div class="losses-scroll"><NTable size="small" :single-line="false"><thead><tr><th>时间</th><th>类型 / 标识</th><th>成员 / 操作者</th><th>证据</th></tr></thead><tbody id="lossEvents">
-          <tr v-for="event in history" :key="event.id"><td>{{ date(event.at) }}</td><td>{{ eventNames[event.type] || event.type }}<small>{{ event.id }}</small><small v-if="event.jobId">任务 {{ event.jobId }}</small></td><td>{{ event.memberName || event.memberId || event.actorId || '共享上游' }}</td><td class="loss-evidence">{{ evidence(event) }}</td></tr>
-          <tr v-if="!history.length"><td colspan="4">暂无证据记录</td></tr>
-        </tbody></NTable></div>
+        <p class="section-caption">已加载 {{ history.length }} 条{{ nextCursor ? '，可继续读取更早记录' : '，已覆盖全部保留历史' }}。筛选与排序作用于已加载记录。{{ paged ? '后台只更新统计与告警，读取最新记录才重置历史。' : '' }}</p>
+        <div class="losses-scroll"><NDataTable id="lossEvents" :columns="eventColumns" :data="history" :row-key="(row: ManagementLossEvent) => row.id" :pagination="pagination" :scroll-x="1035" size="small"><template #empty>暂无证据记录</template></NDataTable></div>
         <NSpace><NButton v-if="nextCursor" id="moreLossEvents" :disabled="loading" @click="load('append')">读取更早记录</NButton><NButton id="reloadLossEvents" :disabled="loading" @click="load('reset')">读取最新记录</NButton></NSpace>
       </NCard>
     </template>
@@ -223,5 +240,5 @@ function evidence(event: ManagementLossEvent) {
 .losses-scroll table { min-width: 760px; }
 .losses-scroll td { vertical-align: top; }
 .loss-evidence { min-width: 280px; white-space: normal; overflow-wrap: anywhere; }
-small { display: block; overflow-wrap: anywhere; opacity: 0.7; }
+:deep(small) { display: block; overflow-wrap: anywhere; opacity: 0.7; }
 </style>

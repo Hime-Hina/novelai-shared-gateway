@@ -166,7 +166,7 @@ describe('ManagementGroups', () => {
     await preview(wrapper)
     expect((errors[0] as Error).message).toBe('空组份额须为 0%。')
     expect(transport).not.toHaveBeenCalled()
-    wrapper.findAllComponents(NSelect).at(-1)!.vm.$emit('update:value', 'g2')
+    wrapper.findAllComponents(NSelect).filter(input => input.attributes('aria-label')?.endsWith(' 的目标分组')).at(-1)!.vm.$emit('update:value', 'g2')
     await nextTick(); await preview(wrapper)
     const body = transport.mock.calls[0]![1] as Payload
     expect(body.groups[1]).toMatchObject({ share: .4, members: ['c'], memberWeights: { c: 1 } })

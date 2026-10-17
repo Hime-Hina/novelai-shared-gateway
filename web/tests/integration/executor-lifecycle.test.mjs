@@ -508,6 +508,10 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.equal(me.username, f.members[0].username); assert.equal(me.owner, false);
     assert.equal(heatmap.days.reduce((sum, day) => sum + day.total, 0), 1);
     assert.equal(shared.subscriptionActive, true); assert.equal(f.nuxt.child().pid, nuxtPid);
+    const history = json(await memberCall('/api/member/history?page=1&pageSize=10'));
+    assert.equal(history.total, 1); assert.equal(history.jobs.length, 1);
+    assert.ok(!JSON.stringify(history).includes(f.members[0].api_key));
+    assert.equal((await f.request('/api/member/history')).status, 401);
     assert.deepEqual(ledger(), originalLedger);
     assert.equal((await f.request('/api/member/me')).status, 401, 'Bearer must not substitute for a browser session');
     assert.equal((await memberCall('/api/member/heatmap?memberId=' + f.members[1].user_id)).status, 400);

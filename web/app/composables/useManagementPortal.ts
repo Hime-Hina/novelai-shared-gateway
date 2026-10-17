@@ -7,7 +7,7 @@ export type ManagementPanel = 'members' | 'groups' | 'usage' | 'settings'
 
 export function useManagementPortal(mode: ManagementMode) {
   const panel = ref<ManagementPanel>(mode === 'owner' ? 'usage' : 'members')
-  const days = ref<1 | 7 | 30>(7), busy = ref(false), connecting = ref(mode === 'owner')
+  const days = ref(7), busy = ref(false), connecting = ref(mode === 'owner')
   const adminToken = ref(''), remember = ref(true), sessionVersion = ref(0)
   const message = ref(''), messageError = ref(false), readError = ref(''), usageError = ref('')
   const shared = shallowRef<SharedStatus | null>(null), updatedAt = ref<number | null>(null)

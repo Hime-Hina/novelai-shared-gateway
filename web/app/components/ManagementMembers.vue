@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
-import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NSelect, NTable, NTag } from 'naive-ui'
+import { computed, h, onBeforeUnmount, ref } from 'vue'
+import { NAlert, NButton, NCard, NInput, NInputNumber, NModal, NSelect, NDataTable, NDropdown, NTag, type DataTableColumns } from 'naive-ui'
 import type { ManagementApi, ManagementGroup, ManagementMemberChange, ManagementMode, ManagementResource, ManagementRun, ManagementState, ManagementUser } from '../types/management'
 import { date, number } from '../utils/member-display'
 
@@ -191,6 +191,42 @@ function changeLabel(userId: string) {
   return (user ? name(user) : userId) + (userId === deleteUser.value?.id ? '（删除）' : userId === deletePreview.value?.payload.transferToUserId ? '（接收）' : '')
 }
 onBeforeUnmount(() => { active = false; closeDialog() })
+
+const pagination = { pageSize: 10, showSizePicker: true, pageSizes: [10, 25, 50] }
+function memberActions(user: ManagementUser) {
+  return [
+    props.state.discordLogin ? { label: '邀请码', key: 'invite', disabled: !user.enabled || !!user.discordId } : { label: '重置密码', key: 'credentials', disabled: !user.enabled },
+    { label: '调整额度', key: 'transfer' },
+    { label: user.acceptingJobs === false ? '恢复接单' : '停止接单', key: 'admission' },
+    { label: user.enabled ? '停用' : '恢复', key: 'status', disabled: protectedOwner(user) },
+    { type: 'divider' as const, key: 'divider' },
+    { label: '删除', key: 'delete', disabled: protectedOwner(user) }
+  ]
+}
+function memberAction(key: string, user: ManagementUser) {
+  const actions: Record<string, () => void | Promise<void>> = { invite: () => inviteMember(user), credentials: () => openCredentials(user),
+    transfer: () => openTransfer(user), admission: () => confirmAdmission(user), status: () => confirmStatus(user), delete: () => openDelete(user) }
+  if (actions[key]) void props.run(actions[key])
+}
+const memberColumns = computed<DataTableColumns<ManagementUser>>(() => [
+  { title: '成员', key: 'username', sorter: 'default', width: 220, render: user => h('div', [h('strong', user.username || user.note || user.id),
+    h('small', props.state.discordLogin ? user.discordId ? '已绑定 Discord' : '尚未绑定 Discord' : '密码登录')]) },
+  { title: '状态', key: 'enabled', width: 130, filterOptions: [{ label: '已启用', value: 'true' }, { label: '已停用', value: 'false' }], filter: (value, user) => String(user.enabled) === value,
+    render: user => h('div', [h(NTag, { size: 'small', bordered: false, type: user.enabled ? 'success' : 'default' }, () => user.enabled ? '已启用' : '已停用'), user.acceptingJobs === false ? h('small', '已停止接单') : null]) },
+  { title: '分组 / 份额', key: 'share', width: 150, sorter: (a, b) => (a.quota?.share || 0) - (b.quota?.share || 0), render: user => h('div', [groupOf(user.id)?.name || '未分组', h('small', percent(user.quota?.share))]) },
+  ...(['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'] as const).map((key, index) => ({ title: ['V5 余量', '订阅 Anlas', '购买 Anlas'][index], key, width: 125, align: 'right' as const,
+    sorter: (a: ManagementUser, b: ManagementUser) => (a.quota?.[key] || 0) - (b.quota?.[key] || 0), render: (user: ManagementUser) => number(user.quota?.[key]) })),
+  { title: '操作', key: 'actions', width: 200, render: user => h('div', { class: 'row-actions' }, [
+    h(NButton, { size: 'small', secondary: true, disabled: props.busy, onClick: () => props.run(() => delivery(user)) }, () => '分发信息'),
+    h(NDropdown, { trigger: 'click', options: memberActions(user), onSelect: key => memberAction(key, user) }, { default: () => h(NButton, { size: 'small', disabled: props.busy }, () => '更多') })
+  ]) }
+])
+type ShareChange = ManagementMemberChange['shareChanges'][number]
+const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
+  { title: '成员', key: 'userId', sorter: 'default', render: row => changeLabel(row.userId), filterOptions: (deletePreview.value?.result.shareChanges || []).map(row => ({ label: changeLabel(row.userId), value: row.userId })), filter: (value, row) => row.userId === value },
+  { title: '当前全局份额', key: 'beforeShare', sorter: 'default', render: row => percent(row.beforeShare) },
+  { title: '删除后全局份额', key: 'afterShare', sorter: 'default', render: row => percent(row.afterShare) }
+])
 </script>
 
 <template>
@@ -203,27 +239,7 @@ onBeforeUnmount(() => { active = false; closeDialog() })
       <span id="memberCount">{{ users.length }} / {{ state.users.length }} 位成员</span>
     </div>
     <div class="members-scroll">
-      <NTable class="members-table" :single-line="false">
-        <thead><tr><th>成员</th><th>分组 / 份额</th><th>V5 余量</th><th>订阅 Anlas</th><th>购买 Anlas</th><th>操作</th></tr></thead>
-        <tbody id="members">
-          <tr v-for="user in users" :key="user.id" :data-member-id="user.id">
-            <td>{{ user.username || user.note || user.id }} <NTag size="small" :type="user.enabled ? 'success' : 'default'">{{ user.enabled ? '已启用' : '已停用' }}</NTag>
-              <small v-if="user.acceptingJobs === false">已停止接单</small><small v-if="state.discordLogin">{{ user.discordId ? 'Discord ' + user.discordId : '尚未绑定 Discord' }}</small></td>
-            <td>{{ groupOf(user.id)?.name || '未分组' }}<small>{{ percent(user.quota?.share) }}</small></td>
-            <td data-label="V5 余量">{{ number(user.quota?.v5Available) }}</td><td data-label="订阅 Anlas">{{ number(user.quota?.anlasFixedAvailable) }}</td><td data-label="购买 Anlas">{{ number(user.quota?.anlasPurchasedAvailable) }}</td>
-            <td><div class="row-actions">
-              <NButton size="small" secondary :disabled="busy" @click="run(() => delivery(user))">分发信息</NButton>
-              <NButton v-if="state.discordLogin" size="small" secondary :disabled="busy || !user.enabled || !!user.discordId" @click="run(() => inviteMember(user))">邀请码</NButton>
-              <NButton v-else size="small" secondary :disabled="busy || !user.enabled" @click="run(() => openCredentials(user))">重置密码</NButton>
-              <NButton size="small" secondary :disabled="busy" @click="run(() => openTransfer(user))">调整额度</NButton>
-              <NButton size="small" secondary :disabled="busy || protectedOwner(user)" @click="run(() => openDelete(user))">删除</NButton>
-              <NButton size="small" secondary :disabled="busy" @click="run(() => confirmAdmission(user))">{{ user.acceptingJobs === false ? '恢复接单' : '停止接单' }}</NButton>
-              <NButton size="small" secondary :disabled="busy || protectedOwner(user)" @click="run(() => confirmStatus(user))">{{ user.enabled ? '停用' : '恢复' }}</NButton>
-            </div></td>
-          </tr>
-          <tr v-if="!users.length"><td colspan="6">没有符合条件的成员</td></tr>
-        </tbody>
-      </NTable>
+      <NDataTable id="members" :columns="memberColumns" :data="users" :row-key="(user: ManagementUser) => user.id" :row-props="(user: ManagementUser) => ({ class: 'member-row', 'data-member-id': user.id })" :pagination="pagination" :scroll-x="1075" size="small"><template #empty>没有符合条件的成员</template></NDataTable>
     </div>
     <p class="muted">停用会阻止登录和新请求，但不回收余额、份额或恢复权重。登录方式由站点配置决定。</p>
   </NCard>
@@ -274,9 +290,7 @@ onBeforeUnmount(() => { active = false; closeDialog() })
         <NButton id="previewDelete" secondary class="modal-actions" :disabled="busy" @click="run(previewDelete)">预览删除与余额转移</NButton>
         <NAlert id="deleteSummary" type="warning" :show-icon="false" class="modal-actions">{{ deleteSummary }}</NAlert>
         <div v-if="deletePreview?.result.shareChanges.length" id="deleteSharePreview" class="members-scroll modal-actions">
-          <NTable :single-line="false"><thead><tr><th>成员</th><th>当前全局份额</th><th>删除后全局份额</th></tr></thead>
-            <tbody id="deleteShareRows"><tr v-for="change in deletePreview.result.shareChanges" :key="change.userId"><td>{{ changeLabel(change.userId) }}</td><td>{{ percent(change.beforeShare) }}</td><td>{{ percent(change.afterShare) }}</td></tr></tbody>
-          </NTable>
+          <NDataTable id="deleteShareRows" :columns="shareColumns" :data="deletePreview.result.shareChanges" :row-key="(row: ShareChange) => row.userId" :pagination="pagination" size="small" />
         </div>
         <div v-if="deletePreview" id="deleteConfirmSection" class="modal-actions">
           <label for="deleteConfirmName">输入被删除成员的完整用户名确认</label><NInput v-model:value="deleteConfirmName" :disabled="busy" :input-props="{ id: 'deleteConfirmName', autocomplete: 'off' }" />
@@ -291,8 +305,8 @@ onBeforeUnmount(() => { active = false; closeDialog() })
 .member-filters { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 220px) auto; gap: 12px; align-items: center; margin-bottom: 16px; }
 .members-scroll { max-width: 100%; overflow-x: auto; }
 .members-table { min-width: 760px; }
-.row-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-small { display: block; margin-top: 4px; color: #adb7c6; }
+.row-actions, :deep(.row-actions) { display: flex; gap: 8px; flex-wrap: wrap; }
+:deep(small) { display: block; margin-top: 4px; color: #adb7c6; }
 .muted { color: #adb7c6; }
 .member-modal { width: min(780px, calc(100vw - 32px)); max-height: 85vh; overflow: auto; }
 .member-modal form { display: grid; gap: 12px; }
@@ -301,12 +315,5 @@ small { display: block; margin-top: 4px; color: #adb7c6; }
 .modal-actions { margin-top: 14px; }
 @media (max-width: 700px) {
   .member-filters { grid-template-columns: 1fr; }
-  .members-table { min-width: 0; }
-  .members-table thead { display: none; }
-  .members-table, .members-table tbody { display: block; }
-  .members-table tr { display: grid; grid-template-columns: 1fr 1fr; margin: 12px 0; border: 1px solid #33465f; border-radius: 10px; padding: 8px; }
-  .members-table td { border: 0; white-space: normal; overflow-wrap: anywhere; }
-  .members-table td:last-child { grid-column: 1 / -1; }
-  .members-table td[data-label]::before { content: attr(data-label); display: block; color: #adb7c6; font-size: 12px; }
 }
 </style>

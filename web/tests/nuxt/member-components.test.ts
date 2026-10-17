@@ -1,3 +1,5 @@
+import { defineComponent, h } from 'vue'
+import { NMessageProvider, NDataTable, NSelect } from 'naive-ui'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { enableAutoUnmount, flushPromises } from '@vue/test-utils'
@@ -17,6 +19,9 @@ function deferred<T>() {
 // Mock 保留传输观测；泛型返回值由与生产 API 相同的类型边界提供。
 function memberApi(transport: (...args: Parameters<MemberApi>) => Promise<unknown>): MemberApi {
   return async <T>(...args: Parameters<MemberApi>) => await transport(...args) as T
+}
+function mountKey(api: MemberApi) {
+  return mountSuspended(defineComponent({ setup: () => () => h(NMessageProvider, null, { default: () => h(MemberApiKey, { api }) }) }))
 }
 const requestId = 'batch/a?b'
 const requestPath = 'requests/batch%2Fa%3Fb'
@@ -39,7 +44,7 @@ describe('MemberApiKey', () => {
     const api = vi.fn<MemberApi>().mockResolvedValue({ apiKey: 'synthetic-member-key', baseUrl: '/v1' })
     const copying = deferred<void>()
     const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockReturnValue(copying.promise)
-    const wrapper = await mountSuspended(MemberApiKey, { props: { api: memberApi(api) } })
+    const wrapper = await mountKey(memberApi(api))
     expect(api).not.toHaveBeenCalled(); expect(clipboard).not.toHaveBeenCalled()
     expect(wrapper.find('#keyPanel').exists()).toBe(false)
     await wrapper.get('#showKey').trigger('click'); await flushPromises()
@@ -60,11 +65,11 @@ describe('MemberApiKey', () => {
   it('卸载后迟到的 Key 响应不能出现在新组件中', async () => {
     const result = deferred<{ apiKey: string; baseUrl: string }>()
     const api = vi.fn<MemberApi>().mockReturnValue(result.promise)
-    const old = await mountSuspended(MemberApiKey, { props: { api: memberApi(api) } })
+    const old = await mountKey(memberApi(api))
     await old.get('#showKey').trigger('click')
     old.unmount()
     const nextApi = vi.fn<MemberApi>()
-    const current = await mountSuspended(MemberApiKey, { props: { api: memberApi(nextApi) } })
+    const current = await mountKey(memberApi(nextApi))
     result.resolve({ apiKey: 'synthetic-late-secret', baseUrl: '/v1' }); await flushPromises()
     expect(nextApi).not.toHaveBeenCalled()
     expect(current.find('#keyPanel').exists()).toBe(false)
@@ -82,18 +87,18 @@ it('调用列表保留签名相对链接及 HTTP(S)、拒绝脚本链接，缺�
     { id: 'three', createdAt: '2026-10-17T00:02:00Z', model: 'third', status: 'done', imageUrl: 'http://images.example/result.png' },
     { id: 'four', createdAt: '2026-10-17T00:03:00Z', model: 'fourth', status: 'done', imageUrl: 'javascript:alert(1)' }
   ]
-  const api = vi.fn<MemberApi>()
+  const api = vi.fn<MemberApi>().mockResolvedValue({ jobs, total: jobs.length, until: '2026-10-17T03:00:00.000Z' })
   const wrapper = await mountSuspended(MemberCalls, { props: { api: memberApi(api), jobs, refreshVersion: 0,
     lateResults: [
       { id: 'late', model: 'late', createdAt: '2026-10-16T00:00:00Z', lateResultAt: '2026-10-17T00:00:00Z', imageUrl: relative, charge: jobs[0]!.charge },
       { id: 'invalid-late', model: 'invalid', createdAt: '2026-10-16T00:00:00Z', lateResultAt: '2026-10-17T00:00:00Z', imageUrl: 'javascript:alert(1)' }
     ] } })
-  expect(wrapper.findAll('#jobs tr')).toHaveLength(4)
+  await flushPromises()
+  expect(wrapper.findAll('#jobs tbody tr')).toHaveLength(4)
   expect(wrapper.get('#jobs').text()).toContain('订阅 未知 / 购买 未知')
   expect(wrapper.get('#jobs').text()).toContain('已退款（本站额度）')
   expect(wrapper.text()).toContain(hostile); expect(wrapper.find('img').exists()).toBe(false)
-  expect(wrapper.findAll('#lateResults li')).toHaveLength(1)
-  expect(wrapper.get('#lateResultsPanel').text()).toContain('退款保留，领取不另扣费')
+  expect(wrapper.get('#jobs').text()).toContain('领取迟到结果（退款保留）')
   const hrefs = wrapper.findAll('a').map(link => link.attributes('href'))
   expect(hrefs).toContain(relative); expect(hrefs).toContain('https://images.example/result.png'); expect(hrefs).toContain('http://images.example/result.png')
   expect(hrefs.some(href => href?.startsWith('javascript:'))).toBe(false)
@@ -105,7 +110,29 @@ it('调用列表保留签名相对链接及 HTTP(S)、拒绝脚本链接，缺�
   const batches = wrapper.findAllComponents(MemberBatch)
   expect(batches).toHaveLength(1)
   expect(batches[0]!.element.closest('.calls-scroll')).toBeNull()
-  expect(api).not.toHaveBeenCalled()
+  expect(api).toHaveBeenCalledTimes(1)
+  expect(api.mock.calls[0]![0]).toContain('history?page=1&pageSize=10')
+})
+
+it('成员历史分页参数传到服务端，筛选回首页，过时查询不能覆盖新结果', async () => {
+  const late = deferred<{ jobs: MemberJob[]; total: number; until: string }>()
+  const job = (id: string): MemberJob => ({ id, createdAt: '2026-10-17T00:00:00Z', model: id, status: 'done' })
+  const first = { jobs: [job('first')], total: 80, until: '2026-10-17T03:00:00.000Z' }
+  const api = vi.fn<MemberApi>().mockResolvedValueOnce(first).mockReturnValueOnce(late.promise)
+    .mockResolvedValue({ ...first, jobs: [job('filtered')], total: 1 })
+  const wrapper = await mountSuspended(MemberCalls, { props: { api: memberApi(api), jobs: [], lateResults: [], refreshVersion: 0 } })
+  await flushPromises()
+  const table = wrapper.findComponent(NDataTable)
+  table.vm.$emit('update:page', 2); await flushPromises()
+  const page = new URL(api.mock.calls[1]![0], 'https://synthetic.invalid/').searchParams
+  expect(page.get('page')).toBe('2'); expect(page.get('until')).toBe(first.until)
+  wrapper.findAllComponents(NSelect).find(select => select.attributes('aria-label') === '筛选调用状态')!.vm.$emit('update:value', 'late')
+  await flushPromises()
+  expect(api.mock.calls.at(-1)![0]).toContain('page=1')
+  expect(api.mock.calls.at(-1)![0]).toContain('status=late')
+  late.resolve({ ...first, jobs: [job('stale')] }); await flushPromises()
+  expect(wrapper.get('#jobs').text()).toContain('filtered'); expect(wrapper.get('#jobs').text()).not.toContain('stale')
+  expect(wrapper.text()).toContain('原退款保留')
 })
 
 describe('MemberBatch', () => {

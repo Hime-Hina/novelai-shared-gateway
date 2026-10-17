@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { DOMWrapper, enableAutoUnmount, flushPromises } from '@vue/test-utils'
-import { NModal, NSelect } from 'naive-ui'
+import { NModal, NSelect, NDropdown } from 'naive-ui'
 import ManagementMembers from '../../app/components/ManagementMembers.vue'
 import type { ManagementApi, ManagementMemberChange, ManagementMode, ManagementRun, ManagementState } from '../../app/types/management'
 
@@ -42,7 +42,17 @@ async function page(transport: (...args: Parameters<ManagementApi>) => Promise<u
   })
   const action = async (userId: string, label: string) => {
     const button = wrapper.get(`[data-member-id="${userId}"]`).findAll('button').find(item => item.text() === label)
-    expect(button).toBeDefined(); await button!.trigger('click'); await flushPromises()
+    if (button) await button.trigger('click')
+    else {
+      const menu = wrapper.findAllComponents(NDropdown).find(item => item.element.closest('[data-member-id]')?.getAttribute('data-member-id') === userId)!
+      const option = menu.props('options')!.find(option => option?.label === label)!
+      expect(option).toBeDefined(); expect(option.disabled).not.toBe(true)
+      await wrapper.get(`[data-member-id="${userId}"]`).findAll('button').find(item => item.text() === '更多')!.trigger('click')
+      await flushPromises()
+      const menuItem = body().findAll('.n-dropdown-option').find(item => item.text() === label)
+      expect(menuItem).toBeDefined(); await menuItem!.get('.n-dropdown-option-body').trigger('click')
+    }
+    await flushPromises()
   }
   const select = async (id: string, value: string) => {
     const input = wrapper.findAllComponents(NSelect).find(item => item.attributes('id') === id)
@@ -157,9 +167,9 @@ it('删除必须预览和完整用户名确认，改接收人使预览失效，�
     return request.action === 'preview-delete-member' ? { ...preview(initial), transferToUserId: request.transferToUserId } : {}
   })
   const { wrapper, action, select } = await page(api, initial)
-  const ownerButtons = wrapper.get('[data-member-id="a"]').findAll('button')
-  expect(ownerButtons.find(button => button.text() === '删除')!.attributes('disabled')).toBeDefined()
-  expect(ownerButtons.find(button => button.text() === '停用')!.attributes('disabled')).toBeDefined()
+  const ownerActions = wrapper.findAllComponents(NDropdown).find(item => item.element.closest('[data-member-id]')?.getAttribute('data-member-id') === 'a')!.props('options')!
+  expect(ownerActions.find(option => option?.label === '删除')!.disabled).toBe(true)
+  expect(ownerActions.find(option => option?.label === '停用')!.disabled).toBe(true)
   await action('b', '删除')
   expect(api).not.toHaveBeenCalled(); expect(body().find('#confirmDelete').exists()).toBe(false)
   await body().get('#previewDelete').trigger('click'); await flushPromises()

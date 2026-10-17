@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { enableAutoUnmount } from '@vue/test-utils'
-import { NSelect } from 'naive-ui'
+import { NSelect, NDataTable } from 'naive-ui'
 import { nextTick } from 'vue'
 import ManagementUsage from '../../app/components/ManagementUsage.vue'
 import type { ManagementUsage as Usage, ManagementUsageCounts } from '../../app/types/management'
@@ -21,11 +21,18 @@ function usage(): Usage {
 }
 
 describe('ManagementUsage', () => {
+  it('后台刷新不在工具栏外插入新块，也不移除已有数据', async () => {
+    const wrapper = await mountSuspended(ManagementUsage, { props: { data: usage(), days: 7, loading: false } })
+    const children = wrapper.get('#usagePanel').element.childElementCount
+    await wrapper.setProps({ loading: true })
+    expect(wrapper.get('#usagePanel').element.childElementCount).toBe(children)
+    expect(wrapper.get('#usageDone').text()).toBe('3 / 10')
+  })
   it('时间范围由props控制，发出筛选/重试事件；三个统计维度切换保留完整指标', async () => {
     const wrapper = await mountSuspended(ManagementUsage, { props: { data: usage(), days: 7, loading: false } })
-    const selects = wrapper.findAllComponents(NSelect)
+    const selects = ['usageDays', 'usageGroup'].map(id => wrapper.findAllComponents(NSelect).find(input => input.attributes('id') === id)!)
     expect(selects[0]!.props('value')).toBe(7)
-    expect(selects[0]!.props('options')).toEqual([{ label: '今天', value: 1 }, { label: '近 7 天', value: 7 }, { label: '近 30 天', value: 30 }])
+    expect(selects[0]!.props('options')).toEqual([{ label: '今天', value: 1 }, { label: '近 7 天', value: 7 }, { label: '近 30 天', value: 30 }, { label: '近一年', value: 365 }, { label: '全部保留记录', value: 0 }])
     for (const days of [1, 30]) selects[0]!.vm.$emit('update:value', days)
     expect(wrapper.emitted('update:days')).toEqual([[1], [30]])
     expect(selects[0]!.props('value')).toBe(7)
@@ -42,24 +49,33 @@ describe('ManagementUsage', () => {
       selects[1]!.vm.$emit('update:value', value)
       await nextTick()
       expect(wrapper.get('#usageRows').text()).toContain(label)
-      expect(wrapper.get('#usageRows tr').findAll('td')).toHaveLength(9)
+      expect(wrapper.get('#usageRows tbody tr').findAll('td')).toHaveLength(10)
     }
   })
 
-  it('免费/退款/分池与HTTP错误保留，未知耗时不显示零，最近记录最多50条', async () => {
+  it('免费/退款/分池与HTTP错误保留，未知耗时不显示零，完整记录分页且支持全范围排序筛选', async () => {
     const data = usage()
     const wrapper = await mountSuspended(ManagementUsage, { props: { data, days: 7, loading: false } })
     expect(wrapper.get('#usageWait').text()).toBe('平均排队 未知')
-    const summary = wrapper.get('#usageRows tr').findAll('td')
-    expect(summary[7]!.text()).toBe('未知'); expect(summary[8]!.text()).toBe('0 秒')
-    const records = wrapper.get('#usageRecent').findAll('tr')
+    const summary = wrapper.get('#usageRows tbody tr').findAll('td')
+    expect(summary[8]!.text()).toBe('未知'); expect(summary[9]!.text()).toBe('0 秒')
+    const records = wrapper.get('#usageRecent').findAll('tbody tr')
     expect(records[0]!.text()).toContain('已结算 · 免费')
     expect(records[0]!.findAll('td')[4]!.text()).toBe('0 秒')
     expect(records[0]!.findAll('td')[5]!.text()).toBe('未知')
     expect(records[1]!.text()).toContain('已退款（本站额度） · 订阅 6 / 购买 4 Anlas · HTTP 429')
     expect(wrapper.text()).toContain('平均生成仅统计成功任务的上游耗时')
     await wrapper.setProps({ data: { ...data, recent: Array.from({ length: 51 }, (_, index) => ({ ...data.recent[0]!, id: String(index) })) } })
-    expect(wrapper.get('#usageRecent').findAll('tr')).toHaveLength(50)
+    expect(wrapper.get('#usageRecent').findAll('tbody tr')).toHaveLength(10)
+    const table = wrapper.findAllComponents(NDataTable).find(item => item.attributes('id') === 'usageRecent')!
+    expect(table.props('data')).toHaveLength(51)
+    table.vm.page(6); await nextTick()
+    expect(wrapper.get('#usageRecent').findAll('tbody tr')).toHaveLength(1)
+    table.vm.filter({ status: ['failed'] }); await nextTick()
+    expect(wrapper.get('#usageRecent').text()).toContain('所选范围暂无请求')
+    await wrapper.setProps({ data })
+    expect(wrapper.get('#usageRecent').findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('#usageRecent tbody').text()).toContain('HTTP 429')
   })
 
   it('无数据可重试，加载中不伪造零用量，空范围明确展示', async () => {
@@ -70,8 +86,8 @@ describe('ManagementUsage', () => {
     expect(wrapper.text()).toContain('尚未读取用量统计')
     const data = usage()
     await wrapper.setProps({ data: { ...data, members: [], models: [], days: [], recent: [] } })
-    expect(wrapper.get('#usageRows').text()).toBe('所选范围暂无记录')
-    expect(wrapper.get('#usageRecent').text()).toBe('所选范围暂无请求')
+    expect(wrapper.get('#usageRows').text()).toContain('所选范围暂无记录')
+    expect(wrapper.get('#usageRecent').text()).toContain('所选范围暂无请求')
     await wrapper.setProps({ loading: true })
     expect(wrapper.text()).toContain('以下为上次读取的结果')
   })
