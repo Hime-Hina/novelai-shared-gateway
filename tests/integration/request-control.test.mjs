@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs }
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
 
-const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };
 async function fixture(t, statuses) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-request-control-')));
@@ -38,7 +39,7 @@ async function fixture(t, statuses) {
   for (const name of ['publicGenerationRequest', 'getGenerationRequest', 'cancelGenerationRequest', 'refundJob',
     'getUserOrThrow', 'uniqueIds', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyResultJobRows',
     'physicalAccountLoad', 'jobDeadlineTimestamp', 'isExpiredJobAt', 'isStaleActiveJob', 'staleActiveJobDetail', 'reserveQueuedJob']) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
   }
   return { store, ctx, notifications };

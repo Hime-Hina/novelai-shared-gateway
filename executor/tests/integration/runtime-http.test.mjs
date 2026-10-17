@@ -26,6 +26,7 @@ const { JsonStore } = await import(pathToFileURL(packaged('server/store.js')).hr
 const { syncFairQuota } = await import(pathToFileURL(packaged('server/fair-quota.js')).href);
 const { createMemberSession } = await import(pathToFileURL(packaged('server/member-auth.js')).href);
 const { nativeImagesMsgpack } = await import(pathToFileURL(packaged('server/native-stream.js')).href);
+assert.equal(runtimeRequire.resolve('novelai-shared-gateway'), packaged('server/index.js'));
 const Database = runtimeRequire('better-sqlite3');
 const migrationJournal = JSON.parse(await readFile(packaged('server/migrations/meta/_journal.json'), 'utf8'));
 for (const name of ['server/gateway-runtime.js', 'server/sqlite-read-worker.js', 'public/generation-pricing.js',

@@ -157,7 +157,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
     finally { clearInterval(timer); }
   };
   const start = async () => {
-    child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     exited = once(child, 'exit');
     child.stderr.on('data', chunk => { output = (output + chunk.toString()).slice(-16000); });
     await new Promise((resolve, reject) => {

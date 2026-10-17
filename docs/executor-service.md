@@ -6,14 +6,14 @@
 
 ## 已抽取的运行时
 
-`server/gateway-runtime.js` 保留现有业务与文件布局，仅提供两个入口：
+`server/gateway-runtime.ts` 保留现有业务与文件布局，仅提供两个入口：
 
 - `handleGatewayRequest(req, res)`：完整的原 Node handler，包含访问守卫、
   各协议错误响应及载荷预算的 finally 释放，不只导出内部 router。
 - `startGateway(handler)`：初始化数据库，先恢复完整结果再清理中断任务，随后
   监听端口；监听成功才启动额度刷新、未知核对和队列派发，并安装统一关闭流程。
 
-`server/index.js` 仍是兼容启动入口，调用同一运行时。导入运行时本身不会建库、
+`server/index.ts` 仍是兼容启动入口，调用同一运行时。导入运行时本身不会建库、
 监听或启动后台任务；它只能由执行服务的进程入口启动，不能在 Nuxt 请求、SSR
 或热更新插件中调用。旧 CLI 与 Nitro 是同一数据目录的替代启动方式，不可并行启动。
 
@@ -44,8 +44,11 @@ SQLite 依赖按目标平台安装；不能将 Windows 的二进制直接部署�
 
 T01 起，执行器构建先运行根项目的 TypeScript 编译，将 `.output/backend/server/`
 的 JavaScript 放回上述业务文件树，并复制原始 migrations 目录；不把 TypeScript
-源码直接交付到 `node_modules`。根配置的 allowJs 仅帮助发射尚未迁移的 JavaScript，
-不代表这些旧模块已经通过严格类型检查。默认数据路径和绝对 DATA_DIR 要求保持。
+源码直接交付到 `node_modules`。后端业务模块已迁为严格 TypeScript；根配置的 allowJs
+仍发射原有公共脚本与运维脚本，不代表所有脚本都已完成类型迁移。两份后端共用的
+public 报价/Medium 模块保留浏览器 JS 路径并启用 `@ts-check`。源码启动使用 `.ts`，
+构建脚本将发布包的 main/start/dev 改为编译后的 `.js`。默认数据路径和绝对 DATA_DIR
+要求保持。
 
 ## 内部入口与构建产物
 
@@ -70,8 +73,8 @@ pnpm --filter @novelai-gateway/executor test:runtime
 docker build -f executor/Dockerfile -t novelai-shared-gateway-executor:check .
 ```
 
-构建后的进程入口是 `.output/server/start.mjs`，类型检查覆盖新配置、认证与
-适配器；旧 JS 通过显式入口声明接入，不声称已经完成 T01 全后端类型迁移。
+构建后的进程入口是 `.output/server/start.mjs`，执行器与后端业务分别进行严格类型
+检查；发布包只使用编译后的 JavaScript，不依赖运行时加载 TypeScript。
 最终镜像只携带生产依赖与输出文件，包含原字节的 SQL/journal、worker 和
 业务/public/scripts 文件树，并附带编入产物的 Nitro/H3 许可。CI 在最终镜像中只读挂载集成测试，以 UID1000、
 禁网及独立 tmpfs 实际启动服务；不允许缺失产物时悄悄回退源码或跳过测试。
@@ -285,10 +288,12 @@ Caddy 只区分 API 与网页的压缩策略，全部转给 Nuxt；公网上的�
 双进程测试实际覆盖 Linux SIGTERM 同时结束成员状态和任务预览 SSE，执行器继续运行。
 以上全部使用合成数据和模拟上游，不包含真实 NAI、生产浏览器或 bob 的部署验收。
 
-## 尚未完成的迁移与部署
+## 当前部署与剩余验收
 
-官方协议差异仍在 N03 验收后按 C03 处理，T01/C01 的后端类型迁移与清理继续推进。
-最终仍需独立 systemd 部署和 D01 隔离验收。现有业务由同一个执行器处理，不能让
-旧 CLI 与独立执行器同时挂同一数据目录。
-尚未验证 systemd 自动拉起、bob 的目标运行时与持久卷；测试中由测试进程重新
-启动服务。当前生产未切换，本文不作为部署完成或任意故障都能找回上游结果的声明。
+N03、C03 当前支持范围与计划内 C01 已完成；T01 最后入口批次正在进行发布产物验收。
+bob 已运行相互独立的 systemd 测试服务，使用 CI 的 Node/Linux 产物、独立持久目录和
+清理后的生产规模副本。systemd 强杀自动恢复、网页与执行器生命周期隔离及同库版本
+回退已通过，详细证据与剩余性能验收见[测试部署说明](test-deployment.md)。
+
+现有业务由同一个执行器处理，不能让旧 CLI 与独立执行器同时挂同一数据目录。
+当前生产未切换；最终版本仍须 D01 验收，不能保证找回上游尚未完整返回的图片。

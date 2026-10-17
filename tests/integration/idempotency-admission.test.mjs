@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -12,12 +13,12 @@ import * as requests from '../../server/generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/native-image.ts';
 
-const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 function load(context, names) {
   const ctx = vm.createContext(context);
   for (const name of names) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
   }
   return ctx;

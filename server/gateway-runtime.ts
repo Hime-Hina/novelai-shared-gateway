@@ -19,6 +19,7 @@ import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, r
 import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.ts';
 import { validateImageBytes } from './native-image.ts';
 import http from 'node:http';
+import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders, Server } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import Negotiator from 'negotiator';
@@ -33,6 +34,90 @@ import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, default
 import { MAX_STEPS, DIRECT_URL_MAX_STEPS, buildErrorImage, fetchNovelAiAccountQuota, generateNovelAiImage, normalizeNovelAiRequest } from './providers.ts';
 import { generationPrice, sizeMap } from '../public/generation-pricing.js';
 import { adminPromptApiConfig, convertChinesePrompt, fetchPromptApiModels, isPromptApiConfigured, normalizePromptApiConfig, publicPromptApiConfig } from './prompt-api.ts';
+
+import type { StoreItem, StoreDatabase, StoredGenerationRequest } from './store.ts';
+import type { NormalizedImageRequest } from './providers.ts';
+import type { FairCharge } from './fair-quota.ts';
+import type { PreviewProgress } from './job-previews.ts';
+
+type Settings = StoreDatabase['settings'];
+type Collection = Exclude<keyof StoreDatabase, 'settings'>;
+type Body = Record<string, unknown>;
+type PayloadClaim = ReturnType<ReturnType<typeof createGenerationPayloadBudget>['claim']>;
+type GenerateOptions = NonNullable<Parameters<typeof generateNovelAiImage>[3]>;
+type UpstreamTiming = Parameters<NonNullable<GenerateOptions['onUpstreamTiming']>>[0];
+type GeneratedImage = (Awaited<ReturnType<typeof generateNovelAiImage>> | NonNullable<Awaited<ReturnType<typeof publishStoredResult>>>) & { mock?: boolean };
+type AccountQuota = Awaited<ReturnType<typeof fetchNovelAiAccountQuota>>;
+type OfficialJob = ReturnType<OfficialKeyJobs['get']>;
+interface GatewayRequest extends IncomingMessage {
+  publicParsedBody?: Body;
+  generationPayloadClaim?: PayloadClaim;
+  generationIdempotencyKey?: string | null;
+}
+interface GatewayResponse extends ServerResponse { generationDeliveryTracked?: boolean }
+interface GatewayError extends Error {
+  statusCode?: number; code?: string; cooldownUntil?: string; requestId?: string;
+  upstreamStatus?: number; upstreamRetryAfterUntil?: string; status?: number; errors?: unknown[];
+}
+
+type ExecutionRequest = StoredGenerationRequest;
+type RequestSummary = Partial<ExecutionRequest>;
+type StoredImage = Pick<StoreItem, 'file' | 'mimeType'> & { base64?: string };
+type StoredResult = StoredImage & { id?: string; imageId?: string; operation?: string; sha256?: string; byteLength?: number };
+interface JobResult {
+  saved?: StoredResult; image?: GeneratedImage; seed?: number; balance?: number;
+  error?: string; statusCode?: number; cooldownUntil?: Parameters<typeof cooldownRetryAfter>[0];
+}
+interface JobWaiter { resolve(value: JobResult | null): void; timer: ReturnType<typeof setTimeout>; cleanup?(): void }
+interface Progress extends PreviewProgress {
+  percent?: number; step?: number; total?: number; accountId?: string;
+  accountRouteId?: number; eventType?: string; updatedAt?: string;
+}
+interface Reservation {
+  job?: StoreItem; account: StoreItem | null; token?: string; userId?: string; ledgerId?: string;
+  cost?: number; accountCost?: number; cacheKey?: string; upstreamTiming?: UpstreamTiming;
+  failurePhase?: string;
+}
+interface RunningControl {
+  controller: AbortController; jobId: string; requestId: string; payloadBytes: number; accountId: string;
+  done: Promise<void>; resolveDone(): void; reason: string; timer: ReturnType<typeof setTimeout> | null;
+  reservation?: Reservation;
+}
+interface JobMetadata {
+  id: string; requestId?: string | null; jobIds?: string[]; count?: number; replayed?: boolean;
+  cacheHit?: boolean; balance?: number; replayImages?: { id: string; token?: string | null }[];
+  cached?: StoredImage;
+}
+interface NativeBatch extends JobMetadata { jobIds: string[]; count: number; streamType?: 'sse' | 'msgpack' }
+interface GenerationIntent {
+  keyHash: string; operation: string; normalize(settings: Partial<Settings>): ExecutionRequest;
+  randomSeed: boolean; noCache: boolean; claim?: PayloadClaim;
+}
+type IdempotencyMapping = NonNullable<ReturnType<JsonStore['readGenerationIdempotency']>>;
+type GenerationRecord = ReturnType<typeof generationRequestRecord>;
+type QueueReservation = (Reservation & { job: StoreItem; skip?: false; queued?: false; changed?: boolean; jobId?: string; failure?: string; statusCode?: number; error?: unknown })
+  | { skip: true; queued?: false; job?: undefined; jobId?: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }
+  | { queued: true; skip?: false; job?: undefined; jobId: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown };
+
+interface ResolvedGeneration {
+  request?: ExecutionRequest; payload?: string; contextBytes?: number;
+  mapping?: IdempotencyMapping; replay?: NativeBatch;
+}
+interface JobOptions {
+  native?: boolean; frontend?: boolean; source?: string; deadlineAt?: string; admissionVersion?: number; batchId?: string; sampleIndex?: number;
+  generationPayloadClaim?: PayloadClaim; idempotencyKey?: string | null; idempotency?: GenerationIntent | null;
+  status?: string; accountId?: string; imageId?: string; cost?: number;
+}
+interface MutationSource {
+  id?: string; job?: StoreItem | null; jobId?: string; token?: string; userToken?: string;
+  accountIds?: (string | undefined)[]; account?: StoreItem | null; accountId?: string; ledgerId?: string;
+}
+type DirtyRows = Record<string, string[]>;
+type RemovedImages = StoreItem[] & { affectedJobIds?: string[] };
+interface Stats { total?: number; done?: number; failed?: number; active?: number; success?: number }
+interface RetryOptions extends Omit<GenerateOptions, 'onProgress'> {
+  deadline?: number; request?: RequestSummary; onProgress?: ((progress: Progress) => void) | null;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -57,25 +142,25 @@ if (fairShareMode) {
   const update = store.update.bind(store);
   store.update = (mutator, options = {}) => update(mutator, { ...options, includeSettings: true, immediate: true });
 }
-let queueDrainTimer = null;
+let queueDrainTimer: ReturnType<typeof setTimeout> | null = null;
 let queueDrainAt = 0;
 let queueDraining = false;
 let queueDrainRequested = false;
 let queueDispatchEnabled = false;
 let runtimeClosing = false;
 let lastQueueWait = '';
-let accountQuotaRefreshTimer = null;
-let accountQuotaRefreshPromise = null;
+let accountQuotaRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let accountQuotaRefreshPromise: Promise<Awaited<ReturnType<typeof refreshAccountQuotas>>> | null = null;
 let accountQuotaAutoRefreshStarted = false;
-let generationReviewTimer = null;
-let generationReviewPromise = null;
-const jobWaiters = new Map();
-const runningJobControls = new Map();
+let generationReviewTimer: ReturnType<typeof setTimeout> | null = null;
+let generationReviewPromise: Promise<unknown> | null = null;
+const jobWaiters = new Map<string, Set<JobWaiter>>();
+const runningJobControls = new Map<string, RunningControl>();
 const directGenerateTimeoutMs = Number(process.env.DIRECT_GENERATE_TIMEOUT_MS || 60_000);
 const openAiChatTimeoutMs = Number(process.env.OPENAI_CHAT_TIMEOUT_MS || 10 * 60_000);
 const openAiQueuePollMs = 650;
 const openAiFixedSteps = 28;
-const jobStreamProgress = new Map();
+const jobStreamProgress = new Map<string, Progress>();
 const jobPreviews = new JobPreviews();
 const officialJobs = new OfficialKeyJobs({
   generate: (request, account, options) => generateNovelAiImage(request, account, process.env, options),
@@ -83,7 +168,7 @@ const officialJobs = new OfficialKeyJobs({
   findImage: cacheKey => store.findImageByCacheKey(cacheKey),
   previews: jobPreviews
 });
-const jobStreamProgressPersistState = new Map();
+const jobStreamProgressPersistState = new Map<string, { percent: number; at: number }>();
 const beijingOffsetMs = 8 * 60 * 60 * 1000;
 const usageChartDays = 7;
 const errorLogRetentionMs = usageChartDays * 24 * 60 * 60 * 1000;
@@ -103,7 +188,7 @@ const openAiImageModels = [
   { id: 'nai-diffusion-5-full-medium', cost: 8 },
   { id: 'nai-diffusion-5-curated', cost: 8 }
 ];
-const openAiSizeTiers = {
+const openAiSizeTiers: Record<string, { label: string; sizes: Record<string, { width: number; height: number }> }> = {
   '2K': {
     label: '[2K]',
     sizes: {
@@ -124,7 +209,7 @@ const openAiSizeTiers = {
 const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';
 
 // 旧入口与 Nitro listener 共用一个宿主；恢复完成前不监听，监听成功后才派发。
-export async function startGateway(handler) {
+export async function startGateway(handler: http.RequestListener) {
   installRuntimeSafetyHandlers();
   await store.init();
   await reconcileMemberSessionOwner(store);
@@ -139,7 +224,7 @@ export async function startGateway(handler) {
   await migrateInlineImages();
   await ensureAccountRouteIds();
   await applyRuntimeSettings();
-  await cleanupImageStorage().catch((error) => console.error('Failed to cleanup image storage:', error));
+  await cleanupImageStorage().catch((error: unknown) => console.error('Failed to cleanup image storage:', error));
 
   const server = http.createServer(handler);
   server.listen(port, host, () => {
@@ -147,14 +232,14 @@ export async function startGateway(handler) {
     console.log(`Nai2API listening on http://${host}:${port}`);
     startAccountQuotaAutoRefresh();
     startGenerationReviews();
-    logStartupQueueState().catch((error) => console.error('[runtime] failed to inspect startup queue:', error)).finally(() => {
+    logStartupQueueState().catch((error: unknown) => console.error('[runtime] failed to inspect startup queue:', error)).finally(() => {
       scheduleQueueDrain();
     });
   });
   installShutdownHandlers(server);
 }
 
-export async function handleGatewayRequest(req, res) {
+export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResponse) {
   // PRIVATE_ACCESS_GUARD
   // 私有服务只接受本机隧道入口，阻断跨站请求与域名重绑定。
   if (process.env.PRIVATE_MODE === 'true') {
@@ -170,26 +255,26 @@ export async function handleGatewayRequest(req, res) {
   } catch (error) {
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) { res.destroy(); return; }
-    const retryAfter = cooldownRetryAfter(error.cooldownUntil);
+    const retryAfter = cooldownRetryAfter((error as GatewayError).cooldownUntil);
     if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
-    if (error.requestId) res.setHeader('X-Nai-Request-Id', error.requestId);
-    if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes(error.statusCode))) {
-      const image = buildErrorImage(publicErrorMessage(error.message || 'Generation failed'));
+    if ((error as GatewayError).requestId) res.setHeader('X-Nai-Request-Id', (error as GatewayError).requestId!);
+    if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes((error as GatewayError).statusCode!))) {
+      const image = buildErrorImage(publicErrorMessage((error as GatewayError).message || 'Generation failed'));
       sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
       return;
     }
     if (/^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(String(req.url || '').split('?')[0])) {
-      const message = publicErrorMessage(error.message || 'Internal server error');
-      const code = Number(error.statusCode);
+      const message = publicErrorMessage((error as GatewayError).message || 'Internal server error');
+      const code = Number((error as GatewayError).statusCode);
       const statusCode = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
       sendJson(res, statusCode, { message, statusCode, error: message });
       return;
     }
     if (req.url?.startsWith('/v1/')) {
-      sendOpenAiError(res, error.statusCode || 500, publicErrorMessage(error.message || 'Internal server error'), openAiErrorType(error));
+      sendOpenAiError(res, (error as GatewayError).statusCode || 500, publicErrorMessage((error as GatewayError).message || 'Internal server error'), openAiErrorType(error));
       return;
     }
-    sendJson(res, error.statusCode || 500, { error: publicErrorMessage(error.message || 'Internal server error') });
+    sendJson(res, (error as GatewayError).statusCode || 500, { error: publicErrorMessage((error as GatewayError).message || 'Internal server error') });
   } finally {
     req.generationPayloadClaim?.release();
     delete req.publicParsedBody;
@@ -235,16 +320,16 @@ async function migrateInlineImages() {
 // PUBLIC_SELF_USE_GUARD
 // 图片签名使用进程随机密钥；重启失效，不暴露账户或网关密钥。
 const publicImageSecret = randomBytes(32);
-function publicImageMac(pathname, expires) {
+function publicImageMac(pathname: string, expires: string) {
   return createHmac('sha256', publicImageSecret).update(`${pathname}\n${expires}`).digest('hex');
 }
-function publicImageUrl(id) {
+function publicImageUrl(id: string) {
   const pathname = `/api/images/${encodeURIComponent(id)}/content`;
   if (process.env.PUBLIC_MODE !== 'true') return pathname;
   const expires = String(Math.floor(Date.now() / 1000) + 900);
   return `${pathname}?expires=${expires}&signature=${publicImageMac(pathname, expires)}`;
 }
-function validPublicImageSignature(url) {
+function validPublicImageSignature(url: URL) {
   if (!/^\/api\/images\/[^/]+\/content$/.test(url.pathname)) return false;
   const expires = url.searchParams.get('expires') || '';
   const signature = url.searchParams.get('signature') || '';
@@ -253,7 +338,7 @@ function validPublicImageSignature(url) {
   if (Number(expires) < now || Number(expires) > now + 900) return false;
   return timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(publicImageMac(url.pathname, expires), 'hex'));
 }
-async function publicSelfUseGuard(req, res, url, method) {
+async function publicSelfUseGuard(req: GatewayRequest, res: GatewayResponse, url: URL, method: string) {
   if (process.env.PUBLIC_MODE !== 'true' || method === 'OPTIONS') return false;
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -294,8 +379,8 @@ async function publicSelfUseGuard(req, res, url, method) {
   return false;
 }
 
-async function route(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+async function route(req: GatewayRequest, res: GatewayResponse) {
+  const url = new URL(req.url!, `http://${req.headers.host}`);
   const method = req.method || 'GET';
   if (fairShareMode) {
     const surface = sharedSurface(url.pathname, method);
@@ -389,10 +474,10 @@ async function route(req, res) {
     if (!fairShareMode) throw httpError(409, 'FAIR_SHARE_MODE is disabled.');
     const body = await readJson(req);
     const result = await store.update(db => {
-      if (!Array.isArray(body.memberIds) || body.memberIds.some(id => !db.users.some(u => u.id === id && u.enabled !== false))) throw httpError(400, '成员必须是已启用的用户');
+      if (!Array.isArray(body.memberIds) || body.memberIds.some((id: unknown) => !db.users.some(u => u.id === id && u.enabled !== false))) throw httpError(400, '成员必须是已启用的用户');
       configureFairQuota(db, body.memberIds);
       syncFairQuota(db);
-      return { status: db.settings.fairQuota.status, members: body.memberIds, globalConcurrency: 4 };
+      return { status: db.settings.fairQuota!.status, members: body.memberIds as unknown[], globalConcurrency: 4 };
     }, { collections: ['settings', 'ledger'] });
     sendJson(res, 200, result);
     return;
@@ -402,14 +487,14 @@ async function route(req, res) {
     const startedAt = Date.now();
     assertAdmin(req, url);
     const readStartedAt = Date.now();
-    const db = await store.readAdminSummary({ fresh: url.searchParams.get('fresh') === '1' });
+    const db: Awaited<ReturnType<JsonStore['readAdminSummary']>> & { statsJobs?: StoreItem[] } = await store.readAdminSummary({ fresh: url.searchParams.get('fresh') === '1' });
     const readMs = Date.now() - readStartedAt;
     resetStaleAccountLoads(db.accounts);
     const revealTokens = url.searchParams.get('revealTokens') === '1';
     const statsJobs = db.statsJobs || db.jobs || [];
     const errorLogJobs = db.errorJobs || statsJobs;
     const computeStartedAt = Date.now();
-    const accountStats1h = db.accountStats1h || Object.fromEntries(accountStatsMapSince(statsJobs, 60 * 60 * 1000));
+    const accountStats1h = (db.accountStats1h || Object.fromEntries(accountStatsMapSince(statsJobs, 60 * 60 * 1000))) as Record<string, ReturnType<typeof finalizeStats>>;
     const payload = {
       settings: adminRuntimeSettings(db.settings),
       userCount: Number(db.userCount || 0),
@@ -545,7 +630,7 @@ async function route(req, res) {
     if (!job) throw httpError(404, 'job not found.');
     if (job.userToken !== token && !isAdmin(req, url)) throw httpError(403, 'forbidden.');
     if (job.status === 'done' && job.imageId) {
-      const image = await store.findImage(job.imageId);
+      const image = await store.findImage(job.imageId!);
       if (image) {
         await sendStoredImage(res, 200, image);
         return;
@@ -597,7 +682,7 @@ async function route(req, res) {
   throw httpError(404, 'not found.');
 }
 
-async function acceptDirectRequest(url, claim, key) {
+async function acceptDirectRequest(url: URL, claim: PayloadClaim | undefined, key: string | null | undefined): Promise<JobMetadata> {
   const token = String(url.searchParams.get('token') || '').trim();
   const rawParams = Object.fromEntries(url.searchParams.entries());
   if (key) {
@@ -637,12 +722,12 @@ async function acceptDirectRequest(url, claim, key) {
   return { id: job.id, requestId: job.requestId };
 }
 
-async function handleDirectGenerate(url, res, claim, key) {
+async function handleDirectGenerate(url: URL, res: GatewayResponse, claim: PayloadClaim | undefined, key: string | null | undefined) {
   const token = String(url.searchParams.get('token') || '').trim();
   if (isOfficialKey(token)) {
     const snapshot = await createOfficialJob(token, Object.fromEntries(url.searchParams.entries()), false, directGenerateTimeoutMs);
-    const job = await officialJobs.get(snapshot.id, token).done;
-    if (job.status !== 'done') throw httpError(502, job.error);
+    const job = await officialJobs.get(snapshot.id, token).done!;
+    if (job.status !== 'done') throw httpError(502, job.error!);
     await sendStoredImage(res, 200, job.image, {
       'cache-control': 'private, max-age=0', 'x-cache': job.cacheHit ? 'hit' : 'miss', 'x-auth-mode': 'official'
     });
@@ -665,13 +750,13 @@ async function handleDirectGenerate(url, res, claim, key) {
   } catch (error) {
     // 响应失败不改写已受理任务；持久执行与结算由调度器负责。
     if (res.destroyed) return;
-    if (error.statusCode === 429 || isNovelAiCapacityError(error)) { sendBusyImage(res, error.cooldownUntil); return; }
-    if (error.message === 'direct generate timeout') { sendTimeoutImage(res, error.cooldownUntil); return; }
+    if ((error as GatewayError).statusCode === 429 || isNovelAiCapacityError(error)) { sendBusyImage(res, (error as GatewayError).cooldownUntil); return; }
+    if ((error as GatewayError).message === 'direct generate timeout') { sendTimeoutImage(res, (error as GatewayError).cooldownUntil); return; }
     throw error;
   }
 }
 
-async function officialKeyInfo(token) {
+async function officialKeyInfo(token: string) {
   officialKeyOwner(token);
   try {
     const quota = await fetchNovelAiAccountQuotaWithTimeout(token);
@@ -685,19 +770,19 @@ async function officialKeyInfo(token) {
   }
 }
 
-async function createOfficialJob(token, body, frontend = false, timeoutMs = novelAiGenerateTimeoutMs()) {
+async function createOfficialJob(token: string, body: Body, frontend = false, timeoutMs = novelAiGenerateTimeoutMs()) {
   const owner = officialKeyOwner(token);
   const settings = await store.readSettings();
   const request = normalizeNovelAiRequest({ ...body, cost: undefined }, settings, { maxSteps: frontend ? MAX_STEPS : DIRECT_URL_MAX_STEPS });
   request.steps = Math.floor(request.steps);
   request.cost = 0;
   // Existing site caching is shared; official-key caching must include its owner.
-  const cacheKey = hashObject({ owner, request: requestCacheKey('', request, body.seed) });
-  return officialJobs.create(token, request, { cacheKey, noCache: isNoCache(body.nocache), timeoutMs });
+  const cacheKey = hashObject({ owner, request: requestCacheKey('', request, body!.seed) });
+  return officialJobs.create(token, request, { cacheKey, noCache: isNoCache(body!.nocache), timeoutMs });
 }
 
-async function saveOfficialImage(job, image) {
-  const request = job.request;
+async function saveOfficialImage(job: OfficialJob, image: GeneratedImage) {
+  const request = job.request!;
   const id = createId('img');
   const file = await writeStoredImage(id, image);
   const saved = {
@@ -719,18 +804,18 @@ async function saveOfficialImage(job, image) {
 }
 
 // 原生插件不经过聊天模板；在进入扣费队列前验证实际生成参数。
-function parseNativeImageRequest(body) {
+function parseNativeImageRequest(body: unknown) {
   return parseValidatedNativeImageRequest(body);
 }
 
 // 无压缩 ZIP 保留上游图片原始字节，兼容酒馆插件的 JSZip 读取流程。
-function nativeImageZip(buffer, filename = 'image_0.png') {
+function nativeImageZip(buffer: Buffer, filename = 'image_0.png') {
   return nativeImagesZip([{buffer, filename}]);
 }
 
 // 每张图片独立排队与结算，ZIP 同时支持成功图片和部分失败的结果清单。
-function nativeImagesZip(entries) {
-  const locals = [], centrals = [];
+function nativeImagesZip(entries: { buffer: Buffer; filename: string }[]) {
+  const locals: Buffer[] = [], centrals: Buffer[] = [];
   let offset = 0;
   for (const {buffer, filename} of entries) {
     const name = Buffer.from(filename, 'utf8');
@@ -756,52 +841,52 @@ function nativeImagesZip(entries) {
 }
 
 // 仅记录请求结构和生成数值，不记录凭据、提示词、负面词或图片原文。
-function nativeRequestDiagnostic(body) {
-  const describe = (value) => {
+function nativeRequestDiagnostic(body: { parameters?: Record<string, unknown>; model?: unknown; action?: unknown; input?: unknown } | null) {
+  const describe = (value: unknown) => {
     if (value === null) return { type: 'null' };
     if (Array.isArray(value)) return { type: 'array', length: value.length,
-      nonEmpty: value.filter(v => v !== null && v !== '' && v !== undefined).length };
+      nonEmpty: value.filter((v: unknown) => v !== null && v !== '' && v !== undefined).length };
     if (typeof value === 'string') return { type: 'string', length: value.length };
     if (typeof value === 'number') return { type: 'number', value: Number.isFinite(value) ? value : 'non-finite' };
     if (typeof value === 'boolean') return { type: 'boolean', value };
     return { type: typeof value };
   };
-  const identifier = (value) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value)
+  const identifier = (value: unknown) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(value)
     && !/pst-|sta1n|token|secret|key/i.test(value) ? value : describe(value);
   const parameters = body?.parameters;
-  const numeric = {};
+  const numeric: Record<string, ReturnType<typeof describe> & { numericValue?: number }> = {};
   for (const field of ['width','height','steps','n_samples','seed','scale','cfg_rescale']) {
     numeric[field] = describe(parameters?.[field]);
     // 数字字符串保留数值以识别客户端类型问题，其余字符串仅记录长度。
     if (typeof parameters?.[field] === 'string' && /^-?\d+(?:\.\d+)?$/.test(parameters[field]) && parameters[field].length <= 24) numeric[field].numericValue = Number(parameters[field]);
   }
-  const structure = {};
+  const structure: Record<string, ReturnType<typeof describe>> = {};
   for (const field of ['image','mask','reference_image','reference_image_multiple','director_reference_images','controlnet_condition','controlnet_model','v4_prompt','v4_negative_prompt','characterPrompts','stream']) {
     if (parameters && Object.hasOwn(parameters, field)) structure[field] = describe(parameters[field]);
   }
   return { model: identifier(body?.model), action: identifier(body?.action), prompt: describe(body?.input), numeric, structure };
 }
 
-function logNativeDiagnostic(id, event, details) {
+function logNativeDiagnostic(id: string, event: string, details: Body) {
   console.warn('[native-diagnostic] ' + JSON.stringify({ time: new Date().toISOString(), id, event, ...details }));
 }
 
-async function acceptNativeHttpRequest(req, diagnosticId, operation) {
+async function acceptNativeHttpRequest(req: GatewayRequest, diagnosticId: string, operation?: 'encode-vibe' | 'upscale') {
   const token = bearerToken(req);
   if (!token.startsWith('STA1N-')) throw httpError(401, 'Existing gateway key required.');
   const user = await store.readUserByToken(token);
   if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
-  let body = await readNativeBody(req, { jsonReader: req => readJson(req, 32 * 1024 * 1024) });
-  logNativeDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
+  let body = await readNativeBody(req, { jsonReader: req => readJson(req as GatewayRequest, 32 * 1024 * 1024) }) as { parameters?: { seed?: unknown; stream?: NativeBatch['streamType'] }; allowPurchasedAnlas?: unknown } | null;
+  logNativeDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body as Parameters<typeof nativeRequestDiagnostic>[0]));
   const normalize = () => {
-    const request = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
-    request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
+    const request: ExecutionRequest = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
+    request.allowPurchasedAnlas = (body as Body).allowPurchasedAnlas === true;
     quoteFairRequest(singleGenerationRequest(request));
     return request;
   };
   const intent = generationIntent(req.generationIdempotencyKey, normalize, { operation: operation || 'generate',
-    randomSeed: !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1), noCache: true, claim: req.generationPayloadClaim });
-  const batch = await createNativeBatch(token, intent ? null : normalize(), diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim, intent);
+    randomSeed: !operation && (body?.parameters?.seed === undefined || body!.parameters!.seed === -1), noCache: true, claim: req.generationPayloadClaim });
+  const batch = await createNativeBatch(token, intent ? null : normalize(), diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim!, intent);
   const streamType = body?.parameters?.stream ?? 'sse';
   body = null;
   scheduleQueueDrain();
@@ -809,23 +894,23 @@ async function acceptNativeHttpRequest(req, diagnosticId, operation) {
   return { ...batch, streamType };
 }
 
-async function createNativeBatch(token, request, diagnosticId, admissionVersion, claim, intent) {
+async function createNativeBatch(token: string, request: ExecutionRequest | null, diagnosticId: string, admissionVersion: number | undefined, claim: PayloadClaim, intent: GenerationIntent | null): Promise<NativeBatch> {
   const replay = await assertFairMemberReady(token, intent);
   if (replay) { claim?.release(); return replay; }
   await cleanupStaleActiveJobs('create native batch');
-  let parent, mapping;
+  let parent: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
   return store.update(db => {
     const user = getUserOrThrow(db, token);
     const resolved = resolveGenerationIdempotency(db, user, intent);
     if (resolved?.replay) return resolved.replay;
-    request = resolved?.request || request;
+    request = (resolved?.request || request)!;
     mapping = resolved?.mapping;
     const count = request.sampleCount || 1;
     assertQueueAdmission(db, user, admissionVersion, process.env, count);
     parent = generationRequestRecord(user, request, 'novelai-native', claim, resolved);
     const createdAt = parent.created_at;
     const queueExpiresAt = queueDeadline(Date.parse(createdAt), '');
-    const jobIds = [];
+    const jobIds: string[] = [];
     for (let index = 0; index < count; index++) {
       const single = singleGenerationRequest(request, index);
       const job = { id: createId('job'), requestId: parent.id, batchId: parent.id, diagnosticId,
@@ -845,7 +930,7 @@ async function createNativeBatch(token, request, diagnosticId, admissionVersion,
     dirtyRows: result => ({ jobs: result.jobIds }) }).then(validateGenerationReplay);
 }
 
-async function waitNativeResult(jobId, deadline, res) {
+async function waitNativeResult(jobId: string, deadline: number, res: GatewayResponse) {
   const result = await waitForJobResult(jobId, deadline, res);
   if (res.destroyed) return null;
   if (!result) throw httpError(504, 'direct generate timeout');
@@ -853,17 +938,17 @@ async function waitNativeResult(jobId, deadline, res) {
   return result;
 }
 
-function nativeResponseType(req, res) {
+function nativeResponseType(req: GatewayRequest, res: GatewayResponse) {
   res.setHeader('Vary', 'Accept');
   const type = new Negotiator(req).mediaType(['application/zip', 'application/json; charset=utf-8']);
   if (!type) throw httpError(406, '响应仅支持 application/zip 或 application/json');
   return type;
 }
 
-async function sendNativeJson(res, status, entries, summary, headers = {}) {
+async function sendNativeJson(res: GatewayResponse, status: number, entries: { saved?: StoredResult; seed?: number }[], summary?: Parameters<typeof nativeImagesJson>[1], headers: OutgoingHttpHeaders = {}) {
   async function* images() {
     for (const [index, entry] of entries.entries()) {
-      yield { buffer: await readStoredImage(entry.saved), index, seed: entry.seed };
+      yield { buffer: await readStoredImage(entry.saved!), index, seed: entry.seed };
     }
   }
   const chunks = nativeImagesJson(images(), summary);
@@ -877,7 +962,7 @@ async function sendNativeJson(res, status, entries, summary, headers = {}) {
   }
 }
 
-async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
+async function handleNativeImageGeneration(req: GatewayRequest, res: GatewayResponse, { stream = false } = {}) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const json = !stream && nativeResponseType(req, res) !== 'application/zip';
@@ -885,34 +970,34 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const deadline = Date.now() + openAiChatTimeoutMs;
   if (stream) { await streamNativeImages(res, batch, deadline); return; }
-  const entries = [], results = [];
+  const entries: { saved?: StoredResult; buffer?: Buffer; filename: string; seed?: number }[] = [], results: NonNullable<NonNullable<Parameters<typeof nativeImagesJson>[1]>['results']> = [];
   for (let index = 0; index < batch.count; index++) {
     if (res.destroyed) return;
     try {
       const result = await waitNativeResult(batch.jobIds[index], deadline, res);
       if (!result) return;
-      const filename = `image_${index}.${imageExtension(result.saved.mimeType || '')}`;
-      entries.push({ ...(json ? { saved: result.saved } : { buffer: await readStoredImage(result.saved) }), filename, seed: result.seed });
-      results.push({ index, status: 'done', filename });
+      const filename = `image_${index}.${imageExtension(result.saved!.mimeType || '')}`;
+      entries.push({ ...(json ? { saved: result.saved } : { buffer: await readStoredImage(result.saved!) }), filename, seed: result.seed });
+      results.push({ index, status: 'done' as const, filename });
     } catch (error) {
       if (!entries.length) throw error;
-      results.push({ index, status: 'failed', message: publicErrorMessage(error.message || '生成失败', { generation: true }) });
+      results.push({ index, status: 'failed' as const, message: publicErrorMessage((error as GatewayError).message || '生成失败', { generation: true }) });
       break;
     }
   }
   if (res.destroyed) return;
   const count = batch.count, completed = entries.length;
-  const summary = count > 1 ? { requested: count, completed, remaining: count - completed, billing: 'independent_single_images', results } : null;
+  const summary = count > 1 ? { requested: count, completed, remaining: count - completed, billing: 'independent_single_images' as const, results } : null;
   if (json) {
     await sendNativeJson(res, 200, entries, summary, { 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
     return;
   }
   if (summary) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify(summary), 'utf8') });
-  sendImage(res, 200, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
+  sendImage(res, 200, 'application/zip', nativeImagesZip(entries as { buffer: Buffer; filename: string }[]), { 'cache-control': 'no-store',
     'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
-function* nativeStreamChunks(res, event, streamType) {
+function* nativeStreamChunks(res: GatewayResponse, event: Parameters<typeof nativeImageMsgpack>[0], streamType: NativeBatch['streamType']) {
   const chunks = streamType === 'sse' ? nativeImageSse(event) : [nativeImageMsgpack(event)];
   for (const chunk of chunks) {
     // 首块编码成功后才发头；显式 stream 决定格式，Accept 不覆盖官方流参数。
@@ -924,13 +1009,13 @@ function* nativeStreamChunks(res, event, streamType) {
   }
 }
 
-async function streamNativeImages(res, batch, deadline) {
+async function streamNativeImages(res: GatewayResponse, batch: NativeBatch, deadline: number) {
   res.once('error', () => res.destroy());
   for (let index = 0; index < batch.count; index++) {
     if (res.destroyed) return;
     const unwatch = jobPreviews.watch(batch.jobIds[index], frame => {
       // 预览可以跳帧，慢连接不能积压预览或阻塞任务；步骤只采用上游原始编号。
-      if (res.destroyed || res.writableEnded || res.writableNeedDrain || !Number.isSafeInteger(frame.stepIndex) || frame.stepIndex < 0) return;
+      if (res.destroyed || res.writableEnded || res.writableNeedDrain || !Number.isSafeInteger(frame.stepIndex) || frame.stepIndex! < 0) return;
       // 预览已有512KiB上限，整帧同步排入同一连接，避免与final交错。
       for (const chunk of nativeStreamChunks(res, { event_type: 'intermediate', samp_ix: index, step_ix: frame.stepIndex, image: frame.buffer }, batch.streamType)) res.write(chunk);
     });
@@ -939,12 +1024,12 @@ async function streamNativeImages(res, batch, deadline) {
       unwatch();
       if (!result) return;
       // final 只来自已经落盘并结算的结果；HTTP 连接消失不会撤销任务。
-      const image = await readStoredImage(result.saved);
+      const image = await readStoredImage(result.saved!);
       if (res.destroyed) return;
       for (const chunk of nativeStreamChunks(res, { event_type: 'final', samp_ix: index, image }, batch.streamType)) {
         if (res.destroyed) return;
         // SSE base64逐块等待写完，不让慢连接积压整张图片的编码副本。
-        await new Promise((resolve, reject) => {
+        await new Promise<void>((resolve, reject) => {
           const onClose = () => resolve();
           res.once('close', onClose);
           res.write(chunk, error => {
@@ -957,14 +1042,14 @@ async function streamNativeImages(res, batch, deadline) {
       if (res.destroyed) return;
       if (!res.headersSent) throw error;
       for (const chunk of nativeStreamChunks(res, { event_type: 'error', samp_ix: index,
-        code: String(error.statusCode || 500), message: publicErrorMessage(error.message || '生成失败', { generation: true }) }, batch.streamType)) res.write(chunk);
+        code: String((error as GatewayError).statusCode || 500), message: publicErrorMessage((error as GatewayError).message || '生成失败', { generation: true }) }, batch.streamType)) res.write(chunk);
       break;
     } finally { unwatch(); }
   }
   if (!res.destroyed) res.end();
 }
 
-async function handleNativeAuxiliary(req, res, operation) {
+async function handleNativeAuxiliary(req: GatewayRequest, res: GatewayResponse, operation: 'encode-vibe' | 'upscale') {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
   const json = operation === 'upscale' && nativeResponseType(req, res) !== 'application/zip';
@@ -973,24 +1058,24 @@ async function handleNativeAuxiliary(req, res, operation) {
   const result = await waitNativeResult(batch.jobIds[0], Date.now() + openAiChatTimeoutMs, res);
   if (!result) return;
   if (json) { await sendNativeJson(res, 200, [{ saved: result.saved }]); return; }
-  const buffer = await readStoredImage(result.saved);
+  const buffer = await readStoredImage(result.saved!);
   if (operation === 'encode-vibe') sendImage(res, 201, 'application/binary', buffer, { 'cache-control': 'no-store' });
-  else sendImage(res, 200, 'application/zip', nativeImageZip(buffer, `image_0.${imageExtension(result.saved.mimeType || '')}`), { 'cache-control': 'no-store' });
+  else sendImage(res, 200, 'application/zip', nativeImageZip(buffer, `image_0.${imageExtension(result.saved!.mimeType || '')}`), { 'cache-control': 'no-store' });
 }
 
-async function acceptOpenAiRequest(req) {
+async function acceptOpenAiRequest(req: GatewayRequest) {
   const token = bearerToken(req);
   if (!token) throw httpError(401, 'missing API key.');
   const body = await readJson(req);
   if (req.generationIdempotencyKey) {
-    let model;
+    let model!: string;
     const intent = generationIntent(req.generationIdempotencyKey, settings => {
       const parsed = parseOpenAiImageRequest(body, settings);
       model = parsed.model;
-      const request = normalizeNovelAiRequest(parsed.request, settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+      const request: NormalizedImageRequest & Pick<ExecutionRequest, 'allowPurchasedAnlas'> = normalizeNovelAiRequest(parsed.request, settings, { maxSteps: DIRECT_URL_MAX_STEPS });
       request.allowPurchasedAnlas = parsed.request.allowPurchasedAnlas === true;
       return request;
-    }, { randomSeed: true, noCache: isNoCache(body.nai?.nocache ?? body.nocache ?? '1'), claim: req.generationPayloadClaim });
+    }, { randomSeed: true, noCache: isNoCache((body.nai as Body | undefined)?.nocache ?? body!.nocache ?? '1'), claim: req.generationPayloadClaim });
     const job = await createJob(token, null, { source: 'openai', generationPayloadClaim: req.generationPayloadClaim, idempotency: intent });
     scheduleQueueDrain();
     return { id: job.id, requestId: job.requestId, model, stream: body.stream === true };
@@ -1005,7 +1090,7 @@ async function acceptOpenAiRequest(req) {
   return { id: job.id, requestId: job.requestId, model: parsed.model, stream: body.stream === true };
 }
 
-async function handleOpenAiChatCompletion(req, res) {
+async function handleOpenAiChatCompletion(req: GatewayRequest, res: GatewayResponse) {
   const job = await acceptOpenAiRequest(req);
   if (job.requestId) res.setHeader('X-Nai-Request-Id', job.requestId);
   if (res.destroyed) return;
@@ -1019,7 +1104,7 @@ async function handleOpenAiChatCompletion(req, res) {
   if (!result) throw httpError(504, 'direct generate timeout');
   if (result.error) throw Object.assign(httpError(result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500), result.error), { cooldownUntil: result.cooldownUntil });
   sendJson(res, 200, openAiChatCompletionResponse({
-    model: job.model, content: openAiImageMarkdown(req, result.saved), id: `chatcmpl-${job.id}`
+    model: job.model, content: openAiImageMarkdown(req, result.saved!), id: `chatcmpl-${job.id}`
   }));
 }
 
@@ -1051,18 +1136,18 @@ function openAiModelsResponse() {
   };
 }
 
-function parseOpenAiImageRequest(body = {}, settings = {}) {
+function parseOpenAiImageRequest(body: Body = {}, settings: Partial<Settings> = {}) {
   const modelParts = parseOpenAiModel(body.model || settings.defaultModel || 'nai-diffusion-4-5-full');
   const messageText = lastUserMessageText(body.messages || []);
   const fields = parseChinesePromptFields(messageText);
   validateOpenAiPromptFormat(fields, messageText);
-  const nai = body.nai && typeof body.nai === 'object' ? body.nai : {};
+  const nai: Body = body.nai && typeof body.nai === 'object' ? body.nai as Body : {};
   const prompt = String(nai.tag || nai.prompt || fields.tag || '').trim();
   const negative = String(nai.negative ?? fields.negative ?? '').trim() || settings.defaultNegative || '';
   const sizeName = String(nai.size ?? fields.size ?? settings.defaults?.size ?? '竖图').trim();
   const tierSize = modelParts.tier?.sizes?.[sizeName];
 
-  const request = {
+  const request: Body & { tag: string; model: string } = {
     tag: prompt,
     model: modelParts.model,
     artist: nai.artist ?? fields.artist ?? settings.defaultArtist ?? '',
@@ -1074,7 +1159,7 @@ function parseOpenAiImageRequest(body = {}, settings = {}) {
     cfg: nai.cfg ?? fields.cfg ?? settings.defaults?.cfg,
     sampler: nai.sampler ?? fields.sampler ?? modelParts.sampler ?? settings.defaults?.sampler,
     negative,
-    nocache: nai.nocache ?? body.nocache ?? '1',
+    nocache: nai.nocache ?? body!.nocache ?? '1',
     noise_schedule: nai.noise_schedule ?? nai.noiseSchedule ?? settings.defaults?.noiseSchedule ?? 'karras'
   };
 
@@ -1084,7 +1169,7 @@ function parseOpenAiImageRequest(body = {}, settings = {}) {
   };
 }
 
-function validateOpenAiPromptFormat(fields, messageText) {
+function validateOpenAiPromptFormat(fields: Record<string, string>, messageText: string) {
   const requiredFields = ['tag', 'size', 'scale', 'cfg'];
   const missing = requiredFields.some((key) => !String(fields[key] ?? '').trim());
   const optionalFieldsPresent = Object.hasOwn(fields, 'artist') && Object.hasOwn(fields, 'negative');
@@ -1095,7 +1180,7 @@ function openAiPromptFormatError() {
   return '请求格式错误，请参考群内使用指南';
 }
 
-function parseOpenAiModel(modelValue) {
+function parseOpenAiModel(modelValue: unknown) {
   const original = String(modelValue || 'nai-diffusion-4-5-full');
   const tierMatch = original.match(/^\[(2K|4K)\]\s*(.+)$/i);
   const tierName = tierMatch ? tierMatch[1].toUpperCase() : '';
@@ -1110,24 +1195,24 @@ function parseOpenAiModel(modelValue) {
   };
 }
 
-function lastUserMessageText(messages) {
-  const list = Array.isArray(messages) ? messages : [];
+function lastUserMessageText(messages: unknown) {
+  const list: { role?: unknown; content?: unknown }[] = Array.isArray(messages) ? messages : [];
   const message = [...list].reverse().find((item) => item?.role === 'user') || list.at(-1);
   return messageContentText(message?.content || '');
 }
 
-function messageContentText(content) {
+function messageContentText(content: unknown) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return String(content || '');
-  return content.map((part) => {
+  return content.map((part: string | { type?: unknown; text?: unknown } | null) => {
     if (typeof part === 'string') return part;
     if (part?.type === 'text') return part.text || '';
     return part?.text || '';
   }).filter(Boolean).join('\n');
 }
 
-function parseChinesePromptFields(text) {
-  const fieldNames = {
+function parseChinesePromptFields(text: string) {
+  const fieldNames: Record<string, string> = {
     '提示词': 'tag',
     '畫師串': 'artist',
     '画师串': 'artist',
@@ -1141,7 +1226,7 @@ function parseChinesePromptFields(text) {
     '采样器': 'sampler',
     '採樣器': 'sampler'
   };
-  const fields = {};
+  const fields: Record<string, string> = {};
   let currentKey = '';
   for (const rawLine of String(text || '').split(/\r?\n/)) {
     const line = rawLine.trimEnd();
@@ -1149,7 +1234,7 @@ function parseChinesePromptFields(text) {
     const key = match ? fieldNames[match[1].trim()] : '';
     if (key) {
       currentKey = key;
-      fields[currentKey] = appendFieldValue(fields[currentKey], match[2]);
+      fields[currentKey] = appendFieldValue(fields[currentKey], match![2]);
       continue;
     }
     if (currentKey && line.trim()) {
@@ -1159,14 +1244,14 @@ function parseChinesePromptFields(text) {
   return fields;
 }
 
-function appendFieldValue(current, value) {
+function appendFieldValue(current: string, value: string) {
   const text = String(value || '').trim();
   if (!current) return text;
   if (!text) return current;
   return `${current}\n${text}`;
 }
 
-async function streamOpenAiImageJob(req, res, job, model, deadline = Date.now() + openAiChatTimeoutMs) {
+async function streamOpenAiImageJob(req: GatewayRequest, res: GatewayResponse, job: JobMetadata, model: string, deadline = Date.now() + openAiChatTimeoutMs) {
   sendOpenAiStreamHeaders(res);
   const streamId = `chatcmpl-${job.id}`;
   writeOpenAiChunk(res, { id: streamId, model, content: '<think>\n任务已提交，正在进入队列\n' });
@@ -1210,12 +1295,12 @@ async function streamOpenAiImageJob(req, res, job, model, deadline = Date.now() 
   finishOpenAiStream(res, streamId, model);
 }
 
-async function publicJobSnapshot(jobId) {
+async function publicJobSnapshot(jobId: string) {
   const snapshot = await store.findJobContext(jobId);
   return snapshot ? publicJob(snapshot.job, snapshot, { includePrompt: false }) : null;
 }
 
-function openAiProgressLine(job) {
+function openAiProgressLine(job: ReturnType<typeof publicJob>) {
   if (job.status === 'queued') {
     if (job.queuePosition && job.queuedCount) return `排队中：第 ${job.queuePosition} / ${job.queuedCount} 个`;
     return '排队中，正在等待可用账号';
@@ -1226,12 +1311,12 @@ function openAiProgressLine(job) {
   return '';
 }
 
-function openAiImageMarkdown(req, imageOrJob) {
+function openAiImageMarkdown(req: GatewayRequest, imageOrJob: { id?: string; imageId?: string; imageUrl?: string }) {
   const imageId = imageOrJob.imageId || imageOrJob.id;
-  return `![image](${absoluteUrl(req, publicImageUrl(imageId))})`;
+  return `![image](${absoluteUrl(req, publicImageUrl(imageId!))})`;
 }
 
-function openAiChatCompletionResponse({ model, content, id }) {
+function openAiChatCompletionResponse({ model, content, id }: { model: string; content: string; id: string }) {
   return {
     id,
     object: 'chat.completion',
@@ -1250,7 +1335,7 @@ function openAiChatCompletionResponse({ model, content, id }) {
   };
 }
 
-function writeOpenAiChunk(res, { id, model, content }) {
+function writeOpenAiChunk(res: GatewayResponse, { id, model, content }: { id: string; model: string; content: string }) {
   res.write(`data: ${JSON.stringify({
     id,
     object: 'chat.completion.chunk',
@@ -1264,7 +1349,7 @@ function writeOpenAiChunk(res, { id, model, content }) {
   })}\n\n`);
 }
 
-function finishOpenAiStream(res, id, model) {
+function finishOpenAiStream(res: GatewayResponse, id: string, model: string) {
   res.write(`data: ${JSON.stringify({
     id,
     object: 'chat.completion.chunk',
@@ -1276,7 +1361,7 @@ function finishOpenAiStream(res, id, model) {
   res.end();
 }
 
-function sendOpenAiStreamHeaders(res) {
+function sendOpenAiStreamHeaders(res: GatewayResponse) {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',
@@ -1285,19 +1370,19 @@ function sendOpenAiStreamHeaders(res) {
   });
 }
 
-function absoluteUrl(req, urlPath) {
-  const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+function absoluteUrl(req: GatewayRequest, urlPath: string) {
+  const proto = req.headers['x-forwarded-proto'] || ((req.socket as typeof req.socket & { encrypted?: boolean }).encrypted ? 'https' : 'http');
   const hostHeader = req.headers['x-forwarded-host'] || req.headers.host || `localhost:${port}`;
   return `${proto}://${hostHeader}${urlPath}`;
 }
 
-async function redeemCard(cardCode) {
+async function redeemCard(cardCode: unknown) {
   if (!cardCode) throw httpError(400, 'card is required.');
   return store.update((db) => {
     const card = db.cards.find((item) => item.code === cardCode);
     if (!card) throw httpError(404, 'card not found.');
     if (card.usedBy) throw httpError(409, 'card already redeemed.');
-    if (card.expiresAt && Date.parse(card.expiresAt) < Date.now()) throw httpError(410, 'card expired.');
+    if (card.expiresAt && Date.parse(card.expiresAt as string) < Date.now()) throw httpError(410, 'card expired.');
 
     const user = {
       id: createId('usr'),
@@ -1323,7 +1408,7 @@ async function redeemCard(cardCode) {
   }, { collections: ['cards', 'users', 'ledger'] });
 }
 
-async function mergeUserBalance(sourceToken, targetToken) {
+async function mergeUserBalance(sourceToken: string, targetToken: string) {
   if (!sourceToken) throw httpError(400, '请先输入被融合密钥。');
   if (!targetToken) throw httpError(400, '请输入需要保留额度的密钥。');
   if (sourceToken === targetToken) throw httpError(409, '两个密钥不能相同。');
@@ -1335,7 +1420,7 @@ async function mergeUserBalance(sourceToken, targetToken) {
     if (source.id === target.id) throw httpError(409, '两个密钥不能相同。');
 
     const activeJob = (db.jobs || []).find((job) => (
-      job.userToken === source.token && ['queued', 'pending', 'running'].includes(job.status)
+      job.userToken === source.token && ['queued', 'pending', 'running'].includes(job.status!)
     ));
     if (activeJob) throw httpError(409, '当前密钥还有任务正在生成，完成后再融合。');
 
@@ -1391,7 +1476,7 @@ async function mergeUserBalance(sourceToken, targetToken) {
   });
 }
 
-async function createCards(body) {
+async function createCards(body: Body) {
   const count = clamp(Number(body.count || 1), 1, 200);
   const credits = clamp(Number(body.credits || 10), 1, 100000);
   const prefix = String(body.prefix || 'CARD').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16) || 'CARD';
@@ -1410,7 +1495,7 @@ async function createCards(body) {
   return cards;
 }
 
-async function createUsers(body) {
+async function createUsers(body: Body) {
   const count = clamp(Number(body.count || 1), 1, 200);
   const credits = clamp(Number(body.credits || 10), 1, 100000);
   const note = String(body.note || 'admin issued').slice(0, 120);
@@ -1441,7 +1526,7 @@ async function createUsers(body) {
   return users;
 }
 
-async function adjustUsers(body) {
+async function adjustUsers(body: Body) {
   const setBalance = body.setBalance === undefined ? null : clamp(Number(body.setBalance), 0, 100000000);
   const delta = body.delta === undefined && body.balanceDelta === undefined ? null : Number(body.delta ?? body.balanceDelta);
   if (setBalance === null && !Number.isFinite(delta)) throw httpError(400, 'setBalance or delta is required.');
@@ -1451,7 +1536,7 @@ async function adjustUsers(body) {
     const now = new Date().toISOString();
     users.forEach((user) => {
       const before = Number(user.balance || 0);
-      user.balance = setBalance === null ? Math.max(0, before + delta) : setBalance;
+      user.balance = setBalance === null ? Math.max(0, before + delta!) : setBalance;
       user.updatedAt = now;
       db.ledger.unshift({
         id: createId('log'),
@@ -1466,11 +1551,11 @@ async function adjustUsers(body) {
   }, { collections: ['users', 'ledger'] });
 }
 
-async function deleteUsers(body) {
+async function deleteUsers(body: Body) {
   return store.update((db) => {
     const users = selectUsers(db, body);
     const ids = new Set(users.map((user) => user.id));
-    const tokens = new Set(users.map((user) => user.token));
+    const tokens = new Set<unknown>(users.map((user) => user.token));
     db.users = db.users.filter((user) => !ids.has(user.id));
     db.cards.forEach((card) => {
       if (tokens.has(card.usedBy)) {
@@ -1489,7 +1574,7 @@ async function deleteUsers(body) {
   }, { collections: ['users', 'cards', 'ledger'] });
 }
 
-async function addAccount(body) {
+async function addAccount(body: Body) {
   const token = String(body.token || '').trim();
   if (!token) throw httpError(400, 'NovelAI account token is required.');
   return store.update((db) => {
@@ -1523,7 +1608,7 @@ async function addAccount(body) {
   }, { collections: ['accounts'] });
 }
 
-async function importAccounts(body) {
+async function importAccounts(body: Body) {
   const mode = body.mode === 'replace' ? 'replace' : 'append';
   const accounts = parseImportedAccounts(body);
   if (!accounts.length) throw httpError(400, 'no account tokens found.');
@@ -1580,7 +1665,7 @@ async function importAccounts(body) {
   }, { collections: ['accounts', 'ledger'] });
 }
 
-async function applyAccountProxies(body) {
+async function applyAccountProxies(body: Body) {
   const proxies = parseProxyLines(body.proxies || body.proxyText || body.text || body.proxy || '');
   if (!proxies.length) throw httpError(400, 'no SOCKS5 proxies found.');
   return store.update((db) => {
@@ -1608,7 +1693,7 @@ async function applyAccountProxies(body) {
   }, { collections: ['accounts', 'ledger'] });
 }
 
-async function deleteAccounts(body) {
+async function deleteAccounts(body: Body) {
   return store.update((db) => {
     const ids = new Set(collectValues(body.ids || body.accounts));
     if (!ids.size) throw httpError(400, 'account ids are required.');
@@ -1626,7 +1711,7 @@ async function deleteAccounts(body) {
   }, { collections: ['accounts', 'ledger'] });
 }
 
-async function updateAccounts(body) {
+async function updateAccounts(body: Body) {
   return store.update((db) => {
     const ids = new Set(collectValues(body.ids || body.accounts));
     if (!ids.size) throw httpError(400, 'account ids are required.');
@@ -1649,7 +1734,7 @@ async function updateAccounts(body) {
   }, { collections: ['accounts', 'ledger'] });
 }
 
-async function resetAccountStats(body) {
+async function resetAccountStats(body: Body) {
   return store.update((db) => {
     const ids = new Set(collectValues(body.ids || body.accounts));
     if (!ids.size) throw httpError(400, 'account ids are required.');
@@ -1673,7 +1758,7 @@ async function resetAccountStats(body) {
   }, { collections: ['accounts', 'ledger'] });
 }
 
-async function refreshAccountQuotas(body) {
+async function refreshAccountQuotas(body: Body) {
   const ids = new Set(collectValues(body.ids || body.accounts));
   const targets = await store.readCollections(['accounts']).then((db) => {
     const accounts = ids.size ? db.accounts.filter((account) => ids.has(account.id)) : db.accounts;
@@ -1701,7 +1786,7 @@ async function refreshAccountQuotas(body) {
     db.accounts.forEach((account) => {
       const result = resultMap.get(account.id);
       // 凭据已更新或较新的验证已完成时，忽略旧查询结果。
-      if (!result || account.token !== targetTokens.get(account.id) || Date.parse(account.quotaCheckedAt || '') > Date.parse(result.quotaCheckedAt || '')) return;
+      if (!result || account.token !== targetTokens.get(account.id) || Date.parse((account.quotaCheckedAt || '') as string) > Date.parse(result.quotaCheckedAt || '')) return;
       applyAccountQuotaResult(account, result, now);
     });
     if (fairShareMode) syncFairQuota(db);
@@ -1738,7 +1823,7 @@ function startGenerationReviews() {
     if (runtimeClosing) return;
     generationReviewPromise = reconcileGenerationReviews();
     try { await generationReviewPromise; }
-    catch (error) { console.error('[fair-quota] 本地消费核对失败，下次继续:', error.message); }
+    catch (error) { console.error('[fair-quota] 本地消费核对失败，下次继续:', (error as GatewayError).message); }
     finally { generationReviewPromise = null; if (!runtimeClosing) { generationReviewTimer = setTimeout(run, 10000); generationReviewTimer.unref?.(); } }
   };
   void run();
@@ -1786,13 +1871,13 @@ async function refreshEnabledAccountQuotas() {
   }
 }
 
-async function testAccount(id) {
+async function testAccount(id: string) {
   const db = await store.readCollections(['settings', 'accounts']);
   const target = db.accounts.find((account) => account.id === id);
   if (!target) throw httpError(404, 'account not found.');
 
   const now = new Date().toISOString();
-  let result;
+  let result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>;
   try {
     const quota = await fetchNovelAiAccountQuotaWithTimeout(target.token, target.proxyUrl);
     result = accountQuotaResult(target.id, quota, now);
@@ -1820,12 +1905,12 @@ async function testAccount(id) {
   };
 }
 
-function accountQuotaResult(id, quota, now) {
+function accountQuotaResult(id: string, quota: AccountQuota, now: string) {
   const noSubscription = isUnsubscribedAccountTier(quota.tier);
   const validTrial = quota.trialStatusKnown === true && quota.trialEligible === true && Number(quota.trialRemainingImages) > 0;
   return {
     id,
-    ok: true,
+    ok: true as const,
     quotaPoints: quota.points,
     quotaFixed: quota.fixed,
     quotaPurchased: quota.purchased,
@@ -1847,13 +1932,13 @@ function accountQuotaResult(id, quota, now) {
   };
 }
 
-function accountQuotaErrorResult(id, error, now) {
-  const message = error.message || 'quota query failed.';
+function accountQuotaErrorResult(id: string, error: unknown, now: string) {
+  const message = (error as GatewayError).message || 'quota query failed.';
   const banned = isNovelAiAccountBannedError(message);
   const outOfTrial = isNovelAiOutOfTrialImageGenerationError(message);
   return {
     id,
-    ok: false,
+    ok: false as const,
     quotaPoints: null,
     quotaFixed: null,
     quotaPurchased: null,
@@ -1863,13 +1948,13 @@ function accountQuotaErrorResult(id, error, now) {
     v5UsageTimeUntilNextPercent: null,
     quotaCheckedAt: now,
     quotaError: publicErrorMessage(message),
-    upstreamStatus: error.upstreamStatus === 401 ? 'invalid_key' : error.upstreamStatus === 403 ? 'access_denied' : 'sync_error',
+    upstreamStatus: (error as GatewayError).upstreamStatus === 401 ? 'invalid_key' : (error as GatewayError).upstreamStatus === 403 ? 'access_denied' : 'sync_error',
     disableAccount: banned || outOfTrial,
     disableReason: banned ? '账号已封禁' : outOfTrial ? '试用次数已用完' : ''
   };
 }
 
-function applyAccountQuotaResult(account, result, now) {
+function applyAccountQuotaResult(account: StoreItem, result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>, now: string) {
   // 查询暂时失败时保留上次余额展示；quotaError 立即阻止继续派发。
   if (!result.ok) {
     account.quotaError = result.quotaError; account.upstreamStatus = result.upstreamStatus;
@@ -1898,7 +1983,7 @@ function applyAccountQuotaResult(account, result, now) {
   account.updatedAt = now;
 }
 
-function accountAvailability(account, settings = {}) {
+function accountAvailability(account: StoreItem, settings: Partial<Settings> = {}) {
   const now = Date.now();
   const maxConcurrency = maxAccountConcurrency(settings, account);
   const inFlight = Number(account.inFlight || 0);
@@ -1925,7 +2010,7 @@ function accountAvailability(account, settings = {}) {
   };
 }
 
-function accountTestMessage(result, availability) {
+function accountTestMessage(result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>, availability: ReturnType<typeof accountAvailability>) {
   if (result.disableAccount && !result.ok) return `测试失败：${result.disableReason || '账号不可用'}，已自动禁用`;
   if (!result.ok) return `测试失败：${result.quotaError || '账号不可用'}`;
   const quotaText = availability.quotaPoints === null ? '点数未知' : `剩余 ${availability.quotaPoints} 点`;
@@ -1943,10 +2028,10 @@ function accountTestMessage(result, availability) {
   return `测试通过：账号当前可用（${accountText}）`;
 }
 
-function accountTierText(tier, fallback = '会员未查询') {
+function accountTierText(tier: unknown, fallback = '会员未查询') {
   if (tier === null || tier === undefined || tier === '') return fallback;
   const value = Number(tier);
-  const tierNames = {
+  const tierNames: Record<number, string> = {
     0: '无订阅',
     1: 'Tablet 会员',
     2: 'Scroll 会员',
@@ -1963,32 +2048,32 @@ function accountTierText(tier, fallback = '会员未查询') {
   }[key] || String(tier);
 }
 
-function isUnsubscribedAccountTier(tier) {
+function isUnsubscribedAccountTier(tier: unknown) {
   if (tier === null || tier === undefined || tier === '') return false;
   const value = Number(tier);
   if (Number.isFinite(value)) return value === 0;
   return ['none', 'paper', 'free', 'unsubscribed'].includes(String(tier).trim().toLowerCase());
 }
 
-function isNovelAiAccountBannedError(error) {
-  const text = String(error?.message || error || '');
+function isNovelAiAccountBannedError(error: unknown) {
+  const text = String((error as GatewayError)?.message || error || '');
   return /\bban(?:ned)?\b|封禁/i.test(text);
 }
 
-function disableNovelAiAccount(account) {
+function disableNovelAiAccount(account: StoreItem) {
   account.enabled = false;
   if (!fairShareMode) { account.inFlight = 0; account.cooldownUntil = ''; }
 }
 
-async function fetchNovelAiAccountQuotaWithTimeout(token, proxyUrl = '') {
+async function fetchNovelAiAccountQuotaWithTimeout(token: string | undefined, proxyUrl: unknown = '') {
   return withQuotaRequestDeadline(
-    signal => fetchNovelAiAccountQuota(token, process.env, { signal, proxyUrl }),
+    signal => fetchNovelAiAccountQuota(token!, process.env, { signal, proxyUrl }),
     accountQuotaRequestTimeoutMs
   );
 }
 
-async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
+async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T, index: number) => Promise<R>) {
+  const results = new Array<R>(items.length);
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (next < items.length) {
@@ -2001,7 +2086,7 @@ async function mapLimit(items, limit, mapper) {
   return results;
 }
 
-async function clearImageCache(body) {
+async function clearImageCache(body: Body) {
   const ids = collectValues(body.ids || body.images);
   const query = String(body.q || body.query || '').trim().toLowerCase();
   const clearAll = body.all === true || body.mode === 'all';
@@ -2009,7 +2094,7 @@ async function clearImageCache(body) {
 
   const result = await store.clearCachedImages({ ...body, ids, q: query, all: clearAll });
   await removeStoredImages(result.images || []);
-  delete result.images;
+  delete (result as Partial<typeof result>).images;
   return result;
 }
 
@@ -2020,13 +2105,13 @@ async function clearRequestLogs() {
 async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
   const result = await store.update((db) => {
     const now = Date.now();
-    const failedJobIds = [];
+    const failedJobIds: string[] = [];
     const message = publicErrorMessage('direct generate timeout');
     const jobs = Array.isArray(db.jobs) ? db.jobs : [];
     jobs.forEach((job) => {
       if (!isStaleActiveJob(job, now)) return;
       const detail = staleActiveJobDetail(job, now);
-      const account = job.status === 'running' && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
+      const account = job.status === 'running' && job.accountId ? db.accounts!.find((item) => item.id === job.accountId) : null;
       let statusCode = 504;
       if (account) {
         const execution = runningJobControls.get(job.id)?.reservation
@@ -2069,14 +2154,14 @@ async function cleanupInterruptedStartupJobs() {
     const updatedAt = new Date(now).toISOString();
     const message = publicErrorMessage('direct generate timeout');
     const jobs = Array.isArray(db.jobs) ? db.jobs : [];
-    const failedJobIds = [];
+    const failedJobIds: string[] = [];
     let running = 0;
     let direct = 0;
     let openai = 0;
     let expired = 0;
 
     jobs.forEach((job) => {
-      if (!['queued', 'pending', 'running'].includes(job.status)) return;
+      if (!['queued', 'pending', 'running'].includes(job.status!)) return;
       const isRunning = job.status === 'running';
       const isDirect = job.source === 'direct';
       const isOpenAi = job.source === 'openai';
@@ -2089,7 +2174,7 @@ async function cleanupInterruptedStartupJobs() {
       if (isOpenAi) openai += 1;
       if (isExpired) expired += 1;
 
-      const account = isRunning && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
+      const account = isRunning && job.accountId ? db.accounts!.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         if (fairShareMode) recordSharedCompletion(account, now, { job,
@@ -2153,11 +2238,11 @@ async function cleanupImageStorage() {
   const referencedFiles = new Set(imageFiles
     .map((file) => path.resolve(dataDir, file)));
 
-  let entries = [];
+  let entries: import('node:fs').Dirent[] = [];
   try {
     entries = await readdir(imageDir, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === 'ENOENT') return;
+    if ((error as GatewayError)?.code === 'ENOENT') return;
     throw error;
   }
 
@@ -2181,7 +2266,7 @@ async function cleanupImageStorage() {
   }
 }
 
-function trimImageCacheRecords(db, options = {}) {
+function trimImageCacheRecords(db: StoreDatabase, options: { force?: boolean } = {}) {
   db.settings = db.settings || {};
   db.images = Array.isArray(db.images) ? db.images : [];
   const maxCacheImages = normalizeCacheImageLimit(db.settings.maxCacheImages);
@@ -2192,14 +2277,14 @@ function trimImageCacheRecords(db, options = {}) {
   const trimAt = maxCacheImages + trimBuffer;
   if (db.images.length < trimAt) return [];
 
-  const removedImages = db.images.slice(maxCacheImages);
+  const removedImages: RemovedImages = db.images.slice(maxCacheImages);
   db.images = db.images.slice(0, maxCacheImages);
 
   const removedIds = new Set(removedImages.map((image) => image.id).filter(Boolean));
-  const affectedJobIds = [];
+  const affectedJobIds: string[] = [];
   if (removedIds.size && Array.isArray(db.jobs)) {
     db.jobs.forEach((job) => {
-      if (!removedIds.has(job.imageId)) return;
+      if (!removedIds.has(job.imageId!)) return;
       job.imageId = '';
       if (job.id) affectedJobIds.push(job.id);
     });
@@ -2209,7 +2294,7 @@ function trimImageCacheRecords(db, options = {}) {
   return removedImages;
 }
 
-function imageCacheTrimDirtyRows(trimmedImages = []) {
+function imageCacheTrimDirtyRows(trimmedImages: RemovedImages = []) {
   const images = uniqueIds((Array.isArray(trimmedImages) ? trimmedImages : []).map((image) => image?.id));
   const jobs = uniqueIds(trimmedImages?.affectedJobIds || []);
   return {
@@ -2218,7 +2303,7 @@ function imageCacheTrimDirtyRows(trimmedImages = []) {
   };
 }
 
-function uniqueIds(values = []) {
+function uniqueIds(values: unknown[] = []) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
@@ -2226,13 +2311,13 @@ function imageCacheTrimBuffer(maxCacheImages = 1) {
   return maxCacheImages > 0 ? 300 : 0;
 }
 
-function normalizeCacheImageLimit(value) {
+function normalizeCacheImageLimit(value: unknown) {
   const number = Number(value ?? 500);
   if (!Number.isFinite(number)) return 500;
   return Math.max(0, Math.min(MAX_CACHE_IMAGES_LIMIT, Math.floor(number)));
 }
 
-async function importPackage(body) {
+async function importPackage(body: Body) {
   const mode = body.mode === 'merge' ? 'merge' : 'replace';
   const payload = body.data || body.package || body;
   if (!payload || typeof payload !== 'object') throw httpError(400, 'import package is required.');
@@ -2257,7 +2342,7 @@ async function importPackage(body) {
     };
   }
 
-  let trimmedImages = [];
+  let trimmedImages: RemovedImages = [];
   const result = await store.update((db) => {
     db.settings = {
       ...db.settings,
@@ -2284,7 +2369,7 @@ async function importPackage(body) {
   return result;
 }
 
-async function updateAccount(id, body) {
+async function updateAccount(id: string, body: Body) {
   return store.update((db) => {
     const account = db.accounts.find((item) => item.id === id);
     if (!account) throw httpError(404, 'account not found.');
@@ -2309,16 +2394,16 @@ async function updateAccount(id, body) {
   }, { collections: ['accounts'] });
 }
 
-function dirtyJobRows(jobId) {
+function dirtyJobRows(jobId: string | undefined) {
   return jobId ? { jobs: [jobId] } : {};
 }
 
-function dirtyResultJobRows(result, db) {
+function dirtyResultJobRows(result: MutationSource, db: StoreDatabase) {
   return dirtyJobMutationRows(result, db);
 }
 
-function dirtyReservationJobRows(reservation) {
-  return (result, db) => dirtyJobMutationRows({
+function dirtyReservationJobRows(reservation: Partial<Reservation>) {
+  return (result: MutationSource | null | void, db: StoreDatabase) => dirtyJobMutationRows({
     job: result?.job || reservation?.job,
     jobId: result?.job?.id || result?.jobId || reservation?.job?.id,
     token: result?.token || reservation?.token || reservation?.job?.userToken,
@@ -2326,12 +2411,12 @@ function dirtyReservationJobRows(reservation) {
   }, db);
 }
 
-function batchJobIds(db, jobId) {
+function batchJobIds(db: Pick<StoreDatabase, 'jobs'>, jobId: string) {
   const job = db.jobs.find(item => item.id === jobId);
   return job?.requestId ? db.jobs.filter(item => item.requestId === job.requestId).map(item => item.id) : [jobId];
 }
 
-function dirtyJobMutationRows(source = {}, db = {}) {
+function dirtyJobMutationRows(source: MutationSource = {}, db: Partial<StoreDatabase> = {}) {
   const jobId = source?.job?.id || source?.jobId || source?.id || '';
   const job = source?.job || (jobId ? db.jobs?.find((item) => item.id === jobId) : null);
   const token = source?.token || source?.userToken || job?.userToken || '';
@@ -2347,14 +2432,14 @@ function dirtyJobMutationRows(source = {}, db = {}) {
   ]);
   const user = token && ledgerIds.length ? db.users?.find((item) => item.token === token) : null;
   return {
-    ...(jobId ? { jobs: batchJobIds(db, jobId) } : {}),
+    ...(jobId ? { jobs: batchJobIds(db as Pick<StoreDatabase, 'jobs'>, jobId) } : {}),
     ...(user?.id ? { users: [user.id] } : {}),
     ...(accountIds.length ? { accounts: accountIds } : {}),
     ...(ledgerIds.length ? { ledger: ledgerIds } : {})
   };
 }
 
-function dirtyJobListRows(result = {}, db = {}) {
+function dirtyJobListRows(result: { jobIds?: string[] } = {}, db: Partial<StoreDatabase> = {}) {
   const rows = {};
   for (const jobId of result?.jobIds || []) {
     mergeDirtyRows(rows, dirtyJobMutationRows({ jobId }, db));
@@ -2362,7 +2447,7 @@ function dirtyJobListRows(result = {}, db = {}) {
   return rows;
 }
 
-function dirtyCreditReservationRows(result) {
+function dirtyCreditReservationRows(result: Partial<Reservation> & { reservation?: Partial<Reservation> }) {
   const reservation = result?.reservation || result || {};
   return {
     ...(reservation.userId ? { users: [reservation.userId] } : {}),
@@ -2371,14 +2456,14 @@ function dirtyCreditReservationRows(result) {
   };
 }
 
-function mergeDirtyRows(target, source = {}) {
+function mergeDirtyRows(target: DirtyRows, source: DirtyRows = {}) {
   Object.entries(source).forEach(([collection, ids]) => {
     target[collection] = uniqueIds([...(target[collection] || []), ...(Array.isArray(ids) ? ids : [ids])]);
   });
   return target;
 }
 
-function readGenerationIdempotencyKey(req) {
+function readGenerationIdempotencyKey(req: GatewayRequest) {
   const key = req.headers['idempotency-key'];
   if (key === undefined) return null;
   const count = (req.rawHeaders || []).filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key').length;
@@ -2388,19 +2473,19 @@ function readGenerationIdempotencyKey(req) {
   return key;
 }
 
-function generationIntent(key, normalize, { operation = 'generate', randomSeed = false, noCache = false, claim } = {}) {
+function generationIntent(key: string | null | undefined, normalize: GenerationIntent['normalize'], { operation = 'generate', randomSeed = false, noCache = false, claim }: { operation?: string; randomSeed?: boolean; noCache?: boolean; claim?: PayloadClaim } = {}) {
   return key ? { keyHash: hashObject(key), operation, normalize, randomSeed, noCache, claim } : null;
 }
 
-function unavailableGenerationResult(requestId) {
+function unavailableGenerationResult(requestId: string | null | undefined) {
   return Object.assign(httpError(410, '原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键'), { requestId: requestId || null });
 }
 
-function resolveGenerationIdempotency(db, user, intent, { existingOnly = false } = {}) {
+function resolveGenerationIdempotency(db: StoreDatabase, user: StoreItem, intent: GenerationIntent | null | undefined, { existingOnly = false } = {}): ResolvedGeneration | null {
   if (!intent) return null;
   const existing = store.readGenerationIdempotency(user.id, intent.operation, intent.keyHash);
   if (!existing && existingOnly) return null;
-  const context = existing ? JSON.parse(existing.normalization_context) : requestNormalizationDefaults(db.settings);
+  const context: Partial<Settings> = existing ? JSON.parse(existing.normalization_context) : requestNormalizationDefaults(db.settings);
   const serializedContext = JSON.stringify(context);
   const contextBytes = Buffer.byteLength(serializedContext);
   intent.claim?.resize(contextBytes);
@@ -2415,7 +2500,7 @@ function resolveGenerationIdempotency(db, user, intent, { existingOnly = false }
   if (existing.fingerprint !== fingerprint) throw httpError(409, '相同 Idempotency-Key 对应的请求参数不同');
   const job = db.jobs.find(job => job.id === existing.job_id) || store.selectItemById('jobs', existing.job_id);
   if (!job) throw unavailableGenerationResult(existing.request_id);
-  let children;
+  let children: { id: string; status?: string | null; sampleIndex?: number | null; imageId?: string | null; lateResultAvailable?: boolean | number | null; referencedImageId?: string | null }[] | undefined;
   if (existing.request_id) {
     const parent = store.readGenerationRequestState(existing.request_id, user.id);
     children = parent?.jobs;
@@ -2433,7 +2518,7 @@ function resolveGenerationIdempotency(db, user, intent, { existingOnly = false }
     replayed: true, cacheHit: job.status === 'done' && !job.startedAt, balance: user.balance, replayImages } };
 }
 
-async function findCachedGenerationImage(cacheKey, token) {
+async function findCachedGenerationImage(cacheKey: string, token: string) {
   const cached = await store.findImageByCacheKey(cacheKey);
   if (!cached || cached.token !== token) return null;
   try {
@@ -2443,9 +2528,9 @@ async function findCachedGenerationImage(cacheKey, token) {
   return cached;
 }
 
-async function validateGenerationReplay(result) {
+async function validateGenerationReplay<T extends JobMetadata>(result: T) {
   if (!result?.replayed) return result;
-  for (const expected of result.replayImages) {
+  for (const expected of result.replayImages!) {
     const image = await store.findImage(expected.id);
     if (!image || expected.token && image.token !== expected.token) throw unavailableGenerationResult(result.requestId);
     try {
@@ -2457,7 +2542,7 @@ async function validateGenerationReplay(result) {
   return metadata;
 }
 
-async function assertFairMemberReady(token, intent) {
+async function assertFairMemberReady(token: string, intent: GenerationIntent | null | undefined) {
   if (!fairShareMode) return;
   const result = await store.update(db => {
     const user = getUserOrThrow(db, token);
@@ -2473,7 +2558,7 @@ async function assertFairMemberReady(token, intent) {
   if (result) throw httpError(result.status, result.message);
 }
 
-function generationRequestRecord(user, request, source, claim, idempotency) {
+function generationRequestRecord(user: StoreItem, request: ExecutionRequest, source: string, claim: PayloadClaim, idempotency: ResolvedGeneration | null) {
   const payload = idempotency?.payload || JSON.stringify(request);
   const payloadBytes = Buffer.byteLength(payload);
   // 与任务准入处于同一串行 update；成功提交后由活动 child 的 SQL 查询接管占用。
@@ -2482,27 +2567,27 @@ function generationRequestRecord(user, request, source, claim, idempotency) {
     created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
 }
 
-async function createJob(token, body, options = {}) {
-  let generationRequest, mapping;
-  const normalizeRequest = settings => {
-    if (options.native) return structuredClone(body);
+async function createJob(token: string, body: Body | ExecutionRequest | null, options: JobOptions = {}): Promise<JobMetadata> {
+  let generationRequest: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
+  const normalizeRequest = (settings: Partial<Settings>): ExecutionRequest => {
+    if (options.native) return structuredClone(body as ExecutionRequest);
     const input = options.frontend ? { ...body, width: undefined, height: undefined, cost: undefined } : body;
-    const request = normalizeNovelAiRequest(input, settings, { maxSteps: options.frontend ? MAX_STEPS : DIRECT_URL_MAX_STEPS });
+    const request: NormalizedImageRequest & Pick<ExecutionRequest, 'allowPurchasedAnlas'> = normalizeNovelAiRequest(input!, settings, { maxSteps: options.frontend ? MAX_STEPS : DIRECT_URL_MAX_STEPS });
     if (options.frontend) { request.steps = Math.floor(request.steps); request.cost = generationCost(request); }
-    if (fairShareMode) request.allowPurchasedAnlas = body.allowPurchasedAnlas === true;
+    if (fairShareMode) request.allowPurchasedAnlas = (body as Body).allowPurchasedAnlas === true;
     return request;
   };
   const intent = options.idempotency || generationIntent(options.idempotencyKey, normalizeRequest, {
-    randomSeed: body?.seed === undefined || body.seed === '', noCache: isNoCache(body?.nocache), claim: options.generationPayloadClaim
+    randomSeed: body?.seed === undefined || body!.seed === '', noCache: isNoCache(body?.nocache), claim: options.generationPayloadClaim
   });
   const replay = await assertFairMemberReady(token, intent);
   if (replay) { options.generationPayloadClaim?.release(); return replay; }
   await cleanupStaleActiveJobs('create job');
-  const noCache = intent ? intent.noCache : isNoCache(body.nocache);
+  const noCache = intent ? intent.noCache : isNoCache(body!.nocache);
   if (!intent && !noCache) {
     const settings = await store.readSettings();
     const request = normalizeRequest(settings);
-    const cacheKey = requestCacheKey(token, request, body.seed);
+    const cacheKey = requestCacheKey(token, request, body!.seed);
     const cached = await store.findImageByCacheKey(cacheKey);
     if (cached) return createDirectJob(token, request, cacheKey, {
       status: 'done', admissionVersion: options.admissionVersion, generationPayloadClaim: options.generationPayloadClaim,
@@ -2517,12 +2602,12 @@ async function createJob(token, body, options = {}) {
     const request = resolved?.request || normalizeRequest(db.settings);
     mapping = resolved?.mapping;
     assertMemberAcceptsJobs(user, options.admissionVersion);
-    const explicitSeed = intent ? intent.randomSeed ? undefined : request.seed : body.seed;
+    const explicitSeed = intent ? intent.randomSeed ? undefined : request.seed : body!.seed;
     const cacheKey = requestCacheKey(token, request, explicitSeed);
     // 有键时，缓存选择和首次 context/映射处于同一串行受理，不能绑定事务外的旧默认值。
     const cached = intent && !noCache ? await findCachedGenerationImage(cacheKey, token) : null;
     if (!cached && !noCache) {
-      const activeMatch = db.jobs.find(job => job.userToken === token && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status));
+      const activeMatch = db.jobs.find(job => job.userToken === token && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status!));
       if (activeMatch) {
         if (mapping) Object.assign(mapping, { job_id: activeMatch.id, request_id: activeMatch.requestId || null });
         return options.generationPayloadClaim ? { id: activeMatch.id, requestId: activeMatch.requestId || null } : activeMatch;
@@ -2530,11 +2615,11 @@ async function createJob(token, body, options = {}) {
     }
     if (!cached) assertQueueAdmission(db, user, options.admissionVersion);
     const cost = cached ? 0 : generationCost(request);
-    if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
     if (options.generationPayloadClaim) generationRequest = generationRequestRecord(user, request, options.source || 'web', claim, resolved);
     const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
     if (!generationRequest) claim.resize(payloadBytes);
-    user.balance -= cost;
+    user.balance! -= cost;
     user.updatedAt = new Date().toISOString();
     const now = new Date().toISOString();
     const job = {
@@ -2565,8 +2650,8 @@ async function ensureAccountRouteIds() {
   }, { collections: ['accounts'] });
 }
 
-async function createDirectJob(token, request, cacheKey, options = {}) {
-  let generationRequest, mapping;
+async function createDirectJob(token: string, request: ExecutionRequest | null, cacheKey: string, options: JobOptions = {}): Promise<JobMetadata> {
+  let generationRequest: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
   const replay = await assertFairMemberReady(token, options.idempotency);
   if (replay) { options.generationPayloadClaim?.release(); return replay; }
   if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
@@ -2575,7 +2660,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     const user = getUserOrThrow(db, token);
     const resolved = resolveGenerationIdempotency(db, user, options.idempotency);
     if (resolved?.replay) return resolved.replay;
-    request = resolved?.request || request;
+    request = (resolved?.request || request)!;
     mapping = resolved?.mapping;
     let status = options.status, imageId = options.imageId || '', accountId = options.accountId || '';
     if (options.idempotency) {
@@ -2587,7 +2672,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     if (status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
     const cost = status === 'done' ? Number(options.cost || 0) : Number(options.cost ?? generationCost(request));
     const shouldCharge = !status && cost > 0;
-    if (shouldCharge && user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (shouldCharge && user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
     if (options.generationPayloadClaim) {
       generationRequest = generationRequestRecord(user, request, options.source || 'direct', options.generationPayloadClaim, resolved);
     }
@@ -2595,7 +2680,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
     if (!generationRequest && status !== 'done') claim.resize(payloadBytes);
     const now = new Date().toISOString();
     if (shouldCharge) {
-      user.balance -= cost;
+      user.balance! -= cost;
       user.updatedAt = now;
     }
     const job = {
@@ -2643,7 +2728,7 @@ async function createDirectJob(token, request, cacheKey, options = {}) {
   }).finally(() => claim.release()).then(validateGenerationReplay);
 }
 
-async function markDirectJobRunning(jobId, reservation) {
+async function markDirectJobRunning(jobId: string, reservation: Reservation) {
   await store.update((db) => {
     const job = db.jobs.find((item) => item.id === jobId);
     if (!job) return;
@@ -2658,15 +2743,15 @@ async function markDirectJobRunning(jobId, reservation) {
   }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
 }
 
-function publicGenerationRequest(request) {
+function publicGenerationRequest(request: NonNullable<ReturnType<JsonStore['readGenerationRequestState']>>) {
   const jobs = request.jobs.map(job => ({
     id: job.id, index: job.sampleIndex, status: job.status, model: job.model || '',
     createdAt: job.createdAt || '', updatedAt: job.updatedAt || '', completedAt: job.completedAt || '',
     error: publicErrorMessage(job.error || '', { generation: true }), cancelled: Boolean(job.cancelledAt),
     lateResultAvailable: Boolean(job.lateResultAvailable), imageUrl: job.imageId ? publicImageUrl(job.imageId) : ''
   }));
-  const counts = { total: jobs.length, queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
-  for (const job of jobs) if (Object.hasOwn(counts, job.status)) counts[job.status]++;
+  const counts: Record<string, number> = { total: jobs.length, queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
+  for (const job of jobs) if (Object.hasOwn(counts, job.status!)) counts[job.status!]++;
   const status = counts.running ? 'running' : counts.queued ? 'queued' : counts.pending ? 'pending'
     : !counts.total ? 'empty' : counts.done === counts.total ? 'done' : counts.done ? 'partial'
       : jobs.every(job => job.cancelled) ? 'cancelled' : 'failed';
@@ -2674,7 +2759,7 @@ function publicGenerationRequest(request) {
     status, cancellable: counts.queued + counts.pending > 0, counts, jobs };
 }
 
-async function getGenerationRequest(requestId, memberId) {
+async function getGenerationRequest(requestId: string, memberId: string) {
   const state = await store.update(db => {
     const user = db.users.find(user => user.id === memberId && user.enabled !== false);
     if (!user) throw httpError(401, 'invalid member.');
@@ -2685,18 +2770,18 @@ async function getGenerationRequest(requestId, memberId) {
   return publicGenerationRequest(state);
 }
 
-async function cancelGenerationRequest(requestId, memberId) {
+async function cancelGenerationRequest(requestId: string, memberId: string) {
   const result = await store.update(db => {
     const user = db.users.find(user => user.id === memberId && user.enabled !== false);
     if (!user) throw httpError(401, 'invalid member.');
     const request = store.readGenerationRequestState(requestId, memberId);
     if (!request) throw httpError(404, 'request not found.');
-    const cancelledJobIds = [];
+    const cancelledJobIds: string[] = [];
     const message = '请求已取消，未派发任务已终止';
     const now = new Date().toISOString();
     for (const child of request.jobs) {
-      if (!['queued', 'pending'].includes(child.status)) continue;
-      const job = store.loadJobForUpdate(child.id);
+      if (!['queued', 'pending'].includes(child.status!)) continue;
+      const job = store.loadJobForUpdate(child.id)!;
       refundJob(db, job, message);
       job.status = 'failed';
       job.error = job.errorDetail = message;
@@ -2709,7 +2794,7 @@ async function cancelGenerationRequest(requestId, memberId) {
   }, { immediate: true, includeSettings: true,
     dirtyRows: (result, db) => ({
       users: [memberId], jobs: result.cancelledJobIds,
-      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId)).map(entry => entry.id)
+      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id)
     })
   });
   // 只在提交后通知；与派发串行，running 不取消，重复取消不再退款。
@@ -2721,14 +2806,14 @@ async function cancelGenerationRequest(requestId, memberId) {
   return { ...await getGenerationRequest(requestId, memberId), cancelledCount: result.cancelledJobIds.length };
 }
 
-async function changeMemberAdmission(userId, acceptingJobs) {
+async function changeMemberAdmission(userId: string, acceptingJobs: boolean) {
   const result = await store.update(db => setMemberAdmission(db, userId, acceptingJobs, refundJob), {
     immediate: true,
     includeSettings: true,
     dirtyRows: (result, db) => ({
       users: [result.id],
       jobs: result.cancelledJobIds,
-      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId)).map(entry => entry.id)
+      ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id)
     })
   });
   // 取消通知必须在事务提交之后发送；写失败不能让连接先收到“已取消”。
@@ -2740,7 +2825,7 @@ async function changeMemberAdmission(userId, acceptingJobs) {
   return { ...result, cancelledCount: result.cancelledJobIds.length };
 }
 
-function waitForJobResult(jobId, deadline, response) {
+function waitForJobResult(jobId: string, deadline: number, response?: GatewayResponse) {
   if (response && !response.generationDeliveryTracked) {
     response.generationDeliveryTracked = true;
     const waitingAt = Date.now();
@@ -2751,7 +2836,7 @@ function waitForJobResult(jobId, deadline, response) {
     response.once('finish', delivered); response.once('close', delivered);
   }
   const remainingMs = Math.max(1, deadline - Date.now());
-  return new Promise((resolve) => {
+  return new Promise<JobResult | null>((resolve) => {
     const timer = setTimeout(() => {
       removeJobWaiter(jobId, waiter);
       resolve(null);
@@ -2759,7 +2844,7 @@ function waitForJobResult(jobId, deadline, response) {
     const onClose = () => { removeJobWaiter(jobId, waiter); resolve(null); };
     const waiter = { resolve, timer, cleanup: () => response?.off('close', onClose) };
     if (!jobWaiters.has(jobId)) jobWaiters.set(jobId, new Set());
-    jobWaiters.get(jobId).add(waiter);
+    jobWaiters.get(jobId)!.add(waiter);
     if (response?.destroyed) { onClose(); return; }
     response?.once('close', onClose);
     // 先订阅再串行补查，既补上错过的取消通知，也不读取尚未提交或将回滚的状态。
@@ -2772,14 +2857,14 @@ function waitForJobResult(jobId, deadline, response) {
       if (job?.status === 'failed') {
         notifyJobWaiters(jobId, { error: job.error, statusCode: job.errorStatus || 500, cooldownUntil: job.cooldownUntil });
       } else if (job?.status === 'done') {
-        const saved = await store.findImage(job.imageId);
+        const saved = await store.findImage(job.imageId!);
         if (saved) notifyJobWaiters(jobId, { saved, seed: job.seed, balance: job.balance });
       }
     }).catch(() => notifyJobWaiters(jobId, { error: '任务状态暂时无法读取，请稍后查询', statusCode: 503 }));
   });
 }
 
-function notifyJobWaiters(jobId, payload) {
+function notifyJobWaiters(jobId: string, payload: JobResult) {
   const waiters = jobWaiters.get(jobId);
   if (!waiters) return;
   jobWaiters.delete(jobId);
@@ -2792,7 +2877,7 @@ function notifyJobWaiters(jobId, payload) {
   });
 }
 
-function resetJobStreamProgress(jobId, request = {}) {
+function resetJobStreamProgress(jobId: string | undefined, request: RequestSummary = {}) {
   if (!jobId) return;
   jobPreviews.clear(jobId);
   const progress = {
@@ -2806,7 +2891,7 @@ function resetJobStreamProgress(jobId, request = {}) {
   jobStreamProgressPersistState.set(jobId, { percent: 0, at: 0 });
 }
 
-function updateJobStreamProgress(jobId, progress = {}) {
+function updateJobStreamProgress(jobId: string | undefined, progress: Progress = {}) {
   if (!jobId) return;
   const previous = jobStreamProgress.get(jobId) || {};
   const percent = clamp(Number(progress.percent ?? previous.percent ?? 0), 0, 100);
@@ -2822,29 +2907,29 @@ function updateJobStreamProgress(jobId, progress = {}) {
   jobStreamProgress.set(jobId, next);
   const job = patchCachedJobStreamProgress(jobId, next);
   if (percent === 0) jobPreviews.clear(jobId);
-  jobPreviews.update(job, progress);
+  jobPreviews.update(job as Parameters<JobPreviews['update']>[0], progress);
   if (shouldPersistJobStreamProgress(jobId, next)) {
-    persistJobStreamProgress(jobId, next).catch((error) => {
+    persistJobStreamProgress(jobId, next).catch((error: unknown) => {
       console.error('[runtime] failed to persist job stream progress:', error);
     });
   }
 }
 
-function clearJobStreamProgress(jobId) {
+function clearJobStreamProgress(jobId: string) {
   if (!jobId) return;
   jobPreviews.clear(jobId);
   jobStreamProgress.delete(jobId);
   jobStreamProgressPersistState.delete(jobId);
 }
 
-function patchCachedJobStreamProgress(jobId, progress = {}) {
+function patchCachedJobStreamProgress(jobId: string, progress: Progress = {}) {
   const job = store.db?.jobs?.find((item) => item.id === jobId);
   if (!job) return;
   job.generationProgress = publicProgressSnapshot(progress, job);
   return job;
 }
 
-function shouldPersistJobStreamProgress(jobId, progress = {}) {
+function shouldPersistJobStreamProgress(jobId: string, progress: Progress = {}) {
   const now = Date.now();
   const previous = jobStreamProgressPersistState.get(jobId) || { percent: 0, at: 0 };
   const percent = Number(progress.percent || 0);
@@ -2853,7 +2938,7 @@ function shouldPersistJobStreamProgress(jobId, progress = {}) {
   return now - Number(previous.at || 0) >= 1500;
 }
 
-async function persistJobStreamProgress(jobId, progress = {}) {
+async function persistJobStreamProgress(jobId: string, progress: Progress = {}) {
   const now = Date.now();
   jobStreamProgressPersistState.set(jobId, { percent: Number(progress.percent || 0), at: now });
   await store.update((db) => {
@@ -2868,7 +2953,7 @@ async function persistJobStreamProgress(jobId, progress = {}) {
   });
 }
 
-function publicProgressSnapshot(progress = {}, job = {}) {
+function publicProgressSnapshot(progress: Progress = {}, job: Partial<StoreItem> = {}) {
   return {
     percent: clamp(Number(progress.percent || 0), 0, 100),
     step: Number(progress.step || 0),
@@ -2877,11 +2962,11 @@ function publicProgressSnapshot(progress = {}, job = {}) {
   };
 }
 
-function isTimeoutResultMessage(message) {
+function isTimeoutResultMessage(message: unknown) {
   return /direct generate timeout|job timed out|aborted|abort|timeout/i.test(String(message || ''));
 }
 
-function removeJobWaiter(jobId, waiter) {
+function removeJobWaiter(jobId: string, waiter: JobWaiter) {
   clearTimeout(waiter.timer);
   waiter.cleanup?.();
   const waiters = jobWaiters.get(jobId);
@@ -2890,18 +2975,18 @@ function removeJobWaiter(jobId, waiter) {
   if (!waiters.size) jobWaiters.delete(jobId);
 }
 
-async function runJob(jobId) {
+async function runJob(jobId: string) {
   try {
     const reservation = await reserveQueuedJob(jobId);
-    await runReservedJob(reservation);
+    await runReservedJob(reservation as QueueReservation);
   } catch (error) {
     console.error(error);
   }
 }
 
-async function reserveQueuedJob(jobId) {
+async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
   const requestedAt = Date.now();
-  const result = await store.update((db) => {
+  const result = await store.update<QueueReservation>((db) => {
     if (!queueDispatchEnabled) return { skip: true, changed: false };
     const job = db.jobs.find((item) => item.id === jobId);
     if (!job) throw new Error('job not found.');
@@ -2920,7 +3005,7 @@ async function reserveQueuedJob(jobId) {
       job.completedAt = job.updatedAt;
       return { skip: true, jobId: job.id, failure: job.error, statusCode: 504 };
     }
-    let account;
+    let account: StoreItem | null | undefined;
     const state = fairShareMode ? syncFairQuota(db) : null;
     try {
       const user = getUserOrThrow(db, job.userToken);
@@ -2929,21 +3014,21 @@ async function reserveQueuedJob(jobId) {
         if (!state?.enabled || state.status !== 'active') throw httpError(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
         account = db.accounts.find(a => a.id === state.boundAccountId);
         if (!account || account.enabled === false) throw httpError(503, '绑定的 Opus 账号未启用');
-        const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account.id).length;
+        const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account!.id).length;
         // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
         if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, Date.now()) > 0) return { queued: true, jobId: job.id };
-        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
+        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
         reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
       } else {
         account = selectAccount(db.accounts, db.settings, { request: job.request });
       }
     } catch (error) {
-      refundJob(db, job, error.message);
-      cancelWaitingBatchJobs(db, job, error.message, error.statusCode || 503);
+      refundJob(db, job, (error as GatewayError).message);
+      cancelWaitingBatchJobs(db, job, (error as GatewayError).message, (error as GatewayError).statusCode || 503);
       job.status = 'failed';
-      job.error = error.message;
-      job.errorStatus = error.statusCode || 503;
+      job.error = (error as GatewayError).message;
+      job.errorStatus = (error as GatewayError).statusCode || 503;
       job.updatedAt = job.completedAt = new Date().toISOString();
       return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus };
     }
@@ -2962,7 +3047,7 @@ async function reserveQueuedJob(jobId) {
       return { queued: true, jobId: job.id };
     }
     if (account) {
-      const running = fairShareMode ? db.jobs.filter(j => j.status === 'running' && j.accountId === account.id).length : 0;
+      const running = fairShareMode ? db.jobs.filter(j => j.status === 'running' && j.accountId === account!.id).length : 0;
       account.inFlight = Math.max(running, Number(account.inFlight || 0)) + 1;
       account.lastUsedAt = new Date().toISOString();
       if (fairShareMode) account.lastSharedDispatchAt = account.lastUsedAt;
@@ -2983,7 +3068,7 @@ async function reserveQueuedJob(jobId) {
   return result;
 }
 
-async function runReservedJob(reservation) {
+async function runReservedJob(reservation: QueueReservation) {
   if (!reservation || reservation.skip || reservation.queued) return;
   const control = createRunningJobControl(reservation.job);
   // 清理超时任务可能先于执行 catch 取得事务；复用活执行证据，不把本地提交错误当网络故障。
@@ -2996,8 +3081,8 @@ async function runReservedJob(reservation) {
     const current = await store.findJobContext(reservation.job.id);
     if (current?.job?.status !== 'running' || control.controller.signal.aborted) throw new Error('任务已取消');
     const request = reservation.job.requestId
-      ? singleGenerationRequest(store.readGenerationRequest(reservation.job.requestId), reservation.job.sampleIndex)
-      : reservation.job.request;
+      ? singleGenerationRequest(store.readGenerationRequest(reservation.job.requestId)!, reservation.job.sampleIndex)
+      : reservation.job.request as ExecutionRequest;
     if (!request) throw new Error('持久生成请求不存在');
     reservation.failurePhase = 'upstream';
     const image = await generateWithAccountRetry(reservation, request, {
@@ -3028,17 +3113,17 @@ async function runReservedJob(reservation) {
   }
 }
 
-function shouldUseJobStreamProgress(job = {}) {
+function shouldUseJobStreamProgress(job: Partial<StoreItem> = {}) {
   return (job.request?.operation || 'generate') === 'generate'
     && ['web', 'direct', 'openai', 'novelai-native'].includes(job.source || 'web');
 }
 
-function createRunningJobControl(job = {}) {
+function createRunningJobControl(job: Partial<StoreItem> = {}) {
   const controller = new AbortController();
   let resolveDone = () => {};
-  const control = {
-    controller, jobId: job.id, requestId: job.requestId || '', payloadBytes: job.payloadBytes || 0, accountId: job.accountId || '',
-    done: new Promise((resolve) => {
+  const control: RunningControl = {
+    controller, jobId: job.id!, requestId: job.requestId || '', payloadBytes: job.payloadBytes || 0, accountId: job.accountId || '',
+    done: new Promise<void>((resolve) => {
       resolveDone = resolve;
     }),
     resolveDone,
@@ -3053,7 +3138,7 @@ function createRunningJobControl(job = {}) {
   return control;
 }
 
-function finishRunningJobControl(jobId, control) {
+function finishRunningJobControl(jobId: string | undefined, control: RunningControl) {
   if (!control) return;
   if (control.timer) clearTimeout(control.timer);
   if (jobId && runningJobControls.get(jobId) === control) runningJobControls.delete(jobId);
@@ -3061,7 +3146,7 @@ function finishRunningJobControl(jobId, control) {
   scheduleQueueDrain();
 }
 
-function abortRunningJob(jobId, reason = 'direct generate timeout') {
+function abortRunningJob(jobId: string, reason = 'direct generate timeout') {
   const control = runningJobControls.get(jobId);
   if (!control) return false;
   control.reason = reason;
@@ -3069,14 +3154,14 @@ function abortRunningJob(jobId, reason = 'direct generate timeout') {
   return true;
 }
 
-function runningJobTimeoutDelay(job = {}) {
+function runningJobTimeoutDelay(job: Partial<StoreItem> = {}) {
   const deadline = jobDeadlineTimestamp(job);
   const delays = [novelAiGenerateTimeoutMs()];
   if (deadline) delays.push(Math.max(1, deadline - Date.now()));
   return Math.max(1, Math.min(...delays));
 }
 
-function jobDeadlineTimestamp(job = {}) {
+function jobDeadlineTimestamp(job: Partial<StoreItem> = {}) {
   const deadline = Date.parse(job.deadlineAt || '');
   return Number.isFinite(deadline) && deadline > 0 ? deadline : 0;
 }
@@ -3092,9 +3177,9 @@ function accountInflightTimeoutMs() {
   return Number.isFinite(configured) && configured > 0 ? Math.max(1000, Math.floor(configured)) : 10 * 60 * 1000;
 }
 
-async function generateWithAccountRetry(reservation, request, options = {}) {
-  const tried = new Set();
-  let firstError = null;
+async function generateWithAccountRetry(reservation: Reservation, request: ExecutionRequest, options: RetryOptions = {}) {
+  const tried = new Set<string>();
+  let firstError: unknown = null;
   let current = reservation;
 
   while (true) {
@@ -3114,8 +3199,8 @@ async function generateWithAccountRetry(reservation, request, options = {}) {
         onUpstreamTiming: event => {
           // 只记录时间与状态，不复制请求头、凭据、提示词或图片。
           reservation.upstreamTiming ||= {};
-          for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil']) {
-            if (event[name] !== undefined) reservation.upstreamTiming[name] = event[name];
+          for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil'] as const) {
+            if (event[name] !== undefined) (reservation.upstreamTiming[name] as typeof event[typeof name]) = event[name];
           }
         },
         onProgress: (progress) => options.onProgress?.({
@@ -3144,10 +3229,10 @@ async function generateWithAccountRetry(reservation, request, options = {}) {
   }
 }
 
-async function retryReservationWithNextAccount(reservation, error, tried, options = {}) {
+async function retryReservationWithNextAccount(reservation: Reservation, error: unknown, tried: Set<string>, options: RetryOptions = {}) {
   if (!reservation.account?.id) return null;
   return store.update((db) => {
-    const failedAccount = db.accounts.find((item) => item.id === reservation.account.id);
+    const failedAccount = db.accounts.find((item) => item.id === reservation.account!.id);
     if (failedAccount) {
       const now = new Date().toISOString();
       failedAccount.inFlight = Math.max(0, Number(failedAccount.inFlight || 0) - 1);
@@ -3176,7 +3261,7 @@ async function retryReservationWithNextAccount(reservation, error, tried, option
     account.updatedAt = new Date().toISOString();
 
     if (reservation.job?.id) {
-      const job = db.jobs.find((item) => item.id === reservation.job.id);
+      const job = db.jobs.find((item) => item.id === reservation.job!.id);
       if (job) {
         job.status = 'running';
         job.accountId = account.id;
@@ -3196,18 +3281,18 @@ async function retryReservationWithNextAccount(reservation, error, tried, option
   }, { dirtyRows: dirtyReservationJobRows(reservation) });
 }
 
-async function requeueReservedJob(reservation, error) {
+async function requeueReservedJob(reservation: Reservation, error: unknown) {
   let delay = accountBusyCooldownMs();
   await store.update((db) => {
     if (reservation.account?.id) {
-      const account = db.accounts.find((item) => item.id === reservation.account.id);
+      const account = db.accounts.find((item) => item.id === reservation.account!.id);
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         account.cooldownUntil = new Date(Date.now() + delay).toISOString();
         account.updatedAt = new Date().toISOString();
       }
     }
-    const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job.id) : null;
+    const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job!.id) : null;
     if (job) {
       job.status = 'queued';
       job.accountId = '';
@@ -3220,15 +3305,15 @@ async function requeueReservedJob(reservation, error) {
     delay = Math.max(250, nextAccountReadyDelay(db.accounts, db.settings) || delay);
   }, { dirtyRows: dirtyReservationJobRows(reservation) });
   scheduleQueueDrain(delay);
-  clearJobStreamProgress(reservation.job?.id);
+  clearJobStreamProgress(reservation.job?.id!);
 }
 
-async function reserveCreditAndAccount(token, request, cacheKey) {
+async function reserveCreditAndAccount(token: string, request: ExecutionRequest, cacheKey: string) {
   if (fairShareMode) throw httpError(409, '共享生图必须通过统一排队账本');
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
     const cost = generationCost(request);
-    if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
     const account = selectAccount(db.accounts, db.settings, { request });
     if (!account && hasEnabledAccounts(db.accounts)) {
       if (!hasAccountWithEnoughQuota(db.accounts, request)) throw httpError(503, '无符合本次参数的可用额度；试用限总像素1048576、28步以内');
@@ -3238,7 +3323,7 @@ async function reserveCreditAndAccount(token, request, cacheKey) {
       account.inFlight = Number(account.inFlight || 0) + 1;
       account.lastUsedAt = new Date().toISOString();
     }
-    user.balance -= cost;
+    user.balance! -= cost;
     user.updatedAt = new Date().toISOString();
     const ledger = {
       id: createId('log'),
@@ -3255,7 +3340,7 @@ async function reserveCreditAndAccount(token, request, cacheKey) {
   });
 }
 
-async function reserveCreditAndAccountWhenAvailable(token, request, cacheKey, deadline) {
+async function reserveCreditAndAccountWhenAvailable(token: string, request: ExecutionRequest, cacheKey: string, deadline: number) {
   while (Date.now() < deadline) {
     const result = await tryReserveCreditAndAccount(token, request, cacheKey);
     if (!result.busy) return result.reservation;
@@ -3264,12 +3349,12 @@ async function reserveCreditAndAccountWhenAvailable(token, request, cacheKey, de
   return null;
 }
 
-async function tryReserveCreditAndAccount(token, request, cacheKey) {
+async function tryReserveCreditAndAccount(token: string, request: ExecutionRequest, cacheKey: string) {
   if (fairShareMode) throw httpError(409, '共享生图必须通过统一排队账本');
   return store.update((db) => {
     const user = getUserOrThrow(db, token);
     const cost = generationCost(request);
-    if (user.balance < cost) throw httpError(402, insufficientBalanceMessage);
+    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
     const account = selectAccount(db.accounts, db.settings, { request });
     if (!account && hasEnabledAccounts(db.accounts)) {
       if (!hasAccountWithEnoughQuota(db.accounts, request)) throw httpError(503, '无符合本次参数的可用额度；试用限总像素1048576、28步以内');
@@ -3279,7 +3364,7 @@ async function tryReserveCreditAndAccount(token, request, cacheKey) {
       account.inFlight = Number(account.inFlight || 0) + 1;
       account.lastUsedAt = new Date().toISOString();
     }
-    user.balance -= cost;
+    user.balance! -= cost;
     user.updatedAt = new Date().toISOString();
     const ledger = {
       id: createId('log'),
@@ -3297,17 +3382,17 @@ async function tryReserveCreditAndAccount(token, request, cacheKey) {
   });
 }
 
-function completionJob(db, reservation, jobId, job = store.loadJobForUpdate(jobId)) {
+function completionJob(db: StoreDatabase, reservation: Reservation, jobId: string, job = store.loadJobForUpdate(jobId)): StoreItem & { fairCharge: FairCharge } {
   if (job) job.fairCharge = resolveFairQuotaCharge(db, job, store.readFairQuotaSettlement(jobId));
-  if (!job || !['reserved', 'refunded', 'settled'].includes(job.fairCharge?.status)) throw httpError(409, '任务结算凭据不存在');
+  if (!job || !['reserved', 'refunded', 'settled'].includes(job.fairCharge?.status!)) throw httpError(409, '任务结算凭据不存在');
   if (job.userToken !== reservation.token || job.accountId !== reservation.account?.id) throw httpError(409, '生成结果与任务归属不符');
   if (job.generationAttempt?.id !== reservation.job?.generationAttempt?.id) throw httpError(409, '生成结果与执行尝试不符');
-  if (job.generationAttempt && (job.generationAttempt.jobId !== job.id || job.generationAttempt.memberId !== job.fairCharge.userId
+  if (job.generationAttempt && (job.generationAttempt.jobId !== job.id || job.generationAttempt.memberId !== job.fairCharge!.userId
     || job.generationAttempt.accountId !== job.accountId)) throw httpError(409, '任务与执行尝试归属不符');
-  return job;
+  return job as StoreItem & { fairCharge: FairCharge };
 }
 
-async function prepareGenerationResult(reservation, request, image, jobId) {
+async function prepareGenerationResult(reservation: Reservation, request: ExecutionRequest, image: GeneratedImage, jobId: string) {
   return store.update(db => {
     const job = completionJob(db, reservation, jobId);
     if (job.imageId) {
@@ -3321,7 +3406,7 @@ async function prepareGenerationResult(reservation, request, image, jobId) {
     if (!job.generationAttempt?.id) throw httpError(409, '任务执行尝试不存在');
     const pending = { ...describeStoredResult(job.resultPending?.imageId || createId('img'), request.operation || 'generate', image),
       attemptId: job.generationAttempt.id };
-    if (job.resultPending && Object.keys(pending).some(key => job.resultPending[key] !== pending[key])) throw httpError(409, '待保存结果与原结果不符');
+    if (job.resultPending && (Object.keys(pending) as (keyof typeof pending)[]).some(key => job.resultPending![key] !== pending[key])) throw httpError(409, '待保存结果与原结果不符');
     if (store.selectItemById('images', pending.imageId)) throw httpError(409, '待保存结果 ID 已被使用');
     Object.assign(job, reservation.upstreamTiming || {});
     job.resultPending = pending;
@@ -3339,7 +3424,7 @@ async function recoverPendingGenerationResults() {
       try {
         const job = store.selectItemById('jobs', jobId), pending = job?.resultPending;
         if (!pending || pending.attemptId !== job.generationAttempt?.id) throw new Error('结果与执行尝试不符');
-        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
+        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request as ExecutionRequest;
         if (!request || pending.operation !== (request.operation || 'generate')) throw new Error('结果与请求操作不符');
         const existing = store.selectItemById('images', pending.imageId);
         if (existing && (job.imageId !== pending.imageId || existing.token !== job.userToken)) throw new Error('待保存结果 ID 已被使用');
@@ -3355,29 +3440,29 @@ async function recoverPendingGenerationResults() {
         console.log('[recovery]', JSON.stringify({ jobId, imageId: pending.imageId, status: 'completed' }));
       } catch (error) {
         // 保留描述与文件，随后按既有未知结果规则退款；不猜测文件归属或重发原请求。
-        console.error('[recovery]', JSON.stringify({ jobId, status: 'unresolved', code: error.code || 'RESULT_RECOVERY_FAILED' }));
+        console.error('[recovery]', JSON.stringify({ jobId, status: 'unresolved', code: (error as GatewayError).code || 'RESULT_RECOVERY_FAILED' }));
       }
     }
   }
 }
 
-async function completeGeneration(reservation, request, image, meta = {}) {
+async function completeGeneration(reservation: Reservation, request: ExecutionRequest, image: GeneratedImage, meta: { jobId?: string } = {}) {
   const commitRequestedAt = Date.now();
-  let preparedAt;
+  let preparedAt: number | undefined;
   // 描述先独立提交；文件发布后结算失败或进程中断，启动仍能用原 ID 校验并续完。
   const pending = fairShareMode && meta.jobId ? await prepareGenerationResult(reservation, request, image, meta.jobId) : null;
   const imageId = pending?.imageId || createId('img');
-  let imageFile = null;
+  let imageFile: string | null = null;
   const accountCost = reservationAccountCost(reservation);
-  let trimmedImages = [];
-  let savedImage;
+  let trimmedImages: RemovedImages = [];
+  let savedImage: StoreItem & { balance: number };
   try {
     savedImage = await store.update(async (db) => {
-      let currentJob = null, refunded = false;
+      let currentJob: ReturnType<typeof completionJob> | null = null, refunded = false;
       if (fairShareMode && meta.jobId) {
         currentJob = completionJob(db, reservation, meta.jobId);
         if (currentJob.imageId) {
-          const existing = db.images.find(item => item.id === currentJob.imageId) || store.selectItemById('images', currentJob.imageId);
+          const existing = db.images.find(item => item.id === currentJob!.imageId) || store.selectItemById('images', currentJob.imageId);
           if (existing) {
             if (existing.token !== currentJob.userToken) throw httpError(409, '已存结果与任务归属不符');
             if (currentJob.resultPending) {
@@ -3386,7 +3471,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
               delete currentJob.resultPending;
             }
             if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id) && !existing.mock) {
-              recordSharedCompletion(db.accounts.find(a => a.id === currentJob.accountId), Date.now(),
+              recordSharedCompletion(db.accounts.find(a => a.id === currentJob!.accountId), Date.now(),
                 { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
             }
             preparedAt = Date.now();
@@ -3399,11 +3484,11 @@ async function completeGeneration(reservation, request, image, meta = {}) {
       const user = currentJob ? db.users.find(item => item.token === reservation.token) : getUserOrThrow(db, reservation.token);
       // 在串行事务中先检查既有产物，再写一次新文件；重复迟到通知不创建第二份文件。
       if (pending) {
-        if (currentJob.resultPending?.attemptId !== pending.attemptId || currentJob.resultPending?.sha256 !== pending.sha256) throw httpError(409, '待保存结果已改变');
+        if (currentJob!.resultPending?.attemptId !== pending.attemptId || currentJob!.resultPending?.sha256 !== pending.sha256) throw httpError(409, '待保存结果已改变');
         await publishStoredResult(dataDir, pending, image.buffer);
         imageFile = pending.file;
       } else imageFile = await writeStoredImage(imageId, image);
-      const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
+      const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
       if (account) {
         if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         if (fairShareMode && currentJob && !image.mock) recordSharedCompletion(account, Date.now(), {
@@ -3477,23 +3562,23 @@ async function completeGeneration(reservation, request, image, meta = {}) {
   return savedImage;
 }
 
-async function cancelReservedJob(reservation, error) {
+async function cancelReservedJob(reservation: Reservation, error: unknown) {
   const commitRequestedAt = Date.now();
   const detail = errorDetailMessage(error);
-  const waiterMessage = error?.message || detail || 'direct generate timeout';
+  const waiterMessage = (error as GatewayError)?.message || detail || 'direct generate timeout';
   const message = publicErrorMessage(waiterMessage, { generation: true });
   let changed = false;
-  let cooldownUntil;
+  let cooldownUntil: StoreItem['cooldownUntil'];
   const kind = sharedFailureKind(reservation, error);
-  const statusCode = kind === 'capacity' ? 429 : error.statusCode || 504;
+  const statusCode = kind === 'capacity' ? 429 : (error as GatewayError).statusCode || 504;
   await store.update((db) => {
-    const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job.id) : null;
-    if (!job || ['done', 'failed'].includes(job.status)) return;
-    const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
+    const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job!.id) : null;
+    if (!job || ['done', 'failed'].includes(job.status!)) return;
+    const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
       if (fairShareMode) recordSharedCompletion(account, Date.now(), { job, kind,
-        retryAfterUntil: error.upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
+        retryAfterUntil: (error as GatewayError).upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
       cooldownUntil = account.cooldownUntil;
       account.updatedAt = new Date().toISOString();
     }
@@ -3521,40 +3606,40 @@ async function cancelReservedJob(reservation, error) {
   }
 }
 
-async function failGeneration(reservation, error) {
+async function failGeneration(reservation: Reservation, error: unknown) {
   const commitRequestedAt = Date.now();
   const detail = errorDetailMessage(error);
   const kind = sharedFailureKind(reservation, error);
   const capacityError = fairShareMode && kind === 'capacity';
-  const statusCode = capacityError ? 429 : error.statusCode || 500;
-  const message = capacityError ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。' : fairShareMode&&error?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&error?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage(error?.message || detail, { generation: true });
-  let cooldownUntil;
+  const statusCode = capacityError ? 429 : (error as GatewayError).statusCode || 500;
+  const message = capacityError ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。' : fairShareMode&&(error as GatewayError)?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&(error as GatewayError)?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage((error as GatewayError)?.message || detail, { generation: true });
+  let cooldownUntil: StoreItem['cooldownUntil'];
   let changed = false;
   await store.update((db) => {
     if (fairShareMode && reservation.job?.id) {
-      const currentJob = db.jobs.find(j => j.id === reservation.job.id);
-      if (!currentJob || ['done', 'failed'].includes(currentJob.status)) return;
+      const currentJob = db.jobs.find(j => j.id === reservation.job!.id);
+      if (!currentJob || ['done', 'failed'].includes(currentJob.status!)) return;
     }
     const user = db.users.find((item) => item.token === reservation.token);
     if (user && !fairShareMode) {
-      user.balance += Number(reservation.cost || 0);
+      user.balance! += Number(reservation.cost || 0);
       user.updatedAt = new Date().toISOString();
     }
-    const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account.id) : null;
+    const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
       if (fairShareMode) recordSharedCompletion(account, Date.now(), { job: db.jobs.find(j => j.id === reservation.job?.id), kind,
-        retryAfterUntil: error.upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
+        retryAfterUntil: (error as GatewayError).upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
       cooldownUntil = account.cooldownUntil;
-      if(fairShareMode&&[401,403].includes(error.upstreamStatus)&&account.token===reservation.account?.token){
-        account.upstreamStatus=error.upstreamStatus===401?'invalid_key':'access_denied';
-        account.quotaError=error.upstreamStatus===401?'共享 Opus Key 已失效，请管理员更新凭据':'上游拒绝访问，请管理员重新验证 Opus';
+      if(fairShareMode&&[401,403].includes((error as GatewayError).upstreamStatus!)&&account.token===reservation.account?.token){
+        account.upstreamStatus=(error as GatewayError).upstreamStatus===401?'invalid_key':'access_denied';
+        account.quotaError=(error as GatewayError).upstreamStatus===401?'共享 Opus Key 已失效，请管理员更新凭据':'上游拒绝访问，请管理员重新验证 Opus';
       }
       account.failures = Number(account.failures || 0) + 1;
       account.updatedAt = new Date().toISOString();
     }
     if (reservation.job?.id) {
-      const job = db.jobs.find((item) => item.id === reservation.job.id);
+      const job = db.jobs.find((item) => item.id === reservation.job!.id);
       if (job) {
         Object.assign(job, reservation.upstreamTiming || {});
         if (fairShareMode) settleFairQuota(db, job, false, Date.now(), { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) }, store.readFairQuotaSettlement(job.id));
@@ -3590,27 +3675,27 @@ async function failGeneration(reservation, error) {
   }
 }
 
-function hasUsableImageTrial(account) {
+function hasUsableImageTrial(account: StoreItem | null | undefined): account is StoreItem {
   return isUnsubscribedAccountTier(account?.quotaTier)
     && account?.trialStatusKnown === true && account?.trialEligible === true
     && Number(account?.trialRemainingImages) > 0;
 }
 
-function isImageTrialRequest(request = {}) {
+function isImageTrialRequest(request: RequestSummary = {}) {
   const width = Number(request?.width);
   const height = Number(request?.height);
   const steps = Number(request?.steps);
-  return ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(request?.model)
+  return ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(request?.model!)
     && Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0
     && width * height <= 1048576 && Number.isInteger(steps) && steps > 0 && steps <= 28
     && !request?.characterRef;
 }
 
-function isNovelAiVerificationError(error) {
-  return /recaptcha|captcha|verification required|verification failed|human verification/i.test(String(error?.message || error || ''));
+function isNovelAiVerificationError(error: unknown) {
+  return /recaptcha|captcha|verification required|verification failed|human verification/i.test(String((error as GatewayError)?.message || error || ''));
 }
 
-async function recordSuccessfulImageTrial(account, request) {
+async function recordSuccessfulImageTrial(account: StoreItem | null | undefined, request: RequestSummary) {
   if (!hasUsableImageTrial(account) || !isImageTrialRequest(request)) return;
   // 先扣减本地余量，官方查询失败也不能重复发送已成功的生图请求。
   const remaining = Math.max(0, Number(account.trialRemainingImages) - 1);
@@ -3638,9 +3723,9 @@ async function recordSuccessfulImageTrial(account, request) {
   }
 }
 
-function selectAccount(accounts, settings = {}, options = {}) {
+function selectAccount(accounts: StoreItem[], settings: Partial<Settings> = {}, options: { request?: RequestSummary; excludeIds?: Set<string>; ignoreCooldown?: boolean } = {}) {
   resetStaleAccountLoads(accounts);
-  const excludeIds = options.excludeIds || new Set();
+  const excludeIds = options.excludeIds || new Set<string>();
   const paid = requiresPaidAccount(options.request);
   const now = Date.now();
   const enabled = accounts.filter((account) => account.enabled !== false && !isAccountCoolingDown(account, now));
@@ -3680,41 +3765,41 @@ function selectAccount(accounts, settings = {}, options = {}) {
     const loadA = Number(a.inFlight || 0) / maxConcurrency;
     const loadB = Number(b.inFlight || 0) / maxConcurrency;
     if (loadA !== loadB) return loadA - loadB;
-    return Date.parse(a.lastUsedAt || 0) - Date.parse(b.lastUsedAt || 0);
+    return Date.parse((a.lastUsedAt || 0) as string) - Date.parse((b.lastUsedAt || 0) as string);
   })[0];
 }
 
-function accountQuotaPoints(account) {
+function accountQuotaPoints(account: StoreItem) {
   if (account?.quotaPoints === null || account?.quotaPoints === undefined || account?.quotaPoints === '') return null;
   const value = Number(account?.quotaPoints);
   return Number.isFinite(value) ? value : null;
 }
 
-function isV5StandardAccountRequest(request = {}) {
+function isV5StandardAccountRequest(request: RequestSummary = {}) {
   return !requiresPaidAccount(request) && String(request?.model || '').startsWith('nai-diffusion-5');
 }
 
-function hasV5FreeQuota(account) {
+function hasV5FreeQuota(account: StoreItem) {
   const percent = numberOrNull(account?.v5UsagePercent);
   return percent !== null && percent > 0 && !account?.v5UsageIsNegative;
 }
 
-function hasPaidQuota(account) {
+function hasPaidQuota(account: StoreItem) {
   const quota = accountQuotaPoints(account);
   return account.quotaError !== '点数不足' && (quota === null || quota > 0);
 }
 
-function maxAccountConcurrency(settings = {}, account = null) {
+function maxAccountConcurrency(settings: Partial<Settings> = {}, account: StoreItem | null = null) {
   return fairShareMode ? sharedAccountConcurrency() : 1;
 }
 
-function physicalAccountLoad(accountId) {
+function physicalAccountLoad(accountId: string) {
   let count = 0;
   for (const control of runningJobControls.values()) if (control.accountId === accountId) count++;
   return count;
 }
 
-function availableAccountSlots(accounts, settings = {}) {
+function availableAccountSlots(accounts: StoreItem[], settings: Partial<Settings> = {}) {
   if (fairShareMode) {
     const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
     return !account || account.enabled === false || sharedAccountReadyDelay(account, Date.now()) > 0 ? 0
@@ -3730,7 +3815,7 @@ function availableAccountSlots(accounts, settings = {}) {
   return enabled.reduce((sum, account) => sum + Math.max(0, maxConcurrency - Number(account.inFlight || 0)), 0);
 }
 
-function nextAccountReadyDelay(accounts, settings = {}) {
+function nextAccountReadyDelay(accounts: StoreItem[], settings: Partial<Settings> = {}) {
   if (fairShareMode) {
     const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
     return !account || account.enabled === false || Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) >= sharedAccountConcurrency()
@@ -3793,7 +3878,7 @@ async function drainQueuedJobs(scheduledAt = Date.now()) {
         if (signature !== lastQueueWait) {
           lastQueueWait = signature;
           console.log('[queue]', JSON.stringify({ event: 'wait', jobId, accountId: account?.id, reason, until,
-            cooldownReason: until ? account.cooldownReason || null : null, scheduledAt, checkedAt: Date.now() }));
+            cooldownReason: until ? account!.cooldownReason || null : null, scheduledAt, checkedAt: Date.now() }));
         }
       }
       // 槽位检查后时钟可能越过冷却截止，仍须保留下一轮唤醒；实际重试间隔由 queueRetryDelay 限制。
@@ -3808,19 +3893,19 @@ async function drainQueuedJobs(scheduledAt = Date.now()) {
     }, { collections: ['accounts'], persist: false });
     const jobIds = drainPlan.jobIds || [];
     if (!jobIds.length && drainPlan.delay > 0) queueDrainRequested = true;
-    const reservations = await Promise.all(jobIds.map((id) => reserveQueuedJob(id).catch((error) => ({ error }))));
+    const reservations = await Promise.all(jobIds.map((id) => reserveQueuedJob(id).catch((error: unknown): Partial<QueueReservation> => ({ error }))));
     reservations.forEach((reservation) => {
       if (reservation?.error) {
         console.error(reservation.error);
         return;
       }
-      if (reservation?.failure) notifyJobWaiters(reservation.jobId, { error: reservation.failure, statusCode: reservation.statusCode });
+      if (reservation?.failure) notifyJobWaiters(reservation.jobId!, { error: reservation.failure, statusCode: reservation.statusCode });
       if (reservation?.skip || reservation?.queued) {
         queueDrainRequested = true;
         return;
       }
       console.log('[queue]', JSON.stringify({ event: 'dispatch', jobId: reservation.job?.id, scheduledAt, dispatchedAt: Date.now() }));
-      runReservedJob(reservation);
+      runReservedJob(reservation as QueueReservation);
     });
   } finally {
     queueDraining = false;
@@ -3841,11 +3926,11 @@ async function queueRetryDelay() {
   }, { persist: false });
 }
 
-function hasEnabledAccounts(accounts) {
+function hasEnabledAccounts(accounts: StoreItem[]) {
   return accounts.some((account) => account.enabled !== false);
 }
 
-function hasAccountWithEnoughQuota(accounts, request = {}) {
+function hasAccountWithEnoughQuota(accounts: StoreItem[], request: RequestSummary = {}) {
   return accounts.some((account) => {
     if (account.enabled === false) return false;
     if (account.quotaTier === null || account.quotaTier === undefined || account.quotaTier === '') return false;
@@ -3855,18 +3940,18 @@ function hasAccountWithEnoughQuota(accounts, request = {}) {
   });
 }
 
-function resetStaleAccountLoads(accounts) {
+function resetStaleAccountLoads(accounts: StoreItem[]) {
   const staleAfterMs = accountInflightTimeoutMs();
   const now = Date.now();
   accounts.forEach((account) => {
     if (account.cooldownUntil && Date.parse(account.cooldownUntil) <= now) account.cooldownUntil = '';
     if (Number(account.inFlight || 0) <= 0) return;
-    const lastUsed = Date.parse(account.lastUsedAt || 0);
+    const lastUsed = Date.parse((account.lastUsedAt || 0) as string);
     if (!lastUsed || now - lastUsed > staleAfterMs) account.inFlight = 0;
   });
 }
 
-function isAccountCoolingDown(account, now = Date.now()) {
+function isAccountCoolingDown(account: StoreItem, now = Date.now()) {
   const until = Date.parse(account.cooldownUntil || '');
   return Number.isFinite(until) && until > now;
 }
@@ -3875,8 +3960,8 @@ function accountBusyCooldownMs() {
   return clamp(Number(process.env.ACCOUNT_429_COOLDOWN_MS || 800), 200, 120_000);
 }
 
-function assignAccountRouteIds(accounts) {
-  const used = new Set();
+function assignAccountRouteIds(accounts: StoreItem[]) {
+  const used = new Set<number>();
   let next = 1;
   accounts.forEach((account) => {
     const current = Number(account.routeId || 0);
@@ -3893,11 +3978,11 @@ function assignAccountRouteIds(accounts) {
   });
 }
 
-function nextAccountRouteId(accounts) {
+function nextAccountRouteId(accounts: StoreItem[]) {
   return accounts.reduce((max, account) => Math.max(max, Number(account.routeId || 0)), 0) + 1;
 }
 
-function normalizePublicBaseUrl(value = '') {
+function normalizePublicBaseUrl(value: unknown = '') {
   const text = String(value || '').trim().replace(/\/+$/, '');
   if (!text) return '';
   try {
@@ -3910,14 +3995,14 @@ function normalizePublicBaseUrl(value = '') {
   }
 }
 
-function getUserOrThrow(db, token) {
+function getUserOrThrow(db: Pick<StoreDatabase, 'users'>, token: string | undefined) {
   const user = db.users.find((item) => item.token === token);
   if (!user || user.enabled === false) throw httpError(401, 'invalid token.');
   return user;
 }
 
-function publicUser(user, options = {}) {
-  const payload = {
+function publicUser(user: StoreItem, options: { includeMergeTrace?: boolean } = {}) {
+  const payload: Pick<StoreItem, 'id' | 'token' | 'balance' | 'createdAt' | 'updatedAt'> & { enabled: boolean; sourceCard: unknown; note: string; mergedInto?: string; mergedAt?: string; mergedAmount?: number; mergedFrom?: ReturnType<typeof mergedFromEntries> } = {
     id: user.id,
     token: user.token,
     balance: user.balance,
@@ -3936,8 +4021,8 @@ function publicUser(user, options = {}) {
   return payload;
 }
 
-function publicAdminUsers(users = []) {
-  const mergedFromByTarget = new Map();
+function publicAdminUsers(users: StoreItem[] = []) {
+  const mergedFromByTarget = new Map<string | undefined, ReturnType<typeof mergedFromEntries>>();
   for (const user of users) {
     if (!user?.mergedInto) continue;
     const token = String(user.mergedInto || '').trim();
@@ -3954,17 +4039,17 @@ function publicAdminUsers(users = []) {
   return users.map((user) => {
     const payload = publicUser(user, { includeMergeTrace: true });
     payload.mergedFrom = uniqueMergedFromEntries([
-      ...payload.mergedFrom,
+      ...payload.mergedFrom!,
       ...(mergedFromByTarget.get(user.token) || [])
     ]);
     return payload;
   });
 }
 
-function mergedFromEntries(value = []) {
+function mergedFromEntries(value: unknown = []) {
   if (!Array.isArray(value)) return [];
   return value
-    .map((entry) => ({
+    .map((entry: { token?: unknown; amount?: unknown; at?: string } | null) => ({
       token: String(entry?.token || '').trim(),
       amount: Number(entry?.amount || 0),
       at: entry?.at || ''
@@ -3972,9 +4057,9 @@ function mergedFromEntries(value = []) {
     .filter((entry) => entry.token);
 }
 
-function uniqueMergedFromEntries(entries = []) {
-  const seen = new Set();
-  const selected = [];
+function uniqueMergedFromEntries(entries: ReturnType<typeof mergedFromEntries> = []) {
+  const seen = new Set<string>();
+  const selected: ReturnType<typeof mergedFromEntries> = [];
   for (const entry of mergedFromEntries(entries)) {
     if (seen.has(entry.token)) continue;
     seen.add(entry.token);
@@ -3983,13 +4068,13 @@ function uniqueMergedFromEntries(entries = []) {
   return selected;
 }
 
-function publicAccount(account, options = {}) {
+function publicAccount(account: StoreItem, options: { revealToken?: boolean; stats1h?: ReturnType<typeof finalizeStats> } | number = {}) {
   return {
     id: account.id,
     routeId: account.routeId || 0,
     name: account.name,
-    token: options.revealToken ? account.token : maskToken(account.token),
-    proxyUrl: options.revealToken ? account.proxyUrl || '' : maskProxyUrl(account.proxyUrl || ''),
+    token: (options as { revealToken?: boolean }).revealToken ? account.token : maskToken(account.token),
+    proxyUrl: (options as { revealToken?: boolean }).revealToken ? account.proxyUrl || '' : maskProxyUrl(account.proxyUrl || ''),
     hasProxy: Boolean(account.proxyUrl),
     enabled: account.enabled !== false,
     weight: account.weight || 1,
@@ -4011,12 +4096,12 @@ function publicAccount(account, options = {}) {
     quotaCheckedAt: account.quotaCheckedAt || '',
     quotaError: account.quotaError || '',
     cooldownUntil: account.cooldownUntil || '',
-    stats1h: options.stats1h || { done: 0, failed: 0, total: 0, successRate: 0 },
+    stats1h: (options as { stats1h?: ReturnType<typeof finalizeStats> }).stats1h || { done: 0, failed: 0, total: 0, successRate: 0 },
     lastUsedAt: account.lastUsedAt || ''
   };
 }
 
-function exportAccount(account) {
+function exportAccount(account: StoreItem) {
   return {
     trialRemainingImages: account.trialRemainingImages ?? null,
     trialUsedImages: account.trialUsedImages ?? null,
@@ -4046,7 +4131,7 @@ function exportAccount(account) {
   };
 }
 
-function exportMigrationData(db) {
+function exportMigrationData(db: StoreDatabase) {
   const users = db.users.filter((user) => Number(user.balance || 0) > 0);
   return {
     settings: db.settings,
@@ -4059,13 +4144,13 @@ function exportMigrationData(db) {
   };
 }
 
-async function writeStoredImage(id, image) {
+async function writeStoredImage(id: string, image: GeneratedImage) {
   const imageFile = imageStorageName(id, image.mimeType);
   await writeFile(path.join(dataDir, imageFile), image.buffer);
   return imageFile;
 }
 
-async function readStoredImage(image) {
+async function readStoredImage(image: StoredResult) {
   if (image.file) {
     return readFile(imageFilePath(image.file));
   }
@@ -4075,7 +4160,7 @@ async function readStoredImage(image) {
   throw httpError(404, 'image content not found.');
 }
 
-async function removeStoredImages(images) {
+async function removeStoredImages(images: StoredResult[]) {
   // 私有部署保护：保留图片文件，删除前须获得用户同意。
   if (process.env.NO_AUTO_DELETE === 'true') return;
   for (let index = 0; index < images.length; index += 50) {
@@ -4091,11 +4176,11 @@ async function removeStoredImages(images) {
   }
 }
 
-function imageStorageName(id, mimeType = '') {
+function imageStorageName(id: string, mimeType = '') {
   return path.join('images', `${id}.${imageExtension(mimeType)}`);
 }
 
-function imageFilePath(file) {
+function imageFilePath(file: string) {
   const resolved = path.resolve(dataDir, file);
   const root = path.resolve(imageDir);
   if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw httpError(403, 'invalid image path.');
@@ -4110,7 +4195,7 @@ function imageExtension(mimeType = '') {
   return 'png';
 }
 
-function sanitizeMigrationData(payload) {
+function sanitizeMigrationData(payload: NonNullable<Parameters<typeof normalizeDb>[0]>) {
   return {
     settings: payload.settings || {},
     cards: Array.isArray(payload.cards) ? payload.cards : [],
@@ -4122,10 +4207,10 @@ function sanitizeMigrationData(payload) {
   };
 }
 
-function publicJob(job, db = null, { includePrompt = true } = {}) {
+function publicJob(job: Pick<StoreItem, 'id' | 'source' | 'status' | 'request' | 'accountId' | 'cost' | 'accountCost' | 'imageId' | 'lateResultAvailable' | 'error' | 'queueTotal' | 'generationProgress' | 'createdAt' | 'updatedAt' | 'completedAt'> & { requestId?: string | null }, db: { queue?: ReturnType<JsonStore['jobQueueProgress']>; users?: StoreItem[]; accounts?: StoreItem[]; images?: StoreItem[]; user?: StoreItem | null; account?: StoreItem | null; image?: StoreItem | null } | null = null, { includePrompt = true } = {}) {
   const queue = db?.queue || store.jobQueueProgress(job);
   const request = (includePrompt && job.requestId ? store.readGenerationRequest(job.requestId) : job.request) || {};
-  const account = db?.account || (db && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null);
+  const account = db?.account || (db && job.accountId ? db.accounts!.find((item) => item.id === job.accountId) : null);
   return {
     id: job.id,
     source: job.source || 'web',
@@ -4149,11 +4234,11 @@ function publicJob(job, db = null, { includePrompt = true } = {}) {
     durationMs: jobDurationMs(job),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
-    completedAt: job.completedAt || (['done', 'failed'].includes(job.status) ? job.updatedAt : '')
+    completedAt: job.completedAt || (['done', 'failed'].includes(job.status!) ? job.updatedAt : '')
   };
 }
 
-function publicGenerationProgress(job = {}) {
+function publicGenerationProgress(job: Partial<Pick<StoreItem, 'id' | 'status' | 'request' | 'generationProgress'>> = {}) {
   if (job.status === 'done') {
     return {
       percent: 100,
@@ -4170,7 +4255,7 @@ function publicGenerationProgress(job = {}) {
       active: false
     };
   }
-  const progress = jobStreamProgress.get(job.id) || job.generationProgress || {};
+  const progress = jobStreamProgress.get(job.id!) || job.generationProgress || {};
   return {
     percent: clamp(Number(progress.percent || 0), 0, 100),
     step: Number(progress.step || 0),
@@ -4180,27 +4265,27 @@ function publicGenerationProgress(job = {}) {
   };
 }
 
-function jobDurationMs(job) {
+function jobDurationMs(job: Pick<StoreItem, 'createdAt' | 'status' | 'completedAt' | 'updatedAt'>) {
   const started = Date.parse(job.createdAt || '');
   if (!started) return 0;
-  const terminal = ['done', 'failed'].includes(job.status);
+  const terminal = ['done', 'failed'].includes(job.status!);
   const ended = terminal ? Date.parse(job.completedAt || job.updatedAt || '') : Date.now();
   if (!ended || ended < started) return 0;
   return ended - started;
 }
 
-function activeJobCount(jobs) {
+function activeJobCount(jobs: StoreItem[]) {
   const now = Date.now();
   return jobs.filter((job) => isQueueActiveJob(job, now)).length;
 }
 
-function isQueueActiveJob(job, now = Date.now()) {
-  if (!job || !['queued', 'running'].includes(job.status)) return false;
+function isQueueActiveJob(job: StoreItem, now = Date.now()) {
+  if (!job || !['queued', 'running'].includes(job.status!)) return false;
   return !isStaleActiveJob(job, now);
 }
 
-function isStaleActiveJob(job, now = Date.now()) {
-  if (!job || !['queued', 'pending', 'running'].includes(job.status)) return false;
+function isStaleActiveJob(job: StoreItem, now = Date.now()) {
+  if (!job || !['queued', 'pending', 'running'].includes(job.status!)) return false;
   if (isExpiredJobAt(job, now)) return true;
   const queueExpires = queuedDeadlineTimestamp(job);
   if (queueExpires && now >= queueExpires) return true;
@@ -4211,17 +4296,17 @@ function isStaleActiveJob(job, now = Date.now()) {
   return false;
 }
 
-function staleActiveJobDetail(job, now = Date.now()) {
+function staleActiveJobDetail(job: StoreItem, now = Date.now()) {
   if (isExpiredJobAt(job, now)) return 'job deadline expired';
   if (queuedDeadlineTimestamp(job) && now >= queuedDeadlineTimestamp(job)) return 'queued job exceeded wait deadline';
   return `${job.status || 'active'} job exceeded stale timeout`;
 }
 
-function isExpiredJob(job) {
+function isExpiredJob(job: StoreItem) {
   return isExpiredJobAt(job);
 }
 
-function isExpiredJobAt(job, now = Date.now()) {
+function isExpiredJobAt(job: StoreItem, now = Date.now()) {
   const deadline = Date.parse(job.deadlineAt || '');
   return Number.isFinite(deadline) && deadline > 0 && now >= deadline;
 }
@@ -4234,13 +4319,13 @@ function staleRunningJobMs() {
   return configuredTimeoutMs('STALE_RUNNING_JOB_MS', accountInflightTimeoutMs() + 60 * 1000);
 }
 
-function configuredTimeoutMs(name, fallback) {
+function configuredTimeoutMs(name: string, fallback: number) {
   const configured = Number(process.env[name] || 0);
   if (Number.isFinite(configured) && configured > 0) return Math.max(60_000, Math.floor(configured));
   return Math.max(60_000, Math.floor(Number(fallback) || 60_000));
 }
 
-function refundJob(db, job, note, evidence = {}) {
+function refundJob(db: StoreDatabase, job: StoreItem, note: string, evidence: Parameters<typeof settleFairQuota>[4] = {}) {
   if (fairShareMode) {
     // 共享入口从不预扣旧 points；缺少凭据也不能猜退旧余额。
     return settleFairQuota(db, job, false, Date.now(), evidence, store.readFairQuotaSettlement(job.id));
@@ -4250,7 +4335,7 @@ function refundJob(db, job, note, evidence = {}) {
   if (cost <= 0) return;
   const user = db.users.find((item) => item.token === job.userToken);
   if (!user) return;
-  user.balance += cost;
+  user.balance! += cost;
   user.updatedAt = new Date().toISOString();
   job.refundedAt = new Date().toISOString();
   db.ledger.unshift({
@@ -4264,7 +4349,7 @@ function refundJob(db, job, note, evidence = {}) {
   });
 }
 
-function hourlyUsageStatsByDay(jobs, days = usageChartDays) {
+function hourlyUsageStatsByDay(jobs: StoreItem[], days = usageChartDays) {
   const keys = recentBeijingDateKeys(days);
   const buckets = new Map(keys.map((key) => [key, {
     date: key,
@@ -4286,11 +4371,11 @@ function hourlyUsageStatsByDay(jobs, days = usageChartDays) {
   }]));
 
   jobs.forEach((job) => {
-    if (!['done', 'failed'].includes(job.status)) return;
+    if (!['done', 'failed'].includes(job.status!)) return;
     const timestamp = Date.parse(job.updatedAt || job.createdAt || '');
     if (!timestamp) return;
     const key = beijingDateKey(timestamp);
-    const bucket = buckets.get(key);
+    const bucket = buckets.get(key)!;
     if (!bucket) return;
     const hourBucket = bucket.hours[beijingHour(timestamp)];
     if (!hourBucket) return;
@@ -4307,7 +4392,7 @@ function hourlyUsageStatsByDay(jobs, days = usageChartDays) {
   });
 
   return keys.map((key) => {
-    const bucket = buckets.get(key);
+    const bucket = buckets.get(key)!;
     bucket.total = bucket.done + bucket.failed;
     bucket.successRate = bucket.total ? bucket.done / bucket.total : 0;
     bucket.hours.forEach((hour) => {
@@ -4318,7 +4403,7 @@ function hourlyUsageStatsByDay(jobs, days = usageChartDays) {
   });
 }
 
-function errorLogs(jobs, db = {}, limit = 100) {
+function errorLogs(jobs: StoreItem[], db: Partial<StoreDatabase> = {}, limit = 100) {
   const cutoff = Date.now() - errorLogRetentionMs;
   return jobs
     .filter((job) => job.status === 'failed')
@@ -4332,7 +4417,7 @@ function errorLogs(jobs, db = {}, limit = 100) {
     .map((job) => publicErrorLog(job, db));
 }
 
-function isAccountErrorLogJob(job) {
+function isAccountErrorLogJob(job: StoreItem) {
   if (!job?.accountId) return false;
   const text = `${job.error || ''}\n${job.errorDetail || ''}`;
   if (isNovelAiCapacityError({ message: text })) return false;
@@ -4342,12 +4427,12 @@ function isAccountErrorLogJob(job) {
   return true;
 }
 
-function publicErrorLog(job, db = {}) {
+function publicErrorLog(job: StoreItem, db: Partial<StoreDatabase> = {}) {
   const request = job.requestId
     ? singleGenerationRequest(store.readGenerationRequest(job.requestId) || {}, job.sampleIndex)
     : job.request || {};
   const account = job.accountId && Array.isArray(db.accounts)
-    ? db.accounts.find((item) => item.id === job.accountId)
+    ? db.accounts!.find((item) => item.id === job.accountId)
     : null;
   return {
     id: job.id,
@@ -4366,12 +4451,12 @@ function publicErrorLog(job, db = {}) {
     request: errorLogRequest(request),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
-    completedAt: job.completedAt || (['done', 'failed'].includes(job.status) ? job.updatedAt : ''),
+    completedAt: job.completedAt || (['done', 'failed'].includes(job.status!) ? job.updatedAt : ''),
     beijingDate: beijingDateKey(Date.parse(job.updatedAt || job.createdAt || ''))
   };
 }
 
-function errorLogRequest(request = {}) {
+function errorLogRequest(request: RequestSummary = {}) {
   return {
     tag: request.tag || '',
     prompt: request.prompt || '',
@@ -4391,7 +4476,7 @@ function errorLogRequest(request = {}) {
   };
 }
 
-function recentBeijingDateKeys(days) {
+function recentBeijingDateKeys(days: number) {
   const now = new Date(Date.now() + beijingOffsetMs);
   const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return Array.from({ length: days }, (_, index) => {
@@ -4400,19 +4485,19 @@ function recentBeijingDateKeys(days) {
   });
 }
 
-function beijingDateKey(timestamp) {
+function beijingDateKey(timestamp: number) {
   const value = Number(timestamp);
   if (!Number.isFinite(value)) return '';
   return new Date(value + beijingOffsetMs).toISOString().slice(0, 10);
 }
 
-function beijingHour(timestamp) {
+function beijingHour(timestamp: number) {
   const value = Number(timestamp);
   if (!Number.isFinite(value)) return 0;
   return new Date(value + beijingOffsetMs).getUTCHours();
 }
 
-function jobStatsSince(jobs, rangeMs) {
+function jobStatsSince(jobs: StoreItem[], rangeMs: number) {
   const since = Date.now() - rangeMs;
   return finalizeStats(jobs.reduce((stats, job) => {
     if (isQuotaFailureJob(job)) return stats;
@@ -4424,7 +4509,7 @@ function jobStatsSince(jobs, rangeMs) {
   }, { done: 0, failed: 0 }));
 }
 
-function requestStatsSince(jobs, rangeMs) {
+function requestStatsSince(jobs: StoreItem[], rangeMs: number) {
   const since = Date.now() - rangeMs;
   const total = jobs.reduce((sum, job) => {
     const createdAt = Date.parse(job.createdAt || '');
@@ -4433,9 +4518,9 @@ function requestStatsSince(jobs, rangeMs) {
   return { total };
 }
 
-function accountStatsMapSince(jobs, rangeMs) {
+function accountStatsMapSince(jobs: StoreItem[], rangeMs: number) {
   const since = Date.now() - rangeMs;
-  const map = new Map();
+  const map = new Map<string, { done: number; failed: number }>();
   jobs.forEach((job) => {
     if (isQuotaFailureJob(job) || !job.accountId) return;
     const createdAt = Date.parse(job.createdAt || '');
@@ -4454,7 +4539,7 @@ function accountStatsMapSince(jobs, rangeMs) {
   return map;
 }
 
-function finalizeStats(stats) {
+function finalizeStats(stats: Stats) {
   const done = Number(stats.done || 0);
   const failed = Number(stats.failed || 0);
   const total = done + failed;
@@ -4466,36 +4551,36 @@ function finalizeStats(stats) {
   };
 }
 
-function generationCost(request = null) {
+function generationCost(request: RequestSummary | null = null) {
   return fairShareMode ? 0 : generationPrice(request || {});
 }
 
-function requiresPaidAccount(request = {}) {
-  const dimensions = sizeMap[normalizeSizeName(request.size)];
+function requiresPaidAccount(request: RequestSummary = {}) {
+  const dimensions = sizeMap[normalizeSizeName(request.size) as keyof typeof sizeMap];
   return Number(request?.steps) > 28
     || dimensions?.width * dimensions?.height > 1024 * 1024
     || Number(request?.width) * Number(request?.height) > 1024 * 1024;
 }
 
 // Retain historical metadata only. New jobs do not estimate or debit upstream points.
-function jobAccountCost(job = {}) {
+function jobAccountCost(job: Partial<Pick<StoreItem, 'request' | 'accountCost' | 'cost'>> = {}) {
   return normalizeAccountCost(job.accountCost);
 }
 
-function reservationAccountCost(reservation = {}) {
+function reservationAccountCost(reservation: Partial<Reservation> = {}) {
   return normalizeAccountCost(reservation.accountCost);
 }
 
-function normalizeAccountCost(value) {
+function normalizeAccountCost(value: unknown) {
   const cost = Number(value);
   return Number.isFinite(cost) && cost > 0 ? Math.ceil(cost) : 0;
 }
 
-function normalizeSizeName(value) {
+function normalizeSizeName(value: unknown) {
   return String(value || '').replace(/\s*\(-\d+\)\s*$/, '').trim();
 }
 
-function requestCacheKey(_token, request, explicitSeed = '') {
+function requestCacheKey(_token: string, request: ExecutionRequest, explicitSeed: unknown = '') {
   return hashObject({
     owner: _token,
     request: cacheableRequest({
@@ -4505,49 +4590,49 @@ function requestCacheKey(_token, request, explicitSeed = '') {
   });
 }
 
-function cacheableRequest(request) {
+function cacheableRequest(request: Omit<ExecutionRequest, 'seed'> & { seed?: string | number }) {
   const { requestedSteps, ...cacheRequest } = request;
   return cacheRequest;
 }
 
-function isNoCache(value) {
+function isNoCache(value: unknown) {
   return value === true || value === 1 || value === '1' || value === 'true';
 }
 
-function isInsufficientBalanceError(error) {
-  return Number(error?.statusCode || error?.status) === 402 || /insufficient balance|额度不足|余额不足/i.test(String(error?.message || error || ''));
+function isInsufficientBalanceError(error: unknown) {
+  return Number((error as GatewayError)?.statusCode || (error as GatewayError)?.status) === 402 || /insufficient balance|额度不足|余额不足/i.test(String((error as GatewayError)?.message || error || ''));
 }
 
-function isNovelAiAccountQuotaError(error) {
-  const text = String(error?.message || error || '');
+function isNovelAiAccountQuotaError(error: unknown) {
+  const text = String((error as GatewayError)?.message || error || '');
   return /NovelAI returned (402|400|403).*?(insufficient|balance|quota|anlas|training|point|额度|余额|点数)|insufficient.*?(quota|anlas|training|point|balance)/i.test(text);
 }
 
-function isNovelAiOutOfTrialImageGenerationError(error) {
-  return /out of trial image generations/i.test(String(error?.message || error || ''));
+function isNovelAiOutOfTrialImageGenerationError(error: unknown) {
+  return /out of trial image generations/i.test(String((error as GatewayError)?.message || error || ''));
 }
 
-function isNovelAiCapacityError(error) {
-  if (Number(error?.upstreamStatus) === 429) return true;
-  if ([401, 403].includes(Number(error?.upstreamStatus))) return false;
-  const text = String(error?.message || error || '');
+function isNovelAiCapacityError(error: unknown) {
+  if (Number((error as GatewayError)?.upstreamStatus) === 429) return true;
+  if ([401, 403].includes(Number((error as GatewayError)?.upstreamStatus))) return false;
+  const text = String((error as GatewayError)?.message || error || '');
   return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(text);
 }
 
-function sharedFailureKind(reservation, error) {
+function sharedFailureKind(reservation: Pick<Reservation, 'upstreamTiming' | 'failurePhase'>, error: unknown) {
   // 执行 catch 也包含本地文件/SQL 提交错误，不能因曾发过请求就计成网络故障。
-  if (reservation.failurePhase === 'commit' || /^(?:SQLITE|ENOSPC|EROFS|EACCES)/.test(error?.code || '')) return 'ended';
-  const status = error?.upstreamStatus ?? reservation.upstreamTiming?.upstreamHttpStatus;
+  if (reservation.failurePhase === 'commit' || /^(?:SQLITE|ENOSPC|EROFS|EACCES)/.test((error as GatewayError)?.code || '')) return 'ended';
+  const status = (error as GatewayError)?.upstreamStatus ?? reservation.upstreamTiming?.upstreamHttpStatus;
   if (status !== undefined && Number(status) >= 400 && Number(status) < 500 && Number(status) !== 429) return 'ended';
-  if (isNovelAiCapacityError(status === undefined ? error : { message: error?.message, upstreamStatus: status })) return 'capacity';
+  if (isNovelAiCapacityError(status === undefined ? error : { message: (error as GatewayError)?.message, upstreamStatus: status })) return 'capacity';
   return reservation.failurePhase === 'upstream' && reservation.upstreamTiming?.upstreamStartedAt ? 'ordinary' : 'ended';
 }
 
-function isQuotaFailureJob(job) {
+function isQuotaFailureJob(job: StoreItem) {
   return job?.status === 'failed' && isInsufficientBalanceError({ message: job.error });
 }
 
-function publicErrorMessage(message, { generation = false } = {}) {
+function publicErrorMessage(message: unknown, { generation = false } = {}) {
   const text = String(message || '');
   const generationFailure = '生成失败，请稍后重试或联系管理员。';
   // 文件/SQLite异常也可能发生在已完成图片的读取阶段，不回显路径或内部操作。
@@ -4576,16 +4661,16 @@ function publicErrorMessage(message, { generation = false } = {}) {
   return text;
 }
 
-function errorDetailMessage(error) {
-  const detail = String(error?.stack || error?.message || error || '').trim();
+function errorDetailMessage(error: unknown) {
+  const detail = String((error as GatewayError)?.stack || (error as GatewayError)?.message || error || '').trim();
   return detail.slice(0, 4000);
 }
 
-function isAbortError(error) {
-  return error?.name === 'AbortError' || /aborted|abort/i.test(String(error?.message || ''));
+function isAbortError(error: unknown) {
+  return (error as GatewayError)?.name === 'AbortError' || /aborted|abort/i.test(String((error as GatewayError)?.message || ''));
 }
 
-function selectUsers(db, body) {
+function selectUsers(db: StoreDatabase, body: Body) {
   if (body.zeroBalance === true) {
     const users = db.users.filter((user) => Number(user.balance || 0) <= 0 && !user.mergedInto && !user.mergedAt && !user.mergedFrom?.length);
     if (!users.length) throw httpError(404, '没有可清理的 0 额度密钥。');
@@ -4594,15 +4679,15 @@ function selectUsers(db, body) {
   const ids = new Set(collectValues(body.ids || body.users));
   const tokens = new Set(collectValues(body.tokens || body.token));
   if (!ids.size && !tokens.size) throw httpError(400, 'user ids or tokens are required.');
-  const users = db.users.filter((user) => ids.has(user.id) || tokens.has(user.token));
+  const users = db.users.filter((user) => ids.has(user.id) || tokens.has(user.token!));
   if (!users.length) throw httpError(404, 'no matching user tokens found.');
   return users;
 }
 
-function parseImportedAccounts(body) {
+function parseImportedAccounts(body: Body): Partial<StoreItem>[] {
   if (Array.isArray(body.accounts)) {
     return body.accounts
-      .map((account) => (typeof account === 'string' ? { token: account } : account))
+      .map((account: string | Partial<StoreItem>) => (typeof account === 'string' ? { token: account } : account))
       .filter((account) => String(account?.token || '').trim());
   }
 
@@ -4626,13 +4711,13 @@ function parseImportedAccounts(body) {
     });
 }
 
-function normalizeAccountProxyUrl(value = '') {
+function normalizeAccountProxyUrl(value: unknown = '') {
   const text = String(value || '').trim();
   if (!text) return '';
   const rawProxy = parseHostPortUserPassProxy(text);
   if (rawProxy) return rawProxy;
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `socks5://${text}`;
-  let url;
+  let url: URL;
   try {
     url = new URL(withScheme.replace(/^sock5:\/\//i, 'socks5://'));
   } catch {
@@ -4646,7 +4731,7 @@ function normalizeAccountProxyUrl(value = '') {
   return url.toString();
 }
 
-function parseProxyLines(value = '') {
+function parseProxyLines(value: unknown = '') {
   return String(value || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -4654,7 +4739,7 @@ function parseProxyLines(value = '') {
     .map((line) => normalizeAccountProxyUrl(line));
 }
 
-function parseHostPortUserPassProxy(value = '') {
+function parseHostPortUserPassProxy(value: unknown = '') {
   const parts = String(value || '').trim().split(':');
   if (parts.length !== 4) return '';
   const [host, port, username, password] = parts.map((part) => part.trim());
@@ -4665,12 +4750,12 @@ function parseHostPortUserPassProxy(value = '') {
   return url.toString();
 }
 
-function looksLikeProxyUrl(value = '') {
+function looksLikeProxyUrl(value: unknown = '') {
   const text = String(value || '').trim();
   return Boolean(text && (/^(sock5|socks5h?):\/\//i.test(text) || /^[^:@\s]+:\d{2,5}$/i.test(text) || /^[^:\s]+:\d{2,5}:[^:\s]+:.+/.test(text)));
 }
 
-function maskProxyUrl(value = '') {
+function maskProxyUrl(value: unknown = '') {
   const text = String(value || '').trim();
   if (!text) return '';
   try {
@@ -4683,8 +4768,8 @@ function maskProxyUrl(value = '') {
   }
 }
 
-function mergeById(current, incoming) {
-  const map = new Map();
+function mergeById<T extends { id: string }>(current: T[], incoming: T[]) {
+  const map = new Map<string, T>();
   current.forEach((item) => map.set(item.id || createId('item'), item));
   incoming.forEach((item) => {
     const key = item.id || createId('item');
@@ -4693,27 +4778,27 @@ function mergeById(current, incoming) {
   return Array.from(map.values());
 }
 
-function publicRuntimeSettings(settings = {}) {
+function publicRuntimeSettings(settings: Partial<Settings> = {}) {
   return {
     ...settings,
     promptApi: publicPromptApiConfig(settings.promptApi)
   };
 }
 
-function adminRuntimeSettings(settings = {}) {
+function adminRuntimeSettings(settings: Partial<Settings> = {}) {
   return {
     ...settings,
     promptApi: adminPromptApiConfig(settings.promptApi)
   };
 }
 
-function collectValues(value) {
-  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+function collectValues(value: unknown) {
+  if (Array.isArray(value)) return value.map((item: unknown) => String(item).trim()).filter(Boolean);
   if (value === undefined || value === null || value === '') return [];
   return [String(value).trim()].filter(Boolean);
 }
 
-async function serveStatic(urlPath, res, options = {}) {
+async function serveStatic(urlPath: string, res: GatewayResponse, options: { head?: boolean } = {}) {
   const pathname = urlPath === '/owner.html' ? '/admin/members.html'
     : urlPath === '/management.js' ? '/admin/members.js'
     : urlPath === '/'
@@ -4743,10 +4828,10 @@ async function serveStatic(urlPath, res, options = {}) {
   }
 }
 
-async function readJson(req, maxBytes = 2 * 1024 * 1024) {
+async function readJson(req: GatewayRequest, maxBytes = 2 * 1024 * 1024): Promise<Body> {
   // 公网守卫读取过的正文直接复用，避免重复消费请求流。
   if (req.publicParsedBody !== undefined) return req.publicParsedBody;
-  const chunks = []; let bytes = 0;
+  const chunks: Buffer[] = []; let bytes = 0;
   if (Number(req.headers?.['content-length']) > maxBytes) throw httpError(413, '请求体超过大小限制');
   for await (const chunk of req) {
     bytes += chunk.length;
@@ -4762,7 +4847,7 @@ async function readJson(req, maxBytes = 2 * 1024 * 1024) {
   }
 }
 
-function sendJson(res, statusCode, payload) {
+function sendJson(res: GatewayResponse, statusCode: number, payload: unknown) {
   const body = JSON.stringify(payload);
   res.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
@@ -4773,7 +4858,7 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
-function sendOpenAiError(res, statusCode, message, type = 'invalid_request_error') {
+function sendOpenAiError(res: GatewayResponse, statusCode: number, message: string, type = 'invalid_request_error') {
   sendJson(res, statusCode, {
     error: {
       message: publicErrorMessage(message),
@@ -4784,7 +4869,7 @@ function sendOpenAiError(res, statusCode, message, type = 'invalid_request_error
   });
 }
 
-function sendImage(res, statusCode, mimeType, buffer, extraHeaders = {}) {
+function sendImage(res: GatewayResponse, statusCode: number, mimeType: string, buffer: Buffer, extraHeaders: OutgoingHttpHeaders = {}) {
   res.writeHead(statusCode, {
     'content-type': mimeType,
     'cache-control': 'public, max-age=31536000, immutable',
@@ -4795,9 +4880,9 @@ function sendImage(res, statusCode, mimeType, buffer, extraHeaders = {}) {
   res.end(buffer);
 }
 
-async function sendStoredImage(res, statusCode, image, extraHeaders = {}) {
+async function sendStoredImage(res: GatewayResponse, statusCode: number, image: StoredResult | null | undefined, extraHeaders: OutgoingHttpHeaders = {}) {
   if (!image?.file) {
-    sendImage(res, statusCode, image?.mimeType || 'image/png', await readStoredImage(image), extraHeaders);
+    sendImage(res, statusCode, image?.mimeType || 'image/png', await readStoredImage(image!), extraHeaders);
     return;
   }
 
@@ -4811,7 +4896,7 @@ async function sendStoredImage(res, statusCode, image, extraHeaders = {}) {
     ...extraHeaders
   });
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     const stream = createReadStream(filePath);
     const cleanup = () => {
       stream.off('error', onStreamError);
@@ -4823,12 +4908,12 @@ async function sendStoredImage(res, statusCode, image, extraHeaders = {}) {
       cleanup();
       resolve();
     };
-    const onStreamError = (error) => {
+    const onStreamError = (error: Error) => {
       cleanup();
       if (!res.destroyed) res.destroy(error);
       resolve();
     };
-    const onResponseError = (error) => {
+    const onResponseError = (error: Error) => {
       cleanup();
       stream.destroy();
       reject(error);
@@ -4847,7 +4932,7 @@ async function sendStoredImage(res, statusCode, image, extraHeaders = {}) {
   });
 }
 
-function sendBusyImage(res, cooldownUntil) {
+function sendBusyImage(res: GatewayResponse, cooldownUntil?: string) {
   const image = buildErrorImage('服务器繁忙，请稍后再试');
   const retryAfter = cooldownRetryAfter(cooldownUntil);
   sendImage(res, 200, image.mimeType, image.buffer, {
@@ -4858,7 +4943,7 @@ function sendBusyImage(res, cooldownUntil) {
   });
 }
 
-function sendTimeoutImage(res, cooldownUntil) {
+function sendTimeoutImage(res: GatewayResponse, cooldownUntil?: string) {
   const image = buildErrorImage('连接超时');
   const retryAfter = cooldownRetryAfter(cooldownUntil);
   sendImage(res, 200, image.mimeType, image.buffer, {
@@ -4869,7 +4954,7 @@ function sendTimeoutImage(res, cooldownUntil) {
   });
 }
 
-function sendCorsPreflight(res) {
+function sendCorsPreflight(res: GatewayResponse) {
   res.writeHead(204, {
     ...corsHeaders(),
     'access-control-max-age': '86400'
@@ -4877,7 +4962,7 @@ function sendCorsPreflight(res) {
   res.end();
 }
 
-function sendHead(res, statusCode, headers = {}) {
+function sendHead(res: GatewayResponse, statusCode: number, headers: OutgoingHttpHeaders = {}) {
   res.writeHead(statusCode, {
     'cache-control': 'no-store',
     ...corsHeaders(),
@@ -4895,7 +4980,7 @@ function corsHeaders() {
   };
 }
 
-function contentType(filePath) {
+function contentType(filePath: string) {
   if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
   if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
   if (filePath.endsWith('.js')) return 'text/javascript; charset=utf-8';
@@ -4903,49 +4988,49 @@ function contentType(filePath) {
   return 'application/octet-stream';
 }
 
-function tokenFrom(req, url) {
+function tokenFrom(req: GatewayRequest, url: URL) {
   const header = req.headers.authorization || '';
   if (header.startsWith('Bearer ')) return header.slice(7).trim();
   return String(url.searchParams.get('token') || req.headers['x-user-token'] || '').trim();
 }
 
-function bearerToken(req) {
+function bearerToken(req: GatewayRequest) {
   const header = String(req.headers.authorization || '');
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : '';
 }
 
-function openAiErrorType(error) {
-  const statusCode = Number(error?.statusCode || 500);
+function openAiErrorType(error: unknown) {
+  const statusCode = Number((error as GatewayError)?.statusCode || 500);
   if (statusCode === 401 || statusCode === 403) return 'authentication_error';
   if (statusCode === 429) return 'rate_limit_error';
   if (statusCode >= 500) return 'server_error';
   return 'invalid_request_error';
 }
 
-function isAdmin(req, url) {
+function isAdmin(req: GatewayRequest, url: URL) {
   const header = String(req.headers['x-admin-token'] || '');
   const query = process.env.PUBLIC_MODE === 'true' ? '' : String(url.searchParams.get('adminToken') || '');
   return Boolean(adminToken) && (header === adminToken || query === adminToken);
 }
 
-function assertAdmin(req, url) {
+function assertAdmin(req: GatewayRequest, url: URL) {
   if (isAdmin(req, url)) return;
   const suppliedToken = String(req.headers['x-admin-token'] || url.searchParams.get('adminToken') || '').trim();
   throw httpError(suppliedToken ? 401 : 403, suppliedToken ? 'invalid token.' : 'admin token required.');
 }
 
-function clamp(value, min, max) {
+function clamp(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
 }
 
-function numberOrNull(value) {
+function numberOrNull(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-function sleep(ms) {
+function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -4983,7 +5068,7 @@ function countJobWaiters() {
   return count;
 }
 
-function safeCountRecords(collection) {
+function safeCountRecords(collection: Collection) {
   try {
     return store.countRecords(collection);
   } catch {
@@ -5010,7 +5095,7 @@ async function readCgroupMemory() {
   };
 }
 
-async function readTextFileOrNull(filePath) {
+async function readTextFileOrNull(filePath: string) {
   try {
     return await readFile(filePath, 'utf8');
   } catch {
@@ -5018,15 +5103,15 @@ async function readTextFileOrNull(filePath) {
   }
 }
 
-function parseMemoryNumber(text) {
+function parseMemoryNumber(text: string | null) {
   const value = String(text || '').trim();
   if (!value || value === 'max') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-function parseMemoryStat(text) {
-  const values = {};
+function parseMemoryStat(text: string | null) {
+  const values: Record<string, number> = {};
   String(text || '').split(/\r?\n/).forEach((line) => {
     const [key, value] = line.trim().split(/\s+/);
     if (!key) return;
@@ -5036,13 +5121,13 @@ function parseMemoryStat(text) {
   return values;
 }
 
-function runtimeSlowLog(label, startedAt, detail = '', thresholdMs = 500) {
+function runtimeSlowLog(label: string, startedAt: number, detail = '', thresholdMs = 500) {
   const duration = Date.now() - startedAt;
   if (duration < thresholdMs) return;
   console.log(`[runtime] slow ${label}: ${duration}ms${detail ? ` (${detail})` : ''}`);
 }
 
-function runtimeRequestLog(label, startedAt, detail = {}) {
+function runtimeRequestLog(label: string, startedAt: number, detail: Body = {}) {
   const duration = Date.now() - startedAt;
   const parts = Object.entries(detail)
     .map(([key, value]) => `${key}=${value}`)
@@ -5050,8 +5135,8 @@ function runtimeRequestLog(label, startedAt, detail = {}) {
   console.log(`[runtime] ${label}: total=${duration}ms${parts ? ` ${parts}` : ''}`);
 }
 
-function logNovelAiGenerateError(error, request = {}, account = {}, job = {}) {
-  const message = String(error?.message || error || '');
+function logNovelAiGenerateError(error: unknown, request: RequestSummary = {}, account: Partial<StoreItem> | null = {}, job: Partial<StoreItem> = {}) {
+  const message = String((error as GatewayError)?.message || error || '');
   if (!/NovelAI returned 5\d\d/i.test(message)) return;
   const cid = message.match(/cid=([a-z0-9]+)/i)?.[1] || '-';
   console.error([
@@ -5069,7 +5154,7 @@ function logNovelAiGenerateError(error, request = {}, account = {}, job = {}) {
   ].join(' '));
 }
 
-function shortRuntimeId(value = '') {
+function shortRuntimeId(value: unknown = '') {
   const text = String(value || '');
   if (!text) return '-';
   if (text.length <= 12) return text;
@@ -5077,11 +5162,11 @@ function shortRuntimeId(value = '') {
 }
 
 function installRuntimeSafetyHandlers() {
-  if (installRuntimeSafetyHandlers.installed) return;
-  installRuntimeSafetyHandlers.installed = true;
+  if ((installRuntimeSafetyHandlers as typeof installRuntimeSafetyHandlers & { installed?: boolean }).installed) return;
+  (installRuntimeSafetyHandlers as typeof installRuntimeSafetyHandlers & { installed?: boolean }).installed = true;
   process.on('uncaughtException', (error) => {
     if (isRecoverableRuntimeAbort(error)) {
-      console.error(`[runtime] recovered from async abort/socket error: ${error?.message || error}`);
+      console.error(`[runtime] recovered from async abort/socket error: ${(error as GatewayError)?.message || error}`);
       return;
     }
     console.error('[runtime] uncaught exception:', error);
@@ -5090,7 +5175,7 @@ function installRuntimeSafetyHandlers() {
   process.on('unhandledRejection', (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
     if (isRecoverableRuntimeAbort(error)) {
-      console.error(`[runtime] recovered from async abort/socket rejection: ${error.message}`);
+      console.error(`[runtime] recovered from async abort/socket rejection: ${(error as GatewayError).message}`);
       return;
     }
     console.error('[runtime] unhandled rejection:', reason);
@@ -5098,10 +5183,10 @@ function installRuntimeSafetyHandlers() {
   });
 }
 
-function installShutdownHandlers(serverInstance) {
-  if (installShutdownHandlers.installed) return;
-  installShutdownHandlers.installed = true;
-  const shutdown = async (signal) => {
+function installShutdownHandlers(serverInstance: Server) {
+  if ((installShutdownHandlers as typeof installShutdownHandlers & { installed?: boolean }).installed) return;
+  (installShutdownHandlers as typeof installShutdownHandlers & { installed?: boolean }).installed = true;
+  const shutdown = async (signal: NodeJS.Signals) => {
     if (runtimeClosing) return;
     runtimeClosing = true; queueDispatchEnabled = false;
     // 长期订阅须先结束；否则 server.close 等连接，而订阅等 store.close，形成循环。
@@ -5137,14 +5222,14 @@ function installShutdownHandlers(serverInstance) {
   process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
-function isRecoverableRuntimeAbort(error) {
-  const text = String(error?.stack || error?.message || error || '');
+function isRecoverableRuntimeAbort(error: unknown) {
+  const text = String((error as GatewayError)?.stack || (error as GatewayError)?.message || error || '');
   return isAbortError(error)
     || /direct generate timeout|This operation was aborted|ECONNRESET|ERR_STREAM_DESTROYED|socket hang up/i.test(text);
 }
 
-function httpError(statusCode, message) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
+function httpError(statusCode: number, message: string) {
+  const error: GatewayError = new Error(message);
+  (error as GatewayError).statusCode = statusCode;
   return error;
 }

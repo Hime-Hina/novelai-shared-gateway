@@ -15,7 +15,7 @@ interface GenerationReview {
 }
 export interface AccountingJob {
   id: string; status?: string; batchId?: string; sampleIndex?: number; source?: string; userToken?: string;
-  request?: FairRequest; requestPayload?: FairRequest; fairCharge?: FairCharge; generationAttempt?: GenerationAttempt;
+  request?: FairRequest; requestPayload?: FairRequest; fairCharge?: FairCharge | null; generationAttempt?: GenerationAttempt;
   generationRefund?: GenerationRefund; generationReview?: GenerationReview;
   upstreamStartedAt?: string; upstreamHeadersAt?: string; upstreamCompletedAt?: string; upstreamHttpStatus?: number;
   lateResultAvailable?: boolean; lateResultAt?: string; updatedAt?: string;

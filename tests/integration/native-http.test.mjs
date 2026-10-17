@@ -191,7 +191,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   Object.assign(env, { ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(gatewayPort),
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
     PUBLIC_BASE_URL: baseUrl, PUBLIC_HOST: 'gateway.example', QUEUE_MAX_PAYLOAD_BYTES: String(1024 * 1024) });
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let runtimeOutput = '';
   const record = chunk => { runtimeOutput = (runtimeOutput + chunk.toString('utf8')).slice(-8000); };
   child.stdout.on('data', record); child.stderr.on('data', record);
@@ -793,7 +793,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
 
   await t.test('独立进程重启后继续冷存网页任务，并兼容旧无 requestId 的 queued 记录', async () => {
     const before = calls.length;
-    const restarted = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const restarted = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const exited = once(restarted, 'exit');
     try {
       await new Promise((resolve, reject) => {

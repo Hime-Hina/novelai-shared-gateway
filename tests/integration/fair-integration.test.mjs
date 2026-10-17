@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import * as fair from '../../server/fair-quota.ts';
 import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.ts';
 import * as queuePolicy from '../../server/queue-policy.ts';
-const source=fs.readFileSync(new URL('../../server/gateway-runtime.js',import.meta.url),'utf8');
+const source= stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
 function fixture(tier=3) {
   let now=Date.now();
   class ClockDate extends Date { constructor(...args){super(...(args.length?args:[now]));} static now(){return now;} }
@@ -22,7 +23,7 @@ function fixture(tier=3) {
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
   for(const name of ['resolveGenerationIdempotency','validateGenerationReplay','physicalAccountLoad','sharedFailureKind','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
-    const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
+    const start=source.search(new RegExp(`function ${name}\\s*\\(`)),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
   }

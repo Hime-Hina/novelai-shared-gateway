@@ -17,6 +17,9 @@ import { activityDate } from './activity-heatmap.ts';
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from './fair-quota.ts';
+import type { ProviderRequest } from './providers.ts';
+import type { recordSharedCompletion } from './shared-capacity.ts';
+import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from './generation-accounting.ts';
 import type { ReadTask, ReadResults, ActivityQuery, ImagePageQuery, PageQuery } from './sqlite-read-worker.ts';
 
@@ -27,18 +30,29 @@ type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
 type MemberSession = typeof memberSessions.$inferInsert;
 interface SessionOwner { ownerUserId: string; guildId: string }
-interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
+export interface StoredGenerationRequest extends ProviderRequest {
+  tag?: string; artist?: string; size?: string; requestedSteps?: number; sampleCount?: number;
+  nocache?: boolean; allowPurchasedAnlas?: unknown; cost?: number; characterRef?: unknown;
+  operationParameters?: object;
+}
+export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
   [key: string]: unknown;
   token?: string; accountId?: string; imageId?: string; requestId?: string; jobId?: string; memberId?: string; userId?: string;
   createdAt?: string; completedAt?: string; cancelledAt?: string; deadlineAt?: string; queuedDeadlineAt?: string;
   queueSeq?: number; queueTotal?: number; payloadBytes?: number; cost?: number; balance?: number; inFlight?: number;
-  error?: string; errorDetail?: string; resultPending?: unknown; at?: string; name?: string; note?: string; file?: string;
+  error?: string; errorDetail?: string; resultPending?: ReturnType<typeof describeStoredResult> & { attemptId: string }; at?: string; name?: string; note?: string; file?: string;
   code?: string; cacheKey?: string; routeId?: number; width?: number; height?: number; mock?: boolean; mimeType?: string;
   model?: string; prompt?: string; fullPrompt?: string; type?: string; attempt?: { memberId?: string };
-  request?: AccountingJob['request'] & { tag?: string; operation?: string; action?: string };
+  request?: AccountingJob['request'] & Partial<StoredGenerationRequest>;
+  base64?: string; accountCost?: number; errorStatus?: number; startedAt?: string; queueExpiresAt?: string;
+  acceptingJobs?: boolean; jobAdmissionVersion?: number; cooldownUntil?: string; lastUsedAt?: string;
+  sharedCooldown?: NonNullable<NonNullable<Parameters<typeof recordSharedCompletion>[2]>['job']>['sharedCooldown'];
+  generationProgress?: { percent?: number; step?: number; total?: number; updatedAt?: string };
+  mergedFrom?: { token?: string; amount: number; at: string }[]; mergedInto?: string; mergedAt?: string;
+  upstreamRetryAfterUntil?: string; refundedAt?: string;
 }
 type Settings = typeof defaultSettings & { fairQuota?: FairQuotaState | null; [key: string]: unknown };
-type StoreDatabase = { settings: Settings } & Record<Collection, StoreItem[]>;
+export type StoreDatabase = { settings: Settings } & Record<Collection, StoreItem[]>;
 type DatabaseInput = Partial<Omit<StoreDatabase, 'settings'>> & { settings?: Partial<Settings> };
 type RowState = { data: string; order: number; sql?: SqlRow };
 type CollectionMaps<T> = Record<Collection, Map<string, T>>;
@@ -283,7 +297,7 @@ export class JsonStore {
     return cloneDb(this.db!);
   }
 
-  async readCollections(requestedCollections: (Collection | 'settings')[] = []) {
+  async readCollections<K extends keyof StoreDatabase = never>(requestedCollections: K[] = []): Promise<Pick<StoreDatabase, K>> {
     await this.ensureLoaded();
     const snapshot: Partial<StoreDatabase> = {};
     for (const key of requestedCollections) {
@@ -296,7 +310,7 @@ export class JsonStore {
         snapshot[key] = structuredClone(this.db![key]);
       }
     }
-    return snapshot;
+    return snapshot as Pick<StoreDatabase, K>;
   }
 
   async readQueueStateCounts() {
@@ -629,7 +643,7 @@ export class JsonStore {
   }
 
   // 只读一份执行参数；状态、列表与容量查询不加载历史 payload。
-  readGenerationRequest(id: string) {
+  readGenerationRequest(id: string): StoredGenerationRequest | null {
     const row = this.statements!.selectGenerationRequest.get({ id });
     return row ? JSON.parse(row.payload) : null;
   }
@@ -642,7 +656,7 @@ export class JsonStore {
     return this.statements!.selectMemberSession.get({ tokenHash }) || null;
   }
 
-  readMemberSessionOwner() {
+  readMemberSessionOwner(): SessionOwner | null {
     const row = this.statements!.selectMemberSessionOwner.get();
     return row ? JSON.parse(row.value) : null;
   }
@@ -762,7 +776,7 @@ export class JsonStore {
     return image ? structuredClone(image) : null;
   }
 
-  async findImageByCacheKey(cacheKey: string) {
+  async findImageByCacheKey(cacheKey: string | undefined) {
     await this.ensureLoaded();
     const row = this.sqlite!.prepare<unknown[], { data: string }>(`
       SELECT data FROM images
@@ -853,7 +867,7 @@ export class JsonStore {
       WHERE j.user_token = @token AND i.token = @token
         AND json_extract(j.data, '$.lateResultAvailable') = 1 AND json_extract(j.data, '$.lateResultAt') > ''
       ORDER BY json_extract(j.data, '$.lateResultAt') DESC, j.id DESC LIMIT 10`).all({ userId: user.id, token: user.token })
-      .map(row => ({ ...row, charge: safeJson(row.charge, null) }));
+      .map(row => ({ ...row, charge: safeJson(row.charge, null) as FairCharge | null }));
   }
 
   async readMemberImageIds(user: StoreItem, jobIds: unknown[]) {
@@ -1115,7 +1129,7 @@ export class JsonStore {
     return Number(statement.get()?.count || 0);
   }
 
-  jobQueueProgress(job: StoreItem) {
+  jobQueueProgress(job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'>) {
     // Use the exact in-memory order used by the scheduler, including unflushed writes.
     return jobQueueProgress(job, this.db!.jobs);
   }
@@ -2289,7 +2303,7 @@ function imageResolutionTier(image: Partial<StoreItem>) {
   return 'standard';
 }
 
-function jobQueueProgress(job: StoreItem | null, jobs: StoreItem[]) {
+function jobQueueProgress(job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'> | null, jobs: StoreItem[]) {
   if (!job || !['queued', 'running'].includes(job.status!)) return { progress: 0, total: 0 };
   if (job.status === 'running') {
     const total = Math.max(1, Number(job.queueTotal) || 1);

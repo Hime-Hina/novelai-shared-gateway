@@ -1,11 +1,7 @@
-import { fairQuotaSummary, type FairQuotaDatabase } from './fair-quota.ts';
+import { fairQuotaSummary, type FairQuotaDatabase, type FairAccount } from './fair-quota.ts';
 
-interface SubscriptionAccount {
-  id: string;
+interface SubscriptionAccount extends Pick<FairAccount, 'id' | 'subscriptionActive' | 'subscriptionExpiresAt' | 'quotaTier'> {
   enabled?: boolean;
-  subscriptionActive?: boolean;
-  subscriptionExpiresAt?: string | number | boolean | null;
-  quotaTier?: string | number | null;
 }
 
 interface SubscriptionDatabase {

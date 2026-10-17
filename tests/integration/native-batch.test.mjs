@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
@@ -10,13 +11,13 @@ import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '..
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion } from '../../server/shared-capacity.ts';
 import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 
-const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-4-5-full', action: 'generate', width: 1024, height: 1024, steps: 23,
   seed: 100, sampleCount: 4, prompt: 'synthetic large input', nativeParameters: { negative_prompt: 'x'.repeat(1024), seed: 100, n_samples: 4 } };
 function functions(context, names) {
   const ctx = vm.createContext(context);
   for (const name of names) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
   }
   return ctx;

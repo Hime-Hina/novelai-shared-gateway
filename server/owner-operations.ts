@@ -1,5 +1,7 @@
+import type { FairAccount } from './fair-quota.ts';
+
 interface OwnerJobRow {
-  id: string; memberId: string; username: string; model?: string | null; status: string; createdAt: string;
+  id: string; memberId: string; username: string; model?: string | null; status: string | null; createdAt: string | null;
   startedAt?: string | null; upstreamStartedAt?: string | null; upstreamCompletedAt?: string | null;
   chargeStatus?: string | null; resource?: string | null;
   amount?: number | string | null; fixed?: number | string | null; purchased?: number | string | null;
@@ -8,13 +10,10 @@ interface OwnerJobRow {
 type UsageAccumulator = ReturnType<typeof empty>;
 type GroupAccumulator = UsageAccumulator & { id: string; label: string };
 type JobStatus = 'done' | 'failed' | 'queued' | 'pending' | 'running';
-interface OwnerAccount {
+interface OwnerAccount extends Pick<FairAccount, 'quotaTier' | 'quotaFixed' | 'quotaPurchased' | 'v5UsagePercent' | 'quotaCheckedAt' | 'quotaError' | 'subscriptionActive' | 'subscriptionExpiresAt'> {
   id: string; enabled?: boolean; inFlight?: number | string;
-  quotaTier?: number | string | null; quotaFixed?: number | null; quotaPurchased?: number | null;
-  v5UsagePercent?: number | null; quotaCheckedAt?: string | null; quotaError?: unknown;
-  subscriptionActive?: boolean; subscriptionExpiresAt?: string | number | boolean | null;
 }
-interface OwnerDatabase { accounts: OwnerAccount[]; settings: { fairQuota?: { boundAccountId?: string | null } } }
+interface OwnerDatabase { accounts: OwnerAccount[]; settings: { fairQuota?: { boundAccountId?: string | null } | null } }
 interface OwnerDependencies {
   store: {
     readOwnerJobRows(since: string, until: string): Promise<OwnerJobRow[]>;
@@ -26,7 +25,7 @@ interface OwnerDependencies {
 
 const fail: (statusCode: number, message: string) => never = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const dayMs = 86400000, offsetMs = 8 * 3600000;
-const day = (value: string): string => new Date(Date.parse(value) + offsetMs).toISOString().slice(0, 10);
+const day = (value: string | null): string => new Date(Date.parse(value as string) + offsetMs).toISOString().slice(0, 10);
 const seconds = (start: string | null | undefined, end: string | null | undefined): number | null => {
   // 保持历史缺失日期经 Date.parse 得到 NaN、最终返回 null 的行为。
   const value = (Date.parse(end as string) - Date.parse(start as string)) / 1000;
@@ -35,7 +34,7 @@ const seconds = (start: string | null | undefined, end: string | null | undefine
 const empty = () => ({ total:0, done:0, failed:0, queued:0, pending:0, running:0, refunded:0, free:0, v5:0, fixed:0, purchased:0, waitSeconds:0, waitCount:0, generationSeconds:0, generationCount:0 });
 function add(total: UsageAccumulator, job: OwnerJobRow): void {
   total.total++;
-  if (['done','failed','queued','pending','running'].includes(job.status)) total[job.status as JobStatus]++;
+  if (['done','failed','queued','pending','running'].includes(job.status!)) total[job.status as JobStatus]++;
   if (job.chargeStatus === 'refunded') total.refunded++;
   if (job.status === 'done' && job.chargeStatus === 'settled') {
     if (job.resource === 'free') total.free++;

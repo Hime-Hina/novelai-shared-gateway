@@ -28,6 +28,7 @@ export interface ProviderRequest {
   operationParameters?: unknown;
 }
 export interface NormalizedImageRequest extends ProviderRequest {
+  operationParameters?: never;
   tag: string; artist: string; negative: string; size: string;
   width: number; height: number; steps: number; requestedSteps?: number;
   scale: number; cfg: number; sampler: string; noiseSchedule: string; seed: number; cost?: number;

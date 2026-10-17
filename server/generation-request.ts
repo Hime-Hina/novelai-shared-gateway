@@ -65,7 +65,7 @@ export function cancelWaitingBatchJobs(db: BatchState, job: BatchJob, message: s
   if (!job.requestId) return [];
   const changed: string[] = [];
   for (const child of db.jobs) {
-    if (child.id === job.id || child.requestId !== job.requestId || !['pending', 'queued'].includes(child.status)) continue;
+    if (child.id === job.id || child.requestId !== job.requestId || !['pending', 'queued'].includes(child.status!)) continue;
     // 未派发 child 没有生成预扣；不为取消意图补造 attempt 或消费证据。
     child.status = 'failed';
     child.error = child.errorDetail = message;
@@ -80,7 +80,7 @@ export function cancelWaitingBatchJobs(db: BatchState, job: BatchJob, message: s
 export function activateNextBatchJob(db: BatchState, job: BatchJob, queueSeq: number, now = Date.now()): void {
   if (!job.requestId || job.status !== 'done') return;
   const children = db.jobs.filter(child => child.requestId === job.requestId);
-  if (children.some(child => ['failed', 'queued', 'running'].includes(child.status))) return;
+  if (children.some(child => ['failed', 'queued', 'running'].includes(child.status!))) return;
   const next = children.filter(child => child.status === 'pending').sort((a, b) => a.sampleIndex! - b.sampleIndex!)[0];
   if (!next) return;
   const deadline = queuedDeadlineTimestamp(next);
@@ -90,7 +90,7 @@ export function activateNextBatchJob(db: BatchState, job: BatchJob, queueSeq: nu
   }
   next.status = 'queued';
   next.queueSeq = queueSeq;
-  next.queueTotal = db.jobs.filter(child => ['queued', 'running'].includes(child.status)).length;
+  next.queueTotal = db.jobs.filter(child => ['queued', 'running'].includes(child.status!)).length;
   next.updatedAt = new Date(now).toISOString();
   // queueExpiresAt 沿用首次提交期限；激活只领取新的队尾位置。
 }

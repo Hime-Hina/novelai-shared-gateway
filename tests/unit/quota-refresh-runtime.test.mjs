@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,7 +6,7 @@ import vm from 'node:vm';
 import { withQuotaRequestDeadline } from '../../server/quota-timeout.ts';
 import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
 
-const source = fs.readFileSync(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const quota = { tier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000, points: 10000, fixed: 10000, purchased: 0, v5UsagePercent: 80 };
 const account = id => ({ id, token: `synthetic-${id}`, enabled: true, quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: quota.subscriptionExpiresAt, quotaFixed: 9000, quotaPurchased: 0, v5UsagePercent: 80, quotaCheckedAt: new Date(Date.now() - 700000).toISOString() });
 const defer = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -26,7 +27,7 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
   });
   for (const name of ['isNovelAiAccountBannedError', 'isInsufficientBalanceError', 'publicErrorMessage', 'disableNovelAiAccount',
     'accountQuotaResult', 'accountQuotaErrorResult', 'applyAccountQuotaResult', 'fetchNovelAiAccountQuotaWithTimeout', 'mapLimit', 'refreshAccountQuotas', 'refreshEnabledAccountQuotas', 'startAccountQuotaAutoRefresh']) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     assert.ok(start >= 0 && end > start, name);
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
   }

@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import { quoteFairRequest } from '../../server/fair-quota.ts';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 import { readNativeBody } from '../../server/native-body.ts';
@@ -9,14 +10,14 @@ import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
 import Negotiator from 'negotiator';
-const source = readFileSync(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(readFileSync(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const section = source.slice(source.indexOf('function parseNativeImageRequest('), source.indexOf('async function handleOpenAiChatCompletion('));
 const context = vm.createContext({ parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest, quoteFairRequest, singleGenerationRequest, webJobRequestSummary, assertQueueAdmission,
   queueDeadline: (now, deadline) => queueDeadline(now, deadline, {}), process: {env:{}},
   publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, Negotiator, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
 vm.runInContext(section, context);
 for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay']) {
-  const start=source.indexOf(`function ${name}(`),end=source.indexOf('\n}',start)+2;
+  const start=source.search(new RegExp(`function ${name}\\s*\\(`)),end=source.indexOf('\n}',start)+2;
   vm.runInContext((source.slice(start-6,start)==='async '?'async ':'')+source.slice(start,end),context);
 }
 vm.runInContext(source.slice(source.indexOf('function generationRequestRecord('), source.indexOf('async function createJob(')), context);
@@ -94,7 +95,7 @@ context.isTimeoutResultMessage=()=>false;
 await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},{setHeader:()=>{}}),e=>e.statusCode===500);
 assert.match(source,/url\.pathname\.startsWith\('\/ai\/'\)/);
 assert.match(source,/\['\/ai\/generate-image', '\/v1\/ai\/generate-image'\]/);
-assert.match(source,/if \(options\.native\) return structuredClone\(body\)/);
+assert.match(source,/if \(options\.native\) return structuredClone\(body\s*\)/);
 console.log('Native adapter offline checks passed: native payload, validation, ZIP, auth, queue and failures. No upstream calls.');
 
 for (const seed of [4294967295,4294967296,9999999999]) {

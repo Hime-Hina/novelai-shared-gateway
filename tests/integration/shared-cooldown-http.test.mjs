@@ -69,7 +69,7 @@ async function fixture(t, { hold = false } = {}) {
   let child, exited, output = '';
   const record = chunk => { output = (output + chunk.toString()).slice(-16000); };
   const start = async () => {
-    child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     exited = once(child, 'exit'); child.stdout.on('data', record); child.stderr.on('data', record);
     await new Promise((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); child.stdout.off('data', ready); child.off('exit', failed); child.off('error', failed); };

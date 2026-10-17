@@ -74,7 +74,7 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}` });
   let child, exited, output = '';
   const start = async () => {
-    child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     exited = once(child, 'exit');
     child.stderr.on('data', chunk => { output += chunk.toString(); });
     await new Promise((resolve, reject) => {

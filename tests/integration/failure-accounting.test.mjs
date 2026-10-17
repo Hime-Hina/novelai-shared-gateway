@@ -198,7 +198,7 @@ test('成员冷历史迟到结果只签发本人仍存在的图片，真实 HTTP
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(env, { ADMIN_TOKEN: 'synthetic-admin-for-local-result-test-12345', DATA_DIR: store.dataDir, HOST: '127.0.0.1', PORT: String(port), PUBLIC_HOST: 'gateway.example',
     NOVELAI_API_URL: 'http://127.0.0.1:1', NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1' });
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.ts'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } }); child.stderr.resume();
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);

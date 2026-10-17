@@ -29,6 +29,9 @@ importers:
       '@types/better-sqlite3':
         specifier: 9.6.0
         version: 9.6.0
+      '@types/negotiator':
+        specifier: 0.6.5
+        version: 0.6.5
       '@types/node':
         specifier: 22.20.5
         version: 22.20.5
@@ -1327,6 +1330,9 @@ packages:
 
   '@types/lodash@4.17.26':
     resolution: {integrity: sha512-48NWfiY6oNcKOh47Z4h+sIvwcQR91h6KPhaYKgeMIrkT2jV82Gy90SErj60vW8jQbeMSOSbhIv3bZ7JoqPPVhA==}
+
+  '@types/negotiator@0.6.5':
+    resolution: {integrity: sha512-MPOlB48mfWhoUlynY0ga7CFsXIPcH6vGPkjzXMn2p+4PH1QUyn2KPtw0hrLLmO6SaX4zse3X6h2x/083vveAlA==}
 
   '@types/node@22.20.5':
     resolution: {integrity: sha512-U2+DNr+wSjpsTS/wZGYHq7GcwfuSmKiKvoPvK22zwTlRhU91yOniN4qRR5KhIjvif7ysw/dz/hKmfDH0Ris4aA==}
@@ -5054,6 +5060,8 @@ snapshots:
       '@types/lodash': 4.17.26
 
   '@types/lodash@4.17.26': {}
+
+  '@types/negotiator@0.6.5': {}
 
   '@types/node@22.20.5':
     dependencies:

@@ -13,12 +13,12 @@ import type { OperatingFundingContext } from './operating-accounting.ts';
 import type { ownerOperation } from './owner-operations.ts';
 
 interface MemberUser extends DiscordUser {
-  token: string;
+  token?: string;
   acceptingJobs?: boolean;
   balance?: number;
   createdAt?: string;
 }
-interface MemberJob extends AccountingJob { status: string; requestId?: string; imageId?: string; createdAt?: string }
+interface MemberJob extends AccountingJob { status?: string; requestId?: string; imageId?: string; createdAt?: string }
 type LedgerRow = Partial<NonNullable<ReturnType<OperatingFundingContext['findEvent']>>> & { id: string; lossEventId?: string };
 type MemberQuotaState = FairQuotaState & { policyHistory?: { at: number; actor: string; autoAnlasFallback: boolean }[] };
 interface MemberDatabase extends FairQuotaDatabase {
@@ -37,7 +37,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   selectItemById(collection: 'ledger', id: string | undefined): LedgerRow | null;
   readOperatingLossSettlements(id: string): LedgerRow[];
   readMemberImageIds(user: MemberUser, jobIds: string[]): Promise<Map<string, string>>;
-  readMemberLateResults(user: MemberUser): Promise<{ id: string; model?: string; createdAt?: string; lateResultAt: string; imageId: string; charge?: FairCharge | null }[]>;
+  readMemberLateResults(user: MemberUser): Promise<{ id: string; model?: string | null; createdAt?: string | null; lateResultAt: string; imageId: string; charge?: FairCharge | null }[]>;
 }
 interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
   store: MemberStore;
@@ -53,7 +53,7 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
 type PublishedEvent = Parameters<Parameters<ReturnType<typeof stateEventsFor>['subscribe']>[0]>[0];
 interface MemberMePayload {
   jobs: { id: string; imageId: string; imageUrl?: string }[];
-  lateResults?: { id: string; model: string; createdAt?: string; lateResultAt: string; imageUrl: string; charge: ReturnType<typeof memberCharge> }[];
+  lateResults?: { id: string; model: string; createdAt?: string | null; lateResultAt: string; imageUrl: string; charge: ReturnType<typeof memberCharge> }[];
 }
 
 const statusStreams = new Map<string, number>();
@@ -90,7 +90,7 @@ function setCookie(req: IncomingMessage, res: ServerResponse, token: string, exp
 
 function recentActivity(db: MemberDatabase,user: MemberUser) {
   const jobs=db.jobs.filter(job=>job.userToken===user.token).slice(0,30);
-  return {total:jobs.length,done:jobs.filter(job=>job.status==='done').length,failed:jobs.filter(job=>job.status==='failed').length,queued:jobs.filter(job=>['queued','pending'].includes(job.status)).length,running:jobs.filter(job=>job.status==='running').length};
+  return {total:jobs.length,done:jobs.filter(job=>job.status==='done').length,failed:jobs.filter(job=>job.status==='failed').length,queued:jobs.filter(job=>['queued','pending'].includes(job.status!)).length,running:jobs.filter(job=>job.status==='running').length};
 }
 
 // 部署配置优先于历史库内地址，成员与管理员复制到的入口保持一致。
@@ -217,7 +217,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       if(typeof body.enabled!=='boolean')error(400,'enabled 必须为布尔值');
       const result=await store.update(db=>{
         const user=db.users.find(u=>u.id===body.userId);if(!user)error(404,'成员不存在');
-        if(!body.enabled&&(db.jobs.some(job=>job.userToken===user.token&&['queued','pending','running'].includes(job.status))||Object.values(db.settings.fairQuota?.reservations||{}).some(charge=>charge.userId===user.id&&charge.status==='reserved')))error(409,'成员仍有排队或生成中的任务，请结清后停用');
+        if(!body.enabled&&(db.jobs.some(job=>job.userToken===user.token&&['queued','pending','running'].includes(job.status!))||Object.values(db.settings.fairQuota?.reservations||{}).some(charge=>charge.userId===user.id&&charge.status==='reserved')))error(409,'成员仍有排队或生成中的任务，请结清后停用');
         user.enabled=body.enabled as boolean;user.updatedAt=new Date().toISOString();
         // 停用时改变会话版本，之后重新启用也不能复活先前登录的 Cookie。
         if(!body.enabled&&user.memberAuth)user.memberAuth={...user.memberAuth,version:randomBytes(16).toString('hex')};

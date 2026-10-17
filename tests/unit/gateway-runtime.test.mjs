@@ -11,7 +11,7 @@ test('导入运行时不打开数据库、不监听端口或启动后台任务',
   const dataDir = path.join(directory, 'not-initialized');
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
     .filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  const runtimeUrl = new URL('../../server/gateway-runtime.js', import.meta.url).href;
+  const runtimeUrl = new URL('../../server/gateway-runtime.ts', import.meta.url).href;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e',
     `import assert from 'node:assert/strict';
 const runtime = await import(${JSON.stringify(runtimeUrl)});

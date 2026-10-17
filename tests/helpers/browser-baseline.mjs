@@ -107,7 +107,7 @@ Object.assign(process.env, {
   DISCORD_CLIENT_SECRET: 'synthetic-browser-secret-only', SQLITE_BATCH_WRITES: 'false'
 });
 // 会话已在启动网关前写入合成数据库；运行期间没有第二个写入连接或认证旁路。
-await import('../../server/index.js');
+await import('../../server/index.ts');
 await realFetch(gatewayUrl + '/api/health');
 
 let baseUrl;

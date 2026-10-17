@@ -51,12 +51,12 @@
 
 | 工作范围 | 对应项 | 本轮检查结果 |
 | --- | --- | --- |
-| 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
+| 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复与 CI，隔离服务的匿名/跨成员拒绝已实测；最终候选验收和生产批准仍单独进行 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
-| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分、受保护的 Nitro 产物及 Nuxt 内部客户端，Windows/Linux 双进程故障隔离、同键受理重试及重复恢复三场景通过；独立 systemd 部署仍待，未按整体完成结案 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | 已实现并通过托管 CI；bob 独立 systemd 的强杀网页、正常/强杀执行器和二次结算幂等已通过。生产副本四个模拟任务按顺序完成，完成到下次派发约10秒；历史 Native 超时及生产长尾是否同因仍未证明 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。F11/N01 两段事件重连与授权校准已通过，N02登录和管理也已通过Linux CI |
-| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C01/C02/C04/C05/C06/N01/N02/N03已完成计划内明确范围；Nuxt统一入口、执行器唯一业务与持久化所有者。C03当前支持范围的参数、响应和恢复边界已核对，保留的共享网关差异不称为透明代理。T01已有纯模块、请求边界及标准JS编译产物分批落地，存储、调度和路由等核心迁移仍待；不能将Nuxt入口TS或文件占比视为整个后端已类型化。清理限于已确认项目，后续迁移发现的问题单独处理 |
-| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成；D01 已在 bob 启动三个独立 systemd 测试服务，合成登录、生图、幂等领取及 mock 停止/恢复通过。实机故障/资源/浏览器与生产规模副本验收仍待，生产首屏历史长等待仍待定位；D02 未获生产切换批准 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C01/C02/C04/C05/C06/N01/N02/N03已完成计划内明确范围；Nuxt统一入口、执行器唯一业务与持久化所有者。C03支持范围及必要网关差异已记录。T01存储和路由批次已通过CI，最后的调度/启动入口已完成严格类型迁移，正在验收最终产物；不能以文件数或本地检查代替Linux与目标机验证 |
+| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成；D01已部署c759f49和清理后的827条任务/824张图片副本，登录、隔离、生图、故障恢复、同库回退及小规模并行下载/排队通过。浏览器已验证自动更新，完整可比首屏/负载和最终T01候选验收仍待；D02未获生产切换批准 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
 
@@ -198,6 +198,10 @@ D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移�
 
 T01存储与业务路由片：store、failure-accounting、discord-auth、member-routes及official-key-jobs迁为严格TypeScript。复用领域模型、Drizzle行和prepared query及只读worker消息类型，保留SQL/事务/冷热缓存、OAuth刷新落盘时序、会话/SSE清理和官方密钥任务生命周期；没有新运行依赖、迁移或框架。类型擦除对照只有括号、引号与排版差异。存储89项、成员/Discord43项、故障账务4项、provider/preview28项及私有官方任务生命周期4项定向通过；根严格检查、全后端527项中523通过/4项Windows跳过、网页类型检查及执行器构建产物3通过/1项Windows跳过。最终Linux/Docker/Nuxt链路由本批完整CI继续验收，不沿用前一批结果冒称通过。server顶层34个TS、2个JS，最后的gateway-runtime/index及其真实调用类型连接仍待完成。前一上游/存储边界片已由[c759f49完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39028262970)验收成功；目标机测试仍固定0901056，未替换生产。
 
+T01最后入口片：gateway-runtime和index迁为严格TypeScript，按真实调用补齐存储投影、队列、账户与响应类型；11个受影响业务模块与93df168的类型擦除AST一致。增加精确开发类型包`@types/negotiator@0.6.5`，运行依赖未变。两份仍供旧浏览器使用的public报价/Medium模块保留JS路径并开启`@ts-check`；不把测试、运维脚本或旧页面一并改写。根源码启动改用TS，构建后统一生成JS入口manifest供根镜像与执行器复用，产物HTTP测试校验包入口能解析到实际JS文件。141项定向、全后端527项中523通过/4项Windows跳过、网页类型与116项、执行器构建及产物HTTP3通过/1项Windows跳过、Nuxt实际开发/生产双进程13通过/1项Windows跳过；根严格检查与冻结安装均通过。本批完整Linux CI和目标机最终产物另验，不将本地成功作为整项交付。
+
+前一存储/业务路由片[93df168完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39029446810)已成功。D01当前测试版本为c759f49，已接入清理后的生产规模副本并完成同库回退；四个模拟任务和八张历史图下载的队列/资源采样、浏览器自动更新见[测试部署说明](test-deployment.md#生产规模副本的有界排队与资源采样)。生产继续运行原版本。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
@@ -219,7 +223,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 
 当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
 
-主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.ts](../server/providers.ts)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.ts](../server/providers.ts)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.ts)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
 
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |

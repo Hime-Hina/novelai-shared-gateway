@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -16,7 +17,7 @@ import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS 
 import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
 
-const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
+const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 function fixture(now = Date.now(), { refund = true, fallback = false, id = 'review' } = {}) {
   const db = { settings: {}, users: ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, balance: 0, enabled: true })),
@@ -48,7 +49,7 @@ async function open(t, seed) {
 function loadFunctions(context, names) {
   const ctx = vm.createContext(context);
   for (const name of names) {
-    const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
   }
   return ctx;
@@ -270,7 +271,7 @@ test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领�
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(env, { ADMIN_TOKEN: 'synthetic-admin-for-offline-review-12345', DATA_DIR: store.dataDir, HOST: '127.0.0.1', PORT: String(port),
     NOVELAI_API_URL: 'http://127.0.0.1:1', NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1', PUBLIC_HOST: 'gateway.example' });
-  const child = spawn(process.execPath, ['server/index.js'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server/index.ts'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } });
   child.stderr.resume();
   await new Promise((resolve, reject) => {
@@ -329,7 +330,7 @@ test('父取消与实际完成/激活并发时，成功产物照常结算，剩�
     ctx.publicErrorMessage = value => value;
     ctx.publicImageUrl = id => `/signed/${id}`;
     for (const name of ['publicGenerationRequest', 'getGenerationRequest', 'cancelGenerationRequest', 'refundJob']) {
-      const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
+      const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
       vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
     }
     const r = reservation(store.db);

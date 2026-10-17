@@ -1,3 +1,4 @@
+import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -566,8 +567,8 @@ test('Medium 通用客户端与原生请求都按实际固定参数发往同一�
 
 
 test('模型目录提供 Medium 的唯一采样器组合，旧 High 与 5C 条目保留',()=>{
- const source=readFileSync(new URL('../../server/gateway-runtime.js',import.meta.url),'utf8');
- const blocks=[/const openAiSamplers = \[[\s\S]*?\n\];/,/const openAiImageModels = \[[\s\S]*?\n\];/,/const openAiSizeTiers = \{[\s\S]*?\n\};/].map(pattern=>{const match=source.match(pattern);assert.ok(match);return match[0];});
+ const source= stripTypeScriptTypes(readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
+ const blocks=[/const openAiSamplers = \[[\s\S]*?\n\];/,/const openAiImageModels = \[[\s\S]*?\n\];/,/const openAiSizeTiers\s*= \{[\s\S]*?\n\};/].map(pattern=>{const match=source.match(pattern);assert.ok(match);return match[0];});
  const start=source.indexOf('function openAiModelsResponse('),end=source.indexOf('\n}',start)+2;assert.ok(start>0);
  const ctx=vm.createContext({Date,Object,sizeMap,openAiFixedSteps:28,generationCost:generationPrice});
  const result=vm.runInContext(blocks.join('\n')+'\n'+source.slice(start,end)+'\nopenAiModelsResponse()',ctx);

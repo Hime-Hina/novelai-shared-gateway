@@ -67,7 +67,7 @@ test('HTTP 幂等跨并发、断线、重启、默认值变化和 Key 轮换保�
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}` });
   let child, exited, output = '';
   const start = async () => {
-    child = spawn(process.execPath, ['server/index.js'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, ['server/index.ts'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     exited = once(child, 'exit'); child.stderr.on('data', chunk => { output += chunk.toString(); });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(output)), 15000);

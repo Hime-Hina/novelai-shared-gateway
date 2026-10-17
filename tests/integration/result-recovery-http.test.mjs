@@ -75,7 +75,7 @@ async function fixture(t, { stage, operation = 'generate', hold = false, grace =
   };
   async function start(faultStage = '') {
     points = []; output = '';
-    child = spawn(process.execPath, [...(faultStage ? ['--import', preload] : []), 'server/index.js'], {
+    child = spawn(process.execPath, [...(faultStage ? ['--import', preload] : []), 'server/index.ts'], {
       cwd: root, env: { ...env, ...(faultStage ? { RESULT_RECOVERY_TEST_STAGE: faultStage } : {}) }, windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     exited = once(child, 'exit');

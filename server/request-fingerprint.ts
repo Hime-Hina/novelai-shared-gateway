@@ -8,7 +8,7 @@ interface FingerprintRequest {
   prompt: string;
   sampleCount?: number;
   allowPurchasedAnlas?: unknown;
-  operationParameters?: Record<string, unknown>;
+  operationParameters?: object;
 }
 
 type NormalizationSettings = {
