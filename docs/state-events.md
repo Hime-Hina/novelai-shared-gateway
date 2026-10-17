@@ -103,4 +103,6 @@ state-invalidated/resync 均由执行器重新鉴权后生成，旧页面据此�
 Nuxt 收到 SIGTERM/SIGINT 时先结束状态桥，再让 Nitro 排空 HTTP；正常退出
 使用普通 EOF，不发 auth-expired，也不停止执行器。仅注册 Nitro close hook
 会晚于 HTTP 排空，因此信号处理与 close 清理共同使用同一个关闭函数。
-真实双进程与开发路由的结果随对应 N01 提交记录，见[执行服务](executor-service.md)。
+N01 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39003589699)
+的开发与双进程 8/8 通过，含同一客户端连接跨执行器重启、成员撤销和 Nuxt
+SIGTERM 普通 EOF；全部使用模拟外部响应。详细边界见[执行服务](executor-service.md)。

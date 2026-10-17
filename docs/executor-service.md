@@ -182,7 +182,11 @@ Origin/认证头、内部密钥覆盖、公私管理隔离、API 无压缩及 SS
 镜像中的 bootstrap CLI 在禁网、只读容器内创建四名合成成员并通过完整性检查。
 网页与执行器镜像构建通过；网页为 `sha256:12a1d9e67ce4d76c075f54c520fc65885b303ec97da6619eb7164b407fb1319b`，
 执行器为 `sha256:97bf5081cf717caa7638be4820e149cd63a11178814f2dcf0fb5951828a78689`。
-最终 Linux 双进程与 SIGTERM 场景随本片 CI 验证，不以 Windows 跳过替代通过。
+源码提交 `0dc3124` 的[最终 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39003589699)
+全部通过：后端 478/478、前端 97/97、执行器认证 3/3、开发与双进程 8/8（含父测试，
+约 77.6 秒）、最终执行器产物 HTTP 3/3、Caddy 7/7、112 文件语法、类型检查及
+三个业务镜像构建。无平台跳过；Nuxt SIGTERM 子场景约 42 毫秒完成普通 EOF
+和正常退出，执行器保持原 PID。这里是合成测试结果，不是 bob 上的重启耗时承诺。
 
 ## 尚未完成的迁移与部署
 
