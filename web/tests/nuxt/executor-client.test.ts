@@ -54,9 +54,12 @@ function request(base: string, path = '/api/jobs', options: {
   method?: string, headers?: string[], body?: string | Buffer
 } = {}): Promise<Reply> {
   return new Promise((resolve, reject) => {
+    const headers = ['Host', 'localhost:18082', ...(options.headers || [])]
+    // agent:false still isolates sockets, but its default Connection:close can reset an upload before an early 413 arrives.
+    if (!headers.some((name, index) => index % 2 === 0 && name.toLowerCase() === 'connection')) headers.push('Connection', 'keep-alive')
     const req = http.request(new URL(path, base), {
       method: options.method || 'POST',
-      headers: ['Host', 'localhost:18082', ...(options.headers || [])],
+      headers,
       agent: false
     }, res => {
       readBody(res).then(body => resolve({ status: res.statusCode!, headers: res.headers, body }), reject)
