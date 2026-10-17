@@ -18,16 +18,18 @@ function element(tag = 'div') {
 }
 
 async function managementPage(pathname) {
-  const elements = new Map(), calls = [];
+  const elements = new Map(), calls = [], intervals = [], listeners = new Map();
+  const events = { callbacks: null, starts: 0, stops: 0 };
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   get('usageGroup').value = 'members';
   get('operatingAction').value = 'operating-contribute';
   get('operatingResource').value = 'v5';
   get('operatingDestination').value = 'operating';
+  for (const id of ['dashboard', 'ownerSignin', 'groupsPanel', 'settingsPanel', 'usagePanel']) get(id).hidden = true;
   const users = ['a', 'b', 'c', 'd'].map(id => ({ id, username: id, enabled: true, quota: { member: true, share: .25 } }));
   const server = {
     state: { configVersion: 1, users, groups: users.map(user => ({ id: user.id, name: user.id, members: [user.id], share: .25, memberWeights: { [user.id]: 1 } })) },
-    nextRead: null, nextLossRead: null,
+    nextRead: null, nextLossRead: null, nextUsageRead: null, nextWrite: null,
     losses: {
       asOf: 1, policy: { version: 1, v5Points24h: 1, fixedAnlas24h: 100, fixedAnlas30d: 500, memberAttempts24h: 3 },
       operating: { available: { v5: 2, anlasFixed: 40, anlasPurchased: 5 }, unfunded: { anlasFixed: 7, anlasPurchased: 11 }, unattributedReturns: { anlasFixed: 3, anlasPurchased: 0 }, v5CapacityGap: 1, gapEventIds: { v5: 'v5-gap', anlasFixed: 'fixed-gap', anlasPurchased: 'purchased-gap' }, pendingExternalFunding: [] },
@@ -39,11 +41,16 @@ async function managementPage(pathname) {
       alerts: [], events: [], nextCursor: null
     }
   };
+  const document = { hidden: false, getElementById: get, createElement: element,
+    addEventListener: (name, fn) => listeners.set(name, fn),
+    querySelectorAll: selector => selector === 'dialog[open]' ? [...elements.values()].filter(item => item.open) : [],
+    querySelector: selector => document.querySelectorAll(selector)[0] || null };
   const context = vm.createContext({
     structuredClone, location: { pathname, origin: 'https://gateway.example' },
-    document: { getElementById: get, createElement: element, querySelectorAll: () => [], querySelector: () => null },
-    window: { addEventListener() {} }, setInterval() {},
-    sessionStorage: { getItem: () => null }, localStorage: { getItem: () => null },
+    document, startMemberEvents(callbacks) { events.callbacks = callbacks; events.starts++; callbacks.onConnection('open'); },
+    stopMemberEvents() { events.stops++; events.callbacks?.onConnection('closed'); },
+    window: { addEventListener() {} }, setInterval(callback) { intervals.push(callback); },
+    sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} }, localStorage: { getItem: () => null, removeItem() {} },
     async fetch(path, options) {
       const body = options.body ? JSON.parse(options.body) : undefined;
       calls.push({ path, body, headers: options.headers });
@@ -57,6 +64,11 @@ async function managementPage(pathname) {
           if (server.nextRead) { const read = server.nextRead; server.nextRead = null; await read; }
           return { ok: true, status: 200, json: async () => structuredClone(server.state) };
         }
+        if (server.nextWrite) { const write = server.nextWrite; server.nextWrite = null; await write; }
+        if (body.action === 'fallback-policy') {
+          server.state.autoAnlasFallback = body.enabled;
+          return { ok: true, status: 200, json: async () => ({}) };
+        }
         if (body.action === 'loss-alert-policy') {
           const conflict = body.expectedVersion !== server.losses.policy.version;
           if (!conflict) server.losses.policy = { ...body.policy, version: body.expectedVersion + 1 };
@@ -69,12 +81,14 @@ async function managementPage(pathname) {
           json: async () => conflict ? { error: '分组版本已变化，请保留草稿并刷新后重新编辑' } : structuredClone(server.state)
         };
       }
+      if (path.includes('/statistics') && server.nextUsageRead) { const read = server.nextUsageRead; server.nextUsageRead = null; await read; }
       return { ok: true, status: 200, json: async () => path.includes('/statistics') ? { totals: { running: 0, queued: 1, pending: 2 }, members: [], recent: [{ createdAt: 1, username: 'a', model: 'test', status: 'pending' }, { createdAt: 1, username: 'a', model: 'test', status: 'future_state' }] } : {} };
     }
   });
-  vm.runInContext(source + `
+  vm.runInContext(source.replace(/^import .*?;\r?\n/, '') + `
     globalThis.ui = {
       refresh, previewGroups, loadLosses,
+      transfer() { openTransfer(state.users[0]); },
       edit() { directShares.a=40; directShares.b=10; applyDirectShares(); markDirty(); },
       reset() { dirty=false; },
       inspect() { return structuredClone({draft,draftConfigVersion,dirty,preview}); },
@@ -85,7 +99,7 @@ async function managementPage(pathname) {
   await setImmediate();
   if (pathname === '/admin') { get('adminToken').value = 'private-test-token'; await context.ui.refresh(); }
   await setImmediate();
-  return { ui: context.ui, get, calls, server };
+  return { ui: context.ui, get, calls, server, events, intervals, document, listeners };
 }
 
 for (const pathname of ['/admin', '/owner']) {
@@ -239,3 +253,119 @@ test('运营表单只发送当前操作所需字段，不指定其他成员钱�
     assert.equal(get('operatingReceipt').value, '');
   }
 });
+
+const invalidate = (page, scopes = ['owner'], resync = false) => page.events.callbacks.onInvalidate({
+  bootId: 'synthetic-boot', version: 1, scopes, updatedAt: '2026-10-17T00:00:00.000Z', resync
+});
+const managementReads = page => page.calls.filter(call => call.path.endsWith('/member-management') && !call.body).length;
+
+test('只有 owner 使用 Cookie SSE，shared/member scope 不整页查询，断线保留更新时间和旧数据提示', async () => {
+  const page = await managementPage('/owner');
+  assert.equal(page.events.starts, 1);
+  const before = page.calls.length;
+  page.events.callbacks.onStatus({ status: 'active', running: 1, queued: 2, v5Percent: 75 });
+  invalidate(page, ['shared', 'member']); await setImmediate();
+  assert.equal(page.calls.length, before); assert.equal(page.get('overviewQueue').textContent, '1 / 2');
+  assert.equal(page.get('overviewV5').textContent, '75%');
+  assert.match(page.get('connectedHint').textContent, /管理摘要更新/);
+  page.events.callbacks.onConnection('retrying');
+  assert.match(page.get('connectedHint').textContent, /实时连接已断开，当前为旧数据.*管理摘要更新/);
+  invalidate(page, ['member'], true); await setImmediate();
+  assert.equal(managementReads(page), 2); assert.equal(page.events.starts, 1);
+  const privatePage = await managementPage('/admin');
+  assert.equal(privatePage.events.starts, 0);
+  assert.ok(privatePage.calls.every(call => call.headers['x-admin-token'] === 'private-test-token'));
+});
+
+test('owner 通知在查询中合并为一次补读，不覆盖分组、告警、续用和操作表单草稿或关闭弹窗', async () => {
+  const page = await managementPage('/owner');
+  page.ui.edit(); const draft = page.ui.inspect();
+  page.get('lossPolicyV5').value = '6'; page.get('lossPolicyV5').oninput();
+  page.get('autoFallback').checked = true; page.get('autoFallback').onchange();
+  page.get('upstreamPst').value = 'pst-unsaved-synthetic';
+  page.get('operatingReceipt').value = 'receipt_unsaved'; page.get('operatingAmount').value = '18';
+  page.get('deliveryText').value = 'synthetic invitation'; page.get('deliveryDialog').showModal();
+  let finish;
+  page.server.nextRead = new Promise(resolve => { finish = resolve; });
+  const before = managementReads(page);
+  invalidate(page);
+  for (let i = 0; i < 20; i++) invalidate(page);
+  assert.equal(managementReads(page), before + 1);
+  page.server.state.configVersion = 2; page.server.losses.policy.version = 2;
+  finish(); await setImmediate();
+  assert.equal(managementReads(page), before + 2);
+  assert.deepEqual(page.ui.inspect(), draft);
+  assert.equal(page.get('lossPolicyV5').value, '6'); assert.equal(page.ui.inspectPolicy().lossPolicyVersion, 1);
+  assert.equal(page.get('autoFallback').checked, true); assert.equal(page.get('upstreamPst').value, 'pst-unsaved-synthetic');
+  assert.equal(page.get('operatingReceipt').value, 'receipt_unsaved'); assert.equal(page.get('operatingAmount').value, '18');
+  assert.equal(page.get('deliveryDialog').open, true); assert.equal(page.get('deliveryText').value, 'synthetic invitation');
+});
+
+test('损耗查询慢时通知不堆并发，最多补一轮且仍可追加更早记录', async () => {
+  const page = await managementPage('/owner');
+  let finish;
+  page.server.nextLossRead = new Promise(resolve => { finish = resolve; });
+  page.server.losses.nextCursor = 'next-page';
+  page.server.olderLosses = { ...page.server.losses, events: [{ id: 'older', type: 'generation_loss_suspected', at: 1 }], nextCursor: null };
+  const before = page.calls.filter(call => call.path.includes('?view=losses')).length;
+  invalidate(page); await setImmediate();
+  for (let i = 0; i < 10; i++) invalidate(page);
+  await setImmediate();
+  assert.equal(page.calls.filter(call => call.path.includes('?view=losses')).length, before + 1);
+  const appended = page.get('moreLossEvents').onclick();
+  finish(); await appended; await setImmediate();
+  const lossCalls = page.calls.filter(call => call.path.includes('?view=losses'));
+  assert.equal(lossCalls.length, before + 2); assert.match(lossCalls.at(-1).path, /&before=next-page$/);
+  assert.match(text(page.get('lossEvents')), /older/);
+});
+
+test('后台页停止查询，操作期间通知只排一次，恢复可见或完成操作后补读', async () => {
+  const page = await managementPage('/owner');
+  const before = managementReads(page);
+  page.document.hidden = true;
+  for (const timer of page.intervals) timer();
+  invalidate(page); invalidate(page);
+  await setImmediate(); assert.equal(managementReads(page), before);
+  page.document.hidden = false; page.listeners.get('visibilitychange')(); await setImmediate();
+  assert.equal(managementReads(page), before + 1);
+  let finish;
+  page.server.nextWrite = new Promise(resolve => { finish = resolve; });
+  page.get('autoFallback').checked = true; page.get('autoFallback').onchange();
+  const saving = page.get('saveFallback').onclick();
+  for (let i = 0; i < 10; i++) invalidate(page);
+  assert.equal(managementReads(page), before + 1);
+  finish(); await saving; await setImmediate();
+  assert.equal(managementReads(page), before + 2);
+});
+
+test('后台配置更新不会给已经打开的调额表单换版本，冲突仍保留输入', async () => {
+  const page = await managementPage('/owner');
+  page.ui.transfer(); page.get('transferAmount').value = '5';
+  page.server.state.configVersion = 2;
+  invalidate(page); await setImmediate();
+  await page.get('transferForm').onsubmit();
+  assert.equal(page.calls.at(-1).body.action, 'transfer-quota');
+  assert.equal(page.calls.at(-1).body.expectedConfigVersion, 1);
+  assert.equal(page.get('transferDialog').open, true); assert.equal(page.get('transferAmount').value, '5');
+  assert.match(page.get('message').textContent, /保留草稿/);
+});
+
+for (const pendingRead of ['nextRead', 'nextUsageRead']) {
+  test(`owner 失效清空敏感字段和弹窗，${pendingRead} 迟到不会重开管理页`, async () => {
+    const page = await managementPage('/owner');
+    let finish;
+    page.server[pendingRead] = new Promise(resolve => { finish = resolve; });
+    invalidate(page); await setImmediate();
+    for (const id of ['password', 'deliveryText', 'upstreamPst']) page.get(id).value = 'synthetic-secret';
+    page.get('deliveryDialog').showModal();
+    page.events.callbacks.onExpired();
+    assert.equal(page.events.stops, 1); assert.equal(page.get('deliveryDialog').open, false);
+    for (const id of ['password', 'deliveryText', 'upstreamPst']) assert.equal(page.get(id).value, '');
+    finish(); await setImmediate();
+    assert.equal(page.get('dashboard').hidden, true); assert.equal(page.get('topActions').hidden, true);
+    assert.equal(page.get('ownerSignin').hidden, false); assert.match(page.get('connectedHint').textContent, /登录已失效/);
+    const before = page.calls.length;
+    invalidate(page); for (const timer of page.intervals) timer(); await setImmediate();
+    assert.equal(page.calls.length, before); assert.equal(page.events.starts, 1);
+  });
+}

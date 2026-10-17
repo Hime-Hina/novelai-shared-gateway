@@ -3,6 +3,7 @@ import { mkdir, readFile, unlink } from 'node:fs/promises';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { EventEmitter } from 'node:events';
 import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -72,6 +73,7 @@ export class JsonStore {
     this.legacyDbPath = path.join(dataDir, 'library.json');
     this.legacyBackupPath = `${this.legacyDbPath}.bak`;
     this.queue = Promise.resolve();
+    this.events = new EventEmitter();
     this.sqlite = null;
     this.statements = null;
     this.db = null;
@@ -87,6 +89,52 @@ export class JsonStore {
     this.adminStatsPromise = null;
     this.adminFreshStatsPromise = null;
     this.lastImageTrimAt = 0;
+  }
+
+  emitStoreEvent(name, event) {
+    // 通知错误不能把已提交的事务变成失败，也不能阻止其他订阅者。
+    for (const listener of this.events.rawListeners(name)) {
+      try {
+        const pending = listener.call(this.events, event);
+        if (pending?.then) Promise.resolve(pending).catch(error => console.error('[runtime] Store event listener failed:', error));
+      } catch (error) { console.error('[runtime] Store event listener failed:', error); }
+    }
+  }
+
+  notifyCommit(event) {
+    if (!event.collections.size) return;
+    this.emitStoreEvent('commit', Object.freeze({ collections: Object.freeze([...event.collections]),
+      memberIds: Object.freeze([...event.memberIds]), allMembers: event.allMembers }));
+  }
+
+  describeCommit(changes, nextSettings, previousRows = this.rowState, previousSettings = this.settingsState, request = null) {
+    const event = { collections: new Set(), memberIds: new Set(), allMembers: false };
+    if (changes.settingsChanged && JSON.stringify(fairQuotaArchive(safeJson(previousSettings, {})).settings) !== nextSettings) {
+      event.collections.add('settings'); event.allMembers = true;
+    }
+    if (!changes.deletes.length && !changes.upserts.length) return event;
+    const oldUsers = [...(previousRows.users?.values() || [])].map(row => safeJson(row.data, null)).filter(Boolean);
+    const users = [...(this.db?.users || []), ...oldUsers];
+    const addMember = (collection, item) => {
+      if (!item || !['users', 'jobs', 'images', 'ledger'].includes(collection)) return;
+      if (collection === 'users') { event.memberIds.add(item.id); return; }
+      const job = item.jobId ? this.selectItemById('jobs', item.jobId) : null;
+      const requestId = item.requestId || job?.requestId;
+      const parent = requestId && (request?.id === requestId ? request : this.statements.selectGenerationRequestMember.get({ id: requestId }));
+      const memberId = parent?.member_id || item.generationAttempt?.memberId || item.attempt?.memberId || item.memberId || item.userId || item.fairCharge?.userId
+        || job?.generationAttempt?.memberId || users.find(user => user.token && user.token === (item.userToken || item.token))?.id;
+      if (memberId) event.memberIds.add(memberId);
+      else if (collection !== 'ledger' || item.token || item.userToken || item.jobId || item.userId || item.memberId) event.allMembers = true;
+    };
+    for (const change of [...changes.deletes, ...changes.upserts]) {
+      event.collections.add(change.collection);
+      const previous = previousRows[change.collection]?.get(change.id)?.data
+        || this.statements.selectById[change.collection]?.get({ id: change.id })?.data;
+      if (previous) addMember(change.collection, safeJson(previous, null));
+      if (change.data) addMember(change.collection, safeJson(change.data, null));
+      if (!previous && !change.data && ['users', 'jobs', 'images', 'ledger'].includes(change.collection)) event.allMembers = true;
+    }
+    return event;
   }
 
   async init() {
@@ -235,6 +283,8 @@ export class JsonStore {
       })
       .filter(Boolean);
 
+    const event = this.describeCommit({ settingsChanged: false,
+      deletes: removedIds.map(id => ({ collection: 'images', id })), upserts: jobUpdates.map(row => ({ ...row, collection: 'jobs' })) });
     const applyTrim = this.sqlite.transaction(() => {
       for (const update of jobUpdates) this.statements.upsertRecord.jobs.run(update.sql);
       for (const id of removedIds) this.statements.deleteRecord.images.run({ id });
@@ -260,6 +310,7 @@ export class JsonStore {
     }
     removedImages.affectedJobIds = uniqueStrings(affectedJobIds);
     this.trimRuntimePartialCaches();
+    this.notifyCommit(event);
 
     runtimeLog(`SQLite image cache trimmed ${removedIds.length} image record(s), affectedJobs=${removedImages.affectedJobIds.length}, totalBefore=${total}, max=${maxCache}, maxDelete=${maxDelete}, duration=${Date.now() - startedAt}ms`);
     return removedImages;
@@ -287,6 +338,7 @@ export class JsonStore {
         const rows = selectBatch.all(cursor, upperRow);
         cursor = rows.at(-1)?.cursor || upperRow;
         const ids = new Set(rows.filter((row) => row.status && !row.resultPending && !['queued', 'pending', 'running'].includes(row.status)).map((row) => row.id));
+        const event = this.describeCommit({ settingsChanged: false, upserts: [], deletes: [...ids].map(id => ({ collection: 'jobs', id })) });
         deleteBatch(ids);
         db.jobs = db.jobs.filter((job) => !ids.has(job.id));
         for (const id of ids) {
@@ -294,6 +346,9 @@ export class JsonStore {
           this.orderKeys.jobs.delete(id);
         }
         removed += ids.size;
+        this.refreshPartialCollectionState('jobs');
+        this.adminStatsCache = null;
+        this.notifyCommit(event);
       }, { shouldPersist: () => false });
       // Let generation, polling and balance writes run between small transactions.
       await new Promise((resolve) => setImmediate(resolve));
@@ -362,6 +417,9 @@ export class JsonStore {
     const ledgerData = JSON.stringify(ledger);
     const ledgerRow = sqlRecord('ledger', ledger, ledgerOrder, ledgerData);
 
+    const event = this.describeCommit({ settingsChanged: false,
+      deletes: removedIds.map(id => ({ collection: 'images', id })),
+      upserts: [...jobUpdates.map(row => ({ ...row, collection: 'jobs' })), { collection: 'ledger', id: ledger.id, data: ledgerData }] });
     const applyClear = this.sqlite.transaction(() => {
       for (const update of jobUpdates) this.statements.upsertRecord.jobs.run(update.sql);
       for (const chunk of chunks(removedIds, 500)) {
@@ -393,6 +451,7 @@ export class JsonStore {
     this.orderKeys.ledger?.set(ledger.id, ledgerOrder);
     this.refreshPartialCollectionState('images');
     this.trimRuntimePartialCaches();
+    this.notifyCommit(event);
 
     const remaining = this.countRecords('images');
     runtimeLog(`SQLite image cache cleared ${removedIds.length} image record(s), affectedJobs=${jobUpdates.length}, totalBefore=${totalBefore}, remaining=${remaining}, duration=${Date.now() - startedAt}ms`);
@@ -483,17 +542,28 @@ export class JsonStore {
     return row ? JSON.parse(row.value) : null;
   }
 
-  persistMemberSessions(scope) {
+  persistMemberSessions(scope, event) {
     if (scope.memberSessionOwner) {
       const previous = this.readMemberSessionOwner();
       const { ownerUserId, guildId } = scope.memberSessionOwner;
       if (!previous || previous.ownerUserId !== ownerUserId || previous.guildId !== guildId) {
         // 配置恢复成旧值也不能恢复旧会话；普通成员仅在成为/离开 owner 时撤销。
-        if (previous) this.statements.deleteChangedOwnerSessions.run({ oldOwnerId: previous.ownerUserId, ownerUserId });
+        if (previous) {
+          const affected = this.statements.selectChangedOwnerSessions.all({ oldOwnerId: previous.ownerUserId, ownerUserId });
+          if (this.statements.deleteChangedOwnerSessions.run({ oldOwnerId: previous.ownerUserId, ownerUserId }).changes) {
+            event.collections.add('sessions');
+            affected.forEach(row => event.memberIds.add(row.user_id));
+          }
+        }
         this.statements.setMeta.run({ key: 'member_session_owner', value: JSON.stringify({ ownerUserId, guildId }) });
       }
     }
-    if (scope.memberSessionDelete) this.statements.deleteMemberSession.run({ tokenHash: scope.memberSessionDelete });
+    if (scope.memberSessionDelete) {
+      const session = this.readMemberSession(scope.memberSessionDelete);
+      if (this.statements.deleteMemberSession.run({ tokenHash: scope.memberSessionDelete }).changes) {
+        event.collections.add('sessions'); event.memberIds.add(session.user_id);
+      }
+    }
     if (scope.memberSession) {
       const record = scope.memberSession;
       this.statements.deleteExpiredMemberSessions.run({ now: record.created_at });
@@ -836,6 +906,8 @@ export class JsonStore {
     this.sqlite?.close();
     this.sqlite = null;
     this.statements = null;
+    this.emitStoreEvent('close');
+    this.events.removeAllListeners();
   }
 
   openReadWorkers() {
@@ -989,6 +1061,8 @@ export class JsonStore {
       )).prepare(),
       selectGenerationRequest: db.select({ payload: generationRequests.payload }).from(generationRequests)
         .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
+      selectGenerationRequestMember: db.select({ member_id: generationRequests.member_id }).from(generationRequests)
+        .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
       insertGenerationIdempotency: db.insert(generationIdempotency).values(Object.fromEntries(
         Object.keys(getTableColumns(generationIdempotency)).map(key => [key, sql.placeholder(key)])
       )).prepare(),
@@ -1009,6 +1083,9 @@ export class JsonStore {
       )).prepare(),
       countActiveMemberSessions: db.select({ count: count() }).from(memberSessions).where(gt(memberSessions.expires_at, sql.placeholder('now'))).prepare(),
       deleteChangedOwnerSessions: db.delete(memberSessions).where(or(isNotNull(memberSessions.owner_binding),
+        eq(memberSessions.user_id, sql.placeholder('oldOwnerId')), eq(memberSessions.user_id, sql.placeholder('ownerUserId'))
+      )).prepare(),
+      selectChangedOwnerSessions: db.select({ user_id: memberSessions.user_id }).from(memberSessions).where(or(isNotNull(memberSessions.owner_binding),
         eq(memberSessions.user_id, sql.placeholder('oldOwnerId')), eq(memberSessions.user_id, sql.placeholder('ownerUserId'))
       )).prepare(),
       insertFairQuotaSettlement: db.insert(fairQuotaSettlements).values({ job_id: sql.placeholder('job_id'), charge: sql.placeholder('charge') })
@@ -1145,6 +1222,15 @@ export class JsonStore {
     const archive = fairQuotaArchive(safeDb.settings);
     safeDb.settings = archive.settings;
     const snapshot = buildSnapshotState(safeDb, emptyCollectionMaps(), { dense: true });
+    // 全量替换也可能覆盖未热载的历史；比较持久行，并忽略仅重排内部序号的同序重写。
+    const previousRows = emptyCollectionMaps();
+    for (const collection of collections) {
+      const rows = this.statements.selectRecords[collection].all();
+      rows.forEach((row, index) => previousRows[collection].set(row.id, { data: row.data, order: rows.length - index }));
+    }
+    const previousSettings = this.statements.selectSettings.get()?.value || '';
+    const changes = collectPersistenceChanges({ previousSettings, previousRows, nextSettings: snapshot.settingsData, nextRows: snapshot.rowState });
+    const event = this.describeCommit(changes, snapshot.settingsData, previousRows, previousSettings);
     const startedAt = Date.now();
     const writeAll = this.sqlite.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
@@ -1170,6 +1256,8 @@ export class JsonStore {
     this.settingsState = snapshot.settingsData;
     this.rowState = snapshot.rowState;
     this.orderKeys = snapshot.orderKeys;
+    this.db = safeDb;
+    this.notifyCommit(event);
     runtimeLog(`SQLite full replace wrote ${formatDbCounts(safeDb)} in ${Date.now() - startedAt}ms`);
   }
 
@@ -1212,6 +1300,7 @@ export class JsonStore {
     });
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !hasMemberSessionChanges(scope)) return;
 
+    const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
     const applyChanges = this.sqlite.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1225,7 +1314,7 @@ export class JsonStore {
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
       if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
-      this.persistMemberSessions(scope);
+      this.persistMemberSessions(scope, event);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1243,6 +1332,7 @@ export class JsonStore {
       runtimeLog(`SQLite incremental persist slow: ${duration}ms scope=${scopeText || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
     }
     this.trimRuntimePartialCaches();
+    this.notifyCommit(event);
   }
 
   persistDirtyRows(db, scope, startedAt = Date.now()) {
@@ -1314,6 +1404,7 @@ export class JsonStore {
 
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !hasMemberSessionChanges(scope)) return;
 
+    const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
     const applyChanges = this.sqlite.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1327,7 +1418,7 @@ export class JsonStore {
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql));
       if (scope.generationIdempotency) this.statements.insertGenerationIdempotency.run(scope.generationIdempotency);
-      this.persistMemberSessions(scope);
+      this.persistMemberSessions(scope, event);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1360,6 +1451,7 @@ export class JsonStore {
       runtimeLog(`SQLite dirty-row persist slow: ${duration}ms scope=${scope.collections.join(',') || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
     }
     this.trimRuntimePartialCaches();
+    this.notifyCommit(event);
   }
 
   assertFullCollectionsAreLoaded(collectionList = []) {

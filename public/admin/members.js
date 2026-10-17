@@ -1,23 +1,62 @@
+import { startMemberEvents, stopMemberEvents } from '/member-events.js';
 const $=id=>document.getElementById(id);
 const ownerMode=location.pathname.startsWith('/owner');
 let usage=null;
 let state=null,upstream=null,publicBase='',draft=[],draftConfigVersion=null,dirty=false,preview=null,confirmTask=null,busy=false;
 let allocationMode='direct',directShares={},redistributeByMode={direct:true,advanced:false};
 let losses=null,lossEvents=[],lossNextCursor=null,lossPaged=false,lossRead=0,lossPolicyVersion=null,lossPolicyDirty=false,lossPolicyEdit=0;
+let pageVersion=0,expired=false,eventsStarted=false,connection='connecting',lastUpdatedAt=null,readFailed=false,fallbackDirty=false;
+let refreshTask=null,refreshPending=false,refreshRequired=false,usageTask=null,usagePending=false,lossTask=null,lossPending=false,lossAppendPending=false;
 const number=v=>v===null||v===undefined?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:3});
 const percent=v=>number(Number(v||0)*100)+'%';
 const statusNames={active:'可用',pending_opus:'等待接入',inactive_opus:'已暂停',stale:'等待同步',quota_sync_error:'同步失败',cooldown:'冷却中',unknown_balance:'余额未知'};
 const displayTime=v=>v?new Date(v).toLocaleString('zh-CN'):'尚未同步';
 function notice(text,error=false){$('message').textContent=text;$('message').hidden=!text;$('message').classList.toggle('error',error);}
+function connectionHint(){
+ const status=expired?'登录已失效，请返回首页重新登录':!ownerMode||connection==='open'?'已连接':connection==='connecting'?'正在连接实时更新':'实时连接已断开，当前为旧数据';
+ $('connectedHint').textContent=status+(lastUpdatedAt?' · 管理摘要更新 '+displayTime(lastUpdatedAt):'')+(readFailed?' · 部分数据读取失败，请重试':'');
+}
+function expireOwnerSession(){
+ if(expired)return;expired=true;pageVersion++;refreshPending=false;refreshRequired=false;usagePending=false;lossPending=false;
+ stopMemberEvents();eventsStarted=false;
+ for(const id of ['deliveryText','password','upstreamPst','adminToken'])$(id).value='';
+ document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close());
+ state=null;upstream=null;usage=null;publicBase='';draft=[];preview=null;dirty=false;lossRead++;losses=null;lossEvents=[];lossPolicyDirty=false;confirmTask=null;
+ $('dashboard').hidden=true;$('topActions').hidden=true;$('ownerSignin').hidden=false;
+ connectionHint();notice('登录已失效，请返回首页重新登录。',true);
+}
+function startOwnerEvents(){
+ if(!ownerMode||eventsStarted||expired)return;eventsStarted=true;
+ startMemberEvents({
+  onStatus(shared){if(state&&!expired){state.shared=shared;updateOverview();}},
+  onInvalidate(event){if(event.resync||event.scopes.includes('owner'))requestRefresh();},
+  onExpired:expireOwnerSession,
+  onConnection(value){connection=value;connectionHint();}
+ });
+}
+function flushRefresh(){
+ if(!refreshPending||refreshTask||busy||document.hidden||!state||expired)return;
+ refresh({reset:false,background:true}).catch(()=>{if(!expired){readFailed=true;connectionHint();}});
+}
+function requestRefresh(){if(!state||expired)return;refreshPending=true;flushRefresh();}
 async function api(path='/api/admin/member-management',body,method){
+ const version=pageVersion;
+ if(expired)throw Object.assign(new Error('登录已失效，请重新登录。'),{code:'STALE_RESPONSE'});
  if(ownerMode)path=path.replace('/api/admin/','/api/member/owner/');
  const response=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:{...(!ownerMode?{'x-admin-token':$('adminToken').value}:{}),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  let result;try{result=await response.json();}catch{throw new Error('响应异常，请检查管理隧道是否连接。');}
- if(ownerMode&&[401,403].includes(response.status)){$('dashboard').hidden=true;$('topActions').hidden=true;$('ownerSignin').hidden=false;}if(!response.ok)throw new Error(result.message||result.error?.message||result.error||'请求失败');return result;
+ if(version!==pageVersion)throw Object.assign(new Error('管理会话已结束。'),{code:'STALE_RESPONSE'});
+ if(ownerMode&&[401,403].includes(response.status))expireOwnerSession();
+ if(!response.ok)throw Object.assign(new Error(result.message||result.error?.message||result.error||'请求失败'),{statusCode:response.status});return result;
 }
 const manage=body=>api('/api/admin/member-management',body);
 const duration=value=>value===null||value===undefined?'—':number(value)+' 秒';
-async function loadUsage(){
+function loadUsage(){
+ if(usageTask){usagePending=true;return usageTask;}
+ usageTask=(async()=>{do{usagePending=false;await readUsage();}while(usagePending&&!document.hidden&&state&&!expired);})().finally(()=>{usageTask=null;});
+ return usageTask;
+}
+async function readUsage(){
  const days=$('usageDays').value,result=await api('/api/admin/statistics?days='+days);
  if(days!==$('usageDays').value)return;
  usage=result;const t=result.totals;
@@ -41,14 +80,14 @@ function renderUsage(){
 }
 $('usageDays').onchange=()=>loadUsage().catch(e=>notice(e.message,true));
 $('usageGroup').onchange=renderUsage;
-function run(fn){return async event=>{event?.preventDefault();if(busy)return;busy=true;const button=event?.currentTarget;const wasDisabled=button?.disabled;if(button?.tagName==='BUTTON')button.disabled=true;notice('');try{await fn(event);}catch(e){notice(e.message,true);}finally{busy=false;if(button?.tagName==='BUTTON')button.disabled=wasDisabled;}};}
+function run(fn){return async event=>{event?.preventDefault();if(busy)return;busy=true;const button=event?.currentTarget;const wasDisabled=button?.disabled;if(button?.tagName==='BUTTON')button.disabled=true;notice('');try{await fn(event);}catch(e){notice(e.message,true);}finally{busy=false;if(button?.tagName==='BUTTON')button.disabled=wasDisabled;flushRefresh();}};}
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function option(value,text){const n=node('option',text);n.value=value;return n;}
 function groupOf(id,groups=state.groups){return groups.find(g=>g.members.includes(id));}
 function modal(id){$(id).showModal();}
 function markDirty(){dirty=true;preview=null;$('draftHint').textContent='有未保存的修改 · 请先预览';updateGroupCounts();}
 function tab(id){document.querySelectorAll('[data-tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===id)));for(const panel of ['membersPanel','groupsPanel','settingsPanel','usagePanel'])$(panel).hidden=panel!==id;if(id==='usagePanel')loadUsage().catch(e=>notice(e.message,true));}
-function updateOverview(){const s=state.shared||{};$('overviewStatus').textContent=statusNames[s.status||state.status]||'待核验';$('overviewDate').textContent='官方查询 '+displayTime(s.officialCheckedAt);$('overviewV5').textContent=number(s.v5Percent)+'%';$('overviewBar').value=s.v5Percent||0;$('overviewRecovery').textContent=s.refillSecondsPerPercent>0?'每恢复 1% 约 '+number(s.refillSecondsPerPercent/60)+' 分钟':'恢复周期等待官方数据';$('overviewAnlas').textContent=number(s.anlasFixed);$('overviewPurchased').textContent='购买余额 '+number(s.anlasPurchased);$('overviewQueue').textContent=(s.running||0)+' / '+(s.queued||0);$('overviewMembers').textContent=state.users.filter(u=>u.enabled).length+' 位启用成员 · 串行，结束后间隔至少 10 秒';$('connectedHint').textContent='已连接 · 页面更新 '+new Date().toLocaleTimeString('zh-CN');}
+function updateOverview(){const s=state.shared||{};$('overviewStatus').textContent=statusNames[s.status||state.status]||'待核验';$('overviewDate').textContent='官方查询 '+displayTime(s.officialCheckedAt);$('overviewV5').textContent=number(s.v5Percent)+'%';$('overviewBar').value=s.v5Percent||0;$('overviewRecovery').textContent=s.refillSecondsPerPercent>0?'每恢复 1% 约 '+number(s.refillSecondsPerPercent/60)+' 分钟':'恢复周期等待官方数据';$('overviewAnlas').textContent=number(s.anlasFixed);$('overviewPurchased').textContent='购买余额 '+number(s.anlasPurchased);$('overviewQueue').textContent=(s.running||0)+' / '+(s.queued||0);$('overviewMembers').textContent=state.users.filter(u=>u.enabled).length+' 位启用成员 · 串行，结束后间隔至少 10 秒';}
 function renderMembers(){
  const query=$('search').value.trim().toLowerCase(),filter=$('filterGroup').value;
  const users=state.users.filter(user=>(user.username||user.note||user.id).toLowerCase().includes(query)
@@ -136,13 +175,24 @@ function applyDirectShares(){for(const u of state.users)if(u.enabled&&!groupOf(u
 function updateDirectTotal(){const total=Object.values(directShares).reduce((n,v)=>n+v,0);$('directTotal').textContent='已分配 '+number(total)+'% / 100%'+(Number.isFinite(total)?' · '+(total<=100?'还需分配 '+number(100-total)+'%':'超出 '+number(total-100)+'%'):' · 请填写有效数字');$('directTotal').classList.toggle('danger',!Number.isFinite(total)||Math.abs(total-100)>1e-6);}
 $('allocationMode').onchange=()=>{redistributeByMode[allocationMode]=$('redistribute').checked;allocationMode=$('allocationMode').value;$('redistribute').checked=redistributeByMode[allocationMode];preview=null;updateRedistributeHint();$('directAllocation').hidden=allocationMode!=='direct';$('advancedAllocation').hidden=allocationMode!=='advanced';if(allocationMode==='direct')renderDirectDraft();else renderAdvancedDraft();};
 // 自动刷新发出后也可能开始编辑；响应回来时再次检查，保留草稿及其原版本。
-async function refresh({reset=true}={}){
+function refresh({reset=true,background=false}={}){
+ if(refreshTask){refreshPending=true;if(!background)refreshRequired=true;return refreshTask;}
+ refreshTask=(async()=>{
+  do{
+   refreshPending=false;refreshRequired=false;
+   await readRefresh({reset,background});
+   reset=false;background=true;
+  }while(refreshPending&&(!busy||refreshRequired)&&!document.hidden&&!expired);
+ })().finally(()=>{refreshTask=null;});
+ return refreshTask;
+}
+async function readRefresh({reset,background}){
  state=await manage();
  $('memberHelp').textContent=state.discordLogin
   ?'首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。'
   :'创建、分发、重置密码，都在成员这一行完成。';
  state.users.sort((a,b)=>(a.username||a.id).localeCompare(b.username||b.id));
- $('autoFallback').checked=state.autoAnlasFallback===true;
+ if(!fallbackDirty)$('autoFallback').checked=state.autoAnlasFallback===true;
  const filter=$('filterGroup').value;
  $('filterGroup').replaceChildren(option('','全部分组'),option('unassigned','未分组'));
  for(const g of state.groups)$('filterGroup').append(option(g.id,g.name));
@@ -150,6 +200,8 @@ async function refresh({reset=true}={}){
  $('dashboard').hidden=false;
  $('connect').hidden=true;
  $('topActions').hidden=false;
+ $('ownerSignin').hidden=true;
+ lastUpdatedAt=new Date().toISOString();readFailed=false;connectionHint();
  updateOverview();
  renderMembers();
  if(reset&&!dirty)renderDraft();
@@ -157,10 +209,11 @@ async function refresh({reset=true}={}){
  loadLosses().catch(showLossReadError);
  if(ownerMode&&!$('usagePanel').hidden)await loadUsage();
  try{
-  await loadUpstream();
+  if(!background||!$('settingsPanel').hidden)await loadUpstream();
  }catch(e){
-  notice('成员数据已刷新；上游状态读取失败：'+e.message,true);
+  if(!expired){readFailed=true;connectionHint();notice('成员数据已刷新；上游状态读取失败：'+e.message,true);}
  }
+ startOwnerEvents();
 }
 async function loadUpstream(){const summary=await api('/api/admin/summary');const id=state.users.find(u=>u.quota?.boundAccountId)?.quota.boundAccountId;const a=summary.accounts?.find(a=>a.id===id);publicBase=String(state.publicBaseUrl||summary.settings?.publicBaseUrl||location.origin).replace(/\/$/,'');upstream=a?{id,enabled:a.enabled===true,tier:a.quotaTier,inFlight:Number(a.inFlight||0),fixed:a.quotaFixed,purchased:a.quotaPurchased,v5:a.v5UsagePercent,checked:a.quotaCheckedAt,error:Boolean(a.quotaError)}:null;for(const id of ['refreshUpstream','toggleUpstream','saveUpstreamPst'])$(id).disabled=!upstream;if(!upstream){$('upstreamStatus').textContent='尚未绑定共享 Opus';return;}$('upstreamStatus').textContent=(upstream.enabled?'已启用':'已暂停')+' · '+(upstream.tier===3?'Opus':'订阅待核验')+' · 正在生成 '+upstream.inFlight;$('upstreamQuota').textContent='V5 '+number(upstream.v5)+'% · 订阅 '+number(upstream.fixed)+' · 购买 '+number(upstream.purchased);$('upstreamUpdated').textContent='官方查询 '+displayTime(upstream.checked)+(upstream.error?' · 查询失败':'');$('toggleUpstream').textContent=upstream.enabled?'暂停上游':'恢复上游';}
 function requireClean(){if(dirty)throw new Error('分组有未保存修改，请先预览保存或撤销修改。');}
@@ -217,7 +270,7 @@ async function previewGroups(){
  modal('previewDialog');
 }
 $('connect').onsubmit=run(async()=>{await refresh();if($('remember').checked)sessionStorage.setItem('nai.adminSession',$('adminToken').value);else sessionStorage.removeItem('nai.adminSession');});
-$('disconnect').onclick=()=>{if(ownerMode){location.href='/';return;}sessionStorage.removeItem('nai.adminSession');localStorage.removeItem('nai.adminToken');$('adminToken').value='';$('deliveryText').value='';$('password').value='';$('upstreamPst').value='';document.querySelectorAll('dialog[open]').forEach(d=>d.close());state=null;upstream=null;preview=null;draft=[];dirty=false;lossRead++;losses=null;lossEvents=[];lossNextCursor=null;lossPaged=false;lossPolicyDirty=false;lossPolicyVersion=null;$('dashboard').hidden=true;$('topActions').hidden=true;$('connect').hidden=false;notice('已断开管理会话。');};
+$('disconnect').onclick=()=>{if(ownerMode){stopMemberEvents();location.href='/';return;}pageVersion++;refreshPending=false;refreshRequired=false;sessionStorage.removeItem('nai.adminSession');localStorage.removeItem('nai.adminToken');$('adminToken').value='';$('deliveryText').value='';$('password').value='';$('upstreamPst').value='';document.querySelectorAll('dialog[open]').forEach(d=>d.close());state=null;upstream=null;preview=null;draft=[];dirty=false;fallbackDirty=false;lossRead++;losses=null;lossEvents=[];lossNextCursor=null;lossPaged=false;lossPolicyDirty=false;lossPolicyVersion=null;$('dashboard').hidden=true;$('topActions').hidden=true;$('connect').hidden=false;notice('已断开管理会话。');};
 $('refresh').onclick=run(async()=>{requireClean();await refresh();notice('状态已刷新。');});
 $('search').oninput=renderMembers;$('filterGroup').onchange=renderMembers;
 for(const b of document.querySelectorAll('[data-tab]'))b.onclick=()=>tab(b.dataset.tab);
@@ -229,27 +282,29 @@ $('copyDelivery').onclick=run(async()=>{await navigator.clipboard.writeText($('d
 $('resetDraft').onclick=()=>{renderDraft();notice('未保存的分组修改已撤销。');};$('redistribute').onchange=()=>{redistributeByMode[allocationMode]=$('redistribute').checked;markDirty();updateRedistributeHint();};$('previewGroups').onclick=run(previewGroups);
 $('confirmGroups').onclick=run(async()=>{if(!preview)throw new Error('请重新预览');await manage(preview);preview=null;dirty=false;$('previewDialog').close();try{await refresh();}catch{notice('分组已保存，但页面刷新失败，请稍后手动刷新。',true);return;}notice('分组与额度分配已保存。');});
 $('confirmAction').onclick=run(async()=>{if(confirmTask)await confirmTask();});$('confirmDialog').addEventListener('close',()=>{confirmTask=null;});
-$('saveFallback').onclick=run(async()=>{await manage({action:'fallback-policy',enabled:$('autoFallback').checked});state.autoAnlasFallback=$('autoFallback').checked;notice('续用策略已保存，仅影响之后的任务。');});
+$('autoFallback').onchange=()=>{fallbackDirty=true;};
+$('saveFallback').onclick=run(async()=>{const enabled=$('autoFallback').checked;await manage({action:'fallback-policy',enabled});state.autoAnlasFallback=enabled;if($('autoFallback').checked===enabled)fallbackDirty=false;notice('续用策略已保存，仅影响之后的任务。');});
 $('refreshUpstream').onclick=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');const result=await api('/api/admin/accounts/quota',{ids:[upstream.id]});await refresh();notice(result.failed?'官方查询失败，请检查凭据。':'已向官方刷新额度。',Boolean(result.failed));});
 $('toggleUpstream').onclick=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');const enabled=!upstream.enabled;if(enabled&&!ownerMode){const r=await api('/api/admin/accounts/quota',{ids:[upstream.id]});if(r.failed)throw new Error('官方查询失败，保持暂停。');}await api('/api/admin/accounts/'+encodeURIComponent(upstream.id),{enabled},'PATCH');await refresh();notice(enabled?'上游已恢复。':'上游已暂停。');});
 $('upstreamCredentials').onsubmit=run(async()=>{requireClean();if(!upstream)throw new Error('未绑定上游');if(upstream.inFlight)throw new Error('请等待在途生成完成。');const token=$('upstreamPst').value.trim();if(!/^pst-[A-Za-z0-9_-]+$/.test(token))throw new Error('请输入完整 PST');await api('/api/admin/accounts/'+encodeURIComponent(upstream.id),{token},'PATCH');$('upstreamPst').value='';await api('/api/admin/accounts/quota',{ids:[upstream.id]});await refresh();notice('PST 已更新，上游保持暂停；确认额度后手动恢复。');});
 window.addEventListener('beforeunload',e=>{if(dirty||lossPolicyDirty){e.preventDefault();e.returnValue='';}});
-if(ownerMode){$('usageTab').hidden=false;$('disconnect').textContent='返回我的额度';$('connectedHint').textContent='正在验证 owner 身份…';refresh().then(()=>tab('usagePanel')).catch(e=>{notice(e.message,true);$('ownerSignin').hidden=false;});}
+if(ownerMode){$('usageTab').hidden=false;$('disconnect').textContent='返回我的额度';$('connectedHint').textContent='正在验证 owner 身份…';refresh().then(()=>{if(!expired)tab('usagePanel');}).catch(e=>{notice(e.message,true);$('ownerSignin').hidden=false;});}
 else{$('connect').hidden=false;$('adminToken').value=sessionStorage.getItem('nai.adminSession')||localStorage.getItem('nai.adminToken')||'';if($('adminToken').value)refresh().catch(()=>notice('请重新连接管理端。',true));}
 
-// 空闲时自动刷新；正在编辑分配或打开弹窗时保留用户草稿。
-setInterval(async()=>{if(!state||busy||dirty||document.querySelector('dialog[open]')||document.activeElement?.matches('input,select,textarea'))return;busy=true;try{await refresh();}catch{}finally{busy=false;}},30000);
+// 时间恢复仍需兜底读取；隐藏页暂停，操作期间仅记一次待刷新。
+setInterval(()=>{if(!document.hidden)requestRefresh();},30000);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){if(ownerMode)flushRefresh();else requestRefresh();}});
 
 // 额度只在成员之间转移，删除前单独预览接收者与全部余额。
-let deletePreview=null;
+let deletePreview=null,transferConfigVersion=null;
 const resourceNames={v5:'V5 余量',anlasFixed:'订阅 Anlas',anlasPurchased:'购买 Anlas'};
 function sharedMembers(){return state.users.filter(u=>u.quota?.member===true);}
 function fillMemberSelect(id,users){$(id).replaceChildren(...users.map(u=>option(u.id,u.username||u.id)));}
-function openTransfer(u){requireClean();const users=sharedMembers();if(!users.some(v=>v.id===u.id))throw new Error('请先将该成员加入共享分组。');if(users.length<2)throw new Error('至少需要两位共享成员才能转移额度。');fillMemberSelect('transferFrom',users);fillMemberSelect('transferTo',users);$('transferFrom').value=u.id;$('transferTo').value=users.find(v=>v.id!==u.id).id;$('transferAmount').value='';$('transferResource').value='v5';updateTransferHint();modal('transferDialog');}
+function openTransfer(u){requireClean();const users=sharedMembers();if(!users.some(v=>v.id===u.id))throw new Error('请先将该成员加入共享分组。');if(users.length<2)throw new Error('至少需要两位共享成员才能转移额度。');transferConfigVersion=state.configVersion;fillMemberSelect('transferFrom',users);fillMemberSelect('transferTo',users);$('transferFrom').value=u.id;$('transferTo').value=users.find(v=>v.id!==u.id).id;$('transferAmount').value='';$('transferResource').value='v5';updateTransferHint();modal('transferDialog');}
 function updateTransferHint(){const from=state.users.find(u=>u.id===$('transferFrom').value),to=state.users.find(u=>u.id===$('transferTo').value),resource=$('transferResource').value,amount=Number($('transferAmount').value)||0,before=Number(from?.quota?.[resource+'Available']||0),after=Number(to?.quota?.[resource+'Available']||0);$('transferHint').textContent=(from?.username||'转出者')+'：'+number(before)+' → '+number(before-amount)+'；'+(to?.username||'接收者')+'：'+number(after)+' → '+number(after+amount)+(resource==='v5'?' / 容量 '+number(to?.quota?.v5Capacity):'')+'。总余额保持不变；有排队或运行任务时暂不可操作。';}
 $('transferAmount').oninput=updateTransferHint;
 for(const id of ['transferFrom','transferTo','transferResource'])$(id).onchange=updateTransferHint;
-$('transferForm').onsubmit=run(async()=>{requireClean();const fromUserId=$('transferFrom').value,toUserId=$('transferTo').value,resource=$('transferResource').value,amount=Number($('transferAmount').value);if(fromUserId===toUserId)throw new Error('转出与接收成员不能相同。');if(!Number.isFinite(amount)||amount<=0)throw new Error('请输入大于 0 的转移额度。');await manage({action:'transfer-quota',fromUserId,toUserId,resource,amount,expectedConfigVersion:state.configVersion});$('transferDialog').close();try{await refresh();}catch{notice('额度已转移，但页面刷新失败，请手动刷新，勿重复提交。',true);return;}notice(resourceNames[resource]+' 已转移。');});
+$('transferForm').onsubmit=run(async()=>{requireClean();const fromUserId=$('transferFrom').value,toUserId=$('transferTo').value,resource=$('transferResource').value,amount=Number($('transferAmount').value);if(fromUserId===toUserId)throw new Error('转出与接收成员不能相同。');if(!Number.isFinite(amount)||amount<=0)throw new Error('请输入大于 0 的转移额度。');await manage({action:'transfer-quota',fromUserId,toUserId,resource,amount,expectedConfigVersion:transferConfigVersion});$('transferDialog').close();try{await refresh();}catch{notice('额度已转移，但页面刷新失败，请手动刷新，勿重复提交。',true);return;}notice(resourceNames[resource]+' 已转移。');});
 function openDelete(u){requireClean();const recipients=state.users.filter(v=>v.id!==u.id&&(v.quota?.member===true||(u.quota?.member===true&&v.enabled)));if(!recipients.length)throw new Error('没有可接收的其他账户。请创建并启用一个新账户；未分组的新账户也可接替当前共享成员。');$('deleteUserId').value=u.id;$('deleteName').textContent=u.username||u.id;$('deleteRecipient').replaceChildren(...recipients.map(v=>option(v.id,(v.username||v.id)+(v.quota?.member?'':'（未分组，将接替原份额）'))));resetDeletePreview();modal('deleteDialog');}
 function resetDeletePreview(){deletePreview=null;$('deleteShareRows').replaceChildren();$('deleteSharePreview').hidden=true;$('deleteConfirmName').value='';$('deleteSummary').textContent='选择接收账户后预览。余额和原份额全部转交指定成员，其他成员份额不变。未分组的新账户会自动加入原分组。';$('deleteConfirmSection').hidden=true;$('confirmDelete').disabled=true;}
 $('deleteRecipient').onchange=resetDeletePreview;
@@ -309,10 +364,15 @@ function renderLosses(){
  if(!operating.pendingExternalFunding.length)$('pendingFunding').append(node('li','暂无待确认注资'));
  $('saveOperating').disabled=false;
 }
-async function loadLosses({append=false}={}){
+function loadLosses(options={}){
+ if(lossTask){lossPending=true;lossAppendPending||=options.append===true;return lossTask;}
+ lossTask=(async()=>{do{lossPending=false;lossAppendPending=false;await readLosses(options);options={append:lossAppendPending};}while(lossPending&&!document.hidden&&state&&!expired);})().finally(()=>{lossTask=null;});
+ return lossTask;
+}
+async function readLosses({append=false}={}){
  if(append&&!lossNextCursor)return;
  const request=++lossRead,cursor=append?lossNextCursor:null;
- let result;try{result=await api('/api/admin/member-management?view=losses'+(cursor?'&before='+encodeURIComponent(cursor):''));}catch(error){if(request!==lossRead||!state)return;throw error;}
+ let result;try{result=await api('/api/admin/member-management?view=losses'+(cursor?'&before='+encodeURIComponent(cursor):''));}catch(error){if(error.code==='STALE_RESPONSE')return;throw error;}
  if(request!==lossRead||!state)return;
  // 翻页后保持同一段连续历史；合并新第一页可能跳过两次读取之间的记录。
  const events=append?[...lossEvents,...result.events]:lossPaged?lossEvents:result.events;

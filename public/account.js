@@ -2,9 +2,11 @@ import { startSharedStatus, stopSharedStatus } from '/shared-status.js';
 const $ = id => document.getElementById(id);
 const stateNames = { pending_opus:'等待管理员接入有效 Opus', inactive_opus:'订阅暂不可用', stale:'官方余额等待刷新', unknown_balance:'官方余额未知', ambiguous_opus:'等待管理员选择上游', active:'额度已同步' };
 const jobStatusNames={done:'成功',failed:'失败',pending:'等待前序图片',queued:'排队',running:'生成中'};
-let accountViewVersion=0;
+let accountViewVersion=0, accountReadVersion=0, accountRefreshing=false, accountRefreshPending=false, accountTimer=null;
+const batchViews=new Map();
 function clearMemberView(message = '') {
   accountViewVersion++; stopSharedStatus();
+  accountRefreshPending=false; clearInterval(accountTimer); accountTimer=null; batchViews.clear();
   $('apiKey').value=''; $('apiBaseUrl').value=''; $('keyPanel').hidden=true;
   $('login').hidden=false; $('account').hidden=true;
   if (message) $('message').textContent=message;
@@ -70,13 +72,16 @@ function batchDetails(requestId) {
     try{const request=await api(path);if(current(version)&&details.open){render(request);hint.textContent='';}}
     catch(error){if(current(version)){hint.textContent='批次读取失败，可重新展开或刷新重试。';throw error;}}
   }
+  details.refresh=read;
   details.ontoggle=run(async()=>{if(details.open)await read();else readVersion++;});
   return details;
 }
-async function load() {
-  const view = ++accountViewVersion, data = await api('me'), q=data.quota;
-  if (view !== accountViewVersion) return;
-  startSharedStatus();
+async function load({automatic=false}={}) {
+  const view = automatic ? accountViewVersion : ++accountViewVersion, read=++accountReadVersion;
+  const data = await api('me'), q=data.quota;
+  if (view !== accountViewVersion || read !== accountReadVersion) return;
+  startSharedStatus(onMemberInvalidation);
+  if(!automatic)batchViews.clear();
   $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
   $('sessionExpiry').textContent=data.sessionExpiresAt ? `本次登录有效至 ${new Date(data.sessionExpiresAt).toLocaleString('zh-CN')}，不会自动续期。` : '';
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
@@ -96,7 +101,10 @@ async function load() {
     row.append(textNode('td',new Date(j.createdAt).toLocaleString()),textNode('td',j.model),result,textNode('td',chargeText(j.charge))); $('jobs').append(row);
     if(j.requestId&&!seenRequests.has(j.requestId)){
       seenRequests.add(j.requestId);const batchRow=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.style.whiteSpace='normal';cell.style.overflowWrap='anywhere';
-      cell.append(batchDetails(j.requestId));batchRow.append(cell);$('jobs').append(batchRow);
+      let details=batchViews.get(j.requestId);
+      if(!details){details=batchDetails(j.requestId);batchViews.set(j.requestId,details);}
+      cell.append(details);batchRow.append(cell);$('jobs').append(batchRow);
+      if(automatic&&details.open)details.refresh().catch(()=>{$('memberUpdated').textContent='批次详情刷新失败，保留上次结果，可手动重试。';});
     }
   }
   if (!data.jobs.length) { const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.textContent='暂无调用记录';row.append(cell);$('jobs').append(row); }
@@ -108,7 +116,32 @@ async function load() {
     item.append(link); $('lateResults').append(item);
   }
   $('lateResultsPanel').hidden=!$('lateResults').children.length;
+  for(const id of batchViews.keys())if(!seenRequests.has(id))batchViews.delete(id);
+  $('memberUpdated').textContent='个人额度与调用更新于 '+new Date().toLocaleTimeString('zh-CN');
+  startAccountTimer();
 }
+async function refreshVisibleAccount(){
+  if(accountRefreshing||document.hidden||$('account').hidden)return;
+  accountRefreshing=true;
+  try{
+    do{accountRefreshPending=false;await load({automatic:true});}
+    while(accountRefreshPending&&!document.hidden&&!$('account').hidden);
+  }catch{if(!$('account').hidden)$('memberUpdated').textContent='自动刷新失败，显示上次结果；连接恢复后重试，也可手动刷新。';}
+  finally{accountRefreshing=false;}
+}
+function onMemberInvalidation(event){
+  if(!event.resync&&!event.scopes.includes('member'))return;
+  accountRefreshPending=true;void refreshVisibleAccount();
+}
+function startAccountTimer(){
+  if(accountTimer!==null||document.hidden||$('account').hidden)return;
+  // 自然恢复也会改变可用额度；仅可见页面低频估算，不触发上游生图或余额查询。
+  accountTimer=setInterval(()=>{accountRefreshPending=true;void refreshVisibleAccount();},30000);
+}
+function stopAccountTimer(){clearInterval(accountTimer);accountTimer=null;}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopAccountTimer();else startAccountTimer();});
+window.addEventListener('pagehide',stopAccountTimer);
+window.addEventListener('pageshow',startAccountTimer);
 function run(fn) { return async event => { event?.preventDefault(); $('message').textContent='';try { await fn(); } catch(e) { $('message').textContent=e.message; } }; }
 $('loginForm').onsubmit=run(async()=>{ await api('login',{username:$('username').value,password:$('password').value});$('password').value='';await load(); });
 $('discordForm').onsubmit=run(async()=>{const invite=$('invite').value.trim();$('discordLogin').disabled=true;try{const result=await api('discord/start',invite?{invite}:{});$('invite').value='';location.assign(result.authorizationUrl);}finally{$('discordLogin').disabled=false;}});

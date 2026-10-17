@@ -367,8 +367,9 @@ async function route(req, res) {
   if (method === 'GET' && url.pathname === '/api/me/quota') {
     const quota = await store.update(db => {
       const user = getUserOrThrow(db, tokenFrom(req, url));
-      return fairQuotaSummary(db, user);
-    }, { collections: ['settings', 'ledger'] });
+      const draft = { ...db, settings: structuredClone(db.settings), ledger: [...db.ledger] };
+      return fairQuotaSummary(draft, user);
+    }, { persist: false });
     sendJson(res, 200, { fairQuota: quota });
     return;
   }

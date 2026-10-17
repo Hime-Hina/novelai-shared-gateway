@@ -5,6 +5,7 @@ import { sharedAccountStatus } from './shared-status.js';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
 import { clientIp } from './client-ip.js';
 import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';
+import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.js';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
@@ -95,16 +96,17 @@ export async function handleMemberRoutes(req, res, url, deps) {
         reply(res, 200, await store.readFailureAccounting(url.searchParams.get('before'))); return true;
       }
       const payload = await store.update(db => {
-        syncFairQuota(db);
-        return { groups: db.settings.fairQuota?.groups || [], status: db.settings.fairQuota?.status,
-          shared: sharedAccountStatus(db),autoAnlasFallback: db.settings.fairQuota?.autoAnlasFallback === true,
-          configVersion: db.settings.fairQuota?.configVersion ?? 1,
+        const draft = { ...db, ledger: [...(db.ledger || [])], settings: structuredClone(db.settings || {}) };
+        syncFairQuota(draft);
+        return { groups: draft.settings.fairQuota?.groups || [], status: draft.settings.fairQuota?.status,
+          shared: sharedAccountStatus(draft),autoAnlasFallback: draft.settings.fairQuota?.autoAnlasFallback === true,
+          configVersion: draft.settings.fairQuota?.configVersion ?? 1,
           publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled, ownerUserId: env.OWNER_USER_ID || null,
           users: db.users.map(u => ({ id: u.id, username: u.memberAuth?.username || '', note: u.note || '', enabled: u.enabled !== false,
             acceptingJobs: u.acceptingJobs !== false,
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
-            quota: fairQuotaSummary(db, u), recentActivity: recentActivity(db, u) })) };
-      }, { collections: ['settings', 'ledger'] });
+            quota: fairQuotaSummary(draft, u), recentActivity: recentActivity(db, u) })) };
+      }, { persist: false });
       reply(res, 200, payload); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
@@ -255,39 +257,59 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, state); return true;
   }
   if (url.pathname === '/api/member/shared-events') {
+    if (res.destroyed || res.writableEnded) return true;
     if ((statusStreams.get(user.id) || 0) >= 3 || [...statusStreams.values()].reduce((n, v) => n + v, 0) >= 100) error(429, '状态连接过多，请关闭多余页面');
     statusStreams.set(user.id, (statusStreams.get(user.id) || 0) + 1);
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no', 'connection': 'keep-alive' });
     res.flushHeaders?.();
-    let closed = false, timer, previous = '', heartbeat = 0;
+    const hub = stateEventsFor(store);
+    let closed = false, timer, previous = '', heartbeat = 0, running = false, requested = false, resync = true, pending;
+    let unsubscribe = () => {};
     const stop = () => {
       if (closed) return;
       closed = true; clearTimeout(timer);
+      unsubscribe(); res.off('close', stop); res.off('error', stop);
       const count = (statusStreams.get(user.id) || 1) - 1;
       if (count) statusStreams.set(user.id, count); else statusStreams.delete(user.id);
     };
     res.once('close', stop); res.once('error', stop);
+    const wake = event => {
+      if (closed) return;
+      if (event) pending = mergeStateEvents(pending, event);
+      requested = true; clearTimeout(timer);
+      if (!running) void tick();
+    };
     const tick = async () => {
+      running = true;
       try {
-        const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
-        if (viewer) await requireDiscordMembership(viewer, deps);
-        const state = viewer ? await store.update(db => sharedAccountStatus(db), { persist: false }) : null;
-        if (closed) return;
-        if (!state) { res.write('event: auth-expired\ndata: {}\n\n'); res.end(); stop(); return; }
-        const text = JSON.stringify(state);
-        if (text !== previous) { res.write(`event: shared-status\ndata: ${text}\n\n`); previous = text; heartbeat = Date.now(); }
-        else if (Date.now() - heartbeat > 15000) { res.write(': keepalive\n\n'); heartbeat = Date.now(); }
-        if (res.writableLength > 65536) { res.end(); stop(); return; }
+        while (requested && !closed) {
+          requested = false;
+          const event = pending || hub.current(), full = resync;
+          pending = undefined; resync = false;
+          const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
+          if (viewer) await requireDiscordMembership(viewer, deps);
+          const state = viewer ? await store.update(db => sharedAccountStatus(db), { persist: false }) : null;
+          if (closed) return;
+          if (!state) { res.write('event: auth-expired\ndata: {}\n\n'); res.end(); stop(); return; }
+          const text = JSON.stringify(state);
+          if (text !== previous) { res.write(`event: shared-status\ndata: ${text}\n\n`); previous = text; heartbeat = Date.now(); }
+          const invalidation = stateInvalidation(event, viewer.id, isOwner(viewer, env), full);
+          if (invalidation) { res.write(`event: state-invalidated\ndata: ${JSON.stringify(invalidation)}\n\n`); heartbeat = Date.now(); }
+          if (Date.now() - heartbeat > 15000) { res.write(': keepalive\n\n'); heartbeat = Date.now(); }
+          if (res.writableLength > 65536) { res.end(); stop(); return; }
+        }
       } catch (error) {
         if (!closed) {
           if ([401, 403].includes(error.statusCode)) res.write('event: auth-expired\ndata: {}\n\n');
           res.end(); stop();
         }
-        return;
+      } finally {
+        running = false;
+        if (!closed) { timer = setTimeout(() => wake(), 2000); timer.unref?.(); }
       }
-      if (!closed) { timer = setTimeout(tick, 2000); timer.unref?.(); }
     };
-    void tick();
+    unsubscribe = hub.subscribe(wake, () => { res.end(); stop(); });
+    wake();
     return true;
   }
   if (url.pathname === '/api/member/key') {
@@ -296,12 +318,15 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, { apiKey: user.token, baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '' }); return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload = await store.update(db => ({ username: user.memberAuth.username, owner: isOwner(user, env), sessionExpiresAt: session.expiresAt,
-      acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(db, user),
-      jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,
-        lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
-        model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))
-    }), { collections: ['settings', 'ledger'] });
+    const payload = await store.update(db => {
+      const draft = { ...db, ledger: [...(db.ledger || [])], settings: structuredClone(db.settings || {}) };
+      return { username: user.memberAuth.username, owner: isOwner(user, env), sessionExpiresAt: session.expiresAt,
+        acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(draft, user),
+        jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,
+          lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
+          model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))
+      };
+    }, { persist: false });
     const [ownedImages, lateResults] = await Promise.all([store.readMemberImageIds(user, payload.jobs.map(job => job.id)), store.readMemberLateResults(user)]);
     for (const job of payload.jobs) {
       job.imageId = ownedImages.get(job.id) || '';

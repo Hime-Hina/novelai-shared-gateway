@@ -1,4 +1,5 @@
-let events = null, active = false, cooldownTimer = null, snapshot = null;
+import { startMemberEvents, stopMemberEvents } from '/member-events.js';
+let active = false, cooldownTimer = null, snapshot = null;
 const box = document.createElement('section');
 box.innerHTML = `<h2>共享账户状态 <small>只读</small></h2><p id="sharedConnection" class="muted">等待连接</p><div class="cards"><article><h2>订阅与队列</h2><strong id="sharedState">—</strong><p id="sharedSubscription"></p><p id="sharedQueue"></p><p id="sharedCooldown"></p></article><article><h2>公共 V5 余量</h2><strong id="sharedV5">—</strong><p id="sharedRefill"></p><small>显示官方最近一次查询值，不等同于你的个人余额。</small></article><article><h2>公共 Anlas</h2><strong id="sharedFixed">—</strong><p id="sharedPurchased"></p><small>订阅与购买额度独立记录。</small></article></div><p id="sharedUpdated" class="muted"></p><p id="sharedError" class="notice" hidden></p>`;
 document.getElementById('status').after(box);
@@ -26,9 +27,6 @@ function startCooldownTimer() {
   renderCooldown();
   if (active && !document.hidden && Date.parse(snapshot?.cooldownUntil || '')>Date.now()) cooldownTimer=setInterval(renderCooldown,1000);
 }
-function disconnect() {
-  events?.close(); events=null; clearCooldownTimer();
-}
 function sessionExpired() {
   stopSharedStatus(); $('sharedConnection').textContent='登录已失效，请重新登录';
   window.dispatchEvent(new Event('member-session-expired'));
@@ -43,29 +41,19 @@ function render(s) {
   $('sharedRefill').textContent=s.refillSecondsPerPercent>0 ? `约 ${n(86400/s.refillSecondsPerPercent)} 个百分点 / 天` : '恢复速度未知或已暂停';
   $('sharedFixed').textContent=`${n(s.anlasFixed)} 订阅`;
   $('sharedPurchased').textContent=`购买 Anlas：${n(s.anlasPurchased)}`;
-  $('sharedUpdated').textContent=`官方余额更新：${date(s.officialCheckedAt)}。每 60 秒查询，生成结束后也刷新；队列变化通常在 2 秒内推送。`;
+  $('sharedUpdated').textContent=`官方余额更新：${date(s.officialCheckedAt)}。每 60 秒查询，生成结束后也刷新；队列与账本提交后合并推送，通常在一秒内更新。`;
   const problems=[];if(s.quotaSyncError)problems.push('官方余额同步异常');if(s.stale)problems.push(s.officialCheckedAt?'余额数据已过期，请勿作为当前余量':'尚无共享 Opus 的官方余额数据');if(s.recentFailures)problems.push(`最近一小时失败 ${n(s.recentFailures)} 次`);
   $('sharedError').hidden=!problems.length;$('sharedError').textContent=problems.join(' · ');
   $('sharedConnection').textContent='状态连接正常 · 接收于 '+new Date().toLocaleTimeString('zh-CN');
 }
-function connect() {
-  if (!active || document.hidden || events) return;
-  const source=events=new EventSource('/api/member/shared-events');
-  if (snapshot) startCooldownTimer();
-  $('sharedConnection').textContent='正在连接共享状态…';
-  source.addEventListener('shared-status',event=>{if(events!==source||!active||document.hidden)return;try{render(JSON.parse(event.data));}catch{$('sharedConnection').textContent='状态数据无效，请刷新页面';}});
-  source.addEventListener('auth-expired',()=>{if(events===source)sessionExpired();});
-  source.onerror=async()=>{
-    if(events!==source)return;
-    $('sharedConnection').textContent='状态连接中断，正在重连；以下为上次接收的数据';
-    // 初次连接的 401 无法携带 SSE 事件；仅永久关闭时核验登录，网络中断不当作注销。
-    if(source.readyState!==EventSource.CLOSED)return;
-    try { const response=await fetch('/api/member/shared-status'); if(events===source&&[401,403].includes(response.status))sessionExpired(); } catch {}
-  };
-  source.onopen=()=>{if(events===source)$('sharedConnection').textContent='状态连接已建立';};
+export function startSharedStatus(onInvalidate){
+  active=true;
+  startMemberEvents({onStatus:render,onInvalidate,onExpired:sessionExpired,onConnection:state=>{
+    const labels={connecting:'正在连接共享状态…',open:'状态连接已建立',retrying:'状态连接中断，正在重连；以下为上次接收的数据',closed:'状态连接已关闭',invalid:'状态数据无效，请刷新页面'};
+    $('sharedConnection').textContent=labels[state];
+    if(state==='connecting'&&snapshot)startCooldownTimer();
+  }});
 }
-export function startSharedStatus(){active=true;connect();}
-export function stopSharedStatus(){active=false;disconnect();snapshot=null;$('sharedConnection').textContent='状态连接已关闭';}
-document.addEventListener('visibilitychange',()=>{if(document.hidden)disconnect();else connect();});
-window.addEventListener('pagehide',disconnect);
-window.addEventListener('pageshow',connect);
+export function stopSharedStatus(){active=false;stopMemberEvents();clearCooldownTimer();snapshot=null;}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearCooldownTimer();});
+window.addEventListener('pagehide',clearCooldownTimer);

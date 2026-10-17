@@ -2,9 +2,14 @@ import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {handleMemberRoutes} from '../../server/member-routes.js';
-import {setMemberCredentials} from '../../server/member-auth.js';
-import {configureFairQuota} from '../../server/fair-quota.js';
+import {setMemberCredentials, createMemberSession, logoutMemberSession} from '../../server/member-auth.js';
+import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.js';
+import { JsonStore } from '../../server/store.js';
 test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失败',async t=>{
  const db={settings:{},accounts:[],jobs:[],users:['a','b','c','d'].map(id=>({id,enabled:true,token:'STA1N-'+id,balance:0}))};
  configureFairQuota(db,['a','b','c','d']);await setMemberCredentials(db,'a',{username:'test-member-a',password:'Valid-password-member-a'});await setMemberCredentials(db,'b',{username:'test-member-b',password:'Valid-password-member-b'});
@@ -88,4 +93,135 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  deletion.expectedConfigVersion=db.settings.fairQuota.configVersion;const historicalJobs=structuredClone(db.jobs),historicalReservations=structuredClone(db.settings.fairQuota.reservations);
  r=await manage({...deletion,action:'delete-member'});assert.equal(r.status,200);assert.ok(!db.users.some(u=>u.id==='a'));assert.equal(db.settings.fairQuota.balances.a,undefined);assert.deepEqual(db.jobs,historicalJobs);assert.deepEqual(db.settings.fairQuota.reservations,historicalReservations);
  r=await call('/api/member/me',{cookie:deletedCookie});assert.equal(r.status,401);r=await call('/api/member/login',{body:{username:'test-member-a',password:'Reset-password-member-a'}});assert.equal(r.status,401);r=await manage({action:'member-key',userId:'a'});assert.equal(r.status,404);
+});
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitFor(check) {
+ const until = Date.now() + 4000;
+ while(!check()) { if(Date.now() >= until) throw new Error('synthetic state event timeout'); await delay(10); }
+}
+async function eventFixture(t) {
+ const store = new JsonStore(await mkdtemp(path.join(tmpdir(),'nai-state-events-'))); await store.init();
+ const env = { OWNER_USER_ID:'event-owner', DISCORD_GUILD_ID:'1134557553011998840', DISCORD_CLIENT_ID:'123456789012345678',
+  DISCORD_CLIENT_SECRET:'synthetic-state-secret', PUBLIC_BASE_URL:'https://nai.example' };
+ await store.update(db=>{
+  db.users=['event-owner','event-member','event-other','event-fourth'].map((id,index)=>({ id,token:'synthetic-token-'+id,enabled:true,balance:0,
+   memberAuth:{username:id,version:id},discord:{id:String(222222222222222220n+BigInt(index)),guildId:env.DISCORD_GUILD_ID,checkedAt:Date.now(),member:true} }));
+  db.accounts=[{id:'opus',enabled:true,quotaTier:3,subscriptionActive:true,subscriptionExpiresAt:Date.now()+86400000,
+   quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,quotaCheckedAt:new Date().toISOString()}];
+  configureFairQuota(db,db.users.map(user=>user.id));syncFairQuota(db);
+ },{immediate:true});
+ const sessions=await Promise.all(store.db.users.map(user=>createMemberSession(store,user,env)));
+ const deps={store,env,assertAdmin(){},publicImageUrl:id=>'/synthetic/'+id};
+ const server=http.createServer(async(req,res)=>{
+  try{await handleMemberRoutes(req,res,new URL(req.url,'https://nai.example'),deps);}
+  catch(error){if(res.headersSent)res.end();else{res.writeHead(error.statusCode||500,{'content-type':'application/json'});res.end(JSON.stringify({error:error.message}));}}
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ const headers=index=>({host:'nai.example',origin:'https://nai.example',cookie:'nai_member_session='+sessions[index].token});
+ const call=route=>new Promise((resolve,reject)=>{
+  const req=http.get({hostname:'127.0.0.1',port:server.address().port,path:route,headers:headers(0)},res=>{
+   res.resume();res.on('end',()=>resolve({status:res.statusCode}));
+  });req.on('error',reject);
+ });
+ const streams=[];
+ const stream=async(index,extra={})=>{
+  const frames=[];let ended=false;
+  const req=http.get({hostname:'127.0.0.1',port:server.address().port,path:'/api/member/shared-events',headers:{...headers(index),...extra}},res=>{
+   let buffer='';res.on('data',chunk=>{
+    buffer+=chunk.toString();let split;
+    while((split=buffer.indexOf('\n\n'))>=0){const frame=buffer.slice(0,split);buffer=buffer.slice(split+2);
+     const event=frame.match(/^event: ([^\n]+)/)?.[1],data=frame.match(/\ndata: ([^\n]+)/)?.[1];
+     if(event)frames.push({event,data:JSON.parse(data)});
+    }
+   });res.on('end',()=>{ended=true;});
+  });
+  req.on('error',()=>{ended=true;});
+  const result={frames,req,get ended(){return ended;},invalidations:()=>frames.filter(frame=>frame.event==='state-invalidated').map(frame=>frame.data)};
+  streams.push(result);await waitFor(()=>result.invalidations().length>0);return result;
+ };
+ t.after(async()=>{for(const stream of streams)stream.req.destroy();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));await store.close();});
+ return {store,env,deps,sessions,headers,call,stream};
+}
+
+test('真实提交及时通知本人/owner，公共状态兼容；读取无写反馈、重连全量resync、退出和关库清理', {timeout:15000}, async t=>{
+ const f=await eventFixture(t),owner=await f.stream(0),member=await f.stream(1),other=await f.stream(2);
+ assert.equal(member.frames[0].event,'shared-status');
+ assert.deepEqual(owner.invalidations()[0].scopes,['shared','member','owner']);
+ assert.deepEqual(member.invalidations()[0].scopes,['shared','member']);
+ const before=structuredClone({settings:f.store.db.settings,ledger:f.store.db.ledger}),commits=[];
+ f.store.events.on('commit',event=>commits.push(event));
+ for(const route of ['/api/member/me','/api/member/owner/member-management'])assert.equal((await f.call(route)).status,200);
+ assert.deepEqual({settings:f.store.db.settings,ledger:f.store.db.ledger},before);assert.equal(commits.length,0);
+ const started=Date.now();
+ await f.store.update(db=>db.jobs.push({id:'event-job',status:'queued',userToken:db.users[1].token,createdAt:new Date().toISOString(),
+  request:{prompt:'private prompt never sent'}}),{dirtyRows:{jobs:['event-job']},immediate:true});
+ await waitFor(()=>[owner,member,other].every(stream=>stream.invalidations().length>=2));
+ assert.ok(Date.now()-started<1000,'空闲鉴权和队列下业务变化一秒内送达');
+ assert.deepEqual(owner.invalidations().at(-1).scopes,['shared','owner']);
+ assert.deepEqual(member.invalidations().at(-1).scopes,['shared','member']);
+ assert.deepEqual(other.invalidations().at(-1).scopes,['shared']);
+ assert.equal(member.frames.filter(frame=>frame.event==='shared-status').at(-1).data.queued,1);
+ await f.store.update(db=>{db.users[1].note='private member note';},{dirtyRows:{users:['event-member']},immediate:true});
+ await waitFor(()=>member.invalidations().length===3&&owner.invalidations().length===3);await delay(50);
+ assert.equal(other.invalidations().length,2);assert.deepEqual(member.invalidations().at(-1).scopes,['member']);
+ for(const stream of [owner,member,other])for(const payload of stream.invalidations()){
+  assert.deepEqual(Object.keys(payload),['bootId','version','scopes','updatedAt','resync']);
+  assert.ok(!JSON.stringify(payload).includes('private'));assert.ok(!JSON.stringify(payload).includes('synthetic-token'));
+ }
+ other.req.destroy();const replay=await f.stream(2,{'last-event-id':'unrelated-boot:999999'});
+ assert.equal(replay.invalidations()[0].resync,true);assert.deepEqual(replay.invalidations()[0].scopes,['shared','member']);
+ assert.equal(replay.invalidations()[0].bootId,owner.invalidations()[0].bootId);
+ const ownerCount=owner.invalidations().length;
+ await logoutMemberSession(f.store,f.sessions[1].token);await waitFor(()=>member.ended);
+ assert.ok(member.frames.some(frame=>frame.event==='auth-expired'));assert.equal(owner.invalidations().length,ownerCount);
+ // 发送前重新鉴权；普通会话不能通过配置改变继承 owner 通知权限。
+ f.env.OWNER_USER_ID='event-member';
+ await f.store.update(db=>{db.users[2].note='trigger owner recheck';},{dirtyRows:{users:['event-other']},immediate:true});
+ await waitFor(()=>owner.ended);assert.ok(owner.frames.some(frame=>frame.event==='auth-expired'));
+ assert.equal(owner.invalidations().length,ownerCount);
+ await f.store.close();await waitFor(()=>replay.ended);
+ assert.ok(!replay.frames.some(frame=>frame.event==='auth-expired'));
+ assert.equal(f.store.events.listenerCount('commit'),0);assert.equal(f.store.events.listenerCount('close'),0);
+});
+
+test('同一SSE异步tick串行，鉴权/读取途中发生的后续提交不会丢失', {timeout:10000}, async t=>{
+ const f=await eventFixture(t),stream=await f.stream(1),initial=stream.invalidations().length;
+ const update=f.store.update.bind(f.store);let release,entered,hold=true,active=0,maxActive=0;
+ const enteredPromise=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});
+ f.store.update=async(fn,options={})=>{
+  if(options.persist===false){active++;maxActive=Math.max(maxActive,active);try{if(hold){hold=false;entered();await gate;}return await update(fn,options);}finally{active--;}}
+  return update(fn,options);
+ };
+ t.after(()=>release());
+ await f.store.update(db=>{db.users[1].note='first';},{dirtyRows:{users:['event-member']},immediate:true});
+ await enteredPromise;
+ await f.store.update(db=>db.jobs.push({id:'during-read',status:'queued',userToken:db.users[2].token}),{dirtyRows:{jobs:['during-read']},immediate:true});
+ await delay(250);release();
+ await waitFor(()=>stream.invalidations().length>=initial+2);
+ const events=stream.invalidations().slice(initial);
+ assert.deepEqual(events[0].scopes,['member']);assert.deepEqual(events[1].scopes,['shared']);
+ assert.ok(events[1].version>events[0].version);assert.equal(maxActive,1);
+});
+
+test('SSE背压结束和连接关闭都退订，不能耗尽每成员三个连接配额', {timeout:10000}, async t=>{
+ const f=await eventFixture(t);
+ class SlowResponse extends EventEmitter {
+  constructor(){super();this.writableLength=65537;this.frames=[];this.ended=false;}
+  writeHead(){} flushHeaders(){} write(text){this.frames.push(text);return false;}
+  end(){this.ended=true;this.emit('close');}
+ }
+ const responses=[];
+ const disconnected=new SlowResponse();disconnected.destroyed=true;
+ await handleMemberRoutes({method:'GET',headers:f.headers(1)},disconnected,new URL('https://nai.example/api/member/shared-events'),f.deps);
+ assert.equal(disconnected.frames.length,0);assert.equal(disconnected.listenerCount('close'),0);
+ for(let i=0;i<5;i++){
+  const res=new SlowResponse();responses.push(res);
+  await handleMemberRoutes({method:'GET',headers:f.headers(1)},res,new URL('https://nai.example/api/member/shared-events'),f.deps);
+  await waitFor(()=>res.ended);assert.equal(res.listenerCount('close'),0);assert.equal(res.listenerCount('error'),0);
+ }
+ const counts=responses.map(res=>res.frames.length);
+ await f.store.update(db=>{db.users[1].note='after closed';},{dirtyRows:{users:['event-member']},immediate:true});
+ await delay(250);assert.deepEqual(responses.map(res=>res.frames.length),counts);
+ assert.equal(f.store.events.listenerCount('commit'),1);
 });

@@ -1,5 +1,5 @@
 // 共享模式仅开放成员门户、管理与生图所需接口，旧功能及静态回退不再可达。
-const staticPaths = new Set(['/account.html', '/account.js', '/members.css', '/shared-status.js', '/admin/members.html', '/admin/members.js', '/owner.html', '/management.js']);
+const staticPaths = new Set(['/account.html', '/account.js', '/members.css', '/shared-status.js', '/member-events.js', '/admin/members.html', '/admin/members.js', '/owner.html', '/management.js']);
 const routes = new Map([
   ['/api/health', ['GET', 'HEAD']],
   ['/api/member/login-options', ['GET']],

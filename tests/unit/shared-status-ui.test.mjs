@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const source = (await readFile(new URL('../../public/shared-status.js', import.meta.url), 'utf8')).replaceAll('export function ', 'function ');
+const source = (await readFile(new URL('../../public/member-events.js', import.meta.url), 'utf8')
+  + (await readFile(new URL('../../public/shared-status.js', import.meta.url), 'utf8')).replace(/^import[^\n]+\n/, '')).replaceAll('export function ', 'function ');
 const NOW = 1800000000000;
 function page(fetchStatus) {
   let now = NOW, nextTimer = 0;
-  const elements = new Map(), timers = new Map(), documentEvents = new Map(), windowEvents = new Map(), streams = [], emitted = [], requests = [];
+  const elements = new Map(), timers = new Map(), retries = new Map(), documentEvents = new Map(), windowEvents = new Map(), streams = [], emitted = [], requests = [];
+  const add=(map,name,fn)=>map.set(name,[...(map.get(name)||[]),fn]);
   const get = id => { if (!elements.has(id)) elements.set(id, { textContent: '', hidden: false, after() {} }); return elements.get(id); };
   class ClockDate extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
@@ -20,15 +22,16 @@ function page(fetchStatus) {
     close() { this.closed = true; }
     emit(name, value) { this.listeners.get(name)?.({ data: JSON.stringify(value) }); }
   }
-  const document = { hidden: false, getElementById: get, createElement: () => ({}), addEventListener: (name, fn) => documentEvents.set(name, fn) };
-  const context = vm.createContext({ document, window: { addEventListener: (name, fn) => windowEvents.set(name, fn), dispatchEvent: event => emitted.push(event.type) }, Date: ClockDate, Event,
+  const document = { hidden: false, getElementById: get, createElement: () => ({}), addEventListener: (name, fn) => add(documentEvents,name,fn) };
+  const context = vm.createContext({ document, window: { addEventListener: (name, fn) => add(windowEvents,name,fn), dispatchEvent: event => emitted.push(event.type) }, Date: ClockDate, Event,
     EventSource: Stream, setInterval(fn, delay) { assert.equal(delay, 1000); const id = ++nextTimer; timers.set(id, fn); return id; },
+    setTimeout(fn,delay){assert.equal(delay,5000);const id=++nextTimer;retries.set(id,fn);return id;},clearTimeout:id=>retries.delete(id),
     clearInterval: id => timers.delete(id), async fetch(url) { requests.push(url); if(!fetchStatus)assert.fail('倒计时不得额外请求'); return { status: await fetchStatus() }; } });
   vm.runInContext(source + '\nglobalThis.ui = {startSharedStatus,stopSharedStatus};', context);
-  return { get, timers, streams, emitted, requests, ui: context.ui,
+  return { get, timers, retries, streams, emitted, requests, ui: context.ui,
     advance(ms) { now += ms; for (const fn of [...timers.values()]) fn(); },
-    visible(visible) { document.hidden = !visible; documentEvents.get('visibilitychange')(); },
-    event(name) { windowEvents.get(name)(); }
+    visible(visible) { document.hidden = !visible; for(const fn of documentEvents.get('visibilitychange'))fn(); },
+    event(name) { for(const fn of windowEvents.get(name))fn(); }
   };
 }
 const state = (reason = 'ordinary_failure', overrides = {}) => ({ status: 'cooldown', cooldownReason: reason,
@@ -103,10 +106,38 @@ test('首次SSE永久关闭只核验一次鉴权；网络错误不注销，旧�
   assert.deepEqual(p.emitted, ['member-session-expired']);
   assert.deepEqual(p.requests, ['/api/member/shared-status']);
   status = 503; p.ui.startSharedStatus(); p.streams[1].readyState = 2; await p.streams[1].onerror();
-  assert.equal(p.emitted.length, 1); assert.equal(p.streams[1].closed, undefined);
+  assert.equal(p.emitted.length, 1); assert.equal(p.streams[1].closed, true); assert.equal(p.retries.size,1);
   let finish;
   const other = page(() => new Promise(resolve => { finish = resolve; })); other.ui.startSharedStatus();
   other.streams[0].readyState = 2; const old = other.streams[0].onerror();
   other.ui.stopSharedStatus(); other.ui.startSharedStatus(); finish(401); await old;
   assert.equal(other.emitted.length, 0);
+});
+
+test('状态版本允许跳号，重复通知忽略，重连与新boot强制校准，旧连接不再触发', () => {
+  const p=page(), changes=[];
+  p.ui.startSharedStatus(change=>changes.push(change));
+  const event=(version,extra={})=>({bootId:'boot-a',version,scopes:['member'],updatedAt:new Date(NOW).toISOString(),resync:false,...extra});
+  p.streams[0].emit('state-invalidated',event(3));
+  p.streams[0].emit('state-invalidated',event(9));
+  p.streams[0].emit('state-invalidated',event(9));
+  p.streams[0].emit('state-invalidated',event(4));
+  assert.equal(changes.length,2);assert.equal(changes[0].resync,true);assert.equal(changes[1].resync,false);
+  p.visible(false);p.visible(true);
+  p.streams[0].emit('state-invalidated',event(12));assert.equal(changes.length,2);
+  p.streams[1].emit('state-invalidated',event(9,{resync:true}));
+  p.streams[1].emit('state-invalidated',event(0,{bootId:'boot-b'}));
+  assert.equal(changes.length,4);assert.ok(changes.slice(2).every(change=>change.resync));
+  p.streams[1].emit('state-invalidated',event(1,{scopes:['credentials']}));
+  assert.equal(changes.length,4);assert.match(p.get('sharedConnection').textContent,/状态数据无效/);
+});
+
+test('永久关闭的临时故障有限重连，隐藏页面取消重试，恢复后新连接校准',async()=>{
+  const p=page(async()=>503);p.ui.startSharedStatus();
+  p.streams[0].readyState=2;await p.streams[0].onerror();
+  assert.equal(p.retries.size,1);p.visible(false);assert.equal(p.retries.size,0);
+  p.visible(true);assert.equal(p.streams.length,2);
+  p.streams[1].readyState=2;await p.streams[1].onerror();
+  const retry=[...p.retries.values()][0];p.retries.clear();retry();
+  assert.equal(p.streams.length,3);assert.equal(p.emitted.length,0);
 });

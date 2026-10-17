@@ -64,5 +64,7 @@ Chrome 的隔离合成成员页在 390px 宽度显示七天截止且无横向溢
 Key 后推进测试时钟，收到服务器 auth-expired 即回登录并清除 Key。
 合成上游生图调用为 0，浏览器测试实例已关闭。
 
-托管 CI 的既有 Native 多图 HTTP 超时仍在单独诊断；上述本地通过不替代
-该问题的结案。未使用真实 NAI、未迁移生产数据库或替换生产服务。
+[托管 CI 38984338010](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38984338010)
+在 536dd58 通过 430/430、101 文件语法及 Docker 构建。此前两次既有
+Native 多图 HTTP 超时仍未解释，此轮通过不等于修复该问题。未使用真实
+NAI、未迁移生产数据库或替换生产服务。

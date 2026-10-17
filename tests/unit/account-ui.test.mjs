@@ -20,13 +20,15 @@ const nodes = (element, tag) => [...(element.tagName === tag ? [element] : []), 
 const links = element => nodes(element, 'A');
 
 async function accountPage(data, extraRequest) {
-  const elements = new Map(), calls = [], events = new Map();
+  const elements = new Map(), calls = [], events = new Map(), documentEvents=new Map(), timers=new Map();
+  let invalidate, nextTimer=0;
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
   const context = vm.createContext({
     URL, location: { origin: 'https://gateway.example' },
-    document: { getElementById: get, createElement: element },
+    document: { hidden:false, getElementById: get, createElement: element, addEventListener:(name,listener)=>documentEvents.set(name,listener) },
     window: { addEventListener: (name, listener) => events.set(name, listener) },
-    startSharedStatus() {}, stopSharedStatus() {},
+    startSharedStatus(listener) {invalidate=listener;}, stopSharedStatus() {},
+    setInterval(listener,delay){assert.equal(delay,30000);const id=++nextTimer;timers.set(id,listener);return id;}, clearInterval:id=>timers.delete(id),
     async fetch(path, options) {
       calls.push({ path, options });
       const value = path.endsWith('/login-options') ? { discord: false, ready: true } : path === '/api/member/me' ? data : await extraRequest(path, options);
@@ -35,7 +37,8 @@ async function accountPage(data, extraRequest) {
   });
   vm.runInContext(source + '\nglobalThis.ui = {load};', context);
   await setImmediate();
-  return { get, calls, context, expire: () => events.get('member-session-expired')() };
+  return { get, calls, context, timers, expire: () => events.get('member-session-expired')(),
+    invalidate:event=>invalidate(event), visible(value){context.document.hidden=!value;documentEvents.get('visibilitychange')();} };
 }
 
 test('显示固定到期时间；登录失效清除Key，迟到读取不能重新展开账户或Key', async () => {
@@ -60,6 +63,28 @@ test('显示固定到期时间；登录失效清除Key，迟到读取不能重�
   page.context.fetch=async()=>({ok:true,json:async()=>data}); await page.context.ui.load();
   rejectOld(); await assert.rejects(stale,/old session/);
   assert.equal(page.get('account').hidden,false,'旧会话的迟到401不能关闭新登录页面');
+});
+
+test('个人通知只刷本人视图，查询中多次通知合并一次补读，隐藏与过期不后台刷',async()=>{
+  const data={username:'member',quota:{anlasFixedAvailable:10},jobs:[]};
+  const p=await accountPage(data);
+  const before=p.calls.length;
+  p.invalidate({scopes:['shared'],resync:false});await setImmediate();assert.equal(p.calls.length,before);
+  let release,reads=0,active=0,peak=0;
+  p.context.fetch=async path=>{
+    assert.equal(path,'/api/member/me');reads++;active++;peak=Math.max(peak,active);
+    if(reads===1)await new Promise(resolve=>{release=resolve;});
+    active--;return {ok:true,json:async()=>({...data,quota:{anlasFixedAvailable:10+reads}})};
+  };
+  p.invalidate({scopes:['member'],resync:false});
+  for(let i=0;i<8;i++)p.invalidate({scopes:['member'],resync:false});
+  assert.equal(reads,1);release();await setImmediate();
+  assert.equal(reads,2);assert.equal(peak,1);assert.equal(p.get('fixed').textContent,'12');
+  assert.match(p.get('memberUpdated').textContent,/个人额度与调用更新于/);assert.equal(p.timers.size,1);
+  p.visible(false);assert.equal(p.timers.size,0);
+  p.invalidate({scopes:['member'],resync:true});await setImmediate();assert.equal(reads,2);
+  p.visible(true);p.invalidate({scopes:[],resync:true});await setImmediate();assert.equal(reads,3);
+  p.expire();assert.equal(p.timers.size,0);p.invalidate({scopes:['member'],resync:true});await setImmediate();assert.equal(reads,3);
 });
 
 test('成员退款与冷历史迟到领取使用签名地址，文本不插 HTML，也不重扣额度', async () => {
@@ -165,4 +190,15 @@ test('批次详情懒读取并去重，取消只标记未派发图片，旧读�
   details = nodes(get('jobs'), 'DETAILS')[0];
   details.open = true; await details.ontoggle();
   assert.equal(reads(), beforeReopen + 2);
+});
+
+test('自动刷新保留打开的批次与已显示Key，并更新批次状态',async()=>{
+  const data={username:'member',quota:{},jobs:[{id:'j',requestId:'r',status:'running',model:'test',createdAt:1}]};
+  let status='running';
+  const p=await accountPage(data,async path=>path.endsWith('/key')?{apiKey:'synthetic-key'}:{id:'r',counts:{total:1,running:1},cancellable:false,jobs:[{id:'j',index:0,model:'test',status}]});
+  const details=nodes(p.get('jobs'),'DETAILS')[0];details.open=true;await details.ontoggle();
+  await p.get('showKey').onclick();status='done';data.jobs[0].status='done';
+  p.invalidate({scopes:['member'],resync:false});await setImmediate();
+  assert.equal(nodes(p.get('jobs'),'DETAILS')[0],details);assert.equal(details.open,true);
+  assert.match(text(details),/成功/);assert.equal(p.get('apiKey').value,'synthetic-key');assert.equal(p.get('keyPanel').hidden,false);
 });

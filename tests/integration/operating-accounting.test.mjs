@@ -218,7 +218,7 @@ test('真实 SQLite 收据/核销覆盖冷历史和重启，失败整笔回滚�
   assert.equal(store.sqlite.pragma('integrity_check', { simple: true }), 'ok');
 });
 
-test('真实管理 HTTP 保留鉴权和本人来源，资金与 GET 同步证据在同一 SQLite 事务落盘', async t => {
+test('真实管理 HTTP 保留鉴权和本人来源，GET只估算，官方同步提交资金证据', async t => {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-operating-routes-')));
   await store.init();
   await store.update(db => {
@@ -246,7 +246,13 @@ test('真实管理 HTTP 保留鉴权和本人来源，资金与 GET 同步证据
   assert.equal((await call(register('http-external-funds', 'anlasPurchased', 100))).status, 200);
   assert.equal(store.db.settings.fairQuota.operating.available.anlasPurchased, 0);
   await store.update(db => Object.assign(db.accounts[0], { quotaFixed: 970, quotaPurchased: 1140, quotaCheckedAt: Date.now() + 10 }), { collections: ['accounts'], immediate: true });
-  assert.equal((await call()).status, 200);
+  const storedSettings=store.settingsState, storedLedger=store.countRecords('ledger');
+  const projected=await call();assert.equal(projected.status,200);
+  assert.equal((await projected.json()).users.find(user=>user.id==='b').quota.anlasPurchasedAvailable,260);
+  assert.equal(store.settingsState,storedSettings);assert.equal(store.countRecords('ledger'),storedLedger);
+  assert.equal(store.db.settings.fairQuota.operating.available.anlasPurchased,0);
+  // 实际余额刷新在其写事务内 syncFairQuota；读取投影不能成为账务提交入口。
+  await store.update(db=>syncFairQuota(db,Date.now()+20),{collections:['settings','ledger'],immediate:true});
   const ops = store.db.settings.fairQuota.operating;
   assert.equal(ops.available.anlasPurchased, 100); assert.equal(ops.unfunded.anlasFixed, 10);
   assert.equal(store.db.settings.fairQuota.balances.b.anlasPurchasedAvailable, 260);

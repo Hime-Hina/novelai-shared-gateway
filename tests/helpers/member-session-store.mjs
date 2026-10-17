@@ -8,6 +8,7 @@ export async function withMemberSessions(t, store) {
   const sessions = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-route-sessions-')));
   await sessions.init(); t.after(() => sessions.close());
   const update = store.update.bind(store);
+  store.events = sessions.events;
   store.readMemberSession = hash => sessions.readMemberSession(hash);
   store.readMemberSessionOwner = () => sessions.readMemberSessionOwner();
   store.update = (fn, options = {}) => update(db =>

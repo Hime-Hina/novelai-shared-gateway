@@ -7,6 +7,8 @@ test('首页只进入共享门户，旧静态资源与未知页面不可访问',
   assert.equal(sharedSurface('/admin').pathname, '/admin/members.html');
   for (const path of ['/app.js', '/admin.js', '/memory', '/unknown', '/foo/../admin.js']) assert.equal(sharedSurface(path).allowed, false, path);
   assert.equal(sharedSurface('/account.js', 'POST').allowed, false);
+  assert.equal(sharedSurface('/member-events.js', 'GET').allowed, true);
+  assert.equal(sharedSurface('/member-events.js', 'POST').allowed, false);
 });
 test('酒馆调用、结果取回、成员及管理依赖保持可用', () => {
   for (const [path, method] of [['/v1/chat/completions', 'POST'], ['/ai/generate-image', 'POST'], ['/v1/ai/generate-image', 'OPTIONS'], ['/generate', 'GET'], ['/api/jobs', 'POST'], ['/api/jobs/job1', 'GET'], ['/api/jobs/job1/content', 'GET'], ['/api/images/img1/content', 'GET'], ['/api/member/shared-events', 'GET'], ['/api/member/login', 'POST'], ['/api/admin/member-management', 'POST'], ['/api/admin/accounts/quota', 'POST'], ['/api/admin/accounts/acct1', 'PATCH']]) assert.equal(sharedSurface(path, method).allowed, true, path);
