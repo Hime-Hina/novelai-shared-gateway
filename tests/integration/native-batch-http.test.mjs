@@ -225,6 +225,7 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   const queued = rows().find(job => job.request.seed === 301);
   assert.equal(queued.status, 'queued');
   await stop('SIGKILL');
+  env.RUNTIME_JOBS_CACHE_LIMIT = '0'; env.RUNTIME_IMAGES_CACHE_LIMIT = '0';
   await start();
   await until(() => rows().some(job => job.request.seed === 301 && job.status === 'done'), 'queued second image resumes');
   assert.equal(calls.filter(seed => seed === 300).length, 1);

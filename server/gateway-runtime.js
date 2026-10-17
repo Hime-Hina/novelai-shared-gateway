@@ -3744,11 +3744,13 @@ async function drainQueuedJobs(scheduledAt = Date.now()) {
 }
 
 async function queueRetryDelay() {
-  const db = await store.readCollections(['settings', 'accounts', 'jobs']);
-  const now = Date.now();
-  const expiryDelays = db.jobs.map(job => queuedDeadlineTimestamp(job)).filter(Boolean).map(until => until - now);
-  const readyDelay = nextAccountReadyDelay(db.accounts, db.settings) || 25;
-  return Math.max(fairShareMode ? 1000 : 25, Math.min(readyDelay, ...expiryDelays));
+  // 活动任务始终驻留；只读取所需的唤醒时间，不把部分加载的历史集合当作完整快照。
+  return store.update(db => {
+    const now = Date.now();
+    const expiryDelays = db.jobs.map(job => queuedDeadlineTimestamp(job)).filter(Boolean).map(until => until - now);
+    const readyDelay = nextAccountReadyDelay(db.accounts, db.settings) || 25;
+    return Math.max(fairShareMode ? 1000 : 25, Math.min(readyDelay, ...expiryDelays));
+  }, { persist: false });
 }
 
 function hasEnabledAccounts(accounts) {
