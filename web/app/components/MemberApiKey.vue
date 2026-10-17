@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import { NButton, NCard, NInput } from 'naive-ui'
+import { NButton, NInput } from 'naive-ui'
 import type { MemberApi } from '../types/member'
 
 const props = defineProps<{ api: MemberApi }>()
@@ -42,7 +42,8 @@ onBeforeUnmount(() => { active = false; hide() })
 </script>
 
 <template>
-  <NCard title="我的 API 配置" size="small">
+  <section aria-label="我的 API 配置">
+    <p class="section-caption">用于客户端接入。仅在主动查看时读取本人 Key，关闭配置后清除页面中的 Key。</p>
     <NButton v-if="!visible" id="showKey" :loading="loading" @click="show">查看我的 API Key</NButton>
     <div v-else id="keyPanel" class="key-fields">
       <label for="apiBaseUrl">Base URL</label>
@@ -56,7 +57,7 @@ onBeforeUnmount(() => { active = false; hide() })
     </div>
     <PortalToast :message="error" type="error" />
     <PortalToast :message="message" type="success" />
-  </NCard>
+  </section>
 </template>
 
 <style scoped>

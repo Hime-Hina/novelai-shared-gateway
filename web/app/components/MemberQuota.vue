@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NAlert, NCard, NProgress } from 'naive-ui'
+import { NButton, NCard, NProgress, NPopover } from 'naive-ui'
 import type { MemberProfile } from '../types/member'
-import { date, number } from '../utils/member-display'
+import { number } from '../utils/member-display'
 
 const props = defineProps<{ profile: MemberProfile }>()
 const quota = computed(() => props.profile.quota)
-const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '订阅暂不可用', stale: '官方余额等待刷新', unknown_balance: '官方余额未知', ambiguous_opus: '等待管理员选择上游', active: '额度已同步' }
+const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '订阅暂不可用', stale: '官方余额等待更新', unknown_balance: '官方余额未知', ambiguous_opus: '等待管理员选择上游', active: '可提交任务' }
+const status = computed(() => [
+  quota.value?.status !== 'active' || props.profile.acceptingJobs !== false ? statuses[quota.value?.status || ''] || '等待分配额度' : '',
+  props.profile.acceptingJobs === false ? '管理员已停止接单，已有结果仍可查询和下载' : ''
+].filter(Boolean).join(' · '))
+const attention = computed(() => props.profile.acceptingJobs === false || quota.value?.status !== 'active')
 const percentage = computed(() => {
   const q = quota.value
   return q && Number.isFinite(q.v5Available) && q.v5Capacity > 0 ? Math.max(0, Math.min(100, q.v5Available / q.v5Capacity * 100)) : null
@@ -23,43 +28,45 @@ const recovery = computed(() => {
 
 <template>
   <section aria-labelledby="welcome">
-    <header>
-      <h2 id="welcome">{{ profile.username }} · 我的额度</h2>
-      <p id="group" class="muted">{{ quota?.member ? `${quota.groupName || '未命名组'} · ${number(quota.groupSize)} 人 · 个人份额 ${number(quota.share == null ? null : quota.share * 100)}%` : '尚未分配到组，请联系管理员' }}</p>
-      <p id="sessionExpiry" class="muted">本次登录有效至 {{ date(profile.sessionExpiresAt) }}（{{ profile.owner ? '管理员固定 12 小时' : '普通成员固定 7 天' }}），不会自动续期。</p>
+    <header class="section-toolbar">
+      <div><h2 id="welcome">我的额度 <span class="count-badge">{{ profile.username }}</span></h2>
+      <p id="group" class="section-caption">{{ quota?.member ? `${quota.groupName || '未命名组'} · ${number(quota.groupSize)} 人 · 个人份额 ${number(quota.share == null ? null : quota.share * 100)}%` : '尚未分配到组，请联系管理员' }}</p></div>
+      <NPopover trigger="click" :style="{ maxWidth: 'min(380px, calc(100vw - 32px))' }">
+        <template #trigger><NButton size="small" quaternary>额度规则</NButton></template>
+        <p>V5 单次消耗为估算百分点。恢复优先分给未满额成员，个人最多恢复到自己的上限；满额时不会继续积攒。</p>
+        <p>订阅额度与购买额度分开记账。购买 Anlas 需请求明确授权，且官方订阅余额耗尽并完成对账后才能使用。</p>
+        <p v-if="quota?.autoAnlasFallback">V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）。</p>
+        <p v-else-if="quota?.autoAnlasFallback === false">V5 不足时停止接单，不自动转扣 Anlas。</p>
+      </NPopover>
     </header>
-    <NAlert id="status" :type="profile.acceptingJobs === false ? 'warning' : 'info'" :show-icon="false" role="status">
-      {{ statuses[quota?.status || ''] || '等待分配额度' }}
-      <span v-if="quota?.autoAnlasFallback"> · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）</span>
-      <span v-if="profile.acceptingJobs === false"> · 管理员已停止接单，已有结果仍可查询和下载</span>
-    </NAlert>
+    <div id="status" class="quota-status" :class="{ attention }" role="status">{{ status }}</div>
     <div class="quota-grid">
       <NCard title="V5 恢复额度" size="small">
-        <strong id="v5" class="amount">{{ number(quota?.v5Available) }} / {{ number(quota?.v5Capacity) }}%</strong>
+        <div class="quota-value"><strong id="v5" class="amount">{{ number(quota?.v5Available) }}%</strong><span id="v5Capacity" class="section-caption">上限 {{ number(quota?.v5Capacity) }}%</span></div>
         <NProgress v-if="percentage !== null" id="v5bar" type="line" :percentage="percentage" :show-indicator="false" aria-label="个人 V5 余量占上限比例" />
-        <p id="recovery">预留 {{ number(quota?.v5Reserved) }}% · {{ recovery }}</p>
-        <p class="muted">单次消耗为估算值。恢复优先分给未满额成员，个人最多恢复到自己的上限；不用且满额时无法继续积攒。</p>
+        <p id="v5Held" class="section-caption">预留 {{ number(quota?.v5Reserved) }}%</p>
       </NCard>
       <NCard title="订阅 Anlas" size="small">
         <strong id="fixed" class="amount">{{ number(quota?.anlasFixedAvailable) }}</strong>
-        <p id="fixedHeld">预留 {{ number(quota?.anlasFixedReserved) }}</p>
-        <p class="muted">订阅额度与购买额度分开记录。</p>
+        <p id="fixedHeld" class="section-caption">预留 {{ number(quota?.anlasFixedReserved) }}</p>
       </NCard>
       <NCard title="购买 Anlas" size="small">
         <strong id="purchased" class="amount">{{ number(quota?.anlasPurchasedAvailable) }}</strong>
-        <p id="purchasedHeld">预留 {{ number(quota?.anlasPurchasedReserved) }}</p>
-        <p class="muted">需请求明确授权，且官方订阅余额耗尽并完成对账后才能使用。</p>
+        <p id="purchasedHeld" class="section-caption">预留 {{ number(quota?.anlasPurchasedReserved) }}</p>
       </NCard>
     </div>
+    <p id="recovery" class="section-caption recovery">V5 恢复 · {{ recovery }}</p>
   </section>
 </template>
 
 <style scoped>
-h2 { margin: 0; font-size: 1.4rem; overflow-wrap: anywhere; }
-header { margin-bottom: 20px; }
-p { line-height: 1.7; overflow-wrap: anywhere; }
-.muted { color: #adb7c6; }
-.quota-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
-.amount { display: block; margin-bottom: 16px; font-size: clamp(1.5rem, 3vw, 2rem); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+h2 { overflow-wrap: anywhere; }
+p { line-height: 1.7; overflow-wrap: anywhere; font-size: 13px; }
+.quota-status { min-height: 30px; line-height: 30px; font-size: 12px; color: var(--text-muted); }
+.attention { color: #f2c97d; }
+.quota-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.quota-value { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.amount { display: block; margin-bottom: 12px; font-size: 28px; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.recovery { min-height: 44px; margin-bottom: 0; }
 @media (max-width: 760px) { .quota-grid { grid-template-columns: 1fr; } }
 </style>

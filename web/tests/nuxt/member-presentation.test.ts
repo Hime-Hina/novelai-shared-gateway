@@ -4,6 +4,7 @@ import { nextTick } from 'vue'
 import MemberSignIn from '../../app/components/MemberSignIn.vue'
 import MemberQuota from '../../app/components/MemberQuota.vue'
 import SharedAccountStatus from '../../app/components/SharedAccountStatus.vue'
+import PortalRefresh from '../../app/components/PortalRefresh.vue'
 import type { MemberProfile, SharedStatus } from '../../app/types/member'
 
 const wrappers: { unmount: () => void }[] = []
@@ -31,6 +32,22 @@ const shared: SharedStatus = {
 }
 
 describe('成员展示组件', () => {
+  it('两页共用刷新入口，连接状态明确且加载时保留更新时间位置', async () => {
+    const wrapper = await mountSuspended(PortalRefresh, { props: { connection: 'open', loading: false, updatedAt: Date.parse('2026-10-17T16:00:00Z'), summary: '额度更新于' } })
+    wrappers.push(wrapper)
+    expect(wrapper.text()).toContain('实时更新')
+    expect(wrapper.text()).toContain('2026/10/18')
+    expect(wrapper.text()).toContain('上海时间')
+    await wrapper.get('#refresh').trigger('click')
+    expect(wrapper.emitted('refresh')).toEqual([[]])
+    const count = wrapper.element.childElementCount
+    await wrapper.setProps({ loading: true, connection: 'retrying' })
+    expect(wrapper.element.childElementCount).toBe(count)
+    expect(wrapper.text()).toContain('每 30 秒补读')
+    await wrapper.setProps({ loading: false, connection: 'polling' })
+    expect(wrapper.text()).toContain('每 30 秒更新')
+  })
+
   it('提交真实密码表单后发出登录事件并清空密码，不写浏览器存储', async () => {
     const storage = vi.spyOn(Storage.prototype, 'setItem')
     const wrapper = await mountSuspended(MemberSignIn, { props: { options: { discord: false, ready: true, origin: null }, busy: false, error: '' } })
@@ -57,22 +74,33 @@ describe('成员展示组件', () => {
     wrappers.push(wrapper)
     expect(wrapper.get('#welcome').text()).toContain('合成成员')
     expect(wrapper.get('#group').text()).toContain('个人份额 25%')
-    expect(wrapper.get('#sessionExpiry').text()).toContain('普通成员固定 7 天')
-    expect(wrapper.get('#v5').text()).toBe('12.5 / 25%')
+    expect(wrapper.get('#v5').text()).toBe('12.5%')
+    expect(wrapper.get('#v5Capacity').text()).toBe('上限 25%')
     expect(wrapper.get('#fixed').text()).toBe('120')
     expect(wrapper.get('#purchased').text()).toBe('48')
     expect(wrapper.get('#fixedHeld').text()).toBe('预留 3')
     expect(wrapper.get('#purchasedHeld').text()).toBe('预留 5')
-    expect(wrapper.get('#recovery').text()).toContain('预留 2%')
+    expect(wrapper.get('#v5Held').text()).toContain('预留 2%')
     expect(wrapper.get('#recovery').text()).toContain('补满时间未知')
-    expect(wrapper.get('#status').text()).toContain('V5 不足时自动按 Anlas 转扣')
     expect(wrapper.get('#status').text()).toContain('管理员已停止接单，已有结果仍可查询和下载')
 
     await wrapper.setProps({ profile: { ...profile, quota: null } })
-    expect(wrapper.get('#v5').text()).toBe('未知 / 未知%')
+    expect(wrapper.get('#v5').text()).toBe('未知%')
     expect(wrapper.get('#fixed').text()).toBe('未知')
     expect(wrapper.get('#purchased').text()).toBe('未知')
     expect(wrapper.find('#v5bar').exists()).toBe(false)
+  })
+
+  it('正常额度不用成功提示框，异常沿用同一状态行，规则仍可查看', async () => {
+    const wrapper = await mountSuspended(MemberQuota, { props: { profile: { ...profile, acceptingJobs: true } } })
+    wrappers.push(wrapper)
+    expect(wrapper.find('.n-alert').exists()).toBe(false)
+    expect(wrapper.get('#status').text()).toBe('可提交任务')
+    const count = wrapper.element.childElementCount
+    await wrapper.setProps({ profile: { ...profile, acceptingJobs: true, quota: { ...profile.quota!, status: 'stale' } } })
+    expect(wrapper.element.childElementCount).toBe(count)
+    expect(wrapper.get('#status').text()).toBe('官方余额等待更新')
+    expect(wrapper.text()).toContain('额度规则')
   })
 
   it('订阅未知、不可用与有效三种状态分别显示', async () => {
