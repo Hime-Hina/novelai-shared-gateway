@@ -194,7 +194,7 @@ T01账务、会话与owner片：fair-quota、generation-accounting、operating-a
 
 T01上游与存储边界片：providers、prompt-api、generation-request、storage-schema、storage-migrations和sqlite-read-worker迁为严格TypeScript，更新直接导入及Nuxt构建输入。复用已有图片、预览、任务和Drizzle类型；为better-sqlite3增加精确开发类型包`@types/better-sqlite3@9.6.0`，运行库及其他锁定包版本/完整性未变。只读worker在源码选择TS、构建产物选择JS，避免tsc不改写URL字符串导致丢worker；没有修改SQL、迁移、协议或正文行为。与dc6ff3b旧模块的擦除后语句对照一致（provider仅多余括号），保留原错误和字段顺序。上游71项、存储42项、请求18项定向通过；全后端527项中523通过/4项Windows跳过、网页类型与116项、Nuxt实际开发/生产双进程13通过/1项Windows跳过通过。根严格检查、三个Linux镜像构建、最终执行器HTTP4/4及包内bootstrap→test-copy CLI通过，源库与权限符合预期。server顶层29个TS、7个JS，store、调度入口、成员/Discord路由和故障账务等核心继续迁移；不以文件比例代替T01完成度。前一账务片[dc6ff3b的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39026080065)已成功，本批完整CI待记录。
 
-D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移尚未替换该测试版本。当前端口仅监听回环、上游为本地 mock，网络过滤已做允许/拒绝对照；安装和首轮验收期间生产进程保持不变。[部署与待验收范围](test-deployment.md#bob-首轮合成验收2026-10-17-19001920asiataipei)已记录，不能把首次合成部署当作最终版本交付。
+D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移尚未替换该测试版本。当前端口仅监听回环、上游为本地 mock，网络过滤已做允许/拒绝对照；安装和首轮验收期间生产进程保持不变。[部署与待验收范围](test-deployment.md#bob-首轮合成验收)已记录，不能把首次合成部署当作最终版本交付。后续实机强杀网页、正常重启执行器、强杀执行器和二次结算幂等检查均通过，原生产继续运行；上游未完整返回的图片仍可能无法找回。
 
 T01存储与业务路由片：store、failure-accounting、discord-auth、member-routes及official-key-jobs迁为严格TypeScript。复用领域模型、Drizzle行和prepared query及只读worker消息类型，保留SQL/事务/冷热缓存、OAuth刷新落盘时序、会话/SSE清理和官方密钥任务生命周期；没有新运行依赖、迁移或框架。类型擦除对照只有括号、引号与排版差异。存储89项、成员/Discord43项、故障账务4项、provider/preview28项及私有官方任务生命周期4项定向通过；根严格检查、全后端527项中523通过/4项Windows跳过、网页类型检查及执行器构建产物3通过/1项Windows跳过。最终Linux/Docker/Nuxt链路由本批完整CI继续验收，不沿用前一批结果冒称通过。server顶层34个TS、2个JS，最后的gateway-runtime/index及其真实调用类型连接仍待完成。前一上游/存储边界片已由[c759f49完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39028262970)验收成功；目标机测试仍固定0901056，未替换生产。
 
