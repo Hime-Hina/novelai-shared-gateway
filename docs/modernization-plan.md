@@ -56,7 +56,7 @@
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分、受保护的 Nitro 产物及 Nuxt 内部客户端，Windows/Linux 双进程故障隔离、同键受理重试及重复恢复三场景通过；独立 systemd 部署仍待，未按整体完成结案 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。F11/N01 两段事件重连与授权校准已通过，N02登录和管理也已通过Linux CI |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C01/C02/C04/C05/C06/N01/N02/N03已完成计划内明确范围；Nuxt统一入口、执行器唯一业务与持久化所有者。C03当前支持范围的参数、响应和恢复边界已核对，保留的共享网关差异不称为透明代理。T01已有纯模块、请求边界及标准JS编译产物分批落地，存储、调度和路由等核心迁移仍待；不能将Nuxt入口TS或文件占比视为整个后端已类型化。清理限于已确认项目，后续迁移发现的问题单独处理 |
-| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
+| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成；D01 已在 bob 启动三个独立 systemd 测试服务，合成登录、生图、幂等领取及 mock 停止/恢复通过。实机故障/资源/浏览器与生产规模副本验收仍待，生产首屏历史长等待仍待定位；D02 未获生产切换批准 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
 
@@ -193,6 +193,8 @@ D01离线副本工具已完成：只读SQLite backup纳入已提交WAL，迁移�
 T01账务、会话与owner片：fair-quota、generation-accounting、operating-accounting、member-auth及owner-operations迁为严格TypeScript。钱包、预留、快照、任务证据和运营资源由所属模块定义；会话行复用Drizzle schema，启动器settings复用账务类型，混合账本保持追加容器。没有新增运行时校验、数值转换或依赖；保留历史算术、原位升级、错误和JSON属性顺序。账务126项、登录相关46项及owner5项定向通过；冻结旧模块的10组账务场景、9种owner操作及统计输出对照一致。根类型/语法、全后端527项中523通过/4项Windows跳过、网页类型与116项、真实Nuxt开发/生产双进程13通过/1项Windows跳过均通过；执行器本机产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4及包内编译后的bootstrap→test-copy CLI通过，源库不变和输出权限已核验。server顶层23个TS、13个JS；存储、上游适配、调度和成员路由等仍待，本批完整Linux CI另记录。图片片[f7c7dca](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39024947176)和副本工具[3b73904](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39025133075)的完整CI均已成功；未处理真实生产副本或部署。
 
 T01上游与存储边界片：providers、prompt-api、generation-request、storage-schema、storage-migrations和sqlite-read-worker迁为严格TypeScript，更新直接导入及Nuxt构建输入。复用已有图片、预览、任务和Drizzle类型；为better-sqlite3增加精确开发类型包`@types/better-sqlite3@9.6.0`，运行库及其他锁定包版本/完整性未变。只读worker在源码选择TS、构建产物选择JS，避免tsc不改写URL字符串导致丢worker；没有修改SQL、迁移、协议或正文行为。与dc6ff3b旧模块的擦除后语句对照一致（provider仅多余括号），保留原错误和字段顺序。上游71项、存储42项、请求18项定向通过；全后端527项中523通过/4项Windows跳过、网页类型与116项、Nuxt实际开发/生产双进程13通过/1项Windows跳过通过。根严格检查、三个Linux镜像构建、最终执行器HTTP4/4及包内bootstrap→test-copy CLI通过，源库与权限符合预期。server顶层29个TS、7个JS，store、调度入口、成员/Discord路由和故障账务等核心继续迁移；不以文件比例代替T01完成度。前一账务片[dc6ff3b的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39026080065)已成功，本批完整CI待记录。
+
+D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移尚未替换该测试版本。当前端口仅监听回环、上游为本地 mock，网络过滤已做允许/拒绝对照；安装和首轮验收期间生产进程保持不变。[部署与待验收范围](test-deployment.md#bob-首轮合成验收2026-10-17-19001920asiataipei)已记录，不能把首次合成部署当作最终版本交付。
 
 ## 仓库与现状
 
