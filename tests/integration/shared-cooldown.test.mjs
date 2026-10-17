@@ -186,3 +186,36 @@ test('队首等待诊断只在原因/截止变化时记录，保留计划唤醒�
   db.accounts[0].enabled = false; await ctx.drainQueuedJobs(now);
   assert.equal(lines.at(-1).reason, 'eligibility');
 });
+
+test('跨冷却截止读取零槽后即使等待已为零仍保留唤醒，下一轮只派发一次', async () => {
+  let now = NOW + 10000, firstRead = true;
+  class ClockDate extends Date {
+    static now() {
+      if (firstRead) { firstRead = false; return now - 1; }
+      return now;
+    }
+  }
+  const scheduled = [], dispatched = [], lines = [];
+  const db = { settings: { fairQuota: { status: 'active', boundAccountId: 'opus' } },
+    accounts: [{ id: 'opus', inFlight: 0, cooldownUntil: new Date(now).toISOString(), cooldownReason: 'success_gap' }],
+    jobs: [{ id: 'last', status: 'queued', queueExpiresAt: new Date(NOW + 600000).toISOString() }] };
+  const ctx = context({ Date: ClockDate, console: { log: (_prefix, line) => lines.push(JSON.parse(line)) },
+    queueDispatchEnabled: true, queueDraining: false, queueDrainRequested: false, lastQueueWait: '', fairShareMode: true,
+    runningJobControls: new Map(), cleanupStaleActiveJobs: async () => {},
+    store: { update: fn => fn(db), queuedJobIds: () => db.jobs.filter(job => job.status === 'queued').map(job => job.id), readCollections: async () => db },
+    scheduleQueueDrain: delay => scheduled.push(delay), isQueueActiveJob: job => job.status === 'queued',
+    reserveQueuedJob: async () => { db.jobs[0].status = 'running'; return { job: db.jobs[0] }; },
+    runReservedJob: reservation => dispatched.push(reservation.job.id)
+  }, ['physicalAccountLoad', 'availableAccountSlots', 'nextAccountReadyDelay', 'queueRetryDelay', 'drainQueuedJobs']);
+
+  await ctx.drainQueuedJobs(now);
+  assert.equal(lines.at(-1).reason, 'ready');
+  assert.equal(dispatched.length, 0);
+  assert.deepEqual(scheduled, [1000], '冷却刚过期不能丢掉最后一条排队任务的唤醒');
+  assert.equal(db.accounts[0].cooldownUntil, new Date(NOW + 10000).toISOString());
+  now += scheduled[0];
+  await ctx.drainQueuedJobs(now);
+  await ctx.drainQueuedJobs(now);
+  assert.deepEqual(dispatched, ['last']);
+  assert.deepEqual(scheduled, [1000]);
+});

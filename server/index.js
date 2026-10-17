@@ -3703,7 +3703,8 @@ async function drainQueuedJobs(scheduledAt = Date.now()) {
             cooldownReason: until ? account.cooldownReason || null : null, scheduledAt, checkedAt: Date.now() }));
         }
       }
-      if (slots <= 0) return { jobIds: [], delay: nextAccountReadyDelay(db.accounts, db.settings) };
+      // 槽位检查后时钟可能越过冷却截止，仍须保留下一轮唤醒；实际重试间隔由 queueRetryDelay 限制。
+      if (slots <= 0) return { jobIds: [], delay: Math.max(1, nextAccountReadyDelay(db.accounts, db.settings)) };
       const activeIds = new Set(db.jobs.filter(job => isQueueActiveJob(job)).map(job => job.id));
       return {
         jobIds: store.queuedJobIds()

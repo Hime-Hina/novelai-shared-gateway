@@ -98,6 +98,8 @@ U01 已提交 [ec011b6](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38984338010) 通过 430/430 和 Docker 构建。此前两轮分别发生 Native 批次及部分失败场景超时；冻结镜像复现通过，根因尚未查明。已分别提交 [1b639bf](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1b639bf) 和 [536dd58](https://github.com/Hime-Hina/novelai-shared-gateway/commit/536dd58) 脱敏现场诊断，未放宽请求期限，也不将此轮成功写成问题已修复。后续 D01 的隔离负载验收继续核对等待长尾。
 
+随后 [38986048883](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38986048883) 的连接生命周期用例捕获“冷却已到、空闲但最后一项仍queued”的现场；已确定性复现跨截止的零槽/零等待丢唤醒并作最小修复，冷却/容量13项与原HTTP用例通过，详见[队列唤醒](request-lifecycle.md#冷却截止时的队列唤醒修复)。此前Native失败和生产长尾仍无充分证据确认为同因。
+
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
 F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长结果，因此结果校验与上传校验分开设置边长，输入仍为 8192；16M 像素、64 MiB、CRC 与解压上限保持。补充提交 [b1e383d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b1e383d)；合成 8192×128 → 16384×256 覆盖图片/JSON/dataURL/ZIP/MessagePack，超限输入与结果仍拒绝，相关模块 37/37 通过。没有据此声称实测 NAI 接受全部极端长宽比例。
