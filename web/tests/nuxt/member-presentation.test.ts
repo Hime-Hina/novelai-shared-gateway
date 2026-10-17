@@ -75,6 +75,20 @@ describe('成员展示组件', () => {
     expect(wrapper.find('#v5bar').exists()).toBe(false)
   })
 
+  it('订阅未知、不可用与有效三种状态分别显示', async () => {
+    const wrapper = await mountSuspended(SharedAccountStatus, { props: {
+      state: { ...shared, subscriptionActive: null }, connection: 'open'
+    } })
+    wrappers.push(wrapper)
+    expect(wrapper.get('#sharedSubscription').text()).toBe('订阅状态未知')
+
+    await wrapper.setProps({ state: { ...shared, subscriptionActive: false } })
+    expect(wrapper.get('#sharedSubscription').text()).toBe('没有可用的 Opus 订阅')
+
+    await wrapper.setProps({ state: { ...shared, subscriptionActive: true } })
+    expect(wrapper.get('#sharedSubscription').text()).toContain('Opus 有效 · 到期')
+  })
+
   it('未知公共余额与冷却原因不猜测，到零仍等待服务端状态', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(new Date('2026-10-17T12:00:00Z'))

@@ -66,7 +66,7 @@ onUnmounted(() => {
     <div class="shared-grid">
       <NCard title="订阅与队列" size="small">
         <strong id="sharedState" class="amount">{{ state ? labels[state.status] || '状态未知' : '未知' }}</strong>
-        <p id="sharedSubscription">{{ state ? (state.subscriptionActive && state.status !== 'inactive_opus' ? `Opus 有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}</p>
+        <p id="sharedSubscription">{{ state?.subscriptionActive != null ? (state.subscriptionActive && state.status !== 'inactive_opus' ? `Opus 有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}</p>
         <p id="sharedQueue">生成中 {{ number(state?.running) }} / {{ number(state?.concurrencyLimit) }} · 排队 {{ number(state?.queued) }} · 批次待激活 {{ number(state?.pending) }}</p>
         <p id="sharedCooldown">{{ cooldown }}</p>
       </NCard>
