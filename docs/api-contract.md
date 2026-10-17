@@ -87,6 +87,23 @@ JSON 图片种子来自首次派发或持久任务中的实际规范化值，随
 
 以上为源码与模拟HTTP证据，不是对全部历史客户端的认证。W.O.F 缺少可对应版本的公开源码；LittleWhiteBox 的 Vibe 调用本轮也未取得可靠源码证据，不据此宣称已验证。
 
+C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e) 的
+[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 已通过后端482、网页112、执行器认证3、开发与双进程14、最终镜像HTTP3和Caddy7项，均无跳过；语法、类型及三个业务镜像构建也通过。新增检查实际种子回绕、部分JSON与ZIP说明一致、零历史缓存重取、缺文件410和406无受理，并保留幂等派发/结算计数；JSON断开测试不声称精确中断在某个数据块。测试全部使用合成数据和模拟上游，生产未切换。
+
+### C03-02 流式证据（待实现）
+
+2026-10-17 取得的[官方网页静态包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)为113682字节，SHA-256为`d416909d4d4c2f249bc5d1045c4790445accb9de3cce34830f8085e41a760769`。其中`requestStream`主动设置`parameters.stream="msgpack"`，该处未设置Accept；按4字节大端长度解码MessagePack，图片按字节处理。它读取以下字段，结束时检查每个样本是否收到最终图：
+
+| 事件 | 官方网页读取的字段 |
+| --- | --- |
+| intermediate | image、samp_ix、step_ix |
+| final | image、samp_ix |
+| error | message、samp_ix |
+
+进度由客户端结合步骤、采样器和样本数量计算，不将门户的`progress/preview`字段当作Native协议。以上为当前官方客户端实现证据，不等于稳定API字段承诺。
+
+Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。C03-02尚未实现或验收，本次C03-01不改Native流式帧。
+
 ## 错误与安全边界
 
 Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message: <文本>, error: <同一文本> }`。不是官方 `utils.JsonError` 的 `message/statusCode/details` 原样透传。路径不在共享白名单时由通用处理器返回 404，错误外形可能是通用 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
@@ -198,7 +215,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 
 | 编号 | 当前差异/不确定项 | 后续验收要求 |
 | --- | --- | --- |
-| C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现，正在回归 | 客户端版本证据和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
+| C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | Native stream 固定最终MessagePack，忽略客户端 stream，无实时预览 | 分开验证SSE/MessagePack内容协商、每事件结构、断流和部分失败；Swagger 路径与枚举表述需结合真实样本 |
 | C03-03 | 官方 URL、WebP、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大尚未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
 | C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |
