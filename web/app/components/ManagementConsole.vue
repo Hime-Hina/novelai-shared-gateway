@@ -7,7 +7,7 @@ import { date } from '../utils/member-display'
 
 const props = defineProps<{ mode: ManagementMode }>()
 const { state, shared, panel, days, usage, usageLoading, busy, connecting, adminToken, remember, sessionVersion,
-  message, messageError, readError, usageError, updatedAt, connection, refreshVersion, activityInvalidation,
+  message, messageError, messageVersion, readError, usageError, updatedAt, connection, refreshVersion, activityInvalidation,
   api, run, notify, changed, connect, disconnect, refresh, loadUsage } = useManagementPortal(props.mode)
 const groupsDirty = ref(false), policyDirty = ref(false), alerts = ref<ManagementAlert[]>([])
 const hint = computed(() => !state.value ? (connecting.value ? '正在验证管理身份…' : props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作')
@@ -31,7 +31,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
       </NSpace>
     </header>
-    <PortalToast :message="message" :type="messageError ? 'error' : 'success'" />
+    <PortalToast :key="messageVersion" :message="message" :type="messageError ? 'error' : 'success'" />
     <PortalToast :message="readError" type="warning" />
     <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"><NSkeleton text :repeat="5" /></NCard>
     <section v-if="state" id="dashboard" :key="sessionVersion" class="dashboard">
@@ -84,7 +84,7 @@ h1 { margin: 0; font-size: 27px; }
 .muted { color: #adb7c6; }
 .dashboard, form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 .dashboard { margin-top: 20px; }
-.account-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; font-size: 12px; color: var(--text-muted); }
+.account-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 36px; font-size: 12px; color: var(--text-muted); }
 :deep(.n-tab-pane) { padding-top: 24px; }
 :deep(.n-tab-pane > * + *) { margin-top: 24px; }
 .connect-card { max-width: 510px; margin: 32px auto; }

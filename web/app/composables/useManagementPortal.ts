@@ -10,6 +10,7 @@ export function useManagementPortal(mode: ManagementMode) {
   const days = ref(7), busy = ref(false), connecting = ref(mode === 'owner')
   const adminToken = ref(''), remember = ref(true), sessionVersion = ref(0)
   const message = ref(''), messageError = ref(false), readError = ref(''), usageError = ref('')
+  const messageVersion = ref(0)
   const shared = shallowRef<SharedStatus | null>(null), updatedAt = ref<number | null>(null)
   const connection = ref(mode === 'owner' ? 'connecting' : 'polling'), refreshVersion = ref(0)
   const activityInvalidation = reactive<{ version: number; dates: string[] | null }>({ version: 0, dates: null })
@@ -18,7 +19,7 @@ export function useManagementPortal(mode: ManagementMode) {
   let timer: ReturnType<typeof setInterval> | null = null
   let events: typeof import('../../../public/member-events.js') | null = null
 
-  function notify(text: string, error = false) { message.value = text; messageError.value = error }
+  function notify(text: string, error = false) { message.value = text; messageError.value = error; messageVersion.value++ }
   function stop() {
     if (mode === 'owner') events?.stopMemberEvents()
     if (timer) clearInterval(timer)
@@ -199,6 +200,6 @@ export function useManagementPortal(mode: ManagementMode) {
     window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', visibility)
   })
   return { state: stateQuery.data, shared, panel, days, usage: usageQuery.data, usageLoading: usageQuery.pending,
-    busy, connecting, adminToken, remember, sessionVersion, message, messageError, readError, usageError,
+    busy, connecting, adminToken, remember, sessionVersion, message, messageError, messageVersion, readError, usageError,
     updatedAt, connection, refreshVersion, activityInvalidation, api, run, notify, changed, connect, disconnect, refresh, loadUsage }
 }
