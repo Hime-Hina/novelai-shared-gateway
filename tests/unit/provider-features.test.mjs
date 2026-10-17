@@ -7,12 +7,13 @@ import { EventEmitter } from 'node:events';
 import { encode } from '@msgpack/msgpack';
 import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
 import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.js';
-import { parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/native-image.js';
 import { nativeImagesMsgpack } from '../../server/native-stream.js';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+const webp = readFileSync(new URL('../fixtures/synthetic.webp', import.meta.url));
 const originalFetch = globalThis.fetch;
 
 async function captured(run, response = () => new Response(png, { headers: { 'content-type': 'image/png' } })) {
@@ -320,8 +321,8 @@ test('单帧上限只计算 payload，分片中额外的四字节前缀不会误
     () => new Response(oversized, { headers: { 'content-type': 'application/octet-stream' } }));
 });
 
-function imageZip(bytes, { method = 0, uncompressedSize = bytes.length } = {}) {
-  const name = Buffer.from('image.png');
+function imageZip(bytes, { method = 0, uncompressedSize = bytes.length, filename = 'image.png' } = {}) {
+  const name = Buffer.from(filename);
   const compressed = method === 8 ? deflateRawSync(bytes) : bytes;
   const local = Buffer.alloc(30);
   local.writeUInt32LE(0x04034b50); local.writeUInt16LE(method, 8);
@@ -337,6 +338,47 @@ function imageZip(bytes, { method = 0, uncompressedSize = bytes.length } = {}) {
   end.writeUInt32LE(local.length + name.length + compressed.length, 16);
   return Buffer.concat([local, name, compressed, central, name, end]);
 }
+
+test('有效 WebP 经原二进制、JSON、data URL、ZIP 和 MsgPack 保留字节与原生输出格式', async () => {
+  assert.deepEqual(validateImageBytes(webp), { width: 2, height: 2, mimeType: 'image/webp', byteLength: 34 });
+  const input = parseNativeImageRequest({ input: 'synthetic four color pixels', model: 'nai-diffusion-5-full',
+    parameters: { width: 1024, height: 1024, steps: 23, seed: 42, image_format: 'webp' } });
+  const before = structuredClone(input);
+  const responses = [
+    () => new Response(webp, { headers: { 'content-type': 'image/webp' } }),
+    () => new Response(webp, { headers: { 'content-type': 'application/octet-stream' } }),
+    () => Response.json({ images: [{ image: webp.toString('base64') }] }),
+    () => Response.json({ image: 'data:image/webp;base64,' + webp.toString('base64') }),
+    () => new Response(imageZip(webp, { filename: 'image.webp' }), { headers: { 'content-type': 'application/zip' } })
+  ];
+  for (const response of responses) {
+    const { value, calls } = await captured(() => generateNovelAiImage(input, account, env, { forceStream: false }), response);
+    assert.deepEqual(value, { buffer: webp, mimeType: 'image/webp' });
+    assert.equal(calls.length, 1); assert.equal(calls[0].body.parameters.image_format, 'webp');
+    assert.match(calls[0].options.headers.accept, /(?:^|,)image\/webp(?:,|$)/);
+  }
+  const { value, calls } = await captured(() => generateNovelAiImage(input, account, env, { forceStream: true }),
+    () => new Response(nativeImagesMsgpack([webp]), { headers: { 'content-type': 'application/octet-stream' } }));
+  assert.deepEqual(value.buffer, webp); assert.equal(value.mimeType, 'image/webp');
+  assert.equal(calls[0].body.parameters.image_format, 'webp'); assert.equal(calls[0].body.parameters.stream, 'msgpack');
+  assert.deepEqual(input, before);
+});
+
+test('WebP 的 MIME 不匹配和截断仍在各传输边界拒绝', async () => {
+  const responses = [
+    () => new Response(webp, { headers: { 'content-type': 'image/png' } }),
+    () => new Response(png, { headers: { 'content-type': 'image/webp' } }),
+    () => Response.json({ image: 'data:image/png;base64,' + webp.toString('base64') }),
+    () => new Response(webp.subarray(0, -1), { headers: { 'content-type': 'image/webp' } }),
+    () => Response.json({ images: [{ image: webp.subarray(0, -1).toString('base64') }] }),
+    () => new Response(imageZip(webp.subarray(0, -1), { filename: 'image.webp' }), { headers: { 'content-type': 'application/zip' } })
+  ];
+  for (const response of responses) {
+    await captured(() => assert.rejects(generateNovelAiImage(request(), account, env, { forceStream: false })), response);
+  }
+  await captured(() => assert.rejects(generateNovelAiImage(request(), account, env, { forceStream: true })),
+    () => new Response(nativeImagesMsgpack([webp.subarray(0, -1)]), { headers: { 'content-type': 'application/octet-stream' } }));
+});
 
 function grayscalePng(width, height) {
   const chunk = (name, data) => {

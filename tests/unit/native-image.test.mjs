@@ -32,6 +32,19 @@ test('V3、V4、V4.5、V5 模型和最多四张输入均正确保留',()=>{
  rejects(request({}, {model:'nai-diffusion-5-unknown'}));
  rejects(request({width:2048,height:2048}),'像素');
 });
+
+test('Native输出只接受官方png/webp枚举，保留格式及缺省，不扩大动作支持',()=>{
+ assert.equal(parseNativeImageRequest(request()).nativeParameters.image_format,undefined);
+ for(const image_format of ['png','webp']){
+  for(const [action,parameters] of [['generate',{}],['img2img',{image,strength:0.5,noise:0}],['infill',{image,mask:image}]]){
+   const body=request({image_format,...parameters},{action}), before=structuredClone(body);
+   assert.equal(parseNativeImageRequest(body).nativeParameters.image_format,image_format);
+   assert.deepEqual(body,before);
+  }
+ }
+ for(const image_format of ['avif','jpeg','PNG','',true,{},['webp']])rejects(request({image_format}));
+ rejects(request({image_format:'webp',image,mask:image},{action:'infill',model:'nai-diffusion-5-curated'}),'V4.5 Curated');
+});
 test('5C 图生图保留模型，未验证的重绘与参考组合不静默降级',()=>{
  const current='nai-diffusion-5-curated';
  const parsed=parseNativeImageRequest(request({image,strength:0.5,noise:0.1,inpaintImg2ImgStrength:1},{action:'img2img',model:current}));

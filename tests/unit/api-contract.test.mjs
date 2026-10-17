@@ -58,7 +58,7 @@ test('C02：迁移期间保留明确拒绝和 stream 清理，不因 Swagger 新
   const invalid = [
     { input: '' }, { parameters: null }, { url: 'https://untrusted.invalid/image.png' },
     { parameters: { ...request().parameters, prompt: 'a different prompt' } },
-    { parameters: { ...request().parameters, image_format: 'webp' } },
+    { parameters: { ...request().parameters, image_format: 'avif' } },
     { parameters: { ...request().parameters, controlnet_model: 'hed' } },
     { parameters: { ...request().parameters, upscale: { declared_blur_sigma: 0 } } },
     { parameters: { ...request().parameters, lora_unet_weights: { unpriced: 1 } } },

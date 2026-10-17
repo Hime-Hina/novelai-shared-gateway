@@ -8,6 +8,7 @@ import { describeStoredResult, publishStoredResult } from '../../server/result-f
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const image = { buffer: png, mimeType: 'image/png' };
+const webp = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
 const invalid = { code: 'ERR_STORED_RESULT_INVALID' };
 async function fixture() {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-result-files-'));
@@ -56,6 +57,29 @@ test('完整 part 在恢复时验证后发布；没有 part 或 final 才返回 
   await writeFile(partial, png, { mode: 0o600 });
   assert.deepEqual(await publishStoredResult(directory, pending), image);
   assert.deepEqual(await readFile(file), png); await assert.rejects(stat(partial), { code: 'ENOENT' });
+});
+
+test('WebP 以 .webp 和固定 SHA256 发布，重新读取及完整 part 恢复仍是原字节', async () => {
+  const directory = await fixture(), image = { buffer: webp, mimeType: 'image/webp' };
+  const pending = describeStoredResult('img_webp', 'generate', image);
+  assert.deepEqual(pending, { imageId: 'img_webp', file: 'images/img_webp.webp', operation: 'generate',
+    mimeType: 'image/webp', byteLength: 34, sha256: '15a40e7d7f1a5ecb5a783b581f173368fd809699b0565be9714284e8b67f4ead' });
+  assert.equal((await publishStoredResult(directory, pending, webp)).buffer, webp);
+  const reopened = await publishStoredResult(directory, JSON.parse(JSON.stringify(pending)));
+  assert.deepEqual(reopened, image); assert.notEqual(reopened.buffer, webp);
+  assert.deepEqual(await readFile(path.join(directory, pending.file)), webp);
+
+  const recovery = describeStoredResult('img_webp_recover', 'upscale', image);
+  const file = path.join(directory, recovery.file);
+  await writeFile(file + '.part', webp, { mode: 0o600 });
+  assert.deepEqual(await publishStoredResult(directory, recovery), image);
+  assert.deepEqual(await readFile(file), webp); await assert.rejects(stat(file + '.part'), { code: 'ENOENT' });
+  const changed = Buffer.from(webp); changed[changed.length - 1] ^= 1;
+  await writeFile(file, changed);
+  await assert.rejects(publishStoredResult(directory, recovery), invalid);
+  assert.deepEqual(await readFile(file), changed, '不覆盖损坏产物的证据');
+  assert.throws(() => describeStoredResult('img_bad_webp', 'generate', { buffer: webp, mimeType: 'image/png' }), invalid);
+  assert.throws(() => describeStoredResult('img_short_webp', 'generate', { buffer: webp.subarray(0, -1), mimeType: 'image/webp' }), invalid);
 });
 
 test('损坏或截断的 part/final 保留原样，不能被新结果覆盖或当作缺失', async () => {

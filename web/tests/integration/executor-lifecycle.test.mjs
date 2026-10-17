@@ -14,6 +14,7 @@ import { readNativeEvents } from '../../../tests/helpers/native-stream-client.mj
 const webRoot = fileURLToPath(new URL('../../', import.meta.url));
 const executorEntry = fileURLToPath(new URL('../../../executor/.output/server/start.mjs', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+const webp = await readFile(new URL('../../../tests/fixtures/synthetic.webp', import.meta.url));
 // The same valid 128×128 PNG as native-image tests; reference pricing rejects tiny (<100 character) encodings.
 const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAVklEQVR4nO3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOBvAI8AAT4ZY7sAAAAASUVORK5CYII=', 'base64');
 const vibe = Buffer.from([0, 255, 128, 3, 13, 10, 0, 42]);
@@ -217,8 +218,9 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
         await held.promise;
       }
       const encoded = req.url === '/ai/encode-vibe';
-      if (!res.headersSent) res.writeHead(200, { 'content-type': stream || encoded ? 'application/octet-stream' : 'image/png' });
-      res.end(encoded ? vibe : stream ? nativeImagesMsgpack([png]) : png);
+      const image = req.url === '/ai/upscale' || generated.parameters?.image_format === 'webp' ? webp : png;
+      if (!res.headersSent) res.writeHead(200, { 'content-type': stream || encoded ? 'application/octet-stream' : image === webp ? 'image/webp' : 'image/png' });
+      res.end(encoded ? vibe : stream ? nativeImagesMsgpack([image]) : image);
     } else { unexpectedUpstream++; res.writeHead(500); res.end('unexpected synthetic upstream route'); }
   });
   const upstreamPort = await listen(upstream), executorPort = await unusedPort(), nuxtPort = await unusedPort();
@@ -698,14 +700,15 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(proxied.headers[name], direct.headers[name], `${method} ${route}: ${name}`);
       }
     }
-    const assertZip = (response, status = 201) => {
+    const assertZip = (response, status = 201, image = png) => {
       assert.equal(response.status, status, response.body.toString().slice(0, 300));
       assert.match(response.headers['content-type'], /application\/zip/);
       assert.match(response.headers.vary, /(?:^|,\s*)Accept(?:\s*,|$)/i);
       assert.equal(response.body.readUInt32LE(0), 0x04034b50);
       assert.equal(response.body.readUInt16LE(8), 0);
       const offset = 30 + response.body.readUInt16LE(26) + response.body.readUInt16LE(28);
-      assert.deepEqual(response.body.subarray(offset, offset + response.body.readUInt32LE(18)), png);
+      assert.equal(response.body.subarray(30, 30 + response.body.readUInt16LE(26)).toString(), image === webp ? 'image_0.webp' : 'image_0.png');
+      assert.deepEqual(response.body.subarray(offset, offset + response.body.readUInt32LE(18)), image);
     };
     const counts = () => ['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
       .map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
@@ -716,8 +719,10 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(response.status, 406); assert.match(response.headers.vary, /Accept/i);
       }
     }
+    const invalidFormat = nativeBody('unsupported image encoding'); invalidFormat.parameters.image_format = 'avif';
+    assert.equal((await f.request('/ai/generate-image', { body: invalidFormat })).status, 422);
     assert.deepEqual(counts(), beforeUnsupported); assert.equal(f.generations(), 0);
-    const aliasBody = nativeBody('synthetic alias replay'); aliasBody.parameters.seed = -1;
+    const aliasBody = nativeBody('synthetic alias replay'); Object.assign(aliasBody.parameters, { seed: -1, image_format: 'webp' });
     let nativeId;
     for (const route of ['/ai/generate-image', '/v1/ai/generate-image', '/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
       const response = await f.request(route, { body: aliasBody, headers: { 'idempotency-key': 'native-alias-replay' } });
@@ -728,11 +733,12 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.match(response.headers['content-type'], /application\/octet-stream/);
         assert.equal(response.headers['x-nai-image-count'], undefined); assert.equal(response.headers['x-nai-partial'], undefined);
         const events = readNativeEvents(response.body); assert.equal(events.length, 1);
-        assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), png);
-      } else assertZip(response);
+        assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), webp);
+      } else assertZip(response, 201, webp);
     }
     assert.equal(f.generations(), 1); assert.equal(f.jobs().length, 1);
     const originalCounts = counts(), seed = f.upstreamCalls[0].body.parameters.seed;
+    assert.equal(f.upstreamCalls[0].body.parameters.image_format, 'webp');
     assert.ok(Number.isInteger(seed) && seed >= 0); assert.equal(f.jobs()[0].request.seed, seed);
     for (const [accept, asJson] of [
       ['application/json', true], ['application/zip;q=0.2, application/json; charset=utf-8;q=0.9', true],
@@ -741,9 +747,17 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       const response = await f.request('/v1/ai/generate-image', { body: aliasBody, headers: { accept, 'idempotency-key': 'native-alias-replay' } });
       assert.equal(response.headers['x-nai-request-id'], nativeId); assert.equal(response.headers['x-nai-image-count'], '1');
       assert.equal(response.headers['x-nai-partial'], 'false'); assert.match(response.headers.vary, /Accept/i);
-      if (asJson) assert.deepEqual(json(response, 201).images, [{ image: png.toString('base64'), index: 0, seed }]);
-      else assertZip(response);
+      if (asJson) assert.deepEqual(json(response, 201).images, [{ image: webp.toString('base64'), index: 0, seed }]);
+      else assertZip(response, 201, webp);
     }
+    const generated = json(await f.request('/api/jobs/' + f.jobs()[0].id));
+    const signed = new URL(generated.imageUrl, publicOrigin);
+    for (const response of [await call(f.nuxtBase, signed.pathname + signed.search), await f.request(`/api/jobs/${generated.id}/content`)]) {
+      assert.equal(response.status, 200); assert.match(response.headers['content-type'], /image\/webp/); assert.deepEqual(response.body, webp);
+    }
+    const conflict = await f.request('/ai/generate-image', { body: { ...aliasBody, parameters: { ...aliasBody.parameters, image_format: 'png' } },
+      headers: { 'idempotency-key': 'native-alias-replay' } });
+    assert.equal(conflict.status, 409);
     assert.deepEqual(counts(), originalCounts); assert.equal(f.generations(), 1);
 
     const input = { ...nativeBody('synthetic multipart reference'), model: 'nai-diffusion-3' };
@@ -784,12 +798,12 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.match(claim.headers['content-type'], /application\/octet-stream/);
     assert.equal((await f.request(`/api/jobs/${vibeJob.id}/content`, { member: 1 })).status, 403);
     for (const route of ['/ai/upscale', '/v1/ai/upscale']) {
-      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200);
+      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200, webp);
     }
     const beforeUpscaleReplay = counts();
     const upscaled = await f.request('/v1/ai/upscale', { body: { image: png.toString('base64') },
       headers: { accept: 'application/json; charset=utf-8', 'idempotency-key': 'upscale-alias-replay' } });
-    assert.deepEqual(json(upscaled).images.map(({ image, index }) => ({ image, index })), [{ image: png.toString('base64'), index: 0 }]);
+    assert.deepEqual(json(upscaled).images.map(({ image, index }) => ({ image, index })), [{ image: webp.toString('base64'), index: 0 }]);
     assert.match(upscaled.headers.vary, /Accept/i); assert.deepEqual(counts(), beforeUpscaleReplay);
     assert.equal(f.generations(), 4); assert.equal(f.jobs().length, 4);
     assert.equal(f.observations.length, 0, 'stream and binary tests must bypass the buffering fault relay'); f.checkStorage();

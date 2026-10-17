@@ -116,6 +116,8 @@ systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_
 
 提供 `GET /user/subscription`、`/v1/user/subscription`、`/ai/user/subscription` 和 `/v1/ai/user/subscription`，只返回调用者自己的 Anlas、V5 余量和当前恢复速度，不公开上游总钱包。
 
+Native 的 `parameters.image_format` 接受 `png` 或 `webp`，省略时保持原有行为。响应保留上游图片的原始字节；ZIP文件名和下载MIME随实际格式变化，同一幂等键改格式会返回409。
+
 小白盒等客户端请求 `/ai/generate-image-stream` 时，网关实时转发 MessagePack `intermediate` 预览，并在每张图片保存、账本结算后发送 `final` 帧，无需等待整批完成。帧有4字节大端长度前缀，图片字段为二进制；预览沿用上游 `step_ix`，多图使用批次内的 `samp_ix`。慢连接可能跳过预览；断线不取消已受理任务，可以通过任务记录或同一幂等键领取最终结果。当前没有排队心跳，长时间排队仍需客户端和反向代理设置足够的超时；SSE协商仍待适配。
 
 Native 请求同时支持 `application/json` 与 `multipart/form-data`。multipart 的 `request` 部件可为 JSON 字符串或 JSON 文件，图片部件必须由请求明确引用。总请求上限 32 MiB，单张附件上限 8 MiB。自动角色布局的空坐标按中心点兼容；显式手动坐标仍严格验证。支持桌面客户端的 `uc_preset`／`quality_toggle` 别名；与标准字段同时填写时必须一致。未知参数错误只列出有限字段名，不回显内容。
@@ -189,4 +191,4 @@ pnpm --filter @novelai-gateway/web test
 
 初始化和启动使用 `pnpm run bootstrap`、`pnpm start`。已有 npm 布局切换时，在测试停止后移走旧 `node_modules` 再冻结安装，保留旧目录以便回退；不混用 npm 锁文件。systemd 可继续直接运行 Node 入口，无需套包管理器。安装方式与平台要求见 [pnpm 10 官方文档](https://pnpm.io/10.x/installation)。
 
-测试集中在 `tests/unit/` 和 `tests/integration/`，合成样本及共享辅助代码分别位于 `tests/fixtures/`、`tests/helpers/`。测试使用合成账户、合成图片与临时目录，不调用官方生图。计价包含 184 个固定的官网报价样例，仓库只保存测试参数和数字结果，不依赖本机的官网脚本副本。HTTP 集成测试会启动本机模拟上游与独立网关，核对初始化、成员登录、ZIP／MessagePack、扣费、退款及持久化；临时数据保留在系统临时目录，便于复核。不要用生产数据运行初始化测试，也不要把测试临时凭据或运行日志上传。
+测试集中在 `tests/unit/` 和 `tests/integration/`，合成样本及共享辅助代码分别位于 `tests/fixtures/`、`tests/helpers/`。测试使用合成账户、合成图片与临时目录，不调用官方生图。计价包含 184 个固定的官网基础报价样例和 12 组 PNG/WebP 成对样例，仓库只保存测试参数和数字结果，不依赖本机的官网脚本副本。HTTP 集成测试会启动本机模拟上游与独立网关，核对初始化、成员登录、ZIP／MessagePack、扣费、退款及持久化；临时数据保留在系统临时目录，便于复核。不要用生产数据运行初始化测试，也不要把测试临时凭据或运行日志上传。

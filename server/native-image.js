@@ -260,7 +260,7 @@ export function parseNativeImageRequest(body) {
   if (!samplers.has(parameters.sampler)) fail(422, '不支持该采样器。');
   parameters.noise_schedule ??= 'karras';
   if (!['native', 'karras', 'exponential', 'polyexponential'].includes(parameters.noise_schedule)) fail(422, '不支持该噪声调度器。');
-  if (parameters.image_format !== undefined && parameters.image_format !== 'png') fail(422, '网关目前仅支持 PNG 输出。');
+  if (parameters.image_format !== undefined && !['png', 'webp'].includes(parameters.image_format)) fail(422, '图片输出格式仅支持 png 或 webp。');
   const v3 = baseModel.endsWith('-3'), v5 = baseModel.startsWith('nai-diffusion-5-');
   if (parameters.autoSmea) fail(422, '暂不支持自动选择 SMEA；请在客户端明确选择 sm / sm_dyn。');
   if (!v3 && (parameters.sm || parameters.sm_dyn || parameters.autoSmea)) fail(422, '当前模型不支持 SMEA；请关闭该选项。');

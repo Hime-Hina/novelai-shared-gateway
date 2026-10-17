@@ -12,9 +12,11 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota } from '../../server/fair-quota.js';
 import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+const webp = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
 const body = (seed, count) => ({ input: 'synthetic batch', model: 'nai-diffusion-4-5-full', action: 'generate',
   parameters: { width: 1024, height: 1024, steps: 23, seed, n_samples: count } });
 async function listen(server) {
@@ -67,7 +69,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
     const payload = JSON.parse(Buffer.concat(chunks));
     const seed = payload.parameters.seed;
     calls.push(seed);
-    upstreamEvent(seed, 'received');
+    upstreamEvent(seed, 'received', { imageFormat: payload.parameters.image_format });
     res.once('close', () => upstreamEvent(seed, 'closed', { finished: res.writableFinished }));
     if ([100, 300, 400].includes(seed)) {
       await new Promise(resolve => releases.set(seed, resolve));
@@ -80,8 +82,9 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
       return;
     }
     upstreamEvent(seed, 'response', { status: 200 });
-    res.writeHead(200, { 'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : 'image/png' });
-    res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
+    const image = payload.parameters.image_format === 'webp' ? webp : png;
+    res.writeHead(200, { 'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : image === webp ? 'image/webp' : 'image/png' });
+    res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([image]) : image);
   });
   const upstreamPort = await listen(upstream);
   const portReservation = http.createServer();
@@ -176,8 +179,8 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
     await new Promise(resolve => upstream.close(resolve));
   });
   await start();
-  const post = (value, member = 0, { accept, key } = {}) => {
-    const pending = fetch(base + '/ai/generate-image', { method: 'POST',
+  const post = (value, member = 0, { accept, key, route = '/ai/generate-image' } = {}) => {
+    const pending = fetch(base + route, { method: 'POST',
       headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json',
         ...(accept ? { accept } : {}), ...(key ? { 'Idempotency-Key': key } : {}) },
       body: JSON.stringify(value), signal: AbortSignal.timeout(90000) });
@@ -190,8 +193,12 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   assert.equal(rejected.status, 406); await rejected.json();
   assert.equal(rows().length, 0); assert.equal(calls.length, 0);
   assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 0);
+  const invalidFormat = body(50, 1); invalidFormat.parameters.image_format = 'avif';
+  const invalidResponse = await post(invalidFormat); assert.equal(invalidResponse.status, 422); await invalidResponse.json();
+  assert.equal(rows().length, 0); assert.equal(calls.length, 0);
 
   const aBody = body(100, 4), bBody = body(4294967295, 2);
+  bBody.parameters.image_format = 'webp';
   const aKey = 'partial-batch-format-replay', bKey = 'complete-batch-format-replay';
   const a = post(aBody, 0, { key: aKey });
   await until(() => calls.includes(100), 'A1 reaches mock upstream');
@@ -208,10 +215,11 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   assert.equal(aResponse.status, 200);
   assert.equal(bResponse.status, 201); assert.match(bResponse.headers.get('content-type'), /application\/json/);
   const bResult = await observed(bResponse.json(), 'B JSON response body');
-  assert.deepEqual(bResult.images, [{ image: png.toString('base64'), index: 0, seed: 4294967295 }, { image: png.toString('base64'), index: 1, seed: 0 }]);
+  assert.deepEqual(bResult.images, [{ image: webp.toString('base64'), index: 0, seed: 4294967295 }, { image: webp.toString('base64'), index: 1, seed: 0 }]);
   assert.equal(bResult.requested, 2); assert.equal(bResult.completed, 2); assert.equal(bResult.remaining, 0);
   // A1 → B1 → A2 仍先于 B2，不能让任一多图批次独占队列。
   assert.deepEqual(calls, [100, 4294967295, 101, 0]);
+  assert.deepEqual(upstreamEvents.filter(event => event.event === 'received' && [4294967295, 0].includes(event.seed)).map(event => event.imageFormat), ['webp', 'webp']);
   assert.equal(aResponse.headers.get('x-nai-partial'), 'true');
   const entries = zipEntries(Buffer.from(await observed(aResponse.arrayBuffer(), 'A partial ZIP body')));
   assert.deepEqual(entries.get('image_0.png'), png);
@@ -260,7 +268,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   const coldZip = await post(bBody, 1, { accept: 'application/zip', key: bKey });
   assert.equal(coldZip.status, 201); assert.equal(coldZip.headers.get('x-nai-request-id'), bId);
   const coldEntries = zipEntries(Buffer.from(await coldZip.arrayBuffer()));
-  assert.deepEqual(coldEntries.get('image_0.png'), png); assert.deepEqual(coldEntries.get('image_1.png'), png);
+  assert.deepEqual(coldEntries.get('image_0.webp'), webp); assert.deepEqual(coldEntries.get('image_1.webp'), webp);
   const { images: _images, ...bSummary } = bResult;
   assert.deepEqual(JSON.parse(coldEntries.get('results.json')), bSummary);
   // 真实客户端在收到 JSON 响应头后断开，不取消已完成任务或退还已结算额度。
@@ -275,6 +283,25 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   });
   const coldJson = await post(bBody, 1, { accept: 'application/json', key: bKey });
   assert.equal(coldJson.status, 201); assert.deepEqual(await coldJson.json(), bResult);
+  const coldStream = await post(bBody, 1, { key: bKey, route: '/v1/ai/generate-image-stream' });
+  assert.equal(coldStream.status, 200);
+  const coldFrames = readNativeEvents(Buffer.from(await coldStream.arrayBuffer()));
+  assert.deepEqual(coldFrames.map(frame => [frame.event_type, frame.samp_ix]), [['final', 0], ['final', 1]]);
+  for (const frame of coldFrames) assert.deepEqual(Buffer.from(frame.image), webp);
+  for (const job of bRows) {
+    const headers = { authorization: `Bearer ${credentials[1].api_key}` };
+    const snapshot = await (await fetch(base + '/api/jobs/' + job.id, { headers })).json();
+    for (const [route, options] of [[snapshot.imageUrl, {}], ['/api/jobs/' + job.id + '/content', { headers }]]) {
+      const image = await fetch(new URL(route, base), options); assert.equal(image.status, 200);
+      assert.match(image.headers.get('content-type'), /image\/webp/); assert.deepEqual(Buffer.from(await image.arrayBuffer()), webp);
+    }
+  }
+  const beforeConflict = ['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+    .map(table => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+  const conflict = await post({ ...bBody, parameters: { ...bBody.parameters, image_format: 'png' } }, 1, { key: bKey });
+  assert.equal(conflict.status, 409); await conflict.json();
+  assert.deepEqual(['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+    .map(table => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), beforeConflict);
   assert.equal(calls.length, beforeReplay); assert.deepEqual(bSettlements(), settledB);
 
   // 缩短的只是同步等待期限，不能把 504 当成任务取消或业务排队过期。
@@ -291,6 +318,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   assert.equal(calls.filter(seed => seed === 400).length, 1);
 
   const stored = JSON.parse(audit.prepare('SELECT data FROM images WHERE id = ?').get(bRows[0].imageId).data);
+  assert.equal(stored.mimeType, 'image/webp'); assert.match(stored.file, /\.webp$/);
   const artifact = path.resolve(dataDir, stored.file);
   assert.ok(artifact.startsWith(path.join(dataDir, 'images') + path.sep));
   await rename(artifact, artifact + '.missing-for-test');

@@ -1,0 +1,413 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-10-17",
+  "sources": [
+    {
+      "url": "https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1",
+      "sha256": "334fe5dd5ba29bfd8a69d2c356a69e6101918b308e8a438ee53acb5bf1026349"
+    },
+    {
+      "url": "https://novelai.net/_next/static/chunks/1kcqqvyilqyxf.js?dpl=b50892a-38995131626-1",
+      "sha256": "a1119589b74951a4edacfc0986fa59427b3eba714abe523af3d278f713e78b2c"
+    },
+    {
+      "url": "https://novelai.net/_next/static/chunks/3o-ef50z217x7.js?dpl=b50892a-38995131626-1",
+      "sha256": "0db37a451a59249df65476f5f417290df8fb29175fcb1a904e49c3545e185730"
+    }
+  ],
+  "functions": [
+    "checkStableDiffusionPrice",
+    "checkUpscalePrice",
+    "vtAdditionalPrice",
+    "modelGroup",
+    "getModelSupportInfo",
+    "imageIsOpusFree",
+    "subscriptionIsActive"
+  ],
+  "pureFunctionsSha256": "224db52958d5456136dbd743b5801f9ea441cecb1f7316f615e8ad3a56efe4f9",
+  "priorBaseline": {
+    "file": "official-image-pricing-20261009.json",
+    "sourceModuleSha256": "321809d048e761a34649c0ac4c9c103dbfa84f127ff78a98d47675d04f39f4dd",
+    "compared": 184,
+    "matched": 184
+  },
+  "accountContext": {
+    "now": 1792195200000,
+    "subscription": {
+      "tier": 3,
+      "active": true,
+      "accountType": 0,
+      "expiresAt": 1792281600,
+      "usage": {
+        "isNegative": false
+      }
+    }
+  },
+  "method": "Only reviewed pure function expressions and verified literal constants were evaluated offline. The complete bundles were not executed. Current subscriptionIsActive requires expiry/accountType, so the old active:true sample context was supplemented with fixed-time valid RETAIL metadata. Each png/webp result was independently recomputed; a property-read probe confirmed neither format was inspected.",
+  "note": "Fixed client quote evidence, not a live NAI billing guarantee. V5 percentage usage remains a separate local estimate. Base generation excludes reference surcharges; Vibe uses the official count helper, Precise uses the separately published fixed surcharge.",
+  "preciseSurcharge": {
+    "source": "https://docs.novelai.net/en/image/precisereference/",
+    "anlasPerReference": 5
+  },
+  "parameterReads": [
+    "characterRef",
+    "height",
+    "image",
+    "inpaintImg2ImgStrength",
+    "mask",
+    "n_samples",
+    "sm",
+    "sm_dyn",
+    "steps",
+    "strength",
+    "width"
+  ],
+  "cases": [
+    {
+      "id": "v3-paid",
+      "model": "nai-diffusion-3",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 29,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 21,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 21
+        },
+        "webp": {
+          "generationAnlas": 21,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 21
+        }
+      }
+    },
+    {
+      "id": "v3-smea-dyn",
+      "model": "nai-diffusion-3",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "sm": true,
+        "sm_dyn": true,
+        "width": 1024,
+        "height": 1024,
+        "steps": 29,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 30,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 30
+        },
+        "webp": {
+          "generationAnlas": 30,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 30
+        }
+      }
+    },
+    {
+      "id": "v4-free",
+      "model": "nai-diffusion-4-5-full",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 23,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 0,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 0
+        },
+        "webp": {
+          "generationAnlas": 0,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 0
+        }
+      }
+    },
+    {
+      "id": "v5-anlas-fallback",
+      "model": "nai-diffusion-5-full",
+      "action": "generate",
+      "forceAnlas": true,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 23,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 26,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 26
+        },
+        "webp": {
+          "generationAnlas": 26,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 26
+        }
+      }
+    },
+    {
+      "id": "v5-curated-paid",
+      "model": "nai-diffusion-5-curated",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 29,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 32,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 32
+        },
+        "webp": {
+          "generationAnlas": 32,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 32
+        }
+      }
+    },
+    {
+      "id": "medium-anlas-fallback",
+      "model": "nai-diffusion-5-full-medium",
+      "action": "generate",
+      "forceAnlas": true,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 14,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 18,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 18
+        },
+        "webp": {
+          "generationAnlas": 18,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 18
+        }
+      }
+    },
+    {
+      "id": "img2img",
+      "model": "nai-diffusion-4-5-full",
+      "action": "img2img",
+      "forceAnlas": false,
+      "parameters": {
+        "image": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "strength": 0.7,
+        "noise": 0,
+        "width": 1024,
+        "height": 1024,
+        "steps": 29,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 15,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 15
+        },
+        "webp": {
+          "generationAnlas": 15,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 15
+        }
+      }
+    },
+    {
+      "id": "infill",
+      "model": "nai-diffusion-4-5-full-inpainting",
+      "action": "infill",
+      "forceAnlas": false,
+      "parameters": {
+        "image": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "mask": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "img2img": {
+          "strength": 0.25,
+          "color_correct": true
+        },
+        "width": 1536,
+        "height": 1024,
+        "steps": 23,
+        "n_samples": 1,
+        "inpaintImg2ImgStrength": 0.25
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 7,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 7
+        },
+        "webp": {
+          "generationAnlas": 7,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 7
+        }
+      }
+    },
+    {
+      "id": "medium-img2img",
+      "model": "nai-diffusion-5-full-medium",
+      "action": "img2img",
+      "forceAnlas": true,
+      "parameters": {
+        "image": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "strength": 0.5,
+        "width": 1024,
+        "height": 1024,
+        "steps": 14,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 9,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 9
+        },
+        "webp": {
+          "generationAnlas": 9,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 9
+        }
+      }
+    },
+    {
+      "id": "medium-infill",
+      "model": "nai-diffusion-5-full-medium-inpainting",
+      "action": "infill",
+      "forceAnlas": true,
+      "parameters": {
+        "image": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "mask": "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+        "img2img": {
+          "strength": 0.5
+        },
+        "width": 1024,
+        "height": 1024,
+        "steps": 14,
+        "n_samples": 1,
+        "inpaintImg2ImgStrength": 0.5
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 9,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 9
+        },
+        "webp": {
+          "generationAnlas": 9,
+          "vibeAnlas": 0,
+          "preciseAnlas": 0,
+          "totalAnlas": 9
+        }
+      }
+    },
+    {
+      "id": "vibe-reference",
+      "model": "nai-diffusion-4-5-full",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 23,
+        "n_samples": 1,
+        "reference_image_multiple": [
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA=="
+        ]
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 0,
+          "vibeAnlas": 8,
+          "preciseAnlas": 0,
+          "totalAnlas": 8
+        },
+        "webp": {
+          "generationAnlas": 0,
+          "vibeAnlas": 8,
+          "preciseAnlas": 0,
+          "totalAnlas": 8
+        }
+      }
+    },
+    {
+      "id": "precise-reference",
+      "model": "nai-diffusion-4-5-full",
+      "action": "generate",
+      "forceAnlas": false,
+      "parameters": {
+        "director_reference_images": [
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==",
+          "eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA==eA=="
+        ],
+        "width": 1024,
+        "height": 1024,
+        "steps": 23,
+        "n_samples": 1
+      },
+      "results": {
+        "png": {
+          "generationAnlas": 0,
+          "vibeAnlas": 0,
+          "preciseAnlas": 10,
+          "totalAnlas": 10
+        },
+        "webp": {
+          "generationAnlas": 0,
+          "vibeAnlas": 0,
+          "preciseAnlas": 10,
+          "totalAnlas": 10
+        }
+      }
+    }
+  ]
+}

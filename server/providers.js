@@ -206,7 +206,7 @@ async function generateNovelAiImageRequest(request, account, env, options) {
     headers: {
       authorization: `Bearer ${account.token}`,
       'content-type': 'application/json',
-      accept: 'application/x-zip-compressed,image/png,application/json',
+      accept: 'application/x-zip-compressed,image/png,image/webp,application/json',
       origin: 'https://novelai.net',
       referer: 'https://novelai.net/',
       'x-correlation-id': correlationId,
@@ -249,7 +249,7 @@ async function generateNovelAiImageOperation(request, account, env, options = {}
     headers: {
       authorization: `Bearer ${account.token}`,
       'content-type': 'application/json',
-      accept: request.operation === 'encode-vibe' ? 'application/octet-stream' : 'application/x-zip-compressed,image/png,application/json',
+      accept: request.operation === 'encode-vibe' ? 'application/octet-stream' : 'application/x-zip-compressed,image/png,image/webp,application/json',
       origin: 'https://novelai.net',
       referer: 'https://novelai.net/',
       'x-correlation-id': correlationId,

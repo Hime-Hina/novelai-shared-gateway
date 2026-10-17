@@ -186,3 +186,25 @@ test('Medium 计价与官网固定报价结果一致：固定 14 步、18 Anlas 
  const free=quoteNativeRequest(medium);assert.equal(free.resource,'v5');assert.equal(free.estimated,true);assert.ok(Math.abs(free.amount/quoteNativeRequest(high).amount-0.58)<1e-12);
  assert.throws(()=>quoteNativeRequest({...medium,steps:23}),/固定 14 步/);
 });
+
+test('官网独立格式配对校准：PNG和WebP不改变已有生成与参考费用',()=>{
+ const formats=JSON.parse(readFileSync(new URL('../fixtures/official-image-format-pricing-20261017.json',import.meta.url),'utf8'));
+ assert.equal(formats.cases.length,12);
+ for(const sample of formats.cases){
+  const quotes=[];
+  for(const format of ['png','webp']){
+   const p={...sample.parameters,image_format:format};
+   const request={model:sample.model,action:sample.action,width:p.width,height:p.height,steps:p.steps,nativeParameters:p};
+   const quote=quoteNativeRequest(request,{forceAnlas:sample.forceAnlas});
+   const expected=sample.results[format];
+   assert.equal(quote.amount,expected.totalAnlas,`${sample.id}/${format}`);
+   assert.deepEqual(quote.breakdown,{generation:expected.generationAnlas,vibe:expected.vibeAnlas,precise:expected.preciseAnlas});
+   quotes.push(quote);
+  }
+  assert.deepEqual(quotes[0],quotes[1],sample.id);
+ }
+ // 官网函数返回的是 Anlas；V5 百分点仍是本地估算，只验证格式不影响现有估算。
+ const v5=input({model:'nai-diffusion-5-full',nativeParameters:{image_format:'png'}});
+ const png=quoteNativeRequest(v5),webp=quoteNativeRequest({...v5,nativeParameters:{image_format:'webp'}});
+ assert.equal(png.resource,'v5');assert.equal(png.estimated,true);assert.deepEqual(webp,png);
+});

@@ -964,7 +964,7 @@ async function handleNativeAuxiliary(req, res, operation) {
   if (json) { await sendNativeJson(res, 200, [{ saved: result.saved }]); return; }
   const buffer = await readStoredImage(result.saved);
   if (operation === 'encode-vibe') sendImage(res, 201, 'application/binary', buffer, { 'cache-control': 'no-store' });
-  else sendImage(res, 200, 'application/zip', nativeImageZip(buffer), { 'cache-control': 'no-store' });
+  else sendImage(res, 200, 'application/zip', nativeImageZip(buffer, `image_0.${imageExtension(result.saved.mimeType || '')}`), { 'cache-control': 'no-store' });
 }
 
 async function acceptOpenAiRequest(req) {

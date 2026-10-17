@@ -47,7 +47,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 种子 | 安全非负整数取模 `2^32`；省略或 -1 随机确定一次 | 小数、低于 -1、不安全整数 422；多图只在此初始种子上递增 |
 | 采样器 | `k_euler`、`k_euler_ancestral`、`k_dpmpp_2m`、`k_dpmpp_2m_sde`、`k_dpmpp_2s_ancestral`、`k_dpmpp_sde`、`k_dpm_2`、`k_dpm_2_ancestral`、`k_dpm_adaptive`、`ddim`、`ddim_v3`、`k_lms` | 默认 `k_dpmpp_2m_sde`；名单表示网关校验接受，并非对每个模型做过上游组合验证 |
 | 引导/调度 | `scale=0..10`，`cfg_rescale=0..1`；调度为 native/karras/exponential/polyexponential，默认 karras | 负面提示 `negative_prompt/uc` 最多 50000 字符；缺少前者时取后者 |
-| 输出/流 | 可省略或 `image_format='png'`；客户端 `parameters.stream` 被移除 | WebP 输出明确 422；客户端 stream 的值不决定出站媒体类型；V4/V5 上游默认请求 msgpack |
+| 输出/流 | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游，省略时不注入新默认值；客户端 `parameters.stream` 被移除 | 其他输出格式422；客户端stream的值不决定出站媒体类型；V4/V5上游默认请求msgpack |
 | 图生图/重绘 | PNG/JPEG/WebP base64 输入，图片实际尺寸必须等于请求尺寸；strength/noise 0..1；重绘要求同尺寸 PNG mask | 不下载图片 URL；遮罩仅在 infill 有效；图生图/重绘不允许 SMEA；文生图无效的默认 strength/noise 滑块会清理 |
 | 多角色 | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点 | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构 |
 | SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | autoSmea 启用、其他模型启用、图生图启用均 422 |
@@ -109,6 +109,14 @@ C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 源码 [d3cacff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d3cacff) 的 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39010558702)全部通过：后端491、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，无跳过。真实HTTP门闩验证预览先于上游完成、首张final先于第二张派发且已结算、批次样本编号、预览后断流退款，以及Nuxt客户端断线后付费任务继续且同键重取不重复派发/扣费。类型检查、113文件语法和三个业务镜像构建通过；没有真实NAI调用或生产切换。
 
 Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。本轮只接入上述已核实的MessagePack事件；客户端stream值与Accept协商尚未消解，C03-02整体仍未完成，也没有新增排队心跳。
+
+### C03-03 WebP 输出
+
+官方 `image.ImageFormat` 枚举列出png/webp，未声明模型或动作条件。已核实的[官方网页包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)构造生成请求时使用WebP，PNG保存偏好在收到图片后转换；这说明当前网页的使用方式，不等于所有模型/动作的实测保证。Native入口现接受两种枚举，保留已有模型、参考、遮罩和尺寸限制；未新增自动转码或客户端格式选择器。
+
+2026-10-17审阅的[当前官方报价模块](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)及所需纯依赖没有读取`image_format`。隔离执行已审阅的纯函数，旧184条报价结果全部吻合，12组PNG/WebP成对结果一致，覆盖免费、付费、V5续用、Medium、图生图/重绘及参考附加费；[固定格式样本](../tests/fixtures/official-image-format-pricing-20261017.json)记录公开来源、哈希、合成账户和每组结果。当前资格函数要求到期时间，校准使用固定时钟与有效的合成RETAIL订阅；没有执行完整网页包或调用真实生图。此证据支持保持现有报价规则，不能替代上游逐笔账单；V5百分点继续明确为本地估算。
+
+结果验证、存储和领取复用原有实际媒体类型识别，保留原始WebP字节。普通生成与放大ZIP均按实际MIME命名，WebP使用`.webp`；JSON仍是base64，MessagePack仍是binary。格式属于持久请求指纹，同一幂等键改格式返回409；冷历史重启后格式与结果不变。WebP验证仍是结构检查，不宣称完整像素解码；合成测试图另由图像库实际解码核对。
 
 ## 错误与安全边界
 
@@ -223,7 +231,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | --- | --- | --- |
 | C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | 已接入实时MessagePack预览与逐张final；客户端stream与Accept协商尚未消解 | 补齐SSE事件证据与协商，分别验证断流、部分失败；当前切片不代表整项完成 |
-| C03-03 | 官方 URL、WebP、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大尚未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
+| C03-03 | WebP已接入；官方URL、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大仍未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
 | C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |
 | C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
 | C03-06 | Vibe内部编码不可由公开schema验证；官方未给幂等生成/结果重取契约 | 维持opaque产物和任务证据，不能宣称任意断电后精确一次上游消费或凭correlation-id找回 |
