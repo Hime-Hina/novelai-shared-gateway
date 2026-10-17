@@ -3983,20 +3983,6 @@ function uniqueMergedFromEntries(entries = []) {
   return selected;
 }
 
-function publicCard(card) {
-  return {
-    id: card.id,
-    code: card.code,
-    credits: card.credits,
-    used: Boolean(card.usedBy),
-    usedBy: card.usedBy ? maskToken(card.usedBy) : '',
-    usedAt: card.usedAt || '',
-    createdAt: card.createdAt,
-    expiresAt: card.expiresAt || '',
-    note: card.note || ''
-  };
-}
-
 function publicAccount(account, options = {}) {
   return {
     id: account.id,
@@ -4447,19 +4433,6 @@ function requestStatsSince(jobs, rangeMs) {
   return { total };
 }
 
-function accountStatsSince(accountId, jobs, rangeMs) {
-  const since = Date.now() - rangeMs;
-  return finalizeStats(jobs.reduce((stats, job) => {
-    if (isQuotaFailureJob(job)) return stats;
-    if (job.accountId !== accountId) return stats;
-    const createdAt = Date.parse(job.createdAt || '');
-    if (!createdAt || createdAt < since) return stats;
-    if (job.status === 'done') stats.done += 1;
-    if (job.status === 'failed') stats.failed += 1;
-    return stats;
-  }, { done: 0, failed: 0 }));
-}
-
 function accountStatsMapSince(jobs, rangeMs) {
   const since = Date.now() - rangeMs;
   const map = new Map();
@@ -4490,27 +4463,6 @@ function finalizeStats(stats) {
     failed,
     total,
     successRate: total ? done / total : 0
-  };
-}
-
-function publicImage(image) {
-  return {
-    id: image.id,
-    imageUrl: publicImageUrl(image.id),
-    token: maskToken(image.token || ''),
-    accountId: image.accountId || '',
-    prompt: image.prompt || '',
-    fullPrompt: image.fullPrompt || '',
-    model: image.model || '',
-    width: image.width || 0,
-    height: image.height || 0,
-    requestedSteps: image.requestedSteps ?? image.routedSteps ?? 0,
-    routedSteps: image.routedSteps ?? image.requestedSteps ?? 0,
-    cost: image.cost || 1,
-    accountCost: image.accountCost || 0,
-    mock: Boolean(image.mock),
-    mimeType: image.mimeType || '',
-    createdAt: image.createdAt || ''
   };
 }
 

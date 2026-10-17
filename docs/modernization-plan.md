@@ -158,6 +158,8 @@ T01第一片：shared-capacity迁为严格TypeScript，显式定义本模块读�
 
 T01首片完整本机复验：修正前述队列夹具后重新执行全部后端511项，507通过、4项Windows平台跳过、0失败；最后的根/执行器Linux镜像均构建通过，执行器在断网只读根目录、默认UID1000下HTTP3/3无跳过。完整Linux CI另按提交记录，尚未把单模块迁移记为整个T01完成。
 
+C01第一片：删除gateway-runtime中仅有定义、全仓源码/测试均无引用且未导出的publicCard、accountStatsSince和publicImage，共48行；它们只构造对象或纯聚合，没有初始化副作用。保留实际调用的签名图片链接、批量账户统计及共享遮罩工具。112文件语法、根严格编译、入口导入/成员路由/owner管理10/10通过，无新测试框架、依赖或数据迁移。其余清理随相关类型迁移继续，不将删除三处函数作为整个C01完成证明。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
