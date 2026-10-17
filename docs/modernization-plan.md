@@ -152,6 +152,8 @@ C03-06已完成协议边界核对：固定Swagger中没有可依赖的幂等生�
 
 C03-04 生成错误公开边界：失败/取消、等待通知、任务与父请求DTO、错误图片、SSE及部分结果共用固定分类文案；上游原文、帧内容和标准文件系统路径不再进入这些成员响应。旧任务读取也受保护，但不改写历史诊断；管理员errorDetail及本地参数校验保持。先由真实HTTP复现旧错误路径、stat路径和上游正文三处泄漏，修复后HTTP17/17、账务/冷却/恢复31/31、额外冷却/取消/连接15/15通过，源码语法与差异检查通过；覆盖已发首帧的部分失败、同键JSON领取、退款与已成功图片各自账目。中间一次新增fixture缺updatedAt导致管理员查询断言失败，补齐该测试时间字段后全通过，未改变业务过滤或放宽240秒测试截止。完整上游状态矩阵未新增，保留已核对的共享网关映射；最终Linux验收继续记录。无schema、依赖或生产改动。
 
+C03-04测试依赖补修：生成错误保护提交[95d2786](https://github.com/Hime-Hina/novelai-shared-gateway/commit/95d2786)的[首次完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018143309)在两项队列VM测试失败，原因是其截取notifyJobWaiters但漏提供新增的publicErrorMessage依赖。给这两个仅验证提交顺序/冷历史读取的夹具补已有模式的文本转换stub，定向6/6通过；成员错误内容继续由真实HTTP17项验证，不删除断言或更改生产实现。该次失败不记为完整通过，后续完整验收另记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

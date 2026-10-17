@@ -98,7 +98,7 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
 test('等待者补查不通知未提交的取消，已经提交的取消也不会错过', async t => {
   const { store } = await fixture(t);
   const jobWaiters = new Map();
-  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, setMemberAdmission,
+  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, setMemberAdmission, publicErrorMessage: String,
     refundJob: refund, clearJobStreamProgress() {}, scheduleQueueDrain() {} });
   const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters', 'changeMemberAdmission']) {
@@ -194,7 +194,7 @@ test('冷历史 done/failed 的等待者补查立即返回，读取结果不把�
   store.trimRuntimeCollection('jobs', 0);
   assert.equal(store.db.jobs.length, 0);
   const jobWaiters = new Map();
-  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout });
+  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, publicErrorMessage: String });
   const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
