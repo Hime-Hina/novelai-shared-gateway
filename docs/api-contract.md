@@ -124,6 +124,8 @@ Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop
 
 网关只接受与input严格相等的冗余`parameters.prompt`，在克隆参数上删除后继续原校验、报价和入队；不会向上游双写或改变持久请求/幂等指纹。不同内容、null或非字符串返回422，不回显提示词；不在比较前trim，原始空白继续保留。input仍必需，不能用嵌套prompt替代缺失或空白input。这个明确的兼容规则不放开未知的双提示词语义。
 
+WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/novelai-shared-gateway/commit/4cc7ed5)、[ace8a7c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ace8a7c)。[最新Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39012113767)后端497、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型和三个业务镜像构建通过。真实本机HTTP覆盖格式原字节、冷重启和冗余字段增减的同键重取；这些仍是模拟上游结果，没有当作真实NAI协议采样。
+
 ## 错误与安全边界
 
 Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message: <文本>, error: <同一文本> }`。不是官方 `utils.JsonError` 的 `message/statusCode/details` 原样透传。路径不在共享白名单时由通用处理器返回 404，错误外形可能是通用 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
