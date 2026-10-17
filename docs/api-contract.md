@@ -65,7 +65,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 操作 | 接受字段及默认值 | 明确拒绝 |
 | --- | --- | --- |
 | encode-vibe | `image/model/information_extracted/allowPurchasedAnlas`；信息提取比例 0..1，默认 1；模型限 V4/V4.5 四种基础模型 | `mask`（即使为空）、`crop_to_mask`、`focus_seed`、`info_extract_seed`、其他模型/未知字段 |
-| upscale | `image/model/declared_blur_sigma/scale/width/height/allowPurchasedAnlas`；默认模型 `nai-diffusion-5-curated`、blur=0；旧尺寸声明必须与图片一致，scale 如提供只能是 2 | blur 非 0、其他模型、伪造尺寸、输入总像素超过 3145728、未知字段；官方列出的非零 blur 档位尚未适配 |
+| upscale | `image/model/declared_blur_sigma/scale/width/height/allowPurchasedAnlas`；默认模型 `nai-diffusion-5-curated`、blur=0；blur接受0/0.30/0.35/0.40/0.45/0.50；旧尺寸声明必须与图片一致，scale 如提供只能是 2 | 其他blur值、其他模型、伪造尺寸、输入总像素超过3145728、未知字段；不猜测非列举值如何舍入 |
 
 F07 后上游产物在成功结算前验证：图片可从二进制、JSON 或 ZIP 取回；ZIP 检查目录、CRC 与解压边界；流必须有合法最终图片且帧/HTTP 传输完整。结果图片边长上限为 16384，允许已接受的8192边长输入产生两倍放大结果；输入仍限8192，结果总像素仍限16777216。单产物上限 64 MiB，msgpack 流累计上限 256 MiB，不把 HTML/空响应/预览当作成功。Vibe 上游同时接受 `application/binary`（Swagger）和 `application/octet-stream`（现有适配），拒绝明显错误文本；不对其套用图片校验或虚构编码魔数。
 
@@ -129,6 +129,14 @@ SSE采用`event: intermediate/final/error`与单行JSON data，图片为无前�
 网关只接受与input严格相等的冗余`parameters.prompt`，在克隆参数上删除后继续原校验、报价和入队；不会向上游双写或改变持久请求/幂等指纹。不同内容、null或非字符串返回422，不回显提示词；不在比较前trim，原始空白继续保留。input仍必需，不能用嵌套prompt替代缺失或空白input。这个明确的兼容规则不放开未知的双提示词语义。
 
 WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/novelai-shared-gateway/commit/4cc7ed5)、[ace8a7c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ace8a7c)。[最新Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39012113767)后端497、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型和三个业务镜像构建通过。真实本机HTTP覆盖格式原字节、冷重启和冗余字段增减的同键重取；这些仍是模拟上游结果，没有当作真实NAI协议采样。
+
+### C03-03 独立放大 blur 参数
+
+[官方schema](https://image.novelai.net/docs/doc.json)的`image.UpscaleParams.declared_blur_sigma`说明列出0、0.30、0.35、0.40、0.45、0.50，独立`image.UpscaleRequest`注明使用同一参数；这是文字列举，不是JSON schema enum。网关只接受这六个数值，保留缺省归零，不将整个连续区间放开，也不自行舍入。
+
+已核实的[官方纯报价模块](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)中`checkUpscalePrice(width,height,account)`仅按像素选择1/2/3/4 Anlas，不读取blur；现有四档报价保持不变。provider原样传递已验证值，结果验证、存储和ZIP/JSON领取复用已有路径。blur属于任务参数和指纹，同键改变值返回409。
+
+当前官方网页独立放大仍使用常量0，因此非零值只有schema与离线核价依据，不宣称真实视觉效果或逐笔实扣已经验证。此次只使用模拟上游，无付费真实放大请求；不同时开放内联upscale、其他放大模型或图片URL。
 
 ## 错误与安全边界
 

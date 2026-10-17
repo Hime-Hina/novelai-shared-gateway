@@ -376,7 +376,8 @@ export function parseNativeAuxiliaryRequest(body, operation) {
     if (body.model !== undefined && body.model !== 'nai-diffusion-5-curated') fail(422, '不支持此放大模型。');
     if (body.scale !== undefined && body.scale !== 2) fail(422, '当前官方放大接口仅支持 2 倍边长放大。');
     operationParameters.model = 'nai-diffusion-5-curated';
-    operationParameters.declared_blur_sigma = number(body.declared_blur_sigma ?? 0, 0, 0, 'declared_blur_sigma');
+    operationParameters.declared_blur_sigma = number(body.declared_blur_sigma ?? 0, 0, 0.5, 'declared_blur_sigma');
+    if (![0, 0.3, 0.35, 0.4, 0.45, 0.5].includes(operationParameters.declared_blur_sigma)) fail(422, 'declared_blur_sigma 仅支持 0、0.30、0.35、0.40、0.45、0.50。');
     if (image.width * image.height > 3145728) fail(422, '独立放大输入不能超过官方 3145728 像素上限。');
   }
   return { operation, operationParameters, action: operation, model: operationParameters.model, width: image.width, height: image.height, steps: 1, requestedSteps: 1, prompt: operation, tag: operation, artist: '', negative: '', seed: 0, sampleCount: 1, nocache: true };

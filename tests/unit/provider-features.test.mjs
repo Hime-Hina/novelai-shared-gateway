@@ -98,14 +98,17 @@ test('Vibe 编码使用固定上游、共享身份和取消信号，二进制完
 });
 
 test('放大维持官网新版参数并返回图片，不使用客户端URL或自动重试旧付费接口', async () => {
-  const parameters = { image: png.toString('base64'), model: 'nai-diffusion-5-curated', declared_blur_sigma: 0 };
+  const parameters = { image: png.toString('base64'), model: 'nai-diffusion-5-curated', declared_blur_sigma: 0.35 };
   const input = { operation: 'upscale', operationParameters: parameters, url: 'https://untrusted.invalid/steal' };
-  const { calls, value } = await captured(() => generateNovelAiImage(input, account, env));
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://configured-upstream.invalid/ai/upscale');
-  assert.deepEqual(calls[0].body, parameters);
-  assert.equal(value.mimeType, 'image/png');
-  assert.deepEqual(value.buffer, png);
+  for (const declared_blur_sigma of [0, 0.3, 0.35, 0.4, 0.45, 0.5]) {
+    const operationParameters = { ...parameters, declared_blur_sigma };
+    const { calls, value } = await captured(() => generateNovelAiImage({ ...input, operationParameters }, account, env));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://configured-upstream.invalid/ai/upscale');
+    assert.deepEqual(calls[0].body, operationParameters);
+    assert.equal(value.mimeType, 'image/png');
+    assert.deepEqual(value.buffer, png);
+  }
   await captured(async () => {
     await assert.rejects(generateNovelAiImage(input, account, env), error => error.upstreamStatus === 402);
   }, () => new Response('insufficient credits', { status: 402 }));

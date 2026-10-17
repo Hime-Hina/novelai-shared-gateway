@@ -130,7 +130,9 @@ F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长
 
 依赖安装、源码搬迁与数据库迁移按实施阶段和独立提交执行，不因 ORM 评估直接改生产数据库或启动连接生产上游的测试服务。生产地址、主机、数据目录和可用测试入口在部署阶段从实际配置核实；本文不包含真实地址或凭据。
 
-C03-02 的 SSE 切片依据[五次真实免费条件探测](novelai-protocol-probes.md)：缺省SSE，显式msgpack覆盖Accept并返回application/msgpack；SSE使用event/data与base64、final后EOF。复用同一验证和持久任务，最终图按48KiB编码并等待写入；客户端断线只清理等待，格式不入指纹，同键可跨格式领取。纯模块37/37、Native HTTP与冷历史批次15/15、Nuxt实际链路12通过加1项Linux专用跳过，113文件语法和两个服务构建通过；复用已有任务追加8MiB合成PNG的暂停读取、final中途断开及SSE/MessagePack完整重取，派发/结算计数不增；最终Linux CI继续记录。无新依赖或schema；仅明确参数的二进制客户端保持MessagePack，未声明stream的旧客户端会改收SSE，需在测试版验收。普通JSON实测200与Swagger201不同，继续列入C03-04，不据此改动所有操作状态。
+C03-02 的 SSE 切片已提交 [d8afad8](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d8afad8)，依据[五次真实免费条件探测](novelai-protocol-probes.md)：缺省SSE，显式msgpack覆盖Accept并返回application/msgpack；SSE使用event/data与base64、final后EOF。复用同一验证和持久任务，最终图按48KiB编码并等待写入；客户端断线只清理等待，格式不入指纹，同键可跨格式领取。纯模块37/37、Native HTTP与冷历史批次15/15、Nuxt实际链路12通过加1项Linux专用跳过，113文件语法和两个服务构建通过；复用已有任务追加8MiB合成PNG的暂停读取、final中途断开及SSE/MessagePack完整重取，派发/结算计数不增；最终Linux CI继续记录。无新依赖或schema；仅明确参数的二进制客户端保持MessagePack，未声明stream的旧客户端会改收SSE，需在测试版验收。普通JSON实测200与Swagger201不同，继续列入C03-04，不据此改动所有操作状态。
+
+C03-03 的独立放大blur切片仅放开官方文字列出的0、0.30、0.35、0.40、0.45、0.50；保留原缺省/null归零和四档像素报价。复用provider原值透传、结果存储与幂等指纹，不增加依赖或schema。六档解析、非列举值/类型拒绝、八个价格边界与透传等61项定向检查通过，113文件语法通过；Nuxt实际HTTP12通过加1项Linux专用跳过，验证一次放大原值转发、不同Accept同键领取以及改blur的409且五表计数不增；执行器重建通过，最终CI继续记录。非零blur只有schema及模拟验证，不宣称视觉效果或真实实扣已验证，也未发送真实收费放大请求，详见[契约](api-contract.md#c03-03-独立放大-blur-参数)。
 
 ## 仓库与现状
 

@@ -86,7 +86,7 @@ test('C02：辅助操作归一和报价采用固定值，官方尚未适配字�
   const upscale = parseNativeAuxiliaryRequest({ image: png, scale: 2, width: 1, height: 1 }, 'upscale');
   assert.deepEqual(upscale.operationParameters, { image: png, model: 'nai-diffusion-5-curated', declared_blur_sigma: 0 });
   assert.deepEqual(quoteNativeRequest(upscale), { resource: 'anlas', amount: 1, estimated: false, breakdown: { upscale: 1 } });
-  for (const patch of [{ declared_blur_sigma: 0.3 }, { scale: 4 }, { width: 2 }, { model: 'nai-diffusion-4-5-full' }]) {
+  for (const patch of [{ declared_blur_sigma: 0.31 }, { scale: 4 }, { width: 2 }, { model: 'nai-diffusion-4-5-full' }]) {
     assert.throws(() => parseNativeAuxiliaryRequest({ image: png, ...patch }, 'upscale'), error => error.statusCode === 422);
   }
 });

@@ -811,14 +811,20 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     const claim = await f.request(`/api/jobs/${vibeJob.id}/content`); assert.equal(claim.status, 200); assert.deepEqual(claim.body, vibe);
     assert.match(claim.headers['content-type'], /application\/octet-stream/);
     assert.equal((await f.request(`/api/jobs/${vibeJob.id}/content`, { member: 1 })).status, 403);
+    const upscaleBody = { image: png.toString('base64'), declared_blur_sigma: 0.35 };
     for (const route of ['/ai/upscale', '/v1/ai/upscale']) {
-      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200, webp);
+      assertZip(await f.request(route, { body: upscaleBody, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200, webp);
     }
     const beforeUpscaleReplay = counts();
-    const upscaled = await f.request('/v1/ai/upscale', { body: { image: png.toString('base64') },
+    const upscaled = await f.request('/v1/ai/upscale', { body: upscaleBody,
       headers: { accept: 'application/json; charset=utf-8', 'idempotency-key': 'upscale-alias-replay' } });
     assert.deepEqual(json(upscaled).images.map(({ image, index }) => ({ image, index })), [{ image: webp.toString('base64'), index: 0 }]);
     assert.match(upscaled.headers.vary, /Accept/i); assert.deepEqual(counts(), beforeUpscaleReplay);
+    const blurConflict = await f.request('/ai/upscale', { body: { ...upscaleBody, declared_blur_sigma: 0.3 },
+      headers: { 'idempotency-key': 'upscale-alias-replay' } });
+    assert.equal(blurConflict.status, 409); assert.deepEqual(counts(), beforeUpscaleReplay);
+    const upscaleCalls = f.upstreamCalls.filter(call => call.path === '/ai/upscale');
+    assert.equal(upscaleCalls.length, 1); assert.equal(upscaleCalls[0].body.declared_blur_sigma, 0.35);
     assert.equal(f.generations(), 4); assert.equal(f.jobs().length, 4);
     assert.equal(f.observations.length, 0, 'stream and binary tests must bypass the buffering fault relay'); f.checkStorage();
   });

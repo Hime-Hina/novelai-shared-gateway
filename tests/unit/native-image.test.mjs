@@ -145,7 +145,19 @@ test('购买点数开关只作为网关授权，普通生成及辅助接口均�
 test('新版与旧版放大均归一为官网 2 倍接口，按实际像素拒绝谎报尺寸',()=>{
  const modern=parseNativeAuxiliaryRequest({image,model:'nai-diffusion-5-curated',declared_blur_sigma:0},'upscale');
  const legacy=parseNativeAuxiliaryRequest({image,width:128,height:128,scale:2},'upscale');assert.deepEqual(modern.operationParameters,legacy.operationParameters);assert.equal(legacy.width,128);
- for(const body of [{image,width:256,height:128,scale:2},{image,scale:4},{image,declared_blur_sigma:0.5},{image,model:'unknown'}])assert.throws(()=>parseNativeAuxiliaryRequest(body,'upscale'),error=>error.statusCode===422);
+ for(const body of [{image,width:256,height:128,scale:2},{image,scale:4},{image,declared_blur_sigma:0.31},{image,model:'unknown'}])assert.throws(()=>parseNativeAuxiliaryRequest(body,'upscale'),error=>error.statusCode===422);
+});
+test('独立放大仅接受官方六档 blur，默认及 null 保持为零',()=>{
+ for(const declared_blur_sigma of [0,0.3,0.35,0.4,0.45,0.5]){
+  const body={image,declared_blur_sigma};
+  const parsed=parseNativeAuxiliaryRequest(body,'upscale');
+  assert.equal(parsed.operationParameters.declared_blur_sigma,declared_blur_sigma);
+  assert.deepEqual(body,{image,declared_blur_sigma});
+ }
+ for(const declared_blur_sigma of [undefined,null])assert.equal(parseNativeAuxiliaryRequest({image,declared_blur_sigma},'upscale').operationParameters.declared_blur_sigma,0);
+ for(const declared_blur_sigma of [-0.1,0.1,0.31,0.49,0.6,NaN,Infinity,-Infinity,'0.3',true,{},[]]){
+  assert.throws(()=>parseNativeAuxiliaryRequest({image,declared_blur_sigma},'upscale'),error=>error.statusCode===422);
+ }
 });
 
 

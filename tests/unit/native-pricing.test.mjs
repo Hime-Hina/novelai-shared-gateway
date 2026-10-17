@@ -120,8 +120,11 @@ test('重绘按提交面积及重绘强度；嵌套参数与扁平参数报价�
 
 test('放大阶梯按官网原函数及输入像素，Vibe 编码固定 2 点且独立于生成尺寸限制',()=>{
   for(const [width,height] of [[1,1],[1024,1024],[1048577,1],[1747627,1],[1747628,1],[2446678,1],[2446679,1],[1536,2048]]){
-    const q=quoteNativeRequest(input({operation:'upscale',model:'nai-diffusion-5-curated',width,height,operationParameters:{image}}));
-    assert.equal(q.amount,official.tY(width,height,opus));assert.equal(q.resource,'anlas');
+    for(const declared_blur_sigma of [0,0.3,0.35,0.4,0.45,0.5]){
+      const q=quoteNativeRequest(input({operation:'upscale',model:'nai-diffusion-5-curated',width,height,operationParameters:{image,declared_blur_sigma}}));
+      const amount=official.tY(width,height,opus);
+      assert.deepEqual(q,{resource:'anlas',amount,estimated:false,breakdown:{upscale:amount}});
+    }
   }
   for(const [width,height] of [[512,512],[2048,2048],[4096,4096]]){
     const q=quoteNativeRequest(input({operation:'encode-vibe',width,height,operationParameters:{image,information_extracted:1}}));
