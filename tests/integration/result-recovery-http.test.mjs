@@ -209,7 +209,7 @@ test('正常SIGTERM停止新派发并等待在途落盘；超过宽限由重启�
     assert.ok(Date.now() - began < 5000, '关闭必须遵守有限宽限');
     assert.equal(f.generations(), 1);
     if (!timeout) {
-      assert.equal(delivered?.status, 200, '正常关闭必须交付完整HTTP响应');
+      assert.equal(delivered?.status, 201, '正常关闭必须交付完整HTTP响应');
       const bytes = delivered.bytes;
       assert.ok(bytes.length >= 52, 'ZIP至少包含本地头和完整EOCD');
       assert.equal(bytes.readUInt32LE(0), 0x04034b50);

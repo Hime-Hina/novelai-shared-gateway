@@ -1,4 +1,4 @@
-# 迁移前 API 契约基线（C02）
+# API 契约与迁移基线（C02/C03）
 
 核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，生产仍未切换。
 
@@ -21,16 +21,16 @@
 
 | 操作 | 当前网关成功契约 | 官方定义及差异 |
 | --- | --- | --- |
-| `/ai/generate-image` | `200 application/zip`；文件为 `image_0.<实际扩展名>` 等；始终重打包 ZIP，`Accept: application/json` 不改变响应 | 官方列 `201`，提供 ZIP/JSON；JSON 结构为 `images` 数组，元素有 `image`、`index`、`seed` |
+| `/ai/generate-image` | 完整成功 `201`，按 Accept 选择 ZIP/JSON；ZIP 文件为 `image_0.<实际扩展名>` 等；部分成功保留 `200` 与批次说明 | C03-01 对齐普通成功状态和 JSON 协商；`images` 元素为 base64 `image`、`index` 和实际 `seed` |
 | `/ai/generate-image-stream` | `200 application/octet-stream`；等待批次处理后返回长度分帧 MessagePack；没有逐步实时预览事件 | 官方路径列 `200 text/event-stream` 和 intermediate/final/error；同时 `image.StreamingType` 明确包含 `msgpack`、`sse`，不能断言 MessagePack 本身非官方 |
-| `/ai/encode-vibe` | `200 application/octet-stream`，保留编码原始字节 | 官方列 `201 application/binary`；对外状态/媒体类型差异留待 C03 |
-| `/ai/upscale` | `200 application/zip`，一个图片文件 | 官方列 `200`，ZIP/JSON；网关不做 JSON 内容协商 |
+| `/ai/encode-vibe` | `201 application/binary`，保留编码原始字节，不套用 JSON 协商 | C03-01 对齐官方成功状态与媒体类型 |
+| `/ai/upscale` | `200`，按 Accept 选择单图 ZIP/JSON；JSON 不虚构放大过程的生成种子 | C03-01 对齐 ZIP/JSON 协商；官方 `seed` 字段并非必填 |
 
 四种操作成功响应均 `Cache-Control: no-store`。普通/流式生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；辅助操作没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。持久受理后返回 CORS 已暴露的 `X-Nai-Request-Id` 父请求 ID，超时/部分失败响应也保留；受理前拒绝没有父 ID。诊断关联不是幂等保证。
 
 MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../tests/helpers/native-stream-client.mjs)检查。
 
-多图 `n_samples=1..4` 一次持久受理全部单图意图：首张 queued，其余 pending；前一张成功结算时，下一张在同一事务激活并排到当时队尾。第 i 张种子是 `(初始种子+i) mod 2^32`。实际失败或未知结果终止剩余未派发图片；首张失败返回错误，已有成功图时返回 `200` 与部分结果。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；流式路径用上述 error 帧表达失败。
+多图 `n_samples=1..4` 一次持久受理全部单图意图：首张 queued，其余 pending；前一张成功结算时，下一张在同一事务激活并排到当时队尾。第 i 张种子是 `(初始种子+i) mod 2^32`。实际失败或未知结果终止剩余未派发图片；首张失败返回错误，已有成功图时返回 `200` 与部分结果。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；JSON 将同一说明放在顶层，`images` 只含已完成图片；流式路径用上述 error 帧表达失败。
 
 Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。HTTP 超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
 
@@ -71,6 +71,22 @@ F07 后上游产物在成功结算前验证：图片可从二进制、JSON 或 Z
 
 建立 C02 时发现 F07 首版曾仅接受 octet-stream，错误排除了官方 application/binary；已补双类型回归，保持客户端既有 octet-stream 输出。这是修复误拒绝上游成功响应，不是提前开展 C03 的对外协议变更。
 
+### C03-01 响应协商与客户端证据
+
+N03 验收后才开始本项；2026-10-17 重新取得的官方 Swagger 字节数和 SHA-256 与上面的 C02 基线相同。普通完整生成从200改为201、Vibe从200/octet-stream改为201/binary；上段C02的旧输出描述是当时事实。Native stream、direct、OpenAI 与任务领取的成功状态在本项保持原协议。
+
+普通生成和放大使用 [negotiator 1.1.0](https://github.com/jshttp/negotiator/tree/v1.1.0) 处理 Accept 的媒体类型、参数、优先级和通配，不自行实现解析器。候选按 ZIP、`application/json; charset=utf-8` 排列，缺省或仅通配保持 ZIP；明确 JSON 或较高 JSON 权重才选择 JSON。两种都不接受时在入队前返回406，不预扣、不建立新任务。响应带 `Vary: Accept`、`Cache-Control: no-store`；同一成员同键重取可以改变 Accept，不重复生成或结算。
+
+JSON 图片种子来自首次派发或持久任务中的实际规范化值，随机种子和重启后的结果保持一致。编码按48 KiB原始字节分块转base64，逐张读取已有文件并使用Node流背压，不构造整批base64字符串；首图读取失败仍返回正常错误，发送过程中后续文件失败则中断响应，不能把残缺JSON当作完整结果。下载断线不取消或退款已完成的任务。
+
+| 已核对的固定版本 | 成功判定与响应要求 |
+| --- | --- |
+| [NovelAI Image Desktop 2.5.9](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai.ts#L2279-L2338)，另复核样本对应2.5.7 | 普通生成使用Axios默认2xx判定，显式Accept ZIP/octet-stream并按二进制解码；Vibe按原始字节读取，不能因为其Axios默认Accept包含JSON就改变Vibe格式 |
+| [LittleWhiteBox](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/modules/draw/providers/novelai/novel-draw.js#L1665-L1690) | 浏览器直连使用response.ok且未设置Accept；[服务端代发](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/server-plugin/littlewhitebox-server/providers/novelai/client.js#L194-L200)接受200–299。两种都解析ZIP/图片，缺省不能改成JSON |
+| [Aaalice NAI Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher/blob/f92ead236506e61812423ef68d70bffa9e671a1b/lib/data/datasources/remote/nai_generation_transport.dart#L120-L135) | 使用Dio默认2xx判定和通配Accept，普通生成解析ZIP；[Vibe](https://github.com/Aaalice233/Aaalice_NAI_Launcher/blob/f92ead236506e61812423ef68d70bffa9e671a1b/lib/data/datasources/remote/nai_image_enhancement_api_service.dart#L177-L205)直接读取字节，无严格200或媒体类型检查 |
+
+以上为源码与模拟HTTP证据，不是对全部历史客户端的认证。W.O.F 缺少可对应版本的公开源码；LittleWhiteBox 的 Vibe 调用本轮也未取得可靠源码证据，不据此宣称已验证。
+
 ## 错误与安全边界
 
 Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message: <文本>, error: <同一文本> }`。不是官方 `utils.JsonError` 的 `message/statusCode/details` 原样透传。路径不在共享白名单时由通用处理器返回 404，错误外形可能是通用 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
@@ -82,6 +98,7 @@ Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message
 | 402 | 本地成员可用额度不足或购买 Anlas 授权/余额条件不满足（依具体核价路径） |
 | 403 | Discord 资格/成员分组权限、访问其他成员结果、同源或 owner 权限失败；F04 停止接单后的新生成 |
 | 404 | 共享模式未开放的路径/方法、任务或结果不存在 |
+| 406 | 普通生成或放大的 Accept 不接受 ZIP/JSON；受理前拒绝 |
 | 409 | 任务未完成、管理状态冲突、分组版本缺失/过期；已取消的等待任务；同成员同操作同幂等键的有效参数冲突；不是成功生成返回值 |
 | 410 | 幂等映射仍在，但原任务、所需子记录或已完成产物已不可领取；不重新生成。direct 沿用 200 错误图片表达 |
 | 413 / 415 / 422 | 请求过大 / 不支持的 Content-Type / 参数、图片、参考或未核价功能不合法 |
@@ -181,7 +198,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 
 | 编号 | 当前差异/不确定项 | 后续验收要求 |
 | --- | --- | --- |
-| C03-01 | 普通生成200/固定ZIP、辅助操作媒体类型与官方定义不同 | 独立评估201、JSON协商和旧客户端兼容；不能用升级框架顺带切换 |
+| C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现，正在回归 | 客户端版本证据和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | Native stream 固定最终MessagePack，忽略客户端 stream，无实时预览 | 分开验证SSE/MessagePack内容协商、每事件结构、断流和部分失败；Swagger 路径与枚举表述需结合真实样本 |
 | C03-03 | 官方 URL、WebP、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大尚未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
 | C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |

@@ -39,3 +39,27 @@ export function nativeImagesMsgpack(images, failure = null) {
   }
   return Buffer.concat(frames);
 }
+
+export async function* nativeImagesJson(images, summary) {
+  let first = true;
+  for await (const { buffer, index, seed } of images) {
+    if (!Buffer.isBuffer(buffer) || !buffer.length) throw new TypeError('原生图片响应缺少二进制图片');
+    // 首图读取失败时还没有响应正文，调用方仍可返回正常错误状态。
+    yield first ? '{"images":[' : ',';
+    first = false;
+    yield '{"image":"';
+    // 3 的倍数让中间块无 base64 padding，不创建整张图片的 base64 字符串。
+    for (let offset = 0; offset < buffer.length; offset += 48 * 1024) {
+      yield buffer.subarray(offset, offset + 48 * 1024).toString('base64');
+    }
+    yield `",${JSON.stringify({ index, seed }).slice(1)}`;
+  }
+  if (first) throw new RangeError('原生图片响应缺少图片');
+  yield ']';
+  if (summary) {
+    const { requested, completed, remaining, billing, results } = summary;
+    const metadata = JSON.stringify({ requested, completed, remaining, billing, results });
+    if (metadata !== '{}') yield `,${metadata.slice(1, -1)}`;
+  }
+  yield '}';
+}

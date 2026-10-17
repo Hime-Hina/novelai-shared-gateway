@@ -697,26 +697,52 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(proxied.headers[name], direct.headers[name], `${method} ${route}: ${name}`);
       }
     }
-    const assertZip = response => {
-      assert.equal(response.status, 200, response.body.toString().slice(0, 300));
+    const assertZip = (response, status = 201) => {
+      assert.equal(response.status, status, response.body.toString().slice(0, 300));
       assert.match(response.headers['content-type'], /application\/zip/);
+      assert.match(response.headers.vary, /(?:^|,\s*)Accept(?:\s*,|$)/i);
       assert.equal(response.body.readUInt32LE(0), 0x04034b50);
       assert.equal(response.body.readUInt16LE(8), 0);
       const offset = 30 + response.body.readUInt16LE(26) + response.body.readUInt16LE(28);
       assert.deepEqual(response.body.subarray(offset, offset + response.body.readUInt32LE(18)), png);
     };
+    const counts = () => ['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+      .map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+    const beforeUnsupported = counts();
+    for (const [route, body] of [['/ai/generate-image', nativeBody('unacceptable response type')], ['/ai/upscale', { image: png.toString('base64') }]]) {
+      for (const accept of ['application/xml', 'application/zip;q=0, application/json;q=0']) {
+        const response = await f.request(route, { body, headers: { accept, 'idempotency-key': 'unacceptable-operation' } });
+        assert.equal(response.status, 406); assert.match(response.headers.vary, /Accept/i);
+      }
+    }
+    assert.deepEqual(counts(), beforeUnsupported); assert.equal(f.generations(), 0);
+    const aliasBody = nativeBody('synthetic alias replay'); aliasBody.parameters.seed = -1;
     let nativeId;
     for (const route of ['/ai/generate-image', '/v1/ai/generate-image', '/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
-      const response = await f.request(route, { body: nativeBody('synthetic alias replay'), headers: { 'idempotency-key': 'native-alias-replay' } });
-      assert.equal(response.status, 200); assert.ok(response.headers['x-nai-request-id']);
+      const response = await f.request(route, { body: aliasBody, headers: { 'idempotency-key': 'native-alias-replay' } });
+      assert.ok(response.headers['x-nai-request-id']);
       nativeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], nativeId);
       if (route.endsWith('-stream')) {
+        assert.equal(response.status, 200);
         assert.match(response.headers['content-type'], /application\/octet-stream/);
         const events = readNativeEvents(response.body); assert.equal(events.length, 1);
         assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), png);
       } else assertZip(response);
     }
     assert.equal(f.generations(), 1); assert.equal(f.jobs().length, 1);
+    const originalCounts = counts(), seed = f.upstreamCalls[0].body.parameters.seed;
+    assert.ok(Number.isInteger(seed) && seed >= 0); assert.equal(f.jobs()[0].request.seed, seed);
+    for (const [accept, asJson] of [
+      ['application/json', true], ['application/zip;q=0.2, application/json; charset=utf-8;q=0.9', true],
+      ['application/json;q=0.2, application/zip;q=0.9', false], ['*/*', false]
+    ]) {
+      const response = await f.request('/v1/ai/generate-image', { body: aliasBody, headers: { accept, 'idempotency-key': 'native-alias-replay' } });
+      assert.equal(response.headers['x-nai-request-id'], nativeId); assert.equal(response.headers['x-nai-image-count'], '1');
+      assert.equal(response.headers['x-nai-partial'], 'false'); assert.match(response.headers.vary, /Accept/i);
+      if (asJson) assert.deepEqual(json(response, 201).images, [{ image: png.toString('base64'), index: 0, seed }]);
+      else assertZip(response);
+    }
+    assert.deepEqual(counts(), originalCounts); assert.equal(f.generations(), 1);
 
     const input = { ...nativeBody('synthetic multipart reference'), model: 'nai-diffusion-3' };
     Object.assign(input.parameters, { reference_image_multiple: ['ref_multiple_0'], reference_strength_multiple: [0.6], reference_information_extracted_multiple: [1] });
@@ -731,7 +757,6 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assertZip(await f.request('/v1/ai/generate-image', { body, headers: { ...headers, ...framing }, timeout: 30000 }));
     }
     assert.equal(f.generations(), 2); assert.equal(f.upstreamCalls.at(-1).body.parameters.reference_image_multiple[0], referencePng.toString('base64'));
-    const counts = () => ['jobs', 'generation_requests', 'fair_quota_settlements', 'ledger'].map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
     const beforeRejected = counts();
     const oversize = Buffer.concat([body, Buffer.from(' ')]);
     for (const options of [
@@ -749,7 +774,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     for (const route of ['/ai/encode-vibe', '/v1/ai/encode-vibe']) {
       const response = await f.request(route, { body: { model: 'nai-diffusion-4-5-full', image: png.toString('base64'), information_extracted: 1 },
         headers: { 'idempotency-key': 'opaque-vibe-replay' } });
-      assert.equal(response.status, 200); assert.match(response.headers['content-type'], /application\/octet-stream/); assert.deepEqual(response.body, vibe);
+      assert.equal(response.status, 201); assert.match(response.headers['content-type'], /application\/binary/); assert.deepEqual(response.body, vibe);
       vibeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], vibeId);
     }
     const vibeJob = f.jobs().find(job => job.requestId === vibeId); assert.ok(vibeJob);
@@ -757,8 +782,13 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.match(claim.headers['content-type'], /application\/octet-stream/);
     assert.equal((await f.request(`/api/jobs/${vibeJob.id}/content`, { member: 1 })).status, 403);
     for (const route of ['/ai/upscale', '/v1/ai/upscale']) {
-      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }));
+      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200);
     }
+    const beforeUpscaleReplay = counts();
+    const upscaled = await f.request('/v1/ai/upscale', { body: { image: png.toString('base64') },
+      headers: { accept: 'application/json; charset=utf-8', 'idempotency-key': 'upscale-alias-replay' } });
+    assert.deepEqual(json(upscaled).images.map(({ image, index }) => ({ image, index })), [{ image: png.toString('base64'), index: 0 }]);
+    assert.match(upscaled.headers.vary, /Accept/i); assert.deepEqual(counts(), beforeUpscaleReplay);
     assert.equal(f.generations(), 4); assert.equal(f.jobs().length, 4);
     assert.equal(f.observations.length, 0, 'stream and binary tests must bypass the buffering fault relay'); f.checkStorage();
   });

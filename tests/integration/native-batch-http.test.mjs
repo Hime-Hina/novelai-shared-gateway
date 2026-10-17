@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,7 +34,7 @@ function zipEntries(buffer) {
   return result;
 }
 
-test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和重启不丢已受理批次', { timeout: 150000 }, async t => {
+test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与断线恢复', { timeout: 150000 }, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-batch-http-'));
   const adminToken = 'synthetic-admin-token-for-offline-batch-test';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: 'pst-synthetic-offline-batch-fixture-only', DATA_DIR: dataDir }, log() {} });
@@ -176,16 +176,24 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
     await new Promise(resolve => upstream.close(resolve));
   });
   await start();
-  const post = (value, member = 0) => {
+  const post = (value, member = 0, { accept, key } = {}) => {
     const pending = fetch(base + '/ai/generate-image', { method: 'POST',
-      headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json' },
+      headers: { authorization: `Bearer ${credentials[member].api_key}`, 'content-type': 'application/json',
+        ...(accept ? { accept } : {}), ...(key ? { 'Idempotency-Key': key } : {}) },
       body: JSON.stringify(value), signal: AbortSignal.timeout(90000) });
     // A 的响应在 B 入队后才一起等待，提前失败也不能成为无现场的未处理拒绝。
     pending.catch(error => { fetchFailure = { seed: value.parameters.seed, at: new Date().toISOString(), error }; });
     return pending;
   };
 
-  const a = post(body(100, 4));
+  const rejected = await post(body(50, 1), 0, { accept: 'text/html', key: 'rejected-format' });
+  assert.equal(rejected.status, 406); await rejected.json();
+  assert.equal(rows().length, 0); assert.equal(calls.length, 0);
+  assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 0);
+
+  const aBody = body(100, 4), bBody = body(4294967295, 2);
+  const aKey = 'partial-batch-format-replay', bKey = 'complete-batch-format-replay';
+  const a = post(aBody, 0, { key: aKey });
   await until(() => calls.includes(100), 'A1 reaches mock upstream');
   const first = rows().filter(job => job.request.seed === 100)[0];
   const aRows = rows().filter(job => job.requestId === first.requestId);
@@ -193,14 +201,17 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   assert.equal(aRows.filter(job => job.status === 'pending').length, 3);
   assert.ok(aRows.every(job => !job.request.prompt && !job.request.nativeParameters));
   assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 1);
-  const b = post(body(200, 1), 1);
-  await until(() => rows().some(job => job.request.seed === 200 && job.status === 'queued'), 'B queued behind A1');
+  const b = post(bBody, 1, { accept: 'application/json', key: bKey });
+  await until(() => rows().some(job => job.request.seed === 4294967295 && job.status === 'queued'), 'B queued behind A1');
   releases.get(100)();
   const [aResponse, bResponse] = await observed(Promise.all([a, b]), 'A/B synchronous responses');
   assert.equal(aResponse.status, 200);
-  assert.equal(bResponse.status, 200);
-  await observed(bResponse.arrayBuffer(), 'B response body');
-  assert.deepEqual(calls, [100, 200, 101]);
+  assert.equal(bResponse.status, 201); assert.match(bResponse.headers.get('content-type'), /application\/json/);
+  const bResult = await observed(bResponse.json(), 'B JSON response body');
+  assert.deepEqual(bResult.images, [{ image: png.toString('base64'), index: 0, seed: 4294967295 }, { image: png.toString('base64'), index: 1, seed: 0 }]);
+  assert.equal(bResult.requested, 2); assert.equal(bResult.completed, 2); assert.equal(bResult.remaining, 0);
+  // A1 → B1 → A2 仍先于 B2，不能让任一多图批次独占队列。
+  assert.deepEqual(calls, [100, 4294967295, 101, 0]);
   assert.equal(aResponse.headers.get('x-nai-partial'), 'true');
   const entries = zipEntries(Buffer.from(await observed(aResponse.arrayBuffer(), 'A partial ZIP body')));
   assert.deepEqual(entries.get('image_0.png'), png);
@@ -211,7 +222,18 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   assert.deepEqual(ended.map(job => job.status), ['done', 'failed', 'failed', 'failed']);
   assert.ok(ended.slice(2).every(job => !job.fairCharge && !job.generationAttempt));
   assert.equal(new Set(ended.map(job => job.queueExpiresAt)).size, 1);
-  assert.ok(ended[1].queueSeq > rows().find(job => job.request.seed === 200).queueSeq);
+  assert.ok(ended[1].queueSeq > rows().find(job => job.request.seed === 4294967295).queueSeq);
+  const partialReplay = await post(aBody, 0, { accept: 'application/json', key: aKey });
+  assert.equal(partialReplay.status, 200); assert.equal(partialReplay.headers.get('x-nai-partial'), 'true');
+  const { images: partialImages, ...partialSummary } = await partialReplay.json();
+  assert.deepEqual(partialImages, [{ image: png.toString('base64'), index: 0, seed: 100 }]);
+  assert.deepEqual(partialSummary, manifest);
+  assert.equal(calls.length, 4); assert.equal(rows().length, 6);
+  const bId = bResponse.headers.get('x-nai-request-id');
+  const bRows = rows().filter(job => job.requestId === bId).sort((a, b) => a.sampleIndex - b.sampleIndex);
+  const bSettlements = () => audit.prepare('SELECT job_id, charge FROM fair_quota_settlements WHERE job_id IN (?, ?) ORDER BY job_id').all(...bRows.map(job => job.id));
+  const settledB = bSettlements();
+  assert.equal(settledB.length, 2); assert.ok(settledB.every(row => JSON.parse(row.charge).status === 'settled'));
 
   // 断开同步 HTTP 连接后，已受理的两张仍继续；首张完成后停进程，重启恢复已排队的第二张。
   const disconnected = http.request(base + '/ai/generate-image-stream', { method: 'POST', headers: {
@@ -233,6 +255,28 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   assert.equal(rows().find(job => job.id === queued.id).queueSeq, queued.queueSeq);
   assert.ok(rows().filter(job => [300, 301].includes(job.request.seed)).every(job => job.imageId));
 
+  // 已完成任务/图片未装入重启热缓存；两种格式均从 SQLite 和原文件重新领取。
+  const beforeReplay = calls.length;
+  const coldZip = await post(bBody, 1, { accept: 'application/zip', key: bKey });
+  assert.equal(coldZip.status, 201); assert.equal(coldZip.headers.get('x-nai-request-id'), bId);
+  const coldEntries = zipEntries(Buffer.from(await coldZip.arrayBuffer()));
+  assert.deepEqual(coldEntries.get('image_0.png'), png); assert.deepEqual(coldEntries.get('image_1.png'), png);
+  const { images: _images, ...bSummary } = bResult;
+  assert.deepEqual(JSON.parse(coldEntries.get('results.json')), bSummary);
+  // 真实客户端在收到 JSON 响应头后断开，不取消已完成任务或退还已结算额度。
+  await new Promise((resolve, reject) => {
+    const req = http.request(base + '/ai/generate-image', { method: 'POST', headers: {
+      authorization: `Bearer ${credentials[1].api_key}`, 'content-type': 'application/json',
+      accept: 'application/json', 'Idempotency-Key': bKey } }, response => {
+      try { assert.equal(response.statusCode, 201); response.destroy(); resolve(); } catch (error) { reject(error); }
+    });
+    req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('synthetic JSON replay timeout')));
+    req.end(JSON.stringify(bBody));
+  });
+  const coldJson = await post(bBody, 1, { accept: 'application/json', key: bKey });
+  assert.equal(coldJson.status, 201); assert.deepEqual(await coldJson.json(), bResult);
+  assert.equal(calls.length, beforeReplay); assert.deepEqual(bSettlements(), settledB);
+
   // 缩短的只是同步等待期限，不能把 504 当成任务取消或业务排队过期。
   await stop();
   env.OPENAI_CHAT_TIMEOUT_MS = '100';
@@ -245,4 +289,14 @@ test('真实 Native HTTP：A1→B→A2、公平激活、部分 ZIP、断线和�
   releases.get(400)();
   await until(() => rows().some(job => job.request.seed === 400 && job.status === 'done'), 'accepted job completes after HTTP deadline');
   assert.equal(calls.filter(seed => seed === 400).length, 1);
+
+  const stored = JSON.parse(audit.prepare('SELECT data FROM images WHERE id = ?').get(bRows[0].imageId).data);
+  const artifact = path.resolve(dataDir, stored.file);
+  assert.ok(artifact.startsWith(path.join(dataDir, 'images') + path.sep));
+  await rename(artifact, artifact + '.missing-for-test');
+  const beforeMissing = calls.length, jobCount = rows().length;
+  const unavailable = await post(bBody, 1, { accept: 'application/json', key: bKey });
+  assert.equal(unavailable.status, 410); await unavailable.json();
+  assert.equal(calls.length, beforeMissing); assert.equal(rows().length, jobCount);
+  assert.deepEqual(bSettlements(), settledB);
 });

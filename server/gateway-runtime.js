@@ -1,7 +1,7 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
 import { describeStoredResult, publishStoredResult } from './result-files.js';
-import { nativeImagesMsgpack } from './native-stream.js';
+import { nativeImagesMsgpack, nativeImagesJson } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
@@ -19,6 +19,9 @@ import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, r
 import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.js';
 import { validateImageBytes } from './native-image.js';
 import http from 'node:http';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import Negotiator from 'negotiator';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JobPreviews } from './job-previews.js';
 import { isOfficialKey, officialKeyOwner, officialKeyError, OfficialKeyJobs } from './official-key-jobs.js';
@@ -847,9 +850,34 @@ async function waitNativeResult(jobId, deadline, res) {
   return result;
 }
 
+function nativeResponseType(req, res) {
+  res.setHeader('Vary', 'Accept');
+  const type = new Negotiator(req).mediaType(['application/zip', 'application/json; charset=utf-8']);
+  if (!type) throw httpError(406, '响应仅支持 application/zip 或 application/json');
+  return type;
+}
+
+async function sendNativeJson(res, status, entries, summary, headers = {}) {
+  async function* images() {
+    for (const [index, entry] of entries.entries()) {
+      yield { buffer: await readStoredImage(entry.saved), index, seed: entry.seed };
+    }
+  }
+  const chunks = nativeImagesJson(images(), summary);
+  // 先读首张再发成功头；后续读取失败由 pipeline 中断响应，不能冒充完整 JSON。
+  const first = await chunks.next();
+  try {
+    res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+    await pipeline(Readable.from((async function* () { yield first.value; yield* chunks; })(), { objectMode: false }), res);
+  } finally {
+    await chunks.return();
+  }
+}
+
 async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
+  const json = !stream && nativeResponseType(req, res) !== 'application/zip';
   const batch = await acceptNativeHttpRequest(req, diagnosticId);
   if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const deadline = Date.now() + openAiChatTimeoutMs;
@@ -860,7 +888,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
       const result = await waitNativeResult(batch.jobIds[index], deadline, res);
       if (!result) return;
       const filename = `image_${index}.${imageExtension(result.saved.mimeType || '')}`;
-      entries.push({ buffer: await readStoredImage(result.saved), filename });
+      entries.push({ ...(json ? { saved: result.saved } : { buffer: await readStoredImage(result.saved) }), filename, seed: result.seed });
       results.push({ index, status: 'done', filename });
     } catch (error) {
       if (!entries.length) throw error;
@@ -875,21 +903,28 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
     sendImage(res, 200, 'application/octet-stream', frames, { 'cache-control': 'no-store', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
     return;
   }
-  if (count > 1) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify({ requested: count, completed,
-    remaining: count - completed, billing: 'independent_single_images', results }), 'utf8') });
-  sendImage(res, 200, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
+  const summary = count > 1 ? { requested: count, completed, remaining: count - completed, billing: 'independent_single_images', results } : null;
+  const status = completed < count ? 200 : 201;
+  if (json) {
+    await sendNativeJson(res, status, entries, summary, { 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
+    return;
+  }
+  if (summary) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify(summary), 'utf8') });
+  sendImage(res, status, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
     'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
 async function handleNativeAuxiliary(req, res, operation) {
   const diagnosticId = randomBytes(8).toString('hex');
   res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
+  const json = operation === 'upscale' && nativeResponseType(req, res) !== 'application/zip';
   const batch = await acceptNativeHttpRequest(req, diagnosticId, operation);
   if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const result = await waitNativeResult(batch.jobIds[0], Date.now() + openAiChatTimeoutMs, res);
   if (!result) return;
+  if (json) { await sendNativeJson(res, 200, [{ saved: result.saved }]); return; }
   const buffer = await readStoredImage(result.saved);
-  if (operation === 'encode-vibe') sendImage(res, 200, 'application/octet-stream', buffer, { 'cache-control': 'no-store' });
+  if (operation === 'encode-vibe') sendImage(res, 201, 'application/binary', buffer, { 'cache-control': 'no-store' });
   else sendImage(res, 200, 'application/zip', nativeImageZip(buffer), { 'cache-control': 'no-store' });
 }
 
@@ -2681,14 +2716,14 @@ function waitForJobResult(jobId, deadline, response) {
     store.update(db => {
       const job = db.jobs.find(item => item.id === jobId) || store.selectItemById('jobs', jobId);
       if (!job) return null;
-      return { status: job.status, imageId: job.imageId, error: job.error, errorStatus: job.errorStatus, cooldownUntil: job.sharedCooldown?.until,
+      return { status: job.status, imageId: job.imageId, seed: job.request?.seed, error: job.error, errorStatus: job.errorStatus, cooldownUntil: job.sharedCooldown?.until,
         balance: db.users.find(user => user.token === job.userToken)?.balance };
     }, { persist: false }).then(async job => {
       if (job?.status === 'failed') {
         notifyJobWaiters(jobId, { error: job.error, statusCode: job.errorStatus || 500, cooldownUntil: job.cooldownUntil });
       } else if (job?.status === 'done') {
         const saved = await store.findImage(job.imageId);
-        if (saved) notifyJobWaiters(jobId, { saved, balance: job.balance });
+        if (saved) notifyJobWaiters(jobId, { saved, seed: job.seed, balance: job.balance });
       }
     }).catch(() => notifyJobWaiters(jobId, { error: '任务状态暂时无法读取，请稍后查询', statusCode: 503 }));
   });
@@ -3384,7 +3419,7 @@ async function completeGeneration(reservation, request, image, meta = {}) {
   await removeStoredImages(trimmedImages);
   scheduleQueueDrain();
   if (meta.jobId) {
-    notifyJobWaiters(meta.jobId, { saved: savedImage, image, balance: savedImage.balance });
+    notifyJobWaiters(meta.jobId, { saved: savedImage, image, seed: request.seed, balance: savedImage.balance });
   }
   return savedImage;
 }

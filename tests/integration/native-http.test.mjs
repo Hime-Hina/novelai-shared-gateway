@@ -180,8 +180,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     try { return await fetch(baseUrl + pathname, { ...options, signal: AbortSignal.timeout(45000) }); }
     catch (error) { throw fetchFailure(error, request); }
   };
-  const post = (pathname, request, key = credentials[0].api_key) => fetchLocal(pathname, {
-    method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(request)
+  const post = (pathname, request, key = credentials[0].api_key, headers = {}) => fetchLocal(pathname, {
+    method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', ...headers }, body: JSON.stringify(request)
   });
   const cookies = [];
   for (const member of credentials.slice(0, 2)) {
@@ -343,7 +343,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const form = new FormData(); form.append('request', new Blob([JSON.stringify(input)], { type: 'application/json' }), 'request.json');
     const before = await quota();
     const response = await fetchLocal('/v1/ai/generate-image', { method: 'POST', headers: { authorization: `Bearer ${credentials[0].api_key}` }, body: form });
-    assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /application\/zip/);
+    assert.equal(response.status, 201); assert.match(response.headers.get('content-type'), /application\/zip/);
     assert.equal(Buffer.from(await response.arrayBuffer()).readUInt32LE(0), 0x04034b50);
     assert.equal(calls.at(-1).payload.parameters.ucPreset, 0); assert.equal(calls.at(-1).payload.parameters.qualityToggle, false);
     assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined); assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);
@@ -412,8 +412,10 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   await t.test('单图失败退款，多图部分成功只结算完成张并保留错误帧', async () => {
     scenario = 'single failure then partial batch';
     let before = await quota(); failAt = calls.length + 1;
-    const failed = await post('/ai/generate-image-stream', body());
-    assert.equal(failed.status, 500); near((await quota()).v5Available, before.v5Available);
+    const failed = await post('/ai/generate-image', body(), credentials[0].api_key, { accept: 'application/json' });
+    assert.equal(failed.status, 500); assert.match(failed.headers.get('content-type'), /application\/json/);
+    const failure = await failed.json(); assert.ok(failure.error); assert.equal(failure.images, undefined);
+    near((await quota()).v5Available, before.v5Available);
     before = await quota(); failAt = calls.length + 2;
     const response = await post('/v1/ai/generate-image-stream', body('nai-diffusion-5-curated', { steps: 29, n_samples: 3 }));
     assert.equal(response.status, 200); assert.equal(response.headers.get('x-nai-partial'), 'true'); assert.equal(response.headers.get('x-nai-image-count'), '1');

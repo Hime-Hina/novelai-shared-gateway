@@ -23,7 +23,8 @@
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "better-sqlite3": "12.10.0",
-    "drizzle-orm": "0.45.4"
+    "drizzle-orm": "0.45.4",
+    "negotiator": "1.1.0"
   },
   "devDependencies": {
     "drizzle-kit": "0.31.11"

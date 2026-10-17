@@ -120,6 +120,8 @@ systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_
 
 Native 请求同时支持 `application/json` 与 `multipart/form-data`。multipart 的 `request` 部件可为 JSON 字符串或 JSON 文件，图片部件必须由请求明确引用。总请求上限 32 MiB，单张附件上限 8 MiB。自动角色布局的空坐标按中心点兼容；显式手动坐标仍严格验证。支持桌面客户端的 `uc_preset`／`quality_toggle` 别名；与标准字段同时填写时必须一致。未知参数错误只列出有限字段名，不回显内容。
 
+普通 Native 生图完整成功返回201；放大返回200。两者缺省保持ZIP，指定 `Accept: application/json` 可领取含base64图片、索引及生成种子的JSON，并按Accept权重选择；不接受两种格式时在入队前返回406。Vibe编码返回201与`application/binary`原始字节。部分成功仍返回200，JSON与ZIP都保留批次说明；同键改变响应格式不再次生成。状态码变化和已核对客户端版本见[API契约](docs/api-contract.md#c03-01-响应协商与客户端证据)，本分支尚未替换生产。
+
 ## 生图功能与计价
 
 以下实现已在 2026-10-10 核对官网规则，并于 2026-10-13 同步客户端兼容修复；费用随模型、像素、步数、图生图强度和参考数量变化。先校验和计价，再进入共享队列。
