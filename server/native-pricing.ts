@@ -1,14 +1,57 @@
 import { isV5MediumModel, V5_MEDIUM_STEPS, V5_MEDIUM_ANLAS_STEP_FACTOR, V5_MEDIUM_USAGE_FACTOR } from '../public/v5-medium.js';
+
+interface PricingParameters {
+  width?: unknown;
+  height?: unknown;
+  steps?: unknown;
+  n_samples?: unknown;
+  sm?: unknown;
+  sm_dyn?: unknown;
+  image?: unknown;
+  mask?: unknown;
+  strength?: unknown;
+  img2img?: { strength?: unknown } | null;
+  inpaintImg2ImgStrength?: unknown;
+  reference_image?: unknown;
+  reference_image_multiple?: unknown;
+  reference_image_multiple_cached?: unknown;
+  director_reference_images?: unknown;
+  director_reference_images_cached?: unknown;
+}
+
+interface PricingRequest {
+  model?: string;
+  operation?: string;
+  action?: string;
+  width?: unknown;
+  height?: unknown;
+  steps?: unknown;
+  n_samples?: unknown;
+  n?: unknown;
+  sm?: unknown;
+  sm_dyn?: unknown;
+  nativeParameters?: PricingParameters | null;
+  parameters?: PricingParameters | null;
+  operationParameters?: { image?: unknown } | null;
+}
+
+interface NativeQuote {
+  resource: 'free' | 'v5' | 'anlas';
+  amount: number;
+  estimated: boolean;
+  breakdown: { generation: number; vibe: number; precise: number } | { encoding: number } | { upscale: number };
+}
+
 // 2026-10-10 核对官网 50464 / 63509；Medium 的步数项在第一次取整前单独修正。
 // 官方生图公式先对基础费用取整，再乘 SMEA、V5 和图生图强度，最后取整。
 const A = 2.951823174884865e-6;
 const B = 5.753298233447344e-7;
 const MP = 1048576;
-const fail = message => { throw Object.assign(new Error(message), {status:422, statusCode:422}); };
-const numeric = value => typeof value === 'number' && Number.isFinite(value);
-const present = value => Array.isArray(value) ? value.length > 0 : Boolean(value);
+function fail(message: string): never { throw Object.assign(new Error(message), {status:422, statusCode:422}); }
+const numeric = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+const present = (value: unknown): boolean => Array.isArray(value) ? value.length > 0 : Boolean(value);
 
-export function quoteNativeRequest(request = {}, options = {}) {
+export function quoteNativeRequest(request: PricingRequest = {}, options: { forceAnlas?: unknown } = {}): NativeQuote {
   const p = request.nativeParameters || request.parameters || {};
   const width = Number(request.width ?? p.width), height = Number(request.height ?? p.height);
   const pixels = width * height;
@@ -17,7 +60,7 @@ export function quoteNativeRequest(request = {}, options = {}) {
   const count = Number(request.n_samples ?? p.n_samples ?? request.n ?? 1);
   if (count !== 1) fail('多图必须逐张排队与结算');
   if (request.operation === 'encode-vibe') {
-    if (!/^nai-diffusion-4(?:-5)?-(?:full|curated|curated-preview)$/.test(request.model) || !request.operationParameters?.image) fail('Vibe 编码参数不完整');
+    if (!/^nai-diffusion-4(?:-5)?-(?:full|curated|curated-preview)$/.test(request.model ?? '') || !request.operationParameters?.image) fail('Vibe 编码参数不完整');
     return {resource:'anlas', amount:2, estimated:false, breakdown:{encoding:2}};
   }
   if (request.operation === 'upscale') {
@@ -37,10 +80,10 @@ export function quoteNativeRequest(request = {}, options = {}) {
   if (medium && steps !== V5_MEDIUM_STEPS) fail('Medium 必须先转换为固定 14 步再计价');
   if (!['generate','img2img','infill'].includes(action)) fail('该动作尚未建立公平计价规则');
   if (model === 'nai-diffusion-5-curated' && action === 'infill') fail('V5 Curated 的局部重绘请使用 V4.5 Curated 的重绘模型');
-  const refs = (plain, cached) => {
+  const refs = (plain: 'reference_image_multiple' | 'director_reference_images', cached: 'reference_image_multiple_cached' | 'director_reference_images_cached'): number => {
     const a=p[plain] || [], b=p[cached] || [];
     if (!Array.isArray(a) || !Array.isArray(b) || a.length && b.length) fail('参考数据格式不明确，无法计价');
-    const values = a.length ? a : b.map(item => item?.data);
+    const values: unknown[] = a.length ? a : b.map((item: { data?: unknown } | null | undefined) => item?.data);
     if (values.length > 16 || values.some(value => typeof value !== 'string' || value.length < 100)) fail('参考数据无效，请先上传或编码');
     return values.length;
   };
@@ -53,8 +96,9 @@ export function quoteNativeRequest(request = {}, options = {}) {
   let strength = 1;
   if (action !== 'generate') {
     if (!present(p.image) || action === 'infill' && !present(p.mask)) fail('图生图或局部重绘缺少底图或遮罩');
-    strength = action === 'infill' ? p.img2img?.strength ?? p.inpaintImg2ImgStrength ?? 1 : p.strength;
-    if (!numeric(strength) || strength < 0 || strength > 1) fail('无法计价：图生图强度无效');
+    const value = action === 'infill' ? p.img2img?.strength ?? p.inpaintImg2ImgStrength ?? 1 : p.strength;
+    if (!numeric(value) || value < 0 || value > 1) fail('无法计价：图生图强度无效');
+    strength = value;
   } else if (present(p.image) || present(p.mask)) fail('纯文生图不能携带底图或遮罩');
   const sm = Boolean(request.sm ?? p.sm), dyn = Boolean(request.sm_dyn ?? p.sm_dyn);
   if (action !== 'generate' && (sm || dyn)) fail('图生图不能使用 SMEA');

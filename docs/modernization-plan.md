@@ -166,6 +166,8 @@ T01共享状态与队列片：shared-status与queue-policy迁为严格TypeScript
 
 共享状态显示补修：订阅标记为null时明确显示“订阅状态未知”，不再走false的“没有可用的Opus订阅”分支；false/true原展示保持。仅改Naive状态组件的一处条件与现有三态组件回归，先红后绿，定向6/6及网页类型检查通过。后端值、账户资格和API状态未改，作为独立行为提交与T01分开。
 
+T01原生报价片：native-pricing迁为TypeScript，只定义报价实际读取的请求/参数投影、有限返回资源与费用明细；不移动分池余额或购买授权逻辑。保留nativeParameters整体优先、原数值转换、严格forceAnlas开关、所有常数/乘法/取整顺序、Medium和参考/辅助费用及estimated标记。新增参数来源与坏强度/参考边界回归，根严格检查/编译、六份价格/契约/账本/适配定向100/100、执行器重建及产物HTTP2通过/1项Windows跳过；184份官方固定报价与12组格式配对样本未改。当前仅使用模拟与固定证据，没有真实收费调用；完整CI另记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
@@ -187,7 +189,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 
 当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
 
-主要实现位于 [native-image.js](../server/native-image.js)、[native-pricing.js](../server/native-pricing.js)、[fair-quota.js](../server/fair-quota.js)、[providers.js](../server/providers.js)、[native-stream.js](../server/native-stream.js)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+主要实现位于 [native-image.js](../server/native-image.js)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.js](../server/fair-quota.js)、[providers.js](../server/providers.js)、[native-stream.js](../server/native-stream.js)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
 
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |

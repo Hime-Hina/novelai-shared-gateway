@@ -1,4 +1,4 @@
-import { quoteNativeRequest } from './native-pricing.js';
+import { quoteNativeRequest } from './native-pricing.ts';
 import { recordGenerationAttempt, recordGenerationRefund } from './generation-accounting.js';
 import { operatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding } from './operating-accounting.js';
 // 所有修改必须在存储事务内执行；账本与任务一起持久化，避免重启后重复扣款。

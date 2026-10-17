@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {quoteNativeRequest} from '../../server/native-pricing.js';
+import {quoteNativeRequest} from '../../server/native-pricing.ts';
 import {configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest} from '../../server/fair-quota.js';
 
 // 对照独立保存的官网报价结果；不包含官网代码或真实账户信息。
@@ -147,6 +147,37 @@ test('无效尺寸、强度、参考数、收费上限和未支持动作在预�
   const expensive=input({model:'nai-diffusion-5-full',width:1536,height:2048,steps:50});
   assert.equal(official.GI(officialParameters(expensive),opus,expensive.model),-3);
   assert.throws(()=>quoteNativeRequest(expensive),/140|费用|计价/);
+});
+
+test('类型迁移保留参数来源优先级、数值转换和严格布尔续用开关',()=>{
+  const parameters={width:'1024',height:'1024',steps:'29',n_samples:'1'};
+  const request={model:'nai-diffusion-4-5-full',parameters};
+  assert.equal(quoteNativeRequest(request).amount,21);
+  for(const nativeParameters of [undefined,null,false,0,'']){
+    assert.equal(quoteNativeRequest({...request,nativeParameters}).amount,21);
+  }
+  // nativeParameters 整体优先，不和 parameters 合并；顶层数值仍优先于选中的参数。
+  assert.throws(()=>quoteNativeRequest({...request,nativeParameters:{steps:28}}),/尺寸/);
+  assert.equal(quoteNativeRequest({...request,nativeParameters:{...parameters,steps:'28'}}).resource,'free');
+  assert.equal(quoteNativeRequest({...request,width:'1024',height:'1024',steps:'29',n_samples:'1',
+    nativeParameters:{width:0,height:0,steps:0,n_samples:2}}).amount,21);
+  const v5=input({model:'nai-diffusion-5-full'});
+  for(const forceAnlas of [undefined,null,false,0,1,'true']){
+    assert.equal(quoteNativeRequest(v5,{forceAnlas}).resource,'v5');
+  }
+  assert.equal(quoteNativeRequest(v5,{forceAnlas:true}).amount,26);
+});
+
+test('类型收窄不把字符串强度转成数字，也不忽略无效参考项',()=>{
+  for(const strength of ['0.7',null,true,NaN,Infinity]){
+    assert.throws(()=>quoteNativeRequest(input({action:'img2img',nativeParameters:{image,strength}})),error=>error.statusCode===422);
+  }
+  for(const field of ['reference_image_multiple','director_reference_images']){
+    for(const value of [null,42,{},'short']){
+      assert.throws(()=>quoteNativeRequest(input({nativeParameters:{[field]:[value]}})),/参考数据无效/);
+      assert.throws(()=>quoteNativeRequest(input({nativeParameters:{[field+'_cached']:[value]}})),/参考数据无效/);
+    }
+  }
 });
 
 test('本站顺序多图按独立单张报价，不把官方原生批量价格混入同一个报价',()=>{

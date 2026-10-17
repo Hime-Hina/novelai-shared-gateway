@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
-import { quoteNativeRequest } from '../../server/native-pricing.js';
+import { quoteNativeRequest } from '../../server/native-pricing.ts';
 import { sharedSurface } from '../../server/shared-surface.js';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
