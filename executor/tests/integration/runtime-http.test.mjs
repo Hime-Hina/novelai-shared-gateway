@@ -169,7 +169,7 @@ async function subscribe(gateway, route, options, firstFrame) {
   return { ended, cancel: () => reader.cancel() };
 }
 function assertSafeHeatmap(value, members, total) {
-  assert.equal(value.coverage, 'retained-records'); assert.equal(value.timezone, 'Asia/Taipei');
+  assert.equal(value.coverage, 'retained-records'); assert.equal(value.timezone, 'Asia/Shanghai');
   assert.equal(value.days.reduce((sum, day) => sum + day.total, 0), total);
   assert.equal(Object.hasOwn(value, 'jobs'), false);
   const text = JSON.stringify(value);

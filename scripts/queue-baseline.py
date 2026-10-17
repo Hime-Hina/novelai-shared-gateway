@@ -165,7 +165,7 @@ def analyze(rows, as_of):
     invalid_created = sum(r["created"] is None for r in rows)
     rows = [r for r in rows if r["created"] is not None]
     idle = idle_measurements(rows)
-    output = {"as_of_utc": iso(as_of), "timezone": "Asia/Taipei",
+    output = {"as_of_utc": iso(as_of), "timezone": "Asia/Shanghai",
               "percentile": "nearest-rank", "invalid_created_in_selected_rows": invalid_created, "windows": {}}
     for days, label in ((1, "24h"), (7, "7d")):
         since = as_of - timedelta(days=days)
