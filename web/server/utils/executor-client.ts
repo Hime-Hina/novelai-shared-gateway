@@ -61,12 +61,14 @@ export function sendExecutorError(event: H3Event, error: unknown) {
   res.end(JSON.stringify({ error: message }))
 }
 
-// 仅处理有限查询和异步任务受理；状态长连接使用 forwardExecutorEvents。
+// 正式路由复用同一传输；只有任务受理可同键重试，管理写入不能重复执行。
 export async function forwardExecutor(event: H3Event) {
   const { req, res } = event.node
   try {
-    const submit = event.method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(event.path.split('?')[0]!)
-    if (!submit && !['GET', 'HEAD'].includes(event.method)) throw createError({ statusCode: 405 })
+    const pathname = event.path.split('?')[0]!
+    const mutation = ['POST', 'PATCH'].includes(event.method)
+    const submit = event.method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(pathname)
+    if (!mutation && !['GET', 'HEAD'].includes(event.method)) throw createError({ statusCode: 405 })
     const { target, headers } = executorConnection(event)
 
     const key = req.headers['idempotency-key']
@@ -74,9 +76,10 @@ export async function forwardExecutor(event: H3Event) {
       || req.rawHeaders.filter((value, i) => i % 2 === 0 && value.toLowerCase() === 'idempotency-key').length !== 1)) {
       throw createError({ statusCode: 400, message: 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节' })
     }
-    if (submit) {
+    if (mutation) {
       for (let i = headers.length - 2; i >= 0; i -= 2) {
-        if (['idempotency-key', 'content-length'].includes(headers[i]!.toLowerCase())) headers.splice(i, 2)
+        const name = headers[i]!.toLowerCase()
+        if (name === 'content-length' || submit && name === 'idempotency-key') headers.splice(i, 2)
       }
     }
     // 键在重试循环外生成；正文与成员身份也复用。不能识别无键客户端在 Nuxt 崩溃后新发的请求。
@@ -103,7 +106,7 @@ export async function forwardExecutor(event: H3Event) {
     const disconnect = () => disconnected.abort()
     res.once('close', disconnect)
     try {
-      const body = submit ? await readLimited(req) : undefined
+      const body = mutation ? await readLimited(req) : undefined
       if (body) headers.push('Content-Length', String(body.length))
       for (let attempt = 0; ; attempt++) {
         let response: IncomingMessage | undefined
@@ -113,8 +116,10 @@ export async function forwardExecutor(event: H3Event) {
             // Node HTTP 保留原 Host、重复头和二进制；不跟随内部重定向或泄漏凭据到其他地址。
             const request = (target.protocol === 'https:' ? https : http).request(target, {
               method: event.method, path: event.path, headers,
-              // Discord 刷新和资格查询各可等 10 秒，冷查询还可等 15 秒；外层须留出余量。
-              signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(45000)])
+              // 私有批量刷新按账户逐批执行，沿用执行器每账户15秒截止，不能套45秒总限。
+              signal: event.method === 'POST' && pathname === '/api/admin/accounts/quota'
+                ? disconnected.signal
+                : AbortSignal.any([disconnected.signal, AbortSignal.timeout(45000)])
             }, resolve)
             request.once('error', reject)
             request.end(body)

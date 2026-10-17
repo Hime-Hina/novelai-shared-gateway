@@ -13,6 +13,8 @@ const executorToken = 'synthetic-caddy-executor-token-for-routing';
 const forgedToken = 'synthetic-forged-browser-token';
 const webBody = '<!doctype html><title>Synthetic web</title>' + '<p>synthetic page</p>'.repeat(500);
 const apiPadding = 'synthetic-api-response '.repeat(100);
+const callbackCookies = ['member_session=synthetic-new-session; Path=/api/member; HttpOnly; SameSite=Strict',
+  'member_oauth=; Max-Age=0; Path=/api/member; HttpOnly; SameSite=Lax'];
 
 async function listen(server) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port;
@@ -40,6 +42,10 @@ async function fixture(t) {
     for await (const chunk of req) chunks.push(chunk);
     received.push({ upstream, method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() });
     res.setHeader('x-test-upstream', upstream);
+    if (upstream === 'nuxt' && req.method === 'GET' && req.url.split('?')[0] === '/api/member/discord/callback') {
+      res.writeHead(303, { location: '/?login=synthetic%20success', 'set-cookie': callbackCookies });
+      res.end(); return;
+    }
     if (upstream === 'nuxt' && req.method === 'GET' && req.url === '/api/member/shared-events') {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
       res.write('event: status\ndata: {"synthetic":true}\n\n');
@@ -129,25 +135,57 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async t => {
     for (const url of ['/api/admin/member-management?view=losses', '/api/admin/summary', '/api/admin/ping']) await routed('private', url, 'nuxt');
   });
 
-  await t.test('writes, HEAD, OPTIONS and legacy generation routes stay with the executor', async () => {
+  await t.test('declared member and private admin writes reach Nuxt only for their exact methods and paths', async () => {
+    const body = JSON.stringify({ synthetic: 'write payload unchanged' });
+    for (const side of ['public', 'private']) {
+      for (const url of ['/api/member/login', '/api/member/logout', '/api/member/discord/start',
+        '/api/member/owner/member-management', '/api/member/owner/accounts/quota']) {
+        const { observed } = await routed(side, url, 'nuxt', { method: 'POST', body, headers: { 'content-type': 'application/json' } });
+        assert.equal(observed.body, body);
+      }
+      const { observed } = await routed(side, '/api/member/owner/accounts/account-1', 'nuxt', { method: 'PATCH', body });
+      assert.equal(observed.body, body);
+      for (const [method, url] of [['GET', '/api/member/login'], ['GET', '/api/member/discord/start'], ['POST', '/api/member/discord/callback'],
+        ['POST', '/api/member/login/'], ['POST', '/api/member/login/nested'], ['POST', '/api/member/owner/accounts/account-1'],
+        ['PATCH', '/api/member/owner/accounts'], ['PATCH', '/api/member/owner/accounts/account-1/'],
+        ['PATCH', '/api/member/owner/accounts/account-1/nested'], ['PATCH', '/api/member/owner/accounts/a%2Fb']]) {
+        await routed(side, url, 'executor', { method });
+      }
+    }
+    for (const url of ['/api/admin/member-management', '/api/admin/fair-quota', '/api/admin/accounts', '/api/admin/accounts/quota']) {
+      const { observed } = await routed('private', url, 'nuxt', { method: 'POST', body }); assert.equal(observed.body, body);
+    }
+    for (const url of ['/api/admin/accounts', '/api/admin/accounts/account-1']) {
+      const { observed } = await routed('private', url, 'nuxt', { method: 'PATCH', body }); assert.equal(observed.body, body);
+    }
+    for (const [method, url] of [['GET', '/api/admin/accounts'], ['POST', '/api/admin/accounts/account-1'],
+      ['POST', '/api/admin/fair-quota/nested'], ['PATCH', '/api/admin/accounts/'],
+      ['PATCH', '/api/admin/accounts/account-1/'], ['PATCH', '/api/admin/accounts/account-1/nested'], ['PATCH', '/api/admin/accounts/a%2Fb']]) {
+      await routed('private', url, 'executor', { method });
+    }
+  });
+
+  await t.test('unmigrated writes, HEAD, OPTIONS and generation routes stay with the executor', async () => {
     const body = JSON.stringify({ synthetic: 'payload unchanged' });
     for (const side of ['public', 'private']) {
-      for (const url of ['/api/member/login', '/api/member/logout', '/api/member/me', '/api/member/owner/member-management',
+      for (const url of ['/api/member/me',
         '/api/member/requests/batch-1/cancel', '/ai/generate-image', '/ai/generate-image-stream', '/ai/upscale', '/ai/encode-vibe', '/v1/chat/completions']) {
         const { observed } = await routed(side, url, 'executor', { method: 'POST', body, headers: { 'content-type': 'application/json' } });
         assert.equal(observed.body, body);
       }
-      for (const method of ['HEAD', 'OPTIONS']) for (const url of ['/api/member/me', '/api/member/owner/summary', '/api/member/requests/batch-1', '/api/member/shared-events']) {
+      for (const method of ['HEAD', 'OPTIONS']) for (const url of ['/api/member/me', '/api/member/owner/summary', '/api/member/requests/batch-1', '/api/member/shared-events',
+        '/api/member/login', '/api/member/logout', '/api/member/discord/start', '/api/member/discord/callback', '/api/member/owner/accounts/quota']) {
         await routed(side, url, 'executor', { method });
       }
       for (const url of ['/v1/models', '/generate?key=synthetic-key']) await routed(side, url, 'executor');
     }
-    for (const method of ['POST', 'HEAD', 'OPTIONS']) await routed('private', '/api/admin/member-management', 'executor', { method });
+    for (const method of ['HEAD', 'OPTIONS']) await routed('private', '/api/admin/member-management', 'executor', { method });
   });
 
   await t.test('public private-management endpoints reject before either upstream, even with forged credentials', async () => {
-    for (const url of ['/admin', '/admin/members.html', '/api/admin/member-management', '/api/admin/summary', '/api/admin/ping', '/api/health', '/memory']) {
-      for (const method of ['GET', 'POST']) {
+    for (const url of ['/admin', '/admin/members.html', '/api/admin/member-management', '/api/admin/summary', '/api/admin/ping',
+      '/api/admin/fair-quota', '/api/admin/accounts', '/api/admin/accounts/quota', '/api/admin/accounts/account-1', '/api/health', '/memory']) {
+      for (const method of ['GET', 'POST', 'PATCH']) {
         const before = f.received.length;
         const response = await request(f.publicPort, f.publicHost, url, { method, headers: {
           'x-executor-token': executorToken, authorization: 'Bearer synthetic-admin', 'x-forwarded-for': '127.0.0.1'
@@ -162,7 +200,8 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async t => {
       const originalHost = side === 'public' ? f.publicHost : f.privateHost;
       const headers = { origin: `http://${originalHost}`, cookie: 'member_session=synthetic-cookie', authorization: 'Bearer synthetic-member',
         'x-forwarded-for': '203.0.113.55', ...(forged ? { 'x-executor-token': forgedToken } : {}) };
-      for (const [url, upstream, method] of [['/api/member/me', 'nuxt', 'GET'], ['/api/member/login', 'executor', 'POST']]) {
+      for (const [url, upstream, method] of [['/api/member/me', 'nuxt', 'GET'], ['/api/member/login', 'nuxt', 'POST'],
+        ['/api/member/requests/batch-1/cancel', 'executor', 'POST']]) {
         const { observed } = await routed(side, url, upstream, { method, headers });
         assert.equal(observed.headers.origin, headers.origin);
         assert.equal(observed.headers.cookie, headers.cookie);
@@ -177,8 +216,29 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async t => {
     }
     const ipHost = `127.0.0.1:${f.privatePort}`;
     await request(f.privatePort, ipHost, '/api/member/login', { method: 'POST', headers: { origin: `http://${ipHost}` } });
+    assert.equal(f.received.at(-1).upstream, 'nuxt');
     assert.equal(f.received.at(-1).headers.host, ipHost);
     assert.equal(f.received.at(-1).headers.origin, `http://${ipHost}`);
+  });
+
+  await t.test('OAuth callback queries, cross-site headers, 303 and separate Set-Cookie headers pass through unchanged', async () => {
+    const url = '/api/member/discord/callback?code=synthetic%2Bcode%2Fpart&state=synthetic%20state&scope=identify+guilds';
+    for (const side of ['public', 'private']) {
+      const port = side === 'public' ? f.publicPort : f.privatePort, host = side === 'public' ? f.publicHost : f.privateHost;
+      const headers = { origin: 'https://discord.com', referer: 'https://discord.com/oauth2/authorize',
+        'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document',
+        cookie: 'member_oauth=synthetic-state-cookie', authorization: 'Bearer synthetic-callback-token' };
+      // Caddy routes; the receiving application remains responsible for business authorization.
+      const login = await routed(side, '/api/member/login', 'nuxt', { method: 'POST', headers });
+      for (const [key, value] of Object.entries(headers)) assert.equal(login.observed.headers[key], value);
+      const response = await request(port, host, url, { headers });
+      assert.equal(response.status, 303); assert.equal(response.headers['x-test-upstream'], 'nuxt');
+      assert.equal(response.headers.location, '/?login=synthetic%20success');
+      assert.deepEqual(response.headers['set-cookie'], callbackCookies);
+      const observed = f.received.at(-1);
+      assert.equal(observed.url, url); assert.equal(observed.method, 'GET'); assert.equal(observed.headers.host, host);
+      for (const [key, value] of Object.entries(headers)) assert.equal(observed.headers[key], value);
+    }
   });
 
   await t.test('API responses stay uncompressed while web responses can use gzip', async () => {

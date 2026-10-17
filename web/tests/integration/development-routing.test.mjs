@@ -33,7 +33,7 @@ function request(base, route, method = 'GET') {
   });
 }
 
-test('真实 Nuxt dev 命中正式查询和状态路由，未迁登录不添加隐式代理', { timeout: 180000 }, async t => {
+test('真实 Nuxt dev 命中正式查询、认证和状态路由，未迁生图不添加隐式代理', { timeout: 180000 }, async t => {
   // test-utils 的 dev CLI 不暴露 --dotenv；发现真实文件就停止，绝不加载其内容。
   await assert.rejects(lstat(path.join(webRoot, '.env')), error => error.code === 'ENOENT',
     'Use process environment and move your own web/.env aside before this smoke test; the test will not read, move, or delete it.');
@@ -118,9 +118,12 @@ test('真实 Nuxt dev 命中正式查询和状态路由，未迁登录不添加�
   assert.match(events.body, /"bootId":"synthetic-dev"/);
 
   const login = await request(ctx.url, '/api/member/login', 'POST');
-  assert.ok([404, 405].includes(login.status), `unmigrated login must not silently reach the executor: ${JSON.stringify({ status: login.status, body: login.body.slice(0, 700), observed: observed.map(item => item.path) })}`);
+  assert.equal(login.status, 200, login.body);
+  assert.deepEqual(JSON.parse(login.body), { fixture: 'current-nuxt-development-route', path: '/api/member/login' });
+  const generation = await request(ctx.url, '/api/jobs', 'POST');
+  assert.ok([404, 405].includes(generation.status), `unmigrated generation must not silently reach the executor: ${JSON.stringify({ status: generation.status, body: generation.body.slice(0, 700), observed: observed.map(item => item.path) })}`);
   assert.deepEqual(observed.map(item => [item.method, item.path]), [
-    ['GET', '/api/member/login-options'], ['GET', '/api/member/me'], ['GET', '/api/member/shared-events']
+    ['GET', '/api/member/login-options'], ['GET', '/api/member/me'], ['GET', '/api/member/shared-events'], ['POST', '/api/member/login']
   ]);
   for (const { headers } of observed) {
     for (const key of ['host', 'origin', 'cookie', 'authorization']) assert.equal(headers[key], identity[key]);

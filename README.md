@@ -6,7 +6,7 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
-成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。查询和状态事件通过 Nuxt 调用独立执行器，执行器独占鉴权、SQLite 与生图调度；登录、管理写入和生图协议仍按阶段分流到同一执行器。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
+成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。查询、状态事件、登录和管理写入通过 Nuxt 调用独立执行器，执行器独占鉴权、SQLite 与生图调度；生图及任务协议继续按阶段分流到同一执行器。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
 
 ## 功能
 
@@ -82,7 +82,7 @@ docker compose run --rm gateway node .output/server/node_modules/novelai-shared-
 docker compose up -d
 ```
 
-公开入口仍需按下文用 Caddy 同源分流；直接访问网页 3000 只有已迁的查询和状态流，不能代替完整入口。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
+公开入口仍需按下文用 Caddy 同源分流；直接访问网页 3000 只有已迁的查询、状态流、登录和管理接口，不能代替完整生图入口。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
 
 初始化只允许全新数据目录，拒绝覆盖已有数据库。它创建一个上游、四个等份成员，随机密码与成员 Key 写入 `data/bootstrap-credentials.json`，不会打印到日志。请私下将对应凭据交给成员。首次查询到有效 Opus 后才分配官方额度；初始化不会生图，也不会创造官方余额。
 

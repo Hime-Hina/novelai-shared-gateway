@@ -2,7 +2,7 @@
 
 owner 与私有 admin 页面已迁入 `web/`，复用 Vue、TypeScript 和 Naive UI。
 独立执行器仍是唯一的鉴权、SQLite 写入和调度服务；Nuxt 网页服务不配置
-上游凭据、不打开业务数据库，通过内部客户端读取授权后的查询与状态。成员页基础与 U01 历史
+上游凭据、不打开业务数据库，通过内部客户端处理查询、状态和管理写入。成员页基础与 U01 历史
 验证见 [Nuxt 成员页](nuxt-member-portal.md)。
 
 ## 入口与分流
@@ -11,11 +11,11 @@ owner 与私有 admin 页面已迁入 `web/`，复用 Vue、TypeScript 和 Naive
 
 | 入口 | 页面与认证 | API 去向 |
 | --- | --- | --- |
-| 公开 HTTPS `/owner` | Nuxt 页面；沿用成员 Cookie，执行器验证 owner 身份 | `member-management/statistics/summary` GET → Nuxt → 执行器；写操作 → 同一执行器 |
-| 回环 HTTP `127.0.0.1:18082/admin` | Nuxt 页面；管理员 Key 放在 `x-admin-token` | `member-management/summary/ping` GET → Nuxt → 执行器；写操作 → 同一执行器 |
+| 公开 HTTPS `/owner` | Nuxt 页面；沿用成员 Cookie，执行器验证 owner 身份 | 查询、成员管理 POST、共享账户额度 POST 与账户 PATCH → Nuxt → 执行器 |
+| 回环 HTTP `127.0.0.1:18082/admin` | Nuxt 页面；管理员 Key 放在 `x-admin-token` | 查询、成员与份额 POST、账户 POST/PATCH 与额度 POST → Nuxt → 执行器 |
 
 公开域名继续拒绝 `/admin*`、`/api/admin*`、`/api/health` 和 `/memory`。
-私有入口显式 `bind 127.0.0.1`；页面和 `/_nuxt/*` 转给网页 3000，查询与成员
+私有入口显式 `bind 127.0.0.1`；页面和 `/_nuxt/*` 转给网页 3000，查询、登录、管理与成员
 SSE 也经过 Nuxt，但使用独立 API 分支。只有网页分支启用压缩；尚未迁移的
 接口由 Caddy 覆盖内部认证头后交给同一执行器，保留原协议和即时刷新。
 

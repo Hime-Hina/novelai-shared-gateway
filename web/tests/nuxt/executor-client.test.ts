@@ -18,6 +18,7 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => void | Promise<voi
 type Reply = { status: number, headers: IncomingMessage['headers'], body: Buffer }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const server of servers.splice(0).reverse()) {
     server.closeAllConnections()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
@@ -231,5 +232,118 @@ describe('executor client through loopback HTTP', () => {
     expect(result.headers['cache-control']).toBe('no-store')
     expect(JSON.parse(result.body.toString())).toEqual({ error: expect.any(String) })
     expect(calls).toBe(0)
+  })
+
+  it('forwards ordinary POST and PATCH bytes and identity without creating an operation key', async () => {
+    const received: { method?: string, path?: string, body: Buffer, headers: IncomingMessage['headers'] }[] = []
+    const base = await fixture(async (req, res) => {
+      received.push({ method: req.method, path: req.url, body: await readBody(req), headers: req.headers })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end('{"ok":true}')
+    })
+    const body = Buffer.from('{ "username": "台北", "enabled": false }\n')
+    const identity = ['Origin', 'http://localhost:18082', 'Cookie', 'member_session=synthetic-cookie',
+      'Authorization', 'Bearer synthetic-member-key', 'Content-Type', 'application/json']
+    expect((await request(base, '/api/member/login', { method: 'POST', body, headers: identity })).status).toBe(200)
+    expect((await request(base, '/api/member/owner/accounts/synthetic', {
+      method: 'PATCH', body, headers: [...identity, 'Idempotency-Key', 'ordinary-write-key']
+    })).status).toBe(200)
+    expect(received.map(item => [item.method, item.path, item.headers['idempotency-key']])).toEqual([
+      ['POST', '/api/member/login', undefined], ['PATCH', '/api/member/owner/accounts/synthetic', 'ordinary-write-key']
+    ])
+    for (const item of received) {
+      expect(item.body).toEqual(body)
+      expect(item.headers).toMatchObject({ host: 'localhost:18082', origin: 'http://localhost:18082',
+        cookie: 'member_session=synthetic-cookie', authorization: 'Bearer synthetic-member-key',
+        'content-type': 'application/json', 'content-length': String(body.length) })
+    }
+  })
+
+  it.each(['POST', 'PATCH'])('does not retry an ordinary %s after losing its response even with an operation key', async method => {
+    const received: unknown[] = []
+    const base = await fixture(async (req, res) => {
+      received.push([req.method, req.headers['idempotency-key'], (await readBody(req)).toString()])
+      res.destroy()
+    })
+    const result = await request(base, '/api/member/owner/member-management', {
+      method, body: '{"action":"synthetic"}', headers: ['Idempotency-Key', 'caller-operation']
+    })
+    expect(result.status).toBe(503)
+    expect(received).toEqual([[method, 'caller-operation', '{"action":"synthetic"}']])
+  })
+
+  it('does not replay an ordinary mutation after a partial 202 response', async () => {
+    let calls = 0
+    const base = await fixture(async (req, res) => {
+      await readBody(req)
+      calls += 1
+      res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': '100' })
+      res.write('{"partial":', () => res.destroy())
+    })
+    const result = await request(base, '/api/member/owner/member-management', {
+      body: '{}', headers: ['Idempotency-Key', 'ordinary-partial-operation']
+    }).then(reply => ({ reply, error: undefined }), error => ({ reply: undefined, error: error as NodeJS.ErrnoException }))
+    // 若头已发出，连接被终止；尚未发头时返回503。两者都不能自动重放普通写入。
+    if (result.reply) expect(result.reply.status).toBe(503)
+    else expect(['ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE']).toContain(result.error!.code)
+    expect(calls).toBe(1)
+  })
+
+  it('returns OAuth cookies and a 303 Location without following the redirect', async () => {
+    let followed = 0, calls = 0
+    const redirect = await listen((_req, res) => { followed += 1; res.end('must not follow') })
+    const cookies = ['nai_oauth_state=; Max-Age=0; Path=/api/member/discord; HttpOnly; SameSite=Lax',
+      'nai_member_session=synthetic; Max-Age=604800; Path=/api/member; HttpOnly; SameSite=Strict']
+    const base = await fixture((_req, res) => {
+      calls += 1
+      res.writeHead(303, { Location: redirect + '/after-login', 'Set-Cookie': cookies })
+      res.end()
+    })
+    const result = await request(base, '/api/member/discord/callback?code=synthetic', { method: 'GET' })
+    expect(result.status).toBe(303)
+    expect(result.headers.location).toBe(redirect + '/after-login')
+    expect(result.headers['set-cookie']).toEqual(cookies)
+    expect(calls).toBe(1)
+    expect(followed).toBe(0)
+  })
+
+  it('lets only the exact admin batch POST exceed the ordinary deadline', async () => {
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const deadlines = vi.spyOn(AbortSignal, 'timeout').mockImplementation(milliseconds => originalTimeout(milliseconds === 45000 ? 100 : milliseconds))
+    const received: string[] = []
+    const base = await fixture(async (req, res) => {
+      await readBody(req)
+      received.push(`${req.method} ${req.url}`)
+      await new Promise(resolve => setTimeout(resolve, 250))
+      if (!res.destroyed) { res.writeHead(200); res.end('{"ok":true}') }
+    })
+    const batch = await request(base, '/api/admin/accounts/quota?refresh=all', { body: '{}' })
+    expect(batch.status).toBe(200)
+    expect(deadlines).not.toHaveBeenCalled()
+    expect(received).toEqual(['POST /api/admin/accounts/quota?refresh=all'])
+    for (const [method, path] of [['GET', '/api/admin/accounts/quota'], ['POST', '/api/admin/accounts/quota-extra'], ['POST', '/api/member/login']]) {
+      const result = await request(base, path, { method, ...(method === 'POST' ? { body: '{}' } : {}) })
+      expect(result.status).toBe(503)
+    }
+    expect(deadlines).toHaveBeenCalledTimes(3)
+    for (const [milliseconds] of deadlines.mock.calls) expect(milliseconds).toBe(45000)
+  })
+
+  it('cancels the admin batch HTTP request when its browser disconnects without retrying', async () => {
+    let calls = 0, closed = false
+    const base = await fixture(async (req, res) => {
+      await readBody(req)
+      calls += 1
+      res.once('close', () => { closed = true })
+    })
+    const browser = http.request(new URL('/api/admin/accounts/quota', base), {
+      method: 'POST', headers: { host: 'localhost:18082', 'content-type': 'application/json' }, agent: false
+    })
+    browser.on('error', () => {})
+    browser.end('{}')
+    await vi.waitFor(() => expect(calls).toBe(1))
+    browser.destroy()
+    await vi.waitFor(() => expect(closed).toBe(true))
+    expect(calls).toBe(1)
   })
 })

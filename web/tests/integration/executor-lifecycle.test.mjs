@@ -33,17 +33,17 @@ async function until(predicate, timeout, label) {
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
-function call(base, route, { method = 'GET', body, headers = {} } = {}) {
+function call(base, route, { method, body, headers = {} } = {}) {
   const target = new URL(route, base);
   assert.equal(target.origin, base, 'fixture calls must stay on the local process');
   return new Promise((resolve, reject) => {
-    const request = http.request(target, { method: body === undefined ? method : 'POST', signal: AbortSignal.timeout(15000),
+    const request = http.request(target, { method: method || (body === undefined ? 'GET' : 'POST'), signal: AbortSignal.timeout(15000),
       headers: { host: publicHost, origin: publicOrigin, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers } }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk)); response.on('error', reject);
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
     });
-    request.on('error', reject); request.end(body === undefined ? undefined : JSON.stringify(body));
+    request.on('error', reject); request.end(body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body));
   });
 }
 function json(response, status = 200) {
@@ -130,20 +130,30 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
   const rows = table => audit.prepare(`SELECT data FROM ${table}`).all().map(row => JSON.parse(row.data));
   const jobs = () => rows('jobs');
   const releaseFirst = deferred();
-  const discordState = { refreshTokens: [], membershipTokens: [], membershipCalls: [], status: 200, gate: null, persistedBeforeMembership: false };
+  const discordState = { refreshTokens: [], authorizationCodes: [], membershipTokens: [], membershipCalls: [], status: 200, gate: null, persistedBeforeMembership: false };
   let fileSynced = false;
-  let generations = 0, fixedRemaining = 10000, unexpectedUpstream = 0, leakedInternalHeader = false, wrongUpstreamAuth = false;
+  let generations = 0, quotaCalls = 0, fixedRemaining = 10000, unexpectedUpstream = 0, leakedInternalHeader = false, wrongUpstreamAuth = false;
   const upstream = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     if (discord && req.url.startsWith('/discord/')) {
       if (req.url === '/discord/oauth2/token' && req.method === 'POST') {
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
         assert.equal(form.get('client_secret'), discordEnv.DISCORD_CLIENT_SECRET);
-        assert.equal(form.get('grant_type'), 'refresh_token');
-        discordState.refreshTokens.push(form.get('refresh_token'));
+        const login = form.get('grant_type') === 'authorization_code';
+        if (login) {
+          assert.equal(form.get('redirect_uri'), publicOrigin + '/api/member/discord/callback');
+          discordState.authorizationCodes.push(form.get('code'));
+        } else {
+          assert.equal(form.get('grant_type'), 'refresh_token');
+          discordState.refreshTokens.push(form.get('refresh_token'));
+        }
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ access_token: 'synthetic-discord-access-0-1', refresh_token: 'synthetic-discord-refresh-0-1',
+        res.end(JSON.stringify({ access_token: login ? 'synthetic-discord-login-access-1' : 'synthetic-discord-access-0-1',
+          refresh_token: login ? 'synthetic-discord-login-refresh-1' : 'synthetic-discord-refresh-0-1',
           expires_in: 3600, token_type: 'Bearer', scope: 'identify guilds.members.read' }));
+      } else if (req.url === '/discord/users/@me') {
+        assert.equal(req.headers.authorization, 'Bearer synthetic-discord-login-access-1');
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ id: '222222222222222221', bot: false }));
       } else if (req.url === `/discord/users/@me/guilds/${discordEnv.DISCORD_GUILD_ID}/member`) {
         discordState.membershipTokens.push(req.headers.authorization);
         const verification = { startedAt: performance.now(), respondedAt: null };
@@ -153,13 +163,16 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
         if (discordState.gate) await discordState.gate.promise;
         verification.respondedAt = performance.now();
         res.writeHead(discordState.status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(discordState.status === 200 ? { pending: false, user: { id: '222222222222222220' } } : { message: 'synthetic membership unavailable' }));
+        res.end(JSON.stringify(discordState.status === 200 ? { pending: false, user: {
+          id: req.headers.authorization === 'Bearer synthetic-discord-login-access-1' ? '222222222222222221' : '222222222222222220'
+        } } : { message: 'synthetic membership unavailable' }));
       } else { unexpectedUpstream++; res.writeHead(500); res.end('unexpected synthetic Discord route'); }
       return;
     }
     leakedInternalHeader ||= Object.hasOwn(req.headers, 'x-executor-token');
     wrongUpstreamAuth ||= req.headers.authorization !== 'Bearer ' + upstreamToken;
     if (req.url === '/user/data') {
+      quotaCalls++;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ subscription: { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
         trainingStepsLeft: { fixedTrainingStepsLeft: fixedRemaining, purchasedTrainingSteps: 0 },
@@ -178,7 +191,7 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
   const upstreamPort = await listen(upstream), executorPort = await unusedPort(), nuxtPort = await unusedPort();
   const executorBase = `http://127.0.0.1:${executorPort}`, nuxtBase = `http://127.0.0.1:${nuxtPort}`;
   const observations = [], droppedReceipts = [];
-  let dropNextReceipt = false, queryBatch;
+  let dropNextReceipt = false, dropMutationPath, queryBatch;
   // This relay injects a lost internal acknowledgement; it is not the Nuxt gateway under test.
   const relay = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
@@ -207,6 +220,9 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
         if (dropNextReceipt && req.method === 'POST' && response.statusCode === 202) {
           dropNextReceipt = false; droppedReceipts.push(JSON.parse(received)); res.destroy(); return;
         }
+        if (dropMutationPath === req.url && ['POST', 'PATCH'].includes(req.method) && response.statusCode === 200) {
+          dropMutationPath = undefined; res.destroy(); return;
+        }
         res.writeHead(response.statusCode, response.headers); res.end(received);
       });
     });
@@ -230,6 +246,7 @@ globalThis.fetch = (input, options) => {
   return original(input, { ...options, redirect: 'error' });
 };\n`);
   const discordSecrets = discord ? [discordEnv.DISCORD_CLIENT_SECRET, 'synthetic-discord-access-0-1', 'synthetic-discord-refresh-0-1',
+    'synthetic-discord-login-access-1', 'synthetic-discord-login-refresh-1',
     ...members.flatMap((_, index) => [`synthetic-discord-access-${index}-0`, `synthetic-discord-refresh-${index}-0`])] : [];
   const secrets = [adminToken, internalToken, upstreamToken, ...discordSecrets, ...members.flatMap(member => [member.api_key, member.password]),
     ...sessions.map(session => session.token)];
@@ -292,11 +309,11 @@ globalThis.fetch = (input, options) => {
   const revoke = member => call(executorBase, '/api/admin/member-management', { body: { action: 'member-status', userId: members[member].user_id, enabled: false },
     headers: { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-admin-token': adminToken, 'x-executor-token': internalToken } });
   return { request, nuxt, executor, startNuxt, startExecutor, dataDir, audit, jobs, members, observations, droppedReceipts, internalToken,
-    nuxtBase, executorBase, adminToken, cookie, revoke, discordState, forbiddenResponseSecrets: [upstreamToken, internalToken, adminToken, ...discordSecrets],
+    nuxtBase, executorBase, adminToken, upstreamToken, cookie, revoke, discordState, forbiddenResponseSecrets: [upstreamToken, internalToken, adminToken, ...discordSecrets],
     fileSynced: () => fileSynced,
-    releaseFirst: releaseFirst.resolve, generations: () => generations,
+    releaseFirst: releaseFirst.resolve, generations: () => generations, quotaCalls: () => quotaCalls,
     batchQueries(routes) { queryBatch = { paths: new Set(routes), arrived: 0, forwarded: 0, open: deferred() }; return queryBatch; },
-    dropReceipt() { dropNextReceipt = true; }, checkStorage };
+    dropReceipt() { dropNextReceipt = true; }, dropMutation(route) { dropMutationPath = route; }, checkStorage };
 }
 
 test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { timeout: 240000 }, async t => {
@@ -484,6 +501,150 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       for (const secret of f.forbiddenResponseSecrets) assert.ok(!observation.response.includes(Buffer.from(secret)), 'executor response must not expose upstream/Discord credentials');
     }
     assert.equal(f.discordState.refreshTokens.length, 1); assert.equal(f.generations(), 1); f.checkStorage();
+  });
+
+  await t.test('正式密码登录保持七天固定期限，Nuxt与执行器重启不丢会话，注销持久生效', { timeout: 30000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry);
+    const credentials = { username: f.members[0].username, password: f.members[0].password };
+    const rawLogin = JSON.stringify(credentials, null, 2) + '\n';
+    assert.equal((await f.request('/api/member/login', { body: rawLogin, headers: { origin: 'https://untrusted.example', 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, 0);
+    const loginResponse = await f.request('/api/member/login', { body: rawLogin });
+    const login = json(loginResponse), setCookie = loginResponse.headers['set-cookie'];
+    assert.equal(setCookie.length, 1); assert.match(setCookie[0], /^nai_member_session=[^;]+; Path=\/api\/member; HttpOnly; SameSite=Strict;/);
+    assert.match(setCookie[0], /; Secure$/); assert.match(setCookie[0], /Max-Age=60480[0-9]|Max-Age=60479[89]/);
+    const cookie = setCookie[0].split(';')[0], headers = { cookie };
+    const saved = f.audit.prepare('SELECT created_at, expires_at FROM member_sessions WHERE user_id = ?').get(f.members[0].user_id);
+    assert.equal(saved.expires_at - saved.created_at, 7 * 86400000); assert.equal(login.expiresAt, saved.expires_at);
+    const forwarded = f.observations.findLast(item => item.path === '/api/member/login');
+    assert.deepEqual(forwarded.body, Buffer.from(rawLogin)); assert.equal(forwarded.headers.host, publicHost); assert.equal(forwarded.headers.origin, publicOrigin);
+    assert.equal(forwarded.headers['idempotency-key'], undefined, 'login must not be turned into a retried generation command');
+    for (const restart of [async () => { await f.nuxt.stop(); await f.startNuxt(); }, async () => { await f.executor.stop(); await f.startExecutor(); }]) {
+      await restart();
+      const response = await f.request('/api/member/me', { headers });
+      assert.equal(json(response).sessionExpiresAt, login.expiresAt); assert.equal(response.headers['set-cookie'], undefined);
+    }
+    const loggedOut = await f.request('/api/member/logout', { body: {}, headers }); json(loggedOut);
+    assert.match(loggedOut.headers['set-cookie'][0], /^nai_member_session=;/); assert.match(loggedOut.headers['set-cookie'][0], /Max-Age=0/);
+    assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, 0);
+    await f.executor.stop(); await f.startExecutor();
+    assert.equal((await f.request('/api/member/me', { headers })).status, 401);
+    assert.equal(f.generations(), 0); f.checkStorage();
+  });
+
+  await t.test('正式Discord回跳跨Nuxt重启保留state，原303与两个Cookie逐项保留，跨站仅限合法回跳', { timeout: 30000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { discord: true });
+    const initialSessions = f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n;
+    assert.equal((await f.request('/api/member/discord/start', { body: {}, headers: { origin: 'https://untrusted.example', 'sec-fetch-site': 'cross-site' } })).status, 403);
+    const started = await f.request('/api/member/discord/start', { body: {} });
+    const authorization = new URL(json(started).authorizationUrl);
+    assert.equal(authorization.origin, 'https://discord.com'); assert.equal(authorization.pathname, '/oauth2/authorize');
+    assert.equal(authorization.searchParams.get('redirect_uri'), publicOrigin + '/api/member/discord/callback');
+    const state = authorization.searchParams.get('state'); assert.ok(state);
+    assert.equal(started.headers['set-cookie'].length, 1);
+    assert.match(started.headers['set-cookie'][0], /Path=\/api\/member\/discord; HttpOnly; Secure; SameSite=Lax/);
+    const stateCookie = started.headers['set-cookie'][0].split(';')[0];
+    const callback = '/api/member/discord/callback?' + new URLSearchParams({ state, code: 'synthetic-owner-code' });
+    assert.equal((await f.request(callback, { headers: { cookie: 'nai_discord_state=wrong', origin: 'https://discord.com', 'sec-fetch-site': 'cross-site' } })).status, 400);
+    assert.equal(f.discordState.authorizationCodes.length, 0);
+    assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, initialSessions);
+    const executorPid = f.executor.child().pid;
+    await f.nuxt.stop(); await f.startNuxt();
+    const response = await f.request(callback, { headers: { cookie: stateCookie, origin: 'https://discord.com', 'sec-fetch-site': 'cross-site' } });
+    assert.equal(response.status, 303); assert.equal(response.headers.location, publicOrigin + '/');
+    assert.equal(response.headers['cache-control'], 'no-store'); assert.equal(f.executor.child().pid, executorPid);
+    const cookies = response.headers['set-cookie']; assert.equal(cookies.length, 2);
+    const stateCleared = cookies.find(value => value.startsWith('nai_discord_state='));
+    const sessionCookie = cookies.find(value => value.startsWith('nai_member_session='));
+    assert.match(stateCleared, /^nai_discord_state=;/); assert.match(stateCleared, /Max-Age=0/);
+    assert.match(sessionCookie, /Path=\/api\/member; HttpOnly; SameSite=Strict;/); assert.match(sessionCookie, /; Secure$/);
+    assert.match(sessionCookie, /Max-Age=4320[0-9]|Max-Age=43199/);
+    const ownerCookie = sessionCookie.split(';')[0], me = json(await f.request('/api/member/me', { headers: { cookie: ownerCookie } }));
+    assert.equal(me.owner, true); assert.equal(me.username, f.members[1].username);
+    const ownerSession = f.audit.prepare('SELECT created_at, expires_at FROM member_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1').get(f.members[1].user_id);
+    assert.equal(ownerSession.expires_at - ownerSession.created_at, 12 * 3600000); assert.equal(me.sessionExpiresAt, ownerSession.expires_at);
+    assert.equal((await f.request(callback, { headers: { cookie: stateCookie } })).status, 400, 'OAuth state is single-use');
+    assert.deepEqual(f.discordState.authorizationCodes, ['synthetic-owner-code']);
+    assert.equal((await f.request('/api/member/logout', { body: {}, headers: { cookie: ownerCookie, origin: 'https://untrusted.example', 'sec-fetch-site': 'cross-site' } })).status, 403);
+    assert.equal(json(await f.request('/api/member/me', { headers: { cookie: ownerCookie } })).owner, true);
+    json(await f.request('/api/member/logout', { body: {}, headers: { cookie: ownerCookie } }));
+    assert.equal((await f.request('/api/member/me', { headers: { cookie: ownerCookie } })).status, 401);
+    for (const observation of f.observations) if (observation.response) {
+      for (const secret of f.forbiddenResponseSecrets) assert.ok(!observation.response.includes(Buffer.from(secret)), 'OAuth response must not disclose grant credentials');
+    }
+    assert.equal(f.generations(), 0); f.checkStorage();
+  });
+
+  await t.test('正式管理写入保留权限、版本与32KiB校验，丢失管理回执不重发已提交命令', { timeout: 30000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { discord: true });
+    const ownerHeaders = { cookie: f.cookie(1) }, memberHeaders = { cookie: f.cookie(2) };
+    const adminHeaders = { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-admin-token': f.adminToken };
+    const ownerPath = '/api/member/owner/member-management', adminPath = '/api/admin/member-management';
+    const fair = () => JSON.parse(f.audit.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value).fairQuota;
+    const ledger = () => f.audit.prepare('SELECT id, data FROM ledger ORDER BY id').all();
+    const initialFair = fair(), initialLedger = ledger();
+    const policy = { action: 'fallback-policy', enabled: true };
+    assert.equal((await f.request(ownerPath, { body: policy })).status, 401);
+    assert.equal((await f.request(ownerPath, { body: policy, headers: memberHeaders })).status, 403);
+    assert.equal((await f.request(ownerPath, { body: policy, headers: { ...ownerHeaders, origin: 'https://untrusted.example' } })).status, 403);
+    assert.equal((await f.request(adminPath, { body: policy, headers: { ...ownerHeaders, 'x-admin-token': f.adminToken } })).status, 404);
+    assert.equal((await f.request(adminPath, { body: policy, headers: { host: adminHeaders.host, origin: adminHeaders.origin } })).status, 403);
+    assert.equal((await f.request(adminPath, { body: policy, headers: { ...adminHeaders, 'x-admin-token': 'synthetic-wrong-admin' } })).status, 401);
+    assert.equal((await f.request(ownerPath, { body: '{', headers: ownerHeaders })).status, 400);
+    assert.equal((await f.request(ownerPath, { body: JSON.stringify({ ...policy, filler: 'x'.repeat(32768) }), headers: ownerHeaders })).status, 413);
+    const staleGroups = { action: 'groups', expectedConfigVersion: initialFair.configVersion - 1, groups: initialFair.groups };
+    assert.equal((await f.request(ownerPath, { body: staleGroups, headers: ownerHeaders })).status, 409);
+    assert.deepEqual(fair(), initialFair); assert.deepEqual(ledger(), initialLedger);
+
+    const rawPolicy = '{\n  "action": "fallback-policy",\n  "enabled": true\n}\n';
+    assert.equal(json(await f.request(ownerPath, { body: rawPolicy, headers: ownerHeaders })).autoAnlasFallback, true);
+    assert.equal(fair().autoAnlasFallback, true);
+    assert.equal(fair().policyHistory.length, (initialFair.policyHistory?.length || 0) + 1);
+    const policyObservation = f.observations.findLast(item => item.path === ownerPath);
+    assert.deepEqual(policyObservation.body, Buffer.from(rawPolicy)); assert.equal(policyObservation.headers.cookie, ownerHeaders.cookie);
+    assert.equal(policyObservation.headers['idempotency-key'], undefined);
+
+    const countBeforeLoss = f.observations.filter(item => item.path === adminPath && item.method === 'POST').length;
+    const policyCount = fair().policyHistory.length;
+    f.dropMutation(adminPath);
+    const lost = await f.request(adminPath, { body: { action: 'fallback-policy', enabled: false }, headers: adminHeaders });
+    json(lost, 503); assert.equal(lost.headers['cache-control'], 'no-store');
+    assert.equal(f.observations.filter(item => item.path === adminPath && item.method === 'POST').length, countBeforeLoss + 1);
+    assert.equal(fair().autoAnlasFallback, false); assert.equal(fair().policyHistory.length, policyCount + 1);
+    assert.equal(json(await f.request(adminPath, { body: policy, headers: adminHeaders })).autoAnlasFallback, true);
+
+    const accountId = initialFair.boundAccountId;
+    const account = () => JSON.parse(f.audit.prepare('SELECT data FROM accounts WHERE id = ?').get(accountId).data);
+    const quotaCalls = f.quotaCalls();
+    assert.equal(json(await f.request('/api/member/owner/accounts/quota', { body: { ids: [accountId] }, headers: ownerHeaders })).ok, 1);
+    assert.equal(f.quotaCalls(), quotaCalls + 1);
+    assert.equal(json(await f.request('/api/member/owner/accounts/' + accountId, { method: 'PATCH', body: { enabled: false }, headers: ownerHeaders })).enabled, false);
+    assert.equal(account().enabled, false);
+    assert.equal(json(await f.request('/api/member/owner/accounts/' + accountId, { method: 'PATCH', body: { enabled: true }, headers: ownerHeaders })).enabled, true);
+    const privateQuota = json(await f.request('/api/admin/accounts/quota', { body: { ids: [accountId] }, headers: adminHeaders }));
+    assert.equal(privateQuota.ok, 1); assert.equal(privateQuota.accounts[0].token, f.upstreamToken);
+    const bulk = json(await f.request('/api/admin/accounts', { method: 'PATCH', body: { ids: [accountId], weight: 2 }, headers: adminHeaders }));
+    assert.equal(bulk.accounts[0].weight, 2); assert.equal(account().weight, 2);
+    const name = 'Synthetic private management account';
+    assert.equal(json(await f.request('/api/admin/accounts/' + accountId, { method: 'PATCH', body: { name }, headers: adminHeaders })).name, name);
+    assert.equal(account().name, name);
+    const configured = json(await f.request('/api/admin/fair-quota', { body: { memberIds: initialFair.members }, headers: adminHeaders }));
+    assert.deepEqual(configured.members, initialFair.members);
+    const disabledToken = 'pst-synthetic-disabled-management-account';
+    f.forbiddenResponseSecrets.push(disabledToken);
+    const added = json(await f.request('/api/admin/accounts', { body: { token: disabledToken, enabled: false, name: 'Synthetic disabled account' }, headers: adminHeaders }), 201);
+    assert.equal(added.enabled, false); assert.notEqual(added.id, accountId);
+    assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM accounts').get().n, 2);
+    for (const observation of f.observations) if (observation.response) {
+      // This existing private admin response explicitly reveals PST; owner and public DTOs never do.
+      const permittedPrivateQuota = observation.path === '/api/admin/accounts/quota' && observation.method === 'POST'
+        && observation.headers.host === adminHeaders.host && observation.headers['x-admin-token'] === f.adminToken;
+      for (const secret of f.forbiddenResponseSecrets) {
+        if (permittedPrivateQuota && secret === f.upstreamToken) continue;
+        assert.ok(!observation.response.includes(Buffer.from(secret)), 'management response must not leak internal/upstream credentials');
+      }
+    }
+    assert.equal(f.generations(), 0); f.checkStorage();
   });
 
   await t.test('正式 SSE 保持同一客户端连接跨执行器重启，校准新boot后仍接收授权失效', { timeout: 45000 }, async sub => {

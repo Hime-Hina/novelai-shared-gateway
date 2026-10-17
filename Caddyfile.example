@@ -1,10 +1,11 @@
 # 修改为自己的域名，并与 .env 的 PUBLIC_HOST 保持一致。
 # Caddy 进程须配置 EXECUTOR_TOKEN，与 Nuxt/执行器一致，不能提交真实值。
-(member_queries) {
+(member_api) {
     @queries {
         method GET
         path /api/member/login-options /api/member/me /api/member/key /api/member/shared-status /api/member/heatmap /api/member/shared-events
         path /api/member/owner/member-management /api/member/owner/statistics /api/member/owner/summary
+        path /api/member/discord/callback
     }
     handle @queries {
         reverse_proxy 127.0.0.1:3000 {
@@ -18,6 +19,21 @@
     handle @request_query {
         reverse_proxy 127.0.0.1:3000
     }
+    @member_writes {
+        method POST
+        path /api/member/login /api/member/logout /api/member/discord/start
+        path /api/member/owner/member-management /api/member/owner/accounts/quota
+    }
+    handle @member_writes {
+        reverse_proxy 127.0.0.1:3000
+    }
+    @owner_account_patch {
+        method PATCH
+        path_regexp owner_account_patch ^/api/member/owner/accounts/[^/]+$
+    }
+    handle @owner_account_patch {
+        reverse_proxy 127.0.0.1:3000
+    }
 }
 
 gateway.example.com {
@@ -25,7 +41,7 @@ gateway.example.com {
     handle @private {
         respond 404
     }
-    import member_queries
+    import member_api
     @web path / /account.html /owner /owner/ /owner.html /_nuxt/*
     handle @web {
         encode zstd gzip
@@ -47,12 +63,26 @@ gateway.example.com {
 # 私有管理同源入口；SSH 隧道应转发到此端口，而不是直接转发到网页或网关。
 http://127.0.0.1:18082, http://localhost:18082 {
     bind 127.0.0.1
-    import member_queries
+    import member_api
     @admin_queries {
         method GET
         path /api/admin/member-management /api/admin/summary /api/admin/ping
     }
     handle @admin_queries {
+        reverse_proxy 127.0.0.1:3000
+    }
+    @admin_writes {
+        method POST
+        path /api/admin/member-management /api/admin/fair-quota /api/admin/accounts /api/admin/accounts/quota
+    }
+    handle @admin_writes {
+        reverse_proxy 127.0.0.1:3000
+    }
+    @admin_account_patch {
+        method PATCH
+        path_regexp admin_account_patch ^/api/admin/accounts(/[^/]+)?$
+    }
+    handle @admin_account_patch {
         reverse_proxy 127.0.0.1:3000
     }
     @web path / /account.html /owner /owner/ /owner.html /admin /admin/ /admin.html /admin/members.html /_nuxt/*

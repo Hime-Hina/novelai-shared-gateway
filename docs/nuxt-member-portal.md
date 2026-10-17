@@ -75,7 +75,7 @@ corepack pnpm --filter @novelai-gateway/executor build
 corepack pnpm --filter @novelai-gateway/web dev
 ```
 
-开发服务绑定 `127.0.0.1:3000`。当前查询与状态流使用正式 Nuxt 服务端路由，
+开发服务绑定 `127.0.0.1:3000`。当前查询、状态流、登录与管理使用正式 Nuxt 服务端路由，
 已删除会抢先接走请求的 `/api` devProxy；`GATEWAY_DEV_URL` 不再使用。
 在另一个终端配置执行器的隔离环境（绝对 `DATA_DIR`、`HOST=127.0.0.1`、
 `PORT=18081`、管理员及内部密钥）后，运行 `node executor/.output/server/start.mjs`。
@@ -117,10 +117,11 @@ Windows 使用 fnm 时可将命令写成
 | --- | --- |
 | `/`、`/account.html`、`/_nuxt/*` | Nuxt 网页服务；旧 `/account.html` 重定向到 `/` |
 | 成员 `login-options/me/key/shared-status/heatmap/requests/:id` 的 GET、owner 查询和成员 `shared-events` | Nuxt 内部客户端 → 同一执行器；业务授权与 DTO 仍由执行器负责 |
-| 其余 `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate`，包括登录、管理写入及取消 | Caddy 添加内部认证头 → 同一执行器的原协议 handler |
+| 成员登录/注销、Discord start POST 与 callback GET，owner 成员管理/额度 POST 与账户 PATCH | Nuxt 内部客户端 → 同一执行器；Cookie、OAuth state 与事务仍由执行器处理 |
+| 其余 `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate`，包括生图及取消 | Caddy 添加内部认证头 → 同一执行器的原协议 handler |
 | `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；执行器验证 owner 会话 |
 | `/admin*`、`/api/admin*`、`/api/health`、`/memory` | 公网入口直接拒绝 |
-| 私有回环 18082 的成员/owner/admin 页面及合法别名、`/_nuxt/*` | Nuxt；管理 GET 经 Nuxt，写操作仍直达同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
+| 私有回环 18082 的成员/owner/admin 页面及合法别名、`/_nuxt/*` | Nuxt；管理查询和写入均经 Nuxt → 同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
 
 示例网页服务使用回环端口 3000、网关使用回环端口 18081；实际端口由隔离
 环境配置。代理保留公共 Host，网关按实际来源配置 `TRUSTED_PROXY_IPS`，
