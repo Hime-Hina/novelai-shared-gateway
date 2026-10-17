@@ -92,6 +92,10 @@ test('Precise 真实校准：标准单张保留基础免费，每张参考加 5�
     // Opus 实测官方只扣 5；采用官网 s8 报价传参，不注入另一 UI 提示分支的 characterRef。
     assert.equal(q.amount,official.GI(officialParameters(request),opus,request.model)+5*count);
     assert.equal(q.amount,5*count);assert.equal(q.breakdown.generation,0);assert.equal(q.breakdown.precise,5*count);
+    for(const [strength,secondary] of [[-1,2],[1,-1]]){
+      const withStrengths={...request,nativeParameters:{...request.nativeParameters,director_reference_strength_values:Array(count).fill(strength),director_reference_secondary_strength_values:Array(count).fill(secondary)}};
+      assert.deepEqual(quoteNativeRequest(withStrengths),q);
+    }
   }
   for(const extra of [{steps:29},{width:1536}]){
     const request=input({...extra,nativeParameters:{director_reference_images:[image]}});

@@ -50,7 +50,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 输出/流 | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游；流式路径按`parameters.stream`选择，缺省为sse | 其他格式/stream值422；stream只属于本次响应，不进入持久请求或幂等指纹；V4/V5上游仍请求msgpack |
 | 图生图/重绘 | PNG/JPEG/WebP base64 输入，图片实际尺寸必须等于请求尺寸；strength/noise 0..1；重绘要求同尺寸 PNG mask | 不下载图片 URL；遮罩仅在 infill 有效；图生图/重绘不允许 SMEA；文生图无效的默认 strength/noise 滑块会清理 |
 | 多角色 | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点 | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构 |
-| SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | autoSmea 启用、其他模型启用、图生图启用均 422 |
+| SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | DDIM/ddim_v3、autoSmea 启用、其他模型启用、图生图启用均 422 |
 | Vibe | V3 原图；V4/V4.5 预编码数据；最多 16 个参考，数量与强度对应；旧单图字段归一成数组 | 编码输入限制 2 MiB，基本形态校验不是内部语义验证；V5、重绘、与 Precise 混用被网关拒绝 |
 | Precise Reference | V4.5；最多 16 张；1024×1536 / 1536×1024 / 1472×1472；描述与参考数组一一对应 | 其他模型或与 Vibe 混用 422；强度当前接受 -1..1、secondary -1..2，较 Swagger 的文字说明宽，留待核实 |
 | 缓存字段 | cached 形式必须同时给出 data，进入核价后转换为普通数组 | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝 |
@@ -158,6 +158,16 @@ WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/nove
 ### C03-04 普通生成成功状态
 
 [官方原始JSON与ZIP实测](novelai-protocol-probes.md)均返回200，因此普通生成及同键JSON/ZIP重取统一为200。删除此前依据Swagger而增加的201分支；部分批次、流式、Vibe和管理操作按各自契约处理，不全局改写2xx。官方ZIP本次使用`binary/octet-stream`，网关保留`application/zip`明确描述已验证ZIP内容；原有Accept协商、部分批次说明、预扣/结算、冷重启和断线后领取不变。
+
+### C03-05 采样器组合与 Precise 范围
+
+[官方采样文档](https://docs.novelai.net/en/image/sampling/)明确DDIM不支持SMEA；官网公共模块的`nonSmSamplers`同时列出`ddim`和`ddim_v3`。因此两者启用sm在入队、报价和预扣前返回422，sm_dyn依赖sm的原规则保持；关闭SMEA仍沿用原采样器校验，Medium仍归一为固定Euler Ancestral。
+
+官网当前V3选择列表含六种共同采样器及ddim_v3，V4/V4.5/V5 High仅含前六种，而网关接受名单更宽。Swagger的sampler只有string，没有按模型限定的enum；网页没有显示某项并不能证明服务端必定拒绝。本轮不据此整体收窄名单，也不宣称所有组合已实测。
+
+[官方Precise文档](https://docs.novelai.net/en/image/precisereference/)明确支持负值数字输入。网页两个滑块虽显示0～1，却设置uncap/allowNegative，发送strength原值和`secondary=1-fidelity`；负Fidelity可以产生大于1的secondary。现有主强度−1～1、secondary−1～2是网关的有限数值边界，不是官方硬范围，本轮保持并补原值/非有限数/参考费用回归。每张参考加5 Anlas的既有规则不因强度改变。
+
+证据固定于2026-10-17：官网[公共模块](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)SHA-256 `334fe5dd5ba29bfd8a69d2c356a69e6101918b308e8a438ee53acb5bf1026349`；[参考参数构造](https://novelai.net/_next/static/chunks/42wv5qb9evl5c.js?dpl=b50892a-38995131626-1) `b6b868a8b430f8992024f82f89221f4e16b5850a1cefafe4ab9d48815bc25f3f`；[滑块与模型列表控件](https://novelai.net/_next/static/chunks/436sreshl2bl8.js?dpl=b50892a-38995131626-1) `b30294d65b6b9b1e7fdfb0b9105576e2ef33723949040daf8e6377175ce5c191`。没有为此发送真实收费参考请求。
 
 ## 错误与安全边界
 
@@ -275,7 +285,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
 | C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP及[最新联合CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
 | C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200，具体上游错误映射与批次扩展继续核对 | 状态切片回归/最终CI继续记录；保留成员鉴权、独立结算和运营限制，不宣称逐字节代理所有官方头部 |
-| C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
+| C03-05 | 已依据官方规则拒绝DDIM＋SMEA，核对并保留Precise负值/secondary大于1；其他采样器组合不凭UI缺席直接收窄 | 定向组合、有限数、原值及报价回归见上节；当前接受名单与Precise界限明确为网关范围，未声称全组合上游验证 |
 | C03-06 | Vibe内部编码不可由公开schema验证；官方未给幂等生成/结果重取契约 | 维持opaque产物和任务证据，不能宣称任意断电后精确一次上游消费或凭correlation-id找回 |
 
 C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准的安全、账务和生命周期修复按各自计划推进，不必等待 C03；相应行为变更需要独立提交和回归，文档记录改变后的事实。

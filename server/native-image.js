@@ -270,6 +270,7 @@ export function parseNativeImageRequest(body) {
   if (parameters.autoSmea) fail(422, '暂不支持自动选择 SMEA；请在客户端明确选择 sm / sm_dyn。');
   if (!v3 && (parameters.sm || parameters.sm_dyn || parameters.autoSmea)) fail(422, '当前模型不支持 SMEA；请关闭该选项。');
   if (parameters.sm_dyn && !parameters.sm) fail(422, 'SMEA DYN 需要启用 SMEA。');
+  if (parameters.sm && ['ddim', 'ddim_v3'].includes(parameters.sampler)) fail(422, 'DDIM 采样器不支持 SMEA；请关闭 sm / sm_dyn 或更换采样器。');
   // 官网负向角色提示词通常不带 use_coords，沿用正向提示词或顶层的布局模式。
   const useCoords = parameters.v4_prompt?.use_coords ?? parameters.use_coords;
   for (const field of ['v4_prompt', 'v4_negative_prompt']) if (active(parameters[field])) { if (v3) fail(422, 'V3 不支持多角色提示词结构。'); validateCaption(parameters[field], field, 24, useCoords); }

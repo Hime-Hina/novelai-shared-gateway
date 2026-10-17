@@ -144,6 +144,8 @@ C03-04 普通生成状态切片：补充一张512×512、4步V4.5免费条件ZIP
 
 C03-04 封禁误判补修：共享封禁识别改为匹配独立的ban/banned，避免bandwidth、banana等普通错误误触发额度刷新链的账户禁用；中文封禁保持。公开文案只说明识别结果，不声称文案函数执行了禁用，真正执行禁用的分支保留动作说明。复用额度刷新测试中的真实分类、应用和禁用函数，先验证新增两项失败，再修复为12/12通过；语法与差异检查通过。账务、冷却、并发占用和原错误诊断保持，原始错误公开边界另行处理，未部署生产。
 
+C03-05 参数组合核对：依据官方采样文档，新增一条DDIM/ddim_v3启用SMEA时的422校验，覆盖Anime/Furry V3、重绘模型映射、DYN依赖、正常Euler和Medium固定参数；不依据官网UI列表缺席收窄其他采样器。官方Precise支持负值，保留现有主值−1～1、secondary−1～2并明确为网关边界；补原值、非有限数与每张参考费用不随强度变化的回归。新增组合先失败、修复后Native参数/报价/契约39/39通过，语法与差异检查通过；无依赖、schema或报价修改，全部离线模拟。证据和限制见[契约](api-contract.md#c03-05-采样器组合与-precise-范围)，最终Linux验收继续记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

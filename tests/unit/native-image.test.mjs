@@ -71,6 +71,26 @@ test('非法参数不能透传未知计费功能，数值和类型边界在入�
  assert.equal(parseNativeImageRequest(request({sm:true,sm_dyn:true},{model:'nai-diffusion-3'})).nativeParameters.sm_dyn,true);
  rejects(request({autoSmea:true},{model:'nai-diffusion-3'}),'明确选择');
 });
+test('DDIM 不接受 SMEA，保留关闭值、V3 重绘映射和 Medium 固定采样器',()=>{
+ for(const sampler of ['ddim','ddim_v3']){
+  for(const current of ['nai-diffusion-3','nai-diffusion-furry-3']){
+   for(const sm_dyn of [false,true])rejects(request({sampler,sm:true,sm_dyn},{model:current}),'DDIM');
+   rejects(request({sampler,sm:false,sm_dyn:true},{model:current}),'SMEA DYN');
+   assert.equal(parseNativeImageRequest(request({sampler,sm:false},{model:current})).sampler,sampler);
+   for(const source of [current,current+'-inpainting']){
+    const body=request({sampler,sm:false,image,mask:image},{model:source,action:'infill'});
+    assert.equal(parseNativeImageRequest(body).model,current+'-inpainting');
+    rejects({...body,parameters:{...body.parameters,sm:true}},'DDIM');
+   }
+  }
+  for(const action of ['generate','infill']){
+   const parsed=parseNativeImageRequest(request({sampler,sm:false,...(action==='infill'?{image,mask:image}:{})},{model:'nai-diffusion-5-full-medium',action}));
+   assert.equal(parsed.sampler,'k_euler_ancestral');assert.equal(parsed.steps,14);
+  }
+ }
+ assert.equal(parseNativeImageRequest(request({sampler:'k_euler_ancestral',sm:true,sm_dyn:true},{model:'nai-diffusion-3'})).nativeParameters.sm_dyn,true);
+ assert.equal(parseNativeImageRequest(request({sampler:'k_dpm_2'})).sampler,'k_dpm_2');
+});
 test('旧官网 V4 模板和客户端关闭值兼容，活跃未知 LoRA 仍拒绝',()=>{
  const common={uncond_scale:0.00001,skip_cfg_below_sigma:0,lora_unet_weights:null,lora_clip_weights:null,dynamic_thresholding_percentile:0.999,dynamic_thresholding_mimic_scale:10,cfg_sched_eligibility:'enable_for_post_summer_samplers',explike_fine_detail:false,minimize_sigma_inf:false,uncond_per_vibe:true,wonky_vibe_correlation:true,version:1,strength:0.7,noise:0.1,inpaintImg2ImgStrength:1};
  const result=parseNativeImageRequest(request(common));assert.equal(result.nativeParameters.uncond_scale,0.00001);assert.equal(result.nativeParameters.dynamic_thresholding_percentile,0.999);assert.equal(result.nativeParameters.uncond_per_vibe,true);
@@ -120,6 +140,12 @@ test('V3 Vibe 使用原图；V4/V4.5 要求已编码数据并防止借缓存漏�
 });
 test('Precise Reference 只允许官方 V4.5 尺寸，数量相符且不能混用 Vibe',()=>{
  const valid=parseNativeImageRequest(request(precise()));assert.equal(valid.nativeParameters.director_reference_images.length,1);
+ for(const [strength,secondary] of [[-1,2],[1,-1]]){
+  const parsed=parseNativeImageRequest(request({...precise(),director_reference_strength_values:[strength],director_reference_secondary_strength_values:[secondary]}));
+  assert.deepEqual(parsed.nativeParameters.director_reference_strength_values,[strength]);
+  assert.deepEqual(parsed.nativeParameters.director_reference_secondary_strength_values,[secondary]);
+ }
+ for(const field of ['director_reference_strength_values','director_reference_secondary_strength_values'])for(const value of [NaN,Infinity,-Infinity])rejects(request({...precise(),[field]:[value]}),field);
  assert.equal(parseNativeImageRequest(request({...precise(),image,mask:image},{action:'infill'})).action,'infill');
  rejects(request(precise(),{model:'nai-diffusion-4-full'}),'V4.5');
  rejects(request({...precise(),reference_image_multiple:[encoding],reference_strength_multiple:[1]}),'同时');
