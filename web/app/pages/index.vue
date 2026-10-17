@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NAlert, NButton, NCard, NSkeleton, NSpace } from 'naive-ui'
+import { NButton, NCard, NSkeleton, NSpace, NCollapse, NCollapseItem } from 'naive-ui'
 import { useMemberPortal } from '../composables/useMemberPortal'
 import { date } from '../utils/member-display'
 
@@ -15,20 +15,20 @@ const { profile, loginOptions, shared, connection, initializing, working, error,
         <NButton id="logout" :loading="working" @click="logout">退出登录</NButton>
       </NSpace>
     </header>
-    <NAlert v-if="error && (profile || !loginOptions)" id="message" type="warning" role="status">{{ error }}</NAlert>
+    <PortalToast :message="profile || !loginOptions ? error : ''" type="warning" />
     <section v-if="initializing" class="initial-state" aria-label="正在读取账户" aria-busy="true">
       <NCard title="正在读取账户"><NSkeleton text :repeat="3" /></NCard>
       <div class="loading-cards"><NCard v-for="n in 3" :key="n"><NSkeleton height="112px" /></NCard></div>
     </section>
     <section v-else-if="profile && loginOptions" id="account" class="account-content">
+      <LazyCallHeatmap :api="api" endpoint="heatmap" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
       <MemberQuota :profile="profile" />
-      <SharedAccountStatus :state="shared" :connection="connection" />
+      <NCard size="small"><NCollapse><NCollapseItem :title="`共享账户 · 生成中 ${shared?.running ?? '—'} / 1 · 排队 ${shared?.queued ?? '—'}`" name="shared"><SharedAccountStatus :state="shared" :connection="connection" /></NCollapseItem></NCollapse></NCard>
       <div class="member-tools">
         <NSpace align="center"><NButton id="refresh" @click="refresh">刷新额度</NButton><span id="memberUpdated" class="muted">个人额度与调用更新于 {{ date(updatedAt) }}</span></NSpace>
         <MemberApiKey :api="api" />
       </div>
       <MemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />
-      <LazyCallHeatmap :api="api" endpoint="heatmap" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
     </section>
     <MemberSignIn v-else-if="loginOptions" :options="loginOptions" :busy="working" :error="error" @login="login" @discord="startDiscord" />
     <NCard v-else title="暂时无法读取登录入口"><NButton @click="initialize">重新读取</NButton></NCard>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NCard, NCheckbox, NInput, NSkeleton, NSpace, NTabPane, NTabs } from 'naive-ui'
+import { NAlert, NButton, NCard, NCheckbox, NInput, NSkeleton, NSpace, NTabPane, NTabs, NPopover, NTag } from 'naive-ui'
 import type { ManagementAlert, ManagementMode } from '../types/management'
 import { useManagementPortal } from '../composables/useManagementPortal'
 import { date } from '../utils/member-display'
@@ -31,19 +31,20 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
       </NSpace>
     </header>
-    <NAlert v-if="message" id="message" :type="messageError ? 'error' : 'success'" role="status">{{ message }}</NAlert>
-    <NAlert v-if="readError" type="warning" role="status">{{ readError }}。已完成的写操作不会自动重复。</NAlert>
+    <PortalToast :message="message" :type="messageError ? 'error' : 'success'" />
+    <PortalToast :message="readError" type="warning" />
     <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"><NSkeleton text :repeat="5" /></NCard>
     <section v-if="state" id="dashboard" :key="sessionVersion" class="dashboard">
-      <NAlert v-if="alerts.length" id="lossAlerts" type="warning" role="status"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p></NAlert>
-      <SharedAccountStatus :state="shared" :connection="mode === 'admin' ? 'polling' : connection" />
-      <p class="muted">{{ state.users.filter(user => user.enabled).length }} 位启用成员 · 所有成员共用串行队列</p>
+      <div class="account-strip">
+        <div class="toolbar-controls"><NTag size="small" :bordered="false">{{ state.users.filter(user => user.enabled).length }} 位成员</NTag><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span></div>
+        <NPopover trigger="click" style="max-width: 380px"><template #trigger><NButton size="small" quaternary :type="alerts.length ? 'warning' : 'default'">{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton></template><div id="lossAlerts"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p><p v-if="!alerts.length">当前没有财务风险告警。</p><NButton size="small" @click="panel = 'settings'">查看上游与策略</NButton></div></NPopover>
+      </div>
       <NTabs v-model:value="panel" type="line" size="large" aria-label="管理功能">
         <NTabPane v-if="mode === 'owner'" name="usage" display-directive="show:lazy">
           <template #tab><NButton id="usageTab" text :aria-pressed="panel === 'usage'">用量与记录</NButton></template>
-          <NAlert v-if="usageError" type="warning" role="status">{{ usageError }}</NAlert>
-          <ManagementUsage :data="usage" :days="days" :loading="usageLoading" @update:days="days = $event" @retry="loadUsage" />
+          <PortalToast :message="usageError" type="warning" />
           <LazyCallHeatmap :api="api" endpoint="member-management?view=heatmap" :members="state.users" :active="panel === 'usage'" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
+          <ManagementUsage :data="usage" :days="days" :loading="usageLoading" @update:days="days = $event" @retry="loadUsage" />
         </NTabPane>
         <NTabPane name="members" display-directive="show:lazy">
           <template #tab><NButton text :aria-pressed="panel === 'members'">成员与分发</NButton></template>
@@ -55,6 +56,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         </NTabPane>
         <NTabPane name="settings" display-directive="show:lazy">
           <template #tab><NButton text :aria-pressed="panel === 'settings'">上游与策略</NButton></template>
+          <SharedAccountStatus :state="shared" :connection="mode === 'admin' ? 'polling' : connection" />
+          <NAlert v-if="alerts.length" type="warning"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p></NAlert>
           <ManagementUpstream :state="state" :mode="mode" :api="api" :run="run" :busy="busy" :groups-dirty="groupsDirty" :active="panel === 'settings'" :refresh-version="refreshVersion" @changed="changed" @notice="notify" />
         </NTabPane>
       </NTabs>
@@ -75,12 +78,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
   </main>
 </template>
 <style scoped>
-.management { max-width: 1280px; margin: auto; padding: 28px 24px 40px; }
+.management { max-width: 1440px; margin: auto; padding: 28px 24px 40px; }
 .management-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 h1 { margin: 0; font-size: 27px; }
 .muted { color: #adb7c6; }
 .dashboard, form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
 .dashboard { margin-top: 20px; }
+.account-strip { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; font-size: 12px; color: var(--text-muted); }
+:deep(.n-tab-pane) { padding-top: 24px; }
+:deep(.n-tab-pane > * + *) { margin-top: 24px; }
 .connect-card { max-width: 510px; margin: 32px auto; }
 form { gap: 14px; }
 @media (max-width: 700px) { .management { padding: 18px 14px 28px; } .management-header { align-items: start; flex-wrap: wrap; } }

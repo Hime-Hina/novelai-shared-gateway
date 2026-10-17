@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import { NAlert, NButton, NCard, NInput } from 'naive-ui'
+import { NButton, NCard, NInput } from 'naive-ui'
 import type { MemberApi } from '../types/member'
 
 const props = defineProps<{ api: MemberApi }>()
@@ -54,8 +54,8 @@ onBeforeUnmount(() => { active = false; hide() })
         <NButton id="hideKey" secondary @click="hide">隐藏</NButton>
       </div>
     </div>
-    <NAlert v-if="error" type="error" class="key-message">{{ error }}</NAlert>
-    <p v-if="message" role="status">{{ message }}</p>
+    <PortalToast :message="error" type="error" />
+    <PortalToast :message="message" type="success" />
   </NCard>
 </template>
 
