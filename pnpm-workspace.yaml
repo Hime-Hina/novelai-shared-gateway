@@ -1,5 +1,6 @@
 packages:
   - web
+  - executor
 
 patchedDependencies:
   naive-ui@2.45.3: patches/naive-ui@2.45.3.patch

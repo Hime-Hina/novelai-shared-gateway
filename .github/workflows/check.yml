@@ -26,5 +26,16 @@ jobs:
       - run: pnpm test
       - run: pnpm --filter @novelai-gateway/web typecheck
       - run: pnpm --filter @novelai-gateway/web test
+      - run: pnpm --filter @novelai-gateway/executor typecheck
+      - run: pnpm --filter @novelai-gateway/executor test
       - run: docker build --tag novelai-shared-gateway:check .
       - run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .
+      - run: docker build --file executor/Dockerfile --tag novelai-shared-gateway-executor:check .
+      - name: Verify packaged executor over real HTTP
+        run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:rw,uid=1000,gid=1000
+          --mount "type=bind,source=${{ github.workspace }}/executor/tests/integration,target=/checks,readonly"
+          -e EXECUTOR_TEST_ENTRY=/app/.output/server/start.mjs
+          novelai-shared-gateway-executor:check
+          node --test /checks/runtime-http.test.mjs
