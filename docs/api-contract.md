@@ -128,7 +128,9 @@ WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/nove
 
 ## 错误与安全边界
 
-Native 非成功响应通常为 `application/json; charset=utf-8` 的 `{ message: <文本>, error: <同一文本> }`。不是官方 `utils.JsonError` 的 `message/statusCode/details` 原样透传。路径不在共享白名单时由通用处理器返回 404，错误外形可能是通用 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
+Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在响应开始前发生错误时，返回 `application/json; charset=utf-8` 的 `{ message: <文本>, statusCode: <与HTTP一致的整数>, error: <同一文本> }`。C03-04 本片补齐官方 `utils.JsonError` 的 `statusCode`，保留旧客户端使用的 `error`；可选 `details` 不填充，也不新增原始异常或堆栈。执行器业务错误与 Nuxt 本地连接/配置错误都覆盖，Nuxt 继续原样转发执行器已返回的正文。已开始的流不能改写为 JSON，错误状态映射、冷却和退款规则保持现状。
+
+这是 HTTP 错误包络的兼容修复，不等于官方错误行为全部对齐。私有入口保护仍可返回纯文本403；路径不在共享白名单时由通用处理器返回404，外形可能是 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
 
 | 状态 | 当前主要触发条件 |
 | --- | --- |

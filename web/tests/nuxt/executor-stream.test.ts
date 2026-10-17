@@ -156,19 +156,21 @@ describe('executor opaque streaming bridge', () => {
     expect(drains).toBeGreaterThan(0)
   }, 15000)
 
-  it.each([401, 413])('preserves an early %i while the browser still has an unfinished upload', async status => {
+  it.each([400, 401, 409, 413])('preserves an early %i while the browser still has an unfinished upload', async status => {
     let calls = 0
+    const original = Buffer.from(JSON.stringify({ message: `synthetic-${status}`, statusCode: status,
+      details: { synthetic: ['unchanged'] }, error: `synthetic-${status}` }, null, 2))
     const base = await fixture((_req, res) => {
       calls += 1
       // Deliberately reject without consuming a declared 32 MiB body.
       res.writeHead(status, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: `synthetic-${status}` }))
+      res.end(original)
     })
-    const browser = open(base, '/ai/generate-image', 'POST', { 'Content-Length': 32 * 1024 * 1024 })
+    const browser = open(base, '/v1/ai/generate-image-stream', 'POST', { 'Content-Length': 32 * 1024 * 1024 })
     browser.req.write(Buffer.alloc(1024))
     const response = await browser.response
     expect(response.statusCode).toBe(status)
-    expect(JSON.parse((await body(response)).toString())).toEqual({ error: `synthetic-${status}` })
+    expect(await body(response)).toEqual(original)
     expect(browser.req.writableEnded).toBe(false)
     expect(calls).toBe(1)
   })
@@ -193,6 +195,10 @@ describe('executor opaque streaming bridge', () => {
   })
 
   it('does not retry a transport failure or expose an internal authentication marker', async () => {
+    const nativePaths = ['generate-image', 'generate-image-stream', 'encode-vibe', 'upscale']
+      .flatMap(action => [`/ai/${action}`, `/v1/ai/${action}`])
+    const paths: [string, boolean][] = [...nativePaths.map(path => [path + '?synthetic=1', true] as [string, boolean]),
+      ['/v1/chat/completions', false], ['/ai/generate-image/extra', false], ['/api/jobs', false]]
     for (const internalAuthFailure of [false, true]) {
       let calls = 0
       const base = await fixture(async (req, res) => {
@@ -202,15 +208,46 @@ describe('executor opaque streaming bridge', () => {
         res.writeHead(401, { 'X-Executor-Auth-Error': '1' })
         res.end(config.executorToken)
       })
-      const browser = open(base, '/v1/chat/completions', 'POST', { 'Idempotency-Key': 'synthetic-no-stream-retry' })
-      browser.req.end('{}')
-      const response = await browser.response, text = (await body(response)).toString()
-      expect(response.statusCode).toBe(503)
-      expect(response.headers['x-executor-auth-error']).toBeUndefined()
-      expect(text).not.toContain(config.executorToken)
-      expect(JSON.parse(text)).toHaveProperty('error')
-      expect(calls).toBe(1)
+      for (const [path, native] of paths) {
+        const before = calls
+        const browser = open(base, path, 'POST', { 'Idempotency-Key': 'synthetic-no-stream-retry' })
+        browser.req.end('{}')
+        const response = await browser.response, text = (await body(response)).toString()
+        expect(response.statusCode).toBe(503)
+        expect(response.headers['cache-control']).toBe('no-store')
+        expect(response.headers['x-executor-auth-error']).toBeUndefined()
+        expect(text).not.toContain(config.executorToken)
+        expect(JSON.parse(text)).toEqual(native
+          ? { message: expect.any(String), statusCode: 503, error: expect.any(String) }
+          : { error: expect.any(String) })
+        if (native) expect(JSON.parse(text).message).toBe(JSON.parse(text).error)
+        expect(calls).toBe(before + 1)
+      }
     }
+  })
+
+  it('handles executor configuration and missing Host failures through the Native JSON envelope', async () => {
+    let calls = 0, omitHost = false
+    const base = await fixture((_req, res) => { calls += 1; res.end('unexpected') }, event => {
+      if (omitHost) delete event.node.req.headers.host
+      return forwardExecutorStream(event)
+    })
+    const original = { ...config }
+    try {
+      for (const invalid of [{ executorBaseUrl: 'not a URL' }, { executorToken: 'short' }]) {
+        Object.assign(config, original, invalid)
+        const browser = open(base, '/ai/encode-vibe', 'POST'); browser.req.end('{}')
+        const response = await browser.response
+        expect(response.statusCode).toBe(503)
+        expect(JSON.parse((await body(response)).toString())).toEqual({ message: expect.any(String), statusCode: 503, error: expect.any(String) })
+      }
+      Object.assign(config, original); omitHost = true
+      const browser = open(base, '/v1/ai/upscale', 'POST'); browser.req.end('{}')
+      const response = await browser.response
+      expect(response.statusCode).toBe(400)
+      expect(JSON.parse((await body(response)).toString())).toEqual({ message: 'Host header required', statusCode: 400, error: 'Host header required' })
+      expect(calls).toBe(0)
+    } finally { Object.assign(config, original) }
   })
 
   it('cancels the internal response when the browser disconnects without another executor call', async () => {

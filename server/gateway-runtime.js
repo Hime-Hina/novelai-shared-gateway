@@ -180,7 +180,9 @@ export async function handleGatewayRequest(req, res) {
     }
     if (/^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(String(req.url || '').split('?')[0])) {
       const message = publicErrorMessage(error.message || 'Internal server error');
-      sendJson(res, error.statusCode || 500, { message, error: message });
+      const code = Number(error.statusCode);
+      const statusCode = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
+      sendJson(res, statusCode, { message, statusCode, error: message });
       return;
     }
     if (req.url?.startsWith('/v1/')) {

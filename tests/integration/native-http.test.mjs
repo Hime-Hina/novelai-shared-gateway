@@ -260,9 +260,15 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('路径、鉴权与跨域校验在生图前完成，私有站点业务不存在', async () => {
-    for (const pathname of ['/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
-      assert.equal((await post(pathname, body(), 'invalid')).status, 401);
-      assert.equal((await post(pathname, body('invalid-model'))).status, 422);
+    for (const prefix of ['/ai/', '/v1/ai/']) for (const operation of ['generate-image', 'generate-image-stream', 'encode-vibe', 'upscale']) {
+      const pathname = `${prefix}${operation}?contract=error`;
+      const invalid = operation.startsWith('generate-image') ? body('invalid-model') : { image: 'not-an-image' };
+      for (const [response, status] of [[await post(pathname, body(), 'invalid'), 401], [await post(pathname, invalid), 422]]) {
+        assert.equal(response.status, status);
+        const error = await response.json();
+        assert.equal(typeof error.message, 'string'); assert.ok(error.message);
+        assert.deepEqual(error, { message: error.message, statusCode: status, error: error.message });
+      }
     }
     assert.equal(calls.length, 0);
     const ownerPage=await fetchLocal('/owner');assert.equal(ownerPage.status,200);assert.match(await ownerPage.text(),/management\.js/);
@@ -468,6 +474,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const failed = await post('/ai/generate-image', body(), credentials[0].api_key, { accept: 'application/json' });
     assert.equal(failed.status, 500); assert.match(failed.headers.get('content-type'), /application\/json/);
     const failure = await failed.json(); assert.ok(failure.error); assert.equal(failure.images, undefined);
+    assert.deepEqual(failure, { message: failure.error, statusCode: 500, error: failure.error });
     near((await quota()).v5Available, before.v5Available);
     before = await quota(); failAt = -1;
     const beforeCalls = calls.length, gate = previewGate(801, 9, true);
@@ -587,6 +594,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const before = await quota(); failStatus = 429; failAt = calls.length + 1;
     const response = await post('/ai/generate-image-stream', body());
     assert.equal(response.status, 429); assert.equal(response.headers.get('retry-after'), '30');
+    const error = await response.json();
+    assert.deepEqual(error, { message: error.error, statusCode: 429, error: error.error });
     near((await quota()).v5Available, before.v5Available);
     assert.equal(calls.length, failAt);
   });

@@ -57,8 +57,9 @@ export function sendExecutorError(event: H3Event, error: unknown) {
   const known = error as { statusCode?: number; message?: string }
   const status = [400, 405, 413, 429, 503].includes(known?.statusCode || 0) ? known.statusCode! : 503
   const message = status === 503 ? '执行服务暂不可用，请稍后重试' : known.message || '请求不受支持'
+  const native = /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(event.path.split('?')[0]!)
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
-  res.end(JSON.stringify({ error: message }))
+  res.end(JSON.stringify(native ? { message, statusCode: status, error: message } : { error: message }))
 }
 
 // 正式路由复用同一传输；只有任务受理可同键重试，管理写入不能重复执行。
