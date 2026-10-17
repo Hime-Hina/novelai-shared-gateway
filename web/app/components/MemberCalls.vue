@@ -11,7 +11,7 @@ type HistoryPage = { jobs: MemberJob[]; total: number; until: string }
 const snapshot = ref<HistoryPage | null>(null), page = ref(1), pageSize = ref(10), search = ref(''), query = ref(''), status = ref('')
 const sort = ref('createdAt'), order = ref<'asc' | 'desc'>('desc'), loading = ref(false), error = ref('')
 let disposed = false, version = 0, until = '', refreshPending = false
-const jobs = computed(() => snapshot.value?.jobs || props.jobs)
+const jobs = computed(() => snapshot.value?.jobs || props.jobs.slice(0, pageSize.value))
 const requests = computed(() => [...new Set(jobs.value.map(job => job.requestId).filter((id): id is string => Boolean(id)))])
 const statuses = [{ label: '全部状态', value: '' }, ...['done', 'failed', 'queued', 'pending', 'running'].map(value => ({ label: jobStatus(value), value })), { label: '有迟到结果', value: 'late' }]
 async function load() {

@@ -28,7 +28,7 @@ const { profile, loginOptions, shared, connection, initializing, working, error,
         <NSpace align="center"><NButton id="refresh" @click="refresh">刷新额度</NButton><span id="memberUpdated" class="muted">个人额度与调用更新于 {{ date(updatedAt) }}</span></NSpace>
         <MemberApiKey :api="api" />
       </div>
-      <MemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />
+      <LazyMemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />
     </section>
     <MemberSignIn v-else-if="loginOptions" :options="loginOptions" :busy="working" :error="error" @login="login" @discord="startDiscord" />
     <NCard v-else title="暂时无法读取登录入口"><NButton @click="initialize">重新读取</NButton></NCard>

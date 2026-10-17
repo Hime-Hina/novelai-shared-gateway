@@ -135,6 +135,16 @@ it('成员历史分页参数传到服务端，筛选回首页，过时查询不�
   expect(wrapper.text()).toContain('原退款保留')
 })
 
+it('历史首屏读取期间只用一页摘要占位，不先显示三十行再收缩', async () => {
+  const first = deferred<{ jobs: MemberJob[]; total: number; until: string }>()
+  const jobs = Array.from({ length: 30 }, (_, i): MemberJob => ({ id: String(i), model: 'v45', status: 'done', createdAt: '2026-10-17T00:00:00Z' }))
+  const wrapper = await mountSuspended(MemberCalls, { props: { api: memberApi(() => first.promise), jobs, lateResults: [], refreshVersion: 0 } })
+  expect(wrapper.findAll('#jobs tbody tr')).toHaveLength(10)
+  first.resolve({ jobs: jobs.slice(0, 10), total: 80, until: '2026-10-17T03:00:00.000Z' }); await flushPromises()
+  expect(wrapper.findAll('#jobs tbody tr')).toHaveLength(10)
+  expect(wrapper.text()).toContain('80 条保留记录')
+})
+
 describe('MemberBatch', () => {
   it('展开才查询，刷新通知单在途并合并一次补读', async () => {
     const first = deferred<BatchSnapshot>()
