@@ -1,9 +1,12 @@
 // 取消信号不保证底层请求一定结束；独立截止时间负责释放整批额度刷新。
-export async function withQuotaRequestDeadline(request, timeoutMs = 15_000) {
+export async function withQuotaRequestDeadline<T>(
+  request: (signal: AbortSignal) => T | PromiseLike<T>,
+  timeoutMs = 15_000
+): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new RangeError('额度查询超时时间必须大于零');
   const controller = new AbortController();
-  let timer;
-  const deadline = new Promise((resolve, reject) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((resolve, reject) => {
     timer = setTimeout(() => {
       const error = Object.assign(new Error('订阅状态查询超时，将在下一轮自动重试'), {
         name: 'TimeoutError', code: 'QUOTA_REQUEST_TIMEOUT'

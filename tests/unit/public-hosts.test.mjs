@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPublicHost, privateAccessAllowed } from '../../server/public-hosts.js';
+import { isPublicHost, privateAccessAllowed } from '../../server/public-hosts.ts';
 import { handleMemberRoutes } from '../../server/member-routes.js';
 
 const env = { PUBLIC_MODE: 'true', PUBLIC_HOST: 'old.example', PUBLIC_HOST_ALIASES: ' nai.example, nai-direct.example ' };

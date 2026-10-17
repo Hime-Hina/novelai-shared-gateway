@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { stateEventsFor, stateInvalidation, mergeStateEvents } from '../../server/state-events.js';
+import { stateEventsFor, stateInvalidation, mergeStateEvents } from '../../server/state-events.ts';
 
 test('每store唯一合并器：200ms尾沿，持续提交首事件最多等一秒，版本单调', t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1800000000000 });

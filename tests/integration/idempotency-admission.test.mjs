@@ -9,7 +9,7 @@ import { normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS } from '../../
 import * as fair from '../../server/fair-quota.js';
 import * as queue from '../../server/queue-policy.ts';
 import * as requests from '../../server/generation-request.js';
-import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.js';
+import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/native-image.js';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');

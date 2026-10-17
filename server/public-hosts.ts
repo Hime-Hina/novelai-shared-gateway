@@ -1,8 +1,10 @@
+import type { IncomingMessage } from 'node:http';
+
 const localHost = /^(127\.0\.0\.1|localhost)(:\d{1,5})?$/;
 const dnsHost = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
 
 // 仅按 Host 与显式配置逐项匹配；不信任转发头、通配符、后缀或 URL 格式配置。
-export function isPublicHost(host, env = process.env) {
+export function isPublicHost(host: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.PUBLIC_MODE !== 'true' || typeof host !== 'string') return false;
   const normalized = host.toLowerCase();
   if (!dnsHost.test(normalized)) return false;
@@ -14,7 +16,7 @@ export function isPublicHost(host, env = process.env) {
 }
 
 // 保留私有入口的同源限制；公开别名只扩展成员客户端入口，管理路由仍独立校验本机 Host。
-export function privateAccessAllowed(req, env = process.env) {
+export function privateAccessAllowed(req: Pick<IncomingMessage, 'headers' | 'url'>, env: NodeJS.ProcessEnv = process.env): boolean {
   const host = typeof req.headers.host === 'string' ? req.headers.host.toLowerCase() : '';
   const publicHost = isPublicHost(host, env);
   const publicClient = publicHost && !/^\/(?:api\/admin|admin|memory)(?:[/?]|$)/.test(req.url || '/');

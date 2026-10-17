@@ -31,8 +31,5 @@ export interface MemberBatch {
   counts: { total: number; pending: number; queued: number; running: number; done: number; failed: number }
   jobs: BatchJob[]
 }
-export interface StateInvalidation {
-  bootId: string; version: number; scopes: ('shared' | 'member' | 'owner')[]; updatedAt: string; resync: boolean
-  activityDates?: string[]
-}
+export type { StateInvalidation } from '../../../server/state-events.ts'
 export type MemberApi = <T>(path: string, body?: unknown) => Promise<T>

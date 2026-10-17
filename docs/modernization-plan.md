@@ -172,6 +172,8 @@ T01客户端地址片已提交[181d822](https://github.com/Hime-Hina/novelai-sha
 
 D01交付准备：新增由已验证Linux镜像导出测试发布包的CI步骤，包含独立Node、两服务产物、生产依赖、许可文件、版本清单和校验和；两个systemd测试unit分别约束用户、目录、回环网络和资源，不联动重启。工作流/脚本/unit静态检查及断网Linux打包重开、SQLite迁移与完整性、Nuxt SSR均已通过，详见[测试部署说明](test-deployment.md)。bob只读预检通过，但未安装或启动测试服务；最终CI artifact、常驻mock、副本脱敏、目标机浏览器/负载/恢复验收仍待，不将准备完成记为D01完成，也不替换生产。
 
+T01继续迁移quota-timeout、public-hosts、request-fingerprint和state-events：保留原截止/取消清理、Host信任、已规范化请求的摘要和事件合并生命周期；公开StateInvalidation由后端导出，网页仅重导出类型，不复制内部成员事件。截止/Host/Discord22项、指纹/幂等17项及追加的迁移前固定SHA回归、事件/存储/成员路由19项均通过；网页类型检查及116项、执行器编译与产物HTTP2通过/1项Windows跳过、Linux网页镜像构建及断网SSR200通过。新增SHA期望来自c1885ba旧函数的三份合成请求，防止已持久幂等键在类型迁移后变更含义。当前server顶层9个TS、27个JS文件，不将文件占比视为整个项目完成度；存储、调度及路由仍待迁移。报价片[bc65ef4的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39020729419)和客户端IP片[181d822的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021158296)均已通过；本批完整CI待记录，无生产变更。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

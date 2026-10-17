@@ -1,12 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generationRequestFingerprint as fingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.js';
+import { generationRequestFingerprint as fingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { normalizeNovelAiRequest, buildNovelAiParameters } from '../../server/providers.js';
 import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
 
 const model = 'nai-diffusion-4-5-full';
 const native = parameters => parseNativeImageRequest({ input: 'test prompt', model, parameters: { width: 128, height: 128, steps: 23, seed: 123, ...parameters } });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+test('TypeScript 迁移保持历史持久指纹，固定种子、缓存参考与辅助操作不冲突', () => {
+  // 固定期望由 c1885ba 的 request-fingerprint.js 离线计算；不是当前实现自动生成。
+  const fixed = { model: 'nai-diffusion-4-5-full', action: 'generate', prompt: 'synthetic historical baseline',
+    width: 128, height: 128, steps: 23, seed: 123, scale: 5, cfg: 0,
+    sampler: 'k_euler_ancestral', noiseSchedule: 'karras', negative: '', sampleCount: 1 };
+  assert.equal(fingerprint(fixed), 'b50c2fdb24e3d13690775356dced83690a821e3a37a2b2a242c15296ac326fb3');
+  const cached = { ...fixed, seed: 987, sampleCount: 2, allowPurchasedAnlas: true,
+    nativeParameters: { params_version: 3, sampler: 'k_euler_ancestral', scale: 5, extra_noise_seed: -1,
+      reference_image_multiple_cached: [{ data: Buffer.alloc(128, 42).toString('base64'), cache_secret_key: 'synthetic-history-cache' }],
+      reference_information_extracted_multiple: [0.8], reference_strength_multiple: [0.5] } };
+  assert.equal(fingerprint(cached, { randomSeed: true, noCache: true }), 'e089dacc8f09295c8f3a7edfeac6c835c27d08cd5d3a890a2d46870134ec622e');
+  const auxiliary = { operation: 'upscale', action: 'upscale', model: 'nai-diffusion-5-curated', prompt: 'upscale',
+    width: 1, height: 1, steps: 1, seed: 0, sampleCount: 1,
+    operationParameters: { image: png, model: 'nai-diffusion-5-curated', declared_blur_sigma: 0.35 } };
+  assert.equal(fingerprint(auxiliary), '6309371d53958fd385a2849bb400b47f0e32408cca105779d80ce293de79be4d');
+});
 
 test('只比较实际执行参数，固定种子/提示词/模型/操作冲突，元数据不影响指纹', () => {
   const request = native(), expected = fingerprint(request), before = structuredClone(request);

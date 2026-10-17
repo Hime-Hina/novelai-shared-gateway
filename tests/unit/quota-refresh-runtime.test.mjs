@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import { withQuotaRequestDeadline } from '../../server/quota-timeout.js';
+import { withQuotaRequestDeadline } from '../../server/quota-timeout.ts';
 import { fetchNovelAiAccountQuota } from '../../server/providers.js';
 
 const source = fs.readFileSync(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
