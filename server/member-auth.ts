@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { memberSessions } from './storage-schema.js';
+import type { memberSessions } from './storage-schema.ts';
 
 interface MemberUser {
   id: string;

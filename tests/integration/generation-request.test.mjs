@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.js';
-import { createGenerationPayloadBudget, generationPayloadLimits, webJobRequestSummary } from '../../server/generation-request.js';
+import { createGenerationPayloadBudget, generationPayloadLimits, webJobRequestSummary } from '../../server/generation-request.ts';
 
 async function fixture(t, dataDir) {
   const store = new JsonStore(dataDir || await mkdtemp(path.join(tmpdir(), 'nai-durable-request-')));

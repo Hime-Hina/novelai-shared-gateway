@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { buildNovelAiParameters } from './providers.js';
+import { buildNovelAiParameters } from './providers.ts';
 
 interface FingerprintRequest {
   operation?: string;

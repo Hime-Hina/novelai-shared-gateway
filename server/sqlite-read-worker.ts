@@ -1,30 +1,48 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { activityDate } from './activity-heatmap.ts';
+import { activityDate, type ActivityDay, type ActivityOperation } from './activity-heatmap.ts';
+import type { images, users } from './storage-schema.ts';
 
-const sqlite = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
+interface ActivityQuery { since: string; until: string; memberId?: string | null; operation?: ActivityOperation; dates?: string[] | null }
+interface AdminStatsQuery { now?: number; days?: number }
+interface PageQuery { limit?: number; offset?: number; q?: string }
+interface ImagePageQuery extends PageQuery { tier?: string; model?: string }
+type ReadTask = { id: number } & (
+  | { type: 'adminStats'; payload?: AdminStatsQuery }
+  | { type: 'activityDays'; payload: ActivityQuery }
+  | { type: 'imagePage'; payload?: ImagePageQuery }
+  | { type: 'userPage'; payload?: PageQuery }
+);
+interface AccountStatsRow { status: string | null; accountId: string | null; statsExcluded: number; count: number }
+interface SpeedRow { modelVersion: 'v45' | 'v5' | ''; count: number; durationSeconds: number | null }
+interface UsageRow { date: string | null; hour: number | null; status: string | null; count: number; credits: number | null }
+interface JobStats { done: number; failed: number; total?: number; successRate?: number }
+interface SpeedStats { seconds: number | null; count: number }
+type DataRow = Pick<typeof images.$inferSelect | typeof users.$inferSelect, 'data'>;
+
+const sqlite = new Database((workerData as { dbPath: string }).dbPath, { readonly: true, fileMustExist: true });
 sqlite.pragma('query_only = ON');
 sqlite.pragma('busy_timeout = 3000');
-sqlite.function('activity_time', { deterministic: true }, value => activityDate(value) ? Date.parse(value) : null);
+sqlite.function('activity_time', { deterministic: true }, value => activityDate(value) ? Date.parse(value as string) : null);
 
-parentPort.on('message', ({ id, type, payload = {} }) => {
+parentPort!.on('message', ({ id, type, payload = {} }: ReadTask) => {
   try {
     const result = type === 'adminStats'
-      ? readAdminStats(payload)
+      ? readAdminStats(payload as AdminStatsQuery)
       : type === 'activityDays'
-        ? readActivityDays(payload)
+        ? readActivityDays(payload as ActivityQuery)
       : type === 'imagePage'
-        ? readImagePage(payload)
+        ? readImagePage(payload as ImagePageQuery)
         : type === 'userPage'
-          ? readUserPage(payload)
+          ? readUserPage(payload as PageQuery)
           : (() => { throw new Error(`Unknown read task: ${type}`); })();
-    parentPort.postMessage({ id, result });
+    parentPort!.postMessage({ id, result });
   } catch (error) {
-    parentPort.postMessage({ id, error: error?.message || String(error) });
+    parentPort!.postMessage({ id, error: (error as { message?: unknown } | null)?.message || String(error) });
   }
 });
 
-function readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }) {
+function readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }: ActivityQuery): ActivityDay[] {
   if (dates?.length === 0) return [];
   // ISO 偏移可跨 UTC 日期；先用现有索引取宽边界，再按严格解析的时间精确过滤。
   const margin = 2 * 86400000;
@@ -35,7 +53,7 @@ function readActivityDays({ since, until, memberId = null, operation = 'generate
     lower: new Date(lower - margin).toISOString().slice(0, 10),
     upper: new Date(upper + margin).toISOString().slice(0, 10),
     dates: dates === null ? null : JSON.stringify(dates) };
-  return sqlite.prepare(`
+  return sqlite.prepare<typeof params, ActivityDay>(`
     WITH activity AS (
       SELECT activity_time(j.created_at) AS submitted,
         COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),
@@ -65,30 +83,30 @@ function readActivityDays({ since, until, memberId = null, operation = 'generate
   `).all(params);
 }
 
-function readAdminStats({ now = Date.now(), days = 7 } = {}) {
+function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
   const oneMinuteAgo = new Date(now - 60_000).toISOString();
   const oneHourAgo = new Date(now - 60 * 60_000).toISOString();
   const chartCutoff = new Date(now - days * 24 * 60 * 60_000).toISOString();
-  const requestRow = sqlite.prepare(`
+  const requestRow = sqlite.prepare<[string], { total: number }>(`
     SELECT COUNT(*) AS total
     FROM jobs INDEXED BY idx_jobs_created_stats
     WHERE created_at >= ?
   `).get(oneMinuteAgo);
   // Generation prices start at 1; zero/fractional-cost completions are cached deliveries.
-  const generationRow = sqlite.prepare(`
+  const generationRow = sqlite.prepare<{ since: string; now: string }, { total: number }>(`
     SELECT COUNT(*) AS total
     FROM jobs INDEXED BY idx_jobs_updated_stats
     WHERE updated_at >= @since AND updated_at <= @now
       AND status = 'done' AND cost >= 1
   `).get({ since: oneMinuteAgo, now: new Date(now).toISOString() });
-  const accountRows = sqlite.prepare(`
+  const accountRows = sqlite.prepare<{ since: string }, AccountStatsRow>(`
     SELECT status, account_id AS accountId, stats_excluded AS statsExcluded, COUNT(*) AS count
     FROM jobs INDEXED BY idx_jobs_created_stats
     WHERE created_at >= @since
       AND status IN ('done', 'failed')
     GROUP BY status, account_id, stats_excluded
   `).all({ since: oneHourAgo });
-  const speedRows = sqlite.prepare(`
+  const speedRows = sqlite.prepare<{ since: string }, SpeedRow>(`
     SELECT
       CASE
         WHEN model LIKE 'nai-diffusion-5%' THEN 'v5'
@@ -104,7 +122,7 @@ function readAdminStats({ now = Date.now(), days = 7 } = {}) {
       AND model LIKE 'nai-diffusion-%'
     GROUP BY modelVersion
   `).all({ since: oneHourAgo });
-  const usageRows = sqlite.prepare(`
+  const usageRows = sqlite.prepare<{ cutoff: string }, UsageRow>(`
     SELECT
       strftime('%Y-%m-%d', datetime(updated_at, '+8 hours')) AS date,
       CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS hour,
@@ -118,8 +136,8 @@ function readAdminStats({ now = Date.now(), days = 7 } = {}) {
   `).all({ cutoff: chartCutoff });
 
   const jobStats = { done: 0, failed: 0 };
-  const accountStats = {};
-  const speed = {
+  const accountStats: Record<string, JobStats> = {};
+  const speed: Record<'v45' | 'v5', SpeedStats> = {
     v45: { seconds: null, count: 0 },
     v5: { seconds: null, count: 0 }
   };
@@ -136,12 +154,12 @@ function readAdminStats({ now = Date.now(), days = 7 } = {}) {
     }
   }
   for (const row of speedRows) {
-    if (!speed[row.modelVersion]) continue;
-    speed[row.modelVersion].count = Number(row.count || 0);
-    speedTotals[row.modelVersion] = Number(row.durationSeconds || 0);
+    if (!speed[row.modelVersion as keyof typeof speed]) continue;
+    speed[row.modelVersion as keyof typeof speed].count = Number(row.count || 0);
+    speedTotals[row.modelVersion as keyof typeof speedTotals] = Number(row.durationSeconds || 0);
   }
 
-  for (const version of Object.keys(speed)) {
+  for (const version of Object.keys(speed) as (keyof typeof speed)[]) {
     const count = speed[version].count;
     speed[version].seconds = count ? Math.max(0, speedTotals[version] / count) : null;
   }
@@ -158,9 +176,9 @@ function readAdminStats({ now = Date.now(), days = 7 } = {}) {
   };
 }
 
-function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' } = {}) {
-  const filters = [];
-  const params = { limit, offset };
+function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' }: ImagePageQuery = {}) {
+  const filters: string[] = [];
+  const params: { limit: number; offset: number; tier?: string; model?: string; q?: string } = { limit, offset };
   if (tier) {
     filters.push('resolution_tier = @tier');
     params.tier = tier;
@@ -174,11 +192,11 @@ function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' }
     params.q = `%${q}%`;
   }
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  const total = Number(sqlite.prepare('SELECT COUNT(*) AS count FROM images').get()?.count || 0);
+  const total = Number(sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM images').get()?.count || 0);
   const matched = filters.length
-    ? Number(sqlite.prepare(`SELECT COUNT(*) AS count FROM images ${where}`).get(params)?.count || 0)
+    ? Number(sqlite.prepare<typeof params, { count: number }>(`SELECT COUNT(*) AS count FROM images ${where}`).get(params)?.count || 0)
     : total;
-  const rows = sqlite.prepare(`
+  const rows = sqlite.prepare<typeof params, DataRow>(`
     SELECT data FROM images
     ${where}
     ORDER BY order_value DESC
@@ -187,15 +205,15 @@ function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' }
   return { images: parseRows(rows), total, matched, offset, limit };
 }
 
-function readUserPage({ limit = 300, offset = 0, q = '' } = {}) {
-  const params = { limit, offset };
+function readUserPage({ limit = 300, offset = 0, q = '' }: PageQuery = {}) {
+  const params: { limit: number; offset: number; q?: string } = { limit, offset };
   const where = q ? 'WHERE search_text LIKE @q' : '';
   if (q) params.q = `%${q}%`;
-  const total = Number(sqlite.prepare('SELECT COUNT(*) AS count FROM users').get()?.count || 0);
+  const total = Number(sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM users').get()?.count || 0);
   const matched = q
-    ? Number(sqlite.prepare(`SELECT COUNT(*) AS count FROM users ${where}`).get(params)?.count || 0)
+    ? Number(sqlite.prepare<typeof params, { count: number }>(`SELECT COUNT(*) AS count FROM users ${where}`).get(params)?.count || 0)
     : total;
-  const rows = sqlite.prepare(`
+  const rows = sqlite.prepare<typeof params, DataRow>(`
     SELECT data FROM users
     ${where}
     ORDER BY order_value DESC
@@ -204,8 +222,8 @@ function readUserPage({ limit = 300, offset = 0, q = '' } = {}) {
   return { users: parseRows(rows), total, matched, offset, limit };
 }
 
-function parseRows(rows) {
-  const values = [];
+function parseRows(rows: DataRow[]): unknown[] {
+  const values: unknown[] = [];
   for (const row of rows) {
     try {
       values.push(JSON.parse(row.data));
@@ -216,7 +234,7 @@ function parseRows(rows) {
   return values;
 }
 
-function buildUsageDays(rows, now, days) {
+function buildUsageDays(rows: UsageRow[], now: number, days: number) {
   const offsetMs = 8 * 60 * 60_000;
   const current = new Date(now + offsetMs);
   const midnight = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate());
@@ -243,7 +261,7 @@ function buildUsageDays(rows, now, days) {
   });
   const byDate = new Map(result.map((item) => [item.date, item]));
   for (const row of rows) {
-    const day = byDate.get(row.date);
+    const day = byDate.get(row.date!);
     const hour = Number(row.hour || 0);
     if (!day || !day.hours[hour]) continue;
     const count = Number(row.count || 0);
@@ -265,7 +283,7 @@ function buildUsageDays(rows, now, days) {
   return result;
 }
 
-function finalizeStats(value) {
+function finalizeStats(value: JobStats) {
   const done = Number(value.done || 0);
   const failed = Number(value.failed || 0);
   const total = done + failed;

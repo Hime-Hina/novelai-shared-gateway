@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import * as fair from '../../server/fair-quota.ts';
 import * as capacity from '../../server/shared-capacity.ts';
-import * as requests from '../../server/generation-request.js';
+import * as requests from '../../server/generation-request.ts';
 import { queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 import type { H3Event } from 'h3'
 import { createError, useRuntimeConfig } from '#imports'
-import { createGenerationPayloadBudget } from '../../../server/generation-request.js'
+import { createGenerationPayloadBudget } from '../../../server/generation-request.ts'
 
 const MiB = 1024 * 1024
 // 复用现有纯内存预算：单次暂存正文与受理回执共 4 MiB，全进程 64 MiB，不加载存储。

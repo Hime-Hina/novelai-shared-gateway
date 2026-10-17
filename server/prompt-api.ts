@@ -1,3 +1,17 @@
+interface PromptApiInput { baseUrl?: unknown; apiKey?: unknown; model?: unknown }
+interface PromptApiConfig { baseUrl: string; apiKey: string; model: string }
+type PromptFetch = (url: string, init: RequestInit) => Promise<Pick<Response, 'ok' | 'status' | 'text'>>;
+interface PromptApiOptions { fetchImpl?: PromptFetch; timeoutMs?: number }
+interface PromptRequestOptions extends PromptApiOptions {
+  apiKey?: string; method?: string; serviceName?: string; body?: unknown;
+}
+// 只描述现有读取位置；外部 JSON 的业务值仍是 unknown，不能据此信任上游字段。
+interface PromptPayload {
+  data?: unknown; models?: unknown; message?: unknown;
+  error?: { message?: unknown } | null;
+  choices?: Array<{ message?: { content?: unknown } | null; text?: unknown }>;
+}
+
 const promptSystemMessage = `You are a specialist at converting Chinese image requests into precise NovelAI Diffusion prompts.
 
 OUTPUT CONTRACT
@@ -32,7 +46,7 @@ WEIGHTING
 
 For multiple characters, keep each character's appearance and actions unambiguous and adjacent. `;
 
-export function normalizePromptApiConfig(value = {}) {
+export function normalizePromptApiConfig(value: PromptApiInput = {}): PromptApiConfig {
   return {
     baseUrl: normalizePromptApiBaseUrl(value.baseUrl || ''),
     apiKey: String(value.apiKey || '').trim(),
@@ -40,12 +54,12 @@ export function normalizePromptApiConfig(value = {}) {
   };
 }
 
-export function publicPromptApiConfig(value = {}) {
+export function publicPromptApiConfig(value: PromptApiInput = {}): { configured: boolean } {
   const config = normalizePromptApiConfig(value);
   return { configured: isPromptApiConfigured(config) };
 }
 
-export function adminPromptApiConfig(value = {}) {
+export function adminPromptApiConfig(value: PromptApiInput = {}) {
   const config = normalizePromptApiConfig(value);
   return {
     baseUrl: config.baseUrl,
@@ -55,12 +69,12 @@ export function adminPromptApiConfig(value = {}) {
   };
 }
 
-export function isPromptApiConfigured(value = {}) {
+export function isPromptApiConfigured(value: PromptApiInput = {}): boolean {
   const config = normalizePromptApiConfig(value);
   return Boolean(config.baseUrl && config.apiKey && config.model);
 }
 
-export function normalizePromptApiBaseUrl(value = '') {
+export function normalizePromptApiBaseUrl(value: unknown = ''): string {
   const text = String(value || '').trim();
   if (!text) return '';
   let url;
@@ -78,20 +92,20 @@ export function normalizePromptApiBaseUrl(value = '') {
   return url.toString().replace(/\/$/, '');
 }
 
-export async function fetchPromptApiModels(value, options = {}) {
+export async function fetchPromptApiModels(value: PromptApiInput, options: PromptApiOptions = {}): Promise<string[]> {
   const config = requirePromptApiCredentials(value);
   const payload = await requestPromptApi(`${config.baseUrl}/models`, {
     apiKey: config.apiKey,
     fetchImpl: options.fetchImpl,
     timeoutMs: options.timeoutMs || 15_000
   });
-  const source = Array.isArray(payload?.data)
-    ? payload.data
-    : Array.isArray(payload?.models)
-      ? payload.models
+  const source: unknown[] = Array.isArray((payload as PromptPayload | null | undefined)?.data)
+    ? (payload as PromptPayload).data as unknown[]
+    : Array.isArray((payload as PromptPayload | null | undefined)?.models)
+      ? (payload as PromptPayload).models as unknown[]
       : [];
   const models = source
-    .map((item) => typeof item === 'string' ? item : item?.id || item?.name)
+    .map((item) => typeof item === 'string' ? item : (item as { id?: unknown; name?: unknown } | null | undefined)?.id || (item as { name?: unknown } | null | undefined)?.name)
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .filter((item, index, array) => array.indexOf(item) === index)
@@ -100,7 +114,7 @@ export async function fetchPromptApiModels(value, options = {}) {
   return models;
 }
 
-export async function convertChinesePrompt(value, prompt, options = {}) {
+export async function convertChinesePrompt(value: PromptApiInput, prompt: unknown, options: PromptApiOptions = {}): Promise<string> {
   const config = normalizePromptApiConfig(value);
   if (!isPromptApiConfigured(config)) throw promptApiError(503, '管理员尚未完成提示词 API 配置');
   const input = String(prompt || '').trim();
@@ -127,7 +141,7 @@ export async function convertChinesePrompt(value, prompt, options = {}) {
   return content;
 }
 
-async function requestPromptApi(url, options = {}) {
+async function requestPromptApi(url: string, options: PromptRequestOptions = {}): Promise<unknown> {
   const fetchImpl = options.fetchImpl || fetch;
   const serviceName = options.serviceName || '提示词 API';
   const controller = new AbortController();
@@ -146,33 +160,33 @@ async function requestPromptApi(url, options = {}) {
     const text = await response.text();
     const payload = safeJson(text);
     if (!response.ok) {
-      const detail = String(payload?.error?.message || payload?.message || '').trim();
+      const detail = String((payload as PromptPayload | null | undefined)?.error?.message || (payload as PromptPayload | null | undefined)?.message || '').trim();
       if (response.status === 401 || response.status === 403) throw promptApiError(502, 'API 密钥无效或没有权限');
       if (response.status === 429) throw promptApiError(502, 'API 请求过于频繁，请稍后重试');
       throw promptApiError(502, detail ? `上游 API：${detail}` : `上游 API 返回 HTTP ${response.status}`);
     }
     return payload;
   } catch (error) {
-    if (error?.statusCode) throw error;
-    if (error?.name === 'AbortError') throw promptApiError(504, `${serviceName} 请求超时`);
-    const code = String(error?.cause?.code || error?.code || '').trim();
+    if ((error as { statusCode?: unknown } | null | undefined)?.statusCode) throw error;
+    if ((error as { name?: unknown } | null | undefined)?.name === 'AbortError') throw promptApiError(504, `${serviceName} 请求超时`);
+    const code = String((error as { cause?: { code?: unknown } | null } | null | undefined)?.cause?.code || (error as { code?: unknown } | null | undefined)?.code || '').trim();
     throw promptApiError(502, `无法连接${serviceName}${code ? `（${code}）` : ''}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
-function requirePromptApiCredentials(value = {}) {
+function requirePromptApiCredentials(value: PromptApiInput = {}): PromptApiConfig {
   const config = normalizePromptApiConfig(value);
   if (!config.baseUrl) throw promptApiError(400, '请输入 API 地址');
   if (!config.apiKey) throw promptApiError(400, '请输入 API 密钥');
   return config;
 }
 
-function promptApiContent(payload = {}) {
-  const content = payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text ?? '';
+function promptApiContent(payload: unknown = {}): string {
+  const content: unknown = (payload as PromptPayload | null | undefined)?.choices?.[0]?.message?.content ?? (payload as PromptPayload | null | undefined)?.choices?.[0]?.text ?? '';
   const text = Array.isArray(content)
-    ? content.map((item) => typeof item === 'string' ? item : item?.text || '').join('')
+    ? content.map((item: unknown) => typeof item === 'string' ? item : (item as { text?: unknown } | null | undefined)?.text || '').join('')
     : String(content || '');
   return text
     .trim()
@@ -184,7 +198,7 @@ function promptApiContent(payload = {}) {
     .trim();
 }
 
-function safeJson(text) {
+function safeJson(text: string): unknown {
   try {
     return text ? JSON.parse(text) : {};
   } catch {
@@ -192,8 +206,8 @@ function safeJson(text) {
   }
 }
 
-function promptApiError(statusCode, message) {
-  const error = new Error(message);
+function promptApiError(statusCode: number, message: string): Error & { statusCode: number } {
+  const error = new Error(message) as Error & { statusCode: number };
   error.statusCode = statusCode;
   return error;
 }

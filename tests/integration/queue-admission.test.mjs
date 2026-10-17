@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { assertQueueAdmission, assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.ts';
-import { createGenerationPayloadBudget } from '../../server/generation-request.js';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { createMemberSession, authenticateMemberSession } from '../../server/member-auth.ts';
 
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };

@@ -4,7 +4,7 @@ import { mkdtemp, cp, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.js';
-import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.js';
+import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
 
 function env(t, name, value) {
   const previous = process.env[name];

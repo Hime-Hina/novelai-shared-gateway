@@ -6,7 +6,7 @@ interface QueueMember {
   updatedAt?: string;
 }
 
-interface QueueJob {
+export interface QueueJob {
   id: string;
   userToken: string;
   status: string;

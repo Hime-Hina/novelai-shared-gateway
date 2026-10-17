@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
-import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.js';
+import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
 import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
 
 const legacySchema = await readFile(new URL('../fixtures/sqlite-before-drizzle.sql', import.meta.url), 'utf8');
@@ -180,7 +180,7 @@ test('ORM 持久预扣保持 JSON/影子列一致、重复预扣不双扣，只�
   assert.equal(JSON.parse(persisted.data).status, persisted.status);
   assert.equal(JSON.parse(persisted.data).accountId, persisted.account_id);
   assert.equal(store.selectItemById('ledger', 'attempt:queued:1:generation_reserved').attempt.id, JSON.parse(persisted.data).generationAttempt.id);
-  const worker = new Worker(new URL('../../server/sqlite-read-worker.js', import.meta.url), { workerData: { dbPath: store.dbPath } });
+  const worker = new Worker(new URL('../../server/sqlite-read-worker.ts', import.meta.url), { workerData: { dbPath: store.dbPath } });
   t.after(() => worker.terminate());
   const stats = await new Promise((resolve, reject) => {
     worker.once('error', reject);

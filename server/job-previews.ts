@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http';
 
-interface PreviewProgress {
+export interface PreviewProgress {
   previewBuffer?: Buffer;
   previewMimeType?: string;
   stepIndex?: number;

@@ -6,7 +6,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.js';
+import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
 

@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { JsonStore, sqlRecord } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { setMemberCredentials, loginMember } from '../../server/member-auth.ts';
-import { fetchNovelAiAccountQuota } from '../../server/providers.js';
+import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
 import { createTestCopy, TEST_COPY_UPSTREAM_TOKEN } from '../../scripts/create-test-copy.mjs';
 
 const now = 1800000000000;

@@ -192,6 +192,8 @@ D01离线副本工具已完成：只读SQLite backup纳入已提交WAL，迁移�
 
 T01账务、会话与owner片：fair-quota、generation-accounting、operating-accounting、member-auth及owner-operations迁为严格TypeScript。钱包、预留、快照、任务证据和运营资源由所属模块定义；会话行复用Drizzle schema，启动器settings复用账务类型，混合账本保持追加容器。没有新增运行时校验、数值转换或依赖；保留历史算术、原位升级、错误和JSON属性顺序。账务126项、登录相关46项及owner5项定向通过；冻结旧模块的10组账务场景、9种owner操作及统计输出对照一致。根类型/语法、全后端527项中523通过/4项Windows跳过、网页类型与116项、真实Nuxt开发/生产双进程13通过/1项Windows跳过均通过；执行器本机产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4及包内编译后的bootstrap→test-copy CLI通过，源库不变和输出权限已核验。server顶层23个TS、13个JS；存储、上游适配、调度和成员路由等仍待，本批完整Linux CI另记录。图片片[f7c7dca](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39024947176)和副本工具[3b73904](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39025133075)的完整CI均已成功；未处理真实生产副本或部署。
 
+T01上游与存储边界片：providers、prompt-api、generation-request、storage-schema、storage-migrations和sqlite-read-worker迁为严格TypeScript，更新直接导入及Nuxt构建输入。复用已有图片、预览、任务和Drizzle类型；为better-sqlite3增加精确开发类型包`@types/better-sqlite3@9.6.0`，运行库及其他锁定包版本/完整性未变。只读worker在源码选择TS、构建产物选择JS，避免tsc不改写URL字符串导致丢worker；没有修改SQL、迁移、协议或正文行为。与dc6ff3b旧模块的擦除后语句对照一致（provider仅多余括号），保留原错误和字段顺序。上游71项、存储42项、请求18项定向通过；全后端527项中523通过/4项Windows跳过、网页类型与116项、Nuxt实际开发/生产双进程13通过/1项Windows跳过通过。根严格检查、三个Linux镜像构建、最终执行器HTTP4/4及包内bootstrap→test-copy CLI通过，源库与权限符合预期。server顶层29个TS、7个JS，store、调度入口、成员/Discord路由和故障账务等核心继续迁移；不以文件比例代替T01完成度。前一账务片[dc6ff3b的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39026080065)已成功，本批完整CI待记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
@@ -213,7 +215,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 
 当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
 
-主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.js](../server/providers.js)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.ts](../server/providers.ts)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
 
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |

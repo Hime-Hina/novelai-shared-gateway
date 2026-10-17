@@ -1,7 +1,7 @@
 import { quoteFairRequest } from '../../server/fair-quota.ts';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 import { readNativeBody } from '../../server/native-body.ts';
-import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.js';
+import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
 import { assertQueueAdmission, queueDeadline } from '../../server/queue-policy.ts';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';

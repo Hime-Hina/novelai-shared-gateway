@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, real, integer, index, primaryKey } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, real, integer, index, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { FAILURE_EVENT_PREDICATE } from './failure-accounting.js';
 
 // 每张历史记录表使用同一组影子列；data 仍是已有 JSON 文本，不能再次自动编码。
@@ -11,7 +11,7 @@ const recordFields = () => ({
   mock: integer(), mime_type: text(), model: text(), prompt: text(), full_prompt: text(),
   resolution_tier: text(), search_text: text()
 });
-const recordIndexes = (name, table) => [
+const recordIndexes = (name: string, table: { id: AnySQLiteColumn; order_value: AnySQLiteColumn }) => [
   // 旧 SQLite TEXT PRIMARY KEY 允许 NULL；接入 ORM 时不顺带改变这个约束。
   primaryKey({ columns: [table.id] }),
   index(`idx_${name}_order`).on(sql`${table.order_value} DESC`)

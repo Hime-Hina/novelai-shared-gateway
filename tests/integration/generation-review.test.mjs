@@ -13,7 +13,7 @@ import { JsonStore } from '../../server/store.js';
 import { describeStoredResult, publishStoredResult } from '../../server/result-files.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.ts';
-import { activateNextBatchJob } from '../../server/generation-request.js';
+import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');

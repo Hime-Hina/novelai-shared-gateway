@@ -4,7 +4,7 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/providers.js';
+import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/providers.ts';
 import { validateImageBytes } from '../../server/native-image.ts';
 import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 

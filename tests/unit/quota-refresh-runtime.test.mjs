@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { withQuotaRequestDeadline } from '../../server/quota-timeout.ts';
-import { fetchNovelAiAccountQuota } from '../../server/providers.js';
+import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
 
 const source = fs.readFileSync(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const quota = { tier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000, points: 10000, fixed: 10000, purchased: 0, v5UsagePercent: 80 };

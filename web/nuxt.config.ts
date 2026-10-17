@@ -24,7 +24,7 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'node-server',
     // 外层纯模块须同时打入开发 worker，不能留下相对生成目录的运行时 import。
-    externals: { inline: ['generation-request.js', 'queue-policy.ts', 'shared-surface.ts'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
+    externals: { inline: ['generation-request.ts', 'queue-policy.ts', 'shared-surface.ts'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
   },
   typescript: { strict: true, tsConfig: { compilerOptions: { allowJs: true } } },
   app: { head: { htmlAttrs: { lang: 'zh-CN' }, title: 'NovelAI 共享', meta: [{ name: 'referrer', content: 'same-origin' }], link: [{ rel: 'icon', href: 'data:,' }] } }

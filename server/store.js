@@ -8,8 +8,8 @@ import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
-import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.js';
-import { migrateStorage } from './storage-migrations.js';
+import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
+import { migrateStorage } from './storage-migrations.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.js';
 import { activityDate } from './activity-heatmap.ts';
@@ -2004,7 +2004,9 @@ class SqliteReadWorker {
 
   open() {
     if (this.worker) return;
-    const worker = new Worker(new URL('./sqlite-read-worker.js', import.meta.url), {
+    // URL 字符串不由 tsc 改写：源码 Node 读取 TS，打包目录只有编译后的 JS。
+    const source = new URL('./sqlite-read-worker.ts', import.meta.url);
+    const worker = new Worker(existsSync(source) ? source : new URL('./sqlite-read-worker.js', import.meta.url), {
       workerData: { dbPath: this.dbPath },
       execArgv: process.execArgv.filter((value) => !value.startsWith('--input-type'))
     });

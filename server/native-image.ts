@@ -4,7 +4,7 @@ import { isV5MediumModel, V5_MEDIUM_MODEL, V5_MEDIUM_STEPS } from '../public/v5-
 import { applyV5MediumParameters } from './v5-medium.ts';
 import type { V4Prompt } from './v5-medium.ts';
 
-type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
+export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
 interface ImageDimensions { width: number; height: number }
 interface ImageInfo extends ImageDimensions { mimeType: ImageMimeType; byteLength: number }
 interface NativeImage extends ImageInfo { base64: string }
