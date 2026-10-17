@@ -17,3 +17,15 @@ export function taipeiDay(now = Date.now()): string {
   const value = (type: string) => parts.find(part => part.type === type)!.value
   return `${value('year')}-${value('month')}-${value('day')}`
 }
+
+export function aggregateActivity(dates: string[], values: Map<string, number>, mode: 'week' | 'month') {
+  const periods = new Map<string, { from: string; to: string; value: number }>()
+  for (const date of dates) {
+    const start = activityDate(date)
+    if (mode === 'week') start.setDate(start.getDate() - start.getDay())
+    else start.setDate(1)
+    const key = activityDateKey(start), period = periods.get(key) || { from: date, to: date, value: 0 }
+    period.to = date; period.value += values.get(date) || 0; periods.set(key, period)
+  }
+  return [...periods.values()]
+}
