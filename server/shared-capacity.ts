@@ -1,24 +1,54 @@
 // 每份 Opus 独立控制并发；这里只保存调度状态，不改变成员额度或请求参数。
+type Timestamp = string | number | null | undefined;
+type CompletionKind = 'ended' | 'success' | 'ordinary' | 'capacity';
+
+interface SharedAccount {
+  cooldownUntil?: Timestamp;
+  cooldownReason?: string;
+  ordinaryStrikeCount?: unknown;
+  capacityStrikeCount?: unknown;
+  capacityLimitedUntil?: Timestamp;
+  capacityConcurrencyLimit?: number;
+  capacityLastErrorAt?: string;
+}
+
+interface SharedJob {
+  id?: string;
+  generationAttempt?: { id?: string } | null;
+  sharedCooldown?: {
+    attemptId?: string;
+    kind: CompletionKind;
+    at: number;
+    until: Timestamp;
+  } | null;
+}
+
+interface CompletionOptions {
+  job?: SharedJob | null;
+  kind?: CompletionKind;
+  retryAfterUntil?: Timestamp;
+}
+
 export const SHARED_ACCOUNT_MAX_CONCURRENCY = 1;
 const SHARED_ACCOUNT_GAP_MS = 10_000;
-const count = value => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
-const timestamp = value => typeof value === 'number' ? value : Date.parse(value || '') || 0;
+const count = (value: unknown): number => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : 0;
+const timestamp = (value: Timestamp): number => typeof value === 'number' ? value : Date.parse(value || '') || 0;
 
-export function sharedAccountConcurrency() {
+export function sharedAccountConcurrency(): number {
   // 免费生成会锁住整个上游账户；错开十秒也不能保证上一张已经完成。
   return SHARED_ACCOUNT_MAX_CONCURRENCY;
 }
 
-export function sharedAccountReadyDelay(account, now = Date.now()) {
+export function sharedAccountReadyDelay(account: SharedAccount | null | undefined, now = Date.now()): number {
   return Math.max(0, timestamp(account?.cooldownUntil) - now);
 }
 
-export function cooldownRetryAfter(until, now = Date.now()) {
+export function cooldownRetryAfter(until: Timestamp, now = Date.now()): number | null {
   const remaining = timestamp(until) - now;
   return Number.isFinite(remaining) && remaining > 0 ? Math.ceil(remaining / 1000) : null;
 }
 
-export function recordSharedCompletion(account, now = Date.now(), { job, kind = 'ended', retryAfterUntil } = {}) {
+export function recordSharedCompletion(account: SharedAccount | null | undefined, now = Date.now(), { job, kind = 'ended', retryAfterUntil }: CompletionOptions = {}): boolean {
   if (!account) return false;
   const attemptId = job?.generationAttempt?.id || job?.id;
   const previous = job?.sharedCooldown;
@@ -28,14 +58,16 @@ export function recordSharedCompletion(account, now = Date.now(), { job, kind = 
   if (kind === 'success') {
     account.ordinaryStrikeCount = 0; account.capacityStrikeCount = 0; reason = 'success_gap';
   } else if (kind === 'ordinary') {
-    account.ordinaryStrikeCount = Math.min(4, count(account.ordinaryStrikeCount) + 1);
-    delay = [10000, 20000, 40000, 60000][account.ordinaryStrikeCount - 1]; reason = 'ordinary_failure';
+    const strikes = Math.min(4, count(account.ordinaryStrikeCount) + 1);
+    account.ordinaryStrikeCount = strikes;
+    delay = [10000, 20000, 40000, 60000][strikes - 1]; reason = 'ordinary_failure';
   } else if (kind === 'capacity') {
     const legacyStrike = account.capacityStrikeCount == null && timestamp(account.capacityLimitedUntil) > now ? 1 : 0;
-    account.capacityStrikeCount = Math.min(4, Math.max(legacyStrike, count(account.capacityStrikeCount)) + 1);
+    const strikes = Math.min(4, Math.max(legacyStrike, count(account.capacityStrikeCount)) + 1);
+    account.capacityStrikeCount = strikes;
     account.capacityConcurrencyLimit = SHARED_ACCOUNT_MAX_CONCURRENCY;
     account.capacityLastErrorAt = new Date(now).toISOString();
-    delay = Math.min(120000, 30000 * 2 ** (account.capacityStrikeCount - 1)); reason = 'capacity_limit';
+    delay = Math.min(120000, 30000 * 2 ** (strikes - 1)); reason = 'capacity_limit';
   }
   let until = now + delay;
   const upstream = timestamp(retryAfterUntil);
@@ -48,6 +80,6 @@ export function recordSharedCompletion(account, now = Date.now(), { job, kind = 
   return true;
 }
 
-export function recordSharedCapacityError(account, now = Date.now(), options = {}) {
+export function recordSharedCapacityError(account: SharedAccount | null | undefined, now = Date.now(), options: CompletionOptions = {}): boolean {
   return recordSharedCompletion(account, now, { ...options, kind: 'capacity' });
 }

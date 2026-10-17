@@ -11,6 +11,7 @@ FROM dependencies AS build
 COPY executor/package.json ./executor/package.json
 RUN CI=true pnpm --filter @novelai-gateway/executor... install --frozen-lockfile
 COPY executor ./executor
+COPY tsconfig.backend.json ./
 COPY server ./server
 COPY public ./public
 COPY scripts ./scripts

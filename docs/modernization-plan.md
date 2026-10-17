@@ -154,6 +154,10 @@ C03-04 生成错误公开边界：失败/取消、等待通知、任务与父请
 
 C03-04测试依赖补修：生成错误保护提交[95d2786](https://github.com/Hime-Hina/novelai-shared-gateway/commit/95d2786)的[首次完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018143309)在两项队列VM测试失败，原因是其截取notifyJobWaiters但漏提供新增的publicErrorMessage依赖。给这两个仅验证提交顺序/冷历史读取的夹具补已有模式的文本转换stub，定向6/6通过；成员错误内容继续由真实HTTP17项验证，不删除断言或更改生产实现。该次失败不记为完整通过，后续完整验收另记录。
 
+T01第一片：shared-capacity迁为严格TypeScript，显式定义本模块读写的账户、尝试、冷却与结果类别；历史计数仍由原归一化处理。删除调用方已无意义的账户/时间实参，不改串行和冷却算法。根新增同一tsconfig.backend.json下的typecheck/build，复用已锁TypeScript6.0.3及Node类型22.20.5；旧JS仅发射，不冒充已类型化。标准tsc改写相对TS导入，Docker及执行器使用编译JS并保留worker/SQL/public/scripts文件树；不新增loader，原源码入口和数据路径保持。Node22的--check不解析TS，因此现有112个JS文件语法检查与独立严格类型检查各司其职。冻结离线安装、类型/编译、容量相关55/55、Nuxt实际链路12通过/1项Windows跳过、执行器产物本机2通过/1项Windows跳过均通过；Linux根镜像的编译入口/迁移/写入重开及最终执行器HTTP3/3通过。完整后端与最终CI结果继续记录；T01其他业务模块、C01及D01/D02尚未完成。
+
+T01首片完整本机复验：修正前述队列夹具后重新执行全部后端511项，507通过、4项Windows平台跳过、0失败；最后的根/执行器Linux镜像均构建通过，执行器在断网只读根目录、默认UID1000下HTTP3/3无跳过。完整Linux CI另按提交记录，尚未把单模块迁移记为整个T01完成。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

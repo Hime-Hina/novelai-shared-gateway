@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import * as fair from '../../server/fair-quota.js';
-import * as capacity from '../../server/shared-capacity.js';
+import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.js';
 import * as queuePolicy from '../../server/queue-policy.js';
 const source=fs.readFileSync(new URL('../../server/gateway-runtime.js',import.meta.url),'utf8');

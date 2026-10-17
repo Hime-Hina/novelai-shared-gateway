@@ -6,7 +6,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import * as fair from '../../server/fair-quota.js';
-import * as capacity from '../../server/shared-capacity.js';
+import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.js';
 import { queuedDeadlineTimestamp } from '../../server/queue-policy.js';
 

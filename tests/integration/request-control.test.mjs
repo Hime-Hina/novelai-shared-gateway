@@ -8,7 +8,7 @@ import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.js';
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.js';
-import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };

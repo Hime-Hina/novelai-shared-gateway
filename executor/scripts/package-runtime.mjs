@@ -8,9 +8,11 @@ const outputDir = path.join(executorDir, '.output', 'server');
 const packageDir = path.join(outputDir, 'node_modules', 'novelai-shared-gateway');
 
 await mkdir(packageDir, { recursive: true });
-for (const name of ['package.json', 'server', 'public', 'scripts', 'LICENSE', 'NOTICE.md', 'UPSTREAM-LICENSE']) {
+for (const name of ['package.json', 'public', 'scripts', 'LICENSE', 'NOTICE.md', 'UPSTREAM-LICENSE']) {
   await cp(path.join(rootDir, name), path.join(packageDir, name), { recursive: true });
 }
+await cp(path.join(rootDir, '.output', 'backend', 'server'), path.join(packageDir, 'server'), { recursive: true });
+await cp(path.join(rootDir, 'server', 'migrations'), path.join(packageDir, 'server', 'migrations'), { recursive: true });
 await cp(path.join(executorDir, 'start.mjs'), path.join(outputDir, 'start.mjs'));
 const licenseDir = path.join(outputDir, 'licenses');
 await mkdir(licenseDir, { recursive: true });

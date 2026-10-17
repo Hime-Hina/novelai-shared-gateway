@@ -3,7 +3,7 @@ import { generationRequestFingerprint, requestNormalizationDefaults } from './re
 import { describeStoredResult, publishStoredResult } from './result-files.js';
 import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.ts';
 import { readNativeBody } from './native-body.js';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from './native-image.js';
 import { privateAccessAllowed } from './public-hosts.js';
@@ -2932,7 +2932,7 @@ async function reserveQueuedJob(jobId) {
         const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account.id).length;
         // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
-        if (load >= sharedAccountConcurrency(account) || sharedAccountReadyDelay(account, Date.now(), load) > 0) return { queued: true, jobId: job.id };
+        if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, Date.now()) > 0) return { queued: true, jobId: job.id };
         const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId), job.sampleIndex) : job.request;
         reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
       } else {
@@ -3705,7 +3705,7 @@ function hasPaidQuota(account) {
 }
 
 function maxAccountConcurrency(settings = {}, account = null) {
-  return fairShareMode ? sharedAccountConcurrency(account) : 1;
+  return fairShareMode ? sharedAccountConcurrency() : 1;
 }
 
 function physicalAccountLoad(accountId) {
@@ -3718,7 +3718,7 @@ function availableAccountSlots(accounts, settings = {}) {
   if (fairShareMode) {
     const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
     return !account || account.enabled === false || sharedAccountReadyDelay(account, Date.now()) > 0 ? 0
-      : Math.max(0, sharedAccountConcurrency(account) - Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)));
+      : Math.max(0, sharedAccountConcurrency() - Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)));
   }
   resetStaleAccountLoads(accounts);
   const now = Date.now();
@@ -3733,7 +3733,7 @@ function availableAccountSlots(accounts, settings = {}) {
 function nextAccountReadyDelay(accounts, settings = {}) {
   if (fairShareMode) {
     const account = accounts.find(a => a.id === settings.fairQuota?.boundAccountId);
-    return !account || account.enabled === false || Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) >= sharedAccountConcurrency(account)
+    return !account || account.enabled === false || Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)) >= sharedAccountConcurrency()
       ? 1000 : sharedAccountReadyDelay(account, Date.now());
   }
   resetStaleAccountLoads(accounts);

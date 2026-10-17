@@ -183,11 +183,14 @@ SQLite、图片和凭据均存于 `data/`，服务重启后保留；有效网页
 corepack enable pnpm
 pnpm --version
 pnpm install --frozen-lockfile
+pnpm run typecheck
 pnpm run check
 pnpm test
 pnpm --filter @novelai-gateway/web typecheck
 pnpm --filter @novelai-gateway/web test
 ```
+
+后端 TypeScript 按模块迁移。`pnpm run typecheck` 严格检查已迁移模块，旧 JavaScript 仍由行为测试和语法检查覆盖；`pnpm run build` 用同一配置生成 `.output/backend/` 下的 JavaScript。源码开发继续使用原入口，Docker 与执行器交付编译后的业务文件并保留迁移 SQL 和资源目录，不依赖在 `node_modules` 中执行 TypeScript。
 
 唯一依赖锁文件为 `pnpm-lock.yaml`；新增直接依赖默认保存精确版本。包管理迁移保留原来的全部 38 个锁定依赖版本，`better-sqlite3` 固定为 `12.10.0`。其原生安装脚本已在 `package.json` 中明确允许，其他依赖不会因此获得执行安装脚本的许可；升级该原生依赖时需同时复核许可版本。不要使用 `--ignore-scripts` 跳过 SQLite 构建，也不要在 Windows 与 Linux 之间复制 `node_modules`。冻结安装失败时应查明锁文件或构建问题，不改用非冻结安装绕过。
 

@@ -14,7 +14,7 @@ import { describeStoredResult, publishStoredResult } from '../../server/result-f
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.js';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.js';
 import { activateNextBatchJob } from '../../server/generation-request.js';
-import { recordSharedCompletion } from '../../server/shared-capacity.js';
+import { recordSharedCompletion } from '../../server/shared-capacity.ts';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');

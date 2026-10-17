@@ -42,6 +42,11 @@ Node 进程入口复用上述恢复、监听和关闭顺序；不使用 Nitro Ta
 public 资源依赖真实相对文件路径。构建产物须保留文件树与 SQL 精确字节，原生
 SQLite 依赖按目标平台安装；不能将 Windows 的二进制直接部署到 bob。
 
+T01 起，执行器构建先运行根项目的 TypeScript 编译，将 `.output/backend/server/`
+的 JavaScript 放回上述业务文件树，并复制原始 migrations 目录；不把 TypeScript
+源码直接交付到 `node_modules`。根配置的 allowJs 仅帮助发射尚未迁移的 JavaScript，
+不代表这些旧模块已经通过严格类型检查。默认数据路径和绝对 DATA_DIR 要求保持。
+
 ## 内部入口与构建产物
 
 `executor/` 是独立 pnpm workspace。入口要求绝对 `DATA_DIR`，避免将打包目录

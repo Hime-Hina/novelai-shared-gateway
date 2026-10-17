@@ -1,14 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from '../../server/shared-capacity.js';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from '../../server/shared-capacity.ts';
 
 const NOW = 1800000000000;
 
-test('共享上游固定串行，旧学习结果、成功次数和观察期均不能恢复多并发', () => {
-  for (const account of [{}, { capacityConcurrencyLimit: 4 }, { capacityConcurrencyLimit: 2, capacitySuccesses: 100, capacityProbeAfter: NOW - 1 }, { capacityLimitedUntil: NOW + 300000 }]) {
-    assert.equal(sharedAccountConcurrency(account, NOW), 1);
-    assert.equal(sharedAccountConcurrency(structuredClone(account), NOW + 86400000), 1);
-  }
+test('共享上游固定串行，并发上限不接受账户状态或时间参数', () => {
+  assert.equal(sharedAccountConcurrency(), 1);
 });
 
 test('完成后至少等待十秒，重启仍保留间隔且不会缩短已有冷却', () => {
@@ -29,7 +26,7 @@ test('重复拒绝保持串行，冷却从三十秒增加至两分钟且不缩�
   for (const [i, delay] of [30000, 60000, 120000, 120000].entries()) {
     const now = NOW + i * 120000;
     recordSharedCapacityError(account, now);
-    assert.equal(sharedAccountConcurrency(account, now), 1);
+    assert.equal(sharedAccountConcurrency(), 1);
     assert.equal(account.capacityConcurrencyLimit, 1);
     assert.equal(sharedAccountReadyDelay(account, now), delay);
   }

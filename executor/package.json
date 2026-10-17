@@ -6,7 +6,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/unit/*.test.mjs",
     "test:runtime": "node --test tests/integration/runtime-http.test.mjs",
-    "build": "nitro build && node scripts/package-runtime.mjs",
+    "build": "pnpm --filter novelai-shared-gateway build && nitro build && node scripts/package-runtime.mjs",
     "start": "node .output/server/start.mjs"
   },
   "engines": { "node": "^22.23.3 || ^24.15.0 || >=26" },
