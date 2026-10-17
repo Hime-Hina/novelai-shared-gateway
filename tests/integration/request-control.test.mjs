@@ -10,7 +10,7 @@ import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs }
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.js';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };
 async function fixture(t, statuses) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-request-control-')));

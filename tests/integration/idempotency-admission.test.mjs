@@ -12,7 +12,7 @@ import * as requests from '../../server/generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.js';
 import { parseNativeImageRequest } from '../../server/native-image.js';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 function load(context, names) {
   const ctx = vm.createContext(context);

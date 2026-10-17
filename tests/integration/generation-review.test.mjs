@@ -16,7 +16,7 @@ import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS 
 import { activateNextBatchJob } from '../../server/generation-request.js';
 import { recordSharedCompletion } from '../../server/shared-capacity.js';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 function fixture(now = Date.now(), { refund = true, fallback = false, id = 'review' } = {}) {
   const db = { settings: {}, users: ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, balance: 0, enabled: true })),

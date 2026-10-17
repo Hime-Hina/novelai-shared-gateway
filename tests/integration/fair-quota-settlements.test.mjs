@@ -79,7 +79,7 @@ test('冷终态优先于陈旧reserved副本，删除任务/重启后refundJob�
   await store.close();
   const reopened = await open(t, store.dataDir);
   const before = structuredClone(reopened.db.settings.fairQuota);
-  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   const start = source.indexOf('function refundJob('), end = source.indexOf('\n}', start) + 2;
   const ctx = vm.createContext({ store: reopened, settleFairQuota, fairShareMode: true });
   vm.runInContext(source.slice(start, end), ctx);

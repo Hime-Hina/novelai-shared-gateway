@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
-const source = readFileSync(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const section = source.slice(source.indexOf('function parseNativeImageRequest('), source.indexOf('async function handleOpenAiChatCompletion('));
 const context = vm.createContext({ parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest, quoteFairRequest, singleGenerationRequest, webJobRequestSummary, assertQueueAdmission,
   queueDeadline: (now, deadline) => queueDeadline(now, deadline, {}), process: {env:{}},

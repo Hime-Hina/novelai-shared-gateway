@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import vm from 'node:vm';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 function load(context, names) {
   const ctx = vm.createContext(context);
   for (const name of names) {

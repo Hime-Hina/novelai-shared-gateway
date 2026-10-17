@@ -100,7 +100,7 @@ test('等待者补查不通知未提交的取消，已经提交的取消也不�
   const jobWaiters = new Map();
   const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, setMemberAdmission,
     refundJob: refund, clearJobStreamProgress() {}, scheduleQueueDrain() {} });
-  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters', 'changeMemberAdmission']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
@@ -140,7 +140,7 @@ test('图片缓存命中也保留原批次停止代次，不能给旧请求换�
     assertFairMemberReady: async () => {}, cleanupStaleActiveJobs: async () => {},
     isNoCache: () => false, requestCacheKey: () => 'synthetic-cache', dirtyResultJobRows: () => ({}),
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) });
-  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay', 'createJob', 'createDirectJob', 'getUserOrThrow']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
@@ -166,7 +166,7 @@ test('部分历史缓存下停止 pending 与恢复/零取消均只写受影响�
   t.after(() => reopened.close());
   assert.equal(reopened.partialCollections.has('jobs'), true);
   assert.ok(reopened.db.jobs.some(job => job.id === 'cold-pending'));
-  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   const start = source.indexOf('function changeMemberAdmission('), end = source.indexOf('\n}', start) + 2;
   const context = vm.createContext({ store: reopened, setMemberAdmission, refundJob: refund,
     clearJobStreamProgress() {}, notifyJobWaiters() {}, scheduleQueueDrain() {} });
@@ -195,7 +195,7 @@ test('冷历史 done/failed 的等待者补查立即返回，读取结果不把�
   assert.equal(store.db.jobs.length, 0);
   const jobWaiters = new Map();
   const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout });
-  const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
   for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
     vm.runInContext(source.slice(start, end), context);

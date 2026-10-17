@@ -10,7 +10,7 @@ import * as capacity from '../../server/shared-capacity.js';
 import * as requests from '../../server/generation-request.js';
 import { queuedDeadlineTimestamp } from '../../server/queue-policy.js';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const NOW = 1800000000000;
 function context(values, names) {
   const ctx = vm.createContext({ ...fair, ...capacity, ...requests, queuedDeadlineTimestamp, ...values });

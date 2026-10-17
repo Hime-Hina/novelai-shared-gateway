@@ -10,7 +10,7 @@ import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '..
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion } from '../../server/shared-capacity.js';
 import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 
-const source = await readFile(new URL('../../server/index.js', import.meta.url), 'utf8');
+const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
 const request = { model: 'nai-diffusion-4-5-full', action: 'generate', width: 1024, height: 1024, steps: 23,
   seed: 100, sampleCount: 4, prompt: 'synthetic large input', nativeParameters: { negative_prompt: 'x'.repeat(1024), seed: 100, n_samples: 4 } };
 function functions(context, names) {
