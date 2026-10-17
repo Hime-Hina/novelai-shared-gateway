@@ -10,8 +10,8 @@ import { NConfigProvider, NGlobalStyle, NMessageProvider, darkTheme, zhCN, dateZ
 </template>
 
 <style>
-html { scrollbar-gutter: stable; --text-muted: #9baabd; }
-body { margin: 0; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+html { scrollbar-gutter: stable; color-scheme: dark; --text-muted: #9baabd; }
+body { margin: 0; background: #101318; color: #e5eaf2; font-family: system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
 * { box-sizing: border-box; }
 a { color: #a3caff; }
 button, input { font: inherit; }

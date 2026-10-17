@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { enableAutoUnmount, flushPromises } from '@vue/test-utils'
+import { DOMWrapper, enableAutoUnmount, flushPromises } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { NHeatmap, NSelect, NRadioGroup } from 'naive-ui'
 import CallHeatmap from '../../app/components/CallHeatmap.vue'
@@ -70,14 +70,16 @@ describe('CallHeatmap', () => {
     expect(wrapper.findComponent(NHeatmap).props('showMonthLabels')).toBe(true)
     expect(wrapper.findComponent(NHeatmap).props('showWeekLabels')).toBe(true)
     expect(wrapper.findComponent(NHeatmap).props('showColorIndicator')).toBe(true)
-    expect(wrapper.get('#heatmapDetails').text()).toContain('覆盖未知')
+    await wrapper.get('#heatmapDetailToggle').trigger('click'); await flushPromises()
+    const details = new DOMWrapper(document.body)
+    expect(details.get('#heatmapDetails').text()).toContain('覆盖未知')
     select(wrapper, 'heatmapDay').vm.$emit('update:value', '2026-10-16'); await flushPromises()
-    expect(wrapper.get('#heatmapDetails').text()).toContain('保留记录 2 次 · 成功 1 · 失败 0 · 取消 1')
+    expect(details.get('#heatmapDetails').text()).toContain('保留记录 2 次 · 成功 1 · 失败 0 · 取消 1')
     select(wrapper, 'heatmapStatus').vm.$emit('update:value', 'failed'); await flushPromises()
     expect(cells(wrapper).map(cell => cell.value)).toEqual([0, 0, 0])
     await wrapper.findAll('.n-heatmap__calendar-table .n-heatmap-rect')[1]!.trigger('mouseenter')
     await vi.waitFor(() => expect(document.querySelector('.heatmap-tooltip-details')?.textContent).toContain('成功 1 · 失败 0 · 取消 1'))
-    expect(wrapper.text()).toContain('包含缓存任务，不等于实际 NAI 调用次数')
+    expect(details.text()).toContain('包含缓存任务，不等于实际 NAI 调用次数')
     expect(transport).toHaveBeenCalledTimes(1); expect(eventSource).not.toHaveBeenCalled()
   })
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { NButton, NCard, NHeatmap, NSelect, NRadioGroup, NRadioButton, NTooltip } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { NButton, NCard, NHeatmap, NSelect, NRadioGroup, NRadioButton, NTooltip, NPopover } from 'naive-ui'
 import type { MemberApi } from '../types/member'
 import type { ActivityDay, ActivityInvalidation, ActivityOperation, ActivitySnapshot } from '../types/activity'
 import { activityDate, activityDateKey, activityDates, aggregateActivity, taipeiDay } from '../utils/activity-display'
@@ -15,6 +15,7 @@ const aggregation = ref<'day' | 'week' | 'month' | 'cumulative'>('day')
 const aggregations = [{ label: '每天', value: 'day' }, { label: '每周', value: 'week' }, { label: '每月', value: 'month' }, { label: '累计', value: 'cumulative' }]
 const colors = ['#252d39', '#163d60', '#165991', '#267fc2', '#68b7f5']
 const selectedDate = ref(''), snapshot = shallowRef<ActivitySnapshot | null>(null)
+const chart = ref<HTMLElement | null>(null), detailsOpen = ref(false)
 const loading = ref(false), error = ref('')
 let mounted = false, disposed = false, epoch = 0, fullPending = true, lastDay = '', scheduled = false
 let task: Promise<void> | null = null
@@ -74,6 +75,7 @@ function read(): Promise<void> {
         if (!full && snapshot.value && (result.from !== snapshot.value.from || result.to !== snapshot.value.to)) {
           fullPending = true; pendingDates.clear(); continue
         }
+        const initial = !snapshot.value
         if (full || !snapshot.value) snapshot.value = result
         else {
           // 空增量也必须删除这些日期的旧桶，避免清历史后留下旧计数。
@@ -83,6 +85,7 @@ function read(): Promise<void> {
         }
         if (selectedDate.value < result.from || selectedDate.value > result.to) selectedDate.value = result.to
         error.value = ''
+        if (initial) { await nextTick(); if (!disposed && current === epoch && chart.value) chart.value.scrollLeft = chart.value.scrollWidth }
       } catch (failure) {
         if (disposed || current !== epoch) continue
         if (full) fullPending = true
@@ -113,6 +116,7 @@ watch(() => props.invalidation?.version, () => {
   request(crossedDay ? null : props.invalidation.dates)
 }, { flush: 'sync' })
 watch(() => props.refreshVersion, calibrateDay)
+watch(aggregation, async () => { await nextTick(); if (chart.value) chart.value.scrollLeft = chart.value.scrollWidth })
 watch(() => props.active, active => { if (active) { lastDay = taipeiDay(); request() } })
 onMounted(() => {
   mounted = true; lastDay = taipeiDay()
@@ -139,8 +143,8 @@ onBeforeUnmount(() => {
     </div>
     <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在读取调用记录…' : snapshot ? `${snapshot.from} — ${snapshot.to}` + (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '') : '等待记录') }}</div>
     <div class="heatmap-chart">
-      <div v-if="aggregation === 'day' || aggregation === 'cumulative'" class="heatmap-scroll" role="region" aria-label="每日调用热力图，可横向滚动" tabindex="0">
-        <NHeatmap :data="cells" :loading="!snapshot" :first-day-of-week="6" :active-colors="colors" :x-gap="4" :y-gap="4" tooltip>
+      <div v-if="aggregation === 'day' || aggregation === 'cumulative'" ref="chart" class="heatmap-scroll" role="region" aria-label="每日调用热力图，可横向滚动" tabindex="0">
+        <NHeatmap :data="cells" :loading="!snapshot" :first-day-of-week="6" :minimum-color="colors[0]" :active-colors="colors.slice(1)" :x-gap="4" :y-gap="4" :theme-overrides="{ rectSizeMedium: 'clamp(11px, calc((100cqw - 250px) / 53), 18px)' }" tooltip>
           <template #tooltip="{ timestamp, value }">
             {{ activityDateKey(timestamp) }} · {{ aggregation === 'cumulative' ? '累计' : '当天' }} {{ value }} 次保留记录
             <p class="heatmap-tooltip-details">{{ breakdown(buckets.get(activityDateKey(timestamp))) }}</p>
@@ -149,30 +153,33 @@ onBeforeUnmount(() => {
       </div>
       <div v-else class="period-grid" :class="{ monthly: aggregation === 'month' }" :aria-label="aggregation === 'month' ? '每月调用热力图' : '每周调用热力图'">
         <NTooltip v-for="period in periods" :key="period.from">
-          <template #trigger><button type="button" class="period-cell" :style="{ background: colors[period.value ? Math.min(4, Math.ceil(period.value / peak * 4)) : 0] }" :aria-label="`${period.from} 至 ${period.to}：${period.value} 次保留记录`" @click="selectedDate = period.from"><span>{{ aggregation === 'month' ? period.from.slice(0, 7) : period.from.slice(5) }}</span><strong>{{ period.value.toLocaleString() }}</strong></button></template>
+          <template #trigger><button type="button" class="period-cell" :style="{ background: colors[period.value ? Math.min(4, Math.ceil(period.value / peak * 4)) : 0] }" :aria-label="`${period.from} 至 ${period.to}：${period.value} 次保留记录`" @click="selectedDate = period.from; detailsOpen = true"><span>{{ aggregation === 'month' ? period.from.slice(0, 7) : period.from.slice(5) }}</span><strong>{{ period.value.toLocaleString() }}</strong></button></template>
           {{ period.from }} 至 {{ period.to }} · {{ period.value }} 次保留记录
         </NTooltip>
       </div>
     </div>
     <div class="heatmap-footer">
-      <span class="section-caption">灰格：无所选状态的保留记录；历史可能不完整。包含缓存任务，不等于实际 NAI 调用次数。</span>
-      <NSelect v-if="snapshot" id="heatmapDay" v-model:value="selectedDate" :options="dateOptions" filterable size="small" aria-label="查看某一天" />
+      <span class="section-caption">仅统计保留记录（含缓存）· 灰格不代表历史完整</span>
+      <NPopover v-model:show="detailsOpen" trigger="click" :style="{ width: 'min(390px, calc(100vw - 32px))' }">
+        <template #trigger><NButton id="heatmapDetailToggle" size="small" quaternary>查看日期明细</NButton></template>
+        <p class="section-caption">包含缓存任务，不等于实际 NAI 调用次数。灰格表示无所选状态的保留记录；历史覆盖可能不完整。</p>
+        <NSelect v-if="snapshot" id="heatmapDay" v-model:value="selectedDate" :options="dateOptions" filterable size="small" aria-label="查看某一天" />
+        <p id="heatmapDetails" class="section-caption" aria-live="polite">{{ selectedDate }}{{ selectedDate ? '：' : '' }}{{ breakdown(selected) }}</p>
+      </NPopover>
     </div>
-    <p id="heatmapDetails" class="section-caption heatmap-details" aria-live="polite">{{ selectedDate }}{{ selectedDate ? '：' : '' }}{{ breakdown(selected) }}</p>
   </NCard>
 </template>
 
 <style scoped>
 .heatmap-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
 .heatmap-filters .n-select { width: 145px; max-width: 100%; }
-.heatmap-chart { min-height: 190px; }
-.heatmap-scroll { max-width: 100%; overflow-x: auto; padding: 6px 0; }
-.heatmap-scroll :deep(.n-heatmap) { min-width: 760px; width: 100%; }
+.heatmap-chart { min-height: 170px; }
+.heatmap-scroll { max-width: 100%; overflow-x: auto; padding: 6px 0; container-type: inline-size; }
+.heatmap-scroll :deep(.n-heatmap) { min-width: 830px; width: 100%; max-width: none; }
 .heatmap-scroll :deep(.n-heatmap__calendar-table) { width: 100%; }
 .heatmap-scroll :deep(.n-heatmap-rect) { border-radius: 3px; }
 .heatmap-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-top: 8px; }
 #heatmapDay { width: 150px; }
-.heatmap-details { min-height: 2.8em; margin-bottom: 0; }
 .period-grid { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 5px; }
 .period-grid.monthly { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .period-cell { border: 1px solid #ffffff0a; border-radius: 5px; color: #e8f1fc; cursor: pointer; padding: 5px 2px; min-height: 38px; }
