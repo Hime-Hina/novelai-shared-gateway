@@ -118,6 +118,8 @@ N03 已提交 [e7b9407](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 C03-01 已提交 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e)：普通Native完整生成对齐201，放大保持200；通过negotiator按Accept协商ZIP/JSON，缺省与通配仍ZIP，不接受两者时入队前406。Vibe对齐201/application-binary且原字节不变，部分批次保留200与原账务说明；JSON按48KiB原图分块编码，实际种子在首次完成、幂等和冷历史领取中一致。固定版本的Desktop、小白盒和Aaalice源码验证接受2xx并明确各自格式要求，详见[契约与证据](api-contract.md#c03-01-响应协商与客户端证据)。新增精确negotiator1.1.0及传递content-type2.1.0，保留其余锁定依赖；没有schema变更。[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 后端482、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，112文件语法、类型和三个业务镜像构建通过，也覆盖前述冷历史队列补修。C03-02–06、T01/C01及D01/D02仍待；未调用真实NAI/Discord，生产保持原版本。
 
+C03-02 的实时 MessagePack 切片已实现：按已核实的官方网页事件字段转发预览，保存并结算后逐张发送final；复用原预览节流和持久任务，不因连接结束取消任务。Native生成加入上游流式进度，Vibe/放大排除；第一个事件前仍返回正常HTTP错误，开始后以error帧结束。流式首帧无法预知批次最终完成数，省略完成数量头，普通ZIP/JSON保持。精确引入`@msgpack/msgpack@3.1.3`替换手写值编解码，保留帧/累计/输入边界，不改其他锁定依赖与schema。详细协议、证据和限制见[流式契约](api-contract.md#c03-02-实时-messagepack-与待核实的-sse)。本地模块34/34、冷历史批次和恢复回归通过；Linux最终执行器镜像HTTP3/3通过。Native HTTP14/14、Nuxt实际链路12通过/1项Linux专用跳过，执行器本地2通过/1项Linux专用跳过；托管CI待验证；SSE字段与协商未完成，因此C03-02整体不标完成。未调用真实NAI/Discord，未部署或替换生产。
+
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
 F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长结果，因此结果校验与上传校验分开设置边长，输入仍为 8192；16M 像素、64 MiB、CRC 与解压上限保持。补充提交 [b1e383d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b1e383d)；合成 8192×128 → 16384×256 覆盖图片/JSON/dataURL/ZIP/MessagePack，超限输入与结果仍拒绝，相关模块 37/37 通过。没有据此声称实测 NAI 接受全部极端长宽比例。
@@ -151,7 +153,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 | --- | --- | --- |
 | 身份 | Persistent API token 的 Bearer 鉴权 | 对外接收成员 Key，对上游使用管理员保存的共享 PST；有个人钱包与成员资格限制 |
 | 普通生图响应 | ZIP 或按 `Accept: application/json` 返回含 `images` 的 JSON；成功状态列为 201 | C03-01已实现完整成功201、按Accept协商ZIP/JSON及实际种子；缺省保持ZIP，部分成功保留200与批次说明 |
-| 流式生图 | 路径描述包含中间、最终及错误事件；`image.StreamingType` 枚举同时列出 `msgpack` 与 `sse` | 接收时移除客户端 `stream` 值；最终统一返回带长度前缀的 MessagePack，无实时预览帧；不能把 MessagePack 本身称为非官方协议 |
+| 流式生图 | 路径描述包含中间、最终及错误事件；`image.StreamingType` 枚举同时列出 `msgpack` 与 `sse` | 已接入实时MessagePack预览与逐张持久化后的final；仍移除客户端stream值，SSE与内容协商待完成；不能把MessagePack本身称为非官方协议 |
 | 多图 | 请求包含 `n_samples`，响应可包含多张图片 | 只允许 1–4 张，拆成独立单图依次排队与结算，种子逐张递增；ZIP和JSON保留批次结果说明，费用不承诺等于官方批量生成 |
 | 参数与功能范围 | 定义包含 PNG/WebP、ControlNet、请求 `url`、Vibe 编码 mask 和 seed 等字段 | 参数白名单和计价规则覆盖其中一部分；例如 WebP、启用的 ControlNet、`url` 和 Vibe 编码 mask 会被拒绝；附加本地 `allowPurchasedAnlas` 等字段 |
 | 额度与限流 | 官方账户级规则与接口错误 | 本地估算、成员预扣退款、单并发、完成后十秒间隔、冷却与队列期限；这些是网关规则 |

@@ -19,7 +19,7 @@
 - 账本与队列提交后按权限推送失效通知；成员额度、调用与 owner 当前视图合并刷新，后台更新保留未保存草稿，详见[实时状态](docs/state-events.md)。
 - 成员与 owner 可查看最近一年的[调用热力图](docs/call-heatmap.md)，按台北提交日逐张统计，生图/放大/Vibe 编码及成功/失败/取消分开查看；旧历史缺失明确显示未知。
 - Native 接口支持 V3／V4／V4.5／V5 Full、Curated（5C）、Medium，以及图生图、局部重绘、Vibe／Precise Reference、Vibe 编码和 2 倍放大，具体组合见下表。
-- 支持原生 MessagePack 最终图片流，兼容不会自动回退 ZIP 的客户端。
+- 支持原生 MessagePack 实时预览与逐张最终图片流，兼容不会自动回退 ZIP 的客户端。
 - V5 恢复优先分给未满额成员；官方聚合余额变化不直接扣减闲置成员钱包。
 - 接受 JSON 和启动器的 multipart 请求；一次 1–4 张按独立单图依次排队、扣费与退款。
 - 不提供公开注册、兑换码、充值商城或旧图库管理。
@@ -116,7 +116,7 @@ systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_
 
 提供 `GET /user/subscription`、`/v1/user/subscription`、`/ai/user/subscription` 和 `/v1/ai/user/subscription`，只返回调用者自己的 Anlas、V5 余量和当前恢复速度，不公开上游总钱包。
 
-小白盒等客户端请求 `/ai/generate-image-stream` 时，网关在图片完成、账本结算后返回带 4 字节大端长度前缀的 MessagePack `final` 帧，图片字段为二进制。无需客户端先处理旧版 403 回退提示。**当前只返回最终结果，没有实时预览帧或排队心跳**；长时间排队仍需客户端和反向代理设置足够的超时。普通 ZIP 接口继续可用。
+小白盒等客户端请求 `/ai/generate-image-stream` 时，网关实时转发 MessagePack `intermediate` 预览，并在每张图片保存、账本结算后发送 `final` 帧，无需等待整批完成。帧有4字节大端长度前缀，图片字段为二进制；预览沿用上游 `step_ix`，多图使用批次内的 `samp_ix`。慢连接可能跳过预览；断线不取消已受理任务，可以通过任务记录或同一幂等键领取最终结果。当前没有排队心跳，长时间排队仍需客户端和反向代理设置足够的超时；SSE协商仍待适配。
 
 Native 请求同时支持 `application/json` 与 `multipart/form-data`。multipart 的 `request` 部件可为 JSON 字符串或 JSON 文件，图片部件必须由请求明确引用。总请求上限 32 MiB，单张附件上限 8 MiB。自动角色布局的空坐标按中心点兼容；显式手动坐标仍严格验证。支持桌面客户端的 `uc_preset`／`quality_toggle` 别名；与标准字段同时填写时必须一致。未知参数错误只列出有限字段名，不回显内容。
 
@@ -139,7 +139,7 @@ Native 请求同时支持 `application/json` 与 `multipart/form-data`。multipa
 
 Medium 会替换自定义负面提示词，正向及角色提示词保留；这与该模式的固定参数一致。标准 1024×1024 的 Medium 本地估算消耗约为 Full 23 步的 58%，转扣 Anlas 时为 18 点；这是估算和本地分账，不是官方逐张用量承诺。
 
-多图采用多次独立单图请求，费用不等同于 NovelAI 官方原生批量报价。部分成功时，ZIP 内含成功图片与 `results.json`；流式接口返回已完成的 `final` 帧及后续 `error` 帧。响应头 `X-Nai-Image-Count`、`X-Nai-Partial` 表示完成数量和是否只完成部分。失败图片退款，未开始的图片不收费。超过费用或图片尺寸上限的请求会明确拒绝。
+多图采用多次独立单图请求，费用不等同于 NovelAI 官方原生批量报价。部分成功时，ZIP 内含成功图片与 `results.json`；流式接口返回已完成的 `final` 帧及后续 `error` 帧。普通生图响应头 `X-Nai-Image-Count`、`X-Nai-Partial` 表示完成数量和是否只完成部分；实时流开始时数量未知，省略这两个头，以事件和任务查询为准。失败图片退款，未开始的图片不收费。超过费用或图片尺寸上限的请求会明确拒绝。
 
 ## 额度语义与限制
 

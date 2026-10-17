@@ -25,6 +25,7 @@ const { bootstrap } = await import(pathToFileURL(packaged('scripts/bootstrap.mjs
 const { JsonStore } = await import(pathToFileURL(packaged('server/store.js')).href);
 const { syncFairQuota } = await import(pathToFileURL(packaged('server/fair-quota.js')).href);
 const { createMemberSession } = await import(pathToFileURL(packaged('server/member-auth.js')).href);
+const { nativeImagesMsgpack } = await import(pathToFileURL(packaged('server/native-stream.js')).href);
 const Database = runtimeRequire('better-sqlite3');
 const migrationJournal = JSON.parse(await readFile(packaged('server/migrations/meta/_journal.json'), 'utf8'));
 for (const name of ['server/gateway-runtime.js', 'server/sqlite-read-worker.js', 'public/generation-pricing.js',
@@ -87,8 +88,10 @@ async function fixture(t, { owner = false } = {}) {
       res.end(JSON.stringify({ subscription: { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
         trainingStepsLeft: { fixedTrainingStepsLeft: 10000, purchasedTrainingSteps: 0 },
         usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 } } }));
-    } else if (req.url === '/ai/generate-image') {
-      generations++; res.writeHead(200, { 'content-type': 'image/png' }); res.end(png);
+    } else if (['/ai/generate-image', '/ai/generate-image-stream'].includes(req.url)) {
+      const stream = req.url.endsWith('-stream');
+      generations++; res.writeHead(200, { 'content-type': stream ? 'application/octet-stream' : 'image/png' });
+      res.end(stream ? nativeImagesMsgpack([png]) : png);
     } else { unexpectedUpstream++; res.writeHead(500); res.end('unexpected synthetic upstream route'); }
   });
   const upstreamPort = await listen(upstream), reservation = http.createServer(), port = await listen(reservation);
@@ -253,6 +256,7 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
   assert.deepEqual(counts(), originalCounts); assert.equal(gateway.generations(), 1);
   const replay = await gateway.call('/v1/ai/generate-image-stream', { body: nativeBody, member: 0, headers });
   assert.equal(replay.status, 200); assert.match(replay.headers.get('content-type'), /application\/octet-stream/);
+  assert.equal(replay.headers.get('x-nai-image-count'), null); assert.equal(replay.headers.get('x-nai-partial'), null);
   assert.equal(replay.headers.get('x-nai-request-id'), requestId);
   const frames = Buffer.from(await replay.arrayBuffer()); assert.ok(frames.includes(png), 'MessagePack must retain original PNG bytes');
   assert.ok(frames.includes(Buffer.from('event_type'))); assert.ok(frames.includes(Buffer.from('image')));

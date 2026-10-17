@@ -1,7 +1,7 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
 import { describeStoredResult, publishStoredResult } from './result-files.js';
-import { nativeImagesMsgpack, nativeImagesJson } from './native-stream.js';
+import { nativeImageMsgpack, nativeImagesJson } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
@@ -881,6 +881,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   const batch = await acceptNativeHttpRequest(req, diagnosticId);
   if (batch.requestId || !batch.replayed) res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
   const deadline = Date.now() + openAiChatTimeoutMs;
+  if (stream) { await streamNativeImages(res, batch, deadline); return; }
   const entries = [], results = [];
   for (let index = 0; index < batch.count; index++) {
     if (res.destroyed) return;
@@ -898,11 +899,6 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   }
   if (res.destroyed) return;
   const count = batch.count, completed = entries.length;
-  if (stream) {
-    const frames = nativeImagesMsgpack(entries.map(entry => entry.buffer), results.find(result => result.status === 'failed'));
-    sendImage(res, 200, 'application/octet-stream', frames, { 'cache-control': 'no-store', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
-    return;
-  }
   const summary = count > 1 ? { requested: count, completed, remaining: count - completed, billing: 'independent_single_images', results } : null;
   const status = completed < count ? 200 : 201;
   if (json) {
@@ -912,6 +908,49 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   if (summary) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify(summary), 'utf8') });
   sendImage(res, status, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
     'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
+}
+
+function writeNativeStreamEvent(res, event, callback) {
+  const frame = nativeImageMsgpack(event);
+  // 首帧前保留普通 HTTP 错误状态；开始流式响应后不再预报未知的完成数量。
+  if (!res.headersSent) res.writeHead(200, {
+    'content-type': 'application/octet-stream', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no'
+  });
+  return res.write(frame, callback);
+}
+
+async function streamNativeImages(res, batch, deadline) {
+  res.once('error', () => res.destroy());
+  for (let index = 0; index < batch.count; index++) {
+    if (res.destroyed) return;
+    const unwatch = jobPreviews.watch(batch.jobIds[index], frame => {
+      // 预览可以跳帧，慢连接不能积压预览或阻塞任务；步骤只采用上游原始编号。
+      if (res.destroyed || res.writableEnded || res.writableNeedDrain || !Number.isSafeInteger(frame.stepIndex) || frame.stepIndex < 0) return;
+      writeNativeStreamEvent(res, { event_type: 'intermediate', samp_ix: index, step_ix: frame.stepIndex, image: frame.buffer });
+    });
+    try {
+      const result = await waitNativeResult(batch.jobIds[index], deadline, res);
+      unwatch();
+      if (!result) return;
+      // final 只来自已经落盘并结算的结果；HTTP 连接消失不会撤销任务。
+      const image = await readStoredImage(result.saved);
+      if (res.destroyed) return;
+      await new Promise((resolve, reject) => {
+        const onClose = () => resolve();
+        res.once('close', onClose);
+        writeNativeStreamEvent(res, { event_type: 'final', samp_ix: index, image }, error => {
+          res.off('close', onClose);
+          if (error) reject(error); else resolve();
+        });
+      });
+    } catch (error) {
+      if (res.destroyed) return;
+      if (!res.headersSent) throw error;
+      writeNativeStreamEvent(res, { event_type: 'error', samp_ix: index, message: publicErrorMessage(error.message || '生成失败') });
+      break;
+    } finally { unwatch(); }
+  }
+  if (!res.destroyed) res.end();
 }
 
 async function handleNativeAuxiliary(req, res, operation) {
@@ -2977,7 +3016,8 @@ async function runReservedJob(reservation) {
 }
 
 function shouldUseJobStreamProgress(job = {}) {
-  return ['web', 'direct', 'openai'].includes(job.source || 'web');
+  return (job.request?.operation || 'generate') === 'generate'
+    && ['web', 'direct', 'openai', 'novelai-native'].includes(job.source || 'web');
 }
 
 function createRunningJobControl(job = {}) {

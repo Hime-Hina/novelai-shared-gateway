@@ -2,7 +2,24 @@
 export class JobPreviews {
   frames = new Map();
   listeners = new Map();
+  watchers = new Map();
   closed = false;
+
+  watch(jobId, callback) {
+    const watchers = this.watchers.get(jobId) || new Set();
+    const notify = frame => {
+      // 预览观察者不能把传输异常变成生成失败或影响任务结算。
+      try { Promise.resolve(callback(frame)).catch(() => {}); } catch {}
+    };
+    watchers.add(notify);
+    this.watchers.set(jobId, watchers);
+    const frame = this.frames.get(jobId);
+    if (frame) notify(frame);
+    return () => {
+      watchers.delete(notify);
+      if (!watchers.size && this.watchers.get(jobId) === watchers) this.watchers.delete(jobId);
+    };
+  }
 
   subscribe(token, res) {
     if (this.closed) { res.end(); return; }
@@ -46,6 +63,7 @@ export class JobPreviews {
     const frame = {
       token: job.userToken, jobId: job.id, buffer,
       mimeType: progress.previewMimeType,
+      stepIndex: progress.stepIndex,
       progress: { percent: progress.percent, step: progress.step, total: progress.total },
       sentAt: previous?.sentAt || 0
     };
@@ -53,6 +71,7 @@ export class JobPreviews {
     // Bound repaint/network work while retaining the newest frame for reconnects.
     if (now - frame.sentAt < 150) return;
     frame.sentAt = now;
+    for (const notify of this.watchers.get(job.id) || []) notify(frame);
     const listeners = this.listeners.get(frame.token);
     if (!listeners?.size) return;
     const message = this.message(frame);

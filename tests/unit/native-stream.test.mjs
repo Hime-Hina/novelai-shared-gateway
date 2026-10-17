@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nativeImagesMsgpack, nativeImagesJson } from '../../server/native-stream.js';
+import { nativeImageMsgpack, nativeImagesMsgpack, nativeImagesJson } from '../../server/native-stream.js';
 import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
 test('NAI 原生 MessagePack 由独立客户端解码，保留二进制和零号样本', () => {
@@ -30,6 +30,20 @@ test('四张图按顺序分帧，部分成功保留已完成图片并发送中�
 test('缺少图片、越界数量与不连续的失败编号不能伪装成功帧', () => {
   for (const images of [[], [Buffer.alloc(0)], ['not binary'], Array(5).fill(Buffer.from('x'))]) assert.throws(() => nativeImagesMsgpack(images));
   assert.throws(() => nativeImagesMsgpack([Buffer.from('x')], { index: 2, message: 'bad index' }));
+});
+
+test('实时中间帧保留原始步骤与批次编号，缺少有效步骤不能伪造预览', () => {
+  const event = { event_type: 'intermediate', samp_ix: 2, step_ix: 37, image: Buffer.from([0, 255, 2]) };
+  const [decoded] = readNativeEvents(nativeImageMsgpack(event));
+  assert.equal(decoded.step_ix, 37); assert.equal(decoded.samp_ix, 2);
+  assert.deepEqual(Buffer.from(decoded.image), event.image);
+  for (const step_ix of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => nativeImageMsgpack({ ...event, step_ix }));
+  }
+  assert.throws(() => nativeImageMsgpack({ ...event, event_type: 'heartbeat' }));
+  assert.throws(() => nativeImageMsgpack({ ...event, samp_ix: 4 }));
+  // 图片本身恰好64MiB时，加上事件字段已越界。
+  assert.throws(() => nativeImageMsgpack({ event_type: 'final', samp_ix: 0, image: Buffer.alloc(64 * 1024 * 1024) }), /单帧限制/);
 });
 
 async function* images(...values) { yield* values; }

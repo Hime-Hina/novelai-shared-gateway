@@ -1,6 +1,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import zlib from 'node:zlib';
+import { decode } from '@msgpack/msgpack';
 import { sizeMap } from '../public/generation-pricing.js';
 import { isV5MediumModel, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
 import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.js';
@@ -1097,7 +1098,7 @@ async function extractFinalImageFromNovelAiReadableStream(response, context = {}
     }
 
     if (offset > 0) pending = pending.slice(offset);
-    if (pending.length > MAX_RESULT_BYTES) throw invalidNovelAiStreamFrameError(pending, 0);
+    if (pending.length > MAX_RESULT_BYTES + 4) throw invalidNovelAiStreamFrameError(pending, 0);
   }
 
   if (pending.length) throw invalidNovelAiStreamFrameError(pending, 0);
@@ -1127,7 +1128,6 @@ function extractFinalImageFromNovelAiStream(buffer, context = {}) {
 function createNovelAiStreamState(context = {}) {
   return {
     finalImage: null,
-    lastImage: null,
     errors: [],
     intermediateCount: 0,
     lastPercent: 0,
@@ -1146,7 +1146,6 @@ function handleNovelAiStreamEvent(event, state) {
 
   if (eventType === 'intermediate') {
     state.intermediateCount += 1;
-    if (event.image) state.lastImage = Buffer.from(event.image);
     emitNovelAiStreamProgress(event, state, false);
     return;
   }
@@ -1161,18 +1160,21 @@ function handleNovelAiStreamEvent(event, state) {
 function emitNovelAiStreamProgress(event, state, isFinal) {
   if (!state.onProgress) return;
   const progress = normalizeNovelAiStreamProgress(event, state, isFinal);
-  if (!isFinal && progress.percent <= state.lastPercent) return;
+  const hasPreview = !isFinal && event.image instanceof Uint8Array && event.image.byteLength > 0;
+  if (!isFinal && progress.percent <= state.lastPercent && !hasPreview) return;
   state.lastPercent = progress.percent;
+  const previewBuffer = hasPreview ? Buffer.from(event.image) : null;
   state.onProgress({
     ...progress,
-    ...(!isFinal && state.lastImage ? {
-      previewBuffer: state.lastImage,
-      previewMimeType: imageMimeType(state.lastImage)
+    ...(previewBuffer ? {
+      previewBuffer,
+      previewMimeType: imageMimeType(previewBuffer)
     } : {})
   });
 }
 
 function normalizeNovelAiStreamProgress(event, state, isFinal) {
+  const stepIndex = Number.isSafeInteger(event?.step_ix) && event.step_ix >= 0 ? event.step_ix : undefined;
   const total = positiveNumber(
     event?.total_steps,
     event?.totalSteps,
@@ -1186,7 +1188,7 @@ function normalizeNovelAiStreamProgress(event, state, isFinal) {
     event?.percent
   );
   const step = positiveNumber(
-    Number.isInteger(event?.step_ix) && event.step_ix >= 0 ? event.step_ix + 1 : null,
+    stepIndex !== undefined ? stepIndex + 1 : null,
     event?.step,
     event?.step_index,
     event?.current_step,
@@ -1210,6 +1212,7 @@ function normalizeNovelAiStreamProgress(event, state, isFinal) {
     percent: Math.round(percent),
     step: total ? Math.max(0, Math.min(total, Math.round(step))) : Math.round(step || 0),
     total,
+    ...(stepIndex !== undefined ? { stepIndex } : {}),
     eventType: event?.event_type || '',
     updatedAt: new Date().toISOString()
   };
@@ -1230,6 +1233,7 @@ function invalidNovelAiStreamFrameError(buffer, offset) {
 
 function finiteNumber(...values) {
   for (const value of values) {
+    if (typeof value === 'bigint') continue;
     const number = Number(value);
     if (Number.isFinite(number)) return number;
   }
@@ -1238,6 +1242,7 @@ function finiteNumber(...values) {
 
 function positiveNumber(...values) {
   for (const value of values) {
+    if (typeof value === 'bigint') continue;
     const number = Number(value);
     if (Number.isFinite(number) && number > 0) return number;
   }
@@ -1245,75 +1250,22 @@ function positiveNumber(...values) {
 }
 
 function decodeMsgpack(buffer) {
-  const reader = {
-    offset: 0,
-    read(length) {
-      if (this.offset + length > buffer.length) throw new Error('Invalid NovelAI msgpack payload.');
-      const chunk = buffer.slice(this.offset, this.offset + length);
-      this.offset += length;
-      return chunk;
-    },
-    byte() {
-      return this.read(1)[0];
+  // 图片用 binary；事件文本和容器另设上限，不能让小帧中的伪造长度先分配巨大数组。
+  const value = decode(buffer, {
+    useBigInt64: true,
+    maxStrLength: 64 * 1024,
+    maxBinLength: MAX_RESULT_BYTES,
+    maxArrayLength: 1024,
+    maxMapLength: 1024,
+    maxExtLength: 0,
+    extensionCodec: { decode() { throw new Error('Unsupported NovelAI msgpack extension.'); } }
+  });
+  // 仅归一实际消费的进度字段；未知数据不递归转换，不安全 int64 也不舍入。
+  if (value && typeof value === 'object') {
+    for (const key of ['total_steps', 'totalSteps', 'n_steps', 'steps', 'progress', 'percentage', 'percent',
+      'step_ix', 'step', 'step_index', 'current_step', 'currentStep', 'sampling_step', 'index']) {
+      if (typeof value[key] === 'bigint') value[key] = numberFromBigInt(value[key]);
     }
-  };
-
-  const value = readMsgpackValue(reader);
-  if (reader.offset !== buffer.length) throw new Error('Invalid trailing NovelAI msgpack data.');
-  return value;
-}
-
-function readMsgpackValue(reader) {
-  const marker = reader.byte();
-
-  if (marker <= 0x7f) return marker;
-  if (marker >= 0xe0) return marker - 0x100;
-  if ((marker & 0xf0) === 0x80) return readMsgpackMap(reader, marker & 0x0f);
-  if ((marker & 0xf0) === 0x90) return readMsgpackArray(reader, marker & 0x0f);
-  if ((marker & 0xe0) === 0xa0) return reader.read(marker & 0x1f).toString('utf8');
-
-  switch (marker) {
-    case 0xc0: return null;
-    case 0xc2: return false;
-    case 0xc3: return true;
-    case 0xc4: return reader.read(reader.byte());
-    case 0xc5: return reader.read(reader.read(2).readUInt16BE(0));
-    case 0xc6: return reader.read(reader.read(4).readUInt32BE(0));
-    case 0xca: return reader.read(4).readFloatBE(0);
-    case 0xcb: return reader.read(8).readDoubleBE(0);
-    case 0xcc: return reader.byte();
-    case 0xcd: return reader.read(2).readUInt16BE(0);
-    case 0xce: return reader.read(4).readUInt32BE(0);
-    case 0xcf: return numberFromBigInt(reader.read(8).readBigUInt64BE(0));
-    case 0xd0: return reader.read(1).readInt8(0);
-    case 0xd1: return reader.read(2).readInt16BE(0);
-    case 0xd2: return reader.read(4).readInt32BE(0);
-    case 0xd3: return numberFromBigInt(reader.read(8).readBigInt64BE(0));
-    case 0xd9: return reader.read(reader.byte()).toString('utf8');
-    case 0xda: return reader.read(reader.read(2).readUInt16BE(0)).toString('utf8');
-    case 0xdb: return reader.read(reader.read(4).readUInt32BE(0)).toString('utf8');
-    case 0xdc: return readMsgpackArray(reader, reader.read(2).readUInt16BE(0));
-    case 0xdd: return readMsgpackArray(reader, reader.read(4).readUInt32BE(0));
-    case 0xde: return readMsgpackMap(reader, reader.read(2).readUInt16BE(0));
-    case 0xdf: return readMsgpackMap(reader, reader.read(4).readUInt32BE(0));
-    default:
-      throw new Error(`Unsupported NovelAI msgpack marker 0x${marker.toString(16)}.`);
-  }
-}
-
-function readMsgpackArray(reader, length) {
-  const value = [];
-  for (let index = 0; index < length; index += 1) {
-    value.push(readMsgpackValue(reader));
-  }
-  return value;
-}
-
-function readMsgpackMap(reader, length) {
-  const value = {};
-  for (let index = 0; index < length; index += 1) {
-    const key = readMsgpackValue(reader);
-    value[String(key)] = readMsgpackValue(reader);
   }
   return value;
 }

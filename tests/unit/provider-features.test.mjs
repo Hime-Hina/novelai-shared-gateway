@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { deflateRawSync, deflateSync, crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
+import { encode } from '@msgpack/msgpack';
 import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
 import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.js';
 import { parseNativeAuxiliaryRequest } from '../../server/native-image.js';
@@ -205,12 +206,13 @@ function msgpack(value) {
   return Buffer.concat([Buffer.from([0x80 | fields.length]), ...fields.flatMap(([key, item]) => [msgpack(key), msgpack(item)])]);
 }
 
-function streamBody(events) {
-  return Buffer.concat(events.map(event => {
-    const frame = msgpack(event);
-    const length = Buffer.alloc(4); length.writeUInt32BE(frame.length);
-    return Buffer.concat([length, frame]);
-  }));
+function streamFrame(payload) {
+  const length = Buffer.alloc(4); length.writeUInt32BE(payload.length);
+  return Buffer.concat([length, payload]);
+}
+
+function streamBody(events, encodeEvent = msgpack) {
+  return Buffer.concat(events.map(event => streamFrame(encodeEvent(event))));
 }
 
 test('流式预览后报错或缺失最终结果必须失败，不能把预览当作已完成扣费', async () => {
@@ -223,6 +225,99 @@ test('流式预览后报错或缺失最终结果必须失败，不能把预览�
   const { value } = await captured(() => generateNovelAiImage(request('img2img'), account, env),
     () => new Response(streamBody([intermediate, { event_type: 'final', image: png }]), { headers: { 'content-type': 'application/octet-stream' } }));
   assert.deepEqual(value.buffer, png);
+});
+
+test('MessagePack 拒绝恶意容器/文本/二进制长度、原型键及所有 extension', async () => {
+  const declared = (marker, size) => {
+    const bytes = Buffer.alloc(5);
+    bytes[0] = marker; bytes.writeUInt32BE(size, 1);
+    return bytes;
+  };
+  const proto = encode(JSON.parse('{"__proto__":{"event_type":"final"}}'));
+  const invalid = [
+    [declared(0xdd, 0xffffffff), /maxArrayLength/],
+    [declared(0xdd, 1025), /maxArrayLength/],
+    [declared(0xdf, 1025), /maxMapLength/],
+    [declared(0xdb, 64 * 1024 + 1), /maxStrLength/],
+    [declared(0xc6, 64 * 1024 * 1024 + 1), /maxBinLength/],
+    [Buffer.from([0xd4, 1, 0]), /maxExtLength/],
+    [Buffer.from([0xc7, 0, 1]), /Unsupported NovelAI msgpack extension/],
+    [proto, /__proto__/],
+    [Buffer.from([0x81, 0x90, 0xc0]), /key must be string or number/]
+  ];
+  for (const [payload, expected] of invalid) {
+    const bytes = streamFrame(payload);
+    for (const readable of [true, false]) {
+      await captured(() => assert.rejects(generateNovelAiImage(request(), account, env), expected), () => readable
+        ? new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } })
+        : { ok: true, headers: new Headers(), arrayBuffer: async () => bytes });
+    }
+  }
+  assert.equal(Object.prototype.event_type, undefined);
+});
+
+test('原始安全 int64 step_ix 保留为 stepIndex，新预览不被相同显示百分比丢弃', async () => {
+  const notifications = [];
+  const events = [
+    { event_type: 'intermediate', image: png, step_ix: 0n, total_steps: 1n },
+    { event_type: 'intermediate', image: Buffer.concat([png, Buffer.from([1])]), step_ix: 1n, total_steps: 1n },
+    { event_type: 'intermediate', image: png, step_ix: 9007199254740993n, progress: 9007199254740993n },
+    { event_type: 'intermediate', image: png, step_ix: -1n },
+    { event_type: 'intermediate', image: png, step_ix: 0.5 },
+    { event_type: 'intermediate', image: 'not binary', step_ix: 2n },
+    { event_type: 'final', image: png, step_ix: 23n }
+  ];
+  const { value } = await captured(() => generateNovelAiImage(request(), account, env, { onProgress: progress => notifications.push(progress) }),
+    () => new Response(streamBody(events, value => encode(value, { useBigInt64: true })), { headers: { 'content-type': 'application/octet-stream' } }));
+  assert.deepEqual(value.buffer, png);
+  assert.equal(notifications.length, 6);
+  assert.deepEqual(notifications.slice(0, 2).map(item => [item.percent, item.step, item.stepIndex]), [[98, 1, 0], [98, 1, 1]]);
+  assert.deepEqual(notifications[1].previewBuffer, events[1].image);
+  for (const item of notifications.slice(2, 5)) {
+    assert.equal(Object.hasOwn(item, 'stepIndex'), false);
+    assert.deepEqual(item.previewBuffer, png);
+  }
+  assert.equal(notifications.at(-1).percent, 100);
+  assert.equal(notifications.at(-1).stepIndex, 23);
+  assert.equal(Object.hasOwn(notifications.at(-1), 'previewBuffer'), false);
+});
+
+test('只有元数据的进度更新不把旧预览绑定到新 stepIndex', async () => {
+  const notifications = [];
+  const events = [
+    { event_type: 'intermediate', image: png, step_ix: 0 },
+    { event_type: 'intermediate', step_ix: 1 },
+    { event_type: 'final', image: png }
+  ];
+  await captured(() => generateNovelAiImage(request(), account, env, { onProgress: progress => notifications.push(progress) }),
+    () => new Response(streamBody(events, encode), { headers: { 'content-type': 'application/octet-stream' } }));
+  assert.equal(notifications.length, 3);
+  assert.equal(notifications[0].stepIndex, 0);
+  assert.deepEqual(notifications[0].previewBuffer, png);
+  assert.equal(notifications[1].stepIndex, 1);
+  assert.equal(Object.hasOwn(notifications[1], 'previewBuffer'), false);
+  assert.equal(Object.hasOwn(notifications[2], 'stepIndex'), false);
+});
+
+test('单帧上限只计算 payload，分片中额外的四字节前缀不会误拒', async () => {
+  const limit = 64 * 1024 * 1024;
+  // 两次 padding 都使用 bin32，准确求出固定元数据开销；只保留一份大 payload。
+  const overhead = encode({ event_type: 'final', image: png, padding: Buffer.alloc(65536) }).length - 65536;
+  const payload = encode({ event_type: 'final', image: png, padding: Buffer.alloc(limit - overhead) }, { initialBufferSize: limit });
+  assert.equal(payload.length, limit);
+  const prefix = Buffer.alloc(4); prefix.writeUInt32BE(payload.length);
+  const { value } = await captured(() => generateNovelAiImage(request(), account, env), () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(prefix);
+      controller.enqueue(payload.subarray(0, -3));
+      controller.enqueue(payload.subarray(-3));
+      controller.close();
+    }
+  }), { headers: { 'content-type': 'application/octet-stream' } }));
+  assert.deepEqual(value.buffer, png);
+  const oversized = Buffer.alloc(4); oversized.writeUInt32BE(limit + 1);
+  await captured(() => assert.rejects(generateNovelAiImage(request(), account, env), /Invalid NovelAI msgpack stream frame/),
+    () => new Response(oversized, { headers: { 'content-type': 'application/octet-stream' } }));
 });
 
 function imageZip(bytes, { method = 0, uncompressedSize = bytes.length } = {}) {

@@ -17,8 +17,9 @@ const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 // The same valid 128×128 PNG as native-image tests; reference pricing rejects tiny (<100 character) encodings.
 const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAVklEQVR4nO3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOBvAI8AAT4ZY7sAAAAASUVORK5CYII=', 'base64');
 const vibe = Buffer.from([0, 255, 128, 3, 13, 10, 0, 42]);
-const previewPayload = Buffer.concat([Buffer.from([0x82, 0xaa]), Buffer.from('event_type'), Buffer.from([0xac]),
-  Buffer.from('intermediate'), Buffer.from([0xa5]), Buffer.from('image'), Buffer.from([0xc4, png.length]), png]);
+const previewPayload = Buffer.concat([Buffer.from([0x84, 0xaa]), Buffer.from('event_type'), Buffer.from([0xac]),
+  Buffer.from('intermediate'), Buffer.from([0xa5]), Buffer.from('image'), Buffer.from([0xc4, png.length]), png,
+  Buffer.from([0xa7]), Buffer.from('step_ix'), Buffer.from([2, 0xab]), Buffer.from('total_steps'), Buffer.from([23])]);
 const previewLength = Buffer.alloc(4); previewLength.writeUInt32BE(previewPayload.length);
 const previewFrame = Buffer.concat([previewLength, previewPayload]);
 const publicHost = 'gateway.example', publicOrigin = 'https://' + publicHost;
@@ -725,6 +726,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       if (route.endsWith('-stream')) {
         assert.equal(response.status, 200);
         assert.match(response.headers['content-type'], /application\/octet-stream/);
+        assert.equal(response.headers['x-nai-image-count'], undefined); assert.equal(response.headers['x-nai-partial'], undefined);
         const events = readNativeEvents(response.body); assert.equal(events.length, 1);
         assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), png);
       } else assertZip(response);
@@ -868,30 +870,61 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.equal(f.generations(), 3); assert.equal(f.observations.length, 0); f.checkStorage();
   });
 
-  await t.test('正式同步生图在Nuxt强杀或客户端断开后继续，同键重试领取而不再次派发', { timeout: 45000 }, async sub => {
+  await t.test('正式同步生图在Nuxt强杀或收到实时Native帧后断开仍继续，同键重试不再次派发扣费', { timeout: 45000 }, async sub => {
     const f = await fixture(sub, nuxtEntry, { directExecutor: true });
     const executorPid = f.executor.child().pid;
     for (const [index, interrupt] of ['nuxt-kill', 'client-close'].entries()) {
-      const input = nativeBody('synthetic lost synchronous response ' + interrupt), held = f.holdNext();
-      let received = false;
-      const pending = http.request(f.nuxtBase + '/ai/generate-image', { method: 'POST', headers: { host: publicHost, origin: publicOrigin,
-        authorization: 'Bearer ' + f.members[0].api_key, 'content-type': 'application/json', 'idempotency-key': interrupt } }, response => { received = true; response.resume(); });
+      const streaming = interrupt === 'client-close';
+      const input = nativeBody('synthetic lost synchronous response ' + interrupt), held = f.holdNext(streaming);
+      if (streaming) input.parameters.width = 1536;
+      let received, buffered = Buffer.alloc(0);
+      const frames = [];
+      const pending = http.request(f.nuxtBase + '/ai/generate-image' + (streaming ? '-stream' : ''), { method: 'POST', headers: { host: publicHost, origin: publicOrigin,
+        authorization: 'Bearer ' + f.members[0].api_key, 'content-type': 'application/json', 'idempotency-key': interrupt } }, response => {
+        received = response;
+        response.on('error', () => {});
+        response.on('data', chunk => {
+          if (!streaming) return;
+          buffered = Buffer.concat([buffered, chunk]);
+          while (buffered.length >= 4 && buffered.length >= 4 + buffered.readUInt32BE(0)) {
+            const end = 4 + buffered.readUInt32BE(0);
+            frames.push(...readNativeEvents(buffered.subarray(0, end))); buffered = buffered.subarray(end);
+          }
+        });
+      });
       pending.on('error', () => {}); pending.end(JSON.stringify(input)); sub.after(() => pending.destroy());
       await until(() => held.started && f.jobs().length === index + 1, 15000, 'synchronous request did not reach the held upstream');
-      const accepted = f.jobs().find(job => job.status === 'running'); assert.ok(accepted?.requestId); assert.equal(received, false);
+      const accepted = f.jobs().find(job => job.status === 'running'); assert.ok(accepted?.requestId);
+      if (streaming) {
+        await until(() => frames.length > 0, 5000, 'Nuxt buffered the Native intermediate frame until upstream completion');
+        assert.equal(received.statusCode, 200); assert.match(received.headers['content-type'], /application\/octet-stream/);
+        assert.equal(received.headers['x-nai-image-count'], undefined); assert.equal(received.headers['x-nai-partial'], undefined);
+        assert.equal(frames.length, 1); assert.equal(frames[0].event_type, 'intermediate');
+        assert.equal(frames[0].step_ix, 2); assert.equal(frames[0].samp_ix, 0); assert.deepEqual(Buffer.from(frames[0].image), png);
+        assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, index, 'preview cannot settle the held generation');
+      } else assert.equal(received, undefined);
       if (interrupt === 'nuxt-kill') await f.nuxt.stop(); else pending.destroy();
       assert.equal(f.executor.child().pid, executorPid); assert.equal(f.executor.child().exitCode, null);
       held.resolve();
       await until(() => f.jobs().find(job => job.id === accepted.id)?.status === 'done', 10000, 'executor cancelled an accepted task after downstream disconnection');
       if (interrupt === 'nuxt-kill') await f.startNuxt();
+      const beforeReplay = ['jobs', 'images', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+        .map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+      if (streaming) {
+        const charge = JSON.parse(f.audit.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(accepted.id).charge);
+        assert.equal(charge.resource, 'anlas'); assert.equal(charge.status, 'settled'); assert.ok(charge.fixed > 0);
+      }
       const replay = await f.request('/v1/ai/generate-image-stream', { body: input, headers: { 'idempotency-key': interrupt } });
       assert.equal(replay.status, 200); assert.equal(replay.headers['x-nai-request-id'], accepted.requestId);
-      assert.deepEqual(Buffer.from(readNativeEvents(replay.body)[0].image), png);
+      const replayFrames = readNativeEvents(replay.body); assert.equal(replayFrames.length, 1); assert.equal(replayFrames[0].event_type, 'final');
+      assert.deepEqual(Buffer.from(replayFrames[0].image), png);
       assert.deepEqual((await f.request(`/api/jobs/${accepted.id}/content`)).body, png);
       assert.equal(json(await f.request('/api/requests/' + accepted.requestId)).id, accepted.requestId);
       assert.equal((await f.request('/api/requests/' + accepted.requestId, { member: 1 })).status, 404);
       assert.equal(f.generations(), index + 1); assert.equal(f.jobs().length, index + 1);
       assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, index + 1);
+      assert.deepEqual(['jobs', 'images', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+        .map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), beforeReplay);
     }
     assert.equal(f.observations.length, 0); f.checkStorage();
   });

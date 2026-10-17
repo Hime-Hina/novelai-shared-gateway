@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const preload = new URL('../helpers/result-recovery-preload.mjs', import.meta.url).href;
@@ -55,8 +56,9 @@ async function fixture(t, { stage, operation = 'generate', hold = false, grace =
     }
     for await (const _chunk of req) { /* 消费合成请求，不记录认证或正文。 */ }
     generations++; await held;
-    res.writeHead(200, { 'content-type': operation === 'encode-vibe' ? 'application/octet-stream' : 'image/png' });
-    res.end(operation === 'encode-vibe' ? vibe : png);
+    const stream = req.url.endsWith('-stream');
+    res.writeHead(200, { 'content-type': operation === 'encode-vibe' || stream ? 'application/octet-stream' : 'image/png' });
+    res.end(operation === 'encode-vibe' ? vibe : stream ? nativeImagesMsgpack([png]) : png);
   });
   const upstreamPort = await listen(upstream), reservedPort = http.createServer(), port = await listen(reservedPort);
   await new Promise(resolve => reservedPort.close(resolve));

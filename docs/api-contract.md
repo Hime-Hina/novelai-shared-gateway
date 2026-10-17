@@ -22,17 +22,17 @@
 | 操作 | 当前网关成功契约 | 官方定义及差异 |
 | --- | --- | --- |
 | `/ai/generate-image` | 完整成功 `201`，按 Accept 选择 ZIP/JSON；ZIP 文件为 `image_0.<实际扩展名>` 等；部分成功保留 `200` 与批次说明 | C03-01 对齐普通成功状态和 JSON 协商；`images` 元素为 base64 `image`、`index` 和实际 `seed` |
-| `/ai/generate-image-stream` | `200 application/octet-stream`；等待批次处理后返回长度分帧 MessagePack；没有逐步实时预览事件 | 官方路径列 `200 text/event-stream` 和 intermediate/final/error；同时 `image.StreamingType` 明确包含 `msgpack`、`sse`，不能断言 MessagePack 本身非官方 |
+| `/ai/generate-image-stream` | `200 application/octet-stream`；实时发送长度分帧 MessagePack 预览，每张图片保存并结算后发送 final | 已按官方网页读取字段接入 intermediate/final/error；SSE 与内容协商仍待完成 |
 | `/ai/encode-vibe` | `201 application/binary`，保留编码原始字节，不套用 JSON 协商 | C03-01 对齐官方成功状态与媒体类型 |
 | `/ai/upscale` | `200`，按 Accept 选择单图 ZIP/JSON；JSON 不虚构放大过程的生成种子 | C03-01 对齐 ZIP/JSON 协商；官方 `seed` 字段并非必填 |
 
-四种操作成功响应均 `Cache-Control: no-store`。普通/流式生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；辅助操作没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。持久受理后返回 CORS 已暴露的 `X-Nai-Request-Id` 父请求 ID，超时/部分失败响应也保留；受理前拒绝没有父 ID。诊断关联不是幂等保证。
+四种操作成功响应均禁止缓存；流式另带 `no-transform` 与 `X-Accel-Buffering: no`。普通生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；流式首帧时完成数量未知，不再提供这两个批次头，客户端应按 final/error 帧或任务查询判断。辅助操作也没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。持久受理后返回 CORS 已暴露的 `X-Nai-Request-Id` 父请求 ID，超时/部分失败响应也保留；受理前拒绝没有父 ID。诊断关联不是幂等保证。
 
-MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。成功对象为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；部分失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立解码器](../tests/helpers/native-stream-client.mjs)检查。
+MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。预览为 `{ event_type: 'intermediate', samp_ix: 0..3, step_ix: <上游原始步骤>, image: <bin> }`，成功为 `{ event_type: 'final', samp_ix: 0..3, image: <bin> }`；开始响应后失败的末帧为 `{ event_type: 'error', samp_ix: <失败序号>, message: <文本> }`。`image` 是二进制类型，不是 base64 字符串。此协议由[独立客户端产物](../tests/helpers/native-stream-client.mjs)检查。
 
 多图 `n_samples=1..4` 一次持久受理全部单图意图：首张 queued，其余 pending；前一张成功结算时，下一张在同一事务激活并排到当时队尾。第 i 张种子是 `(初始种子+i) mod 2^32`。实际失败或未知结果终止剩余未派发图片；首张失败返回错误，已有成功图时返回 `200` 与部分结果。普通 ZIP 在请求多于一张时额外包含 `results.json`，字段为 `requested/completed/remaining/billing/results`，其中 `billing='independent_single_images'`；JSON 将同一说明放在顶层，`images` 只含已完成图片；流式路径用上述 error 帧表达失败。
 
-Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。HTTP 超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
+Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。普通接口超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；流式尚未发送首帧时保留 HTTP 错误状态，已发送预览或 final 时用 error 帧结束。这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
 
 ### 输入范围与规范化
 
@@ -90,7 +90,7 @@ JSON 图片种子来自首次派发或持久任务中的实际规范化值，随
 C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e) 的
 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 已通过后端482、网页112、执行器认证3、开发与双进程14、最终镜像HTTP3和Caddy7项，均无跳过；语法、类型及三个业务镜像构建也通过。新增检查实际种子回绕、部分JSON与ZIP说明一致、零历史缓存重取、缺文件410和406无受理，并保留幂等派发/结算计数；JSON断开测试不声称精确中断在某个数据块。测试全部使用合成数据和模拟上游，生产未切换。
 
-### C03-02 流式证据（待实现）
+### C03-02 实时 MessagePack 与待核实的 SSE
 
 2026-10-17 取得的[官方网页静态包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)为113682字节，SHA-256为`d416909d4d4c2f249bc5d1045c4790445accb9de3cce34830f8085e41a760769`。其中`requestStream`主动设置`parameters.stream="msgpack"`，该处未设置Accept；按4字节大端长度解码MessagePack，图片按字节处理。它读取以下字段，结束时检查每个样本是否收到最终图：
 
@@ -102,7 +102,11 @@ C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 进度由客户端结合步骤、采样器和样本数量计算，不将门户的`progress/preview`字段当作Native协议。以上为当前官方客户端实现证据，不等于稳定API字段承诺。
 
-Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。C03-02尚未实现或验收，本次C03-01不改Native流式帧。
+实时 MessagePack 复用门户已有的最新预览与512 KiB/150 ms限制；慢客户端可跳过预览，不积压历史帧，不阻塞任务。只转发有真实非负整数 `step_ix` 的预览，不用门户百分比反推步骤；每张上游单图的 `samp_ix` 重映射为批次序号。最终图逐张读取、写出，并等待本次写出完成再处理下一张；不在内存组装整批图片流。历史重取只返回持久结果，不保存或重演预览。
+
+编解码统一使用精确版本 [@msgpack/msgpack 3.1.3](https://github.com/msgpack/msgpack-javascript/tree/v3.1.3)（ISC）；保留四字节长度、64 MiB单帧和256 MiB上游累计上限。解码额外限制容器声明大小与文本长度，拒绝原型键、extension、尾随对象；安全int64进度转Number，不安全整数不舍入。只替换值编解码，不把NAI长度前缀交给通用MessagePack流解析器。
+
+Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。本轮只接入上述已核实的MessagePack事件；客户端stream值与Accept协商尚未消解，C03-02整体仍未完成，也没有新增排队心跳。
 
 ## 错误与安全边界
 
@@ -216,7 +220,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | 编号 | 当前差异/不确定项 | 后续验收要求 |
 | --- | --- | --- |
 | C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
-| C03-02 | Native stream 固定最终MessagePack，忽略客户端 stream，无实时预览 | 分开验证SSE/MessagePack内容协商、每事件结构、断流和部分失败；Swagger 路径与枚举表述需结合真实样本 |
+| C03-02 | 已接入实时MessagePack预览与逐张final；客户端stream与Accept协商尚未消解 | 补齐SSE事件证据与协商，分别验证断流、部分失败；当前切片不代表整项完成 |
 | C03-03 | 官方 URL、WebP、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大尚未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
 | C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |
 | C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
