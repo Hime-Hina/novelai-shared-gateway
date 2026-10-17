@@ -131,6 +131,21 @@ test('encode-vibe 预处理只接受 V4/V4.5 和有效图片，保留实际尺�
  const parsed=parseNativeAuxiliaryRequest({image,model,information_extracted:0.8},'encode-vibe');assert.equal(parsed.operation,'encode-vibe');assert.equal(parsed.width,128);assert.equal(parsed.steps,1);assert.equal(parsed.operationParameters.information_extracted,0.8);
  for(const body of [{image,model:'nai-diffusion-5-full'},{image,model,information_extracted:1.1},{image,model,cost:0}])assert.throws(()=>parseNativeAuxiliaryRequest(body,'encode-vibe'),error=>error.statusCode===422);
 });
+test('Vibe 两种子按本地安全整数边界原值保留，缺省不生成种子',()=>{
+ const defaults=parseNativeAuxiliaryRequest({image,model},'encode-vibe');
+ for(const field of ['focus_seed','info_extract_seed']){
+  assert.equal(Object.hasOwn(defaults.operationParameters,field),false);
+  for(const seed of [0,-1,Number.MIN_SAFE_INTEGER,Number.MAX_SAFE_INTEGER]){
+   const body={image,model,[field]:seed};
+   const parsed=parseNativeAuxiliaryRequest(body,'encode-vibe');
+   assert.equal(parsed.operationParameters[field],seed);
+   assert.deepEqual(body,{image,model,[field]:seed});
+  }
+  for(const seed of [null,'0',true,0.5,NaN,Infinity,Number.MIN_SAFE_INTEGER-1,Number.MAX_SAFE_INTEGER+1]){
+   assert.throws(()=>parseNativeAuxiliaryRequest({image,model,[field]:seed},'encode-vibe'),error=>error.statusCode===422);
+  }
+ }
+});
 test('购买点数开关只作为网关授权，普通生成及辅助接口均不向上游透传',()=>{
  for(const allowPurchasedAnlas of [true,false]){
   const body=request({}, {allowPurchasedAnlas});const parsed=parseNativeImageRequest(body);assert.equal(parsed.nativeParameters.allowPurchasedAnlas,undefined);assert.equal(body.allowPurchasedAnlas,allowPurchasedAnlas);

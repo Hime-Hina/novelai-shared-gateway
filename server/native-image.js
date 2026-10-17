@@ -366,10 +366,16 @@ export function parseNativeAuxiliaryRequest(body, operation) {
   const operationParameters = { image: image.base64 };
   if (operation === 'encode-vibe') {
     if (Object.hasOwn(body, 'mask')) fail(422, 'Vibe 编码暂不支持 mask；请先导出需要编码的完整参考图。');
-    checkKeys(body, new Set(['image', 'model', 'information_extracted', 'allowPurchasedAnlas']), 'Vibe 编码含不支持的字段。');
+    checkKeys(body, new Set(['image', 'model', 'information_extracted', 'focus_seed', 'info_extract_seed', 'allowPurchasedAnlas']), 'Vibe 编码含不支持的字段。');
     if (!['nai-diffusion-4-curated-preview', 'nai-diffusion-4-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'].includes(body.model)) fail(422, 'Vibe 编码仅支持 V4 和 V4.5；V3 使用原图，V5 尚不支持 Vibe。');
     operationParameters.model = body.model;
     operationParameters.information_extracted = number(body.information_extracted ?? 1, 0, 1, 'information_extracted');
+    // 官方未声明种子范围；安全整数只是本地无损表达边界，不套用生成种子的随机或取模语义。
+    for (const field of ['focus_seed', 'info_extract_seed']) {
+      if (body[field] === undefined) continue;
+      if (!Number.isSafeInteger(body[field])) fail(422, `${field} 必须是安全整数。`);
+      operationParameters[field] = body[field];
+    }
   } else {
     checkKeys(body, new Set(['image', 'model', 'declared_blur_sigma', 'scale', 'width', 'height', 'allowPurchasedAnlas']), '放大请求含不支持的字段。');
     if (body.width !== undefined && body.width !== image.width || body.height !== undefined && body.height !== image.height) fail(422, '声明的图片尺寸与实际内容不一致。');

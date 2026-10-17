@@ -80,7 +80,7 @@ test('C02：辅助操作归一和报价采用固定值，官方尚未适配字�
   const vibe = parseNativeAuxiliaryRequest(vibeBody, 'encode-vibe');
   assert.deepEqual(vibe.operationParameters, { image: png, model: 'nai-diffusion-4-5-full', information_extracted: 1 });
   assert.deepEqual(quoteNativeRequest(vibe), { resource: 'anlas', amount: 2, estimated: false, breakdown: { encoding: 2 } });
-  for (const patch of [{ mask: '' }, { crop_to_mask: false }, { focus_seed: 0 }, { info_extract_seed: 0 }]) {
+  for (const patch of [{ mask: '' }, { crop_to_mask: false }, { focus_seed: null }, { info_extract_seed: '0' }]) {
     assert.throws(() => parseNativeAuxiliaryRequest({ ...vibeBody, ...patch }, 'encode-vibe'), error => error.statusCode === 422);
   }
   const upscale = parseNativeAuxiliaryRequest({ image: png, scale: 2, width: 1, height: 1 }, 'upscale');

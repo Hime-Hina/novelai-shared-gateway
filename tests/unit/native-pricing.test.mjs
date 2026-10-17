@@ -127,8 +127,10 @@ test('放大阶梯按官网原函数及输入像素，Vibe 编码固定 2 点且
     }
   }
   for(const [width,height] of [[512,512],[2048,2048],[4096,4096]]){
-    const q=quoteNativeRequest(input({operation:'encode-vibe',width,height,operationParameters:{image,information_extracted:1}}));
-    assert.equal(q.amount,2);assert.equal(q.resource,'anlas');
+    for(const seeds of [{},{focus_seed:0,info_extract_seed:-1},{focus_seed:Number.MIN_SAFE_INTEGER,info_extract_seed:Number.MAX_SAFE_INTEGER}]){
+      const q=quoteNativeRequest(input({operation:'encode-vibe',width,height,operationParameters:{image,information_extracted:1,...seeds}}));
+      assert.deepEqual(q,{resource:'anlas',amount:2,estimated:false,breakdown:{encoding:2}});
+    }
   }
   assert.throws(()=>quoteNativeRequest(input({operation:'upscale',model:'nai-diffusion-5-curated',width:2048,height:2048,operationParameters:{image}})),/尺寸|上限/);
   assert.throws(()=>quoteNativeRequest(input({operation:'encode-vibe',model:'nai-diffusion-5-full',operationParameters:{image}})),/Vibe 编码参数/);

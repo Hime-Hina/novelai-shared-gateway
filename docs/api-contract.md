@@ -64,7 +64,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 
 | 操作 | 接受字段及默认值 | 明确拒绝 |
 | --- | --- | --- |
-| encode-vibe | `image/model/information_extracted/allowPurchasedAnlas`；信息提取比例 0..1，默认 1；模型限 V4/V4.5 四种基础模型 | `mask`（即使为空）、`crop_to_mask`、`focus_seed`、`info_extract_seed`、其他模型/未知字段 |
+| encode-vibe | `image/model/information_extracted/allowPurchasedAnlas`；信息提取比例0..1，默认1；可选`focus_seed/info_extract_seed`为安全整数、原值保留；模型限V4/V4.5四种基础模型 | `mask`（即使为空）、`crop_to_mask`、非整数或不能无损表示的seed、其他模型/未知字段 |
 | upscale | `image/model/declared_blur_sigma/scale/width/height/allowPurchasedAnlas`；默认模型 `nai-diffusion-5-curated`、blur=0；blur接受0/0.30/0.35/0.40/0.45/0.50；旧尺寸声明必须与图片一致，scale 如提供只能是 2 | 其他blur值、其他模型、伪造尺寸、输入总像素超过3145728、未知字段；不猜测非列举值如何舍入 |
 
 F07 后上游产物在成功结算前验证：图片可从二进制、JSON 或 ZIP 取回；ZIP 检查目录、CRC 与解压边界；流必须有合法最终图片且帧/HTTP 传输完整。结果图片边长上限为 16384，允许已接受的8192边长输入产生两倍放大结果；输入仍限8192，结果总像素仍限16777216。单产物上限 64 MiB，msgpack 流累计上限 256 MiB，不把 HTML/空响应/预览当作成功。Vibe 上游同时接受 `application/binary`（Swagger）和 `application/octet-stream`（现有适配），拒绝明显错误文本；不对其套用图片校验或虚构编码魔数。
@@ -137,6 +137,23 @@ WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/nove
 已核实的[官方纯报价模块](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)中`checkUpscalePrice(width,height,account)`仅按像素选择1/2/3/4 Anlas，不读取blur；现有四档报价保持不变。provider原样传递已验证值，结果验证、存储和ZIP/JSON领取复用已有路径。blur属于任务参数和指纹，同键改变值返回409。
 
 当前官方网页独立放大仍使用常量0，因此非零值只有schema与离线核价依据，不宣称真实视觉效果或逐笔实扣已经验证。此次只使用模拟上游，无付费真实放大请求；不同时开放内联upscale、其他放大模型或图片URL。
+
+### C03-03 Vibe 种子与明确保留的边界
+
+官方schema将`focus_seed/info_extract_seed`声明为integer，没有minimum、maximum或format；分别控制重点观察区域选择、信息提取随机过程，省略时由图像内容确定种子。网关允许数值型安全整数（±9007199254740991之内），这是本地JSON无损表达的边界，不是查到的官方范围。省略不补值，负数原样传递，不能套用生图seed的取模或`-1`随机化。两字段进入原有操作参数和幂等指纹，同键改变任一值409。
+
+[官方Vibe文档](https://docs.novelai.net/en/image/vibetransfer/)说明新编码固定2 ImageAnlas；已核对网页的编码报价也不读取这两个seed。核价及opaque二进制结果验证保持现状；回归使用模拟上游，不宣称已测试所有种子取值在NAI端的实际支持或实扣。
+
+以下字段已评估，继续明确拒绝启用值，不为覆盖Swagger字段而静默透传：
+
+| 字段 | 依据与当前边界 |
+| --- | --- |
+| 顶层`url` | schema只有string；[官网请求器](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)把自定义模型的aiUrl/inpaintAiUrl提升为body.url，HTTP仍发往固定NAI端点。这是尚未支持的自定义模型/后端路由参数，不能实现成输入图片下载 |
+| `parameters.upscale` | 官网仅在非infill且模型能力e2eUpscale开启时保留；已核对的当前支持模型均关闭此能力，仅custom开启，而网关不接受custom。普通报价没有读取内联字段，不能宣称免费或直接叠加独立放大价；已支持的独立放大继续走`/ai/upscale` |
+| `parameters.upscaled_enhance` | schema仅boolean，已核对官网调用和报价未找到实际使用，语义与收费未证实；不称其“已废弃”或等同upscale |
+| Vibe `mask`、`crop_to_mask` | schema说明base64遮罩和按可见区域外接矩形裁剪；官网确实传mask，但没有可靠确认格式、尺寸关系或通道语义。通用multipart代码同时把原图和遮罩标PNG，标签本身不能证明格式；不把infill的同尺寸PNG规则套用到Vibe。裁剪随遮罩一起保持422 |
+
+关闭的内联模板值仍按既有规则清理，其他启用值在受理前422。上述[请求包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)与[模型/报价包](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)的固定哈希已在前述证据中记录；未来开放需取得相应模型、字段作用与收费依据。本片不增加自定义路由、图片下载或新的计费组合。
 
 ## 错误与安全边界
 
@@ -252,9 +269,9 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | 编号 | 当前差异/不确定项 | 后续验收要求 |
 | --- | --- | --- |
 | C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
-| C03-02 | 已接入实时MessagePack预览与逐张final；客户端stream与Accept协商尚未消解 | 补齐SSE事件证据与协商，分别验证断流、部分失败；当前切片不代表整项完成 |
-| C03-03 | WebP与严格同值的冗余parameters.prompt已接入；官方URL、Vibe mask/随机种子、upscale非零blur及内联放大仍未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载，双提示词冲突继续明确拒绝 |
-| C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |
+| C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | 最终联合CI继续记录；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
+| C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP已通过，联合CI继续记录。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
+| C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON实测200而Swagger/当前网关201，状态映射和批次扩展继续核对 | 普通ZIP尚未实测；分开核对状态与多图部分成功，保留成员鉴权、独立结算和运营限制 |
 | C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
 | C03-06 | Vibe内部编码不可由公开schema验证；官方未给幂等生成/结果重取契约 | 维持opaque产物和任务证据，不能宣称任意断电后精确一次上游消费或凭correlation-id找回 |
 

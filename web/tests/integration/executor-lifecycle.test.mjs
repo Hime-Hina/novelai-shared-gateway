@@ -800,9 +800,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     }
     assert.deepEqual(counts(), beforeRejected); assert.equal(f.generations(), 2);
 
+    const vibeBody = { model: 'nai-diffusion-4-5-full', image: png.toString('base64'), information_extracted: 1,
+      focus_seed: 0, info_extract_seed: 42 };
     let vibeId;
     for (const route of ['/ai/encode-vibe', '/v1/ai/encode-vibe']) {
-      const response = await f.request(route, { body: { model: 'nai-diffusion-4-5-full', image: png.toString('base64'), information_extracted: 1 },
+      const response = await f.request(route, { body: vibeBody,
         headers: { 'idempotency-key': 'opaque-vibe-replay' } });
       assert.equal(response.status, 201); assert.match(response.headers['content-type'], /application\/binary/); assert.deepEqual(response.body, vibe);
       vibeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], vibeId);
@@ -811,6 +813,13 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     const claim = await f.request(`/api/jobs/${vibeJob.id}/content`); assert.equal(claim.status, 200); assert.deepEqual(claim.body, vibe);
     assert.match(claim.headers['content-type'], /application\/octet-stream/);
     assert.equal((await f.request(`/api/jobs/${vibeJob.id}/content`, { member: 1 })).status, 403);
+    const beforeSeedConflict = counts();
+    for (const changed of [{ focus_seed: 1 }, { info_extract_seed: 43 }]) {
+      const conflict = await f.request('/ai/encode-vibe', { body: { ...vibeBody, ...changed }, headers: { 'idempotency-key': 'opaque-vibe-replay' } });
+      assert.equal(conflict.status, 409); assert.deepEqual(counts(), beforeSeedConflict);
+    }
+    const vibeCalls = f.upstreamCalls.filter(call => call.path === '/ai/encode-vibe');
+    assert.equal(vibeCalls.length, 1); assert.equal(vibeCalls[0].body.focus_seed, 0); assert.equal(vibeCalls[0].body.info_extract_seed, 42);
     const upscaleBody = { image: png.toString('base64'), declared_blur_sigma: 0.35 };
     for (const route of ['/ai/upscale', '/v1/ai/upscale']) {
       assertZip(await f.request(route, { body: upscaleBody, headers: { 'idempotency-key': 'upscale-alias-replay' } }), 200, webp);

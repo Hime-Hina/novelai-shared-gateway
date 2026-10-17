@@ -85,16 +85,19 @@ test('V3 动作维持非流式，V4 流式也保留 img2img 动作与收费参�
 
 test('Vibe 编码使用固定上游、共享身份和取消信号，二进制完整返回', async () => {
   const signal = new AbortController().signal;
-  const parameters = { image: png.toString('base64'), mask: png.toString('base64'), information_extracted: 0.8, model: 'nai-diffusion-4-5-full' };
   const encoding = Buffer.from([0, 255, 3, 4, 5, 128]);
-  const { calls, value } = await captured(() => generateNovelAiImage({ operation: 'encode-vibe', action: 'encode-vibe', operationParameters: parameters }, account, env, { signal, forceStream: true }),
-    () => new Response(encoding, { headers: { 'content-type': 'application/octet-stream' } }));
-  assert.deepEqual(value, { buffer: encoding, mimeType: 'application/octet-stream' });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'https://configured-upstream.invalid/ai/encode-vibe');
-  assert.equal(calls[0].options.headers.authorization, `Bearer ${account.token}`);
-  assert.equal(calls[0].options.signal, signal);
-  assert.deepEqual(calls[0].body, parameters);
+  for (const seeds of [{}, { focus_seed: 0, info_extract_seed: -1 }, { focus_seed: Number.MIN_SAFE_INTEGER, info_extract_seed: Number.MAX_SAFE_INTEGER }]) {
+    const parameters = { image: png.toString('base64'), information_extracted: 0.8, model: 'nai-diffusion-4-5-full', ...seeds };
+    const input = parseNativeAuxiliaryRequest(parameters, 'encode-vibe');
+    const { calls, value } = await captured(() => generateNovelAiImage(input, account, env, { signal, forceStream: true }),
+      () => new Response(encoding, { headers: { 'content-type': 'application/octet-stream' } }));
+    assert.deepEqual(value, { buffer: encoding, mimeType: 'application/octet-stream' });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, 'https://configured-upstream.invalid/ai/encode-vibe');
+    assert.equal(calls[0].options.headers.authorization, `Bearer ${account.token}`);
+    assert.equal(calls[0].options.signal, signal);
+    assert.deepEqual(calls[0].body, parameters);
+  }
 });
 
 test('放大维持官网新版参数并返回图片，不使用客户端URL或自动重试旧付费接口', async () => {
