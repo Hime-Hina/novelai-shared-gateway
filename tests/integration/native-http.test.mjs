@@ -51,6 +51,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   } finally { await seeded.close(); }
 
   const calls = [];
+  let scenario = 'initial HTTP compatibility checks';
   let failAt = -1, failStatus = 500, officialFixed = 10000, officialV5 = 100;
   let activeGenerations = 0, maxActiveGenerations = 0, holdNextMs = 0;
   let malformedNext = false;
@@ -75,23 +76,28 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       reservation: JSON.parse(auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value).fairQuota.reservations[job.id],
       ledger: auditReader.prepare('SELECT data FROM ledger WHERE id = ?').get(`${job.generationAttempt?.id}:generation_reserved`)?.data
     })));
-    const call = { pathname: req.url, payload, startedAt: Date.now() }; calls.push(call);
+    const call = { pathname: req.url, payload, startedAt: Date.now(), scenario, failAtOnReceive: failAt }; calls.push(call);
     activeGenerations++; maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
     res.once('finish', () => { activeGenerations--; call.finishedAt = Date.now(); });
+    res.once('close', () => { call.closedAt = Date.now(); call.responseFinished = res.writableFinished; });
     if (activeGenerations > 1) {
+      call.responseStatus = 429;
       res.writeHead(429, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
       return;
     }
-    const delay = holdNextMs; holdNextMs = 0;
+    const delay = holdNextMs; holdNextMs = 0; call.holdMs = delay;
     if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    call.failAtOnResponse = failAt;
     if (calls.length === failAt) {
+      call.responseStatus = failStatus;
       res.writeHead(failStatus, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ message: failStatus === 429 ? 'Concurrent generation limit reached' : 'synthetic generation failure' }));
       return;
     }
     if (malformedNext) {
       malformedNext = false;
+      call.responseStatus = 200; call.malformed = true;
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<html>synthetic upstream error</html>');
       return;
@@ -100,6 +106,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     if (cost.resource === 'anlas') officialFixed -= cost.amount;
     if (cost.resource === 'v5') officialV5 -= cost.amount;
     const stream = req.url.endsWith('-stream');
+    call.responseStatus = 200;
     res.writeHead(200, { 'content-type': stream ? 'application/octet-stream' : 'image/png' });
     res.end(stream ? nativeImagesMsgpack([png]) : png);
   });
@@ -129,7 +136,50 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); reject(new Error(`公开版提前退出 ${code}：${runtimeOutput}`)); });
   });
-  const fetchLocal = (pathname, options = {}) => fetch(baseUrl + pathname, { ...options, signal: AbortSignal.timeout(45000) });
+  const redact = value => {
+    let text = String(value);
+    for (const secret of [adminToken, upstreamToken, ...credentials.flatMap(member => [member.api_key, member.password])]) {
+      if (secret) text = text.replaceAll(secret, '[redacted]');
+    }
+    return text.replace(/\b(?:STA1N-|pst-)[A-Za-z0-9_-]+/g, '[redacted]')
+      .replace(/nai_member_session=[A-Za-z0-9_-]+/g, 'nai_member_session=[redacted]');
+  };
+  const fetchFailure = (error, request) => {
+    let state;
+    try {
+      state = {
+        scenario, observedAt: Date.now(), request, callsAfter: calls.length,
+        mock: { failAt, failStatus, activeGenerations, maxActiveGenerations, holdNextMs, malformedNext },
+        calls: calls.slice(-16).map(call => ({ pathname: call.pathname, seed: call.payload.parameters.seed,
+          scenario: call.scenario, startedAt: call.startedAt, finishedAt: call.finishedAt, closedAt: call.closedAt,
+          responseFinished: call.responseFinished, responseStatus: call.responseStatus, holdMs: call.holdMs,
+          failAtOnReceive: call.failAtOnReceive, failAtOnResponse: call.failAtOnResponse, malformed: call.malformed })),
+        jobs: auditReader.prepare('SELECT data FROM jobs ORDER BY order_value DESC LIMIT 24').all().map(row => {
+          const job = JSON.parse(row.data);
+          return Object.fromEntries(['id', 'requestId', 'sampleIndex', 'status', 'queueSeq', 'createdAt', 'startedAt',
+            'updatedAt', 'completedAt', 'queueExpiresAt', 'upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt',
+            'upstreamHttpStatus', 'errorStatus', 'sharedCooldown', 'imageId'].map(key => [key, job[key]]).concat([
+            ['model', job.request?.model], ['seed', job.request?.seed], ['chargeStatus', job.fairCharge?.status],
+            ['resultPending', Boolean(job.resultPending)], ['error', String(job.error || '').slice(0, 300)]]));
+        }),
+        accounts: auditReader.prepare('SELECT data FROM accounts').all().map(row => {
+          const account = JSON.parse(row.data);
+          return Object.fromEntries(['id', 'enabled', 'inFlight', 'cooldownUntil', 'cooldownReason', 'ordinaryStrikeCount',
+            'capacityStrikeCount', 'quotaCheckedAt', 'upstreamStatus'].map(key => [key, account[key]]));
+        }),
+        child: { exitCode: child.exitCode, signalCode: child.signalCode }
+      };
+    } catch (readError) { state = { scenario, request, callsAfter: calls.length, readError: String(readError) }; }
+    const failure = { name: error?.name, message: error?.message || String(error), code: error?.code,
+      cause: error?.cause && { name: error.cause.name, message: error.cause.message, code: error.cause.code } };
+    return new Error(redact(`[native-http-state] ${JSON.stringify({ failure, state })}\nchild tail:\n${runtimeOutput}`), { cause: error });
+  };
+  const fetchLocal = async (pathname, options = {}) => {
+    const request = { pathname: new URL(pathname, baseUrl).pathname, method: options.method || 'GET',
+      startedAt: Date.now(), callsBefore: calls.length };
+    try { return await fetch(baseUrl + pathname, { ...options, signal: AbortSignal.timeout(45000) }); }
+    catch (error) { throw fetchFailure(error, request); }
+  };
   const post = (pathname, request, key = credentials[0].api_key) => fetchLocal(pathname, {
     method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify(request)
   });
@@ -360,6 +410,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('单图失败退款，多图部分成功只结算完成张并保留错误帧', async () => {
+    scenario = 'single failure then partial batch';
     let before = await quota(); failAt = calls.length + 1;
     const failed = await post('/ai/generate-image-stream', body());
     assert.equal(failed.status, 500); near((await quota()).v5Available, before.v5Available);
@@ -373,6 +424,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('两位成员同时生图，第一张超过十秒时第二张仍排队，完整结束后才接续', async () => {
+    scenario = 'two members with held first generation';
     const before = [await quota(), await quota(1)], startCount = calls.length;
     holdNextMs = 11600; maxActiveGenerations = 0;
     const responses = await Promise.all([
@@ -390,6 +442,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('成员上限与原子停止接单：排队取消，在途结算，恢复不续旧批次', async () => {
+    scenario = 'admission limit and member stop';
     const manage = value => fetchLocal('/api/admin/member-management', {
       method: 'POST', headers: { 'x-admin-token': adminToken, 'content-type': 'application/json', origin: baseUrl },
       body: JSON.stringify(value)
@@ -442,6 +495,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('上游并发锁返回 429 与重试时间，预扣退回且不自动重发', async () => {
+    scenario = 'upstream capacity rejection';
     const before = await quota(); failStatus = 429; failAt = calls.length + 1;
     const response = await post('/ai/generate-image-stream', body());
     assert.equal(response.status, 429); assert.equal(response.headers.get('retry-after'), '30');
