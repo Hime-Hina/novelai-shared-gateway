@@ -8,7 +8,7 @@ import { encode } from '@msgpack/msgpack';
 import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
 import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.js';
 import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/native-image.js';
-import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
-import { nativeImageMsgpack } from '../server/native-stream.js';
+import { nativeImageMsgpack } from '../server/native-stream.ts';
 
 // 仅供隔离验收：固定公开测试凭据、固定图片和余额，不模拟官方收费或生成质量。
 const token = 'pst-synthetic-d01-mock-upstream-only';

@@ -22,6 +22,7 @@ COPY --from=build /app/.output/backend/server ./server
 COPY --from=build /app/server/migrations ./server/migrations
 COPY --from=build /app/public ./public
 COPY --from=build /app/scripts ./scripts
+COPY --from=build /app/.output/backend/scripts ./scripts
 COPY package.json pnpm-lock.yaml LICENSE NOTICE.md UPSTREAM-LICENSE ./
 ENV NODE_ENV=production DATA_DIR=/data HOST=0.0.0.0 PORT=8080
 USER 1000:1000

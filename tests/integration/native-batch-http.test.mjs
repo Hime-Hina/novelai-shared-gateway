@@ -11,7 +11,7 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota } from '../../server/fair-quota.js';
-import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));

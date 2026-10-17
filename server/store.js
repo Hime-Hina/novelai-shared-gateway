@@ -12,7 +12,7 @@ import { recordTables, appSettings, appRecords, appMeta, generationRequests, gen
 import { migrateStorage } from './storage-migrations.js';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.js';
-import { activityDate } from './activity-heatmap.js';
+import { activityDate } from './activity-heatmap.ts';
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
 export const MAX_FREE_STEPS = 28;

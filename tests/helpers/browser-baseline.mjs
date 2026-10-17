@@ -10,7 +10,7 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota } from '../../server/fair-quota.js';
 import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.js';
-import { nativeImagesMsgpack } from '../../server/native-stream.js';
+import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 
 const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
 const adminToken = randomBytes(32).toString('hex');

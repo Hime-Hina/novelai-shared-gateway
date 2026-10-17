@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { activityDate } from './activity-heatmap.js';
+import { activityDate } from './activity-heatmap.ts';
 
 const sqlite = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
 sqlite.pragma('query_only = ON');

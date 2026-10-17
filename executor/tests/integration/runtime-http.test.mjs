@@ -177,6 +177,31 @@ function assertSafeHeatmap(value, members, total) {
   }
 }
 
+test('实际产物的编译后 mock 可从 node_modules 启动，非编译脚本资源仍保留', { timeout: 15000 }, async t => {
+  for (const name of ['scripts/README.md', 'scripts/queue-baseline.py']) await stat(packaged(name));
+  const child = spawn(process.execPath, [packaged('scripts/mock-novelai.mjs'), '--port', '0', '--delay-ms', '0'], {
+    env: envBase(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = ''; const exited = once(child, 'exit');
+  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await bounded(exited, 5000, 'packaged mock did not stop');
+  });
+  const deadline = Date.now() + 5000;
+  while (!output.includes('[mock-novelai] ')) {
+    assert.equal(child.exitCode, null, output);
+    assert.ok(Date.now() < deadline, 'packaged mock startup timeout: ' + output);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const ready = JSON.parse(output.split('[mock-novelai] ')[1].split('\n')[0]);
+  assert.equal(ready.host, '127.0.0.1'); assert.equal(ready.delayMs, 0);
+  const response = await fetch(`http://127.0.0.1:${ready.port}/user/data`, {
+    headers: { authorization: 'Bearer pst-synthetic-d01-mock-upstream-only' }, signal: AbortSignal.timeout(5000) });
+  const quota = await json(response);
+  assert.equal(quota.subscription.tier, 3);
+  assert.equal(quota.subscription.trainingStepsLeft.fixedTrainingStepsLeft, 10000);
+});
+
 test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨格式幂等，并正常结束 SSE', { timeout: 60000 }, async t => {
   // Relative paths must be rejected before importing the runtime or opening any database/listener.
   const invalid = spawn(process.execPath, [entry], { cwd: tmpdir(), env: { ...envBase(), DATA_DIR: 'relative-data' },

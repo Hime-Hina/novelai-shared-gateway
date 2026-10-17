@@ -6,7 +6,7 @@ import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLo
 import { clientIp } from './client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';
 import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.ts';
-import { readActivityHeatmap } from './activity-heatmap.js';
+import { readActivityHeatmap } from './activity-heatmap.ts';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';

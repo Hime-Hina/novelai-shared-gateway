@@ -176,6 +176,8 @@ T01继续迁移quota-timeout、public-hosts、request-fingerprint和state-events
 
 D01常驻mock片：新增仅回环、只接受固定合成PST的纯Node服务与独立unit，复用现有MessagePack编码，支持账户查询及普通/流式生图，固定合成余额与1×1 PNG；未实现路径明确404，不模拟计费或官方生成质量。有限延迟供队列/重启验收使用，无新增依赖或外联。相关4/4、语法/unit静态检查、最终Linux执行器镜像及包内mock路径验证通过，同镜像执行器HTTP3/3通过。首次测试部署用合成数据，不等全量TS或生产副本；生产规模副本的备份、完整冷表脱敏、活动预留隔离和性能验收另行完成。此前发布准备[c1885ba的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021213548)已成功并上传Linux发布包；包含mock的新CI与bob实际部署仍待，生产未动。
 
+T01热力图与图片响应片：activity-heatmap及native-stream迁为严格TypeScript，网页热力图DTO仅重导出后端类型；日期/权限/查询边界、帧和正文上限、属性顺序、分块和部分批次结果保持。与0901056旧函数离线对照，三类事件的MessagePack字节、SSE及JSON分块一致。脚本开始导入TS后，根镜像和执行器须用tsc编译脚本覆盖原始脚本；只增加两处覆盖，保留README和Python资源，并补包内mock真实启动回归。相关热力图/存储/事件19项、流/provider/mock42项、网页类型及116项、根类型/编译、执行器重建与本机产物3通过/1项Windows跳过均通过；三个Linux镜像构建通过，最终执行器HTTP4/4无跳过。server顶层现为11个TS、25个JS，核心存储、调度和路由仍待；完整CI与目标机验收另记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

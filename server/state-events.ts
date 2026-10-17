@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import { activityRange } from './activity-heatmap.js';
+import { activityRange } from './activity-heatmap.ts';
 
 interface StateVersion { bootId: string; version: number; updatedAt: string }
 interface StateEvent extends Partial<StateVersion> {

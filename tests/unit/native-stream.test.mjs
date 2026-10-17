@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { nativeImageMsgpack, nativeImageSse, nativeImagesMsgpack, nativeImagesJson } from '../../server/native-stream.js';
+import { nativeImageMsgpack, nativeImageSse, nativeImagesMsgpack, nativeImagesJson } from '../../server/native-stream.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 
 test('NAI 原生 MessagePack 由独立客户端解码，保留二进制和零号样本', () => {

@@ -1,27 +1,52 @@
 import { encode } from '@msgpack/msgpack';
 
+interface NativeEventInput {
+  event_type?: unknown;
+  samp_ix?: unknown;
+  image?: unknown;
+  step_ix?: unknown;
+  message?: unknown;
+  code?: unknown;
+}
+
+type NativeImageEvent =
+  | { event_type: 'intermediate'; samp_ix: number; image: Buffer; step_ix: number }
+  | { event_type: 'final'; samp_ix: number; image: Buffer }
+  | { event_type: 'error'; samp_ix: number; message: string; image?: never; code?: string };
+
+interface NativeJsonImage {
+  buffer: unknown;
+  index?: number;
+  seed?: number;
+}
+
+interface NativeBatchSummary {
+  requested?: number;
+  completed?: number;
+  remaining?: number;
+  billing?: 'independent_single_images';
+  results?: Array<{ index: number; status: 'done'; filename: string } | { index: number; status: 'failed'; message: string }>;
+}
+
 // NAI 在 MessagePack 对象外增加四字节大端长度，不能直接串接裸对象。
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
-function nativeImageEvent({ event_type, samp_ix, image, step_ix, message }) {
-  if (!Number.isInteger(samp_ix) || samp_ix < 0 || samp_ix > 3) throw new RangeError('原生图片样本编号无效');
-  const event = { event_type, samp_ix };
+function nativeImageEvent({ event_type, samp_ix, image, step_ix, message }: NativeEventInput): NativeImageEvent {
+  if (typeof samp_ix !== 'number' || !Number.isInteger(samp_ix) || samp_ix < 0 || samp_ix > 3) throw new RangeError('原生图片样本编号无效');
   if (event_type === 'error') {
-    event.message = String(message || '生成失败').slice(0, 2000);
-  } else {
-    if (!['intermediate', 'final'].includes(event_type)) throw new TypeError('原生图片事件类型无效');
-    if (!Buffer.isBuffer(image) || !image.length) throw new TypeError('原生图片响应缺少二进制图片');
-    if (image.length > MAX_FRAME_BYTES) throw new RangeError('原生图片响应超过单帧限制');
-    event.image = image;
-    if (event_type === 'intermediate') {
-      if (!Number.isSafeInteger(step_ix) || step_ix < 0) throw new RangeError('原生图片采样步骤无效');
-      event.step_ix = step_ix;
-    }
+    return { event_type, samp_ix, message: String(message || '生成失败').slice(0, 2000) };
   }
-  return event;
+  if (event_type !== 'intermediate' && event_type !== 'final') throw new TypeError('原生图片事件类型无效');
+  if (!Buffer.isBuffer(image) || !image.length) throw new TypeError('原生图片响应缺少二进制图片');
+  if (image.length > MAX_FRAME_BYTES) throw new RangeError('原生图片响应超过单帧限制');
+  if (event_type === 'intermediate') {
+    if (typeof step_ix !== 'number' || !Number.isSafeInteger(step_ix) || step_ix < 0) throw new RangeError('原生图片采样步骤无效');
+    return { event_type, samp_ix, image, step_ix };
+  }
+  return { event_type, samp_ix, image };
 }
 
-export function nativeImageMsgpack(input) {
+export function nativeImageMsgpack(input: NativeEventInput): Buffer {
   const event = nativeImageEvent(input), image = event.image;
   // 每帧独立编码并预留图片空间，避免扩容复制或全局 encoder 留住上一张大图。
   const payload = encode(event, image ? { initialBufferSize: image.length + 128 } : undefined);
@@ -31,7 +56,7 @@ export function nativeImageMsgpack(input) {
   return Buffer.concat([prefix, payload]);
 }
 
-export function* nativeImageSse(input) {
+export function* nativeImageSse(input: NativeEventInput): Generator<string, void, unknown> {
   const { image, ...event } = nativeImageEvent(input);
   if (event.event_type === 'error') event.code = String(input.code ?? '500');
   // 所有字段先校验、序列化，不能先输出事件前缀再发现无效入参。
@@ -49,9 +74,9 @@ export function* nativeImageSse(input) {
   yield '"}\n\n';
 }
 
-export function nativeImagesMsgpack(images, failure = null) {
+export function nativeImagesMsgpack(images: unknown, failure: { index: unknown; message?: unknown } | null = null): Buffer {
   if (!Array.isArray(images) || images.length < 1 || images.length > 4) throw new RangeError('原生图片响应数量无效');
-  const frames = images.map((image, samp_ix) => nativeImageMsgpack({ event_type: 'final', samp_ix, image }));
+  const frames = images.map((image: unknown, samp_ix: number) => nativeImageMsgpack({ event_type: 'final', samp_ix, image }));
   // 多图逐张结算；前面的成功图保留，后续失败通过 error 帧说明，不能冒充全量成功。
   if (failure) {
     if (failure.index !== images.length) throw new RangeError('原生图片失败样本编号不连续');
@@ -60,7 +85,7 @@ export function nativeImagesMsgpack(images, failure = null) {
   return Buffer.concat(frames);
 }
 
-export async function* nativeImagesJson(images, summary) {
+export async function* nativeImagesJson(images: AsyncIterable<NativeJsonImage> | Iterable<NativeJsonImage>, summary?: NativeBatchSummary | null): AsyncGenerator<string, void, unknown> {
   let first = true;
   for await (const { buffer, index, seed } of images) {
     if (!Buffer.isBuffer(buffer) || !buffer.length) throw new TypeError('原生图片响应缺少二进制图片');

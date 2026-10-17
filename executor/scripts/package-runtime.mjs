@@ -12,6 +12,7 @@ for (const name of ['package.json', 'public', 'scripts', 'LICENSE', 'NOTICE.md',
   await cp(path.join(rootDir, name), path.join(packageDir, name), { recursive: true });
 }
 await cp(path.join(rootDir, '.output', 'backend', 'server'), path.join(packageDir, 'server'), { recursive: true });
+await cp(path.join(rootDir, '.output', 'backend', 'scripts'), path.join(packageDir, 'scripts'), { recursive: true });
 await cp(path.join(rootDir, 'server', 'migrations'), path.join(packageDir, 'server', 'migrations'), { recursive: true });
 await cp(path.join(executorDir, 'start.mjs'), path.join(outputDir, 'start.mjs'));
 const licenseDir = path.join(outputDir, 'licenses');

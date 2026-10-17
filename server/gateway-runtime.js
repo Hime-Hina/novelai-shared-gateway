@@ -1,7 +1,7 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
 import { describeStoredResult, publishStoredResult } from './result-files.js';
-import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.js';
+import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.ts';
 import { withQuotaRequestDeadline } from './quota-timeout.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.ts';
 import { readNativeBody } from './native-body.js';
