@@ -54,7 +54,7 @@
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F12 已完成；F10 实现与本地 Windows/Linux 验证完成，托管 CI Native 多图超时仍待定位，不能按全绿结案。F11 独立执行仍待 |
-| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01 已通过托管 CI；Nuxt/Naive UI 成员页20项前端测试、457项后端回归、两个Docker与最终40条浏览器复测通过。下一项 U02；F11/N01 两段事件链路及 D01 生产长等待仍待 |
+| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02 已通过托管 CI；当前63项前端测试、458项后端回归、两个Docker通过，U01最终40条及U02最终20条浏览器复测完成。下一项 U03；F11/N01 两段事件链路及 D01 生产长等待仍待 |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
@@ -100,7 +100,7 @@ CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novela
 
 随后 [38986048883](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38986048883) 的连接生命周期用例捕获“冷却已到、空闲但最后一项仍queued”的现场；已确定性复现跨截止的零槽/零等待丢唤醒，在 [8648826](https://github.com/Hime-Hina/novelai-shared-gateway/commit/8648826) 作最小修复。冷却/容量13项与原HTTP用例通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38990177631) 后端458/458、前端20/20、105文件语法、类型检查和两个Docker构建全部通过，详见[队列唤醒](request-lifecycle.md#冷却截止时的队列唤醒修复)。此前Native失败和生产长尾仍无充分证据确认为同因。
 
-U02 已核对现有两种管理模式：owner Cookie/SSE 与私有 admin Token/可见30秒刷新保持分开，两个薄路由复用同一控制台；分组、调额、告警阈值各自保留编辑版本，业务403/409不能直接当作注销或自动重试写入。必要时用现有本人/私有ping查询确认授权，不解析错误文案猜测状态。生产路径计划由同一Caddy增加仅绑定回环的私有入口，保留SSH本地端口对应的原始Host/Origin，Nuxt不新增业务代理；公开管理拒绝规则保持。此处为已核对的实施边界，U02代码与私有入口均尚未部署。
+U02 已提交 [7af8e3e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7af8e3e)，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38993426014) 后端458/458、前端63/63、语法/类型检查及两个Docker均通过。owner Cookie/SSE 与私有 admin Token/可见30秒刷新保持分开，两个薄路由复用同一控制台；分组、调额、告警阈值保留编辑版本，业务403先核验授权，409保留草稿且不自动重试写入。Naive UI 标签页首次访问才挂载表单、访问后保留草稿，损耗告警独立后台读取；没有自写键盘增强或新增依赖。Caddy示例增加仅绑定回环的18082私有同源入口，保留SSH本地Host/Origin，公开管理拒绝规则保持，Nuxt不新增生产业务代理。浏览器功能、真实别名与20条性能复测见[管理页验收](nuxt-management-portal.md)：默认统计提前，冷缓存连接提示较慢及268KB首次资源代价均保留；无schema变更，尚未部署或替换生产。下一项 U03 热力图。
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
