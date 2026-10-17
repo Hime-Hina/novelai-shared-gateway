@@ -1,0 +1,52 @@
+diff --git a/es/heatmap/src/Heatmap.mjs b/es/heatmap/src/Heatmap.mjs
+index 028ccdfdd1126476bc5253ad79a194861262addd..fbafa24e33117aebcd2e05488faf9989ba642dc1 100644
+--- a/es/heatmap/src/Heatmap.mjs
++++ b/es/heatmap/src/Heatmap.mjs
+@@ -193,7 +193,7 @@ var Heatmap_default = defineComponent({
+       const res = [];
+       for (let col = 0; col < cols; col++) for (let row = 0; row < matrix.length; row++) {
+         const cell = matrix[row][col];
+-        if (cell?.value !== null) {
++        if (cell) {
+           res.push({
+             week: col,
+             month: format(cell.timestamp, "yyyy-MM")
+@@ -221,10 +221,10 @@ var Heatmap_default = defineComponent({
+           end: Math.max(...weekNumbers)
+         };
+       });
+-      return Object.entries(monthStats).filter(([, stats]) => stats.weekCount >= 3).sort(([a], [b]) => a.localeCompare(b)).map(([month, stats]) => {
++      return Object.entries(monthStats).sort(([a], [b]) => a.localeCompare(b)).map(([month, stats]) => {
+         const monthDate = new Date(parseISO(`${month}-01`));
+         return {
+-          name: format(monthDate, monthFormat, {
++          name: stats.weekCount < 3 ? "" : format(monthDate, monthFormat, {
+             locale
+           }),
+           colSpan: stats.end - stats.start + 1
+diff --git a/lib/heatmap/src/Heatmap.js b/lib/heatmap/src/Heatmap.js
+index a655e61a0d32a7e1e722428f45d25fe241ecdbb5..2b23d1376a1094fa9512395f7ac396c8ffb7923b 100644
+--- a/lib/heatmap/src/Heatmap.js
++++ b/lib/heatmap/src/Heatmap.js
+@@ -161,7 +161,7 @@ var Heatmap_default = (0, vue.defineComponent)({
+ 			const res = [];
+ 			for (let col = 0; col < cols; col++) for (let row = 0; row < matrix.length; row++) {
+ 				const cell = matrix[row][col];
+-				if (cell?.value !== null) {
++				if (cell) {
+ 					res.push({
+ 						week: col,
+ 						month: (0, date_fns.format)(cell.timestamp, "yyyy-MM")
+@@ -185,10 +185,10 @@ var Heatmap_default = (0, vue.defineComponent)({
+ 					end: Math.max(...weekNumbers)
+ 				};
+ 			});
+-			return Object.entries(monthStats).filter(([, stats]) => stats.weekCount >= 3).sort(([a], [b]) => a.localeCompare(b)).map(([month, stats]) => {
++			return Object.entries(monthStats).sort(([a], [b]) => a.localeCompare(b)).map(([month, stats]) => {
+ 				const monthDate = new Date((0, date_fns.parseISO)(`${month}-01`));
+ 				return {
+-					name: (0, date_fns.format)(monthDate, monthFormat, { locale }),
++					name: stats.weekCount < 3 ? "" : (0, date_fns.format)(monthDate, monthFormat, { locale }),
+ 					colSpan: stats.end - stats.start + 1
+ 				};
+ 			});

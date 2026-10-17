@@ -1,2 +1,4 @@
 # Migration hashes must match across Windows checkouts and Linux deployments.
 server/migrations/**/*.sql text eol=lf
+# pnpm hashes exact bytes; patch context prefixes source tabs with a required space.
+patches/*.patch text eol=lf whitespace=-space-before-tab

@@ -3,6 +3,7 @@ WORKDIR /app
 ENV NUXT_TELEMETRY_DISABLED=1
 RUN corepack enable pnpm
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
 COPY web/package.json ./web/package.json
 RUN pnpm --filter @novelai-gateway/web install --frozen-lockfile
 COPY web ./web

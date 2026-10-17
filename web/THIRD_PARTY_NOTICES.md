@@ -25,3 +25,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Naive UI heatmap calendar patch
+
+`../patches/naive-ui@2.45.3.patch` modifies the ES module and CommonJS
+`heatmap/src/Heatmap` implementations from
+[Naive UI 2.45.3](https://github.com/tusen-ai/naive-ui/tree/v2.45.3/src/heatmap).
+Months follow calendar columns even when values are unknown; short months keep
+their column spans with blank labels. No CDN bundle is used or modified.
+
+Copyright (c) 2021 TuSimple. Licensed under the MIT License reproduced above.
+The upstream package also retains its original `LICENSE` file.
+
+The patch is installed by pnpm through `patchedDependencies`. Remove it when an
+upstream version passes `tests/nuxt/heatmap-calendar.test.ts` without the patch.

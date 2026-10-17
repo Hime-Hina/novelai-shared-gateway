@@ -2,7 +2,8 @@ FROM node:22.23.3-bookworm-slim AS build
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++
 RUN corepack enable pnpm
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
 RUN pnpm install --prod --frozen-lockfile
 COPY server ./server
 COPY public ./public
