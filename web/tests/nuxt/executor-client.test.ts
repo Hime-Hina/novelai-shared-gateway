@@ -130,6 +130,21 @@ describe('executor client through loopback HTTP', () => {
     expect(keys).toEqual(['existing-operation', 'existing-operation'])
   })
 
+  it('allows an acceptance longer than 15 seconds without retrying normal authentication work', async () => {
+    let calls = 0
+    const base = await fixture(async (req, res) => {
+      await readBody(req)
+      calls += 1
+      // Existing Discord refresh + membership requests may each take up to 10 seconds.
+      if (calls === 1) await new Promise(resolve => setTimeout(resolve, 16000))
+      res.writeHead(202, { 'Content-Type': 'application/json' })
+      res.end('{}')
+    })
+    const result = await request(base, '/api/jobs', { body: '{}' })
+    expect(result.status).toBe(202)
+    expect(calls).toBe(1)
+  }, 25000)
+
   it('preserves business HTTP errors without retrying them', async () => {
     let calls = 0
     const base = await fixture(async (req, res) => {

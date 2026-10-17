@@ -82,7 +82,8 @@ export async function forwardExecutor(event: H3Event) {
             // Node HTTP 保留原 Host、重复头和二进制；不跟随内部重定向或泄漏凭据到其他地址。
             const request = (target.protocol === 'https:' ? https : http).request(target, {
               method: event.method, path: event.path, headers,
-              signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(15000)])
+            // Discord 刷新和资格查询各可等 10 秒，冷查询还可等 15 秒；外层须留出余量。
+            signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(45000)])
             }, resolve)
             request.once('error', reject)
             request.end(body)
