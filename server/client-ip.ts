@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
+import type { IncomingHttpHeaders } from 'node:http';
 
-function normalizeIp(value) {
+function normalizeIp(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const address = value.trim();
   const version = isIP(address);
@@ -14,7 +15,10 @@ function normalizeIp(value) {
   return [high >> 8, high & 255, low >> 8, low & 255].join('.');
 }
 
-export function clientIp(req, env = process.env) {
+export function clientIp(
+  req: { headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } },
+  env: NodeJS.ProcessEnv = process.env
+): string {
   const configured = String(env.TRUSTED_PROXY_IPS || '').trim();
   const trusted = configured ? configured.split(',').map(normalizeIp) : [];
   if (trusted.some(address => address === null)) {
@@ -29,8 +33,9 @@ export function clientIp(req, env = process.env) {
   const chain = forwarded.split(',');
   let address = peer;
   for (let i = chain.length - 1; i >= 0 && trusted.includes(address); i--) {
-    address = normalizeIp(chain[i]);
-    if (!address) return peer;
+    const next = normalizeIp(chain[i]);
+    if (!next) return peer;
+    address = next;
   }
   return address;
 }

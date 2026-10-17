@@ -3,7 +3,7 @@ import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSe
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding } from './fair-quota.js';
 import { sharedAccountStatus } from './shared-status.ts';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
-import { clientIp } from './client-ip.js';
+import { clientIp } from './client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';
 import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.js';
 import { readActivityHeatmap } from './activity-heatmap.js';

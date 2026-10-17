@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { clientIp } from '../../server/client-ip.js';
+import { clientIp } from '../../server/client-ip.ts';
 import { checkMemberLoginRate } from '../../server/member-auth.js';
 import { handleMemberRoutes } from '../../server/member-routes.js';
 
