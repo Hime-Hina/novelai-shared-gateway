@@ -140,11 +140,13 @@ C03-03 的Vibe种子切片已提交 [53525b6](https://github.com/Hime-Hina/novel
 
 SSE与blur联合验收：[dd452ee的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过后端504、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；113文件语法、类型检查及三个业务镜像构建通过。此结果覆盖SSE、blur与镜像契约补修；Vibe两seed另由53525b6的独立CI验收，不混用提交版本。
 
-C03-04 普通生成状态切片：补充一张512×512、4步V4.5免费条件ZIP探测，确认与此前JSON一样为200，两类Anlas差额均0、前后生产空闲。普通生成JSON/ZIP及同键重取据此统一200，删除原先201分支；Vibe和管理创建的201保留。执行器产物本机2通过/1项Linux跳过、Nuxt实际HTTP12通过/1项Linux跳过，113文件语法和执行器构建通过；Native、适配、冷历史及结果恢复26项中24通过/2项Linux专用跳过；最终CI结果继续记录。官方ZIP本次声明binary/octet-stream，网关保留application/zip准确说明已验证内容；没有新增依赖、schema或生产部署。
+C03-04 普通生成状态切片已提交[79cf667](https://github.com/Hime-Hina/novelai-shared-gateway/commit/79cf667)：补充一张512×512、4步V4.5免费条件ZIP探测，确认与此前JSON一样为200，两类Anlas差额均0、前后生产空闲。普通生成JSON/ZIP及同键重取据此统一200，删除原先201分支；Vibe和管理创建的201保留。本机Native等24通过/2项Linux跳过、Nuxt实际HTTP12通过/1项Linux跳过、执行器产物2通过/1项Linux跳过；[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39016755312)后端505、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型和三个镜像构建通过。官方ZIP本次声明binary/octet-stream，网关保留application/zip准确说明已验证内容；没有新增依赖、schema或生产部署。
 
 C03-04 封禁误判补修：共享封禁识别改为匹配独立的ban/banned，避免bandwidth、banana等普通错误误触发额度刷新链的账户禁用；中文封禁保持。公开文案只说明识别结果，不声称文案函数执行了禁用，真正执行禁用的分支保留动作说明。复用额度刷新测试中的真实分类、应用和禁用函数，先验证新增两项失败，再修复为12/12通过；语法与差异检查通过。账务、冷却、并发占用和原错误诊断保持，原始错误公开边界另行处理，未部署生产。
 
 C03-05 参数组合核对：依据官方采样文档，新增一条DDIM/ddim_v3启用SMEA时的422校验，覆盖Anime/Furry V3、重绘模型映射、DYN依赖、正常Euler和Medium固定参数；不依据官网UI列表缺席收窄其他采样器。官方Precise支持负值，保留现有主值−1～1、secondary−1～2并明确为网关边界；补原值、非有限数与每张参考费用不随强度变化的回归。新增组合先失败、修复后Native参数/报价/契约39/39通过，语法与差异检查通过；无依赖、schema或报价修改，全部离线模拟。证据和限制见[契约](api-contract.md#c03-05-采样器组合与-precise-范围)，最终Linux验收继续记录。
+
+C03-06已完成协议边界核对：固定Swagger中没有可依赖的幂等生成/结果找回契约，Vibe内部格式也未公开。沿用已有F06/F10本地持久和恢复保证及F03分资源损耗，不把correlation-id当作上游幂等或结果索引；Vibe保持opaque并核验媒体类型、非空、传输与持久摘要。现有provider/F10回归已有证据，不另造解析器或新增实测付费调用。详细限制见[契约](api-contract.md#c03-06-上游保证与本地恢复边界)；将不可提供的上游保证明确结案，D01仍须验收实际部署链路。
 
 ## 仓库与现状
 
