@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
 import { isV5MediumModel, V5_MEDIUM_MODEL, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
-import { applyV5MediumParameters } from './v5-medium.js';
+import { applyV5MediumParameters } from './v5-medium.ts';
 
 export const NATIVE_MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;

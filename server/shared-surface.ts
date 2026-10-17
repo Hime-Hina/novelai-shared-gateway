@@ -34,7 +34,7 @@ const routes = new Map([
   ['/api/admin/accounts/quota', ['POST']],
   ['/api/admin/fair-quota', ['POST']],
 ]);
-export function sharedSurface(pathname, method = 'GET') {
+export function sharedSurface(pathname: string, method = 'GET'): { allowed: boolean; pathname: string } {
   const alias = pathname === '/' || pathname === '/index.html' ? '/account.html'
     : ['/admin', '/admin/', '/admin.html'].includes(pathname) ? '/admin/members.html'
     : ['/owner', '/owner/'].includes(pathname) ? '/owner.html' : pathname;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { readNativeBody } from '../../server/native-body.js';
+import { readNativeBody } from '../../server/native-body.ts';
 const payload={input:'test prompt',model:'nai-diffusion-4-5-full',parameters:{width:1024,height:1024,steps:23}};
 function stream(bytes,contentType,headers={}){const req=Readable.from([bytes.subarray(0,13),bytes.subarray(13)]);req.headers={'content-type':contentType,...headers};return req;}
 async function multipart(parts){const form=new FormData();for(const [name,value] of parts)typeof value==='string'?form.append(name,value):form.append(name,value,'blob');const response=new Response(form);return {bytes:Buffer.from(await response.arrayBuffer()),contentType:response.headers.get('content-type')};}
@@ -9,6 +9,7 @@ const parse=async parts=>{const {bytes,contentType}=await multipart(parts);retur
 test('JSON直接委托已有读取器，保留返回值、错误与流处理行为',async()=>{
  const req=stream(Buffer.from('{}'),'Application/JSON; charset=utf-8');let called=0;const marker={kept:true};assert.equal(await readNativeBody(req,{jsonReader:incoming=>{assert.equal(incoming,req);called++;return marker;},maxBytes:1}),marker);assert.equal(called,1);assert.equal(req.readableEnded,false);
  const expected=new Error('existing-reader-error');await assert.rejects(readNativeBody(req,{jsonReader:()=>{throw expected;}}),error=>error===expected);
+ for(const value of [null,[],3,'synthetic'])assert.equal(await readNativeBody(req,{jsonReader:()=>value}),value);
 });
 test('Aaalice request JSON Blob和普通文本字段都能解析',async()=>{
  assert.deepEqual(await parse([['request',new Blob([JSON.stringify(payload)],{type:'application/json'})]]),payload);
@@ -76,4 +77,15 @@ test('multipart 流和 base64 展开共享临时预算，保留容量 429', asyn
   req.generationPayloadClaim = { resize(size) { sizes.push(size); } };
   assert.equal((await readNativeBody(req)).image, binary.toString('base64'));
   assert.equal(sizes.at(-1), expandedBytes);
+});
+
+test('unknown 读取错误保留数字 413/429 原对象，其余仍为脱敏 400', async () => {
+  const { bytes, contentType } = await multipart([['request', JSON.stringify(payload)]]);
+  for (const error of [Object.assign(new Error('synthetic limit'), { statusCode: 413 }), { statusCode: 429 },
+    { statusCode: '429', message: 'secret-body' }, null, 'secret-body']) {
+    const req = stream(bytes, contentType);
+    req.generationPayloadClaim = { resize() { throw error; } };
+    if ([413, 429].includes(error?.statusCode)) await assert.rejects(readNativeBody(req), caught => caught === error);
+    else await assert.rejects(readNativeBody(req), caught => caught.statusCode === 400 && !caught.message.includes('secret-body'));
+  }
 });

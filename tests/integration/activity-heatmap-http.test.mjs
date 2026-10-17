@@ -7,7 +7,7 @@ import path from 'node:path';
 import { JsonStore } from '../../server/store.js';
 import { createMemberSession } from '../../server/member-auth.js';
 import { handleMemberRoutes } from '../../server/member-routes.js';
-import { sharedSurface } from '../../server/shared-surface.js';
+import { sharedSurface } from '../../server/shared-surface.ts';
 
 async function fixture(t) {
   const env = { OWNER_USER_ID: 'heat-owner', DISCORD_GUILD_ID: '1134557553011998840', DISCORD_CLIENT_ID: '123456789012345678',

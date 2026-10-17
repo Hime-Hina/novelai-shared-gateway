@@ -1,4 +1,4 @@
-import { sharedSurface } from '../../../server/shared-surface.js'
+import { sharedSurface } from '../../../server/shared-surface.ts'
 
 export default defineEventHandler(async event => {
   const path = event.path.split('?')[0]!

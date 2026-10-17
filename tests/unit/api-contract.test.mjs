@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
 import { quoteNativeRequest } from '../../server/native-pricing.ts';
-import { sharedSurface } from '../../server/shared-surface.js';
+import { sharedSurface } from '../../server/shared-surface.ts';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const fixture = name => JSON.parse(readFileSync(new URL(`../fixtures/${name}.json`, import.meta.url), 'utf8'));

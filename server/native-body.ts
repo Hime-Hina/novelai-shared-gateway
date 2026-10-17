@@ -1,8 +1,26 @@
+import type { IncomingHttpHeaders } from 'node:http';
+
+interface NativeBodyRequest extends AsyncIterable<Uint8Array> {
+  headers?: IncomingHttpHeaders;
+  generationPayloadClaim?: { resize(size: number): unknown };
+}
+
+interface BodyOptions {
+  jsonReader?: (req: NativeBodyRequest) => unknown | Promise<unknown>;
+  maxBytes?: number;
+}
+
+interface Attachment {
+  part: Blob;
+  base64: string | null;
+  used: boolean;
+}
+
 const DEFAULT_MAX_BYTES=32*1024*1024;
-const fail=(statusCode,message)=>{throw Object.assign(new Error(message),{statusCode,status:statusCode});};
+function fail(statusCode: number, message: string): never {throw Object.assign(new Error(message),{statusCode,status:statusCode});}
 
 // 兼容 Aaalice/WOF 的官方 multipart 布局，只解析明确引用的图片分块。
-export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}={}){
+export async function readNativeBody(req: NativeBodyRequest,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}: BodyOptions={}): Promise<unknown>{
   const contentType=String(req.headers?.['content-type'] || '');
   const mediaType=contentType.split(';',1)[0].trim().toLowerCase();
   if(mediaType==='application/json'){
@@ -16,7 +34,7 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
   if(boundaries.length!==1||! /^[0-9A-Za-z'()+_,\-./:=? ]{1,70}$/.test(boundary)||boundary.endsWith(' '))fail(400,'multipart boundary 缺失或无效');
   const declared=Number(req.headers?.['content-length']);
   if(Number.isFinite(declared)&&declared>maxBytes)fail(413,'生图请求体超过大小限制');
-  const chunks=[];let size=0;
+  const chunks: Buffer[]=[];let size=0;
   try{
     for await(const chunk of req){
       const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=bytes.length;
@@ -24,8 +42,12 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
       req.generationPayloadClaim?.resize(size);
       chunks.push(bytes);
     }
-  }catch(error){if([413,429].includes(error?.statusCode))throw error;fail(400,'无法读取 multipart 请求体');}
-  let form;
+  }catch(error){
+    const statusCode=(error as {statusCode?: unknown} | null | undefined)?.statusCode;
+    if(statusCode===413||statusCode===429)throw error;
+    fail(400,'无法读取 multipart 请求体');
+  }
+  let form: FormData;
   try{form=await new Response(Buffer.concat(chunks),{headers:{'content-type':contentType}}).formData();}
   catch{fail(400,'multipart 请求体格式错误');}
   const parts=[...form.entries()];
@@ -35,12 +57,13 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
   if(!requests.length){if(parts.length)fail(422,'multipart 包含未识别的部件');fail(400,'multipart 缺少 request 部件');}
   const value=requests[0][1];
   if(typeof value!=='string'&&value.type&&value.type.split(';',1)[0].toLowerCase()!=='application/json')fail(422,'request 部件必须是 JSON');
-  let parsed;
+  let parsed: unknown;
   try{parsed=JSON.parse(typeof value==='string'?value:await value.text());}
   catch{fail(400,'request 部件不是有效 JSON');}
   if(!parsed||Array.isArray(parsed)||typeof parsed!=='object')fail(400,'request 部件必须是 JSON 对象');
+  const body=parsed as Record<string,unknown>;
   let expandedBytes=Buffer.byteLength(JSON.stringify(parsed));
-  const attachments=new Map();
+  const attachments=new Map<string,Attachment>();
   for(const [name,part] of parts){
     if(name==='request')continue;
     if(!/^(?:image|mask|reference_image|ref_multiple_\d{1,2}|director_ref_\d{1,2})$/.test(name)||attachments.has(name)||typeof part==='string')fail(422,'multipart 包含未知、重复或非文件的图片部件');
@@ -50,26 +73,34 @@ export async function readNativeBody(req,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}
     if(!part.size||part.size>8*1024*1024)fail(422,'multipart 单个图片部件必须非空且不超过 8 MiB');
     attachments.set(name,{part,base64:null,used:false});
   }
-  const expand=async(container,key)=>{
+  const expand=async(container: unknown,key: string): Promise<void>=>{
     if(!container||typeof container!=='object'||Array.isArray(container))return;
-    const reference=container[key];
+    const target=container as Record<string,unknown>;
+    const reference=target[key];
     if(typeof reference!=='string'||!attachments.has(reference))return;
-    const item=attachments.get(reference);item.used=true;
+    const item=attachments.get(reference)!;item.used=true;
     expandedBytes+=Math.ceil(item.part.size/3)*4-Buffer.byteLength(reference);
     req.generationPayloadClaim?.resize(Math.max(size,expandedBytes));
     item.base64??=Buffer.from(await item.part.arrayBuffer()).toString('base64');
-    container[key]=item.base64;
+    target[key]=item.base64;
   };
   for(const field of ['image','mask'])await expand(parsed,field);
-  const parameters=parsed.parameters;
+  const parameters=body.parameters;
   for(const field of ['image','mask','reference_image'])await expand(parameters,field);
   if(parameters&&typeof parameters==='object'&&!Array.isArray(parameters)){
+    const references=parameters as Record<string,unknown>;
     for(const field of ['reference_image_multiple_cached','director_reference_images_cached']){
-      if(Array.isArray(parameters[field]))for(const entry of parameters[field])await expand(entry,'data');
+      if(Array.isArray(references[field])){
+        const entries: unknown[]=references[field];
+        for(const entry of entries)await expand(entry,'data');
+      }
     }
     for(const field of ['reference_image_multiple','director_reference_images']){
-      if(Array.isArray(parameters[field]))for(let i=0;i<parameters[field].length;i++){
-        const holder={data:parameters[field][i]};await expand(holder,'data');parameters[field][i]=holder.data;
+      if(Array.isArray(references[field])){
+        const entries: unknown[]=references[field];
+        for(let i=0;i<entries.length;i++){
+          const holder={data:entries[i]};await expand(holder,'data');entries[i]=holder.data;
+        }
       }
     }
   }

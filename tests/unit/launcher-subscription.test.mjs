@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launcherSubscription } from '../../server/launcher-subscription.js';
+import { launcherSubscription } from '../../server/launcher-subscription.ts';
 import { configureFairQuota,syncFairQuota } from '../../server/fair-quota.js';
 const NOW=1800000000000;
 function fixture(){

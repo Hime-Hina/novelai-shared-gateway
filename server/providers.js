@@ -4,7 +4,7 @@ import zlib from 'node:zlib';
 import { decode } from '@msgpack/msgpack';
 import { sizeMap } from '../public/generation-pricing.js';
 import { isV5MediumModel, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
-import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.js';
+import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.ts';
 import { crc32, validateImageBytes, validateNativeImage } from './native-image.js';
 
 export const MAX_STEPS = 50;
