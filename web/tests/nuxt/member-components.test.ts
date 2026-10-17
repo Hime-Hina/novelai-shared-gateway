@@ -9,7 +9,7 @@ import MemberBatch from '../../app/components/MemberBatch.vue'
 import type { MemberApi, MemberBatch as BatchSnapshot, MemberJob } from '../../app/types/member'
 
 enableAutoUnmount(afterEach)
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -133,6 +133,28 @@ it('成员历史分页参数传到服务端，筛选回首页，过时查询不�
   late.resolve({ ...first, jobs: [job('stale')] }); await flushPromises()
   expect(wrapper.get('#jobs').text()).toContain('filtered'); expect(wrapper.get('#jobs').text()).not.toContain('stale')
   expect(wrapper.text()).toContain('原退款保留')
+})
+
+it('搜索输入防抖回首页，清空立即恢复；卸载后不继续查询', async () => {
+  const api = vi.fn<MemberApi>().mockResolvedValue({ jobs: [], total: 80, until: '2026-10-17T03:00:00.000Z' })
+  const wrapper = await mountSuspended(MemberCalls, { props: { api: memberApi(api), jobs: [], lateResults: [], refreshVersion: 0 } })
+  await flushPromises()
+  wrapper.findComponent(NDataTable).vm.$emit('update:page', 2); await flushPromises()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  const input = wrapper.get('.table-search input')
+  await input.setValue('v'); await vi.advanceTimersByTimeAsync(200)
+  await input.setValue('v45'); await vi.advanceTimersByTimeAsync(299)
+  expect(api).toHaveBeenCalledTimes(2)
+  await vi.advanceTimersByTimeAsync(1); await flushPromises()
+  expect(api).toHaveBeenCalledTimes(3)
+  const params = new URL(api.mock.calls.at(-1)![0], 'https://synthetic.invalid/').searchParams
+  expect(params.get('q')).toBe('v45'); expect(params.get('page')).toBe('1'); expect(params.has('until')).toBe(false)
+  await input.setValue('unfinished'); await input.setValue(''); await flushPromises()
+  expect(api).toHaveBeenCalledTimes(4)
+  expect(new URL(api.mock.calls.at(-1)![0], 'https://synthetic.invalid/').searchParams.get('q')).toBe('')
+  await input.setValue('unmounted'); wrapper.unmount()
+  await vi.advanceTimersByTimeAsync(500)
+  expect(api).toHaveBeenCalledTimes(4)
 })
 
 it('历史首屏读取期间只用一页摘要占位，不先显示三十行再收缩', async () => {

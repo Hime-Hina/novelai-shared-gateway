@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NButton, NCard, NDataTable, NInput, NSelect, NTag, type DataTableColumns, type DataTableSortState } from 'naive-ui'
+import { NCard, NDataTable, NSelect, NTag, type DataTableColumns, type DataTableSortState } from 'naive-ui'
 import MemberBatch from './MemberBatch.vue'
 import type { LateResult, MemberApi, MemberJob } from '../types/member'
 import { chargeText, date, jobStatus, resultUrl } from '../utils/member-display'
@@ -8,7 +8,7 @@ import { chargeText, date, jobStatus, resultUrl } from '../utils/member-display'
 const props = defineProps<{ jobs: MemberJob[]; lateResults: LateResult[]; api: MemberApi; refreshVersion: number }>()
 const emit = defineEmits<{ changed: [] }>()
 type HistoryPage = { jobs: MemberJob[]; total: number; until: string }
-const snapshot = ref<HistoryPage | null>(null), page = ref(1), pageSize = ref(10), search = ref(''), query = ref(''), status = ref('')
+const snapshot = ref<HistoryPage | null>(null), page = ref(1), pageSize = ref(10), query = ref(''), status = ref('')
 const sort = ref('createdAt'), order = ref<'asc' | 'desc'>('desc'), loading = ref(false), error = ref('')
 let disposed = false, version = 0, until = '', refreshPending = false
 const jobs = computed(() => snapshot.value?.jobs || props.jobs.slice(0, pageSize.value))
@@ -34,7 +34,7 @@ async function load() {
     }
   }
 }
-function filter() { page.value = 1; until = ''; query.value = search.value.trim() }
+function filter(value: string) { page.value = 1; until = ''; query.value = value }
 function sorted(value: DataTableSortState | DataTableSortState[] | null) {
   const state = Array.isArray(value) ? value[0] : value
   sort.value = state?.order ? String(state.columnKey) : 'createdAt'; order.value = state?.order === 'ascend' ? 'asc' : 'desc'; page.value = 1
@@ -57,10 +57,10 @@ onBeforeUnmount(() => { disposed = true; version++ })
 <template>
   <NCard title="调用记录" size="small">
     <template #header-extra><span class="count-badge">{{ snapshot?.total ?? '—' }} 条保留记录</span></template>
-    <form class="section-toolbar calls-filters" @submit.prevent="filter">
-      <div class="toolbar-controls"><NInput v-model:value="search" clearable placeholder="搜索模型或任务 ID" aria-label="搜索调用记录" class="table-search" /><NButton attr-type="submit">搜索</NButton></div>
-      <div class="toolbar-controls"><NSelect v-model:value="status" :options="statuses" aria-label="筛选调用状态" class="status-filter" /><NButton :loading="loading" @click="load">刷新</NButton></div>
-    </form>
+    <div class="section-toolbar calls-filters">
+      <TableSearch placeholder="搜索模型或任务 ID" label="搜索调用记录" :delay="300" @search="filter" />
+      <NSelect v-model:value="status" :options="statuses" aria-label="筛选调用状态" class="status-filter" />
+    </div>
     <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在更新记录…' : status === 'late' ? '迟到结果领取不另扣费，原退款保留。' : '全部保留历史可翻页查看；列标题可排序。') }}</div>
     <NDataTable id="jobs" remote :columns="columns" :data="jobs" :row-key="(row: MemberJob) => row.id" :scroll-x="910" size="small"
       :pagination="{ page, pageSize, itemCount: snapshot?.total ?? jobs.length, showSizePicker: true, pageSizes: [10, 25, 50, 100], showQuickJumper: true }"

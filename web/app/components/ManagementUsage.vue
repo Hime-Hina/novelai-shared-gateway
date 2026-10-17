@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, ref } from 'vue'
-import { NButton, NCard, NDataTable, NEmpty, NInput, NSelect, NTag, type DataTableColumns } from 'naive-ui'
+import { NButton, NCard, NDataTable, NEmpty, NSelect, NTag, type DataTableColumns } from 'naive-ui'
 import type { ManagementUsage } from '../types/management'
 import { date, jobStatus, number } from '../utils/member-display'
 
@@ -48,10 +48,10 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
   <section id="usagePanel" aria-labelledby="usageTitle" :aria-busy="loading" class="usage-panel">
     <header class="section-toolbar">
       <div><h2 id="usageTitle">用量概览</h2><p class="section-caption">按上海提交日统计 · 每张图片计一次 · V5 为估算百分点</p></div>
-      <div class="toolbar-controls"><NSelect id="usageDays" :value="days" :options="ranges" aria-label="时间范围" @update:value="emit('update:days', $event)" /><NButton id="retryUsage" :loading="loading" @click="emit('retry')">刷新</NButton></div>
+      <NSelect id="usageDays" :value="days" :options="ranges" aria-label="时间范围" @update:value="emit('update:days', $event)" />
     </header>
     <div class="refresh-status" role="status">{{ loading ? data ? '正在更新 · 以下为上次读取的结果' : '正在读取用量…' : data ? '更新于 ' + date(data.until) : '尚未读取用量统计，请重新读取。' }}</div>
-    <NEmpty v-if="!data && !loading" description="暂无可显示的统计" />
+    <NEmpty v-if="!data && !loading" description="暂无可显示的统计"><template #extra><NButton id="retryUsage" size="small" @click="emit('retry')">重试</NButton></template></NEmpty>
     <template v-if="data && totals">
       <div class="usage-cards">
         <NCard size="small"><span class="metric-label">成功 / 总请求</span><strong id="usageDone">{{ totals.done }} / {{ totals.total }}</strong><p id="usageFree">其中免费成功 {{ totals.free }} 次</p></NCard>
@@ -65,7 +65,7 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
         <p class="section-caption">平均排队统计已派发任务；平均生成仅统计成功任务的上游耗时。未知耗时不按零计算。</p>
       </NCard>
       <NCard size="small" class="data-section">
-        <header class="section-toolbar"><div><h3>请求记录 <span class="count-badge">{{ data.recent.length }}</span></h3><p class="section-caption">所选时间范围内全部保留记录 · 表头可筛选与排序</p></div><NInput v-model:value="search" clearable placeholder="搜索成员、模型或任务 ID" aria-label="搜索请求记录" class="table-search" /></header>
+        <header class="section-toolbar"><div><h3>请求记录 <span class="count-badge">{{ data.recent.length }}</span></h3><p class="section-caption">所选时间范围内全部保留记录 · 表头可筛选与排序</p></div><TableSearch v-model="search" placeholder="搜索成员、模型或任务 ID" label="搜索请求记录" /></header>
         <NDataTable id="usageRecent" :columns="jobColumns" :data="recent" :row-key="(row: Job) => row.id" :pagination="pagination" :scroll-x="1145" size="small"><template #empty>所选范围暂无请求</template></NDataTable>
         <p class="section-caption">失败退款不计入消耗。“已退款”指本站额度已退回，不代表上游已退款。</p>
       </NCard>

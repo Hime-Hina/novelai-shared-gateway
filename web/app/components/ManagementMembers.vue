@@ -234,7 +234,7 @@ const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
     <template #header-extra><NButton id="newMember" :disabled="busy" @click="run(() => openCredentials())">＋ 创建成员</NButton></template>
     <p id="memberHelp">{{ state.discordLogin ? '首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。' : '创建、分发、重置密码，都在成员这一行完成。' }}</p>
     <div class="member-filters">
-      <NInput v-model:value="search" placeholder="搜索用户名" :input-props="{ id: 'search', 'aria-label': '搜索用户名' }" />
+      <TableSearch v-model="search" placeholder="搜索用户名" label="搜索用户名" />
       <NSelect id="filterGroup" v-model:value="filterGroup" :options="groupFilters" aria-label="按分组筛选" />
       <span id="memberCount">{{ users.length }} / {{ state.users.length }} 位成员</span>
     </div>

@@ -199,9 +199,9 @@ it('搜索、分组过滤、密码重置、邀请码及接单/停用确认保留
     return { cancelledCount: 2 }
   })
   const { wrapper, action, select } = await page(api, initial, 'admin')
-  await wrapper.get('#search').setValue('member-b')
+  await wrapper.get('.table-search input').setValue('member-b')
   expect(wrapper.findAll('[data-member-id]')).toHaveLength(1)
-  await wrapper.get('#search').setValue(''); await select('filterGroup', 'b')
+  await wrapper.get('.table-search input').setValue(''); await select('filterGroup', 'b')
   expect(wrapper.findAll('[data-member-id]')).toHaveLength(1)
   await action('b', '重置密码')
   expect(body().get('#username').attributes('readonly')).toBeDefined()
