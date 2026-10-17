@@ -3,7 +3,7 @@ import { encode } from '@msgpack/msgpack';
 // NAI 在 MessagePack 对象外增加四字节大端长度，不能直接串接裸对象。
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
-export function nativeImageMsgpack({ event_type, samp_ix, image, step_ix, message }) {
+function nativeImageEvent({ event_type, samp_ix, image, step_ix, message }) {
   if (!Number.isInteger(samp_ix) || samp_ix < 0 || samp_ix > 3) throw new RangeError('原生图片样本编号无效');
   const event = { event_type, samp_ix };
   if (event_type === 'error') {
@@ -18,12 +18,35 @@ export function nativeImageMsgpack({ event_type, samp_ix, image, step_ix, messag
       event.step_ix = step_ix;
     }
   }
+  return event;
+}
+
+export function nativeImageMsgpack(input) {
+  const event = nativeImageEvent(input), image = event.image;
   // 每帧独立编码并预留图片空间，避免扩容复制或全局 encoder 留住上一张大图。
   const payload = encode(event, image ? { initialBufferSize: image.length + 128 } : undefined);
   if (payload.length > MAX_FRAME_BYTES) throw new RangeError('原生图片响应超过单帧限制');
   const prefix = Buffer.alloc(4);
   prefix.writeUInt32BE(payload.length);
   return Buffer.concat([prefix, payload]);
+}
+
+export function* nativeImageSse(input) {
+  const { image, ...event } = nativeImageEvent(input);
+  if (event.event_type === 'error') event.code = String(input.code ?? '500');
+  // 所有字段先校验、序列化，不能先输出事件前缀再发现无效入参。
+  const metadata = JSON.stringify(event);
+  const prefix = `event: ${event.event_type}\ndata: `;
+  if (!image) {
+    yield `${prefix}${metadata}\n\n`;
+    return;
+  }
+  yield `${prefix}${metadata.slice(0, -1)},"image":"`;
+  // 48 KiB 为 3 的倍数：每块至多 64 KiB base64，块间不会出现 padding。
+  for (let offset = 0; offset < image.length; offset += 48 * 1024) {
+    yield image.subarray(offset, offset + 48 * 1024).toString('base64');
+  }
+  yield '"}\n\n';
 }
 
 export function nativeImagesMsgpack(images, failure = null) {

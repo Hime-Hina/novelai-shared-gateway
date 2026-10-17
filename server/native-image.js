@@ -346,6 +346,7 @@ export function parseNativeImageRequest(body) {
     if (!Array.isArray(parameters.director_reference_descriptions) || parameters.director_reference_descriptions.length !== preciseCount) fail(422, 'Precise Reference 描述数量与参考图不一致。');
     for (const description of parameters.director_reference_descriptions) validateCaption(description, 'Precise Reference', 0);
   } else if (['director_reference_descriptions', 'director_reference_information_extracted', 'director_reference_strength_values', 'director_reference_secondary_strength_values'].some(field => active(parameters[field]))) fail(422, 'Precise Reference 参数缺少对应图片。');
+  if (parameters.stream !== undefined && !['msgpack', 'sse'].includes(parameters.stream)) fail(422, 'stream 仅支持 msgpack 或 sse。');
   delete parameters.stream;
   // Medium 与官网切换开关一样固定参数；核价、保存和转发都使用实际的 14 步。
   if (isV5MediumModel(model)) { applyV5MediumParameters(parameters, body.input); steps = V5_MEDIUM_STEPS; }

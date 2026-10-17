@@ -1,7 +1,7 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.js';
 import { describeStoredResult, publishStoredResult } from './result-files.js';
-import { nativeImageMsgpack, nativeImagesJson } from './native-stream.js';
+import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.js';
 import { withQuotaRequestDeadline } from './quota-timeout.js';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.js';
 import { readNativeBody } from './native-body.js';
@@ -802,10 +802,11 @@ async function acceptNativeHttpRequest(req, diagnosticId, operation) {
   const intent = generationIntent(req.generationIdempotencyKey, normalize, { operation: operation || 'generate',
     randomSeed: !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1), noCache: true, claim: req.generationPayloadClaim });
   const batch = await createNativeBatch(token, intent ? null : normalize(), diagnosticId, user.jobAdmissionVersion || 0, req.generationPayloadClaim, intent);
+  const streamType = body?.parameters?.stream ?? 'sse';
   body = null;
   scheduleQueueDrain();
-  // 此函数的完整正文/参数作用域到此结束，HTTP 等待只持有下面的小型批次元数据。
-  return batch;
+  // 响应格式只属于本次连接；完整正文到此释放，同键换格式不改变持久任务。
+  return { ...batch, streamType };
 }
 
 async function createNativeBatch(token, request, diagnosticId, admissionVersion, claim, intent) {
@@ -912,13 +913,16 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
     'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 
-function writeNativeStreamEvent(res, event, callback) {
-  const frame = nativeImageMsgpack(event);
-  // 首帧前保留普通 HTTP 错误状态；开始流式响应后不再预报未知的完成数量。
-  if (!res.headersSent) res.writeHead(200, {
-    'content-type': 'application/octet-stream', 'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no'
-  });
-  return res.write(frame, callback);
+function* nativeStreamChunks(res, event, streamType) {
+  const chunks = streamType === 'sse' ? nativeImageSse(event) : [nativeImageMsgpack(event)];
+  for (const chunk of chunks) {
+    // 首块编码成功后才发头；显式 stream 决定格式，Accept 不覆盖官方流参数。
+    if (!res.headersSent) res.writeHead(200, {
+      'content-type': streamType === 'sse' ? 'text/event-stream' : 'application/msgpack',
+      'cache-control': 'no-store, no-transform', 'x-accel-buffering': 'no'
+    });
+    yield chunk;
+  }
 }
 
 async function streamNativeImages(res, batch, deadline) {
@@ -928,7 +932,8 @@ async function streamNativeImages(res, batch, deadline) {
     const unwatch = jobPreviews.watch(batch.jobIds[index], frame => {
       // 预览可以跳帧，慢连接不能积压预览或阻塞任务；步骤只采用上游原始编号。
       if (res.destroyed || res.writableEnded || res.writableNeedDrain || !Number.isSafeInteger(frame.stepIndex) || frame.stepIndex < 0) return;
-      writeNativeStreamEvent(res, { event_type: 'intermediate', samp_ix: index, step_ix: frame.stepIndex, image: frame.buffer });
+      // 预览已有512KiB上限，整帧同步排入同一连接，避免与final交错。
+      for (const chunk of nativeStreamChunks(res, { event_type: 'intermediate', samp_ix: index, step_ix: frame.stepIndex, image: frame.buffer }, batch.streamType)) res.write(chunk);
     });
     try {
       const result = await waitNativeResult(batch.jobIds[index], deadline, res);
@@ -937,18 +942,23 @@ async function streamNativeImages(res, batch, deadline) {
       // final 只来自已经落盘并结算的结果；HTTP 连接消失不会撤销任务。
       const image = await readStoredImage(result.saved);
       if (res.destroyed) return;
-      await new Promise((resolve, reject) => {
-        const onClose = () => resolve();
-        res.once('close', onClose);
-        writeNativeStreamEvent(res, { event_type: 'final', samp_ix: index, image }, error => {
-          res.off('close', onClose);
-          if (error) reject(error); else resolve();
+      for (const chunk of nativeStreamChunks(res, { event_type: 'final', samp_ix: index, image }, batch.streamType)) {
+        if (res.destroyed) return;
+        // SSE base64逐块等待写完，不让慢连接积压整张图片的编码副本。
+        await new Promise((resolve, reject) => {
+          const onClose = () => resolve();
+          res.once('close', onClose);
+          res.write(chunk, error => {
+            res.off('close', onClose);
+            if (error) reject(error); else resolve();
+          });
         });
-      });
+      }
     } catch (error) {
       if (res.destroyed) return;
       if (!res.headersSent) throw error;
-      writeNativeStreamEvent(res, { event_type: 'error', samp_ix: index, message: publicErrorMessage(error.message || '生成失败') });
+      for (const chunk of nativeStreamChunks(res, { event_type: 'error', samp_ix: index,
+        code: String(error.statusCode || 500), message: publicErrorMessage(error.message || '生成失败') }, batch.streamType)) res.write(chunk);
       break;
     } finally { unwatch(); }
   }

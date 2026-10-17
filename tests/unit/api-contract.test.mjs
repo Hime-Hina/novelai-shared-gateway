@@ -62,7 +62,8 @@ test('C02：迁移期间保留明确拒绝和 stream 清理，不因 Swagger 新
     { parameters: { ...request().parameters, controlnet_model: 'hed' } },
     { parameters: { ...request().parameters, upscale: { declared_blur_sigma: 0 } } },
     { parameters: { ...request().parameters, lora_unet_weights: { unpriced: 1 } } },
-    { parameters: { ...request().parameters, n_samples: 5 } }
+    { parameters: { ...request().parameters, n_samples: 5 } },
+    ...[null, false, 0, 'zip', 'SSE'].map(stream => ({ parameters: { ...request().parameters, stream } }))
   ];
   for (const [index, patch] of invalid.entries()) {
     assert.throws(() => parseNativeImageRequest({ ...request(), ...patch }), error => error.statusCode === (index < 2 ? 400 : 422));

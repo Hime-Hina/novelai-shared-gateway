@@ -21,8 +21,8 @@
 
 | 操作 | 当前网关成功契约 | 官方定义及差异 |
 | --- | --- | --- |
-| `/ai/generate-image` | 完整成功 `201`，按 Accept 选择 ZIP/JSON；ZIP 文件为 `image_0.<实际扩展名>` 等；部分成功保留 `200` 与批次说明 | C03-01 对齐普通成功状态和 JSON 协商；`images` 元素为 base64 `image`、`index` 和实际 `seed` |
-| `/ai/generate-image-stream` | `200 application/octet-stream`；实时发送长度分帧 MessagePack 预览，每张图片保存并结算后发送 final | 已按官方网页读取字段接入 intermediate/final/error；SSE 与内容协商仍待完成 |
+| `/ai/generate-image` | 完整成功 `201`，按 Accept 选择 ZIP/JSON；ZIP 文件为 `image_0.<实际扩展名>` 等；部分成功保留 `200` 与批次说明 | C03-01 采用Swagger状态；后续真实JSON实测200，差异仍待C03-04核对；`images` 元素为 base64 `image`、`index` 和实际 `seed` |
+| `/ai/generate-image-stream` | `200`；stream缺省/sse为`text/event-stream`，msgpack为`application/msgpack`；图片保存并结算后发送final | 按真实官方响应接入SSE/base64及MessagePack/binary；Accept不覆盖stream，诊断字段和retry不伪造 |
 | `/ai/encode-vibe` | `201 application/binary`，保留编码原始字节，不套用 JSON 协商 | C03-01 对齐官方成功状态与媒体类型 |
 | `/ai/upscale` | `200`，按 Accept 选择单图 ZIP/JSON；JSON 不虚构放大过程的生成种子 | C03-01 对齐 ZIP/JSON 协商；官方 `seed` 字段并非必填 |
 
@@ -47,7 +47,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 种子 | 安全非负整数取模 `2^32`；省略或 -1 随机确定一次 | 小数、低于 -1、不安全整数 422；多图只在此初始种子上递增 |
 | 采样器 | `k_euler`、`k_euler_ancestral`、`k_dpmpp_2m`、`k_dpmpp_2m_sde`、`k_dpmpp_2s_ancestral`、`k_dpmpp_sde`、`k_dpm_2`、`k_dpm_2_ancestral`、`k_dpm_adaptive`、`ddim`、`ddim_v3`、`k_lms` | 默认 `k_dpmpp_2m_sde`；名单表示网关校验接受，并非对每个模型做过上游组合验证 |
 | 引导/调度 | `scale=0..10`，`cfg_rescale=0..1`；调度为 native/karras/exponential/polyexponential，默认 karras | 负面提示 `negative_prompt/uc` 最多 50000 字符；缺少前者时取后者 |
-| 输出/流 | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游，省略时不注入新默认值；客户端 `parameters.stream` 被移除 | 其他输出格式422；客户端stream的值不决定出站媒体类型；V4/V5上游默认请求msgpack |
+| 输出/流 | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游；流式路径按`parameters.stream`选择，缺省为sse | 其他格式/stream值422；stream只属于本次响应，不进入持久请求或幂等指纹；V4/V5上游仍请求msgpack |
 | 图生图/重绘 | PNG/JPEG/WebP base64 输入，图片实际尺寸必须等于请求尺寸；strength/noise 0..1；重绘要求同尺寸 PNG mask | 不下载图片 URL；遮罩仅在 infill 有效；图生图/重绘不允许 SMEA；文生图无效的默认 strength/noise 滑块会清理 |
 | 多角色 | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点 | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构 |
 | SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | autoSmea 启用、其他模型启用、图生图启用均 422 |
@@ -56,7 +56,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 缓存字段 | cached 形式必须同时给出 data，进入核价后转换为普通数组 | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝 |
 | 客户端别名/空模板 | `uc_preset→ucPreset`、`quality_toggle→qualityToggle`；两名并存必须一致；关闭的 ControlNet/自动放大/LoRA 模板字段可清理 | 启用的未知功能不得透传；启用 ControlNet、LoRA、内联 upscale/upscaled_enhance 返回 422 |
 
-其他已列入白名单的提示/兼容标志包括 `params_version`、预设 ID、legacy 系列、dynamic_thresholding 系列、`skip_cfg_*`、`uncond_scale`、`cfg_sched_eligibility`、`deliberate_euler_ancestral_bug`、`prefer_brownian`、`straight_alpha`、`tag_hint_*` 等；仍逐项检查类型或范围。完整字段与约束以 [native-image.js](../server/native-image.js) 为准，不能仅因为存在于 Swagger 就跳过校验。官方 `parameters.prompt` 当前也属于未知参数，实际正向文本使用顶层 `input` 和已验证的角色结构。
+其他已列入白名单的提示/兼容标志包括 `params_version`、预设 ID、legacy 系列、dynamic_thresholding 系列、`skip_cfg_*`、`uncond_scale`、`cfg_sched_eligibility`、`deliberate_euler_ancestral_bug`、`prefer_brownian`、`straight_alpha`、`tag_hint_*` 等；仍逐项检查类型或范围。完整字段与约束以 [native-image.js](../server/native-image.js) 为准，不能仅因为存在于 Swagger 就跳过校验。实际正向文本使用顶层 `input` 和已验证的角色结构；冗余 `parameters.prompt` 的规则见下文。
 
 所有图片输入默认限 8 MiB、边长 ≤8192、≤16777216 像素。PNG 检查块 CRC 与实际解压扫描线；JPEG/WebP 是结构检查，不声称完整像素解码。放大和编码另有下述操作约束。
 
@@ -90,7 +90,7 @@ JSON 图片种子来自首次派发或持久任务中的实际规范化值，随
 C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e) 的
 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 已通过后端482、网页112、执行器认证3、开发与双进程14、最终镜像HTTP3和Caddy7项，均无跳过；语法、类型及三个业务镜像构建也通过。新增检查实际种子回绕、部分JSON与ZIP说明一致、零历史缓存重取、缺文件410和406无受理，并保留幂等派发/结算计数；JSON断开测试不声称精确中断在某个数据块。测试全部使用合成数据和模拟上游，生产未切换。
 
-### C03-02 实时 MessagePack 与待核实的 SSE
+### C03-02 实时 MessagePack 与 SSE
 
 2026-10-17 取得的[官方网页静态包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)为113682字节，SHA-256为`d416909d4d4c2f249bc5d1045c4790445accb9de3cce34830f8085e41a760769`。其中`requestStream`主动设置`parameters.stream="msgpack"`，该处未设置Accept；按4字节大端长度解码MessagePack，图片按字节处理。它读取以下字段，结束时检查每个样本是否收到最终图：
 
@@ -108,7 +108,11 @@ C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 源码 [d3cacff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d3cacff) 的 [Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39010558702)全部通过：后端491、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，无跳过。真实HTTP门闩验证预览先于上游完成、首张final先于第二张派发且已结算、批次样本编号、预览后断流退款，以及Nuxt客户端断线后付费任务继续且同键重取不重复派发/扣费。类型检查、113文件语法和三个业务镜像构建通过；没有真实NAI调用或生产切换。
 
-Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，接受事件名加JSON/base64等形状；不能用它证明官方SSE字段、结束标志或Accept与stream冲突时的优先级。本轮只接入上述已核实的MessagePack事件；客户端stream值与Accept协商尚未消解，C03-02整体仍未完成，也没有新增排队心跳。
+Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop的SSE解码器](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai-stream.ts#L92-L148)明确用于兼容代理，因此后续在用户授权下采集了[真实官方响应](novelai-protocol-probes.md)，而非用第三方实现推断官方协议。
+
+SSE采用`event: intermediate/final/error`与单行JSON data，图片为无前缀base64，结束后EOF、没有`[DONE]`。同一核心字段校验复用于两种编码；最终图每48KiB原字节编码一次并等待连接写完，预览沿用512KiB限额和跳帧策略。SSE错误code为字符串、保留本地批次samp_ix；不伪造尚未保留的gen_id/sigma/retry。官方第一事件前后状态差异仍不覆盖网关本地的权限、额度和批次扩展。
+
+流式响应现在缺省SSE，显式`parameters.stream="msgpack"`则返回`application/msgpack`；Accept不覆盖stream。需要旧二进制流的客户端必须显式传msgpack，不能再依赖网关历史的无条件MessagePack或octet-stream媒体类型。非法stream在入队前422；普通生成依然按ZIP/JSON协商。stream不进入任务参数和指纹，同一幂等键可在SSE/MessagePack间重取，冷历史也不重复生成或结算。
 
 ### C03-03 WebP 输出
 

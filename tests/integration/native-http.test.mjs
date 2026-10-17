@@ -12,16 +12,22 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.js';
-import { parseNativeImageRequest } from '../../server/native-image.js';
+import { crc32, parseNativeImageRequest } from '../../server/native-image.js';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.js';
-import { readNativeEvents } from '../helpers/native-stream-client.mjs';
+import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 // 合成图片和新建临时数据库；测试不会读取 .env、生产数据或请求真实 NAI。
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+// 合法PNG元数据将已有像素样本扩为8MiB，实际socket必须处理多个SSE块。
+const metadataChunk = Buffer.alloc(8 * 1024 * 1024 + 12, 0x78);
+metadataChunk.writeUInt32BE(metadataChunk.length - 12, 0);
+metadataChunk.write('tEXt', 4); metadataChunk.write('Comment\0', 8);
+metadataChunk.writeUInt32BE(crc32(metadataChunk.subarray(4, -4)), metadataChunk.length - 4);
+const largePng = Buffer.concat([png.subarray(0, -12), metadataChunk, png.subarray(-12)]);
 const body = (model = 'nai-diffusion-5-full', extra = {}) => ({
   input: 'a small blue paper boat', model, action: 'generate',
-  parameters: { width: 1024, height: 1024, steps: 23, n_samples: 1, seed: 7, ...extra }
+  parameters: { width: 1024, height: 1024, steps: 23, n_samples: 1, seed: 7, stream: 'msgpack', ...extra }
 });
 const near = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 
@@ -33,6 +39,7 @@ async function listen(server) {
 
 async function* streamEvents(response) {
   const reader = response.body.getReader();
+  const sse = response.headers.get('content-type') === 'text/event-stream';
   let pending = Buffer.alloc(0);
   try {
     while (true) {
@@ -40,6 +47,14 @@ async function* streamEvents(response) {
       if (done) { assert.equal(pending.length, 0, '结束时不能遗留半帧'); return; }
       pending = Buffer.concat([pending, Buffer.from(value)]);
       while (pending.length >= 4) {
+        if (sse) {
+          const end = pending.indexOf('\n\n');
+          if (end < 0) break;
+          const [event] = readNativeSseEvents(pending.subarray(0, end + 2));
+          pending = pending.subarray(end + 2);
+          if (event.image) event.image = Buffer.from(event.image, 'base64');
+          yield event; continue;
+        }
         const length = pending.readUInt32BE(0);
         assert.ok(length > 0 && length <= 64 * 1024 * 1024, '无效帧长度');
         if (pending.length < length + 4) break;
@@ -145,7 +160,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     if (cost.resource === 'v5') officialV5 -= cost.amount;
     call.responseStatus = 200;
     if (!res.headersSent) res.writeHead(200, { 'content-type': stream ? 'application/octet-stream' : 'image/png' });
-    res.end(stream ? nativeImagesMsgpack([png]) : png);
+    const image = payload.parameters.seed === 9001 ? largePng : png;
+    res.end(stream ? nativeImagesMsgpack([image]) : image);
   });
   const upstreamPort = await listen(upstream);
   const reservation = http.createServer();
@@ -270,6 +286,10 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         assert.deepEqual(error, { message: error.message, statusCode: status, error: error.message });
       }
     }
+    for (const pathname of ['/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
+      const invalidStream = await post(pathname, body('nai-diffusion-4-5-full', { stream: 'invalid' }));
+      assert.equal(invalidStream.status, 422); assert.equal((await invalidStream.json()).statusCode, 422);
+    }
     assert.equal(calls.length, 0);
     const ownerPage=await fetchLocal('/owner');assert.equal(ownerPage.status,200);assert.match(await ownerPage.text(),/management\.js/);
     assert.equal((await fetchLocal('/management.js')).status,200);
@@ -367,12 +387,13 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   await t.test('Full、5C 与 Medium 从两个流式路径返回可解码最终图，按实际参数只扣本人', async subtest => {
     for (const [model, pathname] of [['nai-diffusion-5-full', '/ai/generate-image-stream'], ['nai-diffusion-5-curated', '/v1/ai/generate-image-stream'], ['nai-diffusion-5-full-medium', '/ai/generate-image-stream']]) {
       const live = model === 'nai-diffusion-5-full';
-      const input = body(model, live ? { seed: 707 } : {}), before = await quota(), other = await quota(1);
+      const input = body(model, live ? { seed: 707, stream: undefined } : model.endsWith('-curated') ? { stream: 'sse' } : {}), before = await quota(), other = await quota(1);
       const gate = live ? previewGate(707, 17) : null;
       if (gate) subtest.after(() => gate.release());
-      const response = await post(pathname, input);
+      const sse = input.parameters.stream !== 'msgpack';
+      const response = await post(pathname, input, credentials[0].api_key, { accept: sse ? 'application/msgpack' : 'text/event-stream' });
       assert.equal(response.status, 200);
-      assert.match(response.headers.get('content-type'), /application\/octet-stream/);
+      assert.equal(response.headers.get('content-type'), sse ? 'text/event-stream' : 'application/msgpack');
       assert.equal(response.headers.get('x-nai-image-count'), null); assert.equal(response.headers.get('x-nai-partial'), null);
       const reader = streamEvents(response);
       subtest.after(() => reader.return());
@@ -479,7 +500,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     before = await quota(); failAt = -1;
     const beforeCalls = calls.length, gate = previewGate(801, 9, true);
     subtest.after(() => gate.release());
-    const response = await post('/v1/ai/generate-image-stream', body('nai-diffusion-5-curated', { steps: 29, n_samples: 3, seed: 800 }));
+    const response = await post('/v1/ai/generate-image-stream', body('nai-diffusion-5-curated', { steps: 29, n_samples: 3, seed: 800, stream: 'sse' }));
     assert.equal(response.status, 200); assert.equal(response.headers.get('x-nai-partial'), null); assert.equal(response.headers.get('x-nai-image-count'), null);
     const reader = streamEvents(response), first = (await reader.next()).value;
     subtest.after(() => reader.return());
@@ -497,6 +518,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     gate.release();
     const failureFrame = (await reader.next()).value;
     assert.equal(failureFrame.event_type, 'error'); assert.equal(failureFrame.samp_ix, 1); assert.ok(failureFrame.message);
+    assert.equal(failureFrame.code, '500');
     assert.equal((await reader.next()).done, true);
     jobs = batchRows();
     assert.deepEqual(jobs.map(job => job.status), ['done', 'failed', 'failed']);
@@ -509,7 +531,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     scenario = 'two members with held first generation';
     const before = [await quota(), await quota(1)], startCount = calls.length;
     holdNextMs = 11600; maxActiveGenerations = 0;
-    const firstBody = body('nai-diffusion-5-full', { seed: 9001 }), key = 'live-preview-disconnect-replay';
+    const firstBody = body('nai-diffusion-5-full', { seed: 9001, stream: 'sse' }), key = 'live-preview-disconnect-replay';
     const gate = previewGate(9001, 11);
     subtest.after(() => gate.release());
     const firstPending = post('/ai/generate-image-stream', firstBody, credentials[0].api_key, { 'Idempotency-Key': key });
@@ -523,12 +545,33 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     await firstReader.return(); // 关闭浏览器连接，随后才让上游完成。
     gate.release();
     const secondResponse = await secondPending;
-    const replay = await post('/ai/generate-image-stream', firstBody, credentials[0].api_key, { 'Idempotency-Key': key });
+    // 复用已结算结果：暂停真实客户端读取，再在大final中途断开，不新增生成调用。
+    await new Promise((resolve, reject) => {
+      const request = http.request(baseUrl + '/ai/generate-image-stream', { method: 'POST', headers: {
+        authorization: `Bearer ${credentials[0].api_key}`, 'content-type': 'application/json', 'Idempotency-Key': key
+      } }, response => {
+        try { assert.equal(response.statusCode, 200); assert.equal(response.headers['content-type'], 'text/event-stream'); }
+        catch (error) { response.destroy(); reject(error); return; }
+        response.on('error', () => {});
+        response.once('data', chunk => {
+          response.pause();
+          assert.ok(chunk.length < largePng.length);
+          setTimeout(() => { response.destroy(); resolve(); }, 100);
+        });
+      });
+      request.on('error', reject); request.setTimeout(5000, () => request.destroy(new Error('synthetic slow SSE timeout')));
+      request.end(JSON.stringify(firstBody));
+    });
+    const completeSse = await post('/v1/ai/generate-image-stream', firstBody, credentials[0].api_key, { 'Idempotency-Key': key });
+    const completeFrames = readNativeSseEvents(Buffer.from(await completeSse.arrayBuffer()));
+    assert.equal(completeFrames.length, 1); assert.equal(completeFrames[0].event_type, 'final');
+    assert.deepEqual(Buffer.from(completeFrames[0].image, 'base64'), largePng);
+    const replay = await post('/ai/generate-image-stream', { ...firstBody, parameters: { ...firstBody.parameters, stream: 'msgpack' } }, credentials[0].api_key, { 'Idempotency-Key': key });
     assert.equal(replay.headers.get('x-nai-request-id'), firstResponse.headers.get('x-nai-request-id'));
     for (const response of [secondResponse, replay]) {
       assert.equal(response.status, 200, await response.clone().text());
       const final = readNativeEvents(Buffer.from(await response.arrayBuffer())).find(event => event.event_type === 'final');
-      assert.ok(final); assert.deepEqual(Buffer.from(final.image), png);
+      assert.ok(final); assert.deepEqual(Buffer.from(final.image), response === replay ? largePng : png);
     }
     assert.equal(maxActiveGenerations, 1); assert.equal(calls.length - startCount, 2);
     assert.ok(calls[startCount + 1].startedAt - calls[startCount].finishedAt >= 10000);

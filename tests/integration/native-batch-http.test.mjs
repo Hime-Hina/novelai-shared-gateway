@@ -12,7 +12,7 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
 import { syncFairQuota } from '../../server/fair-quota.js';
 import { nativeImagesMsgpack } from '../../server/native-stream.js';
-import { readNativeEvents } from '../helpers/native-stream-client.mjs';
+import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -300,11 +300,21 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   });
   const coldJson = await post(replayBody, 1, { accept: 'application/json', key: bKey });
   assert.equal(coldJson.status, 201); assert.deepEqual(await coldJson.json(), bResult);
-  const coldStream = await post(replayBody, 1, { key: bKey, route: '/v1/ai/generate-image-stream' });
-  assert.equal(coldStream.status, 200);
+  const coldStream = await post({ ...replayBody, parameters: { ...replayBody.parameters, stream: 'msgpack' } }, 1,
+    { key: bKey, route: '/v1/ai/generate-image-stream', accept: 'text/event-stream' });
+  assert.equal(coldStream.status, 200); assert.match(coldStream.headers.get('content-type'), /^application\/msgpack(?:;|$)/);
   const coldFrames = readNativeEvents(Buffer.from(await coldStream.arrayBuffer()));
   assert.deepEqual(coldFrames.map(frame => [frame.event_type, frame.samp_ix]), [['final', 0], ['final', 1]]);
   for (const frame of coldFrames) assert.deepEqual(Buffer.from(frame.image), webp);
+  for (const [stream, accept] of [['sse', 'text/event-stream'], [undefined, 'application/msgpack']]) {
+    const response = await post({ ...replayBody, parameters: { ...replayBody.parameters, ...(stream ? { stream } : {}) } }, 1,
+      { key: bKey, route: '/ai/generate-image-stream', accept });
+    assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /^text\/event-stream(?:;|$)/);
+    assert.equal(response.headers.get('x-nai-request-id'), bId);
+    const frames = readNativeSseEvents(Buffer.from(await response.arrayBuffer()));
+    assert.deepEqual(frames.map(frame => [frame.event_type, frame.samp_ix]), [['final', 0], ['final', 1]]);
+    for (const frame of frames) assert.deepEqual(Buffer.from(frame.image, 'base64'), webp);
+  }
   for (const job of bRows) {
     const headers = { authorization: `Bearer ${credentials[1].api_key}` };
     const snapshot = await (await fetch(base + '/api/jobs/' + job.id, { headers })).json();

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTestContext, loadFixture, buildFixture } from '@nuxt/test-utils/e2e';
-import { readNativeEvents } from '../../../tests/helpers/native-stream-client.mjs';
+import { readNativeEvents, readNativeSseEvents } from '../../../tests/helpers/native-stream-client.mjs';
 
 const webRoot = fileURLToPath(new URL('../../', import.meta.url));
 const executorEntry = fileURLToPath(new URL('../../../executor/.output/server/start.mjs', import.meta.url));
@@ -721,16 +721,20 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     }
     const invalidFormat = nativeBody('unsupported image encoding'); invalidFormat.parameters.image_format = 'avif';
     assert.equal((await f.request('/ai/generate-image', { body: invalidFormat })).status, 422);
+    const invalidStream = nativeBody('unsupported stream encoding'); invalidStream.parameters.stream = 'json';
+    assert.equal((await f.request('/ai/generate-image-stream', { body: invalidStream })).status, 422);
     assert.deepEqual(counts(), beforeUnsupported); assert.equal(f.generations(), 0);
     const aliasBody = nativeBody('synthetic alias replay'); Object.assign(aliasBody.parameters, { seed: -1, image_format: 'webp' });
     let nativeId;
     for (const route of ['/ai/generate-image', '/v1/ai/generate-image', '/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
-      const response = await f.request(route, { body: aliasBody, headers: { 'idempotency-key': 'native-alias-replay' } });
+      const streaming = route.endsWith('-stream');
+      const response = await f.request(route, { body: streaming ? { ...aliasBody, parameters: { ...aliasBody.parameters, stream: 'msgpack' } } : aliasBody,
+        headers: { 'idempotency-key': 'native-alias-replay', ...(streaming ? { accept: 'text/event-stream' } : {}) } });
       assert.ok(response.headers['x-nai-request-id']);
       nativeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], nativeId);
-      if (route.endsWith('-stream')) {
+      if (streaming) {
         assert.equal(response.status, 200);
-        assert.match(response.headers['content-type'], /application\/octet-stream/);
+        assert.match(response.headers['content-type'], /^application\/msgpack(?:;|$)/);
         assert.equal(response.headers['x-nai-image-count'], undefined); assert.equal(response.headers['x-nai-partial'], undefined);
         const events = readNativeEvents(response.body); assert.equal(events.length, 1);
         assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), webp);
@@ -749,6 +753,16 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assert.equal(response.headers['x-nai-partial'], 'false'); assert.match(response.headers.vary, /Accept/i);
       if (asJson) assert.deepEqual(json(response, 201).images, [{ image: webp.toString('base64'), index: 0, seed }]);
       else assertZip(response, 201, webp);
+    }
+    for (const [stream, accept] of [['sse', 'text/event-stream'], [undefined, 'application/msgpack']]) {
+      const response = await f.request('/v1/ai/generate-image-stream', {
+        body: { ...aliasBody, parameters: { ...aliasBody.parameters, ...(stream ? { stream } : {}) } },
+        headers: { 'idempotency-key': 'native-alias-replay', accept } });
+      assert.equal(response.status, 200); assert.match(response.headers['content-type'], /^text\/event-stream(?:;|$)/);
+      assert.equal(response.headers['x-nai-request-id'], nativeId);
+      const events = readNativeSseEvents(response.body); assert.equal(events.length, 1);
+      assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0);
+      assert.deepEqual(Buffer.from(events[0].image, 'base64'), webp);
     }
     const generated = json(await f.request('/api/jobs/' + f.jobs()[0].id));
     const signed = new URL(generated.imageUrl, publicOrigin);
@@ -890,19 +904,20 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     for (const [index, interrupt] of ['nuxt-kill', 'client-close'].entries()) {
       const streaming = interrupt === 'client-close';
       const input = nativeBody('synthetic lost synchronous response ' + interrupt), held = f.holdNext(streaming);
-      if (streaming) input.parameters.width = 1536;
+      if (streaming) Object.assign(input.parameters, { width: 1536, stream: 'sse' });
       let received, buffered = Buffer.alloc(0);
       const frames = [];
       const pending = http.request(f.nuxtBase + '/ai/generate-image' + (streaming ? '-stream' : ''), { method: 'POST', headers: { host: publicHost, origin: publicOrigin,
-        authorization: 'Bearer ' + f.members[0].api_key, 'content-type': 'application/json', 'idempotency-key': interrupt } }, response => {
+        authorization: 'Bearer ' + f.members[0].api_key, 'content-type': 'application/json', 'idempotency-key': interrupt,
+        ...(streaming ? { accept: 'text/event-stream' } : {}) } }, response => {
         received = response;
         response.on('error', () => {});
         response.on('data', chunk => {
           if (!streaming) return;
           buffered = Buffer.concat([buffered, chunk]);
-          while (buffered.length >= 4 && buffered.length >= 4 + buffered.readUInt32BE(0)) {
-            const end = 4 + buffered.readUInt32BE(0);
-            frames.push(...readNativeEvents(buffered.subarray(0, end))); buffered = buffered.subarray(end);
+          for (let at; (at = buffered.indexOf('\n\n')) !== -1;) {
+            const end = at + 2;
+            frames.push(...readNativeSseEvents(buffered.subarray(0, end))); buffered = buffered.subarray(end);
           }
         });
       });
@@ -911,11 +926,13 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       const accepted = f.jobs().find(job => job.status === 'running'); assert.ok(accepted?.requestId);
       if (streaming) {
         await until(() => frames.length > 0, 5000, 'Nuxt buffered the Native intermediate frame until upstream completion');
-        assert.equal(received.statusCode, 200); assert.match(received.headers['content-type'], /application\/octet-stream/);
+        assert.equal(received.statusCode, 200); assert.match(received.headers['content-type'], /^text\/event-stream(?:;|$)/);
         assert.equal(received.headers['x-nai-image-count'], undefined); assert.equal(received.headers['x-nai-partial'], undefined);
         assert.equal(frames.length, 1); assert.equal(frames[0].event_type, 'intermediate');
-        assert.equal(frames[0].step_ix, 2); assert.equal(frames[0].samp_ix, 0); assert.deepEqual(Buffer.from(frames[0].image), png);
+        assert.equal(frames[0].step_ix, 2); assert.equal(frames[0].samp_ix, 0); assert.deepEqual(Buffer.from(frames[0].image, 'base64'), png);
         assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, index, 'preview cannot settle the held generation');
+        const payload = JSON.parse(f.audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(accepted.requestId).payload);
+        assert.equal(Object.hasOwn(payload.nativeParameters, 'stream'), false);
       } else assert.equal(received, undefined);
       if (interrupt === 'nuxt-kill') await f.nuxt.stop(); else pending.destroy();
       assert.equal(f.executor.child().pid, executorPid); assert.equal(f.executor.child().exitCode, null);
@@ -928,8 +945,10 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         const charge = JSON.parse(f.audit.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(accepted.id).charge);
         assert.equal(charge.resource, 'anlas'); assert.equal(charge.status, 'settled'); assert.ok(charge.fixed > 0);
       }
-      const replay = await f.request('/v1/ai/generate-image-stream', { body: input, headers: { 'idempotency-key': interrupt } });
+      const replay = await f.request('/v1/ai/generate-image-stream', { body: { ...input, parameters: { ...input.parameters, stream: 'msgpack' } },
+        headers: { 'idempotency-key': interrupt, accept: 'text/event-stream' } });
       assert.equal(replay.status, 200); assert.equal(replay.headers['x-nai-request-id'], accepted.requestId);
+      assert.match(replay.headers['content-type'], /^application\/msgpack(?:;|$)/);
       const replayFrames = readNativeEvents(replay.body); assert.equal(replayFrames.length, 1); assert.equal(replayFrames[0].event_type, 'final');
       assert.deepEqual(Buffer.from(replayFrames[0].image), png);
       assert.deepEqual((await f.request(`/api/jobs/${accepted.id}/content`)).body, png);
