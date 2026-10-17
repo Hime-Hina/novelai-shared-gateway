@@ -129,6 +129,10 @@ reload 或替换生产版本的操作；实际替换仍须用户批准。
 
 2026-10-17 的 U01 验证已完成：
 
+[实现提交 ec011b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ec011b6)
+的[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38989723903)
+已通过：后端457/457、前端20/20、105文件语法、Nuxt类型检查、两个Docker构建。
+
 - 真实 Nuxt 环境的组件、展示与组合式函数测试 **20/20** 通过，前端 typecheck
   通过。`mountSuspended` 使用真实 Vue 与 `useAsyncData`，仅替换请求和
   EventSource 传输边界；Nuxt 自动导入的 `$fetch` 用官方 `mockNuxtImport` 替换。

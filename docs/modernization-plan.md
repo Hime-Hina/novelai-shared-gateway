@@ -54,7 +54,7 @@
 | 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复及本地回归，隔离部署与生产发布尚未完成 |
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F12 已完成；F10 实现与本地 Windows/Linux 验证完成，托管 CI Native 多图超时仍待定位，不能按全绿结案。F11 独立执行仍待 |
-| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01 已通过托管 CI；U01 Nuxt/Naive UI 成员页已实现，20 项前端测试、后端回归、Docker 与最终40条浏览器复测通过，托管 CI 待本次提交验证。下一项 U02；F11/N01 两段事件链路及 D01 生产长等待仍待 |
+| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01 已通过托管 CI；Nuxt/Naive UI 成员页20项前端测试、457项后端回归、两个Docker与最终40条浏览器复测通过。下一项 U02；F11/N01 两段事件链路及 D01 生产长等待仍待 |
 | 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06 已完成并验证，其他迁移仍待实施 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
@@ -93,6 +93,8 @@
 | P01（排队部分） | [2bc6c79](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2bc6c79) | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器基线已另行完成，见下一行；历史不足七天和拒绝率缺失仍保留，不补造数据 |
 | P01（浏览器部分） | [d96665e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d96665e) | [浏览器基线](browser-baseline.md)：冻结 5437fc8，匿名/成员/owner × 桌面/移动 × HTTP 缓存禁用/启用，各 5 次共 60/60 核验；300 条同源资源、12 组指标与 14 行 API 瀑布逐项校验，CLS 按标准窗口重算。合成 helper 自检与语法通过；明确串行查询、静态 no-store 和布局优化落点 | 上游完全模拟，真实生成 0 次，测试实例已停止；不是生产分位数，历史约 29 秒 HTML TTFB 未复现。owner 默认用量页保持，后续须对比顶部概览及用量表两类 ready 时间；扩展与工具开销不能全部归因业务 |
 | C06 | [975d8b0](https://github.com/Hime-Hina/novelai-shared-gateway/commit/975d8b0) | [ORM 评估与接入](orm-evaluation.md)：Drizzle 0.45.4/Kit 0.31.11 统一 9 表 schema 与 prepared CRUD，保留原同步提交与部分索引；旧 typed/app_records/JSON 兼容。新增 10 项迁移回归，完整 244/244 通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38953276802) 通过；Linux 镜像内默认 UID 1000、只读断网、迁移/写入/关闭重开验证通过 | 首次自动验证并登记两条迁移，SQL 固定 LF，拒绝历史 hash 改写和未知更高版本；不顺带回填极老库历史统计。部署前须一致性备份并在副本验收，未来数据迁移不能仅靠切旧代码回滚；生产未迁移 |
+
+U01 已提交 [ec011b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ec011b6)：Nuxt 4.6.2、Vue 3、TypeScript 与 Naive UI 成员页，固定 Node 22.23.3；Key 按需显示、批次取消/迟到领取、失效清理、R01 合并刷新及独立网页构建保留。[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38989723903) 后端457/457、前端20/20、105文件语法、类型检查和两个Docker构建全部通过。最终浏览器40条完成可比复测，修复滚动条导致的大幅布局跳动及开发代理HTML别名；首屏数据、样式桥接许可与首轮资源增大的代价见 [Nuxt 成员页](nuxt-member-portal.md)。无新schema或第二写入方，生产未切换。
 
 CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38984338010) 通过 430/430 和 Docker 构建。此前两轮分别发生 Native 批次及部分失败场景超时；冻结镜像复现通过，根因尚未查明。已分别提交 [1b639bf](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1b639bf) 和 [536dd58](https://github.com/Hime-Hina/novelai-shared-gateway/commit/536dd58) 脱敏现场诊断，未放宽请求期限，也不将此轮成功写成问题已修复。后续 D01 的隔离负载验收继续核对等待长尾。
 
