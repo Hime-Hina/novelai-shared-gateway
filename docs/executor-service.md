@@ -273,8 +273,11 @@ Caddy 只区分 API 与网页的压缩策略，全部转给 Nuxt；公网上的�
 - Node 流背压与提前拒绝、服务关闭后的 SSE 普通 EOF/二进制中断；固定 Caddy
   产物验证统一入口、原始身份头、公私管理隔离、API 不压缩与首帧即时到达。
 
-本地网页类型检查和112项测试通过，真实开发烟测通过；Windows 产物测试中
-各业务场景已通过，Linux SIGTERM 场景交托管 CI 验证。最终 CI 记录见[实施计划](modernization-plan.md)。
+源码提交 [e7b9407](https://github.com/Hime-Hina/novelai-shared-gateway/commit/e7b9407) 的
+[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39007009293)
+通过后端478、网页112、执行器认证3、开发与双进程14、打包产物HTTP3和Caddy7项，
+全部无跳过；112文件语法、两端类型检查与三个业务Docker镜像构建也通过。
+双进程测试实际覆盖 Linux SIGTERM 同时结束成员状态和任务预览 SSE，执行器继续运行。
 以上全部使用合成数据和模拟上游，不包含真实 NAI、生产浏览器或 bob 的部署验收。
 
 ## 尚未完成的迁移与部署

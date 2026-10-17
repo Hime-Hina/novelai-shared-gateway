@@ -30,7 +30,7 @@
 
 | 事项 | 已确认选择或授权默认 | 实施边界 |
 | --- | --- | --- |
-| Q1 组件库 | Naive UI，统一基础组件、主题、表格和热力图 | 若无特定组件要求，不再重开框架选型；仅遇明确组件缺口再评估 Element Plus |
+| Q1 组件库 | Naive UI，统一基础组件、主题、表格和热力图 | 现成组件按页面需要选择，不单独为键盘操作更换 UI，保留组件默认交互能力；不再重开框架选型，仅遇明确组件缺口再评估 Element Plus |
 | Q2 执行与部署组合 | Nuxt 网页/API + 独立 Nitro 执行服务，由 bob 上两个 systemd unit 分别管理；CI 构建，Docker 非必需 | 增加一条内部通信链路，换取 Nuxt 重启不打断上游生成；同机故障仍无法隔离 |
 | Q3 登录有效期 | SQLite 持久会话；普通成员固定 7 天，owner 固定 12 小时，不滑动延长 | 保留撤销、成员资格与重启恢复，不改成所有人 12 小时 |
 | Q4 热力图口径 | 最近一年，Asia/Taipei 日期，按提交日计每张生图任务；成功与失败可分看 | 一次四张计四个任务，不是一次 HTTP 调用；若要 HTTP 调用次数，需新增批次/请求统计，历史无法准确补齐 |
@@ -55,7 +55,7 @@
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分、受保护的 Nitro 产物及 Nuxt 内部客户端，Windows/Linux 双进程故障隔离、同键受理重试及重复恢复三场景通过；独立 systemd 部署仍待，未按整体完成结案 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。F11/N01 两段事件重连与授权校准已通过，N02登录和管理也已通过Linux CI |
-| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02 已完成并验证；N03生图与任务入口已实现、正在回归，T01/C01/C03仍待完成 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02/N03 已完成并通过所列回归；Nuxt统一入口、执行器唯一业务与持久化所有者。T01/C01/C03仍待完成，迁入Nuxt入口不等于旧JS业务已全部类型化 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
@@ -111,6 +111,8 @@ F11 第二片 [cffd205](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 N01 已提交 [0dc3124](https://github.com/Hime-Hina/novelai-shared-gateway/commit/0dc3124)，将成员、owner 与私有 admin 的有限查询接入 Nuxt 正式 GET 路由，并加入独立 SSE 桥接；DTO、会话和 Discord 刷新仍由执行器唯一处理。内部断线保留浏览器连接，五秒重试后透传新启动标识及 resync，普通故障不误退出登录。同步移除宽泛 devProxy，Caddy 按方法与路径分流，Compose 保留 gateway 名称并改为执行器镜像，避免增加第二个数据写入进程。开发 SSR 的 Naive/vueuc 模块兼容另由 [a765b1a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a765b1a) 修复。[最终 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39003589699) 后端478、前端97、执行器认证3、开发与双进程8、最终镜像HTTP3、Caddy7全部通过，均无跳过，语法/类型和三个业务镜像构建通过。覆盖并发认证刷新、令牌落盘后失败及重启、同连接 SSE 恢复、Nuxt SIGTERM 与实际开发/代理入口；详见[独立执行服务](executor-service.md)。本片无 schema 或依赖变更；N02/N03、独立 systemd 与 D01 目标机验收继续保留，生产未切换。
 
 N02 已提交 [3b3b252](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3b3b252)，将密码登录、注销、Discord start/callback 与既有 owner/私有 admin 管理写入接入 Nuxt 正式路由，原会话、权限和事务仍归执行器。普通写入不生成操作键、不自动重试；OAuth 原 303 与两条 Cookie 保留，私有批量额度刷新沿用执行器逐账户截止，不套普通 45 秒总限。Caddy 精确分流与开发入口同步。[最终 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39004774305) 后端478、前端104、执行器认证3、开发与双进程11、最终镜像HTTP3、Caddy9全部通过且无跳过，112文件语法、类型检查和三个业务镜像构建通过。验证密码固定七天与注销持久性、Discord回跳跨Nuxt重启与owner十二小时、管理权限/版本/正文限制、丢管理回执仅提交一次；详情见[执行服务](executor-service.md)。无schema或依赖变更，N03与D01/D02继续保留，未影响生产。
+
+N03 已提交 [e7b9407](https://github.com/Hime-Hina/novelai-shared-gateway/commit/e7b9407)，将 Native/OpenAI/direct、任务受理/查询/取消、预览与结果领取接入正式 Nuxt 路由；长响应使用 Node 流背压，不套有限查询的45秒截止或自动重发。复用原共享路由表保留错误方法、未知路径、HEAD/OPTIONS的原响应；Caddy全部转给Nuxt，不再直连执行器或持有内部密钥，并删除测试专用路由注入。[最终 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39007009293) 后端478、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，112文件语法、类型检查和三个业务镜像构建通过。覆盖32MiB multipart/超限账本不变、别名同键领取、Vibe与放大字节、实时预览、46秒长流、成员权限与签名图，以及Nuxt强杀后继续执行、Linux双SSE普通EOF；详见[执行服务](executor-service.md#n03-生图与任务传输)。无schema或依赖变更，官方协议差异C03可以继续推进；T01/C01、独立systemd和D01/D02仍待完成。全部使用合成数据与模拟上游，生产未切换。
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
