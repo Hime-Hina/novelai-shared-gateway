@@ -1782,7 +1782,7 @@ function cloneCollectionMaps(source = {}) {
   return maps;
 }
 
-function sqlRecord(collection, item, order, data) {
+export function sqlRecord(collection, item, order, data) {
   const createdAt = item.createdAt || '';
   const updatedAt = item.updatedAt || '';
   const row = {

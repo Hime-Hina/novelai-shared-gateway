@@ -186,6 +186,8 @@ T01输入与共享策略片已提交[199c41c](https://github.com/Hime-Hina/novel
 
 T01图片与结果片：native-image、job-previews、result-files迁为严格TypeScript，更新所有源码和测试直接导入。保留图片/辅助操作校验、预览节流、结果摘要、临时文件恢复及禁止覆盖证据的行为；类型收窄不额外重写归一化参数。与前一提交对照的完整输出和错误形态一致。根类型/语法、相关64项中63通过/1项Windows跳过、完整Native HTTP17/17、网页类型检查均通过；执行器重建及本机构建产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4、结果文件9/9（含符号链接拒绝）全部通过。server顶层18个TS、18个JS，存储、调度和路由等核心仍待；本批完整CI另记录。前一输入与策略片[199c41c的完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39023749442)已成功，生产未改。
 
+D01离线副本工具已完成：只读SQLite backup纳入已提交WAL，迁移和凭据轮换只作用于完整工作副本，复用sqlRecord投影及既有退款/核对函数；清理冷表和释放页中的旧凭据，保留内部关联与受保护历史。活动任务和预留闭合，原停用成员保持停用，默认禁止接单，副本PST可查询常驻mock。Windows与断网只读Linux各7项通过，包含3000+冷历史、V5/免费/订阅/购买/回退退款、冷终态优先、防覆盖、失败无交付及源主库/WAL/图片不变；Linux权限通过。纯旧generic库、孤立预留和无法可靠退款的旧points活动任务拒绝交付，具体使用与边界见[部署说明](test-deployment.md#离线测试副本工具)。未处理真实生产数据、未安装目标机；本片完整CI另记录。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
