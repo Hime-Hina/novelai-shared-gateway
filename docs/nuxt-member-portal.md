@@ -75,7 +75,7 @@ corepack pnpm --filter @novelai-gateway/executor build
 corepack pnpm --filter @novelai-gateway/web dev
 ```
 
-开发服务绑定 `127.0.0.1:3000`。当前查询、状态流、登录与管理使用正式 Nuxt 服务端路由，
+开发服务绑定 `127.0.0.1:3000`。网页及 API 均使用正式 Nuxt 服务端路由，
 已删除会抢先接走请求的 `/api` devProxy；`GATEWAY_DEV_URL` 不再使用。
 在另一个终端配置执行器的隔离环境（绝对 `DATA_DIR`、`HOST=127.0.0.1`、
 `PORT=18081`、管理员及内部密钥）后，运行 `node executor/.output/server/start.mjs`。
@@ -85,8 +85,8 @@ corepack pnpm --filter @novelai-gateway/web dev
 Nuxt 开发终端仅设置 `NUXT_EXECUTOR_BASE_URL=http://127.0.0.1:18081` 和
 `NUXT_EXECUTOR_TOKEN`。开发烟测会先检查 `web/.env` 不存在，以免测试工具默认
 加载真实开发凭据；存在时明确退出，不读取或改动该文件。日常开发与生产都推荐
-使用各自的进程环境。Caddy 另获得相同的 `EXECUTOR_TOKEN`，
-按示例提供同源入口；本地密码模式可从 `http://127.0.0.1:18082/` 使用成员页。
+使用各自的进程环境。Caddy 不需要内部密钥，按示例提供统一入口和管理隔离；
+本地密码模式可从 `http://127.0.0.1:18082/` 使用成员页。
 Discord 开发仍需其已配置的 HTTPS Origin，不能放宽同源校验。
 
 ```sh
@@ -111,21 +111,22 @@ Windows 使用 fnm 时可将命令写成
 
 ## 生产路径分流示例的含义
 
-[Caddyfile.example](../Caddyfile.example) 只描述将来独立服务的同源分流：
+[Caddyfile.example](../Caddyfile.example) 描述独立服务的统一入口，尚未替换生产：
 
 | 路径 | 所属服务 |
 | --- | --- |
-| `/`、`/account.html`、`/_nuxt/*` | Nuxt 网页服务；旧 `/account.html` 重定向到 `/` |
+| `/`、`/account.html`、`/index.html`、`/_nuxt/*` | Nuxt 网页服务；旧 HTML 首页别名重定向到 `/` |
 | 成员 `login-options/me/key/shared-status/heatmap/requests/:id` 的 GET、owner 查询和成员 `shared-events` | Nuxt 内部客户端 → 同一执行器；业务授权与 DTO 仍由执行器负责 |
 | 成员登录/注销、Discord start POST 与 callback GET，owner 成员管理/额度 POST 与账户 PATCH | Nuxt 内部客户端 → 同一执行器；Cookie、OAuth state 与事务仍由执行器处理 |
-| 其余 `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate`，包括生图及取消 | Caddy 添加内部认证头 → 同一执行器的原协议 handler |
+| 生图、结果领取、预览流和取消，以及各 API 命名空间的未知路径/方法 | Nuxt → 同一执行器；保留原请求校验、二进制与错误契约，长响应逐块转发 |
 | `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；执行器验证 owner 会话 |
 | `/admin*`、`/api/admin*`、`/api/health`、`/memory` | 公网入口直接拒绝 |
 | 私有回环 18082 的成员/owner/admin 页面及合法别名、`/_nuxt/*` | Nuxt；管理查询和写入均经 Nuxt → 同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
 
 示例网页服务使用回环端口 3000、网关使用回环端口 18081；实际端口由隔离
 环境配置。代理保留公共 Host，网关按实际来源配置 `TRUSTED_PROXY_IPS`，
-不把公共请求改成 localhost 来绕过私有管理边界。SSE 不缓冲，不启用记录
+不把公共请求改成 localhost 来绕过私有管理边界。Caddy 不再直连执行器或添加内部密钥。
+SSE 不缓冲，不启用记录
 含 Key 查询参数的访问日志。私有管理使用另一个仅绑定回环的 Caddy 监听
 18082，SSH 隧道转发到该入口，并保留浏览器原 Host/Origin；不修改公网权限。
 

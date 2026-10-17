@@ -14,16 +14,17 @@ export default defineNuxtConfig({
     }
   },
   routeRules: {
+    '/index.html': { redirect: '/' },
     '/account.html': { redirect: '/' },
     '/owner.html': { redirect: '/owner' },
     '/admin.html': { redirect: '/admin' },
     '/admin/members.html': { redirect: '/admin' }
   },
-  // 开发和产物使用同一组 API 路由；未迁接口由 Caddy 分流到同一执行器。
+  // 开发和产物使用同一组 API 路由，业务与持久化统一交给执行器。
   nitro: {
     preset: 'node-server',
     // 外层纯模块须同时打入开发 worker，不能留下相对生成目录的运行时 import。
-    externals: { inline: ['generation-request.js', 'queue-policy.js'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
+    externals: { inline: ['generation-request.js', 'queue-policy.js', 'shared-surface.js'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
   },
   typescript: { strict: true, tsConfig: { compilerOptions: { allowJs: true } } },
   app: { head: { htmlAttrs: { lang: 'zh-CN' }, title: 'NovelAI 共享', meta: [{ name: 'referrer', content: 'same-origin' }], link: [{ rel: 'icon', href: 'data:,' }] } }

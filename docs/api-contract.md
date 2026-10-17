@@ -1,6 +1,6 @@
 # 迁移前 API 契约基线（C02）
 
-核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 单进程细粒度事件已接入，独立执行服务链路仍待后续迁移验证。
+核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，生产仍未切换。
 
 实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.js)、[输入解析](../server/native-image.js)、[multipart 解析](../server/native-body.js)、[核价](../server/native-pricing.js)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
@@ -202,5 +202,7 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 | [native-pricing.test.mjs](../tests/unit/native-pricing.test.mjs) | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接 |
 | [native-stream.test.mjs](../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../tests/integration/native-adapter.test.mjs) | 独立解码与既有适配回归；后者仍有源码截取测试，T01/N03迁移时应改为真实模块/HTTP，不照搬这种测试方式 |
 | [shared-surface.test.mjs](../tests/unit/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../tests/unit/launcher-subscription.test.mjs)、[member-routes.test.mjs](../tests/integration/member-routes.test.mjs)、[owner-management.test.mjs](../tests/integration/owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码 |
+| [executor-lifecycle.test.mjs](../web/tests/integration/executor-lifecycle.test.mjs) | 正式 Nuxt 与 Nitro 产物：Native 别名同键重放、32 MiB multipart 附件、Vibe 原始字节、OpenAI 首帧与预览、超过45秒仍完成、direct 原超时图片、任务权限与签名图、只杀 Nuxt 后执行器继续完成；不再注入测试专用 API 路由 |
+| [executor-stream.test.ts](../web/tests/nuxt/executor-stream.test.ts)、[caddy-routing.test.mjs](../tests/deployment/caddy-routing.test.mjs) | Node 流背压、提前拒绝与关停；固定 Caddy 产物验证统一 Nuxt 入口、公私管理隔离、API 不压缩和 SSE 首帧转发。Caddy 用模拟 Nuxt，不代替上行真实业务测试 |
 
 这些是当前基线的证据组合，不是“全部官方API契约通过”。OpenAI关键成功/流式路径已在本地隔离HTTP环境覆盖；公网代理的SSE缓冲/断连行为、真实上游非零blur/新模型组合和浏览器兼容性仍需相应迁移/测试部署阶段验收。不能以纯模块测试替代真实HTTP或浏览器证据。

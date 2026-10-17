@@ -29,7 +29,7 @@ jobs:
       - run: pnpm --filter @novelai-gateway/executor typecheck
       - run: pnpm --filter @novelai-gateway/executor test
       - run: pnpm --filter @novelai-gateway/executor build
-      - name: Verify Nuxt queries, event recovery and process isolation
+      - name: Verify Nuxt routes, streaming and process isolation
         run: pnpm --filter @novelai-gateway/web test:executor
       - run: docker build --tag novelai-shared-gateway:check .
       - run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .

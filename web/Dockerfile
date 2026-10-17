@@ -8,7 +8,7 @@ COPY web/package.json ./web/package.json
 RUN pnpm --filter @novelai-gateway/web install --frozen-lockfile
 COPY web ./web
 COPY public/member-events.js ./public/member-events.js
-COPY server/generation-request.js server/queue-policy.js ./server/
+COPY server/generation-request.js server/queue-policy.js server/shared-surface.js ./server/
 RUN pnpm --filter @novelai-gateway/web build
 
 FROM node:22.23.3-bookworm-slim

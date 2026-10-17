@@ -15,9 +15,9 @@ owner 与私有 admin 页面已迁入 `web/`，复用 Vue、TypeScript 和 Naive
 | 回环 HTTP `127.0.0.1:18082/admin` | Nuxt 页面；管理员 Key 放在 `x-admin-token` | 查询、成员与份额 POST、账户 POST/PATCH 与额度 POST → Nuxt → 执行器 |
 
 公开域名继续拒绝 `/admin*`、`/api/admin*`、`/api/health` 和 `/memory`。
-私有入口显式 `bind 127.0.0.1`；页面和 `/_nuxt/*` 转给网页 3000，查询、登录、管理与成员
-SSE 也经过 Nuxt，但使用独立 API 分支。只有网页分支启用压缩；尚未迁移的
-接口由 Caddy 覆盖内部认证头后交给同一执行器，保留原协议和即时刷新。
+私有入口显式 `bind 127.0.0.1`；全部页面和 API 转给 Nuxt 3000，API 分支及时刷新且
+不压缩，网页资源可压缩。Caddy 不再持有内部密钥或直连执行器；原业务权限与
+协议仍由同一个执行器处理，Nuxt 不接管账本写入。
 
 ```sh
 ssh -N -L 127.0.0.1:19080:127.0.0.1:18082 your-user@your-server

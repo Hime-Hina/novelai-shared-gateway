@@ -1,37 +1,14 @@
 # 修改为自己的域名，并与 .env 的 PUBLIC_HOST 保持一致。
-# Caddy 进程须配置 EXECUTOR_TOKEN，与 Nuxt/执行器一致，不能提交真实值。
-(member_api) {
-    @queries {
-        method GET
-        path /api/member/login-options /api/member/me /api/member/key /api/member/shared-status /api/member/heatmap /api/member/shared-events
-        path /api/member/owner/member-management /api/member/owner/statistics /api/member/owner/summary
-        path /api/member/discord/callback
-    }
-    handle @queries {
+# 网页与 API 统一进入 Nuxt，执行器只接受 Nuxt 的内部调用。
+(nuxt_routes) {
+    @api path /api /api/* /ai /ai/* /v1 /v1/* /user /user/* /generate
+    handle @api {
         reverse_proxy 127.0.0.1:3000 {
             flush_interval -1
         }
     }
-    @request_query {
-        method GET
-        path_regexp request_query ^/api/member/requests/[^/]+$
-    }
-    handle @request_query {
-        reverse_proxy 127.0.0.1:3000
-    }
-    @member_writes {
-        method POST
-        path /api/member/login /api/member/logout /api/member/discord/start
-        path /api/member/owner/member-management /api/member/owner/accounts/quota
-    }
-    handle @member_writes {
-        reverse_proxy 127.0.0.1:3000
-    }
-    @owner_account_patch {
-        method PATCH
-        path_regexp owner_account_patch ^/api/member/owner/accounts/[^/]+$
-    }
-    handle @owner_account_patch {
+    handle {
+        encode zstd gzip
         reverse_proxy 127.0.0.1:3000
     }
 }
@@ -41,60 +18,14 @@ gateway.example.com {
     handle @private {
         respond 404
     }
-    import member_api
-    @web path / /account.html /owner /owner/ /owner.html /_nuxt/*
-    handle @web {
-        encode zstd gzip
-        reverse_proxy 127.0.0.1:3000
-    }
-    handle {
-        reverse_proxy 127.0.0.1:18081 {
-            header_up X-Executor-Token {$EXECUTOR_TOKEN}
-            # 保留公共域名，不能改为 localhost 绕过网关的私有管理边界。
-            header_up Host gateway.example.com
-            # Caddy 默认忽略外部伪造的 X-Forwarded-For 并写入连接来源。
-            # 网关另需配置 TRUSTED_PROXY_IPS，填网关实际看到的 Caddy 来源 IP。
-            flush_interval -1
-        }
-    }
+    import nuxt_routes
+    # Caddy 保留原 Host/Origin，默认忽略伪造的 X-Forwarded-For 并写入连接来源。
     # 不启用包含查询参数的访问日志；兼容 URL 可能携带调用 Key。
 }
 
-# 私有管理同源入口；SSH 隧道应转发到此端口，而不是直接转发到网页或网关。
+# 私有管理同源入口；SSH 隧道应转发到此端口，而不是直接转发到网页或执行器。
 http://127.0.0.1:18082, http://localhost:18082 {
     bind 127.0.0.1
-    import member_api
-    @admin_queries {
-        method GET
-        path /api/admin/member-management /api/admin/summary /api/admin/ping
-    }
-    handle @admin_queries {
-        reverse_proxy 127.0.0.1:3000
-    }
-    @admin_writes {
-        method POST
-        path /api/admin/member-management /api/admin/fair-quota /api/admin/accounts /api/admin/accounts/quota
-    }
-    handle @admin_writes {
-        reverse_proxy 127.0.0.1:3000
-    }
-    @admin_account_patch {
-        method PATCH
-        path_regexp admin_account_patch ^/api/admin/accounts(/[^/]+)?$
-    }
-    handle @admin_account_patch {
-        reverse_proxy 127.0.0.1:3000
-    }
-    @web path / /account.html /owner /owner/ /owner.html /admin /admin/ /admin.html /admin/members.html /_nuxt/*
-    handle @web {
-        encode zstd gzip
-        reverse_proxy 127.0.0.1:3000
-    }
-    handle {
-        reverse_proxy 127.0.0.1:18081 {
-            header_up X-Executor-Token {$EXECUTOR_TOKEN}
-            # 保留浏览器原 Host 和端口，使 SSH 本地端口的 Origin 校验仍然成立。
-            flush_interval -1
-        }
-    }
+    # 保留浏览器原 Host 和端口，使 SSH 本地端口的 Origin 校验仍然成立。
+    import nuxt_routes
 }

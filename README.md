@@ -6,7 +6,7 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
-成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。查询、状态事件、登录和管理写入通过 Nuxt 调用独立执行器，执行器独占鉴权、SQLite 与生图调度；生图及任务协议继续按阶段分流到同一执行器。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
+成员、owner 与私有管理网页及 API 入口已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。Nuxt 将鉴权、SQLite 和生图调度交给独立执行器；长请求及图片逐块转发，断开网页连接不取消已受理的任务。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
 
 ## 功能
 
@@ -82,7 +82,7 @@ docker compose run --rm gateway node .output/server/node_modules/novelai-shared-
 docker compose up -d
 ```
 
-公开入口仍需按下文用 Caddy 同源分流；直接访问网页 3000 只有已迁的查询、状态流、登录和管理接口，不能代替完整生图入口。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
+公开入口仍需按下文用 Caddy 提供 HTTPS 与公私管理隔离；全部网页和 API 都进入 Nuxt，执行器端口仅供内部访问。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
 
 初始化只允许全新数据目录，拒绝覆盖已有数据库。它创建一个上游、四个等份成员，随机密码与成员 Key 写入 `data/bootstrap-credentials.json`，不会打印到日志。请私下将对应凭据交给成员。首次查询到有效 Opus 后才分配官方额度；初始化不会生图，也不会创造官方余额。
 
@@ -96,11 +96,11 @@ ssh -N -L 127.0.0.1:19080:127.0.0.1:18082 your-user@your-server
 
 ## 公网与客户端
 
-Compose 只绑定回环地址。使用 HTTPS 反向代理对外提供服务，参考 [Caddyfile.example](Caddyfile.example)，修改域名并保持与 `PUBLIC_HOST` 一致。Caddy 进程须单独获得相同的 `EXECUTOR_TOKEN` 环境变量；它不会自动读取项目 `.env`，也不需要管理员或上游密钥。示例把有限 GET 和成员 SSE 转给 Nuxt，其余协议直接交给同一执行器并覆盖内部认证头。管理员路由不能公开，代理不能把外部请求伪装成 localhost。不要记录 Authorization 或带 token 的完整 URL。
+Compose 只绑定回环地址。使用 HTTPS 反向代理对外提供服务，参考 [Caddyfile.example](Caddyfile.example)，修改域名并保持与 `PUBLIC_HOST` 一致。Caddy 全部转发到 Nuxt，不再直连执行器，也不需要内部、管理员或上游密钥；API 保持不压缩并及时刷新流，网页资源可压缩。管理员路由不能公开，代理不能把外部请求伪装成 localhost。不要记录 Authorization 或带 token 的完整 URL。
 
 成员密码登录与 Discord 登录起始请求按客户端 IP 限流。`TRUSTED_PROXY_IPS` 默认留空，此时只采用 TCP 连接来源，忽略 `X-Forwarded-For`、`X-Real-IP` 等外部头。启用反向代理时，必须填写网关实际看到的、由你控制的代理精确 IP（逗号分隔），否则所有经过同一代理的成员会共用限流桶；不接受主机名、网段或 `*`，格式错误时登录返回 503。密码模式仍额外保留每用户名限制，改变 IP 不能重置该限制。
 
-systemd 下同机 Caddy/Nuxt 通过回环调用执行器时通常为 `TRUSTED_PROXY_IPS=127.0.0.1,::1`。Docker 下还须核对 Nuxt 容器和 Caddy 的实际来源 IP；容器重建或网络变更后复核，不能直接照抄回环配置，也不要信任整个私网。Compose 已通过 `env_file` 读取该配置。Nuxt 追加自己的实际入站来源，执行器仍逐跳验证。内部监听端口应只允许这些代理访问，不能把内部密钥当作成员或管理员凭据。
+systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_PROXY_IPS=127.0.0.1,::1`。Docker 下还须核对链路中 Nuxt 容器和 Caddy 的实际来源 IP；容器重建或网络变更后复核，不能直接照抄回环配置，也不要信任整个私网。Compose 已通过 `env_file` 读取该配置。Nuxt 追加自己的实际入站来源，执行器仍逐跳验证。内部监听端口应只允许 Nuxt 等获准内部调用方访问，不能把内部密钥当作成员或管理员凭据。
 
 网关仅在连接来源可信时读取 `X-Forwarded-For`，从右向左经过已配置代理，停在第一个不可信地址；畸形链回退到连接来源，不从其他请求头猜测。代理必须覆盖客户端自带的转发头，或追加它实际收到的连接来源。示例 Caddy 的默认行为会忽略外部伪造值；若前面还有 CDN，应先按 [Caddy 官方代理信任配置](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers) 配置其信任边界，再按实际链路配置网关，不能直接信任客户端提供的 CDN/IP 头。发布前用两个不同来源地址确认限流互不影响，并验证伪造前缀不能改变限流身份。
 

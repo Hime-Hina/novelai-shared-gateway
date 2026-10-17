@@ -33,7 +33,7 @@ function request(base, route, method = 'GET') {
   });
 }
 
-test('真实 Nuxt dev 命中正式查询、认证和状态路由，未迁生图不添加隐式代理', { timeout: 180000 }, async t => {
+test('真实 Nuxt dev 命中正式查询、认证、生图和状态路由，API 命名空间保留执行器响应', { timeout: 180000 }, async t => {
   // test-utils 的 dev CLI 不暴露 --dotenv；发现真实文件就停止，绝不加载其内容。
   await assert.rejects(lstat(path.join(webRoot, '.env')), error => error.code === 'ENOENT',
     'Use process environment and move your own web/.env aside before this smoke test; the test will not read, move, or delete it.');
@@ -44,13 +44,14 @@ test('真实 Nuxt dev 命中正式查询、认证和状态路由，未迁生图�
   const internalToken = `synthetic-development-${randomUUID()}`;
   const observed = [];
   let ctx, buildDir;
-  const upstream = http.createServer((req, res) => {
+  const upstream = http.createServer(async (req, res) => {
     observed.push({ method: req.method, path: req.url, headers: req.headers });
     if (req.url === '/api/member/shared-events') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' });
       res.end('event: state-invalidated\ndata: {"bootId":"synthetic-dev","version":0,"scopes":["member"],"resync":true}\n\nevent: auth-expired\ndata: {}\n\n');
       return;
     }
+    for await (const _chunk of req) { /* 正常写入先消费正文，覆盖实际 pipe 路径。 */ }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ fixture: 'current-nuxt-development-route', path: req.url }));
   });
@@ -121,9 +122,17 @@ test('真实 Nuxt dev 命中正式查询、认证和状态路由，未迁生图�
   assert.equal(login.status, 200, login.body);
   assert.deepEqual(JSON.parse(login.body), { fixture: 'current-nuxt-development-route', path: '/api/member/login' });
   const generation = await request(ctx.url, '/api/jobs', 'POST');
-  assert.ok([404, 405].includes(generation.status), `unmigrated generation must not silently reach the executor: ${JSON.stringify({ status: generation.status, body: generation.body.slice(0, 700), observed: observed.map(item => item.path) })}`);
+  assert.equal(generation.status, 200, generation.body);
+  assert.deepEqual(JSON.parse(generation.body), { fixture: 'current-nuxt-development-route', path: '/api/jobs' });
+  const fallback = await request(ctx.url, '/api/unsupported', 'POST');
+  assert.equal(fallback.status, 200, fallback.body);
+  assert.deepEqual(JSON.parse(fallback.body), { fixture: 'current-nuxt-development-route', path: '/api/unsupported' });
+  const unsupportedMethod = await request(ctx.url, '/api/jobs', 'DELETE');
+  assert.equal(unsupportedMethod.status, 200, unsupportedMethod.body);
+  assert.deepEqual(JSON.parse(unsupportedMethod.body), { fixture: 'current-nuxt-development-route', path: '/api/jobs' });
   assert.deepEqual(observed.map(item => [item.method, item.path]), [
-    ['GET', '/api/member/login-options'], ['GET', '/api/member/me'], ['GET', '/api/member/shared-events'], ['POST', '/api/member/login']
+    ['GET', '/api/member/login-options'], ['GET', '/api/member/me'], ['GET', '/api/member/shared-events'],
+    ['POST', '/api/member/login'], ['POST', '/api/jobs'], ['POST', '/api/unsupported'], ['DELETE', '/api/jobs']
   ]);
   for (const { headers } of observed) {
     for (const key of ['host', 'origin', 'cookie', 'authorization']) assert.equal(headers[key], identity[key]);

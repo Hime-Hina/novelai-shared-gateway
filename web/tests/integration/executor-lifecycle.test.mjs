@@ -9,15 +9,26 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTestContext, loadFixture, buildFixture } from '@nuxt/test-utils/e2e';
+import { readNativeEvents } from '../../../tests/helpers/native-stream-client.mjs';
 
 const webRoot = fileURLToPath(new URL('../../', import.meta.url));
 const executorEntry = fileURLToPath(new URL('../../../executor/.output/server/start.mjs', import.meta.url));
-const handler = fileURLToPath(new URL('../fixtures/executor-gateway.ts', import.meta.url)).replaceAll('\\', '/');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
+// The same valid 128×128 PNG as native-image tests; reference pricing rejects tiny (<100 character) encodings.
+const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAVklEQVR4nO3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOBvAI8AAT4ZY7sAAAAASUVORK5CYII=', 'base64');
+const vibe = Buffer.from([0, 255, 128, 3, 13, 10, 0, 42]);
+const previewPayload = Buffer.concat([Buffer.from([0x82, 0xaa]), Buffer.from('event_type'), Buffer.from([0xac]),
+  Buffer.from('intermediate'), Buffer.from([0xa5]), Buffer.from('image'), Buffer.from([0xc4, png.length]), png]);
+const previewLength = Buffer.alloc(4); previewLength.writeUInt32BE(previewPayload.length);
+const previewFrame = Buffer.concat([previewLength, previewPayload]);
 const publicHost = 'gateway.example', publicOrigin = 'https://' + publicHost;
 const envBase = () => Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
   .filter(key => process.env[key]).map(key => [key, process.env[key]]));
 const jobBody = prompt => ({ prompt, model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23, seed: 42 });
+const nativeBody = input => ({ input, model: 'nai-diffusion-4-5-full', action: 'generate',
+  parameters: { width: 1024, height: 1024, steps: 23, seed: 42, n_samples: 1 } });
+const chatBody = (label, stream = false) => ({ model: 'nai-diffusion-4-5-full:k_euler_ancestral', stream,
+  messages: [{ role: 'user', content: `提示词: ${label}\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:` }] });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function listen(server) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port;
@@ -33,17 +44,20 @@ async function until(predicate, timeout, label) {
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
-function call(base, route, { method, body, headers = {} } = {}) {
+function call(base, route, { method, body, headers = {}, timeout = 15000, agent } = {}) {
   const target = new URL(route, base);
   assert.equal(target.origin, base, 'fixture calls must stay on the local process');
   return new Promise((resolve, reject) => {
-    const request = http.request(target, { method: method || (body === undefined ? 'GET' : 'POST'), signal: AbortSignal.timeout(15000),
+    const request = http.request(target, { method: method || (body === undefined ? 'GET' : 'POST'), signal: AbortSignal.timeout(timeout), agent,
       headers: { host: publicHost, origin: publicOrigin, ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers } }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk)); response.on('error', reject);
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
     });
-    request.on('error', reject); request.end(body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body));
+    request.on('error', reject);
+    const bytes = body === undefined ? undefined : typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+    if (headers['transfer-encoding'] === 'chunked') { request.write(bytes.subarray(0, 13)); request.end(bytes.subarray(13)); }
+    else request.end(bytes);
   });
 }
 function json(response, status = 200) {
@@ -52,10 +66,11 @@ function json(response, status = 200) {
   return JSON.parse(response.body);
 }
 
-async function subscribe(t, base, cookie) {
+async function subscribe(t, base, cookie, { route = '/api/member/shared-events', headers = {}, body } = {}) {
   const frames = [];
   let response, ended = false, failure, buffer = '';
-  const request = http.get(base + '/api/member/shared-events', { headers: { host: publicHost, origin: publicOrigin, cookie } }, incoming => {
+  const request = http.request(base + route, { method: body ? 'POST' : 'GET', headers: { host: publicHost, origin: publicOrigin,
+    ...(cookie ? { cookie } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...headers } }, incoming => {
     response = incoming;
     incoming.setEncoding('utf8');
     incoming.on('data', chunk => {
@@ -65,7 +80,7 @@ async function subscribe(t, base, cookie) {
         if (frame.startsWith(':')) frames.push({ comment: frame });
         else {
           const event = /^event: ?(.+)$/m.exec(frame)?.[1], data = /^data: ?(.+)$/m.exec(frame)?.[1];
-          if (event && data) frames.push({ event, data: JSON.parse(data) });
+          if (data) frames.push({ event: event || 'message', data: data === '[DONE]' ? data : JSON.parse(data) });
         }
       }
     });
@@ -73,6 +88,7 @@ async function subscribe(t, base, cookie) {
     incoming.on('error', error => { failure = error; ended = true; });
   });
   request.on('error', error => { failure = error; ended = true; });
+  request.end(body ? JSON.stringify(body) : undefined);
   t.after(() => request.destroy());
   await until(() => response || failure, 10000, 'Nuxt SSE response did not start');
   if (failure) throw failure;
@@ -80,7 +96,7 @@ async function subscribe(t, base, cookie) {
   return { frames, request, response, ended: () => ended, failure: () => failure };
 }
 
-async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, discord = false } = {}) {
+async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, discord = false, directExecutor = false, directTimeout } = {}) {
   await stat(executorEntry);
   const runtimeRequire = createRequire(executorEntry);
   const packagedRoot = path.join(path.dirname(executorEntry), 'node_modules', 'novelai-shared-gateway');
@@ -130,6 +146,9 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
   const rows = table => audit.prepare(`SELECT data FROM ${table}`).all().map(row => JSON.parse(row.data));
   const jobs = () => rows('jobs');
   const releaseFirst = deferred();
+  const heldGenerations = [];
+  let nextGeneration;
+  const upstreamCalls = [];
   const discordState = { refreshTokens: [], authorizationCodes: [], membershipTokens: [], membershipCalls: [], status: 200, gate: null, persistedBeforeMembership: false };
   let fileSynced = false;
   let generations = 0, quotaCalls = 0, fixedRemaining = 10000, unexpectedUpstream = 0, leakedInternalHeader = false, wrongUpstreamAuth = false;
@@ -177,15 +196,28 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
       res.end(JSON.stringify({ subscription: { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
         trainingStepsLeft: { fixedTrainingStepsLeft: fixedRemaining, purchasedTrainingSteps: 0 },
         usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 } } }));
-    } else if (['/ai/generate-image', '/ai/generate-image-stream'].includes(req.url)) {
+    } else if (['/ai/generate-image', '/ai/generate-image-stream', '/ai/encode-vibe', '/ai/upscale'].includes(req.url)) {
       generations++;
       const generated = JSON.parse(Buffer.concat(chunks));
-      const quote = quoteFairRequest({ ...generated.parameters, model: generated.model });
-      if (quote.resource === 'anlas') fixedRemaining -= quote.amount;
+      upstreamCalls.push({ path: req.url, body: generated });
+      if (req.url.includes('generate-image')) {
+        const quote = quoteFairRequest({ ...generated.parameters, model: generated.model });
+        if (quote.resource === 'anlas') fixedRemaining -= quote.amount;
+      }
       if (generations === 1 && holdFirst) await releaseFirst.promise;
       const stream = req.url.endsWith('-stream');
-      res.writeHead(200, { 'content-type': stream ? 'application/octet-stream' : 'image/png' });
-      res.end(stream ? nativeImagesMsgpack([png]) : png);
+      const held = nextGeneration; nextGeneration = undefined;
+      if (held) {
+        held.started = true;
+        if (held.preview) {
+          assert.equal(stream, true, 'preview fixture must exercise an actual upstream MessagePack stream');
+          res.writeHead(200, { 'content-type': 'application/octet-stream' }); res.write(previewFrame);
+        }
+        await held.promise;
+      }
+      const encoded = req.url === '/ai/encode-vibe';
+      if (!res.headersSent) res.writeHead(200, { 'content-type': stream || encoded ? 'application/octet-stream' : 'image/png' });
+      res.end(encoded ? vibe : stream ? nativeImagesMsgpack([png]) : png);
     } else { unexpectedUpstream++; res.writeHead(500); res.end('unexpected synthetic upstream route'); }
   });
   const upstreamPort = await listen(upstream), executorPort = await unusedPort(), nuxtPort = await unusedPort();
@@ -277,16 +309,18 @@ globalThis.fetch = (input, options) => {
     EXECUTOR_TOKEN: internalToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(executorPort),
     PUBLIC_HOST: publicHost, PUBLIC_BASE_URL: publicOrigin, TRUSTED_PROXY_IPS: '127.0.0.1',
     RESULT_RECOVERY_TEST_STAGE: holdFileSync ? 'file_sync' : '',
+    ...(directTimeout === undefined ? {} : { DIRECT_GENERATE_TIMEOUT_MS: String(directTimeout) }),
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`, ...discordEnv },
   [new URL('../fixtures/executor-file-sync.mjs', import.meta.url).href]);
   const nuxt = processHandle('built Nuxt', nuxtEntry, { ...envBase(), NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(nuxtPort),
-    NUXT_EXECUTOR_BASE_URL: `http://127.0.0.1:${relayPort}`, NUXT_EXECUTOR_TOKEN: internalToken });
+    NUXT_EXECUTOR_BASE_URL: directExecutor ? executorBase : `http://127.0.0.1:${relayPort}`, NUXT_EXECUTOR_TOKEN: internalToken });
   const startNuxt = () => nuxt.start(async () => {
     try { return (await call(nuxtBase, '/')).status === 200; } catch { return false; }
   });
   const startExecutor = () => executor.start(output => output.includes('Nai2API listening'), { RESULT_RECOVERY_TEST_STAGE: '' });
   t.after(async () => {
     releaseFirst.resolve();
+    for (const held of heldGenerations) held.resolve();
     discordState.gate?.resolve();
     queryBatch?.open.resolve();
     for (const child of children.slice().reverse()) await child.stop();
@@ -310,7 +344,9 @@ globalThis.fetch = (input, options) => {
     headers: { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-admin-token': adminToken, 'x-executor-token': internalToken } });
   return { request, nuxt, executor, startNuxt, startExecutor, dataDir, audit, jobs, members, observations, droppedReceipts, internalToken,
     nuxtBase, executorBase, adminToken, upstreamToken, cookie, revoke, discordState, forbiddenResponseSecrets: [upstreamToken, internalToken, adminToken, ...discordSecrets],
-    fileSynced: () => fileSynced,
+    fileSynced: () => fileSynced, upstreamCalls,
+    holdNext(preview = false) { assert.equal(nextGeneration, undefined); const held = { ...deferred(), preview, started: false };
+      heldGenerations.push(held); nextGeneration = held; return held; },
     releaseFirst: releaseFirst.resolve, generations: () => generations, quotaCalls: () => quotaCalls,
     batchQueries(routes) { queryBatch = { paths: new Set(routes), arrived: 0, forwarded: 0, open: deferred() }; return queryBatch; },
     dropReceipt() { dropNextReceipt = true; }, dropMutation(route) { dropMutationPath = route; }, checkStorage };
@@ -319,8 +355,7 @@ globalThis.fetch = (input, options) => {
 test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { timeout: 240000 }, async t => {
   await stat(executorEntry); // A missing build is a failure; never substitute the legacy Node server.
   const ctx = createTestContext({ rootDir: webRoot, dev: false, build: true, browser: false, server: false,
-    nuxtConfig: { compatibilityDate: '2026-10-17',
-      nitro: { handlers: ['/api/jobs', '/api/jobs/**', '/api/requests/**'].map(route => ({ route, handler })) } } });
+    nuxtConfig: { compatibilityDate: '2026-10-17' } });
   t.after(async () => {
     await ctx.nuxt?.close();
     const testRoot = path.resolve(webRoot, '.nuxt', 'test');
@@ -647,6 +682,190 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.equal(f.generations(), 0); f.checkStorage();
   });
 
+  await t.test('正式 Native 别名共享幂等结果，multipart真实附件保留32MiB边界，Vibe和放大字节可领取', { timeout: 45000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { directExecutor: true });
+    for (const [method, route] of [
+      ...['api', 'ai', 'v1', 'user'].map(namespace => ['GET', `/${namespace}/unsupported`]),
+      ['GET', '/ai/generate-image'], ['DELETE', '/api/jobs'], ['PATCH', '/v1/chat/completions'], ['POST', '/api/web/jobs'],
+      ['OPTIONS', '/ai/generate-image'], ['HEAD', '/api/jobs']
+    ]) {
+      const proxied = await f.request(route, { method });
+      const direct = await call(f.executorBase, route, { method, headers: {
+        authorization: 'Bearer ' + f.members[0].api_key, 'x-executor-token': f.internalToken } });
+      assert.equal(proxied.status, direct.status, `${method} ${route}`); assert.equal(proxied.body.toString(), direct.body.toString(), `${method} ${route}`);
+      for (const name of ['content-type', 'access-control-allow-origin', 'access-control-allow-methods', 'access-control-allow-headers', 'access-control-expose-headers']) {
+        assert.equal(proxied.headers[name], direct.headers[name], `${method} ${route}: ${name}`);
+      }
+    }
+    const assertZip = response => {
+      assert.equal(response.status, 200, response.body.toString().slice(0, 300));
+      assert.match(response.headers['content-type'], /application\/zip/);
+      assert.equal(response.body.readUInt32LE(0), 0x04034b50);
+      assert.equal(response.body.readUInt16LE(8), 0);
+      const offset = 30 + response.body.readUInt16LE(26) + response.body.readUInt16LE(28);
+      assert.deepEqual(response.body.subarray(offset, offset + response.body.readUInt32LE(18)), png);
+    };
+    let nativeId;
+    for (const route of ['/ai/generate-image', '/v1/ai/generate-image', '/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
+      const response = await f.request(route, { body: nativeBody('synthetic alias replay'), headers: { 'idempotency-key': 'native-alias-replay' } });
+      assert.equal(response.status, 200); assert.ok(response.headers['x-nai-request-id']);
+      nativeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], nativeId);
+      if (route.endsWith('-stream')) {
+        assert.match(response.headers['content-type'], /application\/octet-stream/);
+        const events = readNativeEvents(response.body); assert.equal(events.length, 1);
+        assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), png);
+      } else assertZip(response);
+    }
+    assert.equal(f.generations(), 1); assert.equal(f.jobs().length, 1);
+
+    const input = { ...nativeBody('synthetic multipart reference'), model: 'nai-diffusion-3' };
+    Object.assign(input.parameters, { reference_image_multiple: ['ref_multiple_0'], reference_strength_multiple: [0.6], reference_information_extracted_multiple: [1] });
+    const boundary = 'synthetic-nuxt-native-boundary';
+    const prefix = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="request"; filename="request.json"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(input)}`);
+    const suffix = Buffer.concat([Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="ref_multiple_0"; filename="reference.png"\r\nContent-Type: image/png\r\n\r\n`), referencePng, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+    const exactLimit = 32 * 1024 * 1024;
+    const body = Buffer.concat([prefix, Buffer.alloc(exactLimit - prefix.length - suffix.length, 32), suffix]);
+    assert.equal(body.length, exactLimit);
+    const headers = { 'content-type': `multipart/form-data; boundary=${boundary}`, 'idempotency-key': 'multipart-size-boundary' };
+    for (const framing of [{ 'content-length': String(body.length) }, { 'transfer-encoding': 'chunked' }]) {
+      assertZip(await f.request('/v1/ai/generate-image', { body, headers: { ...headers, ...framing }, timeout: 30000 }));
+    }
+    assert.equal(f.generations(), 2); assert.equal(f.upstreamCalls.at(-1).body.parameters.reference_image_multiple[0], referencePng.toString('base64'));
+    const counts = () => ['jobs', 'generation_requests', 'fair_quota_settlements', 'ledger'].map(table => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+    const beforeRejected = counts();
+    const oversize = Buffer.concat([body, Buffer.from(' ')]);
+    for (const options of [
+      // An early-rejected incomplete upload cannot reuse its socket for another HTTP request.
+      { body: Buffer.from('{}'), agent: false, headers: { ...headers, 'content-length': String(exactLimit + 1) } },
+      { body: oversize, headers: { ...headers, 'content-length': String(exactLimit + 1) } },
+      { body: oversize, headers: { ...headers, 'transfer-encoding': 'chunked' } }
+    ]) {
+      const rejected = await f.request('/ai/generate-image', options); assert.equal(rejected.status, 413,
+        JSON.stringify({ framing: options.headers['transfer-encoding'] || 'content-length', headers: rejected.headers, body: rejected.body.toString().slice(0, 300) }));
+    }
+    assert.deepEqual(counts(), beforeRejected); assert.equal(f.generations(), 2);
+
+    let vibeId;
+    for (const route of ['/ai/encode-vibe', '/v1/ai/encode-vibe']) {
+      const response = await f.request(route, { body: { model: 'nai-diffusion-4-5-full', image: png.toString('base64'), information_extracted: 1 },
+        headers: { 'idempotency-key': 'opaque-vibe-replay' } });
+      assert.equal(response.status, 200); assert.match(response.headers['content-type'], /application\/octet-stream/); assert.deepEqual(response.body, vibe);
+      vibeId ||= response.headers['x-nai-request-id']; assert.equal(response.headers['x-nai-request-id'], vibeId);
+    }
+    const vibeJob = f.jobs().find(job => job.requestId === vibeId); assert.ok(vibeJob);
+    const claim = await f.request(`/api/jobs/${vibeJob.id}/content`); assert.equal(claim.status, 200); assert.deepEqual(claim.body, vibe);
+    assert.match(claim.headers['content-type'], /application\/octet-stream/);
+    assert.equal((await f.request(`/api/jobs/${vibeJob.id}/content`, { member: 1 })).status, 403);
+    for (const route of ['/ai/upscale', '/v1/ai/upscale']) {
+      assertZip(await f.request(route, { body: { image: png.toString('base64') }, headers: { 'idempotency-key': 'upscale-alias-replay' } }));
+    }
+    assert.equal(f.generations(), 4); assert.equal(f.jobs().length, 4);
+    assert.equal(f.observations.length, 0, 'stream and binary tests must bypass the buffering fault relay'); f.checkStorage();
+  });
+
+  await t.test('正式OpenAI首帧与任务预览实时到达，长于45秒仍完成，任务取消和签名图保留成员边界', { timeout: 90000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { directExecutor: true, discord: true, directTimeout: 1000 });
+    const authorization = 'Bearer ' + f.members[1].api_key;
+    const previews = await subscribe(sub, f.nuxtBase, undefined, { route: '/api/jobs/events', headers: { authorization } });
+    const foreignPreviews = await subscribe(sub, f.nuxtBase, undefined, { route: '/api/jobs/events', headers: { authorization: 'Bearer ' + f.members[2].api_key } });
+    const held = f.holdNext(true), started = Date.now();
+    const streamed = await subscribe(sub, f.nuxtBase, undefined, { route: '/v1/chat/completions', headers: { authorization }, body: chatBody('synthetic slow stream', true) });
+    await until(() => held.started && previews.frames.some(frame => frame.data?.preview) && streamed.frames.some(frame => frame.data?.object === 'chat.completion.chunk'),
+      10000, 'OpenAI first frame and actual upstream preview must arrive before the held final image');
+    const preview = previews.frames.find(frame => frame.data?.preview).data;
+    assert.deepEqual(Buffer.from(preview.preview.split(',')[1], 'base64'), png);
+    assert.ok(preview.progress.percent > 0 && preview.progress.percent < 100);
+    assert.equal(f.jobs().find(job => job.id === preview.jobId).status, 'running');
+    assert.equal(foreignPreviews.frames.some(frame => frame.data?.preview), false);
+    assert.equal(streamed.ended(), false); assert.equal(f.generations(), 1);
+
+    const queued = json(await f.request('/api/jobs', { member: 1, body: jobBody('synthetic cancellable task') }), 202);
+    assert.equal(json(await f.request('/api/jobs/' + queued.id, { member: 1 })).status, 'queued');
+    assert.equal(json(await f.request('/api/requests/' + queued.requestId, { member: 1 })).id, queued.requestId);
+    const memberRoute = '/api/member/requests/' + queued.requestId;
+    assert.equal(json(await call(f.nuxtBase, memberRoute, { headers: { cookie: f.cookie(1) } })).id, queued.requestId);
+    for (const [route, options] of [
+      ['/api/requests/' + queued.requestId, { member: 2 }],
+      ['/api/requests/' + queued.requestId + '/cancel', { member: 2, body: {} }]
+    ]) assert.equal((await f.request(route, options)).status, 404);
+    assert.equal((await call(f.nuxtBase, memberRoute + '/cancel', { body: {}, headers: { cookie: f.cookie(2) } })).status, 404);
+    assert.equal(json(await call(f.nuxtBase, memberRoute + '/cancel', { body: {}, headers: { cookie: f.cookie(1) } })).cancelledCount, 1);
+    assert.equal(json(await f.request('/api/requests/' + queued.requestId + '/cancel', { member: 1, body: {} })).cancelledCount, 0);
+
+    const direct = '/generate?' + new URLSearchParams({ token: f.members[1].api_key, prompt: 'synthetic original timeout image',
+      artist: '', model: 'nai-diffusion-4-5-full', width: '1024', height: '1024', steps: '23', seed: '63', nocache: '1' });
+    const timedOut = await call(f.nuxtBase, direct);
+    assert.equal(timedOut.status, 200); assert.match(timedOut.headers['content-type'], /image\//);
+    assert.equal(timedOut.headers['x-error'], '1'); assert.equal(timedOut.headers['x-timeout'], '1');
+    assert.ok(timedOut.body.length); assert.ok(timedOut.headers['x-nai-request-id']);
+    assert.equal(json(await f.request('/api/requests/' + timedOut.headers['x-nai-request-id'] + '/cancel', { member: 1, body: {} })).cancelledCount, 1);
+
+    // This wait crosses the old finite proxy deadline; the upstream final frame remains explicitly blocked.
+    await new Promise(resolve => setTimeout(resolve, Math.max(0, 46000 - (Date.now() - started))));
+    assert.equal(streamed.ended(), false, 'long generation must not inherit a 45 second proxy deadline');
+    assert.equal(streamed.failure(), undefined); assert.equal(f.jobs().find(job => job.id === preview.jobId).status, 'running');
+    held.resolve();
+    await until(streamed.ended, 10000, 'OpenAI stream did not deliver its final frame');
+    assert.equal(streamed.failure(), undefined);
+    const messages = streamed.frames.filter(frame => frame.event === 'message').map(frame => frame.data);
+    assert.equal(messages.at(-1), '[DONE]');
+    const chunks = messages.slice(0, -1); assert.ok(chunks.every(chunk => chunk.object === 'chat.completion.chunk'));
+    assert.ok(chunks.every(chunk => chunk.id === chunks[0].id));
+    assert.deepEqual(chunks.at(-1).choices, [{ index: 0, delta: {}, finish_reason: 'stop' }]);
+    const markdown = chunks.map(chunk => chunk.choices[0].delta.content || '').join('');
+    assert.match(markdown, /!\[image\]\(https?:\/\//);
+    previews.request.destroy(); foreignPreviews.request.destroy();
+
+    const completion = json(await f.request('/v1/chat/completions', { member: 1, body: chatBody('synthetic JSON completion') }));
+    assert.equal(completion.object, 'chat.completion'); assert.equal(completion.choices[0].finish_reason, 'stop');
+    const imageUrl = new URL(completion.choices[0].message.content.match(/!\[image\]\((https?:\/\/[^)]+)\)/)[1]);
+    assert.equal(imageUrl.hostname, publicHost);
+    const imagePath = imageUrl.pathname + imageUrl.search;
+    const signed = await call(f.nuxtBase, imagePath); assert.equal(signed.status, 200); assert.deepEqual(signed.body, png);
+    assert.equal((await f.request(imagePath, { member: 2 })).status, 200, 'a valid limited-lifetime share URL remains usable');
+    const forged = new URL(imageUrl); forged.searchParams.set('signature', '0'.repeat(64));
+    for (const pathname of [imageUrl.pathname, forged.pathname + forged.search]) {
+      assert.equal((await call(f.nuxtBase, pathname)).status, 401);
+      assert.equal((await f.request(pathname, { member: 2 })).status, 403);
+      assert.deepEqual((await f.request(pathname, { member: 1 })).body, png);
+    }
+    await until(() => {
+      const account = JSON.parse(f.audit.prepare('SELECT data FROM accounts LIMIT 1').get().data);
+      return !account.cooldownUntil || Date.parse(account.cooldownUntil) <= Date.now();
+    }, 15000, 'successful-generation cooldown did not elapse before the direct success sample');
+    const success = await call(f.nuxtBase, direct.replace('synthetic+original+timeout+image', 'synthetic+direct+success'));
+    assert.equal(success.status, 200); assert.deepEqual(success.body, png); assert.equal(success.headers['x-error'], undefined);
+    assert.equal(f.generations(), 3); assert.equal(f.observations.length, 0); f.checkStorage();
+  });
+
+  await t.test('正式同步生图在Nuxt强杀或客户端断开后继续，同键重试领取而不再次派发', { timeout: 45000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { directExecutor: true });
+    const executorPid = f.executor.child().pid;
+    for (const [index, interrupt] of ['nuxt-kill', 'client-close'].entries()) {
+      const input = nativeBody('synthetic lost synchronous response ' + interrupt), held = f.holdNext();
+      let received = false;
+      const pending = http.request(f.nuxtBase + '/ai/generate-image', { method: 'POST', headers: { host: publicHost, origin: publicOrigin,
+        authorization: 'Bearer ' + f.members[0].api_key, 'content-type': 'application/json', 'idempotency-key': interrupt } }, response => { received = true; response.resume(); });
+      pending.on('error', () => {}); pending.end(JSON.stringify(input)); sub.after(() => pending.destroy());
+      await until(() => held.started && f.jobs().length === index + 1, 15000, 'synchronous request did not reach the held upstream');
+      const accepted = f.jobs().find(job => job.status === 'running'); assert.ok(accepted?.requestId); assert.equal(received, false);
+      if (interrupt === 'nuxt-kill') await f.nuxt.stop(); else pending.destroy();
+      assert.equal(f.executor.child().pid, executorPid); assert.equal(f.executor.child().exitCode, null);
+      held.resolve();
+      await until(() => f.jobs().find(job => job.id === accepted.id)?.status === 'done', 10000, 'executor cancelled an accepted task after downstream disconnection');
+      if (interrupt === 'nuxt-kill') await f.startNuxt();
+      const replay = await f.request('/v1/ai/generate-image-stream', { body: input, headers: { 'idempotency-key': interrupt } });
+      assert.equal(replay.status, 200); assert.equal(replay.headers['x-nai-request-id'], accepted.requestId);
+      assert.deepEqual(Buffer.from(readNativeEvents(replay.body)[0].image), png);
+      assert.deepEqual((await f.request(`/api/jobs/${accepted.id}/content`)).body, png);
+      assert.equal(json(await f.request('/api/requests/' + accepted.requestId)).id, accepted.requestId);
+      assert.equal((await f.request('/api/requests/' + accepted.requestId, { member: 1 })).status, 404);
+      assert.equal(f.generations(), index + 1); assert.equal(f.jobs().length, index + 1);
+      assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, index + 1);
+    }
+    assert.equal(f.observations.length, 0); f.checkStorage();
+  });
+
   await t.test('正式 SSE 保持同一客户端连接跨执行器重启，校准新boot后仍接收授权失效', { timeout: 45000 }, async sub => {
     const f = await fixture(sub, nuxtEntry, { discord: true });
     const stream = await subscribe(sub, f.nuxtBase, f.cookie(2));
@@ -670,12 +889,16 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     await sub.test('Linux SIGTERM结束Nuxt桥为普通EOF，执行器继续运行', { skip: process.platform === 'win32' }, async signalTest => {
       const ownerStream = await subscribe(signalTest, f.nuxtBase, f.cookie(1));
       await until(() => ownerStream.frames.some(frame => frame.event === 'state-invalidated' && frame.data.resync), 5000, 'owner stream did not open');
+      const previewStream = await subscribe(signalTest, f.nuxtBase, undefined, { route: '/api/jobs/events',
+        headers: { authorization: 'Bearer ' + f.members[1].api_key } });
+      await until(() => previewStream.frames.some(frame => frame.comment?.includes('connected')), 5000, 'preview stream did not open');
       const executorPid = f.executor.child().pid, started = Date.now();
       let exit;
       const stopping = f.nuxt.stop('SIGTERM').then(value => { exit = value; });
-      await until(() => ownerStream.ended() && exit, 5000, 'Nuxt SIGTERM did not close its stream and exit within five seconds');
+      await until(() => ownerStream.ended() && previewStream.ended() && exit, 5000, 'Nuxt SIGTERM did not close both streams and exit within five seconds');
       await stopping;
       assert.equal(ownerStream.failure(), undefined); assert.deepEqual(exit, [0, null]);
+      assert.equal(previewStream.failure(), undefined); assert.equal(previewStream.frames.some(frame => frame.event === 'auth-expired'), false);
       assert.ok(Date.now() - started < 5000);
       assert.equal(ownerStream.frames.some(frame => frame.event === 'auth-expired'), false);
       assert.equal(f.executor.child().pid, executorPid); assert.equal(f.executor.child().exitCode, null); assert.equal(f.executor.child().signalCode, null);
