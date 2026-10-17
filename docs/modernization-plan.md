@@ -188,6 +188,8 @@ T01图片与结果片：native-image、job-previews、result-files迁为严格Ty
 
 D01离线副本工具已完成：只读SQLite backup纳入已提交WAL，迁移和凭据轮换只作用于完整工作副本，复用sqlRecord投影及既有退款/核对函数；清理冷表和释放页中的旧凭据，保留内部关联与受保护历史。活动任务和预留闭合，原停用成员保持停用，默认禁止接单，副本PST可查询常驻mock。Windows与断网只读Linux各7项通过，包含3000+冷历史、V5/免费/订阅/购买/回退退款、冷终态优先、防覆盖、失败无交付及源主库/WAL/图片不变；Linux权限通过。纯旧generic库、孤立预留和无法可靠退款的旧points活动任务拒绝交付，具体使用与边界见[部署说明](test-deployment.md#离线测试副本工具)。未处理真实生产数据、未安装目标机；本片完整CI另记录。
 
+T01账务、会话与owner片：fair-quota、generation-accounting、operating-accounting、member-auth及owner-operations迁为严格TypeScript。钱包、预留、快照、任务证据和运营资源由所属模块定义；会话行复用Drizzle schema，启动器settings复用账务类型，混合账本保持追加容器。没有新增运行时校验、数值转换或依赖；保留历史算术、原位升级、错误和JSON属性顺序。账务126项、登录相关46项及owner5项定向通过；冻结旧模块的10组账务场景、9种owner操作及统计输出对照一致。根类型/语法、全后端527项中523通过/4项Windows跳过、网页类型与116项、真实Nuxt开发/生产双进程13通过/1项Windows跳过均通过；执行器本机产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4及包内编译后的bootstrap→test-copy CLI通过，源库不变和输出权限已核验。server顶层23个TS、13个JS；存储、上游适配、调度和成员路由等仍待，本批完整Linux CI另记录。图片片[f7c7dca](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39024947176)和副本工具[3b73904](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39025133075)的完整CI均已成功；未处理真实生产副本或部署。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
@@ -209,7 +211,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 
 当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
 
-主要实现位于 [native-image.js](../server/native-image.js)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.js](../server/fair-quota.js)、[providers.js](../server/providers.js)、[native-stream.js](../server/native-stream.js)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.js](../server/providers.js)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.js)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
 
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |
@@ -229,7 +231,7 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 
 改造前会话全员固定 12 小时，保存在进程内 Map，重启即失效。当前分支 A01 已改为以下规则；这次源码修改尚未部署生产：
 
-- [member-auth.js](../server/member-auth.js) 中普通成员固定 7 天，owner 固定 12 小时；访问、余额查询和 SSE 不续期。
+- [member-auth.ts](../server/member-auth.ts) 中普通成员固定 7 天，owner 固定 12 小时；访问、余额查询和 SSE 不续期。
 - [member-routes.js](../server/member-routes.js) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
 - 随机 Cookie 只在浏览器，SQLite 冷表保存摘要、成员、版本、固定截止和签发角色绑定；重启保留有效会话。旧 Map 无法迁移，首次升级需重新登录一次。
 - 停用、删除、重置认证版本会撤销对应会话；Discord 再次登录也会更新认证版本，使该成员之前的会话失效。
@@ -245,7 +247,7 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 
 ## 实时更新
 
-当前公共状态通过 SSE 发送，但每条连接仍在服务端每两秒读取状态；成员钱包和最近任务依赖手动刷新，管理页还有三十秒轮询。已有 [JobPreviews](../server/job-previews.js) 是图片预览通道，不是完整的业务状态通知机制。
+当前公共状态通过 SSE 发送，但每条连接仍在服务端每两秒读取状态；成员钱包和最近任务依赖手动刷新，管理页还有三十秒轮询。已有 [JobPreviews](../server/job-previews.ts) 是图片预览通道，不是完整的业务状态通知机制。
 
 建议继续使用浏览器原生 EventSource 与 Node 事件能力，不新增 WebSocket 服务或消息中间件：
 
@@ -353,7 +355,7 @@ HAR、trace 和截图可能包含 Cookie、Authorization、Key、提示词或成
 
 生产只读结果见[近期任务排队基线](queue-baseline.md)，不把本地模拟结果称为生产排队结论。以最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识统计，覆盖成功、失败、取消、正在等待和超时请求；不足七天的实际历史跨度及未落库拒绝率明确标为缺失。
 
-复用 [owner 用量统计](../server/owner-operations.js)和 [readOwnerJobRows](../server/store.js) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
+复用 [owner 用量统计](../server/owner-operations.ts)和 [readOwnerJobRows](../server/store.js) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
 
 | 阶段 | 时间字段 | 能解释的问题 |
 | --- | --- | --- |

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import * as fair from '../../server/fair-quota.js';
+import * as fair from '../../server/fair-quota.ts';
 import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.js';
 import * as queuePolicy from '../../server/queue-policy.ts';

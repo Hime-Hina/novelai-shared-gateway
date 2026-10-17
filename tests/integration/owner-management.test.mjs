@@ -6,9 +6,9 @@ import {mkdtemp} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {handleMemberRoutes} from '../../server/member-routes.js';
-import {createMemberSession, isOwner} from '../../server/member-auth.js';
-import {ownerOperation, summarizeOwnerUsage} from '../../server/owner-operations.js';
-import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.js';
+import {createMemberSession, isOwner} from '../../server/member-auth.ts';
+import {ownerOperation, summarizeOwnerUsage} from '../../server/owner-operations.ts';
+import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.ts';
 import {sharedSurface} from '../../server/shared-surface.ts';
 import {JsonStore} from '../../server/store.js';
 

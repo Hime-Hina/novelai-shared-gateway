@@ -6,7 +6,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonStore, createId, hashObject } from '../../server/store.js';
 import { normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS } from '../../server/providers.js';
-import * as fair from '../../server/fair-quota.js';
+import * as fair from '../../server/fair-quota.ts';
 import * as queue from '../../server/queue-policy.ts';
 import * as requests from '../../server/generation-request.js';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';

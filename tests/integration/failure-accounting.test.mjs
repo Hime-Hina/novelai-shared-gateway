@@ -9,9 +9,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { JsonStore } from '../../server/store.js';
 import { FAILURE_EVENT_PREDICATE, updateLossAlertPolicy } from '../../server/failure-accounting.js';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { handleMemberRoutes } from '../../server/member-routes.js';
-import { createMemberSession, setMemberCredentials } from '../../server/member-auth.js';
+import { createMemberSession, setMemberCredentials } from '../../server/member-auth.ts';
 
 const day = 86400000, iso = time => new Date(time).toISOString();
 const candidate = resources => ({ resources, amountSource: 'synthetic-evidence' });

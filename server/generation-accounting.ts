@@ -1,7 +1,31 @@
+import type { FairCharge, FairRequest, QuotaSnapshot, ResourceAmounts } from './fair-quota.ts';
+
+interface LedgerDatabase { ledger?: unknown[] }
+interface UpstreamCandidate { resources: Partial<ResourceAmounts>; amountSource: string }
+export interface GenerationAttempt {
+  id: string; jobId: string; batchId: string | null; memberId: string; accountId: string; sampleIndex: number | null;
+  operation: string; model: string | null; source: string | null; configVersion: number; reservedAt: number;
+  localReserved: ResourceAmounts; upstreamCandidates: UpstreamCandidate[]; candidateMode: string; sharedV5Reserved: number;
+  evidenceOrigin: string; dispatchIntentAt: number | null; snapshot: QuotaSnapshot | null;
+}
+interface GenerationRefund { eventId: string; refundedAt: number; lossEventId: string | null }
+interface GenerationReview {
+  status: 'pending' | 'estimated_closed' | 'result_recovered'; firstUnknownAt: number; deadlineAt: number;
+  lossEventId: string; closedAt: number | null; closureEventId: string | null; resultImageId?: string;
+}
+export interface AccountingJob {
+  id: string; status?: string; batchId?: string; sampleIndex?: number; source?: string; userToken?: string;
+  request?: FairRequest; requestPayload?: FairRequest; fairCharge?: FairCharge; generationAttempt?: GenerationAttempt;
+  generationRefund?: GenerationRefund; generationReview?: GenerationReview;
+  upstreamStartedAt?: string; upstreamHeadersAt?: string; upstreamCompletedAt?: string; upstreamHttpStatus?: number;
+  lateResultAvailable?: boolean; lateResultAt?: string; updatedAt?: string;
+}
+export interface RefundEvidence { requestStarted?: boolean }
+
 // 共享模式不自动重发原任务：一个任务目前只有一次上游尝试。
 // 本模块只追加证据；钱包变更仍由 fair-quota 在同一个存储事务中执行。
 export const GENERATION_REVIEW_MS = 5 * 60 * 1000;
-function localResources(charge) {
+function localResources(charge: FairCharge): ResourceAmounts {
   return {
     v5: charge.resource === 'v5' ? charge.amount : 0,
     anlasFixed: charge.resource === 'anlas' ? charge.fixed : 0,
@@ -9,7 +33,7 @@ function localResources(charge) {
   };
 }
 
-function upstreamCandidates(charge) {
+function upstreamCandidates(charge: FairCharge): UpstreamCandidate[] {
   const anlas = { resources: { anlasFixed: charge.fixed, anlasPurchased: charge.purchased }, amountSource: 'quote' };
   if (charge.billingMode === 'anlas_fallback') {
     // 两种计费路径是候选，不可相加，也不能据本地 Anlas 预扣断言上游用了哪一池。
@@ -19,7 +43,7 @@ function upstreamCandidates(charge) {
   return charge.resource === 'anlas' ? [anlas] : [];
 }
 
-function appendEvent(db, attempt, type, now, details) {
+function appendEvent<T extends Record<string, unknown>>(db: LedgerDatabase, attempt: GenerationAttempt, type: string, now: number, details: T) {
   const event = {
     id: `${attempt.id}:${type}`, type, at: new Date(now).toISOString(),
     attemptId: attempt.id, jobId: attempt.jobId, batchId: attempt.batchId,
@@ -31,10 +55,10 @@ function appendEvent(db, attempt, type, now, details) {
   return event;
 }
 
-export function recordGenerationAttempt(db, job, charge, snapshot, now) {
+export function recordGenerationAttempt(db: LedgerDatabase, job: AccountingJob, charge: FairCharge, snapshot: QuotaSnapshot | null, now: number): GenerationAttempt {
   if (job.generationAttempt) return job.generationAttempt;
   const request = job.request || job.requestPayload || {};
-  const attempt = {
+  const attempt: GenerationAttempt = {
     id: `attempt:${job.id}:1`, jobId: job.id, batchId: job.batchId || null,
     memberId: charge.userId, accountId: charge.accountId, sampleIndex: job.sampleIndex ?? null,
     operation: request.operation || request.action || 'generate', model: request.model || null,
@@ -52,11 +76,11 @@ export function recordGenerationAttempt(db, job, charge, snapshot, now) {
   return attempt;
 }
 
-export function recordGenerationRefund(db, job, charge, now, evidence = {}) {
+export function recordGenerationRefund(db: LedgerDatabase, job: AccountingJob, charge: FairCharge, now: number, evidence: RefundEvidence = {}) {
   const attempt = job.generationAttempt || recordGenerationAttempt(db, job, charge, null, now);
   // 活进程能明确证明尚未进入 fetch；重启后仅有 running/派发意图时则必须保留不确定性。
   const dispatchState = job.upstreamStartedAt ? 'request_started'
-    : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status) ? 'not_sent' : 'unknown';
+    : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status as string) ? 'not_sent' : 'unknown';
   const response = {
     dispatchState, upstreamStartedAt: job.upstreamStartedAt || null,
     upstreamHeadersAt: job.upstreamHeadersAt || null, upstreamCompletedAt: job.upstreamCompletedAt || null,
@@ -77,7 +101,7 @@ export function recordGenerationRefund(db, job, charge, now, evidence = {}) {
     lossEventId: loss.id, closedAt: null, closureEventId: null };
 }
 
-export function closeGenerationReview(db, job, now = Date.now(), reason = 'deadline') {
+export function closeGenerationReview(db: LedgerDatabase, job: AccountingJob, now = Date.now(), reason = 'deadline'): boolean {
   const review = job.generationReview;
   if (!review || review.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
   if (reason === 'deadline' && (job.status !== 'failed' || now < review.deadlineAt)) return false;
@@ -100,10 +124,10 @@ export function closeGenerationReview(db, job, now = Date.now(), reason = 'deadl
   return true;
 }
 
-export function recordRecoveredGeneration(db, job, imageId, now = Date.now()) {
+export function recordRecoveredGeneration(db: LedgerDatabase, job: AccountingJob, imageId: string, now = Date.now()): boolean {
   if (job.lateResultAvailable) return false;
   closeGenerationReview(db, job, now, 'result_recovered');
-  const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
+  const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge!, null, now);
   appendEvent(db, attempt, 'generation_result_recovered', now, {
     imageId, lossEventId: job.generationRefund?.lossEventId || null,
     closureEventId: job.generationReview?.closureEventId || null,

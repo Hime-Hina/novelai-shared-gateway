@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
-import { syncFairQuota } from '../../server/fair-quota.js';
+import { syncFairQuota } from '../../server/fair-quota.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');

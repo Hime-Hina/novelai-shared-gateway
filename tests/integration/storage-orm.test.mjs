@@ -8,7 +8,7 @@ import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
 import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.js';
-import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/fair-quota.js';
+import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
 
 const legacySchema = await readFile(new URL('../fixtures/sqlite-before-drizzle.sql', import.meta.url), 'utf8');
 const migrationCount = JSON.parse(await readFile(new URL('../../server/migrations/meta/_journal.json', import.meta.url), 'utf8')).entries.length;
@@ -201,7 +201,7 @@ test('实际 persister 在事务中退出不留半笔预扣，提交后退出则
   await store.close();
   const script = `
     import { JsonStore } from ${JSON.stringify(new URL('../../server/store.js', import.meta.url).href)};
-    import { reserveFairQuota } from ${JSON.stringify(new URL('../../server/fair-quota.js', import.meta.url).href)};
+    import { reserveFairQuota } from ${JSON.stringify(new URL('../../server/fair-quota.ts', import.meta.url).href)};
     const store = new JsonStore(process.argv[1]); await store.init();
     if (process.argv[2] === 'during') store.statements.upsertRecord.jobs.run = () => process.exit(73);
     await store.update(db => {

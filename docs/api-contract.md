@@ -2,7 +2,7 @@
 
 核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，生产仍未切换。
 
-实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.js)、[输入解析](../server/native-image.js)、[multipart 解析](../server/native-body.js)、[核价](../server/native-pricing.ts)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
+实现依据为 [HTTP 入口](../server/index.js)、[共享模式路由白名单](../server/shared-surface.ts)、[输入解析](../server/native-image.ts)、[multipart 解析](../server/native-body.ts)、[核价](../server/native-pricing.ts)、[上游适配](../server/providers.js)、[成员路由](../server/member-routes.js)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
 ## 证据与使用边界
 
@@ -56,7 +56,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 缓存字段 | cached 形式必须同时给出 data，进入核价后转换为普通数组 | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝 |
 | 客户端别名/空模板 | `uc_preset→ucPreset`、`quality_toggle→qualityToggle`；两名并存必须一致；关闭的 ControlNet/自动放大/LoRA 模板字段可清理 | 启用的未知功能不得透传；启用 ControlNet、LoRA、内联 upscale/upscaled_enhance 返回 422 |
 
-其他已列入白名单的提示/兼容标志包括 `params_version`、预设 ID、legacy 系列、dynamic_thresholding 系列、`skip_cfg_*`、`uncond_scale`、`cfg_sched_eligibility`、`deliberate_euler_ancestral_bug`、`prefer_brownian`、`straight_alpha`、`tag_hint_*` 等；仍逐项检查类型或范围。完整字段与约束以 [native-image.js](../server/native-image.js) 为准，不能仅因为存在于 Swagger 就跳过校验。实际正向文本使用顶层 `input` 和已验证的角色结构；冗余 `parameters.prompt` 的规则见下文。
+其他已列入白名单的提示/兼容标志包括 `params_version`、预设 ID、legacy 系列、dynamic_thresholding 系列、`skip_cfg_*`、`uncond_scale`、`cfg_sched_eligibility`、`deliberate_euler_ancestral_bug`、`prefer_brownian`、`straight_alpha`、`tag_hint_*` 等；仍逐项检查类型或范围。完整字段与约束以 [native-image.ts](../server/native-image.ts) 为准，不能仅因为存在于 Swagger 就跳过校验。实际正向文本使用顶层 `input` 和已验证的角色结构；冗余 `parameters.prompt` 的规则见下文。
 
 所有图片输入默认限 8 MiB、边长 ≤8192、≤16777216 像素。PNG 检查块 CRC 与实际解压扫描线；JPEG/WebP 是结构检查，不声称完整像素解码。放大和编码另有下述操作约束。
 

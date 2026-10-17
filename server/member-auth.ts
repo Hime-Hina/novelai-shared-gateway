@@ -1,13 +1,40 @@
 import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-const scrypt = promisify(derive);
-const attempts = new Map();
+import type { memberSessions } from './storage-schema.js';
+
+interface MemberUser {
+  id: string;
+  enabled?: boolean;
+  updatedAt?: string;
+  memberAuth?: { username?: string; salt?: string; hash?: string; version?: string };
+  discord?: { id?: string; guildId?: string };
+}
+interface MemberDatabase { users: MemberUser[] }
+type MemberSession = typeof memberSessions.$inferSelect;
+interface SessionOwner { ownerUserId: string; guildId: string }
+interface SessionMutation {
+  collections: [];
+  immediate: true;
+  memberSession?: () => MemberSession | undefined;
+  memberSessionDelete?: string | (() => string | undefined);
+  memberSessionOwner?: SessionOwner;
+}
+interface MemberSessionStore {
+  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation): Promise<T>;
+  readMemberSession(tokenHash: string): MemberSession | null;
+  readMemberSessionOwner(): SessionOwner | null;
+}
+type OwnerUser = MemberUser & { enabled: true; discord: { id: string; guildId: string } };
+
+// Node scrypt 的完成回调返回 Buffer；promisify 对重载函数只能推断 unknown。
+const scrypt = promisify(derive) as (password: string, salt: string, keylen: number) => Promise<Buffer>;
+const attempts = new Map<string, { count: number; expiresAt: number }>();
 const memberTtl = 7 * 24 * 60 * 60 * 1000, ownerTtl = 12 * 60 * 60 * 1000;
 const windowMs = 15 * 60 * 1000;
-const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
-const normalized = value => String(value || '').trim().toLowerCase();
+const fail: (statusCode: number, message: string) => never = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
+const normalized = (value: unknown): string => String(value || '').trim().toLowerCase();
 
-export async function setMemberCredentials(db, userId, input) {
+export async function setMemberCredentials(db: MemberDatabase, userId: string, input: { username?: unknown; password?: unknown }) {
   const user = db.users.find(u => u.id === userId && u.enabled === true);
   if (!user) fail(404, '账户不存在或未启用');
   const username = normalized(input.username);
@@ -22,11 +49,11 @@ export async function setMemberCredentials(db, userId, input) {
   return { id: user.id, username };
 }
 
-function prune(map, now) {
+function prune(map: typeof attempts, now: number): void {
   for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
 }
 
-export function checkMemberLoginRate(username, remote, now = Date.now()) {
+export function checkMemberLoginRate(username: unknown, remote: unknown, now = Date.now()): void {
   prune(attempts, now);
   const keys = [...(username === null ? [] : [`user:${normalized(username).slice(0, 128)}`]), `remote:${String(remote).slice(0, 128)}`];
   const limits = username === null ? [120] : [10, 120];
@@ -35,29 +62,30 @@ export function checkMemberLoginRate(username, remote, now = Date.now()) {
   keys.forEach(key => { const a = attempts.get(key) || { count: 0, expiresAt: now + windowMs }; a.count++; attempts.set(key, a); });
 }
 
-export async function loginMember(db, username, password) {
+export async function loginMember(db: MemberDatabase, username: unknown, password: unknown): Promise<MemberUser> {
   const user = db.users.find(u => u.memberAuth?.username === normalized(username));
   const auth = user?.memberAuth;
   const candidate = typeof password === 'string' && password.length <= 128 ? password : '';
   // 不存在的账户也执行相同派生过程，避免通过响应时间枚举用户名。
   const hash = await scrypt(candidate, auth?.salt || '000000000000000000000000000000000000000000000000', 64);
   const expected = auth?.hash && /^[a-f0-9]{128}$/.test(auth.hash) ? Buffer.from(auth.hash, 'hex') : Buffer.alloc(64);
-  if (!timingSafeEqual(hash, expected) || !auth || user.enabled !== true || !candidate) fail(401, '用户名或密码错误');
-  return user;
+  // auth 只可能来自上面的 user；短路检查通过时 user 已存在。
+  if (!timingSafeEqual(hash, expected) || !auth || user!.enabled !== true || !candidate) fail(401, '用户名或密码错误');
+  return user!;
 }
 
-const sessionHash = token => typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)
+const sessionHash = (token: unknown): string | null => typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token)
   ? createHash('sha256').update(token).digest('hex') : null;
-const ownerConfig = env => ({ ownerUserId: env.OWNER_USER_ID || '', guildId: env.DISCORD_GUILD_ID || '' });
-const ownerBinding = (user, env) => isOwner(user, env) ? JSON.stringify([user.id, user.discord.id, env.DISCORD_GUILD_ID]) : null;
+const ownerConfig = (env: NodeJS.ProcessEnv): SessionOwner => ({ ownerUserId: env.OWNER_USER_ID || '', guildId: env.DISCORD_GUILD_ID || '' });
+const ownerBinding = (user: MemberUser | null | undefined, env: NodeJS.ProcessEnv): string | null => isOwner(user, env) ? JSON.stringify([user.id, user.discord.id, env.DISCORD_GUILD_ID]) : null;
 
-export async function reconcileMemberSessionOwner(store, env = process.env) {
+export async function reconcileMemberSessionOwner(store: Pick<MemberSessionStore, 'update'>, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   await store.update(() => {}, { collections: [], memberSessionOwner: ownerConfig(env), immediate: true });
 }
 
-export async function createMemberSession(store, userSnapshot, env = process.env, now) {
+export async function createMemberSession(store: Pick<MemberSessionStore, 'update'>, userSnapshot: MemberUser, env: NodeJS.ProcessEnv = process.env, now?: number) {
   const token = randomBytes(32).toString('base64url');
-  let row;
+  let row: MemberSession | undefined;
   return store.update(db => {
     const at = now ?? Date.now();
     // 密码/OAuth 校验后可能已被停用、重置或换绑，必须在签发事务内重新核对。
@@ -65,17 +93,18 @@ export async function createMemberSession(store, userSnapshot, env = process.env
     if (!user?.memberAuth?.version || user.memberAuth.version !== userSnapshot.memberAuth?.version
       || ownerBinding(user, env) !== ownerBinding(userSnapshot, env)) fail(401, '成员认证状态已变化，请重新登录');
     const binding = ownerBinding(user, env), expiresAt = at + (binding ? ownerTtl : memberTtl);
-    row = { token_hash: sessionHash(token), user_id: user.id, auth_version: user.memberAuth.version,
+    // 32 随机字节的 base64url 固定为 43 字符，必定满足 sessionHash 的现有格式检查。
+    row = { token_hash: sessionHash(token)!, user_id: user.id, auth_version: user.memberAuth.version,
       created_at: at, expires_at: expiresAt, owner_binding: binding };
     return { token, expiresAt };
   }, { collections: [], memberSession: () => row, memberSessionOwner: ownerConfig(env), immediate: true });
 }
 
-export async function authenticateMemberSession(store, token, env = process.env, now) {
+export async function authenticateMemberSession(store: MemberSessionStore, token: unknown, env: NodeJS.ProcessEnv = process.env, now?: number) {
   const tokenHash = sessionHash(token);
   if (!tokenHash) return null;
   const configured = ownerConfig(env);
-  let revoke;
+  let revoke: string | undefined;
   return store.update(db => {
     const at = now ?? Date.now();
     const session = store.readMemberSession(tokenHash), previous = store.readMemberSessionOwner();
@@ -91,11 +120,11 @@ export async function authenticateMemberSession(store, token, env = process.env,
   }, { collections: [], memberSessionDelete: () => revoke, memberSessionOwner: configured, immediate: true });
 }
 
-export async function logoutMemberSession(store, token) {
+export async function logoutMemberSession(store: Pick<MemberSessionStore, 'update'>, token: unknown): Promise<void> {
   const tokenHash = sessionHash(token);
   if (tokenHash) await store.update(() => {}, { collections: [], memberSessionDelete: tokenHash, immediate: true });
 }
 
-export function isOwner(user, env = process.env) {
+export function isOwner(user: MemberUser | null | undefined, env: NodeJS.ProcessEnv = process.env): user is OwnerUser {
   return Boolean(env.OWNER_USER_ID && env.DISCORD_GUILD_ID && user?.enabled === true && user.id === env.OWNER_USER_ID && user.discord?.id && user.discord.guildId === env.DISCORD_GUILD_ID);
 }

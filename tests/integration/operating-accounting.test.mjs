@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
 import { JsonStore } from '../../server/store.js';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, manageFairMember, manageOperatingFunding } from '../../server/fair-quota.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, manageFairMember, manageOperatingFunding } from '../../server/fair-quota.ts';
 import { launcherSubscription } from '../../server/launcher-subscription.ts';
 import { handleMemberRoutes } from '../../server/member-routes.js';
 

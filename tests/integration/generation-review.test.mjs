@@ -11,8 +11,8 @@ import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
 import { describeStoredResult, publishStoredResult } from '../../server/result-files.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.js';
-import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
+import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.ts';
 import { activateNextBatchJob } from '../../server/generation-request.js';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
 

@@ -1,18 +1,38 @@
-const emptyResources = () => ({ v5: 0, anlasFixed: 0, anlasPurchased: 0 });
-const error = message => { throw Object.assign(new Error(message), { statusCode: 409 }); };
+import type { AnlasResource, FairQuotaDatabase, FairQuotaState, QuotaSnapshot, Resource, ResourceAmounts } from './fair-quota.ts';
 
-export function operatingAccount(s) {
+export interface OperatingAccount {
+  available: ResourceAmounts; unfunded: Record<AnlasResource, number>; unattributedReturns: Record<AnlasResource, number>;
+  gapEventIds: Record<AnlasResource, string | null>; v5CapacityGap: number; v5GapEventId: string | null;
+  pendingExternalFunding: { receipt: string; eventId: string; resource: AnlasResource; destination: string; remaining: number; registeredAt: number; snapshotAt: number }[];
+}
+export interface OperatingFundingInput {
+  action?: string; resource?: unknown; amount?: unknown; receipt?: unknown;
+  destination?: unknown; fromUnattributed?: unknown; lossEventId?: string;
+}
+interface FundingEvent {
+  id: string; type: string; accountId?: string | null; resource?: Resource; amount: number; request?: unknown;
+}
+export interface OperatingFundingContext {
+  actorId: string; findEvent: (id: string | undefined) => FundingEvent | null | undefined; coveredAmount: (id: string) => number;
+}
+type OperatingDatabase = FairQuotaDatabase & { settings: { fairQuota: FairQuotaState } };
+interface FundingResult { eventId: string; duplicate: boolean; memberFunding?: { resource: AnlasResource; amount: number } }
+
+const emptyResources = (): ResourceAmounts => ({ v5: 0, anlasFixed: 0, anlasPurchased: 0 });
+const error: (message: string) => never = message => { throw Object.assign(new Error(message), { statusCode: 409 }); };
+
+export function operatingAccount(s: FairQuotaState): OperatingAccount {
   return s.operating ||= { available: emptyResources(), unfunded: { anlasFixed: 0, anlasPurchased: 0 },
     unattributedReturns: { anlasFixed: 0, anlasPurchased: 0 }, gapEventIds: { anlasFixed: null, anlasPurchased: null },
     v5CapacityGap: 0, v5GapEventId: null, pendingExternalFunding: [] };
 }
 
-function append(db, event, now) {
+function append<T extends Record<string, unknown>>(db: OperatingDatabase, event: T, now: number): T {
   (db.ledger ||= []).unshift(structuredClone({ at: new Date(now).toISOString(), accountId: db.settings.fairQuota.boundAccountId, ...event }));
   return event;
 }
 
-export function recordAnlasGap(db, resource, amount, before, after, now) {
+export function recordAnlasGap(db: OperatingDatabase, resource: AnlasResource, amount: number, before: QuotaSnapshot, after: QuotaSnapshot, now: number) {
   const s = db.settings.fairQuota, ops = operatingAccount(s);
   const id = `resource-gap:${s.boundAccountId}:${after.at}:${resource}`;
   // amount 是此观察点可核销的累计差额；observedAmount 才是本次新观察到的下降，不能重复相加。
@@ -26,7 +46,7 @@ export function recordAnlasGap(db, resource, amount, before, after, now) {
     resource, amount: covered, source: 'operating_available' }, now);
 }
 
-export function reconcileV5Capacity(db, amount, snapshot, now) {
+export function reconcileV5Capacity(db: OperatingDatabase, amount: number, snapshot: QuotaSnapshot, now: number) {
   const s = db.settings.fairQuota, ops = operatingAccount(s), previous = ops.v5CapacityGap;
   if (Math.abs(amount - previous) <= 1e-9) return;
   const id = `v5-capacity:${s.boundAccountId}:${snapshot.at}`;
@@ -35,7 +55,7 @@ export function reconcileV5Capacity(db, amount, snapshot, now) {
   ops.v5CapacityGap = amount; ops.v5GapEventId = amount > 0 ? id : null;
 }
 
-export function recoverV5Capacity(db, budget, from, until, now) {
+export function recoverV5Capacity(db: OperatingDatabase, budget: number, from: number, until: number, now: number): number {
   const s = db.settings.fairQuota, ops = operatingAccount(s), amount = Math.min(ops.v5CapacityGap, budget);
   if (amount <= 0) return 0;
   ops.v5CapacityGap -= amount;
@@ -44,7 +64,7 @@ export function recoverV5Capacity(db, budget, from, until, now) {
   return amount;
 }
 
-export function matchExternalFunding(db, resource, delta, snapshot, now) {
+export function matchExternalFunding(db: OperatingDatabase, resource: AnlasResource, delta: number, snapshot: QuotaSnapshot, now: number): number {
   const ops = operatingAccount(db.settings.fairQuota);
   let memberFunding = 0;
   // 只有提前登记的明确注资才进入运营钱包；未说明归属的增额沿用原分配规则。
@@ -72,15 +92,15 @@ export function matchExternalFunding(db, resource, delta, snapshot, now) {
 }
 
 // 调用者必须在现有 store.update 内提供持久 lookup/coverage；不能只查有限的热 ledger。
-export function applyOperatingFunding(db, body, { actorId, findEvent, coveredAmount }, now = Date.now()) {
+export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFundingInput, { actorId, findEvent, coveredAmount }: OperatingFundingContext, now = Date.now()): FundingResult {
   const s = db.settings?.fairQuota;
   if (!s?.enabled || !s.snapshot || !actorId || !s.balances[actorId]) error('需要已分组的运营者和已初始化账本');
-  const resource = body.resource, amount = body.amount, receipt = body.receipt;
+  const resource = body.resource as Resource, amount = body.amount, receipt = body.receipt;
   if (!['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) || typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0 || (resource !== 'v5' && !Number.isSafeInteger(amount))) error('运营资源或数量无效');
   if (typeof receipt !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(receipt)) error('请提供 8–100 位唯一收据标识，只含字母、数字、下划线或连字符');
   const id = `operating-receipt:${receipt}`;
   const destination = body.destination || 'operating', fromUnattributed = body.fromUnattributed === true;
-  if (!['members', 'operating'].includes(destination) || (body.fromUnattributed !== undefined && typeof body.fromUnattributed !== 'boolean')) error('资金归属选项无效');
+  if (!['members', 'operating'].includes(destination as string) || (body.fromUnattributed !== undefined && typeof body.fromUnattributed !== 'boolean')) error('资金归属选项无效');
   if (body.action !== 'operating-register-funding' && (body.destination !== undefined || body.fromUnattributed !== undefined)) error('只有新增资金凭据支持入账归属选项');
   const request = { action: body.action, actorId, resource, amount, destination, fromUnattributed, lossEventId: body.lossEventId || null };
   const previous = findEvent(id);
@@ -89,9 +109,9 @@ export function applyOperatingFunding(db, body, { actorId, findEvent, coveredAmo
     return { eventId: id, duplicate: true };
   }
   const ops = operatingAccount(s);
-  let event, memberFunding;
+  let event: Record<string, unknown>, memberFunding: FundingResult['memberFunding'];
   if (body.action === 'operating-contribute') {
-    const wallet = s.balances[actorId], field = `${resource}Available`;
+    const wallet = s.balances[actorId], field = `${resource}Available` as const;
     if (wallet[field] + 1e-9 < amount) error('运营者本人可用余额不足');
     wallet[field] = Math.max(0, wallet[field] - amount); ops.available[resource] += amount;
     wallet.anlasAvailable = wallet.anlasFixedAvailable + wallet.anlasPurchasedAvailable;
@@ -108,7 +128,7 @@ export function applyOperatingFunding(db, body, { actorId, findEvent, coveredAmo
     } else {
       if (s.status !== 'active') error('请先刷新有效的官方额度快照');
       if (ops.pendingExternalFunding.length >= 100) error('待核对注资过多，请先核对已有收据');
-      ops.pendingExternalFunding.push({ receipt, eventId: id, resource, destination, remaining: amount, registeredAt: now, snapshotAt: s.snapshot.at });
+      ops.pendingExternalFunding.push({ receipt, eventId: id, resource, destination: destination as string, remaining: amount, registeredAt: now, snapshotAt: s.snapshot.at });
       event = { type: 'operating_funding_registered', source: 'external_funding_receipt', destination };
     }
   } else if (body.action === 'operating-reconcile-return') {
@@ -131,6 +151,6 @@ export function applyOperatingFunding(db, body, { actorId, findEvent, coveredAmo
     else ops.unfunded[resource] = Math.max(0, ops.unfunded[resource] - amount);
     event = { type: 'operating_loss_covered', source: 'operating_available', lossEventId: loss.id };
   } else error('不支持的运营账务操作');
-  append(db, { id, resource, amount, request, ...event }, now);
+  append(db as OperatingDatabase, { id, resource, amount, request, ...event }, now);
   return { eventId: id, duplicate: false, ...(memberFunding ? { memberFunding } : {}) };
 }

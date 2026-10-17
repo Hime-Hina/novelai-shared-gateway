@@ -8,8 +8,8 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
-import { syncFairQuota } from '../../server/fair-quota.js';
-import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.js';
+import { syncFairQuota } from '../../server/fair-quota.ts';
+import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 
 const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));

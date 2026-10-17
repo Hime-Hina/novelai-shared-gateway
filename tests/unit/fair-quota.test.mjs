@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {manageFairMember,configureFairGroups,configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota,quoteFairRequest,fairQuotaSummary} from '../../server/fair-quota.js';
+import {manageFairMember,configureFairGroups,configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota,quoteFairRequest,fairQuotaSummary} from '../../server/fair-quota.ts';
 const NOW=1800000000000;
 const members=['a','b','c','d'];
 function fixture(percent=80){

@@ -8,9 +8,9 @@ import Database from 'better-sqlite3';
 import { migrateStorage } from '../server/storage-migrations.js';
 import { recordTables } from '../server/storage-schema.js';
 import { sqlRecord } from '../server/store.js';
-import { setMemberCredentials } from '../server/member-auth.js';
-import { settleFairQuota } from '../server/fair-quota.js';
-import { closeGenerationReview } from '../server/generation-accounting.js';
+import { setMemberCredentials } from '../server/member-auth.ts';
+import { settleFairQuota } from '../server/fair-quota.ts';
+import { closeGenerationReview } from '../server/generation-accounting.ts';
 
 export const TEST_COPY_UPSTREAM_TOKEN = 'pst-synthetic-d01-mock-upstream-only';
 const collections = Object.keys(recordTables);

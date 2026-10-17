@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {quoteNativeRequest} from '../../server/native-pricing.ts';
-import {configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest} from '../../server/fair-quota.js';
+import {configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest} from '../../server/fair-quota.ts';
 
 // 对照独立保存的官网报价结果；不包含官网代码或真实账户信息。
 const fixture=JSON.parse(readFileSync(new URL('../fixtures/official-image-pricing-20261009.json',import.meta.url),'utf8'));

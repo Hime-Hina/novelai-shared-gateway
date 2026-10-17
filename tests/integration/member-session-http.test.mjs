@@ -11,8 +11,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
-import { syncFairQuota } from '../../server/fair-quota.js';
-import { createMemberSession } from '../../server/member-auth.js';
+import { syncFairQuota } from '../../server/fair-quota.ts';
+import { createMemberSession } from '../../server/member-auth.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const memberTtl = 7 * 86400000, ownerTtl = 12 * 3600000;

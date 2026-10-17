@@ -7,8 +7,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {handleMemberRoutes} from '../../server/member-routes.js';
-import {setMemberCredentials, createMemberSession, logoutMemberSession} from '../../server/member-auth.js';
-import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.js';
+import {setMemberCredentials, createMemberSession, logoutMemberSession} from '../../server/member-auth.ts';
+import {configureFairQuota, syncFairQuota} from '../../server/fair-quota.ts';
 import { JsonStore } from '../../server/store.js';
 test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失败',async t=>{
  const db={settings:{},accounts:[],jobs:[],users:['a','b','c','d'].map(id=>({id,enabled:true,token:'STA1N-'+id,balance:0}))};

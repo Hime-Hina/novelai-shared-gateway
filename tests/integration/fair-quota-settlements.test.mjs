@@ -6,7 +6,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.js';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.js';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
 
 const now = Date.now();
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };

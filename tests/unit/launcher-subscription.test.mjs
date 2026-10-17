@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launcherSubscription } from '../../server/launcher-subscription.ts';
-import { configureFairQuota,syncFairQuota } from '../../server/fair-quota.js';
+import { configureFairQuota,syncFairQuota } from '../../server/fair-quota.ts';
 const NOW=1800000000000;
 function fixture(){
  const db={users:['a','b','c','d','outsider'].map(id=>({id,enabled:true,token:'private-'+id})),settings:{},accounts:[{id:'secret-opus',token:'upstream-secret',enabled:true,quotaTier:3,subscriptionActive:true,subscriptionExpiresAt:NOW+86400000,quotaCheckedAt:NOW,v5UsagePercent:80,v5UsageTimeUntilNextPercent:600,quotaFixed:10000,quotaPurchased:1000}]};

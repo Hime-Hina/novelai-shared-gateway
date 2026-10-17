@@ -1,4 +1,4 @@
-import { fairQuotaSummary } from './fair-quota.js';
+import { fairQuotaSummary, type FairQuotaDatabase } from './fair-quota.ts';
 
 interface SubscriptionAccount {
   id: string;
@@ -11,7 +11,7 @@ interface SubscriptionAccount {
 interface SubscriptionDatabase {
   accounts?: SubscriptionAccount[] | Record<string, SubscriptionAccount>;
   ledger?: unknown[];
-  settings?: Record<string, unknown>;
+  settings?: FairQuotaDatabase['settings'];
 }
 
 const rows=(value: SubscriptionDatabase['accounts']): SubscriptionAccount[]=>Array.isArray(value)?value:Object.values(value || {});

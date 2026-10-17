@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.js';
-import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.js';
+import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
