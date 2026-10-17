@@ -4,6 +4,9 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/providers.ts';
 import { validateImageBytes } from '../../server/native-image.ts';
 import { readNativeEvents } from '../helpers/native-stream-client.mjs';
@@ -14,9 +17,9 @@ const body = { input: 'synthetic mock test', model: 'nai-diffusion-4-5-full', ac
   parameters: { width: 1024, height: 1024, steps: 23, n_samples: 1, seed: 0 } };
 const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
 
-async function start(t, delayMs = 0) {
+async function start(t, delayMs = 0, extra = []) {
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP'].filter(name => process.env[name]).map(name => [name, process.env[name]]));
-  const child = spawn(process.execPath, [script, '--port', '0', '--delay-ms', String(delayMs)], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [script, '--port', '0', '--delay-ms', String(delayMs), ...extra], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; const exited = once(child, 'exit');
   child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
   t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill(); await exited; });
@@ -95,8 +98,40 @@ test('预览先到且断开仅清本次延迟，mock仍可持续服务', { timeo
 });
 
 test('mock启动参数有界，不能通过参数改变回环绑定', () => {
-  for (const args of [['--host', '0.0.0.0'], ['--delay-ms', '60001'], ['--port', '65536'], ['--port']]) {
+  for (const args of [['--host', '0.0.0.0'], ['--delay-ms', '60001'], ['--port', '65536'], ['--port'], ['--replay-dir']]) {
     const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true });
     assert.notEqual(result.status, 0); assert.match(result.stderr, /Usage:/);
   }
+});
+
+test('离线回放保留普通、MessagePack、SSE响应字节和延迟，坏时间表拒绝启动', { timeout: 15000 }, async t => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'nai-mock-replay-'));
+  assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const fixtures = {
+    zip: { type: 'binary/octet-stream', data: Buffer.from('PK\x03\x04recorded-zip') },
+    msgpack: { type: 'application/octet-stream', data: Buffer.from([0x81, 0xa5, 0x69, 0x6d, 0x61, 0x67, 0x65, 0xc4, 2, 1, 2]) },
+    sse: { type: 'text/event-stream', data: Buffer.from('event: retry\ndata: {}\n\nevent: error\ndata: {"message":"recorded error"}\n\n') }
+  };
+  for (const [name, fixture] of Object.entries(fixtures)) {
+    await writeFile(path.join(directory, name + '.response.bin'), fixture.data);
+    await writeFile(path.join(directory, name + '.replay.json'), JSON.stringify({ version: 1, status: 200,
+      contentType: fixture.type, headersAtMs: 0, completeAtMs: 200,
+      chunks: [{ end: 3, atMs: 0 }, { end: fixture.data.length, atMs: 180 }] }));
+  }
+  const mock = await start(t, 50, ['--replay-dir', directory]);
+  for (const [name, fixture] of Object.entries(fixtures)) {
+    const began = performance.now();
+    const response = await fetch(mock.base + '/ai/generate-image' + (name === 'zip' ? '' : '-stream'), {
+      method: 'POST', headers, body: JSON.stringify({ ...body, parameters: { ...body.parameters, stream: name === 'sse' ? 'sse' : 'msgpack' } })
+    });
+    assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), fixture.type);
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), fixture.data);
+    assert.ok(performance.now() - began >= 220, 'recorded timing and added delay must both apply');
+  }
+  assert.ok(!mock.output().includes(directory));
+  const bad = { version: 1, status: 200, contentType: 'image/png', headersAtMs: 0, completeAtMs: 0, chunks: [{ end: 999, atMs: 0 }] };
+  await writeFile(path.join(directory, 'zip.replay.json'), JSON.stringify(bad));
+  const rejected = spawnSync(process.execPath, [script, '--port', '0', '--replay-dir', directory], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+  assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, /Invalid mock replay fixture/);
 });

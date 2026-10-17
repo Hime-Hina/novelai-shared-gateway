@@ -1,19 +1,48 @@
 import http from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { once } from 'node:events';
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { nativeImageMsgpack } from '../server/native-stream.ts';
 
-// 仅供隔离验收：固定公开测试凭据、固定图片和余额，不模拟官方收费或生成质量。
+// 仅供隔离验收：固定公开测试凭据和余额，可回放离线响应；不会请求真实上游。
 const token = 'pst-synthetic-d01-mock-upstream-only';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const maxBodyBytes = 32 * 1024 * 1024;
-const options = { port: 19081, 'delay-ms': 1000 };
+const options = { port: 19081, 'delay-ms': 1000, 'replay-dir': '' };
 for (let index = 2; index < process.argv.length; index += 2) {
   const name = process.argv[index].slice(2), value = process.argv[index + 1];
-  if (process.argv[index] !== `--${name}` || !Object.hasOwn(options, name) || !/^\d+$/.test(value || '')
-    || Number(value) > (name === 'port' ? 65535 : 60000)) {
-    throw new Error('Usage: mock-novelai.mjs [--port 0..65535] [--delay-ms 0..60000]');
+  if (process.argv[index] !== `--${name}` || !Object.hasOwn(options, name) || !value
+    || (name !== 'replay-dir' && (!/^\d+$/.test(value) || Number(value) > (name === 'port' ? 65535 : 60000)))) {
+    throw new Error('Usage: mock-novelai.mjs [--port 0..65535] [--delay-ms 0..60000] [--replay-dir directory]');
   }
-  options[name] = Number(value);
+  options[name] = name === 'replay-dir' ? value : Number(value);
+}
+
+const replays = {};
+if (options['replay-dir']) for (const name of ['zip', 'msgpack', 'sse']) {
+  const invalid = () => { throw new Error(`Invalid mock replay fixture: ${name}`); };
+  const files = ['replay.json', 'response.bin'].map(suffix => path.join(options['replay-dir'], `${name}.${suffix}`));
+  for (const [index, file] of files.entries()) {
+    const info = await stat(file);
+    if (!info.isFile() || info.size > (index === 0 ? 1024 * 1024 : 16 * 1024 * 1024)) invalid();
+  }
+  const metadata = JSON.parse(await readFile(files[0], 'utf8')), bytes = await readFile(files[1]);
+  if (metadata.version !== 1 || !Number.isInteger(metadata.status) || metadata.status < 200 || metadata.status > 599
+    || typeof metadata.contentType !== 'string' || metadata.contentType.length > 256
+    || !Number.isInteger(metadata.headersAtMs) || metadata.headersAtMs < 0
+    || !Number.isInteger(metadata.completeAtMs) || metadata.completeAtMs < metadata.headersAtMs
+    || metadata.completeAtMs + options['delay-ms'] > 60000
+    || !Array.isArray(metadata.chunks) || !metadata.chunks.length || metadata.chunks.length > 4096) invalid();
+  http.validateHeaderValue('content-type', metadata.contentType);
+  let end = 0, atMs = metadata.headersAtMs;
+  for (const chunk of metadata.chunks) {
+    if (!Number.isInteger(chunk.end) || chunk.end <= end || chunk.end > bytes.length
+      || !Number.isInteger(chunk.atMs) || chunk.atMs < atMs || chunk.atMs > metadata.completeAtMs) invalid();
+    end = chunk.end; atMs = chunk.atMs;
+  }
+  if (end !== bytes.length) invalid();
+  replays[name] = { ...metadata, bytes };
 }
 
 function json(res, status, body) {
@@ -61,8 +90,25 @@ const server = http.createServer(async (req, res) => {
     }
     if (!['/ai/generate-image', '/ai/generate-image-stream'].includes(pathname)) fail(404, 'Mock route not implemented');
     if (req.method !== 'POST') fail(405, 'Mock method not supported');
-    await readJson(req);
+    const body = await readJson(req);
     const stream = pathname.endsWith('-stream');
+    const replay = replays[stream ? (body.parameters.stream === 'sse' ? 'sse' : 'msgpack') : 'zip'];
+    if (replay) {
+      const started = performance.now();
+      const waitUntil = at => delay(Math.max(0, options['delay-ms'] + at - (performance.now() - started)), undefined, { signal: controller.signal });
+      await waitUntil(replay.headersAtMs);
+      res.writeHead(replay.status, { 'content-type': replay.contentType, 'cache-control': 'no-store' });
+      res.flushHeaders();
+      let offset = 0;
+      for (const chunk of replay.chunks) {
+        await waitUntil(chunk.atMs);
+        if (!res.write(replay.bytes.subarray(offset, chunk.end))) await once(res, 'drain', { signal: controller.signal });
+        offset = chunk.end;
+      }
+      await waitUntil(replay.completeAtMs);
+      res.end();
+      return;
+    }
     if (stream) {
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' });
       res.write(nativeImageMsgpack({ event_type: 'intermediate', samp_ix: 0, step_ix: 0, image: png }));
@@ -81,7 +127,7 @@ const server = http.createServer(async (req, res) => {
   } finally { res.off('close', abort); }
 });
 server.listen(options.port, '127.0.0.1', () => {
-  console.log('[mock-novelai] ' + JSON.stringify({ host: '127.0.0.1', port: server.address().port, delayMs: options['delay-ms'] }));
+  console.log('[mock-novelai] ' + JSON.stringify({ host: '127.0.0.1', port: server.address().port, delayMs: options['delay-ms'], replay: Boolean(options['replay-dir']) }));
 });
 for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
   if (closing) return;
