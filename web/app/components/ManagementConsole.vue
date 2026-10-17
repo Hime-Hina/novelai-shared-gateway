@@ -1,0 +1,86 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { NAlert, NButton, NCard, NCheckbox, NInput, NSkeleton, NSpace, NTabPane, NTabs } from 'naive-ui'
+import type { ManagementAlert, ManagementMode } from '../types/management'
+import { useManagementPortal } from '../composables/useManagementPortal'
+import { date } from '../utils/member-display'
+
+const props = defineProps<{ mode: ManagementMode }>()
+const { state, shared, panel, days, usage, usageLoading, busy, connecting, adminToken, remember, sessionVersion,
+  message, messageError, readError, usageError, updatedAt, connection, refreshVersion,
+  api, run, notify, changed, connect, disconnect, refresh, loadUsage } = useManagementPortal(props.mode)
+const groupsDirty = ref(false), policyDirty = ref(false), alerts = ref<ManagementAlert[]>([])
+const hint = computed(() => !state.value ? (connecting.value ? '正在验证管理身份…' : props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作')
+  : (props.mode === 'admin' ? '已连接 · 定时读取' : connection.value === 'open' ? '已连接 · 实时更新' : '实时更新正在连接，当前显示上次数据') + ' · 管理摘要更新 ' + date(updatedAt.value))
+function changedSession() { groupsDirty.value = false; policyDirty.value = false; alerts.value = [] }
+watch(sessionVersion, changedSession)
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (groupsDirty.value || policyDirty.value) { event.preventDefault(); event.returnValue = '' }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+</script>
+
+<template>
+  <main class="management">
+    <header class="management-header">
+      <div><h1>共享账户控制台</h1><p id="connectedHint" class="muted" role="status">{{ hint }}</p></div>
+      <NSpace v-if="state" id="topActions">
+        <NButton id="refresh" :disabled="busy" @click="refresh(true)">刷新状态</NButton>
+        <NButton v-if="mode === 'owner'" id="disconnect" tag="a" href="/">返回我的额度</NButton>
+        <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
+      </NSpace>
+    </header>
+    <NAlert v-if="message" id="message" :type="messageError ? 'error' : 'success'" role="status">{{ message }}</NAlert>
+    <NAlert v-if="readError" type="warning" role="status">{{ readError }}。已完成的写操作不会自动重复。</NAlert>
+    <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"><NSkeleton text :repeat="5" /></NCard>
+    <section v-if="state" id="dashboard" :key="sessionVersion" class="dashboard">
+      <NAlert v-if="alerts.length" id="lossAlerts" type="warning" role="status"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p></NAlert>
+      <SharedAccountStatus :state="shared" :connection="mode === 'admin' ? 'polling' : connection" />
+      <p class="muted">{{ state.users.filter(user => user.enabled).length }} 位启用成员 · 所有成员共用串行队列</p>
+      <NTabs v-model:value="panel" type="line" size="large" aria-label="管理功能">
+        <NTabPane v-if="mode === 'owner'" name="usage" display-directive="show:lazy">
+          <template #tab><NButton id="usageTab" text :aria-pressed="panel === 'usage'">用量与记录</NButton></template>
+          <NAlert v-if="usageError" type="warning" role="status">{{ usageError }}</NAlert>
+          <ManagementUsage :data="usage" :days="days" :loading="usageLoading" @update:days="days = $event" @retry="loadUsage" />
+        </NTabPane>
+        <NTabPane name="members" display-directive="show:lazy">
+          <template #tab><NButton text :aria-pressed="panel === 'members'">成员与分发</NButton></template>
+          <ManagementMembers :state="state" :mode="mode" :api="api" :run="run" :busy="busy" :groups-dirty="groupsDirty" @changed="changed" @notice="notify" />
+        </NTabPane>
+        <NTabPane name="groups" display-directive="show:lazy">
+          <template #tab><NButton text :aria-pressed="panel === 'groups'">分组与额度</NButton></template>
+          <ManagementGroups :state="state" :api="api" :run="run" :busy="busy" @dirty="groupsDirty = $event" @changed="changed" @notice="notify" />
+        </NTabPane>
+        <NTabPane name="settings" display-directive="show:lazy">
+          <template #tab><NButton text :aria-pressed="panel === 'settings'">上游与策略</NButton></template>
+          <ManagementUpstream :state="state" :mode="mode" :api="api" :run="run" :busy="busy" :groups-dirty="groupsDirty" :active="panel === 'settings'" :refresh-version="refreshVersion" @changed="changed" @notice="notify" />
+        </NTabPane>
+      </NTabs>
+      <!-- 告警持续读取；其余表单首次访问才挂载，访问后保留草稿。 -->
+      <ManagementLosses :state="state" :api="api" :run="run" :busy="busy" :active="panel === 'settings'" :refresh-version="refreshVersion" @changed="changed" @notice="notify" @dirty="policyDirty = $event" @alerts="alerts = $event" />
+    </section>
+    <template v-else-if="!connecting">
+      <NCard v-if="mode === 'admin'" class="connect-card" title="连接管理端">
+        <form id="connect" @submit.prevent="changedSession(); connect()">
+          <label for="adminToken">管理员 Key</label>
+          <NInput v-model:value="adminToken" type="password" autocomplete="off" :input-props="{ id: 'adminToken', required: true }" />
+          <NCheckbox v-model:checked="remember">仅在当前浏览器会话中记住</NCheckbox>
+          <NButton attr-type="submit" type="primary" :disabled="!adminToken.trim()">进入控制台</NButton>
+        </form>
+      </NCard>
+      <NButton v-else id="ownerSignin" tag="a" href="/">返回成员页登录或确认权限</NButton>
+    </template>
+  </main>
+</template>
+<style scoped>
+.management { max-width: 1280px; margin: auto; padding: 28px 24px 40px; }
+.management-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+h1 { margin: 0; font-size: 27px; }
+.muted { color: #adb7c6; }
+.dashboard, form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
+.dashboard { margin-top: 20px; }
+.connect-card { max-width: 510px; margin: 32px auto; }
+form { gap: 14px; }
+@media (max-width: 700px) { .management { padding: 18px 14px 28px; } .management-header { align-items: start; flex-wrap: wrap; } }
+</style>

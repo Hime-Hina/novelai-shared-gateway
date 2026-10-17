@@ -6,7 +6,7 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
-成员网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。现有网关仍独占会话、SQLite 与生图调度；owner/私有管理页稍后迁移。开发方式、SSR 样式接入和验证边界见 [Nuxt 成员页](docs/nuxt-member-portal.md)。
+成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。现有网关仍独占鉴权、SQLite 与生图调度。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，管理入口、草稿保护及验证边界见 [Nuxt 管理页](docs/nuxt-management-portal.md)。
 
 ## 功能
 
@@ -85,13 +85,13 @@ docker compose up -d
 
 初始化只允许全新数据目录，拒绝覆盖已有数据库。它创建一个上游、四个等份成员，随机密码与成员 Key 写入 `data/bootstrap-credentials.json`，不会打印到日志。请私下将对应凭据交给成员。首次查询到有效 Opus 后才分配官方额度；初始化不会生图，也不会创造官方余额。
 
-本机管理入口：`http://127.0.0.1:18081/admin`，使用 `.env` 中的管理员密钥。需要远程管理时可用 SSH 隧道：
+配置下文的 Caddy 分流后，本机私有管理入口为 `http://127.0.0.1:18082/admin`，使用 `.env` 中的管理员密钥。18082 仅监听回环地址，同时提供 Nuxt 页面与网关 API。需要远程管理时可用 SSH 隧道：
 
 ```sh
-ssh -N -L 19080:127.0.0.1:18081 your-user@your-server
+ssh -N -L 127.0.0.1:19080:127.0.0.1:18082 your-user@your-server
 ```
 
-随后访问 `http://127.0.0.1:19080/admin`。后台支持组与成员管理、续用策略、上游状态、暂停/启用和更新 PST。更新 PST 后需要刷新额度、再明确启用；应只轮换同一官方账户的凭据，替换为另一官方账户前必须另行处理原账本。
+随后访问 `http://127.0.0.1:19080/admin`；不要将新管理页的隧道直接连到网页 3000 或网关 18081。私有反代保留浏览器原 Host 和端口，使 Origin 校验成立。owner 仍从公开 HTTPS 域名的 `/owner` 使用成员 Cookie 登录，不与私有管理员 Key 混用。后台支持组与成员管理、续用策略、上游状态、暂停/启用和更新 PST。更新 PST 后需要刷新额度、再明确启用；应只轮换同一官方账户的凭据，替换为另一官方账户前必须另行处理原账本。
 
 ## 公网与客户端
 

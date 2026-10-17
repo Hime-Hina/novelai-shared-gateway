@@ -6,7 +6,7 @@ import { date, number } from '../utils/member-display'
 
 const props = defineProps<{ state: SharedStatus | null; connection: string }>()
 const labels: Record<string, string> = { pending_opus: '等待 Opus', inactive_opus: '订阅不可用', stale: '余额已过期', active: '可用', cooldown: '等待派发', quota_sync_error: '同步异常', disabled: '账户停用', unknown_balance: '余额未知' }
-const connections: Record<string, string> = { connecting: '正在连接共享状态…', open: '状态连接已建立', retrying: '状态连接中断，正在重连；以下为上次接收的数据', closed: '状态连接已关闭', invalid: '状态数据无效，请刷新页面' }
+const connections: Record<string, string> = { polling: '私有管理页可见时每 30 秒读取，也可手动刷新', connecting: '正在连接共享状态…', open: '状态连接已建立', retrying: '状态连接中断，正在重连；以下为上次接收的数据', closed: '状态连接已关闭', invalid: '状态数据无效，请刷新页面' }
 const reasons: Record<string, string> = { success_gap: '上一张已完成，等待生成间隔', ordinary_failure: '生成失败，短暂等待后继续', capacity_limit: '上游并发或容量限制，等待后继续', upstream_retry_after: '按上游要求等待后继续', completion_gap: '任务已结束，等待生成间隔' }
 const now = ref<number | null>(null)
 let timer: ReturnType<typeof setInterval> | null = null
@@ -81,7 +81,7 @@ onUnmounted(() => {
         <p class="muted">订阅与购买额度独立记录。</p>
       </NCard>
     </div>
-    <p id="sharedUpdated" class="muted">官方余额更新：{{ date(state?.officialCheckedAt) }}。每 60 秒查询，生成结束后也刷新；队列与账本提交后合并推送，通常在一秒内更新。</p>
+    <p id="sharedUpdated" class="muted">官方余额更新：{{ date(state?.officialCheckedAt) }}。每 60 秒查询，生成结束后也刷新；{{ connection === 'polling' ? '此私有页面通过定时读取更新。' : '队列与账本提交后合并推送，通常在一秒内更新。' }}</p>
     <NAlert v-if="problems.length" id="sharedError" type="warning" role="status" :show-icon="false">{{ problems.join(' · ') }}</NAlert>
   </section>
 </template>

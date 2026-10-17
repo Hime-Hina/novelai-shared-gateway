@@ -2,8 +2,9 @@
 
 本阶段在独立的 `web/` workspace 中交付成员页面。现有 Node 网关继续负责
 会话、Discord 资格检查、成员 Key、额度账本、SQLite、队列、生图和 SSE；
-Nuxt 只负责网页渲染和浏览器端数据加载。管理页仍由旧网关提供，后端接口
-迁移和独立执行服务属于后续阶段。
+Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owner 与私有管理
+页面，当前入口见 [Nuxt 管理页](nuxt-management-portal.md)；后端接口迁移和
+独立执行服务属于后续阶段。下文 U01 的验证与性能记录保留为历史证据。
 
 ## 当前选型与目录
 
@@ -73,8 +74,8 @@ corepack pnpm --filter @novelai-gateway/web prepare
 corepack pnpm --filter @novelai-gateway/web dev
 ```
 
-开发服务绑定 `127.0.0.1`。它将现有 API、管理入口及兼容静态资源按
-`web/nuxt.config.ts` 代理给 `GATEWAY_DEV_URL`，默认
+开发服务绑定 `127.0.0.1`。当前成员、owner、admin 页面均由 Nuxt 提供；
+`web/nuxt.config.ts` 只将 `/api` 开发请求代理给 `GATEWAY_DEV_URL`，默认
 `http://127.0.0.1:8080`。旧网关需在另一个终端按原方式启动，使用隔离测试
 配置和数据目录；Nuxt dev 不代为启动它。用同一浏览器来源访问前端与 API，
 避免为了开发另加跨源 Cookie 或放宽网关校验。
@@ -107,13 +108,15 @@ Windows 使用 fnm 时可将命令写成
 | --- | --- |
 | `/`、`/account.html`、`/_nuxt/*` | Nuxt 网页服务；旧 `/account.html` 重定向到 `/` |
 | `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate` 及其余旧业务路径 | 现有网关 |
-| `/owner` 及其旧页面资源 | 现有网关，仍由 owner 会话控制 |
+| `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；业务接口仍由网关验证 owner 会话 |
 | `/admin*`、`/api/admin*`、`/api/health`、`/memory` | 公网入口直接拒绝 |
+| 私有回环 18082 的 `/admin` 及合法页面别名、`/_nuxt/*` | Nuxt；同源 API 转给网关，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
 
 示例网页服务使用回环端口 3000、网关使用回环端口 18081；实际端口由隔离
 环境配置。代理保留公共 Host，网关按实际来源配置 `TRUSTED_PROXY_IPS`，
 不把公共请求改成 localhost 来绕过私有管理边界。SSE 不缓冲，不启用记录
-含 Key 查询参数的访问日志。
+含 Key 查询参数的访问日志。私有管理使用另一个仅绑定回环的 Caddy 监听
+18082，SSH 隧道转发到该入口，并保留浏览器原 Host/Origin；不修改公网权限。
 
 `web/Dockerfile` 用 Node 22.23.3 分阶段构建，运行镜像只复制 Nuxt 产物和
 许可声明，默认 UID/GID 为 1000。它是可选构建与隔离验收方式，bob 的正式

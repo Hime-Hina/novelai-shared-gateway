@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -14,6 +14,8 @@ import { nativeImagesMsgpack } from '../../server/native-stream.js';
 
 const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
 const adminToken = randomBytes(32).toString('hex');
+const adminTokenPath = path.join(dataDir, 'browser-admin-token');
+await writeFile(adminTokenPath, adminToken, { mode: 0o600 });
 const upstreamToken = 'pst-synthetic-browser-baseline-only';
 const guildId = '1134557553011998840';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -130,7 +132,7 @@ const front = http.createServer((req, res) => {
     res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ error: 'OAuth is disabled in the local browser baseline; use a synthetic role entry.' })); return;
   }
-  const frontend = nuxtUrl && (pathname === '/' || pathname === '/account.html' || pathname.startsWith('/_nuxt/'));
+  const frontend = nuxtUrl && (['/', '/account.html', '/owner', '/owner/', '/owner.html', '/admin', '/admin/', '/admin.html', '/admin/members.html'].includes(pathname) || pathname.startsWith('/_nuxt/'));
   const upstream = http.request((frontend ? nuxtUrl.origin : gatewayUrl) + req.url, { method: req.method, headers: req.headers }, reply => {
     if (pathname === '/api/member/login-options' && req.method === 'GET' && reply.statusCode === 200) {
       const chunks = [];
@@ -154,6 +156,8 @@ baseUrl = `http://127.0.0.1:${frontPort}`;
 const loginOptions = await (await realFetch(baseUrl + '/api/member/login-options')).json();
 assert.deepEqual(loginOptions, { discord: true, ready: true, origin: baseUrl });
 assert.equal((await realFetch(baseUrl + '/api/member/me')).status, 401);
+assert.equal((await realFetch(baseUrl + '/api/admin/ping', { headers: { 'x-admin-token': adminToken } })).status, 200);
+assert.equal((await realFetch(baseUrl + '/api/admin/ping')).status, 401);
 for (const role of ['anonymous', 'member', 'owner']) {
   const entry = await realFetch(`${baseUrl}/__baseline/${role}`, { redirect: 'manual' });
   assert.equal(entry.status, 200); assert.equal(entry.headers.get('location'), null);
@@ -168,11 +172,12 @@ for (const role of ['anonymous', 'member', 'owner']) {
   assert.equal(stats.status, role === 'owner' ? 200 : 403);
   if (role === 'owner') assert.equal((await stats.json()).totals.total, 120);
 }
-for (const asset of ['/', '/account.js', '/members.css', '/shared-status.js', '/owner', '/management.js']) {
+for (const asset of ['/', '/account.html', '/account.js', '/members.css', '/shared-status.js', '/owner', '/owner/', '/owner.html', '/admin', '/admin/', '/admin.html', '/admin/members.html', '/management.js']) {
   assert.equal((await realFetch(baseUrl + asset)).status, 200, asset);
 }
 await assert.rejects(fetch('https://forbidden-baseline.invalid/'), /blocked external/);
 assert.equal(mocks.generation, 0);
 console.log('[browser-baseline-ready] ' + JSON.stringify({ pid: process.pid, baseUrl, gatewayUrl, dataDir,
+  admin: `${baseUrl}/admin`, adminTokenPath,
   anonymous: `${baseUrl}/__baseline/anonymous`, member: `${baseUrl}/__baseline/member`, owner: `${baseUrl}/__baseline/owner`,
   note: 'Use entries sequentially and click the same-origin link before measuring the destination page. OAuth is excluded; only login-options.origin is adapted.' }));
