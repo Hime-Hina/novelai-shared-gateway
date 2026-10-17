@@ -903,13 +903,12 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
   if (res.destroyed) return;
   const count = batch.count, completed = entries.length;
   const summary = count > 1 ? { requested: count, completed, remaining: count - completed, billing: 'independent_single_images', results } : null;
-  const status = completed < count ? 200 : 201;
   if (json) {
-    await sendNativeJson(res, status, entries, summary, { 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
+    await sendNativeJson(res, 200, entries, summary, { 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
     return;
   }
   if (summary) entries.push({ filename: 'results.json', buffer: Buffer.from(JSON.stringify(summary), 'utf8') });
-  sendImage(res, status, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
+  sendImage(res, 200, 'application/zip', nativeImagesZip(entries), { 'cache-control': 'no-store',
     'content-disposition': 'attachment; filename="images.zip"', 'X-Nai-Image-Count': String(completed), 'X-Nai-Partial': String(completed < count) });
 }
 

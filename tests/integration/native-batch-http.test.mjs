@@ -225,7 +225,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   releases.get(100)();
   const [aResponse, bResponse] = await observed(Promise.all([a, b]), 'A/B synchronous responses');
   assert.equal(aResponse.status, 200);
-  assert.equal(bResponse.status, 201); assert.match(bResponse.headers.get('content-type'), /application\/json/);
+  assert.equal(bResponse.status, 200); assert.match(bResponse.headers.get('content-type'), /application\/json/);
   const bResult = await observed(bResponse.json(), 'B JSON response body');
   assert.deepEqual(bResult.images, [{ image: webp.toString('base64'), index: 0, seed: 4294967295 }, { image: webp.toString('base64'), index: 1, seed: 0 }]);
   assert.equal(bResult.requested, 2); assert.equal(bResult.completed, 2); assert.equal(bResult.remaining, 0);
@@ -283,7 +283,7 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   const beforeReplay = calls.length;
   const replayBody = { ...bBody, parameters: { ...bBody.parameters } }; delete replayBody.parameters.prompt;
   const coldZip = await post(replayBody, 1, { accept: 'application/zip', key: bKey });
-  assert.equal(coldZip.status, 201); assert.equal(coldZip.headers.get('x-nai-request-id'), bId);
+  assert.equal(coldZip.status, 200); assert.equal(coldZip.headers.get('x-nai-request-id'), bId);
   const coldEntries = zipEntries(Buffer.from(await coldZip.arrayBuffer()));
   assert.deepEqual(coldEntries.get('image_0.webp'), webp); assert.deepEqual(coldEntries.get('image_1.webp'), webp);
   const { images: _images, ...bSummary } = bResult;
@@ -293,13 +293,13 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
     const req = http.request(base + '/ai/generate-image', { method: 'POST', headers: {
       authorization: `Bearer ${credentials[1].api_key}`, 'content-type': 'application/json',
       accept: 'application/json', 'Idempotency-Key': bKey } }, response => {
-      try { assert.equal(response.statusCode, 201); response.destroy(); resolve(); } catch (error) { reject(error); }
+      try { assert.equal(response.statusCode, 200); response.destroy(); resolve(); } catch (error) { reject(error); }
     });
     req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('synthetic JSON replay timeout')));
     req.end(JSON.stringify(replayBody));
   });
   const coldJson = await post(replayBody, 1, { accept: 'application/json', key: bKey });
-  assert.equal(coldJson.status, 201); assert.deepEqual(await coldJson.json(), bResult);
+  assert.equal(coldJson.status, 200); assert.deepEqual(await coldJson.json(), bResult);
   const coldStream = await post({ ...replayBody, parameters: { ...replayBody.parameters, stream: 'msgpack' } }, 1,
     { key: bKey, route: '/v1/ai/generate-image-stream', accept: 'text/event-stream' });
   assert.equal(coldStream.status, 200); assert.match(coldStream.headers.get('content-type'), /^application\/msgpack(?:;|$)/);

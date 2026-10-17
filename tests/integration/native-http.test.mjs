@@ -423,7 +423,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const form = new FormData(); form.append('request', new Blob([JSON.stringify(input)], { type: 'application/json' }), 'request.json');
     const before = await quota();
     const response = await fetchLocal('/v1/ai/generate-image', { method: 'POST', headers: { authorization: `Bearer ${credentials[0].api_key}` }, body: form });
-    assert.equal(response.status, 201); assert.match(response.headers.get('content-type'), /application\/zip/);
+    assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /application\/zip/);
     assert.equal(Buffer.from(await response.arrayBuffer()).readUInt32LE(0), 0x04034b50);
     assert.equal(calls.at(-1).payload.parameters.ucPreset, 0); assert.equal(calls.at(-1).payload.parameters.qualityToggle, false);
     assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined); assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);

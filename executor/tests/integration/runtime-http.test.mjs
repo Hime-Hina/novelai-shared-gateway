@@ -216,7 +216,7 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
 
   const headers = { 'Idempotency-Key': 'synthetic-built-output-one-generation' };
   const generated = await gateway.call('/ai/generate-image', { body: nativeBody, member: 0, headers });
-  assert.equal(generated.status, 201); assert.match(generated.headers.get('content-type'), /application\/zip/);
+  assert.equal(generated.status, 200); assert.match(generated.headers.get('content-type'), /application\/zip/);
   assert.match(generated.headers.get('vary'), /Accept/i);
   const requestId = generated.headers.get('x-nai-request-id'); assert.ok(requestId);
   const zip = Buffer.from(await generated.arrayBuffer());
@@ -248,7 +248,7 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
   const asJson = await gateway.call('/v1/ai/generate-image', { body: nativeBody, member: 0,
     headers: { ...headers, accept: 'application/json; charset=utf-8' } });
   assert.equal(asJson.headers.get('x-nai-request-id'), requestId); assert.match(asJson.headers.get('vary'), /Accept/i);
-  assert.deepEqual((await json(asJson, 201)).images, [{ image: png.toString('base64'), index: 0, seed: job.request.seed }]);
+  assert.deepEqual((await json(asJson, 200)).images, [{ image: png.toString('base64'), index: 0, seed: job.request.seed }]);
   assert.equal(job.request.seed, nativeBody.parameters.seed);
   const unacceptable = await gateway.call('/ai/generate-image', { body: nativeBody, member: 0,
     headers: { 'Idempotency-Key': 'synthetic-unacceptable-output', accept: 'application/xml' } });

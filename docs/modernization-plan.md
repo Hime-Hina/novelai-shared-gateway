@@ -55,7 +55,7 @@
 | 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
 | 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | F04/F06/F10/F12 已实现并通过托管 CI；已修复冷却截止丢唤醒，历史 Native 超时及生产长尾是否同因仍未证明。F11 已完成运行时切分、受保护的 Nitro 产物及 Nuxt 内部客户端，Windows/Linux 双进程故障隔离、同键受理重试及重复恢复三场景通过；独立 systemd 部署仍待，未按整体完成结案 |
 | 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | A01/R01/U01/U02/U03 已通过托管 CI；U03功能与60条首屏对比完成，修复匿名资源预取；耗时改善尚未通过，现时旧版对照也变慢，D01继续定位，不能以功能完成代替性能验收。F11/N01 两段事件重连与授权校准已通过，N02登录和管理也已通过Linux CI |
-| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02/N03 已完成并通过所列回归；Nuxt统一入口、执行器唯一业务与持久化所有者。C03-01响应协商与C03-02实时MessagePack切片已通过Linux CI；SSE、独立blur与错误包络已通过Linux CI，Vibe两seed已完成本机回归、最终CI待记录，其余C03、T01/C01仍待完成，迁入Nuxt入口不等于旧JS业务已全部类型化 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | C02/C04/C05/C06/N01/N02/N03 已完成并通过所列回归；Nuxt统一入口、执行器唯一业务与持久化所有者。C03-01响应协商与C03-02实时MessagePack切片已通过Linux CI；SSE、独立blur与错误包络已通过Linux CI，Vibe两seed也已通过Linux CI，其余C03、T01/C01仍待完成，迁入Nuxt入口不等于旧JS业务已全部类型化 |
 | 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01 已完成并记录实际样本与缺失边界；D01/D02 未完成，生产首屏历史长等待仍待定位 |
 
 分支继承 `56c0c9d` 及其已有历史。用户已授权按计划开始实施，下面的实施记录追踪实际完成与验证；未列为完成的项目继续待办。原基线有 203 项测试通过记录，不能将其写成新方案已通过。文档共 31 个工作项，按编号独立追踪；功能实现或测试完成均不等于生产切换获准。
@@ -136,9 +136,11 @@ C03-03 的独立放大blur切片已提交 [48f6578](https://github.com/Hime-Hina
 
 C03-02 镜像验收补修已提交 [dd452ee](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dd452ee)：首次[SSE CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39014853670)已通过业务/网页/类型/双进程检查和三个镜像构建，最后产物HTTP检查仍断言旧的默认octet-stream而失败。补齐同键缺省SSE、显式SSE和显式MessagePack及相反Accept，原派发与结算计数保持不增；本机产物2通过/1项Linux跳过，新建Linux最终镜像3/3通过。后续blur中间CI由这次补修后的完整检查替代，不将中间失败或取消记为通过。
 
-C03-03 的Vibe种子切片已提交 [53525b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/53525b6)，接受可选focus_seed/info_extract_seed的安全整数并原值传递，缺省不补值，不套用生图seed的随机或取模规则。固定2Anlas与opaque结果边界不变；解析、无损整数边界、拒绝类型、原值透传和报价等62项定向检查通过，113文件语法和执行器构建通过；Nuxt实际HTTP12通过加1项Linux专用跳过，逐个改变seed均409且没有重复编码/账目。最终CI继续记录。另已核对custom路由url、Vibe mask/crop和内联放大的真实含义与模型/收费边界，明确保留422，详见[字段评估](api-contract.md#c03-03-vibe-种子与明确保留的边界)；没有真实收费调用。
+C03-03 的Vibe种子切片已提交 [53525b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/53525b6)，接受可选focus_seed/info_extract_seed的安全整数并原值传递，缺省不补值，不套用生图seed的随机或取模规则。固定2Anlas与opaque结果边界不变；解析、无损整数边界、拒绝类型、原值透传和报价等62项定向检查通过，113文件语法和执行器构建通过；Nuxt实际HTTP12通过加1项Linux专用跳过，逐个改变seed均409且没有重复编码/账目。[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过后端505、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过，语法/类型及三个镜像构建通过。另已核对custom路由url、Vibe mask/crop和内联放大的真实含义与模型/收费边界，明确保留422，详见[字段评估](api-contract.md#c03-03-vibe-种子与明确保留的边界)；没有真实收费调用。
 
-SSE与blur联合验收：[dd452ee的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过后端504、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；113文件语法、类型检查及三个业务镜像构建通过。此结果覆盖SSE、blur与镜像契约补修；Vibe两seed的独立最新CI仍待完成，不混用提交版本。
+SSE与blur联合验收：[dd452ee的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过后端504、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；113文件语法、类型检查及三个业务镜像构建通过。此结果覆盖SSE、blur与镜像契约补修；Vibe两seed另由53525b6的独立CI验收，不混用提交版本。
+
+C03-04 普通生成状态切片：补充一张512×512、4步V4.5免费条件ZIP探测，确认与此前JSON一样为200，两类Anlas差额均0、前后生产空闲。普通生成JSON/ZIP及同键重取据此统一200，删除原先201分支；Vibe和管理创建的201保留。执行器产物本机2通过/1项Linux跳过、Nuxt实际HTTP12通过/1项Linux跳过，113文件语法和执行器构建通过；Native、适配、冷历史及结果恢复26项中24通过/2项Linux专用跳过；最终CI结果继续记录。官方ZIP本次声明binary/octet-stream，网关保留application/zip准确说明已验证内容；没有新增依赖、schema或生产部署。
 
 ## 仓库与现状
 
@@ -166,7 +168,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |
 | 身份 | Persistent API token 的 Bearer 鉴权 | 对外接收成员 Key，对上游使用管理员保存的共享 PST；有个人钱包与成员资格限制 |
-| 普通生图响应 | ZIP 或按 `Accept: application/json` 返回含 `images` 的 JSON；成功状态列为 201 | C03-01采用Swagger的201，后续真实JSON实测200，差异留待C03-04继续核对；已按Accept协商ZIP/JSON及实际种子，缺省保持ZIP，部分成功保留200与批次说明 |
+| 普通生图响应 | ZIP 或按 `Accept: application/json` 返回含 `images` 的 JSON；成功状态列为 201 | C03-04按真实JSON/ZIP响应统一200；已按Accept协商ZIP/JSON及实际种子，缺省保持ZIP，部分成功也为200并保留批次说明 |
 | 流式生图 | 路径描述包含中间、最终及错误事件；`image.StreamingType` 枚举同时列出 `msgpack` 与 `sse` | 已依据真实响应接入SSE与MessagePack；缺省SSE，显式msgpack覆盖Accept；stream不进入持久指纹，保留必要批次扩展 |
 | 多图 | 请求包含 `n_samples`，响应可包含多张图片 | 只允许 1–4 张，拆成独立单图依次排队与结算，种子逐张递增；ZIP和JSON保留批次结果说明，费用不承诺等于官方批量生成 |
 | 参数与功能范围 | 定义包含 PNG/WebP、ControlNet、请求 `url`、Vibe 编码 mask 和 seed 等字段 | Native支持png/webp输出；启用的ControlNet、`url`和Vibe编码mask等仍被拒绝；附加本地`allowPurchasedAnlas`等字段 |
@@ -657,7 +659,7 @@ C03-04 的 HTTP 错误包络切片已提交 [52656b7](https://github.com/Hime-Hi
 
 用户已允许低频 V4.5 免费验证，并在2026-10-17进一步允许空闲时直连共用账户、取消三次上限，要求不与成员请求冲突。默认仍走现有统一调度入口；原始协议会被旧网关转换时，可按本次授权在检查生产无排队/在途、冷却结束后逐次直连，不启动第二个常驻调度器。标准单图最多1MP、最多28步，无参考、放大等额外收费项，先核实有效Opus和免费报价，出现生产任务或限流则让开，费用条件不明先只读核查。空闲检查并非原子锁，不承诺绝无随后到达请求的竞争；需要持续真实测试时应经统一调度。真实消耗与结果单独记录，不混入模拟验证结论。
 
-首次5次原始提交、4张成功及各项限制记录在[官方协议实测](novelai-protocol-probes.md)。前4次两类Anlas差额均0，第5次后置额度查询未成功，不能补称已核实零消费；未更改生产服务、数据或部署版本。
+首轮5次加后续ZIP核对共6次原始提交、5张成功及各项限制记录在[官方协议实测](novelai-protocol-probes.md)。前4次与第6次两类Anlas差额均0，第5次后置额度查询未成功，不能补称已核实零消费；未更改生产服务、数据或部署版本。
 
 ### 验收与切换
 

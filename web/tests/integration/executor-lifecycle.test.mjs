@@ -700,7 +700,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(proxied.headers[name], direct.headers[name], `${method} ${route}: ${name}`);
       }
     }
-    const assertZip = (response, status = 201, image = png) => {
+    const assertZip = (response, status = 200, image = png) => {
       assert.equal(response.status, status, response.body.toString().slice(0, 300));
       assert.match(response.headers['content-type'], /application\/zip/);
       assert.match(response.headers.vary, /(?:^|,\s*)Accept(?:\s*,|$)/i);
@@ -738,7 +738,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(response.headers['x-nai-image-count'], undefined); assert.equal(response.headers['x-nai-partial'], undefined);
         const events = readNativeEvents(response.body); assert.equal(events.length, 1);
         assert.equal(events[0].event_type, 'final'); assert.equal(events[0].samp_ix, 0); assert.deepEqual(Buffer.from(events[0].image), webp);
-      } else assertZip(response, 201, webp);
+      } else assertZip(response, 200, webp);
     }
     assert.equal(f.generations(), 1); assert.equal(f.jobs().length, 1);
     const originalCounts = counts(), seed = f.upstreamCalls[0].body.parameters.seed;
@@ -751,8 +751,8 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       const response = await f.request('/v1/ai/generate-image', { body: aliasBody, headers: { accept, 'idempotency-key': 'native-alias-replay' } });
       assert.equal(response.headers['x-nai-request-id'], nativeId); assert.equal(response.headers['x-nai-image-count'], '1');
       assert.equal(response.headers['x-nai-partial'], 'false'); assert.match(response.headers.vary, /Accept/i);
-      if (asJson) assert.deepEqual(json(response, 201).images, [{ image: webp.toString('base64'), index: 0, seed }]);
-      else assertZip(response, 201, webp);
+      if (asJson) assert.deepEqual(json(response, 200).images, [{ image: webp.toString('base64'), index: 0, seed }]);
+      else assertZip(response, 200, webp);
     }
     for (const [stream, accept] of [['sse', 'text/event-stream'], [undefined, 'application/msgpack']]) {
       const response = await f.request('/v1/ai/generate-image-stream', {

@@ -4,7 +4,7 @@
 
 每次调用前只读检查生产 queued/pending/running 为空、账户 inFlight 为零、冷却已结束，最近生产任务结束超过30秒；探测串行且间隔至少30秒。先查询有效、未过期的 Opus 并核实免费报价。这个检查不能锁住随后新到的生产请求；本轮每次前后均未观察到生产活动任务，不宣称消除了并发竞争窗口。
 
-用户随后取消原定三次上限，要求免费调用避开成员请求。本轮共5次生成HTTP提交，4张成功、1次流内失败；没有客户端自动重发。最初错误使用 `api.novelai.net/user/data` 导致预检400，在生成POST前退出，不计入5次；之后统一使用项目既有的 image 域名额度接口。
+用户随后取消原定三次上限，要求免费调用避开成员请求。首轮5次提交加后续1次ZIP核对，共6次生成HTTP提交，5张成功、1次流内失败；没有客户端自动重发。最初错误使用 `api.novelai.net/user/data` 导致预检400，在生成POST前退出，不计入生成提交；之后统一使用项目既有的 image 域名额度接口。
 
 ## 请求与结果
 
@@ -19,6 +19,7 @@
 | 3／07:29:40 | stream路径；stream=msgpack；Accept SSE；WebP | 200／application/msgpack | 3个预览及1个最终图；两类差额均0 |
 | 4／07:30:31 | 普通路径；Accept JSON；WebP；冗余prompt与input相同 | 200／application/json | images数组包含image/index/seed，seed=42；两类差额均0 |
 | 5／07:31:54 | stream路径；省略stream；Accept application/msgpack；PNG | 200／text/event-stream | 3个预览及1个最终图；后置额度查询未完成，逐次差额未知 |
+| 6／08:08:55 | 普通路径；Accept application/zip；PNG | 200／binary/octet-stream | ZIP内一张image_0.png，512×512，CRC核验通过；两类Anlas前后差额均0 |
 
 第5次的后置额度查询未成功（设有15秒截止，探测器没有保存具体异常原因），响应图片已完整保留。后续只读复查返回有效Opus，官方两类余额均与生产缓存一致、活动队列为空；该缓存更新时间晚于生成，不能据此补称第5次已实测零消费。没有继续生成以重试余额查询。
 
@@ -30,7 +31,7 @@
 - 最终事件后连接结束，未出现`[DONE]`等额外标记。错误样本有`event_type/code/message`而没有`samp_ix`；retry是上游同一HTTP响应内的事件，不是本地再次提交。
 - MessagePack仍为4字节大端长度加对象，image为binary；显式`stream=msgpack`覆盖SSE Accept，实际媒体类型为`application/msgpack`。
 - 省略stream时即使Accept要求MessagePack仍返回SSE。尚未单独采样“显式sse＋MessagePack Accept”，网关按上述证据与官方stream枚举统一由stream选择格式，不再用Accept推断流式类型。
-- 普通JSON成功实测200，与[Swagger](https://image.novelai.net/docs/doc.json)列出的201不一致。网关C03-01目前仍采用文档的201；普通ZIP尚未实测，此差异留在C03-04跟进，不宣称已完全对齐。
+- 普通JSON与ZIP成功均实测200，与[Swagger](https://image.novelai.net/docs/doc.json)列出的201不一致。网关C03-04据此将普通生成JSON/ZIP成功改为200；Vibe201及其他操作独立处理。官方本次ZIP使用binary/octet-stream，网关保留明确的application/zip，而非声称逐字节透传全部头部。
 
 网关SSE复用已有预览/结果生命周期，不伪造未保留的gen_id、sigma或retry。批次错误仍附本地samp_ix，首事件前错误使用HTTP JSON；这些边界见[API契约](api-contract.md)。
 
@@ -45,3 +46,4 @@
 | 3 | 90999 | 69b7dcd042b2fffc67f180bd9899b8a701945bcb00cf0d6fc6ec4e9446b31fc9 |
 | 4 | 110318 | 0c4066fce38d649ec10831d82fdc50ddaea8f07db46fd543615124e891150c6e |
 | 5 | 171109 | 15de2d6aadddc43bf5111277c12f31f23d7fcc558b6c3c0d2a345c4110183e14 |
+| 6 | 119024 | 2cb71f7b9c9286848e98413f912f269fe1c3596fbdd20ab90f89386756062249 |

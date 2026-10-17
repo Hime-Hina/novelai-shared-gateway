@@ -77,7 +77,7 @@ await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',hea
 const response={setHeader:()=>{}}; await context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},response);
 assert.equal(submitted.parent.source,'novelai-native');assert.equal(submitted.parent.member_id,user.id);
 assert.equal(submitted.jobs[0].requestId,submitted.parent.id);assert.equal(submitted.jobs[0].jobAdmissionVersion,7);
-assert.equal(submitted.request.steps,35); assert.equal(response.status,201); assert.equal(response.mime,'application/zip'); assert.equal(response.headers['cache-control'],'no-store');
+assert.equal(submitted.request.steps,35); assert.equal(response.status,200); assert.equal(response.mime,'application/zip'); assert.equal(response.headers['cache-control'],'no-store');
 // 使用启动器实际的 blob JSON 部件，核验从解析到队列和 ZIP 响应的完整路径。
 const form=new FormData();
 form.append('request',new Blob([JSON.stringify(input)],{type:'application/json'}),'blob');
@@ -88,7 +88,7 @@ const multipartResponse={setHeader:()=>{}};
 await context.handleNativeImageGeneration(multipart,multipartResponse);
 assert.equal(submitted.request.steps,35); assert.equal(submitted.request.prompt,'a cat');
 assert.deepEqual(submitted.request.nativeParameters.v4_prompt,input.parameters.v4_prompt);
-assert.equal(multipartResponse.status,201); assert.deepEqual(multipartResponse.buffer,response.buffer);
+assert.equal(multipartResponse.status,200); assert.deepEqual(multipartResponse.buffer,response.buffer);
 context.waitForJobResult=async id=>completeJob(id,{error:'mock provider failure'});
 context.isTimeoutResultMessage=()=>false;
 await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},{setHeader:()=>{}}),e=>e.statusCode===500);
@@ -132,7 +132,7 @@ for (const failAt of [0, 2]) {
   };
   const res = {setHeader() {}};
   await context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:{...input,parameters:{...input.parameters,n_samples:3}},generationPayloadClaim:claim},res);
-  assert.equal(res.status,failAt ? 200 : 201);
+  assert.equal(res.status,200);
   assert.equal(completedWaits,failAt || 3);
   assert.equal(submitted.request.sampleCount,3);assert.equal(submitted.request.nativeParameters.n_samples,3);
   assert.deepEqual(Array.from(submitted.jobs,job=>job.request.seed),[4,5,6]);

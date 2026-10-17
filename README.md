@@ -118,11 +118,13 @@ systemd 下同机 Caddy → Nuxt → 执行器使用回环时通常为 `TRUSTED_
 
 Native 的 `parameters.image_format` 接受 `png` 或 `webp`，省略时保持原有行为。响应保留上游图片的原始字节；ZIP文件名和下载MIME随实际格式变化，同一幂等键改格式会返回409。
 
-小白盒等客户端请求 `/ai/generate-image-stream` 时，网关实时转发 MessagePack `intermediate` 预览，并在每张图片保存、账本结算后发送 `final` 帧，无需等待整批完成。帧有4字节大端长度前缀，图片字段为二进制；预览沿用上游 `step_ix`，多图使用批次内的 `samp_ix`。慢连接可能跳过预览；断线不取消已受理任务，可以通过任务记录或同一幂等键领取最终结果。当前没有排队心跳，长时间排队仍需客户端和反向代理设置足够的超时；SSE协商仍待适配。
+`/ai/generate-image-stream` 缺省返回SSE；二进制客户端须显式提供 `parameters.stream="msgpack"`，响应为`application/msgpack`。`Accept`不覆盖stream，缺省或显式`sse`使用`text/event-stream`；更换交付格式不改变幂等任务。SSE图片为base64，MessagePack图片为binary并带4字节大端帧长。
+
+网关实时发送`intermediate`预览，每张图片保存、结算后发送`final`，无需等待整批完成。预览沿用上游`step_ix`，多图使用批次内`samp_ix`；慢连接可能跳帧。断线不取消已受理任务，可通过任务记录或同一幂等键领取结果。当前没有排队心跳，长时间排队仍需客户端和反向代理设置足够超时。
 
 Native 请求同时支持 `application/json` 与 `multipart/form-data`。multipart 的 `request` 部件可为 JSON 字符串或 JSON 文件，图片部件必须由请求明确引用。总请求上限 32 MiB，单张附件上限 8 MiB。自动角色布局的空坐标按中心点兼容；显式手动坐标仍严格验证。支持桌面客户端的 `uc_preset`／`quality_toggle` 别名；与标准字段同时填写时必须一致。未知参数错误只列出有限字段名，不回显内容。
 
-普通 Native 生图完整成功返回201；放大返回200。两者缺省保持ZIP，指定 `Accept: application/json` 可领取含base64图片、索引及生成种子的JSON，并按Accept权重选择；不接受两种格式时在入队前返回406。Vibe编码返回201与`application/binary`原始字节。部分成功仍返回200，JSON与ZIP都保留批次说明；同键改变响应格式不再次生成。状态码变化和已核对客户端版本见[API契约](docs/api-contract.md#c03-01-响应协商与客户端证据)，本分支尚未替换生产。
+普通 Native 生图和放大成功均返回200。两者缺省保持ZIP，指定 `Accept: application/json` 可领取含base64图片、索引及生成种子的JSON，并按Accept权重选择；不接受两种格式时在入队前返回406。Vibe编码返回201与`application/binary`原始字节。部分成功返回200，JSON与ZIP都保留批次说明；同键改变响应格式不再次生成。普通生成的200依据[官方JSON/ZIP实测](docs/novelai-protocol-probes.md)，与Swagger中的201不同；[API契约](docs/api-contract.md)记录各项边界，本分支尚未替换生产。
 
 ## 生图功能与计价
 
