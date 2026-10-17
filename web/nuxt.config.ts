@@ -5,6 +5,8 @@ export default defineNuxtConfig({
   telemetry: false,
   devtools: { enabled: false },
   runtimeConfig: { executorBaseUrl: '', executorToken: '' },
+  // Naive 的 ESM 入口引用 vueuc 的 CJS 包；开发 SSR 也须由 Vite 处理这两个包。
+  build: { transpile: ['naive-ui', 'vueuc'] },
   hooks: {
     'build:manifest'(manifest) {
       // 匿名页不提前下载登录后才用到的异步组件；保留当前页面的 preload。
