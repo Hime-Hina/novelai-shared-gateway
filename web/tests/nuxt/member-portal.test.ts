@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended, mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { flushPromises, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, h, nextTick } from 'vue'
+import { defineComponent, h, nextTick, watch } from 'vue'
 import { clearNuxtData, useNuxtApp } from '#app'
 import { useMemberPortal } from '../../app/composables/useMemberPortal'
 import type { LoginOptions, MemberProfile } from '../../app/types/member'
@@ -59,8 +59,8 @@ const pending = (path: string) => {
   return request!
 }
 const meCount = () => requests.filter(request => request.path === 'me').length
-const invalidate = (stream: NetworkStream, version: number, scopes = ['member'], resync = false) => {
-  stream.emit('state-invalidated', { bootId: 'test-boot', version, scopes, resync, updatedAt: new Date().toISOString() })
+const invalidate = (stream: NetworkStream, version: number, scopes = ['member'], resync = false, activityDates?: string[]) => {
+  stream.emit('state-invalidated', { bootId: 'test-boot', version, scopes, resync, activityDates, updatedAt: new Date().toISOString() })
 }
 async function mount() {
   wrapper = await mountSuspended(Harness)
@@ -128,8 +128,11 @@ describe('真实 Nuxt useAsyncData 成员会话', () => {
   for (const via of ['SSE过期', '退出登录']) {
     it(`${via}清除profile，旧me成功不能恢复私有数据`, async () => {
       const stream = await authenticated()
+      stream.onopen?.()
+      invalidate(stream, 2, ['member'], false, ['2026-10-17'])
       const refresh = portal.refresh(); await settle()
-      const old = pending('me')
+      const old = pending('me'), signal = portal.activityInvalidation, version = signal.version
+      expect(signal.dates).toEqual(['2026-10-17'])
       if (via === 'SSE过期') stream.emit('auth-expired')
       else {
         const logout = portal.logout(); await settle()
@@ -139,9 +142,11 @@ describe('真实 Nuxt useAsyncData 成员会话', () => {
       }
       await nextTick()
       expect(portal.profile.value).toBeNull(); expect(portal.shared.value).toBeNull()
+      expect(signal.dates).toBeNull()
       expect(stream.close).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0)
       old.reply(200, profile('Expired Alice')); await refresh; await settle()
       expect(portal.profile.value).toBeNull()
+      expect(portal.activityInvalidation).toBe(signal); expect(signal).toEqual({ version, dates: null })
       expect(wrapper!.get('[data-test="member"]').text()).toBe('anonymous')
     })
   }
@@ -162,26 +167,49 @@ describe('真实 Nuxt useAsyncData 成员会话', () => {
     expect(wrapper!.get('[data-test="member"]').text()).toBe('Bob')
   })
 
-  it('同boot的shared通知不读个人资料；查询期间多次member通知只保留一次补读', async () => {
+  it('局部日期信号不受资料补读合并影响，同tick日期逐条可见，resync才全量校准', async () => {
     const stream = await authenticated(), count = meCount()
-    invalidate(stream, 2, ['shared']); await settle(); expect(meCount()).toBe(count)
-    invalidate(stream, 3); await settle(); expect(meCount()).toBe(count + 1)
-    invalidate(stream, 4); invalidate(stream, 5); invalidate(stream, 6); await settle()
-    expect(meCount()).toBe(count + 1)
-    expect(requests.filter(request => request.path === 'me' && !request.done)).toHaveLength(1)
-    pending('me').reply(200, profile('First')); await settle()
-    expect(meCount()).toBe(count + 2)
-    pending('me').reply(200, profile('Latest')); await settle()
-    expect(meCount()).toBe(count + 2); expect(portal.profile.value?.username).toBe('Latest')
+    stream.onopen?.()
+    const signal = portal.activityInvalidation, dates: (string[] | null)[] = []
+    const stop = watch(() => signal.version, () => dates.push(signal.dates && [...signal.dates]), { flush: 'sync' })
+    try {
+      invalidate(stream, 2, ['shared', 'owner'], false, ['2026-10-15']); await settle()
+      expect(meCount()).toBe(count); expect(dates).toEqual([])
+      invalidate(stream, 3); await settle()
+      expect(meCount()).toBe(count + 1); expect(dates).toEqual([])
+      invalidate(stream, 4, ['member'], false, ['2026-10-16'])
+      invalidate(stream, 5, ['member'], false, ['2026-10-17'])
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17']])
+      invalidate(stream, 6); await settle()
+      expect(meCount()).toBe(count + 1)
+      expect(requests.filter(request => request.path === 'me' && !request.done)).toHaveLength(1)
+      pending('me').reply(200, profile('First')); await settle()
+      expect(meCount()).toBe(count + 2)
+      pending('me').reply(200, profile('Latest')); await settle()
+      expect(meCount()).toBe(count + 2); expect(portal.profile.value?.username).toBe('Latest')
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17']])
+      invalidate(stream, 7, ['member'], true, ['2026-10-17']); await settle()
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17'], null])
+      pending('me').reply(200, profile()); await settle()
+      expect(dates).toHaveLength(3); expect(portal.activityInvalidation).toBe(signal)
+    } finally { stop() }
   })
 
   it('503保留最后profile并显示错误，隐藏页不轮询，恢复后由SSE校准', async () => {
     const stream = await authenticated(), updated = portal.updatedAt.value, version = portal.refreshVersion.value
+    stream.onopen?.()
+    const activityVersion = portal.activityInvalidation.version
     const refresh = portal.refresh(); pending('me').reply(503, { error: 'upstream temporarily unavailable' })
     await refresh; await settle()
     expect(portal.profile.value?.username).toBe('Alice')
     expect(portal.error.value).toContain('保留上次结果'); expect(portal.error.value).toContain('upstream temporarily unavailable')
     expect(portal.updatedAt.value).toBe(updated); expect(portal.refreshVersion.value).toBe(version)
+    expect(portal.activityInvalidation.version).toBe(activityVersion)
+    await stream.onerror?.()
+    expect(portal.connection.value).toBe('retrying')
+    await vi.advanceTimersByTimeAsync(30000)
+    pending('me').reply(200, profile()); await settle()
+    expect(portal.activityInvalidation).toEqual({ version: activityVersion + 1, dates: null })
     const count = meCount()
     hidden = true; document.dispatchEvent(new Event('visibilitychange')); await settle()
     expect(stream.close).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0)

@@ -1,14 +1,18 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import Database from 'better-sqlite3';
+import { activityDate } from './activity-heatmap.js';
 
 const sqlite = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
 sqlite.pragma('query_only = ON');
 sqlite.pragma('busy_timeout = 3000');
+sqlite.function('activity_time', { deterministic: true }, value => activityDate(value) ? Date.parse(value) : null);
 
 parentPort.on('message', ({ id, type, payload = {} }) => {
   try {
     const result = type === 'adminStats'
       ? readAdminStats(payload)
+      : type === 'activityDays'
+        ? readActivityDays(payload)
       : type === 'imagePage'
         ? readImagePage(payload)
         : type === 'userPage'
@@ -19,6 +23,47 @@ parentPort.on('message', ({ id, type, payload = {} }) => {
     parentPort.postMessage({ id, error: error?.message || String(error) });
   }
 });
+
+function readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }) {
+  if (dates?.length === 0) return [];
+  // ISO 偏移可跨 UTC 日期；先用现有索引取宽边界，再按严格解析的时间精确过滤。
+  const margin = 2 * 86400000;
+  const start = Date.parse(since), end = Date.parse(until), selectedDates = dates?.slice().sort();
+  const lower = selectedDates ? Math.max(start, Date.parse(selectedDates[0] + 'T00:00:00Z') - 8 * 3600000) : start;
+  const upper = selectedDates ? Math.min(end, Date.parse(selectedDates.at(-1) + 'T00:00:00Z') + 16 * 3600000) : end;
+  const params = { since: start, until: end, memberId, operation,
+    lower: new Date(lower - margin).toISOString().slice(0, 10),
+    upper: new Date(upper + margin).toISOString().slice(0, 10),
+    dates: dates === null ? null : JSON.stringify(dates) };
+  return sqlite.prepare(`
+    WITH activity AS (
+      SELECT activity_time(j.created_at) AS submitted,
+        COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),
+          NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),
+          (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,
+        COALESCE(NULLIF(p.operation, ''), NULLIF(json_extract(j.data, '$.request.operation'), ''),
+          NULLIF(json_extract(j.data, '$.generationAttempt.operation'), ''),
+          NULLIF(json_extract(j.data, '$.request.action'), ''), 'generate') AS operation,
+        CASE WHEN j.status = 'failed' AND NULLIF(json_extract(j.data, '$.cancelledAt'), '') IS NOT NULL
+          THEN 'cancelled' ELSE COALESCE(j.status, 'other') END AS state
+      FROM jobs j INDEXED BY idx_jobs_created_stats
+      LEFT JOIN generation_requests p ON p.id = j.request_id
+      WHERE j.created_at >= @lower AND j.created_at < @upper
+    ), selected AS (
+      SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state
+      FROM activity WHERE submitted >= @since AND submitted < @until
+        AND (@memberId IS NULL OR member = @memberId)
+        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation
+    )
+    SELECT date, COUNT(*) AS total,
+      SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,
+      SUM(state = 'cancelled') AS cancelled, SUM(state = 'queued') AS queued,
+      SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,
+      SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other
+    FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))
+    GROUP BY date ORDER BY date
+  `).all(params);
+}
 
 function readAdminStats({ now = Date.now(), days = 7 } = {}) {
   const oneMinuteAgo = new Date(now - 60_000).toISOString();

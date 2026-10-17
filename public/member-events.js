@@ -1,6 +1,11 @@
 // 成员页和 owner 页共用连接生命周期；事件仅失效提示，数据仍由各自授权接口读取。
 let memberStream = null, memberActive = false, memberHandlers = {}, retryTimer = null;
 let bootId = '', version = -1;
+function validActivityDates(value) {
+  return value === undefined || Array.isArray(value) && value.length <= 366 && value.every(date =>
+    typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && Number.isFinite(Date.parse(date + 'T00:00:00Z'))
+    && new Date(date + 'T00:00:00Z').toISOString().slice(0, 10) === date);
+}
 function disconnect() {
   memberStream?.close(); memberStream = null;
   clearTimeout(retryTimer); retryTimer = null;
@@ -24,7 +29,8 @@ function connect() {
     try {
       const data = JSON.parse(event.data);
       if (typeof data.bootId !== 'string' || !data.bootId || !Number.isSafeInteger(data.version) || data.version < 0
-        || !Array.isArray(data.scopes) || data.scopes.some(scope => !['shared', 'member', 'owner'].includes(scope))) throw new Error('invalid state event');
+        || !Array.isArray(data.scopes) || data.scopes.some(scope => !['shared', 'member', 'owner'].includes(scope))
+        || !validActivityDates(data.activityDates)) throw new Error('invalid state event');
       const restarted = bootId !== data.bootId;
       if (!restarted && !data.resync && data.version <= version) return;
       // 权限过滤和合并均会跳号；只有明确校准或启动标识变化才要求全量重读。

@@ -39,5 +39,6 @@ export interface MemberBatch {
 }
 export interface StateInvalidation {
   bootId: string; version: number; scopes: ('shared' | 'member' | 'owner')[]; updatedAt: string; resync: boolean
+  activityDates?: string[]
 }
 export type MemberApi = <T>(path: string, body?: unknown) => Promise<T>

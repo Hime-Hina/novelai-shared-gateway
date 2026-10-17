@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import type { LoginOptions, MemberApi, MemberProfile, SharedStatus, StateInvalidation } from '../types/member'
 
 type RequestFailure = Error & { status?: number; stale?: boolean }
@@ -8,6 +8,7 @@ export function useMemberPortal() {
   const shared = shallowRef<SharedStatus | null>(null)
   const connection = ref('connecting'), initializing = ref(true), working = ref(false), error = ref('')
   const updatedAt = ref<number | null>(null), refreshVersion = ref(0)
+  const activityInvalidation = reactive<{ version: number; dates: string[] | null }>({ version: 0, dates: null })
   let epoch = 0, disposed = false, refreshPending = false, refreshTask: Promise<void> | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let events: typeof import('../../../public/member-events.js') | null = null
@@ -20,6 +21,7 @@ export function useMemberPortal() {
   function clearSession(message = '') {
     epoch++; refreshPending = false; stop()
     profileQuery.clear(); shared.value = null; updatedAt.value = null
+    activityInvalidation.dates = null
     error.value = message
   }
   const api: MemberApi = async <T>(path: string, body?: unknown): Promise<T> => {
@@ -43,6 +45,7 @@ export function useMemberPortal() {
     try {
       const value = await api<MemberProfile>('me')
       updatedAt.value = Date.now(); refreshVersion.value++
+      if (connection.value !== 'open') { activityInvalidation.dates = null; activityInvalidation.version++ }
       return value
     } catch (failure) {
       const reason = failure as RequestFailure
@@ -60,7 +63,15 @@ export function useMemberPortal() {
       onStatus: (value: SharedStatus) => { shared.value = value },
       onConnection: (value: string) => { connection.value = value },
       onExpired: () => clearSession('登录已失效，请重新登录。'),
-      onInvalidate: (value: StateInvalidation) => { if (value.resync || value.scopes.includes('member')) void refresh() }
+      onInvalidate: (value: StateInvalidation) => {
+        if (value.resync || value.scopes.includes('member')) {
+          if (value.resync || value.activityDates?.length) {
+            activityInvalidation.dates = value.resync ? null : value.activityDates!
+            activityInvalidation.version++
+          }
+          void refresh()
+        }
+      }
     })
     if (!document.hidden && !timer) timer = setInterval(() => { void refresh() }, 30000)
   }
@@ -123,6 +134,6 @@ export function useMemberPortal() {
     document.removeEventListener('visibilitychange', visible)
     window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', visible)
   })
-  return { profile: profileQuery.data, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion,
+  return { profile: profileQuery.data, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion, activityInvalidation,
     initialize, refresh, login, startDiscord, logout, api }
 }

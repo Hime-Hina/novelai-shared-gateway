@@ -41,7 +41,7 @@ export function sharedSurface(pathname, method = 'GET') {
   if (staticPaths.has(alias)) return { allowed: ['GET', 'HEAD'].includes(method), pathname: alias };
   let methods = routes.get(pathname);
   if (/^\/api\/member\/(login|logout)$/.test(pathname)) methods = ['POST'];
-  if (/^\/api\/member\/(me|key|shared-status|shared-events)$/.test(pathname)) methods = ['GET'];
+  if (/^\/api\/member\/(me|key|heatmap|shared-status|shared-events)$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/(?:member\/)?requests\/[^/]+$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/(?:member\/)?requests\/[^/]+\/cancel$/.test(pathname)) methods = ['POST'];
   if (/^\/api\/jobs\/[^/]+(?:\/content)?$/.test(pathname)) methods ||= ['GET'];

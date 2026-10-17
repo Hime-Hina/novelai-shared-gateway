@@ -153,20 +153,25 @@ test('真实提交及时通知本人/owner，公共状态兼容；读取无写�
  f.store.events.on('commit',event=>commits.push(event));
  for(const route of ['/api/member/me','/api/member/owner/member-management'])assert.equal((await f.call(route)).status,200);
  assert.deepEqual({settings:f.store.db.settings,ledger:f.store.db.ledger},before);assert.equal(commits.length,0);
- const started=Date.now();
- await f.store.update(db=>db.jobs.push({id:'event-job',status:'queued',userToken:db.users[1].token,createdAt:new Date().toISOString(),
+ const started=Date.now(),createdAt=new Date(started).toISOString();
+ await f.store.update(db=>db.jobs.push({id:'event-job',status:'queued',userToken:db.users[1].token,createdAt,
   request:{prompt:'private prompt never sent'}}),{dirtyRows:{jobs:['event-job']},immediate:true});
  await waitFor(()=>[owner,member,other].every(stream=>stream.invalidations().length>=2));
  assert.ok(Date.now()-started<1000,'空闲鉴权和队列下业务变化一秒内送达');
  assert.deepEqual(owner.invalidations().at(-1).scopes,['shared','owner']);
  assert.deepEqual(member.invalidations().at(-1).scopes,['shared','member']);
  assert.deepEqual(other.invalidations().at(-1).scopes,['shared']);
+ const date=new Date(started+8*3600000).toISOString().slice(0,10);
+ assert.deepEqual(owner.invalidations().at(-1).activityDates,[date]);
+ assert.deepEqual(member.invalidations().at(-1).activityDates,[date]);
+ assert.equal(other.invalidations().at(-1).activityDates,undefined);
  assert.equal(member.frames.filter(frame=>frame.event==='shared-status').at(-1).data.queued,1);
  await f.store.update(db=>{db.users[1].note='private member note';},{dirtyRows:{users:['event-member']},immediate:true});
  await waitFor(()=>member.invalidations().length===3&&owner.invalidations().length===3);await delay(50);
  assert.equal(other.invalidations().length,2);assert.deepEqual(member.invalidations().at(-1).scopes,['member']);
  for(const stream of [owner,member,other])for(const payload of stream.invalidations()){
-  assert.deepEqual(Object.keys(payload),['bootId','version','scopes','updatedAt','resync']);
+  assert.deepEqual(Object.keys(payload),['bootId','version','scopes','updatedAt','resync',
+   ...(stream!==other&&payload===stream.invalidations()[1]?['activityDates']:[])]);
   assert.ok(!JSON.stringify(payload).includes('private'));assert.ok(!JSON.stringify(payload).includes('synthetic-token'));
  }
  other.req.destroy();const replay=await f.stream(2,{'last-event-id':'unrelated-boot:999999'});

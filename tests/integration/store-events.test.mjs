@@ -16,7 +16,8 @@ async function open(t) {
   await store.update(db => { db.users = ['a', 'b'].map(id => ({ id, token: `STA1N-secret-${id}`, enabled: true, balance: 1 })); }, { immediate: true });
   return store;
 }
-function observe(store) { const events = []; store.events.on('commit', event => events.push(event)); return events; }
+// 日期配对由 activity-storage 专项覆盖；本文件继续验证原业务失效范围。
+function observe(store) { const events = []; store.events.on('commit', ({ activityChanges, ...event }) => events.push(event)); return events; }
 const parent = id => ({ id, member_id: 'a', source: 'web', operation: 'generate', created_at: new Date().toISOString(), payload_bytes: 2, payload: '{}' });
 const job = (id, overrides = {}) => ({ id, status: 'done', userToken: 'STA1N-secret-a', createdAt: new Date().toISOString(), ...overrides });
 
@@ -161,7 +162,7 @@ test('同步和异步监听器异常均不影响提交和后续监听器，close
   store.events.on('commit', () => { throw new Error('synthetic sync listener'); });
   store.events.on('commit', async () => { throw new Error('synthetic async listener'); });
   store.events.once('commit', () => { once++; });
-  store.events.on('commit', event => { received++; assert.deepEqual(Object.keys(event).sort(), ['allMembers', 'collections', 'memberIds']); });
+  store.events.on('commit', event => { received++; assert.deepEqual(Object.keys(event).sort(), ['activityChanges', 'allMembers', 'collections', 'memberIds']); });
   store.events.on('close', () => { throw new Error('synthetic close listener'); });
   store.events.on('close', () => { closed++; });
   await store.update(db => { db.users[0].balance++; }, { collections: ['users'], immediate: true });

@@ -17,6 +17,7 @@
 - 可选“个人 V5 不足转扣本地 Anlas”，参数不变，默认关闭，由管理员开启。
 - 查看官方共享额度状态；兼容酒馆 Native NovelAI 和 OpenAI 风格生图接口。
 - 账本与队列提交后按权限推送失效通知；成员额度、调用与 owner 当前视图合并刷新，后台更新保留未保存草稿，详见[实时状态](docs/state-events.md)。
+- 成员与 owner 可查看最近一年的[调用热力图](docs/call-heatmap.md)，按台北提交日逐张统计，生图/放大/Vibe 编码及成功/失败/取消分开查看；旧历史缺失明确显示未知。
 - Native 接口支持 V3／V4／V4.5／V5 Full、Curated（5C）、Medium，以及图生图、局部重绘、Vibe／Precise Reference、Vibe 编码和 2 倍放大，具体组合见下表。
 - 支持原生 MessagePack 最终图片流，兼容不会自动回退 ZIP 的客户端。
 - V5 恢复优先分给未满额成员；官方聚合余额变化不直接扣减闲置成员钱包。

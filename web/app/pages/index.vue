@@ -3,7 +3,7 @@ import { NAlert, NButton, NCard, NSkeleton, NSpace } from 'naive-ui'
 import { useMemberPortal } from '../composables/useMemberPortal'
 import { date } from '../utils/member-display'
 
-const { profile, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion,
+const { profile, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion, activityInvalidation,
   initialize, refresh, login, startDiscord, logout, api } = useMemberPortal()
 </script>
 <template>
@@ -28,6 +28,7 @@ const { profile, loginOptions, shared, connection, initializing, working, error,
         <MemberApiKey :api="api" />
       </div>
       <MemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />
+      <LazyCallHeatmap :api="api" endpoint="heatmap" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
     </section>
     <MemberSignIn v-else-if="loginOptions" :options="loginOptions" :busy="working" :error="error" @login="login" @discord="startDiscord" />
     <NCard v-else title="暂时无法读取登录入口"><NButton @click="initialize">重新读取</NButton></NCard>

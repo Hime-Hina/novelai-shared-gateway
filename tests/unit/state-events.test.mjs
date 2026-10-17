@@ -21,7 +21,7 @@ test('每store唯一合并器：200ms尾沿，持续提交首事件最多等一�
   assert.equal(events[1].bootId, events[0].bootId); assert.match(events[1].bootId, /^[a-f0-9]{24}$/);
 });
 
-test('权限只投影五字段，版本可跳号；sessions仅促鉴权，重连总是全授权resync', () => {
+test('权限只投影白名单字段，版本可跳号；sessions仅促鉴权，重连总是全授权resync', () => {
   const event = { bootId: 'synthetic-boot', version: 91, updatedAt: '2026-10-17T00:00:00.000Z',
     collections: ['users'], memberIds: ['a'], allMembers: false, token: 'secret', prompt: 'private' };
   const own = stateInvalidation(event, 'a', false);
@@ -38,6 +38,23 @@ test('权限只投影五字段，版本可跳号；sessions仅促鉴权，重连
   const merged = mergeStateEvents(event, { ...event, version: 95, collections: ['images'], memberIds: ['b'] });
   assert.deepEqual(merged.collections, ['users', 'images']); assert.deepEqual(merged.memberIds, ['a', 'b']);
   assert.equal(merged.version, 95); assert.equal(merged.prompt, undefined);
+});
+
+test('合并任务日期仍按成员配对过滤，未知归属只给owner，过期日期不进入全年通知', t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-17T02:00:00Z') });
+  const before = { bootId: 'boot', version: 1, collections: ['jobs'], memberIds: ['alice'],
+    activityChanges: [{ memberId: 'alice', date: '2026-10-15' }, { memberId: 'alice', date: '2025-10-17' }] };
+  const after = { bootId: 'boot', version: 2, collections: ['jobs', 'users'], memberIds: ['bob'], allMembers: true,
+    activityChanges: [{ memberId: 'bob', date: '2026-10-16' }, { memberId: null, date: '2026-10-17' },
+      { memberId: 'alice', date: '2026-10-15' }] };
+  const merged = mergeStateEvents(before, after);
+  assert.equal(merged.activityChanges.length, 4);
+  assert.deepEqual(stateInvalidation(merged, 'alice', false).activityDates, ['2026-10-15']);
+  assert.deepEqual(stateInvalidation(merged, 'bob', false).activityDates, ['2026-10-16']);
+  assert.equal(stateInvalidation(merged, 'charlie', false).activityDates, undefined);
+  const owner = stateInvalidation(merged, 'owner', true);
+  assert.deepEqual(owner.activityDates, ['2026-10-15', '2026-10-16', '2026-10-17']);
+  assert.equal(owner.activityChanges, undefined); assert.equal(owner.memberIds, undefined);
 });
 
 test('100个连接只占一个store监听，回调错误隔离，退订和关库清理待发事件/连接', async t => {

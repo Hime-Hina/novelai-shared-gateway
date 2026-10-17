@@ -141,3 +141,17 @@ test('永久关闭的临时故障有限重连，隐藏页面取消重试，恢�
   const retry=[...p.retries.values()][0];p.retries.clear();retry();
   assert.equal(p.streams.length,3);assert.equal(p.emitted.length,0);
 });
+
+test('日期失效通知保留授权日期，非法日期或超大列表不能触发刷新', () => {
+  const p = page(), changes = [];
+  p.ui.startSharedStatus(change => changes.push(change));
+  const event = (version, activityDates) => ({ bootId: 'activity', version, scopes: ['member'], updatedAt: new Date(NOW).toISOString(), activityDates });
+  p.streams[0].emit('state-invalidated', event(1, ['2024-02-29', '2026-10-17']));
+  assert.deepEqual([...changes[0].activityDates], ['2024-02-29', '2026-10-17']);
+  for (const dates of [['2026-02-30'], ['private-prompt'], '2026-10-17', Array(367).fill('2026-10-17')]) {
+    p.streams[0].emit('state-invalidated', event(2, dates));
+  }
+  assert.equal(changes.length, 1); assert.match(p.get('sharedConnection').textContent, /状态数据无效/);
+  p.streams[0].emit('state-invalidated', event(2, ['2026-10-18']));
+  assert.equal(changes.length, 2);
+});

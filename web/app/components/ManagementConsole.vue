@@ -7,7 +7,7 @@ import { date } from '../utils/member-display'
 
 const props = defineProps<{ mode: ManagementMode }>()
 const { state, shared, panel, days, usage, usageLoading, busy, connecting, adminToken, remember, sessionVersion,
-  message, messageError, readError, usageError, updatedAt, connection, refreshVersion,
+  message, messageError, readError, usageError, updatedAt, connection, refreshVersion, activityInvalidation,
   api, run, notify, changed, connect, disconnect, refresh, loadUsage } = useManagementPortal(props.mode)
 const groupsDirty = ref(false), policyDirty = ref(false), alerts = ref<ManagementAlert[]>([])
 const hint = computed(() => !state.value ? (connecting.value ? '正在验证管理身份…' : props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作')
@@ -43,6 +43,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
           <template #tab><NButton id="usageTab" text :aria-pressed="panel === 'usage'">用量与记录</NButton></template>
           <NAlert v-if="usageError" type="warning" role="status">{{ usageError }}</NAlert>
           <ManagementUsage :data="usage" :days="days" :loading="usageLoading" @update:days="days = $event" @retry="loadUsage" />
+          <LazyCallHeatmap :api="api" endpoint="member-management?view=heatmap" :members="state.users" :active="panel === 'usage'" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
         </NTabPane>
         <NTabPane name="members" display-directive="show:lazy">
           <template #tab><NButton text :aria-pressed="panel === 'members'">成员与分发</NButton></template>

@@ -6,6 +6,7 @@ import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLo
 import { clientIp } from './client-ip.js';
 import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';
 import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.js';
+import { readActivityHeatmap } from './activity-heatmap.js';
 const statusStreams = new Map();
 const error = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
@@ -92,6 +93,9 @@ export async function handleMemberRoutes(req, res, url, deps) {
       deps.assertAdmin(req, url);
     }
     if (req.method === 'GET') {
+      if (url.searchParams.get('view') === 'heatmap') {
+        reply(res, 200, await readActivityHeatmap(store, url.searchParams, { memberId: null, allowMemberFilter: true })); return true;
+      }
       if (url.searchParams.get('view') === 'losses') {
         reply(res, 200, await store.readFailureAccounting(url.searchParams.get('before'))); return true;
       }
@@ -252,6 +256,9 @@ export async function handleMemberRoutes(req, res, url, deps) {
     reply(res, 200, result); return true;
   }
   if (req.method !== 'GET') error(403, '成员账户没有管理权限，请联系管理员');
+  if (url.pathname === '/api/member/heatmap') {
+    reply(res, 200, await readActivityHeatmap(store, url.searchParams, { memberId: user.id, allowMemberFilter: false })); return true;
+  }
   if (url.pathname === '/api/member/shared-status') {
     const state = await store.update(db => sharedAccountStatus(db), { persist: false });
     reply(res, 200, state); return true;

@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { ManagementApi, ManagementMode, ManagementRun, ManagementState, ManagementUsage } from '../types/management'
 import type { SharedStatus, StateInvalidation } from '../types/member'
 
@@ -12,6 +12,7 @@ export function useManagementPortal(mode: ManagementMode) {
   const message = ref(''), messageError = ref(false), readError = ref(''), usageError = ref('')
   const shared = shallowRef<SharedStatus | null>(null), updatedAt = ref<number | null>(null)
   const connection = ref(mode === 'owner' ? 'connecting' : 'polling'), refreshVersion = ref(0)
+  const activityInvalidation = reactive<{ version: number; dates: string[] | null }>({ version: 0, dates: null })
   let epoch = 0, disposed = false, activeToken = '', pending = false, usagePending = false
   let refreshTask: Promise<void> | null = null, usageTask: Promise<void> | null = null
   let timer: ReturnType<typeof setInterval> | null = null
@@ -27,6 +28,7 @@ export function useManagementPortal(mode: ManagementMode) {
     epoch++; sessionVersion.value++; pending = false; usagePending = false; stop()
     refreshTask = null; usageTask = null
     stateQuery.clear(); usageQuery.clear(); shared.value = null; updatedAt.value = null
+    activityInvalidation.dates = null
     activeToken = ''; adminToken.value = ''; busy.value = false; connecting.value = false
     readError.value = ''; usageError.value = ''; notify(text, Boolean(text))
     if (mode === 'admin' && removeCredential) {
@@ -73,6 +75,7 @@ export function useManagementPortal(mode: ManagementMode) {
     try {
       const result = await api<ManagementState>('member-management')
       updatedAt.value = Date.now(); shared.value = result.shared; refreshVersion.value++; readError.value = ''
+      if (connection.value !== 'open') { activityInvalidation.dates = null; activityInvalidation.version++ }
       return result
     } catch (error) {
       if (!(error as Failure).stale) readError.value = '管理摘要读取失败，保留上次结果：' + (error as Error).message
@@ -101,7 +104,15 @@ export function useManagementPortal(mode: ManagementMode) {
         onStatus: (status: SharedStatus) => { shared.value = status },
         onConnection: (value: string) => { connection.value = value },
         onExpired: () => clear(true, '管理授权已失效，请返回成员页重新登录。'),
-        onInvalidate: (event: StateInvalidation) => { if (event.resync || event.scopes.includes('owner')) requestRefresh() }
+        onInvalidate: (event: StateInvalidation) => {
+          if (event.resync || event.scopes.includes('owner')) {
+            if (event.resync || event.activityDates?.length) {
+              activityInvalidation.dates = event.resync ? null : event.activityDates!
+              activityInvalidation.version++
+            }
+            requestRefresh()
+          }
+        }
       })
     }
     if (!document.hidden && !timer) timer = setInterval(requestRefresh, 30000)
@@ -189,5 +200,5 @@ export function useManagementPortal(mode: ManagementMode) {
   })
   return { state: stateQuery.data, shared, panel, days, usage: usageQuery.data, usageLoading: usageQuery.pending,
     busy, connecting, adminToken, remember, sessionVersion, message, messageError, readError, usageError,
-    updatedAt, connection, refreshVersion, api, run, notify, changed, connect, disconnect, refresh, loadUsage }
+    updatedAt, connection, refreshVersion, activityInvalidation, api, run, notify, changed, connect, disconnect, refresh, loadUsage }
 }

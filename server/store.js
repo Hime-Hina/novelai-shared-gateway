@@ -12,6 +12,7 @@ import { recordTables, appSettings, appRecords, appMeta, generationRequests, gen
 import { migrateStorage } from './storage-migrations.js';
 import { queuedDeadlineTimestamp } from './queue-policy.js';
 import { queryFailureAccounting } from './failure-accounting.js';
+import { activityDate } from './activity-heatmap.js';
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
 export const MAX_FREE_STEPS = 28;
@@ -104,11 +105,12 @@ export class JsonStore {
   notifyCommit(event) {
     if (!event.collections.size) return;
     this.emitStoreEvent('commit', Object.freeze({ collections: Object.freeze([...event.collections]),
-      memberIds: Object.freeze([...event.memberIds]), allMembers: event.allMembers }));
+      memberIds: Object.freeze([...event.memberIds]), allMembers: event.allMembers,
+      activityChanges: Object.freeze(event.activityChanges.map(change => Object.freeze(change))) }));
   }
 
   describeCommit(changes, nextSettings, previousRows = this.rowState, previousSettings = this.settingsState, request = null) {
-    const event = { collections: new Set(), memberIds: new Set(), allMembers: false };
+    const event = { collections: new Set(), memberIds: new Set(), allMembers: false, activityChanges: [] };
     if (changes.settingsChanged && JSON.stringify(fairQuotaArchive(safeJson(previousSettings, {})).settings) !== nextSettings) {
       event.collections.add('settings'); event.allMembers = true;
     }
@@ -121,17 +123,43 @@ export class JsonStore {
       const job = item.jobId ? this.selectItemById('jobs', item.jobId) : null;
       const requestId = item.requestId || job?.requestId;
       const parent = requestId && (request?.id === requestId ? request : this.statements.selectGenerationRequestMember.get({ id: requestId }));
-      const memberId = parent?.member_id || item.generationAttempt?.memberId || item.attempt?.memberId || item.memberId || item.userId || item.fairCharge?.userId
-        || job?.generationAttempt?.memberId || users.find(user => user.token && user.token === (item.userToken || item.token))?.id;
+      const memberId = collection === 'jobs'
+        ? parent?.member_id || item.generationAttempt?.memberId || item.fairCharge?.userId || users.find(user => user.token && user.token === item.userToken)?.id
+        : parent?.member_id || item.generationAttempt?.memberId || item.attempt?.memberId || item.memberId || item.userId || item.fairCharge?.userId
+          || job?.generationAttempt?.memberId || users.find(user => user.token && user.token === (item.userToken || item.token))?.id;
       if (memberId) event.memberIds.add(memberId);
       else if (collection !== 'ledger' || item.token || item.userToken || item.jobId || item.userId || item.memberId) event.allMembers = true;
+      return { memberId: memberId || null, parent };
     };
+    const activity = (item, identity) => {
+      const date = activityDate(item?.createdAt);
+      if (!date) return null;
+      const operation = identity?.parent?.operation || item.request?.operation || item.generationAttempt?.operation || item.request?.action || 'generate';
+      const state = item.status === 'failed' && item.cancelledAt != null && item.cancelledAt !== '' ? 'cancelled' : item.status;
+      return { date, memberId: identity?.memberId || null,
+        operation: ['generate', 'img2img', 'infill'].includes(operation) ? 'generate' : operation,
+        state: ['done', 'failed', 'cancelled', 'queued', 'pending', 'running'].includes(state) ? state : 'other' };
+    };
+    const activityKeys = new Set();
     for (const change of [...changes.deletes, ...changes.upserts]) {
       event.collections.add(change.collection);
       const previous = previousRows[change.collection]?.get(change.id)?.data
         || this.statements.selectById[change.collection]?.get({ id: change.id })?.data;
-      if (previous) addMember(change.collection, safeJson(previous, null));
-      if (change.data) addMember(change.collection, safeJson(change.data, null));
+      const before = safeJson(previous, null), after = safeJson(change.data, null);
+      const previousMember = before && addMember(change.collection, before);
+      const nextMember = after && addMember(change.collection, after);
+      if (change.collection === 'jobs') {
+        const oldActivity = activity(before, previousMember), newActivity = activity(after, nextMember);
+        if (!isDeepStrictEqual(oldActivity, newActivity)) {
+          for (const value of [oldActivity, newActivity]) {
+            if (!value) continue;
+            const key = JSON.stringify([value.memberId, value.date]);
+            if (activityKeys.has(key)) continue;
+            activityKeys.add(key);
+            event.activityChanges.push({ memberId: value.memberId, date: value.date });
+          }
+        }
+      }
       if (!previous && !change.data && ['users', 'jobs', 'images', 'ledger'].includes(change.collection)) event.allMembers = true;
     }
     return event;
@@ -727,6 +755,13 @@ export class JsonStore {
     `).all(since, until);
   }
 
+  async readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }) {
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    return this.statsReader.request('activityDays', { since, until, memberId, operation, dates }, 15_000);
+  }
+
   async readFailureAccounting(before, now = Date.now()) {
     await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
     return this.sqlite.transaction(() => queryFailureAccounting(this.sqlite, before, now)).deferred();
@@ -1061,7 +1096,7 @@ export class JsonStore {
       )).prepare(),
       selectGenerationRequest: db.select({ payload: generationRequests.payload }).from(generationRequests)
         .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
-      selectGenerationRequestMember: db.select({ member_id: generationRequests.member_id }).from(generationRequests)
+      selectGenerationRequestMember: db.select({ member_id: generationRequests.member_id, operation: generationRequests.operation }).from(generationRequests)
         .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
       insertGenerationIdempotency: db.insert(generationIdempotency).values(Object.fromEntries(
         Object.keys(getTableColumns(generationIdempotency)).map(key => [key, sql.placeholder(key)])

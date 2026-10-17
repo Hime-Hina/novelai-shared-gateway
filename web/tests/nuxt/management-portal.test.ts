@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { flushPromises, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, h, nextTick } from 'vue'
+import { defineComponent, h, nextTick, watch } from 'vue'
 import { clearNuxtData, useNuxtApp } from '#app'
 import { useManagementPortal } from '../../app/composables/useManagementPortal'
 import type { ManagementMode, ManagementState, ManagementUsage, ManagementUsageCounts } from '../../app/types/management'
@@ -52,8 +52,8 @@ const pending = (path: string) => {
   return request!
 }
 const count = (path: string) => requests.filter(request => request.path === path).length
-const invalidate = (stream: NetworkStream, version: number, scopes = ['owner'], resync = false) => {
-  stream.emit('state-invalidated', { bootId: 'management-test', version, scopes, resync, updatedAt: new Date().toISOString() })
+const invalidate = (stream: NetworkStream, version: number, scopes = ['owner'], resync = false, activityDates?: string[]) => {
+  stream.emit('state-invalidated', { bootId: 'management-test', version, scopes, resync, activityDates, updatedAt: new Date().toISOString() })
 }
 async function mount(mode: ManagementMode) {
   wrapper = await mountSuspended(defineComponent({ setup() {
@@ -124,19 +124,29 @@ describe('真实 Nuxt useAsyncData 管理会话', () => {
 
   it('owner 业务写入403经 me 确认有效后保留会话与草稿承载，失效确认才清除', async () => {
     const stream = (await connected())!, version = portal.sessionVersion.value
+    stream.onopen?.()
+    invalidate(stream, 2, ['owner'], false, ['2026-10-17']); await settle()
+    pending(summaryPath('owner')).reply(200, state()); pending(statisticsPath()).reply(200, usage()); await settle()
+    const signal = portal.activityInvalidation, activityVersion = signal.version
     const write = portal.run(async () => { await portal.api('member-transfer', { amount: 1 }) })
     pending('/api/member/owner/member-transfer').reply(403, { error: '不能转移此资源' }); await settle()
     pending('/api/member/me').reply(200, { owner: true }); await write
     expect(portal.state.value?.users[0]?.username).toBe('Alice')
     expect(portal.sessionVersion.value).toBe(version)
+    expect(signal.dates).toEqual(['2026-10-17'])
     expect(portal.message.value).toBe('不能转移此资源'); expect(portal.messageError.value).toBe(true)
     expect(stream.close).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(1)
+    const refresh = portal.refresh(), old = pending(summaryPath('owner'))
     const expired = portal.api('member-transfer', {}).catch(error => error)
     pending('/api/member/owner/member-transfer').reply(401, { error: 'expired' }); await settle()
     pending('/api/member/me').reply(403, { error: 'expired' }); await expired; await settle()
     expect(portal.state.value).toBeNull(); expect(portal.usage.value).toBeNull(); expect(portal.shared.value).toBeNull()
+    expect(signal.dates).toBeNull()
     expect(portal.sessionVersion.value).toBeGreaterThan(version)
     expect(stream.close).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0)
+    old.reply(200, state('Expired owner')); await refresh; await settle()
+    expect(portal.state.value).toBeNull(); expect(portal.activityInvalidation).toBe(signal)
+    expect(signal).toEqual({ version: activityVersion, dates: null })
   })
 
   it('owner 身份被撤销时即使 me 返回200也清理管理私有数据', async () => {
@@ -150,16 +160,24 @@ describe('真实 Nuxt useAsyncData 管理会话', () => {
 
   it('摘要503和鉴权核验503保留已有私有视图，错误不能误判成会话过期', async () => {
     const stream = (await connected())!, version = portal.sessionVersion.value, updatedAt = portal.updatedAt.value
+    stream.onopen?.()
+    const activityVersion = portal.activityInvalidation.version
     const refresh = portal.refresh()
     pending(summaryPath('owner')).reply(503, { error: 'temporarily unavailable' }); await refresh
     expect(portal.state.value?.users[0]?.username).toBe('Alice'); expect(portal.updatedAt.value).toBe(updatedAt)
     expect(portal.readError.value).toContain('temporarily unavailable')
+    expect(portal.activityInvalidation.version).toBe(activityVersion)
     const write = portal.run(async () => { await portal.api('member-transfer', {}) })
     pending('/api/member/owner/member-transfer').reply(403, { error: 'permission check failed' }); await settle()
     pending('/api/member/me').reply(503, { error: 'temporarily unavailable' }); await write
     expect(portal.state.value?.users[0]?.username).toBe('Alice'); expect(portal.usage.value?.since).toBe('seven days')
     expect(portal.sessionVersion.value).toBe(version); expect(stream.close).not.toHaveBeenCalled()
     expect(portal.message.value).toBe('permission check failed')
+    await stream.onerror?.()
+    expect(portal.connection.value).toBe('retrying')
+    await vi.advanceTimersByTimeAsync(30000)
+    pending(summaryPath('owner')).reply(200, state()); pending(statisticsPath()).reply(200, usage()); await settle()
+    expect(portal.activityInvalidation).toEqual({ version: activityVersion + 1, dates: null })
   })
 
   it('admin 仅使用管理 token 且无成员 SSE，业务403保留，确认失效清凭据和敏感状态', async () => {
@@ -227,22 +245,37 @@ describe('真实 Nuxt useAsyncData 管理会话', () => {
     })
   }
 
-  it('owner 事件按作用域刷新，在途多次通知合并一次补读，busy 后才执行延后更新', async () => {
+  it('owner 日期逐条通知，资料补读合并及busy延后不丢日期；resync全量校准', async () => {
     const stream = (await connected())!, summary = summaryPath('owner'), initial = count(summary), initialUsage = count(statisticsPath())
-    invalidate(stream, 2, ['shared']); await settle(); expect(count(summary)).toBe(initial)
-    invalidate(stream, 3); await settle(); expect(count(summary)).toBe(initial + 1)
-    invalidate(stream, 4); invalidate(stream, 5); invalidate(stream, 6); await settle()
-    expect(count(summary)).toBe(initial + 1); expect(count(statisticsPath())).toBe(initialUsage + 1)
-    pending(summary).reply(200, state('First')); pending(statisticsPath()).reply(200, usage('First')); await settle()
-    expect(count(summary)).toBe(initial + 2); expect(count(statisticsPath())).toBe(initialUsage + 2)
-    pending(summary).reply(200, state('Latest')); pending(statisticsPath()).reply(200, usage('Latest')); await settle()
-    const operation = deferred<void>(), saving = portal.run(() => operation.promise)
-    invalidate(stream, 7); invalidate(stream, 8); await settle()
-    expect(count(summary)).toBe(initial + 2)
-    operation.resolve(); await saving; await settle()
-    expect(count(summary)).toBe(initial + 3); expect(count(statisticsPath())).toBe(initialUsage + 3)
-    pending(summary).reply(200, state('After save')); pending(statisticsPath()).reply(200, usage('After save')); await settle()
-    expect(portal.state.value?.users[0]?.username).toBe('After save')
+    stream.onopen?.()
+    const signal = portal.activityInvalidation, dates: (string[] | null)[] = []
+    const stop = watch(() => signal.version, () => dates.push(signal.dates && [...signal.dates]), { flush: 'sync' })
+    try {
+      invalidate(stream, 2, ['shared', 'member'], false, ['2026-10-15']); await settle()
+      expect(count(summary)).toBe(initial); expect(dates).toEqual([])
+      invalidate(stream, 3); await settle()
+      expect(count(summary)).toBe(initial + 1); expect(dates).toEqual([])
+      invalidate(stream, 4, ['owner'], false, ['2026-10-16'])
+      invalidate(stream, 5, ['owner'], false, ['2026-10-17'])
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17']])
+      invalidate(stream, 6); await settle()
+      expect(count(summary)).toBe(initial + 1); expect(count(statisticsPath())).toBe(initialUsage + 1)
+      pending(summary).reply(200, state('First')); pending(statisticsPath()).reply(200, usage('First')); await settle()
+      expect(count(summary)).toBe(initial + 2); expect(count(statisticsPath())).toBe(initialUsage + 2)
+      pending(summary).reply(200, state('Latest')); pending(statisticsPath()).reply(200, usage('Latest')); await settle()
+      const operation = deferred<void>(), saving = portal.run(() => operation.promise)
+      invalidate(stream, 7); invalidate(stream, 8); await settle()
+      expect(count(summary)).toBe(initial + 2)
+      operation.resolve(); await saving; await settle()
+      expect(count(summary)).toBe(initial + 3); expect(count(statisticsPath())).toBe(initialUsage + 3)
+      pending(summary).reply(200, state('After save')); pending(statisticsPath()).reply(200, usage('After save')); await settle()
+      expect(portal.state.value?.users[0]?.username).toBe('After save')
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17']])
+      invalidate(stream, 9, ['owner'], true, ['2026-10-17']); await settle()
+      expect(dates).toEqual([['2026-10-16'], ['2026-10-17'], null])
+      pending(summary).reply(200, state()); pending(statisticsPath()).reply(200, usage()); await settle()
+      expect(dates).toHaveLength(3); expect(portal.activityInvalidation).toBe(signal)
+    } finally { stop() }
   })
 
   it('隐藏页停轮询，恢复由 SSE 校准；卸载清私有状态并忽略迟到响应和旧事件', async () => {
