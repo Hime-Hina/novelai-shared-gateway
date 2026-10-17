@@ -42,6 +42,12 @@
 
 业务入口与测试前置都只监听 `127.0.0.1`。前置设置合成会话 Cookie，三种角色均通过一个 200 HTML 页面里的真实同源链接进入业务页面；不使用会延续跨站导航上下文的 303 跳转，不修改 `Sec-Fetch-*`、Origin 或生产权限校验。唯一业务响应适配是将真实 `GET /api/member/login-options` 返回的 `origin` 改成本机入口，其余字段保持不变。后端仍配置合成 HTTPS 域以通过 Discord 配置校验；真实 OAuth 流程在测试前置明确禁用。Discord 资格和 NAI 响应由本进程模拟，其他非回环 fetch 被拒绝，不读取 `.env` 或生产数据，不需要证书例外。
 
+复现版本说明：上述 helper 是 `d96665e:tests/helpers/browser-baseline.mjs` 中
+对应内存会话的冻结版本。A01 在 `26899d4` 改为启动前持久签发会话，当前
+helper 已不兼容旧 `5437fc8` 的同步会话 API，不能将当前文件直接复制到旧
+副本。重放原基线须从 d96665e 取 helper 并核对上面的 LF 指纹；U01/U02
+新版采样使用当前 helper，另记源码提交与指纹，不替换原六十条样本。
+
 启动自检确认匿名成员接口 401、普通成员不能访问 owner 接口、owner 能读真实 SQLite 统计及静态资源。自检会使成员资格查询进入热缓存，因此本轮不是 Discord 冷请求实验，也不能用于生产 OAuth 验收。
 
 正式原始数据保存于 `_private/browser-baseline-frozen-5437fc8-20261017.json`；这里只记录脱敏汇总，不提交该私有原始文件。此前 `_private/browser-baseline-preflight-20261017.json` 的 **14 条预采样**混用了资源版本，已从正式基线剔除，不用于补齐任一分组。前面的生产历史导航证据同样不并入本轮样本。

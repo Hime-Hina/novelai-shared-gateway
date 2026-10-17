@@ -62,6 +62,11 @@ Linux 其余相关 62/62 通过；十一条
 105 文件通过。镜像 `novelai-shared-gateway:r01-check`：
 `sha256:f78e7c6dbb95c5e0eca6e29482e2876e513c3b8582de4c8dfd247b756ce71a00`。
 
+[托管 CI 38985638847](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38985638847)
+在 f6686f9 通过 457/457、105 文件语法、冻结安装、SQLite 原生加载与
+Docker 构建。前两轮旧 Native HTTP 超时仍未查明原因，保留已加入的
+脱敏现场诊断；本轮通过不代表该历史问题已修复。
+
 Chrome 验证使用隔离合成数据和两次模拟生成：新调用自动出现；断开 SSE
 后收到 resync，展开的批次保持；owner 后台更新后未保存分组仍为原草稿，
 最终用量 98 成功 / 122 请求。派发提交到通知约 210 毫秒、完成约 214
