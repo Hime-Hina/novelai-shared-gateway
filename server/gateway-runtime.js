@@ -552,7 +552,7 @@ async function route(req, res) {
       }
     }
     if (job.status !== 'failed') throw httpError(409, 'job is not finished.');
-    const image = buildErrorImage(job.error || 'Generation failed');
+    const image = buildErrorImage(publicErrorMessage(job.error || 'Generation failed', { generation: true }));
     sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
     return;
   }
@@ -896,7 +896,7 @@ async function handleNativeImageGeneration(req, res, { stream = false } = {}) {
       results.push({ index, status: 'done', filename });
     } catch (error) {
       if (!entries.length) throw error;
-      results.push({ index, status: 'failed', message: publicErrorMessage(error.message || '生成失败') });
+      results.push({ index, status: 'failed', message: publicErrorMessage(error.message || '生成失败', { generation: true }) });
       break;
     }
   }
@@ -957,7 +957,7 @@ async function streamNativeImages(res, batch, deadline) {
       if (res.destroyed) return;
       if (!res.headersSent) throw error;
       for (const chunk of nativeStreamChunks(res, { event_type: 'error', samp_ix: index,
-        code: String(error.statusCode || 500), message: publicErrorMessage(error.message || '生成失败') }, batch.streamType)) res.write(chunk);
+        code: String(error.statusCode || 500), message: publicErrorMessage(error.message || '生成失败', { generation: true }) }, batch.streamType)) res.write(chunk);
       break;
     } finally { unwatch(); }
   }
@@ -2662,7 +2662,7 @@ function publicGenerationRequest(request) {
   const jobs = request.jobs.map(job => ({
     id: job.id, index: job.sampleIndex, status: job.status, model: job.model || '',
     createdAt: job.createdAt || '', updatedAt: job.updatedAt || '', completedAt: job.completedAt || '',
-    error: publicErrorMessage(job.error || ''), cancelled: Boolean(job.cancelledAt),
+    error: publicErrorMessage(job.error || '', { generation: true }), cancelled: Boolean(job.cancelledAt),
     lateResultAvailable: Boolean(job.lateResultAvailable), imageUrl: job.imageId ? publicImageUrl(job.imageId) : ''
   }));
   const counts = { total: jobs.length, queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
@@ -2783,6 +2783,8 @@ function notifyJobWaiters(jobId, payload) {
   const waiters = jobWaiters.get(jobId);
   if (!waiters) return;
   jobWaiters.delete(jobId);
+  // 实时失败和旧任务补查共用公开边界；数据库中的旧诊断不在读取时改写。
+  if (payload.error) payload = { ...payload, error: publicErrorMessage(payload.error, { generation: true }) };
   waiters.forEach((waiter) => {
     clearTimeout(waiter.timer);
     waiter.cleanup?.();
@@ -3479,7 +3481,7 @@ async function cancelReservedJob(reservation, error) {
   const commitRequestedAt = Date.now();
   const detail = errorDetailMessage(error);
   const waiterMessage = error?.message || detail || 'direct generate timeout';
-  const message = publicErrorMessage(waiterMessage);
+  const message = publicErrorMessage(waiterMessage, { generation: true });
   let changed = false;
   let cooldownUntil;
   const kind = sharedFailureKind(reservation, error);
@@ -3515,7 +3517,7 @@ async function cancelReservedJob(reservation, error) {
   scheduleQueueDrain();
   if (reservation.job?.id) {
     clearJobStreamProgress(reservation.job.id);
-    notifyJobWaiters(reservation.job.id, { error: waiterMessage, statusCode, cooldownUntil });
+    notifyJobWaiters(reservation.job.id, { error: message, statusCode, cooldownUntil });
   }
 }
 
@@ -3525,7 +3527,7 @@ async function failGeneration(reservation, error) {
   const kind = sharedFailureKind(reservation, error);
   const capacityError = fairShareMode && kind === 'capacity';
   const statusCode = capacityError ? 429 : error.statusCode || 500;
-  const message = capacityError ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。' : fairShareMode&&error?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&error?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage(error?.message || detail);
+  const message = capacityError ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。' : fairShareMode&&error?.upstreamStatus===401?'共享 Opus Key 已失效，请联系管理员更新凭据':fairShareMode&&error?.upstreamStatus===403?'上游拒绝访问，请联系管理员重新验证 Opus':publicErrorMessage(error?.message || detail, { generation: true });
   let cooldownUntil;
   let changed = false;
   await store.update((db) => {
@@ -4155,7 +4157,7 @@ function publicJob(job, db = null, { includePrompt = true } = {}) {
     imageId: job.imageId || '',
     imageUrl: job.imageId ? publicImageUrl(job.imageId) : '',
     lateResultAvailable: job.lateResultAvailable === true,
-    error: publicErrorMessage(job.error || ''),
+    error: publicErrorMessage(job.error || '', { generation: true }),
     queuePosition: queue.progress,
     queuedCount: queue.total,
     durationMs: jobDurationMs(job),
@@ -4593,13 +4595,32 @@ function isQuotaFailureJob(job) {
   return job?.status === 'failed' && isInsufficientBalanceError({ message: job.error });
 }
 
-function publicErrorMessage(message) {
+function publicErrorMessage(message, { generation = false } = {}) {
   const text = String(message || '');
+  const generationFailure = '生成失败，请稍后重试或联系管理员。';
+  // 文件/SQLite异常也可能发生在已完成图片的读取阶段，不回显路径或内部操作。
+  if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) return generationFailure;
+  if (generation && /^NovelAI returned 401\b/.test(text)) return '共享 Opus Key 已失效，请联系管理员更新凭据';
+  if (generation && /^NovelAI returned 403\b/.test(text)) return '上游拒绝访问，请联系管理员重新验证 Opus';
   if (isNovelAiAccountBannedError(text)) return '账号已封禁';
   if (isInsufficientBalanceError({ message: text })) return insufficientBalanceMessage;
   if (/This operation was aborted|operation was aborted|direct generate timeout|AbortError/i.test(text)) return '连接超时';
   if (/invalid token/i.test(text)) return '密钥无效或已被禁用。';
   if (/all NovelAI accounts are busy|server busy/i.test(text)) return '服务器繁忙，请稍后再试。';
+  if (generation && text) {
+    if (/(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text)) return insufficientBalanceMessage;
+    if (/^共享 Opus (?:额度)?暂不可用：/.test(text)) return '共享 Opus 暂不可用，请稍后重试或联系管理员。';
+    // 这些文本均由本地生成生命周期构造；其余未知原文只留在管理员诊断中。
+    const known = [generationFailure, '连接超时', insufficientBalanceMessage, '密钥无效或已被禁用。', '服务器繁忙，请稍后再试。',
+      '共享 Opus Key 已失效，请联系管理员更新凭据', '上游拒绝访问，请联系管理员重新验证 Opus',
+      'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。',
+      '共享 Opus 暂不可用，请稍后重试或联系管理员。', '绑定的 Opus 账号未启用', '共享账本尚未配置',
+      '该用户未加入共享分组账本', '共享账本只能使用绑定的 Opus 账号', '已退款任务不能重新提交', '已结算任务不能重新提交',
+      '任务已取消', '请求已取消，未派发任务已终止', '管理员已停止此成员接单，未派发任务已取消',
+      '管理员已停止此成员接单；已有结果仍可查询', '该请求剩余任务已被管理员取消，请重新提交',
+      '任务状态暂时无法读取，请稍后查询'];
+    return known.includes(text) ? text : generationFailure;
+  }
   return text;
 }
 

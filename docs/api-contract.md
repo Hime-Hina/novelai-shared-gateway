@@ -181,6 +181,8 @@ Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在�
 
 这是 HTTP 错误包络的兼容修复，不等于官方错误行为全部对齐。私有入口保护仍可返回纯文本403；路径不在共享白名单时由通用处理器返回404，外形可能是 `{error}` 或 `/v1/` 的 OpenAI 外形，不能假设所有 `/ai/` 未知路径都使用 Native 外形。
 
+生成失败对成员只返回固定分类文案，不公开上游JSON/流错误原文、文件路径或堆栈。失败/取消提交、任务等待通知、任务/父请求查询、错误图片及部分批次共用同一公开转换；旧任务在读取时也处理，但不重写历史诊断。管理员错误详情保留原有诊断；成员参数验证仍提供具体的本地校验提示。读取已完成结果时的标准文件系统错误也不回显内部路径。这一边界不改变HTTP状态、结算、取消、冷却或重发规则。
+
 | 状态 | 当前主要触发条件 |
 | --- | --- |
 | 400 | 非法 JSON/对象、缺失或错误的 prompt/parameters、multipart 结构不完整 |
@@ -290,7 +292,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | C03-01 | ZIP/JSON协商和Vibe201/binary已实现；普通生成状态由后续C03-04实测修正为200 | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
 | C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP及[最新联合CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
-| C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200；映射与批次扩展已审阅，错误文本边界继续修复 | 保留共享上游身份、独立结算与部分交付语义；普通200切片已通过Linux CI，其他切片另记录，不宣称逐状态/逐字节透明代理 |
+| C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200；映射与批次扩展已审阅，生成错误公开边界已修复 | 保留共享上游身份、独立结算与部分交付语义；普通200与封禁片已通过Linux CI，错误文本HTTP17/17通过且最终CI待记录，不宣称逐状态/逐字节透明代理 |
 | C03-05 | 已依据官方规则拒绝DDIM＋SMEA，核对并保留Precise负值/secondary大于1；其他采样器组合不凭UI缺席直接收窄 | 定向组合、有限数、原值及报价回归见上节；当前接受名单与Precise界限明确为网关范围，未声称全组合上游验证 |
 | C03-06 | 已完成边界核对：Vibe内部格式未公开，当前官方契约没有可依赖的幂等生成/结果重取接口 | 保留opaque产物和本地恢复证据；作为明确限制结案，不宣称任意断电后精确一次上游消费或凭correlation-id找回 |
 

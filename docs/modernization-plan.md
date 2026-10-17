@@ -146,7 +146,11 @@ C03-04 封禁误判补修：共享封禁识别改为匹配独立的ban/banned，
 
 C03-05 参数组合核对：依据官方采样文档，新增一条DDIM/ddim_v3启用SMEA时的422校验，覆盖Anime/Furry V3、重绘模型映射、DYN依赖、正常Euler和Medium固定参数；不依据官网UI列表缺席收窄其他采样器。官方Precise支持负值，保留现有主值−1～1、secondary−1～2并明确为网关边界；补原值、非有限数与每张参考费用不随强度变化的回归。新增组合先失败、修复后Native参数/报价/契约39/39通过，语法与差异检查通过；无依赖、schema或报价修改，全部离线模拟。证据和限制见[契约](api-contract.md#c03-05-采样器组合与-precise-范围)，最终Linux验收继续记录。
 
+封禁误判与参数组合的最终验收：封禁提交[84189f3](https://github.com/Hime-Hina/novelai-shared-gateway/commit/84189f3)的[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39017059713)后端507通过；DDIM提交[2360ac7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2360ac7)的[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39017218555)后端508通过。两次均通过前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；语法、类型及三个镜像构建通过。
+
 C03-06已完成协议边界核对：固定Swagger中没有可依赖的幂等生成/结果找回契约，Vibe内部格式也未公开。沿用已有F06/F10本地持久和恢复保证及F03分资源损耗，不把correlation-id当作上游幂等或结果索引；Vibe保持opaque并核验媒体类型、非空、传输与持久摘要。现有provider/F10回归已有证据，不另造解析器或新增实测付费调用。详细限制见[契约](api-contract.md#c03-06-上游保证与本地恢复边界)；将不可提供的上游保证明确结案，D01仍须验收实际部署链路。
+
+C03-04 生成错误公开边界：失败/取消、等待通知、任务与父请求DTO、错误图片、SSE及部分结果共用固定分类文案；上游原文、帧内容和标准文件系统路径不再进入这些成员响应。旧任务读取也受保护，但不改写历史诊断；管理员errorDetail及本地参数校验保持。先由真实HTTP复现旧错误路径、stat路径和上游正文三处泄漏，修复后HTTP17/17、账务/冷却/恢复31/31、额外冷却/取消/连接15/15通过，源码语法与差异检查通过；覆盖已发首帧的部分失败、同键JSON领取、退款与已成功图片各自账目。中间一次新增fixture缺updatedAt导致管理员查询断言失败，补齐该测试时间字段后全通过，未改变业务过滤或放宽240秒测试截止。完整上游状态矩阵未新增，保留已核对的共享网关映射；最终Linux验收继续记录。无schema、依赖或生产改动。
 
 ## 仓库与现状
 

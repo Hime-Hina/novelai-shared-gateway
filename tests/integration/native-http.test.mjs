@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,8 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.js';
+import { JsonStore, hashObject } from '../../server/store.js';
+import { generationRequestFingerprint } from '../../server/request-fingerprint.js';
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.js';
 import { crc32, parseNativeImageRequest } from '../../server/native-image.js';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.js';
@@ -70,6 +71,11 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
   const adminToken = randomBytes(32).toString('hex');
   const upstreamToken = 'pst-synthetic-offline-fixture-only';
+  const privateMarker = 'synthetic-private-generation-diagnostic';
+  const safeFailure = '生成失败，请稍后重试或联系管理员。';
+  const legacyKey = 'synthetic-legacy-private-error';
+  const legacyError = `ENOENT: no such file or directory, open '${path.join(dataDir, privateMarker)}'`;
+  const legacyRequest = parseNativeImageRequest(body());
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir }, log() {} });
   const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
   const seeded = new JsonStore(dataDir);
@@ -82,7 +88,14 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       syncFairQuota(db);
       db.images.push({ id: 'img-access-owner', token: credentials[0].api_key, mimeType: 'image/png', base64: png.toString('base64') });
       db.jobs.push({ id: 'job-access-owner', userToken: credentials[0].api_key, status: 'done', imageId: 'img-access-owner', createdAt: new Date().toISOString() });
-    }, { collections: ['accounts', 'settings', 'images', 'jobs'], includeSettings: true, immediate: true });
+      db.jobs.push({ id: 'job-legacy-private-error', source: 'novelai-native', userToken: credentials[0].api_key,
+        accountId: db.accounts[0].id, status: 'failed', request: legacyRequest,
+        error: legacyError, errorStatus: 500, errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
+        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() });
+    }, { collections: ['accounts', 'settings', 'images', 'jobs'], includeSettings: true, immediate: true,
+      generationIdempotency: { member_id: credentials[0].user_id, operation: 'generate', key_hash: hashObject(legacyKey),
+        fingerprint: generationRequestFingerprint(legacyRequest, { noCache: true }), normalization_context: '{}',
+        job_id: 'job-legacy-private-error', request_id: null, created_at: new Date().toISOString() } });
   } finally { await seeded.close(); }
 
   const calls = [];
@@ -137,7 +150,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     if (calls.length === failAt) {
       call.responseStatus = failStatus;
       res.writeHead(failStatus, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ message: failStatus === 429 ? 'Concurrent generation limit reached' : 'synthetic generation failure' }));
+      res.end(JSON.stringify({ message: failStatus === 429 ? 'Concurrent generation limit reached' : 'synthetic generation failure',
+        diagnostic: privateMarker, credential: upstreamToken }));
       return;
     }
     if (malformedNext) {
@@ -153,6 +167,11 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       res.write(nativeImageMsgpack({ event_type: 'intermediate', samp_ix: 0, image: png, step_ix: gate.step }));
       gate.written = true;
       await gate.wait;
+      if (gate.errorMessage) {
+        call.responseStatus = 200;
+        res.end(nativeImageMsgpack({ event_type: 'error', samp_ix: 0, message: gate.errorMessage }));
+        return;
+      }
       if (gate.disconnect) { call.responseStatus = 'disconnected'; res.destroy(); return; }
     }
     const cost = quoteFairRequest(parseNativeImageRequest({ input: payload.input, action: payload.action, model: payload.model, parameters: payload.parameters }));
@@ -248,6 +267,36 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const response = await fetchLocal('/api/member/me', { headers: { cookie: cookies[member] } });
     assert.equal(response.status, 200); return (await response.json()).quota;
   };
+
+  await t.test('旧生成错误在查询、错误图片和幂等重放时不公开内部路径，管理员仍能诊断', async () => {
+    const headers = { authorization: `Bearer ${credentials[0].api_key}` };
+    const snapshot = await (await fetchLocal('/api/jobs/job-legacy-private-error', { headers })).json();
+    assert.equal(snapshot.error, safeFailure);
+    const image = await fetchLocal('/api/jobs/job-legacy-private-error/content', { headers });
+    assert.equal(image.status, 200); assert.equal(image.headers.get('x-error'), '1');
+    const svg = await image.text();
+    assert.ok(!svg.includes(privateMarker)); assert.ok(!svg.includes(dataDir));
+    const replay = await post('/ai/generate-image-stream', body(), credentials[0].api_key, { 'Idempotency-Key': legacyKey });
+    assert.equal(replay.status, 500);
+    assert.deepEqual(await replay.json(), { message: safeFailure, statusCode: 500, error: safeFailure });
+    assert.equal(calls.length, 0);
+    const persisted = JSON.parse(auditReader.prepare('SELECT data FROM jobs WHERE id = ?').get('job-legacy-private-error').data);
+    assert.equal(persisted.error, legacyError, '读取历史不能偷偷迁移或重写诊断');
+    const summary = await (await fetchLocal('/api/admin/summary', { headers: { 'x-admin-token': adminToken } })).json();
+    const diagnostic = summary.errorLogs.find(item => item.id === persisted.id);
+    assert.ok(diagnostic?.errorDetail.includes(privateMarker));
+  });
+
+  await t.test('已保存图片读取失败不在成员响应中公开 filesystem 路径', async () => {
+    const image = JSON.parse(auditReader.prepare('SELECT data FROM images WHERE id = ?').get('img-access-owner').data);
+    const file = path.join(dataDir, image.file), held = file + '.held';
+    await rename(file, held);
+    try {
+      const response = await fetchLocal('/api/jobs/job-access-owner/content', { headers: { authorization: `Bearer ${credentials[0].api_key}` } });
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), { error: safeFailure });
+    } finally { await rename(held, file); }
+  });
 
   await t.test('图片读取保留有效签名、本人及管理员访问，拒绝其他成员绕过过期签名', async () => {
     const ownHeaders = { authorization: `Bearer ${credentials[0].api_key}` };
@@ -496,6 +545,11 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(failed.status, 500); assert.match(failed.headers.get('content-type'), /application\/json/);
     const failure = await failed.json(); assert.ok(failure.error); assert.equal(failure.images, undefined);
     assert.deepEqual(failure, { message: failure.error, statusCode: 500, error: failure.error });
+    assert.equal(failure.message, safeFailure);
+    const failedJob = JSON.parse(auditReader.prepare("SELECT data FROM jobs WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1").get().data);
+    assert.equal(failedJob.error, safeFailure); assert.ok(failedJob.errorDetail.includes(privateMarker));
+    const failedRequest = await (await fetchLocal('/api/requests/' + failedJob.requestId, { headers: { authorization: `Bearer ${credentials[0].api_key}` } })).json();
+    assert.equal(failedRequest.jobs[0].error, safeFailure);
     near((await quota()).v5Available, before.v5Available);
     before = await quota(); failAt = -1;
     const beforeCalls = calls.length, gate = previewGate(801, 9, true);
@@ -525,6 +579,43 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(charge(jobs[1].id).status, 'refunded'); assert.equal(jobs[2].generationAttempt, undefined);
     assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
     assert.equal(calls.length, beforeCalls + 2);
+  });
+
+  await t.test('SSE 部分失败和同键 JSON 重放只公开分类文案，原错误帧留作管理员诊断', async subtest => {
+    scenario = 'private upstream stream error';
+    const before = await quota(), startCount = calls.length, key = 'private-stream-error';
+    const input = body('nai-diffusion-5-curated', { steps: 29, n_samples: 2, seed: 810, stream: 'sse' });
+    const gate = previewGate(811, 3);
+    gate.errorMessage = JSON.stringify({ diagnostic: privateMarker, credential: upstreamToken });
+    subtest.after(() => gate.release());
+    const response = await post('/ai/generate-image-stream', input, credentials[0].api_key, { 'Idempotency-Key': key });
+    assert.equal(response.status, 200);
+    const reader = streamEvents(response);
+    subtest.after(() => reader.return());
+    assert.equal((await reader.next()).value.event_type, 'final');
+    assert.equal((await reader.next()).value.event_type, 'intermediate');
+    gate.release();
+    const error = (await reader.next()).value;
+    assert.deepEqual(error, { event_type: 'error', samp_ix: 1, message: safeFailure, code: '500' });
+    assert.equal((await reader.next()).done, true);
+    const jobs = auditReader.prepare('SELECT data FROM jobs WHERE request_id = ?').all(response.headers.get('x-nai-request-id'))
+      .map(row => JSON.parse(row.data)).sort((a, b) => a.sampleIndex - b.sampleIndex);
+    assert.deepEqual(jobs.map(job => job.status), ['done', 'failed']);
+    assert.equal(jobs[1].error, safeFailure); assert.ok(jobs[1].errorDetail.includes(privateMarker));
+    const headers = { authorization: `Bearer ${credentials[0].api_key}` };
+    const snapshot = await (await fetchLocal('/api/jobs/' + jobs[1].id, { headers })).json();
+    assert.equal(snapshot.error, safeFailure);
+    const batch = await (await fetchLocal('/api/requests/' + jobs[1].requestId, { headers })).json();
+    assert.equal(batch.jobs[1].error, safeFailure);
+    const replay = await post('/v1/ai/generate-image', input, credentials[0].api_key, { 'Idempotency-Key': key, accept: 'application/json' });
+    assert.equal(replay.status, 200);
+    const result = await replay.json();
+    assert.equal(result.completed, 1); assert.equal(result.results[1].message, safeFailure);
+    assert.deepEqual(Buffer.from(result.images[0].image, 'base64'), png);
+    assert.equal(calls.length, startCount + 2);
+    assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
+    const charges = jobs.map(job => JSON.parse(auditReader.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(job.id).charge));
+    assert.deepEqual(charges.map(charge => charge.status), ['settled', 'refunded']);
   });
 
   await t.test('两位成员同时生图，第一张超过十秒时第二张仍排队，完整结束后才接续', async subtest => {
