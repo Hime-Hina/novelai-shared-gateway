@@ -292,7 +292,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | C03-01 | ZIP/JSON协商和Vibe201/binary已实现；普通生成状态由后续C03-04实测修正为200 | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
 | C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP及[最新联合CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
-| C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200；映射与批次扩展已审阅，生成错误公开边界已修复 | 保留共享上游身份、独立结算与部分交付语义；普通200与封禁片已通过Linux CI，错误文本HTTP17/17通过且最终CI待记录，不宣称逐状态/逐字节透明代理 |
+| C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200；映射与批次扩展已审阅，生成错误公开边界已修复 | 保留共享上游身份、独立结算与部分交付语义；所有本轮切片已通过[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018561882)，错误文本HTTP17/17，不宣称逐状态/逐字节透明代理 |
 | C03-05 | 已依据官方规则拒绝DDIM＋SMEA，核对并保留Precise负值/secondary大于1；其他采样器组合不凭UI缺席直接收窄 | 定向组合、有限数、原值及报价回归见上节；当前接受名单与Precise界限明确为网关范围，未声称全组合上游验证 |
 | C03-06 | 已完成边界核对：Vibe内部格式未公开，当前官方契约没有可依赖的幂等生成/结果重取接口 | 保留opaque产物和本地恢复证据；作为明确限制结案，不宣称任意断电后精确一次上游消费或凭correlation-id找回 |
 
