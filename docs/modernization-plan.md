@@ -108,6 +108,8 @@ F11 首片分别提交 [a81fc38](https://github.com/Hime-Hina/novelai-shared-gat
 
 F11 第二片 [cffd205](https://github.com/Hime-Hina/novelai-shared-gateway/commit/cffd205) 实现 Nuxt 私有内部客户端与有界同键重试；[fb54a7a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/fb54a7a) 单独修正外层截止短于正常认证链的问题，16秒慢受理从错误重试变为一次受理。最终[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39001370060) 后端477、前端89、执行器认证3、真实Nuxt/执行器双进程4（含父测试）、最终镜像HTTP3，以及语法、类型和三个Docker全部通过。实际验证仅杀Nuxt不丢已受理的在途/排队任务、丢202同键重试不重复预扣/派发、完整part同步后杀执行器两次恢复不重复结算；使用合成数据，未访问真实NAI/Discord。生产无新测试路由，API与SSE整体迁移、独立systemd/D01部署仍待；不得把无键客户端崩溃后新提交冒充可自动识别的旧请求。
 
+N01 当前片将成员、owner 与私有 admin 的有限查询接入 Nuxt 正式 GET 路由，并加入独立 SSE 桥接；DTO、会话和 Discord 刷新仍由执行器唯一处理。内部断线保留浏览器连接，五秒重试后透传新启动标识及 resync，普通故障不误退出登录。同步移除宽泛 devProxy，Caddy 按方法与路径分流，Compose 保留 gateway 名称并改为执行器镜像，避免增加第二个数据写入进程。验证包含并发认证刷新、令牌落盘后失败及重启、同连接 SSE 恢复、实际 Caddy 配置和 Nuxt 开发入口，结果见[独立执行服务](executor-service.md)。本片无 schema 或依赖变更；N02/N03、独立 systemd 与 D01 目标机验收继续保留，生产未切换。
+
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
 F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长结果，因此结果校验与上传校验分开设置边长，输入仍为 8192；16M 像素、64 MiB、CRC 与解压上限保持。补充提交 [b1e383d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b1e383d)；合成 8192×128 → 16384×256 覆盖图片/JSON/dataURL/ZIP/MessagePack，超限输入与结果仍拒绝，相关模块 37/37 通过。没有据此声称实测 NAI 接受全部极端长宽比例。

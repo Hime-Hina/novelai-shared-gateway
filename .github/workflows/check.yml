@@ -29,7 +29,7 @@ jobs:
       - run: pnpm --filter @novelai-gateway/executor typecheck
       - run: pnpm --filter @novelai-gateway/executor test
       - run: pnpm --filter @novelai-gateway/executor build
-      - name: Verify Nuxt and executor process isolation
+      - name: Verify Nuxt queries, event recovery and process isolation
         run: pnpm --filter @novelai-gateway/web test:executor
       - run: docker build --tag novelai-shared-gateway:check .
       - run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .
@@ -42,3 +42,16 @@ jobs:
           -e EXECUTOR_TEST_ENTRY=/app/.output/server/start.mjs
           novelai-shared-gateway-executor:check
           node --test /checks/runtime-http.test.mjs
+
+  caddy-routing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build real Caddy routing checks
+        run: docker build --file tests/deployment/Dockerfile --tag novelai-caddy-routing:check .
+      - name: Verify Caddy HTTP routing without external networking
+        run: >-
+          docker run --rm --network none --read-only
+          --tmpfs /tmp:rw,uid=1000,gid=1000
+          novelai-caddy-routing:check

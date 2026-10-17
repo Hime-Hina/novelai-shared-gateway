@@ -3,8 +3,8 @@
 本阶段在独立的 `web/` workspace 中交付成员页面。现有 Node 网关继续负责
 会话、Discord 资格检查、成员 Key、额度账本、SQLite、队列、生图和 SSE；
 Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owner 与私有管理
-页面，当前入口见 [Nuxt 管理页](nuxt-management-portal.md)；后端接口迁移和
-独立执行服务属于后续阶段。下文 U01 的验证与性能记录保留为历史证据。
+页面，当前入口见 [Nuxt 管理页](nuxt-management-portal.md)。后续 F11/N01 已加入
+[独立执行服务和查询入口](executor-service.md)；下文 U01 验证与性能记录保留为历史证据。
 
 ## 当前选型与目录
 
@@ -40,7 +40,7 @@ Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owne
 
 ## 数据、会话与交互边界
 
-- Nuxt 不打开业务 SQLite、不挂载生产数据目录、不持有 NAI PST 或 Discord
+- Nuxt 不打开业务 SQLite、不挂载生产数据目录、不配置 NAI PST 或 Discord
   refresh token，也不启动队列调度器。网页热更新或重启不会另起一个账本写入方。
 - 私人 profile 使用真实 `useAsyncData`，设置 `server:false`、`immediate:false`、
   `serialize:false`；浏览器挂载后才读取，不写入 SSR HTML 或 Nuxt payload。
@@ -71,14 +71,23 @@ Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owne
 ```sh
 corepack pnpm install --frozen-lockfile
 corepack pnpm --filter @novelai-gateway/web prepare
+corepack pnpm --filter @novelai-gateway/executor build
 corepack pnpm --filter @novelai-gateway/web dev
 ```
 
-开发服务绑定 `127.0.0.1`。当前成员、owner、admin 页面均由 Nuxt 提供；
-`web/nuxt.config.ts` 只将 `/api` 开发请求代理给 `GATEWAY_DEV_URL`，默认
-`http://127.0.0.1:8080`。旧网关需在另一个终端按原方式启动，使用隔离测试
-配置和数据目录；Nuxt dev 不代为启动它。用同一浏览器来源访问前端与 API，
-避免为了开发另加跨源 Cookie 或放宽网关校验。
+开发服务绑定 `127.0.0.1:3000`。当前查询与状态流使用正式 Nuxt 服务端路由，
+已删除会抢先接走请求的 `/api` devProxy；`GATEWAY_DEV_URL` 不再使用。
+在另一个终端配置执行器的隔离环境（绝对 `DATA_DIR`、`HOST=127.0.0.1`、
+`PORT=18081`、管理员及内部密钥）后，运行 `node executor/.output/server/start.mjs`。
+入口不会自动读取 `.env`，可用 Node 的 `--env-file` 指定隔离配置文件。
+不要同时运行旧 CLI 和新执行器并指向同一数据目录。
+
+Nuxt 开发终端仅设置 `NUXT_EXECUTOR_BASE_URL=http://127.0.0.1:18081` 和
+`NUXT_EXECUTOR_TOKEN`。开发烟测会先检查 `web/.env` 不存在，以免测试工具默认
+加载真实开发凭据；存在时明确退出，不读取或改动该文件。日常开发与生产都推荐
+使用各自的进程环境。Caddy 另获得相同的 `EXECUTOR_TOKEN`，
+按示例提供同源入口；本地密码模式可从 `http://127.0.0.1:18082/` 使用成员页。
+Discord 开发仍需其已配置的 HTTPS Origin，不能放宽同源校验。
 
 ```sh
 # 前端检查、测试与构建
@@ -107,10 +116,11 @@ Windows 使用 fnm 时可将命令写成
 | 路径 | 所属服务 |
 | --- | --- |
 | `/`、`/account.html`、`/_nuxt/*` | Nuxt 网页服务；旧 `/account.html` 重定向到 `/` |
-| `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate` 及其余旧业务路径 | 现有网关 |
-| `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；业务接口仍由网关验证 owner 会话 |
+| 成员 `login-options/me/key/shared-status/heatmap/requests/:id` 的 GET、owner 查询和成员 `shared-events` | Nuxt 内部客户端 → 同一执行器；业务授权与 DTO 仍由执行器负责 |
+| 其余 `/api/*`、`/ai/*`、`/v1/*`、`/user/*`、`/generate`，包括登录、管理写入及取消 | Caddy 添加内部认证头 → 同一执行器的原协议 handler |
+| `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；执行器验证 owner 会话 |
 | `/admin*`、`/api/admin*`、`/api/health`、`/memory` | 公网入口直接拒绝 |
-| 私有回环 18082 的 `/admin` 及合法页面别名、`/_nuxt/*` | Nuxt；同源 API 转给网关，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
+| 私有回环 18082 的成员/owner/admin 页面及合法别名、`/_nuxt/*` | Nuxt；管理 GET 经 Nuxt，写操作仍直达同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
 
 示例网页服务使用回环端口 3000、网关使用回环端口 18081；实际端口由隔离
 环境配置。代理保留公共 Host，网关按实际来源配置 `TRUSTED_PROXY_IPS`，
@@ -123,10 +133,11 @@ Windows 使用 fnm 时可将命令写成
 运行仍按已确认的独立 systemd 服务规划处理。本说明不包含生产启动、Caddy
 reload 或替换生产版本的操作；实际替换仍须用户批准。
 
-`compose.yml` 的 `web` 独立绑定回环 3000，不读取 `.env`、不挂载数据、不
-依赖 gateway 的启停；可单独重启网页。`web` 的 512 MiB 上限是测试配置，
-不是 bob 的峰值测量结果。`pnpm start` 只启动渲染服务；完整页面要通过同源
-分流访问，不能直接把 3000 端口当作带业务 API 的网关。
+`compose.yml` 的 `web` 独立绑定回环 3000，仅获得内部地址和内部密钥，不读取
+完整 `.env`、不挂载数据、不依赖 gateway 的启停；可单独重启网页。`gateway`
+服务名保留，但镜像已改为独立执行器，避免另起第三个写库进程。`web` 的
+512 MiB 上限是测试配置，不是 bob 的峰值测量结果。完整页面仍通过同源分流
+访问，3000 尚未承接登录、管理写入及全部生图接口。
 
 ## 已完成验证
 

@@ -52,7 +52,35 @@ function json(response, status = 200) {
   return JSON.parse(response.body);
 }
 
-async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false } = {}) {
+async function subscribe(t, base, cookie) {
+  const frames = [];
+  let response, ended = false, failure, buffer = '';
+  const request = http.get(base + '/api/member/shared-events', { headers: { host: publicHost, origin: publicOrigin, cookie } }, incoming => {
+    response = incoming;
+    incoming.setEncoding('utf8');
+    incoming.on('data', chunk => {
+      buffer += chunk;
+      for (let at; (at = buffer.indexOf('\n\n')) !== -1;) {
+        const frame = buffer.slice(0, at); buffer = buffer.slice(at + 2);
+        if (frame.startsWith(':')) frames.push({ comment: frame });
+        else {
+          const event = /^event: ?(.+)$/m.exec(frame)?.[1], data = /^data: ?(.+)$/m.exec(frame)?.[1];
+          if (event && data) frames.push({ event, data: JSON.parse(data) });
+        }
+      }
+    });
+    incoming.on('end', () => { ended = true; });
+    incoming.on('error', error => { failure = error; ended = true; });
+  });
+  request.on('error', error => { failure = error; ended = true; });
+  t.after(() => request.destroy());
+  await until(() => response || failure, 10000, 'Nuxt SSE response did not start');
+  if (failure) throw failure;
+  assert.equal(response.statusCode, 200); assert.match(response.headers['content-type'], /text\/event-stream/);
+  return { frames, request, response, ended: () => ended, failure: () => failure };
+}
+
+async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, discord = false } = {}) {
   await stat(executorEntry);
   const runtimeRequire = createRequire(executorEntry);
   const packagedRoot = path.join(path.dirname(executorEntry), 'node_modules', 'novelai-shared-gateway');
@@ -65,6 +93,7 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false }
   const { JsonStore } = await import(packaged('server/store.js'));
   const { syncFairQuota, quoteFairRequest } = await import(packaged('server/fair-quota.js'));
   const { nativeImagesMsgpack } = await import(packaged('server/native-stream.js'));
+  const { createMemberSession } = await import(packaged('server/member-auth.js'));
   const Database = runtimeRequire('better-sqlite3');
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-nuxt-executor-'));
   const adminToken = 'synthetic-nuxt-executor-admin-token-only';
@@ -72,13 +101,28 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false }
   const upstreamToken = 'pst-synthetic-nuxt-executor-upstream-only';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir }, log() {} });
   const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  const discordEnv = discord ? { DISCORD_CLIENT_ID: '123456789012345678', DISCORD_GUILD_ID: '1134557553011998840',
+    DISCORD_CLIENT_SECRET: 'synthetic-query-discord-client-secret', OWNER_USER_ID: members[1].user_id, PUBLIC_BASE_URL: publicOrigin } : {};
+  const sessions = [];
   const seeded = new JsonStore(dataDir); await seeded.init();
   try {
     await seeded.update(db => {
       Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
         quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() });
       syncFairQuota(db);
+      if (discord) {
+        db.users.forEach((user, index) => {
+          user.discord = { id: String(222222222222222220n + BigInt(index)), guildId: discordEnv.DISCORD_GUILD_ID,
+            member: true, checkedAt: index ? Date.now() : 0, expiresAt: index ? Date.now() + 3600000 : 0,
+            accessToken: `synthetic-discord-access-${index}-0`, refreshToken: `synthetic-discord-refresh-${index}-0` };
+        });
+        db.jobs = [0, 1, 1].map((member, index) => ({ id: `synthetic-query-history-${index}`, status: 'done', source: 'novelai-native',
+          createdAt: new Date().toISOString(), userToken: db.users[member].token,
+          generationAttempt: { id: `synthetic-query-attempt-${index}`, memberId: db.users[member].id },
+          request: { operation: 'generate', model: 'nai-diffusion-4-5-full', prompt: 'synthetic-private-query-history' } }));
+      }
     }, { immediate: true });
+    if (discord) for (const user of seeded.db.users) sessions.push(await createMemberSession(seeded, user, discordEnv));
   } finally { await seeded.close(); }
 
   // After seeding, only the independently launched executor writes the business database.
@@ -86,10 +130,33 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false }
   const rows = table => audit.prepare(`SELECT data FROM ${table}`).all().map(row => JSON.parse(row.data));
   const jobs = () => rows('jobs');
   const releaseFirst = deferred();
+  const discordState = { refreshTokens: [], membershipTokens: [], membershipCalls: [], status: 200, gate: null, persistedBeforeMembership: false };
   let fileSynced = false;
   let generations = 0, fixedRemaining = 10000, unexpectedUpstream = 0, leakedInternalHeader = false, wrongUpstreamAuth = false;
   const upstream = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    if (discord && req.url.startsWith('/discord/')) {
+      if (req.url === '/discord/oauth2/token' && req.method === 'POST') {
+        const form = new URLSearchParams(Buffer.concat(chunks).toString());
+        assert.equal(form.get('client_secret'), discordEnv.DISCORD_CLIENT_SECRET);
+        assert.equal(form.get('grant_type'), 'refresh_token');
+        discordState.refreshTokens.push(form.get('refresh_token'));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ access_token: 'synthetic-discord-access-0-1', refresh_token: 'synthetic-discord-refresh-0-1',
+          expires_in: 3600, token_type: 'Bearer', scope: 'identify guilds.members.read' }));
+      } else if (req.url === `/discord/users/@me/guilds/${discordEnv.DISCORD_GUILD_ID}/member`) {
+        discordState.membershipTokens.push(req.headers.authorization);
+        const verification = { startedAt: performance.now(), respondedAt: null };
+        discordState.membershipCalls.push(verification);
+        const user = rows('users').find(user => user.id === members[0].user_id);
+        discordState.persistedBeforeMembership = user.discord.refreshToken === 'synthetic-discord-refresh-0-1';
+        if (discordState.gate) await discordState.gate.promise;
+        verification.respondedAt = performance.now();
+        res.writeHead(discordState.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(discordState.status === 200 ? { pending: false, user: { id: '222222222222222220' } } : { message: 'synthetic membership unavailable' }));
+      } else { unexpectedUpstream++; res.writeHead(500); res.end('unexpected synthetic Discord route'); }
+      return;
+    }
     leakedInternalHeader ||= Object.hasOwn(req.headers, 'x-executor-token');
     wrongUpstreamAuth ||= req.headers.authorization !== 'Bearer ' + upstreamToken;
     if (req.url === '/user/data') {
@@ -111,25 +178,44 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false }
   const upstreamPort = await listen(upstream), executorPort = await unusedPort(), nuxtPort = await unusedPort();
   const executorBase = `http://127.0.0.1:${executorPort}`, nuxtBase = `http://127.0.0.1:${nuxtPort}`;
   const observations = [], droppedReceipts = [];
-  let dropNextReceipt = false;
+  let dropNextReceipt = false, queryBatch;
   // This relay injects a lost internal acknowledgement; it is not the Nuxt gateway under test.
   const relay = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
-    observations.push({ path: req.url, method: req.method, headers: { ...req.headers }, body });
+    const observation = { path: req.url, method: req.method, headers: { ...req.headers }, body, forwardedAt: null, respondedAt: null };
+    observations.push(observation);
+    const batch = req.method === 'GET' && queryBatch?.paths.has(req.url) ? queryBatch : null;
+    if (batch) {
+      batch.arrived++;
+      if (batch.arrived === batch.paths.size) batch.open.resolve();
+      await batch.open.promise;
+    }
     const forwarded = http.request(new URL(req.url, executorBase), { method: req.method, headers: req.headers }, response => {
+      observation.respondedAt = performance.now();
+      if (response.headers['content-type']?.startsWith('text/event-stream')) {
+        res.writeHead(response.statusCode, response.headers); res.flushHeaders();
+        response.on('error', () => res.destroy()); res.once('close', () => response.destroy());
+        response.pipe(res); return;
+      }
       const parts = [];
       response.on('data', chunk => parts.push(chunk));
       response.on('error', () => res.destroy());
       response.on('end', () => {
         const received = Buffer.concat(parts);
+        observation.response = received;
         if (dropNextReceipt && req.method === 'POST' && response.statusCode === 202) {
           dropNextReceipt = false; droppedReceipts.push(JSON.parse(received)); res.destroy(); return;
         }
         res.writeHead(response.statusCode, response.headers); res.end(received);
       });
     });
-    forwarded.on('error', () => { if (!res.destroyed) { res.writeHead(502); res.end('synthetic relay transport failure'); } });
+    forwarded.on('error', () => { if (!res.destroyed && !res.headersSent) { res.writeHead(502); res.end('synthetic relay transport failure'); } });
+    forwarded.once('finish', () => {
+      observation.forwardedAt = performance.now();
+      if (batch && ++batch.forwarded === batch.paths.size) queryBatch = null;
+    });
+    res.once('close', () => forwarded.destroy());
     forwarded.end(body);
   });
   const relayPort = await listen(relay);
@@ -137,17 +223,23 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false }
   await writeFile(preload, `const original = globalThis.fetch;
 globalThis.fetch = (input, options) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+  if (process.env.DATA_DIR && process.env.DISCORD_CLIENT_ID && url.origin === 'https://discord.com' && url.pathname.startsWith('/api/v10/')) {
+    return original('http://127.0.0.1:${upstreamPort}/discord/' + url.pathname.slice('/api/v10/'.length) + url.search, { ...options, redirect: 'error' });
+  }
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('External fetch blocked by Nuxt executor fixture');
   return original(input, { ...options, redirect: 'error' });
 };\n`);
-  const secrets = [adminToken, internalToken, upstreamToken, ...members.flatMap(member => [member.api_key, member.password])];
+  const discordSecrets = discord ? [discordEnv.DISCORD_CLIENT_SECRET, 'synthetic-discord-access-0-1', 'synthetic-discord-refresh-0-1',
+    ...members.flatMap((_, index) => [`synthetic-discord-access-${index}-0`, `synthetic-discord-refresh-${index}-0`])] : [];
+  const secrets = [adminToken, internalToken, upstreamToken, ...discordSecrets, ...members.flatMap(member => [member.api_key, member.password]),
+    ...sessions.map(session => session.token)];
   const children = [];
   function processHandle(label, entry, env, imports = []) {
     let child, exited, output = '';
     const redacted = () => secrets.reduce((text, secret) => text.replaceAll(secret, '[redacted]'), output);
-    const stop = async () => {
-      if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
-      if (exited) await exited;
+    const stop = async (signal = 'SIGKILL') => {
+      if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
+      if (exited) return await exited;
     };
     const start = async (ready, envChanges = {}) => {
       output = '';
@@ -168,7 +260,7 @@ globalThis.fetch = (input, options) => {
     EXECUTOR_TOKEN: internalToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(executorPort),
     PUBLIC_HOST: publicHost, PUBLIC_BASE_URL: publicOrigin, TRUSTED_PROXY_IPS: '127.0.0.1',
     RESULT_RECOVERY_TEST_STAGE: holdFileSync ? 'file_sync' : '',
-    NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}` },
+    NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`, NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`, ...discordEnv },
   [new URL('../fixtures/executor-file-sync.mjs', import.meta.url).href]);
   const nuxt = processHandle('built Nuxt', nuxtEntry, { ...envBase(), NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(nuxtPort),
     NUXT_EXECUTOR_BASE_URL: `http://127.0.0.1:${relayPort}`, NUXT_EXECUTOR_TOKEN: internalToken });
@@ -178,6 +270,8 @@ globalThis.fetch = (input, options) => {
   const startExecutor = () => executor.start(output => output.includes('Nai2API listening'), { RESULT_RECOVERY_TEST_STAGE: '' });
   t.after(async () => {
     releaseFirst.resolve();
+    discordState.gate?.resolve();
+    queryBatch?.open.resolve();
     for (const child of children.slice().reverse()) await child.stop();
     for (const server of [relay, upstream]) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     audit.close();
@@ -194,9 +288,14 @@ globalThis.fetch = (input, options) => {
     assert.equal(unexpectedUpstream, 0); assert.equal(leakedInternalHeader, false); assert.equal(wrongUpstreamAuth, false);
     for (const child of children) assert.doesNotMatch(child.output(), /External fetch blocked/);
   };
+  const cookie = member => 'nai_member_session=' + sessions[member].token;
+  const revoke = member => call(executorBase, '/api/admin/member-management', { body: { action: 'member-status', userId: members[member].user_id, enabled: false },
+    headers: { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-admin-token': adminToken, 'x-executor-token': internalToken } });
   return { request, nuxt, executor, startNuxt, startExecutor, dataDir, audit, jobs, members, observations, droppedReceipts, internalToken,
+    nuxtBase, executorBase, adminToken, cookie, revoke, discordState, forbiddenResponseSecrets: [upstreamToken, internalToken, adminToken, ...discordSecrets],
     fileSynced: () => fileSynced,
     releaseFirst: releaseFirst.resolve, generations: () => generations,
+    batchQueries(routes) { queryBatch = { paths: new Set(routes), arrived: 0, forwarded: 0, open: deferred() }; return queryBatch; },
     dropReceipt() { dropNextReceipt = true; }, checkStorage };
 }
 
@@ -309,5 +408,118 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assert.equal(f.generations(), 1); f.checkStorage();
       await f.executor.stop();
     }
+  });
+
+  await t.test('正式 Nuxt GET 保留成员范围，Discord并发刷新先落盘，资格503与执行器重启不丢新令牌', { timeout: 45000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { discord: true });
+    const memberCall = (route, member = 0, headers = {}) => f.request(route, { member, headers: { cookie: f.cookie(member), ...headers } });
+    const ledger = () => f.audit.prepare('SELECT id, data FROM ledger ORDER BY id').all();
+    const user = () => JSON.parse(f.audit.prepare('SELECT data FROM users WHERE id = ?').get(f.members[0].user_id).data);
+    const originalLedger = ledger(), originalVersion = user().memberAuth.version;
+    const originalSessions = f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n;
+    const options = json(await f.request('/api/member/login-options')); assert.equal(options.discord, true); assert.equal(options.ready, true);
+    const routes = ['/api/member/me', '/api/member/heatmap?operation=generate', '/api/member/shared-status'];
+    f.discordState.status = 503; f.discordState.gate = deferred();
+    const failureBatch = f.batchQueries(routes);
+    const failedReads = routes.map(route => memberCall(route));
+    await until(() => f.discordState.membershipTokens.length === 1 && failureBatch.forwarded === 3,
+      10000, 'concurrent queries did not reach Discord membership verification');
+    assert.deepEqual(f.discordState.refreshTokens, ['synthetic-discord-refresh-0-0']);
+    assert.equal(f.discordState.persistedBeforeMembership, true);
+    assert.equal(user().discord.refreshToken, 'synthetic-discord-refresh-0-1');
+    f.discordState.gate.resolve();
+    const failed = await Promise.all(failedReads); assert.ok(failed.every(response => response.status === 503));
+    assert.equal(f.discordState.membershipTokens.length, 1, JSON.stringify({
+      requests: f.observations.filter(item => routes.includes(item.path)).map(({ path, forwardedAt, respondedAt }) => ({ path, forwardedAt, respondedAt })),
+      verifications: f.discordState.membershipCalls
+    }));
+    assert.deepEqual(f.discordState.refreshTokens, ['synthetic-discord-refresh-0-0']);
+    assert.equal(user().memberAuth.version, originalVersion);
+    assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, originalSessions);
+    assert.deepEqual(ledger(), originalLedger);
+
+    const nuxtPid = f.nuxt.child().pid;
+    await f.executor.stop(); await f.startExecutor();
+    f.discordState.status = 200; f.discordState.gate = deferred();
+    const successBatch = f.batchQueries(routes);
+    const reads = routes.map(route => memberCall(route));
+    await until(() => f.discordState.membershipTokens.length === 2 && successBatch.forwarded === 3,
+      10000, 'restarted executor did not verify saved grant');
+    assert.deepEqual(f.discordState.refreshTokens, ['synthetic-discord-refresh-0-0']);
+    assert.deepEqual(f.discordState.membershipTokens, ['Bearer synthetic-discord-access-0-1', 'Bearer synthetic-discord-access-0-1']);
+    f.discordState.gate.resolve();
+    const results = await Promise.all(reads), [me, heatmap, shared] = results.map(response => json(response));
+    assert.equal(f.discordState.membershipTokens.length, 2, 'each overlapping query batch must share one membership verification');
+    assert.equal(me.username, f.members[0].username); assert.equal(me.owner, false);
+    assert.equal(heatmap.days.reduce((sum, day) => sum + day.total, 0), 1);
+    assert.equal(shared.subscriptionActive, true); assert.equal(f.nuxt.child().pid, nuxtPid);
+    assert.deepEqual(ledger(), originalLedger);
+    assert.equal((await f.request('/api/member/me')).status, 401, 'Bearer must not substitute for a browser session');
+    assert.equal((await memberCall('/api/member/heatmap?memberId=' + f.members[1].user_id)).status, 400);
+    assert.equal((await memberCall('/api/member/owner/member-management')).status, 403);
+    assert.equal(json(await memberCall('/api/member/key')).apiKey, f.members[0].api_key);
+    const owner = json(await memberCall('/api/member/owner/member-management', 1)); assert.equal(owner.users.length, 4);
+    assert.equal(json(await memberCall('/api/member/owner/statistics?days=7', 1)).totals.total, 3);
+    assert.equal(json(await memberCall('/api/member/owner/member-management?view=heatmap', 1)).days.reduce((sum, day) => sum + day.total, 0), 3);
+    assert.ok(json(await memberCall('/api/member/owner/member-management?view=losses', 1)).policy);
+    assert.equal(json(await memberCall('/api/member/owner/summary', 1)).accounts.length, 1);
+    const local = { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-admin-token': f.adminToken };
+    assert.equal((await memberCall('/api/admin/member-management', 1, { 'x-admin-token': f.adminToken })).status, 404);
+    assert.equal((await f.request('/api/admin/ping', { headers: { host: local.host, origin: local.origin } })).status, 403);
+    assert.equal((await f.request('/api/admin/ping', { headers: { ...local, 'x-admin-token': 'synthetic-wrong-admin' } })).status, 401);
+    for (const route of ['/api/admin/member-management', '/api/admin/member-management?view=losses', '/api/admin/summary', '/api/admin/ping']) {
+      json(await f.request(route, { headers: local }));
+    }
+    assert.equal((await memberCall('/api/member/me', 0, { host: 'unconfigured.example' })).status, 403);
+    assert.equal((await memberCall('/api/member/me', 0, { origin: 'https://untrusted.example' })).status, 403);
+    assert.deepEqual(ledger(), originalLedger);
+
+    const accepted = json(await f.request('/api/jobs', { body: jobBody('synthetic query ownership') }), 202);
+    assert.equal(json(await memberCall('/api/member/requests/' + accepted.requestId)).id, accepted.requestId);
+    assert.equal((await memberCall('/api/member/requests/' + accepted.requestId, 2)).status, 404);
+    await until(() => f.jobs().find(job => job.id === accepted.id)?.status === 'done', 10000, 'query ownership sample did not finish');
+    for (const route of [...routes, '/api/member/key']) assert.ok(f.observations.some(item => item.path === route), 'formal Nuxt route must reach executor: ' + route);
+    for (const observation of f.observations) {
+      if (!observation.response) continue;
+      for (const secret of f.forbiddenResponseSecrets) assert.ok(!observation.response.includes(Buffer.from(secret)), 'executor response must not expose upstream/Discord credentials');
+    }
+    assert.equal(f.discordState.refreshTokens.length, 1); assert.equal(f.generations(), 1); f.checkStorage();
+  });
+
+  await t.test('正式 SSE 保持同一客户端连接跨执行器重启，校准新boot后仍接收授权失效', { timeout: 45000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { discord: true });
+    const stream = await subscribe(sub, f.nuxtBase, f.cookie(2));
+    const invalidations = () => stream.frames.filter(frame => frame.event === 'state-invalidated');
+    await until(() => invalidations().some(frame => frame.data.resync), 10000, 'initial SSE calibration missing');
+    const initial = invalidations()[0].data, socket = stream.response.socket, nuxtPid = f.nuxt.child().pid;
+    // Waiting for the actual upstream heartbeat catches accidental reuse of the finite 15-second deadline.
+    await until(() => stream.frames.some(frame => frame.comment?.includes('keepalive')), 20000, 'SSE did not survive until the upstream heartbeat');
+    assert.equal(stream.ended(), false);
+    await f.executor.stop();
+    await until(() => stream.frames.some(frame => frame.event === 'connection-status' && frame.data.state === 'retrying'), 5000, 'internal disconnect was not reported');
+    assert.equal(stream.ended(), false); assert.equal(stream.response.socket, socket);
+    await f.startExecutor();
+    await until(() => invalidations().some(frame => frame.data.bootId !== initial.bootId && frame.data.resync), 12000, 'same client connection did not receive restarted executor calibration');
+    assert.equal(stream.ended(), false); assert.equal(stream.response.socket, socket); assert.equal(f.nuxt.child().pid, nuxtPid);
+    assert.ok(f.observations.filter(item => item.path === '/api/member/shared-events').length >= 2, 'Nuxt must reopen the internal stream');
+    assert.equal(f.discordState.refreshTokens.length, 0);
+    json(await f.revoke(2));
+    await until(() => stream.frames.some(frame => frame.event === 'auth-expired') && stream.ended(), 10000, 'revoked member must receive auth-expired and EOF');
+    assert.equal(stream.failure(), undefined); assert.equal(f.generations(), 0);
+    await sub.test('Linux SIGTERM结束Nuxt桥为普通EOF，执行器继续运行', { skip: process.platform === 'win32' }, async signalTest => {
+      const ownerStream = await subscribe(signalTest, f.nuxtBase, f.cookie(1));
+      await until(() => ownerStream.frames.some(frame => frame.event === 'state-invalidated' && frame.data.resync), 5000, 'owner stream did not open');
+      const executorPid = f.executor.child().pid, started = Date.now();
+      let exit;
+      const stopping = f.nuxt.stop('SIGTERM').then(value => { exit = value; });
+      await until(() => ownerStream.ended() && exit, 5000, 'Nuxt SIGTERM did not close its stream and exit within five seconds');
+      await stopping;
+      assert.equal(ownerStream.failure(), undefined); assert.deepEqual(exit, [0, null]);
+      assert.ok(Date.now() - started < 5000);
+      assert.equal(ownerStream.frames.some(frame => frame.event === 'auth-expired'), false);
+      assert.equal(f.executor.child().pid, executorPid); assert.equal(f.executor.child().exitCode, null); assert.equal(f.executor.child().signalCode, null);
+      json(await call(f.executorBase, '/api/health', { headers: { host: 'localhost:18082', origin: 'http://localhost:18082', 'x-executor-token': f.internalToken } }));
+    });
+    f.checkStorage();
   });
 });

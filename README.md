@@ -6,7 +6,7 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
-成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。现有网关仍独占鉴权、SQLite 与生图调度。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，管理入口、草稿保护及验证边界见 [Nuxt 管理页](docs/nuxt-management-portal.md)。
+成员、owner 与私有管理网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。查询和状态事件通过 Nuxt 调用独立执行器，执行器独占鉴权、SQLite 与生图调度；登录、管理写入和生图协议仍按阶段分流到同一执行器。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
 
 ## 功能
 
@@ -60,7 +60,7 @@ OAuth 回调使用五分钟、单次、绑定浏览器 Cookie 的 state，只接
 
 ## Docker 部署
 
-需要 Linux Docker Compose。Compose 分别构建 `gateway` 与 `web`：网关绑定回环 18081，网页绑定回环 3000；只有网关读取 `.env` 和数据卷。复制示例配置并生成随机管理员密钥：
+需要 Linux Docker Compose。Compose 分别构建 `gateway`（独立 Nitro 执行器）与 `web`：执行器绑定回环 18081，网页绑定回环 3000。保留原 `gateway` 服务名以替换同一服务，不新增第二个数据写入者；只有它读取完整 `.env` 和数据卷。网页只获得内部地址和 `EXECUTOR_TOKEN`。复制示例配置，分别生成管理员与内部通信密钥：
 
 ```sh
 cp .env.example .env
@@ -70,19 +70,19 @@ sudo chown 1000:1000 data
 chmod 700 data
 ```
 
-在 `.env` 中填写 `ADMIN_TOKEN`、自己的 `NOVELAI_TOKEN`（PST）和公网域名。管理员密钥至少 32 位，不能使用示例值。**不要把 .env 提交到 Git。**
+将上述随机生成命令运行两次，在 `.env` 中分别填写 `ADMIN_TOKEN` 和 `EXECUTOR_TOKEN`，再填写自己的 `NOVELAI_TOKEN`（PST）和公网域名。两份密钥均至少 32 字节，不要复用或使用示例值。**不要把 .env 提交到 Git。**
 
-只在本机体验时，将 `PUBLIC_BASE_URL` 改为 `http://127.0.0.1:18081`；对外部署后填写自己的 HTTPS API 地址。成员配置页优先读取这个环境变量，避免数据库中的旧地址继续被复制给成员。备用域名可填入 `PUBLIC_HOST_ALIASES`，多个主机名用逗号分隔；每个域名仍需要自己的 HTTPS 反向代理配置，别名不会开放管理员入口。
+只在本机体验时，将 `PUBLIC_BASE_URL` 改为下文的同源分流入口 `http://127.0.0.1:18082`；18081 已是需要内部密钥的执行入口，不供浏览器直接访问。对外部署后填写自己的 HTTPS API 地址。成员配置页优先读取这个环境变量，避免数据库中的旧地址继续被复制给成员。备用域名可填入 `PUBLIC_HOST_ALIASES`，多个主机名用逗号分隔；每个域名仍需要自己的 HTTPS 反向代理配置，别名不会开放管理员入口。
 
 先初始化，再启动服务：
 
 ```sh
 docker compose build
-docker compose run --rm gateway node scripts/bootstrap.mjs
+docker compose run --rm gateway node .output/server/node_modules/novelai-shared-gateway/scripts/bootstrap.mjs
 docker compose up -d
 ```
 
-公开入口仍需按下文用 Caddy 同源分流；直接访问网页的 3000 端口不提供业务 API。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
+公开入口仍需按下文用 Caddy 同源分流；直接访问网页 3000 只有已迁的查询和状态流，不能代替完整入口。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
 
 初始化只允许全新数据目录，拒绝覆盖已有数据库。它创建一个上游、四个等份成员，随机密码与成员 Key 写入 `data/bootstrap-credentials.json`，不会打印到日志。请私下将对应凭据交给成员。首次查询到有效 Opus 后才分配官方额度；初始化不会生图，也不会创造官方余额。
 
@@ -96,11 +96,11 @@ ssh -N -L 127.0.0.1:19080:127.0.0.1:18082 your-user@your-server
 
 ## 公网与客户端
 
-Compose 只绑定回环地址。使用 HTTPS 反向代理对外提供服务，参考 [Caddyfile.example](Caddyfile.example)，修改域名并保持与 `PUBLIC_HOST` 一致。管理员路由不能公开，代理不能把外部请求伪装成 localhost。不要记录 Authorization 或带 token 的完整 URL。
+Compose 只绑定回环地址。使用 HTTPS 反向代理对外提供服务，参考 [Caddyfile.example](Caddyfile.example)，修改域名并保持与 `PUBLIC_HOST` 一致。Caddy 进程须单独获得相同的 `EXECUTOR_TOKEN` 环境变量；它不会自动读取项目 `.env`，也不需要管理员或上游密钥。示例把有限 GET 和成员 SSE 转给 Nuxt，其余协议直接交给同一执行器并覆盖内部认证头。管理员路由不能公开，代理不能把外部请求伪装成 localhost。不要记录 Authorization 或带 token 的完整 URL。
 
 成员密码登录与 Discord 登录起始请求按客户端 IP 限流。`TRUSTED_PROXY_IPS` 默认留空，此时只采用 TCP 连接来源，忽略 `X-Forwarded-For`、`X-Real-IP` 等外部头。启用反向代理时，必须填写网关实际看到的、由你控制的代理精确 IP（逗号分隔），否则所有经过同一代理的成员会共用限流桶；不接受主机名、网段或 `*`，格式错误时登录返回 503。密码模式仍额外保留每用户名限制，改变 IP 不能重置该限制。
 
-systemd 下同机 Caddy 直连网关回环监听地址时通常为 `TRUSTED_PROXY_IPS=127.0.0.1,::1`。Docker 端口转发后，网关看到的来源可能是桥接网关或反代容器 IP；请用测试请求核对实际连接来源，并在容器网络变更后复核，不能直接照抄回环配置，也不要信任整个私网。Compose 已通过 `env_file` 读取该配置。网关监听端口应只允许这些代理和本机管理入口访问。
+systemd 下同机 Caddy/Nuxt 通过回环调用执行器时通常为 `TRUSTED_PROXY_IPS=127.0.0.1,::1`。Docker 下还须核对 Nuxt 容器和 Caddy 的实际来源 IP；容器重建或网络变更后复核，不能直接照抄回环配置，也不要信任整个私网。Compose 已通过 `env_file` 读取该配置。Nuxt 追加自己的实际入站来源，执行器仍逐跳验证。内部监听端口应只允许这些代理访问，不能把内部密钥当作成员或管理员凭据。
 
 网关仅在连接来源可信时读取 `X-Forwarded-For`，从右向左经过已配置代理，停在第一个不可信地址；畸形链回退到连接来源，不从其他请求头猜测。代理必须覆盖客户端自带的转发头，或追加它实际收到的连接来源。示例 Caddy 的默认行为会忽略外部伪造值；若前面还有 CDN，应先按 [Caddy 官方代理信任配置](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy#headers) 配置其信任边界，再按实际链路配置网关，不能直接信任客户端提供的 CDN/IP 头。发布前用两个不同来源地址确认限流互不影响，并验证伪造前缀不能改变限流身份。
 

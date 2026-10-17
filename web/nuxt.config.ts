@@ -1,4 +1,4 @@
-const gateway = process.env.GATEWAY_DEV_URL || 'http://127.0.0.1:8080'
+import { fileURLToPath } from 'node:url'
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-10-17',
@@ -19,10 +19,11 @@ export default defineNuxtConfig({
     '/admin.html': { redirect: '/admin' },
     '/admin/members.html': { redirect: '/admin' }
   },
+  // 开发和产物使用同一组 API 路由；未迁接口由 Caddy 分流到同一执行器。
   nitro: {
     preset: 'node-server',
-    // 开发同源分流；生产由 Caddy 分流，网页服务不持有数据库或上游凭据。
-    devProxy: { '/api': { target: gateway + '/api', changeOrigin: false } }
+    // 外层纯模块须同时打入开发 worker，不能留下相对生成目录的运行时 import。
+    externals: { inline: ['generation-request.js', 'queue-policy.js'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
   },
   typescript: { strict: true, tsConfig: { compilerOptions: { allowJs: true } } },
   app: { head: { htmlAttrs: { lang: 'zh-CN' }, title: 'NovelAI 共享', meta: [{ name: 'referrer', content: 'same-origin' }], link: [{ rel: 'icon', href: 'data:,' }] } }

@@ -39,6 +39,14 @@ function connect() {
     } catch { memberHandlers.onConnection?.('invalid'); }
   });
   source.addEventListener('auth-expired', () => { if (current()) expired(); });
+  source.addEventListener('connection-status', event => {
+    if (!current()) return;
+    try {
+      const { state } = JSON.parse(event.data);
+      if (!['open', 'retrying'].includes(state)) throw new Error('invalid connection state');
+      memberHandlers.onConnection?.(state);
+    } catch { memberHandlers.onConnection?.('invalid'); }
+  });
   source.onopen = () => { if (current()) memberHandlers.onConnection?.('open'); };
   source.onerror = async () => {
     if (!current()) return;

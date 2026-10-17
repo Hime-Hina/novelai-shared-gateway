@@ -132,6 +132,29 @@ test('状态版本允许跳号，重复通知忽略，重连与新boot强制校�
   assert.equal(changes.length,4);assert.match(p.get('sharedConnection').textContent,/状态数据无效/);
 });
 
+test('内部重连状态复用同一浏览器连接，新boot校准且旧连接事件无效', () => {
+  const p = page(), changes = [];
+  p.ui.startSharedStatus(change => changes.push(change));
+  const event = (bootId, version) => ({ bootId, version, scopes: ['member'], resync: true });
+  p.streams[0].emit('state-invalidated', event('before', 8));
+  p.streams[0].emit('connection-status', { state: 'retrying' });
+  assert.match(p.get('sharedConnection').textContent, /重连|断开/);
+  assert.equal(p.streams.length, 1);
+  assert.equal(p.requests.length, 0);
+  p.streams[0].emit('connection-status', { state: 'open' });
+  p.streams[0].emit('state-invalidated', event('after', 0));
+  assert.equal(changes.length, 2);
+  assert.equal(changes[1].resync, true);
+  p.streams[0].emit('connection-status', { state: 'auth-expired' });
+  assert.match(p.get('sharedConnection').textContent, /状态数据无效/);
+  assert.equal(p.emitted.length, 0);
+  p.visible(false); p.visible(true);
+  p.streams[1].emit('connection-status', { state: 'open' });
+  const current = p.get('sharedConnection').textContent;
+  p.streams[0].emit('connection-status', { state: 'retrying' });
+  assert.equal(p.get('sharedConnection').textContent, current);
+});
+
 test('永久关闭的临时故障有限重连，隐藏页面取消重试，恢复后新连接校准',async()=>{
   const p=page(async()=>503);p.ui.startSharedStatus();
   p.streams[0].readyState=2;await p.streams[0].onerror();

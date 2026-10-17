@@ -12,6 +12,14 @@ const buffered = createGenerationPayloadBudget(() => 0, { request: 4 * MiB, acti
 const hopHeaders = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']
 const unavailable = () => createError({ statusCode: 503, statusMessage: 'Executor unavailable', message: '执行服务暂不可用，请稍后重试' })
 
+export function executorResponseHeaders(message: IncomingMessage) {
+  const headers = endToEndHeaders(message)
+  for (let i = headers.length - 2; i >= 0; i -= 2) {
+    if (headers[i]!.toLowerCase() === 'x-executor-auth-error') headers.splice(i, 2)
+  }
+  return headers
+}
+
 function endToEndHeaders(message: IncomingMessage) {
   const omitted = new Set([...hopHeaders, ...(message.headers.connection || '').toLowerCase().split(',').map(name => name.trim())])
   const headers: string[] = []
@@ -22,32 +30,55 @@ function endToEndHeaders(message: IncomingMessage) {
   return headers
 }
 
-// 当前只接有限查询及异步任务受理；Native/OpenAI 与长期 SSE 在 N01–N03 分别接入。
+export function executorConnection(event: H3Event) {
+  const { req } = event.node
+  const config = useRuntimeConfig(event)
+  let target: URL
+  try {
+    target = new URL(config.executorBaseUrl)
+    if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.pathname !== '/' || target.search || target.hash
+      || Buffer.byteLength(config.executorToken.trim()) < 32) throw new Error('Invalid executor configuration')
+  } catch { throw unavailable() }
+  if (!req.headers.host) throw createError({ statusCode: 400, message: 'Host header required' })
+  const headers = endToEndHeaders(req)
+  for (let i = headers.length - 2; i >= 0; i -= 2) {
+    if (['host', 'x-executor-token', 'x-forwarded-for'].includes(headers[i]!.toLowerCase())) headers.splice(i, 2)
+  }
+  // 即使 Connection 声称 Host 是逐跳头，也不能退回内部地址、绕过管理入口隔离。
+  headers.push('Host', req.headers.host, 'X-Executor-Token', config.executorToken.trim(), 'X-Forwarded-For',
+    [req.headers['x-forwarded-for'], req.socket.remoteAddress || 'unknown'].filter(Boolean).join(', '))
+  return { target, headers }
+}
+
+export function sendExecutorError(event: H3Event, error: unknown) {
+  const { res } = event.node
+  if (res.destroyed || res.writableEnded) return
+  if (res.headersSent) { res.destroy(); return }
+  const known = error as { statusCode?: number; message?: string }
+  const status = [400, 405, 413, 429, 503].includes(known?.statusCode || 0) ? known.statusCode! : 503
+  const message = status === 503 ? '执行服务暂不可用，请稍后重试' : known.message || '请求不受支持'
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+  res.end(JSON.stringify({ error: message }))
+}
+
+// 仅处理有限查询和异步任务受理；状态长连接使用 forwardExecutorEvents。
 export async function forwardExecutor(event: H3Event) {
   const { req, res } = event.node
   try {
     const submit = event.method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(event.path.split('?')[0]!)
     if (!submit && !['GET', 'HEAD'].includes(event.method)) throw createError({ statusCode: 405 })
-    const config = useRuntimeConfig(event)
-    let target: URL
-    try {
-      target = new URL(config.executorBaseUrl)
-      if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.pathname !== '/' || target.search || target.hash
-        || Buffer.byteLength(config.executorToken.trim()) < 32) throw new Error('Invalid executor configuration')
-    } catch { throw unavailable() }
-    if (!req.headers.host) throw createError({ statusCode: 400, message: 'Host header required' })
+    const { target, headers } = executorConnection(event)
 
     const key = req.headers['idempotency-key']
     if (submit && key !== undefined && (typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)
       || req.rawHeaders.filter((value, i) => i % 2 === 0 && value.toLowerCase() === 'idempotency-key').length !== 1)) {
       throw createError({ statusCode: 400, message: 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节' })
     }
-    const headers = endToEndHeaders(req)
-    const replaced = new Set(['host', 'x-executor-token', 'x-forwarded-for', ...(submit ? ['idempotency-key', 'content-length'] : [])])
-    for (let i = headers.length - 2; i >= 0; i -= 2) if (replaced.has(headers[i]!.toLowerCase())) headers.splice(i, 2)
-    // 即使 Connection 中声称 Host 是逐跳头，也不能退回内部目标 Host、绕过管理入口隔离。
-    headers.push('Host', req.headers.host, 'X-Executor-Token', config.executorToken.trim(), 'X-Forwarded-For',
-      [req.headers['x-forwarded-for'], req.socket.remoteAddress || 'unknown'].filter(Boolean).join(', '))
+    if (submit) {
+      for (let i = headers.length - 2; i >= 0; i -= 2) {
+        if (['idempotency-key', 'content-length'].includes(headers[i]!.toLowerCase())) headers.splice(i, 2)
+      }
+    }
     // 键在重试循环外生成；正文与成员身份也复用。不能识别无键客户端在 Nuxt 崩溃后新发的请求。
     if (submit) headers.push('Idempotency-Key', typeof key === 'string' ? key : randomUUID())
 
@@ -82,8 +113,8 @@ export async function forwardExecutor(event: H3Event) {
             // Node HTTP 保留原 Host、重复头和二进制；不跟随内部重定向或泄漏凭据到其他地址。
             const request = (target.protocol === 'https:' ? https : http).request(target, {
               method: event.method, path: event.path, headers,
-            // Discord 刷新和资格查询各可等 10 秒，冷查询还可等 15 秒；外层须留出余量。
-            signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(45000)])
+              // Discord 刷新和资格查询各可等 10 秒，冷查询还可等 15 秒；外层须留出余量。
+              signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(45000)])
             }, resolve)
             request.once('error', reject)
             request.end(body)
@@ -91,11 +122,7 @@ export async function forwardExecutor(event: H3Event) {
           if (response.headers['x-executor-auth-error'] === '1') throw unavailable()
           // 完整收到受理回执才向客户端写头，避免半份 202 阻止安全的同键重试。
           const accepted = submit && response.statusCode === 202 ? await readLimited(response) : undefined
-          const responseHeaders = endToEndHeaders(response)
-          for (let i = responseHeaders.length - 2; i >= 0; i -= 2) {
-            if (responseHeaders[i]!.toLowerCase() === 'x-executor-auth-error') responseHeaders.splice(i, 2)
-          }
-          res.writeHead(response.statusCode || 502, responseHeaders)
+          res.writeHead(response.statusCode || 502, executorResponseHeaders(response))
           if (accepted) res.end(accepted)
           else await pipeline(response, res)
           return
@@ -117,11 +144,6 @@ export async function forwardExecutor(event: H3Event) {
       claim.release()
     }
   } catch (error) {
-    if (res.headersSent) { res.destroy(); return }
-    const known = error as { statusCode?: number; message?: string }
-    const status = [400, 405, 413, 429, 503].includes(known.statusCode || 0) ? known.statusCode! : 503
-    const message = status === 503 ? '执行服务暂不可用，请稍后重试' : known.message || '请求不受支持'
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
-    res.end(JSON.stringify({ error: message }))
+    sendExecutorError(event, error)
   }
 }

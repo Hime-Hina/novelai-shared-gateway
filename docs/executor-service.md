@@ -92,7 +92,7 @@ docker build -f executor/Dockerfile -t novelai-shared-gateway-executor:check .
 
 `web/server/utils/executor-client.ts` 使用私有 runtimeConfig：
 `NUXT_EXECUTOR_BASE_URL` 与 `NUXT_EXECUTOR_TOKEN`，不放入浏览器 payload。
-Nuxt 不接收 DATA_DIR、上游 PST 或 Discord refresh token，不启动存储或调度器；
+Nuxt 的进程配置不包含 DATA_DIR、上游 PST 或 Discord refresh token，不启动存储或调度器；
 仅复用已有的纯内存载荷预算函数。默认配置为空，未配置时返回 503。
 
 当前客户端支持有限 GET/HEAD 查询与 `/api/jobs`、`/api/web/jobs` 的异步受理。
@@ -144,16 +144,50 @@ Discord 慢调用链；N01 仍须针对并发刷新、令牌持久化和失败�
 `cffd205` 阶段候选镜像：网页 `sha256:7f513cb92c214da533872df7a25113a10a0c0e79fdec6603f698f292719901e9`；
 执行器 `sha256:271082157eefc6a4821eb47a5e46eec37f1c7b876a29b58bf4bfdef1840b911d`。
 
+## N01 查询与状态入口
+
+成员 `login-options`、`me`、`key`、`shared-status`、`heatmap`、`requests/:id`，
+owner 的成员管理、统计、概览，以及私有 admin 的成员管理、概览和 ping，
+由 Nuxt 正式 GET 路由转交执行器。DTO、权限、会话和 Discord 刷新仍由执行器
+处理；Nuxt 不打开数据库，也不启动第二个后台刷新器。查询不能据此改为公共缓存。
+
+`shared-events` 使用单独的流式桥接：内部断线后保留浏览器连接，每五秒重试，
+恢复时透传执行器的新快照、启动标识和 resync。普通故障显示重连中，明确会话
+失效才退出登录。Nuxt 收到退出信号先结束 SSE，执行器独立继续运行。
+帧缓冲和慢读边界见[状态事件](state-events.md)，不复用有限查询的总截止时间。
+
+移除先于文件路由执行的宽泛 devProxy。开发与构建使用相同路由，未迁接口由
+Caddy 转交同一个执行器。成员 GET 精确匹配，私有 admin GET 只在回环入口转发；
+公开管理入口仍拒绝，API 不压缩，SSE 及时刷新。Compose 保留 gateway 服务名，
+但使用 executor 镜像与内部密钥；只有执行器挂数据目录和完整配置，网页仅接收
+内部地址与密钥。Caddy 必须单独取得相同密钥，两层实际代理来源均须按部署核实。
+
+双进程测试增加并发 Discord 刷新与 SSE 恢复场景：三个正式 GET 同时到达时只
+刷新一次；先持久化新令牌，再处理资格查询失败，重启后使用新令牌而不重复刷新。
+查询不额外写账本，成员/owner/admin 权限保留。SSE 跨执行器重启后在同一浏览器
+连接校准；明确撤销成员后才发 auth-expired。所有身份与外部响应均为合成数据。
+
+实际 Caddy 二进制测试直接读取仓库示例配置，覆盖精确路由、未迁方法、Host/
+Origin/认证头、内部密钥覆盖、公私管理隔离、API 无压缩及 SSE 首帧及时到达。
+开发烟测使用实际 Nuxt dev 服务；若 web/.env 存在则停止，不读写或移动该文件。
+
+开发烟测另暴露两处构建差异：Nitro dev 将仓库外层纯预算模块留成错误的运行时
+相对路径，以及 Naive UI 的 ESM 入口直接导入 vueuc 的 CommonJS 命名导出。
+分别用 Nitro 的显式 inline 与 Nuxt `build.transpile` 处理已有模块；不复制业务
+实现、不升级依赖。后者采用 [Vite SSR noExternal](https://vite.dev/config/ssr-options#ssr-noexternal)
+机制，Nuxt 当前版本会将 transpile 列表传给它；真实首页与默认错误页均纳入回归。
+
+本地最终前端 97/97、类型检查、真实开发烟测 1/1、语法检查 112 文件通过。
+固定 Caddy 2.11.7 的隔离容器检查 7/7，Compose 合成配置验证通过；最终执行器
+镜像中的 bootstrap CLI 在禁网、只读容器内创建四名合成成员并通过完整性检查。
+网页与执行器镜像构建通过；网页为 `sha256:12a1d9e67ce4d76c075f54c520fc65885b303ec97da6619eb7164b407fb1319b`，
+执行器为 `sha256:97bf5081cf717caa7638be4820e149cd63a11178814f2dcf0fb5951828a78689`。
+最终 Linux 双进程与 SIGTERM 场景随本片 CI 验证，不以 Windows 跳过替代通过。
+
 ## 尚未完成的迁移与部署
 
-N01–N03 再按查询、认证管理、生图与长连接的顺序迁移网页 API；内部 SSE
-重连必须让仍在线的浏览器重新校准。最终仍需独立 systemd 部署和 D01 隔离验收。
-N01 的第一片可采用标准 `.get.ts` 路由承接成员 `login-options`、`me`、`key`、
-`shared-status`、`heatmap` 与 `requests/:id`，认证和 DTO 仍由执行器生成。
-当前 Nitro 2.13.4 的宽泛 `/api` devProxy 先于服务端文件路由执行，迁移时必须
-同步调整开发与 Caddy 分流，不能只增加路由文件便宣称开发请求已迁移。
-阶段配置须维持一个写入者：未迁协议仍由同一执行器里的旧 handler 处理，不能
-让旧 CLI 与独立执行器同时挂同一数据目录；Compose 的内部地址、密钥和可信
-代理来源也须随实际入口一起更新。当前 Compose/Caddy 示例仍为前一部署阶段。
+N02 继续迁移登录和管理写入，N03 再迁移生图与任务长连接；保留既有客户端契约。
+最终仍需独立 systemd 部署和 D01 隔离验收。未迁协议由同一个执行器里的旧 handler
+处理，不能让旧 CLI 与独立执行器同时挂同一数据目录。
 尚未验证 systemd 自动拉起、bob 的目标运行时与持久卷；测试中由测试进程重新
 启动服务。当前生产未切换，本文不作为部署完成或任意故障都能找回上游结果的声明。
