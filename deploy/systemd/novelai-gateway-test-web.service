@@ -1,0 +1,36 @@
+[Unit]
+Description=NovelAI gateway isolated test web
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=novelai-gateway-test-web
+Group=novelai-gateway-test-web
+WorkingDirectory=/opt/novelai-shared-gateway-test/current/web
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=19300
+Environment=NUXT_EXECUTOR_BASE_URL=http://127.0.0.1:19080
+EnvironmentFile=/etc/novelai-shared-gateway-test/web.env
+ExecStart=/opt/novelai-shared-gateway-test/current/bin/node /opt/novelai-shared-gateway-test/current/web/.output/server/index.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+InaccessiblePaths=/var/lib/novelai-shared-gateway-test /etc/novelai-shared-gateway-test/executor.env
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryHigh=256M
+MemoryMax=384M
+CPUQuota=50%
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   offline-validation:
+    needs: caddy-routing
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -43,6 +44,84 @@ jobs:
           -e EXECUTOR_TEST_ENTRY=/app/.output/server/start.mjs
           novelai-shared-gateway-executor:check
           node --test /checks/runtime-http.test.mjs
+      - name: Export verified Linux test release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_name="novelai-gateway-test-${GITHUB_SHA}-linux-x64"
+          release_dir="${RUNNER_TEMP}/${release_name}"
+          test "$(docker image inspect --format '{{.Architecture}}' novelai-shared-gateway-executor:check)" = amd64
+          test "$(docker image inspect --format '{{.Architecture}}' novelai-shared-gateway-web:check)" = amd64
+          mkdir -p "$release_dir"/{bin,executor,web,licenses,systemd,docs} dist
+          executor_container=$(docker create novelai-shared-gateway-executor:check)
+          web_container=$(docker create novelai-shared-gateway-web:check)
+          trap 'docker rm "$executor_container" "$web_container" >/dev/null' EXIT
+          # docker cp and tar preserve pnpm relative symlinks; do not use -L or --dereference.
+          docker cp "$executor_container:/app/.output" "$release_dir/executor/.output"
+          docker cp "$executor_container:/app/node_modules" "$release_dir/executor/node_modules"
+          docker cp "$executor_container:/usr/local/bin/node" "$release_dir/bin/node"
+          docker cp "$executor_container:/usr/local/LICENSE" "$release_dir/licenses/node.LICENSE"
+          docker cp "$web_container:/app/.output" "$release_dir/web/.output"
+          docker cp "$web_container:/app/dependency-licenses" "$release_dir/licenses/web-dependencies"
+          docker cp "$web_container:/app/web/THIRD_PARTY_NOTICES.md" "$release_dir/licenses/THIRD_PARTY_NOTICES.md"
+          for name in LICENSE NOTICE.md UPSTREAM-LICENSE; do
+            docker cp "$web_container:/app/$name" "$release_dir/$name"
+          done
+          cp pnpm-lock.yaml "$release_dir/pnpm-lock.yaml"
+          cp deploy/systemd/novelai-gateway-test-*.service "$release_dir/systemd/"
+          cp docs/test-deployment.md "$release_dir/docs/"
+          mkdir -p "$RUNNER_TEMP/unit-check"
+          for unit in executor web; do
+            sed "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
+              "$release_dir/systemd/novelai-gateway-test-$unit.service" \
+              > "$RUNNER_TEMP/unit-check/novelai-gateway-test-$unit.service"
+          done
+          systemd-analyze verify --man=no "$RUNNER_TEMP/unit-check/novelai-gateway-test-"*.service
+          test -z "$(find "$release_dir" -type f \( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '.env' -o -name '.env.*' -o -name 'bootstrap-credentials.json' \) -print -quit)"
+          {
+            printf 'commit=%s\nplatform=linux-x64\n' "$GITHUB_SHA"
+            printf 'executor_image=%s\n' "$(docker image inspect --format '{{.Id}}' novelai-shared-gateway-executor:check)"
+            printf 'web_image=%s\n' "$(docker image inspect --format '{{.Id}}' novelai-shared-gateway-web:check)"
+            printf 'node=%s\n' "$("$release_dir/bin/node" --version)"
+            printf 'lock_sha256=%s\n' "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
+          } > "$release_dir/RELEASE.txt"
+          test "$("$release_dir/bin/node" --version)" = v22.23.3
+          tar -C "$RUNNER_TEMP" -czf "dist/$release_name.tar.gz" "$release_name"
+          mkdir -p "$RUNNER_TEMP/release-check"
+          tar -C "$RUNNER_TEMP/release-check" -xzf "dist/$release_name.tar.gz"
+          # Validate the extracted Linux tree without workspace dependency fallback.
+          docker run --rm --network none --read-only --entrypoint /release/bin/node \
+            --mount "type=bind,source=$RUNNER_TEMP/release-check/$release_name,target=/release,readonly" \
+            novelai-shared-gateway-executor:check --input-type=module -e '
+              import assert from "node:assert/strict";
+              import { createRequire } from "node:module";
+              import { access } from "node:fs/promises";
+              const root = "/release/executor/.output/server/node_modules/novelai-shared-gateway/";
+              const require = createRequire(root + "package.json");
+              assert.ok(require.resolve("better-sqlite3").startsWith("/release/executor/node_modules/"));
+              const db = require("better-sqlite3") (":memory:");
+              const { migrateStorage } = await import(root + "server/storage-migrations.js");
+              migrateStorage(db);
+              assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
+              db.close();
+              await access(root + "server/sqlite-read-worker.js");
+              await access("/release/web/.output/server/index.mjs");
+            '
+          (
+            cd dist
+            sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
+          )
+      - name: Upload verified Linux test release
+        # Official actions/upload-artifact v4.6.2; upload the tar to retain file modes/symlinks.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: novelai-gateway-test-${{ github.sha }}-linux-x64
+          path: |
+            dist/novelai-gateway-test-*.tar.gz
+            dist/novelai-gateway-test-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
   caddy-routing:
     runs-on: ubuntu-latest

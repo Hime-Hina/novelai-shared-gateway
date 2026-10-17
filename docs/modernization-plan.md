@@ -168,6 +168,10 @@ T01共享状态与队列片：shared-status与queue-policy迁为严格TypeScript
 
 T01原生报价片：native-pricing迁为TypeScript，只定义报价实际读取的请求/参数投影、有限返回资源与费用明细；不移动分池余额或购买授权逻辑。保留nativeParameters整体优先、原数值转换、严格forceAnlas开关、所有常数/乘法/取整顺序、Medium和参考/辅助费用及estimated标记。新增参数来源与坏强度/参考边界回归，根严格检查/编译、六份价格/契约/账本/适配定向100/100、执行器重建及产物HTTP2通过/1项Windows跳过；184份官方固定报价与12组格式配对样本未改。当前仅使用模拟与固定证据，没有真实收费调用；完整CI另记录。
 
+T01客户端地址片已提交[181d822](https://github.com/Hime-Hina/novelai-shared-gateway/commit/181d822)：client-ip迁为TypeScript，仅补请求头、可选连接地址、环境和返回类型，更新两处直接导入；可信代理逐跳检查、IPv4/IPv6归一化及限流桶保持。严格类型检查与相关15/15通过，执行器重建及产物HTTP2通过/1项Windows跳过。此前共享状态/队列片[4de3c77的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39019983933)与订阅未知显示补修[cd1a401的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39020163114)均已成功；原生报价和本片的完整CI尚在运行。
+
+D01交付准备：新增由已验证Linux镜像导出测试发布包的CI步骤，包含独立Node、两服务产物、生产依赖、许可文件、版本清单和校验和；两个systemd测试unit分别约束用户、目录、回环网络和资源，不联动重启。工作流/脚本/unit静态检查及断网Linux打包重开、SQLite迁移与完整性、Nuxt SSR均已通过，详见[测试部署说明](test-deployment.md)。bob只读预检通过，但未安装或启动测试服务；最终CI artifact、常驻mock、副本脱敏、目标机浏览器/负载/恢复验收仍待，不将准备完成记为D01完成，也不替换生产。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
