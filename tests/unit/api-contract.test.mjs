@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 import { quoteNativeRequest } from '../../server/native-pricing.ts';
 import { sharedSurface } from '../../server/shared-surface.ts';
 

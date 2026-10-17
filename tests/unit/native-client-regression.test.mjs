@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNativeImageRequest } from '../../server/native-image.js';
+import { parseNativeImageRequest } from '../../server/native-image.ts';
 
 // 只复刻线上失败请求的结构，提示词和种子使用合成数据。
 function clientRequest() {

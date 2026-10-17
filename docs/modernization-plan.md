@@ -184,6 +184,8 @@ D01发布准备复验：包含mock的[0901056完整CI](https://github.com/Hime-H
 
 T01输入与共享策略片已提交[199c41c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/199c41c)：native-body、v5-medium、launcher-subscription、shared-surface迁为TypeScript，保留multipart的媒体/附件/正文/扩展预算及413/429原异常透传、Medium固定参数、启动器本地配额隐私和路由白名单；同步Nuxt内联及构建输入。根严格检查/编译、输入与适配12项、策略/契约43项、完整Native HTTP17/17、网页类型及116项均通过；执行器本机产物3通过/1项Windows跳过，Nuxt实际开发/生产双进程13通过/1项Windows跳过。三个Linux镜像构建及最终执行器HTTP4/4通过。server顶层15个TS、21个JS，剩余核心业务继续迁移；本片完整托管CI另记录，生产未改。
 
+T01图片与结果片：native-image、job-previews、result-files迁为严格TypeScript，更新所有源码和测试直接导入。保留图片/辅助操作校验、预览节流、结果摘要、临时文件恢复及禁止覆盖证据的行为；类型收窄不额外重写归一化参数。与前一提交对照的完整输出和错误形态一致。根类型/语法、相关64项中63通过/1项Windows跳过、完整Native HTTP17/17、网页类型检查均通过；执行器重建及本机构建产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4、结果文件9/9（含符号链接拒绝）全部通过。server顶层18个TS、18个JS，存储、调度和路由等核心仍待；本批完整CI另记录。前一输入与策略片[199c41c的完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39023749442)已成功，生产未改。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

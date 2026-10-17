@@ -5,7 +5,7 @@ import { decode } from '@msgpack/msgpack';
 import { sizeMap } from '../public/generation-pricing.js';
 import { isV5MediumModel, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
 import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.ts';
-import { crc32, validateImageBytes, validateNativeImage } from './native-image.js';
+import { crc32, validateImageBytes, validateNativeImage } from './native-image.ts';
 
 export const MAX_STEPS = 50;
 export const DIRECT_URL_MAX_STEPS = 28;

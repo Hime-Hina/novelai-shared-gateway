@@ -1,6 +1,6 @@
 import { V5_MEDIUM_STEPS } from '../public/v5-medium.js';
 
-interface V4Prompt {
+export interface V4Prompt {
   caption: {
     base_caption: string;
     char_captions: { char_caption: string; centers: { x: number; y: number }[] }[];

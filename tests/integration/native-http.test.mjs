@@ -13,7 +13,7 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore, hashObject } from '../../server/store.js';
 import { generationRequestFingerprint } from '../../server/request-fingerprint.ts';
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.js';
-import { crc32, parseNativeImageRequest } from '../../server/native-image.js';
+import { crc32, parseNativeImageRequest } from '../../server/native-image.ts';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 

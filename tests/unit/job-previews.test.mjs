@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { JobPreviews } from '../../server/job-previews.js';
+import { JobPreviews } from '../../server/job-previews.ts';
 
 const job = { id: 'job-a', userToken: 'member-a', status: 'running' };
 const progress = (stepIndex, buffer = Buffer.from([stepIndex])) => ({ previewBuffer: buffer,

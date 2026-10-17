@@ -1,13 +1,37 @@
+import type { ServerResponse } from 'node:http';
+
+interface PreviewProgress {
+  previewBuffer?: Buffer;
+  previewMimeType?: string;
+  stepIndex?: number;
+  percent?: number;
+  step?: number;
+  total?: number;
+}
+
+interface PreviewFrame {
+  token: string;
+  jobId: string;
+  buffer: Buffer;
+  mimeType?: string;
+  stepIndex?: number;
+  progress: Pick<PreviewProgress, 'percent' | 'step' | 'total'>;
+  sentAt: number;
+}
+
+type PreviewWatcher = (frame: PreviewFrame) => unknown;
+type PreviewResponse = Pick<ServerResponse, 'destroyed' | 'writableEnded' | 'writableNeedDrain' | 'writeHead' | 'write' | 'end' | 'once'>;
+
 // Only the latest preview of each running job lives here. Never persisted.
 export class JobPreviews {
-  frames = new Map();
-  listeners = new Map();
-  watchers = new Map();
+  frames = new Map<string, PreviewFrame>();
+  listeners = new Map<string, Set<PreviewResponse>>();
+  watchers = new Map<string, Set<PreviewWatcher>>();
   closed = false;
 
-  watch(jobId, callback) {
-    const watchers = this.watchers.get(jobId) || new Set();
-    const notify = frame => {
+  watch(jobId: string, callback: PreviewWatcher): () => void {
+    const watchers = this.watchers.get(jobId) || new Set<PreviewWatcher>();
+    const notify = (frame: PreviewFrame): void => {
       // 预览观察者不能把传输异常变成生成失败或影响任务结算。
       try { Promise.resolve(callback(frame)).catch(() => {}); } catch {}
     };
@@ -21,7 +45,7 @@ export class JobPreviews {
     };
   }
 
-  subscribe(token, res) {
+  subscribe(token: string, res: PreviewResponse): void {
     if (this.closed) { res.end(); return; }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
@@ -29,7 +53,7 @@ export class JobPreviews {
       'x-accel-buffering': 'no'
     });
     res.write(': connected\n\n');
-    const listeners = this.listeners.get(token) || new Set();
+    const listeners = this.listeners.get(token) || new Set<PreviewResponse>();
     listeners.add(res);
     this.listeners.set(token, listeners);
     const heartbeat = setInterval(() => {
@@ -46,7 +70,7 @@ export class JobPreviews {
     }
   }
 
-  closeSubscriptions() {
+  closeSubscriptions(): void {
     if (this.closed) return;
     this.closed = true;
     for (const listeners of this.listeners.values()) {
@@ -54,13 +78,13 @@ export class JobPreviews {
     }
   }
 
-  update(job, progress) {
+  update(job: { id: string; userToken: string; status: string } | null | undefined, progress: PreviewProgress): void {
     if (!job || job.status !== 'running') return;
     const buffer = progress.previewBuffer;
     if (!buffer?.length || buffer.length > 512 * 1024) return;
     const previous = this.frames.get(job.id);
     const now = Date.now();
-    const frame = {
+    const frame: PreviewFrame = {
       token: job.userToken, jobId: job.id, buffer,
       mimeType: progress.previewMimeType,
       stepIndex: progress.stepIndex,
@@ -78,7 +102,7 @@ export class JobPreviews {
     for (const res of listeners) this.send(res, frame, message);
   }
 
-  message(frame) {
+  message(frame: PreviewFrame): string {
     return `data: ${JSON.stringify({
       jobId: frame.jobId,
       progress: frame.progress,
@@ -86,14 +110,14 @@ export class JobPreviews {
     })}\n\n`;
   }
 
-  send(res, frame, message) {
+  send(res: PreviewResponse, frame: PreviewFrame, message?: string): void {
     // Slow/disconnected clients must not block generation or queue old frames.
     if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) {
       res.write(message || this.message(frame));
     }
   }
 
-  clear(jobId) {
+  clear(jobId: string): void {
     this.frames.delete(jobId);
   }
 }

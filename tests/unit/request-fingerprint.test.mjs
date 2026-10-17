@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generationRequestFingerprint as fingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { normalizeNovelAiRequest, buildNovelAiParameters } from '../../server/providers.js';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 
 const model = 'nai-diffusion-4-5-full';
 const native = parameters => parseNativeImageRequest({ input: 'test prompt', model, parameters: { width: 128, height: 128, steps: 23, seed: 123, ...parameters } });

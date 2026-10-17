@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/providers.js';
-import { validateImageBytes } from '../../server/native-image.js';
+import { validateImageBytes } from '../../server/native-image.ts';
 import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
 const script = fileURLToPath(new URL('../../scripts/mock-novelai.mjs', import.meta.url));

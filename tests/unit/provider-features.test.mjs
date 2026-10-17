@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { encode } from '@msgpack/msgpack';
 import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
 import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.js';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/native-image.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/native-image.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 
 const account = { token: 'offline-provider-feature-token' };

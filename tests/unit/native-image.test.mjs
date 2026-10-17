@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateNativeImage } from '../../server/native-image.js';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateNativeImage } from '../../server/native-image.ts';
 
 function crc32(bytes) { let crc = 0xffffffff; for (const byte of bytes) { crc ^= byte; for (let i=0;i<8;i++) crc=(crc>>>1)^((crc&1)?0xedb88320:0); } return (crc^0xffffffff)>>>0; }
 function chunk(type, data) { const header=Buffer.alloc(8), tail=Buffer.alloc(4);header.writeUInt32BE(data.length);header.write(type,4);tail.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type),data])));return Buffer.concat([header,data,tail]); }

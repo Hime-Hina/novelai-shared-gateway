@@ -1,5 +1,5 @@
 import { quoteFairRequest } from '../../server/fair-quota.js';
-import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
+import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 import { readNativeBody } from '../../server/native-body.ts';
 import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.js';
 import { assertQueueAdmission, queueDeadline } from '../../server/queue-policy.ts';

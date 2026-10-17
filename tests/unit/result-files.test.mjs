@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, stat, symlink } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { deflateSync, crc32 } from 'node:zlib';
-import { describeStoredResult, publishStoredResult } from '../../server/result-files.js';
+import { describeStoredResult, publishStoredResult } from '../../server/result-files.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const image = { buffer: png, mimeType: 'image/png' };
