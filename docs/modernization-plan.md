@@ -98,7 +98,9 @@ U01 已提交 [ec011b6](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38984338010) 通过 430/430 和 Docker 构建。此前两轮分别发生 Native 批次及部分失败场景超时；冻结镜像复现通过，根因尚未查明。已分别提交 [1b639bf](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1b639bf) 和 [536dd58](https://github.com/Hime-Hina/novelai-shared-gateway/commit/536dd58) 脱敏现场诊断，未放宽请求期限，也不将此轮成功写成问题已修复。后续 D01 的隔离负载验收继续核对等待长尾。
 
-随后 [38986048883](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38986048883) 的连接生命周期用例捕获“冷却已到、空闲但最后一项仍queued”的现场；已确定性复现跨截止的零槽/零等待丢唤醒并作最小修复，冷却/容量13项与原HTTP用例通过，详见[队列唤醒](request-lifecycle.md#冷却截止时的队列唤醒修复)。此前Native失败和生产长尾仍无充分证据确认为同因。
+随后 [38986048883](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38986048883) 的连接生命周期用例捕获“冷却已到、空闲但最后一项仍queued”的现场；已确定性复现跨截止的零槽/零等待丢唤醒，在 [8648826](https://github.com/Hime-Hina/novelai-shared-gateway/commit/8648826) 作最小修复。冷却/容量13项与原HTTP用例通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38990177631) 后端458/458、前端20/20、105文件语法、类型检查和两个Docker构建全部通过，详见[队列唤醒](request-lifecycle.md#冷却截止时的队列唤醒修复)。此前Native失败和生产长尾仍无充分证据确认为同因。
+
+U02 已核对现有两种管理模式：owner Cookie/SSE 与私有 admin Token/可见30秒刷新保持分开，两个薄路由复用同一控制台；分组、调额、告警阈值各自保留编辑版本，业务403/409不能直接当作注销或自动重试写入。必要时用现有本人/私有ping查询确认授权，不解析错误文案猜测状态。生产路径计划由同一Caddy增加仅绑定回环的私有入口，保留SSH本地端口对应的原始Host/Origin，Nuxt不新增业务代理；公开管理拒绝规则保持。此处为已核对的实施边界，U02代码与私有入口均尚未部署。
 
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 

@@ -281,3 +281,8 @@ inFlight为0、子进程存活，冷却截止时已记录ready，却没有后续
 下一轮且只派发一次。冷却/容量13项及原连接HTTP用例1项（约72秒）通过。
 没有通过延长测试超时掩盖问题；此前缺少同等级现场的两次Native超时和生产
 历史长等待仍不能确认同因，继续保留诊断与D01验收。
+
+修复提交 [8648826](https://github.com/Hime-Hina/novelai-shared-gateway/commit/8648826)
+的[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38990177631)
+后端458/458、Nuxt前端20/20、105文件语法、类型检查和两个Docker构建全部通过。
+未变更schema、测试期限或生产服务。
