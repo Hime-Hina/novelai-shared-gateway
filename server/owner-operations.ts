@@ -60,7 +60,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
     }
   }
   return { totals:finish(total), members:[...members.values()].map(finish), models:[...models.values()].map(finish), days:[...dates.values()].map(finish),
-    recent:rows.slice(0,50).map(j => ({ id:j.id, memberId:j.memberId, username:j.username, model:j.model, status:j.status, createdAt:j.createdAt,
+    recent:rows.map(j => ({ id:j.id, memberId:j.memberId, username:j.username, model:j.model, status:j.status, createdAt:j.createdAt,
       waitSeconds:seconds(j.createdAt,j.startedAt), generationSeconds:seconds(j.upstreamStartedAt,j.upstreamCompletedAt),
       resource:j.resource, amount:j.amount, fixed:j.fixed, purchased:j.purchased, chargeStatus:j.chargeStatus, errorStatus:j.errorStatus })) };
 }
@@ -78,8 +78,8 @@ export async function ownerOperation(url: URL, method: string | undefined, body:
   const path = url.pathname.slice('/api/member/owner'.length), {store} = deps;
   if (path === '/statistics' && method === 'GET') {
     const days = Number(url.searchParams.get('days') || 7);
-    if (![1,7,30].includes(days)) fail(400, '统计范围仅支持 1、7 或 30 天');
-    const now = Date.now(), since = new Date(Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs).toISOString();
+    if (![0,1,7,30,365].includes(days)) fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+    const now = Date.now(), since = days === 0 ? '' : new Date(Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs).toISOString();
     // 既有响应的 days 是逐日统计数组，会覆盖查询范围的天数；保持键顺序和输出形态。
     const range = { days, since, until:new Date(now).toISOString(), timezone:'Asia/Taipei' };
     return { ...range, ...summarizeOwnerUsage(await store.readOwnerJobRows(since,new Date(now).toISOString())) };

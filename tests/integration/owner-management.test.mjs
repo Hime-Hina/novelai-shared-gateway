@@ -72,7 +72,9 @@ test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key�
   account.subscriptionActive=false;assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,409);assert.equal(account.enabled,false);
   account.subscriptionActive=true;assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,200);assert.equal(account.enabled,true);
   assert.ok(counts().refreshCount>=3);
-  assert.equal((await call('/api/member/owner/statistics?days=365')).status,400);
+  assert.equal((await call('/api/member/owner/statistics?days=365')).status,200);
+  assert.equal((await call('/api/member/owner/statistics?days=0')).status,200);
+  assert.equal((await call('/api/member/owner/statistics?days=999')).status,400);
 });
 
 test('用量按台北日期、成员和模型汇总，退款及预扣不算消耗，缺失耗时不算零',()=>{

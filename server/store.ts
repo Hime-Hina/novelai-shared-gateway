@@ -858,6 +858,27 @@ export class JsonStore {
     return this.sqlite!.transaction(() => queryFailureAccounting(this.sqlite!, before, now)).deferred();
   }
 
+  async readMemberJobPage(user: { id: string; token?: string }, options: { page: number; pageSize: number; q: string; status: string; sort: string; order: string; until: string }) {
+    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
+    const sort = ({ createdAt: 'j.created_at', model: 'j.model', status: 'j.status' } as Record<string, string>)[options.sort] || 'j.created_at';
+    const params = { userId: user.id, token: user.token || '', until: options.until, status: options.status,
+      q: `%${options.q.replace(/[\\%_]/g, '\\$&')}%`, limit: options.pageSize, offset: (options.page - 1) * options.pageSize };
+    const from = `FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1
+      WHERE j.user_token = @token AND j.created_at <= @until
+        AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1))
+        AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\')`;
+    return this.sqlite!.transaction(() => {
+      const total = this.sqlite!.prepare<typeof params, { total: number }>(`SELECT COUNT(*) AS total ${from}`).get(params)!.total;
+      const rows = this.sqlite!.prepare<typeof params, { id: string; requestId: string | null; createdAt: string; model: string; status: string; charge: string | null; lateResultAvailable: number | null; imageId: string | null }>(`
+        SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status,
+          json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
+          (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId
+        ${from} ORDER BY ${sort} ${options.order === 'asc' ? 'ASC' : 'DESC'}, j.id DESC LIMIT @limit OFFSET @offset`).all(params);
+      return { total, page: options.page, pageSize: options.pageSize, until: options.until,
+        jobs: rows.map(row => ({ ...row, lateResultAvailable: row.lateResultAvailable === 1, charge: safeJson(row.charge, null) as FairCharge | null })) };
+    }).deferred();
+  }
+
   async readMemberLateResults(user: StoreItem) {
     await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
     return this.sqlite!.prepare<unknown[], { id: string; model: string | null; createdAt: string | null; imageId: string; lateResultAt: string; charge: string | null }>(`SELECT j.id, j.model, j.created_at AS createdAt, j.image_id AS imageId,

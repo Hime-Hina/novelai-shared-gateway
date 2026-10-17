@@ -37,6 +37,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   selectItemById(collection: 'ledger', id: string | undefined): LedgerRow | null;
   readOperatingLossSettlements(id: string): LedgerRow[];
   readMemberImageIds(user: MemberUser, jobIds: string[]): Promise<Map<string, string>>;
+  readMemberJobPage: import('./store.ts').JsonStore['readMemberJobPage'];
   readMemberLateResults(user: MemberUser): Promise<{ id: string; model?: string | null; createdAt?: string | null; lateResultAt: string; imageId: string; charge?: FairCharge | null }[]>;
 }
 interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
@@ -374,6 +375,19 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     const publicBase = await store.update(db => memberPublicBaseUrl(db), { persist: false });
     const base = publicBase.replace(/\/+$/, '');
     reply(res, 200, { apiKey: user.token, baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '' }); return true;
+  }
+  if (url.pathname === '/api/member/history') {
+    const query = url.searchParams, page = Number(query.get('page') || 1), pageSize = Number(query.get('pageSize') || 25);
+    const q = (query.get('q') || '').trim(), status = query.get('status') || '', sort = query.get('sort') || 'createdAt', order = query.get('order') || 'desc';
+    const until = query.get('until') || new Date().toISOString();
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1000000 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100
+      || q.length > 200 || !['', 'done', 'failed', 'running', 'queued', 'pending', 'late'].includes(status)
+      || !['createdAt', 'model', 'status'].includes(sort) || !['asc', 'desc'].includes(order)
+      || !Number.isFinite(Date.parse(until)) || new Date(until).toISOString() !== until) error(400, '历史查询参数无效');
+    const result = await store.readMemberJobPage(user, { page, pageSize, q, status, sort, order, until });
+    reply(res, 200, { ...result, jobs: result.jobs.map(({ imageId, charge, ...job }) => ({ ...job,
+      imageUrl: imageId ? deps.publicImageUrl(imageId) : '', charge: memberCharge(charge) })) });
+    return true;
   }
   if (url.pathname === '/api/member/me') {
     const payload: MemberMePayload = await store.update(db => {
