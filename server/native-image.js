@@ -227,6 +227,11 @@ export function parseNativeImageRequest(body) {
   if (typeof body.input !== 'string' || !body.input.trim() || body.input.length > 50000) fail(400, 'input must be a non-empty prompt string (max 50000 characters).');
   if (!object(body.parameters)) fail(400, 'parameters must be an object.');
   const parameters = structuredClone(body.parameters);
+  // 不猜测双提示词的优先级；只消除与 input 完全相同的冗余字段。
+  if (Object.hasOwn(parameters, 'prompt')) {
+    if (parameters.prompt !== body.input) fail(422, 'parameters.prompt 必须与 input 完全一致。');
+    delete parameters.prompt;
+  }
   normalizeParameterAliases(parameters);
   for (const field of ['controlnet_model', 'controlnet_condition', 'characterRef', 'upscale', 'upscaled_enhance']) if (Object.hasOwn(parameters, field) && !active(parameters[field])) delete parameters[field];
   // 旧官网参数模板会附带关闭的 LoRA 字段；空值可以忽略，启用权重仍须明确拒绝。

@@ -122,6 +122,8 @@ C03-02 的实时 MessagePack 切片已提交 [d3cacff](https://github.com/Hime-H
 
 C03-03 的WebP输出切片已实现：Native接受png/webp并保留缺省参数，复用现有验证、存储和ZIP/JSON/MessagePack原字节链路；放大ZIP按实际MIME命名。同一幂等键改格式409，缓存为0的重启仍可领取。当前官方纯报价函数重核184条旧样本全部一致，新增12组成对结果也一致，来源、哈希及合成订阅上下文见[格式报价样本](../tests/fixtures/official-image-format-pricing-20261017.json)；不把前端报价当作真实账单，V5百分点仍是估算。生产代码仅4行调整，无新运行依赖或schema；输入/契约22、报价13、provider/文件32通过加1项Windows跳过，批次HTTP1/1、Nuxt完整链路12通过加1项Linux专用跳过，113文件语法和执行器构建通过。托管CI待验证。SSE及C03其他字段、T01/C01与部署验收仍待完成，未调用真实NAI/Discord或替换生产。
 
+C03-03 的冗余提示词兼容切片已实现：仅接受与顶层input严格相同的parameters.prompt，并在克隆参数中删除；不trim、不覆盖input、不改变上游参数、持久请求或幂等指纹。异值、null和非字符串在受理前422且不回显内容；input仍必需。此为[明确的网关兼容规则](api-contract.md#c03-03-冗余提示词兼容规则)，官方schema没有给出字段优先级，不能声称官方等价别名。31项模块/指纹检查及真实冷历史批次HTTP通过，无新增生成调用、依赖或schema；最新联合CI待验证。
+
 F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
 
 F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长结果，因此结果校验与上传校验分开设置边长，输入仍为 8192；16M 像素、64 MiB、CRC 与解压上限保持。补充提交 [b1e383d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b1e383d)；合成 8192×128 → 16384×256 覆盖图片/JSON/dataURL/ZIP/MessagePack，超限输入与结果仍拒绝，相关模块 37/37 通过。没有据此声称实测 NAI 接受全部极端长宽比例。

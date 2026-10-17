@@ -69,7 +69,8 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
     const payload = JSON.parse(Buffer.concat(chunks));
     const seed = payload.parameters.seed;
     calls.push(seed);
-    upstreamEvent(seed, 'received', { imageFormat: payload.parameters.image_format });
+    upstreamEvent(seed, 'received', { imageFormat: payload.parameters.image_format,
+      redundantPrompt: Object.hasOwn(payload.parameters, 'prompt'), originalInput: payload.input === '  synthetic batch  ' });
     res.once('close', () => upstreamEvent(seed, 'closed', { finished: res.writableFinished }));
     if ([100, 300, 400].includes(seed)) {
       await new Promise(resolve => releases.set(seed, resolve));
@@ -196,9 +197,20 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   const invalidFormat = body(50, 1); invalidFormat.parameters.image_format = 'avif';
   const invalidResponse = await post(invalidFormat); assert.equal(invalidResponse.status, 422); await invalidResponse.json();
   assert.equal(rows().length, 0); assert.equal(calls.length, 0);
+  const beforeInvalidPrompt = ['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+    .map(table => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+  for (const prompt of ['synthetic-conflicting-private-prompt', null, 42]) {
+    const invalidPrompt = body(50, 1); invalidPrompt.parameters.prompt = prompt;
+    const response = await post(invalidPrompt, 0, { key: 'rejected-redundant-prompt' });
+    assert.equal(response.status, 422); assert.doesNotMatch(await response.text(), /synthetic-conflicting-private-prompt|synthetic batch/);
+  }
+  assert.deepEqual(['jobs', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'ledger']
+    .map(table => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n), beforeInvalidPrompt);
+  assert.equal(calls.length, 0);
 
   const aBody = body(100, 4), bBody = body(4294967295, 2);
-  bBody.parameters.image_format = 'webp';
+  bBody.input = '  synthetic batch  ';
+  Object.assign(bBody.parameters, { image_format: 'webp', prompt: bBody.input });
   const aKey = 'partial-batch-format-replay', bKey = 'complete-batch-format-replay';
   const a = post(aBody, 0, { key: aKey });
   await until(() => calls.includes(100), 'A1 reaches mock upstream');
@@ -219,7 +231,9 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   assert.equal(bResult.requested, 2); assert.equal(bResult.completed, 2); assert.equal(bResult.remaining, 0);
   // A1 → B1 → A2 仍先于 B2，不能让任一多图批次独占队列。
   assert.deepEqual(calls, [100, 4294967295, 101, 0]);
-  assert.deepEqual(upstreamEvents.filter(event => event.event === 'received' && [4294967295, 0].includes(event.seed)).map(event => event.imageFormat), ['webp', 'webp']);
+  const bUpstream = upstreamEvents.filter(event => event.event === 'received' && [4294967295, 0].includes(event.seed));
+  assert.deepEqual(bUpstream.map(event => event.imageFormat), ['webp', 'webp']);
+  assert.ok(bUpstream.every(event => event.redundantPrompt === false && event.originalInput === true));
   assert.equal(aResponse.headers.get('x-nai-partial'), 'true');
   const entries = zipEntries(Buffer.from(await observed(aResponse.arrayBuffer(), 'A partial ZIP body')));
   assert.deepEqual(entries.get('image_0.png'), png);
@@ -238,6 +252,8 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   assert.deepEqual(partialSummary, manifest);
   assert.equal(calls.length, 4); assert.equal(rows().length, 6);
   const bId = bResponse.headers.get('x-nai-request-id');
+  const persistedB = JSON.parse(audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(bId).payload);
+  assert.equal(persistedB.prompt, bBody.input); assert.equal(Object.hasOwn(persistedB.nativeParameters, 'prompt'), false);
   const bRows = rows().filter(job => job.requestId === bId).sort((a, b) => a.sampleIndex - b.sampleIndex);
   const bSettlements = () => audit.prepare('SELECT job_id, charge FROM fair_quota_settlements WHERE job_id IN (?, ?) ORDER BY job_id').all(...bRows.map(job => job.id));
   const settledB = bSettlements();
@@ -265,7 +281,8 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
 
   // 已完成任务/图片未装入重启热缓存；两种格式均从 SQLite 和原文件重新领取。
   const beforeReplay = calls.length;
-  const coldZip = await post(bBody, 1, { accept: 'application/zip', key: bKey });
+  const replayBody = { ...bBody, parameters: { ...bBody.parameters } }; delete replayBody.parameters.prompt;
+  const coldZip = await post(replayBody, 1, { accept: 'application/zip', key: bKey });
   assert.equal(coldZip.status, 201); assert.equal(coldZip.headers.get('x-nai-request-id'), bId);
   const coldEntries = zipEntries(Buffer.from(await coldZip.arrayBuffer()));
   assert.deepEqual(coldEntries.get('image_0.webp'), webp); assert.deepEqual(coldEntries.get('image_1.webp'), webp);
@@ -279,11 +296,11 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
       try { assert.equal(response.statusCode, 201); response.destroy(); resolve(); } catch (error) { reject(error); }
     });
     req.on('error', reject); req.setTimeout(5000, () => req.destroy(new Error('synthetic JSON replay timeout')));
-    req.end(JSON.stringify(bBody));
+    req.end(JSON.stringify(replayBody));
   });
-  const coldJson = await post(bBody, 1, { accept: 'application/json', key: bKey });
+  const coldJson = await post(replayBody, 1, { accept: 'application/json', key: bKey });
   assert.equal(coldJson.status, 201); assert.deepEqual(await coldJson.json(), bResult);
-  const coldStream = await post(bBody, 1, { key: bKey, route: '/v1/ai/generate-image-stream' });
+  const coldStream = await post(replayBody, 1, { key: bKey, route: '/v1/ai/generate-image-stream' });
   assert.equal(coldStream.status, 200);
   const coldFrames = readNativeEvents(Buffer.from(await coldStream.arrayBuffer()));
   assert.deepEqual(coldFrames.map(frame => [frame.event_type, frame.samp_ix]), [['final', 0], ['final', 1]]);

@@ -11,6 +11,7 @@ const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAY
 test('只比较实际执行参数，固定种子/提示词/模型/操作冲突，元数据不影响指纹', () => {
   const request = native(), expected = fingerprint(request), before = structuredClone(request);
   assert.match(expected, /^[a-f0-9]{64}$/);
+  assert.equal(fingerprint(native({ prompt: 'test prompt' })), expected, '冗余提示词不改变执行参数或幂等指纹');
   for (const patch of [{ seed: 124 }, { prompt: 'another prompt' }, { model: 'nai-diffusion-4-full' }, { action: 'img2img' }, { width: 256 }]) {
     assert.notEqual(fingerprint({ ...request, ...patch }), expected);
   }

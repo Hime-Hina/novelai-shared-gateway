@@ -24,6 +24,16 @@ test('原生单图兼容原 contract，不改变调用者对象，种子保持�
  assert.equal(result.action,'generate');assert.equal(result.sampleCount,1);assert.equal(result.seed,5);assert.equal(result.nativeParameters.seed,5);assert.equal(result.nativeParameters.stream,undefined);assert.equal(result.nativeParameters.controlnet_model,undefined);assert.deepEqual(body,snapshot);
  for(const seed of [-1,undefined])assert.ok(Number.isInteger(parseNativeImageRequest(request({seed})).seed));
 });
+
+test('冗余parameters.prompt仅接受与input严格相等的值，删除副本字段且不改变提示词',()=>{
+ const body=request({prompt:'test prompt'}), before=structuredClone(body);
+ assert.deepEqual(parseNativeImageRequest(body),parseNativeImageRequest(request()));
+ assert.deepEqual(body,before);
+ const spaced=parseNativeImageRequest(request({prompt:' test prompt '},{input:' test prompt '}));
+ assert.equal(spaced.prompt,' test prompt ');assert.equal(Object.hasOwn(spaced.nativeParameters,'prompt'),false);
+ for(const prompt of ['different prompt',' test prompt',null,undefined,1,{},[]])rejects(request({prompt}),'完全一致');
+ for(const input of [undefined,'','   '])assert.throws(()=>parseNativeImageRequest(request({prompt:'test prompt'},{input})),error=>error.statusCode===400);
+});
 test('V3、V4、V4.5、V5 模型和最多四张输入均正确保留',()=>{
  for(const current of ['nai-diffusion-3','nai-diffusion-furry-3','nai-diffusion-4-curated-preview','nai-diffusion-4-full','nai-diffusion-4-5-full','nai-diffusion-4-5-curated','nai-diffusion-5-full','nai-diffusion-5-curated']){
   const result=parseNativeImageRequest(request({n_samples:4},{model:current}));assert.equal(result.model,current);assert.equal(result.sampleCount,4);assert.equal(result.nativeParameters.n_samples,4);

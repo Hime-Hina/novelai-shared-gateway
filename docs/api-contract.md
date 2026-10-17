@@ -40,7 +40,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 
 | 类别 | 已支持的网关范围 | 拒绝或转换 |
 | --- | --- | --- |
-| 顶层 | `input/model/action/parameters/use_new_shared_trial/allowPurchasedAnlas` | 未知字段（含官方 `url`）返回 422；`input` 必须是非空字符串且最多 50000 字符，`parameters` 必须是对象，否则 400 |
+| 顶层 | `input/model/action/parameters/use_new_shared_trial/allowPurchasedAnlas` | 未知字段（含官方 `url`）返回 422；`input` 必须是非空字符串且最多 50000 字符，`parameters` 必须是对象，否则 400；冗余`parameters.prompt`仅在严格等于input时接受并删除 |
 | 动作 | `generate`（默认）、`img2img`、`infill` | 未知动作 422；重绘按模型映射到 `-inpainting` 名称，5C 重绘明确拒绝，不自动替换为 4.5 |
 | 模型 | V3/Furry V3、V4 Curated Preview/Full、V4.5 Curated/Full、V5 Full/Curated/Full Medium；对应的已列入白名单重绘模型（不含 5C） | 其他名称 422。Swagger 的 model 是字符串，不代表任意名称都有本地计价与路由 |
 | 尺寸、步数、张数 | 宽高各为 128..2048 的整数，总像素 ≤3145728；步数 1..50；张数 1..4（缺省 1） | 不是任意数值钳位。Medium 经专用规则归一到 14 步、`k_euler_ancestral`、`cfg_rescale=0` 及固定负面提示处理 |
@@ -117,6 +117,12 @@ Swagger同时描述SSE和msgpack/sse枚举，但没有逐事件schema。[Desktop
 2026-10-17审阅的[当前官方报价模块](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)及所需纯依赖没有读取`image_format`。隔离执行已审阅的纯函数，旧184条报价结果全部吻合，12组PNG/WebP成对结果一致，覆盖免费、付费、V5续用、Medium、图生图/重绘及参考附加费；[固定格式样本](../tests/fixtures/official-image-format-pricing-20261017.json)记录公开来源、哈希、合成账户和每组结果。当前资格函数要求到期时间，校准使用固定时钟与有效的合成RETAIL订阅；没有执行完整网页包或调用真实生图。此证据支持保持现有报价规则，不能替代上游逐笔账单；V5百分点继续明确为本地估算。
 
 结果验证、存储和领取复用原有实际媒体类型识别，保留原始WebP字节。普通生成与放大ZIP均按实际MIME命名，WebP使用`.webp`；JSON仍是base64，MessagePack仍是binary。格式属于持久请求指纹，同一幂等键改格式返回409；冷历史重启后格式与结果不变。WebP验证仍是结构检查，不宣称完整像素解码；合成测试图另由图像库实际解码核对。
+
+### C03-03 冗余提示词兼容规则
+
+官方schema同时列出顶层`input`和`parameters.prompt`，但没有说明替代关系或冲突优先级。[当前网页的构造链](https://novelai.net/_next/static/chunks/42wv5qb9evl5c.js?dpl=b50892a-38995131626-1)将处理后的提示词单独传给请求的input；V4的`v4_prompt.caption.base_caption`也不是这个冗余字段。因此不宣称两个字段在官方API中等价。
+
+网关只接受与input严格相等的冗余`parameters.prompt`，在克隆参数上删除后继续原校验、报价和入队；不会向上游双写或改变持久请求/幂等指纹。不同内容、null或非字符串返回422，不回显提示词；不在比较前trim，原始空白继续保留。input仍必需，不能用嵌套prompt替代缺失或空白input。这个明确的兼容规则不放开未知的双提示词语义。
 
 ## 错误与安全边界
 
@@ -231,7 +237,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | --- | --- | --- |
 | C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
 | C03-02 | 已接入实时MessagePack预览与逐张final；客户端stream与Accept协商尚未消解 | 补齐SSE事件证据与协商，分别验证断流、部分失败；当前切片不代表整项完成 |
-| C03-03 | WebP已接入；官方URL、parameters.prompt、Vibe mask/随机种子、upscale非零blur及内联放大仍未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载 |
+| C03-03 | WebP与严格同值的冗余parameters.prompt已接入；官方URL、Vibe mask/随机种子、upscale非零blur及内联放大仍未支持 | 每项先核验需求、参数作用、计价与安全边界，再明确实现或继续拒绝；URL不能直接下载，双提示词冲突继续明确拒绝 |
 | C03-04 | 错误外形、上游状态转换、批次 results.json 和独立结算是网关现状 | 分开验证官方错误兼容与多图部分成功；保留必要的成员鉴权、账本与运营限制 |
 | C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
 | C03-06 | Vibe内部编码不可由公开schema验证；官方未给幂等生成/结果重取契约 | 维持opaque产物和任务证据，不能宣称任意断电后精确一次上游消费或凭correlation-id找回 |
