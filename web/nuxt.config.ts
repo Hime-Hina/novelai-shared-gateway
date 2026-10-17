@@ -4,6 +4,7 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-10-17',
   telemetry: false,
   devtools: { enabled: false },
+  runtimeConfig: { executorBaseUrl: '', executorToken: '' },
   hooks: {
     'build:manifest'(manifest) {
       // 匿名页不提前下载登录后才用到的异步组件；保留当前页面的 preload。

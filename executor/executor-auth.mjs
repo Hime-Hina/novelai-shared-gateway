@@ -27,7 +27,8 @@ export function protectExecutorHandler(handler, token) {
     if (!matches || headerCount !== 1) {
       res.writeHead(401, {
         'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'no-store'
+        'Cache-Control': 'no-store',
+        'X-Executor-Auth-Error': '1'
       });
       res.end(JSON.stringify({ error: 'Invalid executor credentials.' }));
       return;

@@ -7,6 +7,7 @@
     "prepare": "nuxt prepare",
     "typecheck": "nuxt typecheck",
     "test": "vitest run",
+    "test:executor": "node --test tests/integration/executor-lifecycle.test.mjs",
     "build": "nuxt build",
     "start": "node .output/server/index.mjs"
   },

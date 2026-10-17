@@ -42,6 +42,7 @@ test('executor rejects missing, wrong, or duplicate credentials without reaching
     guarded(req, res);
     assert.equal(res.status, 401);
     assert.equal(res.headers['Cache-Control'], 'no-store');
+    assert.equal(res.headers['X-Executor-Auth-Error'], '1');
     assert.equal(req.headers['x-executor-token'], undefined);
     assert.equal(req.rawHeaders.some(value => value === 'X-Executor-Token'), false);
     assert.equal(req.readableFlowing, null);
@@ -72,5 +73,6 @@ test('executor preserves the original request, response, member identity, and un
   }, token);
   await guarded(req, res);
   assert.equal(res.status, 202);
+  assert.equal(res.headers['X-Executor-Auth-Error'], undefined);
   assert.deepEqual(res.body, Buffer.from([1, 2, 3]));
 });
