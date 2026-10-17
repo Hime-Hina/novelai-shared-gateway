@@ -269,7 +269,7 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 | 编号 | 当前差异/不确定项 | 后续验收要求 |
 | --- | --- | --- |
 | C03-01 | 普通完整生成201、Vibe201/binary及ZIP/JSON协商已实现并通过Linux CI | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
-| C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | 最终联合CI继续记录；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
+| C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
 | C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP已通过，联合CI继续记录。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
 | C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON实测200而Swagger/当前网关201，状态映射和批次扩展继续核对 | 普通ZIP尚未实测；分开核对状态与多图部分成功，保留成员鉴权、独立结算和运营限制 |
 | C03-05 | 模型/采样器组合及Precise强度范围缺少全组合真实验证；Swagger无完整模型枚举 | 不把单个客户端样本或前端字段等同官方保证，新增支持前取得可复现证据 |
