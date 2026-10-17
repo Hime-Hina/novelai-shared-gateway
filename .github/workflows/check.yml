@@ -18,10 +18,13 @@ jobs:
           run_install: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
       - run: pnpm run check
       - run: pnpm test
+      - run: pnpm --filter @novelai-gateway/web typecheck
+      - run: pnpm --filter @novelai-gateway/web test
       - run: docker build --tag novelai-shared-gateway:check .
+      - run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .

@@ -95,6 +95,8 @@ const reservation = http.createServer();
 const gatewayPort = await listen(reservation);
 await new Promise(resolve => reservation.close(resolve));
 const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
+const nuxtUrl = process.env.BROWSER_NUXT_URL ? new URL(process.env.BROWSER_NUXT_URL) : null;
+if (nuxtUrl) assert.ok(nuxtUrl.protocol === 'http:' && nuxtUrl.hostname === '127.0.0.1' && nuxtUrl.pathname === '/', 'Nuxt fixture must be a loopback HTTP origin');
 Object.assign(process.env, {
   ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(gatewayPort),
   NOVELAI_API_URL: 'https://nai-baseline.invalid', NOVELAI_ACCOUNT_API_URL: 'https://nai-baseline.invalid',
@@ -128,7 +130,8 @@ const front = http.createServer((req, res) => {
     res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ error: 'OAuth is disabled in the local browser baseline; use a synthetic role entry.' })); return;
   }
-  const upstream = http.request(gatewayUrl + req.url, { method: req.method, headers: req.headers }, reply => {
+  const frontend = nuxtUrl && (pathname === '/' || pathname === '/account.html' || pathname.startsWith('/_nuxt/'));
+  const upstream = http.request((frontend ? nuxtUrl.origin : gatewayUrl) + req.url, { method: req.method, headers: req.headers }, reply => {
     if (pathname === '/api/member/login-options' && req.method === 'GET' && reply.statusCode === 200) {
       const chunks = [];
       reply.on('data', chunk => chunks.push(chunk));

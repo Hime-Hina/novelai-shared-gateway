@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22.23.3-bookworm-slim AS build
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++
 RUN corepack enable pnpm
@@ -10,7 +10,7 @@ COPY scripts ./scripts
 COPY tests ./tests
 RUN pnpm run check && node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
 
-FROM node:22-bookworm-slim
+FROM node:22.23.3-bookworm-slim
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/server ./server

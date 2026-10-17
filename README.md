@@ -6,6 +6,8 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
+成员网页已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。现有网关仍独占会话、SQLite 与生图调度；owner/私有管理页稍后迁移。开发方式、SSR 样式接入和验证边界见 [Nuxt 成员页](docs/nuxt-member-portal.md)。
+
 ## 功能
 
 - 管理员创建成员账号，成员独立登录、查看自己的 Key、额度和任务。
@@ -57,7 +59,7 @@ OAuth 回调使用五分钟、单次、绑定浏览器 Cookie 的 state，只接
 
 ## Docker 部署
 
-需要 Linux Docker Compose。复制示例配置并生成随机管理员密钥：
+需要 Linux Docker Compose。Compose 分别构建 `gateway` 与 `web`：网关绑定回环 18081，网页绑定回环 3000；只有网关读取 `.env` 和数据卷。复制示例配置并生成随机管理员密钥：
 
 ```sh
 cp .env.example .env
@@ -78,6 +80,8 @@ docker compose build
 docker compose run --rm gateway node scripts/bootstrap.mjs
 docker compose up -d
 ```
+
+公开入口仍需按下文用 Caddy 同源分流；直接访问网页的 3000 端口不提供业务 API。更新网页可单独重建、重启 `web`，不会联动重启 `gateway`。已有生产实例应先在隔离环境验证，不能直接用上述命令覆盖运行中的生产版本。
 
 初始化只允许全新数据目录，拒绝覆盖已有数据库。它创建一个上游、四个等份成员，随机密码与成员 Key 写入 `data/bootstrap-credentials.json`，不会打印到日志。请私下将对应凭据交给成员。首次查询到有效 Opus 后才分配官方额度；初始化不会生图，也不会创造官方余额。
 
@@ -166,7 +170,7 @@ F06 第一片已让网页 `POST /api/jobs` 的完整参数与任务同事务持�
 
 SQLite、图片和凭据均存于 `data/`，服务重启后保留；有效网页登录会话也保留。默认不自动删除图片/历史，请自行监控磁盘并备份。公开仓库不含生产数据、真实凭据、个人地址或部署历史。
 
-本地开发使用 Node.js 22+ 与 `pnpm 10.32.1`。版本固定在 `package.json` 的 `packageManager`，与 CI、Docker 构建一致。使用 Node.js 自带的 Corepack 时，先启用 pnpm shim；已有其他版本 pnpm 的环境也可用 `corepack pnpm` 显式运行本项目固定版本。
+本地开发使用 `.node-version` 固定的 Node.js **22.23.3** 与 `pnpm 10.32.1`，与 CI、Docker 构建一致；Nuxt 不支持旧的 Node 24.14.0，可选兼容分支见 `web/package.json`。pnpm 版本固定在 `package.json` 的 `packageManager`。使用 Corepack 时先启用 pnpm shim；已有其他版本 pnpm 的环境也可用 `corepack pnpm` 显式运行本项目固定版本。
 
 ```sh
 corepack enable pnpm
@@ -174,6 +178,8 @@ pnpm --version
 pnpm install --frozen-lockfile
 pnpm run check
 pnpm test
+pnpm --filter @novelai-gateway/web typecheck
+pnpm --filter @novelai-gateway/web test
 ```
 
 唯一依赖锁文件为 `pnpm-lock.yaml`；新增直接依赖默认保存精确版本。包管理迁移保留原来的全部 38 个锁定依赖版本，`better-sqlite3` 固定为 `12.10.0`。其原生安装脚本已在 `package.json` 中明确允许，其他依赖不会因此获得执行安装脚本的许可；升级该原生依赖时需同时复核许可版本。不要使用 `--ignore-scripts` 跳过 SQLite 构建，也不要在 Windows 与 Linux 之间复制 `node_modules`。冻结安装失败时应查明锁文件或构建问题，不改用非冻结安装绕过。
