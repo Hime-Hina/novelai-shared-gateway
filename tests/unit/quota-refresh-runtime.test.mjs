@@ -16,15 +16,16 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
     Date, Number, Map, Set, AbortController, setTimeout, clearTimeout, process: { env: {} }, console,
     fairShareMode: true, runtimeClosing: false, accountQuotaRequestTimeoutMs: 15, accountQuotaRefreshIntervalMs: 20,
     accountQuotaRefreshPromise: null, accountQuotaRefreshTimer: null, accountQuotaAutoRefreshStarted: false,
-    withQuotaRequestDeadline, fetchNovelAiAccountQuota: fetchQuota, publicErrorMessage: String,
+    withQuotaRequestDeadline, fetchNovelAiAccountQuota: fetchQuota, insufficientBalanceMessage: 'synthetic insufficient balance',
     collectValues: value => value || [], publicAccount: value => value,
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
-    isUnsubscribedAccountTier: tier => Number(tier) === 0, isNovelAiAccountBannedError: () => false,
-    isNovelAiOutOfTrialImageGenerationError: () => false, disableNovelAiAccount: value => { value.enabled = false; },
+    isUnsubscribedAccountTier: tier => Number(tier) === 0,
+    isNovelAiOutOfTrialImageGenerationError: () => false,
     syncFairQuota: () => {},
     store: { readCollections: async () => structuredClone(db), update: async fn => fn(db) }, ...extra
   });
-  for (const name of ['accountQuotaResult', 'accountQuotaErrorResult', 'applyAccountQuotaResult', 'fetchNovelAiAccountQuotaWithTimeout', 'mapLimit', 'refreshAccountQuotas', 'refreshEnabledAccountQuotas', 'startAccountQuotaAutoRefresh']) {
+  for (const name of ['isNovelAiAccountBannedError', 'isInsufficientBalanceError', 'publicErrorMessage', 'disableNovelAiAccount',
+    'accountQuotaResult', 'accountQuotaErrorResult', 'applyAccountQuotaResult', 'fetchNovelAiAccountQuotaWithTimeout', 'mapLimit', 'refreshAccountQuotas', 'refreshEnabledAccountQuotas', 'startAccountQuotaAutoRefresh']) {
     const start = source.indexOf(`function ${name}(`), end = source.indexOf('\n}', start) + 2;
     assert.ok(start >= 0 && end > start, name);
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
@@ -37,6 +38,35 @@ async function within(promise, ms = 500) {
   try { return await Promise.race([promise, new Promise((resolve, reject) => { timer = setTimeout(() => reject(new Error('刷新未按截止时间释放')), ms); })]); }
   finally { clearTimeout(timer); }
 }
+
+test('额度刷新遇到 bandwidth、banana 或词内 ban 时不会误停用账户', async () => {
+  for (const message of ['bandwidth limit exceeded', 'Invalid banana parameter', 'BANANA is unavailable', 'Account is unbanned']) {
+    const f = runtime(async () => { throw new Error(message); });
+    const result = await within(f.context.refreshEnabledAccountQuotas());
+    assert.equal(result.failed, 1);
+    assert.equal(f.db.accounts[0].enabled, true, message);
+    assert.equal(f.db.accounts[0].quotaFixed, 9000);
+    assert.equal(f.db.accounts[0].quotaError, message);
+    assert.equal(f.db.accounts[0].upstreamStatus, 'sync_error');
+  }
+});
+
+test('明确 ban/banned 或封禁仍通过刷新链停用，公开文案不虚构禁用动作', async () => {
+  for (const message of ['Account ban', 'Account BANNED.', '账号已封禁']) {
+    const initial = { ...account('one'), inFlight: 1, cooldownUntil: '2099-01-01T00:00:00.000Z' };
+    const f = runtime(async () => { throw new Error(message); }, [initial]);
+    // 文案函数本身没有执行账户修改，不能声称已经自动禁用。
+    assert.equal(f.context.publicErrorMessage(message), '账号已封禁');
+    assert.equal(initial.enabled, true);
+    const result = await within(f.context.refreshEnabledAccountQuotas());
+    assert.equal(result.failed, 1);
+    assert.equal(initial.enabled, false, message);
+    assert.equal(initial.quotaError, '账号已封禁');
+    assert.equal(initial.quotaFixed, 9000);
+    assert.equal(initial.inFlight, 1);
+    assert.equal(initial.cooldownUntil, '2099-01-01T00:00:00.000Z');
+  }
+});
 
 test('底层完全忽略取消时，本轮仍超时结束且可开始下一轮', async () => {
   let calls = 0, signal;

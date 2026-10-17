@@ -142,6 +142,8 @@ SSE与blur联合验收：[dd452ee的完整Linux CI](https://github.com/Hime-Hina
 
 C03-04 普通生成状态切片：补充一张512×512、4步V4.5免费条件ZIP探测，确认与此前JSON一样为200，两类Anlas差额均0、前后生产空闲。普通生成JSON/ZIP及同键重取据此统一200，删除原先201分支；Vibe和管理创建的201保留。执行器产物本机2通过/1项Linux跳过、Nuxt实际HTTP12通过/1项Linux跳过，113文件语法和执行器构建通过；Native、适配、冷历史及结果恢复26项中24通过/2项Linux专用跳过；最终CI结果继续记录。官方ZIP本次声明binary/octet-stream，网关保留application/zip准确说明已验证内容；没有新增依赖、schema或生产部署。
 
+C03-04 封禁误判补修：共享封禁识别改为匹配独立的ban/banned，避免bandwidth、banana等普通错误误触发额度刷新链的账户禁用；中文封禁保持。公开文案只说明识别结果，不声称文案函数执行了禁用，真正执行禁用的分支保留动作说明。复用额度刷新测试中的真实分类、应用和禁用函数，先验证新增两项失败，再修复为12/12通过；语法与差异检查通过。账务、冷却、并发占用和原错误诊断保持，原始错误公开边界另行处理，未部署生产。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

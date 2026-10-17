@@ -1972,7 +1972,7 @@ function isUnsubscribedAccountTier(tier) {
 
 function isNovelAiAccountBannedError(error) {
   const text = String(error?.message || error || '');
-  return /ban(?:ned)?|封禁/i.test(text);
+  return /\bban(?:ned)?\b|封禁/i.test(text);
 }
 
 function disableNovelAiAccount(account) {
@@ -4595,7 +4595,7 @@ function isQuotaFailureJob(job) {
 
 function publicErrorMessage(message) {
   const text = String(message || '');
-  if (isNovelAiAccountBannedError(text)) return '账号已封禁，已自动禁用';
+  if (isNovelAiAccountBannedError(text)) return '账号已封禁';
   if (isInsufficientBalanceError({ message: text })) return insufficientBalanceMessage;
   if (/This operation was aborted|operation was aborted|direct generate timeout|AbortError/i.test(text)) return '连接超时';
   if (/invalid token/i.test(text)) return '密钥无效或已被禁用。';
