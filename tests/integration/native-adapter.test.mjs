@@ -2,7 +2,7 @@ import { quoteFairRequest } from '../../server/fair-quota.js';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.js';
 import { readNativeBody } from '../../server/native-body.js';
 import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.js';
-import { assertQueueAdmission, queueDeadline } from '../../server/queue-policy.js';
+import { assertQueueAdmission, queueDeadline } from '../../server/queue-policy.ts';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';

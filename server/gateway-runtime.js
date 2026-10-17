@@ -12,7 +12,7 @@ import { sharedSurface } from './shared-surface.js';
 import { handleMemberRoutes } from './member-routes.js';
 import { stateEventsFor } from './state-events.js';
 import { reconcileMemberSessionOwner } from './member-auth.js';
-import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.js';
+import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.ts';
 import { requireDiscordMembership } from './discord-auth.js';
 import { ownerOperation } from './owner-operations.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, fairQuotaSummary, quoteFairRequest } from './fair-quota.js';

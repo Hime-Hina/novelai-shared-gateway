@@ -60,7 +60,8 @@ export function recordSharedCompletion(account: SharedAccount | null | undefined
   } else if (kind === 'ordinary') {
     const strikes = Math.min(4, count(account.ordinaryStrikeCount) + 1);
     account.ordinaryStrikeCount = strikes;
-    delay = [10000, 20000, 40000, 60000][strikes - 1]; reason = 'ordinary_failure';
+    // strikes 已夹取为 1..4，数组索引必定存在。
+    delay = [10000, 20000, 40000, 60000][strikes - 1]!; reason = 'ordinary_failure';
   } else if (kind === 'capacity') {
     const legacyStrike = account.capacityStrikeCount == null && timestamp(account.capacityLimitedUntil) > now ? 1 : 0;
     const strikes = Math.min(4, Math.max(legacyStrike, count(account.capacityStrikeCount)) + 1);

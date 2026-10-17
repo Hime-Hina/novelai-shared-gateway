@@ -1,8 +1,38 @@
-const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
+interface QueueMember {
+  id: string;
+  token: string;
+  acceptingJobs?: boolean;
+  jobAdmissionVersion?: number;
+  updatedAt?: string;
+}
+
+interface QueueJob {
+  id: string;
+  userToken: string;
+  status: string;
+  createdAt?: string;
+  queueExpiresAt?: string;
+  error?: string;
+  errorDetail?: string;
+  errorStatus?: number;
+  cancelledAt?: string;
+  completedAt?: string;
+  updatedAt?: string;
+  cancellationReason?: string;
+}
+
+interface AdmissionState {
+  users: QueueMember[];
+  jobs: QueueJob[];
+}
+
+function fail(statusCode: number, message: string): never {
+  throw Object.assign(new Error(message), { statusCode });
+}
 const unfinished = new Set(['queued', 'pending', 'running']);
 const waiting = new Set(['queued', 'pending']);
 
-export function queuePolicy(env = process.env) {
+export function queuePolicy(env: NodeJS.ProcessEnv = process.env) {
   const limits = {
     member: Number(env.QUEUE_MAX_ACTIVE_PER_MEMBER || 4),
     global: Number(env.QUEUE_MAX_ACTIVE_GLOBAL || 16),
@@ -14,7 +44,7 @@ export function queuePolicy(env = process.env) {
   return limits;
 }
 
-export function assertMemberAcceptsJobs(user, expectedVersion) {
+export function assertMemberAcceptsJobs(user: Pick<QueueMember, 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number): void {
   if (user.acceptingJobs === false) fail(403, '管理员已停止此成员接单；已有结果仍可查询');
   // 停止后再恢复不能让旧的多图请求悄悄提交下一张。
   if (expectedVersion !== undefined && expectedVersion !== (user.jobAdmissionVersion || 0)) {
@@ -23,7 +53,7 @@ export function assertMemberAcceptsJobs(user, expectedVersion) {
 }
 
 // 必须和预扣、入队处于同一 store.update，不能在事务外先数队列再创建任务。
-export function assertQueueAdmission(db, user, expectedVersion, env = process.env, count = 1) {
+export function assertQueueAdmission(db: { jobs: Pick<QueueJob, 'status' | 'userToken'>[] }, user: Pick<QueueMember, 'token' | 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number, env: NodeJS.ProcessEnv = process.env, count = 1): void {
   assertMemberAcceptsJobs(user, expectedVersion);
   const active = db.jobs.filter(job => unfinished.has(job.status));
   const limits = queuePolicy(env);
@@ -33,12 +63,12 @@ export function assertQueueAdmission(db, user, expectedVersion, env = process.en
   if (active.length + count > limits.global) fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
 }
 
-export function queueDeadline(now, requestDeadline, env = process.env) {
+export function queueDeadline(now: number, requestDeadline?: string | null, env: NodeJS.ProcessEnv = process.env): string {
   const deadline = Date.parse(requestDeadline || '');
   return new Date(Math.min(now + queuePolicy(env).waitMs, Number.isFinite(deadline) ? deadline : Infinity)).toISOString();
 }
 
-export function queuedDeadlineTimestamp(job, env = process.env) {
+export function queuedDeadlineTimestamp(job: Pick<QueueJob, 'status' | 'queueExpiresAt' | 'createdAt'>, env: NodeJS.ProcessEnv = process.env): number {
   if (!waiting.has(job.status)) return 0;
   const saved = Date.parse(job.queueExpiresAt || '');
   if (Number.isFinite(saved)) return saved;
@@ -48,13 +78,13 @@ export function queuedDeadlineTimestamp(job, env = process.env) {
 }
 
 // refund 复用入口原有的幂等退款，保持共享账本与旧本地点数的结算口径。
-export function setMemberAdmission(db, userId, acceptingJobs, refund, now = Date.now()) {
+export function setMemberAdmission(db: AdmissionState, userId: string, acceptingJobs: boolean, refund: (db: AdmissionState, job: QueueJob, message: string) => unknown, now = Date.now()) {
   const user = db.users.find(item => item.id === userId);
   if (!user) fail(404, '成员不存在');
   if (!acceptingJobs && user.acceptingJobs !== false) user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
   user.acceptingJobs = acceptingJobs;
   user.updatedAt = new Date(now).toISOString();
-  const cancelledJobIds = [];
+  const cancelledJobIds: string[] = [];
   if (!acceptingJobs) {
     for (const job of db.jobs) {
       if (job.userToken !== user.token || !waiting.has(job.status)) continue;

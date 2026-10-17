@@ -1,4 +1,5 @@
 // 当前成员 API 的公开字段；上游身份、会话摘要和完整生成参数不进入页面模型。
+export type { SharedStatus } from '../../../server/shared-status.ts'
 export interface LoginOptions { discord: boolean; ready: boolean; origin: string | null }
 export interface MemberQuota {
   member: boolean; status: string; groupName: string | null; groupSize: number; share: number
@@ -20,13 +21,6 @@ export type LateResult = Pick<MemberJob, 'id' | 'model' | 'createdAt' | 'imageUr
 export interface MemberProfile {
   username: string; owner: boolean; sessionExpiresAt: number; acceptingJobs: boolean
   quota: MemberQuota | null; jobs: MemberJob[]; lateResults: LateResult[]
-}
-export interface SharedStatus {
-  status: string; subscriptionActive: boolean; expiresAt: string | null; officialCheckedAt: string | null
-  stale: boolean; v5Percent: number | null; v5IsNegative: boolean; refillSecondsPerPercent: number | null
-  anlasFixed: number | null; anlasPurchased: number | null
-  running: number; queued: number; pending: number; concurrencyLimit: number
-  cooldownUntil: string | null; cooldownReason: string | null; quotaSyncError: boolean; recentFailures: number
 }
 export interface BatchJob {
   id: string; index: number; model: string; status: string; cancelled: boolean

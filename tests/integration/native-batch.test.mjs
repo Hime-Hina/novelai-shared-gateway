@@ -6,7 +6,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import * as requests from '../../server/generation-request.js';
-import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '../../server/queue-policy.js';
+import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion } from '../../server/shared-capacity.ts';
 import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 

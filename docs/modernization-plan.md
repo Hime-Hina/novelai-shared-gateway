@@ -162,6 +162,8 @@ C01第一片：删除gateway-runtime中仅有定义、全仓源码/测试均无�
 
 C03与T01/C01首片最终验收：队列夹具补修[a01dc9e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a01dc9e)的[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018561882)已通过，覆盖生成错误保护与全部此前协议切片。TypeScript首片[1773621的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018865311)及死函数清理[cb063ae的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018965682)也已通过；最终清理版本验证后端511、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过，并通过根/服务类型检查、JS语法与三个镜像构建。其余T01/C01及D01/D02继续实施，生产未变。
 
+T01共享状态与队列片：shared-status与queue-policy迁为严格TypeScript；状态构造函数导出唯一SharedStatus DTO，前端仅重导出类型，订阅与透支标记准确声明为boolean/null。保留原字段归一化、集合字典兼容、隐私白名单、准入/取消/截止规则；补非法布尔值及字典/数组等价回归。Nuxt更严格的数组索引检查要求在已夹取1～4的冷却级别处明确类型不变量，不新增兜底算法或关闭检查。更新源码/测试导入、Nitro纯模块内联及网页Docker构建输入；client产物不包含后端状态/冷却实现。根严格检查与编译、110个JS语法、定向58/58、全部后端512项中508通过/4项Windows跳过、前端115/115、执行器产物2通过/1项Windows跳过、Nuxt真实开发/生产双进程13通过/1项Windows跳过均通过。Linux网页最终镜像SSR及Native路由结构化503验证通过，最终完整CI另记录。发现的null订阅显示问题留独立行为修复，本片未改模板；无schema/依赖或生产变更。
+
 ## 仓库与现状
 
 fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。

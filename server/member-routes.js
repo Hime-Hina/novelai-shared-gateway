@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession, isOwner } from './member-auth.js';
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding } from './fair-quota.js';
-import { sharedAccountStatus } from './shared-status.js';
+import { sharedAccountStatus } from './shared-status.ts';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership } from './discord-auth.js';
 import { clientIp } from './client-ip.js';
 import { memberCharge, updateLossAlertPolicy } from './failure-accounting.js';

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import * as fair from '../../server/fair-quota.js';
 import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.js';
-import * as queuePolicy from '../../server/queue-policy.js';
+import * as queuePolicy from '../../server/queue-policy.ts';
 const source=fs.readFileSync(new URL('../../server/gateway-runtime.js',import.meta.url),'utf8');
 function fixture(tier=3) {
   let now=Date.now();

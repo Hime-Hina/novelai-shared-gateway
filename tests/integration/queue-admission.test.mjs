@@ -6,7 +6,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
-import { assertQueueAdmission, assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.js';
+import { assertQueueAdmission, assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.js';
 import { createMemberSession, authenticateMemberSession } from '../../server/member-auth.js';
 

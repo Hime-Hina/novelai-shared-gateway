@@ -1,24 +1,65 @@
 import { sharedAccountConcurrency } from './shared-capacity.ts';
+
+export interface SharedStatus {
+  status: string; subscriptionActive: boolean | null; expiresAt: string | null; officialCheckedAt: string | null;
+  stale: boolean; v5Percent: number | null; v5IsNegative: boolean | null; refillSecondsPerPercent: number | null;
+  anlasFixed: number | null; anlasPurchased: number | null;
+  running: number; queued: number; pending: number; concurrencyLimit: number;
+  cooldownUntil: string | null; cooldownReason: string | null; quotaSyncError: boolean; recentFailures: number;
+}
+
+type Rows<T> = T[] | Record<string, T> | null | undefined;
+interface StatusUser { id: string; token?: string | null }
+interface StatusJob {
+  userToken?: string | null;
+  status?: string;
+  completedAt?: unknown;
+  failedAt?: unknown;
+  updatedAt?: unknown;
+}
+interface StatusAccount {
+  id: string;
+  enabled?: unknown;
+  subscriptionActive?: unknown;
+  subscriptionExpiresAt?: unknown;
+  quotaTier?: unknown;
+  quotaCheckedAt?: unknown;
+  quotaError?: unknown;
+  v5UsagePercent?: unknown;
+  v5UsageIsNegative?: unknown;
+  v5UsageTimeUntilNextPercent?: unknown;
+  quotaFixed?: unknown;
+  quotaPurchased?: unknown;
+  cooldownUntil?: unknown;
+  cooldownReason?: unknown;
+}
+interface StatusDatabase {
+  settings?: { fairQuota?: { members?: string[] | null; boundAccountId?: string | null } | null } | null;
+  users?: Rows<StatusUser>;
+  accounts?: Rows<StatusAccount>;
+  jobs?: Rows<StatusJob>;
+}
+
 // 共享状态仅返回白名单汇总；不改变账本、不调用上游，也不返回个人账户资料。
 const STALE_MS = 10 * 60 * 1000;
-const rows = value => Array.isArray(value) ? value : Object.values(value || {});
-const number = value => value === null || value === undefined || value === '' || typeof value === 'boolean' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
-function timestamp(value) {
+const rows = <T>(value: Rows<T>): T[] => Array.isArray(value) ? value : Object.values(value || {});
+const number = (value: unknown): number | null => value === null || value === undefined || value === '' || typeof value === 'boolean' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
+function timestamp(value: unknown): number | null {
   if(value === null || value === undefined || value === '') return null;
   const numeric=number(value);
-  const result=numeric===null?Date.parse(value):numeric<1e11?numeric*1000:numeric;
+  const result=numeric===null?Date.parse(`${value}`):numeric<1e11?numeric*1000:numeric;
   return Number.isFinite(result)&&result>=0&&result<=8640000000000000?result:null;
 }
-const iso = value => value===null?null:new Date(value).toISOString();
-const bool = value => typeof value==='boolean'?value:null;
+const iso = (value: number | null): string | null => value===null?null:new Date(value).toISOString();
+const bool = (value: unknown): boolean | null => typeof value==='boolean'?value:null;
 const cooldownReasons = new Set(['success_gap', 'ordinary_failure', 'capacity_limit', 'upstream_retry_after', 'completion_gap']);
 
-export function sharedAccountStatus(db, now = Date.now()) {
+export function sharedAccountStatus(db: StatusDatabase | null | undefined, now = Date.now()): SharedStatus {
   const state=db?.settings?.fairQuota;
   const members=new Set(state?.members || []);
   const tokens=new Set(rows(db?.users).filter(u=>members.has(u.id)&&typeof u.token==='string'&&u.token).map(u=>u.token));
   const jobs=rows(db?.jobs).filter(j=>tokens.has(j.userToken));
-  const base={status:'pending_opus',subscriptionActive:null,expiresAt:null,officialCheckedAt:null,stale:true,
+  const base: SharedStatus={status:'pending_opus',subscriptionActive:null,expiresAt:null,officialCheckedAt:null,stale:true,
     v5Percent:null,v5IsNegative:null,refillSecondsPerPercent:null,anlasFixed:null,anlasPurchased:null,
     running:jobs.filter(j=>j.status==='running').length,queued:jobs.filter(j=>j.status==='queued').length,
     pending:jobs.filter(j=>j.status==='pending').length,
@@ -39,5 +80,5 @@ export function sharedAccountStatus(db, now = Date.now()) {
   return {...base,status,concurrencyLimit,subscriptionActive:bool(account.subscriptionActive),expiresAt:iso(expires),officialCheckedAt:iso(checked),stale,
     v5Percent:v5,v5IsNegative:bool(account.v5UsageIsNegative),refillSecondsPerPercent:number(account.v5UsageTimeUntilNextPercent),
     anlasFixed:fixed,anlasPurchased:purchased,cooldownUntil:cooling?iso(cooldown):null,
-    cooldownReason:cooling&&cooldownReasons.has(account.cooldownReason)?account.cooldownReason:null,quotaSyncError};
+    cooldownReason:cooling&&typeof account.cooldownReason==='string'&&cooldownReasons.has(account.cooldownReason)?account.cooldownReason:null,quotaSyncError};
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sharedAccountStatus} from '../../server/shared-status.js';
+import {sharedAccountStatus} from '../../server/shared-status.ts';
 const NOW=1800000000000;
 function fixture(){return {settings:{fairQuota:{members:['member'],boundAccountId:'opus'}},users:[{id:'member',token:'member-secret'},{id:'other',token:'other-secret'}],accounts:[{id:'opus',token:'upstream-secret',username:'secret-name',enabled:true,subscriptionActive:true,subscriptionExpiresAt:NOW+86400000,quotaTier:3,quotaCheckedAt:NOW,v5UsagePercent:80,v5UsageIsNegative:false,v5UsageTimeUntilNextPercent:600,quotaFixed:9000,quotaPurchased:200}],jobs:[]};}
 test('白名单返回只读汇总，没有上游与成员隐私',()=>{
@@ -11,7 +11,17 @@ test('白名单返回只读汇总，没有上游与成员隐私',()=>{
 });
 test('未绑定不能展示试用池及其他上游额度',()=>{
  const db=fixture();db.settings.fairQuota.boundAccountId=null;const s=sharedAccountStatus(db,NOW);
- assert.equal(s.status,'pending_opus');assert.equal(s.v5Percent,null);assert.equal(s.anlasFixed,null);assert.equal(s.subscriptionActive,null);
+ assert.equal(s.status,'pending_opus');assert.equal(s.v5Percent,null);assert.equal(s.anlasFixed,null);assert.equal(s.subscriptionActive,null);assert.equal(s.v5IsNegative,null);
+});
+
+test('订阅与透支标记只接受布尔值，集合字典与数组保留相同公开结果',()=>{
+ for(const value of [null,undefined,0,1,'true','false',{},[]]) {
+  const db=fixture();Object.assign(db.accounts[0],{subscriptionActive:value,v5UsageIsNegative:value});
+  const before=structuredClone(db),s=sharedAccountStatus(db,NOW);
+  assert.equal(s.subscriptionActive,null);assert.equal(s.v5IsNegative,null);assert.equal(s.status,'inactive_opus');
+  assert.deepEqual(sharedAccountStatus({...db,users:Object.fromEntries(db.users.map(u=>[u.id,u])),accounts:{opus:db.accounts[0]},jobs:{}},NOW),s);
+  assert.deepEqual(db,before);
+ }
 });
 test('过期、禁用、非 Opus 与订阅无效均不可用',()=>{
  for(const change of [{enabled:false},{quotaTier:0},{subscriptionActive:false},{subscriptionExpiresAt:NOW},{subscriptionExpiresAt:'invalid'}]) {

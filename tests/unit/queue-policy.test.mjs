@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { queuePolicy, assertQueueAdmission, assertMemberAcceptsJobs, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from '../../server/queue-policy.js';
+import { queuePolicy, assertQueueAdmission, assertMemberAcceptsJobs, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from '../../server/queue-policy.ts';
 
 const now = Date.parse('2026-10-17T00:00:00Z');
 

@@ -1,4 +1,4 @@
-import { queuedDeadlineTimestamp } from './queue-policy.js';
+import { queuedDeadlineTimestamp } from './queue-policy.ts';
 
 const MiB = 1024 * 1024;
 const fail = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };

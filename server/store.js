@@ -10,7 +10,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.js';
 import { migrateStorage } from './storage-migrations.js';
-import { queuedDeadlineTimestamp } from './queue-policy.js';
+import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.js';
 import { activityDate } from './activity-heatmap.js';
 

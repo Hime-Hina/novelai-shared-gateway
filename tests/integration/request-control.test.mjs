@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { JsonStore } from '../../server/store.js';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.js';
 import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.js';
-import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.js';
+import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
 
 const source = await readFile(new URL('../../server/gateway-runtime.js', import.meta.url), 'utf8');
