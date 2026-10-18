@@ -72,7 +72,7 @@ jobs:
           cp pnpm-lock.yaml "$release_dir/pnpm-lock.yaml"
           cp deploy/systemd/*.service deploy/production-*.env.example "$release_dir/systemd/"
           cp docs/test-deployment.md docs/production-release.md "$release_dir/docs/"
-          cp scripts/backup-production.py "$release_dir/ops/"
+          cp scripts/backup-production.py scripts/bridge-owner-session.mjs "$release_dir/ops/"
           mkdir -p "$RUNNER_TEMP/unit-check"
           for unit in "$release_dir/systemd/"*.service; do
             sed -e "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
