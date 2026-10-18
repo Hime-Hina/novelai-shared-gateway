@@ -1,0 +1,31 @@
+[Unit]
+Description=NovelAI gateway production executor
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=nai-gateway
+Group=nai-gateway
+WorkingDirectory=/opt/novelai-shared-gateway/current/executor
+# Keep existing production business/OAuth settings; the second file owns runtime overrides.
+EnvironmentFile=/etc/novelai-shared-gateway/gateway.env
+EnvironmentFile=/etc/novelai-shared-gateway/executor.env
+ExecStart=/opt/novelai-shared-gateway/current/bin/node /opt/novelai-shared-gateway/current/executor/.output/server/start.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/novelai-shared-gateway
+MemoryHigh=512M
+MemoryMax=768M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target
