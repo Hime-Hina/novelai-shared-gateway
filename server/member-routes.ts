@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
+import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
 import { sharedAccountStatus } from './shared-status.ts';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership, type DiscordUser, type DiscordDependencies } from './discord-auth.ts';
@@ -89,6 +89,13 @@ function setCookie(req: IncomingMessage, res: ServerResponse, token: string, exp
   res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
 }
 
+async function renewCookie(req: IncomingMessage, res: ServerResponse, store: MemberStore, env: NodeJS.ProcessEnv) {
+  const session = await renewMemberSession(store, cookie(req), env);
+  if (!session) error(401, '登录已失效，请重新登录');
+  setCookie(req, res, cookie(req), session.expiresAt);
+  return session;
+}
+
 function recentActivity(db: MemberDatabase,user: MemberUser) {
   const jobs=db.jobs.filter(job=>job.userToken===user.token).slice(0,30);
   return {total:jobs.length,done:jobs.filter(job=>job.status==='done').length,failed:jobs.filter(job=>job.status==='failed').length,queued:jobs.filter(job=>['queued','pending'].includes(job.status!)).length,running:jobs.filter(job=>job.status==='running').length};
@@ -115,6 +122,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     res.end(); return true;
   }
   sameOrigin(req);
+  const pageVisit = req.method === 'GET' && req.headers['x-member-activity'] === '1';
   const { store } = deps;
   let actorId = 'local-admin';
   if (ownerRoute) {
@@ -123,6 +131,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     if (!viewer) error(401, '请先使用 Discord 登录');
     if (!isOwner(viewer, env)) error(403, '仅 owner 可访问管理功能');
     await requireDiscordMembership(viewer, deps);
+    if (pageVisit && admin && !url.search) await renewCookie(req, res, store, env);
     actorId = viewer.id;
     if (!admin) {
       const result = await deps.ownerOperation(url, req.method, req.method === 'GET' ? undefined : await json(req));
@@ -295,9 +304,11 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
   if (url.pathname === '/api/member/logout' && req.method === 'POST') {
     await logoutMemberSession(store, cookie(req)); setCookie(req, res, ''); reply(res, 200, { ok: true }); return true;
   }
-  const session = await authenticateMemberSession(store, cookie(req), env), user = session?.user as MemberUser | undefined;
+  let session = await authenticateMemberSession(store, cookie(req), env);
+  const user = session?.user as MemberUser | undefined;
   if (!user) error(401, '请先登录');
   await requireDiscordMembership(user, deps);
+  if (pageVisit && url.pathname === '/api/member/me') session = await renewCookie(req, res, store, env);
   const requestRoute = url.pathname.match(/^\/api\/member\/requests\/([^/]+)(\/cancel)?$/);
   if (requestRoute && (req.method === 'GET' && !requestRoute[2] || req.method === 'POST' && requestRoute[2])) {
     const requestId = decodeURIComponent(requestRoute[1]);

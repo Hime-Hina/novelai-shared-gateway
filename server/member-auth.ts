@@ -16,6 +16,7 @@ interface SessionMutation {
   collections: [];
   immediate: true;
   memberSession?: () => MemberSession | undefined;
+  memberSessionExpiry?: () => { tokenHash: string; expiresAt: number } | undefined;
   memberSessionDelete?: string | (() => string | undefined);
   memberSessionOwner?: SessionOwner;
 }
@@ -29,7 +30,7 @@ type OwnerUser = MemberUser & { enabled: true; discord: { id: string; guildId: s
 // Node scrypt 的完成回调返回 Buffer；promisify 对重载函数只能推断 unknown。
 const scrypt = promisify(derive) as (password: string, salt: string, keylen: number) => Promise<Buffer>;
 const attempts = new Map<string, { count: number; expiresAt: number }>();
-const memberTtl = 7 * 24 * 60 * 60 * 1000, ownerTtl = 12 * 60 * 60 * 1000;
+const memberTtl = 7 * 24 * 60 * 60 * 1000, ownerTtl = 24 * 60 * 60 * 1000;
 const windowMs = 15 * 60 * 1000;
 const fail: (statusCode: number, message: string) => never = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const normalized = (value: unknown): string => String(value || '').trim().toLowerCase();
@@ -100,11 +101,20 @@ export async function createMemberSession(store: Pick<MemberSessionStore, 'updat
   }, { collections: [], memberSession: () => row, memberSessionOwner: ownerConfig(env), immediate: true });
 }
 
-export async function authenticateMemberSession(store: MemberSessionStore, token: unknown, env: NodeJS.ProcessEnv = process.env, now?: number) {
+export function authenticateMemberSession(store: MemberSessionStore, token: unknown, env: NodeJS.ProcessEnv = process.env, now?: number) {
+  return checkMemberSession(store, token, env, now, false);
+}
+
+export function renewMemberSession(store: MemberSessionStore, token: unknown, env: NodeJS.ProcessEnv = process.env, now?: number) {
+  return checkMemberSession(store, token, env, now, true);
+}
+
+async function checkMemberSession(store: MemberSessionStore, token: unknown, env: NodeJS.ProcessEnv, now: number | undefined, renew: boolean) {
   const tokenHash = sessionHash(token);
   if (!tokenHash) return null;
   const configured = ownerConfig(env);
   let revoke: string | undefined;
+  let expiry: { tokenHash: string; expiresAt: number } | undefined;
   return store.update(db => {
     const at = now ?? Date.now();
     const session = store.readMemberSession(tokenHash), previous = store.readMemberSessionOwner();
@@ -116,8 +126,10 @@ export async function authenticateMemberSession(store: MemberSessionStore, token
     if (session.expires_at <= at || !user || affected || session.owner_binding !== ownerBinding(user, env)) {
       revoke = tokenHash; return null;
     }
-    return { user, expiresAt: session.expires_at };
-  }, { collections: [], memberSessionDelete: () => revoke, memberSessionOwner: configured, immediate: true });
+    const expiresAt = renew ? Math.max(session.expires_at, at + (session.owner_binding ? ownerTtl : memberTtl)) : session.expires_at;
+    if (expiresAt > session.expires_at) expiry = { tokenHash, expiresAt };
+    return { user, expiresAt };
+  }, { collections: [], memberSessionDelete: () => revoke, memberSessionExpiry: () => expiry, memberSessionOwner: configured, immediate: true });
 }
 
 export async function logoutMemberSession(store: Pick<MemberSessionStore, 'update'>, token: unknown): Promise<void> {

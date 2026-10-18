@@ -43,7 +43,7 @@ async function api(path='/api/admin/member-management',body,method){
  const version=pageVersion;
  if(expired)throw Object.assign(new Error('登录已失效，请重新登录。'),{code:'STALE_RESPONSE'});
  if(ownerMode)path=path.replace('/api/admin/','/api/member/owner/');
- const response=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:{...(!ownerMode?{'x-admin-token':$('adminToken').value}:{}),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+ const response=await fetch(path,{method:method||(body===undefined?'GET':'POST'),headers:{...(!ownerMode?{'x-admin-token':$('adminToken').value}:{}),...(ownerMode&&path==='/api/member/owner/member-management'&&body===undefined&&!document.hidden?{'X-Member-Activity':'1'}:{}),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  let result;try{result=await response.json();}catch{throw new Error('响应异常，请检查管理隧道是否连接。');}
  if(version!==pageVersion)throw Object.assign(new Error('管理会话已结束。'),{code:'STALE_RESPONSE'});
  if(ownerMode&&[401,403].includes(response.status))expireOwnerSession();

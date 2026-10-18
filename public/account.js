@@ -14,7 +14,7 @@ function clearMemberView(message = '') {
 window.addEventListener('member-session-expired',()=>clearMemberView('登录已失效，请重新登录。'));
 async function api(path, body) {
   const view = accountViewVersion;
-  const r = await fetch('/api/member/' + path, { method: body === undefined ? 'GET' : 'POST', credentials:'same-origin', headers:body === undefined ? {} : {'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body) });
+  const r = await fetch('/api/member/' + path, { method: body === undefined ? 'GET' : 'POST', credentials:'same-origin', headers:body === undefined ? (path==='me'&&!document.hidden?{'X-Member-Activity':'1'}:{}) : {'Content-Type':'application/json'}, body:body === undefined ? undefined : JSON.stringify(body) });
   const data = await r.json();
   if (!r.ok) { if (view===accountViewVersion && (r.status === 401 || r.status === 403)) clearMemberView(); throw new Error(data.message || data.error || '请求失败'); }
   return data;
@@ -83,7 +83,7 @@ async function load({automatic=false}={}) {
   startSharedStatus(onMemberInvalidation);
   if(!automatic)batchViews.clear();
   $('login').hidden=true; $('account').hidden=false; $('ownerConsole').hidden=data.owner!==true; $('welcome').textContent=data.username+' · 我的额度';
-  $('sessionExpiry').textContent=data.sessionExpiresAt ? `本次登录有效至 ${new Date(data.sessionExpiresAt).toLocaleString('zh-CN')}，不会自动续期。` : '';
+  $('sessionExpiry').textContent=data.sessionExpiresAt ? `当前有效至 ${new Date(data.sessionExpiresAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})}，连续 ${data.owner?1:7} 天未访问后退出，可见页面自动续期。` : '';
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
   $('status').textContent=(stateNames[q?.status] || '等待分配额度') + (q?.autoAnlasFallback ? ' · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）' : '');
   if (data.acceptingJobs === false) $('status').textContent += ' · 管理员已停止接单，已有结果仍可查询和下载';

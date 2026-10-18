@@ -112,6 +112,19 @@ afterEach(async () => {
 })
 
 describe('真实 Nuxt useAsyncData 成员会话', () => {
+  it('仅可见页面的 me 查询标记访问，隐藏页和其他接口不续期', async () => {
+    await authenticated()
+    expect(requests.filter(request => request.path === 'me').every(request => new Headers(request.init?.headers).get('x-member-activity') === '1')).toBe(true)
+    hidden = true
+    const background = portal.api('me')
+    expect(new Headers(pending('me').init?.headers).has('x-member-activity')).toBe(false)
+    pending('me').reply(200, profile()); await background
+    hidden = false
+    const key = portal.api('key')
+    expect(new Headers(pending('key').init?.headers).has('x-member-activity')).toBe(false)
+    pending('key').reply(200, {}); await key
+  })
+
   it('页首刷新校准完整活动并通知调用列表，不读取 API Key，成功后清除过时读取错误', async () => {
     const stream = await authenticated()
     stream.onopen?.()

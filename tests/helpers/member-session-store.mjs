@@ -12,7 +12,7 @@ export async function withMemberSessions(t, store) {
   store.readMemberSession = hash => sessions.readMemberSession(hash);
   store.readMemberSessionOwner = () => sessions.readMemberSessionOwner();
   store.update = (fn, options = {}) => update(db =>
-    ['memberSession', 'memberSessionDelete', 'memberSessionOwner'].some(key => Object.hasOwn(options, key))
+    ['memberSession', 'memberSessionDelete', 'memberSessionOwner', 'memberSessionExpiry'].some(key => Object.hasOwn(options, key))
       ? sessions.update(() => fn(db), options) : fn(db), options);
   return store;
 }

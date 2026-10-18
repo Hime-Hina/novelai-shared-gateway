@@ -235,6 +235,11 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
   const profileResponse = await gateway.call('/api/member/me', { cookie });
   assert.equal(profileResponse.headers.get('set-cookie'), null);
   assert.equal((await json(profileResponse)).sessionExpiresAt, login.expiresAt);
+  const visitedAt = Date.now(), visit = await gateway.call('/api/member/me', { cookie, headers: { 'x-member-activity': '1' } });
+  const renewed = await json(visit);
+  assert.ok(renewed.sessionExpiresAt >= visitedAt + 7 * 86400000);
+  assert.equal(visit.headers.get('set-cookie').split(';')[0], cookie);
+  assert.equal(Date.parse(/Expires=([^;]+)/.exec(visit.headers.get('set-cookie'))[1]), Math.floor(renewed.sessionExpiresAt / 1000) * 1000);
   assert.equal((await gateway.call('/api/member/owner/member-management', { cookie })).status, 403);
   assert.equal((await gateway.call('/ai/generate-image', { cookie, body: nativeBody })).status, 401);
   assert.equal((await gateway.call('/api/member/heatmap?memberId=' + gateway.members[1].user_id, { cookie })).status, 400);

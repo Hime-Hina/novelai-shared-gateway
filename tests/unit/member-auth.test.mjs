@@ -14,7 +14,39 @@ async function open(t, seed, directory) {
  return store;
 }
 const digest=token=>createHash('sha256').update(token).digest('hex');
-test('密码散列、账户唯一、固定七天会话及重置/停用持久撤销',async t=>{
+
+for (const owner of [false, true]) test(`${owner ? 'owner 一天' : '成员七天'}按访问时刻续期，读取不续期，重启保留且退出不能复活`, async t => {
+ const env=owner?{OWNER_USER_ID:'a',DISCORD_GUILD_ID:'guild'}:{};
+ const store=await open(t,{users:[{id:'a',enabled:true,memberAuth:{version:'a'},discord:{id:'discord-a',guildId:'guild'}}]});
+ const ttl=(owner?1:7)*86400000, issued=1000, visited=issued+3600000;
+ const session=await auth.createMemberSession(store,store.db.users[0],env,issued);
+ assert.equal(session.expiresAt,issued+ttl);
+ const renewed=await auth.renewMemberSession(store,session.token,env,visited);
+ assert.equal(renewed.expiresAt,visited+ttl);
+ assert.equal(store.readMemberSession(digest(session.token)).created_at,issued);
+ assert.equal((await auth.renewMemberSession(store,session.token,env,visited-1000)).expiresAt,renewed.expiresAt,'时钟回拨不能缩短期限');
+ assert.equal((await auth.authenticateMemberSession(store,session.token,env,visited+1000)).expiresAt,renewed.expiresAt);
+ await store.close(); const reopened=await open(t,null,store.dataDir);
+ assert.equal((await auth.authenticateMemberSession(reopened,session.token,env,visited+2000)).expiresAt,renewed.expiresAt);
+ await auth.logoutMemberSession(reopened,session.token);
+ assert.equal(await auth.renewMemberSession(reopened,session.token,env,visited+3000),null);
+ assert.equal(reopened.readMemberSession(digest(session.token)),null);
+});
+
+test('续期失败不改变截止，过期会话不能靠续期恢复，也不广播业务变更', async t => {
+ const store=await open(t,{users:[{id:'a',enabled:true,memberAuth:{version:'a'}}]});
+ const session=await auth.createMemberSession(store,store.db.users[0],{},1000);
+ store.sqlite.exec("CREATE TEMP TRIGGER reject_renewal BEFORE UPDATE ON member_sessions BEGIN SELECT RAISE(ABORT, 'synthetic renewal failure'); END");
+ await assert.rejects(auth.renewMemberSession(store,session.token,{},2000),/synthetic renewal failure/);
+ assert.equal(store.readMemberSession(digest(session.token)).expires_at,session.expiresAt);
+ store.sqlite.exec('DROP TRIGGER reject_renewal');
+ const events=[]; store.events.on('commit',event=>events.push(event));
+ await auth.renewMemberSession(store,session.token,{},2000);
+ assert.equal(events.length,0);
+ assert.equal(await auth.renewMemberSession(store,session.token,{},2000+7*86400000),null);
+ assert.equal(store.readMemberSession(digest(session.token)),null);
+});
+test('密码散列、账户唯一、七天初始会话及重置/停用持久撤销',async t=>{
  const db={users:[{id:'a',enabled:true},{id:'b',enabled:true}]};
  await auth.setMemberCredentials(db,'a',{username:'MemberOne',password:'synthetic-A-valid-test-password-123'});
  assert.equal(db.users[0].memberAuth.username,'memberone');assert.ok(!JSON.stringify(db).includes('A-valid-test-password'));
@@ -54,19 +86,19 @@ test('SQLite重开保留固定到期，退出在同库持久撤销且无效token
  }
 });
 
-test('owner固定十二小时、普通cookie不能升权；A→B→A和Discord换绑均撤销旧会话',async t=>{
+test('owner一天、普通cookie不能升权；A→B→A和Discord换绑均撤销旧会话',async t=>{
  const guildId='123456789012345678',env={OWNER_USER_ID:'a',DISCORD_GUILD_ID:guildId};
  const users=['a','b','c'].map(id=>({id,enabled:true,memberAuth:{version:id},discord:{id:'discord-'+id,guildId}}));
  const store=await open(t,{users});
  const a=await auth.createMemberSession(store,users[0],env,1000),b=await auth.createMemberSession(store,users[1],env,1000),c=await auth.createMemberSession(store,users[2],env,1000);
- assert.equal(a.expiresAt,1000+12*3600000);assert.equal(b.expiresAt,1000+7*86400000);
+ assert.equal(a.expiresAt,1000+24*3600000);assert.equal(b.expiresAt,1000+7*86400000);
  assert.equal(store.readMemberSession(digest(a.token)).owner_binding,JSON.stringify(['a','discord-a',guildId]));
  assert.equal((await auth.authenticateMemberSession(store,a.token,env,a.expiresAt-1)).user.id,'a');
  const next={...env,OWNER_USER_ID:'b'};
  assert.equal(await auth.authenticateMemberSession(store,b.token,next,2000),null,'首次观察升权配置的请求也必须拒绝');
  assert.equal(await auth.authenticateMemberSession(store,a.token,next,2000),null);
  assert.equal((await auth.authenticateMemberSession(store,c.token,next,2000)).user.id,'c');
- const newOwner=await auth.createMemberSession(store,users[1],next,3000);assert.equal(newOwner.expiresAt,3000+12*3600000);
+ const newOwner=await auth.createMemberSession(store,users[1],next,3000);assert.equal(newOwner.expiresAt,3000+24*3600000);
  await auth.reconcileMemberSessionOwner(store,env);
  for(const session of [a,b,newOwner])assert.equal(await auth.authenticateMemberSession(store,session.token,env,4000),null);
  assert.equal((await auth.authenticateMemberSession(store,c.token,env,4000)).expiresAt,c.expiresAt);

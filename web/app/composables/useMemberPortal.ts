@@ -29,7 +29,7 @@ export function useMemberPortal() {
     const check = () => { if (disposed || epoch !== current) throw Object.assign(new Error('旧会话响应已忽略'), { stale: true }) }
     const response = await fetch('/api/member/' + path, {
       method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin',
-      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      headers: body === undefined ? path === 'me' && !document.hidden ? { 'X-Member-Activity': '1' } : {} : { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
     }).catch(failure => { check(); throw failure })
     const value = await response.json().catch(() => { check(); throw new Error('响应无法读取，请重试。') })

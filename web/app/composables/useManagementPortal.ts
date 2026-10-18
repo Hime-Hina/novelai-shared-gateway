@@ -53,7 +53,8 @@ export function useManagementPortal(mode: ManagementMode) {
     check()
     const response = await fetch((mode === 'owner' ? '/api/member/owner/' : '/api/admin/') + path, {
       method: method || (body === undefined ? 'GET' : 'POST'), credentials: 'same-origin',
-      headers: { ...headers(), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { ...headers(), ...(mode === 'owner' && path === 'member-management' && body === undefined && !document.hidden ? { 'X-Member-Activity': '1' } : {}),
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body)
     }).catch(error => { check(); throw error })
     const value = await response.json().catch(() => null)

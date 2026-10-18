@@ -45,7 +45,7 @@ test('显示固定到期时间；登录失效清除Key，迟到读取不能重�
   let releaseKey;
   const data = { username: 'member', quota: {}, jobs: [], sessionExpiresAt: 1800000000000 };
   const page = await accountPage(data, () => new Promise(resolve => { releaseKey = resolve; }));
-  assert.match(page.get('sessionExpiry').textContent, /本次登录有效至.*不会自动续期/);
+  assert.match(page.get('sessionExpiry').textContent, /当前有效至.*连续 7 天未访问后退出，可见页面自动续期/);
   page.get('apiKey').value='synthetic-old-key';
   const pending = page.get('showKey').onclick();
   page.expire();

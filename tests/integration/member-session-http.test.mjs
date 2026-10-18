@@ -15,7 +15,7 @@ import { syncFairQuota } from '../../server/fair-quota.ts';
 import { createMemberSession } from '../../server/member-auth.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const memberTtl = 7 * 86400000, ownerTtl = 12 * 3600000;
+const memberTtl = 7 * 86400000, ownerTtl = 24 * 3600000;
 const cookieFor = session => `nai_member_session=${session.token}`;
 const tokenHash = cookie => createHash('sha256').update(cookie.slice(cookie.indexOf('=') + 1)).digest('hex');
 async function listen(server) {
@@ -125,7 +125,49 @@ async function openEvents(gateway, cookie) {
   };
 }
 
-test('真实 HTTP 普通会话固定七天，刷新与强制重启保留期限，退出持久撤销并关闭 SSE', { timeout: 45000 }, async t => {
+for (const owner of [false, true]) test(`可见网页访问续期${owner ? 'owner 一天' : '普通成员七天'}，Cookie 与数据库一致，其他查询和跨站请求不续期`, { timeout: 45000 }, async t => {
+  const gateway = await fixture(t, { owner }), ttl = owner ? ownerTtl : memberTtl;
+  let session = owner ? await gateway.createOfflineSession(0, Date.now() - 10000) : null;
+  await gateway.start();
+  let cookie = session ? cookieFor(session) : null;
+  if (!cookie) { const login = await gateway.login(); cookie = login.headers.get('set-cookie').split(';')[0]; await login.json(); }
+  const hash = tokenHash(cookie);
+  const endpoint = owner ? '/api/member/owner/member-management' : '/api/member/me';
+  const prior = Date.now() + 10000;
+  gateway.audit.prepare('UPDATE member_sessions SET expires_at=? WHERE token_hash=?').run(prior, hash);
+  const ordinary = await gateway.call(endpoint, { cookie });
+  assert.equal(ordinary.status, 200); assert.equal(ordinary.headers.get('set-cookie'), null); await ordinary.json();
+  assert.equal(gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash).expires_at, prior);
+  const crossSite = await gateway.call(endpoint, { cookie, headers: { 'x-member-activity': '1', origin: 'https://elsewhere.invalid' } });
+  assert.equal(crossSite.status, 403); assert.equal(crossSite.headers.get('set-cookie'), null); await crossSite.text();
+  assert.equal(gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash).expires_at, prior);
+  const before = Date.now(), visit = await gateway.call(endpoint, { cookie, headers: { 'x-member-activity': '1' } }), after = Date.now();
+  assert.equal(visit.status, 200);
+  const value = await visit.json(), renewed = gateway.audit.prepare('SELECT * FROM member_sessions WHERE token_hash=?').get(hash);
+  assert.ok(renewed.expires_at >= before + ttl && renewed.expires_at <= after + ttl);
+  assert.equal(visit.headers.get('set-cookie').split(';')[0], cookie);
+  assert.equal(Date.parse(/Expires=([^;]+)/.exec(visit.headers.get('set-cookie'))[1]), Math.floor(renewed.expires_at / 1000) * 1000);
+  assert.equal(Number(/Max-Age=(\d+)/.exec(visit.headers.get('set-cookie'))[1]), ttl / 1000);
+  if (!owner) assert.equal(value.sessionExpiresAt, renewed.expires_at);
+  const unrelated = await gateway.call('/api/member/shared-status', { cookie, headers: { 'x-member-activity': '1' } });
+  assert.equal(unrelated.status, 200); assert.equal(unrelated.headers.get('set-cookie'), null); await unrelated.json();
+  assert.equal(gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash).expires_at, renewed.expires_at);
+  gateway.audit.exec("CREATE TRIGGER synthetic_renewal_failure BEFORE UPDATE ON member_sessions BEGIN SELECT RAISE(ABORT, 'synthetic renewal failure'); END");
+  try {
+    const failed = await gateway.call(endpoint, { cookie, headers: { 'x-member-activity': '1' } });
+    assert.equal(failed.status, 500); assert.equal(failed.headers.get('set-cookie'), null); await failed.text();
+    assert.equal(gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash).expires_at, renewed.expires_at);
+  } finally { gateway.audit.exec('DROP TRIGGER synthetic_renewal_failure'); }
+  await gateway.stop(); await gateway.start();
+  assert.equal((await gateway.me(cookie)).sessionExpiresAt, renewed.expires_at);
+  gateway.expire(cookie);
+  const expired = await gateway.call(endpoint, { cookie, headers: { 'x-member-activity': '1' } });
+  assert.equal(expired.status, 401); assert.equal(expired.headers.get('set-cookie'), null); await expired.text();
+  assert.equal(gateway.audit.prepare('SELECT token_hash FROM member_sessions WHERE token_hash=?').get(hash), undefined);
+  gateway.assertNoGeneration();
+});
+
+test('真实 HTTP 普通会话初始七天，刷新与强制重启保留期限，退出持久撤销并关闭 SSE', { timeout: 45000 }, async t => {
   const gateway = await fixture(t); await gateway.start();
   const before = Date.now(), login = await gateway.login(), after = Date.now();
   assert.equal(login.status, 200);
@@ -177,7 +219,7 @@ test('会话写入失败不发 Cookie，浏览器持有的过期 Cookie 和密�
   gateway.assertNoGeneration();
 });
 
-test('owner 固定十二小时，A→B→A 不复活旧会话、普通七天 Cookie 不直接升级，无关成员不受影响', { timeout: 45000 }, async t => {
+test('owner 一天，A→B→A 不复活旧会话、普通七天 Cookie 不直接升级，无关成员不受影响', { timeout: 45000 }, async t => {
   const gateway = await fixture(t, { owner: true }), now = Date.now();
   const owner = await gateway.createOfflineSession(0, now), member = await gateway.createOfflineSession(1, now), unrelated = await gateway.createOfflineSession(2, now);
   assert.equal(owner.expiresAt, now + ownerTtl); assert.equal(member.expiresAt, now + memberTtl);

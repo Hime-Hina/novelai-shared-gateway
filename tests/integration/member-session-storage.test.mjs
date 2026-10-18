@@ -69,7 +69,7 @@ test('owner A→B→A、guild变化撤销相关会话，首次记录和相同配
     record('old-owner-token', { user_id: 'old-owner', owner_binding: '["old-owner","discord","guild"]' })]) await insert(store, value);
   await coordinate(store, owner('a'));
   assert.equal(sessionCount(store), 4);
-  const newOwner = record('new-b-token', { user_id: 'b', owner_binding: '["b","discord","synthetic-guild"]', expires_at: 1000 + 12 * 3600000 });
+  const newOwner = record('new-b-token', { user_id: 'b', owner_binding: '["b","discord","synthetic-guild"]', expires_at: 1000 + 24 * 3600000 });
   await store.update(() => null, { collections: [], memberSessionOwner: owner('b'), memberSession: newOwner });
   assert.deepEqual(store.readMemberSessionOwner(), owner('b'));
   assert.equal(sessionCount(store), 2);

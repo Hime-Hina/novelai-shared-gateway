@@ -12,7 +12,7 @@ watch(profile, value => { if (!value) apiOpen.value = false })
 <template>
   <main class="portal">
     <header class="portal-header">
-      <div><a href="/" class="brand">NovelAI 共享</a><p class="muted">个人额度 · 调用记录</p><p v-if="profile" id="sessionExpiry" class="section-caption">{{ profile.username }} · 登录至 {{ date(profile.sessionExpiresAt) }}（{{ profile.owner ? '管理员固定 12 小时' : '普通成员固定 7 天' }}，不自动续期）</p></div>
+      <div><a href="/" class="brand">NovelAI 共享</a><p class="muted">个人额度 · 调用记录</p><p v-if="profile" id="sessionExpiry" class="section-caption">{{ profile.username }} · 当前有效至 {{ date(profile.sessionExpiresAt) }}（连续 {{ profile.owner ? '1' : '7' }} 天未访问后退出，可见页面自动续期）</p></div>
       <NSpace v-if="profile">
         <NButton id="apiSettings" @click="apiOpen = true">API 配置</NButton>
         <NButton v-if="profile.owner" id="ownerConsole" tag="a" href="/owner">管理控制台</NButton>

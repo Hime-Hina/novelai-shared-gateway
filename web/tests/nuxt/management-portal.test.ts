@@ -108,6 +108,20 @@ afterEach(async () => {
 })
 
 describe('真实 Nuxt useAsyncData 管理会话', () => {
+  it('owner 仅可见页面摘要标记访问，后台摘要、统计和私有 admin 不续期', async () => {
+    await connected()
+    const summaries = requests.filter(request => request.path === summaryPath('owner'))
+    expect(summaries.every(request => new Headers(request.init?.headers).get('x-member-activity') === '1')).toBe(true)
+    expect(requests.filter(request => request.path === statisticsPath()).every(request => !new Headers(request.init?.headers).has('x-member-activity'))).toBe(true)
+    hidden = true
+    const background = portal.api('member-management')
+    expect(new Headers(pending(summaryPath('owner')).init?.headers).has('x-member-activity')).toBe(false)
+    pending(summaryPath('owner')).reply(200, state()); await background
+    wrapper!.unmount(); wrapper = undefined; hidden = false; requests = []
+    await connected('admin')
+    expect(requests.every(request => !new Headers(request.init?.headers).has('x-member-activity'))).toBe(true)
+  })
+
   it('页首手动刷新同时重读摘要、当前用量和完整热力图，不触发上游操作', async () => {
     const stream = (await connected())!
     stream.onopen?.()

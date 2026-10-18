@@ -30,6 +30,7 @@ type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
 type MemberSession = typeof memberSessions.$inferInsert;
 interface SessionOwner { ownerUserId: string; guildId: string }
+type SessionExpiry = { tokenHash: string; expiresAt: number };
 export interface StoredGenerationRequest extends ProviderRequest {
   tag?: string; artist?: string; size?: string; requestedSteps?: number; sampleCount?: number;
   nocache?: boolean; allowPurchasedAnlas?: unknown; cost?: number; characterRef?: unknown;
@@ -59,7 +60,7 @@ type CollectionMaps<T> = Record<Collection, Map<string, T>>;
 interface RowChange { collection: Collection; id: string; data?: string; order?: number; sql?: SqlRow }
 interface Changes { settingsChanged: boolean; nextSettings?: string; deletes: RowChange[]; upserts: RowChange[] }
 interface CommitDraft { collections: Set<string>; memberIds: Set<string>; allMembers: boolean; activityChanges: { memberId: string | null; date: string }[] }
-interface Writes { generationRequest?: GenerationRequest; generationIdempotency?: Idempotency; memberSession?: MemberSession; memberSessionDelete?: string; memberSessionOwner?: SessionOwner }
+interface Writes { generationRequest?: GenerationRequest; generationIdempotency?: Idempotency; memberSession?: MemberSession; memberSessionDelete?: string; memberSessionOwner?: SessionOwner; memberSessionExpiry?: SessionExpiry }
 interface Scope extends Writes { full: boolean; includeSettings: boolean; collections: Collection[]; dirtyRows: Partial<Record<Collection, Set<string>>>; hasDirtyRows: boolean }
 type DirtyRowsInput = Partial<Record<Collection, unknown>> | Map<string, unknown>;
 type Deferred<T, R> = T | ((result: R, db: StoreDatabase) => T | undefined);
@@ -69,6 +70,7 @@ interface PersistenceOptions<R = unknown> {
   dirtyRows?: Deferred<DirtyRowsInput, R>; rows?: Deferred<DirtyRowsInput, R>; changedRows?: Deferred<DirtyRowsInput, R>;
   generationRequest?: Deferred<GenerationRequest, R>; generationIdempotency?: Deferred<Idempotency, R>;
   memberSession?: Deferred<MemberSession, R>; memberSessionDelete?: Deferred<string, R>; memberSessionOwner?: Deferred<SessionOwner, R>;
+  memberSessionExpiry?: Deferred<SessionExpiry, R>;
   generationPayloadClaim?: { release(): void };
 }
 type ResolvedOptions = Omit<PersistenceOptions, keyof Writes> & Writes;
@@ -84,6 +86,7 @@ interface Statements {
   insertGenerationIdempotency: WriteStatement; selectGenerationIdempotency: Prepared<typeof generationIdempotency.$inferSelect>;
   selectMemberSession: Prepared<typeof memberSessions.$inferSelect>; selectMemberSessionOwner: Prepared<{ value: string }>;
   insertMemberSession: WriteStatement; deleteMemberSession: WriteStatement; deleteExpiredMemberSessions: WriteStatement;
+  updateMemberSessionExpiry: WriteStatement;
   deleteOldMemberSessions: WriteStatement; countActiveMemberSessions: Prepared<{ count: number }>;
   deleteChangedOwnerSessions: WriteStatement; selectChangedOwnerSessions: Prepared<{ user_id: string }>;
   insertFairQuotaSettlement: WriteStatement; selectFairQuotaSettlement: Prepared<{ charge: string }>;
@@ -692,6 +695,10 @@ export class JsonStore {
       }
       this.statements!.insertMemberSession.run(record);
     }
+    // 续期只能更新既有会话，不插入令牌，也不广播业务变更导致刷新循环。
+    if (scope.memberSessionExpiry && this.statements!.updateMemberSessionExpiry.run(scope.memberSessionExpiry).changes !== 1) {
+      throw Object.assign(new Error('会话已失效，请重新登录'), { statusCode: 401 });
+    }
   }
 
   readFairQuotaSettlement(jobId: string): FairCharge | null {
@@ -1224,6 +1231,8 @@ export class JsonStore {
         Object.keys(getTableColumns(memberSessions)).map(key => [key, sql.placeholder(key)])
       ) as SQLiteInsertValue<typeof memberSessions>).prepare(),
       deleteMemberSession: db.delete(memberSessions).where(eq(memberSessions.token_hash, sql.placeholder('tokenHash'))).prepare(),
+      updateMemberSessionExpiry: db.update(memberSessions).set({ expires_at: sql`${sql.placeholder('expiresAt')}` })
+        .where(eq(memberSessions.token_hash, sql.placeholder('tokenHash'))).prepare(),
       deleteExpiredMemberSessions: db.delete(memberSessions).where(lte(memberSessions.expires_at, sql.placeholder('now'))).prepare(),
       deleteOldMemberSessions: db.delete(memberSessions).where(and(
         eq(memberSessions.user_id, sql.placeholder('userId')), ne(memberSessions.auth_version, sql.placeholder('authVersion'))
@@ -1770,7 +1779,7 @@ function shouldDeferPersist(scope: Scope, options: ResolvedOptions = {}) {
 
 function resolvePersistenceOptions<T>(options: PersistenceOptions<T> = {}, result: T, db: StoreDatabase): ResolvedOptions {
   const resolved: Record<string, unknown> = { ...options };
-  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest', 'generationIdempotency', 'memberSession', 'memberSessionDelete', 'memberSessionOwner']) {
+  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest', 'generationIdempotency', 'memberSession', 'memberSessionDelete', 'memberSessionOwner', 'memberSessionExpiry']) {
     if (typeof resolved[key] === 'function') resolved[key] = (resolved[key] as (result: T, db: StoreDatabase) => unknown)(result, db);
   }
   return resolved as ResolvedOptions;
@@ -1827,12 +1836,12 @@ function clonePersistenceScope(scope: Scope | null): Scope | null {
 }
 
 function hasMemberSessionChanges(scope: Writes) {
-  return Boolean(scope.memberSession || scope.memberSessionDelete || scope.memberSessionOwner);
+  return Boolean(scope.memberSession || scope.memberSessionDelete || scope.memberSessionOwner || scope.memberSessionExpiry);
 }
 
 function persistenceScope(options: ResolvedOptions = {}): Scope {
   const writes = { generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency,
-    memberSession: options.memberSession, memberSessionDelete: options.memberSessionDelete, memberSessionOwner: options.memberSessionOwner };
+    memberSession: options.memberSession, memberSessionDelete: options.memberSessionDelete, memberSessionOwner: options.memberSessionOwner, memberSessionExpiry: options.memberSessionExpiry };
   if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, ...writes };
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
   const dirtyCollections = Object.keys(dirtyRows);
