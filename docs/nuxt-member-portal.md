@@ -45,8 +45,8 @@ Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owne
 - 私人 profile 使用真实 `useAsyncData`，设置 `server:false`、`immediate:false`、
   `serialize:false`；浏览器挂载后才读取，不写入 SSR HTML 或 Nuxt payload。
   公开 `login-options` 与本人 `me` 并行读取；匿名 `me` 的 401 不丢弃公开登录配置。
-- 沿用 [A01 固定会话](member-sessions.md)：普通成员 7 天、owner 12 小时，不滑动
-  续期。Cookie 仍限于 `/api/member`，不为首页 SSR 扩大范围；写请求的同源与
+- 沿用 [SQLite 持久会话](member-sessions.md)：owner 连续 1 天、普通成员连续 7 天未访问后退出。
+  可见网页的 me/管理摘要读取滑动续期，后台标签页和 SSE 不续期。Cookie 仍限于 `/api/member`，不为首页 SSR 扩大范围；写请求的同源与
   Origin 校验、owner 归属检查仍在网关完成。
 - API Key 只在点击查看时读取，隐藏、组件卸载及会话失效后清空展示；迟到响应
   不能重新显示已隐藏的 Key。退出网页不撤销调用 Key。

@@ -249,7 +249,7 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 
 ## 门户与管理的迁移边界
 
-成员 `/api/member/*` 使用 `nai_member_session` Cookie，`HttpOnly/SameSite=Strict/Path=/api/member`，非本机环境附 Secure；状态变更要求本站 Origin，Discord GET 回跳用独立 OAuth state 校验并303回首页。A01 会话摘要保存在 SQLite：普通成员固定 7 天、owner 固定 12 小时，Cookie 的 Max-Age/Expires 对应同一服务器截止，GET 不续期或重发 Cookie。重启保留有效会话；退出、版本撤销、资格失效及 owner 归属变化按[会话规则](member-sessions.md)处理。旧内存会话无法迁移，首次升级需重新登录。
+成员 `/api/member/*` 使用 `nai_member_session` Cookie，`HttpOnly/SameSite=Strict/Path=/api/member`，非本机环境附 Secure；状态变更要求本站 Origin，Discord GET 回跳用独立 OAuth state 校验并303回首页。会话摘要保存在 SQLite：owner 空闲期限为 1 天，普通成员为 7 天。仅可见网页的 `GET /api/member/me` 和无查询参数的 owner 管理摘要附带 `X-Member-Activity: 1` 时，在同源、会话与成员资格检查后重设截止并更新 Cookie；其他查询、SSE 和生图不续期。Cookie 的 Max-Age/Expires 与数据库对应，失败或过期不能续期恢复。重启保留有效会话；退出、版本撤销、资格失效及 owner 归属变化按[会话规则](member-sessions.md)处理。旧内存会话无法迁移，首次升级需重新登录。
 
 密码登录成功回包增加 `expiresAt`（整数 Unix 毫秒），`GET /api/member/me` 增加 `sessionExpiresAt`；JSON 正文不回传会话令牌或摘要。SSE 建连时仍使用正常 HTTP 鉴权；连接内确认资格/会话失效发送 `auth-expired` 并结束，Discord 503 或网络错误只中断连接。页面在 SSE 永久关闭时最多补一次状态鉴权检查，401/403 清除密钥展示并显示重新登录，503 保留页面。
 
