@@ -25,6 +25,8 @@ jobs:
       - run: node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
       - run: pnpm run typecheck
       - run: pnpm run check
+      - name: Verify production backup and retention with synthetic data
+        run: python3 tests/deployment/backup-production.test.py
       - run: pnpm test
       - run: pnpm --filter @novelai-gateway/web typecheck
       - run: pnpm --filter @novelai-gateway/web test
@@ -52,7 +54,7 @@ jobs:
           release_dir="${RUNNER_TEMP}/${release_name}"
           test "$(docker image inspect --format '{{.Architecture}}' novelai-shared-gateway-executor:check)" = amd64
           test "$(docker image inspect --format '{{.Architecture}}' novelai-shared-gateway-web:check)" = amd64
-          mkdir -p "$release_dir"/{bin,executor,web,licenses,systemd,docs} dist
+          mkdir -p "$release_dir"/{bin,executor,web,licenses,systemd,docs,ops} dist
           executor_container=$(docker create novelai-shared-gateway-executor:check)
           web_container=$(docker create novelai-shared-gateway-web:check)
           trap 'docker rm "$executor_container" "$web_container" >/dev/null' EXIT
@@ -68,15 +70,16 @@ jobs:
             docker cp "$web_container:/app/$name" "$release_dir/$name"
           done
           cp pnpm-lock.yaml "$release_dir/pnpm-lock.yaml"
-          cp deploy/systemd/novelai-gateway-test-*.service "$release_dir/systemd/"
-          cp docs/test-deployment.md "$release_dir/docs/"
+          cp deploy/systemd/*.service deploy/production-*.env.example "$release_dir/systemd/"
+          cp docs/test-deployment.md docs/production-release.md "$release_dir/docs/"
+          cp scripts/backup-production.py "$release_dir/ops/"
           mkdir -p "$RUNNER_TEMP/unit-check"
-          for unit in executor web mock; do
-            sed "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
-              "$release_dir/systemd/novelai-gateway-test-$unit.service" \
-              > "$RUNNER_TEMP/unit-check/novelai-gateway-test-$unit.service"
+          for unit in "$release_dir/systemd/"*.service; do
+            sed -e "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
+              -e "s|/opt/novelai-shared-gateway/current|$release_dir|g" \
+              "$unit" > "$RUNNER_TEMP/unit-check/$(basename "$unit")"
           done
-          systemd-analyze verify --man=no "$RUNNER_TEMP/unit-check/novelai-gateway-test-"*.service
+          systemd-analyze verify --man=no "$RUNNER_TEMP/unit-check/"*.service
           test -z "$(find "$release_dir" -type f \( -name '*.sqlite' -o -name '*.sqlite-wal' -o -name '.env' -o -name '.env.*' -o -name 'bootstrap-credentials.json' \) -print -quit)"
           {
             printf 'commit=%s\nplatform=linux-x64\n' "$GITHUB_SHA"

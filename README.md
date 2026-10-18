@@ -6,6 +6,8 @@
 
 已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
 
+bob 的正式双服务配置、完整备份、切换与回退边界见[正式发布准备](docs/production-release.md)。生产替换仍须单独批准。
+
 成员、owner 与私有管理网页及 API 入口已迁入 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。Nuxt 将鉴权、SQLite 和生图调度交给独立执行器；长请求及图片逐块转发，断开网页连接不取消已受理的任务。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/nuxt-member-portal.md)，内部边界见[执行服务](docs/executor-service.md)。
 
 ## 功能

@@ -58,6 +58,40 @@
 恢复在维护状态、所有写入者停止后进行；先保留故障现场，再恢复数据库、对应图片及配置，
 使用备份记录的程序版本。先在独立目录验证完整性，再替换数据目录；不在运行中的库上解包。
 
+## 完整备份
+
+`scripts/backup-production.py` 替换 bob 原 `/opt/novelai-shared-gateway/backup.py`，
+继续使用已有每日备份 timer，不新增开机服务或另一套调度。需要 Python 3.11+ 与 rsync；
+bob 已具备。备份存入 `/var/backups/novelai-shared-gateway`，目录 0700、文件 0600。
+
+每次先通过 SQLite backup API 读取一致性数据库快照，再复制图片、正式配置目录、
+bootstrap 凭据、相关 systemd unit/drop-in 与运行版本标记。rsync 按校验和复用前一份
+备份中的相同图片，不与在线数据建立硬链接；修改或删除在线文件不会改变已有备份。
+生成逐文件 SHA-256 清单，核验数据库完整性及所有数据库引用的图片，全部通过才发布
+完整备份目录；缺图、复制失败或校验失败不产生成功备份。
+
+自动保留最近七份 `daily-*`；`cutover-*` 和此前旧格式备份不自动删除。
+删除旧快照的目录项不会删除其他快照仍引用的图片。在线备份不会停止生产：
+数据库与对应已完成图片有一致性检查，在途任务仍遵守正常重启恢复及未知结果规则，
+不能据此保证恢复尚未完整到达的上游结果。切换前必须在停接单、排空、停进程后再次备份。
+
+```sh
+# 日常完整备份；既有 timer 同样调用此脚本。
+sudo nice -n 10 ionice -c 3 python3 /opt/novelai-shared-gateway/backup.py
+# 获准切换且排空停止后固定保留的备份。
+sudo python3 /opt/novelai-shared-gateway/backup.py --label cutover
+# 只校验指定完整备份，不修改生产。
+sudo python3 /opt/novelai-shared-gateway/backup.py --verify /var/backups/novelai-shared-gateway/具体备份目录
+```
+
+恢复时先执行 `--verify`，将 `data/` 复制到独立恢复目录，重新校验再按上节停机替换；
+`config/` 与 `systemd/` 按目标版本恢复到对应路径。不要把快照图片或数据库硬链接到
+将投入运行的恢复目录，否则后续原地修改会污染备份。备份权限与原数据目录的服务用户
+权限不同，正式恢复前须重新设置 `nai-gateway` 的归属与访问权限。
+
+这些是同机备份，保护误删及迁移回退；不能抵御 bob 整盘损坏。尚未配置异机备份目的地，
+不擅自上传含密钥的快照。切换前检查剩余空间，必要时将旧完整备份安全转存。
+
 ## 上线后跟踪，不作为本次新增功能
 
 用户已确认以下事项先记录，正式上线后再处理：
