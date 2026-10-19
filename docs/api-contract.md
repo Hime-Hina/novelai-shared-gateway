@@ -1,6 +1,6 @@
 # API 契约与迁移基线（C02/C03）
 
-核对日期：2026-10-17。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，生产仍未切换。
+协议核对日期：2026-10-17；部署状态更新：2026-10-19。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，dff5ee4 已完成[正式发布与真实验收](production-release.md)。
 
 实现依据为 [HTTP 入口](../server/index.ts)、[共享模式路由白名单](../server/shared-surface.ts)、[输入解析](../server/native-image.ts)、[multipart 解析](../server/native-body.ts)、[核价](../server/native-pricing.ts)、[上游适配](../server/providers.ts)、[成员路由](../server/member-routes.ts)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
 
@@ -52,7 +52,7 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 | 多角色 | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点 | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构 |
 | SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | DDIM/ddim_v3、autoSmea 启用、其他模型启用、图生图启用均 422 |
 | Vibe | V3 原图；V4/V4.5 预编码数据；最多 16 个参考，数量与强度对应；旧单图字段归一成数组 | 编码输入限制 2 MiB，基本形态校验不是内部语义验证；V5、重绘、与 Precise 混用被网关拒绝 |
-| Precise Reference | V4.5；最多 16 张；1024×1536 / 1536×1024 / 1472×1472；描述与参考数组一一对应 | 其他模型或与 Vibe 混用 422；强度当前接受 -1..1、secondary -1..2，较 Swagger 的文字说明宽，留待核实 |
+| Precise Reference | V4.5；最多 16 张；1024×1536 / 1536×1024 / 1472×1472；描述与参考数组一一对应 | 其他模型或与 Vibe 混用 422；主强度 -1..1、secondary -1..2 为网关有限数值边界。已核实官方支持负值，不能将此范围称为官方硬限制；详见 C03-05 |
 | 缓存字段 | cached 形式必须同时给出 data，进入核价后转换为普通数组 | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝 |
 | 客户端别名/空模板 | `uc_preset→ucPreset`、`quality_toggle→qualityToggle`；两名并存必须一致；关闭的 ControlNet/自动放大/LoRA 模板字段可清理 | 启用的未知功能不得透传；启用 ControlNet、LoRA、内联 upscale/upscaled_enhance 返回 422 |
 
