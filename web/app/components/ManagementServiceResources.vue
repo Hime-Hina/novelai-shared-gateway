@@ -30,11 +30,6 @@ function uptime(seconds: number | undefined) {
         <strong id="serviceData">{{ bytes(data?.data?.bytes) }}</strong>
         <p>数据库、图片等文件大小之和 · 每分钟采样</p>
         <p v-if="data?.data">采样于 {{ date(data.data.checkedAt) }}</p>
-        <template v-if="data?.r2">
-          <p id="serviceR2">R2 {{ bytes(data.r2.bytes) }} / {{ bytes(data.r2.limitBytes) }} · 已转存 {{ data.r2.images }} 张</p>
-          <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
-          <p id="serviceR2Status">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张</p>
-        </template>
       </NCard>
       <NCard size="small">
         <span class="metric-label">数据目录所在磁盘（已用 / 总量）</span>
@@ -46,13 +41,20 @@ function uptime(seconds: number | undefined) {
         <strong id="serviceUptime">{{ uptime(data?.uptimeSeconds) }}</strong>
         <p>进程重启后重新计时 · 内存不含独立网页服务</p>
       </NCard>
+      <NCard v-if="data?.r2" size="small" aria-label="R2 冷图片存储">
+        <span class="metric-label">R2 冷图片存储（已用 / 转存上限）</span>
+        <strong id="serviceR2">{{ bytes(data.r2.bytes) }} / {{ bytes(data.r2.limitBytes) }}</strong>
+        <p>已转存 {{ data.r2.images }} 张</p>
+        <p id="serviceR2Status">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张</p>
+        <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
+      </NCard>
     </div>
   </section>
 </template>
 
 <style scoped>
 h2 { margin: 0 0 12px; font-size: 16px; }
-.resource-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.resource-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .metric-label, p { color: var(--text-muted); font-size: 12px; }
 strong { display: block; margin: 10px 0; font-size: 20px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 p { margin: 4px 0 0; }

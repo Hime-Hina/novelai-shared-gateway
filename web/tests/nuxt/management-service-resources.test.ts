@@ -42,11 +42,12 @@ describe('ManagementServiceResources', () => {
     expect(wrapper.get('#serviceUptime').text()).toBe('0 天 0 小时 0 分钟')
   })
 
-  it('显示 R2 转存容量、图片数与异常，未配置时隐藏', async () => {
+  it('独立显示 R2 卡片，刷新时保留状态行，未配置时隐藏', async () => {
     const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } })
     expect(wrapper.find('#serviceR2').exists()).toBe(false)
     await wrapper.setProps({ data: { ...data, r2: { bytes: 1024 ** 3, limitBytes: 9_500_000_000, images: 100, pending: 1, errors: 1 } } })
-    expect(wrapper.get('#serviceR2').text()).toContain('R2 1 GiB / 8.848 GiB')
+    expect(wrapper.get('#serviceR2').text()).toBe('1 GiB / 8.848 GiB')
+    expect(wrapper.get('#serviceR2').element.closest('.n-card')).not.toBe(wrapper.get('#serviceData').element.closest('.n-card'))
     expect(wrapper.text()).toContain('已转存 100 张')
     expect(wrapper.text()).toContain('待验证 1 张 · 转存异常 1 张')
     expect(wrapper.text()).toContain('达上限暂停新增转存')
