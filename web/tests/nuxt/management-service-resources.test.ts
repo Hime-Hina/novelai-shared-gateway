@@ -45,14 +45,16 @@ describe('ManagementServiceResources', () => {
   it('独立显示 R2 卡片，刷新时保留状态行，未配置时隐藏', async () => {
     const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } })
     expect(wrapper.find('#serviceR2').exists()).toBe(false)
-    await wrapper.setProps({ data: { ...data, r2: { bytes: 1024 ** 3, limitBytes: 9_500_000_000, images: 100, pending: 1, errors: 1 } } })
-    expect(wrapper.get('#serviceR2').text()).toBe('1 GiB / 8.848 GiB')
+    await wrapper.setProps({ data: { ...data, r2: { bytes: 1023 * 1024 ** 2, limitBytes: 9_500_000_000, images: 100, pending: 1, errors: 1 } } })
+    expect(wrapper.get('#serviceR2').text()).toBe('1,023 MiB')
+    expect(wrapper.text()).toContain('转存上限 8.848 GiB')
     expect(wrapper.get('#serviceR2').element.closest('.n-card')).not.toBe(wrapper.get('#serviceData').element.closest('.n-card'))
     expect(wrapper.text()).toContain('已转存 100 张')
     expect(wrapper.text()).toContain('待验证 1 张 · 转存异常 1 张')
     expect(wrapper.text()).toContain('达上限暂停新增转存')
     const status = wrapper.get('#serviceR2Status').element
     await wrapper.setProps({ data: { ...data, r2: { bytes: 1024 ** 3, limitBytes: 9_500_000_000, images: 101, pending: 0, errors: 0 } } })
+    expect(wrapper.get('#serviceR2').text()).toBe('1 GiB')
     expect(wrapper.get('#serviceR2Status').element).toBe(status)
     expect(wrapper.get('#serviceR2Status').text()).toBe('待验证 0 张 · 转存异常 0 张')
   })

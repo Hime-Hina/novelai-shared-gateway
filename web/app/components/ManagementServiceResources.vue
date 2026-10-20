@@ -42,8 +42,9 @@ function uptime(seconds: number | undefined) {
         <p>进程重启后重新计时 · 内存不含独立网页服务</p>
       </NCard>
       <NCard v-if="data?.r2" size="small" aria-label="R2 冷图片存储">
-        <span class="metric-label">R2 冷图片存储（已用 / 转存上限）</span>
-        <strong id="serviceR2">{{ bytes(data.r2.bytes) }} / {{ bytes(data.r2.limitBytes) }}</strong>
+        <span class="metric-label">R2 冷图片存储</span>
+        <strong id="serviceR2">{{ bytes(data.r2.bytes) }}</strong>
+        <p>转存上限 {{ bytes(data.r2.limitBytes) }}</p>
         <p>已转存 {{ data.r2.images }} 张</p>
         <p id="serviceR2Status">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张</p>
         <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
