@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { JsonStore, createId, hashObject } from '../../server/store.ts';
 import { normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS } from '../../server/providers.ts';
 import * as fair from '../../server/fair-quota.ts';
+import { assertFreeImageAdmission, configureFreeImages } from '../../server/free-image-policy.ts';
 import * as queue from '../../server/queue-policy.ts';
 import * as requests from '../../server/generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
@@ -37,7 +38,7 @@ async function fixture(t) {
   const update = store.update.bind(store);
   store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
   const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
-  const ctx = load({ store, Buffer, process, structuredClone, createId, hashObject, ...fair, ...queue, ...requests,
+  const ctx = load({ store, Buffer, process, structuredClone, createId, hashObject, ...fair, ...queue, ...requests, assertFreeImageAdmission,
     generationRequestFingerprint, requestNormalizationDefaults, normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS,
     fairShareMode: true, generationPayloadBudget: budget, cleanupStaleActiveJobs: async () => {},
     activeJobCount: jobs => jobs.filter(job => ['queued', 'running'].includes(job.status)).length,
@@ -45,7 +46,7 @@ async function fixture(t) {
     readStoredImage: image => image.file ? readFile(path.join(store.dataDir, image.file)) : Buffer.from(image.base64 || '', 'base64'),
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode })
   }, ['readGenerationIdempotencyKey', 'generationIntent', 'unavailableGenerationResult', 'resolveGenerationIdempotency',
-    'findCachedGenerationImage', 'validateGenerationReplay', 'assertFairMemberReady', 'generationRequestRecord',
+    'findCachedGenerationImage', 'validateGenerationReplay', 'assertFairMemberReady', 'generationRequestRecord', 'assertFreeImageRequest',
     'getUserOrThrow', 'generationCost', 'isNoCache', 'cacheableRequest', 'requestCacheKey', 'uniqueIds',
     'batchJobIds', 'dirtyJobMutationRows', 'dirtyResultJobRows', 'createJob', 'createDirectJob', 'createNativeBatch']);
   const admit = (body, key = 'key-a', customClaim) => {
@@ -55,6 +56,27 @@ async function fixture(t) {
   return { store, ctx, budget, admit };
 }
 const body = () => ({ prompt: 'synthetic prompt', model: 'nai-diffusion-4-5-full', steps: 23, width: 1024, height: 1024, nocache: true });
+
+test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回不占名额', async t => {
+  const { store, ctx, budget, admit } = await fixture(t);
+  await store.update(db => {
+    configureFreeImages(db, { expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } }, 'a');
+    const job = { id: 'used', userToken: 'STA1N-a', status: 'running', request: body() };
+    fair.reserveFairQuota(db, db.users[0], job, db.accounts[0]);
+    fair.settleFairQuota(db, job, true);
+    job.status = 'done'; db.jobs.push(job);
+  }, { immediate: true });
+  const limited = error => error.statusCode === 429 && /免费图片/.test(error.message) && Boolean(error.cooldownUntil);
+  await assert.rejects(admit(body()), limited);
+  await assert.rejects(ctx.createDirectJob('STA1N-a', body(), 'new-key'), limited);
+  const claim = budget.claim();
+  try { await assert.rejects(ctx.createNativeBatch('STA1N-a', { ...body(), sampleCount: 2 }, 'synthetic', 0, claim), limited); }
+  finally { claim.release(); }
+  const cached = await ctx.createDirectJob('STA1N-a', body(), 'cache-key', { status: 'done', imageId: 'existing-image', cost: 0 });
+  assert.ok(cached.id);
+  assert.equal(store.readFreeImageUsage(store.db, 'a').successful, 1);
+  assert.equal(store.db.jobs.filter(job => ['queued', 'pending', 'running'].includes(job.status)).length, 0);
+});
 
 test('可选键只接受单个非空可见ASCII，128字节上限，缺键不改变旧流程', () => {
   const ctx = load({ httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) }, ['readGenerationIdempotencyKey']);

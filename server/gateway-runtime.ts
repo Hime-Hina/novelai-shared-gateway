@@ -16,6 +16,7 @@ import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDea
 import { requireDiscordMembership } from './discord-auth.ts';
 import { ownerOperation } from './owner-operations.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, fairQuotaSummary, quoteFairRequest } from './fair-quota.ts';
+import { assertFreeImageAdmission } from './free-image-policy.ts';
 import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.ts';
 import { validateImageBytes } from './native-image.ts';
 import http from 'node:http';
@@ -95,9 +96,9 @@ interface GenerationIntent {
 }
 type IdempotencyMapping = NonNullable<ReturnType<JsonStore['readGenerationIdempotency']>>;
 type GenerationRecord = ReturnType<typeof generationRequestRecord>;
-type QueueReservation = (Reservation & { job: StoreItem; skip?: false; queued?: false; changed?: boolean; jobId?: string; failure?: string; statusCode?: number; error?: unknown })
+type QueueReservation = ((Reservation & { job: StoreItem; skip?: false; queued?: false; changed?: boolean; jobId?: string; failure?: string; statusCode?: number; error?: unknown })
   | { skip: true; queued?: false; job?: undefined; jobId?: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }
-  | { queued: true; skip?: false; job?: undefined; jobId: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown };
+  | { queued: true; skip?: false; job?: undefined; jobId: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }) & { cooldownUntil?: string };
 
 interface ResolvedGeneration {
   request?: ExecutionRequest; payload?: string; contextBytes?: number;
@@ -463,7 +464,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     const quota = await store.update(db => {
       const user = getUserOrThrow(db, tokenFrom(req, url));
       const draft = { ...db, settings: structuredClone(db.settings), ledger: [...db.ledger] };
-      return fairQuotaSummary(draft, user);
+      const quota = fairQuotaSummary(draft, user);
+      return quota && { ...quota, freeImages: store.readFreeImageUsage(draft, user.id) };
     }, { persist: false });
     sendJson(res, 200, { fairQuota: quota });
     return;
@@ -907,6 +909,7 @@ async function createNativeBatch(token: string, request: ExecutionRequest | null
     mapping = resolved?.mapping;
     const count = request.sampleCount || 1;
     assertQueueAdmission(db, user, admissionVersion, process.env, count);
+    if (db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, singleGenerationRequest(request));
     parent = generationRequestRecord(user, request, 'novelai-native', claim, resolved);
     const createdAt = parent.created_at;
     const queueExpiresAt = queueDeadline(Date.parse(createdAt), '');
@@ -2567,6 +2570,12 @@ function generationRequestRecord(user: StoreItem, request: ExecutionRequest, sou
     created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
 }
 
+function assertFreeImageRequest(db: StoreDatabase, user: StoreItem, request: Parameters<typeof quoteFairRequest>[0]) {
+  if (fairShareMode && db.settings.fairQuota?.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free') {
+    assertFreeImageAdmission(store.readFreeImageUsage(db, user.id));
+  }
+}
+
 async function createJob(token: string, body: Body | ExecutionRequest | null, options: JobOptions = {}): Promise<JobMetadata> {
   let generationRequest: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
   const normalizeRequest = (settings: Partial<Settings>): ExecutionRequest => {
@@ -2614,6 +2623,7 @@ async function createJob(token: string, body: Body | ExecutionRequest | null, op
       }
     }
     if (!cached) assertQueueAdmission(db, user, options.admissionVersion);
+    if (!cached && db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
     const cost = cached ? 0 : generationCost(request);
     if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
     if (options.generationPayloadClaim) generationRequest = generationRequestRecord(user, request, options.source || 'web', claim, resolved);
@@ -2670,6 +2680,7 @@ async function createDirectJob(token: string, request: ExecutionRequest | null, 
     }
     assertMemberAcceptsJobs(user, options.admissionVersion);
     if (status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
+    if (status !== 'done' && db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
     const cost = status === 'done' ? Number(options.cost || 0) : Number(options.cost ?? generationCost(request));
     const shouldCharge = !status && cost > 0;
     if (shouldCharge && user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
@@ -2851,7 +2862,7 @@ function waitForJobResult(jobId: string, deadline: number, response?: GatewayRes
     store.update(db => {
       const job = db.jobs.find(item => item.id === jobId) || store.selectItemById('jobs', jobId);
       if (!job) return null;
-      return { status: job.status, imageId: job.imageId, seed: job.request?.seed, error: job.error, errorStatus: job.errorStatus, cooldownUntil: job.sharedCooldown?.until,
+      return { status: job.status, imageId: job.imageId, seed: job.request?.seed, error: job.error, errorStatus: job.errorStatus, cooldownUntil: job.quotaRetryAfterUntil || job.sharedCooldown?.until,
         balance: db.users.find(user => user.token === job.userToken)?.balance };
     }, { persist: false }).then(async job => {
       if (job?.status === 'failed') {
@@ -3019,6 +3030,7 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
         if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, Date.now()) > 0) return { queued: true, jobId: job.id };
         const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
+        if (state.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
         reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
       } else {
         account = selectAccount(db.accounts, db.settings, { request: job.request });
@@ -3029,8 +3041,9 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
       job.status = 'failed';
       job.error = (error as GatewayError).message;
       job.errorStatus = (error as GatewayError).statusCode || 503;
+      job.quotaRetryAfterUntil = (error as GatewayError).cooldownUntil;
       job.updatedAt = job.completedAt = new Date().toISOString();
-      return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus };
+      return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus, cooldownUntil: job.quotaRetryAfterUntil };
     }
     if (!account && hasEnabledAccounts(db.accounts)) {
       if (!hasAccountWithEnoughQuota(db.accounts, job.request)) {
@@ -3899,7 +3912,7 @@ async function drainQueuedJobs(scheduledAt = Date.now()) {
         console.error(reservation.error);
         return;
       }
-      if (reservation?.failure) notifyJobWaiters(reservation.jobId!, { error: reservation.failure, statusCode: reservation.statusCode });
+      if (reservation?.failure) notifyJobWaiters(reservation.jobId!, { error: reservation.failure, statusCode: reservation.statusCode, cooldownUntil: reservation.cooldownUntil });
       if (reservation?.skip || reservation?.queued) {
         queueDrainRequested = true;
         return;

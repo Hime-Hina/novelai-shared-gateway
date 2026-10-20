@@ -1,12 +1,33 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import { DOMWrapper, enableAutoUnmount, flushPromises } from '@vue/test-utils'
-import { NModal, NSelect, NDropdown } from 'naive-ui'
+import { NModal, NSelect, NDropdown, NCheckbox, NInputNumber } from 'naive-ui'
+import ManagementFreeImages from '../../app/components/ManagementFreeImages.vue'
 import ManagementMembers from '../../app/components/ManagementMembers.vue'
 import type { ManagementApi, ManagementMemberChange, ManagementMode, ManagementRun, ManagementState } from '../../app/types/management'
 
 enableAutoUnmount(afterEach)
 afterEach(() => vi.restoreAllMocks())
+it('免费图策略保存独立编辑版本，后台刷新不会覆盖未保存的阈值', async () => {
+  const transport = vi.fn().mockResolvedValue({ policy: { version: 3, enabled: true, warningThreshold: 8, hardLimit: null } })
+  const api: ManagementApi = async <T>(...args: Parameters<ManagementApi>) => await transport(...args) as T
+  const wrapper = await mountSuspended(ManagementFreeImages, { props: {
+    policy: { version: 1, enabled: false, warningThreshold: null, hardLimit: null },
+    api, run: async operation => { await operation() }, busy: false
+  } })
+  wrapper.findComponent(NCheckbox).vm.$emit('update:checked', true)
+  wrapper.findAllComponents(NInputNumber)[0]!.vm.$emit('update:value', 8)
+  await flushPromises()
+  await wrapper.setProps({ policy: { version: 2, enabled: false, warningThreshold: 50, hardLimit: 100 } })
+  expect(wrapper.findAllComponents(NInputNumber)[0]!.props('value')).toBe(8)
+  await wrapper.get('#freeImagePolicyForm').trigger('submit')
+  await flushPromises()
+  expect(transport).toHaveBeenCalledExactlyOnceWith('member-management', {
+    action: 'free-image-policy', expectedVersion: 1, policy: { enabled: true, warningThreshold: 8, hardLimit: null }
+  })
+  expect(wrapper.emitted('changed')).toHaveLength(1)
+})
+
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const body = () => new DOMWrapper(document.body)
 function state(): ManagementState {

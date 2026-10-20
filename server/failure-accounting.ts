@@ -33,7 +33,7 @@ type MemberChargeInput = Partial<Pick<FairCharge, 'resource' | 'amount' | 'statu
 export const FAILURE_EVENT_TYPES = ['generation_reserved', 'generation_refunded', 'generation_loss_suspected',
   'generation_loss_estimated', 'generation_result_recovered', 'resource_gap_observed', 'resource_gap_reconciled',
   'resource_return_unattributed', 'v5_capacity_observed', 'v5_capacity_recovered', 'operating_funding_registered',
-  'operating_funding_received', 'operating_loss_covered', 'loss_alert_policy_updated'];
+  'operating_funding_received', 'operating_loss_covered', 'loss_alert_policy_updated', 'operating_debits_confirmed'];
 export const FAILURE_EVENT_PREDICATE = `source IN (${FAILURE_EVENT_TYPES.map(type => `'${type}'`).join(', ')})`;
 const defaults: LossAlertPolicy = { version: 1, v5Points24h: 1, fixedAnlas24h: 100, fixedAnlas30d: 500, memberAttempts24h: 3 };
 const fields = Object.keys(defaults).filter(key => key !== 'version') as PolicyField[];
@@ -69,7 +69,7 @@ const resources = (value: Partial<ResourceAmounts> | null | undefined) => pick(v
 function safeEvent(row: HistoryRow) {
   const event = JSON.parse(row.data) as FailureLedgerEvent, attempt = event.attempt || {}, request = event.request || {};
   const result: Record<string, unknown> = pick(event, ['id', 'type', 'at', 'jobId', 'memberId', 'accountId', 'resource', 'amount', 'observedAmount', 'delta',
-    'evidenceLevel', 'lossEventId', 'closureEventId', 'estimateAmountStatus', 'refundRetained', 'firstUnknownAt', 'deadlineAt', 'closedAt', 'candidateMode']);
+    'evidenceLevel', 'lossEventId', 'closureEventId', 'confirmationEventId', 'allocatedToMembers', 'estimateAmountStatus', 'refundRetained', 'firstUnknownAt', 'deadlineAt', 'closedAt', 'candidateMode']);
   result.memberName = row.memberName || (event.memberId ? '已移除成员' : null);
   Object.assign(result, pick(attempt, ['operation', 'model']));
   if (event.resources || attempt.localReserved) result.resources = resources(event.resources || attempt.localReserved);
@@ -112,7 +112,7 @@ const riskColumns = `COUNT(*) AS attempts, COALESCE(SUM(unknownAmount),0) AS unk
 export function queryFailureAccounting(sqlite: Database.Database, before?: string | null, now = Date.now()) {
   const point = cursor(before), asOf = new Date(now).toISOString(), since24 = new Date(now - 86400000).toISOString(), since30 = new Date(now - 30 * 86400000).toISOString();
   const params = { asOf, since24, since30 };
-  const state = sqlite.prepare<[], { policy?: string | null; operating?: string | null }>("SELECT json_extract(value, '$.fairQuota.lossAlertPolicy') AS policy, json_extract(value, '$.fairQuota.operating') AS operating FROM app_settings WHERE key='settings'").get() || {};
+  const state = sqlite.prepare<[], { policy?: string | null; operating?: string | null; spent?: string | null }>("SELECT json_extract(value, '$.fairQuota.lossAlertPolicy') AS policy, json_extract(value, '$.fairQuota.operating') AS operating, json_extract(value, '$.fairQuota.spent') AS spent FROM app_settings WHERE key='settings'").get() || {};
   const policy = lossAlertPolicy(json<Partial<LossAlertPolicy>>(state.policy)), operating = safeOperating(json<Partial<OperatingAccount>>(state.operating) || {});
   const summaries = sqlite.prepare<RiskParameters, RiskRow>(`${riskCte} SELECT 'last30d' AS window, ${riskColumns} FROM attempts
     UNION ALL SELECT 'last24h', ${riskColumns} FROM attempts WHERE at >= @since24`).all(params);
@@ -145,7 +145,8 @@ export function queryFailureAccounting(sqlite: Database.Database, before?: strin
     LEFT JOIN users u ON u.id = json_extract(l.data, '$.memberId')
     ORDER BY l.order_value DESC, l.id DESC`).all(point ? { order: point[0], id: point[1] } : {});
   const page = rows.slice(0, 50), last = page.at(-1);
-  return { asOf, policy, operating, risk, alerts, events: page.map(safeEvent),
+  const spent = json<Partial<ResourceAmounts>>(state.spent);
+  return { asOf, policy, operating: { ...operating, pendingAnlasDebits: { anlasFixed: spent?.anlasFixed || 0, anlasPurchased: spent?.anlasPurchased || 0 } }, risk, alerts, events: page.map(safeEvent),
     nextCursor: rows.length > 50 ? Buffer.from(JSON.stringify([last!.orderValue, last!.id])).toString('base64url') : null };
 }
 

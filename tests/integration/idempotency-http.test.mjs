@@ -186,6 +186,29 @@ test('HTTP 幂等跨并发、断线、重启、默认值变化和 Key 轮换保�
   const cachedAgain = await call('/api/jobs', { body: cachedBody, key: 'completed-cache-operation' });
   assert.equal(cachedAgain.status, 202); assert.equal((await cachedAgain.json()).id, cachedJob.id);
   assert.equal(calls.length, 1);
+  const policy = await fetch(base + '/api/admin/member-management', { method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base, 'x-admin-token': adminToken },
+    body: JSON.stringify({ action: 'free-image-policy', expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } }) });
+  assert.equal(policy.status, 200);
+  const quota = await (await call('/api/me/quota')).json();
+  assert.equal(quota.fairQuota.freeImages.successful, 1);
+  assert.equal(quota.fairQuota.freeImages.warning, true);
+  for (const [endpoint, body] of [
+    ['/api/jobs', { ...webBody, prompt: 'blocked by free limit', nocache: true }],
+    ['/ai/generate-image', disconnectedBody],
+    ['/ai/generate-image-stream', disconnectedBody],
+    ['/v1/chat/completions', chat]
+  ]) {
+    const rejected = await call(endpoint, { body, key: 'limited-' + endpoint });
+    assert.equal(rejected.status, 429, endpoint);
+    assert.ok(Number(rejected.headers.get('retry-after')) > 0, endpoint);
+  }
+  const limitedDirect = await call('/generate?' + new URLSearchParams({ token: members[0].api_key, prompt: 'limited direct', model, seed: '29', nocache: '1' }));
+  assert.equal(limitedDirect.headers.get('x-error'), '1');
+  assert.ok(Number(limitedDirect.headers.get('retry-after')) > 0);
+  const cacheAtLimit = await call('/api/jobs', { body: cachedBody, key: 'cached-at-free-limit' });
+  assert.equal(cacheAtLimit.status, 202); assert.equal((await cacheAtLimit.json()).status, 'done');
+  assert.equal(calls.length, 1);
   const replacementKey = 'STA1N-synthetic-idempotency-rotated-key';
   await stop('SIGKILL');
   await editOffline(db => {

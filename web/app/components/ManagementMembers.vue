@@ -216,6 +216,13 @@ const memberColumns = computed<DataTableColumns<ManagementUser>>(() => [
   { title: '分组 / 份额', key: 'share', width: 150, sorter: (a, b) => (a.quota?.share || 0) - (b.quota?.share || 0), render: user => h('div', [groupOf(user.id)?.name || '未分组', h('small', percent(user.quota?.share))]) },
   ...(['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'] as const).map((key, index) => ({ title: ['V5 余量', '订阅 Anlas', '购买 Anlas'][index], key, width: 125, align: 'right' as const,
     sorter: (a: ManagementUser, b: ManagementUser) => (a.quota?.[key] || 0) - (b.quota?.[key] || 0), render: (user: ManagementUser) => number(user.quota?.[key]) })),
+  { title: '免费图 / 24 小时', key: 'freeImages', width: 220, render: user => {
+    const usage = user.quota?.freeImages
+    return usage ? h('div', [h('span', `${usage.successful} 张成功 · ${usage.reserved} 张在途`),
+      h('small', usage.enabled ? `提醒 ${usage.warningThreshold ?? '无'} / 上限 ${usage.hardLimit ?? '无'}` : '策略关闭'),
+      usage.warning ? h(NTag, { type: 'warning', size: 'small' }, () => '用量达到阈值') : null,
+      usage.warning && usage.warnedAt ? h('small', '触发于 ' + date(usage.warnedAt)) : null]) : '—'
+  } },
   { title: '操作', key: 'actions', width: 200, render: user => h('div', { class: 'row-actions' }, [
     h(NButton, { size: 'small', secondary: true, disabled: props.busy, onClick: () => props.run(() => delivery(user)) }, () => '分发信息'),
     h(NDropdown, { trigger: 'click', options: memberActions(user), onSelect: key => memberAction(key, user) }, { default: () => h(NButton, { size: 'small', disabled: props.busy }, () => '更多') })
@@ -230,6 +237,7 @@ const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
 </script>
 
 <template>
+  <ManagementFreeImages :policy="state.freeImagePolicy" :api="api" :run="run" :busy="busy" @changed="message => emit('changed', message)" />
   <NCard id="membersPanel" title="成员与分发" size="small">
     <template #header-extra><NButton id="newMember" :disabled="busy" @click="run(() => openCredentials())">＋ 创建成员</NButton></template>
     <p id="memberHelp">{{ state.discordLogin ? '首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。' : '创建、分发、重置密码，都在成员这一行完成。' }}</p>

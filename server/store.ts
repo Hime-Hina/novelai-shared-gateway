@@ -12,6 +12,7 @@ import { recordTables, appSettings, appRecords, appMeta, generationRequests, gen
 import { migrateStorage } from './storage-migrations.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
+import { readFreeImageUsage as queryFreeImageUsage } from './free-image-policy.ts';
 import { activityDate } from './activity-heatmap.ts';
 
 
@@ -51,6 +52,7 @@ export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enab
   generationProgress?: { percent?: number; step?: number; total?: number; updatedAt?: string };
   mergedFrom?: { token?: string; amount: number; at: string }[]; mergedInto?: string; mergedAt?: string;
   upstreamRetryAfterUntil?: string; refundedAt?: string;
+  quotaRetryAfterUntil?: string;
 }
 type Settings = typeof defaultSettings & { fairQuota?: FairQuotaState | null; [key: string]: unknown };
 export type StoreDatabase = { settings: Settings } & Record<Collection, StoreItem[]>;
@@ -704,6 +706,10 @@ export class JsonStore {
   readFairQuotaSettlement(jobId: string): FairCharge | null {
     const row = this.statements!.selectFairQuotaSettlement.get({ jobId });
     return row ? JSON.parse(row.charge) : null;
+  }
+
+  readFreeImageUsage(db: import('./fair-quota.ts').FairQuotaDatabase, memberId: string, now = Date.now()) {
+    return queryFreeImageUsage(this.sqlite!, db, memberId, now);
   }
 
   persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {

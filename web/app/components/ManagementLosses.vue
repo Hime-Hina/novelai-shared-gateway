@@ -19,36 +19,38 @@ type PolicyField = typeof policyFields[number]['key']
 const policyDraft = reactive<Record<PolicyField, number | null>>({ v5Points24h: null, fixedAnlas24h: null, fixedAnlas30d: null, memberAttempts24h: null })
 const resources: ManagementResource[] = ['v5', 'anlasFixed', 'anlasPurchased']
 const resourceNames: Record<ManagementResource, string> = { v5: 'V5 百分点', anlasFixed: '订阅 Anlas', anlasPurchased: '购买 Anlas' }
-type OperatingAction = 'operating-contribute' | 'operating-register-funding' | 'operating-cover-loss' | 'operating-reconcile-return'
+type OperatingAction = 'operating-contribute' | 'operating-register-funding' | 'operating-cover-loss' | 'operating-reconcile-return' | 'operating-confirm-debits'
 const actionOptions: { value: OperatingAction; label: string }[] = [
   { value: 'operating-contribute', label: '从运营者本人份额划入' },
   { value: 'operating-register-funding', label: '登记新增外部资金' },
   { value: 'operating-cover-loss', label: '用运营余额承担差额' },
   { value: 'operating-reconcile-return', label: '确认快照回跳' },
+  { value: 'operating-confirm-debits', label: '确认普通扣款已反映在快照' },
 ]
 const action = ref<OperatingAction>('operating-contribute'), resource = ref<ManagementResource>('anlasFixed')
 const amount = ref<number | null>(null), receipt = ref(''), lossEventId = ref('')
 const destination = ref<'operating' | 'members'>('operating'), fromUnattributed = ref(false)
 const register = computed(() => action.value === 'operating-register-funding')
 const linked = computed(() => ['operating-cover-loss', 'operating-reconcile-return'].includes(action.value))
-const anlasOnly = computed(() => register.value || action.value === 'operating-reconcile-return')
+const anlasOnly = computed(() => register.value || ['operating-reconcile-return', 'operating-confirm-debits'].includes(action.value))
 const resourceOptions = computed(() => resources.map(value => ({ value, label: resourceNames[value], disabled: value === 'v5' && anlasOnly.value })))
 const hints: Record<OperatingAction, string> = {
   'operating-contribute': '仅从配置的运营者本人可用份额划入，不改变其他成员钱包。',
   'operating-register-funding': '登记已实际新增的资金凭据，本页面不会向 NAI 付款。默认等待官方余额增加后入账；只有确认资金来源时，才选择待归属入账。',
   'operating-cover-loss': '用已有运营余额承担指定的当前聚合差额，不再扣成员余额，也不累计任务疑似或估计金额。',
   'operating-reconcile-return': '确认待归属入账来自官方快照回跳，只修正尚未承担的关联差额，不算新增注资，也不回冲已承担的损耗。',
+  'operating-confirm-debits': '仅在核实普通扣款已包含于官方快照、并与充值相抵时使用。确认数量会解除待核对扣款，先匹配已登记的资金归属，其余按成员份额补发。不能用等待时间代替核实，请提供唯一凭据。',
 }
 const eventNames: Record<string, string> = {
   generation_reserved: '任务预扣', generation_refunded: '本站退款', generation_loss_suspected: '疑似上游损耗',
   generation_loss_estimated: '估计结案', generation_result_recovered: '迟到结果找回', resource_gap_observed: '观察到资源差额',
   resource_gap_reconciled: '确认快照回跳', resource_return_unattributed: '待归属入账', v5_capacity_observed: '观察到 V5 容量差额',
   v5_capacity_recovered: 'V5 容量恢复', operating_funding_registered: '登记运营资金', operating_funding_received: '资金入账',
-  operating_loss_covered: '运营承担差额', loss_alert_policy_updated: '调整软告警阈值',
+  operating_loss_covered: '运营承担差额', loss_alert_policy_updated: '调整软告警阈值', operating_debits_confirmed: '确认普通扣款',
 }
 const evidenceNames: Record<string, string> = { aggregate_gap: '官方余额聚合差额', aggregate_capacity: '共享容量差额',
   recovery_rate_estimate: '恢复速率估计', unclassified_balance_increase: '来源待核实的余额增加',
-  operator_attested_aggregate_correction: '运营者确认的快照修正', local_refund: '本地退款凭据',
+  operator_attested_aggregate_correction: '运营者确认的快照修正', operator_attested_debit_reconciliation: '运营者确认的扣款核对', local_refund: '本地退款凭据',
   unconfirmed: '上游消费未经确认', unconfirmed_estimate: '未确认消费的估计结案', complete_local_result: '完整本地产物' }
 let disposed = false, readVersion = 0, editVersion = 0
 type ReadMode = 'refresh' | 'append' | 'reset'
@@ -211,6 +213,7 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
         </div><NSpace><NButton id="saveLossPolicy" attr-type="submit" type="primary" :loading="policySaving" :disabled="busy || policyVersion === null">保存阈值</NButton><NButton id="resetLossPolicy" :disabled="busy || policySaving" @click="resetPolicy">放弃草稿并读取最新阈值</NButton></NSpace></NForm>
       </NCard>
       <NCard title="运营资金与差额核对" size="small">
+        <p>普通扣款等待核对：订阅 Anlas {{ number(losses.operating.pendingAnlasDebits?.anlasFixed) }}，购买 Anlas {{ number(losses.operating.pendingAnlasDebits?.anlasPurchased) }}。未知余额下降不会自动核销运营资金。</p>
         <NForm id="operatingForm" @submit.prevent="saveOperating"><div class="losses-grid">
           <NFormItem label="操作"><NSelect id="operatingAction" v-model:value="action" :options="actionOptions" :disabled="busy || operatingSaving" /></NFormItem>
           <NFormItem label="资源"><NSelect id="operatingResource" v-model:value="resource" :options="resourceOptions" :disabled="busy || operatingSaving" /></NFormItem>

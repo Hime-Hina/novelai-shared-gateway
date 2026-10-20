@@ -38,6 +38,40 @@ const claimTotal = (db, resource) => Object.values(db.settings.fairQuota.balance
   + (db.settings.fairQuota.operating?.available[resource] || 0);
 
 for (const [resource, field] of [['anlasFixed', 'quotaFixed'], ['anlasPurchased', 'quotaPurchased']]) {
+  test(`${resource} 普通扣款延迟跨快照及重启保留，不补发或记成外部损耗`, () => {
+    let db = fixture({ fixed: resource === 'anlasPurchased' ? 0 : 1000 });
+    const job = { id: 'delayed-paid', status: 'running', request: { ...request, allowPurchasedAnlas: true } };
+    const charge = reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
+    settleFairQuota(db, job, true, now + 1);
+    const before = structuredClone(db.settings.fairQuota.balances);
+    for (const tick of [2, 3]) observe(db, { [field]: 1000 }, now + tick);
+    assert.deepEqual(db.settings.fairQuota.balances, before);
+    db = JSON.parse(JSON.stringify(db));
+    observe(db, { [field]: 1000 - charge.amount / 2 }, now + 4);
+    observe(db, { [field]: 1000 - charge.amount }, now + 5);
+    assert.deepEqual(db.settings.fairQuota.balances, before);
+    assert.equal(db.settings.fairQuota.spent[resource], 0);
+    assert.equal(db.settings.fairQuota.operating.unfunded[resource], 0);
+  });
+}
+
+test('短暂余额下降不自动核销运营资金；重复回跳不重复计提同一缺口', () => {
+  const db = fixture();
+  fund(db, contribute('transient-dip-funds', 'anlasFixed', 100));
+  const before = structuredClone(db.settings.fairQuota.balances);
+  for (const [i, balance] of [900, 1000, 900, 1000].entries()) observe(db, { quotaFixed: balance }, now + i + 1);
+  assert.deepEqual(db.settings.fairQuota.balances, before);
+  const ops = db.settings.fairQuota.operating;
+  assert.equal(ops.available.anlasFixed, 100);
+  assert.equal(ops.unfunded.anlasFixed, 100);
+  assert.equal(ops.unattributedReturns.anlasFixed, 100);
+  fund(db, { action: 'operating-reconcile-return', receipt: 'transient-dip-correction',
+    resource: 'anlasFixed', amount: 100, lossEventId: ops.gapEventIds.anlasFixed }, now + 5);
+  assert.equal(ops.unfunded.anlasFixed, 0);
+  assert.equal(claimTotal(db, 'anlasFixed'), 1000);
+});
+
+for (const [resource, field] of [['anlasFixed', 'quotaFixed'], ['anlasPurchased', 'quotaPurchased']]) {
   test(`${resource} 失败后真实下降只记聚合待承担，不重复扣成员、不把报价当实扣`, () => {
     const db = fixture({ fixed: resource === 'anlasPurchased' ? 0 : 1000 });
     const before = structuredClone(db.settings.fairQuota.balances);
@@ -77,14 +111,15 @@ test('明确耗尽的官方固定池不扣本地固定权益，原购买权限�
   assert.throws(() => reserveFairQuota(fixture(), { id: 'a' }, make('stale', true), fixture().accounts[0], now + 700000), /stale/);
 });
 
-test('本人划入守恒，自动及明确核销只使用有来源运营余额并关联当前损耗', () => {
+test('本人划入守恒，只有明确核销使用有来源运营余额并关联当前损耗', () => {
   const db = fixture(), original = claimTotal(db, 'anlasFixed');
   fund(db, contribute('own-share-1', 'anlasFixed', 20));
   assert.equal(claimTotal(db, 'anlasFixed'), original);
   assert.equal(db.settings.fairQuota.balances.b.anlasFixedAvailable, 250);
   observe(db, { quotaFixed: 970 }, now + 1);
   const ops = db.settings.fairQuota.operating, lossId = ops.gapEventIds.anlasFixed;
-  assert.equal(ops.available.anlasFixed, 0); assert.equal(ops.unfunded.anlasFixed, 10);
+  assert.equal(ops.available.anlasFixed, 20); assert.equal(ops.unfunded.anlasFixed, 30);
+  fund(db, cover('confirm-first-loss', 'anlasFixed', 20, lossId), now + 1);
   assert.throws(() => fund(db, cover('no-funds-1', 'anlasFixed', 10, lossId), now + 2), /余额不足/);
   fund(db, contribute('own-share-2', 'anlasFixed', 10), now + 2);
   fund(db, cover('cover-loss-1', 'anlasFixed', 10, lossId), now + 2);
@@ -144,7 +179,9 @@ test('真实公共充值不拿去核销旧差额；无缺口充值仍自动分�
   const normal = fixture(); observe(normal, { quotaFixed: 2000 }, now + 1);
   assert.equal(normal.settings.fairQuota.balances.b.anlasFixedAvailable, 500);
   const paid = fixture(); fund(paid, contribute('already-covered-loss', 'anlasFixed', 100));
-  observe(paid, { quotaFixed: 900 }, now + 1); observe(paid, { quotaFixed: 1900 }, now + 2);
+  observe(paid, { quotaFixed: 900 }, now + 1);
+  fund(paid, cover('explicit-covered-loss', 'anlasFixed', 100, paid.settings.fairQuota.operating.gapEventIds.anlasFixed), now + 1);
+  observe(paid, { quotaFixed: 1900 }, now + 2);
   assert.equal(paid.settings.fairQuota.balances.b.anlasFixedAvailable, 500);
   assert.equal(paid.settings.fairQuota.operating.available.anlasFixed, 0);
   assert.equal(paid.ledger.filter(event => event.type === 'operating_loss_covered').reduce((sum, event) => sum + event.amount, 0), 100);
@@ -183,12 +220,46 @@ test('V5 容量差额先消耗恢复量，同一恢复不再发个人；历史�
   assert.equal(claimTotal(covered, 'v5'), 79.5);
 });
 
+test('明确凭据确认净增额内的普通扣款只补发一次，未核实的待扣不被清空', () => {
+  const db = fixture(), job = { id: 'paid-with-topup', status: 'running', request };
+  const charge = reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
+  settleFairQuota(db, job, true, now + 1);
+  const confirmation = { action: 'operating-confirm-debits', receipt: 'confirmed-net-topup', resource: 'anlasFixed', amount: charge.amount };
+  assert.throws(() => fund(db, confirmation, now + 1), /先结清/);
+  observe(db, { quotaFixed: 2000 - charge.amount }, now + 2);
+  assert.equal(db.settings.fairQuota.spent.anlasFixed, charge.amount);
+  const before = claimTotal(db, 'anlasFixed');
+  fund(db, confirmation, now + 3); fund(db, confirmation, now + 4);
+  assert.equal(claimTotal(db, 'anlasFixed'), before + charge.amount);
+  assert.equal(claimTotal(db, 'anlasFixed'), 2000 - charge.amount);
+  assert.equal(db.settings.fairQuota.spent.anlas, 0);
+  assert.throws(() => fund(db, { ...confirmation, receipt: 'cannot-confirm-twice' }), /没有可确认/);
+});
+
 test('只读启动器与管理预览不得污染真实 ledger 或运营差额', () => {
   const db = fixture(); Object.assign(db.accounts[0], { quotaFixed: 900, quotaCheckedAt: now + 1 });
   const before = structuredClone(db);
   launcherSubscription(db, db.users[0], now + 1);
   manageFairMember(db, { action: 'preview-delete-member', userId: 'a', transferToUserId: 'b', expectedConfigVersion: 1 }, now + 1);
   assert.deepEqual(db, before);
+});
+
+test('确认净增额扣款继续匹配已登记运营收据，不能把运营充值差额分给成员', () => {
+  const db = fixture();
+  fund(db, register('net-operating-topup', 'anlasFixed', 1000));
+  const job = { id: 'net-operating-paid', status: 'running', request };
+  const charge = reserveFairQuota(db, db.users[0], job, db.accounts[0], now + 1);
+  settleFairQuota(db, job, true, now + 2);
+  const wallets = structuredClone(db.settings.fairQuota.balances);
+  observe(db, { quotaFixed: 2000 - charge.amount }, now + 3);
+  const confirmation = { action: 'operating-confirm-debits', receipt: 'net-operating-confirmed', resource: 'anlasFixed', amount: charge.amount };
+  fund(db, confirmation, now + 4); fund(db, confirmation, now + 5);
+  assert.deepEqual(db.settings.fairQuota.balances, wallets);
+  assert.equal(db.settings.fairQuota.operating.available.anlasFixed, 1000);
+  assert.equal(db.settings.fairQuota.operating.pendingExternalFunding.length, 0);
+  const matches = db.ledger.filter(event => event.receiptEventId === 'operating-receipt:net-operating-topup');
+  assert.equal(new Set(matches.map(event => event.id)).size, 2);
+  assert.equal(matches.reduce((sum, event) => sum + event.amount, 0), 1000);
 });
 
 test('真实 SQLite 收据/核销覆盖冷历史和重启，失败整笔回滚，settings-only 调用显式提交 ledger', async t => {
@@ -199,6 +270,7 @@ test('真实 SQLite 收据/核销覆盖冷历史和重启，失败整笔回滚�
   await store.update(db => fund(db, contribute('durable-own-1', 'anlasFixed', 20), now, store), write);
   await store.update(db => observe(db, { quotaFixed: 970 }, now + 1), { collections: ['accounts', 'settings', 'ledger'], immediate: true });
   const lossId = store.db.settings.fairQuota.operating.gapEventIds.anlasFixed;
+  await store.update(db => fund(db, cover('durable-first-cover', 'anlasFixed', 20, lossId), now + 1, store), write);
   await store.update(db => fund(db, contribute('durable-own-2', 'anlasFixed', 10), now + 2, store), write);
   const original = structuredClone(store.db.settings.fairQuota);
   store.sqlite.exec("CREATE TEMP TRIGGER reject_cover BEFORE INSERT ON ledger WHEN json_extract(NEW.data, '$.id') = 'operating-receipt:durable-cover' BEGIN SELECT RAISE(ABORT, 'synthetic cover failure'); END;");
@@ -254,7 +326,8 @@ test('真实管理 HTTP 保留鉴权和本人来源，GET只估算，官方同�
   // 实际余额刷新在其写事务内 syncFairQuota；读取投影不能成为账务提交入口。
   await store.update(db=>syncFairQuota(db,Date.now()+20),{collections:['settings','ledger'],immediate:true});
   const ops = store.db.settings.fairQuota.operating;
-  assert.equal(ops.available.anlasPurchased, 100); assert.equal(ops.unfunded.anlasFixed, 10);
+  assert.equal(ops.available.anlasPurchased, 100); assert.equal(ops.unfunded.anlasFixed, 30);
+  assert.equal(ops.available.anlasFixed, 20);
   assert.equal(store.db.settings.fairQuota.balances.b.anlasPurchasedAvailable, 260);
   assert.equal(store.selectItemById('ledger', ops.gapEventIds.anlasFixed).observedAmount, 30);
   store.trimRuntimeCollection('ledger', 0);

@@ -54,6 +54,11 @@ export const fairQuotaSettlements = sqliteTable('fair_quota_settlements', {
   job_id: text().primaryKey(), charge: text().notNull()
 });
 
+// 独立于可清理任务的成功凭据；SQLite 触发器与结算/迟到结果原子提交。
+export const freeImageUsage = sqliteTable('free_image_usage', {
+  job_id: text().primaryKey(), member_id: text().notNull(), succeeded_at: integer().notNull(), warning_threshold: integer()
+}, table => [index('idx_free_image_member_time').on(table.member_id, table.succeeded_at, table.job_id)]);
+
 // 会话按令牌摘要冷读，不进入业务记录热缓存或历史清理。
 export const memberSessions = sqliteTable('member_sessions', {
   token_hash: text().primaryKey(), user_id: text().notNull(), auth_version: text().notNull(),

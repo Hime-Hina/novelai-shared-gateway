@@ -123,6 +123,7 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   const writer = new Database(f.source); t.after(() => writer.close());
   writer.pragma('journal_mode = WAL'); writer.pragma('wal_autocheckpoint = 0');
   writer.prepare('INSERT INTO app_meta VALUES (?,?)').run('wal_marker', 'committed-wal-only');
+  writer.prepare('INSERT INTO free_image_usage(job_id,member_id,succeeded_at) VALUES (?,?,?)').run('completed-free-history', 'a', now - 1000);
   const before = await readFile(f.source), beforeWal = await readFile(f.source + '-wal');
   const result = await createTestCopy({ source: f.source, target, imagesDir: path.join(f.sourceDir, 'images'), now: now + 2000 });
   assert.equal(digest(await readFile(f.source)), digest(before));
@@ -136,6 +137,9 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   const db = new Database(path.join(target, 'library.sqlite'), { readonly: true }); t.after(() => db.close());
   assert.equal(db.pragma('integrity_check', { simple: true }), 'ok'); assert.deepEqual(db.pragma('foreign_key_check'), []);
   assert.equal(db.prepare("SELECT value FROM app_meta WHERE key='wal_marker'").get().value, 'committed-wal-only');
+  assert.equal(result.after.free_image_usage, result.before.free_image_usage);
+  assert.deepEqual(db.prepare('SELECT job_id,member_id,succeeded_at FROM free_image_usage WHERE job_id=?').get('completed-free-history'),
+    { job_id: 'completed-free-history', member_id: 'a', succeeded_at: now - 1000 });
   const users = all(db, 'users'), jobs = all(db, 'jobs'), accounts = all(db, 'accounts');
   const credentials = JSON.parse(await readFile(path.join(target, 'test-credentials.json'), 'utf8')).accounts;
   for (const entry of credentials) {

@@ -35,12 +35,15 @@ test('更换来源保留的未分配V5不会被后续快照重新发给本期',(
  for(const tick of [NOW+1000,NOW+2000]){db.accounts[0].quotaCheckedAt=tick;syncFairQuota(db,tick);assert.ok(Math.abs(Object.values(s.balances).reduce((sum,b)=>sum+b.v5Available,0)-10)<1e-9);}
 });
 
-test('续费只按实际新增计入一次，消费及充值校准',()=>{
+test('充值与扣款同窗时仅分配可见净增额，未匹配扣款保留待核对',()=>{
  const db=fixture();const j=job('paid',{...request,width:1536});const c=reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW);
  assert.equal(c.resource,'anlas');settleFairQuota(db,j,true,NOW+10);
  Object.assign(db.accounts[0],{quotaFixed:10000-c.amount+1000,quotaCheckedAt:NOW+20});syncFairQuota(db,NOW+20);
- assert.equal(db.settings.fairQuota.balances.a.anlasAvailable,2750-c.amount);
- assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2750);syncFairQuota(db,NOW+20);assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2750);
+ const allocated=(1000-c.amount)/4;
+ assert.equal(db.settings.fairQuota.balances.a.anlasAvailable,2500-c.amount+allocated);
+ assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2500+allocated);
+ assert.equal(db.settings.fairQuota.spent.anlasFixed,c.amount);
+ syncFairQuota(db,NOW+20);assert.equal(db.settings.fairQuota.balances.b.anlasAvailable,2500+allocated);
 });
 test('有并发未结清时推迟校准，较早快照不当作充值',()=>{
  const db=fixture();const j=job('paid',{...request,width:1536});reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW);

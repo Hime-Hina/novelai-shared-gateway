@@ -78,6 +78,13 @@
       "when": 1792194030142,
       "tag": "0010_persistent_member_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792499099610,
+      "tag": "0011_free_image_usage",
+      "breakpoints": true
     }
   ]
 }

@@ -19,6 +19,7 @@ export interface ManagementState {
   groups: ManagementGroup[]; status?: string; shared: SharedStatus; autoAnlasFallback: boolean
   configVersion: number; publicBaseUrl: string; discordLogin: boolean; ownerUserId: string | null
   users: ManagementUser[]
+  freeImagePolicy?: import('./member').FreeImagePolicy
 }
 export interface ManagementMemberChange {
   configVersion: number; groups: ManagementGroup[]; transferred: ManagementResources
@@ -72,6 +73,7 @@ export interface ManagementLosses {
   operating: {
     available: ManagementResources
     unfunded: Omit<ManagementResources, 'v5'>; unattributedReturns: Omit<ManagementResources, 'v5'>
+    pendingAnlasDebits?: Omit<ManagementResources, 'v5'>
     v5CapacityGap: number; gapEventIds: Record<ManagementResource, string | null>
     pendingExternalFunding: { receipt: string; eventId: string; resource: ManagementResource
       destination: 'members' | 'operating'; remaining: number; registeredAt: number; snapshotAt: number }[]

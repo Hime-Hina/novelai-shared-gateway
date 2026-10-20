@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
 import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
+import { configureFreeImages, freeImagePolicy } from './free-image-policy.ts';
 import { sharedAccountStatus } from './shared-status.ts';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership, type DiscordUser, type DiscordDependencies } from './discord-auth.ts';
 import { clientIp } from './client-ip.ts';
@@ -34,6 +35,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   events: Parameters<typeof stateEventsFor>[0]['events'];
   update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation | { persist: false } | { collections: string[]; immediate: true }): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
+  readFreeImageUsage?: import('./store.ts').JsonStore['readFreeImageUsage'];
   selectItemById(collection: 'ledger', id: string | undefined): LedgerRow | null;
   readOperatingLossSettlements(id: string): LedgerRow[];
   readMemberImageIds(user: MemberUser, jobIds: string[]): Promise<Map<string, string>>;
@@ -124,6 +126,10 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
   sameOrigin(req);
   const pageVisit = req.method === 'GET' && req.headers['x-member-activity'] === '1';
   const { store } = deps;
+  const quotaView = (db: MemberDatabase, user: MemberUser) => {
+    const quota = fairQuotaSummary(db, user);
+    return quota && { ...quota, freeImages: store.readFreeImageUsage?.(db, user.id) };
+  };
   let actorId = 'local-admin';
   if (ownerRoute) {
     // 认证返回同一 store.users 记录；认证模块自身只声明它读取的字段。
@@ -165,23 +171,27 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         syncFairQuota(draft);
         return { groups: draft.settings.fairQuota?.groups || [], status: draft.settings.fairQuota?.status,
           shared: sharedAccountStatus(draft),autoAnlasFallback: draft.settings.fairQuota?.autoAnlasFallback === true,
-          configVersion: draft.settings.fairQuota?.configVersion ?? 1,
+          configVersion: draft.settings.fairQuota?.configVersion ?? 1, freeImagePolicy: freeImagePolicy(draft),
           publicBaseUrl: memberPublicBaseUrl(db), discordLogin: discordEnabled, ownerUserId: env.OWNER_USER_ID || null,
           users: db.users.map(u => ({ id: u.id, username: u.memberAuth?.username || '', note: u.note || '', enabled: u.enabled !== false,
             acceptingJobs: u.acceptingJobs !== false,
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
-            quota: fairQuotaSummary(draft, u), recentActivity: recentActivity(db, u) })) };
+            quota: quotaView(draft, u), recentActivity: recentActivity(db, u) })) };
       }, { persist: false });
       reply(res, 200, payload); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
+    if (body.action === 'free-image-policy') {
+      const policy = await store.update(db => configureFreeImages(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
+      reply(res, 200, { policy }); return true;
+    }
     if (body.action === 'loss-alert-policy') {
       const policy = await store.update(db => updateLossAlertPolicy(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, { policy }); return true;
     }
     if (ownerRoute && body.userId === env.OWNER_USER_ID && (['delete-member','preview-delete-member'].includes(body.action as string) || body.action === 'member-status' && body.enabled === false)) error(409, '不能停用或删除当前 owner');
-    if (['operating-contribute', 'operating-register-funding', 'operating-cover-loss', 'operating-reconcile-return'].includes(body.action as string)) {
+    if (['operating-contribute', 'operating-register-funding', 'operating-cover-loss', 'operating-reconcile-return', 'operating-confirm-debits'].includes(body.action as string)) {
       // 身份来自已鉴权的 owner 配置，不接受客户端指定其他成员作为注资来源。
       if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) error(403, '只能从运营者本人已归属份额划入');
       const result = await store.update(db => {
@@ -404,7 +414,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     const payload: MemberMePayload = await store.update(db => {
       const draft = { ...db, ledger: [...(db.ledger || [])], settings: structuredClone(db.settings || {}) };
       return { username: user.memberAuth!.username, owner: isOwner(user, env), sessionExpiresAt: session!.expiresAt,
-        acceptingJobs: user.acceptingJobs !== false, quota: fairQuotaSummary(draft, user),
+        acceptingJobs: user.acceptingJobs !== false, quota: quotaView(draft, user),
         jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,
           lateResultAvailable: j.lateResultAvailable === true, imageId: j.imageId || '',
           model: j.request?.model || '', status: j.status, charge: memberCharge(j.fairCharge) }))

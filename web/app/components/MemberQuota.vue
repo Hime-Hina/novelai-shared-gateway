@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NCard, NProgress, NPopover } from 'naive-ui'
+import { NAlert, NButton, NCard, NProgress, NPopover } from 'naive-ui'
 import type { MemberProfile } from '../types/member'
-import { number } from '../utils/member-display'
+import { date, number } from '../utils/member-display'
 
 const props = defineProps<{ profile: MemberProfile }>()
 const quota = computed(() => props.profile.quota)
+const sharedRisk = computed(() => {
+  const risk = quota.value?.sharedBalanceRisk
+  return risk && (risk.v5 || risk.anlasFixed || risk.anlasPurchased)
+})
 const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '订阅暂不可用', stale: '官方余额等待更新', unknown_balance: '官方余额未知', ambiguous_opus: '等待管理员选择上游', active: '可提交任务' }
 const status = computed(() => [
   quota.value?.status !== 'active' || props.profile.acceptingJobs !== false ? statuses[quota.value?.status || ''] || '等待分配额度' : '',
@@ -40,6 +44,10 @@ const recovery = computed(() => {
       </NPopover>
     </header>
     <div id="status" class="quota-status" :class="{ attention }" role="status">{{ status }}</div>
+    <NAlert v-if="sharedRisk" id="sharedBalanceRisk" type="warning" role="status">
+      检测到未解释的共享余额差额，实际可用额度可能受影响。个人余额保留，派发仍受官方余额限制。检查时间：{{ date(quota?.sharedBalanceRisk?.checkedAt) }}。
+    </NAlert>
+    <NAlert v-else-if="quota?.sharedBalanceRisk?.pendingAnlasDebit" type="info" role="status">普通 Anlas 扣款等待官方余额核对，可用公共额度暂按保守值计算。</NAlert>
     <div class="quota-grid">
       <NCard title="V5 恢复额度" size="small">
         <div class="quota-value"><strong id="v5" class="amount">{{ number(quota?.v5Available) }}%</strong><span id="v5Capacity" class="section-caption">上限 {{ number(quota?.v5Capacity) }}%</span></div>
@@ -56,6 +64,12 @@ const recovery = computed(() => {
       </NCard>
     </div>
     <p id="recovery" class="section-caption recovery">V5 恢复 · {{ recovery }}</p>
+    <NCard v-if="quota?.freeImages" id="freeImageQuota" title="免费图片 · 滚动 24 小时" size="small">
+      <p>成功 {{ quota.freeImages.successful }} 张 · 在途 {{ quota.freeImages.reserved }} 张 · {{ quota.freeImages.enabled && quota.freeImages.hardLimit !== null ? `上限 ${quota.freeImages.hardLimit} 张` : '未设置硬上限' }}</p>
+      <NAlert v-if="quota.freeImages.warning" type="warning">免费图片用量已达到提醒阈值 {{ quota.freeImages.warningThreshold }} 张。</NAlert>
+      <p v-if="quota.freeImages.waitingForSettlement">名额已被在途任务占用，请等待结算。</p>
+      <p v-else-if="quota.freeImages.nextAvailableAt">下一名额恢复时间：{{ date(quota.freeImages.nextAvailableAt) }}。</p>
+    </NCard>
   </section>
 </template>
 

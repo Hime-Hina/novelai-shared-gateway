@@ -42,7 +42,7 @@ let crc=0xffffffff;
 for(const b of png){crc^=b;for(let bit=0;bit<8;bit++){const odd=crc%2;crc=Math.floor((crc>>>0)/2);if(odd)crc^=0xedb88320;}}
 assert.equal(zip.readUInt32LE(14),(crc^0xffffffff)>>>0);
 let submitted, nextId=0, queueSequence=0;
-const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={users:[user],jobs:[]};
+const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[]};
 const claim={resize(bytes){assert.ok(Number.isSafeInteger(bytes)&&bytes>0);}};
 // 隔离存储与 worker 边界；批次受理、父参数序列化和 HTTP 等待仍执行真实函数。
 const store={

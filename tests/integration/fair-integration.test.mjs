@@ -7,6 +7,7 @@ import * as fair from '../../server/fair-quota.ts';
 import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.ts';
 import * as queuePolicy from '../../server/queue-policy.ts';
+import { assertFreeImageAdmission } from '../../server/free-image-policy.ts';
 const source= stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
 function fixture(tier=3) {
   let now=Date.now();
@@ -14,7 +15,7 @@ function fixture(tier=3) {
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,queueDispatchEnabled:true,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
+  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,assertFreeImageAdmission,queueDispatchEnabled:true,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
     store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
     httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
     jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
@@ -22,7 +23,7 @@ function fixture(tier=3) {
     publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
     uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
   });
-  for(const name of ['resolveGenerationIdempotency','validateGenerationReplay','physicalAccountLoad','sharedFailureKind','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
+  for(const name of ['resolveGenerationIdempotency','validateGenerationReplay','physicalAccountLoad','sharedFailureKind','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFairMemberReady','assertFreeImageRequest','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
     const start=source.search(new RegExp(`function ${name}\\s*\\(`)),end=source.indexOf('\n}',start)+2;
     const async=source.slice(start-6,start)==='async ';
     vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
@@ -30,6 +31,22 @@ function fixture(tier=3) {
   const job=(id,token='a')=>{const j={id,userToken:token,status:'queued',cost:0,request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}};db.jobs.push(j);return j;};
   return {db,ctx,job,advance:milliseconds=>{now+=milliseconds;}};
 }
+test('已受理的免费图片派发前再次检查限额，并保留恢复时间，不占上游槽位', async () => {
+  const { db, ctx, job } = fixture();
+  const queued = job('queued-before-limit');
+  queued.request.model = 'nai-diffusion-4-5-full';
+  db.settings.fairQuota.freeImagePolicy = { enabled: true, warningThreshold: 1, hardLimit: 1 };
+  const retryAt = ctx.Date.now() + 10000;
+  ctx.store.readFreeImageUsage = () => ({ enabled: true, hardLimit: 1, successful: 1, reserved: 0, nextAvailableAt: retryAt });
+  const result = await ctx.reserveQueuedJob(queued.id);
+  assert.equal(result.statusCode, 429);
+  assert.equal(result.cooldownUntil, new Date(retryAt).toISOString());
+  assert.equal(queued.quotaRetryAfterUntil, result.cooldownUntil);
+  assert.equal(queued.status, 'failed');
+  assert.equal(queued.fairCharge, undefined);
+  assert.ok(!db.accounts[0].inFlight);
+});
+
 test('两位成员同时提交，超过十秒仍等待上一张完成，不重现并发锁',async()=>{
   const {db,ctx,job,advance}=fixture();job('first','a');job('second','b');
   const first=await ctx.reserveQueuedJob('first');

@@ -33,6 +33,12 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  r=await call('/api/admin/member-management',{cookie,body:{action:'fallback-policy',enabled:true}});assert.equal(r.status,403);
  r=await call('/api/admin/member-management',{body:{action:'fallback-policy',enabled:true},headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,200);assert.equal(db.settings.fairQuota.autoAnlasFallback,true);
  r=await call('/api/member/me',{cookie});assert.equal((await r.json()).quota.autoAnlasFallback,true);
+ const freePolicy={action:'free-image-policy',expectedVersion:1,policy:{enabled:true,warningThreshold:10,hardLimit:20}};
+ r=await call('/api/admin/member-management',{cookie,body:freePolicy});assert.equal(r.status,403);
+ r=await call('/api/admin/member-management',{body:freePolicy,headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,200);
+ assert.equal((await r.json()).policy.version,2);assert.equal(db.settings.fairQuota.configVersion,1);
+ r=await call('/api/admin/member-management',{body:freePolicy,headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,409);
+ assert.equal(db.ledger.filter(event=>event.type==='free_image_policy_updated').length,1);
  r=await call('/api/admin/member-management',{body:{action:'credentials',username:'invalid',password:'short'},headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,400);assert.equal(db.users.length,4);
  r=await call('/api/admin/member-management',{body:{action:'credentials',userId:'a',username:'test-member-a',password:'Reset-password-member-a'},headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,200);
  r=await call('/api/member/me',{cookie});assert.equal(r.status,401);

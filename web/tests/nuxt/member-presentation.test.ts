@@ -32,6 +32,20 @@ const shared: SharedStatus = {
 }
 
 describe('成员展示组件', () => {
+  it('共享差额和免费图名额分别提示，在途占满时不承诺恢复时间', async () => {
+    const current = structuredClone(profile)
+    current.quota!.sharedBalanceRisk = { v5: false, anlasFixed: true, anlasPurchased: false, pendingAnlasDebit: false, checkedAt: Date.now() }
+    current.quota!.freeImages = { enabled: true, successful: 2, reserved: 1, warningThreshold: 2, hardLimit: 3,
+      warning: true, warnedAt: Date.now(), nextAvailableAt: null, waitingForSettlement: true }
+    const wrapper = await mountSuspended(MemberQuota, { props: { profile: current } })
+    wrappers.push(wrapper)
+    expect(wrapper.get('#sharedBalanceRisk').text()).toContain('检测到未解释的共享余额差额')
+    expect(wrapper.get('#freeImageQuota').text()).toContain('成功 2 张')
+    expect(wrapper.get('#freeImageQuota').text()).toContain('上限 3 张')
+    expect(wrapper.get('#freeImageQuota').text()).toContain('等待结算')
+    expect(wrapper.get('#freeImageQuota').text()).not.toContain('下一名额恢复时间')
+  })
+
   it('两页共用刷新入口，连接状态明确且加载时保留更新时间位置', async () => {
     const wrapper = await mountSuspended(PortalRefresh, { props: { connection: 'open', loading: false, updatedAt: Date.parse('2026-10-17T16:00:00Z'), summary: '额度更新于' } })
     wrappers.push(wrapper)

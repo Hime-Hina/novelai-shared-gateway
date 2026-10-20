@@ -87,6 +87,11 @@ async function load({automatic=false}={}) {
   $('group').textContent=q?.member ? `${q.groupName} · ${q.groupSize} 人 · 个人份额 ${number(q.share*100)}%` : '尚未分配到组，请联系管理员';
   $('status').textContent=(stateNames[q?.status] || '等待分配额度') + (q?.autoAnlasFallback ? ' · V5 不足时自动按 Anlas 转扣（本站记账；上游可能消耗公共 V5）' : '');
   if (data.acceptingJobs === false) $('status').textContent += ' · 管理员已停止接单，已有结果仍可查询和下载';
+  const risk=q?.sharedBalanceRisk;
+  if(risk&&(risk.v5||risk.anlasFixed||risk.anlasPurchased))$('status').textContent+=' · 检测到未解释的共享余额差额，实际可用额度可能受影响';
+  else if(risk?.pendingAnlasDebit)$('status').textContent+=' · 普通 Anlas 扣款等待官方余额核对';
+  const free=q?.freeImages;
+  if(free)$('status').textContent+=` · 免费图 / 24 小时：成功 ${free.successful} 张，在途 ${free.reserved} 张，上限 ${free.enabled&&free.hardLimit!==null?free.hardLimit:'未设置'}${free.warning?'，已达提醒阈值':''}${free.waitingForSettlement?'，请等待在途结算':free.nextAvailableAt?'，名额恢复于 '+new Date(free.nextAvailableAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):''}`;
   $('v5').textContent=`${number(q?.v5Available)} / ${number(q?.v5Capacity)}%`;
   $('v5bar').max=q?.v5Capacity || 1; $('v5bar').value=q?.v5Available || 0;
   const refill = q?.v5RefillLimited ? '恢复时间暂无法可靠估算，请留意共享上游状态' : q?.v5FullRefillSeconds === 0 ? '个人已满额；满额期间不累计额外恢复' : q?.v5RefillPerDay > 0 ? `当前每天约恢复 ${number(q.v5RefillPerDay)} 个百分点，约 ${number(q.v5FullRefillSeconds / 3600)} 小时补满（随成员使用变化）` : '恢复速度等待官方数据';

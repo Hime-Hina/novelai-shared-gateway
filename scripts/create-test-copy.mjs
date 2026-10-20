@@ -15,7 +15,7 @@ import { closeGenerationReview } from '../server/generation-accounting.ts';
 export const TEST_COPY_UPSTREAM_TOKEN = 'pst-synthetic-d01-mock-upstream-only';
 const collections = Object.keys(recordTables);
 const tables = [...collections, 'app_settings', 'app_meta', 'app_records', 'generation_requests',
-  'generation_idempotency', 'fair_quota_settlements', 'member_sessions', '__drizzle_migrations'];
+  'generation_idempotency', 'fair_quota_settlements', 'member_sessions', 'free_image_usage', '__drizzle_migrations'];
 const active = new Set(['queued', 'pending', 'running']);
 const secretFields = new Set(['apiKey', 'api_key', 'password', 'accessToken', 'refreshToken', 'access_token', 'refresh_token',
   'clientSecret', 'client_secret', 'secret', 'image_cache_secret_key', 'mask_cache_secret_key', 'reference_image_cache_secret_key']);

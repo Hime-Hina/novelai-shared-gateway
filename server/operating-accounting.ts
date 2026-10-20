@@ -35,15 +35,20 @@ function append<T extends Record<string, unknown>>(db: OperatingDatabase, event:
 export function recordAnlasGap(db: OperatingDatabase, resource: AnlasResource, amount: number, before: QuotaSnapshot, after: QuotaSnapshot, now: number) {
   const s = db.settings.fairQuota, ops = operatingAccount(s);
   const id = `resource-gap:${s.boundAccountId}:${after.at}:${resource}`;
+  const returned = Math.min(ops.unattributedReturns[resource], amount);
+  if (returned > 0) {
+    ops.unattributedReturns[resource] -= returned; amount -= returned;
+    append(db, { id: `${id}:return`, type: 'resource_return_unattributed', resource, amount: -returned,
+      gapEventId: ops.gapEventIds[resource], snapshotAt: after.at, evidenceLevel: 'unclassified_balance_increase' }, now);
+  }
+  if (amount <= 1e-9) return;
   // amount 是此观察点可核销的累计差额；observedAmount 才是本次新观察到的下降，不能重复相加。
   append(db, { id, type: 'resource_gap_observed', resource, amount: ops.unfunded[resource] + amount,
     observedAmount: amount, evidenceLevel: 'aggregate_gap',
     attribution: 'unassigned', actualTaskConsumption: null, beforeSnapshot: before, afterSnapshot: after }, now);
-  const covered = Math.min(ops.available[resource], amount);
-  ops.available[resource] -= covered; ops.unfunded[resource] += amount - covered;
+  // 聚合下降尚未确认，不自动消耗运营资金；沿用有收据的人工核销。
+  ops.unfunded[resource] += amount;
   ops.gapEventIds[resource] = id;
-  if (covered > 0) append(db, { id: `${id}:covered`, type: 'operating_loss_covered', lossEventId: id,
-    resource, amount: covered, source: 'operating_available' }, now);
 }
 
 export function reconcileV5Capacity(db: OperatingDatabase, amount: number, snapshot: QuotaSnapshot, now: number) {
@@ -64,7 +69,7 @@ export function recoverV5Capacity(db: OperatingDatabase, budget: number, from: n
   return amount;
 }
 
-export function matchExternalFunding(db: OperatingDatabase, resource: AnlasResource, delta: number, snapshot: QuotaSnapshot, now: number): number {
+export function matchExternalFunding(db: OperatingDatabase, resource: AnlasResource, delta: number, snapshot: QuotaSnapshot, now: number, confirmationEventId?: string): number {
   const ops = operatingAccount(db.settings.fairQuota);
   let memberFunding = 0;
   // 只有提前登记的明确注资才进入运营钱包；未说明归属的增额沿用原分配规则。
@@ -74,14 +79,15 @@ export function matchExternalFunding(db: OperatingDatabase, resource: AnlasResou
     pending.remaining -= amount; delta -= amount;
     if (pending.destination === 'members') memberFunding += amount;
     else ops.available[resource] += amount;
-    append(db, { id: `operating-funding:${pending.receipt}:${snapshot.at}`, type: 'operating_funding_received',
+    append(db, { id: `operating-funding:${pending.receipt}:${snapshot.at}${confirmationEventId ? `:${confirmationEventId}` : ''}`, type: 'operating_funding_received',
       receiptEventId: pending.eventId, resource, amount, destination: pending.destination,
+      ...(confirmationEventId ? { confirmationEventId } : {}),
       source: 'registered_external_funding', snapshotAt: snapshot.at }, now);
   }
   ops.pendingExternalFunding = ops.pendingExternalFunding.filter(pending => pending.remaining > 0);
   // 只在已有未归属缺口时暂留同额正差额：仅凭快照无法区分回跳与真实新充值。
   // 它既不是运营收入，也不自动偿还损耗；普通无缺口的充值仍自动分配。
-  const uncertain = Math.min(delta, Math.max(0, ops.unfunded[resource] - ops.unattributedReturns[resource]));
+  const uncertain = confirmationEventId ? 0 : Math.min(delta, Math.max(0, ops.unfunded[resource] - ops.unattributedReturns[resource]));
   if (uncertain > 0) {
     ops.unattributedReturns[resource] += uncertain; delta -= uncertain;
     append(db, { id: `unattributed-return:${db.settings.fairQuota.boundAccountId}:${snapshot.at}:${resource}`,
@@ -131,6 +137,14 @@ export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFund
       ops.pendingExternalFunding.push({ receipt, eventId: id, resource, destination: destination as string, remaining: amount, registeredAt: now, snapshotAt: s.snapshot.at });
       event = { type: 'operating_funding_registered', source: 'external_funding_receipt', destination };
     }
+  } else if (body.action === 'operating-confirm-debits') {
+    if (resource === 'v5' || s.status !== 'active' || Object.values(s.reservations).some(charge => charge.status === 'reserved')
+      || s.snapshot.at < s.lastSettlementAt || amount > s.spent[resource]) error('没有可确认的普通 Anlas 扣款，请先结清任务并刷新快照');
+    // 人工凭据确认扣款已包含在净增额中，才释放相应的待核对金额。
+    s.spent[resource] -= amount; s.spent.anlas -= amount;
+    memberFunding = { resource, amount: matchExternalFunding(db as OperatingDatabase, resource, amount, s.snapshot, now, id) };
+    event = { type: 'operating_debits_confirmed', evidenceLevel: 'operator_attested_debit_reconciliation',
+      allocatedToMembers: memberFunding.amount };
   } else if (body.action === 'operating-reconcile-return') {
     // 仅修正仍未确认/未承担的聚合缺口；不能回冲已核销或未来计提的真实损耗。
     if (resource === 'v5' || body.lossEventId !== ops.gapEventIds[resource] || amount > ops.unfunded[resource] || amount > ops.unattributedReturns[resource]) error('没有可关联修正的未归属余额');

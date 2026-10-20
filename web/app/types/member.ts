@@ -1,5 +1,12 @@
 // 当前成员 API 的公开字段；上游身份、会话摘要和完整生成参数不进入页面模型。
 export type { SharedStatus } from '../../../server/shared-status.ts'
+export interface FreeImagePolicy {
+  version: number; enabled: boolean; warningThreshold: number | null; hardLimit: number | null
+}
+export interface FreeImageUsage {
+  enabled: boolean; successful: number; reserved: number; warningThreshold: number | null; hardLimit: number | null
+  warning: boolean; warnedAt: number | null; nextAvailableAt: number | null; waitingForSettlement: boolean
+}
 export interface LoginOptions { discord: boolean; ready: boolean; origin: string | null }
 export interface MemberQuota {
   member: boolean; status: string; groupName: string | null; groupSize: number; share: number
@@ -8,6 +15,8 @@ export interface MemberQuota {
   v5RefillLimited: boolean; v5FullRefillSeconds: number | null
   anlasFixedAvailable: number; anlasPurchasedAvailable: number
   anlasFixedReserved: number; anlasPurchasedReserved: number
+  freeImages?: FreeImageUsage | null
+  sharedBalanceRisk?: { v5: boolean; anlasFixed: boolean; anlasPurchased: boolean; pendingAnlasDebit: boolean; checkedAt: number | null }
 }
 export interface MemberCharge {
   status: string; resource: string; amount: number

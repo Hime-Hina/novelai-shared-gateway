@@ -1,6 +1,7 @@
 import { quoteNativeRequest } from './native-pricing.ts';
 import { recordGenerationAttempt, recordGenerationRefund, type AccountingJob, type RefundEvidence } from './generation-accounting.ts';
 import { operatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding, type OperatingAccount, type OperatingFundingInput, type OperatingFundingContext } from './operating-accounting.ts';
+import type { FreeImagePolicy } from './free-image-policy.ts';
 
 export type Resource = 'v5' | 'anlasFixed' | 'anlasPurchased';
 export type AnlasResource = Exclude<Resource, 'v5'>;
@@ -43,6 +44,7 @@ export interface FairQuotaState {
   unallocatedV5: number; fallbackBuffer: { fixed: number; purchased: number };
   fallbackTotalsByUser: Record<string, FallbackTotals>; sharedV5Debt: number; autoAnlasFallback?: unknown;
   operating?: OperatingAccount; v5Reconciliation?: V5Reconciliation; v5ReconciliationHistory?: V5Reconciliation[];
+  freeImagePolicy?: FreeImagePolicy;
 }
 type UpgradedField = 'groups' | 'configVersion' | 'configurationHistory' | 'unallocatedV5' | 'fallbackBuffer' | 'fallbackTotalsByUser' | 'sharedV5Debt' | 'spent';
 type LegacyFairQuotaState = Omit<FairQuotaState, UpgradedField> & Partial<Omit<Pick<FairQuotaState, UpgradedField>, 'groups' | 'spent'>> & {
@@ -362,8 +364,10 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     // 快照用于来源核对和安全派发，不把未知消费分摊给闲置成员，也不把差额当恢复增发。
     recordV5Reconciliation(db,s,incoming,now);
     for(const [resource,pool] of [['anlasFixed','fixed'],['anlasPurchased','purchased']] as const) {
-      // 本地转扣不是已证实的上游 Anlas 消费，绝不加进普通充值校正。
-      let delta=incoming[resource]!-old[resource]!+s.spent[resource];
+      // 未显示的普通扣款跨快照保留；余额不变不能证明充值抵消了本次消费。
+      let delta=incoming[resource]!-old[resource]!;
+      const consumed=Math.min(s.spent[resource],Math.max(0,-delta));
+      s.spent[resource]-=consumed;delta+=consumed;
       if(delta<0) {
         // 抵消凭据跨相同快照及重启保留，也吸收随后才出现的官方扣款，避免双扣。
         const matched=Math.min(s.fallbackBuffer[pool],-delta);
@@ -372,7 +376,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
       if(delta < -1e-9) recordAnlasGap(db as ConfiguredDatabase,resource,-delta,old,incoming,now);
       else if(delta > 0) distribute(s,resource,matchExternalFunding(db as ConfiguredDatabase,resource,delta,incoming,now));
     }
-    s.snapshot=incoming;s.spent={v5:0,anlas:0,anlasFixed:0,anlasPurchased:0,fallbackFixed:0,fallbackPurchased:0,fallbackV5:0};s.creditedV5=0;s.lastRefillAt=now;
+    s.snapshot=incoming;s.spent={...s.spent,v5:0,anlas:s.spent.anlasFixed+s.spent.anlasPurchased,fallbackFixed:0,fallbackPurchased:0,fallbackV5:0};s.creditedV5=0;s.lastRefillAt=now;
   }
   // 未能对账的旧基准也不能无限使用，否则连续任务可能永远绕过过期检查。
   if(now-s.snapshot.at>STALE_MS) s.status='stale';
@@ -498,7 +502,12 @@ export function fairQuotaSummary(db: FairQuotaDatabase,user: Pick<FairUser, 'id'
   const sourceCapacityRoom=Math.max(0,100-s.unallocatedV5-s.spent.v5-sharedHeld(s)-sum(s,'v5Available')-operatingAccount(s).available.v5);
   const refillLimited=s.status!=='active'||s.sharedV5Debt>1e-9||s.v5Reconciliation?.status==='source_below_local'||
     (refillRoom>1e-9&&(!refillRate||refillBudget>sourceCapacityRoom+1e-9));
+  const ops=operatingAccount(s);
+  const sharedBalanceRisk={v5:ops.v5CapacityGap>1e-9,
+    anlasFixed:ops.unfunded.anlasFixed>1e-9,anlasPurchased:ops.unfunded.anlasPurchased>1e-9,
+    pendingAnlasDebit:s.spent.anlas>1e-9,checkedAt:s.snapshot?.at??null};
   return {enabled:true,status:s.status,member:Boolean(raw),share,autoAnlasFallback:s.autoAnlasFallback===true,
+    sharedBalanceRisk,
     localAnlasFallbackSpent:localFallback.fixed+localFallback.purchased,localAnlasFallbackFixedSpent:localFallback.fixed,localAnlasFallbackPurchasedSpent:localFallback.purchased,localFallbackV5Equivalent:localFallback.v5Equivalent,groupId:group?.id??null,groupName:group?.name??null,groupSize:group?.members.length??0,boundAccountId:s.boundAccountId,
     v5Available:available,v5Capacity:capacity,v5Reserved:reserved,
     v5PersonalPercent:capacity>0?100*available/capacity:null,v5RefillPerDay:refillRate*86400,
