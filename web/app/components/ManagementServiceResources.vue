@@ -33,7 +33,7 @@ function uptime(seconds: number | undefined) {
         <template v-if="data?.r2">
           <p id="serviceR2">R2 {{ bytes(data.r2.bytes) }} / {{ bytes(data.r2.limitBytes) }} · 已转存 {{ data.r2.images }} 张</p>
           <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
-          <p v-if="data.r2.pending || data.r2.errors">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张（稍后重试）</p>
+          <p id="serviceR2Status">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张</p>
         </template>
       </NCard>
       <NCard size="small">
