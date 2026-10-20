@@ -21,9 +21,9 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
   await store.update(db => {
     db.users.push({ id: 'usr_r2', token, enabled: true, balance: 0, createdAt });
     db.users.push({ id: 'usr_other', token: 'STA1N-synthetic-other-member', enabled: true, balance: 0, createdAt });
-    for (const id of ['local', 'cloud', 'corrupt']) {
+    for (const id of ['local', 'cloud', 'corrupt', 'missing']) {
       db.images.push({ id, token, file: `images/${id}.png`, mimeType: 'image/png', createdAt, sha256, byteLength: png.length,
-        ...(id === 'local' ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${sha256}`,
+        ...(['local', 'missing'].includes(id) ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${sha256}`,
           sha256, byteLength: png.length, verifiedAt: createdAt, localRemovedAt: createdAt } }) });
       db.jobs.push({ id: `job_${id}`, userToken: token, status: 'done', imageId: id, createdAt, completedAt: createdAt });
     }
@@ -75,4 +75,7 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
   const failure = await request('/api/jobs/job_corrupt/content', token);
   assert.equal(failure.status, 503);
   assert.ok(!(await failure.text()).includes('synthetic-secret'));
+  const missing = await request('/api/jobs/job_missing/content', token);
+  assert.equal(missing.status, 500, 'retain the existing local storage failure contract');
+  assert.ok(!(await missing.text()).includes(dataDir), 'filesystem paths stay private');
 });

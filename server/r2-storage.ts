@@ -133,13 +133,18 @@ export class ImageStorage {
   }
 
   async open(image: StoredImage): Promise<{ handle: FileHandle } | { image: StoredImage }> {
+    let missingFile: unknown;
     if (image.file) {
       try { return { handle: await open(storedImagePath(this.dataDir, image.file), 'r') }; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        missingFile = error;
+      }
     }
     // A reader may hold the pre-archive row while the verified local copy is removed.
     const current = image.id ? await this.findImage(image.id) : image;
     if (current?.r2?.verifiedAt || current?.base64) return { image: current };
+    if (missingFile) throw missingFile;
     throw Object.assign(new Error('image content not found'), { statusCode: 404 });
   }
 

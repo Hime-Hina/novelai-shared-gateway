@@ -2,7 +2,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonStore, createId, hashObject } from '../../server/store.ts';
@@ -13,6 +13,7 @@ import * as queue from '../../server/queue-policy.ts';
 import * as requests from '../../server/generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/native-image.ts';
+import { ImageStorage } from '../../server/r2-storage.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -42,8 +43,7 @@ async function fixture(t) {
     generationRequestFingerprint, requestNormalizationDefaults, normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS,
     fairShareMode: true, generationPayloadBudget: budget, cleanupStaleActiveJobs: async () => {},
     activeJobCount: jobs => jobs.filter(job => ['queued', 'running'].includes(job.status)).length,
-    stat, imageFilePath: file => path.join(store.dataDir, file),
-    readStoredImage: image => image.file ? readFile(path.join(store.dataDir, image.file)) : Buffer.from(image.base64 || '', 'base64'),
+    imageStorage: new ImageStorage(store.dataDir, null, id => store.findImage(id)),
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode })
   }, ['readGenerationIdempotencyKey', 'generationIntent', 'unavailableGenerationResult', 'resolveGenerationIdempotency',
     'findCachedGenerationImage', 'validateGenerationReplay', 'assertFairMemberReady', 'generationRequestRecord', 'assertFreeImageRequest',
