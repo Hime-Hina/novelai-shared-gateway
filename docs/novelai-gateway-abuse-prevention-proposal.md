@@ -10,7 +10,7 @@
 
 ## 2026-10-20 实施更新
 
-以下原始草案保留作为背景；当前代码以本节和 [失败退款与资源核对](failure-accounting.md) 为准。本次修改尚未正式部署，部署须经维护者确认。
+以下原始草案保留作为背景；当前代码以本节和 [失败退款与资源核对](failure-accounting.md) 为准。维护者确认后，已先完成并校验数据库及相关文件备份，再于 2026-10-20 23:57（UTC+8）正式部署 `3ff71f5`。免费图策略仍保持关闭，详见 [发布与验收记录](production-release.md#2026-10-20-防滥用修复部署与验收)。
 
 - 调度入口已经迁至 `server/gateway-runtime.ts`，配额、存储和成员接口使用 `.ts`；当前页面为 `web/app/components/ManagementMembers.vue`、`ManagementFreeImages.vue`、`ManagementLosses.vue`、`MemberQuota.vue`。
 - 当前共享并发为 1，任务完成后至少冷却 10 秒；已有每成员 4 个、全局 16 个未完成任务上限和事务内准入检查，无需重复实现。
