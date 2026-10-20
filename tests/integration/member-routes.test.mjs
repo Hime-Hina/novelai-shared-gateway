@@ -30,6 +30,7 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  r=await call('/api/member/me',{cookie,headers:{Origin:'https://evil.invalid'}});assert.equal(r.status,403);
  r=await call('/api/member/login',{body:{},headers:{Origin:''}});assert.equal(r.status,403);
  r=await call('/api/admin/member-management',{headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,200);const admin=await r.json();assert.equal(admin.groups.length,4);assert.ok(!JSON.stringify(admin).includes('memberAuth'));
+ assert.ok(admin.serviceResources.memory.rssBytes>0);assert.equal(admin.serviceResources.data,null);assert.equal(mine.serviceResources,undefined);
  r=await call('/api/admin/member-management',{cookie,body:{action:'fallback-policy',enabled:true}});assert.equal(r.status,403);
  r=await call('/api/admin/member-management',{body:{action:'fallback-policy',enabled:true},headers:{'x-admin-token':'test-admin'}});assert.equal(r.status,200);assert.equal(db.settings.fairQuota.autoAnlasFallback,true);
  r=await call('/api/member/me',{cookie});assert.equal((await r.json()).quota.autoAnlasFallback,true);

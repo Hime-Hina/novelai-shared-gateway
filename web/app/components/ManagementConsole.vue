@@ -38,6 +38,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
         <div class="toolbar-controls"><NTag size="small" :bordered="false">{{ state.users.filter(user => user.enabled).length }} 位成员</NTag><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span></div>
         <NPopover trigger="click" style="max-width: 380px"><template #trigger><NButton size="small" quaternary :type="alerts.length ? 'warning' : 'default'">{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton></template><div id="lossAlerts"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p><p v-if="!alerts.length">当前没有财务风险告警。</p><NButton size="small" @click="panel = 'settings'">查看上游与策略</NButton></div></NPopover>
       </div>
+      <ManagementServiceResources :data="state.serviceResources" />
       <NTabs v-model:value="panel" type="line" size="large" aria-label="管理功能">
         <NTabPane v-if="mode === 'owner'" name="usage" display-directive="show:lazy">
           <template #tab><NButton id="usageTab" text :aria-pressed="panel === 'usage'">用量与记录</NButton></template>

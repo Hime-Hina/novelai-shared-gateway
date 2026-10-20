@@ -20,6 +20,13 @@ export interface ManagementState {
   configVersion: number; publicBaseUrl: string; discordLogin: boolean; ownerUserId: string | null
   users: ManagementUser[]
   freeImagePolicy?: import('./member').FreeImagePolicy
+  serviceResources?: ServiceResources
+}
+export interface ServiceResources {
+  memory: { rssBytes: number; heapUsedBytes: number; heapTotalBytes: number }
+  uptimeSeconds: number
+  data: { bytes: number; checkedAt: string } | null
+  disk: { totalBytes: number; usedBytes: number; availableBytes: number } | null
 }
 export interface ManagementMemberChange {
   configVersion: number; groups: ManagementGroup[]; transferred: ManagementResources

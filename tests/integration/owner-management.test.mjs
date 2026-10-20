@@ -2,7 +2,7 @@ import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import {mkdtemp} from 'node:fs/promises';
+import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {handleMemberRoutes} from '../../server/member-routes.ts';
@@ -30,7 +30,7 @@ async function fixture(t) {
   const call=(route,{viewer=0,method,body,headers={}}={})=>new Promise((resolve,reject)=>{
     const req=http.request({hostname:'127.0.0.1',port:server.address().port,path:route,method:method||(body===undefined?'GET':'POST'),headers:{host:'nai.example',origin:'https://nai.example',...(viewer===null?{}:{cookie:cookies[viewer]}),'content-type':'application/json',...headers}},res=>{let text='';res.on('data',c=>text+=c);res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(text),text}));});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));
   });
-  return {db,env,account,call,counts:()=>({refreshCount,updateCount,statsCount})};
+  return {db,env,account,store,call,counts:()=>({refreshCount,updateCount,statsCount})};
 }
 
 test('owner 权限绑定内部 ID 和有效 Discord 会话，用户名、Key、伪造管理员头均不能提权',async t=>{
@@ -59,6 +59,26 @@ test('owner 复用成员管理和邀请码，但不能停用或删除自己',asy
   assert.equal((await call(route,{body:{action:'member-status',userId:'other-b',enabled:true}})).status,200);
   delete db.users[1].discord;
   const invite=await call(route,{body:{action:'discord-invite',userId:'other-b'}});assert.equal(invite.status,200);assert.match(invite.data.code,/^[A-Za-z0-9_-]{32}$/);assert.ok(db.users[1].discordInvite.hash);assert.equal(db.users[1].discordInvite.code,undefined);
+});
+
+test('服务资源仅随 owner 管理摘要返回，不暴露数据目录路径',async t=>{
+  const {store,call}=await fixture(t);
+  store.dataDir=await mkdtemp(path.join(tmpdir(),'nai-owner-resources-'));
+  t.after(()=>rm(store.dataDir,{recursive:true,force:true}));
+  await writeFile(path.join(store.dataDir,'library.sqlite'),Buffer.alloc(32));
+  const result=await call('/api/member/owner/member-management');
+  assert.equal(result.status,200);
+  assert.equal(result.data.serviceResources.data.bytes,32);
+  assert.ok(result.data.serviceResources.memory.rssBytes>0);
+  assert.ok(result.data.serviceResources.disk.totalBytes>0);
+  assert.ok(!result.text.includes(store.dataDir));
+  for(const viewer of [null,1]) {
+    const denied=await call('/api/member/owner/member-management',{viewer});
+    assert.equal(denied.status,viewer===null?401:403);
+    assert.equal(denied.data.serviceResources,undefined);
+  }
+  assert.equal((await call('/api/member/me')).data.serviceResources,undefined);
+  assert.equal((await call('/api/member/shared-status')).data.serviceResources,undefined);
 });
 
 test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key，响应不泄漏凭据',async t=>{
