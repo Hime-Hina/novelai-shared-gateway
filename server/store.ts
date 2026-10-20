@@ -14,6 +14,7 @@ import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from './free-image-policy.ts';
 import { activityDate } from './activity-heatmap.ts';
+import { R2_IMAGE_LIMIT_BYTES, type R2Image } from './r2-storage.ts';
 
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
@@ -38,6 +39,7 @@ export interface StoredGenerationRequest extends ProviderRequest {
   operationParameters?: object;
 }
 export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
+  r2?: R2Image; r2LastAttemptAt?: string; r2Error?: string;
   [key: string]: unknown;
   token?: string; accountId?: string; imageId?: string; requestId?: string; jobId?: string; memberId?: string; userId?: string;
   createdAt?: string; completedAt?: string; cancelledAt?: string; deadlineAt?: string; queuedDeadlineAt?: string;
@@ -1118,18 +1120,41 @@ export class JsonStore {
   }
 
   loadJobForUpdate(id: string) {
+    return this.loadItemForUpdate('jobs', id);
+  }
+
+  loadItemForUpdate(collection: Collection, id: string) {
     // 仅在串行 update 内使用：冷任务仍是旧行，必须恢复原排序及已提交快照，不能按新行分配顺序。
-    const cached = this.db!.jobs.find(job => job.id === id);
+    const cached = this.db![collection].find(job => job.id === id);
     if (cached) return cached;
-    const row = this.statements!.selectById.jobs.get({ id });
+    const row = this.statements!.selectById[collection].get({ id });
     const job = row ? safeJson(row.data, null) : null;
     if (!job) return null;
     const order = Number(row!.orderValue);
-    this.rowState.jobs.set(id, { data: row!.data, order });
-    this.orderKeys.jobs.set(id, order);
-    const index = this.db!.jobs.findIndex(item => this.orderKeys.jobs.get(item.id)! < order);
-    this.db!.jobs.splice(index < 0 ? this.db!.jobs.length : index, 0, job);
+    this.rowState[collection].set(id, { data: row!.data, order });
+    this.orderKeys[collection].set(id, order);
+    const index = this.db![collection].findIndex(item => this.orderKeys[collection].get(item.id)! < order);
+    this.db![collection].splice(index < 0 ? this.db![collection].length : index, 0, job);
     return job;
+  }
+
+  readR2Usage() {
+    const rows = this.sqlite!.prepare<[], { bytes: number; images: number; pending: number; errors: number }>(`
+      SELECT COALESCE(SUM(json_extract(data, '$.r2.byteLength')), 0) AS bytes,
+        COUNT(CASE WHEN json_extract(data, '$.r2.verifiedAt') IS NOT NULL THEN 1 END) AS images,
+        COUNT(CASE WHEN json_type(data, '$.r2') = 'object' AND json_extract(data, '$.r2.verifiedAt') IS NULL THEN 1 END) AS pending,
+        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
+    return { ...rows, limitBytes: R2_IMAGE_LIMIT_BYTES };
+  }
+
+  nextColdImage(now = Date.now()) {
+    return this.selectItems('images', `WHERE mime_type IN ('image/png', 'image/jpeg', 'image/webp')
+      AND COALESCE(mock, 0) = 0 AND json_extract(data, '$.file') IS NOT NULL
+      AND created_at < @cutoff AND json_extract(data, '$.r2.localRemovedAt') IS NULL
+      AND (json_extract(data, '$.r2Error') IS NULL OR json_extract(data, '$.r2LastAttemptAt') < @retry)
+      AND NOT EXISTS (SELECT 1 FROM jobs WHERE (image_id = images.id OR json_extract(jobs.data, '$.resultPending.imageId') = images.id)
+        AND (status IN ('queued', 'pending', 'running') OR json_type(jobs.data, '$.resultPending') = 'object'))
+      ORDER BY created_at, id LIMIT 1`, { cutoff: new Date(now - 86400000).toISOString(), retry: new Date(now - 3600000).toISOString() })[0] || null;
   }
 
   readOperatingLossSettlements(lossEventId: string) {

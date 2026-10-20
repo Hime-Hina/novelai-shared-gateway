@@ -34,6 +34,7 @@ type SessionMutation = Parameters<AuthStore['update']>[1];
 type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
 interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   dataDir?: string;
+  readR2Usage?: import('./store.ts').JsonStore['readR2Usage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
   update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation | { persist: false } | { collections: string[]; immediate: true }): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
@@ -180,7 +181,8 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
             discordId: u.discord?.id || null, inviteExpiresAt: u.discordInvite?.expiresAt || null,
             quota: quotaView(draft, u), recentActivity: recentActivity(db, u) })) };
       }, { persist: false });
-      reply(res, 200, { ...payload, serviceResources: await readServiceResources(store.dataDir) }); return true;
+      reply(res, 200, { ...payload, serviceResources: { ...await readServiceResources(store.dataDir),
+        ...(env.R2_BUCKET && store.readR2Usage ? { r2: store.readR2Usage() } : {}) } }); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);

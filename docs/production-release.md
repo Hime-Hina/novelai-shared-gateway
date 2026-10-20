@@ -287,30 +287,30 @@ capture 凭据最多有效五分钟；过期后不得修改时间戳或删除 `.
 恢复在维护状态、所有写入者停止后进行；先保留故障现场，再恢复数据库、对应图片及配置，
 使用备份记录的程序版本。先在独立目录验证完整性，再替换数据目录；不在运行中的库上解包。
 
-## 完整备份
+## 业务备份与 R2 冷图片
 
 `scripts/backup-production.py` 替换 bob 原 `/opt/novelai-shared-gateway/backup.py`，
-继续使用已有每日备份 timer，不新增开机服务或另一套调度。需要 Python 3.11+ 与 rsync；
-bob 已具备。备份存入 `/var/backups/novelai-shared-gateway`，目录 0700、文件 0600。
+继续使用已有每日备份 timer，不新增开机服务或另一套调度。需要 Python 3.11+ 与发布包
+自带 Node。备份存入 `/var/backups/novelai-shared-gateway`，目录 0700、文件 0600。
 
-每次先通过 SQLite backup API 读取一致性数据库快照，再复制图片、正式配置目录、
-bootstrap 凭据、相关 systemd unit/drop-in 与运行版本标记。rsync 按校验和复用前一份
-备份中的相同图片，不与在线数据建立硬链接；修改或删除在线文件不会改变已有备份。
-生成逐文件 SHA-256 清单，核验数据库完整性及所有数据库引用的图片，全部通过才发布
-完整备份目录；缺图、复制失败或校验失败不产生成功备份。
+每次通过 SQLite backup API 读取一致性数据库快照，再复制正式配置目录、bootstrap
+凭据、相关 systemd unit/drop-in 与运行版本标记。按用户要求，新快照不复制图片，
+manifest 明确标记 `imagesIncluded: false`；图片参数、归属、SHA-256 与 R2 位置仍在数据库。
+生成逐文件 SHA-256 清单并核验 SQLite 完整性，全部通过才发布备份目录。
 
 自动保留最近七份 `daily-*`；`cutover-*` 和此前旧格式备份不自动删除。
-删除旧快照的目录项不会删除其他快照仍引用的图片。在线备份不会停止生产：
-数据库与对应已完成图片有一致性检查，在途任务仍遵守正常重启恢复及未知结果规则，
-不能据此保证恢复尚未完整到达的上游结果。切换前必须在停接单、排空、停进程后再次备份。
+在线备份不会停止生产，在途任务仍遵守正常重启恢复及未知结果规则，不能据此保证恢复
+尚未完整到达的上游结果。切换前必须在停接单、排空、停进程后再次备份。
 
 ```sh
-# 日常完整备份；既有 timer 同样调用此脚本。
+# 日常业务备份，配置 R2 后加密上传；既有 timer 同样调用此脚本。
 sudo nice -n 10 ionice -c 3 python3 /opt/novelai-shared-gateway/backup.py
 # 获准切换且排空停止后固定保留的备份。
 sudo python3 /opt/novelai-shared-gateway/backup.py --label cutover
-# 只校验指定完整备份，不修改生产。
+# 只校验指定备份，不修改生产或读取云端图片。
 sudo python3 /opt/novelai-shared-gateway/backup.py --verify /var/backups/novelai-shared-gateway/具体备份目录
+# 仅清理已有持久 R2 校验凭据、且哈希一致的旧备份图片副本。
+sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 ```
 
 恢复时先执行 `--verify`，将 `data/` 复制到独立恢复目录，重新校验再按上节停机替换；
@@ -318,8 +318,41 @@ sudo python3 /opt/novelai-shared-gateway/backup.py --verify /var/backups/novelai
 将投入运行的恢复目录，否则后续原地修改会污染备份。备份权限与原数据目录的服务用户
 权限不同，正式恢复前须重新设置 `nai-gateway` 的归属与访问权限。
 
-这些是同机备份，保护误删及迁移回退；不能抵御 bob 整盘损坏。尚未配置异机备份目的地，
-不擅自上传含密钥的快照。切换前检查剩余空间，必要时将旧完整备份安全转存。
+执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
+使用 Standard 私有桶，凭据仅授予该桶对象读写；不启用公开访问。空闲时逐张处理生成超过
+24 小时的 PNG/JPEG/WebP，跳过 mock、活动及待恢复结果。先持久预留容量，条件 PUT 后
+GET 回读验证完整字节及 SHA-256，再持久化 R2 凭据，最后移除本地副本；失败保留副本并
+延迟一小时重试。不重编码图片，原图内嵌参数不变，数据库生成参数同样保留。
+历史查看、下载与缓存命中沿用原鉴权和签名 URL，由执行器代理读取并再次校验原图。
+
+本站图片含未确认上传累计上限为 **9,500,000,000 B（9.5 GB，界面显示 8.848 GiB）**。
+达到上限停止新增转存，保留本地新图，历史读取继续。每日业务快照压缩后使用独立随机
+32 字节密钥做 AES-256-GCM 加密，再存入同桶 `backups/`；单份压缩包最多 50 MiB，
+备份对象总量最多 500,000,000 B，成功回读、解密比对后才淘汰到七份。失败保留本地快照。
+密钥为 `/etc/novelai-shared-gateway/backup-encryption.key`，必须另外保留离机副本；
+仅有 R2 对象而丢失密钥无法恢复。配置和密钥只在服务器受保护文件及加密归档中保存。
+
+下载还原先从本地快照的 `r2-backup.json` 取得对象描述符（也可从桶内路径末段 SHA-256、
+对象长度和桶名重建），在受保护目录执行：
+
+```sh
+sudo /opt/novelai-shared-gateway/current/bin/node \
+  /opt/novelai-shared-gateway/current/executor/.output/server/node_modules/novelai-shared-gateway/scripts/r2-backup.mjs \
+  download /private/r2-backup.json /private/business.tar.gz \
+  /etc/novelai-shared-gateway/r2.env /private/backup-encryption.key
+```
+
+解密成功后才在独立目录解包，并执行 `--verify`。新备份数据库已包含当时的 R2 图片位置；
+旧完整备份清理图片时，先在 manifest 的 `r2Images` 中持久保存每个文件的云端描述符，
+再删除相同哈希的副本。恢复这类旧快照时，须按 `images.data.file` 匹配该映射，将对应
+`r2` 字段合入恢复副本的 `images.data`，再启动支持 R2 的版本，不能直接运行旧版程序。
+回退到不支持 R2 的版本前必须先从 R2 校验下载所有缺失原图；不能只切换程序链接。
+
+最近 24 小时尚未转存的新图只有在线本地原图，服务器损坏可能丢失；每日业务备份不包含
+这些原图。R2 存储上限只统计本站对象，免费额度由整个 Cloudflare 账户共享。A/B 类操作
+有[官方用量记录](https://developers.cloudflare.com/r2/platform/metrics-analytics/)，
+最终以账单为准；[预算告警](https://developers.cloudflare.com/billing/manage/budget-alerts/)
+不自动停用，历史读取仍可能超过 B 类免费额度。
 
 ## 上线后跟踪，不作为本次新增功能
 

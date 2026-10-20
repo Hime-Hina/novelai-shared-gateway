@@ -23,6 +23,7 @@ export interface ManagementState {
   serviceResources?: ServiceResources
 }
 export interface ServiceResources {
+  r2?: { bytes: number; images: number; pending: number; errors: number; limitBytes: number }
   memory: { rssBytes: number; heapUsedBytes: number; heapTotalBytes: number }
   uptimeSeconds: number
   data: { bytes: number; checkedAt: string } | null

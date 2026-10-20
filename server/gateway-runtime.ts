@@ -1,6 +1,8 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
 import { describeStoredResult, publishStoredResult } from './result-files.ts';
+import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
+import { archiveColdImage } from './cold-images.ts';
 import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.ts';
 import { withQuotaRequestDeadline } from './quota-timeout.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.ts';
@@ -27,7 +29,6 @@ import Negotiator from 'negotiator';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JobPreviews } from './job-previews.ts';
 import { isOfficialKey, officialKeyOwner, officialKeyError, OfficialKeyJobs } from './official-key-jobs.ts';
-import { createReadStream } from 'node:fs';
 import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -63,7 +64,7 @@ interface GatewayError extends Error {
 
 type ExecutionRequest = StoredGenerationRequest;
 type RequestSummary = Partial<ExecutionRequest>;
-type StoredImage = Pick<StoreItem, 'file' | 'mimeType'> & { base64?: string };
+type StoredImage = Pick<StoreItem, 'file' | 'mimeType' | 'r2'> & { id?: string; base64?: string };
 type StoredResult = StoredImage & { id?: string; imageId?: string; operation?: string; sha256?: string; byteLength?: number };
 interface JobResult {
   saved?: StoredResult; image?: GeneratedImage; seed?: number; balance?: number;
@@ -136,6 +137,9 @@ process.env.PUBLIC_MODE = 'true';
 process.env.NO_AUTO_DELETE = 'true';
 process.env.MOCK_WHEN_NO_ACCOUNT = 'false';
 const store = new JsonStore(dataDir);
+const coldConfig = r2Config();
+const r2Storage = coldConfig ? new R2Storage(coldConfig) : null;
+const imageStorage = new ImageStorage(dataDir, r2Storage, id => store.findImage(id));
 const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes([...runningJobControls.values()]));
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 // 公平账本和任务状态必须同步落盘，不能使用延迟写入。
@@ -155,6 +159,8 @@ let accountQuotaRefreshPromise: Promise<Awaited<ReturnType<typeof refreshAccount
 let accountQuotaAutoRefreshStarted = false;
 let generationReviewTimer: ReturnType<typeof setTimeout> | null = null;
 let generationReviewPromise: Promise<unknown> | null = null;
+let coldImageTimer: ReturnType<typeof setTimeout> | null = null;
+let coldImagePromise: Promise<unknown> | null = null;
 const jobWaiters = new Map<string, Set<JobWaiter>>();
 const runningJobControls = new Map<string, RunningControl>();
 const directGenerateTimeoutMs = Number(process.env.DIRECT_GENERATE_TIMEOUT_MS || 60_000);
@@ -233,6 +239,7 @@ export async function startGateway(handler: http.RequestListener) {
     console.log(`Nai2API listening on http://${host}:${port}`);
     startAccountQuotaAutoRefresh();
     startGenerationReviews();
+    startColdImages();
     logStartupQueueState().catch((error: unknown) => console.error('[runtime] failed to inspect startup queue:', error)).finally(() => {
       scheduleQueueDrain();
     });
@@ -703,8 +710,7 @@ async function acceptDirectRequest(url: URL, claim: PayloadClaim | undefined, ke
     let cached = await store.findImageByCacheKey(cacheKey);
     if (cached) {
       try {
-        if (cached.file) await stat(imageFilePath(cached.file));
-        else await readStoredImage(cached);
+        if (!await imageStorage.available(cached)) throw new Error('empty image');
       } catch (error) {
         console.error(`Cached image ${cached.id} is missing, regenerating:`, error);
         cached = null;
@@ -715,7 +721,7 @@ async function acceptDirectRequest(url: URL, claim: PayloadClaim | undefined, ke
         status: 'done', accountId: cached.accountId || '', imageId: cached.id, cost: 0,
         source: 'direct', generationPayloadClaim: claim
       });
-      return { id: job.id, requestId: job.requestId, cached: { file: cached.file, base64: cached.base64, mimeType: cached.mimeType },
+      return { id: job.id, requestId: job.requestId, cached: { id: cached.id, file: cached.file, base64: cached.base64, mimeType: cached.mimeType, r2: cached.r2 },
         balance: getUserOrThrow(db, token).balance };
     }
   }
@@ -1832,6 +1838,27 @@ function startGenerationReviews() {
   void run();
 }
 
+function startColdImages() {
+  if (!r2Storage) return;
+  const idle = () => !runtimeClosing && !queueDraining && runningJobControls.size === 0
+    && !store.db?.jobs.some(job => ['queued', 'pending', 'running'].includes(job.status || ''));
+  const run = async () => {
+    if (runtimeClosing) return;
+    let moved = false;
+    try {
+      if (idle()) {
+        coldImagePromise = archiveColdImage(store, r2Storage, idle);
+        moved = await coldImagePromise === true;
+      }
+    } catch { console.error('[storage] R2 cold image archival failed; existing copies retained, retry deferred.'); }
+    finally {
+      coldImagePromise = null;
+      if (!runtimeClosing) { coldImageTimer = setTimeout(run, moved ? 1000 : 60000); coldImageTimer.unref?.(); }
+    }
+  };
+  coldImageTimer = setTimeout(run, 60000); coldImageTimer.unref?.();
+}
+
 async function reconcileGenerationReviews(now = Date.now()) {
   // 不读取 NAI、账户健康或冷却状态；离线/停用时也必须按原截止时间结束核对。
   for (const pending of await store.readDueGenerationReviews(now)) {
@@ -2525,8 +2552,7 @@ async function findCachedGenerationImage(cacheKey: string, token: string) {
   const cached = await store.findImageByCacheKey(cacheKey);
   if (!cached || cached.token !== token) return null;
   try {
-    if (cached.file) { if (!(await stat(imageFilePath(cached.file))).size) return null; }
-    else if (!(await readStoredImage(cached)).length) return null;
+    if (!await imageStorage.available(cached)) return null;
   } catch { return null; }
   return cached;
 }
@@ -2537,8 +2563,7 @@ async function validateGenerationReplay<T extends JobMetadata>(result: T) {
     const image = await store.findImage(expected.id);
     if (!image || expected.token && image.token !== expected.token) throw unavailableGenerationResult(result.requestId);
     try {
-      if (image.file) { if (!(await stat(imageFilePath(image.file))).size) throw new Error('empty artifact'); }
-      else if (!image.base64) throw new Error('missing artifact');
+      if (!await imageStorage.available(image)) throw new Error('missing artifact');
     } catch { throw unavailableGenerationResult(result.requestId); }
   }
   const { replayImages, ...metadata } = result;
@@ -4164,13 +4189,7 @@ async function writeStoredImage(id: string, image: GeneratedImage) {
 }
 
 async function readStoredImage(image: StoredResult) {
-  if (image.file) {
-    return readFile(imageFilePath(image.file));
-  }
-  if (image.base64) {
-    return Buffer.from(image.base64, 'base64');
-  }
-  throw httpError(404, 'image content not found.');
+  return imageStorage.read(image);
 }
 
 async function removeStoredImages(images: StoredResult[]) {
@@ -4194,10 +4213,7 @@ function imageStorageName(id: string, mimeType = '') {
 }
 
 function imageFilePath(file: string) {
-  const resolved = path.resolve(dataDir, file);
-  const root = path.resolve(imageDir);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) throw httpError(403, 'invalid image path.');
-  return resolved;
+  return storedImagePath(dataDir, file);
 }
 
 function imageExtension(mimeType = '') {
@@ -4894,55 +4910,58 @@ function sendImage(res: GatewayResponse, statusCode: number, mimeType: string, b
 }
 
 async function sendStoredImage(res: GatewayResponse, statusCode: number, image: StoredResult | null | undefined, extraHeaders: OutgoingHttpHeaders = {}) {
-  if (!image?.file) {
+  if (!image) throw httpError(404, 'image content not found.');
+  const source = await imageStorage.open(image);
+  if (!('handle' in source)) {
     sendImage(res, statusCode, image?.mimeType || 'image/png', await readStoredImage(image!), extraHeaders);
     return;
   }
 
-  const filePath = imageFilePath(image.file);
-  const fileStat = await stat(filePath);
-  res.writeHead(statusCode, {
-    'content-type': image.mimeType || 'image/png',
-    'cache-control': 'public, max-age=31536000, immutable',
-    'content-length': fileStat.size,
-    ...corsHeaders(),
-    ...extraHeaders
-  });
+  try {
+    const fileStat = await source.handle.stat();
+    res.writeHead(statusCode, {
+      'content-type': image.mimeType || 'image/png',
+      'cache-control': 'public, max-age=31536000, immutable',
+      'content-length': fileStat.size,
+      ...corsHeaders(),
+      ...extraHeaders
+    });
 
-  await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    const cleanup = () => {
-      stream.off('error', onStreamError);
-      res.off('error', onResponseError);
-      res.off('finish', onFinish);
-      res.off('close', onClose);
-    };
-    const finish = () => {
-      cleanup();
-      resolve();
-    };
-    const onStreamError = (error: Error) => {
-      cleanup();
-      if (!res.destroyed) res.destroy(error);
-      resolve();
-    };
-    const onResponseError = (error: Error) => {
-      cleanup();
-      stream.destroy();
-      reject(error);
-    };
-    const onFinish = () => finish();
-    const onClose = () => {
-      cleanup();
-      stream.destroy();
-      resolve();
-    };
-    stream.once('error', onStreamError);
-    res.once('error', onResponseError);
-    res.once('finish', onFinish);
-    res.once('close', onClose);
-    stream.pipe(res);
-  });
+    await new Promise<void>((resolve, reject) => {
+      const stream = source.handle.createReadStream();
+      const cleanup = () => {
+        stream.off('error', onStreamError);
+        res.off('error', onResponseError);
+        res.off('finish', onFinish);
+        res.off('close', onClose);
+      };
+      const finish = () => {
+        cleanup();
+        resolve();
+      };
+      const onStreamError = (error: Error) => {
+        cleanup();
+        if (!res.destroyed) res.destroy(error);
+        resolve();
+      };
+      const onResponseError = (error: Error) => {
+        cleanup();
+        stream.destroy();
+        reject(error);
+      };
+      const onFinish = () => finish();
+      const onClose = () => {
+        cleanup();
+        stream.destroy();
+        resolve();
+      };
+      stream.once('error', onStreamError);
+      res.once('error', onResponseError);
+      res.once('finish', onFinish);
+      res.once('close', onClose);
+      stream.pipe(res);
+    });
+  } finally { await source.handle.close(); }
 }
 
 function sendBusyImage(res: GatewayResponse, cooldownUntil?: string) {
@@ -5211,6 +5230,7 @@ function installShutdownHandlers(serverInstance: Server) {
     if (queueDrainTimer) clearTimeout(queueDrainTimer);
     if (accountQuotaRefreshTimer) clearTimeout(accountQuotaRefreshTimer);
     if (generationReviewTimer) clearTimeout(generationReviewTimer);
+    if (coldImageTimer) clearTimeout(coldImageTimer);
     const connectionsClosed = new Promise(resolve => serverInstance.close(resolve));
     // 宽限到期保留持久任务/产物证据；强制退出后的恢复不依赖信号回调。
     const forceTimer = setTimeout(() => process.exit(0), graceMs);
@@ -5218,7 +5238,7 @@ function installShutdownHandlers(serverInstance: Server) {
       // 已开始的派发事务先结束，随后控制对象的 done 才覆盖全部在途执行。
       while (queueDraining) await sleep(10);
       await Promise.all([...runningJobControls.values()].map(control => control.done));
-      await Promise.allSettled([accountQuotaRefreshPromise, generationReviewPromise].filter(Boolean));
+      await Promise.allSettled([accountQuotaRefreshPromise, generationReviewPromise, coldImagePromise].filter(Boolean));
       await store.queue;
       store.flushSync();
       // 完成事务早于图片 HTTP 发送结束；宽限内也让现有响应自然结束。

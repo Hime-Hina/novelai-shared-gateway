@@ -30,6 +30,11 @@ function uptime(seconds: number | undefined) {
         <strong id="serviceData">{{ bytes(data?.data?.bytes) }}</strong>
         <p>数据库、图片等文件大小之和 · 每分钟采样</p>
         <p v-if="data?.data">采样于 {{ date(data.data.checkedAt) }}</p>
+        <template v-if="data?.r2">
+          <p id="serviceR2">R2 {{ bytes(data.r2.bytes) }} / {{ bytes(data.r2.limitBytes) }} · 已转存 {{ data.r2.images }} 张</p>
+          <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
+          <p v-if="data.r2.pending || data.r2.errors">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张（稍后重试）</p>
+        </template>
       </NCard>
       <NCard size="small">
         <span class="metric-label">数据目录所在磁盘（已用 / 总量）</span>
