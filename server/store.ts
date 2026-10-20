@@ -1152,9 +1152,14 @@ export class JsonStore {
       AND COALESCE(mock, 0) = 0 AND json_extract(data, '$.file') IS NOT NULL
       AND created_at < @cutoff AND json_extract(data, '$.r2.localRemovedAt') IS NULL
       AND (json_extract(data, '$.r2Error') IS NULL OR json_extract(data, '$.r2LastAttemptAt') < @retry)
-      AND NOT EXISTS (SELECT 1 FROM jobs WHERE (image_id = images.id OR json_extract(jobs.data, '$.resultPending.imageId') = images.id)
-        AND (status IN ('queued', 'pending', 'running') OR json_type(jobs.data, '$.resultPending') = 'object'))
-      ORDER BY created_at, id LIMIT 1`, { cutoff: new Date(now - 86400000).toISOString(), retry: new Date(now - 3600000).toISOString() })[0] || null;
+      AND id NOT IN (
+        SELECT image_id FROM jobs INDEXED BY idx_jobs_active_created
+          WHERE status IN ('queued', 'pending', 'running') AND image_id IS NOT NULL
+        UNION SELECT image_id FROM jobs INDEXED BY idx_jobs_result_pending
+          WHERE json_type(data, '$.resultPending') = 'object' AND image_id IS NOT NULL
+        UNION SELECT json_extract(data, '$.resultPending.imageId') FROM jobs INDEXED BY idx_jobs_result_pending
+          WHERE json_type(data, '$.resultPending') = 'object' AND json_extract(data, '$.resultPending.imageId') IS NOT NULL)
+      ORDER BY order_value ASC LIMIT 1`, { cutoff: new Date(now - 86400000).toISOString(), retry: new Date(now - 3600000).toISOString() })[0] || null;
   }
 
   readOperatingLossSettlements(lossEventId: string) {

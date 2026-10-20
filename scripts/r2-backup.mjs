@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { readFile, writeFile, stat } from 'node:fs/promises';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -50,6 +50,6 @@ async function main() {
     await remote.removeBackup({ bucket: config.bucket, key: old.key, byteLength: old.bytes, sha256: old.key.split('/').at(-1) });
   }
 }
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {
   main().catch(() => { console.error('R2 business backup failed; local snapshot retained.'); process.exitCode = 1; });
 }

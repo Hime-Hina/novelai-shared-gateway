@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -52,7 +52,9 @@ test('备份 CLI 上传、回读解密及下载还原，验证后才清理到七
       return new Response(await readFile(file));
     };`);
   const run = promisify(execFile);
-  const cli = fileURLToPath(new URL('../../scripts/r2-backup.mjs', import.meta.url));
+  const scriptsLink = path.join(root, 'scripts-link');
+  await symlink(fileURLToPath(new URL('../../scripts/', import.meta.url)), scriptsLink, 'junction');
+  const cli = path.join(scriptsLink, 'r2-backup.mjs');
   const call = (args, failRead = false) => run(process.execPath, ['--import', pathToFileURL(preload).href, cli, ...args], {
     windowsHide: true, env: { ...process.env, R2_TEST_FAIL_READ: failRead ? '1' : '0' }
   });

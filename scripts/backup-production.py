@@ -74,6 +74,8 @@ def clean_archived_images(source, destination):
         images = [json.loads(row[0]) for row in db.execute('SELECT data FROM images')]
     archived = {image['file']: image['r2'] for image in images
                 if image.get('file') and image.get('r2', {}).get('verifiedAt')}
+    if not archived:
+        return 0, 0
     removed, released = 0, 0
     for snapshot in sorted(destination.iterdir()):
         if snapshot.is_symlink() or not snapshot.is_dir() or not snapshot.name.startswith(('daily-', 'cutover-')):
@@ -207,6 +209,8 @@ def upload_business_backup(snapshot):
                         'upload', str(archive), str(snapshot / 'r2-backup.json'),
                         str(env_file), str(key_file), snapshot.name],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if not (snapshot / 'r2-backup.json').is_file():
+            raise ValueError('R2 upload did not produce a verified receipt')
 
 
 def main():

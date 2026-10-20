@@ -174,3 +174,23 @@ test('已退出内存缓存的冷图仍可转存，持久顺序与其他图片�
   assert.deepEqual(await f.storage.read(await f.store.findImage('img_new')), png);
 });
 
+test('冷图筛选复用任务及图片索引，不对每张图片重复扫描全部任务；待恢复两种关联都保留', async t => {
+  const f = await fixture(t);
+  for (const id of ['img_active', 'img_pending_ref', 'img_pending_result', 'img_ready']) await f.seed(id);
+  await f.store.update(db => db.jobs.push(
+    { id: 'active', status: 'running', imageId: 'img_active' },
+    { id: 'pending', status: 'failed', imageId: 'img_pending_ref', resultPending: { imageId: 'img_pending_result' } },
+    { id: 'no_image', status: 'running' }
+  ), { immediate: true });
+  const select = f.store.selectItems.bind(f.store);
+  let plan;
+  t.mock.method(f.store, 'selectItems', (collection, where, parameters) => {
+    plan = f.store.sqlite.prepare(`EXPLAIN QUERY PLAN SELECT id, data FROM ${collection} ${where}`).all(parameters).map(row => row.detail).join('\n');
+    return select(collection, where, parameters);
+  });
+  assert.equal(f.store.nextColdImage(now).id, 'img_ready');
+  assert.doesNotMatch(plan, /CORRELATED|SCAN jobs(?:\n|$)/);
+  assert.match(plan, /idx_jobs_result_pending/);
+  assert.match(plan, /idx_images_order/);
+});
+
