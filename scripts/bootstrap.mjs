@@ -28,9 +28,9 @@ export async function bootstrap({ env=process.env, dependencies, log=console.log
   for (const name of protectedNames) await ensureAbsent(path.join(config.dataDir,name));
   // 依赖在文件预检后加载；不会导入服务入口，不启动 HTTP 服务或上游请求。
   const deps=dependencies || {
-    ...(await import('../server/store.js')),
-    ...(await import('../server/member-auth.js')),
-    ...(await import('../server/fair-quota.js')),
+    ...(await import('../server/store.ts')),
+    ...(await import('../server/member-auth.ts')),
+    ...(await import('../server/fair-quota.ts')),
   };
   if(!dependencies) {
     // 提前验证原生 SQLite 依赖，避免依赖损坏时留下半初始化目录。

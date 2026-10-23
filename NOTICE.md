@@ -8,4 +8,4 @@
 
 NovelAI 的名称、服务、订阅和模型属于相应权利人，本项目与其没有官方关联。
 
-`test-support/msgpack.mjs` 是 `@msgpack/msgpack` 3.1.3 的独立解码器，用于验证原生流式响应，适用 ISC 许可，完整声明保留在 [test-support/msgpack.LICENSE.txt](test-support/msgpack.LICENSE.txt)。本项目的非商用条款不替代该第三方组件的许可。生产生图帧由 `server/native-stream.js` 编码，不依赖这个测试解码器。
+`tests/helpers/msgpack.mjs` 是 `@msgpack/msgpack` 3.1.3 的独立解码器，用于验证原生流式响应，适用 ISC 许可，完整声明保留在 [tests/helpers/msgpack.LICENSE.txt](tests/helpers/msgpack.LICENSE.txt)。本项目的非商用条款不替代该第三方组件的许可。生产生图帧由 `server/native-stream.js` 编码，不依赖这个测试解码器。

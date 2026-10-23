@@ -1,10 +1,31 @@
 # 修改为自己的域名，并与 .env 的 PUBLIC_HOST 保持一致。
+# 网页与 API 统一进入 Nuxt，执行器只接受 Nuxt 的内部调用。
+(nuxt_routes) {
+    @api path /api /api/* /ai /ai/* /v1 /v1/* /user /user/* /generate
+    handle @api {
+        reverse_proxy 127.0.0.1:3000 {
+            flush_interval -1
+        }
+    }
+    handle {
+        encode zstd gzip
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+
 gateway.example.com {
     @private path /admin* /api/admin* /api/health /memory
-    respond @private 404
-    reverse_proxy 127.0.0.1:18081 {
-        header_up Host gateway.example.com
-        flush_interval -1
+    handle @private {
+        respond 404
     }
+    import nuxt_routes
+    # Caddy 保留原 Host/Origin，默认忽略伪造的 X-Forwarded-For 并写入连接来源。
     # 不启用包含查询参数的访问日志；兼容 URL 可能携带调用 Key。
+}
+
+# 私有管理同源入口；SSH 隧道应转发到此端口，而不是直接转发到网页或执行器。
+http://127.0.0.1:18082, http://localhost:18082 {
+    bind 127.0.0.1
+    # 保留浏览器原 Host 和端口，使 SSH 本地端口的 Origin 校验仍然成立。
+    import nuxt_routes
 }

@@ -1,0 +1,31 @@
+[Unit]
+Description=NovelAI gateway production Nuxt web
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=nai-gateway-web
+Group=nai-gateway-web
+WorkingDirectory=/opt/novelai-shared-gateway/current/web
+EnvironmentFile=/etc/novelai-shared-gateway/web.env
+ExecStart=/opt/novelai-shared-gateway/current/bin/node /opt/novelai-shared-gateway/current/web/.output/server/index.mjs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+InaccessiblePaths=/var/lib/novelai-shared-gateway /etc/novelai-shared-gateway/gateway.env /etc/novelai-shared-gateway/executor.env
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryHigh=256M
+MemoryMax=384M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

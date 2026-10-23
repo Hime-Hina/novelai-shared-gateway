@@ -1,0 +1,784 @@
+# 共享网关改进计划
+
+状态：Q1–Q4 与冷却方案保持已确认；按最新反馈修订 Q5：V5 按恢复机制处理，订阅 Anlas 允许一定故障损耗，购买 Anlas 的疑似/确认损耗逐笔记录。损耗阈值与正常调用资格分离，不因补偿配置禁止原本允许的请求。已将独立评估确认的账务、批次、认证、事件和分阶段发布缺口纳入验收。ORM 仍优先评估，避免扩大自写存储框架。dff5ee4 已在批准窗口内于 2026-10-19 06:01 恢复正式入口，生产切换与真实验收已完成。更新日期：2026-10-19，Asia/Shanghai。
+
+本计划覆盖已有审计问题、登录会话、实时状态、前端组件化、调用热力图、首屏性能、排队诊断、TypeScript 迁移与测试部署。先修账本和访问隔离，再按页面替换前端；保留现有 Native、OpenAI 接口和共享账户调度规则。
+
+当前交付：测试服与正式服务均运行 **dff5ee4**，已通过完整 Linux CI；当前首页采用统一刷新、上海时区和新版额度布局，owner 连续 1 天、普通成员连续 7 天未访问后过期，可见页面自动续期。独立 Discord OAuth 验收入口为 https://nai-test.himehina.space/ 。发布前配置、完整备份、回退与清理记录统一见[正式发布准备](production-release.md)。用户已明确将历史长等待、冷加载成本、长期 OAuth 和持续负载等证据边界留待生产上线后跟踪；D02 已于 10 月 19 日完成正式切换、原 owner 会话沿用、两次 V5 真实生图及浏览器验收。仅扣 owner 约 0.00938 个 V5 百分点，Anlas 为零，一次性安排已结束。
+
+已完成文档、fork、原代码历史保存、31 项实施及正式发布验收。Drizzle 评估和有界接入已完成，未增加自写通用存储框架。后续版本仍须独立验收，并取得用户明确的生产替换授权。
+
+## 最终确认摘要
+
+### 已确认的方向与约束
+
+| 项目 | 已确认内容 |
+| --- | --- |
+| 框架与语言 | Vue 3、TypeScript、Nuxt；由 Nuxt 管理前端构建，不再先建设独立 Vue/Vite 工程 |
+| 迁移路线 | 第一步 Nuxt 网页接现有网关；第二步依次迁移查询、认证管理和生图入口；单一账本写入方、单一上游调度器 |
+| 存储与队列 | 复用 SQLite/better-sqlite3，持久请求与批次、统一恢复、内部幂等和结果查询；不引入 Redis/额外消息队列 |
+| 客户端兼容 | 第三方客户端不要求修改或新增幂等键；内部重试去重，自有网页可支持操作键；不能承诺识别无标识的第三方重试 |
+| 故障体验 | 普通故障自动恢复、失败本地预扣幂等退回，不逐单等待管理员；未知原尝试不自动重发；损耗分资源记录，不暗中摊扣其他成员 |
+| 冷却方案 | 成功后 10 秒；普通故障 10/20/40/60 秒；容量拒绝 30/60/120 秒；遵守更长的上游 Retry-After，成功清零，截止时间取最大并持久化 |
+| 包管理与目录 | pnpm、精确版本、单一 pnpm 锁文件；测试集中到 tests，保留全部 23 个现有测试入口；包管理切换与纯搬迁分别提交 |
+| 产品范围 | 统一前端风格与组件、细粒度实时更新、GitHub 风格热力图、登录状态改进、浏览器首屏优化与最近排队数据诊断 |
+| 协议顺序 | 迁移前记录差异并建立当前客户端回归基线；完整迁移 Nuxt 并通过 N03 后才实施官方协议差异消解 C03 |
+| 仓库与提交 | 使用当前 gh 用户的 fork，保留现有四个代码提交；每个修复至少一个独立提交，推送 fork，保持分支与工作区干净 |
+| 测试与生产 | 可复制生产数据到隔离环境，默认模拟 NAI，必要时低频 V4.5 免费验证；不得影响生产，替换生产还须另行明确允许 |
+
+### 最终选型确认记录
+
+2026-10-17 用户已确认 Q1–Q4，并要求 Q5 采用可调整默认值，随后明确 V5 可恢复、订阅 Anlas 可容忍一定损耗、购买 Anlas 必须记录损耗。以下按最新要求执行；具体 ORM 库按已授权的评估流程决定，不预先认定必用某个库。
+
+| 事项 | 已确认选择或授权默认 | 实施边界 |
+| --- | --- | --- |
+| Q1 组件库 | Naive UI，统一基础组件、主题、表格和热力图 | 现成组件按页面需要选择，不单独为键盘操作更换 UI，保留组件默认交互能力；不再重开框架选型，仅遇明确组件缺口再评估 Element Plus |
+| Q2 执行与部署组合 | Nuxt 网页/API + 独立 Nitro 执行服务，由 bob 上两个 systemd unit 分别管理；CI 构建，Docker 非必需 | 增加一条内部通信链路，换取 Nuxt 重启不打断上游生成；同机故障仍无法隔离 |
+| Q3 登录有效期 | SQLite 持久会话；owner 连续 1 天、普通成员连续 7 天未访问才过期；可见网页访问后从当前时间重新计时 | 保留撤销、成员资格与重启恢复；SSE、后台标签页和客户端生图不续期 |
+| Q4 热力图口径 | 最近一年，Asia/Shanghai 日期，按提交日计每张生图任务；成功与失败可分看 | 一次四张计四个任务，不是一次 HTTP 调用；若要 HTTP 调用次数，需新增批次/请求统计，历史无法准确补齐 |
+| Q5 故障损耗策略 | V5 恢复差额单独跟踪；订阅 Anlas 允许小额损耗；购买 Anlas 每笔疑似/确认损耗留痕 | V5 1 个百分点/24 小时、订阅 Anlas 100/24 小时及 500/30 天改为滚动观察/告警阈值；购买 Anlas 首笔疑似损耗即提示，均不作为正常生成的补偿资金门槛 |
+
+原先“补偿上限为零或没有运营预留就禁止对应有成本请求”的规则撤回。损耗阈值不等于可用余额，也不是保证总损失不会超过该数值的硬上限；阈值触发后台提示、故障诊断与既定冷却，不取消原有调用资格或正常失败退款。购买 Anlas 继续遵守成员余额、请求明确允许使用购买额度、官方固定余额耗尽等已有校验；没有新增自动购买、自动扣管理员个人钱包或摊扣他人余额的授权。
+
+### 工程默认与新增存储要求
+
+- 实时更新使用提交后 SSE 事件，200 毫秒合并、最长一秒发出；重连校准快照。Nuxt 自带数据查询能力优先，不预装 Vue Query、Pinia 或多套 UI 库。ORM 按 C06 优先评估，不再作为默认排除的依赖。
+- 数据库采用 WAL 与 FULL、单写入方；结果文件可关联任务并验证恢复。任务执行结果与消费核对状态分开，账本与文件保存边界通过故障注入检查。
+- 新网页先客户端读取私人数据，不先扩大 Cookie 范围或引入私人 SSR 缓存；热力图与管理统计不阻塞关键首屏。
+- 份额分配、订阅 Anlas 分配和默认关闭的续用规则先保持；没有新增按周期重分、强制回收闲置余额或默认开启借用的授权。
+- 队列容量、排队有效期、故障次数阈值、资源上限与精确依赖版本属于实施参数：结合 P01 和模拟结果给出明确初值、依据及边界测试，交付测试版本时列出；冷却时长保持已确认值，Q5 损耗告警阈值通过有权限、留痕的配置调整。
+- 数据和图片不新增自动删除策略；幂等历史归档与查询继续保护成员权限。生产敏感数据、HAR 和原始日志不进入公开 fork。
+
+### 审计覆盖与当前完成状态
+
+| 工作范围 | 对应项 | 本轮检查结果 |
+| --- | --- | --- |
+| 访问隔离与安全边界 | F01 图片所有权、F07 上游图片校验、F08 可信代理登录限流、F09 配置版本冲突 | 已完成源码修复与CI，最终候选隔离验收通过，匿名/跨成员拒绝已实测；2026-10-19 已随 dff5ee4 获准发布 |
+| 存储、额度与规模 | C06 ORM 评估、F02 写失败内存回滚、F03 分资源损耗台账、F05 结算历史退出热状态 | F02/C06/F03/F05 已实现并验证；分资源故障核对与管理告警完整，终态结算凭据退出热状态并保留冷查询/幂等，合成 10 万条规模验证通过 |
+| 排队与恢复 | F04 准入/取消、F06 请求与批次、F10 崩溃恢复、F11 独立执行、F12 冷却 | 已实现并通过托管 CI；bob 独立 systemd 的强杀网页、正常/强杀执行器和二次结算幂等已通过。生产副本四个模拟任务按顺序完成，完成到下次派发约10秒；历史 Native 超时及生产长尾是否同因仍未证明 |
+| 登录、状态与前端 | A01 会话、R01 事件、U01/U02 页面、U03 热力图 | 已通过CI与相应浏览器验证，含实时刷新、七天会话、热力图和授权校准。D01补同会话、同压缩的12条匿名对照，确认并行查询与静态缓存；新版冷缓存FCP中位344ms、旧版288ms，热缓存分别260/272ms，不声称所有场景提速，历史生产长等待仍未复现 |
+| 工程与迁移 | T01 TypeScript、C01 清理、C02 契约基线、C03 协议差异、C04 目录、C05 pnpm、N01–N03 后端迁移 | T01/C01/C02/C04/C05/C06/N01/N02/N03已完成计划内明确范围；Nuxt统一入口、执行器唯一业务与持久化所有者。C03支持范围及必要网关差异已记录。T01最后入口及JS发布产物已通过完整Linux CI、bob升级/同库回退及最终生图幂等检查；旧页面与运维/测试脚本并未全部改为TS |
+| 证据与发布 | P00 fork/文档、P01 近期队列/浏览器基线、D01 隔离测试、D02 生产切换 | P00/P01/D01 已完成所列验收；当前 dff5ee4 测试库为 893 任务/890 图片/898 账目。真实 OAuth、滚动会话与刷新已验证；最新生产快照另做禁网迁移和同库回退检查。正式双服务配置、完整备份及磁盘整理见发布准备记录。历史实施记录的版本/数量仅代表当时状态；D02 已于 2026-10-19 06:01 切换并完成真实验收。当前 owner Cookie 已在正式域名沿用和续期，其他旧会话仍需登录；备份与回退产物继续保留 |
+
+分支继承 `56c0c9d` 及其已有历史。下面的实施记录按当时版本保留，不把历史阶段的“尚未”误读为当前未完成。原基线的 203 项测试不能作为新方案验收，当前完成依据如下。
+
+### 2026-10-19 收尾证据索引
+
+核对原计划的全部 31 项及原有完成依据。业务源码与正式 dff5ee4 一致，之后只增加运维
+工具、部署配置及文档；[业务 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39131291405)
+与[最终运维 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39146617878)均成功。
+工作流覆盖完整后端/网页/执行器测试、类型检查、双进程实际 HTTP、三份镜像及解压产物，
+不是仅凭测试文件存在判定通过。本次额外执行安全/协议定向 88 项，全部通过。
+
+| 项目 | 已核对的实现与验收证据 |
+| --- | --- |
+| P00 | 当前 gh 用户 Hime-Hina 的 fork 与 upstream 关系正确；原四个提交均为 HEAD 祖先，首份计划提交仅改文档 |
+| P01 | [队列基线](queue-baseline.md)、[浏览器基线](browser-baseline.md)含分位数、缺失率及复现条件；60 条原始浏览器样本 SHA-256 与冻结记录一致 |
+| F01 | 图片所属成员检查；[真实 HTTP 权限回归](../tests/integration/native-http.test.mjs)与正式匿名拒绝/本人图片领取 |
+| F02 | store 失败重载及延迟写边界；[SQLite 失败注入](../tests/integration/store.test.mjs)覆盖内存、索引、钱包及下一次提交 |
+| F03 | [运营账](../tests/integration/operating-accounting.test.mjs)、[损耗查询/权限](../tests/integration/failure-accounting.test.mjs)、[五分钟核对/迟到结果](../tests/integration/generation-review.test.mjs)覆盖分资源、不重复分配和软阈值 |
+| F04 | [准入与原子停止](../tests/integration/queue-admission.test.mjs)覆盖持续提交、上限、SQL 回滚、重复退款与在途结算 |
+| F05 | 冷结算表与唯一终态凭据；[回归](../tests/integration/fair-quota-settlements.test.mjs)及[十万条归档测量](failure-accounting.md) |
+| F06 | [真实批次 HTTP](../tests/integration/native-batch-http.test.mjs)断言 A1→B1→A2、失败终止、断线/重启和同键领取；[请求控制](../tests/integration/request-control.test.mjs)验证并发取消 |
+| F07 | provider 按操作验证产物；[图片/Vibe/ZIP/流边界回归](../tests/unit/provider-features.test.mjs)与 HTTP 伪图失败退款 |
+| F08 | client-ip 与 Nuxt 转发重建可信代理链；[回归](../tests/integration/client-ip.test.mjs)验证伪造头、地址隔离和配置拒绝 |
+| F09 | 同一事务检查配置版本；[路由回归](../tests/integration/member-routes.test.mjs)及[Vue 草稿保护](../web/tests/nuxt/management-groups.test.ts) |
+| F10 | FULL、产物描述、文件/目录同步与启动恢复；[强杀回归](../tests/integration/result-recovery-http.test.mjs)覆盖六个边界、重复启动、Vibe、503 份冷结果 |
+| F11 | 独立 Nitro、唯一写入方；[真实双进程回归](../web/tests/integration/executor-lifecycle.test.mjs)、bob 故障/回退演练与正式双服务 |
+| F12 | [持久冷却及截止唤醒回归](../tests/integration/shared-cooldown.test.mjs)、两组退避/成功复位；真实 Retry-After 与重启检查见[生命周期记录](request-lifecycle.md) |
+| A01 | 持久摘要、角色绑定与可见续期；[存储](../tests/integration/member-session-storage.test.mjs)、[HTTP](../tests/integration/member-session-http.test.mjs)及正式 owner 沿用/续期 |
+| R01 | [事件合并](../tests/unit/state-events.test.mjs)、[提交/回滚](../tests/integration/store-events.test.mjs)、同一浏览器 SSE 跨执行器重启校准；正式调用触发自动更新 |
+| U01 | Nuxt/Vue/Naive 成员页与共用刷新/搜索/toast；[成员页验收](nuxt-member-portal.md)及正式浏览器检查 |
+| U02 | 共用管理入口及成员/分组/上游/损耗组件；[管理页验收](nuxt-management-portal.md)、权限/409 草稿/阈值/来源回归 |
+| U03 | 上海日界、全年 SQL、逐张任务统计；[热力图验收](call-heatmap.md)与 Naive 日历、权限、冷历史、聚合回归 |
+| T01 | server 业务模块已全部迁为严格 TS；CI 发射 JS、检查三镜像和 SQLite worker；运维/测试/旧静态页 JS 不冒充已迁移 |
+| N01 | 正式查询/SSE 仅连接执行器；双进程回归验证 Discord 刷新去重/先落盘、只读额度及成员范围 |
+| N02 | 正式登录/OAuth/管理写入转发；双进程回归验证 Cookie、CSRF、身份、版本及丢回执不重写 |
+| N03 | 正式生成/任务/预览/结果流转发；双进程回归验证背压、32 MiB、长流、断线/强杀/取消；正式 JSON/SSE V5 验收 |
+| C01 | 点名的三个无调用函数独立删除，MessagePack 与普通存储重复实现由库替代，有真实调用的领域逻辑保留 |
+| C02 | [固定官方/客户端证据与契约矩阵](api-contract.md)、[独立期望回归](../tests/unit/api-contract.test.mjs) |
+| C03 | N03 之后实施；[六项差异结案及明确保留的协议边界](api-contract.md)，实际 JSON/SSE/MessagePack、字段与错误包络验证 |
+| C04 | 纯搬迁提交 7d08e21 保留原 23 个测试入口；根/server/scripts 无散落测试，CI/Docker/路径/测试发现一致 |
+| C05 | 单一 pnpm 锁、固定 pnpm 10.32.1、精确依赖；CI/Docker 冻结安装并实际打开 better-sqlite3 |
+| C06 | [Drizzle 评估](orm-evaluation.md)、schema/迁移/普通 CRUD 接入；[旧库、索引、事务和失败回归](../tests/integration/storage-orm.test.mjs) |
+| D01 | [bob 隔离验收](test-deployment.md)：独立 OAuth/mock/数据、浏览器、12 MiB 产物与资源采样、同库回退；测试服务保持 disabled |
+| D02 | [正式发布记录](production-release.md)：用户授权、排空、完整备份、单调度器切换、数据摘要、真实 V5 与 owner/前端验收；回退版本及前后备份保留 |
+
+11:02 再次只读核对正式 current 为 dff5ee4，两服务仍 active、重启数 0、健康检查 200。
+本轮计划及交付已完成；历史长尾根因、冷加载成本、长期 OAuth/持续负载等按用户此前
+要求单列在[上线后跟踪事项](production-release.md)，不将其写成已经解决或无限延长本轮实施。
+
+### 实施记录
+
+每项源码修复独立提交，以下记录实际提交号。验证命令对应当时提交的文件位置，C04 后使用新的 tests 目录。这里的“完成”指代码与所列验证，隔离部署及生产批准仍另行验收。
+
+超大正文测试客户端补修：独立 Node HTTP 对照复现 `agent:false` 默认 `Connection:close` 与提前 413 的关闭竞态，30 次中 4 次响应前 ECONNRESET；同正文改 keep-alive 后 30/30 收到完整 413。仅修改 Nuxt 请求测试 helper 的默认 Connection，仍用独立 socket、保留显式头和全部 413/后续 202 断言，不改产品正文上限、超时或重试。原场景连续 20 轮及完整网页 116/116 通过；调试循环已移除。
+
+| 工作项 | 提交 | 已完成与验证 | 部署与回滚影响 |
+| --- | --- | --- | --- |
+| F01 | [a787042](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a787042) | 图片路由验证所属成员；有效限时签名与管理员访问保持。`node --test native-http.test.mjs` 8/8 通过，覆盖过期/伪造签名、本人/他人/匿名/管理员及现有生图 HTTP 回归 | 无数据迁移；未部署生产，旧版本仍存在越权缺陷 |
+| F02 | [a19a273](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a19a273) | 新变更前先提交旧延迟写，回调/SQL 失败后从已提交 SQLite 重载内存与索引；延迟写失败保留待写范围，定时器异常不终止进程。`node --test server/store.test.mjs fair-integration.test.mjs scripts/bootstrap.test.mjs` 20/20 通过，含真实 SQLite 失败、预扣回滚、部分历史及全量替换失败 | 无 schema 迁移；生产原已强制立即写。通用延迟写模式现在会在下一次 update 前刷盘，失败路径有重载开销；后续 P01 记录，不引入新事务框架 |
+| F07 | [497b340](https://github.com/Hime-Hina/novelai-shared-gateway/commit/497b340) | 普通/JSON/ZIP/流式图片统一校验；单产物 64 MiB、流累计 256 MiB，ZIP CRC/解压上限和 SOCKS 分块完整性检查。`node --test provider-features.test.mjs server/native-image.test.mjs server/native-stream.test.mjs native-adapter-test.mjs` 35/35、`node --test native-http.test.mjs` 9/9 通过，含 HTTP 200 HTML 失败退款 | 复用原图片验证器，无新依赖/数据迁移，出站契约不变。JPEG/WebP 为结构校验；Vibe 格式未公开，只验证媒体类型、明显错误文本及传输完整性，不宣称可验证其内部语义 |
+| F08 | [7febf31](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7febf31) | 密码及 Discord 登录只信任 `TRUSTED_PROXY_IPS` 中的精确代理 IP；从 XFF 右侧定位实际客户端，保留用户名限制。`node --test server/client-ip.test.mjs server/member-auth.test.mjs member-routes.test.mjs discord-login.test.mjs` 15/15 通过 | 默认忽略转发头；隔离部署时须按实际链路配置代理 IP，并复核来源隔离；无数据库迁移，未改生产配置 |
+| F09 | [6a13444](https://github.com/Hime-Hina/novelai-shared-gateway/commit/6a13444) | 分组预览与保存强制校验编辑基线版本；owner/私有管理共用页面保留冲突草稿，后台刷新不覆盖期间开始的编辑。`node --test member-routes.test.mjs owner-management.test.mjs server/member-management-ui.test.mjs server/fair-quota.test.mjs` 76/76 通过 | 无数据迁移；旧版页面缺失版本字段时收到 409，需要重新加载页面。UI 回归执行真实脚本配合轻量 DOM 模拟，D01 仍需真实浏览器验收 |
+| F04 | [da63d74](https://github.com/Hime-Hina/novelai-shared-gateway/commit/da63d74) | 成员 4/全局 16 个未完成任务，排队 10 分钟且取请求更早期限；入队检查与预扣同事务，派发复核接单状态。停止接单原子取消等待并退款，在途继续结算；提交后通知及串行补查避免通知竞态。完整 254/254、语法 67 文件及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38954772107) 通过，含真实 HTTP 上限/停止/恢复/旧批次部分响应、SQLite 失败回滚及重启 | 新增接单状态/代次与排队截止，默认兼容旧记录；不改变登录资格，恢复不复活旧批次。当前 Native 未创建的子任务尚不计入容量，F06 必须一次持久化全部意图并批量计数、扩展 pending 活动查询。未部署生产 |
+| F03（第 1 片） | [3411bfb](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3411bfb) | 派发事务持久化 attempt、原资源预扣和快照；退款与疑似损耗事件按资源追加，续用候选不相加、不作为确认实扣。queued/pending 或明确未发送的取消不记疑似损耗，持久 reserved→refunded 保证幂等。完整 263/263，最后边界修正后存储相关 30/30、69 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38956533113) 通过；真实 HTTP 检查上游收到请求前 SQLite 已存在证据 | 只完成证据和退款基础，不新增资金准入限制。负 Anlas 差额归属、运营资金、V5 恢复抵消、五分钟结案和迟到结果仍待后续片；F03 整项尚未完成，未部署生产 |
+| F03（第 2 片） | [c30fad8](https://github.com/Hime-Hina/novelai-shared-gateway/commit/c30fad8) | [资源核对与运营资金](failure-accounting.md)：Anlas 负差额不削减成员钱包，V5 恢复不双发；本人份额/明确外部来源注资、关联核销和冷历史收据幂等。10 个同步事务显式提交 ledger，预览隔离审计；不扩展通用存储提交规则。完整 274/274，最后整数边界修正后定向 11/11、71 文件语法通过 | 普通无缺口新增继续自动分配；不明正向回跳仅将对应未归属缺口的部分暂列待归属，既不增发也不自动核销。原购买权限保持，官方固定明确为 0 时可按既有授权用个人购买池。五分钟结案/迟到结果/UI 告警仍待后续片，生产未切换 |
+| F03（第 3 片） | [f6406cb](https://github.com/Hime-Hina/novelai-shared-gateway/commit/f6406cb) | 首次未知及五分钟截止持久化，独立本地计时器覆盖离线、停用与冷历史；迟到结果保留失败/退款，可领取且不补扣、不重复保存或释放其他任务槽。完整 280/280，最后冷历史排序修正后定向 24/24、72 文件语法通过；Linux 默认 UID 1000、只读断网容器中三条迁移、写入重开、完整性与真实 HTTP 启动通过 | 新增 0002 迁移及核对部分索引，旧疑似时间不因升级重置；冷任务更新保留原排序。单次估计与聚合缺口不相加、不重复核销运营资金。UI/告警待第 4 片，文件与账本间崩溃窗口留 F10；未部署生产 |
+| F03（第 4 片） | [8b2945d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/8b2945d) | 权限范围内的风险/聚合/运营视图、冷账本分页、软告警与可留痕的独立版本阈值；成员冷历史迟到结果签名领取并保留分池退款。完整 290/290、75 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38964079071) 通过；覆盖 1116 条冷账本、3000+ 冷任务、审计回滚、SQL 索引及真实 HTTP 领取。Chrome 合成页面验证保存/草稿/分页/领取和 390px 迟到面板；Linux 四条迁移、重开、查询及 HTTP 启动通过 | 新增 0003 三个查询索引，不新增调用资格限制；候选与聚合分别比较阈值，不相加。F03 四片完成；F06 请求/批次持久化与 F10 文件恢复仍须继续，不等于任意崩溃可找回图片。未调用真实 NAI、未部署生产 |
+| F06（第 1 片） | [b256644](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b256644) | 网页 `/api/jobs` 父参数、child 与账本同事务提交，完整参数冷存/按需读取；2 MiB 正文限制保持，接入 32/64 MiB 参数预算与提交前后交接。完整 299/299、77 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38966925420) 通过；真实 HTTP 覆盖断线/坏 JSON 释放、规范路径、完整提示词、413、冷存与旧内联任务重启。Linux 默认 UID 1000、断网只读中五条迁移、父子写入/重开、预算释放与 HTTP 启动通过 | 新增 0004 父请求表及 child 外键/索引；历史参数保留，回滚须使用一致性备份。Native/direct/OpenAI、多图 pending、公平激活、可选幂等及物理在途预算仍待后续片，F06 未完成。旧库升级测试改用冻结旧 schema，未部署生产 |
+| F06（持久顺序子片） | [322dab2](https://github.com/Hime-Hina/novelai-shared-gateway/commit/322dab2) | 所有现有 queued 入队、SQL 派发与公开进度使用 queueSeq；旧活任务按原实际派发顺序初始化，保留历史排序。完整 304/304、78 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38968557494) 通过；真实 HTTP 验证重启后忽略被反转的历史排序，SQLite 任务/最高号写失败均回滚。Linux 六条迁移、序号初始化/续增及 HTTP 启动通过 | 新增 0005 排队序号列与索引；最高号和任务同事务提交，清空历史不归零。Native pending 意图与激活仍待下片；配套 [351953f](https://github.com/Hime-Hina/novelai-shared-gateway/commit/351953f) 为两处任务列表补充“等待前序图片”，UI 10/10 通过。未部署生产 |
+| F06（Native 批次片） | [0bd0eeb](https://github.com/Hime-Hina/novelai-shared-gateway/commit/0bd0eeb) | 父参数只存一份，全部子意图同事务受理；pending 计入准入但不预扣/占队列位置。成功原子激活下一张到队尾，失败/未知/过期/停止终止余图；Native 断线与 HTTP 等待超时不取消有效任务。完整 316/316、80 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38971401489) 通过；真实 HTTP 验证 A1→B→A2、部分 ZIP、SIGKILL 后续跑和 100ms 等待超时后完成。Linux 七条迁移、冷 pending、旧参数预算、物理在途去重及 HTTP 启动通过 | 新增 0006 活动索引与旧 inline 字节影子列；保留父参数、旧任务及结果。同步修复冷历史下停止接单、冷终态补查和旧 inline 种子展示；物理执行未 finish 前保留载荷与并发槽。direct/OpenAI 完整解耦、可选幂等、父查询/取消仍待后续，F06 未全部完成；生产未切换 |
+| F06（direct/OpenAI 连接片） | [b565ba1](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b565ba1) | direct/OpenAI 完整父参数持久受理，解析纳入输入预算；HTTP/SSE 超时、断线和发送失败不改变任务结算。有效新旧 queued 重启继续；SSE 进度只读小摘要，close 清理等待者/定时器。完整 320/320、82 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38972558808) 通过；真实 HTTP 验证六条新请求在超时/断线后落盘，SIGKILL 重启连同两条旧 inline 全部完成，缓存 hit 不重复调用。Linux 七条迁移与真实 HTTP 启动通过 | 无新增 schema；HTTP 等待期限与业务期限分开，保留原图片/错误图片/JSON/SSE 格式。正常 GET 任务仍回显完整提示词；删除不再被调用的连接层取消/失败写入。可选幂等、父查询/取消仍待后续，生产未切换 |
+| F06（父请求操作片） | [fc702d7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/fc702d7) | Bearer/Cookie 共用父请求查询与取消，稳定成员 ID 授权、签名结果领取、仅取消 queued/pending；各同步入口返回父 ID，成员页提供批次详情。完整 328/328、84 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38974346425) 通过；真实 HTTP、SQLite 回滚/并发/冷历史覆盖，Chrome 完成取消和实际图片领取，390px 详情无溢出。Linux 七迁移、冷 pending、预算与 HTTP 启动通过 | 无新增 schema；running 继续，重复取消为 0，图片签发仍检查 child 归属。补齐 owner pending 独立统计。可选幂等待下一片，未调用真实 NAI，生产未切换 |
+| F06（可选幂等片） | [0d6f9b7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/0d6f9b7) | 同成员/操作/键持久去重；首次随机种子与有限默认参数保留，并发/重启/换 Key 后复用原任务，失败回放、缺失结果 410 不重生。完整 350/350、89 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38977188583) 通过；Native null 收口另过定向 9/9 和 Windows/Linux HTTP。Linux 八迁移、冷历史、映射回滚/重开、HTTP 与隔离权限通过 | 指纹 [c64424f](https://github.com/Hime-Hina/novelai-shared-gateway/commit/c64424f)、0007 映射 [c5a4f00](https://github.com/Hime-Hina/novelai-shared-gateway/commit/c5a4f00) 分别提交；不同键保留显式缓存规则、无键不猜重。中间 CI 旧连接用例一次超时未复现，[11d55d3](https://github.com/Hime-Hina/novelai-shared-gateway/commit/11d55d3) 补有限诊断且未放宽阈值。F06 完成，F10 掉电/文件恢复仍待；未调用真实 NAI、未切换生产 |
+| F05 | [868be65](https://github.com/Hime-Hina/novelai-shared-gateway/commit/868be65) | 终态凭据按 job ID 冷存，归档与设置/任务/账本同事务；冲突回滚，cold 优先陈旧快照，重复扣退与终态重派被阻止，reserved 原资格保留。完整 364/364、90 文件语法及[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38978709933) 通过；Linux 九迁移、冷历史/预算/HTTP 启动及归档/迟到/幂等 23/23 通过 | 新增 0008 两字段冷表，旧 typed/app_records/JSON/write 均覆盖；未知 reserved 原样保留，不删除凭据。合成 10 万条：热 settings 21.4 MB→3.4 KB、摘要约 450 ms→不足 1 ms，小更新亦不足 1 ms；这不是生产延迟承诺，详见[测量边界](failure-accounting.md#结算历史归档f05)。生产未切换 |
+| F12 | [11543de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/11543de) | 两类独立退避、成功复位、尝试幂等、最大截止与上游等待同事务持久；绑定账户与物理槽、实际 Retry-After、原因/本地倒计时和有限等待日志。冻结核心全量 382/382，新增真实 HTTP 2/2，最终[托管 CI 384/384](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38980552473) 与 93 文件语法通过；Windows/Linux 验证 300 秒截止、强杀重启/重放仅一次上游、已发头 SSE 正常结束。Chrome 390px 与退出关闭 SSE 通过 | 无新迁移；Linux 九迁移、冷历史/预算/完整性/启动、44 定向及 2 HTTP 通过，详见[生命周期验证](request-lifecycle.md#验证边界)。未解释历史 138 秒长尾，未调用真实 NAI；浏览器 hidden 未实际触发，仅单元覆盖。F10 文件恢复继续实施，生产未切换 |
+| F10 | [1c7c42c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1c7c42c) | 描述先提交，wx 临时文件/文件同步/原子发布/目录同步后再结算；冷恢复校验尝试/归属/长度/hash/类型，迟到保留退款，启动三处派发保护和退出宽限。Windows 全量 411 项中 408 通过、3 平台跳过，98 文件语法通过；最终 Linux 45 专项全过，覆盖六强杀边界双重启、Native 两图、Vibe、SIGTERM、503 份冷结果领取 | 新增 0009 冷查询部分索引，WAL/FULL 与 pending 禁删，无新运行时依赖；Linux 十迁移/完整性/预算/HTTP 启动通过。[持久性、性能与限制](result-recovery.md) 明确 Windows 不做目录 fsync、容器挂载微基准不代表 bob、强杀不等于断电试验。没有上游完整结果时仍不能保证找回；生产未迁移或切换 |
+| A01 | [26899d4](https://github.com/Hime-Hina/novelai-shared-gateway/commit/26899d4) | 随机令牌仅存摘要，成员七天/owner 十二小时固定期限；签发、退出和 owner 变更协调持久化，启动重开保留有效会话，升权不得沿用七天 Cookie。Windows 全量 430 项中 427 通过、3 平台跳过，101 文件语法；Linux 40 专项及十一迁移/完整性/HTTP 启动通过；Chrome 390px 实测截止展示、SSE 过期返回登录并清空已展示 Key | 新增 0010 独立冷会话表与索引；首次升级旧内存会话需重新登录，此后重启保持。迟到响应不能覆盖新登录，临时 Discord/网络故障不误注销。[实现与验证边界](member-sessions.md)；托管 CI 旧 Native 多图超时单独跟进，生产未迁移或切换 |
+| R01（现有进程） | [f6686f9](https://github.com/Hime-Hina/novelai-shared-gateway/commit/f6686f9) | 实际提交后发白名单失效通知，200ms 合并/最长一秒，重连 boot/version/resync，授权本人/owner 查询；GET 副本估算防反馈环。Windows 全量 457 项中 454 通过、3 平台跳过；[托管 CI 457/457](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38985638847) 与 Docker 构建通过；Linux 62+11 定向、105 文件语法及十一迁移/完整性/HTTP 启动通过；Chrome 两次模拟调用、成员重连保留批次、owner 草稿保留、最终统计更新均通过 | 无新增依赖/schema；共用 EventSource 生命周期、页面单在途合并、过期清密钥及旧响应保护。详见[状态事件](state-events.md)。F11/N01 的内部重连两段链路仍待；未调用真实 NAI、未切换生产 |
+| C05 | [3e523de](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3e523de) | 固定 pnpm 10.32.1 与 SQLite 12.10.0；唯一 pnpm 锁文件、精确直接版本，CI/Docker 冻结安装。原 38 个依赖版本及 integrity 完全一致，错误锁版本冻结安装拒绝；Windows 安装/查询及 `corepack pnpm test` 227/227 通过，Docker Linux Node 22.23.3 构建及默认 UID 1000 断网只读容器内 SQLite 查询通过 | 无依赖升级或 schema 迁移；旧 node_modules 私有备份保留。测试镜像 `novelai-shared-gateway:c05-check`，未启动生产网关；[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949247612) 已通过（dae4fae，含 C02 与 F07 边界补充） |
+| C02 | [dae4fae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dae4fae) | [API 契约矩阵](api-contract.md)记录官方 Swagger 摘要、支持/拒绝/网关扩展及 C03 差异；三个客户端样本连接解析与独立核价，新增 5 项纯模块通过。`node --test native-http.test.mjs` 10/10，含 OpenAI 目录、非流式/流式、鉴权及图片实际领取 | 仅文档与测试，未改变出站协议；模型全组合、Vibe 内部格式与公网 SSE 代理行为不假装已验证。C03 仍在 N03 后实施 |
+| C04 | [7d08e21](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7d08e21) | 原 23 入口加本轮新增 4 项，共 27 文件迁入 unit 18/integration 9；5 JSON、3 helper/许可内容哈希不变。`corepack pnpm test` 234/234、`corepack pnpm run check` 60 文件通过，Docker 构建及只读断网 SQLite 验证通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38949984502) 通过 | 纯路径/构建调整，业务和依赖未改；`c04-check` 最终镜像不含 tests/fixtures/helpers/测试入口。历史验证命令保留，新命令统一通过 pnpm |
+| P01（排队部分） | [2bc6c79](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2bc6c79) | [队列基线](queue-baseline.md)与标准库只读脚本；Windows/bob 合成自检通过。24h 514 条，等待 P95 15.215 秒、最大 147.092 秒；七天查询仅约 26 小时实际记录。长尾原因仍未知，F12 补最少等待原因打点 | 未修改生产/启动第二调度器；报告仅匿名汇总，未落库拒绝率未知。浏览器基线已另行完成，见下一行；历史不足七天和拒绝率缺失仍保留，不补造数据 |
+| P01（浏览器部分） | [d96665e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d96665e) | [浏览器基线](browser-baseline.md)：冻结 5437fc8，匿名/成员/owner × 桌面/移动 × HTTP 缓存禁用/启用，各 5 次共 60/60 核验；300 条同源资源、12 组指标与 14 行 API 瀑布逐项校验，CLS 按标准窗口重算。合成 helper 自检与语法通过；明确串行查询、静态 no-store 和布局优化落点 | 上游完全模拟，真实生成 0 次，测试实例已停止；不是生产分位数，历史约 29 秒 HTML TTFB 未复现。owner 默认用量页保持，后续须对比顶部概览及用量表两类 ready 时间；扩展与工具开销不能全部归因业务 |
+| C06 | [975d8b0](https://github.com/Hime-Hina/novelai-shared-gateway/commit/975d8b0) | [ORM 评估与接入](orm-evaluation.md)：Drizzle 0.45.4/Kit 0.31.11 统一 9 表 schema 与 prepared CRUD，保留原同步提交与部分索引；旧 typed/app_records/JSON 兼容。新增 10 项迁移回归，完整 244/244 通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38953276802) 通过；Linux 镜像内默认 UID 1000、只读断网、迁移/写入/关闭重开验证通过 | 首次自动验证并登记两条迁移，SQL 固定 LF，拒绝历史 hash 改写和未知更高版本；不顺带回填极老库历史统计。部署前须一致性备份并在副本验收，未来数据迁移不能仅靠切旧代码回滚；生产未迁移 |
+
+U01 已提交 [ec011b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ec011b6)：Nuxt 4.6.2、Vue 3、TypeScript 与 Naive UI 成员页，固定 Node 22.23.3；Key 按需显示、批次取消/迟到领取、失效清理、R01 合并刷新及独立网页构建保留。[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38989723903) 后端457/457、前端20/20、105文件语法、类型检查和两个Docker构建全部通过。最终浏览器40条完成可比复测，修复滚动条导致的大幅布局跳动及开发代理HTML别名；首屏数据、样式桥接许可与首轮资源增大的代价见 [Nuxt 成员页](nuxt-member-portal.md)。无新schema或第二写入方，生产未切换。
+
+CI 跟踪：A01 连同 F10 在 [38984338010](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38984338010) 通过 430/430 和 Docker 构建。此前两轮分别发生 Native 批次及部分失败场景超时；冻结镜像复现通过，根因尚未查明。已分别提交 [1b639bf](https://github.com/Hime-Hina/novelai-shared-gateway/commit/1b639bf) 和 [536dd58](https://github.com/Hime-Hina/novelai-shared-gateway/commit/536dd58) 脱敏现场诊断，未放宽请求期限，也不将此轮成功写成问题已修复。后续 D01 的隔离负载验收继续核对等待长尾。
+
+随后 [38986048883](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38986048883) 的连接生命周期用例捕获“冷却已到、空闲但最后一项仍queued”的现场；已确定性复现跨截止的零槽/零等待丢唤醒，在 [8648826](https://github.com/Hime-Hina/novelai-shared-gateway/commit/8648826) 作最小修复。冷却/容量13项与原HTTP用例通过，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38990177631) 后端458/458、前端20/20、105文件语法、类型检查和两个Docker构建全部通过，详见[队列唤醒](request-lifecycle.md#冷却截止时的队列唤醒修复)。此前Native失败和生产长尾仍无充分证据确认为同因。
+
+U02 已提交 [7af8e3e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/7af8e3e)，[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38993426014) 后端458/458、前端63/63、语法/类型检查及两个Docker均通过。owner Cookie/SSE 与私有 admin Token/可见30秒刷新保持分开，两个薄路由复用同一控制台；分组、调额、告警阈值保留编辑版本，业务403先核验授权，409保留草稿且不自动重试写入。Naive UI 标签页首次访问才挂载表单、访问后保留草稿，损耗告警独立后台读取；没有自写键盘增强或新增依赖。Caddy示例增加仅绑定回环的18082私有同源入口，保留SSH本地Host/Origin，公开管理拒绝规则保持，Nuxt不新增生产业务代理。浏览器功能、真实别名与20条性能复测见[管理页验收](nuxt-management-portal.md)：默认统计提前，冷缓存连接提示较慢及268KB首次资源代价均保留；无schema变更，尚未部署或替换生产。
+
+U03 已提交 [96bf52a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/96bf52a)，Naive 月份对齐补丁 [b9ac32c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b9ac32c) 和匿名预取修复 [731d62c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/731d62c) 分别提交；[最终 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38996693842) 后端474/474、前端80/80、109文件语法、类型与两个Docker通过。[热力图验收](call-heatmap.md)记录全年冷历史SQL聚合、成员隔离、缺失日期不冒充零、SSE授权日期合并，以及真实Chrome时区/移动/成功取消增量验证；无新schema或依赖。匿名提前下载减少58368B，60条矩阵及17条同会话对照完整保留；关键DOM、用量和热力图分别记录，耗时改善仍待D01可控环境验收，不宣称生产长等待已解决。下一项F11确立独立执行与唯一写入所有者，再推进N01–N03；生产保持原版本。
+
+F11 首片分别提交 [a81fc38](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a81fc38) 修复长期 SSE 退出循环等待、[d9119ff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d9119ff) 抽取同一运行时、[85dc265](https://github.com/Hime-Hina/novelai-shared-gateway/commit/85dc265) 加入独立 Nitro 2.13.4 listener 与内部密钥边界。旧 CLI 继续复用同一恢复/派发/关闭逻辑；执行器打包保留 SQLite worker、迁移与业务文件树，默认回环、要求绝对 DATA_DIR。[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/38999790224) 后端477/477、前端80/80、执行器认证3/3、类型与三个Docker构建全部通过，最终Linux候选产物HTTP 3/3验证鉴权、worker、11迁移、一次模拟生成、跨格式幂等及结果领取/退出。详情与剩余范围见[独立执行服务](executor-service.md)；不能把单服务验证当作 Nuxt 双进程故障验收。未改生产配置、数据或服务。
+
+F11 第二片 [cffd205](https://github.com/Hime-Hina/novelai-shared-gateway/commit/cffd205) 实现 Nuxt 私有内部客户端与有界同键重试；[fb54a7a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/fb54a7a) 单独修正外层截止短于正常认证链的问题，16秒慢受理从错误重试变为一次受理。最终[托管 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39001370060) 后端477、前端89、执行器认证3、真实Nuxt/执行器双进程4（含父测试）、最终镜像HTTP3，以及语法、类型和三个Docker全部通过。实际验证仅杀Nuxt不丢已受理的在途/排队任务、丢202同键重试不重复预扣/派发、完整part同步后杀执行器两次恢复不重复结算；使用合成数据，未访问真实NAI/Discord。生产无新测试路由，API与SSE整体迁移、独立systemd/D01部署仍待；不得把无键客户端崩溃后新提交冒充可自动识别的旧请求。
+
+N01 已提交 [0dc3124](https://github.com/Hime-Hina/novelai-shared-gateway/commit/0dc3124)，将成员、owner 与私有 admin 的有限查询接入 Nuxt 正式 GET 路由，并加入独立 SSE 桥接；DTO、会话和 Discord 刷新仍由执行器唯一处理。内部断线保留浏览器连接，五秒重试后透传新启动标识及 resync，普通故障不误退出登录。同步移除宽泛 devProxy，Caddy 按方法与路径分流，Compose 保留 gateway 名称并改为执行器镜像，避免增加第二个数据写入进程。开发 SSR 的 Naive/vueuc 模块兼容另由 [a765b1a](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a765b1a) 修复。[最终 CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39003589699) 后端478、前端97、执行器认证3、开发与双进程8、最终镜像HTTP3、Caddy7全部通过，均无跳过，语法/类型和三个业务镜像构建通过。覆盖并发认证刷新、令牌落盘后失败及重启、同连接 SSE 恢复、Nuxt SIGTERM 与实际开发/代理入口；详见[独立执行服务](executor-service.md)。本片无 schema 或依赖变更；N02/N03、独立 systemd 与 D01 目标机验收继续保留，生产未切换。
+
+N02 已提交 [3b3b252](https://github.com/Hime-Hina/novelai-shared-gateway/commit/3b3b252)，将密码登录、注销、Discord start/callback 与既有 owner/私有 admin 管理写入接入 Nuxt 正式路由，原会话、权限和事务仍归执行器。普通写入不生成操作键、不自动重试；OAuth 原 303 与两条 Cookie 保留，私有批量额度刷新沿用执行器逐账户截止，不套普通 45 秒总限。Caddy 精确分流与开发入口同步。[最终 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39004774305) 后端478、前端104、执行器认证3、开发与双进程11、最终镜像HTTP3、Caddy9全部通过且无跳过，112文件语法、类型检查和三个业务镜像构建通过。验证密码固定七天与注销持久性、Discord回跳跨Nuxt重启与owner十二小时、管理权限/版本/正文限制、丢管理回执仅提交一次；详情见[执行服务](executor-service.md)。无schema或依赖变更，N03与D01/D02继续保留，未影响生产。
+
+N03 已提交 [e7b9407](https://github.com/Hime-Hina/novelai-shared-gateway/commit/e7b9407)，将 Native/OpenAI/direct、任务受理/查询/取消、预览与结果领取接入正式 Nuxt 路由；长响应使用 Node 流背压，不套有限查询的45秒截止或自动重发。复用原共享路由表保留错误方法、未知路径、HEAD/OPTIONS的原响应；Caddy全部转给Nuxt，不再直连执行器或持有内部密钥，并删除测试专用路由注入。[最终 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39007009293) 后端478、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，112文件语法、类型检查和三个业务镜像构建通过。覆盖32MiB multipart/超限账本不变、别名同键领取、Vibe与放大字节、实时预览、46秒长流、成员权限与签名图，以及Nuxt强杀后继续执行、Linux双SSE普通EOF；详见[执行服务](executor-service.md#n03-生图与任务传输)。无schema或依赖变更，官方协议差异C03可以继续推进；T01/C01、独立systemd和D01/D02仍待完成。全部使用合成数据与模拟上游，生产未切换。
+
+冷历史队列补修 [a74485e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a74485e)：C03重启回归将历史热缓存设为0，发现 `queueRetryDelay` 试图克隆部分加载的jobs集合并导致执行进程退出。改为通过既有串行只读回调计算唤醒时间，全部活动任务仍驻留，不读取冷历史或扩大热缓存；单独提交源码与原批次重启回归。冷却8/8与零历史缓存批次HTTP1/1通过，保持原期限、排队顺序和结算，不新增schema或部署动作。
+
+C03-01 已提交 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/238421e)：普通Native完整生成对齐201，放大保持200；通过negotiator按Accept协商ZIP/JSON，缺省与通配仍ZIP，不接受两者时入队前406。Vibe对齐201/application-binary且原字节不变，部分批次保留200与原账务说明；JSON按48KiB原图分块编码，实际种子在首次完成、幂等和冷历史领取中一致。固定版本的Desktop、小白盒和Aaalice源码验证接受2xx并明确各自格式要求，详见[契约与证据](api-contract.md#c03-01-响应协商与客户端证据)。新增精确negotiator1.1.0及传递content-type2.1.0，保留其余锁定依赖；没有schema变更。[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39008740184) 后端482、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，112文件语法、类型和三个业务镜像构建通过，也覆盖前述冷历史队列补修。C03-02–06、T01/C01及D01/D02仍待；未调用真实NAI/Discord，生产保持原版本。
+
+C03-02 的实时 MessagePack 切片已提交 [d3cacff](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d3cacff)：按已核实的官方网页事件字段转发预览，保存并结算后逐张发送final；复用原预览节流和持久任务，不因连接结束取消任务。Native生成加入上游流式进度，Vibe/放大排除；第一个事件前仍返回正常HTTP错误，开始后以error帧结束。流式首帧无法预知批次最终完成数，省略完成数量头，普通ZIP/JSON保持。精确引入`@msgpack/msgpack@3.1.3`替换手写值编解码，保留帧/累计/输入边界，不改其他锁定依赖与schema。详细协议、证据和限制见[流式契约](api-contract.md#c03-02-实时-messagepack-与-sse)。本地模块34/34、冷历史批次和恢复回归通过；Linux最终执行器镜像HTTP3/3通过。Native HTTP14/14、Nuxt实际链路12通过/1项Linux专用跳过，执行器本地2通过/1项Linux专用跳过；[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39010558702) 后端491、前端112、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型检查和三个业务镜像构建通过；SSE字段与协商未完成，因此C03-02整体不标完成。未调用真实NAI/Discord，未部署或替换生产。
+
+C03-03 的WebP输出切片已提交 [4cc7ed5](https://github.com/Hime-Hina/novelai-shared-gateway/commit/4cc7ed5)：Native接受png/webp并保留缺省参数，复用现有验证、存储和ZIP/JSON/MessagePack原字节链路；放大ZIP按实际MIME命名。同一幂等键改格式409，缓存为0的重启仍可领取。当前官方纯报价函数重核184条旧样本全部一致，新增12组成对结果也一致，来源、哈希及合成订阅上下文见[格式报价样本](../tests/fixtures/official-image-format-pricing-20261017.json)；不把前端报价当作真实账单，V5百分点仍是估算。生产代码仅4行调整，无新运行依赖或schema；输入/契约22、报价13、provider/文件32通过加1项Windows跳过，批次HTTP1/1、Nuxt完整链路12通过加1项Linux专用跳过，113文件语法和执行器构建通过。[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39011711904) 后端496、前端112、执行器认证3、开发与双进程14、镜像HTTP3、Caddy7全部通过且无跳过，语法、类型和三个业务镜像构建通过。SSE及C03其他字段、T01/C01与部署验收仍待完成，未调用真实NAI/Discord或替换生产。
+
+C03-03 的冗余提示词兼容切片已提交 [ace8a7c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ace8a7c)：仅接受与顶层input严格相同的parameters.prompt，并在克隆参数中删除；不trim、不覆盖input、不改变上游参数、持久请求或幂等指纹。异值、null和非字符串在受理前422且不回显内容；input仍必需。此为[明确的网关兼容规则](api-contract.md#c03-03-冗余提示词兼容规则)，官方schema没有给出字段优先级，不能声称官方等价别名。31项模块/指纹检查及真实冷历史批次HTTP通过，无新增生成调用、依赖或schema；[最新联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39012113767) 后端497、前端112、执行器认证3、开发与双进程14、镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型和三个业务镜像构建通过，也覆盖前述WebP改动。
+
+F07 契约复核补充：官方 Image Swagger 将 Vibe 响应声明为 `application/binary`；已同时接受该类型与既有 `application/octet-stream`，出站保持当前客户端的 octet-stream 契约。补充提交为 [40b37bd](https://github.com/Hime-Hina/novelai-shared-gateway/commit/40b37bd)，`node --test provider-features.test.mjs` 15/15 通过；不把媒体类型校验误做成官方响应拒绝规则。
+
+F07 边界复核补充：放大接受的 8192 边长输入可产生 16384 边长结果，因此结果校验与上传校验分开设置边长，输入仍为 8192；16M 像素、64 MiB、CRC 与解压上限保持。补充提交 [b1e383d](https://github.com/Hime-Hina/novelai-shared-gateway/commit/b1e383d)；合成 8192×128 → 16384×256 覆盖图片/JSON/dataURL/ZIP/MessagePack，超限输入与结果仍拒绝，相关模块 37/37 通过。没有据此声称实测 NAI 接受全部极端长宽比例。
+
+依赖安装、源码搬迁与数据库迁移按实施阶段和独立提交执行，不因 ORM 评估直接改生产数据库或启动连接生产上游的测试服务。生产地址、主机、数据目录和可用测试入口在部署阶段从实际配置核实；本文不包含真实地址或凭据。
+
+C03-02 的 SSE 切片已提交 [d8afad8](https://github.com/Hime-Hina/novelai-shared-gateway/commit/d8afad8)，依据[五次真实免费条件探测](novelai-protocol-probes.md)：缺省SSE，显式msgpack覆盖Accept并返回application/msgpack；SSE使用event/data与base64、final后EOF。复用同一验证和持久任务，最终图按48KiB编码并等待写入；客户端断线只清理等待，格式不入指纹，同键可跨格式领取。纯模块37/37、Native HTTP与冷历史批次15/15、Nuxt实际链路12通过加1项Linux专用跳过，113文件语法和两个服务构建通过；复用已有任务追加8MiB合成PNG的暂停读取、final中途断开及SSE/MessagePack完整重取，派发/结算计数不增；已由下述联合Linux CI验证。无新依赖或schema；仅明确参数的二进制客户端保持MessagePack，未声明stream的旧客户端会改收SSE，需在测试版验收。普通JSON实测200与Swagger201不同，继续列入C03-04，不据此改动所有操作状态。
+
+C03-03 的独立放大blur切片已提交 [48f6578](https://github.com/Hime-Hina/novelai-shared-gateway/commit/48f6578)，仅放开官方文字列出的0、0.30、0.35、0.40、0.45、0.50；保留原缺省/null归零和四档像素报价。复用provider原值透传、结果存储与幂等指纹，不增加依赖或schema。六档解析、非列举值/类型拒绝、八个价格边界与透传等61项定向检查通过，113文件语法通过；Nuxt实际HTTP12通过加1项Linux专用跳过，验证一次放大原值转发、不同Accept同键领取以及改blur的409且五表计数不增；执行器重建通过，已由下述联合Linux CI验证。非零blur只有schema及模拟验证，不宣称视觉效果或真实实扣已验证，也未发送真实收费放大请求，详见[契约](api-contract.md#c03-03-独立放大-blur-参数)。
+
+C03-02 镜像验收补修已提交 [dd452ee](https://github.com/Hime-Hina/novelai-shared-gateway/commit/dd452ee)：首次[SSE CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39014853670)已通过业务/网页/类型/双进程检查和三个镜像构建，最后产物HTTP检查仍断言旧的默认octet-stream而失败。补齐同键缺省SSE、显式SSE和显式MessagePack及相反Accept，原派发与结算计数保持不增；本机产物2通过/1项Linux跳过，新建Linux最终镜像3/3通过。后续blur中间CI由这次补修后的完整检查替代，不将中间失败或取消记为通过。
+
+C03-03 的Vibe种子切片已提交 [53525b6](https://github.com/Hime-Hina/novelai-shared-gateway/commit/53525b6)，接受可选focus_seed/info_extract_seed的安全整数并原值传递，缺省不补值，不套用生图seed的随机或取模规则。固定2Anlas与opaque结果边界不变；解析、无损整数边界、拒绝类型、原值透传和报价等62项定向检查通过，113文件语法和执行器构建通过；Nuxt实际HTTP12通过加1项Linux专用跳过，逐个改变seed均409且没有重复编码/账目。[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过后端505、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过，语法/类型及三个镜像构建通过。另已核对custom路由url、Vibe mask/crop和内联放大的真实含义与模型/收费边界，明确保留422，详见[字段评估](api-contract.md#c03-03-vibe-种子与明确保留的边界)；没有真实收费调用。
+
+SSE与blur联合验收：[dd452ee的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过后端504、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；113文件语法、类型检查及三个业务镜像构建通过。此结果覆盖SSE、blur与镜像契约补修；Vibe两seed另由53525b6的独立CI验收，不混用提交版本。
+
+C03-04 普通生成状态切片已提交[79cf667](https://github.com/Hime-Hina/novelai-shared-gateway/commit/79cf667)：补充一张512×512、4步V4.5免费条件ZIP探测，确认与此前JSON一样为200，两类Anlas差额均0、前后生产空闲。普通生成JSON/ZIP及同键重取据此统一200，删除原先201分支；Vibe和管理创建的201保留。本机Native等24通过/2项Linux跳过、Nuxt实际HTTP12通过/1项Linux跳过、执行器产物2通过/1项Linux跳过；[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39016755312)后端505、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7全部通过且无跳过，113文件语法、类型和三个镜像构建通过。官方ZIP本次声明binary/octet-stream，网关保留application/zip准确说明已验证内容；没有新增依赖、schema或生产部署。
+
+C03-04 封禁误判补修：共享封禁识别改为匹配独立的ban/banned，避免bandwidth、banana等普通错误误触发额度刷新链的账户禁用；中文封禁保持。公开文案只说明识别结果，不声称文案函数执行了禁用，真正执行禁用的分支保留动作说明。复用额度刷新测试中的真实分类、应用和禁用函数，先验证新增两项失败，再修复为12/12通过；语法与差异检查通过。账务、冷却、并发占用和原错误诊断保持，原始错误公开边界另行处理，未部署生产。
+
+C03-05 参数组合核对：依据官方采样文档，新增一条DDIM/ddim_v3启用SMEA时的422校验，覆盖Anime/Furry V3、重绘模型映射、DYN依赖、正常Euler和Medium固定参数；不依据官网UI列表缺席收窄其他采样器。官方Precise支持负值，保留现有主值−1～1、secondary−1～2并明确为网关边界；补原值、非有限数与每张参考费用不随强度变化的回归。新增组合先失败、修复后Native参数/报价/契约39/39通过，语法与差异检查通过；无依赖、schema或报价修改，全部离线模拟。证据和限制见[契约](api-contract.md#c03-05-采样器组合与-precise-范围)，最终Linux验收继续记录。
+
+封禁误判与参数组合的最终验收：封禁提交[84189f3](https://github.com/Hime-Hina/novelai-shared-gateway/commit/84189f3)的[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39017059713)后端507通过；DDIM提交[2360ac7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/2360ac7)的[Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39017218555)后端508通过。两次均通过前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过；语法、类型及三个镜像构建通过。
+
+C03-06已完成协议边界核对：固定Swagger中没有可依赖的幂等生成/结果找回契约，Vibe内部格式也未公开。沿用已有F06/F10本地持久和恢复保证及F03分资源损耗，不把correlation-id当作上游幂等或结果索引；Vibe保持opaque并核验媒体类型、非空、传输与持久摘要。现有provider/F10回归已有证据，不另造解析器或新增实测付费调用。详细限制见[契约](api-contract.md#c03-06-上游保证与本地恢复边界)；将不可提供的上游保证明确结案，D01仍须验收实际部署链路。
+
+C03-04 生成错误公开边界：失败/取消、等待通知、任务与父请求DTO、错误图片、SSE及部分结果共用固定分类文案；上游原文、帧内容和标准文件系统路径不再进入这些成员响应。旧任务读取也受保护，但不改写历史诊断；管理员errorDetail及本地参数校验保持。先由真实HTTP复现旧错误路径、stat路径和上游正文三处泄漏，修复后HTTP17/17、账务/冷却/恢复31/31、额外冷却/取消/连接15/15通过，源码语法与差异检查通过；覆盖已发首帧的部分失败、同键JSON领取、退款与已成功图片各自账目。中间一次新增fixture缺updatedAt导致管理员查询断言失败，补齐该测试时间字段后全通过，未改变业务过滤或放宽240秒测试截止。完整上游状态矩阵未新增，保留已核对的共享网关映射；最终Linux验收继续记录。无schema、依赖或生产改动。
+
+C03-04测试依赖补修：生成错误保护提交[95d2786](https://github.com/Hime-Hina/novelai-shared-gateway/commit/95d2786)的[首次完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018143309)在两项队列VM测试失败，原因是其截取notifyJobWaiters但漏提供新增的publicErrorMessage依赖。给这两个仅验证提交顺序/冷历史读取的夹具补已有模式的文本转换stub，定向6/6通过；成员错误内容继续由真实HTTP17项验证，不删除断言或更改生产实现。该次失败不记为完整通过，后续完整验收另记录。
+
+T01第一片：shared-capacity迁为严格TypeScript，显式定义本模块读写的账户、尝试、冷却与结果类别；历史计数仍由原归一化处理。删除调用方已无意义的账户/时间实参，不改串行和冷却算法。根新增同一tsconfig.backend.json下的typecheck/build，复用已锁TypeScript6.0.3及Node类型22.20.5；旧JS仅发射，不冒充已类型化。标准tsc改写相对TS导入，Docker及执行器使用编译JS并保留worker/SQL/public/scripts文件树；不新增loader，原源码入口和数据路径保持。Node22的--check不解析TS，因此现有112个JS文件语法检查与独立严格类型检查各司其职。冻结离线安装、类型/编译、容量相关55/55、Nuxt实际链路12通过/1项Windows跳过、执行器产物本机2通过/1项Windows跳过均通过；Linux根镜像的编译入口/迁移/写入重开及最终执行器HTTP3/3通过。完整后端与最终CI结果继续记录；T01其他业务模块、C01及D01/D02尚未完成。
+
+T01首片完整本机复验：修正前述队列夹具后重新执行全部后端511项，507通过、4项Windows平台跳过、0失败；最后的根/执行器Linux镜像均构建通过，执行器在断网只读根目录、默认UID1000下HTTP3/3无跳过。完整Linux CI另按提交记录，尚未把单模块迁移记为整个T01完成。
+
+C01第一片：删除gateway-runtime中仅有定义、全仓源码/测试均无引用且未导出的publicCard、accountStatsSince和publicImage，共48行；它们只构造对象或纯聚合，没有初始化副作用。保留实际调用的签名图片链接、批量账户统计及共享遮罩工具。112文件语法、根严格编译、入口导入/成员路由/owner管理10/10通过，无新测试框架、依赖或数据迁移。其余清理随相关类型迁移继续，不将删除三处函数作为整个C01完成证明。
+
+C03与T01/C01首片最终验收：队列夹具补修[a01dc9e](https://github.com/Hime-Hina/novelai-shared-gateway/commit/a01dc9e)的[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018561882)已通过，覆盖生成错误保护与全部此前协议切片。TypeScript首片[1773621的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018865311)及死函数清理[cb063ae的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018965682)也已通过；最终清理版本验证后端511、前端115、执行器认证3、开发与双进程14、最终镜像HTTP3、Caddy7，均无跳过，并通过根/服务类型检查、JS语法与三个镜像构建。其余T01/C01及D01/D02继续实施，生产未变。
+
+T01共享状态与队列片：shared-status与queue-policy迁为严格TypeScript；状态构造函数导出唯一SharedStatus DTO，前端仅重导出类型，订阅与透支标记准确声明为boolean/null。保留原字段归一化、集合字典兼容、隐私白名单、准入/取消/截止规则；补非法布尔值及字典/数组等价回归。Nuxt更严格的数组索引检查要求在已夹取1～4的冷却级别处明确类型不变量，不新增兜底算法或关闭检查。更新源码/测试导入、Nitro纯模块内联及网页Docker构建输入；client产物不包含后端状态/冷却实现。根严格检查与编译、110个JS语法、定向58/58、全部后端512项中508通过/4项Windows跳过、前端115/115、执行器产物2通过/1项Windows跳过、Nuxt真实开发/生产双进程13通过/1项Windows跳过均通过。Linux网页最终镜像SSR及Native路由结构化503验证通过，最终完整CI另记录。发现的null订阅显示问题留独立行为修复，本片未改模板；无schema/依赖或生产变更。
+
+共享状态显示补修：订阅标记为null时明确显示“订阅状态未知”，不再走false的“没有可用的Opus订阅”分支；false/true原展示保持。仅改Naive状态组件的一处条件与现有三态组件回归，先红后绿，定向6/6及网页类型检查通过。后端值、账户资格和API状态未改，作为独立行为提交与T01分开。
+
+T01原生报价片：native-pricing迁为TypeScript，只定义报价实际读取的请求/参数投影、有限返回资源与费用明细；不移动分池余额或购买授权逻辑。保留nativeParameters整体优先、原数值转换、严格forceAnlas开关、所有常数/乘法/取整顺序、Medium和参考/辅助费用及estimated标记。新增参数来源与坏强度/参考边界回归，根严格检查/编译、六份价格/契约/账本/适配定向100/100、执行器重建及产物HTTP2通过/1项Windows跳过；184份官方固定报价与12组格式配对样本未改。当前仅使用模拟与固定证据，没有真实收费调用；完整CI另记录。
+
+T01客户端地址片已提交[181d822](https://github.com/Hime-Hina/novelai-shared-gateway/commit/181d822)：client-ip迁为TypeScript，仅补请求头、可选连接地址、环境和返回类型，更新两处直接导入；可信代理逐跳检查、IPv4/IPv6归一化及限流桶保持。严格类型检查与相关15/15通过，执行器重建及产物HTTP2通过/1项Windows跳过。此前共享状态/队列片[4de3c77的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39019983933)与订阅未知显示补修[cd1a401的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39020163114)均已成功；原生报价和本片的完整CI尚在运行。
+
+D01交付准备：新增由已验证Linux镜像导出测试发布包的CI步骤，包含独立Node、两服务产物、生产依赖、许可文件、版本清单和校验和；两个systemd测试unit分别约束用户、目录、回环网络和资源，不联动重启。工作流/脚本/unit静态检查及断网Linux打包重开、SQLite迁移与完整性、Nuxt SSR均已通过，详见[测试部署说明](test-deployment.md)。bob只读预检通过，但未安装或启动测试服务；最终CI artifact、常驻mock、副本脱敏、目标机浏览器/负载/恢复验收仍待，不将准备完成记为D01完成，也不替换生产。
+
+T01继续迁移quota-timeout、public-hosts、request-fingerprint和state-events：保留原截止/取消清理、Host信任、已规范化请求的摘要和事件合并生命周期；公开StateInvalidation由后端导出，网页仅重导出类型，不复制内部成员事件。截止/Host/Discord22项、指纹/幂等17项及追加的迁移前固定SHA回归、事件/存储/成员路由19项均通过；网页类型检查及116项、执行器编译与产物HTTP2通过/1项Windows跳过、Linux网页镜像构建及断网SSR200通过。新增SHA期望来自c1885ba旧函数的三份合成请求，防止已持久幂等键在类型迁移后变更含义。当前server顶层9个TS、27个JS文件，不将文件占比视为整个项目完成度；存储、调度及路由仍待迁移。报价片[bc65ef4的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39020729419)和客户端IP片[181d822的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021158296)均已通过；本批完整CI待记录，无生产变更。
+
+D01常驻mock片：新增仅回环、只接受固定合成PST的纯Node服务与独立unit，复用现有MessagePack编码，支持账户查询及普通/流式生图，固定合成余额与1×1 PNG；未实现路径明确404，不模拟计费或官方生成质量。有限延迟供队列/重启验收使用，无新增依赖或外联。相关4/4、语法/unit静态检查、最终Linux执行器镜像及包内mock路径验证通过，同镜像执行器HTTP3/3通过。首次测试部署用合成数据，不等全量TS或生产副本；生产规模副本的备份、完整冷表脱敏、活动预留隔离和性能验收另行完成。此前发布准备[c1885ba的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021213548)已成功并上传Linux发布包；包含mock的新CI与bob实际部署仍待，生产未动。
+
+T01热力图与图片响应片：activity-heatmap及native-stream迁为严格TypeScript，网页热力图DTO仅重导出后端类型；日期/权限/查询边界、帧和正文上限、属性顺序、分块和部分批次结果保持。与0901056旧函数离线对照，三类事件的MessagePack字节、SSE及JSON分块一致。脚本开始导入TS后，根镜像和执行器须用tsc编译脚本覆盖原始脚本；只增加两处覆盖，保留README和Python资源，并补包内mock真实启动回归。相关热力图/存储/事件19项、流/provider/mock42项、网页类型及116项、根类型/编译、执行器重建与本机产物3通过/1项Windows跳过均通过；三个Linux镜像构建通过，最终执行器HTTP4/4无跳过。server顶层现为11个TS、25个JS，核心存储、调度和路由仍待；完整CI与目标机验收另记录。
+
+C01范围核对完成：原计划点名的publicCard/accountStatsSince/publicImage已由[cb063ae](https://github.com/Hime-Hina/novelai-shared-gateway/commit/cb063ae)删除，仍有真实调用的共享依赖保留；自写MessagePack由C03换为现有库，重复DDL/列定义/普通CRUD由C06收敛。按[ORM评估](orm-evaluation.md)保留唯一领域投影sqlRecord、参数化统计SQL及历史兼容，不将它们误当成遗漏删除项。上述改动已被后续综合CI覆盖；C01以已确认清理项完成结案，不宣称全仓不存在其他死代码。迁移中新发现的具体问题仍独立处理。
+
+D01发布准备复验：包含mock的[0901056完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39021932673)已通过，后端519、前端116、执行器认证3、双进程14、最终镜像HTTP3、Caddy7均通过且无跳过，类型/语法及三个镜像通过。51,873,513字节发布包已下载并核对SHA-256；bob此前只读预检端口空闲、生产服务active，但传输阶段起SSH在身份验证前关闭，间隔重试仍失败。安装脚本未执行，测试服务尚未安装，不能据本地或CI通过宣称部署完成。后续[d153f60的CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39022542166)亦成功，包含热力图/流类型和编译脚本回归。
+
+T01输入与共享策略片已提交[199c41c](https://github.com/Hime-Hina/novelai-shared-gateway/commit/199c41c)：native-body、v5-medium、launcher-subscription、shared-surface迁为TypeScript，保留multipart的媒体/附件/正文/扩展预算及413/429原异常透传、Medium固定参数、启动器本地配额隐私和路由白名单；同步Nuxt内联及构建输入。根严格检查/编译、输入与适配12项、策略/契约43项、完整Native HTTP17/17、网页类型及116项均通过；执行器本机产物3通过/1项Windows跳过，Nuxt实际开发/生产双进程13通过/1项Windows跳过。三个Linux镜像构建及最终执行器HTTP4/4通过。server顶层15个TS、21个JS，剩余核心业务继续迁移；本片完整托管CI另记录，生产未改。
+
+T01图片与结果片：native-image、job-previews、result-files迁为严格TypeScript，更新所有源码和测试直接导入。保留图片/辅助操作校验、预览节流、结果摘要、临时文件恢复及禁止覆盖证据的行为；类型收窄不额外重写归一化参数。与前一提交对照的完整输出和错误形态一致。根类型/语法、相关64项中63通过/1项Windows跳过、完整Native HTTP17/17、网页类型检查均通过；执行器重建及本机构建产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4、结果文件9/9（含符号链接拒绝）全部通过。server顶层18个TS、18个JS，存储、调度和路由等核心仍待；本批完整CI另记录。前一输入与策略片[199c41c的完整CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39023749442)已成功，生产未改。
+
+D01离线副本工具已完成：只读SQLite backup纳入已提交WAL，迁移和凭据轮换只作用于完整工作副本，复用sqlRecord投影及既有退款/核对函数；清理冷表和释放页中的旧凭据，保留内部关联与受保护历史。活动任务和预留闭合，原停用成员保持停用，默认禁止接单，副本PST可查询常驻mock。Windows与断网只读Linux各7项通过，包含3000+冷历史、V5/免费/订阅/购买/回退退款、冷终态优先、防覆盖、失败无交付及源主库/WAL/图片不变；Linux权限通过。纯旧generic库、孤立预留和无法可靠退款的旧points活动任务拒绝交付，具体使用与边界见[部署说明](test-deployment.md#离线测试副本工具)。未处理真实生产数据、未安装目标机；本片完整CI另记录。
+
+T01账务、会话与owner片：fair-quota、generation-accounting、operating-accounting、member-auth及owner-operations迁为严格TypeScript。钱包、预留、快照、任务证据和运营资源由所属模块定义；会话行复用Drizzle schema，启动器settings复用账务类型，混合账本保持追加容器。没有新增运行时校验、数值转换或依赖；保留历史算术、原位升级、错误和JSON属性顺序。账务126项、登录相关46项及owner5项定向通过；冻结旧模块的10组账务场景、9种owner操作及统计输出对照一致。根类型/语法、全后端527项中523通过/4项Windows跳过、网页类型与116项、真实Nuxt开发/生产双进程13通过/1项Windows跳过均通过；执行器本机产物3通过/1项Windows跳过，Linux最终镜像HTTP4/4及包内编译后的bootstrap→test-copy CLI通过，源库不变和输出权限已核验。server顶层23个TS、13个JS；存储、上游适配、调度和成员路由等仍待，本批完整Linux CI另记录。图片片[f7c7dca](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39024947176)和副本工具[3b73904](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39025133075)的完整CI均已成功；未处理真实生产副本或部署。
+
+T01上游与存储边界片：providers、prompt-api、generation-request、storage-schema、storage-migrations和sqlite-read-worker迁为严格TypeScript，更新直接导入及Nuxt构建输入。复用已有图片、预览、任务和Drizzle类型；为better-sqlite3增加精确开发类型包`@types/better-sqlite3@9.6.0`，运行库及其他锁定包版本/完整性未变。只读worker在源码选择TS、构建产物选择JS，避免tsc不改写URL字符串导致丢worker；没有修改SQL、迁移、协议或正文行为。与dc6ff3b旧模块的擦除后语句对照一致（provider仅多余括号），保留原错误和字段顺序。上游71项、存储42项、请求18项定向通过；全后端527项中523通过/4项Windows跳过、网页类型与116项、Nuxt实际开发/生产双进程13通过/1项Windows跳过通过。根严格检查、三个Linux镜像构建、最终执行器HTTP4/4及包内bootstrap→test-copy CLI通过，源库与权限符合预期。server顶层29个TS、7个JS，store、调度入口、成员/Discord路由和故障账务等核心继续迁移；不以文件比例代替T01完成度。前一账务片[dc6ff3b的完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39026080065)已成功，本批完整CI待记录。
+
+D01 首次部署使用完整 CI 通过的 `0901056` 产物，后续类型迁移尚未替换该测试版本。当前端口仅监听回环、上游为本地 mock，网络过滤已做允许/拒绝对照；安装和首轮验收期间生产进程保持不变。[部署与待验收范围](test-deployment.md#bob-首轮合成验收)已记录，不能把首次合成部署当作最终版本交付。后续实机强杀网页、正常重启执行器、强杀执行器和二次结算幂等检查均通过，原生产继续运行；上游未完整返回的图片仍可能无法找回。
+
+T01存储与业务路由片：store、failure-accounting、discord-auth、member-routes及official-key-jobs迁为严格TypeScript。复用领域模型、Drizzle行和prepared query及只读worker消息类型，保留SQL/事务/冷热缓存、OAuth刷新落盘时序、会话/SSE清理和官方密钥任务生命周期；没有新运行依赖、迁移或框架。类型擦除对照只有括号、引号与排版差异。存储89项、成员/Discord43项、故障账务4项、provider/preview28项及私有官方任务生命周期4项定向通过；根严格检查、全后端527项中523通过/4项Windows跳过、网页类型检查及执行器构建产物3通过/1项Windows跳过。最终Linux/Docker/Nuxt链路由本批完整CI继续验收，不沿用前一批结果冒称通过。server顶层34个TS、2个JS，最后的gateway-runtime/index及其真实调用类型连接仍待完成。前一上游/存储边界片已由[c759f49完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39028262970)验收成功；目标机测试仍固定0901056，未替换生产。
+
+T01最后入口片：gateway-runtime和index迁为严格TypeScript，按真实调用补齐存储投影、队列、账户与响应类型；11个受影响业务模块与93df168的类型擦除AST一致。增加精确开发类型包`@types/negotiator@0.6.5`，运行依赖未变。两份仍供旧浏览器使用的public报价/Medium模块保留JS路径并开启`@ts-check`；不把测试、运维脚本或旧页面一并改写。根源码启动改用TS，构建后统一生成JS入口manifest供根镜像与执行器复用，产物HTTP测试校验包入口能解析到实际JS文件。141项定向、全后端527项中523通过/4项Windows跳过、网页类型与116项、执行器构建及产物HTTP3通过/1项Windows跳过、Nuxt实际开发/生产双进程13通过/1项Windows跳过；根严格检查与冻结安装均通过。本批完整Linux CI和目标机最终产物另验，不将本地成功作为整项交付。
+
+前一存储/业务路由片[93df168完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39029446810)已成功。D01当前测试版本为c759f49，已接入清理后的生产规模副本并完成同库回退；四个模拟任务和八张历史图下载的队列/资源采样、浏览器自动更新见[测试部署说明](test-deployment.md#生产规模副本的有界排队与资源采样)。生产继续运行原版本。
+
+最终T01提交[ce1eb91](https://github.com/Hime-Hina/novelai-shared-gateway/commit/ce1eb91)的[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39031930743)已成功：后端527、网页116、执行器认证3、实际Nuxt双进程14、最终镜像HTTP4、Caddy7均通过且无跳过，三个业务镜像及产物导出验证成功。bob已部署同一校验产物，执行ce1eb91→c759f49→ce1eb91同库回退，保持会话、图片、账本和停止接单；最终候选一条免费mock任务及同键重试通过。目标机没有安装Docker或修改生产，原生产PID1193102保持active/running。
+
+## 仓库与现状
+
+fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai-shared-gateway)，源仓库为 [pkppkq/novelai-shared-gateway](https://github.com/pkppkq/novelai-shared-gateway)。文档分支为 `codex/modernization-plan`，从现有 `56c0c9d` 创建。
+
+现有 `codex/shared-gateway-management` 分支和以下四个提交完整保留，文档分支继承它们，不用上游 main 覆盖当前代码：
+
+| 提交 | 已有功能 |
+| --- | --- |
+| `4524678` | Discord 邀请登录与服务器成员检查 |
+| `74359c2` | 共享账户串行调度 |
+| `f7879ba` | 每次完成后至少间隔十秒 |
+| `56c0c9d` | owner 管理与用量统计 |
+
+现有代码使用 Node.js、原生浏览器 JavaScript 与 better-sqlite3，仓库提供 Docker Compose 配置；2026-10-17 只读确认目标主机实际通过 systemd 运行生产网关，不能把仓库配置当作实际部署。2026-10-16 审计基线通过 47 个文件语法检查、203 项测试；生产依赖审计未报告已知漏洞。该结果是已有代码基线，不代表后续改动已通过验证。
+
+## 当前生图实现与官方 API 的关系
+
+2026-10-16 对照 [NovelAI Primary API](https://api.novelai.net/docs/)及其指向的 [Image Generation API](https://image.novelai.net/docs/index.html)、[Swagger 定义](https://image.novelai.net/docs/doc.json)：当前实现是支持部分官方协议与第三方客户端扩展的共享网关，不是完整、严格透传的官方 API 实现。
+
+当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
+
+主要实现位于 [native-image.ts](../server/native-image.ts)、[native-pricing.ts](../server/native-pricing.ts)、[fair-quota.ts](../server/fair-quota.ts)、[providers.ts](../server/providers.ts)、[native-stream.ts](../server/native-stream.ts)和 [HTTP 入口](../server/index.ts)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+
+| 维度 | 官方公开契约 | 当前网关 |
+| --- | --- | --- |
+| 身份 | Persistent API token 的 Bearer 鉴权 | 对外接收成员 Key，对上游使用管理员保存的共享 PST；有个人钱包与成员资格限制 |
+| 普通生图响应 | ZIP 或按 `Accept: application/json` 返回含 `images` 的 JSON；成功状态列为 201 | C03-04按真实JSON/ZIP响应统一200；已按Accept协商ZIP/JSON及实际种子，缺省保持ZIP，部分成功也为200并保留批次说明 |
+| 流式生图 | 路径描述包含中间、最终及错误事件；`image.StreamingType` 枚举同时列出 `msgpack` 与 `sse` | 已依据真实响应接入SSE与MessagePack；缺省SSE，显式msgpack覆盖Accept；stream不进入持久指纹，保留必要批次扩展 |
+| 多图 | 请求包含 `n_samples`，响应可包含多张图片 | 只允许 1–4 张，拆成独立单图依次排队与结算，种子逐张递增；ZIP和JSON保留批次结果说明，费用不承诺等于官方批量生成 |
+| 参数与功能范围 | 定义包含 PNG/WebP、ControlNet、请求 `url`、Vibe 编码 mask 和 seed 等字段 | Native支持png/webp输出；启用的ControlNet、`url`和Vibe编码mask等仍被拒绝；附加本地`allowPurchasedAnlas`等字段 |
+| 额度与限流 | 官方账户级规则与接口错误 | 本地估算、成员预扣退款、单并发、完成后十秒间隔、冷却与队列期限；这些是网关规则 |
+| 错误返回 | 图片 API 的 `utils.JsonError` 定义含 `message`、`statusCode`、`details` | Native 错误通常使用本地 `{message,error}`，部分上游状态会转换，不能宣称原样保留 |
+
+Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结合各层定义核对，不能只根据响应媒体类型一行判定兼容性。官网文档、官网前端报价样本和第三方启动器请求样本分别作为不同证据；现有报价测试校准前端样本，V5 小数消耗仍是估算。已有 203 项测试通过并不等于通过全部官方 API 契约测试。
+
+迁移前补充独立契约矩阵：注明已支持、明确拒绝、网关扩展和待核实项，并以当前客户端行为建立回归基线。按用户已确认的顺序，官方协议差异消解在 Nuxt 前后端完整迁移并通过 N03 验收后实施（C03）；迁移过程中不顺带改变状态码、返回格式或参数支持。JSON/SSE 内容协商、WebP 或新参数支持逐项评估、独立提交和测试，不承诺取消成员鉴权与额度限制等必要的网关扩展。未核价字段不能直接透传，URL 也不能为追求字段覆盖而直接交给服务器下载。普通网页状态 SSE 与生图流式协议分开验证。
+
+## 登录状态
+
+改造前会话全员固定 12 小时，保存在进程内 Map，重启即失效。A01 先改为持久会话，2026-10-18 再按用户确认增加可见网页续期；以下规则已于 2026-10-19 随 dff5ee4 部署生产：
+
+- [member-auth.ts](../server/member-auth.ts) 中 owner 空闲期限为 1 天，普通成员为 7 天；可见网页的 me/管理摘要查询续期，后台标签页、SSE 和客户端生图不续期。过期或撤销后不能续期恢复。
+- [member-routes.ts](../server/member-routes.ts) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
+- 随机 Cookie 只在浏览器，SQLite 冷表保存摘要、成员、版本、固定截止和签发角色绑定；重启保留有效会话。旧 Map 无法迁移，首次升级需重新登录一次。
+- 停用、删除、重置认证版本会撤销对应会话；Discord 再次登录也会更新认证版本，使该成员之前的会话失效。
+- Discord 成员资格最多缓存五分钟；资格失效或授权异常会阻止后续访问。退出网页只结束当前网页会话，不改变 API Key 的调用资格。
+
+签发在串行事务中重新核对当前成员版本与绑定，SQL 失败不发成功 Cookie；退出持久撤销。复用当前成员检查，不把登录状态或上游凭据放到 localStorage，不把本地会话和 Discord access token 的有效期混为一谈。具体数据/接口与升级边界见[持久会话](member-sessions.md)。
+
+接口区分会话过期、权限不足、Discord 临时不可用和普通网络错误。页面显示到期时间；真实过期时清除敏感展示并提供重新登录入口，503 和网络中断保留页面并提示重试，避免伪装成“已退出”。如果采用框架内置 session API，使用数据库存储并继续验证成员状态，不能退回纯内存实现。
+
+角色变化必须重新认证：持久会话记录签发时的权限身份/认证版本；owner 归属或授权范围改变时撤销受影响的旧会话，不能让已登录两天的普通成员升为 owner 后继续使用剩余五天会话。角色配置变化的检测和撤销由唯一会话所有者执行，包含服务重启加载配置的情况。
+
+验收：到期边界、服务重启、主动退出、成员停用、认证版本变化、Discord 故障与普通成员/owner 角色切换均有检查；升权后必须重新登录并采用 owner 一天空闲期限，降权立即失去管理权限。
+
+## 实时更新
+
+改造前公共状态通过 SSE 发送，但每条连接在服务端每两秒读取状态；成员钱包和最近任务依赖手动刷新，管理页还有三十秒轮询。以下改进已由 R01/N01–N03 实施，当前采用[事务后事件与合并刷新](state-events.md)。[JobPreviews](../server/job-previews.ts) 仍专用于图片预览。
+
+建议继续使用浏览器原生 EventSource 与 Node 事件能力，不新增 WebSocket 服务或消息中间件：
+
+1. 在任务创建、排队、派发、结算、退款、官方额度同步和成员配置的持久事务成功后，产生变更通知；回滚和预览操作不能产生成功通知。
+2. 通知只含作用域、版本及必要的任务 ID，例如 `jobs`、`quota`、`shared`、`management`。个人事件只发给本人，管理事件验证 owner 权限；不广播提示词、图片、钱包明细或 Key。
+3. 服务端按接收人合并 200 毫秒内的变更，并设置一秒最大发送延迟，避免持续流量使通知无限推迟。终态、注销和权限撤销事件及时处理。
+4. 前端把事件映射到对应查询。相同查询一次只保留一个刷新请求；期间再收到通知，完成后补一次刷新，旧响应不能覆盖更新状态。
+5. 首次连接和重连都发同步信号，前端重新取快照。第一版不建设持久事件日志；通过“先订阅再校准”和版本比较处理取快照期间的变化，避免声称可以无损重放全部历史事件。
+6. 隐藏页面停止非必要刷新，恢复可见后重连校准；保留心跳、连接数量与慢客户端限制，并定期检查会话和 Discord 资格。心跳及后台推送不延长会话。
+7. V5 连续恢复无需每秒写数据库。前端用官方快照和速度做带有“估算”标识的显示，实际额度仍以后端核价和结算为准；来源失效时停止外推。
+8. 拆进程后，执行器到 Nuxt 的内部订阅也是可中断链路。内部连接恢复或执行器重启时，Nuxt 必须向仍连接的浏览器发送重新同步信号，而非等待浏览器自己断线。事件和快照携带执行器启动标识及该启动周期内的版本；启动标识变化时丢弃旧周期的版本比较并重新获取授权快照，同周期内部重连也触发校准。先重新订阅再校准，防止恢复期间再次漏变更；不引入持久事件日志。
+
+Nuxt 路线先使用 [useFetch 与 useAsyncData](https://nuxt.com/docs/4.x/getting-started/data-fetching)组织读取状态，再按合并事件刷新指定数据。若实际需要更复杂的查询缓存，再评估 [TanStack Vue Query](https://tanstack.com/query/latest/docs/framework/vue/overview)，同一份服务端数据只由一套机制管理。只有确有跨页面界面状态需求时才增加 Pinia，不把钱包和任务复制到另一份全局状态。
+
+验收：在测试网络下，已提交的变更通常在一秒内可见；一百条短时间变更不会变成一百次同类 HTTP 请求；浏览器重连、仅内部连接中断及执行器重启三种情况均可校准，事件不跨成员泄漏。端到端延迟目标属于待测验收目标，不是当前生产测量结果。
+
+## 前端与全栈框架选择
+
+前端工程化的收益是统一组件、类型、数据加载、错误处理和构建，而不只是换一个页面框架。成员门户与 owner 控制台采用同一设计系统；私有 `/admin` 入口继续保持本机访问边界。
+
+| 路线 | 适配本项目的优势 | 需要承担的工作 | 建议 |
+| --- | --- | --- | --- |
+| Vue 3 与 Vite，TypeScript，Naive UI | 单文件组件接近现有 HTML 组织；表格、表单、主题和日历热力图可以统一复用 | 按路由拆包；校验类型、组件交互与首屏资源体积 | 保留为独立前端比较方案，不再单独建设此工程 |
+| Nuxt、Vue 3、TypeScript 与 Naive UI | Vue 生态内统一路由、数据加载、服务端接口与渲染方式 | 必须保证现有队列、会话和 SQLite 写入仍有单一所有者 | 已确认两步迁移与 Naive UI |
+| React 与 Vite，Mantine，TypeScript | 表单、弹窗、反馈、主题、图表可由同一组件体系提供；现有后端逐页接入 | 增加前端构建；按路由拆包，控制 React 与图表资源对首屏的影响 | 保留为比较方案 |
+| Lit 与 Web Awesome，TypeScript | 标准 Web Components，能逐块替换现有 DOM 页面；保留普通 HTML 使用方式 | 页面数据、路由、复杂表格与热力图仍需组合；Shadow DOM 的主题和表单交互需验证 | 适合把渐进接入和框架独立放在首位 |
+| SvelteKit 与 shadcn-svelte，Node adapter | 同一框架处理页面、类型、路由、服务端加载；组件写法简洁 | 同时迁移页面与请求入口的风险较高；复制进仓库的组件代码需要自己维护 | 如果确认同时统一全栈，作为重点备选 |
+| React Router Framework Mode 与 Mantine | 类型化路由、数据加载、自动拆包，可选择 SPA、SSR 或静态渲染 | 必须设计与现有 Node 服务、长连接和调度器的整合边界 | React 路线下的全栈首选候选；无需为了名称而立即迁移后端 |
+| Next.js 与 React 组件库 | 完整的服务端渲染、自托管和 React 生态 | 增加缓存、服务端与客户端边界管理；需要防止缓存私人响应 | 保留备选，当前需求不足以把它列为默认 |
+
+选择依据来自 [Vue 的 TypeScript 支持](https://vuejs.org/guide/typescript/overview.html)、[Naive UI](https://github.com/tusen-ai/naive-ui)、[Nuxt](https://github.com/nuxt/nuxt)、[Mantine 入门与许可](https://mantine.dev/getting-started/)、[Lit](https://lit.dev/docs/)、[Web Awesome](https://github.com/shoelace-style/webawesome)、[SvelteKit Node 部署](https://svelte.dev/docs/kit/adapter-node)、[React Router 模式](https://reactrouter.com/start/modes)、[Next.js 自托管](https://nextjs.org/docs/app/guides/self-hosting)。实际采用的依赖在安装时核对稳定版本、Node 要求和兼容性并锁定，不使用浮动 latest 或预发布版本作为部署基线。
+
+[Shoelace 已停止活跃开发](https://shoelace.style/)，Web Components 比较方案使用其后继 Web Awesome 的免费开源部分；不把 Pro 付费组件当成可直接复用资源。[shadcn/ui](https://ui.shadcn.com/docs) 与 [shadcn-svelte](https://www.shadcn-svelte.com/docs) 分发可修改的组件源码，定制自由，但不等于免维护。已选 Vue 路线优先采用 Naive UI 的现成能力，不混装多套按钮、弹窗和表单组件库。
+
+首次改造只接入一个 Nuxt 成员页面，验证同源 Cookie、SSE、路由与资源体积，再替换管理页。单一常驻进程拥有账本、队列和 SQLite 写入；不能让 SSR 请求或开发热更新重复启动调度器。第一阶段保留生产 API 路径、状态码、ZIP 与 MessagePack 行为，不把长任务迁到有执行时限的无状态函数。
+
+### Nuxt 两步迁移
+
+第一步用 Nuxt 建设网页、布局、路由与类型化数据加载，现有 Node 网关继续负责认证、账本、队列、生图和 SSE。通过同一测试域名按路径分流，明确 `/api/`、`/ai/`、`/v1/`、`/user/`、`/generate` 等现有业务路径的归属；私有 `/admin` 及管理接口仍保留回环访问限制。Nuxt 页面不能打开第二份生产 SQLite 写连接或启动另一个调度器。
+
+第一步的个人余额与管理数据先在浏览器读取，不为获得 SSR 而同时改变会话边界。当前 Cookie 限于 `/api/member`，首页的服务端渲染请求不会携带它；将来启用私人页面 SSR 时，再验证 Cookie 范围、服务端认证转发、初始数据脱敏及缓存隔离。Naive UI 的服务端样式与深浅主题一致性也需单独验证。
+
+第二步逐项迁入后端，先普通只读查询，再登录与管理操作，最后是长连接、Native 生图、队列和账本入口。纯报价和分配逻辑继续复用；HTTP 适配与生命周期从现有入口中拆出，每类接口迁移后验证契约再切换其路径归属。按已确认的独立执行方案，任务执行和 SQLite 写入由独立 Nitro 服务拥有，Nuxt 网页/API 进程不初始化调度器。Nuxt 本来使用 Nitro 作为服务端引擎，Node/TypeScript 是运行时与语言，不是与 Nuxt 互斥的框架选项；不为没有网页的执行端另带一套 Nuxt 页面构建，始终只有一个实际调度器。
+
+两步方向已经确认，不再要求重复选择框架；各项实现仍按本计划的独立提交和验收执行。生产替换继续保留用户另行明确允许这一条件。
+
+### 已选 Naive UI 的理由与限制
+
+推荐依据是现有页面的覆盖度与统一主题能力，而不是认定它在所有场景都优于 Element Plus。Naive UI 用 TypeScript 编写，提供可类型检查的主题覆盖，支持按需打包，使用 MIT 许可；项目无需为了使用这些基础组件再引入 Tailwind。
+
+| 项目需求 | 拟复用组件 | 保留在业务代码中的责任 |
+| --- | --- | --- |
+| 成员列表、最近任务、份额预览 | `NDataTable`、`NPagination`、`NTag` | 查询权限、分页与日期口径；新数据不能覆盖正在编辑的草稿 |
+| 额度调整、成员配置 | `NForm`、`NInputNumber`、`NSelect` | 服务端校验、份额总和、额度精度和版本冲突 |
+| 删除确认、余额转移预览 | `NModal`、`NDialog` | 确认对象、防重复提交、失败后保留输入 |
+| 全局提示、加载与空状态 | `NMessage`、`NNotification`、`NSkeleton`、`NEmpty` | 区分过期、离线、拒绝与待结算 |
+| 成员页与管理页统一主题 | `NConfigProvider`、`darkTheme`、主题覆盖 | 设计取值、信息层级、移动布局与对比度 |
+| GitHub 风格调用热力图 | `NHeatmap` | 上海日期分桶、权限、缺失历史与统计口径 |
+
+2026-10-16 核对 npm 注册表中的稳定版本为 `2.45.3`，对应源码已包含上述组件；注册表来源不改变项目统一 pnpm 的要求。[NHeatmap 文档](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/src/heatmap/demos/enUS/index.demo-entry.md)标明它从 `2.43.0` 提供，包含 GitHub 风格主题、月份与星期标签、图例、tooltip 和最近一年布局，因此热力图也可以沿用同一组件体系。
+
+Element Plus 同样提供[深色主题](https://element-plus.org/en-US/guide/dark-mode.html)和[虚拟表格](https://element-plus.org/en-US/component/table-v2.html)，这些不是 Naive UI 独有优势。本项目目前没有复杂表格插件或现有 Element Plus 资产，选择 Naive UI 可以让所需控件、主题和热力图集中在一个库中；若验收发现关键组件能力缺口，再依据具体缺口比较替换成本。
+
+选型不等于免测。[Naive UI 2.45 系列变更记录](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/CHANGELOG.en-US.md)涉及内部构建变化和弹窗、选择框事件修复。实际引入时锁定验证过的稳定版本，用一张真实成员页和一个额度调整弹窗检查首屏体积、焦点回收、键盘操作、中文输入法、小数额度、异步提交和深浅主题；不把可按需打包当作已经测得更小或更快，也不预先包一层通用组件接口。
+
+### 统一界面
+
+- 统一颜色、字号、间距、圆角、表单校验、按钮状态、提示与加载骨架；支持浅色和深色主题，使用本地系统字体作为初始方案。
+- 统一成员与管理导航、钱包卡片、任务状态、时间格式和空状态。额度使用明确单位，区分个人余额、公共余额和预估恢复量。
+- 已提交、待结算、失败、未知结果采用不同文字；状态不能只靠颜色识别。关键操作保留预览、确认、忙碌状态和防重复提交。
+- 管理表格在窄屏提供可用布局；保留键盘导航、焦点回收、可读标签，复用组件不等于跳过无障碍检查。
+- 先用组件库基本表格；只有实测需要复杂排序或大数据交互时才引入额外表格库。避免整套后台模板携带无关图标、编辑器和页面。
+
+## 调用热力图
+
+默认展示最近一年“每日生图任务数”，采用 GitHub 风格的按周列、按星期行布局。日期统一为 `Asia/Shanghai`，聚合依据为 `createdAt`；同日提交但翌日完成的任务仍归提交日，统计说明必须可见。
+
+当前 Native 多图被拆成独立任务，因此一次四张记四个生图任务，不宣称是四次原始 HTTP 调用。放大和 Vibe 编码单独统计，不混入默认生图热力图；缓存命中如果产生任务，展示口径需标明其不是新上游生成。失败与取消可在 tooltip 和筛选中查看，不能只显示成功而隐藏异常。
+
+成员只看本人；owner 可切换全局和成员。接口在服务端按日聚合，最多返回约 366 个日期桶，不把一整年任务或提示词送到浏览器。查询必须覆盖 SQLite 持久历史，不能只用内存中最近三千个任务。首次上线前的数据缺失区间与未来日期不伪装成零调用。
+
+Vue 路线优先复用 Naive UI 的 [NHeatmap](https://github.com/tusen-ai/naive-ui/blob/v2.45.3/src/heatmap/demos/enUS/index.demo-entry.md)，按需加载。提供月份、星期、图例、日期详情和可访问的文字或表格替代；检查触屏、键盘操作、闰年和跨年布局。组件接收时间戳，服务端日期桶到显示数据的映射必须验证不同浏览器时区下不偏移，统计口径始终保持上海日期。新调用或任务状态变化只触发相关日期聚合的合并刷新。
+
+## 浏览器网络与首屏性能
+
+实施证据见[浏览器性能采样](browser-baseline.md)：现已完成冻结源码下的 60 次浏览器测量，并保留 owner 控制台历史导航作为独立生产证据。两类样本不混算；本机基线完成不表示生产历史长等待已经解决。
+
+先测现状，再比较同样环境中的新版本。覆盖匿名登录页、已登录成员页、owner 控制台，分别记录冷缓存和热缓存；桌面与移动视口各测试固定网络和 CPU 条件。每种场景至少五次，保存中位数、最慢样本及原始追踪。
+
+浏览器 Network 与 Performance 记录请求瀑布、TTFB、FCP、LCP、资源传输量、主线程长任务，以及“个人余额与最新任务实际可用”的时间。SSE 是长期连接，不用 network idle 判断页面加载完成。端到端用 [Playwright 的网络观测与模拟能力](https://playwright.dev/docs/network)固定响应，排除真实 NAI 延迟对前端比较的干扰。
+
+已有代码值得核验的点：
+
+- 成员初始化先请求 `login-options`，再请求 `me`，可能形成串行等待；应先判断域名跳转和鉴权要求，再决定合并或并行，不能无条件发送跨域敏感请求。
+- 现有静态资源也使用 `no-store`；新构建的带内容哈希资源可长缓存，HTML 重新验证，登录与私人数据继续禁止共享缓存。
+- `me` 会触发额度同步与 settings 序列化，历史预留膨胀可能增加接口等待；先修热状态增长，再比较前端框架。
+- 管理统计、图表、全年热力图不应阻塞账户首屏；优先显示页面骨架和关键数据，其他区域独立加载。
+- 核验重复请求、SSE 重连风暴、压缩、代理缓冲、数据库锁和脚本解析，不能把网络慢全部归因于 JavaScript。
+
+目标：在约定模拟环境中，重做后的首屏关键数据时间和 LCP 不劣于旧版本；如基线存在明显串行等待，争取降低至少 20%。LCP 2.5 秒、CLS 0.1 可作为目标预算，但不把少量实验室测量当成生产用户分位数。若有回退，先按网络追踪解释或修复，再发布。
+
+HAR、trace 和截图可能包含 Cookie、Authorization、Key、提示词或成员信息。原始记录仅放受保护的私有目录，公开提交只有脱敏汇总与可复现的合成测试。
+
+## 最近请求与排队诊断
+
+生产只读结果见[近期任务排队基线](queue-baseline.md)，不把本地模拟结果称为生产排队结论。以最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识统计，覆盖成功、失败、取消、正在等待和超时请求；不足七天的实际历史跨度及未落库拒绝率明确标为缺失。
+
+复用 [owner 用量统计](../server/owner-operations.ts)和 [readOwnerJobRows](../server/store.ts) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
+
+| 阶段 | 时间字段 | 能解释的问题 |
+| --- | --- | --- |
+| 本地排队 | `startedAt - createdAt` | 前序任务占用、十秒间隔、限流退避、调度延迟 |
+| 派发准备 | `upstreamStartedAt - startedAt` | 本地处理、读写和请求准备 |
+| 等待响应头 | `upstreamHeadersAt - upstreamStartedAt` | 网络或上游排队；不能直接当成纯模型计算时间 |
+| 接收结果 | `upstreamCompletedAt - upstreamHeadersAt` | 流处理、图片传输或响应体等待 |
+| 本地完成 | `completedAt - upstreamCompletedAt` | 图片落盘和结算附近的开销，精度受现有打点位置限制 |
+
+缺失时间记为未知，不记零。未派发就超时的任务不能进入“已派发平均排队时间”后消失，须单列等待年龄、超时率和拒绝率。
+
+审计基线中确定的结构性因素是单并发、每张完成后的十秒间隔、30–120 秒容量退避、全局先来先服务，以及当时尚无队列上限；F04 已补上数量与等待上限，并随 dff5ee4 部署生产。它们是分析假设和已知规则，不是未经测量的生产故障归因。无上游限流且持续有请求时，若生成需 20 秒，十秒间隔使吞吐上界约为每小时 120 张；该数字只用于说明调度成本。
+
+对最近样本重建前序任务完成时间和最早可派发时刻，定位额外空闲时间、一个成员大量占队、容量错误连续发生及账本检查卡住的情况。历史没有记录的限流原因不得猜测回填；确有必要时，新增最少的调度原因与时间字段。
+
+默认先加每成员与全局待处理上限、管理员取消待处理任务、清晰的预计等待和拒绝提示。保留单并发和十秒间隔，只有证据支持且用户接受策略变化时才调整。以相同到达序列和模拟上游时长比较修改前后的等待分位数、拒绝率与成员公平性，不能只让平均值好看。
+
+F04 增加原子的“停止该成员接单并取消未派发任务”操作：同一持久事务内设置接单禁止状态、取消其等待/尚未激活的批次子任务并释放对应预留；入队和派发都检查该状态。在途任务继续保存和结算，不能直接复用 `enabled=false` 导致完成逻辑的用户检查失败。停止接单与禁止登录分开，恢复接单也不复活已取消任务。验收包含成员持续提交与管理员停止接单并发、事务失败回滚、在途正常结算和重启后禁止状态保持。
+
+### 中断恢复与持久队列
+
+2026-10-17 核对当前代码：任务和请求内容已进入 SQLite，共享模式下入队、派发预扣和完成结算使用立即持久化；启动也会读取全部 `queued/running` 任务。因此问题不在于缺少队列数据库，而在于恢复策略、请求生命周期和落盘边界尚未闭合。目前不能承诺“服务突然中断，排队和在途请求都不丢失”。
+
+这里的来源名称表示本项目的入口：`openai` 是兼容 OpenAI 请求格式的 `POST /v1/chat/completions`，解析后仍调用 NAI 生图，不是把任务发给 OpenAI；`direct` 是已有的 `GET /generate` 成员 Key 同步生图入口，含义不是绕过队列。`novelai-native` 则来自 `/ai/generate-image` 等 NAI 风格接口。来源不同不应导致未派发任务具有不同的重启恢复规则。
+
+| 中断时的状态 | 当前行为与缺口 | 相关实现 |
+| --- | --- | --- |
+| 网页或 Native 已排队且未过期 | 重启后可保留；HTTP 等待者只在内存中，原连接无法恢复 | `createJob`、`waitForJobResult`、`cleanupInterruptedStartupJobs` |
+| OpenAI 或旧 direct 已排队 | 即使尚未派发，重启也会直接标成失败并退款；任务记录仍在，但不继续执行 | `cleanupInterruptedStartupJobs` 按 source 清理 |
+| 任意来源正在运行 | 重启统一失败并退款；上游可能已完成或扣费，无法据此认定未消费 | `cleanupInterruptedStartupJobs`、`refundJob` |
+| Native 多图请求 | 每完成一张才创建下一张任务；尚未创建的剩余张数只在 HTTP 处理流程中，崩溃后无完整批次可恢复 | `handleNativeImageGeneration` |
+| 已收到图片，尚未完成结算 | 先用随机图片 ID 写文件，再提交任务与图片关联；两步之间崩溃可能留下无法按任务找回的文件 | `completeGeneration`、`writeStoredImage` |
+| 系统崩溃或断电 | SQLite 使用 WAL 与 `synchronous=NORMAL`，近期已提交事务可能回退；单纯进程崩溃与断电的保证不同 | `JsonStore.openSqlite` |
+| 正常 SIGTERM/SIGINT | 当前只刷新待写数据库、关闭 HTTP，最多五秒强制退出；没有完整停止派发并等待在途任务的流程 | `installShutdownHandlers` |
+
+SQLite 官方说明：WAL 与 NORMAL 可保持一致性、抵抗应用进程崩溃，但操作系统崩溃或断电可能丢失近期提交；WAL 与 FULL 会在每次提交增加同步，以提供更强持久性。[SQLite synchronous 文档](https://www.sqlite.org/pragma.html#pragma_synchronous)。任务库与图片必须位于持久卷；磁盘损坏、卷被删除和存储设备不兑现同步不属于单库重启恢复保证。
+
+改造目标分为三层：已持久受理的请求记录不静默消失；未派发且仍有效的任务重启可继续；已落盘的完整结果可查询和重复领取。对于已经发给 NAI、但没有收到并持久保存结果的请求，只能保证留下任务、尝试、预扣/退款和消费核对证据，不能保证恢复同一张图片或恰好执行一次。
+
+F06 输入载荷初值为单请求规范化 JSON **32 MiB**、全局活动请求合计 **64 MiB**，与 F04 的任务数量上限共同生效。按 UTF-8 字节计入 base64，多图公共参数只存一份；热状态只留请求元数据与子任务，历史参数留在 SQLite。入队事务同时检查并登记字节数，重启只用 SQL 汇总活动元数据；最后一个子任务/执行尝试不再需要输入时才释放，失败提交不占用。正文读取也必须临时计入预算并及时释放，不能等所有并发请求都读入内存后再拒绝。保留既有 32 MiB 正文上限，并检查 multipart 归一后可能增加的体积。
+
+该初值基于 2026-10-17 Windows x64 / Node 22.22.2 的独立合成实验：当前 JsonStore 处理 1×32 MiB、2×32 MiB 的峰值 RSS 分别约 454、648 MiB；16 MiB 参数复制给四个子任务的对照峰值约 341 MiB，共享一份参数且仅返回小型元数据时约 164 MiB。观察到总输入 64 MiB 的风险后停止扩量，未运行 16×32 MiB；真实 SQLite 写失败重载也已采样。实验未包含图片解码、上游/输出缓冲或 Linux 分配器，因此这是待隔离负载验证的参数，不能写成生产内存的严格上界。
+
+2026-10-17 检查 [NAI 图片 API 定义](https://image.novelai.net/docs/doc.json)，公开契约未提供可依赖的生图幂等提交或按任务 ID 找回结果机制；`x-correlation-id` 用于故障报告，不是幂等键。比如 NAI 已扣费，网关在接收图片前崩溃：自动重发可能再次扣费，直接退款也可能把已发生的成本转移给其他成员。未来若官方提供相关保证，再基于其契约增加安全的自动恢复；目前不能把本地重试当作这一保证。
+
+最小改造方案复用现有 SQLite、单调度器和任务查询，不增加 Redis 或消息队列：
+
+1. **持久受理与批次。** 在告知已受理前提交完整规范化请求、成员归属、任务 ID、有效期限；多图请求同时记录批次和全部子任务意图，但后续子任务先保持未激活，不提前取得可派发队列位置。所有未完成子任务计入准入上限。未提交成功不返回受理成功；已提交但响应丢失通过下一项幂等关联找回。派发前重新检查资格、余额与有效期限，取消或过期留下明确记录。
+2. **任务与连接分离。** HTTP/SSE 断开或等待超时只结束等待，不能直接证明上游未消费；任务有效期与 HTTP 等待期限分别定义。成员页面支持恢复后查询、领取结果和显式取消未派发任务。第三方客户端不要求修改，不强制添加幂等键；可靠幂等先覆盖 Nuxt 到执行服务的内部提交，自有网页可以额外携带操作键。相同提示词或种子不等于同一次请求；旧客户端重新提交时不能承诺自动命中上一任务。现有 Native/OpenAI 成功响应格式与既有缓存规则保持不变。
+3. **按可确认程度恢复。** 未派发任务按原调度规则恢复；已成功提交的任务只返回既有结果；无法确认消费的尝试保留派发与错误证据，不能直接宣称 NAI 未收费。普通失败按下文限时恢复策略退回本地预扣、记录系统故障损耗并继续服务，不因单次未知进入人工解锁。未知的原生图尝试不自动重发；发送前的状态提交与网络调用之间仍有不确定窗口。账户余额用于限制可派发额度和后台核对，不武断推断单笔消费，也不自动摊扣其他成员。
+4. **数据库与结果落盘。** 先完成 F02 的事务失败内存恢复，再采用 WAL 与 FULL 并测量提交开销。保留派发前的预扣与任务状态原子提交、完成时结果索引与账本原子结算。结果使用可关联任务/尝试的持久记录，经过按操作类型验证、临时文件写入、同步和原子发布后再提交完成；启动检查完整结果并幂等补结算。生图和放大验证图片；`encode-vibe` 验证二进制产物的媒体类型、大小及可核验格式，不能要求解码为图片，也不能把任意错误文本当作编码结果。保存操作类型、媒体类型、字节数和校验摘要，用同一套落盘边界测试图片与编码结果。文件与目录同步须在目标 Linux 文件系统验证，不能把数据库事务和文件写入当作天然原子；不完整产物不能认作成功，也不擅自删除历史文件。
+5. **完整覆盖状态与关闭流程。** 执行状态与消费核对状态覆盖 SQL 索引、启动加载、缓存裁剪、查询、统计、事件、前端、取消和额度管理，未解决的账目不能因任务已失败而被裁剪。正常关闭先停止接收与派发，等待在途任务到部署宽限期，完成落盘后退出；强杀依靠启动恢复，不依靠退出回调。部署确保只有一个实际派发者；重启后先处理旧尝试与冷却状态，再恢复新派发，不能立刻清空全部在途标记当作无事发生。
+
+验收使用独立模拟上游记录接收次数和消费，网关子进程在“入队提交前/后、派发标记后、上游接收后、产物发布后但结算前、结算后但响应前”强制终止，再重启检查任务与余额；覆盖网页、Native、OpenAI、Vibe 编码、批次部分完成、内部重复提交、无幂等键客户端、过期、取消、写入失败和正常关闭。要求已受理记录仍在、未派发可继续、已完成只结算一次、未知原尝试不自动重发或摊扣；单次断流无需管理员即可恢复派发，损耗不漏记、持续故障自动退避。强杀测试不等同断电测试，持久卷与同步配置另行验证。恢复可靠性纳入 F02/F03/F06/F10，并在 N03 迁移时重新验收；不等待官方协议差异消解。
+
+批次转换必须保留逐张排队的公平性，不能按整个批次最早提交时间让四张连续插到别人前面：
+
+| 事件 | 原子状态变化与后续行为 |
+| --- | --- |
+| 受理批次 | 全部子任务意图落盘，只有第一张取得排队序号；其余未激活，不预扣生成费用 |
+| 一张成功并持久提交 | 同一事务将下一张激活并赋予新的排队序号，排在此前已经等待的其他任务之后；先前完成的图片保留 |
+| 任一张失败或结果未知 | 结束该批次后续执行，将尚未派发子任务标记为终止且不扣费；保留已有成功结果与部分失败说明 |
+| 客户端断线或 HTTP 等待结束 | 按已确认的任务/连接分离规则继续已受理且有效的批次；连接消失本身不取消业务任务，结果可从成员页领取 |
+| 明确取消、管理员停止接单或任务过期 | 原子取消未派发子任务；在途任务按既定完成/失败规则结算，不因取消其它子任务重复退款 |
+| 重启恢复 | 恢复已提交的状态和排队序号，成功子任务不重跑；未知的在途子任务不重发，并终止剩余子任务；未派发且仍有效的批次继续 |
+
+验收例：A 提交四张，B 在 A 第一张运行时提交一张，完成 A1 后必须先派发 B，再派发 A2；A2 失败后 A3/A4 不调用上游。覆盖成功提交与激活下一张之间崩溃、显式取消与派发竞态、断线后继续及重启后的相同次序。继续有效批次是任务/连接分离的明确变更，失败后停止余下生成仍保留旧接口行为。
+
+结果保留沿用当前生产入口强制设置的 `NO_AUTO_DELETE=true`。通用存储的 500 张缓存裁剪不是当前运行行为；迁入 Nitro 后必须继续禁用对持久结果及任务关联的自动删除，内存缓存淘汰不能删除磁盘结果或清空任务引用。首版不增加按天过期，已完成结果持续可领取，除非用户另行允许清理；磁盘空间不足时提示并停止无法可靠落盘的新任务，不能偷偷删历史。将来明确授权清理时保留幂等墓碑，返回已清理/不可领取，不重新生成。验收超过 500 个合成结果后，重启仍可领取最早图片和 Vibe 编码产物。
+
+### 幂等重试如何识别同一次调用
+
+实施约束是第三方客户端不可修改，不能把新增 `Idempotency-Key` 作为使用网关或恢复任务的前提。自有网页在点击生成时可以创建随机键，重试沿用；Nuxt 到执行服务的内部提交始终复用已持久记录的任务标识。这可以防止内部网络重试重复派发，但网关为每次外部 HTTP 请求新生成的 ID，不能识别第三方随后发来的另一次请求是否是重试。
+
+结果保存按任务进行，成员页面可查找已完成图片；第三方原请求已经断开时，不能强行把结果送回已关闭的连接。现有客户端原样可用，新增的外部幂等头仅为可选支持。默认不扩展按“同成员、相同参数、短时间窗口”自动合并的启发式规则，因为它会把有意重复生成误当重试；提示词相同、种子相同、IP 相同也不是可靠操作标识。既有明确缓存接口继续遵守原契约。
+
+以下幂等规则仅适用于自有网页、内部调用或本来就提供稳定操作键的客户端：服务端以稳定成员 ID、操作类型和键定位请求，在数据库事务内完成指纹校验与受理。网页在发送前保存待提交键与参数关联，不存成员密钥；用户再次点击生成则创建新键。
+
+| 重试情况 | 处理规则 |
+| --- | --- |
+| 同成员、同键、同请求，已完成 | 校验当前访问权限后返回已保存的结果，不再次请求 NAI 或扣费；按原接口契约组装响应 |
+| 同键同请求，仍排队或运行 | 继续等待/查询同一任务；原有同步接口不擅自改成返回 202 |
+| 同键同请求，已失败而消费待核对 | 返回该任务失败及本地额度处理状态，不重复执行原请求；用户重新生成使用新操作 |
+| 同键但请求内容不同 | 返回冲突，避免误领另一张图或静默忽略参数变更 |
+| 新键但参数完全相同 | 视为新的用户操作，不能只按内容哈希合并 |
+| 客户端没有稳定键 | 网关仍提供任务历史和结果查询，但不能可靠判断一次重发是否代表新生成 |
+
+指纹包含操作类型、模型、提示词、尺寸、步数、种子意图、批次数量、计费选项及输入图片字节摘要；规范化对象键序与等价编码，排除认证头、连接 ID 等非生成字段。随机种子必须首次受理时确定并保存，重试不能重新抽取后判成不同请求；指纹区分“客户端要求随机”和已经固定的执行参数。幂等映射与任务一同持久化，活动和待核对任务不能因缓存到期而丢掉映射；完成结果的重试保留期限和清理规则须明确，结果已清理时返回过期/不可领取，不能把同键静默当成新生成。历史归档须保留必要的幂等记录或墓碑。
+
+### 结果未知与自动恢复：可用性优先
+
+“未知”是缺少足够证据判断上游是否执行、收费或完成：例如发送后连接中断、只收到部分图片、执行进程在请求发出后崩溃，且没有可靠的本地完成记录。仍有执行进程持有连接并正常等待时只是运行中；浏览器断开、Nuxt 与执行进程暂时断联、或已经提交成功但客户端没收到响应，都不能单独作为未知依据。明确未派发的校验拒绝也不需要进入未知。
+
+根据用户反馈，撤回“单次未知消费就暂停共享账户，等待管理员处理”的默认方案。将请求执行结果与消费核对分开：一次生成可已失败并退回本地额度，同时保留上游消费待核对记录；后续正常请求不必等该记录完全查清。
+
+| 情况 | 自动处理与用户体验 |
+| --- | --- |
+| 客户端或 Nuxt 连接断开，执行器仍在运行 | 继续上游生成并保存结果，成功只结算一次，不影响其他成员 |
+| 完整结果已保存，但返回或结算确认丢失 | 找回结果并幂等完成，不再调用 NAI |
+| 执行器与 NAI 断连、最终图片不完整 | 尝试恢复已有持久结果；确认本次无法交付后标记失败，自动退回本地预扣，疑似消费转系统故障损耗核对；不需要用户找管理员 |
+| 429、上游暂时不可用或恢复后的残留执行风险 | 使用有上限的自动冷却/退避，冷却后继续处理用户提交的后续任务，不自动重发结果未知的原任务，不额外生成探测图片 |
+| 持续故障、真实额度不足或凭据失效 | 按对应故障限制受影响的请求，周期性做只读健康/额度检查；损耗告警阈值本身不取消正常调用资格 |
+
+恢复采用下文明确的冷却初始值，实施后通过隔离测试与真实等待样本调整；不把暂时缺少单笔扣费证据升级为无限期全局锁。执行器取消本地连接不证明 NAI 已停止，恢复派发可能遇到残留任务和 429；保证本地单活动请求、遵守上游限流，但不能在缺少官方任务查询时宣称上游绝无残留执行。保留这一可用性取舍，不通过提升并发掩盖故障。
+
+失败退款仅幂等退回成员本次本地预扣，不等于 NAI 已退款，也不额外赠送额度。上游可能消耗的资源另记运营损耗或待承担差额；普通调用继续按成员权限/余额、官方可用资源、单并发和已确认冷却准入，不追加“必须有补偿保险资金”的门槛。
+
+| 上游资源 | 损耗处理与默认观察值 |
+| --- | --- |
+| V5 恢复额度 | 记录估计消耗和临时容量差额，依可信官方快照与恢复速率核对；1 个百分点/滚动 24 小时仅作异常观察。不能因自然恢复就删除历史损耗，也不能把同一段恢复既抵消差额又再次发给成员 |
+| 订阅 Anlas（固定余额） | 允许一定故障损耗，100/滚动 24 小时、500/滚动 30 天作为可调整告警阈值；不因单笔疑点或阈值告警锁住全站，不将该差额按份额扣给其他成员 |
+| 购买 Anlas | 每笔疑似和确认损耗都记录，首笔疑似即在管理页提示；不再设置“补偿为 0 就禁止购买额度调用”的规则。未知金额/归属必须标识，不将报价写成已确认实扣 |
+
+原每成员 3 笔/滚动 24 小时也改为异常频率提示，而非停止退款或调用的补偿名额。所有提示可去重合并，避免重复刷屏；持续网络失败仍触发既定冷却，真实余额不足仍会阻止对应生成。用户可调整观察值，但记录和阈值不构成实际损耗的绝对上限，系统不会自动购买 Anlas 来填补差额。
+
+F03 分开记录三件事：成员本地预扣/退款、可能的上游消耗、运营损耗核对。每次尝试保留任务/批次/成员/账户、操作、各资源本地金额、各上游候选资源及估值、快照时间、响应状态、证据等级、退款/结案时间和后续调整关联；这些明细只在相应权限范围内可见。
+
+| 调用模式 | 本地退款 | 上游风险核对 |
+| --- | --- | --- |
+| 普通 V5 | 原预扣 V5 | V5 估计风险与恢复，不宣称估价是实际消耗硬上限 |
+| 普通订阅 Anlas | 原预扣固定 Anlas | 固定余额消费或差额；不误归为充值修正 |
+| 明确允许购买 Anlas | 原预扣购买 Anlas | 购买余额的疑似/确认损耗，保留现有固定余额耗尽等校验 |
+| 本地 Anlas 续用 | 按原记录退回本地固定/购买 Anlas | 上游可能仍使用 V5，也可能使用 Anlas；分别记录候选风险，不能只按本地报价判断或把两个候选都列为已确认消费 |
+
+续用验证包含“本地扣 26 Anlas、同时有约 0.057803 个百分点 V5 风险”的现有合成样例。未知归属可以保留为未分池估计，不强行塞入购买或订阅池；官方总余额变化仅为证据之一，不能据此确定单次实际扣费。
+
+自动结案默认使用持久化的五分钟后台核对窗口，从首次判定本次无法交付且消费未知时开始；窗口不是冷却时间，不阻塞下一条任务，重启不重置。能找回完整结果或确定未消费时按证据幂等处理；到期仍未知则按当前可支持的风险估值转为“估计结案”，标注未证实，结束本次核对占用。此时资金状态转为已计提损耗/运营待承担差额，不能一边释放预留又假装钱回来了。没有强制补偿名额锁，滚动窗口仅影响告警统计，历史金额不会因跨日消失。
+
+迟到证据通过追加调整记录修正估计，不覆写原证据、不重复退款。退款前找回完整结果按成功结算；已向用户确认失败退款后找回结果，保存并通知，不突然补扣成员。若报价无法形成可信估值，记录金额待定并对账务流程估计结案，不永久占住队列或伪造“确认零消费”。验收覆盖未知结果永久无法查明、核对窗口内重启、到期重复处理、迟到结果和迟到扣款。
+
+运营资金账与损耗账分开。只有带来源与唯一凭据的明确入账可增加运营可用余额：运营者主动从其已归属份额划入，或将明确指定为运营注资的官方新增额度入账。划拨与来源扣减同一事务提交；外部增额先匹配已登记注资，再按既有规则分配剩余部分，避免再发给成员。没有归属证据的新增 Anlas 不自动归运营。缺少运营资金时仍记录运营待承担差额，不能暗扣任何成员，也不能把该差额当作可用资金；真实官方可用资源仍约束派发。
+
+内部划转保持“成员可用 + 成员预扣 + 运营可用 + 运营预留 + 未分配余额”的总和不变；对外净流入、已确认消费、估计损耗与尚未归属差额分别解释，不在存在快照时差时强行凑平。运营预留核销必须关联具体损耗，重复同步、重启和退款不能重复分配、核销或把历史差额当新增额度。V5 的可恢复差额与 Anlas 的不可自动恢复损耗分别处理；用户页面不声称本地退款已经补回真实 NAI 资源。
+
+F03 验收包括：注资后多次同步仍不进入成员钱包、重启不重复入账、损耗核销守恒、V5 恢复不重复发放、续用双资源不双算、购买 Anlas 损耗逐笔可追踪，以及“未配置补偿预算但原购买额度请求仍正常准入”。
+
+### 冷却时间与自动恢复细则
+
+2026-10-17 用户已确认本节冷却方案，按下列初始值实施，不在实现中擅自更改时长。冷却是暂停向该共享账户派发新的上游任务，直到指定时刻；网站继续接收符合准入上限的请求并排队，查询与下载不受影响。单账户下所有成员的生图队列共用该时刻，不能说完全没有等待影响。计时从一次上游尝试完成或被确认为失败时开始，不从入队、开始生成或浏览器断线时开始。
+
+| 触发情况 | 已确认初始规则 | 说明 |
+| --- | --- | --- |
+| 正常生成成功 | 完成后 10 秒 | 保留现有规则 |
+| 只有浏览器/Nuxt 连接断开，上游仍在执行 | 不增加故障冷却 | 继续执行，结束后按实际结果处理 |
+| 上游连接中断、超时、最终流不完整或可恢复的 5xx | 第 1/2/3/4 次及以后分别为 10/20/40/60 秒 | 普通故障退避上限 60 秒；同一任务只计一次 |
+| NAI 429 或明确的并发容量拒绝 | 第 1/2/3 次及以后分别为 30/60/120 秒 | 复用当前容量退避，归类优先于普通网络故障 |
+| 上游给出有效的 `Retry-After` | 不早于上游要求的时间 | 与本地冷却取较晚者；可能超过上述本地上限 |
+
+普通故障与容量拒绝分别计数，均按自最近一次真实上游生图成功以来的对应失败次数累计；成功图片验证、保存与结算提交后清零，再回到完成后十秒间隔。读取余额成功、命中本地缓存、页面刷新、客户端重复提交及清理本地过期任务都不能清零或增加故障计数。F12 已补齐原先缺少的成功复位路径，并防止同一次迟到成功的重复回调清掉后续故障计数。
+
+所有等待取最大截止时间，不相加：`cooldownUntil = max(已有截止时间, 本次结束时间 + 本地等待, 上游要求的截止时间)`。例如本次容量拒绝需等待 30 秒，不额外叠加正常十秒变成 40 秒；已有更长冷却不能被一次较短规则覆盖。`Retry-After` 支持秒数和 HTTP 日期，按 [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-retry-after)校验；无效值忽略并使用本地规则，不伪造上游提供过该字段。
+
+持久化冷却截止时间、原因与计数，重启恢复剩余时间，不重新从头等待或通过重启清零；同一失败尝试的重复恢复不再次延长。到期后重新检查账户状态、成员与官方可用额度、接单状态、队列期限与本地并发槽，只派发下一条符合条件的用户任务；损耗观察阈值不增加准入门槛。原来结果未知的失败任务不自动重发，也不额外生成健康探测图片。无待执行任务时不会为了结束冷却而调用生图接口。
+
+例如 A 在 12:00:00 断流，最早 12:00:10 派发 B；B 若在 12:00:15 再次断流，最早 12:00:35 派发 C。若 C 在 12:01:00 成功，下一条最早 12:01:10 派发，故障计数归零。到期只是重新具备派发条件，不代表故障一定恢复；连续失败会继续触发下一轮有上限的等待，真实余额不足或凭据失效仍按对应故障处理。
+
+页面显示原因和“最早可派发倒计时”，与前面排队人数及预计完成时间分开；SSE 下发截止时间，浏览器本地倒计时，不每秒写数据库。入队和刷新不能把冷却往后推。对因本地限流被拒绝的调用，`Retry-After` 与剩余冷却一致，不能固定写 30 秒；已经入队的请求保持原任务，不要求客户端重复提交。401/403、数据库不可写及真实余额不足不归为普通瞬时网络错误，不能只等待十秒就忽略故障继续派发。
+
+验收用模拟时钟覆盖两组递增序列、成功复位、混合错误分类、截止时间取最大、合法/无效 `Retry-After`、到期边界、重启及同尝试重复处理；HTTP/SSE 检查倒计时一致、不会重复派发或凭空生成探测请求。时间值是已确认的网关策略，不是 NAI 官方规定或已测得的最优值。
+
+### 独立 NAI 执行进程的可行方案
+
+已确认采用 `客户端 → Nuxt 网页/API → 独立 Nitro 执行服务 → NAI`。[Nuxt 官方明确使用 Nitro 服务端引擎](https://nuxt.com/docs/4.x/guide/concepts/server-engine)，[Nitro 的 Node 部署产物](https://nitro.build/deploy/runtimes/node)可以独立运行。Nuxt/Nitro 完全可以实现队列业务；“独立”要求是进程生命周期隔离，不是要求放弃 Nuxt 生态或手写另一套 HTTP 框架。
+
+执行进程先将请求持久受理，再独立完成派发、读取响应、保存图片和账本结算；Nuxt 的连接断开不能触发它取消上游请求。Nuxt 重启后通过任务 ID 查询或重新订阅同一任务。原有 Native/OpenAI 同步等待和流式输出作为外围适配保留，不因进程拆分改变公开协议。若把任务循环直接放在同一个 Nuxt 进程的插件里，虽然可以工作，但进程崩溃仍会同时中断网页与执行，不能获得这里讨论的隔离效果。
+
+只加无状态 HTTP 转发层不够：它可能随下游断开取消请求，也没有无人接收时的结果保存能力。建议把现有队列、计价与账本整体留在一个独立常驻服务中，继续使用同一 SQLite，而不是新增 Redis 或给两边各放一份队列。执行服务是业务数据库唯一写入者，Nuxt 的成员管理、会话等持久写操作也通过受保护的内部命令入口完成，避免两个进程的内存缓存与数据库互相覆盖；纯校验、报价和 DTO 按实际共享需要复用。
+
+N01 按实际副作用划分查询边界，不能把 GET 当成无写入。改造前 `/api/member/me` 会同步并保存额度；R01 后额度在副本上只读估算，不因页面读取写账本。Discord 成员资格检查仍可能轮换并保存令牌、更新资格和撤销会话，可见网页访问也会续期；这些认证写入由执行服务完成，Nuxt 只取得授权后的公开 DTO。Discord 检查/刷新请求去重由执行服务唯一持有，Nuxt 不复制另一套缓存或刷新队列，也不接收 refresh token。验收同时发起多个 Nuxt 查询、令牌临近过期及执行器重启，确保只发生一次有效刷新，状态写入不分叉；失败返回真实服务状态，不伪装为会话已过期。
+
+内部受理也必须按同一任务/幂等标识去重，Nuxt 丢失受理回执后先查询或重提相同标识，不能生成新键。上游 PST 和数据卷归执行服务，内部入口限定本机/私有网络并验证调用身份和成员作用域，不暴露公网。事件用于通知，任务与结果数据库是恢复依据。
+
+两个服务独立启动、健康检查和部署，不由 Nuxt 请求、热更新插件或绑定其生命周期的子进程启动执行器。目标主机优先使用两个 systemd 服务，Docker Compose 只是可选部署方式；发布时只重启发生变更的服务。验证包括只杀 Nuxt 时 NAI 调用继续且结果落盘、Nuxt 恢复后能领取，以及单独杀执行服务后的自动恢复。执行服务故障、整机断电、存储故障和上游断连仍可能造成未知；同机两个进程或容器都不提供主机级容灾。
+
+复用当前 SQLite 持久队列，不直接把 [Nitro Tasks](https://nitro.build/docs/tasks)当作持久任务系统。2026-10-17 官方仍将 Tasks 标为实验特性，且同一服务实例内按任务名合并正在运行的调用，即使 payload 不同；不能把多个成员的生图都映射到一个任务名后依赖它排队。实际 Nuxt/Nitro 版本在引入时锁定验证，持久受理、重启恢复和账本逻辑仍由项目承担。
+
+独立 Nitro 与 systemd 组合已获 Q2 确认。F11 在 N03 前完成并验证，对外接口全部迁入 Nuxt 后再做 C03；增加的内部通信、健康检查与部署配置保持最小，不扩展成多机调度或自动故障转移。
+
+## TypeScript 与其他模块复用
+
+TypeScript 分阶段迁移，不把改文件扩展名和账本行为修改混成一个提交：
+
+1. 新前端直接使用 TypeScript；先定义公开 DTO、事件、任务状态与报价结果类型，不让浏览器导入存储或凭据模块。
+2. 现有 JavaScript 通过 `allowJs` 和逐步类型检查接入，参考 [官方迁移指南](https://www.typescriptlang.org/docs/handbook/migrating-from-javascript.html)。保留运行时输入校验，TypeScript 不能验证 HTTP 请求或历史数据库 JSON。
+3. 先迁计价、容量和公开状态等纯模块，再迁会话与路由，最后迁存储、调度及入口。针对每个模块保留行为测试，避免 `any` 和忽略注释掩盖边界问题。
+4. 使用明确的类型检查与构建输出，核验 Node、ESM、SQLite 原生依赖、Docker 多阶段构建及 CI。依赖源码字符串截取的测试需要随模块迁移改成真实导入或 HTTP 契约测试，不能仅改路径后放行。
+
+| 现有或拟新增能力 | 复用方向 | 必须保留的约束 |
+| --- | --- | --- |
+| 表单、弹窗、主题、通知、热力图 | 选定的一套开源 UI 组件体系 | 无障碍、确认流程、后台权限和资源预算 |
+| 查询缓存、取消、重试、失效 | 框架数据能力或 TanStack Query，二选一负责同一份服务端数据 | 成员隔离；写操作和生图请求不自动重试 |
+| SSE 与进程内通知 | 浏览器 EventSource 和 Node 标准库 | 提交后通知、权限检查、连接上限、背压 |
+| MessagePack | 评估 [官方 JavaScript 实现](https://github.com/msgpack/msgpack-javascript)替换自写编解码器 | 长度前缀、二进制图像、流式增量、帧和深度限制及客户端兼容测试 |
+| SQLite | 保留 better-sqlite3、现有事务和读 worker | 原子性、失败恢复、单进程写入与账本守恒 |
+| 已关闭旧业务 | 优先删除无调用代码，再决定是否需要替代库 | 保留仍被 Native、测试和历史兼容使用的路径 |
+
+不预先添加 Redis、通用插件系统或新的鉴权平台。ORM 不再默认排除，按下文要求在扩展存储框架前优先评估。ZIP、SOCKS、图像解析等底层代码是否换库，应先核对当前调用与回归样例；不能因“用库”而删掉大小限制、解压保护或已有协议兼容。
+
+### 存储重构的 ORM 评估门槛
+
+用户要求：发现大量重复 SQL、手工字段映射和迁移代码时，优先评估 ORM，避免继续扩大自写框架。2026-10-17 只读初评已发现维护负担：`store.js` 约 2094 行，`recordColumns`、`createSchema` 和 `sqlRecord` 分别描述同批字段；`prepareStatements` 手工拼装通用 upsert，`ensureColumn` 与历史数据升级嵌在启动过程。存储和读 worker 合计 45 处 `.prepare(` 调用，这只是调用点数，不代表 45 处重复或都应消除。优先解决字段定义、迁移来源和实际重复查询，不能以源码行数代替收益判断。
+
+| 候选 | 适用性与验证重点 | 初步排序 |
+| --- | --- | --- |
+| Drizzle ORM + Drizzle Kit | 官方支持现有 better-sqlite3；类型化 schema、事务、现有库反向生成与迁移可覆盖本项目主要维护点 | 首先做小范围验证，不先承诺全库替换 |
+| Kysely | 类型安全 SQL 构建器，适合主要问题集中在查询拼装时；不是完整 ORM，字段映射与迁移收益需另验 | Drizzle 不适配且查询构建是主要痛点时再比较 |
+| Prisma | 支持 SQLite 与 better-sqlite3 adapter；有 schema/client 生成体系 | 保留备选，需证明对现有同步事务、JSON 文本与特殊索引的迁移收益足以覆盖改动 |
+
+依据：[Drizzle SQLite](https://orm.drizzle.team/docs/sqlite/get-started-sqlite)、[事务](https://orm.drizzle.team/docs/transactions)、[现有库 introspection](https://orm.drizzle.team/docs/drizzle-kit-pull)、[迁移生成](https://orm.drizzle.team/docs/drizzle-kit-generate)、[Kysely](https://kysely.dev/)、[Prisma SQLite](https://www.prisma.io/docs/orm/v7/core-concepts/supported-databases/sqlite)。当前部分 Drizzle 示例使用 RC；实际通过 pnpm 锁定经验证的稳定版本并匹配其文档，不能直接照抄 RC 安装命令。
+
+C06 在扩展存储层前验证一个真实表及其读写路径、一个任务/预扣原子事务和一条升级迁移，使用合成或脱敏副本。必须检查：既有 `data TEXT` JSON 与查询影子列一致、部分索引保留、只读 worker 兼容、事务失败/进程中断可恢复、迁移重复执行安全；对比重复代码减少量、热路径 SQL/查询计划和延迟。ORM 事务不会自动恢复已变更的内存对象，F02 仍须单独修复。
+
+通过后采用库直接承担 schema、普通查询与迁移职责，复杂统计允许保留参数化原生 SQL，不再包一套通用 Repository/DSL。历史库先建立准确迁移基线，再提交可审阅的增量 SQL；不在生产直接执行 schema push 或靠自动同步删改表。ORM 接入、字段规范化和账本行为修复分开提交。若验证不通过，记录具体缺口与保留原生 SQL 的最小范围，不以抽象偏好继续扩大手写框架。
+
+## 项目目录与测试整理
+
+### pnpm 统一迁移
+
+用户已明确所有项目包管理使用 pnpm。当前目标主机已安装 `pnpm 10.32.1`；实施时优先验证该现有版本，并在 `package.json` 的 `packageManager` 固定精确版本，开发与 CI 一致，不浮动追随 latest。此次只更新计划，不立即安装依赖或改变生产启动方式。
+
+C05 独立完成包管理迁移：先用 [`pnpm import`](https://pnpm.io/cli/import)从现有 `package-lock.json` 导入 `pnpm-lock.yaml`，核对依赖解析没有无意升级，再移除 npm 锁文件；统一安装使用 `pnpm install --frozen-lockfile`，检查、测试、构建和 bootstrap 使用 pnpm 的脚本命令。同步 README、开发/部署说明、CI 的安装与缓存、Docker 构建；将必要的原生依赖构建许可明确配置，验证 `better-sqlite3` 真正可加载，不能仅以安装成功为通过。跨 Windows 与目标 Linux 的原生模块分别构建/验证，不复制本机 `node_modules` 到服务器。
+
+先锁定包管理器版本与安装行为，再执行脚本；未迁移的工作区不能依赖 `pnpm exec` 隐式安装或重新解析依赖。安装和验证分开，必要时直接使用 Node 运行已有检查，避免把一次只读验证变成依赖升级。
+
+pnpm 是包管理器，systemd 运行编译后的服务仍可直接调用固定路径的 Node 入口，无需为了统一包管理而额外套一层 `pnpm start`。只有实际建立多个包时才加入最小 workspace 配置，不因换包管理器引入任务编排框架。
+
+### 目录职责与搬迁验收
+
+2026-10-17 盘点：根目录有 8 个测试入口，`server/` 有 13 个，`scripts/` 有 2 个，另有 `server/fixtures/` 和 `test-support/`。`package.json` 目前枚举多个测试 glob 并单列 `native-adapter-test.mjs`；`scripts/check.mjs` 不扫描根目录测试，Docker 又复制了服务目录内的测试与 `test-support/`。部分测试按相对路径读取入口源码、fixture，或从项目根启动子进程，不能只移动文件。
+
+采用以下目录职责，逐阶段建立，不提前创建空骨架或引入 monorepo 管理工具：
+
+| 目录 | 职责与迁移规则 |
+| --- | --- |
+| `tests/unit/` | 纯模块和现有函数级测试；按实际测试边界归类，不只按旧文件名判断 |
+| `tests/integration/` | HTTP、SQLite、登录、账本、启动和中断恢复测试 |
+| `tests/fixtures/`、`tests/helpers/` | 经确认只供测试使用的样本、模拟上游和客户端辅助函数，保留第三方许可文件 |
+| `web/` | 第一阶段 Nuxt 项目，包含自身的 `app/`、`server/`、`public/`；与当前后端同名目录隔离 |
+| `executor/` | 独立 Nitro 构建、内部鉴权及进程入口；自身测试分 unit/integration，不重复维护业务源码 |
+| `server/` | 现有后端先保持；逐步迁出 HTTP 适配，按 F11 最终保留独立执行服务与业务持久化代码 |
+| `scripts/`、`docs/` | 运维/构建脚本与文档；测试从脚本目录移走 |
+| 根目录 | 包管理、部署入口、许可证及主要说明；移除散落的测试入口，数据和敏感配置仍按现有规则隔离 |
+
+Nuxt 的 `server/api`、`server/routes` 与 `server/plugins` 有[约定式加载行为](https://nuxt.com/docs/4.x/directory-structure/server)，因此不能把旧 Node 入口和整个旧 `server/` 直接当作 Nuxt 服务目录。先用 `web/` 隔离，随页面迁移搬动真正使用的资源；不同时复制两份业务实现。
+
+目录搬迁作为 C04 独立提交：统一测试命名为 `*.test.mjs`，修正 import、fixture、源码读取路径和子进程 cwd；同步 pnpm 测试脚本的文件发现、语法检查、`.github/workflows/check.yml`、Docker COPY 与忽略规则。先用现有 Node 测试运行器，不因整理目录更换测试框架；未来 TypeScript/浏览器测试随实际引入再配置。Docker 验证阶段执行必要检查，生产最终镜像不携带纯测试代码与样本。
+
+验收比较搬迁前后发现的测试文件和用例，确保原有 23 个入口均被覆盖，再运行语法检查、完整测试和 Docker 构建；检查不会启动或读取生产数据。目录整理不混合行为修复、删除测试或批量 TypeScript 改写；源码截取式测试的改善跟随相应模块重构单独做。
+
+## 分阶段提交与验收
+
+以下每个修复项至少一个独立提交，包含最小回归检查；较大的页面迁移可有多个可构建提交。提交顺序可以因依赖调整，但不得把多个独立账本修复压成一个不可审查的大提交。
+
+| 编号 | 工作项 | 主要涉及范围 | 完成依据 |
+| --- | --- | --- | --- |
+| P00 | 文档与 fork | 本文、README、Git 远程 | 文档可审阅，现有四个提交保留，功能未改 |
+| P01 | 建立只读性能与队列基线 | 浏览器网络、受保护的生产历史副本 | 可重复的首屏记录、排队分位数与缺失率 |
+| F01 | 图片所有权校验 | 图片路由与 HTTP 测试 | 他人 Key 不能绕过过期签名 |
+| F02 | 存储失败后的内存一致性 | store、账本事务 | 注入写失败后无半提交状态或后续误写 |
+| F03 | 分资源退款、损耗与运营账 | fair-quota、生成结算、运营注资/核销、限时核对 | V5 恢复不双算，订阅/购买 Anlas 分池留痕，续用双资源正确；五分钟估计结案不长期占用，不以补偿阈值禁止正常调用 |
+| F04 | 队列准入与原子停止接单 | 入队、派发、批次取消、成员管理 | 用户与全局上限有效；持续提交时仍能原子禁止新增并取消等待，在途保留结算资格 |
+| F05 | 结算历史退出热状态 | fair-quota、持久历史 | 大样本性能改善，幂等退款与历史查询保留 |
+| F06 | 持久请求与批次生命周期 | 网页/Native/OpenAI 等待、子任务激活、排队序号、幂等和结果查询 | A1→B→A2 顺序保持，A2 失败终止余下子任务；断线/取消/重启规则明确，历史结果可领取，内部重试不重复入队 |
+| F07 | 按操作验证上游产物 | providers、图片/编码二进制、响应大小与格式 | HTML、空响应、损坏结果不结算成成功；合法 Vibe 编码不被图片验证误拒绝 |
+| F08 | 可信代理下的登录限流 | 成员登录、代理配置 | 不把所有成员合并成代理 IP；伪造头不能绕过 |
+| F09 | 配置编辑版本检查 | 预览、保存、管理前端 | 旧页面无法覆盖别人新保存的份额 |
+| F10 | 崩溃恢复与结果持久性 | SQLite 同步、按类型保存结果、禁删策略、启动与关闭 | 图片及编码结果故障注入通过，超过 500 个结果仍可领取；结算幂等、未知不误派发 |
+| F11 | 独立 Nitro 执行服务（已确认） | 内部受理/查询、单写入方、上游连接、独立 systemd 服务 | 仅 Nuxt 崩溃不打断生成，恢复可领取；执行服务故障自动恢复，内部重试无重复派发 |
+| F12 | 有界冷却与自动恢复 | shared-capacity、错误分类、持久调度状态、Retry-After、状态展示 | 10/20/40/60 与 30/60/120 秒规则、成功复位、重启剩余时间和重复处理检查通过；原失败任务不自动重发 |
+| A01 | 会话持久化与过期提示 | member-auth、Cookie、角色变化、前端错误状态 | 重启保留有效登录；owner 归属变化撤销相关旧会话，升权不继承七天期限 |
+| R01 | 事务后事件与合并刷新 | 业务变更、两段 SSE、启动标识/版本、查询更新 | 一秒级可见、无广播泄漏；浏览器不断线但内部重连时也能校准 |
+| U01 | Nuxt 网页与成员页 | Nuxt、Vue 3、TypeScript、UI 主题、同源路径分流 | 样式统一，旧网关独占调度，真实浏览器流程与性能通过 |
+| U02 | owner 与私有管理页迁移 | 管理表格、额度预览、运营损耗明细 | 权限、编辑保护、错误和确认流程保持；购买 Anlas 疑似/确认损耗与调整记录可追踪 |
+| U03 | 调用热力图 | SQL 聚合、成员和 owner 页面 | 日期、批次单位、权限、全年历史均正确 |
+| T01 | 后端分批迁移 TypeScript | 纯模块到存储与入口 | 每批类型检查、既有契约和 Docker 构建通过 |
+| N01 | Nuxt 第二步查询接口迁移 | 成员查询 DTO、公开状态、统计与热力图 | 保持 R01 的只读额度估算；查询中的认证刷新仍由执行服务唯一处理，Discord 刷新去重，无第二写入方；内部 SSE 重连校准通过 |
+| N02 | Nuxt 第二步登录与管理迁移 | 会话、Discord、成员管理与额度配置 | 会话与 CSRF、代理信任边界、并发编辑保护通过 |
+| N03 | Nuxt 第二步生图与调度迁移 | Native/OpenAI、SSE、任务生命周期和 SQLite 所有权 | 契约回归、单调度器、取消退款及重启恢复通过 |
+| C01 | 删除死代码与重复实现 | 已确认无调用函数及相关导入 | 无功能回退；底层换库单独验证 |
+| C02 | 官方与客户端接口契约核对 | 官方 Swagger、现有启动器样本、独立期望值 | 支持范围与差异明确；Nuxt 迁移不悄悄改变既有客户端协议 |
+| C03 | 完整迁移后消解官方协议差异 | C02 差异清单、Nuxt 生图路由与客户端回归 | 仅在 N03 验收后逐项实施；响应格式、状态码与参数支持独立验证，必要网关扩展保留 |
+| C04 | 测试与项目目录整理 | tests、fixtures/helpers、pnpm/check、CI、Docker、Nuxt 目录边界 | 原有测试发现不遗漏、路径正确、完整检查及镜像构建通过；纯搬迁独立提交 |
+| C05 | 统一 pnpm | packageManager、锁文件、脚本、README、CI、Docker | 固定版本与冻结安装通过，依赖无无意升级，SQLite 原生模块可用；不混留旧锁文件 |
+| C06 | ORM 评估与最小接入 | 存储 schema、查询、手工映射、迁移、读 worker | 先验证 Drizzle；保留事务与历史兼容，明确减少重复维护，无新增自写通用存储框架；采用与否有证据 |
+| D01 | 隔离测试部署与验收 | 独立配置、数据、systemd 服务或可选容器、入口 | 模拟上游回归、浏览器验收、资源峰值、回滚演练 |
+| D02 | 经用户允许后分阶段发布 | 安全修复版或现代化版本、数据备份、单队列切换 | 每个待发布版本独立验收并取得用户批准，不强制等待整轮框架迁移 |
+
+C03-04 的 HTTP 错误包络切片已提交 [52656b7](https://github.com/Hime-Hina/novelai-shared-gateway/commit/52656b7)：执行器与 Nuxt 本地错误在精确 Native 路径及 `/v1` 别名上补齐整数 `statusCode` 和 `message`，保留旧 `error`；不填可选 `details`，不重写上游正文或已开始的流。Native HTTP 14/14、Nuxt 三类代理 35/35、113 文件语法与类型检查通过；复用现有失败场景验证 401/422/500/429、退款、冷却与流式部分成功，并覆盖本地 400/503 和原样透传。[完整Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39013980861)通过后端497、前端115、执行器认证3、开发与双进程14、镜像HTTP3、Caddy7，均无跳过，语法、类型及三个镜像构建通过。没有新增依赖或 schema；状态映射和批次差异仍属 C03-04 后续范围，生产未替换。
+
+### 实施顺序与阶段出口
+
+下表按已确认的 Q1–Q4、Q5 授权默认和新增 ORM 要求编排。阶段是依赖顺序，不是一个阶段合成一个提交；每个修复项仍至少独立提交一次。
+
+已确认的安全和账本缺陷可走独立修复版本：在现有架构上做最小修复与针对性契约回归，隔离部署验证后即可提出该版本的生产发布申请。不能让完整性能采样、pnpm 切换、目录整理、ORM 验证、Nuxt 或 C03 成为 F01/F02 等明确缺陷交付的必要前置。此通道复用 D01/D02 验收与批准要求，不自动发布，也不顺带扩大修复范围。
+
+| 顺序 | 工作项 | 阶段出口 |
+| --- | --- | --- |
+| 0 已完成准备 | P00 | fork、现有历史与文档分支完整，Q1–Q5 决策已落盘 |
+| 1 安全修复优先 | F01、F02、F07、F08、F09；相关 C02、D01/D02 | 各项可独立修复、隔离验收和申请发布，不等全部项目齐备；不改未获批准的生产版本 |
+| 2 基线与工程整理 | P01、完整 C02；C05 → C04 | 完整首屏/近期排队基线可与安全修复独立推进；pnpm 与目录迁移分别提交，23 个测试入口无遗漏 |
+| 3 存储评估 | C06 | 在增加存储抽象前完成 ORM 小范围验证；安全修复不等待全库迁移 |
+| 4 额度与队列 | F04 → F03 → F06 → F05 → F12 → F10 | 原子停止接单、分资源损耗与估计结案、批次公平和结果保留通过；最后完成跨阶段崩溃注入，可独立交付稳定修复版 |
+| 5 登录和状态基础 | A01 → R01 | 持久会话、撤销边界、提交后事件与合并刷新通过；事件只反映已提交状态 |
+| 6 Nuxt 第一步 | U01 → U02 → U03 | 成员页、管理页与热力图统一；同源认证/权限通过，实际浏览器网络问题得到修复，关键首屏与旧版可比 |
+| 7 Nuxt 第二步 | F11 → N01 → N02 → N03 | 先确立唯一持久化/执行所有者，再迁查询、认证管理、生图与长连接；整个迁移维持已有客户端契约，验证独立重启与结果领取 |
+| 8 官方协议差异 | C03 | 仅在 N03 完整验收后，依据 C02 清单逐项补响应格式、状态码和可支持参数，保留必要网关扩展 |
+| 9 测试版交付 | D01 最终验收 | 独立入口、脱敏副本与模拟上游，浏览器/队列/资源峰值对比、故障恢复和回滚说明齐全；生产继续运行 |
+| 10 现代化版本生产切换 | D02 | 用户针对明确测试版本另行允许；安全修复版本可在之前单独发布，均须备份、单调度器切换与账本检查 |
+| 随相关模块推进 | T01、C01 | 纯模块先迁 TypeScript，存储/入口最后；类型迁移、死代码清理与行为修复分开提交，不进行无关的大规模重构 |
+
+关键依赖为 F02 的可靠提交先于 F03/F06/F10 与 R01；F03/F06 的状态和账目定义先于 F05 归档；队列可靠性先修复并验收，再迁移执行所有权；C03 等 N03 完整验收后再做。D01/D02 可用于多个独立版本，模拟与隔离验证贯穿过程，表中第九阶段是完整现代化测试版交付，不是首次测试或唯一可发布里程碑。已确认选型或开始实现都不构成任何版本的生产替换授权。
+
+每项完成记录提交号、验证命令与结果、迁移或回滚影响。任务分支使用 `codex/` 前缀，提交后推送 fork，保持工作区干净；不改写用户已有提交，不强推覆盖其他分支。现有 origin 仍指向源仓库，新增 fork 远程负责本次改进；不自动合并上游或生产分支。
+
+## 隔离测试与生产发布
+
+### 目标主机资源与进程管理
+
+2026-10-17 00:40（Asia/Taipei）经 SSH 只读采样，未改服务或安装软件：目标主机为 Debian 12、2 个逻辑 CPU，总内存 3659 MiB，MemAvailable 约 1915 MiB，swap 总量 4095 MiB、已用约 41 MiB，系统盘约 59 GiB、剩余约 16 GiB；负载约 0.07/0.08/0.04。生产网关正在 systemd 下运行，进程 RSS 约 299 MiB；该服务 cgroup 内存约 773 MiB，其中文件缓存约 494 MiB，二者口径不同，不能相加或把全部 cgroup 占用当作 JavaScript 堆。已安装 Node 24.14.0 与 pnpm 10.32.1，未发现 Docker、containerd 或 Podman 命令。此快照不含生产地址、凭据与用户数据，也不是压力测试或历史峰值。
+
+据此不能认定主机资源不足以运行 Docker，但没有必要为两个服务额外引入 Docker 守护进程与镜像维护。默认沿用 systemd，生产与测试使用不同服务、端口、目录与资源限制；构建放在 CI 或兼容目标 Linux/架构的隔离环境，部署已验证产物，避免在生产主机边运行边编译 Nuxt 与 SQLite 原生依赖。测试版上线前实测稳态/峰值 RSS、cgroup 内存、CPU、磁盘增长与重启；现有约 1.9 GiB 可用内存不等于可全部分配给新服务，保留系统和其他服务余量。
+
+| 比较项 | systemd | PM2 |
+| --- | --- | --- |
+| 本项目现状 | 生产已经使用，继续复用系统服务管理 | 本项目需要新增 PM2 配置与守护进程管理 |
+| 重启与资源控制 | 原生服务重启、启动频率限制、退出宽限期及 cgroup 内存/CPU 控制 | Node 应用管理命令方便；系统级资源边界仍可交给 systemd/cgroup |
+| 开机启动 | 系统自身管理服务 | 通常通过 `pm2 startup` 接入 systemd 等系统管理器，多一层应用进程管理 |
+| 集群与平滑重载 | 本项目用两个各司其职的单实例服务，不自动复制执行器 | cluster/reload 对无状态 API 有价值；带队列与内存账本的执行器不能直接多实例或新旧重叠 |
+| 选择 | 推荐：Nuxt 与 Nitro 分别一个 unit，生命周期独立 | 若运维已经统一 PM2，可以用单实例 fork 模式，但当前没有迁移必要 |
+
+依据为 Debian 12 的 [systemd 服务](https://manpages.debian.org/bookworm/systemd/systemd.service.5.en.html)、[资源控制](https://manpages.debian.org/bookworm/systemd/systemd.resource-control.5.en.html)，以及 PM2 的[开机启动](https://pm2.keymetrics.io/docs/usage/startup/)与[集群/重载](https://pm2.keymetrics.io/docs/usage/cluster-mode/)文档。选择 systemd 是复用现状与减少生命周期层级，不声称已经测得 PM2 的实际内存差值。
+
+两个服务直接运行各自构建入口，配置异常自动重启、重启退避、日志与合适的停止宽限期；重启 Nuxt 不联动停止执行器。systemd 和 PM2 都不能自动补齐任务持久性，正常关闭仍由应用停止接收/派发并处理在途，强杀依靠 F10 恢复。不能把 PM2 的无状态零停机重载或启动多个同名 systemd 实例当作共享账本的安全切换。
+
+### 测试副本
+
+用户已允许复制生产数据用于测试。实施阶段使用 SQLite 在线备份或其他一致性快照方式，不直接只复制正在写入的主数据库文件而遗漏 WAL。复制后先在隔离环境处理，再启动任何网关进程：
+
+- 独立容器或服务名、端口、测试域名、DATA_DIR、镜像标签和资源限制，不挂载生产数据目录为可写卷。
+- 去掉副本中的真实 PST、Discord access/refresh token、网页登录会话与分发凭据，替换为测试身份和密钥。保留私有原始备份，脱敏副本用于功能与性能验证。
+- 在副本中隔离排队和运行任务及预留状态，默认禁止调度和外联，避免启动清理或自动刷新请求生产 NAI。演练未知结果与重启恢复时使用专门模拟样本。
+- 默认把官方查询和生成指向本地模拟上游，并核验无法回退到真实域名；测试数据库副本绝不回写生产。
+- 只复制必要图片；含提示词、成员信息和凭据的数据库、日志、HAR、截图不提交到公开 fork。测试数据留在受保护目录，交付后按约定清理。
+- 如果需要真实 Discord 流程，使用独立测试 OAuth 应用与测试服务器；不能为测试去更改生产回调地址。
+
+### 模拟与低频真实调用
+
+优先复用现有 HTTP 测试的模拟上游，覆盖正常 ZIP/MessagePack、V4.5 免费任务、V5/Anlas 计价、长响应、429、认证错误、结果已收费后断线、缺失最终帧、重启和数据库写失败。模拟计费同时维护一个独立的官方余额模型，不直接调用待测报价函数生成全部期望值，避免相同错误互相验证。
+
+用户已允许低频 V4.5 免费验证，并在2026-10-17进一步允许空闲时直连共用账户、取消三次上限，要求不与成员请求冲突。默认仍走现有统一调度入口；原始协议会被旧网关转换时，可按本次授权在检查生产无排队/在途、冷却结束后逐次直连，不启动第二个常驻调度器。标准单图最多1MP、最多28步，无参考、放大等额外收费项，先核实有效Opus和免费报价，出现生产任务或限流则让开，费用条件不明先只读核查。空闲检查并非原子锁，不承诺绝无随后到达请求的竞争；需要持续真实测试时应经统一调度。真实消耗与结果单独记录，不混入模拟验证结论。
+
+首轮5次加后续ZIP核对共6次原始提交、5张成功及各项限制记录在[官方协议实测](novelai-protocol-probes.md)。前4次与第6次两类Anlas差额均0，第5次后置额度查询未成功，不能补称已核实零消费；未更改生产服务、数据或部署版本。
+
+### 验收与切换
+
+测试版本提供明确入口、提交号、功能清单、测试结果、浏览器性能对比、排队分析和数据库迁移说明。用户可以使用该版本验证，当前生产服务继续保持运行。
+
+安全与账本修复版本可提前独立交付，验收范围随其实际变更确定，不能要求与该修复无关的整轮 Nuxt/C03 工作完成；相应发布说明明确所修问题、未包含的现代化项、回归结果及回滚边界。每次生产替换仍针对该具体版本取得明确批准。
+
+替换生产须在用户另行明确允许后执行：先停止接收新生成并排空当前执行，取得最新一致性备份，确认消费待核对记录与故障损耗状态已持久化、可由新版本继续处理；无需为已经隔离记账的历史争议无限等待。保持只有一个上游调度器，切换到明确的新版本并检查登录、读取、额度与损耗账目和新任务。需要迁移时优先采用可兼容旧版本的增量 schema。
+
+保留旧构建产物（采用容器时为旧镜像）、配置和回滚步骤。新版本开始产生真实写入后，不能直接用旧备份覆盖数据库，否则会丢失已发生的消费与结算；先判断旧代码能否读新 schema，并保留新账本记录。切换期间可能需要短暂维护窗口，不能把两个独立队列同时接入同一生产账户当作零停机方案。
+
+测试部署通过不等于生产替换获批。原有共享账户模式的官方条款风险也不因框架迁移或复制测试环境而改变。

@@ -1,0 +1,90 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792177068941,
+      "tag": "0000_legacy_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792177134866,
+      "tag": "0001_remove_legacy_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792181008682,
+      "tag": "0002_generation_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792182239201,
+      "tag": "0003_failure_accounting_queries",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792183442744,
+      "tag": "0004_durable_web_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792184917851,
+      "tag": "0005_durable_queue_sequence",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792185793052,
+      "tag": "0006_native_pending_batches",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792189189129,
+      "tag": "0007_generation_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792190801900,
+      "tag": "0008_fair_quota_settlements",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792192789533,
+      "tag": "0009_pending_generation_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792194030142,
+      "tag": "0010_persistent_member_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792499099610,
+      "tag": "0011_free_image_usage",
+      "breakpoints": true
+    }
+  ]
+}

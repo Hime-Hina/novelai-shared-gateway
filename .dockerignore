@@ -1,5 +1,9 @@
 .git
 node_modules
+**/node_modules
+**/.nuxt
+**/.nitro
+**/.output
 .env
 .env.*
 data
