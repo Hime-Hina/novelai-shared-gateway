@@ -58,4 +58,25 @@ describe('ManagementServiceResources', () => {
     expect(wrapper.get('#serviceR2Status').element).toBe(status)
     expect(wrapper.get('#serviceR2Status').text()).toBe('待验证 0 张 · 转存异常 0 张')
   })
+
+  it('官方 A/B 用量从未知更新为真实零值，保留表格行与失败时的上次统计', async () => {
+    const r2 = { bytes: 1024 ** 3, limitBytes: 9_500_000_000, images: 100, pending: 0, errors: 0 }
+    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, r2 } } })
+    const a = wrapper.get('#serviceR2ClassA').element
+    const b = wrapper.get('#serviceR2ClassB').element
+    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类——')
+    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('未配置官方统计')
+    const operations = { status: 'ready' as const, periodStart: '2026-10-12T00:00:00Z', periodEnd: '2026-11-12T00:00:00Z', checkedAt: '2026-10-24T00:00:00Z',
+      classA: { used: 0, limit: 1_000_000, remaining: 1_000_000 }, classB: { used: 1234, limit: 10_000_000, remaining: 9_998_766 } }
+    await wrapper.setProps({ data: { ...data, r2: { ...r2, operations } } })
+    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类01,000,000')
+    expect(wrapper.get('#serviceR2ClassB').text()).toBe('B 类1,2349,998,766')
+    expect(wrapper.get('#serviceR2Period').text()).toContain('2026-10-12 至 2026-11-12（UTC）')
+    expect(wrapper.text()).toContain('账户共享额度')
+    expect(wrapper.text()).toContain('剩余为估算')
+    await wrapper.setProps({ data: { ...data, r2: { ...r2, operations: { ...operations, status: 'stale' } } } })
+    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('更新失败，显示上次统计')
+    expect(wrapper.get('#serviceR2ClassA').element).toBe(a)
+    expect(wrapper.get('#serviceR2ClassB').element).toBe(b)
+  })
 })

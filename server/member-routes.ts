@@ -10,6 +10,7 @@ import { memberCharge, updateLossAlertPolicy } from './failure-accounting.ts';
 import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.ts';
 import { readActivityHeatmap } from './activity-heatmap.ts';
 import { readServiceResources } from './service-resources.ts';
+import { readR2Operations } from './r2-analytics.ts';
 import type { AccountingJob } from './generation-accounting.ts';
 import type { OperatingFundingContext } from './operating-accounting.ts';
 import type { ownerOperation } from './owner-operations.ts';
@@ -182,7 +183,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
             quota: quotaView(draft, u), recentActivity: recentActivity(db, u) })) };
       }, { persist: false });
       reply(res, 200, { ...payload, serviceResources: { ...await readServiceResources(store.dataDir),
-        ...(env.R2_BUCKET && store.readR2Usage ? { r2: store.readR2Usage() } : {}) } }); return true;
+        ...(env.R2_BUCKET && store.readR2Usage ? { r2: { ...store.readR2Usage(), operations: readR2Operations(env) } } : {}) } }); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);

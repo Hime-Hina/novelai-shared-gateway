@@ -428,6 +428,18 @@ sudo /opt/novelai-shared-gateway/current/bin/node \
 最终以账单为准；[预算告警](https://developers.cloudflare.com/billing/manage/budget-alerts/)
 不自动停用，历史读取仍可能超过 B 类免费额度。
 
+管理卡片通过 Cloudflare GraphQL Analytics 读取账户内 Standard 存储的 A/B 操作次数，
+不按单个图片桶推算共享免费余额。另配置 `R2_ANALYTICS_TOKEN`（仅本账户
+`Account Analytics: Read` 权限）与 `R2_BILLING_DAY`（控制台账期起始日，UTC 1–31）。
+本账户已在官方概览核对为每月 12 日至下月 12 日；不可用自然月代替实际账期。
+月底不足指定日时使用当月最后一天。账户账期变更后需同步该配置。
+统计在管理访问时后台刷新，每十分钟最多查询一次；接口故障保留同账期旧值并标记过期，
+新账期不沿用旧余额，缺少配置或没有成功统计时显示未知。令牌仅留在执行器环境中，
+不返回前端。官方统计可能采样或延迟，剩余次数是按 A 类 100 万、B 类 1,000 万次
+免费额度计算的估算；此卡片不执行费用扣款或自动阻断历史图片访问。
+操作分类与成功/用户错误筛选参考 [Cloudflare 官方 R2 Analytics 示例](https://github.com/cloudflare/notebook-examples/blob/main/notebooks/analytics_r2_usage.py)，
+并排除官方明确不计费的 401 请求与免费删除操作。
+
 ## 上线后跟踪，不作为本次新增功能
 
 用户已确认以下事项先记录，正式上线后再处理：

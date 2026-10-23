@@ -81,6 +81,27 @@ test('服务资源仅随 owner 管理摘要返回，不暴露数据目录路径'
   assert.equal((await call('/api/member/shared-status')).data.serviceResources,undefined);
 });
 
+test('R2 官方统计只由已鉴权管理摘要触发，不泄漏统计令牌或拖慢响应', async t=>{
+  const {env,store,call}=await fixture(t);let queries=0,finish;
+  Object.assign(env,{R2_BUCKET:'test-images',R2_ACCOUNT_ID:'b'.repeat(32),R2_ANALYTICS_TOKEN:'synthetic-private-analytics',R2_BILLING_DAY:'12'});
+  store.readR2Usage=()=>({bytes:1024,images:1,pending:0,errors:0,limitBytes:9_500_000_000});
+  t.mock.method(globalThis,'fetch',()=>{queries++;return new Promise(resolve=>{finish=resolve;});});
+  for(const viewer of [null,1]) await call('/api/member/owner/member-management',{viewer});
+  assert.equal(queries,0);
+  const first=await call('/api/member/owner/member-management');
+  assert.equal(first.status,200);
+  assert.equal(first.data.serviceResources.r2.operations.status,'loading');
+  assert.equal(first.data.serviceResources.r2.operations.classA.remaining,null);
+  finish(new Response(JSON.stringify({data:{viewer:{accounts:[{r2OperationsAdaptiveGroups:[{dimensions:{actionType:'GetObject'},sum:{requests:9}}]}]}}})));
+  await new Promise(resolve=>setImmediate(resolve));
+  const result=await call('/api/member/owner/member-management');
+  assert.equal(result.data.serviceResources.r2.operations.classB.remaining,9_999_991);
+  assert.equal(queries,1);
+  assert.ok(!result.text.includes(env.R2_ANALYTICS_TOKEN));
+  assert.ok(!result.text.includes(env.R2_ACCOUNT_ID));
+  assert.equal((await call('/api/member/me')).data.serviceResources,undefined);
+});
+
 test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key，响应不泄漏凭据',async t=>{
   const {account,call,counts}=await fixture(t),route='/api/member/owner/accounts/opus';
   assert.equal((await call(route,{method:'PATCH',body:{proxyUrl:'http://evil.example'}})).status,400);
