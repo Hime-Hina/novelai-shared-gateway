@@ -37,7 +37,7 @@ test('按真实账期跨桶统计标准存储，缓存并合并并发请求，�
   });
   for (let i = 0; i < 5; i++) assert.equal(readR2Operations(env).status, 'loading');
   assert.equal(requests, 1);
-  finish(response([row('PutObject', 200), row('ListObjects', 3), row('PutBucketStorageClass', 1), row('GetObject', 1200), row('HeadObject', 2), row('ReportUsageSummary', 1), row('DeleteObject', 90)]));
+  finish(response([row('PutObject', 200), row('ListObjects', 3), row('PutBucketStorageClass', 1), row('GetObject', 1200), row('HeadObject', 2), row('ReportUsageSummary', 1), row('DeleteObject', 90), row('GetBucketSippyConfiguration', 2)]));
   await setImmediate();
   const actual = readR2Operations(env);
   assert.equal(actual.periodEnd, '2026-11-12T00:00:00.000Z');

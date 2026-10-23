@@ -1,6 +1,7 @@
 const classA = new Set('ListBuckets PutBucket ListObjects PutObject CopyObject CompleteMultipartUpload CreateMultipartUpload LifecycleStorageTierTransition ListMultipartUploads UploadPart UploadPartCopy ListParts PutBucketEncryption PutBucketCors PutBucketLifecycleConfiguration PutBucketStorageClass'.split(' '));
 const classB = new Set('HeadBucket HeadObject GetObject UsageSummary ReportUsageSummary GetBucketEncryption GetBucketLocation GetBucketCors GetBucketLifecycleConfiguration'.split(' '));
-const free = new Set(['DeleteObject', 'DeleteBucket', 'AbortMultipartUpload']);
+// Sippy 配置查询也会出现在分析中；Sippy 本身免费，仅其对象操作计费。
+const free = new Set(['DeleteObject', 'DeleteBucket', 'AbortMultipartUpload', 'GetBucketSippyConfiguration']);
 const refreshMs = 10 * 60_000;
 
 type Snapshot = { classA: number; classB: number; checkedAt: string };
