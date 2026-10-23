@@ -116,7 +116,8 @@ test('用量按上海日期、成员和模型汇总，退款及预扣不算消�
   assert.equal(summarizeOwnerUsage([]).totals.pending,0);
 });
 
-test('SQLite 统计读取覆盖持久历史，按时间筛选且不返回任何 Key、提示词或授权数据',async()=>{
+test('SQLite 统计读取覆盖持久历史，按时间筛选且不返回任何 Key、提示词或授权数据',async t=>{
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-10-16T00:00:00Z')});
   const store=new JsonStore(await mkdtemp(path.join(tmpdir(),'nai-owner-stats-')));await store.init();
   try{
     await store.update(db=>{db.users.push({id:'a',token:'STA1N-private',enabled:true,memberAuth:{username:'Alice'},discord:{accessToken:'private-discord'}});db.jobs.push({id:'job-a',userToken:'STA1N-private',status:'done',request:{model:'nai-diffusion-4-5-full',prompt:'private-prompt'},createdAt:'2026-10-15T16:00:00Z',fairCharge:{resource:'free',status:'settled',amount:0}});},{collections:['users','jobs'],immediate:true});

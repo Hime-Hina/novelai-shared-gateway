@@ -133,7 +133,8 @@ describe('executor opaque streaming bridge', () => {
   }, 15000)
 
   it('propagates a slow reader back to the executor instead of buffering its entire response', async () => {
-    const chunk = Buffer.alloc(64 * 1024, 0x9b), total = 32 * 1024 * 1024
+    // Exceed the combined TCP buffers of both loopback hops on tuned Linux hosts.
+    const chunk = Buffer.alloc(64 * 1024, 0x9b), total = 128 * 1024 * 1024
     let written = 0, completed = false, drains = 0
     const base = await fixture(async (_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': total })

@@ -9,7 +9,7 @@
     "build": "pnpm --filter novelai-shared-gateway build && nitro build && node scripts/package-runtime.mjs",
     "start": "node .output/server/start.mjs"
   },
-  "engines": { "node": "^22.23.3 || ^24.15.0 || >=26" },
+  "engines": { "node": "^22.23.4 || ^24.22.1 || >=26.12.1" },
   "dependencies": {
     "h3": "1.15.11",
     "novelai-shared-gateway": "workspace:*"

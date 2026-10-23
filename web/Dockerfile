@@ -1,4 +1,4 @@
-FROM node:22.23.3-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 WORKDIR /app
 ENV NUXT_TELEMETRY_DISABLED=1
 RUN corepack enable pnpm
@@ -12,7 +12,7 @@ COPY server/generation-request.ts server/queue-policy.ts server/shared-surface.t
 RUN pnpm --filter @novelai-gateway/web build
 RUN mkdir -p /app/dependency-licenses && find node_modules -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' \) -exec cp --parents --target-directory=/app/dependency-licenses -- {} +
 
-FROM node:22.23.3-bookworm-slim
+FROM node:22.23.4-bookworm-slim
 WORKDIR /app
 COPY --from=build /app/web/.output ./.output
 COPY --from=build /app/dependency-licenses ./dependency-licenses

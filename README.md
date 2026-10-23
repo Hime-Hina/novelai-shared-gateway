@@ -183,7 +183,7 @@ F06 第一片已让网页 `POST /api/jobs` 的完整参数与任务同事务持�
 
 SQLite、图片和凭据均存于 `data/`，服务重启后保留；有效网页登录会话也保留。默认不自动删除图片/历史，请自行监控磁盘并备份。公开仓库不含生产数据、真实凭据、个人地址或部署历史。
 
-本地开发使用 `.node-version` 固定的 Node.js **22.23.3** 与 `pnpm 10.32.1`，与 CI、Docker 构建一致；Nuxt 不支持旧的 Node 24.14.0，可选兼容分支见 `web/package.json`。pnpm 版本固定在 `package.json` 的 `packageManager`。使用 Corepack 时先启用 pnpm shim；已有其他版本 pnpm 的环境也可用 `corepack pnpm` 显式运行本项目固定版本。
+本地开发使用 `.node-version` 固定的 Node.js **22.23.4** 与 `pnpm 10.32.1`，与 CI、Docker 构建一致；兼容分支最低安全版本为 Node 24.22.1、26.12.1，见 `web/package.json`。pnpm 版本固定在 `package.json` 的 `packageManager`。使用 Corepack 时先启用 pnpm shim；已有其他版本 pnpm 的环境也可用 `corepack pnpm` 显式运行本项目固定版本。
 
 ```sh
 corepack enable pnpm

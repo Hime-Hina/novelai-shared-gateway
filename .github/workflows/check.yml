@@ -88,7 +88,7 @@ jobs:
             printf 'node=%s\n' "$("$release_dir/bin/node" --version)"
             printf 'lock_sha256=%s\n' "$(sha256sum pnpm-lock.yaml | cut -d ' ' -f 1)"
           } > "$release_dir/RELEASE.txt"
-          test "$("$release_dir/bin/node" --version)" = v22.23.3
+          test "$("$release_dir/bin/node" --version)" = v22.23.4
           tar -C "$RUNNER_TEMP" -czf "dist/$release_name.tar.gz" "$release_name"
           mkdir -p "$RUNNER_TEMP/release-check"
           tar -C "$RUNNER_TEMP/release-check" -xzf "dist/$release_name.tar.gz"
