@@ -1,7 +1,7 @@
 # 正式发布准备与回退
 
-当前正式运行版本为 `f2527263b29da2acbff3b02f2645f938fb1c54c5`，已部署
-独立 R2 资源卡片、冷图片转存及业务数据加密备份，于 **2026-10-21 02:52:46（UTC+8）恢复正式入口**。
+当前正式运行版本为 `93df7e72d09f6aaf69e8185a2a9b44b9e8b91b40`，已部署
+R2 官方 A/B 操作用量与剩余免费额度，于 **2026-10-24 04:44:42（UTC+8）恢复正式入口**。
 本次结果见下节，后续文档提交不改变业务运行版本。
 
 首次架构切换在用户批准的 **2026-10-19 05:30–07:00（Asia/Shanghai，UTC+8）** 窗口内完成，
@@ -10,7 +10,7 @@
 通过。发布包 SHA-256 为 `3c3672a3a1e1645e48b03515f89e4be56234e9cd8e7866251b5e918cded13820`。
 后续运维配置及文档提交不自动改变这个业务版本。
 
-## 2026-10-24 R2 官方操作额度与分支合并（待生产配置）
+## 2026-10-24 R2 官方操作额度与分支合并
 
 - [PR #1](https://github.com/Hime-Hina/novelai-shared-gateway/pull/1) 已以合并提交
   `2d2027284378b5cfed0bba40649e48db42fc2b65` 合入维护者 fork 的 `main`，保留现代化分支的提交历史及已部署的 Node.js 安全维护。
@@ -19,12 +19,30 @@
   [PR CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/40014013089) 均通过：
   后端 574、前端 134、执行器 3、双进程 14、Caddy 7、打包 HTTP 4 项，以及备份、类型和镜像检查。
   本地 Chrome 在 1468 / 390 px 宽度使用合成数据验证加载、成功、过期三种状态，布局位置不变，无横向溢出。
-- 发布包 SHA-256 为 `b35b2736677c3f0498584d38e83512b95d2c8c49705fd6be5bf3676f26180331`，
-  本机和 bob 均核验，候选目录 `releases/de6f036dfe7643ab8f852379370b272e25e0350e` 已预置。
-  正式 `current` 仍为 `f2527263b29da2acbff3b02f2645f938fb1c54c5-node22.23.4-20261023`；新增统计尚未部署。
-- 当前等待维护者确认创建仅本账户 `Account Analytics Read` 的长期只读令牌。
-  真实 Cloudflare 查询与生产界面尚未验证。准备脚本位于 root 专用目录
-  `/var/lib/novelai-shared-gateway-release-prep/r2-usage-de6f036/`；先验证真实统计，再执行带验证回执检查的切换脚本。
+- 获得维护者确认后创建仅本账户 `Account Analytics Read` 的长期令牌，安全写入 root-only 的
+  `r2.env`，仅执行器加载；网页进程环境和管理响应均验证不含令牌。
+  真实查询发现官方还返回 `GetBucketSippyConfiguration`，按照
+  [Sippy 免费、其对象操作单独计费](https://developers.cloudflare.com/r2/pricing/#sippy)的规则补齐免费分类；
+  回归先复现未知操作导致统计不可用，再验证修复。
+- 修复提交 `93df7e72d09f6aaf69e8185a2a9b44b9e8b91b40` 的
+  [完整 Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/40019883950) 通过。
+  最终发布包 SHA-256 为 `d3f96f70a1acc2385b9e944203096c0f8093bba0cccfea4e8de1cdd8249cdb00`，
+  本机和 bob 均核验；固定 Node.js 22.23.4，依赖锁与数据库迁移未变化。
+- 04:44:37 排空队列并开始切换，04:44:42 恢复正式服务，未触发回退。
+  最终无图片业务备份为 `cutover-20261023T204439.406716Z`，SQLite 完整性为 ok；
+  当时有 5 成员、1 上游、2,775 任务、2,749 图片、2,782 账目和 4 会话。
+  回退目录 `f2527263b29da2acbff3b02f2645f938fb1c54c5-node22.23.4-20261023` 保留。
+- 线上管理卡片已显示真实账期 **2026-10-12 至 2026-11-12（UTC）**：
+  A 类已用 **2,605**、免费剩余 **997,395**；B 类已用 **2,598**、免费剩余 **9,997,402**。
+  这是账户 Standard 存储的官方分析数据，十分钟缓存，受统计延迟影响，剩余额度为估算，最终以账单为准。
+  内存、磁盘、数据大小与独立系统读数一致，鉴权和网页代理通过；30 次健康检查全部成功，最大 3.78 ms。
+  三张远端历史原图的签名查看、鉴权下载、字节长度和 SHA-256 均通过，匿名读取仍被拒绝。
+  最终两项服务均 active/running、重启数为 0，部署后的 warning 及以上服务日志为空。
+- 真实 Chrome 在 1468 / 390 px 宽度下验证刷新：桌面资源区高度始终 527.958 px，
+  下方位置 822.219 px；窄屏高度始终 1103.667 px，下方位置 1450.323 px，无横向溢出。
+  本机证据位于 `H:/TEMP/novelai-r2-usage/production-card-desktop.png`、
+  `production-card-mobile.png` 和 `production-layout-check.json`；服务器受限记录位于
+  `/var/lib/novelai-shared-gateway-release-prep/r2-usage-de6f036/`。
 - 已清理 fork 上的 `codex/modernization-plan`、`codex/public-framework-1-1`、
   `codex/public-gateway-1-2-0-20261013`，后两者已核对上游合并 PR 的原始 head。
   本地清理 `codex/shared-gateway-management` 和 `codex/modernization-plan`，
