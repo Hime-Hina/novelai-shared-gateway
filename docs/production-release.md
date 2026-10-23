@@ -10,6 +10,26 @@
 通过。发布包 SHA-256 为 `3c3672a3a1e1645e48b03515f89e4be56234e9cd8e7866251b5e918cded13820`。
 后续运维配置及文档提交不自动改变这个业务版本。
 
+## 2026-10-24 R2 官方操作额度与分支合并（待生产配置）
+
+- [PR #1](https://github.com/Hime-Hina/novelai-shared-gateway/pull/1) 已以合并提交
+  `2d2027284378b5cfed0bba40649e48db42fc2b65` 合入维护者 fork 的 `main`，保留现代化分支的提交历史及已部署的 Node.js 安全维护。
+- 功能提交 `de6f036dfe7643ab8f852379370b272e25e0350e` 的
+  [push CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/40013857539) 与
+  [PR CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/40014013089) 均通过：
+  后端 574、前端 134、执行器 3、双进程 14、Caddy 7、打包 HTTP 4 项，以及备份、类型和镜像检查。
+  本地 Chrome 在 1468 / 390 px 宽度使用合成数据验证加载、成功、过期三种状态，布局位置不变，无横向溢出。
+- 发布包 SHA-256 为 `b35b2736677c3f0498584d38e83512b95d2c8c49705fd6be5bf3676f26180331`，
+  本机和 bob 均核验，候选目录 `releases/de6f036dfe7643ab8f852379370b272e25e0350e` 已预置。
+  正式 `current` 仍为 `f2527263b29da2acbff3b02f2645f938fb1c54c5-node22.23.4-20261023`；新增统计尚未部署。
+- 当前等待维护者确认创建仅本账户 `Account Analytics Read` 的长期只读令牌。
+  真实 Cloudflare 查询与生产界面尚未验证。准备脚本位于 root 专用目录
+  `/var/lib/novelai-shared-gateway-release-prep/r2-usage-de6f036/`；先验证真实统计，再执行带验证回执检查的切换脚本。
+- 已清理 fork 上的 `codex/modernization-plan`、`codex/public-framework-1-1`、
+  `codex/public-gateway-1-2-0-20261013`，后两者已核对上游合并 PR 的原始 head。
+  本地清理 `codex/shared-gateway-management` 和 `codex/modernization-plan`，
+  `main` 跟踪 `fork/main`。上游 `origin` 的分支未修改。
+
 ## 2026-10-23 Node.js 安全维护
 
 - 业务版本仍为 `f2527263b29da2acbff3b02f2645f938fb1c54c5`。正式和隔离测试发布目录中的固定 Node 已替换为官方 22.23.4，保留旧目录供回退；生产目录后缀为 `-node22.23.4-20261023`，各目录包含 `RUNTIME-PATCH.json`。
