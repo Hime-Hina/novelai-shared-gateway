@@ -1,4 +1,4 @@
-import { createId, type JsonStore, type StoreDatabase, type StoreItem } from './store.ts';
+import type { JsonStore, StoreDatabase, StoreItem } from './store.ts';
 import { fetchNovelAiAccountQuota } from './providers.ts';
 import { withQuotaRequestDeadline } from './quota-timeout.ts';
 import { syncFairQuota } from './fair-quota.ts';
@@ -69,23 +69,6 @@ export function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, r
   if (options.fairShareMode === false) account.cooldownUntil = '';
   if (result.disableAccount) disableNovelAiAccount(account, options);
   recordOfficialObservation(db, account, now);
-}
-
-export async function resetAccountStats(store: JsonStore, ids: string[], options: AccountMode & { now?: () => number } = {}) {
-  const selected = new Set(ids);
-  if (!selected.size) fail(400, 'account ids are required.');
-  return store.update(db => {
-    const accounts = db.accounts.filter(account => selected.has(account.id));
-    if (!accounts.length) fail(404, 'no matching accounts found.');
-    const at = new Date((options.now || Date.now)()).toISOString();
-    for (const account of accounts) {
-      if (options.fairShareMode === false) { account.inFlight = 0; account.cooldownUntil = ''; account.lastUsedAt = ''; }
-      account.total = 0; account.failures = 0; account.updatedAt = at;
-    }
-    db.ledger.unshift({ id: createId('log'), type: 'reset-account-stats', amount: accounts.length, at,
-      note: `Reset monitoring stats for ${accounts.length} NovelAI account(s)` });
-    return { reset: accounts.length };
-  }, { collections: ['accounts', 'ledger'] });
 }
 
 interface AccountQuotaRefreshOptions<T> extends AccountMode {
