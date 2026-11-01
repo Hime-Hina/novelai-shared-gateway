@@ -54,8 +54,8 @@ function readActivityDays({ since, until, memberId = null, operation = 'generate
     upper: new Date(upper + margin).toISOString().slice(0, 10),
     dates: dates === null ? null : JSON.stringify(dates) };
   return sqlite.prepare<typeof params, ActivityDay>(`
-    WITH activity AS (
-      SELECT activity_time(j.created_at) AS submitted,
+    WITH candidates AS (
+      SELECT j.created_at,
         COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),
           NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),
           (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,
@@ -67,11 +67,14 @@ function readActivityDays({ since, until, memberId = null, operation = 'generate
       FROM jobs j INDEXED BY idx_jobs_created_stats
       LEFT JOIN generation_requests p ON p.id = j.request_id
       WHERE j.created_at >= @lower AND j.created_at < @upper
+    ), activity AS MATERIALIZED (
+      -- 先按成员/操作缩小范围，再只保存时间与状态；严格日期解析每条候选只运行一次。
+      SELECT activity_time(created_at) AS submitted, state FROM candidates
+      WHERE (@memberId IS NULL OR member = @memberId)
+        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation
     ), selected AS (
       SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state
       FROM activity WHERE submitted >= @since AND submitted < @until
-        AND (@memberId IS NULL OR member = @memberId)
-        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation
     )
     SELECT date, COUNT(*) AS total,
       SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,

@@ -79,6 +79,29 @@ test('精确毫秒左闭右开、上海午夜、合法ISO偏移与非法日期�
   assert.deepEqual(await store.readActivityDays({ ...window, dates: ['2026-10-15'] }), [{ ...empty('2026-10-15'), total: 1, done: 1 }]);
 });
 
+test('成员和操作混合范围保留手算计数、父表优先与严格日期，全局查询不漏未知归属', async t => {
+  const store = await open(t), oneDay = { since: '2026-10-15T16:00:00.000Z', until: '2026-10-16T16:00:00.000Z' };
+  await store.update(db => {
+    db.users = [{ id: 'a', token: 'key-a' }, { id: 'b', token: 'key-b' }];
+    db.jobs = [job('start'), job('offset-cancelled', { createdAt: '2026-10-16T00:00:00+08:00', status: 'failed', cancelledAt: submitted }),
+      job('image-input', { request: { action: 'img2img' }, status: 'pending' }),
+      job('late-failure', { createdAt: '2026-10-16T15:59:59.999Z', status: 'failed', lateResultAvailable: true }),
+      job('parent-wins', { requestId: 'owned', userToken: 'key-b', generationAttempt: { memberId: 'b' }, request: { operation: 'upscale' }, status: 'running' }),
+      job('bad-hour', { createdAt: '2026-10-16T24:00:00Z' }),
+      job('before', { createdAt: '2026-10-15T15:59:59.999Z' }), job('end', { createdAt: oneDay.until }),
+      job('upscale-only', { request: { operation: 'upscale' } }), job('unknown', { userToken: 'old-secret' }),
+      ...Array.from({ length: 256 }, (_, index) => job(`other-member-${index}`, { userToken: 'key-b' })),
+      ...Array.from({ length: 128 }, (_, index) => job(`other-operation-${index}`, { request: { operation: 'encode-vibe' } }))];
+  }, { immediate: true, generationRequest: parent('owned') });
+  const selected = { ...empty('2026-10-16'), total: 5, done: 1, failed: 1, cancelled: 1, pending: 1, running: 1 };
+  assert.deepEqual(await store.readActivityDays({ ...oneDay, memberId: 'a' }), [selected]);
+  assert.deepEqual(await store.readActivityDays({ ...oneDay, memberId: 'a', dates: ['2026-10-16'] }), [selected]);
+  assert.deepEqual(await store.readActivityDays({ ...oneDay, memberId: 'b' }), [{ ...empty('2026-10-16'), total: 256, done: 256 }]);
+  assert.deepEqual(await store.readActivityDays(oneDay), [{ ...selected, total: 262, done: 258 }]);
+  assert.deepEqual(await store.readActivityDays({ ...oneDay, memberId: 'a', operation: 'upscale' }), [{ ...empty('2026-10-16'), total: 1, done: 1 }]);
+  assert.deepEqual(await store.readActivityDays({ ...oneDay, memberId: 'a', operation: 'encode-vibe' }), [{ ...empty('2026-10-16'), total: 128, done: 128 }]);
+});
+
 test('全年SQL聚合覆盖大量冷历史与重启，不热载，现有日期索引缩小候选集', async t => {
   env(t, 'RUNTIME_JOBS_CACHE_LIMIT', '2');
   const store = await open(t);
