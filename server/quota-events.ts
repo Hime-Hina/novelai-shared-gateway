@@ -16,14 +16,22 @@ export const quotaEventTypes = [
   'AvailabilityChanged','QuotaObserved','RefillApplied','QuotaReserved','GenerationSettled','GenerationRefunded',
   'FundingRegistered','FundingReceived','DebitsConfirmed','ResourceGapObserved','ReturnClassified','OperatingLossCovered','V5CapacityObserved','PolicyChanged'
 ] as const;
-export const sharingEventTypes=['SharingConfigured','AllocationChanged','MemberTransferred','MemberRemoved','AccountBound','PolicyChanged','AvailabilityChanged'] as const;
+export const sharingEventTypes=['SharingConfigured','AllocationChanged','MemberTransferred','MemberRemoved','AccountBound','PolicyChanged','AvailabilityChanged','AdmissionChanged','MemberEligibilityChanged'] as const;
 export const accountQuotaEventTypes=['QuotaAccountOpened','FundsTransferred','AllocationApplied','AvailabilityChanged','QuotaObserved','RefillApplied','QuotaReserved','GenerationSettled','GenerationRefunded',
   'FundingRegistered','FundingReceived','DebitsConfirmed','ResourceGapObserved','ReturnClassified','OperatingLossCovered','V5CapacityObserved'] as const;
 type SharingField='version'|'enabled'|'members'|'boundAccountId'|'groups'|'configVersion'|'configurationHistory'|'autoAnlasFallback'|'freeImagePolicy'|'lossAlertPolicy'|'policyHistory';
-export type SharingQuotaState=Pick<FairQuotaState,SharingField>&{pendingStatus?:string};
+export interface MemberEligibility {
+  memberId:string;enabled?:boolean;acceptingJobs?:boolean;jobAdmissionVersion?:number;removed?:boolean;createdAt?:string;at?:number;
+  discord?:{id?:string;guildId?:string;checkedAt?:number;member?:boolean};
+}
+type ConfiguredSharingQuotaState=Pick<FairQuotaState,SharingField>&{pendingStatus?:string;memberEligibility?:Record<string,MemberEligibility>};
+export type SharingQuotaState=Partial<ConfiguredSharingQuotaState>;
 export type AccountQuotaState=Omit<FairQuotaState,SharingField>&{allocationHistory:Record<string,unknown>[]};
+function configuredSharing(state:SharingQuotaState|null):state is ConfiguredSharingQuotaState {
+  return Boolean(state&&Array.isArray(state.members)&&Array.isArray(state.groups)&&typeof state.configVersion==='number');
+}
 
-export function splitQuotaState(state:FairQuotaState):{sharing:SharingQuotaState;quota:AccountQuotaState} {
+export function splitQuotaState(state:FairQuotaState):{sharing:ConfiguredSharingQuotaState;quota:AccountQuotaState} {
   const {version,enabled,members,boundAccountId,groups,configVersion,configurationHistory,autoAnlasFallback,freeImagePolicy,lossAlertPolicy,policyHistory,...financial}=structuredClone(state);
   const allocationHistory:Record<string,unknown>[]=[];
   const metadata=configurationHistory.map(raw=>{
@@ -36,8 +44,9 @@ export function splitQuotaState(state:FairQuotaState):{sharing:SharingQuotaState
     quota:{...financial,allocationHistory}};
 }
 
-export function composeQuotaState(sharing:SharingQuotaState,quota:AccountQuotaState|null):FairQuotaState {
-  const {pendingStatus,...configuration}=structuredClone(sharing),{allocationHistory,...financial}=structuredClone(quota||{...initialState(sharing.members,sharing.groups,sharing.configVersion),allocationHistory:[]});
+export function composeQuotaState(sharing:SharingQuotaState|null,quota:AccountQuotaState|null):FairQuotaState|null {
+  if(!configuredSharing(sharing))return null;
+  const {pendingStatus,memberEligibility:_eligibility,...configuration}=structuredClone(sharing),{allocationHistory,...financial}=structuredClone(quota||{...initialState(sharing.members,sharing.groups,sharing.configVersion),allocationHistory:[]});
   const amounts=new Map(allocationHistory.map(entry=>[entry.version,entry]));
   const zeroBalances=(groups:unknown)=>Object.fromEntries((groups as FairGroup[]||[]).flatMap(group=>group.members).map(id=>[id,emptyBalance()]));
   const history=configuration.configurationHistory.map(raw=>{
@@ -50,13 +59,27 @@ export function composeQuotaState(sharing:SharingQuotaState,quota:AccountQuotaSt
 
 export function reduceSharingEvent(previous:SharingQuotaState|null,event:QuotaEvent):SharingQuotaState|null {
   const p=event.payload;
+  if(event.eventType==='AdmissionChanged'||event.eventType==='MemberEligibilityChanged'){
+    if(typeof p.memberId!=='string'||!p.memberId)throw new Error('Member eligibility fact requires a member ID');
+    const s=previous||{},memberEligibility=s.memberEligibility ||= {},member:MemberEligibility={...(memberEligibility[p.memberId]||{}),memberId:p.memberId};
+    for(const field of ['enabled','acceptingJobs','removed'] as const)if(p[field]!==undefined){if(typeof p[field]!=='boolean')throw new Error(`Invalid member eligibility ${field}`);member[field]=p[field];}
+    if(p.jobAdmissionVersion!==undefined){if(!Number.isSafeInteger(p.jobAdmissionVersion)||(p.jobAdmissionVersion as number)<(member.jobAdmissionVersion||0))throw new Error('Member admission generation moved backwards');member.jobAdmissionVersion=p.jobAdmissionVersion as number;}
+    if(p.at!==undefined)member.at=p.at as number;
+    if(p.createdAt!==undefined)member.createdAt=p.createdAt as string;
+    if(p.discord){
+      const discord=p.discord as NonNullable<MemberEligibility['discord']>;
+      member.discord={...member.discord,...Object.fromEntries(['id','guildId','checkedAt','member'].filter(field=>Object.hasOwn(discord,field)).map(field=>[field,discord[field as keyof typeof discord]]))};
+    }
+    memberEligibility[p.memberId]=member;return s;
+  }
   if(event.eventType==='SharingConfigured'){
-    if(previous)throw new Error('Sharing configuration already exists');
+    if(configuredSharing(previous))throw new Error('Sharing configuration already exists');
     const sharing=splitQuotaState(initialState(p.members as string[],p.groups as FairGroup[],p.configVersion as number)).sharing;
+    if(previous?.memberEligibility)sharing.memberEligibility=structuredClone(previous.memberEligibility);
     if(p.at!==undefined)sharing.configurationHistory.push({at:p.at,actorId:p.actorId||null,version:p.configVersion,before:[],after:structuredClone(p.groups),redistributeRemaining:p.redistributeRemaining===true});
     return sharing;
   }
-  if(!previous)throw new Error(`Sharing event ${event.eventType} has no configuration`);
+  if(!configuredSharing(previous))throw new Error(`Sharing event ${event.eventType} has no configuration`);
   const s=previous;
   if(event.eventType==='AccountBound'){s.boundAccountId=p.accountId as string;delete s.pendingStatus;return s;}
   if(event.eventType==='AvailabilityChanged'){s.pendingStatus=p.status as string;return s;}
@@ -76,6 +99,10 @@ export function reduceSharingEvent(previous:SharingQuotaState|null,event:QuotaEv
     const before=structuredClone(s.groups);s.groups=structuredClone(p.groups as FairGroup[]);s.members=structuredClone(p.members as string[]);s.configVersion=p.configVersion as number;
     s.configurationHistory.push(event.eventType==='AllocationChanged'?{at:p.at,actorId:p.actorId||null,version:s.configVersion,before,after:structuredClone(s.groups),redistributeRemaining:p.redistributeRemaining===true}
       :{at:p.at,actorId:'administrator',action:event.eventType==='MemberTransferred'?'transfer-quota':'delete-member',version:s.configVersion,sourceId:p.sourceId,targetId:p.targetId,autoJoined:p.autoJoined,shareChanges:structuredClone(p.shareChanges),before,after:structuredClone(s.groups)});
+    if(event.eventType==='MemberRemoved'){
+      const memberId=p.sourceId as string,eligibility=s.memberEligibility ||= {};
+      eligibility[memberId]={...eligibility[memberId],memberId,removed:true,at:p.at as number};
+    }
     s.configurationHistory=s.configurationHistory.slice(-1000);return s;
   }
   throw new Error(`Unsupported sharing event ${event.eventType}`);
@@ -112,7 +139,7 @@ export function reduceAccountQuotaEvent(previous:AccountQuotaState|null,event:Qu
     s.allocationHistory.push({version:p.configVersion,beforeBalances,afterBalances:structuredClone(s.balances),...(p.transferred?{transferred:structuredClone(p.transferred)}:{})});
     s.allocationHistory=s.allocationHistory.slice(-1000);return s;
   }
-  const s=composeQuotaState({version:2,enabled:true,members:Object.keys(previous.balances),boundAccountId:null,groups:[],configVersion:0,configurationHistory:[]},previous);
+  const s=composeQuotaState({version:2,enabled:true,members:Object.keys(previous.balances),boundAccountId:null,groups:[],configVersion:0,configurationHistory:[]},previous)!;
   const result=reduceFinancialQuotaEvent(s,event);
   if(!result)throw new Error('Financial event removed quota state');
   if(event.eventType==='GenerationSettled'||event.eventType==='GenerationRefunded')delete result.reservations[p.jobId as string];

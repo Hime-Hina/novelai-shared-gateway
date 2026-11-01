@@ -150,3 +150,15 @@ test('管理金额超过12位精度明确拒绝，不静默接受零金额业务
  assert.throws(()=>manageOperatingFunding(db,{action:'operating-contribute',resource:'v5',amount:1e-13,receipt:'precision_input'},fundingContext(db),now),/12 位/);
  assert.deepEqual(db,before);
 });
+
+test('成员资格先于分组存在，停止接单代次保存在sharing且不泄漏旧额度DTO',()=>{
+ let sharing=reduceSharingEvent(null,{eventType:'MemberEligibilityChanged',payload:{memberId:'a',enabled:true,discord:{id:'discord-a',guildId:'guild',checkedAt:now,member:true}}});
+ assert.equal(composeQuotaState(sharing,null),null);
+ sharing=reduceSharingEvent(sharing,{eventType:'AdmissionChanged',payload:{memberId:'a',acceptingJobs:false,jobAdmissionVersion:1,at:now+1}});
+ assert.deepEqual(sharing.memberEligibility.a,{memberId:'a',enabled:true,discord:{id:'discord-a',guildId:'guild',checkedAt:now,member:true},acceptingJobs:false,jobAdmissionVersion:1,at:now+1});
+ const db=fixture();
+ sharing=reduceSharingEvent(sharing,{eventType:'SharingConfigured',payload:{members,groups:db.settings.fairQuota.groups,configVersion:1}});
+ assert.equal(sharing.memberEligibility.a.jobAdmissionVersion,1);
+ assert.equal(Object.hasOwn(composeQuotaState(sharing,null),'memberEligibility'),false);
+ assert.throws(()=>reduceSharingEvent(structuredClone(sharing),{eventType:'AdmissionChanged',payload:{memberId:'a',acceptingJobs:true,jobAdmissionVersion:0,at:now+2}}),/backwards/);
+});
