@@ -33,8 +33,10 @@ type MemberAllocationFact = ConfigurationFact & { sourceId: string; targetId: st
   shareChanges: { userId: string; beforeShare: number; afterShare: number }[] };
 type ChargeFact = Evidence & { jobId: string; charge: FairCharge; at: number; pricingVersion?: string };
 type OperatingMoneyFact = Evidence & { id: string; resource: Resource; amount: string; request?: unknown; type?: string };
-export type FundingReceivedFact = OperatingMoneyFact & { source: 'operator_share' | 'declared_external_receipt' | 'registered_external_funding';
-  memberId?: string; destination?: string; receiptEventId?: string; snapshotAt?: number; confirmationEventId?: string };
+export type FundingReceivedFact = OperatingMoneyFact & (
+  { source: 'operator_share'; memberId: string }
+  | { source: 'declared_external_receipt'; destination: string }
+  | { source: 'registered_external_funding'; destination: string; receiptEventId: string; snapshotAt: number; confirmationEventId?: string });
 export type ResourceGapFact = OperatingMoneyFact & { observedAmount: string; beforeSnapshot: QuotaSnapshot; afterSnapshot: QuotaSnapshot;
   evidenceLevel: string; attribution: string; actualTaskConsumption: null };
 export type ObservedReturnFact = OperatingMoneyFact & { gapEventId: string | null; snapshotAt: number; evidenceLevel: string };

@@ -17,6 +17,12 @@ recordDomainEvent(db,{eventType:'WaitingJobsCancelled',streamId:'request:r',payl
 recordDomainEvent(db,{eventType:'LateResultRecovered',streamId:'request:r',payload:{jobId:'j',artifactId:'a',at:2,refundRetained:true,review}});
 recordDomainEvent(db,{eventType:'ReviewClosed',streamId:'request:r',payload:{jobId:'j',review,reason:'deadline',actualConsumed:null,upstreamCandidates:null}});
 recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:'artifact:a',payload:{artifactId:'a',reason:'owner_cleared_cache',at:3,jobIds:['j']}});
+recordDomainEvent(db,{eventType:'FundingReceived',streamId:'account:opus',payload:{id:'f',resource:'anlasFixed',amount:'1',source:'operator_share',memberId:'m'}});
+recordDomainEvent(db,{eventType:'FundingReceived',streamId:'account:opus',payload:{id:'f',resource:'anlasFixed',amount:'1',source:'registered_external_funding',receiptEventId:'receipt',destination:'members',snapshotAt:1}});
+// @ts-expect-error An operator contribution must identify the wallet that supplied it.
+recordDomainEvent(db,{eventType:'FundingReceived',streamId:'account:opus',payload:{id:'f',resource:'anlasFixed',amount:'1',source:'operator_share'}});
+// @ts-expect-error Registered external funding must identify the receipt and destination.
+recordDomainEvent(db,{eventType:'FundingReceived',streamId:'account:opus',payload:{id:'f',resource:'anlasFixed',amount:'1',source:'registered_external_funding',snapshotAt:1}});
 // @ts-expect-error Cancellation reason must be recorded, not reconstructed by the reader.
 recordDomainEvent(db,{eventType:'WaitingJobsCancelled',streamId:'request:r',payload:{jobIds:['j'],at:1,reason:'stopped',errorStatus:409}});
 // @ts-expect-error Recovered results must preserve the current review state.
