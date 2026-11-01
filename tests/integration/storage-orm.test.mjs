@@ -58,8 +58,8 @@ test('新库的列、默认值、主键和索引方向与旧版完整 schema 一
   t.after(() => legacy.close());
   legacy.exec(legacySchema);
   const store = await openStore(t);
-  assert.deepEqual(metadata(store.sqlite).filter(table => !['generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'member_sessions', 'free_image_usage', 'generation_contexts', 'event_clock', 'event_commits', 'domain_events', 'event_streams', 'projection_versions', 'event_imports'].includes(table.name)).map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq', 'payload_bytes'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_result_pending', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
-  assert.equal(metadata(store.sqlite).length, 21);
+  assert.deepEqual(metadata(store.sqlite).filter(table => !['generation_requests', 'generation_idempotency', 'fair_quota_settlements', 'member_sessions', 'free_image_usage', 'generation_contexts', 'artifact_inputs', 'generation_diagnostics', 'event_clock', 'event_commits', 'domain_events', 'event_streams', 'projection_versions', 'event_imports'].includes(table.name)).map(table => ({ ...table, columns: table.columns.filter(column => !['request_id', 'queue_seq', 'payload_bytes'].includes(column.name)), indexes: table.indexes.filter(index => !['idx_jobs_queued_sequence', 'idx_jobs_request_status', 'idx_jobs_generation_review_due', 'idx_jobs_result_pending', 'idx_jobs_member_late_results', 'idx_ledger_source_at', 'idx_ledger_failure_history'].includes(index.name)) })), metadata(legacy));
+  assert.equal(metadata(store.sqlite).length, 23);
   const partial = store.sqlite.prepare("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql LIKE '%WHERE%' ORDER BY name").all();
   assert.equal(partial.length, 8);
   assert.match(partial.find(index => index.name === 'idx_jobs_active_created').sql, /IN \('queued', 'pending', 'running'\)/);

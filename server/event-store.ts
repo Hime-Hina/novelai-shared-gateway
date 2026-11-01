@@ -76,6 +76,35 @@ export function readProjectedFairQuota(sqlite:Database.Database):FairQuotaState|
   return composeQuotaState(sharing,account?.quota as AccountQuotaState|null||null);
 }
 
+export function readArtifactInput(sqlite:Database.Database,id:string,expectedHash?:string):Record<string,unknown>|null {
+  const row=sqlite.prepare('SELECT payload,payload_sha256 FROM artifact_inputs WHERE artifact_id=?').get(id) as {payload:string;payload_sha256:string}|undefined;
+  if(!row)return null;
+  const payload=JSON.parse(row.payload) as Record<string,unknown>,digest=domainDigest(payload);
+  if(digest!==row.payload_sha256||expectedHash&&digest!==expectedHash)throw new Error(`Protected artifact input hash mismatch ${id}`);
+  return payload;
+}
+function projectionArtifact(sqlite:Database.Database,value:Record<string,unknown>):Record<string,unknown> {
+  const artifact=structuredClone(value);
+  if(artifact.artifactInputRef){
+    const input=readArtifactInput(sqlite,String(artifact.artifactInputRef),artifact.artifactInputSha256 as string);
+    if(!input)throw new Error(`Missing protected artifact input ${artifact.artifactInputRef}`);
+    Object.assign(artifact,pick(input,['prompt','fullPrompt']));
+  }else if(artifact.inputRef){
+    let inputRef=String(artifact.inputRef);
+    if(inputRef.startsWith('legacy-')){
+      const request=readStreamProjection(sqlite,`request:${inputRef}`)?.projection;
+      inputRef=String((request?.request as Record<string,unknown>|undefined)?.inputRef||inputRef);
+    }
+    const row=sqlite.prepare('SELECT payload FROM generation_requests WHERE id=?').get(inputRef) as {payload:string}|undefined;
+    if(row){
+      const input=JSON.parse(row.payload) as Record<string,unknown>,request=input.legacyInline?object(input.requestPayload||input.request):input;
+      if(request.tag!==undefined)artifact.prompt=request.tag;
+      if(request.prompt!==undefined)artifact.fullPrompt=request.prompt;
+    }
+  }
+  return artifact;
+}
+
 const jobDateFields=['createdAt','updatedAt','startedAt','completedAt','cancelledAt','queueExpiresAt','queuedAt','deadlineAt','lateResultAt'];
 function projectionJob(sqlite:Database.Database,raw:Record<string,unknown>):Record<string,unknown> {
   const job=structuredClone(raw);
@@ -93,6 +122,11 @@ function projectionJob(sqlite:Database.Database,raw:Record<string,unknown>):Reco
     const payload=JSON.parse(input.payload) as Record<string,unknown>;
     if(payload.request)job.request=payload.request;
     if(payload.requestPayload)job.requestPayload=payload.requestPayload;
+  }
+  if(job.diagnosticRef){
+    const diagnostic=sqlite.prepare('SELECT job_id,detail,detail_sha256 FROM generation_diagnostics WHERE diagnostic_id=?').get(job.diagnosticRef) as {job_id:string;detail:string;detail_sha256:string}|undefined;
+    if(!diagnostic||diagnostic.job_id!==job.id||createHash('sha256').update(diagnostic.detail).digest('hex')!==diagnostic.detail_sha256)throw new Error(`Missing or corrupt protected diagnostic ${job.diagnosticRef}`);
+    job.errorDetail=diagnostic.detail;
   }
   return job;
 }
@@ -116,13 +150,15 @@ export function coreProjectionRows(sqlite:Database.Database,commit:DomainCommit,
     if(stream.streamKind==='request'){
       if(seenRequests.has(stream.streamId))continue;seenRequests.add(stream.streamId);
       for(const raw of Object.values(object(state.jobs))){
+        const id=String(object(raw).id);
+        if(object(state.retiredJobs||{})[id]){rows.push({collection:'jobs',item:{id},remove:true});continue;}
         const job=projectionJob(sqlite,object(raw));rows.push({collection:'jobs',item:job});
         if(typeof job.queueSeq==='number'&&(!queueSequence||BigInt(job.queueSeq)>BigInt(queueSequence)))queueSequence=String(job.queueSeq);
       }
       for(const raw of Object.values(object(state.artifacts||{}))){
         const artifact=structuredClone(object(raw)),storage=readStreamProjection(sqlite,`artifact:${artifact.id}`)?.projection;
-        if(storage)Object.assign(artifact,pick(storage,['r2','r2LastAttemptAt','r2Error','storagePhase']));
-        rows.push({collection:'images',item:artifact});
+        if(storage)Object.assign(artifact,pick(storage,['file','mimeType','sha256','byteLength','r2','r2LastAttemptAt','r2Error','storagePhase']));
+        rows.push({collection:'images',item:projectionArtifact(sqlite,artifact)});
       }
     }else if(stream.streamKind==='account'){
       const {quota,lastEventId,...account}=state;rows.push({collection:'accounts',item:account});
@@ -131,7 +167,7 @@ export function coreProjectionRows(sqlite:Database.Database,commit:DomainCommit,
         const member=object(value);
         rows.push({collection:'users',item:{id,...pick(member,['enabled','acceptingJobs','jobAdmissionVersion','discord','createdAt'])},...(member.removed?{remove:true as const}:{})});
       }
-    }else if(stream.streamKind==='artifact')rows.push({collection:'images',item:structuredClone(state)});
+    }else if(stream.streamKind==='artifact')rows.push({collection:'images',item:projectionArtifact(sqlite,state)});
     else if(stream.streamKind==='legacy-ledger')rows.push({collection:'ledger',item:structuredClone(object(state.record)),order:state.order as number});
     else if(stream.streamKind==='system'&&stream.streamId==='system:queue')queueSequence=String(state.queueSequence);
   }
@@ -201,8 +237,8 @@ export function reduceDomainEvent(previous: DomainProjection, event: DomainEvent
     return { ...(state || { id: event.memberId || payload.memberId }), ...structuredClone(payload), lastEventId: event.eventId };
   }
   if(event.streamKind==='artifact'&&event.eventType==='ArtifactStorageChanged'){
-    return {...(state||{id:payload.artifactId}),storagePhase:payload.phase,r2:payload.r2,
-      r2LastAttemptAt:payload.lastAttemptAt,r2Error:payload.error};
+    return {...(state||{id:payload.artifactId}),storagePhase:payload.phase,...pick(payload,['file','mimeType','sha256','byteLength','r2']),
+      ...(payload.lastAttemptAt!==undefined?{r2LastAttemptAt:payload.lastAttemptAt}:{}),...(payload.error!==undefined?{r2Error:payload.error}:{})};
   }
   if (event.eventType === 'FreeImageSucceeded') return { ...payload, eventId: event.eventId };
   throw new Error(`No reducer for event ${event.eventId}: ${event.eventType} on ${event.streamKind}`);
@@ -224,6 +260,17 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
   if (!previous) throw new Error(`Missing request opening before event ${event.eventId}`);
   const state = previous;
   const jobs = object(state.jobs), artifacts = object(state.artifacts ||= {});
+  if(event.eventType==='JobHistoryRetired'){
+    if(!Array.isArray(p.jobIds))throw new Error(`Missing retired jobs in ${event.eventId}`);
+    if(Object.values(jobs).some(raw=>{const job=object(raw);return ['queued','pending','running'].includes(String(job.status))||job.resultPending;}))throw new Error('Cannot retire history while a request has active siblings');
+    const retired=object(state.retiredJobs||={});
+    for(const id of p.jobIds){
+      const job=object(jobs[String(id)]);
+      if(['queued','pending','running'].includes(String(job.status))||job.resultPending)throw new Error(`Cannot retire active job ${id}`);
+      retired[String(id)]={at:p.at,reason:p.reason};
+    }
+    return state;
+  }
   if (event.eventType === 'RequestAliasRegistered') {
     const aliases = (state.aliases ||= []) as unknown[];
     aliases.push(structuredClone(p));
@@ -265,10 +312,11 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
       break;
     case 'JobFailed':
       if (job.status === 'done') throw new Error(`Completed job ${jobId} cannot fail`);
-      Object.assign(job, { status: 'failed', completedAt: p.failedAt,updatedAt:p.failedAt, error: p.message,errorDetail:p.message,errorStatus: p.errorStatus, errorCode: p.errorCode,
+      Object.assign(job, { status: 'failed', completedAt: p.failedAt,updatedAt:p.failedAt, error: p.message,errorStatus: p.errorStatus, errorCode: p.errorCode,
         fairCharge: p.charge, generationRefund: p.generationRefund || p.refund, generationReview: p.generationReview || p.review });
       if(p.cancelledAt)job.cancelledAt=p.cancelledAt;
       if(p.cancellationReason)job.cancellationReason=p.cancellationReason;
+      if(p.diagnosticRef)job.diagnosticRef=p.diagnosticRef;
       break;
     case 'LateResultRecovered':
       if (job.status !== 'failed' || p.refundRetained !== true) throw new Error(`Late result must preserve failure/refund for ${jobId}`);
@@ -296,6 +344,8 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
   }
   // 嵌套事务提供 savepoint，调用者捕获失败后也不能提交半个事件批次。
   return sqlite.transaction(() => {
+    for(const diagnostic of command.diagnostics||[])sqlite.prepare('INSERT OR IGNORE INTO generation_diagnostics(diagnostic_id,job_id,detail,detail_sha256,created_at) VALUES(?,?,?,?,?)')
+      .run(diagnostic.diagnosticId,diagnostic.jobId,diagnostic.detail,diagnostic.detailSha256,command.recordedAt);
     sqlite.prepare('INSERT OR IGNORE INTO event_clock(id,value) VALUES(1,0)').run();
     const clock = sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as { value: string };
     const next = BigInt(clock.value) + 1n;
@@ -352,18 +402,77 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
   })();
 }
 
-function saveIdempotencyFact(sqlite: Database.Database, fact: Record<string, unknown>, owner?: unknown): void {
+function idempotencyFact(sqlite:Database.Database,fact:Record<string,unknown>,owner?:unknown):Record<string,unknown> {
   const memberId = text(fact.memberId || owner, 'idempotency.memberId');
   const contextRef = text(fact.normalizationContextRef || fact.contextRef, 'idempotency.contextRef');
   const context = sqlite.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(contextRef) as { payload: string } | undefined;
   if (!context) throw new Error(`Missing protected normalization input ${contextRef}`);
   if (fact.normalizationContextHash && domainDigest(JSON.parse(context.payload)) !== fact.normalizationContextHash) throw new Error(`Protected normalization input hash mismatch ${contextRef}`);
-  const values = [memberId,text(fact.operation,'idempotency.operation'),text(fact.keyHash,'idempotency.keyHash'),text(fact.fingerprint,'idempotency.fingerprint'),
-    context.payload,text(fact.jobId,'idempotency.jobId'),fact.requestId ?? null,text(fact.createdAt,'idempotency.createdAt')];
+  return {member_id:memberId,operation:text(fact.operation,'idempotency.operation'),key_hash:text(fact.keyHash,'idempotency.keyHash'),fingerprint:text(fact.fingerprint,'idempotency.fingerprint'),
+    normalization_context:context.payload,job_id:text(fact.jobId,'idempotency.jobId'),request_id:fact.requestId??null,created_at:text(fact.createdAt,'idempotency.createdAt')};
+}
+function saveIdempotencyFact(sqlite: Database.Database, fact: Record<string, unknown>, owner?: unknown): void {
+  const row=idempotencyFact(sqlite,fact,owner),values=Object.values(row);
   const existing = sqlite.prepare('SELECT * FROM generation_idempotency WHERE member_id=? AND operation=? AND key_hash=?').get(...values.slice(0,3)) as Record<string,unknown> | undefined;
-  if (existing && (existing.fingerprint !== fact.fingerprint || existing.job_id !== fact.jobId || existing.request_id !== (fact.requestId ?? null))) throw new Error(`Conflicting idempotency fact ${contextRef}`);
+  if (existing && (existing.fingerprint !== row.fingerprint || existing.job_id !== row.job_id || existing.request_id !== row.request_id)) throw new Error(`Conflicting idempotency fact ${row.key_hash}`);
   sqlite.prepare(`INSERT OR IGNORE INTO generation_idempotency(member_id,operation,key_hash,fingerprint,normalization_context,job_id,request_id,created_at)
     VALUES(?,?,?,?,?,?,?,?)`).run(...values);
+}
+
+// 切换/离线核对才扫描冷凭据；普通命令仍只同步本批键。
+export function verifyColdDomainFacts(sqlite:Database.Database):void {
+  sqlite.exec('CREATE TEMP TABLE event_cold_check(kind TEXT NOT NULL, key TEXT NOT NULL, digest TEXT NOT NULL, seen INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(kind,key))');
+  try{
+    const expected=sqlite.prepare('SELECT digest FROM event_cold_check WHERE kind=? AND key=?');
+    const put=(kind:string,key:string,value:unknown)=>{
+      const digest=domainDigest(value),prior=expected.get(kind,key) as {digest:string}|undefined;
+      if(prior&&prior.digest!==digest)throw new Error(`Conflicting historical ${kind} fact ${key}`);
+      sqlite.prepare('INSERT OR IGNORE INTO event_cold_check(kind,key,digest) VALUES(?,?,?)').run(kind,key,digest);
+    };
+    const putIdempotency=(fact:Record<string,unknown>,owner?:unknown)=>{const row=idempotencyFact(sqlite,fact,owner);put('generation_idempotency',canonicalJson([row.member_id,row.operation,row.key_hash]),row);};
+    const putFree=(p:Record<string,unknown>)=>put('free_image_usage',String(p.jobId),{job_id:p.jobId,member_id:p.memberId,succeeded_at:p.succeededAt,warning_threshold:p.warningThreshold??null});
+    let cursor='0',eventIndex=-1;
+    while(true){
+      const events=sqlite.prepare(`SELECT event_id,event_type,stream_kind,schema_version,payload,CAST(commit_seq AS TEXT) AS commit_seq,event_index FROM domain_events
+        WHERE (domain_events.commit_seq,event_index)>(CAST(? AS INTEGER),?) AND (event_type IN ('GenerationSettled','GenerationRefunded','FreeImageSucceeded','RequestAccepted','RequestAliasRegistered')
+        OR (event_type='OpeningStateRecorded' AND stream_kind IN ('settlement','idempotency','free-usage')))
+        ORDER BY domain_events.commit_seq,event_index LIMIT 200`).all(cursor,eventIndex) as {event_id:string;event_type:string;stream_kind:string;schema_version:number;payload:string;commit_seq:string;event_index:number}[];
+      if(!events.length)break;
+      for(const event of events){
+        if(event.schema_version!==1)throw new Error(`Unsupported cold fact schema ${event.event_id}`);
+        const p=JSON.parse(event.payload) as Record<string,unknown>;
+        if(['GenerationSettled','GenerationRefunded'].includes(event.event_type))put('fair_quota_settlements',String(p.jobId),{job_id:p.jobId,charge:p.charge});
+        else if(event.event_type==='FreeImageSucceeded')putFree(p);
+        else if(event.event_type==='RequestAccepted'&&p.idempotency)putIdempotency(object(p.idempotency),p.memberId);
+        else if(event.event_type==='RequestAliasRegistered')putIdempotency({...object(p.idempotency),jobId:p.jobId,requestId:p.requestId},p.memberId);
+        else if(event.event_type==='OpeningStateRecorded'){
+          const state=object(p.state);
+          if(event.stream_kind==='settlement')put('fair_quota_settlements',String(state.jobId),{job_id:state.jobId,charge:state.charge});
+          else if(event.stream_kind==='idempotency')putIdempotency(state);
+          else if(event.stream_kind==='free-usage')putFree(state);
+        }
+      }
+      cursor=events.at(-1)!.commit_seq;eventIndex=events.at(-1)!.event_index;
+    }
+    for(const table of ['fair_quota_settlements','generation_idempotency','free_image_usage']){
+      const keys=table==='generation_idempotency'?['member_id','operation','key_hash']:['job_id'];let last=keys.map(()=>'');
+      while(true){
+        const rows=sqlite.prepare(`SELECT * FROM ${table} WHERE (${keys.join(',')})>(${keys.map(()=>'?').join(',')}) ORDER BY ${keys.join(',')} LIMIT 200`).all(...last) as Record<string,unknown>[];
+        if(!rows.length)break;
+        for(const row of rows){
+          const key=keys.length===1?String(row[keys[0]!]):canonicalJson(keys.map(key=>row[key]));
+          const fact=table==='fair_quota_settlements'?{...row,charge:JSON.parse(String(row.charge))}:row;
+          const wanted=expected.get(table,key) as {digest:string}|undefined;
+          if(!wanted)throw new Error(`Unexpected cold projection ${table}:${key}`);
+          if(wanted.digest!==domainDigest(fact))throw new Error(`Cold projection mismatch ${table}:${key}`);
+          sqlite.prepare('UPDATE event_cold_check SET seen=1 WHERE kind=? AND key=?').run(table,key);
+        }
+        last=keys.map(key=>String(rows.at(-1)![key]));
+      }
+    }
+    const missing=sqlite.prepare('SELECT kind,key FROM event_cold_check WHERE seen=0 LIMIT 1').get() as {kind:string;key:string}|undefined;
+    if(missing)throw new Error(`Missing cold projection ${missing.kind}:${missing.key}`);
+  }finally{sqlite.exec('DROP TABLE event_cold_check');}
 }
 
 // 冷凭据和其源事件在同一事务内生效；这些行不进入通用热缓存。
@@ -428,7 +537,7 @@ export function replayDomainEvents(source: Database.Database, target: Database.D
   return { lastCommitSeq: cursor, commits, events };
 }
 
-const legacySecretKey = /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc|nativeParameters|operationParameters|image|mask|reference_image_multiple)$/i;
+const legacySecretKey = /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc|nativeParameters|operationParameters|image|mask|reference_image_multiple|errorDetail)$/i;
 function legacyPublicFact(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(legacyPublicFact);
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
@@ -444,7 +553,7 @@ export interface OpeningReport { status: 'complete'; importId: string; chunks: n
 
 export function copyProtectedFacts(source:Database.Database,target:Database.Database):void {
   // 认证与输入不是可重建投影；仍需连同事件备份。逐行复制避免将大图片请求载荷热载。
-  for(const table of ['generation_requests','generation_contexts','member_sessions','users','accounts','cards']){
+  for(const table of ['generation_requests','generation_contexts','artifact_inputs','generation_diagnostics','member_sessions','users','accounts','cards']){
     const columns=(source.prepare(`PRAGMA table_info(${table})`).all() as {name:string}[]).map(column=>column.name);
     const insert=target.prepare(`INSERT OR IGNORE INTO ${table}(${columns.join(',')}) VALUES(${columns.map(column=>`@${column}`).join(',')})`);
     target.transaction(()=>{for(const row of source.prepare(`SELECT * FROM ${table}`).iterate())insert.run(row);})();
@@ -522,13 +631,15 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     for (const [jobId,charge] of terminals) sqlite.prepare('INSERT OR IGNORE INTO fair_quota_settlements(job_id,charge) VALUES(?,?)').run(jobId,canonicalJson(charge));
   }else chunk('configuration',0,[opening('sharing:default',{memberEligibility})]);
   function records(table:string,key:string,transform:(row:Record<string,unknown>)=>DomainEventInput[]) {
-    let cursor = '', index = 0;
+    let cursor='',index=0,sourceCount=0,firstKey='';let events:DomainEventInput[]=[];
+    const pageSize=['jobs','images'].includes(table)?1:100;
     while (true) {
-      const rows = sqlite.prepare(`SELECT * FROM ${table} WHERE ${key}>? ORDER BY ${key} LIMIT 100`).all(cursor) as Record<string,unknown>[];
-      if (!rows.length) return;
-      const events = rows.flatMap(transform);
-      chunk(table,index++,events,String(rows[0]![key]),String(rows.at(-1)![key]));
-      cursor = String(rows.at(-1)![key]);
+      const rows=sqlite.prepare(`SELECT * FROM ${table} WHERE ${key}>? ORDER BY ${key} LIMIT ?`).all(cursor,pageSize) as Record<string,unknown>[];
+      if(!rows.length){if(sourceCount)chunk(table,index,events,firstKey,cursor);return;}
+      for(const row of rows){
+        if(!sourceCount)firstKey=String(row[key]);events.push(...transform(row));cursor=String(row[key]);sourceCount++;
+        if(sourceCount===100){chunk(table,index++,events,firstKey,cursor);events=[];sourceCount=0;}
+      }
     }
   }
   records('users','id',row=>[opening(`member:${row.id}`,{id:row.id})]);
@@ -548,18 +659,45 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     }
     const input = inputRef ? sqlite.prepare('SELECT payload FROM generation_requests WHERE id=?').get(inputRef) as {payload:string}|undefined : undefined;
     const jobs = Object.fromEntries(sourceJobs.map(item=>{
+      const stableOwner=item.memberId||(item.generationAttempt as {memberId?:string}|undefined)?.memberId||(item.fairCharge as {userId?:string}|undefined)?.userId;
+      if(parent?.member_id&&stableOwner&&parent.member_id!==stableOwner)throw new Error(`Conflicting legacy job ownership ${item.id}`);
       const fact = legacyPublicFact(item) as Record<string,unknown>;
       delete fact.requestPayload;
       fact.memberId = parent?.member_id || memberOf(item);
       if (item.request) fact.request=pick(object(item.request),requestSummaryFields);
       if (!parent && inputRef) {fact.legacyInputRef=inputRef;fact.legacyInlineInput=true;}
+      if(typeof item.errorDetail==='string'&&item.errorDetail){
+        const digest=createHash('sha256').update(item.errorDetail).digest('hex'),ref=`diagnostic:${item.id}:${digest}`;
+        sqlite.prepare('INSERT OR IGNORE INTO generation_diagnostics(diagnostic_id,job_id,detail,detail_sha256,created_at) VALUES(?,?,?,?,?)').run(ref,item.id,item.errorDetail,digest,String(item.completedAt||item.updatedAt||recordedAt));
+        fact.diagnosticRef=ref;
+      }
       return [String(item.id),fact];
     }));
     return [opening(streamId,{request:{requestId:parent?.id||null,memberId:parent?.member_id||memberOf(job),source:job.source||'legacy',
       operation:parent?.operation||(job.request as Record<string,unknown>|undefined)?.operation||'generate',createdAt:parent?.created_at||job.createdAt||recordedAt,
       inputRef:inputRef||null,inputSha256:input?createHash('sha256').update(input.payload).digest('hex'):null,legacy:true},jobs,artifacts:{},aliases:[],freeUsage:{}})];
   });
-  records('images','id',row=>{const value=JSON.parse(String(row.data)) as Record<string,unknown>;return [opening(`artifact:${row.id}`,{...legacyPublicFact(value) as Record<string,unknown>,memberId:memberOf(value),legacy:true})];});
+  records('images','id',row=>{
+    const value=JSON.parse(String(row.data)) as Record<string,unknown>;
+    const owners=new Set<string>();
+    if(value.memberId||value.userId)owners.add(String(value.memberId||value.userId));
+    const associated=sqlite.prepare(`SELECT DISTINCT COALESCE(r.member_id,json_extract(j.data,'$.memberId'),json_extract(j.data,'$.generationAttempt.memberId'),json_extract(j.data,'$.fairCharge.userId')) AS member_id
+      FROM jobs j LEFT JOIN generation_requests r ON r.id=j.request_id WHERE j.image_id=? OR j.id=?`).all(value.id,value.jobId||'') as {member_id:string|null}[];
+    for(const owner of associated)if(owner.member_id)owners.add(owner.member_id);
+    if(owners.size>1)throw new Error(`Conflicting legacy artifact ownership ${value.id}`);
+    const memberId=[...owners][0]||memberOf(value);
+    const inlinePrivate=pick(value,['base64','prompt','fullPrompt']),savedPrivate=value.artifactInputRef?readArtifactInput(sqlite,String(value.artifactInputRef),value.artifactInputSha256 as string):null;
+    if(savedPrivate)for(const [key,value] of Object.entries(inlinePrivate))if(canonicalJson(value)!==canonicalJson(savedPrivate[key]))throw new Error(`Conflicting projected artifact private field ${row.id}.${key}`);
+    const privateInput=savedPrivate||inlinePrivate;
+    const fact={...legacyPublicFact(value) as Record<string,unknown>,memberId,legacy:true};
+    if(Object.keys(privateInput).length){
+      const digest=domainDigest(privateInput),existing=sqlite.prepare('SELECT payload_sha256 FROM artifact_inputs WHERE artifact_id=?').get(value.id) as {payload_sha256:string}|undefined;
+      if(existing&&existing.payload_sha256!==digest)throw new Error(`Protected legacy artifact input conflict ${value.id}`);
+      sqlite.prepare('INSERT OR IGNORE INTO artifact_inputs(artifact_id,member_id,payload_sha256,payload) VALUES(?,?,?,?)').run(value.id,memberId,digest,canonicalJson(privateInput));
+      Object.assign(fact,{artifactInputRef:value.id,artifactInputSha256:digest});
+    }
+    return [opening(`artifact:${row.id}`,fact)];
+  });
   records('ledger','id',row=>{const value=JSON.parse(String(row.data)) as Record<string,unknown>;return [{eventType:'LegacyFactRecorded',streamId:`legacy-ledger:${row.id}`,
     payload:{record:{...legacyPublicFact(value) as Record<string,unknown>,memberId:memberOf(value)},order:row.order_value,source:'legacy-ledger'}}];});
   records('fair_quota_settlements','job_id',row=>[opening(`settlement:${row.job_id}`,{jobId:row.job_id,charge:JSON.parse(String(row.charge))})]);

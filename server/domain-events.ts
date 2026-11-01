@@ -10,7 +10,7 @@ export const domainEventTypes = [
   'ResourceGapObserved', 'ReturnClassified', 'OperatingLossCovered', 'PolicyChanged', 'CooldownChanged',
   'RequestAccepted', 'JobQueued', 'DispatchAuthorized', 'ArtifactPrepared', 'ArtifactPublished', 'JobCompleted', 'JobFailed',
   'WaitingJobsCancelled', 'LateResultRecovered', 'FreeImageSucceeded', 'ReviewOpened', 'ReviewClosed', 'AdmissionChanged',
-  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged'
+  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged', 'JobHistoryRetired'
 ] as const;
 export type DomainEventType = typeof domainEventTypes[number];
 export type DomainActorKind = 'system' | 'member' | 'admin';
@@ -29,6 +29,7 @@ export interface DomainCommandMetadata {
 export interface DomainCommand {
   commandId: string; fingerprint?: string; recordedAt: string; actorId: string | null; actorKind:DomainActorKind;correlationId: string | null;
   causationId: string | null; expectedVersions: Record<string, string>; receipt: Json; events: DomainEventInput[];
+  diagnostics?:{diagnosticId:string;jobId:string;detail:string;detailSha256:string}[];
 }
 export interface DomainEvent {
   eventId: string; commitSeq: string; eventIndex: number; commandId: string; transactionId:string;streamId: string; streamKind: string; streamVersion: string;
@@ -41,7 +42,7 @@ export interface DomainCommit { commitSeq: string; commandId: string; fingerprin
 const commands = new WeakMap<object, DomainCommand>();
 const closedCommands = new WeakSet<DomainCommand>();
 const knownTypes = new Set<string>(domainEventTypes);
-const forbiddenKeys = /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc)$/i;
+const forbiddenKeys = /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc|errorDetail)$/i;
 
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
@@ -121,6 +122,14 @@ export function setDomainCommandActor(db:object,actor:{actorId:string|null;actor
   command.actorId=actor.actorId;command.actorKind=actor.actorKind;
   if(actor.correlationId!==undefined)command.correlationId=actor.correlationId;
   if(actor.causationId!==undefined)command.causationId=actor.causationId;
+}
+export function recordGenerationDiagnostic(db:object,jobId:string,detail:string):string|null {
+  const command=commands.get(db);if(!command)return null;
+  if(closedCommands.has(command))throw new Error('Domain command is closed.');
+  const detailSha256=createHash('sha256').update(detail).digest('hex'),diagnosticId=`diagnostic:${jobId}:${detailSha256}`;
+  const diagnostics=command.diagnostics||=[];
+  if(!diagnostics.some(item=>item.diagnosticId===diagnosticId))diagnostics.push({diagnosticId,jobId,detail,detailSha256});
+  return diagnosticId;
 }
 export function finishDomainCommand(db: object): DomainCommand | null {
   const command = commands.get(db) || null;

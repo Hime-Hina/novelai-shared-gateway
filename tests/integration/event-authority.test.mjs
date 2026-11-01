@@ -3,13 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp,rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { JsonStore,verifyEventProjections } from '../../server/store.ts';
+import Database from 'better-sqlite3';
+import { JsonStore,verifyEventProjections,applyEventProjection } from '../../server/store.ts';
 import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/fair-quota.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
-import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts } from '../../server/event-store.ts';
+import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts,copyProtectedFacts,replayDomainEvents } from '../../server/event-store.ts';
 import { parseAmount } from '../../server/resource-amounts.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
+import { recordGenerationFailure } from '../../server/generation-execution.ts';
+import { migrateStorage } from '../../server/storage-migrations.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function fixture(t){
@@ -50,12 +53,21 @@ test('authority writes admission, exact reservation and terminal state from the 
   await store.update(db=>{const job=db.jobs.find(job=>job.id==='j');reserveFairQuota(db,db.users[0],job,db.accounts[0],now);job.status='running';job.accountId='opus';},{includeSettings:true,dirtyRows:{jobs:['j']}});
   assert.equal(store.db.settings.fairQuota.reservations.j.status,'reserved');
   await store.update(db=>{
-    const job=db.jobs.find(job=>job.id==='j');settleFairQuota(db,job,false,now+1,{requestStarted:false});job.status='failed';job.completedAt=new Date(now+1).toISOString();job.error='synthetic';job.errorCode='generation_failed';job.errorStatus=500;
-    recordDomainEvent(db,{eventType:'JobFailed',streamId:'request:legacy-j',occurredAt:now+1,payload:{jobId:'j',failedAt:job.completedAt,errorCode:job.errorCode,errorStatus:500,message:job.error,charge:job.fairCharge,refund:job.generationRefund}});
+    const job=db.jobs.find(job=>job.id==='j');settleFairQuota(db,job,false,now+1,{requestStarted:false});job.status='failed';job.completedAt=new Date(now+1).toISOString();job.error='synthetic';job.errorCode='generation_failed';job.errorStatus=500;job.errorDetail='synthetic protected diagnostic';
+    recordGenerationFailure(db,job);
   },{includeSettings:true,dirtyRows:{jobs:['j']}});
   assert.equal(store.db.settings.fairQuota.reservations.j,undefined);
   assert.equal(JSON.parse(store.sqlite.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id=?').get('j').charge).status,'refunded');
   store.sqlite.transaction(()=>verifyEventProjections(store.sqlite))();
+  const count=store.sqlite.prepare('SELECT count(*) AS n FROM generation_diagnostics').get().n;
+  await assert.rejects(store.update(db=>{const job=db.jobs.find(job=>job.id==='j');job.errorDetail='rolled-back diagnostic';recordGenerationFailure(db,job);},
+    {dirtyRows:{jobs:['j']},domainCommand:{expectedVersions:{'request:legacy-j':'0'}}}),/Stream version conflict/);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM generation_diagnostics').get().n,count);
+  assert.equal(store.db.jobs[0].errorDetail,'synthetic protected diagnostic');
+  assert.equal(store.sqlite.prepare('SELECT payload FROM domain_events').all().some(row=>row.payload.includes('synthetic protected diagnostic')),false);
+  const target=new Database(':memory:');try{migrateStorage(target);copyProtectedFacts(store.sqlite,target);replayDomainEvents(store.sqlite,target,{project:applyEventProjection});
+    assert.equal(JSON.parse(target.prepare('SELECT data FROM jobs WHERE id=?').get('j').data).errorDetail,'synthetic protected diagnostic');
+  }finally{target.close();}
 });
 test('a verified opening keeps accepted waiting jobs through cutover and still rejects unrecovered running attempts',async t=>{
   const store=await fixture(t),legacy=structuredClone(store.db);
@@ -86,6 +98,16 @@ test('real cached admission preserves the recorded result account without a new 
     request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:1}});
   const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.status,'done');assert.equal(job.accountId,'opus');assert.equal(job.imageId,'cached-image');
   assert.deepEqual(store.db.settings.fairQuota.balances,before);
+});
+test('retirement cannot remove completed children while siblings can still spend a confirmed batch total',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  const admit=createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>store.activeGenerationPayloadBytes()),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
+  const result=await admit({identity:{memberId:'a'},source:'native',batch:true,noCache:true,request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:2}});
+  await store.update(db=>{const job=db.jobs.find(job=>job.id===result.jobIds[0]);job.status='done';job.completedAt=at;
+    recordDomainEvent(db,{eventType:'JobCompleted',streamId:`request:${result.requestId}`,payload:{jobId:job.id,completedAt:at}});
+  },{dirtyRows:{jobs:[result.jobIds[0]]}});
+  await assert.rejects(store.retireJobHistory([result.jobIds[0]]),/active siblings/);
+  assert.equal(store.readGenerationRequestState(result.requestId,'a').jobs.length,2);
 });
 test('cutover installs conservative fixed-point opening balances before the first real command',async t=>{
   const store=await fixture(t),legacy=structuredClone(store.db);

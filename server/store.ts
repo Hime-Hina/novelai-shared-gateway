@@ -10,8 +10,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
 import { migrateStorage } from './storage-migrations.ts';
-import { beginDomainCommand, finishDomainCommand, canonicalJson, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
-import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, eventAuthorityEnabled,removeLegacyFreeImageTriggers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
+import { beginDomainCommand, finishDomainCommand, canonicalJson,recordDomainEvent, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
+import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
 import { normalizeOpeningQuota } from './fair-quota.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
@@ -452,6 +452,30 @@ export class JsonStore {
     return removedImages;
   }
 
+  async retireJobHistory(jobIds:string[],reason='history_retention',now=Date.now()):Promise<string[]> {
+    const ids=[...new Set(jobIds)];
+    if(ids.length>200)throw new Error('Retire history in batches of at most 200 jobs.');
+    return this.update(db=>{
+      const groups=new Map<string,string[]>(),retired:string[]=[];
+      for(const id of ids){
+        const job=db.jobs.find(item=>item.id===id)||this.selectItemById('jobs',id);
+        if(!job)continue;
+        if(!this.canRetireJobHistory(job))throw new Error(`Cannot retire active job or a request with active siblings: ${id}`);
+        const stream=`request:${job.requestId||`legacy-${id}`}`,group=groups.get(stream)||[];group.push(id);groups.set(stream,group);retired.push(id);
+      }
+      for(const [streamId,jobIds] of groups)recordDomainEvent(db,{eventType:'JobHistoryRetired',streamId,occurredAt:now,payload:{jobIds,reason,at:now}});
+      const removed=new Set(retired);db.jobs=db.jobs.filter(job=>!removed.has(job.id));
+      return retired;
+    },{immediate:true,dirtyRows:result=>({jobs:result})});
+  }
+
+  canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;requestId?:string|null;batchId?:string|null}):boolean {
+    if(!job.status||['queued','pending','running'].includes(job.status)||job.resultPending)return false;
+    if(job.requestId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE request_id=? AND (status IN ('queued','pending','running') OR json_type(data,'$.resultPending')='object') LIMIT 1").get(job.requestId))return false;
+    if(!job.requestId&&job.batchId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE status IN ('queued','pending','running') AND json_extract(data,'$.batchId')=? LIMIT 1").get(job.batchId))return false;
+    return true;
+  }
+
   async clearRequestLogs() {
     await this.ensureLoaded();
     const startedAt = Date.now();
@@ -459,33 +483,16 @@ export class JsonStore {
       this.flushPendingPersistSync();
       return this.sqlite!.prepare<unknown[], { value: number | null }>('SELECT MAX(rowid) AS value FROM jobs').get()!.value || 0;
     }, { shouldPersist: () => false });
-    const selectBatch = this.sqlite!.prepare<unknown[], { cursor: number; id: string; status: string | null; resultPending: number | null }>(`
-      SELECT rowid AS cursor, id, status, json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
+    const selectBatch = this.sqlite!.prepare<unknown[], { cursor: number; id: string; status: string | null; resultPending: number | null;requestId:string|null;batchId:string|null }>(`
+      SELECT rowid AS cursor, id, status, request_id AS requestId,json_extract(data,'$.batchId') AS batchId,json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
       WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 200
     `);
-    const deleteBatch = this.sqlite!.transaction((ids) => {
-      for (const id of ids) this.statements!.deleteRecord.jobs.run({ id });
-    });
     let cursor = 0;
     let removed = 0;
     while (cursor < upperRow) {
-      await this.update((db) => {
-        this.flushPendingPersistSync();
-        const rows = selectBatch.all(cursor, upperRow);
-        cursor = rows.at(-1)?.cursor || upperRow;
-        const ids = new Set(rows.filter((row) => row.status && !row.resultPending && !['queued', 'pending', 'running'].includes(row.status)).map((row) => row.id));
-        const event = this.describeCommit({ settingsChanged: false, upserts: [], deletes: [...ids].map(id => ({ collection: 'jobs', id })) });
-        deleteBatch(ids);
-        db.jobs = db.jobs.filter((job) => !ids.has(job.id));
-        for (const id of ids) {
-          this.rowState.jobs.delete(id);
-          this.orderKeys.jobs.delete(id);
-        }
-        removed += ids.size;
-        this.refreshPartialCollectionState('jobs');
-        this.adminStatsCache = null;
-        this.notifyCommit(event);
-      }, { shouldPersist: () => false });
+      const rows=selectBatch.all(cursor,upperRow);cursor=rows.at(-1)?.cursor||upperRow;
+      const ids=rows.filter(row=>this.canRetireJobHistory(row)).map(row=>row.id);
+      removed+=(await this.retireJobHistory(ids,'owner_cleared_history')).length;
       // Let generation, polling and balance writes run between small transactions.
       await new Promise((resolve) => setImmediate(resolve));
     }
@@ -798,9 +805,16 @@ export class JsonStore {
   async findImage(id: string) {
     await this.ensureLoaded();
     const row = this.statements!.selectById.images.get({ id });
-    if (row) return safeJson(row.data, null);
+    if (row) return this.hydrateArtifactImage(safeJson(row.data, null));
     const image = this.db!.images.find((item) => item.id === id);
-    return image ? structuredClone(image) : null;
+    return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
+  }
+
+  hydrateArtifactImage(image:StoreItem|null):StoreItem|null {
+    if(!image?.artifactInputRef)return image;
+    const input=readArtifactInput(this.sqlite!,String(image.artifactInputRef),image.artifactInputSha256 as string);
+    if(!input)throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
+    return {...image,...input};
   }
 
   async findImageByCacheKey(cacheKey: string | undefined) {
@@ -811,9 +825,9 @@ export class JsonStore {
       ORDER BY order_value DESC
       LIMIT 1
     `).get(String(cacheKey || ''));
-    if (row) return safeJson(row.data, null);
+    if (row) return this.hydrateArtifactImage(safeJson(row.data, null));
     const image = this.db!.images.find((item) => item.cacheKey === cacheKey && !item.mock && item.mimeType !== 'image/svg+xml');
-    return image ? structuredClone(image) : null;
+    return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
   }
 
   async readImagePage(options: ImagePageQuery = {}) {
@@ -1050,7 +1064,8 @@ export class JsonStore {
           if(!item){
             const prior=this.rowState.jobs.get(change.id);
             if(prior&&['queued','pending','running'].includes((JSON.parse(prior.data) as StoreItem).status!))throw new Error(`An active job cannot disappear without a lifecycle fact: ${change.id}`);
-            continue; // 已结清历史清理只影响可重建查询行。
+            if(!scope.domainBatch?.events.some(event=>event.eventType==='JobHistoryRetired'&&(event.payload.jobIds as string[]).includes(change.id)))throw new Error(`Unrecorded job history retirement ${change.id}`);
+            continue;
           }
           include(`request:${item.requestId||`legacy-${item.id}`}`);
         }else if(change.collection==='accounts')include(`account:${change.id}`);
@@ -1625,7 +1640,7 @@ export class JsonStore {
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
-        this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if(!authoritative||!['jobs','users'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
         if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
@@ -1734,7 +1749,7 @@ export class JsonStore {
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
-        this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if(!authoritative||!['jobs','users'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
         if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
@@ -2073,7 +2088,7 @@ function cloneCollectionMaps<T>(source: Partial<CollectionMaps<T>> = {}): Collec
 }
 
 const criticalJobFields = ['id','status','requestId','memberId','accountId','batchId','sampleIndex','queueSeq','queueExpiresAt','deadlineAt','jobAdmissionVersion',
-  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode'];
+  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode','diagnosticRef'];
 const criticalAccountFields = ['id','enabled','quotaTier','subscriptionActive','subscriptionExpiresAt','v5UsagePercent','quotaFixed','quotaPurchased',
   'v5UsageIsNegative','quotaCheckedAt','v5UsageTimeUntilNextPercent','quotaError','upstreamStatus','cooldownUntil','upstreamRetryAfterUntil','quotaRetryAfterUntil'];
 const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion','discord'];
@@ -2121,6 +2136,7 @@ export function activateEventAuthority(sqlite:Database.Database):{version:number
 
 export function verifyEventProjections(sqlite:Database.Database):void {
   if(!sqlite.inTransaction)throw new Error('Shadow verification requires a consistent database transaction.');
+  verifyColdDomainFacts(sqlite);
   const unmapped=sqlite.prepare(`SELECT j.id FROM jobs j LEFT JOIN event_streams s
     ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`).get() as {id:string}|undefined;
   if(unmapped)throw new Error(`Unrecorded domain job ${unmapped.id}`);
@@ -2169,23 +2185,28 @@ export function applyEventProjection(sqlite:Database.Database,commit:DomainCommi
     const prior=sqlite.prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`).get(projected.item.id) as {data:string;order_value:number}|undefined;
     const candidate=options.candidates?.rows.get(`${collection}:${projected.item.id}`);
     const existing=candidate?structuredClone(candidate.item||{}):prior?JSON.parse(prior.data) as Record<string,unknown>:{};
-    if(candidate?.item===null&&['jobs','images'].includes(collection))continue;
     if(projected.remove){
       if(options.verify&&(candidate?candidate.item!==null:prior))throw new Error(`Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`);
-      if(!options.checkOnly)sqlite.prepare('DELETE FROM users WHERE id=?').run(projected.item.id);written.push(projected);continue;
+      if(!options.checkOnly)sqlite.prepare(`DELETE FROM ${collection} WHERE id=?`).run(projected.item.id);written.push(projected);continue;
     }
     const expected={...projected.item};
+    if(collection==='jobs'&&!existing.diagnosticRef&&expected.diagnosticRef&&existing.errorDetail===expected.errorDetail)existing.diagnosticRef=expected.diagnosticRef;
     if(expected.memberId){
       const member=sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as {data:string}|undefined;
       const memberData=options.candidates?.rows.get(`users:${expected.memberId}`)?.item||(member?JSON.parse(member.data) as Record<string,unknown>:null);
       if(memberData?.token){if(collection==='jobs')expected.userToken=existing.userToken||memberData.token;if(collection==='images')expected.token=existing.token||memberData.token;}
-      if(!existing.memberId&&collection==='jobs'&&existing.userToken&&existing.userToken===memberData?.token)existing.memberId=expected.memberId;
+      if(!existing.memberId&&collection==='jobs'){
+        const parent=existing.requestId?sqlite.prepare('SELECT member_id FROM generation_requests WHERE id=?').get(existing.requestId) as {member_id:string}|undefined:undefined;
+        const stableOwner=parent?.member_id||(existing.generationAttempt as {memberId?:string}|undefined)?.memberId||(existing.fairCharge as {userId?:string}|undefined)?.userId;
+        if(stableOwner===expected.memberId||!stableOwner&&existing.userToken&&existing.userToken===memberData?.token)existing.memberId=expected.memberId;
+      }
     }
     if(options.verify&&['jobs','accounts','users'].includes(collection)){
       const mismatch=projectionDifference(domainRowValues(collection,existing),domainRowValues(collection,expected),`${collection}.${expected.id}`);
       if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
     }
     const item={...existing,...expected};
+    if(collection==='images'&&item.artifactInputRef)delete item.base64;
     if(collection==='users'&&expected.discord)item.discord={...(existing.discord as object||{}),...(expected.discord as object)};
     if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
     const order=projected.order??candidate?.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));

@@ -54,6 +54,14 @@ export const generationContexts = sqliteTable('generation_contexts', {
   context_ref: text().primaryKey(), payload: text().notNull()
 });
 
+// 仅保存旧产物原有的私有输入/内联字节；查询行只保留引用，事件不含正文。
+export const artifactInputs = sqliteTable('artifact_inputs', {
+  artifact_id:text().primaryKey(),member_id:text(),payload_sha256:text().notNull(),payload:text().notNull()
+});
+export const generationDiagnostics = sqliteTable('generation_diagnostics', {
+  diagnostic_id:text().primaryKey(),job_id:text().notNull(),detail:text().notNull(),detail_sha256:text().notNull(),created_at:text().notNull()
+});
+
 // 结算凭据不随任务历史清理，也不进入通用热缓存。
 export const fairQuotaSettlements = sqliteTable('fair_quota_settlements', {
   job_id: text().primaryKey(), charge: text().notNull()

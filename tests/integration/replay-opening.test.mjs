@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm,mkdir,link,readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { JsonStore, applyEventProjection } from '../../server/store.ts';
+import { JsonStore, applyEventProjection,verifyEventProjections } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { copyProtectedFacts, importOpeningFacts, readProjectedFairQuota, replayDomainEvents } from '../../server/event-store.ts';
 import { migrateStorage } from '../../server/storage-migrations.ts';
+import { ImageStorage } from '../../server/r2-storage.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function legacyStore(t){
@@ -108,4 +111,65 @@ test('in-process and CLI replay preserve historical free timestamps and warnings
   const process=spawnSync(globalThis.process.execPath,['scripts/replay-events.mjs',`--source=${store.dbPath}`,`--target=${targetPath}`],{encoding:'utf8',timeout:15000});
   assert.equal(process.status,0,process.stderr);
   const rebuilt=new Database(targetPath,{readonly:true});try{assert.deepEqual(rebuilt.prepare('SELECT * FROM free_image_usage WHERE job_id=?').get('historical-free'),expected);}finally{rebuilt.close();}
+});
+test('cutover rejects missing, extra and changed terminal, idempotency and free-usage projections',async t=>{
+  const mutations={
+    fair_quota_settlements:["DELETE FROM fair_quota_settlements","INSERT INTO fair_quota_settlements(job_id,charge) SELECT 'extra',charge FROM fair_quota_settlements LIMIT 1","UPDATE fair_quota_settlements SET charge=json_set(charge,'$.amount','999')"],
+    generation_idempotency:["DELETE FROM generation_idempotency","INSERT INTO generation_idempotency SELECT member_id,operation,'extra',fingerprint,normalization_context,job_id,request_id,created_at FROM generation_idempotency LIMIT 1","UPDATE generation_idempotency SET fingerprint='changed'"],
+    free_image_usage:["DELETE FROM free_image_usage","INSERT INTO free_image_usage SELECT 'extra',member_id,succeeded_at,warning_threshold FROM free_image_usage LIMIT 1","UPDATE free_image_usage SET succeeded_at=succeeded_at+1"]
+  };
+  for(const [table,statements] of Object.entries(mutations))for(const mutation of statements){
+    const store=await legacyStore(t);importOpeningFacts(store.sqlite);store.sqlite.exec(mutation);
+    assert.throws(()=>store.sqlite.transaction(()=>verifyEventProjections(store.sqlite))(),new RegExp(`(?:cold projection|Cold projection mismatch).*${table}`),mutation);
+    await assert.rejects(store.enableEventAuthority(),/cold projection|Cold projection mismatch/);
+    assert.equal(store.sqlite.prepare("SELECT 1 FROM app_meta WHERE key='event_authority'").get(),undefined);
+  }
+});
+test('old inline output bytes and private diagnostics survive replay after Key rotation using stable parent ownership',async t=>{
+  const store=await legacyStore(t),legacy=structuredClone(store.db),bytes=await readFile(new URL('../fixtures/synthetic.webp',import.meta.url));
+  legacy.users[0].token='rotated-new-key';
+  const payload=JSON.stringify({model:'nai-diffusion-5-full',prompt:'protected parent prompt'});
+  store.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)').run('old-parent','a','native','generate',at,Buffer.byteLength(payload),payload);
+  legacy.jobs=[{id:'old-child',requestId:'old-parent',status:'done',userToken:'protected-key-a',imageId:'inline-output',createdAt:at,completedAt:at,errorDetail:'private historical diagnostic /secret/path'}];
+  legacy.images=[{id:'inline-output',token:'protected-key-a',base64:bytes.toString('base64'),mimeType:'image/webp',prompt:'private output prompt',fullPrompt:'private output full prompt',createdAt:at}];
+  await store.write(legacy);await store.enableEventAuthority();
+  const eventText=store.sqlite.prepare('SELECT payload FROM domain_events').all().map(row=>row.payload).join('\n');
+  for(const privateText of [bytes.toString('base64'),'private output prompt','private output full prompt','private historical diagnostic'])assert.equal(eventText.includes(privateText),false);
+  assert.equal(JSON.parse(store.sqlite.prepare('SELECT data FROM images WHERE id=?').get('inline-output').data).base64,undefined);
+  assert.equal(store.db.images.find(image=>image.id==='inline-output').base64,undefined);
+  const targetDir=path.join(store.dataDir,'inline-rebuilt');await mkdir(targetDir);
+  const target=new Database(path.join(targetDir,'library.sqlite'));migrateStorage(target);copyProtectedFacts(store.sqlite,target);replayDomainEvents(store.sqlite,target,{project:applyEventProjection});target.close();
+  const rebuilt=new JsonStore(targetDir);await rebuilt.init();
+  try{
+    const image=await rebuilt.findImage('inline-output');assert.equal(image.memberId,'a');assert.equal(image.token,'rotated-new-key');
+    assert.equal(image.prompt,'private output prompt');assert.equal(image.fullPrompt,'private output full prompt');
+    assert.deepEqual(await new ImageStorage(targetDir,null,id=>rebuilt.findImage(id)).read(image),bytes);
+    assert.equal(rebuilt.readGenerationRequestState('old-parent','a').jobs[0].imageId,'inline-output');
+    assert.equal(rebuilt.selectItemById('jobs','old-child').errorDetail,'private historical diagnostic /secret/path');
+  }finally{await rebuilt.close();}
+});
+test('explicit history retirement survives restart and replay while cold idempotency still returns 410',async t=>{
+  const store=await legacyStore(t);await store.enableEventAuthority();
+  await store.retireJobHistory(['legacy-job'],'synthetic_history_retention',now+5000);
+  assert.equal(store.selectItemById('jobs','legacy-job'),null);
+  for(const table of ['generation_idempotency','fair_quota_settlements','free_image_usage'])assert.equal(store.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n,1);
+  await store.close();const reopened=new JsonStore(store.dataDir);await reopened.init();
+  try{
+    await reopened.enableEventAuthority();
+    const admit=createGenerationAdmission({store:reopened,payloadBudget:createGenerationPayloadBudget(()=>reopened.activeGenerationPayloadBytes()),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
+    await assert.rejects(admit({identity:{memberId:'a'},source:'native',intent:{keyHash:'old-key-hash',operation:'generate',randomSeed:false,noCache:false,
+      normalize:()=>({model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}),fingerprint:()=>'old-intent'}}),error=>error.statusCode===410);
+    const target=new Database(':memory:');try{migrateStorage(target);copyProtectedFacts(reopened.sqlite,target);replayDomainEvents(reopened.sqlite,target,{project:applyEventProjection});
+      assert.equal(target.prepare('SELECT count(*) AS n FROM jobs').get().n,0);for(const table of ['generation_idempotency','fair_quota_settlements','free_image_usage'])assert.equal(target.prepare(`SELECT count(*) AS n FROM ${table}`).get().n,1);
+    }finally{target.close();}
+  }finally{await reopened.close();}
+});
+test('replay rejects an unrelated nonempty target and a hard-linked source before altering either',async t=>{
+  const store=await legacyStore(t);importOpeningFacts(store.sqlite);
+  const occupied=path.join(store.dataDir,'occupied.sqlite'),other=new Database(occupied);other.exec('CREATE TABLE users(id TEXT); INSERT INTO users VALUES(\'untouched\')');other.close();
+  const run=target=>spawnSync(process.execPath,['scripts/replay-events.mjs',`--source=${store.dbPath}`,`--target=${target}`],{encoding:'utf8',timeout:15000});
+  const result=run(occupied);assert.notEqual(result.status,0);assert.match(result.stderr,/target must be empty/);
+  const check=new Database(occupied);try{assert.deepEqual(check.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all(),[{name:'users'}]);}finally{check.close();}
+  const alias=path.join(store.dataDir,'source-alias.sqlite');await link(store.dbPath,alias);
+  const same=run(alias);assert.notEqual(same.status,0);assert.match(same.stderr,/same file/);
 });
