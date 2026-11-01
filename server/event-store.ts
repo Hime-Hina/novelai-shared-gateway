@@ -788,14 +788,17 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
   while(true){
     const idempotencies=sqlite.prepare('SELECT * FROM generation_idempotency WHERE (member_id,operation,key_hash)>(?,?,?) ORDER BY member_id,operation,key_hash LIMIT 100').all(...mappingCursor) as Record<string,unknown>[];
     if(!idempotencies.length)break;
-    const mappings:DomainEventInput[]=[];
-    for (const row of idempotencies) {
-    const contextRef=`generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
-    sqlite.prepare('INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)').run(contextRef,row.normalization_context);
-    mappings.push(opening(`idempotency:${domainDigest([row.member_id,row.operation,row.key_hash])}`,{memberId:row.member_id,operation:row.operation,keyHash:row.key_hash,
-      fingerprint:row.fingerprint,normalizationContextRef:contextRef,normalizationContextHash:domainDigest(JSON.parse(String(row.normalization_context))),jobId:row.job_id,requestId:row.request_id,createdAt:row.created_at}));
-    }
-    chunk('idempotency',idempotencyIndex++,mappings);
+    sqlite.transaction(()=>{
+      const mappings:DomainEventInput[]=[];
+      for (const row of idempotencies) {
+        const contextRef=`generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
+        sqlite.prepare('INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)').run(contextRef,row.normalization_context);
+        mappings.push(opening(`idempotency:${domainDigest([row.member_id,row.operation,row.key_hash])}`,{memberId:row.member_id,operation:row.operation,keyHash:row.key_hash,
+          fingerprint:row.fingerprint,normalizationContextRef:contextRef,normalizationContextHash:domainDigest(JSON.parse(String(row.normalization_context))),jobId:row.job_id,requestId:row.request_id,createdAt:row.created_at}));
+      }
+      chunk('idempotency',idempotencyIndex,mappings);
+    })();
+    idempotencyIndex++;
     const last=idempotencies.at(-1)!;mappingCursor=[String(last.member_id),String(last.operation),String(last.key_hash)];
   }
   const queue = readMeta.get('queue_sequence') as {value:string}|undefined;

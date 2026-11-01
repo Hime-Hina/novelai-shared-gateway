@@ -48,7 +48,15 @@ async function inlineOpeningStore(t,count=205){
   });
   await store.write(db);return store;
 }
-const openingRows=sqlite=>Object.fromEntries(['generation_requests','generation_diagnostics','domain_events','event_commits','event_clock','event_streams','projection_versions','event_imports']
+async function contextOpeningStore(t){
+  const store=await inlineOpeningStore(t,0),insert=store.sqlite.prepare('INSERT INTO generation_idempotency(member_id,operation,key_hash,fingerprint,normalization_context,job_id,request_id,created_at) VALUES(?,?,?,?,?,?,?,?)');
+  store.sqlite.transaction(()=>{
+    for(let index=0;index<205;index++)insert.run('a','generate',`key-${String(index).padStart(3,'0')}`,`intent-${index}`,
+      JSON.stringify({defaultArtist:`private context ${index}`,seed:index}),`retired-job-${index}`,null,at);
+  })();
+  return store;
+}
+const openingRows=sqlite=>Object.fromEntries(['generation_requests','generation_diagnostics','generation_contexts','generation_idempotency','domain_events','event_commits','event_clock','event_streams','projection_versions','event_imports']
   .map(table=>[table,sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 
 test('opening facts reconstruct quota, historical results, protected inline input, cold idempotency and settlements',async t=>{
@@ -179,6 +187,58 @@ test('opening validates and reuses matching protected input left by an interrupt
   assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_requests').get().n,1);
   assert.equal(sqlite.prepare('SELECT payload FROM generation_requests').get().payload,payload);
   assert.equal(sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='request'").get().n,1);
+});
+
+test('opening commits each 100 idempotency contexts with its complete mapping event block',async t=>{
+  const cases=[
+    ['private context insert',"BEFORE INSERT ON generation_contexts WHEN NEW.context_ref='generation-idempotency:a:generate:key-150'"],
+    ['mapping event append',"BEFORE INSERT ON domain_events WHEN NEW.stream_kind='idempotency' AND json_extract(NEW.payload,'$.state.keyHash')='key-150'"],
+    ['mapping import receipt',"BEFORE INSERT ON event_imports WHEN NEW.chunk_id='idempotency:1'"]
+  ];
+  for(const [name,trigger] of cases)await t.test(name,async t=>{
+    const store=await contextOpeningStore(t),sqlite=store.sqlite,source=sqlite.prepare('SELECT * FROM generation_idempotency ORDER BY key_hash').all();
+    sqlite.exec(`CREATE TEMP TRIGGER fail_context_opening ${trigger} BEGIN SELECT RAISE(ABORT,'synthetic context opening failure'); END;`);
+    assert.throws(()=>importOpeningFacts(sqlite),/synthetic context opening failure/);
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_contexts').get().n,100);
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='idempotency'").get().n,100);
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM event_imports WHERE chunk_id LIKE 'idempotency:%'").get().n,1);
+    assert.equal(sqlite.prepare('SELECT value FROM event_clock').get().value,3);
+    assert.equal(JSON.parse(sqlite.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value).status,'importing');
+    assert.deepEqual(sqlite.prepare('SELECT * FROM generation_idempotency ORDER BY key_hash').all(),source);
+    const prefix=openingRows(sqlite),file=store.dbPath;await store.close();
+    const resumed=new Database(file);resumed.pragma('synchronous = FULL');
+    try{
+      const report=importOpeningFacts(resumed);assert.equal(report.status,'complete');
+      assert.equal(resumed.prepare('SELECT count(*) AS n FROM generation_contexts').get().n,205);
+      assert.equal(resumed.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='idempotency'").get().n,205);
+      for(const table of ['domain_events','event_commits'])assert.deepEqual(resumed.prepare(`SELECT * FROM ${table} WHERE commit_seq<=3 ORDER BY rowid`).all(),prefix[table]);
+      const complete=openingRows(resumed);assert.deepEqual(importOpeningFacts(resumed),report);assert.deepEqual(openingRows(resumed),complete);
+      const target=new Database(':memory:');
+      try{
+        migrateStorage(target);copyProtectedFacts(resumed,target);replayDomainEvents(resumed,target,{project:applyEventProjection});
+        assert.deepEqual(target.prepare('SELECT * FROM generation_idempotency ORDER BY key_hash').all(),source);
+        target.transaction(()=>verifyEventProjections(target))();
+      }finally{target.close();}
+    }finally{resumed.close();}
+  });
+});
+
+test('opening resumes matching orphan contexts left beyond an older importer checkpoint',async t=>{
+  const store=await contextOpeningStore(t),sqlite=store.sqlite;
+  sqlite.exec("CREATE TEMP TRIGGER stop_context_opening BEFORE INSERT ON generation_contexts WHEN NEW.context_ref='generation-idempotency:a:generate:key-150' BEGIN SELECT RAISE(ABORT,'stop context opening'); END;");
+  assert.throws(()=>importOpeningFacts(sqlite),/stop context opening/);sqlite.exec('DROP TRIGGER stop_context_opening');
+  // 旧 importer 会在块事件提交前留下 100..149 的私有行；复现该持久现场。
+  sqlite.exec("INSERT OR IGNORE INTO generation_contexts(context_ref,payload) SELECT 'generation-idempotency:'||member_id||':'||operation||':'||key_hash,normalization_context FROM generation_idempotency WHERE key_hash>='key-100' AND key_hash<'key-150'");
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_contexts').get().n,150);
+  const existing=sqlite.prepare('SELECT * FROM generation_contexts ORDER BY context_ref').all(),file=store.dbPath;await store.close();
+  const resumed=new Database(file);
+  try{
+    assert.equal(importOpeningFacts(resumed).status,'complete');
+    assert.equal(resumed.prepare('SELECT count(*) AS n FROM generation_contexts').get().n,205);
+    assert.deepEqual(resumed.prepare('SELECT * FROM generation_contexts ORDER BY context_ref LIMIT 150').all(),existing);
+    assert.equal(resumed.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='idempotency'").get().n,205);
+    assert.equal(resumed.prepare("SELECT count(*) AS n FROM event_imports WHERE chunk_id LIKE 'idempotency:%'").get().n,3);
+  }finally{resumed.close();}
 });
 
 test('replay CLI restores a separate database and can resume at a complete commit',async t=>{
