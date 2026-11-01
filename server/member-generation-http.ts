@@ -23,6 +23,10 @@ interface Dependencies {
   env?: NodeJS.ProcessEnv;
 }
 const streamCounts = new Map<string, number>();
+const storeStreams = new WeakMap<JsonStore, Set<() => void>>();
+export function closeMemberGenerationStreams(store: JsonStore): void {
+  for (const close of storeStreams.get(store) || []) close();
+}
 function fail(statusCode: number, code: string, message: string): never { throw Object.assign(new Error(message), { statusCode, code }); }
 function reply(res: ServerResponse, status: number, value: unknown) {
   const payload = JSON.stringify(value);
@@ -130,7 +134,10 @@ export function createMemberGenerationHttp(deps: Dependencies) {
       }
       if (contentPath && req.method === 'GET') {
         const context = await store.findJobContext(decodeURIComponent(contentPath[1])), job = context?.job;
-        if (!job || !job.requestId || !store.readGenerationRequestState(job.requestId, user.id)?.jobs.some(child => child.id === job.id)) fail(404, 'job_not_found', '任务不存在。');
+        const owned = job && (job.requestId
+          ? store.readGenerationRequestState(job.requestId, user.id)?.jobs.some(child => child.id === job.id)
+          : (job.memberId || job.generationAttempt?.memberId || job.fairCharge?.userId) === user.id);
+        if (!job || !owned) fail(404, 'job_not_found', '任务不存在。');
         if (!job.imageId) {
           if (['pending', 'queued', 'running'].includes(job.status!)) fail(409, 'result_not_ready', '结果尚未完成。');
           if (job.status === 'done' || job.lateResultAvailable) fail(410, 'result_unavailable', '原结果已不可领取。');
@@ -166,9 +173,13 @@ async function streamRequest(deps: Dependencies, res: ServerResponse, requestId:
   streamCounts.set(memberId, (streamCounts.get(memberId) || 0) + 1);
   let closed = false, running = false, requested = false, first = true, previous = '';
   const watched = new Map<string, () => void>();
+  const streams = storeStreams.get(deps.store) || new Set<() => void>();
+  storeStreams.set(deps.store, streams);
+  const close = () => { if (!closed) { res.end(); stop(); } };
   const stop = () => {
     if (closed) return; closed = true;
     clearInterval(heartbeat); deps.store.events.off('commit', wake);
+    deps.store.events.off('close', close); streams.delete(close);
     for (const unwatch of watched.values()) unwatch(); watched.clear();
     res.off('close', stop); res.off('error', stop); res.off('drain', wake);
     const count = (streamCounts.get(memberId) || 1) - 1;
@@ -214,6 +225,7 @@ async function streamRequest(deps: Dependencies, res: ServerResponse, requestId:
     });
   }, 15_000);
   heartbeat.unref();
+  streams.add(close); deps.store.events.once('close', close);
   res.once('close', stop); res.once('error', stop); res.on('drain', wake);
   // Subscribe before the first asynchronous read: a commit during it requests a second read.
   deps.store.events.on('commit', wake);

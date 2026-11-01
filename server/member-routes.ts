@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { formatAmount, parseAmount } from './resource-amounts.ts';
-import { inheritDomainCommand, recordDomainEvent } from './domain-events.ts';
+import { inheritDomainCommand, recordDomainEvent, type DomainCommandMetadata } from './domain-events.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
 import { configureFairGroups, fairQuotaSummary, estimateFairQuota, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
@@ -39,7 +39,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   dataDir?: string;
   readR2Usage?: import('./store.ts').JsonStore['readR2Usage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
-  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation | { persist: false } | { collections: string[]; immediate: true }): Promise<T>;
+  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: (SessionMutation | { persist: false } | { collections: string[]; immediate: true }) & { domainCommand?: DomainCommandMetadata }): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
   readFreeImageUsage?: import('./store.ts').JsonStore['readFreeImageUsage'];
   selectItemById(collection: 'ledger', id: string | undefined): LedgerRow | null;
@@ -55,7 +55,7 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
   createPublicToken(prefix: string): string;
   publicImageUrl(imageId: string): string;
   ownerOperation(url: URL, method: string | undefined, body: Record<string, unknown> | undefined): ReturnType<typeof ownerOperation>;
-  changeMemberAdmission(userId: unknown, acceptingJobs: boolean): Promise<unknown>;
+  changeMemberAdmission(userId: unknown, acceptingJobs: boolean, actorId?: string): Promise<unknown>;
   getGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
   cancelGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
   handleMemberGeneration?(req: IncomingMessage, res: ServerResponse, url: URL, user: { id: string }, revalidate: () => Promise<boolean>): Promise<boolean>;
@@ -138,6 +138,9 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     return quota && { ...quota, freeImages: store.readFreeImageUsage?.(db, user.id) };
   };
   let actorId = 'local-admin';
+  const updateManagement: MemberStore['update'] = (mutator, options) => store.update(mutator, {
+    ...options, domainCommand: { actorId, actorKind: 'admin' }
+  });
   if (ownerRoute) {
     // 认证返回同一 store.users 记录；认证模块自身只声明它读取的字段。
     const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user as MemberUser | undefined;
@@ -173,7 +176,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       if (url.searchParams.get('view') === 'losses') {
         reply(res, 200, await store.readFailureAccounting(url.searchParams.get('before'))); return true;
       }
-      const payload = await store.update(db => {
+      const payload = await updateManagement(db => {
         const draft = estimateFairQuota(db, Date.now());
         return { groups: draft.settings.fairQuota?.groups || [], status: draft.settings.fairQuota?.status,
           shared: sharedAccountStatus(draft),autoAnlasFallback: draft.settings.fairQuota?.autoAnlasFallback === true,
@@ -190,18 +193,18 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
     if (body.action === 'free-image-policy') {
-      const policy = await store.update(db => configureFreeImages(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
+      const policy = await updateManagement(db => configureFreeImages(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, { policy }); return true;
     }
     if (body.action === 'loss-alert-policy') {
-      const policy = await store.update(db => updateLossAlertPolicy(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
+      const policy = await updateManagement(db => updateLossAlertPolicy(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, { policy }); return true;
     }
     if (ownerRoute && body.userId === env.OWNER_USER_ID && (['delete-member','preview-delete-member'].includes(body.action as string) || body.action === 'member-status' && body.enabled === false)) error(409, '不能停用或删除当前 owner');
     if (['operating-contribute', 'operating-register-funding', 'operating-cover-loss', 'operating-reconcile-return', 'operating-confirm-debits'].includes(body.action as string)) {
       // 身份来自已鉴权的 owner 配置，不接受客户端指定其他成员作为注资来源。
       if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) error(403, '只能从运营者本人已归属份额划入');
-      const result = await store.update(db => {
+      const result = await updateManagement(db => {
         syncFairQuota(db);
         return manageOperatingFunding(db, body, {
           actorId: env.OWNER_USER_ID!,
@@ -215,17 +218,17 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'discord-invite') {
       if (!discordEnabled) error(409, 'Discord 登录未启用');
-      const result = await store.update(db => createDiscordInvite(db, body.userId), { collections: ['users'], immediate: true });
+      const result = await updateManagement(db => createDiscordInvite(db, body.userId), { collections: ['users'], immediate: true });
       reply(res, 200, result); return true;
     }
     if (['transfer-quota','preview-delete-member','delete-member'].includes(body.action as string)) {
       const preview=body.action==='preview-delete-member';
-      const result=await store.update(db=>manageFairMember(db,body),preview?{persist:false}:{collections:['users','settings','ledger'],immediate:true});
+      const result=await updateManagement(db=>manageFairMember(db,body),preview?{persist:false}:{collections:['users','settings','ledger'],immediate:true});
       reply(res,200,result);return true;
     }
     if (body.action === 'fallback-policy') {
       if (typeof body.enabled !== 'boolean') error(400, 'enabled 必须为布尔值');
-      await store.update(db => {
+      await updateManagement(db => {
         const state = db.settings.fairQuota;
         if (!state?.enabled) error(409, '共享账本尚未配置');
         state.autoAnlasFallback = body.enabled;
@@ -237,7 +240,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       reply(res, 200, { autoAnlasFallback: body.enabled }); return true;
     }
     if (body.action === 'member-key') {
-      const result=await store.update(db=>{
+      const result=await updateManagement(db=>{
         const user=db.users.find(u=>u.id===body.userId);if(!user)error(404,'成员不存在');
         return {apiKey:user.token};
       },{persist:false});
@@ -245,7 +248,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'member-status') {
       if(typeof body.enabled!=='boolean')error(400,'enabled 必须为布尔值');
-      const result=await store.update(db=>{
+      const result=await updateManagement(db=>{
         const user=db.users.find(u=>u.id===body.userId);if(!user)error(404,'成员不存在');
         if(!body.enabled&&(db.jobs.some(job=>job.userToken===user.token&&['queued','pending','running'].includes(job.status!))||Object.values(db.settings.fairQuota?.reservations||{}).some(charge=>charge.userId===user.id&&charge.status==='reserved')))error(409,'成员仍有排队或生成中的任务，请结清后停用');
         user.enabled=body.enabled as boolean;user.updatedAt=new Date().toISOString();
@@ -259,12 +262,12 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'member-admission') {
       if (typeof body.acceptingJobs !== 'boolean') error(400, 'acceptingJobs 必须为布尔值');
-      const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs);
+      const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs, actorId);
       reply(res, 200, result); return true;
     }
     if (body.action === 'preview-groups') {
       if(body.redistributeRemaining!==undefined&&typeof body.redistributeRemaining!=='boolean')error(400,'redistributeRemaining 必须为布尔值');
-      const result=await store.update(db=>{
+      const result=await updateManagement(db=>{
         const configVersion=db.settings.fairQuota?.configVersion ?? 1;
         if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==configVersion)error(409,'分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
         // 预览只操作独立副本，恢复、重分与审计都不能污染真实账本。
@@ -279,13 +282,13 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       if (discordEnabled && body.userId) error(409, 'Discord 成员不使用登录密码');
       const hasGroup=body.groupId!==undefined&&body.groupId!==null&&body.groupId!=='';
       if(hasGroup&&(typeof body.groupId!=='string'||body.userId))error(400,'只有创建新成员时可以指定 groupId');
-      const result = await store.update(async db => {
+      const result = await updateManagement(async db => {
         const draft = { ...db, ledger:[...(db.ledger || [])],users: structuredClone(db.users),settings:structuredClone(db.settings) };
         inheritDomainCommand(db, draft);
         let userId = body.userId;
         if (!userId) {
           if (draft.users.length >= 200) error(409, '账户数已达上限');
-          const user = { id: deps.createId('usr'), token: deps.createPublicToken('STA1N'), balance: 0, enabled: true,
+          const user = { id: deps.createId('usr'), token: deps.createPublicToken('STA1N'), balance: 0, enabled: true, acceptingJobs: true, jobAdmissionVersion: 0,
             note: String(body.note || '管理员创建的成员').slice(0, 120), createdAt: new Date().toISOString() };
           userId = user.id; draft.users.push(user);
           recordDomainEvent(draft, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
@@ -306,7 +309,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'groups') {
       if(body.redistributeRemaining!==undefined&&typeof body.redistributeRemaining!=='boolean')error(400,'redistributeRemaining 必须为布尔值');
-      const result = await store.update(db => {
+      const result = await updateManagement(db => {
         const currentVersion=db.settings.fairQuota?.configVersion ?? 1;
         if(!Number.isInteger(body.expectedConfigVersion)||body.expectedConfigVersion!==currentVersion)error(409,'分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
         configureFairGroups(db, body.groups, { actorId: 'administrator', redistributeRemaining: body.redistributeRemaining === true });

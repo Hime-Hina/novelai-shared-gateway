@@ -5,7 +5,7 @@ import { assertFreeImageAdmission } from './free-image-policy.ts';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline } from './queue-policy.ts';
 import { createGenerationPayloadBudget, singleGenerationRequest, webJobRequestSummary } from './generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
-import { domainDigest, recordDomainEvent } from './domain-events.ts';
+import { domainDigest, recordDomainEvent, setDomainCommandReceipt, setDomainCommandActor } from './domain-events.ts';
 
 export type GenerationPayloadClaim = ReturnType<ReturnType<typeof createGenerationPayloadBudget>['claim']>;
 type Request = StoredGenerationRequest;
@@ -170,11 +170,16 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
             && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status!));
           if (active) {
             if (mapping) Object.assign(mapping, { job_id: active.id, request_id: active.requestId || null });
-            if (mapping) recordDomainEvent(db, { eventType: 'RequestAliasRegistered', streamId: `request:${active.requestId || `legacy-${active.id}`}`,
+            const aliasEvent = mapping && recordDomainEvent(db, { eventType: 'RequestAliasRegistered', streamId: `request:${active.requestId || `legacy-${active.id}`}`,
               memberId: user.id, occurredAt: timestamp, payload: { jobId: active.id, requestId: active.requestId || null, memberId: user.id,
                 idempotency: { operation: mapping.operation, keyHash: mapping.key_hash, fingerprint: mapping.fingerprint,
                   contextRef: generationContextRef(mapping), createdAt: mapping.created_at } } });
-            return { id: active.id, requestId: active.requestId || null, jobIds: [active.id], count: 1 };
+            const receipt = { id: active.id, requestId: active.requestId || null, jobIds: [active.id], count: 1 };
+            if (aliasEvent) {
+              setDomainCommandActor(db, { actorId: user.id, actorKind: 'member', correlationId: active.requestId || active.id });
+              setDomainCommandReceipt(db, receipt);
+            }
+            return receipt;
           }
         }
         if (!cached) {
@@ -205,7 +210,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
             batchId: 'batchId' in job ? job.batchId : undefined, cacheKey, cost: 0, accountCost: 0, summary: job.request });
         }
         if (mapping) Object.assign(mapping, { job_id: jobIds[0], request_id: parent.id });
-        recordDomainEvent(db, { eventType: 'RequestAccepted', streamId: `request:${parent.id}`, memberId: user.id, occurredAt: createdAt,
+        const acceptedEvent = recordDomainEvent(db, { eventType: 'RequestAccepted', streamId: `request:${parent.id}`, memberId: user.id, occurredAt: createdAt,
           payload: { requestId: parent.id, memberId: user.id, source: options.source, operation: parent.operation,
             createdAt, inputRef: parent.id, inputSha256: hashObject(request), payloadBytes, jobs: acceptedJobs,
             ...(request.clientContract ? { clientContract: request.clientContract, confirmation: request.confirmation } : {}),
@@ -215,7 +220,12 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         if (cached) recordDomainEvent(db, { eventType: 'CachedResultLinked', streamId: `request:${parent.id}`, memberId: user.id,
           occurredAt: createdAt, payload: { jobId: jobIds[0], artifactId: cached.imageId, accountId: cached.accountId || null,
             completedAt: createdAt, localConsumption: { v5: '0', anlasFixed: '0', anlasPurchased: '0' } } });
-        return { id: options.batch ? parent.id : jobIds[0], requestId: parent.id, jobIds, count, ...(cached ? { cacheHit: true } : {}) };
+        const receipt = { id: options.batch ? parent.id : jobIds[0], requestId: parent.id, jobIds, count, ...(cached ? { cacheHit: true } : {}) };
+        if (acceptedEvent) {
+          setDomainCommandActor(db, { actorId: user.id, actorKind: 'member', correlationId: parent.id });
+          setDomainCommandReceipt(db, receipt);
+        }
+        return receipt;
       }, { immediate: true, includeSettings: true, generationRequest: () => parent, generationIdempotency: () => mapping,
         generationPayloadClaim: claim, dirtyRows: result => ({ jobs: result.jobIds }) });
       return await validateReplay(result);

@@ -3,9 +3,23 @@ import type { FairCharge } from './fair-quota.ts';
 import { memberGenerationCapabilities } from './generation-capabilities.ts';
 import { addMemberGenerationResources, assertMemberGenerationCost, assertMemberGenerationVersions,
   memberGenerationChargeResources, parseMemberGenerationConfirmation } from './member-generation.ts';
-import { recordDomainEvent } from './domain-events.ts';
+import { recordDomainEvent, recordGenerationDiagnostic } from './domain-events.ts';
 import { recordSharedCompletion } from './shared-capacity.ts';
 import type { FreeImageUsage } from './free-image-policy.ts';
+import { publishStoredResult } from './result-files.ts';
+import path from 'node:path';
+
+const publishingArtifacts = new Map<string, Promise<Awaited<ReturnType<typeof publishStoredResult>>>>();
+
+export async function publishGenerationArtifact(dataDir: string, pending: NonNullable<StoreItem['resultPending']>, bytes: Buffer, publish = publishStoredResult) {
+  const key = `${path.resolve(dataDir)}:${pending.attemptId}:${pending.imageId}`;
+  const active = publishingArtifacts.get(key);
+  if (active) return active;
+  const publication = publish(dataDir, pending, bytes);
+  publishingArtifacts.set(key, publication);
+  try { return await publication; }
+  finally { if (publishingArtifacts.get(key) === publication) publishingArtifacts.delete(key); }
+}
 
 export const generationStreamId = (job: Pick<StoreItem, 'id' | 'requestId'>): string => `request:${job.requestId || `legacy-${job.id}`}`;
 
@@ -20,11 +34,16 @@ export function assertConfirmedDispatch(db: StoreDatabase, member: StoreItem, re
 }
 
 export function recordGenerationFailure(db: StoreDatabase, job: StoreItem): void {
+  job.errorCode ||= job.cancelledAt ? 'request_cancelled' : 'generation_failed';
+  job.errorStatus ||= 500;
+  const diagnosticRef = job.errorDetail ? recordGenerationDiagnostic(db, job.id, job.errorDetail) : null;
+  if (diagnosticRef) job.diagnosticRef = diagnosticRef;
   recordDomainEvent(db, { eventType: 'JobFailed', streamId: generationStreamId(job), memberId: job.fairCharge?.userId || job.memberId as string | undefined,
     accountId: job.accountId || null, occurredAt: job.completedAt || job.updatedAt || new Date().toISOString(),
     payload: { jobId: job.id, failedAt: job.completedAt || job.updatedAt, errorStatus: job.errorStatus || 500,
-      errorCode: job.errorCode || (job.cancelledAt ? 'request_cancelled' : 'generation_failed'), message: job.error || '生成失败',
+      errorCode: job.errorCode, message: job.error || '生成失败',
       cancellationReason: job.cancellationReason || null, cancelledAt: job.cancelledAt || null,
+      ...(diagnosticRef ? { diagnosticRef } : {}),
       charge: job.fairCharge || null, refund: job.generationRefund || null, review: job.generationReview || null } });
 }
 

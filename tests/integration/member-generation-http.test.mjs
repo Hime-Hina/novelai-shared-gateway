@@ -10,7 +10,7 @@ import { deflateSync } from 'node:zlib';
 import { JsonStore, createId } from '../../server/store.ts';
 import { createMemberSession, logoutMemberSession } from '../../server/member-auth.ts';
 import { handleMemberRoutes } from '../../server/member-routes.ts';
-import { createMemberGenerationHttp, memberGenerationError } from '../../server/member-generation-http.ts';
+import { createMemberGenerationHttp, memberGenerationError, closeMemberGenerationStreams } from '../../server/member-generation-http.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget, singleGenerationRequest } from '../../server/generation-request.ts';
 import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
@@ -20,6 +20,7 @@ import { recordRecoveredGeneration } from '../../server/generation-accounting.ts
 import { ImageStorage } from '../../server/r2-storage.ts';
 import { JobPreviews } from '../../server/job-previews.ts';
 import { crc32, BASE_MODELS } from '../../server/native-image.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
 function png(width = 128, height = 128, noise = false) {
   const chunk = (name, body) => { const h = Buffer.alloc(8), t = Buffer.alloc(4); h.writeUInt32BE(body.length); h.write(name, 4); t.writeUInt32BE(crc32(Buffer.concat([Buffer.from(name), body]))); return Buffer.concat([h, body, t]); };
@@ -38,13 +39,16 @@ async function fixture(t) {
   let store = new JsonStore(dataDir);
   await store.init();
   const env = { OWNER_USER_ID: 'a', DISCORD_GUILD_ID: '12345678901234567', DISCORD_CLIENT_ID: '22345678901234567', DISCORD_CLIENT_SECRET: 'synthetic-offline-client-secret', PUBLIC_BASE_URL: 'https://synthetic.invalid' };
-  await store.update(db => {
+  const seed=structuredClone(store.db);
+  await (async db => {
     db.users = ['a', 'b', 'c', 'd'].map((id, index) => ({ id, token: `synthetic-key-${id}`, enabled: true, balance: 0,
       memberAuth: { username: id, version: `synthetic-auth-${id}` }, discord: { id: `3234567890123456${index}`, guildId: env.DISCORD_GUILD_ID, checkedAt: Date.now(), member: true } }));
     db.accounts = [{ id: 'opus-synthetic', token: 'upstream-secret-not-for-member', enabled: true, quotaTier: 3, subscriptionActive: true,
       quotaFixed: 10000, quotaPurchased: 100, v5UsagePercent: 80, v5UsageIsNegative: false, quotaCheckedAt: Date.now() }];
     configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db);
-  }, { immediate: true });
+  })(seed);
+  await store.write(seed);
+  await store.enableEventAuthority();
   const sessions = {};
   for (const user of store.db.users) sessions[user.id] = await createMemberSession(store, user, env);
   const budget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()), imageStorage = new ImageStorage(dataDir, null, id => store.findImage(id)), previews = new JobPreviews();
@@ -91,7 +95,7 @@ async function fixture(t) {
         if (type && data) notify({ type, data: JSON.parse(data) });
       }
     } } catch (error) { if (error.name !== 'AbortError') throw error; } finally { ended = true; } })();
-    const stream = { response, events, get ended() { return ended; },
+    const stream = { response, events, done: pump, get ended() { return ended; },
       wait(type, timeout = 3000) { const found = events.find(event => event.type === type); if (found) return Promise.resolve(found);
         return new Promise((resolve, reject) => { const waiter = { type, resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(waiter), 1); reject(new Error(`Missing SSE ${type}; received ${events.map(event => event.type)}`)); }, timeout) }; waiters.push(waiter); }); },
       async close() { abort.abort(); await pump; activeStreams.delete(stream); for (const waiter of waiters.splice(0)) clearTimeout(waiter.timer); } };
@@ -210,6 +214,15 @@ test('HTTP input assets and result states enforce ownership including owner and 
   const recovered = await f.raw(`/api/member/jobs/${jobId}/content`, { member: 'b' }); assert.equal(recovered.status, 200); assert.deepEqual(Buffer.from(await recovered.arrayBuffer()), image);
   const state = await f.json(`/api/member/requests/${requestId}`, { member: 'b' }); assert.equal(state.body.status, 'failed'); assert.equal(state.body.jobs[0].lateResultAvailable, true);
   assert.equal(state.body.jobs[0].charge.status, 'refunded'); assert.deepEqual(f.store.db.settings.fairQuota.balances.b, refunded);
+  await f.store.update(db=>{
+    const legacy={id:'legacy-inline-own-result',memberId:'b',userToken:'synthetic-key-b',status:'done',imageId:`image-${requestId}`};
+    db.jobs.push(legacy);
+    recordDomainEvent(db,{eventType:'OpeningStateRecorded',streamId:`request:legacy-${legacy.id}`,
+      payload:{state:{request:{requestId:null,memberId:'b'},jobs:{[legacy.id]:{id:legacy.id,memberId:'b',status:'done',imageId:legacy.imageId}},artifacts:{},aliases:[],freeUsage:{}}}});
+  },{dirtyRows:{jobs:['legacy-inline-own-result']}});
+  const legacyResult=await f.raw('/api/member/jobs/legacy-inline-own-result/content',{member:'b'});
+  assert.equal(legacyResult.status,200); assert.deepEqual(Buffer.from(await legacyResult.arrayBuffer()),image);
+  assert.equal((await f.json('/api/member/jobs/legacy-inline-own-result/content',{member:'a'})).status,404);
 });
 
 test('SSE publishes snapshot, committed state, preview over 64KiB and terminal complete without persisting previews', async t => {
@@ -288,5 +301,13 @@ test('temporary membership service failure ends SSE with error without claiming 
   callbacks.at(-1)(); const error=await stream.wait('error'); assert.equal(error.data.statusCode,503);
   assert.ok(!stream.events.some(event=>event.type==='auth-expired')); await stream.close();
   assert.ok(originalSession(createHash('sha256').update(f.sessions.a.token).digest('hex')),'session remains valid');
+  assert.equal(f.store.readGenerationRequestState(requestId,'a').jobs[0].status,'queued');
+});
+
+test('executor shutdown closes member preview subscriptions before waiting for HTTP connections', async t => {
+  const f=await fixture(t), accepted=await f.submit(), requestId=accepted.body.requestId;
+  const stream=await f.openEvents(requestId); await stream.wait('snapshot');
+  closeMemberGenerationStreams(f.store); await stream.done;
+  assert.equal(stream.ended,true); assert.equal(f.previews.watchers.size,0);
   assert.equal(f.store.readGenerationRequestState(requestId,'a').jobs[0].status,'queued');
 });

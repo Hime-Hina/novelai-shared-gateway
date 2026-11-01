@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { recordDomainEvent } from '../server/domain-events.ts';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 class BootstrapError extends Error {}
@@ -38,7 +39,7 @@ export async function bootstrap({ env=process.env, dependencies, log=console.log
   }
   const createdAt=new Date().toISOString();
   const credentials=config.names.map(username=>({ user_id:deps.createId('usr'), username, password:randomBytes(24).toString('base64url'), api_key:deps.createPublicToken('STA1N') }));
-  const users=credentials.map(member=>({id:member.user_id,token:member.api_key,balance:0,enabled:true,note:member.username,createdAt}));
+  const users=credentials.map(member=>({id:member.user_id,token:member.api_key,balance:0,enabled:true,acceptingJobs:true,jobAdmissionVersion:0,note:member.username,createdAt}));
   const prepared={users};
   for (const member of credentials) await deps.setMemberCredentials(prepared,member.user_id,{username:member.username,password:member.password});
   const account={id:deps.createId('acct'),name:'Shared Opus',token:config.upstreamToken,enabled:true,weight:1,inFlight:0,total:0,failures:0,quotaPoints:null,quotaFixed:null,quotaPurchased:null,quotaTier:null,subscriptionActive:null,subscriptionExpiresAt:null,v5UsagePercent:null,v5UsageIsNegative:false,v5UsageTimeUntilNextPercent:null,quotaCheckedAt:'',quotaError:'',cooldownUntil:'',createdAt};
@@ -59,9 +60,17 @@ export async function bootstrap({ env=process.env, dependencies, log=console.log
     await store.update(db=>{
       if (['users','accounts','cards','jobs','images','ledger'].some(name=>(db[name] || []).length) || db.settings?.fairQuota) reject('数据库并非空白，初始化已停止，未覆盖现有账户。');
       db.users=prepared.users;db.accounts=[account];
+      for (const user of prepared.users) recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+        occurredAt: createdAt, payload: { memberId: user.id, enabled: true, acceptingJobs: true, jobAdmissionVersion: 0, createdAt, actorId: 'bootstrap' } });
+      recordDomainEvent(db, { eventType: 'AccountRegistered', streamId: `account:${account.id}`, accountId: account.id,
+        occurredAt: createdAt, payload: { accountId: account.id, name: account.name, enabled: true, weight: 1, v5UsageIsNegative: false, createdAt } });
       deps.configureFairQuota(db,credentials.map(member=>member.user_id));
       // 不预发额度。首次官方刷新确认有效 Opus 后，才按真实剩余资源初始化。
       db.settings.fairQuota.autoAnlasFallback=false;
+      const at=Date.parse(createdAt);
+      db.settings.fairQuota.policyHistory=[{at,actor:'administrator',autoAnlasFallback:false}];
+      recordDomainEvent(db,{eventType:'PolicyChanged',streamId:'sharing:default',occurredAt:createdAt,
+        payload:{policy:'autoAnlasFallback',value:false,at,actorId:'bootstrap'}});
     },{collections:['settings','users','accounts'],includeSettings:true,immediate:true});
     await store.flush();await store.close();store=null;
   } finally {

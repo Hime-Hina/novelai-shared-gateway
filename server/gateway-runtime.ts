@@ -1,8 +1,8 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.ts';
 import { createGenerationAdmission, generationIntent, isNoCache, readGenerationIdempotencyKey, requestCacheKey, type GenerationIntent } from './generation-admission.ts';
 import { publicGenerationRequest, readOwnedGenerationRequest } from './generation-queries.ts';
-import { createMemberGenerationHttp, memberGenerationError } from './member-generation-http.ts';
-import { assertConfirmedDispatch, completeSharedAccount, recordGenerationFailure, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess } from './generation-execution.ts';
+import { createMemberGenerationHttp, memberGenerationError, closeMemberGenerationStreams } from './member-generation-http.ts';
+import { assertConfirmedDispatch, completeSharedAccount, recordGenerationFailure, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess, publishGenerationArtifact } from './generation-execution.ts';
 import { recordDomainEvent } from './domain-events.ts';
 import { describeStoredResult, publishStoredResult } from './result-files.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
@@ -30,7 +30,7 @@ import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders, Server } fro
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import Negotiator from 'negotiator';
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JobPreviews } from './job-previews.ts';
 import { isOfficialKey, officialKeyOwner, officialKeyError, OfficialKeyJobs } from './official-key-jobs.ts';
 import { mkdir, open, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
@@ -138,11 +138,6 @@ const generationPayloadBudget = createGenerationPayloadBudget(() => store.active
 const admitGeneration = createGenerationAdmission({ store, payloadBudget: generationPayloadBudget,
   artifactAvailable: image => imageStorage.available(image), cleanupStaleActiveJobs });
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
-// 公平账本和任务状态必须同步落盘，不能使用延迟写入。
-if (fairShareMode) {
-  const update = store.update.bind(store);
-  store.update = (mutator, options = {}) => update(mutator, { ...options, includeSettings: true, immediate: true });
-}
 let queueDrainTimer: ReturnType<typeof setTimeout> | null = null;
 let queueDrainAt = 0;
 let queueDraining = false;
@@ -230,6 +225,8 @@ export async function startGateway(handler: http.RequestListener) {
   await ensureAccountRouteIds();
   await applyRuntimeSettings();
   await cleanupImageStorage().catch((error: unknown) => console.error('Failed to cleanup image storage:', error));
+  // Recovery precedes the verified cutover; no listener or dispatcher can race it.
+  await store.enableEventAuthority();
 
   const server = http.createServer(handler);
   server.listen(port, host, () => {
@@ -301,31 +298,34 @@ async function applyRuntimeSettings() {
 }
 
 async function migrateInlineImages() {
-  if (store.hasPartialCollection('images')) {
-    console.log('[runtime] skipped inline image migration because image cache is partially loaded');
-    return;
-  }
-  const startedAt = Date.now();
+  if (store.hasPartialCollection('images')) return;
+  const { images } = await store.readCollections(['images']);
   let migrated = 0;
-  migrated = await store.update(async (db) => {
-    for (const image of db.images) {
-      if (!image.base64 || image.file) continue;
-      const imageFile = imageStorageName(image.id, image.mimeType);
-      try {
-        await writeFile(path.join(dataDir, imageFile), Buffer.from(image.base64, 'base64'));
-        image.file = imageFile;
-        delete image.base64;
-        migrated += 1;
-      } catch (error) {
-        console.error(`Failed to migrate cached image ${image.id}:`, error);
-      }
+  for (const image of images) {
+    if (!image.base64 || image.file) continue;
+    const buffer = Buffer.from(image.base64, 'base64'), file = imageStorageName(image.id, image.mimeType);
+    try {
+      // Legacy bytes already belong to this artifact. File IO stays outside the
+      // command; a crash leaves the original inline bytes available for retry.
+      await writeFile(path.join(dataDir, file), buffer);
+      const sha256 = createHash('sha256').update(buffer).digest('hex');
+      const changed = await store.update(db => {
+        const current = store.loadItemForUpdate('images', image.id);
+        if (!current || current.file || current.base64 !== image.base64) return false;
+        current.file = file; current.sha256 = sha256; current.byteLength = buffer.length;
+        delete current.base64;
+        recordDomainEvent(db, { eventType: 'ArtifactStorageChanged', streamId: `artifact:${image.id}`,
+          payload: { artifactId: image.id, phase: 'local_published', file, mimeType: image.mimeType,
+            sha256, byteLength: buffer.length } });
+        return true;
+      }, { dirtyRows: { images: [image.id] }, shouldPersist: Boolean });
+      if (changed) migrated++;
+    } catch (error) {
+      console.error(`Failed to migrate cached image ${image.id}:`, error);
     }
-    return migrated;
-  }, { collections: ['images'], shouldPersist: (count) => Number(count || 0) > 0 });
-  if (migrated) console.log(`[runtime] migrated ${migrated} inline image(s) in ${Date.now() - startedAt}ms`);
+  }
+  if (migrated) console.log(`[runtime] migrated ${migrated} inline image(s)`);
 }
-
-
 // PUBLIC_SELF_USE_GUARD
 // 图片签名使用进程随机密钥；重启失效，不暴露账户或网关密钥。
 const publicImageSecret = randomBytes(32);
@@ -400,7 +400,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
     changeMemberAdmission, getGenerationRequest, cancelGenerationRequest, handleMemberGeneration,
-    ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
+    ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store,
+      updateAccount: (id, input) => updateAccount(id, input, process.env.OWNER_USER_ID || 'local-admin'), refreshAccountQuotas }) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
   if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
     || (method === 'GET' && url.pathname === '/generate')) {
@@ -1583,9 +1584,9 @@ async function addAccount(body: Body) {
     db.accounts.unshift(account);
     recordDomainEvent(db, { eventType: 'AccountRegistered', streamId: `account:${account.id}`, accountId: account.id,
       occurredAt: account.createdAt, payload: { accountId: account.id, name: account.name, routeId: account.routeId,
-        enabled: account.enabled, weight: account.weight, createdAt: account.createdAt } });
+        enabled: account.enabled, weight: account.weight, v5UsageIsNegative: account.v5UsageIsNegative, createdAt: account.createdAt } });
     return account;
-  }, { collections: ['accounts'] });
+  }, { collections: ['accounts'], domainCommand: { actorId: 'local-admin', actorKind: 'admin' } });
 }
 
 async function importAccounts(body: Body) {
@@ -2382,7 +2383,7 @@ async function importPackage(body: Body) {
   return result;
 }
 
-async function updateAccount(id: string, body: Body) {
+async function updateAccount(id: string, body: Body, actorId = 'local-admin') {
   return store.update((db) => {
     const account = db.accounts.find((item) => item.id === id);
     if (!account) throw httpError(404, 'account not found.');
@@ -2408,7 +2409,7 @@ async function updateAccount(id: string, body: Body) {
         weight: account.weight, quotaCheckedAt: account.quotaCheckedAt, quotaError: account.quotaError, updatedAt: account.updatedAt,
         reason: changingToken ? 'credential_replaced' : 'administrator' } });
     return account;
-  }, { collections: ['accounts'] });
+  }, { collections: ['accounts'], domainCommand: { actorId, actorKind: 'admin' } });
 }
 
 function dirtyJobRows(jobId: string | undefined) {
@@ -2532,7 +2533,7 @@ async function cancelGenerationRequest(requestId: string, memberId: string) {
       cancelledJobIds.push(job.id);
     }
     return { cancelledJobIds };
-  }, { immediate: true, includeSettings: true,
+  }, { immediate: true, includeSettings: true, domainCommand: { actorId: memberId, actorKind: 'member', correlationId: requestId },
     dirtyRows: (result, db) => ({
       users: [memberId], jobs: result.cancelledJobIds,
       ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id)
@@ -2547,9 +2548,10 @@ async function cancelGenerationRequest(requestId: string, memberId: string) {
   return { ...await getGenerationRequest(requestId, memberId), cancelledCount: result.cancelledJobIds.length };
 }
 
-async function changeMemberAdmission(userId: string, acceptingJobs: boolean) {
+async function changeMemberAdmission(userId: string, acceptingJobs: boolean, actorId = 'local-admin') {
   const result = await store.update(db => setMemberAdmission(db, userId, acceptingJobs, refundJob), {
     immediate: true,
+    domainCommand: { actorId, actorKind: 'admin' },
     includeSettings: true,
     dirtyRows: (result, db) => ({
       users: [result.id],
@@ -2871,7 +2873,7 @@ async function runReservedJob(reservation: QueueReservation) {
 
 function shouldUseJobStreamProgress(job: Partial<StoreItem> = {}) {
   return (job.request?.operation || 'generate') === 'generate'
-    && ['web', 'direct', 'openai', 'novelai-native'].includes(job.source || 'web');
+    && ['web', 'direct', 'openai', 'novelai-native', 'member-generation'].includes(job.source || 'web');
 }
 
 function createRunningJobControl(job: Partial<StoreItem> = {}) {
@@ -3142,9 +3144,10 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
   try {
     // The durable descriptor already authorizes these exact bytes. Disk publication
     // happens outside the command transaction; a crash resumes from resultPending.
-    if (pending) { await publishStoredResult(dataDir, pending, image.buffer); imageFile = pending.file; }
+    if (pending) { await publishGenerationArtifact(dataDir, pending, image.buffer, publishStoredResult); imageFile = pending.file; }
     else if (!fairShareMode || !meta.jobId) imageFile = await writeStoredImage(imageId, image);
     savedImage = await store.update((db) => {
+      const completedAt = Date.now(), completedIso = new Date(completedAt).toISOString();
       let currentJob: ReturnType<typeof completionJob> | null = null, refunded = false;
       if (fairShareMode && meta.jobId) {
         currentJob = completionJob(db, reservation, meta.jobId);
@@ -3157,9 +3160,9 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
                 || currentJob.resultPending.byteLength !== existing.byteLength) throw httpError(409, '已存结果与待恢复证据不符');
               delete currentJob.resultPending;
             }
-            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id)) {
-              recordFreeImageSuccess(db, currentJob, Date.now(), store.readFreeImageUsage(db, currentJob.fairCharge.userId));
-              if (!existing.mock) completeSharedAccount(db, db.accounts.find(a => a.id === currentJob!.accountId), Date.now(),
+            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id, completedAt)) {
+              recordFreeImageSuccess(db, currentJob, completedAt, store.readFreeImageUsage(db, currentJob.fairCharge.userId, completedAt));
+              if (!existing.mock) completeSharedAccount(db, db.accounts.find(a => a.id === currentJob!.accountId), completedAt,
                 { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
             }
             preparedAt = Date.now();
@@ -3176,10 +3179,10 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
       if (account) {
         if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode && currentJob && !image.mock) completeSharedAccount(db, account, Date.now(), {
+        if (fairShareMode && currentJob && !image.mock) completeSharedAccount(db, account, completedAt, {
           job: currentJob, kind: 'success', retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil });
         account.total = Number(account.total || 0) + 1;
-        account.updatedAt = new Date().toISOString();
+        account.updatedAt = completedIso;
       }
 
       const saved = {
@@ -3201,7 +3204,7 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
         mimeType: image.mimeType,
         file: imageFile!,
         ...(pending ? { operation: pending.operation, byteLength: pending.byteLength, sha256: pending.sha256 } : {}),
-        createdAt: new Date().toISOString()
+        createdAt: completedIso
       };
       db.images.unshift(saved);
 
@@ -3209,17 +3212,17 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
         const job = db.jobs.find((item) => item.id === meta.jobId);
         if (job) {
           Object.assign(job, reservation.upstreamTiming || {});
-          if (fairShareMode && !refunded) settleFairQuota(db, job, true, Date.now(), {}, store.readFairQuotaSettlement(job.id));
-          if (refunded) recordRecoveredGeneration(db, job, saved.id);
+          if (fairShareMode && !refunded) settleFairQuota(db, job, true, completedAt, {}, store.readFairQuotaSettlement(job.id));
+          if (refunded) recordRecoveredGeneration(db, job, saved.id, completedAt);
           else job.status = 'done';
           job.imageId = saved.id;
           delete job.resultPending;
           job.accountId = reservation.account?.id || job.accountId || '';
           if (!refunded) { job.error = ''; job.errorDetail = ''; }
-          job.updatedAt = new Date().toISOString();
+          job.updatedAt = completedIso;
           if (!refunded) job.completedAt = job.updatedAt;
-          recordCompletedArtifact(db, job, saved, Date.now(), job.fairCharge ? store.readFreeImageUsage(db, job.fairCharge.userId) : undefined);
-          if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence());
+          recordCompletedArtifact(db, job, saved, completedAt, job.fairCharge ? store.readFreeImageUsage(db, job.fairCharge.userId, completedAt) : undefined);
+          if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence(), completedAt);
         }
       }
 
@@ -3861,7 +3864,7 @@ async function removeStoredImages(images: StoredResult[]) {
 }
 
 function imageStorageName(id: string, mimeType = '') {
-  return path.join('images', `${id}.${imageExtension(mimeType)}`);
+  return path.posix.join('images', `${id}.${imageExtension(mimeType)}`);
 }
 
 function imageFilePath(file: string) {
@@ -4857,6 +4860,7 @@ function installShutdownHandlers(serverInstance: Server) {
     // 长期订阅须先结束；否则 server.close 等连接，而订阅等 store.close，形成循环。
     stateEventsFor(store).closeSubscriptions();
     jobPreviews.closeSubscriptions();
+    closeMemberGenerationStreams(store);
     const configured = Number(process.env.SHUTDOWN_GRACE_MS || 30000);
     const graceMs = Number.isFinite(configured) && configured > 0 ? Math.min(600000, Math.floor(configured)) : 30000;
     console.log(`[runtime] ${signal} received. Waiting up to ${graceMs}ms for active generation.`);
