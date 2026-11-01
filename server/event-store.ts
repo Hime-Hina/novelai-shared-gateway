@@ -584,23 +584,25 @@ export function replayDomainEvents(source: Database.Database, target: Database.D
   })();
   const checkpoint = target.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get() as { value: string } | undefined;
   let cursor = checkpoint?.value || '0', commits = 0, events = 0;
+  const through=options.throughCommitSeq===undefined?null:BigInt(options.throughCommitSeq);
   while (commits < (options.maxCommits ?? Infinity)) {
-    const batch = readDomainCommits(source,cursor,Math.min(100, (options.maxCommits ?? Infinity) - commits));
+    const batch = readDomainCommits(source,cursor,Math.min(100, (options.maxCommits ?? Infinity) - commits))
+      .filter(commit=>through===null||BigInt(commit.commitSeq)<=through);
     if (!batch.length) break;
-    for (const commit of batch) {
-      if (options.throughCommitSeq !== undefined && BigInt(commit.commitSeq) > BigInt(options.throughCommitSeq)) return { lastCommitSeq: cursor, commits, events };
-      const result = target.transaction(() => {
+    // 离线重建以最多 100 个完整逻辑提交共用一次 FULL 事务；生产写入仍逐命令提交。
+    target.transaction(() => {
+      for (const commit of batch) {
         const clock=target.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
         if(!clock)target.prepare('INSERT INTO event_clock(id,value) VALUES(1,?)').run(BigInt(commit.commitSeq)-1n);
         else if(BigInt(clock.value)+1n!==BigInt(commit.commitSeq))throw new Error(`Replay commit order mismatch at ${commit.commitSeq}`);
-        return appendDomainCommit(target, {
-        commandId: commit.commandId, fingerprint: commit.fingerprint, recordedAt: commit.recordedAt, actorId: commit.events[0]?.actorId ?? null,
-        actorKind:commit.events[0]?.actorKind||'system',correlationId: commit.events[0]?.correlationId ?? null, causationId: commit.events[0]?.causationId ?? null, receipt: commit.receipt,
-        expectedVersions: {}, events: commit.events
-      }, options);
-      })();
-      cursor = commit.commitSeq; commits++; events += commit.events.length;
-    }
+        appendDomainCommit(target, {
+          commandId: commit.commandId, fingerprint: commit.fingerprint, recordedAt: commit.recordedAt, actorId: commit.events[0]?.actorId ?? null,
+          actorKind:commit.events[0]?.actorKind||'system',correlationId: commit.events[0]?.correlationId ?? null, causationId: commit.events[0]?.causationId ?? null, receipt: commit.receipt,
+          expectedVersions: {}, events: commit.events
+        }, options);
+      }
+    })();
+    cursor=batch.at(-1)!.commitSeq;commits+=batch.length;events+=batch.reduce((count,commit)=>count+commit.events.length,0);
   }
   return { lastCommitSeq: cursor, commits, events };
 }

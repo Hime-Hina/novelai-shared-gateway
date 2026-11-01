@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { migrateStorage } from '../../server/storage-migrations.ts';
 import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt,setDomainCommandActor } from '../../server/domain-events.ts';
 import { appendDomainCommit, readDomainCommits, readStreamProjection, replayDomainEvents } from '../../server/event-store.ts';
-import { JsonStore, generationContextRef } from '../../server/store.ts';
+import { JsonStore, generationContextRef,applyEventProjection } from '../../server/store.ts';
 
 const at = '2026-11-01T00:00:00.000Z';
 const requestPayload='{"seed":17}';
@@ -93,6 +93,46 @@ test('complete commit replay resumes without duplicate effects and preserves fai
   const job = readStreamProjection(target,'request:r1').projection.jobs.j1;
   assert.equal(job.status,'failed'); assert.equal(job.lateResultAvailable,true); assert.equal(job.generationRefund.reason,'upstream failure');
   assert.equal(readDomainCommits(target,'1',1)[0].events.length,2);
+});
+
+test('offline replay rolls back a failed 100-commit batch and resumes from its prior durable checkpoint',async t=>{
+  const source=database(t),directory=await mkdtemp(path.join(os.tmpdir(),'nai-event-batch-replay-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  source.transaction(()=>appendDomainCommit(source,command('accept',[accepted()]),{project:applyEventProjection}))();
+  for(let index=2;index<=205;index++)source.transaction(()=>appendDomainCommit(source,command(`queue-${index}`,
+    [{eventType:'JobQueued',payload:{jobId:'j1',queueSeq:index,queuedAt:at}}]),{project:applyEventProjection}))();
+  for(const {failAt,completed,resumeFullCommits} of [{failAt:1,completed:0,resumeFullCommits:4},{failAt:101,completed:100,resumeFullCommits:3},{failAt:150,completed:100,resumeFullCommits:3}]){
+    await t.test(`SQL failure at logical commit ${failAt}`,async t=>{
+      let fullCommits=0;
+      const open=()=>new Database(path.join(directory,`target-${failAt}.sqlite`),{verbose:sql=>{if(sql==='COMMIT')fullCommits++;}});
+      let target=open();t.after(()=>target.close());
+      target.pragma('journal_mode = WAL');target.pragma('synchronous = FULL');migrateStorage(target);
+      target.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(@id,@member_id,@source,@operation,@created_at,@payload_bytes,@payload)').run(requestRow);
+      target.exec(`CREATE TEMP TRIGGER fail_replay_batch BEFORE INSERT ON event_commits WHEN NEW.commit_seq=${failAt}
+        BEGIN SELECT RAISE(ABORT,'synthetic replay batch failure'); END;`);
+      fullCommits=0;
+      assert.throws(()=>replayDomainEvents(source,target,{project:applyEventProjection}),/synthetic replay batch failure/);
+      assert.equal(target.prepare('SELECT count(*) AS n FROM event_commits').get().n,completed);
+      assert.equal(target.prepare('SELECT count(*) AS n FROM domain_events').get().n,completed);
+      assert.equal(target.prepare('SELECT value FROM event_clock').get()?.value||0,completed);
+      assert.equal(target.prepare("SELECT last_commit_seq FROM projection_versions WHERE name='core'").get()?.last_commit_seq||0,completed);
+      assert.equal(readStreamProjection(target,'request:r1')?.projection.jobs.j1.queueSeq||0,completed);
+      const job=target.prepare('SELECT data FROM jobs WHERE id=?').get('j1');assert.equal(job?JSON.parse(job.data).queueSeq:0,completed);
+      assert.deepEqual(readDomainCommits(target),completed?readDomainCommits(source,'0',completed):[]);
+      assert.equal(fullCommits,completed?2:1); // 预检查 + 完整成功组；失败组只有 ROLLBACK。
+      target.close();target=open();target.pragma('synchronous = FULL');fullCommits=0;
+      assert.deepEqual(replayDomainEvents(source,target,{project:applyEventProjection}),{lastCommitSeq:'205',commits:205-completed,events:205-completed});
+      assert.equal(fullCommits,resumeFullCommits);
+      assert.deepEqual(readDomainCommits(target,'0',1000),readDomainCommits(source,'0',1000));
+      assert.deepEqual(readStreamProjection(target,'request:r1'),readStreamProjection(source,'request:r1'));
+      assert.deepEqual(target.prepare('SELECT data,order_value FROM jobs').all(),source.prepare('SELECT data,order_value FROM jobs').all());
+    });
+  }
+  const bounded=database(t);
+  assert.deepEqual(replayDomainEvents(source,bounded,{maxCommits:125,throughCommitSeq:'150',project:applyEventProjection}),{lastCommitSeq:'125',commits:125,events:125});
+  assert.deepEqual(replayDomainEvents(source,bounded,{throughCommitSeq:'150',project:applyEventProjection}),{lastCommitSeq:'150',commits:25,events:25});
+  assert.deepEqual(replayDomainEvents(source,bounded,{throughCommitSeq:'150',project:applyEventProjection}),{lastCommitSeq:'150',commits:0,events:0});
+  assert.deepEqual(readDomainCommits(bounded,'0',1000),readDomainCommits(source,'0',150));
 });
 
 test('unknown event versions and secret payloads fail before recording facts', t => {
