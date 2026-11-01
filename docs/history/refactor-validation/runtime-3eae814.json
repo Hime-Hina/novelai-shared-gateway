@@ -1,0 +1,191 @@
+{
+  "runtimeCommit": "3eae814ef221d74e7bcd57ea1fbdae0e1d75948d",
+  "branch": "codex/event-sourcing-member-generation",
+  "scope": "R01-R11 and R13/R14 functional/package gates passed; final complete R12 1k/100k/replay/annual is running",
+  "environment": {
+    "node": "22.23.4",
+    "platform": "linux-x64",
+    "network": "none",
+    "data": "synthetic only; no production read/write/deploy"
+  },
+  "changeSincePrior": "Opening protected request/artifact/diagnostic and idempotency context chunks commit atomically with import events; current canonical source inputs are checked against existing protected rows. Activity heatmap filters first and materializes only date/state once.",
+  "backend": {
+    "fullRun": {
+      "total": 693,
+      "passed": 693,
+      "failed": 0,
+      "skipped": 0,
+      "duration_ms": 275620.590134
+    },
+    "priorTransportFailure": {
+      "platform": "Windows Node22",
+      "case": "member-generation-http initial quote fetch",
+      "result": "Prior Windows initial quote TypeError lacked cause; targeted14/14 and both later full Linux suites passed (3a676 and current693). Root cause not inferred."
+    }
+  },
+  "web": {
+    "typecheck": "passed",
+    "unit": {
+      "files": 16,
+      "passed": 139
+    }
+  },
+  "executor": {
+    "typecheck": "passed",
+    "unit": {
+      "passed": 3
+    },
+    "productionImageHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    },
+    "extractedArchiveHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    }
+  },
+  "actualNuxtExecutor": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "duration_ms": 201003.755002
+  },
+  "build": {
+    "backendSyntaxTypePackage": "passed",
+    "rootProductionImage": "passed",
+    "webProductionImage": "passed; identical image digest to f496 because relevant web source is unchanged",
+    "executorProductionImage": "passed"
+  },
+  "release": {
+    "path": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-3eae814-linux-x64.tar.gz",
+    "bytes": 52569294,
+    "sha256": "d6fc13a6d80588e37d1727a248729892dde1b3d59e7ac962054a65cf338d778c",
+    "checksumFile": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-3eae814-linux-x64.tar.gz.sha256",
+    "symlinks": "Linux cp-a/tar/extract; native module resolution constrained to extracted package",
+    "migrationsWorkersCLI": "passed actual schema/journal/SQL resources/worker and package replay tools",
+    "privateInputArtifactDiagnosticReplay": "passed from actual new-package backup; max1 then resume then repeat0, source unchanged",
+    "serviceUnits": "systemd-analyze verify passed",
+    "contentsScan": "no .env/.env.*, database or bootstrap credentials",
+    "businessBackup": {
+      "actualFunction": "new packaged backup-production.py backup()",
+      "tablesCompared": 24,
+      "sourceUnchanged": true,
+      "postOpeningPaidCommands": 3,
+      "restoredFactReceiptTables": 9,
+      "balancesEqual": true,
+      "integrity": "ok",
+      "sourceWriter": 1,
+      "replayedReducerVersions": [
+        2
+      ],
+      "targetAuthority": null,
+      "imagesIncluded": false,
+      "fixtureSource": "Synthetic f781263 candidate-120-round-1 contains three actual post-opening paid commands; same frozen fixture rerun against this final package",
+      "note": "Actual fresh package backup/replay rerun, not carried forward. Target CLI is an isolated rebuilt database; activation is a separate startup gate. Business backup does not include generated image bytes."
+    }
+  },
+  "compatibility": {
+    "preRefactor": "deab4db rejects f781 schema before listen; unchanged migration lineage",
+    "earlyEventWriter": {
+      "old": "1427422",
+      "current": "f4966fd",
+      "version": 2,
+      "minimumWriterVersion": 2,
+      "exitCode": 1,
+      "listened": false,
+      "checkedTables": 24,
+      "allTablesUnchanged": true,
+      "retiredOrphanImages": 0
+    },
+    "carriedForwardReason": "Writer gates, migrations and reducer version contracts are unchanged. Legal opening output equivalence independently verified across11tables; only transaction boundaries/source validation and a read-only heatmap SQL changed. Original actual old-process rejection evidence keeps its original f496 candidate pin."
+  },
+  "peripheral": {
+    "sourceUnchanged": true,
+    "backupScriptTests": 6,
+    "caddyRealHTTP": 7,
+    "carriedForwardReason": "Backup and Caddy source unchanged"
+  },
+  "reviews": {
+    "prior": {
+      "prior": {
+        "interfaces": "independent_reviewer passed f781 interface/execution/R11 +48 pure tests/Native assertions; later production source deltas event/DB only",
+        "events": "event_reviewer closed all findings through f496, including writer2 and both R12 optimizations"
+      },
+      "admissionInterface": {
+        "commit": "3a3ffe1df9f764e85743761fb714aa7492414b7b",
+        "result": "passed",
+        "tests": 26,
+        "skipped": 0,
+        "nativeTopLevelAssertions": true,
+        "scope": "interface/shared admission"
+      },
+      "admissionEvents": {
+        "commit": "3a3ffe1df9f764e85743761fb714aa7492414b7b",
+        "result": "passed",
+        "tables": 12,
+        "scope": "atomic event/receipt/quota, final replay priority, concurrency, SQL fault rollback"
+      }
+    },
+    "openingJobs": {
+      "commit": "537804b",
+      "result": "passed",
+      "tables": 10,
+      "checks": "fault rollback, genuine old150orphans, canonical source conflicts and legal parent/child equivalence"
+    },
+    "openingContexts": {
+      "commit": "9f84ccfe676011867d7aa400f7dbe20c0a00f5fb",
+      "result": "passed; EVENT-OPENING-CONTEXT-01 closed",
+      "tables": 11,
+      "checks": "3SQLfaults retain100/context andclock3; old150orphan compatibility/conflicts;205coldmapping replay and repeat0"
+    },
+    "heatmap": {
+      "commit": "3eae814ef221d74e7bcd57ea1fbdae0e1d75948d",
+      "result": "passed",
+      "tests": 14,
+      "scope": "Independent actual SQL plus member/owner/admin HTTP;12000-history case excluded only from this independent small check and included in root full suite"
+    },
+    "documentation": {
+      "commits": [
+        "2c3fe5e",
+        "3ce1418",
+        "7dc53df"
+      ],
+      "result": "DOC01-04 closed; startup waiting window clarified without new configuration"
+    }
+  },
+  "images": {
+    "backend": "sha256:bfe5ae436f96efabab8df88b45c07e884a2f306d05afea181c84f96b4a8bffd2",
+    "workspace": "sha256:e47ed1650efbb4568929f3d704ff4c6d501d74ac2cc4be871c1e11517fdb95e4",
+    "root": "sha256:5eb20b2e4fbf8643d5bba8e5e742accbc8cf97dbd20414126d287705cd09085f",
+    "executor": "sha256:8dea99267c903657bca2e649718613268063b530034a6a34d78f9694d6ae6221",
+    "web": "sha256:adb666c6e2aa343d6e8ea5d5b487b786f613b5034b07dd085192f75d99d8a8e4",
+    "performance": "sha256:78f2f61a1ef5a5493b9698eef9b26c3891b77c73185206535d2cacfa96a03708"
+  },
+  "logs": [
+    "candidate-3eae814-build.log",
+    "candidate-3eae814-backend-tests.log",
+    "workspace-3eae814-build.log",
+    "workspace-3eae814-checks.log",
+    "runtime-3eae814-build.log",
+    "executor-3eae814-build.log",
+    "web-3eae814-build.log",
+    "executor-3eae814-runtime-tests.log",
+    "release-3eae814-runtime-tests.log",
+    "release-3eae814-stage.log",
+    "release-3eae814-backup-replay-tests.log",
+    "release-3eae814-paid-backup-tests.log",
+    "release-3eae814-systemd-tests.log"
+  ],
+  "unverified": [
+    "Final complete R12 /bench/final-3eae814-run01 still running; old3a1k/100k subset not reused as final evidence",
+    "No real NAI/Discord/R2 provider or production deployment"
+  ],
+  "deferred": [
+    "full official frontend editor",
+    "multi-executor/multi-account/fleet scheduling",
+    "database system migration"
+  ]
+}
