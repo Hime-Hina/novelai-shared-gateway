@@ -1,6 +1,6 @@
 # 事件重构性能验证记录
 
-状态：2026-11-01，测量工具的本地小样本及冻结 Linux 镜像的有界诊断已通过；R12 十万历史正式测量和年度容量尚未开始。小样本、时间外推和容量外推都不能用于宣布性能验收通过。
+状态：R12 已进入正式验证。`f4966fd` 首轮正式运行触发受理全过程门槛，已停止并保留失败证据；修正后的业务候选 `3a3ffe1` 将从独立目录重新执行完整序列。正式十万历史和年度容量尚未全部完成，不能用小样本、预热通过或时间/容量外推宣布验收通过。
 
 验收范围及回归阈值沿用[当前重构计划 §11.2](../plans/architecture-refactor-plan.md#112-性能验收)。本记录保存运行方式、环境、原始结果位置及解释，不另设性能门槛。
 
@@ -26,7 +26,7 @@ node --expose-gc scripts/benchmark-refactor.mjs \
 
 输出目录必须尚不存在。`report.json` 汇总源码摘要、版本、机器/文件系统、各轮分位数、内存、读取行数代理、重建、磁盘和年度预算；每个子进程另外保留配置、完整结果和日志。执行结束发现源码内容变化时，正式模式拒绝将结果作为固定候选对照。
 
-正式候选提交、Linux 镜像、volume、命令及结果：待最终候选全量验证完成、获得空载窗口后补充。
+当前正式候选为 `3a3ffe1`，镜像 `novelai-refactor-validation:performance-3a3ffe1`（`sha256:449c9e91c7f162ebf00bf02eeee7e2fe6f3b94ce9e87b5b11b1e826e858511ee`）。基线 `/baseline`、候选 `/app`、原生 volume `nai-refactor-performance-20261101-87cc125a` 挂载 `/bench`；使用 `--network none --cpus 2 --memory 4g`。新输出目录为 `/bench/final-3a3ffe1-run01`，不拼入旧基线轮次或旧 seed。1,000 和 100,000 历史的对照轮次各自齐全后立即核验原阈值和源码摘要，任何信号先定位并明确记录。
 
 ## 计时和解释边界
 
@@ -105,3 +105,17 @@ node --expose-gc scripts/benchmark-refactor.mjs \
 3. 离线重放可将有界数量的完整逻辑 commit 放入一个外层 FULL 事务；保持各事件批次、回执和提交游标，异常整批回滚。生产命令仍逐次 FULL。此项本轮仅提出，尚未实现或验证收益。
 
 原始证据在宿主目录 `H:\TEMP\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\performance-profile-f781263`，包括 `warm-report.json`、`profile-summary.json`、三组 `*-profile.json` / `*.cpuprofile` 及诊断探针。volume 内对应 `/bench/profile-f781263-warm-v2` 与 `/bench/profile-f781263-instrumented-v2`。runner 摘要为 `4d483dd9f04cdba190eb2b72d3a8937812bdf2b60f9328429a87925edeaaa3e7`，候选源码摘要为 `04f6e1de3e20488640ce199e760530c79ac398802f414d72ca35992534a8a75f`。窗口结束后容器已退出，没有启动年度任务。
+
+## f4966fd 优化后复测与中间门槛
+
+`0ba68e4` 保留校验后跳过未变化的投影写入及刷新；`f4966fd` 将离线重放改为最多 100 个完整提交的外层 FULL 事务，生产仍逐次提交。隔离复测使用 `novelai-refactor-validation:performance-f4966fd`，镜像摘要为 `sha256:ee63c34b9924b95be296f394b5c1e941bfa474784c8615c8988b35713a3aff4b`，资源与 volume 限制同前。
+
+先执行 1,000 历史、三轮各 100 次、固定 8 个活动任务的预热复测，约 53.8 秒完成。所有检查正常，受理全过程 P95 三轮中位为基线 9.75ms、候选 18.97ms，差 9.23ms；该次未触发联合阈值。全重建中位约 1.93 秒，断点两段约 1.27 + 0.59 秒。原始结果为宿主 `performance-f4966fd-final/warm-report.json`。
+
+随后正式运行自身的 1,000 历史对照再次产生阈值信号：受理全过程 P95 三轮中位为 9.42537ms → 20.507024ms，差 11.081654ms、约 2.176 倍。不能用前一次通过覆盖该信号。其余已完成的 1,000 历史指标没有同时触发两项条件；热 RSS 增加 5.10%，两版源码摘要、FULL、固定活动数、完整性及 busy/冲突/重试检查正常。
+
+每次请求成对计算“全过程耗时减最终事务耗时”，再取各轮 P95，受理准备部分的三轮中位为基线 5.641ms、候选 11.306ms。这不是直接相减两个 P95。当前共同受理命令会独立持久化 readiness 额度同步，再执行清理和最终受理事务；这一边界需要继续解释或优化，不能只降低阈值。
+
+该轮在候选十万历史 opening 阶段暂停，随后停止旧容器 `nai-r12-final-f4966fd` 释放内存。旧版十万历史三轮完成，候选十万历史尚未测量，年度未开始；不能将本轮标作正式通过。所有大数据库仍保留在 `/bench/final-f4966fd-100k-annual`，旧候选 seed 含暂停/终止过程，不能用于新测量。原始小 JSON 已收录于 [f4966fd-trigger](refactor-validation/f4966fd-trigger/)，其中[中间阈值核验](refactor-validation/f4966fd-trigger/interim-threshold.json)和[成对准备耗时](refactor-validation/f4966fd-trigger/outside-final-overhead.json)保留触发依据；没有通过反复重跑挑选通过样本。
+
+后续 `3a3ffe1` 将 readiness 改为纯估算，真正额度同步、当前资格校验及受理事实放入最终同一事务；原幂等重放与失效准入回归已由实施/审核流程验证。以下完整性能序列是对这一具体变更的再次验收，结果必须独立报告，不能覆盖上述旧触发记录。
