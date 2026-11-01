@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { performance } from 'node:perf_hooks';
 import { createHash, randomUUID } from 'node:crypto';
-import { promises as fs, existsSync, createWriteStream } from 'node:fs';
+import { promises as fs, existsSync, createReadStream, createWriteStream } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,7 +16,7 @@ const {values}=parseArgs({options:{baseline:{type:'string'},candidate:{type:'str
   observations:{type:'string',default:'525600'},'annual-batches':{type:'string',default:'36500'},'owner-days':{type:'string',default:'7'},
   'skip-annual':{type:'boolean',default:false},smoke:{type:'boolean',default:false},worker:{type:'string'},help:{type:'boolean',default:false}}});
 async function main(){if(values.help){
-  console.log('node --expose-gc scripts/benchmark-refactor.mjs --baseline <old-source> --candidate <new-source> [--output <new-directory>] [--smoke]\nDefaults: 100000 histories, 3 rounds, 100 samples, 8 active jobs; annual: 525600 observations + 36500 batches (sizes 1/4/1/2).\nEach source must use the same installed dependencies; a missing baseline node_modules is temporarily linked to candidate node_modules.\nSynthetic databases only. No HTTP listener, upstream network, production .env, or source edits. --smoke is runner validation, never performance acceptance.');
+  console.log('node --expose-gc scripts/benchmark-refactor.mjs --baseline <old-source> --candidate <new-source> [--output <new-directory>] [--smoke]\nDefaults: 100000 histories, 3 rounds of load and full/checkpoint replay, 100 samples, 8 active jobs; one annual capacity run: 525600 observations + 36500 batches (sizes 1/4/1/2).\nEach source must use the same installed dependencies; a missing baseline node_modules is temporarily linked to candidate node_modules.\nSynthetic databases only. No HTTP listener, upstream network, production .env, or source edits. --smoke is runner validation, never performance acceptance.');
 }else if(values.worker){
   const config=JSON.parse(await fs.readFile(values.worker,'utf8'));
   try{await worker(config);}catch(error){await fs.writeFile(config.result,JSON.stringify({stage:config.stage,error:{message:error.message,stack:error.stack}},null,2));throw error;}
@@ -31,6 +31,7 @@ const encode=value=>JSON.stringify(value,null,2);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 async function bytes(file){try{return (await fs.stat(file)).size;}catch(error){if(error.code==='ENOENT')return 0;throw error;}}
 async function disk(file){return {database:await bytes(file),wal:await bytes(file+'-wal'),shm:await bytes(file+'-shm')};}
+async function fileHash(file){const digest=createHash('sha256');for await(const chunk of createReadStream(file))digest.update(chunk);return digest.digest('hex');}
 function cleanEnvironment(){return Object.fromEntries(Object.entries(process.env).filter(([key])=>/^(PATH|PATHEXT|SYSTEMROOT|WINDIR|TEMP|TMP|TMPDIR|HOME|USERPROFILE|LANG|LC_ALL)$/i.test(key)));}
 function revision(source){try{return execFileSync('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch{return null;}}
 async function sourceEvidence(source){
@@ -41,6 +42,7 @@ async function sourceEvidence(source){
 }
 
 async function orchestrate(){
+  const started=performance.now();
   if(!values.baseline)throw new Error('--baseline is required');
   const candidate=path.resolve(values.candidate),baseline=path.resolve(values.baseline),output=path.resolve(values.output||path.join(os.tmpdir(),'nai-refactor-benchmark-'+randomUUID()));
   if(existsSync(output))throw new Error('Output must be a new directory so previous evidence is not overwritten');
@@ -55,8 +57,9 @@ async function orchestrate(){
   try{
   const report={kind:options.smoke?'runner-smoke':'performance-evidence',options,sources:{baseline:await sourceEvidence(baseline),candidate:await sourceEvidence(candidate)},
     cachePolicy:'Fresh child process and SQLite connection each round; first queries recorded separately; OS page cache is not forcibly dropped.',
-    transactionDefinition:'Admission is the real /api/jobs handler final JsonStore.update; envelope also includes readiness. Every sample has separate dispatch, artifact-prepared, and publish/settlement/cooldown commits using the real domain functions. Synthetic PNG file fsync is outside SQL timing. Logical generation takes 2s and existing account cooldown advances the clock without sleep or network. Fixed waiting jobs use a 24h deadline during timing rounds.',
-    rowCounterPolicy:'Materialized SQL/DTO rows and matched source rows are reported separately. SQLite physical page reads are not exposed by better-sqlite3.',seeds:[],rounds:[]};
+    transactionDefinition:'Admission is the real /api/jobs handler final JsonStore.update; envelope also includes readiness. The candidate uses the exported dispatch and completion commands; the baseline uses public domain functions and JsonStore.update because its dispatch/completion functions are private. Both adapters preserve separate dispatch, artifact-prepared and publish/settlement/cooldown commits, account counters, final job/image records and next-child queue activation. Synthetic PNG publication/fsync is outside SQL timing. Logical generation takes 2s and existing account cooldown advances the clock without sleep or network. Fixed waiting jobs use a 24h deadline during timing rounds.',
+    replayDefinition:'Each replay round reads the same checkpointed candidate database from load round 1, builds an empty target with opening/events and protected facts, and independently closes/reopens a half-replayed target before resuming. The legacy baseline has no event replay operation. Annual capacity is one separate run, not a repeated latency comparison.',
+    rowCounterPolicy:'Materialized SQL/DTO rows and matched source rows are reported separately. SQLite physical page reads are not exposed by better-sqlite3.',seeds:[],rounds:[],replayRounds:[]};
   const run=async(stage,label,source,extra={})=>{
     const name=`${label}-${stage}-${randomUUID()}`,config={...options,...extra,stage,source,label,result:path.join(output,name+'.json')};
     const configFile=path.join(output,name+'.config.json');await fs.writeFile(configFile,encode(config));
@@ -80,6 +83,18 @@ async function orchestrate(){
         }
       }
     }
+    const replaySource=path.join(output,`candidate-${options.history}-round-1`,'library.sqlite');
+    for(let round=1;round<=options.rounds;round++){
+      const directory=path.join(output,`replay-${options.history}-round-${round}`);await fs.mkdir(directory);
+      report.replayRounds.push(await run('replay','candidate',candidate,{directory,history:options.history,round,replaySource}));
+    }
+    const replayHashes=new Set(report.replayRounds.map(round=>round.sourceDatabase.sha256));
+    if(replayHashes.size!==1)throw new Error('Replay rounds did not use one fixed source database');
+    report.replaySummary={sourceDatabaseSha256:[...replayHashes][0],
+      fullReplay:distribution(report.replayRounds.map(round=>round.fullReplay.ms)),
+      checkpointResume:distribution(report.replayRounds.map(round=>round.checkpointResume.ms)),
+      checkpointBuild:distribution(report.replayRounds.map(round=>round.checkpointResume.checkpoint.ms)),
+      integrity:distribution(report.replayRounds.map(round=>round.integrityMs))};
     if(!values['skip-annual']){
       const directory=path.join(output,'annual');report.annualSeed=await run('seed','candidate',candidate,{directory,history:0});
       report.annual=await run('annual','candidate',candidate,{directory});
@@ -96,7 +111,11 @@ async function orchestrate(){
       const before=percentile(variants.baseline.map(round=>round.memory.hotPeakRss),.5),after=percentile(variants.candidate.map(round=>round.memory.hotPeakRss),.5);
       report.comparison.push({history,metric:'hotRss',baselineBytes:before,candidateBytes:after,ratio:after/before,requiresInvestigation:after>before*1.2});
     }
+    const environments=new Set(report.rounds.map(({machine})=>JSON.stringify({platform:machine.platform,architecture:machine.architecture,node:machine.node,
+      sqlite:machine.sqlite,cpu:machine.cpu,filesystemType:machine.filesystem.type,filesystemBlockSize:machine.filesystem.bsize})));
+    if(environments.size!==1)throw new Error('Baseline and candidate measurements did not use the same runtime and filesystem');
     report.sourceChangedDuringRun=(await sourceEvidence(baseline)).codeSha256!==report.sources.baseline.codeSha256||(await sourceEvidence(candidate)).codeSha256!==report.sources.candidate.codeSha256;
+    report.totalMs=elapsed(started);
     await fs.writeFile(path.join(output,'report.json'),encode(report));
     if(report.sourceChangedDuringRun&&!options.smoke)throw new Error('Source changed during measurement; performance evidence is not a fixed-revision comparison');
     console.log(`Report: ${path.join(output,'report.json')}`);
@@ -121,6 +140,7 @@ async function worker(config){
   if(config.stage==='seed')await seed(config,result,modules);
   else if(config.stage==='measure')await measure(config,result,modules);
   else if(config.stage==='annual')await annual(config,result,modules);
+  else if(config.stage==='replay')await replayRound(config,result,modules);
   else throw new Error('Unknown benchmark stage');
   await fs.writeFile(config.result,encode(result));
 }
@@ -168,12 +188,16 @@ async function measure(config,result,{load,storeModule,quota}){
   storeModule.JsonStore.prototype.ensureLoaded=async function(...args){const cold=!this.db,t=performance.now(),value=await originalLoad.apply(this,args);if(cold)loadMs+=elapsed(t);return value;};
   result.memory={beforeLoadRss:process.memoryUsage().rss};result.failures={busy:0,conflicts:0,retries:0};
   storeModule.JsonStore.prototype.update=async function(fn,options){captured=this;const started=performance.now();try{const value=await originalUpdate.call(this,fn,options);
-    if(phase==='admission'&&options?.generationRequest)timings.admissionTransaction.push(elapsed(started));return value;
+    if(phase==='admission'&&options?.generationRequest)timings.admissionTransaction.push(elapsed(started));
+    else if(phase==='artifactPrepared')timings.artifactPreparedTransaction.push(elapsed(started));
+    else if(phase==='settlement')timings.settlementTransaction.push(elapsed(started));return value;
   }catch(error){if(/SQLITE_BUSY/.test(error.code||error.message))result.failures.busy++;if(/conflict/i.test(error.message))result.failures.conflicts++;throw error;}};
   const {handleGatewayRequest}=await load('gateway-runtime'),heatmap=await load('activity-heatmap'),owner=await load('owner-operations');
   const execution=existsSync(path.join(config.source,'server/generation-execution.ts'))?await load('generation-execution'):null;
   const resultFiles=await load('result-files'),capacity=await load('shared-capacity'),batch=await load('generation-request');
   const domain=execution?await load('domain-events'):null,baseTime=config.now;
+  if(execution&&(!execution.reserveQueuedGeneration||!execution.completeGenerationCommand))throw new Error('Candidate must expose the production generation commands');
+  result.executionAdapter=execution?'reserveQueuedGeneration + completeGenerationCommand':'legacy public domain functions + explicit JsonStore.update success transactions';
   await memoryRequest(handleGatewayRequest,null,'bootstrap',{method:'GET',url:'/api/me/quota',expected:200});
   for(let index=0;index<config.active;index++)await memoryRequest(handleGatewayRequest,{...request,token:members[index%20].token},`active-${index}`);
   const store=captured;result.loadMs=loadMs;global.gc?.();result.memory.afterLoadRss=process.memoryUsage().rss;hotPeakRss=result.memory.afterLoadRss;
@@ -203,33 +227,53 @@ async function measure(config,result,{load,storeModule,quota}){
     const accepted=await memoryRequest(handleGatewayRequest,{...request,token:member.token,seed:index+100},`sample-${config.round}-${index}`);
     timings.admissionEnvelope.push(elapsed(admission));phase=null;
     const id=accepted.id;
-    const dispatch=performance.now();await store.update(db=>{
+    const executionRequest={...request,seed:index+100},dispatch=performance.now();
+    let reservation;
+    if(execution){
+      reservation=await execution.reserveQueuedGeneration(store,id,{now:()=>config.now,dispatchEnabled:()=>true,physicalAccountLoad:()=>0});
+      if(!reservation.job)throw new Error(`Measured candidate dispatch did not reserve a job: ${JSON.stringify(reservation)}`);
+    }else await store.update(db=>{
       const job=db.jobs.find(job=>job.id===id),account=db.accounts.find(account=>account.id==='opus');if(!job)throw new Error('Accepted job is missing');
       if(capacity.sharedAccountReadyDelay(account,config.now)>0)throw new Error('Measured dispatch violates the account cooldown');
       job.status='running';job.startedAt=job.updatedAt=iso(config.now);job.accountId=account.id;
-      quota.reserveFairQuota(db,db.users.find(user=>user.id===member.id),job,account,config.now,{...request,seed:index+100},store.readFairQuotaSettlement?.(id));
-    },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id]}});timings.dispatchTransaction.push(elapsed(dispatch));
+      quota.reserveFairQuota(db,db.users.find(user=>user.id===member.id),job,account,config.now,executionRequest,store.readFairQuotaSettlement?.(id));
+      account.inFlight=Number(account.inFlight||0)+1;account.lastUsedAt=account.lastSharedDispatchAt=iso(config.now);
+      reservation={job,account:{...account},token:job.userToken,cost:job.cost,accountCost:job.accountCost,cacheKey:job.cacheKey||''};
+    },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id],accounts:['opus']}});timings.dispatchTransaction.push(elapsed(dispatch));
     config.now+=2000;
+    if(execution){
+      phase='artifactPrepared';
+      await execution.completeGenerationCommand({store,dataDir:config.directory,now:()=>config.now,createId:()=>`image-${id}`,
+        publish:async(...args)=>{const published=await resultFiles.publishStoredResult(...args);phase='settlement';return published;}},reservation,executionRequest,{mimeType:'image/png',buffer:png,mock:false},{jobId:id});
+      phase=null;
+      const charge=store.readFairQuotaSettlement(id);spentFixed+=Number(charge.fixed);spentPurchased+=Number(charge.purchased);
+    }else{
     const imageId=`image-${id}`,descriptor=resultFiles.describeStoredResult(imageId,'generate',{mimeType:'image/png',buffer:png});
     const prepared=performance.now();await store.update(db=>{
-      const job=db.jobs.find(job=>job.id===id);job.resultPending={...descriptor,attemptId:job.generationAttempt.id};
-      execution?.recordPreparedArtifact(db,job);
+      const job=db.jobs.find(job=>job.id===id);
+      if(job.fairCharge?.status!=='reserved'||job.generationAttempt?.id!==reservation.job.generationAttempt.id||job.userToken!==reservation.token||job.accountId!==reservation.account.id)throw new Error('Baseline result no longer owns its reservation');
+      if(store.selectItemById('images',imageId))throw new Error('Baseline result ID already exists');
+      job.resultPending={...descriptor,attemptId:job.generationAttempt.id};
     },{immediate:true,dirtyRows:{jobs:[id]}});timings.artifactPreparedTransaction.push(elapsed(prepared));
-    const image={id:imageId,jobId:id,token:member.token,accountId:'opus',file:descriptor.file,mimeType:descriptor.mimeType,byteLength:descriptor.byteLength,sha256:descriptor.sha256,createdAt:iso(config.now),model:request.model,width:1,height:1,operation:'generate',mock:false};
-    const file=await fs.open(path.join(config.directory,image.file),'w');try{await file.writeFile(png);await file.sync();}finally{await file.close();}
+    const image={id:imageId,memberId:member.id,token:member.token,accountId:'opus',cacheKey:reservation.cacheKey,mock:false,fullPrompt:executionRequest.prompt,
+      file:descriptor.file,mimeType:descriptor.mimeType,byteLength:descriptor.byteLength,sha256:descriptor.sha256,createdAt:iso(config.now),model:request.model,
+      width:request.width,height:request.height,requestedSteps:request.steps,routedSteps:request.steps,cost:reservation.cost,accountCost:reservation.accountCost,operation:'generate'};
+    await resultFiles.publishStoredResult(config.directory,descriptor,png);
     const final=performance.now();await store.update(db=>{
       const job=db.jobs.find(job=>job.id===id),account=db.accounts.find(account=>account.id==='opus');
-      if(execution)execution.completeSharedAccount(db,account,config.now,{job,kind:'success'});
-      else capacity.recordSharedCompletion(account,config.now,{job,kind:'success'});
+      if(job.fairCharge?.status!=='reserved'||job.resultPending?.attemptId!==reservation.job.generationAttempt.id||job.resultPending?.sha256!==descriptor.sha256)throw new Error('Baseline result is no longer pending');
+      capacity.recordSharedCompletion(account,config.now,{job,kind:'success'});
+      account.inFlight=Math.max(0,Number(account.inFlight||0)-1);account.total=Number(account.total||0)+1;account.updatedAt=iso(config.now);
       quota.settleFairQuota(db,job,true,config.now,{},store.readFairQuotaSettlement?.(id));
-      Object.assign(job,{status:'done',imageId:image.id,completedAt:iso(config.now),updatedAt:iso(config.now)});db.images.unshift(image);
+      Object.assign(job,{status:'done',imageId:image.id,error:'',errorDetail:'',completedAt:iso(config.now),updatedAt:iso(config.now)});db.images.unshift(image);
       delete job.resultPending;spentFixed+=Number(job.fairCharge.fixed);spentPurchased+=Number(job.fairCharge.purchased);
-      execution?.recordCompletedArtifact(db,job,image,config.now);
       batch.activateNextBatchJob(db,job,store.nextQueueSequence(),config.now);
     },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id],images:[image.id],accounts:['opus']}});timings.settlementTransaction.push(elapsed(final));
+    }
     await queries();hotPeakRss=Math.max(hotPeakRss,process.memoryUsage().rss);
   }
   result.latency=Object.fromEntries(Object.entries(timings).map(([key,values])=>[key,distribution(values)]));result.samples=timings;result.materializedRows=rows;
+  for(const key of ['admissionTransaction','dispatchTransaction','artifactPreparedTransaction','settlementTransaction'])if(timings[key].length!==config.samples)throw new Error(`Expected ${config.samples} ${key} samples, got ${timings[key].length}`);
   result.sourceRows={historyMember:store.sqlite.prepare('SELECT count(*) AS count FROM jobs WHERE user_token=?').get(members[0].token).count,historyTotal:store.sqlite.prepare('SELECT count(*) AS count FROM jobs').get().count};
   result.memory.hotPeakRss=hotPeakRss;global.gc?.();result.memory.afterGcRss=process.memoryUsage().rss;
   result.hotCollections=Object.fromEntries(['jobs','images','ledger'].map(name=>[name,store.db[name].length]));
@@ -240,8 +284,9 @@ async function measure(config,result,{load,storeModule,quota}){
   await store.close();
 }
 
-async function annual(config,result,{load,storeModule,quota,Database}){
-  const eventStore=await load('event-store'),domain=await load('domain-events'),migration=await load('storage-migrations'),execution=await load('generation-execution');
+async function annual(config,result,modules){
+  const {load,storeModule,quota,Database}=modules;
+  const eventStore=await load('event-store'),domain=await load('domain-events'),execution=await load('generation-execution');
   const batch=await load('generation-request'),resultFiles=await load('result-files'),capacity=await load('shared-capacity'),baseTime=config.now;
   const file=path.join(config.directory,'library.sqlite'),sqlite=new Database(file);sqlite.pragma('journal_mode = WAL');sqlite.pragma('synchronous = FULL');
   const state=eventStore.readProjectedFairQuota(sqlite);
@@ -312,19 +357,59 @@ async function annual(config,result,{load,storeModule,quota,Database}){
   result.initialDisk=initialDisk;result.diskBeforeCheckpoint=await disk(file);const checkpoint=performance.now();result.checkpoint=sqlite.pragma('wal_checkpoint(TRUNCATE)');result.checkpointMs=elapsed(checkpoint);result.disk=await disk(file);result.bytesPerAddedEvent=(result.disk.database-initialDisk.database)/Math.max(1,result.events.added);
   try{result.tableAndIndexBytes=sqlite.prepare('SELECT name,sum(pgsize) AS bytes FROM dbstat GROUP BY name ORDER BY bytes DESC').all();}catch(error){result.tableAndIndexBytes={unavailable:error.message};}
   const backup=path.join(config.directory,'annual-backup.sqlite'),backupStart=performance.now();await sqlite.backup(backup);result.backup={ms:elapsed(backupStart),bytes:await bytes(backup)};
-  const replay=async(name,firstLimit)=>{
-    const targetFile=path.join(config.directory,name+'.sqlite'),target=new Database(targetFile);target.pragma('journal_mode = WAL');target.pragma('synchronous = FULL');migration.migrateStorage(target);eventStore.copyProtectedFacts(sqlite,target);
-    let checkpoint;
-    if(firstLimit){const start=performance.now(),progress=eventStore.replayDomainEvents(sqlite,target,{project:storeModule.applyEventProjection,maxCommits:firstLimit});checkpoint={ms:elapsed(start),...progress};target.pragma('wal_checkpoint(TRUNCATE)');}
-    const start=performance.now(),progress=eventStore.replayDomainEvents(sqlite,target,{project:storeModule.applyEventProjection});
-    const digest=db=>hash(JSON.stringify(db.prepare('SELECT stream_id,projection_sha256 FROM event_streams ORDER BY stream_id').all()));
-    const output={ms:elapsed(start),...progress,...(checkpoint?{checkpoint}:{}),synchronous:target.pragma('synchronous',{simple:true}),sourceProjectionSha256:digest(sqlite),replayedProjectionSha256:digest(target)};
-    if(output.sourceProjectionSha256!==output.replayedProjectionSha256)throw new Error(`Replayed stream projections differ in ${name}`);
-    target.pragma('wal_checkpoint(TRUNCATE)');output.disk=await disk(targetFile);target.close();return output;
-  };
-  result.fullReplay=await replay('full-replay');const commits=sqlite.prepare('SELECT count(*) AS count FROM event_commits').get().count;
-  result.checkpointResume=await replay('checkpoint-replay',Math.max(1,Math.floor(commits/2)));
+  Object.assign(result,await replayEvidence(sqlite,config,modules));
   const integrity=performance.now();result.integrity=sqlite.pragma('integrity_check');result.integrityMs=elapsed(integrity);result.synchronous=sqlite.pragma('synchronous',{simple:true});sqlite.close();
+}
+
+function projectionDigest(sqlite){
+  const digest=createHash('sha256');
+  for(const row of sqlite.prepare('SELECT stream_id,projection_sha256 FROM event_streams ORDER BY stream_id').iterate())digest.update(JSON.stringify(row)+'\n');
+  return digest.digest('hex');
+}
+
+async function replayEvidence(source,config,{load,storeModule,Database}){
+  const eventStore=await load('event-store'),migration=await load('storage-migrations'),sourceProjectionSha256=projectionDigest(source);
+  const commits=source.prepare('SELECT count(*) AS count FROM event_commits').get().count;
+  const replay=async(name,firstLimit)=>{
+    const targetFile=path.join(config.directory,name+'.sqlite');
+    const open=()=>{const target=new Database(targetFile);target.pragma('journal_mode = WAL');target.pragma('synchronous = FULL');target.pragma('foreign_keys = ON');return target;};
+    let target=open();migration.migrateStorage(target);
+    try{
+      const copyStarted=performance.now();eventStore.copyProtectedFacts(source,target);const protectedCopyMs=elapsed(copyStarted);
+      let checkpoint;
+      if(firstLimit){
+        const start=performance.now(),progress=eventStore.replayDomainEvents(source,target,{project:storeModule.applyEventProjection,maxCommits:firstLimit});
+        checkpoint={ms:elapsed(start),...progress};target.pragma('wal_checkpoint(TRUNCATE)');target.close();
+        const reopen=performance.now();target=open();checkpoint.reopenMs=elapsed(reopen);
+        checkpoint.persistedCursor=target.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get()?.value;
+        if(checkpoint.persistedCursor!==checkpoint.lastCommitSeq)throw new Error('Reopened replay did not retain the complete commit cursor');
+      }
+      const start=performance.now(),progress=eventStore.replayDomainEvents(source,target,{project:storeModule.applyEventProjection});
+      const output={ms:elapsed(start),...progress,...(checkpoint?{checkpoint}:{}),protectedCopyMs,
+        synchronous:target.pragma('synchronous',{simple:true}),sourceProjectionSha256,replayedProjectionSha256:projectionDigest(target)};
+      if(output.synchronous!==2)throw new Error('Replay target is not synchronous FULL');
+      if(output.sourceProjectionSha256!==output.replayedProjectionSha256)throw new Error(`Replayed stream projections differ in ${name}`);
+      const verification=performance.now();target.transaction(()=>storeModule.verifyEventProjections(target))();output.projectionVerificationMs=elapsed(verification);
+      const integrity=performance.now();output.integrity=target.pragma('integrity_check',{simple:true});output.integrityMs=elapsed(integrity);
+      if(output.integrity!=='ok')throw new Error(`Replayed integrity check failed in ${name}`);
+      const checkpointStarted=performance.now();output.finalCheckpoint=target.pragma('wal_checkpoint(TRUNCATE)');output.finalCheckpointMs=elapsed(checkpointStarted);
+      output.disk=await disk(targetFile);return output;
+    }finally{target.close();}
+  };
+  return {fullReplay:await replay('full-replay'),checkpointResume:await replay('checkpoint-replay',Math.max(1,Math.floor(commits/2)))};
+}
+
+async function replayRound(config,result,modules){
+  const source=new modules.Database(config.replaySource,{readonly:true,fileMustExist:true});source.pragma('query_only = ON');
+  try{
+    result.sourceDatabase={path:config.replaySource,sha256:await fileHash(config.replaySource),disk:await disk(config.replaySource),
+      jobs:source.prepare('SELECT count(*) AS count FROM jobs').get().count,
+      events:source.prepare('SELECT count(*) AS count FROM domain_events').get().count,commits:source.prepare('SELECT count(*) AS count FROM event_commits').get().count};
+    Object.assign(result,await replayEvidence(source,config,modules));
+    const integrity=performance.now();result.integrity=source.pragma('integrity_check',{simple:true});result.integrityMs=elapsed(integrity);
+    if(result.integrity!=='ok')throw new Error('Replay source integrity check failed');
+    if(result.sourceDatabase.sha256!==await fileHash(config.replaySource))throw new Error('Replay source changed during measurement');
+  }finally{source.close();}
 }
 
 await main();
