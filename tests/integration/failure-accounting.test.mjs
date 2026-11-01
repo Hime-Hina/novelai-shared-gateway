@@ -12,6 +12,9 @@ import { FAILURE_EVENT_PREDICATE, updateLossAlertPolicy } from '../../server/fai
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { handleMemberRoutes } from '../../server/member-routes.ts';
 import { createMemberSession, setMemberCredentials } from '../../server/member-auth.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
+import { recordGenerationFailure } from '../../server/generation-execution.ts';
 
 const day = 86400000, iso = time => new Date(time).toISOString();
 const candidate = resources => ({ resources, amountSource: 'synthetic-evidence' });
@@ -106,12 +109,17 @@ test('聚合差额独立触发软告警，候选与聚合不相加，零阈值�
   assert.deepEqual(result.alerts.map(alert => alert.id), ['v5-24h', 'fixed-24h', 'fixed-30d', 'purchased-30d', 'member-24h:a']);
   assert.equal(new Set(result.alerts.map(alert => alert.id)).size, result.alerts.length);
   const before = structuredClone(store.db.settings.fairQuota.balances);
+  const admit = createGenerationAdmission({ store, payloadBudget: createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
+    artifactAvailable: async () => false, cleanupStaleActiveJobs: async () => {}, now: () => now });
+  const accepted = await admit({ identity: { token: 'STA1N-a' }, source: 'synthetic-risk-test', noCache: true,
+    request: { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 } });
   await store.update(db => {
-    const job = { id: 'still-admitted', userToken: 'STA1N-a', status: 'queued', request: { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 } };
+    const job = db.jobs.find(item => item.id === accepted.jobIds[0]);
     reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
     assert.equal(job.fairCharge.status, 'reserved'); settleFairQuota(db, job, false, now);
     assert.equal(job.fairCharge.status, 'refunded');
-  }, { collections: ['settings', 'ledger'], immediate: true });
+    job.status = 'failed'; recordGenerationFailure(db, job);
+  }, { collections: ['jobs', 'settings', 'ledger'], immediate: true });
   assert.deepEqual(store.db.settings.fairQuota.balances, before);
 });
 

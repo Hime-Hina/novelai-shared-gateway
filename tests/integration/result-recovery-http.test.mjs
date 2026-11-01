@@ -178,6 +178,7 @@ test('完整part被篡改不能误恢复成功；已退款Vibe完整part恢复�
       await store.update(db => {
         const current = store.loadJobForUpdate(job.id); settleFairQuota(db, current, false);
         current.status = 'failed'; current.error = 'synthetic prior refund';
+        recordGenerationFailure(db, current);
       }, { includeSettings: true, immediate: true }); await store.close();
     } else {
       const bytes = await readFile(path.join(f.dataDir, pending.file + '.part')); bytes[bytes.length - 1] ^= 1;
@@ -252,3 +253,4 @@ test('超过500份结果的冷历史PNG和Vibe在重启后仍有记录、文件�
     await f.stop();
   }
 });
+import { recordGenerationFailure } from '../../server/generation-execution.ts';

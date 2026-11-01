@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
+import { recordGenerationFailure } from '../../server/generation-execution.ts';
 
 const now = 1800000000000;
 function fixture(mode = 'v5') {
@@ -22,7 +23,7 @@ function fixture(mode = 'v5') {
   syncFairQuota(db, now);
   if (mode === 'fallback') {
     db.settings.fairQuota.autoAnlasFallback = true;
-    db.settings.fairQuota.balances.a.v5Available = 0;
+    db.settings.fairQuota.balances.a.v5Available = '0';
   }
   return db;
 }
@@ -65,12 +66,12 @@ for (const mode of ['v5', 'fixed', 'purchased', 'fallback', 'free']) {
     assert.equal(loss.firstUnknownAt, now + 2); assert.equal(loss.response.upstreamHttpStatus, 200);
     assert.equal(loss.refundEventId, job.generationRefund.eventId);
     if (mode === 'fallback') {
-      assert.equal(charge.amount, 26); assert.equal(original.anlasFixed, 26); assert.equal(original.v5, 0);
+      assert.equal(charge.amount, '26'); assert.equal(original.anlasFixed, '26'); assert.equal(original.v5, '0');
       assert.equal(loss.upstreamCandidates.length, 2); assert.equal(loss.candidateMode, 'alternatives');
-      assert.ok(Math.abs(loss.upstreamCandidates[0].resources.v5 - 0.057803468208092484) < 1e-10);
-      assert.equal(loss.upstreamCandidates[1].resources.anlasFixed, 26);
+      assert.equal(loss.upstreamCandidates[0].resources.v5, '0.057803468209');
+      assert.equal(loss.upstreamCandidates[1].resources.anlasFixed, '26');
     } else if (mode === 'purchased') {
-      assert.equal(loss.upstreamCandidates[0].resources.anlasFixed, 0);
+      assert.equal(loss.upstreamCandidates[0].resources.anlasFixed, '0');
       assert.equal(loss.upstreamCandidates[0].resources.anlasPurchased, charge.amount);
       assert.equal(db.settings.operatingFunds, undefined);
     }
@@ -109,7 +110,7 @@ test('真实 SQLite 预扣/退款/证据同事务；写失败还原内存，重�
   let store = new JsonStore(directory);
   t.after(() => store.close());
   await store.init();
-  await store.update(db => Object.assign(db, fixture()), { immediate: true });
+  await store.write(fixture());
   const original = structuredClone(store.db.settings.fairQuota.balances);
   store.sqlite.exec(`CREATE TEMP TRIGGER reject_generation_evidence BEFORE INSERT ON ledger
     WHEN json_extract(NEW.data, '$.type') = 'generation_reserved'
@@ -123,6 +124,7 @@ test('真实 SQLite 预扣/退款/证据同事务；写失败还原内存，重�
   const fail = db => {
     db.jobs[0].upstreamStartedAt = new Date(now + 1).toISOString();
     settleFairQuota(db, db.jobs[0], false, now + 2); db.jobs[0].status = 'failed';
+    recordGenerationFailure(db, db.jobs[0]);
   };
   store.sqlite.exec(`CREATE TEMP TRIGGER reject_generation_evidence BEFORE INSERT ON ledger
     WHEN json_extract(NEW.data, '$.type') = 'generation_loss_suspected'

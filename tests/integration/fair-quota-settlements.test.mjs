@@ -8,6 +8,8 @@ import vm from 'node:vm';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
+import { recordGenerationFailure } from '../../server/generation-execution.ts';
 
 const now = Date.now();
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };
@@ -20,22 +22,22 @@ async function open(t, directory) {
 }
 async function fixture(t, variant = 'v5') {
   const store = await open(t);
-  await store.update(db => {
-    db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true, balance: 100 }));
-    db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
-      quotaFixed: variant === 'purchased' ? 0 : 10000, quotaPurchased: 1000,
-      v5UsagePercent: 80, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: now }];
-    configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db, now);
-    if (variant === 'fallback') {
-      db.settings.fairQuota.autoAnlasFallback = true;
-      db.settings.fairQuota.balances.a.v5Available = 0;
-    }
-    const input = variant === 'free' ? { ...request, model: 'nai-diffusion-4-5-full' }
-      : ['fixed', 'purchased'].includes(variant) ? { ...request, width: 1536, allowPurchasedAnlas: true } : request;
-    const job = { id: 'job', userToken: 'a', status: 'running', request: input, createdAt: new Date(now).toISOString() };
-    db.jobs.push(job);
-    reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
-  }, { immediate: true });
+  const db = { settings: {}, jobs: [], ledger: [] };
+  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true, balance: 100 }));
+  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
+    quotaFixed: variant === 'purchased' ? 0 : 10000, quotaPurchased: 1000,
+    v5UsagePercent: 80, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: now }];
+  configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db, now);
+  if (variant === 'fallback') {
+    db.settings.fairQuota.autoAnlasFallback = true;
+    db.settings.fairQuota.balances.a.v5Available = '0';
+  }
+  const input = variant === 'free' ? { ...request, model: 'nai-diffusion-4-5-full' }
+    : ['fixed', 'purchased'].includes(variant) ? { ...request, width: 1536, allowPurchasedAnlas: true } : request;
+  const job = { id: 'job', userToken: 'a', status: 'running', request: input, createdAt: new Date(now).toISOString() };
+  db.jobs.push(job);
+  reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
+  await store.write(db);
   return store;
 }
 async function finish(store, success, options = writeOptions) {
@@ -44,6 +46,9 @@ async function finish(store, success, options = writeOptions) {
     const charge = settleFairQuota(db, job, success, now + 1, { requestStarted: false }, store.readFairQuotaSettlement(job.id));
     job.status = success ? 'done' : 'failed';
     job.completedAt = job.updatedAt = new Date(now + 1).toISOString();
+    if (success) recordDomainEvent(db, { eventType: 'JobCompleted', streamId: 'request:legacy-job', occurredAt: now + 1,
+      payload: { jobId: job.id, completedAt: job.completedAt, charge, artifactId: null } });
+    else recordGenerationFailure(db, job);
     return charge;
   }, options);
 }
@@ -156,7 +161,7 @@ test('重复导入同凭据幂等，冲突不覆盖冷凭据且整事务回滚',
   const original = store.readFairQuotaSettlement('job');
   await store.update(db => { db.settings.fairQuota.reservations.job = { ...original }; }, { immediate: true, collections: ['settings'] });
   const before = await store.read();
-  for (const conflict of [{ userId: 'b' }, { status: 'refunded' }, { amount: original.amount + 1 }]) {
+  for (const conflict of [{ userId: 'b' }, { status: 'refunded' }, { amount: String(Number(original.amount) + 1) }]) {
     await assert.rejects(store.update(db => {
       db.settings.fairQuota.reservations.job = { ...original, ...conflict };
       db.users[0].balance = 0;
@@ -165,7 +170,7 @@ test('重复导入同凭据幂等，冲突不覆盖冷凭据且整事务回滚',
     assert.deepEqual(store.readFairQuotaSettlement('job'), original);
   }
   const replacement = structuredClone(before);
-  replacement.settings.fairQuota.reservations.job = { ...original, amount: original.amount + 1 };
+  replacement.settings.fairQuota.reservations.job = { ...original, amount: String(Number(original.amount) + 1) };
   await assert.rejects(store.write(replacement), /结算凭据冲突/);
   assert.deepEqual(await store.read(), before);
   // 启动遇到旧热凭据与冷凭据冲突也保留原始证据，不提交一半迁移。

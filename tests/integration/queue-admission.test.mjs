@@ -7,42 +7,41 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { assertQueueAdmission, assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.ts';
+import { assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { createMemberSession, authenticateMemberSession } from '../../server/member-auth.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
 
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };
 const writeOptions = { collections: ['users', 'jobs', 'settings', 'ledger'], immediate: true };
 const refund = (db, job) => settleFairQuota(db, job, false);
 
-async function fixture(t) {
+async function fixture(t, seed = () => {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-queue-admission-'));
   const store = new JsonStore(directory);
   await store.init();
   t.after(() => store.close());
-  await store.update(db => {
-    db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true, balance: 0, memberAuth: { username: id, version: 'synthetic-session' } }));
-    db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 1000,
-      quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now(), inFlight: 0 }];
-    configureFairQuota(db, ['a', 'b', 'c', 'd']);
-    syncFairQuota(db);
-  }, { immediate: true });
+  const db = { settings: {}, jobs: [], images: [], ledger: [] };
+  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true, balance: 0, memberAuth: { username: id, version: 'synthetic-session' } }));
+  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 1000,
+    quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now(), inFlight: 0 }];
+  configureFairQuota(db, ['a', 'b', 'c', 'd']);
+  syncFairQuota(db);
+  seed(db);
+  await store.write(db);
   return { store, directory };
 }
 
 test('持续并发提交与停止串行提交，既不超上限也不留下停止后的排队任务', async t => {
   const { store } = await fixture(t);
-  const admit = index => store.update(db => {
-    const user = db.users[0];
-    assertQueueAdmission(db, user, undefined, {});
-    db.jobs.push({ id: `job-${index}`, userToken: user.token, status: 'queued', request,
-      createdAt: new Date().toISOString(), queueExpiresAt: queueDeadline(Date.now(), '', {}) });
-  }, { collections: ['jobs'], immediate: true });
-  const first = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => admit(index)));
+  const accept = createGenerationAdmission({ store, payloadBudget: createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
+    artifactAvailable: async () => false, cleanupStaleActiveJobs: async () => {}, env: {} });
+  const admit = () => accept({ identity: { token: 'a' }, request, source: 'synthetic-queue', noCache: true });
+  const first = await Promise.allSettled(Array.from({ length: 20 }, () => admit()));
   assert.equal(first.filter(result => result.status === 'fulfilled').length, 4);
   assert.ok(first.filter(result => result.status === 'rejected').every(result => result.reason.statusCode === 429));
   const stop = store.update(db => setMemberAdmission(db, 'a', false, refund), writeOptions);
-  const later = await Promise.allSettled(Array.from({ length: 20 }, (_, index) => admit(index + 20)));
+  const later = await Promise.allSettled(Array.from({ length: 20 }, () => admit()));
   assert.equal((await stop).cancelledJobIds.length, 4);
   assert.ok(later.every(result => result.status === 'rejected' && result.reason.statusCode === 403));
   const db = await store.read();
@@ -51,15 +50,14 @@ test('持续并发提交与停止串行提交，既不超上限也不留下停�
 });
 
 test('停止事务写失败整体回滚，成功后取消预留只退一次且在途继续结算', async t => {
-  const { store, directory } = await fixture(t);
-  await store.update(db => {
+  const { store, directory } = await fixture(t, db => {
     for (const status of ['queued', 'pending', 'running']) {
       const job = { id: status, userToken: 'a', status, request, createdAt: new Date().toISOString(), queueExpiresAt: queueDeadline(Date.now(), '') };
       db.jobs.push(job);
       reserveFairQuota(db, db.users[0], job, db.accounts[0]);
     }
     db.accounts[0].inFlight = 1;
-  }, { immediate: true });
+  });
   const before = await store.read(), session = await createMemberSession(store, before.users[0]);
   store.sqlite.exec("CREATE TEMP TRIGGER reject_stop BEFORE INSERT ON jobs BEGIN SELECT RAISE(ABORT, 'injected stop failure'); END");
   await assert.rejects(store.update(db => setMemberAdmission(db, 'a', false, refund), writeOptions), /injected stop failure/);
@@ -97,7 +95,7 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
 });
 
 test('等待者补查不通知未提交的取消，已经提交的取消也不会错过', async t => {
-  const { store } = await fixture(t);
+  const { store } = await fixture(t, db => { db.jobs.push({ id: 'waiting', userToken: 'a', status: 'queued', request }); });
   const jobWaiters = new Map();
   const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, setMemberAdmission, publicErrorMessage: String,
     refundJob: refund, clearJobStreamProgress() {}, scheduleQueueDrain() {} });
@@ -106,7 +104,6 @@ test('等待者补查不通知未提交的取消，已经提交的取消也不�
     const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
   }
-  await store.update(db => { db.jobs.push({ id: 'waiting', userToken: 'a', status: 'queued', request }); }, { immediate: true });
   let entered, release;
   const mutationStarted = new Promise(resolve => { entered = resolve; });
   const gate = new Promise(resolve => { release = resolve; });
@@ -136,17 +133,9 @@ test('图片缓存命中也保留原批次停止代次，不能给旧请求换�
     db.users[0].jobAdmissionVersion = 1;
     db.images.push({ id: 'cached', token: 'a', cacheKey: 'synthetic-cache', mimeType: 'image/png' });
   }, { immediate: true });
-  const context = vm.createContext({ store, structuredClone, assertMemberAcceptsJobs,
-    generationPayloadBudget: createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
-    assertFairMemberReady: async () => {}, cleanupStaleActiveJobs: async () => {},
-    isNoCache: () => false, requestCacheKey: () => 'synthetic-cache', dirtyResultJobRows: () => ({}),
-    httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) });
-  const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-  for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay', 'createJob', 'createDirectJob', 'getUserOrThrow']) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
-  }
-  await assert.rejects(context.createJob('a', request, { native: true, admissionVersion: 0 }), error => error.statusCode === 409);
+  const admit = createGenerationAdmission({ store, payloadBudget:createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
+    artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{} });
+  await assert.rejects(admit({identity:{token:'a'},request,source:'web',cacheKey:'synthetic-cache',noCache:false,admissionVersion:0}), error => error.statusCode === 409);
   assert.equal((await store.read()).jobs.length, 0);
 });
 
@@ -154,13 +143,12 @@ test('部分历史缓存下停止 pending 与恢复/零取消均只写受影响�
   const old = process.env.RUNTIME_JOBS_CACHE_LIMIT;
   process.env.RUNTIME_JOBS_CACHE_LIMIT = '50';
   t.after(() => { if (old === undefined) delete process.env.RUNTIME_JOBS_CACHE_LIMIT; else process.env.RUNTIME_JOBS_CACHE_LIMIT = old; });
-  const { store, directory } = await fixture(t);
-  await store.update(db => {
+  const { store, directory } = await fixture(t, db => {
     db.jobs = Array.from({ length: 101 }, (_, index) => ({ id: `history-${index}`, userToken: 'a', status: 'done', createdAt: new Date().toISOString() }));
     const pending = { id: 'cold-pending', userToken: 'a', status: 'pending', request, createdAt: new Date(1).toISOString() };
     db.jobs.push(pending);
     reserveFairQuota(db, db.users[0], pending, db.accounts[0]);
-  }, { immediate: true });
+  });
   await store.close();
   const reopened = new JsonStore(directory);
   await reopened.init();
