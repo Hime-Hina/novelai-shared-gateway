@@ -2477,15 +2477,6 @@ function dirtyJobListRows(result: { jobIds?: string[] } = {}, db: Partial<StoreD
   return rows;
 }
 
-function dirtyCreditReservationRows(result: Partial<Reservation> & { reservation?: Partial<Reservation> }) {
-  const reservation = result?.reservation || result || {};
-  return {
-    ...(reservation.userId ? { users: [reservation.userId] } : {}),
-    ...(reservation.account?.id ? { accounts: [reservation.account.id] } : {}),
-    ...(reservation.ledgerId ? { ledger: [reservation.ledgerId] } : {})
-  };
-}
-
 function mergeDirtyRows(target: DirtyRows, source: DirtyRows = {}) {
   Object.entries(source).forEach(([collection, ids]) => {
     target[collection] = uniqueIds([...(target[collection] || []), ...(Array.isArray(ids) ? ids : [ids])]);
@@ -3344,80 +3335,6 @@ async function requeueReservedJob(reservation: Reservation, error: unknown) {
   }, { dirtyRows: dirtyReservationJobRows(reservation) });
   scheduleQueueDrain(delay);
   clearJobStreamProgress(reservation.job?.id!);
-}
-
-async function reserveCreditAndAccount(token: string, request: ExecutionRequest, cacheKey: string) {
-  if (fairShareMode) throw httpError(409, '共享生图必须通过统一排队账本');
-  return store.update((db) => {
-    const user = getUserOrThrow(db, token);
-    const cost = generationCost(request);
-    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
-    const account = selectAccount(db.accounts, db.settings, { request });
-    if (!account && hasEnabledAccounts(db.accounts)) {
-      if (!hasAccountWithEnoughQuota(db.accounts, request)) throw httpError(503, '无符合本次参数的可用额度；试用限总像素1048576、28步以内');
-      throw httpError(429, 'all NovelAI accounts are busy, retry shortly.');
-    }
-    if (account) {
-      account.inFlight = Number(account.inFlight || 0) + 1;
-      account.lastUsedAt = new Date().toISOString();
-    }
-    user.balance! -= cost;
-    user.updatedAt = new Date().toISOString();
-    const ledger = {
-      id: createId('log'),
-      type: 'charge',
-      token,
-      accountId: account?.id || '',
-      amount: -cost,
-      at: new Date().toISOString()
-    };
-    db.ledger.unshift(ledger);
-    return { token, userId: user.id, account: account ? { ...account } : null, ledgerId: ledger.id, cost, accountCost: 0, cacheKey };
-  }, {
-    dirtyRows: dirtyCreditReservationRows
-  });
-}
-
-async function reserveCreditAndAccountWhenAvailable(token: string, request: ExecutionRequest, cacheKey: string, deadline: number) {
-  while (Date.now() < deadline) {
-    const result = await tryReserveCreditAndAccount(token, request, cacheKey);
-    if (!result.busy) return result.reservation;
-    await sleep(Math.min(750, Math.max(50, deadline - Date.now())));
-  }
-  return null;
-}
-
-async function tryReserveCreditAndAccount(token: string, request: ExecutionRequest, cacheKey: string) {
-  if (fairShareMode) throw httpError(409, '共享生图必须通过统一排队账本');
-  return store.update((db) => {
-    const user = getUserOrThrow(db, token);
-    const cost = generationCost(request);
-    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
-    const account = selectAccount(db.accounts, db.settings, { request });
-    if (!account && hasEnabledAccounts(db.accounts)) {
-      if (!hasAccountWithEnoughQuota(db.accounts, request)) throw httpError(503, '无符合本次参数的可用额度；试用限总像素1048576、28步以内');
-      return { busy: true };
-    }
-    if (account) {
-      account.inFlight = Number(account.inFlight || 0) + 1;
-      account.lastUsedAt = new Date().toISOString();
-    }
-    user.balance! -= cost;
-    user.updatedAt = new Date().toISOString();
-    const ledger = {
-      id: createId('log'),
-      type: 'charge',
-      token,
-      accountId: account?.id || '',
-      amount: -cost,
-      at: new Date().toISOString()
-    };
-    db.ledger.unshift(ledger);
-    return { busy: false, reservation: { token, userId: user.id, account: account ? { ...account } : null, ledgerId: ledger.id, cost, accountCost: 0, cacheKey } };
-  }, {
-    dirtyRows: dirtyCreditReservationRows,
-    shouldPersist: (result) => !result?.busy
-  });
 }
 
 function completionJob(db: StoreDatabase, reservation: Reservation, jobId: string, job = store.loadJobForUpdate(jobId)): StoreItem & { fairCharge: FairCharge } {
