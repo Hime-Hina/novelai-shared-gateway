@@ -18,7 +18,7 @@
 ## 接口契约
 
 - [现有 API 契约](contracts/api-contract.md)：Native、OpenAI、成员门户及任务/结果的兼容边界。
-- [成员生成目标契约](contracts/member-generation-contract.md)：能力描述、统一报价、费用确认、受理及配套读取，尚未实现。
+- [成员生成契约](contracts/member-generation-contract.md)：已在重构分支实现的能力描述、统一报价、费用确认、受理及配套读取；验收状态统一见当前计划。
 
 ## 架构与实现
 
@@ -45,5 +45,6 @@
 - [官方协议实测](history/novelai-protocol-probes.md)：固定时间的请求/响应证据。
 - [队列基线](history/queue-baseline.md)：排队数据与采样限制。
 - [浏览器基线](history/browser-baseline.md)：首屏、缓存和浏览器验收证据。
+- [事件重构性能验证](history/refactor-performance-evidence.md)：对照方法、正式运行口径、容量和重放证据；小样本与正式结果分别标识。
 
 新增文档放进对应目录并补充此索引；技术规则维护在所属文档，历史测量保留原日期和证据，不复制多个“当前版本”说明。

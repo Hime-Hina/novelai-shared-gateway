@@ -299,7 +299,7 @@ flowchart LR
 
 ## 8. 前端能力、统一报价与成员生成接口
 
-本轮实现与验收的唯一接口规范为[成员生成接口契约](../contracts/member-generation-contract.md)。该规范目前是目标契约，不能当作已经上线的路由；[现有 API 契约](../contracts/api-contract.md)继续描述当前及需要保持兼容的行为。
+本轮实现与验收的唯一接口规范为[成员生成接口契约](../contracts/member-generation-contract.md)。接口已在本分支实现，验收依据见第 10 节，生产状态仍以发布记录为准；[现有 API 契约](../contracts/api-contract.md)继续描述需要保持兼容的行为。
 
 | 接口 | 职责 | 关键边界 |
 | --- | --- | --- |

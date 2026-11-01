@@ -2,7 +2,7 @@
 
 更新日期：2026-11-01，Asia/Taipei。契约版本：`1`。
 
-状态：**目标契约，尚未实现。** 本文是[当前重构计划](../plans/architecture-refactor-plan.md)第 8 节及 R03/R04/R07/R09 的唯一接口规范。适用唯一执行器、单绑定 Opus、SQLite；多账号选路、多执行器及切库属于[后续计划](../plans/scaling-follow-up-plan.md)。[已有 API 契约](api-contract.md)继续约束 Native/OpenAI/direct 和旧网页入口，本文不改变它们的鉴权、状态码或请求格式。
+状态：**已在重构分支实现，最终验收进行中；尚未发布到生产。** 本文是[当前重构计划](../plans/architecture-refactor-plan.md)第 8 节及 R03/R04/R07/R09 的唯一接口规范，完成依据统一记录在计划中。适用唯一执行器、单绑定 Opus、SQLite；多账号选路、多执行器及切库属于[后续计划](../plans/scaling-follow-up-plan.md)。[已有 API 契约](api-contract.md)继续约束 Native/OpenAI/direct 和旧网页入口，本文不改变它们的鉴权、状态码或请求格式。
 
 本轮交付可供独立生成工作台使用的服务端接口、类型、样例和验收。完整官网前端、画布、云项目和素材库不在本契约中实施。编辑器草稿、选区和撤销历史留在编辑器；已受理请求、费用授权、扣退与产物归网关。
 
