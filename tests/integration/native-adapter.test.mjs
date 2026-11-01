@@ -1,24 +1,14 @@
-import { stripTypeScriptTypes } from 'node:module';
-import { quoteFairRequest } from '../../server/fair-quota.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
-import { createGenerationAdmission, generationIntent } from '../../server/generation-admission.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
-import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
-import { readNativeBody } from '../../server/native-body.ts';
-import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
-import { assertQueueAdmission, queueDeadline } from '../../server/queue-policy.ts';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { parseNativeImageRequest } from '../../server/native-image.ts';
+import { singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
+import { createNativeHttp, nativeRequestDiagnostic } from '../../server/native-http.ts';
+import { nativeImageZip } from '../../server/native-stream.ts';
+import { JobPreviews } from '../../server/job-previews.ts';
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
 import { Readable } from 'node:stream';
-import Negotiator from 'negotiator';
-const source = stripTypeScriptTypes(readFileSync(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-const section = source.slice(source.indexOf('function parseNativeImageRequest('), source.indexOf('async function handleOpenAiChatCompletion('));
-const context = vm.createContext({ parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest, quoteFairRequest, singleGenerationRequest, webJobRequestSummary, assertQueueAdmission,
-  queueDeadline: (now, deadline) => queueDeadline(now, deadline, {}), process: {env:{}},
-  publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, Negotiator, generationIntent, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
-vm.runInContext(section, context);
+const context = { parseNativeImageRequest, nativeImageZip, nativeRequestDiagnostic };
 const input = { action: 'generate', input: 'a cat', model: 'nai-diffusion-4-5-full', parameters: {width: 1024,height: 768,steps: 35, n_samples:1, seed: 4, stream: 'msgpack', v4_prompt:{caption:{base_caption:'a cat',char_captions:[{char_caption:'blue hair',centers:[{x:0.2,y:0.5}]}]}}, reference_image_multiple:[] } };
 const parsed = context.parseNativeImageRequest(input);
 assert.equal(parsed.steps,35); assert.equal(parsed.width,1024); assert.equal(parsed.height,768); assert.equal(parsed.prompt,'a cat');
@@ -39,7 +29,7 @@ assert.equal(zip.readUInt32LE(zip.length-22),0x06054b50);
 let crc=0xffffffff;
 for(const b of png){crc^=b;for(let bit=0;bit<8;bit++){const odd=crc%2;crc=Math.floor((crc>>>0)/2);if(odd)crc^=0xedb88320;}}
 assert.equal(zip.readUInt32LE(14),(crc^0xffffffff)>>>0);
-let submitted, nextId=0, queueSequence=0;
+let submitted, queueSequence=0;
 const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[],
   accounts:[{id:'opus',enabled:true,subscriptionActive:true,quotaTier:3,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,quotaCheckedAt:Date.now()}]};
 configureFairQuota(db,[user.id,'member-b','member-c','member-d']);syncFairQuota(db);
@@ -67,16 +57,15 @@ function completeJob(jobId,result){
   else activateNextBatchJob(db,job,store.nextQueueSequence());
   return result;
 }
-Object.assign(context, { bearerToken:req=>req.token||'', store, readJson:async req=>req.body,
+const deps = { store, readJson:async req=>req.body,
   admitGeneration:createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>0),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{}}),
-  assertFairMemberReady:async token=>assert.equal(token,user.token),cleanupStaleActiveJobs:async()=>{},
-  getUserOrThrow:(_db,token)=>{assert.equal(token,user.token);return user;},
-  createId:prefix=>`${prefix}-${++nextId}`,activeJobCount:()=>0,
-  openAiChatTimeoutMs:5000,waitForJobResult:async id=>completeJob(id,{saved:{mimeType:'image/png'}}),
-  scheduleQueueDrain:()=>{},readStoredImage:async()=>png,imageExtension:()=> 'png',
-  sendImage:(res,status,mime,buffer,headers)=>Object.assign(res,{status,mime,buffer,headers}) });
-await assert.rejects(context.handleNativeImageGeneration({token:'pst-invalid',headers:{},body:input},{setHeader(){}}),e=>e.statusCode===401);
-const jsonHeaders={'content-type':'application/json'};
+  timeoutMs:5000,waitForJobResult:async id=>completeJob(id,{saved:{mimeType:'image/png'}}),
+  schedule:()=>{},readStoredImage:async()=>png,previews:new JobPreviews(),logDiagnostic() {},
+  sendImage:(res,status,mime,buffer,headers)=>Object.assign(res,{status,mime,buffer,headers}) };
+const adapter = createNativeHttp(deps);
+context.handleNativeImageGeneration = adapter.handleImage;
+await assert.rejects(context.handleNativeImageGeneration({headers:{authorization:'Bearer pst-invalid'},body:input},{setHeader(){}}),e=>e.statusCode===401);
+const jsonHeaders={'content-type':'application/json',authorization:'Bearer STA1N-test'};
 await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:null,generationPayloadClaim:claim},{setHeader(){}}),error=>error.statusCode===400);
 const response={setHeader:()=>{}}; await context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},response);
 assert.equal(submitted.parent.source,'novelai-native');assert.equal(submitted.parent.member_id,user.id);
@@ -87,18 +76,14 @@ const form=new FormData();
 form.append('request',new Blob([JSON.stringify(input)],{type:'application/json'}),'blob');
 const encoded=new Response(form);
 const multipart=Readable.from([Buffer.from(await encoded.arrayBuffer())]);
-multipart.headers={'content-type':encoded.headers.get('content-type')}; multipart.token='STA1N-test';multipart.generationPayloadClaim=claim;
+multipart.headers={'content-type':encoded.headers.get('content-type'),authorization:'Bearer STA1N-test'};multipart.generationPayloadClaim=claim;
 const multipartResponse={setHeader:()=>{}};
 await context.handleNativeImageGeneration(multipart,multipartResponse);
 assert.equal(submitted.request.steps,35); assert.equal(submitted.request.prompt,'a cat');
 assert.deepEqual(submitted.request.nativeParameters.v4_prompt,input.parameters.v4_prompt);
 assert.equal(multipartResponse.status,200); assert.deepEqual(multipartResponse.buffer,response.buffer);
-context.waitForJobResult=async id=>completeJob(id,{error:'mock provider failure'});
-context.isTimeoutResultMessage=()=>false;
+deps.waitForJobResult=async id=>completeJob(id,{error:'mock provider failure'});
 await assert.rejects(context.handleNativeImageGeneration({token:'STA1N-test',headers:jsonHeaders,body:input,generationPayloadClaim:claim},{setHeader:()=>{}}),e=>e.statusCode===500);
-assert.match(source,/url\.pathname\.startsWith\('\/ai\/'\)/);
-assert.match(source,/\['\/ai\/generate-image', '\/v1\/ai\/generate-image'\]/);
-assert.match(source,/if \(options\.native\) return structuredClone\(body\s*\)/);
 console.log('Native adapter offline checks passed: native payload, validation, ZIP, auth, queue and failures. No upstream calls.');
 
 for (const seed of [4294967295,4294967296,9999999999]) {
@@ -127,7 +112,7 @@ function zipFiles(bytes) {
 }
 for (const failAt of [0, 2]) {
   let completedWaits = 0;
-  context.waitForJobResult = async jobId => {
+  deps.waitForJobResult = async jobId => {
     assert.equal(submitted.jobs.length,3);
     assert.equal(jobId,submitted.jobs[completedWaits].id);
     if(completedWaits===0)assert.deepEqual(Array.from(submitted.jobs,job=>job.status),['queued','pending','pending']);

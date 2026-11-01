@@ -52,3 +52,7 @@ export function isAbortError(error: unknown): boolean {
   const value = error as PublicError;
   return value?.name === 'AbortError' || /aborted|abort/i.test(String(value?.message || ''));
 }
+
+export function isTimeoutResultMessage(message: unknown): boolean {
+  return /direct generate timeout|job timed out|aborted|abort|timeout/i.test(String(message || ''));
+}
