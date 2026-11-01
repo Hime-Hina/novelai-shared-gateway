@@ -9,7 +9,13 @@ import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { JsonStore, sqlRecord } from '../../server/store.ts';
+import { JsonStore, sqlRecord, applyEventProjection, activateEventAuthority } from '../../server/store.ts';
+import { eventAuthorityEnabled, copyProtectedFacts, replayDomainEvents, readStreamProjection } from '../../server/event-store.ts';
+import { migrateStorage } from '../../server/storage-migrations.ts';
+import { createGenerationAdmission, generationIntent } from '../../server/generation-admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
+import { memberGenerationInput } from '../../server/member-generation.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { setMemberCredentials, loginMember } from '../../server/member-auth.ts';
 import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
@@ -51,7 +57,7 @@ async function fixture(t, resource = 'v5') {
   state.settings.promptApi = { apiKey: secrets.prompt, baseUrl: secrets.promptUrl, model: 'preserved-model' };
   state.settings.publicBaseUrl = secrets.publicUrl;
   configureFairQuota(state, state.users.map(user => user.id)); syncFairQuota(state, now);
-  if (resource === 'fallback') { state.settings.fairQuota.autoAnlasFallback = true; state.settings.fairQuota.balances.a.v5Available = 0; }
+  if (resource === 'fallback') { state.settings.fairQuota.autoAnlasFallback = true; state.settings.fairQuota.balances.a.v5Available = '0'; }
   const expectedBalances = structuredClone(state.settings.fairQuota.balances);
   const job = (id, index) => ({ id, userToken: state.users[index].token, accountId: 'opus', status: 'running',
     createdAt: new Date(now).toISOString(), request: { ...request }, cost: 1 });
@@ -86,6 +92,8 @@ async function fixture(t, resource = 'v5') {
     sampleIndex: 0, createdAt: new Date(now).toISOString(), request: { model: request.model } }, 1);
   db.prepare('INSERT INTO generation_idempotency VALUES (?,?,?,?,?,?,?,?)').run('a', 'generate', 'c'.repeat(64), 'd'.repeat(64),
     JSON.stringify({ defaultArtist: privatePrompt, defaultNegative: secrets.refresh }), 'pending-child', 'request-cold', new Date(now).toISOString());
+  db.prepare('INSERT INTO generation_contexts VALUES (?,?)').run(`generation-idempotency:a:generate:${'c'.repeat(64)}`,
+    JSON.stringify({ defaultArtist: privatePrompt, defaultNegative: secrets.refresh }));
   const charge = JSON.parse(db.prepare("SELECT charge FROM fair_quota_settlements WHERE job_id='review-cold'").get().charge);
   charge.debug = secrets.pst;
   db.prepare("UPDATE fair_quota_settlements SET charge=? WHERE job_id='review-cold'").run(JSON.stringify(charge));
@@ -131,7 +139,7 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   assert.deepEqual(await readFile(path.join(f.sourceDir, 'images/image-cold.webp')), f.webp);
   assert.equal(result.refunded, 1); assert.equal(result.reviewsClosed, 2); assert.equal(result.isolated, 4);
   assert.equal(result.imagesCopied, 1); assert.equal(result.imagesMissing, 1);
-  for (const table of ['users', 'accounts', 'jobs', 'images', 'cards', 'app_records', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements'])
+  for (const table of ['users', 'accounts', 'jobs', 'images', 'cards', 'app_records', 'generation_idempotency', 'fair_quota_settlements'])
     assert.equal(result.after[table], result.before[table] + (table === 'fair_quota_settlements' ? 1 : 0), table);
   assert.equal(result.after.member_sessions, 0);
   const db = new Database(path.join(target, 'library.sqlite'), { readonly: true }); t.after(() => db.close());
@@ -175,6 +183,14 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   const requestRow = db.prepare("SELECT * FROM generation_requests WHERE id='request-cold'").get();
   assert.equal(requestRow.member_id, 'a'); assert.equal(requestRow.payload_bytes, Buffer.byteLength(requestRow.payload));
   assert.equal(JSON.parse(requestRow.payload).prompt, privatePrompt);
+  const protectedInputs = db.prepare("SELECT COUNT(*) AS n FROM generation_requests WHERE id LIKE 'legacy-input:%'").get().n;
+  assert.equal(result.after.generation_requests, result.before.generation_requests + protectedInputs);
+  assert.equal(protectedInputs, result.before.jobs - 1, 'opening relocates each legacy inline input to a protected row');
+  const context = JSON.parse(db.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(`generation-idempotency:a:generate:${'c'.repeat(64)}`).payload);
+  assert.equal(context.defaultArtist, privatePrompt); assert.notEqual(context.defaultNegative, secrets.refresh);
+  assert.equal(eventAuthorityEnabled(db), true); assert.match(result.history.historyId, /^[0-9a-f-]{36}$/);
+  assert.equal(result.history.kind, 'isolated-test-copy'); assert.match(result.history.source.sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(JSON.parse(db.prepare("SELECT value FROM app_meta WHERE key='event_test_copy_provenance'").get().value), result.history);
   assert.deepEqual(db.prepare('SELECT member_id,job_id,request_id FROM generation_idempotency').get(), { member_id: 'a', job_id: 'pending-child', request_id: 'request-cold' });
   assert.equal(db.prepare("SELECT 1 FROM app_meta WHERE key='member_session_owner'").get(), undefined);
   assert.equal(all(db, 'cards')[0].enabled, false);
@@ -229,10 +245,91 @@ test('免费、订阅Anlas、购买Anlas和自动回退预留沿现有账务函�
       const charge = JSON.parse(db.prepare("SELECT charge FROM fair_quota_settlements WHERE job_id='running'").get().charge);
       assert.equal(charge.status, 'refunded');
       assert.equal(charge.resource, resource === 'free' ? 'free' : 'anlas');
-      if (resource === 'purchased') { assert.equal(charge.fixed, 0); assert.ok(charge.purchased > 0); }
+      if (resource === 'purchased') { assert.equal(charge.fixed, '0'); assert.ok(charge.purchased > 0); }
       if (resource === 'fallback') assert.equal(charge.billingMode, 'anlas_fallback');
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ledger WHERE json_extract(data,'$.jobId')='running' AND source='generation_refunded'").get().n, 1);
     } finally { db.close(); }
     assert.equal(digest(await readFile(f.source)), digest(f.originalBytes));
   });
+});
+
+test('事件权威源库隔离为全新opening历史，受保护上下文脱敏后可重放且不复活原任务', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'nai-test-copy-events-')), sourceDir = path.join(root, 'source'); await mkdir(sourceDir);
+  const store = new JsonStore(sourceDir); await store.init();
+  t.after(() => store.close());
+  const seed = { settings: store.db.settings, jobs: [], images: [], ledger: [], cards: [],
+    users: ['a', 'b', 'c', 'd'].map((id, index) => ({ id, token: index ? `STA1N-source-${id}-synthetic` : secrets.api, enabled: true,
+      discord: { id: `source-${id}`, guildId: 'source-guild', accessToken: secrets.access, refreshToken: secrets.refresh } })),
+    accounts: [{ id: 'opus', token: secrets.pst, enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 10000, quotaPurchased: 0,
+      v5UsagePercent: 80, quotaCheckedAt: now, proxyUrl: secrets.proxy }] };
+  for (const user of seed.users) await setMemberCredentials(seed, user.id, { username: `source_${user.id}`, password: secrets.password });
+  configureFairQuota(seed, ['a', 'b', 'c', 'd']); syncFairQuota(seed, now);
+  await store.write(seed);
+  const openingBalance = structuredClone(store.db.settings.fairQuota.balances.a);
+  await store.enableEventAuthority();
+  const budget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
+  const admit = createGenerationAdmission({ store, payloadBudget: budget, artifactAvailable: async () => false, cleanupStaleActiveJobs: async () => {}, now: () => now + 100 });
+  const intent = generationIntent('source-idempotency-key', context => ({ ...request, seed: 42, scale: 5, cfg: 0, sampler: 'k_euler', noiseSchedule: 'karras',
+    negative: context.defaultNegative, sampleCount: 1, allowPurchasedAnlas: false }), {
+    noCache: true, context: () => ({ defaultArtist: privatePrompt, defaultNegative: secrets.refresh })
+  });
+  const accepted = await admit({ identity: { memberId: 'a' }, intent, source: 'web', batch: true, noCache: true });
+  await store.update(db => {
+    const job = db.jobs.find(job => job.requestId === accepted.requestId), payload = store.readGenerationRequest(accepted.requestId);
+    job.status = 'running'; job.accountId = 'opus'; job.startedAt = job.updatedAt = new Date(now + 200).toISOString();
+    reserveFairQuota(db, db.users[0], job, db.accounts[0], now + 200, payload);
+  }, { immediate: true });
+  assert.equal(eventAuthorityEnabled(store.sqlite), true);
+  const sourceHistoryId = JSON.parse(store.sqlite.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value).historyId;
+  const sourceCursor = store.sqlite.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS value FROM event_commits').get().value;
+  const sourceFingerprint = store.sqlite.prepare('SELECT fingerprint FROM generation_idempotency WHERE request_id=?').get(accepted.requestId).fingerprint;
+  const acceptedEventId = store.sqlite.prepare("SELECT event_id FROM domain_events WHERE event_type='RequestAccepted'").get().event_id;
+  await store.close();
+  const source = path.join(sourceDir, 'library.sqlite'), original = await readFile(source), target = path.join(root, 'isolated');
+  const result = await createTestCopy({ source, target, now: now + 1000 });
+  assert.deepEqual(await readFile(source), original); assert.equal(result.refunded, 1); assert.equal(result.isolated, 1);
+  assert.equal(result.history.source.historyId, sourceHistoryId); assert.equal(result.history.source.lastCommitSeq, sourceCursor);
+  assert.equal(result.history.source.authoritative, true); assert.notEqual(result.history.historyId, sourceHistoryId);
+  const isolated = new Database(path.join(target, 'library.sqlite'), { readonly: true }); t.after(() => isolated.close());
+  assert.equal(eventAuthorityEnabled(isolated), true);
+  assert.equal(isolated.prepare('SELECT 1 FROM domain_events WHERE event_id=?').get(acceptedEventId), undefined);
+  assert.equal(isolated.prepare("SELECT COUNT(*) n FROM domain_events WHERE event_type NOT IN ('OpeningStateRecorded','LegacyFactRecorded')").get().n, 0);
+  assert.equal(isolated.prepare("SELECT 1 FROM app_meta WHERE key='event_replay_source'").get(), undefined);
+  const stored = JSON.parse(isolated.prepare('SELECT payload FROM generation_requests WHERE id=?').get(accepted.requestId).payload);
+  assert.equal(stored.prompt, privatePrompt); assert.notEqual(stored.negative, secrets.refresh);
+  const context = JSON.parse(isolated.prepare('SELECT payload FROM generation_contexts').get().payload);
+  assert.equal(context.defaultArtist, privatePrompt); assert.notEqual(context.defaultNegative, secrets.refresh);
+  const bytes = await readFile(path.join(target, 'library.sqlite'));
+  for (const value of [secrets.api, secrets.pst, secrets.access, secrets.refresh, secrets.password, secrets.proxy]) assert.equal(bytes.includes(Buffer.from(value)), false);
+  const replay = new Database(path.join(root, 'replayed.sqlite')); t.after(() => replay.close()); migrateStorage(replay); copyProtectedFacts(isolated, replay);
+  const rebuilt = replayDomainEvents(isolated, replay, { project: applyEventProjection }); assert.ok(rebuilt.events > 0);
+  activateEventAuthority(replay); assert.equal(eventAuthorityEnabled(replay), true);
+  const projected = readStreamProjection(replay, `request:${accepted.requestId}`).projection.jobs[accepted.jobIds[0]];
+  assert.equal(projected.status, 'failed'); assert.equal(projected.fairCharge.status, 'refunded');
+  assert.equal(replay.prepare("SELECT COUNT(*) n FROM jobs WHERE status IN ('queued','pending','running')").get().n, 0);
+  assert.ok(all(replay, 'users').every(user => user.acceptingJobs === false));
+  assert.deepEqual(JSON.parse(replay.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value).fairQuota.balances.a, openingBalance);
+  const mapping = replay.prepare('SELECT * FROM generation_idempotency WHERE request_id=?').get(accepted.requestId);
+  assert.equal(mapping.job_id, accepted.jobIds[0]); assert.equal(mapping.normalization_context.includes(secrets.refresh), false);
+  assert.match(mapping.fingerprint, /^[a-f0-9]{64}$/); assert.notEqual(mapping.fingerprint, sourceFingerprint);
+  assert.equal(JSON.parse(replay.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id=?').get(accepted.jobIds[0]).charge).status, 'refunded');
+  assert.deepEqual(replayDomainEvents(isolated, replay, { project: applyEventProjection }), { lastCommitSeq: rebuilt.lastCommitSeq, commits: 0, events: 0 });
+  const copiedStore = new JsonStore(target); await copiedStore.init(); t.after(() => copiedStore.close());
+  const copiedBudget = createGenerationPayloadBudget(() => copiedStore.activeGenerationPayloadBytes());
+  const copiedAdmit = createGenerationAdmission({ store: copiedStore, payloadBudget: copiedBudget, artifactAvailable: async () => false, cleanupStaleActiveJobs: async () => {}, now: () => now + 2000 });
+  await assert.rejects(copiedAdmit({ identity: { memberId: 'a' }, intent: { ...intent, fingerprint: () => sourceFingerprint }, source: 'web', batch: true, noCache: true }),
+    error => error.statusCode === 409 && error.code === 'idempotency_conflict');
+  assert.equal(copiedStore.countRecords('jobs'), 1);
+  const history = publicGenerationRequest(await readOwnedGenerationRequest(copiedStore, accepted.requestId, 'a'));
+  assert.equal(history.id, accepted.requestId); assert.equal(history.status, 'cancelled'); assert.equal(history.jobs[0].status, 'failed');
+  const restoredInput = memberGenerationInput(accepted.requestId, copiedStore.readGenerationRequest(accepted.requestId));
+  assert.equal(restoredInput.recoverable, true); assert.equal(restoredInput.input.input, privatePrompt);
+});
+
+test('副本表清单拒绝未评审的新表而不修改源库或交付半份结果', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'nai-test-copy-table-')), source = path.join(root, 'source.sqlite'), db = new Database(source);
+  migrateStorage(db); db.exec("CREATE TABLE unreviewed_private_table(secret TEXT); INSERT INTO unreviewed_private_table VALUES('synthetic-private-unreviewed')"); db.close();
+  const original = await readFile(source), target = path.join(root, 'isolated');
+  await assert.rejects(createTestCopy({ source, target }), error => error.code === 'unsupported_tables' && error.counts.tables === 1);
+  assert.deepEqual(await readFile(source), original); await assert.rejects(stat(path.join(target, 'library.sqlite')), { code: 'ENOENT' });
 });

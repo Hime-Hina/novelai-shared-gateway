@@ -1,27 +1,30 @@
 import { constants, createReadStream } from 'node:fs';
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, realpath, rmdir, unlink, writeFile } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { migrateStorage } from '../server/storage-migrations.ts';
 import { recordTables } from '../server/storage-schema.ts';
-import { sqlRecord } from '../server/store.ts';
+import { activateEventAuthority, sqlRecord } from '../server/store.ts';
+import { eventAuthorityEnabled } from '../server/event-store.ts';
 import { setMemberCredentials } from '../server/member-auth.ts';
 import { settleFairQuota } from '../server/fair-quota.ts';
 import { closeGenerationReview } from '../server/generation-accounting.ts';
 
 export const TEST_COPY_UPSTREAM_TOKEN = 'pst-synthetic-d01-mock-upstream-only';
 const collections = Object.keys(recordTables);
-const tables = [...collections, 'app_settings', 'app_meta', 'app_records', 'generation_requests',
+const historyTables = ['domain_events', 'event_commits', 'event_streams', 'event_clock', 'projection_versions', 'event_imports'];
+const copiedTables = [...collections, 'app_settings', 'app_meta', 'app_records', 'generation_requests', 'generation_contexts',
   'generation_idempotency', 'fair_quota_settlements', 'member_sessions', 'free_image_usage', '__drizzle_migrations'];
+const tables = [...copiedTables, ...historyTables];
 const active = new Set(['queued', 'pending', 'running']);
 const secretFields = new Set(['apiKey', 'api_key', 'password', 'accessToken', 'refreshToken', 'access_token', 'refresh_token',
   'clientSecret', 'client_secret', 'secret', 'image_cache_secret_key', 'mask_cache_secret_key', 'reference_image_cache_secret_key']);
 const proxyFields = new Set(['proxyUrl', 'socksProxy', 'proxy']);
 const jsonColumns = { ...Object.fromEntries(collections.map(name => [name, 'data'])),
-  app_settings: 'value', app_records: 'data', generation_requests: 'payload',
+  app_settings: 'value', app_records: 'data', generation_requests: 'payload', generation_contexts: 'payload',
   generation_idempotency: 'normalization_context', fair_quota_settlements: 'charge' };
 const message = 'Isolated in an offline test copy; original production task will not be replayed.';
 class CopyError extends Error {
@@ -41,6 +44,20 @@ function* records(db, table) {
   }
 }
 function count(db, table) { return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n; }
+function historySource(db) {
+  const opening = db.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get();
+  const hash = createHash('sha256');
+  for (const table of ['event_commits', 'domain_events']) {
+    hash.update(table + '\0');
+    const order = table === 'event_commits' ? 'commit_seq' : 'commit_seq,event_index';
+    for (const row of db.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).safeIntegers().iterate()) {
+      hash.update(JSON.stringify(row, (_key, value) => typeof value === 'bigint' ? value.toString() : value) + '\n');
+    }
+  }
+  return { historyId: opening ? parse(opening.value).historyId || null : null,
+    lastCommitSeq: db.prepare('SELECT CAST(COALESCE(MAX(commit_seq),0) AS TEXT) AS value FROM event_commits').get().value,
+    commits: count(db, 'event_commits'), events: count(db, 'domain_events'), sha256: hash.digest('hex'), authoritative: eventAuthorityEnabled(db) };
+}
 
 // This operates on a protected full SQLite copy, never JsonStore's partial runtime cache.
 export async function createTestCopy({ source, target, imagesDir, now = Date.now() }) {
@@ -71,6 +88,8 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     // A legacy generic-only database needs its existing importer before this tool can close reservations.
     if (count(db, 'app_records') && !collections.some(table => count(db, table))) throw new CopyError('legacy_import_required');
     summary.before = Object.fromEntries(tables.map(table => [table, count(db, table)]));
+    const sourceHistory = historySource(db);
+    const isolationNonce = randomBytes(32);
     const settingsRow = db.prepare("SELECT value FROM app_settings WHERE key='settings'").get();
     if (!settingsRow) throw new CopyError('settings_missing');
     const state = { settings: parse(settingsRow.value), users: [...records(db, 'users')].map(row => parse(row.data)), ledger: [] };
@@ -140,6 +159,9 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
         throw new CopyError('orphan_reserved_charge', { reservations: 1 });
     }
     db.transaction(() => {
+      // Only this newly created, private backup may start a different history after its facts are scrubbed.
+      for (const table of historyTables) db.exec(`DELETE FROM ${table}`);
+      db.exec("DELETE FROM app_meta WHERE key IN ('event_opening','event_authority','event_replay_source','event_test_copy_provenance')");
       for (const row of records(db, 'jobs')) {
         const job = parse(row.data), settled = cold.get(job.id), charge = settled ? parse(settled.charge) : reservations[job.id];
         const isolate = active.has(job.status) || job.resultPending || job.generationReview?.status === 'pending' || charge?.status === 'reserved';
@@ -198,13 +220,22 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
         }
       }
       // Metadata and cold-table scalar columns may contain copies of known credentials too.
-      for (const table of tables.filter(name => name !== '__drizzle_migrations' && !collections.includes(name))) {
+      for (const table of copiedTables.filter(name => name !== '__drizzle_migrations' && !collections.includes(name))) {
         const columns = db.prepare(`PRAGMA table_info(${table})`).all().filter(column => column.type.toUpperCase() === 'TEXT').map(column => column.name);
         const update = db.prepare(`UPDATE ${table} SET ${columns.map(column => `${column}=@${column}`).join(',')} WHERE rowid=@_rowid`);
         for (const row of records(db, table)) update.run(Object.fromEntries([['_rowid', row._rowid], ...columns.map(column =>
           [column, column === jsonColumns[table] ? row[column] : scrubText(row[column])])]));
       }
+      // Keep old key ownership as a tombstone: scrubbed inputs no longer represent the original accepted intent.
+      const blockKey = db.prepare('UPDATE generation_idempotency SET fingerprint=? WHERE rowid=?');
+      for (const row of records(db, 'generation_idempotency')) blockKey.run(createHash('sha256').update('test-copy-isolated:v1\0')
+        .update(isolationNonce).update(String(row.fingerprint)).digest('hex'), row._rowid);
     })();
+    // Recompute payload/context hashes from the scrubbed protected rows, then verify and switch the new baseline.
+    const authority = activateEventAuthority(db), opening = parse(db.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value);
+    summary.history = { kind: 'isolated-test-copy', version: 1, historyId: opening.historyId, createdAt: new Date(now).toISOString(),
+      source: sourceHistory, openingCommitSeq: authority.commitSeq, authorityVersion: authority.version, historicalIdempotency: 'blocked' };
+    db.prepare("INSERT INTO app_meta(key,value) VALUES('event_test_copy_provenance',?)").run(JSON.stringify(summary.history));
     if (db.pragma('integrity_check', { simple: true }) !== 'ok' || db.pragma('foreign_key_check').length) throw new CopyError('copy_integrity_failed');
     summary.after = Object.fromEntries(tables.map(table => [table, count(db, table)]));
     const copied = new Set(), rootImages = imagesDir ? await realpath(imagesDir) : null;
