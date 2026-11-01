@@ -57,6 +57,8 @@ export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enab
   model?: string; prompt?: string; fullPrompt?: string; type?: string; attempt?: { memberId?: string };
   request?: AccountingJob['request'] & Partial<StoredGenerationRequest>;
   base64?: string; accountCost?: number; errorStatus?: number; startedAt?: string; queueExpiresAt?: string;
+  sha256?:string;byteLength?:number;errorCode?:string;cancellationReason?:string;operation?:string;requestedSteps?:number;routedSteps?:number;
+  cooldownReason?:string;ordinaryStrikeCount?:number;capacityStrikeCount?:number;capacityConcurrencyLimit?:number;capacityLastErrorAt?:string;
   acceptingJobs?: boolean; jobAdmissionVersion?: number; cooldownUntil?: string; lastUsedAt?: string;
   sharedCooldown?: NonNullable<NonNullable<Parameters<typeof recordSharedCompletion>[2]>['job']>['sharedCooldown'];
   generationProgress?: { percent?: number; step?: number; total?: number; updatedAt?: string };
@@ -357,101 +359,54 @@ export class JsonStore {
     return (this.db!.images || []).map((image) => image.file).filter(Boolean as unknown as Present);
   }
 
-  async trimImageCache(maxCacheImages: number | null = null, options: { maxDelete?: unknown; batchSize?: unknown; force?: boolean } = {}) {
-    // 私有部署保护：禁止自动裁剪图片缓存记录。
-    if (process.env.NO_AUTO_DELETE === 'true') return [];
-    await this.ensureLoaded();
-    if (options.force !== true && Date.now() - this.lastImageTrimAt < 1000) return [];
-    this.lastImageTrimAt = Date.now();
-    this.flushPendingPersistSync();
-
-    const maxCache = clampNumber(maxCacheImages ?? this.db!.settings.maxCacheImages, 0, MAX_CACHE_IMAGES_LIMIT);
-    this.db!.settings.maxCacheImages = maxCache;
-    const total = this.countRecords('images');
-    const force = options.force === true || maxCache <= 0;
-    const trimBuffer = force ? 0 : Math.max(0, Math.floor(Number(options.batchSize ?? 100) || 0));
-    const trimAt = maxCache + trimBuffer;
-    if (total < trimAt) return [];
-
-    const maxDelete = trimImageCacheDeleteLimit(options.maxDelete);
-    const deleteCount = Math.min(Math.max(0, total - maxCache), maxDelete);
-    if (!deleteCount) return [];
-
-    const startedAt = Date.now();
-    const removedRows = this.sqlite!.prepare<unknown[], DataRow>(`
-      SELECT id, order_value AS orderValue, data
-      FROM images
-      ORDER BY order_value ASC
-      LIMIT @deleteCount
-    `).all({ deleteCount });
-    const removedImages: RemovedImages = removedRows
-      .map((row) => ({ row, image: safeJson(row.data, null) }))
-      .filter((entry) => entry.image)
-      .map((entry) => ({ ...entry.image, id: entry.image!.id || entry.row.id }));
-    const removedIds = removedImages.map((image) => String(image.id || '')).filter(Boolean as unknown as Present);
-    if (!removedIds.length) return [];
-
-    const affectedJobs = [];
-    for (const chunk of chunks(removedIds, 500)) {
-      const placeholders = chunk.map(() => '?').join(',');
-      const rows = this.sqlite!.prepare<unknown[], DataRow>(`
-        SELECT id, order_value AS orderValue, data
-        FROM jobs
-        WHERE image_id IN (${placeholders})
-      `).all(...chunk);
-      affectedJobs.push(...rows);
-    }
-
-    const jobUpdates = affectedJobs
-      .map((row) => {
-        const job = safeJson(row.data, null);
-        if (!job) return null;
-        if (!job.id) job.id = row.id;
-        job.imageId = '';
-        const data = JSON.stringify(job);
-        const order = Number(row.orderValue);
-        return {
-          id: row.id,
-          data,
-          order,
-          sql: sqlRecord('jobs', job, order, data)
-        };
-      })
-      .filter(Boolean as unknown as Present);
-
-    const event = this.describeCommit({ settingsChanged: false,
-      deletes: removedIds.map(id => ({ collection: 'images', id })), upserts: jobUpdates.map(row => ({ ...row, collection: 'jobs' as const })) });
-    const applyTrim = this.sqlite!.transaction(() => {
-      for (const update of jobUpdates) this.statements!.upsertRecord.jobs.run(update.sql);
-      for (const id of removedIds) this.statements!.deleteRecord.images.run({ id });
-    });
-    applyTrim();
-
-    const removedSet = new Set(removedIds);
-    this.db!.images = (this.db!.images || []).filter((image) => !removedSet.has(String(image.id || '')));
-    for (const id of removedIds) {
-      this.rowState.images?.delete(id);
-      this.orderKeys.images?.delete(id);
-    }
-
-    const affectedJobIds = [];
-    for (const update of jobUpdates) {
-      affectedJobIds.push(update.id);
-      const cachedJob = (this.db!.jobs || []).find((job) => job.id === update.id);
-      if (cachedJob) cachedJob.imageId = '';
-      if (this.rowState.jobs?.has(update.id)) {
-        this.rowState.jobs.set(update.id, { data: update.data, order: update.order });
-        this.orderKeys.jobs.set(update.id, update.order);
-      }
-    }
-    removedImages.affectedJobIds = uniqueStrings(affectedJobIds);
-    this.trimRuntimePartialCaches();
-    this.notifyCommit(event);
-
-    runtimeLog(`SQLite image cache trimmed ${removedIds.length} image record(s), affectedJobs=${removedImages.affectedJobIds.length}, totalBefore=${total}, max=${maxCache}, maxDelete=${maxDelete}, duration=${Date.now() - startedAt}ms`);
-    return removedImages;
+  async retireCachedArtifacts(imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive=false):Promise<RemovedImages> {
+    const commandId=crypto.randomUUID(),now=Date.now(),at=new Date(now).toISOString();
+    const result=await this.update(db=>{
+      return this.retireArtifactsInCommand(db,imageIds,reason,skipActive,now,commandId);
+    },{domainCommand:{commandId,recordedAt:at},immediate:true,dirtyRows:result=>({images:result.images.map(image=>image.id),jobs:result.jobIds,
+      ledger:reason==='owner_cleared_cache'&&result.images.length?[`cache-retired:${commandId}`]:[]})});
+    const images=result.images as RemovedImages;images.affectedJobIds=result.jobIds;return images;
   }
 
+  retireArtifactsInCommand(db:StoreDatabase,imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive:boolean,now:number,commandId=''):{images:StoreItem[];jobIds:string[]} {
+    const removed:StoreItem[]=[],affected=new Set<string>();
+    for(const id of uniqueStrings(imageIds)){
+      const image=db.images.find(image=>image.id===id)||this.selectItemById('images',id);if(!image)continue;
+      const rows=this.sqlite!.prepare<unknown[],DataRow>('SELECT id,data,order_value AS orderValue FROM jobs WHERE image_id=? OR id=?').all(id,image.jobId||'');
+      const linked=new Map<string,{row?:DataRow;job:StoreItem}>(rows.map(row=>[row.id,{row,job:JSON.parse(row.data) as StoreItem}]));
+      for(const job of db.jobs)if(job.imageId===id||job.lateResultImageId===id||job.resultPending?.imageId===id)linked.set(job.id,{row:linked.get(job.id)?.row,job});
+      for(const [key,{job}] of linked)if(job.imageId!==id&&job.lateResultImageId!==id&&job.resultPending?.imageId!==id)linked.delete(key);
+      const active=[...linked.values()].some(({job})=>!this.canRetireJobHistory(job)||job.requestId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE request_id=? AND status IN ('queued','pending','running') LIMIT 1").get(job.requestId));
+      if(active){if(skipActive)continue;throw Object.assign(new Error('Cannot retire an artifact referenced by active work or an unresolved review.'),{statusCode:409});}
+      const jobIds:string[]=[];
+      for(const {row,job} of linked.values()){
+        let live=db.jobs.find(item=>item.id===job.id);
+        if(!live){live=job;db.jobs.push(live);if(row){this.rowState.jobs.set(job.id,{data:row.data,order:row.orderValue});this.orderKeys.jobs.set(job.id,row.orderValue);}}
+        live.imageId='';if(live.lateResultImageId===id)live.lateResultImageId='';if(live.lateResultAvailable)live.lateResultAvailable=false;
+        affected.add(job.id);jobIds.push(job.id);
+      }
+      const memberId=image.memberId||db.users.find(user=>user.token===image.token)?.id||[...linked.values()][0]?.job.memberId;
+      recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:`artifact:${id}`,memberId:memberId||null,occurredAt:now,payload:{artifactId:id,reason,at:now,jobIds}});
+      const {base64,...metadata}=image;removed.push(metadata as StoreItem);
+    }
+    const removedIds=new Set(removed.map(image=>image.id));db.images=db.images.filter(image=>!removedIds.has(image.id));
+    if(reason==='owner_cleared_cache'&&removed.length)db.ledger.unshift({id:`cache-retired:${commandId}`,type:'clear-cache',amount:removed.length,at:new Date(now).toISOString(),note:'Cleared cached images'});
+    return {images:removed,jobIds:[...affected]};
+  }
+
+  async trimImageCache(maxCacheImages: number | null = null, options: { maxDelete?: unknown; batchSize?: unknown; force?: boolean } = {}) {
+    if(process.env.NO_AUTO_DELETE==='true')return [];
+    await this.ensureLoaded();
+    if(options.force!==true&&Date.now()-this.lastImageTrimAt<1000)return [];
+    this.lastImageTrimAt=Date.now();this.flushPendingPersistSync();
+    const maxCache=clampNumber(maxCacheImages??this.db!.settings.maxCacheImages,0,MAX_CACHE_IMAGES_LIMIT),total=this.countRecords('images');
+    const buffer=options.force===true||maxCache<=0?0:Math.max(0,Math.floor(Number(options.batchSize??100)||0));
+    if(total<maxCache+buffer)return [];
+    const count=Math.min(Math.max(0,total-maxCache),trimImageCacheDeleteLimit(options.maxDelete));
+    if(!count)return [];
+    const ids=(this.sqlite!.prepare('SELECT id FROM images ORDER BY order_value ASC LIMIT ?').all(count) as {id:string}[]).map(row=>row.id);
+    return this.retireCachedArtifacts(ids,'cache_limit',true);
+  }
   async retireJobHistory(jobIds:string[],reason='history_retention',now=Date.now()):Promise<string[]> {
     const ids=[...new Set(jobIds)];
     if(ids.length>200)throw new Error('Retire history in batches of at most 200 jobs.');
@@ -460,7 +415,7 @@ export class JsonStore {
       for(const id of ids){
         const job=db.jobs.find(item=>item.id===id)||this.selectItemById('jobs',id);
         if(!job)continue;
-        if(!this.canRetireJobHistory(job))throw new Error(`Cannot retire active job or a request with active siblings: ${id}`);
+        if(!this.canRetireJobHistory(job))throw new Error(`Cannot retire active job or unresolved review: ${id}`);
         const stream=`request:${job.requestId||`legacy-${id}`}`,group=groups.get(stream)||[];group.push(id);groups.set(stream,group);retired.push(id);
       }
       for(const [streamId,jobIds] of groups)recordDomainEvent(db,{eventType:'JobHistoryRetired',streamId,occurredAt:now,payload:{jobIds,reason,at:now}});
@@ -469,11 +424,8 @@ export class JsonStore {
     },{immediate:true,dirtyRows:result=>({jobs:result})});
   }
 
-  canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;requestId?:string|null;batchId?:string|null}):boolean {
-    if(!job.status||['queued','pending','running'].includes(job.status)||job.resultPending)return false;
-    if(job.requestId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE request_id=? AND (status IN ('queued','pending','running') OR json_type(data,'$.resultPending')='object') LIMIT 1").get(job.requestId))return false;
-    if(!job.requestId&&job.batchId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE status IN ('queued','pending','running') AND json_extract(data,'$.batchId')=? LIMIT 1").get(job.batchId))return false;
-    return true;
+  canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;generationReview?:{status?:string}|null}):boolean {
+    return !!job.status&&!['queued','pending','running'].includes(job.status)&&!job.resultPending&&job.generationReview?.status!=='pending';
   }
 
   async clearRequestLogs() {
@@ -483,15 +435,15 @@ export class JsonStore {
       this.flushPendingPersistSync();
       return this.sqlite!.prepare<unknown[], { value: number | null }>('SELECT MAX(rowid) AS value FROM jobs').get()!.value || 0;
     }, { shouldPersist: () => false });
-    const selectBatch = this.sqlite!.prepare<unknown[], { cursor: number; id: string; status: string | null; resultPending: number | null;requestId:string|null;batchId:string|null }>(`
-      SELECT rowid AS cursor, id, status, request_id AS requestId,json_extract(data,'$.batchId') AS batchId,json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
+    const selectBatch = this.sqlite!.prepare<unknown[], { cursor: number; id: string; status: string | null; resultPending: number | null;reviewStatus:string|null }>(`
+      SELECT rowid AS cursor, id, status, json_extract(data,'$.generationReview.status') AS reviewStatus,json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
       WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 200
     `);
     let cursor = 0;
     let removed = 0;
     while (cursor < upperRow) {
       const rows=selectBatch.all(cursor,upperRow);cursor=rows.at(-1)?.cursor||upperRow;
-      const ids=rows.filter(row=>this.canRetireJobHistory(row)).map(row=>row.id);
+      const ids=rows.filter(row=>this.canRetireJobHistory({...row,generationReview:row.reviewStatus?{status:row.reviewStatus}:null})).map(row=>row.id);
       removed+=(await this.retireJobHistory(ids,'owner_cleared_history')).length;
       // Let generation, polling and balance writes run between small transactions.
       await new Promise((resolve) => setImmediate(resolve));
@@ -504,103 +456,15 @@ export class JsonStore {
   }
 
   async clearCachedImages(options: ImageClearOptions = {}) {
-    await this.ensureLoaded();
-    this.flushPendingPersistSync();
-
-    const ids = uniqueStrings(options.ids || options.images);
-    const query = String(options.q || options.query || '').trim().toLowerCase();
-    const clearAll = options.all === true || options.mode === 'all';
-    const startedAt = Date.now();
-    const totalBefore = this.countRecords('images');
-    const imageRows = this.selectImagesForClear({ ids, query, clearAll });
-    const removedImages: RemovedImages = imageRows
-      .map((row) => ({ row, image: safeJson(row.data, null) }))
-      .filter((entry) => entry.image)
-      .map((entry) => ({ ...entry.image, id: entry.image!.id || entry.row.id }));
-    const removedIds = uniqueStrings(removedImages.map((image) => image.id));
-    if (!removedIds.length) {
-      return { deleted: 0, remaining: totalBefore, images: [] };
-    }
-
-    const affectedJobs = [];
-    for (const chunk of chunks(removedIds, 500)) {
-      const placeholders = chunk.map(() => '?').join(',');
-      affectedJobs.push(...this.sqlite!.prepare<unknown[], DataRow>(`
-        SELECT id, order_value AS orderValue, data
-        FROM jobs
-        WHERE image_id IN (${placeholders})
-      `).all(...chunk));
-    }
-
-    const jobUpdates = affectedJobs
-      .map((row) => {
-        const job = safeJson(row.data, null);
-        if (!job) return null;
-        if (!job.id) job.id = row.id;
-        job.imageId = '';
-        const data = JSON.stringify(job);
-        const order = Number(row.orderValue);
-        return {
-          id: row.id,
-          data,
-          order,
-          sql: sqlRecord('jobs', job, order, data)
-        };
-      })
-      .filter(Boolean as unknown as Present);
-
-    const ledger = {
-      id: createId('log'),
-      type: 'clear-cache',
-      amount: removedIds.length,
-      at: new Date().toISOString(),
-      note: clearAll ? 'Cleared all cached images' : query ? `Cleared cached images matching ${query}` : 'Cleared selected cached images'
-    };
-    const ledgerOrder = Number(this.sqlite!.prepare<unknown[], { value: number | null }>('SELECT MAX(order_value) AS value FROM ledger').get()?.value || 0) + 1;
-    const ledgerData = JSON.stringify(ledger);
-    const ledgerRow = sqlRecord('ledger', ledger, ledgerOrder, ledgerData);
-
-    const event = this.describeCommit({ settingsChanged: false,
-      deletes: removedIds.map(id => ({ collection: 'images', id })),
-      upserts: [...jobUpdates.map(row => ({ ...row, collection: 'jobs' as const })), { collection: 'ledger', id: ledger.id, data: ledgerData }] });
-    const applyClear = this.sqlite!.transaction(() => {
-      for (const update of jobUpdates) this.statements!.upsertRecord.jobs.run(update.sql);
-      for (const chunk of chunks(removedIds, 500)) {
-        const placeholders = chunk.map(() => '?').join(',');
-        this.sqlite!.prepare<unknown[], never>(`DELETE FROM images WHERE id IN (${placeholders})`).run(...chunk);
-      }
-      this.statements!.upsertRecord.ledger.run(ledgerRow);
-    });
-    applyClear();
-
-    const removedSet = new Set(removedIds);
-    this.db!.images = (this.db!.images || []).filter((image) => !removedSet.has(String(image.id || '')));
-    for (const id of removedIds) {
-      this.rowState.images?.delete(id);
-      this.orderKeys.images?.delete(id);
-    }
-
-    for (const update of jobUpdates) {
-      const cachedJob = (this.db!.jobs || []).find((job) => job.id === update.id);
-      if (cachedJob) cachedJob.imageId = '';
-      if (this.rowState.jobs?.has(update.id)) {
-        this.rowState.jobs.set(update.id, { data: update.data, order: update.order });
-        this.orderKeys.jobs.set(update.id, update.order);
-      }
-    }
-
-    this.db!.ledger.unshift(ledger);
-    this.rowState.ledger?.set(ledger.id, { data: ledgerData, order: ledgerOrder });
-    this.orderKeys.ledger?.set(ledger.id, ledgerOrder);
+    await this.ensureLoaded();this.flushPendingPersistSync();
+    const ids=uniqueStrings(options.ids||options.images),query=String(options.q||options.query||'').trim().toLowerCase();
+    const clearAll=options.all===true||options.mode==='all';
+    const selected=this.selectImagesForClear({ids,query,clearAll}).map(row=>row.id);
+    if(!selected.length)return {deleted:0,remaining:this.countRecords('images'),images:[]};
+    const images=await this.retireCachedArtifacts(selected,'owner_cleared_cache');
     this.refreshPartialCollectionState('images');
-    this.trimRuntimePartialCaches();
-    this.notifyCommit(event);
-
-    const remaining = this.countRecords('images');
-    runtimeLog(`SQLite image cache cleared ${removedIds.length} image record(s), affectedJobs=${jobUpdates.length}, totalBefore=${totalBefore}, remaining=${remaining}, duration=${Date.now() - startedAt}ms`);
-    return { deleted: removedIds.length, remaining, images: removedImages };
+    return {deleted:images.length,remaining:this.countRecords('images'),images};
   }
-
   selectImagesForClear({ ids = [], query = '', clearAll = false }: { ids?: unknown[]; query?: string; clearAll?: boolean } = {}) {
     if (clearAll) {
       return this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>('SELECT id, data FROM images ORDER BY order_value ASC').all();
@@ -756,6 +620,15 @@ export class JsonStore {
       FROM jobs j LEFT JOIN images i ON i.id = j.image_id AND i.token = j.user_token
       WHERE j.request_id = ? ORDER BY sampleIndex, j.id`).all(id);
     return { ...request, jobs: jobs.map(job => ({ ...job, fairCharge: job.fairCharge ? JSON.parse(job.fairCharge) as FairCharge : null })) };
+  }
+
+  readGenerationRequestJobIds(requestId:string,memberId:string):string[]|null {
+    const parent=this.statements!.selectGenerationRequestMember.get({id:requestId});
+    if(!parent||parent.member_id!==memberId)return null;
+    const request=readStreamProjection(this.sqlite!,`request:${requestId}`)?.projection;
+    if(!request?.jobs)throw new Error(`Missing authoritative generation request ${requestId}`);
+    return Object.values(request.jobs as Record<string,{id:string;sampleIndex?:number}>)
+      .sort((a,b)=>(a.sampleIndex??0)-(b.sampleIndex??0)||a.id.localeCompare(b.id)).map(job=>job.id);
   }
 
   activeGenerationPayloadBytes(inFlight: { requestId?: string; jobId: string; payloadBytes?: number }[] = []) {
@@ -1017,7 +890,7 @@ export class JsonStore {
     this.createSchema();
     this.prepareStatements();
     this.openReadWorkers();
-    this.db = this.hasSqliteData() ? this.loadFromSqlite() : trimDb(normalizeDb(defaultDb));
+    this.db = this.hasSqliteData() ? this.loadFromSqlite() : trimDb(cloneDb(defaultDb));
     if (!this.hasSqliteData()) this.replaceAll(this.db!);
   }
 
@@ -1068,6 +941,13 @@ export class JsonStore {
             continue;
           }
           include(`request:${item.requestId||`legacy-${item.id}`}`);
+        }else if(change.collection==='images'){
+          if(!change.data&&!scope.domainBatch?.events.some(event=>event.eventType==='ArtifactHistoryRetired'&&event.payload.artifactId===change.id))throw new Error(`Unrecorded artifact history retirement ${change.id}`);
+          if(readStreamProjection(this.sqlite!,`artifact:${change.id}`))include(`artifact:${change.id}`);
+          else if(!supplied.some(stream=>stream.streamKind==='request'&&(stream.projection?.artifacts as Record<string,unknown>|undefined)?.[change.id])){
+            const image=change.data?JSON.parse(change.data) as StoreItem:null,job=image?.jobId?this.selectItemById('jobs',image.jobId):null;
+            if(!job)throw new Error(`Unrecorded artifact mutation ${change.id}`);include(`request:${job.requestId||`legacy-${job.id}`}`);
+          }
         }else if(change.collection==='accounts')include(`account:${change.id}`);
         else if(change.collection==='users'){
           include('sharing:default');
@@ -1079,6 +959,7 @@ export class JsonStore {
     };
     if(scope.domainBatch)appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
       if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true,candidates});
+      else written=coreProjectionRows(sqlite,commit,streams).rows.filter(row=>row.remove);
     }});
     else if(authoritative){
       const clock=this.sqlite!.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
@@ -1102,19 +983,49 @@ export class JsonStore {
     }
   }
 
+  includeRetirementChanges(scope:Scope,changes:Changes):void {
+    for(const event of scope.domainBatch?.events||[]){
+      const collection=event.eventType==='JobHistoryRetired'?'jobs':event.eventType==='ArtifactHistoryRetired'?'images':null;
+      if(!collection)continue;
+      const ids=event.eventType==='JobHistoryRetired'?event.payload.jobIds:event.eventType==='ArtifactHistoryRetired'?[event.payload.artifactId]:[];
+      for(const id of ids)if(!changes.deletes.some(change=>change.collection===collection&&change.id===id)&&this.statements!.selectById[collection].get({id}))changes.deletes.push({collection,id});
+    }
+  }
+
+  trimCommandHistory(db:StoreDatabase,scope:Scope):void {
+    if(process.env.NO_AUTO_DELETE==='true')return;
+    const now=Date.now(),retainMs=clampNumber(process.env.JOB_HISTORY_RETENTION_MS??7*24*60*60*1000,60000,7*24*60*60*1000);
+    if(scope.full||scope.collections.includes('jobs')){
+      const groups=new Map<string,string[]>(),retired=new Set<string>();
+      for(const job of db.jobs){
+        const updated=Date.parse(job.updatedAt||job.createdAt||'');
+        if(!this.canRetireJobHistory(job)||updated&&now-updated<=retainMs)continue;
+        const stream=`request:${job.requestId||`legacy-${job.id}`}`,ids=groups.get(stream)||[];ids.push(job.id);groups.set(stream,ids);retired.add(job.id);
+      }
+      for(const [streamId,jobIds] of groups)recordDomainEvent(db,{eventType:'JobHistoryRetired',streamId,occurredAt:now,payload:{jobIds,reason:'automatic_retention',at:now}});
+      db.jobs=db.jobs.filter(job=>!retired.has(job.id));
+    }
+    if(scope.full||scope.collections.includes('images')){
+      const maxCache=clampNumber(db.settings.maxCacheImages,0,MAX_CACHE_IMAGES_LIMIT);
+      this.retireArtifactsInCommand(db,db.images.slice(maxCache).map(image=>image.id),'automatic_retention',true,now);
+    }
+  }
+
   async update<T>(mutator: (db: StoreDatabase) => T | Promise<T>, options: PersistenceOptions<T> = {}): Promise<T> {
     this.queue = this.queue.catch(() => {}).then(async () => {
       await this.ensureLoaded();
       // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
       this.flushPendingPersistSync();
       try {
-        if(!this.eventOpeningReady){importOpeningFacts(this.sqlite!);this.eventOpeningReady=true;}
         beginDomainCommand(this.db!, options.domainCommand);
         const result = await mutator(this.db!);
         const persistOptions = resolvePersistenceOptions(options, result, this.db!);
         if(eventAuthorityEnabled(this.sqlite!))persistOptions.immediate=true;
+        const preliminaryScope=persistenceScope(persistOptions);
+        if(shouldPersistUpdate(result,persistOptions)&&!preliminaryScope.hasDirtyRows)this.trimCommandHistory(this.db!,preliminaryScope);
         const domainBatch = finishDomainCommand(this.db!);
         if (domainBatch?.events.length) {
+          if(!this.eventOpeningReady){importOpeningFacts(this.sqlite!);this.eventOpeningReady=true;}
           persistOptions.domainBatch = domainBatch;
           persistOptions.includeSettings=true;
           persistOptions.immediate=true;
@@ -1437,7 +1348,7 @@ export class JsonStore {
     const startedAt = Date.now();
     const settingsRow = this.statements!.selectSettings.get();
     const db = {
-      ...defaultDb,
+      ...structuredClone(defaultDb),
       settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
     };
     const archive = fairQuotaArchive(db.settings);
@@ -1501,7 +1412,7 @@ export class JsonStore {
   loadFromGenericRecords() {
     const settingsRow = this.statements!.selectSettings.get();
     const db = {
-      ...defaultDb,
+      ...structuredClone(defaultDb),
       settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
     };
     for (const collection of collections) {
@@ -1578,22 +1489,28 @@ export class JsonStore {
     for(const row of settlements){
       const prior=this.statements!.selectFairQuotaSettlement.get({jobId:row.job_id});
       if(prior&&canonicalJson(JSON.parse(prior.charge))===canonicalJson(JSON.parse(row.charge)))continue;
-      const fact=events.find(event=>['GenerationSettled','GenerationRefunded'].includes(event.eventType)&&event.payload.jobId===row.job_id);
-      if(!fact||canonicalJson(fact.payload.charge)!==canonicalJson(JSON.parse(row.charge)))throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
+      const recorded=events.some(event=>(event.eventType==='GenerationSettled'||event.eventType==='GenerationRefunded')&&event.payload.jobId===row.job_id&&canonicalJson(event.payload.charge)===canonicalJson(JSON.parse(row.charge)));
+      if(!recorded)throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
     }
     if(scope.generationRequest){
       const row=scope.generationRequest;
-      const fact=events.find(event=>event.eventType==='RequestAccepted'&&event.payload.inputRef===row.id);
-      if(!fact||fact.payload.memberId!==row.member_id||fact.payload.inputSha256!==crypto.createHash('sha256').update(row.payload).digest('hex'))throw new Error(`Unrecorded generation input ${row.id}`);
+      const recorded=events.some(event=>event.eventType==='RequestAccepted'&&event.payload.inputRef===row.id&&event.payload.memberId===row.member_id&&event.payload.inputSha256===crypto.createHash('sha256').update(row.payload).digest('hex'));
+      if(!recorded)throw new Error(`Unrecorded generation input ${row.id}`);
     }
     if(scope.generationIdempotency){
       const row=scope.generationIdempotency;
       const recorded=events.some(event=>{
-        if(!['RequestAccepted','RequestAliasRegistered'].includes(event.eventType))return false;
-        const mapping=event.payload.idempotency as Record<string,unknown>|undefined;
-        return mapping&&(mapping.memberId||event.payload.memberId)===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash
-          &&mapping.fingerprint===row.fingerprint&&(mapping.jobId||event.payload.jobId)===row.job_id&&(mapping.requestId??event.payload.requestId??null)===(row.request_id??null)
-          &&(mapping.normalizationContextRef||mapping.contextRef)===generationContextRef(row);
+        if(event.eventType==='RequestAccepted'){
+          const mapping=event.payload.idempotency;
+          return !!mapping&&mapping.memberId===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash&&mapping.fingerprint===row.fingerprint
+            &&mapping.jobId===row.job_id&&(mapping.requestId??null)===(row.request_id??null)&&mapping.normalizationContextRef===generationContextRef(row);
+        }
+        if(event.eventType==='RequestAliasRegistered'){
+          const mapping=event.payload.idempotency;
+          return event.payload.memberId===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash&&mapping.fingerprint===row.fingerprint
+            &&event.payload.jobId===row.job_id&&(event.payload.requestId??null)===(row.request_id??null)&&mapping.contextRef===generationContextRef(row);
+        }
+        return false;
       });
       if(!recorded)throw new Error(`Unrecorded generation idempotency ${generationContextRef(row)}`);
     }
@@ -1628,6 +1545,7 @@ export class JsonStore {
       includeSettings: scope.includeSettings,
       collections: scope.full ? collections : scope.collections
     });
+    this.includeRetirementChanges(scope,changes);
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
@@ -1640,10 +1558,10 @@ export class JsonStore {
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
-        if(!authoritative||!['jobs','users'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if(!authoritative||!['jobs','users','images'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
+        if(!authoritative||!['jobs','accounts','users','images'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
       }
       if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
@@ -1737,6 +1655,7 @@ export class JsonStore {
       changes.upserts.push(...fullChanges.upserts);
     }
 
+    this.includeRetirementChanges(scope,changes);
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
@@ -1749,10 +1668,10 @@ export class JsonStore {
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
       if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
-        if(!authoritative||!['jobs','users'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if(!authoritative||!['jobs','users','images'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
+        if(!authoritative||!['jobs','accounts','users','images'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
       }
       if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
@@ -1869,7 +1788,7 @@ export class JsonStore {
       }
     }
     if (lastError) throw lastError;
-    return normalizeDb(defaultDb);
+    return cloneDb(defaultDb);
   }
 
   async markLegacyMigrated() {
@@ -2747,21 +2666,9 @@ function trimDb(db: StoreDatabase, options: { collections?: unknown } = {}) {
   db.settings.accountConcurrency = 1;
     // 私有部署保护：保留历史、图片与账本记录。
     if (process.env.NO_AUTO_DELETE === 'true') return db;
-  if (shouldTrim('jobs')) db.jobs = trimJobs(db.jobs);
-  if (shouldTrim('images')) db.images = db.images.slice(0, maxCacheImages);
+  // 任务与图片清理由命令在 collector 关闭前作决定，不能在持久化时隐式丢行。
   if (shouldTrim('ledger')) db.ledger = db.ledger.slice(0, 1000);
   return db;
-}
-
-function trimJobs(jobs: StoreItem[]) {
-  const now = Date.now();
-  const retainMs = clampNumber(process.env.JOB_HISTORY_RETENTION_MS ?? 7 * 24 * 60 * 60 * 1000, 60_000, 7 * 24 * 60 * 60 * 1000);
-  return jobs.filter((job) => {
-    if (job.resultPending || ['queued', 'pending', 'running'].includes(job.status!)) return true;
-    const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
-    if (!updatedAt || now - updatedAt > retainMs) return false;
-    return true;
-  });
 }
 
 export function normalizeDb(db: DatabaseInput = {}): StoreDatabase {

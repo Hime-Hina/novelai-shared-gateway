@@ -166,10 +166,12 @@ test('explicit history retirement survives restart and replay while cold idempot
 });
 test('replay rejects an unrelated nonempty target and a hard-linked source before altering either',async t=>{
   const store=await legacyStore(t);importOpeningFacts(store.sqlite);
-  const occupied=path.join(store.dataDir,'occupied.sqlite'),other=new Database(occupied);other.exec('CREATE TABLE users(id TEXT); INSERT INTO users VALUES(\'untouched\')');other.close();
+  const occupied=path.join(store.dataDir,'occupied.sqlite'),other=new Database(occupied);other.exec('CREATE TABLE unrelated_business_records(id TEXT); INSERT INTO unrelated_business_records VALUES(\'untouched\')');other.close();
+  const before=await readFile(occupied);
   const run=target=>spawnSync(process.execPath,['scripts/replay-events.mjs',`--source=${store.dbPath}`,`--target=${target}`],{encoding:'utf8',timeout:15000});
   const result=run(occupied);assert.notEqual(result.status,0);assert.match(result.stderr,/target must be empty/);
-  const check=new Database(occupied);try{assert.deepEqual(check.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all(),[{name:'users'}]);}finally{check.close();}
+  assert.deepEqual(await readFile(occupied),before);
+  const check=new Database(occupied);try{assert.deepEqual(check.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all(),[{name:'unrelated_business_records'}]);}finally{check.close();}
   const alias=path.join(store.dataDir,'source-alias.sqlite');await link(store.dbPath,alias);
   const same=run(alias);assert.notEqual(same.status,0);assert.match(same.stderr,/same file/);
 });

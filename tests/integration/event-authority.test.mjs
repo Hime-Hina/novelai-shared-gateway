@@ -13,6 +13,7 @@ import { createGenerationAdmission } from '../../server/generation-admission.ts'
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { recordGenerationFailure } from '../../server/generation-execution.ts';
 import { migrateStorage } from '../../server/storage-migrations.ts';
+import { closeGenerationReview } from '../../server/generation-accounting.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function fixture(t){
@@ -99,15 +100,18 @@ test('real cached admission preserves the recorded result account without a new 
   const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.status,'done');assert.equal(job.accountId,'opus');assert.equal(job.imageId,'cached-image');
   assert.deepEqual(store.db.settings.fairQuota.balances,before);
 });
-test('retirement cannot remove completed children while siblings can still spend a confirmed batch total',async t=>{
+test('retiring a completed child keeps the authoritative child set and immutable input while siblings remain queued',async t=>{
   const store=await fixture(t);await store.enableEventAuthority();
   const admit=createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>store.activeGenerationPayloadBytes()),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
   const result=await admit({identity:{memberId:'a'},source:'native',batch:true,noCache:true,request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:2}});
   await store.update(db=>{const job=db.jobs.find(job=>job.id===result.jobIds[0]);job.status='done';job.completedAt=at;
     recordDomainEvent(db,{eventType:'JobCompleted',streamId:`request:${result.requestId}`,payload:{jobId:job.id,completedAt:at}});
   },{dirtyRows:{jobs:[result.jobIds[0]]}});
-  await assert.rejects(store.retireJobHistory([result.jobIds[0]]),/active siblings/);
-  assert.equal(store.readGenerationRequestState(result.requestId,'a').jobs.length,2);
+  const input=store.readGenerationRequest(result.requestId);
+  await store.retireJobHistory([result.jobIds[0]]);
+  assert.equal(store.readGenerationRequestState(result.requestId,'a').jobs.length,1);
+  assert.deepEqual(store.readGenerationRequestJobIds(result.requestId,'a'),result.jobIds);
+  assert.deepEqual(store.readGenerationRequest(result.requestId),input);
 });
 test('cutover installs conservative fixed-point opening balances before the first real command',async t=>{
   const store=await fixture(t),legacy=structuredClone(store.db);
@@ -129,4 +133,49 @@ test('a failed cutover rolls back installed amounts, removed triggers and the au
   assert.equal(prepare("SELECT value FROM app_settings WHERE key='settings'").get().value,before);
   assert.equal(prepare("SELECT value FROM app_meta WHERE key='event_authority'").get(),undefined);
   assert.equal(prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='trigger' AND name LIKE 'free_image_%'").get().n,4);
+});
+test('pending loss reviews remain due after attempted history cleanup and retire only after explicit closure',async t=>{
+  const store=await fixture(t),legacy=structuredClone(store.db),job={id:'review-job',memberId:'a',userToken:'secret-a',status:'running',createdAt:at,
+    request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23},upstreamStartedAt:at};
+  legacy.jobs=[job];reserveFairQuota(legacy,legacy.users[0],job,legacy.accounts[0],now);settleFairQuota(legacy,job,false,now+1,{requestStarted:true});
+  job.status='failed';job.completedAt=new Date(now+1).toISOString();await store.write(legacy);await store.enableEventAuthority();
+  const deadline=store.db.jobs[0].generationReview.deadlineAt;
+  assert.equal((await store.readDueGenerationReviews(deadline-1)).length,0);
+  await assert.rejects(store.retireJobHistory(['review-job']),/unresolved review/);
+  assert.equal((await store.clearRequestLogs()).removed,0);
+  assert.equal((await store.readDueGenerationReviews(deadline+1)).length,1);
+  await store.update(db=>closeGenerationReview(db,db.jobs[0],deadline+1),{dirtyRows:{jobs:['review-job']}});
+  assert.equal((await store.readDueGenerationReviews(deadline+1)).length,0);
+  assert.deepEqual(await store.retireJobHistory(['review-job']),['review-job']);
+  assert.equal(store.readFairQuotaSettlement('review-job').status,'refunded');
+});
+test('explicit cache clearing and automatic cache trim record tombstones and cannot resurrect artifacts on replay',async t=>{
+  const previous=process.env.NO_AUTO_DELETE;process.env.NO_AUTO_DELETE='false';t.after(()=>{if(previous===undefined)delete process.env.NO_AUTO_DELETE;else process.env.NO_AUTO_DELETE=previous;});
+  const store=await fixture(t),legacy=structuredClone(store.db);
+  legacy.jobs=[{id:'image-job',memberId:'a',userToken:'secret-a',status:'done',createdAt:at,imageId:'one',lateResultAvailable:true,lateResultImageId:'one'}];
+  legacy.images=[{id:'one',memberId:'a',token:'secret-a',file:'images/one.png',jobId:'image-job',createdAt:at},{id:'two',memberId:'b',token:'secret-b',file:'images/two.png',createdAt:at}];
+  await store.write(legacy);await store.enableEventAuthority();
+  const count=store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n;
+  store.sqlite.exec("CREATE TEMP TRIGGER reject_retirement BEFORE DELETE ON images BEGIN SELECT RAISE(ABORT,'synthetic retirement failure'); END");
+  await assert.rejects(store.clearCachedImages({ids:['one']}),/synthetic retirement failure/);store.sqlite.exec('DROP TRIGGER reject_retirement');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n,count);
+  assert.equal(store.db.jobs[0].imageId,'one');
+  assert.equal((await store.clearCachedImages({ids:['one']})).deleted,1);
+  assert.equal(store.db.jobs[0].imageId,'');assert.equal(store.db.jobs[0].lateResultAvailable,false);
+  const configured=store.db.settings.maxCacheImages;assert.equal((await store.trimImageCache(0,{force:true})).length,1);assert.equal(store.db.settings.maxCacheImages,configured);
+  const target=new Database(':memory:');try{migrateStorage(target);copyProtectedFacts(store.sqlite,target);replayDomainEvents(store.sqlite,target,{project:applyEventProjection});
+    assert.equal(target.prepare('SELECT count(*) AS n FROM images').get().n,0);assert.equal(JSON.parse(target.prepare('SELECT data FROM jobs WHERE id=?').get('image-job').data).imageId,'');
+    target.transaction(()=>verifyEventProjections(target))();
+  }finally{target.close();}
+});
+test('automatic history retention records its decision inside the command and keeps the protection flag unchanged',async t=>{
+  const previous=process.env.NO_AUTO_DELETE;process.env.NO_AUTO_DELETE='true';t.after(()=>{if(previous===undefined)delete process.env.NO_AUTO_DELETE;else process.env.NO_AUTO_DELETE=previous;});
+  const store=await fixture(t),legacy=structuredClone(store.db);
+  legacy.jobs=[{id:'expired',memberId:'a',userToken:'secret-a',status:'done',createdAt:new Date(Date.now()-8*86400000).toISOString()}];
+  await store.write(legacy);await store.enableEventAuthority();await store.update(()=>true);
+  assert.ok(store.selectItemById('jobs','expired'));
+  process.env.NO_AUTO_DELETE='false';await store.update(()=>true);
+  assert.equal(store.selectItemById('jobs','expired'),null);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE event_type='JobHistoryRetired'").get().n,1);
+  const target=new Database(':memory:');try{migrateStorage(target);copyProtectedFacts(store.sqlite,target);replayDomainEvents(store.sqlite,target,{project:applyEventProjection});assert.equal(target.prepare('SELECT count(*) AS n FROM jobs').get().n,0);}finally{target.close();}
 });

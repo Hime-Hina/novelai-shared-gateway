@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { createHash,randomUUID } from 'node:crypto';
 import {
   assertDomainEvent, assertPublicDomainFact, canonicalJson, domainDigest, DOMAIN_AMOUNT_VERSION, DOMAIN_REDUCER_VERSION,
-  type DomainCommand, type DomainCommit, type DomainEvent, type DomainEventInput, type Json
+  type DomainCommand, type DomainReplayCommand,type DomainCommit, type DomainEvent, type DomainEventInput, type Json
 } from './domain-events.ts';
 import { reduceSharingEvent, reduceAccountQuotaEvent, accountQuotaEventTypes, splitQuotaState, composeQuotaState,
   type SharingQuotaState, type AccountQuotaState } from './quota-events.ts';
@@ -128,6 +128,10 @@ function projectionJob(sqlite:Database.Database,raw:Record<string,unknown>):Reco
     if(!diagnostic||diagnostic.job_id!==job.id||createHash('sha256').update(diagnostic.detail).digest('hex')!==diagnostic.detail_sha256)throw new Error(`Missing or corrupt protected diagnostic ${job.diagnosticRef}`);
     job.errorDetail=diagnostic.detail;
   }
+  const imageId=job.imageId||job.lateResultImageId;
+  if(imageId&&readStreamProjection(sqlite,`artifact:${imageId}`)?.projection?.retired){
+    job.imageId='';if(job.lateResultImageId)job.lateResultImageId='';if(job.lateResultAvailable)job.lateResultAvailable=false;
+  }
   return job;
 }
 
@@ -135,9 +139,10 @@ function projectionJob(sqlite:Database.Database,raw:Record<string,unknown>):Reco
 export function coreProjectionRows(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[]):CoreProjection {
   const rows:ProjectionRow[]=[],seenRequests=new Set<string>(),requests=[...streams];
   for(const event of commit.events){
-    if(event.streamKind==='account'&&event.payload.jobId){
-      const stored=sqlite.prepare('SELECT request_id FROM jobs WHERE id=?').get(event.payload.jobId) as {request_id:string|null}|undefined;
-      const streamId=`request:${stored?.request_id||`legacy-${event.payload.jobId}`}`;
+    const relatedIds=event.eventType==='ArtifactHistoryRetired'?event.payload.jobIds as string[]:event.streamKind==='account'&&event.payload.jobId?[String(event.payload.jobId)]:[];
+    for(const jobId of relatedIds){
+      const stored=sqlite.prepare('SELECT request_id FROM jobs WHERE id=?').get(jobId) as {request_id:string|null}|undefined;
+      const streamId=`request:${stored?.request_id||`legacy-${jobId}`}`;
       if(!requests.some(stream=>stream.streamId===streamId)){
         const request=readStreamProjection(sqlite,streamId);if(request)requests.push(request);
       }
@@ -157,6 +162,7 @@ export function coreProjectionRows(sqlite:Database.Database,commit:DomainCommit,
       }
       for(const raw of Object.values(object(state.artifacts||{}))){
         const artifact=structuredClone(object(raw)),storage=readStreamProjection(sqlite,`artifact:${artifact.id}`)?.projection;
+        if(storage?.retired){rows.push({collection:'images',item:{id:artifact.id,memberId:artifact.memberId},remove:true});continue;}
         if(storage)Object.assign(artifact,pick(storage,['file','mimeType','sha256','byteLength','r2','r2LastAttemptAt','r2Error','storagePhase']));
         rows.push({collection:'images',item:projectionArtifact(sqlite,artifact)});
       }
@@ -167,10 +173,12 @@ export function coreProjectionRows(sqlite:Database.Database,commit:DomainCommit,
         const member=object(value);
         rows.push({collection:'users',item:{id,...pick(member,['enabled','acceptingJobs','jobAdmissionVersion','discord','createdAt'])},...(member.removed?{remove:true as const}:{})});
       }
-    }else if(stream.streamKind==='artifact')rows.push({collection:'images',item:projectionArtifact(sqlite,state)});
+    }else if(stream.streamKind==='artifact')rows.push(state.retired?{collection:'images',item:{id:state.id,memberId:state.memberId},remove:true}:{collection:'images',item:projectionArtifact(sqlite,state)});
     else if(stream.streamKind==='legacy-ledger')rows.push({collection:'ledger',item:structuredClone(object(state.record)),order:state.order as number});
     else if(stream.streamKind==='system'&&stream.streamId==='system:queue')queueSequence=String(state.queueSequence);
   }
+  const cleared=commit.events.filter(event=>event.eventType==='ArtifactHistoryRetired'&&event.payload.reason==='owner_cleared_cache');
+  if(cleared.length)rows.push({collection:'ledger',item:{id:`cache-retired:${commit.commandId}`,type:'clear-cache',amount:cleared.length,at:commit.recordedAt,note:'Cleared cached images'}});
   const fairQuota=streams.some(stream=>['sharing','account'].includes(stream.streamKind))?readProjectedFairQuota(sqlite):undefined;
   return {rows,...(fairQuota!==undefined?{fairQuota}:{}),...(queueSequence?{queueSequence}:{})};
 }
@@ -240,6 +248,7 @@ export function reduceDomainEvent(previous: DomainProjection, event: DomainEvent
     return {...(state||{id:payload.artifactId}),storagePhase:payload.phase,...pick(payload,['file','mimeType','sha256','byteLength','r2']),
       ...(payload.lastAttemptAt!==undefined?{r2LastAttemptAt:payload.lastAttemptAt}:{}),...(payload.error!==undefined?{r2Error:payload.error}:{})};
   }
+  if(event.streamKind==='artifact'&&event.eventType==='ArtifactHistoryRetired')return {...(state||{id:payload.artifactId,memberId:event.memberId}),retired:{at:payload.at,reason:payload.reason}};
   if (event.eventType === 'FreeImageSucceeded') return { ...payload, eventId: event.eventId };
   throw new Error(`No reducer for event ${event.eventId}: ${event.eventType} on ${event.streamKind}`);
 }
@@ -262,11 +271,10 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
   const jobs = object(state.jobs), artifacts = object(state.artifacts ||= {});
   if(event.eventType==='JobHistoryRetired'){
     if(!Array.isArray(p.jobIds))throw new Error(`Missing retired jobs in ${event.eventId}`);
-    if(Object.values(jobs).some(raw=>{const job=object(raw);return ['queued','pending','running'].includes(String(job.status))||job.resultPending;}))throw new Error('Cannot retire history while a request has active siblings');
     const retired=object(state.retiredJobs||={});
     for(const id of p.jobIds){
       const job=object(jobs[String(id)]);
-      if(['queued','pending','running'].includes(String(job.status))||job.resultPending)throw new Error(`Cannot retire active job ${id}`);
+      if(['queued','pending','running'].includes(String(job.status))||job.resultPending||(job.generationReview as {status?:string}|undefined)?.status==='pending')throw new Error(`Cannot retire active job or unresolved review ${id}`);
       retired[String(id)]={at:p.at,reason:p.reason};
     }
     return state;
@@ -331,7 +339,7 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
   return state;
 }
 
-export function appendDomainCommit(sqlite: Database.Database, command: DomainCommand, options: AppendOptions = {}): { commitSeq: string; receipt: Json; duplicate: boolean } {
+export function appendDomainCommit(sqlite: Database.Database, command: DomainCommand|DomainReplayCommand, options: AppendOptions = {}): { commitSeq: string; receipt: Json; duplicate: boolean } {
   if (!sqlite.inTransaction) throw new Error('Domain commit must run inside the business write transaction.');
   if (!command.events.length) throw new Error('A domain commit requires at least one explicit fact.');
   command.events.forEach(assertDomainEvent);
@@ -479,6 +487,8 @@ export function verifyColdDomainFacts(sqlite:Database.Database):void {
 export function projectColdDomainFacts(sqlite: Database.Database, commit: DomainCommit): void {
   for (const event of commit.events) {
     const p = event.payload;
+    if(event.eventType==='JobHistoryRetired')for(const id of p.jobIds as string[])sqlite.prepare('DELETE FROM jobs WHERE id=?').run(id);
+    if(event.eventType==='ArtifactHistoryRetired')sqlite.prepare('DELETE FROM images WHERE id=?').run(p.artifactId);
     const requestFact=event.eventType==='RequestAccepted'?p:event.eventType==='OpeningStateRecorded'&&event.streamKind==='request'?object(object(p.state).request):null;
     if(requestFact?.inputRef){
       const input=sqlite.prepare('SELECT member_id,payload FROM generation_requests WHERE id=?').get(requestFact.inputRef) as {member_id:string;payload:string}|undefined;
