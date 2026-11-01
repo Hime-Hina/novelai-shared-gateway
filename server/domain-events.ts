@@ -10,7 +10,7 @@ export const domainEventTypes = [
   'ResourceGapObserved', 'ReturnClassified', 'OperatingLossCovered', 'PolicyChanged', 'CooldownChanged',
   'RequestAccepted', 'JobQueued', 'DispatchAuthorized', 'ArtifactPrepared', 'ArtifactPublished', 'JobCompleted', 'JobFailed',
   'WaitingJobsCancelled', 'LateResultRecovered', 'FreeImageSucceeded', 'ReviewOpened', 'ReviewClosed', 'AdmissionChanged',
-  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened'
+  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged'
 ] as const;
 export type DomainEventType = typeof domainEventTypes[number];
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };

@@ -10,6 +10,9 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
 import { migrateStorage } from './storage-migrations.ts';
+import { beginDomainCommand, finishDomainCommand, canonicalJson, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
+import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, type StreamProjection, type ProjectionRow } from './event-store.ts';
+import { normalizeOpeningQuota } from './fair-quota.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from './free-image-policy.ts';
@@ -24,12 +27,15 @@ import type { recordSharedCompletion } from './shared-capacity.ts';
 import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from './generation-accounting.ts';
 import type { ReadTask, ReadResults, ActivityQuery, ImagePageQuery, PageQuery } from './sqlite-read-worker.ts';
+import type { MemberGenerationConfirmation, MemberNormalizationContext } from './member-generation.ts';
 
 type Present = <T>(value: T) => value is NonNullable<T>;
 type Collection = keyof typeof recordTables;
 type SqlRow = typeof recordTables.cards.$inferSelect & Partial<Omit<typeof recordTables.jobs.$inferSelect, keyof typeof recordTables.cards.$inferSelect>>;
 type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
+export const generationContextRef = (row: Pick<Idempotency, 'member_id' | 'operation' | 'key_hash'>): string =>
+  `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
 type MemberSession = typeof memberSessions.$inferInsert;
 interface SessionOwner { ownerUserId: string; guildId: string }
 type SessionExpiry = { tokenHash: string; expiresAt: number };
@@ -37,6 +43,8 @@ export interface StoredGenerationRequest extends ProviderRequest {
   tag?: string; artist?: string; size?: string; requestedSteps?: number; sampleCount?: number;
   nocache?: boolean; allowPurchasedAnlas?: unknown; cost?: number; characterRef?: unknown;
   operationParameters?: object;
+  clientContract?: 'member-generation-v1'; confirmation?: MemberGenerationConfirmation;
+  normalizationContext?: MemberNormalizationContext; intentFingerprint?: string;
 }
 export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
   r2?: R2Image; r2LastAttemptAt?: string; r2Error?: string;
@@ -64,7 +72,7 @@ type CollectionMaps<T> = Record<Collection, Map<string, T>>;
 interface RowChange { collection: Collection; id: string; data?: string; order?: number; sql?: SqlRow }
 interface Changes { settingsChanged: boolean; nextSettings?: string; deletes: RowChange[]; upserts: RowChange[] }
 interface CommitDraft { collections: Set<string>; memberIds: Set<string>; allMembers: boolean; activityChanges: { memberId: string | null; date: string }[] }
-interface Writes { generationRequest?: GenerationRequest; generationIdempotency?: Idempotency; memberSession?: MemberSession; memberSessionDelete?: string; memberSessionOwner?: SessionOwner; memberSessionExpiry?: SessionExpiry }
+interface Writes { generationRequest?: GenerationRequest; generationIdempotency?: Idempotency; memberSession?: MemberSession; memberSessionDelete?: string; memberSessionOwner?: SessionOwner; memberSessionExpiry?: SessionExpiry; domainBatch?: DomainCommand }
 interface Scope extends Writes { full: boolean; includeSettings: boolean; collections: Collection[]; dirtyRows: Partial<Record<Collection, Set<string>>>; hasDirtyRows: boolean }
 type DirtyRowsInput = Partial<Record<Collection, unknown>> | Map<string, unknown>;
 type Deferred<T, R> = T | ((result: R, db: StoreDatabase) => T | undefined);
@@ -76,6 +84,7 @@ interface PersistenceOptions<R = unknown> {
   memberSession?: Deferred<MemberSession, R>; memberSessionDelete?: Deferred<string, R>; memberSessionOwner?: Deferred<SessionOwner, R>;
   memberSessionExpiry?: Deferred<SessionExpiry, R>;
   generationPayloadClaim?: { release(): void };
+  domainCommand?: DomainCommandMetadata; domainBatch?: DomainCommand;
 }
 type ResolvedOptions = Omit<PersistenceOptions, keyof Writes> & Writes;
 type Prepared<Row> = Pick<SQLitePreparedQuery<{ type: 'sync'; run: Database.RunResult; all: Row[]; get: Row | undefined; values: unknown[][]; execute: unknown }>, 'run' | 'get' | 'all'>;
@@ -728,15 +737,16 @@ export class JsonStore {
       FROM generation_requests WHERE id = ? AND member_id = ?`).get(id, memberId);
     if (!request) return null;
     // 父归属使用稳定成员 ID；图片仍必须属于对应 child，不能靠可轮换的当前 Key 代认。
-    const jobs = this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; updatedAt: string | null; sampleIndex: number; completedAt: string | null; error: string | null; cancelledAt: string | null; lateResultAvailable: number | null; referencedImageId: string | null; imageId: string | null }>(`SELECT j.id, j.status, j.model, j.created_at AS createdAt, j.updated_at AS updatedAt,
+    const jobs = this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; updatedAt: string | null; sampleIndex: number; completedAt: string | null; error: string | null; errorCode: string | null; fairCharge: string | null; cancelledAt: string | null; lateResultAvailable: number | null; referencedImageId: string | null; imageId: string | null }>(`SELECT j.id, j.status, j.model, j.created_at AS createdAt, j.updated_at AS updatedAt,
       COALESCE(json_extract(j.data, '$.sampleIndex'), 0) AS sampleIndex,
       json_extract(j.data, '$.completedAt') AS completedAt, json_extract(j.data, '$.error') AS error,
+      json_extract(j.data, '$.errorCode') AS errorCode, json_extract(j.data, '$.fairCharge') AS fairCharge,
       json_extract(j.data, '$.cancelledAt') AS cancelledAt,
       json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
       j.image_id AS referencedImageId, i.id AS imageId
       FROM jobs j LEFT JOIN images i ON i.id = j.image_id AND i.token = j.user_token
       WHERE j.request_id = ? ORDER BY sampleIndex, j.id`).all(id);
-    return { ...request, jobs };
+    return { ...request, jobs: jobs.map(job => ({ ...job, fairCharge: job.fairCharge ? JSON.parse(job.fairCharge) as FairCharge : null })) };
   }
 
   activeGenerationPayloadBytes(inFlight: { requestId?: string; jobId: string; payloadBytes?: number }[] = []) {
@@ -1017,10 +1027,15 @@ export class JsonStore {
       // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
       this.flushPendingPersistSync();
       try {
+        importOpeningFacts(this.sqlite!);
+        beginDomainCommand(this.db!, options.domainCommand);
         const result = await mutator(this.db!);
         const persistOptions = resolvePersistenceOptions(options, result, this.db!);
+        const domainBatch = finishDomainCommand(this.db!);
+        if (domainBatch?.events.length) persistOptions.domainBatch = domainBatch;
         const snapshot = cloneValue(result);
-        if (shouldPersistUpdate(result, persistOptions)) {
+        if (persistOptions.domainBatch && options.persist === false) throw new Error('A domain command cannot discard its recorded facts.');
+        if (persistOptions.domainBatch || shouldPersistUpdate(result, persistOptions)) {
           const scope = persistenceScope(persistOptions);
           if (shouldDeferPersist(scope, persistOptions)) {
             this.schedulePersist(scope);
@@ -1033,6 +1048,7 @@ export class JsonStore {
         }
         return snapshot;
       } catch (error) {
+        if (this.db) finishDomainCommand(this.db);
         // SQL 回滚不会还原 JS 对象；只在失败时重载已提交数据，避免每次预扣复制整个热缓存。
         // 先清空引用，若重载也失败，后续请求不得继续使用污染的内存状态。
         this.clearPendingPersist();
@@ -1461,10 +1477,18 @@ export class JsonStore {
     this.pendingPersistScope = null;
   }
 
+  persistGenerationIdempotency(row: Idempotency) {
+    const contextRef = generationContextRef(row);
+    const existing = this.sqlite!.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(contextRef) as { payload: string } | undefined;
+    if (existing && existing.payload !== row.normalization_context) throw new Error(`Protected normalization context conflict: ${contextRef}`);
+    this.sqlite!.prepare('INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)').run(contextRef,row.normalization_context);
+    this.statements!.insertGenerationIdempotency.run(row);
+  }
+
   persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
-    if (!scope.full && !scope.includeSettings && !scope.collections.length && !scope.generationIdempotency && !hasMemberSessionChanges(scope)) return;
+    if (!scope.full && !scope.includeSettings && !scope.collections.length && !scope.generationRequest && !scope.generationIdempotency && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
     if (scope.hasDirtyRows) {
       const fullCollections = scope.collections.filter((collection) => !scope.dirtyRows[collection]?.size);
       this.assertFullCollectionsAreLoaded(fullCollections);
@@ -1490,7 +1514,7 @@ export class JsonStore {
       includeSettings: scope.includeSettings,
       collections: scope.full ? collections : scope.collections
     });
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !hasMemberSessionChanges(scope)) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
     const applyChanges = this.sqlite!.transaction(() => {
@@ -1505,8 +1529,9 @@ export class JsonStore {
         this.statements!.upsertRecord[change.collection].run(change.sql);
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
-      if (scope.generationIdempotency) this.statements!.insertGenerationIdempotency.run(scope.generationIdempotency);
+      if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
+      if (scope.domainBatch) appendDomainCommit(this.sqlite!, scope.domainBatch);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1594,7 +1619,7 @@ export class JsonStore {
       changes.upserts.push(...fullChanges.upserts);
     }
 
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !hasMemberSessionChanges(scope)) return;
+    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
     const applyChanges = this.sqlite!.transaction(() => {
@@ -1609,8 +1634,9 @@ export class JsonStore {
         this.statements!.upsertRecord[change.collection].run(change.sql);
       }
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
-      if (scope.generationIdempotency) this.statements!.insertGenerationIdempotency.run(scope.generationIdempotency);
+      if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
+      if (scope.domainBatch) appendDomainCommit(this.sqlite!, scope.domainBatch);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1809,7 +1835,7 @@ function shouldPersistUpdate(result: unknown, options: ResolvedOptions = {}) {
 
 function shouldDeferPersist(scope: Scope, options: ResolvedOptions = {}) {
   if (!sqliteBatchWritesEnabled()) return false;
-  if (options.immediate === true || options.defer === false || options.generationRequest || options.generationIdempotency || options.generationPayloadClaim || hasMemberSessionChanges(scope)) return false;
+  if (scope.domainBatch || options.immediate === true || options.defer === false || options.generationRequest || options.generationIdempotency || options.generationPayloadClaim || hasMemberSessionChanges(scope)) return false;
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
@@ -1876,7 +1902,7 @@ function hasMemberSessionChanges(scope: Writes) {
 }
 
 function persistenceScope(options: ResolvedOptions = {}): Scope {
-  const writes = { generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency,
+  const writes = { domainBatch: options.domainBatch, generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency,
     memberSession: options.memberSession, memberSessionDelete: options.memberSessionDelete, memberSessionOwner: options.memberSessionOwner, memberSessionExpiry: options.memberSessionExpiry };
   if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, ...writes };
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
@@ -1937,6 +1963,82 @@ function cloneCollectionMaps<T>(source: Partial<CollectionMaps<T>> = {}): Collec
     maps[collection] = new Map(source[collection] || []);
   }
   return maps;
+}
+
+const criticalJobFields = ['id','status','requestId','memberId','accountId','batchId','sampleIndex','queueSeq','queueExpiresAt','deadlineAt','jobAdmissionVersion',
+  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode'];
+const criticalAccountFields = ['id','enabled','quotaTier','subscriptionActive','subscriptionExpiresAt','v5UsagePercent','quotaFixed','quotaPurchased',
+  'v5UsageIsNegative','quotaCheckedAt','v5UsageTimeUntilNextPercent','quotaError','upstreamStatus','cooldownUntil','upstreamRetryAfterUntil','quotaRetryAfterUntil'];
+const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion'];
+function domainRowValues(collection:ProjectionRow['collection'],item:Record<string,unknown>):Record<string,unknown> {
+  const fields=collection==='jobs'?criticalJobFields:collection==='accounts'?criticalAccountFields:collection==='users'?criticalMemberFields:Object.keys(item);
+  const result:Record<string,unknown>={};
+  for(const key of fields){
+    let value=item[key];
+    if(value===undefined||value===null||value==='')continue;
+    if(['queueExpiresAt','deadlineAt','lateResultAt','cancelledAt','cooldownUntil','quotaCheckedAt','subscriptionExpiresAt'].includes(key)){
+      const timestamp=new Date(value as string|number).getTime();if(Number.isFinite(timestamp))value=timestamp;
+    }
+    result[key]=value;
+  }
+  return result;
+}
+function projectionDifference(actual:unknown,expected:unknown,at:string):string|null {
+  if(canonicalJson(actual)===canonicalJson(expected))return null;
+  if(actual&&expected&&typeof actual==='object'&&typeof expected==='object'&&!Array.isArray(actual)&&!Array.isArray(expected)){
+    for(const key of [...new Set([...Object.keys(actual),...Object.keys(expected)])].sort()){
+      const left=(actual as Record<string,unknown>)[key],right=(expected as Record<string,unknown>)[key];
+      if(left===undefined||right===undefined){if(left!==right)return `${at}.${key}`;continue;}
+      const difference=projectionDifference(left,right,`${at}.${key}`);if(difference)return difference;
+    }
+  }
+  return at;
+}
+
+export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean}={}):ProjectionRow[] {
+  if(!sqlite.inTransaction)throw new Error('Critical projections require the domain write transaction.');
+  const projection=coreProjectionRows(sqlite,commit,streams);
+  if(projection.fairQuota){
+    const row=sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as {value:string}|undefined;
+    const settings=row?JSON.parse(row.value) as Settings:{...defaultSettings};
+    if(options.verify){
+      const actual=settings.fairQuota?fairQuotaArchive({fairQuota:normalizeOpeningQuota(settings.fairQuota)}).settings.fairQuota:null;
+      const expected=fairQuotaArchive({fairQuota:projection.fairQuota}).settings.fairQuota;
+      const mismatch=projectionDifference(actual,expected,'fairQuota');
+      if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+    }
+    settings.fairQuota=projection.fairQuota;
+    sqlite.prepare("INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(settings));
+  }
+  const written:ProjectionRow[]=[];
+  for(const projected of projection.rows){
+    const {collection}=projected;
+    const prior=sqlite.prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`).get(projected.item.id) as {data:string;order_value:number}|undefined;
+    const existing=prior?JSON.parse(prior.data) as Record<string,unknown>:{};
+    const expected={...projected.item};
+    if(expected.memberId){
+      const member=sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as {data:string}|undefined;
+      const memberData=member?JSON.parse(member.data) as Record<string,unknown>:null;
+      if(memberData?.token){if(collection==='jobs')expected.userToken=existing.userToken||memberData.token;if(collection==='images')expected.token=existing.token||memberData.token;}
+    }
+    if(options.verify&&['jobs','accounts','users'].includes(collection)){
+      const mismatch=projectionDifference(domainRowValues(collection,existing),domainRowValues(collection,expected),`${collection}.${expected.id}`);
+      if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+    }
+    const item={...existing,...expected};
+    if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
+    const order=projected.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
+    const row=sqlRecord(collection,item as StoreItem,order,JSON.stringify(item));
+    const keys=Object.keys(row);
+    sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})
+      ON CONFLICT(id) DO UPDATE SET ${keys.filter(key=>key!=='id').map(key=>`${key}=excluded.${key}`).join(',')}`).run(row);
+    written.push({collection,item,order});
+  }
+  if(projection.queueSequence){
+    const prior=sqlite.prepare("SELECT value FROM app_meta WHERE key='queue_sequence'").get() as {value:string}|undefined;
+    if(BigInt(projection.queueSequence)>BigInt(prior?.value||'0'))sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('queue_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(projection.queueSequence);
+  }
+  return written;
 }
 
 export function sqlRecord(collection: Collection, item: Partial<StoreItem>, order: number, data: string): SqlRow {

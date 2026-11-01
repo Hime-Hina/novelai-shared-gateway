@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { sqliteTable, text, real, integer, index, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, real, integer, index, uniqueIndex, primaryKey, type AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { FAILURE_EVENT_PREDICATE } from './failure-accounting.ts';
 
 // 每张历史记录表使用同一组影子列；data 仍是已有 JSON 文本，不能再次自动编码。
@@ -48,6 +48,11 @@ export const generationIdempotency = sqliteTable('generation_idempotency', {
   fingerprint: text().notNull(), normalization_context: text().notNull(),
   job_id: text().notNull(), request_id: text(), created_at: text().notNull()
 }, table => [primaryKey({ columns: [table.member_id, table.operation, table.key_hash] })]);
+
+// 默认提示词等规范化上下文为不可变受保护输入；幂等映射删除重建后仍可按引用恢复。
+export const generationContexts = sqliteTable('generation_contexts', {
+  context_ref: text().primaryKey(), payload: text().notNull()
+});
 
 // 结算凭据不随任务历史清理，也不进入通用热缓存。
 export const fairQuotaSettlements = sqliteTable('fair_quota_settlements', {
@@ -101,3 +106,35 @@ export const ledger = sqliteTable('ledger', recordFields(), table => [
   index('idx_ledger_failure_history').on(sql`${table.order_value} DESC`, sql`${table.id} DESC`).where(sql.raw(FAILURE_EVENT_PREDICATE))
 ]);
 export const recordTables = { cards, users, accounts, jobs, images, ledger };
+
+// 事件正文与请求/认证分开保存；提交序列由同一写事务内的 event_clock 分配。
+export const eventClock = sqliteTable('event_clock', {
+  id: integer().primaryKey(), value: integer({ mode: 'number' }).notNull()
+});
+export const eventCommits = sqliteTable('event_commits', {
+  commit_seq: integer().primaryKey(), command_id: text().notNull().unique(), fingerprint: text().notNull(),
+  recorded_at: text().notNull(), event_count: integer().notNull(), receipt: text().notNull()
+});
+export const eventStreams = sqliteTable('event_streams', {
+  stream_id: text().primaryKey(), stream_kind: text().notNull(), stream_version: integer().notNull(),
+  last_commit_seq: integer().notNull(), last_event_id: text().notNull(), reducer_version: integer().notNull(),
+  projection: text().notNull(), projection_sha256: text().notNull()
+});
+export const domainEvents = sqliteTable('domain_events', {
+  event_id: text().primaryKey(), commit_seq: integer().notNull().references(() => eventCommits.commit_seq),
+  event_index: integer().notNull(), stream_id: text().notNull(), stream_kind: text().notNull(), stream_version: integer().notNull(),
+  event_type: text().notNull(), schema_version: integer().notNull(), occurred_at: text().notNull(), recorded_at: text().notNull(),
+  actor_id: text(), correlation_id: text(), causation_id: text(), account_id: text(), member_id: text(),
+  policy_version: text().notNull(), pricing_version: text().notNull(), amount_version: text().notNull(), payload: text().notNull()
+}, table => [
+  uniqueIndex('idx_domain_events_commit').on(table.commit_seq, table.event_index),
+  uniqueIndex('idx_domain_events_stream').on(table.stream_id, table.stream_version)
+]);
+export const projectionVersions = sqliteTable('projection_versions', {
+  name: text().primaryKey(), epoch: text().notNull(), reducer_version: integer().notNull(),
+  last_commit_seq: integer().notNull(), status: text().notNull(), updated_at: text().notNull()
+});
+export const eventImports = sqliteTable('event_imports', {
+  import_id: text().notNull(), chunk_id: text().notNull(), source_sha256: text().notNull(),
+  first_key: text(), last_key: text(), record_count: integer().notNull(), commit_seq: integer().notNull(), completed_at: text().notNull()
+}, table => [primaryKey({ columns: [table.import_id, table.chunk_id] })]);

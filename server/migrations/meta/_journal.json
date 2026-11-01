@@ -85,6 +85,20 @@
       "when": 1792499099610,
       "tag": "0011_free_image_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1793520198552,
+      "tag": "0012_domain_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1793520357327,
+      "tag": "0013_protected_context",
+      "breakpoints": true
     }
   ]
 }
