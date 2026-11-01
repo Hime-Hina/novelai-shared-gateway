@@ -55,7 +55,7 @@ async function orchestrate(){
   const link=path.join(baseline,'node_modules'),createdLink=!existsSync(link);
   if(createdLink)await fs.symlink(path.join(candidate,'node_modules'),link,process.platform==='win32'?'junction':'dir');
   try{
-  const report={kind:options.smoke?'runner-smoke':'performance-evidence',options,sources:{baseline:await sourceEvidence(baseline),candidate:await sourceEvidence(candidate)},
+  const report={kind:options.smoke?'runner-smoke':'performance-evidence',options,runner:{path:self,sha256:await fileHash(self)},sources:{baseline:await sourceEvidence(baseline),candidate:await sourceEvidence(candidate)},
     cachePolicy:'Fresh child process and SQLite connection each round; first queries recorded separately; OS page cache is not forcibly dropped.',
     transactionDefinition:'Admission is the real /api/jobs handler final JsonStore.update; envelope also includes readiness. The candidate uses the exported dispatch and completion commands; the baseline uses public domain functions and JsonStore.update because its dispatch/completion functions are private. Both adapters preserve separate dispatch, artifact-prepared and publish/settlement/cooldown commits, account counters, final job/image records and next-child queue activation. Synthetic PNG publication/fsync is outside SQL timing. Logical generation takes 2s and existing account cooldown advances the clock without sleep or network. Fixed waiting jobs use a 24h deadline during timing rounds.',
     replayDefinition:'Each replay round reads the same checkpointed candidate database from load round 1, builds an empty target with opening/events and protected facts, and independently closes/reopens a half-replayed target before resuming. The legacy baseline has no event replay operation. Annual capacity is one separate run, not a repeated latency comparison.',
@@ -114,7 +114,7 @@ async function orchestrate(){
     const environments=new Set(report.rounds.map(({machine})=>JSON.stringify({platform:machine.platform,architecture:machine.architecture,node:machine.node,
       sqlite:machine.sqlite,cpu:machine.cpu,filesystemType:machine.filesystem.type,filesystemBlockSize:machine.filesystem.bsize})));
     if(environments.size!==1)throw new Error('Baseline and candidate measurements did not use the same runtime and filesystem');
-    report.sourceChangedDuringRun=(await sourceEvidence(baseline)).codeSha256!==report.sources.baseline.codeSha256||(await sourceEvidence(candidate)).codeSha256!==report.sources.candidate.codeSha256;
+    report.sourceChangedDuringRun=(await sourceEvidence(baseline)).codeSha256!==report.sources.baseline.codeSha256||(await sourceEvidence(candidate)).codeSha256!==report.sources.candidate.codeSha256||await fileHash(self)!==report.runner.sha256;
     report.totalMs=elapsed(started);
     await fs.writeFile(path.join(output,'report.json'),encode(report));
     if(report.sourceChangedDuringRun&&!options.smoke)throw new Error('Source changed during measurement; performance evidence is not a fixed-revision comparison');
@@ -204,7 +204,7 @@ async function measure(config,result,{load,storeModule,quota}){
   result.synchronous=store.sqlite.pragma('synchronous',{simple:true});if(result.synchronous!==2)throw new Error('Measured store is not synchronous FULL');
   const query=async(name,fn,materialized)=>{const started=performance.now(),value=await fn();timings[name].push(elapsed(started));rows[name]=materialized(value);hotPeakRss=Math.max(hotPeakRss,process.memoryUsage().rss);return value;};
   const queries=async()=>{
-    await query('memberSummary',async()=>{const db=await store.readCollections(['settings','users','accounts','jobs']);const view=quota.estimateFairQuota?quota.estimateFairQuota(db,config.now):{...db,settings:structuredClone(db.settings),ledger:[]};return quota.fairQuotaSummary(view,members[0],config.now);},()=>1);
+    await query('memberSummary',()=>memoryRequest(handleGatewayRequest,null,'summary',{method:'GET',url:'/api/me/quota',expected:200}),()=>1);
     await query('firstHistory',()=>store.readMemberJobPage(members[0],{page:1,pageSize:30,q:'',status:'',sort:'createdAt',order:'desc',until:iso(config.now)}),value=>value.jobs.length);
     await query('annualHeatmap',()=>heatmap.readActivityHeatmap(store,new URLSearchParams(),{memberId:members[0].id},config.now),value=>value.days.length);
     await query('ownerStatistics',()=>owner.ownerOperation(new URL(`http://localhost/api/member/owner/statistics?days=${config.ownerDays}`),'GET',undefined,{store}),value=>value.recent.length);
