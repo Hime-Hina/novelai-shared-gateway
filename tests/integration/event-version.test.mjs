@@ -89,6 +89,8 @@ test('unknown authority/reducer versions are rejected before verification, insta
 
 test('failed v1 installation rolls back rebuilt caches, query rows, cursor and authority marker',async t=>{
   const store=await fixture(t);await store.enableEventAuthority();const sqlite=store.sqlite;markV1(sqlite);
+  // 缺失的查询行确实需要重装；不能依靠未变化行的冗余 UPSERT 触发故障。
+  sqlite.prepare("DELETE FROM images WHERE id='unlinked'").run();
   const before=sqlite.serialize();
   sqlite.exec("CREATE TEMP TRIGGER reject_version_install BEFORE INSERT ON images BEGIN SELECT RAISE(ABORT,'synthetic version install failure'); END");
   assert.throws(()=>activateEventAuthority(sqlite),/synthetic version install failure/);
@@ -96,6 +98,7 @@ test('failed v1 installation rolls back rebuilt caches, query rows, cursor and a
   assert.equal(marker(sqlite).version,1);
   sqlite.exec('DROP TRIGGER reject_version_install');
   activateEventAuthority(sqlite);assert.equal(marker(sqlite).version,2);
+  assert.ok(sqlite.prepare("SELECT 1 FROM images WHERE id='unlinked'").get());
 });
 
 test('v2 replay upgrades a v1 checkpoint and keeps retired unlinked artifacts absent',async t=>{

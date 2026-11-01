@@ -2145,7 +2145,9 @@ export function applyEventProjection(sqlite:Database.Database,commit:DomainCommi
     if(collection==='users'&&expected.discord)item.discord={...(existing.discord as object||{}),...(expected.discord as object)};
     if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
     const order=projected.order??candidate?.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
-    const row=sqlRecord(collection,item as StoreItem,order,JSON.stringify(item));
+    const data=JSON.stringify(item);
+    if(prior?.data===data&&prior.order_value===order)continue;
+    const row=sqlRecord(collection,item as StoreItem,order,data);
     const keys=Object.keys(row);
     if(!options.checkOnly)sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})
       ON CONFLICT(id) DO UPDATE SET ${keys.filter(key=>key!=='id').map(key=>`${key}=excluded.${key}`).join(',')}`).run(row);

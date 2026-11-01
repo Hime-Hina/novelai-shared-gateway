@@ -89,6 +89,32 @@ test('real single-image admission keeps its parent request without inventing a l
   const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.requestId,result.requestId);assert.equal(job.batchId,undefined);
   assert.equal(readStreamProjection(store.sqlite,`request:${result.requestId}`).projection.jobs[job.id].batchId,undefined);
 });
+test('unchanged related member projections avoid SQL updates and cache refresh while real changes remain checked',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  store.sqlite.exec(`CREATE TEMP TABLE member_updates(id TEXT);
+    CREATE TEMP TRIGGER count_member_update AFTER UPDATE ON users BEGIN INSERT INTO member_updates(id) VALUES(NEW.id); END;`);
+  const members=new Map(store.db.users.map(user=>[user.id,user]));
+  const admit=createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>store.activeGenerationPayloadBytes()),
+    artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
+  const result=await admit({identity:{token:'secret-a'},source:'api',batch:false,noCache:true,
+    request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:17,sampleCount:1}});
+  const jobId=result.jobIds[0],artifact={id:'prepared',imageId:'prepared',attemptId:'attempt',file:'prepared.webp',mimeType:'image/webp',sha256:'synthetic',byteLength:1};
+  await store.update(db=>{
+    const {id,...descriptor}=artifact;db.jobs.find(job=>job.id===jobId).resultPending=descriptor;
+    recordDomainEvent(db,{eventType:'ArtifactPrepared',streamId:`request:${result.requestId}`,payload:{jobId,artifact}});
+  },{dirtyRows:{jobs:[jobId]}});
+  assert.deepEqual(store.sqlite.prepare('SELECT id FROM member_updates').all(),[]);
+  for(const user of store.db.users)assert.strictEqual(user,members.get(user.id));
+  await assert.rejects(store.update(db=>{db.users.find(user=>user.id==='b').enabled=false;},{dirtyRows:{users:['b']}}),/Domain shadow mismatch/);
+  assert.deepEqual(store.sqlite.prepare('SELECT id FROM member_updates').all(),[]);
+  await store.update(db=>{
+    const user=db.users.find(user=>user.id==='b');user.enabled=false;user.updatedAt=at;
+    recordDomainEvent(db,{eventType:'MemberEligibilityChanged',streamId:'sharing:default',payload:{memberId:'b',enabled:false,at}});
+  },{dirtyRows:{users:['b']}});
+  assert.deepEqual(store.sqlite.prepare('SELECT id FROM member_updates').all(),[{id:'b'}]);
+  assert.equal(store.selectItemById('users','b').enabled,false);
+  store.sqlite.transaction(()=>verifyEventProjections(store.sqlite))();
+});
 test('real cached admission preserves the recorded result account without a new charge',async t=>{
   const store=await fixture(t),legacy=structuredClone(store.db);
   legacy.images=[{id:'cached-image',token:'secret-a',memberId:'a',accountId:'opus',file:'cached.png',createdAt:at}];
