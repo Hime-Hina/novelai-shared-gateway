@@ -12,6 +12,7 @@ import { migrateStorage } from '../../server/storage-migrations.ts';
 import { ImageStorage } from '../../server/r2-storage.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
+import { canonicalJson } from '../../server/domain-events.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function legacyStore(t){
@@ -34,6 +35,21 @@ async function legacyStore(t){
   store.sqlite.prepare('INSERT INTO free_image_usage(job_id,member_id,succeeded_at,warning_threshold) VALUES(?,?,?,?)').run('historical-free','a',now,10);
   return store;
 }
+
+async function inlineOpeningStore(t,count=205){
+  const directory=await mkdtemp(path.join(os.tmpdir(),'nai-inline-opening-')),store=new JsonStore(directory);await store.init();
+  t.after(async()=>{await store.close();await rm(directory,{recursive:true,force:true});});
+  const db=structuredClone(store.db);db.users=[{id:'a',token:'synthetic-private-key',enabled:true}];
+  db.jobs=Array.from({length:count},(_,index)=>{
+    const id=`inline-${String(index).padStart(3,'0')}`;
+    return {id,userToken:'synthetic-private-key',status:'done',createdAt:at,completedAt:at,errorDetail:`private diagnostic ${id}`,
+      request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,prompt:`private prompt ${id}`,
+        nativeParameters:{image:Buffer.from(`private image ${id}`).toString('base64')}},requestPayload:{body:{privatePrompt:`private payload ${id}`}}};
+  });
+  await store.write(db);return store;
+}
+const openingRows=sqlite=>Object.fromEntries(['generation_requests','generation_diagnostics','domain_events','event_commits','event_clock','event_streams','projection_versions','event_imports']
+  .map(table=>[table,sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
 
 test('opening facts reconstruct quota, historical results, protected inline input, cold idempotency and settlements',async t=>{
   const store=await legacyStore(t);
@@ -82,6 +98,87 @@ test('opening resumes a failed block and refuses a changed source before declari
   const settings=JSON.parse(original("SELECT value FROM app_settings WHERE key='settings'").get().value);settings.fairQuota.balances.a.v5Available='0';
   original("UPDATE app_settings SET value=? WHERE key='settings'").run(JSON.stringify(settings));
   assert.throws(()=>importOpeningFacts(changed.sqlite),/Opening source changed/);
+});
+
+test('opening commits private input and diagnostics atomically with each 100-source-row event block',async t=>{
+  const cases=[
+    {name:'first private insert',completed:0,trigger:"BEFORE INSERT ON generation_requests WHEN NEW.id='legacy-input:inline-000'"},
+    {name:'middle private insert',completed:100,trigger:"BEFORE INSERT ON generation_requests WHEN NEW.id='legacy-input:inline-150'"},
+    {name:'middle event append',completed:100,trigger:"BEFORE INSERT ON domain_events WHEN NEW.stream_id='request:legacy-inline-150'"},
+    {name:'block receipt after events',completed:100,trigger:"BEFORE INSERT ON event_imports WHEN NEW.chunk_id='jobs:1'"},
+    {name:'final completion marker',completed:205,trigger:"BEFORE UPDATE ON app_meta WHEN NEW.key='event_opening' AND json_extract(NEW.value,'$.status')='complete'"}
+  ];
+  for(const {name,completed,trigger} of cases)await t.test(name,async t=>{
+    const store=await inlineOpeningStore(t),sqlite=store.sqlite,source=sqlite.prepare('SELECT id,data FROM jobs ORDER BY id').all();
+    sqlite.exec(`CREATE TEMP TRIGGER fail_opening ${trigger} BEGIN SELECT RAISE(ABORT,'synthetic opening failure'); END;`);
+    assert.throws(()=>importOpeningFacts(sqlite),/synthetic opening failure/);
+    assert.equal(JSON.parse(sqlite.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value).status,'importing');
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_requests').get().n,completed);
+    assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_diagnostics').get().n,completed);
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='request'").get().n,completed);
+    assert.equal(sqlite.prepare("SELECT count(*) AS n FROM event_imports WHERE chunk_id LIKE 'jobs:%'").get().n,Math.ceil(completed/100));
+    assert.deepEqual(sqlite.prepare('SELECT id,data FROM jobs ORDER BY id').all(),source);
+    const prefix=openingRows(sqlite),cursor=sqlite.prepare('SELECT value FROM event_clock').get().value;
+    const file=store.dbPath;await store.close();
+    const resumed=new Database(file);resumed.pragma('synchronous = FULL');
+    try{
+      const report=importOpeningFacts(resumed);assert.equal(report.status,'complete');
+      assert.equal(resumed.prepare('SELECT count(*) AS n FROM generation_requests').get().n,205);
+      assert.equal(resumed.prepare('SELECT count(*) AS n FROM generation_diagnostics').get().n,205);
+      assert.equal(resumed.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='request'").get().n,205);
+      for(const table of ['domain_events','event_commits'])assert.deepEqual(resumed.prepare(`SELECT * FROM ${table} WHERE commit_seq<=? ORDER BY rowid`).all(cursor),prefix[table]);
+      assert.deepEqual(resumed.prepare('SELECT id,data FROM jobs ORDER BY id').all(),source);
+      const complete=openingRows(resumed);assert.deepEqual(importOpeningFacts(resumed),report);assert.deepEqual(openingRows(resumed),complete);
+      const target=new Database(':memory:');
+      try{
+        migrateStorage(target);copyProtectedFacts(resumed,target);replayDomainEvents(resumed,target,{project:applyEventProjection});
+        assert.equal(target.prepare('SELECT count(*) AS n FROM jobs').get().n,205);
+        const job=JSON.parse(target.prepare("SELECT data FROM jobs WHERE id='inline-150'").get().data);
+        assert.equal(job.request.prompt,'private prompt inline-150');
+        assert.equal(job.request.nativeParameters.image,Buffer.from('private image inline-150').toString('base64'));
+        assert.deepEqual(job.requestPayload,{body:{privatePrompt:'private payload inline-150'}});
+        assert.equal(job.errorDetail,'private diagnostic inline-150');
+      }finally{target.close();}
+    }finally{resumed.close();}
+  });
+});
+
+test('opening resume rejects changes confined to a committed inline prompt, image bytes or requestPayload',async t=>{
+  const mutations=[
+    ['prompt',job=>{job.request.prompt='changed private prompt';}],
+    ['base64',job=>{job.request.nativeParameters.image=Buffer.from('changed private bytes').toString('base64');}],
+    ['requestPayload',job=>{job.requestPayload.body.privatePrompt='changed private payload';}]
+  ];
+  for(const [name,mutate] of mutations)await t.test(name,async t=>{
+    const store=await inlineOpeningStore(t,105),sqlite=store.sqlite;
+    sqlite.exec("CREATE TEMP TRIGGER stop_opening BEFORE INSERT ON event_imports WHEN NEW.chunk_id='jobs:1' BEGIN SELECT RAISE(ABORT,'stop opening'); END;");
+    assert.throws(()=>importOpeningFacts(sqlite),/stop opening/);sqlite.exec('DROP TRIGGER stop_opening');
+    const row=sqlite.prepare("SELECT data FROM jobs WHERE id='inline-000'").get(),job=JSON.parse(row.data);mutate(job);
+    sqlite.prepare("UPDATE jobs SET data=? WHERE id='inline-000'").run(JSON.stringify(job));
+    const before=openingRows(sqlite);
+    assert.throws(()=>importOpeningFacts(sqlite),/Opening source changed|Protected legacy .*input conflict/);
+    assert.deepEqual(openingRows(sqlite),before);
+    assert.equal(JSON.parse(sqlite.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value).status,'importing');
+  });
+});
+
+test('opening validates and reuses matching protected input left by an interrupted older importer',async t=>{
+  const store=await inlineOpeningStore(t,1),sqlite=store.sqlite;
+  const original=sqlite.prepare("SELECT data FROM jobs WHERE id='inline-000'").get().data,job=JSON.parse(original);
+  const payload=canonicalJson({legacyInline:true,request:job.request,requestPayload:job.requestPayload});
+  sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
+    .run('legacy-input:inline-000','a','legacy','generate',at,Buffer.byteLength(payload),payload);
+  job.request.prompt='private source changed after old interruption';
+  sqlite.prepare("UPDATE jobs SET data=? WHERE id='inline-000'").run(JSON.stringify(job));
+  assert.throws(()=>importOpeningFacts(sqlite),/Protected legacy .*input conflict/);
+  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='request'").get().n,0);
+  assert.equal(sqlite.prepare('SELECT payload FROM generation_requests').get().payload,payload);
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_diagnostics').get().n,0);
+  sqlite.prepare("UPDATE jobs SET data=? WHERE id='inline-000'").run(original);
+  assert.equal(importOpeningFacts(sqlite).status,'complete');
+  assert.equal(sqlite.prepare('SELECT count(*) AS n FROM generation_requests').get().n,1);
+  assert.equal(sqlite.prepare('SELECT payload FROM generation_requests').get().payload,payload);
+  assert.equal(sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE stream_kind='request'").get().n,1);
 });
 
 test('replay CLI restores a separate database and can resume at a complete commit',async t=>{

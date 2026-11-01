@@ -701,16 +701,23 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     for (const [jobId,charge] of terminals) sqlite.prepare('INSERT OR IGNORE INTO fair_quota_settlements(job_id,charge) VALUES(?,?)').run(jobId,canonicalJson(charge));
   }else chunk('configuration',0,[opening('sharing:default',{memberEligibility})]);
   function records(table:string,key:string,transform:(row:Record<string,unknown>)=>DomainEventInput[]) {
-    let cursor='',index=0,sourceCount=0,firstKey='';let events:DomainEventInput[]=[];
+    let cursor='',index=0;
     const pageSize=['jobs','images'].includes(table)?1:100;
-    while (true) {
-      const rows=sqlite.prepare(`SELECT * FROM ${table} WHERE ${key}>? ORDER BY ${key} LIMIT ?`).all(cursor,pageSize) as Record<string,unknown>[];
-      if(!rows.length){if(sourceCount)chunk(table,index,events,firstKey,cursor);return;}
-      for(const row of rows){
-        if(!sourceCount)firstKey=String(row[key]);events.push(...transform(row));cursor=String(row[key]);sourceCount++;
-        if(sourceCount===100){chunk(table,index++,events,firstKey,cursor);events=[];sourceCount=0;}
+    const select=sqlite.prepare(`SELECT * FROM ${table} WHERE ${key}>? ORDER BY ${key} LIMIT ?`);
+    const importBlock=sqlite.transaction(()=>{
+      let sourceCount=0,firstKey='';const events:DomainEventInput[]=[];
+      while(sourceCount<100){
+        const rows=select.all(cursor,Math.min(pageSize,100-sourceCount)) as Record<string,unknown>[];
+        if(!rows.length)break;
+        for(const row of rows){
+          if(!sourceCount)firstKey=String(row[key]);events.push(...transform(row));cursor=String(row[key]);sourceCount++;
+        }
       }
-    }
+      // 私有输入先写，但与引用它的开账事件、来源摘要共用这次 FULL 提交。
+      if(sourceCount)chunk(table,index++,events,firstKey,cursor);
+      return sourceCount;
+    });
+    while(importBlock()) { /* 每块最多读取 100 条；大 payload 仍逐条转换。 */ }
   }
   records('users','id',row=>[opening(`member:${row.id}`,{id:row.id})]);
   records('accounts','id',row=>{if(row.id===openingAccountId)return [];const value=JSON.parse(String(row.data)) as Record<string,unknown>;return [opening(`account:${row.id}`,pick(value,accountFacts))];});
@@ -721,13 +728,17 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     if (sourceJobs[0]?.id !== job.id) return [];
     const parent = job.requestId ? sqlite.prepare('SELECT * FROM generation_requests WHERE id=?').get(job.requestId) as Record<string,unknown>|undefined : undefined;
     let inputRef = parent?.id as string | undefined;
+    let inputPayload=parent?.payload as string|undefined;
     if (!parent && (job.request || job.requestPayload)) {
       inputRef = `legacy-input:${job.id}`;
       const payload = canonicalJson({legacyInline:true,request:job.request || null,requestPayload:job.requestPayload || null});
-      sqlite.prepare('INSERT OR IGNORE INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
-        .run(inputRef,String(memberOf(job)||''),String(job.source||'legacy'),String((job.request as Record<string,unknown>|undefined)?.operation||'generate'),String(job.createdAt||recordedAt),Buffer.byteLength(payload),payload);
+      const input={id:inputRef,member_id:String(memberOf(job)||''),source:String(job.source||'legacy'),
+        operation:String((job.request as Record<string,unknown>|undefined)?.operation||'generate'),created_at:String(job.createdAt||recordedAt),payload_bytes:Buffer.byteLength(payload),payload};
+      const existing=sqlite.prepare('SELECT * FROM generation_requests WHERE id=?').get(inputRef) as typeof input|undefined;
+      if(existing&&Object.entries(input).some(([key,value])=>existing[key as keyof typeof input]!==value))throw new Error(`Protected legacy generation input conflict ${inputRef}`);
+      if(!existing)sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(@id,@member_id,@source,@operation,@created_at,@payload_bytes,@payload)').run(input);
+      inputPayload=payload;
     }
-    const input = inputRef ? sqlite.prepare('SELECT payload FROM generation_requests WHERE id=?').get(inputRef) as {payload:string}|undefined : undefined;
     const jobs = Object.fromEntries(sourceJobs.map(item=>{
       const stableOwner=item.memberId||(item.generationAttempt as {memberId?:string}|undefined)?.memberId||(item.fairCharge as {userId?:string}|undefined)?.userId;
       if(parent?.member_id&&stableOwner&&parent.member_id!==stableOwner)throw new Error(`Conflicting legacy job ownership ${item.id}`);
@@ -745,7 +756,7 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     }));
     return [opening(streamId,{request:{requestId:parent?.id||null,memberId:parent?.member_id||memberOf(job),source:job.source||'legacy',
       operation:parent?.operation||(job.request as Record<string,unknown>|undefined)?.operation||'generate',createdAt:parent?.created_at||job.createdAt||recordedAt,
-      inputRef:inputRef||null,inputSha256:input?createHash('sha256').update(input.payload).digest('hex'):null,legacy:true},jobs,artifacts:{},aliases:[],freeUsage:{}})];
+      inputRef:inputRef||null,inputSha256:inputPayload===undefined?null:createHash('sha256').update(inputPayload).digest('hex'),legacy:true},jobs,artifacts:{},aliases:[],freeUsage:{}})];
   });
   records('images','id',row=>{
     const value=JSON.parse(String(row.data)) as Record<string,unknown>;
