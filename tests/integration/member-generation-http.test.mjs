@@ -99,9 +99,9 @@ async function fixture(t) {
   };
   const dispatch = async requestId => store.update(db => {
     const job = db.jobs.find(job => job.requestId === requestId), user = db.users.find(user => user.token === job.userToken), request = singleGenerationRequest(store.readGenerationRequest(requestId), job.sampleIndex);
-    const now = Date.now(); assertConfirmedDispatch(db, user, request, [], now, env);
+    const now = Date.now();
     job.status = 'running'; job.accountId = db.accounts[0].id; job.startedAt = job.updatedAt = new Date(now).toISOString();
-    reserveFairQuota(db, user, job, db.accounts[0], now, request); return job.id;
+    reserveFairQuota(db, user, job, db.accounts[0], now, request, null, charge => assertConfirmedDispatch(db, user, request, [], charge, env)); return job.id;
   }, { immediate: true });
   const finish = async (requestId, { failed = false, late = false, bytes = image, mimeType = 'image/png' } = {}) => {
     const imageId = `image-${requestId}`, file = `images/${imageId}.png`; await mkdir(path.join(dataDir, 'images'), { recursive: true });
@@ -154,6 +154,7 @@ test('HTTP confirmation tampering and same-key concurrency preserve one durable 
   assert.deepEqual([first.body.replayed, second.body.replayed].sort(), [false, true]);
   const requestId = first.body.requestId, original = f.store.readGenerationRequest(requestId);
   assert.ok(Number.isInteger(original.seed)); assert.equal(f.store.countRecords('jobs'), 1);
+  assert.equal(original.normalizationContext.format, 'native-member-v1');
   assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM domain_events WHERE event_type = 'RequestAccepted'").get().n, 1);
   const alteredBudget = structuredClone(acceptedBody); alteredBudget.confirmation.maxTotal.v5 = '1';
   assert.equal((await f.json('/api/member/generation/requests', { method: 'POST', key: 'concurrent', body: alteredBudget })).body.code, 'idempotency_conflict');

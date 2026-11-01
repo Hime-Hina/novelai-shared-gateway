@@ -96,12 +96,14 @@ type ModelCapability = {
   actions: ('generate' | 'img2img' | 'infill')[]
   fields: Record<string, FieldCapability>
   features: { multiCharacter: boolean; coordinatePlacement: boolean; vibe: boolean; preciseReference: boolean }
-  requirements: { action?: 'generate' | 'img2img' | 'infill'; requires: string[]; excludes: string[] }[]
+  requirements: { action?: 'generate' | 'img2img' | 'infill'; when?: string; requires: string[]; excludes: string[] }[]
   transforms: { code: string; fields: string[]; description: string }[]
 }
 ```
 
 辅助操作的 actions 为 `[]`；涉及数组/对象的复杂编辑器消费已有请求类型，不由这个展示描述发明新的执行语法。fixed 表示服务端固定值，default 仅在缺省时采用；像素总量、参考数量和组合限制仍由共同规则作最终校验。
+
+每条 requirements 仅在其 `action` 与输入动作相同（或没有 action），且 `when` 指向的 Native 字段已启用（或没有 when）时生效；生效后 requires 中每个字段必须启用，excludes 中每个字段必须未启用。when/requires/excludes 使用同一语义：缺省、null、空字符串、false 和空数组均未启用，非空数组以及其他值视为启用；对象包含空对象也视为启用，仍须通过字段自身的类型和结构校验。when 是一个字段路径，不是表达式或脚本。比如普通 Vibe 数组的条件规则只在该数组非空时排除 cached Vibe 与 Precise Reference；无参考输入不会被要求补上参考，普通/cached 数组各自可以单独使用，不能同时启用。
 
 参数描述采用项目实际需要的类型和约束，不嵌可执行 JS 或新通用规则语言。它是共同规范化/能力定义的投影，服务端校验仍是权威；前端不能根据一份复制的模型表判断某功能已被支持。新模型或组合支持变化必须同时更新能力投影及对应校验/报价测试。
 

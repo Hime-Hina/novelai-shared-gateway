@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
 import { BASE_MODELS, INPAINT_MODELS, NATIVE_DEFAULTS, NATIVE_LIMITS, NATIVE_VIBE_MODELS } from '../../server/native-image.ts';
 import { NATIVE_MULTIPART_MAX_PARTS } from '../../server/native-body.ts';
+import { normalizeMemberGeneration } from '../../server/member-generation.ts';
 
 test('capabilities are generated from actual Native models, limits, defaults and Medium transformations', () => {
   const caps = memberGenerationCapabilities({}, { id: 'self' }, { env: {} });
@@ -33,4 +34,29 @@ test('version changes track execution policy; balance, queue counts, warning lab
   const changedLimits = memberGenerationCapabilities(db, { id: 'self' }, { env: { QUEUE_MAX_ACTIVE_GLOBAL: '8' } });
   assert.notEqual(changedLimits.versions.capabilities, fallback.versions.capabilities); assert.notEqual(changedLimits.versions.billingPolicy, fallback.versions.billingPolicy);
   assert.ok(!JSON.stringify(fallback).includes('secret')); assert.ok(!JSON.stringify(fallback).includes('private'));
+});
+
+test('conditional capability requirements agree with Native validation for absent, plain and cached Vibe inputs', () => {
+  const model = memberGenerationCapabilities({}).models.find(entry => entry.operation === 'generate' && entry.id === 'nai-diffusion-4-5-full');
+  const encoded = Buffer.alloc(256, 42).toString('base64');
+  const enabled = value => value !== undefined && value !== null && value !== '' && value !== false && (!Array.isArray(value) || value.length > 0);
+  const allowedByRequirements = body => {
+    const read = path => path.split('.').reduce((value, key) => value?.[key], body);
+    return model.requirements.every(rule => rule.action && rule.action !== (body.action || 'generate') || rule.when && !enabled(read(rule.when))
+      || rule.requires.every(path => enabled(read(path))) && rule.excludes.every(path => !enabled(read(path))));
+  };
+  for (const [parameters, expected] of [
+    [{}, true],
+    [{ reference_image_multiple: [], reference_image_multiple_cached: [] }, true],
+    [{ reference_image_multiple: [encoded], reference_strength_multiple: [0.6] }, true],
+    [{ reference_image_multiple_cached: [{ data: encoded }], reference_strength_multiple: [0.6] }, true],
+    [{ reference_image_multiple: [], reference_image_multiple_cached: [{ data: encoded }], reference_strength_multiple: [0.6] }, true],
+    [{ reference_image_multiple: [encoded], reference_image_multiple_cached: [{ data: encoded }], reference_strength_multiple: [0.6] }, false],
+    [{ reference_image_multiple: [encoded], director_reference_images: ['synthetic'], reference_strength_multiple: [0.6] }, false],
+  ]) {
+    const body = { operation: 'generate', input: 'synthetic', model: model.id, parameters: { width: 128, height: 128, steps: 23, seed: 42, ...parameters } };
+    assert.equal(allowedByRequirements(body), expected);
+    if (expected) assert.doesNotThrow(() => normalizeMemberGeneration(body));
+    else assert.throws(() => normalizeMemberGeneration(body), error => error.statusCode === 422);
+  }
 });

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { BASE_MODELS, INPAINT_MODELS, BOOLEAN_PARAMETERS, NATIVE_SAMPLERS, NATIVE_NOISE_SCHEDULES,
   NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES, NATIVE_DEFAULTS, NATIVE_LIMITS,
-  NATIVE_MAX_BODY_BYTES, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS } from './native-image.ts';
+  NATIVE_MAX_BODY_BYTES, MAX_IMAGE_BYTES } from './native-image.ts';
 import { NATIVE_PRICING_VERSION } from './native-pricing.ts';
 import { NATIVE_MULTIPART_MAX_PARTS } from './native-body.ts';
 import { isV5MediumModel } from '../public/v5-medium.js';
@@ -21,7 +21,7 @@ export interface ModelCapability {
   operation: MemberGenerationOperation; id: string; label: string;
   actions: ('generate' | 'img2img' | 'infill')[]; fields: Record<string, FieldCapability>;
   features: { multiCharacter: boolean; coordinatePlacement: boolean; vibe: boolean; preciseReference: boolean };
-  requirements: { action?: 'generate' | 'img2img' | 'infill'; requires: string[]; excludes: string[] }[];
+  requirements: { action?: 'generate' | 'img2img' | 'infill'; when?: string; requires: string[]; excludes: string[] }[];
   transforms: { code: string; fields: string[]; description: string }[];
 }
 export interface MemberGenerationVersions { capabilities: string; normalization: string; defaults: string; pricing: string; billingPolicy: string }
@@ -96,10 +96,11 @@ function generationModel(id: string): ModelCapability {
     { action: 'img2img', requires: ['parameters.image'], excludes: ['parameters.mask', 'parameters.img2img', 'parameters.sm', 'parameters.sm_dyn'] },
     { action: 'infill', requires: ['parameters.image', 'parameters.mask'], excludes: ['parameters.reference_image_multiple', 'parameters.reference_image_multiple_cached', 'parameters.sm', 'parameters.sm_dyn'] },
   ].filter(item => actions.includes(item.action as 'generate')) as ModelCapability['requirements'];
-  if (base.startsWith('nai-diffusion-4-5-')) {
-    requirements.push({ requires: ['parameters.reference_image_multiple'], excludes: ['parameters.director_reference_images', 'parameters.director_reference_images_cached'] },
-      { requires: ['parameters.reference_image_multiple_cached'], excludes: ['parameters.director_reference_images', 'parameters.director_reference_images_cached'] });
-  }
+  const vibes = ['parameters.reference_image', 'parameters.reference_image_multiple', 'parameters.reference_image_multiple_cached'];
+  const precise = ['parameters.director_reference_images', 'parameters.director_reference_images_cached'];
+  if (!v5 && !inpaint) for (const when of vibes) requirements.push({ when, requires: [],
+    excludes: [...vibes.filter(path => path !== when), ...(base.startsWith('nai-diffusion-4-5-') ? precise : [])] });
+  if (base.startsWith('nai-diffusion-4-5-')) for (const when of precise) requirements.push({ when, requires: [], excludes: [...precise.filter(path => path !== when), ...vibes] });
   return { operation: 'generate', id, label: id, actions, fields,
     features: { multiCharacter: !v3, coordinatePlacement: !v3, vibe: !v5 && !inpaint, preciseReference: base.startsWith('nai-diffusion-4-5-') }, requirements, transforms };
 }
@@ -123,8 +124,9 @@ export function memberGenerationCapabilities(db: FairQuotaDatabase, _member?: Pi
     { id: 'upscale', inputContentTypes: ['application/json', 'multipart/form-data'], outputMimeTypes: ['image/png', 'image/webp'] },
     { id: 'encode-vibe', inputContentTypes: ['application/json', 'multipart/form-data'], outputMimeTypes: ['application/octet-stream'] },
   ];
-  const limits = { wireBytes: NATIVE_MAX_BODY_BYTES, normalizedBytes: payload.request, activePayloadBytes: payload.active, attachmentBytes: MAX_IMAGE_BYTES, multipartParts: NATIVE_MULTIPART_MAX_PARTS,
-    sampleCount: { min: 1, max: NATIVE_LIMITS.samplesMax }, generationPixels: NATIVE_LIMITS.generationPixels, imagePixels: MAX_IMAGE_PIXELS, imageDimension: NATIVE_LIMITS.imageDimension,
+  const limits = { wireBytes: NATIVE_MAX_BODY_BYTES, normalizedBytes: payload.request, activePayloadBytes: payload.active, attachmentBytes: Math.min(MAX_IMAGE_BYTES, NATIVE_LIMITS.imageBytes), multipartParts: NATIVE_MULTIPART_MAX_PARTS,
+    sampleCount: { min: 1, max: NATIVE_LIMITS.samplesMax }, generationPixels: NATIVE_LIMITS.generationPixels, imagePixels: NATIVE_LIMITS.imagePixels, imageDimension: NATIVE_LIMITS.imageDimension,
+    vibeEncodingBytes: NATIVE_LIMITS.vibeEncodingBytes,
     references: NATIVE_LIMITS.referencesMax, characters: NATIVE_LIMITS.charactersMax, centersPerCharacter: NATIVE_LIMITS.centersMax, queue };
   const billing = { units: { v5: 'percentage_points', anlasFixed: 'subscription_anlas', anlasPurchased: 'purchased_anlas' }, estimatedV5: true,
     allowPurchasedAnlasDefault: false, autoAnlasFallback: quota?.autoAnlasFallback === true, freeImagePolicy: { enabled: free.enabled, warningThreshold: free.warningThreshold, hardLimit: free.hardLimit } };
@@ -133,7 +135,7 @@ export function memberGenerationCapabilities(db: FairQuotaDatabase, _member?: Pi
   const defaults = { native: NATIVE_DEFAULTS, medium: applyV5MediumParameters({}, ''), allowPurchasedAnlas: false };
   const versions: MemberGenerationVersions = {
     capabilities: generationDefinitionDigest({ operations, rules, limits }),
-    normalization: generationDefinitionDigest({ format: MEMBER_NORMALIZATION_FORMAT, rules }),
+    normalization: generationDefinitionDigest({ format: MEMBER_NORMALIZATION_FORMAT, rules, limits: NATIVE_LIMITS }),
     defaults: generationDefinitionDigest(defaults), pricing: NATIVE_PRICING_VERSION,
     billingPolicy: generationDefinitionDigest({ enabled: quota?.enabled === true, autoAnlasFallback: billing.autoAnlasFallback,
       groups: quota?.groups?.map(group => ({ id: group.id, members: [...group.members].sort(), share: group.share, memberWeights: group.memberWeights })).sort((left, right) => left.id.localeCompare(right.id, 'en')),

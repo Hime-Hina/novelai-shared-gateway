@@ -20,7 +20,7 @@ export interface MemberNormalizationContext {
   format: typeof MEMBER_NORMALIZATION_FORMAT; versions: Pick<MemberGenerationVersions, 'normalization' | 'defaults'>;
   randomSeed: boolean; native: NativeNormalizationContext;
 }
-export type MemberGenerationRequest = (NativeGenerationRequest | NativeAuxiliaryRequest) & { allowPurchasedAnlas: boolean };
+export type MemberGenerationRequest = (NativeGenerationRequest | NativeAuxiliaryRequest) & { allowPurchasedAnlas: boolean; normalizationContext?: MemberNormalizationContext };
 export interface NormalizedMemberGeneration {
   operation: MemberGenerationOperation; request: MemberGenerationRequest; randomSeed: boolean; requestFingerprint: string;
   normalizationContext: MemberNormalizationContext; confirmation?: MemberGenerationConfirmation;
@@ -101,10 +101,11 @@ export function normalizeMemberGeneration(input: unknown, { normalizationContext
 }
 
 export function materializeMemberGeneration(normalized: NormalizedMemberGeneration, seed?: number): MemberGenerationRequest {
-  if (!normalized.randomSeed || !('nativeParameters' in normalized.request)) return structuredClone(normalized.request);
+  const request = { ...structuredClone(normalized.request), normalizationContext: structuredClone(normalized.normalizationContext) };
+  if (!normalized.randomSeed || !('nativeParameters' in request)) return request;
   const actual = seed ?? randomBytes(4).readUInt32LE(0);
   if (!Number.isInteger(actual) || actual < 0 || actual > 4294967295) throw new Error('Materialized generation seed must be uint32.');
-  return { ...structuredClone(normalized.request), seed: actual, nativeParameters: { ...normalized.request.nativeParameters, seed: actual } };
+  return { ...request, seed: actual, nativeParameters: { ...request.nativeParameters, seed: actual } };
 }
 
 export function memberGenerationIntentFingerprint(normalized: NormalizedMemberGeneration, confirmation = normalized.confirmation): string {
@@ -235,19 +236,20 @@ function inputAssetSlots(input: Record<string, unknown>): { slot: string; owner:
   }
   return slots;
 }
-function decodeInputAsset(asset: { value: string; image: boolean }) {
+function decodeInputAsset(asset: { value: string; image: boolean }, context?: MemberNormalizationContext) {
   const base64 = asset.value.startsWith('data:') ? asset.value.slice(asset.value.indexOf(',') + 1) : asset.value;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) fail(410, 'input_unavailable', '原输入附件不可用。');
   const bytes = Buffer.from(base64, 'base64');
   if (!bytes.length || bytes.toString('base64').replace(/=+$/, '') !== base64.replace(/=+$/, '')) fail(410, 'input_unavailable', '原输入附件不可用。');
-  try { return { bytes, mimeType: asset.image ? validateImageBytes(bytes).mimeType : 'application/octet-stream' }; }
+  const limits = context?.native.limits;
+  try { return { bytes, mimeType: asset.image ? validateImageBytes(bytes, limits ? { maxBytes: limits.imageBytes, maxDimension: limits.imageDimension, maxPixels: limits.imagePixels } : {}).mimeType : 'application/octet-stream' }; }
   catch { fail(410, 'input_unavailable', '原输入附件不可用。'); }
 }
 
 export function memberGenerationInput(requestId: string, request: RecoverableRequest | null | undefined) {
   const input = recoveredInput(request), assets: { slot: string; mimeType: string; byteLength: number; url: string }[] = [];
   if (input) for (const asset of inputAssetSlots(input)) {
-    const decoded = decodeInputAsset(asset);
+    const decoded = decodeInputAsset(asset, request?.normalizationContext);
     assets.push({ slot: asset.slot, mimeType: decoded.mimeType, byteLength: decoded.bytes.length,
       url: `/api/member/requests/${encodeURIComponent(requestId)}/inputs/${encodeURIComponent(asset.slot)}` });
     (asset.owner as Record<string | number, unknown>)[asset.key] = { slot: asset.slot };
@@ -260,5 +262,5 @@ export function memberGenerationInputAsset(request: RecoverableRequest | null | 
   if (!input) fail(410, 'input_unavailable', '历史请求未保存完整输入。');
   const asset = inputAssetSlots(input).find(item => item.slot === slot);
   if (!asset) fail(404, 'input_not_found', '原输入附件不存在。');
-  return decodeInputAsset(asset);
+  return decodeInputAsset(asset, request?.normalizationContext);
 }

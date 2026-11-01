@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { crc32, BASE_MODELS } from '../../server/native-image.ts';
+import { crc32, BASE_MODELS, NATIVE_LIMITS, NATIVE_SAMPLERS, NATIVE_NOISE_SCHEDULES, NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES } from '../../server/native-image.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
 import { readNativeBody } from '../../server/native-body.ts';
 import { V5_MEDIUM_PROFILE } from '../../server/v5-medium.ts';
 import { generateNovelAiImage } from '../../server/providers.ts';
 import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
 import { normalizeMemberGeneration, materializeMemberGeneration, quoteMemberGeneration, parseMemberGenerationConfirmation,
-  memberGenerationIntentFingerprint, assertMemberGenerationConfirmation, assertMemberGenerationCost,
+  memberGenerationIntentFingerprint, assertMemberGenerationConfirmation, assertMemberGenerationCost, assertMemberGenerationVersions,
   addMemberGenerationResources, memberGenerationInput, memberGenerationInputAsset } from '../../server/member-generation.ts';
 
 const NOW = 1800000000000;
@@ -68,17 +68,75 @@ test('stored Medium profile survives rule changes and server-only confirmation/c
   const versions = memberGenerationCapabilities({}).versions, calls = [];
   try {
     Object.assign(V5_MEDIUM_PROFILE, { steps: 12, sampler: 'k_euler', negativePreset: 'changed preset' });
+    const current = normalizeMemberGeneration(input);
+    assert.equal(current.request.steps, 12); assert.notEqual(current.requestFingerprint, normalized.requestFingerprint);
+    assert.throws(() => assertMemberGenerationVersions({ versions }, memberGenerationCapabilities({}).versions), error => error.code === 'quote_changed');
     const replay = normalizeMemberGeneration(input, { normalizationContext: normalized.normalizationContext });
     assert.equal(replay.requestFingerprint, normalized.requestFingerprint); assert.equal(replay.request.steps, 14);
     assert.equal(replay.request.negative, normalized.request.negative); assert.notEqual(memberGenerationCapabilities({}).versions.defaults, versions.defaults);
     globalThis.fetch = async (_url, options) => { calls.push(JSON.parse(options.body)); return new Response(image, { headers: { 'content-type': 'image/png' } }); };
-    const request = { ...materializeMemberGeneration(replay, 77), normalizationContext: replay.normalizationContext, clientContract: 'member-generation-v1', confirmation: { private: 'must-not-reach-upstream' } };
+    const request = { ...materializeMemberGeneration(replay, 77), clientContract: 'member-generation-v1', confirmation: { private: 'must-not-reach-upstream' } };
+    assert.deepEqual(request.normalizationContext, replay.normalizationContext);
     await generateNovelAiImage(request, { token: 'synthetic-local-token' }, { NOVELAI_API_URL: 'https://synthetic.invalid' }, { forceStream: false });
     assert.equal(calls.length, 1); assert.deepEqual(Object.keys(calls[0]).sort(), ['action', 'input', 'model', 'parameters', 'use_new_shared_trial']);
     assert.equal(calls[0].parameters.steps, 14); assert.equal(calls[0].parameters.sampler, 'k_euler_ancestral');
     assert.equal(calls[0].parameters.negative_prompt, normalized.request.negative);
     assert.ok(!JSON.stringify(calls).includes('must-not-reach-upstream')); assert.ok(!JSON.stringify(calls).includes('normalizationContext'));
   } finally { Object.assign(V5_MEDIUM_PROFILE, oldProfile); globalThis.fetch = originalFetch; }
+});
+
+test('historical normalization passes its saved limits to every reference, caption, image and auxiliary helper', () => {
+  const encoded = Buffer.alloc(256, 42).toString('base64'), original = { ...NATIVE_LIMITS };
+  const small = (parameters = {}, root = {}) => body({ width: 128, height: 128, ...parameters }, root);
+  const character = { char_caption: 'character', centers: [{ x: 0.25, y: 0.5 }, { x: 0.75, y: 0.5 }] };
+  const caption = { caption: { base_caption: 'base caption', char_captions: [character, character] }, use_coords: true };
+  const imageInputs = [small({ image: image64 }, { action: 'img2img' }), small({ image: image64, mask: image64 }, { action: 'infill' }),
+    { operation: 'upscale', image: image64 }, { operation: 'encode-vibe', image: image64, model: 'nai-diffusion-4-5-full' },
+    small({ reference_image_multiple: [image64], reference_strength_multiple: [0.6] }, { model: 'nai-diffusion-3' })];
+  const cases = [
+    ['referencesMax', 1, [small({ reference_image_multiple: [encoded, encoded], reference_strength_multiple: [0.6, 0.6] }),
+      small({ reference_image_multiple_cached: [{ data: encoded }, { data: encoded }], reference_strength_multiple: [0.6, 0.6] })]],
+    ['charactersMax', 1, [small({ v4_prompt: caption }), small({ v4_prompt: caption, characterPrompts: [{}, {}] })]],
+    ['centersMax', 1, [small({ v4_prompt: { ...caption, caption: { ...caption.caption, char_captions: [character] } } })]],
+    ['characterPromptCharacters', 2, [small({ v4_prompt: caption })]],
+    ['promptCharacters', 2, [small({ negative_prompt: 'negative' }, { input: 'x' }), small({ v4_prompt: { caption: { base_caption: 'long base', char_captions: [] } } }, { input: 'x' })]],
+    ['imageDimension', 64, imageInputs], ['imageBytes', image.length - 1, imageInputs], ['imagePixels', 128 * 128 - 1, imageInputs],
+    ['vibeEncodingBytes', 255, [small({ reference_image_multiple: [encoded], reference_strength_multiple: [0.6] })]],
+    ['generationPixels', 128 * 128 - 1, [small(), { operation: 'upscale', image: image64 }]],
+    ['dimensionMin', 256, [small()]], ['dimensionMax', 127, [small()]], ['stepsMin', 24, [small()]], ['stepsMax', 22, [small()]], ['samplesMax', 1, [small({ n_samples: 2 })]],
+  ];
+  for (const [limit, value, inputs] of cases) {
+    const accepted = inputs.map(input => normalizeMemberGeneration(input));
+    try {
+      NATIVE_LIMITS[limit] = value;
+      for (const [index, input] of inputs.entries()) {
+        assert.throws(() => normalizeMemberGeneration(input), error => error.statusCode === 422, `new intent must use current ${limit}`);
+        const replay = normalizeMemberGeneration(input, { normalizationContext: accepted[index].normalizationContext });
+        assert.equal(replay.requestFingerprint, accepted[index].requestFingerprint, `replay must use first ${limit}`);
+        if (imageInputs.includes(input)) {
+          const recovered = memberGenerationInput('historical', materializeMemberGeneration(replay, 7));
+          assert.equal(recovered.recoverable, true); assert.ok(recovered.assets.length > 0);
+        }
+      }
+    } finally { Object.assign(NATIVE_LIMITS, original); }
+  }
+});
+
+test('historical auxiliary model, blur, sampler and noise enumerations remain available only through the stored context', () => {
+  const cases = [
+    [NATIVE_VIBE_MODELS, 'nai-diffusion-4-5-full', { operation: 'encode-vibe', image: image64, model: 'nai-diffusion-4-5-full' }],
+    [NATIVE_BLUR_VALUES, 0.3, { operation: 'upscale', image: image64, declared_blur_sigma: 0.3 }],
+    [NATIVE_SAMPLERS, 'k_euler', body({ sampler: 'k_euler' })],
+    [NATIVE_NOISE_SCHEDULES, 'karras', body({ noise_schedule: 'karras' })],
+  ];
+  for (const [values, removed, input] of cases) {
+    const before = [...values], accepted = normalizeMemberGeneration(input);
+    try {
+      values.splice(values.indexOf(removed), 1);
+      assert.throws(() => normalizeMemberGeneration(input), error => error.statusCode === 422);
+      assert.equal(normalizeMemberGeneration(input, { normalizationContext: accepted.normalizationContext }).requestFingerprint, accepted.requestFingerprint);
+    } finally { values.splice(0, values.length, ...before); }
+  }
 });
 
 test('quotes use independent per-child prices and leave frozen wallets, ledger, reservations and jobs untouched', () => {
