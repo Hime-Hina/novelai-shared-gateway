@@ -1,0 +1,19 @@
+{
+  "kind": "read-only-startup-field-classification",
+  "source": "/bench/final-3eae814-run01/annual/annual-backup.sqlite",
+  "target": "/bench/startup-3eae814-run01/library.sqlite",
+  "originalStrictReportPassed": false,
+  "accountRowsBefore": 1,
+  "accountRowsAfter": 1,
+  "accountDifferences": [
+    {
+      "path": ".0.data.inFlight",
+      "beforePresent": false,
+      "afterPresent": true,
+      "after": 0
+    }
+  ],
+  "onlyExpectedCounterReset": true,
+  "rule": "JsonStore.init resets account.inFlight to 0 after opening; the annual synthetic account omitted this runtime counter.",
+  "boundary": "No init or activation was repeated. Original strict raw-row hash failure is retained; all other non-app_meta tables and event/projection cursors match in startup-report.json."
+}

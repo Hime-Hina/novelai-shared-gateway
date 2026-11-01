@@ -1,0 +1,302 @@
+{
+  "kind": "single-v2-store-startup",
+  "candidateCommit": "3eae814",
+  "source": "/bench/final-3eae814-run01/annual/annual-backup.sqlite",
+  "target": "/bench/startup-3eae814-run01/library.sqlite",
+  "limits": {
+    "network": "none",
+    "cpus": 2,
+    "memory": "4g"
+  },
+  "scope": "One JsonStore.init, one already-loaded ensureLoaded, then one enableEventAuthority on an independent consistent annual backup copy; no HTTP listener or upstream calls.",
+  "cachePolicy": "Fresh Node process and SQLite connections; OS cache is not dropped, and copying the backup may warm it. Full logical table hashes are calculated only after the timed calls.",
+  "timings": {
+    "copyMs": 4766.986245,
+    "moduleImportMs": 583.0420730000005,
+    "initMs": 1496.6486269999996,
+    "warmEnsureLoadedMs": 0.0399280000001454,
+    "enableEventAuthorityMs": 63700.291776,
+    "closeMs": 7.420645999998669,
+    "sourceFactHashMs": 24453.508852999992,
+    "targetFactHashMs": 22697.35464199999,
+    "integrityMs": 11312.168963000004
+  },
+  "enableResult": {
+    "version": 2,
+    "commitSeq": "781103"
+  },
+  "synchronous": 2,
+  "runtimeCache": {
+    "jobs": 500,
+    "images": 1000,
+    "ledger": 500,
+    "users": 20,
+    "accounts": 1
+  },
+  "cursors": {
+    "before": "781103",
+    "after": "781103",
+    "projectionBefore": "781103",
+    "projectionAfter": "781103"
+  },
+  "authority": {
+    "before": {
+      "version": 2,
+      "minimumWriterVersion": 2,
+      "commitSeq": "3"
+    },
+    "after": {
+      "version": 2,
+      "minimumWriterVersion": 2,
+      "commitSeq": "781103"
+    }
+  },
+  "metadataChanges": [
+    {
+      "key": "event_authority",
+      "beforeSha256": "c28c0903818f2f9f4f55397bdf941a73c18f2b26ef39b8bf730afbeb30912af7",
+      "afterSha256": "742b24389220e7b4fde1628fad43463f66114a9596cd4459b71d9aee2bbb51d5"
+    }
+  ],
+  "tableComparisons": [
+    {
+      "table": "__drizzle_migrations",
+      "rows": 17,
+      "sha256": "8a3cee112613b7e0884e41c9b602e57d3b53ab0a538d15b615b3a65cde35b1a0",
+      "after": {
+        "rows": 17,
+        "sha256": "8a3cee112613b7e0884e41c9b602e57d3b53ab0a538d15b615b3a65cde35b1a0"
+      },
+      "equal": true
+    },
+    {
+      "table": "accounts",
+      "rows": 1,
+      "sha256": "9e6b6de5de2e1f1889c5331e84cdd6430f4ba1ac909478de6fddef9498e35147",
+      "after": {
+        "rows": 1,
+        "sha256": "be6fff9e37ec8131c8d1a7b9b93b88692e8b56c95876f868d2add274adb9e4d5"
+      },
+      "equal": false
+    },
+    {
+      "table": "app_records",
+      "rows": 0,
+      "sha256": "96f9534ee2ab60b0779dcf85617abc3b002b67beabdb74ff3333043859b5a038",
+      "after": {
+        "rows": 0,
+        "sha256": "96f9534ee2ab60b0779dcf85617abc3b002b67beabdb74ff3333043859b5a038"
+      },
+      "equal": true
+    },
+    {
+      "table": "app_settings",
+      "rows": 1,
+      "sha256": "310273178a9dd4a93aedf24819f78463f95b5ac5fdf46b087722d6940028ab1a",
+      "after": {
+        "rows": 1,
+        "sha256": "310273178a9dd4a93aedf24819f78463f95b5ac5fdf46b087722d6940028ab1a"
+      },
+      "equal": true
+    },
+    {
+      "table": "artifact_inputs",
+      "rows": 0,
+      "sha256": "13698dbfa8bdce1a6759160d0401a047806ea4eafdc61bd7daff40b014c15ece",
+      "after": {
+        "rows": 0,
+        "sha256": "13698dbfa8bdce1a6759160d0401a047806ea4eafdc61bd7daff40b014c15ece"
+      },
+      "equal": true
+    },
+    {
+      "table": "cards",
+      "rows": 0,
+      "sha256": "1f18e49920131ce2a2da095fd049d35a6ab03cc8201c617a5cd463df27211d41",
+      "after": {
+        "rows": 0,
+        "sha256": "1f18e49920131ce2a2da095fd049d35a6ab03cc8201c617a5cd463df27211d41"
+      },
+      "equal": true
+    },
+    {
+      "table": "domain_events",
+      "rows": 2197323,
+      "sha256": "77318fcc8d4641699875ba81d431e64517b68c912b13a9064809471a9950ae36",
+      "after": {
+        "rows": 2197323,
+        "sha256": "77318fcc8d4641699875ba81d431e64517b68c912b13a9064809471a9950ae36"
+      },
+      "equal": true
+    },
+    {
+      "table": "event_clock",
+      "rows": 1,
+      "sha256": "c245991599b0996598fa54059fc5603b4ceac7cbdd515161f3eb8a7577084921",
+      "after": {
+        "rows": 1,
+        "sha256": "c245991599b0996598fa54059fc5603b4ceac7cbdd515161f3eb8a7577084921"
+      },
+      "equal": true
+    },
+    {
+      "table": "event_commits",
+      "rows": 781103,
+      "sha256": "fd905eea7e72d190fcf5c371e726fc5fc577221694312fd28fc592fb4aa2bd1b",
+      "after": {
+        "rows": 781103,
+        "sha256": "fd905eea7e72d190fcf5c371e726fc5fc577221694312fd28fc592fb4aa2bd1b"
+      },
+      "equal": true
+    },
+    {
+      "table": "event_imports",
+      "rows": 3,
+      "sha256": "0647c0bea7d7f448215d8cb1a51d7fdbe696290dbb1fde34c3c67d792462a8e9",
+      "after": {
+        "rows": 3,
+        "sha256": "0647c0bea7d7f448215d8cb1a51d7fdbe696290dbb1fde34c3c67d792462a8e9"
+      },
+      "equal": true
+    },
+    {
+      "table": "event_streams",
+      "rows": 36523,
+      "sha256": "7a656695803c33b0d2eaff0b1bfb0049c46f06a277d994e6fc57300c63ac90a1",
+      "after": {
+        "rows": 36523,
+        "sha256": "7a656695803c33b0d2eaff0b1bfb0049c46f06a277d994e6fc57300c63ac90a1"
+      },
+      "equal": true
+    },
+    {
+      "table": "fair_quota_settlements",
+      "rows": 73000,
+      "sha256": "0c2f416aed33c0046cdab8fdaad2138fda737685554f479e66fd98f21aee405c",
+      "after": {
+        "rows": 73000,
+        "sha256": "0c2f416aed33c0046cdab8fdaad2138fda737685554f479e66fd98f21aee405c"
+      },
+      "equal": true
+    },
+    {
+      "table": "free_image_usage",
+      "rows": 0,
+      "sha256": "d0c8db51ed9c8557c86ced2438620613db8e3ee27fb9cd3f40a62cef6bdf35db",
+      "after": {
+        "rows": 0,
+        "sha256": "d0c8db51ed9c8557c86ced2438620613db8e3ee27fb9cd3f40a62cef6bdf35db"
+      },
+      "equal": true
+    },
+    {
+      "table": "generation_contexts",
+      "rows": 0,
+      "sha256": "14a6494789c5c8a1d718e8465367ee37cfa8b3f9f2f22a9feb7c49b38ba28ede",
+      "after": {
+        "rows": 0,
+        "sha256": "14a6494789c5c8a1d718e8465367ee37cfa8b3f9f2f22a9feb7c49b38ba28ede"
+      },
+      "equal": true
+    },
+    {
+      "table": "generation_diagnostics",
+      "rows": 0,
+      "sha256": "da90e90a1e5a5f03efeb2b71d3320db7086791c7c7f1c554c0ad94d3cf92138b",
+      "after": {
+        "rows": 0,
+        "sha256": "da90e90a1e5a5f03efeb2b71d3320db7086791c7c7f1c554c0ad94d3cf92138b"
+      },
+      "equal": true
+    },
+    {
+      "table": "generation_idempotency",
+      "rows": 0,
+      "sha256": "f21e15b53f65ed8b241400ebba9ae3fc7d24f0b3cdfd5e2e8065048e35052e06",
+      "after": {
+        "rows": 0,
+        "sha256": "f21e15b53f65ed8b241400ebba9ae3fc7d24f0b3cdfd5e2e8065048e35052e06"
+      },
+      "equal": true
+    },
+    {
+      "table": "generation_requests",
+      "rows": 36500,
+      "sha256": "67cc7d934d56e08ae5088fea7b7e14dcddba2c7843e7c0a67bbabf002e7f90d6",
+      "after": {
+        "rows": 36500,
+        "sha256": "67cc7d934d56e08ae5088fea7b7e14dcddba2c7843e7c0a67bbabf002e7f90d6"
+      },
+      "equal": true
+    },
+    {
+      "table": "images",
+      "rows": 73000,
+      "sha256": "fc4d6d8a8ac54ac7ad6c8560dd3d447e4af438d222d9ea420de146a7fe72a676",
+      "after": {
+        "rows": 73000,
+        "sha256": "fc4d6d8a8ac54ac7ad6c8560dd3d447e4af438d222d9ea420de146a7fe72a676"
+      },
+      "equal": true
+    },
+    {
+      "table": "jobs",
+      "rows": 73000,
+      "sha256": "5970e5330c3d2c8b35ca8778f1892b11b509cc5cf921815c499fba2058b7c9f7",
+      "after": {
+        "rows": 73000,
+        "sha256": "5970e5330c3d2c8b35ca8778f1892b11b509cc5cf921815c499fba2058b7c9f7"
+      },
+      "equal": true
+    },
+    {
+      "table": "ledger",
+      "rows": 73000,
+      "sha256": "813aac772f74b3e494a443eeb7bf85c919e8e6742d1f91fe74417296d127d56a",
+      "after": {
+        "rows": 73000,
+        "sha256": "813aac772f74b3e494a443eeb7bf85c919e8e6742d1f91fe74417296d127d56a"
+      },
+      "equal": true
+    },
+    {
+      "table": "member_sessions",
+      "rows": 0,
+      "sha256": "53d5ebf958c8c0f4fef90f11b963f3cd9ea39e2fd11703ca2db0621450c51937",
+      "after": {
+        "rows": 0,
+        "sha256": "53d5ebf958c8c0f4fef90f11b963f3cd9ea39e2fd11703ca2db0621450c51937"
+      },
+      "equal": true
+    },
+    {
+      "table": "projection_versions",
+      "rows": 1,
+      "sha256": "e868bcbc33d182dae2503abf27878b215cce39b7aba5b7050cfbba71e4eae285",
+      "after": {
+        "rows": 1,
+        "sha256": "e868bcbc33d182dae2503abf27878b215cce39b7aba5b7050cfbba71e4eae285"
+      },
+      "equal": true
+    },
+    {
+      "table": "users",
+      "rows": 20,
+      "sha256": "363b942da17ede6905ddd3949ea08dae4332b7d1cefbf5031222a447eae31e58",
+      "after": {
+        "rows": 20,
+        "sha256": "363b942da17ede6905ddd3949ea08dae4332b7d1cefbf5031222a447eae31e58"
+      },
+      "equal": true
+    }
+  ],
+  "sameTableSet": true,
+  "factsUnchanged": false,
+  "integrity": "ok",
+  "cursorUnchanged": true,
+  "passed": false,
+  "error": {
+    "message": "Startup changed stored facts/cursors or failed durability/integrity verification",
+    "stack": "Error: Startup changed stored facts/cursors or failed durability/integrity verification\n    at file:///check/startup-check.mjs:68:29"
+  }
+}

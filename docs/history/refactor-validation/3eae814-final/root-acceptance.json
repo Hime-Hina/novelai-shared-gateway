@@ -1,0 +1,88 @@
+{
+  "runtimeCommit": "3eae814ef221d74e7bcd57ea1fbdae0e1d75948d",
+  "reportSha256": "86913d4506e61b1513f115cf9195650327318d1fdee47267ca9300683afa3e0b",
+  "loadRounds": 12,
+  "sameSourceReplayRounds": 3,
+  "samplesPerLoadRound": 100,
+  "sourceChangedDuringRun": false,
+  "allObservedActiveCounts": 8,
+  "allFailureCounters": 0,
+  "FULL": 2,
+  "annual": {
+    "observations": 525600,
+    "batches": 36500,
+    "imagesAsFactsOnly": 73000,
+    "addedEvents": 2197300,
+    "commits": 781103,
+    "databaseAndBackupBytes": 2412564480,
+    "databaseGiB": 2.246875762939453,
+    "allReplayAndIntegrityChecksPassed": true,
+    "fullReplayMeasuredStagesMs": 2414140.5893870005,
+    "checkpointReplayMeasuredStagesMs": 2296522.947287997,
+    "timingScope": "Sum of recorded stages only; excludes target initialization, projection digest computation and any untimed first checkpoint. Not exact end-to-end startup/readiness."
+  },
+  "retainedThresholdFlags": [
+    {
+      "history": 100000,
+      "metric": "admissionTransaction",
+      "baselineMedianP95Ms": 7.395283999998355,
+      "candidateMedianP95Ms": 27.80925699999989,
+      "deltaMs": 20.413973000001533,
+      "ratio": 3.7604041981357406,
+      "requiresInvestigation": true
+    },
+    {
+      "history": 100000,
+      "metric": "dispatchTransaction",
+      "baselineMedianP95Ms": 6.429755000000114,
+      "candidateMedianP95Ms": 24.279622999998537,
+      "deltaMs": 17.849867999998423,
+      "ratio": 3.776135016030643,
+      "requiresInvestigation": true
+    },
+    {
+      "history": 100000,
+      "metric": "artifactPreparedTransaction",
+      "baselineMedianP95Ms": 4.559762999997474,
+      "candidateMedianP95Ms": 14.71757400000206,
+      "deltaMs": 10.157811000004585,
+      "ratio": 3.2277059136648574,
+      "requiresInvestigation": true
+    },
+    {
+      "history": 100000,
+      "metric": "settlementTransaction",
+      "baselineMedianP95Ms": 5.062539999999899,
+      "candidateMedianP95Ms": 20.79797899999903,
+      "deltaMs": 15.735438999999133,
+      "ratio": 4.108210305498711,
+      "requiresInvestigation": true
+    },
+    {
+      "history": 100000,
+      "metric": "quotaRefreshTransaction",
+      "baselineMedianP95Ms": 18.501430000003893,
+      "candidateMedianP95Ms": 34.622931000000335,
+      "deltaMs": 16.121500999996442,
+      "ratio": 1.8713651323164238,
+      "requiresInvestigation": true
+    }
+  ],
+  "tradeoff": "Five transaction flags remain and are accepted only for the current single-account lifecycle with synchronous facts/projections and FULL. Details and actual lifecycle frequency must remain in final docs.",
+  "postRunStartupStage": {
+    "semanticFactInvariantsPassed": true,
+    "strictAllNonMetadataRowsEqual": false,
+    "originalStrictReportPreserved": true,
+    "unchangedNonMetadataTables": 22,
+    "expectedRuntimeNormalization": "accounts.data.inFlight absent -> 0; existing JsonStore.init behavior, server/store.ts:304-310",
+    "unchangedEventAndProjectionCursor": "781103",
+    "metadataChange": "event_authority validation marker commitSeq 3 -> 781103; same version/minimumWriter2",
+    "initMs": 1496.6486269999996,
+    "warmEnsureLoadedMs": 0.0399280000001454,
+    "enableEventAuthorityMs": 63700.291776,
+    "dataInitAndEnableMs": 65196.940403,
+    "scope": "One annual-backup copy, one init/enable invocation. OS cache not dropped; copy may warm it. Not HTTP-ready or a startup SLA."
+  },
+  "accepted": true,
+  "acceptanceScope": "Complete current single-executor/account plan including measured original-threshold tradeoffs; no claim that all transaction metrics avoided regression."
+}
