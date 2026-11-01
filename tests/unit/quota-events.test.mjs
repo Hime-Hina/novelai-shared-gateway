@@ -162,3 +162,21 @@ test('成员资格先于分组存在，停止接单代次保存在sharing且不�
  assert.equal(Object.hasOwn(composeQuotaState(sharing,null),'memberEligibility'),false);
  assert.throws(()=>reduceSharingEvent(structuredClone(sharing),{eventType:'AdmissionChanged',payload:{memberId:'a',acceptingJobs:true,jobAdmissionVersion:0,at:now+2}}),/backwards/);
 });
+
+test('最终预留决定在扣款前授权，1ms恢复跨fallback边界与已有预留均不能绕过确认',()=>{
+ const db=fixture(),s=db.settings.fairQuota,job={id:'final-charge-authorization',request};
+ s.autoAnlasFallback=true;s.balances.a.v5Available='0.0578031';
+ assert.equal(previewFairQuotaCharge(db,{id:'a'},request,now).resource,'anlas');
+ let authorized;
+ assert.throws(()=>reserveFairQuota(db,{id:'a'},job,db.accounts[0],now+1,request,null,charge=>{
+   authorized=structuredClone(charge);
+   if(charge.resource==='v5')throw new Error('V5 was not confirmed');
+ }),/not confirmed/);
+ assert.equal(authorized.resource,'v5');assert.equal(authorized.amount,'0.057803468209');
+ assert.equal(s.balances.a.v5Available,'0.057803516667');assert.equal(s.balances.a.anlasFixedAvailable,'2500');
+ assert.equal(s.reservations[job.id],undefined);assert.equal(job.fairCharge,undefined);assert.equal(job.generationAttempt,undefined);
+ reserveFairQuota(db,{id:'a'},job,db.accounts[0],now+1,request,null,charge=>assert.equal(charge.resource,'v5'));
+ const before=structuredClone(s),ledger=structuredClone(db.ledger);
+ assert.throws(()=>reserveFairQuota(db,{id:'a'},job,db.accounts[0],now+1,request,null,()=>{throw new Error('reused reservation denied');}),/denied/);
+ assert.deepEqual(s,before);assert.deepEqual(db.ledger,ledger);
+});

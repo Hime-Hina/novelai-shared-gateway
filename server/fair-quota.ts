@@ -550,7 +550,7 @@ export function previewFairQuotaCharge(db: FairQuotaDatabase,user: Pick<FairUser
   return decideFairQuotaCharge(s||{balances:{}},user,account,request,now);
 }
 
-export function reserveFairQuota(db: FairQuotaDatabase,user: FairUser,job: AccountingJob,account: FairAccount,now=Date.now(),request=job.request||job.requestPayload,settledCharge: FairCharge | null=null): FairCharge | null {
+export function reserveFairQuota(db: FairQuotaDatabase,user: FairUser,job: AccountingJob,account: FairAccount,now=Date.now(),request=job.request||job.requestPayload,settledCharge: FairCharge | null=null,authorizeCharge?: (charge:FairCharge)=>void): FairCharge | null {
   if(!job.id) fail('任务缺少持久化 ID',500);
   const previous=resolveFairQuotaCharge(db,job,settledCharge,user.id);
   if(previous && previous.status!=='reserved') fail(previous.status==='refunded'?'已退款任务不能重新提交':'已结算任务不能重新提交',409);
@@ -561,6 +561,7 @@ export function reserveFairQuota(db: FairQuotaDatabase,user: FairUser,job: Accou
   if(account.id!==s.boundAccountId) fail('共享账本只能使用绑定的 Opus 账号',503);
   if(previous) {
     if(previous.accountId!==account.id) fail('任务账本归属不符',409);
+    authorizeCharge?.(previous);
     job.fairCharge=previous;return previous;
   }
   const q=decideFairQuotaCharge(s,user,account,request||{},now),amount=units(q.amount),fixed=units(q.fixed),purchased=units(q.purchased);
@@ -595,10 +596,14 @@ export function reserveFairQuota(db: FairQuotaDatabase,user: FairUser,job: Accou
         const pendingFallback=units(resource==='anlasFixed'?s.spent.fallbackFixed:s.spent.fallbackPurchased);
         if(units(latest[resource])-globalHeld-units(s.spent[resource])-pendingFallback<amount) fail('官方 Anlas 子余额不足或等待并发对账');
       }
-      s.balances[user.id].anlasFixedAvailable=formatAmount(units(s.balances[user.id].anlasFixedAvailable)-fixed);s.balances[user.id].anlasPurchasedAvailable=formatAmount(units(s.balances[user.id].anlasPurchasedAvailable)-purchased);totals(s);
-    } else s.balances[user.id][field]=formatAmount(units(s.balances[user.id][field])-amount);
+    }
   }
   const charge={...q,configVersion:s.configVersion,groupId:groupFor(s,user.id)?.id,userId:user.id,accountId:account.id,status:'reserved',reservedAt:now} as FairCharge;
+  authorizeCharge?.(charge);
+  if(q.resource==='anlas'){
+    s.balances[user.id].anlasFixedAvailable=formatAmount(units(s.balances[user.id].anlasFixedAvailable)-fixed);
+    s.balances[user.id].anlasPurchasedAvailable=formatAmount(units(s.balances[user.id].anlasPurchasedAvailable)-purchased);totals(s);
+  }else if(q.resource==='v5')s.balances[user.id].v5Available=formatAmount(units(s.balances[user.id].v5Available)-amount);
   s.reservations[job.id]=charge;job.fairCharge=charge;
   recordGenerationAttempt(db,job,charge,readSnapshot(account),now);
   quotaFact(db,'QuotaReserved',{jobId:job.id,charge,at:now,pricingVersion:NATIVE_PRICING_VERSION},now);
