@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {manageFairMember,configureFairGroups,configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota,quoteFairRequest,fairQuotaSummary} from '../../server/fair-quota.ts';
+import {manageFairMember,configureFairGroups,configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota,quoteFairRequest,fairQuotaSummary,estimateFairQuota} from '../../server/fair-quota.ts';
 const NOW=1800000000000;
 const members=['a','b','c','d'];
 function fixture(percent=80){
@@ -9,6 +9,17 @@ function fixture(percent=80){
 }
 const request={model:'nai-diffusion-5',width:1024,height:1024,steps:23};
 const job=(id,r=request)=>({id,request:{...r}});
+test('摘要纯读冻结对象，恢复估算隔离状态且不初始化原运营账',()=>{
+ const db=fixture();delete db.settings.fairQuota.operating;db.ledger=[{id:'existing'}];
+ const before=structuredClone(db);
+ const freeze=value=>{if(value&&typeof value==='object'){Object.values(value).forEach(freeze);Object.freeze(value);}return value;};
+ freeze(db);
+ assert.equal(fairQuotaSummary(db,{id:'a'},NOW+60000).v5Available,20);
+ const estimated=estimateFairQuota(db,NOW+60000);
+ assert.equal(fairQuotaSummary(estimated,{id:'a'},NOW+60000).v5Available,20.025);
+ assert.notEqual(estimated.settings,db.settings);assert.notEqual(estimated.ledger,db.ledger);
+ assert.deepEqual(db,before);
+});
 test('未订阅不发放，多个 Opus 不自动绑定，配置幂等',()=>{
  const db={settings:{},accounts:[]};configureFairQuota(db,members);syncFairQuota(db,NOW);
  assert.equal(db.settings.fairQuota.status,'pending_opus');assert.equal(fairQuotaSummary(db,{id:'a'},NOW).v5Available,0);

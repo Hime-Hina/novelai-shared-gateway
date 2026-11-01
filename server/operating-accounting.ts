@@ -22,7 +22,11 @@ const emptyResources = (): ResourceAmounts => ({ v5: 0, anlasFixed: 0, anlasPurc
 const error: (message: string) => never = message => { throw Object.assign(new Error(message), { statusCode: 409 }); };
 
 export function operatingAccount(s: FairQuotaState): OperatingAccount {
-  return s.operating ||= { available: emptyResources(), unfunded: { anlasFixed: 0, anlasPurchased: 0 },
+  return s.operating ||= readOperatingAccount(s);
+}
+
+export function readOperatingAccount(s: FairQuotaState): OperatingAccount {
+  return s.operating || { available: emptyResources(), unfunded: { anlasFixed: 0, anlasPurchased: 0 },
     unattributedReturns: { anlasFixed: 0, anlasPurchased: 0 }, gapEventIds: { anlasFixed: null, anlasPurchased: null },
     v5CapacityGap: 0, v5GapEventId: null, pendingExternalFunding: [] };
 }

@@ -1,6 +1,7 @@
 import { quoteNativeRequest } from './native-pricing.ts';
 import { recordGenerationAttempt, recordGenerationRefund, type AccountingJob, type RefundEvidence } from './generation-accounting.ts';
-import { operatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding, type OperatingAccount, type OperatingFundingInput, type OperatingFundingContext } from './operating-accounting.ts';
+import { operatingAccount, readOperatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding, type OperatingAccount, type OperatingFundingInput, type OperatingFundingContext } from './operating-accounting.ts';
+import { QUOTA_SNAPSHOT_MAX_AGE_MS, quotaTimestamp, isUsableOpus, isQuotaSnapshotFresh } from './quota-policy.ts';
 import type { FreeImagePolicy } from './free-image-policy.ts';
 
 export type Resource = 'v5' | 'anlasFixed' | 'anlasPurchased';
@@ -70,12 +71,12 @@ interface MemberChange {
   userId?: string; transferToUserId?: string; resource?: string; amount?: unknown;
 }
 // 所有修改必须在存储事务内执行；账本与任务一起持久化，避免重启后重复扣款。
-const STALE_MS = 10 * 60 * 1000;
+const STALE_MS = QUOTA_SNAPSHOT_MAX_AGE_MS;
 const number = (v: unknown): number | null => v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
-const stamp = (v: unknown): number => { const n=number(v);return n!==null ? (n<1e11?n*1000:n) : Date.parse((v || '') as string) || 0; };
+const stamp = (v: unknown): number => quotaTimestamp(v) ?? 0;
 const rows = <T>(v: T[] | Record<string, T> | null | undefined): T[] => Array.isArray(v) ? v : Object.values(v || {});
 const fail: (message: string, status?: number) => never = (message, status = 402) => { const e = new Error(message) as Error & { status: number; statusCode: number }; e.status = e.statusCode = status; throw e; };
-const active = (a: FairAccount | undefined,now: number): a is FairAccount => a?.enabled === true && !a?.quotaError && Number(a?.quotaTier) === 3 && a?.subscriptionActive === true && (!a.subscriptionExpiresAt || stamp(a.subscriptionExpiresAt)>now);
+const active = (a: FairAccount | undefined,now: number): a is FairAccount => isUsableOpus(a,now);
 const sum = (s: FairQuotaState, field: BalanceField): number => Object.values(s.balances).reduce((n, b) => n + b[field], 0);
 const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): number => Object.values(s.reservations).filter(c => c.userId === id && c.status === 'reserved').reduce((n,c) => n+(c.resource===resource?c.amount:resource==='anlasFixed'?(c.fixed||0):resource==='anlasPurchased'?(c.purchased||0):0),0);
 const sharedHeld = (s: FairQuotaState): number => Object.values(s.reservations).filter(c=>c.status==='reserved').reduce((n,c)=>n+(c.resource==='v5'?c.amount:(c.sharedV5Reserved||0)),0);
@@ -336,7 +337,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
   const account=accounts.find(a=>a.id===s.boundAccountId);
   if(!active(account,now)) {s.status='inactive_opus';return s;}
   const incoming=readSnapshot(account);
-  if(!incoming.at || incoming.at>now+60000 || now-incoming.at>STALE_MS) {s.status='stale';return s;}
+  if(!incoming.at || !isQuotaSnapshotFresh(incoming.at,now)) {s.status='stale';return s;}
   s.status='active';
   if(!s.snapshot) {
     if(incoming.v5===null || incoming.anlas===null) {s.status='unknown_balance';return s;}
@@ -484,8 +485,14 @@ export function settleFairQuota(db: FairQuotaDatabase,job: AccountingJob,success
   return c;
 }
 
+export function estimateFairQuota<T extends FairQuotaDatabase>(db: T, now = Date.now()): T {
+  const draft = { ...db, settings: structuredClone(db.settings), ledger: [] };
+  syncFairQuota(draft, now);
+  return draft;
+}
+
 export function fairQuotaSummary(db: FairQuotaDatabase,user: Pick<FairUser, 'id'>,now=Date.now()) {
-  const s=syncFairQuota(db,now);
+  const s=db.settings?.fairQuota;
   if(!s?.enabled) return null;
   const raw=s.balances[user.id],b=raw,group=groupFor(s,user.id),share=weight(s,user.id);
   const localFallback=s.fallbackTotalsByUser[user.id] || {fixed:0,purchased:0,v5Equivalent:0};
@@ -499,10 +506,10 @@ export function fairQuotaSummary(db: FairQuotaDatabase,user: Pick<FairUser, 'id'
   const refillBudget=participant?participants.reduce((total,member)=>total+Math.min(member.gap,member.share*participant.gap/participant.share),0):0;
   const fullSeconds=officialRate>0?refillBudget/officialRate:null;
   // 当前来源刚好与钱包相等时仍能随时间恢复；只有最终来源容量不够才不能承诺补满。
-  const sourceCapacityRoom=Math.max(0,100-s.unallocatedV5-s.spent.v5-sharedHeld(s)-sum(s,'v5Available')-operatingAccount(s).available.v5);
+  const ops=readOperatingAccount(s);
+  const sourceCapacityRoom=Math.max(0,100-s.unallocatedV5-s.spent.v5-sharedHeld(s)-sum(s,'v5Available')-ops.available.v5);
   const refillLimited=s.status!=='active'||s.sharedV5Debt>1e-9||s.v5Reconciliation?.status==='source_below_local'||
     (refillRoom>1e-9&&(!refillRate||refillBudget>sourceCapacityRoom+1e-9));
-  const ops=operatingAccount(s);
   const sharedBalanceRisk={v5:ops.v5CapacityGap>1e-9,
     anlasFixed:ops.unfunded.anlasFixed>1e-9,anlasPurchased:ops.unfunded.anlasPurchased>1e-9,
     pendingAnlasDebit:s.spent.anlas>1e-9,checkedAt:s.snapshot?.at??null};
