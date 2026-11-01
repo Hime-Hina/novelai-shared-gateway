@@ -1,6 +1,5 @@
 import type { StoreDatabase, StoreItem, StoredGenerationRequest } from './store.ts';
 import type { FairCharge } from './fair-quota.ts';
-import { previewFairQuotaCharge } from './fair-quota.ts';
 import { memberGenerationCapabilities } from './generation-capabilities.ts';
 import { addMemberGenerationResources, assertMemberGenerationCost, assertMemberGenerationVersions,
   memberGenerationChargeResources, parseMemberGenerationConfirmation } from './member-generation.ts';
@@ -11,11 +10,11 @@ import type { FreeImageUsage } from './free-image-policy.ts';
 export const generationStreamId = (job: Pick<StoreItem, 'id' | 'requestId'>): string => `request:${job.requestId || `legacy-${job.id}`}`;
 
 export function assertConfirmedDispatch(db: StoreDatabase, member: StoreItem, request: StoredGenerationRequest,
-  priorCharges: (FairCharge | null | undefined)[], now: number, env = process.env): void {
+  priorCharges: (FairCharge | null | undefined)[], finalCharge: Parameters<typeof memberGenerationChargeResources>[0], env = process.env): void {
   if (request.clientContract !== 'member-generation-v1') return;
   const confirmation = parseMemberGenerationConfirmation(request.confirmation);
   assertMemberGenerationVersions(confirmation, memberGenerationCapabilities(db, member, { env }).versions);
-  const resources = memberGenerationChargeResources(previewFairQuotaCharge(db, member, request, now));
+  const resources = memberGenerationChargeResources(finalCharge);
   const prior = priorCharges.filter((charge): charge is FairCharge => !!charge && ['reserved', 'settled'].includes(charge.status));
   assertMemberGenerationCost(confirmation, resources, addMemberGenerationResources(resources, ...prior.map(memberGenerationChargeResources)));
 }

@@ -2748,7 +2748,8 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
       return { skip: true, jobId: job.id, failure: job.error, statusCode: 504 };
     }
     let account: StoreItem | null | undefined;
-    const state = fairShareMode ? syncFairQuota(db) : null;
+    const dispatchAt = Date.now();
+    const state = fairShareMode ? syncFairQuota(db, dispatchAt) : null;
     try {
       const user = job.memberId ? db.users.find(member => member.id === job.memberId && member.enabled !== false) : getUserOrThrow(db, job.userToken);
       if (!user) throw httpError(401, 'invalid member.');
@@ -2760,16 +2761,17 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
         const running = db.jobs.filter(j => j.status === 'running' && j.accountId === account!.id).length;
         // 按在途任务和持久计数共同核对槽位，上一张结束后才派发，并遵守上游退避。
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
-        if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, Date.now()) > 0) return { queued: true, jobId: job.id };
+        if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, dispatchAt) > 0) return { queued: true, jobId: job.id };
         const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
+        let priorCharges: (FairCharge | null)[] = [];
         if (request?.clientContract === 'member-generation-v1') {
           const children = store.readGenerationRequestState(job.requestId!, user.id)?.jobs || [];
-          const priorCharges = children.filter(child => child.id !== job.id).map(child =>
+          priorCharges = children.filter(child => child.id !== job.id).map(child =>
             db.settings.fairQuota?.reservations[child.id] || store.readFairQuotaSettlement(child.id));
-          assertConfirmedDispatch(db, user, request as ExecutionRequest, priorCharges, Date.now());
         }
         if (state.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
-        reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
+        reserveFairQuota(db, user, job, account, dispatchAt, request, store.readFairQuotaSettlement(job.id),
+          charge => assertConfirmedDispatch(db, user, request as ExecutionRequest, priorCharges, charge));
       } else {
         account = selectAccount(db.accounts, db.settings, { request: job.request });
       }

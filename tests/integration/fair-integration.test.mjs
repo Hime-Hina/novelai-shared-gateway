@@ -10,6 +10,7 @@ import * as queuePolicy from '../../server/queue-policy.ts';
 import { assertFreeImageAdmission } from '../../server/free-image-policy.ts';
 import { createGenerationAdmission, requestCacheKey } from '../../server/generation-admission.ts';
 import { assertConfirmedDispatch, completeSharedAccount, recordGenerationFailure } from '../../server/generation-execution.ts';
+import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
 const source= stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
 function fixture(tier=3) {
   let now=Date.now();
@@ -49,6 +50,24 @@ test('已受理的免费图片派发前再次检查限额，并保留恢复时�
   assert.equal(queued.status, 'failed');
   assert.equal(queued.fairCharge, undefined);
   assert.ok(!db.accounts[0].inFlight);
+});
+
+test('成员child派发超过原确认时保留失败code并停止余图，没有预扣或上游槽位', async () => {
+  const { db, ctx, job } = fixture(); fair.syncFairQuota(db,ctx.Date.now());
+  const first=job('confirmed-first'), next=job('confirmed-next');
+  Object.assign(first,{requestId:'confirmed-parent',sampleIndex:0});
+  Object.assign(next,{requestId:'confirmed-parent',sampleIndex:1,status:'pending'});
+  const request={...first.request,prompt:'synthetic',seed:1,sampleCount:2,nativeParameters:{width:1024,height:1024,steps:23,seed:1,n_samples:2},
+    clientContract:'member-generation-v1',confirmation:{requestFingerprint:'a'.repeat(64),versions:memberGenerationCapabilities(db,db.users[0]).versions,
+      maxPerJob:{v5:'0',anlasFixed:'0',anlasPurchased:'0'},maxTotal:{v5:'0',anlasFixed:'0',anlasPurchased:'0'}}};
+  ctx.store.readGenerationRequest=()=>request;
+  ctx.store.readGenerationRequestState=()=>({jobs:[first,next]});
+  const before=structuredClone(db.settings.fairQuota.balances);
+  const result=await ctx.reserveQueuedJob(first.id);
+  assert.equal(result.statusCode,409); assert.equal(first.errorCode,'cost_limit_exceeded');
+  assert.equal(first.status,'failed'); assert.equal(next.status,'failed');
+  assert.equal(first.generationAttempt,undefined); assert.equal(first.fairCharge,undefined);
+  assert.ok(!db.accounts[0].inFlight); assert.deepEqual(db.settings.fairQuota.balances,before);
 });
 
 test('两位成员同时提交，超过十秒仍等待上一张完成，不重现并发锁',async()=>{
