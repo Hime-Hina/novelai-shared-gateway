@@ -287,7 +287,7 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
     .map(table => gateway.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
   const originalCounts = counts();
   const charge = JSON.parse(gateway.audit.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(job.id).charge);
-  assert.equal(charge.resource, 'free'); assert.equal(charge.status, 'settled'); assert.equal(charge.amount, 0);
+  assert.equal(charge.resource, 'free'); assert.equal(charge.status, 'settled'); assert.equal(charge.amount, '0');
   const asJson = await gateway.call('/v1/ai/generate-image', { body: nativeBody, member: 0,
     headers: { ...headers, accept: 'application/json; charset=utf-8' } });
   assert.equal(asJson.headers.get('x-nai-request-id'), requestId); assert.match(asJson.headers.get('vary'), /Accept/i);
