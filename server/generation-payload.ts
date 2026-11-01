@@ -36,4 +36,3 @@ export function createGenerationPayloadBudget(readActiveBytes: () => number, lim
     }
   };
 }
-
