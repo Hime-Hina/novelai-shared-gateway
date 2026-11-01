@@ -14,7 +14,7 @@ import { validateImageBytes } from './native-image.ts';
 import type { generateNovelAiImage } from './providers.ts';
 import path from 'node:path';
 
-export interface GenerationClock { now?: () => number; env?: NodeJS.ProcessEnv; fairShareMode?: boolean }
+export interface GenerationClock { now?: () => number; env?: NodeJS.ProcessEnv }
 export interface GenerationTiming {
   upstreamStartedAt?: string; upstreamHeadersAt?: string; upstreamCompletedAt?: string;
   upstreamHttpStatus?: number; upstreamRetryAfterUntil?: string;
@@ -134,19 +134,13 @@ function changedJobRows(db: StoreDatabase, jobIds: string[], extraAccountIds: st
   const jobs = db.jobs.filter(job => selected.has(job.id));
   const ledger = db.ledger.filter(entry => selected.has(entry.jobId || ''));
   return { jobs: [...selected], accounts: [...new Set([...extraAccountIds, ...jobs.map(job => job.accountId)].filter((id): id is string => !!id))],
-    users: db.users.filter(user => ledger.some(entry => entry.token === user.token)).map(user => user.id), ledger: ledger.map(entry => entry.id) };
+    ledger: ledger.map(entry => entry.id) };
 }
 
-export function refundGenerationJob(store: JsonStore, db: StoreDatabase, job: StoreItem, note: string,
+export function refundGenerationJob(store: JsonStore, db: StoreDatabase, job: StoreItem,
   options: GenerationClock & { evidence?: Parameters<typeof settleFairQuota>[4] } = {}) {
   const now = (options.now || Date.now)();
-  if (options.fairShareMode !== false) return settleFairQuota(db, job, false, now, options.evidence || {}, store.readFairQuotaSettlement(job.id));
-  if (job.refundedAt || Number(job.cost || 0) <= 0) return;
-  const user = db.users.find(member => member.token === job.userToken);
-  if (!user) return;
-  const cost = Number(job.cost), at = new Date(now).toISOString();
-  user.balance! += cost; user.updatedAt = at; job.refundedAt = at;
-  db.ledger.unshift({ id: createId('log'), type: 'refund', token: job.userToken, jobId: job.id, amount: cost, at, note });
+  return settleFairQuota(db, job, false, now, options.evidence || {}, store.readFairQuotaSettlement(job.id));
 }
 
 export function generationJobDeadline(job: StoreItem): number {
@@ -178,12 +172,10 @@ export function staleGenerationJobDetail(job: StoreItem, now = Date.now(), env =
 export interface GenerationDispatchOptions extends GenerationClock {
   dispatchEnabled(): boolean;
   physicalAccountLoad(id: string): number;
-  legacy?: { selectAccount(db: StoreDatabase, request: StoreItem['request']): StoreItem | null | undefined;
-    hasEnabledAccounts(accounts: StoreItem[]): boolean; hasAccountWithEnoughQuota(accounts: StoreItem[], request: StoreItem['request']): boolean };
 }
 
 export async function reserveQueuedGeneration(store: JsonStore, jobId: string, options: GenerationDispatchOptions): Promise<GenerationQueueReservation> {
-  const clock = options.now || Date.now, env = options.env || process.env, shared = options.fairShareMode !== false;
+  const clock = options.now || Date.now, env = options.env || process.env;
   return store.update<GenerationQueueReservation>(db => {
     if (!options.dispatchEnabled()) return { skip: true, changed: false };
     const job = db.jobs.find(item => item.id === jobId);
@@ -191,66 +183,49 @@ export async function reserveQueuedGeneration(store: JsonStore, jobId: string, o
     if (job.status !== 'queued') return { skip: true, changed: false };
     const dispatchAt = clock(), at = new Date(dispatchAt).toISOString(), accountCost = normalizedAccountCost(job.accountCost);
     job.accountCost = accountCost;
-    const refund = (message: string) => refundGenerationJob(store, db, job, message, { ...options, now: () => dispatchAt });
+    const refund = () => refundGenerationJob(store, db, job, { now: () => dispatchAt });
     if (isStaleGenerationJob(job, dispatchAt, env)) {
-      refund('连接超时'); cancelWaitingBatchJobs(db, job, '连接超时', 504, dispatchAt);
+      refund(); cancelWaitingBatchJobs(db, job, '连接超时', 504, dispatchAt);
       Object.assign(job, { status: 'failed', error: '连接超时', errorStatus: 504, errorDetail: staleGenerationJobDetail(job, dispatchAt, env), updatedAt: at, completedAt: at });
       recordGenerationFailure(db, job);
       return { skip: true, jobId: job.id, failure: job.error, statusCode: 504 };
     }
-    let account: StoreItem | null | undefined;
-    const state = shared ? syncFairQuota(db, dispatchAt) : null;
+    let account: StoreItem;
+    const state = syncFairQuota(db, dispatchAt);
     try {
       const user = db.users.find(member => (job.memberId ? member.id === job.memberId : member.token === job.userToken) && member.enabled !== false);
       if (!user) fail(401, 'invalid member.');
       assertMemberAcceptsJobs(user, job.jobAdmissionVersion);
-      if (shared) {
-        if (!state?.enabled || state.status !== 'active') fail(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
-        account = db.accounts.find(item => item.id === state.boundAccountId);
-        if (!account || account.enabled === false) fail(503, '绑定的 Opus 账号未启用');
-        const running = db.jobs.filter(item => item.status === 'running' && item.accountId === account!.id).length;
-        if (Math.max(running, Number(account.inFlight || 0), options.physicalAccountLoad(account.id)) >= sharedAccountConcurrency()
-          || sharedAccountReadyDelay(account, dispatchAt) > 0) return { queued: true, jobId: job.id };
-        const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
-        if (!request) fail(409, '持久生成请求不存在');
-        let priorCharges: (FairCharge | null)[] = [];
-        if (request.clientContract === 'member-generation-v1') {
-          const children = store.readGenerationRequestJobIds(job.requestId!, user.id);
-          if (!children) fail(409, '持久生成请求归属不一致');
-          priorCharges = children.filter(id => id !== job.id).map(id => db.settings.fairQuota?.reservations[id] || store.readFairQuotaSettlement(id));
-        }
-        if (state.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free') assertFreeImageAdmission(store.readFreeImageUsage(db, user.id, dispatchAt));
-        reserveFairQuota(db, user, job, account, dispatchAt, request, store.readFairQuotaSettlement(job.id),
-          charge => assertConfirmedDispatch(db, user, request as StoredGenerationRequest, priorCharges, charge, env));
-      } else {
-        if (!options.legacy) throw new Error('Legacy dispatch adapter is required.');
-        account = options.legacy.selectAccount(db, job.request);
+      if (!state?.enabled || state.status !== 'active') fail(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
+      const boundAccount = db.accounts.find(item => item.id === state.boundAccountId);
+      if (!boundAccount || boundAccount.enabled === false) fail(503, '绑定的 Opus 账号未启用');
+      account = boundAccount;
+      const running = db.jobs.filter(item => item.status === 'running' && item.accountId === account.id).length;
+      if (Math.max(running, Number(account.inFlight || 0), options.physicalAccountLoad(account.id)) >= sharedAccountConcurrency()
+        || sharedAccountReadyDelay(account, dispatchAt) > 0) return { queued: true, jobId: job.id };
+      const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
+      if (!request) fail(409, '持久生成请求不存在');
+      let priorCharges: (FairCharge | null)[] = [];
+      if (request.clientContract === 'member-generation-v1') {
+        const children = store.readGenerationRequestJobIds(job.requestId!, user.id);
+        if (!children) fail(409, '持久生成请求归属不一致');
+        priorCharges = children.filter(id => id !== job.id).map(id => db.settings.fairQuota?.reservations[id] || store.readFairQuotaSettlement(id));
       }
+      if (state.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free') assertFreeImageAdmission(store.readFreeImageUsage(db, user.id, dispatchAt));
+      reserveFairQuota(db, user, job, account, dispatchAt, request, store.readFairQuotaSettlement(job.id),
+        charge => assertConfirmedDispatch(db, user, request as StoredGenerationRequest, priorCharges, charge, env));
     } catch (error) {
       const failure = error as GenerationError;
-      refund(failure.message); cancelWaitingBatchJobs(db, job, failure.message, failure.statusCode || 503, dispatchAt);
+      refund(); cancelWaitingBatchJobs(db, job, failure.message, failure.statusCode || 503, dispatchAt);
       Object.assign(job, { status: 'failed', error: failure.message, errorStatus: failure.statusCode || 503, errorCode: failure.code || 'generation_failed',
         quotaRetryAfterUntil: failure.cooldownUntil, updatedAt: at, completedAt: at });
       recordGenerationFailure(db, job);
       return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus, cooldownUntil: job.quotaRetryAfterUntil };
     }
-    if (!account && options.legacy?.hasEnabledAccounts(db.accounts)) {
-      if (!options.legacy.hasAccountWithEnoughQuota(db.accounts, job.request)) {
-        refund('无符合本次参数的可用额度；试用限总像素1048576、28步以内');
-        cancelWaitingBatchJobs(db, job, '无符合本次参数的可用额度', 503, dispatchAt);
-        Object.assign(job, { status: 'failed', error: '无符合本次参数的可用额度；试用限总像素1048576、28步以内',
-          errorDetail: 'No NovelAI account has available free allowance or paid balance for this request', updatedAt: at, completedAt: at });
-        recordGenerationFailure(db, job); return { skip: true, jobId: job.id };
-      }
-      job.updatedAt = at; return { queued: true, jobId: job.id };
-    }
-    if (account) {
-      const running = shared ? db.jobs.filter(item => item.status === 'running' && item.accountId === account!.id).length : 0;
-      account.inFlight = Math.max(running, Number(account.inFlight || 0)) + 1; account.lastUsedAt = at;
-      if (shared) account.lastSharedDispatchAt = at;
-    }
-    Object.assign(job, { status: 'running', startedAt: at, accountId: account?.id || '', completedAt: '', updatedAt: at });
-    return { job, account: account ? { ...account } : null, token: job.userToken, cost: job.cost, accountCost, cacheKey: job.cacheKey || '' };
+    const running = db.jobs.filter(item => item.status === 'running' && item.accountId === account.id).length;
+    account.inFlight = Math.max(running, Number(account.inFlight || 0)) + 1; account.lastUsedAt = at; account.lastSharedDispatchAt = at;
+    Object.assign(job, { status: 'running', startedAt: at, accountId: account.id, completedAt: '', updatedAt: at });
+    return { job, account: { ...account }, token: job.userToken, cost: job.cost, accountCost, cacheKey: job.cacheKey || '' };
   }, { dirtyRows: (result, db) => ({ ...changedJobRows(db, [result.job?.id || result.jobId || jobId]), ledger: db.ledger.map(entry => entry.id) }),
     shouldPersist: result => result.changed !== false });
 }
@@ -264,7 +239,7 @@ export async function cancelGenerationRequestCommand(store: JsonStore, requestId
     for (const child of request.jobs) {
       if (!['queued', 'pending'].includes(child.status!)) continue;
       const job = store.loadJobForUpdate(child.id)!;
-      refundGenerationJob(store, db, job, message, { ...options, now: () => now });
+      refundGenerationJob(store, db, job, { now: () => now });
       Object.assign(job, { status: 'failed', error: message, errorDetail: message, errorStatus: 409,
         cancellationReason: 'request_cancelled', cancelledAt: at, completedAt: at, updatedAt: at });
       recordGenerationFailure(db, job); cancelledJobIds.push(job.id);
@@ -279,7 +254,7 @@ export async function changeMemberAdmissionCommand(store: JsonStore, userId: str
   return store.update(db => {
     const now = (options.now || Date.now)();
     return setMemberAdmission(db, userId, acceptingJobs,
-      (draft, job, message) => refundGenerationJob(store, draft, job, message, { ...options, now: () => now }), now);
+      (draft, job) => refundGenerationJob(store, draft, job, { now: () => now }), now);
   }, { immediate: true, includeSettings: true, domainCommand: { actorId: options.actorId || 'local-admin', actorKind: 'admin' },
     dirtyRows: (result, db) => ({ users: [result.id], jobs: result.cancelledJobIds,
       ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id) }) });
@@ -298,8 +273,6 @@ export function completionJob(store: JsonStore, db: StoreDatabase, reservation: 
 
 export interface GenerationResultOptions extends GenerationClock {
   store: JsonStore; dataDir: string; createId?: typeof createId; publish?: typeof publishStoredResult;
-  legacy?: { writeStoredImage(id: string, image: GenerationContent): Promise<string>;
-    removeStoredImages(images: { id: string; file: string }[]): Promise<unknown> };
 }
 
 export async function prepareGenerationResult(store: JsonStore, reservation: GenerationReservation, request: StoredGenerationRequest,
@@ -326,85 +299,57 @@ export async function prepareGenerationResult(store: JsonStore, reservation: Gen
 }
 
 export async function completeGenerationCommand(options: GenerationResultOptions, reservation: GenerationReservation,
-  request: StoredGenerationRequest, image: GenerationContent, meta: { jobId?: string } = {}): Promise<StoreItem & { balance: number }> {
-  const { store, dataDir } = options, clock = options.now || Date.now, shared = options.fairShareMode !== false;
-  const pending = shared && meta.jobId ? await prepareGenerationResult(store, reservation, request, image, meta.jobId, options) : null;
-  const imageId = pending?.imageId || (options.createId || createId)('img');
-  let imageFile: string | null = null;
-  try {
-    if (pending) {
-      await publishGenerationArtifact(dataDir, pending, image.buffer, options.publish || publishStoredResult);
-      imageFile = pending.file;
-    } else if (!shared || !meta.jobId) {
-      if (!options.legacy) throw new Error('Legacy result storage adapter is required.');
-      imageFile = await options.legacy.writeStoredImage(imageId, image);
+  request: StoredGenerationRequest, image: GenerationContent, meta: { jobId: string }): Promise<StoreItem & { balance: number }> {
+  const { store, dataDir } = options, clock = options.now || Date.now;
+  const pending = await prepareGenerationResult(store, reservation, request, image, meta.jobId, options);
+  if (pending) await publishGenerationArtifact(dataDir, pending, image.buffer, options.publish || publishStoredResult);
+  return store.update(db => {
+    const now = clock(), at = new Date(now).toISOString(), job = completionJob(store, db, reservation, meta.jobId);
+    if (job.imageId) {
+      const existing = db.images.find(item => item.id === job.imageId) || store.selectItemById('images', job.imageId);
+      if (existing) {
+        if (existing.token !== job.userToken) fail(409, '已存结果与任务归属不符');
+        if (job.resultPending) {
+          if (job.resultPending.imageId !== existing.id || job.resultPending.sha256 !== existing.sha256
+            || job.resultPending.byteLength !== existing.byteLength) fail(409, '已存结果与待恢复证据不符');
+          delete job.resultPending;
+        }
+        if (job.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, job, existing.id, now)) {
+          recordFreeImageSuccess(db, job, now, store.readFreeImageUsage(db, job.fairCharge.userId, now));
+          if (!existing.mock) completeSharedAccount(db, db.accounts.find(account => account.id === job.accountId), now,
+            { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil });
+        }
+        return { ...existing, balance: db.users.find(user => user.token === reservation.token)?.balance || 0 };
+      }
     }
-    const savedImage = await store.update(db => {
-      const now = clock(), at = new Date(now).toISOString();
-      let currentJob: ReturnType<typeof completionJob> | null = null, refunded = false;
-      if (shared && meta.jobId) {
-        currentJob = completionJob(store, db, reservation, meta.jobId);
-        if (currentJob.imageId) {
-          const existing = db.images.find(item => item.id === currentJob!.imageId) || store.selectItemById('images', currentJob.imageId);
-          if (existing) {
-            if (existing.token !== currentJob.userToken) fail(409, '已存结果与任务归属不符');
-            if (currentJob.resultPending) {
-              if (currentJob.resultPending.imageId !== existing.id || currentJob.resultPending.sha256 !== existing.sha256
-                || currentJob.resultPending.byteLength !== existing.byteLength) fail(409, '已存结果与待恢复证据不符');
-              delete currentJob.resultPending;
-            }
-            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id, now)) {
-              recordFreeImageSuccess(db, currentJob, now, store.readFreeImageUsage(db, currentJob.fairCharge.userId, now));
-              if (!existing.mock) completeSharedAccount(db, db.accounts.find(account => account.id === currentJob!.accountId), now,
-                { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
-            }
-            return { ...existing, balance: db.users.find(user => user.token === reservation.token)?.balance || 0 };
-          }
-        }
-        refunded = currentJob.fairCharge.status === 'refunded';
-        if (!refunded && currentJob.fairCharge.status !== 'reserved') fail(409, '任务已结算但结果缺失');
-      }
-      const user = db.users.find(member => member.token === reservation.token);
-      if (!currentJob && (!user || user.enabled === false)) fail(401, 'invalid user token.');
-      if (pending) {
-        if (currentJob!.resultPending?.attemptId !== pending.attemptId || currentJob!.resultPending?.sha256 !== pending.sha256) fail(409, '待保存结果已改变');
-      } else if (!imageFile) fail(409, '已发布结果的凭据不存在');
-      const account = reservation.account ? db.accounts.find(item => item.id === reservation.account!.id) : null;
-      if (account) {
-        if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (shared && currentJob && !image.mock) completeSharedAccount(db, account, now,
-          { job: currentJob, kind: 'success', retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil });
-        account.total = Number(account.total || 0) + 1; account.updatedAt = at;
-      }
-      const saved: StoreItem = { id: imageId, memberId: currentJob?.fairCharge.userId || user?.id, token: reservation.token,
-        accountId: reservation.account?.id || '', cacheKey: image.mock ? '' : reservation.cacheKey || '', mock: Boolean(image.mock),
-        prompt: request.tag, fullPrompt: request.prompt, model: request.model, width: request.width, height: request.height,
-        requestedSteps: request.requestedSteps ?? request.steps, routedSteps: request.steps, cost: reservation.cost,
-        accountCost: normalizedAccountCost(reservation.accountCost), mimeType: image.mimeType, file: imageFile!,
-        ...(pending ? { operation: pending.operation, byteLength: pending.byteLength, sha256: pending.sha256 } : {}), createdAt: at };
-      db.images.unshift(saved);
-      if (meta.jobId) {
-        const job = db.jobs.find(item => item.id === meta.jobId);
-        if (job) {
-          Object.assign(job, reservation.upstreamTiming || {});
-          if (shared && !refunded) settleFairQuota(db, job, true, now, {}, store.readFairQuotaSettlement(job.id));
-          if (refunded) recordRecoveredGeneration(db, job, saved.id, now); else job.status = 'done';
-          job.imageId = saved.id; delete job.resultPending;
-          job.accountId = reservation.account?.id || job.accountId || '';
-          if (!refunded) { job.error = ''; job.errorDetail = ''; job.completedAt = at; }
-          job.updatedAt = at;
-          if (shared) recordCompletedArtifact(db, job, saved, now, job.fairCharge ? store.readFreeImageUsage(db, job.fairCharge.userId, now) : undefined);
-          if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence(), now);
-        }
-      }
-      return { ...saved, balance: user?.balance || 0 };
-    }, { dirtyRows: (saved, db) => ({ ...changedJobRows(db, meta.jobId ? [meta.jobId] : [], reservation.account?.id ? [reservation.account.id] : []), images: [saved.id] }) });
-    if (imageFile && savedImage.id !== imageId && !pending) await options.legacy!.removeStoredImages([{ id: imageId, file: imageFile }]);
-    return savedImage;
-  } catch (error) {
-    if (imageFile && !pending) await options.legacy!.removeStoredImages([{ id: imageId, file: imageFile }]);
-    throw error;
-  }
+    const refunded = job.fairCharge.status === 'refunded';
+    if (!refunded && job.fairCharge.status !== 'reserved') fail(409, '任务已结算但结果缺失');
+    if (!pending) fail(409, '已发布结果的凭据不存在');
+    if (job.resultPending?.attemptId !== pending.attemptId || job.resultPending?.sha256 !== pending.sha256) fail(409, '待保存结果已改变');
+    const account = db.accounts.find(item => item.id === job.accountId);
+    if (account) {
+      if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+      if (!image.mock) completeSharedAccount(db, account, now,
+        { job, kind: 'success', retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil });
+      account.total = Number(account.total || 0) + 1; account.updatedAt = at;
+    }
+    const saved: StoreItem = { id: pending.imageId, memberId: job.fairCharge.userId, token: reservation.token,
+      accountId: job.accountId, cacheKey: image.mock ? '' : reservation.cacheKey || '', mock: Boolean(image.mock),
+      prompt: request.tag, fullPrompt: request.prompt, model: request.model, width: request.width, height: request.height,
+      requestedSteps: request.requestedSteps ?? request.steps, routedSteps: request.steps, cost: reservation.cost,
+      accountCost: normalizedAccountCost(reservation.accountCost), mimeType: image.mimeType, file: pending.file,
+      operation: pending.operation, byteLength: pending.byteLength, sha256: pending.sha256, createdAt: at };
+    db.images.unshift(saved);
+    Object.assign(job, reservation.upstreamTiming || {});
+    if (!refunded) settleFairQuota(db, job, true, now, {}, store.readFairQuotaSettlement(job.id));
+    if (refunded) recordRecoveredGeneration(db, job, saved.id, now); else job.status = 'done';
+    job.imageId = saved.id; delete job.resultPending;
+    if (!refunded) { job.error = ''; job.errorDetail = ''; job.completedAt = at; }
+    job.updatedAt = at;
+    recordCompletedArtifact(db, job, saved, now, store.readFreeImageUsage(db, job.fairCharge.userId, now));
+    if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence(), now);
+    return { ...saved, balance: db.users.find(user => user.token === reservation.token)?.balance || 0 };
+  }, { dirtyRows: (saved, db) => ({ ...changedJobRows(db, [meta.jobId], reservation.account?.id ? [reservation.account.id] : []), images: [saved.id] }) });
 }
 
 export interface GenerationRecoveryOutcome { jobId: string; status: 'completed' | 'file_missing' | 'unresolved'; imageId?: string; code?: string }
@@ -467,29 +412,25 @@ export interface GenerationFailureOptions extends GenerationClock {
 }
 
 async function finishGenerationFailure(store: JsonStore, reservation: GenerationReservation, error: unknown, options: GenerationFailureOptions, aborted: boolean) {
-  const shared = options.fairShareMode !== false, failure = error as GenerationError, detail = options.errorDetailMessage(error);
-  const kind = sharedFailureKind(reservation, error), capacity = shared && kind === 'capacity';
-  const statusCode = (aborted ? kind === 'capacity' : capacity) ? 429 : failure?.statusCode || (aborted ? 504 : 500);
+  const failure = error as GenerationError, detail = options.errorDetailMessage(error);
+  const kind = sharedFailureKind(reservation, error), capacity = kind === 'capacity';
+  const statusCode = capacity ? 429 : failure?.statusCode || (aborted ? 504 : 500);
   const message = !aborted && capacity ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。'
-    : !aborted && shared && failure?.upstreamStatus === 401 ? '共享 Opus Key 已失效，请联系管理员更新凭据'
-    : !aborted && shared && failure?.upstreamStatus === 403 ? '上游拒绝访问，请联系管理员重新验证 Opus'
+    : !aborted && failure?.upstreamStatus === 401 ? '共享 Opus Key 已失效，请联系管理员更新凭据'
+    : !aborted && failure?.upstreamStatus === 403 ? '上游拒绝访问，请联系管理员重新验证 Opus'
     : options.publicErrorMessage(failure?.message || detail || (aborted ? 'direct generate timeout' : ''));
   return store.update(db => {
     const job = reservation.job?.id ? db.jobs.find(item => item.id === reservation.job!.id) : null;
     const result = { changed: false, jobId: reservation.job?.id, message, statusCode, kind, cooldownUntil: undefined as StoreItem['cooldownUntil'] };
-    if ((aborted || (shared && reservation.job?.id)) && (!job || ['done', 'failed'].includes(job.status!))) return result;
+    if (!job || ['done', 'failed'].includes(job.status!)) return result;
     const now = (options.now || Date.now)(), at = new Date(now).toISOString();
-    if (!aborted && !shared) {
-      const user = db.users.find(member => member.token === reservation.token);
-      if (user) { user.balance! += Number(reservation.cost || 0); user.updatedAt = at; }
-    }
     const account = reservation.account ? db.accounts.find(item => item.id === reservation.account!.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (shared) completeSharedAccount(db, account, now, { job: job || undefined, kind,
+      completeSharedAccount(db, account, now, { job, kind,
         retryAfterUntil: failure?.upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
       result.cooldownUntil = account.cooldownUntil;
-      if (!aborted && shared && [401, 403].includes(failure?.upstreamStatus!) && account.token === reservation.account?.token) {
+      if (!aborted && [401, 403].includes(failure?.upstreamStatus!) && account.token === reservation.account?.token) {
         account.upstreamStatus = failure.upstreamStatus === 401 ? 'invalid_key' : 'access_denied';
         account.quotaError = failure.upstreamStatus === 401 ? '共享 Opus Key 已失效，请管理员更新凭据' : '上游拒绝访问，请管理员重新验证 Opus';
         recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id, occurredAt: now,
@@ -498,16 +439,11 @@ async function finishGenerationFailure(store: JsonStore, reservation: Generation
       if (!aborted) account.failures = Number(account.failures || 0) + 1;
       account.updatedAt = at;
     }
-    if (job) {
-      Object.assign(job, reservation.upstreamTiming || {});
-      if (aborted || shared) refundGenerationJob(store, db, job, message, { ...options, now: () => now,
-        evidence: { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) } });
-      cancelWaitingBatchJobs(db, job, message, aborted ? 409 : statusCode, now);
-      Object.assign(job, { status: 'failed', error: message, errorStatus: statusCode, errorDetail: detail || (aborted ? 'job aborted' : ''), updatedAt: at, completedAt: at });
-      recordGenerationFailure(db, job);
-    }
-    if (!aborted && !shared) db.ledger.unshift({ id: createId('log'), type: 'refund', token: reservation.token,
-      jobId: reservation.job?.id || '', amount: Number(reservation.cost || 0), at, note: message });
+    Object.assign(job, reservation.upstreamTiming || {});
+    refundGenerationJob(store, db, job, { now: () => now, evidence: { requestStarted: Boolean(reservation.upstreamTiming?.upstreamStartedAt) } });
+    cancelWaitingBatchJobs(db, job, message, aborted ? 409 : statusCode, now);
+    Object.assign(job, { status: 'failed', error: message, errorStatus: statusCode, errorDetail: detail || (aborted ? 'job aborted' : ''), updatedAt: at, completedAt: at });
+    recordGenerationFailure(db, job);
     return { ...result, changed: true };
   }, { dirtyRows: (_result, db) => changedJobRows(db, reservation.job?.id ? [reservation.job.id] : [], reservation.account?.id ? [reservation.account.id] : []),
     shouldPersist: result => result.changed });
@@ -526,7 +462,6 @@ export interface GenerationCleanupOptions extends GenerationClock {
 }
 
 export async function cleanupStaleGenerationJobs(store: JsonStore, reason = 'stale active job cleanup', options: GenerationCleanupOptions) {
-  const shared = options.fairShareMode !== false;
   return store.update(db => {
     const now = (options.now || Date.now)(), at = new Date(now).toISOString(), env = options.env || process.env;
     const jobIds: string[] = [], message = options.publicErrorMessage('direct generate timeout');
@@ -540,11 +475,11 @@ export async function cleanupStaleGenerationJobs(store: JsonStore, reason = 'sta
         Object.assign(job, execution.upstreamTiming || {});
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         const kind = sharedFailureKind(execution, new Error('direct generate timeout'));
-        if (shared) completeSharedAccount(db, account, now, { job, kind, retryAfterUntil: job.upstreamRetryAfterUntil });
-        if (shared && kind === 'capacity') statusCode = 429;
+        completeSharedAccount(db, account, now, { job, kind, retryAfterUntil: job.upstreamRetryAfterUntil });
+        if (kind === 'capacity') statusCode = 429;
         account.updatedAt = at;
       }
-      refundGenerationJob(store, db, job, message, { ...options, now: () => now });
+      refundGenerationJob(store, db, job, { now: () => now });
       Object.assign(job, { status: 'failed', error: message, errorStatus: statusCode, errorDetail: `${reason}: ${detail}`, updatedAt: at, completedAt: at });
       recordGenerationFailure(db, job);
       jobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, statusCode, now));
@@ -555,7 +490,6 @@ export async function cleanupStaleGenerationJobs(store: JsonStore, reason = 'sta
 }
 
 export async function cleanupInterruptedGenerationJobs(store: JsonStore, options: GenerationCleanupOptions) {
-  const shared = options.fairShareMode !== false;
   return store.update(db => {
     const now = (options.now || Date.now)(), at = new Date(now).toISOString(), env = options.env || process.env;
     const jobIds: string[] = [], message = options.publicErrorMessage('direct generate timeout');
@@ -569,12 +503,12 @@ export async function cleanupInterruptedGenerationJobs(store: JsonStore, options
       const account = isRunning && job.accountId ? db.accounts.find(item => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (shared) completeSharedAccount(db, account, now, { job,
+        completeSharedAccount(db, account, now, { job,
           kind: sharedFailureKind({ failurePhase: job.upstreamStartedAt ? 'upstream' : 'preflight', upstreamTiming: job }, new Error('interrupted')),
           retryAfterUntil: job.upstreamRetryAfterUntil });
         account.updatedAt = at;
       }
-      refundGenerationJob(store, db, job, message, { ...options, now: () => now });
+      refundGenerationJob(store, db, job, { now: () => now });
       Object.assign(job, { status: 'failed', error: message, errorDetail: isRunning
         ? 'startup: running job was interrupted by server restart' : 'startup: job deadline expired before restart completed', updatedAt: at, completedAt: at });
       recordGenerationFailure(db, job);
@@ -606,7 +540,7 @@ export async function reconcileGenerationReviewsCommand(store: JsonStore,
       if (localImage && job.imageId === localImage.id) {
         const recovered = recordRecoveredGeneration(db, job, localImage.id, now);
         if (recovered) recordFreeImageSuccess(db, job, now, store.readFreeImageUsage(db, job.fairCharge.userId, now));
-        if (recovered && options.fairShareMode !== false && !localImage.mock) completeSharedAccount(db, db.accounts.find(account => account.id === job.accountId), now,
+        if (recovered && !localImage.mock) completeSharedAccount(db, db.accounts.find(account => account.id === job.accountId), now,
           { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil });
         return recovered;
       }

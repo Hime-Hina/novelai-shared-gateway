@@ -8,7 +8,6 @@ export { isNovelAiAccountBannedError, isNovelAiOutOfTrialImageGenerationError } 
 
 type AccountQuota = Awaited<ReturnType<typeof fetchNovelAiAccountQuota>>;
 type QuotaError = Error & { upstreamStatus?: number };
-interface AccountMode { fairShareMode?: boolean }
 function fail(statusCode: number, message: string): never { throw Object.assign(new Error(message), { statusCode }); }
 
 export function isUnsubscribedAccountTier(tier: unknown): boolean {
@@ -17,9 +16,8 @@ export function isUnsubscribedAccountTier(tier: unknown): boolean {
   return Number.isFinite(value) ? value === 0 : ['none', 'paper', 'free', 'unsubscribed'].includes(String(tier).trim().toLowerCase());
 }
 
-export function disableNovelAiAccount(account: StoreItem, options: AccountMode = {}): void {
+export function disableNovelAiAccount(account: StoreItem): void {
   account.enabled = false;
-  if (options.fairShareMode === false) { account.inFlight = 0; account.cooldownUntil = ''; }
 }
 
 export function accountQuotaResult(id: string, quota: AccountQuota, now: string) {
@@ -52,11 +50,11 @@ export function recordOfficialObservation(db: StoreDatabase, account: StoreItem,
     payload: { kind: 'official', accountId: account.id, observation: Object.fromEntries(fields.filter(key => account[key] !== undefined).map(key => [key, account[key]])), at: now } });
 }
 
-export function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, result: QuotaResult, now: string, options: AccountMode = {}): void {
+export function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, result: QuotaResult, now: string): void {
   if (!result.ok) {
     account.quotaError = result.quotaError; account.upstreamStatus = result.upstreamStatus;
     account.quotaAttemptedAt = now; account.updatedAt = now;
-    if (result.disableAccount) disableNovelAiAccount(account, options);
+    if (result.disableAccount) disableNovelAiAccount(account);
     recordOfficialObservation(db, account, now);
     return;
   }
@@ -66,12 +64,11 @@ export function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, r
     quotaPurchased: result.quotaPurchased, quotaTier: result.quotaTier, v5UsagePercent: result.v5UsagePercent,
     v5UsageIsNegative: result.v5UsageIsNegative, v5UsageTimeUntilNextPercent: result.v5UsageTimeUntilNextPercent,
     quotaCheckedAt: result.quotaCheckedAt, quotaError: result.quotaError, upstreamStatus: result.upstreamStatus, updatedAt: now });
-  if (options.fairShareMode === false) account.cooldownUntil = '';
-  if (result.disableAccount) disableNovelAiAccount(account, options);
+  if (result.disableAccount) disableNovelAiAccount(account);
   recordOfficialObservation(db, account, now);
 }
 
-interface AccountQuotaRefreshOptions<T> extends AccountMode {
+interface AccountQuotaRefreshOptions<T> {
   store: JsonStore;
   fetchQuota?: typeof fetchNovelAiAccountQuota;
   env?: NodeJS.ProcessEnv;
@@ -85,7 +82,7 @@ interface AccountQuotaRefreshOptions<T> extends AccountMode {
 interface RefreshResult<T> { checked: number; ok: number; failed: number; accounts: T[] }
 
 export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions<T>) {
-  const { store } = options, clock = options.now || Date.now, shared = options.fairShareMode !== false;
+  const { store } = options, clock = options.now || Date.now;
   const logger = options.logger || console, fetchQuota = options.fetchQuota || fetchNovelAiAccountQuota;
   let pending: Promise<RefreshResult<T>> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null, started = false, stopped = false;
@@ -114,9 +111,9 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
       for (const account of db.accounts) {
         const result = resultMap.get(account.id);
         if (!result || account.token !== tokens.get(account.id) || Date.parse(String(account.quotaCheckedAt || '')) > Date.parse(result.quotaCheckedAt)) continue;
-        applyAccountQuotaResult(db, account, result, at, options);
+        applyAccountQuotaResult(db, account, result, at);
       }
-      if (shared) syncFairQuota(db, clock());
+      syncFairQuota(db, clock());
       return db.accounts.filter(account => resultMap.has(account.id));
     }, { collections: ['accounts', 'settings', 'ledger'], includeSettings: true });
     return { checked: results.length, ok: results.filter(result => result.ok).length, failed: results.filter(result => !result.ok).length,
@@ -144,7 +141,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
         if (result.checked) logger.log(`[runtime] account quota refresh: checked=${result.checked} ok=${result.ok} failed=${result.failed}`);
       } catch (error) { logger.error('[runtime] account quota refresh failed:', error); }
       finally {
-        if (!stopped) { timer = setTimeout(run, options.refreshIntervalMs ?? (shared ? 60_000 : 300_000)); timer.unref?.(); }
+        if (!stopped) { timer = setTimeout(run, options.refreshIntervalMs ?? 60_000); timer.unref?.(); }
       }
     };
     void run();
