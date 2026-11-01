@@ -49,12 +49,13 @@ async function orchestrate(){
     observations:integer(values.observations,'observations'),annualBatches:integer(values['annual-batches'],'annual-batches',0),ownerDays:integer(values['owner-days'],'owner-days'),now:Date.now(),smoke:values.smoke};
   if(values.smoke)Object.assign(options,{history:120,rounds:1,samples:3,active:2,observations:12,annualBatches:4});
   if(!values.smoke&&options.rounds<3)throw new Error('Performance acceptance requires at least three rounds');
+  if(options.annualBatches>options.observations)throw new Error('annual-batches cannot exceed the number of observation minutes for this single-account workload');
   const link=path.join(baseline,'node_modules'),createdLink=!existsSync(link);
   if(createdLink)await fs.symlink(path.join(candidate,'node_modules'),link,process.platform==='win32'?'junction':'dir');
   try{
   const report={kind:options.smoke?'runner-smoke':'performance-evidence',options,sources:{baseline:await sourceEvidence(baseline),candidate:await sourceEvidence(candidate)},
     cachePolicy:'Fresh child process and SQLite connection each round; first queries recorded separately; OS page cache is not forcibly dropped.',
-    transactionDefinition:'Admission is the real /api/jobs handler final JsonStore.update; envelope also includes readiness. Dispatch/settlement use the real quota and artifact domain functions with persisted synthetic PNG evidence. Artifact file fsync is outside settlement timing. No upstream generation or queue draining runs.',
+    transactionDefinition:'Admission is the real /api/jobs handler final JsonStore.update; envelope also includes readiness. Every sample has separate dispatch, artifact-prepared, and publish/settlement/cooldown commits using the real domain functions. Synthetic PNG file fsync is outside SQL timing. Logical generation takes 2s and existing account cooldown advances the clock without sleep or network. Fixed waiting jobs use a 24h deadline during timing rounds.',
     rowCounterPolicy:'Materialized SQL/DTO rows and matched source rows are reported separately. SQLite physical page reads are not exposed by better-sqlite3.',seeds:[],rounds:[]};
   const run=async(stage,label,source,extra={})=>{
     const name=`${label}-${stage}-${randomUUID()}`,config={...options,...extra,stage,source,label,result:path.join(output,name+'.json')};
@@ -89,6 +90,7 @@ async function orchestrate(){
       const metrics=Object.keys(variants.baseline[0].latency);
       for(const metric of metrics){
         const before=percentile(variants.baseline.map(round=>round.latency[metric].p95Ms),.5),after=percentile(variants.candidate.map(round=>round.latency[metric].p95Ms),.5);
+        if(before===null||after===null){report.comparison.push({history,metric,baselineMedianP95Ms:before,candidateMedianP95Ms:after,requiresInvestigation:null,reason:'No samples in this run'});continue;}
         report.comparison.push({history,metric,baselineMedianP95Ms:before,candidateMedianP95Ms:after,deltaMs:after-before,ratio:before?after/before:null,requiresInvestigation:after>before*1.2&&after-before>10});
       }
       const before=percentile(variants.baseline.map(round=>round.memory.hotPeakRss),.5),after=percentile(variants.candidate.map(round=>round.memory.hotPeakRss),.5);
@@ -159,8 +161,9 @@ async function memoryRequest(handler,body,key,{method='POST',url='/api/jobs',exp
 }
 
 async function measure(config,result,{load,storeModule,quota}){
+  process.env.QUEUE_WAIT_TIMEOUT_MS='86400000';
   let captured,phase=null,hotPeakRss=process.memoryUsage().rss,loadMs=0;
-  const timings={admissionTransaction:[],admissionEnvelope:[],dispatchTransaction:[],settlementTransaction:[],memberSummary:[],firstHistory:[],annualHeatmap:[],ownerStatistics:[]},rows={};
+  const timings={admissionTransaction:[],admissionEnvelope:[],dispatchTransaction:[],artifactPreparedTransaction:[],settlementTransaction:[],quotaRefreshTransaction:[],memberSummary:[],firstHistory:[],annualHeatmap:[],ownerStatistics:[]},rows={};
   const originalUpdate=storeModule.JsonStore.prototype.update,originalLoad=storeModule.JsonStore.prototype.ensureLoaded;
   storeModule.JsonStore.prototype.ensureLoaded=async function(...args){const cold=!this.db,t=performance.now(),value=await originalLoad.apply(this,args);if(cold)loadMs+=elapsed(t);return value;};
   result.memory={beforeLoadRss:process.memoryUsage().rss};result.failures={busy:0,conflicts:0,retries:0};
@@ -169,6 +172,8 @@ async function measure(config,result,{load,storeModule,quota}){
   }catch(error){if(/SQLITE_BUSY/.test(error.code||error.message))result.failures.busy++;if(/conflict/i.test(error.message))result.failures.conflicts++;throw error;}};
   const {handleGatewayRequest}=await load('gateway-runtime'),heatmap=await load('activity-heatmap'),owner=await load('owner-operations');
   const execution=existsSync(path.join(config.source,'server/generation-execution.ts'))?await load('generation-execution'):null;
+  const resultFiles=await load('result-files'),capacity=await load('shared-capacity'),batch=await load('generation-request');
+  const domain=execution?await load('domain-events'):null,baseTime=config.now;
   await memoryRequest(handleGatewayRequest,null,'bootstrap',{method:'GET',url:'/api/me/quota',expected:200});
   for(let index=0;index<config.active;index++)await memoryRequest(handleGatewayRequest,{...request,token:members[index%20].token},`active-${index}`);
   const store=captured;result.loadMs=loadMs;global.gc?.();result.memory.afterLoadRss=process.memoryUsage().rss;hotPeakRss=result.memory.afterLoadRss;
@@ -183,29 +188,53 @@ async function measure(config,result,{load,storeModule,quota}){
   await queries();result.coldQueries=Object.fromEntries(Object.entries(timings).filter(([,values])=>values.length).map(([key,values])=>[key,values.splice(0)]));
   const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=','base64');
   await fs.mkdir(path.join(config.directory,'images'),{recursive:true});
+  let spentFixed=0,spentPurchased=0,lastObservedAt=baseTime;
   for(let index=0;index<config.samples;index++){
+    config.now=baseTime+index*12000;
+    if(config.now-lastObservedAt>=60000){
+      const refresh=performance.now();await store.update(db=>{
+        const account=db.accounts.find(account=>account.id==='opus'),observation={quotaFixed:10000000-spentFixed,quotaPurchased:1000000-spentPurchased,quotaCheckedAt:config.now,v5UsagePercent:100,v5UsageTimeUntilNextPercent:600};
+        Object.assign(account,observation);
+        domain?.recordDomainEvent(db,{eventType:'QuotaObserved',streamId:'account:opus',accountId:'opus',occurredAt:config.now,payload:{kind:'official',accountId:'opus',observation,at:config.now}});
+        quota.syncFairQuota(db,config.now);
+      },{immediate:true,collections:['accounts','settings','ledger']});timings.quotaRefreshTransaction.push(elapsed(refresh));lastObservedAt=config.now;
+    }
     const member=members[index%20];phase='admission';const admission=performance.now();
     const accepted=await memoryRequest(handleGatewayRequest,{...request,token:member.token,seed:index+100},`sample-${config.round}-${index}`);
     timings.admissionEnvelope.push(elapsed(admission));phase=null;
     const id=accepted.id;
     const dispatch=performance.now();await store.update(db=>{
       const job=db.jobs.find(job=>job.id===id),account=db.accounts.find(account=>account.id==='opus');if(!job)throw new Error('Accepted job is missing');
+      if(capacity.sharedAccountReadyDelay(account,config.now)>0)throw new Error('Measured dispatch violates the account cooldown');
       job.status='running';job.startedAt=job.updatedAt=iso(config.now);job.accountId=account.id;
       quota.reserveFairQuota(db,db.users.find(user=>user.id===member.id),job,account,config.now,{...request,seed:index+100},store.readFairQuotaSettlement?.(id));
     },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id]}});timings.dispatchTransaction.push(elapsed(dispatch));
-    const image={id:`image-${id}`,jobId:id,token:member.token,accountId:'opus',file:`images/${id}.png`,mimeType:'image/png',byteLength:png.length,sha256:hash(png),createdAt:iso(config.now),model:request.model,width:1,height:1,operation:'generate',mock:true};
+    config.now+=2000;
+    const imageId=`image-${id}`,descriptor=resultFiles.describeStoredResult(imageId,'generate',{mimeType:'image/png',buffer:png});
+    const prepared=performance.now();await store.update(db=>{
+      const job=db.jobs.find(job=>job.id===id);job.resultPending={...descriptor,attemptId:job.generationAttempt.id};
+      execution?.recordPreparedArtifact(db,job);
+    },{immediate:true,dirtyRows:{jobs:[id]}});timings.artifactPreparedTransaction.push(elapsed(prepared));
+    const image={id:imageId,jobId:id,token:member.token,accountId:'opus',file:descriptor.file,mimeType:descriptor.mimeType,byteLength:descriptor.byteLength,sha256:descriptor.sha256,createdAt:iso(config.now),model:request.model,width:1,height:1,operation:'generate',mock:false};
     const file=await fs.open(path.join(config.directory,image.file),'w');try{await file.writeFile(png);await file.sync();}finally{await file.close();}
     const final=performance.now();await store.update(db=>{
-      const job=db.jobs.find(job=>job.id===id);quota.settleFairQuota(db,job,true,config.now,{},store.readFairQuotaSettlement?.(id));
+      const job=db.jobs.find(job=>job.id===id),account=db.accounts.find(account=>account.id==='opus');
+      if(execution)execution.completeSharedAccount(db,account,config.now,{job,kind:'success'});
+      else capacity.recordSharedCompletion(account,config.now,{job,kind:'success'});
+      quota.settleFairQuota(db,job,true,config.now,{},store.readFairQuotaSettlement?.(id));
       Object.assign(job,{status:'done',imageId:image.id,completedAt:iso(config.now),updatedAt:iso(config.now)});db.images.unshift(image);
+      delete job.resultPending;spentFixed+=Number(job.fairCharge.fixed);spentPurchased+=Number(job.fairCharge.purchased);
       execution?.recordCompletedArtifact(db,job,image,config.now);
-    },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id],images:[image.id]}});timings.settlementTransaction.push(elapsed(final));
+      batch.activateNextBatchJob(db,job,store.nextQueueSequence(),config.now);
+    },{immediate:true,includeSettings:true,dirtyRows:{jobs:[id],images:[image.id],accounts:['opus']}});timings.settlementTransaction.push(elapsed(final));
     await queries();hotPeakRss=Math.max(hotPeakRss,process.memoryUsage().rss);
   }
   result.latency=Object.fromEntries(Object.entries(timings).map(([key,values])=>[key,distribution(values)]));result.samples=timings;result.materializedRows=rows;
   result.sourceRows={historyMember:store.sqlite.prepare('SELECT count(*) AS count FROM jobs WHERE user_token=?').get(members[0].token).count,historyTotal:store.sqlite.prepare('SELECT count(*) AS count FROM jobs').get().count};
   result.memory.hotPeakRss=hotPeakRss;global.gc?.();result.memory.afterGcRss=process.memoryUsage().rss;
   result.hotCollections=Object.fromEntries(['jobs','images','ledger'].map(name=>[name,store.db[name].length]));
+  result.fixedActiveObserved=store.sqlite.prepare("SELECT count(*) AS count FROM jobs WHERE status IN ('queued','pending','running')").get().count;
+  if(result.fixedActiveObserved!==config.active)throw new Error('The fixed active set changed during measurement');
   result.diskBeforeCheckpoint=await disk(store.dbPath);const checkpoint=performance.now();result.checkpoint=store.sqlite.pragma('wal_checkpoint(TRUNCATE)');result.checkpointMs=elapsed(checkpoint);result.disk=await disk(store.dbPath);
   const integrity=performance.now();result.integrity=store.sqlite.pragma('integrity_check');result.integrityMs=elapsed(integrity);
   await store.close();
@@ -213,39 +242,72 @@ async function measure(config,result,{load,storeModule,quota}){
 
 async function annual(config,result,{load,storeModule,quota,Database}){
   const eventStore=await load('event-store'),domain=await load('domain-events'),migration=await load('storage-migrations'),execution=await load('generation-execution');
+  const batch=await load('generation-request'),resultFiles=await load('result-files'),capacity=await load('shared-capacity'),baseTime=config.now;
   const file=path.join(config.directory,'library.sqlite'),sqlite=new Database(file);sqlite.pragma('journal_mode = WAL');sqlite.pragma('synchronous = FULL');
   const state=eventStore.readProjectedFairQuota(sqlite);
   if(!state?.balances)throw new Error('Annual fixture requires a projected opening quota');
   const db={settings:{fairQuota:state},users:structuredClone(members),jobs:[],ledger:[],accounts:[{id:'opus',enabled:true,quotaTier:3,subscriptionActive:true,subscriptionExpiresAt:config.now+2*365*86400000,quotaFixed:10000000,quotaPurchased:1000000,v5UsagePercent:100,v5UsageTimeUntilNextPercent:600,quotaCheckedAt:config.now}]};
   const input=sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)');
-  const append=(action,metadata={})=>{domain.beginDomainCommand(db,{recordedAt:iso(metadata.at||config.now),...metadata});action();const command=domain.finishDomainCommand(db);
-    return sqlite.transaction(()=>{if(metadata.input){const record=metadata.input;input.run(record.id,record.memberId,'benchmark','generate',record.at,Buffer.byteLength(record.payload),record.payload);}
-      return eventStore.appendDomainCommit(sqlite,command,{project:storeModule.applyEventProjection});})();};
-  let batches=0,images=0,spent=0;const started=performance.now(),initialDisk=await disk(file),initialEvents=sqlite.prepare('SELECT count(*) AS count FROM domain_events').get().count;
+  const commitsByPhase={},eventsByType={};
+  const append=(phase,action,metadata={})=>{
+    config.now=metadata.at??config.now;
+    domain.beginDomainCommand(db,{recordedAt:iso(config.now)});action();const command=domain.finishDomainCommand(db);
+    const committed=sqlite.transaction(()=>{if(metadata.input){const record=metadata.input;input.run(record.id,record.memberId,'benchmark','generate',record.at,Buffer.byteLength(record.payload),record.payload);}
+      return eventStore.appendDomainCommit(sqlite,command,{project:storeModule.applyEventProjection});})();
+    commitsByPhase[phase]=(commitsByPhase[phase]||0)+1;
+    for(const event of command.events)eventsByType[event.eventType]=(eventsByType[event.eventType]||0)+1;
+    return committed;
+  };
+  let batches=0,images=0,spent=0,queueSequence=0;const started=performance.now(),initialDisk=await disk(file),initialEvents=sqlite.prepare('SELECT count(*) AS count FROM domain_events').get().count;
   const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=','base64');
   for(let index=0;index<config.observations;index++){
-    const at=config.now+(index+1)*60000,account=db.accounts[0];account.quotaCheckedAt=at;account.quotaFixed=10000000-spent;
-    append(()=>{
+    const at=baseTime+(index+1)*60000,account=db.accounts[0];account.quotaCheckedAt=at;account.quotaFixed=10000000-spent;
+    append('quota-observation',()=>{
       domain.recordDomainEvent(db,{eventType:'QuotaObserved',streamId:'account:opus',accountId:'opus',occurredAt:at,payload:{kind:'official',accountId:'opus',observation:{quotaFixed:account.quotaFixed,quotaPurchased:1000000,v5UsagePercent:100,quotaCheckedAt:at,v5UsageTimeUntilNextPercent:600},at}});
       quota.syncFairQuota(db,at);
     },{at});
     const due=Math.floor((index+1)*config.annualBatches/config.observations);
     while(batches<due){
       const member=members[batches%20],count=[1,4,1,2][batches%4],requestId=`annual-request-${batches}`,payload=JSON.stringify({...request,sampleCount:count});
-      const jobs=Array.from({length:count},(_,sampleIndex)=>({id:`annual-job-${batches}-${sampleIndex}`,requestId,memberId:member.id,userToken:member.token,accountId:'opus',batchId:requestId,sampleIndex,status:'queued',source:'benchmark',request:{...request},createdAt:iso(at),updatedAt:iso(at)}));db.jobs=jobs;
-      append(()=>{
-        domain.recordDomainEvent(db,{eventType:'RequestAccepted',streamId:`request:${requestId}`,memberId:member.id,occurredAt:at,payload:{requestId,memberId:member.id,source:'benchmark',operation:'generate',createdAt:iso(at),inputRef:requestId,inputSha256:hash(payload),payloadBytes:Buffer.byteLength(payload),jobs:jobs.map(job=>({id:job.id,batchId:requestId,index:job.sampleIndex,status:'queued',summary:{operation:'generate',model:request.model,width:512,height:512,steps:request.steps}}))}});
-        for(const job of jobs){job.status='running';quota.reserveFairQuota(db,member,job,account,at,request);quota.settleFairQuota(db,job,true,at);spent+=Number(job.fairCharge.fixed);
-          const image={id:`annual-image-${images++}`,file:`benchmark-capacity/${job.id}.png`,mimeType:'image/png',byteLength:png.length,sha256:hash(png),createdAt:iso(at),model:request.model,width:1,height:1,operation:'generate',mock:true};
-          Object.assign(job,{status:'done',completedAt:iso(at),imageId:image.id});execution.recordCompletedArtifact(db,job,image,at);
-        }
+      const jobs=Array.from({length:count},(_,sampleIndex)=>({id:`annual-job-${batches}-${sampleIndex}`,requestId,memberId:member.id,userToken:member.token,
+        batchId:requestId,sampleIndex,status:sampleIndex===0?'queued':'pending',...(sampleIndex===0?{queueSeq:++queueSequence}:{}),queueExpiresAt:iso(at+600000),
+        source:'benchmark',request:{...request},createdAt:iso(at),updatedAt:iso(at)}));db.jobs=jobs;
+      append('request-accepted',()=>{
+        domain.recordDomainEvent(db,{eventType:'RequestAccepted',streamId:`request:${requestId}`,memberId:member.id,occurredAt:at,payload:{requestId,memberId:member.id,source:'benchmark',operation:'generate',createdAt:iso(at),inputRef:requestId,inputSha256:hash(payload),payloadBytes:Buffer.byteLength(payload),jobs:jobs.map(job=>({id:job.id,batchId:requestId,index:job.sampleIndex,status:job.status,queueSeq:job.queueSeq,queueExpiresAt:job.queueExpiresAt,summary:{operation:'generate',model:request.model,width:512,height:512,steps:request.steps}}))}});
       },{at,input:{id:requestId,memberId:member.id,at:iso(at),payload}});
-      for(const job of jobs)delete db.settings.fairQuota.reservations[job.id];db.ledger=[];batches++;
+      for(const job of jobs){
+        const dispatchAt=Math.max(at,Date.parse(account.cooldownUntil||'')||at);
+        append('child-dispatch',()=>{
+          if(job.status!=='queued'||capacity.sharedAccountReadyDelay(account,dispatchAt)>0)throw new Error('Annual child is not ready for serial dispatch');
+          Object.assign(job,{status:'running',accountId:account.id,startedAt:iso(dispatchAt),updatedAt:iso(dispatchAt)});
+          quota.reserveFairQuota(db,member,job,account,dispatchAt,request);
+        },{at:dispatchAt});
+        const completedAt=dispatchAt+2000,imageId=`annual-image-${images++}`,descriptor=resultFiles.describeStoredResult(imageId,'generate',{mimeType:'image/png',buffer:png});
+        append('artifact-prepared',()=>{
+          job.resultPending={...descriptor,attemptId:job.generationAttempt.id};execution.recordPreparedArtifact(db,job);
+        },{at:completedAt});
+        const image={id:imageId,file:descriptor.file,mimeType:descriptor.mimeType,byteLength:descriptor.byteLength,sha256:descriptor.sha256,
+          createdAt:iso(completedAt),model:request.model,width:1,height:1,operation:'generate',mock:false};
+        append('child-completed',()=>{
+          execution.completeSharedAccount(db,account,completedAt,{job,kind:'success'});
+          quota.settleFairQuota(db,job,true,completedAt);spent+=Number(job.fairCharge.fixed);
+          Object.assign(job,{status:'done',completedAt:iso(completedAt),updatedAt:iso(completedAt),imageId:image.id});delete job.resultPending;
+          execution.recordCompletedArtifact(db,job,image,completedAt);batch.activateNextBatchJob(db,job,++queueSequence,completedAt);
+        },{at:completedAt});
+        delete db.settings.fairQuota.reservations[job.id];db.ledger=[];
+      }
+      batches++;
     }
     if((index+1)%10000===0)console.log(`annual ${index+1}/${config.observations}, batches ${batches}`);
   }
   result.appendMs=elapsed(started);result.observations=config.observations;result.generationBatches=batches;result.generatedImages=images;
-  result.generationProfile={batchSizes:[1,4,1,2],model:request.model,resources:'actual quota decision',artifactBytes:'Metadata references only; image byte storage is excluded from this event-capacity fixture.'};
+  for(const [type,expected] of Object.entries({RequestAccepted:batches,QuotaReserved:images,DispatchAuthorized:images,ArtifactPrepared:images,ArtifactPublished:images,GenerationSettled:images,JobCompleted:images,CooldownChanged:images,JobQueued:images-batches})){
+    if((eventsByType[type]||0)!==expected)throw new Error(`Annual success path emitted ${eventsByType[type]||0} ${type}, expected ${expected}`);
+  }
+  result.commitsByPhase=commitsByPhase;result.eventsByType=eventsByType;
+  result.generationProfile={batchSizes:[1,4,1,2],model:request.model,resources:'actual quota decision',logicalGenerationMs:2000,cooldown:'existing shared-account success policy; logical clock only',
+    commitBoundaries:['request accepted','each child dispatch/reservation','each artifact prepared','each publish/settlement/cooldown/next-child queue'],
+    artifactBytes:'Validated synthetic PNG descriptors and publication metadata only; image byte storage, upstream latency and filesystem publication are excluded from this event-capacity fixture.'};
   const events=sqlite.prepare('SELECT count(*) AS count,sum(length(CAST(payload AS BLOB))) AS payloadBytes FROM domain_events').get();result.events={...events,added:events.count-initialEvents};
   result.initialDisk=initialDisk;result.diskBeforeCheckpoint=await disk(file);const checkpoint=performance.now();result.checkpoint=sqlite.pragma('wal_checkpoint(TRUNCATE)');result.checkpointMs=elapsed(checkpoint);result.disk=await disk(file);result.bytesPerAddedEvent=(result.disk.database-initialDisk.database)/Math.max(1,result.events.added);
   try{result.tableAndIndexBytes=sqlite.prepare('SELECT name,sum(pgsize) AS bytes FROM dbstat GROUP BY name ORDER BY bytes DESC').all();}catch(error){result.tableAndIndexBytes={unavailable:error.message};}
