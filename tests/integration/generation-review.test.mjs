@@ -18,6 +18,7 @@ import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
 import { completeSharedAccount, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess, recordGenerationFailure, publishGenerationArtifact } from '../../server/generation-execution.ts';
 import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -270,9 +271,13 @@ test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领�
   const store = await open(t, seed), { ctx } = await completionContext(store);
   const r = reservation(store.db), before = structuredClone(store.db.settings.fairQuota.balances);
   await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
+  const disabledAt = new Date().toISOString();
   await store.update(db => {
-    db.accounts[0].enabled = false; db.accounts[0].inFlight = 0;
-  }, { immediate: true });
+    const account = db.accounts[0];
+    account.enabled = false; account.inFlight = 0; account.updatedAt = disabledAt;
+    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: `account:${account.id}`, accountId: account.id,
+      occurredAt: disabledAt, payload: { accountId: account.id, enabled: account.enabled, updatedAt: disabledAt, reason: 'administrator' } });
+  }, { immediate: true, domainCommand: { actorId: 'synthetic-offline-review-admin', actorKind: 'admin', recordedAt: disabledAt } });
   await store.close();
   const listener = http.createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
@@ -281,10 +286,11 @@ test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领�
     NOVELAI_API_URL: 'http://127.0.0.1:1', NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1', PUBLIC_HOST: 'gateway.example' });
   const child = spawn(process.execPath, ['server/index.ts'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } });
-  child.stderr.resume();
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString('utf8')).slice(-8000); });
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
-    child.once('exit', code => { clearTimeout(timer); reject(new Error(`server exited ${code}`)); });
+    const timer = setTimeout(() => reject(new Error(`server startup timeout: ${stderr}`)), 10000);
+    child.once('exit', code => { clearTimeout(timer); reject(new Error(`server exited ${code}: ${stderr}`)); });
     child.stdout.on('data', chunk => { if (chunk.toString().includes('listening on')) { clearTimeout(timer); resolve(); } });
   });
   const base = `http://127.0.0.1:${port}`, headers = { host: 'gateway.example', authorization: 'Bearer STA1N-a' };
