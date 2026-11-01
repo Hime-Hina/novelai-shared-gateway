@@ -5,7 +5,7 @@ import { QUOTA_SNAPSHOT_MAX_AGE_MS, quotaTimestamp, isUsableOpus, isQuotaSnapsho
 import type { FreeImagePolicy } from './free-image-policy.ts';
 import type { LossAlertPolicy } from './failure-accounting.ts';
 import { AMOUNT_SCALE, parseAmount, formatAmount, amountNumber, decimalRatio, divideAmount, allocateAmount, normalizeLegacyAmountGroup, minAmount, maxAmount, type AmountText, type AmountInput, type ResourceAmountsText } from './resource-amounts.ts';
-import { recordDomainEvent, inheritDomainCommand, type DomainEventType } from './domain-events.ts';
+import { recordDomainEvent, inheritDomainCommand, type DomainEventFact } from './domain-events.ts';
 import type { QuotaAllocation, RefillFact } from './quota-events.ts';
 
 export type Resource = 'v5' | 'anlasFixed' | 'anlasPurchased';
@@ -167,16 +167,19 @@ const recoveryUnits = (milliseconds: number, seconds: number): bigint => {
   const ratio=decimalRatio(seconds);
   return divideAmount(BigInt(milliseconds)*AMOUNT_SCALE*ratio.denominator,1000n*ratio.numerator,'floor');
 };
-function quotaFact(db: FairQuotaDatabase,eventType:DomainEventType,payload:Record<string,unknown>,now?:number):void {
+type QuotaFact = DomainEventFact<'AvailabilityChanged'|'SharingConfigured'|'AllocationChanged'|'FundsTransferred'|'MemberTransferred'|'MemberRemoved'|
+  'AllocationApplied'|'V5CapacityObserved'|'AccountBound'|'QuotaAccountOpened'|'QuotaObserved'|'RefillApplied'|'QuotaReserved'|'GenerationSettled'|'GenerationRefunded'>;
+function quotaFact(db: FairQuotaDatabase,fact:QuotaFact,now?:number):void {
+  const {eventType}=fact;
   const accountId=db.settings?.fairQuota?.boundAccountId;
   const sharing=['SharingConfigured','AllocationChanged','MemberTransferred','MemberRemoved','AccountBound','PolicyChanged'].includes(eventType)||(!accountId&&eventType==='AvailabilityChanged');
   if(!sharing&&!accountId)throw new Error(`Financial event ${eventType} requires a bound account`);
-  recordDomainEvent(db,{eventType,streamId:sharing?'sharing:default':`account:${accountId}`,payload:eventType==='AvailabilityChanged'?{...payload,kind:'quota'}:payload,occurredAt:now,accountId,
+  recordDomainEvent(db,{...fact,streamId:sharing?'sharing:default':`account:${accountId}`,occurredAt:now,accountId,
     policyVersion:'personal_wallet_v1',amountVersion:'decimal-12-v1'});
 }
 function quotaStatus(db:FairQuotaDatabase,s:FairQuotaState,status:string,now:number):void {
   if(s.status===status)return;
-  s.status=status;quotaFact(db,'AvailabilityChanged',{status},now);
+  s.status=status;quotaFact(db,{eventType:'AvailabilityChanged',payload:{kind:'quota',status}}, now);
 }
 export function assertFairQuotaIdle(db: FairQuotaDatabase): void {
   if(anyHeld(db.settings?.fairQuota || {reservations:{}})||rows(db.jobs).some(job=>['queued','pending','running'].includes(job.status as string)))fail('有排队、运行或预留额度的任务，请结清后调整',409);
@@ -192,7 +195,7 @@ export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): F
   const s=db.settings.fairQuota = upgradeGroups({ version: 2, enabled: true, members: [...memberIds], boundAccountId: null,
     balances: Object.fromEntries(memberIds.map(id => [id,emptyBalance()])),
     reservations: {}, snapshot: null, spent: {v5:'0',anlas:'0',anlasFixed:'0',anlasPurchased:'0'}, creditedV5:'0', lastRefillAt:0,lastSettlementAt:0,status:'pending_opus' });
-  quotaFact(db,'SharingConfigured',{members:s.members,groups:s.groups,configVersion:s.configVersion});
+  quotaFact(db,{eventType:'SharingConfigured',payload:{members:s.members,groups:s.groups,configVersion:s.configVersion}});
   return s;
 }
 
@@ -273,9 +276,9 @@ export function configureFairGroups(db: FairQuotaDatabase, groups: unknown, opti
   s.configurationHistory.push({at:now,actorId:options.actorId || null,version:s.configVersion,before,after:structuredClone(normalized),beforeBalances,afterBalances:structuredClone(balances),redistributeRemaining:options.redistributeRemaining===true});
   s.configurationHistory=s.configurationHistory.slice(-1000);
   totals(s);db.settings.fairQuota=s;db.ledger=draft.ledger;
-  quotaFact(db,existing?'AllocationChanged':'SharingConfigured',{members:s.members,groups:s.groups,configVersion:s.configVersion,
-    at:now,actorId:options.actorId||null,redistributeRemaining:options.redistributeRemaining===true},now);
-  if(s.boundAccountId)quotaFact(db,'FundsTransferred',{kind:'redistribution',configVersion:s.configVersion,members:s.members,redistributions},now);
+  quotaFact(db,{eventType:existing?'AllocationChanged':'SharingConfigured',payload:{members:s.members,groups:s.groups,configVersion:s.configVersion,
+    at:now,actorId:options.actorId||null,redistributeRemaining:options.redistributeRemaining===true}}, now);
+  if(s.boundAccountId)quotaFact(db,{eventType:'FundsTransferred',payload:{kind:'redistribution',configVersion:s.configVersion,members:s.members,redistributions}}, now);
   return s;
 }
 
@@ -342,9 +345,9 @@ export function manageFairMember(db: FairQuotaDatabase & { users: FairUser[] }, 
   if(body.action==='preview-delete-member')result.configVersion=body.expectedConfigVersion;
   else {
     db.settings=draft.settings;db.users=draft.users;db.ledger=draft.ledger;
-    quotaFact(db,body.action==='transfer-quota'?'MemberTransferred':'MemberRemoved',{sourceId,targetId,configVersion:s.configVersion,
-      members:s.members,groups:s.groups,autoJoined,shareChanges,at:now},now);
-    if(s.boundAccountId)quotaFact(db,'FundsTransferred',{kind:body.action==='transfer-quota'?'transfer':'member-removal',sourceId,targetId,transferred,configVersion:s.configVersion,members:s.members},now);
+    quotaFact(db,{eventType:body.action==='transfer-quota'?'MemberTransferred':'MemberRemoved',payload:{sourceId:source.id,targetId:target.id,configVersion:s.configVersion,
+      members:s.members,groups:s.groups,autoJoined,shareChanges,at:now}}, now);
+    if(s.boundAccountId)quotaFact(db,{eventType:'FundsTransferred',payload:{kind:body.action==='transfer-quota'?'transfer':'member-removal',sourceId:source.id,targetId:target.id,transferred,configVersion:s.configVersion,members:s.members}}, now);
   }
   return result;
 }
@@ -362,8 +365,8 @@ function distribute(db:FairQuotaDatabase,s: FairQuotaState, resource: Resource, 
       if(add>0n)allocations.push({memberId:id,amount:formatAmount(add)});
     }
     totals(s);
-    if(allocations.length)quotaFact(db,'AllocationApplied',{resource,sourceAmount:formatAmount(delta),allocations,reason,configVersion:s.configVersion,
-      policyVersion:'weighted_allocation_v1',roundingVersion:'decimal-12-v1'},now);
+    if(allocations.length)quotaFact(db,{eventType:'AllocationApplied',payload:{resource,sourceAmount:formatAmount(delta),allocations,reason,configVersion:s.configVersion,
+      policyVersion:'weighted_allocation_v1',roundingVersion:'decimal-12-v1'}}, now);
     return actual;
   }
   // 负差额没有成员归属证据，必须另记运营待承担，不能按份额削减钱包。
@@ -428,7 +431,7 @@ function recordV5Reconciliation(db: FairQuotaDatabase, s: FairQuotaState, incomi
   if(recordHistory) {
     history.push(entry);s.v5ReconciliationHistory=history.slice(-200);
   }
-  quotaFact(db,'V5CapacityObserved',{capacityGap:ops.v5CapacityGap,gapEventId:ops.v5GapEventId,reconciliation:entry,recordHistory,evidence:evidence?[evidence]:[]},now);
+  quotaFact(db,{eventType:'V5CapacityObserved',payload:{capacityGap:ops.v5CapacityGap,gapEventId:ops.v5GapEventId,reconciliation:entry,recordHistory,evidence:evidence?[evidence]:[]}}, now);
 }
 
 function readSnapshot(a: FairAccount): QuotaSnapshot {
@@ -448,8 +451,8 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     const eligible=accounts.filter(a=>active(a,now));
     if(eligible.length!==1) {quotaStatus(db,s,eligible.length?'ambiguous_opus':'pending_opus',now);return s;}
     s.boundAccountId=eligible[0].id;
-    quotaFact(db,'AccountBound',{accountId:s.boundAccountId},now);
-    quotaFact(db,'QuotaAccountOpened',{memberIds:s.members},now);
+    quotaFact(db,{eventType:'AccountBound',payload:{accountId:s.boundAccountId}}, now);
+    quotaFact(db,{eventType:'QuotaAccountOpened',payload:{memberIds:s.members}}, now);
   }
   const account=accounts.find(a=>a.id===s.boundAccountId);
   if(!active(account,now)) {quotaStatus(db,s,'inactive_opus',now);return s;}
@@ -459,7 +462,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
   if(!s.snapshot) {
     if(incoming.v5===null || incoming.anlas===null) {quotaStatus(db,s,'unknown_balance',now);return s;}
     s.snapshot=incoming;s.lastRefillAt=now;
-    quotaFact(db,'QuotaObserved',{kind:'reconciled',snapshot:incoming,initial:true,at:now,matchedDebits:{anlasFixed:'0',anlasPurchased:'0'},matchedFallback:{fixed:'0',purchased:'0'}},now);
+    quotaFact(db,{eventType:'QuotaObserved',payload:{kind:'reconciled',snapshot:incoming,initial:true,at:now,matchedDebits:{anlasFixed:'0',anlasPurchased:'0'},matchedFallback:{fixed:'0',purchased:'0'}}}, now);
     distribute(db,s,'v5',maxAmount(0n,units(incoming.v5)-units(s.unallocatedV5)),now,'opening');distribute(db,s,'anlasFixed',units(incoming.anlasFixed),now,'opening');distribute(db,s,'anlasPurchased',units(incoming.anlasPurchased),now,'opening');
     recordV5Reconciliation(db,s,incoming,now);
     return s;
@@ -485,7 +488,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
   }
   s.lastRefillAt=Math.max(s.lastRefillAt,until);
   // 同批新观测已保存最终游标；无金融效果时不重复追加恢复事实。
-  if(s.lastRefillAt>from&&(!acceptingObservation||refill.allocations.length||refill.debtRepaid!=='0'||refill.capacityRecovered!=='0'))quotaFact(db,'RefillApplied',{...refill},now);
+  if(s.lastRefillAt>from&&(!acceptingObservation||refill.allocations.length||refill.debtRepaid!=='0'||refill.capacityRecovered!=='0'))quotaFact(db,{eventType:'RefillApplied',payload:{...refill}}, now);
   // 并发生成期间的快照无法归属消费，待全部结清且取得新快照后校准。
   if(acceptingObservation) {
     // 快照用于来源核对和安全派发，不把未知消费分摊给闲置成员，也不把差额当恢复增发。
@@ -507,7 +510,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
       else if(delta > 0n) distribute(db,s,resource,matchExternalFunding(db as ConfiguredDatabase,resource,delta,incoming,now),now,'funding');
     }
     s.snapshot=incoming;s.spent={...s.spent,v5:'0',anlas:formatAmount(units(s.spent.anlasFixed)+units(s.spent.anlasPurchased)),fallbackFixed:'0',fallbackPurchased:'0',fallbackV5:'0'};s.creditedV5='0';s.lastRefillAt=now;
-    quotaFact(db,'QuotaObserved',{kind:'reconciled',snapshot:incoming,initial:false,at:now,matchedDebits,matchedFallback},now);
+    quotaFact(db,{eventType:'QuotaObserved',payload:{kind:'reconciled',snapshot:incoming,initial:false,at:now,matchedDebits,matchedFallback}}, now);
   }
   // 未能对账的旧基准也不能无限使用，否则连续任务可能永远绕过过期检查。
   if(now-s.snapshot.at>STALE_MS) quotaStatus(db,s,'stale',now);
@@ -608,7 +611,7 @@ export function reserveFairQuota(db: FairQuotaDatabase,user: FairUser,job: Accou
   }else if(q.resource==='v5')s.balances[user.id].v5Available=formatAmount(units(s.balances[user.id].v5Available)-amount);
   s.reservations[job.id]=charge;job.fairCharge=charge;
   recordGenerationAttempt(db,job,charge,readSnapshot(account),now);
-  quotaFact(db,'QuotaReserved',{jobId:job.id,charge,at:now,pricingVersion:NATIVE_PRICING_VERSION},now);
+  quotaFact(db,{eventType:'QuotaReserved',payload:{jobId:job.id,charge,at:now,pricingVersion:NATIVE_PRICING_VERSION}}, now);
   return charge;
 }
 
@@ -635,7 +638,7 @@ export function settleFairQuota(db: FairQuotaDatabase,job: AccountingJob,success
   s.lastSettlementAt=Math.max(s.lastSettlementAt,now);job.fairCharge=c;
   // reserved 状态迁移是持久化幂等边界，不依赖只有最近 1000 条的 ledger 内存缓存。
   const refundEvidence=!success?recordGenerationRefund(db,job,c,now,evidence):null;
-  quotaFact(db,success?'GenerationSettled':'GenerationRefunded',{jobId:job.id,charge:c,at:now,...(refundEvidence?{evidence:[refundEvidence]}:{})},now);
+  quotaFact(db,{eventType:success?'GenerationSettled':'GenerationRefunded',payload:{jobId:job.id,charge:c,at:now,...(refundEvidence?{evidence:[refundEvidence]}:{})}}, now);
   return c;
 }
 

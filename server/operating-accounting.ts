@@ -1,6 +1,7 @@
 import type { AnlasResource, FairQuotaDatabase, FairQuotaState, QuotaSnapshot, Resource, ResourceAmounts } from './fair-quota.ts';
 import { parseAmount, formatAmount, minAmount, maxAmount, type AmountText, type AmountInput } from './resource-amounts.ts';
-import { recordDomainEvent, type DomainEventType } from './domain-events.ts';
+import { recordDomainEvent } from './domain-events.ts';
+import type { FundingReceivedFact, ResourceGapFact, ObservedReturnFact, CorrectedReturnFact, DebitsConfirmedFact, OperatingLossFact } from './event-payloads.ts';
 
 export interface OperatingAccount {
   available: ResourceAmounts; unfunded: Record<AnlasResource, AmountText>; unattributedReturns: Record<AnlasResource, AmountText>;
@@ -39,18 +40,33 @@ export function readOperatingAccount(s: FairQuotaState): OperatingAccount {
     v5CapacityGap: '0', v5GapEventId: null, pendingExternalFunding: [] };
 }
 
-function append<T extends Record<string, unknown>>(db: OperatingDatabase, event: T, now: number): T {
+type AuditMoney = {id:string;resource:Resource;amount:string;request?:unknown};
+type OperatingAudit = (FundingReceivedFact & {type:'operating_funding_received'})
+  | (AuditMoney & {type:'operating_funding_registered';source:'external_funding_receipt';destination:string})
+  | (ResourceGapFact & {type:'resource_gap_observed'}) | (ObservedReturnFact & {type:'resource_return_unattributed'})
+  | (CorrectedReturnFact & {type:'resource_gap_reconciled'}) | (DebitsConfirmedFact & {type:'operating_debits_confirmed'})
+  | (OperatingLossFact & {type:'operating_loss_covered'})
+  | (AuditMoney & {type:'v5_capacity_observed';resource:'v5';previous:string;delta:string;evidenceLevel:'aggregate_capacity';actualTaskConsumption:null;snapshot:QuotaSnapshot})
+  | (AuditMoney & {type:'v5_capacity_recovered';resource:'v5';gapEventId:string|null;from:number;until:number;evidenceLevel:'recovery_rate_estimate'});
+type ManualFundingFact = {type:'operating_funding_received';source:'operator_share';memberId:string}
+  | {type:'operating_funding_received';source:'declared_external_receipt';destination:string}
+  | {type:'operating_funding_registered';source:'external_funding_receipt';destination:string}
+  | {type:'operating_debits_confirmed';evidenceLevel:'operator_attested_debit_reconciliation';allocatedToMembers:string}
+  | {type:'resource_gap_reconciled';source:'declared_snapshot_correction';previousGapEventId:string;correctedAmount:string;amount:string;evidenceLevel:'operator_attested_aggregate_correction'}
+  | {type:'operating_loss_covered';source:'operating_available';lossEventId:string};
+
+function append<T extends OperatingAudit & Record<string, unknown>>(db: OperatingDatabase, event: T, now: number): T {
   const legacyEvent={at:new Date(now).toISOString(),accountId:db.settings.fairQuota.boundAccountId,...event};
   (db.ledger ||= []).unshift(structuredClone(legacyEvent));
-  const eventTypes:Record<string,DomainEventType>={
-    operating_funding_registered:'FundingRegistered',operating_funding_received:'FundingReceived',operating_debits_confirmed:'DebitsConfirmed',
-    resource_gap_observed:'ResourceGapObserved',resource_return_unattributed:'ReturnClassified',resource_gap_reconciled:'ReturnClassified',operating_loss_covered:'OperatingLossCovered'
-  };
-  const eventType=eventTypes[event.type as string];
-  if(eventType){
-    const payload=eventType==='FundingRegistered'?{funding:db.settings.fairQuota.operating!.pendingExternalFunding.find(funding=>funding.eventId===event.id)}
-      :eventType==='ReturnClassified'?{...event,kind:event.type==='resource_gap_reconciled'?'gap-correction':'observed'}:event;
-    recordDomainEvent(db,{eventType,streamId:`account:${db.settings.fairQuota.boundAccountId}`,payload:{...payload,evidence:[legacyEvent]},occurredAt:now,accountId:db.settings.fairQuota.boundAccountId,amountVersion:'decimal-12-v1',policyVersion:'operating_funding_v1'});
+  const envelope={streamId:`account:${db.settings.fairQuota.boundAccountId}`,occurredAt:now,accountId:db.settings.fairQuota.boundAccountId,amountVersion:'decimal-12-v1',policyVersion:'operating_funding_v1'},evidence=[legacyEvent];
+  switch(event.type){
+    case 'operating_funding_registered':recordDomainEvent(db,{...envelope,eventType:'FundingRegistered',payload:{funding:db.settings.fairQuota.operating!.pendingExternalFunding.find(funding=>funding.eventId===event.id)!,evidence}});break;
+    case 'operating_funding_received':recordDomainEvent(db,{...envelope,eventType:'FundingReceived',payload:{...event,evidence}});break;
+    case 'operating_debits_confirmed':recordDomainEvent(db,{...envelope,eventType:'DebitsConfirmed',payload:{...event,evidence}});break;
+    case 'resource_gap_observed':recordDomainEvent(db,{...envelope,eventType:'ResourceGapObserved',payload:{...event,evidence}});break;
+    case 'resource_return_unattributed':recordDomainEvent(db,{...envelope,eventType:'ReturnClassified',payload:{...event,kind:'observed',evidence}});break;
+    case 'resource_gap_reconciled':recordDomainEvent(db,{...envelope,eventType:'ReturnClassified',payload:{...event,kind:'gap-correction',evidence}});break;
+    case 'operating_loss_covered':recordDomainEvent(db,{...envelope,eventType:'OperatingLossCovered',payload:{...event,evidence}});break;
   }
   return legacyEvent;
 }
@@ -133,7 +149,7 @@ export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFund
   if (typeof receipt !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(receipt)) error('请提供 8–100 位唯一收据标识，只含字母、数字、下划线或连字符');
   const id = `operating-receipt:${receipt}`;
   const destination = body.destination || 'operating', fromUnattributed = body.fromUnattributed === true;
-  if (!['members', 'operating'].includes(destination as string) || (body.fromUnattributed !== undefined && typeof body.fromUnattributed !== 'boolean')) error('资金归属选项无效');
+  if ((destination !== 'members' && destination !== 'operating') || (body.fromUnattributed !== undefined && typeof body.fromUnattributed !== 'boolean')) error('资金归属选项无效');
   if (body.action !== 'operating-register-funding' && (body.destination !== undefined || body.fromUnattributed !== undefined)) error('只有新增资金凭据支持入账归属选项');
   const request = { action: body.action, actorId, resource, amount:amountText, destination, fromUnattributed, lossEventId: body.lossEventId || null };
   const previous = findEvent(id);
@@ -143,7 +159,7 @@ export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFund
     return { eventId: id, duplicate: true };
   }
   const ops = operatingAccount(s);
-  let event: Record<string, unknown>, memberFunding: FundingResult['memberFunding'];
+  let event: ManualFundingFact, memberFunding: FundingResult['memberFunding'];
   if (body.action === 'operating-contribute') {
     const wallet = s.balances[actorId], field = `${resource}Available` as const;
     if (units(wallet[field]) < amount) error('运营者本人可用余额不足');
@@ -178,7 +194,7 @@ export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFund
     if (resource === 'v5' || body.lossEventId !== ops.gapEventIds[resource] || amount > units(ops.unfunded[resource]) || amount > units(ops.unattributedReturns[resource])) error('没有可关联修正的未归属余额');
     ops.unfunded[resource] = formatAmount(units(ops.unfunded[resource])-amount); ops.unattributedReturns[resource] = formatAmount(units(ops.unattributedReturns[resource])-amount);
     ops.gapEventIds[resource] = id;
-    event = { type: 'resource_gap_reconciled', source: 'declared_snapshot_correction', previousGapEventId: body.lossEventId,
+    event = { type: 'resource_gap_reconciled', source: 'declared_snapshot_correction', previousGapEventId: body.lossEventId!,
       correctedAmount:amountText, amount: ops.unfunded[resource], evidenceLevel: 'operator_attested_aggregate_correction' };
   } else if (body.action === 'operating-cover-loss') {
     const loss = findEvent(body.lossEventId);

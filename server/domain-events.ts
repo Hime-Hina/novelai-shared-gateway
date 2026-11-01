@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { DomainPayloads } from './event-payloads.ts';
+export type { DomainPayloads, AcceptedJobFact } from './event-payloads.ts';
 
 export const DOMAIN_SCHEMA_VERSION = 1;
 export const DOMAIN_REDUCER_VERSION = 1;
@@ -10,16 +12,18 @@ export const domainEventTypes = [
   'ResourceGapObserved', 'ReturnClassified', 'OperatingLossCovered', 'PolicyChanged', 'CooldownChanged',
   'RequestAccepted', 'JobQueued', 'DispatchAuthorized', 'ArtifactPrepared', 'ArtifactPublished', 'JobCompleted', 'JobFailed',
   'WaitingJobsCancelled', 'LateResultRecovered', 'FreeImageSucceeded', 'ReviewOpened', 'ReviewClosed', 'AdmissionChanged',
-  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged', 'JobHistoryRetired'
+  'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged', 'JobHistoryRetired', 'ArtifactHistoryRetired'
 ] as const;
 export type DomainEventType = typeof domainEventTypes[number];
 export type DomainActorKind = 'system' | 'member' | 'admin';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
-export interface DomainEventInput {
-  eventType: DomainEventType; streamId: string; payload: Record<string, unknown>; eventId?: string;
+interface DomainEventEnvelope {
+  streamId: string; eventId?: string;
   occurredAt?: string | number; accountId?: string | null; memberId?: string | null; schemaVersion?: number;
   policyVersion?: string; pricingVersion?: string; amountVersion?: string;
 }
+export type DomainEventFact<K extends DomainEventType = DomainEventType> = { [Type in K]: { eventType: Type; payload: DomainPayloads[Type] } }[K];
+export type DomainEventInput = DomainEventEnvelope & DomainEventFact;
 export interface DomainCommandMetadata {
   commandId?: string; fingerprint?: string; recordedAt?: string; actorId?: string | null;
   actorKind?:DomainActorKind;
@@ -31,6 +35,7 @@ export interface DomainCommand {
   causationId: string | null; expectedVersions: Record<string, string>; receipt: Json; events: DomainEventInput[];
   diagnostics?:{diagnosticId:string;jobId:string;detail:string;detailSha256:string}[];
 }
+export type DomainReplayCommand = Omit<DomainCommand, 'events'> & { events: DomainEvent[] };
 export interface DomainEvent {
   eventId: string; commitSeq: string; eventIndex: number; commandId: string; transactionId:string;streamId: string; streamKind: string; streamVersion: string;
   eventType: DomainEventType; schemaVersion: number; occurredAt: string; recordedAt: string;
