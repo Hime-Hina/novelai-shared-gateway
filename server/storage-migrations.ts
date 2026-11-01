@@ -9,6 +9,7 @@ interface IndexRow { name: string; unique: number; origin: 'c' | 'u' | 'pk'; par
 interface IndexColumn { name: string | null; desc: number; coll: string | null; key: number }
 
 export const storageMigrationsDirectory = fileURLToPath(new URL('./migrations/', import.meta.url));
+export const SUPPORTED_EVENT_AUTHORITY_VERSION = 1;
 const migrationTable = '__drizzle_migrations';
 const legacyJobColumns = new Set(['cost', 'stats_excluded', 'error_loggable']);
 
@@ -26,6 +27,11 @@ export function migrateStorage(sqlite: Database.Database, migrationsFolder = sto
     }
   }
   migrate(drizzle(sqlite), { migrationsFolder });
+  const authority=sqlite.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get() as {value:string}|undefined;
+  if(authority){
+    const marker=JSON.parse(authority.value) as {version:number;minimumWriterVersion:number};
+    if(marker.version!==SUPPORTED_EVENT_AUTHORITY_VERSION||marker.minimumWriterVersion>SUPPORTED_EVENT_AUTHORITY_VERSION)throw new Error('Event authority requires a newer compatible writer.');
+  }
 }
 
 function adoptLegacySchema(sqlite: Database.Database, baseline: MigrationMeta) {

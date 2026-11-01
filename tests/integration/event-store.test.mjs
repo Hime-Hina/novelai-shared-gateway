@@ -108,13 +108,14 @@ test('JsonStore commits explicit events and restores its JavaScript state after 
   t.after(async () => { await store.close(); await rm(directory,{recursive:true,force:true}); });
   await store.init();
   await store.update(db => { db.settings.testFact='committed'; recordDomainEvent(db, { streamId:'request:r1',...accepted() }); });
-  assert.equal(readDomainCommits(store.sqlite).length,2);
+  const committedCount=readDomainCommits(store.sqlite).length;
+  assert.equal(readDomainCommits(store.sqlite).flatMap(commit=>commit.events).filter(event=>event.eventType==='RequestAccepted').length,1);
   await assert.rejects(store.update(db => {
     db.settings.testFact='must roll back';
     recordDomainEvent(db,{streamId:'request:missing',eventType:'JobCompleted',payload:{jobId:'missing',completedAt:at}});
   }),/Missing request opening/);
   assert.equal(store.db.settings.testFact,'committed');
-  assert.equal(readDomainCommits(store.sqlite).length,2);
+  assert.equal(readDomainCommits(store.sqlite).length,committedCount);
   const row = {member_id:'m1',operation:'generate',key_hash:'abc',fingerprint:'f',normalization_context:'{"prompt":"protected input"}',job_id:'j1',request_id:null,created_at:at};
   await store.update(() => true,{collections:[],generationIdempotency:row});
   assert.equal(store.sqlite.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(generationContextRef(row)).payload,row.normalization_context);

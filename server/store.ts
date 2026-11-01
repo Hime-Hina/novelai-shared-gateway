@@ -11,7 +11,7 @@ import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns 
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
 import { migrateStorage } from './storage-migrations.ts';
 import { beginDomainCommand, finishDomainCommand, canonicalJson, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
-import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, type StreamProjection, type ProjectionRow } from './event-store.ts';
+import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, eventAuthorityEnabled, EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
 import { normalizeOpeningQuota } from './fair-quota.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
@@ -166,6 +166,7 @@ const usageChartDays = 7;
 const beijingOffsetHours = 8;
 
 export class JsonStore {
+  eventOpeningReady = false;
   declare dataDir: string; declare dbPath: string; declare legacyDbPath: string; declare legacyBackupPath: string;
   declare queue: Promise<unknown>; declare events: EventEmitter;
   declare sqlite: Database.Database | null; declare statements: Statements | null; declare db: StoreDatabase | null;
@@ -1015,10 +1016,70 @@ export class JsonStore {
 
   async write(db: DatabaseInput) {
     await this.ensureLoaded();
+    if(eventAuthorityEnabled(this.sqlite!))throw new Error('A full legacy-state replacement cannot overwrite event authority.');
     this.flushPendingPersistSync();
     const safeDb = trimDb(normalizeDb(db));
     this.replaceAll(safeDb);
     this.db = safeDb;
+  }
+
+  async enableEventAuthority():Promise<{version:number;commitSeq:string}> {
+    this.queue=this.queue.catch(()=>{}).then(async()=>{
+      await this.ensureLoaded();this.flushPendingPersistSync();
+      const result=activateEventAuthority(this.sqlite!);this.eventOpeningReady=true;
+      this.db=this.loadFromSqlite();return result;
+    });
+    return this.queue as Promise<{version:number;commitSeq:string}>;
+  }
+
+  persistDomainFacts(scope:Scope,changes:Changes):ProjectionRow[] {
+    const authoritative=eventAuthorityEnabled(this.sqlite!);
+    let written:ProjectionRow[]=[];
+    const relatedStreams=(supplied:StreamProjection[]):StreamProjection[]=>{
+      const streams=new Map(supplied.map(stream=>[stream.streamId,stream]));
+      const include=(id:string)=>{if(!streams.has(id)){const stream=readStreamProjection(this.sqlite!,id);if(stream)streams.set(id,stream);else throw new Error(`Unrecorded domain mutation: ${id}`);}};
+      if(changes.settingsChanged)include('sharing:default');
+      for(const change of [...changes.upserts,...changes.deletes]){
+        if(change.collection==='jobs'){
+          const item=change.data?JSON.parse(change.data) as StoreItem:null;
+          if(!item){
+            const prior=this.rowState.jobs.get(change.id);
+            if(prior&&['queued','pending','running'].includes((JSON.parse(prior.data) as StoreItem).status!))throw new Error(`An active job cannot disappear without a lifecycle fact: ${change.id}`);
+            continue; // 已结清历史清理只影响可重建查询行。
+          }
+          include(`request:${item.requestId||`legacy-${item.id}`}`);
+        }else if(change.collection==='accounts')include(`account:${change.id}`);
+        else if(change.collection==='users'){
+          include('sharing:default');
+          const sharing=streams.get('sharing:default')!.projection;
+          if(!(sharing?.memberEligibility as Record<string,unknown>|undefined)?.[change.id])throw new Error(`Unrecorded member eligibility: ${change.id}`);
+        }
+      }
+      return [...streams.values()];
+    };
+    if(scope.domainBatch)appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
+      if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true});
+    }});
+    else if(authoritative){
+      const clock=this.sqlite!.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
+      const commit:DomainCommit={commitSeq:clock.value,commandId:'verify-compatible-write',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
+      written=applyEventProjection(this.sqlite!,commit,relatedStreams([]),{verify:true});
+    }
+    return written;
+  }
+
+  refreshDomainRows(written:ProjectionRow[]):void {
+    if(!written.length)return;
+    const settings=this.statements!.selectSettings.get()?.value;
+    if(settings){this.settingsState=settings;this.db!.settings=JSON.parse(settings) as Settings;}
+    for(const row of written){
+      const collection=row.collection,id=String(row.item.id),index=this.db![collection].findIndex(item=>item.id===id);
+      if(row.remove){if(index>=0)this.db![collection].splice(index,1);this.rowState[collection].delete(id);this.orderKeys[collection].delete(id);continue;}
+      const persisted=this.statements!.selectById[collection].get({id});if(!persisted)continue;
+      const item=JSON.parse(persisted.data) as StoreItem;
+      if(index>=0)this.db![collection][index]=item;else this.db![collection].unshift(item);
+      this.rowState[collection].set(id,{data:persisted.data,order:persisted.orderValue});this.orderKeys[collection].set(id,persisted.orderValue);
+    }
   }
 
   async update<T>(mutator: (db: StoreDatabase) => T | Promise<T>, options: PersistenceOptions<T> = {}): Promise<T> {
@@ -1027,10 +1088,11 @@ export class JsonStore {
       // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
       this.flushPendingPersistSync();
       try {
-        importOpeningFacts(this.sqlite!);
+        if(!this.eventOpeningReady){importOpeningFacts(this.sqlite!);this.eventOpeningReady=true;}
         beginDomainCommand(this.db!, options.domainCommand);
         const result = await mutator(this.db!);
         const persistOptions = resolvePersistenceOptions(options, result, this.db!);
+        if(eventAuthorityEnabled(this.sqlite!))persistOptions.immediate=true;
         const domainBatch = finishDomainCommand(this.db!);
         if (domainBatch?.events.length) persistOptions.domainBatch = domainBatch;
         const snapshot = cloneValue(result);
@@ -1426,6 +1488,7 @@ export class JsonStore {
   }
 
   replaceAll(db: DatabaseInput) {
+    if(eventAuthorityEnabled(this.sqlite!))throw new Error('A full legacy-state replacement cannot overwrite event authority.');
     const safeDb = trimDb(normalizeDb(db));
     const archive = fairQuotaArchive(safeDb.settings);
     safeDb.settings = archive.settings;
@@ -1517,6 +1580,7 @@ export class JsonStore {
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
+    let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1531,7 +1595,7 @@ export class JsonStore {
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      if (scope.domainBatch) appendDomainCommit(this.sqlite!, scope.domainBatch);
+      projectedRows = this.persistDomainFacts(scope, changes);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1548,6 +1612,7 @@ export class JsonStore {
       }).join(',');
       runtimeLog(`SQLite incremental persist slow: ${duration}ms scope=${scopeText || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
     }
+    this.refreshDomainRows(projectedRows);
     this.trimRuntimePartialCaches();
     this.notifyCommit(event);
   }
@@ -1622,6 +1687,7 @@ export class JsonStore {
     if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
 
     const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
+    let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
@@ -1636,7 +1702,7 @@ export class JsonStore {
       this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      if (scope.domainBatch) appendDomainCommit(this.sqlite!, scope.domainBatch);
+      projectedRows = this.persistDomainFacts(scope, changes);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1668,6 +1734,7 @@ export class JsonStore {
     if (duration >= sqliteSlowLogMs()) {
       runtimeLog(`SQLite dirty-row persist slow: ${duration}ms scope=${scope.collections.join(',') || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
     }
+    this.refreshDomainRows(projectedRows);
     this.trimRuntimePartialCaches();
     this.notifyCommit(event);
   }
@@ -1969,13 +2036,14 @@ const criticalJobFields = ['id','status','requestId','memberId','accountId','bat
   'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode'];
 const criticalAccountFields = ['id','enabled','quotaTier','subscriptionActive','subscriptionExpiresAt','v5UsagePercent','quotaFixed','quotaPurchased',
   'v5UsageIsNegative','quotaCheckedAt','v5UsageTimeUntilNextPercent','quotaError','upstreamStatus','cooldownUntil','upstreamRetryAfterUntil','quotaRetryAfterUntil'];
-const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion'];
+const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion','discord'];
 function domainRowValues(collection:ProjectionRow['collection'],item:Record<string,unknown>):Record<string,unknown> {
   const fields=collection==='jobs'?criticalJobFields:collection==='accounts'?criticalAccountFields:collection==='users'?criticalMemberFields:Object.keys(item);
   const result:Record<string,unknown>={};
   for(const key of fields){
     let value=item[key];
     if(value===undefined||value===null||value==='')continue;
+    if(collection==='users'&&key==='discord')value=Object.fromEntries(Object.entries(value as Record<string,unknown>).filter(([field])=>['id','guildId','checkedAt','member'].includes(field)));
     if(['queueExpiresAt','deadlineAt','lateResultAt','cancelledAt','cooldownUntil','quotaCheckedAt','subscriptionExpiresAt'].includes(key)){
       const timestamp=new Date(value as string|number).getTime();if(Number.isFinite(timestamp))value=timestamp;
     }
@@ -1995,10 +2063,41 @@ function projectionDifference(actual:unknown,expected:unknown,at:string):string|
   return at;
 }
 
-export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean}={}):ProjectionRow[] {
+export function activateEventAuthority(sqlite:Database.Database):{version:number;commitSeq:string} {
+  importOpeningFacts(sqlite);
+  return sqlite.transaction(()=>{
+    if(sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get())throw new Error('Recover running attempts before switching event authority.');
+    verifyEventProjections(sqlite);
+    const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
+    // 免费成功与告警的唯一写点改为共同领域事实 projector。
+    sqlite.exec('DROP TRIGGER IF EXISTS free_image_settled; DROP TRIGGER IF EXISTS free_image_recovered_insert; DROP TRIGGER IF EXISTS free_image_recovered_update; DROP TRIGGER IF EXISTS free_image_warning;');
+    sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('event_authority',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(JSON.stringify({version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION,commitSeq:clock.value}));
+    return {version:EVENT_AUTHORITY_VERSION,commitSeq:clock.value};
+  })();
+}
+
+export function verifyEventProjections(sqlite:Database.Database):void {
+  if(!sqlite.inTransaction)throw new Error('Shadow verification requires a consistent database transaction.');
+  const unmapped=sqlite.prepare(`SELECT j.id FROM jobs j LEFT JOIN event_streams s
+    ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`).get() as {id:string}|undefined;
+  if(unmapped)throw new Error(`Unrecorded domain job ${unmapped.id}`);
+  const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
+  const commit:DomainCommit={commitSeq:clock?.value||'0',commandId:'shadow-verification',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
+  let cursor='';
+  while(true){
+    const rows=sqlite.prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100').all(cursor) as {stream_id:string}[];
+    if(!rows.length)break;
+    const streams=rows.map(row=>readStreamProjection(sqlite,row.stream_id)!);
+    applyEventProjection(sqlite,commit,streams,{verify:true,checkOnly:true});
+    cursor=rows.at(-1)!.stream_id;
+  }
+}
+
+export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean;checkOnly?:boolean}={}):ProjectionRow[] {
   if(!sqlite.inTransaction)throw new Error('Critical projections require the domain write transaction.');
   const projection=coreProjectionRows(sqlite,commit,streams);
-  if(projection.fairQuota){
+  if(projection.fairQuota!==undefined){
     const row=sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as {value:string}|undefined;
     const settings=row?JSON.parse(row.value) as Settings:{...defaultSettings};
     if(options.verify){
@@ -2008,33 +2107,39 @@ export function applyEventProjection(sqlite:Database.Database,commit:DomainCommi
       if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
     }
     settings.fairQuota=projection.fairQuota;
-    sqlite.prepare("INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(settings));
+    if(!options.checkOnly)sqlite.prepare("INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(settings));
   }
   const written:ProjectionRow[]=[];
   for(const projected of projection.rows){
     const {collection}=projected;
     const prior=sqlite.prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`).get(projected.item.id) as {data:string;order_value:number}|undefined;
     const existing=prior?JSON.parse(prior.data) as Record<string,unknown>:{};
+    if(projected.remove){
+      if(options.verify&&prior)throw new Error(`Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`);
+      if(!options.checkOnly)sqlite.prepare('DELETE FROM users WHERE id=?').run(projected.item.id);written.push(projected);continue;
+    }
     const expected={...projected.item};
     if(expected.memberId){
       const member=sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as {data:string}|undefined;
       const memberData=member?JSON.parse(member.data) as Record<string,unknown>:null;
       if(memberData?.token){if(collection==='jobs')expected.userToken=existing.userToken||memberData.token;if(collection==='images')expected.token=existing.token||memberData.token;}
+      if(!existing.memberId&&collection==='jobs'&&existing.userToken&&existing.userToken===memberData?.token)existing.memberId=expected.memberId;
     }
     if(options.verify&&['jobs','accounts','users'].includes(collection)){
       const mismatch=projectionDifference(domainRowValues(collection,existing),domainRowValues(collection,expected),`${collection}.${expected.id}`);
       if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
     }
     const item={...existing,...expected};
+    if(collection==='users'&&expected.discord)item.discord={...(existing.discord as object||{}),...(expected.discord as object)};
     if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
     const order=projected.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
     const row=sqlRecord(collection,item as StoreItem,order,JSON.stringify(item));
     const keys=Object.keys(row);
-    sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})
+    if(!options.checkOnly)sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})
       ON CONFLICT(id) DO UPDATE SET ${keys.filter(key=>key!=='id').map(key=>`${key}=excluded.${key}`).join(',')}`).run(row);
     written.push({collection,item,order});
   }
-  if(projection.queueSequence){
+  if(projection.queueSequence&&!options.checkOnly){
     const prior=sqlite.prepare("SELECT value FROM app_meta WHERE key='queue_sequence'").get() as {value:string}|undefined;
     if(BigInt(projection.queueSequence)>BigInt(prior?.value||'0'))sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('queue_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(projection.queueSequence);
   }

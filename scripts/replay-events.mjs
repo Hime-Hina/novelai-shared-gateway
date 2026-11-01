@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import { migrateStorage } from '../server/storage-migrations.ts';
 import { copyProtectedFacts, replayDomainEvents } from '../server/event-store.ts';
 import { applyEventProjection } from '../server/store.ts';
+import { domainDigest } from '../server/domain-events.ts';
 
 const values=Object.fromEntries(process.argv.slice(2).map(value=>{const match=/^--([a-z-]+)=(.+)$/.exec(value);if(!match)throw new Error(`Expected --name=value, received ${value}`);return [match[1],match[2]];}));
 if(!values.source||!values.target)throw new Error('Usage: node scripts/replay-events.mjs --source=/backup/library.sqlite --target=/isolated/rebuilt.sqlite [--through=COMMIT] [--max-commits=N]');
@@ -24,10 +25,11 @@ try{
   if(!origin||JSON.parse(origin.value).status!=='complete')throw new Error('Source has no complete opening import.');
   const first=source.prepare('SELECT event_id FROM domain_events ORDER BY commit_seq,event_index LIMIT 1').get();
   if(!first)throw new Error('Source has no event facts.');
+  const historyId=JSON.parse(origin.value).historyId||domainDigest({opening:origin.value,first});
   const prior=target.prepare("SELECT value FROM app_meta WHERE key='event_replay_source'").get();
-  if(prior&&prior.value!==first.event_id)throw new Error('Target belongs to a different event history.');
+  if(prior&&prior.value!==historyId)throw new Error('Target belongs to a different event history.');
   if(!prior&&target.prepare('SELECT 1 FROM event_commits LIMIT 1').get())throw new Error('Target already contains an unrelated event history.');
-  target.prepare("INSERT OR IGNORE INTO app_meta(key,value) VALUES('event_replay_source',?)").run(first.event_id);
+  target.prepare("INSERT OR IGNORE INTO app_meta(key,value) VALUES('event_replay_source',?)").run(historyId);
   const result=source.transaction(()=>{
     copyProtectedFacts(source,target);
     return replayDomainEvents(source,target,{throughCommitSeq:values.through,maxCommits,project:applyEventProjection});
