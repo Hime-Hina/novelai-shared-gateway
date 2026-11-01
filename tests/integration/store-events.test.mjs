@@ -5,15 +5,16 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 function env(t, name, value) {
   const previous = process.env[name]; process.env[name] = value;
   t.after(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
 }
-async function open(t) {
-  const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-store-events-')));
+async function open(t, directory) {
+  const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-store-events-')));
   t.after(() => store.close()); await store.init();
-  await store.update(db => { db.users = ['a', 'b'].map(id => ({ id, token: `STA1N-secret-${id}`, enabled: true, balance: 1 })); }, { immediate: true });
+  if (!directory) await store.update(db => { db.users = ['a', 'b'].map(id => ({ id, token: `STA1N-secret-${id}`, enabled: true, balance: 1 })); }, { immediate: true });
   return store;
 }
 // 日期配对由 activity-storage 专项覆盖；本文件继续验证原业务失效范围。
@@ -72,10 +73,12 @@ test('新增父请求、冷任务和旧attempt稳定归属优先于已轮换Key�
 
 test('清日志覆盖未热载历史，每批提交后可读且空清理不通知', async t => {
   env(t, 'RUNTIME_JOBS_CACHE_LIMIT', '100');
-  const store = await open(t);
-  await store.update(db => {
+  const legacy = await open(t);
+  await legacy.update(db => {
     db.jobs = Array.from({ length: 230 }, (_, i) => job(`history-${i}`, { requestId: 'parent', userToken: 'retired-token' }));
   }, { collections: ['jobs'], generationRequest: parent('parent'), immediate: true });
+  const directory = await createLegacyDatabaseFixture(legacy.dataDir); await legacy.close();
+  const store = await open(t, directory);
   assert.equal(store.hasPartialCollection('jobs'), true);
   const events = observe(store), counts = [];
   store.events.on('commit', () => counts.push({ sql: store.countRecords('jobs'), cache: store.db.jobs.length }));

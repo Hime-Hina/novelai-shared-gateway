@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 function env(t, name, value) {
   const previous = process.env[name]; process.env[name] = value;
@@ -148,10 +149,12 @@ for (const dirty of [false, true]) test(`日期通知只看统计投影，变更
 
 test('清除冷历史与全量write删除保留日期归属', async t => {
   env(t, 'RUNTIME_JOBS_CACHE_LIMIT', '2');
-  const store = await open(t), events = [];
-  await store.update(db => {
+  const legacy = await open(t), events = [];
+  await legacy.update(db => {
     db.jobs = Array.from({ length: 210 }, (_, index) => job(`history-${index}`, { requestId: 'parent' }));
   }, { immediate: true, generationRequest: parent('parent') });
+  const directory = await createLegacyDatabaseFixture(legacy.dataDir); await legacy.close();
+  const store = await open(t, directory);
   store.events.on('commit', event => events.push(event));
   await store.clearRequestLogs();
   assert.ok(events.length >= 2);

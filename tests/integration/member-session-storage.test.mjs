@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.ts';
 import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 async function open(t, directory) {
   const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-member-session-')));
@@ -162,9 +163,11 @@ test('10000有效会话上限在同一事务内检查，过期可释放且并发
 });
 
 test('业务全量替换和日志清理不删除冷会话及owner配置', async t => {
-  const store = await open(t), member = record('member');
-  await insert(store, member); await coordinate(store, owner('a'));
-  await store.update(db => { db.jobs.push({ id: 'done', status: 'done', createdAt: new Date().toISOString() }); }, { immediate: true });
+  const legacy = await open(t), member = record('member');
+  await insert(legacy, member); await coordinate(legacy, owner('a'));
+  await legacy.update(db => { db.jobs.push({ id: 'done', status: 'done', createdAt: new Date().toISOString() }); }, { immediate: true });
+  const directory = await createLegacyDatabaseFixture(legacy.dataDir); await legacy.close();
+  const store = await open(t, directory);
   assert.equal((await store.clearRequestLogs()).removed, 1);
   await store.write(await store.read());
   assert.deepEqual(store.readMemberSession(member.token_hash), member);

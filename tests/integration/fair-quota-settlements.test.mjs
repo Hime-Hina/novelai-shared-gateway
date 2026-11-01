@@ -1,15 +1,14 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
-import { recordGenerationFailure } from '../../server/generation-execution.ts';
+import { recordGenerationFailure, refundGenerationJob } from '../../server/generation-execution.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const now = Date.now();
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };
@@ -85,14 +84,10 @@ test('冷终态优先于陈旧reserved副本，删除任务/重启后refundJob�
   await store.close();
   const reopened = await open(t, store.dataDir);
   const before = structuredClone(reopened.db.settings.fairQuota);
-  const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-  const start = source.indexOf('function refundJob('), end = source.indexOf('\n}', start) + 2;
-  const ctx = vm.createContext({ store: reopened, settleFairQuota, fairShareMode: true });
-  vm.runInContext(source.slice(start, end), ctx);
   await reopened.update(db => {
     stale.cost = 999;
-    assert.equal(ctx.refundJob(db, stale, '重复失败').status, 'settled');
-    assert.equal(ctx.refundJob(db, { id: 'unknown', userToken: 'a', cost: 999 }, '无凭据'), null);
+    assert.equal(refundGenerationJob(reopened, db, stale, '重复失败', { fairShareMode: true }).status, 'settled');
+    assert.equal(refundGenerationJob(reopened, db, { id: 'unknown', userToken: 'a', cost: 999 }, '无凭据', { fairShareMode: true }), null);
   }, { immediate: true, includeSettings: true, collections: ['users', 'ledger'] });
   assert.equal(reopened.db.users[0].balance, 100);
   assert.deepEqual(reopened.db.settings.fairQuota, before);
@@ -129,8 +124,8 @@ test('冷历史不热载，已删除job的终态保留，未知reserved原样留
   const old = process.env.RUNTIME_JOBS_CACHE_LIMIT;
   process.env.RUNTIME_JOBS_CACHE_LIMIT = '2';
   t.after(() => { if (old === undefined) delete process.env.RUNTIME_JOBS_CACHE_LIMIT; else process.env.RUNTIME_JOBS_CACHE_LIMIT = old; });
-  const store = await fixture(t);
-  await store.update(db => {
+  const legacy = await fixture(t);
+  await legacy.update(db => {
     for (let i = 0; i < 1100; i++) {
       db.settings.fairQuota.reservations[`history-${i}`] = { userId: 'a', resource: 'v5', amount: .05,
         status: i % 2 ? 'settled' : 'refunded', reservedAt: now - 10, settledAt: now - 1 };
@@ -138,6 +133,8 @@ test('冷历史不热载，已删除job的终态保留，未知reserved原样留
     }
     db.settings.fairQuota.reservations['missing-job-reserved'] = { userId: 'a', resource: 'v5', amount: .2, status: 'reserved' };
   }, { immediate: true });
+  const directory = await createLegacyDatabaseFixture(legacy.dataDir); await legacy.close();
+  const store = await open(t, directory);
   assert.equal(store.hasPartialCollection('jobs'), true);
   assert.equal(store.sqlite.prepare('SELECT COUNT(*) AS n FROM fair_quota_settlements').get().n, 1100);
   assert.deepEqual(Object.keys(store.db.settings.fairQuota.reservations).sort(), ['job', 'missing-job-reserved']);
@@ -152,7 +149,9 @@ test('冷历史不热载，已删除job的终态保留，未知reserved原样留
     assert.equal(settleFairQuota(db, job, false, now, {}, reopened.readFairQuotaSettlement(job.id)).status, 'refunded');
   }, { immediate: true, includeSettings: true, collections: [] });
   assert.deepEqual(reopened.db.settings.fairQuota, marker);
-  await reopened.clearRequestLogs();
+  const cleared = await reopened.clearRequestLogs();
+  assert.equal(cleared.removed, 1100);
+  assert.equal(cleared.remaining, 1);
   assert.ok(reopened.readFairQuotaSettlement('history-0'));
 });
 

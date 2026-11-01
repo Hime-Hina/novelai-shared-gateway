@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/store.ts';
 import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 function env(t, name, value) {
   const previous = process.env[name];
@@ -62,28 +63,33 @@ test('冷失败产物按ID游标遍历，未处理的前项不阻塞后页；查
   }, { immediate: true, dirtyRows: { jobs: ['pending-b'] } });
   assert.equal(store.sqlite.prepare("SELECT order_value FROM jobs WHERE id='pending-b'").get().order_value, before);
   assert.deepEqual(await store.readPendingResultJobIds(), ['pending-a', 'pending-c']);
-  const cleared = await store.clearRequestLogs();
+  const directory = await createLegacyDatabaseFixture(store.dataDir); await store.close();
+  const cleanup = await open(t, directory);
+  const cleared = await cleanup.clearRequestLogs();
   assert.equal(cleared.removed, 231);
   assert.equal(cleared.remaining, 2);
-  assert.deepEqual(await store.readPendingResultJobIds(), ['pending-a', 'pending-c']);
-  await store.close();
-  const reopened = await open(t, store.dataDir);
+  assert.deepEqual(await cleanup.readPendingResultJobIds(), ['pending-a', 'pending-c']);
+  await cleanup.close();
+  const reopened = await open(t, cleanup.dataDir);
   assert.deepEqual(await reopened.readPendingResultJobIds(), ['pending-a', 'pending-c']);
   assert.deepEqual(reopened.selectItemById('jobs', 'pending-a').resultPending, descriptor('pending-a'));
 });
 
 test('默认历史裁剪只移除普通旧终态，待恢复证据和活动任务保留', async t => {
   env(t, 'NO_AUTO_DELETE', 'false');
-  const store = await open(t), old = new Date(1).toISOString();
-  await store.update(db => {
-    db.jobs = [
-      { id: 'old-failed', status: 'failed', createdAt: old },
-      { id: 'old-done', status: 'done', createdAt: old },
-      { id: 'failed-result', status: 'failed', createdAt: old, resultPending: descriptor('failed-result') },
-      { id: 'done-result', status: 'done', createdAt: old, resultPending: descriptor('done-result') },
-      { id: 'active', status: 'running', createdAt: old }
-    ];
-  }, { immediate: true });
+  const legacy = await open(t), old = new Date(1).toISOString();
+  const jobs = [
+    { id: 'old-failed', status: 'failed', createdAt: old },
+    { id: 'old-done', status: 'done', createdAt: old },
+    { id: 'failed-result', status: 'failed', createdAt: old, resultPending: descriptor('failed-result') },
+    { id: 'done-result', status: 'done', createdAt: old, resultPending: descriptor('done-result') },
+    { id: 'active', status: 'running', createdAt: old }
+  ];
+  const insert = legacy.sqlite.prepare('INSERT INTO jobs(id,order_value,data,status,created_at) VALUES(?,?,?,?,?)');
+  legacy.sqlite.transaction(() => jobs.forEach((job, index) => insert.run(job.id, jobs.length - index, JSON.stringify(job), job.status, job.createdAt)))();
+  const directory = await createLegacyDatabaseFixture(legacy.dataDir); await legacy.close();
+  const store = await open(t, directory);
+  await store.update(() => {}, { immediate: true, collections: ['jobs'] });
   assert.deepEqual(store.db.jobs.map(job => job.id), ['failed-result', 'done-result', 'active']);
   assert.deepEqual(await store.readPendingResultJobIds(), ['done-result', 'failed-result']);
   assert.equal((await store.clearRequestLogs()).removed, 0);
