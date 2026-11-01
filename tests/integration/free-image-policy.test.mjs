@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
+import Database from 'better-sqlite3';
+import { JsonStore, hashObject } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, quoteFairRequest } from '../../server/fair-quota.ts';
 import { recordRecoveredGeneration } from '../../server/generation-accounting.ts';
 import { assertFreeImageAdmission, configureFreeImages, freeImagePolicy } from '../../server/free-image-policy.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
+import { recordGenerationFailure, recordFreeImageSuccess } from '../../server/generation-execution.ts';
+import { webJobRequestSummary } from '../../server/generation-request.ts';
 
 const now = Date.now(), day = 86400000;
 const free = { model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23 };
@@ -24,19 +28,32 @@ async function fixture(t, policy = { enabled: true, warningThreshold: 1, hardLim
   return store;
 }
 function reserve(store, id, at = now, request = free) {
+  const requestId = `request-${id}`, createdAt = new Date(at).toISOString(), payload = JSON.stringify(request);
   return store.update(db => {
     Object.assign(db.accounts[0], { quotaCheckedAt: at }); syncFairQuota(db, at);
     if (quoteFairRequest(request).resource === 'free') assertFreeImageAdmission(store.readFreeImageUsage(db, 'a', at));
-    const job = { id, userToken: 'a', status: 'running', request, createdAt: new Date(at).toISOString() };
+    const job = { id, requestId, memberId: 'a', userToken: 'a', status: 'queued', request, createdAt };
+    recordDomainEvent(db, { eventType: 'RequestAccepted', streamId: `request:${requestId}`, occurredAt: at,
+      payload: { requestId, memberId: 'a', source: 'synthetic-free-policy', operation: 'generate', createdAt,
+        inputRef: requestId, inputSha256: hashObject(request), payloadBytes: Buffer.byteLength(payload),
+        jobs: [{ id, index: 0, status: 'queued', summary: webJobRequestSummary(request) }] } });
     reserveFairQuota(db, db.users[0], job, db.accounts[0], at);
+    job.status = 'running';
     db.jobs.push(job); return job;
-  }, write);
+  }, { ...write, generationRequest: { id: requestId, member_id: 'a', source: 'synthetic-free-policy', operation: 'generate',
+    created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload } });
 }
 function settle(store, id, success, at = now) {
   return store.update(db => {
     const job = db.jobs.find(j => j.id === id);
     settleFairQuota(db, job, success, at, {}, store.readFairQuotaSettlement(id));
     job.status = success ? 'done' : 'failed';
+    job.completedAt = job.updatedAt = new Date(at).toISOString();
+    if (success) {
+      recordDomainEvent(db, { eventType: 'JobCompleted', streamId: `request:${job.requestId}`, occurredAt: at,
+        payload: { jobId: id, completedAt: job.completedAt, artifactId: null, charge: job.fairCharge } });
+      recordFreeImageSuccess(db, job, at, store.readFreeImageUsage(db, 'a', at));
+    } else recordGenerationFailure(db, job);
   }, write);
 }
 const usage = (store, at = now) => store.readFreeImageUsage(store.db, 'a', at);
@@ -64,6 +81,7 @@ test('重启和清理日志不清零，已退款的迟到完整图片计一次�
   await store.update(db => {
     const job = db.jobs.find(j => j.id === 'late');
     assert.equal(recordRecoveredGeneration(db, job, 'image', now + 1), true);
+    recordFreeImageSuccess(db, job, now + 1, store.readFreeImageUsage(db, 'a', now + 1));
     assert.equal(recordRecoveredGeneration(db, job, 'image', now + 2), false);
     db.jobs.push({ id: 'cache', status: 'done', imageId: 'image' }, { id: 'preview', status: 'running', generationProgress: { percent: 95 } });
   }, write);
@@ -108,11 +126,29 @@ test('升级回填旧成功与迟到任务，重启保留在途名额且退款�
   let store = await fixture(t, { enabled: false, warningThreshold: null, hardLimit: null });
   await reserve(store, 'old-success'); await settle(store, 'old-success', true, now + 1);
   await reserve(store, 'old-late', now + 2); await settle(store, 'old-late', false, now + 3);
-  await store.update(db => recordRecoveredGeneration(db, db.jobs.find(j => j.id === 'old-late'), 'image', now + 4), write);
+  await store.update(db => {
+    const job = db.jobs.find(j => j.id === 'old-late');
+    recordRecoveredGeneration(db, job, 'image', now + 4);
+    recordFreeImageSuccess(db, job, now + 4, store.readFreeImageUsage(db, 'a', now + 4));
+  }, write);
   await reserve(store, 'in-flight', now + 5);
-  store.sqlite.exec(`DROP TRIGGER free_image_settled; DROP TRIGGER free_image_recovered_insert; DROP TRIGGER free_image_recovered_update;
-    DROP TABLE free_image_usage; DELETE FROM __drizzle_migrations WHERE created_at = (SELECT MAX(created_at) FROM __drizzle_migrations);`);
-  const directory = store.dataDir; await store.close();
+  const seed = await store.read(), directory = await mkdtemp(path.join(tmpdir(), 'nai-free-images-legacy-'));
+  for (const job of seed.jobs) {
+    delete job.requestId;
+    const charge = store.readFairQuotaSettlement(job.id);
+    if (charge) seed.settings.fairQuota.reservations[job.id] = charge;
+  }
+  await store.close();
+  const legacy = new Database(path.join(directory, 'library.sqlite'));
+  try {
+    legacy.exec(await readFile(new URL('../fixtures/sqlite-before-drizzle.sql', import.meta.url), 'utf8'));
+    legacy.prepare("INSERT INTO app_settings(key,value) VALUES('settings',?)").run(JSON.stringify(seed.settings));
+    for (const collection of ['users', 'accounts', 'jobs', 'ledger']) {
+      const insert = legacy.prepare(`INSERT INTO ${collection}(id,order_value,data,status,source,user_token,account_id,at) VALUES(?,?,?,?,?,?,?,?)`);
+      seed[collection].forEach((item, index) => insert.run(item.id, seed[collection].length - index, JSON.stringify(item),
+        item.status || null, item.source || null, item.userToken || null, item.accountId || null, item.at || null));
+    }
+  } finally { legacy.close(); }
   store = new JsonStore(directory); await store.init(); t.after(() => store.close());
   assert.equal(usage(store, now + 6).successful, 2);
   assert.equal(usage(store, now + 6).reserved, 1);

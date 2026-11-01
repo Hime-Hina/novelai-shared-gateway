@@ -16,6 +16,8 @@ import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, r
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.ts';
 import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
+import { completeSharedAccount, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess, recordGenerationFailure, publishGenerationArtifact } from '../../server/generation-execution.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -39,15 +41,21 @@ function fixture(now = Date.now(), { refund = true, fallback = false, id = 'revi
   return db;
 }
 const eventCount = (db, type) => db.ledger.filter(event => event.type === type).length;
-async function open(t, seed) {
+async function open(t, seed, requestId) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-generation-review-'));
   const store = new JsonStore(dataDir); await store.init();
   t.after(() => store.close());
-  await store.update(db => Object.assign(db, seed), { immediate: true });
+  if (requestId) {
+    const payload = JSON.stringify(seed.jobs[0].request);
+    store.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
+      .run(requestId, 'a', 'novelai-native', 'generate', seed.jobs[0].createdAt, Buffer.byteLength(payload), payload);
+  }
+  await store.write(seed);
   return store;
 }
 function loadFunctions(context, names) {
-  const ctx = vm.createContext(context);
+  const ctx = vm.createContext({ completeSharedAccount, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess,
+    recordGenerationFailure, publishGenerationArtifact, publicGenerationRequest, readOwnedGenerationRequest, ...context });
   for (const name of names) {
     const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
@@ -256,13 +264,13 @@ test('启动核验缺失文件的待恢复冷任务不重新热载历史或丢�
 });
 
 test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领取失败任务的迟到图片且不补扣', { timeout: 20000 }, async t => {
-  const seed = fixture(Date.now() - 400000), store = await open(t, seed), { ctx } = await completionContext(store);
+  const seed = fixture(Date.now() - 400000), offline = fixture(Date.now() - 400000, { id: 'offline-due' });
+  seed.jobs.push(offline.jobs[0]); seed.ledger.unshift(...offline.ledger);
+  seed.settings.fairQuota.reservations['offline-due'] = offline.settings.fairQuota.reservations['offline-due'];
+  const store = await open(t, seed), { ctx } = await completionContext(store);
   const r = reservation(store.db), before = structuredClone(store.db.settings.fairQuota.balances);
   await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
   await store.update(db => {
-    const offline = fixture(Date.now() - 400000, { id: 'offline-due' });
-    db.jobs.push(offline.jobs[0]); db.ledger.unshift(...offline.ledger);
-    db.settings.fairQuota.reservations['offline-due'] = offline.settings.fairQuota.reservations['offline-due'];
     db.accounts[0].enabled = false; db.accounts[0].inFlight = 0;
   }, { immediate: true });
   await store.close();
@@ -297,15 +305,10 @@ test('离线停用账户启动后自动关闭到期核对，真实 HTTP 可领�
 
 test('已退款的批次首图迟到找回只保存结果，不激活或复活剩余图片', async t => {
   const seed = fixture();
-  const store = await open(t, seed);
-  const payload = JSON.stringify(seed.jobs[0].request);
-  await store.update(db => {
-    db.jobs[0].requestId = 'late-parent';
-    db.jobs.push({ id: 'cancelled-child', requestId: 'late-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'failed',
-      error: 'remaining batch cancelled', createdAt: new Date().toISOString() });
-  }, { immediate: true, generationRequest: { id: 'late-parent', member_id: 'a', source: 'novelai-native', operation: 'generate',
-    created_at: new Date().toISOString(), payload_bytes: Buffer.byteLength(payload), payload },
-    dirtyRows: { jobs: ['review', 'cancelled-child'] } });
+  seed.jobs[0].requestId = 'late-parent';
+  seed.jobs.push({ id: 'cancelled-child', requestId: 'late-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'failed',
+    error: 'remaining batch cancelled', createdAt: new Date().toISOString() });
+  const store = await open(t, seed, 'late-parent');
   const { ctx } = await completionContext(store);
   const r = reservation(store.db);
   await ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
@@ -319,17 +322,14 @@ test('已退款的批次首图迟到找回只保存结果，不激活或复活�
 test('父取消与实际完成/激活并发时，成功产物照常结算，剩余 child 无论顺序都取消', async t => {
   for (const cancelFirst of [true, false]) {
     const seed = fixture(Date.now(), { refund: false });
-    const store = await open(t, seed), payload = JSON.stringify(seed.jobs[0].request);
-    await store.update(db => {
-      db.jobs[0].requestId = 'cancel-parent';
-      db.jobs.push({ id: 'next-child', requestId: 'cancel-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'pending',
-        request: seed.jobs[0].request, createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() });
-    }, { immediate: true, generationRequest: { id: 'cancel-parent', member_id: 'a', source: 'novelai-native', operation: 'generate',
-      created_at: new Date().toISOString(), payload_bytes: Buffer.byteLength(payload), payload }, dirtyRows: { jobs: ['review', 'next-child'] } });
+    seed.jobs[0].requestId = 'cancel-parent';
+    seed.jobs.push({ id: 'next-child', requestId: 'cancel-parent', sampleIndex: 1, userToken: 'STA1N-a', status: 'pending',
+      request: seed.jobs[0].request, createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() });
+    const store = await open(t, seed, 'cancel-parent');
     const { ctx } = await completionContext(store);
     ctx.publicErrorMessage = value => value;
     ctx.publicImageUrl = id => `/signed/${id}`;
-    for (const name of ['publicGenerationRequest', 'getGenerationRequest', 'cancelGenerationRequest', 'refundJob']) {
+    for (const name of ['getGenerationRequest', 'cancelGenerationRequest', 'refundJob']) {
       const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
       vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
     }

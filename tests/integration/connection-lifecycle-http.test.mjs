@@ -12,6 +12,8 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
+import { webJobRequestSummary } from '../../server/generation-request.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -166,15 +168,24 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
   await stop('SIGKILL');
   const legacy = new JsonStore(dataDir);
   await legacy.init();
-  await legacy.update(db => {
-    db.accounts[0].cooldownUntil = '';
-    for (const [index, source] of ['direct', 'openai'].entries()) {
-      const request = { model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23, seed: 801 + index,
-        prompt: `legacy ${source}`, tag: `legacy ${source}`, sampler: 'k_euler_ancestral' };
-      db.jobs.push({ id: `legacy-${source}`, source, userToken: credentials[3].api_key, status: 'queued', request,
-        queueSeq: legacy.nextQueueSequence(), queueExpiresAt: new Date(Date.now() + 600000).toISOString(), createdAt: new Date().toISOString() });
-    }
-  }, { immediate: true, dirtyRows: { jobs: ['legacy-direct', 'legacy-openai'], accounts: [legacy.db.accounts[0].id] } });
+  for (const [index, source] of ['direct', 'openai'].entries()) {
+    const request = { model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23, seed: 801 + index,
+      prompt: `legacy ${source}`, tag: `legacy ${source}`, sampler: 'k_euler_ancestral' };
+    const id = `legacy-${source}`, inputRef = `legacy-input:${id}`, createdAt = new Date().toISOString();
+    const payload = JSON.stringify({ legacyInline: true, request });
+    await legacy.update(db => {
+      db.accounts[0].cooldownUntil = '';
+      const job = { id, source, userToken: credentials[3].api_key, status: 'queued', request,
+        queueSeq: legacy.nextQueueSequence(), queueExpiresAt: new Date(Date.now() + 600000).toISOString(), createdAt };
+      db.jobs.push(job);
+      const { userToken, ...facts } = job;
+      recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${id}`, payload: { state: {
+        request: { requestId: null, memberId: credentials[3].user_id, source, inputRef, legacy: true },
+        jobs: { [id]: { ...facts, memberId: credentials[3].user_id, request: webJobRequestSummary(request), legacyInputRef: inputRef, legacyInlineInput: true } },
+        artifacts: {}, aliases: [], freeUsage: {} } } });
+    }, { immediate: true, generationRequest: { id: inputRef, member_id: credentials[3].user_id, source, operation: 'generate',
+      created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload }, dirtyRows: { jobs: [id], accounts: [legacy.db.accounts[0].id] } });
+  }
   await legacy.close();
   await start();
   await until(() => {

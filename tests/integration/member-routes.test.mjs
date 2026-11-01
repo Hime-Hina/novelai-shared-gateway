@@ -77,7 +77,7 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  db.settings.fairQuota.reservations.testHeld={userId:'a',status:'reserved',resource:'free',amount:0};beforeCreate=structuredClone(db);
  r=await manage({action:'credentials',username:'new-member',password:'synthetic-Valid-password-new-member',groupId:proposed[0].id});assert.equal(r.status,409);assert.deepEqual(db,beforeCreate);
  db.settings.fairQuota.reservations.testHeld.status='refunded';
- r=await manage({action:'credentials',username:'new-member',password:'synthetic-Valid-password-new-member',groupId:proposed[0].id});assert.equal(r.status,200);const created=await r.json();assert.equal(created.id,'new-user');assert.equal(created.groupId,proposed[0].id);assert.ok(db.settings.fairQuota.groups[0].members.includes(created.id));assert.equal(db.settings.fairQuota.balances[created.id].v5Available,0);
+ r=await manage({action:'credentials',username:'new-member',password:'synthetic-Valid-password-new-member',groupId:proposed[0].id});assert.equal(r.status,200);const created=await r.json();assert.equal(created.id,'new-user');assert.equal(created.groupId,proposed[0].id);assert.ok(db.settings.fairQuota.groups[0].members.includes(created.id));assert.equal(db.settings.fairQuota.balances[created.id].v5Available,'0');
  r=await manage({action:'credentials',userId:'a',username:'test-member-a',password:'synthetic-Another-password-member-a',groupId:proposed[0].id});assert.equal(r.status,400);
 
  // 停用保留额度与份额，立即拒绝登录；重新启用不会复活停用前的会话。
@@ -95,7 +95,7 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
  let deletion={action:'preview-delete-member',userId:'a',transferToUserId:'b',expectedConfigVersion:db.settings.fairQuota.configVersion};
  let beforeDelete=structuredClone(db);r=await manage(deletion);assert.equal(r.status,200);const deletePreview=await r.json();assert.equal(deletePreview.deletedUserId,'a');assert.equal(deletePreview.configVersion,deletion.expectedConfigVersion);assert.deepEqual(db,beforeDelete);assert.ok(!JSON.stringify(deletePreview).includes('STA1N-'));
  r=await manage({...deletion,action:'delete-member',expectedConfigVersion:0});assert.equal(r.status,409);assert.deepEqual(db,beforeDelete);
- r=await manage({action:'transfer-quota',fromUserId:'a',toUserId:'b',resource:'anlasFixed',amount:10,expectedConfigVersion:deletion.expectedConfigVersion});assert.equal(r.status,200);assert.equal(db.settings.fairQuota.balances.b.anlasFixedAvailable,beforeDelete.settings.fairQuota.balances.b.anlasFixedAvailable+10);
+ r=await manage({action:'transfer-quota',fromUserId:'a',toUserId:'b',resource:'anlasFixed',amount:10,expectedConfigVersion:deletion.expectedConfigVersion});assert.equal(r.status,200);assert.equal(db.settings.fairQuota.balances.b.anlasFixedAvailable,String(Number(beforeDelete.settings.fairQuota.balances.b.anlasFixedAvailable)+10));
  r=await call('/api/member/login',{body:{username:'test-member-a',password:'Reset-password-member-a'}});assert.equal(r.status,200);const deletedCookie=r.headers.get('set-cookie').split(';')[0];
  deletion.expectedConfigVersion=db.settings.fairQuota.configVersion;const historicalJobs=structuredClone(db.jobs),historicalReservations=structuredClone(db.settings.fairQuota.reservations);
  r=await manage({...deletion,action:'delete-member'});assert.equal(r.status,200);assert.ok(!db.users.some(u=>u.id==='a'));assert.equal(db.settings.fairQuota.balances.a,undefined);assert.deepEqual(db.jobs,historicalJobs);assert.deepEqual(db.settings.fairQuota.reservations,historicalReservations);
