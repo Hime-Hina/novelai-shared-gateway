@@ -97,11 +97,13 @@ function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
   s.version=2;s.configVersion ||= 1;s.configurationHistory ||= [];
   s.unallocatedV5=normalized(s.unallocatedV5);s.creditedV5=normalized(s.creditedV5);s.sharedV5Debt=normalized(s.sharedV5Debt);
   for(const field of ['v5','anlas','anlasFixed','anlasPurchased','fallbackFixed','fallbackPurchased','fallbackV5'] as const)s.spent[field]=normalized(s.spent[field]);
+  s.spent.anlas=formatAmount(units(s.spent.anlasFixed)+units(s.spent.anlasPurchased));
   s.fallbackBuffer ||= {fixed:'0',purchased:'0'};s.fallbackBuffer.fixed=normalized(s.fallbackBuffer.fixed);s.fallbackBuffer.purchased=normalized(s.fallbackBuffer.purchased);s.fallbackTotalsByUser ||= {};
   for(const total of Object.values(s.fallbackTotalsByUser))for(const field of ['fixed','purchased','v5Equivalent'] as const)total[field]=normalized(total[field]);
   for(const balance of Object.values(s.balances))for(const field of ['v5Available','anlasFixedAvailable','anlasPurchasedAvailable','anlasAvailable'] as const)balance[field]=normalized(balance[field]);
   for(const charge of Object.values(s.reservations))normalizeCharge(charge);
   if(s.snapshot)for(const resource of ['v5','anlasFixed','anlasPurchased','anlas'] as const)if(s.snapshot[resource]!==null)s.snapshot[resource]=normalized(s.snapshot[resource]);
+  if(s.snapshot&&s.snapshot.anlasFixed!==null&&s.snapshot.anlasPurchased!==null)s.snapshot.anlas=formatAmount(units(s.snapshot.anlasFixed)+units(s.snapshot.anlasPurchased));
   totals(s as FairQuotaState);
   // 上面的原位升级补齐旧四人账本字段，不重建已有钱包或预留。
   return s as FairQuotaState;
@@ -299,7 +301,8 @@ export function manageFairMember(db: FairQuotaDatabase & { users: FairUser[] }, 
     if(!Object.hasOwn(transferred,body.resource as string)||typeof body.amount!=='number'||!Number.isFinite(body.amount)||body.amount<=0)fail('转账资源或数量无效',400);
     if(body.resource!=='v5'&&!Number.isInteger(body.amount))fail('Anlas 转账数量必须为整数',400);
     const field=(body.resource+'Available') as BalanceField;
-    const amount=units(body.amount);
+    let amount:bigint;
+    try{amount=parseAmount(body.amount);}catch{fail('转账数量最多支持 12 位小数',400);}
     if(units(s.balances[source.id][field])<amount)fail('转出成员余额不足',409);
     if(body.resource==='v5'&&units(s.balances[target.id][field])+amount>capacities(s)[target.id])fail('接收成员 V5 超出容量，请先增加其份额或减少转账量',409);
     s.balances[source.id][field]=formatAmount(units(s.balances[source.id][field])-amount);s.balances[target.id][field]=formatAmount(units(s.balances[target.id][field])+amount);transferred[body.resource as Resource]=formatAmount(amount);

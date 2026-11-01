@@ -127,7 +127,9 @@ export function applyOperatingFunding(db: FairQuotaDatabase, body: OperatingFund
   if (!s?.enabled || !s.snapshot || !actorId || !s.balances[actorId]) error('需要已分组的运营者和已初始化账本');
   const resource = body.resource as Resource, inputAmount = body.amount, receipt = body.receipt;
   if (!['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) || typeof inputAmount !== 'number' || !Number.isFinite(inputAmount) || inputAmount <= 0 || (resource !== 'v5' && !Number.isSafeInteger(inputAmount))) error('运营资源或数量无效');
-  const amount=units(inputAmount),amountText=formatAmount(amount);
+  let amount:bigint;
+  try{amount=parseAmount(inputAmount);}catch{error('运营数量最多支持 12 位小数');}
+  const amountText=formatAmount(amount);
   if (typeof receipt !== 'string' || !/^[A-Za-z0-9_-]{8,100}$/.test(receipt)) error('请提供 8–100 位唯一收据标识，只含字母、数字、下划线或连字符');
   const id = `operating-receipt:${receipt}`;
   const destination = body.destination || 'operating', fromUnattributed = body.fromUnattributed === true;

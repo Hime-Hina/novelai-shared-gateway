@@ -143,3 +143,10 @@ test('重放拒绝重复恢复和无预留终态，未知事件不能跳过',()=
  assert.throws(()=>reduceAccountQuotaEvent(structuredClone(base),{eventType:'GenerationRefunded',payload:{jobId:'missing',charge:{},at:now}}),/reservation/);
  assert.throws(()=>reduceAccountQuotaEvent(structuredClone(base),{eventType:'FutureUnknown',payload:{}}),/support/);
 });
+
+test('管理金额超过12位精度明确拒绝，不静默接受零金额业务操作',()=>{
+ const db=fixture(),before=structuredClone(db);
+ assert.throws(()=>manageFairMember(db,{action:'transfer-quota',fromUserId:'a',toUserId:'b',resource:'v5',amount:1e-13,expectedConfigVersion:1},now),/12 位/);
+ assert.throws(()=>manageOperatingFunding(db,{action:'operating-contribute',resource:'v5',amount:1e-13,receipt:'precision_input'},fundingContext(db),now),/12 位/);
+ assert.deepEqual(db,before);
+});
