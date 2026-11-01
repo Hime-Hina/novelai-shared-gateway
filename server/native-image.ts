@@ -51,6 +51,8 @@ export const NATIVE_SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2m', 'k
 export const NATIVE_NOISE_SCHEDULES = ['native', 'karras', 'exponential', 'polyexponential'];
 export const NATIVE_VIBE_MODELS = [...BASE_MODELS].filter(model => /^nai-diffusion-4(?:-5)?-/.test(model));
 export const NATIVE_BLUR_VALUES = [0, 0.3, 0.35, 0.4, 0.45, 0.5];
+export const NATIVE_VIBE_FIELDS = ['reference_image', 'reference_image_multiple', 'reference_image_multiple_cached'] as const;
+export const NATIVE_PRECISE_FIELDS = ['director_reference_images', 'director_reference_images_cached'] as const;
 export const NATIVE_DEFAULTS = { sampleCount: 1, scale: 5, cfgRescale: 0, sampler: 'k_dpmpp_2m_sde', noiseSchedule: 'karras', img2imgStrength: 0.7, infillStrength: 1, noise: 0, informationExtracted: 1, blurSigma: 0 };
 export const NATIVE_LIMITS = { dimensionMin: 128, dimensionMax: 2048, generationPixels: 3145728, stepsMin: 1, stepsMax: 50, samplesMax: 4,
   imageDimension: 8192, imageBytes: MAX_IMAGE_BYTES, imagePixels: MAX_IMAGE_PIXELS, vibeEncodingBytes: 2 * 1024 * 1024,
@@ -380,14 +382,14 @@ export function parseNativeImageRequest(body: unknown, context?: NativeNormaliza
   delete parameters.inpaintImg2ImgStrength;
   for (const field of ['image_cache_secret_key', 'mask_cache_secret_key', 'reference_image_cache_secret_key']) delete parameters[field];
   if (active(parameters.reference_image)) {
-    if (active(parameters.reference_image_multiple) || active(parameters.reference_image_multiple_cached)) fail(422, '不能同时使用单张和多张 Vibe 字段。');
+    if (NATIVE_VIBE_FIELDS.some(field => field !== 'reference_image' && active(parameters[field]))) fail(422, '不能同时使用单张和多张 Vibe 字段。');
     parameters.reference_image_multiple = [parameters.reference_image];
     parameters.reference_strength_multiple = [parameters.reference_strength ?? 0.6];
     parameters.reference_information_extracted_multiple = [parameters.reference_information_extracted ?? 1];
   }
   delete parameters.reference_image; delete parameters.reference_strength; delete parameters.reference_information_extracted;
-  const hasVibes = active(parameters.reference_image_multiple) || active(parameters.reference_image_multiple_cached);
-  const hasPrecise = active(parameters.director_reference_images) || active(parameters.director_reference_images_cached);
+  const hasVibes = NATIVE_VIBE_FIELDS.some(field => active(parameters[field]));
+  const hasPrecise = NATIVE_PRECISE_FIELDS.some(field => active(parameters[field]));
   if (hasVibes && v5) fail(422, 'V5 官方尚不支持 Vibe Transfer；请改用 V3、V4 或 V4.5。');
   if (hasVibes && action === 'infill') fail(422, '官方局部重绘暂不支持 Vibe Transfer；请关闭 Vibe 或改用 V4.5 Precise Reference。');
   if (hasPrecise && !baseModel.startsWith('nai-diffusion-4-5-')) fail(422, 'Precise Reference 仅支持 V4.5。');

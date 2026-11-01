@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BASE_MODELS, INPAINT_MODELS, BOOLEAN_PARAMETERS, NATIVE_SAMPLERS, NATIVE_NOISE_SCHEDULES,
-  NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES, NATIVE_DEFAULTS, NATIVE_LIMITS,
+  NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES, NATIVE_VIBE_FIELDS, NATIVE_PRECISE_FIELDS, NATIVE_DEFAULTS, NATIVE_LIMITS,
   NATIVE_MAX_BODY_BYTES, MAX_IMAGE_BYTES } from './native-image.ts';
 import { NATIVE_PRICING_VERSION } from './native-pricing.ts';
 import { NATIVE_MULTIPART_MAX_PARTS } from './native-body.ts';
@@ -91,13 +91,12 @@ function generationModel(id: string): ModelCapability {
   ];
   if (!inpaint && actions.includes('infill')) transforms.push({ code: 'infill_model', fields: ['model'], description: '局部重绘使用此基础模型对应的已验证重绘模型。' });
   if (medium) transforms.push({ code: 'medium_fixed_parameters', fields: ['parameters.steps', 'parameters.sampler', 'parameters.cfg_rescale', 'parameters.negative_prompt', 'parameters.v4_negative_prompt'], description: 'Medium 固定 14 步、Euler Ancestral、CFG rescale 0，并按官方 heavy 规则生成负面词。' });
+  const vibes = NATIVE_VIBE_FIELDS.map(field => `parameters.${field}`), precise = NATIVE_PRECISE_FIELDS.map(field => `parameters.${field}`);
   const requirements: ModelCapability['requirements'] = [
     { action: 'generate', requires: [], excludes: ['parameters.image', 'parameters.mask', 'parameters.img2img'] },
     { action: 'img2img', requires: ['parameters.image'], excludes: ['parameters.mask', 'parameters.img2img', 'parameters.sm', 'parameters.sm_dyn'] },
-    { action: 'infill', requires: ['parameters.image', 'parameters.mask'], excludes: ['parameters.reference_image_multiple', 'parameters.reference_image_multiple_cached', 'parameters.sm', 'parameters.sm_dyn'] },
+    { action: 'infill', requires: ['parameters.image', 'parameters.mask'], excludes: [...vibes, 'parameters.sm', 'parameters.sm_dyn'] },
   ].filter(item => actions.includes(item.action as 'generate')) as ModelCapability['requirements'];
-  const vibes = ['parameters.reference_image', 'parameters.reference_image_multiple', 'parameters.reference_image_multiple_cached'];
-  const precise = ['parameters.director_reference_images', 'parameters.director_reference_images_cached'];
   if (!v5 && !inpaint) for (const when of vibes) requirements.push({ when, requires: [],
     excludes: [...vibes.filter(path => path !== when), ...(base.startsWith('nai-diffusion-4-5-') ? precise : [])] });
   if (base.startsWith('nai-diffusion-4-5-')) for (const when of precise) requirements.push({ when, requires: [], excludes: [...precise.filter(path => path !== when), ...vibes] });

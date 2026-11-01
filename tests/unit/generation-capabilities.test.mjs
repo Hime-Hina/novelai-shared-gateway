@@ -60,3 +60,18 @@ test('conditional capability requirements agree with Native validation for absen
     else assert.throws(() => normalizeMemberGeneration(body), error => error.statusCode === 422);
   }
 });
+
+test('infill excludes every Native Vibe alias for both base and explicit inpainting model names', () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAVklEQVR4nO3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOBvAI8AAT4ZY7sAAAAASUVORK5CYII=';
+  const encoded = Buffer.alloc(256, 42).toString('base64'), caps = memberGenerationCapabilities({});
+  const aliases = { reference_image: encoded, reference_image_multiple: [encoded], reference_image_multiple_cached: [{ data: encoded }] };
+  for (const model of ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-full-inpainting']) {
+    const rule = caps.models.find(entry => entry.operation === 'generate' && entry.id === model).requirements.find(rule => rule.action === 'infill');
+    const input = { operation: 'generate', input: 'synthetic infill', model, action: 'infill', parameters: { width: 128, height: 128, steps: 23, seed: 42, image: png, mask: png } };
+    assert.doesNotThrow(() => normalizeMemberGeneration(input));
+    for (const [field, value] of Object.entries(aliases)) {
+      assert.ok(rule.excludes.includes(`parameters.${field}`), `${model} capability must exclude ${field}`);
+      assert.throws(() => normalizeMemberGeneration({ ...input, parameters: { ...input.parameters, [field]: value } }), error => error.statusCode === 422);
+    }
+  }
+});
