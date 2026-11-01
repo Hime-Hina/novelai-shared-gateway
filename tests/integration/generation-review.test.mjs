@@ -1,26 +1,23 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import vm from 'node:vm';
 import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/store.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/result-files.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.ts';
-import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { recordSharedCompletion } from '../../server/shared-capacity.ts';
-import { completeSharedAccount, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess, recordGenerationFailure, publishGenerationArtifact } from '../../server/generation-execution.ts';
+import { completeGenerationCommand, recoverPendingGenerationResultsCommand, reconcileGenerationReviewsCommand } from '../../server/generation-execution.ts';
+import { createRequestControls } from '../../server/generation-delivery.ts';
 import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
 
-const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 function fixture(now = Date.now(), { refund = true, fallback = false, id = 'review' } = {}) {
   const db = { settings: {}, users: ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, balance: 0, enabled: true })),
@@ -53,15 +50,6 @@ async function open(t, seed, requestId) {
   }
   await store.write(seed);
   return store;
-}
-function loadFunctions(context, names) {
-  const ctx = vm.createContext({ completeSharedAccount, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess,
-    recordGenerationFailure, publishGenerationArtifact, publicGenerationRequest, readOwnedGenerationRequest, ...context });
-  for (const name of names) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-  }
-  return ctx;
 }
 
 test('五分钟从首次未知固定计时，虚拟重启/重复关闭不退款、不叠加聚合缺口或运营核销', () => {
@@ -141,16 +129,15 @@ test('升级沿用原首次未知，JSON 部分索引查冷历史，关闭写失
       AND json_extract(data, '$.generationReview.deadlineAt') <= ?
     ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT 100`).all(Date.now());
   assert.ok(plan.some(row => row.detail.includes('idx_jobs_generation_review_due')));
-  const review = loadFunctions({ store: reopened, closeGenerationReview, recordRecoveredGeneration,
-    uniqueIds: values => [...new Set(values.filter(Boolean))] }, ['batchJobIds', 'dirtyJobMutationRows', 'reconcileGenerationReviews']);
+  const reconcile = () => reconcileGenerationReviewsCommand(reopened, { readStoredImage: image => readFile(path.join(reopened.dataDir, image.file)) });
   const originalOrder = reopened.sqlite.prepare("SELECT order_value FROM jobs WHERE id = 'review'").get().order_value;
   assert.equal(originalOrder, -37.5);
   reopened.sqlite.exec("CREATE TEMP TRIGGER reject_review BEFORE INSERT ON ledger WHEN json_extract(NEW.data, '$.type') = 'generation_loss_estimated' BEGIN SELECT RAISE(ABORT, 'synthetic review failure'); END;");
-  await assert.rejects(review.reconcileGenerationReviews(), /synthetic review failure/);
+  await assert.rejects(reconcile(), /synthetic review failure/);
   assert.equal((await reopened.readDueGenerationReviews(Date.now())).length, 1);
   reopened.sqlite.exec('DROP TRIGGER reject_review');
   reopened.trimRuntimeCollection('jobs', 0); reopened.trimRuntimeCollection('ledger', 0);
-  await review.reconcileGenerationReviews();
+  await reconcile();
   assert.equal((await reopened.readDueGenerationReviews(Date.now())).length, 0);
   assert.equal(reopened.sqlite.prepare("SELECT order_value FROM jobs WHERE id = 'review'").get().order_value, originalOrder);
   assert.equal(reopened.sqlite.pragma('integrity_check', { simple: true }), 'ok');
@@ -161,13 +148,15 @@ async function completionContext(store) {
   let writes = 0, ids = 0;
   const update = store.update.bind(store);
   store.update = (fn, options = {}) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = loadFunctions({ store, dataDir: store.dataDir, fairShareMode: true, settleFairQuota, resolveFairQuotaCharge, recordRecoveredGeneration, recordSharedCompletion, activateNextBatchJob,
-    describeStoredResult, publishStoredResult: async (...args) => { writes++; return publishStoredResult(...args); },
-    createId: () => `image-${++ids}`, reservationAccountCost: () => 0, httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
-    writeStoredImage: async (id, image) => { writes++; const file = `images/${id}.png`; await writeFile(path.join(store.dataDir, file), image.buffer); return file; },
-    removeStoredImages: async () => {}, imageCacheTrimBuffer: () => 100,
-    uniqueIds: values => [...new Set(values.filter(Boolean))], clearJobStreamProgress() {}, scheduleQueueDrain() {}, notifyJobWaiters() {}
-  }, ['batchJobIds', 'completionJob', 'prepareGenerationResult', 'completeGeneration', 'recoverPendingGenerationResults']);
+  const options = { store, dataDir: store.dataDir, createId: () => `image-${++ids}`,
+    publish: async (...args) => { writes++; return publishStoredResult(...args); } };
+  const getGenerationRequest = async (requestId, memberId) => publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId), {
+    imageUrl: id => `/signed/${id}`, errorMessage: value => value
+  });
+  const ctx = { getGenerationRequest,
+    ...createRequestControls(store, { clearProgress() {}, notify() {}, schedule() {}, readRequest: getGenerationRequest }),
+    completeGeneration: (...args) => completeGenerationCommand(options, ...args),
+    recoverPendingGenerationResults: () => recoverPendingGenerationResultsCommand(options) };
   return { ctx, writes: () => writes };
 }
 function reservation(db) { return { job: db.jobs[0], account: db.accounts[0], token: 'STA1N-a', cost: 0 }; }
@@ -333,12 +322,6 @@ test('父取消与实际完成/激活并发时，成功产物照常结算，剩�
       request: seed.jobs[0].request, createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() });
     const store = await open(t, seed, 'cancel-parent');
     const { ctx } = await completionContext(store);
-    ctx.publicErrorMessage = value => value;
-    ctx.publicImageUrl = id => `/signed/${id}`;
-    for (const name of ['getGenerationRequest', 'cancelGenerationRequest', 'refundJob']) {
-      const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-      vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-    }
     const r = reservation(store.db);
     const complete = () => ctx.completeGeneration(r, r.job.request, { buffer: png, mimeType: 'image/png' }, { jobId: 'review' });
     const cancel = () => ctx.cancelGenerationRequest('cancel-parent', 'a');

@@ -1,16 +1,15 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { assertMemberAcceptsJobs, setMemberAdmission, queueDeadline } from '../../server/queue-policy.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { createMemberSession, authenticateMemberSession } from '../../server/member-auth.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
+import { createJobDelivery, createRequestControls } from '../../server/generation-delivery.ts';
 
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 };
 const writeOptions = { collections: ['users', 'jobs', 'settings', 'ledger'], immediate: true };
@@ -96,14 +95,10 @@ test('停止事务写失败整体回滚，成功后取消预留只退一次且�
 
 test('等待者补查不通知未提交的取消，已经提交的取消也不会错过', async t => {
   const { store } = await fixture(t, db => { db.jobs.push({ id: 'waiting', userToken: 'a', status: 'queued', request }); });
-  const jobWaiters = new Map();
-  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, setMemberAdmission, publicErrorMessage: String,
-    refundJob: refund, clearJobStreamProgress() {}, scheduleQueueDrain() {} });
-  const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-  for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters', 'changeMemberAdmission']) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);
-  }
+  const delivery = createJobDelivery({ store, errorMessage: String, snapshot: async () => null, sendStreamHeaders() {}, imageMarkdown: () => '' });
+  const jobWaiters = delivery.waiters;
+  const context = { ...delivery, ...createRequestControls(store, { notify: delivery.notifyJobWaiters, clearProgress() {}, schedule() {},
+    readRequest: async () => assert.fail('member admission must not read a parent request') }) };
   let entered, release;
   const mutationStarted = new Promise(resolve => { entered = resolve; });
   const gate = new Promise(resolve => { release = resolve; });
@@ -155,11 +150,8 @@ test('部分历史缓存下停止 pending 与恢复/零取消均只写受影响�
   t.after(() => reopened.close());
   assert.equal(reopened.partialCollections.has('jobs'), true);
   assert.ok(reopened.db.jobs.some(job => job.id === 'cold-pending'));
-  const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-  const start = source.indexOf('function changeMemberAdmission('), end = source.indexOf('\n}', start) + 2;
-  const context = vm.createContext({ store: reopened, setMemberAdmission, refundJob: refund,
-    clearJobStreamProgress() {}, notifyJobWaiters() {}, scheduleQueueDrain() {} });
-  vm.runInContext('async ' + source.slice(start, end), context);
+  const context = createRequestControls(reopened, { clearProgress() {}, notify() {}, schedule() {},
+    readRequest: async () => assert.fail('member admission must not read a parent request') });
   const result = await context.changeMemberAdmission('a', false);
   assert.equal(result.cancelledCount, 1);
   assert.equal(reopened.selectItemById('jobs', 'cold-pending').status, 'failed');
@@ -182,13 +174,8 @@ test('冷历史 done/failed 的等待者补查立即返回，读取结果不把�
   }, { immediate: true });
   store.trimRuntimeCollection('jobs', 0);
   assert.equal(store.db.jobs.length, 0);
-  const jobWaiters = new Map();
-  const context = vm.createContext({ store, jobWaiters, setTimeout, clearTimeout, publicErrorMessage: String });
-  const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-  for (const name of ['waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters']) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext(source.slice(start, end), context);
-  }
+  const context = createJobDelivery({ store, errorMessage: String, snapshot: async () => null, sendStreamHeaders() {}, imageMarkdown: () => '' });
+  const jobWaiters = context.waiters;
   const done = await context.waitForJobResult('cold-done', Date.now() + 1000);
   assert.equal(done?.saved.id, 'cold-result');
   const failed = await context.waitForJobResult('cold-failed', Date.now() + 1000);

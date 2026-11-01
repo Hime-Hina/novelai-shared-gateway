@@ -1,38 +1,30 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import vm from 'node:vm';
 import * as fair from '../../server/fair-quota.ts';
-import * as capacity from '../../server/shared-capacity.ts';
-import * as requests from '../../server/generation-request.ts';
-import * as queuePolicy from '../../server/queue-policy.ts';
-import { assertFreeImageAdmission } from '../../server/free-image-policy.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { createGenerationAdmission, requestCacheKey } from '../../server/generation-admission.ts';
-import { assertConfirmedDispatch, completeSharedAccount, recordGenerationFailure } from '../../server/generation-execution.ts';
+import { reserveQueuedGeneration, refundGenerationJob, failGenerationCommand, cancelReservedGeneration } from '../../server/generation-execution.ts';
 import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
-const source= stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
+import { availableSharedAccountSlots, physicalAccountLoad } from '../../server/queue-dispatch.ts';
+import { generationCost } from '../../server/generation-queries.ts';
 function fixture(tier=3) {
   let now=Date.now();
-  class ClockDate extends Date { constructor(...args){super(...(args.length?args:[now]));} static now(){return now;} }
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx=vm.createContext({...fair,...capacity,...queuePolicy,...requests,assertFreeImageAdmission,assertConfirmedDispatch,completeSharedAccount,recordGenerationFailure,queueDispatchEnabled:true,runningJobControls:new Map(),console,fairShareMode:true,Date:ClockDate,Number,Map,Set,
-    store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}},
-    httpError:(statusCode,message)=>Object.assign(new Error(message),{statusCode}),
-    jobAccountCost:()=>0,staleQueuedJobMs:()=>600000,staleRunningJobMs:()=>660000,isAccountCoolingDown:a=>Date.parse(a.cooldownUntil||'')>Date.now(),
-    hasEnabledAccounts:()=>true,dirtyResultJobRows:()=>({}),dirtyReservationJobRows:()=>()=>({}),
-    publicErrorMessage:s=>s,errorDetailMessage:e=>e.message,isNovelAiCapacityError:e=>e.statusCode===429,
-    uniqueIds:a=>a,createId:()=>String(Math.random()),scheduleQueueDrain(){},notifyJobWaiters(){},clearJobStreamProgress(){},
-  });
-  ctx.assertFairMemberReady = token => createGenerationAdmission({ store:ctx.store,now:()=>now,payloadBudget:requests.createGenerationPayloadBudget(()=>0),
+  const ctx={ queueDispatchEnabled:true,runningJobControls:new Map(),fairShareMode:true,Date:{now:()=>now},
+    store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}} };
+  ctx.assertFairMemberReady = token => createGenerationAdmission({ store:ctx.store,now:()=>now,payloadBudget:createGenerationPayloadBudget(()=>0),
     artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{} })({identity:{token},source:'test',request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}});
-  for(const name of ['physicalAccountLoad','sharedFailureKind','getUserOrThrow','reserveQueuedJob','refundJob','failGeneration','cancelReservedJob','assertFreeImageRequest','generationCost','availableAccountSlots','jobDeadlineTimestamp','isExpiredJobAt','isStaleActiveJob','staleActiveJobDetail']) {
-    const start=source.search(new RegExp(`function ${name}\\s*\\(`)),end=source.indexOf('\n}',start)+2;
-    const async=source.slice(start-6,start)==='async ';
-    vm.runInContext((async?'async ':'')+source.slice(start,end),ctx);
-  }
+  ctx.reserveQueuedJob = id => reserveQueuedGeneration(ctx.store, id, { now: () => now, fairShareMode: ctx.fairShareMode,
+    dispatchEnabled: () => ctx.queueDispatchEnabled, physicalAccountLoad: id => physicalAccountLoad(ctx.runningJobControls, id),
+    legacy: { selectAccount: (...args) => ctx.selectAccount(...args), hasEnabledAccounts: () => true, hasAccountWithEnoughQuota: () => true } });
+  ctx.refundJob = (db, job, note, evidence) => refundGenerationJob(ctx.store, db, job, note, { now: () => now, fairShareMode: ctx.fairShareMode, evidence });
+  const failureOptions = () => ({ now: () => now, fairShareMode: ctx.fairShareMode, publicErrorMessage: value => value, errorDetailMessage: error => error.message });
+  ctx.failGeneration = (reservation, error) => failGenerationCommand(ctx.store, reservation, error, failureOptions());
+  ctx.cancelReservedJob = (reservation, error) => cancelReservedGeneration(ctx.store, reservation, error, failureOptions());
+  ctx.availableAccountSlots = (accounts, settings) => availableSharedAccountSlots(accounts, settings, ctx.runningJobControls, now);
+  ctx.generationCost = request => generationCost(request, ctx.fairShareMode);
   const job=(id,token='a')=>{const j={id,userToken:token,status:'queued',cost:0,request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}};db.jobs.push(j);return j;};
   return {db,ctx,job,advance:milliseconds=>{now+=milliseconds;}};
 }
@@ -61,7 +53,7 @@ test('成员child派发超过原确认时保留失败code并停止余图，没�
     clientContract:'member-generation-v1',confirmation:{requestFingerprint:'a'.repeat(64),versions:memberGenerationCapabilities(db,db.users[0]).versions,
       maxPerJob:{v5:'0',anlasFixed:'0',anlasPurchased:'0'},maxTotal:{v5:'0',anlasFixed:'0',anlasPurchased:'0'}}};
   ctx.store.readGenerationRequest=()=>request;
-  ctx.store.readGenerationRequestState=()=>({jobs:[first,next]});
+  ctx.store.readGenerationRequestJobIds=()=>[first.id,next.id];
   const before=structuredClone(db.settings.fairQuota.balances);
   const result=await ctx.reserveQueuedJob(first.id);
   assert.equal(result.statusCode,409); assert.equal(first.errorCode,'cost_limit_exceeded');
@@ -143,8 +135,6 @@ test('429退款并冷却，不自动换号重试',async()=>{
   await ctx.failGeneration(r,Object.assign(new Error('capacity'),{statusCode:429}));
   job('two');assert.equal((await ctx.reserveQueuedJob('two')).queued,true);
   assert.ok(Date.parse(db.accounts[0].cooldownUntil)>Date.now());
-  assert.match(source,/if \(fairShareMode\) throw error;/);
-  assert.match(source,/includeSettings: true, immediate: true/);
 });
 
 test('管理员开启续用后个人 V5 不足按原参数转扣 Anlas，失败退回同一钱包',async()=>{
@@ -209,10 +199,9 @@ test('禁用的组内子账户在派发与预检均拒绝，不影响其他成�
 });
 
 test('相同提示词和种子不能在不同成员间复用缓存',()=>{
- const ctx={requestCacheKey};
  const request={model:'nai-diffusion-4-5-full',prompt:'synthetic test',seed:42};
- assert.equal(ctx.requestCacheKey('member-a',request,42),ctx.requestCacheKey('member-a',request,42));
- assert.notEqual(ctx.requestCacheKey('member-a',request,42),ctx.requestCacheKey('member-b',request,42));
+ assert.equal(requestCacheKey('member-a',request,42),requestCacheKey('member-a',request,42));
+ assert.notEqual(requestCacheKey('member-a',request,42),requestCacheKey('member-b',request,42));
 });
 
 test('真实共享失败/取消路径保留响应证据，重复失败与成功后的取消不退款', async () => {

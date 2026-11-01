@@ -1,29 +1,18 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import { JsonStore } from '../../server/store.ts';
 import * as requests from '../../server/generation-request.ts';
-import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion } from '../../server/shared-capacity.ts';
-import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
+import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota } from '../../server/fair-quota.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
-import { completeSharedAccount, recordGenerationFailure } from '../../server/generation-execution.ts';
+import { cleanupInterruptedGenerationJobs } from '../../server/generation-execution.ts';
+import { createGenerationControls, availableSharedAccountSlots } from '../../server/queue-dispatch.ts';
+import { generationRequestForErrorLog } from '../../server/generation-queries.ts';
 
-const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-4-5-full', action: 'generate', width: 1024, height: 1024, steps: 23,
   seed: 100, sampleCount: 4, prompt: 'synthetic large input', nativeParameters: { negative_prompt: 'x'.repeat(1024), seed: 100, n_samples: 4 } };
-function functions(context, names) {
-  const ctx = vm.createContext(context);
-  for (const name of names) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-  }
-  return ctx;
-}
 async function open(t, directory) {
   const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-native-batch-')));
   await store.init();
@@ -103,11 +92,8 @@ test('物理在途与 SQL 活动父去重：逻辑失败后仍占字节和上游
   const a = await acceptance(store)('a');
   const job = store.db.jobs.find(job => job.id === a.jobIds[0]);
   job.accountId = 'opus';
-  const runningJobControls = new Map();
-  const ctx = functions({ runningJobControls, AbortController, setTimeout, clearTimeout,
-    runningJobTimeoutDelay: () => 60000, abortRunningJob() {}, scheduleQueueDrain() {},
-    fairShareMode: true, sharedAccountConcurrency, sharedAccountReadyDelay
-  }, ['createRunningJobControl', 'finishRunningJobControl', 'physicalAccountLoad', 'availableAccountSlots']);
+  const ctx = createGenerationControls({ timeoutDelay: () => 60000, schedule() {} });
+  const runningJobControls = ctx.controls;
   const control = ctx.createRunningJobControl(job);
   t.after(() => ctx.finishRunningJobControl(job.id, control));
   const bytes = Buffer.byteLength(JSON.stringify(request));
@@ -119,19 +105,16 @@ test('物理在途与 SQL 活动父去重：逻辑失败后仍占字节和上游
   }, { immediate: true, dirtyRows: { jobs: a.jobIds } });
   assert.equal(store.activeGenerationPayloadBytes(), 0);
   assert.equal(store.activeGenerationPayloadBytes([...runningJobControls.values()]), bytes);
-  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }), 0);
+  assert.equal(availableSharedAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }, runningJobControls), 0);
   ctx.finishRunningJobControl(job.id, control);
   assert.equal(store.activeGenerationPayloadBytes([...runningJobControls.values()]), 0);
-  assert.equal(ctx.availableAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }), 1);
+  assert.equal(availableSharedAccountSlots([{ id: 'opus', enabled: true, inFlight: 0 }], { fairQuota: { boundAccountId: 'opus' } }, runningJobControls), 1);
 });
 
 test('错误日志按新父请求计算单张种子，旧 inline 已解析种子不重复偏移', () => {
-  const ctx = functions({ store: { readGenerationRequest: () => request }, singleGenerationRequest: requests.singleGenerationRequest,
-    maskToken: value => value, publicErrorMessage: value => value, errorDetailMessage: value => value,
-    jobAccountCost: () => 0, jobDurationMs: () => 0, errorLogRequest: value => value, beijingDateKey: () => ''
-  }, ['publicErrorLog']);
-  assert.equal(ctx.publicErrorLog({ requestId: 'parent', sampleIndex: 1 }).request.seed, 101);
-  assert.equal(ctx.publicErrorLog({ request: requests.singleGenerationRequest(request, 1), sampleIndex: 1 }).request.seed, 101);
+  const store = { readGenerationRequest: () => request };
+  assert.equal(generationRequestForErrorLog(store, { requestId: 'parent', sampleIndex: 1 }).seed, 101);
+  assert.equal(generationRequestForErrorLog(store, { request: requests.singleGenerationRequest(request, 1), sampleIndex: 1 }).seed, 101);
 });
 
 test('启动未知在途和已过期父批次原子终止 pending；未过期的其他批次保留', async t => {
@@ -157,18 +140,15 @@ test('启动未知在途和已过期父批次原子终止 pending；未过期的
   const reopened = await open(t, store.dataDir);
   const update = reopened.update.bind(reopened);
   reopened.update = (fn, options) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = functions({ store: reopened, console, fairShareMode: true, queuedDeadlineTimestamp, recordSharedCompletion, completeSharedAccount, recordGenerationFailure, notifyJobWaiters() {},
-    cancelWaitingBatchJobs: requests.cancelWaitingBatchJobs, publicErrorMessage: value => value,
-    refundJob: (db, job) => settleFairQuota(db, job, false)
-  }, ['uniqueIds', 'mergeDirtyRows', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyJobListRows', 'isExpiredJobAt', 'isNovelAiCapacityError', 'sharedFailureKind', 'cleanupInterruptedStartupJobs']);
-  await ctx.cleanupInterruptedStartupJobs();
+  const cleanup = () => cleanupInterruptedGenerationJobs(reopened, { publicErrorMessage: value => value });
+  await cleanup();
   assert.ok(a.jobIds.every(id => reopened.selectItemById('jobs', id).status === 'failed'));
   assert.equal(reopened.selectItemById('jobs', a.jobIds[0]).fairCharge.status, 'refunded');
   assert.deepEqual(Array.from(b.jobIds, id => reopened.selectItemById('jobs', id).status), ['queued', 'pending']);
   await reopened.update(db => {
     for (const job of db.jobs.filter(job => job.requestId === b.id)) job.queueExpiresAt = new Date(1).toISOString();
   }, { dirtyRows: { jobs: b.jobIds } });
-  await ctx.cleanupInterruptedStartupJobs();
+  await cleanup();
   assert.ok(b.jobIds.every(id => reopened.selectItemById('jobs', id).status === 'failed'));
   assert.equal(reopened.activeGenerationPayloadBytes(), 0);
   assert.ok(reopened.readGenerationRequest(a.id));

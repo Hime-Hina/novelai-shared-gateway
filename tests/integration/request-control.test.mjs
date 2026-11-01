@@ -1,19 +1,15 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import vm from 'node:vm';
 import { JsonStore } from '../../server/store.ts';
 import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
-import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
-import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
+import { activateNextBatchJob } from '../../server/generation-request.ts';
 import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
-import { recordGenerationFailure, assertConfirmedDispatch } from '../../server/generation-execution.ts';
+import { reserveQueuedGeneration } from '../../server/generation-execution.ts';
+import { createRequestControls } from '../../server/generation-delivery.ts';
 
-const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };
 async function fixture(t, statuses) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-request-control-')));
@@ -33,20 +29,12 @@ async function fixture(t, statuses) {
   const update = store.update.bind(store);
   store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
   const notifications = [];
-  const ctx = vm.createContext({ store, fairShareMode: true, queueDispatchEnabled: true, settleFairQuota, syncFairQuota, reserveFairQuota,
-    assertMemberAcceptsJobs, queuedDeadlineTimestamp, sharedAccountConcurrency, sharedAccountReadyDelay,
-    publicGenerationRequest, readOwnedGenerationRequest, recordGenerationFailure, assertConfirmedDispatch,
-    singleGenerationRequest, cancelWaitingBatchJobs, runningJobControls: new Map(), jobAccountCost: () => 0,
-    staleQueuedJobMs: () => 600000, staleRunningJobMs: () => 660000,
-    httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
-    publicErrorMessage: value => value, publicImageUrl: id => `/signed/${id}`, clearJobStreamProgress() {},
-    notifyJobWaiters: id => notifications.push(id), scheduleQueueDrain() {}, createId: () => 'synthetic-refund' });
-  for (const name of ['getGenerationRequest', 'cancelGenerationRequest', 'refundJob',
-    'getUserOrThrow', 'uniqueIds', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyResultJobRows',
-    'physicalAccountLoad', 'jobDeadlineTimestamp', 'isExpiredJobAt', 'isStaleActiveJob', 'staleActiveJobDetail', 'reserveQueuedJob']) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-  }
+  const getGenerationRequest = async (requestId, memberId) => publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId), {
+    imageUrl: id => `/signed/${id}`, errorMessage: value => value
+  });
+  const ctx = { getGenerationRequest,
+    ...createRequestControls(store, { clearProgress() {}, notify: id => notifications.push(id), schedule() {}, readRequest: getGenerationRequest }),
+    reserveQueuedJob: id => reserveQueuedGeneration(store, id, { dispatchEnabled: () => true, physicalAccountLoad: () => 0 }) };
   return { store, ctx, notifications };
 }
 
