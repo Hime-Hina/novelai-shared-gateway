@@ -262,6 +262,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         // 预览只操作独立副本，恢复、重分与审计都不能污染真实账本。
         const draft={...db,ledger:[...(db.ledger || [])],settings:structuredClone(db.settings),users:structuredClone(db.users)};
         configureFairGroups(draft,body.groups,{actorId:'administrator',redistributeRemaining:body.redistributeRemaining===true});
+        syncFairQuota(draft);
         return {groups:draft.settings.fairQuota!.groups,users:draft.users.map(user=>({id:user.id,quota:fairQuotaSummary(draft,user)})),redistributeRemaining:body.redistributeRemaining===true,configVersion};
       },{persist:false});
       reply(res,200,result);return true;
