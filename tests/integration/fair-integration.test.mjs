@@ -12,19 +12,18 @@ function fixture(tier=3) {
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};
   fair.configureFairQuota(db,['a','b','c','d']);
   let queue=Promise.resolve();
-  const ctx={ queueDispatchEnabled:true,runningJobControls:new Map(),fairShareMode:true,Date:{now:()=>now},
+  const ctx={ queueDispatchEnabled:true,runningJobControls:new Map(),Date:{now:()=>now},
     store:{readFairQuotaSettlement:()=>null,update(fn){queue=queue.catch(()=>{}).then(()=>fn(db));return queue;}} };
   ctx.assertFairMemberReady = token => createGenerationAdmission({ store:ctx.store,now:()=>now,payloadBudget:createGenerationPayloadBudget(()=>0),
     artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{} })({identity:{token},source:'test',request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}});
-  ctx.reserveQueuedJob = id => reserveQueuedGeneration(ctx.store, id, { now: () => now, fairShareMode: ctx.fairShareMode,
-    dispatchEnabled: () => ctx.queueDispatchEnabled, physicalAccountLoad: id => physicalAccountLoad(ctx.runningJobControls, id),
-    legacy: { selectAccount: (...args) => ctx.selectAccount(...args), hasEnabledAccounts: () => true, hasAccountWithEnoughQuota: () => true } });
-  ctx.refundJob = (db, job, note, evidence) => refundGenerationJob(ctx.store, db, job, note, { now: () => now, fairShareMode: ctx.fairShareMode, evidence });
-  const failureOptions = () => ({ now: () => now, fairShareMode: ctx.fairShareMode, publicErrorMessage: value => value, errorDetailMessage: error => error.message });
+  ctx.reserveQueuedJob = id => reserveQueuedGeneration(ctx.store, id, { now: () => now,
+    dispatchEnabled: () => ctx.queueDispatchEnabled, physicalAccountLoad: id => physicalAccountLoad(ctx.runningJobControls, id) });
+  ctx.refundJob = (db, job) => refundGenerationJob(ctx.store, db, job, { now: () => now });
+  const failureOptions = () => ({ now: () => now, publicErrorMessage: value => value, errorDetailMessage: error => error.message });
   ctx.failGeneration = (reservation, error) => failGenerationCommand(ctx.store, reservation, error, failureOptions());
   ctx.cancelReservedJob = (reservation, error) => cancelReservedGeneration(ctx.store, reservation, error, failureOptions());
   ctx.availableAccountSlots = (accounts, settings) => availableSharedAccountSlots(accounts, settings, ctx.runningJobControls, now);
-  ctx.generationCost = request => generationCost(request, ctx.fairShareMode);
+  ctx.generationCost = generationCost;
   const job=(id,token='a')=>{const j={id,userToken:token,status:'queued',cost:0,request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23}};db.jobs.push(j);return j;};
   return {db,ctx,job,advance:milliseconds=>{now+=milliseconds;}};
 }
@@ -96,17 +95,20 @@ test('派发事务拒绝过期队列与停止后恢复的旧任务，不预扣�
   assert.equal(old.fairCharge, undefined);
 });
 
-test('旧非共享派发路径也必须遵守停止接单，不能先选号或消费', async () => {
+test('停止接单在派发与收费前拒绝，不预留额度或占用执行槽', async () => {
   const { db, ctx, job } = fixture();
-  ctx.fairShareMode = false;
-  let selected = false;
-  ctx.selectAccount = () => { selected = true; return db.accounts[0]; };
   db.users[0].acceptingJobs = false;
-  const queued = job('legacy-stopped');
+  fair.syncFairQuota(db, ctx.Date.now());
+  const balances = structuredClone(db.settings.fairQuota.balances), memberBalance = db.users[0].balance;
+  const queued = job('stopped');
   assert.equal((await ctx.reserveQueuedJob(queued.id)).statusCode, 403);
   assert.equal(queued.status, 'failed');
-  assert.equal(selected, false);
+  assert.equal(queued.fairCharge, undefined);
+  assert.equal(queued.generationAttempt, undefined);
   assert.equal(db.accounts[0].inFlight, undefined);
+  assert.equal(db.accounts[0].lastSharedDispatchAt, undefined);
+  assert.deepEqual(db.settings.fairQuota.balances, balances);
+  assert.equal(db.users[0].balance, memberBalance);
 });
 
 test('同一用户多次提交也只占一个槽位，其余排队；失败退款只发生一次',async()=>{
@@ -118,7 +120,7 @@ test('同一用户多次提交也只占一个槽位，其余排队；失败退�
   const charged=db.settings.fairQuota.balances.a.v5Available;
   await ctx.failGeneration(result[0],new Error('官方失败'));
   const refunded=db.settings.fairQuota.balances.a.v5Available;
-  assert.ok(refunded>charged);ctx.refundJob(db,db.jobs[0],'重复取消');assert.equal(db.settings.fairQuota.balances.a.v5Available,refunded);
+  assert.ok(refunded>charged);ctx.refundJob(db,db.jobs[0]);assert.equal(db.settings.fairQuota.balances.a.v5Available,refunded);
   assert.equal((await ctx.reserveQueuedJob('1')).queued,true);advance(10000);
   assert.equal((await ctx.reserveQueuedJob('1')).job.status,'running');assert.equal(db.accounts[0].inFlight,1);
   assert.equal(db.users[0].balance,100000);assert.equal(ctx.generationCost({}),0);
@@ -149,7 +151,7 @@ test('管理员开启续用后个人 V5 不足按原参数转扣 Anlas，失败�
   assert.equal(db.settings.fairQuota.balances.b.anlasFixedAvailable,'2500');
   await ctx.failGeneration(reserved,new Error('模拟上游失败'));
   assert.equal(db.settings.fairQuota.balances.a.anlasFixedAvailable,'2500');
-  ctx.refundJob(db,j,'重复退款');assert.equal(db.settings.fairQuota.balances.a.anlasFixedAvailable,'2500');
+  ctx.refundJob(db,j);assert.equal(db.settings.fairQuota.balances.a.anlasFixedAvailable,'2500');
 });
 
 function childrenFixture() {
@@ -171,7 +173,7 @@ test('同组子账户依次使用共享槽位，未派发者不扣额度，失�
  for(const id of ['a','b','c','d'])assert.deepEqual(db.settings.fairQuota.balances[id],before[id]);
  assert.equal(results[0].job.fairCharge.userId,'child_one');assert.equal(results[0].job.fairCharge.groupId,'group_1');
  await ctx.failGeneration(results[0],new Error('子账户失败'));const refunded=db.settings.fairQuota.balances.child_one.v5Available;
- await ctx.failGeneration(results[0],new Error('重复失败'));ctx.refundJob(db,db.jobs[0],'重复退款');assert.equal(db.settings.fairQuota.balances.child_one.v5Available,refunded);
+ await ctx.failGeneration(results[0],new Error('重复失败'));ctx.refundJob(db,db.jobs[0]);assert.equal(db.settings.fairQuota.balances.child_one.v5Available,refunded);
  assert.equal(refunded,before.child_one.v5Available);
  assert.equal((await ctx.reserveQueuedJob('child-1')).queued,true);advance(10000);
  assert.equal((await ctx.reserveQueuedJob('child-1')).job.fairCharge.userId,'child_two');
@@ -226,7 +228,7 @@ test('真实共享失败/取消路径保留响应证据，重复失败与成功�
   fair.settleFairQuota(db, db.jobs[0], true); db.jobs[0].status = 'done';
   const settled = structuredClone(db.settings.fairQuota.balances);
   await ctx.failGeneration(reservation, new Error('late failure'));
-  await ctx.cancelReservedJob(reservation, new Error('late cancel')); ctx.refundJob(db, db.jobs[0], 'late cleanup');
+  await ctx.cancelReservedJob(reservation, new Error('late cancel')); ctx.refundJob(db, db.jobs[0]);
   assert.deepEqual(db.settings.fairQuota.balances, settled);
   assert.equal(db.ledger.length, 1); assert.equal(db.ledger[0].type, 'generation_reserved');
 });
