@@ -7,7 +7,7 @@
     "evidenceBoundary": "Built validation package and performance image remain pinned to 3eae814. This whitespace-only change did not trigger a new business test run or package rebuild."
   },
   "branch": "codex/event-sourcing-member-generation",
-  "scope": "R01-R11 and R13/R14 functional/package gates passed; final complete R12 1k/100k/replay/annual is running",
+  "scope": "R00-R14 complete and accepted for one executor, one bound account and SQLite, including the documented R12 transaction-cost tradeoffs. Runtime, package and performance pin remains 3eae814; no production deployment.",
   "environment": {
     "node": "22.23.4",
     "platform": "linux-x64",
@@ -162,6 +162,45 @@
       "result": "DOC01-04 closed; startup waiting window clarified without new configuration"
     }
   },
+  "performance": {
+    "accepted": true,
+    "rootAcceptance": "3eae814-final/root-acceptance.json",
+    "rawReport": "3eae814-final/report.json",
+    "rawReportSha256": "86913d4506e61b1513f115cf9195650327318d1fdee47267ca9300683afa3e0b",
+    "completedScope": "12 load rounds: baseline/candidate at 1k and 100k, three rounds each with 100 samples; three same-source full/checkpoint replays; one complete annual append, backup, full replay and real close/reopen checkpoint replay.",
+    "retainedOriginalThresholdFlags": [
+      "admissionTransaction",
+      "dispatchTransaction",
+      "artifactPreparedTransaction",
+      "settlementTransaction",
+      "quotaRefreshTransaction"
+    ],
+    "tradeoff": "Accepted for the current single-account lifecycle: synchronous facts and critical projections with FULL durability. Original flags remain; this is not a zero-regression claim. Stage P95 sums are rough budgets, not an end-to-end P95 or latency bound; admission, failures, refunds and manual refresh have separate frequency boundaries.",
+    "annual": {
+      "observations": 525600,
+      "batches": 36500,
+      "imagesAsFactsOnly": 73000,
+      "addedEvents": 2197300,
+      "commits": 781103,
+      "databaseAndBackupBytesEach": 2412564480,
+      "replayHashProjectionIntegrityFullAndSourceChecks": "passed",
+      "dataScope": "Ledger, indexes, projections and short-text fixed-parameter private inputs only; no actual reference base64, masks, long prompts, complex parameters or generated image bytes. Not a full official-image-workload disk guarantee."
+    },
+    "postRunStartupStage": {
+      "originalStrictReport": "3eae814-final/startup-report.json",
+      "fieldComparison": "3eae814-final/startup-field-comparison.json",
+      "originalStrictPassed": false,
+      "semanticFactInvariantsAccepted": true,
+      "unchangedNonMetadataTables": 22,
+      "expectedRuntimeNormalization": "accounts.data.inFlight absent -> 0 under existing JsonStore.init behavior; not 23 byte-identical nonmetadata tables",
+      "unchangedEventAndProjectionCursor": "781103",
+      "metadataChange": "app_meta event_authority verification commitSeq 3 -> 781103; writer/minimumWriter remain 2",
+      "initMs": 1496.648627,
+      "enableEventAuthorityMs": 63700.291776,
+      "scope": "One invocation on a consistent annual-backup copy; OS cache not dropped. Data initialization and authority verification only, not complete HTTP-ready or a startup SLA."
+    },
+    "timingBoundary": "Replay event application is timed separately from private-data copying, verification, integrity and checkpoint. Recorded-stage sums exclude untimed initialization/digests and are not exact end-to-end recovery time."
+  },
   "images": {
     "backend": "sha256:bfe5ae436f96efabab8df88b45c07e884a2f306d05afea181c84f96b4a8bffd2",
     "workspace": "sha256:e47ed1650efbb4568929f3d704ff4c6d501d74ac2cc4be871c1e11517fdb95e4",
@@ -186,7 +225,7 @@
     "release-3eae814-systemd-tests.log"
   ],
   "unverified": [
-    "Final complete R12 /bench/final-3eae814-run01 still running; old3a1k/100k subset not reused as final evidence",
+    "Annual post-run startup measurement covers data initialization and authority verification, not full HTTP readiness",
     "No real NAI/Discord/R2 provider or production deployment"
   ],
   "deferred": [
