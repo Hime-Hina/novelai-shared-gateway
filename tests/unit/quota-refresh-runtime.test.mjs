@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { withQuotaRequestDeadline } from '../../server/quota-timeout.ts';
 import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const quota = { tier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000, points: 10000, fixed: 10000, purchased: 0, v5UsagePercent: 80 };
@@ -17,7 +18,7 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
     Date, Number, Map, Set, AbortController, setTimeout, clearTimeout, process: { env: {} }, console,
     fairShareMode: true, runtimeClosing: false, accountQuotaRequestTimeoutMs: 15, accountQuotaRefreshIntervalMs: 20,
     accountQuotaRefreshPromise: null, accountQuotaRefreshTimer: null, accountQuotaAutoRefreshStarted: false,
-    withQuotaRequestDeadline, fetchNovelAiAccountQuota: fetchQuota, insufficientBalanceMessage: 'synthetic insufficient balance',
+    withQuotaRequestDeadline, recordDomainEvent, fetchNovelAiAccountQuota: fetchQuota, insufficientBalanceMessage: 'synthetic insufficient balance',
     collectValues: value => value || [], publicAccount: value => value,
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
     isUnsubscribedAccountTier: tier => Number(tier) === 0,
@@ -26,7 +27,7 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
     store: { readCollections: async () => structuredClone(db), update: async fn => fn(db) }, ...extra
   });
   for (const name of ['isNovelAiAccountBannedError', 'isInsufficientBalanceError', 'publicErrorMessage', 'disableNovelAiAccount',
-    'accountQuotaResult', 'accountQuotaErrorResult', 'applyAccountQuotaResult', 'fetchNovelAiAccountQuotaWithTimeout', 'mapLimit', 'refreshAccountQuotas', 'refreshEnabledAccountQuotas', 'startAccountQuotaAutoRefresh']) {
+    'accountQuotaResult', 'accountQuotaErrorResult', 'recordOfficialObservation', 'applyAccountQuotaResult', 'fetchNovelAiAccountQuotaWithTimeout', 'mapLimit', 'refreshAccountQuotas', 'refreshEnabledAccountQuotas', 'startAccountQuotaAutoRefresh']) {
     const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     assert.ok(start >= 0 && end > start, name);
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), context);

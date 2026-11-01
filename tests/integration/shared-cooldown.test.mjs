@@ -10,11 +10,13 @@ import * as fair from '../../server/fair-quota.ts';
 import * as capacity from '../../server/shared-capacity.ts';
 import * as requests from '../../server/generation-request.ts';
 import { queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
+import { completeSharedAccount, recordGenerationFailure } from '../../server/generation-execution.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const NOW = 1800000000000;
 function context(values, names) {
-  const ctx = vm.createContext({ ...fair, ...capacity, ...requests, queuedDeadlineTimestamp, ...values });
+  const ctx = vm.createContext({ ...fair, ...capacity, ...requests, queuedDeadlineTimestamp, completeSharedAccount, recordGenerationFailure, ...values });
   for (const name of names) {
     const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
     vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
@@ -36,7 +38,8 @@ async function fixture(t, directory) {
   }, ['uniqueIds', 'mergeDirtyRows', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyJobListRows', 'dirtyReservationJobRows',
     'isNovelAiCapacityError', 'sharedFailureKind', 'refundJob', 'failGeneration', 'cancelReservedJob', 'cleanupStaleActiveJobs',
     'isExpiredJobAt', 'cleanupInterruptedStartupJobs', 'physicalAccountLoad', 'availableAccountSlots', 'nextAccountReadyDelay']);
-  if (!directory) await store.update(db => {
+  if (!directory) {
+    const db = { settings: {}, jobs: [], ledger: [] };
     db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true, balance: 0 }));
     db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 1000,
       quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: now, inFlight: 1, ordinaryStrikeCount: 2, capacityStrikeCount: 1 }];
@@ -44,7 +47,8 @@ async function fixture(t, directory) {
     const job = { id: 'sent', status: 'running', accountId: 'opus', userToken: 'a', createdAt: new Date(now).toISOString(),
       request: { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23 } };
     db.jobs.push(job); fair.reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
-  });
+    await store.write(db);
+  }
   const reservation = { job: store.db.jobs[0], account: store.db.accounts[0], token: 'a', failurePhase: 'upstream',
     upstreamTiming: { upstreamStartedAt: new Date(now).toISOString() } };
   return { store, ctx, reservation, notifications, logs, advance: ms => { now += ms; } };
@@ -128,7 +132,12 @@ test('启动中断无发送证据仅结束间隔；排队过期无故障；其�
   advance(10000);
   assert.equal(ctx.availableAccountSlots(store.db.accounts, store.db.settings), 1);
   const before = structuredClone(store.db.accounts[0]);
-  await store.update(db => { db.jobs.push({ id: 'queued', status: 'queued', accountId: 'opus', queueExpiresAt: new Date(1).toISOString() }); });
+  await store.update(db => {
+    const job = { id: 'queued', status: 'queued', accountId: 'opus', queueExpiresAt: new Date(1).toISOString() };
+    db.jobs.push(job);
+    recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: 'request:legacy-queued', payload: { state: {
+      request: { requestId: null, memberId: null, legacy: true }, jobs: { queued: job }, artifacts: {}, aliases: [], freeUsage: {} } } });
+  });
   await ctx.cleanupInterruptedStartupJobs();
   assert.deepEqual(store.db.accounts[0], before);
 });

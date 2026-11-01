@@ -26,7 +26,7 @@ test('离线初始化使用真实口令散列与公平账本，输出不含密�
  const saved=JSON.parse(await readFile(result.credentialPath,'utf8')),db=MemoryStore.databases.get(dataDir);
  assert.deepEqual(saved.accounts.map(a=>a.username),['alpha','beta','gamma','delta']);assert.equal(db.accounts.length,1);assert.equal(db.accounts[0].quotaTier,null);
  assert.equal(db.settings.fairQuota.status,'pending_opus');assert.equal(db.settings.fairQuota.autoAnlasFallback,false);
- for(const c of saved.accounts){assert.equal((await loginMember(db,c.username,c.password)).id,c.user_id);assert.equal(db.settings.fairQuota.balances[c.user_id].anlasAvailable,0);assert.equal(db.settings.fairQuota.balances[c.user_id].v5Available,0);assert.ok(!logs.join('').includes(c.password));assert.ok(!logs.join('').includes(c.api_key));}
+ for(const c of saved.accounts){assert.equal((await loginMember(db,c.username,c.password)).id,c.user_id);assert.equal(db.settings.fairQuota.balances[c.user_id].anlasAvailable,'0');assert.equal(db.settings.fairQuota.balances[c.user_id].v5Available,'0');assert.ok(!logs.join('').includes(c.password));assert.ok(!logs.join('').includes(c.api_key));}
  const before=await readFile(result.credentialPath);await assert.rejects(bootstrap({env:environment(dataDir),dependencies,log:()=>{}}),/拒绝覆盖/);assert.deepEqual(await readFile(result.credentialPath),before);
 });
 

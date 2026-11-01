@@ -10,6 +10,8 @@ import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } 
 import { activateNextBatchJob, singleGenerationRequest, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay } from '../../server/shared-capacity.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
+import { recordGenerationFailure, assertConfirmedDispatch } from '../../server/generation-execution.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };
@@ -17,26 +19,29 @@ async function fixture(t, statuses) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-request-control-')));
   await store.init();
   t.after(() => store.close());
-  await store.update(db => {
-    db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true }));
-    db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
-      quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now(), inFlight: 0 }];
-    configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db);
-    db.jobs = statuses.map((status, sampleIndex) => ({ id: `child-${sampleIndex}`, requestId: 'parent', sampleIndex,
-      status, source: 'novelai-native', userToken: 'STA1N-a', request, createdAt: new Date().toISOString() }));
-  }, { immediate: true, generationRequest: { id: 'parent', member_id: 'a', source: 'novelai-native', operation: 'generate',
-    created_at: new Date().toISOString(), payload_bytes: 100000, payload: JSON.stringify({ ...request, prompt: 'x'.repeat(100000) }) } });
+  const db = { settings: {}, jobs: [], ledger: [] };
+  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true }));
+  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
+    quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now(), inFlight: 0 }];
+  configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db);
+  db.jobs = statuses.map((status, sampleIndex) => ({ id: `child-${sampleIndex}`, requestId: 'parent', sampleIndex,
+    status, source: 'novelai-native', userToken: 'STA1N-a', request, createdAt: new Date().toISOString() }));
+  const payload = JSON.stringify({ ...request, prompt: 'x'.repeat(100000) });
+  store.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
+    .run('parent', 'a', 'novelai-native', 'generate', new Date().toISOString(), Buffer.byteLength(payload), payload);
+  await store.write(db);
   const update = store.update.bind(store);
   store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
   const notifications = [];
   const ctx = vm.createContext({ store, fairShareMode: true, queueDispatchEnabled: true, settleFairQuota, syncFairQuota, reserveFairQuota,
     assertMemberAcceptsJobs, queuedDeadlineTimestamp, sharedAccountConcurrency, sharedAccountReadyDelay,
+    publicGenerationRequest, readOwnedGenerationRequest, recordGenerationFailure, assertConfirmedDispatch,
     singleGenerationRequest, cancelWaitingBatchJobs, runningJobControls: new Map(), jobAccountCost: () => 0,
     staleQueuedJobMs: () => 600000, staleRunningJobMs: () => 660000,
     httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }),
     publicErrorMessage: value => value, publicImageUrl: id => `/signed/${id}`, clearJobStreamProgress() {},
     notifyJobWaiters: id => notifications.push(id), scheduleQueueDrain() {}, createId: () => 'synthetic-refund' });
-  for (const name of ['publicGenerationRequest', 'getGenerationRequest', 'cancelGenerationRequest', 'refundJob',
+  for (const name of ['getGenerationRequest', 'cancelGenerationRequest', 'refundJob',
     'getUserOrThrow', 'uniqueIds', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyResultJobRows',
     'physicalAccountLoad', 'jobDeadlineTimestamp', 'isExpiredJobAt', 'isStaleActiveJob', 'staleActiveJobDetail', 'reserveQueuedJob']) {
     const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
