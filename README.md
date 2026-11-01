@@ -4,7 +4,9 @@
 
 此仓库发布可独立部署的基础共享框架：管理员、成员账号、额度账本、排队和生图接口。支持可选的 Discord OAuth、管理员邀请码和指定服务器成员验证；**不包含拼车大厅、聊天、收款与续车业务，也不包含线上数据。** 最近更新见 [CHANGELOG.md](CHANGELOG.md)。
 
-已完成的修复与后续实施顺序见[共享网关改进计划](docs/modernization-plan.md)，包含前端工程化、实时状态、TypeScript、排队诊断和隔离测试部署；各项以实施记录和对应验收为准。
+当前重构设计与实施顺序见[架构重构与成员生成计划](docs/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，完成规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/member-generation-contract.md)。计划及契约已成文，业务实现尚未开始；多执行器、多账号/车队调度和数据库系统迁移移至[后续扩展计划](docs/scaling-follow-up-plan.md)。
+
+已完成的前端工程化、实时状态、TypeScript、排队与隔离部署等工作见[上一轮现代化实施记录](docs/modernization-plan.md)。接口行为以[API 契约](docs/api-contract.md)为准，各阶段结果以实际实施记录和对应验收为准。
 
 bob 的正式双服务配置、完整备份、切换与回退边界见[正式发布准备](docs/production-release.md)。生产替换仍须单独批准。
 

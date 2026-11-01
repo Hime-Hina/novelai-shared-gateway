@@ -1,5 +1,7 @@
 # API 契约与迁移基线（C02/C03）
 
+新增的 Cookie 会话能力描述、统一报价和成员生成接口见[成员生成接口契约](member-generation-contract.md)，属于当前重构的目标规范，**尚未实现**。下文继续描述现有接口；新契约不改变 Native Bearer 鉴权、旧状态码和响应格式，也不表示多账号或其他数据库已被支持。
+
 协议核对日期：2026-10-17；部署状态更新：2026-10-19。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](executor-service.md)，dff5ee4 已完成[正式发布与真实验收](production-release.md)。
 
 实现依据为 [HTTP 入口](../server/index.ts)、[共享模式路由白名单](../server/shared-surface.ts)、[输入解析](../server/native-image.ts)、[multipart 解析](../server/native-body.ts)、[核价](../server/native-pricing.ts)、[上游适配](../server/providers.ts)、[成员路由](../server/member-routes.ts)。基线建立在首批安全修复之上；修改安全缺陷或实施已批准的需求时，可以更新相应基线，不能为了让测试通过而悄悄改变公开行为。
