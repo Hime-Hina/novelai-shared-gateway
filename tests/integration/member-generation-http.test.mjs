@@ -56,7 +56,7 @@ async function fixture(t) {
   const handleGeneration = () => createMemberGenerationHttp({ store,
     admit: createGenerationAdmission({ store, payloadBudget: budget, artifactAvailable: image => imageStorage.available(image), cleanupStaleActiveJobs: async () => {}, env }),
     budget, imageStorage, previews, scheduleQueueDrain() { drainCalls++; }, env });
-  const deps = { store, env, fetch: unavailable, assertAdmin: unavailable, createId, createPublicToken: unavailable, publicImageUrl: id => `/images/${id}`, ownerOperation: unavailable,
+  const deps = { store, env, fetch: unavailable, discordFetch: unavailable, assertAdmin: unavailable, createId, createPublicToken: unavailable, publicImageUrl: id => `/images/${id}`, ownerOperation: unavailable,
     changeMemberAdmission: unavailable, cancelGenerationRequest: unavailable,
     getGenerationRequest: async (id, memberId) => publicGenerationRequest(await readOwnedGenerationRequest(store, id, memberId)), handleMemberGeneration: handleGeneration() };
   const server = createServer(async (req, res) => {
@@ -126,7 +126,7 @@ async function fixture(t) {
     }, { immediate: true });
   };
   const restart = async () => { await store.close(); store = new JsonStore(dataDir); await store.init(); deps.store = store; deps.handleMemberGeneration = handleGeneration(); };
-  return { get store() { return store; }, server, sessions, budget, imageStorage, previews, origin, raw, json, quote, submit, openEvents, dispatch, finish, restart, get drainCalls() { return drainCalls; } };
+  return { get store() { return store; }, deps, server, sessions, budget, imageStorage, previews, origin, raw, json, quote, submit, openEvents, dispatch, finish, restart, get drainCalls() { return drainCalls; } };
 }
 
 test('HTTP capabilities and quotes require Cookie/Origin, remain private and do not write wallets or domain facts', async t => {
@@ -310,4 +310,47 @@ test('executor shutdown closes member preview subscriptions before waiting for H
   closeMemberGenerationStreams(f.store); await stream.done;
   assert.equal(stream.ended,true); assert.equal(f.previews.watchers.size,0);
   assert.equal(f.store.readGenerationRequestState(requestId,'a').jobs[0].status,'queued');
+});
+
+for (const waitingOn of ['ownership', 'discord-membership']) test(`shutdown while awaiting ${waitingOn} refuses a late SSE subscription`, async t => {
+  const f = await fixture(t), accepted = await f.submit(), requestId = accepted.body.requestId;
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; }), gate = new Promise(resolve => { release = resolve; });
+  if (waitingOn === 'ownership') {
+    const originalRead = f.store.readCollections.bind(f.store);
+    t.mock.method(f.store, 'readCollections', async (...args) => {
+      const result = await originalRead(...args);
+      if (args[0].includes('users')) { enter(); await gate; }
+      return result;
+    });
+  } else {
+    await f.store.update(db => {
+      const member = db.users.find(user => user.id === 'a');
+      Object.assign(member.discord, { checkedAt: Date.now() - 6 * 60000, accessToken: 'synthetic-discord-token', expiresAt: Date.now() + 3600000 });
+      const { id, guildId, checkedAt, member: eligible } = member.discord;
+      recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: member.id,
+        payload: { memberId: member.id, discord: { id, guildId, checkedAt, member: eligible } } });
+    }, { collections: ['users'], immediate: true });
+    t.mock.method(f.deps, 'discordFetch', async url => {
+      assert.match(String(url), /\/users\/@me\/guilds\/12345678901234567\/member$/);
+      enter(); await gate;
+      return Response.json({ pending: false, user: { id: '32345678901234560' } });
+    });
+  }
+  const originalInterval = globalThis.setInterval, intervals = [], initialCommitListeners = f.store.events.listenerCount('commit'), initialCloseListeners = f.store.events.listenerCount('close');
+  t.mock.method(globalThis, 'setInterval', (callback, milliseconds, ...args) => {
+    if (milliseconds === 15000) intervals.push(callback);
+    return originalInterval(callback, milliseconds, ...args);
+  });
+  const opening = f.raw(`/api/member/requests/${requestId}/events`);
+  await entered; closeMemberGenerationStreams(f.store);
+  const serverClosed = new Promise(resolve => f.server.close(resolve));
+  release();
+  const response = await opening;
+  assert.equal(response.status, 503); assert.equal((await response.json()).code, 'executor_closing');
+  await serverClosed;
+  assert.equal(intervals.length, 0); assert.equal(f.previews.watchers.size, 0);
+  assert.equal(f.store.events.listenerCount('commit'), initialCommitListeners);
+  assert.equal(f.store.events.listenerCount('close'), initialCloseListeners);
+  assert.equal(f.store.readGenerationRequestState(requestId, 'a').jobs[0].status, 'queued');
 });

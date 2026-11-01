@@ -24,7 +24,9 @@ interface Dependencies {
 }
 const streamCounts = new Map<string, number>();
 const storeStreams = new WeakMap<JsonStore, Set<() => void>>();
+const closingStores = new WeakSet<JsonStore>();
 export function closeMemberGenerationStreams(store: JsonStore): void {
+  closingStores.add(store);
   for (const close of storeStreams.get(store) || []) close();
 }
 function fail(statusCode: number, code: string, message: string): never { throw Object.assign(new Error(message), { statusCode, code }); }
@@ -169,6 +171,7 @@ async function streamRequest(deps: Dependencies, res: ServerResponse, requestId:
   revalidate: () => Promise<boolean>, snapshot: () => Promise<ReturnType<typeof publicGenerationRequest>>) {
   // Authentication/ownership reads above may finish after the client already left.
   if (res.destroyed || res.writableEnded) return;
+  if (closingStores.has(deps.store)) fail(503, 'executor_closing', '服务正在关闭，请稍后重试。');
   if ((streamCounts.get(memberId) || 0) >= 3 || [...streamCounts.values()].reduce((sum, count) => sum + count, 0) >= 100) fail(429, 'stream_limit', '预览连接过多，请关闭多余页面。');
   streamCounts.set(memberId, (streamCounts.get(memberId) || 0) + 1);
   let closed = false, running = false, requested = false, first = true, previous = '';
