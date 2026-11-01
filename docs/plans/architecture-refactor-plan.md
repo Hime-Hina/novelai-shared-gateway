@@ -2,7 +2,7 @@
 
 更新日期：2026-11-01，Asia/Taipei。
 
-状态：**`codex/event-sourcing-member-generation` 分支的固定候选 `f4966fd` 已通过独立审核和功能/发布包验收；R12 正式测量及其优化仍在进行，后续变更须重新验证，整体计划尚未关闭。** 本轮实施范围为单执行器、单共享 Opus、SQLite 下的架构重构、完整事件溯源和成员生成接口。多执行器、多账号/多车队调度及数据库系统迁移移至[后续扩展计划](scaling-follow-up-plan.md)，不作为本轮依赖或验收条件。代码审查基线为 `29085b8`，本轮实施基线为 `deab4db`。正式部署版本、备份及回退产物只以[发布记录](../operations/production-release.md)为准，本文件不复制一个独立维护的“当前生产版本”。
+状态：**`codex/event-sourcing-member-generation` 分支的固定候选 `3a3ffe1` 已通过独立审核和功能/发布包验收；R12 正式测量仍在进行，整体计划尚未关闭。** 本轮实施范围为单执行器、单共享 Opus、SQLite 下的架构重构、完整事件溯源和成员生成接口。多执行器、多账号/多车队调度及数据库系统迁移移至[后续扩展计划](scaling-follow-up-plan.md)，不作为本轮依赖或验收条件。代码审查基线为 `29085b8`，本轮实施基线为 `deab4db`。正式部署版本、备份及回退产物只以[发布记录](../operations/production-release.md)为准，本文件不复制一个独立维护的“当前生产版本”。
 
 本计划承接[上一轮现代化实施记录](../history/modernization-plan.md)，已有接口、账务和恢复契约继续有效。按 2026-11-01 最新范围调整，本轮补齐前端能力描述、统一报价、成员生成及配套读取/预览契约；完整事件溯源继续实施。SQLite 内部的事件基线/schema 迁移仍属于本轮，SQLite→其他数据库系统的切换属于后续计划。完整官网编辑器、画布和项目云同步不因接口设计自动纳入本轮。
 
@@ -22,7 +22,7 @@
 
 ## 2. 已发现问题与证据
 
-| 编号 | 当前事实及证据 | 影响 | 本轮处理 |
+| 编号 | 审查时事实及证据 | 影响 | 本轮处理 |
 | --- | --- | --- | --- |
 | A01 | [gateway-runtime.ts](../../server/gateway-runtime.ts) 的 `createJob`、`createDirectJob`、`createNativeBatch` 各自组织幂等、准入、免费限制和任务创建 | 新准入规则容易只接入部分入口 | 共同受理命令，保留协议、缓存和批次的真实差异 |
 | A02 | [fairQuotaSummary](../../server/fair-quota.ts) 内部调用 `syncFairQuota`；合成数据推进一分钟后，仅调用摘要就把输入钱包从 20 改成 20.025 | 查询者必须自己复制 settings/ledger；遗漏副本会污染业务状态 | 纯查询投影与显式恢复命令分离 |
@@ -366,42 +366,87 @@ R11/R14 清理依据：所有后端业务测试已退出运行时源码截取，
 
 公开运行时在读取配置前固定启用共享模式，生产没有非共享入口，因此 `7af2724` 继续删除只剩测试构造的旧 points 钱包、选择/重试其他账号和无任务结果写入分支。保留的是当前 Native/OpenAI/direct 共享行为和旧历史读取。批量与单账号管理共同生成 `AvailabilityChanged`；原批量管理日志随事实保存为 evidence，事件写入失败时账号、日志、事件与 commit 一起回滚。`f4f12ef` 的实际 HTTP 回归覆盖该原子性及重启，Windows 该文件 6 通过、1 个已有 SIGTERM 平台跳过；该跳过项已由下述 Linux 固定候选验证覆盖。
 
-固定业务候选 `f4966fd42c789469cb3e55d1d87399c1d0cd417c` 的最终运行证据已保存为[验收清单](../history/refactor-validation/runtime-f4966fd.json)。环境为 Linux x64、Node 22.23.4、隔离网络和合成数据，未使用生产数据或真实 NAI/Discord/R2 服务。接口/执行模块通过独立审核及 48 项纯检查；另一审核者关闭事件、冷投影、版本兼容和两项性能优化的所有发现。
+当前业务候选 `3a3ffe1df9f764e85743761fb714aa7492414b7b` 的运行证据保存为[验收清单](../history/refactor-validation/runtime-3a3ffe1.json)。它将只读 readiness 预检查与最终受理分开：最终事务先按原上下文回放，再同步额度、重验资格、检查费用/容量并保存新请求与回执。无效输入或最终 SQL 失败不留下独立恢复提交；成功时恢复与请求同一提交；cleanup 仍是独立维护命令。真实红例及修复后回归同时覆盖账号在两阶段之间被停用、失败恢复原游标、原回执优先于新政策及停用状态。两位审核者分别完成 26 项接口检查/Native 断言与 12 表的事件并发、回滚独立验证。
+
+历史候选 `f4966fd` 的[原验收清单](../history/refactor-validation/runtime-f4966fd.json)保留其当时结果：后端 674 项中 673 项通过，authority 旧断言由 `619d9eb` 修正后完整受影响文件 1/1 通过，不能改写成一次全绿执行；执行器内部金额断言由 `2d7bacf` 修正。该旧包为 52,568,771 字节，SHA-256 `a18f3947c56da01ca942caa98334deb3e1e872c9fabf3d0838315917dcc4c78c`，不作为新包的散列。
+
+以下是新候选的 Linux x64、Node 22.23.4、隔离网络及合成数据结果，未使用生产数据或真实 NAI/Discord/R2 服务：
 
 | 验证范围 | 固定候选结果 |
 | --- | --- |
-| 后端 | 全量 674 项中 673 通过、1 项是旧 authority 版本断言，0 跳过；`619d9eb` 仅将该元数据期望改为 2，完整受影响真实 HTTP 文件重跑 1/1 通过。验收覆盖为未变的 673 项加完整文件复跑，不能记作一次全绿的全量执行 |
+| 后端 | 本次全量 676/676 通过，0 失败、0 跳过，约 278.6 秒 |
 | 网页与执行器 | web 类型检查及 139 项通过；executor 类型检查及 3 项通过；真实 Nuxt＋执行器 16/16 通过、0 跳过，包含大请求、90 KiB 预览和进程恢复 |
 | 生产与发布包 | root/web/executor 生产镜像构建通过；实际生产执行器镜像和解包发布包 HTTP 各 4/4、0 跳过；包内 Node、依赖、SQL、worker、重放/断点恢复工具及 systemd 校验通过 |
-| 备份与恢复 | 实际 `backup-production.py backup()` 备份的 24 张表逐行一致、源库不变；三笔 opening 后付费操作恢复后，9 张事实/回执相关表及余额一致、integrity=ok。该业务备份样本不含生成图片字节；包内私有输入、产物和诊断恢复另有独立验证 |
-| 旧版本拒绝 | 真正的 `1427422` 进程在监听前拒绝 writer/minimumWriter v2 库，24 张表完全不变，已退休的无 job 图片没有复活；更早 `deab4db` 的不兼容 schema 拒绝亦已验证 |
+| 备份与恢复 | 新包实际执行 `backup-production.py backup()`，24 张表逐行一致、源库不变；私有输入/产物/诊断重放、max1 后续跑与重复0再次通过。三笔 opening 后付费、9 张事实/回执表及余额相等的验证沿用 `f4966fd`，因备份、金额、存储和重放源码未变。业务备份样本不含生成图片字节 |
+| 旧版本拒绝 | 版本门槛/迁移/reducer 源码未变，沿用真正 `1427422` 进程对 `f4966fd` 的验证：监听前拒绝 v2 库，24 张表不变，已退休无 job 图片不复活。更早 `deab4db` 的 schema 拒绝亦保留原证据版本 |
 | 外围兼容 | 相关源文件未变，沿用同轮隔离备份脚本 6 项与实际 Caddy HTTP 7 项通过证据 |
 
-发布包为 `novelai-gateway-f4966fd-linux-x64.tar.gz`，52,568,771 字节，SHA-256 为 `a18f3947c56da01ca942caa98334deb3e1e872c9fabf3d0838315917dcc4c78c`。执行器内部金额断言修订 `2d7bacf` 和后端版本断言修订 `619d9eb` 均未改变业务源码。清单保存各镜像 SHA、原始日志文件名及包位置；它是运行/打包证据，正式性能结果单列，生产发布仍未执行。
+新发布包为 `novelai-gateway-3a3ffe1-linux-x64.tar.gz`，52,568,793 字节，SHA-256 为 `f8d90027ac741324466898a7c99f29b90d04450c6205cb585fb6f30dc78ec53d`。清单保存各镜像 SHA、原始日志名、包位置及承接依据。先前 Windows 的一次初始 quote `fetch failed` 没有底层 cause，原因未确定；隔离文件重跑及本次完整 Linux 通过，不据此将其定性为无故偶发。正式性能结果单列，生产发布仍未执行。
 
-| 编号 | 工作包与责任范围 | 依赖 | 具体交付与完成依据 |
-| --- | --- | --- | --- |
-| R00 | 本文、README、旧计划、服务端入口说明 | 无 | 审查证据、设计、迁移、验收及版本来源落盘；链接可用，状态区分清楚 |
-| R01 | `fair-quota` 查询语义与旧死代码 | R00 | summary 无副作用，所有 caller 明确同步/预测；删除 A08；冻结输入测试与原 HTTP 查询回归通过 |
-| R02 | 稳定身份/归属/类型与增量 schema | R00 | member/account/request/attempt 身份贯穿当前业务；旧 Key/历史归属兼容、跨成员权限通过，缩小 StoreItem 使用面；不新增多车队模型 |
-| R03 | 共享政策、能力描述、统一报价与金额 | R01、R02 | 实现 capabilities/quote、版本 DTO、纯核价与费用向量；12 位定点与原报价对照、舍入守恒，默认行为/购买池/期限端点通过 |
-| R04 | 统一受理与成员生成接口 | R01、R02、R03 | 实现新 Cookie 生成、202 回执、费用确认、幂等及配套输入/预览/领取；复用旧入口命令，原协议不变，大正文和权限 HTTP 回归通过 |
-| R05 | 事件表、信封、版本、原子提交与固定样本 | R02 | 真实端到端命令验证 append+projection+receipt；单执行器并发请求、版本冲突、SQL 失败和完整提交游标测试通过 |
-| R06 | 额度、恢复、分配、成员管理及运营账事件化 | R03、R05 | 所有钱包变更都有上述事件；old/new 对照覆盖净额抵消、恢复上限、fallback、转移/删除/重分；逐来源全量重放相同 |
-| R07 | 请求/attempt/结果事件化与单账号派发 | R04、R05、R06 | 保存原费用确认并逐张校验；描述→产物→结算、停止/关闭/重启/迟到结果完整；故障注入和单账号串行测试通过 |
-| R08 | 关键/查询 projector、重放工具与通知 | R06、R07 | 从 opening 删除全部可重建表后恢复余额、幂等、终态、免费次数和队列；通知与工作唤醒重复/丢失不影响事实 |
-| R09 | 成员生成契约端到端验收 | R03、R04、R07、R08 | 能力→报价→确认→202→预览/查询→产物闭环；覆盖版本漂移、幂等、费用上限、批次、Cookie/CSRF、输入恢复及旧客户端回归 |
-| R10 | opening importer、影子运行与权威切换 | R06、R07、R08、R09 | 旧历史/冷记录/未知状态完整迁移；重复导入和切换中断恢复；T0 后事件全重放一致，无双重权威 |
-| R11 | 测试结构与接口契约收尾 | 随 R01–R10 完成对应部分 | 已迁模块不再被源码截取；保留行为覆盖，执行器/网页实际装配、旧客户端和权限契约通过 |
-| R12 | SQL、缓存、事件体积和查询性能优化 | R08、R10 | 用同数据/硬件对照写事务、重放、查询、内存和磁盘；移除全库热载/无界扫描，关键路径不回归 |
-| R13 | 构建、备份、恢复、文档与候选版本 | R10、R11、R12 | 候选包包含新 SQL/worker/replay 工具；Linux 全量与恢复演练通过，形成具体发布/回退步骤 |
-| R14 | 过渡层清理与最终交付 | R13 | 移除旧钱包写入口、过渡 trigger、重复 commit、失效配置/测试；清理后最终提交通过 CI，逐条关闭 A01–A09 和 I01–I18，形成最终候选及发布记录 |
+| 编号 | 工作包与责任范围 | 依赖 | 具体交付与完成依据 | 当前关闭状态 |
+| --- | --- | --- | --- | --- |
+| R00 | 本文、README、旧计划、服务端入口说明 | 无 | 审查证据、设计、迁移、验收及版本来源落盘；链接可用，状态区分清楚 | 已关闭：文档分类、规范和证据入口已提交 |
+| R01 | `fair-quota` 查询语义与旧死代码 | R00 | summary 无副作用，所有 caller 明确同步/预测；删除 A08；冻结输入测试与原 HTTP 查询回归通过 | 已关闭：`a44ba18` 独立验收，现候选全量回归覆盖 |
+| R02 | 稳定身份/归属/类型与增量 schema | R00 | member/account/request/attempt 身份贯穿当前业务；旧 Key/历史归属兼容、跨成员权限通过，缩小 StoreItem 使用面；不新增多车队模型 | 已关闭：稳定归属、写入联合类型、旧输入与轮换验证 |
+| R03 | 共享政策、能力描述、统一报价与金额 | R01、R02 | 实现 capabilities/quote、版本 DTO、纯核价与费用向量；12 位定点与原报价对照、舍入守恒，默认行为/购买池/期限端点通过 | 已关闭：独立金额样本、能力交叉矩阵及 HTTP 验收 |
+| R04 | 统一受理与成员生成接口 | R01、R02、R03 | 实现新 Cookie 生成、202 回执、费用确认、幂等及配套输入/预览/领取；复用旧入口命令，原协议不变，大正文和权限 HTTP 回归通过 | 已关闭：共同受理、成员闭环；`3a3ffe1` 原子性复审 |
+| R05 | 事件表、信封、版本、原子提交与固定样本 | R02 | 真实端到端命令验证 append+projection+receipt；单执行器并发请求、版本冲突、SQL 失败和完整提交游标测试通过 | 已关闭：事件/回执/投影 SQL 故障及并发验证 |
+| R06 | 额度、恢复、分配、成员管理及运营账事件化 | R03、R05 | 所有钱包变更都有上述事件；old/new 对照覆盖净额抵消、恢复上限、fallback、转移/删除/重分；逐来源全量重放相同 | 已关闭：领域事件与独立账本、净额/回跳/资金来源对照 |
+| R07 | 请求/attempt/结果事件化与单账号派发 | R04、R05、R06 | 保存原费用确认并逐张校验；描述→产物→结算、停止/关闭/重启/迟到结果完整；故障注入和单账号串行测试通过 | 已关闭：精确收费竞态、冷历史预算、结果故障点与实际 HTTP |
+| R08 | 关键/查询 projector、重放工具与通知 | R06、R07 | 从 opening 删除全部可重建表后恢复余额、幂等、终态、免费次数和队列；通知与工作唤醒重复/丢失不影响事实 | 已关闭：全冷表比较、独立重建、通知与批次回滚验证 |
+| R09 | 成员生成契约端到端验收 | R03、R04、R07、R08 | 能力→报价→确认→202→预览/查询→产物闭环；覆盖版本漂移、幂等、费用上限、批次、Cookie/CSRF、输入恢复及旧客户端回归 | 已关闭：成员 HTTP 与实际 Nuxt 16/16，G01–G12 覆盖 |
+| R10 | opening importer、影子运行与权威切换 | R06、R07、R08、R09 | 旧历史/冷记录/未知状态完整迁移；重复导入和切换中断恢复；T0 后事件全重放一致，无双重权威 | 已关闭：opening、保守分摊安装、v1→v2 与实际旧 writer 拒绝 |
+| R11 | 测试结构与接口契约收尾 | 随 R01–R10 完成对应部分 | 已迁模块不再被源码截取；保留行为覆盖，执行器/网页实际装配、旧客户端和权限契约通过 | 已关闭：真实导出、全量 676/676 与独立装配复审 |
+| R12 | SQL、缓存、事件体积和查询性能优化 | R08、R10 | 用同数据/硬件对照写事务、重放、查询、内存和磁盘；移除全库热载/无界扫描，关键路径不回归 | 未关闭：新候选独立正式序列进行中，旧触发记录保留 |
+| R13 | 构建、备份、恢复、文档与候选版本 | R10、R11、R12 | 候选包包含新 SQL/worker/replay 工具；Linux 全量与恢复演练通过，形成具体发布/回退步骤 | 功能/包门禁已过；整体关闭等待 R12 |
+| R14 | 过渡层清理与最终交付 | R13 | 移除旧钱包写入口、过渡 trigger、重复 commit、失效配置/测试；清理后最终提交通过 CI，逐条关闭 A01–A09 和 I01–I18，形成最终候选及发布记录 | 清理和功能复审已过；最终交付等待 R12/R13 关闭 |
 
 主要依赖为：`R00 → R01/R02 → R03 → R04`；`R02 → R05 → R06 → R07 → R08 → R09 → R10 → R12/R13 → R14`。R11 随所属切片迁移，不等最后才修测试。R04 与事件存储准备可分别推进，但实际合并保持每个提交可运行。
 
 R13 是打包与恢复演练候选，R14 清理后的实际提交才是完整计划的最终候选；不能把过渡写入留在已宣布完成的版本中。生产切换针对明确候选另行执行，M4/M5 在此之前通过隔离演练证明。
 
 每个工作包使用一个或多个可独立审查的提交：写明改变的业务触发、事实拥有者、迁移影响和针对性命令。涉及字段、协议或状态的变更必须同时处理调用者、DTO、测试、fixture、schema、导出和构建；不把这些必要部分留成“后续补齐”。
+
+### 10.1 原始问题关闭映射
+
+下列结论对应 `3a3ffe1` 及上面的独立验收清单，说明第 2 节的原始问题如何关闭；不把旧问题描述当作当前实现，也不将功能验收替代尚未结束的 R12。
+
+| 编号 | 实际归属与关闭依据 |
+| --- | --- |
+| A01 | [共同受理](../../server/generation-admission.ts)拥有幂等、资格、免费名额、队列与请求创建；协议层只转换输入/输出。实际成员、Native、direct/OpenAI HTTP 与[受理竞争](../../tests/integration/idempotency-admission.test.mjs)覆盖共同事务。 |
+| A02 | `fairQuotaSummary` 和估算只返回派生值，恢复由命令显式提交；[首次分组预览](../../tests/integration/first-group-preview.test.mjs)验证预览不写原库且与保存一致，[查询和运营账](../../tests/integration/operating-accounting.test.mjs)验证 ledger 不被读取污染。 |
+| A03 | 三资源以 12 位定点保存；Anlas 总额和成员集合由明细计算，恢复/分配事件保存实际向量。[手算金额与余数](../../tests/unit/resource-amounts.test.mjs)、[领域事件](../../tests/unit/quota-events.test.mjs)及旧库 opening 分摊对照共同覆盖。 |
+| A04 | [quota-policy](../../server/quota-policy.ts)维护共享资格/新鲜度，免费计数使用同一成功事实。权威切换和重放移除过渡业务 trigger；[历史免费成功时间和阈值](../../tests/integration/replay-opening.test.mjs)按原事实重建。 |
+| A05 | [事件提交](../../server/event-store.ts)同事务保存事件、回执、关键投影；store 拒绝无事件的关键热/冷表变更，提交失败恢复内存。[权威切换](../../tests/integration/event-authority.test.mjs)和[SQL 原子性](../../tests/integration/event-store.test.mjs)覆盖实际写边界；第二写进程仍不在当前支持范围。 |
+| A06 | [事件 payload 联合](../../server/event-payloads.ts)、生成输入/确认/费用等具体类型约束生产写入；[负向类型断言](../../tests/unit/domain-event-types.test.mjs)进入常规测试。`StoreItem` 仍是旧存储/DTO 兼容外壳，未宣称消除全部动态对象；它不再替代事件 payload 的写入契约。 |
+| A07 | 已迁业务测试直接 import 实际受理、执行、刷新、查询与协议装配，或使用真实 SQLite/HTTP；后端不再截取运行时源码。Linux 后端 676 项和实际 Nuxt/执行器 16 项验证装配；前端 DOM VM 测试属于独立浏览器替身。 |
+| A08 | 全仓调用检索和未使用声明检查后删除旧扣款链及不可达非共享 points/选路路径，也删除只有孤立测试的死管理动作；保留旧历史读取与现有协议回归，未为死路径另建抽象层。 |
+| A09 | docs 按计划、契约、架构、运维和历史分类；本计划维护范围/关闭状态，验收 JSON 保存固定源码与原始日志，正式部署版本只由[发布记录](../operations/production-release.md)维护。 |
+
+### 10.2 不变量验证映射
+
+I01–I18 在当前候选的功能范围内已通过。下面链接到可直接运行的回归；全量运行、独立审核和包恢复的版本/结果以上述清单为准。真实上游不可保证 exactly-once，测试验证的是本网关不重复派发和按证据恢复的责任边界。
+
+| 编号 | 实际验证入口与观察结果 |
+| --- | --- |
+| I01 | [真实幂等 HTTP](../../tests/integration/idempotency-http.test.mjs)：同键并发、断线、重启、默认值变化和 Key 轮换只保留同一请求；[成员 HTTP](../../tests/integration/member-generation-http.test.mjs)保留首个上下文与确认。 |
+| I02 | [真实 SQLite 受理](../../tests/integration/idempotency-admission.test.mjs)：输入/最终 SQL 失败不留下请求、回执或独立恢复；成功时恢复游标、请求、输入引用和子任务同一提交。 |
+| I03 | [冷结算凭据](../../tests/integration/fair-quota-settlements.test.mjs)与[生成账务](../../tests/integration/generation-accounting.test.mjs)：重复/乱序 reserve、退款、终态，以及清理/重启后均不重复扣退。 |
+| I04 | [定点手算](../../tests/unit/resource-amounts.test.mjs)、[额度事件](../../tests/unit/quota-events.test.mjs)逐来源核对重分、转移、删除、注资和恢复；最小单位与 opening 余数可追溯。 |
+| I05 | [运营账](../../tests/integration/operating-accounting.test.mjs)：延迟扣款、净额抵消、下降/回跳和注资不重复分配或自动扣闲置成员；未知收费候选与明确核销保持区分。 |
+| I06 | [共享额度](../../tests/unit/fair-quota.test.mjs)和运营账购买池回归保留授权/固定池/快照条件；[最终派发](../../tests/unit/generation-execution.test.mjs)禁止把零授权资源用于 fallback。 |
+| I07 | [真实请求控制](../../tests/integration/request-control-http.test.mjs)、[生命周期生产者](../../tests/integration/event-lifecycle-producers.test.mjs)：停止、等待取消与退款原子提交，取消分类和时间重放保留；在途完成不复活剩余 child。 |
+| I08 | [连接生命周期 HTTP](../../tests/integration/connection-lifecycle-http.test.mjs)、[批次 HTTP](../../tests/integration/native-batch-http.test.mjs)与实际 Nuxt/执行器覆盖串行派发、物理连接未结束时保留占用、超时/关闭和重启。 |
+| I09 | [结果恢复 HTTP](../../tests/integration/result-recovery-http.test.mjs)与[实际进程链路](../../web/tests/integration/executor-lifecycle.test.mjs)覆盖派发前后退出/强杀；不确定 attempt 留作核对，未自动重发。 |
+| I10 | [生成核对](../../tests/integration/generation-review.test.mjs)及结果恢复覆盖描述提交失败、文件故障、重复重启、迟到产物和取消竞争；原退款保留、结果 ID 稳定、文件/金额不重复。 |
+| I11 | [纯查询/事件](../../tests/unit/quota-events.test.mjs)、首次分组预览和成员报价检查无写入；禁网 Linux 重放/包恢复只应用已记录决定，不调用生成或上游刷新。 |
+| I12 | 额度事件、运营账和[刷新装配](../../tests/unit/quota-refresh-runtime.test.mjs)覆盖重复区间、容量缺口/债务优先、超时后迟到观察；同区间不再次分配。 |
+| I13 | [免费成功事实](../../tests/integration/free-image-policy.test.mjs)覆盖窗口端点、并发名额、清理/重启、迟到成功和计数回滚；opening/replay 保留历史毫秒时间及原告警阈值。 |
+| I14 | 成员 HTTP、幂等 HTTP 和[opening 私有资料恢复](../../tests/integration/replay-opening.test.mjs)覆盖跨成员、owner、Cookie/Origin、Key 轮换及稳定 parent 所有权；秘密不进入公开事件。 |
+| I15 | [事件存储](../../tests/integration/event-store.test.mjs)、权威测试和 opening 冷表比较覆盖事件/receipt/projector SQL 故障、版本竞争、完整 commit 游标、批次回滚；独立审核逐一核对 12 表。 |
+| I16 | [版本演进](../../tests/integration/event-version.test.mjs)验证 v1→v2 原子安装、未知版本先拒绝和失败回滚；固定 opening 全重建与实际旧 writer 进程拒绝 v2 的证据保留原版本。 |
+| I17 | 成员 HTTP 与最终派发测试覆盖只读报价、篡改确认、逐 child/累计上限和 1ms 恢复跨计费路径；[已退休 child 的冷费用](../../tests/integration/generation-budget-retention.test.mjs)仍计入原批次预算。 |
+| I18 | [能力矩阵](../../tests/unit/generation-capabilities.test.mjs)、[成员规范化/报价](../../tests/unit/member-generation.test.mjs)及成员 HTTP 交叉验证普通/缓存/单张 Vibe、infill 模型与冲突组合；旧上下文使用保存的限制，新请求使用当前规则。 |
 
 ## 11. 验证矩阵与完成定义
 
