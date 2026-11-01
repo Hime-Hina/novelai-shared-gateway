@@ -8,7 +8,7 @@ import { reduceSharingEvent, reduceAccountQuotaEvent, accountQuotaEventTypes, sp
   type SharingQuotaState, type AccountQuotaState } from './quota-events.ts';
 import { normalizeOpeningQuota, type FairQuotaState, type OpeningAmountGroupReport } from './fair-quota.ts';
 import { parseAmount } from './resource-amounts.ts';
-import { SUPPORTED_EVENT_AUTHORITY_VERSION } from './storage-migrations.ts';
+import { readCompatibleEventAuthority,SUPPORTED_EVENT_AUTHORITY_VERSION } from './storage-migrations.ts';
 
 export type DomainProjection = Record<string, unknown> | null;
 export interface StreamProjection {
@@ -25,11 +25,7 @@ export function removeLegacyFreeImageTriggers(sqlite:Database.Database):void {
   sqlite.exec('DROP TRIGGER IF EXISTS free_image_settled; DROP TRIGGER IF EXISTS free_image_recovered_insert; DROP TRIGGER IF EXISTS free_image_recovered_update; DROP TRIGGER IF EXISTS free_image_warning;');
 }
 export function eventAuthorityEnabled(sqlite:Database.Database):boolean {
-  const row=sqlite.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get() as {value:string}|undefined;
-  if(!row)return false;
-  const authority=JSON.parse(row.value) as {version:number;minimumWriterVersion:number};
-  if(authority.version!==EVENT_AUTHORITY_VERSION||authority.minimumWriterVersion>EVENT_AUTHORITY_VERSION)throw new Error('Event authority requires a newer compatible writer.');
-  return true;
+  return readCompatibleEventAuthority(sqlite)!==null;
 }
 interface CommitRow { commit_seq: string; command_id: string; fingerprint: string; recorded_at: string; event_count: number; receipt: string }
 interface EventRow {
@@ -214,6 +210,51 @@ export function readDomainCommits(sqlite: Database.Database, afterCommitSeq = '0
   });
 }
 
+export function assertCurrentEventReducer(sqlite:Database.Database):void {
+  readCompatibleEventAuthority(sqlite);
+  const checkpoint=sqlite.prepare("SELECT reducer_version FROM projection_versions WHERE name='core'").get() as {reducer_version:number}|undefined;
+  if(checkpoint&&checkpoint.reducer_version!==DOMAIN_REDUCER_VERSION)
+    throw new Error(`Unsupported reducer version: ${checkpoint.reducer_version}; upgrade event projections before use.`);
+}
+
+// 只升级可重建的 stream cache；调用方在同一事务内核对/安装业务投影及 writer 标记。
+// 不重插事件、收据或冷凭据，不以旧 cache 内容冒充新 reducer 的结果。
+export function upgradeEventReducers(sqlite:Database.Database):boolean {
+  if(!sqlite.inTransaction)throw new Error('Reducer upgrade requires a database transaction.');
+  const authority=readCompatibleEventAuthority(sqlite);
+  const versions=(sqlite.prepare('SELECT DISTINCT reducer_version FROM event_streams UNION SELECT reducer_version FROM projection_versions').all() as {reducer_version:number}[])
+    .map(row=>row.reducer_version);
+  for(const version of versions)if(version!==1&&version!==DOMAIN_REDUCER_VERSION)throw new Error(`Unsupported reducer version: ${version}`);
+  if(authority?.version!==1&&!versions.includes(1))return false;
+  const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
+  const checkpoint=sqlite.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get() as {value:string}|undefined;
+  sqlite.exec('DELETE FROM event_streams');
+  const save=sqlite.prepare(`INSERT INTO event_streams(stream_id,stream_kind,stream_version,last_commit_seq,last_event_id,reducer_version,projection,projection_sha256)
+    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET stream_version=excluded.stream_version,last_commit_seq=excluded.last_commit_seq,
+    last_event_id=excluded.last_event_id,reducer_version=excluded.reducer_version,projection=excluded.projection,projection_sha256=excluded.projection_sha256`);
+  let cursor='0',recordedAt='';
+  while(true){
+    const commits=readDomainCommits(sqlite,cursor,100);if(!commits.length)break;
+    for(const commit of commits){
+      if(cursor!=='0'&&BigInt(commit.commitSeq)!==BigInt(cursor)+1n)throw new Error(`Replay commit order mismatch at ${commit.commitSeq}`);
+      for(const event of commit.events){
+        const prior=readStreamProjection(sqlite,event.streamId);
+        if(BigInt(event.streamVersion)!==BigInt(prior?.streamVersion||'0')+1n||prior&&prior.streamKind!==event.streamKind)
+          throw new Error(`Replayed stream version mismatch at ${event.eventId}`);
+        const projection=reduceDomainEvent(prior?.projection||null,event);
+        save.run(event.streamId,event.streamKind,BigInt(event.streamVersion),BigInt(commit.commitSeq),event.eventId,DOMAIN_REDUCER_VERSION,canonicalJson(projection),domainDigest(projection));
+      }
+      cursor=commit.commitSeq;recordedAt=commit.recordedAt;
+    }
+  }
+  if(cursor!==(clock?.value||'0')||checkpoint&&cursor!==checkpoint.value)throw new Error('Reducer upgrade commit cursor differs from committed history.');
+  if(recordedAt)sqlite.prepare(`INSERT INTO projection_versions(name,epoch,reducer_version,last_commit_seq,status,updated_at) VALUES('core','live',?,?,'ready',?)
+    ON CONFLICT(name) DO UPDATE SET reducer_version=excluded.reducer_version,last_commit_seq=excluded.last_commit_seq,status='ready',updated_at=excluded.updated_at`)
+    .run(DOMAIN_REDUCER_VERSION,BigInt(cursor),recordedAt);
+  else sqlite.prepare('UPDATE projection_versions SET reducer_version=?').run(DOMAIN_REDUCER_VERSION);
+  return true;
+}
+
 // 所有金额已在业务决定时确定；reducer 不读取当前时钟、报价或外部状态。
 export function reduceDomainEvent(previous: DomainProjection, event: DomainEvent): DomainProjection {
   assertDomainEvent(event);
@@ -341,6 +382,7 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
 
 export function appendDomainCommit(sqlite: Database.Database, command: DomainCommand|DomainReplayCommand, options: AppendOptions = {}): { commitSeq: string; receipt: Json; duplicate: boolean } {
   if (!sqlite.inTransaction) throw new Error('Domain commit must run inside the business write transaction.');
+  assertCurrentEventReducer(sqlite);
   if (!command.events.length) throw new Error('A domain commit requires at least one explicit fact.');
   command.events.forEach(assertDomainEvent);
   assertPublicDomainFact(command.receipt, 'receipt');
@@ -522,8 +564,24 @@ export function projectColdDomainFacts(sqlite: Database.Database, commit: Domain
 }
 
 export function replayDomainEvents(source: Database.Database, target: Database.Database, options: AppendOptions & { throughCommitSeq?: string; maxCommits?: number } = {}): { lastCommitSeq: string; commits: number; events: number } {
-  // 新库迁移的旧兼容触发器不能按今日政策改写历史成功时间或告警阈值。
-  target.transaction(()=>removeLegacyFreeImageTriggers(target))();
+  readCompatibleEventAuthority(source);
+  target.transaction(()=>{
+    const authority=readCompatibleEventAuthority(target),upgraded=upgradeEventReducers(target);
+    // 新库迁移的旧兼容触发器不能按今日政策改写历史成功时间或告警阈值。
+    removeLegacyFreeImageTriggers(target);
+    if(upgraded&&options.project){
+      const clock=target.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
+      const commit:DomainCommit={commitSeq:clock?.value||'0',commandId:'upgrade-replayed-projections',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
+      let cursor='';
+      while(true){
+        const rows=target.prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100').all(cursor) as {stream_id:string}[];
+        if(!rows.length)break;
+        options.project(target,commit,rows.map(row=>readStreamProjection(target,row.stream_id)!));cursor=rows.at(-1)!.stream_id;
+      }
+    }
+    if(authority&&upgraded)target.prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
+      .run(JSON.stringify({...authority,version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION}));
+  })();
   const checkpoint = target.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get() as { value: string } | undefined;
   let cursor = checkpoint?.value || '0', commits = 0, events = 0;
   while (commits < (options.maxCommits ?? Infinity)) {

@@ -9,9 +9,9 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
-import { migrateStorage } from './storage-migrations.ts';
+import { migrateStorage,readCompatibleEventAuthority } from './storage-migrations.ts';
 import { beginDomainCommand, finishDomainCommand, canonicalJson,recordDomainEvent, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
-import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
+import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,assertCurrentEventReducer,upgradeEventReducers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
 import { normalizeOpeningQuota } from './fair-quota.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
@@ -1244,6 +1244,7 @@ export class JsonStore {
   createSchema() {
     const startedAt = Date.now();
     migrateStorage(this.sqlite!);
+    upgradeEventAuthorityProjections(this.sqlite!);
     runtimeLog(`SQLite migrations checked in ${Date.now() - startedAt}ms`);
   }
 
@@ -2038,6 +2039,8 @@ function projectionDifference(actual:unknown,expected:unknown,at:string):string|
 }
 
 export function activateEventAuthority(sqlite:Database.Database):{version:number;commitSeq:string} {
+  // 已有权威库的版本升级须先于恢复命令；与首次切换的 running 禁止条件不同。
+  upgradeEventAuthorityProjections(sqlite);
   importOpeningFacts(sqlite);
   return sqlite.transaction(()=>{
     if(sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get())throw new Error('Recover running attempts before switching event authority.');
@@ -2053,8 +2056,21 @@ export function activateEventAuthority(sqlite:Database.Database):{version:number
   })();
 }
 
+function upgradeEventAuthorityProjections(sqlite:Database.Database):void {
+  sqlite.transaction(()=>{
+    const authority=readCompatibleEventAuthority(sqlite);
+    if(!upgradeEventReducers(sqlite)||!authority)return;
+    verifyEventProjections(sqlite);
+    removeLegacyFreeImageTriggers(sqlite);
+    installEventProjections(sqlite);
+    sqlite.prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
+      .run(JSON.stringify({...authority,version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION}));
+  })();
+}
+
 export function verifyEventProjections(sqlite:Database.Database):void {
   if(!sqlite.inTransaction)throw new Error('Shadow verification requires a consistent database transaction.');
+  assertCurrentEventReducer(sqlite);
   verifyColdDomainFacts(sqlite);
   const unmapped=sqlite.prepare(`SELECT j.id FROM jobs j LEFT JOIN event_streams s
     ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`).get() as {id:string}|undefined;

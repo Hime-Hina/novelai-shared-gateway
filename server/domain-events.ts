@@ -3,7 +3,8 @@ import type { DomainPayloads } from './event-payloads.ts';
 export type { DomainPayloads, AcceptedJobFact } from './event-payloads.ts';
 
 export const DOMAIN_SCHEMA_VERSION = 1;
-export const DOMAIN_REDUCER_VERSION = 1;
+// v2 makes retired artifact tombstones part of every rebuilt query projection.
+export const DOMAIN_REDUCER_VERSION = 2;
 export const DOMAIN_AMOUNT_VERSION = 'decimal-12-v1';
 export const domainEventTypes = [
   'OpeningStateRecorded', 'LegacyFactRecorded', 'SharingConfigured', 'AllocationChanged', 'MemberTransferred', 'MemberRemoved',
