@@ -55,7 +55,6 @@ export function createRequestControls(store: JsonStore, deps: {
   notify(jobId: string, result: GenerationDeliveryResult): void;
   schedule(): void;
   readRequest(requestId: string, memberId: string): Promise<object>;
-  fairShareMode?: boolean;
   now?: () => number;
 }) {
   function notifyCancelled(ids: string[], message: string) {

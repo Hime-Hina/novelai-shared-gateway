@@ -61,19 +61,17 @@ export function createQueueDispatcher(options: {
   notify(jobId: string, result: { error?: string; statusCode?: number; cooldownUntil?: string }): void;
   now?: () => number;
   env?: NodeJS.ProcessEnv;
-  fairShareMode?: boolean;
-  legacy?: { availableSlots(accounts: StoreItem[], settings: Settings): number; readyDelay(accounts: StoreItem[], settings: Settings): number };
   log?(value: object): void;
   error?(value: unknown): void;
 }) {
-  const { store, controls } = options, now = options.now || Date.now, shared = options.fairShareMode !== false;
+  const { store, controls } = options, now = options.now || Date.now;
   let timer: ReturnType<typeof setTimeout> | null = null, runAt = 0, draining = false, requested = false, lastWait = '';
-  const slots = (accounts: StoreItem[], settings: Settings) => shared ? availableSharedAccountSlots(accounts, settings, controls, now()) : options.legacy!.availableSlots(accounts, settings);
-  const readyDelay = (accounts: StoreItem[], settings: Settings) => shared ? nextSharedAccountReadyDelay(accounts, settings, controls, now()) : options.legacy!.readyDelay(accounts, settings);
+  const slots = (accounts: StoreItem[], settings: Settings) => availableSharedAccountSlots(accounts, settings, controls, now());
+  const readyDelay = (accounts: StoreItem[], settings: Settings) => nextSharedAccountReadyDelay(accounts, settings, controls, now());
   async function retryDelay() {
     return store.update(db => {
       const at = now(), expiries = db.jobs.map(job => queuedDeadlineTimestamp(job, options.env)).filter(Boolean).map(until => until - at);
-      return Math.max(shared ? 1000 : 25, Math.min(readyDelay(db.accounts, db.settings) || 25, ...expiries));
+      return Math.max(1000, Math.min(readyDelay(db.accounts, db.settings) || 25, ...expiries));
     }, { persist: false });
   }
   function schedule(delay = 0) {
@@ -93,7 +91,7 @@ export function createQueueDispatcher(options: {
       const plan = await store.update(db => {
         if (!db.jobs.some(job => job.status === 'queued')) { lastWait = ''; return { jobIds: [] as string[], delay: 0 }; }
         const available = slots(db.accounts, db.settings);
-        if (shared) {
+        {
           const jobId = store.queuedJobIds()[0], account = db.accounts.find(item => item.id === db.settings.fairQuota?.boundAccountId);
           const physical = account ? physicalAccountLoad(controls, account.id) : 0;
           const reason = !account || account.enabled === false || db.settings.fairQuota?.status !== 'active' ? 'eligibility'

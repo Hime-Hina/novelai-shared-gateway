@@ -2,15 +2,13 @@ import { createHash } from 'node:crypto';
 import type { JsonStore, StoreItem } from './store.ts';
 import { addMemberGenerationResources, memberGenerationChargeResources } from './member-generation.ts';
 import { singleGenerationRequest } from './generation-request.ts';
-import { generationPrice } from '../public/generation-pricing.js';
 
 type State = NonNullable<ReturnType<JsonStore['readGenerationRequestState']>>;
 type PresentedJob = Pick<StoreItem, 'id' | 'source' | 'status' | 'request' | 'accountId' | 'cost' | 'accountCost' | 'imageId' | 'lateResultAvailable' | 'error' | 'queueTotal' | 'generationProgress' | 'createdAt' | 'updatedAt' | 'completedAt'> & { requestId?: string | null };
 type JobContext = { queue?: ReturnType<JsonStore['jobQueueProgress']>; accounts?: StoreItem[]; account?: StoreItem | null };
 
-export function generationCost(request: Parameters<typeof generationPrice>[0] | null = null, fairShareMode = true) {
-  return fairShareMode ? 0 : generationPrice(request || {});
-}
+// Legacy points DTOs remain zero; actual member fees come from the shared resource quote.
+export function generationCost() { return 0; }
 
 export function jobAccountCost(job: Pick<StoreItem, 'accountCost'>): number {
   const cost = Number(job.accountCost);

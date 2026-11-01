@@ -1,17 +1,12 @@
+import type { GenerationReservation as Reservation, GenerationQueueReservation as QueueReservation, GenerationContent as GeneratedImage } from './generation-execution.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sizeMap } from '../public/generation-pricing.js';
 import {
-  accountQuotaResult,
-  applyAccountQuotaResult as applyQuotaResult,
-  createAccountQuotaRefresh,
-  disableNovelAiAccount as disableAccount,
-  isUnsubscribedAccountTier,
-  accountQuotaErrorResult as quotaErrorResult
+  createAccountQuotaRefresh
 } from './account-quota-refresh.ts';
 import { archiveColdImage } from './cold-images.ts';
 import { requireDiscordMembership } from './discord-auth.ts';
@@ -38,15 +33,14 @@ import {
   errorDetailMessage,
   isAbortError,
   isInsufficientBalanceError,
-  isNovelAiAccountBannedError, isNovelAiOutOfTrialImageGenerationError,
   isTimeoutResultMessage,
   publicErrorMessage
 } from './public-errors.ts';
 import { privateAccessAllowed } from './public-hosts.ts';
-import { availableSharedAccountSlots, physicalAccountLoad as countPhysicalAccountLoad, createGenerationControls, createQueueDispatcher, nextSharedAccountReadyDelay } from './queue-dispatch.ts';
+import { physicalAccountLoad as countPhysicalAccountLoad, createGenerationControls, createQueueDispatcher } from './queue-dispatch.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
 import { publishStoredResult } from './result-files.ts';
-import { cooldownRetryAfter, sharedAccountConcurrency } from './shared-capacity.ts';
+import { cooldownRetryAfter } from './shared-capacity.ts';
 import { sharedSurface } from './shared-surface.ts';
 import { stateEventsFor } from './state-events.ts';
 import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, defaultArtist2_5D, hashObject, legacyDefaultArtist, maskToken } from './store.ts';
@@ -59,8 +53,6 @@ type Settings = StoreDatabase['settings'];
 type Body = Record<string, unknown>;
 type PayloadClaim = ReturnType<ReturnType<typeof createGenerationPayloadBudget>['claim']>;
 type GenerateOptions = NonNullable<Parameters<typeof generateNovelAiImage>[3]>;
-type UpstreamTiming = Parameters<NonNullable<GenerateOptions['onUpstreamTiming']>>[0];
-type GeneratedImage = (Awaited<ReturnType<typeof generateNovelAiImage>> | NonNullable<Awaited<ReturnType<typeof publishStoredResult>>>) & { mock?: boolean };
 type OfficialJob = ReturnType<OfficialKeyJobs['get']>;
 interface GatewayRequest extends IncomingMessage {
   publicParsedBody?: Body;
@@ -81,33 +73,21 @@ interface Progress extends PreviewProgress {
   percent?: number; step?: number; total?: number; accountId?: string;
   accountRouteId?: number; eventType?: string; updatedAt?: string;
 }
-interface Reservation {
-  job?: StoreItem; account: StoreItem | null; token?: string; userId?: string; ledgerId?: string;
-  cost?: number; accountCost?: number; cacheKey?: string; upstreamTiming?: UpstreamTiming;
-  failurePhase?: string;
-}
 
 interface JobMetadata {
   id: string; requestId?: string | null; jobIds?: string[]; count?: number; replayed?: boolean;
   cacheHit?: boolean; balance?: number; replayImages?: { id: string; token?: string | null }[];
   cached?: StoredImage;
 }
-type QueueReservation = ((Reservation & { job: StoreItem; skip?: false; queued?: false; changed?: boolean; jobId?: string; failure?: string; statusCode?: number; error?: unknown })
-  | { skip: true; queued?: false; job?: undefined; jobId?: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }
-  | { queued: true; skip?: false; job?: undefined; jobId: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }) & { cooldownUntil?: string };
 
 interface JobOptions {
   native?: boolean; frontend?: boolean; source?: string; deadlineAt?: string; admissionVersion?: number; batchId?: string; sampleIndex?: number;
   generationPayloadClaim?: PayloadClaim; idempotencyKey?: string | null; idempotency?: GenerationIntent | null;
   status?: string; accountId?: string; imageId?: string; cost?: number;
 }
-interface MutationSource {
-  id?: string; job?: StoreItem | null; jobId?: string; token?: string; userToken?: string;
-  accountIds?: (string | undefined)[]; account?: StoreItem | null; accountId?: string; ledgerId?: string;
-}
 interface Stats { total?: number; done?: number; failed?: number; active?: number; success?: number }
-interface RetryOptions extends Omit<GenerateOptions, 'onProgress'> {
-  deadline?: number; request?: RequestSummary; onProgress?: ((progress: Progress) => void) | null;
+interface BoundGenerationOptions extends Pick<GenerateOptions, 'signal' | 'forceStream'> {
+  onProgress?: ((progress: Progress) => void) | null;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -132,7 +112,6 @@ const imageStorage = new ImageStorage(dataDir, r2Storage, id => store.findImage(
 const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes([...runningJobControls.values()]));
 const admitGeneration = createGenerationAdmission({ store, payloadBudget: generationPayloadBudget,
   artifactAvailable: image => imageStorage.available(image), cleanupStaleActiveJobs: reason => cleanupStaleActiveJobs(reason) });
-const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 
 let queueDispatchEnabled = false;
 let runtimeClosing = false;
@@ -161,7 +140,7 @@ const jobStreamProgressPersistState = new Map<string, { percent: number; at: num
 const beijingOffsetMs = 8 * 60 * 60 * 1000;
 const usageChartDays = 7;
 const errorLogRetentionMs = usageChartDays * 24 * 60 * 60 * 1000;
-const accountQuotaRefreshIntervalMs = fairShareMode ? 60 * 1000 : 5 * 60 * 1000;
+const accountQuotaRefreshIntervalMs = 60 * 1000;
 const accountQuotaRequestTimeoutMs = 15 * 1000;
 
 const { publicJob, publicJobSnapshot } = createJobPresentation({ store, imageUrl: publicImageUrl,
@@ -171,16 +150,15 @@ const jobDelivery = createJobDelivery({ store, errorMessage: message => publicEr
   pollMs: openAiQueuePollMs, log: value => console.log('[queue]', JSON.stringify(value)) });
 const { waitForJobResult, notifyJobWaiters } = jobDelivery;
 const { cancelGenerationRequest, changeMemberAdmission } = createRequestControls(store, { clearProgress: clearJobStreamProgress,
-  notify: notifyJobWaiters, schedule: scheduleQueueDrain, readRequest: getGenerationRequest, fairShareMode });
-const failureHandlers = createGenerationFailureHandlers(store, { fairShareMode, publicErrorMessage: message => publicErrorMessage(message, { generation: true }),
+  notify: notifyJobWaiters, schedule: scheduleQueueDrain, readRequest: getGenerationRequest });
+const failureHandlers = createGenerationFailureHandlers(store, { publicErrorMessage: message => publicErrorMessage(message, { generation: true }),
   errorDetailMessage, clearProgress: clearJobStreamProgress, notify: notifyJobWaiters, schedule: scheduleQueueDrain,
   executionEvidence: jobId => runningJobControls.get(jobId)?.reservation, log: value => console.log('[queue]', JSON.stringify(value)) });
 const { failGeneration, cancelReservedJob, cleanupStaleActiveJobs } = failureHandlers;
 const queueDispatcher = createQueueDispatcher({ store, controls: runningJobControls, enabled: () => queueDispatchEnabled,
-  fairShareMode, cleanup: cleanupStaleActiveJobs, reserve: reserveQueuedJob, run: runReservedJob, notify: notifyJobWaiters,
-  legacy: { availableSlots: availableAccountSlots, readyDelay: nextAccountReadyDelay },
+  cleanup: cleanupStaleActiveJobs, reserve: reserveQueuedJob, run: runReservedJob, notify: notifyJobWaiters,
   log: value => console.log('[queue]', JSON.stringify(value)), error: error => console.error(error) });
-const accountQuotaRefresh = createAccountQuotaRefresh({ store, fairShareMode, requestTimeoutMs: accountQuotaRequestTimeoutMs,
+const accountQuotaRefresh = createAccountQuotaRefresh({ store, requestTimeoutMs: accountQuotaRequestTimeoutMs,
   refreshIntervalMs: accountQuotaRefreshIntervalMs, publicAccount: account => publicAccount(account, { revealToken: true }), publicErrorMessage });
 const { refreshEnabled: refreshEnabledAccountQuotas, fetch: fetchNovelAiAccountQuotaWithTimeout } = accountQuotaRefresh;
 const nativeHttp = createNativeHttp({ store, admitGeneration, readJson, waitForJobResult, readStoredImage, sendImage,
@@ -370,7 +348,7 @@ async function publicSelfUseGuard(req: GatewayRequest, res: GatewayResponse, url
 async function route(req: GatewayRequest, res: GatewayResponse) {
   const url = new URL(req.url!, `http://${req.headers.host}`);
   const method = req.method || 'GET';
-  if (fairShareMode) {
+  {
     const surface = sharedSurface(url.pathname, method);
     if (!surface.allowed) throw httpError(404, 'not found.');
     url.pathname = surface.pathname;
@@ -448,7 +426,6 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
 
   if (method === 'POST' && url.pathname === '/api/admin/fair-quota') {
     assertAdmin(req, url);
-    if (!fairShareMode) throw httpError(409, 'FAIR_SHARE_MODE is disabled.');
     const body = await readJson(req);
     const result = await store.update(db => {
       if (!Array.isArray(body.memberIds) || body.memberIds.some((id: unknown) => !db.users.some(u => u.id === id && u.enabled !== false))) throw httpError(400, '成员必须是已启用的用户');
@@ -806,7 +783,7 @@ async function handleOpenAiChatCompletion(req: GatewayRequest, res: GatewayRespo
   }));
 }
 
-function openAiModelsResponse() { return listOpenAiModels(fairShareMode); }
+function openAiModelsResponse() { return listOpenAiModels(); }
 
 function parseOpenAiImageRequest(body: Body = {}, settings: Partial<Settings> = {}) {
   const modelParts = parseOpenAiModel(body.model || settings.defaultModel || 'nai-diffusion-4-5-full');
@@ -1010,20 +987,18 @@ async function updateAccounts(body: Body) {
     const accounts = db.accounts.filter((account) => ids.has(account.id));
     if (!accounts.length) throw httpError(404, 'no matching accounts found.');
     const now = new Date().toISOString();
-    accounts.forEach((account) => {
-      if (body.enabled !== undefined) account.enabled = Boolean(body.enabled);
-      if (body.weight !== undefined) account.weight = clamp(Number(body.weight), 1, 100);
-      account.updatedAt = now;
-    });
-    db.ledger.unshift({
+    const audit = {
       id: createId('log'),
       type: 'update-accounts',
       amount: accounts.length,
       at: now,
       note: body.enabled === undefined ? `Updated ${accounts.length} account(s)` : `${body.enabled ? 'Enabled' : 'Disabled'} ${accounts.length} account(s)`
-    });
+    };
+    db.ledger.unshift(audit);
+    accounts.forEach((account, index) => applyAccountConfiguration(db, account,
+      { enabled: body.enabled, weight: body.weight }, now, index === 0 ? [audit] : undefined));
     return accounts;
-  }, { collections: ['accounts', 'ledger'] });
+  }, { collections: ['accounts', 'ledger'], domainCommand: { actorId: 'local-admin', actorKind: 'admin' } });
 }
 
 function refreshAccountQuotas(body: Body) {
@@ -1065,15 +1040,7 @@ function startColdImages() {
 }
 
 function reconcileGenerationReviews(now = Date.now()) {
-  return reconcileGenerationReviewsCommand(store, { now: () => now, fairShareMode, readStoredImage });
-}
-
-function accountQuotaErrorResult(id: string, error: unknown, now: string) {
-  return quotaErrorResult(id, error, now, publicErrorMessage);
-}
-
-function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>, now: string) {
-  return applyQuotaResult(db, account, result, now, { fairShareMode });
+  return reconcileGenerationReviewsCommand(store, { now: () => now, readStoredImage });
 }
 
 function accountTierText(tier: unknown, fallback = '会员未查询') {
@@ -1095,8 +1062,6 @@ function accountTierText(tier: unknown, fallback = '会员未查询') {
     opus: 'Opus 会员'
   }[key] || String(tier);
 }
-
-function disableNovelAiAccount(account: StoreItem) { disableAccount(account, { fairShareMode }); }
 
 async function cleanupInterruptedStartupJobs() {
   const startedAt = Date.now(), result = await failureHandlers.cleanupInterruptedStartupJobs();
@@ -1157,10 +1122,6 @@ async function cleanupImageStorage() {
   }
 }
 
-function uniqueIds(values: unknown[] = []) {
-  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
-}
-
 function imageCacheTrimBuffer(maxCacheImages = 1) {
   return maxCacheImages > 0 ? 300 : 0;
 }
@@ -1175,9 +1136,15 @@ async function updateAccount(id: string, body: Body, actorId = 'local-admin') {
   return store.update((db) => {
     const account = db.accounts.find((item) => item.id === id);
     if (!account) throw httpError(404, 'account not found.');
+    applyAccountConfiguration(db, account, body, new Date().toISOString());
+    return account;
+  }, { collections: ['accounts'], domainCommand: { actorId, actorKind: 'admin' } });
+}
+
+function applyAccountConfiguration(db: StoreDatabase, account: StoreItem, body: Body, now: string, evidence?: Record<string, unknown>[]) {
     // 更换密钥前先检查在途预扣，避免请求结算到另一账户。
     const changingToken = body.token !== undefined && String(body.token).trim() !== account.token;
-    if (changingToken && (Number(account.inFlight || 0) > 0 || Object.values(db.settings.fairQuota?.reservations || {}).some(r => r.accountId === id && r.status === 'reserved'))) throw httpError(409, '有在途生成任务，请等待完成后更新密钥');
+    if (changingToken && (Number(account.inFlight || 0) > 0 || Object.values(db.settings.fairQuota?.reservations || {}).some(r => r.accountId === account.id && r.status === 'reserved'))) throw httpError(409, '有在途生成任务，请等待完成后更新密钥');
     if (changingToken && !String(body.token).trim().startsWith('pst-')) throw httpError(400, '需要有效的 PST 格式密钥');
     if (changingToken) {
       account.enabled = false;
@@ -1191,54 +1158,15 @@ async function updateAccount(id: string, body: Body, actorId = 'local-admin') {
     }
     if (body.enabled !== undefined && !changingToken) account.enabled = Boolean(body.enabled);
     if (body.weight !== undefined) account.weight = clamp(Number(body.weight), 1, 100);
-    account.updatedAt = new Date().toISOString();
+    account.updatedAt = now;
     recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: `account:${account.id}`, accountId: account.id,
       occurredAt: account.updatedAt, payload: { accountId: account.id, enabled: account.enabled, name: account.name,
         weight: account.weight, quotaCheckedAt: account.quotaCheckedAt, quotaError: account.quotaError, updatedAt: account.updatedAt,
-        reason: changingToken ? 'credential_replaced' : 'administrator' } });
-    return account;
-  }, { collections: ['accounts'], domainCommand: { actorId, actorKind: 'admin' } });
+        reason: changingToken ? 'credential_replaced' : 'administrator', ...(evidence ? { evidence } : {}) } });
 }
 
 function dirtyJobRows(jobId: string | undefined) {
   return jobId ? { jobs: [jobId] } : {};
-}
-
-function dirtyReservationJobRows(reservation: Partial<Reservation>) {
-  return (result: MutationSource | null | void, db: StoreDatabase) => dirtyJobMutationRows({
-    job: result?.job || reservation?.job,
-    jobId: result?.job?.id || result?.jobId || reservation?.job?.id,
-    token: result?.token || reservation?.token || reservation?.job?.userToken,
-    accountIds: [reservation?.account?.id, result?.account?.id, result?.job?.accountId]
-  }, db);
-}
-
-function batchJobIds(db: Pick<StoreDatabase, 'jobs'>, jobId: string) {
-  const job = db.jobs.find(item => item.id === jobId);
-  return job?.requestId ? db.jobs.filter(item => item.requestId === job.requestId).map(item => item.id) : [jobId];
-}
-
-function dirtyJobMutationRows(source: MutationSource = {}, db: Partial<StoreDatabase> = {}) {
-  const jobId = source?.job?.id || source?.jobId || source?.id || '';
-  const job = source?.job || (jobId ? db.jobs?.find((item) => item.id === jobId) : null);
-  const token = source?.token || source?.userToken || job?.userToken || '';
-  const accountIds = uniqueIds([
-    ...(Array.isArray(source?.accountIds) ? source.accountIds : []),
-    source?.account?.id,
-    source?.accountId,
-    job?.accountId
-  ]);
-  const ledgerIds = uniqueIds([
-    source?.ledgerId,
-    ...(jobId ? (db.ledger || []).filter((entry) => entry.jobId === jobId).map((entry) => entry.id) : [])
-  ]);
-  const user = token && ledgerIds.length ? db.users?.find((item) => item.token === token) : null;
-  return {
-    ...(jobId ? { jobs: batchJobIds(db as Pick<StoreDatabase, 'jobs'>, jobId) } : {}),
-    ...(user?.id ? { users: [user.id] } : {}),
-    ...(accountIds.length ? { accounts: accountIds } : {}),
-    ...(ledgerIds.length ? { ledger: ledgerIds } : {})
-  };
 }
 
 async function createJob(token: string, body: Body | ExecutionRequest | null, options: JobOptions = {}): Promise<JobMetadata> {
@@ -1362,9 +1290,7 @@ function publicProgressSnapshot(progress: Progress = {}, job: Partial<StoreItem>
 
 async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
   const requestedAt = Date.now();
-  const result = await reserveQueuedGeneration(store, jobId, { fairShareMode, dispatchEnabled: () => queueDispatchEnabled,
-    physicalAccountLoad, legacy: { selectAccount: (db, request) => selectAccount(db.accounts, db.settings, { request }),
-      hasEnabledAccounts, hasAccountWithEnoughQuota } });
+  const result = await reserveQueuedGeneration(store, jobId, { dispatchEnabled: () => queueDispatchEnabled, physicalAccountLoad });
   if (result.job) console.log('[queue]', JSON.stringify({ event: 'dispatch_commit', jobId, accountId: result.job.accountId,
     createdAt: result.job.createdAt, requestedAt, startedAt: result.job.startedAt, committedAt: Date.now() }));
   return result;
@@ -1387,9 +1313,8 @@ async function runReservedJob(reservation: QueueReservation) {
       : reservation.job.request as ExecutionRequest;
     if (!request) throw new Error('持久生成请求不存在');
     reservation.failurePhase = 'upstream';
-    const image = await generateWithAccountRetry(reservation, request, {
+    const image = await generateWithBoundAccount(reservation, request, {
       signal: control.controller.signal,
-      deadline: jobDeadlineTimestamp(reservation.job),
       forceStream: useStreamProgress,
       onProgress: useStreamProgress ? (progress) => updateJobStreamProgress(reservation.job?.id, progress) : null
     });
@@ -1404,14 +1329,10 @@ async function runReservedJob(reservation: QueueReservation) {
       await cancelReservedJob(reservation, error);
       return;
     }
-    if (!fairShareMode && isNovelAiCapacityError(error) && !isNovelAiVerificationError(error)) {
-      await requeueReservedJob(reservation, error);
-      return;
-    }
     await failGeneration(reservation, error);
   } finally {
     finishRunningJobControl(reservation.job?.id, control);
-    if (fairShareMode && !runtimeClosing) void refreshEnabledAccountQuotas().catch(() => console.error('[fair-quota] 余额刷新失败，将在定时刷新时重试'));
+    if (!runtimeClosing) void refreshEnabledAccountQuotas().catch(() => console.error('[fair-quota] 余额刷新失败，将在定时刷新时重试'));
   }
 }
 
@@ -1443,320 +1364,48 @@ function accountInflightTimeoutMs() {
   return Number.isFinite(configured) && configured > 0 ? Math.max(1000, Math.floor(configured)) : 10 * 60 * 1000;
 }
 
-async function generateWithAccountRetry(reservation: Reservation, request: ExecutionRequest, options: RetryOptions = {}) {
-  const tried = new Set<string>();
-  let firstError: unknown = null;
-  let current = reservation;
-
-  while (true) {
-    if (options.signal?.aborted) throw options.signal.reason || new Error('direct generate timeout');
-    if (current.account?.id) tried.add(current.account.id);
-    try {
-      options.onProgress?.({
-        percent: 0,
-        step: 0,
-        total: Number(request?.steps || 0),
-        accountId: current.account?.id || '',
-        accountRouteId: current.account?.routeId || 0
-      });
-      const image = await generateNovelAiImage(request, current.account, process.env, {
-        signal: options.signal,
-        forceStream: options.forceStream,
-        onUpstreamTiming: event => {
-          // 只记录时间与状态，不复制请求头、凭据、提示词或图片。
-          reservation.upstreamTiming ||= {};
-          for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil'] as const) {
-            if (event[name] !== undefined) (reservation.upstreamTiming[name] as typeof event[typeof name]) = event[name];
-          }
-        },
-        onProgress: (progress) => options.onProgress?.({
-          ...progress,
-          accountId: current.account?.id || '',
-          accountRouteId: current.account?.routeId || 0
-        })
-      });
-      await recordSuccessfulImageTrial(current.account, request);
-      reservation.account = current.account;
-      return image;
-    } catch (error) {
-      logNovelAiGenerateError(error, request, current.account, current.job);
-      if (fairShareMode) throw error;
-      if (options.signal?.aborted || isAbortError(error) || isNovelAiVerificationError(error)) throw error;
-      if (!firstError) firstError = error;
-      const next = await retryReservationWithNextAccount(current, error, tried, { ...options, request });
-      if (!next) {
-        current.account = null;
-        reservation.account = null;
-        throw firstError || error;
-      }
-      current = next;
-      reservation.account = current.account;
-    }
-  }
-}
-
-async function retryReservationWithNextAccount(reservation: Reservation, error: unknown, tried: Set<string>, options: RetryOptions = {}) {
-  if (!reservation.account?.id) return null;
-  return store.update((db) => {
-    const failedAccount = db.accounts.find((item) => item.id === reservation.account!.id);
-    if (failedAccount) {
-      const now = new Date().toISOString();
-      failedAccount.inFlight = Math.max(0, Number(failedAccount.inFlight || 0) - 1);
-      failedAccount.failures = Number(failedAccount.failures || 0) + 1;
-      if (isNovelAiCapacityError(error)) failedAccount.cooldownUntil = new Date(Date.now() + accountBusyCooldownMs()).toISOString();
-      if (isNovelAiAccountBannedError(error)) {
-        disableNovelAiAccount(failedAccount);
-        failedAccount.quotaError = '账号已封禁，已自动禁用';
-        failedAccount.quotaCheckedAt = now;
-      }
-      if (isNovelAiAccountQuotaError(error)) {
-        const outOfTrial = isNovelAiOutOfTrialImageGenerationError(error);
-        if (outOfTrial) disableNovelAiAccount(failedAccount);
-        failedAccount.quotaError = outOfTrial ? '试用次数已用完，已自动禁用' : '点数不足';
-        failedAccount.quotaCheckedAt = now;
-      }
-      failedAccount.updatedAt = now;
-    }
-
-    if (options.deadline && Date.now() >= options.deadline) return null;
-    const accountCost = reservationAccountCost(reservation);
-    const account = selectAccount(db.accounts, db.settings, { excludeIds: tried, request: options.request });
-    if (!account) return null;
-    account.inFlight = Number(account.inFlight || 0) + 1;
-    account.lastUsedAt = new Date().toISOString();
-    account.updatedAt = new Date().toISOString();
-
-    if (reservation.job?.id) {
-      const job = db.jobs.find((item) => item.id === reservation.job!.id);
-      if (job) {
-        job.status = 'running';
-        job.accountId = account.id;
-        job.completedAt = '';
-        job.error = '';
-        job.errorDetail = '';
-        job.updatedAt = new Date().toISOString();
-      }
-    }
-
-    return {
-      ...reservation,
-      accountCost,
-      account: { ...account },
-      job: reservation.job ? { ...reservation.job, accountId: account.id } : reservation.job
-    };
-  }, { dirtyRows: dirtyReservationJobRows(reservation) });
-}
-
-async function requeueReservedJob(reservation: Reservation, error: unknown) {
-  let delay = accountBusyCooldownMs();
-  await store.update((db) => {
-    if (reservation.account?.id) {
-      const account = db.accounts.find((item) => item.id === reservation.account!.id);
-      if (account) {
-        account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        account.cooldownUntil = new Date(Date.now() + delay).toISOString();
-        account.updatedAt = new Date().toISOString();
-      }
-    }
-    const job = reservation.job?.id ? db.jobs.find((item) => item.id === reservation.job!.id) : null;
-    if (job) {
-      job.status = 'queued';
-      job.accountId = '';
-      job.completedAt = '';
-      job.error = '';
-      job.errorDetail = '';
-      job.retryCount = Number(job.retryCount || 0) + 1;
-      job.updatedAt = new Date().toISOString();
-    }
-    delay = Math.max(250, nextAccountReadyDelay(db.accounts, db.settings) || delay);
-  }, { dirtyRows: dirtyReservationJobRows(reservation) });
-  scheduleQueueDrain(delay);
-  clearJobStreamProgress(reservation.job?.id!);
+async function generateWithBoundAccount(reservation: Reservation, request: ExecutionRequest, options: BoundGenerationOptions = {}) {
+  if (options.signal?.aborted) throw options.signal.reason || new Error('direct generate timeout');
+  const account = reservation.account;
+  options.onProgress?.({ percent: 0, step: 0, total: Number(request.steps || 0), accountId: account?.id || '', accountRouteId: account?.routeId || 0 });
+  try {
+    return await generateNovelAiImage(request, account, process.env, {
+      signal: options.signal, forceStream: options.forceStream,
+      onUpstreamTiming: event => {
+        reservation.upstreamTiming ||= {};
+        for (const name of ['upstreamStartedAt', 'upstreamHeadersAt', 'upstreamCompletedAt', 'upstreamHttpStatus', 'upstreamRetryAfterUntil'] as const) {
+          if (event[name] !== undefined) (reservation.upstreamTiming[name] as typeof event[typeof name]) = event[name];
+        }
+      },
+      onProgress: progress => options.onProgress?.({ ...progress, accountId: account?.id || '', accountRouteId: account?.routeId || 0 })
+    });
+  } catch (error) { logNovelAiGenerateError(error, request, account, reservation.job); throw error; }
 }
 
 async function recoverPendingGenerationResults() {
-  const result = await recoverPendingGenerationResultsCommand({ store, dataDir, fairShareMode, publish: publishStoredResult,
+  const result = await recoverPendingGenerationResultsCommand({ store, dataDir, publish: publishStoredResult,
     onRecovery: outcome => (outcome.status === 'completed' ? console.log : outcome.status === 'file_missing' ? console.warn : console.error)('[recovery]', JSON.stringify(outcome)) });
   if (result.completed) await removeStoredImages(await store.trimImageCache(null, { batchSize: imageCacheTrimBuffer() }));
   return result;
 }
 
-async function completeGeneration(reservation: Reservation, request: ExecutionRequest, image: GeneratedImage, meta: { jobId?: string } = {}) {
+async function completeGeneration(reservation: Reservation, request: ExecutionRequest, image: GeneratedImage, meta: { jobId: string }) {
   const requestedAt = Date.now();
-  const saved = await completeGenerationCommand({ store, dataDir, fairShareMode, publish: publishStoredResult,
-    legacy: { writeStoredImage, removeStoredImages } }, reservation, request, image, meta);
-  console.log('[queue]', JSON.stringify({ event: 'result_commit', jobId: meta.jobId || reservation.job?.id,
+  const saved = await completeGenerationCommand({ store, dataDir, publish: publishStoredResult }, reservation, request, image, meta);
+  console.log('[queue]', JSON.stringify({ event: 'result_commit', jobId: meta.jobId,
     requestedAt, committedAt: Date.now(), upstreamCompletedAt: reservation.upstreamTiming?.upstreamCompletedAt }));
-  if (meta.jobId) clearJobStreamProgress(meta.jobId);
+  clearJobStreamProgress(meta.jobId);
   await removeStoredImages(await store.trimImageCache(null, { batchSize: imageCacheTrimBuffer() }));
   scheduleQueueDrain();
-  if (meta.jobId) notifyJobWaiters(meta.jobId, { saved, image, seed: request.seed, balance: saved.balance });
+  notifyJobWaiters(meta.jobId, { saved, image, seed: request.seed, balance: saved.balance });
   return saved;
-}
-
-function hasUsableImageTrial(account: StoreItem | null | undefined): account is StoreItem {
-  return isUnsubscribedAccountTier(account?.quotaTier)
-    && account?.trialStatusKnown === true && account?.trialEligible === true
-    && Number(account?.trialRemainingImages) > 0;
-}
-
-function isImageTrialRequest(request: RequestSummary = {}) {
-  const width = Number(request?.width);
-  const height = Number(request?.height);
-  const steps = Number(request?.steps);
-  return ['nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(request?.model!)
-    && Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0
-    && width * height <= 1048576 && Number.isInteger(steps) && steps > 0 && steps <= 28
-    && !request?.characterRef;
-}
-
-function isNovelAiVerificationError(error: unknown) {
-  return /recaptcha|captcha|verification required|verification failed|human verification/i.test(String((error as GatewayError)?.message || error || ''));
-}
-
-async function recordSuccessfulImageTrial(account: StoreItem | null | undefined, request: RequestSummary) {
-  if (!hasUsableImageTrial(account) || !isImageTrialRequest(request)) return;
-  // 先扣减本地余量，官方查询失败也不能重复发送已成功的生图请求。
-  const remaining = Math.max(0, Number(account.trialRemainingImages) - 1);
-  account.trialRemainingImages = remaining;
-  account.trialUsedImages = Number(account.trialUsedImages || 0) + 1;
-  try {
-    await store.update((db) => {
-      const item = db.accounts.find((entry) => entry.id === account.id);
-      if (!item) return;
-      item.trialRemainingImages = remaining;
-      item.trialUsedImages = account.trialUsedImages;
-    }, { collections: ['accounts'] });
-    const quota = await fetchNovelAiAccountQuotaWithTimeout(account.token, account.proxyUrl);
-    if (quota.trialStatusKnown !== true) return;
-    // 官方状态可能短暂滞后，刷新不能恢复刚刚消耗的次数。
-    quota.trialRemainingImages = Math.min(remaining, Math.max(0, Number(quota.trialRemainingImages) || 0));
-    const now = new Date().toISOString();
-    await store.update((db) => {
-      const item = db.accounts.find((entry) => entry.id === account.id);
-      if (item) applyAccountQuotaResult(db, item, accountQuotaResult(item.id, quota, now), now);
-    }, { collections: ['accounts'] });
-  } catch {
-    // 成功图像仍应返回；保留已扣减的本地余量，避免查询故障触发重试。
-    console.warn('[trial] 生成成功后的额度同步失败，已保留保守余量');
-  }
-}
-
-function selectAccount(accounts: StoreItem[], settings: Partial<Settings> = {}, options: { request?: RequestSummary; excludeIds?: Set<string>; ignoreCooldown?: boolean } = {}) {
-  resetStaleAccountLoads(accounts);
-  const excludeIds = options.excludeIds || new Set<string>();
-  const paid = requiresPaidAccount(options.request);
-  const now = Date.now();
-  const enabled = accounts.filter((account) => account.enabled !== false && !isAccountCoolingDown(account, now));
-  if (!enabled.length) return null;
-  const maxConcurrency = maxAccountConcurrency(settings);
-  const available = enabled.filter((account) => {
-    if (excludeIds.has(account.id)) return false;
-    if (Number(account.inFlight || 0) >= maxConcurrency) return false;
-    if (account.quotaTier === null || account.quotaTier === undefined || account.quotaTier === '') return false;
-    if (isUnsubscribedAccountTier(account.quotaTier)) {
-      return hasUsableImageTrial(account) && isImageTrialRequest(options.request);
-    }
-    return !paid || hasPaidQuota(account);
-  });
-  if (!available.length) return null;
-  let candidates = available;
-  let preferQuota = paid;
-  if (isV5StandardAccountRequest(options.request)) {
-    const freeAccounts = available.filter((account) => hasV5FreeQuota(account)
-      || (hasUsableImageTrial(account) && isImageTrialRequest(options.request)));
-    if (freeAccounts.length) {
-      candidates = freeAccounts;
-    } else {
-      candidates = available.filter(hasPaidQuota);
-      preferQuota = true;
-    }
-  }
-  if (!candidates.length) return null;
-  return candidates.sort((a, b) => {
-    const quotaA = accountQuotaPoints(a);
-    const quotaB = accountQuotaPoints(b);
-    if (preferQuota && (quotaA !== null || quotaB !== null)) {
-      if (quotaA === null) return 1;
-      if (quotaB === null) return -1;
-      if (quotaA !== quotaB) return quotaB - quotaA;
-    }
-    const loadA = Number(a.inFlight || 0) / maxConcurrency;
-    const loadB = Number(b.inFlight || 0) / maxConcurrency;
-    if (loadA !== loadB) return loadA - loadB;
-    return Date.parse((a.lastUsedAt || 0) as string) - Date.parse((b.lastUsedAt || 0) as string);
-  })[0];
-}
-
-function accountQuotaPoints(account: StoreItem) {
-  if (account?.quotaPoints === null || account?.quotaPoints === undefined || account?.quotaPoints === '') return null;
-  const value = Number(account?.quotaPoints);
-  return Number.isFinite(value) ? value : null;
-}
-
-function isV5StandardAccountRequest(request: RequestSummary = {}) {
-  return !requiresPaidAccount(request) && String(request?.model || '').startsWith('nai-diffusion-5');
-}
-
-function hasV5FreeQuota(account: StoreItem) {
-  const percent = numberOrNull(account?.v5UsagePercent);
-  return percent !== null && percent > 0 && !account?.v5UsageIsNegative;
-}
-
-function hasPaidQuota(account: StoreItem) {
-  const quota = accountQuotaPoints(account);
-  return account.quotaError !== '点数不足' && (quota === null || quota > 0);
-}
-
-function maxAccountConcurrency(settings: Partial<Settings> = {}, account: StoreItem | null = null) {
-  return fairShareMode ? sharedAccountConcurrency() : 1;
 }
 
 function physicalAccountLoad(accountId: string) {
   return countPhysicalAccountLoad(runningJobControls, accountId);
 }
 
-function availableAccountSlots(accounts: StoreItem[], settings: Partial<Settings> = {}) {
-  if (fairShareMode) return availableSharedAccountSlots(accounts, settings, runningJobControls);
-  resetStaleAccountLoads(accounts);
-  const now = Date.now();
-  const allEnabled = accounts.filter((account) => account.enabled !== false);
-  if (!allEnabled.length) return 1;
-  const enabled = allEnabled.filter((account) => !isAccountCoolingDown(account, now));
-  if (!enabled.length) return 0;
-  const maxConcurrency = maxAccountConcurrency(settings);
-  return enabled.reduce((sum, account) => sum + Math.max(0, maxConcurrency - Number(account.inFlight || 0)), 0);
-}
-
-function nextAccountReadyDelay(accounts: StoreItem[], settings: Partial<Settings> = {}) {
-  if (fairShareMode) return nextSharedAccountReadyDelay(accounts, settings, runningJobControls);
-  resetStaleAccountLoads(accounts);
-  const now = Date.now();
-  const maxConcurrency = maxAccountConcurrency(settings);
-  const enabled = accounts.filter((account) => account.enabled !== false);
-  if (!enabled.length) return 0;
-  if (enabled.some((account) => !isAccountCoolingDown(account, now) && Number(account.inFlight || 0) < maxConcurrency)) return 0;
-  const waits = enabled
-    .map((account) => Date.parse(account.cooldownUntil || '') - now)
-    .filter((wait) => Number.isFinite(wait) && wait > 0);
-  return waits.length ? Math.min(...waits) + 50 : 1000;
-}
-
 function scheduleQueueDrain(delay = 0) { queueDispatcher.schedule(delay); }
-
-function hasEnabledAccounts(accounts: StoreItem[]) {
-  return accounts.some((account) => account.enabled !== false);
-}
-
-function hasAccountWithEnoughQuota(accounts: StoreItem[], request: RequestSummary = {}) {
-  return accounts.some((account) => {
-    if (account.enabled === false) return false;
-    if (account.quotaTier === null || account.quotaTier === undefined || account.quotaTier === '') return false;
-    if (isUnsubscribedAccountTier(account.quotaTier)) return hasUsableImageTrial(account) && isImageTrialRequest(request);
-    if (isV5StandardAccountRequest(request)) return hasV5FreeQuota(account) || hasPaidQuota(account);
-    return !requiresPaidAccount(request) || hasPaidQuota(account);
-  });
-}
 
 function resetStaleAccountLoads(accounts: StoreItem[]) {
   const staleAfterMs = accountInflightTimeoutMs();
@@ -1767,15 +1416,6 @@ function resetStaleAccountLoads(accounts: StoreItem[]) {
     const lastUsed = Date.parse((account.lastUsedAt || 0) as string);
     if (!lastUsed || now - lastUsed > staleAfterMs) account.inFlight = 0;
   });
-}
-
-function isAccountCoolingDown(account: StoreItem, now = Date.now()) {
-  const until = Date.parse(account.cooldownUntil || '');
-  return Number.isFinite(until) && until > now;
-}
-
-function accountBusyCooldownMs() {
-  return clamp(Number(process.env.ACCOUNT_429_COOLDOWN_MS || 800), 200, 120_000);
 }
 
 function assignAccountRouteIds(accounts: StoreItem[]) {
@@ -2114,14 +1754,7 @@ function finalizeStats(stats: Stats) {
 }
 
 function generationCost(request: RequestSummary | null = null) {
-  return generationDisplayCost(request, fairShareMode);
-}
-
-function requiresPaidAccount(request: RequestSummary = {}) {
-  const dimensions = sizeMap[normalizeSizeName(request.size) as keyof typeof sizeMap];
-  return Number(request?.steps) > 28
-    || dimensions?.width * dimensions?.height > 1024 * 1024
-    || Number(request?.width) * Number(request?.height) > 1024 * 1024;
+  return generationDisplayCost();
 }
 
 // Retain historical metadata only. New jobs do not estimate or debit upstream points.
@@ -2129,22 +1762,9 @@ function jobAccountCost(job: Partial<Pick<StoreItem, 'request' | 'accountCost' |
   return normalizeAccountCost(job.accountCost);
 }
 
-function reservationAccountCost(reservation: Partial<Reservation> = {}) {
-  return normalizeAccountCost(reservation.accountCost);
-}
-
 function normalizeAccountCost(value: unknown) {
   const cost = Number(value);
   return Number.isFinite(cost) && cost > 0 ? Math.ceil(cost) : 0;
-}
-
-function normalizeSizeName(value: unknown) {
-  return String(value || '').replace(/\s*\(-\d+\)\s*$/, '').trim();
-}
-
-function isNovelAiAccountQuotaError(error: unknown) {
-  const text = String((error as GatewayError)?.message || error || '');
-  return /NovelAI returned (402|400|403).*?(insufficient|balance|quota|anlas|training|point|额度|余额|点数)|insufficient.*?(quota|anlas|training|point|balance)/i.test(text);
 }
 
 function isQuotaFailureJob(job: StoreItem) {
@@ -2424,11 +2044,6 @@ function assertAdmin(req: GatewayRequest, url: URL) {
 function clamp(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
-}
-
-function numberOrNull(value: unknown) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
 }
 
 function sleep(ms: number) {

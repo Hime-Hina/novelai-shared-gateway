@@ -566,9 +566,9 @@ test('Medium 通用客户端与原生请求都按实际固定参数发往同一�
 
 
 test('模型目录提供 Medium 的唯一采样器组合，旧 High 与 5C 条目保留',()=>{
- const result=openAiModelsResponse(false);
+ const result=openAiModelsResponse();
  const medium=result.data.filter(item=>item.id.includes('nai-diffusion-5-full-medium'));
  assert.equal(medium.length,3);assert.ok(medium.every(item=>item.id.endsWith(':k_euler_ancestral')));
  for(const id of ['nai-diffusion-5-full:k_euler','nai-diffusion-5-curated:k_euler','nai-diffusion-4-5-full:k_euler'])assert.ok(result.data.some(item=>item.id===id));
- const paid=medium.find(item=>item.id.startsWith('[2K]'));assert.equal(paid.cost,generationPrice({model:'nai-diffusion-5-full-medium',width:1088,height:1600,steps:14}));
+ const highResolution=medium.find(item=>item.id.startsWith('[2K]'));assert.equal(highResolution.cost,0);assert.deepEqual(highResolution.cost_by_size,{'竖图':0,'横图':0,'方图':0});
 });

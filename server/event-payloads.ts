@@ -79,7 +79,7 @@ export interface DomainPayloads {
   AccountBound: { accountId: string };
   QuotaAccountOpened: { memberIds: string[] };
   AccountRegistered: { accountId: string; name?: string; routeId?: number; enabled?: boolean; weight?: unknown; v5UsageIsNegative?: unknown; createdAt: string };
-  AvailabilityChanged: { kind: 'quota'; status: string } | { accountId: string; enabled?: boolean; name?: string; weight?: unknown;
+  AvailabilityChanged: { kind: 'quota'; status: string } | Evidence & { accountId: string; enabled?: boolean; name?: string; weight?: unknown;
     quotaCheckedAt?: unknown; quotaError?: unknown; updatedAt: string; reason: 'credential_replaced' | 'administrator' };
   QuotaObserved: { kind: 'official'; accountId: string; observation: Record<string, unknown>; at: EventTime }
     | { kind: 'reconciled'; snapshot: QuotaSnapshot; initial: boolean; at: number;

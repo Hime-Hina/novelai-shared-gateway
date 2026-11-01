@@ -1,4 +1,4 @@
-import { generationPrice, sizeMap } from '../public/generation-pricing.js';
+import { sizeMap } from '../public/generation-pricing.js';
 export const openAiFixedSteps = 28;
 const openAiSamplers = [
   'k_euler_ancestral',
@@ -33,8 +33,7 @@ export const openAiSizeTiers: Record<string, { label: string; sizes: Record<stri
   }
 };
 
-export function openAiModelsResponse(fairShareMode = true) {
-  const cost = (request: Parameters<typeof generationPrice>[0]) => fairShareMode ? 0 : generationPrice(request);
+export function openAiModelsResponse() {
   const created = Math.floor(Date.now() / 1000);
   return {
     object: 'list',
@@ -52,10 +51,8 @@ export function openAiModelsResponse(fairShareMode = true) {
         object: 'model',
         created,
         owned_by: 'nai2api',
-        cost: cost({ model: model.id, ...tier.sizes['竖图'], steps: openAiFixedSteps }),
-        cost_by_size: Object.fromEntries(Object.entries(tier.sizes).map(([size, dimensions]) => [
-          size, cost({ model: model.id, ...dimensions, steps: openAiFixedSteps })
-        ])),
+        cost: 0,
+        cost_by_size: Object.fromEntries(Object.keys(tier.sizes).map(size => [size, 0])),
         resolution_tier: tierName
       }))))
     ]
