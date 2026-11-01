@@ -1094,7 +1094,11 @@ export class JsonStore {
         const persistOptions = resolvePersistenceOptions(options, result, this.db!);
         if(eventAuthorityEnabled(this.sqlite!))persistOptions.immediate=true;
         const domainBatch = finishDomainCommand(this.db!);
-        if (domainBatch?.events.length) persistOptions.domainBatch = domainBatch;
+        if (domainBatch?.events.length) {
+          persistOptions.domainBatch = domainBatch;
+          persistOptions.includeSettings=true;
+          persistOptions.immediate=true;
+        }
         const snapshot = cloneValue(result);
         if (persistOptions.domainBatch && options.persist === false) throw new Error('A domain command cannot discard its recorded facts.');
         if (persistOptions.domainBatch || shouldPersistUpdate(result, persistOptions)) {
@@ -1548,6 +1552,33 @@ export class JsonStore {
     this.statements!.insertGenerationIdempotency.run(row);
   }
 
+  assertDomainFactWrites(scope:Scope,settlements:(typeof fairQuotaSettlements.$inferInsert)[]):void {
+    if(!eventAuthorityEnabled(this.sqlite!))return;
+    const events=scope.domainBatch?.events||[];
+    for(const row of settlements){
+      const prior=this.statements!.selectFairQuotaSettlement.get({jobId:row.job_id});
+      if(prior&&canonicalJson(JSON.parse(prior.charge))===canonicalJson(JSON.parse(row.charge)))continue;
+      const fact=events.find(event=>['GenerationSettled','GenerationRefunded'].includes(event.eventType)&&event.payload.jobId===row.job_id);
+      if(!fact||canonicalJson(fact.payload.charge)!==canonicalJson(JSON.parse(row.charge)))throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
+    }
+    if(scope.generationRequest){
+      const row=scope.generationRequest;
+      const fact=events.find(event=>event.eventType==='RequestAccepted'&&event.payload.inputRef===row.id);
+      if(!fact||fact.payload.memberId!==row.member_id||fact.payload.inputSha256!==crypto.createHash('sha256').update(row.payload).digest('hex'))throw new Error(`Unrecorded generation input ${row.id}`);
+    }
+    if(scope.generationIdempotency){
+      const row=scope.generationIdempotency;
+      const recorded=events.some(event=>{
+        if(!['RequestAccepted','RequestAliasRegistered'].includes(event.eventType))return false;
+        const mapping=event.payload.idempotency as Record<string,unknown>|undefined;
+        return mapping&&(mapping.memberId||event.payload.memberId)===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash
+          &&mapping.fingerprint===row.fingerprint&&(mapping.jobId||event.payload.jobId)===row.job_id&&(mapping.requestId??event.payload.requestId??null)===(row.request_id??null)
+          &&(mapping.normalizationContextRef||mapping.contextRef)===generationContextRef(row);
+      });
+      if(!recorded)throw new Error(`Unrecorded generation idempotency ${generationContextRef(row)}`);
+    }
+  }
+
   persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
@@ -1582,6 +1613,7 @@ export class JsonStore {
     const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
+      this.assertDomainFactWrites(scope,archive.rows);
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
@@ -1689,6 +1721,7 @@ export class JsonStore {
     const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
+      this.assertDomainFactWrites(scope,archive.rows);
       this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);

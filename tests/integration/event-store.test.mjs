@@ -4,16 +4,20 @@ import Database from 'better-sqlite3';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { migrateStorage } from '../../server/storage-migrations.ts';
 import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt } from '../../server/domain-events.ts';
 import { appendDomainCommit, readDomainCommits, readStreamProjection, replayDomainEvents } from '../../server/event-store.ts';
 import { JsonStore, generationContextRef } from '../../server/store.ts';
 
 const at = '2026-11-01T00:00:00.000Z';
+const requestPayload='{"seed":17}';
+const requestRow={id:'r1',member_id:'m1',source:'member',operation:'generate',created_at:at,payload_bytes:Buffer.byteLength(requestPayload),payload:requestPayload};
 function database(t) {
   const sqlite = new Database(':memory:');
   sqlite.pragma('foreign_keys = ON');
   migrateStorage(sqlite);
+  sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(@id,@member_id,@source,@operation,@created_at,@payload_bytes,@payload)').run(requestRow);
   t.after(() => sqlite.close());
   return sqlite;
 }
@@ -25,7 +29,7 @@ function command(id, events, options = {}) {
   return finishDomainCommand(state);
 }
 const accepted = () => ({ eventType: 'RequestAccepted', payload: { requestId: 'r1', memberId: 'm1', source: 'member', createdAt: at,
-  inputRef: 'r1', inputSha256: '0'.repeat(64), jobs: [{ id: 'j1', status: 'queued', queueSeq: 1, summary: { seed: 17 } }] } });
+  inputRef: 'r1', inputSha256: createHash('sha256').update(requestPayload).digest('hex'), jobs: [{ id: 'j1', status: 'queued', queueSeq: 1, summary: { seed: 17 } }] } });
 
 test('commit, projection and receipt are atomic and command retry does not run the projector twice', t => {
   const sqlite = database(t), batch = command('accept', [accepted()]);
@@ -101,13 +105,21 @@ test('64 bit cursors cross the JavaScript safe integer boundary without rounding
   assert.equal(result.commitSeq,'9007199254740992');
   assert.equal(readDomainCommits(sqlite,'9007199254740991')[0].commitSeq,'9007199254740992');
 });
+test('replay orders numeric commit sequences correctly beyond nine commits',t=>{
+  const source=database(t),target=database(t);
+  source.transaction(()=>appendDomainCommit(source,command('accept',[accepted()])))();
+  for(let index=2;index<=12;index++)source.transaction(()=>appendDomainCommit(source,command(`queue-${index}`,[{eventType:'JobQueued',payload:{jobId:'j1',queueSeq:index,queuedAt:at}}])))();
+  assert.deepEqual(readDomainCommits(source).map(commit=>commit.commitSeq),Array.from({length:12},(_,index)=>String(index+1)));
+  assert.deepEqual(replayDomainEvents(source,target),{lastCommitSeq:'12',commits:12,events:12});
+  assert.equal(readStreamProjection(target,'request:r1').projection.jobs.j1.queueSeq,12);
+});
 
 test('JsonStore commits explicit events and restores its JavaScript state after a projection failure', async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(),'nai-domain-store-'));
   const store = new JsonStore(directory);
   t.after(async () => { await store.close(); await rm(directory,{recursive:true,force:true}); });
   await store.init();
-  await store.update(db => { db.settings.testFact='committed'; recordDomainEvent(db, { streamId:'request:r1',...accepted() }); });
+  await store.update(db => { db.settings.testFact='committed'; recordDomainEvent(db, { streamId:'request:r1',...accepted() }); },{generationRequest:requestRow});
   const committedCount=readDomainCommits(store.sqlite).length;
   assert.equal(readDomainCommits(store.sqlite).flatMap(commit=>commit.events).filter(event=>event.eventType==='RequestAccepted').length,1);
   await assert.rejects(store.update(db => {

@@ -6,7 +6,9 @@ import os from 'node:os';
 import { JsonStore,verifyEventProjections } from '../../server/store.ts';
 import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/fair-quota.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
-import { readProjectedFairQuota,eventAuthorityEnabled } from '../../server/event-store.ts';
+import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled } from '../../server/event-store.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function fixture(t){
@@ -52,4 +54,13 @@ test('a verified opening keeps accepted waiting jobs through cutover and still r
   assert.equal(store.selectItemById('jobs','waiting').queueSeq,7);
   await store.update(db=>{const job=db.jobs[0];reserveFairQuota(db,db.users[0],job,db.accounts[0],now);job.status='running';job.accountId='opus';},{includeSettings:true,dirtyRows:{jobs:['waiting']}});
   await assert.rejects(store.enableEventAuthority(),/Recover running attempts/);
+});
+test('real single-image admission keeps its parent request without inventing a legacy batch ID',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  const admit=createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>store.activeGenerationPayloadBytes()),
+    artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
+  const result=await admit({identity:{token:'secret-a'},source:'api',batch:false,noCache:true,
+    request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:1}});
+  const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.requestId,result.requestId);assert.equal(job.batchId,undefined);
+  assert.equal(readStreamProjection(store.sqlite,`request:${result.requestId}`).projection.jobs[job.id].batchId,undefined);
 });

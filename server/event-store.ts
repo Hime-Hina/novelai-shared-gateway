@@ -156,7 +156,7 @@ function eventFromRow(row: EventRow, commandId: string): DomainEvent {
 export function readDomainCommits(sqlite: Database.Database, afterCommitSeq = '0', limit = 100): DomainCommit[] {
   if (!/^\d+$/.test(afterCommitSeq) || !Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid event commit cursor.');
   const rows = sqlite.prepare(`SELECT CAST(commit_seq AS TEXT) AS commit_seq,command_id,fingerprint,recorded_at,event_count,receipt
-    FROM event_commits WHERE commit_seq > CAST(? AS INTEGER) ORDER BY commit_seq LIMIT ?`).all(afterCommitSeq, limit) as CommitRow[];
+    FROM event_commits WHERE event_commits.commit_seq > CAST(? AS INTEGER) ORDER BY event_commits.commit_seq LIMIT ?`).all(afterCommitSeq, limit) as CommitRow[];
   const selectEvents = sqlite.prepare(`SELECT *,CAST(commit_seq AS TEXT) AS commit_seq,CAST(stream_version AS TEXT) AS stream_version
     FROM domain_events WHERE commit_seq=CAST(? AS INTEGER) ORDER BY event_index`);
   return rows.map(row => {
@@ -212,7 +212,7 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
     if (!Array.isArray(p.jobs) || !p.jobs.length) throw new Error(`RequestAccepted ${event.eventId} requires jobs`);
     const jobs = Object.fromEntries(p.jobs.map(raw => {
       const job = object(raw), id = text(job.id, 'job.id');
-      return [id, { ...structuredClone(job), memberId: p.memberId, requestId: p.requestId, batchId: job.batchId || p.requestId,
+      return [id, { ...structuredClone(job), memberId: p.memberId, requestId: p.requestId, batchId: job.batchId,
         source: job.source || p.source, createdAt: job.createdAt || p.createdAt, request: job.summary || job.request,
         sampleIndex: job.index ?? job.sampleIndex ?? 0 }];
     }));
@@ -367,6 +367,13 @@ function saveIdempotencyFact(sqlite: Database.Database, fact: Record<string, unk
 export function projectColdDomainFacts(sqlite: Database.Database, commit: DomainCommit): void {
   for (const event of commit.events) {
     const p = event.payload;
+    const requestFact=event.eventType==='RequestAccepted'?p:event.eventType==='OpeningStateRecorded'&&event.streamKind==='request'?object(object(p.state).request):null;
+    if(requestFact?.inputRef){
+      const input=sqlite.prepare('SELECT member_id,payload FROM generation_requests WHERE id=?').get(requestFact.inputRef) as {member_id:string;payload:string}|undefined;
+      if(!input)throw new Error(`Missing protected generation input ${requestFact.inputRef}`);
+      if(requestFact.memberId&&input.member_id!==requestFact.memberId)throw new Error(`Protected generation input owner mismatch ${requestFact.inputRef}`);
+      if(createHash('sha256').update(input.payload).digest('hex')!==requestFact.inputSha256)throw new Error(`Protected generation input hash mismatch ${requestFact.inputRef}`);
+    }
     if (event.eventType === 'RequestAccepted' && p.idempotency) saveIdempotencyFact(sqlite,object(p.idempotency),p.memberId);
     if (event.eventType === 'RequestAliasRegistered') saveIdempotencyFact(sqlite,{...object(p.idempotency),jobId:p.jobId,requestId:p.requestId},p.memberId);
     if (['GenerationSettled','GenerationRefunded'].includes(event.eventType) && p.charge) {
