@@ -52,7 +52,7 @@ async function fixture(upstream: Handler, forward = forwardExecutorStream) {
 function open(base: string, path = '/ai/generate-image', method = 'GET', headers: http.OutgoingHttpHeaders = {}) {
   let req!: ClientRequest
   const response = new Promise<IncomingMessage>((resolve, reject) => {
-    req = http.request(base + path, { method, agent: false, headers: { ...identity, ...headers } }, res => {
+    req = http.request(base + path, { method, agent: false, headers: Object.fromEntries(Object.entries({ ...identity, ...headers }).filter(([, value]) => value !== undefined)) }, res => {
       res.on('error', () => {})
       resolve(res)
     })
@@ -79,6 +79,88 @@ afterEach(async () => {
 })
 
 describe('executor opaque streaming bridge', () => {
+  it.each(['/api/member/generation/quote', '/api/member/generation/requests'])('streams member JSON and multipart larger than 2 MiB without replacing Cookie or Origin: %s', async route => {
+    for (const multipart of [false, true]) {
+      const bytes = multipart
+        ? Buffer.concat([Buffer.from('--member-boundary\r\nContent-Disposition: form-data; name="request"\r\n\r\n{"operation":"upscale","image":"image"}\r\n--member-boundary\r\nContent-Disposition: form-data; name="image"; filename="synthetic.png"\r\nContent-Type: image/png\r\n\r\n'), Buffer.alloc(3 * 1024 * 1024, 0xa5), Buffer.from('\r\n--member-boundary--\r\n')])
+        : Buffer.from(JSON.stringify({ operation: 'upscale', image: Buffer.alloc(2 * 1024 * 1024, 0xa5).toString('base64') }))
+      const contentType = multipart ? 'multipart/form-data; boundary=member-boundary' : 'application/json'
+      const first = gate(), hash = createHash('sha256'), expected = createHash('sha256').update(bytes).digest('hex')
+      let count = 0, calls = 0, seen: IncomingMessage['headers'] = {}
+      const base = await fixture(async (req, res) => {
+        calls++; seen = req.headers
+        for await (const chunk of req) { count += chunk.length; hash.update(chunk); first.resolve() }
+        res.writeHead(route.endsWith('/quote') ? 200 : 202, { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store' })
+        res.end(JSON.stringify({ contractVersion: 1, byteLength: count }))
+      })
+      const browser = open(base, route, 'POST', { authorization: undefined, 'Content-Type': contentType, 'Content-Length': bytes.length, 'Idempotency-Key': 'member-original-key' })
+      browser.req.write(bytes.subarray(0, 1024)); await first.promise
+      expect(count).toBeGreaterThan(0); expect(count).toBeLessThan(bytes.length)
+      browser.req.end(bytes.subarray(1024))
+      const response = await browser.response
+      expect(response.statusCode).toBe(route.endsWith('/quote') ? 200 : 202)
+      expect(JSON.parse((await body(response)).toString())).toEqual({ contractVersion: 1, byteLength: bytes.length })
+      expect(response.headers['cache-control']).toBe('private, no-store'); expect(hash.digest('hex')).toBe(expected); expect(calls).toBe(1)
+      expect(seen).toMatchObject({ cookie: identity.cookie, origin: identity.origin, host: identity.host, 'content-type': contentType,
+        'idempotency-key': 'member-original-key', 'x-executor-token': config.executorToken })
+      expect(seen.authorization).toBeUndefined()
+    }
+  })
+
+  it('passes member preview frames above 64 KiB unchanged before the final SSE event', async () => {
+    const release = gate(), image = Buffer.alloc(90 * 1024, 0xa5)
+    const preview = Buffer.from(`event: preview\ndata: ${JSON.stringify({ jobId: 'synthetic-job', progress: { percent: 50 }, preview: `data:image/png;base64,${image.toString('base64')}`, label: '台北😀' })}\n\n`)
+    const complete = Buffer.from('event: complete\ndata: {"status":"done"}\n\n')
+    let calls = 0
+    const base = await fixture(async (req, res) => {
+      calls++; expect(req.url).toBe('/api/member/requests/synthetic-request/events')
+      expect(req.headers.cookie).toBe(identity.cookie); expect(req.headers.origin).toBe(identity.origin)
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform' })
+      res.write(preview); await release.promise; res.end(complete)
+    })
+    const browser = open(base, '/api/member/requests/synthetic-request/events', 'GET', { authorization: undefined }); browser.req.end()
+    try {
+      const response = await browser.response, iterator = response[Symbol.asyncIterator](), parts: Buffer[] = []; let received = 0
+      while (received < preview.length) { const next = await iterator.next(); const chunk = Buffer.from(next.value); parts.push(chunk); received += chunk.length }
+      expect(Buffer.concat(parts)).toEqual(preview); expect(response.complete).toBe(false)
+      expect(response.headers['cache-control']).toBe('no-cache, no-transform')
+      release.resolve()
+      const remaining: Buffer[] = []; for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) remaining.push(Buffer.from(chunk))
+      expect(Buffer.concat(remaining)).toEqual(complete); expect(calls).toBe(1)
+    } finally { release.resolve() }
+  })
+
+  it('does not replay member request bodies after lost transport or internal authentication failure', async () => {
+    const bytes = Buffer.from(JSON.stringify({ operation: 'upscale', image: 'synthetic'.repeat(400000) }))
+    for (const route of ['/api/member/generation/quote', '/api/member/generation/requests']) for (const authError of [false, true]) {
+      let calls = 0, received = 0
+      const base = await fixture(async (req, res) => {
+        calls++; for await (const chunk of req) received += chunk.length
+        if (!authError) { res.destroy(); return }
+        res.writeHead(401, { 'X-Executor-Auth-Error': '1' }); res.end(config.executorToken)
+      })
+      const browser = open(base, route, 'POST', { authorization: undefined, 'Content-Type': 'application/json', 'Idempotency-Key': 'same-member-intent' }); browser.req.end(bytes)
+      const response = await browser.response, payload = (await body(response)).toString()
+      expect(response.statusCode).toBe(503); expect(response.headers['x-executor-auth-error']).toBeUndefined()
+      expect(payload).not.toContain(config.executorToken)
+      expect(JSON.parse(payload)).toMatchObject({ statusCode: 503, code: 'executor_unavailable', message: expect.any(String) })
+      expect(calls).toBe(1); expect(received).toBe(bytes.length)
+    }
+  })
+
+  it('preserves member Origin rejection before a declared large upload has completed', async () => {
+    const rejection = Buffer.from('{"statusCode":403,"code":"origin_rejected","message":"synthetic origin rejection"}')
+    let calls = 0
+    const base = await fixture((req, res) => {
+      calls++; expect(req.headers.origin).toBe('https://untrusted.invalid')
+      res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'private, no-store' }); res.end(rejection)
+    })
+    const browser = open(base, '/api/member/generation/requests', 'POST', { authorization: undefined, origin: 'https://untrusted.invalid', 'Content-Length': 32 * 1024 * 1024 })
+    browser.req.write(Buffer.alloc(1024))
+    const response = await browser.response
+    expect(response.statusCode).toBe(403); expect(await body(response)).toEqual(rejection); expect(browser.req.writableEnded).toBe(false); expect(calls).toBe(1)
+  })
+
   it('forwards a 32 MiB upload before its end and delivers response bytes before the final chunk', async () => {
     const firstUpload = gate(), finalResponse = gate()
     const uploadHash = createHash('sha256'), expectedHash = createHash('sha256')

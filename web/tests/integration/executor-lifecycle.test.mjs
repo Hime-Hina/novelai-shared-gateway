@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
+import { crc32 } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,11 +19,19 @@ const webp = await readFile(new URL('../../../tests/fixtures/synthetic.webp', im
 // The same valid 128×128 PNG as native-image tests; reference pricing rejects tiny (<100 character) encodings.
 const referencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAAVklEQVR4nO3BMQEAAADCoPVPbQwfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOBvAI8AAT4ZY7sAAAAASUVORK5CYII=', 'base64');
 const vibe = Buffer.from([0, 255, 128, 3, 13, 10, 0, 42]);
-const previewPayload = Buffer.concat([Buffer.from([0x84, 0xaa]), Buffer.from('event_type'), Buffer.from([0xac]),
-  Buffer.from('intermediate'), Buffer.from([0xa5]), Buffer.from('image'), Buffer.from([0xc4, png.length]), png,
-  Buffer.from([0xa7]), Buffer.from('step_ix'), Buffer.from([2, 0xab]), Buffer.from('total_steps'), Buffer.from([23])]);
-const previewLength = Buffer.alloc(4); previewLength.writeUInt32BE(previewPayload.length);
-const previewFrame = Buffer.concat([previewLength, previewPayload]);
+function previewFrameFor(image) {
+  const binaryLength = Buffer.alloc(4); binaryLength.writeUInt32BE(image.length);
+  const payload = Buffer.concat([Buffer.from([0x84, 0xaa]), Buffer.from('event_type'), Buffer.from([0xac]),
+    Buffer.from('intermediate'), Buffer.from([0xa5]), Buffer.from('image'), Buffer.from([0xc6]), binaryLength, image,
+    Buffer.from([0xa7]), Buffer.from('step_ix'), Buffer.from([2, 0xab]), Buffer.from('total_steps'), Buffer.from([23])]);
+  const length = Buffer.alloc(4); length.writeUInt32BE(payload.length); return Buffer.concat([length, payload]);
+}
+const previewFrame = previewFrameFor(png);
+function largePreviewPng() {
+  const value = Buffer.concat([Buffer.from('Comment\0'), Buffer.alloc(90 * 1024, 65)]), header = Buffer.alloc(8), tail = Buffer.alloc(4);
+  header.writeUInt32BE(value.length); header.write('tEXt', 4); tail.writeUInt32BE(crc32(Buffer.concat([Buffer.from('tEXt'), value])));
+  return Buffer.concat([referencePng.subarray(0, -12), header, value, tail, referencePng.subarray(-12)]);
+}
 const publicHost = 'gateway.example', publicOrigin = 'https://' + publicHost;
 const envBase = () => Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
   .filter(key => process.env[key]).map(key => [key, process.env[key]]));
@@ -112,6 +121,7 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
   const { syncFairQuota, quoteFairRequest } = await import(packaged('server/fair-quota.js'));
   const { nativeImagesMsgpack } = await import(packaged('server/native-stream.js'));
   const { createMemberSession } = await import(packaged('server/member-auth.js'));
+  const { recordDomainEvent } = await import(packaged('server/domain-events.js'));
   const Database = runtimeRequire('better-sqlite3');
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-nuxt-executor-'));
   const adminToken = 'synthetic-nuxt-executor-admin-token-only';
@@ -138,6 +148,11 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
           createdAt: new Date().toISOString(), userToken: db.users[member].token,
           generationAttempt: { id: `synthetic-query-attempt-${index}`, memberId: db.users[member].id },
           request: { operation: 'generate', model: 'nai-diffusion-4-5-full', prompt: 'synthetic-private-query-history' } }));
+        for (const job of db.jobs) {
+          const { userToken, request, ...facts } = job, memberId = db.users.find(user => user.token === userToken).id;
+          recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${job.id}`, memberId,
+            payload: { state: { request: { requestId: null, memberId }, jobs: { [job.id]: { ...facts, memberId, request: { operation: request.operation, model: request.model } } }, artifacts: {}, aliases: [], freeUsage: {} } } });
+        }
       }
     }, { immediate: true });
     if (discord) for (const user of seeded.db.users) sessions.push(await createMemberSession(seeded, user, discordEnv));
@@ -213,7 +228,7 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
         held.started = true;
         if (held.preview) {
           assert.equal(stream, true, 'preview fixture must exercise an actual upstream MessagePack stream');
-          res.writeHead(200, { 'content-type': 'application/octet-stream' }); res.write(previewFrame);
+          res.writeHead(200, { 'content-type': 'application/octet-stream' }); res.write(Buffer.isBuffer(held.preview) ? held.preview : previewFrame);
         }
         await held.promise;
       }
@@ -424,7 +439,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assert.equal(f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 1, table + ' must contain only the original operation');
     }
     const charge = JSON.parse(f.audit.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(accepted.id).charge);
-    assert.equal(charge.status, 'settled'); assert.equal(charge.resource, 'anlas'); assert.ok(charge.fixed > 0); assert.equal(charge.purchased, 0);
+    assert.equal(charge.status, 'settled'); assert.equal(charge.resource, 'anlas'); assert.ok(charge.fixed > 0); assert.equal(charge.purchased, '0');
     const ledger = f.audit.prepare('SELECT data FROM ledger').all().map(row => JSON.parse(row.data));
     assert.equal(ledger.filter(entry => entry.jobId === accepted.id && entry.type === 'generation_reserved').length, 1);
     const before = f.observations.length;
@@ -847,6 +862,88 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     assert.equal(upscaleCalls.length, 1); assert.equal(upscaleCalls[0].body.declared_blur_sigma, 0.35);
     assert.equal(f.generations(), 4); assert.equal(f.jobs().length, 4);
     assert.equal(f.observations.length, 0, 'stream and binary tests must bypass the buffering fault relay'); f.checkStorage();
+  });
+
+  await t.test('成员生成经正式Nuxt流式路由接收大JSON与multipart，私有预览超过64KiB且Nuxt重启不取消生成', { timeout: 45000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { directExecutor: true, discord: true });
+    const headers = { cookie: f.cookie(2) }, memberCall = (route, options = {}) => call(f.nuxtBase, route, { ...options, headers: { ...headers, ...options.headers } });
+    const base = '/api/member/generation', requestBody = { operation: 'generate', ...nativeBody('synthetic private member large input'), action: 'img2img',
+      parameters: { width: 128, height: 128, steps: 23, seed: 42, n_samples: 1, image: referencePng.toString('base64') } };
+    const paddedJson = body => Buffer.concat([Buffer.from(JSON.stringify(body)), Buffer.alloc(3 * 1024 * 1024, 32)]);
+    const confirm = quote => ({ requestFingerprint: quote.requestFingerprint, versions: quote.versions, maxPerJob: quote.charges.perJob[0].resources, maxTotal: quote.charges.total });
+    assert.equal((await f.request(base + '/capabilities')).status, 401, 'Bearer cannot replace a member Cookie');
+    const capabilitiesResponse = await memberCall(base + '/capabilities'), capabilities = json(capabilitiesResponse);
+    assert.equal(capabilities.contractVersion, 1); assert.match(capabilitiesResponse.headers['cache-control'], /private/);
+    const invalidOrigin = await memberCall(base + '/quote', { body: requestBody, headers: { origin: 'https://untrusted.invalid' } });
+    assert.equal(json(invalidOrigin, 403).code, 'origin_rejected');
+    const quoteResponse = await memberCall(base + '/quote', { body: paddedJson(requestBody) }), quote = json(quoteResponse);
+    assert.equal(quote.admission.allowed, true); assert.match(quoteResponse.headers['cache-control'], /private/); assert.equal(f.generations(), 0);
+    const largePreview = largePreviewPng(), held = f.holdNext(previewFrameFor(largePreview));
+    const submitBody = paddedJson({ ...requestBody, confirmation: confirm(quote) });
+    const accepted = json(await memberCall(base + '/requests', { body: submitBody, headers: { 'idempotency-key': 'member-large-json' } }), 202);
+    assert.equal(accepted.replayed, false); assert.ok(accepted.requestId);
+    const events = await subscribe(sub, f.nuxtBase, headers.cookie, { route: accepted.links.events });
+    assert.match(events.response.headers['cache-control'], /no-cache/); assert.match(events.response.headers['cache-control'], /no-transform/);
+    await until(() => held.started && events.frames.some(frame => frame.event === 'snapshot') && events.frames.some(frame => frame.event === 'preview'), 10000, 'member preview did not pass the raw Nuxt stream');
+    const preview = events.frames.find(frame => frame.event === 'preview').data;
+    assert.ok(Buffer.byteLength(JSON.stringify(preview)) > 64 * 1024); assert.deepEqual(Buffer.from(preview.preview.split(',')[1], 'base64'), largePreview);
+    assert.equal(f.jobs().find(job => job.id === accepted.jobIds[0]).status, 'running');
+    events.request.destroy(); const executorPid = f.executor.child().pid; await f.nuxt.stop();
+    assert.equal(f.executor.child().pid, executorPid); held.resolve();
+    await until(() => f.jobs().find(job => job.id === accepted.jobIds[0]).status === 'done', 15000, 'member generation was lost with its page process');
+    await f.startNuxt();
+    const replay = json(await memberCall(base + '/requests', { body: submitBody, headers: { 'idempotency-key': 'member-large-json' } }), 202);
+    assert.equal(replay.requestId, accepted.requestId); assert.equal(replay.replayed, true); assert.equal(f.generations(), 1);
+    const terminal = await subscribe(sub, f.nuxtBase, headers.cookie, { route: accepted.links.events });
+    await until(() => terminal.ended(), 5000, 'terminal member stream did not close');
+    assert.equal(terminal.failure(), undefined); assert.deepEqual(terminal.frames.filter(frame => frame.event).map(frame => frame.event), ['snapshot', 'complete']);
+    assert.equal(terminal.frames.at(-1).data.status, 'done');
+    const restored = json(await memberCall(accepted.links.input)); assert.equal(restored.input.parameters.seed, 42); assert.equal(restored.assets.length, 1);
+    assert.deepEqual((await memberCall(restored.assets[0].url)).body, referencePng);
+    assert.equal((await call(f.nuxtBase, accepted.links.input, { headers: { cookie: f.cookie(1) } })).status, 404, 'owner cannot read another member input');
+    assert.deepEqual((await memberCall(`/api/member/jobs/${accepted.jobIds[0]}/content`)).body, png);
+    const boundary = 'synthetic-member-generation-boundary';
+    const multipart = body => Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ ...body, parameters: { ...body.parameters, image: 'image' } })}`),
+      Buffer.alloc(3 * 1024 * 1024, 32), Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="synthetic.png"\r\nContent-Type: image/png\r\n\r\n`), referencePng, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+    const multipartHeaders = { 'content-type': `multipart/form-data; boundary=${boundary}` };
+    const multipartQuote = json(await memberCall(base + '/quote', { body: multipart(requestBody), headers: multipartHeaders }));
+    assert.equal(multipartQuote.requestFingerprint, quote.requestFingerprint); assert.deepEqual(multipartQuote.charges, quote.charges);
+    const second = json(await memberCall(base + '/requests', { body: multipart({ ...requestBody, confirmation: confirm(multipartQuote) }),
+      headers: { ...multipartHeaders, 'idempotency-key': 'member-large-multipart', 'transfer-encoding': 'chunked' } }), 202);
+    await until(() => f.jobs().find(job => job.id === second.jobIds[0]).status === 'done', 15000, 'multipart member generation did not complete');
+    assert.equal(f.generations(), 2);
+    for (const generation of f.upstreamCalls) {
+      assert.equal(generation.body.parameters.image, referencePng.toString('base64'));
+      for (const key of ['confirmation', 'normalizationContext', 'clientContract', 'operation']) assert.equal(Object.hasOwn(generation.body, key), false);
+    }
+    assert.equal(f.observations.length, 0, 'raw streaming checks must bypass the buffering fault relay'); f.checkStorage();
+  });
+
+  await t.test('成员大正文报价和受理丢失回执不由Nuxt重发，客户端原键重试领取唯一任务', { timeout: 30000 }, async sub => {
+    const f = await fixture(sub, nuxtEntry, { discord: true }), headers = { cookie: f.cookie(2) }, base = '/api/member/generation';
+    const requestBody = { operation: 'generate', ...nativeBody('synthetic lost member receipt') };
+    const padded = value => Buffer.concat([Buffer.from(JSON.stringify(value)), Buffer.alloc(3 * 1024 * 1024, 32)]);
+    const memberCall = (route, options = {}) => call(f.nuxtBase, route, { ...options, headers: { ...headers, ...options.headers } });
+    f.dropMutation(base + '/quote');
+    const lostQuote = await memberCall(base + '/quote', { body: padded(requestBody) }); assert.equal(json(lostQuote, 503).code, 'executor_unavailable');
+    assert.equal(f.observations.filter(item => item.path === base + '/quote').length, 1); assert.equal(f.generations(), 0);
+    const quote = json(await memberCall(base + '/quote', { body: padded(requestBody) }));
+    const submitBody = padded({ ...requestBody, confirmation: { requestFingerprint: quote.requestFingerprint, versions: quote.versions, maxPerJob: quote.charges.perJob[0].resources, maxTotal: quote.charges.total } });
+    f.dropReceipt();
+    const lost = await memberCall(base + '/requests', { body: submitBody, headers: { 'idempotency-key': 'member-lost-receipt' } });
+    assert.equal(json(lost, 503).code, 'executor_unavailable'); assert.equal(f.droppedReceipts.length, 1);
+    assert.equal(f.observations.filter(item => item.path === base + '/requests').length, 1, 'Nuxt must not replay a large request body');
+    const original = f.droppedReceipts[0];
+    const retried = json(await memberCall(base + '/requests', { body: submitBody, headers: { 'idempotency-key': 'member-lost-receipt' } }), 202);
+    assert.equal(retried.requestId, original.requestId); assert.equal(retried.replayed, true);
+    await until(() => f.jobs().find(job => job.id === retried.jobIds[0]).status === 'done', 15000, 'lost member receipt did not finish its original task');
+    const forwarded = f.observations.filter(item => item.path === base + '/requests'); assert.equal(forwarded.length, 2);
+    for (const observation of forwarded) {
+      assert.deepEqual(observation.body, submitBody); assert.equal(observation.headers.cookie, headers.cookie); assert.equal(observation.headers.authorization, undefined);
+      assert.equal(observation.headers.host, publicHost); assert.equal(observation.headers.origin, publicOrigin); assert.equal(observation.headers['idempotency-key'], 'member-lost-receipt');
+    }
+    assert.equal(f.generations(), 1); assert.equal(f.audit.prepare('SELECT COUNT(*) n FROM generation_requests').get().n, 1);
+    assert.equal(f.audit.prepare("SELECT COUNT(*) n FROM domain_events WHERE event_type = 'RequestAccepted'").get().n, 1); f.checkStorage();
   });
 
   await t.test('正式OpenAI首帧与任务预览实时到达，长于45秒仍完成，任务取消和签名图保留成员边界', { timeout: 90000 }, async sub => {
