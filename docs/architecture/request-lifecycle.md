@@ -1,6 +1,6 @@
 # 持久请求与排队生命周期（F06 / F10 / F12）
 
-当前已接入网页 `POST /api/jobs`、Native 普通/stream 多图和辅助操作、
+当前已接入旧网页 `POST /api/jobs`、Cookie 成员生成、Native 普通/stream 多图和辅助操作、
 direct `/generate`、OpenAI JSON/SSE。各入口均使用持久父参数与统一调度，
 已受理任务独立于 HTTP 连接。父请求查询、结果领取、取消未派发任务与
 可选操作键去重已接入；文件发布与结算之间的恢复详见 [F10 结果持久性](result-recovery.md)。
@@ -22,7 +22,7 @@ Native、direct 和 OpenAI 受理函数返回后结束完整正文/解析参数�
 进度只读取 child 摘要，不为反复展示队列状态冷读完整提示词；普通任务查询
 仍保留完整 prompt 契约。
 
-网页和 OpenAI 正文上限保持 **2 MiB**，Native wire 上限保持 **32 MiB**。规范化请求
+旧网页和 OpenAI 正文上限保持 **2 MiB**，Cookie 成员生成/报价与 Native wire 上限为 **32 MiB**。规范化请求
 默认上限 **32 MiB**（`REQUEST_MAX_PAYLOAD_BYTES`），全局活动载荷默认
 **64 MiB**（`QUEUE_MAX_PAYLOAD_BYTES`）。按含 base64 的 JSON UTF-8 字节
 计量，不按解码图片大小或 JavaScript 字符数。两个配置均可下调验证。

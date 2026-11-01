@@ -255,7 +255,7 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 
 密码登录成功回包增加 `expiresAt`（整数 Unix 毫秒），`GET /api/member/me` 增加 `sessionExpiresAt`；JSON 正文不回传会话令牌或摘要。SSE 建连时仍使用正常 HTTP 鉴权；连接内确认资格/会话失效发送 `auth-expired` 并结束，Discord 503 或网络错误只中断连接。页面在 SSE 永久关闭时最多补一次状态鉴权检查，401/403 清除密钥展示并显示重新登录，503 保留页面。
 
-`me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 的额度同步及 Discord 资格检查有持久副作用，Nuxt 迁移不能把 GET 简单当作可直接读 SQLite 的接口。
+`me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 在副本中估算额度，不同步钱包或提交额度事件；鉴权、Discord 资格缓存及符合条件的可见访问续期仍有各自的持久化边界。Nuxt 继续通过执行器接口取得鉴权后的响应，不能因额度查询纯读就绕过这些守卫直接读取 SQLite。
 
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 
@@ -310,7 +310,7 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 | [provider-features.test.mjs](../../tests/unit/provider-features.test.mjs) | 请求转发、双Vibe二进制类型、上游错误、坏产物、限流读取、ZIP/MessagePack/SOCKS完整性 |
 | [native-body.test.mjs](../../tests/unit/native-body.test.mjs)、[native-image.test.mjs](../../tests/unit/native-image.test.mjs)、[native-client-regression.test.mjs](../../tests/unit/native-client-regression.test.mjs) | multipart、参数/图片拒绝边界、客户端模板与多角色布局 |
 | [native-pricing.test.mjs](../../tests/unit/native-pricing.test.mjs) | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接 |
-| [native-stream.test.mjs](../../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../../tests/integration/native-adapter.test.mjs) | 独立解码与既有适配回归；后者仍有源码截取测试，T01清理时应改为真实模块/HTTP。N03已另用正式Nuxt/执行器产物回归，没有照搬这种测试方式 |
+| [native-stream.test.mjs](../../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../../tests/integration/native-adapter.test.mjs) | 独立解码与实际 `createNativeHttp`、`native-image`、`native-stream` 模块回归；R11 已移除后端源码截取测试，运行时使用同一协议装配。真实 Nuxt/执行器和当前固定候选证据见[重构计划](../plans/architecture-refactor-plan.md#10-可执行工作包与依赖) |
 | [shared-surface.test.mjs](../../tests/unit/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../../tests/unit/launcher-subscription.test.mjs)、[member-routes.test.mjs](../../tests/integration/member-routes.test.mjs)、[owner-management.test.mjs](../../tests/integration/owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码 |
 | [executor-lifecycle.test.mjs](../../web/tests/integration/executor-lifecycle.test.mjs) | 正式 Nuxt 与 Nitro 产物：Native 别名同键重放、32 MiB multipart 附件、Vibe 原始字节、OpenAI 首帧与预览、超过45秒仍完成、direct 原超时图片、任务权限与签名图、只杀 Nuxt 后执行器继续完成；不再注入测试专用 API 路由 |
 | [executor-stream.test.ts](../../web/tests/nuxt/executor-stream.test.ts)、[caddy-routing.test.mjs](../../tests/deployment/caddy-routing.test.mjs) | Node 流背压、提前拒绝与关停；固定 Caddy 产物验证统一 Nuxt 入口、公私管理隔离、API 不压缩和 SSE 首帧转发。Caddy 用模拟 Nuxt，不代替上行真实业务测试 |

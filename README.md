@@ -179,7 +179,7 @@ V5 用量按图片像素与步数估算。官方可能只返回整数百分比�
 
 生成接口可选提供 `Idempotency-Key`，同成员同操作同键重试复用原任务；有效参数冲突为 409，历史任务或产物缺失为 410，不自动重新生图。direct 仍使用原错误图片格式。无键客户端保持原行为，不能仅凭相同提示词判断是重试；完整约束与故障边界见[持久请求说明](docs/architecture/request-lifecycle.md)。这不保证找回 NAI 已执行但网关尚未保存的图片。
 
-F06 第一片已让网页 `POST /api/jobs` 的完整参数与任务同事务持久化，历史参数不进入热缓存，未派发任务重启后按需读取执行。网页正文仍限 2 MiB；规范化参数默认限 32 MiB，新路径活动参数合计限 64 MiB，可通过 `REQUEST_MAX_PAYLOAD_BYTES` / `QUEUE_MAX_PAYLOAD_BYTES` 调整。超出单请求限制返回 413，暂满返回 429。Native/direct/OpenAI 及其在途取消边界尚未接入这片字节预算，详见[持久请求说明](docs/architecture/request-lifecycle.md)，不能将它当作全站内存保证。
+网页、成员生成、Native、direct 与 OpenAI 共用持久请求和输入字节预算：完整参数与任务同事务保存，历史参数不进入热缓存，执行时按需读取。旧网页及 OpenAI 正文仍限 2 MiB；成员生成/报价及 Native 正文限 32 MiB，direct 查询串也计临时占用。规范化参数默认限 32 MiB，活动参数合计限 64 MiB，可通过 `REQUEST_MAX_PAYLOAD_BYTES` / `QUEUE_MAX_PAYLOAD_BYTES` 调整；超出单请求限制返回 413，暂满返回 429。尚未结束的执行尝试即使逻辑上已超时或失败，仍占输入预算，直到物理执行结束；同一父批次只计一次。图片解码、解析中间对象和输出缓冲另有成本，这不是全站内存上界，详见[持久请求说明](docs/architecture/request-lifecycle.md)。
 
 公开版仍是管理员管理一个共享 Opus 的基础框架，不包含线上站点的多车队租户系统。
 
