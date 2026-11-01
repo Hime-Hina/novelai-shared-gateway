@@ -180,3 +180,16 @@ test('最终预留决定在扣款前授权，1ms恢复跨fallback边界与已有
  assert.throws(()=>reserveFairQuota(db,{id:'a'},job,db.accounts[0],now+1,request,null,()=>{throw new Error('reused reservation denied');}),/denied/);
  assert.deepEqual(s,before);assert.deepEqual(db.ledger,ledger);
 });
+
+test('新观测已保存恢复游标时不追加零金额tick，独立tick仍保存未归档游标',()=>{
+ const db=fixture(),s=db.settings.fairQuota;
+ for(const id of members)s.balances[id].v5Available='25';s.snapshot.v5='100';db.accounts[0].v5UsagePercent=100;
+ db.accounts[0].quotaCheckedAt=now+60000;
+ const observed=audit(db,()=>syncFairQuota(db,now+60000));
+ assert.equal(observed.events.some(event=>event.eventType==='RefillApplied'),false);
+ assert.equal(observed.events.some(event=>event.eventType==='QuotaObserved'&&event.payload.kind==='reconciled'),true);
+ assert.equal(s.lastRefillAt,now+60000);
+ const tick=audit(db,()=>syncFairQuota(db,now+60001));
+ assert.equal(tick.events.find(event=>event.eventType==='RefillApplied').payload.allocations.length,0);
+ assert.equal(s.lastRefillAt,now+60001);
+});

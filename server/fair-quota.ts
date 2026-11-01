@@ -465,6 +465,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     return s;
   }
   const old=s.snapshot;
+  const acceptingObservation=incoming.at>old.at&&incoming.at>=s.lastSettlementAt&&!anyHeld(s)&&incoming.v5!==null&&incoming.anlas!==null;
   // 官方字段表示恢复完整 1% 的秒数。旧快照超过十分钟后不再推算恢复。
   const until=Math.min(now,old.at+STALE_MS);
   const from=s.lastRefillAt;
@@ -483,9 +484,10 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     refill={...refill,budget:formatAmount(elapsed),debtRepaid:formatAmount(repaid),capacityRecovered:formatAmount(recovered),allocations:credited.allocations,evidence:recovery.evidence};
   }
   s.lastRefillAt=Math.max(s.lastRefillAt,until);
-  if(s.lastRefillAt>from)quotaFact(db,'RefillApplied',{...refill},now);
+  // 同批新观测已保存最终游标；无金融效果时不重复追加恢复事实。
+  if(s.lastRefillAt>from&&(!acceptingObservation||refill.allocations.length||refill.debtRepaid!=='0'||refill.capacityRecovered!=='0'))quotaFact(db,'RefillApplied',{...refill},now);
   // 并发生成期间的快照无法归属消费，待全部结清且取得新快照后校准。
-  if(incoming.at>old.at && incoming.at>=s.lastSettlementAt && !anyHeld(s) && incoming.v5!==null && incoming.anlas!==null) {
+  if(acceptingObservation) {
     // 快照用于来源核对和安全派发，不把未知消费分摊给闲置成员，也不把差额当恢复增发。
     recordV5Reconciliation(db,s,incoming,now);
     const matchedDebits={anlasFixed:'0',anlasPurchased:'0'},matchedFallback={fixed:'0',purchased:'0'};
