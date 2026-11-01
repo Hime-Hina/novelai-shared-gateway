@@ -93,8 +93,8 @@ globalThis.fetch = (input, options) => {
     if (exited) await exited;
   };
   t.after(async () => { await stop(); audit.close(); upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve)); });
-  const call = (endpoint, { body, cookie, headers = {} } = {}) => fetch(base + endpoint, {
-    method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(15000),
+  const call = (endpoint, { body, cookie, headers = {}, method = body === undefined ? 'GET' : 'POST' } = {}) => fetch(base + endpoint, {
+    method, signal: AbortSignal.timeout(15000),
     headers: { origin: base, ...(cookie ? { cookie } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
@@ -130,6 +130,73 @@ async function openEvents(gateway, cookie) {
     assert.match(text, /event: auth-expired\ndata: \{\}\n\n/);
   };
 }
+
+test('真实管理员批量和单账号修改原子记录可用性事实，事件写入失败不改变账户或账本', { timeout: 45000 }, async t => {
+  const gateway = await fixture(t);
+  const officialObservations = () => gateway.audit.prepare("SELECT COUNT(*) AS n FROM domain_events WHERE event_type='QuotaObserved' AND json_extract(payload,'$.kind')='official'").get().n;
+  const seededObservations = officialObservations();
+  await gateway.start();
+  const refreshDeadline = Date.now() + 15000;
+  while (officialObservations() === seededObservations) {
+    assert.ok(Date.now() < refreshDeadline, 'startup quota observation must commit before testing an unrelated transaction');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  const headers = { 'x-admin-token': gateway.adminToken };
+  const originalId = gateway.audit.prepare('SELECT id FROM accounts').get().id;
+  const added = await gateway.call('/api/admin/accounts', { headers,
+    body: { name: 'Synthetic availability peer', token: 'pst-synthetic-availability-peer', enabled: false } });
+  assert.equal(added.status, 201);
+  const peer = await added.json(), ids = [originalId, peer.id];
+  const readAccounts = () => gateway.audit.prepare('SELECT data FROM accounts ORDER BY id').all().map(row => {
+    const account = JSON.parse(row.data);
+    return { id: account.id, enabled: account.enabled, weight: account.weight };
+  });
+  const snapshot = () => Object.fromEntries(['accounts', 'ledger', 'domain_events', 'event_commits'].map(table => [table,
+    gateway.audit.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+  const availabilityEvents = () => gateway.audit.prepare("SELECT * FROM domain_events WHERE event_type='AvailabilityChanged' ORDER BY commit_seq,event_index").all();
+  const before = snapshot(), beforeAvailability = availabilityEvents().length;
+  gateway.audit.exec("CREATE TRIGGER synthetic_availability_failure BEFORE INSERT ON domain_events WHEN NEW.event_type='AvailabilityChanged' BEGIN SELECT RAISE(ABORT, 'synthetic availability storage failure'); END");
+  try {
+    for (const [endpoint, body] of [
+      ['/api/admin/accounts', { ids, enabled: false, weight: 7 }],
+      [`/api/admin/accounts/${originalId}`, { enabled: false, weight: 9 }]
+    ]) {
+      const failed = await gateway.call(endpoint, { method: 'PATCH', headers, body });
+      assert.equal(failed.status, 500); await failed.text();
+      assert.deepEqual(snapshot(), before, 'rejected account commands must leave all durable facts and ledger rows unchanged');
+    }
+  } finally { gateway.audit.exec('DROP TRIGGER synthetic_availability_failure'); }
+  const bulk = await gateway.call('/api/admin/accounts', { method: 'PATCH', headers, body: { ids, enabled: false, weight: 7 } });
+  assert.equal(bulk.status, 200);
+  const expectedBulk = ids.map(id => ({ id, enabled: false, weight: 7 })).sort((a, b) => a.id.localeCompare(b.id));
+  const response = await bulk.json();
+  assert.deepEqual(response.accounts.map(({ id, enabled, weight }) => ({ id, enabled, weight })).sort((a, b) => a.id.localeCompare(b.id)), expectedBulk);
+  assert.deepEqual(readAccounts(), expectedBulk);
+  const bulkEvents = availabilityEvents().slice(beforeAvailability);
+  assert.equal(bulkEvents.length, 2);
+  assert.equal(new Set(bulkEvents.map(event => event.commit_seq)).size, 1, 'bulk intent must have one atomic commit');
+  assert.deepEqual(bulkEvents.map(event => event.account_id).sort(), [...ids].sort());
+  for (const event of bulkEvents) {
+    assert.equal(event.actor_kind, 'admin'); assert.equal(event.actor_id, 'local-admin');
+    const payload = JSON.parse(event.payload);
+    assert.equal(payload.accountId, event.account_id); assert.equal(payload.enabled, false); assert.equal(payload.weight, 7);
+  }
+  assert.equal(gateway.audit.prepare("SELECT COUNT(*) AS n FROM ledger WHERE json_extract(data,'$.type')='update-accounts'").get().n, 1);
+  await gateway.stop(); await gateway.start();
+  assert.deepEqual(readAccounts(), expectedBulk);
+  const single = await gateway.call(`/api/admin/accounts/${originalId}`, { method: 'PATCH', headers, body: { enabled: true, weight: 11 } });
+  assert.equal(single.status, 200); const changed = await single.json();
+  assert.equal(changed.id, originalId); assert.equal(changed.enabled, true); assert.equal(changed.weight, 11);
+  const expectedSingle = expectedBulk.map(account => account.id === originalId ? { ...account, enabled: true, weight: 11 } : account);
+  assert.deepEqual(readAccounts(), expectedSingle);
+  const singleEvents = availabilityEvents().slice(beforeAvailability + bulkEvents.length);
+  assert.equal(singleEvents.length, 1); assert.equal(singleEvents[0].account_id, originalId);
+  assert.equal(singleEvents[0].actor_kind, 'admin'); assert.equal(singleEvents[0].actor_id, 'local-admin');
+  assert.equal(JSON.parse(singleEvents[0].payload).enabled, true); assert.equal(JSON.parse(singleEvents[0].payload).weight, 11);
+  await gateway.stop(); await gateway.start();
+  assert.deepEqual(readAccounts(), expectedSingle);
+  gateway.assertNoGeneration();
+});
 
 for (const owner of [false, true]) test(`可见网页访问续期${owner ? 'owner 一天' : '普通成员七天'}，Cookie 与数据库一致，其他查询和跨站请求不续期`, { timeout: 45000 }, async t => {
   const gateway = await fixture(t, { owner }), ttl = owner ? ownerTtl : memberTtl;
