@@ -26,7 +26,7 @@ test('真实 SQLite 首次初始化四成员，不联网、不发额度，凭据
   try {
    const db=await store.read();assert.equal(db.users.length,4);assert.equal(db.accounts.length,1);assert.equal(db.accounts[0].quotaTier,null);assert.equal(db.accounts[0].quotaCheckedAt,'');
    assert.equal(db.settings.fairQuota.status,'pending_opus');assert.equal(db.settings.fairQuota.boundAccountId,null);assert.equal(db.settings.fairQuota.autoAnlasFallback,false);
-   for(const member of saved.accounts){assert.equal((await loginMember(db,member.username,member.password)).id,member.user_id);assert.equal(db.settings.fairQuota.balances[member.user_id].v5Available,0);assert.equal(db.settings.fairQuota.balances[member.user_id].anlasAvailable,0);assert.equal(db.users.find(u=>u.id===member.user_id).balance,0);}
+   for(const member of saved.accounts){assert.equal((await loginMember(db,member.username,member.password)).id,member.user_id);assert.equal(db.settings.fairQuota.balances[member.user_id].v5Available,'0');assert.equal(db.settings.fairQuota.balances[member.user_id].anlasAvailable,'0');assert.equal(db.users.find(u=>u.id===member.user_id).balance,0);}
   } finally {await store.close();}
   const before=await readFile(path.join(dataDir,'library.sqlite')),credentialsBefore=await readFile(result.credentialPath);
   await assert.rejects(bootstrap({env:environment(dataDir),log:()=>{}}),/拒绝覆盖/);
