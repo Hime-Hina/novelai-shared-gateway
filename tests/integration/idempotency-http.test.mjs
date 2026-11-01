@@ -106,7 +106,7 @@ test('HTTP 幂等跨并发、断线、重启、默认值变化和 Key 轮换保�
     assert.equal(response.status, 200, JSON.stringify(result)); return result;
   };
   await start();
-  assert.equal(JSON.parse(audit.prepare("SELECT value FROM app_meta WHERE key = 'event_authority'").get().value).version, 1);
+  assert.equal(JSON.parse(audit.prepare("SELECT value FROM app_meta WHERE key = 'event_authority'").get().value).version, 2);
   for (const key of [undefined, 'null-input']) {
     assert.equal((await call('/ai/generate-image', { body: null, key })).status, 400);
   }
