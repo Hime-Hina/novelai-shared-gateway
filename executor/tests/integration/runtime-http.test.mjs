@@ -26,6 +26,7 @@ const { JsonStore } = await import(pathToFileURL(packaged('server/store.js')).hr
 const { syncFairQuota } = await import(pathToFileURL(packaged('server/fair-quota.js')).href);
 const { createMemberSession } = await import(pathToFileURL(packaged('server/member-auth.js')).href);
 const { nativeImagesMsgpack } = await import(pathToFileURL(packaged('server/native-stream.js')).href);
+const { recordDomainEvent } = await import(pathToFileURL(packaged('server/domain-events.js')).href);
 assert.equal(runtimeRequire.resolve('novelai-shared-gateway'), packaged('server/index.js'));
 const Database = runtimeRequire('better-sqlite3');
 const migrationJournal = JSON.parse(await readFile(packaged('server/migrations/meta/_journal.json'), 'utf8'));
@@ -61,18 +62,29 @@ async function fixture(t, { owner = false } = {}) {
   await seeded.init();
   try {
     await seeded.update(db => {
-      Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() });
+      const account = db.accounts[0], observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+      Object.assign(account, observation);
+      recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id,
+        payload: { kind: 'official', accountId: account.id, observation } });
       syncFairQuota(db);
       if (owner) db.users.forEach((user, index) => {
         user.discord = { id: String(222222222222222220n + BigInt(index)), guildId: env.DISCORD_GUILD_ID,
           member: true, checkedAt: Date.now(), accessToken: 'synthetic-discord-access', refreshToken: 'synthetic-discord-refresh',
           expiresAt: Date.now() + 3600000 };
+        recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+          payload: { memberId: user.id, discord: { id: user.discord.id, guildId: user.discord.guildId, member: true, checkedAt: user.discord.checkedAt } } });
       });
       db.jobs = [0, 1, 1].map((member, index) => ({ id: `synthetic-retained-${index}`, status: 'done', source: 'novelai-native',
         createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), userToken: db.users[member].token,
         generationAttempt: { id: `synthetic-history-attempt-${index}`, memberId: db.users[member].id },
         request: { operation: 'generate', model: nativeBody.model, prompt: 'synthetic-private-history' } }));
+      for (const job of db.jobs) {
+        const { userToken, request, ...facts } = job, memberId = db.users.find(user => user.token === userToken).id;
+        recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${job.id}`, memberId,
+          payload: { state: { request: { requestId: null, memberId }, jobs: { [job.id]: { ...facts, memberId,
+            request: { operation: request.operation, model: request.model } } }, artifacts: {}, aliases: [], freeUsage: {} } } });
+      }
     }, { immediate: true });
     if (owner) for (const user of seeded.db.users.slice(0, 2)) sessions.push(await createMemberSession(seeded, user, env));
   } finally { await seeded.close(); }

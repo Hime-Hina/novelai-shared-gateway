@@ -135,14 +135,19 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
   const seeded = new JsonStore(dataDir); await seeded.init();
   try {
     await seeded.update(db => {
-      Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() });
+      const account = db.accounts[0], observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+      Object.assign(account, observation);
+      recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id,
+        payload: { kind: 'official', accountId: account.id, observation } });
       syncFairQuota(db);
       if (discord) {
         db.users.forEach((user, index) => {
           user.discord = { id: String(222222222222222220n + BigInt(index)), guildId: discordEnv.DISCORD_GUILD_ID,
             member: true, checkedAt: index ? Date.now() : 0, expiresAt: index ? Date.now() + 3600000 : 0,
             accessToken: `synthetic-discord-access-${index}-0`, refreshToken: `synthetic-discord-refresh-${index}-0` };
+          recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+            payload: { memberId: user.id, discord: { id: user.discord.id, guildId: user.discord.guildId, member: true, checkedAt: user.discord.checkedAt } } });
         });
         db.jobs = [0, 1, 1].map((member, index) => ({ id: `synthetic-query-history-${index}`, status: 'done', source: 'novelai-native',
           createdAt: new Date().toISOString(), userToken: db.users[member].token,

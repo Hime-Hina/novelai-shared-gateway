@@ -11,48 +11,50 @@ import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
 import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { createLegacyDatabaseFixture } from './legacy-database-fixture.mjs';
 
-const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
+let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
 const adminToken = randomBytes(32).toString('hex');
-const adminTokenPath = path.join(dataDir, 'browser-admin-token');
-await writeFile(adminTokenPath, adminToken, { mode: 0o600 });
 const upstreamToken = 'pst-synthetic-browser-baseline-only';
 const guildId = '1134557553011998840';
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir }, log() {} });
+dataDir = await createLegacyDatabaseFixture(dataDir);
+const adminTokenPath = path.join(dataDir, 'browser-admin-token');
+await writeFile(adminTokenPath, adminToken, { mode: 0o600 });
 const seed = new JsonStore(dataDir);
 let members, roleSessions;
 await seed.init();
 try {
-  await seed.update(db => {
-    const now = Date.now(), account = db.accounts[0];
-    Object.assign(account, { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: now + 86400000,
-      quotaPoints: 10400, quotaFixed: 10000, quotaPurchased: 400, v5UsagePercent: 80,
-      v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date(now).toISOString(), upstreamStatus: 'active' });
-    for (const [index, user] of db.users.entries()) {
-      user.memberAuth.username = ['baseline-owner', 'baseline-member', 'baseline-third', 'baseline-fourth'][index];
-      user.discord = { id: String(222222222222222220n + BigInt(index)), guildId,
-        member: true, checkedAt: 0, accessToken: `synthetic-discord-${index}`,
-        refreshToken: `synthetic-refresh-${index}`, expiresAt: now + 86400000 };
-      // Only terminal sample records: startup must not dispatch fake historical work.
-      for (let entry = 0; entry < 30; entry++) {
-        const created = now - (entry % 7) * 86400000 - (entry + index + 1) * 60000;
-        const failed = entry % 5 === 0;
-        db.jobs.push({ id: `job-baseline-${index}-${entry}`, userToken: user.token, source: 'novelai-native',
-          status: failed ? 'failed' : 'done', accountId: account.id,
-          request: { model: entry % 2 ? 'nai-diffusion-5-full' : 'nai-diffusion-4-5-full', steps: 23, width: 1024, height: 1024 },
-          createdAt: new Date(created).toISOString(), startedAt: new Date(created + 12000).toISOString(),
-          upstreamStartedAt: new Date(created + 12000).toISOString(), upstreamCompletedAt: new Date(created + 25000).toISOString(),
-          updatedAt: new Date(created + 25000).toISOString(), completedAt: new Date(created + 25000).toISOString(),
-          error: failed ? 'Synthetic upstream failure' : '', errorStatus: failed ? 500 : null,
-          fairCharge: { userId: user.id, resource: entry % 2 ? 'v5' : 'free', amount: entry % 2 ? 0.05 : 0,
-            status: failed ? 'refunded' : 'settled', estimated: Boolean(entry % 2) } });
-      }
+  const db = await seed.read();
+  const now = Date.now(), account = db.accounts[0];
+  Object.assign(account, { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: now + 86400000,
+    quotaPoints: 10400, quotaFixed: 10000, quotaPurchased: 400, v5UsagePercent: 80,
+    v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date(now).toISOString(), upstreamStatus: 'active' });
+  for (const [index, user] of db.users.entries()) {
+    user.memberAuth.username = ['baseline-owner', 'baseline-member', 'baseline-third', 'baseline-fourth'][index];
+    user.discord = { id: String(222222222222222220n + BigInt(index)), guildId,
+      member: true, checkedAt: 0, accessToken: `synthetic-discord-${index}`,
+      refreshToken: `synthetic-refresh-${index}`, expiresAt: now + 86400000 };
+    // Only terminal sample records: startup must not dispatch fake historical work.
+    for (let entry = 0; entry < 30; entry++) {
+      const created = now - (entry % 7) * 86400000 - (entry + index + 1) * 60000;
+      const failed = entry % 5 === 0;
+      db.jobs.push({ id: `job-baseline-${index}-${entry}`, userToken: user.token, source: 'novelai-native',
+        status: failed ? 'failed' : 'done', accountId: account.id,
+        request: { model: entry % 2 ? 'nai-diffusion-5-full' : 'nai-diffusion-4-5-full', steps: 23, width: 1024, height: 1024 },
+        createdAt: new Date(created).toISOString(), startedAt: new Date(created + 12000).toISOString(),
+        upstreamStartedAt: new Date(created + 12000).toISOString(), upstreamCompletedAt: new Date(created + 25000).toISOString(),
+        updatedAt: new Date(created + 25000).toISOString(), completedAt: new Date(created + 25000).toISOString(),
+        error: failed ? 'Synthetic upstream failure' : '', errorStatus: failed ? 500 : null,
+        fairCharge: { userId: user.id, resource: entry % 2 ? 'v5' : 'free', amount: entry % 2 ? 0.05 : 0,
+          status: failed ? 'refunded' : 'settled', estimated: Boolean(entry % 2) } });
     }
-    db.jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    syncFairQuota(db, now);
-    members = structuredClone(db.users);
-  }, { collections: ['accounts', 'users', 'jobs', 'settings'], includeSettings: true, immediate: true });
+  }
+  db.jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  syncFairQuota(db, now);
+  members = structuredClone(db.users);
+  await seed.write(db);
   const sessionEnv = { OWNER_USER_ID: members[0].id, DISCORD_GUILD_ID: guildId };
   await reconcileMemberSessionOwner(seed, sessionEnv);
   roleSessions = { owner: await createMemberSession(seed, members[0], sessionEnv), member: await createMemberSession(seed, members[1], sessionEnv) };

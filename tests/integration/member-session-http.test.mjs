@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 import { createMemberSession } from '../../server/member-auth.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -31,12 +32,17 @@ async function fixture(t, { owner = false, grace = 30000 } = {}) {
   const seeded = new JsonStore(dataDir); await seeded.init();
   try {
     await seeded.update(db => {
-      Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() });
+      const account = db.accounts[0], observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+        quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+      Object.assign(account, observation);
+      recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id,
+        payload: { kind: 'official', accountId: account.id, observation } });
       syncFairQuota(db);
       if (owner) db.users.forEach((user, index) => {
         user.discord = { id: `22222222222222222${index}`, guildId, member: true, checkedAt: Date.now(),
           accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 3600000 };
+        recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+          payload: { memberId: user.id, discord: { id: user.discord.id, guildId, member: true, checkedAt: user.discord.checkedAt } } });
       });
     }, { immediate: true });
   } finally { await seeded.close(); }

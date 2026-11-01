@@ -15,6 +15,7 @@ import { createMemberSession, setMemberCredentials } from '../../server/member-a
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { recordGenerationFailure } from '../../server/generation-execution.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const day = 86400000, iso = time => new Date(time).toISOString();
 const candidate = resources => ({ resources, amountSource: 'synthetic-evidence' });
@@ -201,10 +202,12 @@ test('成员冷历史迟到结果只签发本人仍存在的图片，真实 HTTP
   const hot = { ...jobs.find(job => job.id === 'late-0'), id: 'hot-result' };
   await store.update(db => db.jobs.unshift(hot), { dirtyRows: { jobs: [hot.id] }, immediate: true });
   await store.close();
+  // This scenario models imported cold history; bootstrap/fixture command history stays in its separate source.
+  const dataDir = await createLegacyDatabaseFixture(store.dataDir);
   const listener = http.createServer(); listener.listen(0, '127.0.0.1'); await once(listener, 'listening');
   const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
   const env = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE'].filter(key => process.env[key]).map(key => [key, process.env[key]]));
-  Object.assign(env, { ADMIN_TOKEN: 'synthetic-admin-for-local-result-test-12345', DATA_DIR: store.dataDir, HOST: '127.0.0.1', PORT: String(port), PUBLIC_HOST: 'gateway.example',
+  Object.assign(env, { ADMIN_TOKEN: 'synthetic-admin-for-local-result-test-12345', DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(port), PUBLIC_HOST: 'gateway.example',
     NOVELAI_API_URL: 'http://127.0.0.1:1', NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1' });
   const child = spawn(process.execPath, ['server/index.ts'], { cwd: fileURLToPath(new URL('../../', import.meta.url)), env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(async () => { if (child.exitCode === null) { child.kill(); await once(child, 'exit'); } }); child.stderr.resume();

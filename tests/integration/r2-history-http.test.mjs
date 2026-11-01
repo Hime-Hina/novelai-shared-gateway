@@ -18,16 +18,16 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
   const store = new JsonStore(dataDir); await store.init();
   await mkdir(path.join(dataDir, 'images'), { recursive: true });
   await writeFile(path.join(dataDir, 'images/local.png'), png);
-  await store.update(db => {
-    db.users.push({ id: 'usr_r2', token, enabled: true, balance: 0, createdAt });
-    db.users.push({ id: 'usr_other', token: 'STA1N-synthetic-other-member', enabled: true, balance: 0, createdAt });
-    for (const id of ['local', 'cloud', 'corrupt', 'missing']) {
-      db.images.push({ id, token, file: `images/${id}.png`, mimeType: 'image/png', createdAt, sha256, byteLength: png.length,
-        ...(['local', 'missing'].includes(id) ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${sha256}`,
-          sha256, byteLength: png.length, verifiedAt: createdAt, localRemovedAt: createdAt } }) });
-      db.jobs.push({ id: `job_${id}`, userToken: token, status: 'done', imageId: id, createdAt, completedAt: createdAt });
-    }
-  }, { immediate: true });
+  const db = await store.read();
+  db.users.push({ id: 'usr_r2', token, enabled: true, balance: 0, createdAt });
+  db.users.push({ id: 'usr_other', token: 'STA1N-synthetic-other-member', enabled: true, balance: 0, createdAt });
+  for (const id of ['local', 'cloud', 'corrupt', 'missing']) {
+    db.images.push({ id, token, file: `images/${id}.png`, mimeType: 'image/png', createdAt, sha256, byteLength: png.length,
+      ...(['local', 'missing'].includes(id) ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${sha256}`,
+        sha256, byteLength: png.length, verifiedAt: createdAt, localRemovedAt: createdAt } }) });
+    db.jobs.push({ id: `job_${id}`, userToken: token, status: 'done', imageId: id, createdAt, completedAt: createdAt });
+  }
+  await store.write(db);
   await store.close();
   const preload = path.join(dataDir, 'r2-preload.mjs');
   await writeFile(preload, `

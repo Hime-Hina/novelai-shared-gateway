@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';
@@ -34,9 +35,12 @@ async function fixture(t, { hold = false } = {}) {
   const seeded = new JsonStore(dataDir); await seeded.init();
   try {
     await seeded.update(db => {
-      Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+      const account = db.accounts[0], observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
         quotaPoints: 10000, quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100,
-        v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
+        v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' };
+      Object.assign(account, observation);
+      recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id,
+        payload: { kind: 'official', accountId: account.id, observation } });
       syncFairQuota(db);
     }, { immediate: true });
   } finally { await seeded.close(); }

@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 
@@ -44,8 +45,11 @@ test('真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与�
   const store = new JsonStore(dataDir);
   await store.init();
   await store.update(db => {
-    Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() });
+    const account = db.accounts[0], observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+      quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+    Object.assign(account, observation);
+    recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id,
+      payload: { kind: 'official', accountId: account.id, observation } });
     syncFairQuota(db);
   }, { immediate: true });
   await store.close();

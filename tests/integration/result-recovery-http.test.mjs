@@ -13,6 +13,7 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const preload = new URL('../helpers/result-recovery-preload.mjs', import.meta.url).href;
@@ -34,16 +35,17 @@ const durableState = (f, job) => ({ status: job.status, imageId: job.imageId, pe
   images: f.images().map(({ id, file, sha256, byteLength }) => ({ id, file, sha256, byteLength })) });
 
 async function fixture(t, { stage, operation = 'generate', hold = false, grace = 30000 } = {}) {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-result-recovery-'));
+  let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-result-recovery-'));
   const adminToken = 'synthetic-admin-result-recovery-12345678';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: 'pst-synthetic-recovery-only', DATA_DIR: dataDir }, log() {} });
   const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  dataDir = await createLegacyDatabaseFixture(dataDir);
   const seeded = new JsonStore(dataDir); await seeded.init();
-  await seeded.update(db => {
-    Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
-    syncFairQuota(db);
-  }, { immediate: true }); await seeded.close();
+  const db = await seeded.read();
+  Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+    quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
+  syncFairQuota(db);
+  await seeded.write(db); await seeded.close();
   const reader = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
   let generations = 0, release;
   const held = hold ? new Promise(resolve => { release = resolve; }) : Promise.resolve();
@@ -241,10 +243,10 @@ test('超过500份结果的冷历史PNG和Vibe在重启后仍有记录、文件�
     mimeType: i === 502 ? 'application/octet-stream' : 'image/png', file: `images/synthetic-result-${i}.${i === 502 ? 'bin' : 'png'}`,
     createdAt: new Date(Date.now() - i * 1000).toISOString() }));
   await Promise.all(entries.map(image => writeFile(path.join(f.dataDir, image.file), image.mimeType === 'image/png' ? png : vibe)));
-  await store.update(db => {
-    db.images = entries;
-    db.jobs = entries.map(image => ({ id: `job-${image.id}`, status: 'done', userToken: f.members[0].api_key, imageId: image.id, createdAt: image.createdAt }));
-  }, { immediate: true, dirtyRows: { images: entries.map(image => image.id), jobs: entries.map(image => `job-${image.id}`) } }); await store.close();
+  const db = await store.read();
+  db.images = entries;
+  db.jobs = entries.map(image => ({ id: `job-${image.id}`, status: 'done', userToken: f.members[0].api_key, imageId: image.id, createdAt: image.createdAt }));
+  await store.write(db); await store.close();
   for (let restart = 0; restart < 2; restart++) {
     await f.start(); assert.equal(f.images().length, 503); assert.equal(f.generations(), 0);
     await f.claim({ id: 'job-synthetic-result-501' }, png); await f.claim({ id: 'job-synthetic-result-502' }, vibe);
