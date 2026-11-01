@@ -13,6 +13,7 @@ export const domainEventTypes = [
   'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged'
 ] as const;
 export type DomainEventType = typeof domainEventTypes[number];
+export type DomainActorKind = 'system' | 'member' | 'admin';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface DomainEventInput {
   eventType: DomainEventType; streamId: string; payload: Record<string, unknown>; eventId?: string;
@@ -21,17 +22,18 @@ export interface DomainEventInput {
 }
 export interface DomainCommandMetadata {
   commandId?: string; fingerprint?: string; recordedAt?: string; actorId?: string | null;
+  actorKind?:DomainActorKind;
   correlationId?: string | null; causationId?: string | null; expectedVersions?: Record<string, string>;
   receipt?: Json;
 }
 export interface DomainCommand {
-  commandId: string; fingerprint?: string; recordedAt: string; actorId: string | null; correlationId: string | null;
+  commandId: string; fingerprint?: string; recordedAt: string; actorId: string | null; actorKind:DomainActorKind;correlationId: string | null;
   causationId: string | null; expectedVersions: Record<string, string>; receipt: Json; events: DomainEventInput[];
 }
 export interface DomainEvent {
-  eventId: string; commitSeq: string; eventIndex: number; commandId: string; streamId: string; streamKind: string; streamVersion: string;
+  eventId: string; commitSeq: string; eventIndex: number; commandId: string; transactionId:string;streamId: string; streamKind: string; streamVersion: string;
   eventType: DomainEventType; schemaVersion: number; occurredAt: string; recordedAt: string;
-  actorId: string | null; correlationId: string | null; causationId: string | null; accountId: string | null; memberId: string | null;
+  actorId: string | null; actorKind:DomainActorKind;correlationId: string | null; causationId: string | null; accountId: string | null; memberId: string | null;
   policyVersion: string; pricingVersion: string; amountVersion: string; payload: Record<string, unknown>;
 }
 export interface DomainCommit { commitSeq: string; commandId: string; fingerprint: string; recordedAt: string; receipt: Json; events: DomainEvent[] }
@@ -82,6 +84,7 @@ export function beginDomainCommand(db: object, metadata: DomainCommandMetadata =
   const command: DomainCommand = {
     commandId: metadata.commandId || randomUUID(), fingerprint: metadata.fingerprint,
     recordedAt: metadata.recordedAt || new Date().toISOString(), actorId: metadata.actorId || null,
+    actorKind:metadata.actorKind||'system',
     correlationId: metadata.correlationId || null, causationId: metadata.causationId || null,
     expectedVersions: { ...metadata.expectedVersions }, receipt: structuredClone(metadata.receipt ?? null), events: []
   };
@@ -110,6 +113,14 @@ export function setDomainCommandReceipt(db: object, receipt: Json): void {
   if(closedCommands.has(command))throw new Error('Domain command is closed.');
   assertPublicDomainFact(receipt, 'receipt');
   command.receipt = structuredClone(receipt);
+}
+export function setDomainCommandActor(db:object,actor:{actorId:string|null;actorKind:DomainActorKind;correlationId?:string|null;causationId?:string|null}):void {
+  const command=commands.get(db);
+  if(!command||closedCommands.has(command))throw new Error('No open domain command is active.');
+  if(!['system','member','admin'].includes(actor.actorKind)||(actor.actorKind!=='system'&&!actor.actorId))throw new Error('A member or admin command requires a stable actor ID.');
+  command.actorId=actor.actorId;command.actorKind=actor.actorKind;
+  if(actor.correlationId!==undefined)command.correlationId=actor.correlationId;
+  if(actor.causationId!==undefined)command.causationId=actor.causationId;
 }
 export function finishDomainCommand(db: object): DomainCommand | null {
   const command = commands.get(db) || null;

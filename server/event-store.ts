@@ -21,6 +21,9 @@ export interface AppendOptions {
 export interface ProjectionRow { collection:'jobs'|'images'|'accounts'|'users'|'ledger'; item:Record<string,unknown>; order?:number; remove?:true }
 export interface CoreProjection { rows:ProjectionRow[]; fairQuota?:FairQuotaState|null; queueSequence?:string }
 export const EVENT_AUTHORITY_VERSION=SUPPORTED_EVENT_AUTHORITY_VERSION;
+export function removeLegacyFreeImageTriggers(sqlite:Database.Database):void {
+  sqlite.exec('DROP TRIGGER IF EXISTS free_image_settled; DROP TRIGGER IF EXISTS free_image_recovered_insert; DROP TRIGGER IF EXISTS free_image_recovered_update; DROP TRIGGER IF EXISTS free_image_warning;');
+}
 export function eventAuthorityEnabled(sqlite:Database.Database):boolean {
   const row=sqlite.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get() as {value:string}|undefined;
   if(!row)return false;
@@ -32,7 +35,7 @@ interface CommitRow { commit_seq: string; command_id: string; fingerprint: strin
 interface EventRow {
   event_id: string; commit_seq: string; event_index: number; stream_id: string; stream_kind: string; stream_version: string;
   event_type: DomainEvent['eventType']; schema_version: number; occurred_at: string; recorded_at: string;
-  actor_id: string | null; correlation_id: string | null; causation_id: string | null; account_id: string | null; member_id: string | null;
+  actor_id: string | null;actor_kind:DomainEvent['actorKind'];correlation_id: string | null; causation_id: string | null; account_id: string | null; member_id: string | null;
   policy_version: string; pricing_version: string; amount_version: string; payload: string;
 }
 const maxSequence = 9_223_372_036_854_775_807n;
@@ -143,10 +146,10 @@ export function readCommandReceipt(sqlite: Database.Database, commandId: string)
 
 function eventFromRow(row: EventRow, commandId: string): DomainEvent {
   const event: DomainEvent = {
-    eventId: row.event_id, commitSeq: row.commit_seq, eventIndex: row.event_index, commandId,
+    eventId: row.event_id, commitSeq: row.commit_seq, eventIndex: row.event_index, commandId,transactionId:commandId,
     streamId: row.stream_id, streamKind: row.stream_kind, streamVersion: row.stream_version,
     eventType: row.event_type, schemaVersion: row.schema_version, occurredAt: row.occurred_at, recordedAt: row.recorded_at,
-    actorId: row.actor_id, correlationId: row.correlation_id, causationId: row.causation_id, accountId: row.account_id, memberId: row.member_id,
+    actorId: row.actor_id,actorKind:row.actor_kind, correlationId: row.correlation_id, causationId: row.causation_id, accountId: row.account_id, memberId: row.member_id,
     policyVersion: row.policy_version, pricingVersion: row.pricing_version, amountVersion: row.amount_version, payload: JSON.parse(row.payload)
   };
   assertDomainEvent(event);
@@ -249,7 +252,7 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
       break;
     }
     case 'CachedResultLinked':
-      Object.assign(job, { status: 'done', imageId: p.imageId || p.artifactId, completedAt: p.completedAt, cached: true }); break;
+      Object.assign(job, { status: 'done', imageId: p.imageId || p.artifactId, accountId:p.accountId,completedAt: p.completedAt,updatedAt:p.completedAt,cached: true }); break;
     case 'JobCompleted':
       if (job.status === 'failed') throw new Error(`Failed job ${jobId} requires LateResultRecovered`);
       Object.assign(job, { status: 'done', imageId: p.artifactId || p.imageId, completedAt: p.completedAt,updatedAt:p.completedAt,
@@ -303,8 +306,8 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
       .run(next, command.commandId, fingerprint, recordedAt, command.events.length, canonicalJson(command.receipt));
     const streams = new Map<string, StreamProjection>();
     const insertEvent = sqlite.prepare(`INSERT INTO domain_events(event_id,commit_seq,event_index,stream_id,stream_kind,stream_version,
-      event_type,schema_version,occurred_at,recorded_at,actor_id,correlation_id,causation_id,account_id,member_id,
-      policy_version,pricing_version,amount_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      event_type,schema_version,occurred_at,recorded_at,actor_id,actor_kind,correlation_id,causation_id,account_id,member_id,
+      policy_version,pricing_version,amount_version,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     const events = command.events.map((input, eventIndex): DomainEvent => {
       let stream = streams.get(input.streamId);
       if (!stream) {
@@ -318,10 +321,10 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
       if (version > maxSequence) throw new Error(`Stream version exhausted: ${input.streamId}`);
       if ('streamVersion' in input && input.streamVersion !== String(version)) throw new Error(`Replayed stream version mismatch at ${input.eventId}`);
       const event: DomainEvent = {
-        eventId: text(input.eventId, 'eventId'), commitSeq, eventIndex, commandId: command.commandId,
+        eventId: text(input.eventId, 'eventId'), commitSeq, eventIndex, commandId: command.commandId,transactionId:command.commandId,
         streamId: stream.streamId, streamKind: stream.streamKind, streamVersion: String(version), eventType: input.eventType,
         schemaVersion: input.schemaVersion ?? 1, occurredAt: iso(input.occurredAt ?? recordedAt), recordedAt,
-        actorId: command.actorId, correlationId: command.correlationId, causationId: command.causationId,
+        actorId: command.actorId,actorKind:command.actorKind||'system',correlationId: command.correlationId, causationId: command.causationId,
         accountId: input.accountId ?? null, memberId: input.memberId ?? null,
         policyVersion: input.policyVersion || '1', pricingVersion: input.pricingVersion || '1', amountVersion: input.amountVersion || DOMAIN_AMOUNT_VERSION,
         payload: JSON.parse(canonicalJson(input.payload))
@@ -330,7 +333,7 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
       stream.streamVersion = String(version); stream.lastCommitSeq = commitSeq; stream.lastEventId = event.eventId;
       stream.projectionSha256 = domainDigest(stream.projection);
       insertEvent.run(event.eventId, next, eventIndex, event.streamId, event.streamKind, version, event.eventType, event.schemaVersion,
-        event.occurredAt, recordedAt, event.actorId, event.correlationId, event.causationId, event.accountId, event.memberId,
+        event.occurredAt, recordedAt, event.actorId,event.actorKind,event.correlationId, event.causationId, event.accountId, event.memberId,
         event.policyVersion, event.pricingVersion, event.amountVersion, canonicalJson(event.payload));
       return event;
     });
@@ -400,6 +403,8 @@ export function projectColdDomainFacts(sqlite: Database.Database, commit: Domain
 }
 
 export function replayDomainEvents(source: Database.Database, target: Database.Database, options: AppendOptions & { throughCommitSeq?: string; maxCommits?: number } = {}): { lastCommitSeq: string; commits: number; events: number } {
+  // 新库迁移的旧兼容触发器不能按今日政策改写历史成功时间或告警阈值。
+  target.transaction(()=>removeLegacyFreeImageTriggers(target))();
   const checkpoint = target.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get() as { value: string } | undefined;
   let cursor = checkpoint?.value || '0', commits = 0, events = 0;
   while (commits < (options.maxCommits ?? Infinity)) {
@@ -413,7 +418,7 @@ export function replayDomainEvents(source: Database.Database, target: Database.D
         else if(BigInt(clock.value)+1n!==BigInt(commit.commitSeq))throw new Error(`Replay commit order mismatch at ${commit.commitSeq}`);
         return appendDomainCommit(target, {
         commandId: commit.commandId, fingerprint: commit.fingerprint, recordedAt: commit.recordedAt, actorId: commit.events[0]?.actorId ?? null,
-        correlationId: commit.events[0]?.correlationId ?? null, causationId: commit.events[0]?.causationId ?? null, receipt: commit.receipt,
+        actorKind:commit.events[0]?.actorKind||'system',correlationId: commit.events[0]?.correlationId ?? null, causationId: commit.events[0]?.causationId ?? null, receipt: commit.receipt,
         expectedVersions: {}, events: commit.events
       }, options);
       })();
@@ -486,7 +491,7 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     }
     sqlite.transaction(() => {
       const result = appendDomainCommit(sqlite, {commandId:`${importId}:${chunkId}`,fingerprint:digest,recordedAt,
-        actorId:null,correlationId:importId,causationId:null,expectedVersions:{},receipt:{importId,chunkId},
+        actorId:null,actorKind:'system',correlationId:importId,causationId:null,expectedVersions:{},receipt:{importId,chunkId},
         events:events.map((event,index)=>({...event,eventId:`${importId}:${chunkId}:${index}`,occurredAt:recordedAt}))});
       sqlite.prepare(`INSERT INTO event_imports(import_id,chunk_id,source_sha256,first_key,last_key,record_count,commit_seq,completed_at)
         VALUES(?,?,?,?,?,?,?,?)`).run(importId,chunkId,digest,firstKey,lastKey,events.length,BigInt(result.commitSeq),recordedAt);

@@ -6,7 +6,8 @@ import os from 'node:os';
 import { JsonStore,verifyEventProjections } from '../../server/store.ts';
 import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/fair-quota.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
-import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled } from '../../server/event-store.ts';
+import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts } from '../../server/event-store.ts';
+import { parseAmount } from '../../server/resource-amounts.ts';
 import { createGenerationAdmission } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 
@@ -24,6 +25,17 @@ test('cutover verifies the shadow, removes duplicate success triggers, and block
   const before=readProjectedFairQuota(store.sqlite).balances.a.v5Available;
   await assert.rejects(store.update(db=>{db.settings.fairQuota.balances.a.v5Available='999';},{includeSettings:true,collections:[]}),/Domain shadow mismatch/);
   assert.equal(store.db.settings.fairQuota.balances.a.v5Available,before);
+  const eventCount=store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n;
+  await assert.rejects(store.update(db=>{
+    db.settings.fairQuota.reservations.forged={status:'refunded',userId:'a',accountId:'opus',resource:'v5',amount:'0',fixed:'0',purchased:'0',configVersion:1,reservedAt:now,settledAt:now};
+  },{includeSettings:true,collections:[]}),/Unrecorded terminal settlement forged/);
+  assert.equal(store.sqlite.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id=?').get('forged'),undefined);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n,eventCount);
+  const mapping={member_id:'a',operation:'generate',key_hash:'forged',fingerprint:'forged',normalization_context:'{}',job_id:'forged',request_id:null,created_at:at};
+  await assert.rejects(store.update(()=>true,{collections:[],generationIdempotency:mapping}),/Unrecorded generation idempotency/);
+  assert.equal(store.sqlite.prepare('SELECT job_id FROM generation_idempotency WHERE key_hash=?').get('forged'),undefined);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n,eventCount);
+  store.sqlite.transaction(()=>verifyEventProjections(store.sqlite))();
   await assert.rejects(store.write(store.db),/event authority/);
   // 受保护认证与可丢的显示字段不冒充领域事实。
   await store.update(db=>{db.users[0].memberAuth={version:'changed-secret-auth-version'};},{dirtyRows:{users:['a']}});
@@ -63,4 +75,36 @@ test('real single-image admission keeps its parent request without inventing a l
     request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:1}});
   const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.requestId,result.requestId);assert.equal(job.batchId,undefined);
   assert.equal(readStreamProjection(store.sqlite,`request:${result.requestId}`).projection.jobs[job.id].batchId,undefined);
+});
+test('real cached admission preserves the recorded result account without a new charge',async t=>{
+  const store=await fixture(t),legacy=structuredClone(store.db);
+  legacy.images=[{id:'cached-image',token:'secret-a',memberId:'a',accountId:'opus',file:'cached.png',createdAt:at}];
+  await store.write(legacy);await store.enableEventAuthority();
+  const before=structuredClone(store.db.settings.fairQuota.balances);
+  const admit=createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>store.activeGenerationPayloadBytes()),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{},now:()=>now,env:{}});
+  const result=await admit({identity:{token:'secret-a'},source:'api',batch:false,cached:{imageId:'cached-image',accountId:'opus'},
+    request:{model:'nai-diffusion-5-full',width:1024,height:1024,steps:23,seed:7,sampleCount:1}});
+  const job=store.selectItemById('jobs',result.jobIds[0]);assert.equal(job.status,'done');assert.equal(job.accountId,'opus');assert.equal(job.imageId,'cached-image');
+  assert.deepEqual(store.db.settings.fairQuota.balances,before);
+});
+test('cutover installs conservative fixed-point opening balances before the first real command',async t=>{
+  const store=await fixture(t),legacy=structuredClone(store.db);
+  for(const id of ['a','b','c','d'])Object.assign(legacy.settings.fairQuota.balances[id],{anlasFixedAvailable:id==='d'?0:1/3,anlasPurchasedAvailable:0,anlasAvailable:id==='d'?0:1/3});
+  await store.write(legacy);await store.enableEventAuthority();
+  assert.equal(store.db.settings.fairQuota.balances.a.anlasFixedAvailable,'0.333333333334');
+  assert.equal(Object.values(store.db.settings.fairQuota.balances).reduce((sum,balance)=>sum+parseAmount(balance.anlasFixedAvailable),0n),1000000000000n);
+  await store.update(db=>syncFairQuota(db,now),{includeSettings:true,collections:[]});
+  assert.deepEqual(store.db.settings.fairQuota,readProjectedFairQuota(store.sqlite));
+});
+test('a failed cutover rolls back installed amounts, removed triggers and the authority marker',async t=>{
+  const store=await fixture(t),legacy=structuredClone(store.db);
+  for(const id of ['a','b','c'])Object.assign(legacy.settings.fairQuota.balances[id],{anlasFixedAvailable:1/3,anlasPurchasedAvailable:0,anlasAvailable:1/3});
+  await store.write(legacy);importOpeningFacts(store.sqlite);
+  const before=store.sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value;
+  const prepare=store.sqlite.prepare.bind(store.sqlite);
+  store.sqlite.prepare=sql=>{if(sql.startsWith('INSERT INTO app_settings'))throw new Error('injected cutover SQL failure');return prepare(sql);};
+  await assert.rejects(store.enableEventAuthority(),/injected cutover SQL failure/);store.sqlite.prepare=prepare;
+  assert.equal(prepare("SELECT value FROM app_settings WHERE key='settings'").get().value,before);
+  assert.equal(prepare("SELECT value FROM app_meta WHERE key='event_authority'").get(),undefined);
+  assert.equal(prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='trigger' AND name LIKE 'free_image_%'").get().n,4);
 });

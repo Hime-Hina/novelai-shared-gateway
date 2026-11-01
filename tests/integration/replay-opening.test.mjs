@@ -91,3 +91,21 @@ test('replay CLI restores a separate database and can resume at a complete commi
   const rebuilt=new Database(target,{readonly:true});
   try{assert.equal(rebuilt.prepare('SELECT count(*) AS n FROM jobs').get().n,1);}finally{rebuilt.close();}
 });
+test('in-process and CLI replay preserve historical free timestamps and warnings under a changed current policy',async t=>{
+  const store=await legacyStore(t);
+  store.sqlite.prepare('INSERT INTO fair_quota_settlements(job_id,charge) VALUES(?,?)').run('historical-free',JSON.stringify({resource:'free',status:'settled',userId:'a',accountId:'opus',amount:'0',fixed:'0',purchased:'0',reservedAt:now-1,settledAt:now}));
+  store.sqlite.prepare('UPDATE free_image_usage SET succeeded_at=?,warning_threshold=10 WHERE job_id=?').run(now+123,'historical-free');
+  const settings=JSON.parse(store.sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value);
+  settings.fairQuota.freeImagePolicy={enabled:true,warningThreshold:1,hardLimit:null};
+  store.sqlite.prepare("UPDATE app_settings SET value=? WHERE key='settings'").run(JSON.stringify(settings));
+  importOpeningFacts(store.sqlite);
+  const expected=store.sqlite.prepare('SELECT * FROM free_image_usage WHERE job_id=?').get('historical-free');
+  const target=new Database(':memory:');try{
+    migrateStorage(target);copyProtectedFacts(store.sqlite,target);replayDomainEvents(store.sqlite,target,{project:applyEventProjection});
+    assert.deepEqual(target.prepare('SELECT * FROM free_image_usage WHERE job_id=?').get('historical-free'),expected);
+  }finally{target.close();}
+  const targetPath=path.join(store.dataDir,'historical-replay.sqlite');
+  const process=spawnSync(globalThis.process.execPath,['scripts/replay-events.mjs',`--source=${store.dbPath}`,`--target=${targetPath}`],{encoding:'utf8',timeout:15000});
+  assert.equal(process.status,0,process.stderr);
+  const rebuilt=new Database(targetPath,{readonly:true});try{assert.deepEqual(rebuilt.prepare('SELECT * FROM free_image_usage WHERE job_id=?').get('historical-free'),expected);}finally{rebuilt.close();}
+});

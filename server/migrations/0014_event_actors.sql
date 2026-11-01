@@ -1,0 +1,1 @@
+ALTER TABLE `domain_events` ADD `actor_kind` text DEFAULT 'system' NOT NULL;

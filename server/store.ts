@@ -11,7 +11,7 @@ import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns 
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './storage-schema.ts';
 import { migrateStorage } from './storage-migrations.ts';
 import { beginDomainCommand, finishDomainCommand, canonicalJson, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from './domain-events.ts';
-import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, eventAuthorityEnabled, EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
+import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota, readStreamProjection, eventAuthorityEnabled,removeLegacyFreeImageTriggers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from './event-store.ts';
 import { normalizeOpeningQuota } from './fair-quota.ts';
 import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
@@ -725,6 +725,7 @@ export class JsonStore {
   }
 
   persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {
+    if(rows.length&&eventAuthorityEnabled(this.sqlite!))throw new Error('Terminal receipts are written only by the domain projector after cutover.');
     for (const row of rows) {
       const inserted = this.statements!.insertFairQuotaSettlement.run(row);
       if (!inserted.changes && !isDeepStrictEqual(this.readFairQuotaSettlement(row.job_id), JSON.parse(row.charge))) {
@@ -1032,13 +1033,17 @@ export class JsonStore {
     return this.queue as Promise<{version:number;commitSeq:string}>;
   }
 
-  persistDomainFacts(scope:Scope,changes:Changes):ProjectionRow[] {
+  persistDomainFacts(scope:Scope,changes:Changes,candidateSettings:Settings):ProjectionRow[] {
     const authoritative=eventAuthorityEnabled(this.sqlite!);
     let written:ProjectionRow[]=[];
+    const candidateRows=new Map<string,{item:Record<string,unknown>|null;order?:number}>();
+    for(const change of changes.upserts)candidateRows.set(`${change.collection}:${change.id}`,{item:JSON.parse(change.data!) as Record<string,unknown>,order:change.order});
+    for(const change of changes.deletes)candidateRows.set(`${change.collection}:${change.id}`,{item:null});
+    const candidates={settings:candidateSettings,rows:candidateRows};
     const relatedStreams=(supplied:StreamProjection[]):StreamProjection[]=>{
       const streams=new Map(supplied.map(stream=>[stream.streamId,stream]));
       const include=(id:string)=>{if(!streams.has(id)){const stream=readStreamProjection(this.sqlite!,id);if(stream)streams.set(id,stream);else throw new Error(`Unrecorded domain mutation: ${id}`);}};
-      if(changes.settingsChanged)include('sharing:default');
+      include('sharing:default');
       for(const change of [...changes.upserts,...changes.deletes]){
         if(change.collection==='jobs'){
           const item=change.data?JSON.parse(change.data) as StoreItem:null;
@@ -1058,12 +1063,12 @@ export class JsonStore {
       return [...streams.values()];
     };
     if(scope.domainBatch)appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
-      if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true});
+      if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true,candidates});
     }});
     else if(authoritative){
       const clock=this.sqlite!.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
       const commit:DomainCommit={commitSeq:clock.value,commandId:'verify-compatible-write',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
-      written=applyEventProjection(this.sqlite!,commit,relatedStreams([]),{verify:true});
+      written=applyEventProjection(this.sqlite!,commit,relatedStreams([]),{verify:true,candidates});
     }
     return written;
   }
@@ -1549,7 +1554,7 @@ export class JsonStore {
     const existing = this.sqlite!.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(contextRef) as { payload: string } | undefined;
     if (existing && existing.payload !== row.normalization_context) throw new Error(`Protected normalization context conflict: ${contextRef}`);
     this.sqlite!.prepare('INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)').run(contextRef,row.normalization_context);
-    this.statements!.insertGenerationIdempotency.run(row);
+    if(!eventAuthorityEnabled(this.sqlite!))this.statements!.insertGenerationIdempotency.run(row);
   }
 
   assertDomainFactWrites(scope:Scope,settlements:(typeof fairQuotaSettlements.$inferInsert)[]):void {
@@ -1613,21 +1618,22 @@ export class JsonStore {
     const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
+      const authoritative=eventAuthorityEnabled(this.sqlite!);
       this.assertDomainFactWrites(scope,archive.rows);
-      this.persistFairQuotaSettlements(archive.rows);
+      if(!authoritative)this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged) this.statements!.replaceSettings.run({ value: snapshot.settingsData });
+      if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
         this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        this.statements!.upsertRecord[change.collection].run(change.sql);
+        if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
       }
-      this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
+      if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      projectedRows = this.persistDomainFacts(scope, changes);
+      projectedRows = this.persistDomainFacts(scope, changes,archive.settings);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1721,21 +1727,22 @@ export class JsonStore {
     const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
+      const authoritative=eventAuthorityEnabled(this.sqlite!);
       this.assertDomainFactWrites(scope,archive.rows);
-      this.persistFairQuotaSettlements(archive.rows);
+      if(!authoritative)this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
       if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged) this.statements!.replaceSettings.run({ value: changes.nextSettings });
+      if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
         this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        this.statements!.upsertRecord[change.collection].run(change.sql);
+        if(!authoritative||!['jobs','accounts','users'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
       }
-      this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
+      if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
       if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      projectedRows = this.persistDomainFacts(scope, changes);
+      projectedRows = this.persistDomainFacts(scope, changes,archive.settings);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -2103,7 +2110,9 @@ export function activateEventAuthority(sqlite:Database.Database):{version:number
     verifyEventProjections(sqlite);
     const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
     // 免费成功与告警的唯一写点改为共同领域事实 projector。
-    sqlite.exec('DROP TRIGGER IF EXISTS free_image_settled; DROP TRIGGER IF EXISTS free_image_recovered_insert; DROP TRIGGER IF EXISTS free_image_recovered_update; DROP TRIGGER IF EXISTS free_image_warning;');
+    removeLegacyFreeImageTriggers(sqlite);
+    // 精度归一与稳定身份只在已验证投影中；同事务安装后才能标记为权威。
+    installEventProjections(sqlite);
     sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('event_authority',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
       .run(JSON.stringify({version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION,commitSeq:clock.value}));
     return {version:EVENT_AUTHORITY_VERSION,commitSeq:clock.value};
@@ -2127,12 +2136,24 @@ export function verifyEventProjections(sqlite:Database.Database):void {
   }
 }
 
-export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean;checkOnly?:boolean}={}):ProjectionRow[] {
+function installEventProjections(sqlite:Database.Database):void {
+  const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
+  const commit:DomainCommit={commitSeq:clock.value,commandId:'install-verified-projections',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
+  let cursor='';
+  while(true){
+    const rows=sqlite.prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100').all(cursor) as {stream_id:string}[];
+    if(!rows.length)break;
+    applyEventProjection(sqlite,commit,rows.map(row=>readStreamProjection(sqlite,row.stream_id)!));cursor=rows.at(-1)!.stream_id;
+  }
+}
+
+export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean;checkOnly?:boolean;
+  candidates?:{settings:Settings;rows:Map<string,{item:Record<string,unknown>|null;order?:number}>}}={}):ProjectionRow[] {
   if(!sqlite.inTransaction)throw new Error('Critical projections require the domain write transaction.');
   const projection=coreProjectionRows(sqlite,commit,streams);
   if(projection.fairQuota!==undefined){
     const row=sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as {value:string}|undefined;
-    const settings=row?JSON.parse(row.value) as Settings:{...defaultSettings};
+    const settings=options.candidates?structuredClone(options.candidates.settings):row?JSON.parse(row.value) as Settings:{...defaultSettings};
     if(options.verify){
       const actual=settings.fairQuota?fairQuotaArchive({fairQuota:normalizeOpeningQuota(settings.fairQuota)}).settings.fairQuota:null;
       const expected=fairQuotaArchive({fairQuota:projection.fairQuota}).settings.fairQuota;
@@ -2146,15 +2167,17 @@ export function applyEventProjection(sqlite:Database.Database,commit:DomainCommi
   for(const projected of projection.rows){
     const {collection}=projected;
     const prior=sqlite.prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`).get(projected.item.id) as {data:string;order_value:number}|undefined;
-    const existing=prior?JSON.parse(prior.data) as Record<string,unknown>:{};
+    const candidate=options.candidates?.rows.get(`${collection}:${projected.item.id}`);
+    const existing=candidate?structuredClone(candidate.item||{}):prior?JSON.parse(prior.data) as Record<string,unknown>:{};
+    if(candidate?.item===null&&['jobs','images'].includes(collection))continue;
     if(projected.remove){
-      if(options.verify&&prior)throw new Error(`Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`);
+      if(options.verify&&(candidate?candidate.item!==null:prior))throw new Error(`Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`);
       if(!options.checkOnly)sqlite.prepare('DELETE FROM users WHERE id=?').run(projected.item.id);written.push(projected);continue;
     }
     const expected={...projected.item};
     if(expected.memberId){
       const member=sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as {data:string}|undefined;
-      const memberData=member?JSON.parse(member.data) as Record<string,unknown>:null;
+      const memberData=options.candidates?.rows.get(`users:${expected.memberId}`)?.item||(member?JSON.parse(member.data) as Record<string,unknown>:null);
       if(memberData?.token){if(collection==='jobs')expected.userToken=existing.userToken||memberData.token;if(collection==='images')expected.token=existing.token||memberData.token;}
       if(!existing.memberId&&collection==='jobs'&&existing.userToken&&existing.userToken===memberData?.token)existing.memberId=expected.memberId;
     }
@@ -2165,7 +2188,7 @@ export function applyEventProjection(sqlite:Database.Database,commit:DomainCommi
     const item={...existing,...expected};
     if(collection==='users'&&expected.discord)item.discord={...(existing.discord as object||{}),...(expected.discord as object)};
     if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
-    const order=projected.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
+    const order=projected.order??candidate?.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
     const row=sqlRecord(collection,item as StoreItem,order,JSON.stringify(item));
     const keys=Object.keys(row);
     if(!options.checkOnly)sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})

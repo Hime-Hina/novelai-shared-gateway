@@ -124,7 +124,7 @@ export const domainEvents = sqliteTable('domain_events', {
   event_id: text().primaryKey(), commit_seq: integer().notNull().references(() => eventCommits.commit_seq),
   event_index: integer().notNull(), stream_id: text().notNull(), stream_kind: text().notNull(), stream_version: integer().notNull(),
   event_type: text().notNull(), schema_version: integer().notNull(), occurred_at: text().notNull(), recorded_at: text().notNull(),
-  actor_id: text(), correlation_id: text(), causation_id: text(), account_id: text(), member_id: text(),
+  actor_id: text(), actor_kind: text().default('system').notNull(),correlation_id: text(), causation_id: text(), account_id: text(), member_id: text(),
   policy_version: text().notNull(), pricing_version: text().notNull(), amount_version: text().notNull(), payload: text().notNull()
 }, table => [
   uniqueIndex('idx_domain_events_commit').on(table.commit_seq, table.event_index),

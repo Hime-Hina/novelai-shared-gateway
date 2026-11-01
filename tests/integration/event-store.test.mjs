@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { migrateStorage } from '../../server/storage-migrations.ts';
-import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt } from '../../server/domain-events.ts';
+import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt,setDomainCommandActor } from '../../server/domain-events.ts';
 import { appendDomainCommit, readDomainCommits, readStreamProjection, replayDomainEvents } from '../../server/event-store.ts';
 import { JsonStore, generationContextRef } from '../../server/store.ts';
 
@@ -45,6 +45,15 @@ test('commit, projection and receipt are atomic and command retry does not run t
   assert.equal(readStreamProjection(sqlite,'request:r1').projection.jobs.j1.memberId,'m1');
   assert.equal(readDomainCommits(sqlite)[0].events[0].streamVersion,'1');
   assert.throws(() => sqlite.transaction(() => appendDomainCommit(sqlite,{...batch,fingerprint:'changed'}))(),/fingerprint conflict/);
+});
+test('authenticated actor and command transaction correlation survive SQL and replay',t=>{
+  const source=database(t),target=database(t),state={};
+  beginDomainCommand(state,{commandId:'actor-command',recordedAt:at});
+  setDomainCommandActor(state,{actorId:'m1',actorKind:'member',correlationId:'r1'});recordDomainEvent(state,{streamId:'request:r1',...accepted()});
+  source.transaction(()=>appendDomainCommit(source,finishDomainCommand(state)))();
+  const event=readDomainCommits(source)[0].events[0];assert.equal(event.actorKind,'member');assert.equal(event.actorId,'m1');
+  assert.equal(event.transactionId,event.commandId);assert.equal(event.correlationId,'r1');
+  replayDomainEvents(source,target);assert.deepEqual(readDomainCommits(target),readDomainCommits(source));
 });
 
 test('SQL failure and expected-version conflict leave no partial batch, cursor or receipt', t => {
