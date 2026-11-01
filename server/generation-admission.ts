@@ -6,6 +6,7 @@ import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline } from './
 import { createGenerationPayloadBudget, singleGenerationRequest, webJobRequestSummary } from './generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
 import { domainDigest, recordDomainEvent, setDomainCommandReceipt, setDomainCommandActor } from './domain-events.ts';
+import type { AcceptedJobFact } from './event-payloads.ts';
 
 export type GenerationPayloadClaim = ReturnType<ReturnType<typeof createGenerationPayloadBudget>['claim']>;
 type Request = StoredGenerationRequest;
@@ -192,12 +193,13 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         claim.resize(payloadBytes + (resolved?.contextBytes || 0));
         parent = { id: createId('req'), member_id: user.id, source: options.source, operation: request.operation || 'generate',
           created_at: createdAt, payload_bytes: payloadBytes, payload };
-        const jobIds: string[] = [], acceptedJobs: Record<string, unknown>[] = [];
+        const jobIds: string[] = [], acceptedJobs: AcceptedJobFact[] = [];
         for (let index = 0; index < count; index++) {
+          const status: AcceptedJobFact['status'] = cached ? 'done' : index === 0 ? 'queued' : 'pending';
           const job = { id: createId('job'), memberId: user.id, userToken: user.token, requestId: parent.id,
             ...(options.batch ? { batchId: parent.id, sampleIndex: index } : { sampleIndex: 0 }),
             ...(options.diagnosticId ? { diagnosticId: options.diagnosticId } : {}), source: options.source,
-            status: cached ? 'done' : index === 0 ? 'queued' : 'pending',
+            status,
             ...(!cached && index === 0 ? { queueSeq: store.nextQueueSequence() } : {}),
             request: webJobRequestSummary(singleGenerationRequest(request, index)), payloadBytes: 0, cacheKey,
             queueTotal: cached ? 1 : activeCount(db) + 1, cost: 0, accountCost: 0,

@@ -139,13 +139,14 @@ flowchart LR
 
 | 责任 | 实施位置 | 允许依赖与需要移出的内容 |
 | --- | --- | --- |
-| 协议适配 | 保留 `native-body`、`native-image`、`native-stream`、`providers` 及现有 Nuxt 转发 | 只转换输入、保留认证和传输契约；不自行修改钱包 |
-| 通用受理 | 从 runtime 提取 `generation-admission.ts` | 调用身份/scope、规范化、幂等、队列政策和提交入口；共用一个命令，不创建通用命令总线 |
-| 执行生命周期 | 从 runtime 提取 `generation-execution.ts`，复用 request/accounting/result 模块 | 调度、provider、文件发布调用位于事务外；结果与失败返回为新命令 |
+| 协议适配 | `native-http`、`member-generation-http`、`generation-delivery`、`openai-models`，复用 `native-body`、`native-image`、`native-stream`、`providers` 及 Nuxt 转发 | 只转换输入、保留认证和传输契约；等待者/预览/关闭和提交后通知有实际装配测试，不自行修改钱包 |
+| 通用受理 | `generation-admission.ts` | 调用身份/scope、规范化、幂等、队列政策和提交入口；共用一个命令，不创建通用命令总线 |
+| 执行生命周期 | `generation-execution.ts`，复用 request/accounting/result 模块；`queue-dispatch.ts` 管理本进程在途控制和唤醒 | 派发、取消、准备/发布结果、失败、恢复均为实际导出命令；调度及产物 IO 位于事务外，提交后才通知连接 |
 | 额度与恢复 | `fair-quota.ts`、`operating-accounting.ts` | 变成明确输入、显式 now、事件输出的业务决定；相应 reducer 只应用事实 |
 | 共享资格与政策 | `quota-policy.ts`，复用 `free-image-policy.ts`、`shared-capacity.ts` | 统一 freshness/有效 Opus/政策判定；展示适配不能另写批准规则 |
+| 官方额度观察 | `account-quota-refresh.ts` | 读取上游、限时/合并刷新、停止后续调度；观察事实与钱包同步同事务，过期请求不能覆盖新观察 |
 | 查询 | `generation-queries.ts`、现有 owner/heatmap/launcher/shared-status | 只读投影，恢复估算返回预测值及 asOf，永远不提交钱包 |
-| 事件契约与提交 | `domain-events.ts`、`event-store.ts`、现有 schema/migrations | 具体事件联合类型、版本、CAS、事务、关键 projector；不接触 HTTP |
+| 事件契约与提交 | `event-payloads.ts`、`domain-events.ts`、`event-store.ts`、现有 schema/migrations | 写入使用具体 payload 判别联合；SQL 解码保留独立的不可信读取边界。维护版本、CAS、事务、关键 projector，不接触 HTTP |
 | 数据与基础设施 | `store.ts`、SQLite 读 worker、result-files、ImageStorage | schema、SQL、受保护载荷和产物 IO；逐步移除旧通用可变业务对象与重复提交过程 |
 | 认证 | `member-auth.ts`、`discord-auth.ts`、既有入口守卫 | 认证表保留 CRUD；成员资格和管理决定通过业务命令提交 |
 
@@ -355,9 +356,13 @@ Nuxt 为新的大请求采用现有流转发能力，成员路由为新端点单
 
 ## 10. 可执行工作包与依赖
 
-下面均属于本轮完整重构计划；R00 文档与目录整理已提交，R01 在 `a44ba18` 完成独立复审及验收。R02–R10 正在按金额、事件存储、能力/报价、共同受理与成员 HTTP 闭环并行实施；R11 随模块迁移，R12–R14 尚待完整集成后验证。事件模型、导入方式与成员生成契约必须在本轮闭环；跨执行器租约、多账号选路及数据库系统迁移归后续计划。实现按可验证业务切片推进，不把后续扩展作为本轮发布前置。
+下面均属于本轮完整重构计划；R00 文档与目录整理已提交，R01 在 `a44ba18` 完成独立复审及验收。R02–R10 已接成默认事件权威候选，正在关闭全量验证和独立复审发现；R11 已迁移实际命令及协议装配的测试；R12 工具和小样本通过，正式三轮年度测量尚未完成；R13 打包/恢复文档与 CI 已更新，最终候选仍须重验；R14 正在收尾历史退休与过渡写入清理。事件模型、导入方式与成员生成契约必须在本轮闭环；跨执行器租约、多账号选路及数据库系统迁移归后续计划。
 
 R01 的可追溯证据：`c4e72be` 的隔离 Linux 构建、SQLite integrity 与 8 个定向测试文件 127/127 通过；独立审核发现首次分组预览未显式初始化的 P2，由 `a44ba18` 修复，并增加真实 HTTP/SQLite 回归，验证预览不写原库且余额/状态与保存一致。修复快照重新构建、受影响路由 12/12 通过，原审核者复审关闭该问题。这些结论仅覆盖 R01，不代表后续金额/事件权威/成员生成已验收。实施基线 `deab4db` 的隔离 Linux 后端 574/574、web 134/134、executor 3/3、实际 Nuxt/executor 14/14 均通过且无跳过；后续按同环境比较，所有生产数据和服务未用于测试。
+
+后续切片证据：`2d8ca83` 将事件写入改为判别联合，12 个负向类型断言持续拒绝错误 payload；`943f316` 提取实际执行命令，`0686965` 提取真实额度刷新，`b7f0572` 提取 Native 协议装配。Node 22 下命令/连接/队列直接导入测试 51/51、刷新 12/12、真实 Native HTTP 17/17 通过，均无跳过。`ebc6f8d` 处理关闭期间迟到的 SSE 注册，真实 HTTP 13/13 及独立复审通过。全量候选曾暴露开账后的旧 fixture 直接改底表、冷历史删除只作用于热缓存等问题，按事实初始化和共同退休命令修复，不能用这些定向通过代替最终 Linux 全量、重放、性能与打包结论。
+
+R11/R14 清理依据：所有后端业务测试已退出运行时源码截取，保留的前端 DOM VM 测试不读取后端源码。TypeScript 未使用声明检查及全仓调用检索确认运行时中旧卡密/余额管理、无路由的账户导入/代理管理、旧缓存清理和 dirty helper 链没有实际 caller，删除这些私有死链；未删除现有路由、存储 API 或旧数据兼容。无产品入口的统计重置动作及其孤立测试一并删除，实际账户停用/恢复仍验证不会释放在途计数或绕过冷却。运行时只引用新的共同命令及装配模块。
 
 | 编号 | 工作包与责任范围 | 依赖 | 具体交付与完成依据 |
 | --- | --- | --- | --- |

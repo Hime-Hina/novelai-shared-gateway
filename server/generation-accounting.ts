@@ -1,6 +1,7 @@
 import type { FairCharge, FairRequest, QuotaSnapshot, ResourceAmounts } from './fair-quota.ts';
 import { parseAmount } from './resource-amounts.ts';
 import { recordDomainEvent } from './domain-events.ts';
+import type { DomainPayloads } from './event-payloads.ts';
 
 interface LedgerDatabase { ledger?: unknown[] }
 interface UpstreamCandidate { resources: Partial<ResourceAmounts>; amountSource: string }
@@ -86,7 +87,7 @@ export function recordGenerationRefund(db: LedgerDatabase, job: AccountingJob, c
   // 活进程能明确证明尚未进入 fetch；重启后仅有 running/派发意图时则必须保留不确定性。
   const dispatchState = job.upstreamStartedAt ? 'request_started'
     : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status as string) ? 'not_sent' : 'unknown';
-  const response = {
+  const response: DomainPayloads['ReviewOpened']['response'] = {
     dispatchState, upstreamStartedAt: job.upstreamStartedAt || null,
     upstreamHeadersAt: job.upstreamHeadersAt || null, upstreamCompletedAt: job.upstreamCompletedAt || null,
     upstreamHttpStatus: job.upstreamHttpStatus ?? null

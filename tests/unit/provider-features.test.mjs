@@ -1,8 +1,7 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { openAiModelsResponse } from '../../server/openai-models.ts';
 import { deflateRawSync, deflateSync, crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { encode } from '@msgpack/msgpack';
@@ -567,11 +566,7 @@ test('Medium 通用客户端与原生请求都按实际固定参数发往同一�
 
 
 test('模型目录提供 Medium 的唯一采样器组合，旧 High 与 5C 条目保留',()=>{
- const source= stripTypeScriptTypes(readFileSync(new URL('../../server/gateway-runtime.ts',import.meta.url),'utf8'), { mode: 'strip' });
- const blocks=[/const openAiSamplers = \[[\s\S]*?\n\];/,/const openAiImageModels = \[[\s\S]*?\n\];/,/const openAiSizeTiers\s*= \{[\s\S]*?\n\};/].map(pattern=>{const match=source.match(pattern);assert.ok(match);return match[0];});
- const start=source.indexOf('function openAiModelsResponse('),end=source.indexOf('\n}',start)+2;assert.ok(start>0);
- const ctx=vm.createContext({Date,Object,sizeMap,openAiFixedSteps:28,generationCost:generationPrice});
- const result=vm.runInContext(blocks.join('\n')+'\n'+source.slice(start,end)+'\nopenAiModelsResponse()',ctx);
+ const result=openAiModelsResponse(false);
  const medium=result.data.filter(item=>item.id.includes('nai-diffusion-5-full-medium'));
  assert.equal(medium.length,3);assert.ok(medium.every(item=>item.id.endsWith(':k_euler_ancestral')));
  for(const id of ['nai-diffusion-5-full:k_euler','nai-diffusion-5-curated:k_euler','nai-diffusion-4-5-full:k_euler'])assert.ok(result.data.some(item=>item.id===id));

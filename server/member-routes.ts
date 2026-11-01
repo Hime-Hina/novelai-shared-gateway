@@ -228,14 +228,15 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'fallback-policy') {
       if (typeof body.enabled !== 'boolean') error(400, 'enabled 必须为布尔值');
+      const enabled = body.enabled;
       await updateManagement(db => {
         const state = db.settings.fairQuota;
         if (!state?.enabled) error(409, '共享账本尚未配置');
-        state.autoAnlasFallback = body.enabled;
+        state.autoAnlasFallback = enabled;
         const at = Date.now();
-        state.policyHistory = [...(state.policyHistory || []), { at, actor: 'administrator', autoAnlasFallback: body.enabled as boolean }].slice(-1000);
+        state.policyHistory = [...(state.policyHistory || []), { at, actor: 'administrator', autoAnlasFallback: enabled }].slice(-1000);
         recordDomainEvent(db, { eventType: 'PolicyChanged', streamId: 'sharing:default', occurredAt: at,
-          payload: { policy: 'autoAnlasFallback', value: body.enabled, actorId, actor: 'administrator', at } });
+          payload: { policy: 'autoAnlasFallback', value: enabled, actorId, actor: 'administrator', at } });
       }, { collections: ['settings'], immediate: true });
       reply(res, 200, { autoAnlasFallback: body.enabled }); return true;
     }

@@ -1,8 +1,60 @@
 import { createHash } from 'node:crypto';
-import type { JsonStore } from './store.ts';
+import type { JsonStore, StoreItem } from './store.ts';
 import { addMemberGenerationResources, memberGenerationChargeResources } from './member-generation.ts';
+import { singleGenerationRequest } from './generation-request.ts';
+import { generationPrice } from '../public/generation-pricing.js';
 
 type State = NonNullable<ReturnType<JsonStore['readGenerationRequestState']>>;
+type PresentedJob = Pick<StoreItem, 'id' | 'source' | 'status' | 'request' | 'accountId' | 'cost' | 'accountCost' | 'imageId' | 'lateResultAvailable' | 'error' | 'queueTotal' | 'generationProgress' | 'createdAt' | 'updatedAt' | 'completedAt'> & { requestId?: string | null };
+type JobContext = { queue?: ReturnType<JsonStore['jobQueueProgress']>; accounts?: StoreItem[]; account?: StoreItem | null };
+
+export function generationCost(request: Parameters<typeof generationPrice>[0] | null = null, fairShareMode = true) {
+  return fairShareMode ? 0 : generationPrice(request || {});
+}
+
+export function jobAccountCost(job: Pick<StoreItem, 'accountCost'>): number {
+  const cost = Number(job.accountCost);
+  return Number.isFinite(cost) && cost > 0 ? Math.ceil(cost) : 0;
+}
+
+export function jobDurationMs(job: Pick<StoreItem, 'createdAt' | 'status' | 'completedAt' | 'updatedAt'>, now = Date.now()) {
+  const started = Date.parse(job.createdAt || '');
+  if (!started) return 0;
+  const ended = ['done', 'failed'].includes(job.status!) ? Date.parse(job.completedAt || job.updatedAt || '') : now;
+  return !ended || ended < started ? 0 : ended - started;
+}
+
+export function generationRequestForErrorLog(store: Pick<JsonStore, 'readGenerationRequest'>, job: Pick<StoreItem, 'requestId' | 'sampleIndex' | 'request'>) {
+  return job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId) || {}, job.sampleIndex) : job.request || {};
+}
+
+export function createJobPresentation(deps: {
+  store: Pick<JsonStore, 'readGenerationRequest' | 'jobQueueProgress' | 'findJobContext'>;
+  imageUrl(id: string): string;
+  errorMessage(message: string): string;
+  progress?(job: PresentedJob): unknown;
+}) {
+  function publicJob(job: PresentedJob, db: JobContext | null = null, { includePrompt = true } = {}) {
+    const queue = db?.queue || deps.store.jobQueueProgress(job);
+    const request = (includePrompt && job.requestId ? deps.store.readGenerationRequest(job.requestId) : job.request) || {};
+    const account = db?.account || (db && job.accountId ? db.accounts?.find(item => item.id === job.accountId) : null);
+    return {
+      id: job.id, source: job.source || 'web', requestId: job.requestId || null, status: job.status,
+      prompt: request.tag || '', model: request.model || '', requestedSteps: request.requestedSteps ?? request.steps ?? 0, routedSteps: request.steps ?? 0,
+      accountId: job.accountId || '', accountRouteId: account?.routeId || 0, cost: job.cost, accountCost: jobAccountCost(job),
+      generationProgress: deps.progress?.(job) || job.generationProgress || {}, imageId: job.imageId || '',
+      imageUrl: job.imageId ? deps.imageUrl(job.imageId) : '', lateResultAvailable: job.lateResultAvailable === true,
+      error: deps.errorMessage(job.error || ''), queuePosition: queue.progress, queuedCount: queue.total, durationMs: jobDurationMs(job),
+      createdAt: job.createdAt, updatedAt: job.updatedAt,
+      completedAt: job.completedAt || (['done', 'failed'].includes(job.status!) ? job.updatedAt : '')
+    };
+  }
+  async function publicJobSnapshot(jobId: string) {
+    const context = await deps.store.findJobContext(jobId);
+    return context ? publicJob(context.job, context, { includePrompt: false }) : null;
+  }
+  return { publicJob, publicJobSnapshot };
+}
 
 export function generationRequestLinks(requestId: string) {
   const root = `/api/member/requests/${encodeURIComponent(requestId)}`;
