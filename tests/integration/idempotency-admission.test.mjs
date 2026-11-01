@@ -14,6 +14,7 @@ import { parseNativeImageRequest } from '../../server/native-image.ts';
 import { ImageStorage } from '../../server/r2-storage.ts';
 import { createGenerationAdmission, generationIntent, readGenerationIdempotencyKey, requestCacheKey, isNoCache } from '../../server/generation-admission.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
+import { generationStreamId, recordFreeImageSuccess } from '../../server/generation-execution.ts';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 function legacyOpening(db, job) {
@@ -62,12 +63,18 @@ test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回�
   const { store, ctx, budget, admit } = await fixture(t);
   await store.update(db => {
     configureFreeImages(db, { expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } }, 'a');
-    const job = { id: 'used', userToken: 'STA1N-a', status: 'running', request: body() };
+    const at = Date.now(), completedAt = new Date(at).toISOString();
+    const job = { id: 'used', userToken: 'STA1N-a', status: 'running', request: body(), createdAt: completedAt };
     legacyOpening(db, job);
-    fair.reserveFairQuota(db, db.users[0], job, db.accounts[0]);
-    fair.settleFairQuota(db, job, true);
+    fair.reserveFairQuota(db, db.users[0], job, db.accounts[0], at);
+    fair.settleFairQuota(db, job, true, at);
+    job.completedAt = job.updatedAt = completedAt;
     job.status = 'done'; db.jobs.push(job);
+    recordDomainEvent(db, { eventType: 'JobCompleted', streamId: generationStreamId(job), occurredAt: at,
+      payload: { jobId: job.id, completedAt, artifactId: null, charge: job.fairCharge } });
+    recordFreeImageSuccess(db, job, at, store.readFreeImageUsage(db, 'a', at));
   }, { immediate: true });
+  assert.deepEqual(await store.retireJobHistory(['used'], 'synthetic-free-limit-history'), ['used']);
   const limited = error => error.statusCode === 429 && /免费图片/.test(error.message) && Boolean(error.cooldownUntil);
   await assert.rejects(admit(body()), limited);
   await assert.rejects(ctx.createDirectJob('STA1N-a', body(), 'new-key'), limited);

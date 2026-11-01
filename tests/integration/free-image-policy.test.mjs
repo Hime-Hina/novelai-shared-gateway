@@ -15,16 +15,17 @@ import { webJobRequestSummary } from '../../server/generation-request.ts';
 const now = Date.now(), day = 86400000;
 const free = { model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23 };
 const write = { immediate: true };
-async function fixture(t, policy = { enabled: true, warningThreshold: 1, hardLimit: 2 }) {
+async function fixture(t, policy = { enabled: true, warningThreshold: 1, hardLimit: 2 }, history = []) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-free-images-')));
   await store.init(); t.after(() => store.close());
-  await store.update(db => {
-    db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true }));
-    db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
-      quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 80, quotaCheckedAt: now }];
-    configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db, now);
-    configureFreeImages(db, { expectedVersion: 1, policy }, 'a');
-  }, write);
+  const db = await store.read();
+  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: id, enabled: true }));
+  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
+    quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 80, quotaCheckedAt: now }];
+  configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db, now);
+  db.jobs.push(...history);
+  await store.write(db);
+  await store.update(db => configureFreeImages(db, { expectedVersion: 1, policy }, 'a'), write);
   return store;
 }
 function reserve(store, id, at = now, request = free) {
@@ -76,14 +77,16 @@ test('最后一个免费名额事务内争抢；失败释放，成功按结算�
 });
 
 test('重启和清理日志不清零，已退款的迟到完整图片计一次，缓存/预览/付费不计', async t => {
-  let store = await fixture(t, { enabled: true, warningThreshold: 2, hardLimit: null });
+  let store = await fixture(t, { enabled: true, warningThreshold: 2, hardLimit: null }, [
+    { id: 'cache', userToken: 'a', status: 'done', imageId: 'image', createdAt: new Date(now).toISOString() },
+    { id: 'preview', userToken: 'a', status: 'running', generationProgress: { percent: 95 }, createdAt: new Date(now).toISOString() }
+  ]);
   await reserve(store, 'late'); await settle(store, 'late', false);
   await store.update(db => {
     const job = db.jobs.find(j => j.id === 'late');
     assert.equal(recordRecoveredGeneration(db, job, 'image', now + 1), true);
     recordFreeImageSuccess(db, job, now + 1, store.readFreeImageUsage(db, 'a', now + 1));
     assert.equal(recordRecoveredGeneration(db, job, 'image', now + 2), false);
-    db.jobs.push({ id: 'cache', status: 'done', imageId: 'image' }, { id: 'preview', status: 'running', generationProgress: { percent: 95 } });
   }, write);
   await reserve(store, 'paid', now + 3, { ...free, steps: 29 }); await settle(store, 'paid', true, now + 4);
   await reserve(store, 'v5', now + 5, { ...free, model: 'nai-diffusion-5-full' }); await settle(store, 'v5', true, now + 6);
@@ -91,7 +94,8 @@ test('重启和清理日志不清零，已退款的迟到完整图片计一次�
   await settle(store, 'second', true, now + 9);
   assert.equal(usage(store, now + 9).successful, 2);
   assert.equal(usage(store, now + 9).warnedAt, now + 8);
-  await store.update(db => { db.jobs = []; }, { collections: ['jobs'], immediate: true });
+  assert.deepEqual(await store.clearRequestLogs(), { removed: 5, remaining: 1 });
+  assert.equal(store.selectItemById('jobs', 'preview').status, 'running');
   const directory = store.dataDir; await store.close();
   store = new JsonStore(directory); await store.init(); t.after(() => store.close());
   assert.equal(usage(store, now + 10).successful, 2);

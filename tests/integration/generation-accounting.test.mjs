@@ -124,6 +124,7 @@ test('真实 SQLite 预扣/退款/证据同事务；写失败还原内存，重�
   const fail = db => {
     db.jobs[0].upstreamStartedAt = new Date(now + 1).toISOString();
     settleFairQuota(db, db.jobs[0], false, now + 2); db.jobs[0].status = 'failed';
+    db.jobs[0].completedAt = db.jobs[0].updatedAt = new Date(now + 2).toISOString();
     recordGenerationFailure(db, db.jobs[0]);
   };
   store.sqlite.exec(`CREATE TEMP TRIGGER reject_generation_evidence BEFORE INSERT ON ledger
