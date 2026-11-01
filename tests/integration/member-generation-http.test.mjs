@@ -122,7 +122,7 @@ async function fixture(t) {
     }, { immediate: true });
   };
   const restart = async () => { await store.close(); store = new JsonStore(dataDir); await store.init(); deps.store = store; deps.handleMemberGeneration = handleGeneration(); };
-  return { get store() { return store; }, sessions, budget, imageStorage, previews, origin, raw, json, quote, submit, openEvents, dispatch, finish, restart, get drainCalls() { return drainCalls; } };
+  return { get store() { return store; }, server, sessions, budget, imageStorage, previews, origin, raw, json, quote, submit, openEvents, dispatch, finish, restart, get drainCalls() { return drainCalls; } };
 }
 
 test('HTTP capabilities and quotes require Cookie/Origin, remain private and do not write wallets or domain facts', async t => {
@@ -251,4 +251,42 @@ test('a terminal commit during the initial SSE snapshot cannot lose its complete
   try { await f.finish(requestId, { failed: true }); } finally { release(); }
   assert.equal((await stream.wait('snapshot')).data.status, 'failed'); assert.equal((await stream.wait('complete')).data.status, 'failed');
   await stream.close();
+});
+
+test('disconnects during initial ownership reads do not consume SSE slots or timers', async t => {
+  const f=await fixture(t), accepted=await f.submit(), requestId=accepted.body.requestId;
+  const originalRead=f.store.readCollections.bind(f.store), originalInterval=globalThis.setInterval;
+  let enter, release, gate; const intervals=[];
+  t.mock.method(globalThis,'setInterval',(callback,milliseconds,...args)=>{
+    if(milliseconds===15000)intervals.push(callback); return originalInterval(callback,milliseconds,...args);
+  });
+  t.mock.method(f.store,'readCollections',async (...args)=>{
+    const result=await originalRead(...args);
+    if(gate&&args[0].includes('users')){enter();await gate;}
+    return result;
+  });
+  for(let attempt=0;attempt<3;attempt++){
+    const entered=new Promise(resolve=>{enter=resolve;}); gate=new Promise(resolve=>{release=resolve;});
+    const closed=new Promise(resolve=>f.server.once('request',(_req,res)=>res.once('close',resolve)));
+    const abort=new AbortController(), request=f.raw(`/api/member/requests/${requestId}/events`,{signal:abort.signal});
+    await entered; abort.abort(); await assert.rejects(request,error=>error.name==='AbortError'); await closed;
+    release(); gate=null; await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.equal(intervals.length,0); assert.equal(f.previews.watchers.size,0);
+  const active=await f.openEvents(requestId); await active.wait('snapshot'); assert.equal(intervals.length,1); await active.close();
+});
+
+test('temporary membership service failure ends SSE with error without claiming auth expiry', async t => {
+  const f=await fixture(t), accepted=await f.submit(), requestId=accepted.body.requestId;
+  const originalInterval=globalThis.setInterval, callbacks=[];
+  t.mock.method(globalThis,'setInterval',(callback,milliseconds,...args)=>{
+    if(milliseconds===15000)callbacks.push(callback); return originalInterval(callback,milliseconds,...args);
+  });
+  const stream=await f.openEvents(requestId); await stream.wait('snapshot');
+  const originalSession=f.store.readMemberSession.bind(f.store);
+  t.mock.method(f.store,'readMemberSession',()=>{throw Object.assign(new Error('synthetic membership service unavailable'),{statusCode:503});});
+  callbacks.at(-1)(); const error=await stream.wait('error'); assert.equal(error.data.statusCode,503);
+  assert.ok(!stream.events.some(event=>event.type==='auth-expired')); await stream.close();
+  assert.ok(originalSession(createHash('sha256').update(f.sessions.a.token).digest('hex')),'session remains valid');
+  assert.equal(f.store.readGenerationRequestState(requestId,'a').jobs[0].status,'queued');
 });

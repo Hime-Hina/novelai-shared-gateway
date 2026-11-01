@@ -160,6 +160,8 @@ export function createMemberGenerationHttp(deps: Dependencies) {
 
 async function streamRequest(deps: Dependencies, res: ServerResponse, requestId: string, memberId: string,
   revalidate: () => Promise<boolean>, snapshot: () => Promise<ReturnType<typeof publicGenerationRequest>>) {
+  // Authentication/ownership reads above may finish after the client already left.
+  if (res.destroyed || res.writableEnded) return;
   if ((streamCounts.get(memberId) || 0) >= 3 || [...streamCounts.values()].reduce((sum, count) => sum + count, 0) >= 100) fail(429, 'stream_limit', '预览连接过多，请关闭多余页面。');
   streamCounts.set(memberId, (streamCounts.get(memberId) || 0) + 1);
   let closed = false, running = false, requested = false, first = true, previous = '';
@@ -197,7 +199,9 @@ async function streamRequest(deps: Dependencies, res: ServerResponse, requestId:
         }
         if (!['queued', 'pending', 'running'].includes(state.status)) { send('complete', state); res.end(); stop(); }
       }
-    } catch (error) { if (!closed) { send('error', memberGenerationError(error)); res.end(); stop(); } }
+    } catch (error) {
+      if (!closed) { send([401,403].includes((error as { statusCode?: number }).statusCode || 0) ? 'auth-expired' : 'error', memberGenerationError(error)); res.end(); stop(); }
+    }
     finally { running = false; }
   };
   const heartbeat = setInterval(() => {
@@ -205,7 +209,9 @@ async function streamRequest(deps: Dependencies, res: ServerResponse, requestId:
       if (closed) return;
       if (!valid) { send('auth-expired', {}); res.end(); stop(); }
       else { if (!res.writableNeedDrain) res.write(': keepalive\n\n'); wake(); }
-    }).catch(() => { if (!closed) { send('auth-expired', {}); res.end(); stop(); } });
+    }).catch(error => {
+      if (!closed) { send([401,403].includes((error as { statusCode?: number }).statusCode || 0) ? 'auth-expired' : 'error', memberGenerationError(error)); res.end(); stop(); }
+    });
   }, 15_000);
   heartbeat.unref();
   res.once('close', stop); res.once('error', stop); res.on('drain', wake);
