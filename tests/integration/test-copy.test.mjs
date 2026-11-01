@@ -10,7 +10,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { JsonStore, sqlRecord, applyEventProjection, activateEventAuthority } from '../../server/store.ts';
-import { eventAuthorityEnabled, copyProtectedFacts, replayDomainEvents, readStreamProjection } from '../../server/event-store.ts';
+import { eventAuthorityEnabled, copyProtectedFacts, replayDomainEvents, readStreamProjection, readArtifactInput } from '../../server/event-store.ts';
+import { domainDigest } from '../../server/domain-events.ts';
+import { ImageStorage } from '../../server/r2-storage.ts';
 import { migrateStorage } from '../../server/storage-migrations.ts';
 import { createGenerationAdmission, generationIntent } from '../../server/generation-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
@@ -332,4 +334,44 @@ test('副本表清单拒绝未评审的新表而不修改源库或交付半份�
   const original = await readFile(source), target = path.join(root, 'isolated');
   await assert.rejects(createTestCopy({ source, target }), error => error.code === 'unsupported_tables' && error.counts.tables === 1);
   assert.deepEqual(await readFile(source), original); await assert.rejects(stat(path.join(target, 'library.sqlite')), { code: 'ENOENT' });
+});
+
+test('已保护的inline产物与私有诊断脱敏后同步摘要/引用，并保留可重放原字节', async t => {
+  const f = await fixture(t, 'fixed'), db = new Database(f.source);
+  const privateInput = { base64: f.webp.toString('base64'), prompt: privatePrompt, fullPrompt: `private upstream ${secrets.pst}` }, beforeHash = domainDigest(privateInput);
+  db.prepare('INSERT INTO artifact_inputs VALUES (?,?,?,?)').run('image-cold', 'a', beforeHash, JSON.stringify(privateInput));
+  const image = JSON.parse(db.prepare("SELECT data FROM images WHERE id='image-cold'").get().data);
+  delete image.file; image.artifactInputRef = 'image-cold'; image.artifactInputSha256 = beforeHash;
+  db.prepare("UPDATE images SET data=? WHERE id='image-cold'").run(JSON.stringify(image));
+  const detail = `private diagnostic ${secrets.access} ${secrets.pst}`, beforeDiagnosticHash = digest(Buffer.from(detail)), oldRef = `diagnostic:history-cold:${beforeDiagnosticHash}`;
+  db.prepare('INSERT INTO generation_diagnostics VALUES (?,?,?,?,?)').run(oldRef, 'history-cold', detail, beforeDiagnosticHash, new Date(now).toISOString());
+  const job = JSON.parse(db.prepare("SELECT data FROM jobs WHERE id='history-cold'").get().data);
+  job.errorDetail = detail; job.diagnosticRef = oldRef; db.prepare("UPDATE jobs SET data=? WHERE id='history-cold'").run(JSON.stringify(job)); db.close();
+  const before = await readFile(f.source), target = path.join(f.root, 'protected-copy');
+  await createTestCopy({ source: f.source, target, now: now + 2000 }); assert.deepEqual(await readFile(f.source), before);
+  const isolated = new JsonStore(target); await isolated.init(); t.after(() => isolated.close());
+  const restored = await isolated.findImage('image-cold'), input = readArtifactInput(isolated.sqlite, 'image-cold');
+  assert.equal(input.base64, privateInput.base64); assert.equal(input.prompt, privatePrompt); assert.equal(input.fullPrompt.includes(secrets.pst), false);
+  assert.notEqual(restored.artifactInputSha256, beforeHash); assert.equal(restored.artifactInputSha256, domainDigest(input));
+  assert.deepEqual(await new ImageStorage(target, null, id => isolated.findImage(id)).read(restored), f.webp);
+  const copiedJob = isolated.selectItemById('jobs', 'history-cold'), diagnostic = isolated.sqlite.prepare('SELECT * FROM generation_diagnostics WHERE diagnostic_id=?').get(copiedJob.diagnosticRef);
+  assert.notEqual(copiedJob.diagnosticRef, oldRef); assert.equal(isolated.sqlite.prepare('SELECT 1 FROM generation_diagnostics WHERE diagnostic_id=?').get(oldRef), undefined);
+  assert.equal(diagnostic.detail, copiedJob.errorDetail); assert.equal(diagnostic.detail.includes(secrets.access), false); assert.equal(diagnostic.detail.includes(secrets.pst), false);
+  assert.equal(diagnostic.detail_sha256, digest(Buffer.from(diagnostic.detail)));
+  const replay = new Database(':memory:'); t.after(() => replay.close()); migrateStorage(replay); copyProtectedFacts(isolated.sqlite, replay);
+  replayDomainEvents(isolated.sqlite, replay, { project: applyEventProjection }); activateEventAuthority(replay);
+  assert.equal(readArtifactInput(replay, 'image-cold').base64, privateInput.base64);
+  assert.equal(JSON.parse(replay.prepare("SELECT data FROM jobs WHERE id='history-cold'").get().data).errorDetail, diagnostic.detail);
+});
+
+test('受保护原摘要损坏时拒绝制作新baseline，不用脱敏重算掩盖来源损坏', async () => {
+  for (const kind of ['artifact', 'diagnostic']) {
+    const root = await mkdtemp(path.join(tmpdir(), 'nai-test-copy-corrupt-')), source = path.join(root, 'source.sqlite'), db = new Database(source);
+    migrateStorage(db);
+    if (kind === 'artifact') db.prepare('INSERT INTO artifact_inputs VALUES (?,?,?,?)').run('synthetic-image', 'a', '0'.repeat(64), '{"prompt":"synthetic"}');
+    else db.prepare('INSERT INTO generation_diagnostics VALUES (?,?,?,?,?)').run('synthetic-diagnostic', 'job', 'synthetic detail', '0'.repeat(64), new Date(now).toISOString());
+    db.close(); const original = await readFile(source), target = path.join(root, 'isolated');
+    await assert.rejects(createTestCopy({ source, target }), { code: kind === 'artifact' ? 'corrupt_protected_artifact' : 'corrupt_protected_diagnostic' });
+    assert.deepEqual(await readFile(source), original); await assert.rejects(stat(path.join(target, 'library.sqlite')), { code: 'ENOENT' });
+  }
 });

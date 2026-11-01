@@ -9,6 +9,7 @@ import { migrateStorage } from '../server/storage-migrations.ts';
 import { recordTables } from '../server/storage-schema.ts';
 import { activateEventAuthority, sqlRecord } from '../server/store.ts';
 import { eventAuthorityEnabled } from '../server/event-store.ts';
+import { domainDigest } from '../server/domain-events.ts';
 import { setMemberCredentials } from '../server/member-auth.ts';
 import { settleFairQuota } from '../server/fair-quota.ts';
 import { closeGenerationReview } from '../server/generation-accounting.ts';
@@ -16,7 +17,7 @@ import { closeGenerationReview } from '../server/generation-accounting.ts';
 export const TEST_COPY_UPSTREAM_TOKEN = 'pst-synthetic-d01-mock-upstream-only';
 const collections = Object.keys(recordTables);
 const historyTables = ['domain_events', 'event_commits', 'event_streams', 'event_clock', 'projection_versions', 'event_imports'];
-const copiedTables = [...collections, 'app_settings', 'app_meta', 'app_records', 'generation_requests', 'generation_contexts',
+const copiedTables = [...collections, 'app_settings', 'app_meta', 'app_records', 'generation_requests', 'generation_contexts', 'artifact_inputs', 'generation_diagnostics',
   'generation_idempotency', 'fair_quota_settlements', 'member_sessions', 'free_image_usage', '__drizzle_migrations'];
 const tables = [...copiedTables, ...historyTables];
 const active = new Set(['queued', 'pending', 'running']);
@@ -24,7 +25,7 @@ const secretFields = new Set(['apiKey', 'api_key', 'password', 'accessToken', 'r
   'clientSecret', 'client_secret', 'secret', 'image_cache_secret_key', 'mask_cache_secret_key', 'reference_image_cache_secret_key']);
 const proxyFields = new Set(['proxyUrl', 'socksProxy', 'proxy']);
 const jsonColumns = { ...Object.fromEntries(collections.map(name => [name, 'data'])),
-  app_settings: 'value', app_records: 'data', generation_requests: 'payload', generation_contexts: 'payload',
+  app_settings: 'value', app_records: 'data', generation_requests: 'payload', generation_contexts: 'payload', artifact_inputs: 'payload',
   generation_idempotency: 'normalization_context', fair_quota_settlements: 'charge' };
 const message = 'Isolated in an offline test copy; original production task will not be replayed.';
 class CopyError extends Error {
@@ -90,6 +91,8 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     summary.before = Object.fromEntries(tables.map(table => [table, count(db, table)]));
     const sourceHistory = historySource(db);
     const isolationNonce = randomBytes(32);
+    for (const row of records(db, 'artifact_inputs')) if (domainDigest(parse(row.payload)) !== row.payload_sha256) throw new CopyError('corrupt_protected_artifact');
+    for (const row of records(db, 'generation_diagnostics')) if (createHash('sha256').update(row.detail).digest('hex') !== row.detail_sha256) throw new CopyError('corrupt_protected_diagnostic');
     const settingsRow = db.prepare("SELECT value FROM app_settings WHERE key='settings'").get();
     if (!settingsRow) throw new CopyError('settings_missing');
     const state = { settings: parse(settingsRow.value), users: [...records(db, 'users')].map(row => parse(row.data)), ledger: [] };
@@ -225,6 +228,24 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
         const update = db.prepare(`UPDATE ${table} SET ${columns.map(column => `${column}=@${column}`).join(',')} WHERE rowid=@_rowid`);
         for (const row of records(db, table)) update.run(Object.fromEntries([['_rowid', row._rowid], ...columns.map(column =>
           [column, column === jsonColumns[table] ? row[column] : scrubText(row[column])])]));
+      }
+      const artifactHash = db.prepare('UPDATE artifact_inputs SET payload_sha256=? WHERE artifact_id=?');
+      const imageById = db.prepare('SELECT data,order_value FROM images WHERE id=?');
+      for (const row of records(db, 'artifact_inputs')) {
+        const digest = domainDigest(parse(row.payload)); artifactHash.run(digest, row.artifact_id);
+        const image = imageById.get(row.artifact_id);
+        if (image) { const value = parse(image.data); if (value.artifactInputRef === row.artifact_id) { value.artifactInputSha256 = digest; save('images', value, image.order_value); } }
+      }
+      const diagnosticEnd = db.prepare('SELECT COALESCE(MAX(rowid),0) AS n FROM generation_diagnostics').get().n;
+      const putDiagnostic = db.prepare('INSERT OR IGNORE INTO generation_diagnostics(diagnostic_id,job_id,detail,detail_sha256,created_at) VALUES(?,?,?,?,?)');
+      const jobById = db.prepare('SELECT data,order_value FROM jobs WHERE id=?');
+      for (const row of records(db, 'generation_diagnostics')) {
+        if (row._rowid > diagnosticEnd) break;
+        const digest = createHash('sha256').update(row.detail).digest('hex'), ref = `diagnostic:${row.job_id}:${digest}`;
+        if (ref === row.diagnostic_id) db.prepare('UPDATE generation_diagnostics SET detail_sha256=? WHERE diagnostic_id=?').run(digest, ref);
+        else { putDiagnostic.run(ref, row.job_id, row.detail, digest, row.created_at); db.prepare('DELETE FROM generation_diagnostics WHERE diagnostic_id=?').run(row.diagnostic_id); }
+        const job = jobById.get(row.job_id);
+        if (job) { const value = parse(job.data); if (value.diagnosticRef === row.diagnostic_id) { value.diagnosticRef = ref; save('jobs', value, job.order_value); } }
       }
       // Keep old key ownership as a tombstone: scrubbed inputs no longer represent the original accepted intent.
       const blockKey = db.prepare('UPDATE generation_idempotency SET fingerprint=? WHERE rowid=?');
