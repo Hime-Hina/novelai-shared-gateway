@@ -6,7 +6,7 @@
 
 ## 1. 与当前计划的衔接
 
-当前计划只实现唯一执行器、单一绑定 Opus、SQLite 内部事件溯源，以及[成员生成接口契约](member-generation-contract.md)。本文件保存前一版已讨论的扩展设计，避免将来重读聊天史，但不要求当前新增 fleet 表、多账号选路、租约/跨进程状态或 PostgreSQL 驱动。
+当前计划只实现唯一执行器、单一绑定 Opus、SQLite 内部事件溯源，以及[成员生成接口契约](../contracts/member-generation-contract.md)。本文件保存前一版已讨论的扩展设计，避免将来重读聊天史，但不要求当前新增 fleet 表、多账号选路、租约/跨进程状态或 PostgreSQL 驱动。
 
 后续启动时，以当时已交付事件和成员 API 版本为基线：将共享配置聚合明确映射到默认 fleet，保留原 member/account/request/attempt ID、原 Key 默认来源、幂等映射和费用授权。已有事件不原地改写；新 scope 通过增量 schema、导入事实及兼容读取加入。新成员 API 不接受的 fleet/account 选择须通过明确版本扩展开放，不能默默改变旧请求来源。
 
@@ -159,4 +159,4 @@ fencingToken 由数据库实例 epoch 与单调计数组成。恢复旧备份时
 
 数据库行为依据 [SQLite WAL](https://www.sqlite.org/wal.html)、[SQLite transactions](https://www.sqlite.org/lang_transaction.html) 与 [PostgreSQL explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html)。账号来源和外部派发保证来自本项目的证据与约束，不声称 NAI 提供远程幂等或 fencing。
 
-当前计划和[API 契约](api-contract.md)发生变化时，只更新本文件的衔接假设；不要把后续工作重新混入当前验收。正式版本只在[发布记录](production-release.md)维护。
+当前计划和[API 契约](../contracts/api-contract.md)发生变化时，只更新本文件的衔接假设；不要把后续工作重新混入当前验收。正式版本只在[发布记录](../operations/production-release.md)维护。

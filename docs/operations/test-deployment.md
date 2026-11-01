@@ -77,6 +77,7 @@ novelai-gateway-test-<commit>-linux-x64/
 ```
 
 执行器依赖原许可随其完整依赖树保留；Nitro/H3 许可位于其输出目录。
+仓库中的部署文档位于 `docs/operations/`；CI 发布包内继续保留上面的 `docs/test-deployment.md` 和 `docs/production-release.md` 路径。
 网页镜像从冻结安装的 Linux 依赖树收集名称匹配 LICENSE、COPYING、NOTICE 的
 文件，保留包路径后导出。此处记录实际携带的文件，不作额外的许可合规认证。
 

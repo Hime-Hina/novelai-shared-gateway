@@ -33,7 +33,7 @@
 - 省略stream时即使Accept要求MessagePack仍返回SSE。尚未单独采样“显式sse＋MessagePack Accept”，网关按上述证据与官方stream枚举统一由stream选择格式，不再用Accept推断流式类型。
 - 普通JSON与ZIP成功均实测200，与[Swagger](https://image.novelai.net/docs/doc.json)列出的201不一致。网关C03-04据此将普通生成JSON/ZIP成功改为200；Vibe201及其他操作独立处理。官方本次ZIP使用binary/octet-stream，网关保留明确的application/zip，而非声称逐字节透传全部头部。
 
-网关SSE复用已有预览/结果生命周期，不伪造未保留的gen_id、sigma或retry。批次错误仍附本地samp_ix，首事件前错误使用HTTP JSON；这些边界见[API契约](api-contract.md)。
+网关SSE复用已有预览/结果生命周期，不伪造未保留的gen_id、sigma或retry。批次错误仍附本地samp_ix，首事件前错误使用HTTP JSON；这些边界见[API契约](../contracts/api-contract.md)。
 
 ## 原始响应指纹
 

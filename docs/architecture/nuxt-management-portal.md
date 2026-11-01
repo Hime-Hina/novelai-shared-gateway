@@ -7,7 +7,7 @@ owner 与私有 admin 页面已迁入 `web/`，复用 Vue、TypeScript 和 Naive
 
 ## 入口与分流
 
-[Caddyfile.example](../Caddyfile.example) 保持两个入口：
+[Caddyfile.example](../../Caddyfile.example) 保持两个入口：
 
 | 入口 | 页面与认证 | API 去向 |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ admin 定时读取与断开清空。以上不代表真实 Discord OAuth、真实
 
 ## 首屏复测（2026-10-17）
 
-沿用 [P01](browser-baseline.md) 的 Chrome 155 / Windows、4× CPU、150ms
+沿用 [P01](../history/browser-baseline.md) 的 Chrome 155 / Windows、4× CPU、150ms
 延迟、下行 200000 B/s、上行 93750 B/s、DPR≈1；桌面1440×900、手机视口
 390×844 × HTTP 缓存禁用/启用 × 五次，**20/20** 完整且页面可见，无 ready
 上界样本。独立真实网关使用四名合成成员、120 条终态记录，生成次数为0。

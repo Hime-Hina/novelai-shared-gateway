@@ -4,6 +4,6 @@
 
 `pnpm run build` 将后端源码编译到 `.output/backend/`，再运行 `package-backend.mjs` 写入使用 JavaScript 入口的发布包元数据；Docker 和执行器复用这一文件。源码的 `pnpm start`/`dev` 使用 Node 原生 TypeScript 支持，发布产物仍直接运行编译后的 JavaScript。
 
-隔离测试上游使用 `node scripts/mock-novelai.mjs --port 19081 --delay-ms 1000`。只绑定回环地址，接受固定合成凭据，返回固定图片与余额，不访问真实 NAI。支持范围、凭据和独立 systemd 配置见 [测试部署说明](../docs/test-deployment.md#常驻合成上游)；不能用这些响应证明官方计费或生成质量。
+隔离测试上游使用 `node scripts/mock-novelai.mjs --port 19081 --delay-ms 1000`。只绑定回环地址，接受固定合成凭据，返回固定图片与余额，不访问真实 NAI。支持范围、凭据和独立 systemd 配置见 [测试部署说明](../docs/operations/test-deployment.md#常驻合成上游)；不能用这些响应证明官方计费或生成质量。
 
-离线测试副本使用 `node scripts/create-test-copy.mjs --source /private/snapshot/library.sqlite --target /private/test-copy --images-dir /private/snapshot/images`。目标必须不存在，其父目录须为受保护目录；图片目录可省略。工具只读备份源库，轮换凭据、隔离活动任务和预留，输出新的数据库与私有测试凭据；不启动服务或修改源库。支持范围、失败处理与隔离前置见 [离线测试副本](../docs/test-deployment.md#离线测试副本工具)。
+离线测试副本使用 `node scripts/create-test-copy.mjs --source /private/snapshot/library.sqlite --target /private/test-copy --images-dir /private/snapshot/images`。目标必须不存在，其父目录须为受保护目录；图片目录可省略。工具只读备份源库，轮换凭据、隔离活动任务和预留，输出新的数据库与私有测试凭据；不启动服务或修改源库。支持范围、失败处理与隔离前置见 [离线测试副本](../docs/operations/test-deployment.md#离线测试副本工具)。

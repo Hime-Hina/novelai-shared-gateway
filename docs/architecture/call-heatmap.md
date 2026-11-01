@@ -104,7 +104,7 @@ Naive UI 2.45.3 的小补丁修正稀疏数据的月份位置，短月份保留�
 
 源码为 `731d62c`，前端镜像
 `sha256:aa7524509da0d4ae20a2064a22e128f8a2dba6b144c846a9c8de1664f7e40314`。
-沿用 [P01](browser-baseline.md) 的真实 Chrome、4× CPU、150ms 延迟、下行
+沿用 [P01](../history/browser-baseline.md) 的真实 Chrome、4× CPU、150ms 延迟、下行
 200000 B/s、上行 93750 B/s、DPR 1、1440×900／390×844、四名合成成员与
 120 条终态记录；前端经过 Caddy 压缩，API/SSE 仍由同一个测试网关处理。
 三种角色 × 两种视口 × 两种缓存设置 × 五次，共 60 条，另保留修复前诊断与

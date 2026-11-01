@@ -293,8 +293,8 @@ Caddy 只区分 API 与网页的压缩策略，全部转给 Nuxt；公网上的�
 N03、C03当前支持范围与计划内C01已完成；T01最后入口ce1eb91已通过完整Linux CI及bob产物验收。
 bob 已运行相互独立的 systemd 测试服务，使用 CI 的 Node/Linux 产物、独立持久目录和
 清理后的生产规模副本。systemd 强杀自动恢复、网页与执行器生命周期隔离及同库版本
-回退已通过，较大产物、首屏对照及完整验收边界见[测试部署说明](test-deployment.md)。
+回退已通过，较大产物、首屏对照及完整验收边界见[测试部署说明](../operations/test-deployment.md)。
 
 现有业务由同一个执行器处理，不能让旧 CLI 与独立执行器同时挂同一数据目录。
-2026-10-19 已获准将 dff5ee4 部署生产，双服务及真实调用验收见[发布记录](production-release.md)；
+2026-10-19 已获准将 dff5ee4 部署生产，双服务及真实调用验收见[发布记录](../operations/production-release.md)；
 仍不能保证找回上游尚未完整返回的图片。

@@ -71,7 +71,7 @@ jobs:
           done
           cp pnpm-lock.yaml "$release_dir/pnpm-lock.yaml"
           cp deploy/systemd/*.service deploy/production-*.env.example "$release_dir/systemd/"
-          cp docs/test-deployment.md docs/production-release.md "$release_dir/docs/"
+          cp docs/operations/test-deployment.md docs/operations/production-release.md "$release_dir/docs/"
           cp scripts/backup-production.py scripts/bridge-owner-session.mjs "$release_dir/ops/"
           mkdir -p "$RUNNER_TEMP/unit-check"
           for unit in "$release_dir/systemd/"*.service; do

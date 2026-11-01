@@ -14,6 +14,6 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 | 原子持久化、冷历史与查询投影 | `store.ts`、`storage-schema.ts`、`sqlite-read-worker.ts` |
 | 产物恢复、本地/R2 存储与通知 | `result-files.ts`、`r2-storage.ts`、`cold-images.ts`、`state-events.ts` |
 
-已提交 SQLite 记录是当前权威数据；活动预留在 fairQuota，冷结算凭据优先于 job 中的旧副本。`fairQuotaSummary()` 当前仍会修改输入，查询调用者须使用独立副本。新版本将调整这些边界，详见[架构重构计划](../docs/architecture-refactor-plan.md)；事件溯源及[成员生成新接口](../docs/member-generation-contract.md)尚未实现。多执行器、多账号调度和数据库系统迁移已移至[后续计划](../docs/scaling-follow-up-plan.md)，不作为当前重构前置。
+已提交 SQLite 记录是当前权威数据；活动预留在 fairQuota，冷结算凭据优先于 job 中的旧副本。`fairQuotaSummary()` 当前仍会修改输入，查询调用者须使用独立副本。新版本将调整这些边界，详见[架构重构计划](../docs/plans/architecture-refactor-plan.md)；事件溯源及[成员生成新接口](../docs/contracts/member-generation-contract.md)尚未实现。多执行器、多账号调度和数据库系统迁移已移至[后续计划](../docs/plans/scaling-follow-up-plan.md)，不作为当前重构前置。
 
-继续工作先读该计划的目标、事实表和工作包状态，再按所改规则读取具体模块。[API 契约](../docs/api-contract.md)维护外部行为，[结果恢复](../docs/result-recovery.md)维护产物提交边界，[发布记录](../docs/production-release.md)维护运行版本与回退证据。
+继续工作先读该计划的目标、事实表和工作包状态，再按所改规则读取具体模块。[API 契约](../docs/contracts/api-contract.md)维护外部行为，[结果恢复](../docs/architecture/result-recovery.md)维护产物提交边界，[发布记录](../docs/operations/production-release.md)维护运行版本与回退证据。

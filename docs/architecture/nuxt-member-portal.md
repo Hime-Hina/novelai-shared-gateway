@@ -31,8 +31,8 @@ Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owne
 渲染时识别已有样式。它改编自
 [nuxt-naiveui 的固定提交 3452646](https://github.com/becem-gharbi/nuxt-naiveui/blob/345264658e2b4dabdb30be886463e101fd8d6175/src/runtime/plugins/naive.server.ts)，
 没有安装完整模块。原 MIT 版权及许可全文保留在
-[web/THIRD_PARTY_NOTICES.md](../web/THIRD_PARTY_NOTICES.md)，前端镜像也携带该文件；
-项目自身许可仍见根目录 [LICENSE](../LICENSE) 和 [NOTICE.md](../NOTICE.md)。
+[web/THIRD_PARTY_NOTICES.md](../../web/THIRD_PARTY_NOTICES.md)，前端镜像也携带该文件；
+项目自身许可仍见根目录 [LICENSE](../../LICENSE) 和 [NOTICE.md](../../NOTICE.md)。
 
 完整 Nuxt 集成模块不是使用 Naive UI 的必要条件；本项目继续直接使用它的
 按钮、输入框、卡片、表格等组件，仅保留首份 HTML 所需的样式桥接。没有为
@@ -113,9 +113,9 @@ Windows 使用 fnm 时可将命令写成
 
 以下保留 U01 阶段的接入与可选部署说明，不是当前 bob 的端口操作手册。
 后续 N01–N03 已将全部对外接口统一到 Nuxt；2026-10-19 正式部署使用 Cloudflare Tunnel
-→ Nuxt 18081 → 内部执行器 18082，未采用这里的私有 Caddy 监听，详见[发布记录](production-release.md)。
+→ Nuxt 18081 → 内部执行器 18082，未采用这里的私有 Caddy 监听，详见[发布记录](../operations/production-release.md)。
 
-[Caddyfile.example](../Caddyfile.example) 描述可选 Caddy 拓扑，路径归属如下：
+[Caddyfile.example](../../Caddyfile.example) 描述可选 Caddy 拓扑，路径归属如下：
 
 | 路径 | 所属服务 |
 | --- | --- |
@@ -171,7 +171,7 @@ reload 或替换生产版本的操作；实际替换仍须用户批准。
 
 ## 首屏复测（2026-10-17）
 
-沿用 [P01 基线](browser-baseline.md) 的 Chrome 155 / Windows、4× CPU、150ms
+沿用 [P01 基线](../history/browser-baseline.md) 的 Chrome 155 / Windows、4× CPU、150ms
 网络延迟、下行 200000 B/s、上行 93750 B/s、1440×900 与 390×844、DPR≈1。
 匿名/成员 × 桌面/手机视口 × HTTP 缓存禁用/启用，各五次，共 **40/40**。
 使用真实网关、四名合成成员、120 条终态记录；本轮性能采样生成次数为 **0**。
