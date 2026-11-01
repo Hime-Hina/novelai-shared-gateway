@@ -79,13 +79,15 @@ close 会清除自己的轮询定时器和等待者，不改变任务。
 在重启后继续执行，旧 inline direct/OpenAI 也按已保存的业务期限判断；
 已发送但结果不明的旧 running 按现有故障规则结案并终止剩余意图。旧版本
 从未持久化的后续图片无法凭空恢复。原同步 ZIP、MessagePack final/error
-帧、部分成功清单与辅助二进制响应保持；客户端不强制提供幂等键。
+帧、部分成功清单与辅助二进制响应保持；这些旧协议不强制客户端提供幂等键。
 
-## 可选幂等键
+## 旧入口的可选幂等键
 
-上述成员生成入口接受 `Idempotency-Key`，必须是单个 1–128 字节的可见
+本节描述旧网页、Native、direct 与 OpenAI 入口。它们接受 `Idempotency-Key`，必须是单个 1–128 字节的可见
 ASCII 字符串，不含空格；重复头或非法值拒绝。没有该头时保留现有行为，
 不按 IP、提示词或时间窗口猜测重复请求。第三方客户端无需修改。
+
+Cookie 成员新端点必须提供幂等键与 confirmation，并保存完整 `MemberNormalizationContext` 和原 confirmation；其约束见[成员生成契约](../contracts/member-generation-contract.md)，不使用本节的可选键和有限 defaults 上下文约定。
 
 持久映射的唯一范围是稳定成员 ID、操作（generate / encode-vibe / upscale）
 与操作键摘要。相同范围同意图复用已有任务，活动任务继续等待，已完成任务
