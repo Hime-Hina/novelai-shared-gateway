@@ -1,5 +1,11 @@
 {
   "runtimeCommit": "3eae814ef221d74e7bcd57ea1fbdae0e1d75948d",
+  "postValidationWhitespaceChange": {
+    "commit": "ce3043a",
+    "file": "server/generation-payload.ts",
+    "change": "Removed one extra blank line at EOF only; no runtime behavior change.",
+    "evidenceBoundary": "Built validation package and performance image remain pinned to 3eae814. This whitespace-only change did not trigger a new business test run or package rebuild."
+  },
   "branch": "codex/event-sourcing-member-generation",
   "scope": "R01-R11 and R13/R14 functional/package gates passed; final complete R12 1k/100k/replay/annual is running",
   "environment": {
