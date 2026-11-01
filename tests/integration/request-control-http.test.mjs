@@ -10,33 +10,37 @@ import { fileURLToPath } from 'node:url';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { JsonStore } from '../../server/store.ts';
 import { syncFairQuota } from '../../server/fair-quota.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 async function listen(server) { server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port; }
 
 test('请求 API 的 Bearer/Cookie 同归属查询、CSRF 取消、签名领取与受理请求 ID', { timeout: 20000 }, async t => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-request-api-'));
+  let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-request-api-'));
   const adminToken = 'synthetic-admin-for-request-api-test';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: 'pst-synthetic-offline-request-api-only', DATA_DIR: dataDir }, log() {} });
   const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  dataDir = await createLegacyDatabaseFixture(dataDir);
   const newKey = 'STA1N-synthetic-replacement-key';
   const store = new JsonStore(dataDir);
   await store.init();
-  await store.update(db => {
-    Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString(),
-      cooldownUntil: new Date(Date.now() + 900000).toISOString() });
-    syncFairQuota(db);
-    db.users.find(user => user.id === credentials[0].user_id).token = newKey;
-    db.images.push({ id: 'owned-image', token: credentials[0].api_key, mimeType: 'image/png', base64: png.toString('base64') },
-      { id: 'foreign-image', token: credentials[1].api_key, mimeType: 'image/png', base64: png.toString('base64') });
-    db.jobs = ['done', 'queued', 'pending'].map((status, sampleIndex) => ({ id: `old-child-${sampleIndex}`, requestId: 'owned-parent', sampleIndex,
-      source: 'novelai-native', userToken: credentials[0].api_key, status, request: { model: 'nai-diffusion-4-5-full' },
-      imageId: sampleIndex === 0 ? 'owned-image' : 'foreign-image', createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() }));
-    db.jobs.push({ id: 'inline', userToken: newKey, status: 'done', createdAt: new Date().toISOString() });
-  }, { immediate: true, generationRequest: { id: 'owned-parent', member_id: credentials[0].user_id, source: 'novelai-native', operation: 'generate',
-    created_at: new Date().toISOString(), payload_bytes: 100, payload: 'not-json-must-not-be-loaded-by-query' } });
+  const legacyPayload = 'not-json-must-not-be-loaded-by-query';
+  const db = await store.read();
+  const observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+    quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+  Object.assign(db.accounts[0], observation, { cooldownUntil: new Date(Date.now() + 900000).toISOString() });
+  syncFairQuota(db);
+  db.users.find(user => user.id === credentials[0].user_id).token = newKey;
+  db.images.push({ id: 'owned-image', token: credentials[0].api_key, mimeType: 'image/png', base64: png.toString('base64') },
+    { id: 'foreign-image', token: credentials[1].api_key, mimeType: 'image/png', base64: png.toString('base64') });
+  db.jobs = ['done', 'queued', 'pending'].map((status, sampleIndex) => ({ id: `old-child-${sampleIndex}`, requestId: 'owned-parent', sampleIndex,
+    source: 'novelai-native', userToken: credentials[0].api_key, status, request: { model: 'nai-diffusion-4-5-full' },
+    imageId: sampleIndex === 0 ? 'owned-image' : 'foreign-image', createdAt: new Date().toISOString(), queueExpiresAt: new Date(Date.now() + 600000).toISOString() }));
+  db.jobs.push({ id: 'inline', userToken: newKey, status: 'done', createdAt: new Date().toISOString() });
+  store.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
+    .run('owned-parent', credentials[0].user_id, 'novelai-native', 'generate', new Date().toISOString(), 100, legacyPayload);
+  await store.write(db);
   await store.close();
   let generationCalls = 0;
   const upstream = http.createServer((req, res) => {

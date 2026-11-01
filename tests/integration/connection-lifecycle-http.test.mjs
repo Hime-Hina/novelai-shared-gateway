@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,7 @@ import { syncFairQuota } from '../../server/fair-quota.ts';
 import { nativeImagesMsgpack } from '../../server/native-stream.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
 import { webJobRequestSummary } from '../../server/generation-request.ts';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
@@ -33,18 +35,19 @@ const openAiBody = (label, stream = false) => ({ model: 'nai-diffusion-4-5-full:
   messages: [{ role: 'user', content: `提示词: ${label}\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:` }] });
 
 test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inline 队列在强杀后继续，缓存响应不变', { timeout: 150000 }, async t => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-connection-http-'));
+  let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-connection-http-'));
   const adminToken = 'synthetic-admin-for-connection-lifecycle';
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: 'pst-synthetic-offline-connection-only', DATA_DIR: dataDir }, log() {} });
   const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  dataDir = await createLegacyDatabaseFixture(dataDir);
   const store = new JsonStore(dataDir);
   await store.init();
-  await store.update(db => {
-    Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString(),
-      cooldownUntil: new Date(Date.now() + 30000).toISOString() });
-    syncFairQuota(db);
-  }, { immediate: true });
+  const db = await store.read();
+  const observation = { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+    quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: new Date().toISOString() };
+  Object.assign(db.accounts[0], observation, { cooldownUntil: new Date(Date.now() + 30000).toISOString() });
+  syncFairQuota(db);
+  await store.write(db);
   await store.close();
   const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
   t.after(() => audit.close());
@@ -173,18 +176,22 @@ test('direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inlin
       prompt: `legacy ${source}`, tag: `legacy ${source}`, sampler: 'k_euler_ancestral' };
     const id = `legacy-${source}`, inputRef = `legacy-input:${id}`, createdAt = new Date().toISOString();
     const payload = JSON.stringify({ legacyInline: true, request });
+    // The stopped synthetic fixture imports an old protected input before its opening fact; this is not runtime admission.
+    legacy.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
+      .run(inputRef, credentials[3].user_id, source, 'generate', createdAt, Buffer.byteLength(payload), payload);
     await legacy.update(db => {
       db.accounts[0].cooldownUntil = '';
+      recordDomainEvent(db, { eventType: 'CooldownChanged', streamId: `account:${db.accounts[0].id}`, payload: { cooldownUntil: '' } });
       const job = { id, source, userToken: credentials[3].api_key, status: 'queued', request,
         queueSeq: legacy.nextQueueSequence(), queueExpiresAt: new Date(Date.now() + 600000).toISOString(), createdAt };
       db.jobs.push(job);
       const { userToken, ...facts } = job;
       recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${id}`, payload: { state: {
-        request: { requestId: null, memberId: credentials[3].user_id, source, inputRef, legacy: true },
+        request: { requestId: null, memberId: credentials[3].user_id, source, inputRef,
+          inputSha256: createHash('sha256').update(payload).digest('hex'), legacy: true },
         jobs: { [id]: { ...facts, memberId: credentials[3].user_id, request: webJobRequestSummary(request), legacyInputRef: inputRef, legacyInlineInput: true } },
         artifacts: {}, aliases: [], freeUsage: {} } } });
-    }, { immediate: true, generationRequest: { id: inputRef, member_id: credentials[3].user_id, source, operation: 'generate',
-      created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload }, dirtyRows: { jobs: [id], accounts: [legacy.db.accounts[0].id] } });
+    }, { immediate: true, dirtyRows: { jobs: [id], accounts: [legacy.db.accounts[0].id] } });
   }
   await legacy.close();
   await start();

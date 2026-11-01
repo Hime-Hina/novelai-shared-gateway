@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, readFile, rename } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
@@ -15,7 +15,10 @@ import { generationRequestFingerprint } from '../../server/request-fingerprint.t
 import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.ts';
 import { crc32, parseNativeImageRequest } from '../../server/native-image.ts';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
+import { webJobRequestSummary } from '../../server/generation-request.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
+import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 // 合成图片和新建临时数据库；测试不会读取 .env、生产数据或请求真实 NAI。
@@ -68,7 +71,7 @@ async function* streamEvents(response) {
 }
 
 test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 240000 }, async t => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
+  let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
   const adminToken = randomBytes(32).toString('hex');
   const upstreamToken = 'pst-synthetic-offline-fixture-only';
   const privateMarker = 'synthetic-private-generation-diagnostic';
@@ -78,24 +81,29 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   const legacyRequest = parseNativeImageRequest(body());
   const initialized = await bootstrap({ env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir }, log() {} });
   const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  dataDir = await createLegacyDatabaseFixture(dataDir);
   const seeded = new JsonStore(dataDir);
   await seeded.init();
   try {
-    await seeded.update(db => {
-      Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
-        quotaPoints: 10000, quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100,
-        v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
-      syncFairQuota(db);
-      db.images.push({ id: 'img-access-owner', token: credentials[0].api_key, mimeType: 'image/png', base64: png.toString('base64') });
-      db.jobs.push({ id: 'job-access-owner', userToken: credentials[0].api_key, status: 'done', imageId: 'img-access-owner', createdAt: new Date().toISOString() });
-      db.jobs.push({ id: 'job-legacy-private-error', source: 'novelai-native', userToken: credentials[0].api_key,
-        accountId: db.accounts[0].id, status: 'failed', request: legacyRequest,
-        error: legacyError, errorStatus: 500, errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
-        createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() });
-    }, { collections: ['accounts', 'settings', 'images', 'jobs'], includeSettings: true, immediate: true,
-      generationIdempotency: { member_id: credentials[0].user_id, operation: 'generate', key_hash: hashObject(legacyKey),
+    const db = await seeded.read();
+    Object.assign(db.accounts[0], { quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000,
+      quotaPoints: 10000, quotaFixed: 10000, quotaPurchased: 0, v5UsagePercent: 100,
+      v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0, quotaCheckedAt: new Date().toISOString(), upstreamStatus: 'active' });
+    syncFairQuota(db);
+    // The file is the sole copy: renaming it below must exercise a real read failure, without an imported inline fallback.
+    await mkdir(path.join(dataDir, 'images'), { recursive: true });
+    await writeFile(path.join(dataDir, 'images', 'img-access-owner.png'), png);
+    db.images.push({ id: 'img-access-owner', token: credentials[0].api_key, mimeType: 'image/png',
+      file: 'images/img-access-owner.png', byteLength: png.length, sha256: createHash('sha256').update(png).digest('hex') });
+    db.jobs.push({ id: 'job-access-owner', userToken: credentials[0].api_key, status: 'done', imageId: 'img-access-owner', createdAt: new Date().toISOString() });
+    db.jobs.push({ id: 'job-legacy-private-error', source: 'novelai-native', userToken: credentials[0].api_key,
+      accountId: db.accounts[0].id, status: 'failed', request: legacyRequest,
+      error: legacyError, errorStatus: 500, errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() });
+    await seeded.write(db);
+    seeded.persistGenerationIdempotency({ member_id: credentials[0].user_id, operation: 'generate', key_hash: hashObject(legacyKey),
         fingerprint: generationRequestFingerprint(legacyRequest, { noCache: true }), normalization_context: '{}',
-        job_id: 'job-legacy-private-error', request_id: null, created_at: new Date().toISOString() } });
+        job_id: 'job-legacy-private-error', request_id: null, created_at: new Date().toISOString() });
   } finally { await seeded.close(); }
 
   const calls = [];
@@ -773,20 +781,34 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 28, seed: 901,
       sampler: 'k_euler_ancestral', scale: 6, cfg: 0, noiseSchedule: 'karras' };
     const payload = JSON.stringify(request), createdAt = new Date().toISOString();
-    let parent;
+    const legacyInputRef = 'legacy-input:job-restart-legacy', legacyPayload = JSON.stringify({ legacyInline: true, request: { ...request, seed: 902 } });
+    const parent = { id: 'request-restart', member_id: credentials[0].user_id, source: 'web', operation: 'generate',
+      created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload };
+    // The stopped synthetic fixture imports old protected inputs before their opening facts; this is not runtime admission.
+    const insertInput = persisted.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)');
+    insertInput.run(legacyInputRef, credentials[0].user_id, 'web', 'generate', createdAt, Buffer.byteLength(legacyPayload), legacyPayload);
+    insertInput.run(parent.id, parent.member_id, parent.source, parent.operation, parent.created_at, parent.payload_bytes, parent.payload);
     await persisted.update(db => {
       const user = db.users.find(user => user.token === credentials[0].api_key);
-      parent = { id: 'request-restart', member_id: user.id, source: 'web', operation: 'generate',
-        created_at: createdAt, payload_bytes: Buffer.byteLength(payload), payload };
       db.accounts[0].cooldownUntil = '';
+      recordDomainEvent(db, { eventType: 'CooldownChanged', streamId: `account:${db.accounts[0].id}`,
+        payload: { accountId: db.accounts[0].id, cooldownUntil: '' } });
       const common = { source: 'web', status: 'queued', userToken: user.token, createdAt, updatedAt: createdAt,
         jobAdmissionVersion: user.jobAdmissionVersion || 0, cost: 0, imageId: '',
         queueExpiresAt: new Date(Date.now() + 60000).toISOString() };
       db.jobs.unshift({ ...common, id: 'job-restart-cold', requestId: parent.id, queueSeq: persisted.nextQueueSequence(),
         request: { model: request.model, width: 1024, height: 1024, steps: 28, seed: 901 } });
       db.jobs.unshift({ ...common, id: 'job-restart-legacy', queueSeq: persisted.nextQueueSequence(), request: { ...request, seed: 902 } });
-    }, { immediate: true, generationRequest: () => parent,
-      dirtyRows: { accounts: [snapshot.accounts[0].id], jobs: ['job-restart-cold', 'job-restart-legacy'] } });
+      for (const id of ['job-restart-cold', 'job-restart-legacy']) {
+        const { userToken, ...job } = db.jobs.find(job => job.id === id);
+        const inputRef = job.requestId || legacyInputRef;
+        recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:${job.requestId || `legacy-${job.id}`}`, payload: { state: {
+          request: { requestId: job.requestId || null, memberId: user.id, source: 'web', operation: 'generate', createdAt, inputRef,
+            inputSha256: createHash('sha256').update(job.requestId ? payload : legacyPayload).digest('hex'), legacy: true },
+          jobs: { [job.id]: { ...job, memberId: user.id, request: webJobRequestSummary(job.request),
+            ...(!job.requestId ? { legacyInputRef: inputRef, legacyInlineInput: true } : {}) } }, artifacts: {}, aliases: [], freeUsage: {} } } });
+      }
+    }, { immediate: true, dirtyRows: { accounts: [snapshot.accounts[0].id], jobs: ['job-restart-cold', 'job-restart-legacy'] } });
     // 故意令历史顺序与排队顺序相反；重启后的真实派发仍须使用持久 queueSeq。
     persisted.sqlite.exec("UPDATE jobs SET order_value = 1000 WHERE id = 'job-restart-cold'; UPDATE jobs SET order_value = -1000 WHERE id = 'job-restart-legacy';");
   } finally { await persisted.close(); }
