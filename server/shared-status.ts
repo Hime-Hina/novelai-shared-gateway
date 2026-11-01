@@ -1,4 +1,5 @@
 import { sharedAccountConcurrency } from './shared-capacity.ts';
+import { hasActiveOpusSubscription, isQuotaSnapshotFresh, quotaTimestamp as timestamp } from './quota-policy.ts';
 
 export interface SharedStatus {
   status: string; subscriptionActive: boolean | null; expiresAt: string | null; officialCheckedAt: string | null;
@@ -41,15 +42,8 @@ interface StatusDatabase {
 }
 
 // 共享状态仅返回白名单汇总；不改变账本、不调用上游，也不返回个人账户资料。
-const STALE_MS = 10 * 60 * 1000;
 const rows = <T>(value: Rows<T>): T[] => Array.isArray(value) ? value : Object.values(value || {});
 const number = (value: unknown): number | null => value === null || value === undefined || value === '' || typeof value === 'boolean' ? null : Number.isFinite(Number(value)) ? Number(value) : null;
-function timestamp(value: unknown): number | null {
-  if(value === null || value === undefined || value === '') return null;
-  const numeric=number(value);
-  const result=numeric===null?Date.parse(`${value}`):numeric<1e11?numeric*1000:numeric;
-  return Number.isFinite(result)&&result>=0&&result<=8640000000000000?result:null;
-}
 const iso = (value: number | null): string | null => value===null?null:new Date(value).toISOString();
 const bool = (value: unknown): boolean | null => typeof value==='boolean'?value:null;
 const cooldownReasons = new Set(['success_gap', 'ordinary_failure', 'capacity_limit', 'upstream_retry_after', 'completion_gap']);
@@ -70,9 +64,9 @@ export function sharedAccountStatus(db: StatusDatabase | null | undefined, now =
   const account=rows(db?.accounts).find(a=>a.id===state.boundAccountId);
   if(!account) return {...base,status:'inactive_opus'};
   const checked=timestamp(account.quotaCheckedAt),expires=timestamp(account.subscriptionExpiresAt),cooldown=timestamp(account.cooldownUntil);
-  const stale=checked===null || checked>now+60000 || now-checked>STALE_MS;
+  const stale=!isQuotaSnapshotFresh(account.quotaCheckedAt,now);
   const quotaSyncError=Boolean(account.quotaError);
-  const validSubscription=account.enabled===true&&account.subscriptionActive===true&&number(account.quotaTier)===3&&(!account.subscriptionExpiresAt || (expires!==null&&expires>now));
+  const validSubscription=hasActiveOpusSubscription(account,now);
   const v5=number(account.v5UsagePercent),fixed=number(account.quotaFixed),purchased=number(account.quotaPurchased);
   const cooling=cooldown!==null&&cooldown>now;
   const status=!validSubscription?'inactive_opus':quotaSyncError?'quota_sync_error':stale?'stale':cooling?'cooldown':v5===null||fixed===null||purchased===null?'unknown_balance':'active';

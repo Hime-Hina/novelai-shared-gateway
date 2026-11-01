@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
-import { configureFairGroups, fairQuotaSummary, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
+import { configureFairGroups, fairQuotaSummary, estimateFairQuota, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
 import { configureFreeImages, freeImagePolicy } from './free-image-policy.ts';
 import { sharedAccountStatus } from './shared-status.ts';
 import { discordLoginEnabled, discordConfig, createDiscordInvite, beginDiscordLogin, finishDiscordLogin, requireDiscordMembership, type DiscordUser, type DiscordDependencies } from './discord-auth.ts';
@@ -171,8 +171,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         reply(res, 200, await store.readFailureAccounting(url.searchParams.get('before'))); return true;
       }
       const payload = await store.update(db => {
-        const draft = { ...db, ledger: [...(db.ledger || [])], settings: structuredClone(db.settings || {}) };
-        syncFairQuota(draft);
+        const draft = estimateFairQuota(db, Date.now());
         return { groups: draft.settings.fairQuota?.groups || [], status: draft.settings.fairQuota?.status,
           shared: sharedAccountStatus(draft),autoAnlasFallback: draft.settings.fairQuota?.autoAnlasFallback === true,
           configVersion: draft.settings.fairQuota?.configVersion ?? 1, freeImagePolicy: freeImagePolicy(draft),
@@ -417,7 +416,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
   }
   if (url.pathname === '/api/member/me') {
     const payload: MemberMePayload = await store.update(db => {
-      const draft = { ...db, ledger: [...(db.ledger || [])], settings: structuredClone(db.settings || {}) };
+      const draft = estimateFairQuota(db, Date.now());
       return { username: user.memberAuth!.username, owner: isOwner(user, env), sessionExpiresAt: session!.expiresAt,
         acceptingJobs: user.acceptingJobs !== false, quota: quotaView(draft, user),
         jobs: db.jobs.filter(j => j.userToken === user.token).slice(0, 30).map(j => ({ id: j.id, requestId: j.requestId || null, createdAt: j.createdAt,

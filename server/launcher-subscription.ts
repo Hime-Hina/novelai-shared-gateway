@@ -1,4 +1,5 @@
-import { fairQuotaSummary, type FairQuotaDatabase, type FairAccount } from './fair-quota.ts';
+import { estimateFairQuota, fairQuotaSummary, type FairQuotaDatabase, type FairAccount } from './fair-quota.ts';
+import { hasActiveOpusSubscription, quotaTimestamp } from './quota-policy.ts';
 
 interface SubscriptionAccount extends Pick<FairAccount, 'id' | 'subscriptionActive' | 'subscriptionExpiresAt' | 'quotaTier'> {
   enabled?: boolean;
@@ -13,22 +14,18 @@ interface SubscriptionDatabase {
 const rows=(value: SubscriptionDatabase['accounts']): SubscriptionAccount[]=>Array.isArray(value)?value:Object.values(value || {});
 const nonnegative=(value: unknown): number=>typeof value==='number'&&Number.isFinite(value)?Math.max(0,value):0;
 const wholeBalance=(value: unknown): number=>Math.floor(nonnegative(value)+1e-9);
-function expiration(value: SubscriptionAccount['subscriptionExpiresAt']): number {
-  if(value===null||value===undefined||value===''||typeof value==='boolean')return 0;
-  const numeric=Number(value),milliseconds=Number.isFinite(numeric)?numeric<1e11?numeric*1000:numeric:Date.parse(String(value));
-  return Number.isFinite(milliseconds)&&milliseconds>0?Math.floor(milliseconds/1000):0;
-}
 
 // 兼容启动器的官方字段名，内容仅表示调用者本地配额，不是共享上游的总余额。
 // 在副本中估算恢复，查询不改变真实余额、审计或配置，也不返回任何上游标识。
 export function launcherSubscription(db: SubscriptionDatabase,user: { id: string; enabled?: boolean } | null | undefined,now=Date.now()){
   if(!user||user.enabled===false)throw Object.assign(new Error('成员未启用'),{statusCode:403});
-  const draft={...db,ledger:[...(db.ledger || [])],settings:structuredClone(db.settings || {})};
+  const draft=estimateFairQuota({...db,settings:db.settings || {}},now);
   const quota=fairQuotaSummary(draft,user,now);
   if(!quota?.member)throw Object.assign(new Error('该用户未加入共享分组账本'),{statusCode:403});
   const account=rows(db.accounts).find(a=>a.id===quota.boundAccountId);
-  const expires=expiration(account?.subscriptionExpiresAt);
-  const active=quota.status==='active'&&account?.enabled===true&&account?.subscriptionActive===true&&Number(account?.quotaTier)===3&&expires>Math.floor(now/1000);
+  const expires=Math.floor((quotaTimestamp(account?.subscriptionExpiresAt) || 0)/1000);
+  // 官方兼容 DTO 必须携带可用的 expiresAt；缺失到期观测时不伪造订阅期限。
+  const active=quota.status==='active'&&hasActiveOpusSubscription(account,now)&&expires>Math.floor(now/1000);
   const percent=nonnegative(quota.v5Available);
   const recovery=active&&quota.v5RefillLimited!==true&&quota.v5RefillPerDay>0?Math.ceil(86400/quota.v5RefillPerDay):0;
   return {

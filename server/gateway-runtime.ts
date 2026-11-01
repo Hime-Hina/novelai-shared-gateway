@@ -17,7 +17,7 @@ import { reconcileMemberSessionOwner } from './member-auth.ts';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.ts';
 import { requireDiscordMembership } from './discord-auth.ts';
 import { ownerOperation } from './owner-operations.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, fairQuotaSummary, quoteFairRequest } from './fair-quota.ts';
+import { configureFairQuota, syncFairQuota, estimateFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, fairQuotaSummary, quoteFairRequest } from './fair-quota.ts';
 import { assertFreeImageAdmission } from './free-image-policy.ts';
 import { closeGenerationReview, recordRecoveredGeneration } from './generation-accounting.ts';
 import { validateImageBytes } from './native-image.ts';
@@ -470,8 +470,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
   if (method === 'GET' && url.pathname === '/api/me/quota') {
     const quota = await store.update(db => {
       const user = getUserOrThrow(db, tokenFrom(req, url));
-      const draft = { ...db, settings: structuredClone(db.settings), ledger: [...db.ledger] };
-      const quota = fairQuotaSummary(draft, user);
+      const now = Date.now(), draft = estimateFairQuota(db, now);
+      const quota = fairQuotaSummary(draft, user, now);
       return quota && { ...quota, freeImages: store.readFreeImageUsage(draft, user.id) };
     }, { persist: false });
     sendJson(res, 200, { fairQuota: quota });
