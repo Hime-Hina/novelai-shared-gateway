@@ -30,7 +30,7 @@ let crc=0xffffffff;
 for(const b of png){crc^=b;for(let bit=0;bit<8;bit++){const odd=crc%2;crc=Math.floor((crc>>>0)/2);if(odd)crc^=0xedb88320;}}
 assert.equal(zip.readUInt32LE(14),(crc^0xffffffff)>>>0);
 let submitted, queueSequence=0;
-const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[],
+const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[],ledger:[],
   accounts:[{id:'opus',enabled:true,subscriptionActive:true,quotaTier:3,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,quotaCheckedAt:Date.now()}]};
 configureFairQuota(db,[user.id,'member-b','member-c','member-d']);syncFairQuota(db);
 const claim={resize(bytes){assert.ok(Number.isSafeInteger(bytes)&&bytes>0);},release(){}};
@@ -43,7 +43,7 @@ const store={
     if(!options.generationRequest)return batch;
     const parent=options.generationRequest();
     assert.equal(options.immediate,true);assert.equal(options.generationPayloadClaim,claim);
-    assert.deepEqual(options.dirtyRows(batch).jobs,batch.jobIds);
+    assert.deepEqual(options.dirtyRows(batch,db).jobs,batch.jobIds);
     submitted={request:JSON.parse(parent.payload),parent,jobs:batch.jobIds.map(id=>db.jobs.find(job=>job.id===id))};
     assert.equal(parent.payload_bytes,Buffer.byteLength(parent.payload));
     return batch;

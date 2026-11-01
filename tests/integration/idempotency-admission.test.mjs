@@ -59,6 +59,82 @@ async function fixture(t) {
 }
 const body = () => ({ prompt: 'synthetic prompt', model: 'nai-diffusion-4-5-full', steps: 23, width: 1024, height: 1024, nocache: true });
 
+async function atomicFixture(t) {
+  const initialTime = 1800000000000;
+  const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-atomic-admission-')));
+  await store.init(); t.after(() => store.close());
+  const db = await store.read();
+  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true, balance: 0 }));
+  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 1000,
+    quotaPurchased: 0, v5UsagePercent: 80, v5UsageTimeUntilNextPercent: 600, quotaCheckedAt: initialTime }];
+  fair.configureFairQuota(db, ['a', 'b', 'c', 'd']); fair.syncFairQuota(db, initialTime);
+  await store.write(db); await store.enableEventAuthority();
+  let now = initialTime + 60000, cleanup = async () => {};
+  const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), { request: 1048576, active: 1048576 });
+  const accept = createGenerationAdmission({ store, payloadBudget: budget, now: () => now,
+    artifactAvailable: async () => true, cleanupStaleActiveJobs: () => cleanup() });
+  const submit = (key = 'atomic', normalize = settings => normalizeNovelAiRequest({ ...body(), seed: 1 }, settings, { maxSteps: DIRECT_URL_MAX_STEPS })) =>
+    accept({ identity: { memberId: 'a' }, intent: generationIntent(key, normalize, { noCache: true }), source: 'web', noCache: true });
+  return { store, budget, submit, setCleanup: value => { cleanup = value; }, advance: value => { now += value; } };
+}
+
+test('额度恢复与受理同一提交，输入/最终SQL失败不留下独立恢复，重放不再推进时钟', async t => {
+  const { store, budget, submit, advance } = await atomicFixture(t);
+  const snapshot = () => ({ quota: structuredClone(store.db.settings.fairQuota),
+    events: store.sqlite.prepare('SELECT * FROM domain_events ORDER BY commit_seq,event_index').all(),
+    commits: store.sqlite.prepare('SELECT * FROM event_commits ORDER BY commit_seq').all() });
+  const before = snapshot();
+  assert.equal(before.quota.balances.a.v5Available, '20');
+  await assert.rejects(submit('invalid', () => parseNativeImageRequest({ input: 'synthetic', model: 'unsupported-model', parameters: {} })), error => error.statusCode === 422);
+  assert.deepEqual(snapshot(), before);
+  store.sqlite.exec("CREATE TEMP TRIGGER reject_admission BEFORE INSERT ON generation_requests BEGIN SELECT RAISE(ABORT,'synthetic final admission failure'); END");
+  await assert.rejects(submit(), /synthetic final admission failure/);
+  assert.deepEqual(snapshot(), before);
+  assert.equal(store.countRecords('jobs'), 0);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_requests').get().n, 0);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_idempotency').get().n, 0);
+  const released = budget.claim(); released.resize(1048576); released.release();
+  store.sqlite.exec('DROP TRIGGER reject_admission');
+  const accepted = await submit(), after = snapshot();
+  assert.equal(after.quota.balances.a.v5Available, '20.025', 'one minute restores 0.1 percent split equally between four members');
+  assert.equal(after.commits.length, before.commits.length + 1);
+  const events = after.events.slice(before.events.length);
+  assert.equal(new Set(events.map(event => event.commit_seq)).size, 1);
+  assert.ok(events.some(event => event.event_type === 'RefillApplied'));
+  assert.ok(events.some(event => event.event_type === 'RequestAccepted'));
+  advance(60000);
+  assert.equal((await submit()).id, accepted.id);
+  assert.deepEqual(snapshot(), after);
+  const originalRequest = store.readGenerationRequest(accepted.requestId);
+  await store.update(db => {
+    db.accounts[0].enabled = false; db.accounts[0].updatedAt = new Date(1800000120000).toISOString();
+    db.settings.defaultArtist = 'different defaults after acceptance';
+    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: 'account:opus', accountId: 'opus',
+      payload: { accountId: 'opus', enabled: false, updatedAt: db.accounts[0].updatedAt, reason: 'administrator' } });
+  }, { collections: ['accounts', 'settings'], immediate: true });
+  const disabled = snapshot(), replay = await submit();
+  assert.equal(replay.id, accepted.id); assert.equal(replay.replayed, true);
+  assert.deepEqual(store.readGenerationRequest(accepted.requestId), originalRequest);
+  assert.deepEqual(snapshot(), disabled);
+});
+
+test('预检查与最终受理之间账号被停用时重新核验资格，不创建半份请求', async t => {
+  const { store, budget, submit, setCleanup } = await atomicFixture(t);
+  setCleanup(() => store.update(db => {
+    const account = db.accounts[0], at = new Date(1800000060000).toISOString();
+    account.enabled = false; account.updatedAt = at;
+    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: 'account:opus', accountId: 'opus', occurredAt: at,
+      payload: { accountId: 'opus', enabled: false, updatedAt: at, reason: 'administrator' } });
+  }, { collections: ['accounts'], immediate: true }));
+  await assert.rejects(submit(), error => error.statusCode === 503 && /inactive_opus/.test(error.message));
+  assert.equal(store.db.accounts[0].enabled, false);
+  assert.equal(store.countRecords('jobs'), 0);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_requests').get().n, 0);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM domain_events WHERE event_type='RequestAccepted'").get().n, 0);
+  assert.equal(store.db.settings.fairQuota.balances.a.v5Available, '20');
+  const released = budget.claim(); released.resize(1048576); released.release();
+});
+
 test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回不占名额', async t => {
   const { store, ctx, budget, admit } = await fixture(t);
   await store.update(db => {

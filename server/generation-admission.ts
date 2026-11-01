@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import { createId, hashObject, generationContextRef, type JsonStore, type StoreDatabase, type StoreItem, type StoredGenerationRequest } from './store.ts';
-import { syncFairQuota, quoteFairRequest } from './fair-quota.ts';
+import { estimateFairQuota, syncFairQuota, quoteFairRequest, type FairQuotaState } from './fair-quota.ts';
 import { assertFreeImageAdmission } from './free-image-policy.ts';
 import { assertMemberAcceptsJobs, assertQueueAdmission, queueDeadline } from './queue-policy.ts';
 import { createGenerationPayloadBudget, singleGenerationRequest, webJobRequestSummary } from './generation-request.ts';
@@ -87,6 +87,13 @@ function memberFor(db: StoreDatabase, identity: AdmissionOptions['identity']): S
   return member;
 }
 
+function sharingReadiness(state: FairQuotaState | null | undefined, memberId: string) {
+  if (!state?.enabled) return { status: 503, message: '共享账本尚未配置' };
+  if (!state.members.includes(memberId)) return { status: 403, message: '该 Key 未加入共享账本' };
+  if (state.status !== 'active') return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
+  return null;
+}
+
 // All protocols share this command boundary. Protocol normalization stays outside;
 // first context, idempotency, queue capacity and durable children are chosen together.
 export function createGenerationAdmission(deps: AdmissionDependencies) {
@@ -138,14 +145,12 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
       const readiness = await store.update(db => {
         const user = memberFor(db, options.identity), resolved = resolve(db, user, intent, true);
         if (resolved?.replay) return { replay: resolved.replay };
-        const state = syncFairQuota(db, now());
-        if (!state?.enabled) return { status: 503, message: '共享账本尚未配置' };
-        if (!state.members.includes(user.id)) return { status: 403, message: '该 Key 未加入共享账本' };
-        if (state.status !== 'active') return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
-        return null;
-      }, { collections: ['settings', 'ledger'], shouldPersist: result => !result?.replay });
-      if (readiness?.replay) return await validateReplay(readiness.replay);
-      if (readiness) fail(readiness.status!, readiness.message!);
+        return sharingReadiness(estimateFairQuota(db, now()).settings.fairQuota, user.id);
+      }, { persist: false });
+      if (readiness) {
+        if ('replay' in readiness) return await validateReplay(readiness.replay);
+        fail(readiness.status, readiness.message);
+      }
       await deps.cleanupStaleActiveJobs('generation admission');
       const result = await store.update(async db => {
         const user = memberFor(db, options.identity), resolved = resolve(db, user, intent);
@@ -153,6 +158,9 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         const timestamp = now(), createdAt = new Date(timestamp).toISOString();
         const request = resolved?.request || options.normalize?.(db.settings) || options.request;
         if (!request) fail(400, '生成请求缺失');
+        // Recheck after queued cleanup; refill and acceptance share one durable outcome.
+        const currentReadiness = sharingReadiness(syncFairQuota(db, timestamp), user.id);
+        if (currentReadiness) fail(currentReadiness.status, currentReadiness.message);
         mapping = resolved?.mapping;
         intent?.validate?.(db, user, request, timestamp);
         const count = options.batch ? request.sampleCount || 1 : 1;
@@ -229,7 +237,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         }
         return receipt;
       }, { immediate: true, includeSettings: true, generationRequest: () => parent, generationIdempotency: () => mapping,
-        generationPayloadClaim: claim, dirtyRows: result => ({ jobs: result.jobIds }) });
+        generationPayloadClaim: claim, dirtyRows: (result, db) => ({ jobs: result.jobIds, ledger: db.ledger.map(entry => entry.id) }) });
       return await validateReplay(result);
     } finally { claim.release(); }
   };
