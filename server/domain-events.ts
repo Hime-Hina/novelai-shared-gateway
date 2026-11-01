@@ -37,6 +37,7 @@ export interface DomainEvent {
 export interface DomainCommit { commitSeq: string; commandId: string; fingerprint: string; recordedAt: string; receipt: Json; events: DomainEvent[] }
 
 const commands = new WeakMap<object, DomainCommand>();
+const closedCommands = new WeakSet<DomainCommand>();
 const knownTypes = new Set<string>(domainEventTypes);
 const forbiddenKeys = /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc)$/i;
 
@@ -77,11 +78,12 @@ export function assertDomainEvent(input: DomainEventInput | DomainEvent): void {
 
 export function beginDomainCommand(db: object, metadata: DomainCommandMetadata = {}): DomainCommand {
   if (commands.has(db)) throw new Error('A domain command is already active for this state.');
+  assertPublicDomainFact(metadata.receipt ?? null,'receipt');
   const command: DomainCommand = {
     commandId: metadata.commandId || randomUUID(), fingerprint: metadata.fingerprint,
     recordedAt: metadata.recordedAt || new Date().toISOString(), actorId: metadata.actorId || null,
     correlationId: metadata.correlationId || null, causationId: metadata.causationId || null,
-    expectedVersions: { ...metadata.expectedVersions }, receipt: metadata.receipt ?? null, events: []
+    expectedVersions: { ...metadata.expectedVersions }, receipt: structuredClone(metadata.receipt ?? null), events: []
   };
   commands.set(db, command);
   return command;
@@ -90,11 +92,13 @@ export function beginDomainCommand(db: object, metadata: DomainCommandMetadata =
 // 领域函数可在验证副本上决定结果；显式继承同一命令后才收集副本产生的事实。
 export function inheritDomainCommand(source: object, draft: object): void {
   const command = commands.get(source);
+  if(command && closedCommands.has(command))throw new Error('Domain command is closed.');
   if (command) commands.set(draft, command);
 }
 export function recordDomainEvent(db: object, input: DomainEventInput): string | null {
   const command = commands.get(db);
   if (!command) return null;
+  if(closedCommands.has(command))throw new Error('Domain command is closed.');
   assertDomainEvent(input);
   const event = structuredClone({ ...input, eventId: input.eventId || randomUUID(), occurredAt: input.occurredAt ?? command.recordedAt });
   command.events.push(event);
@@ -103,11 +107,13 @@ export function recordDomainEvent(db: object, input: DomainEventInput): string |
 export function setDomainCommandReceipt(db: object, receipt: Json): void {
   const command = commands.get(db);
   if (!command) throw new Error('No domain command is active.');
+  if(closedCommands.has(command))throw new Error('Domain command is closed.');
   assertPublicDomainFact(receipt, 'receipt');
   command.receipt = structuredClone(receipt);
 }
 export function finishDomainCommand(db: object): DomainCommand | null {
   const command = commands.get(db) || null;
   commands.delete(db);
+  if(command)closedCommands.add(command);
   return command;
 }
