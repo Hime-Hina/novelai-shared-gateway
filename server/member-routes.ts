@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { formatAmount, parseAmount } from './resource-amounts.ts';
+import { inheritDomainCommand, recordDomainEvent } from './domain-events.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './member-auth.ts';
 import { configureFairGroups, fairQuotaSummary, estimateFairQuota, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from './fair-quota.ts';
@@ -56,6 +58,7 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
   changeMemberAdmission(userId: unknown, acceptingJobs: boolean): Promise<unknown>;
   getGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
   cancelGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
+  handleMemberGeneration?(req: IncomingMessage, res: ServerResponse, url: URL, user: { id: string }, revalidate: () => Promise<boolean>): Promise<boolean>;
 }
 type PublishedEvent = Parameters<Parameters<ReturnType<typeof stateEventsFor>['subscribe']>[0]>[0];
 interface MemberMePayload {
@@ -72,8 +75,8 @@ function sameOrigin(req: IncomingMessage): void {
   const origin = req.headers.origin;
   const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
   const expected = `${local ? 'http' : 'https'}://${host}`;
-  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') error(403, '此接口仅允许本站访问');
-  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) error(403, '缺少本站 Origin');
+  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') throw Object.assign(new Error('此接口仅允许本站访问'), { statusCode: 403, code: 'origin_rejected' });
+  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
 }
 function reply(res: ServerResponse, status: number, value: unknown): void {
   const text = JSON.stringify(value);
@@ -203,9 +206,9 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         return manageOperatingFunding(db, body, {
           actorId: env.OWNER_USER_ID!,
           findEvent: id => (db.ledger.find(event => event.id === id) || store.selectItemById('ledger', id)) as ReturnType<OperatingFundingContext['findEvent']>,
-          coveredAmount: id => [...new Map([...store.readOperatingLossSettlements(id),
+          coveredAmount: id => formatAmount([...new Map([...store.readOperatingLossSettlements(id),
             ...db.ledger.filter(event => event.type === 'operating_loss_covered' && event.lossEventId === id)]
-            .map(event => [event.id, event])).values()].reduce((total, event) => total + event.amount!, 0)
+            .map(event => [event.id, event])).values()].reduce((total, event) => total + parseAmount(event.amount!, 'nearest'), 0n))
         });
       }, { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, result); return true;
@@ -226,7 +229,10 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         const state = db.settings.fairQuota;
         if (!state?.enabled) error(409, '共享账本尚未配置');
         state.autoAnlasFallback = body.enabled;
-        state.policyHistory = [...(state.policyHistory || []), { at: Date.now(), actor: 'administrator', autoAnlasFallback: body.enabled as boolean }].slice(-1000);
+        const at = Date.now();
+        state.policyHistory = [...(state.policyHistory || []), { at, actor: 'administrator', autoAnlasFallback: body.enabled as boolean }].slice(-1000);
+        recordDomainEvent(db, { eventType: 'PolicyChanged', streamId: 'sharing:default', occurredAt: at,
+          payload: { policy: 'autoAnlasFallback', value: body.enabled, actorId, actor: 'administrator', at } });
       }, { collections: ['settings'], immediate: true });
       reply(res, 200, { autoAnlasFallback: body.enabled }); return true;
     }
@@ -245,6 +251,8 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         user.enabled=body.enabled as boolean;user.updatedAt=new Date().toISOString();
         // 停用时改变会话版本，之后重新启用也不能复活先前登录的 Cookie。
         if(!body.enabled&&user.memberAuth)user.memberAuth={...user.memberAuth,version:randomBytes(16).toString('hex')};
+        recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+          payload: { memberId: user.id, enabled: user.enabled, at: user.updatedAt, actorId } });
         return {id:user.id,enabled:user.enabled};
       },{collections:['users'],immediate:true});
       reply(res,200,result);return true;
@@ -273,12 +281,15 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       if(hasGroup&&(typeof body.groupId!=='string'||body.userId))error(400,'只有创建新成员时可以指定 groupId');
       const result = await store.update(async db => {
         const draft = { ...db, ledger:[...(db.ledger || [])],users: structuredClone(db.users),settings:structuredClone(db.settings) };
+        inheritDomainCommand(db, draft);
         let userId = body.userId;
         if (!userId) {
           if (draft.users.length >= 200) error(409, '账户数已达上限');
           const user = { id: deps.createId('usr'), token: deps.createPublicToken('STA1N'), balance: 0, enabled: true,
             note: String(body.note || '管理员创建的成员').slice(0, 120), createdAt: new Date().toISOString() };
           userId = user.id; draft.users.push(user);
+          recordDomainEvent(draft, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+            payload: { memberId: user.id, enabled: true, acceptingJobs: true, jobAdmissionVersion: 0, createdAt: user.createdAt, actorId } });
         }
         const result = await setMemberCredentials(draft, userId as string, discordEnabled ? { ...body, password: randomBytes(32).toString('base64url') } : body);
         if(hasGroup){
@@ -324,6 +335,11 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
   if (!user) error(401, '请先登录');
   await requireDiscordMembership(user, deps);
   if (pageVisit && url.pathname === '/api/member/me') session = await renewCookie(req, res, store, env);
+  if (await deps.handleMemberGeneration?.(req, res, url, user, async () => {
+    const current = (await authenticateMemberSession(store, cookie(req), env))?.user;
+    if (!current || current.id !== user.id) return false;
+    await requireDiscordMembership(current, deps); return true;
+  })) return true;
   const requestRoute = url.pathname.match(/^\/api\/member\/requests\/([^/]+)(\/cancel)?$/);
   if (requestRoute && (req.method === 'GET' && !requestRoute[2] || req.method === 'POST' && requestRoute[2])) {
     const requestId = decodeURIComponent(requestRoute[1]);

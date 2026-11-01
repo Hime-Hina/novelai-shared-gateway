@@ -9,6 +9,9 @@ const routes = new Map([
   ['/api/member/owner/summary', ['GET']],
   ['/api/member/owner/statistics', ['GET']],
   ['/api/member/owner/accounts/quota', ['POST']],
+  ['/api/member/generation/capabilities', ['GET']],
+  ['/api/member/generation/quote', ['POST']],
+  ['/api/member/generation/requests', ['POST']],
   ['/api/me/quota', ['GET']],
   ['/v1/models', ['GET']],
   ['/user/subscription', ['GET']],
@@ -44,6 +47,8 @@ export function sharedSurface(pathname: string, method = 'GET'): { allowed: bool
   if (/^\/api\/member\/(me|key|history|heatmap|shared-status|shared-events)$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/(?:member\/)?requests\/[^/]+$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/(?:member\/)?requests\/[^/]+\/cancel$/.test(pathname)) methods = ['POST'];
+  if (/^\/api\/member\/requests\/[^/]+\/(?:events|input|inputs\/[^/]+)$/.test(pathname)) methods = ['GET'];
+  if (/^\/api\/member\/jobs\/[^/]+\/content$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/jobs\/[^/]+(?:\/content)?$/.test(pathname)) methods ||= ['GET'];
   if (/^\/api\/images\/[^/]+\/content$/.test(pathname)) methods = ['GET'];
   if (/^\/api\/admin\/accounts\/[^/]+$/.test(pathname)) methods ||= ['PATCH'];

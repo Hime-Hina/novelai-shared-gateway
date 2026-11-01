@@ -1,3 +1,5 @@
+import { recordDomainEvent } from './domain-events.ts';
+
 interface QueueMember {
   id: string;
   token?: string;
@@ -8,6 +10,8 @@ interface QueueMember {
 
 export interface QueueJob {
   id: string;
+  memberId?: string;
+  requestId?: string;
   userToken?: string;
   status?: string;
   createdAt?: string;
@@ -53,11 +57,11 @@ export function assertMemberAcceptsJobs(user: Pick<QueueMember, 'acceptingJobs' 
 }
 
 // 必须和预扣、入队处于同一 store.update，不能在事务外先数队列再创建任务。
-export function assertQueueAdmission(db: { jobs: Pick<QueueJob, 'status' | 'userToken'>[] }, user: Pick<QueueMember, 'token' | 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number, env: NodeJS.ProcessEnv = process.env, count = 1): void {
+export function assertQueueAdmission(db: { jobs: Pick<QueueJob, 'status' | 'userToken' | 'memberId'>[] }, user: Pick<QueueMember, 'id' | 'token' | 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number, env: NodeJS.ProcessEnv = process.env, count = 1): void {
   assertMemberAcceptsJobs(user, expectedVersion);
   const active = db.jobs.filter(job => unfinished.has(job.status!));
   const limits = queuePolicy(env);
-  if (active.filter(job => job.userToken === user.token).length + count > limits.member) {
+  if (active.filter(job => job.memberId ? job.memberId === user.id : job.userToken === user.token).length + count > limits.member) {
     fail(429, `此成员最多保留 ${limits.member} 个未完成任务，请等待已有任务完成`);
   }
   if (active.length + count > limits.global) fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
@@ -84,10 +88,12 @@ export function setMemberAdmission<D extends AdmissionState>(db: D, userId: stri
   if (!acceptingJobs && user.acceptingJobs !== false) user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
   user.acceptingJobs = acceptingJobs;
   user.updatedAt = new Date(now).toISOString();
+  recordDomainEvent(db, { eventType: 'AdmissionChanged', streamId: 'sharing:default', memberId: user.id, occurredAt: now,
+    payload: { memberId: user.id, acceptingJobs, jobAdmissionVersion: user.jobAdmissionVersion || 0, at: now } });
   const cancelledJobIds: string[] = [];
   if (!acceptingJobs) {
     for (const job of db.jobs) {
-      if (job.userToken !== user.token || !waiting.has(job.status!)) continue;
+      if ((job.memberId ? job.memberId !== user.id : job.userToken !== user.token) || !waiting.has(job.status!)) continue;
       const message = '管理员已停止此成员接单，未派发任务已取消';
       refund(db, job, message);
       job.status = 'failed';
@@ -96,6 +102,8 @@ export function setMemberAdmission<D extends AdmissionState>(db: D, userId: stri
       job.cancelledAt = job.completedAt = job.updatedAt = user.updatedAt;
       job.cancellationReason = 'member_stopped';
       cancelledJobIds.push(job.id);
+      recordDomainEvent(db, { eventType: 'WaitingJobsCancelled', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
+        payload: { jobIds: [job.id], at: now, reason: message, errorStatus: 409, cancellationReason: 'member_stopped' } });
     }
   }
   return { id: user.id, acceptingJobs, cancelledJobIds };

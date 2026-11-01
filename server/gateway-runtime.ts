@@ -1,5 +1,9 @@
 import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRequest, activateNextBatchJob, cancelWaitingBatchJobs } from './generation-request.ts';
-import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
+import { createGenerationAdmission, generationIntent, isNoCache, readGenerationIdempotencyKey, requestCacheKey, type GenerationIntent } from './generation-admission.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from './generation-queries.ts';
+import { createMemberGenerationHttp, memberGenerationError } from './member-generation-http.ts';
+import { assertConfirmedDispatch, completeSharedAccount, recordGenerationFailure, recordPreparedArtifact, recordCompletedArtifact, recordFreeImageSuccess } from './generation-execution.ts';
+import { recordDomainEvent } from './domain-events.ts';
 import { describeStoredResult, publishStoredResult } from './result-files.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
 import { archiveColdImage } from './cold-images.ts';
@@ -91,20 +95,10 @@ interface JobMetadata {
   cached?: StoredImage;
 }
 interface NativeBatch extends JobMetadata { jobIds: string[]; count: number; streamType?: 'sse' | 'msgpack' }
-interface GenerationIntent {
-  keyHash: string; operation: string; normalize(settings: Partial<Settings>): ExecutionRequest;
-  randomSeed: boolean; noCache: boolean; claim?: PayloadClaim;
-}
-type IdempotencyMapping = NonNullable<ReturnType<JsonStore['readGenerationIdempotency']>>;
-type GenerationRecord = ReturnType<typeof generationRequestRecord>;
 type QueueReservation = ((Reservation & { job: StoreItem; skip?: false; queued?: false; changed?: boolean; jobId?: string; failure?: string; statusCode?: number; error?: unknown })
   | { skip: true; queued?: false; job?: undefined; jobId?: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }
   | { queued: true; skip?: false; job?: undefined; jobId: string; failure?: string; statusCode?: number; changed?: boolean; error?: unknown }) & { cooldownUntil?: string };
 
-interface ResolvedGeneration {
-  request?: ExecutionRequest; payload?: string; contextBytes?: number;
-  mapping?: IdempotencyMapping; replay?: NativeBatch;
-}
 interface JobOptions {
   native?: boolean; frontend?: boolean; source?: string; deadlineAt?: string; admissionVersion?: number; batchId?: string; sampleIndex?: number;
   generationPayloadClaim?: PayloadClaim; idempotencyKey?: string | null; idempotency?: GenerationIntent | null;
@@ -141,6 +135,8 @@ const coldConfig = r2Config();
 const r2Storage = coldConfig ? new R2Storage(coldConfig) : null;
 const imageStorage = new ImageStorage(dataDir, r2Storage, id => store.findImage(id));
 const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes([...runningJobControls.values()]));
+const admitGeneration = createGenerationAdmission({ store, payloadBudget: generationPayloadBudget,
+  artifactAvailable: image => imageStorage.available(image), cleanupStaleActiveJobs });
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 // 公平账本和任务状态必须同步落盘，不能使用延迟写入。
 if (fairShareMode) {
@@ -169,6 +165,8 @@ const openAiQueuePollMs = 650;
 const openAiFixedSteps = 28;
 const jobStreamProgress = new Map<string, Progress>();
 const jobPreviews = new JobPreviews();
+const handleMemberGeneration = createMemberGenerationHttp({ store, admit: admitGeneration, budget: generationPayloadBudget,
+  imageStorage, previews: jobPreviews, scheduleQueueDrain });
 const officialJobs = new OfficialKeyJobs({
   generate: (request, account, options) => generateNovelAiImage(request, account, process.env, options),
   saveImage: saveOfficialImage,
@@ -266,6 +264,9 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
     const retryAfter = cooldownRetryAfter((error as GatewayError).cooldownUntil);
     if (retryAfter) res.setHeader('Retry-After', String(retryAfter));
     if ((error as GatewayError).requestId) res.setHeader('X-Nai-Request-Id', (error as GatewayError).requestId!);
+    if (/^\/api\/member\/(?:generation\/|requests\/[^/]+\/(?:events|inputs?)|jobs\/[^/]+\/content)/.test(req.url || '')) {
+      const payload = memberGenerationError(error); sendJson(res, payload.statusCode, payload); return;
+    }
     if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes((error as GatewayError).statusCode!))) {
       const image = buildErrorImage(publicErrorMessage((error as GatewayError).message || 'Generation failed'));
       sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
@@ -398,7 +399,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
-    changeMemberAdmission, getGenerationRequest, cancelGenerationRequest,
+    changeMemberAdmission, getGenerationRequest, cancelGenerationRequest, handleMemberGeneration,
     ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store, updateAccount, refreshAccountQuotas }) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
   if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
@@ -903,42 +904,9 @@ async function acceptNativeHttpRequest(req: GatewayRequest, diagnosticId: string
 }
 
 async function createNativeBatch(token: string, request: ExecutionRequest | null, diagnosticId: string, admissionVersion: number | undefined, claim: PayloadClaim, intent: GenerationIntent | null): Promise<NativeBatch> {
-  const replay = await assertFairMemberReady(token, intent);
-  if (replay) { claim?.release(); return replay; }
-  await cleanupStaleActiveJobs('create native batch');
-  let parent: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
-  return store.update(db => {
-    const user = getUserOrThrow(db, token);
-    const resolved = resolveGenerationIdempotency(db, user, intent);
-    if (resolved?.replay) return resolved.replay;
-    request = (resolved?.request || request)!;
-    mapping = resolved?.mapping;
-    const count = request.sampleCount || 1;
-    assertQueueAdmission(db, user, admissionVersion, process.env, count);
-    if (db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, singleGenerationRequest(request));
-    parent = generationRequestRecord(user, request, 'novelai-native', claim, resolved);
-    const createdAt = parent.created_at;
-    const queueExpiresAt = queueDeadline(Date.parse(createdAt), '');
-    const jobIds: string[] = [];
-    for (let index = 0; index < count; index++) {
-      const single = singleGenerationRequest(request, index);
-      const job = { id: createId('job'), requestId: parent.id, batchId: parent.id, diagnosticId,
-        sampleIndex: index, source: 'novelai-native', userToken: token,
-        status: index === 0 ? 'queued' : 'pending',
-        ...(index === 0 ? { queueSeq: store.nextQueueSequence(), queueTotal: activeJobCount(db.jobs) + 1 } : {}),
-        request: webJobRequestSummary(single), cost: 0, accountCost: 0,
-        deadlineAt: '', queueExpiresAt, jobAdmissionVersion: user.jobAdmissionVersion || 0,
-        createdAt, updatedAt: createdAt, imageId: '', error: '', errorDetail: '' };
-      db.jobs.unshift(job);
-      jobIds.push(job.id);
-    }
-    if (mapping) Object.assign(mapping, { job_id: jobIds[0], request_id: parent.id });
-    return { id: parent.id, requestId: parent.id, jobIds, count };
-  }, { immediate: true, generationRequest: () => parent, generationPayloadClaim: claim,
-    generationIdempotency: () => mapping,
-    dirtyRows: result => ({ jobs: result.jobIds }) }).then(validateGenerationReplay);
+  return admitGeneration({ identity: { token }, request, diagnosticId, admissionVersion, claim, intent,
+    batch: true, source: 'novelai-native', noCache: true });
 }
-
 async function waitNativeResult(jobId: string, deadline: number, res: GatewayResponse) {
   const result = await waitForJobResult(jobId, deadline, res);
   if (res.destroyed) return null;
@@ -1613,6 +1581,9 @@ async function addAccount(body: Body) {
       lastUsedAt: ''
     };
     db.accounts.unshift(account);
+    recordDomainEvent(db, { eventType: 'AccountRegistered', streamId: `account:${account.id}`, accountId: account.id,
+      occurredAt: account.createdAt, payload: { accountId: account.id, name: account.name, routeId: account.routeId,
+        enabled: account.enabled, weight: account.weight, createdAt: account.createdAt } });
     return account;
   }, { collections: ['accounts'] });
 }
@@ -1796,7 +1767,7 @@ async function refreshAccountQuotas(body: Body) {
       const result = resultMap.get(account.id);
       // 凭据已更新或较新的验证已完成时，忽略旧查询结果。
       if (!result || account.token !== targetTokens.get(account.id) || Date.parse((account.quotaCheckedAt || '') as string) > Date.parse(result.quotaCheckedAt || '')) return;
-      applyAccountQuotaResult(account, result, now);
+      applyAccountQuotaResult(db, account, result, now);
     });
     if (fairShareMode) syncFairQuota(db);
     return db.accounts.filter((account) => resultMap.has(account.id));
@@ -1876,7 +1847,8 @@ async function reconcileGenerationReviews(now = Date.now()) {
       if (!job || job.generationReview?.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
       if (localImage && job.imageId === localImage.id) {
         const recovered = recordRecoveredGeneration(db, job, localImage.id, now);
-        if (recovered && fairShareMode && !localImage.mock) recordSharedCompletion(db.accounts.find(a => a.id === job.accountId), now,
+        if (recovered) recordFreeImageSuccess(db, job, now, store.readFreeImageUsage(db, job.fairCharge.userId, now));
+        if (recovered && fairShareMode && !localImage.mock) completeSharedAccount(db, db.accounts.find(a => a.id === job.accountId), now,
           { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil });
         return recovered;
       }
@@ -1918,7 +1890,7 @@ async function testAccount(id: string) {
   const account = await store.update((writeDb) => {
     const item = writeDb.accounts.find((entry) => entry.id === id);
     if (!item) throw httpError(404, 'account not found.');
-    applyAccountQuotaResult(item, result, now);
+    applyAccountQuotaResult(writeDb, item, result, now);
     return item;
   }, { collections: ['accounts'] });
   const availability = accountAvailability(account, db.settings);
@@ -1984,12 +1956,13 @@ function accountQuotaErrorResult(id: string, error: unknown, now: string) {
   };
 }
 
-function applyAccountQuotaResult(account: StoreItem, result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>, now: string) {
+function applyAccountQuotaResult(db: StoreDatabase, account: StoreItem, result: ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>, now: string) {
   // 查询暂时失败时保留上次余额展示；quotaError 立即阻止继续派发。
   if (!result.ok) {
     account.quotaError = result.quotaError; account.upstreamStatus = result.upstreamStatus;
     account.quotaAttemptedAt = now; account.updatedAt = now;
     if (result.disableAccount) disableNovelAiAccount(account);
+    recordOfficialObservation(db, account, now);
     return;
   }
   account.trialRemainingImages = result.trialRemainingImages ?? null;
@@ -2011,6 +1984,14 @@ function applyAccountQuotaResult(account: StoreItem, result: ReturnType<typeof a
   if (result.ok && !fairShareMode) account.cooldownUntil = '';
   if (result.disableAccount) disableNovelAiAccount(account);
   account.updatedAt = now;
+  recordOfficialObservation(db, account, now);
+}
+
+function recordOfficialObservation(db: StoreDatabase, account: StoreItem, now: string) {
+  const fields = ['enabled', 'subscriptionActive', 'subscriptionExpiresAt', 'quotaTier', 'quotaPoints', 'quotaFixed', 'quotaPurchased',
+    'v5UsagePercent', 'v5UsageIsNegative', 'v5UsageTimeUntilNextPercent', 'quotaCheckedAt', 'quotaAttemptedAt', 'quotaError', 'upstreamStatus', 'updatedAt'];
+  recordDomainEvent(db, { eventType: 'QuotaObserved', streamId: `account:${account.id}`, accountId: account.id, occurredAt: now,
+    payload: { kind: 'official', accountId: account.id, observation: Object.fromEntries(fields.filter(key => account[key] !== undefined).map(key => [key, account[key]])), at: now } });
 }
 
 function accountAvailability(account: StoreItem, settings: Partial<Settings> = {}) {
@@ -2149,7 +2130,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
         Object.assign(job, execution.upstreamTiming || {});
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
         const kind = sharedFailureKind(execution, new Error('direct generate timeout'));
-        if (fairShareMode) recordSharedCompletion(account, now, { job, kind, retryAfterUntil: job.upstreamRetryAfterUntil });
+        if (fairShareMode) completeSharedAccount(db, account, now, { job, kind, retryAfterUntil: job.upstreamRetryAfterUntil });
         if (fairShareMode && kind === 'capacity') statusCode = 429;
         account.updatedAt = new Date().toISOString();
       }
@@ -2160,6 +2141,7 @@ async function cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       job.errorDetail = `${reason}: ${detail}`;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
+      recordGenerationFailure(db, job);
       failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, statusCode));
     });
     return {
@@ -2207,7 +2189,7 @@ async function cleanupInterruptedStartupJobs() {
       const account = isRunning && job.accountId ? db.accounts!.find((item) => item.id === job.accountId) : null;
       if (account) {
         account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode) recordSharedCompletion(account, now, { job,
+        if (fairShareMode) completeSharedAccount(db, account, now, { job,
           kind: sharedFailureKind({ failurePhase: job.upstreamStartedAt ? 'upstream' : 'preflight', upstreamTiming: job }, new Error('interrupted')),
           retryAfterUntil: job.upstreamRetryAfterUntil });
         account.updatedAt = updatedAt;
@@ -2220,6 +2202,7 @@ async function cleanupInterruptedStartupJobs() {
         : 'startup: job deadline expired before restart completed';
       job.updatedAt = updatedAt;
       job.completedAt = updatedAt;
+      recordGenerationFailure(db, job);
       failedJobIds.push(job.id, ...cancelWaitingBatchJobs(db, job, message, 504));
     });
 
@@ -2420,6 +2403,10 @@ async function updateAccount(id: string, body: Body) {
     if (body.enabled !== undefined && !changingToken) account.enabled = Boolean(body.enabled);
     if (body.weight !== undefined) account.weight = clamp(Number(body.weight), 1, 100);
     account.updatedAt = new Date().toISOString();
+    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: `account:${account.id}`, accountId: account.id,
+      occurredAt: account.updatedAt, payload: { accountId: account.id, enabled: account.enabled, name: account.name,
+        weight: account.weight, quotaCheckedAt: account.quotaCheckedAt, quotaError: account.quotaError, updatedAt: account.updatedAt,
+        reason: changingToken ? 'credential_replaced' : 'administrator' } });
     return account;
   }, { collections: ['accounts'] });
 }
@@ -2484,108 +2471,6 @@ function mergeDirtyRows(target: DirtyRows, source: DirtyRows = {}) {
   return target;
 }
 
-function readGenerationIdempotencyKey(req: GatewayRequest) {
-  const key = req.headers['idempotency-key'];
-  if (key === undefined) return null;
-  const count = (req.rawHeaders || []).filter((value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key').length;
-  if (count > 1 || typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) {
-    throw httpError(400, 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
-  }
-  return key;
-}
-
-function generationIntent(key: string | null | undefined, normalize: GenerationIntent['normalize'], { operation = 'generate', randomSeed = false, noCache = false, claim }: { operation?: string; randomSeed?: boolean; noCache?: boolean; claim?: PayloadClaim } = {}) {
-  return key ? { keyHash: hashObject(key), operation, normalize, randomSeed, noCache, claim } : null;
-}
-
-function unavailableGenerationResult(requestId: string | null | undefined) {
-  return Object.assign(httpError(410, '原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键'), { requestId: requestId || null });
-}
-
-function resolveGenerationIdempotency(db: StoreDatabase, user: StoreItem, intent: GenerationIntent | null | undefined, { existingOnly = false } = {}): ResolvedGeneration | null {
-  if (!intent) return null;
-  const existing = store.readGenerationIdempotency(user.id, intent.operation, intent.keyHash);
-  if (!existing && existingOnly) return null;
-  const context: Partial<Settings> = existing ? JSON.parse(existing.normalization_context) : requestNormalizationDefaults(db.settings);
-  const serializedContext = JSON.stringify(context);
-  const contextBytes = Buffer.byteLength(serializedContext);
-  intent.claim?.resize(contextBytes);
-  // 最终串行受理时重新选择首调用的 context；不能沿用事务外的默认值或随机种子。
-  const request = intent.normalize(context);
-  const payload = JSON.stringify(request);
-  intent.claim?.resize(Buffer.byteLength(payload) + contextBytes);
-  const fingerprint = generationRequestFingerprint(request, intent);
-  if (!existing) return { request, payload, contextBytes, mapping: { member_id: user.id, operation: intent.operation,
-    key_hash: intent.keyHash, fingerprint, normalization_context: serializedContext,
-    job_id: '', request_id: null, created_at: new Date().toISOString() } };
-  if (existing.fingerprint !== fingerprint) throw httpError(409, '相同 Idempotency-Key 对应的请求参数不同');
-  const job = db.jobs.find(job => job.id === existing.job_id) || store.selectItemById('jobs', existing.job_id);
-  if (!job) throw unavailableGenerationResult(existing.request_id);
-  let children: { id: string; status?: string | null; sampleIndex?: number | null; imageId?: string | null; lateResultAvailable?: boolean | number | null; referencedImageId?: string | null }[] | undefined;
-  if (existing.request_id) {
-    const parent = store.readGenerationRequestState(existing.request_id, user.id);
-    children = parent?.jobs;
-    if (job.requestId !== existing.request_id || !children || children.length !== (request.sampleCount || 1)
-      || children.some((child, index) => child.sampleIndex !== index)) throw unavailableGenerationResult(existing.request_id);
-  } else {
-    // 旧 inline 的稳定归属由首次受理映射保存；不能因 Key 轮换把它归给新 Key 持有者。
-    children = [job];
-  }
-  const replayImages = children.filter(child => child.status === 'done' || child.lateResultAvailable || child.imageId || child.referencedImageId).map(child => {
-    if (!child.imageId) throw unavailableGenerationResult(existing.request_id);
-    return { id: child.imageId, token: existing.request_id ? null : job.userToken };
-  });
-  return { replay: { id: job.id, requestId: existing.request_id, jobIds: children.map(child => child.id), count: children.length,
-    replayed: true, cacheHit: job.status === 'done' && !job.startedAt, balance: user.balance, replayImages } };
-}
-
-async function findCachedGenerationImage(cacheKey: string, token: string) {
-  const cached = await store.findImageByCacheKey(cacheKey);
-  if (!cached || cached.token !== token) return null;
-  try {
-    if (!await imageStorage.available(cached)) return null;
-  } catch { return null; }
-  return cached;
-}
-
-async function validateGenerationReplay<T extends JobMetadata>(result: T) {
-  if (!result?.replayed) return result;
-  for (const expected of result.replayImages!) {
-    const image = await store.findImage(expected.id);
-    if (!image || expected.token && image.token !== expected.token) throw unavailableGenerationResult(result.requestId);
-    try {
-      if (!await imageStorage.available(image)) throw new Error('missing artifact');
-    } catch { throw unavailableGenerationResult(result.requestId); }
-  }
-  const { replayImages, ...metadata } = result;
-  return metadata;
-}
-
-async function assertFairMemberReady(token: string, intent: GenerationIntent | null | undefined) {
-  if (!fairShareMode) return;
-  const result = await store.update(db => {
-    const user = getUserOrThrow(db, token);
-    const resolved = resolveGenerationIdempotency(db, user, intent, { existingOnly: true });
-    if (resolved?.replay) return { replay: resolved.replay };
-    const state = syncFairQuota(db);
-    if (!state?.enabled) return { status: 503, message: '共享账本尚未配置' };
-    if (!state.members.includes(user.id)) return { status: 403, message: '该 Key 未加入共享账本' };
-    if (state.status !== 'active') return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
-    return null;
-  }, { collections: ['settings', 'ledger'], shouldPersist: result => !result?.replay });
-  if (result?.replay) return validateGenerationReplay(result.replay);
-  if (result) throw httpError(result.status, result.message);
-}
-
-function generationRequestRecord(user: StoreItem, request: ExecutionRequest, source: string, claim: PayloadClaim, idempotency: ResolvedGeneration | null) {
-  const payload = idempotency?.payload || JSON.stringify(request);
-  const payloadBytes = Buffer.byteLength(payload);
-  // 与任务准入处于同一串行 update；成功提交后由活动 child 的 SQL 查询接管占用。
-  claim.resize(payloadBytes + (idempotency?.contextBytes || 0));
-  return { id: createId('req'), member_id: user.id, source, operation: request.operation || 'generate',
-    created_at: new Date().toISOString(), payload_bytes: payloadBytes, payload };
-}
-
 function assertFreeImageRequest(db: StoreDatabase, user: StoreItem, request: Parameters<typeof quoteFairRequest>[0]) {
   if (fairShareMode && db.settings.fairQuota?.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free') {
     assertFreeImageAdmission(store.readFreeImageUsage(db, user.id));
@@ -2593,83 +2478,21 @@ function assertFreeImageRequest(db: StoreDatabase, user: StoreItem, request: Par
 }
 
 async function createJob(token: string, body: Body | ExecutionRequest | null, options: JobOptions = {}): Promise<JobMetadata> {
-  let generationRequest: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
-  const normalizeRequest = (settings: Partial<Settings>): ExecutionRequest => {
+  const normalize = (settings: Partial<Settings>): ExecutionRequest => {
     if (options.native) return structuredClone(body as ExecutionRequest);
     const input = options.frontend ? { ...body, width: undefined, height: undefined, cost: undefined } : body;
     const request: NormalizedImageRequest & Pick<ExecutionRequest, 'allowPurchasedAnlas'> = normalizeNovelAiRequest(input!, settings, { maxSteps: options.frontend ? MAX_STEPS : DIRECT_URL_MAX_STEPS });
     if (options.frontend) { request.steps = Math.floor(request.steps); request.cost = generationCost(request); }
-    if (fairShareMode) request.allowPurchasedAnlas = (body as Body).allowPurchasedAnlas === true;
+    request.allowPurchasedAnlas = (body as Body).allowPurchasedAnlas === true;
     return request;
   };
-  const intent = options.idempotency || generationIntent(options.idempotencyKey, normalizeRequest, {
-    randomSeed: body?.seed === undefined || body!.seed === '', noCache: isNoCache(body?.nocache), claim: options.generationPayloadClaim
+  const intent = options.idempotency || generationIntent(options.idempotencyKey, normalize, {
+    randomSeed: body?.seed === undefined || body.seed === '', noCache: isNoCache(body?.nocache), claim: options.generationPayloadClaim
   });
-  const replay = await assertFairMemberReady(token, intent);
-  if (replay) { options.generationPayloadClaim?.release(); return replay; }
-  await cleanupStaleActiveJobs('create job');
-  const noCache = intent ? intent.noCache : isNoCache(body!.nocache);
-  if (!intent && !noCache) {
-    const settings = await store.readSettings();
-    const request = normalizeRequest(settings);
-    const cacheKey = requestCacheKey(token, request, body!.seed);
-    const cached = await store.findImageByCacheKey(cacheKey);
-    if (cached) return createDirectJob(token, request, cacheKey, {
-      status: 'done', admissionVersion: options.admissionVersion, generationPayloadClaim: options.generationPayloadClaim,
-      source: options.source || 'web', accountId: cached.accountId || '', imageId: cached.id, cost: 0
-    });
-  }
-  const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
-  return store.update(async db => {
-    const user = getUserOrThrow(db, token);
-    const resolved = resolveGenerationIdempotency(db, user, intent);
-    if (resolved?.replay) return resolved.replay;
-    const request = resolved?.request || normalizeRequest(db.settings);
-    mapping = resolved?.mapping;
-    assertMemberAcceptsJobs(user, options.admissionVersion);
-    const explicitSeed = intent ? intent.randomSeed ? undefined : request.seed : body!.seed;
-    const cacheKey = requestCacheKey(token, request, explicitSeed);
-    // 有键时，缓存选择和首次 context/映射处于同一串行受理，不能绑定事务外的旧默认值。
-    const cached = intent && !noCache ? await findCachedGenerationImage(cacheKey, token) : null;
-    if (!cached && !noCache) {
-      const activeMatch = db.jobs.find(job => job.userToken === token && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status!));
-      if (activeMatch) {
-        if (mapping) Object.assign(mapping, { job_id: activeMatch.id, request_id: activeMatch.requestId || null });
-        return options.generationPayloadClaim ? { id: activeMatch.id, requestId: activeMatch.requestId || null } : activeMatch;
-      }
-    }
-    if (!cached) assertQueueAdmission(db, user, options.admissionVersion);
-    if (!cached && db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
-    const cost = cached ? 0 : generationCost(request);
-    if (user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
-    if (options.generationPayloadClaim) generationRequest = generationRequestRecord(user, request, options.source || 'web', claim, resolved);
-    const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
-    if (!generationRequest) claim.resize(payloadBytes);
-    user.balance! -= cost;
-    user.updatedAt = new Date().toISOString();
-    const now = new Date().toISOString();
-    const job = {
-      id: createId('job'), source: options.source || 'web',
-      ...(options.batchId ? { batchId: options.batchId, sampleIndex: options.sampleIndex } : {}),
-      userToken: token, status: cached ? 'done' : 'queued',
-      ...(cached ? {} : { queueSeq: store.nextQueueSequence() }),
-      ...(generationRequest ? { requestId: generationRequest.id } : {}),
-      request: generationRequest ? webJobRequestSummary(request) : request,
-      payloadBytes, cacheKey, queueTotal: cached ? 1 : activeJobCount(db.jobs) + 1, cost, accountCost: 0,
-      ...(cached ? { accountId: cached.accountId || '', completedAt: now } : {}),
-      deadlineAt: options.deadlineAt || '', queueExpiresAt: cached ? '' : queueDeadline(Date.now(), options.deadlineAt),
-      jobAdmissionVersion: user.jobAdmissionVersion || 0,
-      createdAt: now, updatedAt: now, imageId: cached?.id || '', error: '', errorDetail: ''
-    };
-    db.jobs.unshift(job);
-    if (!cached) db.ledger.unshift({ id: createId('log'), type: 'reserve', token, jobId: job.id, amount: -cost, at: now });
-    if (mapping) Object.assign(mapping, { job_id: job.id, request_id: job.requestId || null });
-    return generationRequest ? { id: job.id, requestId: generationRequest.id } : job;
-  }, { dirtyRows: dirtyResultJobRows, generationRequest: () => generationRequest,
-    generationIdempotency: () => mapping, generationPayloadClaim: claim
-  }).finally(() => claim.release()).then(validateGenerationReplay);
+  return admitGeneration({ identity: { token }, normalize, intent, claim: options.generationPayloadClaim,
+    admissionVersion: options.admissionVersion, source: options.source || 'web', deadlineAt: options.deadlineAt,
+    noCache: isNoCache(body?.nocache), explicitSeed: body?.seed });
 }
-
 async function ensureAccountRouteIds() {
   await store.update((db) => {
     assignAccountRouteIds(db.accounts);
@@ -2677,126 +2500,16 @@ async function ensureAccountRouteIds() {
 }
 
 async function createDirectJob(token: string, request: ExecutionRequest | null, cacheKey: string, options: JobOptions = {}): Promise<JobMetadata> {
-  let generationRequest: GenerationRecord | undefined, mapping: IdempotencyMapping | undefined;
-  const replay = await assertFairMemberReady(token, options.idempotency);
-  if (replay) { options.generationPayloadClaim?.release(); return replay; }
-  if (options.status !== 'done') await cleanupStaleActiveJobs('create direct job');
-  const claim = options.generationPayloadClaim || generationPayloadBudget.claim();
-  return store.update(async db => {
-    const user = getUserOrThrow(db, token);
-    const resolved = resolveGenerationIdempotency(db, user, options.idempotency);
-    if (resolved?.replay) return resolved.replay;
-    request = (resolved?.request || request)!;
-    mapping = resolved?.mapping;
-    let status = options.status, imageId = options.imageId || '', accountId = options.accountId || '';
-    if (options.idempotency) {
-      cacheKey = requestCacheKey(token, request, options.idempotency.randomSeed ? undefined : request.seed);
-      const cached = !options.idempotency.noCache ? await findCachedGenerationImage(cacheKey, token) : null;
-      if (cached) { status = 'done'; imageId = cached.id; accountId = cached.accountId || ''; }
-    }
-    assertMemberAcceptsJobs(user, options.admissionVersion);
-    if (status !== 'done') assertQueueAdmission(db, user, options.admissionVersion);
-    if (status !== 'done' && db.settings.fairQuota?.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
-    const cost = status === 'done' ? Number(options.cost || 0) : Number(options.cost ?? generationCost(request));
-    const shouldCharge = !status && cost > 0;
-    if (shouldCharge && user.balance! < cost) throw httpError(402, insufficientBalanceMessage);
-    if (options.generationPayloadClaim) {
-      generationRequest = generationRequestRecord(user, request, options.source || 'direct', options.generationPayloadClaim, resolved);
-    }
-    const payloadBytes = generationRequest ? 0 : Buffer.byteLength(JSON.stringify(request));
-    if (!generationRequest && status !== 'done') claim.resize(payloadBytes);
-    const now = new Date().toISOString();
-    if (shouldCharge) {
-      user.balance! -= cost;
-      user.updatedAt = now;
-    }
-    const job = {
-      id: createId('job'),
-      source: options.source || 'direct',
-      ...(generationRequest ? { requestId: generationRequest.id } : {}),
-      userToken: token,
-      status: status || 'queued',
-      ...(status === 'done' ? {} : { queueSeq: store.nextQueueSequence() }),
-      request: generationRequest ? webJobRequestSummary(request) : request,
-      payloadBytes,
-      cacheKey,
-      queueTotal: status === 'done' ? 1 : activeJobCount(db.jobs) + 1,
-      cost: shouldCharge ? cost : Number(options.cost || 0),
-      accountCost: 0,
-      accountId,
-      deadlineAt: options.deadlineAt || '',
-      queueExpiresAt: status === 'done' ? '' : queueDeadline(Date.now(), options.deadlineAt),
-      jobAdmissionVersion: user.jobAdmissionVersion || 0,
-      createdAt: now,
-      updatedAt: now,
-      completedAt: status === 'done' ? now : '',
-      imageId,
-      error: '',
-      errorDetail: ''
-    };
-    db.jobs.unshift(job);
-    if (shouldCharge) {
-      db.ledger.unshift({
-        id: createId('log'),
-        type: 'reserve',
-        token,
-        jobId: job.id,
-        amount: -cost,
-        at: now
-      });
-    }
-    if (mapping) Object.assign(mapping, { job_id: job.id, request_id: job.requestId || null });
-    return generationRequest ? { id: job.id, requestId: generationRequest.id, ...(options.idempotency ? { cacheHit: status === 'done' } : {}) } : job;
-  }, {
-    dirtyRows: dirtyResultJobRows,
-    generationRequest: () => generationRequest,
-    generationIdempotency: () => mapping,
-    generationPayloadClaim: claim
-  }).finally(() => claim.release()).then(validateGenerationReplay);
+  return admitGeneration({ identity: { token }, request, cacheKey, intent: options.idempotency,
+    claim: options.generationPayloadClaim, source: options.source || 'direct', admissionVersion: options.admissionVersion,
+    deadlineAt: options.deadlineAt, noCache: true,
+    ...(options.status === 'done' ? { cached: { imageId: options.imageId || '', accountId: options.accountId } } : {}) });
 }
-
-async function markDirectJobRunning(jobId: string, reservation: Reservation) {
-  await store.update((db) => {
-    const job = db.jobs.find((item) => item.id === jobId);
-    if (!job) return;
-    job.status = 'running';
-    job.accountId = reservation.account?.id || '';
-    job.cost = Number(reservation.cost || 0);
-    job.accountCost = Number(reservation.accountCost || 0);
-    job.completedAt = '';
-    job.error = '';
-    job.errorDetail = '';
-    job.updatedAt = new Date().toISOString();
-  }, { collections: ['jobs'], dirtyRows: dirtyJobRows(jobId) });
-}
-
-function publicGenerationRequest(request: NonNullable<ReturnType<JsonStore['readGenerationRequestState']>>) {
-  const jobs = request.jobs.map(job => ({
-    id: job.id, index: job.sampleIndex, status: job.status, model: job.model || '',
-    createdAt: job.createdAt || '', updatedAt: job.updatedAt || '', completedAt: job.completedAt || '',
-    error: publicErrorMessage(job.error || '', { generation: true }), cancelled: Boolean(job.cancelledAt),
-    lateResultAvailable: Boolean(job.lateResultAvailable), imageUrl: job.imageId ? publicImageUrl(job.imageId) : ''
-  }));
-  const counts: Record<string, number> = { total: jobs.length, queued: 0, pending: 0, running: 0, done: 0, failed: 0 };
-  for (const job of jobs) if (Object.hasOwn(counts, job.status!)) counts[job.status!]++;
-  const status = counts.running ? 'running' : counts.queued ? 'queued' : counts.pending ? 'pending'
-    : !counts.total ? 'empty' : counts.done === counts.total ? 'done' : counts.done ? 'partial'
-      : jobs.every(job => job.cancelled) ? 'cancelled' : 'failed';
-  return { id: request.id, source: request.source, operation: request.operation, createdAt: request.createdAt,
-    status, cancellable: counts.queued + counts.pending > 0, counts, jobs };
-}
-
 async function getGenerationRequest(requestId: string, memberId: string) {
-  const state = await store.update(db => {
-    const user = db.users.find(user => user.id === memberId && user.enabled !== false);
-    if (!user) throw httpError(401, 'invalid member.');
-    const request = store.readGenerationRequestState(requestId, memberId);
-    if (!request) throw httpError(404, 'request not found.');
-    return request;
-  }, { persist: false });
-  return publicGenerationRequest(state);
+  return publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId), {
+    imageUrl: publicImageUrl, errorMessage: message => publicErrorMessage(message, { generation: true })
+  });
 }
-
 async function cancelGenerationRequest(requestId: string, memberId: string) {
   const result = await store.update(db => {
     const user = db.users.find(user => user.id === memberId && user.enabled !== false);
@@ -2815,6 +2528,7 @@ async function cancelGenerationRequest(requestId: string, memberId: string) {
       job.errorStatus = 409;
       job.cancellationReason = 'request_cancelled';
       job.cancelledAt = job.completedAt = job.updatedAt = now;
+      recordGenerationFailure(db, job);
       cancelledJobIds.push(job.id);
     }
     return { cancelledJobIds };
@@ -3030,12 +2744,14 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
       job.errorDetail = detail;
       job.updatedAt = new Date().toISOString();
       job.completedAt = job.updatedAt;
+      recordGenerationFailure(db, job);
       return { skip: true, jobId: job.id, failure: job.error, statusCode: 504 };
     }
     let account: StoreItem | null | undefined;
     const state = fairShareMode ? syncFairQuota(db) : null;
     try {
-      const user = getUserOrThrow(db, job.userToken);
+      const user = job.memberId ? db.users.find(member => member.id === job.memberId && member.enabled !== false) : getUserOrThrow(db, job.userToken);
+      if (!user) throw httpError(401, 'invalid member.');
       assertMemberAcceptsJobs(user, job.jobAdmissionVersion);
       if (fairShareMode) {
         if (!state?.enabled || state.status !== 'active') throw httpError(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
@@ -3046,6 +2762,12 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
         const load = Math.max(running, Number(account.inFlight || 0), physicalAccountLoad(account.id));
         if (load >= sharedAccountConcurrency() || sharedAccountReadyDelay(account, Date.now()) > 0) return { queued: true, jobId: job.id };
         const request = job.requestId ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex) : job.request;
+        if (request?.clientContract === 'member-generation-v1') {
+          const children = store.readGenerationRequestState(job.requestId!, user.id)?.jobs || [];
+          const priorCharges = children.filter(child => child.id !== job.id).map(child =>
+            db.settings.fairQuota?.reservations[child.id] || store.readFairQuotaSettlement(child.id));
+          assertConfirmedDispatch(db, user, request as ExecutionRequest, priorCharges, Date.now());
+        }
         if (state.freeImagePolicy?.enabled) assertFreeImageRequest(db, user, request);
         reserveFairQuota(db, user, job, account, Date.now(), request, store.readFairQuotaSettlement(job.id));
       } else {
@@ -3057,8 +2779,10 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
       job.status = 'failed';
       job.error = (error as GatewayError).message;
       job.errorStatus = (error as GatewayError).statusCode || 503;
+      job.errorCode = (error as GatewayError).code || 'generation_failed';
       job.quotaRetryAfterUntil = (error as GatewayError).cooldownUntil;
       job.updatedAt = job.completedAt = new Date().toISOString();
+      recordGenerationFailure(db, job);
       return { skip: true, jobId: job.id, failure: job.error, statusCode: job.errorStatus, cooldownUntil: job.quotaRetryAfterUntil };
     }
     if (!account && hasEnabledAccounts(db.accounts)) {
@@ -3070,6 +2794,7 @@ async function reserveQueuedJob(jobId: string): Promise<QueueReservation> {
         job.errorDetail = 'No NovelAI account has available free allowance or paid balance for this request';
         job.updatedAt = new Date().toISOString();
         job.completedAt = job.updatedAt;
+        recordGenerationFailure(db, job);
         return { skip: true, jobId: job.id };
       }
       job.updatedAt = new Date().toISOString();
@@ -3365,6 +3090,7 @@ async function prepareGenerationResult(reservation: Reservation, request: Execut
     if (store.selectItemById('images', pending.imageId)) throw httpError(409, '待保存结果 ID 已被使用');
     Object.assign(job, reservation.upstreamTiming || {});
     job.resultPending = pending;
+    recordPreparedArtifact(db, job);
     return pending;
   }, { dirtyRows: { jobs: [jobId] } });
 }
@@ -3412,7 +3138,11 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
   let trimmedImages: RemovedImages = [];
   let savedImage: StoreItem & { balance: number };
   try {
-    savedImage = await store.update(async (db) => {
+    // The durable descriptor already authorizes these exact bytes. Disk publication
+    // happens outside the command transaction; a crash resumes from resultPending.
+    if (pending) { await publishStoredResult(dataDir, pending, image.buffer); imageFile = pending.file; }
+    else if (!fairShareMode || !meta.jobId) imageFile = await writeStoredImage(imageId, image);
+    savedImage = await store.update((db) => {
       let currentJob: ReturnType<typeof completionJob> | null = null, refunded = false;
       if (fairShareMode && meta.jobId) {
         currentJob = completionJob(db, reservation, meta.jobId);
@@ -3425,8 +3155,9 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
                 || currentJob.resultPending.byteLength !== existing.byteLength) throw httpError(409, '已存结果与待恢复证据不符');
               delete currentJob.resultPending;
             }
-            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id) && !existing.mock) {
-              recordSharedCompletion(db.accounts.find(a => a.id === currentJob!.accountId), Date.now(),
+            if (currentJob.fairCharge.status === 'refunded' && recordRecoveredGeneration(db, currentJob, existing.id)) {
+              recordFreeImageSuccess(db, currentJob, Date.now(), store.readFreeImageUsage(db, currentJob.fairCharge.userId));
+              if (!existing.mock) completeSharedAccount(db, db.accounts.find(a => a.id === currentJob!.accountId), Date.now(),
                 { job: currentJob, kind: 'success', retryAfterUntil: currentJob.upstreamRetryAfterUntil });
             }
             preparedAt = Date.now();
@@ -3437,16 +3168,13 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
         if (!refunded && currentJob.fairCharge.status !== 'reserved') throw httpError(409, '任务已结算但结果缺失');
       }
       const user = currentJob ? db.users.find(item => item.token === reservation.token) : getUserOrThrow(db, reservation.token);
-      // 在串行事务中先检查既有产物，再写一次新文件；重复迟到通知不创建第二份文件。
       if (pending) {
         if (currentJob!.resultPending?.attemptId !== pending.attemptId || currentJob!.resultPending?.sha256 !== pending.sha256) throw httpError(409, '待保存结果已改变');
-        await publishStoredResult(dataDir, pending, image.buffer);
-        imageFile = pending.file;
-      } else imageFile = await writeStoredImage(imageId, image);
+      } else if (!imageFile) throw httpError(409, '已发布结果的凭据不存在');
       const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
       if (account) {
         if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (fairShareMode && currentJob && !image.mock) recordSharedCompletion(account, Date.now(), {
+        if (fairShareMode && currentJob && !image.mock) completeSharedAccount(db, account, Date.now(), {
           job: currentJob, kind: 'success', retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil });
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = new Date().toISOString();
@@ -3454,6 +3182,7 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
 
       const saved = {
         id: imageId,
+        memberId: currentJob?.fairCharge.userId || user?.id,
         token: reservation.token,
         accountId: reservation.account?.id || '',
         cacheKey: image.mock ? '' : reservation.cacheKey || '',
@@ -3468,7 +3197,7 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
         cost: reservation.cost,
         accountCost,
         mimeType: image.mimeType,
-        file: imageFile,
+        file: imageFile!,
         ...(pending ? { operation: pending.operation, byteLength: pending.byteLength, sha256: pending.sha256 } : {}),
         createdAt: new Date().toISOString()
       };
@@ -3480,13 +3209,15 @@ async function completeGeneration(reservation: Reservation, request: ExecutionRe
           Object.assign(job, reservation.upstreamTiming || {});
           if (fairShareMode && !refunded) settleFairQuota(db, job, true, Date.now(), {}, store.readFairQuotaSettlement(job.id));
           if (refunded) recordRecoveredGeneration(db, job, saved.id);
-          else { job.status = 'done'; activateNextBatchJob(db, job, store.nextQueueSequence()); }
+          else job.status = 'done';
           job.imageId = saved.id;
           delete job.resultPending;
           job.accountId = reservation.account?.id || job.accountId || '';
           if (!refunded) { job.error = ''; job.errorDetail = ''; }
           job.updatedAt = new Date().toISOString();
           if (!refunded) job.completedAt = job.updatedAt;
+          recordCompletedArtifact(db, job, saved, Date.now(), job.fairCharge ? store.readFreeImageUsage(db, job.fairCharge.userId) : undefined);
+          if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence());
         }
       }
 
@@ -3532,7 +3263,7 @@ async function cancelReservedJob(reservation: Reservation, error: unknown) {
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (fairShareMode) recordSharedCompletion(account, Date.now(), { job, kind,
+      if (fairShareMode) completeSharedAccount(db, account, Date.now(), { job, kind,
         retryAfterUntil: (error as GatewayError).upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
       cooldownUntil = account.cooldownUntil;
       account.updatedAt = new Date().toISOString();
@@ -3546,6 +3277,7 @@ async function cancelReservedJob(reservation: Reservation, error: unknown) {
     job.errorDetail = detail || 'job aborted';
     job.updatedAt = new Date().toISOString();
     job.completedAt = job.updatedAt;
+    recordGenerationFailure(db, job);
     changed = true;
   }, {
     dirtyRows: dirtyReservationJobRows(reservation),
@@ -3583,7 +3315,7 @@ async function failGeneration(reservation: Reservation, error: unknown) {
     const account = reservation.account ? db.accounts.find((item) => item.id === reservation.account!.id) : null;
     if (account) {
       account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-      if (fairShareMode) recordSharedCompletion(account, Date.now(), { job: db.jobs.find(j => j.id === reservation.job?.id), kind,
+      if (fairShareMode) completeSharedAccount(db, account, Date.now(), { job: db.jobs.find(j => j.id === reservation.job?.id), kind,
         retryAfterUntil: (error as GatewayError).upstreamRetryAfterUntil || reservation.upstreamTiming?.upstreamRetryAfterUntil });
       cooldownUntil = account.cooldownUntil;
       if(fairShareMode&&[401,403].includes((error as GatewayError).upstreamStatus!)&&account.token===reservation.account?.token){
@@ -3605,6 +3337,7 @@ async function failGeneration(reservation: Reservation, error: unknown) {
         job.errorDetail = detail;
         job.updatedAt = new Date().toISOString();
         job.completedAt = job.updatedAt;
+        recordGenerationFailure(db, job);
       }
     }
     if (!fairShareMode) db.ledger.unshift({
@@ -3670,7 +3403,7 @@ async function recordSuccessfulImageTrial(account: StoreItem | null | undefined,
     const now = new Date().toISOString();
     await store.update((db) => {
       const item = db.accounts.find((entry) => entry.id === account.id);
-      if (item) applyAccountQuotaResult(item, accountQuotaResult(item.id, quota, now), now);
+      if (item) applyAccountQuotaResult(db, item, accountQuotaResult(item.id, quota, now), now);
     }, { collections: ['accounts'] });
   } catch {
     // 成功图像仍应返回；保留已扣减的本地余量，避免查询故障触发重试。
@@ -4524,25 +4257,6 @@ function normalizeAccountCost(value: unknown) {
 
 function normalizeSizeName(value: unknown) {
   return String(value || '').replace(/\s*\(-\d+\)\s*$/, '').trim();
-}
-
-function requestCacheKey(_token: string, request: ExecutionRequest, explicitSeed: unknown = '') {
-  return hashObject({
-    owner: _token,
-    request: cacheableRequest({
-      ...request,
-      seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed)
-    })
-  });
-}
-
-function cacheableRequest(request: Omit<ExecutionRequest, 'seed'> & { seed?: string | number }) {
-  const { requestedSteps, ...cacheRequest } = request;
-  return cacheRequest;
-}
-
-function isNoCache(value: unknown) {
-  return value === true || value === 1 || value === '1' || value === 'true';
 }
 
 function isInsufficientBalanceError(error: unknown) {

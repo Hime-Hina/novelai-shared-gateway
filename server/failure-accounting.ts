@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type { FairCharge, FairQuotaDatabase, FairQuotaState, Resource, ResourceAmounts } from './fair-quota.ts';
 import type { GenerationAttempt } from './generation-accounting.ts';
 import type { OperatingAccount } from './operating-accounting.ts';
+import { recordDomainEvent } from './domain-events.ts';
 
 export interface LossAlertPolicy {
   version: number; v5Points24h: number; fixedAnlas24h: number; fixedAnlas30d: number; memberAttempts24h: number;
@@ -21,9 +22,10 @@ interface FailureLedgerEvent extends Record<string, unknown> {
 }
 interface HistoryRow { id: string; orderValue: number; data: string; memberName: string | null }
 type RiskWindow = 'last24h' | 'last30d';
-interface RiskSummary { attempts: number; unknownAmounts: number; possible: ResourceAmounts }
-type FailureRisk = Record<RiskWindow, RiskSummary> & { aggregate: Record<RiskWindow, ResourceAmounts> };
-interface RiskRow extends ResourceAmounts { window: RiskWindow; attempts: number; unknownAmounts: number }
+type ResourceNumbers = Record<Resource, number>;
+interface RiskSummary { attempts: number; unknownAmounts: number; possible: ResourceNumbers }
+type FailureRisk = Record<RiskWindow, RiskSummary> & { aggregate: Record<RiskWindow, ResourceNumbers> };
+interface RiskRow extends ResourceNumbers { window: RiskWindow; attempts: number; unknownAmounts: number }
 interface AggregateRow { source: string; resource: Resource; last24h: number; last30d: number }
 interface MemberRiskRow { memberId: string | null; attempts: number; memberName: string | null }
 interface RiskParameters { asOf: string; since24: string; since30: string }
@@ -51,7 +53,10 @@ export function updateLossAlertPolicy(db: PolicyDatabase, body: PolicyInput, act
   if (!db.settings.fairQuota) fail(409, '共享账本尚未初始化');
   const after = { version: before.version + 1, ...pick(policy, fields) } as LossAlertPolicy;
   db.settings.fairQuota.lossAlertPolicy = after;
-  db.ledger.unshift(structuredClone({ id: `loss-policy:${randomUUID()}`, type: 'loss_alert_policy_updated', at: new Date(now).toISOString(), actorId, before, after }));
+  const evidence = { id: `loss-policy:${randomUUID()}`, type: 'loss_alert_policy_updated', at: new Date(now).toISOString(), actorId, before, after };
+  db.ledger.unshift(structuredClone(evidence));
+  recordDomainEvent(db, { eventType: 'PolicyChanged', streamId: 'sharing:default', occurredAt: now,
+    payload: { policy: 'lossAlertPolicy', beforeVersion: before.version, version: after.version, value: after, actorId, evidence: [evidence] } });
   return after;
 }
 
@@ -65,12 +70,17 @@ function cursor(value: string | null | undefined): [number, string] | null {
   } catch { fail(400, '历史分页游标无效'); }
 }
 
-const resources = (value: Partial<ResourceAmounts> | null | undefined) => pick(value, ['v5', 'anlasFixed', 'anlasPurchased']);
+// Compatibility views may use Numbers; these summaries never approve or change money.
+const resources = (value: Partial<ResourceAmounts> | null | undefined): Partial<ResourceNumbers> => Object.fromEntries(
+  Object.entries(pick(value, ['v5', 'anlasFixed', 'anlasPurchased'])).map(([key, amount]) => [key, Number(amount)]));
+const numericFields = <T extends object, K extends keyof T>(value: T | null | undefined, fields: readonly K[]) => Object.fromEntries(
+  Object.entries(pick(value, fields)).map(([key, amount]) => [key, amount == null ? amount : Number(amount)]));
 function safeEvent(row: HistoryRow) {
   const event = JSON.parse(row.data) as FailureLedgerEvent, attempt = event.attempt || {}, request = event.request || {};
   const result: Record<string, unknown> = pick(event, ['id', 'type', 'at', 'jobId', 'memberId', 'accountId', 'resource', 'amount', 'observedAmount', 'delta',
     'evidenceLevel', 'lossEventId', 'closureEventId', 'confirmationEventId', 'allocatedToMembers', 'estimateAmountStatus', 'refundRetained', 'firstUnknownAt', 'deadlineAt', 'closedAt', 'candidateMode']);
   result.memberName = row.memberName || (event.memberId ? '已移除成员' : null);
+  Object.assign(result, numericFields(event, ['amount', 'observedAmount', 'delta']));
   Object.assign(result, pick(attempt, ['operation', 'model']));
   if (event.resources || attempt.localReserved) result.resources = resources(event.resources || attempt.localReserved);
   const candidates = event.upstreamCandidates || attempt.upstreamCandidates;
@@ -86,18 +96,18 @@ function safeEvent(row: HistoryRow) {
 
 function safeOperating(value: Partial<OperatingAccount> = {}) {
   return { available: { v5: 0, anlasFixed: 0, anlasPurchased: 0, ...resources(value.available) },
-    unfunded: { anlasFixed: 0, anlasPurchased: 0, ...pick(value.unfunded, ['anlasFixed', 'anlasPurchased']) },
-    unattributedReturns: { anlasFixed: 0, anlasPurchased: 0, ...pick(value.unattributedReturns, ['anlasFixed', 'anlasPurchased']) },
-    v5CapacityGap: value.v5CapacityGap || 0,
+    unfunded: { anlasFixed: 0, anlasPurchased: 0, ...numericFields(value.unfunded, ['anlasFixed', 'anlasPurchased']) },
+    unattributedReturns: { anlasFixed: 0, anlasPurchased: 0, ...numericFields(value.unattributedReturns, ['anlasFixed', 'anlasPurchased']) },
+    v5CapacityGap: Number(value.v5CapacityGap || 0),
     gapEventIds: { anlasFixed: null, anlasPurchased: null, ...pick(value.gapEventIds, ['anlasFixed', 'anlasPurchased']), v5: value.v5GapEventId || null },
-    pendingExternalFunding: (value.pendingExternalFunding || []).map(item => pick(item, ['receipt', 'eventId', 'resource', 'destination', 'remaining', 'registeredAt', 'snapshotAt'])) };
+    pendingExternalFunding: (value.pendingExternalFunding || []).map(item => ({ ...pick(item, ['receipt', 'eventId', 'resource', 'destination', 'registeredAt', 'snapshotAt']), remaining: Number(item.remaining) })) };
 }
 
 // 仅取滚动窗口内的标量并在 SQLite 汇总，不把所有 ledger JSON 载入 JS。
 const candidate = "CASE WHEN c.type = 'object' THEN c.value ELSE '{}' END";
-const numberSql = (resource: Resource) => `CASE WHEN json_type(${candidate}, '$.resources.${resource}') IN ('integer','real')
-  AND json_extract(${candidate}, '$.resources.${resource}') >= 0 AND json_extract(${candidate}, '$.resources.${resource}') < 1e999
-  THEN json_extract(${candidate}, '$.resources.${resource}') ELSE 0 END`;
+const numberSql = (resource: Resource) => `CASE WHEN json_type(${candidate}, '$.resources.${resource}') IN ('integer','real','text')
+  AND CAST(json_extract(${candidate}, '$.resources.${resource}') AS REAL) >= 0 AND CAST(json_extract(${candidate}, '$.resources.${resource}') AS REAL) < 1e999
+  THEN CAST(json_extract(${candidate}, '$.resources.${resource}') AS REAL) ELSE 0 END`;
 const riskCte = `WITH attempts AS (
   SELECT COALESCE(json_extract(l.data, '$.attemptId'), l.id) AS attemptId, MIN(l.at) AS at,
     json_extract(l.data, '$.memberId') AS memberId,
@@ -120,8 +130,8 @@ export function queryFailureAccounting(sqlite: Database.Database, before?: strin
   const risk = Object.fromEntries<RiskSummary | FailureRisk['aggregate']>(summaries.map(row => [row.window, { attempts: row.attempts, unknownAmounts: row.unknownAmounts,
     possible: { v5: row.v5, anlasFixed: row.anlasFixed, anlasPurchased: row.anlasPurchased } }])) as FailureRisk;
   const aggregate = sqlite.prepare<RiskParameters, AggregateRow>(`SELECT source, json_extract(data, '$.resource') AS resource,
-    SUM(CASE WHEN source = 'resource_gap_observed' THEN MAX(0,COALESCE(json_extract(data, '$.observedAmount'),0)) ELSE MAX(0,COALESCE(json_extract(data, '$.delta'),0)) END) AS last30d,
-    SUM(CASE WHEN at >= @since24 THEN CASE WHEN source = 'resource_gap_observed' THEN MAX(0,COALESCE(json_extract(data, '$.observedAmount'),0)) ELSE MAX(0,COALESCE(json_extract(data, '$.delta'),0)) END ELSE 0 END) AS last24h
+    SUM(CASE WHEN source = 'resource_gap_observed' THEN MAX(0,COALESCE(CAST(json_extract(data, '$.observedAmount') AS REAL),0)) ELSE MAX(0,COALESCE(CAST(json_extract(data, '$.delta') AS REAL),0)) END) AS last30d,
+    SUM(CASE WHEN at >= @since24 THEN CASE WHEN source = 'resource_gap_observed' THEN MAX(0,COALESCE(CAST(json_extract(data, '$.observedAmount') AS REAL),0)) ELSE MAX(0,COALESCE(CAST(json_extract(data, '$.delta') AS REAL),0)) END ELSE 0 END) AS last24h
     FROM ledger WHERE source IN ('resource_gap_observed','v5_capacity_observed') AND at >= @since30 AND at <= @asOf GROUP BY source, resource`).all(params);
   risk.aggregate = { last24h: { v5: 0, anlasFixed: 0, anlasPurchased: 0 }, last30d: { v5: 0, anlasFixed: 0, anlasPurchased: 0 } };
   for (const row of aggregate) for (const window of ['last24h', 'last30d'] as const) if (Object.hasOwn(risk.aggregate[window], row.resource)) risk.aggregate[window][row.resource] += row[window];
@@ -146,12 +156,12 @@ export function queryFailureAccounting(sqlite: Database.Database, before?: strin
     ORDER BY l.order_value DESC, l.id DESC`).all(point ? { order: point[0], id: point[1] } : {});
   const page = rows.slice(0, 50), last = page.at(-1);
   const spent = json<Partial<ResourceAmounts>>(state.spent);
-  return { asOf, policy, operating: { ...operating, pendingAnlasDebits: { anlasFixed: spent?.anlasFixed || 0, anlasPurchased: spent?.anlasPurchased || 0 } }, risk, alerts, events: page.map(safeEvent),
+  return { asOf, policy, operating: { ...operating, pendingAnlasDebits: { anlasFixed: Number(spent?.anlasFixed || 0), anlasPurchased: Number(spent?.anlasPurchased || 0) } }, risk, alerts, events: page.map(safeEvent),
     nextCursor: rows.length > 50 ? Buffer.from(JSON.stringify([last!.orderValue, last!.id])).toString('base64url') : null };
 }
 
 export function memberCharge(charge: MemberChargeInput | null | undefined) {
-  return charge ? { ...pick(charge, ['resource', 'amount', 'status', 'estimated']), billingMode: charge.billingMode || null,
-    v5Equivalent: charge.v5Equivalent ?? null, upstreamBilling: charge.upstreamBilling || null,
-    fixed: charge.fixed ?? null, purchased: charge.purchased ?? null } : null;
+  return charge ? { ...pick(charge, ['resource', 'status', 'estimated']), amount: Number(charge.amount), billingMode: charge.billingMode || null,
+    v5Equivalent: charge.v5Equivalent == null ? null : Number(charge.v5Equivalent), upstreamBilling: charge.upstreamBilling || null,
+    fixed: charge.fixed == null ? null : Number(charge.fixed), purchased: charge.purchased == null ? null : Number(charge.purchased) } : null;
 }

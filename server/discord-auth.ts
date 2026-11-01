@@ -127,6 +127,8 @@ export async function finishDiscordLogin(req: DiscordRequest, res: DiscordRespon
     user.memberAuth = { username: user.memberAuth?.username || user.note || user.id, version: randomBytes(16).toString('hex') };
     delete user.discordInvite;
     user.updatedAt = new Date().toISOString();
+    recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: user.id,
+      payload: { memberId: user.id, enabled: true, discord: { id: grant.id, guildId: grant.guildId, checkedAt: user.discord.checkedAt, member: true } } });
     return user;
   }, { collections: ['users'], immediate: true });
 }
@@ -161,6 +163,8 @@ export async function requireDiscordMembership(user: DiscordUser, deps: DiscordD
       const current = db.users.find(u => u.id === user.id && u.enabled !== false);
       if (!current || current.discord?.accessToken !== grant.accessToken) fail('成员认证状态已变化，请重试', 401);
       current.discord = { ...grant, checkedAt: Date.now(), member: !membershipError };
+      recordDomainEvent(db, { eventType: 'MemberEligibilityChanged', streamId: 'sharing:default', memberId: current.id,
+        payload: { memberId: current.id, discord: { id: grant.id, guildId: grant.guildId, checkedAt: current.discord.checkedAt, member: !membershipError } } });
       if (membershipError) current.memberAuth!.version = randomBytes(16).toString('hex');
     }, { collections: ['users'], immediate: true });
     if (membershipError) throw membershipError;
@@ -168,3 +172,4 @@ export async function requireDiscordMembership(user: DiscordUser, deps: DiscordD
   checks.set(key, pending);
   try { await pending; } finally { checks.delete(key); }
 }
+import { recordDomainEvent } from './domain-events.ts';

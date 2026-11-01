@@ -1,11 +1,13 @@
 import type { FairCharge, FairRequest, QuotaSnapshot, ResourceAmounts } from './fair-quota.ts';
+import { parseAmount } from './resource-amounts.ts';
+import { recordDomainEvent } from './domain-events.ts';
 
 interface LedgerDatabase { ledger?: unknown[] }
 interface UpstreamCandidate { resources: Partial<ResourceAmounts>; amountSource: string }
 export interface GenerationAttempt {
   id: string; jobId: string; batchId: string | null; memberId: string; accountId: string; sampleIndex: number | null;
   operation: string; model: string | null; source: string | null; configVersion: number; reservedAt: number;
-  localReserved: ResourceAmounts; upstreamCandidates: UpstreamCandidate[]; candidateMode: string; sharedV5Reserved: number;
+  localReserved: ResourceAmounts; upstreamCandidates: UpstreamCandidate[]; candidateMode: string; sharedV5Reserved: string;
   evidenceOrigin: string; dispatchIntentAt: number | null; snapshot: QuotaSnapshot | null;
 }
 interface GenerationRefund { eventId: string; refundedAt: number; lossEventId: string | null }
@@ -14,7 +16,7 @@ interface GenerationReview {
   lossEventId: string; closedAt: number | null; closureEventId: string | null; resultImageId?: string;
 }
 export interface AccountingJob {
-  id: string; status?: string; batchId?: string; sampleIndex?: number; source?: string; userToken?: string;
+  id: string; status?: string; requestId?: string; batchId?: string; sampleIndex?: number; source?: string; userToken?: string;
   request?: FairRequest; requestPayload?: FairRequest; fairCharge?: FairCharge | null; generationAttempt?: GenerationAttempt;
   generationRefund?: GenerationRefund; generationReview?: GenerationReview;
   upstreamStartedAt?: string; upstreamHeadersAt?: string; upstreamCompletedAt?: string; upstreamHttpStatus?: number;
@@ -27,9 +29,9 @@ export interface RefundEvidence { requestStarted?: boolean }
 export const GENERATION_REVIEW_MS = 5 * 60 * 1000;
 function localResources(charge: FairCharge): ResourceAmounts {
   return {
-    v5: charge.resource === 'v5' ? charge.amount : 0,
-    anlasFixed: charge.resource === 'anlas' ? charge.fixed : 0,
-    anlasPurchased: charge.resource === 'anlas' ? charge.purchased : 0
+    v5: charge.resource === 'v5' ? charge.amount : '0',
+    anlasFixed: charge.resource === 'anlas' ? charge.fixed : '0',
+    anlasPurchased: charge.resource === 'anlas' ? charge.purchased : '0'
   };
 }
 
@@ -65,14 +67,17 @@ export function recordGenerationAttempt(db: LedgerDatabase, job: AccountingJob, 
     source: job.source || null, configVersion: charge.configVersion,
     reservedAt: charge.reservedAt, localReserved: localResources(charge),
     upstreamCandidates: upstreamCandidates(charge), candidateMode: 'alternatives',
-    sharedV5Reserved: charge.sharedV5Reserved || 0,
+    sharedV5Reserved: charge.sharedV5Reserved || '0',
     // 旧版残留预扣不能补造派发前快照；派发意图也不等于请求已到达 NAI。
     evidenceOrigin: snapshot ? 'dispatch_intent' : 'legacy_reservation',
     dispatchIntentAt: snapshot ? now : null, snapshot: snapshot ? structuredClone(snapshot) : null
   };
   job.generationAttempt = attempt;
   charge.attemptId = attempt.id;
-  appendEvent(db, attempt, 'generation_reserved', now, { attempt });
+  const evidence = appendEvent(db, attempt, 'generation_reserved', now, { attempt });
+  recordDomainEvent(db, { eventType: 'DispatchAuthorized', streamId: `request:${job.requestId || `legacy-${job.id}`}`,
+    accountId: charge.accountId, memberId: charge.userId, occurredAt: now,
+    payload: { jobId: job.id, accountId: charge.accountId, attemptId: attempt.id, authorizedAt: now, attempt, evidence: [evidence] } });
   return attempt;
 }
 
@@ -90,7 +95,7 @@ export function recordGenerationRefund(db: LedgerDatabase, job: AccountingJob, c
     resources: localResources(charge), refundedAt: now, evidenceLevel: 'local_refund', response
   });
   job.generationRefund = { eventId: refund.id, refundedAt: now, lossEventId: null };
-  if (dispatchState === 'not_sent' || !attempt.upstreamCandidates.length) return;
+  if (dispatchState === 'not_sent' || !attempt.upstreamCandidates.length) return refund;
   const loss = appendEvent(db, attempt, 'generation_loss_suspected', now, {
     refundEventId: refund.id, firstUnknownAt: now, evidenceLevel: 'unconfirmed',
     // 候选报价不是实际扣费；未知金额明确为空，后续核对只追加调整记录。
@@ -99,6 +104,9 @@ export function recordGenerationRefund(db: LedgerDatabase, job: AccountingJob, c
   job.generationRefund.lossEventId = loss.id;
   job.generationReview = { status: 'pending', firstUnknownAt: now, deadlineAt: now + GENERATION_REVIEW_MS,
     lossEventId: loss.id, closedAt: null, closureEventId: null };
+  recordDomainEvent(db, { eventType: 'ReviewOpened', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
+    payload: { jobId: job.id, review: job.generationReview, refund: job.generationRefund, response, actualConsumed: null, evidence: [loss] } });
+  return refund;
 }
 
 export function closeGenerationReview(db: LedgerDatabase, job: AccountingJob, now = Date.now(), reason = 'deadline'): boolean {
@@ -107,10 +115,14 @@ export function closeGenerationReview(db: LedgerDatabase, job: AccountingJob, no
   if (reason === 'deadline' && (job.status !== 'failed' || now < review.deadlineAt)) return false;
   const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
   const candidates = attempt.upstreamCandidates;
+  const validAmount = (amount: unknown): amount is string | number => {
+    try { return (typeof amount === 'string' || typeof amount === 'number') && parseAmount(amount, 'nearest') >= 0n; }
+    catch { return false; }
+  };
   const usable = Array.isArray(candidates) && candidates.length > 0 && candidates.every(candidate =>
     candidate.resources && Object.values(candidate.resources).length > 0 && Object.entries(candidate.resources).every(([resource, amount]) =>
-      ['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) && typeof amount === 'number' && Number.isFinite(amount) && amount >= 0)
-    && Object.values(candidate.resources).some(amount => amount > 0));
+      ['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) && validAmount(amount))
+    && Object.values(candidate.resources).some(amount => parseAmount(amount, 'nearest') > 0n));
   const event = appendEvent(db, attempt, 'generation_loss_estimated', now, {
     lossEventId: review.lossEventId, firstUnknownAt: review.firstUnknownAt, deadlineAt: review.deadlineAt,
     closedAt: now, reason, evidenceLevel: 'unconfirmed_estimate', actualConsumed: null,
@@ -121,6 +133,8 @@ export function closeGenerationReview(db: LedgerDatabase, job: AccountingJob, no
     aggregateSettlement: 'unmatched'
   });
   Object.assign(review, { status: 'estimated_closed', closedAt: now, closureEventId: event.id });
+  recordDomainEvent(db, { eventType: 'ReviewClosed', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
+    payload: { jobId: job.id, review, reason, actualConsumed: null, upstreamCandidates: usable ? candidates : null, evidence: [event] } });
   return true;
 }
 
@@ -128,7 +142,7 @@ export function recordRecoveredGeneration(db: LedgerDatabase, job: AccountingJob
   if (job.lateResultAvailable) return false;
   closeGenerationReview(db, job, now, 'result_recovered');
   const attempt = job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge!, null, now);
-  appendEvent(db, attempt, 'generation_result_recovered', now, {
+  const recovered = appendEvent(db, attempt, 'generation_result_recovered', now, {
     imageId, lossEventId: job.generationRefund?.lossEventId || null,
     closureEventId: job.generationReview?.closureEventId || null,
     refundRetained: true, actualConsumed: null, evidenceLevel: 'complete_local_result',
@@ -138,5 +152,7 @@ export function recordRecoveredGeneration(db: LedgerDatabase, job: AccountingJob
   job.lateResultAvailable = true; job.lateResultAt = new Date(now).toISOString();
   job.updatedAt = job.lateResultAt;
   if (job.generationReview) Object.assign(job.generationReview, { status: 'result_recovered', resultImageId: imageId });
+  recordDomainEvent(db, { eventType: 'LateResultRecovered', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
+    payload: { jobId: job.id, artifactId: imageId, at: now, refundRetained: true, review: job.generationReview || null, evidence: [recovered] } });
   return true;
 }

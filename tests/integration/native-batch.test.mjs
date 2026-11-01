@@ -10,6 +10,8 @@ import * as requests from '../../server/generation-request.ts';
 import { assertQueueAdmission, queueDeadline, queuedDeadlineTimestamp } from '../../server/queue-policy.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion } from '../../server/shared-capacity.ts';
 import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
+import { createGenerationAdmission } from '../../server/generation-admission.ts';
+import { completeSharedAccount, recordGenerationFailure } from '../../server/generation-execution.ts';
 
 const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const request = { model: 'nai-diffusion-4-5-full', action: 'generate', width: 1024, height: 1024, steps: 23,
@@ -25,20 +27,20 @@ function functions(context, names) {
 async function open(t, directory) {
   const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-native-batch-')));
   await store.init();
+  if (!directory) await store.update(db => {
+    db.users = ['a','b','c','d'].map(id=>({id,token:id,enabled:true}));
+    db.accounts = [{id:'opus',enabled:true,quotaTier:3,subscriptionActive:true,quotaFixed:1000,quotaPurchased:0,v5UsagePercent:100,quotaCheckedAt:Date.now()}];
+    configureFairQuota(db,['a','b','c','d']);syncFairQuota(db);
+  },{immediate:true});
   t.after(() => store.close());
   return store;
 }
 function acceptance(store) {
-  let id = 0;
   const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
-  const ctx = functions({ store, Buffer, process, ...requests, assertQueueAdmission, queueDeadline,
-    createId: prefix => `${prefix}-${++id}`, getUserOrThrow: (db, token) => db.users.find(user => user.token === token),
-    assertFairMemberReady: async () => {}, cleanupStaleActiveJobs: async () => {},
-    activeJobCount: jobs => jobs.filter(job => ['queued', 'running'].includes(job.status)).length
-  }, ['resolveGenerationIdempotency', 'validateGenerationReplay', 'generationRequestRecord', 'createNativeBatch']);
+  const admit = createGenerationAdmission({store,payloadBudget:budget,artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{}});
   return (token, value = request) => {
     const claim = budget.claim();
-    return ctx.createNativeBatch(token, value, 'synthetic-diagnostic', 0, claim).finally(() => claim.release());
+    return admit({identity:{token},request:value,diagnosticId:'synthetic-diagnostic',admissionVersion:0,claim,batch:true,source:'novelai-native'});
   };
 }
 
@@ -155,7 +157,7 @@ test('启动未知在途和已过期父批次原子终止 pending；未过期的
   const reopened = await open(t, store.dataDir);
   const update = reopened.update.bind(reopened);
   reopened.update = (fn, options) => update(fn, { ...options, includeSettings: true, immediate: true });
-  const ctx = functions({ store: reopened, console, fairShareMode: true, queuedDeadlineTimestamp, recordSharedCompletion, notifyJobWaiters() {},
+  const ctx = functions({ store: reopened, console, fairShareMode: true, queuedDeadlineTimestamp, recordSharedCompletion, completeSharedAccount, recordGenerationFailure, notifyJobWaiters() {},
     cancelWaitingBatchJobs: requests.cancelWaitingBatchJobs, publicErrorMessage: value => value,
     refundJob: (db, job) => settleFairQuota(db, job, false)
   }, ['uniqueIds', 'mergeDirtyRows', 'batchJobIds', 'dirtyJobMutationRows', 'dirtyJobListRows', 'isExpiredJobAt', 'isNovelAiCapacityError', 'sharedFailureKind', 'cleanupInterruptedStartupJobs']);

@@ -1,4 +1,5 @@
 import { queuedDeadlineTimestamp, type QueueJob } from './queue-policy.ts';
+import { recordDomainEvent } from './domain-events.ts';
 
 type SummaryField = 'model' | 'width' | 'height' | 'steps' | 'requestedSteps' | 'seed' | 'allowPurchasedAnlas' | 'operation' | 'action';
 interface BatchableRequest { seed?: number; nativeParameters?: Record<string, unknown> | null }
@@ -74,6 +75,8 @@ export function cancelWaitingBatchJobs(db: BatchState, job: BatchJob, message: s
     child.cancellationReason = 'batch_stopped';
     changed.push(child.id);
   }
+  if (changed.length) recordDomainEvent(db, { eventType: 'WaitingJobsCancelled', streamId: `request:${job.requestId}`, occurredAt: now,
+    payload: { jobIds: changed, at: now, reason: message, errorStatus: statusCode, cancellationReason: 'batch_stopped' } });
   return changed;
 }
 
@@ -92,5 +95,7 @@ export function activateNextBatchJob(db: BatchState, job: BatchJob, queueSeq: nu
   next.queueSeq = queueSeq;
   next.queueTotal = db.jobs.filter(child => ['queued', 'running'].includes(child.status!)).length;
   next.updatedAt = new Date(now).toISOString();
+  recordDomainEvent(db, { eventType: 'JobQueued', streamId: `request:${job.requestId}`, occurredAt: now,
+    payload: { jobId: next.id, queueSeq, queuedAt: next.updatedAt, queueExpiresAt: next.queueExpiresAt, queueTotal: next.queueTotal } });
   // queueExpiresAt 沿用首次提交期限；激活只领取新的队尾位置。
 }

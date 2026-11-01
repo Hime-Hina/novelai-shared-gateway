@@ -3,6 +3,13 @@ import { lstat, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { R2Storage, R2_IMAGE_LIMIT_BYTES, MAX_STORED_IMAGE_BYTES, storedImagePath } from './r2-storage.ts';
 import type { JsonStore, StoreItem } from './store.ts';
+import { recordDomainEvent } from './domain-events.ts';
+
+function storageFact(db: object, image: StoreItem, phase: 'reserved' | 'verified' | 'local_removed' | 'failed', at: number) {
+  recordDomainEvent(db, { eventType: 'ArtifactStorageChanged', streamId: `artifact:${image.id}`, occurredAt: at,
+    payload: { artifactId: image.id, phase, r2: image.r2 || null, lastAttemptAt: image.r2LastAttemptAt || null,
+      error: image.r2Error || null, sha256: image.sha256, byteLength: image.byteLength } });
+}
 
 export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle = () => true, now = Date.now()) {
   const candidate = await store.update(() => idle() ? store.nextColdImage(now) : null, { persist: false });
@@ -25,7 +32,7 @@ export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle
     if (candidate.sha256 !== undefined && candidate.sha256 !== sha256
       || candidate.byteLength !== undefined && candidate.byteLength !== buffer.length) throw new Error('Local image checksum mismatch');
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id)) throw new Error('Invalid image identity');
-    const reserved = await store.update(() => {
+    const reserved = await store.update(db => {
       const current = store.loadItemForUpdate('images', candidate.id);
       if (!current || current.file !== candidate.file || !idle()) return null;
       if (!current.r2) {
@@ -35,16 +42,18 @@ export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle
       if (current.r2.sha256 !== sha256 || current.r2.byteLength !== buffer.length) throw new Error('R2 reservation checksum mismatch');
       current.sha256 = sha256; current.byteLength = buffer.length;
       current.r2LastAttemptAt = new Date(now).toISOString(); delete current.r2Error;
+      storageFact(db, current, 'reserved', now);
       return current.r2;
     }, { immediate: true, dirtyRows: { images: [candidate.id] }, shouldPersist: Boolean });
     if (!reserved) return false;
     if (!reserved.verifiedAt) await remote.put(reserved, buffer, candidate.mimeType!);
     const downloaded = await remote.get(reserved);
     if (!downloaded.equals(buffer)) throw new Error('R2 round-trip mismatch');
-    await store.update(() => {
+    await store.update(db => {
       const current = store.loadItemForUpdate('images', candidate.id);
       if (!current?.r2 || current.r2.key !== reserved.key) throw new Error('R2 reservation changed');
       current.r2.verifiedAt = new Date().toISOString();
+      storageFact(db, current, 'verified', Date.now());
     }, { immediate: true, dirtyRows: { images: [candidate.id] } });
     // Only release an identical local copy after the remote bytes and durable receipt are verified.
     if (info) {
@@ -56,15 +65,16 @@ export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle
         try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
       }
     }
-    await store.update(() => {
+    await store.update(db => {
       const current = store.loadItemForUpdate('images', candidate.id);
       if (current?.r2?.key === reserved.key) { current.r2.localRemovedAt = new Date().toISOString(); delete current.r2Error; }
+      if (current) storageFact(db, current, 'local_removed', Date.now());
     }, { immediate: true, dirtyRows: { images: [candidate.id] } });
     return true;
   } catch (error) {
-    await store.update(() => {
+    await store.update(db => {
       const current: StoreItem | null = store.loadItemForUpdate('images', candidate.id);
-      if (current) { current.r2LastAttemptAt = new Date(now).toISOString(); current.r2Error = '转存校验或写入失败，保留现有副本并稍后重试'; }
+      if (current) { current.r2LastAttemptAt = new Date(now).toISOString(); current.r2Error = '转存校验或写入失败，保留现有副本并稍后重试'; storageFact(db, current, 'failed', now); }
     }, { immediate: true, dirtyRows: { images: [candidate.id] } });
     throw error;
   }

@@ -1,5 +1,8 @@
 import { stripTypeScriptTypes } from 'node:module';
 import { quoteFairRequest } from '../../server/fair-quota.ts';
+import { configureFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
+import { createGenerationAdmission, generationIntent } from '../../server/generation-admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
 import { parseNativeImageRequest as parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
 import { readNativeBody } from '../../server/native-body.ts';
 import { singleGenerationRequest, webJobRequestSummary, activateNextBatchJob, cancelWaitingBatchJobs } from '../../server/generation-request.ts';
@@ -14,13 +17,8 @@ const source = stripTypeScriptTypes(readFileSync(new URL('../../server/gateway-r
 const section = source.slice(source.indexOf('function parseNativeImageRequest('), source.indexOf('async function handleOpenAiChatCompletion('));
 const context = vm.createContext({ parseValidatedNativeImageRequest, parseNativeAuxiliaryRequest, quoteFairRequest, singleGenerationRequest, webJobRequestSummary, assertQueueAdmission,
   queueDeadline: (now, deadline) => queueDeadline(now, deadline, {}), process: {env:{}},
-  publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, Negotiator, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
+  publicErrorMessage: String, Buffer, structuredClone, randomBytes, readNativeBody, Negotiator, generationIntent, httpError: (statusCode, message) => Object.assign(new Error(message), {statusCode}) });
 vm.runInContext(section, context);
-for (const name of ['generationIntent', 'resolveGenerationIdempotency', 'validateGenerationReplay']) {
-  const start=source.search(new RegExp(`function ${name}\\s*\\(`)),end=source.indexOf('\n}',start)+2;
-  vm.runInContext((source.slice(start-6,start)==='async '?'async ':'')+source.slice(start,end),context);
-}
-vm.runInContext(source.slice(source.indexOf('function generationRequestRecord('), source.indexOf('async function createJob(')), context);
 const input = { action: 'generate', input: 'a cat', model: 'nai-diffusion-4-5-full', parameters: {width: 1024,height: 768,steps: 35, n_samples:1, seed: 4, stream: 'msgpack', v4_prompt:{caption:{base_caption:'a cat',char_captions:[{char_caption:'blue hair',centers:[{x:0.2,y:0.5}]}]}}, reference_image_multiple:[] } };
 const parsed = context.parseNativeImageRequest(input);
 assert.equal(parsed.steps,35); assert.equal(parsed.width,1024); assert.equal(parsed.height,768); assert.equal(parsed.prompt,'a cat');
@@ -42,14 +40,18 @@ let crc=0xffffffff;
 for(const b of png){crc^=b;for(let bit=0;bit<8;bit++){const odd=crc%2;crc=Math.floor((crc>>>0)/2);if(odd)crc^=0xedb88320;}}
 assert.equal(zip.readUInt32LE(14),(crc^0xffffffff)>>>0);
 let submitted, nextId=0, queueSequence=0;
-const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[]};
-const claim={resize(bytes){assert.ok(Number.isSafeInteger(bytes)&&bytes>0);}};
+const user={id:'member-test',token:'STA1N-test',enabled:true,jobAdmissionVersion:7}, db={settings:{},users:[user],jobs:[],
+  accounts:[{id:'opus',enabled:true,subscriptionActive:true,quotaTier:3,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,quotaCheckedAt:Date.now()}]};
+configureFairQuota(db,[user.id,'member-b','member-c','member-d']);syncFairQuota(db);
+const claim={resize(bytes){assert.ok(Number.isSafeInteger(bytes)&&bytes>0);},release(){}};
 // 隔离存储与 worker 边界；批次受理、父参数序列化和 HTTP 等待仍执行真实函数。
 const store={
   readUserByToken:async token=>token===user.token?user:null,
   nextQueueSequence:()=>++queueSequence,
   update:async(fn,options)=>{
-    const batch=fn(db),parent=options.generationRequest();
+    const batch=await fn(db);
+    if(!options.generationRequest)return batch;
+    const parent=options.generationRequest();
     assert.equal(options.immediate,true);assert.equal(options.generationPayloadClaim,claim);
     assert.deepEqual(options.dirtyRows(batch).jobs,batch.jobIds);
     submitted={request:JSON.parse(parent.payload),parent,jobs:batch.jobIds.map(id=>db.jobs.find(job=>job.id===id))};
@@ -66,6 +68,7 @@ function completeJob(jobId,result){
   return result;
 }
 Object.assign(context, { bearerToken:req=>req.token||'', store, readJson:async req=>req.body,
+  admitGeneration:createGenerationAdmission({store,payloadBudget:createGenerationPayloadBudget(()=>0),artifactAvailable:async()=>true,cleanupStaleActiveJobs:async()=>{}}),
   assertFairMemberReady:async token=>assert.equal(token,user.token),cleanupStaleActiveJobs:async()=>{},
   getUserOrThrow:(_db,token)=>{assert.equal(token,user.token);return user;},
   createId:prefix=>`${prefix}-${++nextId}`,activeJobCount:()=>0,

@@ -1,8 +1,6 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonStore, createId, hashObject } from '../../server/store.ts';
@@ -14,16 +12,14 @@ import * as requests from '../../server/generation-request.ts';
 import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/native-image.ts';
 import { ImageStorage } from '../../server/r2-storage.ts';
+import { createGenerationAdmission, generationIntent, readGenerationIdempotencyKey, requestCacheKey, isNoCache } from '../../server/generation-admission.ts';
+import { recordDomainEvent } from '../../server/domain-events.ts';
 
-const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-function load(context, names) {
-  const ctx = vm.createContext(context);
-  for (const name of names) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-  }
-  return ctx;
+function legacyOpening(db, job) {
+  const { userToken, ...facts } = job;
+  recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${job.id}`,
+    payload: { state: { request: { requestId: null, memberId: 'a' }, jobs: { [job.id]: { ...facts, memberId: 'a', request: requests.webJobRequestSummary(job.request) } }, artifacts: {}, aliases: [], freeUsage: {} } } });
 }
 async function fixture(t) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-idempotency-admission-')));
@@ -39,16 +35,21 @@ async function fixture(t) {
   const update = store.update.bind(store);
   store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
   const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
-  const ctx = load({ store, Buffer, process, structuredClone, createId, hashObject, ...fair, ...queue, ...requests, assertFreeImageAdmission,
-    generationRequestFingerprint, requestNormalizationDefaults, normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS,
-    fairShareMode: true, generationPayloadBudget: budget, cleanupStaleActiveJobs: async () => {},
-    activeJobCount: jobs => jobs.filter(job => ['queued', 'running'].includes(job.status)).length,
-    imageStorage: new ImageStorage(store.dataDir, null, id => store.findImage(id)),
-    httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode })
-  }, ['readGenerationIdempotencyKey', 'generationIntent', 'unavailableGenerationResult', 'resolveGenerationIdempotency',
-    'findCachedGenerationImage', 'validateGenerationReplay', 'assertFairMemberReady', 'generationRequestRecord', 'assertFreeImageRequest',
-    'getUserOrThrow', 'generationCost', 'isNoCache', 'cacheableRequest', 'requestCacheKey', 'uniqueIds',
-    'batchJobIds', 'dirtyJobMutationRows', 'dirtyResultJobRows', 'createJob', 'createDirectJob', 'createNativeBatch']);
+  const imageStorage = new ImageStorage(store.dataDir, null, id => store.findImage(id));
+  const ctx = { generationIntent, readGenerationIdempotencyKey, requestCacheKey, cleanupStaleActiveJobs: async () => {} };
+  const accept = createGenerationAdmission({ store, payloadBudget: budget, artifactAvailable: image => imageStorage.available(image),
+    cleanupStaleActiveJobs: reason => ctx.cleanupStaleActiveJobs(reason) });
+  ctx.createJob = (token, input, options = {}) => {
+    const normalize = settings => ({ ...normalizeNovelAiRequest(input, settings, { maxSteps: DIRECT_URL_MAX_STEPS }), allowPurchasedAnlas: input.allowPurchasedAnlas === true });
+    const intent = options.idempotency || generationIntent(options.idempotencyKey, normalize, {
+      randomSeed: input.seed === undefined || input.seed === '', noCache: isNoCache(input.nocache), claim: options.generationPayloadClaim });
+    return accept({ identity: { token }, normalize, intent, source: 'web', noCache: isNoCache(input.nocache), explicitSeed: input.seed,
+      claim: options.generationPayloadClaim });
+  };
+  ctx.createDirectJob = (token, request, cacheKey, options = {}) => accept({ identity: { token }, request, cacheKey, source: 'direct', noCache: true,
+    ...(options.status === 'done' ? { cached: { imageId: options.imageId, accountId: options.accountId } } : {}) });
+  ctx.createNativeBatch = (token, request, diagnosticId, admissionVersion, claim, intent) => accept({ identity: { token }, request, diagnosticId,
+    admissionVersion, claim, intent, batch: true, source: 'novelai-native', noCache: true });
   const admit = (body, key = 'key-a', customClaim) => {
     const claim = customClaim || budget.claim();
     return ctx.createJob('STA1N-a', body, { generationPayloadClaim: claim, idempotencyKey: key }).finally(() => claim.release());
@@ -62,6 +63,7 @@ test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回�
   await store.update(db => {
     configureFreeImages(db, { expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } }, 'a');
     const job = { id: 'used', userToken: 'STA1N-a', status: 'running', request: body() };
+    legacyOpening(db, job);
     fair.reserveFairQuota(db, db.users[0], job, db.accounts[0]);
     fair.settleFairQuota(db, job, true);
     job.status = 'done'; db.jobs.push(job);
@@ -79,7 +81,7 @@ test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回�
 });
 
 test('可选键只接受单个非空可见ASCII，128字节上限，缺键不改变旧流程', () => {
-  const ctx = load({ httpError: (statusCode, message) => Object.assign(new Error(message), { statusCode }) }, ['readGenerationIdempotencyKey']);
+  const ctx = { readGenerationIdempotencyKey };
   assert.equal(ctx.readGenerationIdempotencyKey({ headers: {} }), null);
   assert.equal(ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': 'x'.repeat(128) } }), 'x'.repeat(128));
   for (const key of ['', 'a b', '中文', 'x'.repeat(129)]) {
@@ -126,7 +128,7 @@ test('旧inline active cache只追加每个key自己的映射，首次随机意�
   const target = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
   target.allowPurchasedAnlas = false; target.seed = 777;
   await store.update(db => { db.jobs.push({ id: 'inline', status: 'queued', userToken: 'STA1N-a', request: target,
-    cacheKey: ctx.requestCacheKey('STA1N-a', target, undefined), payloadBytes: Buffer.byteLength(JSON.stringify(target)), createdAt: new Date().toISOString() }); },
+    cacheKey: ctx.requestCacheKey('STA1N-a', target, undefined), payloadBytes: Buffer.byteLength(JSON.stringify(target)), createdAt: new Date().toISOString() }); legacyOpening(db, db.jobs.at(-1)); },
     { dirtyRows: { jobs: ['inline'] } });
   assert.equal((await admit(input, 'alias-a')).id, 'inline');
   assert.equal((await admit(input, 'alias-b')).id, 'inline');
@@ -180,7 +182,7 @@ test('同key failed-late回放核对parent及旧inline产物归属，错误关�
       const normalized = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
       normalized.allowPurchasedAnlas = false;
       await store.update(db => { db.jobs.push({ id: 'inline', status: 'queued', userToken: 'STA1N-a', request: normalized,
-        cacheKey: ctx.requestCacheKey('STA1N-a', normalized, undefined), createdAt: new Date().toISOString() }); }, { dirtyRows: { jobs: ['inline'] } });
+        cacheKey: ctx.requestCacheKey('STA1N-a', normalized, undefined), createdAt: new Date().toISOString() }); legacyOpening(db, db.jobs.at(-1)); }, { dirtyRows: { jobs: ['inline'] } });
     }
     const accepted = await admit(input);
     await store.update(db => {

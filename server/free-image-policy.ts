@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { FairQuotaDatabase } from './fair-quota.ts';
+import { recordDomainEvent } from './domain-events.ts';
 
 export interface FreeImagePolicy {
   version: number; enabled: boolean; warningThreshold: number | null; hardLimit: number | null;
@@ -24,8 +25,11 @@ export function configureFreeImages(db: FairQuotaDatabase, body: { expectedVersi
   const after: FreeImagePolicy = { version: before.version + 1, enabled: policy.enabled,
     warningThreshold: policy.warningThreshold!, hardLimit: policy.hardLimit! };
   db.settings.fairQuota.freeImagePolicy = after;
-  (db.ledger ||= []).unshift({ id: `free-image-policy:${after.version}`, type: 'free_image_policy_updated',
-    at: new Date().toISOString(), actorId, before, after });
+  const evidence = { id: `free-image-policy:${after.version}`, type: 'free_image_policy_updated',
+    at: new Date().toISOString(), actorId, before, after };
+  (db.ledger ||= []).unshift(evidence);
+  recordDomainEvent(db, { eventType: 'PolicyChanged', streamId: 'sharing:default',
+    occurredAt: evidence.at, payload: { policy: 'freeImagePolicy', beforeVersion: before.version, version: after.version, value: after, actorId, evidence: [evidence] } });
   return after;
 }
 
