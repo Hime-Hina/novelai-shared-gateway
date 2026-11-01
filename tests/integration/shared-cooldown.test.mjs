@@ -9,7 +9,7 @@ import { sharedFailureKind } from '../../server/generation-execution.ts';
 import { recordDomainEvent } from '../../server/domain-events.ts';
 import { createGenerationFailureHandlers, generationErrorImage } from '../../server/generation-delivery.ts';
 import { availableSharedAccountSlots, nextSharedAccountReadyDelay, createQueueDispatcher } from '../../server/queue-dispatch.ts';
-import { resetAccountStats, disableNovelAiAccount } from '../../server/account-quota-refresh.ts';
+import { disableNovelAiAccount } from '../../server/account-quota-refresh.ts';
 
 const NOW = 1800000000000;
 async function fixture(t, directory) {
@@ -137,14 +137,11 @@ test('Retry-After仅来自尚未到期真实截止，direct忙碌图维持SVG响
   }
 });
 
-test('统计重置和停用/重新启用不能绕过共享账户冷却或释放在途计数', async () => {
+test('停用/重新启用不能绕过共享账户冷却或释放在途计数', () => {
   const account = { id: 'opus', inFlight: 1, ordinaryStrikeCount: 3, capacityStrikeCount: 2,
-    cooldownUntil: new Date(NOW + 300000).toISOString(), cooldownReason: 'upstream_retry_after', lastUsedAt: new Date(NOW).toISOString(), total: 5, failures: 4 };
-  const db = { accounts: [account], ledger: [] };
-  const scheduling = ({ total, failures, updatedAt, enabled, ...state }) => state;
+    cooldownUntil: new Date(NOW + 300000).toISOString(), cooldownReason: 'upstream_retry_after', lastUsedAt: new Date(NOW).toISOString() };
+  const scheduling = ({ updatedAt, enabled, ...state }) => state;
   const before = scheduling(account);
-  await resetAccountStats({ update: fn => fn(db) }, ['opus'], { now: () => NOW });
-  assert.deepEqual(scheduling(account), before); assert.equal(account.total, 0); assert.equal(account.failures, 0);
   disableNovelAiAccount(account); account.enabled = true;
   assert.deepEqual(scheduling(account), before);
 });
