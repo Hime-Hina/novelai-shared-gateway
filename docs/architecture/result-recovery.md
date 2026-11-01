@@ -4,16 +4,57 @@
 放大和 Vibe 编码。一个任务只有一次上游尝试；恢复不再次请求 NAI。已停用
 的官方 Key 独立缓存路径及旧 inline 图片搬移不据此宣称同样的尝试恢复保证。
 
+本页前半部分描述当前重构分支的持久性边界；文末 F10 数字是既有验证记录，不能当作本轮事件重构已经完成生产升级的证据。运行版本和发布授权以[正式发布记录](../operations/production-release.md)为准。
+
+## 事件权威与启动
+
+账务和任务生命周期由 `domain_events` 的业务事实重建，`event_commits` 保存整笔提交的顺序与回执。钱包、预留、任务、冷结算和免费次数是同一 SQLite 事务内维护的投影；事件写入或投影失败会一起回滚。读路径不以查询为由补发恢复额度、初始化运营账或更新钱包。
+
+唯一执行器的启动顺序是：迁移并加载 SQLite；在首次领域写入前完成旧库 opening；创建结果目录，恢复已描述的完整产物，再清理其他中断/过期任务；完成旧 inline 图片迁移、配置应用等启动工作；最后 `enableEventAuthority()` 核对事件与关键投影、写入权威版本标记。只有切换成功，HTTP 才开始监听，队列才允许派发。投影、权威版本或迁移历史不匹配，以及仍未处置的 running 尝试会阻止切换，不能通过忽略核对结果继续写账本。
+
+Opening 保存导入时确实存在的成员/分组、账户与额度、运营账、预留、任务与产物关联、冷幂等/结算、免费使用凭据和队列游标。旧 ledger 以 `LegacyFactRecorded` 留存；旧输入和私有字段移入受保护记录，并在事件中保存引用/摘要。导入按块记录来源摘要，重复执行不重建同一块，半途失败可续跑；已导入块对应的来源变化会被拒绝。Opening 不是补造过去的逐次恢复、派发或官方实耗，也不调用上游补齐没有保存的历史。
+
+## 共同备份边界与离线重放
+
+事件文件单独存在不足以恢复服务。应从同一一致性 SQLite backup 保留完整数据库，并同时保留其匹配的产物与受保护配置：
+
+| 类别 | 必须保留的事实/内容 |
+| --- | --- |
+| 事件与版本 | `domain_events`、`event_commits`、opening/historyId、权威/迁移元数据；投影和游标可校验重建 |
+| 原输入 | `generation_requests`、`generation_contexts` 中的完整参数、首次规范化上下文和确认；事件只存引用/摘要 |
+| 旧产物与诊断 | `artifact_inputs` 中已有的 inline 字节/提示词，`generation_diagnostics` 中的私有错误详情；各自保留摘要校验 |
+| 认证与部署 | 成员认证、PST、会话、相关配置/签名密钥，以及必要 R2 访问配置，均作为受保护数据保存，不混入公开事件 |
+| 产物字节 | 本地 images 和仍需恢复的完整 `.part`，或可核验的 R2 对象及其 bucket/key/长度/SHA-256 清单 |
+
+在线备份必须通过 SQLite backup 纳入已提交 WAL；不能只复制正在写入的主文件。现有 `backup-production.py` 的日常业务快照明确标记 `imagesIncluded:false`，不能据此声称图片字节也在该包内。恢复还要核对独立保留的本地文件/R2 对象与清单，缺失字节不能由事件重新生成。部署配置、密码、输入和诊断均属于私有备份。
+
+仓库入口为 `scripts/replay-events.mjs`；发布包入口为 `executor/.output/server/node_modules/novelai-shared-gateway/scripts/replay-events.mjs`。使用同包固定 Node，源为只读一致性备份，目标为新的隔离数据库；续跑只使用同一 historyId 的既有目标：
+
+```sh
+node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite --max-commits=100
+node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite
+```
+
+参数采用 `--name=value`。`--max-commits=N` 在整笔提交边界暂停，重复执行从已提交游标继续；完成后再跑为零新增。`--through=COMMIT` 可指定业务事件截止游标，但受保护输入与认证来自所选源备份，并不构成该历史时点的完整服务快照。源必须有完整 opening；未知事件/schema/金额版本、不同来源历史或无效顺序被拒绝。CLI 只复制受保护事实并重建数据库投影，不请求 NAI、不重新派发、不下载 R2、不复制产物文件，也不替换运行中的库。
+
+恢复验收须检查完整性、重放游标、余额/冷结算、任务与产物归属、受保护摘要及实际内容可领取；随后由唯一执行器执行启动恢复和权威核对。不能把分段未完成的目标上线。目标路径、文件/R2 恢复和切换授权仍按[发布记录](../operations/production-release.md)执行。
+
+## 历史退休和旧 writer
+
+清理终态任务通过 `retireJobHistory()` 按不超过 200 条的批次提交 `JobHistoryRetired`。活动任务、带 resultPending 的任务，以及同一 parent 仍有活动兄弟的任务不能退休；重放会保留退休事实并删除相应 jobs 投影，不会重新出现旧任务。事件、冷结算和幂等防重记录仍保留，旧键找不到原目标时返回 410，不能再生成一次。当前不会随退休自动删除受保护输入、产物输入或诊断；图片字节仍按独立产物保存规则处理，不能把日志退休当作完整数据删除。
+
+`event_authority` 标记要求兼容 writer，迁移器同时校验每个已应用 SQL 的 hash；当前实现拒绝未知的更高 writer/迁移版本。旧发布不因此自动获得新语义，不能删除标记或降级迁移文件来强行打开新库。发生新事件写入后，不得用旧快照覆盖账本实现回退；应保留原事实，在隔离副本验证兼容读取或修复后再按授权切换。当前仍只允许一个执行器写同一库。
+
 ## 提交与恢复顺序
 
 1. 检查任务、成员、账户、尝试和原结算凭据，在独立 SQLite 事务中提交
-   `job.resultPending`：attemptId、imageId、file、operation、mimeType、byteLength、sha256。
+   `ArtifactPrepared` 及其 `job.resultPending` 投影：attemptId、imageId、file、operation、mimeType、byteLength、sha256。
    同时保留上游时间与状态证据，描述提交失败时不开始写文件。
 2. 在现有串行写流程内，校验内容与描述一致，以 `wx`、0600 创建同目录
    `${file}.part`，完整写入、文件 fsync、rename 为最终文件、目录 fsync。
    已有同内容完整文件可复用；路径、长度、SHA-256 或格式不符则保留原文件
    和描述并报错，不覆盖、删除或猜测它属于哪个任务。
-3. 同一账本事务写入图片元数据、任务终态、扣费结算或迟到结果、冷却与批次
+3. 同一领域提交写入产物发布、任务终态、扣费结算或迟到结果、冷却与批次
    下一张激活，并删除 resultPending。失败回滚保留此前已提交的描述和文件。
    重试沿用原 imageId，重复完成不创建第二份结果，也不重复扣退。
 
@@ -30,12 +71,13 @@ Vibe 编码作为非空 opaque 二进制处理，以原媒体类型、长度和 
 缺失、半写、损坏或身份不符的结果不记成功，保留证据；旧 running 通过现有
 未知结果流程幂等退款，损耗按 F03 分资源记录。没有对应描述的旧孤儿文件
 不自动认领。手动清请求日志跳过待恢复任务；默认历史裁剪也保留它们。
-生产既有 `NO_AUTO_DELETE=true` 继续保护全部记录/文件，500 条默认缓存值
+配置 `NO_AUTO_DELETE=true` 时继续保护全部记录/文件，500 条默认缓存值
 不会删除共享结果，历史退出内存后仍可通过冷查询签名领取。
 
-新增 0009 仅为 jobs.data 中的 resultPending 建部分索引，不新增任务字段
-影子列或第二套存储框架。查询只返回分页 ID，保留冷历史和原排序；迁移仍
-受既有 hash 检查约束，不能回写旧迁移。
+F10 使用的 0009 仅为 jobs.data 中的 resultPending 建部分索引，不新增任务字段
+影子列或第二套存储框架。事件及受保护输入/诊断表由随后追加的迁移建立。
+待恢复查询只返回分页 ID，保留冷历史和原排序；所有迁移仍受 hash 检查约束，
+不能回写旧迁移，发布包必须保留完整 SQL/journal。
 
 ## 正常退出
 
@@ -77,7 +119,7 @@ Windows 无此实现可用的可移植目录 fsync，明确跳过该步骤；Win
 这不是 bob 原生 Linux 文件系统、生产账本规模或端到端生图性能；D01 在
 部署副本复测，不能拿本表代替生产延迟承诺。
 
-## 验证记录
+## 既有 F10 验证记录
 
 最终 Windows 全套 411 项：408 通过、3 项明确跳过 Linux 专属的目录同步、
 符号链接和真实 SIGTERM，98 文件语法通过。实际子进程在描述提交后、半写、

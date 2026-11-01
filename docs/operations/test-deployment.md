@@ -1,6 +1,6 @@
 # D01 隔离测试部署与验收
 
-当前测试版及正式业务候选为 **dff5ee4**；下方按时间保留历史部署证据，不把旧版号当作当前状态。当前会话规则为 owner 连续 1 天、普通成员连续 7 天未访问后过期，可见页面续期。发布前收尾与用户确认的上线后跟踪事项见[正式发布准备](production-release.md)。生产仍未切换，三个测试服务仍不开机启动。
+本页保留 **dff5ee4** 等既有测试与部署证据；这些历史记录不证明当前事件权威重构分支已经部署。当前源码的恢复、隔离副本和发布包要求见下方相应章节；实际运行版本、生产授权与切换结果统一以[正式发布记录](production-release.md)为准。
 
 2026-10-17 已在 bob 启动三个独立 systemd 测试服务，尚未启用开机启动。首次使用
 `0901056` 与全新合成数据，随后使用 `c759f49` 接入已清理的生产规模副本；
@@ -64,7 +64,7 @@ mock 本身仍只允许回环。三个测试服务不启用开机启动；生产
 
 ```text
 novelai-gateway-test-<commit>-linux-x64/
-  bin/node                         # 同一执行器镜像的 Node 22.23.3
+  bin/node                         # 同一执行器镜像的固定 Node 22.23.4
   executor/.output/                # Nitro 入口、业务文件、worker、SQL/journal
   executor/node_modules/           # 最终执行器镜像的完整生产依赖
   web/.output/                    # Nuxt 生产产物
@@ -78,6 +78,7 @@ novelai-gateway-test-<commit>-linux-x64/
 
 执行器依赖原许可随其完整依赖树保留；Nitro/H3 许可位于其输出目录。
 仓库中的部署文档位于 `docs/operations/`；CI 发布包内继续保留上面的 `docs/test-deployment.md` 和 `docs/production-release.md` 路径。
+后端包继续由现有编译和复制脚本生成，包含 `scripts/replay-events.mjs`、离线副本工具、事件/投影模块以及完整 SQL/journal；不另建打包框架。发布包提取检查须实际执行离线分段重放并续跑，不能仅检查文件名存在。
 网页镜像从冻结安装的 Linux 依赖树收集名称匹配 LICENSE、COPYING、NOTICE 的
 文件，保留包路径后导出。此处记录实际携带的文件，不作额外的许可合规认证。
 
@@ -243,9 +244,17 @@ CI 通过的新发布包，首次合成部署固定的 `0901056` 包不包含此
 外联隔离、生成与额度 URL 均指向 mock，且 DATA_DIR 是这个新目录；工具本身不会配置
 网络隔离。副本绝不回写生产，也不要对副本再次运行 bootstrap。
 
-合成回归在 Windows 与断网只读 Linux 容器各通过 7 项：源主库/WAL/原图不变、3000+
+此前 D01 合成回归在 Windows 与断网只读 Linux 容器各通过 7 项：源主库/WAL/原图不变、3000+
 历史任务与冷表凭据清理、新凭据登录及真实 mock 额度查询、各资源退款/冷结算幂等、
-禁止覆盖和失败无交付；Linux 另验证上述权限。真实生产规模副本的后续处理结果见文末。
+禁止覆盖和失败无交付；Linux 另验证上述权限。这是旧版工具的历史记录，不能代替本轮事件权威副本的 Linux/POSIX 验收。当前工具还需通过 `tests/integration/test-copy.test.mjs` 中的独立历史重放、受保护上下文脱敏、旧幂等阻断和未知表拒绝场景；本轮最终证据由架构重构计划的验收记录维护。
+
+事件权威库的测试副本必须成为独立历史。工具只在新建私有副本中清空旧事件、提交、投影、opening/authority/replay 标记，终止活动任务并关闭预留后，重新生成 opening facts、核对投影并启用权威。`app_meta.event_test_copy_provenance` 与命令摘要保留原 historyId、原提交游标和原事件历史 SHA-256 摘要，同时记录新的 historyId；不得把脱敏过的事件与原哈希混用。受保护请求、首次规范化上下文和冷结算一起脱敏；旧幂等键保留历史归属但成为隔离阻断记录，重试返回 409，复用参数开始测试须使用新键。历史读取仍可使用原 request/job ID。
+
+当前完整备份包含事件之外的 `generation_requests`、`generation_contexts`、`artifact_inputs`、`generation_diagnostics`、认证/会话和私有配置，并核对本地文件/R2 清单。inline 产物和诊断的原摘要必须先有效，脱敏后更新摘要与引用；不靠事件重新取得已经丢失的图片。旧库 opening 只记录已有事实，不补造过去的逐次执行。
+
+另行验证原历史重放时，使用包内 `scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite --max-commits=100`，再用相同 source/target 去掉 max-commits 继续。参数为 `--name=value`，目标须为新库或同 historyId 的未完成目标，不能指向运行数据。`--through=COMMIT` 只限定业务投影，不把源备份的认证/受保护数据回退为历史时点。重放不请求上游、不重新派发、不下载或复制产物；未知版本和异源历史被拒绝，未完成目标不能上线。
+
+执行器启动先完成 opening、产物和中断任务恢复，再核对事件投影并启用权威，最后才监听及派发。终态历史清理写入 `JobHistoryRetired`，重放不复活被清理任务；旧幂等目标已缺失时保持 410。writer/迁移版本不兼容必须拒绝，不可删标记强行降级；任何生产切换仍须按[正式发布记录](production-release.md)针对明确版本授权。本分支新增这些步骤不代表生产已经执行。
 
 ## 待执行顺序
 
@@ -256,7 +265,7 @@ CI 通过的新发布包，首次合成部署固定的 `0901056` 包不包含此
 
 1. 选择一个 CI 全部通过的测试提交；下载、校验、在 Linux 解包。不必等所有
    T01/C01 迁移完成才首次部署，最终完整验收仍须覆盖剩余迁移。先确认
-   `bin/node --version` 为 v22.23.3、平台正确；保留旧测试发布目录以便回退。
+   `bin/node --version` 与包内 `RELEASE.txt`、仓库 `.node-version` 一致、平台正确；保留旧测试发布目录以便回退。
 2. 创建上述三个无登录测试用户、root 所有的版本／配置目录及执行器所有的
    0700 数据目录。发布文件只读，current 指向本次测试版本，不动生产链接。
 3. 核对 mock 及两个应用的回环地址、合成 PST 与无外联配置。先用现有 bootstrap
@@ -296,7 +305,7 @@ CI 通过的新发布包，首次合成部署固定的 `0901056` 包不包含此
 Cookie 外不保留；当前 owner 已完成禁网副本沿用演练。新版真实写入后不能
 直接覆盖旧数据库快照或让旧程序读取新库。
 
-## 当前验证状态
+## 既有 D01 验证记录
 
 本轮工作流 YAML、导出 shell 语法和 unit 结构检查通过。现有 Linux 环境的
 `systemd-analyze verify` 已分别通过三份临时 unit 副本（仅将未安装的 ExecStart 换为
