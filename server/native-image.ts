@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
-import { isV5MediumModel, V5_MEDIUM_MODEL, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
-import { applyV5MediumParameters } from './v5-medium.ts';
-import type { V4Prompt } from './v5-medium.ts';
+import { isV5MediumModel, V5_MEDIUM_MODEL } from '../public/v5-medium.js';
+import { applyV5MediumParameters, V5_MEDIUM_PROFILE } from './v5-medium.ts';
+import type { V4Prompt, V5MediumProfile } from './v5-medium.ts';
 
 export type ImageMimeType = 'image/png' | 'image/jpeg' | 'image/webp';
 interface ImageDimensions { width: number; height: number }
@@ -37,16 +37,31 @@ type AuxiliaryOperation =
 export type NativeAuxiliaryRequest = NativeRequestCommon & AuxiliaryOperation & { action: 'encode-vibe' | 'upscale' };
 
 export const NATIVE_MAX_BODY_BYTES = 32 * 1024 * 1024;
-const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
-const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+export const MAX_IMAGE_PIXELS = 16 * 1024 * 1024;
 function fail(statusCode: number, message: string): never { throw Object.assign(new Error(message), { statusCode, status: statusCode }); }
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const active = (value: unknown): boolean => value !== undefined && value !== null && value !== '' && value !== false && (!Array.isArray(value) || value.length > 0);
-const BASE_MODELS = new Set(['nai-diffusion-3', 'nai-diffusion-furry-3', 'nai-diffusion-4-curated-preview', 'nai-diffusion-4-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full', 'nai-diffusion-5-full', 'nai-diffusion-5-curated', V5_MEDIUM_MODEL]);
+export const BASE_MODELS: ReadonlySet<string> = new Set(['nai-diffusion-3', 'nai-diffusion-furry-3', 'nai-diffusion-4-curated-preview', 'nai-diffusion-4-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full', 'nai-diffusion-5-full', 'nai-diffusion-5-curated', V5_MEDIUM_MODEL]);
 // 5C 的文生图和图生图使用独立模型；不推导尚未验证的 5C 重绘模型，也不静默改成 4.5。
-const INPAINT_MODELS = new Map([...BASE_MODELS].filter(model => model !== 'nai-diffusion-5-curated').map(model => [`${model.replace('-curated-preview', '-curated')}-inpainting`, model]));
+export const INPAINT_MODELS: ReadonlyMap<string, string> = new Map([...BASE_MODELS].filter(model => model !== 'nai-diffusion-5-curated').map(model => [`${model.replace('-curated-preview', '-curated')}-inpainting`, model]));
 const PARAMETERS = new Set(`width height steps n_samples scale cfg_rescale sampler noise_schedule seed negative_prompt uc params_version ucPreset qualityToggle ucPresetId qualityPresetId dynamic_thresholding dynamic_thresholding_percentile dynamic_thresholding_mimic_scale uncond_scale controlnet_strength legacy legacy_uc legacy_v3_extend add_original_image autoSmea sm sm_dyn skip_cfg_above_sigma skip_cfg_below_sigma deliberate_euler_ancestral_bug prefer_brownian cfg_sched_eligibility explike_fine_detail minimize_sigma_inf uncond_per_vibe wonky_vibe_correlation image_format stream use_coords characterPrompts v4_prompt v4_negative_prompt normalize_reference_strength_multiple reference_image reference_strength reference_information_extracted reference_image_multiple reference_image_multiple_cached reference_strength_multiple reference_information_extracted_multiple director_reference_images director_reference_images_cached director_reference_descriptions director_reference_information_extracted director_reference_strength_values director_reference_secondary_strength_values image mask image_cache_secret_key mask_cache_secret_key reference_image_cache_secret_key strength noise extra_noise_seed color_correct img2img inpaintImg2ImgStrength straight_alpha tag_hint_transparent_background tag_hint_qt tag_hint_uc_preset version`.split(' '));
-const BOOLEAN_PARAMETERS = `qualityToggle dynamic_thresholding legacy legacy_uc legacy_v3_extend add_original_image autoSmea sm sm_dyn deliberate_euler_ancestral_bug prefer_brownian use_coords normalize_reference_strength_multiple color_correct straight_alpha tag_hint_transparent_background explike_fine_detail minimize_sigma_inf uncond_per_vibe wonky_vibe_correlation`.split(' ');
+export const BOOLEAN_PARAMETERS = `qualityToggle dynamic_thresholding legacy legacy_uc legacy_v3_extend add_original_image autoSmea sm sm_dyn deliberate_euler_ancestral_bug prefer_brownian use_coords normalize_reference_strength_multiple color_correct straight_alpha tag_hint_transparent_background explike_fine_detail minimize_sigma_inf uncond_per_vibe wonky_vibe_correlation`.split(' ');
+export const NATIVE_SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_2s_ancestral', 'k_dpmpp_sde', 'k_dpm_2', 'k_dpm_2_ancestral', 'k_dpm_adaptive', 'ddim', 'ddim_v3', 'k_lms'];
+export const NATIVE_NOISE_SCHEDULES = ['native', 'karras', 'exponential', 'polyexponential'];
+export const NATIVE_VIBE_MODELS = [...BASE_MODELS].filter(model => /^nai-diffusion-4(?:-5)?-/.test(model));
+export const NATIVE_BLUR_VALUES = [0, 0.3, 0.35, 0.4, 0.45, 0.5];
+export const NATIVE_DEFAULTS = { sampleCount: 1, scale: 5, cfgRescale: 0, sampler: 'k_dpmpp_2m_sde', noiseSchedule: 'karras', img2imgStrength: 0.7, infillStrength: 1, noise: 0, informationExtracted: 1, blurSigma: 0 };
+export const NATIVE_LIMITS = { dimensionMin: 128, dimensionMax: 2048, generationPixels: 3145728, stepsMin: 1, stepsMax: 50, samplesMax: 4, imageDimension: 8192, referencesMax: 16, charactersMax: 24, centersMax: 16, promptCharacters: 50000 };
+export interface NativeNormalizationContext {
+  baseModels: string[]; inpaintModels: [string, string][]; defaults: typeof NATIVE_DEFAULTS;
+  mediumProfile: V5MediumProfile; limits: typeof NATIVE_LIMITS; samplers: string[]; noiseSchedules: string[];
+  parameterNames: string[]; booleanParameters: string[];
+}
+export function nativeNormalizationContext(): NativeNormalizationContext {
+  return { baseModels: [...BASE_MODELS], inpaintModels: [...INPAINT_MODELS], defaults: { ...NATIVE_DEFAULTS }, mediumProfile: { ...V5_MEDIUM_PROFILE },
+    limits: { ...NATIVE_LIMITS }, samplers: [...NATIVE_SAMPLERS], noiseSchedules: [...NATIVE_NOISE_SCHEDULES], parameterNames: [...PARAMETERS], booleanParameters: [...BOOLEAN_PARAMETERS] };
+}
 
 function number(value: unknown, min: number, max: number, field: string, integer = false): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) fail(422, `${field} 必须是 ${min} 到 ${max} 之间的${integer ? '整数' : '数值'}。`);
@@ -183,7 +198,7 @@ function webpDimensions(bytes: Buffer, maxDimension: number): ImageDimensions {
   return dimensions!;
 }
 
-export function validateImageBytes(bytes: unknown, { maxBytes = MAX_IMAGE_BYTES, maxDimension = 8192, label = 'image' }: ImageLimits & { label?: string } = {}): ImageInfo {
+export function validateImageBytes(bytes: unknown, { maxBytes = MAX_IMAGE_BYTES, maxDimension = NATIVE_LIMITS.imageDimension, label = 'image' }: ImageLimits & { label?: string } = {}): ImageInfo {
   if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > maxBytes) fail(422, `${label} 的图片大小无效。`);
   let actualType: ImageMimeType, dimensions: ImageDimensions;
   if (bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) { actualType = 'image/png'; dimensions = pngDimensions(bytes, maxDimension); }
@@ -193,23 +208,23 @@ export function validateImageBytes(bytes: unknown, { maxBytes = MAX_IMAGE_BYTES,
   return { ...dimensions, mimeType: actualType, byteLength: bytes.length };
 }
 
-export function validateNativeImage(value: unknown, label = 'image', { maxBytes = MAX_IMAGE_BYTES, maxDimension = 8192 }: ImageLimits = {}): NativeImage {
+export function validateNativeImage(value: unknown, label = 'image', { maxBytes = MAX_IMAGE_BYTES, maxDimension = NATIVE_LIMITS.imageDimension }: ImageLimits = {}): NativeImage {
   const decoded = decodeBase64(value, label, { maxBytes });
   const image = validateImageBytes(decoded.bytes, { maxBytes, maxDimension, label });
   if (decoded.mimeType && decoded.mimeType !== image.mimeType) fail(422, `${label} 的 MIME 类型与图片内容不一致。`);
   return { ...image, base64: decoded.base64 };
 }
 
-function validateCaption(value: unknown, label: string, maxCharacters = 24, inheritedUseCoords?: unknown): asserts value is V4Prompt {
+function validateCaption(value: unknown, label: string, maxCharacters = NATIVE_LIMITS.charactersMax, inheritedUseCoords?: unknown): asserts value is V4Prompt {
   if (!object(value) || !object(value.caption) || typeof value.caption.base_caption !== 'string' || !Array.isArray(value.caption.char_captions) || value.caption.char_captions.length > maxCharacters) fail(422, `${label} 提示词结构无效。`);
   checkKeys(value, new Set(['caption', 'use_coords', 'use_order', 'legacy_uc']), `${label} 含不支持的字段。`);
   checkKeys(value.caption, new Set(['base_caption', 'char_captions']), `${label} caption 含不支持的字段。`);
-  if (value.caption.base_caption.length > 50000) fail(422, '提示词过长。');
+  if (value.caption.base_caption.length > NATIVE_LIMITS.promptCharacters) fail(422, '提示词过长。');
   for (const key of ['use_coords', 'use_order', 'legacy_uc']) if (value[key] !== undefined && typeof value[key] !== 'boolean') fail(422, `${label} 标志必须是布尔值。`);
   const useCoords = value.use_coords ?? inheritedUseCoords;
   const characters: unknown[] = value.caption.char_captions;
   for (const character of characters) {
-    if (!object(character) || typeof character.char_caption !== 'string' || character.char_caption.length > 10000 || !Array.isArray(character.centers) || character.centers.length > 16) fail(422, `${label} 角色提示词无效。`);
+    if (!object(character) || typeof character.char_caption !== 'string' || character.char_caption.length > 10000 || !Array.isArray(character.centers) || character.centers.length > NATIVE_LIMITS.centersMax) fail(422, `${label} 角色提示词无效。`);
     checkKeys(character, new Set(['char_caption', 'centers']), `${label} 角色字段无效。`);
     const centers: unknown[] = character.centers;
     for (const center of centers) {
@@ -227,7 +242,7 @@ function numericList(parameters: Record<string, unknown>, field: string, count: 
   if (!Array.isArray(values) || values.length !== count) fail(422, `${field} 数量必须与参考图数量一致。`);
   values.forEach((value: unknown) => number(value, min, max, field));
 }
-function references(parameters: Record<string, unknown>, direct: string, cached: string, { image, count = 16 }: { image: boolean; count?: number }): number {
+function references(parameters: Record<string, unknown>, direct: string, cached: string, { image, count = NATIVE_LIMITS.referencesMax }: { image: boolean; count?: number }): number {
   if (active(parameters[direct]) && active(parameters[cached])) fail(422, '相同参考图不能同时使用普通字段和缓存字段。');
   const key = active(parameters[cached]) ? cached : direct;
   const values = parameters[key] ?? [];
@@ -250,7 +265,10 @@ function references(parameters: Record<string, unknown>, direct: string, cached:
   return list.length;
 }
 
-export function parseNativeImageRequest(body: unknown): NativeGenerationRequest {
+export function parseNativeImageRequest(body: unknown, context?: NativeNormalizationContext): NativeGenerationRequest {
+  const baseModels = context ? new Set(context.baseModels) : BASE_MODELS, inpaintModels = context ? new Map(context.inpaintModels) : INPAINT_MODELS;
+  const defaults = context?.defaults || NATIVE_DEFAULTS, mediumProfile = context?.mediumProfile || V5_MEDIUM_PROFILE, limits = context?.limits || NATIVE_LIMITS;
+  const booleanParameters = context?.booleanParameters || BOOLEAN_PARAMETERS;
   if (!object(body)) fail(400, 'Expected a JSON object.');
   checkKeys(body, new Set(['input', 'model', 'action', 'parameters', 'use_new_shared_trial', 'allowPurchasedAnlas']), '请求含尚未支持的顶层字段。');
   if (body.allowPurchasedAnlas !== undefined && typeof body.allowPurchasedAnlas !== 'boolean') fail(422, 'allowPurchasedAnlas 必须是布尔值。');
@@ -258,12 +276,12 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   if (action !== 'generate' && action !== 'img2img' && action !== 'infill') fail(422, '不支持此生图操作；可使用 generate、img2img 或 infill。');
   if (typeof body.model !== 'string') fail(422, 'Unsupported NovelAI model.');
   if (action === 'infill' && ['nai-diffusion-5-curated', 'nai-diffusion-5-curated-inpainting'].includes(body.model)) fail(422, 'V5 Curated（5C）的局部重绘请在客户端选择 V4.5 Curated；网关不会自动更换模型。');
-  const baseModel = INPAINT_MODELS.get(body.model) ?? body.model;
-  if (!BASE_MODELS.has(baseModel)) fail(422, 'Unsupported NovelAI model.');
-  if (INPAINT_MODELS.has(body.model) && action !== 'infill') fail(422, '局部重绘模型必须配合 action=infill 使用。');
+  const baseModel = inpaintModels.get(body.model) ?? body.model;
+  if (!baseModels.has(baseModel)) fail(422, 'Unsupported NovelAI model.');
+  if (inpaintModels.has(body.model) && action !== 'infill') fail(422, '局部重绘模型必须配合 action=infill 使用。');
   // 2026-10-07 真实上游校准：基础 V4.5 模型拒绝 infill；必须使用重绘模型名。
-  const model = action === 'infill' ? [...INPAINT_MODELS].find(([, base]) => base === baseModel)![0] : baseModel;
-  if (typeof body.input !== 'string' || !body.input.trim() || body.input.length > 50000) fail(400, 'input must be a non-empty prompt string (max 50000 characters).');
+  const model = action === 'infill' ? [...inpaintModels].find(([, base]) => base === baseModel)![0] : baseModel;
+  if (typeof body.input !== 'string' || !body.input.trim() || body.input.length > limits.promptCharacters) fail(400, 'input must be a non-empty prompt string (max 50000 characters).');
   if (!object(body.parameters)) fail(400, 'parameters must be an object.');
   const parameters = structuredClone(body.parameters);
   // 不猜测双提示词的优先级；只消除与 input 完全相同的冗余字段。
@@ -275,18 +293,18 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   for (const field of ['controlnet_model', 'controlnet_condition', 'characterRef', 'upscale', 'upscaled_enhance']) if (Object.hasOwn(parameters, field) && !active(parameters[field])) delete parameters[field];
   // 旧官网参数模板会附带关闭的 LoRA 字段；空值可以忽略，启用权重仍须明确拒绝。
   for (const field of ['lora_unet_weights', 'lora_clip_weights']) if (Object.hasOwn(parameters, field) && (!active(parameters[field]) || object(parameters[field]) && Object.keys(parameters[field]).length === 0)) delete parameters[field];
-  for (const field of [...BOOLEAN_PARAMETERS, 'uncond_scale', 'dynamic_thresholding_percentile', 'dynamic_thresholding_mimic_scale', 'cfg_sched_eligibility', 'version']) if (parameters[field] === null) delete parameters[field];
+  for (const field of [...booleanParameters, 'uncond_scale', 'dynamic_thresholding_percentile', 'dynamic_thresholding_mimic_scale', 'cfg_sched_eligibility', 'version']) if (parameters[field] === null) delete parameters[field];
   // 未适配的付费功能不透传，防止通过新字段绕过成本预估。
-  checkKeys(parameters, PARAMETERS, '包含尚未支持的生成参数；请关闭 ControlNet、自动放大或其他未支持的扩展。');
-  const width = number(parameters.width, 128, 2048, 'width', true), height = number(parameters.height, 128, 2048, 'height', true);
-  if (width * height > 3145728) fail(422, '生成尺寸不能超过官方 3145728 像素上限。');
-  let steps = number(parameters.steps ?? (isV5MediumModel(model) ? V5_MEDIUM_STEPS : undefined), 1, 50, 'steps', true);
-  const sampleCount = number(parameters.n_samples ?? 1, 1, 4, 'n_samples', true);
+  checkKeys(parameters, context ? new Set(context.parameterNames) : PARAMETERS, '包含尚未支持的生成参数；请关闭 ControlNet、自动放大或其他未支持的扩展。');
+  const width = number(parameters.width, limits.dimensionMin, limits.dimensionMax, 'width', true), height = number(parameters.height, limits.dimensionMin, limits.dimensionMax, 'height', true);
+  if (width * height > limits.generationPixels) fail(422, '生成尺寸不能超过官方 3145728 像素上限。');
+  let steps = number(parameters.steps ?? (isV5MediumModel(model) ? mediumProfile.steps : undefined), limits.stepsMin, limits.stepsMax, 'steps', true);
+  const sampleCount = number(parameters.n_samples ?? defaults.sampleCount, 1, limits.samplesMax, 'n_samples', true);
   parameters.n_samples = sampleCount;
-  parameters.scale = number(parameters.scale ?? (isV5MediumModel(model) ? 7 : 5), 0, 10, 'scale');
-  parameters.cfg_rescale = number(parameters.cfg_rescale ?? 0, 0, 1, 'cfg_rescale');
-  for (const field of BOOLEAN_PARAMETERS) if (parameters[field] !== undefined && typeof parameters[field] !== 'boolean') fail(422, `${field} 必须是布尔值。`);
-  for (const field of ['negative_prompt', 'uc']) if (parameters[field] !== undefined && (typeof parameters[field] !== 'string' || parameters[field].length > 50000)) fail(422, '负面提示词必须是字符串且不超过 50000 字符。');
+  parameters.scale = number(parameters.scale ?? (isV5MediumModel(model) ? mediumProfile.defaultScale : defaults.scale), 0, 10, 'scale');
+  parameters.cfg_rescale = number(parameters.cfg_rescale ?? defaults.cfgRescale, 0, 1, 'cfg_rescale');
+  for (const field of booleanParameters) if (parameters[field] !== undefined && typeof parameters[field] !== 'boolean') fail(422, `${field} 必须是布尔值。`);
+  for (const field of ['negative_prompt', 'uc']) if (parameters[field] !== undefined && (typeof parameters[field] !== 'string' || parameters[field].length > NATIVE_LIMITS.promptCharacters)) fail(422, '负面提示词必须是字符串且不超过 50000 字符。');
   if (parameters.negative_prompt === undefined && typeof parameters.uc === 'string') parameters.negative_prompt = parameters.uc;
   if (parameters.seed !== undefined && (typeof parameters.seed !== 'number' || !Number.isSafeInteger(parameters.seed) || parameters.seed < -1)) fail(422, 'seed must be a safe non-negative integer or -1 for random.');
   parameters.seed = parameters.seed === undefined || parameters.seed === -1 ? randomBytes(4).readUInt32LE(0) : parameters.seed % 4294967296;
@@ -299,11 +317,10 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   if (parameters.dynamic_thresholding_mimic_scale !== undefined) number(parameters.dynamic_thresholding_mimic_scale, 0, 100, 'dynamic_thresholding_mimic_scale');
   if (parameters.cfg_sched_eligibility !== undefined && (typeof parameters.cfg_sched_eligibility !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/.test(parameters.cfg_sched_eligibility))) fail(422, 'cfg_sched_eligibility 参数无效。');
   if (parameters.controlnet_strength !== undefined) number(parameters.controlnet_strength, 0, 2, 'controlnet_strength');
-  const samplers = new Set(['k_euler', 'k_euler_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_2s_ancestral', 'k_dpmpp_sde', 'k_dpm_2', 'k_dpm_2_ancestral', 'k_dpm_adaptive', 'ddim', 'ddim_v3', 'k_lms']);
-  parameters.sampler ??= 'k_dpmpp_2m_sde';
-  if (typeof parameters.sampler !== 'string' || !samplers.has(parameters.sampler)) fail(422, '不支持该采样器。');
-  parameters.noise_schedule ??= 'karras';
-  if (typeof parameters.noise_schedule !== 'string' || !['native', 'karras', 'exponential', 'polyexponential'].includes(parameters.noise_schedule)) fail(422, '不支持该噪声调度器。');
+  parameters.sampler ??= defaults.sampler;
+  if (typeof parameters.sampler !== 'string' || !(context?.samplers || NATIVE_SAMPLERS).includes(parameters.sampler)) fail(422, '不支持该采样器。');
+  parameters.noise_schedule ??= defaults.noiseSchedule;
+  if (typeof parameters.noise_schedule !== 'string' || !(context?.noiseSchedules || NATIVE_NOISE_SCHEDULES).includes(parameters.noise_schedule)) fail(422, '不支持该噪声调度器。');
   if (parameters.image_format !== undefined && parameters.image_format !== 'png' && parameters.image_format !== 'webp') fail(422, '图片输出格式仅支持 png 或 webp。');
   const v3 = baseModel.endsWith('-3'), v5 = baseModel.startsWith('nai-diffusion-5-');
   if (parameters.autoSmea) fail(422, '暂不支持自动选择 SMEA；请在客户端明确选择 sm / sm_dyn。');
@@ -312,8 +329,8 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   if (parameters.sm && ['ddim', 'ddim_v3'].includes(parameters.sampler)) fail(422, 'DDIM 采样器不支持 SMEA；请关闭 sm / sm_dyn 或更换采样器。');
   // 官网负向角色提示词通常不带 use_coords，沿用正向提示词或顶层的布局模式。
   const useCoords = (parameters.v4_prompt as { use_coords?: unknown } | null | undefined)?.use_coords ?? parameters.use_coords;
-  for (const field of ['v4_prompt', 'v4_negative_prompt']) if (active(parameters[field])) { if (v3) fail(422, 'V3 不支持多角色提示词结构。'); validateCaption(parameters[field], field, 24, useCoords); }
-  if (parameters.characterPrompts !== undefined && (!Array.isArray(parameters.characterPrompts) || parameters.characterPrompts.length > 24)) fail(422, '角色提示词列表无效。');
+  for (const field of ['v4_prompt', 'v4_negative_prompt']) if (active(parameters[field])) { if (v3) fail(422, 'V3 不支持多角色提示词结构。'); validateCaption(parameters[field], field, NATIVE_LIMITS.charactersMax, useCoords); }
+  if (parameters.characterPrompts !== undefined && (!Array.isArray(parameters.characterPrompts) || parameters.characterPrompts.length > NATIVE_LIMITS.charactersMax)) fail(422, '角色提示词列表无效。');
   if (active(parameters.characterPrompts) && (v3 || !parameters.v4_prompt)) fail(422, '角色提示词需要当前模型的 v4_prompt 结构。');
   // characterPrompts 是启动器界面元数据；实际提示词以已经验证的 v4_prompt 为准。
   delete parameters.characterPrompts;
@@ -330,8 +347,8 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
     imageInfo = validateNativeImage(parameters.image, '底图');
     if (imageInfo.width !== width || imageInfo.height !== height) fail(422, '底图尺寸必须与 width、height 一致，请在客户端先调整尺寸。');
     parameters.image = imageInfo.base64;
-    parameters.strength = number(parameters.strength ?? (action === 'infill' ? 1 : 0.7), 0, 1, 'strength');
-    parameters.noise = number(parameters.noise ?? 0, 0, 1, 'noise');
+    parameters.strength = number(parameters.strength ?? (action === 'infill' ? defaults.infillStrength : defaults.img2imgStrength), 0, 1, 'strength');
+    parameters.noise = number(parameters.noise ?? defaults.noise, 0, 1, 'noise');
     if (parameters.sm || parameters.sm_dyn) fail(422, '图生图与局部重绘不支持 SMEA。');
     if (action === 'infill') {
       const mask = validateNativeImage(parameters.mask, '遮罩');
@@ -389,7 +406,7 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   if (parameters.stream !== undefined && parameters.stream !== 'msgpack' && parameters.stream !== 'sse') fail(422, 'stream 仅支持 msgpack 或 sse。');
   delete parameters.stream;
   // Medium 与官网切换开关一样固定参数；核价、保存和转发都使用实际的 14 步。
-  if (isV5MediumModel(model)) { applyV5MediumParameters(parameters, body.input); steps = V5_MEDIUM_STEPS; }
+  if (isV5MediumModel(model)) { applyV5MediumParameters(parameters, body.input, mediumProfile); steps = mediumProfile.steps; }
   // 核心字段已逐项校验，Medium 的可省略字段也已补齐；类型收窄不重写参数或改变键顺序。
   const normalized = parameters as NativeParameters;
   return {
@@ -400,7 +417,8 @@ export function parseNativeImageRequest(body: unknown): NativeGenerationRequest 
   };
 }
 
-export function parseNativeAuxiliaryRequest(body: unknown, operation: unknown): NativeAuxiliaryRequest {
+export function parseNativeAuxiliaryRequest(body: unknown, operation: unknown, context?: NativeNormalizationContext): NativeAuxiliaryRequest {
+  const defaults = context?.defaults || NATIVE_DEFAULTS;
   if (!object(body)) fail(400, 'Expected a JSON object.');
   if (operation !== 'encode-vibe' && operation !== 'upscale') fail(422, '不支持此图片操作。');
   if (body.allowPurchasedAnlas !== undefined && typeof body.allowPurchasedAnlas !== 'boolean') fail(422, 'allowPurchasedAnlas 必须是布尔值。');
@@ -410,9 +428,9 @@ export function parseNativeAuxiliaryRequest(body: unknown, operation: unknown): 
   if (operation === 'encode-vibe') {
     if (Object.hasOwn(body, 'mask')) fail(422, 'Vibe 编码暂不支持 mask；请先导出需要编码的完整参考图。');
     checkKeys(body, new Set(['image', 'model', 'information_extracted', 'focus_seed', 'info_extract_seed', 'allowPurchasedAnlas']), 'Vibe 编码含不支持的字段。');
-    if (typeof body.model !== 'string' || !['nai-diffusion-4-curated-preview', 'nai-diffusion-4-full', 'nai-diffusion-4-5-curated', 'nai-diffusion-4-5-full'].includes(body.model)) fail(422, 'Vibe 编码仅支持 V4 和 V4.5；V3 使用原图，V5 尚不支持 Vibe。');
+    if (typeof body.model !== 'string' || !(context ? context.baseModels.filter(model => /^nai-diffusion-4(?:-5)?-/.test(model)) : NATIVE_VIBE_MODELS).includes(body.model)) fail(422, 'Vibe 编码仅支持 V4 和 V4.5；V3 使用原图，V5 尚不支持 Vibe。');
     const vibe: VibeParameters = Object.assign(operationParameters, { model: body.model,
-      information_extracted: number(body.information_extracted ?? 1, 0, 1, 'information_extracted') });
+      information_extracted: number(body.information_extracted ?? defaults.informationExtracted, 0, 1, 'information_extracted') });
     // 官方未声明种子范围；安全整数只是本地无损表达边界，不套用生成种子的随机或取模语义。
     for (const field of ['focus_seed', 'info_extract_seed'] as const) {
       if (body[field] === undefined) continue;
@@ -426,9 +444,9 @@ export function parseNativeAuxiliaryRequest(body: unknown, operation: unknown): 
     if (body.model !== undefined && body.model !== 'nai-diffusion-5-curated') fail(422, '不支持此放大模型。');
     if (body.scale !== undefined && body.scale !== 2) fail(422, '当前官方放大接口仅支持 2 倍边长放大。');
     const upscale: UpscaleParameters = Object.assign(operationParameters, { model: 'nai-diffusion-5-curated' as const,
-      declared_blur_sigma: number(body.declared_blur_sigma ?? 0, 0, 0.5, 'declared_blur_sigma') });
-    if (![0, 0.3, 0.35, 0.4, 0.45, 0.5].includes(upscale.declared_blur_sigma)) fail(422, 'declared_blur_sigma 仅支持 0、0.30、0.35、0.40、0.45、0.50。');
-    if (image.width * image.height > 3145728) fail(422, '独立放大输入不能超过官方 3145728 像素上限。');
+      declared_blur_sigma: number(body.declared_blur_sigma ?? defaults.blurSigma, 0, 0.5, 'declared_blur_sigma') });
+    if (!NATIVE_BLUR_VALUES.includes(upscale.declared_blur_sigma)) fail(422, 'declared_blur_sigma 仅支持 0、0.30、0.35、0.40、0.45、0.50。');
+    if (image.width * image.height > NATIVE_LIMITS.generationPixels) fail(422, '独立放大输入不能超过官方 3145728 像素上限。');
     auxiliary = { operation, operationParameters: upscale };
   }
   return { ...auxiliary, action: operation, model: auxiliary.operationParameters.model, width: image.width, height: image.height, steps: 1, requestedSteps: 1, prompt: operation, tag: operation, artist: '', negative: '', seed: 0, sampleCount: 1, nocache: true };

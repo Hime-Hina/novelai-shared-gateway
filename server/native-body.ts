@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
+import { NATIVE_MAX_BODY_BYTES, MAX_IMAGE_BYTES } from './native-image.ts';
 
 interface NativeBodyRequest extends AsyncIterable<Uint8Array> {
   headers?: IncomingHttpHeaders;
@@ -16,11 +17,11 @@ interface Attachment {
   used: boolean;
 }
 
-const DEFAULT_MAX_BYTES=32*1024*1024;
+export const NATIVE_MULTIPART_MAX_PARTS = 36;
 function fail(statusCode: number, message: string): never {throw Object.assign(new Error(message),{statusCode,status:statusCode});}
 
 // 兼容 Aaalice/WOF 的官方 multipart 布局，只解析明确引用的图片分块。
-export async function readNativeBody(req: NativeBodyRequest,{jsonReader,maxBytes=DEFAULT_MAX_BYTES}: BodyOptions={}): Promise<unknown>{
+export async function readNativeBody(req: NativeBodyRequest,{jsonReader,maxBytes=NATIVE_MAX_BODY_BYTES}: BodyOptions={}): Promise<unknown>{
   const contentType=String(req.headers?.['content-type'] || '');
   const mediaType=contentType.split(';',1)[0].trim().toLowerCase();
   if(mediaType==='application/json'){
@@ -51,7 +52,7 @@ export async function readNativeBody(req: NativeBodyRequest,{jsonReader,maxBytes
   try{form=await new Response(Buffer.concat(chunks),{headers:{'content-type':contentType}}).formData();}
   catch{fail(400,'multipart 请求体格式错误');}
   const parts=[...form.entries()];
-  if(parts.length>36)fail(422,'multipart 附件数量过多');
+  if(parts.length>NATIVE_MULTIPART_MAX_PARTS)fail(422,'multipart 附件数量过多');
   const requests=parts.filter(([name])=>name==='request');
   if(requests.length>1)fail(422,'multipart 必须只有一个 request 部件');
   if(!requests.length){if(parts.length)fail(422,'multipart 包含未识别的部件');fail(400,'multipart 缺少 request 部件');}
@@ -70,7 +71,7 @@ export async function readNativeBody(req: NativeBodyRequest,{jsonReader,maxBytes
     const type=String(part.type||'').split(';',1)[0].toLowerCase();
     // 部分启动器给二进制 Vibe 编码也声明 image/png，内容由生成解析器验证。
     if(type&&!['image/png','image/jpeg','image/webp','application/octet-stream'].includes(type))fail(422,'multipart 图片部件的类型不受支持');
-    if(!part.size||part.size>8*1024*1024)fail(422,'multipart 单个图片部件必须非空且不超过 8 MiB');
+    if(!part.size||part.size>MAX_IMAGE_BYTES)fail(422,'multipart 单个图片部件必须非空且不超过 8 MiB');
     attachments.set(name,{part,base64:null,used:false});
   }
   const expand=async(container: unknown,key: string): Promise<void>=>{

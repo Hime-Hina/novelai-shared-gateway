@@ -195,20 +195,21 @@ test('新操作经过公平账本预扣和幂等退款，成功只结算一次',
   assert.deepEqual(quoteFairRequest(request),quoteNativeRequest(request));
   const balance=db.settings.fairQuota.balances.a;
   const initial=balance.anlasFixedAvailable;
+  assert.equal(initial,'2500');
   const failed={id:'encoding-failed',request};
   const held=reserveFairQuota(db,{id:'a'},failed,db.accounts[0],now);
-  assert.equal(held.amount,2);assert.equal(balance.anlasFixedAvailable,initial-2);
+  assert.equal(held.amount,'2');assert.equal(balance.anlasFixedAvailable,'2498');
   settleFairQuota(db,failed,false,now+1);settleFairQuota(db,failed,false,now+2);
   assert.equal(balance.anlasFixedAvailable,initial);
   const success={id:'upscale-ok',request:input({operation:'upscale',model:'nai-diffusion-5-curated',operationParameters:{image}})};
   reserveFairQuota(db,{id:'a'},success,db.accounts[0],now+3);
   settleFairQuota(db,success,true,now+4);settleFairQuota(db,success,true,now+5);settleFairQuota(db,success,false,now+6);
-  assert.equal(balance.anlasFixedAvailable,initial-1);assert.equal(db.settings.fairQuota.spent.anlas,1);
+  assert.equal(balance.anlasFixedAvailable,'2499');assert.equal(db.settings.fairQuota.spent.anlas,'1');
   const precise={id:'precise-ok',request:input({nativeParameters:{director_reference_images:[image]}})};
   reserveFairQuota(db,{id:'a'},precise,db.accounts[0],now+7);
-  assert.equal(precise.fairCharge.amount,5);assert.equal(balance.anlasFixedAvailable,initial-6);
+  assert.equal(precise.fairCharge.amount,'5');assert.equal(balance.anlasFixedAvailable,'2494');
   settleFairQuota(db,precise,true,now+8);settleFairQuota(db,precise,true,now+9);
-  assert.equal(balance.anlasFixedAvailable,initial-6);assert.equal(db.settings.fairQuota.spent.anlas,6);
+  assert.equal(balance.anlasFixedAvailable,'2494');assert.equal(db.settings.fairQuota.spent.anlas,'6');
 });
 
 

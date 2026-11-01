@@ -6,6 +6,7 @@ import type { ExtensionCodecType } from '@msgpack/msgpack';
 import { sizeMap } from '../public/generation-pricing.js';
 import { isV5MediumModel, V5_MEDIUM_STEPS } from '../public/v5-medium.js';
 import { applyV5MediumParameters, mediumNegativePrompt } from './v5-medium.ts';
+import type { MemberNormalizationContext } from './member-generation.ts';
 import { crc32, validateImageBytes, validateNativeImage } from './native-image.ts';
 import type { ImageMimeType, NativeGenerationRequest } from './native-image.ts';
 import type { PreviewProgress } from './job-previews.ts';
@@ -26,6 +27,7 @@ export interface ProviderRequest {
   action?: string; operation?: string;
   nativeParameters?: NativeGenerationRequest['nativeParameters'];
   operationParameters?: unknown;
+  normalizationContext?: MemberNormalizationContext;
 }
 export interface NormalizedImageRequest extends ProviderRequest {
   operationParameters?: never;
@@ -1029,11 +1031,11 @@ export function buildNovelAiParameters(request: ProviderRequest): Record<string,
     delete parameters.stream;
     const actual = { ...parameters, width: request.width, height: request.height, steps: request.steps,
       seed: request.seed, n_samples: 1 };
-    return isV5MediumModel(request.model) ? applyV5MediumParameters(actual, request.prompt) : actual;
+    return isV5MediumModel(request.model) ? applyV5MediumParameters(actual, request.prompt, request.normalizationContext?.native?.mediumProfile) : actual;
   }
   if (isModernImageModel(request.model)) {
     const parameters = buildV4Parameters(request);
-    return isV5MediumModel(request.model) ? applyV5MediumParameters(parameters, request.prompt) : parameters;
+    return isV5MediumModel(request.model) ? applyV5MediumParameters(parameters, request.prompt, request.normalizationContext?.native?.mediumProfile) : parameters;
   }
 
   return {
