@@ -12,7 +12,7 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 | 队列、批次、冷却与免费限制 | `queue-policy.ts`、`generation-request.ts`、`shared-capacity.ts`、`free-image-policy.ts` |
 | 会话、Discord 与管理入口 | `member-auth.ts`、`discord-auth.ts`、`member-routes.ts`、`owner-operations.ts` |
 | 原子持久化、冷历史与查询投影 | `store.ts`、`storage-schema.ts`、`sqlite-read-worker.ts` |
-| 产物恢复、本地/R2 存储与通知 | `result-files.ts`、`r2-storage.ts`、`cold-images.ts`、`state-events.ts` |
+| 产物恢复、本地/R2/PikPak 存储与通知 | `result-files.ts`、`r2-storage.ts`、`pikpak-storage.ts`、`cold-images.ts`、`state-events.ts` |
 
 已提交 SQLite 记录是当前权威数据；活动预留在 fairQuota，冷结算凭据优先于 job 中的旧副本。`fairQuotaSummary()` 当前仍会修改输入，查询调用者须使用独立副本。新版本将调整这些边界，详见[架构重构计划](../docs/architecture-refactor-plan.md)；事件溯源及[成员生成新接口](../docs/member-generation-contract.md)尚未实现。多执行器、多账号调度和数据库系统迁移已移至[后续计划](../docs/scaling-follow-up-plan.md)，不作为当前重构前置。
 

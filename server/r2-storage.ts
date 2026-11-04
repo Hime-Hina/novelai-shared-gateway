@@ -2,14 +2,17 @@ import { createHash, createHmac } from 'node:crypto';
 import { open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import type { PikPakStorage } from './pikpak-storage.ts';
 
 export const R2_IMAGE_LIMIT_BYTES = 9_500_000_000;
+export const R2_PIKPAK_THRESHOLD_BYTES = R2_IMAGE_LIMIT_BYTES * 0.9;
 export const MAX_STORED_IMAGE_BYTES = 64 * 1024 * 1024;
 export interface R2Object {
   bucket: string; key: string; byteLength: number; sha256: string;
 }
 export interface R2Image extends R2Object {
   verifiedAt?: string; localRemovedAt?: string;
+  pikpak?: { url: string; uploadedAt: string }; removedAt?: string;
 }
 export interface StoredImage {
   id?: string; file?: string; base64?: string; mimeType?: string;
@@ -89,6 +92,14 @@ export class R2Storage {
     return buffer;
   }
 
+  async removeImage(image: R2Image) {
+    this.check(image);
+    if (!image.key.startsWith('images/') || !image.pikpak?.uploadedAt) throw new Error('Confirmed PikPak upload is required before removing an R2 image');
+    const response = await this.request('DELETE', image.key);
+    await response.body?.cancel();
+    if (!response.ok && response.status !== 404) throw new Error(`R2 image removal failed (HTTP ${response.status})`);
+  }
+
   async listBackups() {
     const response = await this.request('GET', '', undefined, undefined, { 'list-type': '2', prefix: 'backups/', 'max-keys': '1000' });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`R2 backup listing failed (HTTP ${response.status})`); }
@@ -128,8 +139,9 @@ export class ImageStorage {
   readonly dataDir: string;
   readonly remote: R2Storage | null;
   readonly findImage: (id: string) => Promise<StoredImage | null>;
-  constructor(dataDir: string, remote: R2Storage | null, findImage: (id: string) => Promise<StoredImage | null>) {
-    this.dataDir = dataDir; this.remote = remote; this.findImage = findImage;
+  readonly pikpak: PikPakStorage | null;
+  constructor(dataDir: string, remote: R2Storage | null, findImage: (id: string) => Promise<StoredImage | null>, pikpak: PikPakStorage | null = null) {
+    this.dataDir = dataDir; this.remote = remote; this.findImage = findImage; this.pikpak = pikpak;
   }
 
   async open(image: StoredImage): Promise<{ handle: FileHandle } | { image: StoredImage }> {
@@ -154,9 +166,17 @@ export class ImageStorage {
       try { return await source.handle.readFile(); } finally { await source.handle.close(); }
     }
     if (source.image.r2?.verifiedAt) {
-      if (!this.remote) throw Object.assign(new Error('R2 storage is not configured'), { statusCode: 503 });
-      if (!source.image.r2.key.startsWith('images/')) throw Object.assign(new Error('invalid image object'), { statusCode: 403 });
-      return this.remote.get(source.image.r2).catch(() => { throw Object.assign(new Error('历史图片暂时无法从 R2 读取，请稍后重试'), { statusCode: 503 }); });
+      const object = source.image.r2;
+      if (!object.key.startsWith('images/')) throw Object.assign(new Error('invalid image object'), { statusCode: 403 });
+      try {
+        if (!object.removedAt && this.remote) {
+          try { return await this.remote.get(object); }
+          catch (error) { if (!this.pikpak) throw error; }
+        }
+        // Old snapshots retain the R2 descriptor; the SHA-256 also locates and verifies the PikPak copy.
+        if (this.pikpak) return await this.pikpak.get(object);
+        throw new Error('Image storage is not configured');
+      } catch { throw Object.assign(new Error('历史图片暂时无法从云端读取，请稍后重试'), { statusCode: 503 }); }
     }
     return Buffer.from(source.image.base64!, 'base64');
   }
@@ -166,7 +186,7 @@ export class ImageStorage {
     if ('handle' in source) {
       try { return (await source.handle.stat()).size > 0; } finally { await source.handle.close(); }
     }
-    // Durable verification is enough for admission; downloading later verifies content without a HEAD per view.
+    // Durable storage receipts are enough for admission; downloads verify the content on demand.
     return Boolean(source.image.r2?.verifiedAt || source.image.base64);
   }
 }

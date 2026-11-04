@@ -8,12 +8,14 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { brotliCompressSync } from 'node:zlib';
 import { JsonStore } from '../../server/store.ts';
 
-test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属、原图校验保持有效', { timeout: 20000 }, async t => {
+test('本地、R2 及压缩 PikPak 冷图经真实 HTTP 查看和下载；签名、归属、原图校验保持有效', { timeout: 20000 }, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-r2-http-'));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
   const sha256 = createHash('sha256').update(png).digest('hex');
+  const compressed = brotliCompressSync(png);
   const token = 'STA1N-synthetic-r2-member', createdAt = new Date().toISOString();
   const store = new JsonStore(dataDir); await store.init();
   await mkdir(path.join(dataDir, 'images'), { recursive: true });
@@ -21,17 +23,27 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
   await store.update(db => {
     db.users.push({ id: 'usr_r2', token, enabled: true, balance: 0, createdAt });
     db.users.push({ id: 'usr_other', token: 'STA1N-synthetic-other-member', enabled: true, balance: 0, createdAt });
-    for (const id of ['local', 'cloud', 'corrupt', 'missing']) {
-      db.images.push({ id, token, file: `images/${id}.png`, mimeType: 'image/png', createdAt, sha256, byteLength: png.length,
-        ...(['local', 'missing'].includes(id) ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${sha256}`,
-          sha256, byteLength: png.length, verifiedAt: createdAt, localRemovedAt: createdAt } }) });
+    for (const id of ['local', 'cloud', 'pikpak', 'corrupt', 'missing']) {
+      const imageHash = id === 'corrupt' ? 'f'.repeat(64) : sha256;
+      db.images.push({ id, token, file: `images/${id}.png`, mimeType: 'image/png', createdAt, sha256: imageHash, byteLength: png.length,
+        ...(['local', 'missing'].includes(id) ? {} : { r2: { bucket: 'synthetic-images', key: `images/${id}/${imageHash}`,
+          sha256: imageHash, byteLength: png.length, verifiedAt: createdAt, localRemovedAt: createdAt,
+          ...(id === 'pikpak' ? { removedAt: createdAt, pikpak: { url: 'https://dav.pikpak.test/archive/', uploadedAt: createdAt } } : {}) } }) });
       db.jobs.push({ id: `job_${id}`, userToken: token, status: 'done', imageId: id, createdAt, completedAt: createdAt });
     }
   }, { immediate: true });
   await store.close();
   const preload = path.join(dataDir, 'r2-preload.mjs');
   await writeFile(preload, `
+    import { getPatcher } from ${JSON.stringify(import.meta.resolve('webdav'))};
+    getPatcher().patch('fetch', (...args) => globalThis.fetch(...args));
     globalThis.fetch = async (url, options) => {
+      url = new URL(url);
+      if (url.hostname === 'dav.pikpak.test') {
+        if (options.method !== 'GET' || new Headers(options.headers).get('authorization') !== 'Basic ' + Buffer.from('synthetic-pikpak-user:synthetic-pikpak-secret').toString('base64')) throw new Error('Unexpected WebDAV request');
+        if (url.pathname !== '/archive/${sha256}.br') return new Response(null, { status: 404 });
+        return new Response(Buffer.from('${compressed.toString('base64')}', 'base64'));
+      }
       if (url.hostname !== '${'a'.repeat(32)}.r2.cloudflarestorage.com' || options.method !== 'GET') throw new Error('Unexpected external request');
       const bytes = Buffer.from('${png.toString('base64')}', 'base64');
       if (url.pathname.includes('/corrupt/')) bytes[0] ^= 1;
@@ -46,7 +58,8 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
     cwd: fileURLToPath(new URL('../../', import.meta.url)), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...env, DATA_DIR: dataDir, ADMIN_TOKEN: 'synthetic-r2-admin-12345678901234567890', HOST: '127.0.0.1', PORT: String(port),
       PUBLIC_BASE_URL: base, R2_ACCOUNT_ID: 'a'.repeat(32), R2_BUCKET: 'synthetic-images',
-      R2_ACCESS_KEY_ID: 'synthetic-access', R2_SECRET_ACCESS_KEY: 'synthetic-secret' }
+      R2_ACCESS_KEY_ID: 'synthetic-access', R2_SECRET_ACCESS_KEY: 'synthetic-secret',
+      PIKPAK_WEBDAV_URL: 'https://dav.pikpak.test/archive/', PIKPAK_WEBDAV_USERNAME: 'synthetic-pikpak-user', PIKPAK_WEBDAV_PASSWORD: 'synthetic-pikpak-secret' }
   });
   const exit = once(child, 'exit'); let output = '';
   child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { output += chunk; });
@@ -58,11 +71,13 @@ test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属�
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   const request = (url, auth = '') => fetch(new URL(url, base), { headers: auth ? { authorization: `Bearer ${auth}` } : {}, signal: AbortSignal.timeout(3000) });
-  for (const id of ['local', 'cloud']) {
+  for (const id of ['local', 'cloud', 'pikpak']) {
     const view = await request(`/api/jobs/job_${id}`, token); assert.equal(view.status, 200);
     const body = await view.json();
     assert.ok(!JSON.stringify(body).includes('cloudflarestorage.com'));
     assert.ok(!JSON.stringify(body).includes('synthetic-secret'));
+    assert.ok(!JSON.stringify(body).includes('synthetic-pikpak-secret'));
+    assert.ok(!JSON.stringify(body).includes('dav.pikpak.test'));
     for (const response of [await request(body.imageUrl), await request(`/api/jobs/job_${id}/content`, token)]) {
       assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /image\/png/);
       assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);

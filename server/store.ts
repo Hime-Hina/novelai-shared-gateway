@@ -14,7 +14,7 @@ import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from './free-image-policy.ts';
 import { activityDate } from './activity-heatmap.ts';
-import { R2_IMAGE_LIMIT_BYTES, type R2Image } from './r2-storage.ts';
+import { R2_IMAGE_LIMIT_BYTES, R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
 
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
@@ -39,7 +39,7 @@ export interface StoredGenerationRequest extends ProviderRequest {
   operationParameters?: object;
 }
 export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
-  r2?: R2Image; r2LastAttemptAt?: string; r2Error?: string;
+  r2?: R2Image; r2LastAttemptAt?: string; r2Error?: string; pikpakLastAttemptAt?: string; pikpakError?: string;
   [key: string]: unknown;
   token?: string; accountId?: string; imageId?: string; requestId?: string; jobId?: string; memberId?: string; userId?: string;
   createdAt?: string; completedAt?: string; cancelledAt?: string; deadlineAt?: string; queuedDeadlineAt?: string;
@@ -1140,10 +1140,10 @@ export class JsonStore {
 
   readR2Usage() {
     const rows = this.sqlite!.prepare<[], { bytes: number; images: number; pending: number; errors: number }>(`
-      SELECT COALESCE(SUM(json_extract(data, '$.r2.byteLength')), 0) AS bytes,
-        COUNT(CASE WHEN json_extract(data, '$.r2.verifiedAt') IS NOT NULL THEN 1 END) AS images,
+      SELECT COALESCE(SUM(CASE WHEN json_extract(data, '$.r2.removedAt') IS NULL THEN json_extract(data, '$.r2.byteLength') END), 0) AS bytes,
+        COUNT(CASE WHEN json_extract(data, '$.r2.verifiedAt') IS NOT NULL AND json_extract(data, '$.r2.removedAt') IS NULL THEN 1 END) AS images,
         COUNT(CASE WHEN json_type(data, '$.r2') = 'object' AND json_extract(data, '$.r2.verifiedAt') IS NULL THEN 1 END) AS pending,
-        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
+        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL OR json_extract(data, '$.pikpakError') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
     return { ...rows, limitBytes: R2_IMAGE_LIMIT_BYTES };
   }
 
@@ -1160,6 +1160,18 @@ export class JsonStore {
         UNION SELECT json_extract(data, '$.resultPending.imageId') FROM jobs INDEXED BY idx_jobs_result_pending
           WHERE json_type(data, '$.resultPending') = 'object' AND json_extract(data, '$.resultPending.imageId') IS NOT NULL)
       ORDER BY order_value ASC LIMIT 1`, { cutoff: new Date(now - 86400000).toISOString(), retry: new Date(now - 3600000).toISOString() })[0] || null;
+  }
+
+  nextPikPakImage(now = Date.now()) {
+    return this.selectItems('images', `WHERE mime_type IN ('image/png', 'image/jpeg', 'image/webp')
+      AND COALESCE(mock, 0) = 0 AND json_extract(data, '$.r2.localRemovedAt') IS NOT NULL
+      AND json_extract(data, '$.r2.verifiedAt') IS NOT NULL AND json_extract(data, '$.r2.removedAt') IS NULL
+      AND (json_extract(data, '$.r2.pikpak.uploadedAt') IS NOT NULL OR json_extract(data, '$.r2.verifiedAt') < @cutoff OR @pressure)
+      AND (json_extract(data, '$.pikpakError') IS NULL OR json_extract(data, '$.pikpakLastAttemptAt') < @retry)
+      ORDER BY json_extract(data, '$.r2.verifiedAt') ASC, order_value ASC LIMIT 1`, {
+      cutoff: new Date(now - 7 * 86400000).toISOString(), retry: new Date(now - 3600000).toISOString(),
+      pressure: this.readR2Usage().bytes >= R2_PIKPAK_THRESHOLD_BYTES ? 1 : 0
+    })[0] || null;
   }
 
   readOperatingLossSettlements(lossEventId: string) {

@@ -3,6 +3,7 @@ import { lstat, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { R2Storage, R2_IMAGE_LIMIT_BYTES, MAX_STORED_IMAGE_BYTES, storedImagePath } from './r2-storage.ts';
 import type { JsonStore, StoreItem } from './store.ts';
+import type { PikPakStorage } from './pikpak-storage.ts';
 
 export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle = () => true, now = Date.now()) {
   const candidate = await store.update(() => idle() ? store.nextColdImage(now) : null, { persist: false });
@@ -65,6 +66,40 @@ export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle
     await store.update(() => {
       const current: StoreItem | null = store.loadItemForUpdate('images', candidate.id);
       if (current) { current.r2LastAttemptAt = new Date(now).toISOString(); current.r2Error = '转存校验或写入失败，保留现有副本并稍后重试'; }
+    }, { immediate: true, dirtyRows: { images: [candidate.id] } });
+    throw error;
+  }
+}
+
+export async function archivePikPakImage(store: JsonStore, remote: R2Storage, pikpak: PikPakStorage, idle = () => true, now = Date.now()) {
+  const candidate = await store.update(() => idle() ? store.nextPikPakImage(now) : null, { persist: false });
+  if (!candidate) return false;
+  try {
+    const object = candidate.r2!;
+    if (object.pikpak && object.pikpak.url !== pikpak.config.url) throw new Error('PikPak archive directory changed');
+    if (!object.pikpak?.uploadedAt) {
+      const buffer = await remote.get(object);
+      await pikpak.put(object, buffer);
+    }
+    const uploaded = await store.update(() => {
+      const current = store.loadItemForUpdate('images', candidate.id);
+      if (!current?.r2 || current.r2.key !== object.key || current.r2.removedAt) throw new Error('R2 image changed during PikPak archival');
+      current.r2.pikpak = { url: pikpak.config.url, uploadedAt: object.pikpak?.uploadedAt ?? new Date(now).toISOString() };
+      current.pikpakLastAttemptAt = new Date(now).toISOString(); delete current.pikpakError;
+      return current.r2;
+    }, { immediate: true, dirtyRows: { images: [candidate.id] } });
+    if (!idle()) return true;
+    await remote.removeImage(uploaded);
+    await store.update(() => {
+      const current = store.loadItemForUpdate('images', candidate.id);
+      if (!current?.r2 || current.r2.key !== uploaded.key) throw new Error('R2 image changed during removal');
+      current.r2.removedAt = new Date(now).toISOString(); delete current.pikpakError;
+    }, { immediate: true, dirtyRows: { images: [candidate.id] } });
+    return true;
+  } catch (error) {
+    await store.update(() => {
+      const current = store.loadItemForUpdate('images', candidate.id);
+      if (current) { current.pikpakLastAttemptAt = new Date(now).toISOString(); current.pikpakError = 'PikPak 转存或删除源副本失败，保留已有副本并稍后重试'; }
     }, { immediate: true, dirtyRows: { images: [candidate.id] } });
     throw error;
   }

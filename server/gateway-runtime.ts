@@ -2,7 +2,8 @@ import { createGenerationPayloadBudget, webJobRequestSummary, singleGenerationRe
 import { generationRequestFingerprint, requestNormalizationDefaults } from './request-fingerprint.ts';
 import { describeStoredResult, publishStoredResult } from './result-files.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
-import { archiveColdImage } from './cold-images.ts';
+import { archiveColdImage, archivePikPakImage } from './cold-images.ts';
+import { PikPakStorage, pikpakConfig } from './pikpak-storage.ts';
 import { nativeImageMsgpack, nativeImageSse, nativeImagesJson } from './native-stream.ts';
 import { withQuotaRequestDeadline } from './quota-timeout.ts';
 import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCompletion, cooldownRetryAfter } from './shared-capacity.ts';
@@ -139,7 +140,9 @@ process.env.MOCK_WHEN_NO_ACCOUNT = 'false';
 const store = new JsonStore(dataDir);
 const coldConfig = r2Config();
 const r2Storage = coldConfig ? new R2Storage(coldConfig) : null;
-const imageStorage = new ImageStorage(dataDir, r2Storage, id => store.findImage(id));
+const archiveConfig = pikpakConfig();
+const pikpakStorage = archiveConfig ? new PikPakStorage(archiveConfig) : null;
+const imageStorage = new ImageStorage(dataDir, r2Storage, id => store.findImage(id), pikpakStorage);
 const generationPayloadBudget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes([...runningJobControls.values()]));
 const fairShareMode = process.env.FAIR_SHARE_MODE === 'true';
 // 公平账本和任务状态必须同步落盘，不能使用延迟写入。
@@ -1847,10 +1850,13 @@ function startColdImages() {
     let moved = false;
     try {
       if (idle()) {
-        coldImagePromise = archiveColdImage(store, r2Storage, idle);
+        coldImagePromise = (async () => {
+          if (pikpakStorage && await archivePikPakImage(store, r2Storage, pikpakStorage, idle)) return true;
+          return archiveColdImage(store, r2Storage, idle);
+        })();
         moved = await coldImagePromise === true;
       }
-    } catch { console.error('[storage] R2 cold image archival failed; existing copies retained, retry deferred.'); }
+    } catch { console.error('[storage] Cold image archival failed; retry deferred.'); }
     finally {
       coldImagePromise = null;
       if (!runtimeClosing) { coldImageTimer = setTimeout(run, moved ? 1000 : 60000); coldImageTimer.unref?.(); }
