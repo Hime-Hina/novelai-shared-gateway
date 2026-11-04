@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('backup_production', Path(__file__).resolve().parents[2] / 'scripts/backup-production.py')
 module = importlib.util.module_from_spec(spec)
@@ -62,11 +63,22 @@ class BackupTests(unittest.TestCase):
 
     def test_retention_preserves_cutover_and_latest(self):
         pinned = self.run_backup(label='cutover')
-        old = self.run_backup(keep=1)
-        latest = self.run_backup(keep=1)
+        daily = [self.run_backup() for _ in range(8)]
+        old, latest = daily[0], daily[-1]
+        self.assertTrue(old.exists(), 'Creating a local snapshot must not expire older backups')
+        module.retain_daily_backups(self.destination)
         self.assertFalse(old.exists())
         self.assertTrue(pinned.exists())
+        self.assertEqual(len(list(self.destination.glob('daily-*'))), 7)
         module.verify(latest)
+
+    def test_failed_remote_upload_keeps_all_previous_local_backups(self):
+        daily = [self.run_backup() for _ in range(8)]
+        with patch.object(module, 'backup', return_value=daily[-1]), patch.object(module, 'production_configuration', return_value={}), \
+                patch.object(module, 'upload_business_backup', side_effect=RuntimeError('synthetic upload failure')), \
+                patch('sys.argv', ['backup-production.py']):
+            with self.assertRaises(RuntimeError): module.main()
+        self.assertTrue(all(snapshot.exists() for snapshot in daily))
 
     def test_refuses_destination_inside_live_data(self):
         with self.assertRaises(ValueError):

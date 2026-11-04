@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, open, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { R2Storage, R2_IMAGE_LIMIT_BYTES, MAX_STORED_IMAGE_BYTES, storedImagePath } from './r2-storage.ts';
+import { R2Storage, MAX_STORED_IMAGE_BYTES, storedImagePath } from './r2-storage.ts';
 import type { JsonStore, StoreItem } from './store.ts';
 import type { PikPakStorage } from './pikpak-storage.ts';
 
@@ -30,7 +30,6 @@ export async function archiveColdImage(store: JsonStore, remote: R2Storage, idle
       const current = store.loadItemForUpdate('images', candidate.id);
       if (!current || current.file !== candidate.file || !idle()) return null;
       if (!current.r2) {
-        if (store.readR2Usage().bytes + buffer.length > R2_IMAGE_LIMIT_BYTES) return null;
         current.r2 = { bucket: remote.config.bucket, key: `images/${current.id}/${sha256}`, sha256, byteLength: buffer.length };
       }
       if (current.r2.sha256 !== sha256 || current.r2.byteLength !== buffer.length) throw new Error('R2 reservation checksum mismatch');

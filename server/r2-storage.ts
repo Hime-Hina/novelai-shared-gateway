@@ -1,12 +1,15 @@
 import { createHash, createHmac } from 'node:crypto';
-import { open } from 'node:fs/promises';
+import { createReadStream, type ReadStream } from 'node:fs';
+import { open, rm } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type { PikPakStorage } from './pikpak-storage.ts';
 
-export const R2_IMAGE_LIMIT_BYTES = 9_500_000_000;
-export const R2_PIKPAK_THRESHOLD_BYTES = R2_IMAGE_LIMIT_BYTES * 0.9;
+export const R2_PIKPAK_THRESHOLD_BYTES = 8_550_000_000;
 export const MAX_STORED_IMAGE_BYTES = 64 * 1024 * 1024;
+// shortcut: backups use single-part PUT, add multipart upload when a backup reaches R2's 5 GiB limit.
+const MAX_R2_UPLOAD_BYTES = 5 * 1024 ** 3;
 export interface R2Object {
   bucket: string; key: string; byteLength: number; sha256: string;
 }
@@ -23,6 +26,12 @@ const hash = (value: string | Buffer) => createHash('sha256').update(value).dige
 const hmac = (key: string | Buffer, value: string) => createHmac('sha256', key).update(value).digest();
 const encode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g, char => '%' + char.charCodeAt(0).toString(16).toUpperCase());
 
+export async function fileChecksums(filename: string) {
+  const sha256 = createHash('sha256'), md5 = createHash('md5'); let byteLength = 0;
+  for await (const chunk of createReadStream(filename)) { sha256.update(chunk); md5.update(chunk); byteLength += chunk.length; }
+  return { byteLength, sha256: sha256.digest('hex'), md5: md5.digest('base64') };
+}
+
 export function r2Config(env: NodeJS.ProcessEnv = process.env): R2Config | null {
   const fields = [env.R2_ACCOUNT_ID, env.R2_BUCKET, env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY];
   if (fields.every(value => !value)) return null;
@@ -32,13 +41,13 @@ export function r2Config(env: NodeJS.ProcessEnv = process.env): R2Config | null 
 }
 
 // Redirects and automatic retries are disabled; callers reconcile uncertain writes by checksum.
-export function signedR2Request(config: R2Config, method: 'GET' | 'PUT' | 'DELETE', key: string, body?: Buffer, mimeType?: string, now = new Date(), query: Record<string, string> = {}) {
+export function signedR2Request(config: R2Config, method: 'GET' | 'PUT' | 'DELETE', key: string, body?: Buffer, mimeType?: string, now = new Date(), query: Record<string, string> = {}, checksums?: { sha256: string; md5: string }) {
   const url = new URL(`https://${config.accountId}.r2.cloudflarestorage.com/${encode(config.bucket)}/${key.split('/').map(encode).join('/')}`);
   const timestamp = now.toISOString().replace(/[:-]|\.\d{3}/g, ''), date = timestamp.slice(0, 8);
-  const scope = `${date}/auto/s3/aws4_request`, payloadHash = hash(body ?? '');
+  const scope = `${date}/auto/s3/aws4_request`, payloadHash = checksums?.sha256 ?? hash(body ?? '');
   const headers: Record<string, string> = { host: url.host, 'x-amz-date': timestamp, 'x-amz-content-sha256': payloadHash };
-  if (body) Object.assign(headers, { 'content-type': mimeType || 'application/octet-stream',
-    'content-md5': createHash('md5').update(body).digest('base64'), 'if-none-match': '*' });
+  if (body || checksums) Object.assign(headers, { 'content-type': mimeType || 'application/octet-stream',
+    'content-md5': checksums?.md5 ?? createHash('md5').update(body!).digest('base64'), 'if-none-match': '*' });
   const names = Object.keys(headers).sort(), signedHeaders = names.join(';');
   const canonicalQuery = Object.keys(query).sort().map(name => `${encode(name)}=${encode(query[name]!)}`).join('&');
   url.search = canonicalQuery;
@@ -53,10 +62,12 @@ export class R2Storage {
   readonly config: R2Config;
   constructor(config: R2Config) { this.config = config; }
 
-  private async request(method: 'GET' | 'PUT' | 'DELETE', key: string, body?: Buffer, mimeType?: string, query?: Record<string, string>) {
-    const signed = signedR2Request(this.config, method, key, body, mimeType, new Date(), query);
-    return fetch(signed.url, { method, headers: signed.headers, body: body as BodyInit | undefined,
-      redirect: 'error', signal: AbortSignal.timeout(30000) });
+  private async request(method: 'GET' | 'PUT' | 'DELETE', key: string, body?: Buffer | ReadStream, mimeType?: string, query?: Record<string, string>, checksums?: Awaited<ReturnType<typeof fileChecksums>>) {
+    const signed = signedR2Request(this.config, method, key, Buffer.isBuffer(body) ? body : undefined, mimeType, new Date(), query, checksums);
+    if (checksums) signed.headers['content-length'] = String(checksums.byteLength);
+    const options = { method, headers: signed.headers, body: body as BodyInit | undefined, duplex: 'half',
+      redirect: 'error' as const, signal: AbortSignal.timeout(key.startsWith('backups/') ? 10 * 60_000 : 30000) };
+    return fetch(signed.url, options);
   }
 
   async put(image: R2Object, buffer: Buffer, mimeType: string) {
@@ -92,6 +103,44 @@ export class R2Storage {
     return buffer;
   }
 
+  async putFile(image: R2Object, filename: string) {
+    this.check(image);
+    const checksums = await fileChecksums(filename);
+    if (checksums.byteLength !== image.byteLength || checksums.sha256 !== image.sha256) throw new Error('R2 upload source checksum mismatch');
+    const source = createReadStream(filename);
+    try {
+      const response = await this.request('PUT', image.key, source, 'application/octet-stream', undefined, checksums);
+      await response.body?.cancel();
+      if (!response.ok && response.status !== 412) throw new Error(`R2 upload failed (HTTP ${response.status})`);
+    } finally { source.destroy(); }
+  }
+
+  async getFile(image: R2Object, filename: string) {
+    this.check(image);
+    const response = await this.request('GET', image.key);
+    if (!response.ok) { await response.body?.cancel(); throw new Error(`R2 read failed (HTTP ${response.status})`); }
+    if (!response.body || response.headers.has('content-length') && Number(response.headers.get('content-length')) !== image.byteLength) {
+      await response.body?.cancel(); throw new Error('R2 object length mismatch');
+    }
+    let handle: FileHandle;
+    try { handle = await open(filename, 'wx', 0o600); }
+    catch (error) { await response.body.cancel(); throw error; }
+    let verified = false, length = 0;
+    const digest = createHash('sha256');
+    try {
+      for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+        length += chunk.length;
+        if (length > image.byteLength) throw new Error('R2 object exceeds recorded length');
+        digest.update(chunk); await handle.writeFile(chunk);
+      }
+      if (length !== image.byteLength || digest.digest('hex') !== image.sha256) throw new Error('R2 object checksum mismatch');
+      await handle.sync(); verified = true;
+    } finally {
+      await handle.close();
+      if (!verified) await rm(filename, { force: true });
+    }
+  }
+
   async removeImage(image: R2Image) {
     this.check(image);
     if (!image.key.startsWith('images/') || !image.pikpak?.uploadedAt) throw new Error('Confirmed PikPak upload is required before removing an R2 image');
@@ -101,17 +150,26 @@ export class R2Storage {
   }
 
   async listBackups() {
-    const response = await this.request('GET', '', undefined, undefined, { 'list-type': '2', prefix: 'backups/', 'max-keys': '1000' });
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`R2 backup listing failed (HTTP ${response.status})`); }
-    const xml = await response.text();
-    if (!xml.includes('<ListBucketResult') || !xml.includes('</ListBucketResult>')
-      || !/<IsTruncated>false<\/IsTruncated>/.test(xml)) throw new Error('R2 backup listing is incomplete');
-    return [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)].map(match => {
-      const key = /<Key>([^<]+)<\/Key>/.exec(match[1]!)?.[1];
-      const bytes = Number(/<Size>(\d+)<\/Size>/.exec(match[1]!)?.[1]);
-      if (!key?.startsWith('backups/') || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid R2 backup listing');
-      return { key, bytes };
-    });
+    const rows: { key: string; bytes: number }[] = [], seen = new Set<string>();
+    const parser = new XMLParser({ ignoreAttributes: true, parseTagValue: false });
+    let token = '';
+    do {
+      const response = await this.request('GET', '', undefined, undefined, { 'list-type': '2', prefix: 'backups/', 'max-keys': '1000', ...(token ? { 'continuation-token': token } : {}) });
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`R2 backup listing failed (HTTP ${response.status})`); }
+      const xml = await response.text();
+      if (XMLValidator.validate(xml) !== true) throw new Error('Invalid R2 backup listing');
+      const result = parser.parse(xml)?.ListBucketResult;
+      if (!result || !['true', 'false'].includes(result.IsTruncated)) throw new Error('R2 backup listing is incomplete');
+      for (const item of result.Contents === undefined ? [] : Array.isArray(result.Contents) ? result.Contents : [result.Contents]) {
+        const key = item?.Key, bytes = Number(item?.Size);
+        if (typeof key !== 'string' || !key.startsWith('backups/') || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid R2 backup listing');
+        rows.push({ key, bytes });
+      }
+      token = result.IsTruncated === 'true' ? result.NextContinuationToken : '';
+      if (typeof token !== 'string' || result.IsTruncated === 'true' && (!token || seen.has(token))) throw new Error('R2 backup listing is incomplete');
+      seen.add(token);
+    } while (token);
+    return rows;
   }
 
   async removeBackup(image: R2Object) {
@@ -125,7 +183,7 @@ export class R2Storage {
   private check(image: R2Object) {
     if (image.bucket !== this.config.bucket || !/^(?:images\/[A-Za-z0-9_-]{1,128}|backups\/daily-[0-9TZ.]+)\/[a-f0-9]{64}$/.test(image.key)
       || !/^[a-f0-9]{64}$/.test(image.sha256) || !Number.isSafeInteger(image.byteLength)
-      || image.byteLength < 1 || image.byteLength > MAX_STORED_IMAGE_BYTES) throw new Error('Invalid R2 object descriptor');
+      || image.byteLength < 1 || image.byteLength > (image.key.startsWith('images/') ? MAX_STORED_IMAGE_BYTES : MAX_R2_UPLOAD_BYTES)) throw new Error('Invalid R2 object descriptor');
   }
 }
 

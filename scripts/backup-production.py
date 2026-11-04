@@ -121,7 +121,7 @@ def clean_archived_images(source, destination):
     return removed, released
 
 
-def backup(source, destination, configuration, *, label='daily', keep=7):
+def backup(source, destination, configuration, *, label='daily'):
     source, destination = source.resolve(), destination.resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Backup destination must be outside live data')
@@ -160,14 +160,17 @@ def backup(source, destination, configuration, *, label='daily', keep=7):
             os.fsync(directory)
         finally:
             os.close(directory)
-        # Only this script's completed daily snapshots expire. Cutover/legacy backups stay pinned.
-        daily = sorted(p for p in destination.glob('daily-*') if not p.is_symlink() and (p / 'manifest.json').is_file())
-        for old in daily[:-keep]:
-            shutil.rmtree(old)
         return result
     finally:
         if work.exists():
             shutil.rmtree(work)
+
+
+def retain_daily_backups(destination):
+    # Call only after the new snapshot and its configured remote upload have succeeded.
+    daily = sorted(p for p in destination.glob('daily-*') if not p.is_symlink() and (p / 'manifest.json').is_file())
+    for old in daily[:-7]:
+        shutil.rmtree(old)
 
 
 def production_configuration():
@@ -234,6 +237,7 @@ def main():
             upload_business_backup(result)
             if (result / 'r2-backup.json').is_file():
                 print('Encrypted R2 business backup verified:', result.name)
+            retain_daily_backups(result.parent)
             count, size = clean_archived_images(Path('/var/lib/novelai-shared-gateway'), result.parent)
             print('Verified duplicate backup images removed:', count, 'logical bytes:', size)
 

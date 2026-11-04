@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { JsonStore } from '../../server/store.ts';
 import { archiveColdImage } from '../../server/cold-images.ts';
-import { ImageStorage, R2Storage, R2_IMAGE_LIMIT_BYTES, r2Config, signedR2Request } from '../../server/r2-storage.ts';
+import { ImageStorage, R2Storage, R2_PIKPAK_THRESHOLD_BYTES, r2Config, signedR2Request } from '../../server/r2-storage.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -83,7 +83,7 @@ test('超过一天的图片原字节转存，参数保留；陈旧记录、历�
   assert.deepEqual(await f.storage.read(await f.store.findImage('img_warm')), png);
   await f.store.close(); await f.store.init();
   assert.deepEqual(await f.storage.read(await f.store.findImage(image.id)), png);
-  assert.deepEqual(f.store.readR2Usage(), { bytes: png.length, images: 1, pending: 0, errors: 0, limitBytes: R2_IMAGE_LIMIT_BYTES });
+  assert.deepEqual(f.store.readR2Usage(), { bytes: png.length, images: 1, pending: 0, errors: 0, archiveAtBytes: R2_PIKPAK_THRESHOLD_BYTES });
 });
 
 for (const failure of ['upload', 'checksum', 'database']) {
@@ -120,13 +120,14 @@ test('上传结果未知时保留原图；重新启动后复用同一预留 key 
   assert.ok((await f.store.findImage(image.id)).r2.verifiedAt, 'R2 暂时故障不删除历史记录');
 });
 
-test('9.5 GB 上限包括未确认上传，达到上限不发请求；忙时不上传', async t => {
+test('R2 水位只触发转冷，不阻止本地图片上传；忙时不上传', async t => {
   const f = await fixture(t); await f.seed('img_limit');
   await f.seed('img_reserved', { r2: { bucket: config.bucket, key: 'images/img_reserved/' + digest(png),
-    byteLength: R2_IMAGE_LIMIT_BYTES, sha256: digest(png) }, r2Error: 'retry later', r2LastAttemptAt: new Date(now).toISOString() });
-  assert.equal(await archiveColdImage(f.store, f.remote, () => true, now), false);
+    byteLength: 10_000_000_000, sha256: digest(png) }, r2Error: 'retry later', r2LastAttemptAt: new Date(now).toISOString() });
   assert.equal(await archiveColdImage(f.store, f.remote, () => false, now), false);
   assert.equal(f.calls.length, 0);
+  assert.equal(await archiveColdImage(f.store, f.remote, () => true, now), true);
+  assert.equal(f.store.readR2Usage().bytes, 10_000_000_000 + png.length);
 });
 
 test('已校验并移除本地但收尾未提交的情况可恢复，文件路径越界拒绝', async t => {
@@ -172,6 +173,22 @@ test('已退出内存缓存的冷图仍可转存，持久顺序与其他图片�
   assert.deepEqual(f.store.sqlite.prepare('SELECT id, order_value FROM images ORDER BY order_value').all(), before);
   assert.deepEqual(await f.storage.read(await f.store.findImage('img_old')), png);
   assert.deepEqual(await f.storage.read(await f.store.findImage('img_new')), png);
+});
+
+test('备份对象列表完整翻页，XML 转义的续页令牌正确签名；重复令牌拒绝', async t => {
+  let calls = 0, repeat = false;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.method, 'GET'); calls++;
+    const token = url.searchParams.get('continuation-token');
+    if (token) assert.equal(token, 'next&token');
+    return new Response('<ListBucketResult><IsTruncated>' + (!token || repeat ? 'true' : 'false') + '</IsTruncated>'
+      + (!token || repeat ? '<NextContinuationToken>next&amp;token</NextContinuationToken>' : '')
+      + '<Contents><Key>backups/daily-20261021T000000Z/' + digest(png) + '</Key><Size>68</Size></Contents></ListBucketResult>');
+  });
+  const remote = new R2Storage(config);
+  assert.equal((await remote.listBackups()).length, 2); assert.equal(calls, 2);
+  repeat = true; calls = 0;
+  await assert.rejects(remote.listBackups(), /incomplete/); assert.equal(calls, 2);
 });
 
 test('冷图筛选复用任务及图片索引，不对每张图片重复扫描全部任务；待恢复两种关联都保留', async t => {

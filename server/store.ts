@@ -14,7 +14,7 @@ import { queuedDeadlineTimestamp } from './queue-policy.ts';
 import { queryFailureAccounting } from './failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from './free-image-policy.ts';
 import { activityDate } from './activity-heatmap.ts';
-import { R2_IMAGE_LIMIT_BYTES, R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
+import { R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
 
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
@@ -1143,8 +1143,16 @@ export class JsonStore {
       SELECT COALESCE(SUM(CASE WHEN json_extract(data, '$.r2.removedAt') IS NULL THEN json_extract(data, '$.r2.byteLength') END), 0) AS bytes,
         COUNT(CASE WHEN json_extract(data, '$.r2.verifiedAt') IS NOT NULL AND json_extract(data, '$.r2.removedAt') IS NULL THEN 1 END) AS images,
         COUNT(CASE WHEN json_type(data, '$.r2') = 'object' AND json_extract(data, '$.r2.verifiedAt') IS NULL THEN 1 END) AS pending,
-        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL OR json_extract(data, '$.pikpakError') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
-    return { ...rows, limitBytes: R2_IMAGE_LIMIT_BYTES };
+        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
+    return { ...rows, archiveAtBytes: R2_PIKPAK_THRESHOLD_BYTES };
+  }
+
+  readPikPakUsage() {
+    return this.sqlite!.prepare<[], { originalBytes: number; images: number; pending: number; errors: number }>(`
+      SELECT COALESCE(SUM(CASE WHEN json_extract(data, '$.r2.pikpak.uploadedAt') IS NOT NULL THEN json_extract(data, '$.r2.byteLength') END), 0) AS originalBytes,
+        COUNT(CASE WHEN json_extract(data, '$.r2.pikpak.uploadedAt') IS NOT NULL THEN 1 END) AS images,
+        COUNT(CASE WHEN json_extract(data, '$.r2.pikpak.uploadedAt') IS NOT NULL AND json_extract(data, '$.r2.removedAt') IS NULL THEN 1 END) AS pending,
+        COUNT(CASE WHEN json_extract(data, '$.pikpakError') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
   }
 
   nextColdImage(now = Date.now()) {

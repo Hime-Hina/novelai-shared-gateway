@@ -23,12 +23,15 @@ export interface ManagementState {
   serviceResources?: ServiceResources
 }
 export interface ServiceResources {
-  r2?: { bytes: number; images: number; pending: number; errors: number; limitBytes: number; operations?: {
+  r2?: { bytes: number; images: number; pending: number; errors: number; archiveAtBytes: number;
+    backups?: { bytes: number | null; count: number | null; checkedAt: string | null; status: 'unconfigured' | 'loading' | 'ready' | 'stale' | 'unavailable' };
+    operations?: {
     status: 'unconfigured' | 'loading' | 'ready' | 'stale' | 'unavailable'
     periodStart: string | null; periodEnd: string | null; checkedAt: string | null
     classA: { used: number | null; limit: number; remaining: number | null }
     classB: { used: number | null; limit: number; remaining: number | null }
   } }
+  pikpak?: { originalBytes: number; images: number; pending: number; errors: number }
   memory: { rssBytes: number; heapUsedBytes: number; heapTotalBytes: number }
   uptimeSeconds: number
   data: { bytes: number; checkedAt: string } | null

@@ -81,6 +81,7 @@ test('R2 超过七天的图片无损压缩上传，不回读网盘；确认落�
   const archived = await f.store.findImage(image.id), compressed = f.objects.get(dav.url + image.sha256 + '.br');
   assert.deepEqual(brotliDecompressSync(compressed), png);
   assert.ok(archived.r2.pikpak.uploadedAt); assert.ok(archived.r2.removedAt);
+  assert.deepEqual(f.store.readPikPakUsage(), { originalBytes: png.length, images: 1, pending: 0, errors: 0 });
   assert.equal(archived.fullPrompt, image.fullPrompt);
   assert.equal(f.store.readR2Usage().bytes, 0); assert.equal(f.store.readR2Usage().images, 0);
   assert.equal(await f.storage.available(image), true); assert.equal(f.calls.length, 3);
@@ -112,13 +113,13 @@ for (const failure of ['upload', 'upload-unknown', 'receipt', 'delete']) {
     if (failure === 'receipt') f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_receipt BEFORE INSERT ON images
       WHEN json_extract(NEW.data, '$.r2.pikpak.uploadedAt') IS NOT NULL BEGIN SELECT RAISE(ABORT, 'synthetic receipt failure'); END`);
     await assert.rejects(f.move());
-    assert.equal(f.store.readR2Usage().bytes, png.length); assert.equal(f.store.readR2Usage().errors, 1);
+    assert.equal(f.store.readR2Usage().bytes, png.length); assert.equal(f.store.readPikPakUsage().errors, 1);
     assert.deepEqual(await f.remote.get(image.r2), png);
     assert.equal(await f.move(), false);
     if (failure === 'receipt') f.store.sqlite.exec('DROP TRIGGER fail_receipt');
     f.controls.failUpload = false; f.controls.loseUploadReply = false; f.controls.failDelete = false;
     assert.equal(await f.move(now + 3600001), true);
-    assert.equal(f.store.readR2Usage().bytes, 0); assert.equal(f.store.readR2Usage().errors, 0);
+    assert.equal(f.store.readR2Usage().bytes, 0); assert.equal(f.store.readPikPakUsage().errors, 0);
     assert.ok(!f.calls.includes('pikpak:GET'));
   });
 }

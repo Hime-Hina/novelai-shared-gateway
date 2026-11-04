@@ -1,11 +1,12 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
-import { readFile, writeFile, stat } from 'node:fs/promises';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { constants, createReadStream, createWriteStream, existsSync, realpathSync } from 'node:fs';
+import { copyFile, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const magic = Buffer.from('NAIR2B1\0');
-const hash = value => createHash('sha256').update(value).digest('hex');
 export function encryptBackup(archive, key) {
   if (key.length !== 32) throw new Error('Backup key must contain 32 bytes');
   const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -19,35 +20,69 @@ export function decryptBackup(buffer, key) {
   return Buffer.concat([decipher.update(buffer.subarray(36)), decipher.final()]);
 }
 
+async function encryptBackupFile(input, output, key) {
+  if (key.length !== 32) throw new Error('Backup key must contain 32 bytes');
+  const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
+  await writeFile(output, Buffer.concat([magic, iv, Buffer.alloc(16)]), { flag: 'wx', mode: 0o600 });
+  await pipeline(createReadStream(input), cipher, createWriteStream(output, { flags: 'a' }));
+  const handle = await open(output, 'r+');
+  try {
+    if ((await handle.write(cipher.getAuthTag(), 0, 16, 20)).bytesWritten !== 16) throw new Error('Backup authentication tag write failed');
+    await handle.sync();
+  } finally { await handle.close(); }
+}
+
+async function decryptBackupFile(input, output, key) {
+  if (key.length !== 32) throw new Error('Backup key must contain 32 bytes');
+  const handle = await open(input, 'r'), header = Buffer.alloc(36);
+  try {
+    if ((await handle.read(header, 0, header.length, 0)).bytesRead !== 36 || !header.subarray(0, 8).equals(magic)) throw new Error('Invalid encrypted backup');
+  } finally { await handle.close(); }
+  const decipher = createDecipheriv('aes-256-gcm', key, header.subarray(8, 20));
+  decipher.setAuthTag(header.subarray(20, 36));
+  await pipeline(createReadStream(input, { start: 36 }), decipher, createWriteStream(output, { flags: 'wx', mode: 0o600 }));
+}
+
 async function main() {
   const [mode, input, output, envFile, keyFile, snapshotName] = process.argv.slice(2);
   if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile) throw new Error('Invalid backup arguments');
   const runtime = existsSync(new URL('../server/r2-storage.js', import.meta.url)) ? '../server/r2-storage.js' : '../server/r2-storage.ts';
-  const { R2Storage, r2Config } = await import(runtime);
+  const { R2Storage, r2Config, fileChecksums } = await import(runtime);
   const config = r2Config(parseEnv(await readFile(envFile, 'utf8')));
   if (!config) throw new Error('R2 configuration is required');
   const remote = new R2Storage(config), key = await readFile(keyFile);
-  if (mode === 'download') {
-    const receipt = JSON.parse(await readFile(input, 'utf8'));
-    const decrypted = decryptBackup(await remote.get(receipt), key);
-    await writeFile(output, decrypted, { flag: 'wx', mode: 0o600 });
-    return;
-  }
-  if (!/^daily-[0-9TZ.]+$/.test(snapshotName || '')) throw new Error('Only daily business backups are uploaded');
-  // Keep seven compressed backups below the 0.5 GB reserved alongside the 9.5 GB image allowance.
-  if ((await stat(input)).size > 50 * 1024 * 1024) throw new Error('Compressed business backup exceeds 50 MiB; local backup retained');
-  const encrypted = encryptBackup(await readFile(input), key);
-  const object = { bucket: config.bucket, key: `backups/${snapshotName}/${hash(encrypted)}`,
-    byteLength: encrypted.length, sha256: hash(encrypted) };
-  const existing = await remote.listBackups();
-  if (existing.reduce((sum, row) => sum + row.bytes, 0) + encrypted.length > 500_000_000) throw new Error('R2 business backup allowance reached; local backup retained');
-  await remote.put(object, encrypted, 'application/octet-stream');
-  if (!decryptBackup(await remote.get(object), key).equals(await readFile(input))) throw new Error('Encrypted backup round-trip mismatch');
-  await writeFile(output, JSON.stringify(object, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-  const backups = [...existing, { key: object.key, bytes: object.byteLength }]
-    .filter(row => /^backups\/daily-[0-9TZ.]+\/[a-f0-9]{64}$/.test(row.key)).sort((a, b) => b.key.localeCompare(a.key));
-  for (const old of backups.slice(7)) {
-    await remote.removeBackup({ bucket: config.bucket, key: old.key, byteLength: old.bytes, sha256: old.key.split('/').at(-1) });
+  const parent = path.resolve(path.dirname(output)), work = await mkdtemp(path.join(parent, '.r2-transfer-'));
+  try {
+    const encrypted = path.join(work, 'encrypted'), downloaded = path.join(work, 'downloaded'), restored = path.join(work, 'restored');
+    if (mode === 'download') {
+      const receipt = JSON.parse(await readFile(input, 'utf8'));
+      await remote.getFile(receipt, downloaded);
+      await decryptBackupFile(downloaded, restored, key);
+      await copyFile(restored, output, constants.COPYFILE_EXCL);
+      return;
+    }
+    if (!/^daily-[0-9TZ.]+$/.test(snapshotName || '')) throw new Error('Only daily business backups are uploaded');
+    const original = await fileChecksums(input);
+    await encryptBackupFile(input, encrypted, key);
+    const { byteLength, sha256 } = await fileChecksums(encrypted);
+    const object = { bucket: config.bucket, key: `backups/${snapshotName}/${sha256}`, byteLength, sha256 };
+    const existing = await remote.listBackups();
+    await remote.putFile(object, encrypted);
+    await remote.getFile(object, downloaded);
+    await decryptBackupFile(downloaded, restored, key);
+    const roundTrip = await fileChecksums(restored);
+    if (roundTrip.byteLength !== original.byteLength || roundTrip.sha256 !== original.sha256) throw new Error('Encrypted backup round-trip mismatch');
+    const receipt = await open(output, 'wx', 0o600);
+    try { await receipt.writeFile(JSON.stringify(object, null, 2) + '\n'); await receipt.sync(); }
+    finally { await receipt.close(); }
+    const backups = [...existing, { key: object.key, bytes: object.byteLength }]
+      .filter(row => /^backups\/daily-[0-9TZ.]+\/[a-f0-9]{64}$/.test(row.key)).sort((a, b) => b.key.localeCompare(a.key));
+    for (const old of backups.slice(7)) {
+      await remote.removeBackup({ bucket: config.bucket, key: old.key, byteLength: old.bytes, sha256: old.key.split('/').at(-1) });
+    }
+  } finally {
+    if (path.dirname(work) !== parent) throw new Error('Unsafe backup temporary directory');
+    await rm(work, { recursive: true, force: true });
   }
 }
 if (process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url) {

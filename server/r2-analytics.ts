@@ -1,3 +1,5 @@
+import { R2Storage, r2Config } from './r2-storage.ts';
+
 const classA = new Set('ListBuckets PutBucket ListObjects PutObject CopyObject CompleteMultipartUpload CreateMultipartUpload LifecycleStorageTierTransition ListMultipartUploads UploadPart UploadPartCopy ListParts PutBucketEncryption PutBucketCors PutBucketLifecycleConfiguration PutBucketStorageClass'.split(' '));
 const classB = new Set('HeadBucket HeadObject GetObject UsageSummary ReportUsageSummary GetBucketEncryption GetBucketLocation GetBucketCors GetBucketLifecycleConfiguration'.split(' '));
 // Sippy 配置查询也会出现在分析中；Sippy 本身免费，仅其对象操作计费。
@@ -7,6 +9,27 @@ const refreshMs = 10 * 60_000;
 type Snapshot = { classA: number; classB: number; checkedAt: string };
 type Cache = { key: string; periodStart: string; nextRefreshAt: number; pending: boolean; failed: boolean; snapshot?: Snapshot };
 let cache: Cache | undefined;
+type BackupSnapshot = { bytes: number; count: number; checkedAt: string };
+let backupCache: { key: string; nextRefreshAt: number; pending: boolean; failed: boolean; snapshot?: BackupSnapshot } | undefined;
+
+export function readR2Backups(env: NodeJS.ProcessEnv = process.env) {
+  const empty = { bytes: null, count: null, checkedAt: null };
+  if (![env.R2_ACCOUNT_ID, env.R2_BUCKET, env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY].every(Boolean)) return { ...empty, status: 'unconfigured' as const };
+  const config = r2Config(env)!;
+  const key = Object.values(config).join('\0');
+  if (!backupCache || backupCache.key !== key) backupCache = { key, nextRefreshAt: 0, pending: false, failed: false };
+  const entry = backupCache;
+  if (!entry.pending && Date.now() >= entry.nextRefreshAt) {
+    entry.pending = true;
+    void new R2Storage(config).listBackups().then(rows => {
+      entry.snapshot = { bytes: rows.reduce((sum, row) => sum + row.bytes, 0), count: rows.length, checkedAt: new Date().toISOString() };
+      entry.failed = false;
+    }).catch(() => { entry.failed = true; })
+      .finally(() => { entry.pending = false; entry.nextRefreshAt = Date.now() + 60000; });
+  }
+  return { ...(entry.snapshot ?? empty), status: entry.snapshot ? (entry.failed ? 'stale' as const : 'ready' as const)
+    : (entry.failed ? 'unavailable' as const : 'loading' as const) };
+}
 
 function monthBoundary(year: number, month: number, day: number) {
   return Date.UTC(year, month, Math.min(day, new Date(Date.UTC(year, month + 1, 0)).getUTCDate()));

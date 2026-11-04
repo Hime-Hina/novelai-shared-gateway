@@ -10,7 +10,7 @@ import { memberCharge, updateLossAlertPolicy } from './failure-accounting.ts';
 import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-events.ts';
 import { readActivityHeatmap } from './activity-heatmap.ts';
 import { readServiceResources } from './service-resources.ts';
-import { readR2Operations } from './r2-analytics.ts';
+import { readR2Operations, readR2Backups } from './r2-analytics.ts';
 import type { AccountingJob } from './generation-accounting.ts';
 import type { OperatingFundingContext } from './operating-accounting.ts';
 import type { ownerOperation } from './owner-operations.ts';
@@ -36,6 +36,7 @@ type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
 interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   dataDir?: string;
   readR2Usage?: import('./store.ts').JsonStore['readR2Usage'];
+  readPikPakUsage?: import('./store.ts').JsonStore['readPikPakUsage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
   update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation | { persist: false } | { collections: string[]; immediate: true }): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
@@ -183,7 +184,8 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
             quota: quotaView(draft, u), recentActivity: recentActivity(db, u) })) };
       }, { persist: false });
       reply(res, 200, { ...payload, serviceResources: { ...await readServiceResources(store.dataDir),
-        ...(env.R2_BUCKET && store.readR2Usage ? { r2: { ...store.readR2Usage(), operations: readR2Operations(env) } } : {}) } }); return true;
+        ...(env.R2_BUCKET && store.readR2Usage ? { r2: { ...store.readR2Usage(), operations: readR2Operations(env), backups: readR2Backups(env) } } : {}),
+        ...(env.PIKPAK_WEBDAV_URL && store.readPikPakUsage ? { pikpak: store.readPikPakUsage() } : {}) } }); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);

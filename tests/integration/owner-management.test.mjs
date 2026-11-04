@@ -84,7 +84,7 @@ test('服务资源仅随 owner 管理摘要返回，不暴露数据目录路径'
 test('R2 官方统计只由已鉴权管理摘要触发，不泄漏统计令牌或拖慢响应', async t=>{
   const {env,store,call}=await fixture(t);let queries=0,finish;
   Object.assign(env,{R2_BUCKET:'test-images',R2_ACCOUNT_ID:'b'.repeat(32),R2_ANALYTICS_TOKEN:'synthetic-private-analytics',R2_BILLING_DAY:'12'});
-  store.readR2Usage=()=>({bytes:1024,images:1,pending:0,errors:0,limitBytes:9_500_000_000});
+  store.readR2Usage=()=>({bytes:1024,images:1,pending:0,errors:0,archiveAtBytes:8_550_000_000});
   t.mock.method(globalThis,'fetch',()=>{queries++;return new Promise(resolve=>{finish=resolve;});});
   for(const viewer of [null,1]) await call('/api/member/owner/member-management',{viewer});
   assert.equal(queries,0);
@@ -116,6 +116,26 @@ test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key�
   assert.equal((await call('/api/member/owner/statistics?days=365')).status,200);
   assert.equal((await call('/api/member/owner/statistics?days=0')).status,200);
   assert.equal((await call('/api/member/owner/statistics?days=999')).status,400);
+});
+
+test('热备份统计异步刷新且有缓存；冷存储摘要仅授权 owner 可见，凭据不返回', { timeout: 5000 }, async t=>{
+  const {env,store,call}=await fixture(t); let queries=0,finish,coldReads=0;
+  Object.assign(env,{R2_ACCOUNT_ID:'c'.repeat(32),R2_BUCKET:'test-backups',R2_ACCESS_KEY_ID:'synthetic-storage-access',R2_SECRET_ACCESS_KEY:'synthetic-storage-secret',
+    PIKPAK_WEBDAV_URL:'https://dav.example/private/',PIKPAK_WEBDAV_USERNAME:'private-dav-user',PIKPAK_WEBDAV_PASSWORD:'private-dav-secret'});
+  store.readR2Usage=()=>({bytes:1024,images:1,pending:0,errors:0,archiveAtBytes:8_550_000_000});
+  store.readPikPakUsage=()=>{coldReads++;return {originalBytes:2048,images:2,pending:0,errors:0};};
+  t.mock.method(globalThis,'fetch',(url)=>{assert.match(url.hostname,/r2\.cloudflarestorage\.com$/);queries++;return new Promise(resolve=>{finish=resolve;});});
+  for(const viewer of [null,1]) await call('/api/member/owner/member-management',{viewer});
+  assert.equal(queries,0);assert.equal(coldReads,0);
+  const first=await call('/api/member/owner/member-management');
+  assert.equal(first.data.serviceResources.r2.backups.status,'loading');
+  assert.equal(first.data.serviceResources.r2.backups.bytes,null);
+  assert.deepEqual(first.data.serviceResources.pikpak,{originalBytes:2048,images:2,pending:0,errors:0});
+  finish(new Response('<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>backups/daily-20261021T000000Z/'+'a'.repeat(64)+'</Key><Size>70</Size></Contents></ListBucketResult>'));
+  await new Promise(resolve=>setImmediate(resolve));
+  const result=await call('/api/member/owner/member-management');
+  assert.equal(result.data.serviceResources.r2.backups.count,1);assert.equal(result.data.serviceResources.r2.backups.bytes,70);assert.equal(queries,1);
+  for(const secret of [env.R2_SECRET_ACCESS_KEY,env.PIKPAK_WEBDAV_USERNAME,env.PIKPAK_WEBDAV_PASSWORD,env.PIKPAK_WEBDAV_URL]) assert.ok(!result.text.includes(secret));
 });
 
 test('用量按上海日期、成员和模型汇总，退款及预扣不算消耗，缺失耗时不算零',()=>{
