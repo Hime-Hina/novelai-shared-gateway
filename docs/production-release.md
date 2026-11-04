@@ -604,6 +604,14 @@ PikPak Premium 的[当前 WebDAV 文档](https://mypikpak.com/en-US/help-center/
 目录后便可凭原 SHA-256 找到冷图，不要求旧库带有新回执。恢复时必须提供当前 PikPak 凭据并运行支持
 冷归档的版本；回退旧版前应下载解压已迁移原图，不能只切换程序链接。
 
+管理资源区的账户实际已用量和总容量通过 PikPak Drive 的 `GET /drive/v1/about` 读取，
+与本站归档原图规模分别展示。WebDAV 不提供容量配额，因此在同一受保护的 `r2.env` 中配置
+`PIKPAK_API_TOKEN`，使用 PikPak「账户与安全 → 已连接的应用 → 个人访问令牌」创建的只读 PAT；
+「读取文件」权限已实测足够。令牌仅交给执行器，不返回网页；不需要账户密码或新的客户端依赖。
+接口使用 `quota.usage` 和 `quota.limit` 的字节值，按分钟异步缓存；请求失败保留上次统计及时间，
+没有成功数据时显示未知，不阻塞管理页。PAT 按用户选择的有效期到期后需替换，创建及权限说明见
+[PikPak 官方 FAQ](https://mypikpak.com/en-US/faq)。查询实现与归档接入同在 `server/pikpak-storage.ts`。
+
 WebDAV 使用[Connected Apps 传输额度](https://mypikpak.com/en-US/help-center/connected_apps/webdav/speed_limit)：
 下载限额触发限速，上传额度耗尽则阻止后续上传。上传被拒时保留 R2 原件，不将失败视作已迁移。
 容量、七天和重试筛选归 `store.ts`，迁移提交顺序归 `cold-images.ts`，压缩格式和 WebDAV 访问归

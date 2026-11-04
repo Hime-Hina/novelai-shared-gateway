@@ -11,6 +11,7 @@ import { stateEventsFor, mergeStateEvents, stateInvalidation } from './state-eve
 import { readActivityHeatmap } from './activity-heatmap.ts';
 import { readServiceResources } from './service-resources.ts';
 import { readR2Operations, readR2Backups } from './r2-analytics.ts';
+import { readPikPakQuota } from './pikpak-storage.ts';
 import type { AccountingJob } from './generation-accounting.ts';
 import type { OperatingFundingContext } from './operating-accounting.ts';
 import type { ownerOperation } from './owner-operations.ts';
@@ -185,7 +186,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
       }, { persist: false });
       reply(res, 200, { ...payload, serviceResources: { ...await readServiceResources(store.dataDir),
         ...(env.R2_BUCKET && store.readR2Usage ? { r2: { ...store.readR2Usage(), operations: readR2Operations(env), backups: readR2Backups(env) } } : {}),
-        ...(env.PIKPAK_WEBDAV_URL && store.readPikPakUsage ? { pikpak: store.readPikPakUsage() } : {}) } }); return true;
+        ...(env.PIKPAK_WEBDAV_URL && store.readPikPakUsage ? { pikpak: { ...store.readPikPakUsage(), quota: readPikPakQuota(env) } } : {}) } }); return true;
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);

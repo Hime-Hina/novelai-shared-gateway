@@ -86,12 +86,29 @@ describe('ManagementServiceResources', () => {
     const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, r2, pikpak } } })
     expect(wrapper.text()).toContain('R2 热存储')
     expect(wrapper.text()).toContain('PikPak 冷存储')
-    expect(wrapper.get('#servicePikPak').text()).toBe('2 GiB')
-    expect(wrapper.text()).toContain('本站原图规模')
+    expect(wrapper.get('#servicePikPak').text()).toBe('暂不可用 / 暂不可用')
+    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张')
     expect(wrapper.get('#servicePikPakStatus').text()).toContain('待释放 R2 1 张 · 转存异常 2 张')
     expect(wrapper.get('#serviceR2Backups').text()).toContain('暂不可用')
     await wrapper.setProps({ data: { ...data, pikpak, r2: { ...r2, backups: { bytes: 70 * 1024 ** 2, count: 7, checkedAt: '2026-11-04T00:00:00Z', status: 'ready' } } } })
     expect(wrapper.get('#serviceR2Backups').text()).toContain('7 份 · 70 MiB')
     expect(wrapper.text()).toContain('新备份成功后清理旧备份')
+  })
+
+  it('显示账户实际已用和总容量，区别于本站原图规模；失败保留上次统计，真实零值不显示为未知', async () => {
+    const pikpak = { originalBytes: 2 * 1024 ** 3, images: 42, pending: 0, errors: 0 }
+    const quota = { usedBytes: 1024 ** 4, totalBytes: 10 * 1024 ** 4, checkedAt: '2026-11-04T06:00:00Z', status: 'ready' as const }
+    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, pikpak: { ...pikpak, quota } } } })
+    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB')
+    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张')
+    expect(wrapper.text()).toContain('账户用量包含其他目录')
+    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('官方统计')
+    const status = wrapper.get('#servicePikPakQuotaStatus').element
+    await wrapper.setProps({ data: { ...data, pikpak: { ...pikpak, quota: { ...quota, status: 'stale' } } } })
+    expect(wrapper.get('#servicePikPakQuotaStatus').element).toBe(status)
+    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB')
+    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('更新失败，显示上次统计')
+    await wrapper.setProps({ data: { ...data, pikpak: { ...pikpak, quota: { ...quota, usedBytes: 0 } } } })
+    expect(wrapper.get('#servicePikPak').text()).toBe('0 B / 10 TiB')
   })
 })

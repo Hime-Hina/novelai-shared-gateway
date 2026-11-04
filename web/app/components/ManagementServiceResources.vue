@@ -58,13 +58,14 @@ function operationStatus(status: string | undefined) {
             <p id="serviceR2BackupStatus">{{ data.r2.backups?.status === 'stale' ? '更新失败，显示上次统计' : data.r2.backups?.status === 'ready' ? `备份统计于 ${date(data.r2.backups.checkedAt!)}` : '备份统计暂不可用' }}</p>
           </div>
           <div v-if="data?.pikpak" class="cold-storage">
-            <span class="metric-label">PikPak 冷存储 · 本站原图规模</span>
-            <strong id="servicePikPak">{{ bytes(data.pikpak.originalBytes) }}</strong>
-            <p>已归档 {{ number(data.pikpak.images) }} 张</p>
+            <span class="metric-label">PikPak 冷存储 · 账户已用 / 总量</span>
+            <strong id="servicePikPak">{{ bytes(data.pikpak.quota?.usedBytes) }} / {{ bytes(data.pikpak.quota?.totalBytes) }}</strong>
+            <p>本站归档原图 {{ bytes(data.pikpak.originalBytes) }} · {{ number(data.pikpak.images) }} 张</p>
             <p id="servicePikPakStatus">待释放 R2 {{ data.pikpak.pending }} 张 · 转存异常 {{ data.pikpak.errors }} 张</p>
             <p>R2 存放超过七天或达到水位时自动转冷</p>
             <p>原图无损压缩 · 下载时解压校验</p>
-            <p>显示本站归档原图规模，实际网盘占用以 PikPak 为准</p>
+            <p>账户用量包含其他目录；本站规模按原图计算</p>
+            <p id="servicePikPakQuotaStatus">{{ operationStatus(data.pikpak.quota?.status) }}<br>{{ data.pikpak.quota?.checkedAt ? date(data.pikpak.quota.checkedAt) : '尚无更新时间' }}</p>
           </div>
           <div v-if="data?.r2" class="r2-operations">
             <p>账户标准存储 · 本账期操作次数</p>

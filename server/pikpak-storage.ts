@@ -21,6 +21,37 @@ export function pikpakConfig(env: NodeJS.ProcessEnv = process.env): PikPakConfig
   return { url: url.href, username, password };
 }
 
+type QuotaSnapshot = { usedBytes: number; totalBytes: number; checkedAt: string };
+let quotaCache: { token: string; nextRefreshAt: number; pending: boolean; failed: boolean; snapshot?: QuotaSnapshot } | undefined;
+
+function quotaBytes(value: unknown) {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) throw new Error('Invalid PikPak quota');
+  const bytes = Number(value);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('Invalid PikPak quota');
+  return bytes;
+}
+
+export function readPikPakQuota(env: NodeJS.ProcessEnv = process.env) {
+  const empty = { usedBytes: null, totalBytes: null, checkedAt: null }, token = env.PIKPAK_API_TOKEN;
+  if (!token) return { ...empty, status: 'unconfigured' as const };
+  if (!quotaCache || quotaCache.token !== token) quotaCache = { token, nextRefreshAt: 0, pending: false, failed: false };
+  const entry = quotaCache;
+  if (!entry.pending && Date.now() >= entry.nextRefreshAt) {
+    entry.pending = true;
+    void fetch('https://api-drive.mypikpak.com/drive/v1/about', {
+      headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(10_000)
+    }).then(async response => {
+      if (!response.ok) { await response.body?.cancel(); throw new Error('PikPak quota unavailable'); }
+      const body = await response.json() as { quota?: { usage?: unknown; limit?: unknown } };
+      entry.snapshot = { usedBytes: quotaBytes(body.quota?.usage), totalBytes: quotaBytes(body.quota?.limit), checkedAt: new Date().toISOString() };
+      entry.failed = false;
+    }).catch(() => { entry.failed = true; })
+      .finally(() => { entry.pending = false; entry.nextRefreshAt = Date.now() + 60_000; });
+  }
+  return { ...(entry.snapshot ?? empty), status: entry.snapshot ? (entry.failed ? 'stale' as const : 'ready' as const)
+    : (entry.failed ? 'unavailable' as const : 'loading' as const) };
+}
+
 export class PikPakStorage {
   readonly config: PikPakConfig;
   readonly client: WebDAVClient;

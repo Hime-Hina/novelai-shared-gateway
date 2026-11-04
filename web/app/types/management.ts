@@ -31,7 +31,8 @@ export interface ServiceResources {
     classA: { used: number | null; limit: number; remaining: number | null }
     classB: { used: number | null; limit: number; remaining: number | null }
   } }
-  pikpak?: { originalBytes: number; images: number; pending: number; errors: number }
+  pikpak?: { originalBytes: number; images: number; pending: number; errors: number;
+    quota?: { usedBytes: number | null; totalBytes: number | null; checkedAt: string | null; status: 'unconfigured' | 'loading' | 'ready' | 'stale' | 'unavailable' } }
   memory: { rssBytes: number; heapUsedBytes: number; heapTotalBytes: number }
   uptimeSeconds: number
   data: { bytes: number; checkedAt: string } | null
