@@ -9,7 +9,7 @@ interface IndexRow { name: string; unique: number; origin: 'c' | 'u' | 'pk'; par
 interface IndexColumn { name: string | null; desc: number; coll: string | null; key: number }
 
 export const storageMigrationsDirectory = fileURLToPath(new URL('../migrations/', import.meta.url));
-export const SUPPORTED_EVENT_AUTHORITY_VERSION = 2;
+export const SUPPORTED_EVENT_AUTHORITY_VERSION = 3;
 const migrationTable = '__drizzle_migrations';
 const legacyJobColumns = new Set(['cost', 'stats_excluded', 'error_loggable']);
 
@@ -18,14 +18,14 @@ export function readCompatibleEventAuthority(sqlite:Database.Database):{version:
   const row=sqlite.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get() as {value:string}|undefined;
   if(!row)return null;
   const marker=JSON.parse(row.value) as {version:number;minimumWriterVersion:number;commitSeq?:string};
-  if(!marker||![1,SUPPORTED_EVENT_AUTHORITY_VERSION].includes(marker.version)||
+  if(!marker||![1,2,SUPPORTED_EVENT_AUTHORITY_VERSION].includes(marker.version)||
     !Number.isInteger(marker.minimumWriterVersion)||marker.minimumWriterVersion<marker.version||marker.minimumWriterVersion>SUPPORTED_EVENT_AUTHORITY_VERSION)
     throw new Error('Event authority requires a newer compatible writer or has an unsupported version marker.');
   return marker;
 }
 
 export function migrateStorage(sqlite: Database.Database, migrationsFolder = storageMigrationsDirectory) {
-  // 在任何 schema/投影写入前检查；v1 由 store 的原子 reducer 升级流程接管。
+  // 在任何 schema/投影写入前检查；旧版由 store 的原子 reducer 升级流程接管。
   readCompatibleEventAuthority(sqlite);
   const migrations = readMigrationFiles({ migrationsFolder });
   const hasJournal = sqlite.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?").get(migrationTable);

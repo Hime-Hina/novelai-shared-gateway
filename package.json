@@ -11,6 +11,10 @@
     "build": "tsc -p tsconfig.backend.json && node scripts/package-backend.mjs",
     "test": "node --test --test-concurrency=4 tests/unit/*.test.mjs tests/integration/*.test.mjs",
     "check": "node scripts/check.mjs",
+    "format": "prettier --write \"**/*.{ts,js,mjs,vue,json,jsonc,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,js,mjs,vue,json,jsonc,md}\"",
+    "architecture:check": "node scripts/check-architecture.mjs",
+    "migration:check": "node scripts/check-migration-history.mjs",
     "bootstrap": "node scripts/bootstrap.mjs"
   },
   "engines": {
@@ -34,6 +38,7 @@
     "@types/negotiator": "0.6.5",
     "@types/node": "22.20.5",
     "drizzle-kit": "0.31.11",
+    "prettier": "3.9.10",
     "typescript": "6.0.3"
   }
 }

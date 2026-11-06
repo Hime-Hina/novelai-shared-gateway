@@ -11,6 +11,7 @@ import type { ImageStorage } from '../storage/r2-storage.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './batch-requests.ts';
 import { describeStoredResult } from '../storage/result-files.ts';
+import { publicErrorMessage } from '../http/public-errors.ts';
 
 type MemberRequest = IncomingMessage & { generationPayloadClaim?: GenerationPayloadClaim };
 interface Dependencies {
@@ -62,7 +63,7 @@ export function memberGenerationError(error: unknown) {
   const details = Object.fromEntries(Object.entries(source.details || {}).filter(([key, value]) =>
     ['field', 'resource', 'limit', 'requote'].includes(key) && ['string', 'number', 'boolean'].includes(typeof value)));
   if (source.requestId) details.requestId = source.requestId;
-  return { statusCode: safeStatus, code, message: safeStatus === 500 ? '服务暂时无法完成请求。' : source.message,
+  return { statusCode: safeStatus, code, message: safeStatus === 500 ? '服务暂时无法完成请求。' : publicErrorMessage(source.message),
     ...(Object.keys(details).length ? { details } : {}) };
 }
 

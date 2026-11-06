@@ -1,7 +1,7 @@
 import { quoteNativeRequest, NATIVE_PRICING_VERSION } from '../protocols/native-pricing.ts';
 import { recordGenerationAttempt, recordGenerationRefund, type AccountingJob, type RefundEvidence } from '../generation/accounting.ts';
 import { operatingAccount, readOperatingAccount, recordAnlasGap, reconcileV5Capacity, recoverV5Capacity, matchExternalFunding, applyOperatingFunding, type OperatingAccount, type OperatingFundingInput, type OperatingFundingContext } from './operating-accounting.ts';
-import { QUOTA_SNAPSHOT_MAX_AGE_MS, quotaTimestamp, isUsableOpus, isQuotaSnapshotFresh } from './eligibility.ts';
+import { QUOTA_SNAPSHOT_MAX_AGE_MS, quotaTimestamp, isUsableOpus, quotaAvailability, quotaNumber as number } from './eligibility.ts';
 import type { FreeImagePolicy } from './free-image-policy.ts';
 import type { LossAlertPolicy } from './failure-accounting.ts';
 import { AMOUNT_SCALE, parseAmount, formatAmount, amountNumber, decimalRatio, divideAmount, allocateAmount, normalizeLegacyAmountGroup, minAmount, maxAmount, type AmountText, type AmountInput, type ResourceAmountsText } from './resource-amounts.ts';
@@ -77,7 +77,6 @@ interface MemberChange {
 }
 // 所有修改必须在存储事务内执行；账本与任务一起持久化，避免重启后重复扣款。
 const STALE_MS = QUOTA_SNAPSHOT_MAX_AGE_MS;
-const number = (v: unknown): number | null => v === null || v === undefined || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
 const stamp = (v: unknown): number => quotaTimestamp(v) ?? 0;
 const rows = <T>(v: T[] | Record<string, T> | null | undefined): T[] => Array.isArray(v) ? v : Object.values(v || {});
 const fail: (message: string, status?: number) => never = (message, status = 402) => { const e = new Error(message) as Error & { status: number; statusCode: number }; e.status = e.statusCode = status; throw e; };
@@ -437,7 +436,7 @@ function recordV5Reconciliation(db: FairQuotaDatabase, s: FairQuotaState, incomi
 function readSnapshot(a: FairAccount): QuotaSnapshot {
   const percent=number(a.v5UsagePercent), fixed=number(a.quotaFixed), purchased=number(a.quotaPurchased);
   const fixedUnits=fixed===null?null:maxAmount(0n,units(a.quotaFixed as AmountInput)),purchasedUnits=purchased===null?null:maxAmount(0n,units(a.quotaPurchased as AmountInput));
-  return {at:stamp(a.quotaCheckedAt),v5: a.v5UsageIsNegative ? '0' : percent === null ? null : formatAmount(maxAmount(0n,minAmount(100n*AMOUNT_SCALE,units(a.v5UsagePercent as AmountInput)))),
+  return {at:stamp(a.quotaCheckedAt),v5: percent === null ? null : a.v5UsageIsNegative ? '0' : formatAmount(maxAmount(0n,minAmount(100n*AMOUNT_SCALE,units(a.v5UsagePercent as AmountInput)))),
     anlas:fixedUnits===null||purchasedUnits===null?null:formatAmount(fixedUnits+purchasedUnits),anlasFixed:fixedUnits===null?null:formatAmount(fixedUnits),anlasPurchased:purchasedUnits===null?null:formatAmount(purchasedUnits),
     seconds:number(a.v5UsageTimeUntilNextPercent)};
 }
@@ -455,12 +454,11 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     quotaFact(db,{eventType:'QuotaAccountOpened',payload:{memberIds:s.members}}, now);
   }
   const account=accounts.find(a=>a.id===s.boundAccountId);
-  if(!active(account,now)) {quotaStatus(db,s,'inactive_opus',now);return s;}
+  const status=quotaAvailability(account,now,{at:s.snapshot?.at,held:anyHeld(s),lastSettlementAt:s.lastSettlementAt});
+  quotaStatus(db,s,status,now);
+  if(status!=='active'||!account) return s;
   const incoming=readSnapshot(account);
-  if(!incoming.at || !isQuotaSnapshotFresh(incoming.at,now)) {quotaStatus(db,s,'stale',now);return s;}
-  quotaStatus(db,s,'active',now);
   if(!s.snapshot) {
-    if(incoming.v5===null || incoming.anlas===null) {quotaStatus(db,s,'unknown_balance',now);return s;}
     s.snapshot=incoming;s.lastRefillAt=now;
     quotaFact(db,{eventType:'QuotaObserved',payload:{kind:'reconciled',snapshot:incoming,initial:true,at:now,matchedDebits:{anlasFixed:'0',anlasPurchased:'0'},matchedFallback:{fixed:'0',purchased:'0'}}}, now);
     distribute(db,s,'v5',maxAmount(0n,units(incoming.v5)-units(s.unallocatedV5)),now,'opening');distribute(db,s,'anlasFixed',units(incoming.anlasFixed),now,'opening');distribute(db,s,'anlasPurchased',units(incoming.anlasPurchased),now,'opening');
@@ -512,8 +510,6 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     s.snapshot=incoming;s.spent={...s.spent,v5:'0',anlas:formatAmount(units(s.spent.anlasFixed)+units(s.spent.anlasPurchased)),fallbackFixed:'0',fallbackPurchased:'0',fallbackV5:'0'};s.creditedV5='0';s.lastRefillAt=now;
     quotaFact(db,{eventType:'QuotaObserved',payload:{kind:'reconciled',snapshot:incoming,initial:false,at:now,matchedDebits,matchedFallback}}, now);
   }
-  // 未能对账的旧基准也不能无限使用，否则连续任务可能永远绕过过期检查。
-  if(now-s.snapshot.at>STALE_MS) quotaStatus(db,s,'stale',now);
   return s;
 }
 

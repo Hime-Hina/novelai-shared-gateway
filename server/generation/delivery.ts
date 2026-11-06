@@ -1,5 +1,5 @@
 import type { ServerResponse } from 'node:http';
-import type { JsonStore, StoreItem } from '../storage/sqlite-store.ts';
+import type { JsonStore, PersistenceOptions, StoreItem } from '../storage/sqlite-store.ts';
 import { cancelGenerationRequestCommand, changeMemberAdmissionCommand, failGenerationCommand, cancelReservedGeneration,
   cleanupStaleGenerationJobs, cleanupInterruptedGenerationJobs, type GenerationFailureOptions, type GenerationReservation } from './execution.ts';
 import type { createJobPresentation } from './request-queries.ts';
@@ -67,8 +67,8 @@ export function createRequestControls(store: JsonStore, deps: {
       notifyCancelled(result.cancelledJobIds, '请求已取消，未派发任务已终止');
       return { ...await deps.readRequest(requestId, memberId), cancelledCount: result.cancelledJobIds.length };
     },
-    async changeMemberAdmission(userId: string, acceptingJobs: boolean, actorId = 'local-admin') {
-      const result = await changeMemberAdmissionCommand(store, userId, acceptingJobs, { ...deps, actorId });
+    async changeMemberAdmission(userId: string, acceptingJobs: boolean, actorId = 'local-admin', command?: Pick<PersistenceOptions, 'domainCommand' | 'authorize'>) {
+      const result = await changeMemberAdmissionCommand(store, userId, acceptingJobs, { ...deps, actorId, ...command });
       notifyCancelled(result.cancelledJobIds, '管理员已停止此成员接单，未派发任务已取消');
       return { ...result, cancelledCount: result.cancelledJobIds.length };
     }

@@ -10,7 +10,7 @@ const sharedRisk = computed(() => {
   const risk = quota.value?.sharedBalanceRisk
   return risk && (risk.v5 || risk.anlasFixed || risk.anlasPurchased)
 })
-const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '订阅暂不可用', stale: '官方余额等待更新', unknown_balance: '官方余额未知', ambiguous_opus: '等待管理员选择上游', active: '可提交任务' }
+const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '账号或订阅不可用', quota_sync_error: '额度同步失败', stale: '额度已过期，等待更新', unknown_balance: '额度不完整，等待更新', ambiguous_opus: '等待管理员选择上游', active: '可提交任务' }
 const status = computed(() => [
   quota.value?.status !== 'active' || props.profile.acceptingJobs !== false ? statuses[quota.value?.status || ''] || '等待分配额度' : '',
   props.profile.acceptingJobs === false ? '管理员已停止接单，已有结果仍可查询和下载' : ''

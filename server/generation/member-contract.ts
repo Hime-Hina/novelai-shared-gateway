@@ -8,6 +8,7 @@ import { assertQueueAdmission } from './queue-policy.ts';
 import { assertFreeImageAdmission, freeImagePolicy, type FreeImageUsage } from '../quota/free-image-policy.ts';
 import { estimateFairQuota, reserveFairQuota, previewFairQuotaCharge, type FairQuotaDatabase, type FairUser } from '../quota/fair-share.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
+import { publicErrorMessage } from '../http/public-errors.ts';
 import { memberGenerationCapabilities, generationDefinitionDigest, MEMBER_NORMALIZATION_FORMAT,
   type MemberGenerationOperation, type MemberGenerationVersions } from './capabilities.ts';
 
@@ -143,7 +144,7 @@ function admissionReason(error: unknown, fallbackCode: string): MemberGeneration
   const source = error as Error & { statusCode?: number; code?: string; cooldownUntil?: string };
   const statusCode = source.statusCode || 503;
   return { statusCode, code: source.code || (statusCode === 503 ? 'upstream_unavailable' : statusCode === 403 && fallbackCode !== 'member_stopped' ? 'membership_required' : fallbackCode),
-    message: source.message, ...(source.cooldownUntil ? { retryAt: source.cooldownUntil } : {}) };
+    message: publicErrorMessage(source.message), ...(source.cooldownUntil ? { retryAt: source.cooldownUntil } : {}) };
 }
 
 export function quoteMemberGeneration(db: FairQuotaDatabase, member: MemberGenerationMember, normalized: NormalizedMemberGeneration, options: MemberQuoteOptions = {}) {

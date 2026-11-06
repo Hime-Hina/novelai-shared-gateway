@@ -28,3 +28,24 @@ export function isQuotaSnapshotFresh(checkedAt: unknown, now: number): boolean {
   const checked = quotaTimestamp(checkedAt);
   return checked !== null && checked <= now + QUOTA_CLOCK_SKEW_MS && now - checked <= QUOTA_SNAPSHOT_MAX_AGE_MS;
 }
+
+interface QuotaObservation extends OpusSubscription {
+  quotaCheckedAt?: unknown; v5UsagePercent?: unknown; quotaFixed?: unknown; quotaPurchased?: unknown;
+}
+
+export const quotaNumber = (value: unknown): number | null =>
+  (typeof value === 'number' || typeof value === 'string' && /^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value))
+    && Number.isFinite(Number(value)) ? Number(value) : null;
+
+// An observation can establish a new baseline only after every reservation has settled.
+export function quotaAvailability(account: QuotaObservation | null | undefined, now: number,
+  baseline: { at?: unknown; held?: boolean; lastSettlementAt?: number } = {}): string {
+  if (!hasActiveOpusSubscription(account, now)) return 'inactive_opus';
+  if (account?.quotaError) return 'quota_sync_error';
+  if (!isQuotaSnapshotFresh(account?.quotaCheckedAt, now)) return 'stale';
+  const complete = [account?.v5UsagePercent, account?.quotaFixed, account?.quotaPurchased].every(value => quotaNumber(value) !== null);
+  if (!complete) return 'unknown_balance';
+  const checked = quotaTimestamp(account?.quotaCheckedAt)!;
+  const canReconcile = !baseline.held && checked > (quotaTimestamp(baseline.at) ?? -1) && checked >= (baseline.lastSettlementAt ?? 0);
+  return canReconcile || isQuotaSnapshotFresh(baseline.at, now) ? 'active' : 'stale';
+}

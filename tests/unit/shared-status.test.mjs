@@ -13,6 +13,12 @@ test('未绑定不能展示试用池及其他上游额度',()=>{
  const db=fixture();db.settings.fairQuota.boundAccountId=null;const s=sharedAccountStatus(db,NOW);
  assert.equal(s.status,'pending_opus');assert.equal(s.v5Percent,null);assert.equal(s.anlasFixed,null);assert.equal(s.subscriptionActive,null);assert.equal(s.v5IsNegative,null);
 });
+test('多个可用候选显示待选择，异常候选不参与且不泄露余额',()=>{
+ const db=fixture();db.settings.fairQuota.boundAccountId=null;db.accounts.push({...db.accounts[0],id:'second'});
+ const before=structuredClone(db);assert.equal(sharedAccountStatus(db,NOW).status,'ambiguous_opus');assert.deepEqual(db,before);
+ db.accounts[1].quotaError='private upstream error';const status=sharedAccountStatus(db,NOW);
+ assert.equal(status.status,'pending_opus');assert.equal(status.v5Percent,null);assert.equal(status.anlasFixed,null);
+});
 
 test('订阅与透支标记只接受布尔值，集合字典与数组保留相同公开结果',()=>{
  for(const value of [null,undefined,0,1,'true','false',{},[]]) {

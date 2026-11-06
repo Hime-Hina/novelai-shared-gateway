@@ -3,8 +3,8 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
 import Negotiator from 'negotiator';
-import type { JsonStore, StoredGenerationRequest } from '../storage/sqlite-store.ts';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest, NATIVE_MAX_BODY_BYTES } from './native-image.ts';
+import type { JsonStore, StoredGenerationRequest, StoreDatabase } from '../storage/sqlite-store.ts';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest, nativeNormalizationContext, NATIVE_MAX_BODY_BYTES, type NativeNormalizationContext } from './native-image.ts';
 import { readNativeBody } from './native-body.ts';
 import { quoteFairRequest } from '../quota/fair-share.ts';
 import { singleGenerationRequest } from '../generation/batch-requests.ts';
@@ -71,14 +71,17 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     let body = await readNativeBody(req, { jsonReader: request => deps.readJson(request as NativeHttpRequest, NATIVE_MAX_BODY_BYTES) }) as
       { parameters?: { seed?: unknown; stream?: NativeBatch['streamType'] }; allowPurchasedAnlas?: unknown } | null;
     logDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
-    const normalize = () => {
-      const request: StoredGenerationRequest = operation ? parseNativeAuxiliaryRequest(body, operation) : parseNativeImageRequest(body);
+    const normalize = (context?: Partial<StoreDatabase['settings']>) => {
+      // Old mappings saved only gateway defaults; they cannot recover earlier Native definitions.
+      const native = context?.native as NativeNormalizationContext | undefined;
+      const request: StoredGenerationRequest = operation ? parseNativeAuxiliaryRequest(body, operation, native) : parseNativeImageRequest(body, native);
       request.allowPurchasedAnlas = body?.allowPurchasedAnlas === true;
       quoteFairRequest(singleGenerationRequest(request));
       return request;
     };
     const intent = generationIntent(req.generationIdempotencyKey, normalize, { operation: operation || 'generate',
-      randomSeed: !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1), noCache: true, claim: req.generationPayloadClaim });
+      randomSeed: !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1), noCache: true, claim: req.generationPayloadClaim,
+      context: () => ({ native: nativeNormalizationContext() }) });
     const batch = await deps.admitGeneration({ identity: { token }, request: intent ? null : normalize(), diagnosticId,
       admissionVersion: user.jobAdmissionVersion || 0, claim: req.generationPayloadClaim, intent, batch: true, source: 'novelai-native', noCache: true });
     const streamType = body?.parameters?.stream ?? 'sse';

@@ -89,6 +89,9 @@ type FieldCapability = {
   min?: number; max?: number; step?: number
   values?: (string | number | boolean)[]
   default?: unknown; fixed?: unknown
+  encoding?: 'base64'; mimeTypes?: string[]; source?: 'encode-vibe'
+  minBytes?: number; maxBytes?: number
+  items?: FieldCapability; properties?: Record<string, FieldCapability>
 }
 type ModelCapability = {
   operation: 'generate' | 'upscale' | 'encode-vibe'
@@ -103,11 +106,17 @@ type ModelCapability = {
 
 辅助操作的 actions 为 `[]`；涉及数组/对象的复杂编辑器消费已有请求类型，不由这个展示描述发明新的执行语法。fixed 表示服务端固定值，default 仅在缺省时采用；像素总量、参考数量和组合限制仍由共同规则作最终校验。
 
+Vibe 的 `parameters.reference_image` 在 V3 是 `image`，内容为 PNG/JPEG/WebP 原图的 Base64；在 V4/V4.5 是 `string`，内容为 `encode-vibe` 产出的不透明二进制 Base64（`source: 'encode-vibe'`、MIME 为 `application/octet-stream`），不接受原图或 data URL。编码字节至少 100、最多 `limits.vibeEncodingBytes`；这是本地输入边界，不能据此判定任意二进制都能被上游执行。V3 图片使用 `limits.attachmentBytes`、`imageDimension` 和 `imagePixels` 限制。
+
+`reference_image_multiple.items` 与单参考字段使用同一内容语义；`reference_image_multiple_cached.items.properties.data` 是相同的必需内容。cached 输入仍须携带 data，`cache_secret_key` 仅为旧客户端兼容输入，不代表网关会信任缓存或少计参考数量。`maxBytes` 是解码后的字节上限，数组的 max 是参考数量；JSON Base64 与 multipart 引用的分块内容按同一 parser 检查。G11 恢复 V3 原图时保留实际图片 MIME，恢复 V4/V4.5 编码时使用 `application/octet-stream`，不回传 cache secret。items/properties 只描述这些已有内容位置，不引入第二套校验器。
+
 每条 requirements 仅在其 `action` 与输入动作相同（或没有 action），且 `when` 指向的 Native 字段已启用（或没有 when）时生效；生效后 requires 中每个字段必须启用，excludes 中每个字段必须未启用。when/requires/excludes 使用同一语义：缺省、null、空字符串、false 和空数组均未启用，非空数组以及其他值视为启用；对象包含空对象也视为启用，仍须通过字段自身的类型和结构校验。when 是一个字段路径，不是表达式或脚本。比如普通 Vibe 数组的条件规则只在该数组非空时排除 cached Vibe 与 Precise Reference；无参考输入不会被要求补上参考，普通/cached 数组各自可以单独使用，不能同时启用。
 
 参数描述采用项目实际需要的类型和约束，不嵌可执行 JS 或新通用规则语言。它是共同规范化/能力定义的投影，服务端校验仍是权威；前端不能根据一份复制的模型表判断某功能已被支持。新模型或组合支持变化必须同时更新能力投影及对应校验/报价测试。
 
 versions 由真实定义/相关配置版本或其规范摘要产生，不维护一套需要手工同步的第二版本。`defaults` 只覆盖影响规范化的默认值；`billingPolicy` 只覆盖执行/收费/准入相关政策。余额、当前队列长度、时钟变化不使这些版本变化。错误文案、布局和无关运营告警显示也不使报价版本失效。
+
+Vibe 内容类型、来源及字节限制属于能力语义，进入现有 capabilities/normalization 摘要；旧报价用于新操作键提交时须重新确认。已受理操作仍按首次上下文和原 confirmation 重放，不因能力投影修正增加上游尝试或收费。
 
 能力响应不返回上游账号 ID/PST、其他成员信息或逐步报价公式。当前上游是否暂停、余额是否够用通过 quote 的准入预览表达，不把“暂不可用”误报为“模型不支持”。
 

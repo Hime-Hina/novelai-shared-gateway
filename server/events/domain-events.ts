@@ -3,15 +3,15 @@ import type { DomainPayloads } from './domain-payloads.ts';
 export type { DomainPayloads, AcceptedJobFact } from './domain-payloads.ts';
 
 export const DOMAIN_SCHEMA_VERSION = 1;
-// v2 makes retired artifact tombstones part of every rebuilt query projection.
-export const DOMAIN_REDUCER_VERSION = 2;
+// v3 restores observed response evidence, including sourced supplements for old query rows.
+export const DOMAIN_REDUCER_VERSION = 3;
 export const DOMAIN_AMOUNT_VERSION = 'decimal-12-v1';
 export const domainEventTypes = [
   'OpeningStateRecorded', 'LegacyFactRecorded', 'SharingConfigured', 'AllocationChanged', 'MemberTransferred', 'MemberRemoved',
   'AccountBound', 'AccountRegistered', 'AvailabilityChanged', 'QuotaObserved', 'RefillApplied', 'QuotaReserved',
   'GenerationSettled', 'GenerationRefunded', 'FundingRegistered', 'FundingReceived', 'FundsTransferred',
   'ResourceGapObserved', 'ReturnClassified', 'OperatingLossCovered', 'PolicyChanged', 'CooldownChanged',
-  'RequestAccepted', 'JobQueued', 'DispatchAuthorized', 'ArtifactPrepared', 'ArtifactPublished', 'JobCompleted', 'JobFailed',
+  'RequestAccepted', 'JobQueued', 'DispatchAuthorized', 'ArtifactPrepared', 'ArtifactPublished', 'JobCompleted', 'JobFailed', 'ResponseEvidenceRecorded',
   'WaitingJobsCancelled', 'LateResultRecovered', 'FreeImageSucceeded', 'ReviewOpened', 'ReviewClosed', 'AdmissionChanged',
   'CachedResultLinked', 'RequestAliasRegistered', 'AllocationApplied', 'V5CapacityObserved', 'DebitsConfirmed', 'MemberEligibilityChanged', 'QuotaAccountOpened', 'ArtifactStorageChanged', 'JobHistoryRetired', 'ArtifactHistoryRetired'
 ] as const;

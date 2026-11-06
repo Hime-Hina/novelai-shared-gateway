@@ -1,0 +1,11 @@
+# 开发入口
+
+先读[文档导航](docs/README.md)、[模块归属](server/README.md)和受影响契约；格式、关键注释及验证命令见 [CONTRIBUTING.md](CONTRIBUTING.md)（#13）。业务规则只在对应契约和 owner 维护，不复制另一套规范。
+
+先追踪调用者、事实源及验收，再采用满足需求的最小改动：删除或复用优先，不添加未要求的抽象、配置或依赖。保留信任边界校验、数据保护和已有行为；非平凡逻辑留下能区分回归的小检查。
+
+局部验证后执行 `pnpm run architecture:check`、`pnpm run migration:check`、`pnpm run typecheck`、`pnpm test`；完整三包、格式与发布包检查按 CONTRIBUTING 和 CI。迁移历史以可信 Git 基线比较，只追加，不重写已有 SQL/journal；数据库运行时 hash guard 仍需保留。
+
+交付说明受影响契约、实际 owner、复现反例、验证结果及历史兼容性。事件/reducer/金额/政策变化应链接回放验证。架构守卫、基线、关键断言或 CI 的修改需明确需求和维护者复核；仓库内检查不构成 agent 权限沙箱，远端合并保护必须另行核验。
+
+上下文压缩后保留目标、已选最小方案、安全约束、受影响模块、验证和真实阻塞；从已有进展继续，不扩大范围。

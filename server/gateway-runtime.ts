@@ -47,7 +47,7 @@ import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, default
 
 import type { PreviewProgress } from './generation/job-previews.ts';
 import type { NormalizedImageRequest } from './protocols/novelai-client.ts';
-import type { StoreDatabase, StoreItem, StoredGenerationRequest } from './storage/sqlite-store.ts';
+import type { PersistenceOptions, StoreDatabase, StoreItem, StoredGenerationRequest } from './storage/sqlite-store.ts';
 
 type Settings = StoreDatabase['settings'];
 type Body = Record<string, unknown>;
@@ -356,8 +356,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
     changeMemberAdmission, getGenerationRequest, cancelGenerationRequest, handleMemberGeneration,
-    ownerOperation: (url, method, body) => ownerOperation(url, method, body, { store,
-      updateAccount: (id, input) => updateAccount(id, input, process.env.OWNER_USER_ID || 'local-admin'), refreshAccountQuotas }) })) return;
+    ownerOperation: (url, method, body, command) => ownerOperation(url, method, body, { store,
+      updateAccount: (id, input, options) => updateAccount(id, input, process.env.OWNER_USER_ID || 'local-admin', options), refreshAccountQuotas }, command) })) return;
   // 与实际路由使用同一个规范化路径，必须在公网守卫读取正文之前占用预算。
   if ((method === 'POST' && (['/api/jobs', '/api/web/jobs', '/v1/chat/completions'].includes(url.pathname) || /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(url.pathname)))
     || (method === 'GET' && url.pathname === '/generate')) {
@@ -991,8 +991,8 @@ async function updateAccounts(body: Body) {
   }, { collections: ['accounts', 'ledger'], domainCommand: { actorId: 'local-admin', actorKind: 'admin' } });
 }
 
-function refreshAccountQuotas(body: Body) {
-  return accountQuotaRefresh.refresh(collectValues(body.ids || body.accounts));
+function refreshAccountQuotas(body: Body, command?: Parameters<typeof accountQuotaRefresh.refresh>[1]) {
+  return accountQuotaRefresh.refresh(collectValues(body.ids || body.accounts),command);
 }
 
 function startAccountQuotaAutoRefresh() { accountQuotaRefresh.start(); }
@@ -1011,7 +1011,7 @@ function startGenerationReviews() {
 function startColdImages() {
   if (!r2Storage) return;
   const idle = () => !runtimeClosing && !queueDispatcher.draining && runningJobControls.size === 0
-    && !store.db?.jobs.some(job => ['queued', 'pending', 'running'].includes(job.status || ''));
+    && !store.hasActiveJobs();
   const run = async () => {
     if (runtimeClosing) return;
     let moved = false;
@@ -1122,13 +1122,13 @@ function normalizeCacheImageLimit(value: unknown) {
   return Math.max(0, Math.min(MAX_CACHE_IMAGES_LIMIT, Math.floor(number)));
 }
 
-async function updateAccount(id: string, body: Body, actorId = 'local-admin') {
+async function updateAccount(id: string, body: Body, actorId = 'local-admin', command?: Pick<PersistenceOptions<StoreItem>, 'domainCommand' | 'authorize' | 'commandReceipt'>) {
   return store.update((db) => {
     const account = db.accounts.find((item) => item.id === id);
     if (!account) throw httpError(404, 'account not found.');
     applyAccountConfiguration(db, account, body, new Date().toISOString());
     return account;
-  }, { collections: ['accounts'], domainCommand: { actorId, actorKind: 'admin' } });
+  }, { collections: ['accounts'], ...command, domainCommand: command?.domainCommand || { actorId, actorKind: 'admin' } });
 }
 
 function applyAccountConfiguration(db: StoreDatabase, account: StoreItem, body: Body, now: string, evidence?: Record<string, unknown>[]) {
@@ -1239,10 +1239,7 @@ function clearJobStreamProgress(jobId: string) {
 }
 
 function patchCachedJobStreamProgress(jobId: string, progress: Progress = {}) {
-  const job = store.db?.jobs?.find((item) => item.id === jobId);
-  if (!job) return;
-  job.generationProgress = publicProgressSnapshot(progress, job);
-  return job;
+  return store.updateGenerationProgress(jobId, publicProgressSnapshot(progress));
 }
 
 function shouldPersistJobStreamProgress(jobId: string, progress: Progress = {}) {

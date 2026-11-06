@@ -15,10 +15,11 @@ function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
   const refresh = createAccountQuotaRefresh({
     store: { readCollections: async () => structuredClone(db), update: async fn => fn(db) },
     fetchQuota, env: {}, requestTimeoutMs: 15, refreshIntervalMs: 20,
-    publicAccount: value => value, publicErrorMessage, logger: extra.console || console
+    publicAccount: value => value, publicErrorMessage, logger: extra.console || { log() {}, error() {} },
+    ...extra
   });
   return { context: { publicErrorMessage, refreshEnabledAccountQuotas: refresh.refreshEnabled,
-    startAccountQuotaAutoRefresh: refresh.start, stop: refresh.stop, get accountQuotaRefreshPromise() { return refresh.pending; } }, db };
+    startAccountQuotaAutoRefresh: refresh.start, stop: refresh.stop, get accountQuotaRefreshPromise() { return refresh.pending; } }, db, refresh };
 }
 
 async function within(promise, ms = 500) {
@@ -34,7 +35,7 @@ test('额度刷新遇到 bandwidth、banana 或词内 ban 时不会误停用账�
     assert.equal(result.failed, 1);
     assert.equal(f.db.accounts[0].enabled, true, message);
     assert.equal(f.db.accounts[0].quotaFixed, 9000);
-    assert.equal(f.db.accounts[0].quotaError, message);
+    assert.equal(f.db.accounts[0].quotaError, '官方额度同步失败，请稍后重试');
     assert.equal(f.db.accounts[0].upstreamStatus, 'sync_error');
   }
 });
@@ -90,7 +91,7 @@ test('旧请求在超时后迟到成功，不能覆盖下一轮的余额', async
 test('自动调度在挂起请求超时后继续下一轮，不重复启动', async () => {
   let calls = 0; const completed = defer(); const summaries = [];
   const f = runtime(async () => ++calls === 1 ? new Promise(() => {}) : quota, [account('one')], {
-    console: { log: value => { summaries.push(value); if (summaries.length === 2) completed.resolve(); }, error: error => completed.reject(error) }
+    console: { log: value => { if (!value.startsWith('[runtime]')) return; summaries.push(value); if (summaries.length === 2) completed.resolve(); }, error: error => completed.reject(error) }
   });
   try {
     f.context.startAccountQuotaAutoRefresh(); f.context.startAccountQuotaAutoRefresh();
@@ -150,4 +151,21 @@ test('有效 Opus 仅读取订阅，不为不可用的试用接口阻塞刷新',
   assert.equal(result.tier, 3); assert.equal(result.subscriptionActive, true);
   assert.deepEqual(calls, ['https://offline.invalid/user/data']);
   assert.equal(result.trialStatusKnown, false);
+});
+
+test('排队批次按账户实际发起查询分配顺序，而不是按整批开始时间', async () => {
+  const blocked = Array.from({ length: 5 }, defer), calls = [];
+  const f = runtime(async token => {
+    calls.push(token);
+    const index = Number(token.split('-').at(-1));
+    if (index < 5) return blocked[index].promise;
+    return { ...quota, fixed: calls.filter(value => value === token).length === 1 ? 8000 : 10000 };
+  }, Array.from({ length: 6 }, (_, index) => account(String(index))), { requestTimeoutMs: 1000 });
+  const batch = f.refresh.refresh(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 5);
+  await f.refresh.refresh(['5']); assert.equal(f.db.accounts[5].quotaFixed, 8000);
+  blocked[0].resolve(quota); await new Promise(resolve => setImmediate(resolve));
+  for (const result of blocked.slice(1)) result.resolve(quota);
+  const output = await batch;
+  assert.equal(output.ok, 6); assert.equal(output.ignored, 0); assert.equal(f.db.accounts[5].quotaFixed, 10000);
 });

@@ -82,16 +82,17 @@ export function recordGenerationAttempt(db: LedgerDatabase, job: AccountingJob, 
   return attempt;
 }
 
+export function generationResponseEvidence(job: AccountingJob, evidence: RefundEvidence = {}): DomainPayloads['ReviewOpened']['response'] {
+  return { dispatchState: job.upstreamStartedAt ? 'request_started'
+    : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status as string) ? 'not_sent' : 'unknown',
+    upstreamStartedAt: job.upstreamStartedAt || null, upstreamHeadersAt: job.upstreamHeadersAt || null,
+    upstreamCompletedAt: job.upstreamCompletedAt || null, upstreamHttpStatus: job.upstreamHttpStatus ?? null };
+}
+
 export function recordGenerationRefund(db: LedgerDatabase, job: AccountingJob, charge: FairCharge, now: number, evidence: RefundEvidence = {}) {
   const attempt = job.generationAttempt || recordGenerationAttempt(db, job, charge, null, now);
   // 活进程能明确证明尚未进入 fetch；重启后仅有 running/派发意图时则必须保留不确定性。
-  const dispatchState = job.upstreamStartedAt ? 'request_started'
-    : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status as string) ? 'not_sent' : 'unknown';
-  const response: DomainPayloads['ReviewOpened']['response'] = {
-    dispatchState, upstreamStartedAt: job.upstreamStartedAt || null,
-    upstreamHeadersAt: job.upstreamHeadersAt || null, upstreamCompletedAt: job.upstreamCompletedAt || null,
-    upstreamHttpStatus: job.upstreamHttpStatus ?? null
-  };
+  const response = generationResponseEvidence(job, evidence), { dispatchState } = response;
   const refund = appendEvent(db, attempt, 'generation_refunded', now, {
     resources: localResources(charge), refundedAt: now, evidenceLevel: 'local_refund', response
   });
@@ -154,6 +155,6 @@ export function recordRecoveredGeneration(db: LedgerDatabase, job: AccountingJob
   job.updatedAt = job.lateResultAt;
   if (job.generationReview) Object.assign(job.generationReview, { status: 'result_recovered', resultImageId: imageId });
   recordDomainEvent(db, { eventType: 'LateResultRecovered', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
-    payload: { jobId: job.id, artifactId: imageId, at: now, refundRetained: true, review: job.generationReview || null, evidence: [recovered] } });
+    payload: { jobId: job.id, artifactId: imageId, at: now, refundRetained: true, review: job.generationReview || null, response: generationResponseEvidence(job), evidence: [recovered] } });
   return true;
 }

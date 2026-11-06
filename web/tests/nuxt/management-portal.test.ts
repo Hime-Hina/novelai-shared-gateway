@@ -108,6 +108,40 @@ afterEach(async () => {
 })
 
 describe('真实 Nuxt useAsyncData 管理会话', () => {
+  it('不确定结果保留操作键和原正文，重连后的旧版本重试领取原回执，成功后的新操作使用新键', async () => {
+    await connected()
+    const body = { action: 'groups', groups: [], expectedConfigVersion: 1 }
+    const first = portal.api('member-management', body).catch(error => error)
+    const request = pending(summaryPath('owner'))
+    const originalKey = new Headers(request.init?.headers).get('idempotency-key')
+    expect(originalKey).toBeTruthy()
+    request.reply(503, { error: 'response lost' }); await first
+    await expect(portal.api('member-management', { ...body, groups: [{ id: 'changed' }] })).rejects.toThrow('请先重试原操作')
+    const reconnect = portal.connect()
+    pending(summaryPath('owner')).reply(200, { ...state(), configVersion: 2 })
+    pending(statisticsPath()).reply(200, usage()); await reconnect
+    const retry = portal.api('member-management', { ...body, expectedConfigVersion: 2 })
+    const retried = pending(summaryPath('owner'))
+    expect(new Headers(retried.init?.headers).get('idempotency-key')).toBe(originalKey)
+    expect(retried.init?.body).toBe(request.init?.body)
+    retried.reply(200, { configVersion: 2 }); await expect(retry).resolves.toEqual({ configVersion: 2 })
+    const next = portal.api('member-management', { ...body, expectedConfigVersion: 2 })
+    const nextRequest = pending(summaryPath('owner'))
+    expect(new Headers(nextRequest.init?.headers).get('idempotency-key')).not.toBe(originalKey)
+    expect(JSON.parse(nextRequest.init?.body as string).expectedConfigVersion).toBe(2)
+    nextRequest.reply(200, {}); await next
+  })
+
+  it('预览、读取 Key 和认证秘密操作沿用独立请求，不附加无法持久化回执的操作键', async () => {
+    await connected()
+    for (const action of ['preview-groups','preview-delete-member','member-key','credentials','discord-invite']) {
+      const request = portal.api('member-management', { action })
+      const pendingRequest = pending(summaryPath('owner'))
+      expect(new Headers(pendingRequest.init?.headers).has('idempotency-key')).toBe(false)
+      pendingRequest.reply(200, {}); await request
+    }
+  })
+
   it('owner 仅可见页面摘要标记访问，后台摘要、统计和私有 admin 不续期', async () => {
     await connected()
     const summaries = requests.filter(request => request.path === summaryPath('owner'))

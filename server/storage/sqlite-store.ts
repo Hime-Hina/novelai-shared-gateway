@@ -10,8 +10,8 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
 import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './sqlite-schema.ts';
 import { migrateStorage,readCompatibleEventAuthority } from './sqlite-migrations.ts';
-import { beginDomainCommand, finishDomainCommand, canonicalJson,recordDomainEvent, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from '../events/domain-events.ts';
-import { appendDomainCommit, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,assertCurrentEventReducer,upgradeEventReducers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from '../events/event-store.ts';
+import { beginDomainCommand, finishDomainCommand, setDomainCommandReceipt, canonicalJson,domainDigest,recordDomainEvent, type Json, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from '../events/domain-events.ts';
+import { appendDomainCommit, readCommandReceipt, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,assertCurrentEventReducer,upgradeEventReducers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from '../events/event-store.ts';
 import { normalizeOpeningQuota } from '../quota/fair-share.ts';
 import { queuedDeadlineTimestamp } from '../generation/queue-policy.ts';
 import { queryFailureAccounting } from '../quota/failure-accounting.ts';
@@ -67,7 +67,10 @@ export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enab
   quotaRetryAfterUntil?: string;
 }
 type Settings = typeof defaultSettings & { fairQuota?: FairQuotaState | null; [key: string]: unknown };
-export type StoreDatabase = { settings: Settings } & Record<Collection, StoreItem[]>;
+export type StoreUser = Pick<FairUser, keyof FairUser> & Pick<StoreItem, 'createdAt' | 'updatedAt' | 'note' | 'balance' | 'acceptingJobs' | 'jobAdmissionVersion'>;
+export type StoreJob = Pick<AccountingJob, keyof AccountingJob> & Pick<StoreItem, 'accountId' | 'imageId' | 'memberId' | 'createdAt' | 'completedAt' | 'cancelledAt' | 'deadlineAt' | 'queuedDeadlineAt' | 'queueSeq' | 'queueTotal' | 'payloadBytes' | 'cost' | 'error' | 'errorDetail' | 'resultPending' | 'request' | 'accountCost' | 'errorStatus' | 'startedAt' | 'queueExpiresAt' | 'errorCode' | 'cancellationReason' | 'generationProgress' | 'sharedCooldown' | 'refundedAt' | 'cacheKey' | 'jobAdmissionVersion' | 'quotaRetryAfterUntil' | 'upstreamRetryAfterUntil'> & { lateResultImageId?: string };
+export type StoreAccount = Pick<FairAccount, Exclude<keyof FairAccount, 'enabled'>> & Pick<StoreItem, 'enabled' | 'token' | 'name' | 'routeId' | 'inFlight' | 'createdAt' | 'updatedAt' | 'cooldownUntil' | 'cooldownReason' | 'lastUsedAt' | 'upstreamRetryAfterUntil' | 'quotaRetryAfterUntil' | 'ordinaryStrikeCount' | 'capacityStrikeCount' | 'capacityConcurrencyLimit' | 'capacityLastErrorAt'>;
+export type StoreDatabase = { settings: Settings; users: StoreUser[]; jobs: StoreJob[] } & Record<Exclude<Collection, 'users' | 'jobs'>, StoreItem[]>;
 type DatabaseInput = Partial<Omit<StoreDatabase, 'settings'>> & { settings?: Partial<Settings> };
 type RowState = { data: string; order: number; sql?: SqlRow };
 type CollectionMaps<T> = Record<Collection, Map<string, T>>;
@@ -78,7 +81,7 @@ interface Writes { generationRequest?: GenerationRequest; generationIdempotency?
 interface Scope extends Writes { full: boolean; includeSettings: boolean; collections: Collection[]; dirtyRows: Partial<Record<Collection, Set<string>>>; hasDirtyRows: boolean }
 type DirtyRowsInput = Partial<Record<Collection, unknown>> | Map<string, unknown>;
 type Deferred<T, R> = T | ((result: R, db: StoreDatabase) => T | undefined);
-interface PersistenceOptions<R = unknown> {
+export interface PersistenceOptions<R = unknown> {
   persist?: boolean; shouldPersist?: (result: R) => unknown; immediate?: boolean; defer?: boolean;
   full?: boolean; includeSettings?: boolean; collections?: unknown; changedCollections?: unknown;
   dirtyRows?: Deferred<DirtyRowsInput, R>; rows?: Deferred<DirtyRowsInput, R>; changedRows?: Deferred<DirtyRowsInput, R>;
@@ -87,6 +90,12 @@ interface PersistenceOptions<R = unknown> {
   memberSessionExpiry?: Deferred<SessionExpiry, R>;
   generationPayloadClaim?: { release(): void };
   domainCommand?: DomainCommandMetadata; domainBatch?: DomainCommand;
+  authorize?: (db: StoreDatabase) => void;
+  commandReceipt?: (result: R) => Json;
+}
+class DuplicateDomainCommand extends Error {
+  readonly receipt: Json;
+  constructor(receipt: Json) { super('Domain command already committed.'); this.receipt=receipt; }
 }
 type ResolvedOptions = Omit<PersistenceOptions, keyof Writes> & Writes;
 type Prepared<Row> = Pick<SQLitePreparedQuery<{ type: 'sync'; run: Database.RunResult; all: Row[]; get: Row | undefined; values: unknown[][]; execute: unknown }>, 'run' | 'get' | 'all'>;
@@ -168,16 +177,16 @@ const usageChartDays = 7;
 const beijingOffsetHours = 8;
 
 export class JsonStore {
-  eventOpeningReady = false;
+  private eventOpeningReady = false;
   declare dataDir: string; declare dbPath: string; declare legacyDbPath: string; declare legacyBackupPath: string;
   declare queue: Promise<unknown>; declare events: EventEmitter;
-  declare sqlite: Database.Database | null; declare statements: Statements | null; declare db: StoreDatabase | null;
-  declare rowState: CollectionMaps<RowState>; declare orderKeys: CollectionMaps<number>; declare settingsState: string;
-  declare pendingPersistScope: Scope | null; declare pendingPersistTimer: ReturnType<typeof setTimeout> | null;
-  declare partialCollections: Set<Collection>; declare statsReader: SqliteReadWorker | null; declare adminReader: SqliteReadWorker | null;
-  declare adminStatsCache: { at: number; value: ReadResults['adminStats'] } | null;
-  declare adminStatsPromise: Promise<ReadResults['adminStats']> | null; declare adminFreshStatsPromise: Promise<ReadResults['adminStats']> | null;
-  declare lastImageTrimAt: number;
+  private declare sqlite: Database.Database | null; private declare statements: Statements | null; private declare db: StoreDatabase | null;
+  private declare rowState: CollectionMaps<RowState>; private declare orderKeys: CollectionMaps<number>; private declare settingsState: string;
+  private declare pendingPersistScope: Scope | null; private declare pendingPersistTimer: ReturnType<typeof setTimeout> | null;
+  private declare partialCollections: Set<Collection>; private declare statsReader: SqliteReadWorker | null; private declare adminReader: SqliteReadWorker | null;
+  private declare adminStatsCache: { at: number; value: ReadResults['adminStats'] } | null;
+  private declare adminStatsPromise: Promise<ReadResults['adminStats']> | null; private declare adminFreshStatsPromise: Promise<ReadResults['adminStats']> | null;
+  private declare lastImageTrimAt: number;
   constructor(dataDir: string) {
     this.dataDir = dataDir;
     this.dbPath = path.join(dataDir, 'library.sqlite');
@@ -202,7 +211,7 @@ export class JsonStore {
     this.lastImageTrimAt = 0;
   }
 
-  emitStoreEvent(name: string, event?: unknown) {
+  private emitStoreEvent(name: string, event?: unknown) {
     // 通知错误不能把已提交的事务变成失败，也不能阻止其他订阅者。
     for (const listener of this.events.rawListeners(name)) {
       try {
@@ -212,14 +221,14 @@ export class JsonStore {
     }
   }
 
-  notifyCommit(event: CommitDraft) {
+  private notifyCommit(event: CommitDraft) {
     if (!event.collections.size) return;
     this.emitStoreEvent('commit', Object.freeze({ collections: Object.freeze([...event.collections]),
       memberIds: Object.freeze([...event.memberIds]), allMembers: event.allMembers,
       activityChanges: Object.freeze(event.activityChanges.map(change => Object.freeze(change))) }));
   }
 
-  describeCommit(changes: Changes, nextSettings?: string, previousRows = this.rowState, previousSettings = this.settingsState, request: GenerationRequest | null = null) {
+  private describeCommit(changes: Changes, nextSettings?: string, previousRows = this.rowState, previousSettings = this.settingsState, request: GenerationRequest | null = null) {
     const event: CommitDraft = { collections: new Set(), memberIds: new Set(), allMembers: false, activityChanges: [] };
     if (changes.settingsChanged && JSON.stringify(fairQuotaArchive(safeJson(previousSettings, {})).settings) !== nextSettings) {
       event.collections.add('settings'); event.allMembers = true;
@@ -368,7 +377,7 @@ export class JsonStore {
     const images=result.images as RemovedImages;images.affectedJobIds=result.jobIds;return images;
   }
 
-  retireArtifactsInCommand(db:StoreDatabase,imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive:boolean,now:number,commandId=''):{images:StoreItem[];jobIds:string[]} {
+  private retireArtifactsInCommand(db:StoreDatabase,imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive:boolean,now:number,commandId=''):{images:StoreItem[];jobIds:string[]} {
     const removed:StoreItem[]=[],affected=new Set<string>();
     for(const id of uniqueStrings(imageIds)){
       const image=db.images.find(image=>image.id===id)||this.selectItemById('images',id);if(!image)continue;
@@ -424,7 +433,7 @@ export class JsonStore {
     },{immediate:true,dirtyRows:result=>({jobs:result})});
   }
 
-  canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;generationReview?:{status?:string}|null}):boolean {
+  private canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;generationReview?:{status?:string}|null}):boolean {
     return !!job.status&&!['queued','pending','running'].includes(job.status)&&!job.resultPending&&job.generationReview?.status!=='pending';
   }
 
@@ -465,7 +474,7 @@ export class JsonStore {
     this.refreshPartialCollectionState('images');
     return {deleted:images.length,remaining:this.countRecords('images'),images};
   }
-  selectImagesForClear({ ids = [], query = '', clearAll = false }: { ids?: unknown[]; query?: string; clearAll?: boolean } = {}) {
+  private selectImagesForClear({ ids = [], query = '', clearAll = false }: { ids?: unknown[]; query?: string; clearAll?: boolean } = {}) {
     if (clearAll) {
       return this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>('SELECT id, data FROM images ORDER BY order_value ASC').all();
     }
@@ -500,7 +509,7 @@ export class JsonStore {
     return next;
   }
 
-  initializeQueueSequence() {
+  private initializeQueueSequence() {
     // 精确沿用升级前实际选择：运行缓存的任务数组过滤后 reverse。
     // 不猜测 createdAt/order_value 的排序等价关系，也不改历史 order_value。
     const active = this.db!.jobs.filter(job => ['queued', 'pending', 'running'].includes(job.status!)).reverse();
@@ -522,7 +531,7 @@ export class JsonStore {
       WHERE status = 'queued' ORDER BY queue_seq ASC`).all().map(row => row.id);
   }
 
-  persistQueueSequence(rows: Partial<SqlRow>[]) {
+  private persistQueueSequence(rows: Partial<SqlRow>[]) {
     let maximum = 0;
     for (const row of rows) maximum = Math.max(maximum, Number(row.queue_seq) || 0);
     if (maximum > Number(this.statements!.readQueueSequence.get()?.value || 0)) {
@@ -549,7 +558,7 @@ export class JsonStore {
     return row ? JSON.parse(row.value) : null;
   }
 
-  persistMemberSessions(scope: Writes, event: CommitDraft) {
+  private persistMemberSessions(scope: Writes, event: CommitDraft) {
     if (scope.memberSessionOwner) {
       const previous = this.readMemberSessionOwner();
       const { ownerUserId, guildId } = scope.memberSessionOwner;
@@ -595,7 +604,7 @@ export class JsonStore {
     return queryFreeImageUsage(this.sqlite!, db, memberId, now);
   }
 
-  persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {
+  private persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {
     if(rows.length&&eventAuthorityEnabled(this.sqlite!))throw new Error('Terminal receipts are written only by the domain projector after cutover.');
     for (const row of rows) {
       const inserted = this.statements!.insertFairQuotaSettlement.run(row);
@@ -656,7 +665,18 @@ export class JsonStore {
     return total;
   }
 
-  async findJobContext(id: string) {
+  hasActiveJobs(): boolean {
+    return this.db?.jobs.some(job => ['queued', 'pending', 'running'].includes(job.status || '')) || false;
+  }
+
+  updateGenerationProgress(jobId: string, progress: StoreJob['generationProgress']): StoreJob | null {
+    const job = this.db?.jobs.find(item => item.id === jobId);
+    if (!job) return null;
+    job.generationProgress = progress ? { ...progress, total: progress.total || job.request?.steps || 0 } : progress;
+    return structuredClone(job);
+  }
+
+  async findJobContext(id: string): Promise<{ job: StoreJob; account: StoreAccount | null; queue: ReturnType<JsonStore['jobQueueProgress']> } | null> {
     await this.ensureLoaded();
     const job = this.db!.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
     if (!job) return null;
@@ -683,7 +703,7 @@ export class JsonStore {
     return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
   }
 
-  hydrateArtifactImage(image:StoreItem|null):StoreItem|null {
+  private hydrateArtifactImage(image:StoreItem|null):StoreItem|null {
     if(!image?.artifactInputRef)return image;
     const input=readArtifactInput(this.sqlite!,String(image.artifactInputRef),image.artifactInputSha256 as string);
     if(!input)throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
@@ -742,7 +762,7 @@ export class JsonStore {
     await this.queue;
     this.flushPendingPersistSync();
     // 只取统计字段，不加载提示词、图片、Key 或 Discord 授权数据。
-    return this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; memberId: string; username: string; startedAt: string | null; upstreamStartedAt: string | null; upstreamCompletedAt: string | null; errorStatus: number | null; resource: string | null; chargeStatus: string | null; amount: number | null; fixed: number | null; purchased: number | null }>(`
+    return this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; memberId: string; username: string; startedAt: string | null; upstreamStartedAt: string | null; upstreamCompletedAt: string | null; errorStatus: number | null; resource: string | null; chargeStatus: string | null; amount: string | number | null; fixed: string | number | null; purchased: string | number | null }>(`
       SELECT j.id, j.status, j.model, j.created_at AS createdAt,
         COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId,
         COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username,
@@ -851,7 +871,7 @@ export class JsonStore {
     return (this.adminFreshStatsPromise || this.refreshAdminStats(now)).catch(() => emptyAdminStats(now));
   }
 
-  async readFreshAdminStats() {
+  private async readFreshAdminStats() {
     if (!this.adminFreshStatsPromise) {
       this.adminFreshStatsPromise = (async () => {
         try {
@@ -868,7 +888,7 @@ export class JsonStore {
     return this.adminFreshStatsPromise;
   }
 
-  async refreshAdminStats(now = Date.now()) {
+  private async refreshAdminStats(now = Date.now()) {
     if (this.adminStatsPromise) return this.adminStatsPromise;
     this.adminStatsPromise = Promise.resolve()
       .then(() => this.statsReader!.request('adminStats', { now, days: usageChartDays }, 3_000))
@@ -884,7 +904,7 @@ export class JsonStore {
     return this.adminStatsPromise;
   }
 
-  async ensureLoaded() {
+  private async ensureLoaded() {
     if (this.db!) return;
     this.openSqlite();
     this.createSchema();
@@ -920,7 +940,7 @@ export class JsonStore {
     return this.queue as Promise<{version:number;commitSeq:string}>;
   }
 
-  persistDomainFacts(scope:Scope,changes:Changes,candidateSettings:Settings):ProjectionRow[] {
+  private persistDomainFacts(scope:Scope,changes:Changes,candidateSettings:Settings):ProjectionRow[] {
     const authoritative=eventAuthorityEnabled(this.sqlite!);
     let written:ProjectionRow[]=[];
     const candidateRows=new Map<string,{item:Record<string,unknown>|null;order?:number}>();
@@ -957,10 +977,14 @@ export class JsonStore {
       }
       return [...streams.values()];
     };
-    if(scope.domainBatch)appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
-      if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true,candidates});
-      else written=coreProjectionRows(sqlite,commit,streams).rows.filter(row=>row.remove);
-    }});
+    if(scope.domainBatch){
+      const appended=appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
+        if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true,candidates});
+        else written=coreProjectionRows(sqlite,commit,streams).rows.filter(row=>row.remove);
+      }});
+      // Roll back the caller's protected writes as well as discarding its candidate cache.
+      if(appended.duplicate)throw new DuplicateDomainCommand(appended.receipt);
+    }
     else if(authoritative){
       const clock=this.sqlite!.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
       const commit:DomainCommit={commitSeq:clock.value,commandId:'verify-compatible-write',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
@@ -969,7 +993,7 @@ export class JsonStore {
     return written;
   }
 
-  refreshDomainRows(written:ProjectionRow[]):void {
+  private refreshDomainRows(written:ProjectionRow[]):void {
     if(!written.length)return;
     const settings=this.statements!.selectSettings.get()?.value;
     if(settings){this.settingsState=settings;this.db!.settings=JSON.parse(settings) as Settings;}
@@ -983,7 +1007,7 @@ export class JsonStore {
     }
   }
 
-  includeRetirementChanges(scope:Scope,changes:Changes):void {
+  private includeRetirementChanges(scope:Scope,changes:Changes):void {
     for(const event of scope.domainBatch?.events||[]){
       const collection=event.eventType==='JobHistoryRetired'?'jobs':event.eventType==='ArtifactHistoryRetired'?'images':null;
       if(!collection)continue;
@@ -992,7 +1016,7 @@ export class JsonStore {
     }
   }
 
-  trimCommandHistory(db:StoreDatabase,scope:Scope):void {
+  private trimCommandHistory(db:StoreDatabase,scope:Scope):void {
     if(process.env.NO_AUTO_DELETE==='true')return;
     const now=Date.now(),retainMs=clampNumber(process.env.JOB_HISTORY_RETENTION_MS??7*24*60*60*1000,60000,7*24*60*60*1000);
     if(scope.full||scope.collections.includes('jobs')){
@@ -1017,13 +1041,31 @@ export class JsonStore {
       // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
       this.flushPendingPersistSync();
       try {
+        options.authorize?.(this.db!);
+        const metadata=options.domainCommand;
+        if(metadata?.commandId){
+          const prior=readCommandReceipt(this.sqlite!,metadata.commandId);
+          if(prior){
+            if(!metadata.fingerprint||prior.fingerprint!==metadata.fingerprint)throw Object.assign(new Error(`Command fingerprint conflict: ${metadata.commandId}`),{statusCode:409});
+            options.generationPayloadClaim?.release();
+            return cloneValue(prior.receipt) as T;
+          }
+        }
         beginDomainCommand(this.db!, options.domainCommand);
         const result = await mutator(this.db!);
+        if(metadata?.commandId&&metadata.fingerprint&&options.persist!==false&&metadata.receipt===undefined){
+          setDomainCommandReceipt(this.db!,options.commandReceipt?options.commandReceipt(result):result as Json);
+        }
         const persistOptions = resolvePersistenceOptions(options, result, this.db!);
         if(eventAuthorityEnabled(this.sqlite!))persistOptions.immediate=true;
         const preliminaryScope=persistenceScope(persistOptions);
         if(shouldPersistUpdate(result,persistOptions)&&!preliminaryScope.hasDirtyRows)this.trimCommandHistory(this.db!,preliminaryScope);
         const domainBatch = finishDomainCommand(this.db!);
+        if(metadata?.commandId&&metadata.fingerprint&&options.persist!==false&&!domainBatch?.events.length){
+          const prior=readCommandReceipt(this.sqlite!,metadata.commandId);
+          if(prior?.fingerprint===metadata.fingerprint)throw new DuplicateDomainCommand(prior.receipt);
+          throw Object.assign(new Error('操作已被更新或未产生可提交事实，请刷新后确认结果'),{statusCode:409});
+        }
         if (domainBatch?.events.length) {
           if(!this.eventOpeningReady){importOpeningFacts(this.sqlite!);this.eventOpeningReady=true;}
           persistOptions.domainBatch = domainBatch;
@@ -1051,13 +1093,14 @@ export class JsonStore {
         this.clearPendingPersist();
         this.db = null;
         this.db = this.loadFromSqlite();
+        if(error instanceof DuplicateDomainCommand){options.generationPayloadClaim?.release();return cloneValue(error.receipt) as T;}
         throw error;
       }
     });
     return this.queue as Promise<T>;
   }
 
-  scheduleFlush() {
+  private scheduleFlush() {
     this.schedulePersist({ full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false });
     return this.pendingPersistTimer;
   }
@@ -1085,12 +1128,12 @@ export class JsonStore {
     this.events.removeAllListeners();
   }
 
-  openReadWorkers() {
+  private openReadWorkers() {
     this.statsReader ||= new SqliteReadWorker(this.dbPath, 'stats');
     this.adminReader ||= new SqliteReadWorker(this.dbPath, 'admin');
   }
 
-  schedulePersist(scope: Scope) {
+  private schedulePersist(scope: Scope) {
     this.pendingPersistScope = mergePersistenceScopes(this.pendingPersistScope, scope);
     if (this.pendingPersistTimer) return;
     this.pendingPersistTimer = setTimeout(() => {
@@ -1105,7 +1148,7 @@ export class JsonStore {
     this.pendingPersistTimer.unref?.();
   }
 
-  flushPendingPersistSync() {
+  private flushPendingPersistSync() {
     if (!this.pendingPersistScope) return;
     if (this.pendingPersistTimer) {
       clearTimeout(this.pendingPersistTimer);
@@ -1118,14 +1161,14 @@ export class JsonStore {
     this.pendingPersistScope = null;
   }
 
-  selectItems(collection: Collection, clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}): StoreItem[] {
+  private selectItems(collection: Collection, clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}): StoreItem[] {
     const table = collectionTables[collection];
     if (!table) return [];
     const rows = this.sqlite!.prepare<unknown[], { data: string }>(`SELECT data FROM ${table} ${clause}`).all(params);
     return rows.map((row) => safeJson(row.data, null)).filter(Boolean as unknown as Present);
   }
 
-  selectItemById(collection: Collection, id: string): StoreItem | null {
+  selectItemById<C extends Collection>(collection: C, id: string): StoreDatabase[C][number] | null {
     const statement = this.statements!.selectById[collection];
     if (!statement || !id) return null;
     const row = statement.get({ id: String(id) });
@@ -1136,10 +1179,10 @@ export class JsonStore {
     return this.loadItemForUpdate('jobs', id);
   }
 
-  loadItemForUpdate(collection: Collection, id: string) {
+  loadItemForUpdate<C extends Collection>(collection: C, id: string): StoreDatabase[C][number] | null {
     // 仅在串行 update 内使用：冷任务仍是旧行，必须恢复原排序及已提交快照，不能按新行分配顺序。
     const cached = this.db![collection].find(job => job.id === id);
-    if (cached) return cached;
+    if (cached) return cached as StoreDatabase[C][number];
     const row = this.statements!.selectById[collection].get({ id });
     const job = row ? safeJson(row.data, null) : null;
     if (!job) return null;
@@ -1200,7 +1243,7 @@ export class JsonStore {
       ORDER BY id LIMIT @limit`).all({ afterId, limit }).map(row => row.id);
   }
 
-  countRecords(collection: Collection) {
+  private countRecords(collection: Collection) {
     const statement = this.statements!.countRecords[collection];
     if (!statement) return 0;
     return Number(statement.get()?.count || 0);
@@ -1211,7 +1254,7 @@ export class JsonStore {
     return jobQueueProgress(job, this.db!.jobs);
   }
 
-  selectJobStatRows(clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}) {
+  private selectJobStatRows(clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}) {
     const rows = this.sqlite!.prepare<unknown[], { id: string | null; status: string | null; accountId: string | null; createdAt: string | null; updatedAt: string | null }>(`
       SELECT
         id,
@@ -1231,7 +1274,7 @@ export class JsonStore {
     }));
   }
 
-  openSqlite() {
+  private openSqlite() {
     if (this.sqlite!) return;
     const startedAt = Date.now();
     this.sqlite = new Database(this.dbPath);
@@ -1241,14 +1284,14 @@ export class JsonStore {
     runtimeLog(`SQLite opened in ${Date.now() - startedAt}ms`);
   }
 
-  createSchema() {
+  private createSchema() {
     const startedAt = Date.now();
     migrateStorage(this.sqlite!);
     upgradeEventAuthorityProjections(this.sqlite!);
     runtimeLog(`SQLite migrations checked in ${Date.now() - startedAt}ms`);
   }
 
-  prepareStatements() {
+  private prepareStatements() {
     if (this.statements) return;
     const db = drizzle(this.sqlite!);
     this.statements = {
@@ -1325,15 +1368,15 @@ export class JsonStore {
     }
   }
 
-  hasSqliteData() {
+  private hasSqliteData() {
     return Boolean(this.statements!.hasSettings.get() || this.hasTypedRecords() || this.statements!.hasGenericRecords.get());
   }
 
-  hasTypedRecords() {
+  private hasTypedRecords() {
     return collections.some((collection) => this.statements!.hasTypedRecords[collection].get());
   }
 
-  loadFromSqlite(): StoreDatabase {
+  private loadFromSqlite(): StoreDatabase {
     if (!this.hasTypedRecords() && this.statements!.hasGenericRecords.get()) {
       const startedAt = Date.now();
       runtimeLog('Legacy SQLite app_records table found. Upgrading to typed tables.');
@@ -1383,7 +1426,7 @@ export class JsonStore {
     return normalized;
   }
 
-  runtimeRowsForCollection(collection: Collection) {
+  private runtimeRowsForCollection(collection: Collection) {
     const table = collectionTables[collection];
     if (!table) return [];
     if (collection === 'jobs') {
@@ -1410,7 +1453,7 @@ export class JsonStore {
     return this.statements!.selectRecords[collection].all();
   }
 
-  loadFromGenericRecords() {
+  private loadFromGenericRecords() {
     const settingsRow = this.statements!.selectSettings.get();
     const db = {
       ...structuredClone(defaultDb),
@@ -1423,7 +1466,7 @@ export class JsonStore {
     return normalizeDb(db);
   }
 
-  replaceAll(db: DatabaseInput) {
+  private replaceAll(db: DatabaseInput) {
     if(eventAuthorityEnabled(this.sqlite!))throw new Error('A full legacy-state replacement cannot overwrite event authority.');
     const safeDb = trimDb(normalizeDb(db));
     const archive = fairQuotaArchive(safeDb.settings);
@@ -1468,7 +1511,7 @@ export class JsonStore {
     runtimeLog(`SQLite full replace wrote ${formatDbCounts(safeDb)} in ${Date.now() - startedAt}ms`);
   }
 
-  clearPendingPersist() {
+  private clearPendingPersist() {
     if (this.pendingPersistTimer) {
       clearTimeout(this.pendingPersistTimer);
       this.pendingPersistTimer = null;
@@ -1476,7 +1519,7 @@ export class JsonStore {
     this.pendingPersistScope = null;
   }
 
-  persistGenerationIdempotency(row: Idempotency) {
+  private persistGenerationIdempotency(row: Idempotency) {
     const contextRef = generationContextRef(row);
     const existing = this.sqlite!.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(contextRef) as { payload: string } | undefined;
     if (existing && existing.payload !== row.normalization_context) throw new Error(`Protected normalization context conflict: ${contextRef}`);
@@ -1484,7 +1527,7 @@ export class JsonStore {
     if(!eventAuthorityEnabled(this.sqlite!))this.statements!.insertGenerationIdempotency.run(row);
   }
 
-  assertDomainFactWrites(scope:Scope,settlements:(typeof fairQuotaSettlements.$inferInsert)[]):void {
+  private assertDomainFactWrites(scope:Scope,settlements:(typeof fairQuotaSettlements.$inferInsert)[]):void {
     if(!eventAuthorityEnabled(this.sqlite!))return;
     const events=scope.domainBatch?.events||[];
     for(const row of settlements){
@@ -1517,7 +1560,7 @@ export class JsonStore {
     }
   }
 
-  persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
+  private persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
     if (!scope.full && !scope.includeSettings && !scope.collections.length && !scope.generationRequest && !scope.generationIdempotency && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
@@ -1589,7 +1632,7 @@ export class JsonStore {
     this.notifyCommit(event);
   }
 
-  persistDirtyRows(db: StoreDatabase, scope: Scope, startedAt = Date.now()) {
+  private persistDirtyRows(db: StoreDatabase, scope: Scope, startedAt = Date.now()) {
     const changes: Changes = {
       settingsChanged: false,
       deletes: [],
@@ -1714,14 +1757,14 @@ export class JsonStore {
     this.notifyCommit(event);
   }
 
-  assertFullCollectionsAreLoaded(collectionList: Collection[] = []) {
+  private assertFullCollectionsAreLoaded(collectionList: Collection[] = []) {
     const partial = collectionList.filter((collection) => this.partialCollections.has(collection) && ['jobs', 'images'].includes(collection));
     if (partial.length) {
       throw new Error(`Refusing full persistence for partially loaded collection(s): ${partial.join(',')}`);
     }
   }
 
-  trimRuntimePartialCaches() {
+  private trimRuntimePartialCaches() {
     if (!this.db!) return;
     if (this.trimRuntimeCollection('images', runtimeCacheLimit('images'))) {
       this.partialCollections.add('images');
@@ -1751,11 +1794,11 @@ export class JsonStore {
     }
   }
 
-  trimRuntimeCollection(collection: Collection, limit: number) {
+  private trimRuntimeCollection(collection: Collection, limit: number) {
     const items = Array.isArray(this.db?.[collection]) ? this.db![collection] : [];
     if (items.length <= limit) return 0;
     const removed = items.slice(limit);
-    this.db![collection] = items.slice(0, limit);
+    this.db![collection].splice(limit);
     for (const item of removed) {
       if (!item?.id) continue;
       this.rowState[collection]?.delete(item.id);
@@ -1764,7 +1807,7 @@ export class JsonStore {
     return removed.length;
   }
 
-  refreshPartialCollectionState(collection: Collection) {
+  private refreshPartialCollectionState(collection: Collection) {
     if (!collectionTables[collection]) return;
     const loaded = Array.isArray(this.db?.[collection]) ? this.db![collection].length : 0;
     const total = this.countRecords(collection);
@@ -1772,7 +1815,7 @@ export class JsonStore {
     else this.partialCollections.delete(collection);
   }
 
-  async readLegacyOrDefault() {
+  private async readLegacyOrDefault() {
     const candidates = [this.legacyDbPath, this.legacyBackupPath];
     let lastError = null;
     for (const filePath of candidates) {
@@ -1792,7 +1835,7 @@ export class JsonStore {
     return cloneDb(defaultDb);
   }
 
-  async markLegacyMigrated() {
+  private async markLegacyMigrated() {
     const migratedAt = new Date().toISOString();
     this.statements!.setMeta.run({ key: 'schema_version', value: '1' });
     this.statements!.setMeta.run({ key: 'last_migrated_at', value: migratedAt });
@@ -2008,7 +2051,8 @@ function cloneCollectionMaps<T>(source: Partial<CollectionMaps<T>> = {}): Collec
 }
 
 const criticalJobFields = ['id','status','requestId','memberId','accountId','batchId','sampleIndex','queueSeq','queueExpiresAt','deadlineAt','jobAdmissionVersion',
-  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode','diagnosticRef'];
+  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode','diagnosticRef',
+  'upstreamStartedAt','upstreamHeadersAt','upstreamCompletedAt','upstreamHttpStatus'];
 const criticalAccountFields = ['id','enabled','quotaTier','subscriptionActive','subscriptionExpiresAt','v5UsagePercent','quotaFixed','quotaPurchased',
   'v5UsageIsNegative','quotaCheckedAt','v5UsageTimeUntilNextPercent','quotaError','upstreamStatus','cooldownUntil','upstreamRetryAfterUntil','quotaRetryAfterUntil'];
 const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion','discord'];
@@ -2059,7 +2103,28 @@ export function activateEventAuthority(sqlite:Database.Database):{version:number
 function upgradeEventAuthorityProjections(sqlite:Database.Database):void {
   sqlite.transaction(()=>{
     const authority=readCompatibleEventAuthority(sqlite);
-    if(!upgradeEventReducers(sqlite)||!authority)return;
+    if(!upgradeEventReducers(sqlite))return;
+    // Old writers kept these observations only in query rows. Preserve their provenance before stricter verification.
+    let cursor='';
+    for(;;){
+      const row=sqlite.prepare('SELECT id,data,request_id FROM jobs WHERE id>? ORDER BY id LIMIT 1').get(cursor) as {id:string;data:string;request_id:string|null}|undefined;
+      if(!row)break;cursor=row.id;
+      const observed=JSON.parse(row.data) as StoreItem,streamId=`request:${row.request_id||`legacy-${row.id}`}`;
+      const state=readStreamProjection(sqlite,streamId)?.projection;
+      const expected=(state?.jobs as Record<string,StoreItem>|undefined)?.[row.id];
+      if(!expected)continue;
+      const response={dispatchState:observed.upstreamStartedAt?'request_started' as const:'unknown' as const,
+        upstreamStartedAt:null as string|null,upstreamHeadersAt:null as string|null,upstreamCompletedAt:null as string|null,upstreamHttpStatus:null as number|null};
+      let missing=false;
+      for(const field of ['upstreamStartedAt','upstreamHeadersAt','upstreamCompletedAt','upstreamHttpStatus'] as const){
+        if(observed[field]!=null&&observed[field]!==''&&(expected[field]==null||expected[field]==='')){Object.assign(response,{[field]:observed[field]});missing=true;}
+      }
+      if(!missing)continue;
+      appendDomainCommit(sqlite,{commandId:`response-evidence-v3:${row.id}`,recordedAt:new Date().toISOString(),actorId:null,actorKind:'system',
+        correlationId:null,causationId:null,expectedVersions:{},receipt:null,events:[{eventType:'ResponseEvidenceRecorded',eventId:`response-evidence-v3:${row.id}:0`,streamId,
+          payload:{jobId:row.id,response,source:'legacy-query-projection',sourceRowSha256:domainDigest(observed)}}]});
+    }
+    if(!authority)return;
     verifyEventProjections(sqlite);
     removeLegacyFreeImageTriggers(sqlite);
     installEventProjections(sqlite);
@@ -2388,7 +2453,7 @@ class SqliteReadWorker {
     const source = new URL('./sqlite-read-worker.ts', import.meta.url);
     const worker = new Worker(existsSync(source) ? source : new URL('./sqlite-read-worker.js', import.meta.url), {
       workerData: { dbPath: this.dbPath },
-      execArgv: process.execArgv.filter((value) => !value.startsWith('--input-type'))
+      execArgv: []
     });
     worker.unref();
     worker.on('message', (message) => {

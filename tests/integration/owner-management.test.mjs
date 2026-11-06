@@ -2,6 +2,8 @@ import { withMemberSessions } from '../helpers/member-session-store.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import {fork} from 'node:child_process';
+import Database from 'better-sqlite3';
 import {mkdtemp, rm, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -12,17 +14,60 @@ import {configureFairQuota, syncFairQuota} from '../../server/quota/fair-share.t
 import {sharedSurface} from '../../server/http/api-surface.ts';
 import {JsonStore} from '../../server/storage/sqlite-store.ts';
 
+test('管理命令丢失真实 HTTP 响应并重开进程后返回原回执，不重新转移或开启旧策略',{timeout:20000},async t=>{
+  const dir=await mkdtemp(path.join(tmpdir(),'nai-management-receipts-'));
+  let child,port,cookie;
+  async function stop(){if(!child)return;if(child.exitCode!==null){child=null;return;}const exited=new Promise(resolve=>child.once('exit',resolve));if(child.connected)child.send({stop:true});else child.kill();await exited;child=null;}
+  t.after(async()=>{await stop();await rm(dir,{recursive:true,force:true});});
+  async function start(){
+    child=fork(new URL('../helpers/management-receipt-server.mjs',import.meta.url),[dir],{stdio:['ignore','ignore','pipe','ipc']});
+    let stderr='';child.stderr.on('data',chunk=>stderr+=chunk);
+    const ready=await new Promise((resolve,reject)=>{child.on('message',message=>{if(message.port)resolve(message);});child.once('exit',code=>reject(new Error(`receipt server exited ${code}: ${stderr}`)));});
+    port=ready.port;cookie ||=ready.cookie;
+  }
+  function call(body,headers={}){
+    return new Promise((resolve,reject)=>{
+      const req=http.request({hostname:'127.0.0.1',port,path:'/api/member/owner/member-management',method:body?'POST':'GET',headers:{host:'nai.example',origin:'https://nai.example',cookie,'content-type':'application/json',...headers}},res=>{let text='';res.on('data',chunk=>text+=chunk);res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(text)}));});req.on('error',reject);req.end(body?JSON.stringify(body):undefined);
+    });
+  }
+  await start();
+  const initial=(await call()).data;
+  const transfer={action:'transfer-quota',fromUserId:'other-b',toUserId:'other-c',resource:'anlasFixed',amount:10,expectedConfigVersion:initial.configVersion};
+  await assert.rejects(call(transfer,{'Idempotency-Key':'transfer-once','x-test-drop-response':'1'}),error=>error.code==='ECONNRESET');
+  const changed=(await call()).data;assert.equal(changed.configVersion,initial.configVersion+1);
+  await stop();await start();
+  const reader=new Database(path.join(dir,'library.sqlite'),{readonly:true});
+  let receipt;try{receipt=JSON.parse(reader.prepare("SELECT receipt FROM event_commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq LIMIT 1").get().receipt);}finally{reader.close();}
+  const replay=await call(transfer,{'Idempotency-Key':'transfer-once'});
+  assert.equal(replay.status,200);assert.deepEqual(replay.data,receipt);
+  assert.deepEqual((await call()).data.users.map(user=>user.quota.anlasFixedAvailable),changed.users.map(user=>user.quota.anlasFixedAvailable));
+  assert.equal((await call({...transfer,amount:11},{'Idempotency-Key':'transfer-once'})).status,409);
+  const a=await call({action:'fallback-policy',enabled:true},{'Idempotency-Key':'policy-A'});assert.equal(a.status,200);
+  assert.equal((await call({action:'fallback-policy',enabled:false},{'Idempotency-Key':'policy-B'})).status,200);
+  assert.deepEqual(await call({action:'fallback-policy',enabled:true},{'Idempotency-Key':'policy-A'}),a);
+  assert.equal((await call()).data.autoAnlasFallback,false);
+  await call({action:'fallback-policy',enabled:false});await call({action:'fallback-policy',enabled:false});
+  await new Promise(resolve=>{child.once('message',message=>{assert.equal(message.revoked,true);resolve();});child.send({revoke:true});});
+  assert.ok([401,403].includes((await call(transfer,{'Idempotency-Key':'transfer-once'})).status));
+  await stop();
+  const final=new Database(path.join(dir,'library.sqlite'),{readonly:true});
+  try{
+    assert.equal(final.prepare("SELECT count(*) AS n FROM domain_events WHERE event_type='MemberTransferred'").get().n,1);
+    assert.equal(final.prepare("SELECT count(*) AS n FROM domain_events WHERE event_type='PolicyChanged'").get().n,4);
+  }finally{final.close();}
+});
+
 async function fixture(t) {
   const env={OWNER_USER_ID:'owner-a',DISCORD_GUILD_ID:'1134557553011998840',DISCORD_CLIENT_ID:'123456789012345678',DISCORD_CLIENT_SECRET:'synthetic-secret-only',PUBLIC_BASE_URL:'https://nai.example'};
   const account={id:'opus',token:'pst-synthetic-upstream-secret',enabled:true,quotaTier:3,subscriptionActive:true,subscriptionExpiresAt:Date.now()+86400000,quotaFixed:10000,quotaPurchased:100,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:new Date().toISOString()};
   const db={settings:{},accounts:[account],jobs:[],users:['owner-a','other-b','other-c','other-d'].map((id,index)=>({id,token:'STA1N-synthetic-'+id,enabled:true,balance:0,memberAuth:{username:'owner',version:id},discord:{id:String(222222222222222220n+BigInt(index)),guildId:env.DISCORD_GUILD_ID,checkedAt:Date.now(),member:true,accessToken:'synthetic-discord-secret'}}))};
   configureFairQuota(db,db.users.map(u=>u.id));syncFairQuota(db);
-  let chain=Promise.resolve(), refreshCount=0, updateCount=0, statsCount=0;
+  let chain=Promise.resolve(), refreshCount=0, updateCount=0, statsCount=0, refreshResult={checked:1,ok:1,failed:0};
   const store={update(fn){chain=chain.catch(()=>{}).then(()=>fn(db));return chain;},async readOwnerJobRows(){statsCount++;return [];},async readMemberLateResults(){return [];},async readMemberImageIds(){return new Map();}};
   await withMemberSessions(t,store);
   const deps={env,store,assertAdmin(){throw Object.assign(new Error('Private administrator required'),{statusCode:401});}};
   deps.ownerOperation=(url,method,body)=>ownerOperation(url,method,body,{store,
-    async refreshAccountQuotas(){refreshCount++;return {checked:1,ok:1,failed:0,accounts:[account]};},
+    async refreshAccountQuotas(){refreshCount++;return {...refreshResult,accounts:[account]};},
     async updateAccount(id,body){assert.equal(id,account.id);updateCount++;Object.assign(account,body);return account;}});
   const server=http.createServer(async(req,res)=>{try{const url=new URL(req.url,'https://nai.example');if(!sharedSurface(url.pathname,req.method).allowed){res.writeHead(404);res.end('{}');return;}await handleMemberRoutes(req,res,url,deps);}catch(e){res.writeHead(e.statusCode||500,{'content-type':'application/json'});res.end(JSON.stringify({error:e.message}));}});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
@@ -30,7 +75,7 @@ async function fixture(t) {
   const call=(route,{viewer=0,method,body,headers={}}={})=>new Promise((resolve,reject)=>{
     const req=http.request({hostname:'127.0.0.1',port:server.address().port,path:route,method:method||(body===undefined?'GET':'POST'),headers:{host:'nai.example',origin:'https://nai.example',...(viewer===null?{}:{cookie:cookies[viewer]}),'content-type':'application/json',...headers}},res=>{let text='';res.on('data',c=>text+=c);res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(text),text}));});req.on('error',reject);req.end(body===undefined?undefined:JSON.stringify(body));
   });
-  return {db,env,account,store,call,counts:()=>({refreshCount,updateCount,statsCount})};
+  return {db,env,account,store,call,setRefreshResult:result=>{refreshResult=result;},counts:()=>({refreshCount,updateCount,statsCount})};
 }
 
 test('owner 权限绑定内部 ID 和有效 Discord 会话，用户名、Key、伪造管理员头均不能提权',async t=>{
@@ -103,7 +148,7 @@ test('R2 官方统计只由已鉴权管理摘要触发，不泄漏统计令牌�
 });
 
 test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key，响应不泄漏凭据',async t=>{
-  const {account,call,counts}=await fixture(t),route='/api/member/owner/accounts/opus';
+  const {account,call,counts,setRefreshResult}=await fixture(t),route='/api/member/owner/accounts/opus';
   assert.equal((await call(route,{method:'PATCH',body:{proxyUrl:'http://evil.example'}})).status,400);
   assert.equal((await call('/api/member/owner/accounts/another',{method:'PATCH',body:{enabled:true}})).status,404);
   assert.equal((await call('/api/member/owner/accounts/quota',{body:{ids:['another']}})).status,400);
@@ -111,7 +156,9 @@ test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key�
   assert.equal((await call(route,{method:'PATCH',body:{token:'invalid'}})).status,400);
   const rotated=await call(route,{method:'PATCH',body:{token:'pst-synthetic-new-secret'}});assert.equal(rotated.status,200);assert.equal(account.enabled,false);assert.equal(account.token,'pst-synthetic-new-secret');assert.ok(!rotated.text.includes('pst-'));
   account.subscriptionActive=false;assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,409);assert.equal(account.enabled,false);
-  account.subscriptionActive=true;assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,200);assert.equal(account.enabled,true);
+  account.subscriptionActive=true;setRefreshResult({checked:1,ok:0,failed:0,ignored:1});
+  assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,409);assert.equal(account.enabled,false);
+  setRefreshResult({checked:1,ok:1,failed:0});assert.equal((await call(route,{method:'PATCH',body:{enabled:true}})).status,200);assert.equal(account.enabled,true);
   assert.ok(counts().refreshCount>=3);
   assert.equal((await call('/api/member/owner/statistics?days=365')).status,200);
   assert.equal((await call('/api/member/owner/statistics?days=0')).status,200);

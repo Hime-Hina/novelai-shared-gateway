@@ -3,10 +3,25 @@ import assert from 'node:assert/strict';
 import { beginDomainCommand,finishDomainCommand } from '../../server/events/domain-events.ts';
 import { reduceDomainEvent } from '../../server/events/event-store.ts';
 import { recordRecoveredGeneration } from '../../server/generation/accounting.ts';
-import { recordGenerationFailure } from '../../server/generation/execution.ts';
+import { recordGenerationFailure,recordPreparedArtifact,recordCompletedArtifact } from '../../server/generation/execution.ts';
 import { setMemberAdmission } from '../../server/generation/queue-policy.ts';
 import { cancelWaitingBatchJobs } from '../../server/generation/batch-requests.ts';
 const now=1793491200000;
+test('response evidence survives prepared, completed, failed and late result facts without inferred timestamps',()=>{
+  const response={upstreamStartedAt:new Date(now).toISOString(),upstreamHeadersAt:new Date(now+11000).toISOString(),upstreamCompletedAt:new Date(now+12000).toISOString(),upstreamHttpStatus:200};
+  for(const phase of ['prepared','completed','failed','late','unknown']){
+    const before={id:'response',memberId:'a',status:phase==='late'?'failed':'running',fairCharge:{status:phase==='late'?'refunded':'reserved'},generationAttempt:{id:'attempt',jobId:'response',memberId:'a',accountId:'opus',upstreamCandidates:[]}};
+    const job={...structuredClone(before),...(phase==='unknown'?{}:response)},db={jobs:[job],ledger:[]};
+    beginDomainCommand(db);
+    if(phase==='prepared'){job.resultPending={imageId:'image',attemptId:'attempt'};recordPreparedArtifact(db,job,now+13000);}
+    else if(phase==='completed'){job.status='done';job.completedAt=new Date(now+13000).toISOString();recordCompletedArtifact(db,job,{id:'image',file:'image.png',mimeType:'image/png',byteLength:1,sha256:'abc',createdAt:job.completedAt},now+13000);}
+    else if(phase==='late')recordRecoveredGeneration(db,job,'image',now+13000);
+    else{job.status='failed';job.completedAt=new Date(now+13000).toISOString();recordGenerationFailure(db,job);}
+    const replayed=replayRequest([before],finishDomainCommand(db),'request:legacy-response').response;
+    for(const field of Object.keys(response))assert.equal(replayed[field],job[field],`${phase}.${field}`);
+    if(phase==='late')assert.equal(replayed.fairCharge.status,'refunded');
+  }
+});
 function replayRequest(before,command,streamId){
   let projection={jobs:Object.fromEntries(before.map(job=>[job.id,structuredClone(job)])),artifacts:{},freeUsage:{}};
   for(const [index,input] of command.events.filter(event=>event.streamId===streamId).entries())projection=reduceDomainEvent(projection,{...input,eventId:input.eventId,commitSeq:'1',eventIndex:index,commandId:command.commandId,

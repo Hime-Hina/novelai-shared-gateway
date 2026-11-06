@@ -19,8 +19,10 @@ import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } 
 import { recordRecoveredGeneration } from '../../server/generation/accounting.ts';
 import { ImageStorage } from '../../server/storage/r2-storage.ts';
 import { JobPreviews } from '../../server/generation/job-previews.ts';
-import { crc32, BASE_MODELS } from '../../server/protocols/native-image.ts';
+import { crc32, BASE_MODELS, NATIVE_LIMITS } from '../../server/protocols/native-image.ts';
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { createAccountQuotaRefresh } from '../../server/quota/account-refresh.ts';
+import { publicErrorMessage } from '../../server/http/public-errors.ts';
 
 function png(width = 128, height = 128, noise = false) {
   const chunk = (name, body) => { const h = Buffer.alloc(8), t = Buffer.alloc(4); h.writeUInt32BE(body.length); h.write(name, 4); t.writeUInt32BE(crc32(Buffer.concat([Buffer.from(name), body]))); return Buffer.concat([h, body, t]); };
@@ -146,6 +148,46 @@ test('HTTP capabilities and quotes require Cookie/Origin, remain private and do 
   assert.equal(f.store.activeGenerationPayloadBytes(), 0);
 });
 
+test('quota outages reject new member intents while original replay, input and settlement remain available', async t => {
+  const f = await fixture(t), body = input({ seed: 17 }), quote = await f.quote(body);
+  const acceptedBody = { ...body, confirmation: confirmation(quote) };
+  const accepted = await f.json('/api/member/generation/requests', { method: 'POST', key: 'before-quota-outage', body: acceptedBody });
+  assert.equal(accepted.status, 202); const requestId = accepted.body.requestId;
+  const jobId = await f.dispatch(requestId);
+  let failure = true, missing = null;
+  const refresh = createAccountQuotaRefresh({ store: f.store, publicAccount: account => account, publicErrorMessage,
+    logger: { log() {}, error() {} }, fetchQuota: async () => {
+      if (failure) throw Object.assign(new Error('SYNTHETIC_PRIVATE_MEMBER_QUOTA'), { upstreamStatus: 503 });
+      const value = { tier: 3, subscriptionActive: true, points: 10100, fixed: 10000, purchased: 100,
+        v5UsagePercent: 80, v5UsageIsNegative: false, v5UsageTimeUntilNextPercent: 0 };
+      if (missing) value[missing] = null;
+      return value;
+    } });
+  const financialState = () => ({ balances: f.store.db.settings.fairQuota.balances, reservations: f.store.db.settings.fairQuota.reservations,
+    counts: Object.fromEntries(['jobs', 'ledger', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements']
+      .map(table => [table, f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n])) });
+  for (const field of [null, 'v5UsagePercent', 'fixed', 'purchased']) {
+    failure = field === null; missing = field; await refresh.refresh();
+    const currentQuote = await f.quote(body);
+    assert.equal(currentQuote.admission.allowed, false);
+    assert.match(JSON.stringify(currentQuote.admission.reasons), failure ? /额度同步失败/ : /额度不完整/);
+    const before = structuredClone(financialState());
+    const denied = await f.json('/api/member/generation/requests', { method: 'POST', key: `new-${field}`, body: acceptedBody });
+    assert.equal(denied.status, 503, JSON.stringify(denied.body));
+    assert.match(JSON.stringify(denied.body), failure ? /额度同步失败/ : /额度不完整/);
+    const replay = await f.json('/api/member/generation/requests', { method: 'POST', key: 'before-quota-outage', body: acceptedBody });
+    assert.equal(replay.status, 202); assert.equal(replay.body.requestId, requestId); assert.equal(replay.body.replayed, true);
+    assert.equal((await f.json(`/api/member/requests/${requestId}`)).status, 200);
+    assert.equal((await f.json(`/api/member/requests/${requestId}/input`)).status, 200);
+    assert.deepEqual(financialState(), before);
+    assert.doesNotMatch(JSON.stringify(denied.body), /SYNTHETIC_PRIVATE/);
+  }
+  await f.finish(requestId);
+  assert.equal(f.store.readGenerationRequestState(requestId, 'a').jobs[0].status, 'done');
+  const result = await f.raw(`/api/member/jobs/${jobId}/content`);
+  assert.equal(result.status, 200); await result.arrayBuffer();
+});
+
 test('HTTP confirmation tampering and same-key concurrency preserve one durable request and its first context', async t => {
   const f = await fixture(t), body = input(), quote = await f.quote(body), acceptedBody = { ...body, confirmation: confirmation(quote) };
   assert.equal((await f.json('/api/member/generation/requests', { method: 'POST', key: 'missing-confirmation', body })).body.code, 'confirmation_required');
@@ -185,6 +227,29 @@ test('HTTP paid confirmations enforce per-job and total caps without reserving r
   assert.equal(perJob.status, 409); assert.equal(perJob.body.code, 'cost_limit_exceeded');
   assert.equal(f.store.countRecords('jobs'), 0); assert.equal(f.store.activeGenerationPayloadBytes(), 0);
   assert.deepEqual(f.store.db.settings.fairQuota.balances.a, balance); assert.deepEqual(f.store.db.settings.fairQuota.reservations, {});
+});
+
+test('Vibe capability semantics invalidate new confirmation but preserve accepted context and settled charge', async t => {
+  const f = await fixture(t), encoded = Buffer.alloc(200, 42).toString('base64');
+  const body = input({ reference_image_multiple: Array(5).fill(encoded), reference_strength_multiple: Array(5).fill(0.6) });
+  const quote = await f.quote(body), acceptedBody = { ...body, confirmation: confirmation(quote) };
+  assert.equal(quote.charges.total.anlasFixed, '2');
+  const accepted = await f.json('/api/member/generation/requests', { method: 'POST', key: 'vibe-capability', body: acceptedBody });
+  assert.equal(accepted.status, 202, JSON.stringify(accepted.body));
+  await f.dispatch(accepted.body.requestId); await f.finish(accepted.body.requestId);
+  const original = f.store.readGenerationRequest(accepted.body.requestId), ledger = f.store.countRecords('ledger'), balance = structuredClone(f.store.db.settings.fairQuota.balances.a);
+  const originalLimit = NATIVE_LIMITS.vibeEncodingBytes;
+  NATIVE_LIMITS.vibeEncodingBytes--;
+  try {
+    const changed = await f.quote(body); assert.notEqual(changed.versions.capabilities, quote.versions.capabilities);
+    const replay = await f.json('/api/member/generation/requests', { method: 'POST', key: 'vibe-capability', body: acceptedBody });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body)); assert.equal(replay.body.replayed, true); assert.equal(replay.body.requestId, accepted.body.requestId);
+    const stale = await f.json('/api/member/generation/requests', { method: 'POST', key: 'new-vibe-operation', body: acceptedBody });
+    assert.equal(stale.status, 409); assert.equal(stale.body.code, 'quote_changed');
+    assert.deepEqual(f.store.readGenerationRequest(accepted.body.requestId), original);
+    assert.equal(f.store.countRecords('jobs'), 1); assert.equal(f.store.countRecords('ledger'), ledger);
+    assert.deepEqual(f.store.db.settings.fairQuota.balances.a, balance);
+  } finally { NATIVE_LIMITS.vibeEncodingBytes = originalLimit; }
 });
 
 test('HTTP JSON and multipart share large-image quote semantics and release failed attachment budgets', async t => {

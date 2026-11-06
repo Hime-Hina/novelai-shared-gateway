@@ -6,16 +6,24 @@ import os from 'node:os';
 import Database from 'better-sqlite3';
 import { JsonStore,verifyEventProjections,applyEventProjection } from '../../server/storage/sqlite-store.ts';
 import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/quota/fair-share.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts,copyProtectedFacts,replayDomainEvents } from '../../server/events/event-store.ts';
+import { domainDigest, recordDomainEvent } from '../../server/events/domain-events.ts';
+import { readCommandReceipt,readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts,copyProtectedFacts,replayDomainEvents } from '../../server/events/event-store.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
 import { createGenerationAdmission } from '../../server/generation/admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
 import { recordGenerationFailure } from '../../server/generation/execution.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { closeGenerationReview } from '../../server/generation/accounting.ts';
+import { createAccountQuotaRefresh } from '../../server/quota/account-refresh.ts';
+import { publicErrorMessage } from '../../server/http/public-errors.ts';
+import { sharedAccountStatus } from '../../server/quota/shared-status.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
+function changeFallback(db,enabled,time=now){
+  db.settings.fairQuota.autoAnlasFallback=enabled;
+  db.settings.fairQuota.policyHistory=[...(db.settings.fairQuota.policyHistory||[]),{at:time,actor:'administrator',autoAnlasFallback:enabled}].slice(-1000);
+  recordDomainEvent(db,{eventType:'PolicyChanged',streamId:'sharing:default',occurredAt:time,payload:{policy:'autoAnlasFallback',value:enabled,actorId:'local-admin',at:time}});
+}
 async function fixture(t){
   const dir=await mkdtemp(path.join(os.tmpdir(),'nai-event-authority-'));const store=new JsonStore(dir);await store.init();
   t.after(async()=>{await store.close();await rm(dir,{recursive:true,force:true});});
@@ -23,6 +31,110 @@ async function fixture(t){
   db.accounts=[{id:'opus',enabled:true,quotaTier:3,subscriptionActive:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:80,quotaCheckedAt:now}];
   configureFairQuota(db,['a','b','c','d']);syncFairQuota(db,now);await store.write(db);return store;
 }
+test('真实刷新同批提交可用状态，失败回滚、重开与离线重放保留完整钱包和观察',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  let clock=now+1,fail=true;
+  const refresh=createAccountQuotaRefresh({store,now:()=>clock,env:{},publicAccount:value=>value,publicErrorMessage,logger:{log(){},error(){}},
+    fetchQuota:async()=>{if(fail)throw new Error('private upstream token pst-secret https://secret.invalid');
+      return {tier:3,subscriptionActive:true,subscriptionExpiresAt:now+86400000,points:10000,fixed:10000,purchased:0,v5UsagePercent:80};}});
+  const snapshot=()=>({accounts:structuredClone(store.db.accounts),quota:structuredClone(store.db.settings.fairQuota),
+    events:store.sqlite.prepare('SELECT * FROM domain_events ORDER BY commit_seq,event_index').all(),
+    commits:store.sqlite.prepare('SELECT * FROM event_commits ORDER BY commit_seq').all()});
+  const assertReplay=()=>{const target=new Database(':memory:');try{migrateStorage(target);copyProtectedFacts(store.sqlite,target);
+    replayDomainEvents(store.sqlite,target,{project:applyEventProjection});target.transaction(()=>verifyEventProjections(target))();
+    assert.deepEqual(readProjectedFairQuota(target),readProjectedFairQuota(store.sqlite));
+    assert.deepEqual(JSON.parse(target.prepare("SELECT data FROM accounts WHERE id='opus'").get().data),store.selectItemById('accounts','opus'));
+  }finally{target.close();}};
+  const opening=snapshot(),wallets=structuredClone(opening.quota.balances),baseline=structuredClone(opening.quota.snapshot);
+  store.sqlite.exec("CREATE TEMP TRIGGER reject_quota_availability BEFORE INSERT ON domain_events WHEN NEW.event_type='AvailabilityChanged' BEGIN SELECT RAISE(ABORT,'synthetic availability failure'); END");
+  await assert.rejects(refresh.refresh(['opus']),/synthetic availability failure/);assert.deepEqual(snapshot(),opening);
+  store.sqlite.exec('DROP TRIGGER reject_quota_availability');
+  assert.equal((await refresh.refresh(['opus'])).failed,1);
+  const failed=snapshot();assert.equal(failed.quota.status,'quota_sync_error');assert.equal(sharedAccountStatus(store.db,clock).status,'quota_sync_error');
+  assert.deepEqual(failed.quota.balances,wallets);assert.deepEqual(failed.quota.snapshot,baseline);
+  const events=failed.events.slice(opening.events.length);
+  assert.deepEqual(events.map(event=>event.event_type),['QuotaObserved','AvailabilityChanged']);
+  assert.equal(new Set(events.map(event=>event.commit_seq)).size,1);
+  for(const secret of ['pst-secret','secret.invalid','private upstream'])assert.equal(JSON.stringify(events).includes(secret),false);
+  assertReplay();
+  await store.close();await store.init();assert.equal(store.db.settings.fairQuota.status,'quota_sync_error');
+  assert.deepEqual(store.db.settings.fairQuota.balances,wallets);
+  fail=false;clock++;assert.equal((await refresh.refresh(['opus'])).ok,1);
+  const recovered=snapshot();assert.equal(recovered.quota.status,'active');assert.deepEqual(recovered.quota.balances,wallets);
+  assert.equal(store.db.accounts[0].quotaError,'');
+  await refresh.refresh(['opus']);assert.deepEqual(store.db.settings.fairQuota.balances,wallets);
+  assertReplay();await store.close();await store.init();assert.equal(store.db.settings.fairQuota.status,'active');assert.deepEqual(store.db.settings.fairQuota.balances,wallets);
+});
+test('command receipts precede mutation and stale expected versions without accepting an old candidate',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  let executed=0,authorized=0;
+  const version=readStreamProjection(store.sqlite,'sharing:default').streamVersion;
+  const invoke=(id,enabled,extra={})=>store.update(db=>{
+    executed++;changeFallback(db,enabled,now+executed);
+    return {executed,enabled};
+  },{collections:['settings'],immediate:true,authorize(){authorized++;},domainCommand:{commandId:id,fingerprint:domainDigest({enabled}),...extra}});
+  const first=await invoke('policy-A',true,{expectedVersions:{'sharing:default':version}});
+  await invoke('policy-B',false);
+  assert.deepEqual(await invoke('policy-A',true,{expectedVersions:{'sharing:default':version}}),first);
+  assert.equal(executed,2);assert.equal(authorized,3);
+  assert.equal(store.db.settings.fairQuota.autoAnlasFallback,false);
+  assert.equal(JSON.parse(store.sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value).fairQuota.autoAnlasFallback,false);
+  assert.equal(readProjectedFairQuota(store.sqlite).autoAnlasFallback,false);
+  assert.deepEqual(readCommandReceipt(store.sqlite,'policy-A').receipt,first);
+  await assert.rejects(invoke('policy-A',false),error=>error.statusCode===409&&/fingerprint conflict/.test(error.message));
+  await assert.rejects(store.update(()=>{executed++;},{domainCommand:{commandId:'policy-A',fingerprint:domainDigest({enabled:true})},authorize(){throw Object.assign(new Error('revoked'),{statusCode:403});}}),/revoked/);
+  assert.equal(executed,2);assert.equal(store.db.settings.fairQuota.autoAnlasFallback,false);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE event_type='PolicyChanged'").get().n,2);
+});
+test('an eventless keyed write rejects instead of claiming a success without a durable receipt',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  await assert.rejects(store.update(db=>{db.users[0].memberAuth={version:'must-not-persist'};return {ignored:1};},
+    {collections:['users'],domainCommand:{commandId:'ignored-command',fingerprint:'ignored-intent'}}),error=>error.statusCode===409);
+  assert.equal(readCommandReceipt(store.sqlite,'ignored-command'),null);
+  assert.equal(store.db.users[0].memberAuth,undefined);
+  assert.equal(JSON.parse(store.sqlite.prepare('SELECT data FROM users WHERE id=?').get('a').data).memberAuth,undefined);
+});
+test('the final duplicate defense rolls back protected writes and discards a prepared candidate',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  const other=new JsonStore(store.dataDir);await other.init();
+  try{
+  const metadata={commandId:'raced-policy-A',fingerprint:domainDigest({enabled:true})};
+  const result=await store.update(async db=>{
+    assert.equal(store.sqlite.inTransaction,false);
+    await other.update(draft=>{changeFallback(draft,true);return {executed:'original'};},{collections:['settings'],domainCommand:metadata});
+    await other.update(draft=>{changeFallback(draft,false,now+1);return {enabled:false};},{collections:['settings']});
+    changeFallback(db,true);db.users[0].memberAuth={version:'discarded-candidate'};
+    return {executed:'candidate'};
+  },{collections:['settings','users'],domainCommand:metadata,memberSession:{token_hash:'b'.repeat(64),user_id:'a',auth_version:'discarded',created_at:now,expires_at:now+60000,owner_binding:null}});
+  assert.deepEqual(result,{executed:'original'});
+  assert.equal(store.db.settings.fairQuota.autoAnlasFallback,false);
+  assert.equal(store.db.users[0].memberAuth,undefined);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM member_sessions').get().n,0);
+  assert.equal(readProjectedFairQuota(store.sqlite).autoAnlasFallback,false);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM domain_events WHERE event_type='PolicyChanged'").get().n,2);
+  }finally{await other.close();}
+});
+test('a failed SQL commit rolls back receipt, projections and protected writes before reloading the cache',async t=>{
+  const store=await fixture(t);await store.enableEventAuthority();
+  const beforeSettings=store.sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value;
+  const beforeUser=store.sqlite.prepare('SELECT data FROM users WHERE id=?').get('a').data;
+  const beforeCount=store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n;
+  store.sqlite.exec("CREATE TEMP TRIGGER fail_command_projection BEFORE UPDATE ON projection_versions BEGIN SELECT RAISE(ABORT,'injected command projection failure'); END");
+  const options={collections:['settings','users'],immediate:true,domainCommand:{commandId:'failed-policy',fingerprint:domainDigest({enabled:true})},
+    memberSession:{token_hash:'a'.repeat(64),user_id:'a',auth_version:'protected',created_at:now,expires_at:now+60000,owner_binding:null}};
+  const mutate=db=>{changeFallback(db,true);db.users[0].memberAuth={version:'candidate-private-auth'};return {enabled:true};};
+  await assert.rejects(store.update(mutate,options),/injected command projection failure/);
+  assert.equal(readCommandReceipt(store.sqlite,'failed-policy'),null);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM domain_events').get().n,beforeCount);
+  assert.equal(store.sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value,beforeSettings);
+  assert.equal(store.sqlite.prepare('SELECT data FROM users WHERE id=?').get('a').data,beforeUser);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM member_sessions').get().n,0);
+  assert.equal(store.db.settings.fairQuota.autoAnlasFallback,JSON.parse(beforeSettings).fairQuota.autoAnlasFallback);
+  assert.equal(store.db.users[0].memberAuth,undefined);
+  store.sqlite.exec('DROP TRIGGER fail_command_projection');
+  assert.deepEqual(await store.update(mutate,options),{enabled:true});
+  assert.equal(readCommandReceipt(store.sqlite,'failed-policy').receipt.enabled,true);
+});
 test('cutover verifies the shadow, removes duplicate success triggers, and blocks unrecorded money changes',async t=>{
   const store=await fixture(t);await store.enableEventAuthority();assert.equal(eventAuthorityEnabled(store.sqlite),true);
   assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='trigger' AND name LIKE 'free_image_%'").get().n,0);

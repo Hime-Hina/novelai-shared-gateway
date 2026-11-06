@@ -87,7 +87,7 @@ export function publicGenerationRequest(request: State, options: {
   return { ...snapshot, revision, links: generationRequestLinks(request.id) };
 }
 
-export async function readOwnedGenerationRequest(store: JsonStore, requestId: string, memberId: string) {
+export async function readOwnedGenerationRequest(store: Pick<JsonStore, 'readCollections' | 'readGenerationRequestState'>, requestId: string, memberId: string) {
   const { users } = await store.readCollections(['users']);
   if (!users.some(user => user.id === memberId && user.enabled !== false)) {
     throw Object.assign(new Error('登录已失效，请重新登录'), { statusCode: 401, code: 'session_expired' });

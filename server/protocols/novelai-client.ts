@@ -426,7 +426,9 @@ export async function fetchNovelAiAccountQuota(token: string, env: NodeJS.Proces
 
   const text = await response.text();
   if (!response.ok) {
-    throw Object.assign(new Error(`NovelAI account returned ${response.status}: ${text.slice(0, 500)}`), { upstreamStatus: response.status });
+    const message = /\bban(?:ned)?\b|封禁/i.test(text) ? '账号已封禁'
+      : /out of trial image generations/i.test(text) ? '试用次数已用完' : '官方额度同步失败，请稍后重试';
+    throw Object.assign(new Error(message), { upstreamStatus: response.status });
   }
 
   const payload: unknown = text ? JSON.parse(text) : {};

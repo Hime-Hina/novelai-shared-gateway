@@ -1,4 +1,6 @@
 import type { FairAccount } from '../quota/fair-share.ts';
+import type { PersistenceOptions } from '../storage/sqlite-store.ts';
+import type { Json } from '../events/domain-events.ts';
 
 interface OwnerJobRow {
   id: string; memberId: string; username: string; model?: string | null; status: string | null; createdAt: string | null;
@@ -17,10 +19,10 @@ interface OwnerDatabase { accounts: OwnerAccount[]; settings: { fairQuota?: { bo
 interface OwnerDependencies {
   store: {
     readOwnerJobRows(since: string, until: string): Promise<OwnerJobRow[]>;
-    update<T>(query: (db: OwnerDatabase) => T, options: { persist: false }): Promise<T>;
+    update<T>(query: (db: OwnerDatabase) => T, options: { persist: false } & Pick<PersistenceOptions<T>, 'domainCommand' | 'authorize'>): Promise<T>;
   };
-  refreshAccountQuotas(options: { ids: string[] }): Promise<{ checked: number; ok: number; failed: number }>;
-  updateAccount(id: string, change: { token?: string; enabled: boolean }): Promise<OwnerAccount>;
+  refreshAccountQuotas(options: { ids: string[] }, command?: Pick<PersistenceOptions<{ checked: number; ok: number; failed: number; ignored?: number }>, 'domainCommand' | 'authorize' | 'commandReceipt'>): Promise<{ checked: number; ok: number; failed: number; ignored?: number }>;
+  updateAccount(id: string, change: { token?: string; enabled: boolean }, command?: Pick<PersistenceOptions<OwnerAccount>, 'domainCommand' | 'authorize' | 'commandReceipt'>): Promise<OwnerAccount>;
 }
 
 const fail: (statusCode: number, message: string) => never = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
@@ -62,7 +64,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
   return { totals:finish(total), members:[...members.values()].map(finish), models:[...models.values()].map(finish), days:[...dates.values()].map(finish),
     recent:rows.map(j => ({ id:j.id, memberId:j.memberId, username:j.username, model:j.model, status:j.status, createdAt:j.createdAt,
       waitSeconds:seconds(j.createdAt,j.startedAt), generationSeconds:seconds(j.upstreamStartedAt,j.upstreamCompletedAt),
-      resource:j.resource, amount:j.amount, fixed:j.fixed, purchased:j.purchased, chargeStatus:j.chargeStatus, errorStatus:j.errorStatus })) };
+      resource:j.resource, amount:j.amount == null ? j.amount : Number(j.amount), fixed:j.fixed == null ? j.fixed : Number(j.fixed), purchased:j.purchased == null ? j.purchased : Number(j.purchased), chargeStatus:j.chargeStatus, errorStatus:j.errorStatus })) };
 }
 
 function sharedAccount(db: OwnerDatabase) {
@@ -74,7 +76,8 @@ function safeAccount(a: OwnerAccount | null | undefined) {
     quotaCheckedAt:a.quotaCheckedAt, quotaError:a.quotaError ? '官方额度同步失败，请重新验证凭据' : '' };
 }
 
-export async function ownerOperation(url: URL, method: string | undefined, body: Record<string, unknown> | undefined, deps: OwnerDependencies) {
+export async function ownerOperation(url: URL, method: string | undefined, body: Record<string, unknown> | undefined, deps: OwnerDependencies,
+  command?: Pick<PersistenceOptions, 'domainCommand' | 'authorize'>) {
   const path = url.pathname.slice('/api/member/owner'.length), {store} = deps;
   if (path === '/statistics' && method === 'GET') {
     const days = Number(url.searchParams.get('days') || 7);
@@ -84,6 +87,10 @@ export async function ownerOperation(url: URL, method: string | undefined, body:
     const range = { days, since, until:new Date(now).toISOString(), timezone:'Asia/Shanghai' };
     return { ...range, ...summarizeOwnerUsage(await store.readOwnerJobRows(since,new Date(now).toISOString())) };
   }
+  if(command?.domainCommand?.commandId){
+    const prior=await store.update(()=>null,{persist:false,...command});
+    if(prior!==null)return prior;
+  }
   const account = await store.update(db => sharedAccount(db), {persist:false});
   if (path === '/summary' && method === 'GET') return { accounts:account ? [safeAccount(account)] : [] };
   if (!account) fail(409, '尚未确定共享上游账户');
@@ -91,23 +98,23 @@ export async function ownerOperation(url: URL, method: string | undefined, body:
   const input = body!;
   if (path === '/accounts/quota' && method === 'POST') {
     if (Object.keys(input).some(k => k !== 'ids') || !Array.isArray(input.ids) || input.ids.length !== 1 || input.ids[0] !== account.id) fail(400, '仅可刷新当前共享账户');
-    const result = await deps.refreshAccountQuotas({ids:[account.id]});
-    return { checked:result.checked, ok:result.ok, failed:result.failed };
+    const result = await deps.refreshAccountQuotas({ids:[account.id]},{...command,commandReceipt:result=>({checked:result.checked,ok:result.ok,failed:result.failed,...(result.ignored===undefined?{}:{ignored:result.ignored})})});
+    return { checked:result.checked, ok:result.ok, failed:result.failed,...(result.ignored===undefined?{}:{ignored:result.ignored}) };
   }
   if (path === '/accounts/' + account.id && method === 'PATCH') {
     if (Object.keys(input).length !== 1 || !['token','enabled'].includes(Object.keys(input)[0])) fail(400, '只允许更新启用状态或 PST');
     if ('token' in input) {
       if (typeof input.token !== 'string' || input.token.length > 4096 || !/^pst-[A-Za-z0-9_-]+$/.test(input.token)) fail(400, '请输入完整 PST');
-      return safeAccount(await deps.updateAccount(account.id,{token:input.token,enabled:false}));
+      return safeAccount(await deps.updateAccount(account.id,{token:input.token,enabled:false},{...command,commandReceipt:account=>safeAccount(account) as Json}));
     }
     if (typeof input.enabled !== 'boolean') fail(400, 'enabled 必须为布尔值');
     if (input.enabled) {
       const result = await deps.refreshAccountQuotas({ids:[account.id]});
       const checked = await store.update(db => sharedAccount(db), {persist:false});
       const expiry = Number(checked?.subscriptionExpiresAt), expiresAt = Number.isFinite(expiry) && expiry > 0 ? (expiry < 1e11 ? expiry * 1000 : expiry) : Date.parse(checked?.subscriptionExpiresAt as string);
-      if (result.failed || checked?.quotaError || checked?.quotaTier !== 3 || checked?.subscriptionActive !== true || (checked.subscriptionExpiresAt && !(expiresAt > Date.now()))) fail(409, '未核验到有效 Opus，上游保持暂停');
+      if (result.ok !== 1 || result.failed || result.ignored || checked?.quotaError || checked?.quotaTier !== 3 || checked?.subscriptionActive !== true || (checked.subscriptionExpiresAt && !(expiresAt > Date.now()))) fail(409, '未核验到有效 Opus，上游保持暂停');
     }
-    return safeAccount(await deps.updateAccount(account.id,{enabled:input.enabled}));
+    return safeAccount(await deps.updateAccount(account.id,{enabled:input.enabled},{...command,commandReceipt:account=>safeAccount(account) as Json}));
   }
   fail(404, '未开放此管理操作');
 }

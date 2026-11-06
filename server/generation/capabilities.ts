@@ -16,6 +16,8 @@ export interface FieldCapability {
   type: 'integer' | 'number' | 'boolean' | 'string' | 'enum' | 'image' | 'array' | 'object';
   required: boolean; min?: number; max?: number; step?: number;
   values?: (string | number | boolean)[]; default?: unknown; fixed?: unknown;
+  encoding?: 'base64'; mimeTypes?: string[]; source?: 'encode-vibe'; minBytes?: number; maxBytes?: number;
+  items?: FieldCapability; properties?: Record<string, FieldCapability>;
 }
 export interface ModelCapability {
   operation: MemberGenerationOperation; id: string; label: string;
@@ -78,10 +80,15 @@ function generationModel(id: string): ModelCapability {
     fields['parameters.characterPrompts'] = field('array', { max: NATIVE_LIMITS.charactersMax });
   }
   if (!v5) {
-    fields['parameters.reference_image'] = field('image');
+    const reference = v3 ? field('image', { encoding: 'base64', mimeTypes: ['image/png', 'image/jpeg', 'image/webp'], maxBytes: NATIVE_LIMITS.imageBytes })
+      : field('string', { encoding: 'base64', mimeTypes: ['application/octet-stream'], source: 'encode-vibe', minBytes: 100, maxBytes: NATIVE_LIMITS.vibeEncodingBytes });
+    fields['parameters.reference_image'] = reference;
     fields['parameters.reference_strength'] = numeric(0, 1, { default: 0.6 });
     fields['parameters.reference_information_extracted'] = numeric(0, 1, { default: 1 });
-    for (const name of ['reference_image_multiple', 'reference_image_multiple_cached', 'reference_strength_multiple', 'reference_information_extracted_multiple']) fields[`parameters.${name}`] = field('array', { max: NATIVE_LIMITS.referencesMax });
+    fields['parameters.reference_image_multiple'] = field('array', { max: NATIVE_LIMITS.referencesMax, items: reference });
+    fields['parameters.reference_image_multiple_cached'] = field('array', { max: NATIVE_LIMITS.referencesMax,
+      items: field('object', { properties: { data: { ...reference, required: true } } }) });
+    for (const name of ['reference_strength_multiple', 'reference_information_extracted_multiple']) fields[`parameters.${name}`] = field('array', { max: NATIVE_LIMITS.referencesMax });
   }
   if (base.startsWith('nai-diffusion-4-5-')) for (const name of ['director_reference_images', 'director_reference_images_cached', 'director_reference_descriptions', 'director_reference_information_extracted', 'director_reference_strength_values', 'director_reference_secondary_strength_values']) fields[`parameters.${name}`] = field('array', { max: NATIVE_LIMITS.referencesMax });
   const transforms: ModelCapability['transforms'] = [

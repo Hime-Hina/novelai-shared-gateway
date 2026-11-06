@@ -4,7 +4,7 @@
 
 此仓库发布可独立部署的基础共享框架：管理员、成员账号、额度账本、排队和生图接口。支持可选的 Discord OAuth、管理员邀请码和指定服务器成员验证；**不包含拼车大厅、聊天、收款与续车业务，也不包含线上数据。** 最近更新见 [CHANGELOG.md](CHANGELOG.md)。
 
-文档按计划、接口契约、架构、运维和历史证据分组，统一入口见[文档导航](docs/README.md)。
+文档按计划、接口契约、架构、运维和历史证据分组，统一入口见[文档导航](docs/README.md)。开发、格式和验证命令见[贡献指南](CONTRIBUTING.md)。
 
 当前重构设计与完成依据见[架构重构与成员生成计划](docs/plans/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，实现规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/contracts/member-generation-contract.md)。R00–R14 已在重构分支完成验收，保留已量化的性能取舍；R15 审计待修与 R16/R17 收尾另记，尚未部署生产；多执行器、多账号/车队调度和数据库系统迁移归[后续扩展计划](docs/plans/scaling-follow-up-plan.md)。
 

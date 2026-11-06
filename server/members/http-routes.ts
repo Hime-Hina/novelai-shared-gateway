@@ -1,6 +1,7 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { formatAmount, parseAmount } from '../quota/resource-amounts.ts';
-import { inheritDomainCommand, recordDomainEvent, type DomainCommandMetadata } from '../events/domain-events.ts';
+import { domainDigest, inheritDomainCommand, recordDomainEvent, type DomainCommandMetadata } from '../events/domain-events.ts';
+import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { setMemberCredentials, loginMember, checkMemberLoginRate, createMemberSession, authenticateMemberSession, renewMemberSession, logoutMemberSession, isOwner } from './authentication.ts';
 import { configureFairGroups, fairQuotaSummary, estimateFairQuota, syncFairQuota, manageFairMember, manageOperatingFunding, type FairQuotaDatabase, type FairQuotaState, type FairCharge } from '../quota/fair-share.ts';
@@ -39,7 +40,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   dataDir?: string;
   readR2Usage?: import('../storage/sqlite-store.ts').JsonStore['readR2Usage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
-  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: (SessionMutation | { persist: false } | { collections: string[]; immediate: true }) & { domainCommand?: DomainCommandMetadata }): Promise<T>;
+  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: (SessionMutation | { persist: false } | { collections: string[]; immediate: true }) & Pick<PersistenceOptions<T>, 'domainCommand' | 'authorize'>): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
   readFreeImageUsage?: import('../storage/sqlite-store.ts').JsonStore['readFreeImageUsage'];
   selectItemById(collection: 'ledger', id: string | undefined): LedgerRow | null;
@@ -54,8 +55,8 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
   createId(prefix: string): string;
   createPublicToken(prefix: string): string;
   publicImageUrl(imageId: string): string;
-  ownerOperation(url: URL, method: string | undefined, body: Record<string, unknown> | undefined): ReturnType<typeof ownerOperation>;
-  changeMemberAdmission(userId: unknown, acceptingJobs: boolean, actorId?: string): Promise<unknown>;
+  ownerOperation(url: URL, method: string | undefined, body: Record<string, unknown> | undefined, command?: Pick<PersistenceOptions, 'domainCommand' | 'authorize'>): ReturnType<typeof ownerOperation>;
+  changeMemberAdmission(userId: unknown, acceptingJobs: boolean, actorId?: string, command?: Pick<PersistenceOptions, 'domainCommand' | 'authorize'>): Promise<unknown>;
   getGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
   cancelGenerationRequest(requestId: string, memberId: string): Promise<unknown>;
   handleMemberGeneration?(req: IncomingMessage, res: ServerResponse, url: URL, user: { id: string }, revalidate: () => Promise<boolean>): Promise<boolean>;
@@ -69,6 +70,13 @@ interface MemberMePayload {
 const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => { throw Object.assign(new Error(message), { statusCode }); };
 const cookieName = 'nai_member_session';
+const keyedManagementActions = new Set(['free-image-policy','loss-alert-policy','operating-contribute','operating-register-funding','operating-cover-loss','operating-reconcile-return','operating-confirm-debits','transfer-quota','delete-member','fallback-policy','member-status','member-admission','groups']);
+function managementCommand(req: IncomingMessage, actorId: string, operation: string, body: Record<string, unknown>): DomainCommandMetadata {
+  const key=req.headers['idempotency-key'];
+  if(key===undefined)return {actorId,actorKind:'admin'};
+  if(typeof key!=='string'||!/^[\x21-\x7e]{1,128}$/.test(key)||req.rawHeaders.filter((value,index)=>index%2===0&&value.toLowerCase()==='idempotency-key').length!==1)error(400,'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
+  return {actorId,actorKind:'admin',commandId:`management:${domainDigest([actorId,operation,key])}`,fingerprint:domainDigest({operation,body})};
+}
 function cookie(req: IncomingMessage): string { return String(req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith(cookieName + '='))?.slice(cookieName.length + 1) || ''; }
 function sameOrigin(req: IncomingMessage): void {
   const host = String(req.headers.host || '');
@@ -138,8 +146,10 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     return quota && { ...quota, freeImages: store.readFreeImageUsage?.(db, user.id) };
   };
   let actorId = 'local-admin';
+  let command: DomainCommandMetadata | undefined;
+  let authorize: PersistenceOptions['authorize'] = () => deps.assertAdmin(req,url);
   const updateManagement: MemberStore['update'] = (mutator, options) => store.update(mutator, {
-    ...options, domainCommand: { actorId, actorKind: 'admin' }
+    ...options, domainCommand: command || { actorId, actorKind: 'admin' }, authorize
   });
   if (ownerRoute) {
     // 认证返回同一 store.users 记录；认证模块自身只声明它读取的字段。
@@ -149,8 +159,19 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     await requireDiscordMembership(viewer, deps);
     if (pageVisit && admin && !url.search) await renewCookie(req, res, store, env);
     actorId = viewer.id;
+    const authVersion=viewer.memberAuth?.version;
+    const sessionHash=createHash('sha256').update(cookie(req)).digest('hex');
+    authorize=db=>{
+      const session=store.readMemberSession(sessionHash);
+      if(!session||session.user_id!==actorId||session.auth_version!==authVersion||session.expires_at<=Date.now())error(401,'管理会话已失效，请重新登录');
+      const current=db.users.find(user=>user.id===actorId) as MemberUser|undefined;
+      if(!current||current.enabled!==true||current.memberAuth?.version!==authVersion||current.discord?.member!==true||!isOwner(current,env))error(403,'管理授权已失效，请重新确认身份');
+    };
     if (!admin) {
-      const result = await deps.ownerOperation(url, req.method, req.method === 'GET' ? undefined : await json(req));
+      const body=req.method==='GET'?undefined:await json(req);
+      const keyed=body&&(req.method==='PATCH'&&/^\/api\/member\/owner\/accounts\/[^/]+$/.test(url.pathname)||req.method==='POST'&&url.pathname==='/api/member/owner/accounts/quota');
+      const options=keyed?{domainCommand:managementCommand(req,actorId,`${req.method}:${url.pathname}`,body!),authorize}:undefined;
+      const result = await deps.ownerOperation(url, req.method, body, options);
       reply(res, 200, result); return true;
     }
   }
@@ -192,6 +213,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (req.method !== 'POST') error(405, 'method not allowed');
     const body = await json(req);
+    if(keyedManagementActions.has(body.action as string))command=managementCommand(req,actorId,`member-management:${body.action}`,body);
     if (body.action === 'free-image-policy') {
       const policy = await updateManagement(db => configureFreeImages(db, body, actorId), { collections: ['settings', 'ledger'], immediate: true });
       reply(res, 200, { policy }); return true;
@@ -229,7 +251,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     if (body.action === 'fallback-policy') {
       if (typeof body.enabled !== 'boolean') error(400, 'enabled 必须为布尔值');
       const enabled = body.enabled;
-      await updateManagement(db => {
+      const result=await updateManagement(db => {
         const state = db.settings.fairQuota;
         if (!state?.enabled) error(409, '共享账本尚未配置');
         state.autoAnlasFallback = enabled;
@@ -237,8 +259,9 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
         state.policyHistory = [...(state.policyHistory || []), { at, actor: 'administrator', autoAnlasFallback: enabled }].slice(-1000);
         recordDomainEvent(db, { eventType: 'PolicyChanged', streamId: 'sharing:default', occurredAt: at,
           payload: { policy: 'autoAnlasFallback', value: enabled, actorId, actor: 'administrator', at } });
+        return {autoAnlasFallback:enabled};
       }, { collections: ['settings'], immediate: true });
-      reply(res, 200, { autoAnlasFallback: body.enabled }); return true;
+      reply(res, 200, result); return true;
     }
     if (body.action === 'member-key') {
       const result=await updateManagement(db=>{
@@ -263,7 +286,7 @@ export async function handleMemberRoutes(req: IncomingMessage, res: ServerRespon
     }
     if (body.action === 'member-admission') {
       if (typeof body.acceptingJobs !== 'boolean') error(400, 'acceptingJobs 必须为布尔值');
-      const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs, actorId);
+      const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs, actorId, {domainCommand:command,authorize});
       reply(res, 200, result); return true;
     }
     if (body.action === 'preview-groups') {

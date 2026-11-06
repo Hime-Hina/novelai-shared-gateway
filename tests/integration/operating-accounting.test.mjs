@@ -107,7 +107,7 @@ test('明确耗尽的官方固定池不扣本地固定权益，原购买权限�
   assert.throws(() => reserveFairQuota(db, db.users[0], make('poor', true), db.accounts[0], now + 2), /购买 Anlas 不足/);
   for (const value of [null, undefined]) {
     const unknown = fixture(); observe(unknown, { quotaFixed: value }, now + 1);
-    assert.throws(() => reserveFairQuota(unknown, unknown.users[0], make('unknown', true), unknown.accounts[0], now + 1), /官方公共额度不足/);
+    assert.throws(() => reserveFairQuota(unknown, unknown.users[0], make('unknown', true), unknown.accounts[0], now + 1), error => error.statusCode === 503 && /unknown_balance/.test(error.message));
   }
   assert.throws(() => reserveFairQuota(fixture(), { id: 'a' }, make('stale', true), fixture().accounts[0], now + 700000), /stale/);
 });

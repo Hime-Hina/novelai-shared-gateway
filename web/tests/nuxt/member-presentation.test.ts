@@ -113,7 +113,7 @@ describe('成员展示组件', () => {
     const count = wrapper.element.childElementCount
     await wrapper.setProps({ profile: { ...profile, acceptingJobs: true, quota: { ...profile.quota!, status: 'stale' } } })
     expect(wrapper.element.childElementCount).toBe(count)
-    expect(wrapper.get('#status').text()).toBe('官方余额等待更新')
+    expect(wrapper.get('#status').text()).toBe('额度已过期，等待更新')
     expect(wrapper.text()).toContain('额度规则')
   })
 
@@ -122,13 +122,28 @@ describe('成员展示组件', () => {
       state: { ...shared, subscriptionActive: null }, connection: 'open'
     } })
     wrappers.push(wrapper)
-    expect(wrapper.get('#sharedSubscription').text()).toBe('订阅状态未知')
+    expect(wrapper.get('#sharedSubscription').text()).toBe('上次核验：订阅状态未知')
 
     await wrapper.setProps({ state: { ...shared, subscriptionActive: false } })
-    expect(wrapper.get('#sharedSubscription').text()).toBe('没有可用的 Opus 订阅')
+    expect(wrapper.get('#sharedSubscription').text()).toBe('上次核验：没有可用的 Opus 订阅')
 
     await wrapper.setProps({ state: { ...shared, subscriptionActive: true } })
-    expect(wrapper.get('#sharedSubscription').text()).toContain('Opus 有效 · 到期')
+    expect(wrapper.get('#sharedSubscription').text()).toContain('上次核验：Opus 订阅有效 · 到期')
+  })
+
+  it('个人与共享额度使用一致原因，失败时订阅显示上次核验事实', async () => {
+    const personal = await mountSuspended(MemberQuota, { props: { profile } })
+    const publicState = await mountSuspended(SharedAccountStatus, { props: { state: shared, connection: 'open' } })
+    wrappers.push(personal, publicState)
+    for (const [status, label] of Object.entries({ inactive_opus: '账号或订阅不可用', quota_sync_error: '额度同步失败',
+      stale: '额度已过期，等待更新', unknown_balance: '额度不完整，等待更新' })) {
+      await personal.setProps({ profile: { ...profile, acceptingJobs: true, quota: { ...profile.quota!, status } } })
+      await publicState.setProps({ state: { ...shared, status, subscriptionActive: true, cooldownUntil: null } })
+      expect(personal.get('#status').text()).toBe(label)
+      expect(publicState.get('#sharedState').text()).toBe(label)
+      expect(publicState.get('#sharedSubscription').text()).toContain('上次核验：Opus 订阅有效')
+      expect(publicState.get('#sharedState').text()).not.toContain('等待派发')
+    }
   })
 
   it('未知公共余额与冷却原因不猜测，到零仍等待服务端状态', async () => {

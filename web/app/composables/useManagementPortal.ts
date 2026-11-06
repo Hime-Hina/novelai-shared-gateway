@@ -4,6 +4,7 @@ import type { SharedStatus, StateInvalidation } from '../types/member'
 
 type Failure = Error & { statusCode?: number; stale?: boolean }
 export type ManagementPanel = 'members' | 'groups' | 'usage' | 'settings'
+const keyedActions = new Set(['free-image-policy','loss-alert-policy','operating-contribute','operating-register-funding','operating-cover-loss','operating-reconcile-return','operating-confirm-debits','transfer-quota','delete-member','fallback-policy','member-status','member-admission','groups'])
 
 export function useManagementPortal(mode: ManagementMode) {
   const panel = ref<ManagementPanel>(mode === 'owner' ? 'usage' : 'members')
@@ -18,6 +19,7 @@ export function useManagementPortal(mode: ManagementMode) {
   let refreshTask: Promise<void> | null = null, usageTask: Promise<void> | null = null
   let timer: ReturnType<typeof setInterval> | null = null
   let events: typeof import('../utils/member-events.js') | null = null
+  const pendingCommands = new Map<string, { id: string; body: string; intent: string }>()
 
   function notify(text: string, error = false) { message.value = text; messageError.value = error; messageVersion.value++ }
   function stop() {
@@ -51,15 +53,30 @@ export function useManagementPortal(mode: ManagementMode) {
     const current = epoch
     const check = () => { if (disposed || current !== epoch) throw Object.assign(new Error('旧管理连接响应已忽略'), { stale: true }) }
     check()
+    const input = body && typeof body === 'object' ? body as Record<string, unknown> : null
+    const keyed = input && (path === 'member-management' && keyedActions.has(input.action as string)
+      || mode === 'owner' && (path === 'accounts/quota' || method === 'PATCH' && path.startsWith('accounts/')))
+    const scope = keyed ? JSON.stringify([mode, mode === 'owner' ? stateQuery.data.value?.ownerUserId : 'local-admin', method || 'POST', path, input.action || '']) : ''
+    let command = scope ? pendingCommands.get(scope) : undefined
+    const retrying = Boolean(command)
+    if (keyed) {
+      const intent = JSON.stringify({ ...input, expectedConfigVersion: undefined, expectedVersion: undefined })
+      if (command && command.intent !== intent) throw new Error('上次操作结果尚未确认，请先重试原操作。')
+      if (!command) {
+        command = { id: crypto.randomUUID(), body: JSON.stringify(body), intent }
+        pendingCommands.set(scope, command)
+      }
+    }
     const response = await fetch((mode === 'owner' ? '/api/member/owner/' : '/api/admin/') + path, {
       method: method || (body === undefined ? 'GET' : 'POST'), credentials: 'same-origin',
       headers: { ...headers(), ...(mode === 'owner' && path === 'member-management' && body === undefined && !document.hidden ? { 'X-Member-Activity': '1' } : {}),
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      body: body === undefined ? undefined : JSON.stringify(body)
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(command ? { 'Idempotency-Key': command.id } : {}) },
+      body: command ? command.body : body === undefined ? undefined : JSON.stringify(body)
     }).catch(error => { check(); throw error })
     const value = await response.json().catch(() => null)
     check()
     if (!response.ok) {
+      if (response.status >= 400 && response.status < 500 && response.status !== 408 && (!retrying || ![401,403].includes(response.status))) pendingCommands.delete(scope)
       // 管理业务也会返回403；用既有鉴权查询确认，不能因此销毁仍有效的草稿。
       if ([401, 403].includes(response.status)) {
         const valid = await authorized(); check()
@@ -71,6 +88,7 @@ export function useManagementPortal(mode: ManagementMode) {
       throw Object.assign(new Error(value?.message || value?.error?.message || value?.error || '管理请求失败，请检查连接。'), { statusCode: response.status })
     }
     if (value === null) throw new Error('响应无法读取，请检查管理入口。')
+    pendingCommands.delete(scope)
     return value as T
   }
   const stateQuery = useAsyncData<ManagementState | null>(`management-${mode}`, async (): Promise<ManagementState | null> => {
@@ -203,6 +221,7 @@ export function useManagementPortal(mode: ManagementMode) {
   })
   onBeforeUnmount(() => {
     disposed = true; clear()
+    pendingCommands.clear()
     document.removeEventListener('visibilitychange', visibility)
     window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', visibility)
   })

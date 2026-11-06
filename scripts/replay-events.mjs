@@ -2,7 +2,7 @@ import path from 'node:path';
 import { mkdirSync,existsSync,statSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { migrateStorage } from '../server/storage/sqlite-migrations.ts';
-import { copyProtectedFacts, replayDomainEvents } from '../server/events/event-store.ts';
+import { assertReplaySourceReady, copyProtectedFacts, replayDomainEvents } from '../server/events/event-store.ts';
 import { applyEventProjection } from '../server/storage/sqlite-store.ts';
 import { domainDigest } from '../server/events/domain-events.ts';
 
@@ -22,6 +22,7 @@ const source=new Database(sourcePath,{readonly:true,fileMustExist:true});
 source.pragma('query_only = ON');
 let target;
 try{
+  assertReplaySourceReady(source);
   const origin=source.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get();
   if(!origin||JSON.parse(origin.value).status!=='complete')throw new Error('Source has no complete opening import.');
   const first=source.prepare('SELECT event_id FROM domain_events ORDER BY commit_seq,event_index LIMIT 1').get();

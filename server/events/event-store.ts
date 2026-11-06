@@ -224,8 +224,8 @@ export function upgradeEventReducers(sqlite:Database.Database):boolean {
   const authority=readCompatibleEventAuthority(sqlite);
   const versions=(sqlite.prepare('SELECT DISTINCT reducer_version FROM event_streams UNION SELECT reducer_version FROM projection_versions').all() as {reducer_version:number}[])
     .map(row=>row.reducer_version);
-  for(const version of versions)if(version!==1&&version!==DOMAIN_REDUCER_VERSION)throw new Error(`Unsupported reducer version: ${version}`);
-  if(authority?.version!==1&&!versions.includes(1))return false;
+  for(const version of versions)if(![1,2,DOMAIN_REDUCER_VERSION].includes(version))throw new Error(`Unsupported reducer version: ${version}`);
+  if((!authority||authority.version===EVENT_AUTHORITY_VERSION)&&versions.every(version=>version===DOMAIN_REDUCER_VERSION))return false;
   const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
   const checkpoint=sqlite.prepare("SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'").get() as {value:string}|undefined;
   sqlite.exec('DELETE FROM event_streams');
@@ -336,7 +336,15 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
     return state;
   }
   const jobId = text(p.jobId, 'jobId'), job = object(jobs[jobId]);
+  if (p.response && ['ArtifactPrepared','JobCompleted','JobFailed','LateResultRecovered','ReviewOpened','ResponseEvidenceRecorded'].includes(event.eventType)) {
+    const response = object(p.response);
+    // Old events can lack observations; absence must never erase previously observed evidence.
+    for (const field of ['upstreamStartedAt','upstreamHeadersAt','upstreamCompletedAt','upstreamHttpStatus']) {
+      if (response[field] !== null && response[field] !== undefined) job[field] = response[field];
+    }
+  }
   switch (event.eventType) {
+    case 'ResponseEvidenceRecorded': break;
     case 'JobQueued': Object.assign(job, { status: 'queued', queueSeq: p.queueSeq, queueExpiresAt: p.queueExpiresAt, queuedAt: p.queuedAt }); break;
     case 'DispatchAuthorized':
       Object.assign(job, { status: 'running', accountId: p.accountId, attemptId: p.attemptId, startedAt: p.authorizedAt,
@@ -389,7 +397,7 @@ export function appendDomainCommit(sqlite: Database.Database, command: DomainCom
   const fingerprint = command.fingerprint || domainDigest(command.events.map(({eventId, ...event}) => event));
   const prior = readCommandReceipt(sqlite, command.commandId);
   if (prior) {
-    if (prior.fingerprint !== fingerprint) throw new Error(`Command fingerprint conflict: ${command.commandId}`);
+    if (prior.fingerprint !== fingerprint) throw Object.assign(new Error(`Command fingerprint conflict: ${command.commandId}`), { statusCode: 409 });
     return { commitSeq: prior.commitSeq, receipt: prior.receipt, duplicate: true };
   }
   // 嵌套事务提供 savepoint，调用者捕获失败后也不能提交半个事件批次。
@@ -563,8 +571,16 @@ export function projectColdDomainFacts(sqlite: Database.Database, commit: Domain
   }
 }
 
+export function assertReplaySourceReady(source: Database.Database): void {
+  const authority = readCompatibleEventAuthority(source);
+  const versions = source.prepare('SELECT DISTINCT reducer_version FROM event_streams UNION SELECT reducer_version FROM projection_versions').all() as { reducer_version: number }[];
+  if (authority && authority.version !== EVENT_AUTHORITY_VERSION || versions.some(row => row.reducer_version !== DOMAIN_REDUCER_VERSION)) {
+    throw new Error('Replay source requires a current writer/reducer. Upgrade an ISOLATED COPY of the complete backup with JsonStore.init() first, preserving legacy query-only response evidence; keep the original backup unchanged.');
+  }
+}
+
 export function replayDomainEvents(source: Database.Database, target: Database.Database, options: AppendOptions & { throughCommitSeq?: string; maxCommits?: number } = {}): { lastCommitSeq: string; commits: number; events: number } {
-  readCompatibleEventAuthority(source);
+  assertReplaySourceReady(source);
   target.transaction(()=>{
     const authority=readCompatibleEventAuthority(target),upgraded=upgradeEventReducers(target);
     // 新库迁移的旧兼容触发器不能按今日政策改写历史成功时间或告警阈值。

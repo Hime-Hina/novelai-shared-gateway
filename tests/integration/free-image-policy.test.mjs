@@ -11,6 +11,8 @@ import { assertFreeImageAdmission, configureFreeImages, freeImagePolicy } from '
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
 import { recordGenerationFailure, recordFreeImageSuccess } from '../../server/generation/execution.ts';
 import { webJobRequestSummary } from '../../server/generation/batch-requests.ts';
+import { summarizeOwnerUsage } from '../../server/members/owner-operations.ts';
+import { number } from '../../web/app/utils/member-display.ts';
 
 const now = Date.now(), day = 86400000;
 const free = { model: 'nai-diffusion-4-5-full', width: 1024, height: 1024, steps: 23 };
@@ -58,6 +60,33 @@ function settle(store, id, success, at = now) {
   }, write);
 }
 const usage = (store, at = now) => store.readFreeImageUsage(store.db, 'a', at);
+
+test('owner usage converts persisted charge amounts only at the DTO boundary', async t => {
+  const store = await fixture(t);
+  await reserve(store, 'v5-usage', now, { ...free, model: 'nai-diffusion-5-full' });
+  await settle(store, 'v5-usage', true, now + 1);
+  await reserve(store, 'refund-usage', now + 2, { ...free, model: 'nai-diffusion-5-full' });
+  await settle(store, 'refund-usage', false, now + 3);
+  await reserve(store, 'free-usage', now + 4); await settle(store, 'free-usage', true, now + 5);
+  const rows = await store.readOwnerJobRows('', new Date(now + 1000).toISOString());
+  const raw = rows.find(row => row.id === 'v5-usage');
+  assert.equal(typeof raw.amount, 'string');
+  const before = JSON.stringify(await store.read());
+  const result = summarizeOwnerUsage(rows), v5 = result.recent.find(row => row.id === 'v5-usage');
+  for (const key of ['amount', 'fixed', 'purchased']) assert.equal(v5[key], raw[key] == null ? raw[key] : Number(raw[key]));
+  assert.equal(number(v5.amount), '0.058');
+  assert.equal(result.totals.v5, v5.amount);
+  assert.equal(result.totals.refunded, 1); assert.equal(result.totals.free, 1);
+  assert.equal(result.recent.find(row => row.id === 'refund-usage').chargeStatus, 'refunded');
+  assert.equal(result.recent.find(row => row.id === 'free-usage').resource, 'free');
+  assert.equal(JSON.stringify(await store.read()), before);
+  const legacy = summarizeOwnerUsage([{ ...raw, amount: 0.25, fixed: null, purchased: undefined },
+    { ...raw, id: 'string-pools', amount: '26.5', fixed: '20', purchased: '6.5' },
+    { ...raw, id: 'uncharged', amount: null, fixed: null, purchased: null, resource: null, chargeStatus: null }]).recent;
+  assert.equal(legacy[0].amount, 0.25); assert.equal(legacy[0].fixed, null); assert.equal(legacy[0].purchased, undefined);
+  assert.deepEqual([legacy[1].amount, legacy[1].fixed, legacy[1].purchased], [26.5, 20, 6.5]);
+  assert.deepEqual([legacy[2].amount, legacy[2].fixed, legacy[2].purchased], [null, null, null]);
+});
 
 test('最后一个免费名额事务内争抢；失败释放，成功按结算时间计数，窗口端点精确', async t => {
   const store = await fixture(t, { enabled: true, warningThreshold: 1, hardLimit: 1 });

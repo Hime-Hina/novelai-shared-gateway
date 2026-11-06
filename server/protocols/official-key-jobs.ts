@@ -33,9 +33,10 @@ export function officialKeyOwner(token: string): string {
 
 export function officialKeyError(error: unknown): Error & { statusCode: number } {
   const message = String((error as { message?: unknown } | null | undefined)?.message || '');
-  if (/401|403|unauthorized|invalid.*token/i.test(message)) return failure(401, '官方密钥无效或账号不可用。');
-  if (/402|insufficient|out.of.trial|not enough|balance/i.test(message)) return failure(402, 'NovelAI 账号额度不足。');
-  if (/429|concurrent|busy/i.test(message)) return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
+  const status = (error as { upstreamStatus?: number } | null | undefined)?.upstreamStatus;
+  if (status === 401 || status === 403 || message === '账号已封禁' || /401|403|unauthorized|invalid.*token/i.test(message)) return failure(401, '官方密钥无效或账号不可用。');
+  if (status === 402 || message === '试用次数已用完' || /402|insufficient|out.of.trial|not enough|balance/i.test(message)) return failure(402, 'NovelAI 账号额度不足。');
+  if (status === 429 || /429|concurrent|busy/i.test(message)) return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
   if (/abort|timeout|超时/i.test(message)) return failure(504, '官方账号请求超时，请稍后重试。');
   // Upstream errors may echo request headers; never return their body or raw key.
   return failure(502, 'NovelAI 请求失败，请稍后重试。');

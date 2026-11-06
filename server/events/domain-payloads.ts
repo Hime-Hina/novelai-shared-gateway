@@ -54,7 +54,8 @@ export interface DomainPayloads {
   RequestAliasRegistered: { jobId: string; requestId: string | null; memberId: string;
     idempotency: { operation: string; keyHash: string; fingerprint: string; contextRef: string; createdAt: string } };
   DispatchAuthorized: Evidence & { jobId: string; accountId: string; attemptId: string; authorizedAt: number; attempt: GenerationAttempt; chargeEventId?: string };
-  ArtifactPrepared: { jobId: string; artifact: ReturnType<typeof describeStoredResult> & { id: string; attemptId: string } };
+  ArtifactPrepared: { jobId: string; artifact: ReturnType<typeof describeStoredResult> & { id: string; attemptId: string }; response?: ResponseEvidence };
+  ResponseEvidenceRecorded: { jobId: string; response: ResponseEvidence; source: 'legacy-query-projection'; sourceRowSha256: string };
   ArtifactPublished: { jobId: string; memberId: string; accountId: string | null; artifact: PublishedArtifact };
   ArtifactStorageChanged: { artifactId: string; phase: 'local_published'; file: string; mimeType?: string; sha256: string; byteLength: number }
     | { artifactId: string; phase: 'reserved' | 'verified' | 'local_removed' | 'failed'; r2: R2Image | null;
@@ -63,11 +64,11 @@ export interface DomainPayloads {
   JobQueued: { jobId: string; queueSeq: number; queuedAt: string; queueExpiresAt: string | undefined; queueTotal: number };
   JobFailed: { jobId: string; failedAt: EventTime; errorStatus: number; errorCode: string; message: string;
     cancellationReason: string | null; cancelledAt: string | null; diagnosticRef?: string;
-    charge: FairCharge | null; refund: Refund | null; review: Review | null };
-  JobCompleted: { jobId: string; artifactId: string; accountId: string | null; completedAt: EventTime; charge: FairCharge | null };
+    charge: FairCharge | null; refund: Refund | null; review: Review | null; response?: ResponseEvidence };
+  JobCompleted: { jobId: string; artifactId: string; accountId: string | null; completedAt: EventTime; charge: FairCharge | null; response?: ResponseEvidence };
   WaitingJobsCancelled: { jobIds: string[]; at: EventTime; reason: string; errorStatus: number; cancellationReason: string };
   JobHistoryRetired: { jobIds: string[]; reason: string; at: number };
-  LateResultRecovered: Evidence & { jobId: string; artifactId: string; at: number; refundRetained: true; review: Review | null };
+  LateResultRecovered: Evidence & { jobId: string; artifactId: string; at: number; refundRetained: true; review: Review | null; response?: ResponseEvidence };
   FreeImageSucceeded: { jobId: string; memberId: string; succeededAt: number; warningThreshold: number | null };
   ReviewOpened: Evidence & { jobId: string; review: Review; refund: Refund; response: ResponseEvidence; actualConsumed: null };
   ReviewClosed: Evidence & { jobId: string; review: Review; reason: string; actualConsumed: null; upstreamCandidates: GenerationAttempt['upstreamCandidates'] | null };

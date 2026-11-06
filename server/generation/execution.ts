@@ -1,4 +1,4 @@
-import { createId, type JsonStore, type StoreDatabase, type StoreItem, type StoredGenerationRequest } from '../storage/sqlite-store.ts';
+import { createId, type JsonStore, type PersistenceOptions, type StoreDatabase, type StoreItem, type StoredGenerationRequest } from '../storage/sqlite-store.ts';
 import { reserveFairQuota, settleFairQuota, resolveFairQuotaCharge, syncFairQuota, quoteFairRequest, type FairCharge } from '../quota/fair-share.ts';
 import { memberGenerationCapabilities } from './capabilities.ts';
 import { addMemberGenerationResources, assertMemberGenerationCost, assertMemberGenerationVersions,
@@ -9,7 +9,7 @@ import { assertFreeImageAdmission, type FreeImageUsage } from '../quota/free-ima
 import { describeStoredResult, publishStoredResult } from '../storage/result-files.ts';
 import { assertMemberAcceptsJobs, queuedDeadlineTimestamp, setMemberAdmission } from './queue-policy.ts';
 import { activateNextBatchJob, cancelWaitingBatchJobs, singleGenerationRequest } from './batch-requests.ts';
-import { closeGenerationReview, recordRecoveredGeneration } from './accounting.ts';
+import { closeGenerationReview, recordRecoveredGeneration, generationResponseEvidence } from './accounting.ts';
 import { validateImageBytes } from '../protocols/native-image.ts';
 import type { generateNovelAiImage } from '../protocols/novelai-client.ts';
 import path from 'node:path';
@@ -84,14 +84,14 @@ export function recordGenerationFailure(db: StoreDatabase, job: StoreItem): void
       errorCode: requiredString(job.errorCode, 'errorCode'), message: job.error || '生成失败',
       cancellationReason: optionalString(job.cancellationReason, 'cancellationReason') || null, cancelledAt: job.cancelledAt || null,
       ...(diagnosticRef ? { diagnosticRef } : {}),
-      charge: job.fairCharge || null, refund: job.generationRefund || null, review: job.generationReview || null } });
+      charge: job.fairCharge || null, refund: job.generationRefund || null, review: job.generationReview || null, response: generationResponseEvidence(job) } });
 }
 
 export function recordPreparedArtifact(db: StoreDatabase, job: StoreItem, now = Date.now()): void {
   const pending = job.resultPending;
   if (!pending) return;
   recordDomainEvent(db, { eventType: 'ArtifactPrepared', streamId: generationStreamId(job), occurredAt: now,
-    payload: { jobId: job.id, artifact: { id: pending.imageId, ...pending } } });
+    payload: { jobId: job.id, artifact: { id: pending.imageId, ...pending }, response: generationResponseEvidence(job) } });
 }
 
 export function recordCompletedArtifact(db: StoreDatabase, job: StoreItem, image: StoreItem, now: number, freeUsage?: FreeImageUsage): void {
@@ -104,7 +104,7 @@ export function recordCompletedArtifact(db: StoreDatabase, job: StoreItem, image
         cacheKey: image.cacheKey || '', mock: image.mock === true, cost: image.cost || 0, accountCost: image.accountCost || 0 } } });
   if (job.status === 'done') recordDomainEvent(db, { eventType: 'JobCompleted', streamId: generationStreamId(job), occurredAt: now,
     payload: { jobId: job.id, artifactId: image.id, accountId: job.accountId || null, completedAt: job.completedAt || new Date(now).toISOString(),
-      charge: job.fairCharge || null } });
+      charge: job.fairCharge || null, response: generationResponseEvidence(job) } });
   recordFreeImageSuccess(db, job, now, freeUsage);
 }
 
@@ -250,12 +250,12 @@ export async function cancelGenerationRequestCommand(store: JsonStore, requestId
       ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id) }) });
 }
 
-export async function changeMemberAdmissionCommand(store: JsonStore, userId: string, acceptingJobs: boolean, options: GenerationClock & { actorId?: string } = {}) {
+export async function changeMemberAdmissionCommand(store: JsonStore, userId: string, acceptingJobs: boolean, options: GenerationClock & { actorId?: string } & Pick<PersistenceOptions, 'domainCommand' | 'authorize'> = {}) {
   return store.update(db => {
     const now = (options.now || Date.now)();
     return setMemberAdmission(db, userId, acceptingJobs,
       (draft, job) => refundGenerationJob(store, draft, job, { now: () => now }), now);
-  }, { immediate: true, includeSettings: true, domainCommand: { actorId: options.actorId || 'local-admin', actorKind: 'admin' },
+  }, { immediate: true, includeSettings: true, authorize:options.authorize, domainCommand: options.domainCommand || { actorId: options.actorId || 'local-admin', actorKind: 'admin' },
     dirtyRows: (result, db) => ({ users: [result.id], jobs: result.cancelledJobIds,
       ledger: db.ledger.filter(entry => result.cancelledJobIds.includes(entry.jobId!)).map(entry => entry.id) }) });
 }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {sharedAccountStatus} from '../../server/quota/shared-status.ts';
 import {manageFairMember,configureFairGroups,configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota,quoteFairRequest,fairQuotaSummary,estimateFairQuota} from '../../server/quota/fair-share.ts';
 const NOW=1800000000000;
 const members=['a','b','c','d'];
@@ -9,6 +10,50 @@ function fixture(percent=80){
 }
 const request={model:'nai-diffusion-5',width:1024,height:1024,steps:23};
 const job=(id,r=request)=>({id,request:{...r}});
+test('每次观察都校验三种余额，已有钱包与冷却不豁免，完整恢复不重发',()=>{
+ for(const opened of [false,true]) for(const field of ['v5UsagePercent','quotaFixed','quotaPurchased']) for(const value of [null,undefined,'',true,[],{},NaN,Infinity,'invalid']) {
+  const db=fixture(),s=db.settings.fairQuota;
+  if(!opened){db.settings={};configureFairQuota(db,members);}
+  const current=db.settings.fairQuota,before=structuredClone({balances:current.balances,snapshot:current.snapshot,lastRefillAt:current.lastRefillAt});
+  Object.assign(db.accounts[0],{[field]:value,quotaCheckedAt:NOW+1,cooldownUntil:NOW+30000});
+  assert.equal(syncFairQuota(db,NOW+1).status,'unknown_balance',`${opened}/${field}/${String(value)}`);
+  assert.equal(sharedAccountStatus(db,NOW+1).status,'unknown_balance');
+  assert.throws(()=>reserveFairQuota(db,{id:'a'},job('blocked'),db.accounts[0],NOW+1),error=>error.statusCode===503&&/unknown_balance/.test(error.message));
+  assert.deepEqual({balances:current.balances,snapshot:current.snapshot,lastRefillAt:current.lastRefillAt},before);
+  assert.deepEqual(current.reservations,{});
+  Object.assign(db.accounts[0],{[field]:field==='v5UsagePercent'?80:field==='quotaFixed'?10000:0,quotaCheckedAt:NOW+2});
+  assert.equal(syncFairQuota(db,NOW+2).status,'active');assert.equal(sharedAccountStatus(db,NOW+2).status,'cooldown');
+  const recovered=structuredClone(current);syncFairQuota(db,NOW+2);assert.deepEqual(current,recovered);
+ }
+});
+test('同步失败保留钱包和基准，真实停用或到期优先于失败与冷却',()=>{
+ for(const change of [{},{enabled:false},{subscriptionActive:false},{subscriptionExpiresAt:NOW},{quotaTier:0}]) {
+  const db=fixture(),s=db.settings.fairQuota,j=job('running');reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW);
+  const before=structuredClone({balances:s.balances,reservations:s.reservations,snapshot:s.snapshot,lastRefillAt:s.lastRefillAt});
+  Object.assign(db.accounts[0],{quotaError:'secret upstream error',cooldownUntil:NOW+30000,...change});
+  const expected=Object.keys(change).length?'inactive_opus':'quota_sync_error';
+  assert.equal(syncFairQuota(db,NOW+1).status,expected);assert.equal(sharedAccountStatus(db,NOW+1).status,expected);
+  assert.deepEqual({balances:s.balances,reservations:s.reservations,snapshot:s.snapshot,lastRefillAt:s.lastRefillAt},before);
+ }
+});
+test('新鲜官方观察仍受在途旧基准约束，结算之前的观察不能恢复过期基准',()=>{
+ const db=fixture(),s=db.settings.fairQuota,j=job('running');reserveFairQuota(db,{id:'a'},j,db.accounts[0],NOW+300000);
+ Object.assign(db.accounts[0],{quotaCheckedAt:NOW+600001});
+ assert.equal(syncFairQuota(db,NOW+600001).status,'stale');assert.equal(sharedAccountStatus(db,NOW+600001).status,'stale');
+ assert.equal(sharedAccountStatus(db,NOW+600001).stale,true);assert.equal(s.snapshot.at,NOW);
+ assert.throws(()=>reserveFairQuota(db,{id:'b'},job('blocked'),db.accounts[0],NOW+600001),error=>error.statusCode===503);
+ settleFairQuota(db,j,true,NOW+600002);assert.equal(syncFairQuota(db,NOW+600002).status,'stale');
+ db.accounts[0].quotaCheckedAt=NOW+600003;assert.equal(syncFairQuota(db,NOW+600003).status,'active');assert.equal(s.snapshot.at,NOW+600003);
+ const before=structuredClone(s);syncFairQuota(db,NOW+600003);assert.deepEqual(s,before);
+});
+test('官方观察与对账基准的十分钟和未来一分钟边界一致',()=>{
+ for(const [offset,expected] of [[-600000,'active'],[-600001,'stale'],[60000,'active'],[60001,'stale']]) {
+  const db=fixture();db.accounts[0].quotaCheckedAt=NOW+offset;db.settings.fairQuota.snapshot.at=NOW+offset;
+  assert.equal(syncFairQuota(db,NOW).status,expected);assert.equal(sharedAccountStatus(db,NOW).status,expected);
+ }
+ const db=fixture();db.settings.fairQuota.snapshot=null;db.settings.fairQuota.reservations.unresolved={status:'reserved',userId:'a',resource:'free',amount:'0',fixed:'0',purchased:'0'};
+ assert.equal(syncFairQuota(db,NOW).status,'stale');assert.equal(sharedAccountStatus(db,NOW).status,'stale');
+});
 test('摘要纯读冻结对象，恢复估算隔离状态且不初始化原运营账',()=>{
  const db=fixture();delete db.settings.fairQuota.operating;db.ledger=[{id:'existing'}];
  const before=structuredClone(db);
@@ -110,7 +155,7 @@ test('订阅有效期支持 ISO、秒及毫秒，到期即停',()=>{
 });
 test('禁用或查询出错的账号不绑定，不继续派发',()=>{
  for(const change of [{enabled:false},{enabled:undefined},{quotaError:'quota failed'}]) {
-  const db=fixture();Object.assign(db.accounts[0],change);assert.equal(syncFairQuota(db,NOW).status,'inactive_opus');
+  const db=fixture();Object.assign(db.accounts[0],change);assert.equal(syncFairQuota(db,NOW).status,change.quotaError?'quota_sync_error':'inactive_opus');
   db.settings={};configureFairQuota(db,members);assert.equal(syncFairQuota(db,NOW).status,'pending_opus');
  }
 });

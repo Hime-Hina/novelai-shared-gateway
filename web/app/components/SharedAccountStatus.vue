@@ -5,7 +5,7 @@ import type { SharedStatus } from '../types/member'
 import { date, number } from '../utils/member-display'
 
 const props = defineProps<{ state: SharedStatus | null; connection: string }>()
-const labels: Record<string, string> = { pending_opus: '等待 Opus', inactive_opus: '订阅不可用', stale: '余额已过期', active: '可用', cooldown: '等待派发', quota_sync_error: '同步异常', disabled: '账户停用', unknown_balance: '余额未知' }
+const labels: Record<string, string> = { pending_opus: '等待 Opus', ambiguous_opus: '等待管理员选择上游', inactive_opus: '账号或订阅不可用', stale: '额度已过期，等待更新', active: '可用', cooldown: '等待派发', quota_sync_error: '额度同步失败', disabled: '账户停用', unknown_balance: '额度不完整，等待更新' }
 const connections: Record<string, string> = { polling: '私有管理页可见时每 30 秒读取，也可手动刷新', connecting: '正在连接共享状态…', open: '状态连接已建立', retrying: '状态连接中断，正在重连；以下为上次接收的数据', closed: '状态连接已关闭', invalid: '状态数据无效，请刷新页面' }
 const reasons: Record<string, string> = { success_gap: '上一张已完成，等待生成间隔', ordinary_failure: '生成失败，短暂等待后继续', capacity_limit: '上游并发或容量限制，等待后继续', upstream_retry_after: '按上游要求等待后继续', completion_gap: '任务已结束，等待生成间隔' }
 const now = ref<number | null>(null)
@@ -66,7 +66,7 @@ onUnmounted(() => {
     <div class="shared-grid">
       <NCard title="订阅与队列" size="small">
         <strong id="sharedState" class="amount">{{ state ? labels[state.status] || '状态未知' : '未知' }}</strong>
-        <p id="sharedSubscription">{{ state?.subscriptionActive != null ? (state.subscriptionActive && state.status !== 'inactive_opus' ? `Opus 有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}</p>
+        <p id="sharedSubscription">上次核验：{{ state?.subscriptionActive != null ? (state.subscriptionActive ? `Opus 订阅有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}</p>
         <p id="sharedQueue">生成中 {{ number(state?.running) }} / {{ number(state?.concurrencyLimit) }} · 排队 {{ number(state?.queued) }} · 批次待激活 {{ number(state?.pending) }}</p>
         <p id="sharedCooldown">{{ cooldown }}</p>
       </NCard>

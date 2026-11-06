@@ -2,6 +2,19 @@ interface PublicError { message?: string; stack?: string; name?: string; statusC
 
 export const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';
 
+const quotaUnavailableMessages: Record<string, string> = {
+  pending_opus: '共享 Opus 尚未接入，请联系管理员。',
+  ambiguous_opus: '共享 Opus 尚未选定，请联系管理员。',
+  inactive_opus: '共享 Opus 账号或订阅不可用，请联系管理员。',
+  quota_sync_error: '共享 Opus 额度同步失败，请稍后重试。',
+  stale: '共享 Opus 额度已过期，请等待更新后重试。',
+  unknown_balance: '共享 Opus 额度不完整，请等待更新后重试。'
+};
+const quotaFailureMessages = new Set([...Object.values(quotaUnavailableMessages),
+  '共享 Opus 暂不可用，请稍后重试或联系管理员。',
+  '共享 Opus Key 已失效，请联系管理员更新凭据', '上游拒绝访问，请联系管理员重新验证 Opus',
+  '账号已封禁', '试用次数已用完', '订阅状态查询超时，将在下一轮自动重试', '官方额度同步失败，请稍后重试']);
+
 export function isNovelAiAccountBannedError(error: unknown): boolean {
   return /\bban(?:ned)?\b|封禁/i.test(String((error as PublicError)?.message || error || ''));
 }
@@ -18,6 +31,10 @@ export function isInsufficientBalanceError(error: unknown): boolean {
 export function publicErrorMessage(message: unknown, { generation = false } = {}): string {
   const text = String(message || '');
   const generationFailure = '生成失败，请稍后重试或联系管理员。';
+  const quotaUnavailable = /^共享 Opus (?:额度)?暂不可用：([\s\S]*)$/.exec(text);
+  if (quotaUnavailable) return Object.hasOwn(quotaUnavailableMessages, quotaUnavailable[1]!)
+    ? quotaUnavailableMessages[quotaUnavailable[1]!]! : '共享 Opus 暂不可用，请稍后重试或联系管理员。';
+  if (quotaFailureMessages.has(text)) return text;
   // File and SQL failures can also arise while reading completed images.
   if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) return generationFailure;
   if (generation && /^NovelAI returned 401\b/.test(text)) return '共享 Opus Key 已失效，请联系管理员更新凭据';
@@ -29,7 +46,6 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   if (/all NovelAI accounts are busy|server busy/i.test(text)) return '服务器繁忙，请稍后再试。';
   if (generation && text) {
     if (/(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text)) return insufficientBalanceMessage;
-    if (/^共享 Opus (?:额度)?暂不可用：/.test(text)) return '共享 Opus 暂不可用，请稍后重试或联系管理员。';
     const known = [generationFailure, '连接超时', insufficientBalanceMessage, '密钥无效或已被禁用。', '服务器繁忙，请稍后再试。',
       '共享 Opus Key 已失效，请联系管理员更新凭据', '上游拒绝访问，请联系管理员重新验证 Opus',
       'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。',

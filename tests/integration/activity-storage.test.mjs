@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
@@ -22,6 +23,15 @@ const job = (id, fields = {}) => ({ id, userToken: 'key-a', createdAt: submitted
 const parent = (id, member = 'a', operation = 'generate') => ({ id, member_id: member, source: 'novelai-native',
   operation, created_at: submitted, payload_bytes: 2, payload: '{}' });
 const empty = date => ({ date, total: 0, done: 0, failed: 0, cancelled: 0, queued: 0, pending: 0, running: 0, other: 0 });
+
+test('read worker ignores parent-only flags and input-type', () => {
+  const script = `import { JsonStore } from ${JSON.stringify(new URL('../../server/storage/sqlite-store.ts', import.meta.url).href)};
+    import { mkdtemp } from 'node:fs/promises'; import { tmpdir } from 'node:os'; import path from 'node:path';
+    const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-worker-flags-')));
+    try { await store.init(); await store.readActivityDays({ since: '2026-01-01T00:00:00Z', until: '2027-01-01T00:00:00Z' }); } finally { await store.close(); }`;
+  const child = spawnSync(process.execPath, ['--v8-pool-size=2', '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
+});
 
 test('逐张生图按提交日分类，免费/缓存计入、取消互斥、迟到仍失败，辅助操作独立', async t => {
   const store = await open(t);

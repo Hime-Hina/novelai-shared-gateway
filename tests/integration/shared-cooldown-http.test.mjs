@@ -50,12 +50,21 @@ async function fixture(t, { hold = false } = {}) {
   let release;
   const released = new Promise(resolve => { release = resolve; });
   const calls = [];
+  let quotaFailure = false, missingQuotaField = null;
   const upstream = http.createServer(async (req, res) => {
     if (req.url === '/user/data') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ subscription: { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
+      if (quotaFailure) {
+        res.writeHead(503, { 'content-type': 'text/plain' });
+        res.end('SYNTHETIC_PRIVATE_QUOTA_ROOT'); return;
+      }
+      const subscription = { tier: 3, active: true, expiresAt: Math.floor(Date.now() / 1000) + 86400,
         trainingStepsLeft: { fixedTrainingStepsLeft: 10000, purchasedTrainingSteps: 0 },
-        usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 } } })); return;
+        usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 } };
+      if (missingQuotaField === 'v5') delete subscription.usage.percent;
+      if (missingQuotaField === 'fixed') delete subscription.trainingStepsLeft.fixedTrainingStepsLeft;
+      if (missingQuotaField === 'purchased') delete subscription.trainingStepsLeft.purchasedTrainingSteps;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ subscription })); return;
     }
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     calls.push({ path: req.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
@@ -103,7 +112,19 @@ async function fixture(t, { hold = false } = {}) {
     assert.equal(response.status, 200); return response.json();
   };
   await start();
-  return { start, stop, call, sharedStatus, jobs, account, calls, release,
+  const financialState = () => {
+    const state = JSON.parse(audit.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value).fairQuota;
+    return { balances: state.balances, reservations: state.reservations,
+      records: Object.fromEntries(['jobs', 'ledger', 'generation_requests', 'generation_idempotency', 'fair_quota_settlements']
+        .map(table => [table, audit.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()])) };
+  };
+  return { start, stop, call, sharedStatus, jobs, account, calls, release, financialState, memberKey: member.api_key,
+    async observeQuota({ failure = false, missing = null } = {}) {
+      quotaFailure = failure; missingQuotaField = missing;
+      const response = await call('/api/admin/accounts/quota', { body: { ids: [account().id] }, headers: { 'x-admin-token': adminToken } });
+      assert.equal(response.status, 200, await response.clone().text()); return response.json();
+    },
+    privateEvidence() { return { log: output, events: audit.prepare("SELECT payload FROM domain_events WHERE event_type='QuotaObserved'").all() }; },
     assertAlive() { assert.equal(child.exitCode, null); assert.equal(child.signalCode, null); assert.doesNotMatch(output, /ERR_HTTP_HEADERS_SENT/); } };
 }
 
@@ -155,6 +176,36 @@ test('真实 Native 429、幂等失败重放和强制重启共用持久冷却截
   await replay();
   await gateway.stop('SIGKILL'); await gateway.start();
   await checkShared(); await replay();
+  gateway.assertAlive();
+});
+
+test('刷新失败及不完整余额优先于冷却，所有生成协议拒绝新意图并保留原受理重放', { timeout: 45000 }, async t => {
+  const gateway = await fixture(t);
+  const body = { input: 'synthetic quota admission', model, action: 'generate',
+    parameters: { width: 1024, height: 1024, steps: 23, seed: 7, n_samples: 1 } };
+  const original = await gateway.call('/ai/generate-image', { body, key: 'before-quota-failure' });
+  assert.equal(original.status, 429); await original.json();
+  const requestId = original.headers.get('x-nai-request-id');
+  for (const observation of [{ failure: true }, ...['v5', 'fixed', 'purchased'].map(missing => ({ missing }))]) {
+    await gateway.observeQuota(observation);
+    const expected = observation.failure ? 'quota_sync_error' : 'unknown_balance';
+    assert.equal((await gateway.sharedStatus()).status, expected);
+    const before = gateway.financialState();
+    const denied = await gateway.call('/ai/generate-image', { body, key: `blocked-${expected}-${observation.missing}` });
+    assert.equal(denied.status, 503); assert.match((await denied.json()).message, observation.failure ? /额度同步失败/ : /额度不完整/);
+    const openAi = await gateway.call('/v1/chat/completions', { body: { model: `${model}:k_euler_ancestral`, stream: false,
+      messages: [{ role: 'user', content: '提示词: synthetic quota admission\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:' }] } });
+    assert.equal(openAi.status, 503); assert.doesNotMatch(await openAi.text(), /SYNTHETIC_PRIVATE|quota_sync_error|unknown_balance/);
+    const query = new URLSearchParams({ token: gateway.memberKey, prompt: 'synthetic quota admission', model, seed: '7', nocache: '1' });
+    const direct = await gateway.call('/generate?' + query);
+    assert.equal(direct.status, 200); assert.match(direct.headers.get('content-type'), /^image\//);
+    assert.doesNotMatch(await direct.text(), /SYNTHETIC_PRIVATE|quota_sync_error|unknown_balance/);
+    const replay = await gateway.call('/ai/generate-image', { body, key: 'before-quota-failure' });
+    assert.equal(replay.status, 429); await replay.json(); assert.equal(replay.headers.get('x-nai-request-id'), requestId);
+    assert.deepEqual(gateway.financialState(), before); assert.equal(gateway.calls.length, 1);
+    assert.doesNotMatch(JSON.stringify(gateway.privateEvidence()), /SYNTHETIC_PRIVATE_QUOTA_ROOT/);
+  }
+  await gateway.observeQuota(); assert.equal((await gateway.sharedStatus()).status, 'cooldown');
   gateway.assertAlive();
 });
 
