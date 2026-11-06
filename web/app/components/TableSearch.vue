@@ -14,5 +14,11 @@ watch(value, text => {
 onBeforeUnmount(() => clearTimeout(timer))
 </script>
 <template>
-  <NInput v-model:value="value" clearable :placeholder="placeholder" :aria-label="label" class="table-search" />
+  <NInput
+    v-model:value="value"
+    clearable
+    :placeholder="placeholder"
+    :aria-label="label"
+    class="table-search"
+  />
 </template>

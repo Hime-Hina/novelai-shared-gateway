@@ -198,39 +198,171 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
 
 <template>
   <section v-show="active" class="management-losses" aria-label="损耗与运营账务">
-    <div id="lossReadStatus" class="refresh-status" role="status">{{ loading ? '正在更新损耗数据…' : losses ? '损耗数据更新 ' + date(losses.asOf) : '尚未读取损耗数据' }}</div>
+    <div id="lossReadStatus" class="refresh-status" role="status">
+      {{ loading ? '正在更新损耗数据…' : losses ? '损耗数据更新 ' + date(losses.asOf) : '尚未读取损耗数据' }}
+    </div>
     <NAlert v-if="readError" type="warning" role="status">{{ readError }}</NAlert>
-    <NAlert type="info">疑似尝试风险与官方聚合差额可能重叠，分别展示，不相加为已确认消费。告警不停止调用或退款。</NAlert>
+    <NAlert type="info"
+      >疑似尝试风险与官方聚合差额可能重叠，分别展示，不相加为已确认消费。告警不停止调用或退款。</NAlert
+    >
     <template v-if="losses">
       <NCard title="风险与运营余额" size="small">
-        <p>近 24 小时异常尝试 {{ number(losses.risk.last24h.attempts) }} 次，其中金额未知 {{ number(losses.risk.last24h.unknownAmounts) }} 次；近 30 天 {{ number(losses.risk.last30d.attempts) }} 次，其中金额未知 {{ number(losses.risk.last30d.unknownAmounts) }} 次。</p>
-        <div class="losses-scroll"><NDataTable :columns="riskColumns" :data="riskRows" :row-key="(row: RiskRow) => row.key" :pagination="pagination" :scroll-x="1120" size="small" /></div>
+        <p>
+          近 24 小时异常尝试 {{ number(losses.risk.last24h.attempts) }} 次，其中金额未知
+          {{ number(losses.risk.last24h.unknownAmounts) }} 次；近 30 天
+          {{ number(losses.risk.last30d.attempts) }} 次，其中金额未知
+          {{ number(losses.risk.last30d.unknownAmounts) }} 次。
+        </p>
+        <div class="losses-scroll">
+          <NDataTable
+            :columns="riskColumns"
+            :data="riskRows"
+            :row-key="(row: RiskRow) => row.key"
+            :pagination="pagination"
+            :scroll-x="1120"
+            size="small"
+          />
+        </div>
       </NCard>
       <NCard title="软告警阈值" size="small">
-        <p id="lossPolicyHint">{{ policyDirty ? '未保存草稿' : '尚无修改' }} · 编辑版本 {{ policyVersion }} · 服务器版本 {{ losses.policy.version }}。后台读取不会覆盖草稿，0 表示任何正数达到阈值。购买 Anlas 有正风险即提示。</p>
-        <NForm id="lossPolicyForm" @submit.prevent="savePolicy"><div class="losses-grid">
-          <NFormItem v-for="field in policyFields" :key="field.key" :label="field.label"><NInputNumber :value="policyDraft[field.key]" :min="0" :step="field.integer ? 1 : 0.1" :input-props="{ id: 'loss-' + field.key }" @update:value="value => editPolicy(field.key, value)" /></NFormItem>
-        </div><NSpace><NButton id="saveLossPolicy" attr-type="submit" type="primary" :loading="policySaving" :disabled="busy || policyVersion === null">保存阈值</NButton><NButton id="resetLossPolicy" :disabled="busy || policySaving" @click="resetPolicy">放弃草稿并读取最新阈值</NButton></NSpace></NForm>
+        <p id="lossPolicyHint">
+          {{ policyDirty ? '未保存草稿' : '尚无修改' }} · 编辑版本 {{ policyVersion }} · 服务器版本
+          {{ losses.policy.version }}。后台读取不会覆盖草稿，0 表示任何正数达到阈值。购买 Anlas
+          有正风险即提示。
+        </p>
+        <NForm id="lossPolicyForm" @submit.prevent="savePolicy"
+          ><div class="losses-grid">
+            <NFormItem v-for="field in policyFields" :key="field.key" :label="field.label"
+              ><NInputNumber
+                :value="policyDraft[field.key]"
+                :min="0"
+                :step="field.integer ? 1 : 0.1"
+                :input-props="{ id: 'loss-' + field.key }"
+                @update:value="value => editPolicy(field.key, value)"
+            /></NFormItem>
+          </div>
+          <NSpace
+            ><NButton
+              id="saveLossPolicy"
+              attr-type="submit"
+              type="primary"
+              :loading="policySaving"
+              :disabled="busy || policyVersion === null"
+              >保存阈值</NButton
+            ><NButton id="resetLossPolicy" :disabled="busy || policySaving" @click="resetPolicy"
+              >放弃草稿并读取最新阈值</NButton
+            ></NSpace
+          ></NForm
+        >
       </NCard>
       <NCard title="运营资金与差额核对" size="small">
-        <p>普通扣款等待核对：订阅 Anlas {{ number(losses.operating.pendingAnlasDebits?.anlasFixed) }}，购买 Anlas {{ number(losses.operating.pendingAnlasDebits?.anlasPurchased) }}。未知余额下降不会自动核销运营资金。</p>
-        <NForm id="operatingForm" @submit.prevent="saveOperating"><div class="losses-grid">
-          <NFormItem label="操作"><NSelect id="operatingAction" v-model:value="action" :options="actionOptions" :disabled="busy || operatingSaving" /></NFormItem>
-          <NFormItem label="资源"><NSelect id="operatingResource" v-model:value="resource" :options="resourceOptions" :disabled="busy || operatingSaving" /></NFormItem>
-          <NFormItem label="数量"><NInputNumber v-model:value="amount" :min="0" :step="resource === 'v5' ? 0.1 : 1" :input-props="{ id: 'operatingAmount' }" :disabled="busy || operatingSaving" /></NFormItem>
-          <NFormItem label="唯一收据标识"><NInput v-model:value="receipt" :input-props="{ id: 'operatingReceipt' }" :disabled="busy || operatingSaving" /></NFormItem>
-        </div><p>{{ hints[action] }}</p>
-          <div v-if="register" class="losses-grid"><NFormItem label="入账归属"><NSelect id="operatingDestination" v-model:value="destination" :options="[{ label: '运营余额', value: 'operating' }, { label: '成员份额', value: 'members' }]" :disabled="busy || operatingSaving" /></NFormItem><NCheckbox v-model:checked="fromUnattributed" :disabled="busy || operatingSaving">已核实来自待归属入账</NCheckbox></div>
-          <NFormItem v-if="linked" label="当前聚合差额记录 ID"><NInput v-model:value="lossEventId" :input-props="{ id: 'operatingLossId' }" :disabled="busy || operatingSaving" /><NButton id="useCurrentGap" :disabled="busy || operatingSaving" @click="useCurrentGap">使用当前差额</NButton></NFormItem>
-          <NButton id="saveOperating" attr-type="submit" type="primary" :loading="operatingSaving" :disabled="busy || !state.ownerUserId">提交账务操作</NButton>
+        <p>
+          普通扣款等待核对：订阅 Anlas
+          {{ number(losses.operating.pendingAnlasDebits?.anlasFixed) }}，购买 Anlas
+          {{ number(losses.operating.pendingAnlasDebits?.anlasPurchased)
+          }}。未知余额下降不会自动核销运营资金。
+        </p>
+        <NForm id="operatingForm" @submit.prevent="saveOperating"
+          ><div class="losses-grid">
+            <NFormItem label="操作"
+              ><NSelect
+                id="operatingAction"
+                v-model:value="action"
+                :options="actionOptions"
+                :disabled="busy || operatingSaving"
+            /></NFormItem>
+            <NFormItem label="资源"
+              ><NSelect
+                id="operatingResource"
+                v-model:value="resource"
+                :options="resourceOptions"
+                :disabled="busy || operatingSaving"
+            /></NFormItem>
+            <NFormItem label="数量"
+              ><NInputNumber
+                v-model:value="amount"
+                :min="0"
+                :step="resource === 'v5' ? 0.1 : 1"
+                :input-props="{ id: 'operatingAmount' }"
+                :disabled="busy || operatingSaving"
+            /></NFormItem>
+            <NFormItem label="唯一收据标识"
+              ><NInput
+                v-model:value="receipt"
+                :input-props="{ id: 'operatingReceipt' }"
+                :disabled="busy || operatingSaving"
+            /></NFormItem>
+          </div>
+          <p>{{ hints[action] }}</p>
+          <div v-if="register" class="losses-grid">
+            <NFormItem label="入账归属"
+              ><NSelect
+                id="operatingDestination"
+                v-model:value="destination"
+                :options="[{ label: '运营余额', value: 'operating' }, { label: '成员份额', value: 'members' }]"
+                :disabled="busy || operatingSaving" /></NFormItem
+            ><NCheckbox v-model:checked="fromUnattributed" :disabled="busy || operatingSaving"
+              >已核实来自待归属入账</NCheckbox
+            >
+          </div>
+          <NFormItem v-if="linked" label="当前聚合差额记录 ID"
+            ><NInput
+              v-model:value="lossEventId"
+              :input-props="{ id: 'operatingLossId' }"
+              :disabled="busy || operatingSaving"
+            /><NButton id="useCurrentGap" :disabled="busy || operatingSaving" @click="useCurrentGap"
+              >使用当前差额</NButton
+            ></NFormItem
+          >
+          <NButton
+            id="saveOperating"
+            attr-type="submit"
+            type="primary"
+            :loading="operatingSaving"
+            :disabled="busy || !state.ownerUserId"
+            >提交账务操作</NButton
+          >
         </NForm>
-        <p>失败时保留原收据及输入，核实后可用同一收据重试；成功后清空数量与收据，避免误重复提交。运营资金不足不影响普通调用。</p>
-        <ul id="pendingFunding"><li v-for="funding in losses.operating.pendingExternalFunding" :key="funding.eventId">{{ funding.receipt }} · {{ resourceNames[funding.resource] }} 待确认 {{ number(funding.remaining) }} · 归属{{ funding.destination === 'members' ? '成员' : '运营' }}</li><li v-if="!losses.operating.pendingExternalFunding.length">暂无待确认注资</li></ul>
+        <p>
+          失败时保留原收据及输入，核实后可用同一收据重试；成功后清空数量与收据，避免误重复提交。运营资金不足不影响普通调用。
+        </p>
+        <ul id="pendingFunding">
+          <li v-for="funding in losses.operating.pendingExternalFunding" :key="funding.eventId">
+            {{ funding.receipt }} · {{ resourceNames[funding.resource] }} 待确认
+            {{ number(funding.remaining) }} · 归属{{ funding.destination === 'members' ? '成员' : '运营' }}
+          </li>
+          <li v-if="!losses.operating.pendingExternalFunding.length">暂无待确认注资</li>
+        </ul>
       </NCard>
       <NCard title="损耗证据与审计记录" size="small">
-        <p class="section-caption">已加载 {{ history.length }} 条{{ nextCursor ? '，可继续读取更早记录' : '，已覆盖全部保留历史' }}。筛选与排序作用于已加载记录。{{ paged ? '后台只更新统计与告警，读取最新记录才重置历史。' : '' }}</p>
-        <div class="losses-scroll"><NDataTable id="lossEvents" :columns="eventColumns" :data="history" :row-key="(row: ManagementLossEvent) => row.id" :pagination="pagination" :scroll-x="1035" size="small"><template #empty>暂无证据记录</template></NDataTable></div>
-        <NSpace><NButton v-if="nextCursor" id="moreLossEvents" :disabled="loading" @click="load('append')">读取更早记录</NButton><NButton id="reloadLossEvents" :disabled="loading" @click="load('reset')">读取最新记录</NButton></NSpace>
+        <p class="section-caption">
+          已加载
+          {{ history.length }} 条{{ nextCursor ? '，可继续读取更早记录' : '，已覆盖全部保留历史'
+          }}。筛选与排序作用于已加载记录。{{ paged ? '后台只更新统计与告警，读取最新记录才重置历史。' : '' }}
+        </p>
+        <div class="losses-scroll">
+          <NDataTable
+            id="lossEvents"
+            :columns="eventColumns"
+            :data="history"
+            :row-key="(row: ManagementLossEvent) => row.id"
+            :pagination="pagination"
+            :scroll-x="1035"
+            size="small"
+            ><template #empty>暂无证据记录</template></NDataTable
+          >
+        </div>
+        <NSpace
+          ><NButton
+            v-if="nextCursor"
+            id="moreLossEvents"
+            :disabled="loading"
+            @click="load('append')"
+            >读取更早记录</NButton
+          ><NButton id="reloadLossEvents" :disabled="loading" @click="load('reset')"
+            >读取最新记录</NButton
+          ></NSpace
+        >
       </NCard>
     </template>
   </section>

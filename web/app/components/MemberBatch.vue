@@ -68,24 +68,54 @@ onBeforeUnmount(() => { active = false; viewVersion++; readVersion++; pending = 
 </script>
 
 <template>
-  <NCollapse class="member-batch" :expanded-names="expanded ? [requestId] : []" @update:expanded-names="toggle">
+  <NCollapse
+    class="member-batch"
+    :expanded-names="expanded ? [requestId] : []"
+    @update:expanded-names="toggle"
+  >
     <NCollapseItem :name="requestId" :title="'查看批次 · ' + requestId">
-      <div class="refresh-status" role="status">{{ loading ? '正在读取批次…' : '展开时随调用记录自动更新' }}</div>
+      <div class="refresh-status" role="status">
+        {{ loading ? '正在读取批次…' : '展开时随调用记录自动更新' }}
+      </div>
       <NAlert v-if="error" type="error">{{ error }}</NAlert>
       <template v-if="batch">
-        <p>共 {{ number(batch.counts.total) }} 张 · 等待前序 {{ number(batch.counts.pending) }} · 排队 {{ number(batch.counts.queued) }} · 生成中 {{ number(batch.counts.running) }} · 成功 {{ number(batch.counts.done) }} · 失败或取消 {{ number(batch.counts.failed) }}</p>
+        <p>
+          共 {{ number(batch.counts.total) }} 张 · 等待前序 {{ number(batch.counts.pending) }} ·
+          排队 {{ number(batch.counts.queued) }} · 生成中 {{ number(batch.counts.running) }} · 成功
+          {{ number(batch.counts.done) }} · 失败或取消 {{ number(batch.counts.failed) }}
+        </p>
         <ul class="batch-jobs">
           <li v-for="job in batch.jobs" :key="job.id">
-            第 {{ job.index + 1 }} 张 · {{ job.model }} · {{ job.status === 'failed' && job.cancelled ? '已取消（尚未派发）' : jobStatus(job.status) }}
+            第 {{ job.index + 1 }} 张 · {{ job.model }} ·
+            {{ job.status === 'failed' && job.cancelled ? '已取消（尚未派发）' : jobStatus(job.status) }}
             <p v-if="job.error && job.status === 'failed' && !job.cancelled">{{ job.error }}</p>
-            <p v-if="resultUrl(job.imageUrl)"><a :href="resultUrl(job.imageUrl) || undefined" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">{{ job.lateResultAvailable ? '领取迟到结果（退款保留）' : '领取结果' }}</a></p>
+            <p v-if="resultUrl(job.imageUrl)">
+              <a
+                :href="resultUrl(job.imageUrl) || undefined"
+                target="_blank"
+                rel="noopener noreferrer"
+                referrerpolicy="no-referrer"
+                >{{ job.lateResultAvailable ? '领取迟到结果（退款保留）' : '领取结果' }}</a
+              >
+            </p>
           </li>
         </ul>
-        <NAlert type="info">仅取消此批次排队或等待前序的图片。生成中的图片继续完成，已完成结果仍可领取。</NAlert>
+        <NAlert type="info"
+          >仅取消此批次排队或等待前序的图片。生成中的图片继续完成，已完成结果仍可领取。</NAlert
+        >
       </template>
       <div class="batch-actions">
-        <NButton v-if="error" secondary :loading="loading" :disabled="cancelling" @click="read">重新核实批次</NButton>
-        <NButton v-if="batch" secondary :loading="cancelling" :disabled="!batch.cancellable" @click="cancel">取消此批次尚未派发的图片</NButton>
+        <NButton v-if="error" secondary :loading="loading" :disabled="cancelling" @click="read"
+          >重新核实批次</NButton
+        >
+        <NButton
+          v-if="batch"
+          secondary
+          :loading="cancelling"
+          :disabled="!batch.cancellable"
+          @click="cancel"
+          >取消此批次尚未派发的图片</NButton
+        >
       </div>
       <p v-if="message" role="status">{{ message }}</p>
     </NCollapseItem>

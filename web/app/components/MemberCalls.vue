@@ -56,20 +56,55 @@ onBeforeUnmount(() => { disposed = true; version++ })
 
 <template>
   <NCard title="调用记录" size="small">
-    <template #header-extra><span class="count-badge">{{ snapshot?.total ?? '—' }} 条保留记录</span></template>
+    <template #header-extra
+      ><span class="count-badge">{{ snapshot?.total ?? '—' }} 条保留记录</span></template
+    >
     <div class="section-toolbar calls-filters">
-      <TableSearch placeholder="搜索模型或任务 ID" label="搜索调用记录" :delay="300" @search="filter" />
-      <NSelect v-model:value="status" :options="statuses" aria-label="筛选调用状态" class="status-filter" />
+      <TableSearch
+        placeholder="搜索模型或任务 ID"
+        label="搜索调用记录"
+        :delay="300"
+        @search="filter"
+      />
+      <NSelect
+        v-model:value="status"
+        :options="statuses"
+        aria-label="筛选调用状态"
+        class="status-filter"
+      />
     </div>
-    <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在更新记录…' : status === 'late' ? '迟到结果领取不另扣费，原退款保留。' : '全部保留历史可翻页查看；列标题可排序。') }}</div>
-    <NDataTable id="jobs" remote :columns="columns" :data="jobs" :row-key="(row: MemberJob) => row.id" :scroll-x="910" size="small"
+    <div class="refresh-status" role="status" :title="error">
+      {{ error || (loading ? '正在更新记录…' : status === 'late' ? '迟到结果领取不另扣费，原退款保留。' : '全部保留历史可翻页查看；列标题可排序。') }}
+    </div>
+    <NDataTable
+      id="jobs"
+      remote
+      :columns="columns"
+      :data="jobs"
+      :row-key="(row: MemberJob) => row.id"
+      :scroll-x="910"
+      size="small"
       :pagination="{ page, pageSize, itemCount: snapshot?.total ?? jobs.length, showSizePicker: true, pageSizes: [10, 25, 50, 100], showQuickJumper: true }"
-      @update:page="page = $event" @update:page-size="pageSize = $event" @update:sorter="sorted"><template #empty>暂无调用记录</template></NDataTable>
+      @update:page="page = $event"
+      @update:page-size="pageSize = $event"
+      @update:sorter="sorted"
+      ><template #empty>暂无调用记录</template></NDataTable
+    >
     <div v-if="requests.length" class="request-list">
       <h3>本页相关批次</h3>
-      <MemberBatch v-for="requestId in requests" :key="requestId" :request-id="requestId" :api="api" :refresh-version="refreshVersion" @changed="emit('changed')" />
+      <MemberBatch
+        v-for="requestId in requests"
+        :key="requestId"
+        :request-id="requestId"
+        :api="api"
+        :refresh-version="refreshVersion"
+        @changed="emit('changed')"
+      />
     </div>
-    <p class="section-caption">“已退款”指本站额度已退回，不代表上游已退款。所有成员共用串行队列；生成结束后至少间隔 10 秒派发下一张，官方限流时自动退避。</p>
+    <p class="section-caption">
+      “已退款”指本站额度已退回，不代表上游已退款。所有成员共用串行队列；生成结束后至少间隔 10
+      秒派发下一张，官方限流时自动退避。
+    </p>
   </NCard>
 </template>
 

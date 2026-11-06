@@ -1,4 +1,4 @@
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath } from 'node:url';
 
 export default defineNuxtConfig({
   compatibilityDate: '2026-10-17',
@@ -10,15 +10,26 @@ export default defineNuxtConfig({
   hooks: {
     'build:manifest'(manifest) {
       // 匿名页不提前下载登录后才用到的异步组件；保留当前页面的 preload。
-      for (const resource of Object.values(manifest)) resource.prefetch = false
-    }
+      for (const resource of Object.values(manifest)) resource.prefetch = false;
+    },
   },
   // 开发和产物使用同一组 API 路由，业务与持久化统一交给执行器。
   nitro: {
     preset: 'node-server',
     // 外层纯模块须同时打入开发 worker，不能留下相对生成目录的运行时 import。
-    externals: { inline: ['generation/payload-budget.ts', 'http/api-surface.ts'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
+    externals: {
+      inline: ['generation/payload-budget.ts', 'http/api-surface.ts'].map((name) =>
+        fileURLToPath(new URL('../server/' + name, import.meta.url)),
+      ),
+    },
   },
   typescript: { strict: true, tsConfig: { compilerOptions: { allowJs: true } } },
-  app: { head: { htmlAttrs: { lang: 'zh-CN' }, title: 'NovelAI 共享', meta: [{ name: 'referrer', content: 'same-origin' }], link: [{ rel: 'icon', href: 'data:,' }] } }
-})
+  app: {
+    head: {
+      htmlAttrs: { lang: 'zh-CN' },
+      title: 'NovelAI 共享',
+      meta: [{ name: 'referrer', content: 'same-origin' }],
+      link: [{ rel: 'icon', href: 'data:,' }],
+    },
+  },
+});

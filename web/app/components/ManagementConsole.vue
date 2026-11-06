@@ -23,54 +23,163 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
 <template>
   <main class="management">
     <header class="management-header">
-      <div><h1>共享账户控制台</h1><p id="connectedHint" class="muted" role="status">{{ hint }}</p></div>
+      <div>
+        <h1>共享账户控制台</h1>
+        <p id="connectedHint" class="muted" role="status">{{ hint }}</p>
+      </div>
       <NSpace v-if="state" id="topActions">
         <NButton v-if="mode === 'owner'" id="disconnect" tag="a" href="/">返回我的额度</NButton>
         <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
       </NSpace>
     </header>
-    <PortalToast :key="messageVersion" :message="message" :type="messageError ? 'error' : 'success'" />
+    <PortalToast
+      :key="messageVersion"
+      :message="message"
+      :type="messageError ? 'error' : 'success'"
+    />
     <PortalToast :message="readError" type="warning" />
-    <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"><NSkeleton text :repeat="5" /></NCard>
+    <NCard v-if="connecting && !state" title="正在读取管理摘要" aria-busy="true"
+      ><NSkeleton text :repeat="5"
+    /></NCard>
     <section v-if="state" id="dashboard" :key="sessionVersion" class="dashboard">
-      <PortalRefresh :connection="connection" :loading="refreshing" :disabled="busy" :updated-at="updatedAt" summary="管理摘要更新于" @refresh="refreshPage" />
+      <PortalRefresh
+        :connection="connection"
+        :loading="refreshing"
+        :disabled="busy"
+        :updated-at="updatedAt"
+        summary="管理摘要更新于"
+        @refresh="refreshPage"
+      />
       <div class="account-strip">
-        <div class="toolbar-controls"><NTag size="small" :bordered="false">{{ state.users.filter(user => user.enabled).length }} 位成员</NTag><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span></div>
-        <NPopover trigger="click" style="max-width: 380px"><template #trigger><NButton size="small" quaternary :type="alerts.length ? 'warning' : 'default'">{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton></template><div id="lossAlerts"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p><p v-if="!alerts.length">当前没有财务风险告警。</p><NButton size="small" @click="panel = 'settings'">查看上游与策略</NButton></div></NPopover>
+        <div class="toolbar-controls">
+          <NTag size="small" :bordered="false"
+            >{{ state.users.filter(user => user.enabled).length }} 位成员</NTag
+          ><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span
+          ><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span>
+        </div>
+        <NPopover trigger="click" style="max-width: 380px"
+          ><template #trigger
+            ><NButton
+              size="small"
+              quaternary
+              :type="alerts.length ? 'warning' : 'default'"
+              >{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton
+            ></template
+          >
+          <div id="lossAlerts">
+            <p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p>
+            <p v-if="!alerts.length">当前没有财务风险告警。</p>
+            <NButton size="small" @click="panel = 'settings'">查看上游与策略</NButton>
+          </div></NPopover
+        >
       </div>
       <ManagementServiceResources :data="state.serviceResources" />
       <NTabs v-model:value="panel" type="line" size="large" aria-label="管理功能">
         <NTabPane v-if="mode === 'owner'" name="usage" display-directive="show:lazy">
-          <template #tab><NButton id="usageTab" text :aria-pressed="panel === 'usage'">用量与记录</NButton></template>
+          <template #tab
+            ><NButton id="usageTab" text :aria-pressed="panel === 'usage'"
+              >用量与记录</NButton
+            ></template
+          >
           <PortalToast :message="usageError" type="warning" />
-          <LazyCallHeatmap :api="api" endpoint="member-management?view=heatmap" :members="state.users" :active="panel === 'usage'" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
-          <ManagementUsage :data="usage" :days="days" :loading="usageLoading" @update:days="days = $event" @retry="loadUsage" />
+          <LazyCallHeatmap
+            :api="api"
+            endpoint="member-management?view=heatmap"
+            :members="state.users"
+            :active="panel === 'usage'"
+            :refresh-version="refreshVersion"
+            :invalidation="activityInvalidation"
+          />
+          <ManagementUsage
+            :data="usage"
+            :days="days"
+            :loading="usageLoading"
+            @update:days="days = $event"
+            @retry="loadUsage"
+          />
         </NTabPane>
         <NTabPane name="members" display-directive="show:lazy">
-          <template #tab><NButton text :aria-pressed="panel === 'members'">成员与分发</NButton></template>
-          <ManagementMembers :state="state" :mode="mode" :api="api" :run="run" :busy="busy" :groups-dirty="groupsDirty" @changed="changed" @notice="notify" />
+          <template #tab
+            ><NButton text :aria-pressed="panel === 'members'">成员与分发</NButton></template
+          >
+          <ManagementMembers
+            :state="state"
+            :mode="mode"
+            :api="api"
+            :run="run"
+            :busy="busy"
+            :groups-dirty="groupsDirty"
+            @changed="changed"
+            @notice="notify"
+          />
         </NTabPane>
         <NTabPane name="groups" display-directive="show:lazy">
-          <template #tab><NButton text :aria-pressed="panel === 'groups'">分组与额度</NButton></template>
-          <ManagementGroups :state="state" :api="api" :run="run" :busy="busy" @dirty="groupsDirty = $event" @changed="changed" @notice="notify" />
+          <template #tab
+            ><NButton text :aria-pressed="panel === 'groups'">分组与额度</NButton></template
+          >
+          <ManagementGroups
+            :state="state"
+            :api="api"
+            :run="run"
+            :busy="busy"
+            @dirty="groupsDirty = $event"
+            @changed="changed"
+            @notice="notify"
+          />
         </NTabPane>
         <NTabPane name="settings" display-directive="show:lazy">
-          <template #tab><NButton text :aria-pressed="panel === 'settings'">上游与策略</NButton></template>
-          <SharedAccountStatus :state="shared" :connection="mode === 'admin' ? 'polling' : connection" />
-          <NAlert v-if="alerts.length" type="warning"><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p></NAlert>
-          <ManagementUpstream :state="state" :mode="mode" :api="api" :run="run" :busy="busy" :groups-dirty="groupsDirty" :active="panel === 'settings'" :refresh-version="refreshVersion" @changed="changed" @notice="notify" />
+          <template #tab
+            ><NButton text :aria-pressed="panel === 'settings'">上游与策略</NButton></template
+          >
+          <SharedAccountStatus
+            :state="shared"
+            :connection="mode === 'admin' ? 'polling' : connection"
+          />
+          <NAlert v-if="alerts.length" type="warning"
+            ><p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p></NAlert
+          >
+          <ManagementUpstream
+            :state="state"
+            :mode="mode"
+            :api="api"
+            :run="run"
+            :busy="busy"
+            :groups-dirty="groupsDirty"
+            :active="panel === 'settings'"
+            :refresh-version="refreshVersion"
+            @changed="changed"
+            @notice="notify"
+          />
         </NTabPane>
       </NTabs>
       <!-- 告警持续读取；其余表单首次访问才挂载，访问后保留草稿。 -->
-      <ManagementLosses :state="state" :api="api" :run="run" :busy="busy" :active="panel === 'settings'" :refresh-version="refreshVersion" @changed="changed" @notice="notify" @dirty="policyDirty = $event" @alerts="alerts = $event" />
+      <ManagementLosses
+        :state="state"
+        :api="api"
+        :run="run"
+        :busy="busy"
+        :active="panel === 'settings'"
+        :refresh-version="refreshVersion"
+        @changed="changed"
+        @notice="notify"
+        @dirty="policyDirty = $event"
+        @alerts="alerts = $event"
+      />
     </section>
     <template v-else-if="!connecting">
       <NCard v-if="mode === 'admin'" class="connect-card" title="连接管理端">
         <form id="connect" @submit.prevent="changedSession(); connect()">
           <label for="adminToken">管理员 Key</label>
-          <NInput v-model:value="adminToken" type="password" autocomplete="off" :input-props="{ id: 'adminToken', required: true }" />
+          <NInput
+            v-model:value="adminToken"
+            type="password"
+            autocomplete="off"
+            :input-props="{ id: 'adminToken', required: true }"
+          />
           <NCheckbox v-model:checked="remember">仅在当前浏览器会话中记住</NCheckbox>
-          <NButton attr-type="submit" type="primary" :disabled="!adminToken.trim()">进入控制台</NButton>
+          <NButton attr-type="submit" type="primary" :disabled="!adminToken.trim()"
+            >进入控制台</NButton
+          >
         </form>
       </NCard>
       <NButton v-else id="ownerSignin" tag="a" href="/">返回成员页登录或确认权限</NButton>

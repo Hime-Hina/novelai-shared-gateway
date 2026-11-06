@@ -12,7 +12,14 @@ watch(profile, value => { if (!value) apiOpen.value = false })
 <template>
   <main class="portal">
     <header class="portal-header">
-      <div><a href="/" class="brand">NovelAI 共享</a><p class="muted">个人额度 · 调用记录</p><p v-if="profile" id="sessionExpiry" class="section-caption">{{ profile.username }} · 当前有效至 {{ date(profile.sessionExpiresAt) }}（连续 {{ profile.owner ? '1' : '7' }} 天未访问后退出，可见页面自动续期）</p></div>
+      <div>
+        <a href="/" class="brand">NovelAI 共享</a>
+        <p class="muted">个人额度 · 调用记录</p>
+        <p v-if="profile" id="sessionExpiry" class="section-caption">
+          {{ profile.username }} · 当前有效至 {{ date(profile.sessionExpiresAt) }}（连续
+          {{ profile.owner ? '1' : '7' }} 天未访问后退出，可见页面自动续期）
+        </p>
+      </div>
       <NSpace v-if="profile">
         <NButton id="apiSettings" @click="apiOpen = true">API 配置</NButton>
         <NButton v-if="profile.owner" id="ownerConsole" tag="a" href="/owner">管理控制台</NButton>
@@ -22,21 +29,61 @@ watch(profile, value => { if (!value) apiOpen.value = false })
     <PortalToast :message="profile || !loginOptions ? error : ''" type="warning" />
     <section v-if="initializing" class="initial-state" aria-label="正在读取账户" aria-busy="true">
       <NCard title="正在读取账户"><NSkeleton text :repeat="3" /></NCard>
-      <div class="loading-cards"><NCard v-for="n in 3" :key="n"><NSkeleton height="112px" /></NCard></div>
+      <div class="loading-cards">
+        <NCard v-for="n in 3" :key="n"><NSkeleton height="112px" /></NCard>
+      </div>
     </section>
     <section v-else-if="profile && loginOptions" id="account" class="account-content">
-      <PortalRefresh :connection="connection" :loading="refreshing" :updated-at="updatedAt" summary="额度更新于" @refresh="refreshPage" />
-      <LazyCallHeatmap :api="api" endpoint="heatmap" :refresh-version="refreshVersion" :invalidation="activityInvalidation" />
+      <PortalRefresh
+        :connection="connection"
+        :loading="refreshing"
+        :updated-at="updatedAt"
+        summary="额度更新于"
+        @refresh="refreshPage"
+      />
+      <LazyCallHeatmap
+        :api="api"
+        endpoint="heatmap"
+        :refresh-version="refreshVersion"
+        :invalidation="activityInvalidation"
+      />
       <MemberQuota :profile="profile" />
-      <NCard size="small"><NCollapse><NCollapseItem :title="`共享账户 · 生成中 ${shared?.running ?? '—'} / 1 · 排队 ${shared?.queued ?? '—'}`" name="shared"><SharedAccountStatus :state="shared" :connection="connection" /></NCollapseItem></NCollapse></NCard>
-      <LazyMemberCalls :jobs="profile.jobs" :late-results="profile.lateResults" :api="api" :refresh-version="refreshVersion" @changed="refresh" />
+      <NCard size="small"
+        ><NCollapse
+          ><NCollapseItem
+            :title="`共享账户 · 生成中 ${shared?.running ?? '—'} / 1 · 排队 ${shared?.queued ?? '—'}`"
+            name="shared"
+            ><SharedAccountStatus
+              :state="shared"
+              :connection="connection" /></NCollapseItem></NCollapse
+      ></NCard>
+      <LazyMemberCalls
+        :jobs="profile.jobs"
+        :late-results="profile.lateResults"
+        :api="api"
+        :refresh-version="refreshVersion"
+        @changed="refresh"
+      />
       <NDrawer v-model:show="apiOpen" width="min(440px, 100vw)">
-        <NDrawerContent title="我的 API 配置" closable><MemberApiKey v-if="apiOpen" :api="api" /></NDrawerContent>
+        <NDrawerContent title="我的 API 配置" closable
+          ><MemberApiKey v-if="apiOpen" :api="api"
+        /></NDrawerContent>
       </NDrawer>
     </section>
-    <MemberSignIn v-else-if="loginOptions" :options="loginOptions" :busy="working" :error="error" @login="login" @discord="startDiscord" />
-    <NCard v-else title="暂时无法读取登录入口"><NButton @click="initialize">重新读取</NButton></NCard>
-    <footer class="muted">个人预扣与退款属于本站账本，不代表上游已退款。所有成员共用串行队列。</footer>
+    <MemberSignIn
+      v-else-if="loginOptions"
+      :options="loginOptions"
+      :busy="working"
+      :error="error"
+      @login="login"
+      @discord="startDiscord"
+    />
+    <NCard v-else title="暂时无法读取登录入口"
+      ><NButton @click="initialize">重新读取</NButton></NCard
+    >
+    <footer class="muted">
+      个人预扣与退款属于本站账本，不代表上游已退款。所有成员共用串行队列。
+    </footer>
   </main>
 </template>
 <style scoped>

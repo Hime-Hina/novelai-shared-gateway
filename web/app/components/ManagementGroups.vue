@@ -177,33 +177,162 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
 
 <template>
   <section id="groupsPanel" aria-labelledby="groupsTitle">
-    <header class="toolbar"><div><h2 id="groupsTitle">分组与额度</h2><p class="muted">填写每位成员的百分比，合计 100% 后预览并保存。</p></div><NButton id="resetDraft" :disabled="locked" @click="resetDraft">撤销未保存修改</NButton></header>
+    <header class="toolbar">
+      <div>
+        <h2 id="groupsTitle">分组与额度</h2>
+        <p class="muted">填写每位成员的百分比，合计 100% 后预览并保存。</p>
+      </div>
+      <NButton id="resetDraft" :disabled="locked" @click="resetDraft">撤销未保存修改</NButton>
+    </header>
     <label id="allocationModeLabel">分配方式</label>
-    <NSelect id="allocationMode" :value="mode" :options="modeOptions" aria-labelledby="allocationModeLabel" @update:value="switchMode" />
-    <NAlert v-if="dirty && state.configVersion !== configVersion" type="warning" class="notice" role="status">后台分组配置已有更新。草稿仍基于版本 {{ configVersion }}；可保留查看，或撤销后按最新配置重新编辑。</NAlert>
+    <NSelect
+      id="allocationMode"
+      :value="mode"
+      :options="modeOptions"
+      aria-labelledby="allocationModeLabel"
+      @update:value="switchMode"
+    />
+    <NAlert
+      v-if="dirty && state.configVersion !== configVersion"
+      type="warning"
+      class="notice"
+      role="status"
+      >后台分组配置已有更新。草稿仍基于版本
+      {{ configVersion }}；可保留查看，或撤销后按最新配置重新编辑。</NAlert
+    >
     <div v-if="mode === 'direct'" id="directAllocation">
       <h3>按成员直接分配</h3>
-      <p class="muted">填写每个人占全部额度的百分比，例如 70% 与 30%。0% 保留成员但不分配未来额度。未分组的启用成员保存时自动加入第一组。</p>
-      <div class="table-scroll" tabindex="0" aria-label="成员具体份额表，可横向滚动"><NDataTable id="directRows" :columns="directColumns" :data="state.users" :row-key="(user: ManagementUser) => user.id" :pagination="pagination" :scroll-x="660" size="small" /></div>
+      <p class="muted">
+        填写每个人占全部额度的百分比，例如 70% 与 30%。0%
+        保留成员但不分配未来额度。未分组的启用成员保存时自动加入第一组。
+      </p>
+      <div class="table-scroll" tabindex="0" aria-label="成员具体份额表，可横向滚动">
+        <NDataTable
+          id="directRows"
+          :columns="directColumns"
+          :data="state.users"
+          :row-key="(user: ManagementUser) => user.id"
+          :pagination="pagination"
+          :scroll-x="660"
+          size="small"
+        />
+      </div>
     </div>
     <div v-else id="advancedAllocation">
-      <div id="groupCards" class="group-grid"><NCard v-for="group in groups" :key="group.id" size="small">
-        <label :for="'group-name-' + group.id">组名 · {{ group.members.length }} 人</label><NInput :value="group.name" :maxlength="60" :input-props="{ id: 'group-name-' + group.id }" @update:value="group.name = $event; edited()" />
-        <label :for="'group-share-' + group.id">总份额（%）</label><NInputNumber :value="inputNumber(group.share * 100)" :min="0" :max="100" :show-button="false" :input-props="{ id: 'group-share-' + group.id }" @update:value="group.share = $event == null ? NaN : $event / 100; edited()" />
-      </NCard></div>
-      <p class="muted">空组份额须为 0%。成员权重和非空组份额允许为 0；有份额的组至少一位成员权重大于 0。权重 2 的成员获得同组权重 1 成员的两倍份额。</p>
-      <div class="table-scroll" tabindex="0" aria-label="分组权重表，可横向滚动"><NDataTable id="assignments" :columns="assignmentColumns" :data="state.users" :row-key="(user: ManagementUser) => user.id" :pagination="pagination" :scroll-x="890" size="small" /></div>
+      <div id="groupCards" class="group-grid">
+        <NCard v-for="group in groups" :key="group.id" size="small">
+          <label :for="'group-name-' + group.id">组名 · {{ group.members.length }} 人</label
+          ><NInput
+            :value="group.name"
+            :maxlength="60"
+            :input-props="{ id: 'group-name-' + group.id }"
+            @update:value="group.name = $event; edited()"
+          />
+          <label :for="'group-share-' + group.id">总份额（%）</label
+          ><NInputNumber
+            :value="inputNumber(group.share * 100)"
+            :min="0"
+            :max="100"
+            :show-button="false"
+            :input-props="{ id: 'group-share-' + group.id }"
+            @update:value="group.share = $event == null ? NaN : $event / 100; edited()"
+          />
+        </NCard>
+      </div>
+      <p class="muted">
+        空组份额须为 0%。成员权重和非空组份额允许为 0；有份额的组至少一位成员权重大于 0。权重 2
+        的成员获得同组权重 1 成员的两倍份额。
+      </p>
+      <div class="table-scroll" tabindex="0" aria-label="分组权重表，可横向滚动">
+        <NDataTable
+          id="assignments"
+          :columns="assignmentColumns"
+          :data="state.users"
+          :row-key="(user: ManagementUser) => user.id"
+          :pagination="pagination"
+          :scroll-x="890"
+          size="small"
+        />
+      </div>
     </div>
-    <p :id="mode === 'direct' ? 'directTotal' : 'shareTotal'" :class="{ danger: !validTotal }" role="status">{{ mode === 'direct' ? '已分配' : '四组总份额' }} {{ Number.isFinite(total) ? number(total) + '% / 100%' : '待填写有效数字' }}</p>
-    <NCheckbox id="redistribute" :checked="redistribute[mode]" @update:checked="redistribute[mode] = $event; edited()">同步分配当前剩余余额（推荐）</NCheckbox>
-    <p class="muted">勾选后保留各组总余额，按组内新权重重新分配；不会自动跨组转移。跨组调额请用成员行的「调整额度」。</p>
-    <NAlert v-if="!redistribute[mode]" id="balancePreserveWarning" type="warning" role="status">仅以后生效：当前余额保持不变。已有额度仍留在原成员账户。</NAlert>
-    <div class="toolbar actions"><span id="draftHint" role="status">{{ dirty ? '有未保存的修改 · 请先预览' : '尚无未保存修改' }} · 版本 {{ configVersion }}</span><NButton id="previewGroups" type="primary" :disabled="locked" :loading="pending" @click="previewGroups">预览并保存分配</NButton></div>
-    <NModal :show="Boolean(preview)" preset="card" title="确认分配结果" class="group-preview" :style="{ width: 'min(1080px, calc(100vw - 32px))' }" :mask-closable="!pending" :closable="!pending" @update:show="value => { if (!value && !pending) preview = null }">
-      <template v-if="preview"><NAlert id="previewDescription" type="info" :show-icon="false">{{ preview.payload.redistributeRemaining ? '将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。' : '仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样。' }}</NAlert>
-        <div class="table-scroll preview-table" tabindex="0" aria-label="分配前后对照表，可横向滚动"><NDataTable id="previewRows" :columns="previewColumns" :data="preview.rows" :row-key="(row: PreviewRow) => row.id" :pagination="pagination" :scroll-x="1000" size="small" /></div>
-        <p class="muted">预览由后端账本计算。余额会随生成与恢复变化，保存按当时可用余额计算；分组配置被其他操作修改时需重新编辑。</p>
-        <div class="toolbar"><NButton id="confirmGroups" type="primary" :disabled="locked" :loading="pending" @click="saveGroups">确认保存分配</NButton><NButton :disabled="pending" @click="preview = null">返回修改</NButton></div>
+    <p
+      :id="mode === 'direct' ? 'directTotal' : 'shareTotal'"
+      :class="{ danger: !validTotal }"
+      role="status"
+    >
+      {{ mode === 'direct' ? '已分配' : '四组总份额' }}
+      {{ Number.isFinite(total) ? number(total) + '% / 100%' : '待填写有效数字' }}
+    </p>
+    <NCheckbox
+      id="redistribute"
+      :checked="redistribute[mode]"
+      @update:checked="redistribute[mode] = $event; edited()"
+      >同步分配当前剩余余额（推荐）</NCheckbox
+    >
+    <p class="muted">
+      勾选后保留各组总余额，按组内新权重重新分配；不会自动跨组转移。跨组调额请用成员行的「调整额度」。
+    </p>
+    <NAlert v-if="!redistribute[mode]" id="balancePreserveWarning" type="warning" role="status"
+      >仅以后生效：当前余额保持不变。已有额度仍留在原成员账户。</NAlert
+    >
+    <div class="toolbar actions">
+      <span id="draftHint" role="status"
+        >{{ dirty ? '有未保存的修改 · 请先预览' : '尚无未保存修改' }} · 版本
+        {{ configVersion }}</span
+      ><NButton
+        id="previewGroups"
+        type="primary"
+        :disabled="locked"
+        :loading="pending"
+        @click="previewGroups"
+        >预览并保存分配</NButton
+      >
+    </div>
+    <NModal
+      :show="Boolean(preview)"
+      preset="card"
+      title="确认分配结果"
+      class="group-preview"
+      :style="{ width: 'min(1080px, calc(100vw - 32px))' }"
+      :mask-closable="!pending"
+      :closable="!pending"
+      @update:show="value => { if (!value && !pending) preview = null }"
+    >
+      <template v-if="preview"
+        ><NAlert
+          id="previewDescription"
+          type="info"
+          :show-icon="false"
+          >{{ preview.payload.redistributeRemaining ? '将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。' : '仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样。' }}</NAlert
+        >
+        <div
+          class="table-scroll preview-table"
+          tabindex="0"
+          aria-label="分配前后对照表，可横向滚动"
+        >
+          <NDataTable
+            id="previewRows"
+            :columns="previewColumns"
+            :data="preview.rows"
+            :row-key="(row: PreviewRow) => row.id"
+            :pagination="pagination"
+            :scroll-x="1000"
+            size="small"
+          />
+        </div>
+        <p class="muted">
+          预览由后端账本计算。余额会随生成与恢复变化，保存按当时可用余额计算；分组配置被其他操作修改时需重新编辑。
+        </p>
+        <div class="toolbar">
+          <NButton
+            id="confirmGroups"
+            type="primary"
+            :disabled="locked"
+            :loading="pending"
+            @click="saveGroups"
+            >确认保存分配</NButton
+          ><NButton :disabled="pending" @click="preview = null">返回修改</NButton>
+        </div>
       </template>
     </NModal>
   </section>

@@ -132,38 +132,137 @@ onBeforeUnmount(() => {
 <template>
   <NCard id="callHeatmap" size="small" :aria-busy="loading">
     <header class="section-toolbar">
-      <div><h2>调用活动 <span class="count-badge">{{ snapshot ? total.toLocaleString() + ' 次' : '—' }}</span></h2><p class="section-caption">最近一年 · 上海时间 · 每张生图计一次</p></div>
-      <NRadioGroup v-model:value="aggregation" name="activity-aggregation" size="small" aria-label="热力图聚合方式"><NRadioButton v-for="item in aggregations" :key="item.value" :value="item.value">{{ item.label }}</NRadioButton></NRadioGroup>
+      <div>
+        <h2>
+          调用活动
+          <span class="count-badge">{{ snapshot ? total.toLocaleString() + ' 次' : '—' }}</span>
+        </h2>
+        <p class="section-caption">最近一年 · 上海时间 · 每张生图计一次</p>
+      </div>
+      <NRadioGroup
+        v-model:value="aggregation"
+        name="activity-aggregation"
+        size="small"
+        aria-label="热力图聚合方式"
+        ><NRadioButton
+          v-for="item in aggregations"
+          :key="item.value"
+          :value="item.value"
+          >{{ item.label }}</NRadioButton
+        ></NRadioGroup
+      >
     </header>
     <div class="heatmap-filters">
-      <NSelect id="heatmapOperation" v-model:value="operation" :options="operations" aria-label="调用操作" size="small" />
-      <NSelect id="heatmapStatus" v-model:value="status" :options="statuses" aria-label="任务状态" size="small" />
-      <NSelect v-if="members !== undefined" id="heatmapMember" v-model:value="memberId" :options="memberOptions" filterable aria-label="统计成员" size="small" />
+      <NSelect
+        id="heatmapOperation"
+        v-model:value="operation"
+        :options="operations"
+        aria-label="调用操作"
+        size="small"
+      />
+      <NSelect
+        id="heatmapStatus"
+        v-model:value="status"
+        :options="statuses"
+        aria-label="任务状态"
+        size="small"
+      />
+      <NSelect
+        v-if="members !== undefined"
+        id="heatmapMember"
+        v-model:value="memberId"
+        :options="memberOptions"
+        filterable
+        aria-label="统计成员"
+        size="small"
+      />
     </div>
-    <div class="refresh-status" role="status" :title="error">{{ error || (loading ? '正在读取调用记录…' : snapshot ? `${snapshot.from} — ${snapshot.to}` + (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '') : '等待记录') }} <NButton v-if="error" id="retryHeatmap" :loading="loading" size="tiny" text @click="request()">重试</NButton></div>
+    <div class="refresh-status" role="status" :title="error">
+      {{ error || (loading ? '正在读取调用记录…' : snapshot ? `${snapshot.from} — ${snapshot.to}` + (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '') : '等待记录') }}
+      <NButton v-if="error" id="retryHeatmap" :loading="loading" size="tiny" text @click="request()"
+        >重试</NButton
+      >
+    </div>
     <div class="heatmap-chart">
-      <div v-if="aggregation === 'day' || aggregation === 'cumulative'" ref="chart" class="heatmap-scroll" role="region" aria-label="每日调用热力图，可横向滚动" tabindex="0">
-        <NHeatmap :data="cells" :loading="!snapshot" :first-day-of-week="6" :minimum-color="colors[0]" :active-colors="colors.slice(1)" :x-gap="4" :y-gap="4" :theme-overrides="{ rectSizeMedium: 'clamp(11px, calc((100cqw - 250px) / 53), 18px)' }" tooltip>
+      <div
+        v-if="aggregation === 'day' || aggregation === 'cumulative'"
+        ref="chart"
+        class="heatmap-scroll"
+        role="region"
+        aria-label="每日调用热力图，可横向滚动"
+        tabindex="0"
+      >
+        <NHeatmap
+          :data="cells"
+          :loading="!snapshot"
+          :first-day-of-week="6"
+          :minimum-color="colors[0]"
+          :active-colors="colors.slice(1)"
+          :x-gap="4"
+          :y-gap="4"
+          :theme-overrides="{ rectSizeMedium: 'clamp(11px, calc((100cqw - 250px) / 53), 18px)' }"
+          tooltip
+        >
           <template #tooltip="{ timestamp, value }">
-            {{ activityDateKey(timestamp) }} · {{ aggregation === 'cumulative' ? '累计' : '当天' }} {{ value }} 次保留记录
-            <p class="heatmap-tooltip-details">{{ breakdown(buckets.get(activityDateKey(timestamp))) }}</p>
+            {{ activityDateKey(timestamp) }} · {{ aggregation === 'cumulative' ? '累计' : '当天' }}
+            {{ value }} 次保留记录
+            <p class="heatmap-tooltip-details">
+              {{ breakdown(buckets.get(activityDateKey(timestamp))) }}
+            </p>
           </template>
         </NHeatmap>
       </div>
-      <div v-else class="period-grid" :class="{ monthly: aggregation === 'month' }" :aria-label="aggregation === 'month' ? '每月调用热力图' : '每周调用热力图'">
+      <div
+        v-else
+        class="period-grid"
+        :class="{ monthly: aggregation === 'month' }"
+        :aria-label="aggregation === 'month' ? '每月调用热力图' : '每周调用热力图'"
+      >
         <NTooltip v-for="period in periods" :key="period.from">
-          <template #trigger><button type="button" class="period-cell" :style="{ background: colors[period.value ? Math.min(4, Math.ceil(period.value / peak * 4)) : 0] }" :aria-label="`${period.from} 至 ${period.to}：${period.value} 次保留记录`" @click="selectedDate = period.from; detailsOpen = true"><span>{{ aggregation === 'month' ? period.from.slice(0, 7) : period.from.slice(5) }}</span><strong>{{ period.value.toLocaleString() }}</strong></button></template>
+          <template #trigger
+            ><button
+              type="button"
+              class="period-cell"
+              :style="{ background: colors[period.value ? Math.min(4, Math.ceil(period.value / peak * 4)) : 0] }"
+              :aria-label="`${period.from} 至 ${period.to}：${period.value} 次保留记录`"
+              @click="selectedDate = period.from; detailsOpen = true"
+            >
+              <span
+                >{{ aggregation === 'month' ? period.from.slice(0, 7) : period.from.slice(5) }}</span
+              ><strong>{{ period.value.toLocaleString() }}</strong>
+            </button></template
+          >
           {{ period.from }} 至 {{ period.to }} · {{ period.value }} 次保留记录
         </NTooltip>
       </div>
     </div>
     <div class="heatmap-footer">
       <span class="section-caption">仅统计保留记录（含缓存）· 灰格不代表历史完整</span>
-      <NPopover v-model:show="detailsOpen" trigger="click" :style="{ width: 'min(390px, calc(100vw - 32px))' }">
-        <template #trigger><NButton id="heatmapDetailToggle" size="small" quaternary>查看日期明细</NButton></template>
-        <p class="section-caption">包含缓存任务，不等于实际 NAI 调用次数。灰格表示无所选状态的保留记录；历史覆盖可能不完整。</p>
-        <NSelect v-if="snapshot" id="heatmapDay" v-model:value="selectedDate" :options="dateOptions" filterable size="small" aria-label="查看某一天" />
-        <p id="heatmapDetails" class="section-caption" aria-live="polite">{{ selectedDate }}{{ selectedDate ? '：' : '' }}{{ breakdown(selected) }}</p>
+      <NPopover
+        v-model:show="detailsOpen"
+        trigger="click"
+        :style="{ width: 'min(390px, calc(100vw - 32px))' }"
+      >
+        <template #trigger
+          ><NButton id="heatmapDetailToggle" size="small" quaternary
+            >查看日期明细</NButton
+          ></template
+        >
+        <p class="section-caption">
+          包含缓存任务，不等于实际 NAI 调用次数。灰格表示无所选状态的保留记录；历史覆盖可能不完整。
+        </p>
+        <NSelect
+          v-if="snapshot"
+          id="heatmapDay"
+          v-model:value="selectedDate"
+          :options="dateOptions"
+          filterable
+          size="small"
+          aria-label="查看某一天"
+        />
+        <p id="heatmapDetails" class="section-caption" aria-live="polite">
+          {{ selectedDate }}{{ selectedDate ? '：' : '' }}{{ breakdown(selected) }}
+        </p>
       </NPopover>
     </div>
   </NCard>

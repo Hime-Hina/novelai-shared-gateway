@@ -87,28 +87,65 @@ onBeforeUnmount(() => { disposed = true; pending = false; pst.value = ''; accoun
 <template>
   <section class="upstream-settings">
     <NCard title="共享 Opus">
-      <NAlert v-if="error" type="warning" role="status">{{ error }} <NButton text @click="load">重试读取</NButton></NAlert>
-      <div class="refresh-status" role="status">{{ loading ? '正在读取上游状态…' : '随页面数据自动更新' }}</div>
+      <NAlert v-if="error" type="warning" role="status"
+        >{{ error }} <NButton text @click="load">重试读取</NButton></NAlert
+      >
+      <div class="refresh-status" role="status">
+        {{ loading ? '正在读取上游状态…' : '随页面数据自动更新' }}
+      </div>
       <template v-if="account">
-        <p id="upstreamStatus">{{ account.enabled ? '已启用' : '已暂停' }} · {{ account.quotaTier === 3 ? 'Opus' : '订阅待核验' }} · 正在生成 {{ account.inFlight }}</p>
-        <p id="upstreamQuota">V5 {{ number(account.v5UsagePercent) }}% · 订阅 {{ number(account.quotaFixed) }} · 购买 {{ number(account.quotaPurchased) }}</p>
-        <p id="upstreamUpdated" class="muted">官方查询 {{ date(account.quotaCheckedAt) }}{{ account.quotaError ? ' · 查询失败' : '' }}</p>
+        <p id="upstreamStatus">
+          {{ account.enabled ? '已启用' : '已暂停' }} ·
+          {{ account.quotaTier === 3 ? 'Opus' : '订阅待核验' }} · 正在生成 {{ account.inFlight }}
+        </p>
+        <p id="upstreamQuota">
+          V5 {{ number(account.v5UsagePercent) }}% · 订阅 {{ number(account.quotaFixed) }} · 购买
+          {{ number(account.quotaPurchased) }}
+        </p>
+        <p id="upstreamUpdated" class="muted">
+          官方查询 {{ date(account.quotaCheckedAt) }}{{ account.quotaError ? ' · 查询失败' : '' }}
+        </p>
       </template>
       <p v-else-if="!loading">尚未绑定共享 Opus</p>
-      <NSpace><NButton id="refreshUpstream" :disabled="busy || !account" @click="refreshQuota">向官方查询余额</NButton>
-        <NButton id="toggleUpstream" :disabled="busy || !account" @click="toggle">{{ account?.enabled ? '暂停上游' : '恢复上游' }}</NButton></NSpace>
+      <NSpace
+        ><NButton id="refreshUpstream" :disabled="busy || !account" @click="refreshQuota"
+          >向官方查询余额</NButton
+        >
+        <NButton
+          id="toggleUpstream"
+          :disabled="busy || !account"
+          @click="toggle"
+          >{{ account?.enabled ? '暂停上游' : '恢复上游' }}</NButton
+        ></NSpace
+      >
     </NCard>
     <NCard title="V5 额度用完后">
-      <NCheckbox id="autoFallback" v-model:checked="fallback" @update:checked="fallbackDirty = true">个人 V5 不足时，按 Anlas 公式转扣本人本地余额</NCheckbox>
-      <p>保持原生图参数。上游仍可能消耗公共 V5；官方 Anlas 没减少也不会退本地扣款。个人余额不足则停止，失败退款。</p>
+      <NCheckbox id="autoFallback" v-model:checked="fallback" @update:checked="fallbackDirty = true"
+        >个人 V5 不足时，按 Anlas 公式转扣本人本地余额</NCheckbox
+      >
+      <p>
+        保持原生图参数。上游仍可能消耗公共 V5；官方 Anlas
+        没减少也不会退本地扣款。个人余额不足则停止，失败退款。
+      </p>
       <NButton id="saveFallback" :disabled="busy" @click="saveFallback">保存续用策略</NButton>
     </NCard>
     <NCard title="轮换同一官方账户的 PST">
       <p>只更新同一 NAI 账户的凭据。更新后上游保持暂停；查到正确额度后再明确恢复。</p>
       <form id="upstreamCredentials" @submit.prevent="savePst">
         <label for="upstreamPst">新的完整 PST</label>
-        <NInput v-model:value="pst" type="password" autocomplete="off" :maxlength="4096" :input-props="{ id: 'upstreamPst' }" />
-        <NButton id="saveUpstreamPst" attr-type="submit" :disabled="busy || !account || Boolean(account.inFlight) || !pst.trim()">更新 PST 并保持暂停</NButton>
+        <NInput
+          v-model:value="pst"
+          type="password"
+          autocomplete="off"
+          :maxlength="4096"
+          :input-props="{ id: 'upstreamPst' }"
+        />
+        <NButton
+          id="saveUpstreamPst"
+          attr-type="submit"
+          :disabled="busy || !account || Boolean(account.inFlight) || !pst.trim()"
+          >更新 PST 并保持暂停</NButton
+        >
       </form>
     </NCard>
   </section>

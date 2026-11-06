@@ -62,17 +62,34 @@ onUnmounted(() => {
 <template>
   <section aria-labelledby="sharedTitle">
     <h2 id="sharedTitle">共享账户状态 <small>只读</small></h2>
-    <p id="sharedConnection" role="status" class="muted">{{ connections[connection] || '等待连接' }}</p>
+    <p id="sharedConnection" role="status" class="muted">
+      {{ connections[connection] || '等待连接' }}
+    </p>
     <div class="shared-grid">
       <NCard title="订阅与队列" size="small">
-        <strong id="sharedState" class="amount">{{ state ? labels[state.status] || '状态未知' : '未知' }}</strong>
-        <p id="sharedSubscription">上次核验：{{ state?.subscriptionActive != null ? (state.subscriptionActive ? `Opus 订阅有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}</p>
-        <p id="sharedQueue">生成中 {{ number(state?.running) }} / {{ number(state?.concurrencyLimit) }} · 排队 {{ number(state?.queued) }} · 批次待激活 {{ number(state?.pending) }}</p>
+        <strong
+          id="sharedState"
+          class="amount"
+          >{{ state ? labels[state.status] || '状态未知' : '未知' }}</strong
+        >
+        <p id="sharedSubscription">
+          上次核验：{{ state?.subscriptionActive != null ? (state.subscriptionActive ? `Opus 订阅有效 · 到期 ${date(state.expiresAt)}` : '没有可用的 Opus 订阅') : '订阅状态未知' }}
+        </p>
+        <p id="sharedQueue">
+          生成中 {{ number(state?.running) }} / {{ number(state?.concurrencyLimit) }} · 排队
+          {{ number(state?.queued) }} · 批次待激活 {{ number(state?.pending) }}
+        </p>
         <p id="sharedCooldown">{{ cooldown }}</p>
       </NCard>
       <NCard title="公共 V5 余量" size="small">
-        <strong id="sharedV5" class="amount">{{ state?.v5Percent == null ? '未知' : `${number(state.v5Percent)}%${state.v5IsNegative ? '（已透支）' : ''}` }}</strong>
-        <p id="sharedRefill">{{ state?.refillSecondsPerPercent != null && state.refillSecondsPerPercent > 0 ? `约 ${number(86400 / state.refillSecondsPerPercent)} 个百分点 / 天` : '恢复速度未知或已暂停' }}</p>
+        <strong
+          id="sharedV5"
+          class="amount"
+          >{{ state?.v5Percent == null ? '未知' : `${number(state.v5Percent)}%${state.v5IsNegative ? '（已透支）' : ''}` }}</strong
+        >
+        <p id="sharedRefill">
+          {{ state?.refillSecondsPerPercent != null && state.refillSecondsPerPercent > 0 ? `约 ${number(86400 / state.refillSecondsPerPercent)} 个百分点 / 天` : '恢复速度未知或已暂停' }}
+        </p>
         <p class="muted">显示官方最近一次查询值，不等同于你的个人余额。</p>
       </NCard>
       <NCard title="公共 Anlas" size="small">
@@ -81,8 +98,17 @@ onUnmounted(() => {
         <p class="muted">订阅与购买额度独立记录。</p>
       </NCard>
     </div>
-    <p id="sharedUpdated" class="muted">官方余额更新：{{ date(state?.officialCheckedAt) }}。每 60 秒查询，生成结束后也刷新；{{ connection === 'polling' ? '此私有页面通过定时读取更新。' : '队列与账本提交后合并推送，通常在一秒内更新。' }}</p>
-    <NAlert v-if="problems.length" id="sharedError" type="warning" role="status" :show-icon="false">{{ problems.join(' · ') }}</NAlert>
+    <p id="sharedUpdated" class="muted">
+      官方余额更新：{{ date(state?.officialCheckedAt) }}。每 60 秒查询，生成结束后也刷新；{{ connection === 'polling' ? '此私有页面通过定时读取更新。' : '队列与账本提交后合并推送，通常在一秒内更新。' }}
+    </p>
+    <NAlert
+      v-if="problems.length"
+      id="sharedError"
+      type="warning"
+      role="status"
+      :show-icon="false"
+      >{{ problems.join(' · ') }}</NAlert
+    >
   </section>
 </template>
 

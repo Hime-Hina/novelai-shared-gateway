@@ -27,7 +27,9 @@ function operationStatus(status: string | undefined) {
       <NCard size="small">
         <span class="metric-label">执行器内存（RSS）</span>
         <strong id="serviceMemory">{{ bytes(data?.memory.rssBytes) }}</strong>
-        <p>JS 堆 {{ bytes(data?.memory.heapUsedBytes) }} / {{ bytes(data?.memory.heapTotalBytes) }}</p>
+        <p>
+          JS 堆 {{ bytes(data?.memory.heapUsedBytes) }} / {{ bytes(data?.memory.heapTotalBytes) }}
+        </p>
       </NCard>
       <NCard size="small">
         <span class="metric-label">服务数据文件</span>
@@ -37,7 +39,9 @@ function operationStatus(status: string | undefined) {
       </NCard>
       <NCard size="small">
         <span class="metric-label">数据目录所在磁盘（已用 / 总量）</span>
-        <strong id="serviceDisk">{{ bytes(data?.disk?.usedBytes) }} / {{ bytes(data?.disk?.totalBytes) }}</strong>
+        <strong id="serviceDisk"
+          >{{ bytes(data?.disk?.usedBytes) }} / {{ bytes(data?.disk?.totalBytes) }}</strong
+        >
         <p>可用 {{ bytes(data?.disk?.availableBytes) }} · 包含其他服务占用</p>
       </NCard>
       <NCard size="small">
@@ -52,22 +56,44 @@ function operationStatus(status: string | undefined) {
             <strong id="serviceR2">{{ bytes(data.r2.bytes) }}</strong>
             <p>转存上限 {{ bytes(data.r2.limitBytes) }}</p>
             <p>已转存 {{ data.r2.images }} 张</p>
-            <p id="serviceR2Status">待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张</p>
+            <p id="serviceR2Status">
+              待验证 {{ data.r2.pending }} 张 · 转存异常 {{ data.r2.errors }} 张
+            </p>
             <p>生成超过一天后自动转存原图 · 达上限暂停新增转存</p>
           </div>
           <div class="r2-operations">
             <p>账户标准存储 · 本账期操作次数</p>
-            <p id="serviceR2Period">{{ data.r2.operations?.periodStart?.slice(0, 10) || '—' }} 至 {{ data.r2.operations?.periodEnd?.slice(0, 10) || '—' }}（UTC）</p>
+            <p id="serviceR2Period">
+              {{ data.r2.operations?.periodStart?.slice(0, 10) || '—' }} 至
+              {{ data.r2.operations?.periodEnd?.slice(0, 10) || '—' }}（UTC）
+            </p>
             <table aria-label="R2 官方操作用量与剩余免费额度">
-              <thead><tr><th scope="col">操作</th><th scope="col">已用</th><th scope="col">免费剩余</th></tr></thead>
+              <thead>
+                <tr>
+                  <th scope="col">操作</th>
+                  <th scope="col">已用</th>
+                  <th scope="col">免费剩余</th>
+                </tr>
+              </thead>
               <tbody>
-                <tr id="serviceR2ClassA"><th scope="row">A 类</th><td>{{ count(data.r2.operations?.classA.used) }}</td><td>{{ count(data.r2.operations?.classA.remaining) }}</td></tr>
-                <tr id="serviceR2ClassB"><th scope="row">B 类</th><td>{{ count(data.r2.operations?.classB.used) }}</td><td>{{ count(data.r2.operations?.classB.remaining) }}</td></tr>
+                <tr id="serviceR2ClassA">
+                  <th scope="row">A 类</th>
+                  <td>{{ count(data.r2.operations?.classA.used) }}</td>
+                  <td>{{ count(data.r2.operations?.classA.remaining) }}</td>
+                </tr>
+                <tr id="serviceR2ClassB">
+                  <th scope="row">B 类</th>
+                  <td>{{ count(data.r2.operations?.classB.used) }}</td>
+                  <td>{{ count(data.r2.operations?.classB.remaining) }}</td>
+                </tr>
               </tbody>
             </table>
             <p>免费额度：A 类 100 万 / B 类 1,000 万次</p>
-            <p id="serviceR2OperationsStatus">{{ operationStatus(data.r2.operations?.status) }}<br>{{ data.r2.operations?.checkedAt ? date(data.r2.operations.checkedAt) : '尚无更新时间' }}</p>
-            <p>账户共享额度 · 统计有延迟<br>剩余为估算，以 Cloudflare 账单为准</p>
+            <p id="serviceR2OperationsStatus">
+              {{ operationStatus(data.r2.operations?.status)
+              }}<br />{{ data.r2.operations?.checkedAt ? date(data.r2.operations.checkedAt) : '尚无更新时间' }}
+            </p>
+            <p>账户共享额度 · 统计有延迟<br />剩余为估算，以 Cloudflare 账单为准</p>
           </div>
         </div>
       </NCard>

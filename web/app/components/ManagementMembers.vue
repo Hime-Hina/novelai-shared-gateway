@@ -237,72 +237,246 @@ const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
 </script>
 
 <template>
-  <ManagementFreeImages :policy="state.freeImagePolicy" :api="api" :run="run" :busy="busy" @changed="message => emit('changed', message)" />
+  <ManagementFreeImages
+    :policy="state.freeImagePolicy"
+    :api="api"
+    :run="run"
+    :busy="busy"
+    @changed="message => emit('changed', message)"
+  />
   <NCard id="membersPanel" title="成员与分发" size="small">
-    <template #header-extra><NButton id="newMember" :disabled="busy" @click="run(() => openCredentials())">＋ 创建成员</NButton></template>
-    <p id="memberHelp">{{ state.discordLogin ? '首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。' : '创建、分发、重置密码，都在成员这一行完成。' }}</p>
+    <template #header-extra
+      ><NButton id="newMember" :disabled="busy" @click="run(() => openCredentials())"
+        >＋ 创建成员</NButton
+      ></template
+    >
+    <p id="memberHelp">
+      {{ state.discordLogin ? '首次登录发放一次性邀请码，成员通过 Discord 领取自己的额度。' : '创建、分发、重置密码，都在成员这一行完成。' }}
+    </p>
     <div class="member-filters">
       <TableSearch v-model="search" placeholder="搜索用户名" label="搜索用户名" />
-      <NSelect id="filterGroup" v-model:value="filterGroup" :options="groupFilters" aria-label="按分组筛选" />
+      <NSelect
+        id="filterGroup"
+        v-model:value="filterGroup"
+        :options="groupFilters"
+        aria-label="按分组筛选"
+      />
       <span id="memberCount">{{ users.length }} / {{ state.users.length }} 位成员</span>
     </div>
     <div class="members-scroll">
-      <NDataTable id="members" :columns="memberColumns" :data="users" :row-key="(user: ManagementUser) => user.id" :row-props="(user: ManagementUser) => ({ class: 'member-row', 'data-member-id': user.id })" :pagination="pagination" :scroll-x="1075" size="small"><template #empty>没有符合条件的成员</template></NDataTable>
+      <NDataTable
+        id="members"
+        :columns="memberColumns"
+        :data="users"
+        :row-key="(user: ManagementUser) => user.id"
+        :row-props="(user: ManagementUser) => ({ class: 'member-row', 'data-member-id': user.id })"
+        :pagination="pagination"
+        :scroll-x="1075"
+        size="small"
+        ><template #empty>没有符合条件的成员</template></NDataTable
+      >
     </div>
-    <p class="muted">停用会阻止登录和新请求，但不回收余额、份额或恢复权重。登录方式由站点配置决定。</p>
+    <p class="muted">
+      停用会阻止登录和新请求，但不回收余额、份额或恢复权重。登录方式由站点配置决定。
+    </p>
   </NCard>
 
   <NModal :show="dialog !== null" @update:show="updateDialog">
-    <NCard :id="dialog ? dialogIds[dialog] : undefined" class="member-modal" role="dialog" aria-modal="true" :aria-labelledby="dialogTitleId">
-      <template #header><span :id="dialogTitleId">{{ dialogTitle }}</span></template>
-      <template #header-extra><NButton id="closeMemberOperation" secondary @click="closeDialog">关闭</NButton></template>
+    <NCard
+      :id="dialog ? dialogIds[dialog] : undefined"
+      class="member-modal"
+      role="dialog"
+      aria-modal="true"
+      :aria-labelledby="dialogTitleId"
+    >
+      <template #header
+        ><span :id="dialogTitleId">{{ dialogTitle }}</span></template
+      >
+      <template #header-extra
+        ><NButton id="closeMemberOperation" secondary @click="closeDialog">关闭</NButton></template
+      >
       <form v-if="dialog === 'credentials'" id="credentials" @submit.prevent="run(saveCredentials)">
-        <input id="editingId" type="hidden" :value="editingId">
+        <input id="editingId" type="hidden" :value="editingId" />
         <label for="username">用户名</label>
-        <NInput v-model:value="username" :readonly="!!editingId" :disabled="busy" :maxlength="40" :input-props="{ id: 'username', required: true, pattern: '[A-Za-z0-9][A-Za-z0-9_.-]{2,39}', autocomplete: 'off' }" />
+        <NInput
+          v-model:value="username"
+          :readonly="!!editingId"
+          :disabled="busy"
+          :maxlength="40"
+          :input-props="{ id: 'username', required: true, pattern: '[A-Za-z0-9][A-Za-z0-9_.-]{2,39}', autocomplete: 'off' }"
+        />
         <template v-if="!credentialDiscord">
           <label id="passwordLabel" for="password">登录密码（至少 12 位）</label>
-          <NInput v-model:value="password" :type="showPassword ? 'text' : 'password'" :disabled="busy" :maxlength="128" :input-props="{ id: 'password', required: true, minlength: 12, autocomplete: 'new-password' }" />
-          <div class="row-actions"><NButton id="generatePassword" secondary :disabled="busy" @click="randomPassword">随机生成</NButton><NButton id="showPassword" secondary :disabled="busy" @click="showPassword = !showPassword">{{ showPassword ? '隐藏' : '显示' }}</NButton></div>
+          <NInput
+            v-model:value="password"
+            :type="showPassword ? 'text' : 'password'"
+            :disabled="busy"
+            :maxlength="128"
+            :input-props="{ id: 'password', required: true, minlength: 12, autocomplete: 'new-password' }"
+          />
+          <div class="row-actions">
+            <NButton id="generatePassword" secondary :disabled="busy" @click="randomPassword"
+              >随机生成</NButton
+            ><NButton
+              id="showPassword"
+              secondary
+              :disabled="busy"
+              @click="showPassword = !showPassword"
+              >{{ showPassword ? '隐藏' : '显示' }}</NButton
+            >
+          </div>
         </template>
-        <template v-if="!editingId"><label id="createGroupLabel">加入分组</label><NSelect id="createGroup" v-model:value="createGroup" :options="createGroups" :disabled="busy" aria-label="加入分组" /></template>
-        <p id="credentialHint" class="muted">{{ editingId ? '原 API Key 保持不变，旧登录会话将失效。' : credentialDiscord ? '创建后生成一次性 Discord 邀请码；新成员余额为 0，份额由管理员分配。' : '可加入已有分组，或暂不入组。新成员当前余额为 0；要启用空组，请在分组页同时分配份额。' }}</p>
-        <NButton id="saveMember" attr-type="submit" type="primary" :disabled="busy" :loading="busy">{{ editingId ? '保存新密码' : credentialDiscord ? '创建成员并生成邀请码' : '创建并生成分发信息' }}</NButton>
+        <template v-if="!editingId"
+          ><label id="createGroupLabel">加入分组</label
+          ><NSelect
+            id="createGroup"
+            v-model:value="createGroup"
+            :options="createGroups"
+            :disabled="busy"
+            aria-label="加入分组"
+        /></template>
+        <p id="credentialHint" class="muted">
+          {{ editingId ? '原 API Key 保持不变，旧登录会话将失效。' : credentialDiscord ? '创建后生成一次性 Discord 邀请码；新成员余额为 0，份额由管理员分配。' : '可加入已有分组，或暂不入组。新成员当前余额为 0；要启用空组，请在分组页同时分配份额。' }}
+        </p>
+        <NButton
+          id="saveMember"
+          attr-type="submit"
+          type="primary"
+          :disabled="busy"
+          :loading="busy"
+          >{{ editingId ? '保存新密码' : credentialDiscord ? '创建成员并生成邀请码' : '创建并生成分发信息' }}</NButton
+        >
       </form>
 
       <div v-else-if="dialog === 'delivery'">
         <p class="muted">只包含这一位成员的信息，请发送给对应成员。</p>
         <p v-if="deliveryLoading" role="status">正在读取分发信息…</p>
         <p v-else-if="!deliveryText" role="status">未取得分发信息，请关闭后在成员行重试。</p>
-        <NInput type="textarea" :value="deliveryText" readonly :autosize="{ minRows: 6 }" :input-props="{ id: 'deliveryText', 'aria-label': '成员分发信息' }" />
-        <div class="row-actions modal-actions"><NButton id="copyDelivery" :disabled="busy || !deliveryText" @click="run(copyDelivery)">复制全部信息</NButton><NButton secondary @click="closeDialog">完成</NButton></div>
+        <NInput
+          type="textarea"
+          :value="deliveryText"
+          readonly
+          :autosize="{ minRows: 6 }"
+          :input-props="{ id: 'deliveryText', 'aria-label': '成员分发信息' }"
+        />
+        <div class="row-actions modal-actions">
+          <NButton id="copyDelivery" :disabled="busy || !deliveryText" @click="run(copyDelivery)"
+            >复制全部信息</NButton
+          ><NButton secondary @click="closeDialog">完成</NButton>
+        </div>
       </div>
 
       <div v-else-if="dialog === 'confirm' && confirmation">
         <p id="confirmDescription">{{ confirmation.description }}</p>
-        <div class="row-actions"><NButton id="confirmAction" type="primary" :disabled="busy" :loading="busy" @click="run(confirmAction)">确认</NButton><NButton secondary @click="closeDialog">取消</NButton></div>
+        <div class="row-actions">
+          <NButton
+            id="confirmAction"
+            type="primary"
+            :disabled="busy"
+            :loading="busy"
+            @click="run(confirmAction)"
+            >确认</NButton
+          ><NButton secondary @click="closeDialog">取消</NButton>
+        </div>
       </div>
 
       <form v-else-if="dialog === 'transfer'" id="transferForm" @submit.prevent="run(transfer)">
-        <label>转出成员</label><NSelect id="transferFrom" v-model:value="transferFrom" :options="transferOptions" :disabled="busy" aria-label="转出成员" />
-        <label>接收成员</label><NSelect id="transferTo" v-model:value="transferTo" :options="transferOptions" :disabled="busy" aria-label="接收成员" />
-        <label>额度类型</label><NSelect id="transferResource" v-model:value="transferResource" :options="resourceOptions" :disabled="busy" aria-label="额度类型" />
-        <label for="transferAmount">转移数量</label><NInputNumber v-model:value="transferAmount" :min="0.000001" :disabled="busy" :input-props="{ id: 'transferAmount', required: true }" />
+        <label>转出成员</label
+        ><NSelect
+          id="transferFrom"
+          v-model:value="transferFrom"
+          :options="transferOptions"
+          :disabled="busy"
+          aria-label="转出成员"
+        />
+        <label>接收成员</label
+        ><NSelect
+          id="transferTo"
+          v-model:value="transferTo"
+          :options="transferOptions"
+          :disabled="busy"
+          aria-label="接收成员"
+        />
+        <label>额度类型</label
+        ><NSelect
+          id="transferResource"
+          v-model:value="transferResource"
+          :options="resourceOptions"
+          :disabled="busy"
+          aria-label="额度类型"
+        />
+        <label for="transferAmount">转移数量</label
+        ><NInputNumber
+          v-model:value="transferAmount"
+          :min="0.000001"
+          :disabled="busy"
+          :input-props="{ id: 'transferAmount', required: true }"
+        />
         <NAlert id="transferHint" type="info" :show-icon="false">{{ transferHint }}</NAlert>
-        <NButton attr-type="submit" type="primary" :disabled="busy" :loading="busy">确认转移额度</NButton>
+        <NButton attr-type="submit" type="primary" :disabled="busy" :loading="busy"
+          >确认转移额度</NButton
+        >
       </form>
 
       <div v-else-if="dialog === 'delete'">
-        <input id="deleteUserId" type="hidden" :value="deleteUser?.id"><p>被删除成员：<strong id="deleteName">{{ deleteName }}</strong></p>
-        <label>全部剩余余额与原份额转交给</label><NSelect id="deleteRecipient" :value="deleteRecipient" :options="deleteOptions" :disabled="busy" aria-label="余额与份额接收者" @update:value="changeRecipient" />
-        <NButton id="previewDelete" secondary class="modal-actions" :disabled="busy" @click="run(previewDelete)">预览删除与余额转移</NButton>
-        <NAlert id="deleteSummary" type="warning" :show-icon="false" class="modal-actions">{{ deleteSummary }}</NAlert>
-        <div v-if="deletePreview?.result.shareChanges.length" id="deleteSharePreview" class="members-scroll modal-actions">
-          <NDataTable id="deleteShareRows" :columns="shareColumns" :data="deletePreview.result.shareChanges" :row-key="(row: ShareChange) => row.userId" :pagination="pagination" size="small" />
+        <input id="deleteUserId" type="hidden" :value="deleteUser?.id" />
+        <p>
+          被删除成员：<strong id="deleteName">{{ deleteName }}</strong>
+        </p>
+        <label>全部剩余余额与原份额转交给</label
+        ><NSelect
+          id="deleteRecipient"
+          :value="deleteRecipient"
+          :options="deleteOptions"
+          :disabled="busy"
+          aria-label="余额与份额接收者"
+          @update:value="changeRecipient"
+        />
+        <NButton
+          id="previewDelete"
+          secondary
+          class="modal-actions"
+          :disabled="busy"
+          @click="run(previewDelete)"
+          >预览删除与余额转移</NButton
+        >
+        <NAlert
+          id="deleteSummary"
+          type="warning"
+          :show-icon="false"
+          class="modal-actions"
+          >{{ deleteSummary }}</NAlert
+        >
+        <div
+          v-if="deletePreview?.result.shareChanges.length"
+          id="deleteSharePreview"
+          class="members-scroll modal-actions"
+        >
+          <NDataTable
+            id="deleteShareRows"
+            :columns="shareColumns"
+            :data="deletePreview.result.shareChanges"
+            :row-key="(row: ShareChange) => row.userId"
+            :pagination="pagination"
+            size="small"
+          />
         </div>
         <div v-if="deletePreview" id="deleteConfirmSection" class="modal-actions">
-          <label for="deleteConfirmName">输入被删除成员的完整用户名确认</label><NInput v-model:value="deleteConfirmName" :disabled="busy" :input-props="{ id: 'deleteConfirmName', autocomplete: 'off' }" />
-          <NButton id="confirmDelete" type="error" class="modal-actions" :disabled="busy || !canDelete" :loading="busy" @click="run(confirmDelete)">确认删除并转交余额</NButton>
+          <label for="deleteConfirmName">输入被删除成员的完整用户名确认</label
+          ><NInput
+            v-model:value="deleteConfirmName"
+            :disabled="busy"
+            :input-props="{ id: 'deleteConfirmName', autocomplete: 'off' }"
+          />
+          <NButton
+            id="confirmDelete"
+            type="error"
+            class="modal-actions"
+            :disabled="busy || !canDelete"
+            :loading="busy"
+            @click="run(confirmDelete)"
+            >确认删除并转交余额</NButton
+          >
         </div>
       </div>
     </NCard>

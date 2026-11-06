@@ -43,13 +43,22 @@ onBeforeUnmount(() => { active = false; hide() })
 
 <template>
   <section aria-label="我的 API 配置">
-    <p class="section-caption">用于客户端接入。仅在主动查看时读取本人 Key，关闭配置后清除页面中的 Key。</p>
-    <NButton v-if="!visible" id="showKey" :loading="loading" @click="show">查看我的 API Key</NButton>
+    <p class="section-caption">
+      用于客户端接入。仅在主动查看时读取本人 Key，关闭配置后清除页面中的 Key。
+    </p>
+    <NButton v-if="!visible" id="showKey" :loading="loading" @click="show"
+      >查看我的 API Key</NButton
+    >
     <div v-else id="keyPanel" class="key-fields">
       <label for="apiBaseUrl">Base URL</label>
       <NInput :value="baseUrl" readonly :input-props="{ id: 'apiBaseUrl', autocomplete: 'off' }" />
       <label for="apiKey">我的 API Key</label>
-      <NInput :value="apiKey" type="password" readonly :input-props="{ id: 'apiKey', autocomplete: 'off' }" />
+      <NInput
+        :value="apiKey"
+        type="password"
+        readonly
+        :input-props="{ id: 'apiKey', autocomplete: 'off' }"
+      />
       <div class="key-actions">
         <NButton id="copyKey" :loading="copying" @click="copy">复制 Key</NButton>
         <NButton id="hideKey" secondary @click="hide">隐藏</NButton>

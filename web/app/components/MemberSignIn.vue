@@ -32,16 +32,48 @@ function discord() {
     <NAlert v-if="error" type="error" role="alert" :show-icon="false">{{ error }}</NAlert>
     <form v-if="options.discord" id="discordForm" @submit.prevent="discord">
       <label for="invite">邀请码（仅首次登录需要）</label>
-      <NInput v-model:value="invite" type="password" autocomplete="off" :maxlength="32" :disabled="busy || !options.ready" :input-props="{ id: 'invite' }" />
-      <NButton id="discordLogin" attr-type="submit" type="primary" block :loading="busy" :disabled="busy || !options.ready">使用 Discord 登录</NButton>
-      <p class="muted">首次登录需管理员邀请，并验证你是指定 Discord 服务器成员。绑定后无需再次填写邀请码。</p>
+      <NInput
+        v-model:value="invite"
+        type="password"
+        autocomplete="off"
+        :maxlength="32"
+        :disabled="busy || !options.ready"
+        :input-props="{ id: 'invite' }"
+      />
+      <NButton
+        id="discordLogin"
+        attr-type="submit"
+        type="primary"
+        block
+        :loading="busy"
+        :disabled="busy || !options.ready"
+        >使用 Discord 登录</NButton
+      >
+      <p class="muted">
+        首次登录需管理员邀请，并验证你是指定 Discord 服务器成员。绑定后无需再次填写邀请码。
+      </p>
     </form>
     <form v-else id="loginForm" @submit.prevent="login">
       <label for="username">用户名</label>
-      <NInput v-model:value="username" autocomplete="username" :maxlength="40" :disabled="busy" :input-props="{ id: 'username', required: true }" />
+      <NInput
+        v-model:value="username"
+        autocomplete="username"
+        :maxlength="40"
+        :disabled="busy"
+        :input-props="{ id: 'username', required: true }"
+      />
       <label for="password">密码</label>
-      <NInput v-model:value="password" type="password" autocomplete="current-password" :maxlength="128" :disabled="busy" :input-props="{ id: 'password', required: true }" />
-      <NButton attr-type="submit" type="primary" block :loading="busy" :disabled="busy">登录</NButton>
+      <NInput
+        v-model:value="password"
+        type="password"
+        autocomplete="current-password"
+        :maxlength="128"
+        :disabled="busy"
+        :input-props="{ id: 'password', required: true }"
+      />
+      <NButton attr-type="submit" type="primary" block :loading="busy" :disabled="busy"
+        >登录</NButton
+      >
     </form>
   </NCard>
 </template>

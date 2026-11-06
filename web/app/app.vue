@@ -3,9 +3,16 @@ import { NConfigProvider, NGlobalStyle, NMessageProvider, darkTheme, zhCN, dateZ
 </script>
 
 <template>
-  <NConfigProvider :theme="darkTheme" :locale="zhCN" :date-locale="dateZhCN" :theme-overrides="{ common: { primaryColor: '#8ebfff', primaryColorHover: '#b2d2ff', primaryColorPressed: '#6fa9f4', borderRadius: '8px', bodyColor: '#101318', cardColor: '#171c24', tableColor: '#171c24' }, Card: { paddingSmall: '20px', titleFontSizeSmall: '16px' }, DataTable: { thColor: '#1b2230', tdColor: '#171c24', tdColorHover: '#202a38', borderColor: '#2a3444' } }">
+  <NConfigProvider
+    :theme="darkTheme"
+    :locale="zhCN"
+    :date-locale="dateZhCN"
+    :theme-overrides="{ common: { primaryColor: '#8ebfff', primaryColorHover: '#b2d2ff', primaryColorPressed: '#6fa9f4', borderRadius: '8px', bodyColor: '#101318', cardColor: '#171c24', tableColor: '#171c24' }, Card: { paddingSmall: '20px', titleFontSizeSmall: '16px' }, DataTable: { thColor: '#1b2230', tdColor: '#171c24', tdColorHover: '#202a38', borderColor: '#2a3444' } }"
+  >
     <NGlobalStyle />
-    <NMessageProvider placement="top" :max="3" :container-style="{ top: '20px' }"><NuxtPage /></NMessageProvider>
+    <NMessageProvider placement="top" :max="3" :container-style="{ top: '20px' }"
+      ><NuxtPage
+    /></NMessageProvider>
   </NConfigProvider>
 </template>
 
