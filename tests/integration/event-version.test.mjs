@@ -4,10 +4,10 @@ import { mkdtemp,rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { JsonStore,activateEventAuthority,verifyEventProjections,applyEventProjection } from '../../server/store.ts';
-import { migrateStorage,SUPPORTED_EVENT_AUTHORITY_VERSION } from '../../server/storage-migrations.ts';
-import { canonicalJson,domainDigest,DOMAIN_REDUCER_VERSION } from '../../server/domain-events.ts';
-import { importOpeningFacts,readStreamProjection,readDomainCommits,appendDomainCommit,copyProtectedFacts,replayDomainEvents } from '../../server/event-store.ts';
+import { JsonStore,activateEventAuthority,verifyEventProjections,applyEventProjection } from '../../server/storage/sqlite-store.ts';
+import { migrateStorage,SUPPORTED_EVENT_AUTHORITY_VERSION } from '../../server/storage/sqlite-migrations.ts';
+import { canonicalJson,domainDigest,DOMAIN_REDUCER_VERSION } from '../../server/events/domain-events.ts';
+import { importOpeningFacts,readStreamProjection,readDomainCommits,appendDomainCommit,copyProtectedFacts,replayDomainEvents } from '../../server/events/event-store.ts';
 
 const at='2026-11-01T00:00:00.000Z';
 async function fixture(t,{running=false}={}) {

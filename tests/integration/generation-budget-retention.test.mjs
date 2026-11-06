@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { JsonStore, verifyEventProjections } from '../../server/store.ts';
-import { configureFairGroups, syncFairQuota } from '../../server/fair-quota.ts';
-import { createGenerationAdmission, generationIntent } from '../../server/generation-admission.ts';
-import { createGenerationPayloadBudget, singleGenerationRequest } from '../../server/generation-request.ts';
+import { JsonStore, verifyEventProjections } from '../../server/storage/sqlite-store.ts';
+import { configureFairGroups, syncFairQuota } from '../../server/quota/fair-share.ts';
+import { createGenerationAdmission, generationIntent } from '../../server/generation/admission.ts';
+import { createGenerationPayloadBudget, singleGenerationRequest } from '../../server/generation/batch-requests.ts';
 import { normalizeMemberGeneration, materializeMemberGeneration, quoteMemberGeneration,
-  assertMemberGenerationConfirmation, memberGenerationIntentFingerprint } from '../../server/member-generation.ts';
-import { reserveQueuedGeneration, completeGenerationCommand } from '../../server/generation-execution.ts';
+  assertMemberGenerationConfirmation, memberGenerationIntentFingerprint } from '../../server/generation/member-contract.ts';
+import { reserveQueuedGeneration, completeGenerationCommand } from '../../server/generation/execution.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 

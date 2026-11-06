@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedSurface } from '../../server/shared-surface.ts';
+import { sharedSurface } from '../../server/http/api-surface.ts';
 
-test('首页只进入共享门户，旧静态资源与未知页面不可访问', () => {
-  assert.deepEqual(sharedSurface('/'), { allowed: true, pathname: '/account.html' });
-  assert.equal(sharedSurface('/admin').pathname, '/admin/members.html');
-  for (const path of ['/app.js', '/admin.js', '/memory', '/unknown', '/foo/../admin.js']) assert.equal(sharedSurface(path).allowed, false, path);
-  assert.equal(sharedSurface('/account.js', 'POST').allowed, false);
-  assert.equal(sharedSurface('/member-events.js', 'GET').allowed, true);
-  assert.equal(sharedSurface('/member-events.js', 'POST').allowed, false);
+test('后端不开放旧门户、静态资源、页面别名或未知页面', () => {
+  for (const path of ['/', '/index.html', '/account.html', '/account.js', '/members.css', '/shared-status.js', '/member-events.js',
+    '/generation-pricing.js', '/v5-medium.js', '/admin', '/admin/', '/admin.html', '/admin/members.html', '/admin/members.js',
+    '/owner', '/owner/', '/owner.html', '/management.js', '/generate.html', '/generate.js', '/generate.css', '/app.js', '/admin.js', '/memory', '/unknown', '/foo/../admin.js']) {
+    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) assert.deepEqual(sharedSurface(path, method), { allowed: false, pathname: path }, `${method} ${path}`);
+  }
 });
 test('酒馆调用、结果取回、成员及管理依赖保持可用', () => {
   for (const [path, method] of [['/v1/chat/completions', 'POST'], ['/ai/generate-image', 'POST'], ['/v1/ai/generate-image', 'OPTIONS'], ['/generate', 'GET'], ['/api/jobs', 'POST'], ['/api/jobs/job1', 'GET'], ['/api/jobs/job1/content', 'GET'], ['/api/images/img1/content', 'GET'], ['/api/member/shared-events', 'GET'], ['/api/member/login', 'POST'], ['/api/admin/member-management', 'POST'], ['/api/admin/accounts/quota', 'POST'], ['/api/admin/accounts/acct1', 'PATCH']]) assert.equal(sharedSurface(path, method).allowed, true, path);
@@ -40,9 +39,7 @@ test('Discord 登录只开放配置读取、同源发起和 GET 回调', () => {
   }
 });
 
-test('owner 仅开放指定页面与管理接口，不能访问导出、代理设置或新增上游', () => {
-  assert.deepEqual(sharedSurface('/owner'),{allowed:true,pathname:'/owner.html'});
-  assert.equal(sharedSurface('/management.js').allowed,true);
+test('owner 仅开放管理 API，不能访问导出、代理设置或新增上游', () => {
   for(const [path,method] of [['/api/member/owner/statistics','GET'],['/api/member/owner/member-management','POST'],['/api/member/owner/accounts/quota','POST'],['/api/member/owner/accounts/opus','PATCH']])assert.equal(sharedSurface(path,method).allowed,true);
   for(const path of ['/api/member/owner/export','/api/member/owner/import','/api/member/owner/accounts','/owner/unknown'])assert.equal(sharedSurface(path,'POST').allowed,false);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
-import { readR2Operations } from '../../server/r2-analytics.ts';
+import { readR2Operations } from '../../server/reports/r2-analytics.ts';
 
 const config = name => ({ R2_ACCOUNT_ID: 'a'.repeat(32), R2_ANALYTICS_TOKEN: 'synthetic-' + name, R2_BILLING_DAY: '12' });
 const row = (actionType, requests) => ({ dimensions: { actionType }, sum: { requests } });

@@ -4,8 +4,8 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { JsonStore } from '../../server/store.ts';
-import { authenticateMemberSession, logoutMemberSession } from '../../server/member-auth.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { authenticateMemberSession, logoutMemberSession } from '../../server/members/authentication.ts';
 import { captureOwnerSession, importOwnerSession } from '../../scripts/bridge-owner-session.mjs';
 
 const env = { OWNER_USER_ID: 'owner', DISCORD_GUILD_ID: 'guild', PUBLIC_BASE_URL: 'https://gateway.example.com' };

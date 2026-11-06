@@ -16,5 +16,5 @@
     "rootDir": ".",
     "outDir": ".output/backend"
   },
-  "include": ["server/**/*", "public/**/*.js", "scripts/**/*.mjs"]
+  "include": ["server/**/*", "scripts/**/*.mjs"]
 }

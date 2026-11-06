@@ -5,14 +5,14 @@ import { mkdtemp, rm,mkdir,link,readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { JsonStore, applyEventProjection,verifyEventProjections } from '../../server/store.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { copyProtectedFacts, importOpeningFacts, readProjectedFairQuota, replayDomainEvents } from '../../server/event-store.ts';
-import { migrateStorage } from '../../server/storage-migrations.ts';
-import { ImageStorage } from '../../server/r2-storage.ts';
-import { createGenerationAdmission } from '../../server/generation-admission.ts';
-import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
-import { canonicalJson } from '../../server/domain-events.ts';
+import { JsonStore, applyEventProjection,verifyEventProjections } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/quota/fair-share.ts';
+import { copyProtectedFacts, importOpeningFacts, readProjectedFairQuota, replayDomainEvents } from '../../server/events/event-store.ts';
+import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
+import { ImageStorage } from '../../server/storage/r2-storage.ts';
+import { createGenerationAdmission } from '../../server/generation/admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
+import { canonicalJson } from '../../server/events/domain-events.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function legacyStore(t){

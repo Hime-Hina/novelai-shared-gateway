@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import * as requests from '../../server/generation-request.ts';
-import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota } from '../../server/fair-quota.ts';
-import { createGenerationAdmission } from '../../server/generation-admission.ts';
-import { cleanupInterruptedGenerationJobs } from '../../server/generation-execution.ts';
-import { createGenerationControls, availableSharedAccountSlots } from '../../server/queue-dispatch.ts';
-import { generationRequestForErrorLog } from '../../server/generation-queries.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import * as requests from '../../server/generation/batch-requests.ts';
+import { assertFairQuotaIdle, configureFairQuota, syncFairQuota, reserveFairQuota } from '../../server/quota/fair-share.ts';
+import { createGenerationAdmission } from '../../server/generation/admission.ts';
+import { cleanupInterruptedGenerationJobs } from '../../server/generation/execution.ts';
+import { createGenerationControls, availableSharedAccountSlots } from '../../server/generation/queue-dispatch.ts';
+import { generationRequestForErrorLog } from '../../server/generation/request-queries.ts';
 
 const request = { model: 'nai-diffusion-4-5-full', action: 'generate', width: 1024, height: 1024, steps: 23,
   seed: 100, sampleCount: 4, prompt: 'synthetic large input', nativeParameters: { negative_prompt: 'x'.repeat(1024), seed: 100, n_samples: 4 } };

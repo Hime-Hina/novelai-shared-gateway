@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { createGenerationPayloadBudget, generationPayloadLimits, webJobRequestSummary } from '../../server/generation-request.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { createGenerationPayloadBudget, generationPayloadLimits, webJobRequestSummary } from '../../server/generation/batch-requests.ts';
 
 async function fixture(t, dataDir) {
   const store = new JsonStore(dataDir || await mkdtemp(path.join(tmpdir(), 'nai-durable-request-')));

@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import * as fair from '../../server/fair-quota.ts';
-import { sharedFailureKind } from '../../server/generation-execution.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { createGenerationFailureHandlers, generationErrorImage } from '../../server/generation-delivery.ts';
-import { availableSharedAccountSlots, nextSharedAccountReadyDelay, createQueueDispatcher } from '../../server/queue-dispatch.ts';
-import { disableNovelAiAccount } from '../../server/account-quota-refresh.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import * as fair from '../../server/quota/fair-share.ts';
+import { sharedFailureKind } from '../../server/generation/execution.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { createGenerationFailureHandlers, generationErrorImage } from '../../server/generation/delivery.ts';
+import { availableSharedAccountSlots, nextSharedAccountReadyDelay, createQueueDispatcher } from '../../server/generation/queue-dispatch.ts';
+import { disableNovelAiAccount } from '../../server/quota/account-refresh.ts';
 
 const NOW = 1800000000000;
 async function fixture(t, directory) {

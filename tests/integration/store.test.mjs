@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota, reserveFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
 
 function setEnv(t, name, value) {
   const previous = process.env[name];

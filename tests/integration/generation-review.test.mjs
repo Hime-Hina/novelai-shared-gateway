@@ -8,15 +8,15 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { JsonStore } from '../../server/store.ts';
-import { describeStoredResult, publishStoredResult } from '../../server/result-files.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation-accounting.ts';
-import { recordSharedCompletion } from '../../server/shared-capacity.ts';
-import { completeGenerationCommand, recoverPendingGenerationResultsCommand, reconcileGenerationReviewsCommand } from '../../server/generation-execution.ts';
-import { createRequestControls } from '../../server/generation-delivery.ts';
-import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/quota/fair-share.ts';
+import { closeGenerationReview, recordRecoveredGeneration, GENERATION_REVIEW_MS } from '../../server/generation/accounting.ts';
+import { recordSharedCompletion } from '../../server/quota/shared-capacity.ts';
+import { completeGenerationCommand, recoverPendingGenerationResultsCommand, reconcileGenerationReviewsCommand } from '../../server/generation/execution.ts';
+import { createRequestControls } from '../../server/generation/delivery.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation/request-queries.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 function fixture(now = Date.now(), { refund = true, fallback = false, id = 'review' } = {}) {

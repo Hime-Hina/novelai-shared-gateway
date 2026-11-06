@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { once } from 'node:events';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { nativeImageMsgpack } from '../server/native-stream.ts';
+import { nativeImageMsgpack } from '../server/protocols/native-stream.ts';
 
 // 仅供隔离验收：固定公开测试凭据和余额，可回放离线响应；不会请求真实上游。
 const token = 'pst-synthetic-d01-mock-upstream-only';

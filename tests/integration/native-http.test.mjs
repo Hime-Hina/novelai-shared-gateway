@@ -10,13 +10,13 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore, hashObject } from '../../server/store.ts';
-import { generationRequestFingerprint } from '../../server/request-fingerprint.ts';
-import { syncFairQuota, quoteFairRequest } from '../../server/fair-quota.ts';
-import { crc32, parseNativeImageRequest } from '../../server/native-image.ts';
-import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { webJobRequestSummary } from '../../server/generation-request.ts';
+import { JsonStore, hashObject } from '../../server/storage/sqlite-store.ts';
+import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
+import { syncFairQuota, quoteFairRequest } from '../../server/quota/fair-share.ts';
+import { crc32, parseNativeImageRequest } from '../../server/protocols/native-image.ts';
+import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { webJobRequestSummary } from '../../server/generation/batch-requests.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
@@ -276,6 +276,29 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(response.status, 200); return (await response.json()).quota;
   };
 
+  await t.test('后端旧门户及静态资源的 GET/HEAD 均为 404，无重定向或成功回退', async () => {
+    for (const pathname of ['/', '/index.html', '/account.html', '/account.js', '/members.css', '/shared-status.js', '/member-events.js',
+      '/generation-pricing.js', '/v5-medium.js', '/admin', '/admin/', '/admin.html', '/admin/members.html', '/admin/members.js',
+      '/owner', '/owner/', '/owner.html', '/management.js', '/generate.html', '/generate.js', '/generate.css', '/unknown.html', '/unknown.js', '/unknown.css']) {
+      for (const method of ['GET', 'HEAD']) {
+        const response = await fetchLocal(pathname, { method, redirect: 'manual' });
+        assert.equal(response.status, 404, `${method} ${pathname}`);
+        assert.equal(response.headers.get('location'), null, `${method} ${pathname}`);
+        assert.match(response.headers.get('content-type'), /application\/json/);
+        if (method === 'HEAD') assert.equal(await response.text(), '');
+        else assert.deepEqual(await response.json(), { error: 'not found.' });
+      }
+    }
+    for (const method of ['GET', 'HEAD']) {
+      const health = await fetchLocal('/api/health', { method });
+      assert.equal(health.status, 200);
+      assert.match(health.headers.get('content-type'), /application\/json/);
+      if (method === 'HEAD') assert.equal(await health.text(), '');
+      else assert.equal((await health.json()).ok, true);
+    }
+    assert.equal(calls.length, 0);
+  });
+
   await t.test('旧生成错误在查询、错误图片和幂等重放时不公开内部路径，管理员仍能诊断', async () => {
     const headers = { authorization: `Bearer ${credentials[0].api_key}` };
     const snapshot = await (await fetchLocal('/api/jobs/job-legacy-private-error', { headers })).json();
@@ -348,8 +371,6 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(invalidStream.status, 422); assert.equal((await invalidStream.json()).statusCode, 422);
     }
     assert.equal(calls.length, 0);
-    const ownerPage=await fetchLocal('/owner');assert.equal(ownerPage.status,200);assert.match(await ownerPage.text(),/management\.js/);
-    assert.equal((await fetchLocal('/management.js')).status,200);
     assert.equal((await fetchLocal('/api/member/owner/summary')).status,401);
     for (const pathname of ['/discord', '/auth/discord/callback', '/api/carpool/teams']) assert.equal((await fetchLocal(pathname)).status, 404);
     const cors = await new Promise((resolve, reject) => {

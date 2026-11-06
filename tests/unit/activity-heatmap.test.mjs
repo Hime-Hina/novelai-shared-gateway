@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activityDate, activityRange, readActivityHeatmap } from '../../server/activity-heatmap.ts';
+import { activityDate, activityRange, readActivityHeatmap } from '../../server/reports/activity-heatmap.ts';
 
 test('activity dates use Shanghai submission days and reject ambiguous or invalid timestamps', () => {
   assert.equal(activityDate('2026-10-16T15:59:59.999Z'), '2026-10-16');

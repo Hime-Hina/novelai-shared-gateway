@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {AMOUNT_SCALE,parseAmount,formatAmount,allocateAmount,divideAmount} from '../../server/resource-amounts.ts';
+import {AMOUNT_SCALE,parseAmount,formatAmount,allocateAmount,divideAmount} from '../../server/quota/resource-amounts.ts';
 
 test('12位定点保持大余额最小单位，拒绝静默超精度',()=>{
  const amount=parseAmount('10000.000000000001');

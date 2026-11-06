@@ -10,10 +10,10 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { createMemberSession } from '../../server/member-auth.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { createMemberSession } from '../../server/members/authentication.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const memberTtl = 7 * 86400000, ownerTtl = 24 * 3600000;

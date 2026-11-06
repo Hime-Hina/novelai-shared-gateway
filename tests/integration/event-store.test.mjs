@@ -5,10 +5,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { migrateStorage } from '../../server/storage-migrations.ts';
-import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt,setDomainCommandActor } from '../../server/domain-events.ts';
-import { appendDomainCommit, readDomainCommits, readStreamProjection, replayDomainEvents } from '../../server/event-store.ts';
-import { JsonStore, generationContextRef,applyEventProjection } from '../../server/store.ts';
+import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
+import { beginDomainCommand, recordDomainEvent, finishDomainCommand, setDomainCommandReceipt,setDomainCommandActor } from '../../server/events/domain-events.ts';
+import { appendDomainCommit, readDomainCommits, readStreamProjection, replayDomainEvents } from '../../server/events/event-store.ts';
+import { JsonStore, generationContextRef,applyEventProjection } from '../../server/storage/sqlite-store.ts';
 
 const at = '2026-11-01T00:00:00.000Z';
 const requestPayload='{"seed":17}';

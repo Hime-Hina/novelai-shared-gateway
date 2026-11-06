@@ -2,8 +2,8 @@ import { cp, mkdtemp, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { migrateStorage } from '../../server/storage-migrations.ts';
-import { removeLegacyFreeImageTriggers } from '../../server/event-store.ts';
+import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
+import { removeLegacyFreeImageTriggers } from '../../server/events/event-store.ts';
 
 // A separate pre-event fixture keeps bootstrap's real history intact.
 export async function createLegacyDatabaseFixture(sourceDataDir) {

@@ -4,8 +4,8 @@ import http from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { handleMemberRoutes } from '../../server/member-routes.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { handleMemberRoutes } from '../../server/members/http-routes.ts';
 
 test('首次分组预览纯读且与保存后的有效Opus钱包一致', async t => {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-first-preview-')));

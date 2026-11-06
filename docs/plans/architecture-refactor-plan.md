@@ -1,10 +1,12 @@
 # 架构重构、事件溯源与成员生成契约计划
 
-更新日期：2026-11-02，Asia/Taipei。
+更新日期：2026-11-06，Asia/Taipei。
 
 状态：**R00–R14 已完成并验收关闭；`codex/event-sourcing-member-generation` 分支的业务、发布包与测量固定为 `3eae814`，尚未部署生产。** R12 保留五项事务阈值触发，按第 11.2 节接受当前单账号生命周期下的量化取舍，不代表全部指标零回归。本轮实施范围为单执行器、单共享 Opus、SQLite 下的架构重构、完整事件溯源和成员生成接口。多执行器、多账号/多车队调度及数据库系统迁移移至[后续扩展计划](scaling-follow-up-plan.md)，不作为本轮依赖或验收条件。代码审查基线为 `29085b8`，本轮实施基线为 `deab4db`。正式部署版本、备份及回退产物只以[发布记录](../operations/production-release.md)为准，本文件不复制一个独立维护的“当前生产版本”。
 
 本计划承接[上一轮现代化实施记录](../history/modernization-plan.md)，已有接口、账务和恢复契约继续有效。按 2026-11-01 的范围调整，本轮完成前端能力描述、统一报价、成员生成及配套读取/预览契约，以及完整事件溯源。SQLite 内部的事件基线/schema 迁移属于本轮，SQLite→其他数据库系统的切换属于后续计划。完整官网编辑器、画布和项目云同步不因接口设计自动纳入本轮。
+
+后续收尾 R15–R17 已于 2026-11-06 登记：R15 的三项功能问题仍待修复，R16 旧门户退役和 R17 源码整理已完成，独立验收及失败历史见第 14 节。以上 R00–R14 的固定候选与测量仍是历史验收，不替代本轮新产物的验收，也不宣称本轮重新完成了性能/年度测量。
 
 ## 1. 交付目标与设计决定
 
@@ -25,10 +27,10 @@
 | 编号 | 审查时事实及证据 | 影响 | 本轮处理 |
 | --- | --- | --- | --- |
 | A01 | [gateway-runtime.ts](../../server/gateway-runtime.ts) 的 `createJob`、`createDirectJob`、`createNativeBatch` 各自组织幂等、准入、免费限制和任务创建 | 新准入规则容易只接入部分入口 | 共同受理命令，保留协议、缓存和批次的真实差异 |
-| A02 | [fairQuotaSummary](../../server/fair-quota.ts) 内部调用 `syncFairQuota`；合成数据推进一分钟后，仅调用摘要就把输入钱包从 20 改成 20.025 | 查询者必须自己复制 settings/ledger；遗漏副本会污染业务状态 | 纯查询投影与显式恢复命令分离 |
-| A03 | `anlasAvailable` 由 [fair-quota.ts](../../server/fair-quota.ts) 与 [operating-accounting.ts](../../server/operating-accounting.ts) 手工维护；成员总表也与组内成员重复表示 | 写入路径越多，同步责任越重 | 总额、成员集合、容量等由权威事实计算 |
+| A02 | [fairQuotaSummary](../../server/quota/fair-share.ts) 内部调用 `syncFairQuota`；合成数据推进一分钟后，仅调用摘要就把输入钱包从 20 改成 20.025 | 查询者必须自己复制 settings/ledger；遗漏副本会污染业务状态 | 纯查询投影与显式恢复命令分离 |
+| A03 | `anlasAvailable` 由 [fair-quota.ts](../../server/quota/fair-share.ts) 与 [operating-accounting.ts](../../server/quota/operating-accounting.ts) 手工维护；成员总表也与组内成员重复表示 | 写入路径越多，同步责任越重 | 总额、成员集合、容量等由权威事实计算 |
 | A04 | 快照十分钟失效、订阅有效性分布在额度、共享状态、owner 和启动器适配；免费窗口同时出现在 TS 与 SQL 触发器 | 修改期限或资格后，展示和执行可能分歧 | 共用资格结果与版本化策略；SQL 投影不再另写业务判断 |
-| A05 | [store.ts](../../server/store.ts) 维护 JSON、影子列、热缓存、dirty rows，以及两段相近的提交过程；运行时另包裹 `store.update` 强制立即保存 | 原子性依赖多个调用约定；未来第二写入进程不能信任自己的热缓存 | 一个命令提交边界；事件与关键投影同事务，缓存带版本 |
+| A05 | [store.ts](../../server/storage/sqlite-store.ts) 维护 JSON、影子列、热缓存、dirty rows，以及两段相近的提交过程；运行时另包裹 `store.update` 强制立即保存 | 原子性依赖多个调用约定；未来第二写入进程不能信任自己的热缓存 | 一个命令提交边界；事件与关键投影同事务，缓存带版本 |
 | A06 | `StoreItem` 同时表示成员、账户、任务、图片等，大量字段可选 | 不同业务对象的字段和身份容易混用 | 随所属模块迁移为明确类型；外部旧 JSON 在边界转换 |
 | A07 | [幂等受理测试](../../tests/integration/idempotency-admission.test.mjs)等截取运行时函数文本并注入全局变量 | 函数位置、名字和依赖变化使测试失败；不能完整验证真实装配 | 纯规则直接 import，应用命令使用真实存储，协议用 HTTP 测试 |
 | A08 | `reserveCreditAndAccount`、`reserveCreditAndAccountWhenAvailable`、内部 `tryReserveCreditAndAccount` 及专用 dirty-row helper 没有外部调用 | 保留了另一套已不用的扣款路径，增加阅读与误用成本 | 删除约 79 行；移除前再次全仓检索 |
@@ -139,16 +141,16 @@ flowchart LR
 
 | 责任 | 实施位置 | 允许依赖与需要移出的内容 |
 | --- | --- | --- |
-| 协议适配 | `native-http`、`member-generation-http`、`generation-delivery`、`openai-models`，复用 `native-body`、`native-image`、`native-stream`、`providers` 及 Nuxt 转发 | 只转换输入、保留认证和传输契约；等待者/预览/关闭和提交后通知有实际装配测试，不自行修改钱包 |
-| 通用受理 | `generation-admission.ts` | 调用身份/scope、规范化、幂等、队列政策和提交入口；共用一个命令，不创建通用命令总线 |
-| 执行生命周期 | `generation-execution.ts`，复用 request/accounting/result 模块；`queue-dispatch.ts` 管理本进程在途控制和唤醒 | 派发、取消、准备/发布结果、失败、恢复均为实际导出命令；调度及产物 IO 位于事务外，提交后才通知连接 |
-| 额度与恢复 | `fair-quota.ts`、`operating-accounting.ts` | 变成明确输入、显式 now、事件输出的业务决定；相应 reducer 只应用事实 |
-| 共享资格与政策 | `quota-policy.ts`，复用 `free-image-policy.ts`、`shared-capacity.ts` | 统一 freshness/有效 Opus/政策判定；展示适配不能另写批准规则 |
-| 官方额度观察 | `account-quota-refresh.ts` | 读取上游、限时/合并刷新、停止后续调度；观察事实与钱包同步同事务，过期请求不能覆盖新观察 |
-| 查询 | `generation-queries.ts`、现有 owner/heatmap/launcher/shared-status | 只读投影，恢复估算返回预测值及 asOf，永远不提交钱包 |
-| 事件契约与提交 | `event-payloads.ts`、`domain-events.ts`、`event-store.ts`、现有 schema/migrations | 写入使用具体 payload 判别联合；SQL 解码保留独立的不可信读取边界。维护版本、CAS、事务、关键 projector，不接触 HTTP |
-| 数据与基础设施 | `store.ts`、SQLite 读 worker、result-files、ImageStorage | schema、SQL、受保护载荷和产物 IO；逐步移除旧通用可变业务对象与重复提交过程 |
-| 认证 | `member-auth.ts`、`discord-auth.ts`、既有入口守卫 | 认证表保留 CRUD；成员资格和管理决定通过业务命令提交 |
+| 协议适配 | `protocols/native-http`、`generation/member-http`、`generation/delivery`、`protocols/openai-models`，复用 `protocols/native-body`、`protocols/native-image`、`protocols/native-stream`、`protocols/novelai-client` 及 Nuxt 转发 | 只转换输入、保留认证和传输契约；等待者/预览/关闭和提交后通知有实际装配测试，不自行修改钱包 |
+| 通用受理 | `generation/admission.ts` | 调用身份/scope、规范化、幂等、队列政策和提交入口；共用一个命令，不创建通用命令总线 |
+| 执行生命周期 | `generation/execution.ts`，复用 request/accounting/result 模块；`generation/queue-dispatch.ts` 管理本进程在途控制和唤醒 | 派发、取消、准备/发布结果、失败、恢复均为实际导出命令；调度及产物 IO 位于事务外，提交后才通知连接 |
+| 额度与恢复 | `quota/fair-share.ts`、`quota/operating-accounting.ts` | 变成明确输入、显式 now、事件输出的业务决定；相应 reducer 只应用事实 |
+| 共享资格与政策 | `quota/eligibility.ts`，复用 `quota/free-image-policy.ts`、`quota/shared-capacity.ts` | 统一 freshness/有效 Opus/政策判定；展示适配不能另写批准规则 |
+| 官方额度观察 | `quota/account-refresh.ts` | 读取上游、限时/合并刷新、停止后续调度；观察事实与钱包同步同事务，过期请求不能覆盖新观察 |
+| 查询 | `generation/request-queries.ts`、现有 owner/heatmap/launcher/shared-status | 只读投影，恢复估算返回预测值及 asOf，永远不提交钱包 |
+| 事件契约与提交 | `events/domain-payloads.ts`、`events/domain-events.ts`、`events/event-store.ts`、现有 schema/migrations | 写入使用具体 payload 判别联合；SQL 解码保留独立的不可信读取边界。维护版本、CAS、事务、关键 projector，不接触 HTTP |
+| 数据与基础设施 | `storage/sqlite-store.ts`、SQLite 读 worker、result-files、ImageStorage | schema、SQL、受保护载荷和产物 IO；逐步移除旧通用可变业务对象与重复提交过程 |
+| 认证 | `members/authentication.ts`、`members/discord-auth.ts`、既有入口守卫 | 认证表保留 CRUD；成员资格和管理决定通过业务命令提交 |
 
 `gateway-runtime.ts` 最终负责装配、HTTP 分流、生命周期和后台任务启动。按责任提取可独立验证的函数，不按行数机械拆文件；所有 caller、导出、构建复制规则与测试在对应工作包内一起迁移。
 
@@ -417,12 +419,12 @@ R13 是打包与恢复演练候选，R14 清理后的实际提交才是完整计
 
 | 编号 | 实际归属与关闭依据 |
 | --- | --- |
-| A01 | [共同受理](../../server/generation-admission.ts)拥有幂等、资格、免费名额、队列与请求创建；协议层只转换输入/输出。实际成员、Native、direct/OpenAI HTTP 与[受理竞争](../../tests/integration/idempotency-admission.test.mjs)覆盖共同事务。 |
+| A01 | [共同受理](../../server/generation/admission.ts)拥有幂等、资格、免费名额、队列与请求创建；协议层只转换输入/输出。实际成员、Native、direct/OpenAI HTTP 与[受理竞争](../../tests/integration/idempotency-admission.test.mjs)覆盖共同事务。 |
 | A02 | `fairQuotaSummary` 和估算只返回派生值，恢复由命令显式提交；[首次分组预览](../../tests/integration/first-group-preview.test.mjs)验证预览不写原库且与保存一致，[查询和运营账](../../tests/integration/operating-accounting.test.mjs)验证 ledger 不被读取污染。 |
 | A03 | 三资源以 12 位定点保存；Anlas 总额和成员集合由明细计算，恢复/分配事件保存实际向量。[手算金额与余数](../../tests/unit/resource-amounts.test.mjs)、[领域事件](../../tests/unit/quota-events.test.mjs)及旧库 opening 分摊对照共同覆盖。 |
-| A04 | [quota-policy](../../server/quota-policy.ts)维护共享资格/新鲜度，免费计数使用同一成功事实。权威切换和重放移除过渡业务 trigger；[历史免费成功时间和阈值](../../tests/integration/replay-opening.test.mjs)按原事实重建。 |
-| A05 | [事件提交](../../server/event-store.ts)同事务保存事件、回执、关键投影；store 拒绝无事件的关键热/冷表变更，提交失败恢复内存。[权威切换](../../tests/integration/event-authority.test.mjs)和[SQL 原子性](../../tests/integration/event-store.test.mjs)覆盖实际写边界；第二写进程仍不在当前支持范围。 |
-| A06 | [事件 payload 联合](../../server/event-payloads.ts)、生成输入/确认/费用等具体类型约束生产写入；[负向类型断言](../../tests/unit/domain-event-types.test.mjs)进入常规测试。`StoreItem` 仍是旧存储/DTO 兼容外壳，未宣称消除全部动态对象；它不再替代事件 payload 的写入契约。 |
+| A04 | [quota-policy](../../server/quota/eligibility.ts)维护共享资格/新鲜度，免费计数使用同一成功事实。权威切换和重放移除过渡业务 trigger；[历史免费成功时间和阈值](../../tests/integration/replay-opening.test.mjs)按原事实重建。 |
+| A05 | [事件提交](../../server/events/event-store.ts)同事务保存事件、回执、关键投影；store 拒绝无事件的关键热/冷表变更，提交失败恢复内存。[权威切换](../../tests/integration/event-authority.test.mjs)和[SQL 原子性](../../tests/integration/event-store.test.mjs)覆盖实际写边界；第二写进程仍不在当前支持范围。 |
+| A06 | [事件 payload 联合](../../server/events/domain-payloads.ts)、生成输入/确认/费用等具体类型约束生产写入；[负向类型断言](../../tests/unit/domain-event-types.test.mjs)进入常规测试。`StoreItem` 仍是旧存储/DTO 兼容外壳，未宣称消除全部动态对象；它不再替代事件 payload 的写入契约。 |
 | A07 | 已迁业务测试直接 import 实际受理、执行、刷新、查询与协议装配，或使用真实 SQLite/HTTP；后端不再截取运行时源码。Linux 后端 693 项和实际 Nuxt/执行器 16 项验证装配；前端 DOM VM 测试属于独立浏览器替身。 |
 | A08 | 全仓调用检索和未使用声明检查后删除旧扣款链及不可达非共享 points/选路路径，也删除只有孤立测试的死管理动作；保留旧历史读取与现有协议回归，未为死路径另建抽象层。 |
 | A09 | docs 按计划、契约、架构、运维和历史分类；本计划维护范围/关闭状态，验收 JSON 保存固定源码与原始日志，正式部署版本只由[发布记录](../operations/production-release.md)维护。 |
@@ -541,6 +543,75 @@ node --test --test-reporter=spec @checks
 两项跳过分别是 Linux 目录同步后的强杀恢复及 SIGTERM 正常/超宽限退出场景。未用此次审查确认生产实时状态，没有运行新的事件存储或多车队实现。本次仅修改文档，代码测试结果引用同日已完成的审查运行，不冒充文档编辑后重新运行。
 
 此次范围调整校验了 7 份文档、190 个本地链接、4 个 JSON 样例；9 项问题、18 条不变量、15 个当前工作包、12 项成员接口验收和 7 个后续工作包编号完整，两个计划依赖均无环。代码块及 `git diff --check` 通过；业务回归沿用上述基线，不为纯文档修订重复运行。
+
+## 14. 分支审计与收尾（2026-11-06）
+
+审计对象为 `codex/event-sourcing-member-generation` 的 `0d12c3eff6060b5f69b65a3619b6c9d316a3d154`，对照共同祖先 `e6844bddd05b58479c5f1f2e6bd9884a401213ea`，审计时工作区干净。2026-11-04 使用 Node 22.23.4 的合成 SQLite/HTTP 复现确认下列问题；没有访问真实 NAI 或生产数据库。本轮不修复这些功能问题。
+
+### R15：功能问题待修复
+
+| 编号 | 来源与具体复现 | 最小修复方向 | 后续验收 |
+| --- | --- | --- | --- |
+| A10 | 重构回归：真实受理、派发、完成后重放，`upstreamStartedAt`、`upstreamCompletedAt`、`upstreamHttpStatus` 丢失；owner 平均生成时间从 12 秒变为 null，投影核对仍通过 | 在准备/终态事实保存已有上游时序与状态，由 reducer 恢复，并补足行为核对；不能补造旧事件没有保存的时间 | 在现有重放测试核对源库/重建库的任务时序、状态和 owner 耗时统计相同；保留旧查询数据作为缺失事实的补充证据 |
+| A11 | 基线已有：并发额度刷新中，较新 401 先阻止准入，较旧成功随后清空错误；实际预留由拒绝变为允许 | 成功和失败使用同一最新观察顺序校验，过期响应不得覆盖新观察 | 手动/自动刷新倒序完成；较旧成功及失败都不能覆盖较新失败，准入维持阻止 |
+| A12 | 重构回归：实际 reserve→settle→SQLite→owner 响应中 `recent.amount/fixed/purchased` 为内部十进制字符串，V5 显示 `0.057803468209` 而非 `0.058` | 在 owner DTO 边界转换为原有数字类型，保留空值 | 用真实新账本记录验证三个字段的数字/空值类型及显示格式，不能只使用手写数字行 |
+
+原始复现位于审计环境的 `H:\TEMP\novelai-audit-20261104-0d12c3e-70249ae4742e47319c59cfce1c911d66`：`repro-replay-timing`、`repro-quota-refresh-stale-success`、`repro-owner-money` 的 `.mjs` 与 `.log`，以及 `verification-record.json`。上表保存可重建的触发条件和观察结果；后续修复应将对应复现加入现有测试，不依赖临时目录一直存在。
+
+审计时后端 689 通过/4 跳过、Web 139 通过、执行器认证 3 通过、Nuxt/执行器集成 15 通过/1 跳过、产物 HTTP 3 通过/1 跳过；类型、111 个 JS 文件语法及后端/执行器构建通过。Windows 备份测试 1 通过/5 错误，失败为 `fsync`，脚本和测试与基线字节相同；Docker 引擎未运行，Linux 容器及平台跳过项没有据此获得通过结果。这些旧证据不适用于本轮改动后的代码状态。
+
+### R16/R17：本轮实施边界与状态
+
+| 工作包 | 状态 | 交付与验收边界 |
+| --- | --- | --- |
+| R16 旧门户及无用代码清理 | 已完成 | 网页仅由 Nuxt 的 `/`、`/owner`、`/admin` 提供；移除旧 HTML、脚本、样式、重定向、静态兜底与专属测试。旧页面/资源 GET/HEAD 已验证为 404，无 Location、无新页面兜底。保留并迁移通知客户端及计价规则，删除无调用导出和提示词转换网络实现，保留管理摘要配置脱敏 |
+| R17 源码分组与重命名 | 已完成 | 按 generation/quota/events/members/storage/protocols/http/reports 分组，根保留 index/runtime 与 SQL 迁移目录；已同步导入、worker、脚本、Docker、CI、文档及产物检查，不保留旧源码路径转发。干净构建后验证了当前网页/API/权限、打包 HTTP、离线重放与新旧基线加载 smoke；完整命令、资源限制及失败历史见下表 |
+
+私有配置、生产数据、备份、本地历史产物、依赖及历史验收原始结果不在清理范围；SQL/journal/snapshot 内容和数据库版本不变。正式生图/鉴权 API、CLI 启动入口和默认数据目录不变。仅离线基线工具可识别固定旧版本布局，生产代码不添加旧布局兼容层。R15 始终保持待修，R16/R17 的完成状态以本节后续实测记录为准。
+
+### R17：源码归属与命名
+
+60 个原平铺 TypeScript 文件保留根入口 `index.ts` 与装配 `gateway-runtime.ts`，其余 58 个移动，25 个同时重命名。导出符号保持原名；仅 R16 明确无人使用的导出被删除。归属和今后的修改入口如下（省略 `.ts`）：
+
+| 目录 | 当前模块 |
+| --- | --- |
+| generation | accounting、admission、capabilities、delivery、execution、payload-budget、request-queries、batch-requests、member-contract、member-http、queue-dispatch、queue-policy、request-fingerprint、job-previews |
+| quota | fair-share、account-refresh、free-image-policy、eligibility、refresh-timeout、resource-amounts、operating-accounting、failure-accounting、shared-capacity、shared-status、launcher-subscription |
+| events | domain-events、domain-payloads、event-store、quota-projections、state-notifications；领域事实与通知仍分开负责 |
+| members | authentication、discord-auth、http-routes、owner-operations |
+| storage | sqlite-store、sqlite-schema、sqlite-migrations、sqlite-read-worker、result-files、cold-images、r2-storage |
+| protocols | native-body、native-http、native-image、native-pricing、native-stream、novelai-client、official-key-jobs、openai-models、v5-medium；纯 JS 规则为 generation-pricing.js 与 v5-medium-rules.js |
+| http | client-ip、public-errors、public-hosts、api-surface、prompt-api-settings |
+| reports | activity-heatmap、r2-analytics、service-resources |
+
+原 `public/member-events.js` 位于 `web/app/utils/member-events.js`，由现有 composable 动态导入。根 `public/` 已删除，不在任何业务发布包中复制。旧 HTML/JS/CSS 以及 `/generate.html`、`/generate.js`、`/generate.css` 都应被拒绝；错误图片仅匹配真实 `/generate`（含查询），不把假路径的 404 转为 200。
+
+### R16/R17：实际验收与限制
+
+实施基线仍为 `0d12c3eff6060b5f69b65a3619b6c9d316a3d154`，验收对象为其后的未提交工作区，未推送或部署。代码、配置、测试和固定文件的摘要（排除 Markdown）为 `24a2363d429db036f71b9ca4b506a7fab307efa29069de395ab446456b929ebd`；420 个当前文件的逐文件摘要、命令、日志和探针保存在 `H:\TEMP\novelai-layout-20261106-765852ea23ab4537b5a5d2213446eeb2`。以下检查均针对本轮新目录和干净生成的产物，Node 为 22.23.4。
+
+| 检查/命令 | 实际结果 |
+| --- | --- |
+| `pnpm run check`，根/Web/执行器 typecheck | 104 个 JS 文件语法与三处类型检查通过 |
+| Windows `node --test --test-concurrency=4 tests/unit/*.test.mjs tests/integration/*.test.mjs` | 660 通过、4 个平台跳过、0 失败 |
+| Linux `docker run --rm --network none --cpuset-cpus 0-3 novelai-layout-backend-build:20261106 pnpm test` | 664 通过、0 跳过、0 失败；包含信号退出、目录同步崩溃恢复和符号链接边界 |
+| Web `test` 与执行器 `test` | 144 与 3 项通过；三份旧 UI 测试文件删除，5 项通用 SSE/鉴权/重连/版本/日期用例迁入现有 Nuxt 测试 |
+| Web `test:executor` | Windows 真实 dev/生产构建双进程 15 通过、1 个 Linux 信号子场景跳过；新增旧资源 GET/HEAD 404 与无重定向断言 |
+| 执行器 `test:runtime` | Windows 产物 HTTP 3 通过/1 跳过；最终 Linux 只读、禁网镜像 4/4，无源码回退 |
+| 根/Web/执行器本机构建及三个最终 Docker 镜像 | 全部通过；SQL/worker/职责子目录完整，业务包中没有 public 或旧平铺 JS |
+| Linux Caddy 与 Python 备份测试 | 8/8 与 6/6；公网管理隔离、旧资源 404 透传及备份保留规则通过 |
+| 最终 Linux Nuxt 镜像 HTTP | 3 个当前页面与客户端资源可读；32 个旧/假资源 GET/HEAD 均 404，无 Location |
+| 最终 Linux Nuxt SIGTERM 探针 | 两类长事件流均正常 EOF，无 auth-expired；合成内部上游仍健康，退出约 11ms；补充 Windows 跳过的信号边界，不声称重跑了完整 Linux Nuxt 双进程套件 |
+| 最终 Linux 独立 CLI 镜像 | 仅编译 JS 启动，health 正常，34 次网页/旧资源 GET/HEAD 均 404，无源码回退 |
+| 导出 tar 后解包运行重放 CLI | 依赖只从解包树加载；整提交断点/续跑、重复零提交、输入/context/inline 产物/私有诊断、源库不变及完整性通过，网络/派发计数均 0 |
+| `benchmark-refactor.mjs --smoke` | 固定旧基线 e6844bd 和新目录均可加载；20/120 条历史、全量/重开续跑与小规模追加通过。kind 为 runner-smoke，不代替年度或性能验收；运行后的源文件摘要仍完全匹配 |
+| 本地链接、差异与冻结文件 | 333 个文档本地链接无缺失；git diff --check 通过；SQL/journal/snapshot、锁文件、patch、测试夹具与原始验收 JSON/MJS 字节未改 |
+
+默认不限制并发的首次 Windows 全量为 659 通过/1 失败/4 跳过，Linux 16 CPU 默认全量为 663 通过/1 失败；两次均为同一 3100 条冷历史用例超过原有 10 秒启动等待。未修改该等待或业务断言。该用例隔离执行时本轮约 4.136 秒、原 0d12c3e 约 6.193 秒均通过；按上表固定并发/CPU 后完整套件通过。原始失败日志保留，不能将这次验收写成“默认并发 pnpm test 全部通过”。
+
+解包重放探针首次把原生 SQLite 库解压到 Docker 默认 noexec 的 /tmp，出现原生库映射失败；读取 /proc/mounts 确认后，只将该探针的临时解包挂载设为 exec，复测通过。生产镜像和 Compose 的 noexec 配置没有改变，原失败日志亦保留。
+
+四份旧生成目录先完整移出工作区，随后按用户指示送入 Windows 回收站并确认在桶中；本轮重新生成了根后端、执行器和 Web 产物。没有清理私有配置、备份或其他本地历史数据。CI 工作流的解包路径与拒绝旧文件断言已经更新，但未推送或触发远端 GitHub Actions，也未改变合并保护/审批。R15 三项功能缺陷仍待修复；本轮没有真实 NAI/Discord/R2、生产切换或年度性能复测。
 
 ### 设计依据
 

@@ -17,7 +17,7 @@ export function useManagementPortal(mode: ManagementMode) {
   let epoch = 0, disposed = false, activeToken = '', pending = false, usagePending = false
   let refreshTask: Promise<void> | null = null, usageTask: Promise<void> | null = null
   let timer: ReturnType<typeof setInterval> | null = null
-  let events: typeof import('../../../public/member-events.js') | null = null
+  let events: typeof import('../utils/member-events.js') | null = null
 
   function notify(text: string, error = false) { message.value = text; messageError.value = error; messageVersion.value++ }
   function stop() {
@@ -100,7 +100,7 @@ export function useManagementPortal(mode: ManagementMode) {
     if (!stateQuery.data.value || disposed) return
     const current = epoch
     if (mode === 'owner') {
-      events ||= await import('../../../public/member-events.js')
+      events ||= await import('../utils/member-events.js')
       if (current !== epoch || disposed || !stateQuery.data.value) return
       events.startMemberEvents({
         onStatus: (status: SharedStatus) => { shared.value = status },

@@ -53,7 +53,7 @@ Nuxt 只负责网页渲染和浏览器端数据加载。U02 已继续迁入 owne
 - 调用记录沿用现有状态和分池显示，同一父请求展示一份批次。展开批次后才
   查询，通知期间保持单个在途读取并合并补读；取消通过明确的 POST 操作，只
   取消 queued/pending，running 继续执行，已完成及迟到结果仍按网关权限领取。
-- 直接复用 `public/member-events.js` 的连接生命周期与
+- 复用 `web/app/utils/member-events.js` 的连接生命周期与
   [R01 协议](state-events.md)。共享通知不触发个人资料查询；本人失效或 resync
   才刷新额度及调用记录。查询进行中收到多次通知，完成后补读一次。
 - 可见页面每 30 秒补充读取本地额度估算；隐藏或离开页面停止计时与 SSE，
@@ -119,13 +119,13 @@ Windows 使用 fnm 时可将命令写成
 
 | 路径 | 所属服务 |
 | --- | --- |
-| `/`、`/account.html`、`/index.html`、`/_nuxt/*` | Nuxt 网页服务；旧 HTML 首页别名重定向到 `/` |
+| `/`、`/_nuxt/*` | Nuxt 成员网页与构建资源；旧 HTML 与静态资源地址返回 404，无重定向或页面兜底 |
 | 成员 `login-options/me/key/shared-status/heatmap/requests/:id` 的 GET、owner 查询和成员 `shared-events` | Nuxt 内部客户端 → 同一执行器；业务授权与 DTO 仍由执行器负责 |
 | 成员登录/注销、Discord start POST 与 callback GET，owner 成员管理/额度 POST 与账户 PATCH | Nuxt 内部客户端 → 同一执行器；Cookie、OAuth state 与事务仍由执行器处理 |
 | 生图、结果领取、预览流和取消，以及各 API 命名空间的未知路径/方法 | Nuxt → 同一执行器；保留原请求校验、二进制与错误契约，长响应逐块转发 |
-| `/owner`、`/owner/`、`/owner.html` | Nuxt 管理页；执行器验证 owner 会话 |
+| `/owner`、`/owner/` | Nuxt 管理页；执行器验证 owner 会话 |
 | `/admin*`、`/api/admin*`、`/api/health`、`/memory` | 公网入口直接拒绝 |
-| 私有回环 18082 的成员/owner/admin 页面及合法别名、`/_nuxt/*` | Nuxt；管理查询和写入均经 Nuxt → 同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
+| 私有回环 18082 的 `/`、`/owner`、`/admin` 与 `/_nuxt/*` | Nuxt；管理查询和写入均经 Nuxt → 同一执行器，详见 [管理入口](nuxt-management-portal.md#入口与分流) |
 
 示例网页服务使用回环端口 3000、网关使用回环端口 18081；实际端口由隔离
 环境配置。代理保留公共 Host，网关按实际来源配置 `TRUSTED_PROXY_IPS`，

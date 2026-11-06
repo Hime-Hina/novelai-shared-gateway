@@ -1,53 +1,53 @@
-import type { GenerationReservation as Reservation, GenerationQueueReservation as QueueReservation, GenerationContent as GeneratedImage } from './generation-execution.ts';
+import type { GenerationReservation as Reservation, GenerationQueueReservation as QueueReservation, GenerationContent as GeneratedImage } from './generation/execution.ts';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createAccountQuotaRefresh
-} from './account-quota-refresh.ts';
-import { archiveColdImage } from './cold-images.ts';
-import { requireDiscordMembership } from './discord-auth.ts';
-import { recordDomainEvent } from './domain-events.ts';
-import { configureFairQuota, estimateFairQuota, fairQuotaSummary, syncFairQuota } from './fair-quota.ts';
-import { createGenerationAdmission, generationIntent, isNoCache, readGenerationIdempotencyKey, requestCacheKey, type GenerationIntent } from './generation-admission.ts';
-import { createGenerationFailureHandlers, createJobDelivery, createRequestControls, deliverDirectGeneration, generationErrorImage } from './generation-delivery.ts';
-import { completeGenerationCommand, isNovelAiCapacityError, reconcileGenerationReviewsCommand, recoverPendingGenerationResultsCommand, reserveQueuedGeneration } from './generation-execution.ts';
-import { createJobPresentation, generationCost as generationDisplayCost, generationRequestForErrorLog, jobDurationMs, publicGenerationRequest, readOwnedGenerationRequest } from './generation-queries.ts';
-import { createGenerationPayloadBudget, singleGenerationRequest } from './generation-request.ts';
-import { JobPreviews } from './job-previews.ts';
-import { launcherSubscription } from './launcher-subscription.ts';
-import { reconcileMemberSessionOwner } from './member-auth.ts';
-import { closeMemberGenerationStreams, createMemberGenerationHttp, memberGenerationError } from './member-generation-http.ts';
-import { handleMemberRoutes } from './member-routes.ts';
-import { createNativeHttp } from './native-http.ts';
-import { imageExtension } from './native-stream.ts';
-import { OfficialKeyJobs, isOfficialKey, officialKeyError, officialKeyOwner } from './official-key-jobs.ts';
-import { openAiModelsResponse as listOpenAiModels, openAiFixedSteps, openAiSizeTiers } from './openai-models.ts';
-import { ownerOperation } from './owner-operations.ts';
-import { adminPromptApiConfig } from './prompt-api.ts';
-import { DIRECT_URL_MAX_STEPS, MAX_STEPS, buildErrorImage, generateNovelAiImage, normalizeNovelAiRequest } from './providers.ts';
+} from './quota/account-refresh.ts';
+import { archiveColdImage } from './storage/cold-images.ts';
+import { requireDiscordMembership } from './members/discord-auth.ts';
+import { recordDomainEvent } from './events/domain-events.ts';
+import { configureFairQuota, estimateFairQuota, fairQuotaSummary, syncFairQuota } from './quota/fair-share.ts';
+import { createGenerationAdmission, generationIntent, isNoCache, readGenerationIdempotencyKey, requestCacheKey, type GenerationIntent } from './generation/admission.ts';
+import { createGenerationFailureHandlers, createJobDelivery, createRequestControls, deliverDirectGeneration, generationErrorImage } from './generation/delivery.ts';
+import { completeGenerationCommand, isNovelAiCapacityError, reconcileGenerationReviewsCommand, recoverPendingGenerationResultsCommand, reserveQueuedGeneration } from './generation/execution.ts';
+import { createJobPresentation, generationCost as generationDisplayCost, generationRequestForErrorLog, jobDurationMs, publicGenerationRequest, readOwnedGenerationRequest } from './generation/request-queries.ts';
+import { createGenerationPayloadBudget, singleGenerationRequest } from './generation/batch-requests.ts';
+import { JobPreviews } from './generation/job-previews.ts';
+import { launcherSubscription } from './quota/launcher-subscription.ts';
+import { reconcileMemberSessionOwner } from './members/authentication.ts';
+import { closeMemberGenerationStreams, createMemberGenerationHttp, memberGenerationError } from './generation/member-http.ts';
+import { handleMemberRoutes } from './members/http-routes.ts';
+import { createNativeHttp } from './protocols/native-http.ts';
+import { imageExtension } from './protocols/native-stream.ts';
+import { OfficialKeyJobs, isOfficialKey, officialKeyError, officialKeyOwner } from './protocols/official-key-jobs.ts';
+import { openAiModelsResponse as listOpenAiModels, openAiFixedSteps, openAiSizeTiers } from './protocols/openai-models.ts';
+import { ownerOperation } from './members/owner-operations.ts';
+import { adminPromptApiConfig } from './http/prompt-api-settings.ts';
+import { DIRECT_URL_MAX_STEPS, MAX_STEPS, buildErrorImage, generateNovelAiImage, normalizeNovelAiRequest } from './protocols/novelai-client.ts';
 import {
   errorDetailMessage,
   isAbortError,
   isInsufficientBalanceError,
   isTimeoutResultMessage,
   publicErrorMessage
-} from './public-errors.ts';
-import { privateAccessAllowed } from './public-hosts.ts';
-import { physicalAccountLoad as countPhysicalAccountLoad, createGenerationControls, createQueueDispatcher } from './queue-dispatch.ts';
-import { ImageStorage, R2Storage, r2Config, storedImagePath } from './r2-storage.ts';
-import { publishStoredResult } from './result-files.ts';
-import { cooldownRetryAfter } from './shared-capacity.ts';
-import { sharedSurface } from './shared-surface.ts';
-import { stateEventsFor } from './state-events.ts';
-import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, defaultArtist2_5D, hashObject, legacyDefaultArtist, maskToken } from './store.ts';
+} from './http/public-errors.ts';
+import { privateAccessAllowed } from './http/public-hosts.ts';
+import { physicalAccountLoad as countPhysicalAccountLoad, createGenerationControls, createQueueDispatcher } from './generation/queue-dispatch.ts';
+import { ImageStorage, R2Storage, r2Config, storedImagePath } from './storage/r2-storage.ts';
+import { publishStoredResult } from './storage/result-files.ts';
+import { cooldownRetryAfter } from './quota/shared-capacity.ts';
+import { sharedSurface } from './http/api-surface.ts';
+import { stateEventsFor } from './events/state-notifications.ts';
+import { JsonStore, MAX_CACHE_IMAGES_LIMIT, createId, createPublicToken, defaultArtist2_5D, hashObject, legacyDefaultArtist, maskToken } from './storage/sqlite-store.ts';
 
-import type { PreviewProgress } from './job-previews.ts';
-import type { NormalizedImageRequest } from './providers.ts';
-import type { StoreDatabase, StoreItem, StoredGenerationRequest } from './store.ts';
+import type { PreviewProgress } from './generation/job-previews.ts';
+import type { NormalizedImageRequest } from './protocols/novelai-client.ts';
+import type { StoreDatabase, StoreItem, StoredGenerationRequest } from './storage/sqlite-store.ts';
 
 type Settings = StoreDatabase['settings'];
 type Body = Record<string, unknown>;
@@ -92,7 +92,6 @@ interface BoundGenerationOptions extends Pick<GenerateOptions, 'signal' | 'force
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-const publicDir = path.join(rootDir, 'public');
 const dataDir = process.env.DATA_DIR || path.join(rootDir, 'data');
 const imageDir = path.join(dataDir, 'images');
 const port = Number(process.env.PORT || 8080);
@@ -221,7 +220,7 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
     if (/^\/api\/member\/(?:generation\/|requests\/[^/]+\/(?:events|inputs?)|jobs\/[^/]+\/content)/.test(req.url || '')) {
       const payload = memberGenerationError(error); sendJson(res, payload.statusCode, payload); return;
     }
-    if (req.url?.startsWith('/generate') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes((error as GatewayError).statusCode!))) {
+    if (/^\/generate(?:\?|$)/.test(req.url || '') && !(process.env.PUBLIC_MODE === 'true' && [401, 403].includes((error as GatewayError).statusCode!))) {
       const image = buildErrorImage(publicErrorMessage((error as GatewayError).message || 'Generation failed'));
       sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
       return;
@@ -352,8 +351,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     const surface = sharedSurface(url.pathname, method);
     if (!surface.allowed) throw httpError(404, 'not found.');
     url.pathname = surface.pathname;
-    // 所有管理员别名都只从本机隧道进入，不能绕过代理的路径规则。
-    if (/^\/(?:admin|api\/admin)(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
+    // 管理员 API 只从本机隧道进入，不能绕过代理的路径规则。
+    if (/^\/api\/admin(?:\/|$)/.test(url.pathname) && !/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''))) throw httpError(404, 'not found.');
   }
   if (await handleMemberRoutes(req, res, url, { store, assertAdmin, createId, createPublicToken, publicImageUrl,
     changeMemberAdmission, getGenerationRequest, cancelGenerationRequest, handleMemberGeneration,
@@ -373,12 +372,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     return;
   }
 
-  if (method === 'HEAD') {
-    if (url.pathname === '/api/health') {
-      sendHead(res, 200, { 'content-type': 'application/json; charset=utf-8' });
-      return;
-    }
-    await serveStatic(url.pathname, res, { head: true });
+  if (method === 'HEAD' && url.pathname === '/api/health') {
+    sendHead(res, 200, { 'content-type': 'application/json; charset=utf-8' });
     return;
   }
 
@@ -625,11 +620,6 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
 
   if (method === 'GET' && url.pathname === '/generate') {
     await handleDirectGenerate(url, res, req.generationPayloadClaim, req.generationIdempotencyKey);
-    return;
-  }
-
-  if (method === 'GET') {
-    await serveStatic(url.pathname, res);
     return;
   }
 
@@ -1828,36 +1818,6 @@ function collectValues(value: unknown) {
   return [String(value).trim()].filter(Boolean);
 }
 
-async function serveStatic(urlPath: string, res: GatewayResponse, options: { head?: boolean } = {}) {
-  const pathname = urlPath === '/owner.html' ? '/admin/members.html'
-    : urlPath === '/management.js' ? '/admin/members.js'
-    : urlPath === '/'
-    ? '/index.html'
-    : urlPath === '/admin' || urlPath === '/admin/'
-      ? '/admin.html'
-      : decodeURIComponent(urlPath);
-  const filePath = path.resolve(publicDir, `.${pathname}`);
-  if (!filePath.startsWith(publicDir)) throw httpError(403, 'forbidden.');
-
-  try {
-    const content = await readFile(filePath);
-    res.writeHead(200, {
-      'content-type': contentType(filePath),
-      'cache-control': 'no-store',
-      'content-length': content.length
-    });
-    res.end(options.head ? undefined : content);
-  } catch {
-    const content = await readFile(path.join(publicDir, 'index.html'));
-    res.writeHead(200, {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-      'content-length': content.length
-    });
-    res.end(options.head ? undefined : content);
-  }
-}
-
 async function readJson(req: GatewayRequest, maxBytes = 2 * 1024 * 1024): Promise<Body> {
   // 公网守卫读取过的正文直接复用，避免重复消费请求流。
   if (req.publicParsedBody !== undefined) return req.publicParsedBody;
@@ -1999,14 +1959,6 @@ function corsHeaders() {
     'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'access-control-allow-headers': 'content-type,authorization,x-admin-token,x-user-token,x-requested-with,x-request-id,x-correlation-id,x-initiated-at,user-agent,accept,idempotency-key'
   };
-}
-
-function contentType(filePath: string) {
-  if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
-  if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
-  if (filePath.endsWith('.js')) return 'text/javascript; charset=utf-8';
-  if (filePath.endsWith('.svg')) return 'image/svg+xml';
-  return 'application/octet-stream';
 }
 
 function tokenFrom(req: GatewayRequest, url: URL) {

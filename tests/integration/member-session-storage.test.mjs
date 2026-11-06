@@ -4,8 +4,8 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, cp, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { migrateStorage, storageMigrationsDirectory } from '../../server/storage-migrations.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { migrateStorage, storageMigrationsDirectory } from '../../server/storage/sqlite-migrations.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 async function open(t, directory) {

@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { beginDomainCommand,finishDomainCommand } from '../../server/domain-events.ts';
-import { reduceDomainEvent } from '../../server/event-store.ts';
-import { recordRecoveredGeneration } from '../../server/generation-accounting.ts';
-import { recordGenerationFailure } from '../../server/generation-execution.ts';
-import { setMemberAdmission } from '../../server/queue-policy.ts';
-import { cancelWaitingBatchJobs } from '../../server/generation-request.ts';
+import { beginDomainCommand,finishDomainCommand } from '../../server/events/domain-events.ts';
+import { reduceDomainEvent } from '../../server/events/event-store.ts';
+import { recordRecoveredGeneration } from '../../server/generation/accounting.ts';
+import { recordGenerationFailure } from '../../server/generation/execution.ts';
+import { setMemberAdmission } from '../../server/generation/queue-policy.ts';
+import { cancelWaitingBatchJobs } from '../../server/generation/batch-requests.ts';
 const now=1793491200000;
 function replayRequest(before,command,streamId){
   let projection={jobs:Object.fromEntries(before.map(job=>[job.id,structuredClone(job)])),artifacts:{},freeUsage:{}};

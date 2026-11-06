@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createJobPresentation } from '../../server/generation-queries.ts';
-import { createJobDelivery, deliverDirectGeneration } from '../../server/generation-delivery.ts';
+import { createJobPresentation } from '../../server/generation/request-queries.ts';
+import { createJobDelivery, deliverDirectGeneration } from '../../server/generation/delivery.ts';
 
 test('OpenAI SSE 进度只读小 child，普通任务查询仍返回父请求完整提示词', async () => {
   const prompt = 'x'.repeat(128000), job = { id: 'job', requestId: 'parent', status: 'queued', request: { model: 'nai-diffusion-4-5-full' } };

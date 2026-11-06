@@ -222,6 +222,115 @@ describe('真实 Nuxt useAsyncData 成员会话', () => {
     } finally { stop() }
   })
 
+  it('永久关闭只核验一次鉴权，普通断线不注销；旧连接的鉴权结果不影响新登录', async () => {
+    const stream = await authenticated()
+    await stream.onerror?.()
+    expect(requests.some(request => request.path === 'shared-status')).toBe(false)
+    expect(portal.profile.value?.username).toBe('Alice')
+    stream.readyState = NetworkStream.CLOSED
+    const checking = stream.onerror?.()
+    await stream.onerror?.()
+    expect(requests.filter(request => request.path === 'shared-status')).toHaveLength(1)
+    const old = pending('shared-status')
+    const logout = portal.logout(); pending('logout').reply(200, { ok: true }); await logout
+    const login = portal.login({ username: 'Bob', password: 'synthetic-password' })
+    pending('login').reply(200, { ok: true }); await settle()
+    pending('me').reply(200, profile('Bob')); await login
+    old.reply(401, { error: 'old session expired' }); await checking; await settle()
+    expect(portal.profile.value?.username).toBe('Bob')
+    expect(NetworkStream.instances).toHaveLength(2)
+    const current = NetworkStream.instances[1]!
+    current.readyState = NetworkStream.CLOSED
+    const expired = current.onerror?.()
+    pending('shared-status').reply(403, { error: 'session expired' }); await expired; await settle()
+    expect(portal.profile.value).toBeNull(); expect(portal.shared.value).toBeNull()
+    expect(current.close).toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('永久关闭的503五秒后重连，隐藏页取消重试，恢复和pagehide/pageshow只建立当前连接', async () => {
+    const stream = await authenticated()
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout'] })
+    stream.readyState = NetworkStream.CLOSED
+    const checking = stream.onerror?.()
+    pending('shared-status').reply(503, { error: 'offline' }); await checking
+    expect(portal.profile.value?.username).toBe('Alice'); expect(stream.close).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(4999); expect(NetworkStream.instances).toHaveLength(1)
+    hidden = true; document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(5001); expect(NetworkStream.instances).toHaveLength(1)
+    hidden = false; document.dispatchEvent(new Event('visibilitychange')); await settle()
+    const resumed = NetworkStream.instances[1]!
+    resumed.readyState = NetworkStream.CLOSED
+    const retrying = resumed.onerror?.()
+    pending('shared-status').reply(503, { error: 'still offline' }); await retrying
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(NetworkStream.instances).toHaveLength(3)
+    window.dispatchEvent(new Event('pagehide'))
+    expect(NetworkStream.instances[2]!.close).toHaveBeenCalled()
+    window.dispatchEvent(new Event('pageshow')); await settle()
+    expect(NetworkStream.instances).toHaveLength(4)
+    expect(portal.profile.value?.username).toBe('Alice')
+  })
+
+  it('状态版本允许跳号，重复和倒退版本忽略；重连及新boot重读，非法scope不刷新', async () => {
+    const stream = await authenticated(), initial = meCount()
+    stream.onopen?.()
+    for (const version of [3, 9]) {
+      invalidate(stream, version); await settle()
+      pending('me').reply(200, profile()); await settle()
+    }
+    expect(meCount()).toBe(initial + 2)
+    invalidate(stream, 9); invalidate(stream, 4); await settle()
+    expect(meCount()).toBe(initial + 2)
+    hidden = true; document.dispatchEvent(new Event('visibilitychange'))
+    hidden = false; document.dispatchEvent(new Event('visibilitychange')); await settle()
+    const current = NetworkStream.instances[1]!
+    invalidate(stream, 12, ['member'], true); await settle()
+    expect(meCount()).toBe(initial + 2)
+    invalidate(current, 9, ['member'], true); await settle()
+    pending('me').reply(200, profile()); await settle()
+    current.emit('state-invalidated', { bootId: 'new-boot', version: 0, scopes: ['member'], activityDates: ['2026-10-17'] })
+    expect(portal.activityInvalidation.dates).toBeNull()
+    await settle(); pending('me').reply(200, profile()); await settle()
+    expect(meCount()).toBe(initial + 4)
+    current.emit('state-invalidated', { bootId: 'new-boot', version: 1, scopes: ['credentials'] }); await settle()
+    expect(meCount()).toBe(initial + 4); expect(portal.connection.value).toBe('invalid')
+  })
+
+  it('内部重连状态复用浏览器连接，无效状态和旧连接事件不能注销或覆盖当前状态', async () => {
+    const stream = await authenticated(), initial = meCount()
+    stream.emit('connection-status', { state: 'retrying' })
+    expect(portal.connection.value).toBe('retrying')
+    stream.emit('connection-status', { state: 'open' })
+    expect(portal.connection.value).toBe('open')
+    expect(NetworkStream.instances).toHaveLength(1); expect(meCount()).toBe(initial)
+    stream.emit('connection-status', { state: 'auth-expired' })
+    expect(portal.connection.value).toBe('invalid'); expect(portal.profile.value?.username).toBe('Alice')
+    hidden = true; document.dispatchEvent(new Event('visibilitychange'))
+    hidden = false; document.dispatchEvent(new Event('visibilitychange')); await settle()
+    NetworkStream.instances[1]!.emit('connection-status', { state: 'open' })
+    stream.emit('connection-status', { state: 'retrying' })
+    expect(portal.connection.value).toBe('open'); expect(meCount()).toBe(initial)
+  })
+
+  it('日期通知保留闰日，非法日期和超大列表不触发刷新，也不推进状态版本', async () => {
+    const stream = await authenticated()
+    stream.onopen?.()
+    invalidate(stream, 2, ['member'], false, ['2024-02-29', '2026-10-17'])
+    expect(portal.activityInvalidation.dates).toEqual(['2024-02-29', '2026-10-17'])
+    await settle(); pending('me').reply(200, profile()); await settle()
+    const initial = meCount(), version = portal.activityInvalidation.version
+    for (const activityDates of [['2026-02-30'], ['private-prompt'], '2026-10-17', Array(367).fill('2026-10-17')]) {
+      stream.emit('state-invalidated', { bootId: 'test-boot', version: 3, scopes: ['member'], activityDates })
+    }
+    await settle()
+    expect(meCount()).toBe(initial); expect(portal.activityInvalidation.version).toBe(version)
+    expect(portal.connection.value).toBe('invalid')
+    invalidate(stream, 3, ['member'], false, ['2026-10-18'])
+    expect(portal.activityInvalidation.dates).toEqual(['2026-10-18'])
+    expect(portal.activityInvalidation.version).toBe(version + 1)
+    await settle(); pending('me').reply(200, profile()); await settle()
+  })
+
   it('503保留最后profile并显示错误，隐藏页不轮询，恢复后由SSE校准', async () => {
     const stream = await authenticated(), updated = portal.updatedAt.value, version = portal.refreshVersion.value
     stream.onopen?.()

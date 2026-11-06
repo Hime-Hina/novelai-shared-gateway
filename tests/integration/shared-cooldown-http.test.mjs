@@ -9,9 +9,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';

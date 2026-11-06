@@ -4,10 +4,10 @@ import http from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { createMemberSession } from '../../server/member-auth.ts';
-import { handleMemberRoutes } from '../../server/member-routes.ts';
-import { sharedSurface } from '../../server/shared-surface.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { createMemberSession } from '../../server/members/authentication.ts';
+import { handleMemberRoutes } from '../../server/members/http-routes.ts';
+import { sharedSurface } from '../../server/http/api-surface.ts';
 
 async function fixture(t) {
   const env = { OWNER_USER_ID: 'heat-owner', DISCORD_GUILD_ID: '1134557553011998840', DISCORD_CLIENT_ID: '123456789012345678',

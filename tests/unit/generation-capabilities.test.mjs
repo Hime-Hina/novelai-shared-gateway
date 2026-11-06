@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
-import { BASE_MODELS, INPAINT_MODELS, NATIVE_DEFAULTS, NATIVE_LIMITS, NATIVE_VIBE_MODELS } from '../../server/native-image.ts';
-import { NATIVE_MULTIPART_MAX_PARTS } from '../../server/native-body.ts';
-import { normalizeMemberGeneration } from '../../server/member-generation.ts';
+import { memberGenerationCapabilities } from '../../server/generation/capabilities.ts';
+import { BASE_MODELS, INPAINT_MODELS, NATIVE_DEFAULTS, NATIVE_LIMITS, NATIVE_VIBE_MODELS } from '../../server/protocols/native-image.ts';
+import { NATIVE_MULTIPART_MAX_PARTS } from '../../server/protocols/native-body.ts';
+import { normalizeMemberGeneration } from '../../server/generation/member-contract.ts';
 
 test('capabilities are generated from actual Native models, limits, defaults and Medium transformations', () => {
   const caps = memberGenerationCapabilities({}, { id: 'self' }, { env: {} });

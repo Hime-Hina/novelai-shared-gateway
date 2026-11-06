@@ -9,11 +9,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
-import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/native-stream.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { setMemberAdmission } from '../../server/queue-policy.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { setMemberAdmission } from '../../server/generation/queue-policy.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';

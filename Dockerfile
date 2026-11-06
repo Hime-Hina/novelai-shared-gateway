@@ -10,7 +10,6 @@ FROM dependencies AS build
 RUN CI=true pnpm install --frozen-lockfile
 COPY tsconfig.backend.json ./
 COPY server ./server
-COPY public ./public
 COPY scripts ./scripts
 COPY tests ./tests
 RUN pnpm run check && pnpm run build && node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
@@ -20,7 +19,6 @@ WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/.output/backend/server ./server
 COPY --from=build /app/server/migrations ./server/migrations
-COPY --from=build /app/public ./public
 COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/.output/backend/scripts ./scripts
 COPY --from=build /app/.output/backend/package.json ./

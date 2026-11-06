@@ -1,5 +1,5 @@
 // 当前成员 API 的公开字段；上游身份、会话摘要和完整生成参数不进入页面模型。
-export type { SharedStatus } from '../../../server/shared-status.ts'
+export type { SharedStatus } from '../../../server/quota/shared-status.ts'
 export interface FreeImagePolicy {
   version: number; enabled: boolean; warningThreshold: number | null; hardLimit: number | null
 }
@@ -40,5 +40,5 @@ export interface MemberBatch {
   counts: { total: number; pending: number; queued: number; running: number; done: number; failed: number }
   jobs: BatchJob[]
 }
-export type { StateInvalidation } from '../../../server/state-events.ts'
+export type { StateInvalidation } from '../../../server/events/state-notifications.ts'
 export type MemberApi = <T>(path: string, body?: unknown) => Promise<T>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, statfs, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readServiceResources } from '../../server/service-resources.ts';
+import { readServiceResources } from '../../server/reports/service-resources.ts';
 
 test('资源采样递归统计数据文件，忽略链接，磁盘使用数据目录所在卷，扫描结果缓存一分钟', async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'nai-resources-'));

@@ -13,7 +13,6 @@ RUN CI=true pnpm --filter @novelai-gateway/executor... install --frozen-lockfile
 COPY executor ./executor
 COPY tsconfig.backend.json ./
 COPY server ./server
-COPY public ./public
 COPY scripts ./scripts
 COPY LICENSE NOTICE.md UPSTREAM-LICENSE ./
 RUN pnpm --filter @novelai-gateway/executor build

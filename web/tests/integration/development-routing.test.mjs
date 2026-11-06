@@ -105,6 +105,20 @@ test('真实 Nuxt dev 命中正式查询、认证、生图和状态路由，API 
   assert.match(home.body, /<div id="__nuxt"/);
   assert.match(home.body, /cssr-id=/);
   assert.ok(!home.body.includes(internalToken));
+  for (const route of ['/owner', '/admin']) {
+    const page = await request(ctx.url, route);
+    assert.equal(page.status, 200, route);
+    assert.match(page.headers['content-type'], /text\/html/);
+  }
+  for (const route of ['/index.html', '/account.html', '/owner.html', '/admin.html', '/admin/members.html', '/account.js',
+    '/management.js', '/admin/members.js', '/members.css', '/shared-status.js', '/member-events.js', '/generation-pricing.js', '/v5-medium.js']) {
+    for (const method of ['GET', 'HEAD']) {
+      const retired = await request(ctx.url, route, method);
+      assert.equal(retired.status, 404, `${method} ${route}`);
+      assert.equal(retired.headers.location, undefined, `${method} ${route}`);
+      if (method === 'HEAD') assert.equal(retired.body, '');
+    }
+  }
   for (const route of ['/api/member/login-options', '/api/member/me']) {
     const result = await request(ctx.url, route);
     assert.equal(result.status, 200, result.body);

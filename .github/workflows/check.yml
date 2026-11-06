@@ -99,13 +99,16 @@ jobs:
             novelai-shared-gateway-executor:check --input-type=module -e '
               import assert from "node:assert/strict";
               import { createRequire } from "node:module";
-              import { access, mkdtemp, readFile } from "node:fs/promises";
+              import { access, mkdtemp, readFile, readdir } from "node:fs/promises";
               import { spawnSync } from "node:child_process";
               const root = "/release/executor/.output/server/node_modules/novelai-shared-gateway/";
+              await assert.rejects(access(root + "public"), { code: "ENOENT" });
+              const serverEntries = await readdir(root + "server", { withFileTypes: true });
+              assert.deepEqual(serverEntries.filter(entry => entry.isFile() && entry.name.endsWith(".js")).map(entry => entry.name).sort(), ["gateway-runtime.js", "index.js"]);
               const require = createRequire(root + "package.json");
               assert.ok(require.resolve("better-sqlite3").startsWith("/release/executor/node_modules/"));
               const db = require("better-sqlite3") (":memory:");
-              const { migrateStorage } = await import(root + "server/storage-migrations.js");
+              const { migrateStorage } = await import(root + "server/storage/sqlite-migrations.js");
               migrateStorage(db);
               assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
               const journal = JSON.parse(await readFile(root + "server/migrations/meta/_journal.json", "utf8"));
@@ -114,11 +117,11 @@ jobs:
               for (const table of ["domain_events", "event_commits", "event_streams", "generation_contexts", "artifact_inputs", "generation_diagnostics"])
                 assert.ok(db.prepare("SELECT name FROM sqlite_schema WHERE type=? AND name=?").get("table", table));
               db.close();
-              for (const entry of ["server/sqlite-read-worker.js", "server/event-store.js", "server/domain-events.js", "server/generation-admission.js", "scripts/replay-events.mjs", "scripts/create-test-copy.mjs"])
+              for (const entry of ["server/storage/sqlite-read-worker.js", "server/events/event-store.js", "server/events/domain-events.js", "server/generation/admission.js", "scripts/replay-events.mjs", "scripts/create-test-copy.mjs"])
                 await access(root + entry);
               await access("/release/web/.output/server/index.mjs");
-              const { JsonStore } = await import(root + "server/store.js");
-              const { readArtifactInput } = await import(root + "server/event-store.js");
+              const { JsonStore } = await import(root + "server/storage/sqlite-store.js");
+              const { readArtifactInput } = await import(root + "server/events/event-store.js");
               const directory = await mkdtemp("/tmp/nai-release-replay-");
               const source = new JsonStore(directory + "/source"); await source.init();
               const at = "2026-11-01T00:00:00.000Z", inline = "c3ludGhldGljLXBhY2thZ2UtYXJ0aWZhY3Q=";

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from '../../server/shared-capacity.ts';
+import { sharedAccountConcurrency, sharedAccountReadyDelay, recordSharedCapacityError, recordSharedCompletion } from '../../server/quota/shared-capacity.ts';
 
 const NOW = 1800000000000;
 

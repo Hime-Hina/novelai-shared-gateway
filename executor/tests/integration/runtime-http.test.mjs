@@ -4,7 +4,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,16 +22,21 @@ function packaged(relative) {
   return filename;
 }
 const { bootstrap } = await import(pathToFileURL(packaged('scripts/bootstrap.mjs')).href);
-const { JsonStore } = await import(pathToFileURL(packaged('server/store.js')).href);
-const { syncFairQuota } = await import(pathToFileURL(packaged('server/fair-quota.js')).href);
-const { createMemberSession } = await import(pathToFileURL(packaged('server/member-auth.js')).href);
-const { nativeImagesMsgpack } = await import(pathToFileURL(packaged('server/native-stream.js')).href);
-const { recordDomainEvent } = await import(pathToFileURL(packaged('server/domain-events.js')).href);
+const { JsonStore } = await import(pathToFileURL(packaged('server/storage/sqlite-store.js')).href);
+const { syncFairQuota } = await import(pathToFileURL(packaged('server/quota/fair-share.js')).href);
+const { createMemberSession } = await import(pathToFileURL(packaged('server/members/authentication.js')).href);
+const { nativeImagesMsgpack } = await import(pathToFileURL(packaged('server/protocols/native-stream.js')).href);
+const { recordDomainEvent } = await import(pathToFileURL(packaged('server/events/domain-events.js')).href);
 assert.equal(runtimeRequire.resolve('novelai-shared-gateway'), packaged('server/index.js'));
 const Database = runtimeRequire('better-sqlite3');
 const migrationJournal = JSON.parse(await readFile(packaged('server/migrations/meta/_journal.json'), 'utf8'));
-for (const name of ['server/gateway-runtime.js', 'server/sqlite-read-worker.js', 'public/generation-pricing.js',
+for (const name of ['server/gateway-runtime.js', 'server/storage/sqlite-read-worker.js', 'server/storage/sqlite-migrations.js',
+  'server/storage/sqlite-schema.js', 'server/events/event-store.js', 'server/generation/admission.js', 'server/http/api-surface.js',
+  'server/protocols/generation-pricing.js', 'server/protocols/v5-medium-rules.js', 'server/reports/activity-heatmap.js',
   ...migrationJournal.entries.map(item => `server/migrations/${item.tag}.sql`)]) await stat(packaged(name));
+assert.deepEqual((await readdir(path.join(packagedRoot, 'server'))).filter(name => name.endsWith('.js')).sort(),
+  ['gateway-runtime.js', 'index.js'], 'old flat backend modules must not remain in the package');
+await assert.rejects(stat(path.join(packagedRoot, 'public')), { code: 'ENOENT' });
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const nativeBody = { input: 'synthetic built executor image', model: 'nai-diffusion-4-5-full', action: 'generate',
@@ -145,9 +150,9 @@ globalThis.fetch = (input, options) => {
       child.stdout.on('data', ready); child.once('exit', failed); child.once('error', failed);
     });
   };
-  const call = (route, { body, cookie, member, internal = internalToken, headers = {} } = {}) => {
+  const call = (route, { body, method = body === undefined ? 'GET' : 'POST', cookie, member, internal = internalToken, headers = {} } = {}) => {
     const url = new URL(route, base); assert.equal(url.origin, base, 'test requests must remain on the local executor');
-    return fetch(url, { method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(15000),
+    return fetch(url, { method, redirect: 'error', signal: AbortSignal.timeout(15000),
       headers: { origin: base, ...(internal === null ? {} : { 'x-executor-token': internal }), ...(cookie ? { cookie } : {}),
         ...(member === undefined ? {} : { authorization: 'Bearer ' + members[member].api_key }),
         ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
@@ -231,6 +236,20 @@ test('实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨�
     assert.deepEqual(await rejected.json(), { error: 'Invalid executor credentials.' });
   }
   await json(await gateway.call('/api/health'));
+  const head = await gateway.call('/api/health', { method: 'HEAD' });
+  assert.equal(head.status, 200); assert.equal(await head.text(), '');
+  for (const pathname of ['/', '/index.html', '/account.html', '/account.js', '/members.css', '/shared-status.js', '/member-events.js',
+    '/generation-pricing.js', '/v5-medium.js', '/admin', '/admin/', '/admin.html', '/admin/members.html', '/admin/members.js',
+    '/owner', '/owner/', '/owner.html', '/management.js', '/generate.html', '/generate.js', '/generate.css', '/unknown.html', '/unknown.js', '/unknown.css']) {
+    for (const method of ['GET', 'HEAD']) {
+      const response = await gateway.call(pathname, { method });
+      assert.equal(response.status, 404, `${method} ${pathname}`);
+      assert.equal(response.headers.get('location'), null, `${method} ${pathname}`);
+      assert.match(response.headers.get('content-type'), /application\/json/);
+      if (method === 'HEAD') assert.equal(await response.text(), '');
+      else assert.deepEqual(await response.json(), { error: 'not found.' });
+    }
+  }
   assert.equal((await gateway.call('/api/member/me')).status, 401);
   assert.equal((await gateway.call('/api/member/me', { member: 0 })).status, 401);
   assert.equal((await gateway.call('/api/member/owner/member-management')).status, 401);

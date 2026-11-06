@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withQuotaRequestDeadline } from '../../server/quota-timeout.ts';
-import { fetchNovelAiAccountQuota } from '../../server/providers.ts';
-import { normalizeDb } from '../../server/store.ts';
-import { createAccountQuotaRefresh } from '../../server/account-quota-refresh.ts';
-import { publicErrorMessage } from '../../server/public-errors.ts';
+import { withQuotaRequestDeadline } from '../../server/quota/refresh-timeout.ts';
+import { fetchNovelAiAccountQuota } from '../../server/protocols/novelai-client.ts';
+import { normalizeDb } from '../../server/storage/sqlite-store.ts';
+import { createAccountQuotaRefresh } from '../../server/quota/account-refresh.ts';
+import { publicErrorMessage } from '../../server/http/public-errors.ts';
 
 const quota = { tier: 3, subscriptionActive: true, subscriptionExpiresAt: Date.now() + 86400000, points: 10000, fixed: 10000, purchased: 0, v5UsagePercent: 80 };
 const account = id => ({ id, token: `synthetic-${id}`, enabled: true, quotaTier: 3, subscriptionActive: true, subscriptionExpiresAt: quota.subscriptionExpiresAt, quotaFixed: 9000, quotaPurchased: 0, v5UsagePercent: 80, quotaCheckedAt: new Date(Date.now() - 700000).toISOString() });

@@ -2,7 +2,7 @@
 
 首次启动前在项目根目录运行 `pnpm run bootstrap`。先使用 `pnpm install --frozen-lockfile` 安装锁定依赖；只使用新数据目录，不会覆盖现有数据库，详见仓库根目录 README.md。
 
-`pnpm run build` 将后端源码编译到 `.output/backend/`，再运行 `package-backend.mjs` 写入使用 JavaScript 入口的发布包元数据；Docker 和执行器复用这一文件。源码的 `pnpm start`/`dev` 使用 Node 原生 TypeScript 支持，发布产物仍直接运行编译后的 JavaScript。
+`pnpm run build` 将后端源码编译到 `.output/backend/`，保留 `server/` 的职责子目录，再运行 `package-backend.mjs` 写入使用 JavaScript 入口的发布包元数据；Docker 和执行器复用这一文件。源码的 `pnpm start`/`dev` 使用 Node 原生 TypeScript 支持，发布产物仍直接运行编译后的 JavaScript。独立后端只提供 API，网页由 Nuxt 提供；已删除旧静态入口和根 `public/`。整理后构建应先清理受控生成目录，防止旧平铺 JavaScript 掩盖错误引用。
 
 离线重放使用 `node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite [--max-commits=100] [--through=COMMIT]`，参数使用等号。源库只读，目标须为新的隔离库或同一历史的续跑目标；游标停在完整提交边界，完成后重复运行不新增业务效果。CLI 不生成图片、不请求上游、不复制本地/R2 产物；必须同时保留完整输入/上下文、inline 产物、私有诊断、认证和实际文件/R2 清单。版本、opening、退休与恢复限制见[结果恢复](../docs/architecture/result-recovery.md)。发布包工具仍位于 `executor/.output/server/node_modules/novelai-shared-gateway/scripts/`，已有 `package-runtime.mjs` 复制编译脚本及完整 SQL/journal，CI 对解包结果运行离线重放检查。
 
@@ -13,3 +13,5 @@
 测试副本是一段独立历史。工具仅在新建的私有副本中移除旧事件、提交、投影、导入/重放标记，按脱敏并终止任务后的事实建立新的 opening baseline，经影子核对后启用事件权威。新 historyId 与原 historyId、原提交游标及原事件历史 SHA-256 摘要写入 `app_meta.event_test_copy_provenance` 和命令摘要；不会篡改源事件、沿用旧事件哈希或把被隔离任务重新排队。数据库会重新压实并扫描原凭据残留字节；未知表仍拒绝交付，失败仅留下受保护的工作副本。支持范围、失败处理与隔离前置见 [离线测试副本](../docs/operations/test-deployment.md#离线测试副本工具)。
 
 旧幂等键保留到原请求/任务的归属，并以独立域摘要改为隔离阻断记录；提交旧键会得到 409，不能借删除映射重新创建原任务。历史状态与已脱敏输入仍可读取，复用参数开始测试必须使用新键。原密码、成员 Key、会话与上游凭据均不可用于副本。
+
+手工浏览器基线 helper `tests/helpers/browser-baseline.mjs` 只接受先启动的回环 Nuxt 页面服务，须设置 `BROWSER_NUXT_URL=http://127.0.0.1:3000/`。它提供隔离合成身份和模拟上游，当前页面仅为 `/`、`/owner`、`/admin`；不再提供旧静态门户。历史浏览器测量中的命令与旧资源属于原固定提交，不能当作当前 helper 的启动方式。

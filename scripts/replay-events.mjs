@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { mkdirSync,existsSync,statSync } from 'node:fs';
 import Database from 'better-sqlite3';
-import { migrateStorage } from '../server/storage-migrations.ts';
-import { copyProtectedFacts, replayDomainEvents } from '../server/event-store.ts';
-import { applyEventProjection } from '../server/store.ts';
-import { domainDigest } from '../server/domain-events.ts';
+import { migrateStorage } from '../server/storage/sqlite-migrations.ts';
+import { copyProtectedFacts, replayDomainEvents } from '../server/events/event-store.ts';
+import { applyEventProjection } from '../server/storage/sqlite-store.ts';
+import { domainDigest } from '../server/events/domain-events.ts';
 
 const values=Object.fromEntries(process.argv.slice(2).map(value=>{const match=/^--([a-z-]+)=(.+)$/.exec(value);if(!match)throw new Error(`Expected --name=value, received ${value}`);return [match[1],match[2]];}));
 if(!values.source||!values.target)throw new Error('Usage: node scripts/replay-events.mjs --source=/backup/library.sqlite --target=/isolated/rebuilt.sqlite [--through=COMMIT] [--max-commits=N]');

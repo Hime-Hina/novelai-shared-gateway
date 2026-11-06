@@ -22,7 +22,7 @@ export function decryptBackup(buffer, key) {
 async function main() {
   const [mode, input, output, envFile, keyFile, snapshotName] = process.argv.slice(2);
   if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile) throw new Error('Invalid backup arguments');
-  const runtime = existsSync(new URL('../server/r2-storage.js', import.meta.url)) ? '../server/r2-storage.js' : '../server/r2-storage.ts';
+  const runtime = existsSync(new URL('../server/storage/r2-storage.js', import.meta.url)) ? '../server/storage/r2-storage.js' : '../server/storage/r2-storage.ts';
   const { R2Storage, r2Config } = await import(runtime);
   const config = r2Config(parseEnv(await readFile(envFile, 'utf8')));
   if (!config) throw new Error('R2 configuration is required');

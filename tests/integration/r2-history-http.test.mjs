@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { JsonStore } from '../../server/store.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
 
 test('本地及 R2 历史图片经真实 HTTP 查看和下载；签名、归属、原图校验保持有效', { timeout: 20000 }, async t => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-r2-http-'));

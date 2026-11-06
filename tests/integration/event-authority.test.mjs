@@ -4,16 +4,16 @@ import { mkdtemp,rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { JsonStore,verifyEventProjections,applyEventProjection } from '../../server/store.ts';
-import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/fair-quota.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts,copyProtectedFacts,replayDomainEvents } from '../../server/event-store.ts';
-import { parseAmount } from '../../server/resource-amounts.ts';
-import { createGenerationAdmission } from '../../server/generation-admission.ts';
-import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
-import { recordGenerationFailure } from '../../server/generation-execution.ts';
-import { migrateStorage } from '../../server/storage-migrations.ts';
-import { closeGenerationReview } from '../../server/generation-accounting.ts';
+import { JsonStore,verifyEventProjections,applyEventProjection } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota,syncFairQuota,reserveFairQuota,settleFairQuota } from '../../server/quota/fair-share.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { readProjectedFairQuota,readStreamProjection,eventAuthorityEnabled,importOpeningFacts,copyProtectedFacts,replayDomainEvents } from '../../server/events/event-store.ts';
+import { parseAmount } from '../../server/quota/resource-amounts.ts';
+import { createGenerationAdmission } from '../../server/generation/admission.ts';
+import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
+import { recordGenerationFailure } from '../../server/generation/execution.ts';
+import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
+import { closeGenerationReview } from '../../server/generation/accounting.ts';
 
 const now=1793491200000,at=new Date(now).toISOString();
 async function fixture(t){

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {beginDomainCommand,finishDomainCommand} from '../../server/domain-events.ts';
-import {configureFairQuota,configureFairGroups,syncFairQuota,reserveFairQuota,settleFairQuota,manageFairMember,manageOperatingFunding,previewFairQuotaCharge,normalizeOpeningQuota} from '../../server/fair-quota.ts';
-import {splitQuotaState,composeQuotaState,reduceSharingEvent,reduceAccountQuotaEvent} from '../../server/quota-events.ts';
-import {parseAmount,formatAmount} from '../../server/resource-amounts.ts';
+import {beginDomainCommand,finishDomainCommand} from '../../server/events/domain-events.ts';
+import {configureFairQuota,configureFairGroups,syncFairQuota,reserveFairQuota,settleFairQuota,manageFairMember,manageOperatingFunding,previewFairQuotaCharge,normalizeOpeningQuota} from '../../server/quota/fair-share.ts';
+import {splitQuotaState,composeQuotaState,reduceSharingEvent,reduceAccountQuotaEvent} from '../../server/events/quota-projections.ts';
+import {parseAmount,formatAmount} from '../../server/quota/resource-amounts.ts';
 
 const now=1800000000000,members=['a','b','c','d'];
 const request={model:'nai-diffusion-5',width:1024,height:1024,steps:23};

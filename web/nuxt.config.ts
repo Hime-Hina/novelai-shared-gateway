@@ -13,18 +13,11 @@ export default defineNuxtConfig({
       for (const resource of Object.values(manifest)) resource.prefetch = false
     }
   },
-  routeRules: {
-    '/index.html': { redirect: '/' },
-    '/account.html': { redirect: '/' },
-    '/owner.html': { redirect: '/owner' },
-    '/admin.html': { redirect: '/admin' },
-    '/admin/members.html': { redirect: '/admin' }
-  },
   // 开发和产物使用同一组 API 路由，业务与持久化统一交给执行器。
   nitro: {
     preset: 'node-server',
     // 外层纯模块须同时打入开发 worker，不能留下相对生成目录的运行时 import。
-    externals: { inline: ['generation-payload.ts', 'shared-surface.ts'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
+    externals: { inline: ['generation/payload-budget.ts', 'http/api-surface.ts'].map(name => fileURLToPath(new URL('../server/' + name, import.meta.url))) }
   },
   typescript: { strict: true, tsConfig: { compilerOptions: { allowJs: true } } },
   app: { head: { htmlAttrs: { lang: 'zh-CN' }, title: 'NovelAI 共享', meta: [{ name: 'referrer', content: 'same-origin' }], link: [{ rel: 'icon', href: 'data:,' }] } }

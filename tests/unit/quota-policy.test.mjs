@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {hasActiveOpusSubscription,isUsableOpus,isQuotaSnapshotFresh,quotaTimestamp} from '../../server/quota-policy.ts';
+import {hasActiveOpusSubscription,isUsableOpus,isQuotaSnapshotFresh,quotaTimestamp} from '../../server/quota/eligibility.ts';
 
 const now=1800000000000;
 test('共享订阅规则保留到期端点和同步错误区别',()=>{

@@ -1,4 +1,4 @@
-// Local browser baseline only: real gateway routes/static assets, synthetic users and upstreams.
+// Local browser baseline only: current Nuxt pages, real gateway routes and synthetic data.
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
@@ -7,11 +7,16 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
-import { createMemberSession, reconcileMemberSessionOwner } from '../../server/member-auth.ts';
-import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { createMemberSession, reconcileMemberSessionOwner } from '../../server/members/authentication.ts';
+import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
 import { createLegacyDatabaseFixture } from './legacy-database-fixture.mjs';
+
+assert.ok(process.env.BROWSER_NUXT_URL, 'BROWSER_NUXT_URL is required for the current Nuxt pages');
+const nuxtUrl = new URL(process.env.BROWSER_NUXT_URL);
+assert.ok(nuxtUrl.protocol === 'http:' && nuxtUrl.hostname === '127.0.0.1' && nuxtUrl.pathname === '/'
+  && !nuxtUrl.username && !nuxtUrl.password && !nuxtUrl.search && !nuxtUrl.hash, 'Nuxt fixture must be a loopback HTTP origin');
 
 let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-browser-baseline-'));
 const adminToken = randomBytes(32).toString('hex');
@@ -99,8 +104,6 @@ const reservation = http.createServer();
 const gatewayPort = await listen(reservation);
 await new Promise(resolve => reservation.close(resolve));
 const gatewayUrl = `http://127.0.0.1:${gatewayPort}`;
-const nuxtUrl = process.env.BROWSER_NUXT_URL ? new URL(process.env.BROWSER_NUXT_URL) : null;
-if (nuxtUrl) assert.ok(nuxtUrl.protocol === 'http:' && nuxtUrl.hostname === '127.0.0.1' && nuxtUrl.pathname === '/', 'Nuxt fixture must be a loopback HTTP origin');
 Object.assign(process.env, {
   ADMIN_TOKEN: adminToken, DATA_DIR: dataDir, HOST: '127.0.0.1', PORT: String(gatewayPort),
   NOVELAI_API_URL: 'https://nai-baseline.invalid', NOVELAI_ACCOUNT_API_URL: 'https://nai-baseline.invalid',
@@ -134,7 +137,7 @@ const front = http.createServer((req, res) => {
     res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify({ error: 'OAuth is disabled in the local browser baseline; use a synthetic role entry.' })); return;
   }
-  const frontend = nuxtUrl && (['/', '/account.html', '/owner', '/owner/', '/owner.html', '/admin', '/admin/', '/admin.html', '/admin/members.html'].includes(pathname) || pathname.startsWith('/_nuxt/'));
+  const frontend = ['/', '/owner', '/owner/', '/admin', '/admin/'].includes(pathname) || pathname.startsWith('/_nuxt/');
   const upstream = http.request((frontend ? nuxtUrl.origin : gatewayUrl) + req.url, { method: req.method, headers: req.headers }, reply => {
     if (pathname === '/api/member/login-options' && req.method === 'GET' && reply.statusCode === 200) {
       const chunks = [];
@@ -174,8 +177,8 @@ for (const role of ['anonymous', 'member', 'owner']) {
   assert.equal(stats.status, role === 'owner' ? 200 : 403);
   if (role === 'owner') assert.equal((await stats.json()).totals.total, 120);
 }
-for (const asset of ['/', '/account.html', '/account.js', '/members.css', '/shared-status.js', '/owner', '/owner/', '/owner.html', '/admin', '/admin/', '/admin.html', '/admin/members.html', '/management.js']) {
-  assert.equal((await realFetch(baseUrl + asset)).status, 200, asset);
+for (const page of ['/', '/owner', '/owner/', '/admin', '/admin/']) {
+  assert.equal((await realFetch(baseUrl + page)).status, 200, page);
 }
 await assert.rejects(fetch('https://forbidden-baseline.invalid/'), /blocked external/);
 assert.equal(mocks.generation, 0);

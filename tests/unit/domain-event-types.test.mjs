@@ -7,9 +7,9 @@ import ts from 'typescript';
 test('事件写入判别联合拒绝丢失生命周期事实与错误金额类型',()=>{
   const filename=fileURLToPath(new URL('./domain-event-types.fixture.ts',import.meta.url));
   const source=`
-import {recordDomainEvent,type DomainEventInput} from '../../server/domain-events.ts';
-import type {FairCharge} from '../../server/fair-quota.ts';
-import type {AccountingJob} from '../../server/generation-accounting.ts';
+import {recordDomainEvent,type DomainEventInput} from '../../server/events/domain-events.ts';
+import type {FairCharge} from '../../server/quota/fair-share.ts';
+import type {AccountingJob} from '../../server/generation/accounting.ts';
 declare const db: object;
 declare const charge: FairCharge;
 declare const review: NonNullable<AccountingJob['generationReview']>;

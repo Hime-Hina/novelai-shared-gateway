@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));

@@ -4,10 +4,10 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { JsonStore } from '../../server/store.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/fair-quota.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { recordGenerationFailure, refundGenerationJob } from '../../server/generation-execution.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, resolveFairQuotaCharge } from '../../server/quota/fair-share.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { recordGenerationFailure, refundGenerationJob } from '../../server/generation/execution.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const now = Date.now();

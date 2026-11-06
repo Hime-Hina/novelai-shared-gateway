@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/providers.ts';
-import { validateImageBytes } from '../../server/native-image.ts';
+import { fetchNovelAiAccountQuota, generateNovelAiImage } from '../../server/protocols/novelai-client.ts';
+import { validateImageBytes } from '../../server/protocols/native-image.ts';
 import { readNativeEvents } from '../helpers/native-stream-client.mjs';
 
 const script = fileURLToPath(new URL('../../scripts/mock-novelai.mjs', import.meta.url));

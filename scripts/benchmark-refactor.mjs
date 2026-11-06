@@ -36,7 +36,7 @@ function cleanEnvironment(){return Object.fromEntries(Object.entries(process.env
 function revision(source){try{return execFileSync('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch{return null;}}
 async function sourceEvidence(source){
   const files=['package.json','pnpm-lock.yaml'];
-  for(const directory of ['server','public'])for(const name of await fs.readdir(path.join(source,directory),{recursive:true}))if(/\.(?:ts|js|mjs|sql|json)$/.test(name))files.push(`${directory}/${name.split(path.sep).join('/')}`);
+  for(const directory of ['server',...(existsSync(path.join(source,'public'))?['public']:[])])for(const name of await fs.readdir(path.join(source,directory),{recursive:true}))if(/\.(?:ts|js|mjs|sql|json)$/.test(name))files.push(`${directory}/${name.split(path.sep).join('/')}`);
   files.sort();const digests=Object.fromEntries(await Promise.all(files.map(async file=>[file,hash(await fs.readFile(path.join(source,file)))])));
   return {path:source,commit:revision(source),codeSha256:hash(JSON.stringify(digests)),files:digests};
 }
@@ -129,7 +129,13 @@ async function worker(config){
     QUEUE_MAX_ACTIVE_GLOBAL:String(config.active+10),QUEUE_MAX_ACTIVE_PER_MEMBER:String(config.active+10),RUNTIME_JOBS_CACHE_LIMIT:'500',RUNTIME_LEDGER_CACHE_LIMIT:'500'});
   const NativeDate=Date;globalThis.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[config.now]));}static now(){return config.now;}};
   globalThis.fetch=()=>{throw new Error('External network is disabled in the benchmark');};
-  const load=file=>import(pathToFileURL(path.join(config.source,'server',file+'.ts')).href);
+  // Historical benchmark baselines keep their flat server paths.
+  const grouped=existsSync(path.join(config.source,'server/storage/sqlite-store.ts'));
+  const modulePaths={store:'storage/sqlite-store','fair-quota':'quota/fair-share','activity-heatmap':'reports/activity-heatmap',
+    'owner-operations':'members/owner-operations','generation-execution':'generation/execution','result-files':'storage/result-files',
+    'shared-capacity':'quota/shared-capacity','generation-request':'generation/batch-requests','domain-events':'events/domain-events',
+    'event-store':'events/event-store','storage-migrations':'storage/sqlite-migrations'};
+  const load=file=>import(pathToFileURL(path.join(config.source,'server',(grouped?modulePaths[file]||file:file)+'.ts')).href);
   const storeModule=await load('store'),quota=await load('fair-quota');
   const require=createRequire(path.join(config.source,'package.json')),Database=require('better-sqlite3');
   const sqliteVersion=new Database(':memory:');const sqlite=sqliteVersion.prepare('SELECT sqlite_version() AS version').get().version;sqliteVersion.close();
@@ -193,7 +199,7 @@ async function measure(config,result,{load,storeModule,quota}){
     else if(phase==='settlement')timings.settlementTransaction.push(elapsed(started));return value;
   }catch(error){if(/SQLITE_BUSY/.test(error.code||error.message))result.failures.busy++;if(/conflict/i.test(error.message))result.failures.conflicts++;throw error;}};
   const {handleGatewayRequest}=await load('gateway-runtime'),heatmap=await load('activity-heatmap'),owner=await load('owner-operations');
-  const execution=existsSync(path.join(config.source,'server/generation-execution.ts'))?await load('generation-execution'):null;
+  const execution=existsSync(path.join(config.source,'server/generation/execution.ts'))||existsSync(path.join(config.source,'server/generation-execution.ts'))?await load('generation-execution'):null;
   const resultFiles=await load('result-files'),capacity=await load('shared-capacity'),batch=await load('generation-request');
   const domain=execution?await load('domain-events'):null,baseTime=config.now;
   if(execution&&(!execution.reserveQueuedGeneration||!execution.completeGenerationCommand))throw new Error('Candidate must expose the production generation commands');

@@ -4,8 +4,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { JsonStore } from '../../server/store.ts';
-import * as auth from '../../server/member-auth.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import * as auth from '../../server/members/authentication.ts';
 
 async function open(t, seed, directory) {
  const store=new JsonStore(directory || await mkdtemp(path.join(tmpdir(),'nai-member-auth-')));await store.init();

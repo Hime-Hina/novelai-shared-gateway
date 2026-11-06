@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as fair from '../../server/fair-quota.ts';
-import { createGenerationPayloadBudget } from '../../server/generation-request.ts';
-import { createGenerationAdmission, requestCacheKey } from '../../server/generation-admission.ts';
-import { reserveQueuedGeneration, refundGenerationJob, failGenerationCommand, cancelReservedGeneration } from '../../server/generation-execution.ts';
-import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
-import { availableSharedAccountSlots, physicalAccountLoad } from '../../server/queue-dispatch.ts';
-import { generationCost } from '../../server/generation-queries.ts';
+import * as fair from '../../server/quota/fair-share.ts';
+import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
+import { createGenerationAdmission, requestCacheKey } from '../../server/generation/admission.ts';
+import { reserveQueuedGeneration, refundGenerationJob, failGenerationCommand, cancelReservedGeneration } from '../../server/generation/execution.ts';
+import { memberGenerationCapabilities } from '../../server/generation/capabilities.ts';
+import { availableSharedAccountSlots, physicalAccountLoad } from '../../server/generation/queue-dispatch.ts';
+import { generationCost } from '../../server/generation/request-queries.ts';
 function fixture(tier=3) {
   let now=Date.now();
   const db={settings:{},users:['a','b','c','d'].map(id=>({id,token:id,balance:100000})),accounts:[{id:'opus',quotaTier:tier,subscriptionActive:true,enabled:true,quotaFixed:10000,quotaPurchased:0,v5UsagePercent:100,v5UsageTimeUntilNextPercent:0,quotaCheckedAt:now}],jobs:[],ledger:[]};

@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { crc32, BASE_MODELS, NATIVE_LIMITS, NATIVE_SAMPLERS, NATIVE_NOISE_SCHEDULES, NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES } from '../../server/native-image.ts';
-import { configureFairQuota, syncFairQuota } from '../../server/fair-quota.ts';
-import { readNativeBody } from '../../server/native-body.ts';
-import { V5_MEDIUM_PROFILE } from '../../server/v5-medium.ts';
-import { generateNovelAiImage } from '../../server/providers.ts';
-import { memberGenerationCapabilities } from '../../server/generation-capabilities.ts';
+import { crc32, BASE_MODELS, NATIVE_LIMITS, NATIVE_SAMPLERS, NATIVE_NOISE_SCHEDULES, NATIVE_VIBE_MODELS, NATIVE_BLUR_VALUES } from '../../server/protocols/native-image.ts';
+import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
+import { readNativeBody } from '../../server/protocols/native-body.ts';
+import { V5_MEDIUM_PROFILE } from '../../server/protocols/v5-medium.ts';
+import { generateNovelAiImage } from '../../server/protocols/novelai-client.ts';
+import { memberGenerationCapabilities } from '../../server/generation/capabilities.ts';
 import { normalizeMemberGeneration, materializeMemberGeneration, quoteMemberGeneration, parseMemberGenerationConfirmation,
   memberGenerationIntentFingerprint, assertMemberGenerationConfirmation, assertMemberGenerationCost, assertMemberGenerationVersions,
-  addMemberGenerationResources, memberGenerationInput, memberGenerationInputAsset } from '../../server/member-generation.ts';
+  addMemberGenerationResources, memberGenerationInput, memberGenerationInputAsset } from '../../server/generation/member-contract.ts';
 
 const NOW = 1800000000000;
 const zero = () => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });

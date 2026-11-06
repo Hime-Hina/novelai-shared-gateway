@@ -117,11 +117,11 @@ async function fixture(t, nuxtEntry, { holdFirst = false, holdFileSync = false, 
     return pathToFileURL(filename).href;
   };
   const { bootstrap } = await import(packaged('scripts/bootstrap.mjs'));
-  const { JsonStore } = await import(packaged('server/store.js'));
-  const { syncFairQuota, quoteFairRequest } = await import(packaged('server/fair-quota.js'));
-  const { nativeImagesMsgpack } = await import(packaged('server/native-stream.js'));
-  const { createMemberSession } = await import(packaged('server/member-auth.js'));
-  const { recordDomainEvent } = await import(packaged('server/domain-events.js'));
+  const { JsonStore } = await import(packaged('server/storage/sqlite-store.js'));
+  const { syncFairQuota, quoteFairRequest } = await import(packaged('server/quota/fair-share.js'));
+  const { nativeImagesMsgpack } = await import(packaged('server/protocols/native-stream.js'));
+  const { createMemberSession } = await import(packaged('server/members/authentication.js'));
+  const { recordDomainEvent } = await import(packaged('server/events/domain-events.js'));
   const Database = runtimeRequire('better-sqlite3');
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-nuxt-executor-'));
   const adminToken = 'synthetic-nuxt-executor-admin-token-only';
@@ -392,6 +392,20 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
 
   await t.test('只强杀 Nuxt 不取消在途或排队任务，恢复后仅原成员可查询领取', { timeout: 60000 }, async sub => {
     const f = await fixture(sub, nuxtEntry, { holdFirst: true });
+    for (const route of ['/', '/owner', '/admin']) {
+      const page = await f.request(route);
+      assert.equal(page.status, 200, route);
+      assert.match(page.headers['content-type'], /text\/html/);
+    }
+    for (const route of ['/index.html', '/account.html', '/owner.html', '/admin.html', '/admin/members.html', '/account.js',
+      '/management.js', '/admin/members.js', '/members.css', '/shared-status.js', '/member-events.js', '/generation-pricing.js', '/v5-medium.js']) {
+      for (const method of ['GET', 'HEAD']) {
+        const retired = await f.request(route, { method });
+        assert.equal(retired.status, 404, `${method} ${route}`);
+        assert.equal(retired.headers.location, undefined, `${method} ${route}`);
+        if (method === 'HEAD') assert.equal(retired.body.length, 0);
+      }
+    }
     const first = json(await f.request('/api/jobs', { body: jobBody('synthetic running after Nuxt kill') }), 202);
     await until(() => f.generations() === 1, 10000, 'first accepted task did not reach the synthetic upstream');
     const second = json(await f.request('/api/jobs', { body: jobBody('synthetic queued after Nuxt kill') }), 202);

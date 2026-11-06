@@ -14,6 +14,8 @@ const webBody = '<!doctype html><title>Synthetic web</title>' + '<p>synthetic pa
 const apiPadding = 'synthetic-api-response '.repeat(100);
 const callbackCookies = ['member_session=synthetic-new-session; Path=/api/member; HttpOnly; SameSite=Strict',
   'member_oauth=; Max-Age=0; Path=/api/member; HttpOnly; SameSite=Lax'];
+const retiredPaths = ['/index.html', '/account.html', '/owner.html', '/admin.html', '/admin/members.html', '/account.js',
+  '/management.js', '/admin/members.js', '/members.css', '/shared-status.js', '/member-events.js', '/generation-pricing.js', '/v5-medium.js'];
 
 async function listen(server) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening'); return server.address().port;
@@ -42,6 +44,10 @@ async function fixture(t) {
     for await (const chunk of req) chunks.push(chunk);
     received.push({ method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks).toString() });
     res.setHeader('x-test-upstream', 'nuxt');
+    if (retiredPaths.includes(req.url.split('?')[0])) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Page not found' })); return;
+    }
     if (req.method === 'GET' && req.url.split('?')[0] === '/api/member/discord/callback') {
       res.writeHead(303, { location: '/?login=synthetic%20success', 'set-cookie': callbackCookies });
       res.end(); return;
@@ -132,8 +138,26 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async t => {
         }
       }
     }
-    for (const url of ['/api/admin/member-management', '/api/admin/unknown/deep', '/api/health', '/memory', '/admin/members.html']) {
+    for (const url of ['/api/admin/member-management', '/api/admin/unknown/deep', '/api/health', '/memory']) {
       for (const method of ['GET', 'POST', 'PATCH', 'HEAD', 'OPTIONS']) await routed('private', url, { method });
+    }
+  });
+
+  await t.test('retired HTML, scripts and styles stay 404 without redirects or a page fallback', async () => {
+    for (const side of ['public', 'private']) for (const url of retiredPaths) for (const method of ['GET', 'HEAD']) {
+      const port = side === 'public' ? f.publicPort : f.privatePort;
+      const host = side === 'public' ? f.publicHost : f.privateHost;
+      const before = f.received.length;
+      const response = await request(port, host, url, { method });
+      assert.equal(response.status, 404, `${side} ${method} ${url}`);
+      assert.equal(response.headers.location, undefined, `${side} ${method} ${url}`);
+      assert.ok(!response.body.includes(Buffer.from(webBody)));
+      if (method === 'HEAD') assert.equal(response.body.length, 0);
+      if (side === 'public' && url.startsWith('/admin')) assert.equal(f.received.length, before);
+      else {
+        assert.equal(response.headers['x-test-upstream'], 'nuxt');
+        assert.equal(f.received.at(-1).url, url);
+      }
     }
   });
 

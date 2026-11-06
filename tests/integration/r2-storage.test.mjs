@@ -4,9 +4,9 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { JsonStore } from '../../server/store.ts';
-import { archiveColdImage } from '../../server/cold-images.ts';
-import { ImageStorage, R2Storage, R2_IMAGE_LIMIT_BYTES, r2Config, signedR2Request } from '../../server/r2-storage.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { archiveColdImage } from '../../server/storage/cold-images.ts';
+import { ImageStorage, R2Storage, R2_IMAGE_LIMIT_BYTES, r2Config, signedR2Request } from '../../server/storage/r2-storage.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64');
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');

@@ -4,11 +4,11 @@ import http from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { createMemberSession } from '../../server/member-auth.ts';
-import { handleMemberRoutes } from '../../server/member-routes.ts';
-import { summarizeOwnerUsage } from '../../server/owner-operations.ts';
-import { sharedSurface } from '../../server/shared-surface.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { createMemberSession } from '../../server/members/authentication.ts';
+import { handleMemberRoutes } from '../../server/members/http-routes.ts';
+import { summarizeOwnerUsage } from '../../server/members/owner-operations.ts';
+import { sharedSurface } from '../../server/http/api-surface.ts';
 
 test('完整持久历史可分页、筛选和排序，认证与图片归属不被查询参数绕过', async t => {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-history-'))); await store.init();

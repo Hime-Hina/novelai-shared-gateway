@@ -10,9 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota, settleFairQuota } from '../../server/quota/fair-share.ts';
+import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -255,4 +255,4 @@ test('超过500份结果的冷历史PNG和Vibe在重启后仍有记录、文件�
     await f.stop();
   }
 });
-import { recordGenerationFailure } from '../../server/generation-execution.ts';
+import { recordGenerationFailure } from '../../server/generation/execution.ts';

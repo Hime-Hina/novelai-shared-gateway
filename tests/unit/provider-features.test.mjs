@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { openAiModelsResponse } from '../../server/openai-models.ts';
+import { openAiModelsResponse } from '../../server/protocols/openai-models.ts';
 import { deflateRawSync, deflateSync, crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { encode } from '@msgpack/msgpack';
-import { generationPrice, sizeMap } from '../../public/generation-pricing.js';
-import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/providers.ts';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/native-image.ts';
-import { nativeImagesMsgpack } from '../../server/native-stream.ts';
+import { generationPrice, sizeMap } from '../../server/protocols/generation-pricing.js';
+import { generateNovelAiImage, normalizeNovelAiRequest, __providerInternals } from '../../server/protocols/novelai-client.ts';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest, validateImageBytes } from '../../server/protocols/native-image.ts';
+import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
 
 const account = { token: 'offline-provider-feature-token' };
 const env = { NOVELAI_API_URL: 'https://configured-upstream.invalid/' };

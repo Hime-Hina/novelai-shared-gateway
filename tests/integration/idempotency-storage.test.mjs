@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
 
 async function open(t, directory) {
   const store = new JsonStore(directory || await mkdtemp(path.join(tmpdir(), 'nai-idempotency-store-')));

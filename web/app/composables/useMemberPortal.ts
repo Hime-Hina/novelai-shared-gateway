@@ -11,7 +11,7 @@ export function useMemberPortal() {
   const activityInvalidation = reactive<{ version: number; dates: string[] | null }>({ version: 0, dates: null })
   let epoch = 0, disposed = false, refreshPending = false, refreshTask: Promise<void> | null = null
   let timer: ReturnType<typeof setInterval> | null = null
-  let events: typeof import('../../../public/member-events.js') | null = null
+  let events: typeof import('../utils/member-events.js') | null = null
 
   function stop() {
     events?.stopMemberEvents()
@@ -58,7 +58,7 @@ export function useMemberPortal() {
   async function start() {
     if (!profileQuery.data.value || !loginOptions.value || disposed || initializing.value) return
     const current = epoch
-    events ||= await import('../../../public/member-events.js')
+    events ||= await import('../utils/member-events.js')
     if (current !== epoch || disposed || !profileQuery.data.value) return
     events.startMemberEvents({
       onStatus: (value: SharedStatus) => { shared.value = value },

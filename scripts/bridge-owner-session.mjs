@@ -80,7 +80,7 @@ async function main() {
   const prep = '/var/lib/novelai-shared-gateway-release-prep/dff5ee4';
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     'data-dir': { type: 'string', default: '/var/lib/novelai-shared-gateway' },
-    'module-root': { type: 'string', default: '/opt/novelai-shared-gateway/releases/dff5ee4cff44ad7c3c29134af9989da96071eaa1/executor/.output/server/node_modules/novelai-shared-gateway/server' },
+    'module-root': { type: 'string' },
     config: { type: 'string', default: '/etc/novelai-shared-gateway/gateway.env' },
     'cookie-file': { type: 'string', default: `${prep}/owner-cookie.json` },
     receipt: { type: 'string', default: `${prep}/owner-session.json` }
@@ -88,7 +88,9 @@ async function main() {
   if (positionals.length !== 1 || !['capture', 'import'].includes(positionals[0])) fail('Use capture or import');
   process.umask(0o077);
   const config = await readFile(values.config, 'utf8'), env = parseEnv(config), configHash = hash(config);
-  const moduleFile = path.join(values['module-root'], 'store.js'), require = createRequire(pathToFileURL(moduleFile));
+  const capture = positionals[0] === 'capture';
+  const moduleRoot = values['module-root'] || `/opt/novelai-shared-gateway/${capture ? 'releases/dff5ee4cff44ad7c3c29134af9989da96071eaa1' : 'current'}/executor/.output/server/node_modules/novelai-shared-gateway/server`;
+  const moduleFile = path.join(moduleRoot, capture ? 'store.js' : 'storage/sqlite-store.js'), require = createRequire(pathToFileURL(moduleFile));
   if (positionals[0] === 'capture') {
     if ((await stat(values['cookie-file'])).mode & 0o077) fail('Cookie input must be private (0600)');
     const Database = require('better-sqlite3'), database = new Database(path.join(values['data-dir'], 'library.sqlite'), { readonly: true, fileMustExist: true });

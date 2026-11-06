@@ -1,5 +1,5 @@
 export default {
   dialect: 'sqlite',
-  schema: './server/storage-schema.ts',
+  schema: './server/storage/sqlite-schema.ts',
   out: './server/migrations'
 };

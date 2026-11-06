@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/native-image.ts';
-import { quoteNativeRequest } from '../../server/native-pricing.ts';
-import { sharedSurface } from '../../server/shared-surface.ts';
+import { parseNativeImageRequest, parseNativeAuxiliaryRequest } from '../../server/protocols/native-image.ts';
+import { quoteNativeRequest } from '../../server/protocols/native-pricing.ts';
+import { sharedSurface } from '../../server/http/api-surface.ts';
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const fixture = name => JSON.parse(readFileSync(new URL(`../fixtures/${name}.json`, import.meta.url), 'utf8'));

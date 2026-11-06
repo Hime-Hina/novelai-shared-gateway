@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { JsonStore } from '../../server/store.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/fair-quota.ts';
-import { activateNextBatchJob } from '../../server/generation-request.ts';
-import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation-queries.ts';
-import { reserveQueuedGeneration } from '../../server/generation-execution.ts';
-import { createRequestControls } from '../../server/generation-delivery.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/quota/fair-share.ts';
+import { activateNextBatchJob } from '../../server/generation/batch-requests.ts';
+import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation/request-queries.ts';
+import { reserveQueuedGeneration } from '../../server/generation/execution.ts';
+import { createRequestControls } from '../../server/generation/delivery.ts';
 
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 23, seed: 12 };
 async function fixture(t, statuses) {

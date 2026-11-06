@@ -10,11 +10,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/store.ts';
-import { syncFairQuota } from '../../server/fair-quota.ts';
-import { nativeImagesMsgpack } from '../../server/native-stream.ts';
-import { recordDomainEvent } from '../../server/domain-events.ts';
-import { webJobRequestSummary } from '../../server/generation-request.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
+import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { webJobRequestSummary } from '../../server/generation/batch-requests.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));

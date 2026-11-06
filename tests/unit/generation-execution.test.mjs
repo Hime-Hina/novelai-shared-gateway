@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, previewFairQuotaCharge } from '../../server/fair-quota.ts';
-import { normalizeMemberGeneration, materializeMemberGeneration, quoteMemberGeneration } from '../../server/member-generation.ts';
-import { assertConfirmedDispatch } from '../../server/generation-execution.ts';
-import { singleGenerationRequest } from '../../server/generation-request.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, previewFairQuotaCharge } from '../../server/quota/fair-share.ts';
+import { normalizeMemberGeneration, materializeMemberGeneration, quoteMemberGeneration } from '../../server/generation/member-contract.ts';
+import { assertConfirmedDispatch } from '../../server/generation/execution.ts';
+import { singleGenerationRequest } from '../../server/generation/batch-requests.ts';
 
 const now = 1800000000000;
 const v5Charge = {resource:'v5',amount:'0.057803468209',fixed:'0',purchased:'0'};

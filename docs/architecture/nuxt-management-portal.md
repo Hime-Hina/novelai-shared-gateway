@@ -28,8 +28,7 @@ ssh -N -L 127.0.0.1:19080:127.0.0.1:18082 your-user@your-server
 失败。公开入口也不能伪装成 localhost。Compose 的网页与网关仍分别绑定
 回环 3000、18081，互不依赖启停；SSH 隧道使用同源分流入口 18082。
 
-保留 `/owner.html`、`/admin.html`、`/admin/members.html`，重定向到对应
-规范页面；尾斜杠由 Nuxt 原生路由处理，避免配置重定向循环。开发与生产产物
+旧 `/index.html`、`/account.html`、`/owner.html`、`/admin.html`、`/admin/members.html` 及旧页面脚本/样式均返回 404，不保留重定向或后端静态兜底。当前网页只使用 `/`、`/owner`、`/admin`；尾斜杠由 Nuxt 原生路由处理。开发与生产产物
 复用正式查询路由及 Caddy 同源分流；不再用宽泛 devProxy 抢先处理 `/api`。
 
 ## 数据与编辑行为

@@ -267,8 +267,7 @@ OpenAI SSE 使用普通 EOF，部分二进制中断；不会伪造完成帧、�
 
 Caddy 只区分 API 与网页的压缩策略，全部转给 Nuxt；公网上的管理拒绝与私有
 回环入口不变。Caddy 不再连接执行器，也不需要内部密钥。未知 API 的协议拒绝
-由同一执行器处理，避免维护两份路由白名单。首页 `/index.html` 与现有 HTML
-别名重定向到 Nuxt 页面；这仅完成入口迁移，不表示旧 JS 业务已完成 T01 类型迁移。
+由同一执行器处理，避免维护两份路由白名单。网页只保留 Nuxt 的 `/`、`/owner`、`/admin`；旧 HTML、JS 与 CSS 入口全部返回 404，无重定向或静态兜底。独立后端及执行器只提供 API。计价规则位于 `server/protocols/`，成员通知客户端位于 `web/app/utils/member-events.js`，不再复制根 `public/` 文件树。
 
 验证覆盖正式开发与构建路由，不再注入测试专用 handler：
 

@@ -275,7 +275,7 @@ fork 为 [Hime-Hina/novelai-shared-gateway](https://github.com/Hime-Hina/novelai
 
 当前调用链为：成员 Key 与资格检查 → JSON 或 multipart 解析 → 参数归一与核价 → 持久任务入队 → 派发前个人额度预扣 → 以共享账户 PST 调用 `image.novelai.net` → 提取最终图片、保存并结算 → 重新打包客户端响应。V4/V5 默认向上游请求 MessagePack 流，旧模型可以走普通生图接口；客户端访问普通 ZIP 路径，不代表上游也采用普通路径。
 
-主要实现位于 [native-image.ts](../../server/native-image.ts)、[native-pricing.ts](../../server/native-pricing.ts)、[fair-quota.ts](../../server/fair-quota.ts)、[providers.ts](../../server/providers.ts)、[native-stream.ts](../../server/native-stream.ts)和 [HTTP 入口](../../server/index.ts)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
+主要实现位于 [native-image.ts](../../server/protocols/native-image.ts)、[native-pricing.ts](../../server/protocols/native-pricing.ts)、[fair-quota.ts](../../server/quota/fair-share.ts)、[providers.ts](../../server/protocols/novelai-client.ts)、[native-stream.ts](../../server/protocols/native-stream.ts)和 [HTTP 入口](../../server/index.ts)。OpenAI 风格聊天生图是另外一层参数与结果转换，不属于 NovelAI 官方接口。
 
 | 维度 | 官方公开契约 | 当前网关 |
 | --- | --- | --- |
@@ -295,8 +295,8 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 
 改造前会话全员固定 12 小时，保存在进程内 Map，重启即失效。A01 先改为持久会话，2026-10-18 再按用户确认增加可见网页续期；以下规则已于 2026-10-19 随 dff5ee4 部署生产：
 
-- [member-auth.ts](../../server/member-auth.ts) 中 owner 空闲期限为 1 天，普通成员为 7 天；可见网页的 me/管理摘要查询续期，后台标签页、SSE 和客户端生图不续期。过期或撤销后不能续期恢复。
-- [member-routes.ts](../../server/member-routes.ts) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
+- [member-auth.ts](../../server/members/authentication.ts) 中 owner 空闲期限为 1 天，普通成员为 7 天；可见网页的 me/管理摘要查询续期，后台标签页、SSE 和客户端生图不续期。过期或撤销后不能续期恢复。
+- [member-routes.ts](../../server/members/http-routes.ts) 的 Max-Age/Expires 使用同一服务器截止，保持 HttpOnly、SameSite=Strict、Path=/api/member 与公网 Secure。
 - 随机 Cookie 只在浏览器，SQLite 冷表保存摘要、成员、版本、固定截止和签发角色绑定；重启保留有效会话。旧 Map 无法迁移，首次升级需重新登录一次。
 - 停用、删除、重置认证版本会撤销对应会话；Discord 再次登录也会更新认证版本，使该成员之前的会话失效。
 - Discord 成员资格最多缓存五分钟；资格失效或授权异常会阻止后续访问。退出网页只结束当前网页会话，不改变 API Key 的调用资格。
@@ -311,7 +311,7 @@ Swagger 路径描述偏向 SSE，但参数枚举也支持 MessagePack，应结�
 
 ## 实时更新
 
-改造前公共状态通过 SSE 发送，但每条连接在服务端每两秒读取状态；成员钱包和最近任务依赖手动刷新，管理页还有三十秒轮询。以下改进已由 R01/N01–N03 实施，当前采用[事务后事件与合并刷新](../architecture/state-events.md)。[JobPreviews](../../server/job-previews.ts) 仍专用于图片预览。
+改造前公共状态通过 SSE 发送，但每条连接在服务端每两秒读取状态；成员钱包和最近任务依赖手动刷新，管理页还有三十秒轮询。以下改进已由 R01/N01–N03 实施，当前采用[事务后事件与合并刷新](../architecture/state-events.md)。[JobPreviews](../../server/generation/job-previews.ts) 仍专用于图片预览。
 
 建议继续使用浏览器原生 EventSource 与 Node 事件能力，不新增 WebSocket 服务或消息中间件：
 
@@ -419,7 +419,7 @@ HAR、trace 和截图可能包含 Cookie、Authorization、Key、提示词或成
 
 生产只读结果见[近期任务排队基线](queue-baseline.md)，不把本地模拟结果称为生产排队结论。以最近 24 小时和七天的时间字段、模型、任务状态、错误状态及匿名成员标识统计，覆盖成功、失败、取消、正在等待和超时请求；不足七天的实际历史跨度及未落库拒绝率明确标为缺失。
 
-复用 [owner 用量统计](../../server/owner-operations.ts)和 [readOwnerJobRows](../../server/store.ts) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
+复用 [owner 用量统计](../../server/members/owner-operations.ts)和 [readOwnerJobRows](../../server/storage/sqlite-store.ts) 的持久历史查询，按需要补字段。现有平均值不足以定位长尾，输出样本数、P50、P95、最大值及缺失记录数，并按模型、入口、成员和时段分组。
 
 | 阶段 | 时间字段 | 能解释的问题 |
 | --- | --- | --- |

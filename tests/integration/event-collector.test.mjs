@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { beginDomainCommand, inheritDomainCommand, recordDomainEvent, setDomainCommandReceipt, finishDomainCommand } from '../../server/domain-events.ts';
+import { beginDomainCommand, inheritDomainCommand, recordDomainEvent, setDomainCommandReceipt, finishDomainCommand } from '../../server/events/domain-events.ts';
 
 const fact={eventType:'MemberEligibilityChanged',streamId:'sharing:default',payload:{memberId:'member',enabled:true}};
 test('closing a command closes all draft aliases and leaves the next command isolated',()=>{

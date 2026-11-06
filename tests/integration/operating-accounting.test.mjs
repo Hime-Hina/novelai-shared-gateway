@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { JsonStore } from '../../server/store.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, manageFairMember, manageOperatingFunding } from '../../server/fair-quota.ts';
-import { launcherSubscription } from '../../server/launcher-subscription.ts';
-import { handleMemberRoutes } from '../../server/member-routes.ts';
-import { parseAmount, formatAmount } from '../../server/resource-amounts.ts';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota, manageFairMember, manageOperatingFunding } from '../../server/quota/fair-share.ts';
+import { launcherSubscription } from '../../server/quota/launcher-subscription.ts';
+import { handleMemberRoutes } from '../../server/members/http-routes.ts';
+import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
 
 const now = 1800000000000;
 const request = { model: 'nai-diffusion-5-full', width: 1024, height: 1024, steps: 29 };
