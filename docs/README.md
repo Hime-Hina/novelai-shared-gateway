@@ -4,13 +4,13 @@
 
 开发入口、架构与 migration 守卫、格式/注释规范和实际验证命令见 [开发与验证](../CONTRIBUTING.md)；当前模块归属见 [服务端](../server/README.md)。
 
-| 目录 | 内容 |
-| --- | --- |
-| [plans](plans/) | 当前重构与后续扩展计划 |
-| [contracts](contracts/) | 现有 API 行为及目标接口契约 |
+| 目录                          | 内容                                 |
+| ----------------------------- | ------------------------------------ |
+| [plans](plans/)               | 当前重构与后续扩展计划               |
+| [contracts](contracts/)       | 现有 API 行为及目标接口契约          |
 | [architecture](architecture/) | 服务边界、业务规则、数据流和前端接入 |
-| [operations](operations/) | 测试部署、生产发布、备份与回退 |
-| [history](history/) | 已完成阶段、评估、实测与性能基线 |
+| [operations](operations/)     | 测试部署、生产发布、备份与回退       |
+| [history](history/)           | 已完成阶段、评估、实测与性能基线     |
 
 ## 计划
 

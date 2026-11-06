@@ -8,17 +8,17 @@
 
 ## 1. 端点与共同规则
 
-| 方法与路径 | 状态 | 用途 |
-| --- | --- | --- |
-| `GET /api/member/generation/capabilities` | 新增 | 描述当前实际支持的操作/参数与版本 |
-| `POST /api/member/generation/quote` | 新增 | 只读规范化、报价和当前准入预览 |
-| `POST /api/member/generation/requests` | 新增 | 带费用确认和幂等键受理，返回 202 |
-| `GET /api/member/requests/:requestId` | 复用并添加兼容字段 | 持久任务/批次状态；原字段含义保持 |
-| `POST /api/member/requests/:requestId/cancel` | 复用 | 仅取消尚未派发 child；在途继续结算 |
-| `GET /api/member/requests/:requestId/events` | 新增 | Cookie 鉴权的状态/预览 SSE |
-| `GET /api/member/requests/:requestId/input` | 新增 | 恢复本人的已提交输入与实际种子 |
-| `GET /api/member/requests/:requestId/inputs/:slot` | 新增 | 按白名单槽位读取该请求的原输入附件 |
-| `GET /api/member/jobs/:jobId/content` | 新增适配 | 以 Cookie 领取已有结果，复用产物读取 |
+| 方法与路径                                         | 状态               | 用途                                 |
+| -------------------------------------------------- | ------------------ | ------------------------------------ |
+| `GET /api/member/generation/capabilities`          | 新增               | 描述当前实际支持的操作/参数与版本    |
+| `POST /api/member/generation/quote`                | 新增               | 只读规范化、报价和当前准入预览       |
+| `POST /api/member/generation/requests`             | 新增               | 带费用确认和幂等键受理，返回 202     |
+| `GET /api/member/requests/:requestId`              | 复用并添加兼容字段 | 持久任务/批次状态；原字段含义保持    |
+| `POST /api/member/requests/:requestId/cancel`      | 复用               | 仅取消尚未派发 child；在途继续结算   |
+| `GET /api/member/requests/:requestId/events`       | 新增               | Cookie 鉴权的状态/预览 SSE           |
+| `GET /api/member/requests/:requestId/input`        | 新增               | 恢复本人的已提交输入与实际种子       |
+| `GET /api/member/requests/:requestId/inputs/:slot` | 新增               | 按白名单槽位读取该请求的原输入附件   |
+| `GET /api/member/jobs/:jobId/content`              | 新增适配           | 以 Cookie 领取已有结果，复用产物读取 |
 
 - 身份只来自有效的 `nai_member_session` Cookie，继续检查启用状态和既有 Discord 资格。owner 在这些接口也只能代表自己生成和读取；不能通过正文指定其他成员。
 - 复用现有同源检查：POST 必须带匹配的 Origin；GET 拒绝明确跨站 Origin/Sec-Fetch-Site。Cookie/Bearer 互不替代，新接口不接受请求体或 URL 中的成员 Key、PST、memberId、accountId 或 fleetId。
@@ -32,11 +32,11 @@
 
 报价与提交使用同一个 `GenerationInput`：在当前 Native 请求对象的根部增加必填 `operation`，值为 `generate`、`upscale` 或 `encode-vibe`。参数仍位于现有位置，不再嵌一层不同结构。
 
-| 操作 | 业务输入 | 规范化归属 |
-| --- | --- | --- |
-| `generate` | `input/model/action/parameters`，其中 action 为 generate/img2img/infill；`allowPurchasedAnlas` 默认 false | 现有 Native 生图解析、模型能力及 Medium 转换 |
-| `upscale` | 现有放大 body：根部 image、model、scale、width/height、declared_blur_sigma 及购买池授权 | 现有辅助操作解析；按真实图片尺寸校验 |
-| `encode-vibe` | 现有编码 body：根部 image、model、information_extracted、focus_seed/info_extract_seed 及购买池授权 | 现有辅助操作解析，不按图片产物验证编码结果 |
+| 操作          | 业务输入                                                                                                  | 规范化归属                                   |
+| ------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `generate`    | `input/model/action/parameters`，其中 action 为 generate/img2img/infill；`allowPurchasedAnlas` 默认 false | 现有 Native 生图解析、模型能力及 Medium 转换 |
+| `upscale`     | 现有放大 body：根部 image、model、scale、width/height、declared_blur_sigma 及购买池授权                   | 现有辅助操作解析；按真实图片尺寸校验         |
+| `encode-vibe` | 现有编码 body：根部 image、model、information_extracted、focus_seed/info_extract_seed 及购买池授权        | 现有辅助操作解析，不按图片产物验证编码结果   |
 
 成员适配器只先取出 `operation` 和提交专用的 `confirmation`，其余对象传给对应 Native 解析器。未知业务字段继续拒绝；不能因为包装层改变而放宽旧模型限制。JSON 和 multipart 的同一输入必须得到相同规范化意图和报价。
 
@@ -69,16 +69,16 @@
 
 `GET /api/member/generation/capabilities` 返回 200 JSON。描述当前网关真的可以接受的功能，不承诺复刻所有官方操作，不在线抓取官网生成字段表。
 
-| 字段 | 类型/含义 |
-| --- | --- |
-| `contractVersion` | 整数 1 |
-| `versions` | 非空不透明字符串：`capabilities`、`normalization`、`defaults`、`pricing`、`billingPolicy` |
-| `operations` | 当前开放的 generate/upscale/encode-vibe；每个操作的输入格式和产物媒体类型 |
-| `models` | 按 operation 的模型 ID/标签、actions、参数范围/步长/枚举/默认/固定值、角色位置及参考能力 |
+| 字段                    | 类型/含义                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------ |
+| `contractVersion`       | 整数 1                                                                                                 |
+| `versions`              | 非空不透明字符串：`capabilities`、`normalization`、`defaults`、`pricing`、`billingPolicy`              |
+| `operations`            | 当前开放的 generate/upscale/encode-vibe；每个操作的输入格式和产物媒体类型                              |
+| `models`                | 按 operation 的模型 ID/标签、actions、参数范围/步长/枚举/默认/固定值、角色位置及参考能力               |
 | `models[].requirements` | 明确的组合约束，例如 img2img 需要 image、infill 需要 image+mask，Vibe/Precise 互斥；按共同模型能力生成 |
-| `models[].transforms` | 必要转换的说明，例如 Medium 固定步数与负面词；包含可供 UI 展示的原因代码 |
-| `limits` | 线传/规范化/附件限制、部件数、sampleCount、像素限制、现有队列上限 |
-| `billing` | 资源单位、V5 estimated 标记、购买池默认不授权、当前已启用的 fallback/免费政策可见信息 |
+| `models[].transforms`   | 必要转换的说明，例如 Medium 固定步数与负面词；包含可供 UI 展示的原因代码                               |
+| `limits`                | 线传/规范化/附件限制、部件数、sampleCount、像素限制、现有队列上限                                      |
+| `billing`               | 资源单位、V5 estimated 标记、购买池默认不授权、当前已启用的 fallback/免费政策可见信息                  |
 
 `operations` 元素固定为 `{id, inputContentTypes, outputMimeTypes}`；`models` 以 `(operation, id)` 唯一。模型描述的最小形状如下，字段路径沿用 Native body，例如 `parameters.steps` 或辅助操作的根部 `scale`：
 
@@ -255,18 +255,18 @@ V5/Anlas fallback 是互斥收费路径，不能把两者加起来显示成单�
 
 新端点的 JSON 错误统一为 `{statusCode, code, message, details?}`，details 只允许字段名/限制、requote 提示和本人 requestId 等有限信息，不回显正文、提示词、图片或认证信息。已开始的 SSE 不能再改 HTTP 状态，使用明确的 auth-expired/error 事件或中断连接；业务任务失败由 state/complete 的持久状态描述。
 
-| HTTP | code 示例 | 含义 |
-| --- | --- | --- |
-| 400 | invalid_body、invalid_idempotency_key、confirmation_required | 结构、幂等头或费用确认缺失 |
-| 401 / 403 | session_expired、membership_required、origin_rejected、member_stopped | 会话/资格/同源/新增任务权限；停止接单不阻止读取旧结果 |
-| 402 | insufficient_balance、purchased_anlas_not_authorized | 当前余额或购买池条件不足 |
-| 404 | request_not_found、job_not_found、input_not_found | 不存在或不属于调用者的资源 |
-| 409 | quote_changed、cost_limit_exceeded、idempotency_conflict、result_not_ready、generation_failed | 需重新报价、超原授权、同键冲突或结果状态 |
-| 410 | result_unavailable、input_unavailable | 已知历史对象的内容确实不再可用，不触发重生成 |
-| 413 / 415 / 422 | payload_too_large、unsupported_media_type、invalid_parameters | 大小、媒体类型、参数/模型组合不合法 |
-| 429 | queue_full、free_image_limit、payload_budget_exhausted | 临时容量限制；有明确恢复时刻才给 retryAt/Retry-After |
-| 503 | executor_unavailable、upstream_unavailable | 执行器不可用或当前上游/快照不可用 |
-| 500 | internal_error | 未预期内部故障，保留脱敏诊断关联，不回显内部异常 |
+| HTTP            | code 示例                                                                                     | 含义                                                  |
+| --------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| 400             | invalid_body、invalid_idempotency_key、confirmation_required                                  | 结构、幂等头或费用确认缺失                            |
+| 401 / 403       | session_expired、membership_required、origin_rejected、member_stopped                         | 会话/资格/同源/新增任务权限；停止接单不阻止读取旧结果 |
+| 402             | insufficient_balance、purchased_anlas_not_authorized                                          | 当前余额或购买池条件不足                              |
+| 404             | request_not_found、job_not_found、input_not_found                                             | 不存在或不属于调用者的资源                            |
+| 409             | quote_changed、cost_limit_exceeded、idempotency_conflict、result_not_ready、generation_failed | 需重新报价、超原授权、同键冲突或结果状态              |
+| 410             | result_unavailable、input_unavailable                                                         | 已知历史对象的内容确实不再可用，不触发重生成          |
+| 413 / 415 / 422 | payload_too_large、unsupported_media_type、invalid_parameters                                 | 大小、媒体类型、参数/模型组合不合法                   |
+| 429             | queue_full、free_image_limit、payload_budget_exhausted                                        | 临时容量限制；有明确恢复时刻才给 retryAt/Retry-After  |
+| 503             | executor_unavailable、upstream_unavailable                                                    | 执行器不可用或当前上游/快照不可用                     |
+| 500             | internal_error                                                                                | 未预期内部故障，保留脱敏诊断关联，不回显内部异常      |
 
 quote 的 admission.reasons 可使用同一代码，但认证/结构错误不能塞进 200 当普通预览。提交后发生的失败写入 job.errorCode，后续 GET 查询返回 200 及真实状态，不把任务业务失败混成查询服务失败。
 
@@ -276,20 +276,20 @@ quote 的 admission.reasons 可使用同一代码，但认证/结构错误不能
 
 能力定义和类型由共同业务模块拥有，quote 与 submit 不各实现一套 parser/price。前端消费类型及 DTO；SQLite 写入、认证和生成仍只在执行器。现有 JobPreviews、原生正文解析、请求查询/取消、ImageStorage 和结果恢复继续复用。
 
-| 编号 | 必须运行的场景 | 判据/对应工作包 |
-| --- | --- | --- |
-| G01 | 当前模型/操作/固定参数和不支持组合 | capabilities 与规范化/报价/提交逐项一致；R03 |
-| G02 | 同输入 JSON/multipart、免费/V5/Anlas、辅助操作 | 规范化指纹、逐图/合计和独立价格期望相同；R03/R04 |
-| G03 | 重复报价、恢复估算、输入出错、正文中断 | 钱包/ledger/任务/预留/事件均未变化，临时预算释放；R03 |
-| G04 | Cookie/Origin、跨成员 ID、过期会话、owner 自用 | 无权限扩大，不要求在页面暴露 Key；R04/R09 |
-| G05 | 同键并发、丢回执、重启、随机 seed、版本变化或模型下架 | 原 confirmation/seed/defaults 保留、原 request 可重放领取、不重复生成；R04/R07 |
-| G06 | 伪造价格/指纹/版本、缺确认、扩大或改变同键上限 | 服务端重新计算，明确 400/409，无半份受理；R04 |
-| G07 | 最后余额/免费名额、购买池、排队后政策或费用路径变化 | 提交/派发重验，不超单张/整批原授权；R07 |
-| G08 | 多图部分成功、取消、失败退款与迟到结果 | 原批次公平、已完成保留、余图停止、迟到不补扣；R07/R09 |
-| G09 | 8 MiB 附件、32 MiB 请求、展开后上限、超过 64 KiB 的合法预览帧 | 新链路完整通过且不放宽旧入口；R04/R09 |
-| G10 | 初始订阅竞态、慢连接、断线、Nuxt/执行器重启 | snapshot/补读无遗漏；预览可丢帧，生成和最终领取不丢；R08/R09 |
-| G11 | 参数/实际 seed 复用、蒙版/参考附件、编码二进制、旧输入缺失 | 仅本人可恢复，附件无第二份持久副本，不猜缺失字段；R04/R09 |
-| G12 | 旧 Native/OpenAI/direct/网页与新接口交叉 | 老协议状态/鉴权/可选幂等保持；同键确认冲突不新建任务；R09/R11 |
+| 编号 | 必须运行的场景                                                | 判据/对应工作包                                                                |
+| ---- | ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| G01  | 当前模型/操作/固定参数和不支持组合                            | capabilities 与规范化/报价/提交逐项一致；R03                                   |
+| G02  | 同输入 JSON/multipart、免费/V5/Anlas、辅助操作                | 规范化指纹、逐图/合计和独立价格期望相同；R03/R04                               |
+| G03  | 重复报价、恢复估算、输入出错、正文中断                        | 钱包/ledger/任务/预留/事件均未变化，临时预算释放；R03                          |
+| G04  | Cookie/Origin、跨成员 ID、过期会话、owner 自用                | 无权限扩大，不要求在页面暴露 Key；R04/R09                                      |
+| G05  | 同键并发、丢回执、重启、随机 seed、版本变化或模型下架         | 原 confirmation/seed/defaults 保留、原 request 可重放领取、不重复生成；R04/R07 |
+| G06  | 伪造价格/指纹/版本、缺确认、扩大或改变同键上限                | 服务端重新计算，明确 400/409，无半份受理；R04                                  |
+| G07  | 最后余额/免费名额、购买池、排队后政策或费用路径变化           | 提交/派发重验，不超单张/整批原授权；R07                                        |
+| G08  | 多图部分成功、取消、失败退款与迟到结果                        | 原批次公平、已完成保留、余图停止、迟到不补扣；R07/R09                          |
+| G09  | 8 MiB 附件、32 MiB 请求、展开后上限、超过 64 KiB 的合法预览帧 | 新链路完整通过且不放宽旧入口；R04/R09                                          |
+| G10  | 初始订阅竞态、慢连接、断线、Nuxt/执行器重启                   | snapshot/补读无遗漏；预览可丢帧，生成和最终领取不丢；R08/R09                   |
+| G11  | 参数/实际 seed 复用、蒙版/参考附件、编码二进制、旧输入缺失    | 仅本人可恢复，附件无第二份持久副本，不猜缺失字段；R04/R09                      |
+| G12  | 旧 Native/OpenAI/direct/网页与新接口交叉                      | 老协议状态/鉴权/可选幂等保持；同键确认冲突不新建任务；R09/R11                  |
 
 能力、报价和生成的 HTTP fixture 使用合成数据；费用预期引用已有独立报价样本及手算小账本，不用待测报价函数生成全部 expected。合同测试与实际 Nuxt＋唯一执行器链路都要通过，不能只验证纯函数或 DTO 编译。
 
