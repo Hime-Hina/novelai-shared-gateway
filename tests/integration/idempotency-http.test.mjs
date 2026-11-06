@@ -13,6 +13,7 @@ import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { syncFairQuota } from '../../server/quota/fair-share.ts';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { EVENT_AUTHORITY_VERSION } from '../../server/events/event-store.ts';
 import { setMemberAdmission } from '../../server/generation/queue-policy.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -225,7 +226,7 @@ test(
       JSON.parse(
         audit.prepare("SELECT value FROM app_meta WHERE key = 'event_authority'").get().value,
       ).version,
-      2,
+      EVENT_AUTHORITY_VERSION,
     );
     for (const key of [undefined, 'null-input']) {
       assert.equal((await call('/ai/generate-image', { body: null, key })).status, 400);
