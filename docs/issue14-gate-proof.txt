@@ -1,0 +1,1 @@
+Synthetic isolated required-check enforcement proof for issue 14. No product change.
