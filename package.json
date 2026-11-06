@@ -9,7 +9,7 @@
     "dev": "node --watch server/index.ts",
     "typecheck": "tsc -p tsconfig.backend.json --noEmit",
     "build": "tsc -p tsconfig.backend.json && node scripts/package-backend.mjs",
-    "test": "node --test tests/unit/*.test.mjs tests/integration/*.test.mjs",
+    "test": "node --test --test-concurrency=4 tests/unit/*.test.mjs tests/integration/*.test.mjs",
     "check": "node scripts/check.mjs",
     "bootstrap": "node scripts/bootstrap.mjs"
   },

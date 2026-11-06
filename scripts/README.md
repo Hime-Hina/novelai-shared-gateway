@@ -2,6 +2,8 @@
 
 首次启动前在项目根目录运行 `pnpm run bootstrap`。先使用 `pnpm install --frozen-lockfile` 安装锁定依赖；只使用新数据目录，不会覆盖现有数据库，详见仓库根目录 README.md。
 
+完整后端测试使用 `pnpm test`，默认最多并行运行 4 个测试文件。各文件会创建 SQLite、读 worker 及测试网关进程，按全部逻辑 CPU 同时启动会争抢资源，导致旧历史开账超过测试的 10 秒启动等待；该等待和业务断言保持不变。此限制只作用于测试文件，不改变用例内部的并发请求或服务的队列并发。CI 复用同一个命令，无须另外指定参数。
+
 `pnpm run build` 将后端源码编译到 `.output/backend/`，保留 `server/` 的职责子目录，再运行 `package-backend.mjs` 写入使用 JavaScript 入口的发布包元数据；Docker 和执行器复用这一文件。源码的 `pnpm start`/`dev` 使用 Node 原生 TypeScript 支持，发布产物仍直接运行编译后的 JavaScript。独立后端只提供 API，网页由 Nuxt 提供；已删除旧静态入口和根 `public/`。整理后构建应先清理受控生成目录，防止旧平铺 JavaScript 掩盖错误引用。
 
 离线重放使用 `node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite [--max-commits=100] [--through=COMMIT]`，参数使用等号。源库只读，目标须为新的隔离库或同一历史的续跑目标；游标停在完整提交边界，完成后重复运行不新增业务效果。CLI 不生成图片、不请求上游、不复制本地/R2 产物；必须同时保留完整输入/上下文、inline 产物、私有诊断、认证和实际文件/R2 清单。版本、opening、退休与恢复限制见[结果恢复](../docs/architecture/result-recovery.md)。发布包工具仍位于 `executor/.output/server/node_modules/novelai-shared-gateway/scripts/`，已有 `package-runtime.mjs` 复制编译脚本及完整 SQL/journal，CI 对解包结果运行离线重放检查。
