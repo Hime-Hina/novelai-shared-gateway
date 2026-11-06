@@ -7,5 +7,6 @@
   "trailingComma": "all",
   "endOfLine": "lf",
   "proseWrap": "preserve",
-  "embeddedLanguageFormatting": "off"
+  "embeddedLanguageFormatting": "off",
+  "overrides": [{ "files": "**/*.vue", "options": { "embeddedLanguageFormatting": "auto" } }]
 }

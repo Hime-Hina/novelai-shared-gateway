@@ -35,6 +35,8 @@ pnpm --filter @novelai-gateway/web test:executor
 
 Prettier 不检查大括号、嵌套三元或业务保证，这些由结构 review 与已有行为测试验证。纯机械格式提交与行为修复、控制流展开分开，避免把金额、事件、请求指纹或测试期望的变化藏在排版中。
 
+Markdown 等嵌入代码保持 `embeddedLanguageFormatting: off`，避免改写记录的样本；Vue SFC 单独设为 `auto`，让同一根命令实际检查 `<script>` 和样式。关闭 Vue 的嵌入格式会漏过压行脚本，不能把只检查模板称为完整的 Vue 格式门禁。
+
 `.prettierignore` 保留迁移 SQL/元数据、历史证据、精确字节 fixtures、独立打包的外部 MessagePack 测试解码器、patch、生成的 notices 和 lockfile 的工具格式；不按“legacy”排除核心源码。锁文件只由包管理器修改，历史 migration 只允许追加，不能改旧字节。
 
 ## 注释与交付证据
