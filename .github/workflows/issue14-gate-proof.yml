@@ -1,0 +1,9 @@
+name: Issue 14 isolated gate proof
+on:
+  pull_request:
+jobs:
+  required-failure-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deliberately fail only the isolated gate proof
+        run: exit 1
