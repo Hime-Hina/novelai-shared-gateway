@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
-test('事件写入判别联合拒绝丢失生命周期事实与错误金额类型',()=>{
-  const filename=fileURLToPath(new URL('./domain-event-types.fixture.ts',import.meta.url));
-  const source=`
+test('事件写入判别联合拒绝丢失生命周期事实与错误金额类型', () => {
+  const filename = fileURLToPath(new URL('./domain-event-types.fixture.ts', import.meta.url));
+  const source = `
 import {recordDomainEvent,type DomainEventInput} from '../../server/events/domain-events.ts';
 import type {FairCharge} from '../../server/quota/fair-share.ts';
 import type {AccountingJob} from '../../server/generation/accounting.ts';
@@ -48,13 +48,39 @@ recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:'artifact:a',p
 // @ts-expect-error A broad event-name variable and arbitrary payload are not a typed write.
 const untyped:DomainEventInput={eventType:'FreeImageSucceeded',streamId:'request:r',payload:{}};
 `;
-  const options={target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.NodeNext,moduleResolution:ts.ModuleResolutionKind.NodeNext,
-    strict:true,noEmit:true,allowJs:true,checkJs:false,allowImportingTsExtensions:true,skipLibCheck:true,types:['node']};
-  const host=ts.createCompilerHost(options),read=host.readFile.bind(host),exists=host.fileExists.bind(host),get=host.getSourceFile.bind(host);
-  const isFixture=name=>path.resolve(name).toLowerCase()===path.resolve(filename).toLowerCase();
-  host.readFile=name=>isFixture(name)?source:read(name);
-  host.fileExists=name=>isFixture(name)||exists(name);
-  host.getSourceFile=(name,version,onError,newFile)=>isFixture(name)?ts.createSourceFile(name,source,version,true):get(name,version,onError,newFile);
-  const program=ts.createProgram([filename],options,host),diagnostics=ts.getPreEmitDiagnostics(program);
-  assert.equal(diagnostics.length,0,ts.formatDiagnosticsWithColorAndContext(diagnostics,{getCanonicalFileName:name=>name,getCurrentDirectory:()=>process.cwd(),getNewLine:()=> '\n'}));
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true,
+    noEmit: true,
+    allowJs: true,
+    checkJs: false,
+    allowImportingTsExtensions: true,
+    skipLibCheck: true,
+    types: ['node'],
+  };
+  const host = ts.createCompilerHost(options),
+    read = host.readFile.bind(host),
+    exists = host.fileExists.bind(host),
+    get = host.getSourceFile.bind(host);
+  const isFixture = (name) =>
+    path.resolve(name).toLowerCase() === path.resolve(filename).toLowerCase();
+  host.readFile = (name) => (isFixture(name) ? source : read(name));
+  host.fileExists = (name) => isFixture(name) || exists(name);
+  host.getSourceFile = (name, version, onError, newFile) =>
+    isFixture(name)
+      ? ts.createSourceFile(name, source, version, true)
+      : get(name, version, onError, newFile);
+  const program = ts.createProgram([filename], options, host),
+    diagnostics = ts.getPreEmitDiagnostics(program);
+  assert.equal(
+    diagnostics.length,
+    0,
+    ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: (name) => name,
+      getCurrentDirectory: () => process.cwd(),
+      getNewLine: () => '\n',
+    }),
+  );
 });

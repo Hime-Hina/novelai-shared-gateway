@@ -10,11 +10,19 @@ export async function backupFixture(t, root) {
   const preserve = Boolean(root);
   root ??= await mkdtemp(path.join(tmpdir(), 'nai-r2-backup-'));
   if (!preserve) t.after(() => rm(root, { recursive: true, force: true }));
-  const cloud = path.join(root, 'cloud'); await mkdir(cloud);
-  const envFile = path.join(root, 'r2.env'), keyFile = path.join(root, 'backup.key'), preload = path.join(root, 'preload.mjs');
+  const cloud = path.join(root, 'cloud');
+  await mkdir(cloud);
+  const envFile = path.join(root, 'r2.env'),
+    keyFile = path.join(root, 'backup.key'),
+    preload = path.join(root, 'preload.mjs');
   await writeFile(keyFile, randomBytes(32));
-  await writeFile(envFile, `R2_ACCOUNT_ID=${'a'.repeat(32)}\nR2_BUCKET=synthetic-images\nR2_ACCESS_KEY_ID=synthetic-access\nR2_SECRET_ACCESS_KEY=synthetic-secret\n`);
-  await writeFile(preload, `
+  await writeFile(
+    envFile,
+    `R2_ACCOUNT_ID=${'a'.repeat(32)}\nR2_BUCKET=synthetic-images\nR2_ACCESS_KEY_ID=synthetic-access\nR2_SECRET_ACCESS_KEY=synthetic-secret\n`,
+  );
+  await writeFile(
+    preload,
+    `
     import { readFile, writeFile, readdir, stat, unlink } from 'node:fs/promises';
     import path from 'node:path';
     import { writeFileSync, statSync, lstatSync, readdirSync } from 'node:fs';
@@ -42,12 +50,23 @@ export async function backupFixture(t, root) {
         writeFileSync(process.env.R2_TEST_METRICS, JSON.stringify({ peakRssBytes: process.resourceUsage().maxRSS * 1024,
           archiveBytes: statSync(process.argv[3]).size, retainedLogicalBytes: bytes(process.env.R2_TEST_ROOT) }));
       }
-    });`);
+    });`,
+  );
   const scriptsLink = path.join(root, 'scripts-link');
   await symlink(fileURLToPath(new URL('../../scripts/', import.meta.url)), scriptsLink, 'junction');
-  const cli = path.join(scriptsLink, 'r2-backup.mjs'), run = promisify(execFile);
-  const call = (args, env = {}) => run(process.execPath, ['--import', pathToFileURL(preload).href, cli, ...args], {
-    windowsHide: true, env: { ...process.env, R2_TEST_FAIL_READ: '0', R2_TEST_LIST_BYTES: '', ...env }
-  });
-  return { root, cloud, envFile, keyFile, call, encode: key => path.join(cloud, encodeURIComponent(key)) };
+  const cli = path.join(scriptsLink, 'r2-backup.mjs'),
+    run = promisify(execFile);
+  const call = (args, env = {}) =>
+    run(process.execPath, ['--import', pathToFileURL(preload).href, cli, ...args], {
+      windowsHide: true,
+      env: { ...process.env, R2_TEST_FAIL_READ: '0', R2_TEST_LIST_BYTES: '', ...env },
+    });
+  return {
+    root,
+    cloud,
+    envFile,
+    keyFile,
+    call,
+    encode: (key) => path.join(cloud, encodeURIComponent(key)),
+  };
 }

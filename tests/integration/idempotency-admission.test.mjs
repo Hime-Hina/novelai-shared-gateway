@@ -4,292 +4,653 @@ import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { JsonStore, createId, hashObject } from '../../server/storage/sqlite-store.ts';
-import { normalizeNovelAiRequest, MAX_STEPS, DIRECT_URL_MAX_STEPS } from '../../server/protocols/novelai-client.ts';
+import {
+  normalizeNovelAiRequest,
+  MAX_STEPS,
+  DIRECT_URL_MAX_STEPS,
+} from '../../server/protocols/novelai-client.ts';
 import * as fair from '../../server/quota/fair-share.ts';
-import { assertFreeImageAdmission, configureFreeImages } from '../../server/quota/free-image-policy.ts';
+import {
+  assertFreeImageAdmission,
+  configureFreeImages,
+} from '../../server/quota/free-image-policy.ts';
 import * as queue from '../../server/generation/queue-policy.ts';
 import * as requests from '../../server/generation/batch-requests.ts';
-import { generationRequestFingerprint, requestNormalizationDefaults } from '../../server/generation/request-fingerprint.ts';
+import {
+  generationRequestFingerprint,
+  requestNormalizationDefaults,
+} from '../../server/generation/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/protocols/native-image.ts';
 import { ImageStorage } from '../../server/storage/r2-storage.ts';
-import { createGenerationAdmission, generationIntent, readGenerationIdempotencyKey, requestCacheKey, isNoCache } from '../../server/generation/admission.ts';
+import {
+  createGenerationAdmission,
+  generationIntent,
+  readGenerationIdempotencyKey,
+  requestCacheKey,
+  isNoCache,
+} from '../../server/generation/admission.ts';
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
 import { generationStreamId, recordFreeImageSuccess } from '../../server/generation/execution.ts';
 
-const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const png =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 function legacyOpening(db, job) {
   const { userToken, ...facts } = job;
-  recordDomainEvent(db, { eventType: 'OpeningStateRecorded', streamId: `request:legacy-${job.id}`,
-    payload: { state: { request: { requestId: null, memberId: 'a' }, jobs: { [job.id]: { ...facts, memberId: 'a', request: requests.webJobRequestSummary(job.request) } }, artifacts: {}, aliases: [], freeUsage: {} } } });
+  recordDomainEvent(db, {
+    eventType: 'OpeningStateRecorded',
+    streamId: `request:legacy-${job.id}`,
+    payload: {
+      state: {
+        request: { requestId: null, memberId: 'a' },
+        jobs: {
+          [job.id]: {
+            ...facts,
+            memberId: 'a',
+            request: requests.webJobRequestSummary(job.request),
+          },
+        },
+        artifacts: {},
+        aliases: [],
+        freeUsage: {},
+      },
+    },
+  });
 }
 async function fixture(t) {
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-idempotency-admission-')));
   await store.init();
   t.after(() => store.close());
-  await store.update(db => {
-    db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true, balance: 0 }));
-    db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
-      quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now() }];
-    db.settings.defaultArtist = 'first default artist';
-    fair.configureFairQuota(db, ['a', 'b', 'c', 'd']); fair.syncFairQuota(db);
-  }, { immediate: true });
+  await store.update(
+    (db) => {
+      db.users = ['a', 'b', 'c', 'd'].map((id) => ({
+        id,
+        token: `STA1N-${id}`,
+        enabled: true,
+        balance: 0,
+      }));
+      db.accounts = [
+        {
+          id: 'opus',
+          enabled: true,
+          quotaTier: 3,
+          subscriptionActive: true,
+          quotaFixed: 1000,
+          quotaPurchased: 0,
+          v5UsagePercent: 100,
+          quotaCheckedAt: Date.now(),
+        },
+      ];
+      db.settings.defaultArtist = 'first default artist';
+      fair.configureFairQuota(db, ['a', 'b', 'c', 'd']);
+      fair.syncFairQuota(db);
+    },
+    { immediate: true },
+  );
   const update = store.update.bind(store);
-  store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
+  store.update = (fn, options) =>
+    update(fn, { ...options, immediate: true, includeSettings: true });
   const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
-  const imageStorage = new ImageStorage(store.dataDir, null, id => store.findImage(id));
-  const ctx = { generationIntent, readGenerationIdempotencyKey, requestCacheKey, cleanupStaleActiveJobs: async () => {} };
-  const accept = createGenerationAdmission({ store, payloadBudget: budget, artifactAvailable: image => imageStorage.available(image),
-    cleanupStaleActiveJobs: reason => ctx.cleanupStaleActiveJobs(reason) });
-  ctx.createJob = (token, input, options = {}) => {
-    const normalize = settings => ({ ...normalizeNovelAiRequest(input, settings, { maxSteps: DIRECT_URL_MAX_STEPS }), allowPurchasedAnlas: input.allowPurchasedAnlas === true });
-    const intent = options.idempotency || generationIntent(options.idempotencyKey, normalize, {
-      randomSeed: input.seed === undefined || input.seed === '', noCache: isNoCache(input.nocache), claim: options.generationPayloadClaim });
-    return accept({ identity: { token }, normalize, intent, source: 'web', noCache: isNoCache(input.nocache), explicitSeed: input.seed,
-      claim: options.generationPayloadClaim });
+  const imageStorage = new ImageStorage(store.dataDir, null, (id) => store.findImage(id));
+  const ctx = {
+    generationIntent,
+    readGenerationIdempotencyKey,
+    requestCacheKey,
+    cleanupStaleActiveJobs: async () => {},
   };
-  ctx.createDirectJob = (token, request, cacheKey, options = {}) => accept({ identity: { token }, request, cacheKey, source: 'direct', noCache: true,
-    ...(options.status === 'done' ? { cached: { imageId: options.imageId, accountId: options.accountId } } : {}) });
-  ctx.createNativeBatch = (token, request, diagnosticId, admissionVersion, claim, intent) => accept({ identity: { token }, request, diagnosticId,
-    admissionVersion, claim, intent, batch: true, source: 'novelai-native', noCache: true });
+  const accept = createGenerationAdmission({
+    store,
+    payloadBudget: budget,
+    artifactAvailable: (image) => imageStorage.available(image),
+    cleanupStaleActiveJobs: (reason) => ctx.cleanupStaleActiveJobs(reason),
+  });
+  ctx.createJob = (token, input, options = {}) => {
+    const normalize = (settings) => ({
+      ...normalizeNovelAiRequest(input, settings, { maxSteps: DIRECT_URL_MAX_STEPS }),
+      allowPurchasedAnlas: input.allowPurchasedAnlas === true,
+    });
+    const intent =
+      options.idempotency ||
+      generationIntent(options.idempotencyKey, normalize, {
+        randomSeed: input.seed === undefined || input.seed === '',
+        noCache: isNoCache(input.nocache),
+        claim: options.generationPayloadClaim,
+      });
+    return accept({
+      identity: { token },
+      normalize,
+      intent,
+      source: 'web',
+      noCache: isNoCache(input.nocache),
+      explicitSeed: input.seed,
+      claim: options.generationPayloadClaim,
+    });
+  };
+  ctx.createDirectJob = (token, request, cacheKey, options = {}) =>
+    accept({
+      identity: { token },
+      request,
+      cacheKey,
+      source: 'direct',
+      noCache: true,
+      ...(options.status === 'done'
+        ? { cached: { imageId: options.imageId, accountId: options.accountId } }
+        : {}),
+    });
+  ctx.createNativeBatch = (token, request, diagnosticId, admissionVersion, claim, intent) =>
+    accept({
+      identity: { token },
+      request,
+      diagnosticId,
+      admissionVersion,
+      claim,
+      intent,
+      batch: true,
+      source: 'novelai-native',
+      noCache: true,
+    });
   const admit = (body, key = 'key-a', customClaim) => {
     const claim = customClaim || budget.claim();
-    return ctx.createJob('STA1N-a', body, { generationPayloadClaim: claim, idempotencyKey: key }).finally(() => claim.release());
+    return ctx
+      .createJob('STA1N-a', body, { generationPayloadClaim: claim, idempotencyKey: key })
+      .finally(() => claim.release());
   };
   return { store, ctx, budget, admit };
 }
-const body = () => ({ prompt: 'synthetic prompt', model: 'nai-diffusion-4-5-full', steps: 23, width: 1024, height: 1024, nocache: true });
+const body = () => ({
+  prompt: 'synthetic prompt',
+  model: 'nai-diffusion-4-5-full',
+  steps: 23,
+  width: 1024,
+  height: 1024,
+  nocache: true,
+});
 
 async function atomicFixture(t) {
   const initialTime = 1800000000000;
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-atomic-admission-')));
-  await store.init(); t.after(() => store.close());
+  await store.init();
+  t.after(() => store.close());
   const db = await store.read();
-  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true, balance: 0 }));
-  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true, quotaFixed: 1000,
-    quotaPurchased: 0, v5UsagePercent: 80, v5UsageTimeUntilNextPercent: 600, quotaCheckedAt: initialTime }];
-  fair.configureFairQuota(db, ['a', 'b', 'c', 'd']); fair.syncFairQuota(db, initialTime);
-  await store.write(db); await store.enableEventAuthority();
-  let now = initialTime + 60000, cleanup = async () => {};
-  const budget = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), { request: 1048576, active: 1048576 });
-  const accept = createGenerationAdmission({ store, payloadBudget: budget, now: () => now,
-    artifactAvailable: async () => true, cleanupStaleActiveJobs: () => cleanup() });
-  const submit = (key = 'atomic', normalize = settings => normalizeNovelAiRequest({ ...body(), seed: 1 }, settings, { maxSteps: DIRECT_URL_MAX_STEPS })) =>
-    accept({ identity: { memberId: 'a' }, intent: generationIntent(key, normalize, { noCache: true }), source: 'web', noCache: true });
-  return { store, budget, submit, setCleanup: value => { cleanup = value; }, advance: value => { now += value; } };
+  db.users = ['a', 'b', 'c', 'd'].map((id) => ({
+    id,
+    token: `STA1N-${id}`,
+    enabled: true,
+    balance: 0,
+  }));
+  db.accounts = [
+    {
+      id: 'opus',
+      enabled: true,
+      quotaTier: 3,
+      subscriptionActive: true,
+      quotaFixed: 1000,
+      quotaPurchased: 0,
+      v5UsagePercent: 80,
+      v5UsageTimeUntilNextPercent: 600,
+      quotaCheckedAt: initialTime,
+    },
+  ];
+  fair.configureFairQuota(db, ['a', 'b', 'c', 'd']);
+  fair.syncFairQuota(db, initialTime);
+  await store.write(db);
+  await store.enableEventAuthority();
+  let now = initialTime + 60000,
+    cleanup = async () => {};
+  const budget = requests.createGenerationPayloadBudget(
+    () => store.activeGenerationPayloadBytes(),
+    { request: 1048576, active: 1048576 },
+  );
+  const accept = createGenerationAdmission({
+    store,
+    payloadBudget: budget,
+    now: () => now,
+    artifactAvailable: async () => true,
+    cleanupStaleActiveJobs: () => cleanup(),
+  });
+  const submit = (
+    key = 'atomic',
+    normalize = (settings) =>
+      normalizeNovelAiRequest({ ...body(), seed: 1 }, settings, { maxSteps: DIRECT_URL_MAX_STEPS }),
+  ) =>
+    accept({
+      identity: { memberId: 'a' },
+      intent: generationIntent(key, normalize, { noCache: true }),
+      source: 'web',
+      noCache: true,
+    });
+  return {
+    store,
+    budget,
+    submit,
+    setCleanup: (value) => {
+      cleanup = value;
+    },
+    advance: (value) => {
+      now += value;
+    },
+  };
 }
 
-test('额度恢复与受理同一提交，输入/最终SQL失败不留下独立恢复，重放不再推进时钟', async t => {
+test('额度恢复与受理同一提交，输入/最终SQL失败不留下独立恢复，重放不再推进时钟', async (t) => {
   const { store, budget, submit, advance } = await atomicFixture(t);
-  const snapshot = () => ({ quota: structuredClone(store.db.settings.fairQuota),
-    events: store.sqlite.prepare('SELECT * FROM domain_events ORDER BY commit_seq,event_index').all(),
-    commits: store.sqlite.prepare('SELECT * FROM event_commits ORDER BY commit_seq').all() });
+  const snapshot = () => ({
+    quota: structuredClone(store.db.settings.fairQuota),
+    events: store.sqlite
+      .prepare('SELECT * FROM domain_events ORDER BY commit_seq,event_index')
+      .all(),
+    commits: store.sqlite.prepare('SELECT * FROM event_commits ORDER BY commit_seq').all(),
+  });
   const before = snapshot();
   assert.equal(before.quota.balances.a.v5Available, '20');
-  await assert.rejects(submit('invalid', () => parseNativeImageRequest({ input: 'synthetic', model: 'unsupported-model', parameters: {} })), error => error.statusCode === 422);
+  await assert.rejects(
+    submit('invalid', () =>
+      parseNativeImageRequest({ input: 'synthetic', model: 'unsupported-model', parameters: {} }),
+    ),
+    (error) => error.statusCode === 422,
+  );
   assert.deepEqual(snapshot(), before);
-  store.sqlite.exec("CREATE TEMP TRIGGER reject_admission BEFORE INSERT ON generation_requests BEGIN SELECT RAISE(ABORT,'synthetic final admission failure'); END");
+  store.sqlite.exec(
+    "CREATE TEMP TRIGGER reject_admission BEFORE INSERT ON generation_requests BEGIN SELECT RAISE(ABORT,'synthetic final admission failure'); END",
+  );
   await assert.rejects(submit(), /synthetic final admission failure/);
   assert.deepEqual(snapshot(), before);
   assert.equal(store.countRecords('jobs'), 0);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_requests').get().n, 0);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_idempotency').get().n, 0);
-  const released = budget.claim(); released.resize(1048576); released.release();
+  const released = budget.claim();
+  released.resize(1048576);
+  released.release();
   store.sqlite.exec('DROP TRIGGER reject_admission');
-  const accepted = await submit(), after = snapshot();
-  assert.equal(after.quota.balances.a.v5Available, '20.025', 'one minute restores 0.1 percent split equally between four members');
+  const accepted = await submit(),
+    after = snapshot();
+  assert.equal(
+    after.quota.balances.a.v5Available,
+    '20.025',
+    'one minute restores 0.1 percent split equally between four members',
+  );
   assert.equal(after.commits.length, before.commits.length + 1);
   const events = after.events.slice(before.events.length);
-  assert.equal(new Set(events.map(event => event.commit_seq)).size, 1);
-  assert.ok(events.some(event => event.event_type === 'RefillApplied'));
-  assert.ok(events.some(event => event.event_type === 'RequestAccepted'));
+  assert.equal(new Set(events.map((event) => event.commit_seq)).size, 1);
+  assert.ok(events.some((event) => event.event_type === 'RefillApplied'));
+  assert.ok(events.some((event) => event.event_type === 'RequestAccepted'));
   advance(60000);
   assert.equal((await submit()).id, accepted.id);
   assert.deepEqual(snapshot(), after);
   const originalRequest = store.readGenerationRequest(accepted.requestId);
-  await store.update(db => {
-    db.accounts[0].enabled = false; db.accounts[0].updatedAt = new Date(1800000120000).toISOString();
-    db.settings.defaultArtist = 'different defaults after acceptance';
-    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: 'account:opus', accountId: 'opus',
-      payload: { accountId: 'opus', enabled: false, updatedAt: db.accounts[0].updatedAt, reason: 'administrator' } });
-  }, { collections: ['accounts', 'settings'], immediate: true });
-  const disabled = snapshot(), replay = await submit();
-  assert.equal(replay.id, accepted.id); assert.equal(replay.replayed, true);
+  await store.update(
+    (db) => {
+      db.accounts[0].enabled = false;
+      db.accounts[0].updatedAt = new Date(1800000120000).toISOString();
+      db.settings.defaultArtist = 'different defaults after acceptance';
+      recordDomainEvent(db, {
+        eventType: 'AvailabilityChanged',
+        streamId: 'account:opus',
+        accountId: 'opus',
+        payload: {
+          accountId: 'opus',
+          enabled: false,
+          updatedAt: db.accounts[0].updatedAt,
+          reason: 'administrator',
+        },
+      });
+    },
+    { collections: ['accounts', 'settings'], immediate: true },
+  );
+  const disabled = snapshot(),
+    replay = await submit();
+  assert.equal(replay.id, accepted.id);
+  assert.equal(replay.replayed, true);
   assert.deepEqual(store.readGenerationRequest(accepted.requestId), originalRequest);
   assert.deepEqual(snapshot(), disabled);
 });
 
-test('预检查与最终受理之间账号被停用时重新核验资格，不创建半份请求', async t => {
+test('预检查与最终受理之间账号被停用时重新核验资格，不创建半份请求', async (t) => {
   const { store, budget, submit, setCleanup } = await atomicFixture(t);
-  setCleanup(() => store.update(db => {
-    const account = db.accounts[0], at = new Date(1800000060000).toISOString();
-    account.enabled = false; account.updatedAt = at;
-    recordDomainEvent(db, { eventType: 'AvailabilityChanged', streamId: 'account:opus', accountId: 'opus', occurredAt: at,
-      payload: { accountId: 'opus', enabled: false, updatedAt: at, reason: 'administrator' } });
-  }, { collections: ['accounts'], immediate: true }));
-  await assert.rejects(submit(), error => error.statusCode === 503 && /inactive_opus/.test(error.message));
+  setCleanup(() =>
+    store.update(
+      (db) => {
+        const account = db.accounts[0],
+          at = new Date(1800000060000).toISOString();
+        account.enabled = false;
+        account.updatedAt = at;
+        recordDomainEvent(db, {
+          eventType: 'AvailabilityChanged',
+          streamId: 'account:opus',
+          accountId: 'opus',
+          occurredAt: at,
+          payload: { accountId: 'opus', enabled: false, updatedAt: at, reason: 'administrator' },
+        });
+      },
+      { collections: ['accounts'], immediate: true },
+    ),
+  );
+  await assert.rejects(
+    submit(),
+    (error) => error.statusCode === 503 && /inactive_opus/.test(error.message),
+  );
   assert.equal(store.db.accounts[0].enabled, false);
   assert.equal(store.countRecords('jobs'), 0);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM generation_requests').get().n, 0);
-  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM domain_events WHERE event_type='RequestAccepted'").get().n, 0);
+  assert.equal(
+    store.sqlite
+      .prepare("SELECT count(*) n FROM domain_events WHERE event_type='RequestAccepted'")
+      .get().n,
+    0,
+  );
   assert.equal(store.db.settings.fairQuota.balances.a.v5Available, '20');
-  const released = budget.claim(); released.resize(1048576); released.release();
+  const released = budget.claim();
+  released.resize(1048576);
+  released.release();
 });
 
-test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回不占名额', async t => {
+test('免费限额覆盖网页、direct/OpenAI 和 Native 受理，缓存返回不占名额', async (t) => {
   const { store, ctx, budget, admit } = await fixture(t);
-  await store.update(db => {
-    configureFreeImages(db, { expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } }, 'a');
-    const at = Date.now(), completedAt = new Date(at).toISOString();
-    const job = { id: 'used', userToken: 'STA1N-a', status: 'running', request: body(), createdAt: completedAt };
-    legacyOpening(db, job);
-    fair.reserveFairQuota(db, db.users[0], job, db.accounts[0], at);
-    fair.settleFairQuota(db, job, true, at);
-    job.completedAt = job.updatedAt = completedAt;
-    job.status = 'done'; db.jobs.push(job);
-    recordDomainEvent(db, { eventType: 'JobCompleted', streamId: generationStreamId(job), occurredAt: at,
-      payload: { jobId: job.id, completedAt, artifactId: null, charge: job.fairCharge } });
-    recordFreeImageSuccess(db, job, at, store.readFreeImageUsage(db, 'a', at));
-  }, { immediate: true });
-  assert.deepEqual(await store.retireJobHistory(['used'], 'synthetic-free-limit-history'), ['used']);
-  const limited = error => error.statusCode === 429 && /免费图片/.test(error.message) && Boolean(error.cooldownUntil);
+  await store.update(
+    (db) => {
+      configureFreeImages(
+        db,
+        { expectedVersion: 1, policy: { enabled: true, warningThreshold: 1, hardLimit: 1 } },
+        'a',
+      );
+      const at = Date.now(),
+        completedAt = new Date(at).toISOString();
+      const job = {
+        id: 'used',
+        userToken: 'STA1N-a',
+        status: 'running',
+        request: body(),
+        createdAt: completedAt,
+      };
+      legacyOpening(db, job);
+      fair.reserveFairQuota(db, db.users[0], job, db.accounts[0], at);
+      fair.settleFairQuota(db, job, true, at);
+      job.completedAt = job.updatedAt = completedAt;
+      job.status = 'done';
+      db.jobs.push(job);
+      recordDomainEvent(db, {
+        eventType: 'JobCompleted',
+        streamId: generationStreamId(job),
+        occurredAt: at,
+        payload: { jobId: job.id, completedAt, artifactId: null, charge: job.fairCharge },
+      });
+      recordFreeImageSuccess(db, job, at, store.readFreeImageUsage(db, 'a', at));
+    },
+    { immediate: true },
+  );
+  assert.deepEqual(await store.retireJobHistory(['used'], 'synthetic-free-limit-history'), [
+    'used',
+  ]);
+  const limited = (error) =>
+    error.statusCode === 429 && /免费图片/.test(error.message) && Boolean(error.cooldownUntil);
   await assert.rejects(admit(body()), limited);
   await assert.rejects(ctx.createDirectJob('STA1N-a', body(), 'new-key'), limited);
   const claim = budget.claim();
-  try { await assert.rejects(ctx.createNativeBatch('STA1N-a', { ...body(), sampleCount: 2 }, 'synthetic', 0, claim), limited); }
-  finally { claim.release(); }
-  const cached = await ctx.createDirectJob('STA1N-a', body(), 'cache-key', { status: 'done', imageId: 'existing-image', cost: 0 });
+  try {
+    await assert.rejects(
+      ctx.createNativeBatch('STA1N-a', { ...body(), sampleCount: 2 }, 'synthetic', 0, claim),
+      limited,
+    );
+  } finally {
+    claim.release();
+  }
+  const cached = await ctx.createDirectJob('STA1N-a', body(), 'cache-key', {
+    status: 'done',
+    imageId: 'existing-image',
+    cost: 0,
+  });
   assert.ok(cached.id);
   assert.equal(store.readFreeImageUsage(store.db, 'a').successful, 1);
-  assert.equal(store.db.jobs.filter(job => ['queued', 'pending', 'running'].includes(job.status)).length, 0);
+  assert.equal(
+    store.db.jobs.filter((job) => ['queued', 'pending', 'running'].includes(job.status)).length,
+    0,
+  );
 });
 
 test('可选键只接受单个非空可见ASCII，128字节上限，缺键不改变旧流程', () => {
   const ctx = { readGenerationIdempotencyKey };
   assert.equal(ctx.readGenerationIdempotencyKey({ headers: {} }), null);
-  assert.equal(ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': 'x'.repeat(128) } }), 'x'.repeat(128));
+  assert.equal(
+    ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': 'x'.repeat(128) } }),
+    'x'.repeat(128),
+  );
   for (const key of ['', 'a b', '中文', 'x'.repeat(129)]) {
-    assert.throws(() => ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': key } }), error => error.statusCode === 400);
+    assert.throws(
+      () => ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': key } }),
+      (error) => error.statusCode === 400,
+    );
   }
-  assert.throws(() => ctx.readGenerationIdempotencyKey({ headers: { 'idempotency-key': 'one, two' },
-    rawHeaders: ['Idempotency-Key', 'one', 'IDEMPOTENCY-KEY', 'two'] }), error => error.statusCode === 400);
+  assert.throws(
+    () =>
+      ctx.readGenerationIdempotencyKey({
+        headers: { 'idempotency-key': 'one, two' },
+        rawHeaders: ['Idempotency-Key', 'one', 'IDEMPOTENCY-KEY', 'two'],
+      }),
+    (error) => error.statusCode === 400,
+  );
 });
 
-test('同键保留首次随机seed与defaults；冲突409，暂停接单和共享账户不可用仍回放', async t => {
+test('同键保留首次随机seed与defaults；冲突409，暂停接单和共享账户不可用仍回放', async (t) => {
   const { store, admit } = await fixture(t);
   const first = await admit(body());
   const original = store.readGenerationRequest(first.requestId);
-  await store.update(db => { db.settings.defaultArtist = 'new default artist'; db.users[0].acceptingJobs = false; db.accounts[0].enabled = false; },
-    { collections: ['settings', 'users', 'accounts'] });
+  await store.update(
+    (db) => {
+      db.settings.defaultArtist = 'new default artist';
+      db.users[0].acceptingJobs = false;
+      db.accounts[0].enabled = false;
+    },
+    { collections: ['settings', 'users', 'accounts'] },
+  );
   const replay = await admit(body());
   assert.equal(replay.id, first.id);
   assert.equal(replay.replayed, true);
   assert.equal(store.readGenerationRequest(first.requestId).seed, original.seed);
   assert.equal(store.readGenerationRequest(first.requestId).artist, 'first default artist');
-  await assert.rejects(admit({ ...body(), prompt: 'different request' }), error => error.statusCode === 409);
+  await assert.rejects(
+    admit({ ...body(), prompt: 'different request' }),
+    (error) => error.statusCode === 409,
+  );
   assert.equal(store.countRecords('jobs'), 1);
 });
 
-test('两次preflight都未见mapping、默认值随后改变，最终串行受理按首context重算而不误报409', { timeout: 5000 }, async t => {
-  const { store, ctx, admit } = await fixture(t);
-  const gates = [];
-  ctx.cleanupStaleActiveJobs = () => new Promise(resolve => gates.push(resolve));
-  const first = admit(body()), second = admit(body());
-  while (gates.length < 2) await new Promise(resolve => setImmediate(resolve));
-  gates[0]();
-  const accepted = await first;
-  await store.update(db => { db.settings.defaultArtist = 'changed between submissions'; }, { collections: ['settings'] });
-  gates[1]();
-  const retried = await second;
-  assert.equal(retried.id, accepted.id);
-  assert.equal(store.readGenerationRequest(accepted.requestId).artist, 'first default artist');
-  assert.equal(store.sqlite.prepare('SELECT COUNT(*) AS n FROM generation_idempotency').get().n, 1);
-});
+test(
+  '两次preflight都未见mapping、默认值随后改变，最终串行受理按首context重算而不误报409',
+  { timeout: 5000 },
+  async (t) => {
+    const { store, ctx, admit } = await fixture(t);
+    const gates = [];
+    ctx.cleanupStaleActiveJobs = () => new Promise((resolve) => gates.push(resolve));
+    const first = admit(body()),
+      second = admit(body());
+    while (gates.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    gates[0]();
+    const accepted = await first;
+    await store.update(
+      (db) => {
+        db.settings.defaultArtist = 'changed between submissions';
+      },
+      { collections: ['settings'] },
+    );
+    gates[1]();
+    const retried = await second;
+    assert.equal(retried.id, accepted.id);
+    assert.equal(store.readGenerationRequest(accepted.requestId).artist, 'first default artist');
+    assert.equal(
+      store.sqlite.prepare('SELECT COUNT(*) AS n FROM generation_idempotency').get().n,
+      1,
+    );
+  },
+);
 
-test('旧inline active cache只追加每个key自己的映射，首次随机意图不从target固定seed重算', async t => {
+test('旧inline active cache只追加每个key自己的映射，首次随机意图不从target固定seed重算', async (t) => {
   const { store, ctx, admit } = await fixture(t);
   const input = { ...body(), nocache: false };
-  const target = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
-  target.allowPurchasedAnlas = false; target.seed = 777;
-  await store.update(db => { db.jobs.push({ id: 'inline', status: 'queued', userToken: 'STA1N-a', request: target,
-    cacheKey: ctx.requestCacheKey('STA1N-a', target, undefined), payloadBytes: Buffer.byteLength(JSON.stringify(target)), createdAt: new Date().toISOString() }); legacyOpening(db, db.jobs.at(-1)); },
-    { dirtyRows: { jobs: ['inline'] } });
+  const target = normalizeNovelAiRequest(input, store.db.settings, {
+    maxSteps: DIRECT_URL_MAX_STEPS,
+  });
+  target.allowPurchasedAnlas = false;
+  target.seed = 777;
+  await store.update(
+    (db) => {
+      db.jobs.push({
+        id: 'inline',
+        status: 'queued',
+        userToken: 'STA1N-a',
+        request: target,
+        cacheKey: ctx.requestCacheKey('STA1N-a', target, undefined),
+        payloadBytes: Buffer.byteLength(JSON.stringify(target)),
+        createdAt: new Date().toISOString(),
+      });
+      legacyOpening(db, db.jobs.at(-1));
+    },
+    { dirtyRows: { jobs: ['inline'] } },
+  );
   assert.equal((await admit(input, 'alias-a')).id, 'inline');
   assert.equal((await admit(input, 'alias-b')).id, 'inline');
   const mapped = store.readGenerationIdempotency('a', 'generate', hashObject('alias-a'));
   assert.equal(mapped.request_id, null);
-  assert.notEqual(mapped.fingerprint, generationRequestFingerprint(target, { randomSeed: false, noCache: false }));
+  assert.notEqual(
+    mapped.fingerprint,
+    generationRequestFingerprint(target, { randomSeed: false, noCache: false }),
+  );
   assert.equal((await admit(input, 'alias-a')).id, 'inline');
   assert.equal(store.countRecords('jobs'), 1);
   assert.equal(store.sqlite.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 0);
 });
 
-test('首次completed cache仅绑定本人可读产物，缺失或错配回落cache miss且不绑定错误mapping', async t => {
+test('首次completed cache仅绑定本人可读产物，缺失或错配回落cache miss且不绑定错误mapping', async (t) => {
   for (const variant of ['valid', 'foreign', 'missing']) {
     const { store, ctx, admit } = await fixture(t);
     const input = { ...body(), seed: 42, nocache: false };
-    const normalized = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+    const normalized = normalizeNovelAiRequest(input, store.db.settings, {
+      maxSteps: DIRECT_URL_MAX_STEPS,
+    });
     normalized.allowPurchasedAnlas = false;
-    await store.update(db => { db.images.push({ id: 'cached', token: variant === 'foreign' ? 'STA1N-b' : 'STA1N-a',
-      cacheKey: ctx.requestCacheKey('STA1N-a', normalized, 42), mimeType: 'image/png',
-      ...(variant === 'missing' ? { file: 'absent.png' } : { base64: png }) }); }, { dirtyRows: { images: ['cached'] } });
+    await store.update(
+      (db) => {
+        db.images.push({
+          id: 'cached',
+          token: variant === 'foreign' ? 'STA1N-b' : 'STA1N-a',
+          cacheKey: ctx.requestCacheKey('STA1N-a', normalized, 42),
+          mimeType: 'image/png',
+          ...(variant === 'missing' ? { file: 'absent.png' } : { base64: png }),
+        });
+      },
+      { dirtyRows: { images: ['cached'] } },
+    );
     const accepted = await admit(input);
     const job = store.selectItemById('jobs', accepted.id);
     assert.equal(job.status, variant === 'valid' ? 'done' : 'queued');
     assert.equal(job.imageId, variant === 'valid' ? 'cached' : '');
-    assert.equal(store.readGenerationIdempotency('a', 'generate', hashObject('key-a')).job_id, job.id);
+    assert.equal(
+      store.readGenerationIdempotency('a', 'generate', hashObject('key-a')).job_id,
+      job.id,
+    );
   }
 });
 
-test('有限context与规范化payload合计占原临时预算，落盘只计执行输入；重试也不能绕过', async t => {
+test('有限context与规范化payload合计占原临时预算，落盘只计执行输入；重试也不能绕过', async (t) => {
   const { store, ctx, admit } = await fixture(t);
   const input = { ...body(), seed: 42 };
-  const normalized = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+  const normalized = normalizeNovelAiRequest(input, store.db.settings, {
+    maxSteps: DIRECT_URL_MAX_STEPS,
+  });
   normalized.allowPurchasedAnlas = false;
   const bytes = Buffer.byteLength(JSON.stringify(normalized));
-  const combined = bytes + Buffer.byteLength(JSON.stringify(requestNormalizationDefaults(store.db.settings)));
-  const small = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), { request: bytes, active: 100000 });
-  await assert.rejects(admit(input, 'budget', small.claim()), error => error.statusCode === 413);
+  const combined =
+    bytes + Buffer.byteLength(JSON.stringify(requestNormalizationDefaults(store.db.settings)));
+  const small = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), {
+    request: bytes,
+    active: 100000,
+  });
+  await assert.rejects(admit(input, 'budget', small.claim()), (error) => error.statusCode === 413);
   assert.equal(store.countRecords('jobs'), 0);
-  const exact = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), { request: combined, active: 100000 });
+  const exact = requests.createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes(), {
+    request: combined,
+    active: 100000,
+  });
   const accepted = await admit(input, 'budget', exact.claim());
   assert.equal(store.activeGenerationPayloadBytes(), bytes);
-  await assert.rejects(admit(input, 'budget', small.claim()), error => error.statusCode === 413);
+  await assert.rejects(admit(input, 'budget', small.claim()), (error) => error.statusCode === 413);
   assert.equal((await admit(input, 'budget', exact.claim())).id, accepted.id);
 });
 
-test('同key failed-late回放核对parent及旧inline产物归属，错误关联410且不重生', async t => {
+test('同key failed-late回放核对parent及旧inline产物归属，错误关联410且不重生', async (t) => {
   for (const inline of [false, true]) {
     const { store, ctx, admit } = await fixture(t);
     const input = { ...body(), nocache: !inline };
     if (inline) {
-      const normalized = normalizeNovelAiRequest(input, store.db.settings, { maxSteps: DIRECT_URL_MAX_STEPS });
+      const normalized = normalizeNovelAiRequest(input, store.db.settings, {
+        maxSteps: DIRECT_URL_MAX_STEPS,
+      });
       normalized.allowPurchasedAnlas = false;
-      await store.update(db => { db.jobs.push({ id: 'inline', status: 'queued', userToken: 'STA1N-a', request: normalized,
-        cacheKey: ctx.requestCacheKey('STA1N-a', normalized, undefined), createdAt: new Date().toISOString() }); legacyOpening(db, db.jobs.at(-1)); }, { dirtyRows: { jobs: ['inline'] } });
+      await store.update(
+        (db) => {
+          db.jobs.push({
+            id: 'inline',
+            status: 'queued',
+            userToken: 'STA1N-a',
+            request: normalized,
+            cacheKey: ctx.requestCacheKey('STA1N-a', normalized, undefined),
+            createdAt: new Date().toISOString(),
+          });
+          legacyOpening(db, db.jobs.at(-1));
+        },
+        { dirtyRows: { jobs: ['inline'] } },
+      );
     }
     const accepted = await admit(input);
-    await store.update(db => {
-      const job = db.jobs.find(job => job.id === accepted.id);
-      job.status = 'failed'; job.imageId = 'foreign'; job.lateResultAvailable = true;
-      db.images.push({ id: 'foreign', token: 'STA1N-b', mimeType: 'image/png', base64: png });
-    }, { dirtyRows: { jobs: [accepted.id], images: ['foreign'] } });
-    await assert.rejects(admit(input), error => error.statusCode === 410 && error.requestId === (accepted.requestId || null));
+    await store.update(
+      (db) => {
+        const job = db.jobs.find((job) => job.id === accepted.id);
+        job.status = 'failed';
+        job.imageId = 'foreign';
+        job.lateResultAvailable = true;
+        db.images.push({ id: 'foreign', token: 'STA1N-b', mimeType: 'image/png', base64: png });
+      },
+      { dirtyRows: { jobs: [accepted.id], images: ['foreign'] } },
+    );
+    await assert.rejects(
+      admit(input),
+      (error) => error.statusCode === 410 && error.requestId === (accepted.requestId || null),
+    );
     assert.equal(store.countRecords('jobs'), 1);
     assert.equal(store.selectItemById('jobs', accepted.id).status, 'failed');
   }
 });
 
-test('Native剩余child被清理时同键410保留parent ID，不把剩余图静默当完整批次', async t => {
+test('Native剩余child被清理时同键410保留parent ID，不把剩余图静默当完整批次', async (t) => {
   const { store, ctx, budget } = await fixture(t);
-  const raw = { input: 'synthetic batch', model: 'nai-diffusion-4-5-full', parameters: { width: 1024, height: 1024, steps: 23, n_samples: 3 } };
+  const raw = {
+    input: 'synthetic batch',
+    model: 'nai-diffusion-4-5-full',
+    parameters: { width: 1024, height: 1024, steps: 23, n_samples: 3 },
+  };
   const submit = () => {
     const claim = budget.claim();
-    const intent = ctx.generationIntent('native', () => parseNativeImageRequest(raw), { randomSeed: true, noCache: true, claim });
-    return ctx.createNativeBatch('STA1N-a', null, 'synthetic', 0, claim, intent).finally(() => claim.release());
+    const intent = ctx.generationIntent('native', () => parseNativeImageRequest(raw), {
+      randomSeed: true,
+      noCache: true,
+      claim,
+    });
+    return ctx
+      .createNativeBatch('STA1N-a', null, 'synthetic', 0, claim, intent)
+      .finally(() => claim.release());
   };
   const accepted = await submit();
-  await store.update(db => { db.jobs = db.jobs.filter(job => job.id !== accepted.jobIds[1]); }, { dirtyRows: { jobs: [accepted.jobIds[1]] } });
-  await assert.rejects(submit(), error => error.statusCode === 410 && error.requestId === accepted.requestId);
+  await store.update(
+    (db) => {
+      db.jobs = db.jobs.filter((job) => job.id !== accepted.jobIds[1]);
+    },
+    { dirtyRows: { jobs: [accepted.jobIds[1]] } },
+  );
+  await assert.rejects(
+    submit(),
+    (error) => error.statusCode === 410 && error.requestId === accepted.requestId,
+  );
   assert.equal(store.countRecords('jobs'), 2);
-  assert.equal(store.readGenerationIdempotency('a', 'generate', hashObject('native')).request_id, accepted.requestId);
+  assert.equal(
+    store.readGenerationIdempotency('a', 'generate', hashObject('native')).request_id,
+    accepted.requestId,
+  );
 });

@@ -41,14 +41,38 @@ declare const query: Pick<JsonStore, 'readSettings' | 'findJobContext'>;
 // @ts-expect-error Queries only receive read capabilities.
 query.update(() => null);
 `;
-  const options = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    strict: true, noEmit: true, allowJs: true, checkJs: false, allowImportingTsExtensions: true, skipLibCheck: true, types: ['node'] };
-  const host = ts.createCompilerHost(options), read = host.readFile.bind(host), exists = host.fileExists.bind(host), get = host.getSourceFile.bind(host);
-  const fixture = name => path.resolve(name).toLowerCase() === path.resolve(filename).toLowerCase();
-  host.readFile = name => fixture(name) ? source : read(name);
-  host.fileExists = name => fixture(name) || exists(name);
-  host.getSourceFile = (name, version, onError, newFile) => fixture(name) ? ts.createSourceFile(name, source, version, true) : get(name, version, onError, newFile);
+  const options = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    strict: true,
+    noEmit: true,
+    allowJs: true,
+    checkJs: false,
+    allowImportingTsExtensions: true,
+    skipLibCheck: true,
+    types: ['node'],
+  };
+  const host = ts.createCompilerHost(options),
+    read = host.readFile.bind(host),
+    exists = host.fileExists.bind(host),
+    get = host.getSourceFile.bind(host);
+  const fixture = (name) =>
+    path.resolve(name).toLowerCase() === path.resolve(filename).toLowerCase();
+  host.readFile = (name) => (fixture(name) ? source : read(name));
+  host.fileExists = (name) => fixture(name) || exists(name);
+  host.getSourceFile = (name, version, onError, newFile) =>
+    fixture(name)
+      ? ts.createSourceFile(name, source, version, true)
+      : get(name, version, onError, newFile);
   const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram([filename], options, host));
-  assert.equal(diagnostics.length, 0, ts.formatDiagnosticsWithColorAndContext(diagnostics,
-    { getCanonicalFileName: name => name, getCurrentDirectory: () => process.cwd(), getNewLine: () => '\n' }));
+  assert.equal(
+    diagnostics.length,
+    0,
+    ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: (name) => name,
+      getCurrentDirectory: () => process.cwd(),
+      getNewLine: () => '\n',
+    }),
+  );
 });

@@ -14,7 +14,8 @@ export function protectExecutorHandler(handler, token) {
   const guarded = (req, res) => {
     const value = req.headers['x-executor-token'];
     const supplied = Buffer.from(typeof value === 'string' ? value : '', 'utf8');
-    const matches = supplied.byteLength === expected.byteLength && timingSafeEqual(supplied, expected);
+    const matches =
+      supplied.byteLength === expected.byteLength && timingSafeEqual(supplied, expected);
     let headerCount = 0;
     // 内部凭据不传入业务鉴权、请求诊断或后续转发；其他入站头保持原样。
     delete req.headers['x-executor-token'];
@@ -28,7 +29,7 @@ export function protectExecutorHandler(handler, token) {
       res.writeHead(401, {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
-        'X-Executor-Auth-Error': '1'
+        'X-Executor-Auth-Error': '1',
       });
       res.end(JSON.stringify({ error: 'Invalid executor credentials.' }));
       return;

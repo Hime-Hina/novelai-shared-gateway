@@ -4,4 +4,7 @@ const manifest = JSON.parse(await readFile(new URL('../package.json', import.met
 manifest.main = 'server/index.js';
 manifest.scripts.start = 'node server/index.js';
 manifest.scripts.dev = 'node --watch server/index.js';
-await writeFile(new URL('../.output/backend/package.json', import.meta.url), JSON.stringify(manifest, null, 2) + '\n');
+await writeFile(
+  new URL('../.output/backend/package.json', import.meta.url),
+  JSON.stringify(manifest, null, 2) + '\n',
+);

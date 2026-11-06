@@ -13,7 +13,8 @@ async function pause(point, detail = {}) {
   process.send?.({ point, ...detail });
   await new Promise(() => {});
 }
-const insideImages = filename => typeof filename === 'string' && path.dirname(path.resolve(filename)) === imageDir;
+const insideImages = (filename) =>
+  typeof filename === 'string' && path.dirname(path.resolve(filename)) === imageDir;
 const originalOpen = fs.open;
 fs.open = async function (filename, ...args) {
   const handle = await originalOpen.call(this, filename, ...args);
@@ -28,10 +29,16 @@ fs.open = async function (filename, ...args) {
       return writeFile(data, ...options);
     };
     const sync = handle.sync.bind(handle);
-    handle.sync = async () => { await sync(); await pause('file_sync'); };
+    handle.sync = async () => {
+      await sync();
+      await pause('file_sync');
+    };
   } else if (typeof filename === 'string' && path.resolve(filename) === imageDir) {
     const sync = handle.sync.bind(handle);
-    handle.sync = async () => { await sync(); await pause('dir_sync'); };
+    handle.sync = async () => {
+      await sync();
+      await pause('dir_sync');
+    };
   }
   return handle;
 };
@@ -44,11 +51,21 @@ syncBuiltinESMExports();
 
 const originalUpdate = JsonStore.prototype.update;
 JsonStore.prototype.update = async function (...args) {
-  const pendingBefore = (this.db?.jobs || []).filter(job => job.resultPending).map(job => ({ id: job.id, imageId: job.resultPending.imageId }));
+  const pendingBefore = (this.db?.jobs || [])
+    .filter((job) => job.resultPending)
+    .map((job) => ({ id: job.id, imageId: job.resultPending.imageId }));
   const result = await originalUpdate.apply(this, args);
-  const pending = this.db?.jobs?.find(job => job.resultPending);
-  if (pending) await pause('descriptor', { jobId: pending.id, sqliteSynchronous: this.sqlite.pragma('synchronous', { simple: true }) });
-  const completed = pendingBefore.find(before => this.db.jobs.some(job => job.id === before.id && !job.resultPending && job.imageId === before.imageId));
+  const pending = this.db?.jobs?.find((job) => job.resultPending);
+  if (pending)
+    await pause('descriptor', {
+      jobId: pending.id,
+      sqliteSynchronous: this.sqlite.pragma('synchronous', { simple: true }),
+    });
+  const completed = pendingBefore.find((before) =>
+    this.db.jobs.some(
+      (job) => job.id === before.id && !job.resultPending && job.imageId === before.imageId,
+    ),
+  );
   if (completed) await pause('final_sql', { jobId: completed.id });
   return result;
 };

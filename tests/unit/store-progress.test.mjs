@@ -11,7 +11,9 @@ test('transient progress never exposes the mutable cached job or persists frames
   const progress = { percent: 25, step: 7 };
   const job = store.updateGenerationProgress('j', progress);
   assert.deepEqual(job.generationProgress, { percent: 25, step: 7, total: 28 });
-  progress.percent = 99; job.generationProgress.percent = 100; job.request.steps = 1;
+  progress.percent = 99;
+  job.generationProgress.percent = 100;
+  job.request.steps = 1;
   assert.equal(store.db.jobs[0].generationProgress.percent, 25);
   assert.equal(store.db.jobs[0].request.steps, 28);
   assert.equal(store.updateGenerationProgress('missing', progress), null);
