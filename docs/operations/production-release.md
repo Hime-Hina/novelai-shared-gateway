@@ -462,6 +462,8 @@ GET 回读验证完整字节及 SHA-256，再持久化 R2 凭据，最后移除�
 
 ### 事件及大输入的备份容量边界（2026-11-07）
 
+下方表格保留前期有界测量的原数值与限制；[初始原始报告](../history/issue14-validation/backup-capacity-initial.json)及[源码摘要](../history/issue14-validation/backup-initial-source-hashes.json)不重标为最终提交。候选 `6d64fa1` 又完成一次正式加密备份/恢复，gzip 为 8,527,752 B、加密对象 8,527,788 B；[最终报告](../history/issue14-validation/backup-capacity-6d64fa1.json)包含 SHA、逐表哈希、时间、RSS 与临时空间。该复测没有扩大下面的容量政策，也不构成生产部署授权。
+
 当前继续执行上述硬上限，不提高常量或删除历史输入：压缩归档 **52,428,800 B**，
 AES-GCM 对象增加 **36 B**，最大为 **52,428,836 B**，小于共用 R2 descriptor 的
 **67,108,864 B（64 MiB）**；上传与回读使用整文件缓冲，不能按归档大小估算峰值内存。

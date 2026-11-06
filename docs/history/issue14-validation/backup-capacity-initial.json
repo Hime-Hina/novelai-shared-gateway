@@ -1,0 +1,135 @@
+{
+  "fixture": {
+    "width": 512,
+    "height": 512,
+    "inputImageBytes": 1049476,
+    "maskBytes": 1049476,
+    "opaqueReferenceBytes": 1048576,
+    "inlineResultBytes": 1049476,
+    "sourceSha256": "7c55c6dad7ec59b04550ee9e2f1a0db6047db791+working-tree"
+  },
+  "sourceBytes": 11653120,
+  "archiveBytes": 8527747,
+  "encryptedBytes": 8527783,
+  "encryptionOverheadBytes": 36,
+  "nodeHarnessPeakRssBytes": 199651328,
+  "nodeUploadPeakRssBytes": 128163840,
+  "sampledTempPeakBytes": 63749514,
+  "tempSampleIntervalMs": 100,
+  "cgroupMemoryPeakBytes": 203460608,
+  "timings": {
+    "fixtureMs": 6755.072358999999,
+    "downloadDecryptMs": 380.21241100000043,
+    "extractVerifyMs": 3708.8881580000016,
+    "copyReplayVerifyAndOpenMs": 4719.877941999999,
+    "snapshotMs": 3935.023567999451,
+    "compressEncryptUploadVerifyMs": 3128.3445820008637,
+    "totalMs": 24670.589794
+  },
+  "pythonPeakRssBytes": 67141632,
+  "progress": {
+    "lastCommitSeq": "7",
+    "commits": 7,
+    "events": 11
+  },
+  "summaries": {
+    "event_commits": {
+      "rows": 7,
+      "sha256": "ce72b955fca17416807bbfe011d54fe88afadadbb43ae8dc6e8311aee1ff2bf5"
+    },
+    "domain_events": {
+      "rows": 11,
+      "sha256": "b188fcf433e679982d80bef74fcb3966fbdf07299b08128256fc2a7c55031bd3"
+    },
+    "event_streams": {
+      "rows": 11,
+      "sha256": "dd624dbca49d54f52bc75911245e91ca1ddd9130fc241b9e4453097eb707616a"
+    },
+    "jobs": {
+      "rows": 3,
+      "sha256": "5a315049cc8ff2afdb4613d1f44f79d295e7b481adde5905a783b0293e653bc1"
+    },
+    "images": {
+      "rows": 1,
+      "sha256": "66237c2ac6907d375193f29228e453cbec280f54d3ec02df9c7210fd1a95b304"
+    },
+    "ledger": {
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generation_requests": {
+      "rows": 3,
+      "sha256": "05ad4468395f7386d6abce2b03fa168da2f555598b77bf5724aac812bed56216"
+    },
+    "generation_contexts": {
+      "rows": 2,
+      "sha256": "bf758dda5a94dcdfac0f0be94cea83ba34ec234ae9f999a94d344185ac3e6653"
+    },
+    "artifact_inputs": {
+      "rows": 1,
+      "sha256": "0c840cc4bf765ffad5ea7b1a2ee95b99f34be3d15d530af1bd9e4405a7979444"
+    },
+    "generation_idempotency": {
+      "rows": 2,
+      "sha256": "b49121de09a15b3a94a9af4963023b0fbf95336a12e8fd2486a8e365c51ef104"
+    }
+  },
+  "replaySummaries": {
+    "event_commits": {
+      "rows": 7,
+      "sha256": "ce72b955fca17416807bbfe011d54fe88afadadbb43ae8dc6e8311aee1ff2bf5"
+    },
+    "domain_events": {
+      "rows": 11,
+      "sha256": "b188fcf433e679982d80bef74fcb3966fbdf07299b08128256fc2a7c55031bd3"
+    },
+    "event_streams": {
+      "rows": 11,
+      "sha256": "dd624dbca49d54f52bc75911245e91ca1ddd9130fc241b9e4453097eb707616a"
+    },
+    "jobs": {
+      "rows": 3,
+      "sha256": "531908a14f3234ea08717390987e47cf40401268b8c21a18854c6d412f17a0f6"
+    },
+    "images": {
+      "rows": 1,
+      "sha256": "d668f0c4bb9fa43aeafe3d5571924064785a8c6b05d84f2400057958e64d1258"
+    },
+    "ledger": {
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generation_requests": {
+      "rows": 3,
+      "sha256": "05ad4468395f7386d6abce2b03fa168da2f555598b77bf5724aac812bed56216"
+    },
+    "generation_contexts": {
+      "rows": 2,
+      "sha256": "bf758dda5a94dcdfac0f0be94cea83ba34ec234ae9f999a94d344185ac3e6653"
+    },
+    "artifact_inputs": {
+      "rows": 1,
+      "sha256": "0c840cc4bf765ffad5ea7b1a2ee95b99f34be3d15d530af1bd9e4405a7979444"
+    },
+    "generation_idempotency": {
+      "rows": 2,
+      "sha256": "b49121de09a15b3a94a9af4963023b0fbf95336a12e8fd2486a8e365c51ef104"
+    }
+  },
+  "verified": [
+    "manifest",
+    "event facts",
+    "command receipts",
+    "stream projections",
+    "jobs/images/ledger",
+    "protected requests/contexts/artifacts",
+    "idempotency",
+    "inline artifact bytes"
+  ],
+  "limits": {
+    "archiveBytes": 52428800,
+    "objectBytes": 67108864,
+    "remoteBytes": 500000000,
+    "keep": 7
+  }
+}

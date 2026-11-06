@@ -6,7 +6,7 @@
 
 文档按计划、接口契约、架构、运维和历史证据分组，统一入口见[文档导航](docs/README.md)。开发、格式和验证命令见[贡献指南](CONTRIBUTING.md)。
 
-当前重构设计与完成依据见[架构重构与成员生成计划](docs/plans/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，实现规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/contracts/member-generation-contract.md)。R00–R14 已在重构分支完成验收，保留已量化的性能取舍；R15 审计待修与 R16/R17 收尾另记，尚未部署生产；多执行器、多账号/车队调度和数据库系统迁移归[后续扩展计划](docs/plans/scaling-follow-up-plan.md)。
+当前重构设计与完成依据见[架构重构与成员生成计划](docs/plans/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，实现规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/contracts/member-generation-contract.md)。R00–R14 的历史验收及量化取舍继续保留；R15/R18 后续修复、issue #14 的工程门禁和当前限制统一见计划第 16 节，尚未部署生产。多执行器、多账号/车队调度和数据库系统迁移归[后续扩展计划](docs/plans/scaling-follow-up-plan.md)。
 
 已完成的前端工程化、实时状态、TypeScript、排队与隔离部署等工作见[上一轮现代化实施记录](docs/history/modernization-plan.md)。接口行为以[API 契约](docs/contracts/api-contract.md)为准，各阶段结果以实际实施记录和对应验收为准。
 

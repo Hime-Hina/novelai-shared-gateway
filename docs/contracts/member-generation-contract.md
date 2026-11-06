@@ -1,6 +1,6 @@
 # 成员生成接口契约：能力、报价与受理
 
-更新日期：2026-11-02，Asia/Taipei。契约版本：`1`。
+更新日期：2026-11-07，Asia/Taipei。契约版本：`1`。
 
 状态：**已在重构分支实现并通过本轮验收；尚未发布到生产。** 本文是[当前重构计划](../plans/architecture-refactor-plan.md)第 8 节及 R03/R04/R07/R09 的唯一接口规范，完成依据统一记录在计划中。适用唯一执行器、单绑定 Opus、SQLite；多账号选路、多执行器及切库属于[后续计划](../plans/scaling-follow-up-plan.md)。[已有 API 契约](api-contract.md)继续约束 Native/OpenAI/direct 和旧网页入口，本文不改变它们的鉴权、状态码或请求格式。
 

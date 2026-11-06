@@ -1,0 +1,9 @@
+{
+  "source": "read-only Docker volume nai-refactor-performance-20261101-87cc125a:/bench/final-3eae814-run01/annual/annual-backup.sqlite",
+  "sourceBytes": 2412564480,
+  "archiveBytes": 426748997,
+  "compressionMs": 67019.66178799921,
+  "peakRssBytes": 15728640,
+  "fixture": "existing immutable annual SQLite backup only; production tarfile.open(w:gz), no config or manifest; not a full restore measurement",
+  "limitBytes": 52428800
+}
