@@ -190,16 +190,20 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   let malformedNext = false;
   const previewGates = new Map();
   const previewGate = (seed, step, disconnect = false) => {
-    let release;
+    let release, receive;
     const gate = {
       step,
       disconnect,
       written: false,
       released: false,
+      received: new Promise((resolve) => {
+        receive = resolve;
+      }),
       wait: new Promise((resolve) => {
         release = resolve;
       }),
     };
+    gate.receive = receive;
     gate.release = () => {
       gate.released = true;
       release();
@@ -284,6 +288,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
       return;
     }
+    previewGates.get(payload.parameters.seed)?.receive();
     const delay = holdNextMs;
     holdNextMs = 0;
     call.holdMs = delay;
@@ -1301,6 +1306,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       const firstPending = post('/ai/generate-image-stream', firstBody, credentials[0].api_key, {
         'Idempotency-Key': key,
       });
+      // HTTP 到达顺序不由调用顺序保证；先确认长请求占槽，再验证第二位成员排队。
+      await gate.received;
       const secondPending = post('/v1/ai/generate-image-stream', body(), credentials[1].api_key);
       secondPending.catch(() => {}); // 首请求的断言先失败时，仍避免并发请求产生未处理拒绝；下方 await 会继续传播错误。
       const firstResponse = await firstPending,
@@ -1311,6 +1318,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(preview.event_type, 'intermediate');
       assert.equal(preview.step_ix, 11);
       assert.equal(gate.released, false);
+      assert.equal(calls.length, startCount + 1);
       await firstReader.return(); // 关闭浏览器连接，随后才让上游完成。
       gate.release();
       const secondResponse = await secondPending;
