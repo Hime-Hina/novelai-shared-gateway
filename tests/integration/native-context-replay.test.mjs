@@ -76,7 +76,7 @@ async function fixture(t, legacy = false) {
   );
   syncFairQuota(seed);
   const legacyContext = { defaultModel: input().model, defaults: { steps: 23, scale: 9 } };
-  if (legacy)
+  if (legacy) {
     seed.jobs.push({
       id: 'old-job',
       memberId: 'a',
@@ -85,8 +85,9 @@ async function fixture(t, legacy = false) {
       error: 'synthetic old failure',
       errorStatus: 502,
     });
+  }
   await store.write(seed);
-  if (legacy)
+  if (legacy) {
     store.persistGenerationIdempotency({
       member_id: 'a',
       operation: 'generate',
@@ -100,6 +101,7 @@ async function fixture(t, legacy = false) {
       request_id: null,
       created_at: new Date().toISOString(),
     });
+  }
   await store.enableEventAuthority();
   const budget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes());
   const adapter = () =>
@@ -119,7 +121,9 @@ async function fixture(t, legacy = false) {
       readJson: async (req) => req.body,
       waitForJobResult: async (id) => {
         let job = store.selectItemById('jobs', id);
-        if (job.status === 'failed') return { error: job.error, statusCode: job.errorStatus };
+        if (job.status === 'failed') {
+          return { error: job.error, statusCode: job.errorStatus };
+        }
         if (job.status !== 'done') {
           now += 10001;
           const reservation = await reserveQueuedGeneration(store, id, {
@@ -167,8 +171,11 @@ async function fixture(t, legacy = false) {
       body,
       generationIdempotencyKey: key,
     };
-    if (operation) await adapter().handleAuxiliary(req, res, operation);
-    else await adapter().handleImage(req, res);
+    if (operation) {
+      await adapter().handleAuxiliary(req, res, operation);
+    } else {
+      await adapter().handleImage(req, res);
+    }
     return res;
   };
   return {

@@ -31,7 +31,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 
 const replays = {};
-if (options['replay-dir'])
+if (options['replay-dir']) {
   for (const name of ['zip', 'msgpack', 'sse']) {
     const invalid = () => {
       throw new Error(`Invalid mock replay fixture: ${name}`);
@@ -41,7 +41,9 @@ if (options['replay-dir'])
     );
     for (const [index, file] of files.entries()) {
       const info = await stat(file);
-      if (!info.isFile() || info.size > (index === 0 ? 1024 * 1024 : 16 * 1024 * 1024)) invalid();
+      if (!info.isFile() || info.size > (index === 0 ? 1024 * 1024 : 16 * 1024 * 1024)) {
+        invalid();
+      }
     }
     const metadata = JSON.parse(await readFile(files[0], 'utf8')),
       bytes = await readFile(files[1]);
@@ -60,8 +62,9 @@ if (options['replay-dir'])
       !Array.isArray(metadata.chunks) ||
       !metadata.chunks.length ||
       metadata.chunks.length > 4096
-    )
+    ) {
       invalid();
+    }
     http.validateHeaderValue('content-type', metadata.contentType);
     let end = 0,
       atMs = metadata.headersAtMs;
@@ -73,14 +76,18 @@ if (options['replay-dir'])
         !Number.isInteger(chunk.atMs) ||
         chunk.atMs < atMs ||
         chunk.atMs > metadata.completeAtMs
-      )
+      ) {
         invalid();
+      }
       end = chunk.end;
       atMs = chunk.atMs;
     }
-    if (end !== bytes.length) invalid();
+    if (end !== bytes.length) {
+      invalid();
+    }
     replays[name] = { ...metadata, bytes };
   }
+}
 
 function json(res, status, body) {
   const text = JSON.stringify(body);
@@ -100,16 +107,20 @@ async function readJson(req) {
     String(req.headers['content-type'] || '')
       .split(';')[0]
       .trim() !== 'application/json'
-  )
+  ) {
     fail(415, 'Mock requires application/json');
-  if (Number(req.headers['content-length']) > maxBodyBytes)
+  }
+  if (Number(req.headers['content-length']) > maxBodyBytes) {
     fail(413, 'Mock request body too large');
+  }
   const chunks = [];
   let bytes = 0;
   // 超限后由错误响应关闭连接，不让迭代器提前销毁响应 socket 而丢失 413。
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     bytes += chunk.length;
-    if (bytes > maxBodyBytes) fail(413, 'Mock request body too large');
+    if (bytes > maxBodyBytes) {
+      fail(413, 'Mock request body too large');
+    }
     chunks.push(chunk);
   }
   let body;
@@ -130,8 +141,9 @@ async function readJson(req) {
     Array.isArray(body.parameters) ||
     typeof body.parameters !== 'object' ||
     (body.parameters.n_samples ?? 1) !== 1
-  )
+  ) {
     fail(400, 'Mock requires a single-image generation request');
+  }
   return body;
 }
 
@@ -141,12 +153,17 @@ const server = http.createServer(async (req, res) => {
   const abort = () => controller.abort();
   res.once('close', abort);
   try {
-    if (closing) fail(503, 'Mock is stopping');
-    if (req.headers.authorization !== `Bearer ${token}`)
+    if (closing) {
+      fail(503, 'Mock is stopping');
+    }
+    if (req.headers.authorization !== `Bearer ${token}`) {
       fail(401, 'Synthetic mock credential required');
+    }
     const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
     if (pathname === '/user/data') {
-      if (req.method !== 'GET') fail(405, 'Mock method not supported');
+      if (req.method !== 'GET') {
+        fail(405, 'Mock method not supported');
+      }
       json(res, 200, {
         subscription: {
           tier: 3,
@@ -158,12 +175,19 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    if (!['/ai/generate-image', '/ai/generate-image-stream'].includes(pathname))
+    if (!['/ai/generate-image', '/ai/generate-image-stream'].includes(pathname)) {
       fail(404, 'Mock route not implemented');
-    if (req.method !== 'POST') fail(405, 'Mock method not supported');
+    }
+    if (req.method !== 'POST') {
+      fail(405, 'Mock method not supported');
+    }
     const body = await readJson(req);
     const stream = pathname.endsWith('-stream');
-    const replay = replays[stream ? (body.parameters.stream === 'sse' ? 'sse' : 'msgpack') : 'zip'];
+    let replayFormat = 'zip';
+    if (stream) {
+      replayFormat = body.parameters.stream === 'sse' ? 'sse' : 'msgpack';
+    }
+    const replay = replays[replayFormat];
     if (replay) {
       const started = performance.now();
       const waitUntil = (at) =>
@@ -179,8 +203,9 @@ const server = http.createServer(async (req, res) => {
       let offset = 0;
       for (const chunk of replay.chunks) {
         await waitUntil(chunk.atMs);
-        if (!res.write(replay.bytes.subarray(offset, chunk.end)))
+        if (!res.write(replay.bytes.subarray(offset, chunk.end))) {
           await once(res, 'drain', { signal: controller.signal });
+        }
         offset = chunk.end;
       }
       await waitUntil(replay.completeAtMs);
@@ -197,8 +222,9 @@ const server = http.createServer(async (req, res) => {
       );
     }
     await delay(options['delay-ms'], undefined, { signal: controller.signal });
-    if (stream) res.end(nativeImageMsgpack({ event_type: 'final', samp_ix: 0, image: png }));
-    else {
+    if (stream) {
+      res.end(nativeImageMsgpack({ event_type: 'final', samp_ix: 0, image: png }));
+    } else {
       res.writeHead(200, {
         'content-type': 'image/png',
         'content-length': png.length,
@@ -208,8 +234,9 @@ const server = http.createServer(async (req, res) => {
     }
   } catch (error) {
     if (!res.destroyed && !res.writableEnded) {
-      if (res.headersSent) res.destroy();
-      else {
+      if (res.headersSent) {
+        res.destroy();
+      } else {
         req.resume();
         json(res, error.statusCode || 500, {
           message: error.statusCode ? error.message : 'Mock request failed',
@@ -231,10 +258,13 @@ server.listen(options.port, '127.0.0.1', () => {
       }),
   );
 });
-for (const signal of ['SIGTERM', 'SIGINT'])
+for (const signal of ['SIGTERM', 'SIGINT']) {
   process.once(signal, () => {
-    if (closing) return;
+    if (closing) {
+      return;
+    }
     closing = true;
     server.close();
     setTimeout(() => server.closeAllConnections(), 65000).unref();
   });
+}

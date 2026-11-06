@@ -101,17 +101,21 @@ interface EventRow {
 const maxSequence = 9_223_372_036_854_775_807n;
 const iso = (value: string | number): string => {
   const date = new Date(value);
-  if (!Number.isFinite(date.getTime()))
+  if (!Number.isFinite(date.getTime())) {
     throw new Error('Domain event time must be an explicit valid timestamp.');
+  }
   return date.toISOString();
 };
 const object = (value: unknown): Record<string, unknown> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value))
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Domain projection expects an object fact.');
+  }
   return value as Record<string, unknown>;
 };
 const text = (value: unknown, field: string): string => {
-  if (typeof value !== 'string' || !value) throw new Error(`Domain fact requires ${field}.`);
+  if (typeof value !== 'string' || !value) {
+    throw new Error(`Domain fact requires ${field}.`);
+  }
   return value;
 };
 
@@ -137,12 +141,16 @@ export function readStreamProjection(
         projection_sha256: string;
       }
     | undefined;
-  if (!row) return null;
-  if (row.reducer_version !== DOMAIN_REDUCER_VERSION)
+  if (!row) {
+    return null;
+  }
+  if (row.reducer_version !== DOMAIN_REDUCER_VERSION) {
     throw new Error(`Unsupported reducer version for ${streamId}: ${row.reducer_version}`);
+  }
   const projection = JSON.parse(row.projection) as DomainProjection;
-  if (domainDigest(projection) !== row.projection_sha256)
+  if (domainDigest(projection) !== row.projection_sha256) {
     throw new Error(`Corrupt domain projection ${streamId}`);
+  }
   return {
     streamId: row.stream_id,
     streamKind: row.stream_kind,
@@ -158,12 +166,15 @@ export function readStreamProjection(
 export function readProjectedFairQuota(sqlite: Database.Database): FairQuotaState | null {
   const sharing = readStreamProjection(sqlite, 'sharing:default')?.projection as
     SharingQuotaState | null | undefined;
-  if (!sharing) return null;
+  if (!sharing) {
+    return null;
+  }
   const account = sharing.boundAccountId
     ? readStreamProjection(sqlite, `account:${sharing.boundAccountId}`)?.projection
     : null;
-  if (sharing.boundAccountId && !account?.quota)
+  if (sharing.boundAccountId && !account?.quota) {
     throw new Error(`Missing authoritative quota account ${sharing.boundAccountId}`);
+  }
   return composeQuotaState(sharing, (account?.quota as AccountQuotaState | null) || null);
 }
 
@@ -175,11 +186,14 @@ export function readArtifactInput(
   const row = sqlite
     .prepare('SELECT payload,payload_sha256 FROM artifact_inputs WHERE artifact_id=?')
     .get(id) as { payload: string; payload_sha256: string } | undefined;
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   const payload = JSON.parse(row.payload) as Record<string, unknown>,
     digest = domainDigest(payload);
-  if (digest !== row.payload_sha256 || (expectedHash && digest !== expectedHash))
+  if (digest !== row.payload_sha256 || (expectedHash && digest !== expectedHash)) {
     throw new Error(`Protected artifact input hash mismatch ${id}`);
+  }
   return payload;
 }
 function projectionArtifact(
@@ -193,7 +207,9 @@ function projectionArtifact(
       String(artifact.artifactInputRef),
       artifact.artifactInputSha256 as string,
     );
-    if (!input) throw new Error(`Missing protected artifact input ${artifact.artifactInputRef}`);
+    if (!input) {
+      throw new Error(`Missing protected artifact input ${artifact.artifactInputRef}`);
+    }
     Object.assign(artifact, pick(input, ['prompt', 'fullPrompt']));
   } else if (artifact.inputRef) {
     let inputRef = String(artifact.inputRef);
@@ -209,8 +225,12 @@ function projectionArtifact(
     if (row) {
       const input = JSON.parse(row.payload) as Record<string, unknown>,
         request = input.legacyInline ? object(input.requestPayload || input.request) : input;
-      if (request.tag !== undefined) artifact.prompt = request.tag;
-      if (request.prompt !== undefined) artifact.fullPrompt = request.prompt;
+      if (request.tag !== undefined) {
+        artifact.prompt = request.tag;
+      }
+      if (request.prompt !== undefined) {
+        artifact.fullPrompt = request.prompt;
+      }
     }
   }
   return artifact;
@@ -234,8 +254,11 @@ function projectionJob(
   const job = structuredClone(raw);
   delete job.summary;
   delete job.index;
-  for (const key of jobDateFields)
-    if (typeof job[key] === 'number') job[key] = iso(job[key] as number);
+  for (const key of jobDateFields) {
+    if (typeof job[key] === 'number') {
+      job[key] = iso(job[key] as number);
+    }
+  }
   const terminal = sqlite
     .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id=?')
     .get(job.id) as { charge: string } | undefined;
@@ -245,16 +268,25 @@ function projectionJob(
     ? readStreamProjection(sqlite, `account:${accountId}`)?.projection
     : null;
   const reserved = (account?.quota as AccountQuotaState | undefined)?.reservations[String(job.id)];
-  if (terminal) job.fairCharge = JSON.parse(terminal.charge);
-  else if (reserved) job.fairCharge = structuredClone(reserved);
+  if (terminal) {
+    job.fairCharge = JSON.parse(terminal.charge);
+  } else if (reserved) {
+    job.fairCharge = structuredClone(reserved);
+  }
   if (job.legacyInputRef) {
     const input = sqlite
       .prepare('SELECT payload FROM generation_requests WHERE id=?')
       .get(job.legacyInputRef) as { payload: string } | undefined;
-    if (!input) throw new Error(`Missing protected legacy input ${job.legacyInputRef}`);
+    if (!input) {
+      throw new Error(`Missing protected legacy input ${job.legacyInputRef}`);
+    }
     const payload = JSON.parse(input.payload) as Record<string, unknown>;
-    if (payload.request) job.request = payload.request;
-    if (payload.requestPayload) job.requestPayload = payload.requestPayload;
+    if (payload.request) {
+      job.request = payload.request;
+    }
+    if (payload.requestPayload) {
+      job.requestPayload = payload.requestPayload;
+    }
   }
   if (job.diagnosticRef) {
     const diagnostic = sqlite
@@ -267,15 +299,20 @@ function projectionJob(
       !diagnostic ||
       diagnostic.job_id !== job.id ||
       createHash('sha256').update(diagnostic.detail).digest('hex') !== diagnostic.detail_sha256
-    )
+    ) {
       throw new Error(`Missing or corrupt protected diagnostic ${job.diagnosticRef}`);
+    }
     job.errorDetail = diagnostic.detail;
   }
   const imageId = job.imageId || job.lateResultImageId;
   if (imageId && readStreamProjection(sqlite, `artifact:${imageId}`)?.projection?.retired) {
     job.imageId = '';
-    if (job.lateResultImageId) job.lateResultImageId = '';
-    if (job.lateResultAvailable) job.lateResultAvailable = false;
+    if (job.lateResultImageId) {
+      job.lateResultImageId = '';
+    }
+    if (job.lateResultAvailable) {
+      job.lateResultAvailable = false;
+    }
   }
   return job;
 }
@@ -290,31 +327,39 @@ export function coreProjectionRows(
     seenRequests = new Set<string>(),
     requests = [...streams];
   for (const event of commit.events) {
-    const relatedIds =
-      event.eventType === 'ArtifactHistoryRetired'
-        ? (event.payload.jobIds as string[])
-        : event.streamKind === 'account' && event.payload.jobId
-          ? [String(event.payload.jobId)]
-          : [];
+    let relatedIds: string[] = [];
+    if (event.eventType === 'ArtifactHistoryRetired') {
+      relatedIds = event.payload.jobIds as string[];
+    } else if (event.streamKind === 'account' && event.payload.jobId) {
+      relatedIds = [String(event.payload.jobId)];
+    }
     for (const jobId of relatedIds) {
       const stored = sqlite.prepare('SELECT request_id FROM jobs WHERE id=?').get(jobId) as
         { request_id: string | null } | undefined;
       const streamId = `request:${stored?.request_id || `legacy-${jobId}`}`;
       if (!requests.some((stream) => stream.streamId === streamId)) {
         const request = readStreamProjection(sqlite, streamId);
-        if (request) requests.push(request);
+        if (request) {
+          requests.push(request);
+        }
       }
     }
-    if (Array.isArray(event.payload.evidence))
-      for (const evidence of event.payload.evidence)
+    if (Array.isArray(event.payload.evidence)) {
+      for (const evidence of event.payload.evidence) {
         rows.push({ collection: 'ledger', item: structuredClone(object(evidence)) });
+      }
+    }
   }
   let queueSequence: string | undefined;
   for (const stream of requests) {
     const state = stream.projection;
-    if (!state) continue;
+    if (!state) {
+      continue;
+    }
     if (stream.streamKind === 'request') {
-      if (seenRequests.has(stream.streamId)) continue;
+      if (seenRequests.has(stream.streamId)) {
+        continue;
+      }
       seenRequests.add(stream.streamId);
       for (const raw of Object.values(object(state.jobs))) {
         const id = String(object(raw).id);
@@ -327,8 +372,9 @@ export function coreProjectionRows(
         if (
           typeof job.queueSeq === 'number' &&
           (!queueSequence || BigInt(job.queueSeq) > BigInt(queueSequence))
-        )
+        ) {
           queueSequence = String(job.queueSeq);
+        }
       }
       for (const raw of Object.values(object(state.artifacts || {}))) {
         const artifact = structuredClone(object(raw)),
@@ -341,7 +387,7 @@ export function coreProjectionRows(
           });
           continue;
         }
-        if (storage)
+        if (storage) {
           Object.assign(
             artifact,
             pick(storage, [
@@ -355,6 +401,7 @@ export function coreProjectionRows(
               'storagePhase',
             ]),
           );
+        }
         rows.push({ collection: 'images', item: projectionArtifact(sqlite, artifact) });
       }
     } else if (stream.streamKind === 'account') {
@@ -378,27 +425,28 @@ export function coreProjectionRows(
           ...(member.removed ? { remove: true as const } : {}),
         });
       }
-    } else if (stream.streamKind === 'artifact')
+    } else if (stream.streamKind === 'artifact') {
       rows.push(
         state.retired
           ? { collection: 'images', item: { id: state.id, memberId: state.memberId }, remove: true }
           : { collection: 'images', item: projectionArtifact(sqlite, state) },
       );
-    else if (stream.streamKind === 'legacy-ledger')
+    } else if (stream.streamKind === 'legacy-ledger') {
       rows.push({
         collection: 'ledger',
         item: structuredClone(object(state.record)),
         order: state.order as number,
       });
-    else if (stream.streamKind === 'system' && stream.streamId === 'system:queue')
+    } else if (stream.streamKind === 'system' && stream.streamId === 'system:queue') {
       queueSequence = String(state.queueSequence);
+    }
   }
   const cleared = commit.events.filter(
     (event) =>
       event.eventType === 'ArtifactHistoryRetired' &&
       event.payload.reason === 'owner_cleared_cache',
   );
-  if (cleared.length)
+  if (cleared.length) {
     rows.push({
       collection: 'ledger',
       item: {
@@ -409,6 +457,7 @@ export function coreProjectionRows(
         note: 'Cleared cached images',
       },
     });
+  }
   const fairQuota = streams.some((stream) => ['sharing', 'account'].includes(stream.streamKind))
     ? readProjectedFairQuota(sqlite)
     : undefined;
@@ -471,8 +520,9 @@ export function readDomainCommits(
   afterCommitSeq = '0',
   limit = 100,
 ): DomainCommit[] {
-  if (!/^\d+$/.test(afterCommitSeq) || !Number.isInteger(limit) || limit < 1 || limit > 1000)
+  if (!/^\d+$/.test(afterCommitSeq) || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
     throw new Error('Invalid event commit cursor.');
+  }
   const rows = sqlite
     .prepare(
       `SELECT CAST(commit_seq AS TEXT) AS commit_seq,command_id,fingerprint,recorded_at,event_count,receipt
@@ -489,8 +539,9 @@ export function readDomainCommits(
     if (
       events.length !== row.event_count ||
       events.some((event, index) => event.eventIndex !== index)
-    )
+    ) {
       throw new Error(`Incomplete event commit ${row.commit_seq}`);
+    }
     return {
       commitSeq: row.commit_seq,
       commandId: row.command_id,
@@ -507,16 +558,19 @@ export function assertCurrentEventReducer(sqlite: Database.Database): void {
   const checkpoint = sqlite
     .prepare("SELECT reducer_version FROM projection_versions WHERE name='core'")
     .get() as { reducer_version: number } | undefined;
-  if (checkpoint && checkpoint.reducer_version !== DOMAIN_REDUCER_VERSION)
+  if (checkpoint && checkpoint.reducer_version !== DOMAIN_REDUCER_VERSION) {
     throw new Error(
       `Unsupported reducer version: ${checkpoint.reducer_version}; upgrade event projections before use.`,
     );
+  }
 }
 
 // 只升级可重建的 stream cache；调用方在同一事务内核对/安装业务投影及 writer 标记。
 // 不重插事件、收据或冷凭据，不以旧 cache 内容冒充新 reducer 的结果。
 export function upgradeEventReducers(sqlite: Database.Database): boolean {
-  if (!sqlite.inTransaction) throw new Error('Reducer upgrade requires a database transaction.');
+  if (!sqlite.inTransaction) {
+    throw new Error('Reducer upgrade requires a database transaction.');
+  }
   const authority = readCompatibleEventAuthority(sqlite);
   const versions = (
     sqlite
@@ -525,14 +579,17 @@ export function upgradeEventReducers(sqlite: Database.Database): boolean {
       )
       .all() as { reducer_version: number }[]
   ).map((row) => row.reducer_version);
-  for (const version of versions)
-    if (![1, 2, DOMAIN_REDUCER_VERSION].includes(version))
+  for (const version of versions) {
+    if (![1, 2, DOMAIN_REDUCER_VERSION].includes(version)) {
       throw new Error(`Unsupported reducer version: ${version}`);
+    }
+  }
   if (
     (!authority || authority.version === EVENT_AUTHORITY_VERSION) &&
     versions.every((version) => version === DOMAIN_REDUCER_VERSION)
-  )
+  ) {
     return false;
+  }
   const clock = sqlite
     .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
     .get() as { value: string } | undefined;
@@ -550,17 +607,21 @@ export function upgradeEventReducers(sqlite: Database.Database): boolean {
     recordedAt = '';
   while (true) {
     const commits = readDomainCommits(sqlite, cursor, 100);
-    if (!commits.length) break;
+    if (!commits.length) {
+      break;
+    }
     for (const commit of commits) {
-      if (cursor !== '0' && BigInt(commit.commitSeq) !== BigInt(cursor) + 1n)
+      if (cursor !== '0' && BigInt(commit.commitSeq) !== BigInt(cursor) + 1n) {
         throw new Error(`Replay commit order mismatch at ${commit.commitSeq}`);
+      }
       for (const event of commit.events) {
         const prior = readStreamProjection(sqlite, event.streamId);
         if (
           BigInt(event.streamVersion) !== BigInt(prior?.streamVersion || '0') + 1n ||
           (prior && prior.streamKind !== event.streamKind)
-        )
+        ) {
           throw new Error(`Replayed stream version mismatch at ${event.eventId}`);
+        }
         const projection = reduceDomainEvent(prior?.projection || null, event);
         save.run(
           event.streamId,
@@ -577,21 +638,24 @@ export function upgradeEventReducers(sqlite: Database.Database): boolean {
       recordedAt = commit.recordedAt;
     }
   }
-  if (cursor !== (clock?.value || '0') || (checkpoint && cursor !== checkpoint.value))
+  if (cursor !== (clock?.value || '0') || (checkpoint && cursor !== checkpoint.value)) {
     throw new Error('Reducer upgrade commit cursor differs from committed history.');
-  if (recordedAt)
+  }
+  if (recordedAt) {
     sqlite
       .prepare(
         `INSERT INTO projection_versions(name,epoch,reducer_version,last_commit_seq,status,updated_at) VALUES('core','live',?,?,'ready',?)
     ON CONFLICT(name) DO UPDATE SET reducer_version=excluded.reducer_version,last_commit_seq=excluded.last_commit_seq,status='ready',updated_at=excluded.updated_at`,
       )
       .run(DOMAIN_REDUCER_VERSION, BigInt(cursor), recordedAt);
-  else
+  } else {
     sqlite.prepare('UPDATE projection_versions SET reducer_version=?').run(DOMAIN_REDUCER_VERSION);
+  }
   return true;
 }
 
 // 所有金额已在业务决定时确定；reducer 不读取当前时钟、报价或外部状态。
+// 只修改输入投影的副本；历史未记录的响应时间保持未知，不能从派发或重放时间推算。
 export function reduceDomainEvent(
   previous: DomainProjection,
   event: DomainEvent,
@@ -600,19 +664,26 @@ export function reduceDomainEvent(
   const state = previous === null ? null : structuredClone(previous);
   const payload = event.payload;
   if (event.eventType === 'OpeningStateRecorded') {
-    if (state !== null) throw new Error(`Opening must be the first fact of ${event.streamId}`);
+    if (state !== null) {
+      throw new Error(`Opening must be the first fact of ${event.streamId}`);
+    }
     return structuredClone(object(payload.state));
   }
-  if (event.streamKind === 'sharing')
+  if (event.streamKind === 'sharing') {
     return reduceSharingEvent(
       state as unknown as SharingQuotaState | null,
       event,
     ) as unknown as DomainProjection;
+  }
   if (event.eventType === 'LegacyFactRecorded') {
-    if (state !== null) throw new Error(`Legacy fact already exists for ${event.streamId}`);
+    if (state !== null) {
+      throw new Error(`Legacy fact already exists for ${event.streamId}`);
+    }
     return structuredClone(payload);
   }
-  if (event.streamKind === 'request') return reduceRequestEvent(state, event);
+  if (event.streamKind === 'request') {
+    return reduceRequestEvent(state, event);
+  }
   if (event.streamKind === 'account') {
     const next: Record<string, unknown> = state || { id: event.accountId || payload.accountId };
     if (
@@ -658,12 +729,15 @@ export function reduceDomainEvent(
       ...(payload.error !== undefined ? { r2Error: payload.error } : {}),
     };
   }
-  if (event.streamKind === 'artifact' && event.eventType === 'ArtifactHistoryRetired')
+  if (event.streamKind === 'artifact' && event.eventType === 'ArtifactHistoryRetired') {
     return {
       ...(state || { id: payload.artifactId, memberId: event.memberId }),
       retired: { at: payload.at, reason: payload.reason },
     };
-  if (event.eventType === 'FreeImageSucceeded') return { ...payload, eventId: event.eventId };
+  }
+  if (event.eventType === 'FreeImageSucceeded') {
+    return { ...payload, eventId: event.eventId };
+  }
   throw new Error(
     `No reducer for event ${event.eventId}: ${event.eventType} on ${event.streamKind}`,
   );
@@ -672,9 +746,12 @@ export function reduceDomainEvent(
 function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): DomainProjection {
   const p = event.payload;
   if (event.eventType === 'RequestAccepted') {
-    if (previous !== null) throw new Error(`Request already exists: ${event.streamId}`);
-    if (!Array.isArray(p.jobs) || !p.jobs.length)
+    if (previous !== null) {
+      throw new Error(`Request already exists: ${event.streamId}`);
+    }
+    if (!Array.isArray(p.jobs) || !p.jobs.length) {
       throw new Error(`RequestAccepted ${event.eventId} requires jobs`);
+    }
     const jobs = Object.fromEntries(
       p.jobs.map((raw) => {
         const job = object(raw),
@@ -696,12 +773,16 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
     );
     return { request: structuredClone(p), jobs, artifacts: {}, aliases: [], freeUsage: {} };
   }
-  if (!previous) throw new Error(`Missing request opening before event ${event.eventId}`);
+  if (!previous) {
+    throw new Error(`Missing request opening before event ${event.eventId}`);
+  }
   const state = previous;
   const jobs = object(state.jobs),
     artifacts = object((state.artifacts ||= {}));
   if (event.eventType === 'JobHistoryRetired') {
-    if (!Array.isArray(p.jobIds)) throw new Error(`Missing retired jobs in ${event.eventId}`);
+    if (!Array.isArray(p.jobIds)) {
+      throw new Error(`Missing retired jobs in ${event.eventId}`);
+    }
     const retired = object((state.retiredJobs ||= {}));
     for (const id of p.jobIds) {
       const job = object(jobs[String(id)]);
@@ -709,8 +790,9 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
         ['queued', 'pending', 'running'].includes(String(job.status)) ||
         job.resultPending ||
         (job.generationReview as { status?: string } | undefined)?.status === 'pending'
-      )
+      ) {
         throw new Error(`Cannot retire active job or unresolved review ${id}`);
+      }
       retired[String(id)] = { at: p.at, reason: p.reason };
     }
     return state;
@@ -721,11 +803,14 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
     return state;
   }
   if (event.eventType === 'WaitingJobsCancelled') {
-    if (!Array.isArray(p.jobIds)) throw new Error(`Missing cancelled job IDs in ${event.eventId}`);
+    if (!Array.isArray(p.jobIds)) {
+      throw new Error(`Missing cancelled job IDs in ${event.eventId}`);
+    }
     for (const id of p.jobIds) {
       const job = object(jobs[String(id)]);
-      if (!['queued', 'pending'].includes(String(job.status)))
+      if (!['queued', 'pending'].includes(String(job.status))) {
         throw new Error(`Cannot cancel non-waiting job ${id}`);
+      }
       Object.assign(job, {
         status: 'failed',
         cancelledAt: iso(p.at as string | number),
@@ -760,7 +845,9 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
       'upstreamCompletedAt',
       'upstreamHttpStatus',
     ]) {
-      if (response[field] !== null && response[field] !== undefined) job[field] = response[field];
+      if (response[field] !== null && response[field] !== undefined) {
+        job[field] = response[field];
+      }
     }
   }
   switch (event.eventType) {
@@ -809,8 +896,9 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
       });
       break;
     case 'JobCompleted':
-      if (job.status === 'failed')
+      if (job.status === 'failed') {
         throw new Error(`Failed job ${jobId} requires LateResultRecovered`);
+      }
       Object.assign(job, {
         status: 'done',
         imageId: p.artifactId || p.imageId,
@@ -830,7 +918,9 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
       delete job.resultPending;
       break;
     case 'JobFailed':
-      if (job.status === 'done') throw new Error(`Completed job ${jobId} cannot fail`);
+      if (job.status === 'done') {
+        throw new Error(`Completed job ${jobId} cannot fail`);
+      }
       Object.assign(job, {
         status: 'failed',
         completedAt: p.failedAt,
@@ -842,13 +932,20 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
         generationRefund: p.generationRefund || p.refund,
         generationReview: p.generationReview || p.review,
       });
-      if (p.cancelledAt) job.cancelledAt = p.cancelledAt;
-      if (p.cancellationReason) job.cancellationReason = p.cancellationReason;
-      if (p.diagnosticRef) job.diagnosticRef = p.diagnosticRef;
+      if (p.cancelledAt) {
+        job.cancelledAt = p.cancelledAt;
+      }
+      if (p.cancellationReason) {
+        job.cancellationReason = p.cancellationReason;
+      }
+      if (p.diagnosticRef) {
+        job.diagnosticRef = p.diagnosticRef;
+      }
       break;
     case 'LateResultRecovered':
-      if (job.status !== 'failed' || p.refundRetained !== true)
+      if (job.status !== 'failed' || p.refundRetained !== true) {
         throw new Error(`Late result must preserve failure/refund for ${jobId}`);
+      }
       Object.assign(job, {
         lateResultAvailable: true,
         lateResultAt: iso(p.at as string | number),
@@ -857,7 +954,9 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
         imageId: p.artifactId,
       });
       delete job.resultPending;
-      if (p.review) job.generationReview = structuredClone(p.review);
+      if (p.review) {
+        job.generationReview = structuredClone(p.review);
+      }
       break;
     case 'ReviewOpened':
     case 'ReviewClosed':
@@ -872,31 +971,39 @@ function reduceRequestEvent(previous: DomainProjection, event: DomainEvent): Dom
   return state;
 }
 
+/**
+ * 调用者持有业务写事务；这里把一个完整命令的事实、原回执和投影 checkpoint 一起写入。
+ * 稳定键去重先于 expectedVersions 核验，已提交命令可领取旧回执而不重新作决定。
+ * duplicate 只返回原回执；调用者必须丢弃候选状态，并回滚此前为该候选准备的写入。
+ */
 export function appendDomainCommit(
   sqlite: Database.Database,
   command: DomainCommand | DomainReplayCommand,
   options: AppendOptions = {},
 ): { commitSeq: string; receipt: Json; duplicate: boolean } {
-  if (!sqlite.inTransaction)
+  if (!sqlite.inTransaction) {
     throw new Error('Domain commit must run inside the business write transaction.');
+  }
   assertCurrentEventReducer(sqlite);
-  if (!command.events.length)
+  if (!command.events.length) {
     throw new Error('A domain commit requires at least one explicit fact.');
+  }
   command.events.forEach(assertDomainEvent);
   assertPublicDomainFact(command.receipt, 'receipt');
   const fingerprint =
     command.fingerprint || domainDigest(command.events.map(({ eventId, ...event }) => event));
   const prior = readCommandReceipt(sqlite, command.commandId);
   if (prior) {
-    if (prior.fingerprint !== fingerprint)
+    if (prior.fingerprint !== fingerprint) {
       throw Object.assign(new Error(`Command fingerprint conflict: ${command.commandId}`), {
         statusCode: 409,
       });
+    }
     return { commitSeq: prior.commitSeq, receipt: prior.receipt, duplicate: true };
   }
   // 嵌套事务提供 savepoint，调用者捕获失败后也不能提交半个事件批次。
   return sqlite.transaction(() => {
-    for (const diagnostic of command.diagnostics || [])
+    for (const diagnostic of command.diagnostics || []) {
       sqlite
         .prepare(
           'INSERT OR IGNORE INTO generation_diagnostics(diagnostic_id,job_id,detail,detail_sha256,created_at) VALUES(?,?,?,?,?)',
@@ -908,12 +1015,15 @@ export function appendDomainCommit(
           diagnostic.detailSha256,
           command.recordedAt,
         );
+    }
     sqlite.prepare('INSERT OR IGNORE INTO event_clock(id,value) VALUES(1,0)').run();
     const clock = sqlite
       .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
       .get() as { value: string };
     const next = BigInt(clock.value) + 1n;
-    if (next > maxSequence) throw new Error('Event commit sequence exhausted.');
+    if (next > maxSequence) {
+      throw new Error('Event commit sequence exhausted.');
+    }
     sqlite.prepare('UPDATE event_clock SET value=? WHERE id=1').run(next);
     const commitSeq = String(next),
       recordedAt = iso(command.recordedAt);
@@ -948,16 +1058,20 @@ export function appendDomainCommit(
           projectionSha256: domainDigest(null),
         };
         const expected = command.expectedVersions[input.streamId];
-        if (expected !== undefined && expected !== stream.streamVersion)
+        if (expected !== undefined && expected !== stream.streamVersion) {
           throw new Error(
             `Stream version conflict ${input.streamId}: expected ${expected}, found ${stream.streamVersion}`,
           );
+        }
         streams.set(input.streamId, stream);
       }
       const version = BigInt(stream.streamVersion) + 1n;
-      if (version > maxSequence) throw new Error(`Stream version exhausted: ${input.streamId}`);
-      if ('streamVersion' in input && input.streamVersion !== String(version))
+      if (version > maxSequence) {
+        throw new Error(`Stream version exhausted: ${input.streamId}`);
+      }
+      if ('streamVersion' in input && input.streamVersion !== String(version)) {
         throw new Error(`Replayed stream version mismatch at ${input.eventId}`);
+      }
       const event: DomainEvent = {
         eventId: text(input.eventId, 'eventId'),
         commitSeq,
@@ -1015,7 +1129,7 @@ export function appendDomainCommit(
       sqlite.prepare(`INSERT INTO event_streams(stream_id,stream_kind,stream_version,last_commit_seq,last_event_id,reducer_version,projection,projection_sha256)
       VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET stream_version=excluded.stream_version,last_commit_seq=excluded.last_commit_seq,
       last_event_id=excluded.last_event_id,reducer_version=excluded.reducer_version,projection=excluded.projection,projection_sha256=excluded.projection_sha256`);
-    for (const stream of streams.values())
+    for (const stream of streams.values()) {
       saveStream.run(
         stream.streamId,
         stream.streamKind,
@@ -1026,6 +1140,7 @@ export function appendDomainCommit(
         canonicalJson(stream.projection),
         stream.projectionSha256,
       );
+    }
     const commit: DomainCommit = {
       commitSeq,
       commandId: command.commandId,
@@ -1059,12 +1174,15 @@ function idempotencyFact(
   const context = sqlite
     .prepare('SELECT payload FROM generation_contexts WHERE context_ref=?')
     .get(contextRef) as { payload: string } | undefined;
-  if (!context) throw new Error(`Missing protected normalization input ${contextRef}`);
+  if (!context) {
+    throw new Error(`Missing protected normalization input ${contextRef}`);
+  }
   if (
     fact.normalizationContextHash &&
     domainDigest(JSON.parse(context.payload)) !== fact.normalizationContextHash
-  )
+  ) {
     throw new Error(`Protected normalization input hash mismatch ${contextRef}`);
+  }
   return {
     member_id: memberId,
     operation: text(fact.operation, 'idempotency.operation'),
@@ -1093,8 +1211,9 @@ function saveIdempotencyFact(
     (existing.fingerprint !== row.fingerprint ||
       existing.job_id !== row.job_id ||
       existing.request_id !== row.request_id)
-  )
+  ) {
     throw new Error(`Conflicting idempotency fact ${row.key_hash}`);
+  }
   sqlite
     .prepare(
       `INSERT OR IGNORE INTO generation_idempotency(member_id,operation,key_hash,fingerprint,normalization_context,job_id,request_id,created_at)
@@ -1113,8 +1232,9 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
     const put = (kind: string, key: string, value: unknown) => {
       const digest = domainDigest(value),
         prior = expected.get(kind, key) as { digest: string } | undefined;
-      if (prior && prior.digest !== digest)
+      if (prior && prior.digest !== digest) {
         throw new Error(`Conflicting historical ${kind} fact ${key}`);
+      }
       sqlite
         .prepare('INSERT OR IGNORE INTO event_cold_check(kind,key,digest) VALUES(?,?,?)')
         .run(kind, key, digest);
@@ -1153,30 +1273,37 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
         commit_seq: string;
         event_index: number;
       }[];
-      if (!events.length) break;
+      if (!events.length) {
+        break;
+      }
       for (const event of events) {
-        if (event.schema_version !== 1)
+        if (event.schema_version !== 1) {
           throw new Error(`Unsupported cold fact schema ${event.event_id}`);
+        }
         const p = JSON.parse(event.payload) as Record<string, unknown>;
-        if (['GenerationSettled', 'GenerationRefunded'].includes(event.event_type))
+        if (['GenerationSettled', 'GenerationRefunded'].includes(event.event_type)) {
           put('fair_quota_settlements', String(p.jobId), { job_id: p.jobId, charge: p.charge });
-        else if (event.event_type === 'FreeImageSucceeded') putFree(p);
-        else if (event.event_type === 'RequestAccepted' && p.idempotency)
+        } else if (event.event_type === 'FreeImageSucceeded') {
+          putFree(p);
+        } else if (event.event_type === 'RequestAccepted' && p.idempotency) {
           putIdempotency(object(p.idempotency), p.memberId);
-        else if (event.event_type === 'RequestAliasRegistered')
+        } else if (event.event_type === 'RequestAliasRegistered') {
           putIdempotency(
             { ...object(p.idempotency), jobId: p.jobId, requestId: p.requestId },
             p.memberId,
           );
-        else if (event.event_type === 'OpeningStateRecorded') {
+        } else if (event.event_type === 'OpeningStateRecorded') {
           const state = object(p.state);
-          if (event.stream_kind === 'settlement')
+          if (event.stream_kind === 'settlement') {
             put('fair_quota_settlements', String(state.jobId), {
               job_id: state.jobId,
               charge: state.charge,
             });
-          else if (event.stream_kind === 'idempotency') putIdempotency(state);
-          else if (event.stream_kind === 'free-usage') putFree(state);
+          } else if (event.stream_kind === 'idempotency') {
+            putIdempotency(state);
+          } else if (event.stream_kind === 'free-usage') {
+            putFree(state);
+          }
         }
       }
       cursor = events.at(-1)!.commit_seq;
@@ -1192,7 +1319,9 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
             `SELECT * FROM ${table} WHERE (${keys.join(',')})>(${keys.map(() => '?').join(',')}) ORDER BY ${keys.join(',')} LIMIT 200`,
           )
           .all(...last) as Record<string, unknown>[];
-        if (!rows.length) break;
+        if (!rows.length) {
+          break;
+        }
         for (const row of rows) {
           const key =
             keys.length === 1 ? String(row[keys[0]!]) : canonicalJson(keys.map((key) => row[key]));
@@ -1201,9 +1330,12 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
               ? { ...row, charge: JSON.parse(String(row.charge)) }
               : row;
           const wanted = expected.get(table, key) as { digest: string } | undefined;
-          if (!wanted) throw new Error(`Unexpected cold projection ${table}:${key}`);
-          if (wanted.digest !== domainDigest(fact))
+          if (!wanted) {
+            throw new Error(`Unexpected cold projection ${table}:${key}`);
+          }
+          if (wanted.digest !== domainDigest(fact)) {
             throw new Error(`Cold projection mismatch ${table}:${key}`);
+          }
           sqlite
             .prepare('UPDATE event_cold_check SET seen=1 WHERE kind=? AND key=?')
             .run(table, key);
@@ -1214,7 +1346,9 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
     const missing = sqlite
       .prepare('SELECT kind,key FROM event_cold_check WHERE seen=0 LIMIT 1')
       .get() as { kind: string; key: string } | undefined;
-    if (missing) throw new Error(`Missing cold projection ${missing.kind}:${missing.key}`);
+    if (missing) {
+      throw new Error(`Missing cold projection ${missing.kind}:${missing.key}`);
+    }
   } finally {
     sqlite.exec('DROP TABLE event_cold_check');
   }
@@ -1224,45 +1358,57 @@ export function verifyColdDomainFacts(sqlite: Database.Database): void {
 export function projectColdDomainFacts(sqlite: Database.Database, commit: DomainCommit): void {
   for (const event of commit.events) {
     const p = event.payload;
-    if (event.eventType === 'JobHistoryRetired')
-      for (const id of p.jobIds as string[]) sqlite.prepare('DELETE FROM jobs WHERE id=?').run(id);
-    if (event.eventType === 'ArtifactHistoryRetired')
+    if (event.eventType === 'JobHistoryRetired') {
+      for (const id of p.jobIds as string[]) {
+        sqlite.prepare('DELETE FROM jobs WHERE id=?').run(id);
+      }
+    }
+    if (event.eventType === 'ArtifactHistoryRetired') {
       sqlite.prepare('DELETE FROM images WHERE id=?').run(p.artifactId);
-    const requestFact =
-      event.eventType === 'RequestAccepted'
-        ? p
-        : event.eventType === 'OpeningStateRecorded' && event.streamKind === 'request'
-          ? object(object(p.state).request)
-          : null;
+    }
+    let requestFact: Record<string, unknown> | null = null;
+    if (event.eventType === 'RequestAccepted') {
+      requestFact = p;
+    } else if (event.eventType === 'OpeningStateRecorded' && event.streamKind === 'request') {
+      requestFact = object(object(p.state).request);
+    }
     if (requestFact?.inputRef) {
       const input = sqlite
         .prepare('SELECT member_id,payload FROM generation_requests WHERE id=?')
         .get(requestFact.inputRef) as { member_id: string; payload: string } | undefined;
-      if (!input) throw new Error(`Missing protected generation input ${requestFact.inputRef}`);
-      if (requestFact.memberId && input.member_id !== requestFact.memberId)
+      if (!input) {
+        throw new Error(`Missing protected generation input ${requestFact.inputRef}`);
+      }
+      if (requestFact.memberId && input.member_id !== requestFact.memberId) {
         throw new Error(`Protected generation input owner mismatch ${requestFact.inputRef}`);
-      if (createHash('sha256').update(input.payload).digest('hex') !== requestFact.inputSha256)
+      }
+      if (createHash('sha256').update(input.payload).digest('hex') !== requestFact.inputSha256) {
         throw new Error(`Protected generation input hash mismatch ${requestFact.inputRef}`);
+      }
     }
-    if (event.eventType === 'RequestAccepted' && p.idempotency)
+    if (event.eventType === 'RequestAccepted' && p.idempotency) {
       saveIdempotencyFact(sqlite, object(p.idempotency), p.memberId);
-    if (event.eventType === 'RequestAliasRegistered')
+    }
+    if (event.eventType === 'RequestAliasRegistered') {
       saveIdempotencyFact(
         sqlite,
         { ...object(p.idempotency), jobId: p.jobId, requestId: p.requestId },
         p.memberId,
       );
+    }
     if (['GenerationSettled', 'GenerationRefunded'].includes(event.eventType) && p.charge) {
       const charge = object(p.charge);
-      if (!['settled', 'refunded'].includes(String(charge.status)))
+      if (!['settled', 'refunded'].includes(String(charge.status))) {
         throw new Error(`Terminal event has nonterminal charge ${event.eventId}`);
+      }
       const id = text(p.jobId, 'settlement.jobId'),
         serialized = canonicalJson(charge);
       const prior = sqlite
         .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id=?')
         .get(id) as { charge: string } | undefined;
-      if (prior && domainDigest(JSON.parse(prior.charge)) !== domainDigest(charge))
+      if (prior && domainDigest(JSON.parse(prior.charge)) !== domainDigest(charge)) {
         throw new Error(`Conflicting terminal charge ${id}`);
+      }
       sqlite
         .prepare('INSERT OR IGNORE INTO fair_quota_settlements(job_id,charge) VALUES(?,?)')
         .run(id, serialized);
@@ -1281,17 +1427,21 @@ export function projectColdDomainFacts(sqlite: Database.Database, commit: Domain
     }
     if (event.eventType === 'OpeningStateRecorded') {
       const state = object(p.state);
-      if (event.streamKind === 'idempotency') saveIdempotencyFact(sqlite, state);
-      if (event.streamKind === 'settlement')
+      if (event.streamKind === 'idempotency') {
+        saveIdempotencyFact(sqlite, state);
+      }
+      if (event.streamKind === 'settlement') {
         sqlite
           .prepare('INSERT OR IGNORE INTO fair_quota_settlements(job_id,charge) VALUES(?,?)')
           .run(state.jobId, canonicalJson(state.charge));
-      if (event.streamKind === 'free-usage')
+      }
+      if (event.streamKind === 'free-usage') {
         sqlite
           .prepare(
             'INSERT OR IGNORE INTO free_image_usage(job_id,member_id,succeeded_at,warning_threshold) VALUES(?,?,?,?)',
           )
           .run(state.jobId, state.memberId, state.succeededAt, state.warningThreshold ?? null);
+      }
     }
   }
 }
@@ -1313,6 +1463,11 @@ export function assertReplaySourceReady(source: Database.Database): void {
   }
 }
 
+/**
+ * 源库保持只读且必须先完成兼容升级；受保护正文与诊断由 copyProtectedFacts 单独复制。
+ * 按完整提交重放事实并推进 checkpoint，不调用上游、重新扣退额度或重新计算历史业务决定。
+ * 每批目标写入同事务提交；失败重试从最后已提交 checkpoint 继续。
+ */
 export function replayDomainEvents(
   source: Database.Database,
   target: Database.Database,
@@ -1343,7 +1498,9 @@ export function replayDomainEvents(
             'SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100',
           )
           .all(cursor) as { stream_id: string }[];
-        if (!rows.length) break;
+        if (!rows.length) {
+          break;
+        }
         options.project(
           target,
           commit,
@@ -1352,16 +1509,15 @@ export function replayDomainEvents(
         cursor = rows.at(-1)!.stream_id;
       }
     }
-    if (authority && upgraded)
-      target
-        .prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
-        .run(
-          JSON.stringify({
-            ...authority,
-            version: EVENT_AUTHORITY_VERSION,
-            minimumWriterVersion: EVENT_AUTHORITY_VERSION,
-          }),
-        );
+    if (authority && upgraded) {
+      target.prepare("UPDATE app_meta SET value=? WHERE key='event_authority'").run(
+        JSON.stringify({
+          ...authority,
+          version: EVENT_AUTHORITY_VERSION,
+          minimumWriterVersion: EVENT_AUTHORITY_VERSION,
+        }),
+      );
+    }
   })();
   const checkpoint = target
     .prepare(
@@ -1378,19 +1534,22 @@ export function replayDomainEvents(
       cursor,
       Math.min(100, (options.maxCommits ?? Infinity) - commits),
     ).filter((commit) => through === null || BigInt(commit.commitSeq) <= through);
-    if (!batch.length) break;
+    if (!batch.length) {
+      break;
+    }
     // 离线重建以最多 100 个完整逻辑提交共用一次 FULL 事务；生产写入仍逐命令提交。
     target.transaction(() => {
       for (const commit of batch) {
         const clock = target
           .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
           .get() as { value: string } | undefined;
-        if (!clock)
+        if (!clock) {
           target
             .prepare('INSERT INTO event_clock(id,value) VALUES(1,?)')
             .run(BigInt(commit.commitSeq) - 1n);
-        else if (BigInt(clock.value) + 1n !== BigInt(commit.commitSeq))
+        } else if (BigInt(clock.value) + 1n !== BigInt(commit.commitSeq)) {
           throw new Error(`Replay commit order mismatch at ${commit.commitSeq}`);
+        }
         appendDomainCommit(
           target,
           {
@@ -1419,13 +1578,16 @@ export function replayDomainEvents(
 const legacySecretKey =
   /^(?:userToken|token|accessToken|refreshToken|access_token|refresh_token|pst|password|passwordHash|password_hash|authorization|cookie|apiKey|api_key|secret|base64|prompt|fullPrompt|negativePrompt|negative_prompt|uc|nativeParameters|operationParameters|image|mask|reference_image_multiple|errorDetail)$/i;
 function legacyPublicFact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(legacyPublicFact);
-  if (value && typeof value === 'object')
+  if (Array.isArray(value)) {
+    return value.map(legacyPublicFact);
+  }
+  if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
         .filter(([key, item]) => item !== undefined && !legacySecretKey.test(key))
         .map(([key, item]) => [key, legacyPublicFact(item)]),
     );
+  }
   return value;
 }
 const pick = (value: Record<string, unknown>, fields: string[]): Record<string, unknown> =>
@@ -1493,7 +1655,9 @@ export function copyProtectedFacts(source: Database.Database, target: Database.D
       `INSERT OR IGNORE INTO ${table}(${columns.join(',')}) VALUES(${columns.map((column) => `@${column}`).join(',')})`,
     );
     target.transaction(() => {
-      for (const row of source.prepare(`SELECT * FROM ${table}`).iterate()) insert.run(row);
+      for (const row of source.prepare(`SELECT * FROM ${table}`).iterate()) {
+        insert.run(row);
+      }
     })();
   }
   const settings = source.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as
@@ -1507,8 +1671,9 @@ export function copyProtectedFacts(source: Database.Database, target: Database.D
   }
   for (const row of source
     .prepare("SELECT key,value FROM app_meta WHERE key IN ('event_opening','member_session_owner')")
-    .iterate() as Iterable<{ key: string; value: string }>)
+    .iterate() as Iterable<{ key: string; value: string }>) {
     target.prepare('INSERT OR IGNORE INTO app_meta(key,value) VALUES(?,?)').run(row.key, row.value);
+  }
 }
 // 调用方已停止业务写入；每块可恢复，完成标记之前不允许受理新命令。
 export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
@@ -1526,8 +1691,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
       .get(importId) as { chunks: number; facts: number };
     return { status: 'complete', importId, ...totals, recordedAt: marker.recordedAt };
   }
-  if (!marker && sqlite.prepare('SELECT 1 FROM event_commits LIMIT 1').get())
+  if (!marker && sqlite.prepare('SELECT 1 FROM event_commits LIMIT 1').get()) {
     throw new Error('Domain history exists without an opening import marker.');
+  }
   const recordedAt =
     marker?.recordedAt ||
     (sqlite.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now') AS at").get() as { at: string })
@@ -1547,7 +1713,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     data: string;
   }>) {
     const user = JSON.parse(row.data) as Record<string, unknown>;
-    if (typeof user.token === 'string') memberByToken.set(user.token, String(user.id));
+    if (typeof user.token === 'string') {
+      memberByToken.set(user.token, String(user.id));
+    }
     memberEligibility[String(user.id)] = {
       memberId: user.id,
       ...pick(user, ['enabled', 'acceptingJobs', 'jobAdmissionVersion', 'createdAt']),
@@ -1572,15 +1740,18 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
     firstKey: string | null = null,
     lastKey: string | null = null,
   ) => {
-    if (!events.length) return;
+    if (!events.length) {
+      return;
+    }
     const chunkId = `${kind}:${index}`,
       digest = domainDigest(events);
     const prior = sqlite
       .prepare('SELECT source_sha256 FROM event_imports WHERE import_id=? AND chunk_id=?')
       .get(importId, chunkId) as { source_sha256: string } | undefined;
     if (prior) {
-      if (prior.source_sha256 !== digest)
+      if (prior.source_sha256 !== digest) {
         throw new Error(`Opening source changed during import at ${chunkId}`);
+      }
       chunks++;
       facts += events.length;
       return;
@@ -1671,7 +1842,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
       const account = sqlite
         .prepare('SELECT data FROM accounts WHERE id=?')
         .get(openingAccountId) as { data: string } | undefined;
-      if (!account) throw new Error(`Opening quota references missing account ${openingAccountId}`);
+      if (!account) {
+        throw new Error(`Opening quota references missing account ${openingAccountId}`);
+      }
       openingEvents.push(
         opening(
           `account:${openingAccountId}`,
@@ -1684,11 +1857,14 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
       );
     }
     chunk('configuration', 0, openingEvents);
-    for (const [jobId, charge] of terminals)
+    for (const [jobId, charge] of terminals) {
       sqlite
         .prepare('INSERT OR IGNORE INTO fair_quota_settlements(job_id,charge) VALUES(?,?)')
         .run(jobId, canonicalJson(charge));
-  } else chunk('configuration', 0, [opening('sharing:default', { memberEligibility })]);
+    }
+  } else {
+    chunk('configuration', 0, [opening('sharing:default', { memberEligibility })]);
+  }
   function records(
     table: string,
     key: string,
@@ -1707,16 +1883,22 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
           string,
           unknown
         >[];
-        if (!rows.length) break;
+        if (!rows.length) {
+          break;
+        }
         for (const row of rows) {
-          if (!sourceCount) firstKey = String(row[key]);
+          if (!sourceCount) {
+            firstKey = String(row[key]);
+          }
           events.push(...transform(row));
           cursor = String(row[key]);
           sourceCount++;
         }
       }
       // 私有输入先写，但与引用它的开账事件、来源摘要共用这次 FULL 提交。
-      if (sourceCount) chunk(table, index++, events, firstKey, cursor);
+      if (sourceCount) {
+        chunk(table, index++, events, firstKey, cursor);
+      }
       return sourceCount;
     });
     while (importBlock()) {
@@ -1725,7 +1907,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
   }
   records('users', 'id', (row) => [opening(`member:${row.id}`, { id: row.id })]);
   records('accounts', 'id', (row) => {
-    if (row.id === openingAccountId) return [];
+    if (row.id === openingAccountId) {
+      return [];
+    }
     const value = JSON.parse(String(row.data)) as Record<string, unknown>;
     return [opening(`account:${row.id}`, pick(value, accountFacts))];
   });
@@ -1739,7 +1923,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
             .all(job.requestId) as { data: string }[]
         ).map((value) => JSON.parse(value.data) as Record<string, unknown>)
       : [job];
-    if (sourceJobs[0]?.id !== job.id) return [];
+    if (sourceJobs[0]?.id !== job.id) {
+      return [];
+    }
     const parent = job.requestId
       ? (sqlite.prepare('SELECT * FROM generation_requests WHERE id=?').get(job.requestId) as
           Record<string, unknown> | undefined)
@@ -1770,14 +1956,16 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
       if (
         existing &&
         Object.entries(input).some(([key, value]) => existing[key as keyof typeof input] !== value)
-      )
+      ) {
         throw new Error(`Protected legacy generation input conflict ${inputRef}`);
-      if (!existing)
+      }
+      if (!existing) {
         sqlite
           .prepare(
             'INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(@id,@member_id,@source,@operation,@created_at,@payload_bytes,@payload)',
           )
           .run(input);
+      }
       inputPayload = payload;
     }
     const jobs = Object.fromEntries(
@@ -1786,12 +1974,15 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
           item.memberId ||
           (item.generationAttempt as { memberId?: string } | undefined)?.memberId ||
           (item.fairCharge as { userId?: string } | undefined)?.userId;
-        if (parent?.member_id && stableOwner && parent.member_id !== stableOwner)
+        if (parent?.member_id && stableOwner && parent.member_id !== stableOwner) {
           throw new Error(`Conflicting legacy job ownership ${item.id}`);
+        }
         const fact = legacyPublicFact(item) as Record<string, unknown>;
         delete fact.requestPayload;
         fact.memberId = parent?.member_id || memberOf(item);
-        if (item.request) fact.request = pick(object(item.request), requestSummaryFields);
+        if (item.request) {
+          fact.request = pick(object(item.request), requestSummaryFields);
+        }
         if (!parent && inputRef) {
           fact.legacyInputRef = inputRef;
           fact.legacyInlineInput = true;
@@ -1843,15 +2034,23 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
   records('images', 'id', (row) => {
     const value = JSON.parse(String(row.data)) as Record<string, unknown>;
     const owners = new Set<string>();
-    if (value.memberId || value.userId) owners.add(String(value.memberId || value.userId));
+    if (value.memberId || value.userId) {
+      owners.add(String(value.memberId || value.userId));
+    }
     const associated = sqlite
       .prepare(
         `SELECT DISTINCT COALESCE(r.member_id,json_extract(j.data,'$.memberId'),json_extract(j.data,'$.generationAttempt.memberId'),json_extract(j.data,'$.fairCharge.userId')) AS member_id
       FROM jobs j LEFT JOIN generation_requests r ON r.id=j.request_id WHERE j.image_id=? OR j.id=?`,
       )
       .all(value.id, value.jobId || '') as { member_id: string | null }[];
-    for (const owner of associated) if (owner.member_id) owners.add(owner.member_id);
-    if (owners.size > 1) throw new Error(`Conflicting legacy artifact ownership ${value.id}`);
+    for (const owner of associated) {
+      if (owner.member_id) {
+        owners.add(owner.member_id);
+      }
+    }
+    if (owners.size > 1) {
+      throw new Error(`Conflicting legacy artifact ownership ${value.id}`);
+    }
     const memberId = [...owners][0] || memberOf(value);
     const inlinePrivate = pick(value, ['base64', 'prompt', 'fullPrompt']),
       savedPrivate = value.artifactInputRef
@@ -1861,10 +2060,13 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
             value.artifactInputSha256 as string,
           )
         : null;
-    if (savedPrivate)
-      for (const [key, value] of Object.entries(inlinePrivate))
-        if (canonicalJson(value) !== canonicalJson(savedPrivate[key]))
+    if (savedPrivate) {
+      for (const [key, value] of Object.entries(inlinePrivate)) {
+        if (canonicalJson(value) !== canonicalJson(savedPrivate[key])) {
           throw new Error(`Conflicting projected artifact private field ${row.id}.${key}`);
+        }
+      }
+    }
     const privateInput = savedPrivate || inlinePrivate;
     const fact = {
       ...(legacyPublicFact(value) as Record<string, unknown>),
@@ -1876,8 +2078,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
         existing = sqlite
           .prepare('SELECT payload_sha256 FROM artifact_inputs WHERE artifact_id=?')
           .get(value.id) as { payload_sha256: string } | undefined;
-      if (existing && existing.payload_sha256 !== digest)
+      if (existing && existing.payload_sha256 !== digest) {
         throw new Error(`Protected legacy artifact input conflict ${value.id}`);
+      }
       sqlite
         .prepare(
           'INSERT OR IGNORE INTO artifact_inputs(artifact_id,member_id,payload_sha256,payload) VALUES(?,?,?,?)',
@@ -1926,7 +2129,9 @@ export function importOpeningFacts(sqlite: Database.Database): OpeningReport {
         'SELECT * FROM generation_idempotency WHERE (member_id,operation,key_hash)>(?,?,?) ORDER BY member_id,operation,key_hash LIMIT 100',
       )
       .all(...mappingCursor) as Record<string, unknown>[];
-    if (!idempotencies.length) break;
+    if (!idempotencies.length) {
+      break;
+    }
     sqlite.transaction(() => {
       const mappings: DomainEventInput[] = [];
       for (const row of idempotencies) {

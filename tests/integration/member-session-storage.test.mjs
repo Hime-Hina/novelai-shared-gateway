@@ -69,7 +69,9 @@ test('签发只清截止时刻已过期和同用户旧版本，其他用户及�
     auth_version: 'version-2',
     created_at: 2000,
   });
-  for (const value of [expired, old, kept]) await insert(store, value);
+  for (const value of [expired, old, kept]) {
+    await insert(store, value);
+  }
   await insert(store, current);
   assert.equal(store.readMemberSession(expired.token_hash), null);
   assert.equal(store.readMemberSession(old.token_hash), null);
@@ -91,13 +93,14 @@ test('签发只清截止时刻已过期和同用户旧版本，其他用户及�
       ['member-a', 'version-2'],
       'idx_member_sessions_user',
     ],
-  ])
+  ]) {
     assert.ok(
       store.sqlite
         .prepare('EXPLAIN QUERY PLAN ' + query)
         .all(...values)
         .some((row) => row.detail.includes(index)),
     );
+  }
 });
 
 test('owner A→B→A、guild变化撤销相关会话，首次记录和相同配置不撤销普通成员', async (t) => {
@@ -113,8 +116,9 @@ test('owner A→B→A、guild变化撤销相关会话，首次记录和相同配
       user_id: 'old-owner',
       owner_binding: '["old-owner","discord","guild"]',
     }),
-  ])
+  ]) {
     await insert(store, value);
+  }
   await coordinate(store, owner('a'));
   assert.equal(sessionCount(store), 4);
   const newOwner = record('new-b-token', {
@@ -148,8 +152,11 @@ for (const dirty of [false, true]) {
     const previousBatch = process.env.SQLITE_BATCH_WRITES;
     process.env.SQLITE_BATCH_WRITES = 'true';
     t.after(() => {
-      if (previousBatch === undefined) delete process.env.SQLITE_BATCH_WRITES;
-      else process.env.SQLITE_BATCH_WRITES = previousBatch;
+      if (previousBatch === undefined) {
+        delete process.env.SQLITE_BATCH_WRITES;
+      } else {
+        process.env.SQLITE_BATCH_WRITES = previousBatch;
+      }
     });
     const store = await open(t);
     await store.update(
@@ -159,8 +166,9 @@ for (const dirty of [false, true]) {
       { immediate: true },
     );
     await coordinate(store, owner('a'));
-    for (const value of [record('a'), record('expired', { expires_at: 2000 })])
+    for (const value of [record('a'), record('expired', { expires_at: 2000 })]) {
       await insert(store, value);
+    }
     const before = await store.read();
     const options = dirty ? { includeSettings: true, dirtyRows: { users: ['a'] } } : {};
     const write = () =>
@@ -234,7 +242,9 @@ test('10000有效会话上限在同一事务内检查，过期可释放且并发
     'INSERT INTO member_sessions (token_hash,user_id,auth_version,created_at,expires_at,owner_binding) VALUES (@token_hash,@user_id,@auth_version,@created_at,@expires_at,@owner_binding)',
   );
   store.sqlite.transaction(() => {
-    for (let i = 0; i < 10000; i++) statement.run(record('bulk-' + i));
+    for (let i = 0; i < 10000; i++) {
+      statement.run(record('bulk-' + i));
+    }
   })();
   await assert.rejects(
     insert(store, record('over-limit')),

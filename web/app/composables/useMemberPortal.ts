@@ -31,9 +31,12 @@ export function useMemberPortal() {
 
   function stop() {
     events?.stopMemberEvents();
-    if (timer) clearInterval(timer);
+    if (timer) {
+      clearInterval(timer);
+    }
     timer = null;
   }
+  // 会话版本让旧请求失效，清理同时停止事件连接和定时器。
   function clearSession(message = '') {
     epoch++;
     refreshPending = false;
@@ -47,18 +50,18 @@ export function useMemberPortal() {
   const api: MemberApi = async <T>(path: string, body?: unknown): Promise<T> => {
     const current = epoch;
     const check = () => {
-      if (disposed || epoch !== current)
+      if (disposed || epoch !== current) {
         throw Object.assign(new Error('旧会话响应已忽略'), { stale: true });
+      }
     };
+    let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (body === undefined) {
+      headers = path === 'me' && !document.hidden ? { 'X-Member-Activity': '1' } : {};
+    }
     const response = await fetch('/api/member/' + path, {
       method: body === undefined ? 'GET' : 'POST',
       credentials: 'same-origin',
-      headers:
-        body === undefined
-          ? path === 'me' && !document.hidden
-            ? { 'X-Member-Activity': '1' }
-            : {}
-          : { 'Content-Type': 'application/json' },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     }).catch((failure) => {
       check();
@@ -70,8 +73,9 @@ export function useMemberPortal() {
     });
     check();
     if (!response.ok) {
-      if ([401, 403].includes(response.status))
+      if ([401, 403].includes(response.status)) {
         clearSession(initializing.value ? '' : '登录已失效，请重新登录。');
+      }
       throw Object.assign(new Error(value.message || value.error || '请求失败'), {
         status: response.status,
       });
@@ -86,7 +90,9 @@ export function useMemberPortal() {
         const value = await api<MemberProfile>('me');
         updatedAt.value = Date.now();
         refreshVersion.value++;
-        if (error.value.startsWith('额度读取失败，保留上次结果：')) error.value = '';
+        if (error.value.startsWith('额度读取失败，保留上次结果：')) {
+          error.value = '';
+        }
         if (connection.value !== 'open') {
           activityInvalidation.dates = null;
           activityInvalidation.version++;
@@ -94,8 +100,9 @@ export function useMemberPortal() {
         return value;
       } catch (failure) {
         const reason = failure as RequestFailure;
-        if (!reason.stale && ![401, 403].includes(reason.status || 0))
+        if (!reason.stale && ![401, 403].includes(reason.status || 0)) {
           error.value = '额度读取失败，保留上次结果：' + reason.message;
+        }
         return profileQuery.data.value ?? null;
       }
     },
@@ -103,10 +110,14 @@ export function useMemberPortal() {
   );
 
   async function start() {
-    if (!profileQuery.data.value || !loginOptions.value || disposed || initializing.value) return;
+    if (!profileQuery.data.value || !loginOptions.value || disposed || initializing.value) {
+      return;
+    }
     const current = epoch;
     events ||= await import('../utils/member-events.js');
-    if (current !== epoch || disposed || !profileQuery.data.value) return;
+    if (current !== epoch || disposed || !profileQuery.data.value) {
+      return;
+    }
     events.startMemberEvents({
       onStatus: (value: SharedStatus) => {
         shared.value = value;
@@ -125,15 +136,20 @@ export function useMemberPortal() {
         }
       },
     });
-    if (!document.hidden && !timer)
+    if (!document.hidden && !timer) {
       timer = setInterval(() => {
         void refresh();
       }, 30000);
+    }
   }
   function refresh(): Promise<void> {
-    if (disposed || (!initializing.value && document.hidden)) return Promise.resolve();
+    if (disposed || (!initializing.value && document.hidden)) {
+      return Promise.resolve();
+    }
     refreshPending = true;
-    if (refreshTask) return refreshTask;
+    if (refreshTask) {
+      return refreshTask;
+    }
     refreshTask = (async () => {
       do {
         refreshPending = false;
@@ -146,7 +162,9 @@ export function useMemberPortal() {
     return refreshTask;
   }
   function refreshPage() {
-    if (disposed || !profileQuery.data.value || document.hidden) return Promise.resolve();
+    if (disposed || !profileQuery.data.value || document.hidden) {
+      return Promise.resolve();
+    }
     activityInvalidation.dates = null;
     activityInvalidation.version++;
     return refresh();
@@ -160,27 +178,35 @@ export function useMemberPortal() {
         $fetch<LoginOptions>('/api/member/login-options', { retry: 0, credentials: 'same-origin' }),
         refresh(),
       ]);
-      if (disposed) return;
+      if (disposed) {
+        return;
+      }
       if (options.discord && options.origin && options.origin !== location.origin) {
         location.replace(options.origin + '/');
         return;
       }
       loginOptions.value = options;
     } catch (failure) {
-      if (!disposed) error.value = '登录设置读取失败：' + (failure as Error).message;
+      if (!disposed) {
+        error.value = '登录设置读取失败：' + (failure as Error).message;
+      }
     } finally {
       initializing.value = false;
     }
     await start();
   }
   async function action(run: () => Promise<void>) {
-    if (working.value) return;
+    if (working.value) {
+      return;
+    }
     working.value = true;
     error.value = '';
     try {
       await run();
     } catch (failure) {
-      if (!(failure as RequestFailure).stale) error.value = (failure as Error).message;
+      if (!(failure as RequestFailure).stale) {
+        error.value = (failure as Error).message;
+      }
     } finally {
       working.value = false;
     }
@@ -208,12 +234,18 @@ export function useMemberPortal() {
   }
   function visible() {
     if (document.hidden) {
-      if (timer) clearInterval(timer);
+      if (timer) {
+        clearInterval(timer);
+      }
       timer = null;
-    } else void start();
+    } else {
+      void start();
+    }
   }
   function hide() {
-    if (timer) clearInterval(timer);
+    if (timer) {
+      clearInterval(timer);
+    }
     timer = null;
   }
   onMounted(() => {

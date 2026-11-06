@@ -54,8 +54,9 @@ for (const name of [
   'server/protocols/v5-medium-rules.js',
   'server/reports/activity-heatmap.js',
   ...migrationJournal.entries.map((item) => `server/migrations/${item.tag}.sql`),
-])
+]) {
   await stat(packaged(name));
+}
 assert.deepEqual(
   (await readdir(path.join(packagedRoot, 'server'))).filter((name) => name.endsWith('.js')).sort(),
   ['gateway-runtime.js', 'index.js'],
@@ -112,7 +113,7 @@ async function fixture(t, { owner = false } = {}) {
     HOST: '127.0.0.1',
     SHUTDOWN_GRACE_MS: '20000',
   };
-  if (owner)
+  if (owner) {
     Object.assign(env, {
       OWNER_USER_ID: members[0].user_id,
       DISCORD_GUILD_ID: '1134557553011998840',
@@ -120,6 +121,7 @@ async function fixture(t, { owner = false } = {}) {
       DISCORD_CLIENT_SECRET: 'synthetic-executor-discord-secret',
       PUBLIC_BASE_URL: 'https://executor.example',
     });
+  }
   const seeded = new JsonStore(dataDir),
     sessions = [];
   await seeded.init();
@@ -144,7 +146,7 @@ async function fixture(t, { owner = false } = {}) {
           payload: { kind: 'official', accountId: account.id, observation },
         });
         syncFairQuota(db);
-        if (owner)
+        if (owner) {
           db.users.forEach((user, index) => {
             user.discord = {
               id: String(222222222222222220n + BigInt(index)),
@@ -170,6 +172,7 @@ async function fixture(t, { owner = false } = {}) {
               },
             });
           });
+        }
         db.jobs = [0, 1, 1].map((member, index) => ({
           id: `synthetic-retained-${index}`,
           status: 'done',
@@ -214,9 +217,11 @@ async function fixture(t, { owner = false } = {}) {
       },
       { immediate: true },
     );
-    if (owner)
-      for (const user of seeded.db.users.slice(0, 2))
+    if (owner) {
+      for (const user of seeded.db.users.slice(0, 2)) {
         sessions.push(await createMemberSession(seeded, user, env));
+      }
+    }
   } finally {
     await seeded.close();
   }
@@ -270,7 +275,9 @@ async function fixture(t, { owner = false } = {}) {
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
     NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
   });
-  if (!owner) env.PUBLIC_BASE_URL = base;
+  if (!owner) {
+    env.PUBLIC_BASE_URL = base;
+  }
   const preload = path.join(dataDir, 'deny-external-fetch.mjs');
   await writeFile(
     preload,
@@ -298,15 +305,21 @@ globalThis.fetch = (input, options) => {
     output = (output + chunk.toString()).slice(-12000);
   };
   const stop = async () => {
-    if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
-    if (exited) await exited;
+    if (child?.exitCode === null && child?.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+    if (exited) {
+      await exited;
+    }
   };
   t.after(async () => {
     await stop();
     audit.close();
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
-    if (!t.passed && output) t.diagnostic(safeOutput());
+    if (!t.passed && output) {
+      t.diagnostic(safeOutput());
+    }
   });
   const start = async () => {
     child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, entry], {
@@ -417,7 +430,9 @@ async function subscribe(gateway, route, options, firstFrame) {
   const ended = (async () => {
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) return { text };
+      if (chunk.done) {
+        return { text };
+      }
       text += decoder.decode(chunk.value, { stream: true });
     }
   })().catch((error) => ({ error }));
@@ -445,8 +460,9 @@ test(
   '实际产物的编译后 mock 可从 node_modules 启动，非编译脚本资源仍保留',
   { timeout: 15000 },
   async (t) => {
-    for (const name of ['scripts/README.md', 'scripts/queue-baseline.py'])
+    for (const name of ['scripts/README.md', 'scripts/queue-baseline.py']) {
       await stat(packaged(name));
+    }
     const child = spawn(
       process.execPath,
       [packaged('scripts/mock-novelai.mjs'), '--port', '0', '--delay-ms', '0'],
@@ -465,7 +481,9 @@ test(
       output += chunk;
     });
     t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
       await bounded(exited, 5000, 'packaged mock did not stop');
     });
     const deadline = Date.now() + 5000;
@@ -506,7 +524,9 @@ test(
       invalidOutput += chunk;
     });
     t.after(() => {
-      if (invalid.exitCode === null && invalid.signalCode === null) invalid.kill('SIGKILL');
+      if (invalid.exitCode === null && invalid.signalCode === null) {
+        invalid.kill('SIGKILL');
+      }
     });
     const [invalidCode] = await bounded(
       once(invalid, 'exit'),
@@ -560,8 +580,11 @@ test(
         assert.equal(response.status, 404, `${method} ${pathname}`);
         assert.equal(response.headers.get('location'), null, `${method} ${pathname}`);
         assert.match(response.headers.get('content-type'), /application\/json/);
-        if (method === 'HEAD') assert.equal(await response.text(), '');
-        else assert.deepEqual(await response.json(), { error: 'not found.' });
+        if (method === 'HEAD') {
+          assert.equal(await response.text(), '');
+        } else {
+          assert.deepEqual(await response.json(), { error: 'not found.' });
+        }
       }
     }
     assert.equal((await gateway.call('/api/member/me')).status, 401);

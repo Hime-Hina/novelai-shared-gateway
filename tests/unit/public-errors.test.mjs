@@ -11,7 +11,7 @@ test('额度不可用的所有公开读取和重复生成转换保留固定原�
     stale: '额度已过期',
     unknown_balance: '额度不完整',
   };
-  for (const [status, reason] of Object.entries(reasons))
+  for (const [status, reason] of Object.entries(reasons)) {
     for (const prefix of ['共享 Opus 暂不可用：', '共享 Opus 额度暂不可用：']) {
       const message = publicErrorMessage(prefix + status);
       assert.ok(message.includes(reason));
@@ -20,6 +20,7 @@ test('额度不可用的所有公开读取和重复生成转换保留固定原�
       assert.equal(publicErrorMessage(message, { generation: true }), message);
       assert.equal(publicErrorMessage(prefix + status, { generation: true }), message);
     }
+  }
   for (const secret of [
     'constructor',
     'private body https://secret.invalid?token=pst-secret\nError: private stack',

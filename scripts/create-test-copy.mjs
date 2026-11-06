@@ -100,7 +100,9 @@ function* records(db, table) {
   let after = -Infinity;
   for (;;) {
     const batch = select.all(after);
-    if (!batch.length) return;
+    if (!batch.length) {
+      return;
+    }
     after = batch.at(-1)._rowid;
     yield* batch;
   }
@@ -139,9 +141,13 @@ function historySource(db) {
 
 // This operates on a protected full SQLite copy, never JsonStore's partial runtime cache.
 export async function createTestCopy({ source, target, imagesDir, now = Date.now() }) {
-  if (!source || !target) throw new CopyError('source_and_target_required');
+  if (!source || !target) {
+    throw new CopyError('source_and_target_required');
+  }
   const sourcePath = await realpath(source);
-  if (!(await lstat(sourcePath)).isFile()) throw new CopyError('source_must_be_a_file');
+  if (!(await lstat(sourcePath)).isFile()) {
+    throw new CopyError('source_must_be_a_file');
+  }
   const targetPath = path.join(
     await realpath(path.dirname(path.resolve(target))),
     path.basename(path.resolve(target)),
@@ -171,22 +177,30 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
       .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all()
       .filter((row) => !tables.includes(row.name));
-    if (unknownTables.length)
+    if (unknownTables.length) {
       throw new CopyError('unsupported_tables', { tables: unknownTables.length });
+    }
     // A legacy generic-only database needs its existing importer before this tool can close reservations.
-    if (count(db, 'app_records') && !collections.some((table) => count(db, table)))
+    if (count(db, 'app_records') && !collections.some((table) => count(db, table))) {
       throw new CopyError('legacy_import_required');
+    }
     summary.before = Object.fromEntries(tables.map((table) => [table, count(db, table)]));
     const sourceHistory = historySource(db);
     const isolationNonce = randomBytes(32);
-    for (const row of records(db, 'artifact_inputs'))
-      if (domainDigest(parse(row.payload)) !== row.payload_sha256)
+    for (const row of records(db, 'artifact_inputs')) {
+      if (domainDigest(parse(row.payload)) !== row.payload_sha256) {
         throw new CopyError('corrupt_protected_artifact');
-    for (const row of records(db, 'generation_diagnostics'))
-      if (createHash('sha256').update(row.detail).digest('hex') !== row.detail_sha256)
+      }
+    }
+    for (const row of records(db, 'generation_diagnostics')) {
+      if (createHash('sha256').update(row.detail).digest('hex') !== row.detail_sha256) {
         throw new CopyError('corrupt_protected_diagnostic');
+      }
+    }
     const settingsRow = db.prepare("SELECT value FROM app_settings WHERE key='settings'").get();
-    if (!settingsRow) throw new CopyError('settings_missing');
+    if (!settingsRow) {
+      throw new CopyError('settings_missing');
+    }
     const state = {
       settings: parse(settingsRow.value),
       users: [...records(db, 'users')].map((row) => parse(row.data)),
@@ -195,10 +209,13 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     const accounts = [...records(db, 'accounts')].map((row) => parse(row.data));
     const replacements = new Map();
     const remember = (value, replacement = '[removed-from-test-copy]') => {
-      if (typeof value === 'string' && value && value !== replacement && !replacements.has(value))
+      if (typeof value === 'string' && value && value !== replacement && !replacements.has(value)) {
         replacements.set(value, replacement);
+      }
     };
-    for (const account of accounts) remember(account.token, TEST_COPY_UPSTREAM_TOKEN);
+    for (const account of accounts) {
+      remember(account.token, TEST_COPY_UPSTREAM_TOKEN);
+    }
     const credentials = [],
       users = new Map(),
       usernames = new Set();
@@ -206,13 +223,18 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
       const password = randomBytes(24).toString('base64url'),
         token = `STA1N-${randomBytes(24).toString('base64url')}`;
       remember(original.token, token);
-      for (const value of Object.values(original.memberAuth || {}))
-        if (value !== original.memberAuth?.username) remember(value);
+      for (const value of Object.values(original.memberAuth || {})) {
+        if (value !== original.memberAuth?.username) {
+          remember(value);
+        }
+      }
       const user = { ...original, enabled: true };
       const username = /^[a-z0-9][a-z0-9_.-]{2,39}$/.test(original.memberAuth?.username || '')
         ? original.memberAuth.username
         : `test_member_${index + 1}_${randomBytes(4).toString('hex')}`;
-      if (usernames.has(username)) throw new CopyError('duplicate_member_username');
+      if (usernames.has(username)) {
+        throw new CopyError('duplicate_member_username');
+      }
       usernames.add(username);
       await setMemberCredentials({ users: [user] }, user.id, { username, password });
       user.enabled = original.enabled;
@@ -225,53 +247,76 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
       credentials.push({ user_id: user.id, username, password, api_key: token });
     }
     const discover = (value, parent = '') => {
-      if (!value || typeof value !== 'object') return;
+      if (!value || typeof value !== 'object') {
+        return;
+      }
       for (const [key, item] of Object.entries(value)) {
         if (
           secretFields.has(key) ||
           proxyFields.has(key) ||
           (parent === 'memberAuth' && key !== 'username') ||
           (parent === 'discordInvite' && key === 'hash')
-        )
+        ) {
           remember(item);
-        if (['token', 'userToken', 'user_token'].includes(key) && typeof item === 'string')
+        }
+        if (['token', 'userToken', 'user_token'].includes(key) && typeof item === 'string') {
           remember(
             item,
             item.startsWith('pst-')
               ? TEST_COPY_UPSTREAM_TOKEN
               : `STA1N-${randomBytes(24).toString('base64url')}`,
           );
-        if (key === 'code' && parent === 'cards')
+        }
+        if (key === 'code' && parent === 'cards') {
           remember(item, randomBytes(24).toString('base64url'));
-        if ((key === 'baseUrl' && parent === 'promptApi') || key === 'publicBaseUrl')
+        }
+        if ((key === 'baseUrl' && parent === 'promptApi') || key === 'publicBaseUrl') {
           remember(item);
+        }
         discover(item, key);
       }
     };
-    for (const [table, column] of Object.entries(jsonColumns))
-      for (const row of records(db, table))
-        discover(parse(row[column]), table === 'app_records' ? row.collection : table);
-    for (const table of collections)
+    for (const [table, column] of Object.entries(jsonColumns)) {
       for (const row of records(db, table)) {
-        for (const field of ['token', 'user_token'])
+        discover(parse(row[column]), table === 'app_records' ? row.collection : table);
+      }
+    }
+    for (const table of collections) {
+      for (const row of records(db, table)) {
+        for (const field of ['token', 'user_token']) {
           remember(
             row[field],
             table === 'accounts'
               ? TEST_COPY_UPSTREAM_TOKEN
               : `STA1N-${randomBytes(24).toString('base64url')}`,
           );
-        if (table === 'cards') remember(row.code, randomBytes(24).toString('base64url'));
+        }
+        if (table === 'cards') {
+          remember(row.code, randomBytes(24).toString('base64url'));
+        }
       }
+    }
     const scrubText = (value) => {
-      if (typeof value !== 'string') return value;
-      if (replacements.has(value)) return replacements.get(value);
-      for (const [secret, replacement] of replacements)
-        if (secret.length >= 8) value = value.split(secret).join(replacement);
+      if (typeof value !== 'string') {
+        return value;
+      }
+      if (replacements.has(value)) {
+        return replacements.get(value);
+      }
+      for (const [secret, replacement] of replacements) {
+        if (secret.length >= 8) {
+          value = value.split(secret).join(replacement);
+        }
+      }
       return value;
     };
     const scrub = (value) => {
-      if (Array.isArray(value)) return value.map(scrub);
-      if (!value || typeof value !== 'object') return scrubText(value);
+      if (Array.isArray(value)) {
+        return value.map(scrub);
+      }
+      if (!value || typeof value !== 'object') {
+        return scrubText(value);
+      }
       return Object.fromEntries(
         Object.entries(value)
           .filter(([key]) => !['discord', 'discordInvite', 'memberAuth'].includes(key))
@@ -302,16 +347,21 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     );
     const reservations = state.settings.fairQuota?.reservations || {};
     for (const [jobId, charge] of Object.entries(reservations)) {
-      if (charge?.status !== 'reserved' || cold.get(jobId)) continue;
+      if (charge?.status !== 'reserved' || cold.get(jobId)) {
+        continue;
+      }
       if (
         !db.prepare('SELECT 1 FROM jobs WHERE id=?').get(jobId) ||
         !state.settings.fairQuota?.balances?.[charge.userId]
-      )
+      ) {
         throw new CopyError('orphan_reserved_charge', { reservations: 1 });
+      }
     }
     db.transaction(() => {
       // Only this newly created, private backup may start a different history after its facts are scrubbed.
-      for (const table of historyTables) db.exec(`DELETE FROM ${table}`);
+      for (const table of historyTables) {
+        db.exec(`DELETE FROM ${table}`);
+      }
       db.exec(
         "DELETE FROM app_meta WHERE key IN ('event_opening','event_authority','event_replay_source','event_test_copy_provenance')",
       );
@@ -324,24 +374,32 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
           job.resultPending ||
           job.generationReview?.status === 'pending' ||
           charge?.status === 'reserved';
-        if (!isolate) continue;
-        if (settled && charge.status === 'reserved')
+        if (!isolate) {
+          continue;
+        }
+        if (settled && charge.status === 'reserved') {
           throw new CopyError('nonterminal_cold_charge', { reservations: 1 });
-        if (active.has(job.status) && !charge && Number(job.cost || 0) > 0 && !job.refundedAt)
+        }
+        if (active.has(job.status) && !charge && Number(job.cost || 0) > 0 && !job.refundedAt) {
           throw new CopyError('legacy_points_refund_required', { jobs: 1 });
+        }
         if (charge) {
           const wasReserved = charge.status === 'reserved';
           const result = settleFairQuota(state, job, false, now, {}, charge);
-          if (wasReserved) summary.refunded++;
-          if (result && ['settled', 'refunded'].includes(result.status))
+          if (wasReserved) {
+            summary.refunded++;
+          }
+          if (result && ['settled', 'refunded'].includes(result.status)) {
             putCharge.run(job.id, JSON.stringify(result));
+          }
         }
         if (job.generationReview?.status === 'pending') {
-          if (!closeGenerationReview(state, job, now, 'test_copy_isolated'))
+          if (!closeGenerationReview(state, job, now, 'test_copy_isolated')) {
             throw new CopyError('unclosed_generation_review', { jobs: 1 });
+          }
           summary.reviewsClosed++;
         }
-        if (active.has(job.status))
+        if (active.has(job.status)) {
           Object.assign(job, {
             status: 'failed',
             cancelledAt: new Date(now).toISOString(),
@@ -352,33 +410,42 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
             errorStatus: 409,
             cancellationReason: 'test_copy_isolated',
           });
+        }
         job.testCopyIsolatedAt = new Date(now).toISOString();
         delete job.resultPending;
         save('jobs', job, row.order_value);
         summary.isolated++;
       }
       for (const [jobId, charge] of Object.entries(reservations)) {
-        if (cold.get(jobId)) continue;
-        if (!['settled', 'refunded'].includes(charge.status))
+        if (cold.get(jobId)) {
+          continue;
+        }
+        if (!['settled', 'refunded'].includes(charge.status)) {
           throw new CopyError('unclosed_reserved_charge', { reservations: 1 });
+        }
         putCharge.run(jobId, JSON.stringify(charge));
       }
-      if (state.settings.fairQuota) state.settings.fairQuota.reservations = {};
+      if (state.settings.fairQuota) {
+        state.settings.fairQuota.reservations = {};
+      }
       let order = db.prepare('SELECT COALESCE(MAX(order_value),0) AS n FROM ledger').get().n;
       for (const event of [...state.ledger].reverse()) {
-        if (db.prepare('SELECT 1 FROM ledger WHERE id=?').get(event.id))
+        if (db.prepare('SELECT 1 FROM ledger WHERE id=?').get(event.id)) {
           throw new CopyError('isolation_event_conflict', { events: 1 });
+        }
         save('ledger', event, ++order);
       }
       db.prepare("UPDATE app_settings SET value=? WHERE key='settings'").run(
         JSON.stringify(state.settings),
       );
       db.exec("DELETE FROM member_sessions; DELETE FROM app_meta WHERE key='member_session_owner'");
-      for (const table of collections)
+      for (const table of collections) {
         for (const row of records(db, table)) {
           const value = scrub(parse(row.data));
-          if (table === 'users') Object.assign(value, users.get(value.id));
-          if (table === 'accounts')
+          if (table === 'users') {
+            Object.assign(value, users.get(value.id));
+          }
+          if (table === 'accounts') {
             Object.assign(value, {
               token: TEST_COPY_UPSTREAM_TOKEN,
               proxyUrl: '',
@@ -386,9 +453,13 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
               proxy: '',
               inFlight: 0,
             });
-          if (table === 'cards') value.enabled = false;
+          }
+          if (table === 'cards') {
+            value.enabled = false;
+          }
           save(table, value, row.order_value);
         }
+      }
       for (const [table, column] of Object.entries(jsonColumns).filter(
         ([table]) => !collections.includes(table),
       )) {
@@ -399,7 +470,9 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
           const value = scrub(parse(row[column]));
           if (table === 'app_settings' && row.key === 'settings') {
             value.publicBaseUrl = '';
-            if (value.promptApi) Object.assign(value.promptApi, { baseUrl: '', apiKey: '' });
+            if (value.promptApi) {
+              Object.assign(value.promptApi, { baseUrl: '', apiKey: '' });
+            }
           }
           const encoded = JSON.stringify(value);
           update.run(
@@ -421,7 +494,7 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
         const update = db.prepare(
           `UPDATE ${table} SET ${columns.map((column) => `${column}=@${column}`).join(',')} WHERE rowid=@_rowid`,
         );
-        for (const row of records(db, table))
+        for (const row of records(db, table)) {
           update.run(
             Object.fromEntries([
               ['_rowid', row._rowid],
@@ -431,6 +504,7 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
               ]),
             ]),
           );
+        }
       }
       const artifactHash = db.prepare(
         'UPDATE artifact_inputs SET payload_sha256=? WHERE artifact_id=?',
@@ -456,15 +530,17 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
       );
       const jobById = db.prepare('SELECT data,order_value FROM jobs WHERE id=?');
       for (const row of records(db, 'generation_diagnostics')) {
-        if (row._rowid > diagnosticEnd) break;
+        if (row._rowid > diagnosticEnd) {
+          break;
+        }
         const digest = createHash('sha256').update(row.detail).digest('hex'),
           ref = `diagnostic:${row.job_id}:${digest}`;
-        if (ref === row.diagnostic_id)
+        if (ref === row.diagnostic_id) {
           db.prepare('UPDATE generation_diagnostics SET detail_sha256=? WHERE diagnostic_id=?').run(
             digest,
             ref,
           );
-        else {
+        } else {
           putDiagnostic.run(ref, row.job_id, row.detail, digest, row.created_at);
           db.prepare('DELETE FROM generation_diagnostics WHERE diagnostic_id=?').run(
             row.diagnostic_id,
@@ -481,7 +557,7 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
       }
       // Keep old key ownership as a tombstone: scrubbed inputs no longer represent the original accepted intent.
       const blockKey = db.prepare('UPDATE generation_idempotency SET fingerprint=? WHERE rowid=?');
-      for (const row of records(db, 'generation_idempotency'))
+      for (const row of records(db, 'generation_idempotency')) {
         blockKey.run(
           createHash('sha256')
             .update('test-copy-isolated:v1\0')
@@ -490,6 +566,7 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
             .digest('hex'),
           row._rowid,
         );
+      }
     })();
     // Recompute payload/context hashes from the scrubbed protected rows, then verify and switch the new baseline.
     const authority = activateEventAuthority(db),
@@ -512,17 +589,23 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     if (
       db.pragma('integrity_check', { simple: true }) !== 'ok' ||
       db.pragma('foreign_key_check').length
-    )
+    ) {
       throw new CopyError('copy_integrity_failed');
+    }
     summary.after = Object.fromEntries(tables.map((table) => [table, count(db, table)]));
     const copied = new Set(),
       rootImages = imagesDir ? await realpath(imagesDir) : null;
     for (const row of records(db, 'images')) {
       const image = parse(row.data);
-      if (!image.file) continue;
-      if (!/^images\/[A-Za-z0-9_.-]+$/.test(image.file) || image.file.endsWith('.part'))
+      if (!image.file) {
+        continue;
+      }
+      if (!/^images\/[A-Za-z0-9_.-]+$/.test(image.file) || image.file.endsWith('.part')) {
         throw new CopyError('unsupported_image_path');
-      if (copied.has(image.file)) continue;
+      }
+      if (copied.has(image.file)) {
+        continue;
+      }
       copied.add(image.file);
       if (!rootImages) {
         summary.imagesMissing++;
@@ -539,8 +622,9 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
         }
         throw error;
       }
-      if (!stat.isFile() || stat.isSymbolicLink())
+      if (!stat.isFile() || stat.isSymbolicLink()) {
         throw new CopyError('image_must_be_regular_file');
+      }
       await mkdir(path.join(targetPath, 'images'), { mode: 0o700, recursive: true });
       await copyFile(from, path.join(targetPath, image.file), constants.COPYFILE_EXCL);
       await chmod(path.join(targetPath, image.file), 0o600);
@@ -564,8 +648,9 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     let tail = Buffer.alloc(0);
     for await (const chunk of createReadStream(cleanPath)) {
       const bytes = Buffer.concat([tail, chunk]);
-      if (needles.some((needle) => bytes.includes(needle)))
+      if (needles.some((needle) => bytes.includes(needle))) {
         throw new CopyError('credential_residue');
+      }
       tail = overlap ? bytes.subarray(-overlap) : Buffer.alloc(0);
     }
     await unlink(workPath);
@@ -576,8 +661,12 @@ export async function createTestCopy({ source, target, imagesDir, now = Date.now
     return summary;
   } catch (error) {
     // Failed work remains private for diagnosis; it is never published as library.sqlite.
-    if (published) await unlink(finalPath);
-    if (error instanceof CopyError) throw error;
+    if (published) {
+      await unlink(finalPath);
+    }
+    if (error instanceof CopyError) {
+      throw error;
+    }
     throw new CopyError('test_copy_failed');
   } finally {
     sourceDb?.close();

@@ -121,7 +121,7 @@ export function sharedAccountStatus(
     }).length,
   };
   // 未绑定时不挑选其他上游账户，防止把试用池资料带入共享状态。
-  if (!state?.boundAccountId)
+  if (!state?.boundAccountId) {
     return {
       ...base,
       status:
@@ -129,8 +129,11 @@ export function sharedAccountStatus(
           ? 'ambiguous_opus'
           : 'pending_opus',
     };
+  }
   const account = rows(db?.accounts).find((a) => a.id === state.boundAccountId);
-  if (!account) return { ...base, status: 'inactive_opus' };
+  if (!account) {
+    return { ...base, status: 'inactive_opus' };
+  }
   const checked = timestamp(account.quotaCheckedAt),
     expires = timestamp(account.subscriptionExpiresAt),
     cooldown = timestamp(account.cooldownUntil);

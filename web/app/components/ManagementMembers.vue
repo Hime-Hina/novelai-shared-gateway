@@ -79,7 +79,9 @@ const groupFilters = computed(() => [
   ...props.state.groups.map((group) => ({ label: group.name, value: group.id })),
 ]);
 function requireClean() {
-  if (props.groupsDirty) throw new Error('分组有未保存修改，请先预览保存或撤销修改。');
+  if (props.groupsDirty) {
+    throw new Error('分组有未保存修改，请先预览保存或撤销修改。');
+  }
 }
 function current(version: number, kind: Dialog) {
   return active && dialogVersion === version && dialog.value === kind;
@@ -162,17 +164,19 @@ const canDelete = computed(() =>
 );
 const deleteSummary = computed(() => {
   const preview = deletePreview.value;
-  if (!preview)
+  if (!preview) {
     return '选择接收账户后预览。余额和原份额全部转交指定成员，其他成员份额不变。未分组的新账户会自动加入原分组。';
+  }
   const to = deleteUsers.value.find((user) => user.id === preview.payload.transferToUserId),
     q = preview.result.transferred;
   let message = `将删除成员「${deleteName.value}」，把全部剩余余额和原份额交给「${to ? name(to) : preview.payload.transferToUserId}」：V5 ${number(q.v5)}，订阅 Anlas ${number(q.anlasFixed)}，购买 Anlas ${number(q.anlasPurchased)}。其他成员份额不变。登录与 API Key 将失效，历史记录保留。接收者 V5 如超过容量，将暂停恢复直到低于容量。`;
-  if (to && !to.quota?.member)
+  if (to && !to.quota?.member) {
     message += ' 新账户将自动加入原分组并继承被删除成员的份额，其他成员的份额不变。';
+  }
   const changes = preview.result.groups.filter(
     (group) => group.share !== deleteGroups.value.find((old) => old.id === group.id)?.share,
   );
-  if (changes.length)
+  if (changes.length) {
     message +=
       ' 分组份额调整：' +
       changes
@@ -182,31 +186,45 @@ const deleteSummary = computed(() => {
         )
         .join('；') +
       '。';
+  }
   return message;
 });
-const dialogTitle = computed(() =>
-  !dialog.value
-    ? ''
-    : dialog.value === 'credentials'
-      ? editingId.value
-        ? '重置 ' + username.value + ' 的密码'
-        : '创建成员'
-      : dialog.value === 'delivery'
-        ? '成员分发信息'
-        : dialog.value === 'confirm'
-          ? confirmation.value?.title || '确认操作'
-          : dialog.value === 'transfer'
-            ? '调整成员额度'
-            : '删除成员',
-);
-const dialogTitleId = computed(() =>
-  dialog.value === 'credentials'
-    ? 'memberDialogTitle'
-    : dialog.value === 'confirm'
-      ? 'confirmTitle'
-      : 'memberOperationTitle',
-);
+const dialogTitle = computed(() => {
+  if (!dialog.value) {
+    return '';
+  }
+  if (dialog.value === 'credentials') {
+    return editingId.value ? '重置 ' + username.value + ' 的密码' : '创建成员';
+  }
+  if (dialog.value === 'delivery') {
+    return '成员分发信息';
+  }
+  if (dialog.value === 'confirm') {
+    return confirmation.value?.title || '确认操作';
+  }
+  return dialog.value === 'transfer' ? '调整成员额度' : '删除成员';
+});
+const dialogTitleId = computed(() => {
+  if (dialog.value === 'credentials') {
+    return 'memberDialogTitle';
+  }
+  return dialog.value === 'confirm' ? 'confirmTitle' : 'memberOperationTitle';
+});
 
+const credentialHint = computed(() => {
+  if (editingId.value) {
+    return '原 API Key 保持不变，旧登录会话将失效。';
+  }
+  return credentialDiscord.value
+    ? '创建后生成一次性 Discord 邀请码；新成员余额为 0，份额由管理员分配。'
+    : '可加入已有分组，或暂不入组。新成员当前余额为 0；要启用空组，请在分组页同时分配份额。';
+});
+const credentialAction = computed(() => {
+  if (editingId.value) {
+    return '保存新密码';
+  }
+  return credentialDiscord.value ? '创建成员并生成邀请码' : '创建并生成分发信息';
+});
 function closeDialog() {
   dialogVersion++;
   deleteReadVersion++;
@@ -225,7 +243,9 @@ function openDialog(kind: Dialog) {
   return dialogVersion;
 }
 function updateDialog(show: boolean) {
-  if (!show) closeDialog();
+  if (!show) {
+    closeDialog();
+  }
 }
 function portal() {
   return (props.state.publicBaseUrl || location.origin).replace(/\/+$/, '');
@@ -259,7 +279,7 @@ async function delivery(user: MemberIdentity, savedPassword = '') {
   deliveryLoading.value = true;
   try {
     const key = await manage<{ apiKey: string }>({ action: 'member-key', userId: user.id });
-    if (current(version, 'delivery'))
+    if (current(version, 'delivery')) {
       deliveryText.value = [
         `成员入口：${base}/`,
         `用户名：${name(user)}`,
@@ -269,8 +289,11 @@ async function delivery(user: MemberIdentity, savedPassword = '') {
         `API Base：${base}/v1`,
         `API Key：${key.apiKey}`,
       ].join('\n');
+    }
   } finally {
-    if (current(version, 'delivery')) deliveryLoading.value = false;
+    if (current(version, 'delivery')) {
+      deliveryLoading.value = false;
+    }
   }
 }
 async function inviteMember(user: MemberIdentity) {
@@ -283,9 +306,11 @@ async function inviteMember(user: MemberIdentity) {
       action: 'discord-invite',
       userId: user.id,
     });
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     emit('changed', '邀请码已生成；重新生成会撤销旧邀请码。');
-    if (current(version, 'delivery'))
+    if (current(version, 'delivery')) {
       deliveryText.value = [
         `成员入口：${base}/`,
         `成员：${name(user)}`,
@@ -294,8 +319,11 @@ async function inviteMember(user: MemberIdentity) {
         '首次登录填写邀请码，再通过 Discord 验证指定服务器成员身份。',
         '邀请码仅可使用一次；重新生成会撤销旧邀请码。绑定后直接使用 Discord 登录。',
       ].join('\n');
+    }
   } finally {
-    if (current(version, 'delivery')) deliveryLoading.value = false;
+    if (current(version, 'delivery')) {
+      deliveryLoading.value = false;
+    }
   }
 }
 async function saveCredentials() {
@@ -312,37 +340,48 @@ async function saveCredentials() {
     password: savedPassword,
     ...(!id && groupId ? { groupId } : {}),
   });
-  if (!active) return;
-  emit(
-    'changed',
-    id
-      ? '新密码已保存；原 API Key 不变。'
-      : groupId
-        ? '成员已创建并加入分组。'
-        : '成员已创建，尚未入组，请到分组页设置份额。',
-  );
-  if (!current(version, 'credentials')) return;
+  if (!active) {
+    return;
+  }
+  let changedMessage = '成员已创建，尚未入组，请到分组页设置份额。';
+  if (id) {
+    changedMessage = '新密码已保存；原 API Key 不变。';
+  } else if (groupId) {
+    changedMessage = '成员已创建并加入分组。';
+  }
+  emit('changed', changedMessage);
+  if (!current(version, 'credentials')) {
+    return;
+  }
   closeDialog();
   try {
-    if (discord) await inviteMember(user);
-    else await delivery(user, savedPassword);
+    if (discord) {
+      await inviteMember(user);
+    } else {
+      await delivery(user, savedPassword);
+    }
   } catch (failure) {
-    if (active && !(failure as { stale?: boolean } | null)?.stale)
+    if (active && !(failure as { stale?: boolean } | null)?.stale) {
       emit(
         'notice',
         '账户已保存，但分发信息读取失败。请勿重复创建；在该成员行重新生成邀请码或打开分发信息。',
         true,
       );
+    }
   }
 }
 async function copyDelivery() {
   const version = dialogVersion;
   await navigator.clipboard.writeText(deliveryText.value);
-  if (current(version, 'delivery')) emit('notice', '已复制这一位成员的登录与 API 配置。');
+  if (current(version, 'delivery')) {
+    emit('notice', '已复制这一位成员的登录与 API 配置。');
+  }
 }
 function confirmStatus(user: ManagementUser) {
   requireClean();
-  if (protectedOwner(user)) throw new Error('不能停用当前 owner。');
+  if (protectedOwner(user)) {
+    throw new Error('不能停用当前 owner。');
+  }
   openDialog('confirm');
   confirmation.value = {
     title: (user.enabled ? '停用 ' : '恢复 ') + name(user),
@@ -368,24 +407,33 @@ async function confirmAction() {
   requireClean();
   const task = confirmation.value,
     version = dialogVersion;
-  if (!task) return;
+  if (!task) {
+    return;
+  }
   const result = await manage<{ cancelledCount?: number }>(task.body);
-  if (!active) return;
-  if (current(version, 'confirm')) closeDialog();
-  emit(
-    'changed',
-    task.body.action === 'member-status'
-      ? '成员状态已更新。'
-      : task.body.acceptingJobs
-        ? '已恢复接单。'
-        : `已停止接单，取消 ${number(result.cancelledCount ?? 0)} 个未派发任务。`,
-  );
+  if (!active) {
+    return;
+  }
+  if (current(version, 'confirm')) {
+    closeDialog();
+  }
+  let changedMessage = '成员状态已更新。';
+  if (task.body.action !== 'member-status') {
+    changedMessage = task.body.acceptingJobs
+      ? '已恢复接单。'
+      : `已停止接单，取消 ${number(result.cancelledCount ?? 0)} 个未派发任务。`;
+  }
+  emit('changed', changedMessage);
 }
 function openTransfer(user: ManagementUser) {
   requireClean();
   const members = props.state.users.filter((item) => item.quota?.member);
-  if (!members.some((item) => item.id === user.id)) throw new Error('请先将该成员加入共享分组。');
-  if (members.length < 2) throw new Error('至少需要两位共享成员才能转移额度。');
+  if (!members.some((item) => item.id === user.id)) {
+    throw new Error('请先将该成员加入共享分组。');
+  }
+  if (members.length < 2) {
+    throw new Error('至少需要两位共享成员才能转移额度。');
+  }
   openDialog('transfer');
   transferUsers.value = members.map(copyUser);
   transferConfigVersion = props.state.configVersion;
@@ -399,9 +447,12 @@ async function transfer() {
   const version = dialogVersion,
     resource = transferResource.value,
     amount = transferAmount.value;
-  if (transferFrom.value === transferTo.value) throw new Error('转出与接收成员不能相同。');
-  if (amount == null || !Number.isFinite(amount) || amount <= 0)
+  if (transferFrom.value === transferTo.value) {
+    throw new Error('转出与接收成员不能相同。');
+  }
+  if (amount == null || !Number.isFinite(amount) || amount <= 0) {
     throw new Error('请输入大于 0 的转移额度。');
+  }
   await manage({
     action: 'transfer-quota',
     fromUserId: transferFrom.value,
@@ -410,8 +461,12 @@ async function transfer() {
     amount,
     expectedConfigVersion: transferConfigVersion,
   });
-  if (!active) return;
-  if (current(version, 'transfer')) closeDialog();
+  if (!active) {
+    return;
+  }
+  if (current(version, 'transfer')) {
+    closeDialog();
+  }
   emit('changed', resourceNames[resource] + ' 已转移。');
 }
 function resetDeletePreview() {
@@ -425,14 +480,17 @@ function changeRecipient(value: string) {
 }
 function openDelete(user: ManagementUser) {
   requireClean();
-  if (protectedOwner(user)) throw new Error('不能删除当前 owner。');
+  if (protectedOwner(user)) {
+    throw new Error('不能删除当前 owner。');
+  }
   const candidates = props.state.users.filter(
     (item) => item.id !== user.id && (item.quota?.member || (user.quota?.member && item.enabled)),
   );
-  if (!candidates.length)
+  if (!candidates.length) {
     throw new Error(
       '没有可接收的其他账户。请创建并启用一个新账户；未分组的新账户也可接替当前共享成员。',
     );
+  }
   openDialog('delete');
   deleteUser.value = copyUser(user);
   deleteUsers.value = props.state.users.map(copyUser);
@@ -446,7 +504,9 @@ function openDelete(user: ManagementUser) {
 }
 async function previewDelete() {
   requireClean();
-  if (!deleteUser.value) return;
+  if (!deleteUser.value) {
+    return;
+  }
   const version = dialogVersion,
     read = ++deleteReadVersion;
   const body = {
@@ -458,39 +518,50 @@ async function previewDelete() {
   deletePreview.value = null;
   deleteConfirmName.value = '';
   const result = await manage<ManagementMemberChange>(body);
-  if (current(version, 'delete') && read === deleteReadVersion)
+  if (current(version, 'delete') && read === deleteReadVersion) {
     deletePreview.value = {
       result,
       payload: { ...body, action: 'delete-member', expectedConfigVersion: result.configVersion },
     };
+  }
 }
 async function confirmDelete() {
   requireClean();
-  if (!deletePreview.value || !canDelete.value)
+  if (!deletePreview.value || !canDelete.value) {
     throw new Error('请输入被删除成员的完整用户名确认。');
+  }
   const version = dialogVersion,
     payload = { ...deletePreview.value.payload };
   await manage(payload);
-  if (!active) return;
-  if (current(version, 'delete')) closeDialog();
+  if (!active) {
+    return;
+  }
+  if (current(version, 'delete')) {
+    closeDialog();
+  }
   emit('changed', '成员已删除，全部剩余余额已转交，历史记录已保留。');
 }
 function changeLabel(userId: string) {
   const user = deleteUsers.value.find((item) => item.id === userId);
-  return (
-    (user ? name(user) : userId) +
-    (userId === deleteUser.value?.id
-      ? '（删除）'
-      : userId === deletePreview.value?.payload.transferToUserId
-        ? '（接收）'
-        : '')
-  );
+  let suffix = '';
+  if (userId === deleteUser.value?.id) {
+    suffix = '（删除）';
+  } else if (userId === deletePreview.value?.payload.transferToUserId) {
+    suffix = '（接收）';
+  }
+  return (user ? name(user) : userId) + suffix;
 }
 onBeforeUnmount(() => {
   active = false;
   closeDialog();
 });
 
+function discordLabel(user: ManagementUser) {
+  if (!props.state.discordLogin) {
+    return '密码登录';
+  }
+  return user.discordId ? '已绑定 Discord' : '尚未绑定 Discord';
+}
 const pagination = { pageSize: 10, showSizePicker: true, pageSizes: [10, 25, 50] };
 function memberActions(user: ManagementUser) {
   return [
@@ -513,7 +584,9 @@ function memberAction(key: string, user: ManagementUser) {
     status: () => confirmStatus(user),
     delete: () => openDelete(user),
   };
-  if (actions[key]) void props.run(actions[key]);
+  if (actions[key]) {
+    void props.run(actions[key]);
+  }
 }
 const memberColumns = computed<DataTableColumns<ManagementUser>>(() => [
   {
@@ -524,14 +597,7 @@ const memberColumns = computed<DataTableColumns<ManagementUser>>(() => [
     render: (user) =>
       h('div', [
         h('strong', user.username || user.note || user.id),
-        h(
-          'small',
-          props.state.discordLogin
-            ? user.discordId
-              ? '已绑定 Discord'
-              : '尚未绑定 Discord'
-            : '密码登录',
-        ),
+        h('small', discordLabel(user)),
       ]),
   },
   {
@@ -578,21 +644,20 @@ const memberColumns = computed<DataTableColumns<ManagementUser>>(() => [
     width: 220,
     render: (user) => {
       const usage = user.quota?.freeImages;
-      return usage
-        ? h('div', [
-            h('span', `${usage.successful} 张成功 · ${usage.reserved} 张在途`),
-            h(
-              'small',
-              usage.enabled
-                ? `提醒 ${usage.warningThreshold ?? '无'} / 上限 ${usage.hardLimit ?? '无'}`
-                : '策略关闭',
-            ),
-            usage.warning
-              ? h(NTag, { type: 'warning', size: 'small' }, () => '用量达到阈值')
-              : null,
-            usage.warning && usage.warnedAt ? h('small', '触发于 ' + date(usage.warnedAt)) : null,
-          ])
-        : '—';
+      if (!usage) {
+        return '—';
+      }
+      return h('div', [
+        h('span', `${usage.successful} 张成功 · ${usage.reserved} 张在途`),
+        h(
+          'small',
+          usage.enabled
+            ? `提醒 ${usage.warningThreshold ?? '无'} / 上限 ${usage.hardLimit ?? '无'}`
+            : '策略关闭',
+        ),
+        usage.warning ? h(NTag, { type: 'warning', size: 'small' }, () => '用量达到阈值') : null,
+        usage.warning && usage.warnedAt ? h('small', '触发于 ' + date(usage.warnedAt)) : null,
+      ]);
     },
   },
   {
@@ -765,13 +830,7 @@ const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
             aria-label="加入分组"
         /></template>
         <p id="credentialHint" class="muted">
-          {{
-            editingId
-              ? '原 API Key 保持不变，旧登录会话将失效。'
-              : credentialDiscord
-                ? '创建后生成一次性 Discord 邀请码；新成员余额为 0，份额由管理员分配。'
-                : '可加入已有分组，或暂不入组。新成员当前余额为 0；要启用空组，请在分组页同时分配份额。'
-          }}
+          {{ credentialHint }}
         </p>
         <NButton
           id="saveMember"
@@ -779,13 +838,7 @@ const shareColumns = computed<DataTableColumns<ShareChange>>(() => [
           type="primary"
           :disabled="busy"
           :loading="busy"
-          >{{
-            editingId
-              ? '保存新密码'
-              : credentialDiscord
-                ? '创建成员并生成邀请码'
-                : '创建并生成分发信息'
-          }}</NButton
+          >{{ credentialAction }}</NButton
         >
       </form>
 

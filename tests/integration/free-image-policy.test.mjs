@@ -68,8 +68,9 @@ function reserve(store, id, at = now, request = free) {
     (db) => {
       Object.assign(db.accounts[0], { quotaCheckedAt: at });
       syncFairQuota(db, at);
-      if (quoteFairRequest(request).resource === 'free')
+      if (quoteFairRequest(request).resource === 'free') {
         assertFreeImageAdmission(store.readFreeImageUsage(db, 'a', at));
+      }
       const job = {
         id,
         requestId,
@@ -133,7 +134,9 @@ function settle(store, id, success, at = now) {
         },
       });
       recordFreeImageSuccess(db, job, at, store.readFreeImageUsage(db, 'a', at));
-    } else recordGenerationFailure(db, job);
+    } else {
+      recordGenerationFailure(db, job);
+    }
   }, write);
 }
 const usage = (store, at = now) => store.readFreeImageUsage(store.db, 'a', at);
@@ -152,8 +155,9 @@ test('owner usage converts persisted charge amounts only at the DTO boundary', a
   const before = JSON.stringify(await store.read());
   const result = summarizeOwnerUsage(rows),
     v5 = result.recent.find((row) => row.id === 'v5-usage');
-  for (const key of ['amount', 'fixed', 'purchased'])
+  for (const key of ['amount', 'fixed', 'purchased']) {
     assert.equal(v5[key], raw[key] == null ? raw[key] : Number(raw[key]));
+  }
   assert.equal(number(v5.amount), '0.058');
   assert.equal(result.totals.v5, v5.amount);
   assert.equal(result.totals.refunded, 1);
@@ -322,7 +326,9 @@ test('升级回填旧成功与迟到任务，重启保留在途名额且退款�
   for (const job of seed.jobs) {
     delete job.requestId;
     const charge = store.readFairQuotaSettlement(job.id);
-    if (charge) seed.settings.fairQuota.reservations[job.id] = charge;
+    if (charge) {
+      seed.settings.fairQuota.reservations[job.id] = charge;
+    }
   }
   await store.close();
   const legacy = new Database(path.join(directory, 'library.sqlite'));

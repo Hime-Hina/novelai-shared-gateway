@@ -35,18 +35,44 @@ const now = ref<number | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 let mounted = false;
 let pageActive = true;
+const subscriptionText = computed(() => {
+  const value = props.state;
+  if (value?.subscriptionActive == null) {
+    return '订阅状态未知';
+  }
+  return value.subscriptionActive
+    ? `Opus 订阅有效 · 到期 ${date(value.expiresAt)}`
+    : '没有可用的 Opus 订阅';
+});
+const v5Text = computed(() => {
+  const value = props.state;
+  if (value?.v5Percent == null) {
+    return '未知';
+  }
+  return `${number(value.v5Percent)}%${value.v5IsNegative ? '（已透支）' : ''}`;
+});
 const deadline = computed(() => Date.parse(props.state?.cooldownUntil || ''));
 const cooldown = computed(() => {
-  if (!props.state) return '等待共享状态';
-  if (!Number.isFinite(deadline.value)) return '当前无冷却';
-  if (now.value === null) return '正在读取等待时间';
+  if (!props.state) {
+    return '等待共享状态';
+  }
+  if (!Number.isFinite(deadline.value)) {
+    return '当前无冷却';
+  }
+  if (now.value === null) {
+    return '正在读取等待时间';
+  }
   const seconds = Math.max(0, Math.ceil((deadline.value - now.value) / 1000));
-  if (!seconds) return '等待期已结束，等待状态更新';
+  if (!seconds) {
+    return '等待期已结束，等待状态更新';
+  }
   return `${reasons[props.state.cooldownReason || ''] || '共享账户等待派发'} · 剩余 ${seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ` : ''}${seconds % 60} 秒 · 至 ${date(props.state.cooldownUntil)}`;
 });
 const problems = computed(() => {
   const s = props.state;
-  if (!s) return [];
+  if (!s) {
+    return [];
+  }
   return [
     s.quotaSyncError && '官方余额同步异常',
     s.stale &&
@@ -55,18 +81,26 @@ const problems = computed(() => {
   ].filter(Boolean);
 });
 function stopTimer() {
-  if (timer !== null) clearInterval(timer);
+  if (timer !== null) {
+    clearInterval(timer);
+  }
   timer = null;
 }
 function tick() {
   now.value = Date.now();
-  if (!Number.isFinite(deadline.value) || deadline.value <= now.value) stopTimer();
+  if (!Number.isFinite(deadline.value) || deadline.value <= now.value) {
+    stopTimer();
+  }
 }
 function resume() {
   stopTimer();
-  if (!mounted || !pageActive || document.hidden) return;
+  if (!mounted || !pageActive || document.hidden) {
+    return;
+  }
   tick();
-  if (deadline.value > (now.value ?? 0)) timer = setInterval(tick, 1000);
+  if (deadline.value > (now.value ?? 0)) {
+    timer = setInterval(tick, 1000);
+  }
 }
 function pageHide() {
   pageActive = false;
@@ -104,15 +138,7 @@ onUnmounted(() => {
         <strong id="sharedState" class="amount">{{
           state ? labels[state.status] || '状态未知' : '未知'
         }}</strong>
-        <p id="sharedSubscription">
-          上次核验：{{
-            state?.subscriptionActive != null
-              ? state.subscriptionActive
-                ? `Opus 订阅有效 · 到期 ${date(state.expiresAt)}`
-                : '没有可用的 Opus 订阅'
-              : '订阅状态未知'
-          }}
-        </p>
+        <p id="sharedSubscription">上次核验：{{ subscriptionText }}</p>
         <p id="sharedQueue">
           生成中 {{ number(state?.running) }} / {{ number(state?.concurrencyLimit) }} · 排队
           {{ number(state?.queued) }} · 批次待激活 {{ number(state?.pending) }}
@@ -120,11 +146,7 @@ onUnmounted(() => {
         <p id="sharedCooldown">{{ cooldown }}</p>
       </NCard>
       <NCard title="公共 V5 余量" size="small">
-        <strong id="sharedV5" class="amount">{{
-          state?.v5Percent == null
-            ? '未知'
-            : `${number(state.v5Percent)}%${state.v5IsNegative ? '（已透支）' : ''}`
-        }}</strong>
+        <strong id="sharedV5" class="amount">{{ v5Text }}</strong>
         <p id="sharedRefill">
           {{
             state?.refillSecondsPerPercent != null && state.refillSecondsPerPercent > 0

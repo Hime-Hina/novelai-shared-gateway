@@ -43,7 +43,9 @@ test(
       for (const name of await readdir(dir)) {
         const file = path.join(dir, name),
           info = await lstat(file);
-        if (!info.isSymbolicLink()) total += info.isDirectory() ? await disk(file) : info.size;
+        if (!info.isSymbolicLink()) {
+          total += info.isDirectory() ? await disk(file) : info.size;
+        }
       }
       return total;
     };
@@ -82,7 +84,9 @@ test(
       head[8] = 8;
       head[9] = 6;
       const rows = randomBytes((512 * 4 + 1) * 512);
-      for (let i = 0; i < 512; i++) rows[i * (512 * 4 + 1)] = 0;
+      for (let i = 0; i < 512; i++) {
+        rows[i * (512 * 4 + 1)] = 0;
+      }
       return Buffer.concat([
         Buffer.from('89504e470d0a1a0a', 'hex'),
         chunk('IHDR', head),
@@ -237,8 +241,9 @@ test(
       'generation_contexts',
       'artifact_inputs',
       'generation_idempotency',
-    ])
+    ]) {
       assert.ok(before[table].rows > 0, table);
+    }
     const sourceBytes = (await lstat(store.dbPath)).size;
     const preload = path.join(root, 'preload.mjs'),
       uploadMetrics = path.join(root, 'upload-metrics.json');
@@ -308,8 +313,9 @@ start=time.monotonic();b.upload_business_backup(snapshot);upload_ms=(time.monoto
     replay.transaction(() => verifyEventProjections(replay))();
     assert.equal(replay.pragma('integrity_check', { simple: true }), 'ok');
     const replaySummaries = summaries(replay);
-    for (const table of tables.filter((table) => !['jobs', 'images'].includes(table)))
+    for (const table of tables.filter((table) => !['jobs', 'images'].includes(table))) {
       assert.deepEqual(replaySummaries[table], before[table], table);
+    }
     // Rebuilt query rows omit transient display fields and use fresh order_value; compare authoritative state and artifact descriptors.
     assert.deepEqual(
       replay

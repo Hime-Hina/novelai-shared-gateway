@@ -10,14 +10,16 @@ interface OpusSubscription {
 }
 
 export function quotaTimestamp(value: unknown): number | null {
-  if (value === null || value === undefined || value === '' || typeof value === 'boolean')
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') {
     return null;
+  }
   const numeric = Number(value);
-  const result = Number.isFinite(numeric)
-    ? numeric < 1e11
-      ? numeric * 1000
-      : numeric
-    : Date.parse(String(value));
+  let result: number;
+  if (Number.isFinite(numeric)) {
+    result = numeric < 1e11 ? numeric * 1000 : numeric;
+  } else {
+    result = Date.parse(String(value));
+  }
   return Number.isFinite(result) && result >= 0 && result <= 8640000000000000 ? result : null;
 }
 
@@ -29,9 +31,12 @@ export function hasActiveOpusSubscription(
     account?.enabled !== true ||
     account.subscriptionActive !== true ||
     Number(account.quotaTier) !== 3
-  )
+  ) {
     return false;
-  if (!account.subscriptionExpiresAt) return true;
+  }
+  if (!account.subscriptionExpiresAt) {
+    return true;
+  }
   const expires = quotaTimestamp(account.subscriptionExpiresAt);
   return expires !== null && expires > now;
 }
@@ -69,13 +74,21 @@ export function quotaAvailability(
   now: number,
   baseline: { at?: unknown; held?: boolean; lastSettlementAt?: number } = {},
 ): string {
-  if (!hasActiveOpusSubscription(account, now)) return 'inactive_opus';
-  if (account?.quotaError) return 'quota_sync_error';
-  if (!isQuotaSnapshotFresh(account?.quotaCheckedAt, now)) return 'stale';
+  if (!hasActiveOpusSubscription(account, now)) {
+    return 'inactive_opus';
+  }
+  if (account?.quotaError) {
+    return 'quota_sync_error';
+  }
+  if (!isQuotaSnapshotFresh(account?.quotaCheckedAt, now)) {
+    return 'stale';
+  }
   const complete = [account?.v5UsagePercent, account?.quotaFixed, account?.quotaPurchased].every(
     (value) => quotaNumber(value) !== null,
   );
-  if (!complete) return 'unknown_balance';
+  if (!complete) {
+    return 'unknown_balance';
+  }
   const checked = quotaTimestamp(account?.quotaCheckedAt)!;
   const canReconcile =
     !baseline.held &&

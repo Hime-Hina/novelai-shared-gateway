@@ -215,7 +215,9 @@ test('停止接单在派发与收费前拒绝，不预留额度或占用执行�
 
 test('同一用户多次提交也只占一个槽位，其余排队；失败退款只发生一次', async () => {
   const { db, ctx, job, advance } = fixture();
-  for (let i = 0; i < 5; i++) job(String(i));
+  for (let i = 0; i < 5; i++) {
+    job(String(i));
+  }
   const result = [];
   for (const j of db.jobs) {
     result.push(await ctx.reserveQueuedJob(j.id));
@@ -282,7 +284,9 @@ test('管理员开启续用后个人 V5 不足按原参数转扣 Anlas，失败�
 
 function childrenFixture() {
   const f = fixture();
-  for (const u of f.db.users) u.enabled = true;
+  for (const u of f.db.users) {
+    u.enabled = true;
+  }
   f.db.users.push(
     ...['child_one', 'child_two'].map((id) => ({ id, token: id, enabled: true, balance: 0 })),
   );
@@ -307,7 +311,9 @@ test('同组子账户依次使用共享槽位，未派发者不扣额度，失�
     height: 1024,
     steps: 23,
   });
-  for (let i = 0; i < 4; i++) job(`child-${i}`, i % 2 ? 'child_two' : 'child_one');
+  for (let i = 0; i < 4; i++) {
+    job(`child-${i}`, i % 2 ? 'child_two' : 'child_one');
+  }
   job('fifth', 'b');
   const before = structuredClone(db.settings.fairQuota.balances);
   const results = [];
@@ -325,8 +331,9 @@ test('同组子账户依次使用共享槽位，未派发者不扣额度，失�
     ) < 1e-9,
   );
   assert.deepEqual(db.settings.fairQuota.balances.child_two, before.child_two);
-  for (const id of ['a', 'b', 'c', 'd'])
+  for (const id of ['a', 'b', 'c', 'd']) {
     assert.deepEqual(db.settings.fairQuota.balances[id], before[id]);
+  }
   assert.equal(results[0].job.fairCharge.userId, 'child_one');
   assert.equal(results[0].job.fairCharge.groupId, 'group_1');
   await ctx.failGeneration(results[0], new Error('子账户失败'));
@@ -344,13 +351,16 @@ test('同组子账户依次使用共享槽位，未派发者不扣额度，失�
         (before.child_two.v5Available - q.amount),
     ) < 1e-9,
   );
-  for (const id of ['b', 'c', 'd'])
+  for (const id of ['b', 'c', 'd']) {
     assert.deepEqual(db.settings.fairQuota.balances[id], before[id]);
+  }
 });
 
 test('并发提交只立即派发一张，其余保持排队且尚未扣款', async () => {
   const { db, ctx, job, advance } = fixture();
-  for (let i = 0; i < 5; i++) job(`burst-${i}`);
+  for (let i = 0; i < 5; i++) {
+    job(`burst-${i}`);
+  }
   const results = await Promise.all(db.jobs.map((j) => ctx.reserveQueuedJob(j.id)));
   assert.equal(results.filter((result) => result.job).length, 1);
   assert.equal(results.filter((result) => result.queued).length, 4);

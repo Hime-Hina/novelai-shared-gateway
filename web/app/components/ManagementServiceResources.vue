@@ -5,12 +5,16 @@ import { date, number } from '../utils/member-display';
 
 defineProps<{ data?: ServiceResources }>();
 function bytes(value: number | undefined) {
-  if (value == null || !Number.isFinite(value) || value < 0) return '暂不可用';
+  if (value == null || !Number.isFinite(value) || value < 0) {
+    return '暂不可用';
+  }
   const unit = value === 0 ? 0 : Math.min(Math.floor(Math.log(value) / Math.log(1024)), 4);
   return `${number(value / 1024 ** unit)} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][unit]}`;
 }
 function uptime(seconds: number | undefined) {
-  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '暂不可用';
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) {
+    return '暂不可用';
+  }
   const minutes = Math.floor(seconds / 60);
   return `${Math.floor(minutes / 1440)} 天 ${Math.floor(minutes / 60) % 24} 小时 ${minutes % 60} 分钟`;
 }
@@ -101,7 +105,7 @@ function operationStatus(status: string | undefined) {
             </table>
             <p>免费额度：A 类 100 万 / B 类 1,000 万次</p>
             <p id="serviceR2OperationsStatus">
-              {{ operationStatus(data.r2.operations?.status) }}<br />{{
+              <span v-text="operationStatus(data.r2.operations?.status)" /><br />{{
                 data.r2.operations?.checkedAt ? date(data.r2.operations.checkedAt) : '尚无更新时间'
               }}
             </p>

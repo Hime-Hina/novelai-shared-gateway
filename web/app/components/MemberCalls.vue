@@ -45,6 +45,8 @@ const statuses = [
   })),
   { label: '有迟到结果', value: 'late' },
 ];
+// 工作区拥有分页游标和筛选状态；版本变化或销毁后丢弃旧响应。
+// 分页固定 until，避免刷新时新记录改变已读范围。
 async function load() {
   const current = ++version;
   loading.value = true;
@@ -56,18 +58,25 @@ async function load() {
     sort: sort.value,
     order: order.value,
   });
-  if (page.value > 1 && until) params.set('until', until);
+  if (page.value > 1 && until) {
+    params.set('until', until);
+  }
   try {
     const result = await props.api<HistoryPage>('history?' + params);
-    if (disposed || current !== version) return;
+    if (disposed || current !== version) {
+      return;
+    }
     snapshot.value = result;
     until = result.until;
     error.value = '';
     const last = Math.max(1, Math.ceil(result.total / pageSize.value));
-    if (page.value > last) page.value = last;
+    if (page.value > last) {
+      page.value = last;
+    }
   } catch (failure) {
-    if (!disposed && current === version && !(failure as { stale?: boolean }).stale)
+    if (!disposed && current === version && !(failure as { stale?: boolean }).stale) {
       error.value = '历史读取失败，请刷新重试：' + (failure as Error).message;
+    }
   } finally {
     if (!disposed && current === version) {
       loading.value = false;
@@ -89,13 +98,36 @@ function sorted(value: DataTableSortState | DataTableSortState[] | null) {
   order.value = state?.order === 'ascend' ? 'asc' : 'desc';
   page.value = 1;
 }
+function sortOrder(key: string) {
+  if (sort.value !== key) {
+    return false;
+  }
+  return order.value === 'asc' ? 'ascend' : 'descend';
+}
+function tagType(status: string) {
+  if (status === 'done') {
+    return 'success';
+  }
+  return status === 'failed' ? 'error' : 'info';
+}
+const statusText = computed(() => {
+  if (error.value) {
+    return error.value;
+  }
+  if (loading.value) {
+    return '正在更新记录…';
+  }
+  return status.value === 'late'
+    ? '迟到结果领取不另扣费，原退款保留。'
+    : '全部保留历史可翻页查看；列标题可排序。';
+});
 const columns = computed<DataTableColumns<MemberJob>>(() => [
   {
     title: '提交时间',
     key: 'createdAt',
     width: 185,
     sorter: true,
-    sortOrder: sort.value === 'createdAt' ? (order.value === 'asc' ? 'ascend' : 'descend') : false,
+    sortOrder: sortOrder('createdAt'),
     render: (row) => date(row.createdAt),
   },
   {
@@ -103,7 +135,7 @@ const columns = computed<DataTableColumns<MemberJob>>(() => [
     key: 'model',
     width: 240,
     sorter: true,
-    sortOrder: sort.value === 'model' ? (order.value === 'asc' ? 'ascend' : 'descend') : false,
+    sortOrder: sortOrder('model'),
     ellipsis: { tooltip: true },
   },
   {
@@ -111,31 +143,26 @@ const columns = computed<DataTableColumns<MemberJob>>(() => [
     key: 'status',
     width: 225,
     sorter: true,
-    sortOrder: sort.value === 'status' ? (order.value === 'asc' ? 'ascend' : 'descend') : false,
-    render: (row) =>
-      h('div', { class: 'result-cell' }, [
-        h(
-          NTag,
+    sortOrder: sortOrder('status'),
+    render: (row) => {
+      const status = h(NTag, { size: 'small', bordered: false, type: tagType(row.status) }, () =>
+        jobStatus(row.status),
+      );
+      let result: ReturnType<typeof h> | null = null;
+      if (resultUrl(row.imageUrl)) {
+        result = h(
+          'a',
           {
-            size: 'small',
-            bordered: false,
-            type: row.status === 'done' ? 'success' : row.status === 'failed' ? 'error' : 'info',
+            href: resultUrl(row.imageUrl)!,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            referrerpolicy: 'no-referrer',
           },
-          () => jobStatus(row.status),
-        ),
-        resultUrl(row.imageUrl)
-          ? h(
-              'a',
-              {
-                href: resultUrl(row.imageUrl)!,
-                target: '_blank',
-                rel: 'noopener noreferrer',
-                referrerpolicy: 'no-referrer',
-              },
-              row.lateResultAvailable ? '领取迟到结果（退款保留）' : '领取结果',
-            )
-          : null,
-      ]),
+          row.lateResultAvailable ? '领取迟到结果（退款保留）' : '领取结果',
+        );
+      }
+      return h('div', { class: 'result-cell' }, [status, result]);
+    },
   },
   { title: '额度记录', key: 'charge', width: 260, render: (row) => chargeText(row.charge) },
 ]);
@@ -152,8 +179,11 @@ watch(
   () => props.refreshVersion,
   () => {
     if (!document.hidden) {
-      if (loading.value) refreshPending = true;
-      else void load();
+      if (loading.value) {
+        refreshPending = true;
+      } else {
+        void load();
+      }
     }
   },
 );
@@ -184,14 +214,7 @@ onBeforeUnmount(() => {
       />
     </div>
     <div class="refresh-status" role="status" :title="error">
-      {{
-        error ||
-        (loading
-          ? '正在更新记录…'
-          : status === 'late'
-            ? '迟到结果领取不另扣费，原退款保留。'
-            : '全部保留历史可翻页查看；列标题可排序。')
-      }}
+      {{ statusText }}
     </div>
     <NDataTable
       id="jobs"

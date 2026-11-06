@@ -13,7 +13,9 @@ const statuses: Record<string, string> = {
 };
 export const jobStatus = (status: string) => statuses[status] || status;
 export function resultUrl(value?: string) {
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
   try {
     const url = new URL(value, 'https://local.invalid');
     return ['http:', 'https:'].includes(url.protocol) ? value : null;
@@ -22,7 +24,9 @@ export function resultUrl(value?: string) {
   }
 }
 export function chargeText(charge?: MemberCharge | null) {
-  if (!charge) return '—';
+  if (!charge) {
+    return '—';
+  }
   const settlements: Record<string, string> = {
     refunded: '已退款（本站额度）',
     settled: '已结算',

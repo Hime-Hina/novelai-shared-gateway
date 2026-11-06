@@ -35,7 +35,9 @@ const {
 } = useMemberPortal();
 const apiOpen = ref(false);
 watch(profile, (value) => {
-  if (!value) apiOpen.value = false;
+  if (!value) {
+    apiOpen.value = false;
+  }
 });
 </script>
 <template>

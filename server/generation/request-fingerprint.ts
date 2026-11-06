@@ -25,13 +25,17 @@ type NormalizationSettings = {
 
 // 入口已验证 base64；这里按解码字节摘要，不再复制或拼接整段图片文本。
 function imageDigest(value: unknown): unknown {
-  if (typeof value !== 'string' || !value) return value;
+  if (typeof value !== 'string' || !value) {
+    return value;
+  }
   const encoded = value.startsWith('data:') ? value.slice(value.indexOf(',') + 1) : value;
   return { sha256: createHash('sha256').update(encoded, 'base64').digest('hex') };
 }
 
 function sortedKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (Array.isArray(value)) {
+    return value.map(sortedKeys);
+  }
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
     return Object.fromEntries(
@@ -51,18 +55,26 @@ export function generationRequestFingerprint(
   const operation = request.operation || 'generate';
   const parameters: Record<string, unknown> =
     operation === 'generate' ? buildNovelAiParameters(request) : { ...request.operationParameters };
-  if (operation === 'generate' && randomSeed) parameters.seed = 'random';
-  for (const field of ['image', 'mask', 'reference_image'])
-    if (Object.hasOwn(parameters, field)) parameters[field] = imageDigest(parameters[field]);
+  if (operation === 'generate' && randomSeed) {
+    parameters.seed = 'random';
+  }
+  for (const field of ['image', 'mask', 'reference_image']) {
+    if (Object.hasOwn(parameters, field)) {
+      parameters[field] = imageDigest(parameters[field]);
+    }
+  }
   for (const field of ['reference_image_multiple', 'director_reference_images']) {
-    if (Array.isArray(parameters[field])) parameters[field] = parameters[field].map(imageDigest);
+    if (Array.isArray(parameters[field])) {
+      parameters[field] = parameters[field].map(imageDigest);
+    }
   }
   for (const field of ['reference_image_multiple_cached', 'director_reference_images_cached']) {
-    if (Array.isArray(parameters[field]))
+    if (Array.isArray(parameters[field])) {
       parameters[field] = parameters[field].map((item: Record<string, unknown>) => ({
         ...item,
         data: imageDigest(item.data),
       }));
+    }
   }
   const execution = {
     operation,

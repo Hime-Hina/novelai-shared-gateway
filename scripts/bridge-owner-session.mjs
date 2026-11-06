@@ -22,8 +22,9 @@ function checkedOwner(user, env) {
     !user.memberAuth?.version ||
     !user.discord?.id ||
     user.discord.guildId !== env.DISCORD_GUILD_ID
-  )
+  ) {
     fail('Owner identity is not valid');
+  }
   return {
     id: user.id,
     version: user.memberAuth.version,
@@ -64,8 +65,9 @@ export async function captureOwnerSession({
   now = Date.now(),
   requestImpl = legacyResponse,
 }) {
-  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !Number.isSafeInteger(expiresAt) || expiresAt <= now)
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token) || !Number.isSafeInteger(expiresAt) || expiresAt <= now) {
     fail('Legacy Cookie is absent or expired');
+  }
   const origin = new URL(env.PUBLIC_BASE_URL).origin,
     target = new URL(baseUrl);
   if (
@@ -73,8 +75,9 @@ export async function captureOwnerSession({
     target.hostname !== '127.0.0.1' ||
     target.username ||
     target.password
-  )
+  ) {
     fail('Legacy validation must use loopback');
+  }
   const readOwner = () =>
     checkedOwner(
       JSON.parse(
@@ -88,15 +91,18 @@ export async function captureOwnerSession({
     headers: { Host: new URL(origin).host, Origin: origin, Cookie: `nai_member_session=${token}` },
     signal: AbortSignal.timeout(15000),
   });
-  if (response.status !== 200) fail('Legacy service did not authenticate this Cookie');
+  if (response.status !== 200) {
+    fail('Legacy service did not authenticate this Cookie');
+  }
   const profile = await response.json(),
     after = readOwner();
   if (
     profile.owner !== true ||
     profile.username !== before.username ||
     JSON.stringify(before) !== JSON.stringify(after)
-  )
+  ) {
     fail('Owner changed during legacy authentication');
+  }
   return {
     version: 1,
     capturedAt: now,
@@ -127,8 +133,9 @@ export async function importOwnerSession({
     !Number.isSafeInteger(receipt.expiresAt) ||
     receipt.expiresAt <= now ||
     receipt.expiresAt > receipt.capturedAt + 12 * 3600000
-  )
+  ) {
     fail('Migration receipt is stale or invalid');
+  }
   let record;
   return store.update(
     async (db) => {
@@ -136,28 +143,33 @@ export async function importOwnerSession({
         db.users.find((user) => user.id === receipt.ownerId),
         env,
       );
-      if (owner.version !== receipt.authVersion || owner.binding !== receipt.ownerBinding)
+      if (owner.version !== receipt.authVersion || owner.binding !== receipt.ownerBinding) {
         fail('Owner authorization changed before migration');
+      }
       const prior = store.readMemberSessionOwner();
       if (
         prior &&
         (prior.ownerUserId !== env.OWNER_USER_ID || prior.guildId !== env.DISCORD_GUILD_ID)
-      )
+      ) {
         fail('Owner configuration changed before migration');
+      }
       // Claim before the database write. A failed attempt stays claimed and needs inspection, not replay.
       let claim;
       try {
         claim = await open(claimFile, 'wx', 0o600);
       } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
+        if (error.code !== 'EEXIST') {
+          throw error;
+        }
         const existing = store.readMemberSession(receipt.tokenHash);
         if (
           existing?.user_id === receipt.ownerId &&
           existing.auth_version === receipt.authVersion &&
           existing.owner_binding === receipt.ownerBinding &&
           existing.expires_at >= receipt.expiresAt
-        )
+        ) {
           return { imported: false, alreadyPresent: true };
+        }
         fail('This migration was consumed; it cannot recreate a revoked session');
       }
       try {
@@ -197,8 +209,9 @@ async function main() {
       receipt: { type: 'string', default: `${prep}/owner-session.json` },
     },
   });
-  if (positionals.length !== 1 || !['capture', 'import'].includes(positionals[0]))
+  if (positionals.length !== 1 || !['capture', 'import'].includes(positionals[0])) {
     fail('Use capture or import');
+  }
   process.umask(0o077);
   const config = await readFile(values.config, 'utf8'),
     env = parseEnv(config),
@@ -210,8 +223,9 @@ async function main() {
   const moduleFile = path.join(moduleRoot, capture ? 'store.js' : 'storage/sqlite-store.js'),
     require = createRequire(pathToFileURL(moduleFile));
   if (positionals[0] === 'capture') {
-    if ((await stat(values['cookie-file'])).mode & 0o077)
+    if ((await stat(values['cookie-file'])).mode & 0o077) {
       fail('Cookie input must be private (0600)');
+    }
     const Database = require('better-sqlite3'),
       database = new Database(path.join(values['data-dir'], 'library.sqlite'), {
         readonly: true,
@@ -237,7 +251,9 @@ async function main() {
         const pid = execFileSync('systemctl', ['show', unit, '--value', '-p', 'MainPID'], {
           encoding: 'utf8',
         }).trim();
-        if (pid !== '0') fail('Stop all production writers before importing');
+        if (pid !== '0') {
+          fail('Stop all production writers before importing');
+        }
       }
     }
     const { JsonStore } = await import(pathToFileURL(moduleFile));

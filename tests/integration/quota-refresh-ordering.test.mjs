@@ -101,7 +101,7 @@ const observations = (store) =>
     .all();
 
 test('newest actual launch wins for success/failure with equal and rolled-back clocks, across automatic/manual refresh', async (t) => {
-  for (const rollback of [false, true])
+  for (const rollback of [false, true]) {
     for (const latestFails of [false, true]) {
       const f = await fixture(t),
         first = defer(),
@@ -114,21 +114,28 @@ test('newest actual launch wins for success/failure with equal and rolled-back c
       const older = refresh.refreshEnabled();
       await launched();
       assert.equal(calls, 1);
-      if (rollback) time -= 1000;
+      if (rollback) {
+        time -= 1000;
+      }
       const newer = refresh.refresh(['opus']);
       await launched();
       assert.equal(calls, 2);
-      if (latestFails)
+      if (latestFails) {
         second.reject(
           Object.assign(new Error('synthetic unknown private body'), { upstreamStatus: 401 }),
         );
-      else second.resolve(quota);
+      } else {
+        second.resolve(quota);
+      }
       const current = await newer,
         accepted = structuredClone(f.store.db.accounts[0]);
       assert.equal(current.ignored, 0);
       assert.equal(observations(f.store).length, 1);
-      if (latestFails) first.resolve({ ...quota, fixed: 99999 });
-      else first.reject(Object.assign(new Error('synthetic old body'), { upstreamStatus: 401 }));
+      if (latestFails) {
+        first.resolve({ ...quota, fixed: 99999 });
+      } else {
+        first.reject(Object.assign(new Error('synthetic old body'), { upstreamStatus: 401 }));
+      }
       const ignored = await older;
       assert.deepEqual([ignored.ok, ignored.failed, ignored.ignored], [0, 0, 1]);
       assert.deepEqual(f.store.db.accounts[0], accepted);
@@ -137,6 +144,7 @@ test('newest actual launch wins for success/failure with equal and rolled-back c
       assert.equal(accepted.quotaCheckedAt, latestFails ? at : new Date(time).toISOString());
       assert.equal(accepted.quotaError !== '', latestFails);
     }
+  }
 });
 
 test('changing the token during a query ignores the response without an observation', async (t) => {
@@ -291,18 +299,20 @@ test('bound, unbound and timeout diagnostics contain only whitelist fields and f
       .filter((value) => value.category === 'query_error')
       .every((value) => value.errorCode === null && value.httpStatus === null),
   );
-  for (const entry of entries)
+  for (const entry of entries) {
     assert.deepEqual(
       Object.keys(entry).sort(),
       ['event', 'at', 'accountId', 'durationMs', 'httpStatus', 'errorCode', 'category'].sort(),
     );
-  for (const status of [401, 403, 402, 429])
+  }
+  for (const status of [401, 403, 402, 429]) {
     assert.equal(
       officialKeyError(
         Object.assign(new Error('官方额度同步失败，请稍后重试'), { upstreamStatus: status }),
       ).statusCode,
       status === 403 ? 401 : status,
     );
+  }
 });
 
 test('a keyed refresh stores its public receipt in the same observation commit', async (t) => {

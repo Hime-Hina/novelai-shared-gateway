@@ -32,7 +32,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(predicate, label, timeout = 15000) {
   const end = Date.now() + timeout;
   while (!(await predicate())) {
-    if (Date.now() >= end) throw new Error(`synthetic recovery timeout: ${label}`);
+    if (Date.now() >= end) {
+      throw new Error(`synthetic recovery timeout: ${label}`);
+    }
     await delay(20);
   }
 }
@@ -114,7 +116,13 @@ async function fixture(t, { stage, operation = 'generate', hold = false, grace =
       'content-type':
         operation === 'encode-vibe' || stream ? 'application/octet-stream' : 'image/png',
     });
-    res.end(operation === 'encode-vibe' ? vibe : stream ? nativeImagesMsgpack([png]) : png);
+    let responseBody = png;
+    if (operation === 'encode-vibe') {
+      responseBody = vibe;
+    } else if (stream) {
+      responseBody = nativeImagesMsgpack([png]);
+    }
+    res.end(responseBody);
   });
   const upstreamPort = await listen(upstream),
     reservedPort = http.createServer(),
@@ -148,8 +156,9 @@ async function fixture(t, { stage, operation = 'generate', hold = false, grace =
       adminToken,
       'pst-synthetic-recovery-only',
       ...members.flatMap((member) => [member.api_key, member.password]),
-    ])
+    ]) {
       value = value.replaceAll(secret, '[redacted]');
+    }
     return value.slice(-3000);
   };
   async function start(faultStage = '') {
@@ -174,14 +183,19 @@ async function fixture(t, { stage, operation = 'generate', hold = false, grace =
       output = (output + chunk.toString()).slice(-8000);
     });
     await until(() => {
-      if (child.exitCode !== null || child.signalCode !== null)
+      if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`synthetic child exited: ${safeOutput()}`);
+      }
       return output.includes('Nai2API listening');
     }, 'startup: ' + faultStage);
   }
   async function stop(signal = 'SIGKILL') {
-    if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-    if (exited) await exited;
+    if (child?.exitCode === null && child?.signalCode === null) {
+      child.kill(signal);
+    }
+    if (exited) {
+      await exited;
+    }
   }
   t.after(async () => {
     release?.();
@@ -278,7 +292,9 @@ for (const stage of ['descriptor', 'half_write', 'file_sync', 'rename', 'dir_syn
       await f.start(stage);
       const response = f.generate(),
         point = await f.waitPoint(stage);
-      if (stage === 'descriptor') assert.equal(point.sqliteSynchronous, 2, '持久数据库必须为 FULL');
+      if (stage === 'descriptor') {
+        assert.equal(point.sqliteSynchronous, 2, '持久数据库必须为 FULL');
+      }
       assert.equal(f.generations(), 1);
       const original = f.jobs()[0],
         expectedId = original.resultPending?.imageId || original.imageId;
@@ -303,7 +319,9 @@ for (const stage of ['descriptor', 'half_write', 'file_sync', 'rename', 'dir_syn
           assert.ok(!job.imageId);
         }
         const state = durableState(f, job);
-        if (snapshot) assert.deepEqual(state, snapshot, '第二次启动必须无重复结算或状态漂移');
+        if (snapshot) {
+          assert.deepEqual(state, snapshot, '第二次启动必须无重复结算或状态漂移');
+        }
         snapshot = state;
         await f.stop();
       }
@@ -413,7 +431,9 @@ test(
           assert.ok(recovered.resultPending);
         }
         const state = durableState(f, recovered);
-        if (snapshot) assert.deepEqual(state, snapshot);
+        if (snapshot) {
+          assert.deepEqual(state, snapshot);
+        }
         snapshot = state;
         await f.stop();
       }

@@ -74,17 +74,25 @@ export function nativeRequestDiagnostic(
   } | null,
 ) {
   const describe = (value: unknown) => {
-    if (value === null) return { type: 'null' };
-    if (Array.isArray(value))
+    if (value === null) {
+      return { type: 'null' };
+    }
+    if (Array.isArray(value)) {
       return {
         type: 'array',
         length: value.length,
         nonEmpty: value.filter((item) => item !== null && item !== '' && item !== undefined).length,
       };
-    if (typeof value === 'string') return { type: 'string', length: value.length };
-    if (typeof value === 'number')
+    }
+    if (typeof value === 'string') {
+      return { type: 'string', length: value.length };
+    }
+    if (typeof value === 'number') {
       return { type: 'number', value: Number.isFinite(value) ? value : 'non-finite' };
-    if (typeof value === 'boolean') return { type: 'boolean', value };
+    }
+    if (typeof value === 'boolean') {
+      return { type: 'boolean', value };
+    }
     return { type: typeof value };
   };
   const identifier = (value: unknown) =>
@@ -101,8 +109,9 @@ export function nativeRequestDiagnostic(
       typeof parameters?.[field] === 'string' &&
       /^-?\d+(?:\.\d+)?$/.test(parameters[field]) &&
       parameters[field].length <= 24
-    )
+    ) {
       numeric[field].numericValue = Number(parameters[field]);
+    }
   }
   const structure: Record<string, ReturnType<typeof describe>> = {};
   for (const field of [
@@ -118,8 +127,9 @@ export function nativeRequestDiagnostic(
     'characterPrompts',
     'stream',
   ]) {
-    if (parameters && Object.hasOwn(parameters, field))
+    if (parameters && Object.hasOwn(parameters, field)) {
       structure[field] = describe(parameters[field]);
+    }
   }
   return {
     model: identifier(body?.model),
@@ -149,9 +159,13 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
       String(req.headers.authorization || '')
         .match(/^Bearer\s+(.+)$/i)?.[1]
         ?.trim() || '';
-    if (!token.startsWith('STA1N-')) throw error(401, 'Existing gateway key required.');
+    if (!token.startsWith('STA1N-')) {
+      throw error(401, 'Existing gateway key required.');
+    }
     const user = await deps.store.readUserByToken(token);
-    if (!user || user.enabled === false) throw error(401, 'invalid token.');
+    if (!user || user.enabled === false) {
+      throw error(401, 'invalid token.');
+    }
     let body = (await readNativeBody(req, {
       jsonReader: (request) => deps.readJson(request as NativeHttpRequest, NATIVE_MAX_BODY_BYTES),
     })) as {
@@ -196,9 +210,13 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
 
   async function wait(jobId: string, deadline: number, res: ServerResponse) {
     const result = await deps.waitForJobResult(jobId, deadline, res);
-    if (res.destroyed) return null;
-    if (!result) throw error(504, 'direct generate timeout');
-    if (result.error)
+    if (res.destroyed) {
+      return null;
+    }
+    if (!result) {
+      throw error(504, 'direct generate timeout');
+    }
+    if (result.error) {
       throw Object.assign(
         error(
           result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500),
@@ -206,6 +224,7 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
         ),
         { cooldownUntil: result.cooldownUntil },
       );
+    }
     return result;
   }
   function responseType(req: NativeHttpRequest, res: ServerResponse) {
@@ -214,7 +233,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
       'application/zip',
       'application/json; charset=utf-8',
     ]);
-    if (!type) throw error(406, '响应仅支持 application/zip 或 application/json');
+    if (!type) {
+      throw error(406, '响应仅支持 application/zip 或 application/json');
+    }
     return type;
   }
   async function sendJson(
@@ -224,8 +245,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     headers: OutgoingHttpHeaders = {},
   ) {
     async function* images() {
-      for (const [index, entry] of entries.entries())
+      for (const [index, entry] of entries.entries()) {
         yield { buffer: await deps.readStoredImage(entry.saved!), index, seed: entry.seed };
+      }
     }
     const chunks = nativeImagesJson(images(), summary),
       first = await chunks.next();
@@ -255,19 +277,22 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     type: NativeBatch['streamType'],
   ) {
     for (const chunk of type === 'sse' ? nativeImageSse(event) : [nativeImageMsgpack(event)]) {
-      if (!res.headersSent)
+      if (!res.headersSent) {
         res.writeHead(200, {
           'content-type': type === 'sse' ? 'text/event-stream' : 'application/msgpack',
           'cache-control': 'no-store, no-transform',
           'x-accel-buffering': 'no',
         });
+      }
       yield chunk;
     }
   }
   async function streamImages(res: ServerResponse, batch: NativeBatch, deadline: number) {
     res.once('error', () => res.destroy());
     for (let index = 0; index < batch.count; index++) {
-      if (res.destroyed) return;
+      if (res.destroyed) {
+        return;
+      }
       const unwatch = deps.previews.watch(batch.jobIds[index]!, (frame) => {
         if (
           res.destroyed ||
@@ -275,8 +300,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
           res.writableNeedDrain ||
           !Number.isSafeInteger(frame.stepIndex) ||
           frame.stepIndex! < 0
-        )
+        ) {
           return;
+        }
         for (const chunk of streamChunks(
           res,
           {
@@ -286,34 +312,48 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
             image: frame.buffer,
           },
           batch.streamType,
-        ))
+        )) {
           res.write(chunk);
+        }
       });
       try {
         const result = await wait(batch.jobIds[index]!, deadline, res);
         unwatch();
-        if (!result) return;
+        if (!result) {
+          return;
+        }
         const image = await deps.readStoredImage(result.saved!);
-        if (res.destroyed) return;
+        if (res.destroyed) {
+          return;
+        }
         for (const chunk of streamChunks(
           res,
           { event_type: 'final', samp_ix: index, image },
           batch.streamType,
         )) {
-          if (res.destroyed) return;
+          if (res.destroyed) {
+            return;
+          }
           await new Promise<void>((resolve, reject) => {
             const onClose = () => resolve();
             res.once('close', onClose);
             res.write(chunk, (failure) => {
               res.off('close', onClose);
-              if (failure) reject(failure);
-              else resolve();
+              if (failure) {
+                reject(failure);
+              } else {
+                resolve();
+              }
             });
           });
         }
       } catch (failure) {
-        if (res.destroyed) return;
-        if (!res.headersSent) throw failure;
+        if (res.destroyed) {
+          return;
+        }
+        if (!res.headersSent) {
+          throw failure;
+        }
         for (const chunk of streamChunks(
           res,
           {
@@ -325,14 +365,17 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
             }),
           },
           batch.streamType,
-        ))
+        )) {
           res.write(chunk);
+        }
         break;
       } finally {
         unwatch();
       }
     }
-    if (!res.destroyed) res.end();
+    if (!res.destroyed) {
+      res.end();
+    }
   }
 
   async function handleImage(req: NativeHttpRequest, res: ServerResponse, { stream = false } = {}) {
@@ -340,8 +383,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
     const json = !stream && responseType(req, res) !== 'application/zip',
       batch = await accept(req, diagnosticId);
-    if (batch.requestId || !batch.replayed)
+    if (batch.requestId || !batch.replayed) {
       res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
+    }
     const deadline = now() + deps.timeoutMs;
     if (stream) {
       await streamImages(res, batch, deadline);
@@ -351,10 +395,14 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
       [];
     const results: NonNullable<NonNullable<Parameters<typeof nativeImagesJson>[1]>['results']> = [];
     for (let index = 0; index < batch.count; index++) {
-      if (res.destroyed) return;
+      if (res.destroyed) {
+        return;
+      }
       try {
         const result = await wait(batch.jobIds[index]!, deadline, res);
-        if (!result) return;
+        if (!result) {
+          return;
+        }
         const filename = `image_${index}.${imageExtension(result.saved!.mimeType || '')}`;
         entries.push({
           ...(json
@@ -365,7 +413,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
         });
         results.push({ index, status: 'done', filename });
       } catch (failure) {
-        if (!entries.length) throw failure;
+        if (!entries.length) {
+          throw failure;
+        }
         results.push({
           index,
           status: 'failed',
@@ -376,7 +426,9 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
         break;
       }
     }
-    if (res.destroyed) return;
+    if (res.destroyed) {
+      return;
+    }
     const count = batch.count,
       completed = entries.length;
     const summary =
@@ -397,11 +449,12 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
       await sendJson(res, entries, summary, headers);
       return;
     }
-    if (summary)
+    if (summary) {
       entries.push({
         filename: 'results.json',
         buffer: Buffer.from(JSON.stringify(summary), 'utf8'),
       });
+    }
     deps.sendImage(
       res,
       200,
@@ -426,18 +479,21 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     res.setHeader('X-Nai-Diagnostic-Id', diagnosticId);
     const json = operation === 'upscale' && responseType(req, res) !== 'application/zip',
       batch = await accept(req, diagnosticId, operation);
-    if (batch.requestId || !batch.replayed)
+    if (batch.requestId || !batch.replayed) {
       res.setHeader('X-Nai-Request-Id', batch.requestId || batch.id);
+    }
     const result = await wait(batch.jobIds[0]!, now() + deps.timeoutMs, res);
-    if (!result) return;
+    if (!result) {
+      return;
+    }
     if (json) {
       await sendJson(res, [{ saved: result.saved }]);
       return;
     }
     const buffer = await deps.readStoredImage(result.saved!);
-    if (operation === 'encode-vibe')
+    if (operation === 'encode-vibe') {
       deps.sendImage(res, 201, 'application/binary', buffer, { 'cache-control': 'no-store' });
-    else
+    } else {
       deps.sendImage(
         res,
         200,
@@ -445,10 +501,13 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
         nativeImageZip(buffer, `image_0.${imageExtension(result.saved!.mimeType || '')}`),
         { 'cache-control': 'no-store' },
       );
+    }
   }
 
   async function handle(req: NativeHttpRequest, res: ServerResponse, url: URL): Promise<boolean> {
-    if (req.method !== 'POST') return false;
+    if (req.method !== 'POST') {
+      return false;
+    }
     if (
       [
         '/ai/generate-image',

@@ -156,12 +156,14 @@ test('conditional capability requirements agree with Native validation for absen
       parameters: { width: 128, height: 128, steps: 23, seed: 42, ...parameters },
     };
     assert.equal(allowedByRequirements(body), expected);
-    if (expected) assert.doesNotThrow(() => normalizeMemberGeneration(body));
-    else
+    if (expected) {
+      assert.doesNotThrow(() => normalizeMemberGeneration(body));
+    } else {
       assert.throws(
         () => normalizeMemberGeneration(body),
         (error) => error.statusCode === 422,
       );
+    }
   }
 });
 
@@ -241,7 +243,9 @@ test('V3 images and V4/4.5 encode-vibe data agree across capabilities, JSON, mul
         v3 ? NATIVE_LIMITS.imageBytes : NATIVE_LIMITS.vibeEncodingBytes,
       );
       assert.equal(content.source, v3 ? undefined : 'encode-vibe');
-      if (!v3) assert.equal(content.minBytes, 100);
+      if (!v3) {
+        assert.equal(content.minBytes, 100);
+      }
       const parameters = (data) =>
         key === 'reference_image'
           ? { [key]: data }
@@ -278,7 +282,7 @@ test('V3 images and V4/4.5 encode-vibe data agree across capabilities, JSON, mul
         (error) => error.statusCode === 422,
       );
       if (!v3) {
-        for (const length of [99, NATIVE_LIMITS.vibeEncodingBytes + 1])
+        for (const length of [99, NATIVE_LIMITS.vibeEncodingBytes + 1]) {
           assert.throws(
             () =>
               parseNativeImageRequest(
@@ -286,6 +290,7 @@ test('V3 images and V4/4.5 encode-vibe data agree across capabilities, JSON, mul
               ),
             (error) => error.statusCode === 422,
           );
+        }
         assert.doesNotThrow(() =>
           parseNativeImageRequest(body(parameters(Buffer.alloc(100, 42).toString('base64')))),
         );
@@ -297,12 +302,13 @@ test('V3 images and V4/4.5 encode-vibe data agree across capabilities, JSON, mul
     (row) => row.operation === 'generate' && row.fields['parameters.reference_image'],
   )) {
     model.fields['parameters.reference_image'] = { type: 'image', required: false };
-    for (const key of ['reference_image_multiple', 'reference_image_multiple_cached'])
+    for (const key of ['reference_image_multiple', 'reference_image_multiple_cached']) {
       model.fields[`parameters.${key}`] = {
         type: 'array',
         required: false,
         max: NATIVE_LIMITS.referencesMax,
       };
+    }
   }
   const rules = oldModels
     .map(({ label, transforms, ...model }) => ({

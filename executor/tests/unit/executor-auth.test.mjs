@@ -85,7 +85,9 @@ test('executor preserves the original request, response, member identity, and un
     });
     assert.deepEqual(req.rawHeaders, ['Host', 'localhost:18082']);
     let body = '';
-    for await (const chunk of req) body += chunk.toString();
+    for await (const chunk of req) {
+      body += chunk.toString();
+    }
     assert.equal(body, 'body remains unread');
     res.writeHead(202, { 'Content-Type': 'application/octet-stream' });
     res.end(Buffer.from([1, 2, 3]));

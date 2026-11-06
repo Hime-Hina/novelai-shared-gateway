@@ -52,8 +52,9 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
   const deps = {
     store,
     assertAdmin(req) {
-      if (req.headers['x-admin-token'] !== 'test-admin')
+      if (req.headers['x-admin-token'] !== 'test-admin') {
         throw Object.assign(new Error('admin required'), { statusCode: 403 });
+      }
     },
     createId: () => 'new-user',
     createPublicToken: () => 'STA1N-new',
@@ -273,7 +274,7 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
   proposed[0].members.push('e');
   const beforePreview = structuredClone(db);
   // 预览和保存都必须携带编辑开始时的版本；省略版本不能绕过并发保护。
-  for (const action of ['preview-groups', 'groups'])
+  for (const action of ['preview-groups', 'groups']) {
     for (const expectedConfigVersion of [undefined, null, '1', 1.5, 0]) {
       r = await manage({
         action,
@@ -284,6 +285,7 @@ test('独立登录、只读隔离、管理员权限、CSRF、重置与事务失�
       assert.equal(r.status, 409);
       assert.deepEqual(db, beforePreview);
     }
+  }
   r = await manage({
     action: 'preview-groups',
     groups: proposed,
@@ -493,7 +495,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(check) {
   const until = Date.now() + 4000;
   while (!check()) {
-    if (Date.now() >= until) throw new Error('synthetic state event timeout');
+    if (Date.now() >= until) {
+      throw new Error('synthetic state event timeout');
+    }
     await delay(10);
   }
 }
@@ -553,8 +557,9 @@ async function eventFixture(t) {
     try {
       await handleMemberRoutes(req, res, new URL(req.url, 'https://nai.example'), deps);
     } catch (error) {
-      if (res.headersSent) res.end();
-      else {
+      if (res.headersSent) {
+        res.end();
+      } else {
         res.writeHead(error.statusCode || 500, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: error.message }));
       }
@@ -598,7 +603,9 @@ async function eventFixture(t) {
             buffer = buffer.slice(split + 2);
             const event = frame.match(/^event: ([^\n]+)/)?.[1],
               data = frame.match(/\ndata: ([^\n]+)/)?.[1];
-            if (event) frames.push({ event, data: JSON.parse(data) });
+            if (event) {
+              frames.push({ event, data: JSON.parse(data) });
+            }
           }
         });
         res.on('end', () => {
@@ -623,7 +630,9 @@ async function eventFixture(t) {
     return result;
   };
   t.after(async () => {
-    for (const stream of streams) stream.req.destroy();
+    for (const stream of streams) {
+      stream.req.destroy();
+    }
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     await store.close();
@@ -645,8 +654,9 @@ test(
     const before = structuredClone({ settings: f.store.db.settings, ledger: f.store.db.ledger }),
       commits = [];
     f.store.events.on('commit', (event) => commits.push(event));
-    for (const route of ['/api/member/me', '/api/member/owner/member-management'])
+    for (const route of ['/api/member/me', '/api/member/owner/member-management']) {
       assert.equal((await f.call(route)).status, 200);
+    }
     assert.deepEqual({ settings: f.store.db.settings, ledger: f.store.db.ledger }, before);
     assert.equal(commits.length, 0);
     const started = Date.now(),
@@ -687,7 +697,7 @@ test(
     await delay(50);
     assert.equal(other.invalidations().length, 2);
     assert.deepEqual(member.invalidations().at(-1).scopes, ['member']);
-    for (const stream of [owner, member, other])
+    for (const stream of [owner, member, other]) {
       for (const payload of stream.invalidations()) {
         assert.deepEqual(Object.keys(payload), [
           'bootId',
@@ -700,6 +710,7 @@ test(
         assert.ok(!JSON.stringify(payload).includes('private'));
         assert.ok(!JSON.stringify(payload).includes('synthetic-token'));
       }
+    }
     other.req.destroy();
     const replay = await f.stream(2, { 'last-event-id': 'unrelated-boot:999999' });
     assert.equal(replay.invalidations()[0].resync, true);

@@ -13,12 +13,14 @@ async function open(t, seed, directory) {
   );
   await store.init();
   t.after(() => store.close());
-  if (seed) await store.update((db) => Object.assign(db, seed), { immediate: true });
+  if (seed) {
+    await store.update((db) => Object.assign(db, seed), { immediate: true });
+  }
   return store;
 }
 const digest = (token) => createHash('sha256').update(token).digest('hex');
 
-for (const owner of [false, true])
+for (const owner of [false, true]) {
   test(`${owner ? 'owner 一天' : '成员七天'}按访问时刻续期，读取不续期，重启保留且退出不能复活`, async (t) => {
     const env = owner ? { OWNER_USER_ID: 'a', DISCORD_GUILD_ID: 'guild' } : {};
     const store = await open(t, {
@@ -59,6 +61,7 @@ for (const owner of [false, true])
     assert.equal(await auth.renewMemberSession(reopened, session.token, env, visited + 3000), null);
     assert.equal(reopened.readMemberSession(digest(session.token)), null);
   });
+}
 
 test('续期失败不改变截止，过期会话不能靠续期恢复，也不广播业务变更', async (t) => {
   const store = await open(t, {
@@ -214,8 +217,9 @@ test('owner一天、普通cookie不能升权；A→B→A和Discord换绑均撤�
   const newOwner = await auth.createMemberSession(store, users[1], next, 3000);
   assert.equal(newOwner.expiresAt, 3000 + 24 * 3600000);
   await auth.reconcileMemberSessionOwner(store, env);
-  for (const session of [a, b, newOwner])
+  for (const session of [a, b, newOwner]) {
     assert.equal(await auth.authenticateMemberSession(store, session.token, env, 4000), null);
+  }
   assert.equal(
     (await auth.authenticateMemberSession(store, c.token, env, 4000)).expiresAt,
     c.expiresAt,
@@ -270,7 +274,9 @@ test('签发重新核对用户快照，写失败不产生会话；排队鉴权�
   assert.equal(await pending, null, '队列等待不能延长Cookie有效期');
 });
 test('登录尝试在密码验证前限流且到期可恢复', () => {
-  for (let i = 0; i < 10; i++) auth.checkMemberLoginRate('rate-user', 'test-peer', 1000);
+  for (let i = 0; i < 10; i++) {
+    auth.checkMemberLoginRate('rate-user', 'test-peer', 1000);
+  }
   assert.throws(
     () => auth.checkMemberLoginRate('rate-user', 'test-peer', 1001),
     (e) => e.statusCode === 429,
@@ -279,7 +285,9 @@ test('登录尝试在密码验证前限流且到期可恢复', () => {
 });
 
 test('OAuth 尚无用户身份时仍保留来源请求上限', () => {
-  for (let i = 0; i < 120; i++) auth.checkMemberLoginRate(null, 'synthetic-oauth-peer', 1000);
+  for (let i = 0; i < 120; i++) {
+    auth.checkMemberLoginRate(null, 'synthetic-oauth-peer', 1000);
+  }
   assert.throws(
     () => auth.checkMemberLoginRate(null, 'synthetic-oauth-peer', 1001),
     (e) => e.statusCode === 429,

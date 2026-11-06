@@ -122,7 +122,9 @@ async function unusedPort() {
 async function until(predicate, timeout, label) {
   const deadline = Date.now() + timeout;
   while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error(label);
+    if (Date.now() >= deadline) {
+      throw new Error(label);
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
@@ -157,16 +159,16 @@ function call(base, route, { method, body, headers = {}, timeout = 15000, agent 
       },
     );
     request.on('error', reject);
-    const bytes =
-      body === undefined
-        ? undefined
-        : typeof body === 'string' || Buffer.isBuffer(body)
-          ? body
-          : JSON.stringify(body);
+    let bytes;
+    if (body !== undefined) {
+      bytes = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+    }
     if (headers['transfer-encoding'] === 'chunked') {
       request.write(bytes.subarray(0, 13));
       request.end(bytes.subarray(13));
-    } else request.end(bytes);
+    } else {
+      request.end(bytes);
+    }
   });
 }
 function json(response, status = 200) {
@@ -206,15 +208,17 @@ async function subscribe(
         for (let at; (at = buffer.indexOf('\n\n')) !== -1;) {
           const frame = buffer.slice(0, at);
           buffer = buffer.slice(at + 2);
-          if (frame.startsWith(':')) frames.push({ comment: frame });
-          else {
+          if (frame.startsWith(':')) {
+            frames.push({ comment: frame });
+          } else {
             const event = /^event: ?(.+)$/m.exec(frame)?.[1],
               data = /^data: ?(.+)$/m.exec(frame)?.[1];
-            if (data)
+            if (data) {
               frames.push({
                 event: event || 'message',
                 data: data === '[DONE]' ? data : JSON.parse(data),
               });
+            }
           }
         }
       });
@@ -234,7 +238,9 @@ async function subscribe(
   request.end(body ? JSON.stringify(body) : undefined);
   t.after(() => request.destroy());
   await until(() => response || failure, 10000, 'Nuxt SSE response did not start');
-  if (failure) throw failure;
+  if (failure) {
+    throw failure;
+  }
   assert.equal(response.statusCode, 200);
   assert.match(response.headers['content-type'], /text\/event-stream/);
   return { frames, request, response, ended: () => ended, failure: () => failure };
@@ -386,9 +392,11 @@ async function fixture(
       },
       { immediate: true },
     );
-    if (discord)
-      for (const user of seeded.db.users)
+    if (discord) {
+      for (const user of seeded.db.users) {
         sessions.push(await createMemberSession(seeded, user, discordEnv));
+      }
+    }
   } finally {
     await seeded.close();
   }
@@ -426,7 +434,9 @@ async function fixture(
     wrongUpstreamAuth = false;
   const upstream = http.createServer(async (req, res) => {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
     if (discord && req.url.startsWith('/discord/')) {
       if (req.url === '/discord/oauth2/token' && req.method === 'POST') {
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
@@ -464,7 +474,9 @@ async function fixture(
         const user = rows('users').find((user) => user.id === members[0].user_id);
         discordState.persistedBeforeMembership =
           user.discord.refreshToken === 'synthetic-discord-refresh-0-1';
-        if (discordState.gate) await discordState.gate.promise;
+        if (discordState.gate) {
+          await discordState.gate.promise;
+        }
         verification.respondedAt = performance.now();
         res.writeHead(discordState.status, { 'content-type': 'application/json' });
         res.end(
@@ -521,9 +533,13 @@ async function fixture(
       upstreamCalls.push({ path: req.url, body: generated });
       if (req.url.includes('generate-image')) {
         const quote = quoteFairRequest({ ...generated.parameters, model: generated.model });
-        if (quote.resource === 'anlas') fixedRemaining -= quote.amount;
+        if (quote.resource === 'anlas') {
+          fixedRemaining -= quote.amount;
+        }
       }
-      if (generations === 1 && holdFirst) await releaseFirst.promise;
+      if (generations === 1 && holdFirst) {
+        await releaseFirst.promise;
+      }
       const stream = req.url.endsWith('-stream');
       const held = nextGeneration;
       nextGeneration = undefined;
@@ -543,16 +559,20 @@ async function fixture(
       const encoded = req.url === '/ai/encode-vibe';
       const image =
         req.url === '/ai/upscale' || generated.parameters?.image_format === 'webp' ? webp : png;
-      if (!res.headersSent)
-        res.writeHead(200, {
-          'content-type':
-            stream || encoded
-              ? 'application/octet-stream'
-              : image === webp
-                ? 'image/webp'
-                : 'image/png',
-        });
-      res.end(encoded ? vibe : stream ? nativeImagesMsgpack([image]) : image);
+      if (!res.headersSent) {
+        let contentType = 'application/octet-stream';
+        if (!stream && !encoded) {
+          contentType = image === webp ? 'image/webp' : 'image/png';
+        }
+        res.writeHead(200, { 'content-type': contentType });
+      }
+      let responseBody = image;
+      if (encoded) {
+        responseBody = vibe;
+      } else if (stream) {
+        responseBody = nativeImagesMsgpack([image]);
+      }
+      res.end(responseBody);
     } else {
       unexpectedUpstream++;
       res.writeHead(500);
@@ -572,7 +592,9 @@ async function fixture(
   // This relay injects a lost internal acknowledgement; it is not the Nuxt gateway under test.
   const relay = http.createServer(async (req, res) => {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
     const body = Buffer.concat(chunks);
     const observation = {
       path: req.url,
@@ -586,7 +608,9 @@ async function fixture(
     const batch = req.method === 'GET' && queryBatch?.paths.has(req.url) ? queryBatch : null;
     if (batch) {
       batch.arrived++;
-      if (batch.arrived === batch.paths.size) batch.open.resolve();
+      if (batch.arrived === batch.paths.size) {
+        batch.open.resolve();
+      }
       await batch.open.promise;
     }
     const forwarded = http.request(
@@ -636,7 +660,9 @@ async function fixture(
     });
     forwarded.once('finish', () => {
       observation.forwardedAt = performance.now();
-      if (batch && ++batch.forwarded === batch.paths.size) queryBatch = null;
+      if (batch && ++batch.forwarded === batch.paths.size) {
+        queryBatch = null;
+      }
     });
     res.once('close', () => forwarded.destroy());
     forwarded.end(body);
@@ -684,8 +710,12 @@ globalThis.fetch = (input, options) => {
     const redacted = () =>
       secrets.reduce((text, secret) => text.replaceAll(secret, '[redacted]'), output);
     const stop = async (signal = 'SIGKILL') => {
-      if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-      if (exited) return await exited;
+      if (child?.exitCode === null && child?.signalCode === null) {
+        child.kill(signal);
+      }
+      if (exited) {
+        return await exited;
+      }
     };
     const start = async (ready, envChanges = {}) => {
       output = '';
@@ -706,7 +736,9 @@ globalThis.fetch = (input, options) => {
       );
       exited = once(child, 'exit');
       child.on('message', (message) => {
-        if (message.point === 'file_sync') fileSynced = true;
+        if (message.point === 'file_sync') {
+          fileSynced = true;
+        }
       });
       const record = (chunk) => {
         output = (output + chunk.toString()).slice(-12000);
@@ -715,8 +747,9 @@ globalThis.fetch = (input, options) => {
       child.stderr.on('data', record);
       await until(
         async () => {
-          if (child.exitCode !== null || child.signalCode !== null)
+          if (child.exitCode !== null || child.signalCode !== null) {
             throw new Error(label + ' exited before ready: ' + redacted());
+          }
           return ready(output);
         },
         20000,
@@ -770,26 +803,35 @@ globalThis.fetch = (input, options) => {
     });
   t.after(async () => {
     releaseFirst.resolve();
-    for (const held of heldGenerations) held.resolve();
+    for (const held of heldGenerations) {
+      held.resolve();
+    }
     discordState.gate?.resolve();
     queryBatch?.open.resolve();
-    for (const child of children.slice().reverse()) await child.stop();
+    for (const child of children.slice().reverse()) {
+      await child.stop();
+    }
     for (const server of [relay, upstream]) {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
     audit.close();
-    if (!t.passed) for (const child of children) t.diagnostic(child.output());
+    if (!t.passed) {
+      for (const child of children) {
+        t.diagnostic(child.output());
+      }
+    }
   });
   await executor.start((output) => output.includes('Nai2API listening'));
   await startNuxt();
   const render = await call(nuxtBase, '/');
   assert.match(render.body.toString(), /__NUXT_DATA__/);
-  for (const secret of secrets)
+  for (const secret of secrets) {
     assert.ok(
       !render.body.includes(Buffer.from(secret)),
       'SSR must not serialize internal credentials',
     );
+  }
   const request = (route, { member = 0, headers = {}, ...options } = {}) =>
     call(nuxtBase, route, {
       ...options,
@@ -800,7 +842,9 @@ globalThis.fetch = (input, options) => {
     assert.equal(unexpectedUpstream, 0);
     assert.equal(leakedInternalHeader, false);
     assert.equal(wrongUpstreamAuth, false);
-    for (const child of children) assert.doesNotMatch(child.output(), /External fetch blocked/);
+    for (const child of children) {
+      assert.doesNotMatch(child.output(), /External fetch blocked/);
+    }
   };
   const cookie = (member) => 'nai_member_session=' + sessions[member].token;
   const revoke = (member) =>
@@ -879,7 +923,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       inside && !inside.startsWith('..') && !path.isAbsolute(inside),
       'only an isolated Nuxt test build may be removed',
     );
-    for (const teardown of ctx.teardown || []) await teardown();
+    for (const teardown of ctx.teardown || []) {
+      await teardown();
+    }
   });
   await loadFixture();
   await buildFixture();
@@ -915,7 +961,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
           const retired = await f.request(route, { method });
           assert.equal(retired.status, 404, `${method} ${route}`);
           assert.equal(retired.headers.location, undefined, `${method} ${route}`);
-          if (method === 'HEAD') assert.equal(retired.body.length, 0);
+          if (method === 'HEAD') {
+            assert.equal(retired.body.length, 0);
+          }
         }
       }
       const first = json(
@@ -1142,8 +1190,11 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
           'ledger',
         ].map((table) => f.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
         const current = { counts, charge, imageId: saved.imageId };
-        if (settledState) assert.deepEqual(current, settledState);
-        else settledState = current;
+        if (settledState) {
+          assert.deepEqual(current, settledState);
+        } else {
+          settledState = current;
+        }
         assert.equal(f.generations(), 1);
         f.checkStorage();
         await f.executor.stop();
@@ -1332,18 +1383,22 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         10000,
         'query ownership sample did not finish',
       );
-      for (const route of [...routes, '/api/member/key'])
+      for (const route of [...routes, '/api/member/key']) {
         assert.ok(
           f.observations.some((item) => item.path === route),
           'formal Nuxt route must reach executor: ' + route,
         );
+      }
       for (const observation of f.observations) {
-        if (!observation.response) continue;
-        for (const secret of f.forbiddenResponseSecrets)
+        if (!observation.response) {
+          continue;
+        }
+        for (const secret of f.forbiddenResponseSecrets) {
           assert.ok(
             !observation.response.includes(Buffer.from(secret)),
             'executor response must not expose upstream/Discord credentials',
           );
+        }
       }
       assert.equal(f.discordState.refreshTokens.length, 1);
       assert.equal(f.generations(), 1);
@@ -1547,14 +1602,16 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         (await f.request('/api/member/me', { headers: { cookie: ownerCookie } })).status,
         401,
       );
-      for (const observation of f.observations)
+      for (const observation of f.observations) {
         if (observation.response) {
-          for (const secret of f.forbiddenResponseSecrets)
+          for (const secret of f.forbiddenResponseSecrets) {
             assert.ok(
               !observation.response.includes(Buffer.from(secret)),
               'OAuth response must not disclose grant credentials',
             );
+          }
         }
+      }
       assert.equal(f.generations(), 0);
       f.checkStorage();
     },
@@ -1763,7 +1820,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assert.equal(added.enabled, false);
       assert.notEqual(added.id, accountId);
       assert.equal(f.audit.prepare('SELECT COUNT(*) AS n FROM accounts').get().n, 2);
-      for (const observation of f.observations)
+      for (const observation of f.observations) {
         if (observation.response) {
           // This existing private admin response explicitly reveals PST; owner and public DTOs never do.
           const permittedPrivateQuota =
@@ -1772,13 +1829,16 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
             observation.headers.host === adminHeaders.host &&
             observation.headers['x-admin-token'] === f.adminToken;
           for (const secret of f.forbiddenResponseSecrets) {
-            if (permittedPrivateQuota && secret === f.upstreamToken) continue;
+            if (permittedPrivateQuota && secret === f.upstreamToken) {
+              continue;
+            }
             assert.ok(
               !observation.response.includes(Buffer.from(secret)),
               'management response must not leak internal/upstream credentials',
             );
           }
         }
+      }
       assert.equal(f.generations(), 0);
       f.checkStorage();
     },
@@ -1899,7 +1959,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
           assert.equal(events[0].event_type, 'final');
           assert.equal(events[0].samp_ix, 0);
           assert.deepEqual(Buffer.from(events[0].image), webp);
-        } else assertZip(response, 200, webp);
+        } else {
+          assertZip(response, 200, webp);
+        }
       }
       assert.equal(f.generations(), 1);
       assert.equal(f.jobs().length, 1);
@@ -1922,11 +1984,13 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         assert.equal(response.headers['x-nai-image-count'], '1');
         assert.equal(response.headers['x-nai-partial'], 'false');
         assert.match(response.headers.vary, /Accept/i);
-        if (asJson)
+        if (asJson) {
           assert.deepEqual(json(response, 200).images, [
             { image: webp.toString('base64'), index: 0, seed },
           ]);
-        else assertZip(response, 200, webp);
+        } else {
+          assertZip(response, 200, webp);
+        }
       }
       for (const [stream, accept] of [
         ['sse', 'text/event-stream'],
@@ -2284,8 +2348,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       assert.equal(f.generations(), 2);
       for (const generation of f.upstreamCalls) {
         assert.equal(generation.body.parameters.image, referencePng.toString('base64'));
-        for (const key of ['confirmation', 'normalizationContext', 'clientContract', 'operation'])
+        for (const key of ['confirmation', 'normalizationContext', 'clientContract', 'operation']) {
           assert.equal(Object.hasOwn(generation.body, key), false);
+        }
       }
       assert.equal(
         f.observations.length,
@@ -2433,8 +2498,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       for (const [route, options] of [
         ['/api/requests/' + queued.requestId, { member: 2 }],
         ['/api/requests/' + queued.requestId + '/cancel', { member: 2, body: {} }],
-      ])
+      ]) {
         assert.equal((await f.request(route, options)).status, 404);
+      }
       assert.equal(
         (
           await call(f.nuxtBase, memberRoute + '/cancel', {
@@ -2578,7 +2644,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
         const streaming = interrupt === 'client-close';
         const input = nativeBody('synthetic lost synchronous response ' + interrupt),
           held = f.holdNext(streaming);
-        if (streaming) Object.assign(input.parameters, { width: 1536, stream: 'sse' });
+        if (streaming) {
+          Object.assign(input.parameters, { width: 1536, stream: 'sse' });
+        }
         let received,
           buffered = Buffer.alloc(0);
         const frames = [];
@@ -2599,7 +2667,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
             received = response;
             response.on('error', () => {});
             response.on('data', (chunk) => {
-              if (!streaming) return;
+              if (!streaming) {
+                return;
+              }
               buffered = Buffer.concat([buffered, chunk]);
               for (let at; (at = buffered.indexOf('\n\n')) !== -1;) {
                 const end = at + 2;
@@ -2645,9 +2715,14 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
               .get(accepted.requestId).payload,
           );
           assert.equal(Object.hasOwn(payload.nativeParameters, 'stream'), false);
-        } else assert.equal(received, undefined);
-        if (interrupt === 'nuxt-kill') await f.nuxt.stop();
-        else pending.destroy();
+        } else {
+          assert.equal(received, undefined);
+        }
+        if (interrupt === 'nuxt-kill') {
+          await f.nuxt.stop();
+        } else {
+          pending.destroy();
+        }
         assert.equal(f.executor.child().pid, executorPid);
         assert.equal(f.executor.child().exitCode, null);
         held.resolve();
@@ -2656,7 +2731,9 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
           10000,
           'executor cancelled an accepted task after downstream disconnection',
         );
-        if (interrupt === 'nuxt-kill') await f.startNuxt();
+        if (interrupt === 'nuxt-kill') {
+          await f.startNuxt();
+        }
         const beforeReplay = [
           'jobs',
           'images',

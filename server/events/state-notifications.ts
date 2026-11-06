@@ -71,12 +71,21 @@ export function stateInvalidation(
 ): StateInvalidation | null {
   const business = event.collections?.some((name) => businessCollections.has(name));
   const scopes: StateInvalidation['scopes'] = [];
-  if (resync || event.collections?.some((name) => ['settings', 'accounts', 'jobs'].includes(name)))
+  if (
+    resync ||
+    event.collections?.some((name) => ['settings', 'accounts', 'jobs'].includes(name))
+  ) {
     scopes.push('shared');
-  if (resync || (business && (event.allMembers || event.memberIds?.includes(memberId))))
+  }
+  if (resync || (business && (event.allMembers || event.memberIds?.includes(memberId)))) {
     scopes.push('member');
-  if (owner && (resync || business)) scopes.push('owner');
-  if (!scopes.length) return null;
+  }
+  if (owner && (resync || business)) {
+    scopes.push('owner');
+  }
+  if (!scopes.length) {
+    return null;
+  }
   const { from, to } = activityRange();
   const activityDates = [
     ...new Set(
@@ -100,7 +109,9 @@ export function stateInvalidation(
 
 export function stateEventsFor(store: EventStore): StateHub {
   const existing = hubs.get(store);
-  if (existing) return existing;
+  if (existing) {
+    return existing;
+  }
   const bootId = randomBytes(12).toString('hex'),
     listeners = new Map<StateListener, (() => void) | undefined>();
   let version = 0,
@@ -111,7 +122,9 @@ export function stateEventsFor(store: EventStore): StateHub {
     firstAt: number;
   const flush = () => {
     timer = undefined;
-    if (closed || !pending) return;
+    if (closed || !pending) {
+      return;
+    }
     updatedAt = new Date().toISOString();
     const event = { ...pending, bootId, version: ++version, updatedAt };
     pending = undefined;
@@ -122,15 +135,21 @@ export function stateEventsFor(store: EventStore): StateHub {
     }
   };
   const commit = (event: StateEvent) => {
-    if (closed) return;
-    if (!pending) firstAt = Date.now();
+    if (closed) {
+      return;
+    }
+    if (!pending) {
+      firstAt = Date.now();
+    }
     pending = mergeStateEvents(pending, event);
     clearTimeout(timer);
     timer = setTimeout(flush, Math.max(0, Math.min(200, firstAt + 1000 - Date.now())));
     timer.unref?.();
   };
   const closeSubscriptions = () => {
-    if (closed) return;
+    if (closed) {
+      return;
+    }
     closed = true;
     clearTimeout(timer);
     pending = undefined;

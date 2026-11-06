@@ -136,7 +136,9 @@ test('并发同键在原串行 update 中重查后只写一份映射、父子意
     return store.update(
       (db) => {
         const existing = store.readGenerationIdempotency('member-a', 'generate', 'a'.repeat(64));
-        if (existing) return existing.job_id;
+        if (existing) {
+          return existing.job_id;
+        }
         inserted = true;
         db.jobs.push({
           id: 'job',

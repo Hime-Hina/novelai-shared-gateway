@@ -60,7 +60,9 @@ function png(width = 128, height = 128, noise = false) {
   const rows = Buffer.alloc((width * 4 + 1) * height);
   if (noise) {
     randomFillSync(rows);
-    for (let row = 0; row < height; row++) rows[row * (width * 4 + 1)] = 0;
+    for (let row = 0; row < height; row++) {
+      rows[row * (width * 4 + 1)] = 0;
+    }
   }
   return Buffer.concat([
     Buffer.from('89504e470d0a1a0a', 'hex'),
@@ -136,8 +138,9 @@ async function fixture(t) {
   await store.write(seed);
   await store.enableEventAuthority();
   const sessions = {};
-  for (const user of store.db.users)
+  for (const user of store.db.users) {
     sessions[user.id] = await createMemberSession(store, user, env);
+  }
   const budget = createGenerationPayloadBudget(() => store.activeGenerationPayloadBytes()),
     imageStorage = new ImageStorage(dataDir, null, (id) => store.findImage(id)),
     previews = new JobPreviews();
@@ -198,7 +201,9 @@ async function fixture(t) {
   const origin = `http://127.0.0.1:${server.address().port}`;
   const activeStreams = new Set();
   t.after(async () => {
-    for (const stream of activeStreams) await stream.close();
+    for (const stream of activeStreams) {
+      await stream.close();
+    }
     previews.closeSubscriptions();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
@@ -261,18 +266,21 @@ async function fixture(t) {
       ended = false;
     const notify = (item) => {
       events.push(item);
-      for (const waiter of [...waiters])
+      for (const waiter of [...waiters]) {
         if (waiter.type === item.type) {
           waiters.splice(waiters.indexOf(waiter), 1);
           clearTimeout(waiter.timer);
           waiter.resolve(item);
         }
+      }
     };
     const pump = (async () => {
       try {
         while (true) {
           const next = await reader.read();
-          if (next.done) break;
+          if (next.done) {
+            break;
+          }
           pending += decoder.decode(next.value, { stream: true });
           let boundary;
           while ((boundary = pending.indexOf('\n\n')) >= 0) {
@@ -286,11 +294,15 @@ async function fixture(t) {
                 .split('\n')
                 .find((line) => line.startsWith('data: '))
                 ?.slice(6);
-            if (type && data) notify({ type, data: JSON.parse(data) });
+            if (type && data) {
+              notify({ type, data: JSON.parse(data) });
+            }
           }
         }
       } catch (error) {
-        if (error.name !== 'AbortError') throw error;
+        if (error.name !== 'AbortError') {
+          throw error;
+        }
       } finally {
         ended = true;
       }
@@ -304,7 +316,9 @@ async function fixture(t) {
       },
       wait(type, timeout = 3000) {
         const found = events.find((event) => event.type === type);
-        if (found) return Promise.resolve(found);
+        if (found) {
+          return Promise.resolve(found);
+        }
         return new Promise((resolve, reject) => {
           const waiter = {
             type,
@@ -323,7 +337,9 @@ async function fixture(t) {
         abort.abort();
         await pump;
         activeStreams.delete(stream);
-        for (const waiter of waiters.splice(0)) clearTimeout(waiter.timer);
+        for (const waiter of waiters.splice(0)) {
+          clearTimeout(waiter.timer);
+        }
       },
     };
     activeStreams.add(stream);
@@ -356,7 +372,9 @@ async function fixture(t) {
     const imageId = `image-${requestId}`,
       file = `images/${imageId}.png`;
     await mkdir(path.join(dataDir, 'images'), { recursive: true });
-    if (!failed || late) await writeFile(path.join(dataDir, file), bytes);
+    if (!failed || late) {
+      await writeFile(path.join(dataDir, file), bytes);
+    }
     return store.update(
       (db) => {
         const job = db.jobs.find((job) => job.requestId === requestId),
@@ -382,8 +400,9 @@ async function fixture(t) {
           };
           db.images.push(artifact);
           job.imageId = imageId;
-          if (late) recordRecoveredGeneration(db, job, imageId, now);
-          else {
+          if (late) {
+            recordRecoveredGeneration(db, job, imageId, now);
+          } else {
             settleFairQuota(db, job, true, now);
             job.status = 'done';
             job.completedAt = job.updatedAt;
@@ -500,8 +519,9 @@ test('quota outages reject new member intents while original replay, input and s
     publicErrorMessage,
     logger: { log() {}, error() {} },
     fetchQuota: async () => {
-      if (failure)
+      if (failure) {
         throw Object.assign(new Error('SYNTHETIC_PRIVATE_MEMBER_QUOTA'), { upstreamStatus: 503 });
+      }
       const value = {
         tier: 3,
         subscriptionActive: true,
@@ -512,7 +532,9 @@ test('quota outages reject new member intents while original replay, input and s
         v5UsageIsNegative: false,
         v5UsageTimeUntilNextPercent: 0,
       };
-      if (missing) value[missing] = null;
+      if (missing) {
+        value[missing] = null;
+      }
       return value;
     },
   });
@@ -797,12 +819,13 @@ test('HTTP input assets and result states enforce ownership including owner and 
   const asset = await f.raw(ownInput.body.assets[0].url, { member: 'b' });
   assert.equal(asset.status, 200);
   assert.deepEqual(Buffer.from(await asset.arrayBuffer()), image);
-  for (const suffix of ['/input', '/inputs/parameters.mask', '/events'])
+  for (const suffix of ['/input', '/inputs/parameters.mask', '/events']) {
     assert.equal(
       (await f.json(`/api/member/requests/${requestId}${suffix}`)).status,
       404,
       'owner cannot read another member input',
     );
+  }
   assert.equal((await f.json(`/api/member/jobs/${jobId}/content`)).status, 404);
   assert.equal(
     (await f.json(`/api/member/jobs/${jobId}/content`, { member: 'b' })).body.code,
@@ -905,7 +928,9 @@ test('SSE closes on real session revocation or client disconnect without cancell
     callbacks = [],
     original = globalThis.setInterval;
   t.mock.method(globalThis, 'setInterval', (callback, milliseconds, ...args) => {
-    if (milliseconds === 15000) callbacks.push(callback);
+    if (milliseconds === 15000) {
+      callbacks.push(callback);
+    }
     return original(callback, milliseconds, ...args);
   });
   const stream = await f.openEvents(requestId);
@@ -966,7 +991,9 @@ test('disconnects during initial ownership reads do not consume SSE slots or tim
   let enter, release, gate;
   const intervals = [];
   t.mock.method(globalThis, 'setInterval', (callback, milliseconds, ...args) => {
-    if (milliseconds === 15000) intervals.push(callback);
+    if (milliseconds === 15000) {
+      intervals.push(callback);
+    }
     return originalInterval(callback, milliseconds, ...args);
   });
   t.mock.method(f.store, 'readCollections', async (...args) => {
@@ -1012,7 +1039,9 @@ test('temporary membership service failure ends SSE with error without claiming 
   const originalInterval = globalThis.setInterval,
     callbacks = [];
   t.mock.method(globalThis, 'setInterval', (callback, milliseconds, ...args) => {
-    if (milliseconds === 15000) callbacks.push(callback);
+    if (milliseconds === 15000) {
+      callbacks.push(callback);
+    }
     return originalInterval(callback, milliseconds, ...args);
   });
   const stream = await f.openEvents(requestId);
@@ -1046,7 +1075,7 @@ test('executor shutdown closes member preview subscriptions before waiting for H
   assert.equal(f.store.readGenerationRequestState(requestId, 'a').jobs[0].status, 'queued');
 });
 
-for (const waitingOn of ['ownership', 'discord-membership'])
+for (const waitingOn of ['ownership', 'discord-membership']) {
   test(`shutdown while awaiting ${waitingOn} refuses a late SSE subscription`, async (t) => {
     const f = await fixture(t),
       accepted = await f.submit(),
@@ -1099,7 +1128,9 @@ for (const waitingOn of ['ownership', 'discord-membership'])
       initialCommitListeners = f.store.events.listenerCount('commit'),
       initialCloseListeners = f.store.events.listenerCount('close');
     t.mock.method(globalThis, 'setInterval', (callback, milliseconds, ...args) => {
-      if (milliseconds === 15000) intervals.push(callback);
+      if (milliseconds === 15000) {
+        intervals.push(callback);
+      }
       return originalInterval(callback, milliseconds, ...args);
     });
     const opening = f.raw(`/api/member/requests/${requestId}/events`);
@@ -1117,3 +1148,4 @@ for (const waitingOn of ['ownership', 'discord-membership'])
     assert.equal(f.store.events.listenerCount('close'), initialCloseListeners);
     assert.equal(f.store.readGenerationRequestState(requestId, 'a').jobs[0].status, 'queued');
   });
+}

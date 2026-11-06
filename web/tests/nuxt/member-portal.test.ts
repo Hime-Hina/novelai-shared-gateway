@@ -31,7 +31,9 @@ class NetworkStream {
     this.handlers.set(name, [...(this.handlers.get(name) || []), listener]);
   }
   emit(name: string, data: unknown = {}) {
-    for (const listener of this.handlers.get(name) || []) listener({ data: JSON.stringify(data) });
+    for (const listener of this.handlers.get(name) || []) {
+      listener({ data: JSON.stringify(data) });
+    }
   }
 }
 
@@ -154,7 +156,9 @@ beforeEach(() => {
         init,
         done: false,
         reply(status, body) {
-          if (request.done) throw new Error('Response already delivered');
+          if (request.done) {
+            throw new Error('Response already delivered');
+          }
           request.done = true;
           result.resolve(
             new Response(JSON.stringify(body), {
@@ -174,8 +178,11 @@ afterEach(async () => {
   wrapper?.unmount();
   wrapper = undefined;
   publicReply.resolve(options);
-  for (const request of requests)
-    if (!request.done) request.reply(503, { error: 'fixture closed' });
+  for (const request of requests) {
+    if (!request.done) {
+      request.reply(503, { error: 'fixture closed' });
+    }
+  }
   await settle();
   useNuxtApp().runWithContext(() => clearNuxtData('member-profile'));
   vi.unstubAllGlobals();
@@ -251,8 +258,9 @@ describe('真实 Nuxt useAsyncData 成员会话', () => {
         signal = portal.activityInvalidation,
         version = signal.version;
       expect(signal.dates).toEqual(['2026-10-17']);
-      if (via === 'SSE过期') stream.emit('auth-expired');
-      else {
+      if (via === 'SSE过期') {
+        stream.emit('auth-expired');
+      } else {
         const logout = portal.logout();
         await settle();
         const request = pending('logout');

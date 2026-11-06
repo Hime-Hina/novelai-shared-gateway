@@ -133,18 +133,16 @@ async function editFallback(wrapper: Wrapper, checked: boolean) {
 
 describe('ManagementUpstream', () => {
   it('summary中的PST、代理凭据和原始错误不进入DOM或PST输入', async () => {
-    const transport = vi
-      .fn<Transport>()
-      .mockResolvedValue({
-        accounts: [
-          {
-            ...account,
-            token: 'pst-synthetic-secret',
-            proxyUrl: 'http://secret-user:secret-password@proxy.invalid',
-            quotaError: 'raw-error-with-secret',
-          },
-        ],
-      });
+    const transport = vi.fn<Transport>().mockResolvedValue({
+      accounts: [
+        {
+          ...account,
+          token: 'pst-synthetic-secret',
+          proxyUrl: 'http://secret-user:secret-password@proxy.invalid',
+          quotaError: 'raw-error-with-secret',
+        },
+      ],
+    });
     const { wrapper } = await fixture(transport);
     expect(wrapper.get('#upstreamStatus').text()).toContain('已暂停 · Opus');
     expect(wrapper.get('#upstreamQuota').text()).toContain('V5 90% · 订阅 1,000 · 购买 100');
@@ -154,8 +152,9 @@ describe('ManagementUpstream', () => {
       'secret-user',
       'secret-password',
       'raw-error-with-secret',
-    ])
+    ]) {
       expect(wrapper.html()).not.toContain(secret);
+    }
     expect(pstValue(wrapper)).toBe('');
   });
 
@@ -187,9 +186,13 @@ describe('ManagementUpstream', () => {
     'PST已写入但额度查询%s，清旧输入并提示勿重复提交',
     async (failure) => {
       const transport = vi.fn<Transport>().mockImplementation(async (path) => {
-        if (path === 'summary') return { accounts: [account] };
+        if (path === 'summary') {
+          return { accounts: [account] };
+        }
         if (path === 'accounts/quota') {
-          if (failure === 'rejected') throw new Error('synthetic network failure');
+          if (failure === 'rejected') {
+            throw new Error('synthetic network failure');
+          }
           return { failed: 1 };
         }
         return {};
@@ -219,7 +222,9 @@ describe('ManagementUpstream', () => {
   it('PST保存期间的新输入不被旧请求完成清除', async () => {
     const saving = deferred<unknown>();
     const transport = vi.fn<Transport>().mockImplementation(async (path, _body, method) => {
-      if (path === 'summary') return { accounts: [account] };
+      if (path === 'summary') {
+        return { accounts: [account] };
+      }
       return method === 'PATCH' ? saving.promise : { failed: 0 };
     });
     const { wrapper } = await fixture(transport);

@@ -517,8 +517,9 @@ test('confirmation uses canonical decimal strings, verifies each resource and in
     quote = quoteMemberGeneration(db, db.users[0], normalized, { now: NOW }),
     original = confirmation(quote);
   const equivalent = structuredClone(original);
-  for (const resource of Object.keys(equivalent.maxTotal))
+  for (const resource of Object.keys(equivalent.maxTotal)) {
     equivalent.maxTotal[resource] = equivalent.maxPerJob[resource] = '0.000';
+  }
   assert.equal(
     memberGenerationIntentFingerprint(normalized, original),
     memberGenerationIntentFingerprint(normalized, equivalent),

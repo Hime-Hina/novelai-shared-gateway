@@ -71,16 +71,22 @@ async function* streamEvents(response) {
       while (pending.length >= 4) {
         if (sse) {
           const end = pending.indexOf('\n\n');
-          if (end < 0) break;
+          if (end < 0) {
+            break;
+          }
           const [event] = readNativeSseEvents(pending.subarray(0, end + 2));
           pending = pending.subarray(end + 2);
-          if (event.image) event.image = Buffer.from(event.image, 'base64');
+          if (event.image) {
+            event.image = Buffer.from(event.image, 'base64');
+          }
           yield event;
           continue;
         }
         const length = pending.readUInt32BE(0);
         assert.ok(length > 0 && length <= 64 * 1024 * 1024, '无效帧长度');
-        if (pending.length < length + 4) break;
+        if (pending.length < length + 4) {
+          break;
+        }
         const [event] = readNativeEvents(pending.subarray(0, length + 4));
         pending = pending.subarray(length + 4);
         yield event;
@@ -225,7 +231,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       return;
     }
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     // 真正收到上游调用时就检查派发证据已提交，不能只在失败后补写一个看似完整的历史。
     const running = auditReader
@@ -279,7 +287,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const delay = holdNextMs;
     holdNextMs = 0;
     call.holdMs = delay;
-    if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (delay) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
     call.failAtOnResponse = failAt;
     if (calls.length === failAt) {
       call.responseStatus = failStatus;
@@ -339,11 +349,16 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         parameters: payload.parameters,
       }),
     );
-    if (cost.resource === 'anlas') officialFixed -= cost.amount;
-    if (cost.resource === 'v5') officialV5 -= cost.amount;
+    if (cost.resource === 'anlas') {
+      officialFixed -= cost.amount;
+    }
+    if (cost.resource === 'v5') {
+      officialV5 -= cost.amount;
+    }
     call.responseStatus = 200;
-    if (!res.headersSent)
+    if (!res.headersSent) {
       res.writeHead(200, { 'content-type': stream ? 'application/octet-stream' : 'image/png' });
+    }
     const image = payload.parameters.seed === 9001 ? largePng : png;
     res.end(stream ? nativeImagesMsgpack([image]) : image);
   });
@@ -382,11 +397,15 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   child.stderr.on('data', record);
   const stopped = once(child, 'exit');
   const stop = async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+    }
     await stopped;
   };
   t.after(async () => {
-    for (const gate of previewGates.values()) gate.release();
+    for (const gate of previewGates.values()) {
+      gate.release();
+    }
     await stop();
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
@@ -418,7 +437,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       upstreamToken,
       ...credentials.flatMap((member) => [member.api_key, member.password]),
     ]) {
-      if (secret) text = text.replaceAll(secret, '[redacted]');
+      if (secret) {
+        text = text.replaceAll(secret, '[redacted]');
+      }
     }
     return text
       .replace(/\b(?:STA1N-|pst-)[A-Za-z0-9_-]+/g, '[redacted]')
@@ -440,22 +461,20 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
           holdNextMs,
           malformedNext,
         },
-        calls: calls
-          .slice(-16)
-          .map((call) => ({
-            pathname: call.pathname,
-            seed: call.payload.parameters.seed,
-            scenario: call.scenario,
-            startedAt: call.startedAt,
-            finishedAt: call.finishedAt,
-            closedAt: call.closedAt,
-            responseFinished: call.responseFinished,
-            responseStatus: call.responseStatus,
-            holdMs: call.holdMs,
-            failAtOnReceive: call.failAtOnReceive,
-            failAtOnResponse: call.failAtOnResponse,
-            malformed: call.malformed,
-          })),
+        calls: calls.slice(-16).map((call) => ({
+          pathname: call.pathname,
+          seed: call.payload.parameters.seed,
+          scenario: call.scenario,
+          startedAt: call.startedAt,
+          finishedAt: call.finishedAt,
+          closedAt: call.closedAt,
+          responseFinished: call.responseFinished,
+          responseStatus: call.responseStatus,
+          holdMs: call.holdMs,
+          failAtOnReceive: call.failAtOnReceive,
+          failAtOnResponse: call.failAtOnResponse,
+          malformed: call.malformed,
+        })),
         jobs: auditReader
           .prepare('SELECT data FROM jobs ORDER BY order_value DESC LIMIT 24')
           .all()
@@ -599,16 +618,22 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         assert.equal(response.status, 404, `${method} ${pathname}`);
         assert.equal(response.headers.get('location'), null, `${method} ${pathname}`);
         assert.match(response.headers.get('content-type'), /application\/json/);
-        if (method === 'HEAD') assert.equal(await response.text(), '');
-        else assert.deepEqual(await response.json(), { error: 'not found.' });
+        if (method === 'HEAD') {
+          assert.equal(await response.text(), '');
+        } else {
+          assert.deepEqual(await response.json(), { error: 'not found.' });
+        }
       }
     }
     for (const method of ['GET', 'HEAD']) {
       const health = await fetchLocal('/api/health', { method });
       assert.equal(health.status, 200);
       assert.match(health.headers.get('content-type'), /application\/json/);
-      if (method === 'HEAD') assert.equal(await health.text(), '');
-      else assert.equal((await health.json()).ok, true);
+      if (method === 'HEAD') {
+        assert.equal(await health.text(), '');
+      } else {
+        assert.equal((await health.json()).ok, true);
+      }
     }
     assert.equal(calls.length, 0);
   });
@@ -702,7 +727,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('路径、鉴权与跨域校验在生图前完成，私有站点业务不存在', async () => {
-    for (const prefix of ['/ai/', '/v1/ai/'])
+    for (const prefix of ['/ai/', '/v1/ai/']) {
       for (const operation of [
         'generate-image',
         'generate-image-stream',
@@ -728,6 +753,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
           });
         }
       }
+    }
     for (const pathname of ['/ai/generate-image-stream', '/v1/ai/generate-image-stream']) {
       const invalidStream = await post(
         pathname,
@@ -738,8 +764,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     }
     assert.equal(calls.length, 0);
     assert.equal((await fetchLocal('/api/member/owner/summary')).status, 401);
-    for (const pathname of ['/discord', '/auth/discord/callback', '/api/carpool/teams'])
+    for (const pathname of ['/discord', '/auth/discord/callback', '/api/carpool/teams']) {
       assert.equal((await fetchLocal(pathname)).status, 404);
+    }
     const cors = await new Promise((resolve, reject) => {
       const request = http.request(
         new URL('/ai/generate-image-stream', baseUrl),
@@ -865,7 +892,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
           headers: { authorization: `Bearer ${credentials[0].api_key}` },
         })
       ).json();
-      if (['done', 'failed'].includes(result.status)) break;
+      if (['done', 'failed'].includes(result.status)) {
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.equal(result.status, 'done');
@@ -925,18 +954,19 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         ['nai-diffusion-5-full-medium', '/ai/generate-image-stream'],
       ]) {
         const live = model === 'nai-diffusion-5-full';
-        const input = body(
-            model,
-            live
-              ? { seed: 707, stream: undefined }
-              : model.endsWith('-curated')
-                ? { stream: 'sse' }
-                : {},
-          ),
+        let parameters = {};
+        if (live) {
+          parameters = { seed: 707, stream: undefined };
+        } else if (model.endsWith('-curated')) {
+          parameters = { stream: 'sse' };
+        }
+        const input = body(model, parameters),
           before = await quota(),
           other = await quota(1);
         const gate = live ? previewGate(707, 17) : null;
-        if (gate) subtest.after(() => gate.release());
+        if (gate) {
+          subtest.after(() => gate.release());
+        }
         const sse = input.parameters.stream !== 'msgpack';
         const response = await post(pathname, input, credentials[0].api_key, {
           accept: sse ? 'application/msgpack' : 'text/event-stream',
@@ -980,8 +1010,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
           'anlasPurchasedAvailable',
           'anlasReserved',
           'share',
-        ])
+        ]) {
           assert.equal(unchanged[field], other[field], field);
+        }
         assert.equal(calls.at(-1).payload.model, model);
         assert.equal(calls.at(-1).payload.parameters.steps, model.endsWith('-medium') ? 14 : 23);
       }
@@ -1083,8 +1114,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(call.payload.parameters.height, 1024);
     }
     const after = await quota();
-    for (const field of ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'])
+    for (const field of ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable']) {
       assert.equal(after[field], before[field]);
+    }
   });
 
   await t.test(
@@ -1350,8 +1382,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(calls.length - startCount, 2);
       assert.ok(calls[startCount + 1].startedAt - calls[startCount].finishedAt >= 10000);
       const cost = quoteFairRequest(parseNativeImageRequest(body()));
-      for (let member = 0; member < 2; member++)
+      for (let member = 0; member < 2; member++) {
         near(before[member].v5Available - (await quota(member)).v5Available, cost.amount);
+      }
     },
   );
 
@@ -1373,8 +1406,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     holdNextMs = 3000;
     const batch = post('/ai/generate-image-stream', body('nai-diffusion-5-full', { n_samples: 3 }));
     const startedDeadline = Date.now() + 20000;
-    while (calls.length === startCount && Date.now() < startedDeadline)
+    while (calls.length === startCount && Date.now() < startedDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     assert.equal(calls.length, startCount + 1);
     const queued = [];
     const enqueue = (seed) =>
@@ -1495,7 +1529,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         (event) => event.jobId === job.id && event.type === 'generation_loss_suspected',
       );
       assert.equal(refunds.length, job.fairCharge?.status === 'refunded' ? 1 : 0);
-      if (!job.fairCharge || job.status === 'done') assert.equal(losses.length, 0);
+      if (!job.fairCharge || job.status === 'done') {
+        assert.equal(losses.length, 0);
+      }
       if (losses.length) {
         assert.equal(losses.length, 1);
         assert.equal(losses[0].actualConsumed, null);
@@ -1686,7 +1722,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
               headers: { authorization: `Bearer ${credentials[0].api_key}` },
             })
           ).json();
-          if (['done', 'failed'].includes(job.status)) break;
+          if (['done', 'failed'].includes(job.status)) {
+            break;
+          }
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
         assert.equal(job.status, 'done', JSON.stringify(job));

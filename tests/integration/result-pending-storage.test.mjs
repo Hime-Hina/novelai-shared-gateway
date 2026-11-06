@@ -14,8 +14,11 @@ function env(t, name, value) {
   const previous = process.env[name];
   process.env[name] = value;
   t.after(() => {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
   });
 }
 async function open(t, directory) {

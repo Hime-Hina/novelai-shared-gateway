@@ -100,12 +100,19 @@ const empty = () => ({
 });
 function add(total: UsageAccumulator, job: OwnerJobRow): void {
   total.total++;
-  if (['done', 'failed', 'queued', 'pending', 'running'].includes(job.status!))
+  if (['done', 'failed', 'queued', 'pending', 'running'].includes(job.status!)) {
     total[job.status as JobStatus]++;
-  if (job.chargeStatus === 'refunded') total.refunded++;
+  }
+  if (job.chargeStatus === 'refunded') {
+    total.refunded++;
+  }
   if (job.status === 'done' && job.chargeStatus === 'settled') {
-    if (job.resource === 'free') total.free++;
-    if (job.resource === 'v5') total.v5 += Number(job.amount) || 0;
+    if (job.resource === 'free') {
+      total.free++;
+    }
+    if (job.resource === 'v5') {
+      total.v5 += Number(job.amount) || 0;
+    }
     if (job.resource === 'anlas') {
       total.fixed += Number(job.fixed) || 0;
       total.purchased += Number(job.purchased) || 0;
@@ -143,7 +150,9 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
       [models, job.model || 'unknown', job.model || '未知模型'],
       [dates, day(job.createdAt), day(job.createdAt)],
     ] as const) {
-      if (!map.has(key)) map.set(key, { id: key, label, ...empty() });
+      if (!map.has(key)) {
+        map.set(key, { id: key, label, ...empty() });
+      }
       add(map.get(key)!, job);
     }
   }
@@ -204,7 +213,9 @@ export async function ownerOperation(
     { store } = deps;
   if (path === '/statistics' && method === 'GET') {
     const days = Number(url.searchParams.get('days') || 7);
-    if (![0, 1, 7, 30, 365].includes(days)) fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+    if (![0, 1, 7, 30, 365].includes(days)) {
+      fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+    }
     const now = Date.now(),
       since =
         days === 0
@@ -219,14 +230,20 @@ export async function ownerOperation(
       ...summarizeOwnerUsage(await store.readOwnerJobRows(since, new Date(now).toISOString())),
     };
   }
+  // 原回执仍受当前授权约束；命中后不再触发外部额度查询或重新决定账户配置。
   if (command?.domainCommand?.commandId) {
     const prior = await store.update(() => null, { persist: false, ...command });
-    if (prior !== null) return prior;
+    if (prior !== null) {
+      return prior;
+    }
   }
   const account = await store.update((db) => sharedAccount(db), { persist: false });
-  if (path === '/summary' && method === 'GET')
+  if (path === '/summary' && method === 'GET') {
     return { accounts: account ? [safeAccount(account)] : [] };
-  if (!account) fail(409, '尚未确定共享上游账户');
+  }
+  if (!account) {
+    fail(409, '尚未确定共享上游账户');
+  }
   // 成员路由只为写操作提供已解析的 JSON 对象，GET 不读取正文。
   const input = body!;
   if (path === '/accounts/quota' && method === 'POST') {
@@ -235,8 +252,9 @@ export async function ownerOperation(
       !Array.isArray(input.ids) ||
       input.ids.length !== 1 ||
       input.ids[0] !== account.id
-    )
+    ) {
       fail(400, '仅可刷新当前共享账户');
+    }
     const result = await deps.refreshAccountQuotas(
       { ids: [account.id] },
       {
@@ -257,15 +275,17 @@ export async function ownerOperation(
     };
   }
   if (path === '/accounts/' + account.id && method === 'PATCH') {
-    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0]))
+    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
       fail(400, '只允许更新启用状态或 PST');
+    }
     if ('token' in input) {
       if (
         typeof input.token !== 'string' ||
         input.token.length > 4096 ||
         !/^pst-[A-Za-z0-9_-]+$/.test(input.token)
-      )
+      ) {
         fail(400, '请输入完整 PST');
+      }
       return safeAccount(
         await deps.updateAccount(
           account.id,
@@ -274,17 +294,23 @@ export async function ownerOperation(
         ),
       );
     }
-    if (typeof input.enabled !== 'boolean') fail(400, 'enabled 必须为布尔值');
+    if (typeof input.enabled !== 'boolean') {
+      fail(400, 'enabled 必须为布尔值');
+    }
     if (input.enabled) {
       const result = await deps.refreshAccountQuotas({ ids: [account.id] });
       const checked = await store.update((db) => sharedAccount(db), { persist: false });
-      const expiry = Number(checked?.subscriptionExpiresAt),
-        expiresAt =
-          Number.isFinite(expiry) && expiry > 0
-            ? expiry < 1e11
-              ? expiry * 1000
-              : expiry
-            : Date.parse(checked?.subscriptionExpiresAt as string);
+      const expiry = Number(checked?.subscriptionExpiresAt);
+      let expiresAt: number;
+      if (Number.isFinite(expiry) && expiry > 0) {
+        if (expiry < 1e11) {
+          expiresAt = expiry * 1000;
+        } else {
+          expiresAt = expiry;
+        }
+      } else {
+        expiresAt = Date.parse(checked?.subscriptionExpiresAt as string);
+      }
       if (
         result.ok !== 1 ||
         result.failed ||
@@ -293,8 +319,9 @@ export async function ownerOperation(
         checked?.quotaTier !== 3 ||
         checked?.subscriptionActive !== true ||
         (checked.subscriptionExpiresAt && !(expiresAt > Date.now()))
-      )
+      ) {
         fail(409, '未核验到有效 Opus，上游保持暂停');
+      }
     }
     return safeAccount(
       await deps.updateAccount(

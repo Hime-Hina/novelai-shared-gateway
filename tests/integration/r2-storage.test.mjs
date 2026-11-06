@@ -47,18 +47,28 @@ async function fixture(t) {
     );
     calls.push(options.method);
     const key = decodeURIComponent(url.pathname);
-    if (controls.fail) return new Response('unavailable', { status: 503 });
+    if (controls.fail) {
+      return new Response('unavailable', { status: 503 });
+    }
     if (options.method === 'PUT') {
       assert.equal(options.headers['if-none-match'], '*');
       assert.equal(options.headers['x-amz-content-sha256'], digest(options.body));
-      if (objects.has(key)) return new Response('', { status: 412 });
+      if (objects.has(key)) {
+        return new Response('', { status: 412 });
+      }
       objects.set(key, Buffer.from(options.body));
-      if (controls.timeoutAfterPut) throw new Error('synthetic lost response');
+      if (controls.timeoutAfterPut) {
+        throw new Error('synthetic lost response');
+      }
       return new Response(null, { status: 200 });
     }
-    if (!objects.has(key)) return new Response('', { status: 404 });
+    if (!objects.has(key)) {
+      return new Response('', { status: 404 });
+    }
     const bytes = Buffer.from(objects.get(key));
-    if (controls.corrupt) bytes[bytes.length - 1] ^= 1;
+    if (controls.corrupt) {
+      bytes[bytes.length - 1] ^= 1;
+    }
     return new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
   });
   async function seed(id, values = {}) {
@@ -158,11 +168,16 @@ for (const failure of ['upload', 'checksum', 'database']) {
   test(`R2 ${failure} 失败保留本地，容量预留持久化；重试不会覆盖已存在的云端原图`, async (t) => {
     const f = await fixture(t),
       image = await f.seed('img_failure');
-    if (failure === 'upload') f.controls.fail = true;
-    if (failure === 'checksum') f.controls.corrupt = true;
-    if (failure === 'database')
+    if (failure === 'upload') {
+      f.controls.fail = true;
+    }
+    if (failure === 'checksum') {
+      f.controls.corrupt = true;
+    }
+    if (failure === 'database') {
       f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_verified BEFORE INSERT ON images
       WHEN json_extract(NEW.data, '$.r2.verifiedAt') IS NOT NULL BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END`);
+    }
     await assert.rejects(archiveColdImage(f.store, f.remote, () => true, now));
     assert.deepEqual(await readFile(path.join(f.dataDir, image.file)), png);
     assert.equal(f.store.readR2Usage().bytes, png.length);
@@ -170,7 +185,9 @@ for (const failure of ['upload', 'checksum', 'database']) {
     assert.equal(f.store.readR2Usage().errors, 1);
     f.controls.fail = false;
     f.controls.corrupt = false;
-    if (failure === 'database') f.store.sqlite.exec('DROP TRIGGER fail_verified');
+    if (failure === 'database') {
+      f.store.sqlite.exec('DROP TRIGGER fail_verified');
+    }
     assert.equal(await archiveColdImage(f.store, f.remote, () => true, now + 3600001), true);
     assert.equal(f.objects.size, 1);
     assert.deepEqual(await f.storage.read(image), png);
@@ -302,8 +319,9 @@ test('已退出内存缓存的冷图仍可转存，持久顺序与其他图片�
 
 test('冷图筛选复用任务及图片索引，不对每张图片重复扫描全部任务；待恢复两种关联都保留', async (t) => {
   const f = await fixture(t);
-  for (const id of ['img_active', 'img_pending_ref', 'img_pending_result', 'img_ready'])
+  for (const id of ['img_active', 'img_pending_ref', 'img_pending_result', 'img_ready']) {
     await f.seed(id);
+  }
   await f.store.update(
     (db) =>
       db.jobs.push(

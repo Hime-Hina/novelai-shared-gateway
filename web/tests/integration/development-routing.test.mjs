@@ -74,8 +74,11 @@ test(
       'APPDATA',
       'LOCALAPPDATA',
     ]);
-    for (const key of Object.keys(process.env))
-      if (!allowed.has(key.toUpperCase())) delete process.env[key];
+    for (const key of Object.keys(process.env)) {
+      if (!allowed.has(key.toUpperCase())) {
+        delete process.env[key];
+      }
+    }
     const internalToken = `synthetic-development-${randomUUID()}`;
     const observed = [];
     let ctx, buildDir;
@@ -129,7 +132,9 @@ test(
           await rm(target, { recursive: true, force: true });
         }
       } finally {
-        for (const key of Object.keys(process.env)) delete process.env[key];
+        for (const key of Object.keys(process.env)) {
+          delete process.env[key];
+        }
         Object.assign(process.env, savedEnv);
       }
     });
@@ -192,7 +197,9 @@ test(
         const retired = await request(ctx.url, route, method);
         assert.equal(retired.status, 404, `${method} ${route}`);
         assert.equal(retired.headers.location, undefined, `${method} ${route}`);
-        if (method === 'HEAD') assert.equal(retired.body, '');
+        if (method === 'HEAD') {
+          assert.equal(retired.body, '');
+        }
       }
     }
     for (const route of ['/api/member/login-options', '/api/member/me']) {
@@ -248,8 +255,9 @@ test(
       ],
     );
     for (const { headers } of observed) {
-      for (const key of ['host', 'origin', 'cookie', 'authorization'])
+      for (const key of ['host', 'origin', 'cookie', 'authorization']) {
         assert.equal(headers[key], identity[key]);
+      }
       assert.equal(headers['x-executor-token'], internalToken);
       assert.match(headers['x-forwarded-for'], /^198\.51\.100\.18, /);
     }

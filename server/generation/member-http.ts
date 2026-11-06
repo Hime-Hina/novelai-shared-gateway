@@ -51,7 +51,9 @@ const storeStreams = new WeakMap<JsonStore, Set<() => void>>();
 const closingStores = new WeakSet<JsonStore>();
 export function closeMemberGenerationStreams(store: JsonStore): void {
   closingStores.add(store);
-  for (const close of storeStreams.get(store) || []) close();
+  for (const close of storeStreams.get(store) || []) {
+    close();
+  }
 }
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -73,12 +75,16 @@ async function jsonBody(req: MemberRequest) {
     for await (const raw of req) {
       const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
       size += chunk.length;
-      if (size > 32 * 1024 * 1024) fail(413, 'payload_too_large', '生成请求超过 32 MiB。');
+      if (size > 32 * 1024 * 1024) {
+        fail(413, 'payload_too_large', '生成请求超过 32 MiB。');
+      }
       req.generationPayloadClaim?.resize(size);
       chunks.push(chunk);
     }
   } catch (error) {
-    if ((error as { statusCode?: number }).statusCode) throw error;
+    if ((error as { statusCode?: number }).statusCode) {
+      throw error;
+    }
     fail(400, 'invalid_body', '生成请求正文未完整接收。');
   }
   try {
@@ -124,7 +130,9 @@ export function memberGenerationError(error: unknown) {
         ['string', 'number', 'boolean'].includes(typeof value),
     ),
   );
-  if (source.requestId) details.requestId = source.requestId;
+  if (source.requestId) {
+    details.requestId = source.requestId;
+  }
   return {
     statusCode: safeStatus,
     code,
@@ -166,7 +174,9 @@ export function createMemberGenerationHttp(deps: Dependencies) {
       /^\/api\/member\/requests\/([^/]+)\/(events|input|inputs\/([^/]+))$/,
     );
     const contentPath = path.match(/^\/api\/member\/jobs\/([^/]+)\/content$/);
-    if (!path.startsWith(base + '/') && !requestPath && !contentPath) return false;
+    if (!path.startsWith(base + '/') && !requestPath && !contentPath) {
+      return false;
+    }
     try {
       if (path === base + '/capabilities' && req.method === 'GET') {
         const result = await store.update(
@@ -208,10 +218,12 @@ export function createMemberGenerationHttp(deps: Dependencies) {
             return true;
           }
           const input = body as Record<string, unknown> | null;
-          if (!input || !['generate', 'upscale', 'encode-vibe'].includes(String(input.operation)))
+          if (!input || !['generate', 'upscale', 'encode-vibe'].includes(String(input.operation))) {
             fail(422, 'invalid_parameters', '生成操作无效。');
+          }
           const confirmation = parseMemberGenerationConfirmation(input.confirmation);
           let normalized: NormalizedMemberGeneration;
+          // 受理层在同一串行命令内选择首次上下文并校验新提交；重放沿用原授权，不改用当前报价。
           const intent = generationIntent(
             key,
             (context) => {
@@ -238,7 +250,9 @@ export function createMemberGenerationHttp(deps: Dependencies) {
                 const currentQuote = quote(db, member, normalized!, now);
                 assertMemberGenerationConfirmation(confirmation, currentQuote);
                 const rejection = currentQuote.admission.reasons[0];
-                if (rejection) fail(rejection.statusCode, rejection.code, rejection.message);
+                if (rejection) {
+                  fail(rejection.statusCode, rejection.code, rejection.message);
+                }
               },
             },
           );
@@ -306,17 +320,22 @@ export function createMemberGenerationHttp(deps: Dependencies) {
                 ?.jobs.some((child) => child.id === job.id)
             : (job.memberId || job.generationAttempt?.memberId || job.fairCharge?.userId) ===
               user.id);
-        if (!job || !owned) fail(404, 'job_not_found', '任务不存在。');
+        if (!job || !owned) {
+          fail(404, 'job_not_found', '任务不存在。');
+        }
         if (!job.imageId) {
-          if (['pending', 'queued', 'running'].includes(job.status!))
+          if (['pending', 'queued', 'running'].includes(job.status!)) {
             fail(409, 'result_not_ready', '结果尚未完成。');
-          if (job.status === 'done' || job.lateResultAvailable)
+          }
+          if (job.status === 'done' || job.lateResultAvailable) {
             fail(410, 'result_unavailable', '原结果已不可领取。');
+          }
           fail(409, 'generation_failed', '任务未产生可领取的结果。');
         }
         const image = await store.findImage(job.imageId);
-        if (!image || image.token !== job.userToken || image.mimeType === 'image/svg+xml')
+        if (!image || image.token !== job.userToken || image.mimeType === 'image/svg+xml') {
           fail(410, 'result_unavailable', '原结果已不可领取。');
+        }
         let bytes: Buffer;
         try {
           bytes = await deps.imageStorage.read(image);
@@ -328,11 +347,13 @@ export function createMemberGenerationHttp(deps: Dependencies) {
           if (
             (image.sha256 && image.sha256 !== verified.sha256) ||
             (image.byteLength !== undefined && image.byteLength !== verified.byteLength)
-          )
+          ) {
             throw new Error('stored content mismatch');
+          }
         } catch (error) {
-          if ((error as { statusCode?: number }).statusCode === 503)
+          if ((error as { statusCode?: number }).statusCode === 503) {
             fail(503, 'content_temporarily_unavailable', '结果存储暂不可用，请稍后重试。');
+          }
           fail(410, 'result_unavailable', '原结果已不可领取。');
         }
         res.writeHead(200, {
@@ -366,13 +387,18 @@ async function streamRequest(
   snapshot: () => Promise<ReturnType<typeof publicGenerationRequest>>,
 ) {
   // Authentication/ownership reads above may finish after the client already left.
-  if (res.destroyed || res.writableEnded) return;
-  if (closingStores.has(deps.store)) fail(503, 'executor_closing', '服务正在关闭，请稍后重试。');
+  if (res.destroyed || res.writableEnded) {
+    return;
+  }
+  if (closingStores.has(deps.store)) {
+    fail(503, 'executor_closing', '服务正在关闭，请稍后重试。');
+  }
   if (
     (streamCounts.get(memberId) || 0) >= 3 ||
     [...streamCounts.values()].reduce((sum, count) => sum + count, 0) >= 100
-  )
+  ) {
     fail(429, 'stream_limit', '预览连接过多，请关闭多余页面。');
+  }
   streamCounts.set(memberId, (streamCounts.get(memberId) || 0) + 1);
   let closed = false,
     running = false,
@@ -388,24 +414,34 @@ async function streamRequest(
       stop();
     }
   };
+  // 连接只拥有订阅和预览；关闭时释放这些资源，已受理任务仍由执行器继续处理。
   const stop = () => {
-    if (closed) return;
+    if (closed) {
+      return;
+    }
     closed = true;
     clearInterval(heartbeat);
     deps.store.events.off('commit', wake);
     deps.store.events.off('close', close);
     streams.delete(close);
-    for (const unwatch of watched.values()) unwatch();
+    for (const unwatch of watched.values()) {
+      unwatch();
+    }
     watched.clear();
     res.off('close', stop);
     res.off('error', stop);
     res.off('drain', wake);
     const count = (streamCounts.get(memberId) || 1) - 1;
-    if (count) streamCounts.set(memberId, count);
-    else streamCounts.delete(memberId);
+    if (count) {
+      streamCounts.set(memberId, count);
+    } else {
+      streamCounts.delete(memberId);
+    }
   };
   const send = (event: string, data: unknown) => {
-    if (closed || res.destroyed || res.writableEnded) return;
+    if (closed || res.destroyed || res.writableEnded) {
+      return;
+    }
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     if (res.writableLength > 1024 * 1024) {
       res.end();
@@ -414,7 +450,9 @@ async function streamRequest(
   };
   const wake = () => {
     requested = true;
-    if (!running && !closed) void tick();
+    if (!running && !closed) {
+      void tick();
+    }
   };
   const tick = async () => {
     running = true;
@@ -422,13 +460,15 @@ async function streamRequest(
       while (requested && !closed) {
         requested = false;
         const state = await snapshot();
-        if (closed) return;
+        if (closed) {
+          return;
+        }
         if (first || state.revision !== previous) {
           send(first ? 'snapshot' : 'state', state);
           first = false;
           previous = state.revision;
         }
-        for (const job of state.jobs)
+        for (const job of state.jobs) {
           if (!watched.has(job.id) && job.status === 'running') {
             watched.set(
               job.id,
@@ -443,6 +483,7 @@ async function streamRequest(
               }),
             );
           }
+        }
         if (!['queued', 'pending', 'running'].includes(state.status)) {
           send('complete', state);
           res.end();
@@ -467,13 +508,17 @@ async function streamRequest(
   const heartbeat = setInterval(() => {
     void revalidate()
       .then((valid) => {
-        if (closed) return;
+        if (closed) {
+          return;
+        }
         if (!valid) {
           send('auth-expired', {});
           res.end();
           stop();
         } else {
-          if (!res.writableNeedDrain) res.write(': keepalive\n\n');
+          if (!res.writableNeedDrain) {
+            res.write(': keepalive\n\n');
+          }
           wake();
         }
       })

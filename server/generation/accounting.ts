@@ -95,8 +95,9 @@ function upstreamCandidates(charge: FairCharge): UpstreamCandidate[] {
     // 两种计费路径是候选，不可相加，也不能据本地 Anlas 预扣断言上游用了哪一池。
     return [{ resources: { v5: charge.v5Equivalent }, amountSource: 'quote' }, anlas];
   }
-  if (charge.resource === 'v5')
+  if (charge.resource === 'v5') {
     return [{ resources: { v5: charge.amount }, amountSource: 'quote' }];
+  }
   return charge.resource === 'anlas' ? [anlas] : [];
 }
 
@@ -130,7 +131,9 @@ export function recordGenerationAttempt(
   snapshot: QuotaSnapshot | null,
   now: number,
 ): GenerationAttempt {
-  if (job.generationAttempt) return job.generationAttempt;
+  if (job.generationAttempt) {
+    return job.generationAttempt;
+  }
   const request = job.request || job.requestPayload || {};
   const attempt: GenerationAttempt = {
     id: `attempt:${job.id}:1`,
@@ -178,12 +181,18 @@ export function generationResponseEvidence(
   job: AccountingJob,
   evidence: RefundEvidence = {},
 ): DomainPayloads['ReviewOpened']['response'] {
+  // 只保留实际观察；授权时间不能补作上游起始时间，未知字段继续为 null。
+  let dispatchState: 'request_started' | 'not_sent' | 'unknown' = 'unknown';
+  if (job.upstreamStartedAt) {
+    dispatchState = 'request_started';
+  } else if (
+    evidence.requestStarted === false ||
+    ['queued', 'pending'].includes(job.status as string)
+  ) {
+    dispatchState = 'not_sent';
+  }
   return {
-    dispatchState: job.upstreamStartedAt
-      ? 'request_started'
-      : evidence.requestStarted === false || ['queued', 'pending'].includes(job.status as string)
-        ? 'not_sent'
-        : 'unknown',
+    dispatchState,
     upstreamStartedAt: job.upstreamStartedAt || null,
     upstreamHeadersAt: job.upstreamHeadersAt || null,
     upstreamCompletedAt: job.upstreamCompletedAt || null,
@@ -209,7 +218,9 @@ export function recordGenerationRefund(
     response,
   });
   job.generationRefund = { eventId: refund.id, refundedAt: now, lossEventId: null };
-  if (dispatchState === 'not_sent' || !attempt.upstreamCandidates.length) return refund;
+  if (dispatchState === 'not_sent' || !attempt.upstreamCandidates.length) {
+    return refund;
+  }
   const loss = appendEvent(db, attempt, 'generation_loss_suspected', now, {
     refundEventId: refund.id,
     firstUnknownAt: now,
@@ -252,8 +263,12 @@ export function closeGenerationReview(
   reason = 'deadline',
 ): boolean {
   const review = job.generationReview;
-  if (!review || review.status !== 'pending' || job.fairCharge?.status !== 'refunded') return false;
-  if (reason === 'deadline' && (job.status !== 'failed' || now < review.deadlineAt)) return false;
+  if (!review || review.status !== 'pending' || job.fairCharge?.status !== 'refunded') {
+    return false;
+  }
+  if (reason === 'deadline' && (job.status !== 'failed' || now < review.deadlineAt)) {
+    return false;
+  }
   const attempt =
     job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
   const candidates = attempt.upstreamCandidates;
@@ -319,7 +334,9 @@ export function recordRecoveredGeneration(
   imageId: string,
   now = Date.now(),
 ): boolean {
-  if (job.lateResultAvailable) return false;
+  if (job.lateResultAvailable) {
+    return false;
+  }
   closeGenerationReview(db, job, now, 'result_recovered');
   const attempt =
     job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge!, null, now);
@@ -336,8 +353,9 @@ export function recordRecoveredGeneration(
   job.lateResultAvailable = true;
   job.lateResultAt = new Date(now).toISOString();
   job.updatedAt = job.lateResultAt;
-  if (job.generationReview)
+  if (job.generationReview) {
     Object.assign(job.generationReview, { status: 'result_recovered', resultImageId: imageId });
+  }
   recordDomainEvent(db, {
     eventType: 'LateResultRecovered',
     streamId: `request:${job.requestId || `legacy-${job.id}`}`,

@@ -159,7 +159,9 @@ export function composeQuotaState(
   sharing: SharingQuotaState | null,
   quota: AccountQuotaState | null,
 ): FairQuotaState | null {
-  if (!configuredSharing(sharing)) return null;
+  if (!configuredSharing(sharing)) {
+    return null;
+  }
   const {
       pendingStatus,
       memberEligibility: _eligibility,
@@ -181,21 +183,19 @@ export function composeQuotaState(
   const history = configuration.configurationHistory.map((raw) => {
     const entry = raw as Record<string, unknown>,
       allocation = amounts.get(entry.version);
+    if (allocation) {
+      return {
+        ...entry,
+        beforeBalances: allocation.beforeBalances,
+        afterBalances: allocation.afterBalances,
+        ...(allocation.transferred === undefined ? {} : { transferred: allocation.transferred }),
+      };
+    }
     return {
       ...entry,
-      ...(allocation
-        ? {
-            beforeBalances: allocation.beforeBalances,
-            afterBalances: allocation.afterBalances,
-            ...(allocation.transferred === undefined
-              ? {}
-              : { transferred: allocation.transferred }),
-          }
-        : {
-            beforeBalances: zeroBalances(entry.before),
-            afterBalances: zeroBalances(entry.after),
-            ...(entry.action ? { transferred: emptyResources() } : {}),
-          }),
+      beforeBalances: zeroBalances(entry.before),
+      afterBalances: zeroBalances(entry.after),
+      ...(entry.action ? { transferred: emptyResources() } : {}),
     };
   });
   return {
@@ -212,29 +212,38 @@ export function reduceSharingEvent(
 ): SharingQuotaState | null {
   const p = event.payload;
   if (event.eventType === 'AdmissionChanged' || event.eventType === 'MemberEligibilityChanged') {
-    if (typeof p.memberId !== 'string' || !p.memberId)
+    if (typeof p.memberId !== 'string' || !p.memberId) {
       throw new Error('Member eligibility fact requires a member ID');
+    }
     const s = previous || {},
       memberEligibility = (s.memberEligibility ||= {}),
       member: MemberEligibility = {
         ...(memberEligibility[p.memberId] || {}),
         memberId: p.memberId,
       };
-    for (const field of ['enabled', 'acceptingJobs', 'removed'] as const)
+    for (const field of ['enabled', 'acceptingJobs', 'removed'] as const) {
       if (p[field] !== undefined) {
-        if (typeof p[field] !== 'boolean') throw new Error(`Invalid member eligibility ${field}`);
+        if (typeof p[field] !== 'boolean') {
+          throw new Error(`Invalid member eligibility ${field}`);
+        }
         member[field] = p[field];
       }
+    }
     if (p.jobAdmissionVersion !== undefined) {
       if (
         !Number.isSafeInteger(p.jobAdmissionVersion) ||
         (p.jobAdmissionVersion as number) < (member.jobAdmissionVersion || 0)
-      )
+      ) {
         throw new Error('Member admission generation moved backwards');
+      }
       member.jobAdmissionVersion = p.jobAdmissionVersion as number;
     }
-    if (p.at !== undefined) member.at = p.at as number;
-    if (p.createdAt !== undefined) member.createdAt = p.createdAt as string;
+    if (p.at !== undefined) {
+      member.at = p.at as number;
+    }
+    if (p.createdAt !== undefined) {
+      member.createdAt = p.createdAt as string;
+    }
     if (p.discord) {
       const discord = p.discord as NonNullable<MemberEligibility['discord']>;
       member.discord = {
@@ -250,13 +259,16 @@ export function reduceSharingEvent(
     return s;
   }
   if (event.eventType === 'SharingConfigured') {
-    if (configuredSharing(previous)) throw new Error('Sharing configuration already exists');
+    if (configuredSharing(previous)) {
+      throw new Error('Sharing configuration already exists');
+    }
     const sharing = splitQuotaState(
       initialState(p.members as string[], p.groups as FairGroup[], p.configVersion as number),
     ).sharing;
-    if (previous?.memberEligibility)
+    if (previous?.memberEligibility) {
       sharing.memberEligibility = structuredClone(previous.memberEligibility);
-    if (p.at !== undefined)
+    }
+    if (p.at !== undefined) {
       sharing.configurationHistory.push({
         at: p.at,
         actorId: p.actorId || null,
@@ -265,10 +277,12 @@ export function reduceSharingEvent(
         after: structuredClone(p.groups),
         redistributeRemaining: p.redistributeRemaining === true,
       });
+    }
     return sharing;
   }
-  if (!configuredSharing(previous))
+  if (!configuredSharing(previous)) {
     throw new Error(`Sharing event ${event.eventType} has no configuration`);
+  }
   const s = previous;
   if (event.eventType === 'AccountBound') {
     s.boundAccountId = p.accountId as string;
@@ -281,51 +295,56 @@ export function reduceSharingEvent(
   }
   if (event.eventType === 'PolicyChanged') {
     if (p.policy === 'autoAnlasFallback') {
-      if (typeof p.value !== 'boolean' || typeof p.at !== 'number')
+      if (typeof p.value !== 'boolean' || typeof p.at !== 'number') {
         throw new Error('Invalid fallback policy fact');
+      }
       s.autoAnlasFallback = p.value;
       s.policyHistory = [
         ...(s.policyHistory || []),
         { at: p.at, actor: 'administrator', autoAnlasFallback: p.value },
       ].slice(-1000);
-    } else if (p.policy === 'freeImagePolicy')
+    } else if (p.policy === 'freeImagePolicy') {
       s.freeImagePolicy = structuredClone(p.value as FairQuotaState['freeImagePolicy']);
-    else if (p.policy === 'lossAlertPolicy')
+    } else if (p.policy === 'lossAlertPolicy') {
       s.lossAlertPolicy = structuredClone(p.value as FairQuotaState['lossAlertPolicy']);
-    else if (p.policy === 'enabled' && typeof p.value === 'boolean') s.enabled = p.value;
-    else throw new Error(`Unsupported sharing policy ${p.policy}`);
+    } else if (p.policy === 'enabled' && typeof p.value === 'boolean') {
+      s.enabled = p.value;
+    } else {
+      throw new Error(`Unsupported sharing policy ${p.policy}`);
+    }
     return s;
   }
   if (['AllocationChanged', 'MemberTransferred', 'MemberRemoved'].includes(event.eventType)) {
-    if (p.configVersion !== s.configVersion + 1)
+    if (p.configVersion !== s.configVersion + 1) {
       throw new Error('Sharing configuration version is out of order');
+    }
     const before = structuredClone(s.groups);
     s.groups = structuredClone(p.groups as FairGroup[]);
     s.members = structuredClone(p.members as string[]);
     s.configVersion = p.configVersion as number;
-    s.configurationHistory.push(
-      event.eventType === 'AllocationChanged'
-        ? {
-            at: p.at,
-            actorId: p.actorId || null,
-            version: s.configVersion,
-            before,
-            after: structuredClone(s.groups),
-            redistributeRemaining: p.redistributeRemaining === true,
-          }
-        : {
-            at: p.at,
-            actorId: 'administrator',
-            action: event.eventType === 'MemberTransferred' ? 'transfer-quota' : 'delete-member',
-            version: s.configVersion,
-            sourceId: p.sourceId,
-            targetId: p.targetId,
-            autoJoined: p.autoJoined,
-            shareChanges: structuredClone(p.shareChanges),
-            before,
-            after: structuredClone(s.groups),
-          },
-    );
+    if (event.eventType === 'AllocationChanged') {
+      s.configurationHistory.push({
+        at: p.at,
+        actorId: p.actorId || null,
+        version: s.configVersion,
+        before,
+        after: structuredClone(s.groups),
+        redistributeRemaining: p.redistributeRemaining === true,
+      });
+    } else {
+      s.configurationHistory.push({
+        at: p.at,
+        actorId: 'administrator',
+        action: event.eventType === 'MemberTransferred' ? 'transfer-quota' : 'delete-member',
+        version: s.configVersion,
+        sourceId: p.sourceId,
+        targetId: p.targetId,
+        autoJoined: p.autoJoined,
+        shareChanges: structuredClone(p.shareChanges),
+        before,
+        after: structuredClone(s.groups),
+      });
+    }
     if (event.eventType === 'MemberRemoved') {
       const memberId = p.sourceId as string,
         eligibility = (s.memberEligibility ||= {});
@@ -350,13 +369,18 @@ export function reduceAccountQuotaEvent(
   if (
     (event.eventType === 'QuotaObserved' && p.kind === 'official') ||
     (event.eventType === 'AvailabilityChanged' && p.kind !== 'quota')
-  )
+  ) {
     return previous;
+  }
   if (event.eventType === 'QuotaAccountOpened') {
-    if (previous) throw new Error('Account quota already exists');
+    if (previous) {
+      throw new Error('Account quota already exists');
+    }
     return splitQuotaState(initialState(p.memberIds as string[], [], 0)).quota;
   }
-  if (!previous) throw new Error(`Account quota event ${event.eventType} has no opening`);
+  if (!previous) {
+    throw new Error(`Account quota event ${event.eventType} has no opening`);
+  }
   if (event.eventType === 'FundsTransferred') {
     const s = previous,
       beforeBalances = structuredClone(s.balances),
@@ -370,46 +394,57 @@ export function reduceAccountQuotaEvent(
         ),
       ]),
     );
-    for (const id of members) s.balances[id] ||= emptyBalance();
+    for (const id of members) {
+      s.balances[id] ||= emptyBalance();
+    }
     if (p.transferred) {
       const source = p.sourceId as string,
         target = p.targetId as string;
       for (const resource of ['v5', 'anlasFixed', 'anlasPurchased'] as const) {
         const field = `${resource}Available` as const,
           amount = (p.transferred as ResourceAmounts)[resource];
-        if (s.balances[source])
+        if (s.balances[source]) {
           s.balances[source][field] = subtract(s.balances[source][field], amount);
-        else if (parseAmount(amount) > 0n) throw new Error('Transfer source does not exist');
+        } else if (parseAmount(amount) > 0n) {
+          throw new Error('Transfer source does not exist');
+        }
         s.balances[target][field] = add(s.balances[target][field], amount);
       }
     }
     for (const redistribution of (p.redistributions as {
       resource: Resource;
       allocations: QuotaAllocation[];
-    }[]) || [])
-      for (const entry of redistribution.allocations)
+    }[]) || []) {
+      for (const entry of redistribution.allocations) {
         s.balances[entry.memberId][`${redistribution.resource}Available`] = entry.amount;
-    for (const id of Object.keys(s.balances))
+      }
+    }
+    for (const id of Object.keys(s.balances)) {
       if (!members.includes(id)) {
         if (
           ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'].some(
             (field) =>
               parseAmount(s.balances[id][field as keyof (typeof s.balances)[string]]) !== 0n,
           )
-        )
+        ) {
           throw new Error('Removed wallet still has resources');
+        }
         delete s.balances[id];
       }
-    for (const resource of ['v5', 'anlasFixed', 'anlasPurchased'] as const)
+    }
+    for (const resource of ['v5', 'anlasFixed', 'anlasPurchased'] as const) {
       if (
         Object.values(s.balances).reduce(
           (sum, b) => sum + parseAmount(b[`${resource}Available`]),
           0n,
         ) !== beforeTotal[resource]
-      )
+      ) {
         throw new Error('Funds transfer changes total resources');
-    for (const balance of Object.values(s.balances))
+      }
+    }
+    for (const balance of Object.values(s.balances)) {
       balance.anlasAvailable = add(balance.anlasFixedAvailable, balance.anlasPurchasedAvailable);
+    }
     s.allocationHistory.push({
       version: p.configVersion,
       beforeBalances,
@@ -432,9 +467,12 @@ export function reduceAccountQuotaEvent(
     previous,
   )!;
   const result = reduceFinancialQuotaEvent(s, event);
-  if (!result) throw new Error('Financial event removed quota state');
-  if (event.eventType === 'GenerationSettled' || event.eventType === 'GenerationRefunded')
+  if (!result) {
+    throw new Error('Financial event removed quota state');
+  }
+  if (event.eventType === 'GenerationSettled' || event.eventType === 'GenerationRefunded') {
     delete result.reservations[p.jobId as string];
+  }
   return { ...splitQuotaState(result).quota, allocationHistory: previous.allocationHistory };
 }
 const emptyResources = (): ResourceAmounts => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
@@ -448,12 +486,15 @@ const add = (left: AmountText, right: AmountText) =>
   formatAmount(parseAmount(left) + parseAmount(right));
 function subtract(left: AmountText, right: AmountText): AmountText {
   const result = parseAmount(left) - parseAmount(right);
-  if (result < 0n) throw new Error('Quota event overdraws its recorded source');
+  if (result < 0n) {
+    throw new Error('Quota event overdraws its recorded source');
+  }
   return formatAmount(result);
 }
 function totals(s: FairQuotaState): void {
-  for (const balance of Object.values(s.balances))
+  for (const balance of Object.values(s.balances)) {
     balance.anlasAvailable = add(balance.anlasFixedAvailable, balance.anlasPurchasedAvailable);
+  }
 }
 function operating(s: FairQuotaState): OperatingAccount {
   return (s.operating ||= {
@@ -472,9 +513,13 @@ function applyAllocations(
   allocations: QuotaAllocation[],
 ): void {
   for (const allocation of allocations) {
-    if (parseAmount(allocation.amount) < 0n) throw new Error('Negative allocation in quota event');
+    if (parseAmount(allocation.amount) < 0n) {
+      throw new Error('Negative allocation in quota event');
+    }
     const balance = s.balances[allocation.memberId];
-    if (!balance) throw new Error(`Quota event references unknown member ${allocation.memberId}`);
+    if (!balance) {
+      throw new Error(`Quota event references unknown member ${allocation.memberId}`);
+    }
     const field = `${resource}Available` as const;
     balance[field] = add(balance[field], allocation.amount);
   }
@@ -527,21 +572,24 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       (sum, allocation) => sum + parseAmount(allocation.amount),
       0n,
     );
-    if (actual > parseAmount(fact.sourceAmount))
+    if (actual > parseAmount(fact.sourceAmount)) {
       throw new Error('Allocation exceeds recorded source amount');
+    }
     applyAllocations(s, fact.resource, fact.allocations);
     return s;
   }
   if (event.eventType === 'RefillApplied') {
     const fact = p as unknown as RefillFact;
-    if (fact.from !== s.lastRefillAt || fact.until <= fact.from)
+    if (fact.from !== s.lastRefillAt || fact.until <= fact.from) {
       throw new Error('Refill interval is repeated or out of order');
+    }
     if (
       [fact.budget, fact.debtRepaid, fact.capacityRecovered].some(
         (amount) => parseAmount(amount) < 0n,
       )
-    )
+    ) {
       throw new Error('Negative refill resource amount');
+    }
     const allocated = fact.allocations.reduce(
       (sum, allocation) => sum + parseAmount(allocation.amount),
       0n,
@@ -549,8 +597,9 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
     if (
       allocated + parseAmount(fact.debtRepaid) + parseAmount(fact.capacityRecovered) >
       parseAmount(fact.budget)
-    )
+    ) {
       throw new Error('Refill exceeds recorded source budget');
+    }
     s.sharedV5Debt = subtract(s.sharedV5Debt, fact.debtRepaid);
     if (parseAmount(fact.capacityRecovered) > 0n) {
       const ops = operating(s);
@@ -566,10 +615,12 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       matched = p.matchedDebits as Record<'anlasFixed' | 'anlasPurchased', AmountText>,
       fallback = p.matchedFallback as { fixed: AmountText; purchased: AmountText };
     if (p.initial !== true) {
-      if (!s.snapshot || snapshot.at <= s.snapshot.at)
+      if (!s.snapshot || snapshot.at <= s.snapshot.at) {
         throw new Error('Quota observation is repeated or out of order');
-      for (const resource of ['anlasFixed', 'anlasPurchased'] as const)
+      }
+      for (const resource of ['anlasFixed', 'anlasPurchased'] as const) {
         s.spent[resource] = subtract(s.spent[resource], matched[resource]);
+      }
       s.fallbackBuffer.fixed = subtract(s.fallbackBuffer.fixed, fallback.fixed);
       s.fallbackBuffer.purchased = subtract(s.fallbackBuffer.purchased, fallback.purchased);
       s.spent = {
@@ -581,13 +632,17 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
         fallbackV5: '0',
       };
       s.creditedV5 = '0';
-    } else if (s.snapshot) throw new Error('Initial quota already observed');
+    } else if (s.snapshot) {
+      throw new Error('Initial quota already observed');
+    }
     s.snapshot = snapshot;
     s.lastRefillAt = p.at as number;
     return s;
   }
   if (event.eventType === 'V5CapacityObserved') {
-    if (parseAmount(p.capacityGap as string) < 0n) throw new Error('Negative V5 capacity gap');
+    if (parseAmount(p.capacityGap as string) < 0n) {
+      throw new Error('Negative V5 capacity gap');
+    }
     const ops = operating(s);
     ops.v5CapacityGap = p.capacityGap as string;
     ops.v5GapEventId = p.gapEventId as string | null;
@@ -602,8 +657,12 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
   if (event.eventType === 'QuotaReserved') {
     const jobId = p.jobId as string,
       charge = structuredClone(p.charge as FairCharge);
-    if (s.reservations[jobId]) throw new Error('Job already has a quota reservation');
-    if (charge.status !== 'reserved') throw new Error('Reservation fact is not reserved');
+    if (s.reservations[jobId]) {
+      throw new Error('Job already has a quota reservation');
+    }
+    if (charge.status !== 'reserved') {
+      throw new Error('Reservation fact is not reserved');
+    }
     if (
       [
         charge.amount,
@@ -612,14 +671,19 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
         charge.sharedV5Reserved || '0',
         charge.v5Equivalent || '0',
       ].some((amount) => parseAmount(amount) < 0n)
-    )
+    ) {
       throw new Error('Negative quota reservation');
-    if (charge.resource === 'anlas' && add(charge.fixed, charge.purchased) !== charge.amount)
+    }
+    if (charge.resource === 'anlas' && add(charge.fixed, charge.purchased) !== charge.amount) {
       throw new Error('Anlas reservation split differs from quoted amount');
+    }
     const balance = s.balances[charge.userId];
-    if (!balance) throw new Error('Reservation member does not exist');
-    if (charge.resource === 'v5')
+    if (!balance) {
+      throw new Error('Reservation member does not exist');
+    }
+    if (charge.resource === 'v5') {
       balance.v5Available = subtract(balance.v5Available, charge.amount);
+    }
     if (charge.resource === 'anlas') {
       balance.anlasFixedAvailable = subtract(balance.anlasFixedAvailable, charge.fixed);
       balance.anlasPurchasedAvailable = subtract(balance.anlasPurchasedAvailable, charge.purchased);
@@ -632,8 +696,9 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
     const jobId = p.jobId as string,
       recorded = p.charge as FairCharge,
       charge = s.reservations[jobId];
-    if (!charge || charge.status !== 'reserved')
+    if (!charge || charge.status !== 'reserved') {
       throw new Error('Quota terminal event has no active reservation');
+    }
     if (
       charge.userId !== recorded.userId ||
       charge.accountId !== recorded.accountId ||
@@ -641,8 +706,9 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       charge.amount !== recorded.amount ||
       charge.fixed !== recorded.fixed ||
       charge.purchased !== recorded.purchased
-    )
+    ) {
       throw new Error('Terminal quota amounts differ from original reservation');
+    }
     const success = event.eventType === 'GenerationSettled';
     if (charge.resource !== 'free') {
       if (success) {
@@ -670,8 +736,9 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
         }
       } else {
         const balance = s.balances[charge.userId];
-        if (charge.resource === 'v5') balance.v5Available = add(balance.v5Available, charge.amount);
-        else {
+        if (charge.resource === 'v5') {
+          balance.v5Available = add(balance.v5Available, charge.amount);
+        } else {
           balance.anlasFixedAvailable = add(balance.anlasFixedAvailable, charge.fixed);
           balance.anlasPurchasedAvailable = add(balance.anlasPurchasedAvailable, charge.purchased);
         }
@@ -704,23 +771,31 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       ops.available[resource] = add(ops.available[resource], amount);
       totals(s);
     } else {
-      if (resource === 'v5') throw new Error('External V5 funding is unsupported');
+      if (resource === 'v5') {
+        throw new Error('External V5 funding is unsupported');
+      }
       if (p.source === 'registered_external_funding') {
         const pending = ops.pendingExternalFunding.find(
           (funding) => funding.eventId === p.receiptEventId,
         );
-        if (!pending) throw new Error('Funding receipt does not exist');
-        if (pending.resource !== resource || pending.destination !== p.destination)
+        if (!pending) {
+          throw new Error('Funding receipt does not exist');
+        }
+        if (pending.resource !== resource || pending.destination !== p.destination) {
           throw new Error('Funding receipt ownership changed');
+        }
         pending.remaining = subtract(pending.remaining, amount);
         ops.pendingExternalFunding = ops.pendingExternalFunding.filter(
           (funding) => parseAmount(funding.remaining) > 0n,
         );
-      } else if (p.source === 'declared_external_receipt')
+      } else if (p.source === 'declared_external_receipt') {
         ops.unattributedReturns[resource] = subtract(ops.unattributedReturns[resource], amount);
-      else throw new Error('Unsupported funding source');
-      if (p.destination === 'operating')
+      } else {
+        throw new Error('Unsupported funding source');
+      }
+      if (p.destination === 'operating') {
         ops.available[resource] = add(ops.available[resource], amount);
+      }
     }
     return s;
   }
@@ -734,8 +809,9 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
   if (event.eventType === 'ResourceGapObserved') {
     const ops = operating(s),
       resource = p.resource as 'anlasFixed' | 'anlasPurchased';
-    if (add(ops.unfunded[resource], p.observedAmount as string) !== p.amount)
+    if (add(ops.unfunded[resource], p.observedAmount as string) !== p.amount) {
       throw new Error('Observed resource gap does not match cumulative gap');
+    }
     ops.unfunded[resource] = p.amount as string;
     ops.gapEventIds[resource] = p.id as string;
     return s;
@@ -745,18 +821,23 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       resource = p.resource as 'anlasFixed' | 'anlasPurchased';
     if (p.kind === 'observed') {
       const next = add(ops.unattributedReturns[resource], p.amount as string);
-      if (parseAmount(next) < 0n) throw new Error('Unattributed return is overdrawn');
+      if (parseAmount(next) < 0n) {
+        throw new Error('Unattributed return is overdrawn');
+      }
       ops.unattributedReturns[resource] = next;
     } else if (p.kind === 'gap-correction') {
       ops.unfunded[resource] = subtract(ops.unfunded[resource], p.correctedAmount as string);
-      if (ops.unfunded[resource] !== p.amount)
+      if (ops.unfunded[resource] !== p.amount) {
         throw new Error('Gap correction does not match outstanding amount');
+      }
       ops.unattributedReturns[resource] = subtract(
         ops.unattributedReturns[resource],
         p.correctedAmount as string,
       );
       ops.gapEventIds[resource] = p.id as string;
-    } else throw new Error('Unsupported return classification');
+    } else {
+      throw new Error('Unsupported return classification');
+    }
     return s;
   }
   if (event.eventType === 'OperatingLossCovered') {
@@ -764,8 +845,11 @@ function reduceFinancialQuotaEvent(s: FairQuotaState, event: QuotaEvent): FairQu
       resource = p.resource as Resource,
       amount = p.amount as string;
     ops.available[resource] = subtract(ops.available[resource], amount);
-    if (resource === 'v5') ops.v5CapacityGap = subtract(ops.v5CapacityGap, amount);
-    else ops.unfunded[resource] = subtract(ops.unfunded[resource], amount);
+    if (resource === 'v5') {
+      ops.v5CapacityGap = subtract(ops.v5CapacityGap, amount);
+    } else {
+      ops.unfunded[resource] = subtract(ops.unfunded[resource], amount);
+    }
     return s;
   }
   throw new Error(`Quota reducer does not support event ${event.eventType}`);

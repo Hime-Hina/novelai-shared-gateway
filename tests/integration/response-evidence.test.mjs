@@ -67,7 +67,7 @@ function queriedJob(store, id) {
 }
 
 test('real admission, reservation, dispatch and result commands preserve business queries through offline replay', async (t) => {
-  for (const mode of ['success', 'failure', 'prepared-recovery', 'late'])
+  for (const mode of ['success', 'failure', 'prepared-recovery', 'late']) {
     await t.test(mode, async (t) => {
       const store = await fixture(t),
         seed = structuredClone(store.db);
@@ -133,12 +133,13 @@ test('real admission, reservation, dispatch and result commands preserve busines
         upstreamHttpStatus: mode === 'failure' ? 503 : 200,
       };
       reservation.failurePhase = 'upstream';
-      if (mode === 'failure' || mode === 'late')
+      if (mode === 'failure' || mode === 'late') {
         await failGenerationCommand(store, reservation, new Error('synthetic upstream failure'), {
           now: () => now + 15000,
           publicErrorMessage: String,
           errorDetailMessage: String,
         });
+      }
       if (mode === 'prepared-recovery') {
         const pending = await prepareGenerationResult(store, reservation, request, image, id, {
           now: () => now + 15000,
@@ -154,7 +155,7 @@ test('real admission, reservation, dispatch and result commands preserve busines
           now: () => now + 16000,
         });
         assert.equal(recovered.completed, 1);
-      } else if (mode !== 'failure')
+      } else if (mode !== 'failure') {
         await completeGenerationCommand(
           { store, dataDir: store.dataDir, now: () => now + 16000 },
           reservation,
@@ -162,6 +163,7 @@ test('real admission, reservation, dispatch and result commands preserve busines
           image,
           { jobId: id },
         );
+      }
       const before = queriedJob(store, id),
         owner = await store.readOwnerJobRows('', '9999'),
         balance = structuredClone(store.db.settings.fairQuota.balances);
@@ -211,4 +213,5 @@ test('real admission, reservation, dispatch and result commands preserve busines
       );
       target.sqlite.transaction(() => verifyEventProjections(target.sqlite))();
     });
+  }
 });

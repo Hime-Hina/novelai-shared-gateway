@@ -158,7 +158,7 @@ async function contextOpeningStore(t) {
       'INSERT INTO generation_idempotency(member_id,operation,key_hash,fingerprint,normalization_context,job_id,request_id,created_at) VALUES(?,?,?,?,?,?,?,?)',
     );
   store.sqlite.transaction(() => {
-    for (let index = 0; index < 205; index++)
+    for (let index = 0; index < 205; index++) {
       insert.run(
         'a',
         'generate',
@@ -169,6 +169,7 @@ async function contextOpeningStore(t) {
         null,
         at,
       );
+    }
   })();
   return store;
 }
@@ -206,8 +207,9 @@ test('opening facts reconstruct quota, historical results, protected inline inpu
     'private input prompt',
     'private-base64',
     'private default prompt',
-  ])
+  ]) {
     assert.equal(eventText.includes(secret), false, secret);
+  }
   const target = new Database(':memory:');
   t.after(() => target.close());
   migrateStorage(target);
@@ -264,7 +266,9 @@ test('opening resumes a failed block and refuses a changed source before declari
     if (sql.includes('INSERT INTO event_imports')) {
       const run = statement.run.bind(statement);
       statement.run = (...args) => {
-        if (++writes === 2) throw new Error('injected import interruption');
+        if (++writes === 2) {
+          throw new Error('injected import interruption');
+        }
         return run(...args);
       };
     }
@@ -287,7 +291,9 @@ test('opening resumes a failed block and refuses a changed source before declari
     if (sql.includes('INSERT INTO event_imports')) {
       const run = statement.run.bind(statement);
       statement.run = (...args) => {
-        if (++chunks === 2) throw new Error('stop');
+        if (++chunks === 2) {
+          throw new Error('stop');
+        }
         return run(...args);
       };
     }
@@ -332,7 +338,7 @@ test('opening commits private input and diagnostics atomically with each 100-sou
         "BEFORE UPDATE ON app_meta WHEN NEW.key='event_opening' AND json_extract(NEW.value,'$.status')='complete'",
     },
   ];
-  for (const { name, completed, trigger } of cases)
+  for (const { name, completed, trigger } of cases) {
     await t.test(name, async (t) => {
       const store = await inlineOpeningStore(t),
         sqlite = store.sqlite,
@@ -386,13 +392,14 @@ test('opening commits private input and diagnostics atomically with each 100-sou
             .get().n,
           205,
         );
-        for (const table of ['domain_events', 'event_commits'])
+        for (const table of ['domain_events', 'event_commits']) {
           assert.deepEqual(
             resumed
               .prepare(`SELECT * FROM ${table} WHERE commit_seq<=? ORDER BY rowid`)
               .all(cursor),
             prefix[table],
           );
+        }
         assert.deepEqual(resumed.prepare('SELECT id,data FROM jobs ORDER BY id').all(), source);
         const complete = openingRows(resumed);
         assert.deepEqual(importOpeningFacts(resumed), report);
@@ -422,6 +429,7 @@ test('opening commits private input and diagnostics atomically with each 100-sou
         resumed.close();
       }
     });
+  }
 });
 
 test('opening resume rejects changes confined to a committed inline prompt, image bytes or requestPayload', async (t) => {
@@ -446,7 +454,7 @@ test('opening resume rejects changes confined to a committed inline prompt, imag
       },
     ],
   ];
-  for (const [name, mutate] of mutations)
+  for (const [name, mutate] of mutations) {
     await t.test(name, async (t) => {
       const store = await inlineOpeningStore(t, 105),
         sqlite = store.sqlite;
@@ -472,6 +480,7 @@ test('opening resume rejects changes confined to a committed inline prompt, imag
         'importing',
       );
     });
+  }
 });
 
 test('opening validates and reuses matching protected input left by an interrupted older importer', async (t) => {
@@ -528,7 +537,7 @@ test('opening commits each 100 idempotency contexts with its complete mapping ev
     ],
     ['mapping import receipt', "BEFORE INSERT ON event_imports WHEN NEW.chunk_id='idempotency:1'"],
   ];
-  for (const [name, trigger] of cases)
+  for (const [name, trigger] of cases) {
     await t.test(name, async (t) => {
       const store = await contextOpeningStore(t),
         sqlite = store.sqlite,
@@ -576,11 +585,12 @@ test('opening commits each 100 idempotency contexts with its complete mapping ev
             .get().n,
           205,
         );
-        for (const table of ['domain_events', 'event_commits'])
+        for (const table of ['domain_events', 'event_commits']) {
           assert.deepEqual(
             resumed.prepare(`SELECT * FROM ${table} WHERE commit_seq<=3 ORDER BY rowid`).all(),
             prefix[table],
           );
+        }
         const complete = openingRows(resumed);
         assert.deepEqual(importOpeningFacts(resumed), report);
         assert.deepEqual(openingRows(resumed), complete);
@@ -601,6 +611,7 @@ test('opening commits each 100 idempotency contexts with its complete mapping ev
         resumed.close();
       }
     });
+  }
 });
 
 test('opening resumes matching orphan contexts left beyond an older importer checkpoint', async (t) => {
@@ -672,22 +683,20 @@ test('replay CLI restores a separate database and can resume at a complete commi
 });
 test('in-process and CLI replay preserve historical free timestamps and warnings under a changed current policy', async (t) => {
   const store = await legacyStore(t);
-  store.sqlite
-    .prepare('INSERT INTO fair_quota_settlements(job_id,charge) VALUES(?,?)')
-    .run(
-      'historical-free',
-      JSON.stringify({
-        resource: 'free',
-        status: 'settled',
-        userId: 'a',
-        accountId: 'opus',
-        amount: '0',
-        fixed: '0',
-        purchased: '0',
-        reservedAt: now - 1,
-        settledAt: now,
-      }),
-    );
+  store.sqlite.prepare('INSERT INTO fair_quota_settlements(job_id,charge) VALUES(?,?)').run(
+    'historical-free',
+    JSON.stringify({
+      resource: 'free',
+      status: 'settled',
+      userId: 'a',
+      accountId: 'opus',
+      amount: '0',
+      fixed: '0',
+      purchased: '0',
+      reservedAt: now - 1,
+      settledAt: now,
+    }),
+  );
   store.sqlite
     .prepare('UPDATE free_image_usage SET succeeded_at=?,warning_threshold=10 WHERE job_id=?')
     .run(now + 123, 'historical-free');
@@ -749,7 +758,7 @@ test('cutover rejects missing, extra and changed terminal, idempotency and free-
       'UPDATE free_image_usage SET succeeded_at=succeeded_at+1',
     ],
   };
-  for (const [table, statements] of Object.entries(mutations))
+  for (const [table, statements] of Object.entries(mutations)) {
     for (const mutation of statements) {
       const store = await legacyStore(t);
       importOpeningFacts(store.sqlite);
@@ -768,6 +777,7 @@ test('cutover rejects missing, extra and changed terminal, idempotency and free-
         undefined,
       );
     }
+  }
 });
 test('old inline output bytes and private diagnostics survive replay after Key rotation using stable parent ownership', async (t) => {
   const store = await legacyStore(t),
@@ -818,8 +828,9 @@ test('old inline output bytes and private diagnostics survive replay after Key r
     'private output prompt',
     'private output full prompt',
     'private historical diagnostic',
-  ])
+  ]) {
     assert.equal(eventText.includes(privateText), false);
+  }
   assert.equal(
     JSON.parse(store.sqlite.prepare('SELECT data FROM images WHERE id=?').get('inline-output').data)
       .base64,
@@ -862,8 +873,9 @@ test('explicit history retirement survives restart and replay while cold idempot
   await store.enableEventAuthority();
   await store.retireJobHistory(['legacy-job'], 'synthetic_history_retention', now + 5000);
   assert.equal(store.selectItemById('jobs', 'legacy-job'), null);
-  for (const table of ['generation_idempotency', 'fair_quota_settlements', 'free_image_usage'])
+  for (const table of ['generation_idempotency', 'fair_quota_settlements', 'free_image_usage']) {
     assert.equal(store.sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 1);
+  }
   await store.close();
   const reopened = new JsonStore(store.dataDir);
   await reopened.init();
@@ -903,8 +915,13 @@ test('explicit history retirement survives restart and replay while cold idempot
       copyProtectedFacts(reopened.sqlite, target);
       replayDomainEvents(reopened.sqlite, target, { project: applyEventProjection });
       assert.equal(target.prepare('SELECT count(*) AS n FROM jobs').get().n, 0);
-      for (const table of ['generation_idempotency', 'fair_quota_settlements', 'free_image_usage'])
+      for (const table of [
+        'generation_idempotency',
+        'fair_quota_settlements',
+        'free_image_usage',
+      ]) {
         assert.equal(target.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 1);
+      }
     } finally {
       target.close();
     }

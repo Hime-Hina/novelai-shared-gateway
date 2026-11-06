@@ -93,6 +93,7 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
     ['executor/start.mjs', "await import('novelai-shared-gateway/server/gateway-runtime.js');"],
     ['server/index.ts', "import { startGateway } from './gateway-runtime.ts';"],
-  ])
+  ]) {
     assert.deepEqual(checkSource(filename, source), [], filename);
+  }
 });

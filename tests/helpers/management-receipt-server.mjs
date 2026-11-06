@@ -52,12 +52,13 @@ db = await store.readRaw();
 const session = await createMemberSession(store, db.users[0], env);
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.headers['x-test-drop-response'] === '1')
+    if (req.headers['x-test-drop-response'] === '1') {
       res.end = () => {
         res.destroy();
         process.send({ dropped: true });
         return res;
       };
+    }
     const handled = await handleMemberRoutes(req, res, new URL(req.url, 'https://nai.example'), {
       env,
       store,

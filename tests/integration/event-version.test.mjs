@@ -58,7 +58,7 @@ async function fixture(t, { running = false } = {}) {
       createdAt: at,
     },
   ];
-  if (running)
+  if (running) {
     db.jobs = [
       {
         id: 'running',
@@ -70,6 +70,7 @@ async function fixture(t, { running = false } = {}) {
         resultPending: { imageId: 'unpublished', file: 'pending.webp', preparedAt: at },
       },
     ];
+  }
   await store.write(db);
   return store;
 }
@@ -329,8 +330,9 @@ test('v2 query-only response observations become sourced facts atomically; missi
         'upstreamHttpStatus',
         'resultPending',
         'status',
-      ])
+      ]) {
         assert.deepEqual(rebuilt[field], job[field], field);
+      }
       assert.equal(rebuilt.upstreamHeadersAt, undefined);
       assert.equal(rebuilt.status, 'running');
       target.transaction(() => verifyEventProjections(target))();
@@ -423,8 +425,9 @@ test('replay rejects an old source before writing either database, then preserve
       'upstreamHeadersAt',
       'upstreamCompletedAt',
       'upstreamHttpStatus',
-    ])
+    ]) {
       assert.deepEqual(replayed[field], job[field], field);
+    }
     assert.equal(
       readDomainCommits(upgraded.sqlite)
         .flatMap((commit) => commit.events)

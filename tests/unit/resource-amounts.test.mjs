@@ -14,8 +14,9 @@ test('12位定点保持大余额最小单位，拒绝静默超精度', () => {
   assert.equal(formatAmount(parseAmount(1e-12)), '0.000000000001');
   assert.equal(formatAmount(parseAmount('001.230000000000')), '1.23');
   assert.throws(() => parseAmount('0.0000000000001'), RangeError);
-  for (const value of [NaN, Infinity, '', ' 1', 'true', '1x'])
+  for (const value of [NaN, Infinity, '', ' 1', 'true', '1x']) {
     assert.throws(() => parseAmount(value));
+  }
   assert.equal(parseAmount('0.0000000000001', 'ceil'), 1n);
   assert.equal(parseAmount('-0.0000000000001', 'floor'), -1n);
   assert.equal(divideAmount(-3n, 2n, 'nearest'), -2n);

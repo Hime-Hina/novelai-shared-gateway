@@ -8,7 +8,9 @@ const stage = process.env.RESULT_RECOVERY_TEST_STAGE;
 const imageDir = path.resolve(process.env.DATA_DIR, 'images');
 let paused = false;
 async function pause(point, detail = {}) {
-  if (paused || stage !== point) return;
+  if (paused || stage !== point) {
+    return;
+  }
   paused = true;
   process.send?.({ point, ...detail });
   await new Promise(() => {});
@@ -45,7 +47,9 @@ fs.open = async function (filename, ...args) {
 const originalRename = fs.rename;
 fs.rename = async function (from, to) {
   await originalRename.call(this, from, to);
-  if (insideImages(from) && from.endsWith('.part')) await pause('rename');
+  if (insideImages(from) && from.endsWith('.part')) {
+    await pause('rename');
+  }
 };
 syncBuiltinESMExports();
 
@@ -56,16 +60,19 @@ JsonStore.prototype.update = async function (...args) {
     .map((job) => ({ id: job.id, imageId: job.resultPending.imageId }));
   const result = await originalUpdate.apply(this, args);
   const pending = this.db?.jobs?.find((job) => job.resultPending);
-  if (pending)
+  if (pending) {
     await pause('descriptor', {
       jobId: pending.id,
       sqliteSynchronous: this.sqlite.pragma('synchronous', { simple: true }),
     });
+  }
   const completed = pendingBefore.find((before) =>
     this.db.jobs.some(
       (job) => job.id === before.id && !job.resultPending && job.imageId === before.imageId,
     ),
   );
-  if (completed) await pause('final_sql', { jobId: completed.id });
+  if (completed) {
+    await pause('final_sql', { jobId: completed.id });
+  }
   return result;
 };

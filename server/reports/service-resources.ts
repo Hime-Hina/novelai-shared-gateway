@@ -8,13 +8,18 @@ async function directoryBytes(directory: string): Promise<number> {
   let bytes = 0;
   for await (const entry of await opendir(directory)) {
     const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) bytes += await directoryBytes(file);
-    else if (entry.isFile()) {
+    if (entry.isDirectory()) {
+      bytes += await directoryBytes(file);
+    } else if (entry.isFile()) {
       try {
         const info = await lstat(file);
-        if (info.isFile()) bytes += info.size;
+        if (info.isFile()) {
+          bytes += info.size;
+        }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
       }
     }
   }
@@ -23,7 +28,9 @@ async function directoryBytes(directory: string): Promise<number> {
 
 function readDataUsage(directory: string): Promise<DataUsage | null> {
   const cached = dataUsageCache.get(directory);
-  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
   // 图片目录可能很大；一分钟内共用一次异步扫描，包括并发管理请求。
   const result = directoryBytes(directory)
     .then((bytes) => ({ bytes, checkedAt: new Date().toISOString() }))

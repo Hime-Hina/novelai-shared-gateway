@@ -50,10 +50,13 @@ export function activityDate(createdAt: unknown): string | null {
       createdAt,
     ) ||
     !calendarDate(createdAt.slice(0, 10))
-  )
+  ) {
     return null;
+  }
   const timestamp = Date.parse(createdAt);
-  if (!Number.isFinite(timestamp)) return null;
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
   const date = new Date(timestamp + offsetMs).toISOString().slice(0, 10);
   return calendarDate(date) ? date : null;
 }
@@ -86,29 +89,41 @@ export async function readActivityHeatmap(
   }: { memberId?: string | null; allowMemberFilter?: boolean },
   now = Date.now(),
 ): Promise<ActivitySnapshot> {
-  for (const key of ['operation', 'memberId', 'dates'])
-    if (params.getAll(key).length > 1) fail('热力图参数不能重复');
-  if (!allowMemberFilter && !memberId) fail('成员热力图需要已确认的成员身份');
-  if (!allowMemberFilter && params.has('memberId')) fail('成员热力图只能查询本人');
+  for (const key of ['operation', 'memberId', 'dates']) {
+    if (params.getAll(key).length > 1) {
+      fail('热力图参数不能重复');
+    }
+  }
+  if (!allowMemberFilter && !memberId) {
+    fail('成员热力图需要已确认的成员身份');
+  }
+  if (!allowMemberFilter && params.has('memberId')) {
+    fail('成员热力图只能查询本人');
+  }
   if (allowMemberFilter) {
     memberId = params.get('memberId') || null;
-    if (memberId && (memberId.length > 128 || /[\x00-\x1f\x7f]/.test(memberId)))
+    if (memberId && (memberId.length > 128 || /[\x00-\x1f\x7f]/.test(memberId))) {
       fail('成员标识无效');
+    }
   }
   const operation = params.get('operation') || 'generate';
-  if (operation !== 'generate' && operation !== 'upscale' && operation !== 'encode-vibe')
+  if (operation !== 'generate' && operation !== 'upscale' && operation !== 'encode-vibe') {
     fail('不支持的热力图操作类型');
+  }
   const range = activityRange(now);
   let dates: string[] | null = null;
   if (params.has('dates')) {
     const value = params.get('dates');
-    if (!value || value.length > 4026) fail('日期列表不能为空且最多366天');
+    if (!value || value.length > 4026) {
+      fail('日期列表不能为空且最多366天');
+    }
     dates = [...new Set(value.split(','))].sort();
     if (
       dates.length > 366 ||
       dates.some((date) => !calendarDate(date) || date < range.from || date > range.to)
-    )
+    ) {
       fail('日期须在最近一年内');
+    }
   }
   const days = await store.readActivityDays({
     since: range.since,

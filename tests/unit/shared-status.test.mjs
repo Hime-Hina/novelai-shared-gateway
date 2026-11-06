@@ -75,8 +75,9 @@ test('白名单返回只读汇总，没有上游与成员隐私', () => {
     'secret-name',
     'private upstream error',
     'secret prompt',
-  ])
+  ]) {
     assert.equal(JSON.stringify(s).includes(secret), false);
+  }
 });
 test('未绑定不能展示试用池及其他上游额度', () => {
   const db = fixture();
@@ -159,8 +160,9 @@ test('快照十分钟失效及未来异常快照，不把未知数字伪造成�
   });
   const s = sharedAccountStatus(db, NOW);
   assert.equal(s.status, 'unknown_balance');
-  for (const field of ['v5Percent', 'anlasFixed', 'anlasPurchased', 'refillSecondsPerPercent'])
+  for (const field of ['v5Percent', 'anlasFixed', 'anlasPurchased', 'refillSecondsPerPercent']) {
     assert.equal(s[field], null);
+  }
 });
 test('负用量标记保留，零与暂停恢复不是未知，冷却只显示未来时间', () => {
   const db = fixture();

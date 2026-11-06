@@ -46,7 +46,9 @@ export function jobDurationMs(
   now = Date.now(),
 ) {
   const started = Date.parse(job.createdAt || '');
-  if (!started) return 0;
+  if (!started) {
+    return 0;
+  }
   const ended = ['done', 'failed'].includes(job.status!)
     ? Date.parse(job.completedAt || job.updatedAt || '')
     : now;
@@ -165,22 +167,30 @@ export function publicGenerationRequest(
     done: 0,
     failed: 0,
   };
-  for (const job of jobs) if (Object.hasOwn(counts, job.status!)) counts[job.status!]++;
-  const status = counts.running
-    ? 'running'
-    : counts.queued
-      ? 'queued'
-      : counts.pending
-        ? 'pending'
-        : !counts.total
-          ? 'empty'
-          : counts.done === counts.total
-            ? 'done'
-            : counts.done
-              ? 'partial'
-              : jobs.every((job) => job.cancelled)
-                ? 'cancelled'
-                : 'failed';
+  for (const job of jobs) {
+    if (Object.hasOwn(counts, job.status!)) {
+      counts[job.status!]++;
+    }
+  }
+  // 父状态仅汇总已存子任务事实；活动状态优先，完成后才判断部分成功或取消。
+  let status: string;
+  if (counts.running) {
+    status = 'running';
+  } else if (counts.queued) {
+    status = 'queued';
+  } else if (counts.pending) {
+    status = 'pending';
+  } else if (!counts.total) {
+    status = 'empty';
+  } else if (counts.done === counts.total) {
+    status = 'done';
+  } else if (counts.done) {
+    status = 'partial';
+  } else if (jobs.every((job) => job.cancelled)) {
+    status = 'cancelled';
+  } else {
+    status = 'failed';
+  }
   const snapshot = {
     id: request.id,
     source: request.source,
@@ -214,7 +224,8 @@ export async function readOwnedGenerationRequest(
     });
   }
   const request = store.readGenerationRequestState(requestId, memberId);
-  if (!request)
+  if (!request) {
     throw Object.assign(new Error('请求不存在'), { statusCode: 404, code: 'request_not_found' });
+  }
   return request;
 }

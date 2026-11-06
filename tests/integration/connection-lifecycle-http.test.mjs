@@ -30,11 +30,12 @@ async function listen(server) {
 async function until(predicate, timeout = 100000, diagnostic) {
   const end = Date.now() + timeout;
   while (!predicate()) {
-    if (Date.now() >= end)
+    if (Date.now() >= end) {
       throw new Error(
         'synthetic connection lifecycle wait timed out' +
           (diagnostic ? ': ' + JSON.stringify(diagnostic()) : ''),
       );
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
@@ -105,7 +106,9 @@ test(
         return;
       }
       const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
+      for await (const chunk of req) {
+        chunks.push(chunk);
+      }
       const payload = JSON.parse(Buffer.concat(chunks));
       calls.push(Date.now());
       res.writeHead(200, {
@@ -167,8 +170,12 @@ test(
       });
     };
     const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-      if (exited) await exited;
+      if (child?.exitCode === null && child?.signalCode === null) {
+        child.kill(signal);
+      }
+      if (exited) {
+        await exited;
+      }
     };
     t.after(async () => {
       await stop();
@@ -186,8 +193,9 @@ test(
         adminToken,
         'pst-synthetic-offline-connection-only',
         ...credentials.flatMap((member) => [member.api_key, member.password]),
-      ])
+      ]) {
         text = text.replaceAll(secret, '[redacted]');
+      }
       return text.slice(-limit);
     };
     // 只输出合成样本的状态与时间，区分失败终态、停止派发和仍在前进；不延长等待阈值。
@@ -421,8 +429,9 @@ test(
     await until(
       () => {
         const jobs = rows();
-        if (jobs.some((job) => job.status === 'failed'))
+        if (jobs.some((job) => job.status === 'failed')) {
           assert.fail('synthetic connection lifecycle job failed: ' + JSON.stringify(diagnostic()));
+        }
         return jobs.length === 8 && jobs.every((job) => job.status === 'done');
       },
       100000,

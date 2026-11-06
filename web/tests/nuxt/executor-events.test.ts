@@ -58,7 +58,9 @@ afterEach(async () => {
 async function listen(handler: Handler, highWaterMark = 64 * 1024) {
   const server = http.createServer({ highWaterMark }, (req, res) => {
     const task = Promise.resolve(handler(req, res)).catch((error) => {
-      if (res.destroyed || res.writableEnded) return;
+      if (res.destroyed || res.writableEnded) {
+        return;
+      }
       if (res.headersSent) {
         res.destroy();
         return;
@@ -161,7 +163,7 @@ describe('executor status event bridge', () => {
     expect(browser.text()).toContain('event: connection-status\ndata: {"state":"retrying"}\n\n');
     expect(retry.delays).toEqual([5000, 5000]);
     expect(received).toHaveLength(3);
-    for (const headers of received)
+    for (const headers of received) {
       expect(headers).toMatchObject({
         host: 'localhost:18082',
         origin: 'http://localhost:18082',
@@ -170,6 +172,7 @@ describe('executor status event bridge', () => {
         'x-forwarded-for': '198.51.100.5, 127.0.0.1',
         'x-executor-token': config.executorToken,
       });
+    }
     latest!.write('event: auth-expired\ndata: {}\n\n');
     await vi.waitFor(() => expect(browser.ended()).toBe(true));
     expect(browser.text()).toContain('event: auth-expired\ndata: {}\n\n');
@@ -198,7 +201,9 @@ describe('executor status event bridge', () => {
       expect(browser.response.statusCode).toBe(marker ? 503 : status);
       expect(browser.response.headers['x-executor-auth-error']).toBeUndefined();
       expect(browser.text()).not.toContain(config.executorToken);
-      if (!marker) expect(JSON.parse(browser.text())).toEqual({ error: `business-${status}` });
+      if (!marker) {
+        expect(JSON.parse(browser.text())).toEqual({ error: `business-${status}` });
+      }
       expect(calls).toBe(1);
     }
     expect(retry.delays).toEqual([]);
@@ -229,8 +234,11 @@ describe('executor status event bridge', () => {
     let calls = 0;
     const f = await fixture((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      if (++calls === 1) res.write('event: shared-status\ndata: ' + 'x'.repeat(64 * 1024));
-      else res.write(invalidation('after-oversize', 0));
+      if (++calls === 1) {
+        res.write('event: shared-status\ndata: ' + 'x'.repeat(64 * 1024));
+      } else {
+        res.write(invalidation('after-oversize', 0));
+      }
     });
     const browser = await open(f.base);
     await vi.waitFor(() => expect(browser.text()).toContain(invalidation('after-oversize', 0)));

@@ -55,7 +55,9 @@ test('空目录为零，目录缺失或不可扫描返回未知，不妨碍内�
   for (const directory of [undefined, path.join(root, 'missing'), file]) {
     const result = await readServiceResources(directory);
     assert.equal(result.data, null);
-    if (directory !== file) assert.equal(result.disk, null);
+    if (directory !== file) {
+      assert.equal(result.disk, null);
+    }
     assert.ok(result.memory.rssBytes > 0);
     assert.ok(result.uptimeSeconds > 0);
   }

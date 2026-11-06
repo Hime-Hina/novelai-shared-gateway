@@ -35,7 +35,7 @@ async function open(t, directory) {
     directory || (await mkdtemp(path.join(tmpdir(), 'nai-native-batch-'))),
   );
   await store.init();
-  if (!directory)
+  if (!directory) {
     await store.update(
       (db) => {
         db.users = ['a', 'b', 'c', 'd'].map((id) => ({ id, token: id, enabled: true }));
@@ -56,6 +56,7 @@ async function open(t, directory) {
       },
       { immediate: true },
     );
+  }
   t.after(() => store.close());
   return store;
 }
@@ -304,8 +305,9 @@ test('启动未知在途和已过期父批次原子终止 pending；未过期的
   );
   await reopened.update(
     (db) => {
-      for (const job of db.jobs.filter((job) => job.requestId === b.id))
+      for (const job of db.jobs.filter((job) => job.requestId === b.id)) {
         job.queueExpiresAt = new Date(1).toISOString();
+      }
     },
     { dirtyRows: { jobs: b.jobIds } },
   );

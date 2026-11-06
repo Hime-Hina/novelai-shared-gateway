@@ -10,8 +10,9 @@ export function activityDateKey(value: Date | number): string {
 export function activityDates(from: string, to: string): string[] {
   const days: string[] = [],
     end = activityDate(to);
-  for (const date = activityDate(from); date <= end; date.setDate(date.getDate() + 1))
+  for (const date = activityDate(from); date <= end; date.setDate(date.getDate() + 1)) {
     days.push(activityDateKey(date));
+  }
   return days;
 }
 export function shanghaiDay(now = Date.now()): string {
@@ -33,8 +34,11 @@ export function aggregateActivity(
   const periods = new Map<string, { from: string; to: string; value: number }>();
   for (const date of dates) {
     const start = activityDate(date);
-    if (mode === 'week') start.setDate(start.getDate() - start.getDay());
-    else start.setDate(1);
+    if (mode === 'week') {
+      start.setDate(start.getDate() - start.getDay());
+    } else {
+      start.setDate(1);
+    }
     const key = activityDateKey(start),
       period = periods.get(key) || { from: date, to: date, value: 0 };
     period.to = date;

@@ -322,13 +322,14 @@ test('真实完成路径：退款前成功结算；退款后保留失败与结�
     const store = await open(t, fixture(Date.now(), { refund })),
       { ctx, writes } = await completionContext(store);
     // 迟到调用可能携带旧 reserved 快照；冷退款凭据仍是最终依据。
-    if (refund)
+    if (refund) {
       await store.update(
         (db) => {
           db.jobs[0].fairCharge.status = 'reserved';
         },
         { dirtyRows: { jobs: ['review'] } },
       );
+    }
     store.db.accounts[0].inFlight = 1;
     store.db.accounts[0].ordinaryStrikeCount = 3;
     store.db.accounts[0].capacityStrikeCount = 2;
@@ -619,7 +620,9 @@ test(
       const due = JSON.parse(
         reader.prepare("SELECT data FROM jobs WHERE id = 'offline-due'").get().data,
       );
-      if (due.generationReview.status === 'estimated_closed') break;
+      if (due.generationReview.status === 'estimated_closed') {
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.equal(

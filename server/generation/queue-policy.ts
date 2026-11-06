@@ -52,7 +52,9 @@ export function assertMemberAcceptsJobs(
   user: Pick<QueueMember, 'acceptingJobs' | 'jobAdmissionVersion'>,
   expectedVersion?: number,
 ): void {
-  if (user.acceptingJobs === false) fail(403, '管理员已停止此成员接单；已有结果仍可查询');
+  if (user.acceptingJobs === false) {
+    fail(403, '管理员已停止此成员接单；已有结果仍可查询');
+  }
   // 停止后再恢复不能让旧的多图请求悄悄提交下一张。
   if (expectedVersion !== undefined && expectedVersion !== (user.jobAdmissionVersion || 0)) {
     fail(409, '该请求剩余任务已被管理员取消，请重新提交');
@@ -78,8 +80,9 @@ export function assertQueueAdmission(
   ) {
     fail(429, `此成员最多保留 ${limits.member} 个未完成任务，请等待已有任务完成`);
   }
-  if (active.length + count > limits.global)
+  if (active.length + count > limits.global) {
     fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
+  }
 }
 
 export function queueDeadline(
@@ -97,9 +100,13 @@ export function queuedDeadlineTimestamp(
   job: Pick<QueueJob, 'status' | 'queueExpiresAt' | 'createdAt'>,
   env: NodeJS.ProcessEnv = process.env,
 ): number {
-  if (!waiting.has(job.status!)) return 0;
+  if (!waiting.has(job.status!)) {
+    return 0;
+  }
   const saved = Date.parse(job.queueExpiresAt || '');
-  if (Number.isFinite(saved)) return saved;
+  if (Number.isFinite(saved)) {
+    return saved;
+  }
   // 发布前已经排队的任务没有新字段，以原提交时间计算，不在重启时重新计时。
   const created = Date.parse(job.createdAt || '');
   return Number.isFinite(created) ? created + queuePolicy(env).waitMs : 0;
@@ -114,9 +121,12 @@ export function setMemberAdmission<D extends AdmissionState>(
   now = Date.now(),
 ) {
   const user = db.users.find((item) => item.id === userId);
-  if (!user) fail(404, '成员不存在');
-  if (!acceptingJobs && user.acceptingJobs !== false)
+  if (!user) {
+    fail(404, '成员不存在');
+  }
+  if (!acceptingJobs && user.acceptingJobs !== false) {
     user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
+  }
   user.acceptingJobs = acceptingJobs;
   user.updatedAt = new Date(now).toISOString();
   recordDomainEvent(db, {
@@ -137,8 +147,9 @@ export function setMemberAdmission<D extends AdmissionState>(
       if (
         (job.memberId ? job.memberId !== user.id : job.userToken !== user.token) ||
         !waiting.has(job.status!)
-      )
+      ) {
         continue;
+      }
       const message = '管理员已停止此成员接单，未派发任务已取消';
       refund(db, job, message);
       job.status = 'failed';

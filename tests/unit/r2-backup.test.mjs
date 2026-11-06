@@ -24,8 +24,9 @@ test('业务备份 AES-256-GCM 可还原，密钥/密文/认证标签损坏必�
 
 test('备份 CLI 上传、回读解密及下载还原，验证后才清理到七份', async (t) => {
   const { root, cloud, envFile, keyFile, call, encode } = await backupFixture(t);
-  for (let i = 1; i <= 7; i++)
+  for (let i = 1; i <= 7; i++) {
     await writeFile(encode(`backups/daily-2026100${i}T000000Z/${'a'.repeat(64)}`), 'old');
+  }
   const archive = path.join(root, 'business.tar.gz'),
     receipt = path.join(root, 'receipt.json');
   await writeFile(archive, 'synthetic private archive');

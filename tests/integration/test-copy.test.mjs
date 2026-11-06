@@ -124,11 +124,12 @@ async function fixture(t, resource = 'v5') {
     ledger: [],
     cards: [],
   };
-  for (const user of state.users)
+  for (const user of state.users) {
     await setMemberCredentials(state, user.id, {
       username: `member_${user.id}`,
       password: secrets.password,
     });
+  }
   state.users[3].enabled = false;
   const oldAuth = structuredClone(state.users.map((user) => user.memberAuth));
   state.settings.promptApi = {
@@ -158,9 +159,12 @@ async function fixture(t, resource = 'v5') {
   });
   const running = job('running', 0);
   state.jobs.push(running);
-  if (resource === 'free') running.request.model = 'nai-diffusion-4-5-full';
-  if (['fixed', 'purchased'].includes(resource))
+  if (resource === 'free') {
+    running.request.model = 'nai-diffusion-4-5-full';
+  }
+  if (['fixed', 'purchased'].includes(resource)) {
     Object.assign(running.request, { width: 1536, allowPurchasedAnlas: true });
+  }
   reserveFairQuota(state, state.users[0], running, state.accounts[0], now);
   running.upstreamStartedAt = new Date(now).toISOString();
   running.resultPending = {
@@ -275,9 +279,9 @@ async function fixture(t, resource = 'v5') {
     }),
   );
   save(db, 'cards', { id: 'card', code: secrets.card, token: secrets.api, enabled: true }, 1);
-  if (resource === 'v5')
+  if (resource === 'v5') {
     db.transaction(() => {
-      for (let index = 0; index < 3001; index++)
+      for (let index = 0; index < 3001; index++) {
         save(
           db,
           'jobs',
@@ -290,7 +294,9 @@ async function fixture(t, resource = 'v5') {
           },
           -index - 1,
         );
+      }
     })();
+  }
   save(
     db,
     'jobs',
@@ -401,12 +407,13 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
     'app_records',
     'generation_idempotency',
     'fair_quota_settlements',
-  ])
+  ]) {
     assert.equal(
       result.after[table],
       result.before[table] + (table === 'fair_quota_settlements' ? 1 : 0),
       table,
     );
+  }
   assert.equal(result.after.member_sessions, 0);
   const db = new Database(path.join(target, 'library.sqlite'), { readonly: true });
   t.after(() => db.close());
@@ -434,7 +441,9 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
     if (user.id === 'd') {
       assert.equal(user.enabled, false);
       await assert.rejects(loginMember({ users }, entry.username, entry.password));
-    } else assert.equal((await loginMember({ users }, entry.username, entry.password)).id, user.id);
+    } else {
+      assert.equal((await loginMember({ users }, entry.username, entry.password)).id, user.id);
+    }
     await assert.rejects(loginMember({ users }, entry.username, secrets.password));
     assert.equal(user.token, entry.api_key);
     assert.equal(user.acceptingJobs, false);
@@ -463,7 +472,9 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   );
   const exited = once(child, 'exit');
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+    }
     await exited;
   });
   const lines = createInterface({ input: child.stdout });
@@ -556,12 +567,13 @@ test('离线全表副本旋转凭据、闭合预留并保留冷历史关系，�
   for (const value of [
     ...Object.values(secrets),
     ...f.oldAuth.flatMap((auth) => [auth.hash, auth.salt, auth.version]),
-  ])
+  ]) {
     assert.equal(
       outputBytes.includes(Buffer.from(value)),
       false,
       'no original credential in rows, shadow columns, cold tables or free pages',
     );
+  }
   assert.deepEqual((await readdir(target)).sort(), [
     'images',
     'library.sqlite',
@@ -622,7 +634,7 @@ test('目标存在时拒绝覆盖；孤立预留与旧points活动任务保留�
 });
 
 test('免费、订阅Anlas、购买Anlas和自动回退预留沿现有账务函数只退款一次', async (t) => {
-  for (const resource of ['free', 'fixed', 'purchased', 'fallback'])
+  for (const resource of ['free', 'fixed', 'purchased', 'fallback']) {
     await t.test(resource, async (t) => {
       const f = await fixture(t, resource),
         target = path.join(f.root, 'test-copy');
@@ -645,7 +657,9 @@ test('免费、订阅Anlas、购买Anlas和自动回退预留沿现有账务函�
           assert.equal(charge.fixed, '0');
           assert.ok(charge.purchased > 0);
         }
-        if (resource === 'fallback') assert.equal(charge.billingMode, 'anlas_fallback');
+        if (resource === 'fallback') {
+          assert.equal(charge.billingMode, 'anlas_fallback');
+        }
         assert.equal(
           db
             .prepare(
@@ -659,6 +673,7 @@ test('免费、订阅Anlas、购买Anlas和自动回退预留沿现有账务函�
       }
       assert.equal(digest(await readFile(f.source)), digest(f.originalBytes));
     });
+  }
 });
 
 test('事件权威源库隔离为全新opening历史，受保护上下文脱敏后可重放且不复活原任务', async (t) => {
@@ -700,11 +715,12 @@ test('事件权威源库隔离为全新opening历史，受保护上下文脱敏�
       },
     ],
   };
-  for (const user of seed.users)
+  for (const user of seed.users) {
     await setMemberCredentials(seed, user.id, {
       username: `source_${user.id}`,
       password: secrets.password,
     });
+  }
   configureFairQuota(seed, ['a', 'b', 'c', 'd']);
   syncFairQuota(seed, now);
   await store.write(seed);
@@ -817,8 +833,9 @@ test('事件权威源库隔离为全新opening历史，受保护上下文脱敏�
     secrets.refresh,
     secrets.password,
     secrets.proxy,
-  ])
+  ]) {
     assert.equal(bytes.includes(Buffer.from(value)), false);
+  }
   const replay = new Database(path.join(root, 'replayed.sqlite'));
   t.after(() => replay.close());
   migrateStorage(replay);
@@ -1009,14 +1026,14 @@ test('受保护原摘要损坏时拒绝制作新baseline，不用脱敏重算掩
       source = path.join(root, 'source.sqlite'),
       db = new Database(source);
     migrateStorage(db);
-    if (kind === 'artifact')
+    if (kind === 'artifact') {
       db.prepare('INSERT INTO artifact_inputs VALUES (?,?,?,?)').run(
         'synthetic-image',
         'a',
         '0'.repeat(64),
         '{"prompt":"synthetic"}',
       );
-    else
+    } else {
       db.prepare('INSERT INTO generation_diagnostics VALUES (?,?,?,?,?)').run(
         'synthetic-diagnostic',
         'job',
@@ -1024,6 +1041,7 @@ test('受保护原摘要损坏时拒绝制作新baseline，不用脱敏重算掩
         '0'.repeat(64),
         new Date(now).toISOString(),
       );
+    }
     db.close();
     const original = await readFile(source),
       target = path.join(root, 'isolated');

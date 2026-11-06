@@ -15,11 +15,9 @@ import type {
 enableAutoUnmount(afterEach);
 afterEach(() => vi.restoreAllMocks());
 it('免费图策略保存独立编辑版本，后台刷新不会覆盖未保存的阈值', async () => {
-  const transport = vi
-    .fn()
-    .mockResolvedValue({
-      policy: { version: 3, enabled: true, warningThreshold: 8, hardLimit: null },
-    });
+  const transport = vi.fn().mockResolvedValue({
+    policy: { version: 3, enabled: true, warningThreshold: 8, hardLimit: null },
+  });
   const api: ManagementApi = async <T>(...args: Parameters<ManagementApi>) =>
     (await transport(...args)) as T;
   const wrapper = await mountSuspended(ManagementFreeImages, {
@@ -146,7 +144,9 @@ async function page(
   const api: ManagementApi = async <T>(...args: Parameters<ManagementApi>) =>
     (await transport(...args)) as T;
   const run: ManagementRun = async (operation) => {
-    if (working) return;
+    if (working) {
+      return;
+    }
     working = true;
     try {
       await operation();
@@ -165,8 +165,9 @@ async function page(
       .get(`[data-member-id="${userId}"]`)
       .findAll('button')
       .find((item) => item.text() === label);
-    if (button) await button.trigger('click');
-    else {
+    if (button) {
+      await button.trigger('click');
+    } else {
       const menu = wrapper
         .findAllComponents(NDropdown)
         .find(
@@ -243,8 +244,12 @@ describe('成员创建与凭据', () => {
       .fn<(...args: Parameters<ManagementApi>) => Promise<unknown>>()
       .mockImplementation(async (_path, value) => {
         const request = value as { action: string };
-        if (request.action === 'credentials') return { id: 'new-id', username: 'new-member' };
-        if (request.action === 'member-key') throw new Error('synthetic delivery failure');
+        if (request.action === 'credentials') {
+          return { id: 'new-id', username: 'new-member' };
+        }
+        if (request.action === 'member-key') {
+          throw new Error('synthetic delivery failure');
+        }
         throw new Error('unexpected request');
       });
     const { wrapper, errors } = await page(api);
@@ -408,10 +413,15 @@ it('搜索、分组过滤、密码重置、邀请码及接单/停用确认保留
     .fn<(...args: Parameters<ManagementApi>) => Promise<unknown>>()
     .mockImplementation(async (_path, value) => {
       const request = value as { action: string; userId: string };
-      if (request.action === 'credentials') return { id: request.userId, username: 'member-b' };
-      if (request.action === 'member-key') return { apiKey: 'synthetic-reset-key' };
-      if (request.action === 'discord-invite')
+      if (request.action === 'credentials') {
+        return { id: request.userId, username: 'member-b' };
+      }
+      if (request.action === 'member-key') {
+        return { apiKey: 'synthetic-reset-key' };
+      }
+      if (request.action === 'discord-invite') {
         return { code: 'synthetic-invite', expiresAt: 1800000000000 };
+      }
       return { cancelledCount: 2 };
     });
   const { wrapper, action, select } = await page(api, initial, 'admin');
@@ -436,8 +446,9 @@ it('搜索、分组过滤、密码重置、邀请码及接单/停用确认保留
     const before = api.mock.calls.length;
     await action('b', label!);
     expect(api).toHaveBeenCalledTimes(before);
-    if (expectedAction === 'member-admission')
+    if (expectedAction === 'member-admission') {
       expect(body().get('#confirmDescription').text()).toContain('在途生成正常完成');
+    }
     await body().get('#confirmAction').trigger('click');
     await flushPromises();
     expect(api.mock.calls.at(-1)?.[1]).toMatchObject({ action: expectedAction, userId: 'b' });

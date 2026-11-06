@@ -56,8 +56,9 @@ function command(id, events, options = {}) {
     recordedAt: at,
     ...options,
   });
-  for (const event of events)
+  for (const event of events) {
     recordDomainEvent(state, { streamId: 'request:r1', occurredAt: at, ...event });
+  }
   setDomainCommandReceipt(state, { requestId: 'r1', jobIds: ['j1'] });
   return finishDomainCommand(state);
 }
@@ -137,8 +138,9 @@ test('SQL failure and expected-version conflict leave no partial batch, cursor o
       /absent_table/,
     );
   })();
-  for (const table of ['event_commits', 'domain_events', 'event_streams', 'projection_versions'])
+  for (const table of ['event_commits', 'domain_events', 'event_streams', 'projection_versions']) {
     assert.equal(sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0);
+  }
   assert.equal(sqlite.prepare('SELECT value FROM event_clock').get(), undefined);
   sqlite.transaction(() => appendDomainCommit(sqlite, batch))();
   const conflict = command(
@@ -198,7 +200,9 @@ test('complete commit replay resumes without duplicate effects and preserves fai
       },
     ]),
   ];
-  for (const batch of batches) source.transaction(() => appendDomainCommit(source, batch))();
+  for (const batch of batches) {
+    source.transaction(() => appendDomainCommit(source, batch))();
+  }
   assert.deepEqual(replayDomainEvents(source, target, { maxCommits: 2 }), {
     lastCommitSeq: '2',
     commits: 2,
@@ -232,7 +236,7 @@ test('offline replay rolls back a failed 100-commit batch and resumes from its p
   source.transaction(() =>
     appendDomainCommit(source, command('accept', [accepted()]), { project: applyEventProjection }),
   )();
-  for (let index = 2; index <= 205; index++)
+  for (let index = 2; index <= 205; index++) {
     source.transaction(() =>
       appendDomainCommit(
         source,
@@ -242,6 +246,7 @@ test('offline replay rolls back a failed 100-commit batch and resumes from its p
         { project: applyEventProjection },
       ),
     )();
+  }
   for (const { failAt, completed, resumeFullCommits } of [
     { failAt: 1, completed: 0, resumeFullCommits: 4 },
     { failAt: 101, completed: 100, resumeFullCommits: 3 },
@@ -252,7 +257,9 @@ test('offline replay rolls back a failed 100-commit batch and resumes from its p
       const open = () =>
         new Database(path.join(directory, `target-${failAt}.sqlite`), {
           verbose: (sql) => {
-            if (sql === 'COMMIT') fullCommits++;
+            if (sql === 'COMMIT') {
+              fullCommits++;
+            }
           },
         });
       let target = open();
@@ -370,7 +377,7 @@ test('replay orders numeric commit sequences correctly beyond nine commits', (t)
   const source = database(t),
     target = database(t);
   source.transaction(() => appendDomainCommit(source, command('accept', [accepted()])))();
-  for (let index = 2; index <= 12; index++)
+  for (let index = 2; index <= 12; index++) {
     source.transaction(() =>
       appendDomainCommit(
         source,
@@ -379,6 +386,7 @@ test('replay orders numeric commit sequences correctly beyond nine commits', (t)
         ]),
       ),
     )();
+  }
   assert.deepEqual(
     readDomainCommits(source).map((commit) => commit.commitSeq),
     Array.from({ length: 12 }, (_, index) => String(index + 1)),

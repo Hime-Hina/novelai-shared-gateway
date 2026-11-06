@@ -120,7 +120,9 @@ test(
       output += chunk;
     });
     t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+      }
       await exit;
     });
     const deadline = Date.now() + 15000;

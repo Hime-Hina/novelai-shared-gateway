@@ -34,20 +34,24 @@ function resultFile({ imageId, operation, mimeType }: ResultIdentity): string {
     typeof imageId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(imageId) ||
     /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i.test(imageId)
-  )
+  ) {
     throw invalid('imageId is invalid.');
-  if (!['generate', 'upscale', 'encode-vibe'].includes(operation as string))
+  }
+  if (!['generate', 'upscale', 'encode-vibe'].includes(operation as string)) {
     throw invalid('operation is invalid.');
+  }
   if (
     !Object.hasOwn(extensions, mimeType as PropertyKey) ||
     (operation === 'encode-vibe') !== (mimeType as string).startsWith('application/')
-  )
+  ) {
     throw invalid('MIME type does not match the operation.');
+  }
   return `images/${imageId}.${extensions[mimeType as ResultMime]}`;
 }
 function contentHash(operation: unknown, mimeType: unknown, buffer: unknown): string {
-  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_RESULT_BYTES)
+  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_RESULT_BYTES) {
     throw invalid('byte length is invalid.');
+  }
   if (operation !== 'encode-vibe') {
     let image;
     try {
@@ -59,7 +63,9 @@ function contentHash(operation: unknown, mimeType: unknown, buffer: unknown): st
     } catch (cause) {
       throw invalid('image is invalid.', cause);
     }
-    if (image.mimeType !== mimeType) throw invalid('MIME type does not match image bytes.');
+    if (image.mimeType !== mimeType) {
+      throw invalid('MIME type does not match image bytes.');
+    }
   }
   return createHash('sha256').update(buffer).digest('hex');
 }
@@ -74,14 +80,17 @@ function checkDescriptor(value: unknown): asserts value is StoredResultDescripto
     (pending.byteLength as number) > MAX_RESULT_BYTES ||
     typeof pending.sha256 !== 'string' ||
     !/^[a-f0-9]{64}$/.test(pending.sha256)
-  )
+  ) {
     throw invalid('descriptor is invalid.');
+  }
 }
 function checkContent(pending: StoredResultDescriptor, buffer: unknown): asserts buffer is Buffer {
-  if (!Buffer.isBuffer(buffer) || buffer.length !== pending.byteLength)
+  if (!Buffer.isBuffer(buffer) || buffer.length !== pending.byteLength) {
     throw invalid('length does not match the descriptor.');
-  if (contentHash(pending.operation, pending.mimeType, buffer) !== pending.sha256)
+  }
+  if (contentHash(pending.operation, pending.mimeType, buffer) !== pending.sha256) {
     throw invalid('hash does not match the descriptor.');
+  }
 }
 
 export function describeStoredResult(
@@ -111,11 +120,17 @@ async function readCandidate(
   try {
     stat = await lstat(file);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
     throw error;
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) throw invalid('path must be a regular file.');
-  if (stat.size !== pending.byteLength) throw invalid('file length does not match the descriptor.');
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw invalid('path must be a regular file.');
+  }
+  if (stat.size !== pending.byteLength) {
+    throw invalid('file length does not match the descriptor.');
+  }
   const handle = await open(file, 'r+');
   try {
     const buffer = await handle.readFile();
@@ -128,7 +143,9 @@ async function readCandidate(
 }
 async function syncDirectory(directory: string): Promise<void> {
   // Windows 无可移植的目录 fsync；仅 Linux 等支持平台保证此目录项同步步骤。
-  if (process.platform === 'win32') return;
+  if (process.platform === 'win32') {
+    return;
+  }
   const handle = await open(directory, 'r');
   try {
     await handle.sync();
@@ -145,11 +162,14 @@ export async function publishStoredResult(
   buffer?: unknown,
 ): Promise<ResultContent | null> {
   checkDescriptor(pending);
-  if (buffer !== undefined) checkContent(pending, buffer);
+  if (buffer !== undefined) {
+    checkContent(pending, buffer);
+  }
   const directory = path.resolve(dataDir, 'images'),
     stat = await lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink())
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw invalid('images directory must not be a symbolic link.');
+  }
   const file = path.resolve(dataDir, pending.file),
     partial = `${file}.part`;
   const existing = await readCandidate(file, pending),
@@ -158,7 +178,9 @@ export async function publishStoredResult(
     await syncDirectory(directory);
     return { buffer: buffer ?? existing, mimeType: pending.mimeType };
   }
-  if (!staged && buffer === undefined) return null;
+  if (!staged && buffer === undefined) {
+    return null;
+  }
   if (!staged) {
     const handle = await open(partial, 'wx', 0o600);
     try {

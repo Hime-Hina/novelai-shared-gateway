@@ -29,8 +29,9 @@ test('四张图按顺序分帧，部分成功保留已完成图片并发送中�
     events.map((event) => event.samp_ix),
     [0, 1, 2, 3],
   );
-  for (const [index, event] of events.entries())
+  for (const [index, event] of events.entries()) {
     assert.deepEqual(Buffer.from(event.image), images[index]);
+  }
   const partial = readNativeEvents(
     nativeImagesMsgpack(images.slice(0, 1), { index: 1, message: '下一张失败，已退回本张额度' }),
   );
@@ -44,8 +45,9 @@ test('四张图按顺序分帧，部分成功保留已完成图片并发送中�
 });
 
 test('缺少图片、越界数量与不连续的失败编号不能伪装成功帧', () => {
-  for (const images of [[], [Buffer.alloc(0)], ['not binary'], Array(5).fill(Buffer.from('x'))])
+  for (const images of [[], [Buffer.alloc(0)], ['not binary'], Array(5).fill(Buffer.from('x'))]) {
     assert.throws(() => nativeImagesMsgpack(images));
+  }
   assert.throws(() => nativeImagesMsgpack([Buffer.from('x')], { index: 2, message: 'bad index' }));
 });
 
@@ -212,7 +214,9 @@ async function* images(...values) {
 }
 async function collect(source) {
   const chunks = [];
-  for await (const chunk of source) chunks.push(chunk);
+  for await (const chunk of source) {
+    chunks.push(chunk);
+  }
   return chunks;
 }
 
@@ -264,7 +268,9 @@ test('JSON图片按有限块输出，跨三字节及48KiB边界仍可精确还�
       chunks.every((chunk) => typeof chunk === 'string' && Buffer.byteLength(chunk) <= 65536),
     );
     assert.deepEqual(Buffer.from(JSON.parse(chunks.join('')).images[0].image, 'base64'), buffer);
-    if (length > 49152) assert.ok(chunks.length > 6, '大图片必须分块输出');
+    if (length > 49152) {
+      assert.ok(chunks.length > 6, '大图片必须分块输出');
+    }
   }
 });
 
@@ -325,7 +331,9 @@ test('初次与后续source错误原样抛出，首项失败或空source没有�
   }
   await assert.rejects(
     async () => {
-      for await (const chunk of nativeImagesJson(failedLater())) chunks.push(chunk);
+      for await (const chunk of nativeImagesJson(failedLater())) {
+        chunks.push(chunk);
+      }
     },
     (error) => error === later,
   );

@@ -16,10 +16,12 @@ function readConfig(env) {
   if (
     adminToken.length < 32 ||
     /^(123456|change|replace|example|your[-_ ]?admin)/i.test(adminToken)
-  )
+  ) {
     reject('ADMIN_TOKEN 必须设置为至少 32 位的随机管理员密钥。');
-  if (!/^pst-[A-Za-z0-9_-]{20,}$/.test(upstreamToken))
+  }
+  if (!/^pst-[A-Za-z0-9_-]{20,}$/.test(upstreamToken)) {
     reject('NOVELAI_TOKEN 必须是有效格式的 NovelAI PST。');
+  }
   const names =
     env.BOOTSTRAP_USERNAMES === undefined
       ? ['member01', 'member02', 'member03', 'member04']
@@ -30,8 +32,9 @@ function readConfig(env) {
     names.length !== 4 ||
     new Set(names).size !== 4 ||
     names.some((name) => !/^[a-z0-9][a-z0-9_.-]{2,39}$/.test(name))
-  )
+  ) {
     reject('BOOTSTRAP_USERNAMES 需要四个唯一用户名，用英文逗号分隔。');
+  }
   return {
     upstreamToken,
     names,
@@ -43,7 +46,9 @@ async function ensureAbsent(filename) {
   try {
     await lstat(filename);
   } catch (error) {
-    if (error.code === 'ENOENT') return;
+    if (error.code === 'ENOENT') {
+      return;
+    }
     throw error;
   }
   reject('数据目录已有数据库、初始化记录或凭据，拒绝覆盖；请在首次启动服务之前初始化。');
@@ -60,7 +65,9 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     'bootstrap-credentials.json',
     '.bootstrap.lock',
   ];
-  for (const name of protectedNames) await ensureAbsent(path.join(config.dataDir, name));
+  for (const name of protectedNames) {
+    await ensureAbsent(path.join(config.dataDir, name));
+  }
   // 依赖在文件预检后加载；不会导入服务入口，不启动 HTTP 服务或上游请求。
   const deps = dependencies || {
     ...(await import('../server/storage/sqlite-store.ts')),
@@ -91,11 +98,12 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     createdAt,
   }));
   const prepared = { users };
-  for (const member of credentials)
+  for (const member of credentials) {
     await deps.setMemberCredentials(prepared, member.user_id, {
       username: member.username,
       password: member.password,
     });
+  }
   const account = {
     id: deps.createId('acct'),
     name: 'Shared Opus',
@@ -128,15 +136,18 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     try {
       lock = await open(path.join(config.dataDir, '.bootstrap.lock'), 'wx', 0o600);
     } catch (error) {
-      if (error.code === 'EEXIST') reject('已有初始化记录，拒绝重复运行。');
+      if (error.code === 'EEXIST') {
+        reject('已有初始化记录，拒绝重复运行。');
+      }
       throw error;
     }
     await lock.writeFile(JSON.stringify({ createdAt }) + '\n', 'utf8');
     await lock.sync();
     await lock.close();
     lock = null;
-    for (const name of protectedNames.filter((name) => name !== '.bootstrap.lock'))
+    for (const name of protectedNames.filter((name) => name !== '.bootstrap.lock')) {
       await ensureAbsent(path.join(config.dataDir, name));
+    }
     // 在持久化用户前保存一次性随机凭据，避免已建账户却无法找回初始密码。
     const output = await open(credentialPath, 'wx', 0o600);
     try {
@@ -158,11 +169,12 @@ export async function bootstrap({ env = process.env, dependencies, log = console
             (name) => (db[name] || []).length,
           ) ||
           db.settings?.fairQuota
-        )
+        ) {
           reject('数据库并非空白，初始化已停止，未覆盖现有账户。');
+        }
         db.users = prepared.users;
         db.accounts = [account];
-        for (const user of prepared.users)
+        for (const user of prepared.users) {
           recordDomainEvent(db, {
             eventType: 'MemberEligibilityChanged',
             streamId: 'sharing:default',
@@ -177,6 +189,7 @@ export async function bootstrap({ env = process.env, dependencies, log = console
               actorId: 'bootstrap',
             },
           });
+        }
         recordDomainEvent(db, {
           eventType: 'AccountRegistered',
           streamId: `account:${account.id}`,
@@ -214,8 +227,12 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     await store.close();
     store = null;
   } finally {
-    if (lock) await lock.close();
-    if (store) await store.close();
+    if (lock) {
+      await lock.close();
+    }
+    if (store) {
+      await store.close();
+    }
     process.umask(oldMask);
   }
   log(`初始化完成；四个成员的登录凭据和 API Key 已保存至：${credentialPath}`);

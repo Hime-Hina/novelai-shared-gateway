@@ -24,7 +24,11 @@ type Settings = Partial<StoreDatabase['settings']>;
 
 export function physicalAccountLoad(controls: PhysicalControls, accountId: string) {
   let count = 0;
-  for (const control of controls.values()) if (control.accountId === accountId) count++;
+  for (const control of controls.values()) {
+    if (control.accountId === accountId) {
+      count++;
+    }
+  }
   return count;
 }
 export function availableSharedAccountSlots(
@@ -64,9 +68,14 @@ export function createGenerationControls(options: {
   const controls = new Map<string, RunningControl>();
   function abortRunningJob(jobId: string, reason = 'direct generate timeout') {
     const control = controls.get(jobId);
-    if (!control) return false;
+    if (!control) {
+      return false;
+    }
     control.reason = reason;
-    if (!control.controller.signal.aborted) control.controller.abort(new Error(reason));
+    // Abort 只请求终止；物理槽一直保留到执行 promise 收尾，防止上游仍运行时派发下一次。
+    if (!control.controller.signal.aborted) {
+      control.controller.abort(new Error(reason));
+    }
     return true;
   }
   function createRunningJobControl(job: Partial<StoreItem> = {}) {
@@ -85,7 +94,9 @@ export function createGenerationControls(options: {
       reason: '',
       timer: null,
     };
-    if (!job.id) return control;
+    if (!job.id) {
+      return control;
+    }
     control.timer = setTimeout(
       () => abortRunningJob(job.id!, 'direct generate timeout'),
       options.timeoutDelay(job),
@@ -94,8 +105,12 @@ export function createGenerationControls(options: {
     return control;
   }
   function finishRunningJobControl(jobId: string | undefined, control: RunningControl) {
-    if (control.timer) clearTimeout(control.timer);
-    if (jobId && controls.get(jobId) === control) controls.delete(jobId);
+    if (control.timer) {
+      clearTimeout(control.timer);
+    }
+    if (jobId && controls.get(jobId) === control) {
+      controls.delete(jobId);
+    }
     control.resolveDone();
     options.schedule();
   }
@@ -143,14 +158,18 @@ export function createQueueDispatcher(options: {
     );
   }
   function schedule(delay = 0) {
-    if (!options.enabled()) return;
+    if (!options.enabled()) {
+      return;
+    }
     if (draining) {
       requested = true;
       return;
     }
     const next = now() + delay;
     if (timer) {
-      if (next >= runAt) return;
+      if (next >= runAt) {
+        return;
+      }
       clearTimeout(timer);
     }
     runAt = next;
@@ -161,7 +180,9 @@ export function createQueueDispatcher(options: {
     }, delay);
   }
   async function drain(scheduledAt = now()) {
-    if (!options.enabled()) return;
+    if (!options.enabled()) {
+      return;
+    }
     if (draining) {
       requested = true;
       return;
@@ -183,16 +204,20 @@ export function createQueueDispatcher(options: {
                 (item) => item.id === db.settings.fairQuota?.boundAccountId,
               );
             const physical = account ? physicalAccountLoad(controls, account.id) : 0;
-            const reason =
-              !account || account.enabled === false || db.settings.fairQuota?.status !== 'active'
-                ? 'eligibility'
-                : physical > 0
-                  ? 'physical_inflight'
-                  : Number(account.inFlight || 0) > 0
-                    ? 'account_inflight'
-                    : sharedAccountReadyDelay(account, now()) > 0
-                      ? 'cooldown'
-                      : 'ready';
+            let reason = 'ready';
+            if (
+              !account ||
+              account.enabled === false ||
+              db.settings.fairQuota?.status !== 'active'
+            ) {
+              reason = 'eligibility';
+            } else if (physical > 0) {
+              reason = 'physical_inflight';
+            } else if (Number(account.inFlight || 0) > 0) {
+              reason = 'account_inflight';
+            } else if (sharedAccountReadyDelay(account, now()) > 0) {
+              reason = 'cooldown';
+            }
             const until =
               account && sharedAccountReadyDelay(account, now()) > 0 ? account.cooldownUntil : null;
             const signature = JSON.stringify([jobId, account?.id, reason, until]);
@@ -211,11 +236,12 @@ export function createQueueDispatcher(options: {
             }
           }
           // Crossing the cooldown boundary between reads must still preserve a wakeup.
-          if (available <= 0)
+          if (available <= 0) {
             return {
               jobIds: [] as string[],
               delay: Math.max(1, readyDelay(db.accounts, db.settings)),
             };
+          }
           const active = new Set(
             db.jobs
               .filter(
@@ -235,7 +261,9 @@ export function createQueueDispatcher(options: {
         },
         { collections: ['accounts'], persist: false },
       );
-      if (!plan.jobIds.length && plan.delay > 0) requested = true;
+      if (!plan.jobIds.length && plan.delay > 0) {
+        requested = true;
+      }
       const reservations = await Promise.all(
         plan.jobIds.map((id) => options.reserve(id).catch((error) => ({ error }))),
       );
@@ -244,12 +272,13 @@ export function createQueueDispatcher(options: {
           options.error?.(reservation.error);
           continue;
         }
-        if (reservation.failure)
+        if (reservation.failure) {
           options.notify(reservation.jobId!, {
             error: reservation.failure,
             statusCode: reservation.statusCode,
             cooldownUntil: reservation.cooldownUntil,
           });
+        }
         if (reservation.skip || reservation.queued) {
           requested = true;
           continue;
@@ -264,11 +293,15 @@ export function createQueueDispatcher(options: {
       }
     } finally {
       draining = false;
-      if (requested) schedule(await retryDelay());
+      if (requested) {
+        schedule(await retryDelay());
+      }
     }
   }
   function stop() {
-    if (timer) clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+    }
     timer = null;
     runAt = 0;
   }

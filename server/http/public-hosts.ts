@@ -6,9 +6,13 @@ const dnsHost =
 
 // 仅按 Host 与显式配置逐项匹配；不信任转发头、通配符、后缀或 URL 格式配置。
 export function isPublicHost(host: unknown, env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.PUBLIC_MODE !== 'true' || typeof host !== 'string') return false;
+  if (env.PUBLIC_MODE !== 'true' || typeof host !== 'string') {
+    return false;
+  }
   const normalized = host.toLowerCase();
-  if (!dnsHost.test(normalized)) return false;
+  if (!dnsHost.test(normalized)) {
+    return false;
+  }
   const configured = [env.PUBLIC_HOST, ...String(env.PUBLIC_HOST_ALIASES || '').split(',')];
   return configured.some((value) => {
     const allowed = String(value || '')

@@ -58,7 +58,9 @@ export function recordSharedCompletion(
   now = Date.now(),
   { job, kind = 'ended', retryAfterUntil }: CompletionOptions = {},
 ): boolean {
-  if (!account) return false;
+  if (!account) {
+    return false;
+  }
   const attemptId = job?.generationAttempt?.id || job?.id;
   const previous = job?.sharedCooldown;
   // 首次完整迟到产物可以纠正失败结果；重复回调不能清除另一任务后来积累的失败。
@@ -66,8 +68,9 @@ export function recordSharedCompletion(
     previous?.attemptId === attemptId &&
     previous &&
     (kind !== 'success' || previous.kind === 'success')
-  )
+  ) {
     return false;
+  }
   let delay = SHARED_ACCOUNT_GAP_MS,
     reason = 'completion_gap';
   if (kind === 'success') {
@@ -101,7 +104,9 @@ export function recordSharedCompletion(
     account.cooldownUntil = new Date(until).toISOString();
     account.cooldownReason = reason;
   }
-  if (job) job.sharedCooldown = { attemptId, kind, at: now, until: account.cooldownUntil };
+  if (job) {
+    job.sharedCooldown = { attemptId, kind, at: now, until: account.cooldownUntil };
+  }
   return true;
 }
 

@@ -90,7 +90,8 @@ test('首次分组预览纯读且与保存后的有效Opus钱包一致', async (
       'anlasFixedAvailable',
       'anlasPurchasedAvailable',
       'share',
-    ])
+    ]) {
       assert.equal(actual[field], member.quota[field]);
+    }
   }
 });

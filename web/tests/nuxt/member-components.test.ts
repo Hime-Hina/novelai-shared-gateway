@@ -300,8 +300,9 @@ describe('MemberBatch', () => {
     expect(api).not.toHaveBeenCalled();
     await wrapper.get('.n-collapse-item__header-main').trigger('click');
     expect(api).toHaveBeenCalledExactlyOnceWith(requestPath);
-    for (let refreshVersion = 1; refreshVersion <= 8; refreshVersion++)
+    for (let refreshVersion = 1; refreshVersion <= 8; refreshVersion++) {
       await wrapper.setProps({ refreshVersion });
+    }
     expect(api).toHaveBeenCalledTimes(1);
     first.resolve(snapshot('first-result'));
     await flushPromises();
@@ -391,8 +392,11 @@ describe('MemberBatch', () => {
         .findAll('button')
         .find((item) => item.text() === '取消此批次尚未派发的图片')!
         .trigger('click');
-      if (unmount) wrapper.unmount();
-      else await wrapper.get('.n-collapse-item__header-main').trigger('click');
+      if (unmount) {
+        wrapper.unmount();
+      } else {
+        await wrapper.get('.n-collapse-item__header-main').trigger('click');
+      }
       cancelled.resolve(cancelledSnapshot());
       await flushPromises();
       expect(wrapper.emitted('changed')?.length || 0).toBe(unmount ? 0 : 1);

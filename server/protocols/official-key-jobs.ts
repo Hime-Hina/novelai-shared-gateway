@@ -49,7 +49,9 @@ interface CreateOptions {
 export const isOfficialKey = (token: unknown): boolean => String(token || '').startsWith('pst-');
 
 export function officialKeyOwner(token: string): string {
-  if (!/^pst-[A-Za-z0-9_-]{1,256}$/.test(token || '')) throw failure(401, '官方密钥格式不正确。');
+  if (!/^pst-[A-Za-z0-9_-]{1,256}$/.test(token || '')) {
+    throw failure(401, '官方密钥格式不正确。');
+  }
   return `official:${createHash('sha256').update(token).digest('hex')}`;
 }
 
@@ -61,17 +63,22 @@ export function officialKeyError(error: unknown): Error & { statusCode: number }
     status === 403 ||
     message === '账号已封禁' ||
     /401|403|unauthorized|invalid.*token/i.test(message)
-  )
+  ) {
     return failure(401, '官方密钥无效或账号不可用。');
+  }
   if (
     status === 402 ||
     message === '试用次数已用完' ||
     /402|insufficient|out.of.trial|not enough|balance/i.test(message)
-  )
+  ) {
     return failure(402, 'NovelAI 账号额度不足。');
-  if (status === 429 || /429|concurrent|busy/i.test(message))
+  }
+  if (status === 429 || /429|concurrent|busy/i.test(message)) {
     return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
-  if (/abort|timeout|超时/i.test(message)) return failure(504, '官方账号请求超时，请稍后重试。');
+  }
+  if (/abort|timeout|超时/i.test(message)) {
+    return failure(504, '官方账号请求超时，请稍后重试。');
+  }
   // Upstream errors may echo request headers; never return their body or raw key.
   return failure(502, 'NovelAI 请求失败，请稍后重试。');
 }
@@ -128,8 +135,9 @@ export class OfficialKeyJobs {
           job.owner === owner &&
           job.cacheKey === cacheKey &&
           ['queued', 'running'].includes(job.status)
-        )
+        ) {
           return this.snapshot(job);
+        }
       }
     }
     this.prune();
@@ -180,8 +188,12 @@ export class OfficialKeyJobs {
 
   get(id: string, token: string): OfficialJob {
     const job = this.jobs.get(id);
-    if (!job) throw failure(404, '任务已过期，请重新提交。');
-    if (job.owner !== officialKeyOwner(token)) throw failure(403, '无权访问该任务。');
+    if (!job) {
+      throw failure(404, '任务已过期，请重新提交。');
+    }
+    if (job.owner !== officialKeyOwner(token)) {
+      throw failure(403, '无权访问该任务。');
+    }
     return job;
   }
 
@@ -210,8 +222,12 @@ export class OfficialKeyJobs {
   drain(): void {
     this.queue = this.queue.filter((job) => job.status === 'queued');
     for (const job of [...this.queue]) {
-      if (this.running.size >= this.maxRunning) break;
-      if (this.running.has(job.owner)) continue;
+      if (this.running.size >= this.maxRunning) {
+        break;
+      }
+      if (this.running.has(job.owner)) {
+        continue;
+      }
       this.queue.splice(this.queue.indexOf(job), 1);
       this.running.add(job.owner);
       job.status = 'running';
@@ -229,7 +245,9 @@ export class OfficialKeyJobs {
           signal: job.controller.signal,
           forceStream: true,
           onProgress: (progress) => {
-            if (job.status !== 'running') return;
+            if (job.status !== 'running') {
+              return;
+            }
             job.generationProgress = {
               percent: Math.max(
                 job.generationProgress.percent,
@@ -242,12 +260,17 @@ export class OfficialKeyJobs {
           },
         },
       );
-      if (job.status !== 'running') return;
+      if (job.status !== 'running') {
+        return;
+      }
       const saved = await this.saveImage(job, image);
-      if (job.status === 'running') this.finish(job, 'done', { image: saved });
+      if (job.status === 'running') {
+        this.finish(job, 'done', { image: saved });
+      }
     } catch (error) {
-      if (job.status === 'running')
+      if (job.status === 'running') {
         this.finish(job, 'failed', { error: officialKeyError(error).message });
+      }
     } finally {
       this.running.delete(job.owner);
       this.drain();
@@ -259,10 +282,14 @@ export class OfficialKeyJobs {
     status: 'done' | 'failed',
     result: Pick<OfficialJob, 'image' | 'cacheHit' | 'error'>,
   ): void {
-    if (['done', 'failed'].includes(job.status)) return;
+    if (['done', 'failed'].includes(job.status)) {
+      return;
+    }
     clearTimeout(job.timer);
     Object.assign(job, result, { status, updatedAt: new Date().toISOString() });
-    if (status === 'done') job.generationProgress.percent = 100;
+    if (status === 'done') {
+      job.generationProgress.percent = 100;
+    }
     delete job.token;
     delete job.request;
     this.previews.clear(job.id);
@@ -276,8 +303,9 @@ export class OfficialKeyJobs {
         ['done', 'failed'].includes(job.status) &&
         (Date.now() - Date.parse(job.updatedAt) > this.retentionMs ||
           this.jobs.size >= this.maxJobs)
-      )
+      ) {
         this.jobs.delete(id);
+      }
     }
   }
 }

@@ -10,8 +10,11 @@ const emit = defineEmits<{ search: [value: string] }>();
 let timer: ReturnType<typeof setTimeout> | undefined;
 watch(value, (text) => {
   clearTimeout(timer);
-  if (!props.delay || !text.trim()) emit('search', text.trim());
-  else timer = setTimeout(() => emit('search', text.trim()), props.delay);
+  if (!props.delay || !text.trim()) {
+    emit('search', text.trim());
+  } else {
+    timer = setTimeout(() => emit('search', text.trim()), props.delay);
+  }
 });
 onBeforeUnmount(() => clearTimeout(timer));
 </script>

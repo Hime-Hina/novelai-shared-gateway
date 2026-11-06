@@ -252,8 +252,11 @@ test('部分历史缓存下停止 pending 与恢复/零取消均只写受影响�
   const old = process.env.RUNTIME_JOBS_CACHE_LIMIT;
   process.env.RUNTIME_JOBS_CACHE_LIMIT = '50';
   t.after(() => {
-    if (old === undefined) delete process.env.RUNTIME_JOBS_CACHE_LIMIT;
-    else process.env.RUNTIME_JOBS_CACHE_LIMIT = old;
+    if (old === undefined) {
+      delete process.env.RUNTIME_JOBS_CACHE_LIMIT;
+    } else {
+      process.env.RUNTIME_JOBS_CACHE_LIMIT = old;
+    }
   });
   const { store, directory } = await fixture(t, (db) => {
     db.jobs = Array.from({ length: 101 }, (_, index) => ({

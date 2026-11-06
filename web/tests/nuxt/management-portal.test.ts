@@ -36,7 +36,9 @@ class NetworkStream {
     this.handlers.set(name, [...(this.handlers.get(name) || []), listener]);
   }
   emit(name: string, data: unknown = {}) {
-    for (const listener of this.handlers.get(name) || []) listener({ data: JSON.stringify(data) });
+    for (const listener of this.handlers.get(name) || []) {
+      listener({ data: JSON.stringify(data) });
+    }
   }
 }
 
@@ -164,10 +166,14 @@ async function mount(mode: ManagementMode) {
   await settle();
 }
 async function connected(mode: ManagementMode = 'owner') {
-  if (mode === 'admin') sessionStorage.setItem('nai.adminSession', 'synthetic-admin');
+  if (mode === 'admin') {
+    sessionStorage.setItem('nai.adminSession', 'synthetic-admin');
+  }
   await mount(mode);
   pending(summaryPath(mode)).reply(200, state());
-  if (mode === 'owner') pending(statisticsPath()).reply(200, usage());
+  if (mode === 'owner') {
+    pending(statisticsPath()).reply(200, usage());
+  }
   await vi.waitFor(() => expect(portal.connecting.value).toBe(false));
   expect(portal.state.value?.users[0]?.username).toBe('Alice');
   if (mode === 'owner') {
@@ -202,7 +208,9 @@ beforeEach(() => {
         init,
         done: false,
         reply(status, body) {
-          if (request.done) throw new Error('Response already delivered');
+          if (request.done) {
+            throw new Error('Response already delivered');
+          }
           request.done = true;
           result.resolve(
             new Response(JSON.stringify(body), {
@@ -220,8 +228,11 @@ beforeEach(() => {
 afterEach(async () => {
   wrapper?.unmount();
   wrapper = undefined;
-  for (const request of requests)
-    if (!request.done) request.reply(503, { error: 'fixture closed' });
+  for (const request of requests) {
+    if (!request.done) {
+      request.reply(503, { error: 'fixture closed' });
+    }
+  }
   await settle();
   useNuxtApp().runWithContext(() => clearNuxtData((key) => key.startsWith('management-')));
   sessionStorage.clear();

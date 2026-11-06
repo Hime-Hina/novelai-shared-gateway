@@ -9,7 +9,9 @@ import { promisify } from 'node:util';
 export async function backupFixture(t, root) {
   const preserve = Boolean(root);
   root ??= await mkdtemp(path.join(tmpdir(), 'nai-r2-backup-'));
-  if (!preserve) t.after(() => rm(root, { recursive: true, force: true }));
+  if (!preserve) {
+    t.after(() => rm(root, { recursive: true, force: true }));
+  }
   const cloud = path.join(root, 'cloud');
   await mkdir(cloud);
   const envFile = path.join(root, 'r2.env'),

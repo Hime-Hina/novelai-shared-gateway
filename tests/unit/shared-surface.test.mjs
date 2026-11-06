@@ -31,12 +31,13 @@ test('后端不开放旧门户、静态资源、页面别名或未知页面', ()
     '/unknown',
     '/foo/../admin.js',
   ]) {
-    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS'])
+    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
       assert.deepEqual(
         sharedSurface(path, method),
         { allowed: false, pathname: path },
         `${method} ${path}`,
       );
+    }
   }
 });
 test('酒馆调用、结果取回、成员及管理依赖保持可用', () => {
@@ -54,8 +55,9 @@ test('酒馆调用、结果取回、成员及管理依赖保持可用', () => {
     ['/api/admin/member-management', 'POST'],
     ['/api/admin/accounts/quota', 'POST'],
     ['/api/admin/accounts/acct1', 'PATCH'],
-  ])
+  ]) {
     assert.equal(sharedSurface(path, method).allowed, true, path);
+  }
 });
 test('兑换、旧余额、提示词转换、图库管理及整库导入导出已关闭', () => {
   for (const path of [
@@ -72,8 +74,9 @@ test('兑换、旧余额、提示词转换、图库管理及整库导入导出�
     '/api/admin/export',
     '/api/web/jobs',
   ]) {
-    for (const method of ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
+    for (const method of ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']) {
       assert.equal(sharedSurface(path, method).allowed, false, path);
+    }
   }
 });
 
@@ -108,15 +111,17 @@ test('owner 仅开放管理 API，不能访问导出、代理设置或新增上�
     ['/api/member/owner/member-management', 'POST'],
     ['/api/member/owner/accounts/quota', 'POST'],
     ['/api/member/owner/accounts/opus', 'PATCH'],
-  ])
+  ]) {
     assert.equal(sharedSurface(path, method).allowed, true);
+  }
   for (const path of [
     '/api/member/owner/export',
     '/api/member/owner/import',
     '/api/member/owner/accounts',
     '/owner/unknown',
-  ])
+  ]) {
     assert.equal(sharedSurface(path, 'POST').allowed, false);
+  }
 });
 
 test('父请求只开放本人查询与显式取消方法，Cookie 和 Bearer 路径一致', () => {

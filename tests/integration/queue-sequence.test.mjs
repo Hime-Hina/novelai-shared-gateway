@@ -111,7 +111,9 @@ test('新序号与任务原子提交，失败不推进高水位，并发不重�
 
 test('SQL 派发与公开排队进度按 queueSeq，历史数组和 order_value 不决定派发', async (t) => {
   const store = await open(t);
-  for (const id of ['running', 'b', 'a2']) await enqueue(store, id);
+  for (const id of ['running', 'b', 'a2']) {
+    await enqueue(store, id);
+  }
   await store.update(
     (db) => {
       db.jobs.find((job) => job.id === 'running').status = 'running';

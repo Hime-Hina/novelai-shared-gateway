@@ -46,10 +46,11 @@ function fresh() {
 }
 function comparable(state) {
   const result = structuredClone(state);
-  if (result)
+  if (result) {
     result.reservations = Object.fromEntries(
       Object.entries(result.reservations).filter(([, charge]) => charge.status === 'reserved'),
     );
+  }
   return result;
 }
 function audit(db, command) {
@@ -60,9 +61,11 @@ function audit(db, command) {
   const value = command();
   const events = finishDomainCommand(db).events;
   for (const event of events) {
-    if (event.streamId === 'sharing:default') sharing = reduceSharingEvent(sharing, event);
-    else if (event.streamId.startsWith('request:')) continue;
-    else {
+    if (event.streamId === 'sharing:default') {
+      sharing = reduceSharingEvent(sharing, event);
+    } else if (event.streamId.startsWith('request:')) {
+      continue;
+    } else {
       assert.equal(event.streamId, 'account:opus');
       quota = reduceAccountQuotaEvent(quota, event);
     }
@@ -463,7 +466,9 @@ test('最终预留决定在扣款前授权，1ms恢复跨fallback边界与已有
     () =>
       reserveFairQuota(db, { id: 'a' }, job, db.accounts[0], now + 1, request, null, (charge) => {
         authorized = structuredClone(charge);
-        if (charge.resource === 'v5') throw new Error('V5 was not confirmed');
+        if (charge.resource === 'v5') {
+          throw new Error('V5 was not confirmed');
+        }
       }),
     /not confirmed/,
   );
@@ -493,7 +498,9 @@ test('最终预留决定在扣款前授权，1ms恢复跨fallback边界与已有
 test('新观测已保存恢复游标时不追加零金额tick，独立tick仍保存未归档游标', () => {
   const db = fixture(),
     s = db.settings.fairQuota;
-  for (const id of members) s.balances[id].v5Available = '25';
+  for (const id of members) {
+    s.balances[id].v5Available = '25';
+  }
   s.snapshot.v5 = '100';
   db.accounts[0].v5UsagePercent = 100;
   db.accounts[0].quotaCheckedAt = now + 60000;

@@ -1,3 +1,4 @@
+// V5 用百分点，固定/购买 Anlas 用点数；统一按 12 位定点保存，保留各自账目。
 export const AMOUNT_SCALE = 1_000_000_000_000n;
 export const AMOUNT_DECIMALS = 12;
 export type AmountText = string;
@@ -6,13 +7,17 @@ export type AmountRounding = 'exact' | 'floor' | 'ceil' | 'nearest';
 export type ResourceAmountsText = Record<'v5' | 'anlasFixed' | 'anlasPurchased', AmountText>;
 
 export function decimalRatio(value: AmountInput): { numerator: bigint; denominator: bigint } {
-  if (typeof value === 'number' && !Number.isFinite(value))
+  if (typeof value === 'number' && !Number.isFinite(value)) {
     throw new RangeError('Resource amount must be finite');
+  }
   const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(String(value));
-  if (!match) throw new TypeError('Invalid decimal resource amount');
+  if (!match) {
+    throw new TypeError('Invalid decimal resource amount');
+  }
   const exponent = Number(match[4] || 0) - (match[3]?.length || 0);
-  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000)
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) {
     throw new RangeError('Resource amount exponent is too large');
+  }
   const coefficient = BigInt(`${match[1]}${match[2]}${match[3] || ''}`);
   return exponent >= 0
     ? { numerator: coefficient * 10n ** BigInt(exponent), denominator: 1n }
@@ -24,16 +29,29 @@ export function divideAmount(
   denominator: bigint,
   rounding: AmountRounding = 'floor',
 ): bigint {
-  if (denominator <= 0n) throw new RangeError('Amount divisor must be positive');
+  if (denominator <= 0n) {
+    throw new RangeError('Amount divisor must be positive');
+  }
   const result = numerator / denominator,
     remainder = numerator % denominator;
-  if (!remainder) return result;
-  if (rounding === 'exact') throw new RangeError('Resource amount exceeds 12 decimal places');
-  if (rounding === 'floor') return remainder < 0n ? result - 1n : result;
-  if (rounding === 'ceil') return remainder > 0n ? result + 1n : result;
-  return (remainder < 0n ? -remainder : remainder) * 2n >= denominator
-    ? result + (remainder > 0n ? 1n : -1n)
-    : result;
+  if (!remainder) {
+    return result;
+  }
+  if (rounding === 'exact') {
+    throw new RangeError('Resource amount exceeds 12 decimal places');
+  }
+  if (rounding === 'floor') {
+    return remainder < 0n ? result - 1n : result;
+  }
+  if (rounding === 'ceil') {
+    return remainder > 0n ? result + 1n : result;
+  }
+  const absoluteRemainder = remainder < 0n ? -remainder : remainder;
+  // 最近值舍入在恰好半格时远离零；floor/ceil 已在上方按符号处理。
+  if (absoluteRemainder * 2n >= denominator) {
+    return result + (remainder > 0n ? 1n : -1n);
+  }
+  return result;
 }
 
 export function parseAmount(value: AmountInput, rounding: AmountRounding = 'exact'): bigint {
@@ -64,31 +82,35 @@ export function allocateAmount(
     total < 0n ||
     weights.some((entry) => entry.weight < 0n) ||
     new Set(weights.map((entry) => entry.id)).size !== weights.length
-  )
+  ) {
     throw new RangeError('Invalid allocation');
+  }
   const result = Object.fromEntries(weights.map((entry) => [entry.id, 0n]));
   const denominator = weights.reduce((sum, entry) => sum + entry.weight, 0n);
-  if (!total || !denominator) return result;
+  if (!total || !denominator) {
+    return result;
+  }
   const remainders = weights
     .map((entry) => {
       const product = total * entry.weight;
       result[entry.id] = product / denominator;
       return { id: entry.id, remainder: product % denominator };
     })
-    .sort((left, right) =>
-      left.remainder === right.remainder
-        ? left.id < right.id
-          ? -1
-          : left.id > right.id
-            ? 1
-            : 0
-        : left.remainder > right.remainder
-          ? -1
-          : 1,
-    );
+    .sort((left, right) => {
+      if (left.remainder === right.remainder) {
+        if (left.id < right.id) {
+          return -1;
+        }
+        return left.id > right.id ? 1 : 0;
+      }
+      return left.remainder > right.remainder ? -1 : 1;
+    });
+  // 先向下分配，再按余数与稳定 ID 补最小单位，保持分配总量精确守恒。
   let remaining = total - Object.values(result).reduce((sum, value) => sum + value, 0n);
   for (const entry of remainders) {
-    if (!remaining) break;
+    if (!remaining) {
+      break;
+    }
     result[entry.id] += 1n;
     remaining -= 1n;
   }
@@ -105,8 +127,9 @@ function decimalFraction(numerator: bigint, denominator: bigint): string {
 }
 
 export function normalizeLegacyAmountGroup(entries: { id: string; value: AmountInput }[]) {
-  if (new Set(entries.map((entry) => entry.id)).size !== entries.length)
+  if (new Set(entries.map((entry) => entry.id)).size !== entries.length) {
     throw new Error('Duplicate opening amount identity');
+  }
   const ratios = entries.map((entry) => ({ ...entry, ...decimalRatio(entry.value) }));
   const denominator = ratios.reduce(
     (largest, entry) => (entry.denominator > largest ? entry.denominator : largest),
@@ -129,29 +152,30 @@ export function normalizeLegacyAmountGroup(entries: { id: string; value: AmountI
       id: entry.id,
       remainder: entry.raw * AMOUNT_SCALE - amounts[entry.id] * denominator,
     }))
-    .sort((left, right) =>
-      left.remainder === right.remainder
-        ? left.id < right.id
-          ? -1
-          : left.id > right.id
-            ? 1
-            : 0
-        : left.remainder > right.remainder
-          ? -1
-          : 1,
-    );
+    .sort((left, right) => {
+      if (left.remainder === right.remainder) {
+        if (left.id < right.id) {
+          return -1;
+        }
+        return left.id > right.id ? 1 : 0;
+      }
+      return left.remainder > right.remainder ? -1 : 1;
+    });
   let remaining = normalizedTotal - Object.values(amounts).reduce((sum, value) => sum + value, 0n);
   for (const entry of remainders) {
-    if (!remaining) break;
+    if (!remaining) {
+      break;
+    }
     amounts[entry.id] += 1n;
     remaining -= 1n;
   }
   const adjustments = expanded.map((entry) => {
     const normalized = amounts[entry.id];
-    if (entry.raw !== 0n && (normalized === 0n || entry.raw < 0n !== normalized < 0n))
+    if (entry.raw !== 0n && (normalized === 0n || entry.raw < 0n !== normalized < 0n)) {
       throw new Error(
         `Opening normalization cannot preserve the sign of ${entry.id}: ${entry.value}`,
       );
+    }
     return {
       id: entry.id,
       raw: String(entry.value),

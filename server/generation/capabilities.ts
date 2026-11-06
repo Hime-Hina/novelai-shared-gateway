@@ -73,16 +73,19 @@ export const MEMBER_NORMALIZATION_FORMAT = 'native-member-v1';
 
 // A canonical digest is also used for confirmation, so JSON object key order is never intent.
 export function generationDefinitionDigest(value: unknown): string {
-  const ordered = (item: unknown): unknown =>
-    Array.isArray(item)
-      ? item.map(ordered)
-      : item && typeof item === 'object'
-        ? Object.fromEntries(
-            Object.keys(item)
-              .sort()
-              .map((key) => [key, ordered((item as Record<string, unknown>)[key])]),
-          )
-        : item;
+  const ordered = (item: unknown): unknown => {
+    if (Array.isArray(item)) {
+      return item.map(ordered);
+    }
+    if (item && typeof item === 'object') {
+      return Object.fromEntries(
+        Object.keys(item)
+          .sort()
+          .map((key) => [key, ordered((item as Record<string, unknown>)[key])]),
+      );
+    }
+    return item;
+  };
   return createHash('sha256')
     .update(JSON.stringify(ordered(value)))
     .digest('hex');
@@ -111,16 +114,19 @@ const none = {
 };
 
 function generationModel(id: string): ModelCapability {
-  const base = INPAINT_MODELS.get(id) || id,
-    inpaint = INPAINT_MODELS.has(id),
-    v3 = base.endsWith('-3'),
-    v5 = base.startsWith('nai-diffusion-5-'),
-    medium = isV5MediumModel(base);
-  const actions: ModelCapability['actions'] = inpaint
-    ? ['infill']
-    : base === 'nai-diffusion-5-curated'
-      ? ['generate', 'img2img']
-      : ['generate', 'img2img', 'infill'];
+  const base = INPAINT_MODELS.get(id) || id;
+  const inpaint = INPAINT_MODELS.has(id);
+  const v3 = base.endsWith('-3');
+  const v5 = base.startsWith('nai-diffusion-5-');
+  const medium = isV5MediumModel(base);
+  let actions: ModelCapability['actions'];
+  if (inpaint) {
+    actions = ['infill'];
+  } else if (base === 'nai-diffusion-5-curated') {
+    actions = ['generate', 'img2img'];
+  } else {
+    actions = ['generate', 'img2img', 'infill'];
+  }
   const fields: Record<string, FieldCapability> = {
     input: field('string', { required: true, min: 1, max: NATIVE_LIMITS.promptCharacters }),
     model: field('enum', { required: true, values: [id] }),
@@ -173,17 +179,27 @@ function generationModel(id: string): ModelCapability {
     'parameters.qualityPresetId': field('string', { min: 1, max: 64 }),
     'parameters.stream': field('enum', { values: ['msgpack', 'sse'] }),
   };
-  for (const name of BOOLEAN_PARAMETERS)
+  for (const name of BOOLEAN_PARAMETERS) {
     fields[`parameters.${name}`] = field(
       'boolean',
       name === 'autoSmea' || (!v3 && ['sm', 'sm_dyn'].includes(name)) ? { fixed: false } : {},
     );
-  for (const name of ['params_version', 'ucPreset', 'tag_hint_qt', 'tag_hint_uc_preset', 'version'])
+  }
+  for (const name of [
+    'params_version',
+    'ucPreset',
+    'tag_hint_qt',
+    'tag_hint_uc_preset',
+    'version',
+  ]) {
     fields[`parameters.${name}`] = integer(0, 20);
-  for (const name of ['skip_cfg_above_sigma', 'skip_cfg_below_sigma'])
+  }
+  for (const name of ['skip_cfg_above_sigma', 'skip_cfg_below_sigma']) {
     fields[`parameters.${name}`] = numeric(0, 1000);
-  for (const name of ['uncond_scale', 'dynamic_thresholding_mimic_scale'])
+  }
+  for (const name of ['uncond_scale', 'dynamic_thresholding_mimic_scale']) {
     fields[`parameters.${name}`] = numeric(0, 100);
+  }
   fields['parameters.dynamic_thresholding_percentile'] = numeric(0, 1);
   fields['parameters.controlnet_strength'] = numeric(0, 2);
   if (!v3) {
@@ -216,10 +232,14 @@ function generationModel(id: string): ModelCapability {
       max: NATIVE_LIMITS.referencesMax,
       items: field('object', { properties: { data: { ...reference, required: true } } }),
     });
-    for (const name of ['reference_strength_multiple', 'reference_information_extracted_multiple'])
+    for (const name of [
+      'reference_strength_multiple',
+      'reference_information_extracted_multiple',
+    ]) {
       fields[`parameters.${name}`] = field('array', { max: NATIVE_LIMITS.referencesMax });
+    }
   }
-  if (base.startsWith('nai-diffusion-4-5-'))
+  if (base.startsWith('nai-diffusion-4-5-')) {
     for (const name of [
       'director_reference_images',
       'director_reference_images_cached',
@@ -227,8 +247,10 @@ function generationModel(id: string): ModelCapability {
       'director_reference_information_extracted',
       'director_reference_strength_values',
       'director_reference_secondary_strength_values',
-    ])
+    ]) {
       fields[`parameters.${name}`] = field('array', { max: NATIVE_LIMITS.referencesMax });
+    }
+  }
   const transforms: ModelCapability['transforms'] = [
     {
       code: 'seed_uint32',
@@ -246,13 +268,14 @@ function generationModel(id: string): ModelCapability {
       description: '界面角色元数据和传输选择不作为上游执行参数。',
     },
   ];
-  if (!inpaint && actions.includes('infill'))
+  if (!inpaint && actions.includes('infill')) {
     transforms.push({
       code: 'infill_model',
       fields: ['model'],
       description: '局部重绘使用此基础模型对应的已验证重绘模型。',
     });
-  if (medium)
+  }
+  if (medium) {
     transforms.push({
       code: 'medium_fixed_parameters',
       fields: [
@@ -265,6 +288,7 @@ function generationModel(id: string): ModelCapability {
       description:
         'Medium 固定 14 步、Euler Ancestral、CFG rescale 0，并按官方 heavy 规则生成负面词。',
     });
+  }
   const vibes = NATIVE_VIBE_FIELDS.map((field) => `parameters.${field}`),
     precise = NATIVE_PRECISE_FIELDS.map((field) => `parameters.${field}`);
   const requirements: ModelCapability['requirements'] = [
@@ -286,8 +310,8 @@ function generationModel(id: string): ModelCapability {
   ].filter((item) =>
     actions.includes(item.action as 'generate'),
   ) as ModelCapability['requirements'];
-  if (!v5 && !inpaint)
-    for (const when of vibes)
+  if (!v5 && !inpaint) {
+    for (const when of vibes) {
       requirements.push({
         when,
         requires: [],
@@ -296,13 +320,17 @@ function generationModel(id: string): ModelCapability {
           ...(base.startsWith('nai-diffusion-4-5-') ? precise : []),
         ],
       });
-  if (base.startsWith('nai-diffusion-4-5-'))
-    for (const when of precise)
+    }
+  }
+  if (base.startsWith('nai-diffusion-4-5-')) {
+    for (const when of precise) {
       requirements.push({
         when,
         requires: [],
         excludes: [...precise.filter((path) => path !== when), ...vibes],
       });
+    }
+  }
   return {
     operation: 'generate',
     id,
@@ -353,7 +381,7 @@ export function generationModels(): ModelCapability[] {
       },
     ],
   });
-  for (const id of NATIVE_VIBE_MODELS)
+  for (const id of NATIVE_VIBE_MODELS) {
     models.push({
       operation: 'encode-vibe',
       id,
@@ -371,6 +399,7 @@ export function generationModels(): ModelCapability[] {
       requirements: [{ requires: ['image'], excludes: ['mask'] }],
       transforms: [],
     });
+  }
   return models;
 }
 
@@ -432,6 +461,7 @@ export function memberGenerationCapabilities(
       hardLimit: free.hardLimit,
     },
   };
+  // 摘要只覆盖执行语义；标签和解释文案变化不使已展示的报价失效。
   const rules = models
     .map(({ label: _label, transforms, ...model }) => ({
       ...model,

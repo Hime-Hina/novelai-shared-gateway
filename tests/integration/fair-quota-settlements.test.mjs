@@ -50,12 +50,12 @@ async function fixture(t, variant = 'v5') {
     db.settings.fairQuota.autoAnlasFallback = true;
     db.settings.fairQuota.balances.a.v5Available = '0';
   }
-  const input =
-    variant === 'free'
-      ? { ...request, model: 'nai-diffusion-4-5-full' }
-      : ['fixed', 'purchased'].includes(variant)
-        ? { ...request, width: 1536, allowPurchasedAnlas: true }
-        : request;
+  let input = request;
+  if (variant === 'free') {
+    input = { ...request, model: 'nai-diffusion-4-5-full' };
+  } else if (['fixed', 'purchased'].includes(variant)) {
+    input = { ...request, width: 1536, allowPurchasedAnlas: true };
+  }
   const job = {
     id: 'job',
     userToken: 'a',
@@ -81,14 +81,16 @@ async function finish(store, success, options = writeOptions) {
     );
     job.status = success ? 'done' : 'failed';
     job.completedAt = job.updatedAt = new Date(now + 1).toISOString();
-    if (success)
+    if (success) {
       recordDomainEvent(db, {
         eventType: 'JobCompleted',
         streamId: 'request:legacy-job',
         occurredAt: now + 1,
         payload: { jobId: job.id, completedAt: job.completedAt, charge, artifactId: null },
       });
-    else recordGenerationFailure(db, job);
+    } else {
+      recordGenerationFailure(db, job);
+    }
     return charge;
   }, options);
 }
@@ -235,8 +237,11 @@ test('冷历史不热载，已删除job的终态保留，未知reserved原样留
   const old = process.env.RUNTIME_JOBS_CACHE_LIMIT;
   process.env.RUNTIME_JOBS_CACHE_LIMIT = '2';
   t.after(() => {
-    if (old === undefined) delete process.env.RUNTIME_JOBS_CACHE_LIMIT;
-    else process.env.RUNTIME_JOBS_CACHE_LIMIT = old;
+    if (old === undefined) {
+      delete process.env.RUNTIME_JOBS_CACHE_LIMIT;
+    } else {
+      process.env.RUNTIME_JOBS_CACHE_LIMIT = old;
+    }
   });
   const legacy = await fixture(t);
   await legacy.update(
@@ -376,12 +381,12 @@ for (const format of ['typed', 'app_records', 'json']) {
       operating: { unfunded: { anlasFixed: 7 } },
     };
     const settings = { fairQuota: quota };
-    if (format === 'json')
+    if (format === 'json') {
       await writeFile(
         path.join(directory, 'library.json'),
         JSON.stringify({ settings, users: [{ id: 'a' }] }),
       );
-    else {
+    } else {
       const sqlite = new Database(path.join(directory, 'library.sqlite'));
       sqlite.exec(
         await readFile(new URL('../fixtures/sqlite-before-drizzle.sql', import.meta.url), 'utf8'),
@@ -389,14 +394,15 @@ for (const format of ['typed', 'app_records', 'json']) {
       sqlite
         .prepare('INSERT INTO app_settings(key,value) VALUES(?,?)')
         .run('settings', JSON.stringify(settings));
-      if (format === 'typed')
+      if (format === 'typed') {
         sqlite
           .prepare('INSERT INTO users(id,order_value,data) VALUES(?,?,?)')
           .run('a', 1, '{"id":"a"}');
-      else
+      } else {
         sqlite
           .prepare('INSERT INTO app_records(collection,id,order_value,data) VALUES(?,?,?,?)')
           .run('users', 'a', 1, '{"id":"a"}');
+      }
       sqlite.close();
     }
     const store = await open(t, directory);

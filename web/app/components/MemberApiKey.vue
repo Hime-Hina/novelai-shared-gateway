@@ -25,39 +25,55 @@ function hide() {
   copying.value = false;
 }
 async function show() {
-  if (!active || loading.value) return;
+  if (!active || loading.value) {
+    return;
+  }
   const request = ++version;
   loading.value = true;
   error.value = '';
   message.value = '';
   try {
     const result = await props.api<{ apiKey: string; baseUrl: string }>('key');
-    if (!active || request !== version) return;
+    if (!active || request !== version) {
+      return;
+    }
     apiKey.value = result.apiKey;
     baseUrl.value = result.baseUrl || '';
     visible.value = true;
   } catch (cause) {
-    if (active && request === version)
+    if (active && request === version) {
       error.value = cause instanceof Error ? cause.message : 'API Key 读取失败，请重试。';
+    }
   } finally {
-    if (active && request === version) loading.value = false;
+    if (active && request === version) {
+      loading.value = false;
+    }
   }
 }
 async function copy() {
-  if (!active || !visible.value || !apiKey.value || copying.value) return;
+  if (!active || !visible.value || !apiKey.value || copying.value) {
+    return;
+  }
   const request = version;
   copying.value = true;
   error.value = '';
   message.value = '';
   try {
-    if (!navigator.clipboard) throw new Error('浏览器暂不支持复制，请检查安全连接和剪贴板权限。');
+    if (!navigator.clipboard) {
+      throw new Error('浏览器暂不支持复制，请检查安全连接和剪贴板权限。');
+    }
     await navigator.clipboard.writeText(apiKey.value);
-    if (active && request === version) message.value = '已复制自己的 API Key';
+    if (active && request === version) {
+      message.value = '已复制自己的 API Key';
+    }
   } catch (cause) {
-    if (active && request === version)
+    if (active && request === version) {
       error.value = cause instanceof Error ? cause.message : '复制失败，请检查剪贴板权限。';
+    }
   } finally {
-    if (active && request === version) copying.value = false;
+    if (active && request === version) {
+      copying.value = false;
+    }
   }
 }
 onBeforeUnmount(() => {

@@ -57,7 +57,9 @@ export function createGenerationFailureHandlers(
       error,
       options,
     );
-    if (!result.changed) return;
+    if (!result.changed) {
+      return;
+    }
     options.log?.({
       event: cancelled ? 'cancel_commit' : 'failure_commit',
       jobId: result.jobId,
@@ -83,14 +85,16 @@ export function createGenerationFailureHandlers(
       fail(reservation, error, true),
     async cleanupStaleActiveJobs(reason = 'stale active job cleanup') {
       const result = await cleanupStaleGenerationJobs(store, reason, options);
-      for (const { jobId, ...failure } of result.failures)
+      for (const { jobId, ...failure } of result.failures) {
         options.notify(jobId, { error: 'direct generate timeout', ...failure });
+      }
       return result;
     },
     async cleanupInterruptedStartupJobs() {
       const result = await cleanupInterruptedGenerationJobs(store, options);
-      for (const jobId of result.jobIds)
+      for (const jobId of result.jobIds) {
         options.notify(jobId, { error: 'direct generate timeout' });
+      }
       return result;
     },
   };
@@ -154,19 +158,26 @@ export function createJobDelivery(deps: {
     waiter.cleanup();
     const subscriptions = waiters.get(jobId);
     subscriptions?.delete(waiter);
-    if (!subscriptions?.size) waiters.delete(jobId);
+    if (!subscriptions?.size) {
+      waiters.delete(jobId);
+    }
   }
   function notifyJobWaiters(jobId: string, payload: GenerationDeliveryResult) {
     const subscriptions = waiters.get(jobId);
-    if (!subscriptions) return;
+    if (!subscriptions) {
+      return;
+    }
     waiters.delete(jobId);
-    if (payload.error) payload = { ...payload, error: deps.errorMessage(payload.error) };
+    if (payload.error) {
+      payload = { ...payload, error: deps.errorMessage(payload.error) };
+    }
     for (const waiter of subscriptions) {
       clearTimeout(waiter.timer);
       waiter.cleanup();
       waiter.resolve(payload);
     }
   }
+  // HTTP 截止或断连只解除领取等待；任务的业务期限、取消和结算由命令层管理。
   function waitForJobResult(jobId: string, deadline: number, response?: Response) {
     if (response && !response.generationDeliveryTracked) {
       response.generationDeliveryTracked = true;
@@ -198,7 +209,9 @@ export function createJobDelivery(deps: {
         resolve(null);
       };
       const waiter: Waiter = { resolve, timer, cleanup: () => response?.off('close', onClose) };
-      if (!waiters.has(jobId)) waiters.set(jobId, new Set());
+      if (!waiters.has(jobId)) {
+        waiters.set(jobId, new Set());
+      }
       waiters.get(jobId)!.add(waiter);
       if (response?.destroyed) {
         onClose();
@@ -211,7 +224,9 @@ export function createJobDelivery(deps: {
           (db) => {
             const job =
               db.jobs.find((item) => item.id === jobId) || deps.store.selectItemById('jobs', jobId);
-            if (!job) return null;
+            if (!job) {
+              return null;
+            }
             return {
               status: job.status,
               imageId: job.imageId,
@@ -225,15 +240,17 @@ export function createJobDelivery(deps: {
           { persist: false },
         )
         .then(async (job) => {
-          if (job?.status === 'failed')
+          if (job?.status === 'failed') {
             notifyJobWaiters(jobId, {
               error: job.error,
               statusCode: job.errorStatus || 500,
               cooldownUntil: job.cooldownUntil,
             });
-          else if (job?.status === 'done') {
+          } else if (job?.status === 'done') {
             const saved = await deps.store.findImage(job.imageId!);
-            if (saved) notifyJobWaiters(jobId, { saved, seed: job.seed, balance: job.balance });
+            if (saved) {
+              notifyJobWaiters(jobId, { saved, seed: job.seed, balance: job.balance });
+            }
           }
         })
         .catch(() =>
@@ -255,22 +272,27 @@ export function createJobDelivery(deps: {
       reachedRunning = false;
     while (!res.destroyed && Date.now() < deadline) {
       const snapshot = await deps.snapshot(job.id);
-      if (res.destroyed) return;
+      if (res.destroyed) {
+        return;
+      }
       if (!snapshot) {
         writeOpenAiChunk(res, { id, model, content: '任务不存在\n</think>\n任务不存在\n' });
         finishOpenAiStream(res, id, model);
         return;
       }
-      const line =
-        snapshot.status === 'queued'
-          ? snapshot.queuePosition && snapshot.queuedCount
+      let line = '';
+      if (snapshot.status === 'queued') {
+        line =
+          snapshot.queuePosition && snapshot.queuedCount
             ? `排队中：第 ${snapshot.queuePosition} / ${snapshot.queuedCount} 个`
-            : '排队中，正在等待可用账号'
-          : snapshot.status === 'running'
-            ? '已路由账号，正在生成'
-            : '';
+            : '排队中，正在等待可用账号';
+      } else if (snapshot.status === 'running') {
+        line = '已路由账号，正在生成';
+      }
       const queuedAfterRunning = reachedRunning && snapshot.status === 'queued';
-      if (snapshot.status === 'running') reachedRunning = true;
+      if (snapshot.status === 'running') {
+        reachedRunning = true;
+      }
       if (line && !queuedAfterRunning && line !== lastLine) {
         writeOpenAiChunk(res, { id, model, content: `${line}\n` });
         lastLine = line;
@@ -292,7 +314,9 @@ export function createJobDelivery(deps: {
       }
       await waitForJobResult(job.id, Math.min(deadline, Date.now() + (deps.pollMs ?? 650)), res);
     }
-    if (res.destroyed) return;
+    if (res.destroyed) {
+      return;
+    }
     writeOpenAiChunk(res, { id, model, content: '连接超时\n</think>\n连接超时\n' });
     finishOpenAiStream(res, id, model);
   }
@@ -355,8 +379,12 @@ export async function deliverDirectGeneration(
     isCapacityError(error: unknown): boolean;
   },
 ) {
-  if (accepted.requestId) res.setHeader('X-Nai-Request-Id', accepted.requestId);
-  if (res.destroyed) return;
+  if (accepted.requestId) {
+    res.setHeader('X-Nai-Request-Id', accepted.requestId);
+  }
+  if (res.destroyed) {
+    return;
+  }
   if (accepted.cached) {
     await deps.sendStoredImage(res, 200, accepted.cached, {
       'x-cache': 'hit',
@@ -366,22 +394,27 @@ export async function deliverDirectGeneration(
   }
   try {
     const result = await deps.waitForJobResult(accepted.id, Date.now() + deps.timeoutMs, res);
-    if (res.destroyed) return;
+    if (res.destroyed) {
+      return;
+    }
     if (!result) {
       deps.sendTimeoutImage(res);
       return;
     }
-    if (result.error)
+    if (result.error) {
       throw Object.assign(new Error(result.error), {
         statusCode: result.statusCode || 500,
         cooldownUntil: result.cooldownUntil,
       });
+    }
     await deps.sendStoredImage(res, 200, result.saved, {
       'x-cache': accepted.cacheHit ? 'hit' : 'miss',
       'x-balance': String((accepted.replayed ? accepted.balance : result.balance) ?? ''),
     });
   } catch (error) {
-    if (res.destroyed) return;
+    if (res.destroyed) {
+      return;
+    }
     const failure = error as Error & { statusCode?: number; cooldownUntil?: string };
     if (failure.statusCode === 429 || deps.isCapacityError(error)) {
       deps.sendBusyImage(res, failure.cooldownUntil);

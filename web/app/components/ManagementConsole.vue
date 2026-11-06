@@ -51,15 +51,15 @@ const {
 const groupsDirty = ref(false),
   policyDirty = ref(false),
   alerts = ref<ManagementAlert[]>([]);
-const hint = computed(() =>
-  !state.value
-    ? connecting.value
-      ? '正在验证管理身份…'
-      : props.mode === 'owner'
-        ? '需要 owner 身份'
-        : '私有管理入口 · 仅管理员可操作'
-    : '成员、分组与共享账户管理',
-);
+const hint = computed(() => {
+  if (state.value) {
+    return '成员、分组与共享账户管理';
+  }
+  if (connecting.value) {
+    return '正在验证管理身份…';
+  }
+  return props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作';
+});
 function changedSession() {
   groupsDirty.value = false;
   policyDirty.value = false;

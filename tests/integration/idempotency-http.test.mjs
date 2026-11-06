@@ -29,7 +29,9 @@ async function listen(server) {
 async function until(predicate, timeout = 5000) {
   const deadline = Date.now() + timeout;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('synthetic idempotency wait timed out');
+    if (Date.now() >= deadline) {
+      throw new Error('synthetic idempotency wait timed out');
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
@@ -115,7 +117,9 @@ test(
         return;
       }
       const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
+      for await (const chunk of req) {
+        chunks.push(chunk);
+      }
       calls.push({ path: req.url, body: JSON.parse(Buffer.concat(chunks)) });
       if (previewGate) {
         assert.equal(
@@ -186,8 +190,12 @@ test(
       });
     };
     const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-      if (exited) await exited;
+      if (child?.exitCode === null && child?.signalCode === null) {
+        child.kill(signal);
+      }
+      if (exited) {
+        await exited;
+      }
     };
     t.after(async () => {
       previewGate?.release();
@@ -654,7 +662,9 @@ test(
     let buffered = '';
     for (;;) {
       const next = await reader.read();
-      if (next.done) break;
+      if (next.done) {
+        break;
+      }
       buffered += decoder.decode(next.value, { stream: true });
       let boundary;
       while ((boundary = buffered.indexOf('\n\n')) >= 0) {
@@ -662,7 +672,9 @@ test(
         buffered = buffered.slice(boundary + 2);
         const type = frame.match(/^event: ([^\n]+)/)?.[1],
           data = frame.match(/\ndata: ([^\n]+)/)?.[1];
-        if (!type || !data) continue;
+        if (!type || !data) {
+          continue;
+        }
         const event = { type, value: JSON.parse(data) };
         events.push(event);
         if (type === 'preview') {
@@ -722,8 +734,9 @@ test(
         'imageId',
         'fairCharge',
         'generationAttempt',
-      ])
+      ]) {
         assert.deepEqual(restoredJob[field], liveJob[field], field);
+      }
       assert.equal(
         rebuilt
           .prepare('SELECT payload FROM generation_requests WHERE id = ?')

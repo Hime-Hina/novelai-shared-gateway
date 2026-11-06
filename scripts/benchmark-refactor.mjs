@@ -50,12 +50,16 @@ async function main() {
       );
       throw error;
     }
-  } else await orchestrate();
+  } else {
+    await orchestrate();
+  }
 }
 
 function integer(value, name, minimum = 1) {
   const number = Number(value);
-  if (!Number.isSafeInteger(number) || number < minimum) throw new Error(`Invalid ${name}`);
+  if (!Number.isSafeInteger(number) || number < minimum) {
+    throw new Error(`Invalid ${name}`);
+  }
   return number;
 }
 function percentile(values, p) {
@@ -79,7 +83,9 @@ async function bytes(file) {
   try {
     return (await fs.stat(file)).size;
   } catch (error) {
-    if (error.code === 'ENOENT') return 0;
+    if (error.code === 'ENOENT') {
+      return 0;
+    }
     throw error;
   }
 }
@@ -92,7 +98,9 @@ async function disk(file) {
 }
 async function fileHash(file) {
   const digest = createHash('sha256');
-  for await (const chunk of createReadStream(file)) digest.update(chunk);
+  for await (const chunk of createReadStream(file)) {
+    digest.update(chunk);
+  }
   return digest.digest('hex');
 }
 function cleanEnvironment() {
@@ -117,10 +125,13 @@ async function sourceEvidence(source) {
   for (const directory of [
     'server',
     ...(existsSync(path.join(source, 'public')) ? ['public'] : []),
-  ])
-    for (const name of await fs.readdir(path.join(source, directory), { recursive: true }))
-      if (/\.(?:ts|js|mjs|sql|json)$/.test(name))
+  ]) {
+    for (const name of await fs.readdir(path.join(source, directory), { recursive: true })) {
+      if (/\.(?:ts|js|mjs|sql|json)$/.test(name)) {
         files.push(`${directory}/${name.split(path.sep).join('/')}`);
+      }
+    }
+  }
   files.sort();
   const digests = Object.fromEntries(
     await Promise.all(
@@ -137,14 +148,17 @@ async function sourceEvidence(source) {
 
 async function orchestrate() {
   const started = performance.now();
-  if (!values.baseline) throw new Error('--baseline is required');
+  if (!values.baseline) {
+    throw new Error('--baseline is required');
+  }
   const candidate = path.resolve(values.candidate),
     baseline = path.resolve(values.baseline),
     output = path.resolve(
       values.output || path.join(os.tmpdir(), 'nai-refactor-benchmark-' + randomUUID()),
     );
-  if (existsSync(output))
+  if (existsSync(output)) {
     throw new Error('Output must be a new directory so previous evidence is not overwritten');
+  }
   await fs.mkdir(output, { recursive: true });
   const options = {
     history: integer(values.history, 'history'),
@@ -157,7 +171,7 @@ async function orchestrate() {
     now: Date.now(),
     smoke: values.smoke,
   };
-  if (values.smoke)
+  if (values.smoke) {
     Object.assign(options, {
       history: 120,
       rounds: 1,
@@ -166,20 +180,24 @@ async function orchestrate() {
       observations: 12,
       annualBatches: 4,
     });
-  if (!values.smoke && options.rounds < 3)
+  }
+  if (!values.smoke && options.rounds < 3) {
     throw new Error('Performance acceptance requires at least three rounds');
-  if (options.annualBatches > options.observations)
+  }
+  if (options.annualBatches > options.observations) {
     throw new Error(
       'annual-batches cannot exceed the number of observation minutes for this single-account workload',
     );
+  }
   const link = path.join(baseline, 'node_modules'),
     createdLink = !existsSync(link);
-  if (createdLink)
+  if (createdLink) {
     await fs.symlink(
       path.join(candidate, 'node_modules'),
       link,
       process.platform === 'win32' ? 'junction' : 'dir',
     );
+  }
   try {
     const report = {
       kind: options.smoke ? 'runner-smoke' : 'performance-evidence',
@@ -227,10 +245,11 @@ async function orchestrate() {
       });
       await new Promise((resolve) => log.end(resolve));
       const result = JSON.parse(await fs.readFile(config.result, 'utf8'));
-      if (exitCode !== 0)
+      if (exitCode !== 0) {
         throw new Error(
           `${label}/${stage} failed; inspect ${config.result}: ${result.error?.message || exitCode}`,
         );
+      }
       console.log(`${label} ${stage}: ${config.result}`);
       return result;
     };
@@ -272,8 +291,9 @@ async function orchestrate() {
       );
     }
     const replayHashes = new Set(report.replayRounds.map((round) => round.sourceDatabase.sha256));
-    if (replayHashes.size !== 1)
+    if (replayHashes.size !== 1) {
       throw new Error('Replay rounds did not use one fixed source database');
+    }
     report.replaySummary = {
       sourceDatabaseSha256: [...replayHashes][0],
       fullReplay: distribution(report.replayRounds.map((round) => round.fullReplay.ms)),
@@ -357,23 +377,27 @@ async function orchestrate() {
         }),
       ),
     );
-    if (environments.size !== 1)
+    if (environments.size !== 1) {
       throw new Error(
         'Baseline and candidate measurements did not use the same runtime and filesystem',
       );
+    }
     report.sourceChangedDuringRun =
       (await sourceEvidence(baseline)).codeSha256 !== report.sources.baseline.codeSha256 ||
       (await sourceEvidence(candidate)).codeSha256 !== report.sources.candidate.codeSha256 ||
       (await fileHash(self)) !== report.runner.sha256;
     report.totalMs = elapsed(started);
     await fs.writeFile(path.join(output, 'report.json'), encode(report));
-    if (report.sourceChangedDuringRun && !options.smoke)
+    if (report.sourceChangedDuringRun && !options.smoke) {
       throw new Error(
         'Source changed during measurement; performance evidence is not a fixed-revision comparison',
       );
+    }
     console.log(`Report: ${path.join(output, 'report.json')}`);
   } finally {
-    if (createdLink) await fs.unlink(link);
+    if (createdLink) {
+      await fs.unlink(link);
+    }
   }
 }
 
@@ -457,11 +481,17 @@ async function worker(config) {
     source: config.source,
   };
   const modules = { load, storeModule, quota, Database };
-  if (config.stage === 'seed') await seed(config, result, modules);
-  else if (config.stage === 'measure') await measure(config, result, modules);
-  else if (config.stage === 'annual') await annual(config, result, modules);
-  else if (config.stage === 'replay') await replayRound(config, result, modules);
-  else throw new Error('Unknown benchmark stage');
+  if (config.stage === 'seed') {
+    await seed(config, result, modules);
+  } else if (config.stage === 'measure') {
+    await measure(config, result, modules);
+  } else if (config.stage === 'annual') {
+    await annual(config, result, modules);
+  } else if (config.stage === 'replay') {
+    await replayRound(config, result, modules);
+  } else {
+    throw new Error('Unknown benchmark stage');
+  }
   await fs.writeFile(config.result, encode(result));
 }
 
@@ -522,6 +552,12 @@ async function seed(config, result, { storeModule, quota }) {
         config.now - Math.floor(((index + 0.5) / Math.max(1, config.history)) * 365 * 86400000),
       ),
       failed = index % 10 === 0;
+    let operation = 'generate';
+    if (index % 20 === 1) {
+      operation = 'upscale';
+    } else if (index % 20 === 2) {
+      operation = 'encode-vibe';
+    }
     return {
       id: `history-${index}`,
       memberId: user.id,
@@ -541,7 +577,7 @@ async function seed(config, result, { storeModule, quota }) {
         ? { cancelledAt: createdAt, cancellationReason: 'request_cancelled' }
         : {}),
       request: {
-        operation: index % 20 === 1 ? 'upscale' : index % 20 === 2 ? 'encode-vibe' : 'generate',
+        operation,
         model: index % 3 ? 'nai-diffusion-5-full' : 'nai-diffusion-4-5-full',
         width: 512,
         height: 512,
@@ -572,7 +608,9 @@ async function seed(config, result, { storeModule, quota }) {
   }
   result.rows = store.sqlite.prepare('SELECT count(*) AS count FROM jobs').get().count;
   result.synchronous = store.sqlite.pragma('synchronous', { simple: true });
-  if (result.synchronous !== 2) throw new Error('Financial fixture is not synchronous FULL');
+  if (result.synchronous !== 2) {
+    throw new Error('Financial fixture is not synchronous FULL');
+  }
   result.checkpoint = store.sqlite.pragma('wal_checkpoint(TRUNCATE)');
   result.disk = await disk(store.dbPath);
   await store.close();
@@ -624,7 +662,9 @@ async function memoryRequest(
       return true;
     },
     end(chunk) {
-      if (chunk) this.write(chunk);
+      if (chunk) {
+        this.write(chunk);
+      }
       this.writableEnded = true;
       this.emit('finish');
     },
@@ -635,8 +675,9 @@ async function memoryRequest(
   await handler(req, res);
   const text = Buffer.concat(res.chunks).toString(),
     payload = text ? JSON.parse(text) : null;
-  if (res.statusCode !== expected)
+  if (res.statusCode !== expected) {
     throw new Error(`Synthetic ${url} returned ${res.statusCode}: ${text}`);
+  }
   return payload;
 }
 
@@ -665,7 +706,9 @@ async function measure(config, result, { load, storeModule, quota }) {
     const cold = !this.db,
       t = performance.now(),
       value = await originalLoad.apply(this, args);
-    if (cold) loadMs += elapsed(t);
+    if (cold) {
+      loadMs += elapsed(t);
+    }
     return value;
   };
   result.memory = { beforeLoadRss: process.memoryUsage().rss };
@@ -675,15 +718,21 @@ async function measure(config, result, { load, storeModule, quota }) {
     const started = performance.now();
     try {
       const value = await originalUpdate.call(this, fn, options);
-      if (phase === 'admission' && options?.generationRequest)
+      if (phase === 'admission' && options?.generationRequest) {
         timings.admissionTransaction.push(elapsed(started));
-      else if (phase === 'artifactPrepared')
+      } else if (phase === 'artifactPrepared') {
         timings.artifactPreparedTransaction.push(elapsed(started));
-      else if (phase === 'settlement') timings.settlementTransaction.push(elapsed(started));
+      } else if (phase === 'settlement') {
+        timings.settlementTransaction.push(elapsed(started));
+      }
       return value;
     } catch (error) {
-      if (/SQLITE_BUSY/.test(error.code || error.message)) result.failures.busy++;
-      if (/conflict/i.test(error.message)) result.failures.conflicts++;
+      if (/SQLITE_BUSY/.test(error.code || error.message)) {
+        result.failures.busy++;
+      }
+      if (/conflict/i.test(error.message)) {
+        result.failures.conflicts++;
+      }
       throw error;
     }
   };
@@ -700,8 +749,9 @@ async function measure(config, result, { load, storeModule, quota }) {
     batch = await load('generation-request');
   const domain = execution ? await load('domain-events') : null,
     baseTime = config.now;
-  if (execution && (!execution.reserveQueuedGeneration || !execution.completeGenerationCommand))
+  if (execution && (!execution.reserveQueuedGeneration || !execution.completeGenerationCommand)) {
     throw new Error('Candidate must expose the production generation commands');
+  }
   result.executionAdapter = execution
     ? 'reserveQueuedGeneration + completeGenerationCommand'
     : 'legacy public domain functions + explicit JsonStore.update success transactions';
@@ -710,19 +760,22 @@ async function measure(config, result, { load, storeModule, quota }) {
     url: '/api/me/quota',
     expected: 200,
   });
-  for (let index = 0; index < config.active; index++)
+  for (let index = 0; index < config.active; index++) {
     await memoryRequest(
       handleGatewayRequest,
       { ...request, token: members[index % 20].token },
       `active-${index}`,
     );
+  }
   const store = captured;
   result.loadMs = loadMs;
   global.gc?.();
   result.memory.afterLoadRss = process.memoryUsage().rss;
   hotPeakRss = result.memory.afterLoadRss;
   result.synchronous = store.sqlite.pragma('synchronous', { simple: true });
-  if (result.synchronous !== 2) throw new Error('Measured store is not synchronous FULL');
+  if (result.synchronous !== 2) {
+    throw new Error('Measured store is not synchronous FULL');
+  }
   const query = async (name, fn, materialized) => {
     const started = performance.now(),
       value = await fn();
@@ -842,18 +895,22 @@ async function measure(config, result, { load, storeModule, quota }) {
         dispatchEnabled: () => true,
         physicalAccountLoad: () => 0,
       });
-      if (!reservation.job)
+      if (!reservation.job) {
         throw new Error(
           `Measured candidate dispatch did not reserve a job: ${JSON.stringify(reservation)}`,
         );
-    } else
+      }
+    } else {
       await store.update(
         (db) => {
           const job = db.jobs.find((job) => job.id === id),
             account = db.accounts.find((account) => account.id === 'opus');
-          if (!job) throw new Error('Accepted job is missing');
-          if (capacity.sharedAccountReadyDelay(account, config.now) > 0)
+          if (!job) {
+            throw new Error('Accepted job is missing');
+          }
+          if (capacity.sharedAccountReadyDelay(account, config.now) > 0) {
             throw new Error('Measured dispatch violates the account cooldown');
+          }
           job.status = 'running';
           job.startedAt = job.updatedAt = iso(config.now);
           job.accountId = account.id;
@@ -879,6 +936,7 @@ async function measure(config, result, { load, storeModule, quota }) {
         },
         { immediate: true, includeSettings: true, dirtyRows: { jobs: [id], accounts: ['opus'] } },
       );
+    }
     timings.dispatchTransaction.push(elapsed(dispatch));
     config.now += 2000;
     if (execution) {
@@ -919,10 +977,12 @@ async function measure(config, result, { load, storeModule, quota }) {
             job.generationAttempt?.id !== reservation.job.generationAttempt.id ||
             job.userToken !== reservation.token ||
             job.accountId !== reservation.account.id
-          )
+          ) {
             throw new Error('Baseline result no longer owns its reservation');
-          if (store.selectItemById('images', imageId))
+          }
+          if (store.selectItemById('images', imageId)) {
             throw new Error('Baseline result ID already exists');
+          }
           job.resultPending = { ...descriptor, attemptId: job.generationAttempt.id };
         },
         { immediate: true, dirtyRows: { jobs: [id] } },
@@ -960,8 +1020,9 @@ async function measure(config, result, { load, storeModule, quota }) {
             job.fairCharge?.status !== 'reserved' ||
             job.resultPending?.attemptId !== reservation.job.generationAttempt.id ||
             job.resultPending?.sha256 !== descriptor.sha256
-          )
+          ) {
             throw new Error('Baseline result is no longer pending');
+          }
           capacity.recordSharedCompletion(account, config.now, { job, kind: 'success' });
           account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
           account.total = Number(account.total || 0) + 1;
@@ -1002,9 +1063,11 @@ async function measure(config, result, { load, storeModule, quota }) {
     'dispatchTransaction',
     'artifactPreparedTransaction',
     'settlementTransaction',
-  ])
-    if (timings[key].length !== config.samples)
+  ]) {
+    if (timings[key].length !== config.samples) {
       throw new Error(`Expected ${config.samples} ${key} samples, got ${timings[key].length}`);
+    }
+  }
   result.sourceRows = {
     historyMember: store.sqlite
       .prepare('SELECT count(*) AS count FROM jobs WHERE user_token=?')
@@ -1020,8 +1083,9 @@ async function measure(config, result, { load, storeModule, quota }) {
   result.fixedActiveObserved = store.sqlite
     .prepare("SELECT count(*) AS count FROM jobs WHERE status IN ('queued','pending','running')")
     .get().count;
-  if (result.fixedActiveObserved !== config.active)
+  if (result.fixedActiveObserved !== config.active) {
     throw new Error('The fixed active set changed during measurement');
+  }
   result.diskBeforeCheckpoint = await disk(store.dbPath);
   const checkpoint = performance.now();
   result.checkpoint = store.sqlite.pragma('wal_checkpoint(TRUNCATE)');
@@ -1047,7 +1111,9 @@ async function annual(config, result, modules) {
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('synchronous = FULL');
   const state = eventStore.readProjectedFairQuota(sqlite);
-  if (!state?.balances) throw new Error('Annual fixture requires a projected opening quota');
+  if (!state?.balances) {
+    throw new Error('Annual fixture requires a projected opening quota');
+  }
   const db = {
     settings: { fairQuota: state },
     users: structuredClone(members),
@@ -1096,8 +1162,9 @@ async function annual(config, result, modules) {
       });
     })();
     commitsByPhase[phase] = (commitsByPhase[phase] || 0) + 1;
-    for (const event of command.events)
+    for (const event of command.events) {
       eventsByType[event.eventType] = (eventsByType[event.eventType] || 0) + 1;
+    }
     return committed;
   };
   let batches = 0,
@@ -1208,8 +1275,9 @@ async function annual(config, result, modules) {
             if (
               job.status !== 'queued' ||
               capacity.sharedAccountReadyDelay(account, dispatchAt) > 0
-            )
+            ) {
               throw new Error('Annual child is not ready for serial dispatch');
+            }
             Object.assign(job, {
               status: 'running',
               accountId: account.id,
@@ -1270,8 +1338,9 @@ async function annual(config, result, modules) {
       }
       batches++;
     }
-    if ((index + 1) % 10000 === 0)
+    if ((index + 1) % 10000 === 0) {
       console.log(`annual ${index + 1}/${config.observations}, batches ${batches}`);
+    }
   }
   result.appendMs = elapsed(started);
   result.observations = config.observations;
@@ -1288,10 +1357,11 @@ async function annual(config, result, modules) {
     CooldownChanged: images,
     JobQueued: images - batches,
   })) {
-    if ((eventsByType[type] || 0) !== expected)
+    if ((eventsByType[type] || 0) !== expected) {
       throw new Error(
         `Annual success path emitted ${eventsByType[type] || 0} ${type}, expected ${expected}`,
       );
+    }
   }
   result.commitsByPhase = commitsByPhase;
   result.eventsByType = eventsByType;
@@ -1347,8 +1417,9 @@ function projectionDigest(sqlite) {
   const digest = createHash('sha256');
   for (const row of sqlite
     .prepare('SELECT stream_id,projection_sha256 FROM event_streams ORDER BY stream_id')
-    .iterate())
+    .iterate()) {
     digest.update(JSON.stringify(row) + '\n');
+  }
   return digest.digest('hex');
 }
 
@@ -1390,8 +1461,9 @@ async function replayEvidence(source, config, { load, storeModule, Database }) {
             "SELECT CAST(last_commit_seq AS TEXT) AS value FROM projection_versions WHERE name='core'",
           )
           .get()?.value;
-        if (checkpoint.persistedCursor !== checkpoint.lastCommitSeq)
+        if (checkpoint.persistedCursor !== checkpoint.lastCommitSeq) {
           throw new Error('Reopened replay did not retain the complete commit cursor');
+        }
       }
       const start = performance.now(),
         progress = eventStore.replayDomainEvents(source, target, {
@@ -1406,16 +1478,21 @@ async function replayEvidence(source, config, { load, storeModule, Database }) {
         sourceProjectionSha256,
         replayedProjectionSha256: projectionDigest(target),
       };
-      if (output.synchronous !== 2) throw new Error('Replay target is not synchronous FULL');
-      if (output.sourceProjectionSha256 !== output.replayedProjectionSha256)
+      if (output.synchronous !== 2) {
+        throw new Error('Replay target is not synchronous FULL');
+      }
+      if (output.sourceProjectionSha256 !== output.replayedProjectionSha256) {
         throw new Error(`Replayed stream projections differ in ${name}`);
+      }
       const verification = performance.now();
       target.transaction(() => storeModule.verifyEventProjections(target))();
       output.projectionVerificationMs = elapsed(verification);
       const integrity = performance.now();
       output.integrity = target.pragma('integrity_check', { simple: true });
       output.integrityMs = elapsed(integrity);
-      if (output.integrity !== 'ok') throw new Error(`Replayed integrity check failed in ${name}`);
+      if (output.integrity !== 'ok') {
+        throw new Error(`Replayed integrity check failed in ${name}`);
+      }
       const checkpointStarted = performance.now();
       output.finalCheckpoint = target.pragma('wal_checkpoint(TRUNCATE)');
       output.finalCheckpointMs = elapsed(checkpointStarted);
@@ -1447,9 +1524,12 @@ async function replayRound(config, result, modules) {
     const integrity = performance.now();
     result.integrity = source.pragma('integrity_check', { simple: true });
     result.integrityMs = elapsed(integrity);
-    if (result.integrity !== 'ok') throw new Error('Replay source integrity check failed');
-    if (result.sourceDatabase.sha256 !== (await fileHash(config.replaySource)))
+    if (result.integrity !== 'ok') {
+      throw new Error('Replay source integrity check failed');
+    }
+    if (result.sourceDatabase.sha256 !== (await fileHash(config.replaySource))) {
       throw new Error('Replay source changed during measurement');
+    }
   } finally {
     source.close();
   }

@@ -116,7 +116,9 @@ async function loginServer(t, env) {
 test('密码与 Discord 路由隔离不同代理客户端，伪造链前缀不能绕过来源上限', async (t) => {
   const env = { TRUSTED_PROXY_IPS: '127.0.0.1' };
   const { call, passwordChecks } = await loginServer(t, env);
-  for (let i = 0; i < 120; i++) checkMemberLoginRate(null, '198.51.100.20');
+  for (let i = 0; i < 120; i++) {
+    checkMemberLoginRate(null, '198.51.100.20');
+  }
 
   assert.equal(
     await call('/api/member/login', '203.0.113.98, 198.51.100.20', { username: 'proxy-blocked' }),
@@ -137,7 +139,9 @@ test('密码与 Discord 路由隔离不同代理客户端，伪造链前缀不�
 
   // 未配置可信代理时，轮换客户端可控头不能重置真实连接的计数。
   env.TRUSTED_PROXY_IPS = '';
-  for (let i = 0; i < 120; i++) checkMemberLoginRate(null, '127.0.0.1');
+  for (let i = 0; i < 120; i++) {
+    checkMemberLoginRate(null, '127.0.0.1');
+  }
   assert.equal(await call('/api/member/discord/start', '198.51.100.22'), 429);
   assert.equal(await call('/api/member/discord/start', '198.51.100.23'), 429);
 });

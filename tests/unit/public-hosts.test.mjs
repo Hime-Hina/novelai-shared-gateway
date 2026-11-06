@@ -15,10 +15,12 @@ const request = (host, url = '/ai/user/subscription', headers = {}) => ({
 });
 
 test('公开入口仅接受启用状态下的显式主域名或别名', () => {
-  for (const host of ['old.example', 'nai.example', 'nai-direct.example', 'NAI.EXAMPLE'])
+  for (const host of ['old.example', 'nai.example', 'nai-direct.example', 'NAI.EXAMPLE']) {
     assert.equal(isPublicHost(host, env), true);
-  for (const mode of [undefined, '', 'false', 'TRUE'])
+  }
+  for (const mode of [undefined, '', 'false', 'TRUE']) {
     assert.equal(isPublicHost('nai.example', { ...env, PUBLIC_MODE: mode }), false);
+  }
   for (const host of [
     '',
     'other.example',

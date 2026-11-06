@@ -35,8 +35,11 @@ test('成员公开入口优先部署配置，未配置时沿用数据库和旧�
 test('成员取 Key 使用新的 API 入口，保留单个 v1 后缀且不改库内旧地址', async (t) => {
   const previous = process.env.PUBLIC_BASE_URL;
   t.after(() => {
-    if (previous === undefined) delete process.env.PUBLIC_BASE_URL;
-    else process.env.PUBLIC_BASE_URL = previous;
+    if (previous === undefined) {
+      delete process.env.PUBLIC_BASE_URL;
+    } else {
+      process.env.PUBLIC_BASE_URL = previous;
+    }
   });
   const user = {
     id: 'synthetic-user',

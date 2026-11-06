@@ -146,6 +146,12 @@ const evidenceNames: Record<string, string> = {
   unconfirmed_estimate: '未确认消费的估计结案',
   complete_local_result: '完整本地产物',
 };
+const refreshStatus = computed(() => {
+  if (loading.value) {
+    return '正在更新损耗数据…';
+  }
+  return losses.value ? '损耗数据更新 ' + date(losses.value.asOf) : '尚未读取损耗数据';
+});
 let disposed = false,
   readVersion = 0,
   editVersion = 0;
@@ -163,41 +169,61 @@ const message = (failure: unknown) =>
 function adoptPolicy(policy: ManagementLossPolicy) {
   policyVersion.value = policy.version;
   policyDirty.value = false;
-  for (const { key } of policyFields) policyDraft[key] = policy[key];
+  for (const { key } of policyFields) {
+    policyDraft[key] = policy[key];
+  }
 }
 function editPolicy(key: PolicyField, value: number | null) {
   policyDraft[key] = value;
   policyDirty.value = true;
   editVersion++;
 }
+// 同一组件合并读取请求；重置优先，版本变化或销毁后不采用旧响应。
+// 已翻页历史保持连续，且刷新不能覆盖正在编辑或保存的阈值草稿。
 function load(mode: ReadMode = 'refresh'): Promise<void> {
-  if (disposed) return Promise.resolve();
-  if (pending !== 'reset' && (mode !== 'refresh' || !pending)) pending = mode;
-  if (reading) return reading;
+  if (disposed) {
+    return Promise.resolve();
+  }
+  if (pending !== 'reset' && (mode !== 'refresh' || !pending)) {
+    pending = mode;
+  }
+  if (reading) {
+    return reading;
+  }
   reading = (async () => {
     do {
       const next: ReadMode = pending || 'refresh';
       pending = null;
       const cursor = next === 'append' ? nextCursor.value : null;
-      if (next === 'append' && !cursor) continue;
+      if (next === 'append' && !cursor) {
+        continue;
+      }
       const version = ++readVersion;
       loading.value = true;
       try {
         const result = await props.api<ManagementLosses>(
           'member-management?view=losses' + (cursor ? '&before=' + encodeURIComponent(cursor) : ''),
         );
-        if (disposed || version !== readVersion) continue;
+        if (disposed || version !== readVersion) {
+          continue;
+        }
         // 翻页后刷新统计与告警，但不插入新第一页，避免破坏已读历史的连续范围。
-        if (next === 'reset') paged.value = false;
+        if (next === 'reset') {
+          paged.value = false;
+        }
         if (next === 'append' || !paged.value) {
           const events = next === 'append' ? [...history.value, ...result.events] : result.events;
           history.value = [...new Map(events.map((event) => [event.id, event])).values()];
           nextCursor.value = result.nextCursor;
         }
-        if (next === 'append') paged.value = true;
+        if (next === 'append') {
+          paged.value = true;
+        }
         losses.value = result;
         readError.value = '';
-        if (!policyDirty.value && !policySaving.value) adoptPolicy(result.policy);
+        if (!policyDirty.value && !policySaving.value) {
+          adoptPolicy(result.policy);
+        }
         emit('alerts', result.alerts);
       } catch (failure) {
         if (!disposed && version === readVersion && !isStale(failure)) {
@@ -208,16 +234,22 @@ function load(mode: ReadMode = 'refresh'): Promise<void> {
     } while (pending && !disposed && !document.hidden);
   })().finally(() => {
     reading = null;
-    if (!disposed) loading.value = false;
+    if (!disposed) {
+      loading.value = false;
+    }
   });
   return reading;
 }
 async function savePolicy() {
-  if (props.busy || policySaving.value) return;
+  if (props.busy || policySaving.value) {
+    return;
+  }
   policySaving.value = true;
   try {
     await props.run(async () => {
-      if (policyVersion.value === null) throw new Error('请先读取告警阈值。');
+      if (policyVersion.value === null) {
+        throw new Error('请先读取告警阈值。');
+      }
       const policy = {} as Omit<ManagementLossPolicy, 'version'>;
       for (const { key, integer } of policyFields) {
         const value = policyDraft[key];
@@ -226,10 +258,12 @@ async function savePolicy() {
           !Number.isFinite(value) ||
           value < 0 ||
           (integer && !Number.isSafeInteger(value))
-        )
+        ) {
           throw new Error('阈值须为非负数字；Anlas 和次数须为安全整数。');
+        }
         policy[key] = value;
       }
+      // 保存期间的新编辑归当前草稿所有，旧读取也不能回写保存前的版本。
       const edit = editVersion;
       readVersion++;
       const result = await props.api<{ policy: ManagementLossPolicy }>('member-management', {
@@ -237,9 +271,13 @@ async function savePolicy() {
         expectedVersion: policyVersion.value,
         policy,
       });
-      if (disposed) return;
+      if (disposed) {
+        return;
+      }
       policyVersion.value = result.policy.version;
-      if (edit === editVersion) adoptPolicy(result.policy);
+      if (edit === editVersion) {
+        adoptPolicy(result.policy);
+      }
       emit(
         'changed',
         '软告警阈值已保存并记录审计；调用权限不变。' +
@@ -248,20 +286,27 @@ async function savePolicy() {
       await load();
     });
   } finally {
-    if (!disposed) policySaving.value = false;
+    if (!disposed) {
+      policySaving.value = false;
+    }
   }
 }
 async function resetPolicy() {
-  if (props.busy || policySaving.value) return;
+  if (props.busy || policySaving.value) {
+    return;
+  }
   const edit = editVersion;
   await props.run(async () => {
     await load();
-    if (!disposed && !readError.value && losses.value && edit === editVersion)
+    if (!disposed && !readError.value && losses.value && edit === editVersion) {
       adoptPolicy(losses.value.policy);
+    }
   });
 }
 async function saveOperating() {
-  if (props.busy || operatingSaving.value) return;
+  if (props.busy || operatingSaving.value) {
+    return;
+  }
   operatingSaving.value = true;
   try {
     await props.run(async () => {
@@ -272,11 +317,15 @@ async function saveOperating() {
         !Number.isFinite(value) ||
         value <= 0 ||
         (resource.value !== 'v5' && !Number.isSafeInteger(value))
-      )
+      ) {
         throw new Error('数量须大于 0；Anlas 须为安全整数。');
-      if (!/^[A-Za-z0-9_-]{8,100}$/.test(receiptId))
+      }
+      if (!/^[A-Za-z0-9_-]{8,100}$/.test(receiptId)) {
         throw new Error('请填写 8–100 位唯一收据标识，只含字母、数字、下划线或连字符。');
-      if (linked.value && !lossEventId.value.trim()) throw new Error('请提供当前聚合差额记录 ID。');
+      }
+      if (linked.value && !lossEventId.value.trim()) {
+        throw new Error('请提供当前聚合差额记录 ID。');
+      }
       const result = await props.api<{ eventId: string; duplicate: boolean }>('member-management', {
         action: action.value,
         resource: resource.value,
@@ -287,7 +336,9 @@ async function saveOperating() {
           ? { destination: destination.value, fromUnattributed: fromUnattributed.value }
           : {}),
       });
-      if (disposed) return;
+      if (disposed) {
+        return;
+      }
       amount.value = null;
       receipt.value = '';
       emit(
@@ -299,16 +350,23 @@ async function saveOperating() {
       await load();
     });
   } finally {
-    if (!disposed) operatingSaving.value = false;
+    if (!disposed) {
+      operatingSaving.value = false;
+    }
   }
 }
 function useCurrentGap() {
   lossEventId.value = losses.value?.operating.gapEventIds[resource.value] || '';
 }
 watch([action, resource], () => {
-  if (anlasOnly.value && resource.value === 'v5') resource.value = 'anlasFixed';
-  if (linked.value) useCurrentGap();
-  else lossEventId.value = '';
+  if (anlasOnly.value && resource.value === 'v5') {
+    resource.value = 'anlasFixed';
+  }
+  if (linked.value) {
+    useCurrentGap();
+  } else {
+    lossEventId.value = '';
+  }
 });
 watch(
   () => props.refreshVersion,
@@ -336,32 +394,48 @@ const policyText = (value: ManagementLossPolicy) =>
   policyFields.map((field) => `${field.label} ${number(value[field.key])}`).join('；');
 function evidence(event: ManagementLossEvent) {
   const parts: string[] = [];
-  if (event.upstreamCandidates?.length)
+  if (event.upstreamCandidates?.length) {
     parts.push(
       '上游候选（互斥，不相加）：' +
         event.upstreamCandidates.map((candidate) => resourceText(candidate.resources)).join(' 或 '),
     );
-  if (event.resources) parts.push('本地账务：' + resourceText(event.resources));
-  if (event.resource && event.amount !== undefined)
+  }
+  if (event.resources) {
+    parts.push('本地账务：' + resourceText(event.resources));
+  }
+  if (event.resource && event.amount !== undefined) {
     parts.push(`记录数量：${resourceNames[event.resource]} ${number(event.amount)}`);
-  if (event.observedAmount !== undefined)
+  }
+  if (event.observedAmount !== undefined) {
     parts.push('本次新增差额 ' + number(event.observedAmount));
-  if (event.delta !== undefined) parts.push('本次变化 ' + number(event.delta));
-  if (event.estimateAmountStatus)
+  }
+  if (event.delta !== undefined) {
+    parts.push('本次变化 ' + number(event.delta));
+  }
+  if (event.estimateAmountStatus) {
     parts.push(
       event.estimateAmountStatus === 'quoted_candidates'
         ? '提交前报价候选，实耗未确认'
         : '金额未知，不能视为零消费',
     );
-  if (event.evidenceLevel)
+  }
+  if (event.evidenceLevel) {
     parts.push('证据：' + (evidenceNames[event.evidenceLevel] || event.evidenceLevel));
-  if (event.refundRetained) parts.push('退款保留');
-  if (event.before && event.after)
+  }
+  if (event.refundRetained) {
+    parts.push('退款保留');
+  }
+  if (event.before && event.after) {
     parts.push(
       `版本 ${event.before.version} → ${event.after.version}；原阈值 ${policyText(event.before)}；新阈值 ${policyText(event.after)}`,
     );
-  if (event.receipt) parts.push('收据 ' + event.receipt);
-  if (event.lossEventId) parts.push('关联差额 ' + event.lossEventId);
+  }
+  if (event.receipt) {
+    parts.push('收据 ' + event.receipt);
+  }
+  if (event.lossEventId) {
+    parts.push('关联差额 ' + event.lossEventId);
+  }
   return parts.join('；') || '未提供金额，不推算实耗';
 }
 
@@ -450,13 +524,7 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
 <template>
   <section v-show="active" class="management-losses" aria-label="损耗与运营账务">
     <div id="lossReadStatus" class="refresh-status" role="status">
-      {{
-        loading
-          ? '正在更新损耗数据…'
-          : losses
-            ? '损耗数据更新 ' + date(losses.asOf)
-            : '尚未读取损耗数据'
-      }}
+      {{ refreshStatus }}
     </div>
     <NAlert v-if="readError" type="warning" role="status">{{ readError }}</NAlert>
     <NAlert type="info"
@@ -516,9 +584,9 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
         <p>
           普通扣款等待核对：订阅 Anlas
           {{ number(losses.operating.pendingAnlasDebits?.anlasFixed) }}，购买 Anlas
-          {{
-            number(losses.operating.pendingAnlasDebits?.anlasPurchased)
-          }}。未知余额下降不会自动核销运营资金。
+          <span
+            v-text="number(losses.operating.pendingAnlasDebits?.anlasPurchased)"
+          />。未知余额下降不会自动核销运营资金。
         </p>
         <NForm id="operatingForm" @submit.prevent="saveOperating"
           ><div class="losses-grid">
@@ -600,9 +668,9 @@ const eventColumns = computed<DataTableColumns<ManagementLossEvent>>(() => [
       <NCard title="损耗证据与审计记录" size="small">
         <p class="section-caption">
           已加载
-          {{ history.length }} 条{{
-            nextCursor ? '，可继续读取更早记录' : '，已覆盖全部保留历史'
-          }}。筛选与排序作用于已加载记录。{{
+          {{ history.length }} 条<span
+            v-text="nextCursor ? '，可继续读取更早记录' : '，已覆盖全部保留历史'"
+          />。筛选与排序作用于已加载记录。{{
             paged ? '后台只更新统计与告警，读取最新记录才重置历史。' : ''
           }}
         </p>

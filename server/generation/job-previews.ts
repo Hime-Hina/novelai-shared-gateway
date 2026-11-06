@@ -43,10 +43,14 @@ export class JobPreviews {
     watchers.add(notify);
     this.watchers.set(jobId, watchers);
     const frame = this.frames.get(jobId);
-    if (frame) notify(frame);
+    if (frame) {
+      notify(frame);
+    }
     return () => {
       watchers.delete(notify);
-      if (!watchers.size && this.watchers.get(jobId) === watchers) this.watchers.delete(jobId);
+      if (!watchers.size && this.watchers.get(jobId) === watchers) {
+        this.watchers.delete(jobId);
+      }
     };
   }
 
@@ -65,24 +69,36 @@ export class JobPreviews {
     listeners.add(res);
     this.listeners.set(token, listeners);
     const heartbeat = setInterval(() => {
-      if (!res.destroyed && !res.writableNeedDrain) res.write(': keepalive\n\n');
+      if (!res.destroyed && !res.writableNeedDrain) {
+        res.write(': keepalive\n\n');
+      }
     }, 15000);
     heartbeat.unref();
     res.once('close', () => {
       clearInterval(heartbeat);
       listeners.delete(res);
-      if (!listeners.size) this.listeners.delete(token);
+      if (!listeners.size) {
+        this.listeners.delete(token);
+      }
     });
     for (const frame of this.frames.values()) {
-      if (frame.token === token) this.send(res, frame);
+      if (frame.token === token) {
+        this.send(res, frame);
+      }
     }
   }
 
   closeSubscriptions(): void {
-    if (this.closed) return;
+    if (this.closed) {
+      return;
+    }
     this.closed = true;
     for (const listeners of this.listeners.values()) {
-      for (const res of listeners) if (!res.destroyed && !res.writableEnded) res.end();
+      for (const res of listeners) {
+        if (!res.destroyed && !res.writableEnded) {
+          res.end();
+        }
+      }
     }
   }
 
@@ -90,9 +106,13 @@ export class JobPreviews {
     job: { id: string; userToken: string; status: string } | null | undefined,
     progress: PreviewProgress,
   ): void {
-    if (!job || job.status !== 'running') return;
+    if (!job || job.status !== 'running') {
+      return;
+    }
     const buffer = progress.previewBuffer;
-    if (!buffer?.length || buffer.length > 512 * 1024) return;
+    if (!buffer?.length || buffer.length > 512 * 1024) {
+      return;
+    }
     const previous = this.frames.get(job.id);
     const now = Date.now();
     const frame: PreviewFrame = {
@@ -106,13 +126,21 @@ export class JobPreviews {
     };
     this.frames.set(job.id, frame);
     // Bound repaint/network work while retaining the newest frame for reconnects.
-    if (now - frame.sentAt < 150) return;
+    if (now - frame.sentAt < 150) {
+      return;
+    }
     frame.sentAt = now;
-    for (const notify of this.watchers.get(job.id) || []) notify(frame);
+    for (const notify of this.watchers.get(job.id) || []) {
+      notify(frame);
+    }
     const listeners = this.listeners.get(frame.token);
-    if (!listeners?.size) return;
+    if (!listeners?.size) {
+      return;
+    }
     const message = this.message(frame);
-    for (const res of listeners) this.send(res, frame, message);
+    for (const res of listeners) {
+      this.send(res, frame, message);
+    }
   }
 
   message(frame: PreviewFrame): string {

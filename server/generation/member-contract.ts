@@ -109,8 +109,9 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 }
 
 export function parseMemberGenerationConfirmation(value: unknown): MemberGenerationConfirmation {
-  if (value === undefined || value === null)
+  if (value === undefined || value === null) {
     fail(400, 'confirmation_required', '请先报价并明确确认费用上限。');
+  }
   if (
     !object(value) ||
     !exactKeys(value, ['requestFingerprint', 'versions', 'maxPerJob', 'maxTotal']) ||
@@ -127,8 +128,9 @@ export function parseMemberGenerationConfirmation(value: unknown): MemberGenerat
     fail(400, 'invalid_body', '费用确认的指纹或版本格式无效。');
   }
   const amounts = (input: unknown): MemberGenerationResources => {
-    if (!object(input) || !exactKeys(input, resourceNames))
+    if (!object(input) || !exactKeys(input, resourceNames)) {
       fail(400, 'invalid_body', '费用确认必须包含三种资源的上限。');
+    }
     const result = zeroResources();
     for (const resource of resourceNames) {
       const amount = input[resource];
@@ -136,10 +138,11 @@ export function parseMemberGenerationConfirmation(value: unknown): MemberGenerat
         typeof amount !== 'string' ||
         amount.length > 64 ||
         !/^(0|[1-9]\d*)(\.\d{1,12})?$/.test(amount)
-      )
+      ) {
         fail(400, 'invalid_body', '费用上限须为不超过 12 位小数的非负十进制字符串。', {
           field: resource,
         });
+      }
       result[resource] = formatAmount(parseAmount(amount));
     }
     return result;
@@ -157,12 +160,16 @@ export function normalizeMemberGeneration(
   input: unknown,
   { normalizationContext }: { normalizationContext?: MemberNormalizationContext } = {},
 ): NormalizedMemberGeneration {
-  if (!object(input)) fail(400, 'invalid_body', '请求正文必须是对象。');
+  if (!object(input)) {
+    fail(400, 'invalid_body', '请求正文必须是对象。');
+  }
   const operation = input.operation;
-  if (operation !== 'generate' && operation !== 'upscale' && operation !== 'encode-vibe')
+  if (operation !== 'generate' && operation !== 'upscale' && operation !== 'encode-vibe') {
     fail(422, 'invalid_parameters', 'operation 必须为 generate、upscale 或 encode-vibe。');
-  if (normalizationContext && normalizationContext.format !== MEMBER_NORMALIZATION_FORMAT)
+  }
+  if (normalizationContext && normalizationContext.format !== MEMBER_NORMALIZATION_FORMAT) {
     fail(409, 'idempotency_conflict', '无法按原请求的规范化版本重放。');
+  }
   const body = structuredClone(input),
     confirmation = Object.hasOwn(body, 'confirmation')
       ? parseMemberGenerationConfirmation(body.confirmation)
@@ -174,7 +181,9 @@ export function normalizeMemberGeneration(
     object(body.parameters) &&
     (body.parameters.seed === undefined || body.parameters.seed === -1);
   // Quoting is deterministic and does not select the accepted seed; the original intent remains random.
-  if (randomSeed) (body.parameters as Record<string, unknown>).seed = 0;
+  if (randomSeed) {
+    (body.parameters as Record<string, unknown>).seed = 0;
+  }
   const current = normalizationContext ? undefined : memberGenerationCapabilities({});
   const context: MemberNormalizationContext = normalizationContext || {
     format: MEMBER_NORMALIZATION_FORMAT,
@@ -205,13 +214,14 @@ export function normalizeMemberGeneration(
   if (operation === 'generate' && object(input.parameters)) {
     const p = input.parameters,
       actual = (request as NativeGenerationRequest).nativeParameters;
-    if (request.model !== input.model)
+    if (request.model !== input.model) {
       warnings.push({
         code: 'infill_model',
         message: '局部重绘已使用对应的重绘模型。',
         field: 'model',
       });
-    for (const key of ['steps', 'sampler', 'cfg_rescale', 'negative_prompt'])
+    }
+    for (const key of ['steps', 'sampler', 'cfg_rescale', 'negative_prompt']) {
       if (p[key] !== undefined && p[key] !== actual[key]) {
         warnings.push({
           code: 'parameter_normalized',
@@ -219,6 +229,7 @@ export function normalizeMemberGeneration(
           field: `parameters.${key}`,
         });
       }
+    }
   }
   const fingerprintRequest = { ...request, normalizationContext: context };
   return {
@@ -243,10 +254,13 @@ export function materializeMemberGeneration(
     ...structuredClone(normalized.request),
     normalizationContext: structuredClone(normalized.normalizationContext),
   };
-  if (!normalized.randomSeed || !('nativeParameters' in request)) return request;
+  if (!normalized.randomSeed || !('nativeParameters' in request)) {
+    return request;
+  }
   const actual = seed ?? randomBytes(4).readUInt32LE(0);
-  if (!Number.isInteger(actual) || actual < 0 || actual > 4294967295)
+  if (!Number.isInteger(actual) || actual < 0 || actual > 4294967295) {
     throw new Error('Materialized generation seed must be uint32.');
+  }
   return {
     ...request,
     seed: actual,
@@ -269,8 +283,9 @@ export function assertMemberGenerationVersions(
   confirmation: MemberGenerationConfirmation,
   versions: MemberGenerationVersions,
 ): void {
-  if (versionNames.some((key) => confirmation.versions[key] !== versions[key]))
+  if (versionNames.some((key) => confirmation.versions[key] !== versions[key])) {
     fail(409, 'quote_changed', '生成规则已变化，请重新报价。', { requote: true });
+  }
 }
 
 export function assertMemberGenerationCost(
@@ -309,7 +324,9 @@ export function memberGenerationChargeResources(charge: {
   purchased?: string | number;
 }): MemberGenerationResources {
   const result = zeroResources();
-  if (charge.resource === 'v5') result.v5 = formatAmount(parseAmount(charge.amount, 'ceil'));
+  if (charge.resource === 'v5') {
+    result.v5 = formatAmount(parseAmount(charge.amount, 'ceil'));
+  }
   if (charge.resource === 'anlas') {
     result.anlasFixed = formatAmount(parseAmount(charge.fixed ?? charge.amount, 'ceil'));
     result.anlasPurchased = formatAmount(parseAmount(charge.purchased ?? 0, 'ceil'));
@@ -320,15 +337,18 @@ export function memberGenerationChargeResources(charge: {
 function admissionReason(error: unknown, fallbackCode: string): MemberGenerationReason {
   const source = error as Error & { statusCode?: number; code?: string; cooldownUntil?: string };
   const statusCode = source.statusCode || 503;
+  let code = source.code;
+  if (!code) {
+    code = fallbackCode;
+    if (statusCode === 503) {
+      code = 'upstream_unavailable';
+    } else if (statusCode === 403 && fallbackCode !== 'member_stopped') {
+      code = 'membership_required';
+    }
+  }
   return {
     statusCode,
-    code:
-      source.code ||
-      (statusCode === 503
-        ? 'upstream_unavailable'
-        : statusCode === 403 && fallbackCode !== 'member_stopped'
-          ? 'membership_required'
-          : fallbackCode),
+    code,
     message: publicErrorMessage(source.message),
     ...(source.cooldownUntil ? { retryAt: source.cooldownUntil } : {}),
   };
@@ -345,24 +365,29 @@ export function quoteMemberGeneration(
   const versions = memberGenerationCapabilities(db, member, { env }).versions;
   const reasons: MemberGenerationReason[] = [],
     append = (reason: MemberGenerationReason) => {
-      if (!reasons.some((item) => item.code === reason.code && item.message === reason.message))
+      if (!reasons.some((item) => item.code === reason.code && item.message === reason.message)) {
         reasons.push(reason);
+      }
     };
   const count = normalized.request.sampleCount,
     payloadBytes = Buffer.byteLength(JSON.stringify(normalized.request)),
     payloadLimits = generationPayloadLimits(env);
-  if (payloadBytes > payloadLimits.request)
+  if (payloadBytes > payloadLimits.request) {
     fail(413, 'payload_too_large', '规范化生成请求超过载荷大小限制。');
-  if ((options.activePayloadBytes || 0) + payloadBytes > payloadLimits.active)
+  }
+  if ((options.activePayloadBytes || 0) + payloadBytes > payloadLimits.active) {
     append({
       statusCode: 429,
       code: 'payload_budget_exhausted',
       message: '待执行请求载荷已满，请等待已有任务完成。',
     });
-  if (options.executorAvailable === false)
+  }
+  if (options.executorAvailable === false) {
     append({ statusCode: 503, code: 'executor_unavailable', message: '执行器暂不可用。' });
-  if (member.enabled === false)
+  }
+  if (member.enabled === false) {
     append({ statusCode: 403, code: 'membership_required', message: '成员当前不可生成。' });
+  }
   try {
     assertQueueAdmission({ jobs: rows(db.jobs) }, member, undefined, env, count);
   } catch (error) {
@@ -403,12 +428,13 @@ export function quoteMemberGeneration(
           append(admissionReason(error, 'free_image_limit'));
         }
         usage.reserved++;
-      } else if (freeImagePolicy(draft).enabled)
+      } else if (freeImagePolicy(draft).enabled) {
         append({
           statusCode: 503,
           code: 'upstream_unavailable',
           message: '免费图片使用记录暂不可用。',
         });
+      }
     }
     if (!account || !draft.settings?.fairQuota?.enabled) {
       append({
@@ -440,6 +466,10 @@ export function quoteMemberGeneration(
       );
     }
   }
+  let seedMode = 'not_applicable';
+  if (normalized.operation === 'generate') {
+    seedMode = normalized.randomSeed ? 'random' : 'fixed';
+  }
   const effective = {
     operation: normalized.operation,
     model: normalized.request.model,
@@ -448,12 +478,7 @@ export function quoteMemberGeneration(
     height: normalized.request.height,
     steps: normalized.request.steps,
     sampleCount: count,
-    seedMode:
-      normalized.operation === 'generate'
-        ? normalized.randomSeed
-          ? 'random'
-          : 'fixed'
-        : 'not_applicable',
+    seedMode,
     ...(!normalized.randomSeed && normalized.operation === 'generate'
       ? { seed: normalized.request.seed }
       : {}),
@@ -479,10 +504,12 @@ export function assertMemberGenerationConfirmation(
   quote: ReturnType<typeof quoteMemberGeneration>,
 ): void {
   assertMemberGenerationVersions(confirmation, quote.versions);
-  if (confirmation.requestFingerprint !== quote.requestFingerprint)
+  if (confirmation.requestFingerprint !== quote.requestFingerprint) {
     fail(409, 'quote_changed', '生成意图与费用确认不一致，请重新报价。', { requote: true });
-  for (const charge of quote.charges.perJob)
+  }
+  for (const charge of quote.charges.perJob) {
     assertMemberGenerationCost(confirmation, charge.resources, quote.charges.total);
+  }
 }
 
 type RecoverableRequest = Omit<Partial<ProviderRequest>, 'nativeParameters'> & {
@@ -494,13 +521,16 @@ type RecoverableRequest = Omit<Partial<ProviderRequest>, 'nativeParameters'> & {
 function recoveredInput(
   request: RecoverableRequest | null | undefined,
 ): Record<string, unknown> | null {
-  if (!request) return null;
+  if (!request) {
+    return null;
+  }
   if (request.operation === 'upscale' || request.operation === 'encode-vibe') {
     if (
       !object(request.operationParameters) ||
       typeof request.operationParameters.image !== 'string'
-    )
+    ) {
       return null;
+    }
     const fields =
       request.operation === 'upscale'
         ? ['image', 'model', 'declared_blur_sigma']
@@ -515,7 +545,9 @@ function recoveredInput(
       allowPurchasedAnlas: request.allowPurchasedAnlas === true,
     };
   }
-  if (typeof request.model !== 'string' || typeof request.prompt !== 'string') return null;
+  if (typeof request.model !== 'string' || typeof request.prompt !== 'string') {
+    return null;
+  }
   let parameters = request.nativeParameters;
   if (!object(parameters)) {
     if (
@@ -526,8 +558,9 @@ function recoveredInput(
       !['sampler', 'noiseSchedule', 'negative'].every(
         (key) => typeof request[key as keyof RecoverableRequest] === 'string',
       )
-    )
+    ) {
       return null;
+    }
     parameters = buildNovelAiParameters(request as ProviderRequest);
   }
   const clean = structuredClone(parameters);
@@ -535,11 +568,14 @@ function recoveredInput(
     'image_cache_secret_key',
     'mask_cache_secret_key',
     'reference_image_cache_secret_key',
-  ])
+  ]) {
     delete clean[key];
-  for (const key of ['reference_image_multiple_cached', 'director_reference_images_cached'])
-    if (Array.isArray(clean[key]))
+  }
+  for (const key of ['reference_image_multiple_cached', 'director_reference_images_cached']) {
+    if (Array.isArray(clean[key])) {
       clean[key] = clean[key].map((value) => (object(value) ? { data: value.data } : value));
+    }
+  }
   return {
     operation: 'generate',
     input: request.prompt,
@@ -553,9 +589,7 @@ function recoveredInput(
     allowPurchasedAnlas: request.allowPurchasedAnlas === true,
   };
 }
-function inputAssetSlots(
-  input: Record<string, unknown>,
-): {
+function inputAssetSlots(input: Record<string, unknown>): {
   slot: string;
   owner: Record<string, unknown> | unknown[];
   key: string | number;
@@ -576,20 +610,25 @@ function inputAssetSlots(
     image: boolean,
   ) => {
     const value = (owner as Record<string | number, unknown>)[key];
-    if (typeof value === 'string' && value) slots.push({ slot, owner, key, value, image });
+    if (typeof value === 'string' && value) {
+      slots.push({ slot, owner, key, value, image });
+    }
   };
   for (const [prefix, owner] of [
     ['', input],
     ['parameters.', input.parameters],
   ] as const) {
-    if (!object(owner)) continue;
-    for (const key of ['image', 'mask', 'reference_image'])
+    if (!object(owner)) {
+      continue;
+    }
+    for (const key of ['image', 'mask', 'reference_image']) {
       add(
         owner,
         key,
         prefix + key,
         key !== 'reference_image' || String(input.model).endsWith('-3'),
       );
+    }
     for (const key of [
       'reference_image_multiple',
       'director_reference_images',
@@ -597,12 +636,18 @@ function inputAssetSlots(
       'director_reference_images_cached',
     ]) {
       const values = owner[key];
-      if (!Array.isArray(values)) continue;
+      if (!Array.isArray(values)) {
+        continue;
+      }
       values.forEach((value, index) => {
         const image = key.startsWith('director_') || String(input.model).endsWith('-3');
         if (key.endsWith('_cached')) {
-          if (object(value)) add(value, 'data', `${prefix}${key}.${index}.data`, image);
-        } else add(values, index, `${prefix}${key}.${index}`, image);
+          if (object(value)) {
+            add(value, 'data', `${prefix}${key}.${index}.data`, image);
+          }
+        } else {
+          add(values, index, `${prefix}${key}.${index}`, image);
+        }
       });
     }
   }
@@ -615,27 +660,27 @@ function decodeInputAsset(
   const base64 = asset.value.startsWith('data:')
     ? asset.value.slice(asset.value.indexOf(',') + 1)
     : asset.value;
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) fail(410, 'input_unavailable', '原输入附件不可用。');
-  const bytes = Buffer.from(base64, 'base64');
-  if (!bytes.length || bytes.toString('base64').replace(/=+$/, '') !== base64.replace(/=+$/, ''))
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
     fail(410, 'input_unavailable', '原输入附件不可用。');
+  }
+  const bytes = Buffer.from(base64, 'base64');
+  if (!bytes.length || bytes.toString('base64').replace(/=+$/, '') !== base64.replace(/=+$/, '')) {
+    fail(410, 'input_unavailable', '原输入附件不可用。');
+  }
   const limits = context?.native.limits;
   try {
-    return {
-      bytes,
-      mimeType: asset.image
-        ? validateImageBytes(
-            bytes,
-            limits
-              ? {
-                  maxBytes: limits.imageBytes,
-                  maxDimension: limits.imageDimension,
-                  maxPixels: limits.imagePixels,
-                }
-              : {},
-          ).mimeType
-        : 'application/octet-stream',
-    };
+    let mimeType = 'application/octet-stream';
+    if (asset.image) {
+      const imageLimits = limits
+        ? {
+            maxBytes: limits.imageBytes,
+            maxDimension: limits.imageDimension,
+            maxPixels: limits.imagePixels,
+          }
+        : {};
+      mimeType = validateImageBytes(bytes, imageLimits).mimeType;
+    }
+    return { bytes, mimeType };
   } catch {
     fail(410, 'input_unavailable', '原输入附件不可用。');
   }
@@ -647,7 +692,7 @@ export function memberGenerationInput(
 ) {
   const input = recoveredInput(request),
     assets: { slot: string; mimeType: string; byteLength: number; url: string }[] = [];
-  if (input)
+  if (input) {
     for (const asset of inputAssetSlots(input)) {
       const decoded = decodeInputAsset(asset, request?.normalizationContext);
       assets.push({
@@ -658,6 +703,7 @@ export function memberGenerationInput(
       });
       (asset.owner as Record<string | number, unknown>)[asset.key] = { slot: asset.slot };
     }
+  }
   return {
     contractVersion: 1,
     requestId,
@@ -673,8 +719,12 @@ export function memberGenerationInputAsset(
   slot: string,
 ) {
   const input = recoveredInput(request);
-  if (!input) fail(410, 'input_unavailable', '历史请求未保存完整输入。');
+  if (!input) {
+    fail(410, 'input_unavailable', '历史请求未保存完整输入。');
+  }
   const asset = inputAssetSlots(input).find((item) => item.slot === slot);
-  if (!asset) fail(404, 'input_not_found', '原输入附件不存在。');
+  if (!asset) {
+    fail(404, 'input_not_found', '原输入附件不存在。');
+  }
   return decodeInputAsset(asset, request?.normalizationContext);
 }

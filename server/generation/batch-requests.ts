@@ -51,7 +51,9 @@ export function webJobRequestSummary<T extends object>(
 }
 
 export function singleGenerationRequest<T extends BatchableRequest>(request: T, sampleIndex = 0) {
-  if (!request.nativeParameters) return request;
+  if (!request.nativeParameters) {
+    return request;
+  }
   const seed = (request.seed! + sampleIndex) % 4294967296;
   // 字符串/参考数组只读共享；不为每个 child 深拷贝整份 base64。
   return {
@@ -70,15 +72,18 @@ export function cancelWaitingBatchJobs(
   statusCode = 409,
   now = Date.now(),
 ): string[] {
-  if (!job.requestId) return [];
+  if (!job.requestId) {
+    return [];
+  }
   const changed: string[] = [];
   for (const child of db.jobs) {
     if (
       child.id === job.id ||
       child.requestId !== job.requestId ||
       !['pending', 'queued'].includes(child.status!)
-    )
+    ) {
       continue;
+    }
     // 未派发 child 没有生成预扣；不为取消意图补造 attempt 或消费证据。
     child.status = 'failed';
     child.error = child.errorDetail = message;
@@ -87,7 +92,7 @@ export function cancelWaitingBatchJobs(
     child.cancellationReason = 'batch_stopped';
     changed.push(child.id);
   }
-  if (changed.length)
+  if (changed.length) {
     recordDomainEvent(db, {
       eventType: 'WaitingJobsCancelled',
       streamId: `request:${job.requestId}`,
@@ -100,6 +105,7 @@ export function cancelWaitingBatchJobs(
         cancellationReason: 'batch_stopped',
       },
     });
+  }
   return changed;
 }
 
@@ -109,13 +115,19 @@ export function activateNextBatchJob(
   queueSeq: number,
   now = Date.now(),
 ): void {
-  if (!job.requestId || job.status !== 'done') return;
+  if (!job.requestId || job.status !== 'done') {
+    return;
+  }
   const children = db.jobs.filter((child) => child.requestId === job.requestId);
-  if (children.some((child) => ['failed', 'queued', 'running'].includes(child.status!))) return;
+  if (children.some((child) => ['failed', 'queued', 'running'].includes(child.status!))) {
+    return;
+  }
   const next = children
     .filter((child) => child.status === 'pending')
     .sort((a, b) => a.sampleIndex! - b.sampleIndex!)[0];
-  if (!next) return;
+  if (!next) {
+    return;
+  }
   const deadline = queuedDeadlineTimestamp(next);
   if (deadline && now >= deadline) {
     cancelWaitingBatchJobs(db, job, '任务已过期，剩余图片已取消', 504, now);

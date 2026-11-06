@@ -48,8 +48,9 @@ test('启动器只见个人本地余额和真实百分点，接口无写入与�
     usage: { percent: 20, isNegative: false, timeUntilNextPercent: 2400 },
   });
   assert.deepEqual(db, before);
-  for (const secret of ['secret-opus', 'upstream-secret', 'private-a', 'private-b'])
+  for (const secret of ['secret-opus', 'upstream-secret', 'private-a', 'private-b']) {
     assert.ok(!JSON.stringify(result).includes(secret));
+  }
   db.settings.fairQuota.balances.b.anlasFixedAvailable = 9000;
   assert.equal(
     launcherSubscription(db, db.users[0], NOW).trainingStepsLeft.fixedTrainingStepsLeft,
@@ -58,11 +59,12 @@ test('启动器只见个人本地余额和真实百分点，接口无写入与�
 });
 test('无共享成员和停用成员不能取得启动器订阅', () => {
   const db = fixture();
-  for (const user of [db.users[4], { ...db.users[0], enabled: false }, null])
+  for (const user of [db.users[4], { ...db.users[0], enabled: false }, null]) {
     assert.throws(
       () => launcherSubscription(db, user, NOW),
       (e) => e.statusCode === 403,
     );
+  }
 });
 test('过期、停用、非Opus、配额过期与同步错误不会被启动器误认为有效订阅', () => {
   for (const patch of [
@@ -127,7 +129,9 @@ test('秒和ISO到期时间均兼容，恢复按个人份额向上取整且不�
 test('队友满额后启动器反映当前恢复速度，个人满额时停止恢复', () => {
   const db = fixture(),
     s = db.settings.fairQuota;
-  for (const id of ['b', 'c', 'd']) s.balances[id].v5Available = 25;
+  for (const id of ['b', 'c', 'd']) {
+    s.balances[id].v5Available = 25;
+  }
   s.snapshot.v5 = 95;
   db.accounts[0].v5UsagePercent = 95;
   let result = launcherSubscription(db, db.users[0], NOW);

@@ -88,7 +88,9 @@ function request(action = 'generate') {
 test('图生图和局部重绘按原动作转发，保留图像、遮罩和已核价的参考强度', async () => {
   for (const action of ['generate', 'img2img', 'infill']) {
     const input = request(action);
-    if (action === 'infill') input.model += '-inpainting';
+    if (action === 'infill') {
+      input.model += '-inpainting';
+    }
     const before = structuredClone(input);
     const { calls, value } = await captured(() =>
       generateNovelAiImage(input, account, env, { forceStream: false }),
@@ -305,8 +307,9 @@ test('Retry-After 按收头时间解析整秒和 HTTP-date，无效或过期不�
       deadline === undefined ? undefined : new Date(deadline).toISOString(),
       header,
     );
-    if (deadline === undefined)
+    if (deadline === undefined) {
       assert.equal(Object.hasOwn(timing, 'upstreamRetryAfterUntil'), false);
+    }
   }
 });
 
@@ -338,7 +341,9 @@ test('普通、流式、放大和编码保留收头证据，429 后断流和 200
         onUpstreamTiming(value) {
           Object.assign(timing, value);
           // 模拟响应体读取耗时，不能在错误落地时用新时钟重新计算秒数。
-          if (value.upstreamHeadersAt) now = start + 90000;
+          if (value.upstreamHeadersAt) {
+            now = start + 90000;
+          }
         },
       };
     const call = () => generateNovelAiImage(variant.request, account, env, options);
@@ -420,7 +425,9 @@ test('普通、流式、放大和编码保留收头证据，429 后断流和 200
 });
 
 function msgpack(value) {
-  if (Buffer.isBuffer(value)) return Buffer.concat([Buffer.from([0xc4, value.length]), value]);
+  if (Buffer.isBuffer(value)) {
+    return Buffer.concat([Buffer.from([0xc4, value.length]), value]);
+  }
   if (typeof value === 'string') {
     const text = Buffer.from(value);
     return Buffer.concat([Buffer.from([0xa0 | text.length]), text]);
@@ -840,11 +847,12 @@ test('ZIP 提取验证目录、CRC、解压大小和图片内容，压缩炸弹�
     wrongCrc,
     imageZip(Buffer.alloc(64 * 1024 * 1024 + 1), { method: 8, uncompressedSize: png.length }),
   ];
-  for (const bytes of badResponses)
+  for (const bytes of badResponses) {
     await captured(
       () => assert.rejects(call()),
       () => new Response(bytes),
     );
+  }
 });
 
 test('流式最终帧必须包含完整图片，尾部截断或帧内尾随垃圾不能成功', async () => {
@@ -949,7 +957,9 @@ test('SOCKS HTTP 分块传输只有收到完整结束块才成功，拒绝超长
     socket.destroy = () => {};
     socket.write = () =>
       queueMicrotask(() => {
-        for (const chunk of chunks) socket.emit('data', chunk);
+        for (const chunk of chunks) {
+          socket.emit('data', chunk);
+        }
         socket.emit('end');
       });
     return __providerInternals.writeAndReadHttpResponse(socket, Buffer.alloc(0));
@@ -966,11 +976,12 @@ test('SOCKS HTTP 分块传输只有收到完整结束块才成功，拒绝超长
     [header, Buffer.from('4000001\r\n')],
     [header, Buffer.from('4z\r\n')],
     [header, Buffer.concat([Buffer.from('4\r\n'), binary, Buffer.from('xx0\r\n\r\n')])],
-  ])
+  ]) {
     await captured(
       () => assert.rejects(call(), /chunked/),
       () => response(chunks),
     );
+  }
   const retryDate = new Date(Date.now() + 300000).toUTCString(),
     until = new Date(retryDate).toISOString();
   const throttled = Buffer.from(
@@ -1055,8 +1066,9 @@ test('模型目录提供 Medium 的唯一采样器组合，旧 High 与 5C 条�
     'nai-diffusion-5-full:k_euler',
     'nai-diffusion-5-curated:k_euler',
     'nai-diffusion-4-5-full:k_euler',
-  ])
+  ]) {
     assert.ok(result.data.some((item) => item.id === id));
+  }
   const highResolution = medium.find((item) => item.id.startsWith('[2K]'));
   assert.equal(highResolution.cost, 0);
   assert.deepEqual(highResolution.cost_by_size, { 竖图: 0, 横图: 0, 方图: 0 });

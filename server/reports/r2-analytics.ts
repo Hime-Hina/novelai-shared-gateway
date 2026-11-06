@@ -90,20 +90,28 @@ async function queryOperations(
     accounts.length !== 1 ||
     !Array.isArray(rows) ||
     rows.length >= 1000
-  )
+  ) {
     throw new Error('Incomplete R2 analytics');
+  }
   let a = 0,
     b = 0;
   for (const row of rows) {
     const action = row?.dimensions?.actionType,
       count = row?.sum?.requests;
-    if (typeof action !== 'string' || !Number.isSafeInteger(count) || count! < 0)
+    if (typeof action !== 'string' || !Number.isSafeInteger(count) || count! < 0) {
       throw new Error('Invalid R2 analytics');
-    if (classA.has(action)) a += count!;
-    else if (classB.has(action)) b += count!;
-    else if (!free.has(action)) throw new Error('Unknown R2 operation');
+    }
+    if (classA.has(action)) {
+      a += count!;
+    } else if (classB.has(action)) {
+      b += count!;
+    } else if (!free.has(action)) {
+      throw new Error('Unknown R2 operation');
+    }
   }
-  if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b)) throw new Error('Invalid R2 totals');
+  if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b)) {
+    throw new Error('Invalid R2 totals');
+  }
   return { classA: a, classB: b, checkedAt: end };
 }
 
@@ -127,7 +135,7 @@ export function readR2Operations(env: NodeJS.ProcessEnv = process.env) {
     day <= 31;
   const now = new Date(),
     period = configured ? billingPeriod(now, day) : { periodStart: null, periodEnd: null };
-  if (!configured)
+  if (!configured) {
     return {
       ...period,
       status: 'unconfigured' as const,
@@ -135,6 +143,7 @@ export function readR2Operations(env: NodeJS.ProcessEnv = process.env) {
       classA: quota(undefined, 1_000_000),
       classB: quota(undefined, 10_000_000),
     };
+  }
   const key = `${account}\0${token}\0${day}`;
   if (!cache || cache.key !== key || cache.periodStart !== period.periodStart) {
     cache = {
@@ -162,15 +171,21 @@ export function readR2Operations(env: NodeJS.ProcessEnv = process.env) {
         entry.nextRefreshAt = Date.now() + refreshMs;
       });
   }
+  let status: 'stale' | 'ready' | 'unavailable' | 'loading';
+  if (entry.snapshot) {
+    if (entry.failed) {
+      status = 'stale';
+    } else {
+      status = 'ready';
+    }
+  } else if (entry.failed) {
+    status = 'unavailable';
+  } else {
+    status = 'loading';
+  }
   return {
     ...period,
-    status: entry.snapshot
-      ? entry.failed
-        ? ('stale' as const)
-        : ('ready' as const)
-      : entry.failed
-        ? ('unavailable' as const)
-        : ('loading' as const),
+    status,
     checkedAt: entry.snapshot?.checkedAt ?? null,
     classA: quota(entry.snapshot?.classA, 1_000_000),
     classB: quota(entry.snapshot?.classB, 10_000_000),

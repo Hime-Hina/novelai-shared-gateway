@@ -33,11 +33,14 @@ const legacyJobColumns = new Set(['cost', 'stats_excluded', 'error_loggable']);
 export function readCompatibleEventAuthority(
   sqlite: Database.Database,
 ): { version: number; minimumWriterVersion: number; commitSeq?: string } | null {
-  if (!sqlite.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='app_meta'").get())
+  if (!sqlite.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='app_meta'").get()) {
     return null;
+  }
   const row = sqlite.prepare("SELECT value FROM app_meta WHERE key='event_authority'").get() as
     { value: string } | undefined;
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   const marker = JSON.parse(row.value) as {
     version: number;
     minimumWriterVersion: number;
@@ -49,10 +52,11 @@ export function readCompatibleEventAuthority(
     !Number.isInteger(marker.minimumWriterVersion) ||
     marker.minimumWriterVersion < marker.version ||
     marker.minimumWriterVersion > SUPPORTED_EVENT_AUTHORITY_VERSION
-  )
+  ) {
     throw new Error(
       'Event authority requires a newer compatible writer or has an unsupported version marker.',
     );
+  }
   return marker;
 }
 
@@ -91,7 +95,9 @@ function adoptLegacySchema(sqlite: Database.Database, baseline: MigrationMeta) {
   // 只在首次接入时建立内存参考库；实际结构来自已审阅的基线 SQL，不再维护第二套 DDL。
   const reference = new Database(':memory:');
   try {
-    for (const statement of baseline.sql) reference.exec(statement);
+    for (const statement of baseline.sql) {
+      reference.exec(statement);
+    }
     const tables = reference
       .prepare<[], { name: string }>(
         "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name",
@@ -103,9 +109,12 @@ function adoptLegacySchema(sqlite: Database.Database, baseline: MigrationMeta) {
           const existing = sqlite
             .prepare<[string], { type: string }>('SELECT type FROM sqlite_schema WHERE name = ?')
             .get(name);
-          if (!existing) continue;
-          if (existing.type !== 'table')
+          if (!existing) {
+            continue;
+          }
+          if (existing.type !== 'table') {
             throw new Error(`SQLite baseline mismatch: ${name} is not a table.`);
+          }
           const actualColumns = columns(sqlite, name),
             expectedColumns = columns(reference, name);
           const missing = expectedColumns.filter(
@@ -122,7 +131,9 @@ function adoptLegacySchema(sqlite: Database.Database, baseline: MigrationMeta) {
           const actualIndexes = indexes(sqlite, name);
           for (const expectedIndex of indexes(reference, name)) {
             const actualIndex = actualIndexes.find((index) => index.name === expectedIndex.name);
-            if (actualIndex) assertSame(actualIndex, expectedIndex, expectedIndex.name);
+            if (actualIndex) {
+              assertSame(actualIndex, expectedIndex, expectedIndex.name);
+            }
           }
           // 支持旧版逐步增加过的三个统计列；字段定义取自基线，不从模型重新推测历史。
           for (const column of missing) {
@@ -131,7 +142,9 @@ function adoptLegacySchema(sqlite: Database.Database, baseline: MigrationMeta) {
             );
           }
         }
-        for (const statement of baseline.sql) sqlite.exec(statement);
+        for (const statement of baseline.sql) {
+          sqlite.exec(statement);
+        }
         sqlite.exec(
           `CREATE TABLE IF NOT EXISTS ${migrationTable} (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`,
         );

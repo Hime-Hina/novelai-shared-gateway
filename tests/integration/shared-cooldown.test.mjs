@@ -121,8 +121,9 @@ test('失败分类区分HTTP200流内容量、网络、认证/额度、本地提
     [Object.assign(new Error('disk full'), { code: 'ENOSPC' }), 'upstream', 'ended'],
     [new Error('synthetic local write failure'), 'commit', 'ended'],
     [new Error('cancelled'), 'preflight', 'ended'],
-  ])
+  ]) {
     assert.equal(sharedFailureKind({ ...sent, failurePhase: phase }, error), expected);
+  }
   assert.equal(
     sharedFailureKind(
       { ...sent, upstreamTiming: { ...sent.upstreamTiming, upstreamHttpStatus: 429 } },

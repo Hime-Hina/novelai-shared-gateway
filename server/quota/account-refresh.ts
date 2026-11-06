@@ -46,41 +46,49 @@ function quotaFailure(error: unknown) {
   ].includes(candidate!)
     ? candidate!
     : null;
-  const category = isNovelAiAccountBannedError(value?.message)
-    ? 'banned'
-    : isNovelAiOutOfTrialImageGenerationError(value?.message) || value?.message === '试用次数已用完'
-      ? 'out_of_trial'
-      : httpStatus === 401
-        ? 'invalid_key'
-        : httpStatus === 403
-          ? 'access_denied'
-          : errorCode === 'QUOTA_REQUEST_TIMEOUT' ||
-              errorCode?.includes('TIMEOUT') ||
-              value?.name === 'AbortError' ||
-              value?.message === '订阅状态查询超时，将在下一轮自动重试'
-            ? 'timeout'
-            : errorCode
-              ? 'network_error'
-              : httpStatus
-                ? 'http_error'
-                : 'query_error';
-  const message =
-    category === 'banned'
-      ? '账号已封禁'
-      : category === 'out_of_trial'
-        ? '试用次数已用完'
-        : category === 'invalid_key'
-          ? '共享 Opus Key 已失效，请联系管理员更新凭据'
-          : category === 'access_denied'
-            ? '上游拒绝访问，请联系管理员重新验证 Opus'
-            : category === 'timeout'
-              ? '订阅状态查询超时，将在下一轮自动重试'
-              : '官方额度同步失败，请稍后重试';
+  let category = 'query_error';
+  if (isNovelAiAccountBannedError(value?.message)) {
+    category = 'banned';
+  } else if (
+    isNovelAiOutOfTrialImageGenerationError(value?.message) ||
+    value?.message === '试用次数已用完'
+  ) {
+    category = 'out_of_trial';
+  } else if (httpStatus === 401) {
+    category = 'invalid_key';
+  } else if (httpStatus === 403) {
+    category = 'access_denied';
+  } else if (
+    errorCode === 'QUOTA_REQUEST_TIMEOUT' ||
+    errorCode?.includes('TIMEOUT') ||
+    value?.name === 'AbortError' ||
+    value?.message === '订阅状态查询超时，将在下一轮自动重试'
+  ) {
+    category = 'timeout';
+  } else if (errorCode) {
+    category = 'network_error';
+  } else if (httpStatus) {
+    category = 'http_error';
+  }
+  let message = '官方额度同步失败，请稍后重试';
+  if (category === 'banned') {
+    message = '账号已封禁';
+  } else if (category === 'out_of_trial') {
+    message = '试用次数已用完';
+  } else if (category === 'invalid_key') {
+    message = '共享 Opus Key 已失效，请联系管理员更新凭据';
+  } else if (category === 'access_denied') {
+    message = '上游拒绝访问，请联系管理员重新验证 Opus';
+  } else if (category === 'timeout') {
+    message = '订阅状态查询超时，将在下一轮自动重试';
+  }
   return { httpStatus, errorCode, category, message };
 }
 
 export function isUnsubscribedAccountTier(tier: unknown): boolean {
-  if (tier === null || tier === undefined || tier === '') return false;
+  if (tier === null || tier === undefined || tier === '') {
+    return false;
+  }
   const value = Number(tier);
   return Number.isFinite(value)
     ? value === 0
@@ -126,6 +134,18 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
   const failure = quotaFailure(error);
   const banned = failure.category === 'banned',
     outOfTrial = failure.category === 'out_of_trial';
+  let upstreamStatus = 'sync_error';
+  if (failure.httpStatus === 401) {
+    upstreamStatus = 'invalid_key';
+  } else if (failure.httpStatus === 403) {
+    upstreamStatus = 'access_denied';
+  }
+  let disableReason = '';
+  if (banned) {
+    disableReason = '账号已封禁';
+  } else if (outOfTrial) {
+    disableReason = '试用次数已用完';
+  }
   return {
     id,
     ok: false as const,
@@ -138,14 +158,9 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
     v5UsageTimeUntilNextPercent: null,
     quotaCheckedAt: now,
     quotaError: failure.message,
-    upstreamStatus:
-      failure.httpStatus === 401
-        ? 'invalid_key'
-        : failure.httpStatus === 403
-          ? 'access_denied'
-          : 'sync_error',
+    upstreamStatus,
     disableAccount: banned || outOfTrial,
-    disableReason: banned ? '账号已封禁' : outOfTrial ? '试用次数已用完' : '',
+    disableReason,
   };
 }
 
@@ -201,7 +216,9 @@ export function applyAccountQuotaResult(
     account.upstreamStatus = result.upstreamStatus;
     account.quotaAttemptedAt = now;
     account.updatedAt = now;
-    if (result.disableAccount) disableNovelAiAccount(account);
+    if (result.disableAccount) {
+      disableNovelAiAccount(account);
+    }
     recordOfficialObservation(db, account, now);
     return;
   }
@@ -225,7 +242,9 @@ export function applyAccountQuotaResult(
     upstreamStatus: result.upstreamStatus,
     updatedAt: now,
   });
-  if (result.disableAccount) disableNovelAiAccount(account);
+  if (result.disableAccount) {
+    disableNovelAiAccount(account);
+  }
   recordOfficialObservation(db, account, now);
 }
 
@@ -304,6 +323,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     }
   };
 
+  // 网络等待在事务外；实际发起时领票，写事务内再核对票号与凭据，旧响应不产生观察事实。
   async function refresh(
     ids: string[] = [],
     command?: Pick<
@@ -322,11 +342,12 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
       token: account.token,
       proxyUrl: account.proxyUrl || '',
     }));
-    if (!targets.length)
+    if (!targets.length) {
       fail(
         selected.size ? 404 : 400,
         selected.size ? 'no matching accounts found.' : 'no accounts found.',
       );
+    }
     const results = new Array<QuotaResult>(targets.length),
       tickets = new Map<string, number>();
     let next = 0;
@@ -362,12 +383,15 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
             !result ||
             account.token !== tokens.get(account.id) ||
             latestTickets.get(account.id) !== tickets.get(account.id)
-          )
+          ) {
             continue;
+          }
           applyAccountQuotaResult(db, account, result, result.quotaCheckedAt);
           applied.push(result);
         }
-        if (applied.length) syncFairQuota(db, clock());
+        if (applied.length) {
+          syncFairQuota(db, clock());
+        }
         return {
           checked: results.length,
           ok: applied.filter((result) => result.ok).length,
@@ -383,7 +407,9 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
   }
 
   function refreshEnabled(): Promise<RefreshResult<T>> {
-    if (pending) return pending;
+    if (pending) {
+      return pending;
+    }
     pending = (async () => {
       try {
         const db = await store.readCollections(['accounts']),
@@ -401,16 +427,21 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
   }
 
   function start(): void {
-    if (started || stopped) return;
+    if (started || stopped) {
+      return;
+    }
     started = true;
     const run = async () => {
-      if (stopped) return;
+      if (stopped) {
+        return;
+      }
       try {
         const result = await refreshEnabled();
-        if (result.checked)
+        if (result.checked) {
           logger.log(
             `[runtime] account quota refresh: checked=${result.checked} ok=${result.ok} failed=${result.failed}`,
           );
+        }
       } catch {
         logger.error('[runtime] account quota refresh failed');
       } finally {
@@ -425,7 +456,9 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
 
   function stop(): void {
     stopped = true;
-    if (timer) clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+    }
     timer = null;
   }
   return {

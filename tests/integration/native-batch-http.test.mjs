@@ -97,7 +97,9 @@ test(
       releases = new Map();
     const upstreamEvent = (seed, event, details = {}) => {
       upstreamEvents.push({ seed, event, at: new Date().toISOString(), ...details });
-      if (upstreamEvents.length > 40) upstreamEvents.shift();
+      if (upstreamEvents.length > 40) {
+        upstreamEvents.shift();
+      }
     };
     const upstream = http.createServer(async (req, res) => {
       if (req.url === '/user/data') {
@@ -116,7 +118,9 @@ test(
         return;
       }
       const chunks = [];
-      for await (const chunk of req) chunks.push(chunk);
+      for await (const chunk of req) {
+        chunks.push(chunk);
+      }
       const payload = JSON.parse(Buffer.concat(chunks));
       const seed = payload.parameters.seed;
       calls.push(seed);
@@ -138,13 +142,11 @@ test(
       }
       upstreamEvent(seed, 'response', { status: 200 });
       const image = payload.parameters.image_format === 'webp' ? webp : png;
-      res.writeHead(200, {
-        'content-type': req.url.endsWith('-stream')
-          ? 'application/octet-stream'
-          : image === webp
-            ? 'image/webp'
-            : 'image/png',
-      });
+      let contentType = 'application/octet-stream';
+      if (!req.url.endsWith('-stream')) {
+        contentType = image === webp ? 'image/webp' : 'image/png';
+      }
+      res.writeHead(200, { 'content-type': contentType });
       res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([image]) : image);
     });
     const upstreamPort = await listen(upstream);
@@ -181,7 +183,9 @@ test(
         'pst-synthetic-offline-batch-fixture-only',
         ...credentials.flatMap((member) => [member.api_key, member.password]),
       ]) {
-        if (secret) text = text.replaceAll(secret, '[redacted]');
+        if (secret) {
+          text = text.replaceAll(secret, '[redacted]');
+        }
       }
       return text.replace(/\b(?:STA1N-|pst-)[A-Za-z0-9_-]+/g, '[redacted]');
     };
@@ -267,21 +271,28 @@ test(
       );
     };
     const checkWaitingState = () => {
-      if (fetchFailure) throw fetchFailure.error;
-      if (child?.exitCode !== null || child?.signalCode !== null)
+      if (fetchFailure) {
+        throw fetchFailure.error;
+      }
+      if (child?.exitCode !== null || child?.signalCode !== null) {
         throw new Error('synthetic gateway exited while waiting');
+      }
       // seed 101 的模拟失败及其未派发余图是本例预期；其他失败应立即保留现场。
       const failed = rows().find(
         (job) => job.status === 'failed' && ![101, 102, 103].includes(job.request?.seed),
       );
-      if (failed) throw new Error(`unexpected terminal job: ${failed.id}`);
+      if (failed) {
+        throw new Error(`unexpected terminal job: ${failed.id}`);
+      }
     };
     const until = async (predicate, phase, timeout = 45000) => {
       const end = Date.now() + timeout;
       try {
         while (!predicate()) {
           checkWaitingState();
-          if (Date.now() >= end) throw new Error('synthetic state wait timed out');
+          if (Date.now() >= end) {
+            throw new Error('synthetic state wait timed out');
+          }
           await new Promise((resolve) => setTimeout(resolve, 25));
         }
       } catch (error) {
@@ -339,11 +350,17 @@ test(
       });
     };
     const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-      if (exited) await exited;
+      if (child?.exitCode === null && child?.signalCode === null) {
+        child.kill(signal);
+      }
+      if (exited) {
+        await exited;
+      }
     };
     t.after(async () => {
-      for (const release of releases.values()) release();
+      for (const release of releases.values()) {
+        release();
+      }
       await stop();
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
@@ -592,7 +609,9 @@ test(
         ['final', 1],
       ],
     );
-    for (const frame of coldFrames) assert.deepEqual(Buffer.from(frame.image), webp);
+    for (const frame of coldFrames) {
+      assert.deepEqual(Buffer.from(frame.image), webp);
+    }
     for (const [stream, accept] of [
       ['sse', 'text/event-stream'],
       [undefined, 'application/msgpack'],
@@ -613,7 +632,9 @@ test(
           ['final', 1],
         ],
       );
-      for (const frame of frames) assert.deepEqual(Buffer.from(frame.image, 'base64'), webp);
+      for (const frame of frames) {
+        assert.deepEqual(Buffer.from(frame.image, 'base64'), webp);
+      }
     }
     for (const job of bRows) {
       const headers = { authorization: `Bearer ${credentials[1].api_key}` };

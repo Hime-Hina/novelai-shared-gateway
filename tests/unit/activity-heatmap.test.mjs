@@ -20,8 +20,9 @@ test('activity dates use Shanghai submission days and reject ambiguous or invali
     '2026-10-17T24:01:00Z',
     '2026-10-17T12:00:00+24:00',
     'not-a-date',
-  ])
+  ]) {
     assert.equal(activityDate(value), null, String(value));
+  }
 });
 
 test('recent calendar year includes today and correctly spans leap day and midnight', () => {

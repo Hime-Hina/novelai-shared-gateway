@@ -32,12 +32,14 @@ export function launcherSubscription(
   user: { id: string; enabled?: boolean } | null | undefined,
   now = Date.now(),
 ) {
-  if (!user || user.enabled === false)
+  if (!user || user.enabled === false) {
     throw Object.assign(new Error('成员未启用'), { statusCode: 403 });
+  }
   const draft = estimateFairQuota({ ...db, settings: db.settings || {} }, now);
   const quota = fairQuotaSummary(draft, user, now);
-  if (!quota?.member)
+  if (!quota?.member) {
     throw Object.assign(new Error('该用户未加入共享分组账本'), { statusCode: 403 });
+  }
   const account = rows(db.accounts).find((a) => a.id === quota.boundAccountId);
   const expires = Math.floor((quotaTimestamp(account?.subscriptionExpiresAt) || 0) / 1000);
   // 官方兼容 DTO 必须携带可用的 expiresAt；缺失到期观测时不伪造订阅期限。

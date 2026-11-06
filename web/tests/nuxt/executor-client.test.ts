@@ -36,7 +36,9 @@ afterEach(async () => {
 async function listen(handler: Handler) {
   const server = http.createServer((req, res) => {
     Promise.resolve(handler(req, res)).catch((error) => {
-      if (res.destroyed || res.writableEnded) return;
+      if (res.destroyed || res.writableEnded) {
+        return;
+      }
       if (res.headersSent) {
         res.destroy();
         return;
@@ -57,7 +59,9 @@ async function fixture(upstream: Handler) {
 
 async function readBody(req: IncomingMessage) {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk);
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -73,8 +77,9 @@ function request(
   return new Promise((resolve, reject) => {
     const headers = ['Host', 'localhost:18082', ...(options.headers || [])];
     // agent:false still isolates sockets, but its default Connection:close can reset an upload before an early 413 arrives.
-    if (!headers.some((name, index) => index % 2 === 0 && name.toLowerCase() === 'connection'))
+    if (!headers.some((name, index) => index % 2 === 0 && name.toLowerCase() === 'connection')) {
       headers.push('Connection', 'keep-alive');
+    }
     const req = http.request(
       new URL(path, base),
       {
@@ -205,7 +210,9 @@ describe('executor client through loopback HTTP', () => {
       await readBody(req);
       calls += 1;
       // Existing Discord refresh + membership requests may each take up to 10 seconds.
-      if (calls === 1) await new Promise((resolve) => setTimeout(resolve, 16000));
+      if (calls === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 16000));
+      }
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end('{}');
     });
@@ -432,8 +439,11 @@ describe('executor client through loopback HTTP', () => {
       (error) => ({ reply: undefined, error: error as NodeJS.ErrnoException }),
     );
     // 若头已发出，连接被终止；尚未发头时返回503。两者都不能自动重放普通写入。
-    if (result.reply) expect(result.reply.status).toBe(503);
-    else expect(['ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE']).toContain(result.error!.code);
+    if (result.reply) {
+      expect(result.reply.status).toBe(503);
+    } else {
+      expect(['ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE']).toContain(result.error!.code);
+    }
     expect(calls).toBe(1);
   });
 
@@ -496,7 +506,9 @@ describe('executor client through loopback HTTP', () => {
       expect(result.status).toBe(503);
     }
     expect(deadlines).toHaveBeenCalledTimes(3);
-    for (const [milliseconds] of deadlines.mock.calls) expect(milliseconds).toBe(45000);
+    for (const [milliseconds] of deadlines.mock.calls) {
+      expect(milliseconds).toBe(45000);
+    }
   });
 
   it('cancels the admin batch HTTP request when its browser disconnects without retrying', async () => {

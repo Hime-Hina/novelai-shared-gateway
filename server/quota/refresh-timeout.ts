@@ -3,8 +3,9 @@ export async function withQuotaRequestDeadline<T>(
   request: (signal: AbortSignal) => T | PromiseLike<T>,
   timeoutMs = 15_000,
 ): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new RangeError('额度查询超时时间必须大于零');
+  }
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((resolve, reject) => {

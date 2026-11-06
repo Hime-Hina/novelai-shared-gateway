@@ -179,15 +179,20 @@ const MAX_RESULT_DIMENSION = 16384;
 function retryAfterUntil(value: unknown, receivedAt: number): string | undefined {
   const text = String(value || '').trim();
   let deadline;
-  if (/^\d+$/.test(text)) deadline = receivedAt + Number(text) * 1000;
-  else {
+  if (/^\d+$/.test(text)) {
+    deadline = receivedAt + Number(text) * 1000;
+  } else {
     // HTTP-date 的三种形式；不让 Date.parse 把普通数字、ISO 或自由文本误当重试日期。
     const imf = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
     const obsolete = /^[A-Za-z]+, \d{2}-[A-Za-z]{3}-\d{2} \d{2}:\d{2}:\d{2} GMT$/;
     const asctime = /^[A-Za-z]{3} [A-Za-z]{3} (?: \d|\d{2}) \d{2}:\d{2}:\d{2} \d{4}$/;
-    if (!imf.test(text) && !obsolete.test(text) && !asctime.test(text)) return;
+    if (!imf.test(text) && !obsolete.test(text) && !asctime.test(text)) {
+      return;
+    }
     const date = new Date(Date.parse(asctime.test(text) ? text + ' GMT' : text));
-    if (!Number.isFinite(date.getTime())) return;
+    if (!Number.isFinite(date.getTime())) {
+      return;
+    }
     if (obsolete.test(text)) {
       const limit = new Date(receivedAt);
       limit.setUTCFullYear(limit.getUTCFullYear() + 50);
@@ -195,7 +200,9 @@ function retryAfterUntil(value: unknown, receivedAt: number): string | undefined
         Math.floor(new Date(receivedAt).getUTCFullYear() / 100) * 100 +
           (date.getUTCFullYear() % 100),
       );
-      if (date > limit) date.setUTCFullYear(date.getUTCFullYear() - 100);
+      if (date > limit) {
+        date.setUTCFullYear(date.getUTCFullYear() - 100);
+      }
     }
     const [weekday, day, month, year, time] = date.toUTCString().split(' ');
     const longDay = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][
@@ -207,12 +214,14 @@ function retryAfterUntil(value: unknown, receivedAt: number): string | undefined
         `${longDay}, ${day}-${month}-${year.slice(-2)} ${time} GMT`,
         `${weekday.slice(0, 3)} ${month} ${String(Number(day)).padStart(2, ' ')} ${time} ${year}`,
       ].includes(text)
-    )
+    ) {
       return;
+    }
     deadline = date.getTime();
   }
-  if (Number.isSafeInteger(deadline) && deadline > receivedAt && deadline <= 8640000000000000)
+  if (Number.isSafeInteger(deadline) && deadline > receivedAt && deadline <= 8640000000000000) {
     return new Date(deadline).toISOString();
+  }
 }
 
 async function fetchWithGenerationTiming(
@@ -259,12 +268,18 @@ async function* readGenerationChunks(
       const { value, done } = reader
         ? await reader.read()
         : { value: await response.arrayBuffer(), done: false };
-      if (done) break;
+      if (done) {
+        break;
+      }
       const chunk = (Buffer.from as (bytes: ArrayBuffer | Uint8Array) => Buffer)(value);
       received += chunk.length;
-      if (received > maxBytes) throw new Error('NovelAI response exceeds the size limit.');
+      if (received > maxBytes) {
+        throw new Error('NovelAI response exceeds the size limit.');
+      }
       yield chunk;
-      if (!reader) break;
+      if (!reader) {
+        break;
+      }
     }
     // 原生 Fetch 会解压 HTTP 内容；只有未压缩响应才能按头部长度核对字节数。
     const encoding = response.headers.get('content-encoding');
@@ -285,7 +300,9 @@ async function* readGenerationChunks(
 
 async function readGenerationBody(response: UpstreamResponse): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of readGenerationChunks(response)) chunks.push(chunk);
+  for await (const chunk of readGenerationChunks(response)) {
+    chunks.push(chunk);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -296,8 +313,9 @@ function validatedUpstreamImage(buffer: Buffer, declaredType = ''): ImageResult 
       maxDimension: MAX_RESULT_DIMENSION,
       label: 'NovelAI result',
     });
-    if (declaredType.startsWith('image/') && declaredType !== image.mimeType)
+    if (declaredType.startsWith('image/') && declaredType !== image.mimeType) {
       throw new Error('Image media type does not match its contents.');
+    }
     return { buffer, mimeType: image.mimeType };
   } catch (cause) {
     // 上游坏产物不是客户端参数错误；不能把输入校验器的 422 状态带出边界。
@@ -316,10 +334,14 @@ function decodeImageResponse(buffer: Buffer, contentType: string): ImageResult {
           { image?: unknown } | null | undefined
       )?.image ||
       (payload as ImageJsonPayload | null | undefined)?.images?.[0];
-    if (!base64) throw new Error('NovelAI JSON response does not contain image data.');
+    if (!base64) {
+      throw new Error('NovelAI JSON response does not contain image data.');
+    }
     return decodeDataUrl(base64);
   }
-  if (contentType.includes('zip') || looksLikeZip(buffer)) return extractFirstImageFromZip(buffer);
+  if (contentType.includes('zip') || looksLikeZip(buffer)) {
+    return extractFirstImageFromZip(buffer);
+  }
   if (
     contentType &&
     !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'].includes(contentType)
@@ -492,7 +514,9 @@ async function generateNovelAiImageOperation(
   env: NodeJS.ProcessEnv,
   options: GenerationOptions = {},
 ): Promise<GeneratedResult> {
-  if (!account?.token) throw new Error('No enabled NovelAI account is available.');
+  if (!account?.token) {
+    throw new Error('No enabled NovelAI account is available.');
+  }
   const payload = request.operationParameters;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error('Validated NovelAI operation parameters are required.');
@@ -534,7 +558,9 @@ async function generateNovelAiImageOperation(
       { upstreamStatus: response.status },
     );
   }
-  if (!buffer.length) throw new Error('NovelAI returned an empty operation result.');
+  if (!buffer.length) {
+    throw new Error('NovelAI returned an empty operation result.');
+  }
   if (request.operation === 'encode-vibe') {
     // 编码格式未公开；只核验传输边界和二进制类型，不猜测图片格式或编码魔数。
     if (
@@ -550,8 +576,12 @@ async function generateNovelAiImageOperation(
 
 function looksLikeTextResponse(buffer: Buffer): boolean {
   const text = buffer.toString('utf8').trim();
-  if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) || /^(?:<!doctype\s+html|<html\b|<\?xml)/i.test(text))
+  if (
+    /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) ||
+    /^(?:<!doctype\s+html|<html\b|<\?xml)/i.test(text)
+  ) {
     return true;
+  }
   if (text.startsWith('{') || text.startsWith('[')) {
     try {
       JSON.parse(text);
@@ -635,7 +665,9 @@ export async function fetchNovelAiAccountQuota(
   env: NodeJS.ProcessEnv = {},
   options: { signal?: AbortSignal; proxyUrl?: unknown } = {},
 ) {
-  if (!token) throw new Error('NovelAI account token is required.');
+  if (!token) {
+    throw new Error('NovelAI account token is required.');
+  }
   const baseUrl = (env.NOVELAI_ACCOUNT_API_URL || 'https://image.novelai.net').replace(/\/$/, '');
   const response = await novelAiFetch(
     `${baseUrl}/user/data`,
@@ -655,11 +687,12 @@ export async function fetchNovelAiAccountQuota(
 
   const text = await response.text();
   if (!response.ok) {
-    const message = /\bban(?:ned)?\b|封禁/i.test(text)
-      ? '账号已封禁'
-      : /out of trial image generations/i.test(text)
-        ? '试用次数已用完'
-        : '官方额度同步失败，请稍后重试';
+    let message = '官方额度同步失败，请稍后重试';
+    if (/\bban(?:ned)?\b|封禁/i.test(text)) {
+      message = '账号已封禁';
+    } else if (/out of trial image generations/i.test(text)) {
+      message = '试用次数已用完';
+    }
     throw Object.assign(new Error(message), { upstreamStatus: response.status });
   }
 
@@ -765,7 +798,9 @@ async function novelAiFetch(
   proxyUrl = '',
 ): Promise<UpstreamResponse> {
   const normalizedProxy = normalizeSocksProxyUrl(proxyUrl);
-  if (!normalizedProxy) return fetch(url, options);
+  if (!normalizedProxy) {
+    return fetch(url, options);
+  }
   return socksFetch(url, options, normalizedProxy);
 }
 
@@ -775,9 +810,13 @@ function accountProxyUrl(account: ProviderAccount = {}): string {
 
 function normalizeSocksProxyUrl(value: unknown = ''): string {
   const text = String(value || '').trim();
-  if (!text) return '';
+  if (!text) {
+    return '';
+  }
   const rawProxy = parseHostPortUserPassProxy(text);
-  if (rawProxy) return rawProxy;
+  if (rawProxy) {
+    return rawProxy;
+  }
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `socks5://${text}`;
   const normalized = withScheme.replace(/^sock5:\/\//i, 'socks5://');
   let url;
@@ -789,8 +828,12 @@ function normalizeSocksProxyUrl(value: unknown = ''): string {
   if (!['socks5:', 'socks5h:'].includes(url.protocol)) {
     throw new Error('Only socks5:// and socks5h:// proxies are supported.');
   }
-  if (!url.hostname) throw new Error('SOCKS5 proxy host is required.');
-  if (!url.port) url.port = '1080';
+  if (!url.hostname) {
+    throw new Error('SOCKS5 proxy host is required.');
+  }
+  if (!url.port) {
+    url.port = '1080';
+  }
   return url.toString();
 }
 
@@ -798,9 +841,13 @@ function parseHostPortUserPassProxy(value: unknown = ''): string {
   const parts = String(value || '')
     .trim()
     .split(':');
-  if (parts.length !== 4) return '';
+  if (parts.length !== 4) {
+    return '';
+  }
   const [host, port, username, password] = parts.map((part) => part.trim());
-  if (!host || !port || !username || !password || !/^\d{1,5}$/.test(port)) return '';
+  if (!host || !port || !username || !password || !/^\d{1,5}$/.test(port)) {
+    return '';
+  }
   const url = new URL(`socks5://${host}:${port}`);
   url.username = username;
   url.password = password;
@@ -813,8 +860,9 @@ async function socksFetch(
   proxyUrl = '',
 ): Promise<UpstreamResponse> {
   const target = new URL(url);
-  if (target.protocol !== 'https:')
+  if (target.protocol !== 'https:') {
     throw new Error('SOCKS5 proxy requests only support HTTPS targets.');
+  }
   const proxy = new URL(proxyUrl);
   const port = Number(target.port || 443);
   const tunnel = await connectSocks5(proxy, target.hostname, port, options.signal);
@@ -840,7 +888,9 @@ async function connectSocks5(
     port: Number(proxy.port || 1080),
   });
   const abort = () => destroySocketQuietly(socket);
-  if (signal?.aborted) abort();
+  if (signal?.aborted) {
+    abort();
+  }
   signal?.addEventListener('abort', abort, { once: true });
 
   try {
@@ -851,16 +901,24 @@ async function connectSocks5(
     socket.write(Buffer.from([0x05, methods.length, ...methods]));
 
     const greeting = await readExact(socket, 2, signal);
-    if (greeting[0] !== 0x05 || greeting[1] === 0xff)
+    if (greeting[0] !== 0x05 || greeting[1] === 0xff) {
       throw new Error('SOCKS5 proxy rejected authentication methods.');
-    if (greeting[1] === 0x02) await authenticateSocks5(socket, username, password, signal);
-    if (greeting[1] !== 0x00 && greeting[1] !== 0x02)
+    }
+    if (greeting[1] === 0x02) {
+      await authenticateSocks5(socket, username, password, signal);
+    }
+    if (greeting[1] !== 0x00 && greeting[1] !== 0x02) {
       throw new Error(`SOCKS5 proxy selected unsupported auth method ${greeting[1]}.`);
+    }
 
     socket.write(buildSocks5ConnectRequest(targetHost, targetPort));
     const header = await readExact(socket, 4, signal);
-    if (header[0] !== 0x05) throw new Error('Invalid SOCKS5 proxy response.');
-    if (header[1] !== 0x00) throw new Error(`SOCKS5 proxy connect failed with code ${header[1]}.`);
+    if (header[0] !== 0x05) {
+      throw new Error('Invalid SOCKS5 proxy response.');
+    }
+    if (header[1] !== 0x00) {
+      throw new Error(`SOCKS5 proxy connect failed with code ${header[1]}.`);
+    }
     const addressLength = socks5AddressLength(header[3], socket, signal);
     await addressLength;
     signal?.removeEventListener('abort', abort);
@@ -880,18 +938,23 @@ async function authenticateSocks5(
 ): Promise<void> {
   const user = Buffer.from(username, 'utf8');
   const pass = Buffer.from(password, 'utf8');
-  if (user.length > 255 || pass.length > 255)
+  if (user.length > 255 || pass.length > 255) {
     throw new Error('SOCKS5 proxy username/password is too long.');
+  }
   socket.write(
     Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]),
   );
   const response = await readExact(socket, 2, signal);
-  if (response[1] !== 0x00) throw new Error('SOCKS5 proxy authentication failed.');
+  if (response[1] !== 0x00) {
+    throw new Error('SOCKS5 proxy authentication failed.');
+  }
 }
 
 function buildSocks5ConnectRequest(host: string, port: number): Buffer {
   const hostBuffer = Buffer.from(host, 'utf8');
-  if (hostBuffer.length > 255) throw new Error('Target host is too long for SOCKS5.');
+  if (hostBuffer.length > 255) {
+    throw new Error('Target host is too long for SOCKS5.');
+  }
   return Buffer.concat([
     Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuffer.length]),
     hostBuffer,
@@ -942,12 +1005,15 @@ function buildHttpRequest(target: URL, options: UpstreamRequest = {}): Buffer {
       : Buffer.from(String(options.body));
   const headers = new Map<string, string>();
   Object.entries(options.headers || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) headers.set(key.toLowerCase(), String(value));
+    if (value !== undefined && value !== null) {
+      headers.set(key.toLowerCase(), String(value));
+    }
   });
   headers.set('host', target.host);
   headers.set('connection', 'close');
-  if (body.length && !headers.has('content-length'))
+  if (body.length && !headers.has('content-length')) {
     headers.set('content-length', String(body.length));
+  }
 
   const path = `${target.pathname || '/'}${target.search || ''}`;
   const headerLines = [`${method} ${path} HTTP/1.1`];
@@ -985,7 +1051,9 @@ function writeAndReadHttpResponse(
       },
     });
     const closeBody = () => {
-      if (bodyClosed) return;
+      if (bodyClosed) {
+        return;
+      }
       bodyClosed = true;
       cleanup();
       try {
@@ -994,7 +1062,9 @@ function writeAndReadHttpResponse(
       destroySocketQuietly(socket);
     };
     const errorBody = (error: unknown) => {
-      if (bodyClosed) return;
+      if (bodyClosed) {
+        return;
+      }
       bodyClosed = true;
       cleanup();
       try {
@@ -1002,24 +1072,32 @@ function writeAndReadHttpResponse(
       } catch {}
     };
     const enqueueBody = (chunk: Buffer) => {
-      if (!chunk?.length || bodyClosed) return;
+      if (!chunk?.length || bodyClosed) {
+        return;
+      }
       const copy = Buffer.from(chunk);
       bodyController?.enqueue(copy);
     };
     const rejectAndClose = (error: unknown) => {
       cleanup();
       destroySocketQuietly(socket);
-      if (responseResolved) errorBody(error);
-      else reject(error);
+      if (responseResolved) {
+        errorBody(error);
+      } else {
+        reject(error);
+      }
     };
     const onData = (chunk: Buffer) => {
       try {
         if (!responseResolved) {
           headerBuffer = Buffer.concat([headerBuffer, chunk]);
           const headerEnd = headerBuffer.indexOf('\r\n\r\n');
-          if (headerEnd > 65536 || (headerEnd < 0 && headerBuffer.length > 65536))
+          if (headerEnd > 65536 || (headerEnd < 0 && headerBuffer.length > 65536)) {
             throw new Error('NovelAI HTTP headers exceed the size limit.');
-          if (headerEnd < 0) return;
+          }
+          if (headerEnd < 0) {
+            return;
+          }
           const response = openHttpResponseFromHeader(headerBuffer.slice(0, headerEnd), body);
           contentLength = Number(response.headers.get('content-length') || 0);
           if (/chunked/i.test(response.headers.get('transfer-encoding') || '')) {
@@ -1029,7 +1107,9 @@ function writeAndReadHttpResponse(
           resolve(response);
           const rest = headerBuffer.slice(headerEnd + 4);
           headerBuffer = Buffer.alloc(0);
-          if (rest.length) handleBodyChunk(rest);
+          if (rest.length) {
+            handleBodyChunk(rest);
+          }
           return;
         }
         handleBodyChunk(chunk);
@@ -1062,23 +1142,31 @@ function writeAndReadHttpResponse(
       }
       if (contentLength > 0) {
         const remaining = contentLength - receivedBodyBytes;
-        if (remaining <= 0) return;
+        if (remaining <= 0) {
+          return;
+        }
         const next = chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
         receivedBodyBytes += next.length;
         enqueueBody(next);
-        if (receivedBodyBytes >= contentLength) closeBody();
+        if (receivedBodyBytes >= contentLength) {
+          closeBody();
+        }
         return;
       }
       enqueueBody(chunk);
     };
 
-    if (signal?.aborted) return abort();
+    if (signal?.aborted) {
+      return abort();
+    }
     signal?.addEventListener('abort', abort, { once: true });
     socket.on('data', onData);
     socket.once('end', onEnd);
     socket.once('error', onError);
     socket.write(request, (error) => {
-      if (error) rejectAndClose(error);
+      if (error) {
+        rejectAndClose(error);
+      }
     });
   });
 }
@@ -1090,11 +1178,15 @@ function openHttpResponseFromHeader(
   const headerText = headerBuffer.toString('latin1');
   const [statusLine, ...headerLines] = headerText.split('\r\n');
   const status = Number(statusLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] || 0);
-  if (!status) throw new Error('Invalid HTTP status from NovelAI.');
+  if (!status) {
+    throw new Error('Invalid HTTP status from NovelAI.');
+  }
   const headers = new Map<string, string>();
   headerLines.forEach((line) => {
     const index = line.indexOf(':');
-    if (index <= 0) return;
+    if (index <= 0) {
+      return;
+    }
     const key = line.slice(0, index).trim().toLowerCase();
     const value = line.slice(index + 1).trim();
     headers.set(key, headers.has(key) ? `${headers.get(key)}, ${value}` : value);
@@ -1102,8 +1194,9 @@ function openHttpResponseFromHeader(
 
   let bodyUsed = false;
   const consumeBody = async () => {
-    if (bodyUsed || body.locked)
+    if (bodyUsed || body.locked) {
       throw new Error('NovelAI response body has already been consumed.');
+    }
     bodyUsed = true;
     return collectReadableStream(body);
   };
@@ -1137,32 +1230,41 @@ function createChunkedBodyDecoder(
   let done = false;
   return {
     push(chunk: Buffer) {
-      if (done) return;
+      if (done) {
+        return;
+      }
       buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const lineEnd = buffer.indexOf('\r\n');
-        if (lineEnd > 1024 || (lineEnd < 0 && buffer.length > 1024))
+        if (lineEnd > 1024 || (lineEnd < 0 && buffer.length > 1024)) {
           throw new Error('Invalid chunked NovelAI response header.');
-        if (lineEnd < 0) return;
+        }
+        if (lineEnd < 0) {
+          return;
+        }
         const sizeText = buffer.slice(0, lineEnd).toString('latin1').split(';')[0].trim();
         const size = Number.parseInt(sizeText, 16);
         if (
           !/^[0-9a-f]+$/i.test(sizeText) ||
           !Number.isSafeInteger(size) ||
           size > MAX_RESULT_BYTES
-        )
+        ) {
           throw new Error('Invalid or oversized chunked NovelAI response.');
+        }
         const dataStart = lineEnd + 2;
         const dataEnd = dataStart + size;
-        if (buffer.length < dataEnd + 2) return;
+        if (buffer.length < dataEnd + 2) {
+          return;
+        }
         if (size === 0) {
           // 零块后的空行（或完整 trailers）才结束传输；EOF 不能替代结束块。
           if (
             buffer.toString('latin1', dataStart, dataStart + 2) !== '\r\n' &&
             buffer.indexOf('\r\n\r\n', dataStart) < 0
           ) {
-            if (buffer.length - dataStart > 65536)
+            if (buffer.length - dataStart > 65536) {
               throw new Error('NovelAI HTTP trailers exceed the size limit.');
+            }
             return;
           }
           done = true;
@@ -1170,14 +1272,17 @@ function createChunkedBodyDecoder(
           close();
           return;
         }
-        if (buffer.toString('latin1', dataEnd, dataEnd + 2) !== '\r\n')
+        if (buffer.toString('latin1', dataEnd, dataEnd + 2) !== '\r\n') {
           throw new Error('Invalid chunked NovelAI response terminator.');
+        }
         enqueue(buffer.slice(dataStart, dataEnd));
         buffer = buffer.slice(dataEnd + 2);
       }
     },
     finish() {
-      if (!done) throw new Error('Truncated chunked NovelAI response.');
+      if (!done) {
+        throw new Error('Truncated chunked NovelAI response.');
+      }
     },
   };
 }
@@ -1188,7 +1293,9 @@ async function collectReadableStream(body: ReadableStream<Uint8Array>): Promise<
   let totalBytes = 0;
   while (true) {
     const { done, value } = await reader.read();
-    if (done) return Buffer.concat(chunks, totalBytes);
+    if (done) {
+      return Buffer.concat(chunks, totalBytes);
+    }
     const chunk = Buffer.from(value);
     chunks.push(chunk);
     totalBytes += chunk.length;
@@ -1209,20 +1316,28 @@ function parseHttpResponse(buffer: Buffer): UpstreamResponse {
   const headerText = buffer.slice(0, headerEnd).toString('latin1');
   const [statusLine, ...headerLines] = headerText.split('\r\n');
   const status = Number(statusLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] || 0);
-  if (!status) throw new Error('Invalid HTTP status from NovelAI.');
+  if (!status) {
+    throw new Error('Invalid HTTP status from NovelAI.');
+  }
   const headers = new Map<string, string>();
   headerLines.forEach((line) => {
     const index = line.indexOf(':');
-    if (index <= 0) return;
+    if (index <= 0) {
+      return;
+    }
     const key = line.slice(0, index).trim().toLowerCase();
     const value = line.slice(index + 1).trim();
     headers.set(key, headers.has(key) ? `${headers.get(key)}, ${value}` : value);
   });
 
   let body: Buffer = buffer.slice(headerEnd + 4);
-  if (/chunked/i.test(headers.get('transfer-encoding') || '')) body = decodeChunkedBody(body);
+  if (/chunked/i.test(headers.get('transfer-encoding') || '')) {
+    body = decodeChunkedBody(body);
+  }
   const contentLength = Number(headers.get('content-length') || 0);
-  if (contentLength > 0 && body.length > contentLength) body = body.slice(0, contentLength);
+  if (contentLength > 0 && body.length > contentLength) {
+    body = body.slice(0, contentLength);
+  }
 
   return {
     ok: status >= 200 && status < 300,
@@ -1277,7 +1392,9 @@ function waitForSocket(socket: net.Socket, event: string, signal?: AbortSignal):
       destroySocketQuietly(socket);
       reject(abortError(signal?.reason));
     };
-    if (signal?.aborted) return onAbort();
+    if (signal?.aborted) {
+      return onAbort();
+    }
     signal?.addEventListener('abort', onAbort, { once: true });
     socket.once(event, onReady);
     socket.once('error', onError);
@@ -1304,7 +1421,9 @@ function readExact(socket: net.Socket, length: number, signal?: AbortSignal): Pr
         chunks.push(chunk);
         total += chunk.length;
       }
-      if (total >= length) finish();
+      if (total >= length) {
+        finish();
+      }
     };
     const onEnd = () => {
       cleanup();
@@ -1320,7 +1439,9 @@ function readExact(socket: net.Socket, length: number, signal?: AbortSignal): Pr
       reject(abortError(signal?.reason));
     };
 
-    if (signal?.aborted) return onAbort();
+    if (signal?.aborted) {
+      return onAbort();
+    }
     signal?.addEventListener('abort', onAbort, { once: true });
     socket.on('readable', onReadable);
     socket.once('end', onEnd);
@@ -1330,14 +1451,18 @@ function readExact(socket: net.Socket, length: number, signal?: AbortSignal): Pr
 }
 
 function abortError(reason: unknown): Error {
-  if (reason instanceof Error) return reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
   const error = new Error('This operation was aborted');
   error.name = 'AbortError';
   return error;
 }
 
 function destroySocketQuietly(socket: net.Socket | null | undefined): void {
-  if (!socket || socket.destroyed) return;
+  if (!socket || socket.destroyed) {
+    return;
+  }
   socket.once('error', noop);
   socket.destroy();
 }
@@ -1464,9 +1589,15 @@ function shouldUseNovelAiStream(
   env: NodeJS.ProcessEnv = {},
   options: GenerationOptions = {},
 ): boolean {
-  if (options.forceStream === true) return isModernImageModel(request.model);
-  if (options.forceStream === false) return false;
-  if (String(env.NOVELAI_STREAM_IMAGE || '').toLowerCase() === 'false') return false;
+  if (options.forceStream === true) {
+    return isModernImageModel(request.model);
+  }
+  if (options.forceStream === false) {
+    return false;
+  }
+  if (String(env.NOVELAI_STREAM_IMAGE || '').toLowerCase() === 'false') {
+    return false;
+  }
   return isModernImageModel(request.model);
 }
 
@@ -1502,19 +1633,28 @@ async function extractFinalImageFromNovelAiReadableStream(
 
     while (offset + 4 <= pending.length) {
       const length = pending.readUInt32BE(offset);
-      if (length <= 0 || length > MAX_RESULT_BYTES)
+      if (length <= 0 || length > MAX_RESULT_BYTES) {
         throw invalidNovelAiStreamFrameError(pending, offset);
-      if (offset + 4 + length > pending.length) break;
+      }
+      if (offset + 4 + length > pending.length) {
+        break;
+      }
       offset += 4;
       handleNovelAiStreamEvent(decodeMsgpack(pending.slice(offset, offset + length)), state);
       offset += length;
     }
 
-    if (offset > 0) pending = pending.slice(offset);
-    if (pending.length > MAX_RESULT_BYTES + 4) throw invalidNovelAiStreamFrameError(pending, 0);
+    if (offset > 0) {
+      pending = pending.slice(offset);
+    }
+    if (pending.length > MAX_RESULT_BYTES + 4) {
+      throw invalidNovelAiStreamFrameError(pending, 0);
+    }
   }
 
-  if (pending.length) throw invalidNovelAiStreamFrameError(pending, 0);
+  if (pending.length) {
+    throw invalidNovelAiStreamFrameError(pending, 0);
+  }
   return finalNovelAiStreamImage(state);
 }
 
@@ -1537,7 +1677,9 @@ function extractFinalImageFromNovelAiStream(
     handleNovelAiStreamEvent(event, state);
   }
 
-  if (offset !== buffer.length) throw invalidNovelAiStreamFrameError(buffer, offset);
+  if (offset !== buffer.length) {
+    throw invalidNovelAiStreamFrameError(buffer, offset);
+  }
   return finalNovelAiStreamImage(state);
 }
 
@@ -1567,8 +1709,9 @@ function handleNovelAiStreamEvent(event: unknown, state: StreamState): void {
   }
 
   if (eventType === 'final') {
-    if (!((event as StreamEvent).image instanceof Uint8Array))
+    if (!((event as StreamEvent).image instanceof Uint8Array)) {
       throw new Error('NovelAI final event does not contain binary image data.');
+    }
     state.finalImage = validatedUpstreamImage(
       Buffer.from((event as StreamEvent).image as Uint8Array),
     );
@@ -1581,10 +1724,14 @@ function emitNovelAiStreamProgress(
   state: StreamState,
   isFinal: boolean,
 ): void {
-  if (!state.onProgress) return;
+  if (!state.onProgress) {
+    return;
+  }
   const progress = normalizeNovelAiStreamProgress(event, state, isFinal);
   const hasPreview = !isFinal && event.image instanceof Uint8Array && event.image.byteLength > 0;
-  if (!isFinal && progress.percent <= state.lastPercent && !hasPreview) return;
+  if (!isFinal && progress.percent <= state.lastPercent && !hasPreview) {
+    return;
+  }
   state.lastPercent = progress.percent;
   const previewBuffer = hasPreview ? Buffer.from(event.image as Uint8Array) : null;
   state.onProgress({
@@ -1650,8 +1797,12 @@ function normalizeNovelAiStreamProgress(
 
 function finalNovelAiStreamImage(state: StreamState): ImageResult {
   // 中途预览不是最终结果；遇到报错或缺少 final 必须让任务失败并退款。
-  if (state.errors.length) throw new Error(`NovelAI stream error: ${state.errors.at(-1)}`);
-  if (state.finalImage) return state.finalImage;
+  if (state.errors.length) {
+    throw new Error(`NovelAI stream error: ${state.errors.at(-1)}`);
+  }
+  if (state.finalImage) {
+    return state.finalImage;
+  }
 
   throw new Error('NovelAI stream ended without a final image.');
 }
@@ -1667,18 +1818,26 @@ function invalidNovelAiStreamFrameError(buffer: Buffer, offset: number): Error {
 
 function finiteNumber(...values: unknown[]): number | null {
   for (const value of values) {
-    if (typeof value === 'bigint') continue;
+    if (typeof value === 'bigint') {
+      continue;
+    }
     const number = Number(value);
-    if (Number.isFinite(number)) return number;
+    if (Number.isFinite(number)) {
+      return number;
+    }
   }
   return null;
 }
 
 function positiveNumber(...values: unknown[]): number | null {
   for (const value of values) {
-    if (typeof value === 'bigint') continue;
+    if (typeof value === 'bigint') {
+      continue;
+    }
     const number = Number(value);
-    if (Number.isFinite(number) && number > 0) return number;
+    if (Number.isFinite(number) && number > 0) {
+      return number;
+    }
   }
   return null;
 }
@@ -1717,10 +1876,11 @@ function decodeMsgpack(buffer: Buffer): unknown {
       'sampling_step',
       'index',
     ]) {
-      if (typeof (value as Record<string, unknown>)[key] === 'bigint')
+      if (typeof (value as Record<string, unknown>)[key] === 'bigint') {
         (value as Record<string, unknown>)[key] = numberFromBigInt(
           (value as Record<string, unknown>)[key] as bigint,
         );
+      }
     }
   }
   return value;
@@ -1786,36 +1946,44 @@ function extractFirstImageFromZip(buffer: Buffer): ImageResult {
   for (const entry of entries) {
     const lowerName = entry.fileName.toLowerCase();
     const isImage = /\.(png|jpe?g|webp)$/.test(lowerName) || !entry.fileName.includes('.');
-    if (!isImage) continue;
+    if (!isImage) {
+      continue;
+    }
 
     if (
       ![0, 8].includes(entry.method) ||
       entry.flags & 1 ||
       entry.uncompressedSize > MAX_RESULT_BYTES
-    )
+    ) {
       throw new Error('Unsupported or oversized NovelAI ZIP image.');
+    }
     if (
       entry.localHeaderOffset + 30 > entry.directoryOffset ||
       buffer.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50
-    )
+    ) {
       throw new Error('Invalid NovelAI ZIP local header.');
+    }
     if (
       buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method ||
       buffer.readUInt16LE(entry.localHeaderOffset + 6) & 1
-    )
+    ) {
       throw new Error('Invalid NovelAI ZIP image method.');
+    }
     const fileNameLength = buffer.readUInt16LE(entry.localHeaderOffset + 26);
     const extraLength = buffer.readUInt16LE(entry.localHeaderOffset + 28);
     const dataStart = entry.localHeaderOffset + 30 + fileNameLength + extraLength;
     const dataEnd = dataStart + entry.compressedSize;
-    if (dataEnd > entry.directoryOffset) throw new Error('Truncated NovelAI ZIP image.');
+    if (dataEnd > entry.directoryOffset) {
+      throw new Error('Truncated NovelAI ZIP image.');
+    }
     const compressed = buffer.slice(dataStart, dataEnd);
     const image =
       entry.method === 8
         ? zlib.inflateRawSync(compressed, { maxOutputLength: MAX_RESULT_BYTES })
         : compressed;
-    if (image.length !== entry.uncompressedSize || crc32(image) !== entry.crc)
+    if (image.length !== entry.uncompressedSize || crc32(image) !== entry.crc) {
       throw new Error('Corrupt NovelAI ZIP image.');
+    }
     return validatedUpstreamImage(image);
   }
   throw new Error('No image file found in NovelAI ZIP response.');
@@ -1831,7 +1999,9 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
       break;
     }
   }
-  if (eocdOffset === -1) throw new Error('ZIP end of central directory not found.');
+  if (eocdOffset === -1) {
+    throw new Error('ZIP end of central directory not found.');
+  }
 
   const entryCount = buffer.readUInt16LE(eocdOffset + 10);
   const directorySize = buffer.readUInt32LE(eocdOffset + 12);
@@ -1841,14 +2011,16 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
     directoryOffset + directorySize !== eocdOffset ||
     buffer.readUInt32LE(eocdOffset + 4) !== 0 ||
     buffer.readUInt16LE(eocdOffset + 8) !== entryCount
-  )
+  ) {
     throw new Error('Invalid NovelAI ZIP directory.');
+  }
   let offset = directoryOffset;
   const entries: ZipEntry[] = [];
 
   for (let index = 0; index < entryCount; index += 1) {
-    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50)
+    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50) {
       throw new Error('Truncated NovelAI ZIP directory.');
+    }
     const flags = buffer.readUInt16LE(offset + 8);
     const method = buffer.readUInt16LE(offset + 10);
     const crc = buffer.readUInt32LE(offset + 16);
@@ -1858,8 +2030,9 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
     const localHeaderOffset = buffer.readUInt32LE(offset + 42);
-    if (offset + 46 + fileNameLength + extraLength + commentLength > eocdOffset)
+    if (offset + 46 + fileNameLength + extraLength + commentLength > eocdOffset) {
       throw new Error('Truncated NovelAI ZIP directory entry.');
+    }
     const fileName = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString('utf8');
     entries.push({
       flags,
@@ -1874,7 +2047,9 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
 
-  if (offset !== eocdOffset) throw new Error('Invalid NovelAI ZIP directory size.');
+  if (offset !== eocdOffset) {
+    throw new Error('Invalid NovelAI ZIP directory size.');
+  }
   return entries;
 }
 
@@ -1896,7 +2071,9 @@ function looksLikeZip(buffer: Buffer): boolean {
 
 function clampNumber(value: unknown, min: number, max: number): number {
   const number = Number(value);
-  if (!Number.isFinite(number)) return min;
+  if (!Number.isFinite(number)) {
+    return min;
+  }
   return Math.max(min, Math.min(max, number));
 }
 

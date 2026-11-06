@@ -53,7 +53,9 @@ test('按真实账期跨桶统计标准存储，缓存并合并并发请求，�
       finish = resolve;
     });
   });
-  for (let i = 0; i < 5; i++) assert.equal(readR2Operations(env).status, 'loading');
+  for (let i = 0; i < 5; i++) {
+    assert.equal(readR2Operations(env).status, 'loading');
+  }
   assert.equal(requests, 1);
   finish(
     response([
@@ -83,7 +85,9 @@ test('失败保留上一份同账期统计，下一账期不沿用旧余额，�
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async () => {
     calls++;
-    if (calls !== 1) return new Response('private upstream error', { status: 503 });
+    if (calls !== 1) {
+      return new Response('private upstream error', { status: 503 });
+    }
     return response([row('PutObject', 1_000_005), row('GetObject', 10_000_010)]);
   });
   assert.equal(readR2Operations(env).periodStart, '2026-09-12T00:00:00.000Z');
@@ -103,7 +107,9 @@ test('后台刷新失败不清空同账期数据，并限制错误重试频率',
   const env = config('stale');
   let calls = 0;
   t.mock.method(globalThis, 'fetch', async () => {
-    if (++calls > 1) throw new Error(env.R2_ANALYTICS_TOKEN);
+    if (++calls > 1) {
+      throw new Error(env.R2_ANALYTICS_TOKEN);
+    }
     return response([row('GetObject', 42)]);
   });
   readR2Operations(env);
@@ -116,7 +122,9 @@ test('后台刷新失败不清空同账期数据，并限制错误重试频率',
   assert.equal(actual.classB.used, 42);
   assert.equal(actual.checkedAt, '2026-10-24T01:00:00.000Z');
   assert.ok(!JSON.stringify(actual).includes(env.R2_ANALYTICS_TOKEN));
-  for (let i = 0; i < 10; i++) readR2Operations(env);
+  for (let i = 0; i < 10; i++) {
+    readR2Operations(env);
+  }
   assert.equal(calls, 2);
 });
 

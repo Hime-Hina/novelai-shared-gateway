@@ -38,20 +38,32 @@ const pagination = {
 const duration = (value: number | null) => (value == null ? '未知' : `${number(value)} 秒`);
 type Summary = ManagementUsage['members'][number];
 type Job = ManagementUsage['recent'][number];
+const refreshStatus = computed(() => {
+  if (props.loading) {
+    return props.data ? '正在更新 · 以下为上次读取的结果' : '正在读取用量…';
+  }
+  return props.data ? '更新于 ' + date(props.data.until) : '尚未读取用量统计，请重新读取。';
+});
+function tagType(status: string) {
+  if (status === 'done') {
+    return 'success';
+  }
+  return status === 'failed' ? 'error' : 'info';
+}
 function charge(job: Job) {
   const settlements: Record<string, string> = {
     settled: '已结算',
     refunded: '已退款（本站额度）',
     reserved: '预扣',
   };
-  const amount =
-    job.resource === 'free'
-      ? '免费'
-      : job.resource === 'v5'
-        ? `${number(job.amount)} V5`
-        : job.resource === 'anlas'
-          ? `订阅 ${number(job.fixed)} / 购买 ${number(job.purchased)} Anlas`
-          : '未扣款';
+  let amount = '未扣款';
+  if (job.resource === 'free') {
+    amount = '免费';
+  } else if (job.resource === 'v5') {
+    amount = `${number(job.amount)} V5`;
+  } else if (job.resource === 'anlas') {
+    amount = `订阅 ${number(job.fixed)} / 购买 ${number(job.purchased)} Anlas`;
+  }
   return [
     settlements[job.chargeStatus || ''],
     amount,
@@ -146,7 +158,7 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
         {
           size: 'small',
           bordered: false,
-          type: row.status === 'done' ? 'success' : row.status === 'failed' ? 'error' : 'info',
+          type: tagType(row.status),
         },
         () => jobStatus(row.status),
       ),
@@ -187,15 +199,7 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
       />
     </header>
     <div class="refresh-status" role="status">
-      {{
-        loading
-          ? data
-            ? '正在更新 · 以下为上次读取的结果'
-            : '正在读取用量…'
-          : data
-            ? '更新于 ' + date(data.until)
-            : '尚未读取用量统计，请重新读取。'
-      }}
+      {{ refreshStatus }}
     </div>
     <NEmpty v-if="!data && !loading" description="暂无可显示的统计"
       ><template #extra

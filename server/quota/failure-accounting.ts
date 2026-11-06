@@ -151,8 +151,9 @@ export function updateLossAlertPolicy(
 ): LossAlertPolicy {
   const before = lossAlertPolicy(db.settings.fairQuota?.lossAlertPolicy),
     policy = body.policy as Partial<LossAlertPolicy> | null | undefined;
-  if (!Number.isSafeInteger(body.expectedVersion) || body.expectedVersion !== before.version)
+  if (!Number.isSafeInteger(body.expectedVersion) || body.expectedVersion !== before.version) {
     fail(409, '告警配置已变化，请刷新后重试');
+  }
   if (
     !policy ||
     Array.isArray(policy) ||
@@ -165,10 +166,15 @@ export function updateLossAlertPolicy(
         policy[key] < 0 ||
         (key !== 'v5Points24h' && !Number.isSafeInteger(policy[key])),
     )
-  )
+  ) {
     fail(400, '告警阈值须为有限非负数，Anlas 和次数须为安全整数');
-  if (before.version >= Number.MAX_SAFE_INTEGER) fail(409, '告警版本已达到安全上限');
-  if (!db.settings.fairQuota) fail(409, '共享账本尚未初始化');
+  }
+  if (before.version >= Number.MAX_SAFE_INTEGER) {
+    fail(409, '告警版本已达到安全上限');
+  }
+  if (!db.settings.fairQuota) {
+    fail(409, '共享账本尚未初始化');
+  }
   const after = { version: before.version + 1, ...pick(policy, fields) } as LossAlertPolicy;
   db.settings.fairQuota.lossAlertPolicy = after;
   const evidence = {
@@ -197,9 +203,13 @@ export function updateLossAlertPolicy(
 }
 
 function cursor(value: string | null | undefined): [number, string] | null {
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
   try {
-    if (value.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
+    if (value.length > 1024 || !/^[A-Za-z0-9_-]+$/.test(value)) {
+      throw new Error();
+    }
     const result: unknown = JSON.parse(Buffer.from(value, 'base64url').toString());
     if (
       !Array.isArray(result) ||
@@ -208,8 +218,9 @@ function cursor(value: string | null | undefined): [number, string] | null {
       typeof result[1] !== 'string' ||
       !result[1] ||
       result[1].length > 256
-    )
+    ) {
       throw new Error();
+    }
     return result as [number, string];
   } catch {
     fail(400, '历史分页游标无效');
@@ -264,23 +275,32 @@ function safeEvent(row: HistoryRow) {
   result.memberName = row.memberName || (event.memberId ? '已移除成员' : null);
   Object.assign(result, numericFields(event, ['amount', 'observedAmount', 'delta']));
   Object.assign(result, pick(attempt, ['operation', 'model']));
-  if (event.resources || attempt.localReserved)
+  if (event.resources || attempt.localReserved) {
     result.resources = resources(event.resources || attempt.localReserved);
+  }
   const candidates = event.upstreamCandidates || attempt.upstreamCandidates;
-  if (attempt.candidateMode && !result.candidateMode) result.candidateMode = attempt.candidateMode;
-  if (Array.isArray(candidates))
+  if (attempt.candidateMode && !result.candidateMode) {
+    result.candidateMode = attempt.candidateMode;
+  }
+  if (Array.isArray(candidates)) {
     result.upstreamCandidates = candidates.map((candidate) => ({
       resources: resources(candidate?.resources),
       ...pick(candidate, ['amountSource']),
     }));
-  if (event.upstreamCandidates === null) result.upstreamCandidates = null;
+  }
+  if (event.upstreamCandidates === null) {
+    result.upstreamCandidates = null;
+  }
   result.actorId = event.actorId || request.actorId || null;
   const receiptId = event.id.startsWith('operating-receipt:') ? event.id : event.receiptEventId;
-  if (receiptId?.startsWith('operating-receipt:'))
+  if (receiptId?.startsWith('operating-receipt:')) {
     result.receipt = receiptId.slice('operating-receipt:'.length);
-  for (const key of ['before', 'after'] as const)
-    if (event.type === 'loss_alert_policy_updated' && event[key])
+  }
+  for (const key of ['before', 'after'] as const) {
+    if (event.type === 'loss_alert_policy_updated' && event[key]) {
       result[key] = lossAlertPolicy(event[key]);
+    }
+  }
   return result;
 }
 
@@ -383,10 +403,13 @@ export function queryFailureAccounting(
     last24h: { v5: 0, anlasFixed: 0, anlasPurchased: 0 },
     last30d: { v5: 0, anlasFixed: 0, anlasPurchased: 0 },
   };
-  for (const row of aggregate)
-    for (const window of ['last24h', 'last30d'] as const)
-      if (Object.hasOwn(risk.aggregate[window], row.resource))
+  for (const row of aggregate) {
+    for (const window of ['last24h', 'last30d'] as const) {
+      if (Object.hasOwn(risk.aggregate[window], row.resource)) {
         risk.aggregate[window][row.resource] += row[window];
+      }
+    }
+  }
   const alerts: LossAlert[] = [],
     warn = (id: string, message: string) => alerts.push({ id, level: 'warning', message });
   const threshold = (value: number, limit: number) => value > 0 && value >= limit;
@@ -394,50 +417,57 @@ export function queryFailureAccounting(
   if (
     threshold(risk.last24h.possible.v5, policy.v5Points24h) ||
     threshold(risk.aggregate.last24h.v5, policy.v5Points24h)
-  )
+  ) {
     warn(
       'v5-24h',
       '最近 24 小时 V5 候选风险或聚合容量差额达到观察阈值；两者未相加，不代表已确认单次消费，也不限制调用。',
     );
+  }
   if (
     threshold(risk.last24h.possible.anlasFixed, policy.fixedAnlas24h) ||
     threshold(risk.aggregate.last24h.anlasFixed, policy.fixedAnlas24h)
-  )
+  ) {
     warn(
       'fixed-24h',
       '最近 24 小时固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
     );
+  }
   if (
     threshold(risk.last30d.possible.anlasFixed, policy.fixedAnlas30d) ||
     threshold(risk.aggregate.last30d.anlasFixed, policy.fixedAnlas30d)
-  )
+  ) {
     warn(
       'fixed-30d',
       '最近 30 天固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
     );
-  if (risk.last30d.possible.anlasPurchased > 0 || risk.aggregate.last30d.anlasPurchased > 0)
+  }
+  if (risk.last30d.possible.anlasPurchased > 0 || risk.aggregate.last30d.anlasPurchased > 0) {
     warn(
       'purchased-30d',
       '最近 30 天有购买 Anlas 候选风险或聚合差额，请核对保留的记录；两者未相加，不代表已确认单次消费。',
     );
-  if (risk.last30d.unknownAmounts)
+  }
+  if (risk.last30d.unknownAmounts) {
     alerts.push({
       id: 'amount-unknown',
       level: 'info',
       message: '存在金额未定的尝试风险；未将其当作零消费。',
     });
+  }
   const members = sqlite
     .prepare<RiskParameters, MemberRiskRow>(
       `${riskCte} SELECT a.memberId, COUNT(*) AS attempts, json_extract(u.data, '$.memberAuth.username') AS memberName
     FROM attempts a LEFT JOIN users u ON u.id = a.memberId WHERE a.at >= @since24 GROUP BY a.memberId`,
     )
     .all(params);
-  for (const member of members)
-    if (threshold(member.attempts, policy.memberAttempts24h))
+  for (const member of members) {
+    if (threshold(member.attempts, policy.memberAttempts24h)) {
       warn(
         `member-24h:${member.memberId || 'unknown'}`,
         `成员 ${member.memberName || `已移除成员（${member.memberId || '未知'}）`} 最近 24 小时有 ${member.attempts} 次疑似损耗；仅提示频率，不停止退款或调用。`,
       );
+    }
+  }
   const rows = sqlite
     .prepare<{ order?: number; id?: string }, HistoryRow>(
       `SELECT l.id, l.order_value AS orderValue, l.data,
@@ -473,15 +503,16 @@ export function queryFailureAccounting(
 }
 
 export function memberCharge(charge: MemberChargeInput | null | undefined) {
-  return charge
-    ? {
-        ...pick(charge, ['resource', 'status', 'estimated']),
-        amount: Number(charge.amount),
-        billingMode: charge.billingMode || null,
-        v5Equivalent: charge.v5Equivalent == null ? null : Number(charge.v5Equivalent),
-        upstreamBilling: charge.upstreamBilling || null,
-        fixed: charge.fixed == null ? null : Number(charge.fixed),
-        purchased: charge.purchased == null ? null : Number(charge.purchased),
-      }
-    : null;
+  if (!charge) {
+    return null;
+  }
+  return {
+    ...pick(charge, ['resource', 'status', 'estimated']),
+    amount: Number(charge.amount),
+    billingMode: charge.billingMode || null,
+    v5Equivalent: charge.v5Equivalent == null ? null : Number(charge.v5Equivalent),
+    upstreamBilling: charge.upstreamBilling || null,
+    fixed: charge.fixed == null ? null : Number(charge.fixed),
+    purchased: charge.purchased == null ? null : Number(charge.purchased),
+  };
 }

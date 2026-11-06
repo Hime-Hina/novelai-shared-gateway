@@ -14,8 +14,9 @@ function stream(bytes, contentType, headers = {}) {
 }
 async function multipart(parts) {
   const form = new FormData();
-  for (const [name, value] of parts)
+  for (const [name, value] of parts) {
     typeof value === 'string' ? form.append(name, value) : form.append(name, value, 'blob');
+  }
   const response = new Response(form);
   return {
     bytes: Buffer.from(await response.arrayBuffer()),
@@ -52,8 +53,9 @@ test('JSON直接委托已有读取器，保留返回值、错误与流处理行�
     }),
     (error) => error === expected,
   );
-  for (const value of [null, [], 3, 'synthetic'])
+  for (const value of [null, [], 3, 'synthetic']) {
     assert.equal(await readNativeBody(req, { jsonReader: () => value }), value);
+  }
 });
 test('Aaalice request JSON Blob和普通文本字段都能解析', async () => {
   assert.deepEqual(
@@ -74,11 +76,12 @@ test('拒重复request和未引用附图，不在错误消息包含请求内容'
     ],
     [['unknown', 'secret-token-body']],
     [['request', new Blob(['secret-token-body'], { type: 'image/png' })]],
-  ])
+  ]) {
     await assert.rejects(
       parse(parts),
       (error) => error.statusCode === 422 && !error.message.includes('secret-token-body'),
     );
+  }
 });
 
 test('Aaalice 官方 multipart 按 JSON 引用解析底图、遮罩和缓存参考，不凭文件名覆盖字段', async () => {
@@ -167,11 +170,12 @@ test('encode-vibe 和放大接受顶层 image 分块，未知、重复、文本�
       ['request', '{"image":"image"}'],
       ['image', new Blob([])],
     ],
-  ])
+  ]) {
     await assert.rejects(
       parse(parts),
       (error) => error.statusCode === 422 && !error.message.includes('secret-image'),
     );
+  }
 });
 
 test('multipart 默认允许超过旧 2 MiB 的图片请求，仍限制单附件 8 MiB', async () => {
@@ -195,20 +199,22 @@ test('缺失boundary、损坏multipart、非法JSON或非对象均返回400', as
     'multipart/form-data; boundary=',
     'multipart/form-data; boundary=a; boundary=b',
     'multipart/form-data; boundary="bad@boundary"',
-  ])
+  ]) {
     await assert.rejects(
       readNativeBody(stream(Buffer.from('secret'), ' ' + type)),
       (error) => error.statusCode === 400,
     );
+  }
   await assert.rejects(
     readNativeBody(stream(Buffer.from('secret'), 'multipart/form-data; boundary=test')),
     (error) => error.statusCode === 400 && !error.message.includes('secret'),
   );
-  for (const value of ['secret-token-invalid', 'null', '[]', '"a"'])
+  for (const value of ['secret-token-invalid', 'null', '[]', '"a"']) {
     await assert.rejects(
       parse([['request', value]]),
       (error) => error.statusCode === 400 && !error.message.includes(value),
     );
+  }
   await assert.rejects(parse([]), (error) => error.statusCode === 400);
 });
 test('按实际流字节限制请求大小，Content-Length提前拒绝，边界大小可接受', async () => {
@@ -258,7 +264,9 @@ test('multipart 流和 base64 展开共享临时预算，保留容量 429', asyn
     const req = stream(bytes, contentType);
     req.generationPayloadClaim = {
       resize(size) {
-        if (size > limit) throw Object.assign(new Error('synthetic capacity'), { statusCode: 429 });
+        if (size > limit) {
+          throw Object.assign(new Error('synthetic capacity'), { statusCode: 429 });
+        }
       },
     };
     await assert.rejects(readNativeBody(req), (error) => error.statusCode === 429);
@@ -289,12 +297,13 @@ test('unknown 读取错误保留数字 413/429 原对象，其余仍为脱敏 40
         throw error;
       },
     };
-    if ([413, 429].includes(error?.statusCode))
+    if ([413, 429].includes(error?.statusCode)) {
       await assert.rejects(readNativeBody(req), (caught) => caught === error);
-    else
+    } else {
       await assert.rejects(
         readNativeBody(req),
         (caught) => caught.statusCode === 400 && !caught.message.includes('secret-body'),
       );
+    }
   }
 });

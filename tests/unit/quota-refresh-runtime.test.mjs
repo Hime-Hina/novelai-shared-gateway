@@ -177,9 +177,13 @@ test('自动调度在挂起请求超时后继续下一轮，不重复启动', as
   const f = runtime(async () => (++calls === 1 ? new Promise(() => {}) : quota), [account('one')], {
     console: {
       log: (value) => {
-        if (!value.startsWith('[runtime]')) return;
+        if (!value.startsWith('[runtime]')) {
+          return;
+        }
         summaries.push(value);
-        if (summaries.length === 2) completed.resolve();
+        if (summaries.length === 2) {
+          completed.resolve();
+        }
       },
       error: (error) => completed.reject(error),
     },
@@ -278,7 +282,9 @@ test('有效 Opus 仅读取订阅，不为不可用的试用接口阻塞刷新',
   const calls = [];
   t.mock.method(globalThis, 'fetch', async (url) => {
     calls.push(url);
-    if (url.endsWith('/ai/trial-status')) return new Promise(() => {});
+    if (url.endsWith('/ai/trial-status')) {
+      return new Promise(() => {});
+    }
     return Response.json({
       subscription: {
         tier: 3,
@@ -312,7 +318,9 @@ test('排队批次按账户实际发起查询分配顺序，而不是按整批�
     async (token) => {
       calls.push(token);
       const index = Number(token.split('-').at(-1));
-      if (index < 5) return blocked[index].promise;
+      if (index < 5) {
+        return blocked[index].promise;
+      }
       return {
         ...quota,
         fixed: calls.filter((value) => value === token).length === 1 ? 8000 : 10000,
@@ -328,7 +336,9 @@ test('排队批次按账户实际发起查询分配顺序，而不是按整批�
   assert.equal(f.db.accounts[5].quotaFixed, 8000);
   blocked[0].resolve(quota);
   await new Promise((resolve) => setImmediate(resolve));
-  for (const result of blocked.slice(1)) result.resolve(quota);
+  for (const result of blocked.slice(1)) {
+    result.resolve(quota);
+  }
   const output = await batch;
   assert.equal(output.ok, 6);
   assert.equal(output.ignored, 0);

@@ -54,8 +54,9 @@ test('response evidence survives prepared, completed, failed and late result fac
         },
         now + 13000,
       );
-    } else if (phase === 'late') recordRecoveredGeneration(db, job, 'image', now + 13000);
-    else {
+    } else if (phase === 'late') {
+      recordRecoveredGeneration(db, job, 'image', now + 13000);
+    } else {
       job.status = 'failed';
       job.completedAt = new Date(now + 13000).toISOString();
       recordGenerationFailure(db, job);
@@ -65,9 +66,12 @@ test('response evidence survives prepared, completed, failed and late result fac
       finishDomainCommand(db),
       'request:legacy-response',
     ).response;
-    for (const field of Object.keys(response))
+    for (const field of Object.keys(response)) {
       assert.equal(replayed[field], job[field], `${phase}.${field}`);
-    if (phase === 'late') assert.equal(replayed.fairCharge.status, 'refunded');
+    }
+    if (phase === 'late') {
+      assert.equal(replayed.fairCharge.status, 'refunded');
+    }
   }
 });
 function replayRequest(before, command, streamId) {
@@ -78,7 +82,7 @@ function replayRequest(before, command, streamId) {
   };
   for (const [index, input] of command.events
     .filter((event) => event.streamId === streamId)
-    .entries())
+    .entries()) {
     projection = reduceDomainEvent(projection, {
       ...input,
       eventId: input.eventId,
@@ -92,6 +96,7 @@ function replayRequest(before, command, streamId) {
       occurredAt: new Date(input.occurredAt).toISOString(),
       amountVersion: 'decimal-12-v1',
     });
+  }
   return projection.jobs;
 }
 test('real recovered-generation producer replays the final review status and result reference', () => {
@@ -151,8 +156,9 @@ test('real member-stop and batch-cancel producers preserve cancellation classifi
       'completedAt',
       'errorStatus',
       'cancellationReason',
-    ])
+    ]) {
       assert.deepEqual(replayed[field], live[field], field);
+    }
   }
 });
 test('real JobFailed recorder retains explicit cancellation fields', () => {

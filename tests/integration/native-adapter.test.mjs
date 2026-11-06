@@ -76,7 +76,9 @@ for (const b of png) {
   for (let bit = 0; bit < 8; bit++) {
     const odd = crc % 2;
     crc = Math.floor((crc >>> 0) / 2);
-    if (odd) crc ^= 0xedb88320;
+    if (odd) {
+      crc ^= 0xedb88320;
+    }
   }
 }
 assert.equal(zip.readUInt32LE(14), (crc ^ 0xffffffff) >>> 0);
@@ -115,7 +117,9 @@ const store = {
   nextQueueSequence: () => ++queueSequence,
   update: async (fn, options) => {
     const batch = await fn(db);
-    if (!options.generationRequest) return batch;
+    if (!options.generationRequest) {
+      return batch;
+    }
     const parent = options.generationRequest();
     assert.equal(options.immediate, true);
     assert.equal(options.generationPayloadClaim, claim);
@@ -134,8 +138,11 @@ function completeJob(jobId, result) {
   assert.ok(job);
   assert.equal(job.status, 'queued');
   job.status = result.error ? 'failed' : 'done';
-  if (result.error) cancelWaitingBatchJobs(db, job, result.error, result.statusCode || 500);
-  else activateNextBatchJob(db, job, store.nextQueueSequence());
+  if (result.error) {
+    cancelWaitingBatchJobs(db, job, result.error, result.statusCode || 500);
+  } else {
+    activateNextBatchJob(db, job, store.nextQueueSequence());
+  }
   return result;
 }
 const deps = {
@@ -249,8 +256,9 @@ for (const secret of [
   'DO_NOT_LOG_KEY',
   'DO_NOT_LOG_IMAGE',
   'DO_NOT_LOG_NEGATIVE',
-])
+]) {
   assert.ok(!serialized.includes(secret));
+}
 assert.equal(diagnostic.numeric.width.value, 1024);
 console.log('Diagnostic redaction and seed boundaries passed.');
 
@@ -276,11 +284,12 @@ for (const failAt of [0, 2]) {
   deps.waitForJobResult = async (jobId) => {
     assert.equal(submitted.jobs.length, 3);
     assert.equal(jobId, submitted.jobs[completedWaits].id);
-    if (completedWaits === 0)
+    if (completedWaits === 0) {
       assert.deepEqual(
         Array.from(submitted.jobs, (job) => job.status),
         ['queued', 'pending', 'pending'],
       );
+    }
     completedWaits++;
     return completeJob(
       jobId,

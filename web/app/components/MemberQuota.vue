@@ -6,6 +6,13 @@ import { date, number } from '../utils/member-display';
 
 const props = defineProps<{ profile: MemberProfile }>();
 const quota = computed(() => props.profile.quota);
+const groupText = computed(() => {
+  const value = quota.value;
+  if (!value?.member) {
+    return '尚未分配到组，请联系管理员';
+  }
+  return `${value.groupName || '未命名组'} · ${number(value.groupSize)} 人 · 个人份额 ${number(value.share == null ? null : value.share * 100)}%`;
+});
 const sharedRisk = computed(() => {
   const risk = quota.value?.sharedBalanceRisk;
   return risk && (risk.v5 || risk.anlasFixed || risk.anlasPurchased);
@@ -40,11 +47,18 @@ const percentage = computed(() => {
 });
 const recovery = computed(() => {
   const q = quota.value;
-  if (!q) return '恢复速度未知';
-  if (q.v5RefillLimited) return '恢复时间暂无法可靠估算，请留意共享上游状态';
-  if (q.v5FullRefillSeconds === 0) return '个人已满额；满额期间不累计额外恢复';
-  if (q.v5RefillPerDay > 0)
+  if (!q) {
+    return '恢复速度未知';
+  }
+  if (q.v5RefillLimited) {
+    return '恢复时间暂无法可靠估算，请留意共享上游状态';
+  }
+  if (q.v5FullRefillSeconds === 0) {
+    return '个人已满额；满额期间不累计额外恢复';
+  }
+  if (q.v5RefillPerDay > 0) {
     return `当前每天约恢复 ${number(q.v5RefillPerDay)} 个百分点，补满时间${q.v5FullRefillSeconds == null ? '未知' : `约 ${number(q.v5FullRefillSeconds / 3600)} 小时（随成员使用变化）`}`;
+  }
   return '恢复速度等待官方数据';
 });
 </script>
@@ -57,11 +71,7 @@ const recovery = computed(() => {
           我的额度 <span class="count-badge">{{ profile.username }}</span>
         </h2>
         <p id="group" class="section-caption">
-          {{
-            quota?.member
-              ? `${quota.groupName || '未命名组'} · ${number(quota.groupSize)} 人 · 个人份额 ${number(quota.share == null ? null : quota.share * 100)}%`
-              : '尚未分配到组，请联系管理员'
-          }}
+          {{ groupText }}
         </p>
       </div>
       <NPopover trigger="click" :style="{ maxWidth: 'min(380px, calc(100vw - 32px))' }">
@@ -82,9 +92,9 @@ const recovery = computed(() => {
     </header>
     <div id="status" class="quota-status" :class="{ attention }" role="status">{{ status }}</div>
     <NAlert v-if="sharedRisk" id="sharedBalanceRisk" type="warning" role="status">
-      检测到未解释的共享余额差额，实际可用额度可能受影响。个人余额保留，派发仍受官方余额限制。检查时间：{{
-        date(quota?.sharedBalanceRisk?.checkedAt)
-      }}。
+      检测到未解释的共享余额差额，实际可用额度可能受影响。个人余额保留，派发仍受官方余额限制。检查时间：<span
+        v-text="date(quota?.sharedBalanceRisk?.checkedAt)"
+      />。
     </NAlert>
     <NAlert v-else-if="quota?.sharedBalanceRisk?.pendingAnlasDebit" type="info" role="status"
       >普通 Anlas 扣款等待官方余额核对，可用公共额度暂按保守值计算。</NAlert

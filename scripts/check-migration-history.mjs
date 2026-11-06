@@ -25,19 +25,23 @@ export function checkMigrationHistory(root = process.cwd(), base = releasedMigra
     (file) => file.endsWith('.sql') || /meta\/\d+_snapshot\.json$/.test(file),
   )) {
     try {
-      if (!git(['show', `${commit}:${file}`]).equals(readFileSync(path.join(root, file))))
+      if (!git(['show', `${commit}:${file}`]).equals(readFileSync(path.join(root, file)))) {
         errors.push(`${file}: historical migration bytes changed; append a new migration.`);
+      }
     } catch {
       errors.push(`${file}: historical migration missing; restore it and append a new migration.`);
     }
   }
-  if (!isDeepStrictEqual({ ...previous, entries: undefined }, { ...current, entries: undefined }))
+  if (!isDeepStrictEqual({ ...previous, entries: undefined }, { ...current, entries: undefined })) {
     errors.push(`${journalPath}: historical journal metadata changed.`);
-  if (!Array.isArray(current.entries) || current.entries.length < previous.entries.length)
+  }
+  if (!Array.isArray(current.entries) || current.entries.length < previous.entries.length) {
     errors.push(`${journalPath}: historical journal entries removed.`);
+  }
   for (const [index, entry] of previous.entries.entries()) {
-    if (!isDeepStrictEqual(entry, current.entries?.[index]))
+    if (!isDeepStrictEqual(entry, current.entries?.[index])) {
       errors.push(`${journalPath}: historical journal entry ${index} changed; append only.`);
+    }
   }
   const entries = Array.isArray(current.entries) ? current.entries : [];
   const sqlFiles = readdirSync(path.join(root, directory)).filter((file) => file.endsWith('.sql'));
@@ -49,27 +53,34 @@ export function checkMigrationHistory(root = process.cwd(), base = releasedMigra
       typeof entry.breakpoints !== 'boolean' ||
       !Number.isSafeInteger(entry.when) ||
       (index && entry.when <= entries[index - 1].when)
-    )
+    ) {
       errors.push(`${journalPath}: invalid append order or entry ${index}.`);
-    if (!sqlFiles.includes(`${entry.tag}.sql`))
+    }
+    if (!sqlFiles.includes(`${entry.tag}.sql`)) {
       errors.push(`${journalPath}: missing SQL for ${entry.tag}.`);
+    }
   }
-  for (const file of sqlFiles)
-    if (!entries.some((entry) => `${entry.tag}.sql` === file))
+  for (const file of sqlFiles) {
+    if (!entries.some((entry) => `${entry.tag}.sql` === file)) {
       errors.push(`${directory}/${file}: migration must have the next journal entry.`);
+    }
+  }
   return errors;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const args = process.argv.slice(2);
-    if (args.length && (args.length !== 2 || args[0] !== '--base'))
+    if (args.length && (args.length !== 2 || args[0] !== '--base')) {
       throw new Error('Usage: node scripts/check-migration-history.mjs [--base TRUSTED_COMMIT]');
+    }
     const errors = checkMigrationHistory(process.cwd(), args[1] || releasedMigrationBase);
     if (errors.length) {
       console.error(errors.join('\n'));
       process.exitCode = 1;
-    } else console.log('Migration history unchanged; appended migrations valid.');
+    } else {
+      console.log('Migration history unchanged; appended migrations valid.');
+    }
   } catch (error) {
     console.error(`Cannot verify trusted migration history: ${error.message}`);
     process.exitCode = 1;

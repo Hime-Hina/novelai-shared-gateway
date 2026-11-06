@@ -118,19 +118,21 @@ export function checkSource(filename, text) {
         node.exportClause && ts.isNamedExports(node.exportClause)
           ? node.exportClause.elements.filter((item) => !item.isTypeOnly)
           : null;
-      if (!named || named.length)
+      if (!named || named.length) {
         dependency(
           node,
           node.moduleSpecifier.text,
           named ? named.map((item) => (item.propertyName || item.name).text) : ['*'],
         );
+      }
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression;
-      const name = ts.isIdentifier(callee)
-        ? callee.text
-        : ts.isPropertyAccessExpression(callee)
-          ? callee.name.text
-          : '';
+      let name = '';
+      if (ts.isIdentifier(callee)) {
+        name = callee.text;
+      } else if (ts.isPropertyAccessExpression(callee)) {
+        name = callee.name.text;
+      }
       if (
         (callee.kind === ts.SyntaxKind.ImportKeyword || name === 'require') &&
         node.arguments[0] &&
@@ -138,17 +140,19 @@ export function checkSource(filename, text) {
       ) {
         dependency(node, node.arguments[0].text, ['*']);
       }
-      if (pure.has(filename) && ['fetch', 'require'].includes(name))
+      if (pure.has(filename) && ['fetch', 'require'].includes(name)) {
         report(node, `pure reducer/amount IO call ${name}`, 'observations passed as event facts');
+      }
       const storeCall =
         ts.isPropertyAccessExpression(callee) &&
         /(?:^|\.)store$/i.test(callee.expression.getText(source));
-      if ((query || protocol) && (mutations.has(name) || (storeCall && persistence.has(name))))
+      if ((query || protocol) && (mutations.has(name) || (storeCall && persistence.has(name)))) {
         report(
           node,
           `adapter/query write call ${name}`,
           'the existing generation admission/execution command',
         );
+      }
     }
     if (
       (query || protocol) &&
@@ -167,14 +171,20 @@ export function checkArchitecture(root = process.cwd()) {
   const errors = [];
   function walk(relative) {
     for (const entry of readdirSync(path.join(root, relative), { withFileTypes: true })) {
-      if (['node_modules', 'tests', '.nuxt', '.output', 'dist'].includes(entry.name)) continue;
+      if (['node_modules', 'tests', '.nuxt', '.output', 'dist'].includes(entry.name)) {
+        continue;
+      }
       const filename = `${relative}/${entry.name}`;
-      if (entry.isDirectory()) walk(filename);
-      else if (/\.(?:ts|js|mjs|vue)$/.test(entry.name) && !entry.name.endsWith('.d.ts'))
+      if (entry.isDirectory()) {
+        walk(filename);
+      } else if (/\.(?:ts|js|mjs|vue)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
         errors.push(...checkSource(filename, readFileSync(path.join(root, filename), 'utf8')));
+      }
     }
   }
-  for (const directory of ['server', 'web', 'executor']) walk(directory);
+  for (const directory of ['server', 'web', 'executor']) {
+    walk(directory);
+  }
   return errors;
 }
 
@@ -183,5 +193,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (errors.length) {
     console.error(errors.join('\n'));
     process.exitCode = 1;
-  } else console.log('Architecture boundaries passed.');
+  } else {
+    console.log('Architecture boundaries passed.');
+  }
 }

@@ -41,13 +41,16 @@ const encode = (value: string) =>
 
 export function r2Config(env: NodeJS.ProcessEnv = process.env): R2Config | null {
   const fields = [env.R2_ACCOUNT_ID, env.R2_BUCKET, env.R2_ACCESS_KEY_ID, env.R2_SECRET_ACCESS_KEY];
-  if (fields.every((value) => !value)) return null;
+  if (fields.every((value) => !value)) {
+    return null;
+  }
   if (
     fields.some((value) => !value) ||
     !/^[a-f0-9]{32}$/.test(fields[0]!) ||
     !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(fields[1]!)
-  )
+  ) {
     throw new Error('R2 configuration is incomplete or invalid');
+  }
   return {
     accountId: fields[0]!,
     bucket: fields[1]!,
@@ -78,12 +81,13 @@ export function signedR2Request(
     'x-amz-date': timestamp,
     'x-amz-content-sha256': payloadHash,
   };
-  if (body)
+  if (body) {
     Object.assign(headers, {
       'content-type': mimeType || 'application/octet-stream',
       'content-md5': createHash('md5').update(body).digest('base64'),
       'if-none-match': '*',
     });
+  }
   const names = Object.keys(headers).sort(),
     signedHeaders = names.join(';');
   const canonicalQuery = Object.keys(query)
@@ -136,13 +140,15 @@ export class R2Storage {
 
   async put(image: R2Object, buffer: Buffer, mimeType: string) {
     this.check(image);
-    if (buffer.length !== image.byteLength || hash(buffer) !== image.sha256)
+    if (buffer.length !== image.byteLength || hash(buffer) !== image.sha256) {
       throw new Error('R2 upload source checksum mismatch');
+    }
     const response = await this.request('PUT', image.key, buffer, mimeType);
     await response.body?.cancel();
     // A timed-out PUT may have committed; never overwrite it, verify its bytes with GET instead.
-    if (!response.ok && response.status !== 412)
+    if (!response.ok && response.status !== 412) {
       throw new Error(`R2 upload failed (HTTP ${response.status})`);
+    }
   }
 
   async get(image: R2Object): Promise<Buffer> {
@@ -160,15 +166,21 @@ export class R2Storage {
       throw new Error('R2 object length mismatch');
     }
     const reader = response.body?.getReader();
-    if (!reader) throw new Error('R2 object body is missing');
+    if (!reader) {
+      throw new Error('R2 object body is missing');
+    }
     const chunks: Uint8Array[] = [];
     let length = 0;
     try {
       while (true) {
         const result = await reader.read();
-        if (result.done) break;
+        if (result.done) {
+          break;
+        }
         length += result.value.length;
-        if (length > image.byteLength) throw new Error('R2 object exceeds recorded length');
+        if (length > image.byteLength) {
+          throw new Error('R2 object exceeds recorded length');
+        }
         chunks.push(result.value);
       }
     } finally {
@@ -176,8 +188,9 @@ export class R2Storage {
       reader.releaseLock();
     }
     const buffer = Buffer.concat(chunks);
-    if (buffer.length !== image.byteLength || hash(buffer) !== image.sha256)
+    if (buffer.length !== image.byteLength || hash(buffer) !== image.sha256) {
       throw new Error('R2 object checksum mismatch');
+    }
     return buffer;
   }
 
@@ -196,25 +209,29 @@ export class R2Storage {
       !xml.includes('<ListBucketResult') ||
       !xml.includes('</ListBucketResult>') ||
       !/<IsTruncated>false<\/IsTruncated>/.test(xml)
-    )
+    ) {
       throw new Error('R2 backup listing is incomplete');
+    }
     return [...xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)].map((match) => {
       const key = /<Key>([^<]+)<\/Key>/.exec(match[1]!)?.[1];
       const bytes = Number(/<Size>(\d+)<\/Size>/.exec(match[1]!)?.[1]);
-      if (!key?.startsWith('backups/') || !Number.isSafeInteger(bytes) || bytes < 0)
+      if (!key?.startsWith('backups/') || !Number.isSafeInteger(bytes) || bytes < 0) {
         throw new Error('Invalid R2 backup listing');
+      }
       return { key, bytes };
     });
   }
 
   async removeBackup(image: R2Object) {
     this.check(image);
-    if (!image.key.startsWith('backups/daily-'))
+    if (!image.key.startsWith('backups/daily-')) {
       throw new Error('Only daily backup retention may delete R2 objects');
+    }
     const response = await this.request('DELETE', image.key);
     await response.body?.cancel();
-    if (!response.ok && response.status !== 404)
+    if (!response.ok && response.status !== 404) {
       throw new Error(`R2 backup retention failed (HTTP ${response.status})`);
+    }
   }
 
   private check(image: R2Object) {
@@ -227,16 +244,18 @@ export class R2Storage {
       !Number.isSafeInteger(image.byteLength) ||
       image.byteLength < 1 ||
       image.byteLength > MAX_STORED_IMAGE_BYTES
-    )
+    ) {
       throw new Error('Invalid R2 object descriptor');
+    }
   }
 }
 
 export function storedImagePath(dataDir: string, file: string) {
   const directory = path.resolve(dataDir, 'images'),
     resolved = path.resolve(dataDir, file);
-  if (!resolved.startsWith(directory + path.sep))
+  if (!resolved.startsWith(directory + path.sep)) {
     throw Object.assign(new Error('invalid image path'), { statusCode: 403 });
+  }
   return resolved;
 }
 
@@ -260,14 +279,20 @@ export class ImageStorage {
       try {
         return { handle: await open(storedImagePath(this.dataDir, image.file), 'r') };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
         missingFile = error;
       }
     }
     // A reader may hold the pre-archive row while the verified local copy is removed.
     const current = image.id ? await this.findImage(image.id) : image;
-    if (current?.r2?.verifiedAt || current?.base64) return { image: current };
-    if (missingFile) throw missingFile;
+    if (current?.r2?.verifiedAt || current?.base64) {
+      return { image: current };
+    }
+    if (missingFile) {
+      throw missingFile;
+    }
     throw Object.assign(new Error('image content not found'), { statusCode: 404 });
   }
 
@@ -281,10 +306,12 @@ export class ImageStorage {
       }
     }
     if (source.image.r2?.verifiedAt) {
-      if (!this.remote)
+      if (!this.remote) {
         throw Object.assign(new Error('R2 storage is not configured'), { statusCode: 503 });
-      if (!source.image.r2.key.startsWith('images/'))
+      }
+      if (!source.image.r2.key.startsWith('images/')) {
         throw Object.assign(new Error('invalid image object'), { statusCode: 403 });
+      }
       return this.remote.get(source.image.r2).catch(() => {
         throw Object.assign(new Error('历史图片暂时无法从 R2 读取，请稍后重试'), {
           statusCode: 503,

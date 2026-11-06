@@ -21,14 +21,19 @@ test(
     const dir = await mkdtemp(path.join(tmpdir(), 'nai-management-receipts-'));
     let child, port, cookie;
     async function stop() {
-      if (!child) return;
+      if (!child) {
+        return;
+      }
       if (child.exitCode !== null) {
         child = null;
         return;
       }
       const exited = new Promise((resolve) => child.once('exit', resolve));
-      if (child.connected) child.send({ stop: true });
-      else child.kill();
+      if (child.connected) {
+        child.send({ stop: true });
+      } else {
+        child.kill();
+      }
       await exited;
       child = null;
     }
@@ -44,7 +49,9 @@ test(
       child.stderr.on('data', (chunk) => (stderr += chunk));
       const ready = await new Promise((resolve, reject) => {
         child.on('message', (message) => {
-          if (message.port) resolve(message);
+          if (message.port) {
+            resolve(message);
+          }
         });
         child.once('exit', (code) => reject(new Error(`receipt server exited ${code}: ${stderr}`)));
       });
@@ -340,8 +347,9 @@ test('owner 权限绑定内部 ID 和有效 Discord 会话，用户名、Key、�
   assert.equal((await call('/api/member/me', { viewer: 1 })).data.owner, false);
   const result = await call('/api/member/owner/summary?revealTokens=1');
   assert.equal(result.status, 200);
-  for (const secret of ['pst-synthetic', 'synthetic-discord', 'STA1N-'])
+  for (const secret of ['pst-synthetic', 'synthetic-discord', 'STA1N-']) {
     assert.ok(!result.text.includes(secret));
+  }
   assert.equal((await call('/api/admin/member-management')).status, 404);
   assert.equal(
     (
@@ -367,8 +375,9 @@ test('owner 复用成员管理和邀请码，但不能停用或删除自己', as
     { action: 'member-status', userId: 'owner-a', enabled: false },
     { action: 'preview-delete-member', userId: 'owner-a' },
     { action: 'delete-member', userId: 'owner-a' },
-  ])
+  ]) {
     assert.equal((await call(route, { body })).status, 409);
+  }
   assert.equal(
     (await call(route, { body: { action: 'member-status', userId: 'other-b', enabled: false } }))
       .status,
@@ -431,7 +440,9 @@ test('R2 官方统计只由已鉴权管理摘要触发，不泄漏统计令牌�
       finish = resolve;
     });
   });
-  for (const viewer of [null, 1]) await call('/api/member/owner/member-management', { viewer });
+  for (const viewer of [null, 1]) {
+    await call('/api/member/owner/member-management', { viewer });
+  }
   assert.equal(queries, 0);
   const first = await call('/api/member/owner/member-management');
   assert.equal(first.status, 200);
@@ -616,8 +627,9 @@ test('用量按上海日期、成员和模型汇总，退款及预扣不算消�
     result.members.find((row) => row.id === 'b'),
     result.models.find((row) => row.id === 'v5'),
     result.days.find((row) => row.id === '2026-10-15'),
-  ])
+  ]) {
     assert.equal(group.pending, 1);
+  }
   assert.equal(result.members.find((row) => row.id === 'b').averageWaitSeconds, null);
   assert.equal(result.members.find((row) => row.id === 'b').averageGenerationSeconds, null);
   assert.equal(summarizeOwnerUsage([]).totals.pending, 0);
@@ -653,8 +665,9 @@ test('SQLite 统计读取覆盖持久历史，按时间筛选且不返回任何 
     assert.equal(rows[0].username, 'Alice');
     assert.equal(rows[0].memberId, 'a');
     assert.equal(rows[0].model, 'nai-diffusion-4-5-full');
-    for (const secret of ['STA1N-private', 'private-discord', 'private-prompt'])
+    for (const secret of ['STA1N-private', 'private-discord', 'private-prompt']) {
       assert.ok(!JSON.stringify(rows).includes(secret));
+    }
     assert.equal(
       (await store.readOwnerJobRows('2026-10-16T00:00:00Z', '2026-10-17T00:00:00Z')).length,
       0,

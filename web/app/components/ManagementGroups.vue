@@ -76,8 +76,12 @@ const total = computed(() =>
 const validTotal = computed(
   () => Number.isFinite(total.value) && Math.abs(total.value - 100) <= 1e-6,
 );
-const percent = (value: number | null | undefined) =>
-  value == null ? '未知' : Number.isFinite(value) ? `${number(value * 100)}%` : '待填写';
+const percent = (value: number | null | undefined) => {
+  if (value == null) {
+    return '未知';
+  }
+  return Number.isFinite(value) ? `${number(value * 100)}%` : '待填写';
+};
 const inputNumber = (value: number) => (Number.isFinite(value) ? value : null);
 const copyGroups = (values: ManagementGroup[]) =>
   values.map((group) => ({
@@ -90,17 +94,20 @@ const groupOf = (id: string) => groups.value.find((group) => group.members.inclu
 
 function draftShare(id: string) {
   const group = groupOf(id);
-  if (!group) return 0;
+  if (!group) {
+    return 0;
+  }
   const sum = group.members.reduce(
     (value, member) => value + (group.memberWeights[member] ?? 1),
     0,
   );
-  if (!Number.isFinite(group.share) || !Number.isFinite(sum)) return NaN;
-  return sum > 0
-    ? (group.share * (group.memberWeights[id] ?? 1)) / sum
-    : group.share === 0
-      ? 0
-      : NaN;
+  if (!Number.isFinite(group.share) || !Number.isFinite(sum)) {
+    return NaN;
+  }
+  if (sum > 0) {
+    return (group.share * (group.memberWeights[id] ?? 1)) / sum;
+  }
+  return group.share === 0 ? 0 : NaN;
 }
 function readDirectShares() {
   directShares.value = Object.fromEntries(
@@ -114,7 +121,9 @@ function setDirty(value: boolean) {
 function edited(markDirty = true) {
   editVersion++;
   preview.value = null;
-  if (markDirty) setDirty(true);
+  if (markDirty) {
+    setDirty(true);
+  }
 }
 function loadSnapshot() {
   groups.value = copyGroups(props.state.groups);
@@ -124,7 +133,9 @@ function loadSnapshot() {
   readDirectShares();
 }
 function resetDraft() {
-  if (locked.value) return;
+  if (locked.value) {
+    return;
+  }
   if (props.state.configVersion < configVersion.value) {
     emit('notice', '分组已保存，但页面配置尚未刷新；请先刷新管理摘要再撤销修改。', true);
     return;
@@ -136,12 +147,17 @@ function resetDraft() {
 }
 function switchMode(value: Mode) {
   mode.value = value;
-  if (value === 'direct') readDirectShares();
+  if (value === 'direct') {
+    readDirectShares();
+  }
   edited(false);
 }
 function applyDirectShares() {
-  for (const user of props.state.users)
-    if (user.enabled && !groupOf(user.id)) groups.value[0]?.members.push(user.id);
+  for (const user of props.state.users) {
+    if (user.enabled && !groupOf(user.id)) {
+      groups.value[0]?.members.push(user.id);
+    }
+  }
   for (const group of groups.value) {
     group.memberWeights = Object.fromEntries(
       group.members.map((id) => [id, directShares.value[id] ?? 0]),
@@ -177,37 +193,48 @@ function changeWeight(id: string, value: number | null) {
 function validate() {
   if (mode.value === 'direct') {
     const values = Object.values(directShares.value);
-    if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 100))
+    if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 100)) {
       throw new Error('每位成员的份额必须在 0% 到 100% 之间。');
-    if (Math.abs(values.reduce((sum, value) => sum + value, 0) - 100) > 1e-6)
+    }
+    if (Math.abs(values.reduce((sum, value) => sum + value, 0) - 100) > 1e-6) {
       throw new Error('成员份额合计必须为 100%，请调整后再预览。');
+    }
   }
   if (
     groups.value.some(
       (group) => !Number.isFinite(group.share) || group.share < 0 || group.share > 1,
     ) ||
     Math.abs(groups.value.reduce((sum, group) => sum + group.share, 0) - 1) > 1e-8
-  )
+  ) {
     throw new Error('四组份额须合计 100%。');
-  if (groups.value.some((group) => !group.members.length && group.share !== 0))
+  }
+  if (groups.value.some((group) => !group.members.length && group.share !== 0)) {
     throw new Error('空组份额须为 0%。');
-  if (!groups.value.some((group) => group.members.length))
+  }
+  if (!groups.value.some((group) => group.members.length)) {
     throw new Error('至少保留一位已分组成员。');
+  }
   for (const group of groups.value) {
     const weights = group.members.map((id) => group.memberWeights[id] ?? 1);
-    if (weights.some((weight) => !Number.isFinite(weight) || weight < 0 || weight > 1e6))
+    if (weights.some((weight) => !Number.isFinite(weight) || weight < 0 || weight > 1e6)) {
       throw new Error('组内权重须在 0 到 1000000 之间。');
-    if (group.share > 0 && weights.reduce((sum, weight) => sum + weight, 0) <= 0)
+    }
+    if (group.share > 0 && weights.reduce((sum, weight) => sum + weight, 0) <= 0) {
       throw new Error('有份额的组至少一位成员权重须大于 0。');
+    }
   }
 }
 function previewGroups() {
-  if (locked.value) return;
+  if (locked.value) {
+    return;
+  }
   void props.run(async () => {
     pending.value = true;
     preview.value = null;
     try {
-      if (mode.value === 'direct') applyDirectShares();
+      if (mode.value === 'direct') {
+        applyDirectShares();
+      }
       validate();
       const revision = editVersion;
       const payload: GroupPayload = {
@@ -222,7 +249,9 @@ function previewGroups() {
         before: user.quota ? { ...user.quota } : null,
       }));
       const result = await props.api<GroupResult>('member-management', payload);
-      if (!active) return;
+      if (!active) {
+        return;
+      }
       if (revision !== editVersion) {
         emit('notice', '预览期间草稿已修改，请重新预览。');
         return;
@@ -240,7 +269,9 @@ function previewGroups() {
   });
 }
 function saveGroups() {
-  if (locked.value || !preview.value) return;
+  if (locked.value || !preview.value) {
+    return;
+  }
   const payload = { ...preview.value.payload, groups: copyGroups(preview.value.payload.groups) },
     revision = editVersion;
   void props.run(async () => {
@@ -250,7 +281,9 @@ function saveGroups() {
         'member-management',
         payload,
       );
-      if (!active) return;
+      if (!active) {
+        return;
+      }
       preview.value = null;
       // 只有本次保存的成功响应能推进仍在编辑的草稿版本；后台快照不能替它换版本。
       configVersion.value = result.configVersion;
@@ -271,8 +304,9 @@ function saveGroups() {
 watch(
   () => props.state,
   () => {
-    if (!dirty.value && !pending.value && props.state.configVersion >= configVersion.value)
+    if (!dirty.value && !pending.value && props.state.configVersion >= configVersion.value) {
       loadSnapshot();
+    }
   },
   { immediate: true },
 );

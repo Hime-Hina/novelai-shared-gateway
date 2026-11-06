@@ -462,7 +462,9 @@ test(
     ctx.cleanupStaleActiveJobs = () => new Promise((resolve) => gates.push(resolve));
     const first = admit(body()),
       second = admit(body());
-    while (gates.length < 2) await new Promise((resolve) => setImmediate(resolve));
+    while (gates.length < 2) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     gates[0]();
     const accepted = await first;
     await store.update(

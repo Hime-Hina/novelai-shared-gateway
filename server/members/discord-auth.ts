@@ -60,7 +60,9 @@ export function discordLoginEnabled(env: NodeJS.ProcessEnv = process.env): boole
 }
 
 export function discordConfig(env: NodeJS.ProcessEnv = process.env): DiscordConfig | null {
-  if (!discordLoginEnabled(env)) return null;
+  if (!discordLoginEnabled(env)) {
+    return null;
+  }
   let url: URL;
   try {
     url = new URL(env.PUBLIC_BASE_URL!);
@@ -74,15 +76,17 @@ export function discordConfig(env: NodeJS.ProcessEnv = process.env): DiscordConf
     url.search ||
     url.hash ||
     !['/', '/v1', '/v1/'].includes(url.pathname)
-  )
+  ) {
     fail('Discord 登录需要配置 HTTPS 站点根地址', 503);
+  }
   if (
     !snowflake(env.DISCORD_GUILD_ID) ||
     !snowflake(env.DISCORD_CLIENT_ID) ||
     typeof env.DISCORD_CLIENT_SECRET !== 'string' ||
     env.DISCORD_CLIENT_SECRET.length < 16
-  )
+  ) {
     fail('Discord 登录尚未配置完成，请联系管理员', 503);
+  }
   return {
     clientId: env.DISCORD_CLIENT_ID,
     secret: env.DISCORD_CLIENT_SECRET,
@@ -98,8 +102,12 @@ export function createDiscordInvite(
   now = Date.now(),
 ) {
   const user = db.users.find((u) => u.id === userId && u.enabled !== false);
-  if (!user) fail('成员不存在或已停用', 404);
-  if (user.discord?.id) fail('成员已绑定 Discord，无需邀请码', 409);
+  if (!user) {
+    fail('成员不存在或已停用', 404);
+  }
+  if (user.discord?.id) {
+    fail('成员已绑定 Discord，无需邀请码', 409);
+  }
   const code = randomBytes(24).toString('base64url'),
     expiresAt = now + 7 * 86400000;
   user.discordInvite = { hash: hash(code), expiresAt };
@@ -110,8 +118,9 @@ export function assertDiscordBound(user: DiscordUser, env: NodeJS.ProcessEnv = p
   if (
     discordLoginEnabled(env) &&
     (!user.discord?.id || user.discord.guildId !== env.DISCORD_GUILD_ID)
-  )
+  ) {
     fail('请先使用邀请码完成 Discord 登录');
+  }
 }
 
 function stateCookie(value: string, maxAge: number): string {
@@ -125,16 +134,21 @@ export async function beginDiscordLogin(
   deps: DiscordDependencies,
 ) {
   const config = discordConfig(envOf(deps));
-  if (!config) fail('Discord 登录未启用', 404);
-  if (req.headers.host !== new URL(config.origin).host) fail('请从配置的主域名登录');
+  if (!config) {
+    fail('Discord 登录未启用', 404);
+  }
+  if (req.headers.host !== new URL(config.origin).host) {
+    fail('请从配置的主域名登录');
+  }
   if (
     body.invite !== undefined &&
     (typeof body.invite !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(body.invite.trim()))
-  )
+  ) {
     fail('邀请码无效或已过期');
+  }
   const now = Date.now(),
     inviteHash = body.invite ? hash(body.invite.trim()) : null;
-  if (inviteHash)
+  if (inviteHash) {
     await deps.store.update(
       (db) => {
         if (
@@ -145,13 +159,21 @@ export async function beginDiscordLogin(
               u.discordInvite?.hash === inviteHash &&
               u.discordInvite.expiresAt > now,
           )
-        )
+        ) {
           fail('邀请码无效或已过期');
+        }
       },
       { persist: false },
     );
-  for (const [key, value] of states) if (value.expiresAt <= now) states.delete(key);
-  if (states.size >= 1000) fail('登录请求过多，请稍后重试', 429);
+  }
+  for (const [key, value] of states) {
+    if (value.expiresAt <= now) {
+      states.delete(key);
+    }
+  }
+  if (states.size >= 1000) {
+    fail('登录请求过多，请稍后重试', 429);
+  }
   const state = randomBytes(32).toString('base64url');
   states.set(state, {
     inviteHash,
@@ -187,11 +209,15 @@ async function discordRequest(
   } catch {
     fail('Discord 暂时无法连接，请稍后重试', 503);
   }
-  if (response.status === 401 || (response.status === 400 && path === '/oauth2/token'))
+  if (response.status === 401 || (response.status === 400 && path === '/oauth2/token')) {
     fail('Discord 授权已失效，请重新登录', 401);
-  if (response.status === 403 || response.status === 404)
+  }
+  if (response.status === 403 || response.status === 404) {
     fail('无法验证指定 Discord 服务器成员资格');
-  if (!response.ok) fail('Discord 验证暂不可用，请稍后重试', 503);
+  }
+  if (!response.ok) {
+    fail('Discord 验证暂不可用，请稍后重试', 503);
+  }
   try {
     return await response.json();
   } catch {
@@ -231,8 +257,9 @@ async function exchangeToken(
         .split(' ')
         .includes(s),
     )
-  )
+  ) {
     fail('Discord 未授予所需的身份与成员权限');
+  }
   return {
     accessToken: value.access_token,
     refreshToken: value.refresh_token,
@@ -250,8 +277,9 @@ async function guildMember(
     { headers: { authorization: `Bearer ${grant.accessToken}` } },
     deps,
   )) as { pending?: unknown; user?: { id?: unknown } };
-  if (member.pending === true || member.user?.id !== grant.id)
+  if (member.pending === true || member.user?.id !== grant.id) {
     fail('请先加入指定 Discord 服务器并完成成员验证');
+  }
 }
 
 export async function finishDiscordLogin(
@@ -261,7 +289,9 @@ export async function finishDiscordLogin(
   deps: DiscordDependencies,
 ): Promise<DiscordUser> {
   const config = discordConfig(envOf(deps));
-  if (!config) fail('Discord 登录未启用', 404);
+  if (!config) {
+    fail('Discord 登录未启用', 404);
+  }
   const state = url.searchParams.get('state'),
     pending = states.get(state!);
   const cookie = String(req.headers.cookie || '')
@@ -280,14 +310,18 @@ export async function finishDiscordLogin(
     pending.clientId !== config.clientId ||
     pending.guildId !== config.guildId ||
     pending.redirectUri !== config.redirectUri
-  )
+  ) {
     fail('Discord 登录请求已失效，请返回首页重新登录', 400);
+  }
   states.delete(state);
   res.setHeader('Set-Cookie', stateCookie('', 0));
-  if (url.searchParams.has('error')) fail('你已取消 Discord 授权，请返回首页重试', 400);
+  if (url.searchParams.has('error')) {
+    fail('你已取消 Discord 授权，请返回首页重试', 400);
+  }
   const code = url.searchParams.get('code');
-  if (url.searchParams.getAll('code').length !== 1 || !code || code.length > 4096)
+  if (url.searchParams.getAll('code').length !== 1 || !code || code.length > 4096) {
     fail('Discord 授权码无效', 400);
+  }
   const token = await exchangeToken(
     config,
     { grant_type: 'authorization_code', code, redirect_uri: config.redirectUri },
@@ -298,7 +332,9 @@ export async function finishDiscordLogin(
     { headers: { authorization: `Bearer ${token.accessToken}` } },
     deps,
   )) as { id?: unknown; bot?: unknown };
-  if (!snowflake(profile.id) || profile.bot) fail('Discord 用户身份无效');
+  if (!snowflake(profile.id) || profile.bot) {
+    fail('Discord 用户身份无效');
+  }
   const grant = { ...token, id: profile.id, guildId: config.guildId };
   await guildMember(config, grant, deps);
   return deps.store.update(
@@ -310,10 +346,13 @@ export async function finishDiscordLogin(
           (u) =>
             u.discordInvite?.hash === pending.inviteHash && u.discordInvite.expiresAt > Date.now(),
         );
-      if (pending.inviteHash && (!invited || invited.discord?.id || existing))
+      if (pending.inviteHash && (!invited || invited.discord?.id || existing)) {
         fail('邀请码已使用、已撤销或 Discord 已绑定其他成员');
+      }
       const user = invited || existing;
-      if (!user || user.enabled === false) fail('此 Discord 尚未获邀，或成员已停用');
+      if (!user || user.enabled === false) {
+        fail('此 Discord 尚未获邀，或成员已停用');
+      }
       user.discord = { ...grant, checkedAt: Date.now(), member: true };
       user.memberAuth = {
         username: user.memberAuth?.username || user.note || user.id,
@@ -348,17 +387,23 @@ export async function requireDiscordMembership(
   deps: DiscordDependencies,
 ): Promise<void> {
   const env = envOf(deps);
-  if (!discordLoginEnabled(env)) return;
+  if (!discordLoginEnabled(env)) {
+    return;
+  }
   assertDiscordBound(user, env);
   // 上面的启用/绑定检查保证 config 和 discord 存在；缺失时间仍按原比较得到 false。
   const config = discordConfig(env)!,
     original = user.discord!;
   if (original.checkedAt! > Date.now() - 5 * 60000 && original.checkedAt! <= Date.now()) {
-    if (original.member === true) return;
+    if (original.member === true) {
+      return;
+    }
     fail('你已不在指定 Discord 服务器，请重新登录验证');
   }
   const key = `${config.clientId}:${config.guildId}:${user.id}`;
-  if (checks.has(key)) return checks.get(key);
+  if (checks.has(key)) {
+    return checks.get(key);
+  }
   const pending = (async () => {
     let grant = { ...original },
       membershipError: unknown;
@@ -375,8 +420,9 @@ export async function requireDiscordMembership(
       await deps.store.update(
         (db) => {
           const current = db.users.find((u) => u.id === user.id && u.enabled !== false);
-          if (!current || current.discord?.accessToken !== original.accessToken)
+          if (!current || current.discord?.accessToken !== original.accessToken) {
             fail('成员认证状态已变化，请重试', 401);
+          }
           current.discord = { ...grant };
         },
         { collections: ['users'], immediate: true },
@@ -385,14 +431,17 @@ export async function requireDiscordMembership(
     try {
       await guildMember(config, grant, deps);
     } catch (error) {
-      if ((error as { statusCode?: number }).statusCode !== 403) throw error;
+      if ((error as { statusCode?: number }).statusCode !== 403) {
+        throw error;
+      }
       membershipError = error;
     }
     await deps.store.update(
       (db) => {
         const current = db.users.find((u) => u.id === user.id && u.enabled !== false);
-        if (!current || current.discord?.accessToken !== grant.accessToken)
+        if (!current || current.discord?.accessToken !== grant.accessToken) {
           fail('成员认证状态已变化，请重试', 401);
+        }
         current.discord = { ...grant, checkedAt: Date.now(), member: !membershipError };
         recordDomainEvent(db, {
           eventType: 'MemberEligibilityChanged',
@@ -408,11 +457,15 @@ export async function requireDiscordMembership(
             },
           },
         });
-        if (membershipError) current.memberAuth!.version = randomBytes(16).toString('hex');
+        if (membershipError) {
+          current.memberAuth!.version = randomBytes(16).toString('hex');
+        }
       },
       { collections: ['users'], immediate: true },
     );
-    if (membershipError) throw membershipError;
+    if (membershipError) {
+      throw membershipError;
+    }
   })();
   checks.set(key, pending);
   try {

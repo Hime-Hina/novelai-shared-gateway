@@ -52,42 +52,55 @@ const boundId = computed(
 watch(
   () => props.state.autoAnlasFallback,
   (value) => {
-    if (!fallbackDirty.value) fallback.value = value;
+    if (!fallbackDirty.value) {
+      fallback.value = value;
+    }
   },
 );
 function requireClean() {
-  if (props.groupsDirty) throw new Error('分组有未保存修改，请先保存或撤销。');
+  if (props.groupsDirty) {
+    throw new Error('分组有未保存修改，请先保存或撤销。');
+  }
 }
 function load(): Promise<void> {
-  if (!props.active || disposed) return Promise.resolve();
+  if (!props.active || disposed) {
+    return Promise.resolve();
+  }
   pending = true;
-  if (task) return task;
+  if (task) {
+    return task;
+  }
   task = (async () => {
     do {
       pending = false;
       loading.value = true;
       try {
         const summary = await props.api<ManagementSummary>('summary');
-        if (disposed) return;
+        if (disposed) {
+          return;
+        }
         const value = summary.accounts.find((candidate) => candidate.id === boundId.value);
         // 私有summary可能含秘密；只保留页面所需的脱敏字段。
-        account.value = value
-          ? {
-              id: value.id,
-              enabled: value.enabled,
-              inFlight: value.inFlight,
-              quotaTier: value.quotaTier,
-              quotaFixed: value.quotaFixed,
-              quotaPurchased: value.quotaPurchased,
-              v5UsagePercent: value.v5UsagePercent,
-              quotaCheckedAt: value.quotaCheckedAt,
-              quotaError: value.quotaError ? '官方额度查询失败' : '',
-            }
-          : null;
+        if (value) {
+          account.value = {
+            id: value.id,
+            enabled: value.enabled,
+            inFlight: value.inFlight,
+            quotaTier: value.quotaTier,
+            quotaFixed: value.quotaFixed,
+            quotaPurchased: value.quotaPurchased,
+            v5UsagePercent: value.v5UsagePercent,
+            quotaCheckedAt: value.quotaCheckedAt,
+            quotaError: value.quotaError ? '官方额度查询失败' : '',
+          };
+        } else {
+          account.value = null;
+        }
         error.value = '';
       } catch (failure) {
-        if (!disposed && !(failure as { stale?: boolean }).stale)
+        if (!disposed && !(failure as { stale?: boolean }).stale) {
           error.value = '上游状态读取失败，保留上次结果：' + (failure as Error).message;
+        }
       } finally {
         loading.value = false;
       }
@@ -100,7 +113,9 @@ function load(): Promise<void> {
 function refreshQuota() {
   return props.run(async () => {
     requireClean();
-    if (!account.value) throw new Error('未绑定共享上游');
+    if (!account.value) {
+      throw new Error('未绑定共享上游');
+    }
     const result = await props.api<{ failed: number }>('accounts/quota', {
       ids: [account.value.id],
     });
@@ -113,11 +128,15 @@ function refreshQuota() {
 function toggle() {
   return props.run(async () => {
     requireClean();
-    if (!account.value) throw new Error('未绑定共享上游');
+    if (!account.value) {
+      throw new Error('未绑定共享上游');
+    }
     const { id, enabled } = account.value;
     if (!enabled && props.mode === 'admin') {
       const result = await props.api<{ failed: number }>('accounts/quota', { ids: [id] });
-      if (result.failed) throw new Error('官方查询失败，上游保持暂停。');
+      if (result.failed) {
+        throw new Error('官方查询失败，上游保持暂停。');
+      }
     }
     await props.api('accounts/' + encodeURIComponent(id), { enabled: !enabled }, 'PATCH');
     emit('changed', enabled ? '上游已暂停。' : '上游已恢复。');
@@ -127,29 +146,40 @@ function saveFallback() {
   return props.run(async () => {
     const enabled = fallback.value;
     await props.api('member-management', { action: 'fallback-policy', enabled });
-    if (fallback.value === enabled) fallbackDirty.value = false;
+    if (fallback.value === enabled) {
+      fallbackDirty.value = false;
+    }
     emit('changed', '续用策略已保存，仅影响之后的任务。');
   });
 }
 function savePst() {
   return props.run(async () => {
     requireClean();
-    if (!account.value) throw new Error('未绑定共享上游');
-    if (account.value.inFlight) throw new Error('请等待在途生成完成。');
+    if (!account.value) {
+      throw new Error('未绑定共享上游');
+    }
+    if (account.value.inFlight) {
+      throw new Error('请等待在途生成完成。');
+    }
     const token = pst.value.trim(),
       id = account.value.id;
-    if (!/^pst-[A-Za-z0-9_-]+$/.test(token) || token.length > 4096)
+    if (!/^pst-[A-Za-z0-9_-]+$/.test(token) || token.length > 4096) {
       throw new Error('请输入完整 PST');
+    }
     await props.api('accounts/' + encodeURIComponent(id), { token }, 'PATCH');
-    if (pst.value.trim() === token) pst.value = '';
+    if (pst.value.trim() === token) {
+      pst.value = '';
+    }
     emit('changed', 'PST 已更新，上游保持暂停；确认官方额度后手动恢复。');
     try {
       const result = await props.api<{ failed: number }>('accounts/quota', { ids: [id] });
-      if (result.failed)
+      if (result.failed) {
         emit('notice', 'PST 已更新，但官方额度查询失败；上游保持暂停，勿重复提交。', true);
+      }
     } catch (failure) {
-      if (!(failure as { stale?: boolean }).stale)
+      if (!(failure as { stale?: boolean }).stale) {
         emit('notice', 'PST 已更新，但后续查询失败；上游保持暂停，勿重复提交。', true);
+      }
     }
   });
 }

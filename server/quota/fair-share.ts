@@ -236,8 +236,12 @@ const fail: (message: string, status?: number) => never = (message, status = 402
   throw e;
 };
 const active = (a: FairAccount | undefined, now: number): a is FairAccount => isUsableOpus(a, now);
-const units = (value: AmountInput | null | undefined): bigint =>
-  value == null ? 0n : parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact');
+const units = (value: AmountInput | null | undefined): bigint => {
+  if (value == null) {
+    return 0n;
+  }
+  return parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact');
+};
 const normalized = (value: AmountInput | null | undefined): AmountText =>
   formatAmount(units(value));
 const sum = (s: FairQuotaState, field: BalanceField): bigint =>
@@ -245,20 +249,17 @@ const sum = (s: FairQuotaState, field: BalanceField): bigint =>
 const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.userId === id && c.status === 'reserved')
-    .reduce(
-      (n, c) =>
-        n +
-        units(
-          c.resource === resource
-            ? c.amount
-            : resource === 'anlasFixed'
-              ? c.fixed
-              : resource === 'anlasPurchased'
-                ? c.purchased
-                : '0',
-        ),
-      0n,
-    );
+    .reduce((n, c) => {
+      let amount: AmountInput | undefined = '0';
+      if (c.resource === resource) {
+        amount = c.amount;
+      } else if (resource === 'anlasFixed') {
+        amount = c.fixed;
+      } else if (resource === 'anlasPurchased') {
+        amount = c.purchased;
+      }
+      return n + units(amount);
+    }, 0n);
 const sharedHeld = (s: FairQuotaState): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.status === 'reserved')
@@ -266,10 +267,11 @@ const sharedHeld = (s: FairQuotaState): bigint =>
 const anyHeld = (s: Pick<FairQuotaState, 'reservations'>): boolean =>
   Object.values(s.reservations).some((c) => c.status === 'reserved');
 const totals = (s: FairQuotaState): void => {
-  for (const b of Object.values(s.balances))
+  for (const b of Object.values(s.balances)) {
     b.anlasAvailable = formatAmount(
       units(b.anlasFixedAvailable) + units(b.anlasPurchasedAvailable),
     );
+  }
 };
 
 const emptyBalance = (): FairBalance => ({
@@ -279,12 +281,13 @@ const emptyBalance = (): FairBalance => ({
   anlasPurchasedAvailable: '0',
 });
 function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
-  if (!s.groups)
+  if (!s.groups) {
     s.groups = s.members.map((id, i) => ({
       id: `group_${i + 1}`,
       name: `第 ${i + 1} 组`,
       members: [id],
     }));
+  }
   for (const group of s.groups) {
     group.share ??= 0.25;
     group.memberWeights = Object.fromEntries(
@@ -305,32 +308,44 @@ function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
     'fallbackFixed',
     'fallbackPurchased',
     'fallbackV5',
-  ] as const)
+  ] as const) {
     s.spent[field] = normalized(s.spent[field]);
+  }
   s.spent.anlas = formatAmount(units(s.spent.anlasFixed) + units(s.spent.anlasPurchased));
   s.fallbackBuffer ||= { fixed: '0', purchased: '0' };
   s.fallbackBuffer.fixed = normalized(s.fallbackBuffer.fixed);
   s.fallbackBuffer.purchased = normalized(s.fallbackBuffer.purchased);
   s.fallbackTotalsByUser ||= {};
-  for (const total of Object.values(s.fallbackTotalsByUser))
-    for (const field of ['fixed', 'purchased', 'v5Equivalent'] as const)
+  for (const total of Object.values(s.fallbackTotalsByUser)) {
+    for (const field of ['fixed', 'purchased', 'v5Equivalent'] as const) {
       total[field] = normalized(total[field]);
-  for (const balance of Object.values(s.balances))
+    }
+  }
+  for (const balance of Object.values(s.balances)) {
     for (const field of [
       'v5Available',
       'anlasFixedAvailable',
       'anlasPurchasedAvailable',
       'anlasAvailable',
-    ] as const)
+    ] as const) {
       balance[field] = normalized(balance[field]);
-  for (const charge of Object.values(s.reservations)) normalizeCharge(charge);
-  if (s.snapshot)
-    for (const resource of ['v5', 'anlasFixed', 'anlasPurchased', 'anlas'] as const)
-      if (s.snapshot[resource] !== null) s.snapshot[resource] = normalized(s.snapshot[resource]);
-  if (s.snapshot && s.snapshot.anlasFixed !== null && s.snapshot.anlasPurchased !== null)
+    }
+  }
+  for (const charge of Object.values(s.reservations)) {
+    normalizeCharge(charge);
+  }
+  if (s.snapshot) {
+    for (const resource of ['v5', 'anlasFixed', 'anlasPurchased', 'anlas'] as const) {
+      if (s.snapshot[resource] !== null) {
+        s.snapshot[resource] = normalized(s.snapshot[resource]);
+      }
+    }
+  }
+  if (s.snapshot && s.snapshot.anlasFixed !== null && s.snapshot.anlasPurchased !== null) {
     s.snapshot.anlas = formatAmount(
       units(s.snapshot.anlasFixed) + units(s.snapshot.anlasPurchased),
     );
+  }
   totals(s as FairQuotaState);
   // 上面的原位升级补齐旧四人账本字段，不重建已有钱包或预留。
   return s as FairQuotaState;
@@ -339,7 +354,9 @@ const groupFor = (s: FairQuotaState, id: string): FairGroup | undefined =>
   s.groups.find((g) => g.members.includes(id));
 const weight = (s: FairQuotaState, id: string): number => {
   const group = groupFor(s, id);
-  if (!group) return 0;
+  if (!group) {
+    return 0;
+  }
   const total = group.members.reduce((n, member) => n + (group.memberWeights?.[member] ?? 1), 0);
   return total > 0 ? (group.share ?? 0.25) * ((group.memberWeights?.[id] ?? 1) / total) : 0;
 };
@@ -377,7 +394,7 @@ export function normalizeOpeningQuota(
         },
       });
     }
-    if (copy.operating)
+    if (copy.operating) {
       groups[resource].push({
         id: 'operating',
         value: copy.operating.available[resource],
@@ -385,9 +402,12 @@ export function normalizeOpeningQuota(
           copy.operating!.available[resource] = amount;
         },
       });
+    }
     for (const [jobId, charge] of Object.entries(copy.reservations)) {
-      if (charge.status !== 'reserved') continue;
-      if (resource === 'v5' && charge.resource === 'v5')
+      if (charge.status !== 'reserved') {
+        continue;
+      }
+      if (resource === 'v5' && charge.resource === 'v5') {
         groups.v5.push({
           id: `reservation:${jobId}`,
           value: charge.amount,
@@ -395,6 +415,7 @@ export function normalizeOpeningQuota(
             charge.amount = amount;
           },
         });
+      }
       if (resource !== 'v5' && charge.resource === 'anlas') {
         const field = resource === 'anlasFixed' ? 'fixed' : 'purchased';
         groups[resource].push({
@@ -416,17 +437,25 @@ export function normalizeOpeningQuota(
   });
   for (const resource of ['v5', 'anlasFixed', 'anlasPurchased'] as const) {
     const report = normalizeLegacyAmountGroup(groups[resource]);
-    for (const entry of groups[resource]) entry.assign(report.amounts[entry.id]);
+    for (const entry of groups[resource]) {
+      entry.assign(report.amounts[entry.id]);
+    }
     reports.push({ resource, ...report });
   }
   upgradeGroups(copy);
   totals(copy);
-  for (const charge of Object.values(copy.reservations))
-    if (charge.resource === 'anlas')
+  for (const charge of Object.values(copy.reservations)) {
+    if (charge.resource === 'anlas') {
       charge.amount = formatAmount(units(charge.fixed) + units(charge.purchased));
-  if (copy.operating) operatingAccount(copy);
+    }
+  }
+  if (copy.operating) {
+    operatingAccount(copy);
+  }
   for (const reconciliation of [copy.v5Reconciliation, ...(copy.v5ReconciliationHistory || [])]) {
-    if (!reconciliation) continue;
+    if (!reconciliation) {
+      continue;
+    }
     for (const field of [
       'officialV5',
       'localAvailable',
@@ -435,8 +464,11 @@ export function normalizeOpeningQuota(
       'difference',
       'tolerance',
       'personalDelta',
-    ] as const)
-      if (reconciliation[field] !== null) reconciliation[field] = normalized(reconciliation[field]);
+    ] as const) {
+      if (reconciliation[field] !== null) {
+        reconciliation[field] = normalized(reconciliation[field]);
+      }
+    }
   }
   return copy;
 }
@@ -511,8 +543,9 @@ function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
       'PolicyChanged',
     ].includes(eventType) ||
     (!accountId && eventType === 'AvailabilityChanged');
-  if (!sharing && !accountId)
+  if (!sharing && !accountId) {
     throw new Error(`Financial event ${eventType} requires a bound account`);
+  }
   recordDomainEvent(db, {
     ...fact,
     streamId: sharing ? 'sharing:default' : `account:${accountId}`,
@@ -523,7 +556,9 @@ function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
   });
 }
 function quotaStatus(db: FairQuotaDatabase, s: FairQuotaState, status: string, now: number): void {
-  if (s.status === status) return;
+  if (s.status === status) {
+    return;
+  }
   s.status = status;
   quotaFact(db, { eventType: 'AvailabilityChanged', payload: { kind: 'quota', status } }, now);
 }
@@ -531,8 +566,9 @@ export function assertFairQuotaIdle(db: FairQuotaDatabase): void {
   if (
     anyHeld(db.settings?.fairQuota || { reservations: {} }) ||
     rows(db.jobs).some((job) => ['queued', 'pending', 'running'].includes(job.status as string))
-  )
+  ) {
     fail('有排队、运行或预留额度的任务，请结清后调整', 409);
+  }
 }
 
 export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): FairQuotaState {
@@ -541,12 +577,14 @@ export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): F
     memberIds.length !== 4 ||
     new Set(memberIds).size !== 4 ||
     memberIds.some((id) => typeof id !== 'string' || !id)
-  )
+  ) {
     fail('公平分配需要四个不同的用户 ID', 400);
+  }
   db.settings ||= {};
   if (db.settings.fairQuota) {
-    if (JSON.stringify(db.settings.fairQuota.members) !== JSON.stringify(memberIds))
+    if (JSON.stringify(db.settings.fairQuota.members) !== JSON.stringify(memberIds)) {
       fail('已有账本不能直接更换成员', 409);
+    }
     return upgradeGroups(db.settings.fairQuota);
   }
   const s = (db.settings.fairQuota = upgradeGroups({
@@ -576,7 +614,9 @@ export function configureFairGroups(
   groups: unknown,
   options: GroupOptions = {},
 ): FairQuotaState {
-  if (!Array.isArray(groups) || groups.length !== 4) fail('必须配置四个顶层共享组', 400);
+  if (!Array.isArray(groups) || groups.length !== 4) {
+    fail('必须配置四个顶层共享组', 400);
+  }
   const ids = new Set<string>(),
     members = new Set<string>(),
     users = rows(db.users);
@@ -587,8 +627,9 @@ export function configureFairGroups(
       !g.id.trim() ||
       ids.has(g.id) ||
       !Array.isArray(g.members)
-    )
+    ) {
       fail('组 ID 必须唯一且成员必须为数组', 400);
+    }
     ids.add(g.id);
     for (const id of g.members) {
       const user = users.find((u) => u.id === id);
@@ -609,29 +650,36 @@ export function configureFairGroups(
         members.has(id) ||
         !user ||
         !(user.enabled === true || remainsDisabled)
-      )
+      ) {
         fail('成员必须唯一且有效；停用成员只能保留在原组', 400);
+      }
       members.add(id);
     }
     const share = g.share ?? 0.25;
-    if (typeof share !== 'number' || !Number.isFinite(share) || share < 0 || share > 1)
+    if (typeof share !== 'number' || !Number.isFinite(share) || share < 0 || share > 1) {
       fail('组份额必须介于 0 和 1', 400);
-    if (!g.members.length && share !== 0) fail('空组份额必须为零', 400);
+    }
+    if (!g.members.length && share !== 0) {
+      fail('空组份额必须为零', 400);
+    }
     if (
       g.memberWeights !== undefined &&
       (!g.memberWeights || Array.isArray(g.memberWeights) || typeof g.memberWeights !== 'object')
-    )
+    ) {
       fail('成员权重必须为对象', 400);
+    }
     const memberWeights: Record<string, number> = Object.fromEntries(
       (g.members as string[]).map((id) => {
         const value = (g.memberWeights as Record<string, unknown> | undefined)?.[id] ?? 1;
-        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1000000)
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1000000) {
           fail('成员权重必须介于 0 和 1000000', 400);
+        }
         return [id, value];
       }),
     );
-    if (share > 0 && Object.values(memberWeights).reduce((n, value) => n + value, 0) <= 0)
+    if (share > 0 && Object.values(memberWeights).reduce((n, value) => n + value, 0) <= 0) {
       fail('有份额的组至少需要一名正权重成员', 400);
+    }
     return {
       share,
       memberWeights,
@@ -640,21 +688,30 @@ export function configureFairGroups(
       members: [...(g.members as string[])],
     };
   });
-  if (!members.size) fail('至少保留一名共享成员', 400);
-  if (Math.abs(normalized.reduce((n, g) => n + g.share, 0) - 1) > 1e-9)
+  if (!members.size) {
+    fail('至少保留一名共享成员', 400);
+  }
+  if (Math.abs(normalized.reduce((n, g) => n + g.share, 0) - 1) > 1e-9) {
     fail('四个组份额总和必须为 100%', 400);
+  }
   assertFairQuotaIdle(db);
-  if (members.size > 100) fail('共享成员总数不能超过 100', 400);
-  if (Object.keys(options).some((k) => !['now', 'redistributeRemaining', 'actorId'].includes(k)))
+  if (members.size > 100) {
+    fail('共享成员总数不能超过 100', 400);
+  }
+  if (Object.keys(options).some((k) => !['now', 'redistributeRemaining', 'actorId'].includes(k))) {
     fail('不支持的分组配置选项', 400);
+  }
   if (
     options.redistributeRemaining !== undefined &&
     typeof options.redistributeRemaining !== 'boolean'
-  )
+  ) {
     fail('redistributeRemaining 必须是布尔值', 400);
+  }
   db.settings ||= {};
   const existing = db.settings.fairQuota ? structuredClone(db.settings.fairQuota) : null;
-  if (existing && anyHeld(existing)) fail('有任务正在预留额度，请结清后调整分组', 409);
+  if (existing && anyHeld(existing)) {
+    fail('有任务正在预留额度，请结清后调整分组', 409);
+  }
   if (existing) {
     for (const [id, b] of Object.entries(existing.balances)) {
       if (
@@ -662,20 +719,27 @@ export function configureFairGroups(
         (['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'] as const).some(
           (f) => units(b[f]) > 0n,
         )
-      )
+      ) {
         fail('不能移除仍持有额度的成员，请先处理其余额', 409);
+      }
     }
   }
   // 先按旧份额完成当前时刻的恢复，再切换后续分配比例。
   const now = options.now ?? Date.now();
-  if (!Number.isFinite(now) || now < 0) fail('配置时间无效', 400);
+  if (!Number.isFinite(now) || now < 0) {
+    fail('配置时间无效', 400);
+  }
   const draft = {
     ...db,
     ledger: [...(db.ledger || [])],
     settings: { ...db.settings, fairQuota: existing },
   };
-  if (existing) inheritDomainCommand(db, draft);
-  if (existing) syncFairQuota(draft, now);
+  if (existing) {
+    inheritDomainCommand(db, draft);
+  }
+  if (existing) {
+    syncFairQuota(draft, now);
+  }
   const s = existing || configureFairQuota(draft, ['__seed_1', '__seed_2', '__seed_3', '__seed_4']);
   upgradeGroups(s);
   if (existing) {
@@ -685,12 +749,13 @@ export function configureFairGroups(
         (['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'] as const).some(
           (f) => units(b[f]) > 0n,
         )
-      )
+      ) {
         fail('不能移除仍持有额度的成员，请先处理其余额', 409);
+      }
     }
   }
   if (options.redistributeRemaining === true) {
-    for (const g of normalized)
+    for (const g of normalized) {
       for (const id of g.members) {
         const oldGroup = groupFor(s, id),
           b = s.balances[id];
@@ -700,9 +765,11 @@ export function configureFairGroups(
           (['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable'] as const).some(
             (f) => units(b[f]) > 0n,
           )
-        )
+        ) {
           fail('有余额成员跨组移动与剩余额度重分必须分两次执行', 409);
+        }
       }
+    }
   }
   const before = existing ? structuredClone(s.groups) : [],
     beforeBalances = existing ? structuredClone(s.balances) : {};
@@ -713,7 +780,7 @@ export function configureFairGroups(
     [];
   if (options.redistributeRemaining === true) {
     // 显式重分只转移该组现有钱包总额，不增发余额，也不重分历史消费。
-    for (const g of normalized)
+    for (const g of normalized) {
       for (const field of [
         'v5Available',
         'anlasFixedAvailable',
@@ -726,7 +793,9 @@ export function configureFairGroups(
         );
         // 零份额组若全部权重为零，保留已有钱包，避免除零或静默抹去余额。
         if (g.members.some((id) => g.memberWeights[id] > 0)) {
-          for (const id of g.members) balances[id][field] = formatAmount(allocation[id]);
+          for (const id of g.members) {
+            balances[id][field] = formatAmount(allocation[id]);
+          }
           redistributions.push({
             groupId: g.id,
             resource: field.slice(0, -9) as Resource,
@@ -737,6 +806,7 @@ export function configureFairGroups(
           });
         }
       }
+    }
   }
   s.groups = normalized;
   s.members = [...members];
@@ -773,7 +843,7 @@ export function configureFairGroups(
     },
     now,
   );
-  if (s.boundAccountId)
+  if (s.boundAccountId) {
     quotaFact(
       db,
       {
@@ -787,6 +857,7 @@ export function configureFairGroups(
       },
       now,
     );
+  }
   return s;
 }
 
@@ -803,37 +874,52 @@ export function manageFairMember(
     users: structuredClone(db.users),
     settings: structuredClone(db.settings),
   };
-  if (body.action !== 'preview-delete-member') inheritDomainCommand(db, draft);
+  if (body.action !== 'preview-delete-member') {
+    inheritDomainCommand(db, draft);
+  }
   const s = syncFairQuota(draft, now);
-  if (!s?.enabled) fail('共享账本尚未配置', 409);
+  if (!s?.enabled) {
+    fail('共享账本尚未配置', 409);
+  }
   if (
     !Number.isInteger(body.expectedConfigVersion) ||
     body.expectedConfigVersion !== s.configVersion
-  )
+  ) {
     fail('配置已变化，请刷新后重新预览', 409);
+  }
   const beforeBalances = structuredClone(s.balances),
     before = structuredClone(s.groups);
   const sourceId = body.action === 'transfer-quota' ? body.fromUserId : body.userId;
   const targetId = body.action === 'transfer-quota' ? body.toUserId : body.transferToUserId;
   const source = draft.users.find((u) => u.id === sourceId),
     target = draft.users.find((u) => u.id === targetId);
-  if (!source) fail('成员不存在', 404);
-  if (!target || target.id === source.id) fail('请选择另一名成员接收余额', 400);
+  if (!source) {
+    fail('成员不存在', 404);
+  }
+  if (!target || target.id === source.id) {
+    fail('请选择另一名成员接收余额', 400);
+  }
   let autoJoined = null,
     shareChanges: { userId: string; beforeShare: number; afterShare: number }[] = [];
   const transferred: ResourceAmounts = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
   if (body.action === 'transfer-quota') {
-    if (!s.balances[target.id]) fail('转账接收成员必须已加入共享分组', 400);
-    if (!s.balances[source.id]) fail('转出成员未加入共享分组', 400);
+    if (!s.balances[target.id]) {
+      fail('转账接收成员必须已加入共享分组', 400);
+    }
+    if (!s.balances[source.id]) {
+      fail('转出成员未加入共享分组', 400);
+    }
     if (
       !Object.hasOwn(transferred, body.resource as string) ||
       typeof body.amount !== 'number' ||
       !Number.isFinite(body.amount) ||
       body.amount <= 0
-    )
+    ) {
       fail('转账资源或数量无效', 400);
-    if (body.resource !== 'v5' && !Number.isInteger(body.amount))
+    }
+    if (body.resource !== 'v5' && !Number.isInteger(body.amount)) {
       fail('Anlas 转账数量必须为整数', 400);
+    }
     const field = (body.resource + 'Available') as BalanceField;
     let amount: bigint;
     try {
@@ -841,12 +927,15 @@ export function manageFairMember(
     } catch {
       fail('转账数量最多支持 12 位小数', 400);
     }
-    if (units(s.balances[source.id][field]) < amount) fail('转出成员余额不足', 409);
+    if (units(s.balances[source.id][field]) < amount) {
+      fail('转出成员余额不足', 409);
+    }
     if (
       body.resource === 'v5' &&
       units(s.balances[target.id][field]) + amount > capacities(s)[target.id]
-    )
+    ) {
       fail('接收成员 V5 超出容量，请先增加其份额或减少转账量', 409);
+    }
     s.balances[source.id][field] = formatAmount(units(s.balances[source.id][field]) - amount);
     s.balances[target.id][field] = formatAmount(units(s.balances[target.id][field]) + amount);
     transferred[body.resource as Resource] = formatAmount(amount);
@@ -854,9 +943,12 @@ export function manageFairMember(
     const originalShares = Object.fromEntries(s.members.map((id) => [id, weight(s, id)]));
     const originalGroup = groupFor(s, source.id);
     if (!s.balances[target.id]) {
-      if (!originalGroup)
+      if (!originalGroup) {
         fail('删除未分组成员时，请选择已分组成员接收；双方均未分组无法继承份额', 400);
-      if (target.enabled !== true) fail('未分组接收成员必须已启用，才能继承共享份额', 400);
+      }
+      if (target.enabled !== true) {
+        fail('未分组接收成员必须已启用，才能继承共享份额', 400);
+      }
       // 直接替换原位置与权重，不先增加成员分摊，避免其他成员份额发生短暂或永久改变。
       const memberWeight = originalGroup.memberWeights[source.id] ?? 1;
       originalGroup.members = originalGroup.members.map((id) =>
@@ -873,8 +965,9 @@ export function manageFairMember(
         share: weight(s, target.id),
       };
     }
-    if (s.members.includes(source.id) && s.members.length <= 1)
+    if (s.members.includes(source.id) && s.members.length <= 1) {
       fail('不能删除最后一名共享成员，请选择启用的未分组成员继承份额', 409);
+    }
     for (const resource of Object.keys(transferred) as Resource[]) {
       const amount = units(s.balances[source.id]?.[(resource + 'Available') as BalanceField]);
       transferred[resource] = formatAmount(amount);
@@ -943,8 +1036,9 @@ export function manageFairMember(
       ? { fromUserId: sourceId, toUserId: targetId }
       : { deletedUserId: sourceId, transferToUserId: targetId }),
   };
-  if (body.action === 'preview-delete-member') result.configVersion = body.expectedConfigVersion;
-  else {
+  if (body.action === 'preview-delete-member') {
+    result.configVersion = body.expectedConfigVersion;
+  } else {
     db.settings = draft.settings;
     db.users = draft.users;
     db.ledger = draft.ledger;
@@ -965,7 +1059,7 @@ export function manageFairMember(
       },
       now,
     );
-    if (s.boundAccountId)
+    if (s.boundAccountId) {
       quotaFact(
         db,
         {
@@ -981,6 +1075,7 @@ export function manageFairMember(
         },
         now,
       );
+    }
   }
   return result;
 }
@@ -1010,10 +1105,12 @@ function distribute(
           : (allocation[id] ?? 0n);
       b[field] = formatAmount(units(b[field]) + add);
       actual += add;
-      if (add > 0n) allocations.push({ memberId: id, amount: formatAmount(add) });
+      if (add > 0n) {
+        allocations.push({ memberId: id, amount: formatAmount(add) });
+      }
     }
     totals(s);
-    if (allocations.length)
+    if (allocations.length) {
       quotaFact(
         db,
         {
@@ -1030,6 +1127,7 @@ function distribute(
         },
         now,
       );
+    }
     return actual;
   }
   // 负差额没有成员归属证据，必须另记运营待承担，不能按份额削减钱包。
@@ -1043,7 +1141,7 @@ export function manageOperatingFunding(
   now = Date.now(),
 ) {
   const { memberFunding, ...result } = applyOperatingFunding(db, body, options, now);
-  if (memberFunding)
+  if (memberFunding) {
     distribute(
       db,
       db.settings!.fairQuota!,
@@ -1052,6 +1150,7 @@ export function manageOperatingFunding(
       now,
       'funding',
     );
+  }
   return result;
 }
 
@@ -1062,9 +1161,13 @@ function v5RecoveryMembers(db: FairQuotaDatabase, s: FairQuotaState, now: number
   return s.members.flatMap((id) => {
     const share = weight(s, id),
       balance = s.balances[id];
-    if (!(share > 0) || !balance) return [];
+    if (!(share > 0) || !balance) {
+      return [];
+    }
     const gap = maxAmount(0n, capacity[id] - held(s, id, 'v5') - units(balance.v5Available));
-    if (gap === 0n) return [];
+    if (gap === 0n) {
+      return [];
+    }
     // 停用只拦登录与调用；保留管理员已分配的份额。
     return [{ id, share, weight: weights[id], gap }];
   });
@@ -1096,7 +1199,9 @@ function distributeV5Recovery(
     remaining = maxAmount(0n, remaining - credited);
     const unfilled = participants.filter((member) => member.gap > 0n);
     // 本轮有人满额时，把未用完的恢复继续分给其余人；没有人满额则预算已分完。
-    if (unfilled.length === participants.length) break;
+    if (unfilled.length === participants.length) {
+      break;
+    }
     participants = unfilled;
   }
   return {
@@ -1120,12 +1225,12 @@ function recordV5Reconciliation(
   const difference =
     assigned - maxAmount(0n, localAvailable + units(ops.available.v5) - units(s.sharedV5Debt));
   const tolerance = units(incoming.v5) % AMOUNT_SCALE === 0n ? AMOUNT_SCALE : 0n;
-  const status =
-    difference < -tolerance
-      ? 'source_below_local'
-      : difference > tolerance
-        ? 'source_above_local'
-        : 'within_precision';
+  let status: V5Reconciliation['status'] = 'within_precision';
+  if (difference < -tolerance) {
+    status = 'source_below_local';
+  } else if (difference > tolerance) {
+    status = 'source_above_local';
+  }
   const entry: V5Reconciliation = {
     at: now,
     sourceCheckedAt: incoming.at,
@@ -1186,16 +1291,20 @@ function readSnapshot(a: FairAccount): QuotaSnapshot {
   const fixedUnits = fixed === null ? null : maxAmount(0n, units(a.quotaFixed as AmountInput)),
     purchasedUnits =
       purchased === null ? null : maxAmount(0n, units(a.quotaPurchased as AmountInput));
+  const at = stamp(a.quotaCheckedAt);
+  let v5: AmountText | null = null;
+  if (percent !== null) {
+    if (a.v5UsageIsNegative) {
+      v5 = '0';
+    } else {
+      v5 = formatAmount(
+        maxAmount(0n, minAmount(100n * AMOUNT_SCALE, units(a.v5UsagePercent as AmountInput))),
+      );
+    }
+  }
   return {
-    at: stamp(a.quotaCheckedAt),
-    v5:
-      percent === null
-        ? null
-        : a.v5UsageIsNegative
-          ? '0'
-          : formatAmount(
-              maxAmount(0n, minAmount(100n * AMOUNT_SCALE, units(a.v5UsagePercent as AmountInput))),
-            ),
+    at,
+    v5,
     anlas:
       fixedUnits === null || purchasedUnits === null
         ? null
@@ -1206,9 +1315,12 @@ function readSnapshot(a: FairAccount): QuotaSnapshot {
   };
 }
 
+// 官方快照是资格与来源对账依据，成员钱包独立保留；查询失败不能抹掉已分配权益。
 export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuotaState | null {
   const s = db.settings?.fairQuota;
-  if (!s?.enabled) return s || null;
+  if (!s?.enabled) {
+    return s || null;
+  }
   upgradeGroups(s);
   const accounts = rows(db.accounts);
   if (!s.boundAccountId) {
@@ -1228,7 +1340,9 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     lastSettlementAt: s.lastSettlementAt,
   });
   quotaStatus(db, s, status, now);
-  if (status !== 'active' || !account) return s;
+  if (status !== 'active' || !account) {
+    return s;
+  }
   const incoming = readSnapshot(account);
   if (!s.snapshot) {
     s.snapshot = incoming;
@@ -1339,8 +1453,9 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
       refill.allocations.length ||
       refill.debtRepaid !== '0' ||
       refill.capacityRecovered !== '0')
-  )
+  ) {
     quotaFact(db, { eventType: 'RefillApplied', payload: { ...refill } }, now);
+  }
   // 并发生成期间的快照无法归属消费，待全部结清且取得新快照后校准。
   if (acceptingObservation) {
     // 快照用于来源核对和安全派发，不把未知消费分摊给闲置成员，也不把差额当恢复增发。
@@ -1364,9 +1479,9 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
         delta += matched;
         matchedFallback[pool] = formatAmount(matched);
       }
-      if (delta < 0n)
+      if (delta < 0n) {
         recordAnlasGap(db as ConfiguredDatabase, resource, -delta, old, incoming, now);
-      else if (delta > 0n)
+      } else if (delta > 0n) {
         distribute(
           db,
           s,
@@ -1375,6 +1490,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
           now,
           'funding',
         );
+      }
     }
     s.snapshot = incoming;
     s.spent = {
@@ -1421,27 +1537,29 @@ export function resolveFairQuotaCharge(
   userId?: string,
 ): FairCharge | null {
   const charge = settledCharge || db.settings?.fairQuota?.reservations?.[job.id];
-  if (!charge) return null;
+  if (!charge) {
+    return null;
+  }
   const owner = job.userToken
     ? db.users?.find((user) => user.token === job.userToken)?.id
     : undefined;
   const owners = [userId, owner, job.fairCharge?.userId, job.generationAttempt?.memberId].filter(
     (id) => id !== undefined && id !== null,
   );
-  if (owners.some((id) => id !== charge.userId)) fail('任务账本归属不符', 409);
+  if (owners.some((id) => id !== charge.userId)) {
+    fail('任务账本归属不符', 409);
+  }
   return charge;
 }
 
 function projectedV5(snapshot: QuotaSnapshot, now: number): bigint | null {
-  return snapshot.v5 === null
-    ? null
-    : minAmount(
-        100n * AMOUNT_SCALE,
-        units(snapshot.v5) +
-          (snapshot.seconds! > 0
-            ? recoveryUnits(Math.max(0, now - snapshot.at), snapshot.seconds!)
-            : 0n),
-      );
+  if (snapshot.v5 === null) {
+    return null;
+  }
+  const observed = units(snapshot.v5);
+  const recovered =
+    snapshot.seconds! > 0 ? recoveryUnits(Math.max(0, now - snapshot.at), snapshot.seconds!) : 0n;
+  return minAmount(100n * AMOUNT_SCALE, observed + recovered);
 }
 
 function decideFairQuotaCharge(
@@ -1502,6 +1620,7 @@ export function previewFairQuotaCharge(
   return decideFairQuotaCharge(s || { balances: {} }, user, account, request, now);
 }
 
+// 调用方持有写事务：校验来源和授权后扣成员可用钱包，并一同记录预留事实。
 export function reserveFairQuota(
   db: FairQuotaDatabase,
   user: FairUser,
@@ -1512,17 +1631,30 @@ export function reserveFairQuota(
   settledCharge: FairCharge | null = null,
   authorizeCharge?: (charge: FairCharge) => void,
 ): FairCharge | null {
-  if (!job.id) fail('任务缺少持久化 ID', 500);
+  if (!job.id) {
+    fail('任务缺少持久化 ID', 500);
+  }
   const previous = resolveFairQuotaCharge(db, job, settledCharge, user.id);
-  if (previous && previous.status !== 'reserved')
+  if (previous && previous.status !== 'reserved') {
     fail(previous.status === 'refunded' ? '已退款任务不能重新提交' : '已结算任务不能重新提交', 409);
+  }
   const s = syncFairQuota(db, now);
-  if (!s?.enabled) return null;
-  if (!s.members.includes(user.id)) fail('该用户未加入共享分组账本', 403);
-  if (s.status !== 'active') fail(`共享 Opus 额度暂不可用：${s.status}`, 503);
-  if (account.id !== s.boundAccountId) fail('共享账本只能使用绑定的 Opus 账号', 503);
+  if (!s?.enabled) {
+    return null;
+  }
+  if (!s.members.includes(user.id)) {
+    fail('该用户未加入共享分组账本', 403);
+  }
+  if (s.status !== 'active') {
+    fail(`共享 Opus 额度暂不可用：${s.status}`, 503);
+  }
+  if (account.id !== s.boundAccountId) {
+    fail('共享账本只能使用绑定的 Opus 账号', 503);
+  }
   if (previous) {
-    if (previous.accountId !== account.id) fail('任务账本归属不符', 409);
+    if (previous.accountId !== account.id) {
+      fail('任务账本归属不符', 409);
+    }
     authorizeCharge?.(previous);
     job.fairCharge = previous;
     return previous;
@@ -1535,11 +1667,14 @@ export function reserveFairQuota(
   if (q.resource === 'anlas') {
     // 官方固定已明确耗尽时，本地保留的固定权益不能挡住原已授权的纯购买池调用。
     const officialFixed = readSnapshot(account).anlasFixed;
-    if (purchased > 0n && request?.allowPurchasedAnlas !== true)
+    if (purchased > 0n && request?.allowPurchasedAnlas !== true) {
       fail(
         `${officialFixed === '0' ? '官方固定 Anlas 已耗尽' : '个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`,
       );
-    if (purchased > units(s.balances[user.id].anlasPurchasedAvailable)) fail('个人购买 Anlas 不足');
+    }
+    if (purchased > units(s.balances[user.id].anlasPurchasedAvailable)) {
+      fail('个人购买 Anlas 不足');
+    }
     if (purchased > 0n) {
       // 上游优先使用固定余额，不能指定购买池；禁止混用导致其他成员被扣款。
       const official = readSnapshot(account),
@@ -1550,10 +1685,11 @@ export function reserveFairQuota(
         fixedReserved > 0n ||
         units(s.spent.anlasFixed) > 0n ||
         units(s.spent.fallbackFixed) > 0n
-      )
+      ) {
         fail(
           '暂不能使用购买 Anlas：请等待官方固定余额完全耗尽并完成对账；不支持混合固定与购买余额',
         );
+      }
     }
   }
   if (q.resource !== 'free') {
@@ -1562,12 +1698,13 @@ export function reserveFairQuota(
         ? units(s.balances[user.id].v5Available)
         : units(s.balances[user.id].anlasFixedAvailable) +
           units(s.balances[user.id].anlasPurchasedAvailable);
-    if (available < amount)
+    if (available < amount) {
       fail(
         q.resource === 'v5'
           ? '个人 V5 恢复额度不足，请等待恢复；不会自动扣 Anlas'
           : '个人 Anlas 不足',
       );
+    }
     if (
       q.resource === 'v5' &&
       sum(s, field) -
@@ -1576,20 +1713,21 @@ export function reserveFairQuota(
         s.members.reduce((n, id) => n + held(s, id, 'v5'), 0n) -
         amount <
         AMOUNT_SCALE
-    )
+    ) {
       fail('V5 公共额度已达到安全保留边界，请等待恢复');
+    }
     // 未结清并发会延后账本校准，但新快照下降必须立即限制派发。
     const latest = readSnapshot(account);
     const reserved =
       q.resource === 'v5'
         ? sharedHeld(s)
         : s.members.reduce((n, id) => n + held(s, id, q.resource as 'anlas'), 0n);
-    const projected =
-      q.resource === 'v5'
-        ? projectedV5(latest, now)
-        : latest.anlas === null
-          ? null
-          : units(latest.anlas);
+    let projected: bigint | null;
+    if (q.resource === 'v5') {
+      projected = projectedV5(latest, now);
+    } else {
+      projected = latest.anlas === null ? null : units(latest.anlas);
+    }
     const margin = q.resource === 'v5' ? AMOUNT_SCALE : 0n;
     const fallbackSpent =
       q.resource === 'v5'
@@ -1598,8 +1736,9 @@ export function reserveFairQuota(
     if (
       projected === null ||
       projected - reserved - units(s.spent[q.resource]) - fallbackSpent - amount < margin
-    )
+    ) {
       fail('官方公共额度不足或等待并发对账，请稍后重试');
+    }
     if (q.resource === 'anlas') {
       for (const [resource, amount] of [
         ['anlasFixed', fixed],
@@ -1612,8 +1751,9 @@ export function reserveFairQuota(
         if (
           units(latest[resource]) - globalHeld - units(s.spent[resource]) - pendingFallback <
           amount
-        )
+        ) {
           fail('官方 Anlas 子余额不足或等待并发对账');
+        }
       }
     }
   }
@@ -1635,8 +1775,9 @@ export function reserveFairQuota(
       units(s.balances[user.id].anlasPurchasedAvailable) - purchased,
     );
     totals(s);
-  } else if (q.resource === 'v5')
+  } else if (q.resource === 'v5') {
     s.balances[user.id].v5Available = formatAmount(units(s.balances[user.id].v5Available) - amount);
+  }
   s.reservations[job.id] = charge;
   job.fairCharge = charge;
   recordGenerationAttempt(db, job, charge, readSnapshot(account), now);
@@ -1651,6 +1792,7 @@ export function reserveFairQuota(
   return charge;
 }
 
+// 与任务终态同事务提交：成功进入待对账消耗，失败退回原钱包；已终结的预留不再次变账。
 export function settleFairQuota(
   db: FairQuotaDatabase,
   job: AccountingJob,
@@ -1661,9 +1803,13 @@ export function settleFairQuota(
 ): FairCharge | null {
   const s = db.settings?.fairQuota!,
     c = resolveFairQuotaCharge(db, job, settledCharge);
-  if (!c) return null;
+  if (!c) {
+    return null;
+  }
   job.fairCharge = c;
-  if (c.status !== 'reserved') return c;
+  if (c.status !== 'reserved') {
+    return c;
+  }
   upgradeGroups(s);
   normalizeCharge(c);
   c.status = success ? 'settled' : 'refunded';
@@ -1704,10 +1850,11 @@ export function settleFairQuota(
         units(s.balances[c.userId].anlasPurchasedAvailable) + units(c.purchased),
       );
       totals(s);
-    } else
+    } else {
       s.balances[c.userId].v5Available = formatAmount(
         units(s.balances[c.userId].v5Available) + units(c.amount),
       );
+    }
   }
   s.lastSettlementAt = Math.max(s.lastSettlementAt, now);
   job.fairCharge = c;
@@ -1741,7 +1888,9 @@ export function fairQuotaSummary(
   now = Date.now(),
 ) {
   const s = db.settings?.fairQuota;
-  if (!s?.enabled) return null;
+  if (!s?.enabled) {
+    return null;
+  }
   const raw = s.balances[user.id],
     b = raw,
     group = groupFor(s, user.id),
@@ -1798,6 +1947,12 @@ export function fairQuotaSummary(
     pendingAnlasDebit: units(s.spent.anlas) > 0n,
     checkedAt: s.snapshot?.at ?? null,
   };
+  let v5FullRefillSeconds: number | null;
+  if (refillRoom <= 1e-9) {
+    v5FullRefillSeconds = 0;
+  } else {
+    v5FullRefillSeconds = refillLimited ? null : fullSeconds;
+  }
   return {
     enabled: true,
     status: s.status,
@@ -1823,7 +1978,7 @@ export function fairQuotaSummary(
     v5BaseRefillPerDay: officialRate * share * 86400,
     v5RecoveringShare: recoveringShare,
     v5RefillPolicy: 'unfilled_members_v1',
-    v5FullRefillSeconds: refillRoom <= 1e-9 ? 0 : refillLimited ? null : fullSeconds,
+    v5FullRefillSeconds,
     v5RefillLimited: refillLimited,
     v5SharedBalanceStatus: s.v5Reconciliation?.status ?? 'pending',
     v5BalancePolicy: 'personal_wallet_v1',

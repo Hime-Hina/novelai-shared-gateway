@@ -56,15 +56,20 @@ export async function setMemberCredentials(
   input: { username?: unknown; password?: unknown },
 ) {
   const user = db.users.find((u) => u.id === userId && u.enabled === true);
-  if (!user) fail(404, '账户不存在或未启用');
+  if (!user) {
+    fail(404, '账户不存在或未启用');
+  }
   const username = normalized(input.username);
   const password = input.password;
-  if (!/^[a-z0-9][a-z0-9_.-]{2,39}$/.test(username))
+  if (!/^[a-z0-9][a-z0-9_.-]{2,39}$/.test(username)) {
     fail(400, '用户名需为 3–40 位字母、数字、下划线、点或短横线');
-  if (typeof password !== 'string' || password.length < 12 || password.length > 128)
+  }
+  if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
     fail(400, '密码需为 12–128 个字符');
-  if (db.users.some((u) => u.id !== userId && u.memberAuth?.username === username))
+  }
+  if (db.users.some((u) => u.id !== userId && u.memberAuth?.username === username)) {
     fail(409, '用户名已存在');
+  }
   const salt = randomBytes(24).toString('hex');
   const hash = (await scrypt(password, salt, 64)).toString('hex');
   user.memberAuth = { username, salt, hash, version: randomBytes(16).toString('hex') };
@@ -73,7 +78,11 @@ export async function setMemberCredentials(
 }
 
 function prune(map: typeof attempts, now: number): void {
-  for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
+  for (const [key, value] of map) {
+    if (value.expiresAt <= now) {
+      map.delete(key);
+    }
+  }
 }
 
 export function checkMemberLoginRate(username: unknown, remote: unknown, now = Date.now()): void {
@@ -83,8 +92,12 @@ export function checkMemberLoginRate(username: unknown, remote: unknown, now = D
     `remote:${String(remote).slice(0, 128)}`,
   ];
   const limits = username === null ? [120] : [10, 120];
-  if (attempts.size >= 10000 || keys.some((key, i) => (attempts.get(key)?.count || 0) >= limits[i]))
+  if (
+    attempts.size >= 10000 ||
+    keys.some((key, i) => (attempts.get(key)?.count || 0) >= limits[i])
+  ) {
     fail(429, '登录尝试过多，请 15 分钟后重试');
+  }
   // 对每次尝试计数，防止并发请求在密码校验完成前绕过限制。
   keys.forEach((key) => {
     const a = attempts.get(key) || { count: 0, expiresAt: now + windowMs };
@@ -112,8 +125,9 @@ export async function loginMember(
       ? Buffer.from(auth.hash, 'hex')
       : Buffer.alloc(64);
   // auth 只可能来自上面的 user；短路检查通过时 user 已存在。
-  if (!timingSafeEqual(hash, expected) || !auth || user!.enabled !== true || !candidate)
+  if (!timingSafeEqual(hash, expected) || !auth || user!.enabled !== true || !candidate) {
     fail(401, '用户名或密码错误');
+  }
   return user!;
 }
 
@@ -159,8 +173,9 @@ export async function createMemberSession(
         !user?.memberAuth?.version ||
         user.memberAuth.version !== userSnapshot.memberAuth?.version ||
         ownerBinding(user, env) !== ownerBinding(userSnapshot, env)
-      )
+      ) {
         fail(401, '成员认证状态已变化，请重新登录');
+      }
       const binding = ownerBinding(user, env),
         expiresAt = at + (binding ? ownerTtl : memberTtl);
       // 32 随机字节的 base64url 固定为 43 字符，必定满足 sessionHash 的现有格式检查。
@@ -209,7 +224,9 @@ async function checkMemberSession(
   renew: boolean,
 ) {
   const tokenHash = sessionHash(token);
-  if (!tokenHash) return null;
+  if (!tokenHash) {
+    return null;
+  }
   const configured = ownerConfig(env);
   let revoke: string | undefined;
   let expiry: { tokenHash: string; expiresAt: number } | undefined;
@@ -218,7 +235,9 @@ async function checkMemberSession(
       const at = now ?? Date.now();
       const session = store.readMemberSession(tokenHash),
         previous = store.readMemberSessionOwner();
-      if (!session) return null;
+      if (!session) {
+        return null;
+      }
       const user = db.users.find(
         (user) =>
           user.id === session.user_id &&
@@ -247,7 +266,9 @@ async function checkMemberSession(
       const expiresAt = renew
         ? Math.max(session.expires_at, at + (session.owner_binding ? ownerTtl : memberTtl))
         : session.expires_at;
-      if (expiresAt > session.expires_at) expiry = { tokenHash, expiresAt };
+      if (expiresAt > session.expires_at) {
+        expiry = { tokenHash, expiresAt };
+      }
       return { user, expiresAt };
     },
     {
@@ -265,12 +286,13 @@ export async function logoutMemberSession(
   token: unknown,
 ): Promise<void> {
   const tokenHash = sessionHash(token);
-  if (tokenHash)
+  if (tokenHash) {
     await store.update(() => {}, {
       collections: [],
       memberSessionDelete: tokenHash,
       immediate: true,
     });
+  }
 }
 
 export function isOwner(

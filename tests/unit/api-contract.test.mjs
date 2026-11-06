@@ -46,8 +46,9 @@ test('C02：官方图片操作和四个订阅别名开放，其余官方功能�
     ['/user/data', 'GET'],
     ['/user/login', 'POST'],
     ['/user/create-persistent-token', 'POST'],
-  ])
+  ]) {
     assert.equal(sharedSurface(path, method).allowed, false, path);
+  }
 });
 
 test('C02：三个客户端样本经解析与核价得到固定独立期望，不用被测公式生成 expected', () => {

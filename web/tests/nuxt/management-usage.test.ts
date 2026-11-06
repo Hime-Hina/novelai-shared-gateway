@@ -88,7 +88,9 @@ describe('ManagementUsage', () => {
       { label: '近一年', value: 365 },
       { label: '全部保留记录', value: 0 },
     ]);
-    for (const days of [1, 30]) selects[0]!.vm.$emit('update:value', days);
+    for (const days of [1, 30]) {
+      selects[0]!.vm.$emit('update:value', days);
+    }
     expect(wrapper.emitted('update:days')).toEqual([[1], [30]]);
     expect(selects[0]!.props('value')).toBe(7);
     expect(wrapper.find('#retryUsage').exists()).toBe(false);

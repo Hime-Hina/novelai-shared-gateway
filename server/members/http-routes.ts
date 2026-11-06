@@ -98,9 +98,7 @@ interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
   readOperatingLossSettlements(id: string): LedgerRow[];
   readMemberImageIds(user: MemberUser, jobIds: string[]): Promise<Map<string, string>>;
   readMemberJobPage: import('../storage/sqlite-store.ts').JsonStore['readMemberJobPage'];
-  readMemberLateResults(
-    user: MemberUser,
-  ): Promise<
+  readMemberLateResults(user: MemberUser): Promise<
     {
       id: string;
       model?: string | null;
@@ -179,15 +177,19 @@ function managementCommand(
   body: Record<string, unknown>,
 ): DomainCommandMetadata {
   const key = req.headers['idempotency-key'];
-  if (key === undefined) return { actorId, actorKind: 'admin' };
+  if (key === undefined) {
+    return { actorId, actorKind: 'admin' };
+  }
   if (
     typeof key !== 'string' ||
     !/^[\x21-\x7e]{1,128}$/.test(key) ||
     req.rawHeaders.filter(
       (value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key',
     ).length !== 1
-  )
+  ) {
     error(400, 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
+  }
+  // 键按已鉴权 actor 和操作隔离；指纹只取提交意图，不取新生成的事件或时间。
   return {
     actorId,
     actorKind: 'admin',
@@ -209,13 +211,15 @@ function sameOrigin(req: IncomingMessage): void {
   const origin = req.headers.origin;
   const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
   const expected = `${local ? 'http' : 'https'}://${host}`;
-  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site')
+  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') {
     throw Object.assign(new Error('此接口仅允许本站访问'), {
       statusCode: 403,
       code: 'origin_rejected',
     });
-  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected)
+  }
+  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) {
     throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
+  }
 }
 function reply(res: ServerResponse, status: number, value: unknown): void {
   const text = JSON.stringify(value);
@@ -228,13 +232,16 @@ function reply(res: ServerResponse, status: number, value: unknown): void {
   res.end(text);
 }
 async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!String(req.headers['content-type'] || '').startsWith('application/json'))
+  if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
     error(415, '仅接受 JSON');
+  }
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 32768) error(413, '请求过大');
+    if (size > 32768) {
+      error(413, '请求过大');
+    }
     chunks.push(chunk);
   }
   let value: unknown;
@@ -243,7 +250,9 @@ async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
   } catch {
     error(400, 'JSON 格式错误');
   }
-  if (!value || Array.isArray(value) || typeof value !== 'object') error(400, '请求内容无效');
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    error(400, '请求内容无效');
+  }
   return value as Record<string, unknown>;
 }
 function setCookie(
@@ -266,7 +275,9 @@ async function renewCookie(
   env: NodeJS.ProcessEnv,
 ) {
   const session = await renewMemberSession(store, cookie(req), env);
-  if (!session) error(401, '登录已失效，请重新登录');
+  if (!session) {
+    error(401, '登录已失效，请重新登录');
+  }
   setCookie(req, res, cookie(req), session.expiresAt);
   return session;
 }
@@ -305,7 +316,9 @@ export async function handleMemberRoutes(
   const admin =
     url.pathname === '/api/admin/member-management' ||
     url.pathname === '/api/member/owner/member-management';
-  if (!member && !admin) return false;
+  if (!member && !admin) {
+    return false;
+  }
   const env = deps.env || process.env,
     discordEnabled = discordLoginEnabled(env);
   // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
@@ -342,13 +355,20 @@ export async function handleMemberRoutes(
     // 认证返回同一 store.users 记录；认证模块自身只声明它读取的字段。
     const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user as
       MemberUser | undefined;
-    if (!viewer) error(401, '请先使用 Discord 登录');
-    if (!isOwner(viewer, env)) error(403, '仅 owner 可访问管理功能');
+    if (!viewer) {
+      error(401, '请先使用 Discord 登录');
+    }
+    if (!isOwner(viewer, env)) {
+      error(403, '仅 owner 可访问管理功能');
+    }
     await requireDiscordMembership(viewer, deps);
-    if (pageVisit && admin && !url.search) await renewCookie(req, res, store, env);
+    if (pageVisit && admin && !url.search) {
+      await renewCookie(req, res, store, env);
+    }
     actorId = viewer.id;
     const authVersion = viewer.memberAuth?.version;
     const sessionHash = createHash('sha256').update(cookie(req)).digest('hex');
+    // 入队前的鉴权可能已过时；领取旧回执和执行新命令都必须检查当前会话与权限。
     authorize = (db) => {
       const session = store.readMemberSession(sessionHash);
       if (
@@ -356,8 +376,9 @@ export async function handleMemberRoutes(
         session.user_id !== actorId ||
         session.auth_version !== authVersion ||
         session.expires_at <= Date.now()
-      )
+      ) {
         error(401, '管理会话已失效，请重新登录');
+      }
       const current = db.users.find((user) => user.id === actorId) as MemberUser | undefined;
       if (
         !current ||
@@ -365,8 +386,9 @@ export async function handleMemberRoutes(
         current.memberAuth?.version !== authVersion ||
         current.discord?.member !== true ||
         !isOwner(current, env)
-      )
+      ) {
         error(403, '管理授权已失效，请重新确认身份');
+      }
     };
     if (!admin) {
       const body = req.method === 'GET' ? undefined : await json(req);
@@ -405,8 +427,9 @@ export async function handleMemberRoutes(
   if (admin) {
     // 原私有管理 API 保持本机与密钥校验；owner 别名已经过独立会话鉴权。
     if (!ownerRoute) {
-      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || '')))
+      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(String(req.headers.host || ''))) {
         error(404, 'not found.');
+      }
       deps.assertAdmin(req, url);
     }
     if (req.method === 'GET') {
@@ -464,10 +487,13 @@ export async function handleMemberRoutes(
       });
       return true;
     }
-    if (req.method !== 'POST') error(405, 'method not allowed');
+    if (req.method !== 'POST') {
+      error(405, 'method not allowed');
+    }
     const body = await json(req);
-    if (keyedManagementActions.has(body.action as string))
+    if (keyedManagementActions.has(body.action as string)) {
       command = managementCommand(req, actorId, `member-management:${body.action}`, body);
+    }
     if (body.action === 'free-image-policy') {
       const policy = await updateManagement((db) => configureFreeImages(db, body, actorId), {
         collections: ['settings', 'ledger'],
@@ -489,8 +515,9 @@ export async function handleMemberRoutes(
       body.userId === env.OWNER_USER_ID &&
       (['delete-member', 'preview-delete-member'].includes(body.action as string) ||
         (body.action === 'member-status' && body.enabled === false))
-    )
+    ) {
       error(409, '不能停用或删除当前 owner');
+    }
     if (
       [
         'operating-contribute',
@@ -501,8 +528,9 @@ export async function handleMemberRoutes(
       ].includes(body.action as string)
     ) {
       // 身份来自已鉴权的 owner 配置，不接受客户端指定其他成员作为注资来源。
-      if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID))
+      if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) {
         error(403, '只能从运营者本人已归属份额划入');
+      }
       const result = await updateManagement(
         (db) => {
           syncFairQuota(db);
@@ -535,7 +563,9 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'discord-invite') {
-      if (!discordEnabled) error(409, 'Discord 登录未启用');
+      if (!discordEnabled) {
+        error(409, 'Discord 登录未启用');
+      }
       const result = await updateManagement((db) => createDiscordInvite(db, body.userId), {
         collections: ['users'],
         immediate: true,
@@ -557,12 +587,16 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'fallback-policy') {
-      if (typeof body.enabled !== 'boolean') error(400, 'enabled 必须为布尔值');
+      if (typeof body.enabled !== 'boolean') {
+        error(400, 'enabled 必须为布尔值');
+      }
       const enabled = body.enabled;
       const result = await updateManagement(
         (db) => {
           const state = db.settings.fairQuota;
-          if (!state?.enabled) error(409, '共享账本尚未配置');
+          if (!state?.enabled) {
+            error(409, '共享账本尚未配置');
+          }
           state.autoAnlasFallback = enabled;
           const at = Date.now();
           state.policyHistory = [
@@ -592,7 +626,9 @@ export async function handleMemberRoutes(
       const result = await updateManagement(
         (db) => {
           const user = db.users.find((u) => u.id === body.userId);
-          if (!user) error(404, '成员不存在');
+          if (!user) {
+            error(404, '成员不存在');
+          }
           return { apiKey: user.token };
         },
         { persist: false },
@@ -601,11 +637,15 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'member-status') {
-      if (typeof body.enabled !== 'boolean') error(400, 'enabled 必须为布尔值');
+      if (typeof body.enabled !== 'boolean') {
+        error(400, 'enabled 必须为布尔值');
+      }
       const result = await updateManagement(
         (db) => {
           const user = db.users.find((u) => u.id === body.userId);
-          if (!user) error(404, '成员不存在');
+          if (!user) {
+            error(404, '成员不存在');
+          }
           if (
             !body.enabled &&
             (db.jobs.some(
@@ -616,13 +656,15 @@ export async function handleMemberRoutes(
               Object.values(db.settings.fairQuota?.reservations || {}).some(
                 (charge) => charge.userId === user.id && charge.status === 'reserved',
               ))
-          )
+          ) {
             error(409, '成员仍有排队或生成中的任务，请结清后停用');
+          }
           user.enabled = body.enabled as boolean;
           user.updatedAt = new Date().toISOString();
           // 停用时改变会话版本，之后重新启用也不能复活先前登录的 Cookie。
-          if (!body.enabled && user.memberAuth)
+          if (!body.enabled && user.memberAuth) {
             user.memberAuth = { ...user.memberAuth, version: randomBytes(16).toString('hex') };
+          }
           recordDomainEvent(db, {
             eventType: 'MemberEligibilityChanged',
             streamId: 'sharing:default',
@@ -637,7 +679,9 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'member-admission') {
-      if (typeof body.acceptingJobs !== 'boolean') error(400, 'acceptingJobs 必须为布尔值');
+      if (typeof body.acceptingJobs !== 'boolean') {
+        error(400, 'acceptingJobs 必须为布尔值');
+      }
       const result = await deps.changeMemberAdmission(body.userId, body.acceptingJobs, actorId, {
         domainCommand: command,
         authorize,
@@ -649,16 +693,18 @@ export async function handleMemberRoutes(
       if (
         body.redistributeRemaining !== undefined &&
         typeof body.redistributeRemaining !== 'boolean'
-      )
+      ) {
         error(400, 'redistributeRemaining 必须为布尔值');
+      }
       const result = await updateManagement(
         (db) => {
           const configVersion = db.settings.fairQuota?.configVersion ?? 1;
           if (
             !Number.isInteger(body.expectedConfigVersion) ||
             body.expectedConfigVersion !== configVersion
-          )
+          ) {
             error(409, '分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
+          }
           // 预览只操作独立副本，恢复、重分与审计都不能污染真实账本。
           const draft = {
             ...db,
@@ -687,10 +733,13 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'credentials') {
-      if (discordEnabled && body.userId) error(409, 'Discord 成员不使用登录密码');
+      if (discordEnabled && body.userId) {
+        error(409, 'Discord 成员不使用登录密码');
+      }
       const hasGroup = body.groupId !== undefined && body.groupId !== null && body.groupId !== '';
-      if (hasGroup && (typeof body.groupId !== 'string' || body.userId))
+      if (hasGroup && (typeof body.groupId !== 'string' || body.userId)) {
         error(400, '只有创建新成员时可以指定 groupId');
+      }
       const result = await updateManagement(
         async (db) => {
           const draft = {
@@ -702,7 +751,9 @@ export async function handleMemberRoutes(
           inheritDomainCommand(db, draft);
           let userId = body.userId;
           if (!userId) {
-            if (draft.users.length >= 200) error(409, '账户数已达上限');
+            if (draft.users.length >= 200) {
+              error(409, '账户数已达上限');
+            }
             const user = {
               id: deps.createId('usr'),
               token: deps.createPublicToken('STA1N'),
@@ -738,7 +789,9 @@ export async function handleMemberRoutes(
             syncFairQuota(draft);
             const groups = structuredClone(draft.settings.fairQuota?.groups || []);
             const group = groups.find((g) => g.id === body.groupId);
-            if (!group) error(400, '指定的共享组不存在');
+            if (!group) {
+              error(400, '指定的共享组不存在');
+            }
             group.members.push(userId as string);
             configureFairGroups(draft, groups, { actorId: 'administrator' });
           }
@@ -759,16 +812,18 @@ export async function handleMemberRoutes(
       if (
         body.redistributeRemaining !== undefined &&
         typeof body.redistributeRemaining !== 'boolean'
-      )
+      ) {
         error(400, 'redistributeRemaining 必须为布尔值');
+      }
       const result = await updateManagement(
         (db) => {
           const currentVersion = db.settings.fairQuota?.configVersion ?? 1;
           if (
             !Number.isInteger(body.expectedConfigVersion) ||
             body.expectedConfigVersion !== currentVersion
-          )
+          ) {
             error(409, '分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
+          }
           configureFairGroups(db, body.groups, {
             actorId: 'administrator',
             redistributeRemaining: body.redistributeRemaining === true,
@@ -789,7 +844,9 @@ export async function handleMemberRoutes(
   }
 
   if (url.pathname === '/api/member/login' && req.method === 'POST') {
-    if (discordEnabled) error(403, '本站仅允许 Discord 登录');
+    if (discordEnabled) {
+      error(403, '本站仅允许 Discord 登录');
+    }
     const body = await json(req);
     checkMemberLoginRate(body.username, clientIp(req, env));
     const user = await store.update((db) => loginMember(db, body.username, body.password), {
@@ -808,33 +865,43 @@ export async function handleMemberRoutes(
   }
   let session = await authenticateMemberSession(store, cookie(req), env);
   const user = session?.user as MemberUser | undefined;
-  if (!user) error(401, '请先登录');
+  if (!user) {
+    error(401, '请先登录');
+  }
   await requireDiscordMembership(user, deps);
-  if (pageVisit && url.pathname === '/api/member/me')
+  if (pageVisit && url.pathname === '/api/member/me') {
     session = await renewCookie(req, res, store, env);
+  }
   if (
     await deps.handleMemberGeneration?.(req, res, url, user, async () => {
       const current = (await authenticateMemberSession(store, cookie(req), env))?.user;
-      if (!current || current.id !== user.id) return false;
+      if (!current || current.id !== user.id) {
+        return false;
+      }
       await requireDiscordMembership(current, deps);
       return true;
     })
-  )
+  ) {
     return true;
+  }
   const requestRoute = url.pathname.match(/^\/api\/member\/requests\/([^/]+)(\/cancel)?$/);
   if (
     requestRoute &&
     ((req.method === 'GET' && !requestRoute[2]) || (req.method === 'POST' && requestRoute[2]))
   ) {
     const requestId = decodeURIComponent(requestRoute[1]);
-    if (requestRoute[2]) await json(req);
+    if (requestRoute[2]) {
+      await json(req);
+    }
     const result = requestRoute[2]
       ? await deps.cancelGenerationRequest(requestId, user.id)
       : await deps.getGenerationRequest(requestId, user.id);
     reply(res, 200, result);
     return true;
   }
-  if (req.method !== 'GET') error(403, '成员账户没有管理权限，请联系管理员');
+  if (req.method !== 'GET') {
+    error(403, '成员账户没有管理权限，请联系管理员');
+  }
   if (url.pathname === '/api/member/heatmap') {
     reply(
       res,
@@ -852,12 +919,15 @@ export async function handleMemberRoutes(
     return true;
   }
   if (url.pathname === '/api/member/shared-events') {
-    if (res.destroyed || res.writableEnded) return true;
+    if (res.destroyed || res.writableEnded) {
+      return true;
+    }
     if (
       (statusStreams.get(user.id) || 0) >= 3 ||
       [...statusStreams.values()].reduce((n, v) => n + v, 0) >= 100
-    )
+    ) {
       error(429, '状态连接过多，请关闭多余页面');
+    }
     statusStreams.set(user.id, (statusStreams.get(user.id) || 0) + 1);
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -877,24 +947,35 @@ export async function handleMemberRoutes(
       pending: PublishedEvent | undefined;
     let unsubscribe = () => {};
     const stop = () => {
-      if (closed) return;
+      if (closed) {
+        return;
+      }
       closed = true;
       clearTimeout(timer);
       unsubscribe();
       res.off('close', stop);
       res.off('error', stop);
       const count = (statusStreams.get(user.id) || 1) - 1;
-      if (count) statusStreams.set(user.id, count);
-      else statusStreams.delete(user.id);
+      if (count) {
+        statusStreams.set(user.id, count);
+      } else {
+        statusStreams.delete(user.id);
+      }
     };
     res.once('close', stop);
     res.once('error', stop);
     const wake = (event?: PublishedEvent): void => {
-      if (closed) return;
-      if (event) pending = mergeStateEvents(pending, event);
+      if (closed) {
+        return;
+      }
+      if (event) {
+        pending = mergeStateEvents(pending, event);
+      }
       requested = true;
       clearTimeout(timer);
-      if (!running) void tick();
+      if (!running) {
+        void tick();
+      }
     };
     const tick = async () => {
       running = true;
@@ -906,11 +987,15 @@ export async function handleMemberRoutes(
           pending = undefined;
           resync = false;
           const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
-          if (viewer) await requireDiscordMembership(viewer, deps);
+          if (viewer) {
+            await requireDiscordMembership(viewer, deps);
+          }
           const state = viewer
             ? await store.update((db) => sharedAccountStatus(db), { persist: false })
             : null;
-          if (closed) return;
+          if (closed) {
+            return;
+          }
           if (!state) {
             res.write('event: auth-expired\ndata: {}\n\n');
             res.end();
@@ -940,8 +1025,9 @@ export async function handleMemberRoutes(
         }
       } catch (error) {
         if (!closed) {
-          if ([401, 403].includes((error as { statusCode?: number }).statusCode!))
+          if ([401, 403].includes((error as { statusCode?: number }).statusCode!)) {
             res.write('event: auth-expired\ndata: {}\n\n');
+          }
           res.end();
           stop();
         }
@@ -991,8 +1077,9 @@ export async function handleMemberRoutes(
       !['asc', 'desc'].includes(order) ||
       !Number.isFinite(Date.parse(until)) ||
       new Date(until).toISOString() !== until
-    )
+    ) {
       error(400, '历史查询参数无效');
+    }
     const result = await store.readMemberJobPage(user, {
       page,
       pageSize,

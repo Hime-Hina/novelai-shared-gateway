@@ -96,7 +96,9 @@ export function readGenerationIdempotencyKey(
   required = false,
 ): string | null {
   const key = req.headers['idempotency-key'];
-  if (key === undefined && !required) return null;
+  if (key === undefined && !required) {
+    return null;
+  }
   const count = (req.rawHeaders || []).filter(
     (value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key',
   ).length;
@@ -158,20 +160,30 @@ function memberFor(db: StoreDatabase, identity: AdmissionOptions['identity']): S
   const member = db.users.find((user) =>
     'memberId' in identity ? user.id === identity.memberId : user.token === identity.token,
   );
-  if (!member || member.enabled === false) fail(401, 'invalid member.');
+  if (!member || member.enabled === false) {
+    fail(401, 'invalid member.');
+  }
   return member;
 }
 
 function sharingReadiness(state: FairQuotaState | null | undefined, memberId: string) {
-  if (!state?.enabled) return { status: 503, message: '共享账本尚未配置' };
-  if (!state.members.includes(memberId)) return { status: 403, message: '该 Key 未加入共享账本' };
-  if (state.status !== 'active')
+  if (!state?.enabled) {
+    return { status: 503, message: '共享账本尚未配置' };
+  }
+  if (!state.members.includes(memberId)) {
+    return { status: 403, message: '该 Key 未加入共享账本' };
+  }
+  if (state.status !== 'active') {
     return { status: 503, message: `共享 Opus 暂不可用：${state.status}` };
+  }
   return null;
 }
 
-// All protocols share this command boundary. Protocol normalization stays outside;
-// first context, idempotency, queue capacity and durable children are chosen together.
+/**
+ * 所有协议共用受理边界；先按首次上下文领取原请求，再决定新额度、确认与容量。
+ * 产物检查可异步等待，但由 JsonStore 在其后开启短写事务，原子保存事实、输入和回执。
+ * 身份仍按当前状态核验；失败不留下半个请求或独立的额度恢复提交。
+ */
 export function createGenerationAdmission(deps: AdmissionDependencies) {
   const { store } = deps,
     now = deps.now || Date.now,
@@ -184,9 +196,13 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
     intent: GenerationIntent | null | undefined,
     existingOnly = false,
   ) => {
-    if (!intent) return null;
+    if (!intent) {
+      return null;
+    }
     const existing = store.readGenerationIdempotency(user.id, intent.operation, intent.keyHash);
-    if (!existing && existingOnly) return null;
+    if (!existing && existingOnly) {
+      return null;
+    }
     const context = existing
       ? JSON.parse(existing.normalization_context)
       : intent.context?.(db.settings) || requestNormalizationDefaults(db.settings);
@@ -198,7 +214,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
     intent.claim?.resize(Buffer.byteLength(payload) + contextBytes);
     const fingerprint =
       intent.fingerprint?.(request) || generationRequestFingerprint(request, intent);
-    if (!existing)
+    if (!existing) {
       return {
         request,
         payload,
@@ -214,12 +230,16 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
           created_at: new Date(now()).toISOString(),
         } as Mapping,
       };
-    if (existing.fingerprint !== fingerprint)
+    }
+    if (existing.fingerprint !== fingerprint) {
       fail(409, '相同 Idempotency-Key 对应的请求参数不同', 'idempotency_conflict');
+    }
     const job =
       db.jobs.find((item) => item.id === existing.job_id) ||
       store.selectItemById('jobs', existing.job_id);
-    if (!job) unavailable(existing.request_id);
+    if (!job) {
+      unavailable(existing.request_id);
+    }
     const children = existing.request_id
       ? store.readGenerationRequestState(existing.request_id, user.id)?.jobs
       : [job];
@@ -229,8 +249,9 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         (job.requestId !== existing.request_id ||
           children.length !== (request.sampleCount || 1) ||
           children.some((child, index) => child.sampleIndex !== index)))
-    )
+    ) {
       unavailable(existing.request_id);
+    }
     const replayImages = children
       .filter(
         (child) =>
@@ -240,7 +261,9 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
           ('referencedImageId' in child && child.referencedImageId),
       )
       .map((child) => {
-        if (!child.imageId) unavailable(existing.request_id);
+        if (!child.imageId) {
+          unavailable(existing.request_id);
+        }
         return { id: child.imageId, token: existing.request_id ? null : job.userToken };
       });
     return {
@@ -259,10 +282,13 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
   const validateReplay = async (result: Replay): Promise<GenerationMetadata> => {
     for (const expected of result.replayImages || []) {
       const image = await store.findImage(expected.id);
-      if (!image || (expected.token && image.token !== expected.token))
+      if (!image || (expected.token && image.token !== expected.token)) {
         unavailable(result.requestId);
+      }
       try {
-        if (!(await deps.artifactAvailable(image))) unavailable(result.requestId);
+        if (!(await deps.artifactAvailable(image))) {
+          unavailable(result.requestId);
+        }
       } catch {
         unavailable(result.requestId);
       }
@@ -291,13 +317,17 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         (db) => {
           const user = memberFor(db, options.identity),
             resolved = resolve(db, user, intent, true);
-          if (resolved?.replay) return { replay: resolved.replay };
+          if (resolved?.replay) {
+            return { replay: resolved.replay };
+          }
           return sharingReadiness(estimateFairQuota(db, now()).settings.fairQuota, user.id);
         },
         { persist: false },
       );
       if (readiness) {
-        if ('replay' in readiness) return await validateReplay(readiness.replay);
+        if ('replay' in readiness) {
+          return await validateReplay(readiness.replay);
+        }
         fail(readiness.status, readiness.message);
       }
       await deps.cleanupStaleActiveJobs('generation admission');
@@ -305,33 +335,43 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
         async (db) => {
           const user = memberFor(db, options.identity),
             resolved = resolve(db, user, intent);
-          if (resolved?.replay) return resolved.replay;
+          if (resolved?.replay) {
+            return resolved.replay;
+          }
           const timestamp = now(),
             createdAt = new Date(timestamp).toISOString();
           const request = resolved?.request || options.normalize?.(db.settings) || options.request;
-          if (!request) fail(400, '生成请求缺失');
+          if (!request) {
+            fail(400, '生成请求缺失');
+          }
           // Recheck after queued cleanup; refill and acceptance share one durable outcome.
           const currentReadiness = sharingReadiness(syncFairQuota(db, timestamp), user.id);
-          if (currentReadiness) fail(currentReadiness.status, currentReadiness.message);
+          if (currentReadiness) {
+            fail(currentReadiness.status, currentReadiness.message);
+          }
           mapping = resolved?.mapping;
           intent?.validate?.(db, user, request, timestamp);
           const count = options.batch ? request.sampleCount || 1 : 1;
           const noCache = intent?.noCache ?? options.noCache ?? true;
-          const cacheKey = options.batch
-            ? ''
-            : options.cacheKey ||
-              requestCacheKey(
-                user.token!,
-                request,
-                intent ? (intent.randomSeed ? undefined : request.seed) : options.explicitSeed,
-              );
+          let cacheKey = '';
+          if (!options.batch) {
+            cacheKey = options.cacheKey || '';
+            if (!cacheKey) {
+              let explicitSeed = options.explicitSeed;
+              if (intent) {
+                explicitSeed = intent.randomSeed ? undefined : request.seed;
+              }
+              cacheKey = requestCacheKey(user.token!, request, explicitSeed);
+            }
+          }
           let cached = options.cached;
           if (!cached && !noCache && !options.batch) {
             const image = await store.findImageByCacheKey(cacheKey);
             if (image && image.token === user.token) {
               try {
-                if (await deps.artifactAvailable(image))
+                if (await deps.artifactAvailable(image)) {
                   cached = { imageId: image.id, accountId: image.accountId };
+                }
               } catch {}
             }
           }
@@ -344,8 +384,9 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
                 ['queued', 'running'].includes(job.status!),
             );
             if (active) {
-              if (mapping)
+              if (mapping) {
                 Object.assign(mapping, { job_id: active.id, request_id: active.requestId || null });
+              }
               const aliasEvent =
                 mapping &&
                 recordDomainEvent(db, {
@@ -407,11 +448,12 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
           const jobIds: string[] = [],
             acceptedJobs: AcceptedJobFact[] = [];
           for (let index = 0; index < count; index++) {
-            const status: AcceptedJobFact['status'] = cached
-              ? 'done'
-              : index === 0
-                ? 'queued'
-                : 'pending';
+            let status: AcceptedJobFact['status'] = 'pending';
+            if (cached) {
+              status = 'done';
+            } else if (index === 0) {
+              status = 'queued';
+            }
             const job = {
               id: createId('job'),
               memberId: user.id,
@@ -457,7 +499,9 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
               summary: job.request,
             });
           }
-          if (mapping) Object.assign(mapping, { job_id: jobIds[0], request_id: parent.id });
+          if (mapping) {
+            Object.assign(mapping, { job_id: jobIds[0], request_id: parent.id });
+          }
           const acceptedEvent = recordDomainEvent(db, {
             eventType: 'RequestAccepted',
             streamId: `request:${parent.id}`,
@@ -495,7 +539,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
                 : {}),
             },
           });
-          if (cached)
+          if (cached) {
             recordDomainEvent(db, {
               eventType: 'CachedResultLinked',
               streamId: `request:${parent.id}`,
@@ -509,6 +553,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
                 localConsumption: { v5: '0', anlasFixed: '0', anlasPurchased: '0' },
               },
             });
+          }
           const receipt = {
             id: options.batch ? parent.id : jobIds[0],
             requestId: parent.id,
@@ -531,6 +576,7 @@ export function createGenerationAdmission(deps: AdmissionDependencies) {
           includeSettings: true,
           generationRequest: () => parent,
           generationIdempotency: () => mapping,
+          // 提交成功才将临时正文占用移交给持久活动输入统计，finally 释放剩余 claim。
           generationPayloadClaim: claim,
           dirtyRows: (result, db) => ({
             jobs: result.jobIds,

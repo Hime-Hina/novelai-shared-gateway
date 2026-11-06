@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { NAlert, NButton, NCard, NInput } from 'naive-ui';
 import type { LoginOptions } from '../types/member';
 
@@ -8,18 +8,30 @@ const emit = defineEmits<{
   login: [credentials: { username: string; password: string }];
   discord: [invite: string];
 }>();
+const loginHint = computed(() => {
+  if (!props.options.discord) {
+    return '账户由管理员创建。登录后查看个人额度和调用记录。';
+  }
+  return props.options.ready
+    ? '使用 Discord 身份登录；仅限受邀的指定服务器成员。'
+    : 'Discord 登录尚未配置完成，请联系管理员。';
+});
 const username = ref('');
 const password = ref('');
 const invite = ref('');
 
 function login() {
-  if (props.busy || !username.value.trim() || !password.value) return;
+  if (props.busy || !username.value.trim() || !password.value) {
+    return;
+  }
   const credentials = { username: username.value.trim(), password: password.value };
   password.value = '';
   emit('login', credentials);
 }
 function discord() {
-  if (props.busy || !props.options.ready) return;
+  if (props.busy || !props.options.ready) {
+    return;
+  }
   const value = invite.value.trim();
   invite.value = '';
   emit('discord', value);
@@ -30,13 +42,7 @@ function discord() {
   <NCard id="login" class="sign-in" :aria-busy="busy" aria-labelledby="loginTitle">
     <template #header><h2 id="loginTitle">登录你的账户</h2></template>
     <p id="loginHint" class="muted">
-      {{
-        options.discord
-          ? options.ready
-            ? '使用 Discord 身份登录；仅限受邀的指定服务器成员。'
-            : 'Discord 登录尚未配置完成，请联系管理员。'
-          : '账户由管理员创建。登录后查看个人额度和调用记录。'
-      }}
+      {{ loginHint }}
     </p>
     <NAlert v-if="error" type="error" role="alert" :show-icon="false">{{ error }}</NAlert>
     <form v-if="options.discord" id="discordForm" @submit.prevent="discord">

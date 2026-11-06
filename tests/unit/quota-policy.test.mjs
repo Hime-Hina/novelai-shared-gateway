@@ -25,8 +25,9 @@ test('共享快照规则接受十分钟和时钟偏差端点，拒绝无效时�
   assert.equal(isQuotaSnapshotFresh(now - 600001, now), false);
   assert.equal(isQuotaSnapshotFresh(now + 60000, now), true);
   assert.equal(isQuotaSnapshotFresh(now + 60001, now), false);
-  for (const value of [null, undefined, '', true, false, 'invalid', -1, Infinity])
+  for (const value of [null, undefined, '', true, false, 'invalid', -1, Infinity]) {
     assert.equal(isQuotaSnapshotFresh(value, now), false);
+  }
   assert.equal(quotaTimestamp(now / 1000), now);
   assert.equal(quotaTimestamp(new Date(now).toISOString()), now);
 });

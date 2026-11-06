@@ -98,11 +98,13 @@ test('自动布局仅补缺失和 null 分量，保留另一分量及有效边�
     ],
   ]) {
     const body = clientRequest();
-    for (const field of ['v4_prompt', 'v4_negative_prompt'])
+    for (const field of ['v4_prompt', 'v4_negative_prompt']) {
       body.parameters[field].caption.char_captions[0].centers = [center];
+    }
     const parsed = parseNativeImageRequest(body);
-    for (const field of ['v4_prompt', 'v4_negative_prompt'])
+    for (const field of ['v4_prompt', 'v4_negative_prompt']) {
       assert.deepEqual(centers(parsed.nativeParameters, field)[0], [expected]);
+    }
   }
 });
 
@@ -117,8 +119,9 @@ test('负向未声明布局时继承正向，正向未声明时继承顶层', ()
   const topOnly = clientRequest();
   delete topOnly.parameters.v4_prompt.use_coords;
   const parsed = parseNativeImageRequest(topOnly);
-  for (const field of ['v4_prompt', 'v4_negative_prompt'])
+  for (const field of ['v4_prompt', 'v4_negative_prompt']) {
     assert.deepEqual(centers(parsed.nativeParameters, field)[0], [{ x: 0.5, y: 0.5 }]);
+  }
 });
 
 test('正向显式布局优先于顶层；负向显式手动模式保持严格', () => {
@@ -142,8 +145,11 @@ test('未明确自动布局或手动布局时，空坐标不可静默通过', ()
   for (const mode of [undefined, true]) {
     const body = clientRequest();
     delete body.parameters.v4_prompt.use_coords;
-    if (mode === undefined) delete body.parameters.use_coords;
-    else body.parameters.use_coords = mode;
+    if (mode === undefined) {
+      delete body.parameters.use_coords;
+    } else {
+      body.parameters.use_coords = mode;
+    }
     rejectsCoordinates(body);
   }
   const body = clientRequest();
@@ -273,7 +279,7 @@ test('预设别名沿用原字段类型及取值校验，不强制转换非法�
   for (const [alias, field, invalids] of [
     ['uc_preset', 'ucPreset', ['0', true, [], {}, null, -1, 21, 0.5]],
     ['quality_toggle', 'qualityToggle', ['true', 0, 1, [], {}]],
-  ])
+  ]) {
     for (const value of invalids) {
       const input = structuredClone(desktopRequest);
       delete input.parameters[field];
@@ -283,6 +289,7 @@ test('预设别名沿用原字段类型及取值校验，不强制转换非法�
         (error) => error.statusCode === 422 && error.message.includes(field),
       );
     }
+  }
 });
 
 test('质量开关别名的 null 与原模板保持一致，不能掩盖冲突的已启用值', () => {
@@ -322,8 +329,9 @@ test('未知扩展错误列出有限字段名，不回显参数值、提示词�
     'extra_b',
     'extra_c',
     'not_shown',
-  ])
+  ]) {
     input.parameters[name] = 'synthetic-sensitive-value';
+  }
   assert.throws(
     () => parseNativeImageRequest(input),
     (error) => {

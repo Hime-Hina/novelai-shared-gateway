@@ -38,8 +38,9 @@ export function configureFreeImages(
 ) {
   const before = freeImagePolicy(db),
     policy = body.policy as Partial<FreeImagePolicy> | null;
-  if (body.expectedVersion !== before.version)
+  if (body.expectedVersion !== before.version) {
     throw Object.assign(new Error('免费图片策略已变化，请刷新后重试'), { statusCode: 409 });
+  }
   if (
     !db.settings?.fairQuota ||
     !policy ||
@@ -52,10 +53,11 @@ export function configureFreeImages(
       );
     }) ||
     before.version >= Number.MAX_SAFE_INTEGER
-  )
+  ) {
     throw Object.assign(new Error('免费图片阈值须为正整数或 null，enabled 须为布尔值'), {
       statusCode: 400,
     });
+  }
   const after: FreeImagePolicy = {
     version: before.version + 1,
     enabled: policy.enabled,
@@ -139,8 +141,9 @@ export function assertFreeImageAdmission(usage: FreeImageUsage): void {
     !usage.enabled ||
     usage.hardLimit === null ||
     usage.successful + usage.reserved < usage.hardLimit
-  )
+  ) {
     return;
+  }
   const message = usage.waitingForSettlement
     ? '免费图片名额已被在途任务占用，请等待结算'
     : '滚动 24 小时免费图片数量已达上限，请等待名额恢复';

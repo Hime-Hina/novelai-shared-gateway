@@ -39,8 +39,8 @@ function fixture(percent = 80) {
 const request = { model: 'nai-diffusion-5', width: 1024, height: 1024, steps: 23 };
 const job = (id, r = request) => ({ id, request: { ...r } });
 test('每次观察都校验三种余额，已有钱包与冷却不豁免，完整恢复不重发', () => {
-  for (const opened of [false, true])
-    for (const field of ['v5UsagePercent', 'quotaFixed', 'quotaPurchased'])
+  for (const opened of [false, true]) {
+    for (const field of ['v5UsagePercent', 'quotaFixed', 'quotaPurchased']) {
       for (const value of [null, undefined, '', true, [], {}, NaN, Infinity, 'invalid']) {
         const db = fixture(),
           s = db.settings.fairQuota;
@@ -78,8 +78,14 @@ test('每次观察都校验三种余额，已有钱包与冷却不豁免，完�
           before,
         );
         assert.deepEqual(current.reservations, {});
+        let recoveredValue = 0;
+        if (field === 'v5UsagePercent') {
+          recoveredValue = 80;
+        } else if (field === 'quotaFixed') {
+          recoveredValue = 10000;
+        }
         Object.assign(db.accounts[0], {
-          [field]: field === 'v5UsagePercent' ? 80 : field === 'quotaFixed' ? 10000 : 0,
+          [field]: recoveredValue,
           quotaCheckedAt: NOW + 2,
         });
         assert.equal(syncFairQuota(db, NOW + 2).status, 'active');
@@ -88,6 +94,8 @@ test('每次观察都校验三种余额，已有钱包与冷却不豁免，完�
         syncFairQuota(db, NOW + 2);
         assert.deepEqual(current, recovered);
       }
+    }
+  }
 });
 test('同步失败保留钱包和基准，真实停用或到期优先于失败与冷却', () => {
   for (const change of [
@@ -214,9 +222,12 @@ test('四并发独立预扣，重启后退款/成功重复调用只结算一次'
   const jobs = members.map((id) => job(id));
   jobs.forEach((j, i) => reserveFairQuota(db, { id: members[i] }, j, db.accounts[0], NOW));
   // 100 / 1730 向上保留 12 位；预扣及钱包余额均为精确持久事实。
-  for (const j of jobs) assert.equal(j.fairCharge.amount, '0.057803468209');
-  for (const b of Object.values(db.settings.fairQuota.balances))
+  for (const j of jobs) {
+    assert.equal(j.fairCharge.amount, '0.057803468209');
+  }
+  for (const b of Object.values(db.settings.fairQuota.balances)) {
     assert.equal(b.v5Available, '19.942196531791');
+  }
   db = JSON.parse(JSON.stringify(db));
   settleFairQuota(db, jobs[0], false, NOW + 1);
   settleFairQuota(db, jobs[0], false, NOW + 2);
@@ -545,11 +556,12 @@ test('分组严格校验四组、重复成员、未启用用户及时间参数',
     grouped().slice(1),
     [...grouped().slice(0, 3), { id: 'group_4', members: ['a'] }],
     grouped(['unknown']),
-  ])
+  ]) {
     assert.throws(
       () => configureFairGroups(db, gs, { now: NOW }),
       (e) => e.status === 400,
     );
+  }
   db.users.find((u) => u.id === 'e').enabled = false;
   assert.throws(
     () => configureFairGroups(db, grouped(['e']), { now: NOW }),
@@ -732,11 +744,15 @@ test('同组两个子成员独立消费与退款，其他组不承担消费，�
   settleFairQuota(db, j1, false, NOW);
   assert.ok(Math.abs(s.balances.child_one.v5Available - (20 / 3 - cost)) < 1e-9);
   assert.ok(Math.abs(s.balances.child_two.v5Available - 20 / 3) < 1e-9);
-  for (const id of ['b', 'c', 'd']) assert.deepEqual(s.balances[id], untouched[id]);
+  for (const id of ['b', 'c', 'd']) {
+    assert.deepEqual(s.balances[id], untouched[id]);
+  }
   syncFairQuota(db, NOW + 300000);
   assert.ok(Math.abs(s.balances.child_one.v5Available - (20 / 3 - cost + 0.5 * share)) < 1e-9);
   assert.ok(Math.abs(s.balances.child_two.v5Available - (20 / 3 + 0.5 * share)) < 1e-9);
-  for (const id of ['b', 'c', 'd']) assert.ok(Math.abs(s.balances[id].v5Available - 20.125) < 1e-9);
+  for (const id of ['b', 'c', 'd']) {
+    assert.ok(Math.abs(s.balances[id].v5Available - 20.125) < 1e-9);
+  }
 });
 
 function fallbackFixture() {
@@ -841,12 +857,16 @@ test('官方未扣Anlas时真实充值只分新增，不消除转扣buffer或补
 test('四个本地转扣预留原子扣各自余额，失败幂等退款且不累计成功转扣', () => {
   const db = fallbackFixture(),
     s = db.settings.fairQuota;
-  for (const id of members) s.balances[id].v5Available = 0;
+  for (const id of members) {
+    s.balances[id].v5Available = 0;
+  }
   Object.assign(db.accounts[0], { v5UsagePercent: 0 });
   s.snapshot.v5 = 0;
   const jobs = members.map((id) => job(`fallback-${id}`));
   jobs.forEach((j, i) => reserveFairQuota(db, { id: members[i] }, j, db.accounts[0], NOW));
-  for (const id of members) assert.equal(s.balances[id].anlasFixedAvailable, '2474');
+  for (const id of members) {
+    assert.equal(s.balances[id].anlasFixedAvailable, '2474');
+  }
   settleFairQuota(db, jobs[0], false, NOW + 1);
   settleFairQuota(db, jobs[0], false, NOW + 2);
   settleFairQuota(db, jobs[0], true, NOW + 3);
@@ -1130,7 +1150,7 @@ test('唯一共享成员可被启用的未分组成员原位继承；预览无�
     token: 'key-' + id,
   }));
   db.jobs = [];
-  for (const id of ['b', 'c', 'd'])
+  for (const id of ['b', 'c', 'd']) {
     manageFairMember(
       db,
       {
@@ -1141,6 +1161,7 @@ test('唯一共享成员可被启用的未分组成员原位继承；预览无�
       },
       NOW,
     );
+  }
   assert.equal(fairQuotaSummary(db, { id: 'a' }, NOW).share, 1);
   assert.equal(db.settings.fairQuota.balances.a.anlasFixedAvailable, '10000');
   const body = {
@@ -1338,8 +1359,9 @@ test('同组不等权删除：余额与全局份额全部给指定接收者，�
   assert.ok(Math.abs(preview.users.find((u) => u.id === 'e').quota.share - 0.2) < 1e-12);
   assert.equal(preview.shareChanges.find((c) => c.userId === 'a').afterShare, 0);
   manageFairMember(db, { ...body, action: 'delete-member' }, NOW);
-  for (const id of ['c', 'd', 'e'])
+  for (const id of ['c', 'd', 'e']) {
     assert.ok(Math.abs(fairQuotaSummary(db, { id }, NOW).share - shares[id]) < 1e-12);
+  }
   assert.equal(db.settings.fairQuota.balances.b.anlasFixedAvailable, '5000');
   assert.equal(db.settings.fairQuota.balances.b.v5Available, '40');
 });
@@ -1537,7 +1559,9 @@ function advanceRecovery(db, milliseconds, step = 60000) {
       v5UsagePercent: Math.min(100, Number(source) + elapsed / 1000 / seconds),
     });
     syncFairQuota(db, start + elapsed);
-    if (elapsed === milliseconds) break;
+    if (elapsed === milliseconds) {
+      break;
+    }
   }
 }
 
@@ -1548,7 +1572,9 @@ test('复现四人车官方回满：只有A缺15点时全部恢复给A，其余�
     anlas = members.map((id) => s.balances[id].anlasAvailable);
   advanceRecovery(db, 15 * 7888 * 1000);
   assert.equal(db.accounts[0].v5UsagePercent, 100);
-  for (const id of members) nearQuota(s.balances[id].v5Available, 25);
+  for (const id of members) {
+    nearQuota(s.balances[id].v5Available, 25);
+  }
   assert.deepEqual(s.balances.b, untouched);
   assert.deepEqual(
     members.map((id) => s.balances[id].anlasAvailable),
@@ -1577,11 +1603,12 @@ test('同次恢复有人先满额时剩余继续分配，拆分同步不会改�
   advanceRecovery(split, 60000, 1000);
   nearQuota(once.settings.fairQuota.balances.a.v5Available, 25);
   nearQuota(once.settings.fairQuota.balances.b.v5Available, 10.8);
-  for (const id of members)
+  for (const id of members) {
     nearQuota(
       once.settings.fairQuota.balances[id].v5Available,
       split.settings.fairQuota.balances[id].v5Available,
     );
+  }
 });
 
 test('恢复与在途预留共同受容量约束，失败幂等退款不超过个人上限', () => {
@@ -1640,7 +1667,9 @@ test('满额期间不存恢复量，重新消费后只恢复消费后的有效�
   const db = recoveryFixture([24.9, 24.9, 24.9, 24.9]),
     s = db.settings.fairQuota;
   advanceRecovery(db, 180000);
-  for (const id of members) nearQuota(s.balances[id].v5Available, 25);
+  for (const id of members) {
+    nearQuota(s.balances[id].v5Available, 25);
+  }
   const j = job('new-consumption'),
     at = NOW + 180000,
     c = reserveFairQuota(db, { id: 'a' }, j, db.accounts[0], at);
@@ -1717,7 +1746,9 @@ test('不同权重和剩余容量下守恒、不超上限，批次大小不影�
       nearQuota(balance, split.settings.fairQuota.balances[id].v5Available);
       if (capacity - balance > 1e-8) {
         const current = (balance - available[index]) / shares[index];
-        if (ratio !== null) nearQuota(current, ratio);
+        if (ratio !== null) {
+          nearQuota(current, ratio);
+        }
         ratio = current;
       }
     });

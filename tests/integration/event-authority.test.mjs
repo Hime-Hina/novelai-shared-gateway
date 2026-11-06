@@ -96,7 +96,9 @@ test('真实刷新同批提交可用状态，失败回滚、重开与离线重�
     publicErrorMessage,
     logger: { log() {}, error() {} },
     fetchQuota: async () => {
-      if (fail) throw new Error('private upstream token pst-secret https://secret.invalid');
+      if (fail) {
+        throw new Error('private upstream token pst-secret https://secret.invalid');
+      }
       return {
         tier: 3,
         subscriptionActive: true,
@@ -153,8 +155,9 @@ test('真实刷新同批提交可用状态，失败回滚、重开与离线重�
     ['QuotaObserved', 'AvailabilityChanged'],
   );
   assert.equal(new Set(events.map((event) => event.commit_seq)).size, 1);
-  for (const secret of ['pst-secret', 'secret.invalid', 'private upstream'])
+  for (const secret of ['pst-secret', 'secret.invalid', 'private upstream']) {
     assert.equal(JSON.stringify(events).includes(secret), false);
+  }
   assertReplay();
   await store.close();
   await store.init();
@@ -674,7 +677,9 @@ test('unchanged related member projections avoid SQL updates and cache refresh w
     { dirtyRows: { jobs: [jobId] } },
   );
   assert.deepEqual(store.sqlite.prepare('SELECT id FROM member_updates').all(), []);
-  for (const user of store.db.users) assert.strictEqual(user, members.get(user.id));
+  for (const user of store.db.users) {
+    assert.strictEqual(user, members.get(user.id));
+  }
   await assert.rejects(
     store.update(
       (db) => {
@@ -793,12 +798,13 @@ test('retiring a completed child keeps the authoritative child set and immutable
 test('cutover installs conservative fixed-point opening balances before the first real command', async (t) => {
   const store = await fixture(t),
     legacy = structuredClone(store.db);
-  for (const id of ['a', 'b', 'c', 'd'])
+  for (const id of ['a', 'b', 'c', 'd']) {
     Object.assign(legacy.settings.fairQuota.balances[id], {
       anlasFixedAvailable: id === 'd' ? 0 : 1 / 3,
       anlasPurchasedAvailable: 0,
       anlasAvailable: id === 'd' ? 0 : 1 / 3,
     });
+  }
   await store.write(legacy);
   await store.enableEventAuthority();
   assert.equal(store.db.settings.fairQuota.balances.a.anlasFixedAvailable, '0.333333333334');
@@ -815,12 +821,13 @@ test('cutover installs conservative fixed-point opening balances before the firs
 test('a failed cutover rolls back installed amounts, removed triggers and the authority marker', async (t) => {
   const store = await fixture(t),
     legacy = structuredClone(store.db);
-  for (const id of ['a', 'b', 'c'])
+  for (const id of ['a', 'b', 'c']) {
     Object.assign(legacy.settings.fairQuota.balances[id], {
       anlasFixedAvailable: 1 / 3,
       anlasPurchasedAvailable: 0,
       anlasAvailable: 1 / 3,
     });
+  }
   await store.write(legacy);
   importOpeningFacts(store.sqlite);
   const before = store.sqlite
@@ -828,7 +835,9 @@ test('a failed cutover rolls back installed amounts, removed triggers and the au
     .get().value;
   const prepare = store.sqlite.prepare.bind(store.sqlite);
   store.sqlite.prepare = (sql) => {
-    if (sql.startsWith('INSERT INTO app_settings')) throw new Error('injected cutover SQL failure');
+    if (sql.startsWith('INSERT INTO app_settings')) {
+      throw new Error('injected cutover SQL failure');
+    }
     return prepare(sql);
   };
   await assert.rejects(store.enableEventAuthority(), /injected cutover SQL failure/);
@@ -877,8 +886,11 @@ test('explicit cache clearing and automatic cache trim record tombstones and can
   const previous = process.env.NO_AUTO_DELETE;
   process.env.NO_AUTO_DELETE = 'false';
   t.after(() => {
-    if (previous === undefined) delete process.env.NO_AUTO_DELETE;
-    else process.env.NO_AUTO_DELETE = previous;
+    if (previous === undefined) {
+      delete process.env.NO_AUTO_DELETE;
+    } else {
+      process.env.NO_AUTO_DELETE = previous;
+    }
   });
   const store = await fixture(t),
     legacy = structuredClone(store.db);
@@ -940,8 +952,11 @@ test('automatic history retention records its decision inside the command and ke
   const previous = process.env.NO_AUTO_DELETE;
   process.env.NO_AUTO_DELETE = 'true';
   t.after(() => {
-    if (previous === undefined) delete process.env.NO_AUTO_DELETE;
-    else process.env.NO_AUTO_DELETE = previous;
+    if (previous === undefined) {
+      delete process.env.NO_AUTO_DELETE;
+    } else {
+      process.env.NO_AUTO_DELETE = previous;
+    }
   });
   const store = await fixture(t),
     legacy = structuredClone(store.db);

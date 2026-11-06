@@ -75,18 +75,18 @@ sqlite.function('activity_time', { deterministic: true }, (value) =>
 
 parentPort!.on('message', ({ id, type, payload = {} }: ReadTask) => {
   try {
-    const result =
-      type === 'adminStats'
-        ? readAdminStats(payload as AdminStatsQuery)
-        : type === 'activityDays'
-          ? readActivityDays(payload as ActivityQuery)
-          : type === 'imagePage'
-            ? readImagePage(payload as ImagePageQuery)
-            : type === 'userPage'
-              ? readUserPage(payload as PageQuery)
-              : (() => {
-                  throw new Error(`Unknown read task: ${type}`);
-                })();
+    let result;
+    if (type === 'adminStats') {
+      result = readAdminStats(payload as AdminStatsQuery);
+    } else if (type === 'activityDays') {
+      result = readActivityDays(payload as ActivityQuery);
+    } else if (type === 'imagePage') {
+      result = readImagePage(payload as ImagePageQuery);
+    } else if (type === 'userPage') {
+      result = readUserPage(payload as PageQuery);
+    } else {
+      throw new Error(`Unknown read task: ${type}`);
+    }
     parentPort!.postMessage({ id, result });
   } catch (error) {
     parentPort!.postMessage({
@@ -103,7 +103,9 @@ function readActivityDays({
   operation = 'generate',
   dates = null,
 }: ActivityQuery): ActivityDay[] {
-  if (dates?.length === 0) return [];
+  if (dates?.length === 0) {
+    return [];
+  }
   // ISO 偏移可跨 UTC 日期；先用现有索引取宽边界，再按严格解析的时间精确过滤。
   const margin = 2 * 86400000;
   const start = Date.parse(since),
@@ -252,7 +254,9 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     }
   }
   for (const row of speedRows) {
-    if (!speed[row.modelVersion as keyof typeof speed]) continue;
+    if (!speed[row.modelVersion as keyof typeof speed]) {
+      continue;
+    }
     speed[row.modelVersion as keyof typeof speed].count = Number(row.count || 0);
     speedTotals[row.modelVersion as keyof typeof speedTotals] = Number(row.durationSeconds || 0);
   }
@@ -261,8 +265,9 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     const count = speed[version].count;
     speed[version].seconds = count ? Math.max(0, speedTotals[version] / count) : null;
   }
-  for (const accountId of Object.keys(accountStats))
+  for (const accountId of Object.keys(accountStats)) {
     accountStats[accountId] = finalizeStats(accountStats[accountId]);
+  }
 
   return {
     requestStats1m: { total: Number(requestRow?.total || 0) },
@@ -328,7 +333,9 @@ function readImagePage({
 function readUserPage({ limit = 300, offset = 0, q = '' }: PageQuery = {}) {
   const params: { limit: number; offset: number; q?: string } = { limit, offset };
   const where = q ? 'WHERE search_text LIKE @q' : '';
-  if (q) params.q = `%${q}%`;
+  if (q) {
+    params.q = `%${q}%`;
+  }
   const total = Number(
     sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM users').get()?.count || 0,
   );
@@ -395,7 +402,9 @@ function buildUsageDays(rows: UsageRow[], now: number, days: number) {
   for (const row of rows) {
     const day = byDate.get(row.date!);
     const hour = Number(row.hour || 0);
-    if (!day || !day.hours[hour]) continue;
+    if (!day || !day.hours[hour]) {
+      continue;
+    }
     const count = Number(row.count || 0);
     const credits = Math.max(0, Number(row.credits || 0));
     if (row.status === 'done') {
@@ -410,7 +419,9 @@ function buildUsageDays(rows: UsageRow[], now: number, days: number) {
   }
   for (const day of result) {
     Object.assign(day, finalizeStats(day));
-    for (const hour of day.hours) Object.assign(hour, finalizeStats(hour));
+    for (const hour of day.hours) {
+      Object.assign(hour, finalizeStats(hour));
+    }
   }
   return result;
 }

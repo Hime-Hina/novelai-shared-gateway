@@ -11,7 +11,9 @@ function crc32(bytes) {
   let crc = 0xffffffff;
   for (const byte of bytes) {
     crc ^= byte;
-    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
   }
   return (crc ^ 0xffffffff) >>> 0;
 }
@@ -30,7 +32,11 @@ function png(width = 128, height = 128, { pixels, filter = 0 } = {}) {
   header[8] = 8;
   header[9] = 6;
   const rows = pixels ?? Buffer.alloc((width * 4 + 1) * height);
-  if (filter) for (let i = 0; i < height; i++) rows[i * (width * 4 + 1)] = filter;
+  if (filter) {
+    for (let i = 0; i < height; i++) {
+      rows[i * (width * 4 + 1)] = filter;
+    }
+  }
   return Buffer.concat([
     Buffer.from('89504e470d0a1a0a', 'hex'),
     chunk('IHDR', header),
@@ -81,8 +87,9 @@ test('原生单图兼容原 contract，不改变调用者对象，种子保持�
   assert.equal(result.nativeParameters.stream, undefined);
   assert.equal(result.nativeParameters.controlnet_model, undefined);
   assert.deepEqual(body, snapshot);
-  for (const seed of [-1, undefined])
+  for (const seed of [-1, undefined]) {
     assert.ok(Number.isInteger(parseNativeImageRequest(request({ seed })).seed));
+  }
 });
 
 test('冗余parameters.prompt仅接受与input严格相等的值，删除副本字段且不改变提示词', () => {
@@ -95,13 +102,15 @@ test('冗余parameters.prompt仅接受与input严格相等的值，删除副本�
   );
   assert.equal(spaced.prompt, ' test prompt ');
   assert.equal(Object.hasOwn(spaced.nativeParameters, 'prompt'), false);
-  for (const prompt of ['different prompt', ' test prompt', null, undefined, 1, {}, []])
+  for (const prompt of ['different prompt', ' test prompt', null, undefined, 1, {}, []]) {
     rejects(request({ prompt }), '完全一致');
-  for (const input of [undefined, '', '   '])
+  }
+  for (const input of [undefined, '', '   ']) {
     assert.throws(
       () => parseNativeImageRequest(request({ prompt: 'test prompt' }, { input })),
       (error) => error.statusCode === 400,
     );
+  }
 });
 test('V3、V4、V4.5、V5 模型和最多四张输入均正确保留', () => {
   for (const current of [
@@ -119,7 +128,9 @@ test('V3、V4、V4.5、V5 模型和最多四张输入均正确保留', () => {
     assert.equal(result.sampleCount, 4);
     assert.equal(result.nativeParameters.n_samples, 4);
   }
-  for (const n_samples of [0, 5, 1.2, '2']) rejects(request({ n_samples }));
+  for (const n_samples of [0, 5, 1.2, '2']) {
+    rejects(request({ n_samples }));
+  }
   rejects(request({}, { model: 'nai-diffusion-5-unknown' }));
   rejects(request({ width: 2048, height: 2048 }), '像素');
 });
@@ -138,8 +149,9 @@ test('Native输出只接受官方png/webp枚举，保留格式及缺省，不扩
       assert.deepEqual(body, before);
     }
   }
-  for (const image_format of ['avif', 'jpeg', 'PNG', '', true, {}, ['webp']])
+  for (const image_format of ['avif', 'jpeg', 'PNG', '', true, {}, ['webp']]) {
     rejects(request({ image_format }));
+  }
   rejects(
     request(
       { image_format: 'webp', image, mask: image },
@@ -168,11 +180,12 @@ test('5C 图生图保留模型，未验证的重绘与参考组合不静默降�
     ),
     '局部重绘强度',
   );
-  for (const currentModel of [current, current + '-inpainting'])
+  for (const currentModel of [current, current + '-inpainting']) {
     rejects(
       request({ image, mask: image }, { action: 'infill', model: currentModel }),
       'V4.5 Curated',
     );
+  }
   rejects(
     request(
       { reference_image_multiple: [encoding], reference_strength_multiple: [1] },
@@ -206,8 +219,9 @@ test('非法参数不能透传未知计费功能，数值和类型边界在入�
         },
       },
     },
-  ])
+  ]) {
     rejects(request(parameters));
+  }
   rejects(request({}, { cost: 0 }));
   rejects(request({ sm_dyn: true }, { model: 'nai-diffusion-3' }));
   assert.equal(
@@ -220,8 +234,9 @@ test('非法参数不能透传未知计费功能，数值和类型边界在入�
 test('DDIM 不接受 SMEA，保留关闭值、V3 重绘映射和 Medium 固定采样器', () => {
   for (const sampler of ['ddim', 'ddim_v3']) {
     for (const current of ['nai-diffusion-3', 'nai-diffusion-furry-3']) {
-      for (const sm_dyn of [false, true])
+      for (const sm_dyn of [false, true]) {
         rejects(request({ sampler, sm: true, sm_dyn }, { model: current }), 'DDIM');
+      }
       rejects(request({ sampler, sm: false, sm_dyn: true }, { model: current }), 'SMEA DYN');
       assert.equal(
         parseNativeImageRequest(request({ sampler, sm: false }, { model: current })).sampler,
@@ -286,14 +301,16 @@ test('旧官网 V4 模板和客户端关闭值兼容，活跃未知 LoRA 仍拒�
     'strength',
     'noise',
     'inpaintImg2ImgStrength',
-  ])
+  ]) {
     assert.equal(result.nativeParameters[field], undefined);
-  for (const value of [null, [], {}, false, ''])
+  }
+  for (const value of [null, [], {}, false, '']) {
     assert.equal(
       parseNativeImageRequest(request({ lora_unet_weights: value, lora_clip_weights: value }))
         .action,
       'generate',
     );
+  }
   for (const parameters of [
     { lora_unet_weights: { custom: 0.5 } },
     { lora_clip_weights: [1] },
@@ -303,8 +320,9 @@ test('旧官网 V4 模板和客户端关闭值兼容，活跃未知 LoRA 仍拒�
     { explike_fine_detail: 'false' },
     { cfg_sched_eligibility: { unexpected: true } },
     { strength: 1.1 },
-  ])
+  ]) {
     rejects(request(parameters));
+  }
   assert.equal(
     parseNativeImageRequest(
       request({ uncond_scale: null, version: null, explike_fine_detail: null }),
@@ -336,11 +354,12 @@ test('图片 base64、MIME、文件签名、CRC、像素解压与尺寸独立验
     png(1, 1, { pixels: Buffer.alloc(1024) }).toString('base64'),
     png().subarray(0, 40).toString('base64'),
   ];
-  for (const value of cases)
+  for (const value of cases) {
     assert.throws(
       () => validateNativeImage(value),
       (error) => error.statusCode === 422 && !error.message.includes('secret-token-text'),
     );
+  }
   const huge = png(1, 1);
   huge.writeUInt32BE(9000, 16);
   huge.writeUInt32BE(crc32(huge.subarray(12, 29)), 29);
@@ -361,11 +380,12 @@ test('JPEG 和 WebP 按实际格式结构读取尺寸并拒绝截断与动画', 
   header.writeUInt32LE(vp8.length, 16);
   const webp = Buffer.concat([header, vp8]);
   assert.equal(validateNativeImage(webp.toString('base64')).height, 128);
-  for (const bytes of [jpeg.subarray(0, jpeg.length - 1), webp.subarray(0, webp.length - 1)])
+  for (const bytes of [jpeg.subarray(0, jpeg.length - 1), webp.subarray(0, webp.length - 1)]) {
     assert.throws(
       () => validateNativeImage(bytes.toString('base64')),
       (error) => error.statusCode === 422,
     );
+  }
 });
 test('图生图使用实际图像尺寸，检查强度、噪声并拒绝遮罩和 SMEA', () => {
   const body = request({ image, strength: 0.7, noise: 0.1 }, { action: 'img2img' });
@@ -379,8 +399,9 @@ test('图生图使用实际图像尺寸，检查强度、噪声并拒绝遮罩�
     { image, mask: image },
     { image, sm: true },
     {},
-  ])
+  ]) {
     rejects(request(parameters, { action: 'img2img' }));
+  }
   rejects(request({ image }), '请选择');
 });
 test('局部重绘匹配底图和 PNG 遮罩，映射模型并保留实际强度', () => {
@@ -406,20 +427,22 @@ test('局部重绘匹配底图和 PNG 遮罩，映射模型并保留实际强度
     ['nai-diffusion-5-full', 'nai-diffusion-5-full-inpainting'],
     ['nai-diffusion-4-curated-inpainting', 'nai-diffusion-4-curated-inpainting'],
     ['nai-diffusion-4-5-full-inpainting', 'nai-diffusion-4-5-full-inpainting'],
-  ])
+  ]) {
     assert.equal(
       parseNativeImageRequest(request({ image, mask: image }, { action: 'infill', model: current }))
         .model,
       expected,
     );
+  }
   for (const parameters of [
     { image },
     { image, mask: png(64, 64).toString('base64') },
     { image, mask: image, img2img: { strength: 2 } },
     { image, mask: image, img2img: { strength: 0.5, unknown: true } },
     { image, mask: image, inpaintImg2ImgStrength: 0.5, img2img: { strength: 0.7 } },
-  ])
+  ]) {
     rejects(request(parameters, { action: 'infill' }));
+  }
   rejects(
     request(
       { image, mask: image, img2img: { strength: 0.5 } },
@@ -454,8 +477,9 @@ test('V3 Vibe 使用原图；V4/V4.5 要求已编码数据并防止借缓存漏�
       reference_strength_multiple: Array(17).fill(1),
     },
     { reference_strength_multiple: [1] },
-  ])
+  ]) {
     rejects(request(parameters));
+  }
   rejects(
     request(
       { reference_image_multiple: [encoding], reference_strength_multiple: [1] },
@@ -498,9 +522,11 @@ test('Precise Reference 只允许官方 V4.5 尺寸，数量相符且不能混�
   for (const field of [
     'director_reference_strength_values',
     'director_reference_secondary_strength_values',
-  ])
-    for (const value of [NaN, Infinity, -Infinity])
+  ]) {
+    for (const value of [NaN, Infinity, -Infinity]) {
       rejects(request({ ...precise(), [field]: [value] }), field);
+    }
+  }
   assert.equal(
     parseNativeImageRequest(request({ ...precise(), image, mask: image }, { action: 'infill' }))
       .action,
@@ -539,11 +565,12 @@ test('encode-vibe 预处理只接受 V4/V4.5 和有效图片，保留实际尺�
     { image, model: 'nai-diffusion-5-full' },
     { image, model, information_extracted: 1.1 },
     { image, model, cost: 0 },
-  ])
+  ]) {
     assert.throws(
       () => parseNativeAuxiliaryRequest(body, 'encode-vibe'),
       (error) => error.statusCode === 422,
     );
+  }
 });
 test('Vibe 两种子按本地安全整数边界原值保留，缺省不生成种子', () => {
   const defaults = parseNativeAuxiliaryRequest({ image, model }, 'encode-vibe');
@@ -618,11 +645,12 @@ test('新版与旧版放大均归一为官网 2 倍接口，按实际像素拒�
     { image, scale: 4 },
     { image, declared_blur_sigma: 0.31 },
     { image, model: 'unknown' },
-  ])
+  ]) {
     assert.throws(
       () => parseNativeAuxiliaryRequest(body, 'upscale'),
       (error) => error.statusCode === 422,
     );
+  }
 });
 test('独立放大仅接受官方六档 blur，默认及 null 保持为零', () => {
   for (const declared_blur_sigma of [0, 0.3, 0.35, 0.4, 0.45, 0.5]) {
@@ -631,12 +659,13 @@ test('独立放大仅接受官方六档 blur，默认及 null 保持为零', () 
     assert.equal(parsed.operationParameters.declared_blur_sigma, declared_blur_sigma);
     assert.deepEqual(body, { image, declared_blur_sigma });
   }
-  for (const declared_blur_sigma of [undefined, null])
+  for (const declared_blur_sigma of [undefined, null]) {
     assert.equal(
       parseNativeAuxiliaryRequest({ image, declared_blur_sigma }, 'upscale').operationParameters
         .declared_blur_sigma,
       0,
     );
+  }
   for (const declared_blur_sigma of [
     -0.1,
     0.1,

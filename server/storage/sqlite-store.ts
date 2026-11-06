@@ -504,10 +504,11 @@ export class JsonStore {
     for (const listener of this.events.rawListeners(name)) {
       try {
         const pending = listener.call(this.events, event);
-        if (pending?.then)
+        if (pending?.then) {
           Promise.resolve(pending).catch((error) =>
             console.error('[runtime] Store event listener failed:', error),
           );
+        }
       } catch (error) {
         console.error('[runtime] Store event listener failed:', error);
       }
@@ -515,7 +516,9 @@ export class JsonStore {
   }
 
   private notifyCommit(event: CommitDraft) {
-    if (!event.collections.size) return;
+    if (!event.collections.size) {
+      return;
+    }
     this.emitStoreEvent(
       'commit',
       Object.freeze({
@@ -549,13 +552,17 @@ export class JsonStore {
       event.collections.add('settings');
       event.allMembers = true;
     }
-    if (!changes.deletes.length && !changes.upserts.length) return event;
+    if (!changes.deletes.length && !changes.upserts.length) {
+      return event;
+    }
     const oldUsers = [...(previousRows.users?.values() || [])]
       .map((row) => safeJson(row.data, null))
       .filter(Boolean as unknown as Present);
     const users = [...(this.db?.users || []), ...oldUsers];
     const addMember = (collection: Collection, item: StoreItem | null) => {
-      if (!item || !['users', 'jobs', 'images', 'ledger'].includes(collection)) return;
+      if (!item || !['users', 'jobs', 'images', 'ledger'].includes(collection)) {
+        return;
+      }
       if (collection === 'users') {
         event.memberIds.add(item.id);
         return;
@@ -581,21 +588,25 @@ export class JsonStore {
             item.fairCharge?.userId ||
             job?.generationAttempt?.memberId ||
             users.find((user) => user.token && user.token === (item.userToken || item.token))?.id;
-      if (memberId) event.memberIds.add(memberId);
-      else if (
+      if (memberId) {
+        event.memberIds.add(memberId);
+      } else if (
         collection !== 'ledger' ||
         item.token ||
         item.userToken ||
         item.jobId ||
         item.userId ||
         item.memberId
-      )
+      ) {
         event.allMembers = true;
+      }
       return { memberId: memberId || null, parent };
     };
     const activity = (item: StoreItem | null, identity: ReturnType<typeof addMember> | null) => {
       const date = activityDate(item?.createdAt);
-      if (!date) return null;
+      if (!date) {
+        return null;
+      }
       const operation =
         identity?.parent?.operation ||
         item!.request?.operation ||
@@ -630,9 +641,13 @@ export class JsonStore {
           newActivity = activity(after, nextMember);
         if (!isDeepStrictEqual(oldActivity, newActivity)) {
           for (const value of [oldActivity, newActivity]) {
-            if (!value) continue;
+            if (!value) {
+              continue;
+            }
             const key = JSON.stringify([value.memberId, value.date]);
-            if (activityKeys.has(key)) continue;
+            if (activityKeys.has(key)) {
+              continue;
+            }
             activityKeys.add(key);
             event.activityChanges.push({ memberId: value.memberId, date: value.date });
           }
@@ -642,8 +657,9 @@ export class JsonStore {
         !previous &&
         !change.data &&
         ['users', 'jobs', 'images', 'ledger'].includes(change.collection)
-      )
+      ) {
         event.allMembers = true;
+      }
     }
     return event;
   }
@@ -726,11 +742,19 @@ export class JsonStore {
         const count = Number(row.count || 0);
         if (row.status === 'queued') {
           counts.queued += count;
-          if (row.source === 'direct') counts.directQueued += count;
-          if (row.source === 'openai') counts.openAiQueued += count;
+          if (row.source === 'direct') {
+            counts.directQueued += count;
+          }
+          if (row.source === 'openai') {
+            counts.openAiQueued += count;
+          }
         }
-        if (row.status === 'pending') counts.pending += count;
-        if (row.status === 'running') counts.running += count;
+        if (row.status === 'pending') {
+          counts.pending += count;
+        }
+        if (row.status === 'running') {
+          counts.running += count;
+        }
         return counts;
       },
       { queued: 0, pending: 0, running: 0, directQueued: 0, openAiQueued: 0 },
@@ -739,7 +763,9 @@ export class JsonStore {
 
   async readImageFiles() {
     await this.ensureLoaded();
-    if (this.partialCollections.has('images')) return null;
+    if (this.partialCollections.has('images')) {
+      return null;
+    }
     return (this.db!.images || []).map((image) => image.file).filter(Boolean as unknown as Present);
   }
 
@@ -785,19 +811,33 @@ export class JsonStore {
       affected = new Set<string>();
     for (const id of uniqueStrings(imageIds)) {
       const image = db.images.find((image) => image.id === id) || this.selectItemById('images', id);
-      if (!image) continue;
+      if (!image) {
+        continue;
+      }
       const rows = this.sqlite!.prepare<unknown[], DataRow>(
         'SELECT id,data,order_value AS orderValue FROM jobs WHERE image_id=? OR id=?',
       ).all(id, image.jobId || '');
       const linked = new Map<string, { row?: DataRow; job: StoreItem }>(
         rows.map((row) => [row.id, { row, job: JSON.parse(row.data) as StoreItem }]),
       );
-      for (const job of db.jobs)
-        if (job.imageId === id || job.lateResultImageId === id || job.resultPending?.imageId === id)
+      for (const job of db.jobs) {
+        if (
+          job.imageId === id ||
+          job.lateResultImageId === id ||
+          job.resultPending?.imageId === id
+        ) {
           linked.set(job.id, { row: linked.get(job.id)?.row, job });
-      for (const [key, { job }] of linked)
-        if (job.imageId !== id && job.lateResultImageId !== id && job.resultPending?.imageId !== id)
+        }
+      }
+      for (const [key, { job }] of linked) {
+        if (
+          job.imageId !== id &&
+          job.lateResultImageId !== id &&
+          job.resultPending?.imageId !== id
+        ) {
           linked.delete(key);
+        }
+      }
       const active = [...linked.values()].some(
         ({ job }) =>
           !this.canRetireJobHistory(job) ||
@@ -807,7 +847,9 @@ export class JsonStore {
             ).get(job.requestId)),
       );
       if (active) {
-        if (skipActive) continue;
+        if (skipActive) {
+          continue;
+        }
         throw Object.assign(
           new Error('Cannot retire an artifact referenced by active work or an unresolved review.'),
           { statusCode: 409 },
@@ -825,8 +867,12 @@ export class JsonStore {
           }
         }
         live.imageId = '';
-        if (live.lateResultImageId === id) live.lateResultImageId = '';
-        if (live.lateResultAvailable) live.lateResultAvailable = false;
+        if (live.lateResultImageId === id) {
+          live.lateResultImageId = '';
+        }
+        if (live.lateResultAvailable) {
+          live.lateResultAvailable = false;
+        }
         affected.add(job.id);
         jobIds.push(job.id);
       }
@@ -846,7 +892,7 @@ export class JsonStore {
     }
     const removedIds = new Set(removed.map((image) => image.id));
     db.images = db.images.filter((image) => !removedIds.has(image.id));
-    if (reason === 'owner_cleared_cache' && removed.length)
+    if (reason === 'owner_cleared_cache' && removed.length) {
       db.ledger.unshift({
         id: `cache-retired:${commandId}`,
         type: 'clear-cache',
@@ -854,6 +900,7 @@ export class JsonStore {
         at: new Date(now).toISOString(),
         note: 'Cleared cached images',
       });
+    }
     return { images: removed, jobIds: [...affected] };
   }
 
@@ -861,9 +908,13 @@ export class JsonStore {
     maxCacheImages: number | null = null,
     options: { maxDelete?: unknown; batchSize?: unknown; force?: boolean } = {},
   ) {
-    if (process.env.NO_AUTO_DELETE === 'true') return [];
+    if (process.env.NO_AUTO_DELETE === 'true') {
+      return [];
+    }
     await this.ensureLoaded();
-    if (options.force !== true && Date.now() - this.lastImageTrimAt < 1000) return [];
+    if (options.force !== true && Date.now() - this.lastImageTrimAt < 1000) {
+      return [];
+    }
     this.lastImageTrimAt = Date.now();
     this.flushPendingPersistSync();
     const maxCache = clampNumber(
@@ -876,12 +927,16 @@ export class JsonStore {
       options.force === true || maxCache <= 0
         ? 0
         : Math.max(0, Math.floor(Number(options.batchSize ?? 100) || 0));
-    if (total < maxCache + buffer) return [];
+    if (total < maxCache + buffer) {
+      return [];
+    }
     const count = Math.min(
       Math.max(0, total - maxCache),
       trimImageCacheDeleteLimit(options.maxDelete),
     );
-    if (!count) return [];
+    if (!count) {
+      return [];
+    }
     const ids = (
       this.sqlite!.prepare('SELECT id FROM images ORDER BY order_value ASC LIMIT ?').all(count) as {
         id: string;
@@ -895,29 +950,35 @@ export class JsonStore {
     now = Date.now(),
   ): Promise<string[]> {
     const ids = [...new Set(jobIds)];
-    if (ids.length > 200) throw new Error('Retire history in batches of at most 200 jobs.');
+    if (ids.length > 200) {
+      throw new Error('Retire history in batches of at most 200 jobs.');
+    }
     return this.update(
       (db) => {
         const groups = new Map<string, string[]>(),
           retired: string[] = [];
         for (const id of ids) {
           const job = db.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
-          if (!job) continue;
-          if (!this.canRetireJobHistory(job))
+          if (!job) {
+            continue;
+          }
+          if (!this.canRetireJobHistory(job)) {
             throw new Error(`Cannot retire active job or unresolved review: ${id}`);
+          }
           const stream = `request:${job.requestId || `legacy-${id}`}`,
             group = groups.get(stream) || [];
           group.push(id);
           groups.set(stream, group);
           retired.push(id);
         }
-        for (const [streamId, jobIds] of groups)
+        for (const [streamId, jobIds] of groups) {
           recordDomainEvent(db, {
             eventType: 'JobHistoryRetired',
             streamId,
             occurredAt: now,
             payload: { jobIds, reason, at: now },
           });
+        }
         const removed = new Set(retired);
         db.jobs = db.jobs.filter((job) => !removed.has(job.id));
         return retired;
@@ -1002,7 +1063,9 @@ export class JsonStore {
         .toLowerCase();
     const clearAll = options.all === true || options.mode === 'all';
     const selected = this.selectImagesForClear({ ids, query, clearAll }).map((row) => row.id);
-    if (!selected.length) return { deleted: 0, remaining: this.countRecords('images'), images: [] };
+    if (!selected.length) {
+      return { deleted: 0, remaining: this.countRecords('images'), images: [] };
+    }
     const images = await this.retireCachedArtifacts(selected, 'owner_cleared_cache');
     this.refreshPartialCollectionState('images');
     return { deleted: images.length, remaining: this.countRecords('images'), images };
@@ -1046,9 +1109,13 @@ export class JsonStore {
   nextQueueSequence() {
     // 元数据保留历史最高号；热任务还包含同一事务内刚分配、尚未提交的号。
     let maximum = Number(this.statements!.readQueueSequence.get()?.value || 0);
-    for (const job of this.db!.jobs) maximum = Math.max(maximum, Number(job.queueSeq) || 0);
+    for (const job of this.db!.jobs) {
+      maximum = Math.max(maximum, Number(job.queueSeq) || 0);
+    }
     const next = maximum + 1;
-    if (!Number.isSafeInteger(next)) throw new Error('排队序号已达到安全整数上限');
+    if (!Number.isSafeInteger(next)) {
+      throw new Error('排队序号已达到安全整数上限');
+    }
     return next;
   }
 
@@ -1069,9 +1136,13 @@ export class JsonStore {
         job.payloadBytes = Buffer.byteLength(JSON.stringify(job.request || {}));
         dirty = true;
       }
-      if (dirty) changed.push(job.id);
+      if (dirty) {
+        changed.push(job.id);
+      }
     }
-    if (changed.length) this.persistIncremental(this.db!, { dirtyRows: { jobs: changed } });
+    if (changed.length) {
+      this.persistIncremental(this.db!, { dirtyRows: { jobs: changed } });
+    }
   }
 
   queuedJobIds() {
@@ -1085,7 +1156,9 @@ export class JsonStore {
 
   private persistQueueSequence(rows: Partial<SqlRow>[]) {
     let maximum = 0;
-    for (const row of rows) maximum = Math.max(maximum, Number(row.queue_seq) || 0);
+    for (const row of rows) {
+      maximum = Math.max(maximum, Number(row.queue_seq) || 0);
+    }
     if (maximum > Number(this.statements!.readQueueSequence.get()?.value || 0)) {
       this.statements!.setMeta.run({ key: 'queue_sequence', value: String(maximum) });
     }
@@ -1185,8 +1258,9 @@ export class JsonStore {
   }
 
   private persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {
-    if (rows.length && eventAuthorityEnabled(this.sqlite!))
+    if (rows.length && eventAuthorityEnabled(this.sqlite!)) {
       throw new Error('Terminal receipts are written only by the domain projector after cutover.');
+    }
     for (const row of rows) {
       const inserted = this.statements!.insertFairQuotaSettlement.run(row);
       if (
@@ -1206,7 +1280,9 @@ export class JsonStore {
       `SELECT id, source, operation, created_at AS createdAt
       FROM generation_requests WHERE id = ? AND member_id = ?`,
     ).get(id, memberId);
-    if (!request) return null;
+    if (!request) {
+      return null;
+    }
     // 父归属使用稳定成员 ID；图片仍必须属于对应 child，不能靠可轮换的当前 Key 代认。
     const jobs = this.sqlite!.prepare<
       unknown[],
@@ -1248,9 +1324,13 @@ export class JsonStore {
 
   readGenerationRequestJobIds(requestId: string, memberId: string): string[] | null {
     const parent = this.statements!.selectGenerationRequestMember.get({ id: requestId });
-    if (!parent || parent.member_id !== memberId) return null;
+    if (!parent || parent.member_id !== memberId) {
+      return null;
+    }
     const request = readStreamProjection(this.sqlite!, `request:${requestId}`)?.projection;
-    if (!request?.jobs) throw new Error(`Missing authoritative generation request ${requestId}`);
+    if (!request?.jobs) {
+      throw new Error(`Missing authoritative generation request ${requestId}`);
+    }
     return Object.values(request.jobs as Record<string, { id: string; sampleIndex?: number }>)
       .sort((a, b) => (a.sampleIndex ?? 0) - (b.sampleIndex ?? 0) || a.id.localeCompare(b.id))
       .map((job) => job.id);
@@ -1280,7 +1360,9 @@ export class JsonStore {
     // 逻辑 failed 不代表执行器已经释放输入；按父请求去重，直到 control.finish。
     for (const attempt of inFlight) {
       const key = attempt.requestId ? `request:${attempt.requestId}` : `job:${attempt.jobId}`;
-      if (held.has(key)) continue;
+      if (held.has(key)) {
+        continue;
+      }
       const bytes = attempt.requestId
         ? this.sqlite!.prepare<unknown[], { bytes: number }>(
             'SELECT payload_bytes AS bytes FROM generation_requests WHERE id = ?',
@@ -1289,7 +1371,9 @@ export class JsonStore {
       held.set(key, Number(bytes || 0));
     }
     let total = 0;
-    for (const bytes of held.values()) total += Number(bytes || 0);
+    for (const bytes of held.values()) {
+      total += Number(bytes || 0);
+    }
     return total;
   }
 
@@ -1305,23 +1389,25 @@ export class JsonStore {
     progress: StoreJob['generationProgress'],
   ): StoreJob | null {
     const job = this.db?.jobs.find((item) => item.id === jobId);
-    if (!job) return null;
+    if (!job) {
+      return null;
+    }
     job.generationProgress = progress
       ? { ...progress, total: progress.total || job.request?.steps || 0 }
       : progress;
     return structuredClone(job);
   }
 
-  async findJobContext(
-    id: string,
-  ): Promise<{
+  async findJobContext(id: string): Promise<{
     job: StoreJob;
     account: StoreAccount | null;
     queue: ReturnType<JsonStore['jobQueueProgress']>;
   } | null> {
     await this.ensureLoaded();
     const job = this.db!.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
-    if (!job) return null;
+    if (!job) {
+      return null;
+    }
     const account = job.accountId
       ? this.db!.accounts.find((item) => item.id === job.accountId) || null
       : null;
@@ -1340,19 +1426,25 @@ export class JsonStore {
   async findImage(id: string) {
     await this.ensureLoaded();
     const row = this.statements!.selectById.images.get({ id });
-    if (row) return this.hydrateArtifactImage(safeJson(row.data, null));
+    if (row) {
+      return this.hydrateArtifactImage(safeJson(row.data, null));
+    }
     const image = this.db!.images.find((item) => item.id === id);
     return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
   }
 
   private hydrateArtifactImage(image: StoreItem | null): StoreItem | null {
-    if (!image?.artifactInputRef) return image;
+    if (!image?.artifactInputRef) {
+      return image;
+    }
     const input = readArtifactInput(
       this.sqlite!,
       String(image.artifactInputRef),
       image.artifactInputSha256 as string,
     );
-    if (!input) throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
+    if (!input) {
+      throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
+    }
     return { ...image, ...input };
   }
 
@@ -1366,7 +1458,9 @@ export class JsonStore {
       LIMIT 1
     `,
     ).get(String(cacheKey || ''));
-    if (row) return this.hydrateArtifactImage(safeJson(row.data, null));
+    if (row) {
+      return this.hydrateArtifactImage(safeJson(row.data, null));
+    }
     const image = this.db!.images.find(
       (item) => item.cacheKey === cacheKey && !item.mock && item.mimeType !== 'image/svg+xml',
     );
@@ -1588,7 +1682,9 @@ export class JsonStore {
 
   async readMemberImageIds(user: StoreItem, jobIds: unknown[]) {
     const ids = uniqueStrings(jobIds).slice(0, 30);
-    if (!ids.length) return new Map();
+    if (!ids.length) {
+      return new Map();
+    }
     await this.ensureLoaded();
     await this.queue.catch(() => {});
     this.flushPendingPersistSync();
@@ -1628,7 +1724,9 @@ export class JsonStore {
   }
 
   async readAdminSummaryStats({ fresh = false } = {}) {
-    if (fresh) return this.readFreshAdminStats();
+    if (fresh) {
+      return this.readFreshAdminStats();
+    }
     // Job writes must not invalidate this cache: traffic would disable caching entirely.
     const now = Date.now();
     if (this.adminStatsCache) {
@@ -1664,7 +1762,9 @@ export class JsonStore {
   }
 
   private async refreshAdminStats(now = Date.now()) {
-    if (this.adminStatsPromise) return this.adminStatsPromise;
+    if (this.adminStatsPromise) {
+      return this.adminStatsPromise;
+    }
     this.adminStatsPromise = Promise.resolve()
       .then(() => this.statsReader!.request('adminStats', { now, days: usageChartDays }, 3_000))
       .then((value) => {
@@ -1682,13 +1782,17 @@ export class JsonStore {
   }
 
   private async ensureLoaded() {
-    if (this.db!) return;
+    if (this.db!) {
+      return;
+    }
     this.openSqlite();
     this.createSchema();
     this.prepareStatements();
     this.openReadWorkers();
     this.db = this.hasSqliteData() ? this.loadFromSqlite() : trimDb(cloneDb(defaultDb));
-    if (!this.hasSqliteData()) this.replaceAll(this.db!);
+    if (!this.hasSqliteData()) {
+      this.replaceAll(this.db!);
+    }
   }
 
   async readRaw() {
@@ -1705,8 +1809,9 @@ export class JsonStore {
 
   async write(db: DatabaseInput) {
     await this.ensureLoaded();
-    if (eventAuthorityEnabled(this.sqlite!))
+    if (eventAuthorityEnabled(this.sqlite!)) {
       throw new Error('A full legacy-state replacement cannot overwrite event authority.');
+    }
     this.flushPendingPersistSync();
     const safeDb = trimDb(normalizeDb(db));
     this.replaceAll(safeDb);
@@ -1727,6 +1832,8 @@ export class JsonStore {
     return this.queue as Promise<{ version: number; commitSeq: string }>;
   }
 
+  // 由持久化事务调用；候选内存只用于核验，查询行最终由已提交事实投影生成。
+  // 若末端发现重复命令，抛出信号让外层事务连同此前写入的受保护输入一起回滚。
   private persistDomainFacts(
     scope: Scope,
     changes: Changes,
@@ -1738,21 +1845,26 @@ export class JsonStore {
       string,
       { item: Record<string, unknown> | null; order?: number }
     >();
-    for (const change of changes.upserts)
+    for (const change of changes.upserts) {
       candidateRows.set(`${change.collection}:${change.id}`, {
         item: JSON.parse(change.data!) as Record<string, unknown>,
         order: change.order,
       });
-    for (const change of changes.deletes)
+    }
+    for (const change of changes.deletes) {
       candidateRows.set(`${change.collection}:${change.id}`, { item: null });
+    }
     const candidates = { settings: candidateSettings, rows: candidateRows };
     const relatedStreams = (supplied: StreamProjection[]): StreamProjection[] => {
       const streams = new Map(supplied.map((stream) => [stream.streamId, stream]));
       const include = (id: string) => {
         if (!streams.has(id)) {
           const stream = readStreamProjection(this.sqlite!, id);
-          if (stream) streams.set(id, stream);
-          else throw new Error(`Unrecorded domain mutation: ${id}`);
+          if (stream) {
+            streams.set(id, stream);
+          } else {
+            throw new Error(`Unrecorded domain mutation: ${id}`);
+          }
         }
       };
       include('sharing:default');
@@ -1766,18 +1878,20 @@ export class JsonStore {
               ['queued', 'pending', 'running'].includes(
                 (JSON.parse(prior.data) as StoreItem).status!,
               )
-            )
+            ) {
               throw new Error(
                 `An active job cannot disappear without a lifecycle fact: ${change.id}`,
               );
+            }
             if (
               !scope.domainBatch?.events.some(
                 (event) =>
                   event.eventType === 'JobHistoryRetired' &&
                   (event.payload.jobIds as string[]).includes(change.id),
               )
-            )
+            ) {
               throw new Error(`Unrecorded job history retirement ${change.id}`);
+            }
             continue;
           }
           include(`request:${item.requestId || `legacy-${item.id}`}`);
@@ -1789,11 +1903,12 @@ export class JsonStore {
                 event.eventType === 'ArtifactHistoryRetired' &&
                 event.payload.artifactId === change.id,
             )
-          )
+          ) {
             throw new Error(`Unrecorded artifact history retirement ${change.id}`);
-          if (readStreamProjection(this.sqlite!, `artifact:${change.id}`))
+          }
+          if (readStreamProjection(this.sqlite!, `artifact:${change.id}`)) {
             include(`artifact:${change.id}`);
-          else if (
+          } else if (
             !supplied.some(
               (stream) =>
                 stream.streamKind === 'request' &&
@@ -1802,15 +1917,19 @@ export class JsonStore {
           ) {
             const image = change.data ? (JSON.parse(change.data) as StoreItem) : null,
               job = image?.jobId ? this.selectItemById('jobs', image.jobId) : null;
-            if (!job) throw new Error(`Unrecorded artifact mutation ${change.id}`);
+            if (!job) {
+              throw new Error(`Unrecorded artifact mutation ${change.id}`);
+            }
             include(`request:${job.requestId || `legacy-${job.id}`}`);
           }
-        } else if (change.collection === 'accounts') include(`account:${change.id}`);
-        else if (change.collection === 'users') {
+        } else if (change.collection === 'accounts') {
+          include(`account:${change.id}`);
+        } else if (change.collection === 'users') {
           include('sharing:default');
           const sharing = streams.get('sharing:default')!.projection;
-          if (!(sharing?.memberEligibility as Record<string, unknown> | undefined)?.[change.id])
+          if (!(sharing?.memberEligibility as Record<string, unknown> | undefined)?.[change.id]) {
             throw new Error(`Unrecorded member eligibility: ${change.id}`);
+          }
         }
       }
       return [...streams.values()];
@@ -1818,17 +1937,20 @@ export class JsonStore {
     if (scope.domainBatch) {
       const appended = appendDomainCommit(this.sqlite!, scope.domainBatch, {
         project: (sqlite, commit, streams) => {
-          if (authoritative)
+          if (authoritative) {
             written = applyEventProjection(sqlite, commit, relatedStreams(streams), {
               verify: true,
               candidates,
             });
-          else
+          } else {
             written = coreProjectionRows(sqlite, commit, streams).rows.filter((row) => row.remove);
+          }
         },
       });
       // Roll back the caller's protected writes as well as discarding its candidate cache.
-      if (appended.duplicate) throw new DuplicateDomainCommand(appended.receipt);
+      if (appended.duplicate) {
+        throw new DuplicateDomainCommand(appended.receipt);
+      }
     } else if (authoritative) {
       const clock = this.sqlite!.prepare(
         'SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1',
@@ -1850,7 +1972,9 @@ export class JsonStore {
   }
 
   private refreshDomainRows(written: ProjectionRow[]): void {
-    if (!written.length) return;
+    if (!written.length) {
+      return;
+    }
     const settings = this.statements!.selectSettings.get()?.value;
     if (settings) {
       this.settingsState = settings;
@@ -1861,16 +1985,23 @@ export class JsonStore {
         id = String(row.item.id),
         index = this.db![collection].findIndex((item) => item.id === id);
       if (row.remove) {
-        if (index >= 0) this.db![collection].splice(index, 1);
+        if (index >= 0) {
+          this.db![collection].splice(index, 1);
+        }
         this.rowState[collection].delete(id);
         this.orderKeys[collection].delete(id);
         continue;
       }
       const persisted = this.statements!.selectById[collection].get({ id });
-      if (!persisted) continue;
+      if (!persisted) {
+        continue;
+      }
       const item = JSON.parse(persisted.data) as StoreItem;
-      if (index >= 0) this.db![collection][index] = item;
-      else this.db![collection].unshift(item);
+      if (index >= 0) {
+        this.db![collection][index] = item;
+      } else {
+        this.db![collection].unshift(item);
+      }
       this.rowState[collection].set(id, { data: persisted.data, order: persisted.orderValue });
       this.orderKeys[collection].set(id, persisted.orderValue);
     }
@@ -1878,30 +2009,32 @@ export class JsonStore {
 
   private includeRetirementChanges(scope: Scope, changes: Changes): void {
     for (const event of scope.domainBatch?.events || []) {
-      const collection =
-        event.eventType === 'JobHistoryRetired'
-          ? 'jobs'
-          : event.eventType === 'ArtifactHistoryRetired'
-            ? 'images'
-            : null;
-      if (!collection) continue;
-      const ids =
-        event.eventType === 'JobHistoryRetired'
-          ? event.payload.jobIds
-          : event.eventType === 'ArtifactHistoryRetired'
-            ? [event.payload.artifactId]
-            : [];
-      for (const id of ids)
+      let collection: 'jobs' | 'images';
+      let ids: string[];
+      if (event.eventType === 'JobHistoryRetired') {
+        collection = 'jobs';
+        ids = event.payload.jobIds;
+      } else if (event.eventType === 'ArtifactHistoryRetired') {
+        collection = 'images';
+        ids = [event.payload.artifactId];
+      } else {
+        continue;
+      }
+      for (const id of ids) {
         if (
           !changes.deletes.some((change) => change.collection === collection && change.id === id) &&
           this.statements!.selectById[collection].get({ id })
-        )
+        ) {
           changes.deletes.push({ collection, id });
+        }
+      }
     }
   }
 
   private trimCommandHistory(db: StoreDatabase, scope: Scope): void {
-    if (process.env.NO_AUTO_DELETE === 'true') return;
+    if (process.env.NO_AUTO_DELETE === 'true') {
+      return;
+    }
     const now = Date.now(),
       retainMs = clampNumber(
         process.env.JOB_HISTORY_RETENTION_MS ?? 7 * 24 * 60 * 60 * 1000,
@@ -1913,20 +2046,23 @@ export class JsonStore {
         retired = new Set<string>();
       for (const job of db.jobs) {
         const updated = Date.parse(job.updatedAt || job.createdAt || '');
-        if (!this.canRetireJobHistory(job) || (updated && now - updated <= retainMs)) continue;
+        if (!this.canRetireJobHistory(job) || (updated && now - updated <= retainMs)) {
+          continue;
+        }
         const stream = `request:${job.requestId || `legacy-${job.id}`}`,
           ids = groups.get(stream) || [];
         ids.push(job.id);
         groups.set(stream, ids);
         retired.add(job.id);
       }
-      for (const [streamId, jobIds] of groups)
+      for (const [streamId, jobIds] of groups) {
         recordDomainEvent(db, {
           eventType: 'JobHistoryRetired',
           streamId,
           occurredAt: now,
           payload: { jobIds, reason: 'automatic_retention', at: now },
         });
+      }
       db.jobs = db.jobs.filter((job) => !retired.has(job.id));
     }
     if (scope.full || scope.collections.includes('images')) {
@@ -1941,6 +2077,11 @@ export class JsonStore {
     }
   }
 
+  /**
+   * 串行处理命令：先刷完旧写入、核验当前权限，再凭稳定键领取原回执或执行新决定。
+   * mutator 可等待外部准备，因此不持有 SQLite 写事务；事实、回执和查询投影在随后短事务中提交。
+   * 失败或末端去重后从已提交库重载内存，不能继续接受尚未提交的候选状态。
+   */
   async update<T>(
     mutator: (db: StoreDatabase) => T | Promise<T>,
     options: PersistenceOptions<T> = {},
@@ -1957,11 +2098,12 @@ export class JsonStore {
           if (metadata?.commandId) {
             const prior = readCommandReceipt(this.sqlite!, metadata.commandId);
             if (prior) {
-              if (!metadata.fingerprint || prior.fingerprint !== metadata.fingerprint)
+              if (!metadata.fingerprint || prior.fingerprint !== metadata.fingerprint) {
                 throw Object.assign(
                   new Error(`Command fingerprint conflict: ${metadata.commandId}`),
                   { statusCode: 409 },
                 );
+              }
               options.generationPayloadClaim?.release();
               return cloneValue(prior.receipt) as T;
             }
@@ -1980,10 +2122,13 @@ export class JsonStore {
             );
           }
           const persistOptions = resolvePersistenceOptions(options, result, this.db!);
-          if (eventAuthorityEnabled(this.sqlite!)) persistOptions.immediate = true;
+          if (eventAuthorityEnabled(this.sqlite!)) {
+            persistOptions.immediate = true;
+          }
           const preliminaryScope = persistenceScope(persistOptions);
-          if (shouldPersistUpdate(result, persistOptions) && !preliminaryScope.hasDirtyRows)
+          if (shouldPersistUpdate(result, persistOptions) && !preliminaryScope.hasDirtyRows) {
             this.trimCommandHistory(this.db!, preliminaryScope);
+          }
           const domainBatch = finishDomainCommand(this.db!);
           if (
             metadata?.commandId &&
@@ -1992,8 +2137,9 @@ export class JsonStore {
             !domainBatch?.events.length
           ) {
             const prior = readCommandReceipt(this.sqlite!, metadata.commandId);
-            if (prior?.fingerprint === metadata.fingerprint)
+            if (prior?.fingerprint === metadata.fingerprint) {
               throw new DuplicateDomainCommand(prior.receipt);
+            }
             throw Object.assign(new Error('操作已被更新或未产生可提交事实，请刷新后确认结果'), {
               statusCode: 409,
             });
@@ -2008,15 +2154,17 @@ export class JsonStore {
             persistOptions.immediate = true;
           }
           const snapshot = cloneValue(result);
-          if (persistOptions.domainBatch && options.persist === false)
+          if (persistOptions.domainBatch && options.persist === false) {
             throw new Error('A domain command cannot discard its recorded facts.');
+          }
           if (persistOptions.domainBatch || shouldPersistUpdate(result, persistOptions)) {
             const scope = persistenceScope(persistOptions);
             if (shouldDeferPersist(scope, persistOptions)) {
               this.schedulePersist(scope);
             } else {
-              if (!scope.hasDirtyRows)
+              if (!scope.hasDirtyRows) {
                 trimDb(this.db!, { collections: scope.full ? null : scope.collections });
+              }
               this.persistIncremental(this.db!, scope);
             }
             // 新父记录已进入活动 SQL 统计；下一项串行受理开始前移交临时正文占用。
@@ -2024,7 +2172,9 @@ export class JsonStore {
           }
           return snapshot;
         } catch (error) {
-          if (this.db) finishDomainCommand(this.db);
+          if (this.db) {
+            finishDomainCommand(this.db);
+          }
           // SQL 回滚不会还原 JS 对象；只在失败时重载已提交数据，避免每次预扣复制整个热缓存。
           // 先清空引用，若重载也失败，后续请求不得继续使用污染的内存状态。
           this.clearPendingPersist();
@@ -2058,12 +2208,16 @@ export class JsonStore {
   }
 
   flushSync() {
-    if (!this.db!) return;
+    if (!this.db!) {
+      return;
+    }
     this.flushPendingPersistSync();
   }
 
   async close() {
-    if (this.sqlite!) this.flushPendingPersistSync();
+    if (this.sqlite!) {
+      this.flushPendingPersistSync();
+    }
     await Promise.allSettled(
       [this.statsReader?.close(), this.adminReader?.close()].filter(Boolean as unknown as Present),
     );
@@ -2083,7 +2237,9 @@ export class JsonStore {
 
   private schedulePersist(scope: Scope) {
     this.pendingPersistScope = mergePersistenceScopes(this.pendingPersistScope, scope);
-    if (this.pendingPersistTimer) return;
+    if (this.pendingPersistTimer) {
+      return;
+    }
     this.pendingPersistTimer = setTimeout(() => {
       this.pendingPersistTimer = null;
       try {
@@ -2097,14 +2253,17 @@ export class JsonStore {
   }
 
   private flushPendingPersistSync() {
-    if (!this.pendingPersistScope) return;
+    if (!this.pendingPersistScope) {
+      return;
+    }
     if (this.pendingPersistTimer) {
       clearTimeout(this.pendingPersistTimer);
       this.pendingPersistTimer = null;
     }
     const scope = this.pendingPersistScope;
-    if (!scope.hasDirtyRows)
+    if (!scope.hasDirtyRows) {
       trimDb(this.db!, { collections: scope.full ? null : scope.collections });
+    }
     this.persistIncremental(this.db!, scope);
     // 写失败时保留待写范围；下一次更新必须先重试它，不能静默丢掉已接受的延迟变更。
     this.pendingPersistScope = null;
@@ -2116,7 +2275,9 @@ export class JsonStore {
     params: Record<string, unknown> = {},
   ): StoreItem[] {
     const table = collectionTables[collection];
-    if (!table) return [];
+    if (!table) {
+      return [];
+    }
     const rows = this.sqlite!.prepare<unknown[], { data: string }>(
       `SELECT data FROM ${table} ${clause}`,
     ).all(params);
@@ -2125,7 +2286,9 @@ export class JsonStore {
 
   selectItemById<C extends Collection>(collection: C, id: string): StoreDatabase[C][number] | null {
     const statement = this.statements!.selectById[collection];
-    if (!statement || !id) return null;
+    if (!statement || !id) {
+      return null;
+    }
     const row = statement.get({ id: String(id) });
     return row ? safeJson(row.data, null) : null;
   }
@@ -2140,10 +2303,14 @@ export class JsonStore {
   ): StoreDatabase[C][number] | null {
     // 仅在串行 update 内使用：冷任务仍是旧行，必须恢复原排序及已提交快照，不能按新行分配顺序。
     const cached = this.db![collection].find((job) => job.id === id);
-    if (cached) return cached as StoreDatabase[C][number];
+    if (cached) {
+      return cached as StoreDatabase[C][number];
+    }
     const row = this.statements!.selectById[collection].get({ id });
     const job = row ? safeJson(row.data, null) : null;
-    if (!job) return null;
+    if (!job) {
+      return null;
+    }
     const order = Number(row!.orderValue);
     this.rowState[collection].set(id, { data: row!.data, order });
     this.orderKeys[collection].set(id, order);
@@ -2231,7 +2398,9 @@ export class JsonStore {
 
   private countRecords(collection: Collection) {
     const statement = this.statements!.countRecords[collection];
-    if (!statement) return 0;
+    if (!statement) {
+      return 0;
+    }
     return Number(statement.get()?.count || 0);
   }
 
@@ -2275,7 +2444,9 @@ export class JsonStore {
   }
 
   private openSqlite() {
-    if (this.sqlite!) return;
+    if (this.sqlite!) {
+      return;
+    }
     const startedAt = Date.now();
     this.sqlite = new Database(this.dbPath);
     this.sqlite!.pragma('journal_mode = WAL');
@@ -2292,7 +2463,9 @@ export class JsonStore {
   }
 
   private prepareStatements() {
-    if (this.statements) return;
+    if (this.statements) {
+      return;
+    }
     const db = drizzle(this.sqlite!);
     this.statements = {
       hasSettings: db
@@ -2561,7 +2734,9 @@ export class JsonStore {
 
     for (const collection of collections) {
       const rows = this.runtimeRowsForCollection(collection);
-      if (rows.length < totalCounts[collection]) this.partialCollections.add(collection);
+      if (rows.length < totalCounts[collection]) {
+        this.partialCollections.add(collection);
+      }
       db[collection] = rows
         .map((row) => {
           rowState[collection].set(row.id, { data: row.data, order: Number(row.orderValue) });
@@ -2583,7 +2758,9 @@ export class JsonStore {
 
   private runtimeRowsForCollection(collection: Collection) {
     const table = collectionTables[collection];
-    if (!table) return [];
+    if (!table) {
+      return [];
+    }
     if (collection === 'jobs') {
       // Read the small active index separately; OR makes SQLite scan all history.
       const active = this.sqlite!.prepare<unknown[], DataRow>(
@@ -2631,8 +2808,9 @@ export class JsonStore {
   }
 
   private replaceAll(db: DatabaseInput) {
-    if (eventAuthorityEnabled(this.sqlite!))
+    if (eventAuthorityEnabled(this.sqlite!)) {
       throw new Error('A full legacy-state replacement cannot overwrite event authority.');
+    }
     const safeDb = trimDb(normalizeDb(db));
     const archive = fairQuotaArchive(safeDb.settings);
     safeDb.settings = archive.settings;
@@ -2705,34 +2883,42 @@ export class JsonStore {
     const existing = this.sqlite!.prepare(
       'SELECT payload FROM generation_contexts WHERE context_ref=?',
     ).get(contextRef) as { payload: string } | undefined;
-    if (existing && existing.payload !== row.normalization_context)
+    if (existing && existing.payload !== row.normalization_context) {
       throw new Error(`Protected normalization context conflict: ${contextRef}`);
+    }
     this.sqlite!.prepare(
       'INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)',
     ).run(contextRef, row.normalization_context);
-    if (!eventAuthorityEnabled(this.sqlite!)) this.statements!.insertGenerationIdempotency.run(row);
+    if (!eventAuthorityEnabled(this.sqlite!)) {
+      this.statements!.insertGenerationIdempotency.run(row);
+    }
   }
 
   private assertDomainFactWrites(
     scope: Scope,
     settlements: (typeof fairQuotaSettlements.$inferInsert)[],
   ): void {
-    if (!eventAuthorityEnabled(this.sqlite!)) return;
+    if (!eventAuthorityEnabled(this.sqlite!)) {
+      return;
+    }
     const events = scope.domainBatch?.events || [];
     for (const row of settlements) {
       const prior = this.statements!.selectFairQuotaSettlement.get({ jobId: row.job_id });
       if (
         prior &&
         canonicalJson(JSON.parse(prior.charge)) === canonicalJson(JSON.parse(row.charge))
-      )
+      ) {
         continue;
+      }
       const recorded = events.some(
         (event) =>
           (event.eventType === 'GenerationSettled' || event.eventType === 'GenerationRefunded') &&
           event.payload.jobId === row.job_id &&
           canonicalJson(event.payload.charge) === canonicalJson(JSON.parse(row.charge)),
       );
-      if (!recorded) throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
+      if (!recorded) {
+        throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
+      }
     }
     if (scope.generationRequest) {
       const row = scope.generationRequest;
@@ -2744,7 +2930,9 @@ export class JsonStore {
           event.payload.inputSha256 ===
             crypto.createHash('sha256').update(row.payload).digest('hex'),
       );
-      if (!recorded) throw new Error(`Unrecorded generation input ${row.id}`);
+      if (!recorded) {
+        throw new Error(`Unrecorded generation input ${row.id}`);
+      }
     }
     if (scope.generationIdempotency) {
       const row = scope.generationIdempotency;
@@ -2776,11 +2964,14 @@ export class JsonStore {
         }
         return false;
       });
-      if (!recorded)
+      if (!recorded) {
         throw new Error(`Unrecorded generation idempotency ${generationContextRef(row)}`);
+      }
     }
   }
 
+  // 全集合差异与 dirtyRows 路径共用提交边界：受保护输入、领域事实和查询投影同成同败。
+  // 事务成功后才更新内存快照并发布通知，避免观察者读到未提交的候选变更。
   private persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
@@ -2792,14 +2983,17 @@ export class JsonStore {
       !scope.generationIdempotency &&
       !scope.domainBatch &&
       !hasMemberSessionChanges(scope)
-    )
+    ) {
       return;
+    }
     if (scope.hasDirtyRows) {
       const fullCollections = scope.collections.filter(
         (collection) => !scope.dirtyRows[collection]?.size,
       );
       this.assertFullCollectionsAreLoaded(fullCollections);
-      if (fullCollections.length) trimDb(db, { collections: fullCollections });
+      if (fullCollections.length) {
+        trimDb(db, { collections: fullCollections });
+      }
       this.persistDirtyRows(db, scope, startedAt);
       return;
     }
@@ -2833,8 +3027,9 @@ export class JsonStore {
       !archive.rows.length &&
       !scope.domainBatch &&
       !hasMemberSessionChanges(scope)
-    )
+    ) {
       return;
+    }
 
     const event = this.describeCommit(
       changes,
@@ -2847,34 +3042,49 @@ export class JsonStore {
     const applyChanges = this.sqlite!.transaction(() => {
       const authoritative = eventAuthorityEnabled(this.sqlite!);
       this.assertDomainFactWrites(scope, archive.rows);
-      if (!authoritative) this.persistFairQuotaSettlements(archive.rows);
+      if (!authoritative) {
+        this.persistFairQuotaSettlements(archive.rows);
+      }
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
-      if (scope.generationRequest)
+      if (scope.generationRequest) {
         this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged && !authoritative)
+      }
+      if (changes.settingsChanged && !authoritative) {
         this.statements!.replaceSettings.run({ value: snapshot.settingsData });
+      }
       for (const change of changes.deletes) {
-        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection))
+        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection)) {
           this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        }
       }
       for (const change of changes.upserts) {
-        if (!authoritative || !['jobs', 'accounts', 'users', 'images'].includes(change.collection))
+        if (
+          !authoritative ||
+          !['jobs', 'accounts', 'users', 'images'].includes(change.collection)
+        ) {
           this.statements!.upsertRecord[change.collection].run(change.sql);
+        }
       }
-      if (!authoritative)
+      if (!authoritative) {
         this.persistQueueSequence(
           changes.upserts
             .filter((change) => change.collection === 'jobs')
             .map((change) => change.sql!),
         );
-      if (scope.generationIdempotency)
+      }
+      if (scope.generationIdempotency) {
         this.persistGenerationIdempotency(scope.generationIdempotency);
+      }
       this.persistMemberSessions(scope, event);
       projectedRows = this.persistDomainFacts(scope, changes, archive.settings);
     });
     applyChanges();
-    if (scope.includeSettings) db.settings = archive.settings;
-    if (scope.includeSettings) this.settingsState = snapshot.settingsData;
+    if (scope.includeSettings) {
+      db.settings = archive.settings;
+    }
+    if (scope.includeSettings) {
+      this.settingsState = snapshot.settingsData;
+    }
     for (const collection of scope.full ? collections : scope.collections) {
       this.rowState[collection] = snapshot.rowState[collection];
       this.orderKeys[collection] = snapshot.orderKeys[collection];
@@ -2885,7 +3095,9 @@ export class JsonStore {
         ? 'full'
         : ['settings', ...scope.collections]
             .filter((item, index, array) => {
-              if (item !== 'settings') return true;
+              if (item !== 'settings') {
+                return true;
+              }
               return scope.includeSettings && array.indexOf(item) === index;
             })
             .join(',');
@@ -2912,7 +3124,9 @@ export class JsonStore {
     if (scope.includeSettings) {
       const nextSettings = JSON.stringify(archive.settings);
       changes.settingsChanged = this.settingsState !== nextSettings;
-      if (changes.settingsChanged) changes.nextSettings = nextSettings;
+      if (changes.settingsChanged) {
+        changes.nextSettings = nextSettings;
+      }
     }
 
     for (const collection of scope.collections) {
@@ -2928,7 +3142,9 @@ export class JsonStore {
       for (const id of dirtyIds) {
         const index = dirtyIndexes.get(id) ?? -1;
         if (index < 0) {
-          if (previousRows.has(id)) changes.deletes.push({ collection, id });
+          if (previousRows.has(id)) {
+            changes.deletes.push({ collection, id });
+          }
           continue;
         }
         const item = items[index];
@@ -2977,8 +3193,9 @@ export class JsonStore {
       !archive.rows.length &&
       !scope.domainBatch &&
       !hasMemberSessionChanges(scope)
-    )
+    ) {
       return;
+    }
 
     const event = this.describeCommit(
       changes,
@@ -2991,35 +3208,50 @@ export class JsonStore {
     const applyChanges = this.sqlite!.transaction(() => {
       const authoritative = eventAuthorityEnabled(this.sqlite!);
       this.assertDomainFactWrites(scope, archive.rows);
-      if (!authoritative) this.persistFairQuotaSettlements(archive.rows);
+      if (!authoritative) {
+        this.persistFairQuotaSettlements(archive.rows);
+      }
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
-      if (scope.generationRequest)
+      if (scope.generationRequest) {
         this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged && !authoritative)
+      }
+      if (changes.settingsChanged && !authoritative) {
         this.statements!.replaceSettings.run({ value: changes.nextSettings });
+      }
       for (const change of changes.deletes) {
-        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection))
+        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection)) {
           this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        }
       }
       for (const change of changes.upserts) {
-        if (!authoritative || !['jobs', 'accounts', 'users', 'images'].includes(change.collection))
+        if (
+          !authoritative ||
+          !['jobs', 'accounts', 'users', 'images'].includes(change.collection)
+        ) {
           this.statements!.upsertRecord[change.collection].run(change.sql);
+        }
       }
-      if (!authoritative)
+      if (!authoritative) {
         this.persistQueueSequence(
           changes.upserts
             .filter((change) => change.collection === 'jobs')
             .map((change) => change.sql!),
         );
-      if (scope.generationIdempotency)
+      }
+      if (scope.generationIdempotency) {
         this.persistGenerationIdempotency(scope.generationIdempotency);
+      }
       this.persistMemberSessions(scope, event);
       projectedRows = this.persistDomainFacts(scope, changes, archive.settings);
     });
     applyChanges();
-    if (scope.includeSettings) db.settings = archive.settings;
+    if (scope.includeSettings) {
+      db.settings = archive.settings;
+    }
 
-    if (changes.settingsChanged) this.settingsState = changes.nextSettings!;
+    if (changes.settingsChanged) {
+      this.settingsState = changes.nextSettings!;
+    }
     for (const change of changes.deletes) {
       this.rowState[change.collection]?.delete(change.id);
       this.orderKeys[change.collection]?.delete(change.id);
@@ -3069,7 +3301,9 @@ export class JsonStore {
   }
 
   private trimRuntimePartialCaches() {
-    if (!this.db!) return;
+    if (!this.db!) {
+      return;
+    }
     if (this.trimRuntimeCollection('images', runtimeCacheLimit('images'))) {
       this.partialCollections.add('images');
     }
@@ -3091,7 +3325,9 @@ export class JsonStore {
       this.db!.jobs = retained;
       this.partialCollections.add('jobs');
       for (const job of removed) {
-        if (!job?.id) continue;
+        if (!job?.id) {
+          continue;
+        }
         this.rowState.jobs?.delete(job.id);
         this.orderKeys.jobs?.delete(job.id);
       }
@@ -3100,11 +3336,15 @@ export class JsonStore {
 
   private trimRuntimeCollection(collection: Collection, limit: number) {
     const items = Array.isArray(this.db?.[collection]) ? this.db![collection] : [];
-    if (items.length <= limit) return 0;
+    if (items.length <= limit) {
+      return 0;
+    }
     const removed = items.slice(limit);
     this.db![collection].splice(limit);
     for (const item of removed) {
-      if (!item?.id) continue;
+      if (!item?.id) {
+        continue;
+      }
       this.rowState[collection]?.delete(item.id);
       this.orderKeys[collection]?.delete(item.id);
     }
@@ -3112,18 +3352,25 @@ export class JsonStore {
   }
 
   private refreshPartialCollectionState(collection: Collection) {
-    if (!collectionTables[collection]) return;
+    if (!collectionTables[collection]) {
+      return;
+    }
     const loaded = Array.isArray(this.db?.[collection]) ? this.db![collection].length : 0;
     const total = this.countRecords(collection);
-    if (loaded < total) this.partialCollections.add(collection);
-    else this.partialCollections.delete(collection);
+    if (loaded < total) {
+      this.partialCollections.add(collection);
+    } else {
+      this.partialCollections.delete(collection);
+    }
   }
 
   private async readLegacyOrDefault() {
     const candidates = [this.legacyDbPath, this.legacyBackupPath];
     let lastError = null;
     for (const filePath of candidates) {
-      if (!existsSync(filePath)) continue;
+      if (!existsSync(filePath)) {
+        continue;
+      }
       try {
         runtimeLog(`Reading legacy JSON: ${filePath} (${formatFileSize(filePath)})`);
         const raw = await readFile(filePath, 'utf8');
@@ -3135,7 +3382,9 @@ export class JsonStore {
         runtimeLog(`Failed to read legacy JSON ${filePath}: ${(error as Error).message}`);
       }
     }
-    if (lastError) throw lastError;
+    if (lastError) {
+      throw lastError;
+    }
     return cloneDb(defaultDb);
   }
 
@@ -3144,10 +3393,14 @@ export class JsonStore {
     this.statements!.setMeta.run({ key: 'schema_version', value: '1' });
     this.statements!.setMeta.run({ key: 'last_migrated_at', value: migratedAt });
     // 私有部署保护：迁移后保留旧版 JSON 文件。
-    if (process.env.NO_AUTO_DELETE === 'true') return;
+    if (process.env.NO_AUTO_DELETE === 'true') {
+      return;
+    }
     const deleted = [];
     for (const filePath of [this.legacyDbPath, this.legacyBackupPath]) {
-      if (!existsSync(filePath)) continue;
+      if (!existsSync(filePath)) {
+        continue;
+      }
       try {
         await unlink(filePath);
         deleted.push(filePath);
@@ -3157,10 +3410,11 @@ export class JsonStore {
       }
     }
     this.statements!.setMeta.run({ key: 'legacy_json_deleted', value: JSON.stringify(deleted) });
-    if (deleted.length)
+    if (deleted.length) {
       console.log(
         `Migrated legacy JSON data to SQLite and deleted ${deleted.length} old JSON file(s).`,
       );
+    }
   }
 }
 
@@ -3225,7 +3479,9 @@ function collectPersistenceChanges({
     const previous = previousRows[collection] || new Map();
     const next = nextRows[collection] || new Map();
     for (const id of previous.keys()) {
-      if (!next.has(id)) deletes.push({ collection, id });
+      if (!next.has(id)) {
+        deletes.push({ collection, id });
+      }
     }
     for (const [id, row] of next) {
       const old = previous.get(id);
@@ -3242,13 +3498,19 @@ function collectPersistenceChanges({
 }
 
 function shouldPersistUpdate(result: unknown, options: ResolvedOptions = {}) {
-  if (options.persist === false) return false;
-  if (typeof options.shouldPersist === 'function') return Boolean(options.shouldPersist(result));
+  if (options.persist === false) {
+    return false;
+  }
+  if (typeof options.shouldPersist === 'function') {
+    return Boolean(options.shouldPersist(result));
+  }
   return true;
 }
 
 function shouldDeferPersist(scope: Scope, options: ResolvedOptions = {}) {
-  if (!sqliteBatchWritesEnabled()) return false;
+  if (!sqliteBatchWritesEnabled()) {
+    return false;
+  }
   if (
     scope.domainBatch ||
     options.immediate === true ||
@@ -3257,8 +3519,9 @@ function shouldDeferPersist(scope: Scope, options: ResolvedOptions = {}) {
     options.generationIdempotency ||
     options.generationPayloadClaim ||
     hasMemberSessionChanges(scope)
-  )
+  ) {
     return false;
+  }
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
@@ -3279,15 +3542,20 @@ function resolvePersistenceOptions<T>(
     'memberSessionOwner',
     'memberSessionExpiry',
   ]) {
-    if (typeof resolved[key] === 'function')
+    if (typeof resolved[key] === 'function') {
       resolved[key] = (resolved[key] as (result: T, db: StoreDatabase) => unknown)(result, db);
+    }
   }
   return resolved as ResolvedOptions;
 }
 
 function mergePersistenceScopes(current: Scope | null, next: Scope | null): Scope | null {
-  if (!current) return clonePersistenceScope(next);
-  if (!next) return clonePersistenceScope(current);
+  if (!current) {
+    return clonePersistenceScope(next);
+  }
+  if (!next) {
+    return clonePersistenceScope(current);
+  }
   if (current.full || next.full) {
     return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
   }
@@ -3304,9 +3572,15 @@ function mergePersistenceScopes(current: Scope | null, next: Scope | null): Scop
         delete dirtyRows[collection];
         continue;
       }
-      if (fullCollections.has(collection)) continue;
-      if (!dirtyRows[collection]) dirtyRows[collection] = new Set();
-      for (const id of ids) dirtyRows[collection].add(id);
+      if (fullCollections.has(collection)) {
+        continue;
+      }
+      if (!dirtyRows[collection]) {
+        dirtyRows[collection] = new Set();
+      }
+      for (const id of ids) {
+        dirtyRows[collection].add(id);
+      }
     }
   }
 
@@ -3320,9 +3594,12 @@ function mergePersistenceScopes(current: Scope | null, next: Scope | null): Scop
 }
 
 function clonePersistenceScope(scope: Scope | null): Scope | null {
-  if (!scope) return null;
-  if (scope.full)
+  if (!scope) {
+    return null;
+  }
+  if (scope.full) {
     return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
+  }
   const dirtyRows: Partial<Record<Collection, Set<string>>> = {};
   for (const [collection, ids] of Object.entries(scope.dirtyRows || {})) {
     dirtyRows[collection as Collection] = new Set(ids || []);
@@ -3355,7 +3632,7 @@ function persistenceScope(options: ResolvedOptions = {}): Scope {
     memberSessionOwner: options.memberSessionOwner,
     memberSessionExpiry: options.memberSessionExpiry,
   };
-  if (options.full === true)
+  if (options.full === true) {
     return {
       full: true,
       includeSettings: true,
@@ -3364,13 +3641,14 @@ function persistenceScope(options: ResolvedOptions = {}): Scope {
       hasDirtyRows: false,
       ...writes,
     };
+  }
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
   const dirtyCollections = Object.keys(dirtyRows);
   const raw =
     options.collections ??
     options.changedCollections ??
     (dirtyCollections.length ? dirtyCollections : undefined);
-  if (raw === undefined || raw === null)
+  if (raw === undefined || raw === null) {
     return {
       full: true,
       includeSettings: true,
@@ -3379,6 +3657,7 @@ function persistenceScope(options: ResolvedOptions = {}): Scope {
       hasDirtyRows: false,
       ...writes,
     };
+  }
   const values = Array.isArray(raw) ? raw : [raw];
   const includeSettings = values.includes('settings') || options.includeSettings === true;
   const targetCollections = normalizeCollectionList([...values, ...dirtyCollections]);
@@ -3393,13 +3672,17 @@ function persistenceScope(options: ResolvedOptions = {}): Scope {
 }
 
 function normalizeCollectionList(value: unknown): Collection[] | null {
-  if (value === undefined || value === null) return null;
+  if (value === undefined || value === null) {
+    return null;
+  }
   const values = Array.isArray(value) ? value : [value];
   const selected: Collection[] = [];
   const seen = new Set();
   for (const item of values) {
     const collection = String(item || '') as Collection;
-    if (!collections.includes(collection) || seen.has(collection)) continue;
+    if (!collections.includes(collection) || seen.has(collection)) {
+      continue;
+    }
     seen.add(collection);
     selected.push(collection);
   }
@@ -3408,14 +3691,27 @@ function normalizeCollectionList(value: unknown): Collection[] | null {
 
 function normalizeDirtyRows(value: unknown): Partial<Record<Collection, Set<string>>> {
   const dirtyRows: Partial<Record<Collection, Set<string>>> = {};
-  if (!value) return dirtyRows;
+  if (!value) {
+    return dirtyRows;
+  }
   const entries = value instanceof Map ? value.entries() : Object.entries(value);
   for (const [rawCollection, rawIds] of entries) {
     const collection = String(rawCollection || '') as Collection;
-    if (!collections.includes(collection)) continue;
-    const ids = rawIds instanceof Set ? [...rawIds] : Array.isArray(rawIds) ? rawIds : [rawIds];
+    if (!collections.includes(collection)) {
+      continue;
+    }
+    let ids: unknown[];
+    if (rawIds instanceof Set) {
+      ids = [...rawIds];
+    } else if (Array.isArray(rawIds)) {
+      ids = rawIds;
+    } else {
+      ids = [rawIds];
+    }
     const selected = ids.map((id) => String(id || '').trim()).filter(Boolean as unknown as Present);
-    if (!selected.length) continue;
+    if (!selected.length) {
+      continue;
+    }
     dirtyRows[collection] = new Set([...(dirtyRows[collection] || []), ...selected]);
   }
   return dirtyRows;
@@ -3481,24 +3777,29 @@ function domainRowValues(
   collection: ProjectionRow['collection'],
   item: Record<string, unknown>,
 ): Record<string, unknown> {
-  const fields =
-    collection === 'jobs'
-      ? criticalJobFields
-      : collection === 'accounts'
-        ? criticalAccountFields
-        : collection === 'users'
-          ? criticalMemberFields
-          : Object.keys(item);
+  let fields: string[];
+  if (collection === 'jobs') {
+    fields = criticalJobFields;
+  } else if (collection === 'accounts') {
+    fields = criticalAccountFields;
+  } else if (collection === 'users') {
+    fields = criticalMemberFields;
+  } else {
+    fields = Object.keys(item);
+  }
   const result: Record<string, unknown> = {};
   for (const key of fields) {
     let value = item[key];
-    if (value === undefined || value === null || value === '') continue;
-    if (collection === 'users' && key === 'discord')
+    if (value === undefined || value === null || value === '') {
+      continue;
+    }
+    if (collection === 'users' && key === 'discord') {
       value = Object.fromEntries(
         Object.entries(value as Record<string, unknown>).filter(([field]) =>
           ['id', 'guildId', 'checkedAt', 'member'].includes(field),
         ),
       );
+    }
     if (
       [
         'queueExpiresAt',
@@ -3511,14 +3812,18 @@ function domainRowValues(
       ].includes(key)
     ) {
       const timestamp = new Date(value as string | number).getTime();
-      if (Number.isFinite(timestamp)) value = timestamp;
+      if (Number.isFinite(timestamp)) {
+        value = timestamp;
+      }
     }
     result[key] = value;
   }
   return result;
 }
 function projectionDifference(actual: unknown, expected: unknown, at: string): string | null {
-  if (canonicalJson(actual) === canonicalJson(expected)) return null;
+  if (canonicalJson(actual) === canonicalJson(expected)) {
+    return null;
+  }
   if (
     actual &&
     expected &&
@@ -3531,11 +3836,15 @@ function projectionDifference(actual: unknown, expected: unknown, at: string): s
       const left = (actual as Record<string, unknown>)[key],
         right = (expected as Record<string, unknown>)[key];
       if (left === undefined || right === undefined) {
-        if (left !== right) return `${at}.${key}`;
+        if (left !== right) {
+          return `${at}.${key}`;
+        }
         continue;
       }
       const difference = projectionDifference(left, right, `${at}.${key}`);
-      if (difference) return difference;
+      if (difference) {
+        return difference;
+      }
     }
   }
   return at;
@@ -3549,8 +3858,9 @@ export function activateEventAuthority(sqlite: Database.Database): {
   upgradeEventAuthorityProjections(sqlite);
   importOpeningFacts(sqlite);
   return sqlite.transaction(() => {
-    if (sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get())
+    if (sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get()) {
       throw new Error('Recover running attempts before switching event authority.');
+    }
     verifyEventProjections(sqlite);
     const clock = sqlite
       .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
@@ -3574,23 +3884,31 @@ export function activateEventAuthority(sqlite: Database.Database): {
   })();
 }
 
+// v1/v2 升到 v3 时先重建事实投影，再补记旧查询行仍可证明的响应证据；缺失值保持未知。
+// 补充事实、核验、查询安装和最低 writer 版本同事务提交，任一步失败都保留原库。
 function upgradeEventAuthorityProjections(sqlite: Database.Database): void {
   sqlite.transaction(() => {
     const authority = readCompatibleEventAuthority(sqlite);
-    if (!upgradeEventReducers(sqlite)) return;
+    if (!upgradeEventReducers(sqlite)) {
+      return;
+    }
     // Old writers kept these observations only in query rows. Preserve their provenance before stricter verification.
     let cursor = '';
     for (;;) {
       const row = sqlite
         .prepare('SELECT id,data,request_id FROM jobs WHERE id>? ORDER BY id LIMIT 1')
         .get(cursor) as { id: string; data: string; request_id: string | null } | undefined;
-      if (!row) break;
+      if (!row) {
+        break;
+      }
       cursor = row.id;
       const observed = JSON.parse(row.data) as StoreItem,
         streamId = `request:${row.request_id || `legacy-${row.id}`}`;
       const state = readStreamProjection(sqlite, streamId)?.projection;
       const expected = (state?.jobs as Record<string, StoreItem> | undefined)?.[row.id];
-      if (!expected) continue;
+      if (!expected) {
+        continue;
+      }
       const response = {
         dispatchState: observed.upstreamStartedAt
           ? ('request_started' as const)
@@ -3616,7 +3934,9 @@ function upgradeEventAuthorityProjections(sqlite: Database.Database): void {
           missing = true;
         }
       }
-      if (!missing) continue;
+      if (!missing) {
+        continue;
+      }
       appendDomainCommit(sqlite, {
         commandId: `response-evidence-v3:${row.id}`,
         recordedAt: new Date().toISOString(),
@@ -3641,25 +3961,26 @@ function upgradeEventAuthorityProjections(sqlite: Database.Database): void {
         ],
       });
     }
-    if (!authority) return;
+    if (!authority) {
+      return;
+    }
     verifyEventProjections(sqlite);
     removeLegacyFreeImageTriggers(sqlite);
     installEventProjections(sqlite);
-    sqlite
-      .prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
-      .run(
-        JSON.stringify({
-          ...authority,
-          version: EVENT_AUTHORITY_VERSION,
-          minimumWriterVersion: EVENT_AUTHORITY_VERSION,
-        }),
-      );
+    sqlite.prepare("UPDATE app_meta SET value=? WHERE key='event_authority'").run(
+      JSON.stringify({
+        ...authority,
+        version: EVENT_AUTHORITY_VERSION,
+        minimumWriterVersion: EVENT_AUTHORITY_VERSION,
+      }),
+    );
   })();
 }
 
 export function verifyEventProjections(sqlite: Database.Database): void {
-  if (!sqlite.inTransaction)
+  if (!sqlite.inTransaction) {
     throw new Error('Shadow verification requires a consistent database transaction.');
+  }
   assertCurrentEventReducer(sqlite);
   verifyColdDomainFacts(sqlite);
   const unmapped = sqlite
@@ -3668,7 +3989,9 @@ export function verifyEventProjections(sqlite: Database.Database): void {
     ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`,
     )
     .get() as { id: string } | undefined;
-  if (unmapped) throw new Error(`Unrecorded domain job ${unmapped.id}`);
+  if (unmapped) {
+    throw new Error(`Unrecorded domain job ${unmapped.id}`);
+  }
   const clock = sqlite
     .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
     .get() as { value: string } | undefined;
@@ -3685,7 +4008,9 @@ export function verifyEventProjections(sqlite: Database.Database): void {
     const rows = sqlite
       .prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100')
       .all(cursor) as { stream_id: string }[];
-    if (!rows.length) break;
+    if (!rows.length) {
+      break;
+    }
     const streams = rows.map((row) => readStreamProjection(sqlite, row.stream_id)!);
     applyEventProjection(sqlite, commit, streams, { verify: true, checkOnly: true });
     cursor = rows.at(-1)!.stream_id;
@@ -3709,7 +4034,9 @@ function installEventProjections(sqlite: Database.Database): void {
     const rows = sqlite
       .prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100')
       .all(cursor) as { stream_id: string }[];
-    if (!rows.length) break;
+    if (!rows.length) {
+      break;
+    }
     applyEventProjection(
       sqlite,
       commit,
@@ -3732,17 +4059,21 @@ export function applyEventProjection(
     };
   } = {},
 ): ProjectionRow[] {
-  if (!sqlite.inTransaction)
+  if (!sqlite.inTransaction) {
     throw new Error('Critical projections require the domain write transaction.');
+  }
   const projection = coreProjectionRows(sqlite, commit, streams);
   if (projection.fairQuota !== undefined) {
     const row = sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as
       { value: string } | undefined;
-    const settings = options.candidates
-      ? structuredClone(options.candidates.settings)
-      : row
-        ? (JSON.parse(row.value) as Settings)
-        : { ...defaultSettings };
+    let settings: Settings;
+    if (options.candidates) {
+      settings = structuredClone(options.candidates.settings);
+    } else if (row) {
+      settings = JSON.parse(row.value) as Settings;
+    } else {
+      settings = { ...defaultSettings };
+    }
     if (options.verify) {
       const actual = settings.fairQuota
         ? fairQuotaArchive({ fairQuota: normalizeOpeningQuota(settings.fairQuota) }).settings
@@ -3750,16 +4081,18 @@ export function applyEventProjection(
         : null;
       const expected = fairQuotaArchive({ fairQuota: projection.fairQuota }).settings.fairQuota;
       const mismatch = projectionDifference(actual, expected, 'fairQuota');
-      if (mismatch)
+      if (mismatch) {
         throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+      }
     }
     settings.fairQuota = projection.fairQuota;
-    if (!options.checkOnly)
+    if (!options.checkOnly) {
       sqlite
         .prepare(
           "INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         )
         .run(JSON.stringify(settings));
+    }
   }
   const written: ProjectionRow[] = [];
   for (const projected of projection.rows) {
@@ -3768,18 +4101,23 @@ export function applyEventProjection(
       .prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`)
       .get(projected.item.id) as { data: string; order_value: number } | undefined;
     const candidate = options.candidates?.rows.get(`${collection}:${projected.item.id}`);
-    const existing = candidate
-      ? structuredClone(candidate.item || {})
-      : prior
-        ? (JSON.parse(prior.data) as Record<string, unknown>)
-        : {};
+    let existing: Record<string, unknown>;
+    if (candidate) {
+      existing = structuredClone(candidate.item || {});
+    } else if (prior) {
+      existing = JSON.parse(prior.data) as Record<string, unknown>;
+    } else {
+      existing = {};
+    }
     if (projected.remove) {
-      if (options.verify && (candidate ? candidate.item !== null : prior))
+      if (options.verify && (candidate ? candidate.item !== null : prior)) {
         throw new Error(
           `Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`,
         );
-      if (!options.checkOnly)
+      }
+      if (!options.checkOnly) {
         sqlite.prepare(`DELETE FROM ${collection} WHERE id=?`).run(projected.item.id);
+      }
       written.push(projected);
       continue;
     }
@@ -3789,8 +4127,9 @@ export function applyEventProjection(
       !existing.diagnosticRef &&
       expected.diagnosticRef &&
       existing.errorDetail === expected.errorDetail
-    )
+    ) {
       existing.diagnosticRef = expected.diagnosticRef;
+    }
     if (expected.memberId) {
       const member = sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as
         { data: string } | undefined;
@@ -3798,8 +4137,12 @@ export function applyEventProjection(
         options.candidates?.rows.get(`users:${expected.memberId}`)?.item ||
         (member ? (JSON.parse(member.data) as Record<string, unknown>) : null);
       if (memberData?.token) {
-        if (collection === 'jobs') expected.userToken = existing.userToken || memberData.token;
-        if (collection === 'images') expected.token = existing.token || memberData.token;
+        if (collection === 'jobs') {
+          expected.userToken = existing.userToken || memberData.token;
+        }
+        if (collection === 'images') {
+          expected.token = existing.token || memberData.token;
+        }
       }
       if (!existing.memberId && collection === 'jobs') {
         const parent = existing.requestId
@@ -3814,8 +4157,9 @@ export function applyEventProjection(
         if (
           stableOwner === expected.memberId ||
           (!stableOwner && existing.userToken && existing.userToken === memberData?.token)
-        )
+        ) {
           existing.memberId = expected.memberId;
+        }
       }
     }
     if (options.verify && ['jobs', 'accounts', 'users'].includes(collection)) {
@@ -3824,25 +4168,36 @@ export function applyEventProjection(
         domainRowValues(collection, expected),
         `${collection}.${expected.id}`,
       );
-      if (mismatch)
+      if (mismatch) {
         throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+      }
     }
     const item = { ...existing, ...expected };
-    if (collection === 'images' && item.artifactInputRef) delete item.base64;
-    if (collection === 'users' && expected.discord)
+    if (collection === 'images' && item.artifactInputRef) {
+      delete item.base64;
+    }
+    if (collection === 'users' && expected.discord) {
       item.discord = { ...((existing.discord as object) || {}), ...(expected.discord as object) };
-    if (collection === 'jobs')
-      for (const field of criticalJobFields) if (!(field in expected)) delete item[field];
+    }
+    if (collection === 'jobs') {
+      for (const field of criticalJobFields) {
+        if (!(field in expected)) {
+          delete item[field];
+        }
+      }
+    }
     const order =
       projected.order ??
       candidate?.order ??
       prior?.order_value ??
       Date.parse(String(item.createdAt || item.at || commit.recordedAt));
     const data = JSON.stringify(item);
-    if (prior?.data === data && prior.order_value === order) continue;
+    if (prior?.data === data && prior.order_value === order) {
+      continue;
+    }
     const row = sqlRecord(collection, item as StoreItem, order, data);
     const keys = Object.keys(row);
-    if (!options.checkOnly)
+    if (!options.checkOnly) {
       sqlite
         .prepare(
           `INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map((key) => `@${key}`).join(',')})
@@ -3852,17 +4207,19 @@ export function applyEventProjection(
         .join(',')}`,
         )
         .run(row);
+    }
     written.push({ collection, item, order });
   }
   if (projection.queueSequence && !options.checkOnly) {
     const prior = sqlite.prepare("SELECT value FROM app_meta WHERE key='queue_sequence'").get() as
       { value: string } | undefined;
-    if (BigInt(projection.queueSequence) > BigInt(prior?.value || '0'))
+    if (BigInt(projection.queueSequence) > BigInt(prior?.value || '0')) {
       sqlite
         .prepare(
           "INSERT INTO app_meta(key,value) VALUES('queue_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         )
         .run(projection.queueSequence);
+    }
   }
   return written;
 }
@@ -3875,6 +4232,14 @@ export function sqlRecord(
 ): SqlRow {
   const createdAt = item.createdAt || '';
   const updatedAt = item.updatedAt || '';
+  let enabled: number | null = null;
+  if (item.enabled !== undefined) {
+    enabled = item.enabled !== false ? 1 : 0;
+  }
+  let mock: number | null = null;
+  if (item.mock !== undefined) {
+    mock = item.mock ? 1 : 0;
+  }
   const row: SqlRow = {
     ...emptyRecordRows[collection],
     id: String(item.id),
@@ -3883,12 +4248,12 @@ export function sqlRecord(
     created_at: createdAt || null,
     updated_at: updatedAt || null,
     at: item.at || null,
-    enabled: item.enabled === undefined ? null : item.enabled !== false ? 1 : 0,
+    enabled,
     balance: numberOrNull(item.balance),
     route_id: numberOrNull(item.routeId),
     width: numberOrNull(item.width),
     height: numberOrNull(item.height),
-    mock: item.mock === undefined ? null : item.mock ? 1 : 0,
+    mock,
     mime_type: item.mimeType || null,
     model: item.model || item.request?.model || null,
     prompt: item.prompt || item.request?.tag || null,
@@ -3970,14 +4335,18 @@ function numberOrNull(value: unknown) {
 }
 
 function isStatsExcludedJob(job: Partial<StoreItem> = {}) {
-  if (job.status !== 'failed') return false;
+  if (job.status !== 'failed') {
+    return false;
+  }
   return /insufficient balance|额度不足|余额不足/i.test(
     `${job.error || ''}\n${job.errorDetail || ''}`,
   );
 }
 
 function isErrorLoggableJob(job: Partial<StoreItem> = {}) {
-  if (job.status !== 'failed' || !job.accountId) return false;
+  if (job.status !== 'failed' || !job.accountId) {
+    return false;
+  }
   const text = `${job.error || ''}\n${job.errorDetail || ''}`;
   return !/all NovelAI accounts are busy|server busy|NovelAI returned 429|statusCode"\s*:\s*429|Concurrent generation is locked|concurrent generation|direct generate timeout|AbortError|operation was aborted|job deadline expired|stale timeout|queued job exceeded|running job exceeded|invalid user token|invalid STA1N|密钥额度不足|用户额度不足/i.test(
     text,
@@ -3987,7 +4356,9 @@ function isErrorLoggableJob(job: Partial<StoreItem> = {}) {
 function ensureItemIds(collection: Collection, items: StoreItem[]) {
   const prefix = collection === 'accounts' ? 'acct' : collection.slice(0, 4);
   items.forEach((item) => {
-    if (item && !item.id) item.id = createId(prefix);
+    if (item && !item.id) {
+      item.id = createId(prefix);
+    }
   });
 }
 
@@ -3995,7 +4366,9 @@ function denseOrderValues(items: StoreItem[]): Map<string, number> {
   const orders = new Map();
   const total = items.length;
   items.forEach((item, index) => {
-    if (item?.id) orders.set(String(item.id), total - index);
+    if (item?.id) {
+      orders.set(String(item.id), total - index);
+    }
   });
   return orders;
 }
@@ -4004,8 +4377,12 @@ function assignOrderValues(
   items: StoreItem[],
   previousOrders: Map<string, number>,
 ): Map<string, number> {
-  if (!items.length) return new Map();
-  if (!existingOrderSequenceIsStable(items, previousOrders)) return denseOrderValues(items);
+  if (!items.length) {
+    return new Map();
+  }
+  if (!existingOrderSequenceIsStable(items, previousOrders)) {
+    return denseOrderValues(items);
+  }
 
   const orders = new Map();
   let index = 0;
@@ -4018,7 +4395,9 @@ function assignOrderValues(
     }
 
     const runStart = index;
-    while (index < items.length && !previousOrders.has(String(items[index]?.id || ''))) index += 1;
+    while (index < items.length && !previousOrders.has(String(items[index]?.id || ''))) {
+      index += 1;
+    }
     const runLength = index - runStart;
     const previousItem = runStart > 0 ? items[runStart - 1] : null;
     const nextItem = index < items.length ? items[index] : null;
@@ -4034,12 +4413,16 @@ function assignOrderValues(
 
 function dirtyRowOrder(items: StoreItem[], index: number, previousOrders: Map<string, number>) {
   const id = String(items[index]?.id || '');
-  if (previousOrders.has(id)) return Number(previousOrders.get(id));
+  if (previousOrders.has(id)) {
+    return Number(previousOrders.get(id));
+  }
 
   let before = null;
   for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
     const previousId = String(items[cursor]?.id || '');
-    if (!previousOrders.has(previousId)) continue;
+    if (!previousOrders.has(previousId)) {
+      continue;
+    }
     before = Number(previousOrders.get(previousId));
     break;
   }
@@ -4047,7 +4430,9 @@ function dirtyRowOrder(items: StoreItem[], index: number, previousOrders: Map<st
   let after = null;
   for (let cursor = index + 1; cursor < items.length; cursor += 1) {
     const nextId = String(items[cursor]?.id || '');
-    if (!previousOrders.has(nextId)) continue;
+    if (!previousOrders.has(nextId)) {
+      continue;
+    }
     after = Number(previousOrders.get(nextId));
     break;
   }
@@ -4060,7 +4445,9 @@ function dirtyItemIndexes(items: StoreItem[], dirtyIds: Set<string>): Map<string
   let remaining = dirtyIds.size;
   for (let index = 0; index < items.length && remaining > 0; index += 1) {
     const id = String(items[index]?.id || '');
-    if (!dirtyIds.has(id) || indexes.has(id)) continue;
+    if (!dirtyIds.has(id) || indexes.has(id)) {
+      continue;
+    }
     indexes.set(id, index);
     remaining -= 1;
   }
@@ -4085,7 +4472,9 @@ function uniqueStrings(values: unknown[] = []): string[] {
 
 function trimImageCacheDeleteLimit(value: unknown) {
   const number = Number(value ?? 25);
-  if (!Number.isFinite(number) || number <= 0) return 25;
+  if (!Number.isFinite(number) || number <= 0) {
+    return 25;
+  }
   return Math.max(1, Math.floor(number));
 }
 
@@ -4117,7 +4506,9 @@ class SqliteReadWorker {
     payload: Extract<ReadTask, { type: K }>['payload'],
     timeoutMs: number,
   ): Promise<ReadResults[K]> {
-    if (this.closed) return Promise.reject(new Error(`${this.name} reader is closed`));
+    if (this.closed) {
+      return Promise.reject(new Error(`${this.name} reader is closed`));
+    }
     this.open();
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
@@ -4130,7 +4521,9 @@ class SqliteReadWorker {
   }
 
   open() {
-    if (this.worker) return;
+    if (this.worker) {
+      return;
+    }
     // URL 字符串不由 tsc 改写：源码 Node 读取 TS，打包目录只有编译后的 JS。
     const source = new URL('./sqlite-read-worker.ts', import.meta.url);
     const worker = new Worker(
@@ -4143,18 +4536,26 @@ class SqliteReadWorker {
     worker.unref();
     worker.on('message', (message) => {
       const request = this.pending.get(message.id);
-      if (!request) return;
+      if (!request) {
+        return;
+      }
       clearTimeout(request.timer);
       this.pending.delete(message.id);
-      if (message.error) request.reject(new Error(message.error));
-      else request.resolve(message.result as never);
+      if (message.error) {
+        request.reject(new Error(message.error));
+      } else {
+        request.resolve(message.result as never);
+      }
     });
     worker.on('error', (error) => this.fail(error));
     worker.on('exit', (code) => {
-      if (this.worker !== worker) return;
+      if (this.worker !== worker) {
+        return;
+      }
       this.worker = null;
-      if (code && !this.closed)
+      if (code && !this.closed) {
         this.fail(new Error(`${this.name} reader exited with code ${code}`));
+      }
     });
     this.worker = worker;
   }
@@ -4243,9 +4644,13 @@ function existingOrderSequenceIsStable(items: StoreItem[], previousOrders: Map<s
   let last = Number.POSITIVE_INFINITY;
   for (const item of items) {
     const id = String(item?.id || '');
-    if (!previousOrders.has(id)) continue;
+    if (!previousOrders.has(id)) {
+      continue;
+    }
     const value = Number(previousOrders.get(id));
-    if (!Number.isFinite(value) || value >= last) return false;
+    if (!Number.isFinite(value) || value >= last) {
+      return false;
+    }
     last = value;
   }
   return true;
@@ -4295,7 +4700,9 @@ function runtimeLog(message: string) {
 
 function sqliteSlowLogMs() {
   const configured = Number(process.env.SQLITE_SLOW_LOG_MS || 500);
-  if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.floor(configured);
+  }
   return 500;
 }
 
@@ -4305,7 +4712,9 @@ function sqliteBatchWritesEnabled() {
 
 function sqliteWriteDebounceMs() {
   const configured = Number(process.env.SQLITE_WRITE_DEBOUNCE_MS || 500);
-  if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.floor(configured);
+  }
   return 500;
 }
 
@@ -4319,7 +4728,9 @@ function runtimeCacheLimit(collection: Collection) {
   const configured = Number(
     process.env[envName] || defaults[collection as keyof typeof defaults] || 1000,
   );
-  if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return Math.floor(configured);
+  }
   return defaults[collection as keyof typeof defaults] || 1000;
 }
 
@@ -4338,8 +4749,12 @@ function formatDbCounts(db: Partial<Record<Collection, unknown>> = {}) {
 function formatFileSize(filePath: string) {
   try {
     const bytes = statSync(filePath).size;
-    if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
-    if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    if (bytes >= 1024 * 1024) {
+      return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+    }
+    if (bytes >= 1024) {
+      return `${(bytes / 1024).toFixed(1)} KiB`;
+    }
     return `${bytes} B`;
   } catch {
     return 'unknown size';
@@ -4349,8 +4764,12 @@ function formatFileSize(filePath: string) {
 function imageResolutionTier(image: Partial<StoreItem>) {
   const width = Number(image?.width || 0);
   const height = Number(image?.height || 0);
-  if (width >= 1700 || height >= 1900) return '4K';
-  if (width >= 1300 || height >= 1500) return '2K';
+  if (width >= 1700 || height >= 1900) {
+    return '4K';
+  }
+  if (width >= 1300 || height >= 1500) {
+    return '2K';
+  }
   return 'standard';
 }
 
@@ -4358,7 +4777,9 @@ function jobQueueProgress(
   job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'> | null,
   jobs: StoreItem[],
 ) {
-  if (!job || !['queued', 'running'].includes(job.status!)) return { progress: 0, total: 0 };
+  if (!job || !['queued', 'running'].includes(job.status!)) {
+    return { progress: 0, total: 0 };
+  }
   if (job.status === 'running') {
     const total = Math.max(1, Number(job.queueTotal) || 1);
     return { progress: total, total };
@@ -4369,8 +4790,12 @@ function jobQueueProgress(
     .reverse()
     .sort((a, b) => (Number(a.queueSeq) || 0) - (Number(b.queueSeq) || 0));
   for (const item of ordered) {
-    if (item.id === job.id) break;
-    if (isQueueActiveJob(item, now)) ahead++;
+    if (item.id === job.id) {
+      break;
+    }
+    if (isQueueActiveJob(item, now)) {
+      ahead++;
+    }
   }
   const total = Math.max(1, Number(job.queueTotal) || ahead + 1);
   // A free queue position is not a reserved account; only running may reach N/N.
@@ -4378,22 +4803,35 @@ function jobQueueProgress(
 }
 
 function isQueueActiveJob(job: StoreItem | null, now = Date.now()) {
-  if (!job || !['queued', 'running'].includes(job.status!)) return false;
+  if (!job || !['queued', 'running'].includes(job.status!)) {
+    return false;
+  }
   return !isStaleActiveJob(job, now);
 }
 
 function isStaleActiveJob(job: StoreItem | null, now = Date.now()) {
-  if (!job || !['queued', 'pending', 'running'].includes(job.status!)) return false;
-  if (isExpiredJob(job, now)) return true;
+  if (!job || !['queued', 'pending', 'running'].includes(job.status!)) {
+    return false;
+  }
+  if (isExpiredJob(job, now)) {
+    return true;
+  }
   const queueDeadline = queuedDeadlineTimestamp(
     job as StoreItem & { status: string; queueExpiresAt?: string },
   );
-  if (queueDeadline && now >= queueDeadline) return true;
+  if (queueDeadline && now >= queueDeadline) {
+    return true;
+  }
   const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
-  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
-  if (job.status === 'running') return now - updatedAt > staleRunningJobMs();
-  if (job.status === 'queued' && !jobDeadlineTimestamp(job))
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return false;
+  }
+  if (job.status === 'running') {
+    return now - updatedAt > staleRunningJobMs();
+  }
+  if (job.status === 'queued' && !jobDeadlineTimestamp(job)) {
     return now - updatedAt > staleQueuedJobMs();
+  }
   return false;
 }
 
@@ -4427,8 +4865,9 @@ function accountInflightTimeoutMs() {
 
 function configuredTimeoutMs(name: string, fallback: number) {
   const configured = Number(process.env[name] || 0);
-  if (Number.isFinite(configured) && configured > 0)
+  if (Number.isFinite(configured) && configured > 0) {
     return Math.max(60_000, Math.floor(configured));
+  }
   return Math.max(60_000, Math.floor(Number(fallback) || 60_000));
 }
 
@@ -4437,7 +4876,9 @@ function fairQuotaArchive<T extends Partial<Settings>>(
 ): { settings: T; rows: (typeof fairQuotaSettlements.$inferInsert)[] } {
   const entries = Object.entries(settings.fairQuota?.reservations || {});
   const terminal = entries.filter(([, charge]) => ['settled', 'refunded'].includes(charge?.status));
-  if (!terminal.length) return { settings, rows: [] };
+  if (!terminal.length) {
+    return { settings, rows: [] };
+  }
   return {
     settings: {
       ...settings,
@@ -4457,7 +4898,9 @@ function cloneDb(db: StoreDatabase) {
 }
 
 function cloneValue<T>(value: T): T {
-  if (value === undefined || value === null) return value;
+  if (value === undefined || value === null) {
+    return value;
+  }
   return structuredClone(value);
 }
 
@@ -4473,9 +4916,13 @@ function trimDb(db: StoreDatabase, options: { collections?: unknown } = {}) {
   db.settings.maxCacheImages = maxCacheImages;
   db.settings.accountConcurrency = 1;
   // 私有部署保护：保留历史、图片与账本记录。
-  if (process.env.NO_AUTO_DELETE === 'true') return db;
+  if (process.env.NO_AUTO_DELETE === 'true') {
+    return db;
+  }
   // 任务与图片清理由命令在 collector 关闭前作决定，不能在持久化时隐式丢行。
-  if (shouldTrim('ledger')) db.ledger = db.ledger.slice(0, 1000);
+  if (shouldTrim('ledger')) {
+    db.ledger = db.ledger.slice(0, 1000);
+  }
   return db;
 }
 
@@ -4517,12 +4964,16 @@ export function hashObject(value: unknown) {
 }
 
 export function maskToken(token = '') {
-  if (token.length <= 12) return token ? '******' : '';
+  if (token.length <= 12) {
+    return token ? '******' : '';
+  }
   return `${token.slice(0, 6)}...${token.slice(-4)}`;
 }
 
 function clampNumber(value: unknown, min: number, max: number) {
   const number = Number(value);
-  if (!Number.isFinite(number)) return max;
+  if (!Number.isFinite(number)) {
+    return max;
+  }
   return Math.max(min, Math.min(max, Math.floor(number)));
 }

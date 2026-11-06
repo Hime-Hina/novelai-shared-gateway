@@ -65,7 +65,7 @@ async function fixture(t, { owner = false, grace = 30000 } = {}) {
           payload: { kind: 'official', accountId: account.id, observation },
         });
         syncFairQuota(db);
-        if (owner)
+        if (owner) {
           db.users.forEach((user, index) => {
             user.discord = {
               id: `22222222222222222${index}`,
@@ -91,6 +91,7 @@ async function fixture(t, { owner = false, grace = 30000 } = {}) {
               },
             });
           });
+        }
       },
       { immediate: true },
     );
@@ -151,13 +152,14 @@ globalThis.fetch = (input, options) => {
     NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
     NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
   });
-  if (owner)
+  if (owner) {
     Object.assign(env, {
       OWNER_USER_ID: members[0].user_id,
       DISCORD_GUILD_ID: guildId,
       DISCORD_CLIENT_ID: '123456789012345678',
       DISCORD_CLIENT_SECRET: 'synthetic-session-client-secret',
     });
+  }
   let child,
     exited,
     output = '';
@@ -165,7 +167,9 @@ globalThis.fetch = (input, options) => {
     output = (output + chunk.toString()).slice(-16000);
   };
   const start = async (ownerUserId = env.OWNER_USER_ID) => {
-    if (owner) env.OWNER_USER_ID = ownerUserId;
+    if (owner) {
+      env.OWNER_USER_ID = ownerUserId;
+    }
     child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, 'server/index.ts'], {
       cwd: root,
       env,
@@ -199,8 +203,12 @@ globalThis.fetch = (input, options) => {
     });
   };
   const stop = async () => {
-    if (child?.exitCode === null && child?.signalCode === null) child.kill('SIGKILL');
-    if (exited) await exited;
+    if (child?.exitCode === null && child?.signalCode === null) {
+      child.kill('SIGKILL');
+    }
+    if (exited) {
+      await exited;
+    }
   };
   t.after(async () => {
     await stop();
@@ -289,7 +297,9 @@ async function openEvents(gateway, cookie) {
   return async () => {
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) break;
+      if (chunk.done) {
+        break;
+      }
       text += decoder.decode(chunk.value, { stream: true });
     }
     assert.match(text, /event: auth-expired\ndata: \{\}\n\n/);
@@ -445,7 +455,7 @@ test(
   },
 );
 
-for (const owner of [false, true])
+for (const owner of [false, true]) {
   test(
     `可见网页访问续期${owner ? 'owner 一天' : '普通成员七天'}，Cookie 与数据库一致，其他查询和跨站请求不续期`,
     { timeout: 45000 },
@@ -502,7 +512,9 @@ for (const owner of [false, true])
         Math.floor(renewed.expires_at / 1000) * 1000,
       );
       assert.equal(Number(/Max-Age=(\d+)/.exec(visit.headers.get('set-cookie'))[1]), ttl / 1000);
-      if (!owner) assert.equal(value.sessionExpiresAt, renewed.expires_at);
+      if (!owner) {
+        assert.equal(value.sessionExpiresAt, renewed.expires_at);
+      }
       const unrelated = await gateway.call('/api/member/shared-status', {
         cookie,
         headers: { 'x-member-activity': '1' },
@@ -555,6 +567,7 @@ for (const owner of [false, true])
       gateway.assertNoGeneration();
     },
   );
+}
 
 test(
   '真实 HTTP 普通会话初始七天，刷新与强制重启保留期限，退出持久撤销并关闭 SSE',
@@ -746,7 +759,9 @@ test(
       const ended = (async () => {
         for (;;) {
           const chunk = await reader.read();
-          if (chunk.done) return { text };
+          if (chunk.done) {
+            return { text };
+          }
           text += decoder.decode(chunk.value, { stream: true });
         }
       })().catch((error) => ({ error }));

@@ -14,8 +14,11 @@ function setEnv(t, name, value) {
   const previous = process.env[name];
   process.env[name] = value;
   t.after(() => {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
   });
 }
 
@@ -231,8 +234,9 @@ test('部分历史缓存回滚后仍保留未加载的持久任务', async (t) =
   setEnv(t, 'RUNTIME_JOBS_CACHE_LIMIT', '1');
   await store.update(
     (db) => {
-      for (let i = 0; i < 5; i++)
+      for (let i = 0; i < 5; i++) {
         db.jobs.push({ id: `history-${i}`, status: 'done', createdAt: new Date().toISOString() });
+      }
     },
     { collections: ['jobs'], immediate: true },
   );

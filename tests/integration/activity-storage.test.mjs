@@ -11,8 +11,11 @@ function env(t, name, value) {
   const previous = process.env[name];
   process.env[name] = value;
   t.after(() => {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
   });
 }
 async function open(t, directory) {
@@ -172,8 +175,9 @@ test('成员归属父表优先，旧attempt/凭据其次；未知只进全局，
   );
   assert.equal((await store.readActivityDays({ ...window, memberId: 'a' }))[0].total, 3);
   const serialized = JSON.stringify(await store.readActivityDays(window));
-  for (const secret of ['key-a', 'key-b', 'old-secret', 'rotated-key', 'memberId'])
+  for (const secret of ['key-a', 'key-b', 'old-secret', 'rotated-key', 'memberId']) {
     assert.ok(!serialized.includes(secret));
+  }
 });
 
 test('精确毫秒左闭右开、上海午夜、合法ISO偏移与非法日期，不用字符串边界误漏', async (t) => {
@@ -389,7 +393,7 @@ test('读取等待串行事务并flush延迟写，SQL失败不能进入已提交
   assert.equal(events.length, 1);
 });
 
-for (const dirty of [false, true])
+for (const dirty of [false, true]) {
   test(`日期通知只看统计投影，变更前后成员/日期成对去重，失败零通知（${dirty ? 'dirty' : '普通'}）`, async (t) => {
     const store = await open(t),
       events = [];
@@ -459,6 +463,7 @@ for (const dirty of [false, true])
     assert.equal(events.length, before);
     store.sqlite.exec('DROP TRIGGER fail_activity');
   });
+}
 
 test('清除冷历史与全量write删除保留日期归属', async (t) => {
   env(t, 'RUNTIME_JOBS_CACHE_LIMIT', '2');

@@ -49,30 +49,49 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   const text = String(message || '');
   const generationFailure = '生成失败，请稍后重试或联系管理员。';
   const quotaUnavailable = /^共享 Opus (?:额度)?暂不可用：([\s\S]*)$/.exec(text);
-  if (quotaUnavailable)
+  if (quotaUnavailable) {
     return Object.hasOwn(quotaUnavailableMessages, quotaUnavailable[1]!)
       ? quotaUnavailableMessages[quotaUnavailable[1]!]!
       : '共享 Opus 暂不可用，请稍后重试或联系管理员。';
-  if (quotaFailureMessages.has(text)) return text;
+  }
+  if (quotaFailureMessages.has(text)) {
+    return text;
+  }
   // File and SQL failures can also arise while reading completed images.
-  if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) return generationFailure;
-  if (generation && /^NovelAI returned 401\b/.test(text))
+  if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) {
+    return generationFailure;
+  }
+  if (generation && /^NovelAI returned 401\b/.test(text)) {
     return '共享 Opus Key 已失效，请联系管理员更新凭据';
-  if (generation && /^NovelAI returned 403\b/.test(text))
+  }
+  if (generation && /^NovelAI returned 403\b/.test(text)) {
     return '上游拒绝访问，请联系管理员重新验证 Opus';
-  if (isNovelAiAccountBannedError(text)) return '账号已封禁';
-  if (isInsufficientBalanceError({ message: text })) return insufficientBalanceMessage;
+  }
+  if (isNovelAiAccountBannedError(text)) {
+    return '账号已封禁';
+  }
+  if (isInsufficientBalanceError({ message: text })) {
+    return insufficientBalanceMessage;
+  }
   if (
     /This operation was aborted|operation was aborted|direct generate timeout|AbortError/i.test(
       text,
     )
-  )
+  ) {
     return '连接超时';
-  if (/invalid token/i.test(text)) return '密钥无效或已被禁用。';
-  if (/all NovelAI accounts are busy|server busy/i.test(text)) return '服务器繁忙，请稍后再试。';
+  }
+  if (/invalid token/i.test(text)) {
+    return '密钥无效或已被禁用。';
+  }
+  if (/all NovelAI accounts are busy|server busy/i.test(text)) {
+    return '服务器繁忙，请稍后再试。';
+  }
   if (generation && text) {
-    if (/(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text))
+    if (
+      /(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text)
+    ) {
       return insufficientBalanceMessage;
+    }
     const known = [
       generationFailure,
       '连接超时',

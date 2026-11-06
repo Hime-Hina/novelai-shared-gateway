@@ -26,11 +26,15 @@ export function generationPrice({ size = '竖图', width, height, model, steps =
   const dimensions = sizeMap[size] || sizeMap['竖图'];
   const pixels = Number(width ?? dimensions.width) * Number(height ?? dimensions.height);
   const medium = isV5MediumModel(model);
-  if (medium) steps = V5_MEDIUM_STEPS;
+  if (medium) {
+    steps = V5_MEDIUM_STEPS;
+  }
   const v5 =
     medium ||
     ['nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(/** @type {string} */ (model));
-  if (steps <= 28 && pixels <= 1024 * 1024) return v5 ? 8 : 1;
+  if (steps <= 28 && pixels <= 1024 * 1024) {
+    return v5 ? 8 : 1;
+  }
   const base = Math.ceil(
     2.951823174884865e-6 * pixels +
       5.753298233447344e-7 * pixels * steps * (medium ? V5_MEDIUM_ANLAS_STEP_FACTOR : 1),

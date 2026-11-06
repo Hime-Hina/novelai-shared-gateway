@@ -11,13 +11,12 @@ const props = defineProps<{
   disabled?: boolean;
 }>();
 const emit = defineEmits<{ refresh: [] }>();
-const mode = computed(() =>
-  props.connection === 'open'
-    ? '实时更新'
-    : props.connection === 'polling'
-      ? '每 30 秒更新'
-      : '连接恢复中 · 每 30 秒补读',
-);
+const mode = computed(() => {
+  if (props.connection === 'open') {
+    return '实时更新';
+  }
+  return props.connection === 'polling' ? '每 30 秒更新' : '连接恢复中 · 每 30 秒补读';
+});
 </script>
 <template>
   <div class="portal-refresh">

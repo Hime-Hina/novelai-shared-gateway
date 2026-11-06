@@ -30,13 +30,17 @@ function expired() {
   memberHandlers.onExpired?.();
 }
 function connect() {
-  if (!memberActive || document.hidden || memberStream) return;
+  if (!memberActive || document.hidden || memberStream) {
+    return;
+  }
   const source = (memberStream = new EventSource('/api/member/shared-events'));
   const current = () => memberStream === source && memberActive && !document.hidden;
   let checkingSession = false;
   memberHandlers.onConnection?.('connecting');
   source.addEventListener('shared-status', (event) => {
-    if (!current()) return;
+    if (!current()) {
+      return;
+    }
     try {
       memberHandlers.onStatus?.(JSON.parse(event.data));
     } catch {
@@ -44,7 +48,9 @@ function connect() {
     }
   });
   source.addEventListener('state-invalidated', (event) => {
-    if (!current()) return;
+    if (!current()) {
+      return;
+    }
     try {
       const data = JSON.parse(event.data);
       if (
@@ -55,10 +61,13 @@ function connect() {
         !Array.isArray(data.scopes) ||
         data.scopes.some((scope) => !['shared', 'member', 'owner'].includes(scope)) ||
         !validActivityDates(data.activityDates)
-      )
+      ) {
         throw new Error('invalid state event');
+      }
       const restarted = bootId !== data.bootId;
-      if (!restarted && !data.resync && data.version <= version) return;
+      if (!restarted && !data.resync && data.version <= version) {
+        return;
+      }
       // 权限过滤和合并均会跳号；只有明确校准或启动标识变化才要求全量重读。
       bootId = data.bootId;
       version = data.version;
@@ -68,26 +77,38 @@ function connect() {
     }
   });
   source.addEventListener('auth-expired', () => {
-    if (current()) expired();
+    if (current()) {
+      expired();
+    }
   });
   source.addEventListener('connection-status', (event) => {
-    if (!current()) return;
+    if (!current()) {
+      return;
+    }
     try {
       const { state } = JSON.parse(event.data);
-      if (!['open', 'retrying'].includes(state)) throw new Error('invalid connection state');
+      if (!['open', 'retrying'].includes(state)) {
+        throw new Error('invalid connection state');
+      }
       memberHandlers.onConnection?.(state);
     } catch {
       memberHandlers.onConnection?.('invalid');
     }
   });
   source.onopen = () => {
-    if (current()) memberHandlers.onConnection?.('open');
+    if (current()) {
+      memberHandlers.onConnection?.('open');
+    }
   };
   source.onerror = async () => {
-    if (!current()) return;
+    if (!current()) {
+      return;
+    }
     memberHandlers.onConnection?.('retrying');
     // 普通掉线交给 EventSource 重连；永久关闭才补查鉴权，不能把 503 当作注销。
-    if (source.readyState !== EventSource.CLOSED || checkingSession) return;
+    if (source.readyState !== EventSource.CLOSED || checkingSession) {
+      return;
+    }
     checkingSession = true;
     try {
       const response = await fetch('/api/member/shared-status');
@@ -118,8 +139,11 @@ export function stopMemberEvents() {
   memberHandlers.onConnection?.('closed');
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) disconnect();
-  else connect();
+  if (document.hidden) {
+    disconnect();
+  } else {
+    connect();
+  }
 });
 window.addEventListener('pagehide', disconnect);
 window.addEventListener('pageshow', connect);

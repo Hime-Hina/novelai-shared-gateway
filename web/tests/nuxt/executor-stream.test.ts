@@ -48,7 +48,9 @@ async function listen(handler: Handler) {
   const server = http.createServer((req, res) => {
     handlers.push(
       Promise.resolve(handler(req, res)).catch((error) => {
-        if (res.destroyed || res.writableEnded) return;
+        if (res.destroyed || res.writableEnded) {
+          return;
+        }
         if (res.headersSent) {
           res.destroy();
           return;
@@ -98,12 +100,16 @@ function open(
 
 async function body(res: IncomingMessage) {
   const chunks: Buffer[] = [];
-  for await (const chunk of res) chunks.push(Buffer.from(chunk));
+  for await (const chunk of res) {
+    chunks.push(Buffer.from(chunk));
+  }
   return Buffer.concat(chunks);
 }
 
 afterEach(async () => {
-  for (const request of requests.splice(0)) request.destroy();
+  for (const request of requests.splice(0)) {
+    request.destroy();
+  }
   for (const server of servers.splice(0).reverse()) {
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) =>
@@ -230,8 +236,9 @@ describe('executor opaque streaming bridge', () => {
       expect(response.headers['cache-control']).toBe('no-cache, no-transform');
       release.resolve();
       const remaining: Buffer[] = [];
-      for await (const chunk of { [Symbol.asyncIterator]: () => iterator })
+      for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) {
         remaining.push(Buffer.from(chunk));
+      }
       expect(Buffer.concat(remaining)).toEqual(complete);
       expect(calls).toBe(1);
     } finally {
@@ -243,13 +250,15 @@ describe('executor opaque streaming bridge', () => {
     const bytes = Buffer.from(
       JSON.stringify({ operation: 'upscale', image: 'synthetic'.repeat(400000) }),
     );
-    for (const route of ['/api/member/generation/quote', '/api/member/generation/requests'])
+    for (const route of ['/api/member/generation/quote', '/api/member/generation/requests']) {
       for (const authError of [false, true]) {
         let calls = 0,
           received = 0;
         const base = await fixture(async (req, res) => {
           calls++;
-          for await (const chunk of req) received += chunk.length;
+          for await (const chunk of req) {
+            received += chunk.length;
+          }
           if (!authError) {
             res.destroy();
             return;
@@ -276,6 +285,7 @@ describe('executor opaque streaming bridge', () => {
         expect(calls).toBe(1);
         expect(received).toBe(bytes.length);
       }
+    }
   });
 
   it('preserves member Origin rejection before a declared large upload has completed', async () => {
@@ -346,7 +356,9 @@ describe('executor opaque streaming bridge', () => {
       expect(uploaded).toBeLessThan(32 * 1024 * 1024);
       for (let i = 1; i < 512; i += 1) {
         expectedHash.update(chunk);
-        if (!browser.req.write(chunk)) await once(browser.req, 'drain');
+        if (!browser.req.write(chunk)) {
+          await once(browser.req, 'drain');
+        }
       }
       browser.req.end();
       const response = await browser.response;
@@ -356,8 +368,9 @@ describe('executor opaque streaming bridge', () => {
       expect(response.complete).toBe(false);
       finalResponse.resolve();
       const remaining: Buffer[] = [];
-      for await (const part of { [Symbol.asyncIterator]: () => iterator })
+      for await (const part of { [Symbol.asyncIterator]: () => iterator }) {
         remaining.push(Buffer.from(part));
+      }
       expect(Buffer.concat(remaining)).toEqual(last);
       expect(response.headers['set-cookie']).toEqual(['first=a; HttpOnly', 'second=b; HttpOnly']);
       expect(uploaded).toBe(32 * 1024 * 1024);
@@ -402,7 +415,9 @@ describe('executor opaque streaming bridge', () => {
     expect(completed).toBe(false);
     expect(written).toBeLessThan(total);
     let received = 0;
-    for await (const part of response) received += part.length;
+    for await (const part of response) {
+      received += part.length;
+    }
     expect(received).toBe(total);
     expect(drains).toBeGreaterThan(0);
   }, 15000);
@@ -507,7 +522,9 @@ describe('executor opaque streaming bridge', () => {
             ? { message: expect.any(String), statusCode: 503, error: expect.any(String) }
             : { error: expect.any(String) },
         );
-        if (native) expect(JSON.parse(text).message).toBe(JSON.parse(text).error);
+        if (native) {
+          expect(JSON.parse(text).message).toBe(JSON.parse(text).error);
+        }
         expect(calls).toBe(before + 1);
       }
     }
@@ -522,7 +539,9 @@ describe('executor opaque streaming bridge', () => {
         res.end('unexpected');
       },
       (event) => {
-        if (omitHost) delete event.node.req.headers.host;
+        if (omitHost) {
+          delete event.node.req.headers.host;
+        }
         return forwardExecutorStream(event);
       },
     );

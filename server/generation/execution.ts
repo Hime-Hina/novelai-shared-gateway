@@ -116,24 +116,35 @@ function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 function optionalString(value: unknown, name: string): string | undefined {
-  if (value === undefined || value === null) return;
-  if (typeof value !== 'string') throw new TypeError(`${name} must be a string`);
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== 'string') {
+    throw new TypeError(`${name} must be a string`);
+  }
   return value;
 }
 function requiredString(value: unknown, name: string): string {
   const result = optionalString(value, name);
-  if (!result) throw new TypeError(`${name} is required`);
+  if (!result) {
+    throw new TypeError(`${name} is required`);
+  }
   return result;
 }
 function optionalNumber(value: unknown, name: string): number | undefined {
-  if (value === undefined || value === null) return;
-  if (typeof value !== 'number' || !Number.isFinite(value))
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new TypeError(`${name} must be finite`);
+  }
   return value;
 }
 function requiredNumber(value: unknown, name: string): number {
   const result = optionalNumber(value, name);
-  if (result === undefined) throw new TypeError(`${name} is required`);
+  if (result === undefined) {
+    throw new TypeError(`${name} is required`);
+  }
   return result;
 }
 function normalizedAccountCost(value: unknown): number {
@@ -154,13 +165,17 @@ export async function publishGenerationArtifact(
 ) {
   const key = `${path.resolve(dataDir)}:${pending.attemptId}:${pending.imageId}`;
   const active = publishingArtifacts.get(key);
-  if (active) return active;
+  if (active) {
+    return active;
+  }
   const publication = publish(dataDir, pending, bytes);
   publishingArtifacts.set(key, publication);
   try {
     return await publication;
   } finally {
-    if (publishingArtifacts.get(key) === publication) publishingArtifacts.delete(key);
+    if (publishingArtifacts.get(key) === publication) {
+      publishingArtifacts.delete(key);
+    }
   }
 }
 
@@ -175,7 +190,9 @@ export function assertConfirmedDispatch(
   finalCharge: Parameters<typeof memberGenerationChargeResources>[0],
   env = process.env,
 ): void {
-  if (request.clientContract !== 'member-generation-v1') return;
+  if (request.clientContract !== 'member-generation-v1') {
+    return;
+  }
   const confirmation = parseMemberGenerationConfirmation(request.confirmation);
   assertMemberGenerationVersions(
     confirmation,
@@ -198,7 +215,9 @@ export function recordGenerationFailure(db: StoreDatabase, job: StoreItem): void
   const diagnosticRef = job.errorDetail
     ? recordGenerationDiagnostic(db, job.id, job.errorDetail)
     : null;
-  if (diagnosticRef) job.diagnosticRef = diagnosticRef;
+  if (diagnosticRef) {
+    job.diagnosticRef = diagnosticRef;
+  }
   recordDomainEvent(db, {
     eventType: 'JobFailed',
     streamId: generationStreamId(job),
@@ -224,7 +243,9 @@ export function recordGenerationFailure(db: StoreDatabase, job: StoreItem): void
 
 export function recordPreparedArtifact(db: StoreDatabase, job: StoreItem, now = Date.now()): void {
   const pending = job.resultPending;
-  if (!pending) return;
+  if (!pending) {
+    return;
+  }
   recordDomainEvent(db, {
     eventType: 'ArtifactPrepared',
     streamId: generationStreamId(job),
@@ -276,7 +297,7 @@ export function recordCompletedArtifact(
       },
     },
   });
-  if (job.status === 'done')
+  if (job.status === 'done') {
     recordDomainEvent(db, {
       eventType: 'JobCompleted',
       streamId: generationStreamId(job),
@@ -290,6 +311,7 @@ export function recordCompletedArtifact(
         response: generationResponseEvidence(job),
       },
     });
+  }
   recordFreeImageSuccess(db, job, now, freeUsage);
 }
 
@@ -327,7 +349,9 @@ export function completeSharedAccount(
   now: number,
   options: NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
 ): boolean {
-  if (!recordSharedCompletion(account, now, options) || !account) return false;
+  if (!recordSharedCompletion(account, now, options) || !account) {
+    return false;
+  }
   recordDomainEvent(db, {
     eventType: 'CooldownChanged',
     streamId: `account:${account.id}`,
@@ -354,8 +378,11 @@ function changedJobRows(db: StoreDatabase, jobIds: string[], extraAccountIds: st
   const requestIds = new Set(
     db.jobs.filter((job) => selected.has(job.id) && job.requestId).map((job) => job.requestId),
   );
-  for (const job of db.jobs)
-    if (job.requestId && requestIds.has(job.requestId)) selected.add(job.id);
+  for (const job of db.jobs) {
+    if (job.requestId && requestIds.has(job.requestId)) {
+      selected.add(job.id);
+    }
+  }
   const jobs = db.jobs.filter((job) => selected.has(job.id));
   const ledger = db.ledger.filter((entry) => selected.has(entry.jobId || ''));
   return {
@@ -400,19 +427,26 @@ function timeoutMs(env: NodeJS.ProcessEnv, name: string, fallback: number): numb
   );
 }
 export function isStaleGenerationJob(job: StoreItem, now = Date.now(), env = process.env): boolean {
-  if (!['queued', 'pending', 'running'].includes(job.status!)) return false;
+  if (!['queued', 'pending', 'running'].includes(job.status!)) {
+    return false;
+  }
   const deadline = generationJobDeadline(job),
     queuedDeadline = queuedDeadlineTimestamp(job, env);
-  if ((deadline && now >= deadline) || (queuedDeadline && now >= queuedDeadline)) return true;
+  if ((deadline && now >= deadline) || (queuedDeadline && now >= queuedDeadline)) {
+    return true;
+  }
   const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
-  if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return false;
+  }
   const configuredInflight = Number(env.ACCOUNT_INFLIGHT_TIMEOUT_MS || 600_000);
   const inflight =
     Number.isFinite(configuredInflight) && configuredInflight > 0
       ? Math.max(1000, Math.floor(configuredInflight))
       : 600_000;
-  if (job.status === 'running')
+  if (job.status === 'running') {
     return now - updatedAt > timeoutMs(env, 'STALE_RUNNING_JOB_MS', inflight + 60_000);
+  }
   return (
     job.status === 'queued' &&
     !deadline &&
@@ -427,8 +461,12 @@ export function staleGenerationJobDetail(
 ): string {
   const deadline = generationJobDeadline(job),
     queuedDeadline = queuedDeadlineTimestamp(job, env);
-  if (deadline && now >= deadline) return 'job deadline expired';
-  if (queuedDeadline && now >= queuedDeadline) return 'queued job exceeded wait deadline';
+  if (deadline && now >= deadline) {
+    return 'job deadline expired';
+  }
+  if (queuedDeadline && now >= queuedDeadline) {
+    return 'queued job exceeded wait deadline';
+  }
   return `${job.status || 'active'} job exceeded stale timeout`;
 }
 
@@ -437,6 +475,8 @@ export interface GenerationDispatchOptions extends GenerationClock {
   physicalAccountLoad(id: string): number;
 }
 
+// 先在同一命令中核验资格、物理槽和冷却并预留，提交派发事实后调用者才可连接上游。
+// 任务超时退款不代表物理连接已结束，不能仅按逻辑 running 数释放账号容量。
 export async function reserveQueuedGeneration(
   store: JsonStore,
   jobId: string,
@@ -446,10 +486,16 @@ export async function reserveQueuedGeneration(
     env = options.env || process.env;
   return store.update<GenerationQueueReservation>(
     (db) => {
-      if (!options.dispatchEnabled()) return { skip: true, changed: false };
+      if (!options.dispatchEnabled()) {
+        return { skip: true, changed: false };
+      }
       const job = db.jobs.find((item) => item.id === jobId);
-      if (!job) throw new Error('job not found.');
-      if (job.status !== 'queued') return { skip: true, changed: false };
+      if (!job) {
+        throw new Error('job not found.');
+      }
+      if (job.status !== 'queued') {
+        return { skip: true, changed: false };
+      }
       const dispatchAt = clock(),
         at = new Date(dispatchAt).toISOString(),
         accountCost = normalizedAccountCost(job.accountCost);
@@ -477,12 +523,17 @@ export async function reserveQueuedGeneration(
             (job.memberId ? member.id === job.memberId : member.token === job.userToken) &&
             member.enabled !== false,
         );
-        if (!user) fail(401, 'invalid member.');
+        if (!user) {
+          fail(401, 'invalid member.');
+        }
         assertMemberAcceptsJobs(user, job.jobAdmissionVersion);
-        if (!state?.enabled || state.status !== 'active')
+        if (!state?.enabled || state.status !== 'active') {
           fail(503, `共享 Opus 暂不可用：${state?.status || '未配置成员'}`);
+        }
         const boundAccount = db.accounts.find((item) => item.id === state.boundAccountId);
-        if (!boundAccount || boundAccount.enabled === false) fail(503, '绑定的 Opus 账号未启用');
+        if (!boundAccount || boundAccount.enabled === false) {
+          fail(503, '绑定的 Opus 账号未启用');
+        }
         account = boundAccount;
         const running = db.jobs.filter(
           (item) => item.status === 'running' && item.accountId === account.id,
@@ -494,24 +545,30 @@ export async function reserveQueuedGeneration(
             options.physicalAccountLoad(account.id),
           ) >= sharedAccountConcurrency() ||
           sharedAccountReadyDelay(account, dispatchAt) > 0
-        )
+        ) {
           return { queued: true, jobId: job.id };
+        }
         const request = job.requestId
           ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex)
           : job.request;
-        if (!request) fail(409, '持久生成请求不存在');
+        if (!request) {
+          fail(409, '持久生成请求不存在');
+        }
         let priorCharges: (FairCharge | null)[] = [];
         if (request.clientContract === 'member-generation-v1') {
           const children = store.readGenerationRequestJobIds(job.requestId!, user.id);
-          if (!children) fail(409, '持久生成请求归属不一致');
+          if (!children) {
+            fail(409, '持久生成请求归属不一致');
+          }
           priorCharges = children
             .filter((id) => id !== job.id)
             .map(
               (id) => db.settings.fairQuota?.reservations[id] || store.readFairQuotaSettlement(id),
             );
         }
-        if (state.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free')
+        if (state.freeImagePolicy?.enabled && quoteFairRequest(request).resource === 'free') {
           assertFreeImageAdmission(store.readFreeImageUsage(db, user.id, dispatchAt));
+        }
         reserveFairQuota(
           db,
           user,
@@ -592,16 +649,21 @@ export async function cancelGenerationRequestCommand(
 ) {
   return store.update(
     (db) => {
-      if (!db.users.some((user) => user.id === memberId && user.enabled !== false))
+      if (!db.users.some((user) => user.id === memberId && user.enabled !== false)) {
         fail(401, 'invalid member.');
+      }
       const request = store.readGenerationRequestState(requestId, memberId);
-      if (!request) fail(404, 'request not found.');
+      if (!request) {
+        fail(404, 'request not found.');
+      }
       const cancelledJobIds: string[] = [],
         message = '请求已取消，未派发任务已终止',
         now = (options.now || Date.now)(),
         at = new Date(now).toISOString();
       for (const child of request.jobs) {
-        if (!['queued', 'pending'].includes(child.status!)) continue;
+        if (!['queued', 'pending'].includes(child.status!)) {
+          continue;
+        }
         const job = store.loadJobForUpdate(child.id)!;
         refundGenerationJob(store, db, job, { now: () => now });
         Object.assign(job, {
@@ -680,20 +742,26 @@ export function completionJob(
   jobId: string,
   job = store.loadJobForUpdate(jobId),
 ): StoreItem & { fairCharge: FairCharge } {
-  if (job) job.fairCharge = resolveFairQuotaCharge(db, job, store.readFairQuotaSettlement(jobId));
-  if (!job || !['reserved', 'refunded', 'settled'].includes(job.fairCharge?.status!))
+  if (job) {
+    job.fairCharge = resolveFairQuotaCharge(db, job, store.readFairQuotaSettlement(jobId));
+  }
+  if (!job || !['reserved', 'refunded', 'settled'].includes(job.fairCharge?.status!)) {
     fail(409, '任务结算凭据不存在');
-  if (job.userToken !== reservation.token || job.accountId !== reservation.account?.id)
+  }
+  if (job.userToken !== reservation.token || job.accountId !== reservation.account?.id) {
     fail(409, '生成结果与任务归属不符');
-  if (job.generationAttempt?.id !== reservation.job?.generationAttempt?.id)
+  }
+  if (job.generationAttempt?.id !== reservation.job?.generationAttempt?.id) {
     fail(409, '生成结果与执行尝试不符');
+  }
   if (
     job.generationAttempt &&
     (job.generationAttempt.jobId !== job.id ||
       job.generationAttempt.memberId !== job.fairCharge!.userId ||
       job.generationAttempt.accountId !== job.accountId)
-  )
+  ) {
     fail(409, '任务与执行尝试归属不符');
+  }
   return job as StoreItem & { fairCharge: FairCharge };
 }
 
@@ -720,12 +788,18 @@ export async function prepareGenerationResult(
           db.images.find((item) => item.id === job.imageId) ||
           store.selectItemById('images', job.imageId);
         if (existing) {
-          if (existing.token !== job.userToken) fail(409, '已存结果与任务归属不符');
+          if (existing.token !== job.userToken) {
+            fail(409, '已存结果与任务归属不符');
+          }
           return null;
         }
       }
-      if (job.fairCharge.status === 'settled') fail(409, '任务已结算但结果缺失');
-      if (!job.generationAttempt?.id) fail(409, '任务执行尝试不存在');
+      if (job.fairCharge.status === 'settled') {
+        fail(409, '任务已结算但结果缺失');
+      }
+      if (!job.generationAttempt?.id) {
+        fail(409, '任务执行尝试不存在');
+      }
       const pending = {
         ...describeStoredResult(
           job.resultPending?.imageId || (options.createId || createId)('img'),
@@ -739,9 +813,12 @@ export async function prepareGenerationResult(
         (Object.keys(pending) as (keyof typeof pending)[]).some(
           (key) => job.resultPending![key] !== pending[key],
         )
-      )
+      ) {
         fail(409, '待保存结果与原结果不符');
-      if (store.selectItemById('images', pending.imageId)) fail(409, '待保存结果 ID 已被使用');
+      }
+      if (store.selectItemById('images', pending.imageId)) {
+        fail(409, '待保存结果 ID 已被使用');
+      }
       Object.assign(job, reservation.upstreamTiming || {});
       job.resultPending = pending;
       recordPreparedArtifact(db, job, (options.now || Date.now)());
@@ -751,6 +828,11 @@ export async function prepareGenerationResult(
   );
 }
 
+/**
+ * 先提交待恢复描述，再持久发布文件，最后在另一短事务中关联产物并结算。
+ * 崩溃恢复按描述的长度、摘要和尝试核验已发布文件，不重新请求上游。
+ * 已退款任务只补存迟到结果，保留退款且不推进下一张子任务。
+ */
 export async function completeGenerationCommand(
   options: GenerationResultOptions,
   reservation: GenerationReservation,
@@ -768,13 +850,14 @@ export async function completeGenerationCommand(
     meta.jobId,
     options,
   );
-  if (pending)
+  if (pending) {
     await publishGenerationArtifact(
       dataDir,
       pending,
       image.buffer,
       options.publish || publishStoredResult,
     );
+  }
   return store.update(
     (db) => {
       const now = clock(),
@@ -785,14 +868,17 @@ export async function completeGenerationCommand(
           db.images.find((item) => item.id === job.imageId) ||
           store.selectItemById('images', job.imageId);
         if (existing) {
-          if (existing.token !== job.userToken) fail(409, '已存结果与任务归属不符');
+          if (existing.token !== job.userToken) {
+            fail(409, '已存结果与任务归属不符');
+          }
           if (job.resultPending) {
             if (
               job.resultPending.imageId !== existing.id ||
               job.resultPending.sha256 !== existing.sha256 ||
               job.resultPending.byteLength !== existing.byteLength
-            )
+            ) {
               fail(409, '已存结果与待恢复证据不符');
+            }
             delete job.resultPending;
           }
           if (
@@ -805,13 +891,14 @@ export async function completeGenerationCommand(
               now,
               store.readFreeImageUsage(db, job.fairCharge.userId, now),
             );
-            if (!existing.mock)
+            if (!existing.mock) {
               completeSharedAccount(
                 db,
                 db.accounts.find((account) => account.id === job.accountId),
                 now,
                 { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil },
               );
+            }
           }
           return {
             ...existing,
@@ -820,22 +907,30 @@ export async function completeGenerationCommand(
         }
       }
       const refunded = job.fairCharge.status === 'refunded';
-      if (!refunded && job.fairCharge.status !== 'reserved') fail(409, '任务已结算但结果缺失');
-      if (!pending) fail(409, '已发布结果的凭据不存在');
+      if (!refunded && job.fairCharge.status !== 'reserved') {
+        fail(409, '任务已结算但结果缺失');
+      }
+      if (!pending) {
+        fail(409, '已发布结果的凭据不存在');
+      }
       if (
         job.resultPending?.attemptId !== pending.attemptId ||
         job.resultPending?.sha256 !== pending.sha256
-      )
+      ) {
         fail(409, '待保存结果已改变');
+      }
       const account = db.accounts.find((item) => item.id === job.accountId);
       if (account) {
-        if (!refunded) account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
-        if (!image.mock)
+        if (!refunded) {
+          account.inFlight = Math.max(0, Number(account.inFlight || 0) - 1);
+        }
+        if (!image.mock) {
           completeSharedAccount(db, account, now, {
             job,
             kind: 'success',
             retryAfterUntil: reservation.upstreamTiming?.upstreamRetryAfterUntil,
           });
+        }
         account.total = Number(account.total || 0) + 1;
         account.updatedAt = at;
       }
@@ -864,9 +959,14 @@ export async function completeGenerationCommand(
       };
       db.images.unshift(saved);
       Object.assign(job, reservation.upstreamTiming || {});
-      if (!refunded) settleFairQuota(db, job, true, now, {}, store.readFairQuotaSettlement(job.id));
-      if (refunded) recordRecoveredGeneration(db, job, saved.id, now);
-      else job.status = 'done';
+      if (!refunded) {
+        settleFairQuota(db, job, true, now, {}, store.readFairQuotaSettlement(job.id));
+      }
+      if (refunded) {
+        recordRecoveredGeneration(db, job, saved.id, now);
+      } else {
+        job.status = 'done';
+      }
       job.imageId = saved.id;
       delete job.resultPending;
       if (!refunded) {
@@ -882,7 +982,9 @@ export async function completeGenerationCommand(
         now,
         store.readFreeImageUsage(db, job.fairCharge.userId, now),
       );
-      if (!refunded) activateNextBatchJob(db, job, store.nextQueueSequence(), now);
+      if (!refunded) {
+        activateNextBatchJob(db, job, store.nextQueueSequence(), now);
+      }
       return {
         ...saved,
         balance: db.users.find((user) => user.token === reservation.token)?.balance || 0,
@@ -910,28 +1012,34 @@ export interface GenerationRecoveryOutcome {
 export async function recoverPendingGenerationResultsCommand(
   options: GenerationResultOptions & { onRecovery?(result: GenerationRecoveryOutcome): void },
 ) {
+  // 恢复依据已提交描述检查字节；缺失或冲突保留证据，不能猜测结果或重新派发。
   const { store, dataDir } = options;
   const result = { completed: 0, fileMissing: 0, unresolved: 0 };
   let afterId = '';
   for (;;) {
     const ids = await store.readPendingResultJobIds(afterId);
-    if (!ids.length) break;
+    if (!ids.length) {
+      break;
+    }
     for (const jobId of ids) {
       afterId = jobId;
       let outcome: GenerationRecoveryOutcome;
       try {
         const job = store.selectItemById('jobs', jobId),
           pending = job?.resultPending;
-        if (!job || !pending || pending.attemptId !== job.generationAttempt?.id)
+        if (!job || !pending || pending.attemptId !== job.generationAttempt?.id) {
           throw new Error('结果与执行尝试不符');
+        }
         const request = job.requestId
           ? singleGenerationRequest(store.readGenerationRequest(job.requestId)!, job.sampleIndex)
           : (job.request as StoredGenerationRequest);
-        if (!request || pending.operation !== (request.operation || 'generate'))
+        if (!request || pending.operation !== (request.operation || 'generate')) {
           throw new Error('结果与请求操作不符');
+        }
         const existing = store.selectItemById('images', pending.imageId);
-        if (existing && (job.imageId !== pending.imageId || existing.token !== job.userToken))
+        if (existing && (job.imageId !== pending.imageId || existing.token !== job.userToken)) {
           throw new Error('待保存结果 ID 已被使用');
+        }
         const reservation: GenerationReservation = {
           job,
           token: job.userToken,
@@ -975,8 +1083,12 @@ export async function recoverPendingGenerationResultsCommand(
 
 export function isNovelAiCapacityError(error: unknown): boolean {
   const failure = error as GenerationError;
-  if (Number(failure?.upstreamStatus) === 429) return true;
-  if ([401, 403].includes(Number(failure?.upstreamStatus))) return false;
+  if (Number(failure?.upstreamStatus) === 429) {
+    return true;
+  }
+  if ([401, 403].includes(Number(failure?.upstreamStatus))) {
+    return false;
+  }
   return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(
     String(failure?.message || error || ''),
   );
@@ -990,22 +1102,25 @@ export function sharedFailureKind(
   if (
     reservation.failurePhase === 'commit' ||
     /^(?:SQLITE|ENOSPC|EROFS|EACCES)/.test(failure?.code || '')
-  )
+  ) {
     return 'ended';
+  }
   const status = failure?.upstreamStatus ?? reservation.upstreamTiming?.upstreamHttpStatus;
   if (
     status !== undefined &&
     Number(status) >= 400 &&
     Number(status) < 500 &&
     Number(status) !== 429
-  )
+  ) {
     return 'ended';
+  }
   if (
     isNovelAiCapacityError(
       status === undefined ? error : { message: failure?.message, upstreamStatus: status },
     )
-  )
+  ) {
     return 'capacity';
+  }
   return reservation.failurePhase === 'upstream' && reservation.upstreamTiming?.upstreamStartedAt
     ? 'ordinary'
     : 'ended';
@@ -1027,17 +1142,22 @@ async function finishGenerationFailure(
     detail = options.errorDetailMessage(error);
   const kind = sharedFailureKind(reservation, error),
     capacity = kind === 'capacity';
-  const statusCode = capacity ? 429 : failure?.statusCode || (aborted ? 504 : 500);
-  const message =
-    !aborted && capacity
-      ? 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。'
-      : !aborted && failure?.upstreamStatus === 401
-        ? '共享 Opus Key 已失效，请联系管理员更新凭据'
-        : !aborted && failure?.upstreamStatus === 403
-          ? '上游拒绝访问，请联系管理员重新验证 Opus'
-          : options.publicErrorMessage(
-              failure?.message || detail || (aborted ? 'direct generate timeout' : ''),
-            );
+  let statusCode = 429;
+  if (!capacity) {
+    statusCode = failure?.statusCode || (aborted ? 504 : 500);
+  }
+  let message: string;
+  if (!aborted && capacity) {
+    message = 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。';
+  } else if (!aborted && failure?.upstreamStatus === 401) {
+    message = '共享 Opus Key 已失效，请联系管理员更新凭据';
+  } else if (!aborted && failure?.upstreamStatus === 403) {
+    message = '上游拒绝访问，请联系管理员重新验证 Opus';
+  } else {
+    message = options.publicErrorMessage(
+      failure?.message || detail || (aborted ? 'direct generate timeout' : ''),
+    );
+  }
   return store.update(
     (db) => {
       const job = reservation.job?.id
@@ -1051,7 +1171,9 @@ async function finishGenerationFailure(
         kind,
         cooldownUntil: undefined as StoreItem['cooldownUntil'],
       };
-      if (!job || ['done', 'failed'].includes(job.status!)) return result;
+      if (!job || ['done', 'failed'].includes(job.status!)) {
+        return result;
+      }
       const now = (options.now || Date.now)(),
         at = new Date(now).toISOString();
       const account = reservation.account
@@ -1093,7 +1215,9 @@ async function finishGenerationFailure(
             },
           });
         }
-        if (!aborted) account.failures = Number(account.failures || 0) + 1;
+        if (!aborted) {
+          account.failures = Number(account.failures || 0) + 1;
+        }
         account.updatedAt = at;
       }
       Object.assign(job, reservation.upstreamTiming || {});
@@ -1162,7 +1286,9 @@ export async function cleanupStaleGenerationJobs(
       const jobIds: string[] = [],
         message = options.publicErrorMessage('direct generate timeout');
       for (const job of db.jobs) {
-        if (!isStaleGenerationJob(job, now, env)) continue;
+        if (!isStaleGenerationJob(job, now, env)) {
+          continue;
+        }
         const detail = staleGenerationJobDetail(job, now, env);
         const account =
           job.status === 'running' && job.accountId
@@ -1182,7 +1308,9 @@ export async function cleanupStaleGenerationJobs(
             kind,
             retryAfterUntil: job.upstreamRetryAfterUntil,
           });
-          if (kind === 'capacity') statusCode = 429;
+          if (kind === 'capacity') {
+            statusCode = 429;
+          }
           account.updatedAt = at;
         }
         refundGenerationJob(store, db, job, { now: () => now });
@@ -1232,18 +1360,30 @@ export async function cleanupInterruptedGenerationJobs(
         openai = 0,
         expired = 0;
       for (const job of db.jobs) {
-        if (!['queued', 'pending', 'running'].includes(job.status!)) continue;
+        if (!['queued', 'pending', 'running'].includes(job.status!)) {
+          continue;
+        }
         const isRunning = job.status === 'running',
           deadline = generationJobDeadline(job),
           queueExpires = queuedDeadlineTimestamp(job, env);
         const isExpired = Boolean(
           (deadline && now >= deadline) || (queueExpires && now >= queueExpires),
         );
-        if (!isRunning && !isExpired) continue;
-        if (isRunning) running++;
-        if (job.source === 'direct') direct++;
-        if (job.source === 'openai') openai++;
-        if (isExpired) expired++;
+        if (!isRunning && !isExpired) {
+          continue;
+        }
+        if (isRunning) {
+          running++;
+        }
+        if (job.source === 'direct') {
+          direct++;
+        }
+        if (job.source === 'openai') {
+          openai++;
+        }
+        if (isExpired) {
+          expired++;
+        }
         const account =
           isRunning && job.accountId ? db.accounts.find((item) => item.id === job.accountId) : null;
         if (account) {
@@ -1300,13 +1440,17 @@ export async function reconcileGenerationReviewsCommand(
   let changed = 0;
   for (const pending of await store.readDueGenerationReviews(now)) {
     let localImage = pending.imageId ? await store.findImage(pending.imageId) : null;
-    if (localImage?.token !== pending.userToken) localImage = null;
+    if (localImage?.token !== pending.userToken) {
+      localImage = null;
+    }
     if (localImage) {
       try {
         const buffer = await options.readStoredImage(localImage);
-        if (localImage.mimeType !== 'application/octet-stream')
+        if (localImage.mimeType !== 'application/octet-stream') {
           validateImageBytes(buffer, { maxBytes: 64 * 1024 * 1024, maxDimension: 16384 });
-        else if (!buffer.length) localImage = null;
+        } else if (!buffer.length) {
+          localImage = null;
+        }
       } catch {
         localImage = null;
       }
@@ -1318,24 +1462,27 @@ export async function reconcileGenerationReviewsCommand(
           !job ||
           job.generationReview?.status !== 'pending' ||
           job.fairCharge?.status !== 'refunded'
-        )
+        ) {
           return false;
+        }
         if (localImage && job.imageId === localImage.id) {
           const recovered = recordRecoveredGeneration(db, job, localImage.id, now);
-          if (recovered)
+          if (recovered) {
             recordFreeImageSuccess(
               db,
               job,
               now,
               store.readFreeImageUsage(db, job.fairCharge.userId, now),
             );
-          if (recovered && !localImage.mock)
+          }
+          if (recovered && !localImage.mock) {
             completeSharedAccount(
               db,
               db.accounts.find((account) => account.id === job.accountId),
               now,
               { job, kind: 'success', retryAfterUntil: job.upstreamRetryAfterUntil },
             );
+          }
           return recovered;
         }
         return closeGenerationReview(db, job, now);
@@ -1347,7 +1494,9 @@ export async function reconcileGenerationReviewsCommand(
         shouldPersist: Boolean,
       },
     );
-    if (updated) changed++;
+    if (updated) {
+      changed++;
+    }
   }
   return { changed };
 }

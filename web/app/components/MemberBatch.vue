@@ -20,7 +20,9 @@ let reading: Promise<void> | null = null;
 const path = () => 'requests/' + encodeURIComponent(props.requestId);
 
 function read() {
-  if (!active || !expanded.value) return;
+  if (!active || !expanded.value) {
+    return;
+  }
   if (reading || cancelling.value) {
     pending = true;
     return reading;
@@ -53,20 +55,25 @@ function read() {
     } while (pending && active && expanded.value && !cancelling.value);
   })().finally(() => {
     reading = null;
-    if (active) loading.value = false;
+    if (active) {
+      loading.value = false;
+    }
   });
   return reading;
 }
 function toggle(names: Array<string | number>) {
   expanded.value = names.includes(props.requestId);
-  if (expanded.value) void read();
-  else {
+  if (expanded.value) {
+    void read();
+  } else {
     readVersion++;
     pending = false;
   }
 }
 async function cancel() {
-  if (!active || cancelling.value || !batch.value?.cancellable) return;
+  if (!active || cancelling.value || !batch.value?.cancellable) {
+    return;
+  }
   const view = viewVersion;
   cancelling.value = true;
   readVersion++;
@@ -75,26 +82,33 @@ async function cancel() {
   message.value = '';
   try {
     const result = await props.api<BatchSnapshot>(path() + '/cancel', {});
-    if (!active || view !== viewVersion) return;
+    if (!active || view !== viewVersion) {
+      return;
+    }
     batch.value = result;
     message.value = `此次取消 ${number(result.cancelledCount ?? 0)} 条尚未派发任务。生成中的图片继续完成，已完成结果仍可领取。`;
     emit('changed');
   } catch (cause) {
-    if (active && view === viewVersion)
+    if (active && view === viewVersion) {
       error.value =
         '取消未确认，请刷新批次核实状态后再操作。' +
         (cause instanceof Error ? ' ' + cause.message : '');
+    }
   } finally {
     if (active && view === viewVersion) {
       cancelling.value = false;
-      if (pending && expanded.value) void read();
+      if (pending && expanded.value) {
+        void read();
+      }
     }
   }
 }
 watch(
   () => props.refreshVersion,
   () => {
-    if (expanded.value) void read();
+    if (expanded.value) {
+      void read();
+    }
   },
 );
 watch(
@@ -107,7 +121,9 @@ watch(
     error.value = '';
     message.value = '';
     cancelling.value = false;
-    if (expanded.value) void read();
+    if (expanded.value) {
+      void read();
+    }
   },
 );
 onBeforeUnmount(() => {

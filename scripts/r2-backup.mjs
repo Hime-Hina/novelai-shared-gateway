@@ -7,15 +7,18 @@ import { pathToFileURL } from 'node:url';
 const magic = Buffer.from('NAIR2B1\0');
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 export function encryptBackup(archive, key) {
-  if (key.length !== 32) throw new Error('Backup key must contain 32 bytes');
+  if (key.length !== 32) {
+    throw new Error('Backup key must contain 32 bytes');
+  }
   const iv = randomBytes(12),
     cipher = createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(archive), cipher.final()]);
   return Buffer.concat([magic, iv, cipher.getAuthTag(), encrypted]);
 }
 export function decryptBackup(buffer, key) {
-  if (!buffer.subarray(0, 8).equals(magic) || buffer.length < 36)
+  if (!buffer.subarray(0, 8).equals(magic) || buffer.length < 36) {
     throw new Error('Invalid encrypted backup');
+  }
   const decipher = createDecipheriv('aes-256-gcm', key, buffer.subarray(8, 20));
   decipher.setAuthTag(buffer.subarray(20, 36));
   return Buffer.concat([decipher.update(buffer.subarray(36)), decipher.final()]);
@@ -23,14 +26,17 @@ export function decryptBackup(buffer, key) {
 
 async function main() {
   const [mode, input, output, envFile, keyFile, snapshotName] = process.argv.slice(2);
-  if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile)
+  if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile) {
     throw new Error('Invalid backup arguments');
+  }
   const runtime = existsSync(new URL('../server/storage/r2-storage.js', import.meta.url))
     ? '../server/storage/r2-storage.js'
     : '../server/storage/r2-storage.ts';
   const { R2Storage, r2Config } = await import(runtime);
   const config = r2Config(parseEnv(await readFile(envFile, 'utf8')));
-  if (!config) throw new Error('R2 configuration is required');
+  if (!config) {
+    throw new Error('R2 configuration is required');
+  }
   const remote = new R2Storage(config),
     key = await readFile(keyFile);
   if (mode === 'download') {
@@ -39,11 +45,13 @@ async function main() {
     await writeFile(output, decrypted, { flag: 'wx', mode: 0o600 });
     return;
   }
-  if (!/^daily-[0-9TZ.]+$/.test(snapshotName || ''))
+  if (!/^daily-[0-9TZ.]+$/.test(snapshotName || '')) {
     throw new Error('Only daily business backups are uploaded');
+  }
   // Keep seven compressed backups below the 0.5 GB reserved alongside the 9.5 GB image allowance.
-  if ((await stat(input)).size > 50 * 1024 * 1024)
+  if ((await stat(input)).size > 50 * 1024 * 1024) {
     throw new Error('Compressed business backup exceeds 50 MiB; local backup retained');
+  }
   const encrypted = encryptBackup(await readFile(input), key);
   const object = {
     bucket: config.bucket,
@@ -52,11 +60,13 @@ async function main() {
     sha256: hash(encrypted),
   };
   const existing = await remote.listBackups();
-  if (existing.reduce((sum, row) => sum + row.bytes, 0) + encrypted.length > 500_000_000)
+  if (existing.reduce((sum, row) => sum + row.bytes, 0) + encrypted.length > 500_000_000) {
     throw new Error('R2 business backup allowance reached; local backup retained');
+  }
   await remote.put(object, encrypted, 'application/octet-stream');
-  if (!decryptBackup(await remote.get(object), key).equals(await readFile(input)))
+  if (!decryptBackup(await remote.get(object), key).equals(await readFile(input))) {
     throw new Error('Encrypted backup round-trip mismatch');
+  }
   await writeFile(output, JSON.stringify(object, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   const backups = [...existing, { key: object.key, bytes: object.byteLength }]
     .filter((row) => /^backups\/daily-[0-9TZ.]+\/[a-f0-9]{64}$/.test(row.key))

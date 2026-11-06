@@ -172,8 +172,9 @@ globalThis.fetch = async (input, init = {}) => {
       { status: user ? 200 : 403 },
     );
   }
-  if (url.protocol === 'http:' && url.hostname === '127.0.0.1')
+  if (url.protocol === 'http:' && url.hostname === '127.0.0.1') {
     return realFetch(input, { ...init, redirect: 'error' });
+  }
   mocks.blocked++;
   throw new Error(`Browser baseline blocked external fetch to ${url.origin}`);
 };
@@ -284,7 +285,9 @@ const front = http.createServer((req, res) => {
     },
   );
   upstream.on('error', () => {
-    if (!res.headersSent) res.writeHead(502);
+    if (!res.headersSent) {
+      res.writeHead(502);
+    }
     res.end();
   });
   res.on('close', () => upstream.destroy());
@@ -320,7 +323,9 @@ for (const role of ['anonymous', 'member', 'owner']) {
   assert.equal(member.jobs.length, 30);
   const stats = await realFetch(baseUrl + '/api/member/owner/statistics?days=7', { headers });
   assert.equal(stats.status, role === 'owner' ? 200 : 403);
-  if (role === 'owner') assert.equal((await stats.json()).totals.total, 120);
+  if (role === 'owner') {
+    assert.equal((await stats.json()).totals.total, 120);
+  }
 }
 for (const page of ['/', '/owner', '/owner/', '/admin', '/admin/']) {
   assert.equal((await realFetch(baseUrl + page)).status, 200, page);

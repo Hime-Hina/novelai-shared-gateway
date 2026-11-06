@@ -23,7 +23,9 @@ async function listen(server) {
 async function until(predicate, timeout = 10000) {
   const deadline = Date.now() + timeout;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('synthetic cooldown wait timed out');
+    if (Date.now() >= deadline) {
+      throw new Error('synthetic cooldown wait timed out');
+    }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
@@ -105,19 +107,27 @@ async function fixture(t, { hold = false } = {}) {
         trainingStepsLeft: { fixedTrainingStepsLeft: 10000, purchasedTrainingSteps: 0 },
         usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 },
       };
-      if (missingQuotaField === 'v5') delete subscription.usage.percent;
-      if (missingQuotaField === 'fixed')
+      if (missingQuotaField === 'v5') {
+        delete subscription.usage.percent;
+      }
+      if (missingQuotaField === 'fixed') {
         delete subscription.trainingStepsLeft.fixedTrainingStepsLeft;
-      if (missingQuotaField === 'purchased')
+      }
+      if (missingQuotaField === 'purchased') {
         delete subscription.trainingStepsLeft.purchasedTrainingSteps;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ subscription }));
       return;
     }
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
     calls.push({ path: req.url, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
-    if (hold) await released;
+    if (hold) {
+      await released;
+    }
     res.writeHead(429, { 'content-type': 'application/json', 'Retry-After': '300' });
     res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
   });
@@ -182,8 +192,12 @@ async function fixture(t, { hold = false } = {}) {
     });
   };
   const stop = async (signal = 'SIGTERM') => {
-    if (child?.exitCode === null && child?.signalCode === null) child.kill(signal);
-    if (exited) await exited;
+    if (child?.exitCode === null && child?.signalCode === null) {
+      child.kill(signal);
+    }
+    if (exited) {
+      await exited;
+    }
   };
   t.after(async () => {
     release();

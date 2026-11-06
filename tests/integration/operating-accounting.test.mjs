@@ -113,7 +113,9 @@ for (const [resource, field] of [
     const charge = reserveFairQuota(db, db.users[0], job, db.accounts[0], now);
     settleFairQuota(db, job, true, now + 1);
     const before = structuredClone(db.settings.fairQuota.balances);
-    for (const tick of [2, 3]) observe(db, { [field]: 1000 }, now + tick);
+    for (const tick of [2, 3]) {
+      observe(db, { [field]: 1000 }, now + tick);
+    }
     assert.deepEqual(db.settings.fairQuota.balances, before);
     db = JSON.parse(JSON.stringify(db));
     observe(db, { [field]: 1000 - charge.amount / 2 }, now + 4);
@@ -128,8 +130,9 @@ test('短暂余额下降不自动核销运营资金；重复回跳不重复计�
   const db = fixture();
   fund(db, contribute('transient-dip-funds', 'anlasFixed', 100));
   const before = structuredClone(db.settings.fairQuota.balances);
-  for (const [i, balance] of [900, 1000, 900, 1000].entries())
+  for (const [i, balance] of [900, 1000, 900, 1000].entries()) {
     observe(db, { quotaFixed: balance }, now + i + 1);
+  }
   assert.deepEqual(db.settings.fairQuota.balances, before);
   const ops = db.settings.fairQuota.operating;
   assert.equal(ops.available.anlasFixed, '100');
@@ -600,8 +603,9 @@ test('真实管理 HTTP 保留鉴权和本人来源，GET只估算，官方同�
     store,
     env: { OWNER_USER_ID: 'a' },
     assertAdmin(req) {
-      if (req.headers['x-admin-token'] !== 'synthetic-admin')
+      if (req.headers['x-admin-token'] !== 'synthetic-admin') {
         throw Object.assign(new Error('admin required'), { statusCode: 403 });
+      }
     },
   };
   const server = http.createServer(async (req, res) => {

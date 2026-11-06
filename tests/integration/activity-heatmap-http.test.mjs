@@ -78,8 +78,9 @@ async function fixture(t) {
     store,
     env,
     assertAdmin(req) {
-      if (req.headers['x-admin-token'] !== 'synthetic-local-admin')
+      if (req.headers['x-admin-token'] !== 'synthetic-local-admin') {
         throw Object.assign(new Error('Private administrator required'), { statusCode: 401 });
+      }
     },
   };
   const server = http.createServer(async (req, res) => {
@@ -184,8 +185,9 @@ test('热力图真实成员会话只读本人：三操作分开、每图计数�
     'synthetic-discord',
     'private-child',
     'private-batch',
-  ])
+  ]) {
     assert.ok(!generated.text.includes(secret), secret);
+  }
   assert.equal(Object.hasOwn(generated.data, 'jobs'), false);
 });
 
@@ -222,8 +224,9 @@ test('owner和本机admin沿用原鉴权：全局与已删除成员筛选，不�
   });
   assert.equal(local.status, 200);
   assert.equal(total(local), 1);
-  for (const secret of ['STA1N-', 'synthetic-private', 'synthetic-discord', 'private-deleted'])
+  for (const secret of ['STA1N-', 'synthetic-private', 'synthetic-discord', 'private-deleted']) {
     assert.ok(!local.text.includes(secret), secret);
+  }
   await store.update(
     (db) => {
       db.users[0].discord.member = false;

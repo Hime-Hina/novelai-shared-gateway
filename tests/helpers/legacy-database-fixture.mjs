@@ -8,8 +8,9 @@ import { removeLegacyFreeImageTriggers } from '../../server/events/event-store.t
 // A separate pre-event fixture keeps bootstrap's real history intact.
 export async function createLegacyDatabaseFixture(sourceDataDir) {
   const relative = path.relative(path.resolve(tmpdir()), path.resolve(sourceDataDir));
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative))
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new Error('Legacy fixtures must come from a synthetic temporary directory.');
+  }
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-legacy-fixture-'));
   const source = new Database(path.join(sourceDataDir, 'library.sqlite'), {
     readonly: true,
@@ -43,8 +44,9 @@ export async function createLegacyDatabaseFixture(sourceDataDir) {
         const insert = target.prepare(
           `INSERT INTO ${table}(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`,
         );
-        for (const row of source.prepare(`SELECT * FROM ${table}`).iterate())
+        for (const row of source.prepare(`SELECT * FROM ${table}`).iterate()) {
           insert.run(...columns.map((column) => row[column]));
+        }
       }
       for (const row of source
         .prepare(
@@ -63,7 +65,9 @@ export async function createLegacyDatabaseFixture(sourceDataDir) {
     await stat(images).then(
       (value) => value.isDirectory(),
       (error) => {
-        if (error.code === 'ENOENT') return false;
+        if (error.code === 'ENOENT') {
+          return false;
+        }
         throw error;
       },
     )

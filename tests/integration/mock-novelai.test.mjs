@@ -44,7 +44,9 @@ async function start(t, delayMs = 0, extra = []) {
     output += bytes;
   });
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+    }
     await exited;
   });
   const deadline = Date.now() + 5000;

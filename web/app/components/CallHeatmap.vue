@@ -53,6 +53,21 @@ const chart = ref<HTMLElement | null>(null),
   detailsOpen = ref(false);
 const loading = ref(false),
   error = ref('');
+const refreshStatus = computed(() => {
+  if (error.value) {
+    return error.value;
+  }
+  if (loading.value) {
+    return '正在读取调用记录…';
+  }
+  if (!snapshot.value) {
+    return '等待记录';
+  }
+  return (
+    `${snapshot.value.from} — ${snapshot.value.to}` +
+    (aggregation.value === 'cumulative' ? ' · 自范围起始日逐日累计' : '')
+  );
+});
 let mounted = false,
   disposed = false,
   epoch = 0,
@@ -85,7 +100,9 @@ function count(day: ActivityDay): number {
   return status.value === 'active' ? day.queued + day.pending + day.running : day[status.value];
 }
 function breakdown(day?: ActivityDay): string {
-  if (!day) return '无保留记录，覆盖未知，不能推断为零次调用。';
+  if (!day) {
+    return '无保留记录，覆盖未知，不能推断为零次调用。';
+  }
   return `保留记录 ${day.total} 次 · 成功 ${day.done} · 失败 ${day.failed} · 取消 ${day.cancelled} · 排队 ${day.queued} · 等待前序图片 ${day.pending} · 生成中 ${day.running} · 其他 ${day.other}。记录可能不完整。`;
 }
 const values = computed(
@@ -124,19 +141,28 @@ function request(dates: string[] | null = null) {
     fullPending = true;
     pendingDates.clear();
   } else if (!fullPending) {
-    for (const date of dates)
-      if (date >= snapshot.value.from && date <= snapshot.value.to) pendingDates.add(date);
+    for (const date of dates) {
+      if (date >= snapshot.value.from && date <= snapshot.value.to) {
+        pendingDates.add(date);
+      }
+    }
   }
   // 同一轮通知先合并日期；不为每条 SSE 立即发出一次请求。
-  if (scheduled) return;
+  if (scheduled) {
+    return;
+  }
   scheduled = true;
   queueMicrotask(() => {
     scheduled = false;
-    if (canRead() && !task && (fullPending || pendingDates.size)) void read();
+    if (canRead() && !task && (fullPending || pendingDates.size)) {
+      void read();
+    }
   });
 }
 function read(): Promise<void> {
-  if (task) return task;
+  if (task) {
+    return task;
+  }
   task = (async () => {
     while (canRead() && (fullPending || pendingDates.size)) {
       const current = epoch,
@@ -146,13 +172,19 @@ function read(): Promise<void> {
       pendingDates.clear();
       loading.value = true;
       const query = new URLSearchParams({ operation: operation.value });
-      if (props.members !== undefined && memberId.value) query.set('memberId', memberId.value);
-      if (!full) query.set('dates', dates.join(','));
+      if (props.members !== undefined && memberId.value) {
+        query.set('memberId', memberId.value);
+      }
+      if (!full) {
+        query.set('dates', dates.join(','));
+      }
       try {
         const result = await props.api<ActivitySnapshot>(
           props.endpoint + (props.endpoint.includes('?') ? '&' : '?') + query,
         );
-        if (disposed || current !== epoch) continue;
+        if (disposed || current !== epoch) {
+          continue;
+        }
         if (
           !full &&
           snapshot.value &&
@@ -163,8 +195,9 @@ function read(): Promise<void> {
           continue;
         }
         const initial = !snapshot.value;
-        if (full || !snapshot.value) snapshot.value = result;
-        else {
+        if (full || !snapshot.value) {
+          snapshot.value = result;
+        } else {
           // 空增量也必须删除这些日期的旧桶，避免清历史后留下旧计数。
           const replaced = new Set(dates);
           snapshot.value = {
@@ -175,25 +208,36 @@ function read(): Promise<void> {
             ].sort((a, b) => a.date.localeCompare(b.date)),
           };
         }
-        if (selectedDate.value < result.from || selectedDate.value > result.to)
+        if (selectedDate.value < result.from || selectedDate.value > result.to) {
           selectedDate.value = result.to;
+        }
         error.value = '';
         if (initial) {
           await nextTick();
-          if (!disposed && current === epoch && chart.value)
+          if (!disposed && current === epoch && chart.value) {
             chart.value.scrollLeft = chart.value.scrollWidth;
+          }
         }
       } catch (failure) {
-        if (disposed || current !== epoch) continue;
-        if (full) fullPending = true;
-        else for (const date of dates) pendingDates.add(date);
+        if (disposed || current !== epoch) {
+          continue;
+        }
+        if (full) {
+          fullPending = true;
+        } else {
+          for (const date of dates) {
+            pendingDates.add(date);
+          }
+        }
         error.value = '调用热力图读取失败，保留上次结果：' + (failure as Error).message;
         break;
       }
     }
   })().finally(() => {
     task = null;
-    if (!disposed) loading.value = false;
+    if (!disposed) {
+      loading.value = false;
+    }
   });
   return task;
 }
@@ -205,7 +249,9 @@ function reset() {
   request();
 }
 function calibrateDay() {
-  if (!mounted) return;
+  if (!mounted) {
+    return;
+  }
   const day = shanghaiDay();
   if (day !== lastDay) {
     lastDay = day;
@@ -222,13 +268,17 @@ watch([operation, memberId, () => props.endpoint, () => props.api], reset);
 watch(
   () => props.members,
   (members) => {
-    if (!members?.some((member) => member.id === memberId.value)) memberId.value = '';
+    if (!members?.some((member) => member.id === memberId.value)) {
+      memberId.value = '';
+    }
   },
 );
 watch(
   () => props.invalidation?.version,
   () => {
-    if (!props.invalidation) return;
+    if (!props.invalidation) {
+      return;
+    }
     const day = shanghaiDay(),
       crossedDay = mounted && day !== lastDay;
     lastDay = day;
@@ -239,7 +289,9 @@ watch(
 watch(() => props.refreshVersion, calibrateDay);
 watch(aggregation, async () => {
   await nextTick();
-  if (chart.value) chart.value.scrollLeft = chart.value.scrollWidth;
+  if (chart.value) {
+    chart.value.scrollLeft = chart.value.scrollWidth;
+  }
 });
 watch(
   () => props.active,
@@ -312,15 +364,7 @@ onBeforeUnmount(() => {
       />
     </div>
     <div class="refresh-status" role="status" :title="error">
-      {{
-        error ||
-        (loading
-          ? '正在读取调用记录…'
-          : snapshot
-            ? `${snapshot.from} — ${snapshot.to}` +
-              (aggregation === 'cumulative' ? ' · 自范围起始日逐日累计' : '')
-            : '等待记录')
-      }}
+      {{ refreshStatus }}
       <NButton v-if="error" id="retryHeatmap" :loading="loading" size="tiny" text @click="request()"
         >重试</NButton
       >

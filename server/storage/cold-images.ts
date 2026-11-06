@@ -41,16 +41,22 @@ export async function archiveColdImage(
   const candidate = await store.update(() => (idle() ? store.nextColdImage(now) : null), {
     persist: false,
   });
-  if (!candidate) return false;
+  if (!candidate) {
+    return false;
+  }
   try {
     const file = storedImagePath(store.dataDir, candidate.file!);
-    if (path.dirname(file) !== path.resolve(store.dataDir, 'images'))
+    if (path.dirname(file) !== path.resolve(store.dataDir, 'images')) {
       throw new Error('Unsafe image path');
+    }
     const directory = await lstat(path.join(store.dataDir, 'images'));
-    if (!directory.isDirectory() || directory.isSymbolicLink())
+    if (!directory.isDirectory() || directory.isSymbolicLink()) {
       throw new Error('Unsafe image directory');
+    }
     const info = await lstat(file).catch((error) => {
-      if (error.code === 'ENOENT' && candidate.r2?.verifiedAt) return null;
+      if (error.code === 'ENOENT' && candidate.r2?.verifiedAt) {
+        return null;
+      }
       throw error;
     });
     if (
@@ -59,8 +65,9 @@ export async function archiveColdImage(
         info.isSymbolicLink() ||
         info.size < 1 ||
         info.size > MAX_STORED_IMAGE_BYTES)
-    )
+    ) {
       throw new Error('Invalid local image file');
+    }
     const handle = info ? await open(file, 'r') : null;
     let buffer: Buffer;
     try {
@@ -72,15 +79,22 @@ export async function archiveColdImage(
     if (
       (candidate.sha256 !== undefined && candidate.sha256 !== sha256) ||
       (candidate.byteLength !== undefined && candidate.byteLength !== buffer.length)
-    )
+    ) {
       throw new Error('Local image checksum mismatch');
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id)) throw new Error('Invalid image identity');
+    }
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(candidate.id)) {
+      throw new Error('Invalid image identity');
+    }
     const reserved = await store.update(
       (db) => {
         const current = store.loadItemForUpdate('images', candidate.id);
-        if (!current || current.file !== candidate.file || !idle()) return null;
+        if (!current || current.file !== candidate.file || !idle()) {
+          return null;
+        }
         if (!current.r2) {
-          if (store.readR2Usage().bytes + buffer.length > R2_IMAGE_LIMIT_BYTES) return null;
+          if (store.readR2Usage().bytes + buffer.length > R2_IMAGE_LIMIT_BYTES) {
+            return null;
+          }
           current.r2 = {
             bucket: remote.config.bucket,
             key: `images/${current.id}/${sha256}`,
@@ -88,8 +102,9 @@ export async function archiveColdImage(
             byteLength: buffer.length,
           };
         }
-        if (current.r2.sha256 !== sha256 || current.r2.byteLength !== buffer.length)
+        if (current.r2.sha256 !== sha256 || current.r2.byteLength !== buffer.length) {
           throw new Error('R2 reservation checksum mismatch');
+        }
         current.sha256 = sha256;
         current.byteLength = buffer.length;
         current.r2LastAttemptAt = new Date(now).toISOString();
@@ -99,15 +114,22 @@ export async function archiveColdImage(
       },
       { immediate: true, dirtyRows: { images: [candidate.id] }, shouldPersist: Boolean },
     );
-    if (!reserved) return false;
-    if (!reserved.verifiedAt) await remote.put(reserved, buffer, candidate.mimeType!);
+    if (!reserved) {
+      return false;
+    }
+    if (!reserved.verifiedAt) {
+      await remote.put(reserved, buffer, candidate.mimeType!);
+    }
     const downloaded = await remote.get(reserved);
-    if (!downloaded.equals(buffer)) throw new Error('R2 round-trip mismatch');
+    if (!downloaded.equals(buffer)) {
+      throw new Error('R2 round-trip mismatch');
+    }
     await store.update(
       (db) => {
         const current = store.loadItemForUpdate('images', candidate.id);
-        if (!current?.r2 || current.r2.key !== reserved.key)
+        if (!current?.r2 || current.r2.key !== reserved.key) {
           throw new Error('R2 reservation changed');
+        }
         current.r2.verifiedAt = new Date().toISOString();
         storageFact(db, current, 'verified', Date.now());
       },
@@ -120,8 +142,9 @@ export async function archiveColdImage(
         current.ino !== info.ino ||
         current.size !== info.size ||
         current.mtimeMs !== info.mtimeMs
-      )
+      ) {
         throw new Error('Local image changed during archival');
+      }
       await unlink(file);
       if (process.platform !== 'win32') {
         const directoryHandle = await open(path.dirname(file), 'r');
@@ -139,7 +162,9 @@ export async function archiveColdImage(
           current.r2.localRemovedAt = new Date().toISOString();
           delete current.r2Error;
         }
-        if (current) storageFact(db, current, 'local_removed', Date.now());
+        if (current) {
+          storageFact(db, current, 'local_removed', Date.now());
+        }
       },
       { immediate: true, dirtyRows: { images: [candidate.id] } },
     );

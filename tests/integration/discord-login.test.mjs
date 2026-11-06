@@ -39,11 +39,12 @@ async function fixture(t) {
     })),
   };
   configureFairQuota(db, ['a', 'b', 'c', 'd']);
-  for (const user of db.users)
+  for (const user of db.users) {
     await setMemberCredentials(db, user.id, {
       username: 'member-' + user.id,
       password: 'synthetic-password-for-' + user.id,
     });
+  }
   let queue = Promise.resolve();
   const store = {
     update(fn) {
@@ -73,14 +74,17 @@ async function fixture(t) {
     createId: () => 'new-member',
     createPublicToken: () => 'STA1N-new-member',
     assertAdmin(req) {
-      if (req.headers['x-admin-token'] !== 'synthetic-admin')
+      if (req.headers['x-admin-token'] !== 'synthetic-admin') {
         throw Object.assign(new Error('Admin required'), { statusCode: 403 });
+      }
     },
     async discordFetch(url, options) {
       upstream.calls.push({ url, options });
       if (url.endsWith('/oauth2/token')) {
         const refresh = options.body.get('grant_type') === 'refresh_token';
-        if (refresh) upstream.refreshes++;
+        if (refresh) {
+          upstream.refreshes++;
+        }
         return Response.json({
           access_token: 'synthetic-access-' + (refresh ? upstream.refreshes : 'login'),
           refresh_token: 'synthetic-refresh-' + upstream.refreshes,
@@ -89,13 +93,16 @@ async function fixture(t) {
           scope: upstream.scope,
         });
       }
-      if (url.endsWith('/users/@me'))
+      if (url.endsWith('/users/@me')) {
         return Response.json({ id: upstream.id, username: 'synthetic-discord-user' });
+      }
       assert.equal(
         url,
         'https://discord.com/api/v10/users/@me/guilds/' + env.DISCORD_GUILD_ID + '/member',
       );
-      if (upstream.fail) return new Response('synthetic-upstream-secret', { status: 503 });
+      if (upstream.fail) {
+        return new Response('synthetic-upstream-secret', { status: 503 });
+      }
       return upstream.member
         ? Response.json({ user: { id: upstream.id }, pending: upstream.pending })
         : new Response('', { status: 404 });
@@ -231,8 +238,11 @@ test(
               if (!changed && text.includes('event: shared-status')) {
                 changed = true;
                 db.users[0].discord.checkedAt = Date.now() - 300001;
-                if (temporary) upstream.fail = true;
-                else upstream.member = false;
+                if (temporary) {
+                  upstream.fail = true;
+                } else {
+                  upstream.member = false;
+                }
               }
             });
             res.on('end', () => resolve(text));
@@ -266,11 +276,12 @@ test('Discord 配置不完整时不能回退密码，回调只使用固定 HTTPS
     { PUBLIC_BASE_URL: 'http://nai.example' },
     { PUBLIC_BASE_URL: 'https://nai.example/?redirect=evil' },
     { PUBLIC_BASE_URL: 'https://name:secret@nai.example' },
-  ])
+  ]) {
     assert.throws(
       () => discordConfig({ ...env, ...changes }),
       (e) => e.statusCode === 503,
     );
+  }
 });
 
 test('邀请 + OAuth + 服务器验证绑定原钱包，纯 Discord 再登录，密码与旧会话不能绕过', async (t) => {

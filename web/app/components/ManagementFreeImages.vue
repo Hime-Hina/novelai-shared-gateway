@@ -21,16 +21,22 @@ onBeforeUnmount(() => {
 watch(
   () => props.policy,
   (value) => {
-    if (value && !dirty.value && !saving.value) draft.value = { ...value };
+    if (value && !dirty.value && !saving.value) {
+      draft.value = { ...value };
+    }
   },
   { immediate: true },
 );
 function reset() {
-  if (props.policy) draft.value = { ...props.policy };
+  if (props.policy) {
+    draft.value = { ...props.policy };
+  }
   dirty.value = false;
 }
 async function save() {
-  if (props.busy || saving.value || !draft.value) return;
+  if (props.busy || saving.value || !draft.value) {
+    return;
+  }
   const { version, ...policy } = draft.value;
   saving.value = true;
   try {
@@ -40,7 +46,9 @@ async function save() {
         expectedVersion: version,
         policy,
       });
-      if (!active) return;
+      if (!active) {
+        return;
+      }
       draft.value = { ...result.policy };
       dirty.value = false;
       emit('changed', '免费图片策略已保存；滚动窗口用量不会因修改策略而清零。');

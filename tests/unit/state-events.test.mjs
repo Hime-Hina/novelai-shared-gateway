@@ -133,11 +133,12 @@ test('100个连接只占一个store监听，回调错误隔离，退订和关库
   });
   const detach = hub.subscribe(() => assert.fail('removed listener called'));
   detach();
-  for (let i = 0; i < 100; i++)
+  for (let i = 0; i < 100; i++) {
     hub.subscribe(
       () => delivered++,
       () => closed++,
     );
+  }
   assert.equal(store.events.listenerCount('commit'), 1);
   assert.equal(store.events.listenerCount('close'), 1);
   store.events.emit('commit', { collections: ['jobs'], memberIds: [] });

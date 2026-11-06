@@ -63,7 +63,9 @@ async function fixture(t) {
   // No executor mock or executor listener: every proxied request must reach Nuxt.
   const nuxt = http.createServer(async (req, res) => {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
     received.push({
       method: req.method,
       url: req.url,
@@ -106,7 +108,9 @@ async function fixture(t) {
   const reservations = [http.createServer(), http.createServer()];
   const publicPort = await listen(reservations[0]),
     privatePort = await listen(reservations[1]);
-  for (const server of reservations) await new Promise((resolve) => server.close(resolve));
+  for (const server of reservations) {
+    await new Promise((resolve) => server.close(resolve));
+  }
 
   const source = await readFile(new URL('../../Caddyfile.example', import.meta.url), 'utf8');
   assert.equal(
@@ -155,10 +159,11 @@ async function fixture(t) {
   caddy.on('error', (error) => {
     spawnError = error;
   });
-  for (const stream of [caddy.stdout, caddy.stderr])
+  for (const stream of [caddy.stdout, caddy.stderr]) {
     stream.on('data', (data) => {
       logs = (logs + data).slice(-16000);
     });
+  }
   t.after(async () => {
     if (!spawnError && caddy.exitCode === null) {
       caddy.kill('SIGTERM');
@@ -174,14 +179,20 @@ async function fixture(t) {
     privateHost = `localhost:${privatePort}`;
   let ready = false;
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (spawnError) throw spawnError; // No skipped test when Caddy is missing.
-    if (caddy.exitCode !== null) throw new Error(`Caddy exited before listening: ${logs}`);
+    if (spawnError) {
+      throw spawnError;
+    } // No skipped test when Caddy is missing.
+    if (caddy.exitCode !== null) {
+      throw new Error(`Caddy exited before listening: ${logs}`);
+    }
     try {
       ready = (await request(publicPort, publicHost, '/api/member/me')).status === 200;
     } catch {
       /* wait for listener */
     }
-    if (ready) break;
+    if (ready) {
+      break;
+    }
     await delay(50);
   }
   assert.ok(ready, `Caddy failed to become ready: ${logs}`);
@@ -245,8 +256,9 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
         '/api/health',
         '/memory',
       ]) {
-        for (const method of ['GET', 'POST', 'PATCH', 'HEAD', 'OPTIONS'])
+        for (const method of ['GET', 'POST', 'PATCH', 'HEAD', 'OPTIONS']) {
           await routed('private', url, { method });
+        }
       }
     },
   );
@@ -254,8 +266,8 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
   await t.test(
     'retired HTML, scripts and styles stay 404 without redirects or a page fallback',
     async () => {
-      for (const side of ['public', 'private'])
-        for (const url of retiredPaths)
+      for (const side of ['public', 'private']) {
+        for (const url of retiredPaths) {
           for (const method of ['GET', 'HEAD']) {
             const port = side === 'public' ? f.publicPort : f.privatePort;
             const host = side === 'public' ? f.publicHost : f.privateHost;
@@ -264,14 +276,18 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
             assert.equal(response.status, 404, `${side} ${method} ${url}`);
             assert.equal(response.headers.location, undefined, `${side} ${method} ${url}`);
             assert.ok(!response.body.includes(Buffer.from(webBody)));
-            if (method === 'HEAD') assert.equal(response.body.length, 0);
-            if (side === 'public' && url.startsWith('/admin'))
+            if (method === 'HEAD') {
+              assert.equal(response.body.length, 0);
+            }
+            if (side === 'public' && url.startsWith('/admin')) {
               assert.equal(f.received.length, before);
-            else {
+            } else {
               assert.equal(response.headers['x-test-upstream'], 'nuxt');
               assert.equal(f.received.at(-1).url, url);
             }
           }
+        }
+      }
     },
   );
 
@@ -307,7 +323,7 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
   await t.test(
     'preserves Host, Origin and browser credentials, sanitizes XFF and injects no internal token',
     async () => {
-      for (const side of ['public', 'private'])
+      for (const side of ['public', 'private']) {
         for (const forged of [false, true]) {
           const originalHost = side === 'public' ? f.publicHost : f.privateHost;
           const headers = {
@@ -333,6 +349,7 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
             assert.equal(observed.headers['x-executor-token'], forged ? forgedToken : undefined);
           }
         }
+      }
       const ipHost = `127.0.0.1:${f.privatePort}`;
       const response = await request(f.privatePort, ipHost, '/api/member/login', {
         method: 'POST',
@@ -363,8 +380,9 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
         };
         // Nuxt/executor, not Caddy, enforce business authorization and accepted methods.
         const login = await routed(side, '/api/member/login', { method: 'POST', headers });
-        for (const [key, value] of Object.entries(headers))
+        for (const [key, value] of Object.entries(headers)) {
           assert.equal(login.observed.headers[key], value);
+        }
         const response = await request(port, host, url, { headers });
         assert.equal(response.status, 303);
         assert.equal(response.headers['x-test-upstream'], 'nuxt');
@@ -374,8 +392,9 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
         assert.equal(observed.url, url);
         assert.equal(observed.method, 'GET');
         assert.equal(observed.headers.host, host);
-        for (const [key, value] of Object.entries(headers))
+        for (const [key, value] of Object.entries(headers)) {
           assert.equal(observed.headers[key], value);
+        }
       }
     },
   );
@@ -383,7 +402,7 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
   await t.test(
     'all remaining web paths reach Nuxt with gzip, without broad API-prefix matching',
     async () => {
-      for (const side of ['public', 'private'])
+      for (const side of ['public', 'private']) {
         for (const url of [
           '/',
           '/_nuxt/synthetic.js',
@@ -398,9 +417,13 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
           const { response } = await routed(side, url, { headers: { 'accept-encoding': 'gzip' } });
           assert.equal(response.headers['content-encoding'], 'gzip', url);
           const content = gunzipSync(response.body).toString();
-          if (url === '/' || url.startsWith('/_nuxt/')) assert.equal(content, webBody);
-          else assert.equal(JSON.parse(content).upstream, 'nuxt');
+          if (url === '/' || url.startsWith('/_nuxt/')) {
+            assert.equal(content, webBody);
+          } else {
+            assert.equal(JSON.parse(content).upstream, 'nuxt');
+          }
         }
+      }
     },
   );
 
@@ -439,7 +462,9 @@ test('shipped Caddy routing over real HTTP', { timeout: 30000 }, async (t) => {
           let data = '';
           res.on('data', (chunk) => {
             data += chunk;
-            if (!data.includes('\n\n')) return;
+            if (!data.includes('\n\n')) {
+              return;
+            }
             clearTimeout(timer);
             req.destroy();
             try {

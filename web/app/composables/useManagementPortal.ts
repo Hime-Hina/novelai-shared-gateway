@@ -64,10 +64,15 @@ export function useManagementPortal(mode: ManagementMode) {
     messageVersion.value++;
   }
   function stop() {
-    if (mode === 'owner') events?.stopMemberEvents();
-    if (timer) clearInterval(timer);
+    if (mode === 'owner') {
+      events?.stopMemberEvents();
+    }
+    if (timer) {
+      clearInterval(timer);
+    }
     timer = null;
   }
+  // epoch 隔离连接和异步响应；清理时同时停止事件流及定时刷新。
   function clear(removeCredential = false, text = '') {
     epoch++;
     sessionVersion.value++;
@@ -101,8 +106,12 @@ export function useManagementPortal(mode: ManagementMode) {
         credentials: 'same-origin',
         headers: headers(),
       });
-      if ([401, 403].includes(response.status)) return false;
-      if (!response.ok) return null;
+      if ([401, 403].includes(response.status)) {
+        return false;
+      }
+      if (!response.ok) {
+        return null;
+      }
       return mode === 'admin' || (await response.json()).owner === true;
     } catch {
       return null;
@@ -115,8 +124,9 @@ export function useManagementPortal(mode: ManagementMode) {
   ): Promise<T> => {
     const current = epoch;
     const check = () => {
-      if (disposed || current !== epoch)
+      if (disposed || current !== epoch) {
         throw Object.assign(new Error('旧管理连接响应已忽略'), { stale: true });
+      }
     };
     check();
     const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : null;
@@ -125,15 +135,16 @@ export function useManagementPortal(mode: ManagementMode) {
       ((path === 'member-management' && keyedActions.has(input.action as string)) ||
         (mode === 'owner' &&
           (path === 'accounts/quota' || (method === 'PATCH' && path.startsWith('accounts/')))));
-    const scope = keyed
-      ? JSON.stringify([
-          mode,
-          mode === 'owner' ? stateQuery.data.value?.ownerUserId : 'local-admin',
-          method || 'POST',
-          path,
-          input.action || '',
-        ])
-      : '';
+    let scope = '';
+    if (keyed) {
+      scope = JSON.stringify([
+        mode,
+        mode === 'owner' ? stateQuery.data.value?.ownerUserId : 'local-admin',
+        method || 'POST',
+        path,
+        input.action || '',
+      ]);
+    }
     let command = scope ? pendingCommands.get(scope) : undefined;
     const retrying = Boolean(command);
     if (keyed) {
@@ -142,8 +153,9 @@ export function useManagementPortal(mode: ManagementMode) {
         expectedConfigVersion: undefined,
         expectedVersion: undefined,
       });
-      if (command && command.intent !== intent)
+      if (command && command.intent !== intent) {
         throw new Error('上次操作结果尚未确认，请先重试原操作。');
+      }
       if (!command) {
         command = { id: crypto.randomUUID(), body: JSON.stringify(body), intent };
         pendingCommands.set(scope, command);
@@ -163,7 +175,7 @@ export function useManagementPortal(mode: ManagementMode) {
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(command ? { 'Idempotency-Key': command.id } : {}),
       },
-      body: command ? command.body : body === undefined ? undefined : JSON.stringify(body),
+      body: command?.body ?? (body === undefined ? undefined : JSON.stringify(body)),
     }).catch((error) => {
       check();
       throw error;
@@ -176,8 +188,9 @@ export function useManagementPortal(mode: ManagementMode) {
         response.status < 500 &&
         response.status !== 408 &&
         (!retrying || ![401, 403].includes(response.status))
-      )
+      ) {
         pendingCommands.delete(scope);
+      }
       // 管理业务也会返回403；用既有鉴权查询确认，不能因此销毁仍有效的草稿。
       if ([401, 403].includes(response.status)) {
         const valid = await authorized();
@@ -199,7 +212,9 @@ export function useManagementPortal(mode: ManagementMode) {
         { statusCode: response.status },
       );
     }
-    if (value === null) throw new Error('响应无法读取，请检查管理入口。');
+    if (value === null) {
+      throw new Error('响应无法读取，请检查管理入口。');
+    }
     pendingCommands.delete(scope);
     return value as T;
   };
@@ -218,8 +233,9 @@ export function useManagementPortal(mode: ManagementMode) {
         }
         return result;
       } catch (error) {
-        if (!(error as Failure).stale)
+        if (!(error as Failure).stale) {
           readError.value = '管理摘要读取失败，保留上次结果：' + (error as Error).message;
+        }
         return stateQuery.data.value ?? null;
       }
     },
@@ -231,12 +247,15 @@ export function useManagementPortal(mode: ManagementMode) {
       const requestedDays = days.value;
       try {
         const result = await api<ManagementUsage>('statistics?days=' + requestedDays);
-        if (requestedDays !== days.value) return usageQuery.data.value ?? null;
+        if (requestedDays !== days.value) {
+          return usageQuery.data.value ?? null;
+        }
         usageError.value = '';
         return result;
       } catch (error) {
-        if (!(error as Failure).stale && requestedDays === days.value)
+        if (!(error as Failure).stale && requestedDays === days.value) {
           usageError.value = '用量读取失败：' + (error as Error).message;
+        }
         return usageQuery.data.value ?? null;
       }
     },
@@ -244,11 +263,15 @@ export function useManagementPortal(mode: ManagementMode) {
   );
 
   async function start() {
-    if (!stateQuery.data.value || disposed) return;
+    if (!stateQuery.data.value || disposed) {
+      return;
+    }
     const current = epoch;
     if (mode === 'owner') {
       events ||= await import('../utils/member-events.js');
-      if (current !== epoch || disposed || !stateQuery.data.value) return;
+      if (current !== epoch || disposed || !stateQuery.data.value) {
+        return;
+      }
       events.startMemberEvents({
         onStatus: (status: SharedStatus) => {
           shared.value = status;
@@ -268,30 +291,46 @@ export function useManagementPortal(mode: ManagementMode) {
         },
       });
     }
-    if (!document.hidden && !timer) timer = setInterval(requestRefresh, 30000);
+    if (!document.hidden && !timer) {
+      timer = setInterval(requestRefresh, 30000);
+    }
   }
+  // 忙碌或隐藏期间合并刷新，完成当前命令后再读取，保留页面持有的草稿。
   function refresh(force = false): Promise<void> {
-    if (disposed) return Promise.resolve();
-    pending = true;
-    if (!force && (busy.value || document.hidden || !stateQuery.data.value))
+    if (disposed) {
       return Promise.resolve();
-    if (refreshTask) return refreshTask;
+    }
+    pending = true;
+    if (!force && (busy.value || document.hidden || !stateQuery.data.value)) {
+      return Promise.resolve();
+    }
+    if (refreshTask) {
+      return refreshTask;
+    }
     const current = epoch;
     refreshTask = (async () => {
       do {
         pending = false;
         await stateQuery.refresh({ dedupe: 'defer' });
       } while (pending && current === epoch && !disposed && !document.hidden && !busy.value);
-      if (current === epoch) await start();
+      if (current === epoch) {
+        await start();
+      }
     })().finally(() => {
-      if (current === epoch) refreshTask = null;
+      if (current === epoch) {
+        refreshTask = null;
+      }
     });
     return refreshTask;
   }
   function loadUsage(): Promise<void> {
-    if (mode !== 'owner' || disposed) return Promise.resolve();
+    if (mode !== 'owner' || disposed) {
+      return Promise.resolve();
+    }
     usagePending = true;
-    if (usageTask) return usageTask;
+    if (usageTask) {
+      return usageTask;
+    }
     const current = epoch;
     usageTask = (async () => {
       do {
@@ -305,13 +344,16 @@ export function useManagementPortal(mode: ManagementMode) {
         panel.value === 'usage'
       );
     })().finally(() => {
-      if (current === epoch) usageTask = null;
+      if (current === epoch) {
+        usageTask = null;
+      }
     });
     return usageTask;
   }
   function refreshPage() {
-    if (disposed || busy.value || document.hidden || !stateQuery.data.value)
+    if (disposed || busy.value || document.hidden || !stateQuery.data.value) {
       return Promise.resolve();
+    }
     activityInvalidation.dates = null;
     activityInvalidation.version++;
     return Promise.all([refresh(), panel.value === 'usage' ? loadUsage() : Promise.resolve()]);
@@ -320,26 +362,36 @@ export function useManagementPortal(mode: ManagementMode) {
     () => stateQuery.pending.value || (panel.value === 'usage' && usageQuery.pending.value),
   );
   function requestRefresh() {
-    if (!stateQuery.data.value || disposed) return;
+    if (!stateQuery.data.value || disposed) {
+      return;
+    }
     pending = true;
     if (!busy.value && !document.hidden) {
       void refresh();
-      if (mode === 'owner' && panel.value === 'usage') void loadUsage();
+      if (mode === 'owner' && panel.value === 'usage') {
+        void loadUsage();
+      }
     }
   }
   const run: ManagementRun = async (operation) => {
-    if (busy.value) return;
+    if (busy.value) {
+      return;
+    }
     const current = epoch;
     busy.value = true;
     notify('');
     try {
       await operation();
     } catch (error) {
-      if (current === epoch && !(error as Failure).stale) notify((error as Error).message, true);
+      if (current === epoch && !(error as Failure).stale) {
+        notify((error as Error).message, true);
+      }
     } finally {
       if (current === epoch) {
         busy.value = false;
-        if (pending) requestRefresh();
+        if (pending) {
+          requestRefresh();
+        }
       }
     }
   };
@@ -355,11 +407,16 @@ export function useManagementPortal(mode: ManagementMode) {
     const current = epoch;
     // owner的默认用量与主要摘要独立查询，不串行等待上游或损耗记录。
     await Promise.all([refresh(true), mode === 'owner' ? loadUsage() : Promise.resolve()]);
-    if (current !== epoch || disposed) return;
+    if (current !== epoch || disposed) {
+      return;
+    }
     connecting.value = false;
     if (stateQuery.data.value && mode === 'admin') {
-      if (rememberToken) sessionStorage.setItem('nai.adminSession', token);
-      else sessionStorage.removeItem('nai.adminSession');
+      if (rememberToken) {
+        sessionStorage.setItem('nai.adminSession', token);
+      } else {
+        sessionStorage.removeItem('nai.adminSession');
+      }
       localStorage.removeItem('nai.adminToken');
     }
   }
@@ -368,33 +425,46 @@ export function useManagementPortal(mode: ManagementMode) {
   }
   function visibility() {
     if (document.hidden) {
-      if (timer) clearInterval(timer);
+      if (timer) {
+        clearInterval(timer);
+      }
       timer = null;
     } else {
       void start();
-      if (mode === 'admin') requestRefresh();
+      if (mode === 'admin') {
+        requestRefresh();
+      }
     }
   }
   function hide() {
-    if (timer) clearInterval(timer);
+    if (timer) {
+      clearInterval(timer);
+    }
     timer = null;
   }
   watch(days, () => {
     usageQuery.clear();
-    if (mode === 'owner' && stateQuery.data.value) void loadUsage();
+    if (mode === 'owner' && stateQuery.data.value) {
+      void loadUsage();
+    }
   });
   watch(panel, (value) => {
-    if (value === 'usage' && stateQuery.data.value) void loadUsage();
+    if (value === 'usage' && stateQuery.data.value) {
+      void loadUsage();
+    }
   });
   onMounted(() => {
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('pagehide', hide);
     window.addEventListener('pageshow', visibility);
-    if (mode === 'owner') void connect();
-    else {
+    if (mode === 'owner') {
+      void connect();
+    } else {
       adminToken.value =
         sessionStorage.getItem('nai.adminSession') || localStorage.getItem('nai.adminToken') || '';
-      if (adminToken.value) void connect();
+      if (adminToken.value) {
+        void connect();
+      }
     }
   });
   onBeforeUnmount(() => {

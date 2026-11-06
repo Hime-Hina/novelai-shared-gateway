@@ -11,8 +11,11 @@ function env(t, name, value) {
   const previous = process.env[name];
   process.env[name] = value;
   t.after(() => {
-    if (previous === undefined) delete process.env[name];
-    else process.env[name] = previous;
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
   });
 }
 async function open(t, directory) {
@@ -21,7 +24,7 @@ async function open(t, directory) {
   );
   t.after(() => store.close());
   await store.init();
-  if (!directory)
+  if (!directory) {
     await store.update(
       (db) => {
         db.users = ['a', 'b'].map((id) => ({
@@ -33,6 +36,7 @@ async function open(t, directory) {
       },
       { immediate: true },
     );
+  }
   return store;
 }
 // 日期配对由 activity-storage 专项覆盖；本文件继续验证原业务失效范围。

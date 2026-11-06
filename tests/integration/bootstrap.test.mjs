@@ -46,8 +46,9 @@ test('真实 SQLite 首次初始化四成员，不联网、不发额度，凭据
     }
     assert.ok(!JSON.stringify(saved).includes(environment(dataDir).ADMIN_TOKEN));
     assert.ok(!JSON.stringify(saved).includes(environment(dataDir).NOVELAI_TOKEN));
-    if (process.platform !== 'win32')
+    if (process.platform !== 'win32') {
       assert.equal((await stat(result.credentialPath)).mode & 0o777, 0o600);
+    }
     const store = new JsonStore(dataDir);
     await store.init();
     try {
@@ -104,10 +105,11 @@ test('环境变量先校验，用户名可配置且不允许重复', async () =>
     { NOVELAI_TOKEN: '' },
     { BOOTSTRAP_USERNAMES: 'same,same,other,last' },
     { BOOTSTRAP_USERNAMES: 'one,two,three' },
-  ])
+  ]) {
     await assert.rejects(
       bootstrap({ env: { ...environment(dataDir), ...changes }, log: () => {} }),
     );
+  }
   const result = await bootstrap({
     env: { ...environment(dataDir), BOOTSTRAP_USERNAMES: 'Alpha,Beta,Gamma,Delta' },
     log: () => {},

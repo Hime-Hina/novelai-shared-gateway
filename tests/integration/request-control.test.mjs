@@ -138,8 +138,9 @@ test('取消、任务退款和账本同事务：写失败不通知，重复取�
   const { store, ctx, notifications } = await fixture(t, ['queued', 'pending', 'running']);
   await store.update(
     (db) => {
-      for (const job of db.jobs.filter((job) => job.status !== 'pending'))
+      for (const job of db.jobs.filter((job) => job.status !== 'pending')) {
         reserveFairQuota(db, db.users[0], job, db.accounts[0]);
+      }
       db.accounts[0].inFlight = 1;
       db.jobs.find((job) => job.status === 'running').accountId = 'opus';
     },
@@ -199,12 +200,13 @@ test('部分冷历史下取消只持久化本父待执行任务，终态重复�
   const { store, ctx } = await fixture(t, ['queued', 'pending']);
   await store.update(
     (db) => {
-      for (let index = 0; index < 101; index++)
+      for (let index = 0; index < 101; index++) {
         db.jobs.unshift({
           id: `history-${index}`,
           status: 'done',
           createdAt: new Date().toISOString(),
         });
+      }
     },
     { immediate: true },
   );

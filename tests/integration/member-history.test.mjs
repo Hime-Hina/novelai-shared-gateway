@@ -23,7 +23,7 @@ test('完整持久历史可分页、筛选和排序，认证与图片归属不�
   await store.update(
     (db) => {
       db.users.push(user, { ...user, id: 'b', token: 'STA1N-private-b' });
-      for (let i = 0; i < 81; i++)
+      for (let i = 0; i < 81; i++) {
         db.jobs.push({
           id: `job-${String(i).padStart(3, '0')}`,
           userToken: i === 80 ? 'STA1N-private-b' : user.token,
@@ -33,6 +33,7 @@ test('完整持久历史可分页、筛选和排序，认证与图片归属不�
           imageId: 'foreign-image',
           fairCharge: { userId: user.id, resource: 'free', amount: 0, status: 'settled' },
         });
+      }
       db.images.push({ id: 'foreign-image', token: 'STA1N-private-b' });
     },
     { collections: ['users', 'jobs', 'images'], immediate: true },
@@ -80,8 +81,9 @@ test('完整持久历史可分页、筛选和排序，认证与图片归属不�
     assert.equal(result.total, 80);
     ids.push(...result.jobs.map((job) => job.id));
     assert.ok(result.jobs.every((job) => job.imageUrl === ''));
-    for (const secret of ['STA1N-', 'private-prompt', 'userId', 'imageId'])
+    for (const secret of ['STA1N-', 'private-prompt', 'userId', 'imageId']) {
       assert.ok(!JSON.stringify(result).includes(secret));
+    }
   }
   assert.equal(new Set(ids).size, 80);
   const filtered = await (
@@ -97,6 +99,7 @@ test('完整持久历史可分页、筛选和排序，认证与图片归属不�
     '?order=bad',
     '?until=bad',
     '?status=invalid',
-  ])
+  ]) {
     assert.equal((await call(query)).status, 400);
+  }
 });

@@ -51,8 +51,9 @@ test('descriptor 仅包含规范路径、按操作验证的媒体类型、长度
   for (const id of ['../escape', 'a/b', 'a\\b', 'C:escape', '', '.', 'NUL', 'COM1']) {
     assert.throws(() => describeStoredResult(id, 'generate', image), invalid);
   }
-  for (const operation of ['img2img', 'unknown', undefined])
+  for (const operation of ['img2img', 'unknown', undefined]) {
     assert.throws(() => describeStoredResult('img_result', operation, image), invalid);
+  }
 });
 
 test('新结果用 0600 临时文件发布，原 buffer 复用，重复发布和最终文件恢复不重写内容', async () => {
@@ -70,7 +71,9 @@ test('新结果用 0600 临时文件发布，原 buffer 复用，重复发布和
   assert.deepEqual(await readFile(file), png);
   await assert.rejects(stat(partial), { code: 'ENOENT' });
   const first = await stat(file);
-  if (process.platform !== 'win32') assert.equal(first.mode & 0o777, 0o600);
+  if (process.platform !== 'win32') {
+    assert.equal(first.mode & 0o777, 0o600);
+  }
   assert.equal((await publishStoredResult(directory, pending, png)).buffer, png);
   assert.deepEqual(await publishStoredResult(directory, pending), image);
   const last = await stat(file);
@@ -173,8 +176,9 @@ test('descriptor 和输入 buffer 不匹配时不写文件，拒绝越界路径�
     { sha256: 'not-a-hash' },
     { sha256: '0'.repeat(64) },
     { mimeType: 'image/jpeg', file: 'images/img_checked.jpg' },
-  ])
+  ]) {
     await assert.rejects(publishStoredResult(directory, { ...pending, ...changed }, png), invalid);
+  }
   await assert.rejects(publishStoredResult(directory, pending, png.subarray(0, 10)), invalid);
   await assert.rejects(publishStoredResult(directory, pending, null), invalid);
   await assert.rejects(stat(path.join(directory, pending.file)), { code: 'ENOENT' });

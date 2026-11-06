@@ -231,7 +231,9 @@ test('旧 app_records 在迁移后完整导入 typed tables，重复启动不重
   const dataDir = await directory(),
     sqlite = new Database(path.join(dataDir, 'library.sqlite'));
   sqlite.exec(legacySchema);
-  for (const table of recordTables) sqlite.exec(`DROP TABLE ${table}`);
+  for (const table of recordTables) {
+    sqlite.exec(`DROP TABLE ${table}`);
+  }
   sqlite
     .prepare('INSERT INTO app_records(collection,id,order_value,data) VALUES(?,?,?,?)')
     .run('jobs', job.id, 1, JSON.stringify(job));
@@ -255,8 +257,11 @@ test('旧 JSON 文件经过同一新库迁移路径导入，保护模式保留�
   const old = process.env.NO_AUTO_DELETE;
   process.env.NO_AUTO_DELETE = 'true';
   t.after(() => {
-    if (old === undefined) delete process.env.NO_AUTO_DELETE;
-    else process.env.NO_AUTO_DELETE = old;
+    if (old === undefined) {
+      delete process.env.NO_AUTO_DELETE;
+    } else {
+      process.env.NO_AUTO_DELETE = old;
+    }
   });
   const dataDir = await directory(),
     source = JSON.stringify({ settings: { serviceName: 'legacy-json' }, jobs: [job] });

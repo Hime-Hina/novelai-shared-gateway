@@ -1,10 +1,18 @@
 import { encode } from '@msgpack/msgpack';
 
 export function imageExtension(mimeType = ''): string {
-  if (mimeType === 'application/octet-stream') return 'bin';
-  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) return 'jpg';
-  if (mimeType.includes('webp')) return 'webp';
-  if (mimeType.includes('svg')) return 'svg';
+  if (mimeType === 'application/octet-stream') {
+    return 'bin';
+  }
+  if (mimeType.includes('jpeg') || mimeType.includes('jpg')) {
+    return 'jpg';
+  }
+  if (mimeType.includes('webp')) {
+    return 'webp';
+  }
+  if (mimeType.includes('svg')) {
+    return 'svg';
+  }
   return 'png';
 }
 
@@ -22,7 +30,9 @@ export function nativeImagesZip(entries: { buffer: Buffer; filename: string }[])
     let crc = 0xffffffff;
     for (const byte of buffer) {
       crc ^= byte;
-      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      for (let bit = 0; bit < 8; bit++) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      }
     }
     crc = (crc ^ 0xffffffff) >>> 0;
     const local = Buffer.alloc(30);
@@ -96,18 +106,25 @@ function nativeImageEvent({
   step_ix,
   message,
 }: NativeEventInput): NativeImageEvent {
-  if (typeof samp_ix !== 'number' || !Number.isInteger(samp_ix) || samp_ix < 0 || samp_ix > 3)
+  if (typeof samp_ix !== 'number' || !Number.isInteger(samp_ix) || samp_ix < 0 || samp_ix > 3) {
     throw new RangeError('原生图片样本编号无效');
+  }
   if (event_type === 'error') {
     return { event_type, samp_ix, message: String(message || '生成失败').slice(0, 2000) };
   }
-  if (event_type !== 'intermediate' && event_type !== 'final')
+  if (event_type !== 'intermediate' && event_type !== 'final') {
     throw new TypeError('原生图片事件类型无效');
-  if (!Buffer.isBuffer(image) || !image.length) throw new TypeError('原生图片响应缺少二进制图片');
-  if (image.length > MAX_FRAME_BYTES) throw new RangeError('原生图片响应超过单帧限制');
+  }
+  if (!Buffer.isBuffer(image) || !image.length) {
+    throw new TypeError('原生图片响应缺少二进制图片');
+  }
+  if (image.length > MAX_FRAME_BYTES) {
+    throw new RangeError('原生图片响应超过单帧限制');
+  }
   if (event_type === 'intermediate') {
-    if (typeof step_ix !== 'number' || !Number.isSafeInteger(step_ix) || step_ix < 0)
+    if (typeof step_ix !== 'number' || !Number.isSafeInteger(step_ix) || step_ix < 0) {
       throw new RangeError('原生图片采样步骤无效');
+    }
     return { event_type, samp_ix, image, step_ix };
   }
   return { event_type, samp_ix, image };
@@ -118,7 +135,9 @@ export function nativeImageMsgpack(input: NativeEventInput): Buffer {
     image = event.image;
   // 每帧独立编码并预留图片空间，避免扩容复制或全局 encoder 留住上一张大图。
   const payload = encode(event, image ? { initialBufferSize: image.length + 128 } : undefined);
-  if (payload.length > MAX_FRAME_BYTES) throw new RangeError('原生图片响应超过单帧限制');
+  if (payload.length > MAX_FRAME_BYTES) {
+    throw new RangeError('原生图片响应超过单帧限制');
+  }
   const prefix = Buffer.alloc(4);
   prefix.writeUInt32BE(payload.length);
   return Buffer.concat([prefix, payload]);
@@ -126,7 +145,9 @@ export function nativeImageMsgpack(input: NativeEventInput): Buffer {
 
 export function* nativeImageSse(input: NativeEventInput): Generator<string, void, unknown> {
   const { image, ...event } = nativeImageEvent(input);
-  if (event.event_type === 'error') event.code = String(input.code ?? '500');
+  if (event.event_type === 'error') {
+    event.code = String(input.code ?? '500');
+  }
   // 所有字段先校验、序列化，不能先输出事件前缀再发现无效入参。
   const metadata = JSON.stringify(event);
   const prefix = `event: ${event.event_type}\ndata: `;
@@ -146,14 +167,17 @@ export function nativeImagesMsgpack(
   images: unknown,
   failure: { index: unknown; message?: unknown } | null = null,
 ): Buffer {
-  if (!Array.isArray(images) || images.length < 1 || images.length > 4)
+  if (!Array.isArray(images) || images.length < 1 || images.length > 4) {
     throw new RangeError('原生图片响应数量无效');
+  }
   const frames = images.map((image: unknown, samp_ix: number) =>
     nativeImageMsgpack({ event_type: 'final', samp_ix, image }),
   );
   // 多图逐张结算；前面的成功图保留，后续失败通过 error 帧说明，不能冒充全量成功。
   if (failure) {
-    if (failure.index !== images.length) throw new RangeError('原生图片失败样本编号不连续');
+    if (failure.index !== images.length) {
+      throw new RangeError('原生图片失败样本编号不连续');
+    }
     frames.push(
       nativeImageMsgpack({ event_type: 'error', samp_ix: failure.index, message: failure.message }),
     );
@@ -167,8 +191,9 @@ export async function* nativeImagesJson(
 ): AsyncGenerator<string, void, unknown> {
   let first = true;
   for await (const { buffer, index, seed } of images) {
-    if (!Buffer.isBuffer(buffer) || !buffer.length)
+    if (!Buffer.isBuffer(buffer) || !buffer.length) {
       throw new TypeError('原生图片响应缺少二进制图片');
+    }
     // 首图读取失败时还没有响应正文，调用方仍可返回正常错误状态。
     yield first ? '{"images":[' : ',';
     first = false;
@@ -179,12 +204,16 @@ export async function* nativeImagesJson(
     }
     yield `",${JSON.stringify({ index, seed }).slice(1)}`;
   }
-  if (first) throw new RangeError('原生图片响应缺少图片');
+  if (first) {
+    throw new RangeError('原生图片响应缺少图片');
+  }
   yield ']';
   if (summary) {
     const { requested, completed, remaining, billing, results } = summary;
     const metadata = JSON.stringify({ requested, completed, remaining, billing, results });
-    if (metadata !== '{}') yield `,${metadata.slice(1, -1)}`;
+    if (metadata !== '{}') {
+      yield `,${metadata.slice(1, -1)}`;
+    }
   }
   yield '}';
 }

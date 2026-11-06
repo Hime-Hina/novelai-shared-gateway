@@ -107,7 +107,9 @@ test(
     await store.close();
     let generationCalls = 0;
     const upstream = http.createServer((req, res) => {
-      if (req.url !== '/user/data') generationCalls++;
+      if (req.url !== '/user/data') {
+        generationCalls++;
+      }
       res.setHeader('content-type', 'application/json');
       res.end(
         JSON.stringify({
@@ -152,7 +154,9 @@ test(
       output += chunk.toString();
     });
     t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) child.kill();
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
       await exited;
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));

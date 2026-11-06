@@ -203,9 +203,12 @@ test('冷历史滚动窗口、候选去重、安全分页、重启与查询索�
       'private-token',
       'private-upstream-error',
       'private-discord',
-    ])
+    ]) {
       assert.ok(!JSON.stringify(result).includes(secret));
-    if (!result.nextCursor) break;
+    }
+    if (!result.nextCursor) {
+      break;
+    }
     result = await store.readFailureAccounting(result.nextCursor, now);
   } while (true);
   assert.equal(seen.size, events.length);
@@ -228,7 +231,7 @@ test('冷历史滚动窗口、候选去重、安全分页、重启与查询索�
       "SELECT id FROM jobs WHERE user_token='STA1N-a' AND json_extract(data, '$.lateResultAvailable')=1 AND json_extract(data, '$.lateResultAt')>'' ORDER BY json_extract(data, '$.lateResultAt') DESC, id DESC LIMIT 10",
       'idx_jobs_member_late_results',
     ],
-  ])
+  ]) {
     assert.ok(
       store.sqlite
         .prepare(`EXPLAIN QUERY PLAN ${sql}`)
@@ -236,6 +239,7 @@ test('冷历史滚动窗口、候选去重、安全分页、重启与查询索�
         .some((row) => row.detail.includes(index)),
       index,
     );
+  }
   await store.close();
   const reopened = new JsonStore(store.dataDir);
   t.after(() => reopened.close());
@@ -351,8 +355,9 @@ async function routes(t, store) {
     env,
     store,
     assertAdmin(req) {
-      if (req.headers['x-admin-token'] !== 'synthetic-admin')
+      if (req.headers['x-admin-token'] !== 'synthetic-admin') {
         throw Object.assign(new Error('admin required'), { statusCode: 401 });
+      }
     },
   };
   const server = http.createServer(async (req, res) => {
@@ -436,7 +441,7 @@ test('管理损耗 API 鉴权、独立策略版本、来源限制、可信审计
   assert.equal(history.events[0].actorId, 'a');
   assert.equal(history.events[0].before.version, 1);
   assert.equal(history.events[0].after.fixedAnlas24h, 0);
-  for (const invalid of [-1, 1e20, 0.5, null])
+  for (const invalid of [-1, 1e20, 0.5, null]) {
     assert.equal(
       (
         await call(owner, {
@@ -445,6 +450,7 @@ test('管理损耗 API 鉴权、独立策略版本、来源限制、可信审计
       ).status,
       400,
     );
+  }
   assert.equal(
     (
       await call(owner, {
@@ -490,7 +496,9 @@ test(
     await writeFile(path.join(store.dataDir, 'images', 'result.png'), png);
     await store.update(
       async (db) => {
-        for (const user of db.users) delete user.discord;
+        for (const user of db.users) {
+          delete user.discord;
+        }
         await setMemberCredentials(db, 'a', {
           username: 'alice',
           password: 'synthetic-password-123456789',
@@ -533,7 +541,9 @@ test(
           createdAt: iso(now),
         });
       };
-    for (let i = 0; i < 12; i++) add(`late-${i}`, 'STA1N-a', 'STA1N-a', now - i);
+    for (let i = 0; i < 12; i++) {
+      add(`late-${i}`, 'STA1N-a', 'STA1N-a', now - i);
+    }
     add('other', 'STA1N-b');
     add('mismatch', 'STA1N-a', 'STA1N-b');
     add('deleted-image', 'STA1N-a');
