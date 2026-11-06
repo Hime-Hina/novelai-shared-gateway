@@ -11,18 +11,21 @@ function normalizeIp(value: unknown): string | null {
   const mapped = /^::ffff:([\da-f]+):([\da-f]+)$/.exec(canonical);
   if (!mapped) return canonical;
   // IPv4 与其 mapped IPv6 写法必须共用限流桶，也要匹配同一条代理配置。
-  const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+  const high = parseInt(mapped[1], 16),
+    low = parseInt(mapped[2], 16);
   return [high >> 8, high & 255, low >> 8, low & 255].join('.');
 }
 
 export function clientIp(
   req: { headers: IncomingHttpHeaders; socket?: { remoteAddress?: string } },
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   const configured = String(env.TRUSTED_PROXY_IPS || '').trim();
   const trusted = configured ? configured.split(',').map(normalizeIp) : [];
-  if (trusted.some(address => address === null)) {
-    throw Object.assign(new Error('TRUSTED_PROXY_IPS 仅接受逗号分隔的 IPv4/IPv6 地址'), { statusCode: 503 });
+  if (trusted.some((address) => address === null)) {
+    throw Object.assign(new Error('TRUSTED_PROXY_IPS 仅接受逗号分隔的 IPv4/IPv6 地址'), {
+      statusCode: 503,
+    });
   }
   const peer = normalizeIp(req.socket?.remoteAddress) || 'unknown';
   const forwarded = req.headers['x-forwarded-for'];

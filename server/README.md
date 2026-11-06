@@ -4,16 +4,16 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 
 当前执行器独占业务写入和上游调度，Nuxt 只通过内部 HTTP 转发。根部 `index.ts` 与独立 Nitro 入口复用 `gateway-runtime.ts`；它们是替代启动方式，不能据此启动两个当前版本的账本写入者。后端只提供 API，不读取或回退到静态门户；网页入口仅由 Nuxt 提供，旧网页与资源地址返回 404。
 
-| 规则/事实 | 当前归属 |
-| --- | --- |
-| 受理、费用确认、执行、查询、队列与批次 | `generation/`：`admission.ts`、`member-contract.ts`、`execution.ts`、`request-queries.ts`、`batch-requests.ts` 等 |
-| 分配、恢复、预扣、退款、资格与运营账 | `quota/`：`fair-share.ts`、`eligibility.ts`、`account-refresh.ts`、`operating-accounting.ts` 等 |
-| 领域事实、提交、投影、重放及状态通知 | `events/`：`domain-events.ts`、`event-store.ts`、`quota-projections.ts`、`state-notifications.ts` 等；通知不是权威事件日志 |
-| 会话、Discord、成员 HTTP 与 owner 操作 | `members/`：`authentication.ts`、`discord-auth.ts`、`http-routes.ts`、`owner-operations.ts` |
-| SQLite、worker、产物及本地/R2 存储 | `storage/`：`sqlite-store.ts`、`sqlite-schema.ts`、`sqlite-migrations.ts`、`sqlite-read-worker.ts` 等 |
-| Native/OpenAI 协议、NAI 请求与计价 | `protocols/`：`native-*.ts`、`novelai-client.ts`、`openai-models.ts` 及计价/Medium 规则 |
-| Host、来源 IP、API 白名单及公开错误 | `http/`；`prompt-api-settings.ts` 仅保留现有管理摘要的配置规范化与脱敏，不提供提示词转换服务 |
-| 调用热力图、服务资源与 R2 分析 | `reports/` |
+| 规则/事实                              | 当前归属                                                                                                                   |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| 受理、费用确认、执行、查询、队列与批次 | `generation/`：`admission.ts`、`member-contract.ts`、`execution.ts`、`request-queries.ts`、`batch-requests.ts` 等          |
+| 分配、恢复、预扣、退款、资格与运营账   | `quota/`：`fair-share.ts`、`eligibility.ts`、`account-refresh.ts`、`operating-accounting.ts` 等                            |
+| 领域事实、提交、投影、重放及状态通知   | `events/`：`domain-events.ts`、`event-store.ts`、`quota-projections.ts`、`state-notifications.ts` 等；通知不是权威事件日志 |
+| 会话、Discord、成员 HTTP 与 owner 操作 | `members/`：`authentication.ts`、`discord-auth.ts`、`http-routes.ts`、`owner-operations.ts`                                |
+| SQLite、worker、产物及本地/R2 存储     | `storage/`：`sqlite-store.ts`、`sqlite-schema.ts`、`sqlite-migrations.ts`、`sqlite-read-worker.ts` 等                      |
+| Native/OpenAI 协议、NAI 请求与计价     | `protocols/`：`native-*.ts`、`novelai-client.ts`、`openai-models.ts` 及计价/Medium 规则                                    |
+| Host、来源 IP、API 白名单及公开错误    | `http/`；`prompt-api-settings.ts` 仅保留现有管理摘要的配置规范化与脱敏，不提供提示词转换服务                               |
+| 调用热力图、服务资源与 R2 分析         | `reports/`                                                                                                                 |
 
 根 `gateway-runtime.ts` 负责装配和 HTTP/进程生命周期，但仍包含 OpenAI 请求解析、账号管理与统计适配。后续真实需求触及这些规则时，分别归入现有 `protocols/`、`members/`/`quota/`、`reports/` owner；不按文件行数机械拆分。默认数据位置仍为仓库根下的 `data/`。SQL、journal 和快照仍在 `migrations/`，文件字节与版本不因源码移动变化。没有旧平铺模块的转发或重导出。
 

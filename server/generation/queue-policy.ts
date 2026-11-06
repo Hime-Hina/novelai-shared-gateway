@@ -40,15 +40,18 @@ export function queuePolicy(env: NodeJS.ProcessEnv = process.env) {
   const limits = {
     member: Number(env.QUEUE_MAX_ACTIVE_PER_MEMBER || 4),
     global: Number(env.QUEUE_MAX_ACTIVE_GLOBAL || 16),
-    waitMs: Number(env.QUEUE_WAIT_TIMEOUT_MS || 10 * 60 * 1000)
+    waitMs: Number(env.QUEUE_WAIT_TIMEOUT_MS || 10 * 60 * 1000),
   };
-  if (Object.values(limits).some(value => !Number.isSafeInteger(value) || value <= 0)) {
+  if (Object.values(limits).some((value) => !Number.isSafeInteger(value) || value <= 0)) {
     fail(503, '队列上限与等待期限必须配置为正整数');
   }
   return limits;
 }
 
-export function assertMemberAcceptsJobs(user: Pick<QueueMember, 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number): void {
+export function assertMemberAcceptsJobs(
+  user: Pick<QueueMember, 'acceptingJobs' | 'jobAdmissionVersion'>,
+  expectedVersion?: number,
+): void {
   if (user.acceptingJobs === false) fail(403, '管理员已停止此成员接单；已有结果仍可查询');
   // 停止后再恢复不能让旧的多图请求悄悄提交下一张。
   if (expectedVersion !== undefined && expectedVersion !== (user.jobAdmissionVersion || 0)) {
@@ -57,22 +60,43 @@ export function assertMemberAcceptsJobs(user: Pick<QueueMember, 'acceptingJobs' 
 }
 
 // 必须和预扣、入队处于同一 store.update，不能在事务外先数队列再创建任务。
-export function assertQueueAdmission(db: { jobs: Pick<QueueJob, 'status' | 'userToken' | 'memberId'>[] }, user: Pick<QueueMember, 'id' | 'token' | 'acceptingJobs' | 'jobAdmissionVersion'>, expectedVersion?: number, env: NodeJS.ProcessEnv = process.env, count = 1): void {
+export function assertQueueAdmission(
+  db: { jobs: Pick<QueueJob, 'status' | 'userToken' | 'memberId'>[] },
+  user: Pick<QueueMember, 'id' | 'token' | 'acceptingJobs' | 'jobAdmissionVersion'>,
+  expectedVersion?: number,
+  env: NodeJS.ProcessEnv = process.env,
+  count = 1,
+): void {
   assertMemberAcceptsJobs(user, expectedVersion);
-  const active = db.jobs.filter(job => unfinished.has(job.status!));
+  const active = db.jobs.filter((job) => unfinished.has(job.status!));
   const limits = queuePolicy(env);
-  if (active.filter(job => job.memberId ? job.memberId === user.id : job.userToken === user.token).length + count > limits.member) {
+  if (
+    active.filter((job) => (job.memberId ? job.memberId === user.id : job.userToken === user.token))
+      .length +
+      count >
+    limits.member
+  ) {
     fail(429, `此成员最多保留 ${limits.member} 个未完成任务，请等待已有任务完成`);
   }
-  if (active.length + count > limits.global) fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
+  if (active.length + count > limits.global)
+    fail(429, `共享队列已满（${limits.global} 个未完成任务），请稍后重试`);
 }
 
-export function queueDeadline(now: number, requestDeadline?: string | null, env: NodeJS.ProcessEnv = process.env): string {
+export function queueDeadline(
+  now: number,
+  requestDeadline?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   const deadline = Date.parse(requestDeadline || '');
-  return new Date(Math.min(now + queuePolicy(env).waitMs, Number.isFinite(deadline) ? deadline : Infinity)).toISOString();
+  return new Date(
+    Math.min(now + queuePolicy(env).waitMs, Number.isFinite(deadline) ? deadline : Infinity),
+  ).toISOString();
 }
 
-export function queuedDeadlineTimestamp(job: Pick<QueueJob, 'status' | 'queueExpiresAt' | 'createdAt'>, env: NodeJS.ProcessEnv = process.env): number {
+export function queuedDeadlineTimestamp(
+  job: Pick<QueueJob, 'status' | 'queueExpiresAt' | 'createdAt'>,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   if (!waiting.has(job.status!)) return 0;
   const saved = Date.parse(job.queueExpiresAt || '');
   if (Number.isFinite(saved)) return saved;
@@ -82,18 +106,39 @@ export function queuedDeadlineTimestamp(job: Pick<QueueJob, 'status' | 'queueExp
 }
 
 // refund 复用入口原有的幂等退款，保持共享账本与旧本地点数的结算口径。
-export function setMemberAdmission<D extends AdmissionState>(db: D, userId: string, acceptingJobs: boolean, refund: (db: D, job: D['jobs'][number], message: string) => unknown, now = Date.now()) {
-  const user = db.users.find(item => item.id === userId);
+export function setMemberAdmission<D extends AdmissionState>(
+  db: D,
+  userId: string,
+  acceptingJobs: boolean,
+  refund: (db: D, job: D['jobs'][number], message: string) => unknown,
+  now = Date.now(),
+) {
+  const user = db.users.find((item) => item.id === userId);
   if (!user) fail(404, '成员不存在');
-  if (!acceptingJobs && user.acceptingJobs !== false) user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
+  if (!acceptingJobs && user.acceptingJobs !== false)
+    user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
   user.acceptingJobs = acceptingJobs;
   user.updatedAt = new Date(now).toISOString();
-  recordDomainEvent(db, { eventType: 'AdmissionChanged', streamId: 'sharing:default', memberId: user.id, occurredAt: now,
-    payload: { memberId: user.id, acceptingJobs, jobAdmissionVersion: user.jobAdmissionVersion || 0, at: now } });
+  recordDomainEvent(db, {
+    eventType: 'AdmissionChanged',
+    streamId: 'sharing:default',
+    memberId: user.id,
+    occurredAt: now,
+    payload: {
+      memberId: user.id,
+      acceptingJobs,
+      jobAdmissionVersion: user.jobAdmissionVersion || 0,
+      at: now,
+    },
+  });
   const cancelledJobIds: string[] = [];
   if (!acceptingJobs) {
     for (const job of db.jobs) {
-      if ((job.memberId ? job.memberId !== user.id : job.userToken !== user.token) || !waiting.has(job.status!)) continue;
+      if (
+        (job.memberId ? job.memberId !== user.id : job.userToken !== user.token) ||
+        !waiting.has(job.status!)
+      )
+        continue;
       const message = '管理员已停止此成员接单，未派发任务已取消';
       refund(db, job, message);
       job.status = 'failed';
@@ -102,8 +147,18 @@ export function setMemberAdmission<D extends AdmissionState>(db: D, userId: stri
       job.cancelledAt = job.completedAt = job.updatedAt = user.updatedAt;
       job.cancellationReason = 'member_stopped';
       cancelledJobIds.push(job.id);
-      recordDomainEvent(db, { eventType: 'WaitingJobsCancelled', streamId: `request:${job.requestId || `legacy-${job.id}`}`, occurredAt: now,
-        payload: { jobIds: [job.id], at: now, reason: message, errorStatus: 409, cancellationReason: 'member_stopped' } });
+      recordDomainEvent(db, {
+        eventType: 'WaitingJobsCancelled',
+        streamId: `request:${job.requestId || `legacy-${job.id}`}`,
+        occurredAt: now,
+        payload: {
+          jobIds: [job.id],
+          at: now,
+          reason: message,
+          errorStatus: 409,
+          cancellationReason: 'member_stopped',
+        },
+      });
     }
   }
   return { id: user.id, acceptingJobs, cancelledJobIds };

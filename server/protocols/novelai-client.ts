@@ -12,67 +12,162 @@ import type { ImageMimeType, NativeGenerationRequest } from './native-image.ts';
 import type { PreviewProgress } from '../generation/job-previews.ts';
 
 interface NormalizationInput {
-  size?: unknown; tag?: unknown; prompt?: unknown; artist?: unknown; model?: unknown; negative?: unknown;
-  width?: unknown; height?: unknown; steps?: unknown; scale?: unknown; cfg?: unknown; sampler?: unknown;
-  noise_schedule?: unknown; noiseSchedule?: unknown; seed?: unknown; cost?: unknown;
+  size?: unknown;
+  tag?: unknown;
+  prompt?: unknown;
+  artist?: unknown;
+  model?: unknown;
+  negative?: unknown;
+  width?: unknown;
+  height?: unknown;
+  steps?: unknown;
+  scale?: unknown;
+  cfg?: unknown;
+  sampler?: unknown;
+  noise_schedule?: unknown;
+  noiseSchedule?: unknown;
+  seed?: unknown;
+  cost?: unknown;
 }
 interface NormalizationSettings {
-  defaultArtist?: unknown; defaultModel?: unknown; defaultNegative?: unknown;
+  defaultArtist?: unknown;
+  defaultModel?: unknown;
+  defaultNegative?: unknown;
   defaults?: NormalizationInput;
 }
 export interface ProviderRequest {
-  model: string; prompt: string;
-  width?: number; height?: number; steps?: number; seed?: number; scale?: number; cfg?: number;
-  sampler?: string; noiseSchedule?: string; negative?: string;
-  action?: string; operation?: string;
+  model: string;
+  prompt: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  seed?: number;
+  scale?: number;
+  cfg?: number;
+  sampler?: string;
+  noiseSchedule?: string;
+  negative?: string;
+  action?: string;
+  operation?: string;
   nativeParameters?: NativeGenerationRequest['nativeParameters'];
   operationParameters?: unknown;
   normalizationContext?: MemberNormalizationContext;
 }
 export interface NormalizedImageRequest extends ProviderRequest {
   operationParameters?: never;
-  tag: string; artist: string; negative: string; size: string;
-  width: number; height: number; steps: number; requestedSteps?: number;
-  scale: number; cfg: number; sampler: string; noiseSchedule: string; seed: number; cost?: number;
+  tag: string;
+  artist: string;
+  negative: string;
+  size: string;
+  width: number;
+  height: number;
+  steps: number;
+  requestedSteps?: number;
+  scale: number;
+  cfg: number;
+  sampler: string;
+  noiseSchedule: string;
+  seed: number;
+  cost?: number;
 }
-interface ProviderAccount { token?: string; proxyUrl?: unknown; socksProxy?: unknown; proxy?: unknown }
+interface ProviderAccount {
+  token?: string;
+  proxyUrl?: unknown;
+  socksProxy?: unknown;
+  proxy?: unknown;
+}
 interface UpstreamTiming {
-  upstreamStartedAt?: string; upstreamHeadersAt?: string; upstreamCompletedAt?: string;
-  upstreamHttpStatus?: number; upstreamRetryAfterUntil?: string;
+  upstreamStartedAt?: string;
+  upstreamHeadersAt?: string;
+  upstreamCompletedAt?: string;
+  upstreamHttpStatus?: number;
+  upstreamRetryAfterUntil?: string;
 }
 interface GenerationProgress extends PreviewProgress {
-  percent: number; step: number; total: number; eventType: string; updatedAt: string;
+  percent: number;
+  step: number;
+  total: number;
+  eventType: string;
+  updatedAt: string;
 }
 interface GenerationOptions {
-  signal?: AbortSignal; forceStream?: boolean;
+  signal?: AbortSignal;
+  forceStream?: boolean;
   onUpstreamTiming?: (timing: UpstreamTiming) => unknown;
   onProgress?: ((progress: GenerationProgress) => unknown) | null;
 }
 interface UpstreamRequest {
-  method?: string; signal?: AbortSignal; headers?: Record<string, string>; body?: string;
+  method?: string;
+  signal?: AbortSignal;
+  headers?: Record<string, string>;
+  body?: string;
 }
 interface UpstreamResponse {
-  ok: boolean; status: number; headers: { get(name: string): string | null };
-  body?: ReadableStream<Uint8Array> | null; readonly bodyUsed?: boolean;
-  arrayBuffer(): Promise<ArrayBuffer | Buffer>; text(): Promise<string>;
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  body?: ReadableStream<Uint8Array> | null;
+  readonly bodyUsed?: boolean;
+  arrayBuffer(): Promise<ArrayBuffer | Buffer>;
+  text(): Promise<string>;
 }
-interface ImageResult { buffer: Buffer; mimeType: ImageMimeType }
-interface GeneratedResult { buffer: Buffer; mimeType: ImageMimeType | 'application/octet-stream' | 'image/svg+xml'; mock?: boolean }
-interface StreamEvent extends Record<string, unknown> { event_type?: unknown; image?: unknown; message?: unknown }
+interface ImageResult {
+  buffer: Buffer;
+  mimeType: ImageMimeType;
+}
+interface GeneratedResult {
+  buffer: Buffer;
+  mimeType: ImageMimeType | 'application/octet-stream' | 'image/svg+xml';
+  mock?: boolean;
+}
+interface StreamEvent extends Record<string, unknown> {
+  event_type?: unknown;
+  image?: unknown;
+  message?: unknown;
+}
 type ImageStreamEvent = StreamEvent & { event_type: 'intermediate' | 'final' };
-interface StreamContext { request?: Pick<ProviderRequest, 'steps'>; onProgress?: GenerationOptions['onProgress'] }
+interface StreamContext {
+  request?: Pick<ProviderRequest, 'steps'>;
+  onProgress?: GenerationOptions['onProgress'];
+}
 interface StreamState {
-  finalImage: ImageResult | null; errors: string[]; intermediateCount: number; lastPercent: number;
-  request: Pick<ProviderRequest, 'steps'>; onProgress: GenerationOptions['onProgress'];
+  finalImage: ImageResult | null;
+  errors: string[];
+  intermediateCount: number;
+  lastPercent: number;
+  request: Pick<ProviderRequest, 'steps'>;
+  onProgress: GenerationOptions['onProgress'];
 }
 interface ZipEntry {
-  flags: number; method: number; crc: number; compressedSize: number; uncompressedSize: number;
-  fileName: string; localHeaderOffset: number; directoryOffset: number;
+  flags: number;
+  method: number;
+  crc: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  fileName: string;
+  localHeaderOffset: number;
+  directoryOffset: number;
 }
-interface ChunkedDecoder { push(chunk: Buffer): void; finish(): void }
-interface ImageJsonPayload { image?: unknown; data?: unknown; images?: unknown[] }
-interface QuotaJsonPayload { subscription?: unknown; account?: { subscription?: unknown } | null; usage?: unknown; tier?: unknown }
-interface TrialJsonPayload { remaining_image_actions?: unknown; used_image_actions?: unknown; eligible_for_image_gens?: unknown }
+interface ChunkedDecoder {
+  push(chunk: Buffer): void;
+  finish(): void;
+}
+interface ImageJsonPayload {
+  image?: unknown;
+  data?: unknown;
+  images?: unknown[];
+}
+interface QuotaJsonPayload {
+  subscription?: unknown;
+  account?: { subscription?: unknown } | null;
+  usage?: unknown;
+  tier?: unknown;
+}
+interface TrialJsonPayload {
+  remaining_image_actions?: unknown;
+  used_image_actions?: unknown;
+  eligible_for_image_gens?: unknown;
+}
 
 export const MAX_STEPS = 50;
 export const DIRECT_URL_MAX_STEPS = 28;
@@ -94,25 +189,48 @@ function retryAfterUntil(value: unknown, receivedAt: number): string | undefined
     const date = new Date(Date.parse(asctime.test(text) ? text + ' GMT' : text));
     if (!Number.isFinite(date.getTime())) return;
     if (obsolete.test(text)) {
-      const limit = new Date(receivedAt);limit.setUTCFullYear(limit.getUTCFullYear() + 50);
-      date.setUTCFullYear(Math.floor(new Date(receivedAt).getUTCFullYear() / 100) * 100 + date.getUTCFullYear() % 100);
+      const limit = new Date(receivedAt);
+      limit.setUTCFullYear(limit.getUTCFullYear() + 50);
+      date.setUTCFullYear(
+        Math.floor(new Date(receivedAt).getUTCFullYear() / 100) * 100 +
+          (date.getUTCFullYear() % 100),
+      );
       if (date > limit) date.setUTCFullYear(date.getUTCFullYear() - 100);
     }
     const [weekday, day, month, year, time] = date.toUTCString().split(' ');
-    const longDay = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][date.getUTCDay()];
-    if (![date.toUTCString(), `${longDay}, ${day}-${month}-${year.slice(-2)} ${time} GMT`, `${weekday.slice(0,3)} ${month} ${String(Number(day)).padStart(2,' ')} ${time} ${year}`].includes(text)) return;
+    const longDay = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][
+      date.getUTCDay()
+    ];
+    if (
+      ![
+        date.toUTCString(),
+        `${longDay}, ${day}-${month}-${year.slice(-2)} ${time} GMT`,
+        `${weekday.slice(0, 3)} ${month} ${String(Number(day)).padStart(2, ' ')} ${time} ${year}`,
+      ].includes(text)
+    )
+      return;
     deadline = date.getTime();
   }
-  if (Number.isSafeInteger(deadline) && deadline > receivedAt && deadline <= 8640000000000000) return new Date(deadline).toISOString();
+  if (Number.isSafeInteger(deadline) && deadline > receivedAt && deadline <= 8640000000000000)
+    return new Date(deadline).toISOString();
 }
 
-async function fetchWithGenerationTiming(url: string, init: UpstreamRequest, proxyUrl: string, options: GenerationOptions): Promise<UpstreamResponse> {
+async function fetchWithGenerationTiming(
+  url: string,
+  init: UpstreamRequest,
+  proxyUrl: string,
+  options: GenerationOptions,
+): Promise<UpstreamResponse> {
   // 发起调用、收到响应头、读完响应体分别计时，不记录用户请求内容。
   options.onUpstreamTiming?.({ upstreamStartedAt: new Date().toISOString() });
   const response = await novelAiFetch(url, init, proxyUrl);
-  const receivedAt = Date.now(), upstreamRetryAfterUntil = retryAfterUntil(response.headers.get('retry-after'), receivedAt);
-  options.onUpstreamTiming?.({ upstreamHeadersAt: new Date(receivedAt).toISOString(), upstreamHttpStatus: response.status,
-    ...(upstreamRetryAfterUntil ? { upstreamRetryAfterUntil } : {}) });
+  const receivedAt = Date.now(),
+    upstreamRetryAfterUntil = retryAfterUntil(response.headers.get('retry-after'), receivedAt);
+  options.onUpstreamTiming?.({
+    upstreamHeadersAt: new Date(receivedAt).toISOString(),
+    upstreamHttpStatus: response.status,
+    ...(upstreamRetryAfterUntil ? { upstreamRetryAfterUntil } : {}),
+  });
   return response;
 }
 
@@ -124,7 +242,10 @@ function responseMediaType(response: UpstreamResponse): string {
   return (response.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
 }
 
-async function* readGenerationChunks(response: UpstreamResponse, maxBytes = MAX_RESULT_BYTES): AsyncGenerator<Buffer, void, unknown> {
+async function* readGenerationChunks(
+  response: UpstreamResponse,
+  maxBytes = MAX_RESULT_BYTES,
+): AsyncGenerator<Buffer, void, unknown> {
   const declaredLength = Number(response.headers.get('content-length'));
   if (declaredLength > maxBytes) {
     await response.body?.cancel();
@@ -135,7 +256,9 @@ async function* readGenerationChunks(response: UpstreamResponse, maxBytes = MAX_
   try {
     // Fetch 与 SOCKS 响应都逐块限流；不等 arrayBuffer 分配完超大响应后才检查。
     while (true) {
-      const { value, done } = reader ? await reader.read() : { value: await response.arrayBuffer(), done: false };
+      const { value, done } = reader
+        ? await reader.read()
+        : { value: await response.arrayBuffer(), done: false };
       if (done) break;
       const chunk = (Buffer.from as (bytes: ArrayBuffer | Uint8Array) => Buffer)(value);
       received += chunk.length;
@@ -145,7 +268,11 @@ async function* readGenerationChunks(response: UpstreamResponse, maxBytes = MAX_
     }
     // 原生 Fetch 会解压 HTTP 内容；只有未压缩响应才能按头部长度核对字节数。
     const encoding = response.headers.get('content-encoding');
-    if ((!encoding || encoding === 'identity') && declaredLength > 0 && received !== declaredLength) {
+    if (
+      (!encoding || encoding === 'identity') &&
+      declaredLength > 0 &&
+      received !== declaredLength
+    ) {
       throw new Error('Truncated NovelAI response body.');
     }
   } finally {
@@ -164,8 +291,13 @@ async function readGenerationBody(response: UpstreamResponse): Promise<Buffer> {
 
 function validatedUpstreamImage(buffer: Buffer, declaredType = ''): ImageResult {
   try {
-    const image = validateImageBytes(buffer, { maxBytes: MAX_RESULT_BYTES, maxDimension: MAX_RESULT_DIMENSION, label: 'NovelAI result' });
-    if (declaredType.startsWith('image/') && declaredType !== image.mimeType) throw new Error('Image media type does not match its contents.');
+    const image = validateImageBytes(buffer, {
+      maxBytes: MAX_RESULT_BYTES,
+      maxDimension: MAX_RESULT_DIMENSION,
+      label: 'NovelAI result',
+    });
+    if (declaredType.startsWith('image/') && declaredType !== image.mimeType)
+      throw new Error('Image media type does not match its contents.');
     return { buffer, mimeType: image.mimeType };
   } catch (cause) {
     // 上游坏产物不是客户端参数错误；不能把输入校验器的 422 状态带出边界。
@@ -176,46 +308,71 @@ function validatedUpstreamImage(buffer: Buffer, declaredType = ''): ImageResult 
 function decodeImageResponse(buffer: Buffer, contentType: string): ImageResult {
   if (contentType === 'application/json') {
     const payload: unknown = JSON.parse(buffer.toString('utf8'));
-    const base64 = (payload as ImageJsonPayload | null | undefined)?.image || (payload as ImageJsonPayload | null | undefined)?.data || ((payload as ImageJsonPayload | null | undefined)?.images?.[0] as { image?: unknown } | null | undefined)?.image || (payload as ImageJsonPayload | null | undefined)?.images?.[0];
+    const base64 =
+      (payload as ImageJsonPayload | null | undefined)?.image ||
+      (payload as ImageJsonPayload | null | undefined)?.data ||
+      (
+        (payload as ImageJsonPayload | null | undefined)?.images?.[0] as
+          { image?: unknown } | null | undefined
+      )?.image ||
+      (payload as ImageJsonPayload | null | undefined)?.images?.[0];
     if (!base64) throw new Error('NovelAI JSON response does not contain image data.');
     return decodeDataUrl(base64);
   }
   if (contentType.includes('zip') || looksLikeZip(buffer)) return extractFirstImageFromZip(buffer);
-  if (contentType && !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'].includes(contentType)) {
+  if (
+    contentType &&
+    !['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream'].includes(contentType)
+  ) {
     throw new Error('NovelAI response does not contain image data.');
   }
   return validatedUpstreamImage(buffer, contentType);
 }
 
-export function normalizeNovelAiRequest(input: NormalizationInput, settings: NormalizationSettings, options: { maxSteps?: unknown } = {}): NormalizedImageRequest {
+export function normalizeNovelAiRequest(
+  input: NormalizationInput,
+  settings: NormalizationSettings,
+  options: { maxSteps?: unknown } = {},
+): NormalizedImageRequest {
   const defaults = settings.defaults || {};
   const maxSteps = Number.isFinite(Number(options.maxSteps)) ? Number(options.maxSteps) : MAX_STEPS;
   const sizeName = normalizeSizeName(input.size || defaults.size || '竖图');
-  const mappedSize: { width?: number; height?: number } = (sizeMap as Partial<Record<string, { width: number; height: number }>>)[sizeName] || {};
+  const mappedSize: { width?: number; height?: number } =
+    (sizeMap as Partial<Record<string, { width: number; height: number }>>)[sizeName] || {};
   const tag = normalizePromptText(input.tag || input.prompt || '').trim();
   const artist = normalizePromptText(input.artist ?? settings.defaultArtist ?? '').trim();
   const prompt = [artist, tag].filter(Boolean).join('\n');
   const model = String(input.model || settings.defaultModel || 'nai-diffusion-4-5-full');
   const medium = isV5MediumModel(model);
-  const requestedSteps = medium ? V5_MEDIUM_STEPS : input.steps ?? defaults.steps;
+  const requestedSteps = medium ? V5_MEDIUM_STEPS : (input.steps ?? defaults.steps);
 
   return {
     tag,
     prompt,
     artist,
     model,
-    negative: medium ? mediumNegativePrompt(prompt) : normalizePromptText(input.negative ?? settings.defaultNegative ?? ''),
+    negative: medium
+      ? mediumNegativePrompt(prompt)
+      : normalizePromptText(input.negative ?? settings.defaultNegative ?? ''),
     width: clampNumber(input.width ?? mappedSize.width ?? defaults.width, 128, 2048),
     height: clampNumber(input.height ?? mappedSize.height ?? defaults.height, 128, 2048),
     size: sizeName,
-    requestedSteps: requestedSteps === undefined || requestedSteps === '' ? undefined : Number(requestedSteps),
+    requestedSteps:
+      requestedSteps === undefined || requestedSteps === '' ? undefined : Number(requestedSteps),
     steps: clampNumber(requestedSteps, 1, maxSteps),
     scale: clampNumber(input.scale ?? defaults.scale, medium ? 0 : 1, medium ? 10 : 20),
     cfg: medium ? 0 : clampNumber(input.cfg ?? defaults.cfg, 0, 1),
-    sampler: medium ? 'k_euler_ancestral' : String(input.sampler || defaults.sampler || 'k_dpmpp_2m_sde'),
-    noiseSchedule: String(input.noise_schedule || input.noiseSchedule || defaults.noiseSchedule || 'karras'),
-    seed: input.seed === undefined || input.seed === '' ? Math.floor(Math.random() * 2 ** 31) : Number(input.seed),
-    cost: input.cost === undefined || input.cost === '' ? undefined : Number(input.cost)
+    sampler: medium
+      ? 'k_euler_ancestral'
+      : String(input.sampler || defaults.sampler || 'k_dpmpp_2m_sde'),
+    noiseSchedule: String(
+      input.noise_schedule || input.noiseSchedule || defaults.noiseSchedule || 'karras',
+    ),
+    seed:
+      input.seed === undefined || input.seed === ''
+        ? Math.floor(Math.random() * 2 ** 31)
+        : Number(input.seed),
+    cost: input.cost === undefined || input.cost === '' ? undefined : Number(input.cost),
   };
 }
 
@@ -224,26 +381,46 @@ function normalizePromptText(value: unknown): string {
 }
 
 function normalizeSizeName(value: unknown): string {
-  return String(value || '').replace(/\s*\(-\d+\)\s*$/, '').trim();
+  return String(value || '')
+    .replace(/\s*\(-\d+\)\s*$/, '')
+    .trim();
 }
 
-export async function generateNovelAiImage(request: ProviderRequest, account: ProviderAccount | null | undefined, env: NodeJS.ProcessEnv, options: GenerationOptions = {}): Promise<GeneratedResult> {
+export async function generateNovelAiImage(
+  request: ProviderRequest,
+  account: ProviderAccount | null | undefined,
+  env: NodeJS.ProcessEnv,
+  options: GenerationOptions = {},
+): Promise<GeneratedResult> {
   const timing: UpstreamTiming = {};
   try {
-    return await generateNovelAiImageRequest(request, account, env, { ...options, onUpstreamTiming(details) {
-      Object.assign(timing, details);options.onUpstreamTiming?.(details);
-    } });
+    return await generateNovelAiImageRequest(request, account, env, {
+      ...options,
+      onUpstreamTiming(details) {
+        Object.assign(timing, details);
+        options.onUpstreamTiming?.(details);
+      },
+    });
   } catch (error) {
     // 状态只来自本次响应头；断流或产物校验失败不能抹掉已收到的限流证据。
     if (timing.upstreamHttpStatus !== undefined) {
-      Object.assign(error as object, { upstreamStatus: timing.upstreamHttpStatus,
-        ...(timing.upstreamRetryAfterUntil ? { upstreamRetryAfterUntil: timing.upstreamRetryAfterUntil } : {}) });
+      Object.assign(error as object, {
+        upstreamStatus: timing.upstreamHttpStatus,
+        ...(timing.upstreamRetryAfterUntil
+          ? { upstreamRetryAfterUntil: timing.upstreamRetryAfterUntil }
+          : {}),
+      });
     }
     throw error;
   }
 }
 
-async function generateNovelAiImageRequest(request: ProviderRequest, account: ProviderAccount | null | undefined, env: NodeJS.ProcessEnv, options: GenerationOptions): Promise<GeneratedResult> {
+async function generateNovelAiImageRequest(
+  request: ProviderRequest,
+  account: ProviderAccount | null | undefined,
+  env: NodeJS.ProcessEnv,
+  options: GenerationOptions,
+): Promise<GeneratedResult> {
   const operation = request.operation || 'generate';
   if (!['generate', 'encode-vibe', 'upscale'].includes(operation)) {
     throw new Error('Unsupported NovelAI operation.');
@@ -267,27 +444,32 @@ async function generateNovelAiImageRequest(request: ProviderRequest, account: Pr
 
   const baseUrl = (env.NOVELAI_API_URL || 'https://image.novelai.net').replace(/\/$/, '');
   const correlationId = novelAiCorrelationId();
-  const response = await fetchWithGenerationTiming(`${baseUrl}/ai/generate-image`, {
-    method: 'POST',
-    signal: options.signal,
-    headers: {
-      authorization: `Bearer ${account.token}`,
-      'content-type': 'application/json',
-      accept: 'application/x-zip-compressed,image/png,image/webp,application/json',
-      origin: 'https://novelai.net',
-      referer: 'https://novelai.net/',
-      'x-correlation-id': correlationId,
-      'x-initiated-at': new Date().toISOString(),
-      'user-agent': 'Mozilla/5.0 Nai2API/1.0'
+  const response = await fetchWithGenerationTiming(
+    `${baseUrl}/ai/generate-image`,
+    {
+      method: 'POST',
+      signal: options.signal,
+      headers: {
+        authorization: `Bearer ${account.token}`,
+        'content-type': 'application/json',
+        accept: 'application/x-zip-compressed,image/png,image/webp,application/json',
+        origin: 'https://novelai.net',
+        referer: 'https://novelai.net/',
+        'x-correlation-id': correlationId,
+        'x-initiated-at': new Date().toISOString(),
+        'user-agent': 'Mozilla/5.0 Nai2API/1.0',
+      },
+      body: JSON.stringify({
+        action: request.action || 'generate',
+        input: request.prompt,
+        model: request.model,
+        parameters: buildNovelAiParameters(request),
+        use_new_shared_trial: true,
+      }),
     },
-    body: JSON.stringify({
-      action: request.action || 'generate',
-      input: request.prompt,
-      model: request.model,
-      parameters: buildNovelAiParameters(request),
-      use_new_shared_trial: true
-    })
-  }, accountProxyUrl(account), options);
+    accountProxyUrl(account),
+    options,
+  );
 
   const contentType = responseMediaType(response);
   const buffer = await readGenerationBody(response);
@@ -295,13 +477,21 @@ async function generateNovelAiImageRequest(request: ProviderRequest, account: Pr
 
   if (!response.ok) {
     const text = buffer.toString('utf8').slice(0, 1000);
-    throw Object.assign(new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`), { upstreamStatus: response.status });
+    throw Object.assign(
+      new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`),
+      { upstreamStatus: response.status },
+    );
   }
 
   return decodeImageResponse(buffer, contentType);
 }
 
-async function generateNovelAiImageOperation(request: ProviderRequest, account: ProviderAccount | null | undefined, env: NodeJS.ProcessEnv, options: GenerationOptions = {}): Promise<GeneratedResult> {
+async function generateNovelAiImageOperation(
+  request: ProviderRequest,
+  account: ProviderAccount | null | undefined,
+  env: NodeJS.ProcessEnv,
+  options: GenerationOptions = {},
+): Promise<GeneratedResult> {
   if (!account?.token) throw new Error('No enabled NovelAI account is available.');
   const payload = request.operationParameters;
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -310,33 +500,47 @@ async function generateNovelAiImageOperation(request: ProviderRequest, account: 
   // 仅使用管理员配置的上游地址；请求里的图片和缓存字段永远不作为下载地址。
   const baseUrl = (env.NOVELAI_API_URL || 'https://image.novelai.net').replace(/\/$/, '');
   const correlationId = novelAiCorrelationId();
-  const response = await fetchWithGenerationTiming(`${baseUrl}/ai/${request.operation}`, {
-    method: 'POST',
-    signal: options.signal,
-    headers: {
-      authorization: `Bearer ${account.token}`,
-      'content-type': 'application/json',
-      accept: request.operation === 'encode-vibe' ? 'application/octet-stream' : 'application/x-zip-compressed,image/png,image/webp,application/json',
-      origin: 'https://novelai.net',
-      referer: 'https://novelai.net/',
-      'x-correlation-id': correlationId,
-      'x-initiated-at': new Date().toISOString(),
-      'user-agent': 'Mozilla/5.0 Nai2API/1.0'
+  const response = await fetchWithGenerationTiming(
+    `${baseUrl}/ai/${request.operation}`,
+    {
+      method: 'POST',
+      signal: options.signal,
+      headers: {
+        authorization: `Bearer ${account.token}`,
+        'content-type': 'application/json',
+        accept:
+          request.operation === 'encode-vibe'
+            ? 'application/octet-stream'
+            : 'application/x-zip-compressed,image/png,image/webp,application/json',
+        origin: 'https://novelai.net',
+        referer: 'https://novelai.net/',
+        'x-correlation-id': correlationId,
+        'x-initiated-at': new Date().toISOString(),
+        'user-agent': 'Mozilla/5.0 Nai2API/1.0',
+      },
+      // 官网仍支持 JSON 传输；入口把旧 JSON 和新版 multipart 统一为已核价参数。
+      body: JSON.stringify(payload),
     },
-    // 官网仍支持 JSON 传输；入口把旧 JSON 和新版 multipart 统一为已核价参数。
-    body: JSON.stringify(payload)
-  }, accountProxyUrl(account), options);
+    accountProxyUrl(account),
+    options,
+  );
   const contentType = responseMediaType(response);
   const buffer = await readGenerationBody(response);
   finishGenerationTiming(options);
   if (!response.ok) {
     const text = buffer.toString('utf8').slice(0, 1000);
-    throw Object.assign(new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`), { upstreamStatus: response.status });
+    throw Object.assign(
+      new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`),
+      { upstreamStatus: response.status },
+    );
   }
   if (!buffer.length) throw new Error('NovelAI returned an empty operation result.');
   if (request.operation === 'encode-vibe') {
     // 编码格式未公开；只核验传输边界和二进制类型，不猜测图片格式或编码魔数。
-    if (!['application/octet-stream', 'application/binary'].includes(contentType) || looksLikeTextResponse(buffer)) {
+    if (
+      !['application/octet-stream', 'application/binary'].includes(contentType) ||
+      looksLikeTextResponse(buffer)
+    ) {
       throw new Error('NovelAI encode-vibe response does not contain binary encoding data.');
     }
     return { buffer, mimeType: 'application/octet-stream' };
@@ -346,40 +550,54 @@ async function generateNovelAiImageOperation(request: ProviderRequest, account: 
 
 function looksLikeTextResponse(buffer: Buffer): boolean {
   const text = buffer.toString('utf8').trim();
-  if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) || /^(?:<!doctype\s+html|<html\b|<\?xml)/i.test(text)) return true;
+  if (/^[\x09\x0a\x0d\x20-\x7e]*$/.test(text) || /^(?:<!doctype\s+html|<html\b|<\?xml)/i.test(text))
+    return true;
   if (text.startsWith('{') || text.startsWith('[')) {
-    try { JSON.parse(text); return true; } catch {}
+    try {
+      JSON.parse(text);
+      return true;
+    } catch {}
   }
   return false;
 }
 
-async function generateNovelAiImageStream(request: ProviderRequest, account: ProviderAccount, env: NodeJS.ProcessEnv, options: GenerationOptions = {}): Promise<ImageResult> {
+async function generateNovelAiImageStream(
+  request: ProviderRequest,
+  account: ProviderAccount,
+  env: NodeJS.ProcessEnv,
+  options: GenerationOptions = {},
+): Promise<ImageResult> {
   const baseUrl = (env.NOVELAI_API_URL || 'https://image.novelai.net').replace(/\/$/, '');
   const correlationId = novelAiCorrelationId();
   const parameters = buildNovelAiParameters(request);
   parameters.stream = 'msgpack';
 
-  const response = await fetchWithGenerationTiming(`${baseUrl}/ai/generate-image-stream`, {
-    method: 'POST',
-    signal: options.signal,
-    headers: {
-      authorization: `Bearer ${account.token}`,
-      'content-type': 'application/json',
-      accept: 'application/octet-stream,application/x-msgpack,application/json',
-      origin: 'https://novelai.net',
-      referer: 'https://novelai.net/',
-      'x-correlation-id': correlationId,
-      'x-initiated-at': new Date().toISOString(),
-      'user-agent': 'Mozilla/5.0 Nai2API/1.0'
+  const response = await fetchWithGenerationTiming(
+    `${baseUrl}/ai/generate-image-stream`,
+    {
+      method: 'POST',
+      signal: options.signal,
+      headers: {
+        authorization: `Bearer ${account.token}`,
+        'content-type': 'application/json',
+        accept: 'application/octet-stream,application/x-msgpack,application/json',
+        origin: 'https://novelai.net',
+        referer: 'https://novelai.net/',
+        'x-correlation-id': correlationId,
+        'x-initiated-at': new Date().toISOString(),
+        'user-agent': 'Mozilla/5.0 Nai2API/1.0',
+      },
+      body: JSON.stringify({
+        action: request.action || 'generate',
+        input: request.prompt,
+        model: request.model,
+        parameters,
+        use_new_shared_trial: true,
+      }),
     },
-    body: JSON.stringify({
-      action: request.action || 'generate',
-      input: request.prompt,
-      model: request.model,
-      parameters,
-      use_new_shared_trial: true
-    })
-  }, accountProxyUrl(account), options);
+    accountProxyUrl(account),
+    options,
+  );
 
   const contentType = responseMediaType(response);
   if (!response.ok || contentType.includes('application/json')) {
@@ -387,7 +605,10 @@ async function generateNovelAiImageStream(request: ProviderRequest, account: Pro
     finishGenerationTiming(options);
     if (!response.ok) {
       const text = buffer.toString('utf8').slice(0, 1000);
-      throw Object.assign(new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`), { upstreamStatus: response.status });
+      throw Object.assign(
+        new Error(`NovelAI returned ${response.status} (cid=${correlationId}): ${text}`),
+        { upstreamStatus: response.status },
+      );
     }
     return decodeImageResponse(buffer, contentType);
   }
@@ -395,7 +616,7 @@ async function generateNovelAiImageStream(request: ProviderRequest, account: Pro
   if (response.body) {
     const image = await extractFinalImageFromNovelAiReadableStream(response, {
       request,
-      onProgress: options.onProgress
+      onProgress: options.onProgress,
     });
     finishGenerationTiming(options);
     return image;
@@ -405,50 +626,72 @@ async function generateNovelAiImageStream(request: ProviderRequest, account: Pro
   finishGenerationTiming(options);
   return extractFinalImageFromNovelAiStream(buffer, {
     request,
-    onProgress: options.onProgress
+    onProgress: options.onProgress,
   });
 }
 
-export async function fetchNovelAiAccountQuota(token: string, env: NodeJS.ProcessEnv = {}, options: { signal?: AbortSignal; proxyUrl?: unknown } = {}) {
+export async function fetchNovelAiAccountQuota(
+  token: string,
+  env: NodeJS.ProcessEnv = {},
+  options: { signal?: AbortSignal; proxyUrl?: unknown } = {},
+) {
   if (!token) throw new Error('NovelAI account token is required.');
   const baseUrl = (env.NOVELAI_ACCOUNT_API_URL || 'https://image.novelai.net').replace(/\/$/, '');
-  const response = await novelAiFetch(`${baseUrl}/user/data`, {
-    method: 'GET',
-    signal: options.signal,
-    headers: {
-      authorization: `Bearer ${token}`,
-      accept: 'application/json',
-      origin: 'https://novelai.net',
-      referer: 'https://novelai.net/',
-      'user-agent': 'Mozilla/5.0 Nai2API/1.0'
-    }
-  }, normalizeSocksProxyUrl(options.proxyUrl || ''));
+  const response = await novelAiFetch(
+    `${baseUrl}/user/data`,
+    {
+      method: 'GET',
+      signal: options.signal,
+      headers: {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json',
+        origin: 'https://novelai.net',
+        referer: 'https://novelai.net/',
+        'user-agent': 'Mozilla/5.0 Nai2API/1.0',
+      },
+    },
+    normalizeSocksProxyUrl(options.proxyUrl || ''),
+  );
 
   const text = await response.text();
   if (!response.ok) {
-    const message = /\bban(?:ned)?\b|封禁/i.test(text) ? '账号已封禁'
-      : /out of trial image generations/i.test(text) ? '试用次数已用完' : '官方额度同步失败，请稍后重试';
+    const message = /\bban(?:ned)?\b|封禁/i.test(text)
+      ? '账号已封禁'
+      : /out of trial image generations/i.test(text)
+        ? '试用次数已用完'
+        : '官方额度同步失败，请稍后重试';
     throw Object.assign(new Error(message), { upstreamStatus: response.status });
   }
 
   const payload: unknown = text ? JSON.parse(text) : {};
-  const subscription = ((payload as QuotaJsonPayload).subscription || (payload as QuotaJsonPayload).account?.subscription || {}) as Record<string, unknown>;
-  const stepsLeft = (subscription.trainingStepsLeft || subscription.training_steps_left || {}) as Record<string, unknown>;
+  const subscription = ((payload as QuotaJsonPayload).subscription ||
+    (payload as QuotaJsonPayload).account?.subscription ||
+    {}) as Record<string, unknown>;
+  const stepsLeft = (subscription.trainingStepsLeft ||
+    subscription.training_steps_left ||
+    {}) as Record<string, unknown>;
   const fixed = numberOrNull(
-    stepsLeft.fixedTrainingStepsLeft
-    ?? stepsLeft.fixed_training_steps_left
-    ?? subscription.fixedTrainingStepsLeft
-    ?? subscription.fixed_training_steps_left
+    stepsLeft.fixedTrainingStepsLeft ??
+      stepsLeft.fixed_training_steps_left ??
+      subscription.fixedTrainingStepsLeft ??
+      subscription.fixed_training_steps_left,
   );
   const purchased = numberOrNull(
-    stepsLeft.purchasedTrainingSteps
-    ?? stepsLeft.purchased_training_steps
-    ?? subscription.purchasedTrainingSteps
-    ?? subscription.purchased_training_steps
+    stepsLeft.purchasedTrainingSteps ??
+      stepsLeft.purchased_training_steps ??
+      subscription.purchasedTrainingSteps ??
+      subscription.purchased_training_steps,
   );
   const values = [fixed, purchased].filter((value) => value !== null);
-  const usage = (subscription.usage || (payload as QuotaJsonPayload).usage || {}) as Record<string, unknown>;
-  const tier = subscription.tier ?? subscription.subscriptionTier ?? (payload as QuotaJsonPayload).tier ?? null;
+  const usage = (subscription.usage || (payload as QuotaJsonPayload).usage || {}) as Record<
+    string,
+    unknown
+  >;
+  const tier =
+    subscription.tier ??
+    subscription.subscriptionTier ??
+    (payload as QuotaJsonPayload).tier ??
+    null;
 
   // 新试用接口独立于订阅余额；查询失败时保持未知，不将旧字段当作零额度。
   let trialRemainingImages: number | null = null;
@@ -458,26 +701,38 @@ export async function fetchNovelAiAccountQuota(token: string, env: NodeJS.Proces
   // 有效付费订阅直接采用订阅结果，避免无关试用查询拖住余额刷新。
   if (!(subscription.active === true && Number(tier) > 0)) {
     try {
-      const trialResponse = await novelAiFetch(`${baseUrl}/ai/trial-status`, {
-        method: 'GET',
-        signal: options.signal,
-        headers: {
-          authorization: `Bearer ${token}`,
-          accept: 'application/json',
-          origin: 'https://novelai.net',
-          referer: 'https://novelai.net/',
-          'user-agent': 'Mozilla/5.0 Nai2API/1.0'
-        }
-      }, normalizeSocksProxyUrl(options.proxyUrl || ''));
+      const trialResponse = await novelAiFetch(
+        `${baseUrl}/ai/trial-status`,
+        {
+          method: 'GET',
+          signal: options.signal,
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/json',
+            origin: 'https://novelai.net',
+            referer: 'https://novelai.net/',
+            'user-agent': 'Mozilla/5.0 Nai2API/1.0',
+          },
+        },
+        normalizeSocksProxyUrl(options.proxyUrl || ''),
+      );
       const trialText = await trialResponse.text();
       if (trialResponse.ok) {
         const trial: unknown = JSON.parse(trialText);
         const remaining = (trial as TrialJsonPayload | null | undefined)?.remaining_image_actions;
         const used = (trial as TrialJsonPayload | null | undefined)?.used_image_actions;
-        trialRemainingImages = Number.isSafeInteger(remaining) && (remaining as number) >= 0 ? remaining as number : null;
-        trialUsedImages = Number.isSafeInteger(used) && (used as number) >= 0 ? used as number : null;
-        trialEligible = (trial as TrialJsonPayload | null | undefined)?.eligible_for_image_gens === true;
-        trialStatusKnown = trialRemainingImages !== null && typeof (trial as TrialJsonPayload | null | undefined)?.eligible_for_image_gens === 'boolean';
+        trialRemainingImages =
+          Number.isSafeInteger(remaining) && (remaining as number) >= 0
+            ? (remaining as number)
+            : null;
+        trialUsedImages =
+          Number.isSafeInteger(used) && (used as number) >= 0 ? (used as number) : null;
+        trialEligible =
+          (trial as TrialJsonPayload | null | undefined)?.eligible_for_image_gens === true;
+        trialStatusKnown =
+          trialRemainingImages !== null &&
+          typeof (trial as TrialJsonPayload | null | undefined)?.eligible_for_image_gens ===
+            'boolean';
       }
     } catch {
       // 试用接口不可用时仍返回已取得的订阅结果，也不记录可能包含凭据的响应。
@@ -493,16 +748,22 @@ export async function fetchNovelAiAccountQuota(token: string, env: NodeJS.Proces
     subscriptionExpiresAt: subscription.expiresAt ?? null,
     v5UsagePercent: numberOrNull(usage.percent),
     v5UsageIsNegative: Boolean(usage.isNegative ?? usage.is_negative),
-    v5UsageTimeUntilNextPercent: numberOrNull(usage.timeUntilNextPercent ?? usage.time_until_next_percent),
+    v5UsageTimeUntilNextPercent: numberOrNull(
+      usage.timeUntilNextPercent ?? usage.time_until_next_percent,
+    ),
     trialRemainingImages,
     trialUsedImages,
     trialEligible,
     trialStatusKnown,
-    raw: payload
+    raw: payload,
   };
 }
 
-async function novelAiFetch(url: string, options: UpstreamRequest = {}, proxyUrl = ''): Promise<UpstreamResponse> {
+async function novelAiFetch(
+  url: string,
+  options: UpstreamRequest = {},
+  proxyUrl = '',
+): Promise<UpstreamResponse> {
   const normalizedProxy = normalizeSocksProxyUrl(proxyUrl);
   if (!normalizedProxy) return fetch(url, options);
   return socksFetch(url, options, normalizedProxy);
@@ -534,7 +795,9 @@ function normalizeSocksProxyUrl(value: unknown = ''): string {
 }
 
 function parseHostPortUserPassProxy(value: unknown = ''): string {
-  const parts = String(value || '').trim().split(':');
+  const parts = String(value || '')
+    .trim()
+    .split(':');
   if (parts.length !== 4) return '';
   const [host, port, username, password] = parts.map((part) => part.trim());
   if (!host || !port || !username || !password || !/^\d{1,5}$/.test(port)) return '';
@@ -544,9 +807,14 @@ function parseHostPortUserPassProxy(value: unknown = ''): string {
   return url.toString();
 }
 
-async function socksFetch(url: string, options: UpstreamRequest = {}, proxyUrl = ''): Promise<UpstreamResponse> {
+async function socksFetch(
+  url: string,
+  options: UpstreamRequest = {},
+  proxyUrl = '',
+): Promise<UpstreamResponse> {
   const target = new URL(url);
-  if (target.protocol !== 'https:') throw new Error('SOCKS5 proxy requests only support HTTPS targets.');
+  if (target.protocol !== 'https:')
+    throw new Error('SOCKS5 proxy requests only support HTTPS targets.');
   const proxy = new URL(proxyUrl);
   const port = Number(target.port || 443);
   const tunnel = await connectSocks5(proxy, target.hostname, port, options.signal);
@@ -561,10 +829,15 @@ async function socksFetch(url: string, options: UpstreamRequest = {}, proxyUrl =
   }
 }
 
-async function connectSocks5(proxy: URL, targetHost: string, targetPort: number, signal?: AbortSignal): Promise<net.Socket> {
+async function connectSocks5(
+  proxy: URL,
+  targetHost: string,
+  targetPort: number,
+  signal?: AbortSignal,
+): Promise<net.Socket> {
   const socket = net.connect({
     host: proxy.hostname,
-    port: Number(proxy.port || 1080)
+    port: Number(proxy.port || 1080),
   });
   const abort = () => destroySocketQuietly(socket);
   if (signal?.aborted) abort();
@@ -578,9 +851,11 @@ async function connectSocks5(proxy: URL, targetHost: string, targetPort: number,
     socket.write(Buffer.from([0x05, methods.length, ...methods]));
 
     const greeting = await readExact(socket, 2, signal);
-    if (greeting[0] !== 0x05 || greeting[1] === 0xff) throw new Error('SOCKS5 proxy rejected authentication methods.');
+    if (greeting[0] !== 0x05 || greeting[1] === 0xff)
+      throw new Error('SOCKS5 proxy rejected authentication methods.');
     if (greeting[1] === 0x02) await authenticateSocks5(socket, username, password, signal);
-    if (greeting[1] !== 0x00 && greeting[1] !== 0x02) throw new Error(`SOCKS5 proxy selected unsupported auth method ${greeting[1]}.`);
+    if (greeting[1] !== 0x00 && greeting[1] !== 0x02)
+      throw new Error(`SOCKS5 proxy selected unsupported auth method ${greeting[1]}.`);
 
     socket.write(buildSocks5ConnectRequest(targetHost, targetPort));
     const header = await readExact(socket, 4, signal);
@@ -597,16 +872,19 @@ async function connectSocks5(proxy: URL, targetHost: string, targetPort: number,
   }
 }
 
-async function authenticateSocks5(socket: net.Socket, username: string, password: string, signal?: AbortSignal): Promise<void> {
+async function authenticateSocks5(
+  socket: net.Socket,
+  username: string,
+  password: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const user = Buffer.from(username, 'utf8');
   const pass = Buffer.from(password, 'utf8');
-  if (user.length > 255 || pass.length > 255) throw new Error('SOCKS5 proxy username/password is too long.');
-  socket.write(Buffer.concat([
-    Buffer.from([0x01, user.length]),
-    user,
-    Buffer.from([pass.length]),
-    pass
-  ]));
+  if (user.length > 255 || pass.length > 255)
+    throw new Error('SOCKS5 proxy username/password is too long.');
+  socket.write(
+    Buffer.concat([Buffer.from([0x01, user.length]), user, Buffer.from([pass.length]), pass]),
+  );
   const response = await readExact(socket, 2, signal);
   if (response[1] !== 0x00) throw new Error('SOCKS5 proxy authentication failed.');
 }
@@ -617,11 +895,15 @@ function buildSocks5ConnectRequest(host: string, port: number): Buffer {
   return Buffer.concat([
     Buffer.from([0x05, 0x01, 0x00, 0x03, hostBuffer.length]),
     hostBuffer,
-    Buffer.from([(port >> 8) & 0xff, port & 0xff])
+    Buffer.from([(port >> 8) & 0xff, port & 0xff]),
   ]);
 }
 
-async function socks5AddressLength(type: number, socket: net.Socket, signal?: AbortSignal): Promise<void> {
+async function socks5AddressLength(
+  type: number,
+  socket: net.Socket,
+  signal?: AbortSignal,
+): Promise<void> {
   if (type === 0x01) {
     await readExact(socket, 4 + 2, signal);
     return;
@@ -638,11 +920,15 @@ async function socks5AddressLength(type: number, socket: net.Socket, signal?: Ab
   throw new Error(`Unsupported SOCKS5 address type ${type}.`);
 }
 
-async function connectTls(tunnel: net.Socket, host: string, signal?: AbortSignal): Promise<tls.TLSSocket> {
+async function connectTls(
+  tunnel: net.Socket,
+  host: string,
+  signal?: AbortSignal,
+): Promise<tls.TLSSocket> {
   const socket = tls.connect({
     socket: tunnel,
     servername: host,
-    ALPNProtocols: ['http/1.1']
+    ALPNProtocols: ['http/1.1'],
   });
   await waitForSocket(socket, 'secureConnect', signal);
   return socket;
@@ -650,25 +936,30 @@ async function connectTls(tunnel: net.Socket, host: string, signal?: AbortSignal
 
 function buildHttpRequest(target: URL, options: UpstreamRequest = {}): Buffer {
   const method = String(options.method || 'GET').toUpperCase();
-  const body = options.body === undefined || options.body === null ? Buffer.alloc(0) : Buffer.from(String(options.body));
+  const body =
+    options.body === undefined || options.body === null
+      ? Buffer.alloc(0)
+      : Buffer.from(String(options.body));
   const headers = new Map<string, string>();
   Object.entries(options.headers || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) headers.set(key.toLowerCase(), String(value));
   });
   headers.set('host', target.host);
   headers.set('connection', 'close');
-  if (body.length && !headers.has('content-length')) headers.set('content-length', String(body.length));
+  if (body.length && !headers.has('content-length'))
+    headers.set('content-length', String(body.length));
 
   const path = `${target.pathname || '/'}${target.search || ''}`;
   const headerLines = [`${method} ${path} HTTP/1.1`];
   headers.forEach((value, key) => headerLines.push(`${key}: ${value}`));
-  return Buffer.concat([
-    Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n`, 'utf8'),
-    body
-  ]);
+  return Buffer.concat([Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n`, 'utf8'), body]);
 }
 
-function writeAndReadHttpResponse(socket: net.Socket, request: Buffer, signal?: AbortSignal): Promise<UpstreamResponse> {
+function writeAndReadHttpResponse(
+  socket: net.Socket,
+  request: Buffer,
+  signal?: AbortSignal,
+): Promise<UpstreamResponse> {
   return new Promise<UpstreamResponse>((resolve, reject) => {
     let headerBuffer: Buffer = Buffer.alloc(0);
     let responseResolved = false;
@@ -691,7 +982,7 @@ function writeAndReadHttpResponse(socket: net.Socket, request: Buffer, signal?: 
       cancel() {
         cleanup();
         destroySocketQuietly(socket);
-      }
+      },
     });
     const closeBody = () => {
       if (bodyClosed) return;
@@ -726,7 +1017,8 @@ function writeAndReadHttpResponse(socket: net.Socket, request: Buffer, signal?: 
         if (!responseResolved) {
           headerBuffer = Buffer.concat([headerBuffer, chunk]);
           const headerEnd = headerBuffer.indexOf('\r\n\r\n');
-          if (headerEnd > 65536 || headerEnd < 0 && headerBuffer.length > 65536) throw new Error('NovelAI HTTP headers exceed the size limit.');
+          if (headerEnd > 65536 || (headerEnd < 0 && headerBuffer.length > 65536))
+            throw new Error('NovelAI HTTP headers exceed the size limit.');
           if (headerEnd < 0) return;
           const response = openHttpResponseFromHeader(headerBuffer.slice(0, headerEnd), body);
           contentLength = Number(response.headers.get('content-length') || 0);
@@ -791,7 +1083,10 @@ function writeAndReadHttpResponse(socket: net.Socket, request: Buffer, signal?: 
   });
 }
 
-function openHttpResponseFromHeader(headerBuffer: Buffer, body: ReadableStream<Uint8Array>): UpstreamResponse {
+function openHttpResponseFromHeader(
+  headerBuffer: Buffer,
+  body: ReadableStream<Uint8Array>,
+): UpstreamResponse {
   const headerText = headerBuffer.toString('latin1');
   const [statusLine, ...headerLines] = headerText.split('\r\n');
   const status = Number(statusLine.match(/^HTTP\/\d(?:\.\d)?\s+(\d+)/)?.[1] || 0);
@@ -807,7 +1102,8 @@ function openHttpResponseFromHeader(headerBuffer: Buffer, body: ReadableStream<U
 
   let bodyUsed = false;
   const consumeBody = async () => {
-    if (bodyUsed || body.locked) throw new Error('NovelAI response body has already been consumed.');
+    if (bodyUsed || body.locked)
+      throw new Error('NovelAI response body has already been consumed.');
     bodyUsed = true;
     return collectReadableStream(body);
   };
@@ -818,7 +1114,7 @@ function openHttpResponseFromHeader(headerBuffer: Buffer, body: ReadableStream<U
     headers: {
       get(name: string) {
         return headers.get(String(name || '').toLowerCase()) || '';
-      }
+      },
     },
     body,
     get bodyUsed() {
@@ -829,11 +1125,14 @@ function openHttpResponseFromHeader(headerBuffer: Buffer, body: ReadableStream<U
     },
     async text() {
       return (await consumeBody()).toString('utf8');
-    }
+    },
   };
 }
 
-function createChunkedBodyDecoder(enqueue: (chunk: Buffer) => void, close: () => void): ChunkedDecoder {
+function createChunkedBodyDecoder(
+  enqueue: (chunk: Buffer) => void,
+  close: () => void,
+): ChunkedDecoder {
   let buffer: Buffer = Buffer.alloc(0);
   let done = false;
   return {
@@ -842,18 +1141,28 @@ function createChunkedBodyDecoder(enqueue: (chunk: Buffer) => void, close: () =>
       buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const lineEnd = buffer.indexOf('\r\n');
-        if (lineEnd > 1024 || lineEnd < 0 && buffer.length > 1024) throw new Error('Invalid chunked NovelAI response header.');
+        if (lineEnd > 1024 || (lineEnd < 0 && buffer.length > 1024))
+          throw new Error('Invalid chunked NovelAI response header.');
         if (lineEnd < 0) return;
         const sizeText = buffer.slice(0, lineEnd).toString('latin1').split(';')[0].trim();
         const size = Number.parseInt(sizeText, 16);
-        if (!/^[0-9a-f]+$/i.test(sizeText) || !Number.isSafeInteger(size) || size > MAX_RESULT_BYTES) throw new Error('Invalid or oversized chunked NovelAI response.');
+        if (
+          !/^[0-9a-f]+$/i.test(sizeText) ||
+          !Number.isSafeInteger(size) ||
+          size > MAX_RESULT_BYTES
+        )
+          throw new Error('Invalid or oversized chunked NovelAI response.');
         const dataStart = lineEnd + 2;
         const dataEnd = dataStart + size;
         if (buffer.length < dataEnd + 2) return;
         if (size === 0) {
           // 零块后的空行（或完整 trailers）才结束传输；EOF 不能替代结束块。
-          if (buffer.toString('latin1', dataStart, dataStart + 2) !== '\r\n' && buffer.indexOf('\r\n\r\n', dataStart) < 0) {
-            if (buffer.length - dataStart > 65536) throw new Error('NovelAI HTTP trailers exceed the size limit.');
+          if (
+            buffer.toString('latin1', dataStart, dataStart + 2) !== '\r\n' &&
+            buffer.indexOf('\r\n\r\n', dataStart) < 0
+          ) {
+            if (buffer.length - dataStart > 65536)
+              throw new Error('NovelAI HTTP trailers exceed the size limit.');
             return;
           }
           done = true;
@@ -861,14 +1170,15 @@ function createChunkedBodyDecoder(enqueue: (chunk: Buffer) => void, close: () =>
           close();
           return;
         }
-        if (buffer.toString('latin1', dataEnd, dataEnd + 2) !== '\r\n') throw new Error('Invalid chunked NovelAI response terminator.');
+        if (buffer.toString('latin1', dataEnd, dataEnd + 2) !== '\r\n')
+          throw new Error('Invalid chunked NovelAI response terminator.');
         enqueue(buffer.slice(dataStart, dataEnd));
         buffer = buffer.slice(dataEnd + 2);
       }
     },
     finish() {
       if (!done) throw new Error('Truncated chunked NovelAI response.');
-    }
+    },
   };
 }
 
@@ -888,7 +1198,12 @@ async function collectReadableStream(body: ReadableStream<Uint8Array>): Promise<
 function parseHttpResponse(buffer: Buffer): UpstreamResponse {
   const headerEnd = buffer.indexOf('\r\n\r\n');
   if (headerEnd < 0) {
-    const preview = buffer.length ? buffer.slice(0, 80).toString('latin1').replace(/[^\x20-\x7e]/g, '.') : 'empty response';
+    const preview = buffer.length
+      ? buffer
+          .slice(0, 80)
+          .toString('latin1')
+          .replace(/[^\x20-\x7e]/g, '.')
+      : 'empty response';
     throw new Error(`Invalid HTTP response from NovelAI via SOCKS5 proxy: ${preview}`);
   }
   const headerText = buffer.slice(0, headerEnd).toString('latin1');
@@ -915,25 +1230,28 @@ function parseHttpResponse(buffer: Buffer): UpstreamResponse {
     headers: {
       get(name: string) {
         return headers.get(String(name || '').toLowerCase()) || '';
-      }
+      },
     },
     async arrayBuffer() {
       return body;
     },
     async text() {
       return body.toString('utf8');
-    }
+    },
   };
 }
 
 export const __providerInternals = {
   openHttpResponseFromHeader,
-  writeAndReadHttpResponse
+  writeAndReadHttpResponse,
 };
 
 function decodeChunkedBody(buffer: Buffer): Buffer {
   const chunks: Buffer[] = [];
-  const decoder = createChunkedBodyDecoder(chunk => chunks.push(chunk), () => {});
+  const decoder = createChunkedBodyDecoder(
+    (chunk) => chunks.push(chunk),
+    () => {},
+  );
   decoder.push(buffer);
   decoder.finish();
   return Buffer.concat(chunks);
@@ -1031,13 +1349,31 @@ export function buildNovelAiParameters(request: ProviderRequest): Record<string,
   if (request.nativeParameters) {
     const parameters = structuredClone(request.nativeParameters);
     delete parameters.stream;
-    const actual = { ...parameters, width: request.width, height: request.height, steps: request.steps,
-      seed: request.seed, n_samples: 1 };
-    return isV5MediumModel(request.model) ? applyV5MediumParameters(actual, request.prompt, request.normalizationContext?.native?.mediumProfile) : actual;
+    const actual = {
+      ...parameters,
+      width: request.width,
+      height: request.height,
+      steps: request.steps,
+      seed: request.seed,
+      n_samples: 1,
+    };
+    return isV5MediumModel(request.model)
+      ? applyV5MediumParameters(
+          actual,
+          request.prompt,
+          request.normalizationContext?.native?.mediumProfile,
+        )
+      : actual;
   }
   if (isModernImageModel(request.model)) {
     const parameters = buildV4Parameters(request);
-    return isV5MediumModel(request.model) ? applyV5MediumParameters(parameters, request.prompt, request.normalizationContext?.native?.mediumProfile) : parameters;
+    return isV5MediumModel(request.model)
+      ? applyV5MediumParameters(
+          parameters,
+          request.prompt,
+          request.normalizationContext?.native?.mediumProfile,
+        )
+      : parameters;
   }
 
   return {
@@ -1055,7 +1391,7 @@ export function buildNovelAiParameters(request: ProviderRequest): Record<string,
     sm_dyn: false,
     dynamic_thresholding: false,
     noise_schedule: request.noiseSchedule,
-    negative_prompt: request.negative
+    negative_prompt: request.negative,
   };
 }
 
@@ -1078,20 +1414,20 @@ function buildV4Parameters(request: ProviderRequest) {
     v4_prompt: {
       caption: {
         base_caption: request.prompt,
-        char_captions: []
+        char_captions: [],
       },
       use_coords: false,
       use_order: true,
-      legacy_uc: false
+      legacy_uc: false,
     },
     v4_negative_prompt: {
       caption: {
         base_caption: request.negative,
-        char_captions: []
+        char_captions: [],
       },
       use_coords: false,
       use_order: false,
-      legacy_uc: false
+      legacy_uc: false,
     },
     negative_prompt: request.negative,
     uc: request.negative,
@@ -1115,7 +1451,7 @@ function buildV4Parameters(request: ProviderRequest) {
     uncond_per_vibe: true,
     wonky_vibe_correlation: true,
     image_format: 'png',
-    version: 1
+    version: 1,
   };
 }
 
@@ -1123,7 +1459,11 @@ function novelAiCorrelationId() {
   return Math.random().toString(36).slice(2, 8);
 }
 
-function shouldUseNovelAiStream(request: ProviderRequest, env: NodeJS.ProcessEnv = {}, options: GenerationOptions = {}): boolean {
+function shouldUseNovelAiStream(
+  request: ProviderRequest,
+  env: NodeJS.ProcessEnv = {},
+  options: GenerationOptions = {},
+): boolean {
   if (options.forceStream === true) return isModernImageModel(request.model);
   if (options.forceStream === false) return false;
   if (String(env.NOVELAI_STREAM_IMAGE || '').toLowerCase() === 'false') return false;
@@ -1144,12 +1484,15 @@ function normalizeV4Sampler(sampler: string | undefined): string {
     'k_dpmpp_2m_sde',
     'k_dpmpp_3m_sde',
     'k_dpmpp_sde',
-    'k_dpmpp_2s_ancestral'
+    'k_dpmpp_2s_ancestral',
   ]);
   return supported.has(sampler as string) ? sampler! : 'k_euler_ancestral';
 }
 
-async function extractFinalImageFromNovelAiReadableStream(response: UpstreamResponse, context: StreamContext = {}): Promise<ImageResult> {
+async function extractFinalImageFromNovelAiReadableStream(
+  response: UpstreamResponse,
+  context: StreamContext = {},
+): Promise<ImageResult> {
   const state = createNovelAiStreamState(context);
   let pending: Buffer = Buffer.alloc(0);
 
@@ -1159,7 +1502,8 @@ async function extractFinalImageFromNovelAiReadableStream(response: UpstreamResp
 
     while (offset + 4 <= pending.length) {
       const length = pending.readUInt32BE(offset);
-      if (length <= 0 || length > MAX_RESULT_BYTES) throw invalidNovelAiStreamFrameError(pending, offset);
+      if (length <= 0 || length > MAX_RESULT_BYTES)
+        throw invalidNovelAiStreamFrameError(pending, offset);
       if (offset + 4 + length > pending.length) break;
       offset += 4;
       handleNovelAiStreamEvent(decodeMsgpack(pending.slice(offset, offset + length)), state);
@@ -1174,7 +1518,10 @@ async function extractFinalImageFromNovelAiReadableStream(response: UpstreamResp
   return finalNovelAiStreamImage(state);
 }
 
-function extractFinalImageFromNovelAiStream(buffer: Buffer, context: StreamContext = {}): ImageResult {
+function extractFinalImageFromNovelAiStream(
+  buffer: Buffer,
+  context: StreamContext = {},
+): ImageResult {
   const state = createNovelAiStreamState(context);
   let offset = 0;
 
@@ -1201,7 +1548,7 @@ function createNovelAiStreamState(context: StreamContext = {}): StreamState {
     intermediateCount: 0,
     lastPercent: 0,
     request: context.request || {},
-    onProgress: typeof context.onProgress === 'function' ? context.onProgress : null
+    onProgress: typeof context.onProgress === 'function' ? context.onProgress : null,
   };
 }
 
@@ -1220,13 +1567,20 @@ function handleNovelAiStreamEvent(event: unknown, state: StreamState): void {
   }
 
   if (eventType === 'final') {
-    if (!((event as StreamEvent).image instanceof Uint8Array)) throw new Error('NovelAI final event does not contain binary image data.');
-    state.finalImage = validatedUpstreamImage(Buffer.from((event as StreamEvent).image as Uint8Array));
+    if (!((event as StreamEvent).image instanceof Uint8Array))
+      throw new Error('NovelAI final event does not contain binary image data.');
+    state.finalImage = validatedUpstreamImage(
+      Buffer.from((event as StreamEvent).image as Uint8Array),
+    );
     emitNovelAiStreamProgress(event as ImageStreamEvent, state, true);
   }
 }
 
-function emitNovelAiStreamProgress(event: ImageStreamEvent, state: StreamState, isFinal: boolean): void {
+function emitNovelAiStreamProgress(
+  event: ImageStreamEvent,
+  state: StreamState,
+  isFinal: boolean,
+): void {
   if (!state.onProgress) return;
   const progress = normalizeNovelAiStreamProgress(event, state, isFinal);
   const hasPreview = !isFinal && event.image instanceof Uint8Array && event.image.byteLength > 0;
@@ -1235,37 +1589,44 @@ function emitNovelAiStreamProgress(event: ImageStreamEvent, state: StreamState, 
   const previewBuffer = hasPreview ? Buffer.from(event.image as Uint8Array) : null;
   state.onProgress({
     ...progress,
-    ...(previewBuffer ? {
-      previewBuffer,
-      previewMimeType: imageMimeType(previewBuffer)
-    } : {})
+    ...(previewBuffer
+      ? {
+          previewBuffer,
+          previewMimeType: imageMimeType(previewBuffer),
+        }
+      : {}),
   });
 }
 
-function normalizeNovelAiStreamProgress(event: ImageStreamEvent, state: StreamState, isFinal: boolean): GenerationProgress {
-  const stepIndex = Number.isSafeInteger(event?.step_ix) && (event.step_ix as number) >= 0 ? event.step_ix as number : undefined;
-  const total = positiveNumber(
-    event?.total_steps,
-    event?.totalSteps,
-    event?.n_steps,
-    event?.steps,
-    state.request?.steps
-  ) || 0;
-  const explicitProgress = finiteNumber(
-    event?.progress,
-    event?.percentage,
-    event?.percent
-  );
-  const step = positiveNumber(
-    stepIndex !== undefined ? stepIndex + 1 : null,
-    event?.step,
-    event?.step_index,
-    event?.current_step,
-    event?.currentStep,
-    event?.sampling_step,
-    event?.index,
-    state.intermediateCount
-  ) || 0;
+function normalizeNovelAiStreamProgress(
+  event: ImageStreamEvent,
+  state: StreamState,
+  isFinal: boolean,
+): GenerationProgress {
+  const stepIndex =
+    Number.isSafeInteger(event?.step_ix) && (event.step_ix as number) >= 0
+      ? (event.step_ix as number)
+      : undefined;
+  const total =
+    positiveNumber(
+      event?.total_steps,
+      event?.totalSteps,
+      event?.n_steps,
+      event?.steps,
+      state.request?.steps,
+    ) || 0;
+  const explicitProgress = finiteNumber(event?.progress, event?.percentage, event?.percent);
+  const step =
+    positiveNumber(
+      stepIndex !== undefined ? stepIndex + 1 : null,
+      event?.step,
+      event?.step_index,
+      event?.current_step,
+      event?.currentStep,
+      event?.sampling_step,
+      event?.index,
+      state.intermediateCount,
+    ) || 0;
   let percent = 0;
 
   if (isFinal) {
@@ -1283,7 +1644,7 @@ function normalizeNovelAiStreamProgress(event: ImageStreamEvent, state: StreamSt
     total,
     ...(stepIndex !== undefined ? { stepIndex } : {}),
     eventType: event?.event_type || '',
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
   };
 }
 
@@ -1296,8 +1657,12 @@ function finalNovelAiStreamImage(state: StreamState): ImageResult {
 }
 
 function invalidNovelAiStreamFrameError(buffer: Buffer, offset: number): Error {
-  const preview = buffer.slice(Math.max(0, offset), Math.min(buffer.length, offset + 80)).toString('latin1');
-  return new Error(`Invalid NovelAI msgpack stream frame: ${preview.replace(/[^\x20-\x7e]/g, '.')}`);
+  const preview = buffer
+    .slice(Math.max(0, offset), Math.min(buffer.length, offset + 80))
+    .toString('latin1');
+  return new Error(
+    `Invalid NovelAI msgpack stream frame: ${preview.replace(/[^\x20-\x7e]/g, '.')}`,
+  );
 }
 
 function finiteNumber(...values: unknown[]): number | null {
@@ -1328,13 +1693,34 @@ function decodeMsgpack(buffer: Buffer): unknown {
     maxMapLength: 1024,
     maxExtLength: 0,
     // Decoder 只读取 decode；库类型要求完整编解码接口，但此处不提供未使用的编码行为。
-    extensionCodec: { decode() { throw new Error('Unsupported NovelAI msgpack extension.'); } } as unknown as ExtensionCodecType<undefined>
+    extensionCodec: {
+      decode() {
+        throw new Error('Unsupported NovelAI msgpack extension.');
+      },
+    } as unknown as ExtensionCodecType<undefined>,
   });
   // 仅归一实际消费的进度字段；未知数据不递归转换，不安全 int64 也不舍入。
   if (value && typeof value === 'object') {
-    for (const key of ['total_steps', 'totalSteps', 'n_steps', 'steps', 'progress', 'percentage', 'percent',
-      'step_ix', 'step', 'step_index', 'current_step', 'currentStep', 'sampling_step', 'index']) {
-      if (typeof (value as Record<string, unknown>)[key] === 'bigint') (value as Record<string, unknown>)[key] = numberFromBigInt((value as Record<string, unknown>)[key] as bigint);
+    for (const key of [
+      'total_steps',
+      'totalSteps',
+      'n_steps',
+      'steps',
+      'progress',
+      'percentage',
+      'percent',
+      'step_ix',
+      'step',
+      'step_index',
+      'current_step',
+      'currentStep',
+      'sampling_step',
+      'index',
+    ]) {
+      if (typeof (value as Record<string, unknown>)[key] === 'bigint')
+        (value as Record<string, unknown>)[key] = numberFromBigInt(
+          (value as Record<string, unknown>)[key] as bigint,
+        );
     }
   }
   return value;
@@ -1348,7 +1734,11 @@ function numberFromBigInt(value: bigint): number | bigint {
 }
 
 function imageMimeType(buffer: Buffer): ImageMimeType {
-  if (buffer.length >= 12 && buffer.slice(0, 4).toString('latin1') === 'RIFF' && buffer.slice(8, 12).toString('latin1') === 'WEBP') {
+  if (
+    buffer.length >= 12 &&
+    buffer.slice(0, 4).toString('latin1') === 'RIFF' &&
+    buffer.slice(8, 12).toString('latin1') === 'WEBP'
+  ) {
     return 'image/webp';
   }
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
@@ -1357,7 +1747,10 @@ function imageMimeType(buffer: Buffer): ImageMimeType {
   return 'image/png';
 }
 
-export function generateMockImage(request: { width?: unknown; height?: unknown; tag?: unknown; prompt?: unknown; seed?: unknown }, message = 'Mock NovelAI preview'): GeneratedResult {
+export function generateMockImage(
+  request: { width?: unknown; height?: unknown; tag?: unknown; prompt?: unknown; seed?: unknown },
+  message = 'Mock NovelAI preview',
+): GeneratedResult {
   const width = Number(request.width) || 832;
   const height = Number(request.height) || 1216;
   const prompt = String(request.tag || request.prompt || 'NovelAI image');
@@ -1380,7 +1773,7 @@ export function generateMockImage(request: { width?: unknown; height?: unknown; 
   return {
     mimeType: 'image/svg+xml',
     buffer: Buffer.from(svg),
-    mock: true
+    mock: true,
   };
 }
 
@@ -1395,17 +1788,34 @@ function extractFirstImageFromZip(buffer: Buffer): ImageResult {
     const isImage = /\.(png|jpe?g|webp)$/.test(lowerName) || !entry.fileName.includes('.');
     if (!isImage) continue;
 
-    if (![0, 8].includes(entry.method) || entry.flags & 1 || entry.uncompressedSize > MAX_RESULT_BYTES) throw new Error('Unsupported or oversized NovelAI ZIP image.');
-    if (entry.localHeaderOffset + 30 > entry.directoryOffset || buffer.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50) throw new Error('Invalid NovelAI ZIP local header.');
-    if (buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method || buffer.readUInt16LE(entry.localHeaderOffset + 6) & 1) throw new Error('Invalid NovelAI ZIP image method.');
+    if (
+      ![0, 8].includes(entry.method) ||
+      entry.flags & 1 ||
+      entry.uncompressedSize > MAX_RESULT_BYTES
+    )
+      throw new Error('Unsupported or oversized NovelAI ZIP image.');
+    if (
+      entry.localHeaderOffset + 30 > entry.directoryOffset ||
+      buffer.readUInt32LE(entry.localHeaderOffset) !== 0x04034b50
+    )
+      throw new Error('Invalid NovelAI ZIP local header.');
+    if (
+      buffer.readUInt16LE(entry.localHeaderOffset + 8) !== entry.method ||
+      buffer.readUInt16LE(entry.localHeaderOffset + 6) & 1
+    )
+      throw new Error('Invalid NovelAI ZIP image method.');
     const fileNameLength = buffer.readUInt16LE(entry.localHeaderOffset + 26);
     const extraLength = buffer.readUInt16LE(entry.localHeaderOffset + 28);
     const dataStart = entry.localHeaderOffset + 30 + fileNameLength + extraLength;
     const dataEnd = dataStart + entry.compressedSize;
     if (dataEnd > entry.directoryOffset) throw new Error('Truncated NovelAI ZIP image.');
     const compressed = buffer.slice(dataStart, dataEnd);
-    const image = entry.method === 8 ? zlib.inflateRawSync(compressed, { maxOutputLength: MAX_RESULT_BYTES }) : compressed;
-    if (image.length !== entry.uncompressedSize || crc32(image) !== entry.crc) throw new Error('Corrupt NovelAI ZIP image.');
+    const image =
+      entry.method === 8
+        ? zlib.inflateRawSync(compressed, { maxOutputLength: MAX_RESULT_BYTES })
+        : compressed;
+    if (image.length !== entry.uncompressedSize || crc32(image) !== entry.crc)
+      throw new Error('Corrupt NovelAI ZIP image.');
     return validatedUpstreamImage(image);
   }
   throw new Error('No image file found in NovelAI ZIP response.');
@@ -1426,12 +1836,19 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
   const entryCount = buffer.readUInt16LE(eocdOffset + 10);
   const directorySize = buffer.readUInt32LE(eocdOffset + 12);
   const directoryOffset = buffer.readUInt32LE(eocdOffset + 16);
-  if (eocdOffset + 22 + buffer.readUInt16LE(eocdOffset + 20) !== buffer.length || directoryOffset + directorySize !== eocdOffset || buffer.readUInt32LE(eocdOffset + 4) !== 0 || buffer.readUInt16LE(eocdOffset + 8) !== entryCount) throw new Error('Invalid NovelAI ZIP directory.');
+  if (
+    eocdOffset + 22 + buffer.readUInt16LE(eocdOffset + 20) !== buffer.length ||
+    directoryOffset + directorySize !== eocdOffset ||
+    buffer.readUInt32LE(eocdOffset + 4) !== 0 ||
+    buffer.readUInt16LE(eocdOffset + 8) !== entryCount
+  )
+    throw new Error('Invalid NovelAI ZIP directory.');
   let offset = directoryOffset;
   const entries: ZipEntry[] = [];
 
   for (let index = 0; index < entryCount; index += 1) {
-    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error('Truncated NovelAI ZIP directory.');
+    if (offset + 46 > eocdOffset || buffer.readUInt32LE(offset) !== 0x02014b50)
+      throw new Error('Truncated NovelAI ZIP directory.');
     const flags = buffer.readUInt16LE(offset + 8);
     const method = buffer.readUInt16LE(offset + 10);
     const crc = buffer.readUInt32LE(offset + 16);
@@ -1441,9 +1858,19 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
     const localHeaderOffset = buffer.readUInt32LE(offset + 42);
-    if (offset + 46 + fileNameLength + extraLength + commentLength > eocdOffset) throw new Error('Truncated NovelAI ZIP directory entry.');
+    if (offset + 46 + fileNameLength + extraLength + commentLength > eocdOffset)
+      throw new Error('Truncated NovelAI ZIP directory entry.');
     const fileName = buffer.slice(offset + 46, offset + 46 + fileNameLength).toString('utf8');
-    entries.push({ flags, method, crc, compressedSize, uncompressedSize, fileName, localHeaderOffset, directoryOffset });
+    entries.push({
+      flags,
+      method,
+      crc,
+      compressedSize,
+      uncompressedSize,
+      fileName,
+      localHeaderOffset,
+      directoryOffset,
+    });
     offset += 46 + fileNameLength + extraLength + commentLength;
   }
 
@@ -1453,7 +1880,10 @@ function readZipCentralDirectory(buffer: Buffer): ZipEntry[] {
 
 function decodeDataUrl(value: unknown): ImageResult {
   try {
-    const image = validateNativeImage(value, 'NovelAI result', { maxBytes: MAX_RESULT_BYTES, maxDimension: MAX_RESULT_DIMENSION });
+    const image = validateNativeImage(value, 'NovelAI result', {
+      maxBytes: MAX_RESULT_BYTES,
+      maxDimension: MAX_RESULT_DIMENSION,
+    });
     return { mimeType: image.mimeType, buffer: Buffer.from(image.base64, 'base64') };
   } catch (cause) {
     throw new Error('NovelAI returned invalid or incomplete image data.', { cause });

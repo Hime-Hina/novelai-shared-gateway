@@ -26,28 +26,38 @@ function readDataUsage(directory: string): Promise<DataUsage | null> {
   if (cached && cached.expiresAt > Date.now()) return cached.result;
   // 图片目录可能很大；一分钟内共用一次异步扫描，包括并发管理请求。
   const result = directoryBytes(directory)
-    .then(bytes => ({ bytes, checkedAt: new Date().toISOString() }))
+    .then((bytes) => ({ bytes, checkedAt: new Date().toISOString() }))
     .catch(() => null);
   const entry = { expiresAt: Infinity, result };
   dataUsageCache.set(directory, entry);
-  void result.then(() => { entry.expiresAt = Date.now() + 60000; });
+  void result.then(() => {
+    entry.expiresAt = Date.now() + 60000;
+  });
   return result;
 }
 
 export async function readServiceResources(dataDir: string | undefined) {
-  const [data, disk] = dataDir ? await Promise.all([
-    readDataUsage(dataDir),
-    statfs(dataDir).then(info => ({
-      totalBytes: info.blocks * info.bsize,
-      usedBytes: (info.blocks - info.bfree) * info.bsize,
-      availableBytes: info.bavail * info.bsize
-    })).catch(() => null)
-  ]) : [null, null];
+  const [data, disk] = dataDir
+    ? await Promise.all([
+        readDataUsage(dataDir),
+        statfs(dataDir)
+          .then((info) => ({
+            totalBytes: info.blocks * info.bsize,
+            usedBytes: (info.blocks - info.bfree) * info.bsize,
+            availableBytes: info.bavail * info.bsize,
+          }))
+          .catch(() => null),
+      ])
+    : [null, null];
   const memory = process.memoryUsage();
   return {
-    memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal },
+    memory: {
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+    },
     uptimeSeconds: process.uptime(),
     data,
-    disk
+    disk,
   };
 }

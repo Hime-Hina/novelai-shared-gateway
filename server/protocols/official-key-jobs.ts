@@ -3,26 +3,48 @@ import type { generateNovelAiImage, NormalizedImageRequest } from './novelai-cli
 import type { JobPreviews } from '../generation/job-previews.ts';
 
 type GeneratedImage = Awaited<ReturnType<typeof generateNovelAiImage>>;
-interface StoredImage { id: string }
+interface StoredImage {
+  id: string;
+}
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 interface OfficialJob {
-  id: string; owner: string; userToken: string; cacheKey?: string;
-  request?: NormalizedImageRequest; token?: string; status: JobStatus;
-  createdAt: string; updatedAt: string; queueTotal: number;
+  id: string;
+  owner: string;
+  userToken: string;
+  cacheKey?: string;
+  request?: NormalizedImageRequest;
+  token?: string;
+  status: JobStatus;
+  createdAt: string;
+  updatedAt: string;
+  queueTotal: number;
   generationProgress: { percent: number; step: number; total: number };
-  controller: AbortController; timer?: ReturnType<typeof setTimeout>;
-  done?: Promise<OfficialJob>; resolve?: (job: OfficialJob) => void;
-  image?: StoredImage; cacheHit?: boolean; error?: string;
+  controller: AbortController;
+  timer?: ReturnType<typeof setTimeout>;
+  done?: Promise<OfficialJob>;
+  resolve?: (job: OfficialJob) => void;
+  image?: StoredImage;
+  cacheHit?: boolean;
+  error?: string;
 }
 interface OfficialKeyJobOptions {
-  generate: (request: NormalizedImageRequest, account: { token?: string },
-    options: NonNullable<Parameters<typeof generateNovelAiImage>[3]>) => Promise<GeneratedImage>;
+  generate: (
+    request: NormalizedImageRequest,
+    account: { token?: string },
+    options: NonNullable<Parameters<typeof generateNovelAiImage>[3]>,
+  ) => Promise<GeneratedImage>;
   saveImage: (job: OfficialJob, image: GeneratedImage) => Promise<StoredImage>;
   findImage: (cacheKey: string | undefined) => Promise<StoredImage | null | undefined>;
   previews: Pick<JobPreviews, 'update' | 'clear'>;
-  maxRunning?: number; maxJobs?: number; retentionMs?: number;
+  maxRunning?: number;
+  maxJobs?: number;
+  retentionMs?: number;
 }
-interface CreateOptions { cacheKey?: string; noCache?: boolean; timeoutMs?: number }
+interface CreateOptions {
+  cacheKey?: string;
+  noCache?: boolean;
+  timeoutMs?: number;
+}
 
 export const isOfficialKey = (token: unknown): boolean => String(token || '').startsWith('pst-');
 
@@ -34,9 +56,21 @@ export function officialKeyOwner(token: string): string {
 export function officialKeyError(error: unknown): Error & { statusCode: number } {
   const message = String((error as { message?: unknown } | null | undefined)?.message || '');
   const status = (error as { upstreamStatus?: number } | null | undefined)?.upstreamStatus;
-  if (status === 401 || status === 403 || message === '账号已封禁' || /401|403|unauthorized|invalid.*token/i.test(message)) return failure(401, '官方密钥无效或账号不可用。');
-  if (status === 402 || message === '试用次数已用完' || /402|insufficient|out.of.trial|not enough|balance/i.test(message)) return failure(402, 'NovelAI 账号额度不足。');
-  if (status === 429 || /429|concurrent|busy/i.test(message)) return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
+  if (
+    status === 401 ||
+    status === 403 ||
+    message === '账号已封禁' ||
+    /401|403|unauthorized|invalid.*token/i.test(message)
+  )
+    return failure(401, '官方密钥无效或账号不可用。');
+  if (
+    status === 402 ||
+    message === '试用次数已用完' ||
+    /402|insufficient|out.of.trial|not enough|balance/i.test(message)
+  )
+    return failure(402, 'NovelAI 账号额度不足。');
+  if (status === 429 || /429|concurrent|busy/i.test(message))
+    return failure(429, '你的 NovelAI 账号正在忙，请稍后重试。');
   if (/abort|timeout|超时/i.test(message)) return failure(504, '官方账号请求超时，请稍后重试。');
   // Upstream errors may echo request headers; never return their body or raw key.
   return failure(502, 'NovelAI 请求失败，请稍后重试。');
@@ -60,32 +94,74 @@ export class OfficialKeyJobs {
   declare maxJobs: number;
   declare retentionMs: number;
 
-  constructor({ generate, saveImage, findImage, previews, maxRunning = 16, maxJobs = 512, retentionMs = 30 * 60_000 }: OfficialKeyJobOptions) {
-    Object.assign(this, { generate, saveImage, findImage, previews, maxRunning, maxJobs, retentionMs });
+  constructor({
+    generate,
+    saveImage,
+    findImage,
+    previews,
+    maxRunning = 16,
+    maxJobs = 512,
+    retentionMs = 30 * 60_000,
+  }: OfficialKeyJobOptions) {
+    Object.assign(this, {
+      generate,
+      saveImage,
+      findImage,
+      previews,
+      maxRunning,
+      maxJobs,
+      retentionMs,
+    });
   }
 
-  async create(token: string, request: NormalizedImageRequest, { cacheKey, noCache = true, timeoutMs = 600_000 }: CreateOptions = {}) {
+  async create(
+    token: string,
+    request: NormalizedImageRequest,
+    { cacheKey, noCache = true, timeoutMs = 600_000 }: CreateOptions = {},
+  ) {
     const owner = officialKeyOwner(token);
     const cached = noCache ? null : await this.findImage(cacheKey);
     // Check again after the async cache lookup to coalesce simultaneous requests.
     if (!noCache) {
       for (const job of this.jobs.values()) {
-        if (job.owner === owner && job.cacheKey === cacheKey && ['queued', 'running'].includes(job.status)) return this.snapshot(job);
+        if (
+          job.owner === owner &&
+          job.cacheKey === cacheKey &&
+          ['queued', 'running'].includes(job.status)
+        )
+          return this.snapshot(job);
       }
     }
     this.prune();
-    if (this.jobs.size >= this.maxJobs || this.queue.filter(job => job.owner === owner).length >= 8) {
+    if (
+      this.jobs.size >= this.maxJobs ||
+      this.queue.filter((job) => job.owner === owner).length >= 8
+    ) {
       throw failure(429, '官方密钥任务过多，请等待已有任务完成。');
     }
     const now = new Date().toISOString();
     const job: OfficialJob = {
-      id: `job_pst_${randomUUID()}`, owner, userToken: owner, cacheKey,
-      request, token, status: 'queued', createdAt: now, updatedAt: now,
-      queueTotal: Math.max(2, this.queue.filter(item => item.owner === owner).length + (this.running.has(owner) ? 1 : 0) + 1),
+      id: `job_pst_${randomUUID()}`,
+      owner,
+      userToken: owner,
+      cacheKey,
+      request,
+      token,
+      status: 'queued',
+      createdAt: now,
+      updatedAt: now,
+      queueTotal: Math.max(
+        2,
+        this.queue.filter((item) => item.owner === owner).length +
+          (this.running.has(owner) ? 1 : 0) +
+          1,
+      ),
       generationProgress: { percent: 0, step: 0, total: request.steps },
-      controller: new AbortController()
+      controller: new AbortController(),
     };
-    job.done = new Promise(resolve => { job.resolve = resolve; });
+    job.done = new Promise((resolve) => {
+      job.resolve = resolve;
+    });
     this.jobs.set(job.id, job);
     if (cached) {
       this.finish(job, 'done', { image: cached, cacheHit: true });
@@ -110,18 +186,29 @@ export class OfficialKeyJobs {
   }
 
   snapshot(job: OfficialJob) {
-    const ahead = this.queue.slice(0, this.queue.indexOf(job)).filter(item => item.owner === job.owner).length + (this.running.has(job.owner) ? 1 : 0);
+    const ahead =
+      this.queue.slice(0, this.queue.indexOf(job)).filter((item) => item.owner === job.owner)
+        .length + (this.running.has(job.owner) ? 1 : 0);
     return {
-      id: job.id, status: job.status, authMode: 'official', cost: 0,
-      createdAt: job.createdAt, updatedAt: job.updatedAt,
-      queuePosition: job.status === 'queued' ? Math.max(1, Math.min(job.queueTotal - 1, job.queueTotal - ahead)) : job.queueTotal,
-      queuedCount: job.queueTotal, generationProgress: { ...job.generationProgress },
-      imageUrl: job.image ? `/api/images/${job.image.id}/content` : '', error: job.error || ''
+      id: job.id,
+      status: job.status,
+      authMode: 'official',
+      cost: 0,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      queuePosition:
+        job.status === 'queued'
+          ? Math.max(1, Math.min(job.queueTotal - 1, job.queueTotal - ahead))
+          : job.queueTotal,
+      queuedCount: job.queueTotal,
+      generationProgress: { ...job.generationProgress },
+      imageUrl: job.image ? `/api/images/${job.image.id}/content` : '',
+      error: job.error || '',
     };
   }
 
   drain(): void {
-    this.queue = this.queue.filter(job => job.status === 'queued');
+    this.queue = this.queue.filter((job) => job.status === 'queued');
     for (const job of [...this.queue]) {
       if (this.running.size >= this.maxRunning) break;
       if (this.running.has(job.owner)) continue;
@@ -135,29 +222,43 @@ export class OfficialKeyJobs {
 
   async run(job: OfficialJob): Promise<void> {
     try {
-      const image = await this.generate(job.request!, { token: job.token }, {
-        signal: job.controller.signal, forceStream: true,
-        onProgress: progress => {
-          if (job.status !== 'running') return;
-          job.generationProgress = {
-            percent: Math.max(job.generationProgress.percent, Math.min(100, Number(progress.percent) || 0)),
-            step: Number(progress.step) || 0, total: job.request!.steps
-          };
-          this.previews.update(job, progress);
-        }
-      });
+      const image = await this.generate(
+        job.request!,
+        { token: job.token },
+        {
+          signal: job.controller.signal,
+          forceStream: true,
+          onProgress: (progress) => {
+            if (job.status !== 'running') return;
+            job.generationProgress = {
+              percent: Math.max(
+                job.generationProgress.percent,
+                Math.min(100, Number(progress.percent) || 0),
+              ),
+              step: Number(progress.step) || 0,
+              total: job.request!.steps,
+            };
+            this.previews.update(job, progress);
+          },
+        },
+      );
       if (job.status !== 'running') return;
       const saved = await this.saveImage(job, image);
       if (job.status === 'running') this.finish(job, 'done', { image: saved });
     } catch (error) {
-      if (job.status === 'running') this.finish(job, 'failed', { error: officialKeyError(error).message });
+      if (job.status === 'running')
+        this.finish(job, 'failed', { error: officialKeyError(error).message });
     } finally {
       this.running.delete(job.owner);
       this.drain();
     }
   }
 
-  finish(job: OfficialJob, status: 'done' | 'failed', result: Pick<OfficialJob, 'image' | 'cacheHit' | 'error'>): void {
+  finish(
+    job: OfficialJob,
+    status: 'done' | 'failed',
+    result: Pick<OfficialJob, 'image' | 'cacheHit' | 'error'>,
+  ): void {
     if (['done', 'failed'].includes(job.status)) return;
     clearTimeout(job.timer);
     Object.assign(job, result, { status, updatedAt: new Date().toISOString() });
@@ -171,7 +272,12 @@ export class OfficialKeyJobs {
 
   prune(): void {
     for (const [id, job] of this.jobs) {
-      if (['done', 'failed'].includes(job.status) && (Date.now() - Date.parse(job.updatedAt) > this.retentionMs || this.jobs.size >= this.maxJobs)) this.jobs.delete(id);
+      if (
+        ['done', 'failed'].includes(job.status) &&
+        (Date.now() - Date.parse(job.updatedAt) > this.retentionMs ||
+          this.jobs.size >= this.maxJobs)
+      )
+        this.jobs.delete(id);
     }
   }
 }

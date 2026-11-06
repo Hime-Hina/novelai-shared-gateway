@@ -20,7 +20,10 @@ interface PreviewFrame {
 }
 
 type PreviewWatcher = (frame: PreviewFrame) => unknown;
-type PreviewResponse = Pick<ServerResponse, 'destroyed' | 'writableEnded' | 'writableNeedDrain' | 'writeHead' | 'write' | 'end' | 'once'>;
+type PreviewResponse = Pick<
+  ServerResponse,
+  'destroyed' | 'writableEnded' | 'writableNeedDrain' | 'writeHead' | 'write' | 'end' | 'once'
+>;
 
 // Only the latest preview of each running job lives here. Never persisted.
 export class JobPreviews {
@@ -33,7 +36,9 @@ export class JobPreviews {
     const watchers = this.watchers.get(jobId) || new Set<PreviewWatcher>();
     const notify = (frame: PreviewFrame): void => {
       // 预览观察者不能把传输异常变成生成失败或影响任务结算。
-      try { Promise.resolve(callback(frame)).catch(() => {}); } catch {}
+      try {
+        Promise.resolve(callback(frame)).catch(() => {});
+      } catch {}
     };
     watchers.add(notify);
     this.watchers.set(jobId, watchers);
@@ -46,11 +51,14 @@ export class JobPreviews {
   }
 
   subscribe(token: string, res: PreviewResponse): void {
-    if (this.closed) { res.end(); return; }
+    if (this.closed) {
+      res.end();
+      return;
+    }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
-      'x-accel-buffering': 'no'
+      'x-accel-buffering': 'no',
     });
     res.write(': connected\n\n');
     const listeners = this.listeners.get(token) || new Set<PreviewResponse>();
@@ -78,18 +86,23 @@ export class JobPreviews {
     }
   }
 
-  update(job: { id: string; userToken: string; status: string } | null | undefined, progress: PreviewProgress): void {
+  update(
+    job: { id: string; userToken: string; status: string } | null | undefined,
+    progress: PreviewProgress,
+  ): void {
     if (!job || job.status !== 'running') return;
     const buffer = progress.previewBuffer;
     if (!buffer?.length || buffer.length > 512 * 1024) return;
     const previous = this.frames.get(job.id);
     const now = Date.now();
     const frame: PreviewFrame = {
-      token: job.userToken, jobId: job.id, buffer,
+      token: job.userToken,
+      jobId: job.id,
+      buffer,
       mimeType: progress.previewMimeType,
       stepIndex: progress.stepIndex,
       progress: { percent: progress.percent, step: progress.step, total: progress.total },
-      sentAt: previous?.sentAt || 0
+      sentAt: previous?.sentAt || 0,
     };
     this.frames.set(job.id, frame);
     // Bound repaint/network work while retaining the newest frame for reconnects.
@@ -106,7 +119,7 @@ export class JobPreviews {
     return `data: ${JSON.stringify({
       jobId: frame.jobId,
       progress: frame.progress,
-      preview: `data:${frame.mimeType};base64,${frame.buffer.toString('base64')}`
+      preview: `data:${frame.mimeType};base64,${frame.buffer.toString('base64')}`,
     })}\n\n`;
   }
 

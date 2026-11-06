@@ -7,11 +7,59 @@ import { EventEmitter } from 'node:events';
 import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { sql, eq, and, or, ne, lte, gt, isNotNull, desc, count, getTableColumns } from 'drizzle-orm';
-import { recordTables, appSettings, appRecords, appMeta, generationRequests, generationIdempotency, fairQuotaSettlements, memberSessions } from './sqlite-schema.ts';
-import { migrateStorage,readCompatibleEventAuthority } from './sqlite-migrations.ts';
-import { beginDomainCommand, finishDomainCommand, setDomainCommandReceipt, canonicalJson,domainDigest,recordDomainEvent, type Json, type DomainCommand, type DomainCommandMetadata, type DomainCommit } from '../events/domain-events.ts';
-import { appendDomainCommit, readCommandReceipt, importOpeningFacts, coreProjectionRows, readProjectedFairQuota,readArtifactInput,readStreamProjection,verifyColdDomainFacts,eventAuthorityEnabled,removeLegacyFreeImageTriggers,assertCurrentEventReducer,upgradeEventReducers,EVENT_AUTHORITY_VERSION, type StreamProjection, type ProjectionRow } from '../events/event-store.ts';
+import {
+  sql,
+  eq,
+  and,
+  or,
+  ne,
+  lte,
+  gt,
+  isNotNull,
+  desc,
+  count,
+  getTableColumns,
+} from 'drizzle-orm';
+import {
+  recordTables,
+  appSettings,
+  appRecords,
+  appMeta,
+  generationRequests,
+  generationIdempotency,
+  fairQuotaSettlements,
+  memberSessions,
+} from './sqlite-schema.ts';
+import { migrateStorage, readCompatibleEventAuthority } from './sqlite-migrations.ts';
+import {
+  beginDomainCommand,
+  finishDomainCommand,
+  setDomainCommandReceipt,
+  canonicalJson,
+  domainDigest,
+  recordDomainEvent,
+  type Json,
+  type DomainCommand,
+  type DomainCommandMetadata,
+  type DomainCommit,
+} from '../events/domain-events.ts';
+import {
+  appendDomainCommit,
+  readCommandReceipt,
+  importOpeningFacts,
+  coreProjectionRows,
+  readProjectedFairQuota,
+  readArtifactInput,
+  readStreamProjection,
+  verifyColdDomainFacts,
+  eventAuthorityEnabled,
+  removeLegacyFreeImageTriggers,
+  assertCurrentEventReducer,
+  upgradeEventReducers,
+  EVENT_AUTHORITY_VERSION,
+  type StreamProjection,
+  type ProjectionRow,
+} from '../events/event-store.ts';
 import { normalizeOpeningQuota } from '../quota/fair-share.ts';
 import { queuedDeadlineTimestamp } from '../generation/queue-policy.ts';
 import { queryFailureAccounting } from '../quota/failure-accounting.ts';
@@ -19,122 +67,350 @@ import { readFreeImageUsage as queryFreeImageUsage } from '../quota/free-image-p
 import { activityDate } from '../reports/activity-heatmap.ts';
 import { R2_IMAGE_LIMIT_BYTES, type R2Image } from './r2-storage.ts';
 
-
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota/fair-share.ts';
 import type { ProviderRequest } from '../protocols/novelai-client.ts';
 import type { recordSharedCompletion } from '../quota/shared-capacity.ts';
 import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from '../generation/accounting.ts';
-import type { ReadTask, ReadResults, ActivityQuery, ImagePageQuery, PageQuery } from './sqlite-read-worker.ts';
-import type { MemberGenerationConfirmation, MemberNormalizationContext } from '../generation/member-contract.ts';
+import type {
+  ReadTask,
+  ReadResults,
+  ActivityQuery,
+  ImagePageQuery,
+  PageQuery,
+} from './sqlite-read-worker.ts';
+import type {
+  MemberGenerationConfirmation,
+  MemberNormalizationContext,
+} from '../generation/member-contract.ts';
 
 type Present = <T>(value: T) => value is NonNullable<T>;
 type Collection = keyof typeof recordTables;
-type SqlRow = typeof recordTables.cards.$inferSelect & Partial<Omit<typeof recordTables.jobs.$inferSelect, keyof typeof recordTables.cards.$inferSelect>>;
+type SqlRow = typeof recordTables.cards.$inferSelect &
+  Partial<
+    Omit<typeof recordTables.jobs.$inferSelect, keyof typeof recordTables.cards.$inferSelect>
+  >;
 type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
-export const generationContextRef = (row: Pick<Idempotency, 'member_id' | 'operation' | 'key_hash'>): string =>
-  `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
+export const generationContextRef = (
+  row: Pick<Idempotency, 'member_id' | 'operation' | 'key_hash'>,
+): string => `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
 type MemberSession = typeof memberSessions.$inferInsert;
-interface SessionOwner { ownerUserId: string; guildId: string }
+interface SessionOwner {
+  ownerUserId: string;
+  guildId: string;
+}
 type SessionExpiry = { tokenHash: string; expiresAt: number };
 export interface StoredGenerationRequest extends ProviderRequest {
-  tag?: string; artist?: string; size?: string; requestedSteps?: number; sampleCount?: number;
-  nocache?: boolean; allowPurchasedAnlas?: unknown; cost?: number; characterRef?: unknown;
+  tag?: string;
+  artist?: string;
+  size?: string;
+  requestedSteps?: number;
+  sampleCount?: number;
+  nocache?: boolean;
+  allowPurchasedAnlas?: unknown;
+  cost?: number;
+  characterRef?: unknown;
   operationParameters?: object;
-  clientContract?: 'member-generation-v1'; confirmation?: MemberGenerationConfirmation;
-  normalizationContext?: MemberNormalizationContext; intentFingerprint?: string;
+  clientContract?: 'member-generation-v1';
+  confirmation?: MemberGenerationConfirmation;
+  normalizationContext?: MemberNormalizationContext;
+  intentFingerprint?: string;
 }
 export interface StoreItem extends AccountingJob, Omit<FairAccount, 'id' | 'enabled'>, FairUser {
-  r2?: R2Image; r2LastAttemptAt?: string; r2Error?: string;
+  r2?: R2Image;
+  r2LastAttemptAt?: string;
+  r2Error?: string;
   [key: string]: unknown;
-  token?: string; accountId?: string; imageId?: string; requestId?: string; jobId?: string; memberId?: string; userId?: string;
-  createdAt?: string; completedAt?: string; cancelledAt?: string; deadlineAt?: string; queuedDeadlineAt?: string;
-  queueSeq?: number; queueTotal?: number; payloadBytes?: number; cost?: number; balance?: number; inFlight?: number;
-  error?: string; errorDetail?: string; resultPending?: ReturnType<typeof describeStoredResult> & { attemptId: string }; at?: string; name?: string; note?: string; file?: string;
-  code?: string; cacheKey?: string; routeId?: number; width?: number; height?: number; mock?: boolean; mimeType?: string;
-  model?: string; prompt?: string; fullPrompt?: string; type?: string; attempt?: { memberId?: string };
+  token?: string;
+  accountId?: string;
+  imageId?: string;
+  requestId?: string;
+  jobId?: string;
+  memberId?: string;
+  userId?: string;
+  createdAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  deadlineAt?: string;
+  queuedDeadlineAt?: string;
+  queueSeq?: number;
+  queueTotal?: number;
+  payloadBytes?: number;
+  cost?: number;
+  balance?: number;
+  inFlight?: number;
+  error?: string;
+  errorDetail?: string;
+  resultPending?: ReturnType<typeof describeStoredResult> & { attemptId: string };
+  at?: string;
+  name?: string;
+  note?: string;
+  file?: string;
+  code?: string;
+  cacheKey?: string;
+  routeId?: number;
+  width?: number;
+  height?: number;
+  mock?: boolean;
+  mimeType?: string;
+  model?: string;
+  prompt?: string;
+  fullPrompt?: string;
+  type?: string;
+  attempt?: { memberId?: string };
   request?: AccountingJob['request'] & Partial<StoredGenerationRequest>;
-  base64?: string; accountCost?: number; errorStatus?: number; startedAt?: string; queueExpiresAt?: string;
-  sha256?:string;byteLength?:number;errorCode?:string;cancellationReason?:string;operation?:string;requestedSteps?:number;routedSteps?:number;
-  cooldownReason?:string;ordinaryStrikeCount?:number;capacityStrikeCount?:number;capacityConcurrencyLimit?:number;capacityLastErrorAt?:string;
-  acceptingJobs?: boolean; jobAdmissionVersion?: number; cooldownUntil?: string; lastUsedAt?: string;
-  sharedCooldown?: NonNullable<NonNullable<Parameters<typeof recordSharedCompletion>[2]>['job']>['sharedCooldown'];
+  base64?: string;
+  accountCost?: number;
+  errorStatus?: number;
+  startedAt?: string;
+  queueExpiresAt?: string;
+  sha256?: string;
+  byteLength?: number;
+  errorCode?: string;
+  cancellationReason?: string;
+  operation?: string;
+  requestedSteps?: number;
+  routedSteps?: number;
+  cooldownReason?: string;
+  ordinaryStrikeCount?: number;
+  capacityStrikeCount?: number;
+  capacityConcurrencyLimit?: number;
+  capacityLastErrorAt?: string;
+  acceptingJobs?: boolean;
+  jobAdmissionVersion?: number;
+  cooldownUntil?: string;
+  lastUsedAt?: string;
+  sharedCooldown?: NonNullable<
+    NonNullable<Parameters<typeof recordSharedCompletion>[2]>['job']
+  >['sharedCooldown'];
   generationProgress?: { percent?: number; step?: number; total?: number; updatedAt?: string };
-  mergedFrom?: { token?: string; amount: number; at: string }[]; mergedInto?: string; mergedAt?: string;
-  upstreamRetryAfterUntil?: string; refundedAt?: string;
+  mergedFrom?: { token?: string; amount: number; at: string }[];
+  mergedInto?: string;
+  mergedAt?: string;
+  upstreamRetryAfterUntil?: string;
+  refundedAt?: string;
   quotaRetryAfterUntil?: string;
 }
-type Settings = typeof defaultSettings & { fairQuota?: FairQuotaState | null; [key: string]: unknown };
-export type StoreUser = Pick<FairUser, keyof FairUser> & Pick<StoreItem, 'createdAt' | 'updatedAt' | 'note' | 'balance' | 'acceptingJobs' | 'jobAdmissionVersion'>;
-export type StoreJob = Pick<AccountingJob, keyof AccountingJob> & Pick<StoreItem, 'accountId' | 'imageId' | 'memberId' | 'createdAt' | 'completedAt' | 'cancelledAt' | 'deadlineAt' | 'queuedDeadlineAt' | 'queueSeq' | 'queueTotal' | 'payloadBytes' | 'cost' | 'error' | 'errorDetail' | 'resultPending' | 'request' | 'accountCost' | 'errorStatus' | 'startedAt' | 'queueExpiresAt' | 'errorCode' | 'cancellationReason' | 'generationProgress' | 'sharedCooldown' | 'refundedAt' | 'cacheKey' | 'jobAdmissionVersion' | 'quotaRetryAfterUntil' | 'upstreamRetryAfterUntil'> & { lateResultImageId?: string };
-export type StoreAccount = Pick<FairAccount, Exclude<keyof FairAccount, 'enabled'>> & Pick<StoreItem, 'enabled' | 'token' | 'name' | 'routeId' | 'inFlight' | 'createdAt' | 'updatedAt' | 'cooldownUntil' | 'cooldownReason' | 'lastUsedAt' | 'upstreamRetryAfterUntil' | 'quotaRetryAfterUntil' | 'ordinaryStrikeCount' | 'capacityStrikeCount' | 'capacityConcurrencyLimit' | 'capacityLastErrorAt'>;
-export type StoreDatabase = { settings: Settings; users: StoreUser[]; jobs: StoreJob[] } & Record<Exclude<Collection, 'users' | 'jobs'>, StoreItem[]>;
+type Settings = typeof defaultSettings & {
+  fairQuota?: FairQuotaState | null;
+  [key: string]: unknown;
+};
+export type StoreUser = Pick<FairUser, keyof FairUser> &
+  Pick<
+    StoreItem,
+    'createdAt' | 'updatedAt' | 'note' | 'balance' | 'acceptingJobs' | 'jobAdmissionVersion'
+  >;
+export type StoreJob = Pick<AccountingJob, keyof AccountingJob> &
+  Pick<
+    StoreItem,
+    | 'accountId'
+    | 'imageId'
+    | 'memberId'
+    | 'createdAt'
+    | 'completedAt'
+    | 'cancelledAt'
+    | 'deadlineAt'
+    | 'queuedDeadlineAt'
+    | 'queueSeq'
+    | 'queueTotal'
+    | 'payloadBytes'
+    | 'cost'
+    | 'error'
+    | 'errorDetail'
+    | 'resultPending'
+    | 'request'
+    | 'accountCost'
+    | 'errorStatus'
+    | 'startedAt'
+    | 'queueExpiresAt'
+    | 'errorCode'
+    | 'cancellationReason'
+    | 'generationProgress'
+    | 'sharedCooldown'
+    | 'refundedAt'
+    | 'cacheKey'
+    | 'jobAdmissionVersion'
+    | 'quotaRetryAfterUntil'
+    | 'upstreamRetryAfterUntil'
+  > & { lateResultImageId?: string };
+export type StoreAccount = Pick<FairAccount, Exclude<keyof FairAccount, 'enabled'>> &
+  Pick<
+    StoreItem,
+    | 'enabled'
+    | 'token'
+    | 'name'
+    | 'routeId'
+    | 'inFlight'
+    | 'createdAt'
+    | 'updatedAt'
+    | 'cooldownUntil'
+    | 'cooldownReason'
+    | 'lastUsedAt'
+    | 'upstreamRetryAfterUntil'
+    | 'quotaRetryAfterUntil'
+    | 'ordinaryStrikeCount'
+    | 'capacityStrikeCount'
+    | 'capacityConcurrencyLimit'
+    | 'capacityLastErrorAt'
+  >;
+export type StoreDatabase = { settings: Settings; users: StoreUser[]; jobs: StoreJob[] } & Record<
+  Exclude<Collection, 'users' | 'jobs'>,
+  StoreItem[]
+>;
 type DatabaseInput = Partial<Omit<StoreDatabase, 'settings'>> & { settings?: Partial<Settings> };
 type RowState = { data: string; order: number; sql?: SqlRow };
 type CollectionMaps<T> = Record<Collection, Map<string, T>>;
-interface RowChange { collection: Collection; id: string; data?: string; order?: number; sql?: SqlRow }
-interface Changes { settingsChanged: boolean; nextSettings?: string; deletes: RowChange[]; upserts: RowChange[] }
-interface CommitDraft { collections: Set<string>; memberIds: Set<string>; allMembers: boolean; activityChanges: { memberId: string | null; date: string }[] }
-interface Writes { generationRequest?: GenerationRequest; generationIdempotency?: Idempotency; memberSession?: MemberSession; memberSessionDelete?: string; memberSessionOwner?: SessionOwner; memberSessionExpiry?: SessionExpiry; domainBatch?: DomainCommand }
-interface Scope extends Writes { full: boolean; includeSettings: boolean; collections: Collection[]; dirtyRows: Partial<Record<Collection, Set<string>>>; hasDirtyRows: boolean }
+interface RowChange {
+  collection: Collection;
+  id: string;
+  data?: string;
+  order?: number;
+  sql?: SqlRow;
+}
+interface Changes {
+  settingsChanged: boolean;
+  nextSettings?: string;
+  deletes: RowChange[];
+  upserts: RowChange[];
+}
+interface CommitDraft {
+  collections: Set<string>;
+  memberIds: Set<string>;
+  allMembers: boolean;
+  activityChanges: { memberId: string | null; date: string }[];
+}
+interface Writes {
+  generationRequest?: GenerationRequest;
+  generationIdempotency?: Idempotency;
+  memberSession?: MemberSession;
+  memberSessionDelete?: string;
+  memberSessionOwner?: SessionOwner;
+  memberSessionExpiry?: SessionExpiry;
+  domainBatch?: DomainCommand;
+}
+interface Scope extends Writes {
+  full: boolean;
+  includeSettings: boolean;
+  collections: Collection[];
+  dirtyRows: Partial<Record<Collection, Set<string>>>;
+  hasDirtyRows: boolean;
+}
 type DirtyRowsInput = Partial<Record<Collection, unknown>> | Map<string, unknown>;
 type Deferred<T, R> = T | ((result: R, db: StoreDatabase) => T | undefined);
 export interface PersistenceOptions<R = unknown> {
-  persist?: boolean; shouldPersist?: (result: R) => unknown; immediate?: boolean; defer?: boolean;
-  full?: boolean; includeSettings?: boolean; collections?: unknown; changedCollections?: unknown;
-  dirtyRows?: Deferred<DirtyRowsInput, R>; rows?: Deferred<DirtyRowsInput, R>; changedRows?: Deferred<DirtyRowsInput, R>;
-  generationRequest?: Deferred<GenerationRequest, R>; generationIdempotency?: Deferred<Idempotency, R>;
-  memberSession?: Deferred<MemberSession, R>; memberSessionDelete?: Deferred<string, R>; memberSessionOwner?: Deferred<SessionOwner, R>;
+  persist?: boolean;
+  shouldPersist?: (result: R) => unknown;
+  immediate?: boolean;
+  defer?: boolean;
+  full?: boolean;
+  includeSettings?: boolean;
+  collections?: unknown;
+  changedCollections?: unknown;
+  dirtyRows?: Deferred<DirtyRowsInput, R>;
+  rows?: Deferred<DirtyRowsInput, R>;
+  changedRows?: Deferred<DirtyRowsInput, R>;
+  generationRequest?: Deferred<GenerationRequest, R>;
+  generationIdempotency?: Deferred<Idempotency, R>;
+  memberSession?: Deferred<MemberSession, R>;
+  memberSessionDelete?: Deferred<string, R>;
+  memberSessionOwner?: Deferred<SessionOwner, R>;
   memberSessionExpiry?: Deferred<SessionExpiry, R>;
   generationPayloadClaim?: { release(): void };
-  domainCommand?: DomainCommandMetadata; domainBatch?: DomainCommand;
+  domainCommand?: DomainCommandMetadata;
+  domainBatch?: DomainCommand;
   authorize?: (db: StoreDatabase) => void;
   commandReceipt?: (result: R) => Json;
 }
 class DuplicateDomainCommand extends Error {
   readonly receipt: Json;
-  constructor(receipt: Json) { super('Domain command already committed.'); this.receipt=receipt; }
+  constructor(receipt: Json) {
+    super('Domain command already committed.');
+    this.receipt = receipt;
+  }
 }
 type ResolvedOptions = Omit<PersistenceOptions, keyof Writes> & Writes;
-type Prepared<Row> = Pick<SQLitePreparedQuery<{ type: 'sync'; run: Database.RunResult; all: Row[]; get: Row | undefined; values: unknown[][]; execute: unknown }>, 'run' | 'get' | 'all'>;
+type Prepared<Row> = Pick<
+  SQLitePreparedQuery<{
+    type: 'sync';
+    run: Database.RunResult;
+    all: Row[];
+    get: Row | undefined;
+    values: unknown[][];
+    execute: unknown;
+  }>,
+  'run' | 'get' | 'all'
+>;
 type WriteStatement = Pick<Prepared<unknown>, 'run'>;
 type DataRow = { id: string; data: string; orderValue: number };
 interface Statements {
-  hasSettings: Prepared<{ value: unknown }>; hasGenericRecords: Prepared<{ value: unknown }>;
-  readQueueSequence: Prepared<{ value: string }>; selectSettings: Prepared<{ value: string }>;
-  selectGenericRecords: Prepared<DataRow>; replaceSettings: WriteStatement; insertGenerationRequest: WriteStatement;
+  hasSettings: Prepared<{ value: unknown }>;
+  hasGenericRecords: Prepared<{ value: unknown }>;
+  readQueueSequence: Prepared<{ value: string }>;
+  selectSettings: Prepared<{ value: string }>;
+  selectGenericRecords: Prepared<DataRow>;
+  replaceSettings: WriteStatement;
+  insertGenerationRequest: WriteStatement;
   selectGenerationRequest: Prepared<{ payload: string }>;
   selectGenerationRequestMember: Prepared<{ member_id: string; operation: string }>;
-  insertGenerationIdempotency: WriteStatement; selectGenerationIdempotency: Prepared<typeof generationIdempotency.$inferSelect>;
-  selectMemberSession: Prepared<typeof memberSessions.$inferSelect>; selectMemberSessionOwner: Prepared<{ value: string }>;
-  insertMemberSession: WriteStatement; deleteMemberSession: WriteStatement; deleteExpiredMemberSessions: WriteStatement;
+  insertGenerationIdempotency: WriteStatement;
+  selectGenerationIdempotency: Prepared<typeof generationIdempotency.$inferSelect>;
+  selectMemberSession: Prepared<typeof memberSessions.$inferSelect>;
+  selectMemberSessionOwner: Prepared<{ value: string }>;
+  insertMemberSession: WriteStatement;
+  deleteMemberSession: WriteStatement;
+  deleteExpiredMemberSessions: WriteStatement;
   updateMemberSessionExpiry: WriteStatement;
-  deleteOldMemberSessions: WriteStatement; countActiveMemberSessions: Prepared<{ count: number }>;
-  deleteChangedOwnerSessions: WriteStatement; selectChangedOwnerSessions: Prepared<{ user_id: string }>;
-  insertFairQuotaSettlement: WriteStatement; selectFairQuotaSettlement: Prepared<{ charge: string }>;
-  deleteAllSettings: WriteStatement; deleteGenericRecords: WriteStatement; setMeta: WriteStatement;
-  hasTypedRecords: Record<Collection, Prepared<{ value: unknown }>>; selectRecords: Record<Collection, Prepared<DataRow>>;
-  selectById: Record<Collection, Prepared<Omit<DataRow, 'id'>>>; countRecords: Record<Collection, Prepared<{ count: number }>>;
-  deleteAllRecords: Record<Collection, WriteStatement>; upsertRecord: Record<Collection, WriteStatement>; deleteRecord: Record<Collection, WriteStatement>;
+  deleteOldMemberSessions: WriteStatement;
+  countActiveMemberSessions: Prepared<{ count: number }>;
+  deleteChangedOwnerSessions: WriteStatement;
+  selectChangedOwnerSessions: Prepared<{ user_id: string }>;
+  insertFairQuotaSettlement: WriteStatement;
+  selectFairQuotaSettlement: Prepared<{ charge: string }>;
+  deleteAllSettings: WriteStatement;
+  deleteGenericRecords: WriteStatement;
+  setMeta: WriteStatement;
+  hasTypedRecords: Record<Collection, Prepared<{ value: unknown }>>;
+  selectRecords: Record<Collection, Prepared<DataRow>>;
+  selectById: Record<Collection, Prepared<Omit<DataRow, 'id'>>>;
+  countRecords: Record<Collection, Prepared<{ count: number }>>;
+  deleteAllRecords: Record<Collection, WriteStatement>;
+  upsertRecord: Record<Collection, WriteStatement>;
+  deleteRecord: Record<Collection, WriteStatement>;
 }
-interface SnapshotOptions { includeSettings?: boolean; collections?: unknown; dense?: boolean; baseRowState?: CollectionMaps<RowState> | null; baseOrderKeys?: CollectionMaps<number> | null }
-interface ImageClearOptions { ids?: unknown[]; images?: unknown[]; q?: unknown; query?: unknown; all?: boolean; mode?: string }
+interface SnapshotOptions {
+  includeSettings?: boolean;
+  collections?: unknown;
+  dense?: boolean;
+  baseRowState?: CollectionMaps<RowState> | null;
+  baseOrderKeys?: CollectionMaps<number> | null;
+}
+interface ImageClearOptions {
+  ids?: unknown[];
+  images?: unknown[];
+  q?: unknown;
+  query?: unknown;
+  all?: boolean;
+  mode?: string;
+}
 type RemovedImages = StoreItem[] & { affectedJobIds?: string[] };
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
 export const MAX_FREE_STEPS = 28;
-export const defaultArtist2_5D =
-  `0.9::misaka_12003-gou ::, dino_(dinoartforame), wanke, liduke, year 2025, realistic, 4k, -2::green ::, textless version, The image is highly intricate finished drawn. Only the character's face is in anime style, but their body is in realistic style. 1.35::A highly finished photo-style artwork that has lively color, graphic texture, realistic skin surface, and lifelike flesh with little obliques::. 1.63::photorealistic::, 1.63::photo(medium)::, \\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,, very aesthetic, masterpiece, no text,`;
+export const defaultArtist2_5D = `0.9::misaka_12003-gou ::, dino_(dinoartforame), wanke, liduke, year 2025, realistic, 4k, -2::green ::, textless version, The image is highly intricate finished drawn. Only the character's face is in anime style, but their body is in realistic style. 1.35::A highly finished photo-style artwork that has lively color, graphic texture, realistic skin surface, and lifelike flesh with little obliques::. 1.63::photorealistic::, 1.63::photo(medium)::, \\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,, very aesthetic, masterpiece, no text,`;
 export const legacyDefaultArtist =
   'artist:ningen_mame,, noyu_(noyu23386566),, toosaka asagi,, location,\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,:,, very aesthetic, masterpiece, no text,';
 
 const collections = Object.keys(recordTables) as Collection[];
 const largeRuntimeCollections = new Set(['jobs', 'images', 'ledger']);
-const collectionTables = Object.fromEntries(collections.map(name => [name, name]));
-const emptyRecordRows = Object.fromEntries(Object.entries(recordTables).map(([name, table]) => [name,
-  Object.fromEntries(Object.keys(getTableColumns(table)).map(column => [column, null]))])) as unknown as Record<Collection, SqlRow>;
+const collectionTables = Object.fromEntries(collections.map((name) => [name, name]));
+const emptyRecordRows = Object.fromEntries(
+  Object.entries(recordTables).map(([name, table]) => [
+    name,
+    Object.fromEntries(Object.keys(getTableColumns(table)).map((column) => [column, null])),
+  ]),
+) as unknown as Record<Collection, SqlRow>;
 
 const defaultSettings = {
   serviceName: 'Nai2API',
@@ -146,7 +422,7 @@ const defaultSettings = {
   promptApi: {
     baseUrl: '',
     apiKey: '',
-    model: ''
+    model: '',
   },
   defaultModel: 'nai-diffusion-4-5-full',
   defaultArtist: defaultArtist2_5D,
@@ -160,8 +436,8 @@ const defaultSettings = {
     scale: 6,
     cfg: 0,
     sampler: 'k_dpmpp_2m_sde',
-    noiseSchedule: 'karras'
-  }
+    noiseSchedule: 'karras',
+  },
 };
 
 const defaultDb: StoreDatabase = {
@@ -171,22 +447,34 @@ const defaultDb: StoreDatabase = {
   accounts: [],
   jobs: [],
   images: [],
-  ledger: []
+  ledger: [],
 };
 const usageChartDays = 7;
 const beijingOffsetHours = 8;
 
 export class JsonStore {
   private eventOpeningReady = false;
-  declare dataDir: string; declare dbPath: string; declare legacyDbPath: string; declare legacyBackupPath: string;
-  declare queue: Promise<unknown>; declare events: EventEmitter;
-  private declare sqlite: Database.Database | null; private declare statements: Statements | null; private declare db: StoreDatabase | null;
-  private declare rowState: CollectionMaps<RowState>; private declare orderKeys: CollectionMaps<number>; private declare settingsState: string;
-  private declare pendingPersistScope: Scope | null; private declare pendingPersistTimer: ReturnType<typeof setTimeout> | null;
-  private declare partialCollections: Set<Collection>; private declare statsReader: SqliteReadWorker | null; private declare adminReader: SqliteReadWorker | null;
-  private declare adminStatsCache: { at: number; value: ReadResults['adminStats'] } | null;
-  private declare adminStatsPromise: Promise<ReadResults['adminStats']> | null; private declare adminFreshStatsPromise: Promise<ReadResults['adminStats']> | null;
-  private declare lastImageTrimAt: number;
+  declare dataDir: string;
+  declare dbPath: string;
+  declare legacyDbPath: string;
+  declare legacyBackupPath: string;
+  declare queue: Promise<unknown>;
+  declare events: EventEmitter;
+  declare private sqlite: Database.Database | null;
+  declare private statements: Statements | null;
+  declare private db: StoreDatabase | null;
+  declare private rowState: CollectionMaps<RowState>;
+  declare private orderKeys: CollectionMaps<number>;
+  declare private settingsState: string;
+  declare private pendingPersistScope: Scope | null;
+  declare private pendingPersistTimer: ReturnType<typeof setTimeout> | null;
+  declare private partialCollections: Set<Collection>;
+  declare private statsReader: SqliteReadWorker | null;
+  declare private adminReader: SqliteReadWorker | null;
+  declare private adminStatsCache: { at: number; value: ReadResults['adminStats'] } | null;
+  declare private adminStatsPromise: Promise<ReadResults['adminStats']> | null;
+  declare private adminFreshStatsPromise: Promise<ReadResults['adminStats']> | null;
+  declare private lastImageTrimAt: number;
   constructor(dataDir: string) {
     this.dataDir = dataDir;
     this.dbPath = path.join(dataDir, 'library.sqlite');
@@ -216,59 +504,130 @@ export class JsonStore {
     for (const listener of this.events.rawListeners(name)) {
       try {
         const pending = listener.call(this.events, event);
-        if (pending?.then) Promise.resolve(pending).catch(error => console.error('[runtime] Store event listener failed:', error));
-      } catch (error) { console.error('[runtime] Store event listener failed:', error); }
+        if (pending?.then)
+          Promise.resolve(pending).catch((error) =>
+            console.error('[runtime] Store event listener failed:', error),
+          );
+      } catch (error) {
+        console.error('[runtime] Store event listener failed:', error);
+      }
     }
   }
 
   private notifyCommit(event: CommitDraft) {
     if (!event.collections.size) return;
-    this.emitStoreEvent('commit', Object.freeze({ collections: Object.freeze([...event.collections]),
-      memberIds: Object.freeze([...event.memberIds]), allMembers: event.allMembers,
-      activityChanges: Object.freeze(event.activityChanges.map(change => Object.freeze(change))) }));
+    this.emitStoreEvent(
+      'commit',
+      Object.freeze({
+        collections: Object.freeze([...event.collections]),
+        memberIds: Object.freeze([...event.memberIds]),
+        allMembers: event.allMembers,
+        activityChanges: Object.freeze(
+          event.activityChanges.map((change) => Object.freeze(change)),
+        ),
+      }),
+    );
   }
 
-  private describeCommit(changes: Changes, nextSettings?: string, previousRows = this.rowState, previousSettings = this.settingsState, request: GenerationRequest | null = null) {
-    const event: CommitDraft = { collections: new Set(), memberIds: new Set(), allMembers: false, activityChanges: [] };
-    if (changes.settingsChanged && JSON.stringify(fairQuotaArchive(safeJson(previousSettings, {})).settings) !== nextSettings) {
-      event.collections.add('settings'); event.allMembers = true;
+  private describeCommit(
+    changes: Changes,
+    nextSettings?: string,
+    previousRows = this.rowState,
+    previousSettings = this.settingsState,
+    request: GenerationRequest | null = null,
+  ) {
+    const event: CommitDraft = {
+      collections: new Set(),
+      memberIds: new Set(),
+      allMembers: false,
+      activityChanges: [],
+    };
+    if (
+      changes.settingsChanged &&
+      JSON.stringify(fairQuotaArchive(safeJson(previousSettings, {})).settings) !== nextSettings
+    ) {
+      event.collections.add('settings');
+      event.allMembers = true;
     }
     if (!changes.deletes.length && !changes.upserts.length) return event;
-    const oldUsers = [...(previousRows.users?.values() || [])].map(row => safeJson(row.data, null)).filter(Boolean as unknown as Present);
+    const oldUsers = [...(previousRows.users?.values() || [])]
+      .map((row) => safeJson(row.data, null))
+      .filter(Boolean as unknown as Present);
     const users = [...(this.db?.users || []), ...oldUsers];
     const addMember = (collection: Collection, item: StoreItem | null) => {
       if (!item || !['users', 'jobs', 'images', 'ledger'].includes(collection)) return;
-      if (collection === 'users') { event.memberIds.add(item.id); return; }
+      if (collection === 'users') {
+        event.memberIds.add(item.id);
+        return;
+      }
       const job = item.jobId ? this.selectItemById('jobs', item.jobId) : null;
       const requestId = item.requestId || job?.requestId;
-      const parent = (requestId && (request?.id === requestId ? request : this.statements!.selectGenerationRequestMember.get({ id: requestId }))) as { member_id: string; operation: string } | undefined;
-      const memberId = collection === 'jobs'
-        ? parent?.member_id || item.generationAttempt?.memberId || item.fairCharge?.userId || users.find(user => user.token && user.token === item.userToken)?.id
-        : parent?.member_id || item.generationAttempt?.memberId || item.attempt?.memberId || item.memberId || item.userId || item.fairCharge?.userId
-          || job?.generationAttempt?.memberId || users.find(user => user.token && user.token === (item.userToken || item.token))?.id;
+      const parent = (requestId &&
+        (request?.id === requestId
+          ? request
+          : this.statements!.selectGenerationRequestMember.get({ id: requestId }))) as
+        { member_id: string; operation: string } | undefined;
+      const memberId =
+        collection === 'jobs'
+          ? parent?.member_id ||
+            item.generationAttempt?.memberId ||
+            item.fairCharge?.userId ||
+            users.find((user) => user.token && user.token === item.userToken)?.id
+          : parent?.member_id ||
+            item.generationAttempt?.memberId ||
+            item.attempt?.memberId ||
+            item.memberId ||
+            item.userId ||
+            item.fairCharge?.userId ||
+            job?.generationAttempt?.memberId ||
+            users.find((user) => user.token && user.token === (item.userToken || item.token))?.id;
       if (memberId) event.memberIds.add(memberId);
-      else if (collection !== 'ledger' || item.token || item.userToken || item.jobId || item.userId || item.memberId) event.allMembers = true;
+      else if (
+        collection !== 'ledger' ||
+        item.token ||
+        item.userToken ||
+        item.jobId ||
+        item.userId ||
+        item.memberId
+      )
+        event.allMembers = true;
       return { memberId: memberId || null, parent };
     };
     const activity = (item: StoreItem | null, identity: ReturnType<typeof addMember> | null) => {
       const date = activityDate(item?.createdAt);
       if (!date) return null;
-      const operation = identity?.parent?.operation || item!.request?.operation || item!.generationAttempt?.operation || item!.request?.action || 'generate';
-      const state = item!.status === 'failed' && item!.cancelledAt != null && item!.cancelledAt !== '' ? 'cancelled' : item!.status;
-      return { date, memberId: identity?.memberId || null,
+      const operation =
+        identity?.parent?.operation ||
+        item!.request?.operation ||
+        item!.generationAttempt?.operation ||
+        item!.request?.action ||
+        'generate';
+      const state =
+        item!.status === 'failed' && item!.cancelledAt != null && item!.cancelledAt !== ''
+          ? 'cancelled'
+          : item!.status;
+      return {
+        date,
+        memberId: identity?.memberId || null,
         operation: ['generate', 'img2img', 'infill'].includes(operation) ? 'generate' : operation,
-        state: ['done', 'failed', 'cancelled', 'queued', 'pending', 'running'].includes(state!) ? state : 'other' };
+        state: ['done', 'failed', 'cancelled', 'queued', 'pending', 'running'].includes(state!)
+          ? state
+          : 'other',
+      };
     };
     const activityKeys = new Set();
     for (const change of [...changes.deletes, ...changes.upserts]) {
       event.collections.add(change.collection);
-      const previous = previousRows[change.collection]?.get(change.id)?.data
-        || this.statements!.selectById[change.collection]?.get({ id: change.id })?.data;
-      const before = safeJson(previous, null), after = safeJson(change.data, null);
+      const previous =
+        previousRows[change.collection]?.get(change.id)?.data ||
+        this.statements!.selectById[change.collection]?.get({ id: change.id })?.data;
+      const before = safeJson(previous, null),
+        after = safeJson(change.data, null);
       const previousMember = before && addMember(change.collection, before);
       const nextMember = after && addMember(change.collection, after);
       if (change.collection === 'jobs') {
-        const oldActivity = activity(before, previousMember), newActivity = activity(after, nextMember);
+        const oldActivity = activity(before, previousMember),
+          newActivity = activity(after, nextMember);
         if (!isDeepStrictEqual(oldActivity, newActivity)) {
           for (const value of [oldActivity, newActivity]) {
             if (!value) continue;
@@ -279,7 +638,12 @@ export class JsonStore {
           }
         }
       }
-      if (!previous && !change.data && ['users', 'jobs', 'images', 'ledger'].includes(change.collection)) event.allMembers = true;
+      if (
+        !previous &&
+        !change.data &&
+        ['users', 'jobs', 'images', 'ledger'].includes(change.collection)
+      )
+        event.allMembers = true;
     }
     return event;
   }
@@ -305,7 +669,9 @@ export class JsonStore {
       await this.markLegacyMigrated();
       this.db = safeDb;
       this.initializeQueueSequence();
-      runtimeLog(`SQLite store init completed in ${Date.now() - startedAt}ms: ${formatDbCounts(this.db!)}`);
+      runtimeLog(
+        `SQLite store init completed in ${Date.now() - startedAt}ms: ${formatDbCounts(this.db!)}`,
+      );
       return;
     }
 
@@ -317,7 +683,9 @@ export class JsonStore {
     });
     trimDb(this.db!, { collections: ['accounts'] });
     this.persistIncremental(this.db!, { collections: ['accounts'] });
-    runtimeLog(`SQLite store init completed in ${Date.now() - startedAt}ms: ${formatDbCounts(this.db!)}`);
+    runtimeLog(
+      `SQLite store init completed in ${Date.now() - startedAt}ms: ${formatDbCounts(this.db!)}`,
+    );
   }
 
   async read() {
@@ -325,7 +693,9 @@ export class JsonStore {
     return cloneDb(this.db!);
   }
 
-  async readCollections<K extends keyof StoreDatabase = never>(requestedCollections: K[] = []): Promise<Pick<StoreDatabase, K>> {
+  async readCollections<K extends keyof StoreDatabase = never>(
+    requestedCollections: K[] = [],
+  ): Promise<Pick<StoreDatabase, K>> {
     await this.ensureLoaded();
     const snapshot: Partial<StoreDatabase> = {};
     for (const key of requestedCollections) {
@@ -343,23 +713,28 @@ export class JsonStore {
 
   async readQueueStateCounts() {
     await this.ensureLoaded();
-    const rows = this.sqlite!.prepare<unknown[], { status: string; source: string; count: number }>(`
+    const rows = this.sqlite!.prepare<unknown[], { status: string; source: string; count: number }>(
+      `
       SELECT status, source, COUNT(*) AS count
       FROM jobs INDEXED BY idx_jobs_active_created
       WHERE status IN ('queued', 'pending', 'running')
       GROUP BY status, source
-    `).all();
-    return rows.reduce((counts, row) => {
-      const count = Number(row.count || 0);
-      if (row.status === 'queued') {
-        counts.queued += count;
-        if (row.source === 'direct') counts.directQueued += count;
-        if (row.source === 'openai') counts.openAiQueued += count;
-      }
-      if (row.status === 'pending') counts.pending += count;
-      if (row.status === 'running') counts.running += count;
-      return counts;
-    }, { queued: 0, pending: 0, running: 0, directQueued: 0, openAiQueued: 0 });
+    `,
+    ).all();
+    return rows.reduce(
+      (counts, row) => {
+        const count = Number(row.count || 0);
+        if (row.status === 'queued') {
+          counts.queued += count;
+          if (row.source === 'direct') counts.directQueued += count;
+          if (row.source === 'openai') counts.openAiQueued += count;
+        }
+        if (row.status === 'pending') counts.pending += count;
+        if (row.status === 'running') counts.running += count;
+        return counts;
+      },
+      { queued: 0, pending: 0, running: 0, directQueued: 0, openAiQueued: 0 },
+    );
   }
 
   async readImageFiles() {
@@ -368,129 +743,297 @@ export class JsonStore {
     return (this.db!.images || []).map((image) => image.file).filter(Boolean as unknown as Present);
   }
 
-  async retireCachedArtifacts(imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive=false):Promise<RemovedImages> {
-    const commandId=crypto.randomUUID(),now=Date.now(),at=new Date(now).toISOString();
-    const result=await this.update(db=>{
-      return this.retireArtifactsInCommand(db,imageIds,reason,skipActive,now,commandId);
-    },{domainCommand:{commandId,recordedAt:at},immediate:true,dirtyRows:result=>({images:result.images.map(image=>image.id),jobs:result.jobIds,
-      ledger:reason==='owner_cleared_cache'&&result.images.length?[`cache-retired:${commandId}`]:[]})});
-    const images=result.images as RemovedImages;images.affectedJobIds=result.jobIds;return images;
+  async retireCachedArtifacts(
+    imageIds: string[],
+    reason: 'owner_cleared_cache' | 'cache_limit' | 'automatic_retention',
+    skipActive = false,
+  ): Promise<RemovedImages> {
+    const commandId = crypto.randomUUID(),
+      now = Date.now(),
+      at = new Date(now).toISOString();
+    const result = await this.update(
+      (db) => {
+        return this.retireArtifactsInCommand(db, imageIds, reason, skipActive, now, commandId);
+      },
+      {
+        domainCommand: { commandId, recordedAt: at },
+        immediate: true,
+        dirtyRows: (result) => ({
+          images: result.images.map((image) => image.id),
+          jobs: result.jobIds,
+          ledger:
+            reason === 'owner_cleared_cache' && result.images.length
+              ? [`cache-retired:${commandId}`]
+              : [],
+        }),
+      },
+    );
+    const images = result.images as RemovedImages;
+    images.affectedJobIds = result.jobIds;
+    return images;
   }
 
-  private retireArtifactsInCommand(db:StoreDatabase,imageIds:string[],reason:'owner_cleared_cache'|'cache_limit'|'automatic_retention',skipActive:boolean,now:number,commandId=''):{images:StoreItem[];jobIds:string[]} {
-    const removed:StoreItem[]=[],affected=new Set<string>();
-    for(const id of uniqueStrings(imageIds)){
-      const image=db.images.find(image=>image.id===id)||this.selectItemById('images',id);if(!image)continue;
-      const rows=this.sqlite!.prepare<unknown[],DataRow>('SELECT id,data,order_value AS orderValue FROM jobs WHERE image_id=? OR id=?').all(id,image.jobId||'');
-      const linked=new Map<string,{row?:DataRow;job:StoreItem}>(rows.map(row=>[row.id,{row,job:JSON.parse(row.data) as StoreItem}]));
-      for(const job of db.jobs)if(job.imageId===id||job.lateResultImageId===id||job.resultPending?.imageId===id)linked.set(job.id,{row:linked.get(job.id)?.row,job});
-      for(const [key,{job}] of linked)if(job.imageId!==id&&job.lateResultImageId!==id&&job.resultPending?.imageId!==id)linked.delete(key);
-      const active=[...linked.values()].some(({job})=>!this.canRetireJobHistory(job)||job.requestId&&this.sqlite!.prepare("SELECT id FROM jobs WHERE request_id=? AND status IN ('queued','pending','running') LIMIT 1").get(job.requestId));
-      if(active){if(skipActive)continue;throw Object.assign(new Error('Cannot retire an artifact referenced by active work or an unresolved review.'),{statusCode:409});}
-      const jobIds:string[]=[];
-      for(const {row,job} of linked.values()){
-        let live=db.jobs.find(item=>item.id===job.id);
-        if(!live){live=job;db.jobs.push(live);if(row){this.rowState.jobs.set(job.id,{data:row.data,order:row.orderValue});this.orderKeys.jobs.set(job.id,row.orderValue);}}
-        live.imageId='';if(live.lateResultImageId===id)live.lateResultImageId='';if(live.lateResultAvailable)live.lateResultAvailable=false;
-        affected.add(job.id);jobIds.push(job.id);
+  private retireArtifactsInCommand(
+    db: StoreDatabase,
+    imageIds: string[],
+    reason: 'owner_cleared_cache' | 'cache_limit' | 'automatic_retention',
+    skipActive: boolean,
+    now: number,
+    commandId = '',
+  ): { images: StoreItem[]; jobIds: string[] } {
+    const removed: StoreItem[] = [],
+      affected = new Set<string>();
+    for (const id of uniqueStrings(imageIds)) {
+      const image = db.images.find((image) => image.id === id) || this.selectItemById('images', id);
+      if (!image) continue;
+      const rows = this.sqlite!.prepare<unknown[], DataRow>(
+        'SELECT id,data,order_value AS orderValue FROM jobs WHERE image_id=? OR id=?',
+      ).all(id, image.jobId || '');
+      const linked = new Map<string, { row?: DataRow; job: StoreItem }>(
+        rows.map((row) => [row.id, { row, job: JSON.parse(row.data) as StoreItem }]),
+      );
+      for (const job of db.jobs)
+        if (job.imageId === id || job.lateResultImageId === id || job.resultPending?.imageId === id)
+          linked.set(job.id, { row: linked.get(job.id)?.row, job });
+      for (const [key, { job }] of linked)
+        if (job.imageId !== id && job.lateResultImageId !== id && job.resultPending?.imageId !== id)
+          linked.delete(key);
+      const active = [...linked.values()].some(
+        ({ job }) =>
+          !this.canRetireJobHistory(job) ||
+          (job.requestId &&
+            this.sqlite!.prepare(
+              "SELECT id FROM jobs WHERE request_id=? AND status IN ('queued','pending','running') LIMIT 1",
+            ).get(job.requestId)),
+      );
+      if (active) {
+        if (skipActive) continue;
+        throw Object.assign(
+          new Error('Cannot retire an artifact referenced by active work or an unresolved review.'),
+          { statusCode: 409 },
+        );
       }
-      const memberId=image.memberId||db.users.find(user=>user.token===image.token)?.id||[...linked.values()][0]?.job.memberId;
-      recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:`artifact:${id}`,memberId:memberId||null,occurredAt:now,payload:{artifactId:id,reason,at:now,jobIds}});
-      const {base64,...metadata}=image;removed.push(metadata as StoreItem);
+      const jobIds: string[] = [];
+      for (const { row, job } of linked.values()) {
+        let live = db.jobs.find((item) => item.id === job.id);
+        if (!live) {
+          live = job;
+          db.jobs.push(live);
+          if (row) {
+            this.rowState.jobs.set(job.id, { data: row.data, order: row.orderValue });
+            this.orderKeys.jobs.set(job.id, row.orderValue);
+          }
+        }
+        live.imageId = '';
+        if (live.lateResultImageId === id) live.lateResultImageId = '';
+        if (live.lateResultAvailable) live.lateResultAvailable = false;
+        affected.add(job.id);
+        jobIds.push(job.id);
+      }
+      const memberId =
+        image.memberId ||
+        db.users.find((user) => user.token === image.token)?.id ||
+        [...linked.values()][0]?.job.memberId;
+      recordDomainEvent(db, {
+        eventType: 'ArtifactHistoryRetired',
+        streamId: `artifact:${id}`,
+        memberId: memberId || null,
+        occurredAt: now,
+        payload: { artifactId: id, reason, at: now, jobIds },
+      });
+      const { base64, ...metadata } = image;
+      removed.push(metadata as StoreItem);
     }
-    const removedIds=new Set(removed.map(image=>image.id));db.images=db.images.filter(image=>!removedIds.has(image.id));
-    if(reason==='owner_cleared_cache'&&removed.length)db.ledger.unshift({id:`cache-retired:${commandId}`,type:'clear-cache',amount:removed.length,at:new Date(now).toISOString(),note:'Cleared cached images'});
-    return {images:removed,jobIds:[...affected]};
+    const removedIds = new Set(removed.map((image) => image.id));
+    db.images = db.images.filter((image) => !removedIds.has(image.id));
+    if (reason === 'owner_cleared_cache' && removed.length)
+      db.ledger.unshift({
+        id: `cache-retired:${commandId}`,
+        type: 'clear-cache',
+        amount: removed.length,
+        at: new Date(now).toISOString(),
+        note: 'Cleared cached images',
+      });
+    return { images: removed, jobIds: [...affected] };
   }
 
-  async trimImageCache(maxCacheImages: number | null = null, options: { maxDelete?: unknown; batchSize?: unknown; force?: boolean } = {}) {
-    if(process.env.NO_AUTO_DELETE==='true')return [];
+  async trimImageCache(
+    maxCacheImages: number | null = null,
+    options: { maxDelete?: unknown; batchSize?: unknown; force?: boolean } = {},
+  ) {
+    if (process.env.NO_AUTO_DELETE === 'true') return [];
     await this.ensureLoaded();
-    if(options.force!==true&&Date.now()-this.lastImageTrimAt<1000)return [];
-    this.lastImageTrimAt=Date.now();this.flushPendingPersistSync();
-    const maxCache=clampNumber(maxCacheImages??this.db!.settings.maxCacheImages,0,MAX_CACHE_IMAGES_LIMIT),total=this.countRecords('images');
-    const buffer=options.force===true||maxCache<=0?0:Math.max(0,Math.floor(Number(options.batchSize??100)||0));
-    if(total<maxCache+buffer)return [];
-    const count=Math.min(Math.max(0,total-maxCache),trimImageCacheDeleteLimit(options.maxDelete));
-    if(!count)return [];
-    const ids=(this.sqlite!.prepare('SELECT id FROM images ORDER BY order_value ASC LIMIT ?').all(count) as {id:string}[]).map(row=>row.id);
-    return this.retireCachedArtifacts(ids,'cache_limit',true);
+    if (options.force !== true && Date.now() - this.lastImageTrimAt < 1000) return [];
+    this.lastImageTrimAt = Date.now();
+    this.flushPendingPersistSync();
+    const maxCache = clampNumber(
+        maxCacheImages ?? this.db!.settings.maxCacheImages,
+        0,
+        MAX_CACHE_IMAGES_LIMIT,
+      ),
+      total = this.countRecords('images');
+    const buffer =
+      options.force === true || maxCache <= 0
+        ? 0
+        : Math.max(0, Math.floor(Number(options.batchSize ?? 100) || 0));
+    if (total < maxCache + buffer) return [];
+    const count = Math.min(
+      Math.max(0, total - maxCache),
+      trimImageCacheDeleteLimit(options.maxDelete),
+    );
+    if (!count) return [];
+    const ids = (
+      this.sqlite!.prepare('SELECT id FROM images ORDER BY order_value ASC LIMIT ?').all(count) as {
+        id: string;
+      }[]
+    ).map((row) => row.id);
+    return this.retireCachedArtifacts(ids, 'cache_limit', true);
   }
-  async retireJobHistory(jobIds:string[],reason='history_retention',now=Date.now()):Promise<string[]> {
-    const ids=[...new Set(jobIds)];
-    if(ids.length>200)throw new Error('Retire history in batches of at most 200 jobs.');
-    return this.update(db=>{
-      const groups=new Map<string,string[]>(),retired:string[]=[];
-      for(const id of ids){
-        const job=db.jobs.find(item=>item.id===id)||this.selectItemById('jobs',id);
-        if(!job)continue;
-        if(!this.canRetireJobHistory(job))throw new Error(`Cannot retire active job or unresolved review: ${id}`);
-        const stream=`request:${job.requestId||`legacy-${id}`}`,group=groups.get(stream)||[];group.push(id);groups.set(stream,group);retired.push(id);
-      }
-      for(const [streamId,jobIds] of groups)recordDomainEvent(db,{eventType:'JobHistoryRetired',streamId,occurredAt:now,payload:{jobIds,reason,at:now}});
-      const removed=new Set(retired);db.jobs=db.jobs.filter(job=>!removed.has(job.id));
-      return retired;
-    },{immediate:true,dirtyRows:result=>({jobs:result})});
+  async retireJobHistory(
+    jobIds: string[],
+    reason = 'history_retention',
+    now = Date.now(),
+  ): Promise<string[]> {
+    const ids = [...new Set(jobIds)];
+    if (ids.length > 200) throw new Error('Retire history in batches of at most 200 jobs.');
+    return this.update(
+      (db) => {
+        const groups = new Map<string, string[]>(),
+          retired: string[] = [];
+        for (const id of ids) {
+          const job = db.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
+          if (!job) continue;
+          if (!this.canRetireJobHistory(job))
+            throw new Error(`Cannot retire active job or unresolved review: ${id}`);
+          const stream = `request:${job.requestId || `legacy-${id}`}`,
+            group = groups.get(stream) || [];
+          group.push(id);
+          groups.set(stream, group);
+          retired.push(id);
+        }
+        for (const [streamId, jobIds] of groups)
+          recordDomainEvent(db, {
+            eventType: 'JobHistoryRetired',
+            streamId,
+            occurredAt: now,
+            payload: { jobIds, reason, at: now },
+          });
+        const removed = new Set(retired);
+        db.jobs = db.jobs.filter((job) => !removed.has(job.id));
+        return retired;
+      },
+      { immediate: true, dirtyRows: (result) => ({ jobs: result }) },
+    );
   }
 
-  private canRetireJobHistory(job:{id:string;status?:string|null;resultPending?:unknown;generationReview?:{status?:string}|null}):boolean {
-    return !!job.status&&!['queued','pending','running'].includes(job.status)&&!job.resultPending&&job.generationReview?.status!=='pending';
+  private canRetireJobHistory(job: {
+    id: string;
+    status?: string | null;
+    resultPending?: unknown;
+    generationReview?: { status?: string } | null;
+  }): boolean {
+    return (
+      !!job.status &&
+      !['queued', 'pending', 'running'].includes(job.status) &&
+      !job.resultPending &&
+      job.generationReview?.status !== 'pending'
+    );
   }
 
   async clearRequestLogs() {
     await this.ensureLoaded();
     const startedAt = Date.now();
-    const upperRow = await this.update(() => {
-      this.flushPendingPersistSync();
-      return this.sqlite!.prepare<unknown[], { value: number | null }>('SELECT MAX(rowid) AS value FROM jobs').get()!.value || 0;
-    }, { shouldPersist: () => false });
-    const selectBatch = this.sqlite!.prepare<unknown[], { cursor: number; id: string; status: string | null; resultPending: number | null;reviewStatus:string|null }>(`
+    const upperRow = await this.update(
+      () => {
+        this.flushPendingPersistSync();
+        return (
+          this.sqlite!.prepare<unknown[], { value: number | null }>(
+            'SELECT MAX(rowid) AS value FROM jobs',
+          ).get()!.value || 0
+        );
+      },
+      { shouldPersist: () => false },
+    );
+    const selectBatch = this.sqlite!.prepare<
+      unknown[],
+      {
+        cursor: number;
+        id: string;
+        status: string | null;
+        resultPending: number | null;
+        reviewStatus: string | null;
+      }
+    >(`
       SELECT rowid AS cursor, id, status, json_extract(data,'$.generationReview.status') AS reviewStatus,json_type(data, '$.resultPending') = 'object' AS resultPending FROM jobs
       WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT 200
     `);
     let cursor = 0;
     let removed = 0;
     while (cursor < upperRow) {
-      const rows=selectBatch.all(cursor,upperRow);cursor=rows.at(-1)?.cursor||upperRow;
-      const ids=rows.filter(row=>this.canRetireJobHistory({...row,generationReview:row.reviewStatus?{status:row.reviewStatus}:null})).map(row=>row.id);
-      removed+=(await this.retireJobHistory(ids,'owner_cleared_history')).length;
+      const rows = selectBatch.all(cursor, upperRow);
+      cursor = rows.at(-1)?.cursor || upperRow;
+      const ids = rows
+        .filter((row) =>
+          this.canRetireJobHistory({
+            ...row,
+            generationReview: row.reviewStatus ? { status: row.reviewStatus } : null,
+          }),
+        )
+        .map((row) => row.id);
+      removed += (await this.retireJobHistory(ids, 'owner_cleared_history')).length;
       // Let generation, polling and balance writes run between small transactions.
       await new Promise((resolve) => setImmediate(resolve));
     }
     this.refreshPartialCollectionState('jobs');
     this.adminStatsCache = null;
     const remaining = this.countRecords('jobs');
-    runtimeLog(`SQLite request logs cleared ${removed} job record(s), remaining=${remaining}, duration=${Date.now() - startedAt}ms`);
+    runtimeLog(
+      `SQLite request logs cleared ${removed} job record(s), remaining=${remaining}, duration=${Date.now() - startedAt}ms`,
+    );
     return { removed, remaining };
   }
 
   async clearCachedImages(options: ImageClearOptions = {}) {
-    await this.ensureLoaded();this.flushPendingPersistSync();
-    const ids=uniqueStrings(options.ids||options.images),query=String(options.q||options.query||'').trim().toLowerCase();
-    const clearAll=options.all===true||options.mode==='all';
-    const selected=this.selectImagesForClear({ids,query,clearAll}).map(row=>row.id);
-    if(!selected.length)return {deleted:0,remaining:this.countRecords('images'),images:[]};
-    const images=await this.retireCachedArtifacts(selected,'owner_cleared_cache');
+    await this.ensureLoaded();
+    this.flushPendingPersistSync();
+    const ids = uniqueStrings(options.ids || options.images),
+      query = String(options.q || options.query || '')
+        .trim()
+        .toLowerCase();
+    const clearAll = options.all === true || options.mode === 'all';
+    const selected = this.selectImagesForClear({ ids, query, clearAll }).map((row) => row.id);
+    if (!selected.length) return { deleted: 0, remaining: this.countRecords('images'), images: [] };
+    const images = await this.retireCachedArtifacts(selected, 'owner_cleared_cache');
     this.refreshPartialCollectionState('images');
-    return {deleted:images.length,remaining:this.countRecords('images'),images};
+    return { deleted: images.length, remaining: this.countRecords('images'), images };
   }
-  private selectImagesForClear({ ids = [], query = '', clearAll = false }: { ids?: unknown[]; query?: string; clearAll?: boolean } = {}) {
+  private selectImagesForClear({
+    ids = [],
+    query = '',
+    clearAll = false,
+  }: { ids?: unknown[]; query?: string; clearAll?: boolean } = {}) {
     if (clearAll) {
-      return this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>('SELECT id, data FROM images ORDER BY order_value ASC').all();
+      return this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>(
+        'SELECT id, data FROM images ORDER BY order_value ASC',
+      ).all();
     }
 
     const rowsById = new Map();
     for (const chunk of chunks(uniqueStrings(ids), 500)) {
       const placeholders = chunk.map(() => '?').join(',');
-      const rows = this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>(`SELECT id, data FROM images WHERE id IN (${placeholders})`).all(...chunk);
+      const rows = this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>(
+        `SELECT id, data FROM images WHERE id IN (${placeholders})`,
+      ).all(...chunk);
       rows.forEach((row) => rowsById.set(row.id, row));
     }
     if (query) {
-      const rows = this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>(`
+      const rows = this.sqlite!.prepare<unknown[], Pick<DataRow, 'id' | 'data'>>(
+        `
         SELECT id, data FROM images
         WHERE search_text LIKE @query
         ORDER BY order_value ASC
-      `).all({ query: `%${query}%` });
+      `,
+      ).all({ query: `%${query}%` });
       rows.forEach((row) => rowsById.set(row.id, row));
     }
     return [...rowsById.values()];
@@ -512,11 +1055,16 @@ export class JsonStore {
   private initializeQueueSequence() {
     // 精确沿用升级前实际选择：运行缓存的任务数组过滤后 reverse。
     // 不猜测 createdAt/order_value 的排序等价关系，也不改历史 order_value。
-    const active = this.db!.jobs.filter(job => ['queued', 'pending', 'running'].includes(job.status!)).reverse();
+    const active = this.db!.jobs.filter((job) =>
+      ['queued', 'pending', 'running'].includes(job.status!),
+    ).reverse();
     const changed = [];
     for (const job of active) {
       let dirty = false;
-      if (job.status !== 'pending' && !job.queueSeq) { job.queueSeq = this.nextQueueSequence(); dirty = true; }
+      if (job.status !== 'pending' && !job.queueSeq) {
+        job.queueSeq = this.nextQueueSequence();
+        dirty = true;
+      }
       if (!job.requestId && !Number.isSafeInteger(job.payloadBytes)) {
         job.payloadBytes = Buffer.byteLength(JSON.stringify(job.request || {}));
         dirty = true;
@@ -527,8 +1075,12 @@ export class JsonStore {
   }
 
   queuedJobIds() {
-    return this.sqlite!.prepare<unknown[], { id: string }>(`SELECT id FROM jobs INDEXED BY idx_jobs_queued_sequence
-      WHERE status = 'queued' ORDER BY queue_seq ASC`).all().map(row => row.id);
+    return this.sqlite!.prepare<unknown[], { id: string }>(
+      `SELECT id FROM jobs INDEXED BY idx_jobs_queued_sequence
+      WHERE status = 'queued' ORDER BY queue_seq ASC`,
+    )
+      .all()
+      .map((row) => row.id);
   }
 
   private persistQueueSequence(rows: Partial<SqlRow>[]) {
@@ -546,7 +1098,9 @@ export class JsonStore {
   }
 
   readGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
-    return this.statements!.selectGenerationIdempotency.get({ memberId, operation, keyHash }) || null;
+    return (
+      this.statements!.selectGenerationIdempotency.get({ memberId, operation, keyHash }) || null
+    );
   }
 
   readMemberSession(tokenHash: string) {
@@ -565,32 +1119,54 @@ export class JsonStore {
       if (!previous || previous.ownerUserId !== ownerUserId || previous.guildId !== guildId) {
         // 配置恢复成旧值也不能恢复旧会话；普通成员仅在成为/离开 owner 时撤销。
         if (previous) {
-          const affected = this.statements!.selectChangedOwnerSessions.all({ oldOwnerId: previous.ownerUserId, ownerUserId });
-          if (this.statements!.deleteChangedOwnerSessions.run({ oldOwnerId: previous.ownerUserId, ownerUserId }).changes) {
+          const affected = this.statements!.selectChangedOwnerSessions.all({
+            oldOwnerId: previous.ownerUserId,
+            ownerUserId,
+          });
+          if (
+            this.statements!.deleteChangedOwnerSessions.run({
+              oldOwnerId: previous.ownerUserId,
+              ownerUserId,
+            }).changes
+          ) {
             event.collections.add('sessions');
-            affected.forEach(row => event.memberIds.add(row.user_id));
+            affected.forEach((row) => event.memberIds.add(row.user_id));
           }
         }
-        this.statements!.setMeta.run({ key: 'member_session_owner', value: JSON.stringify({ ownerUserId, guildId }) });
+        this.statements!.setMeta.run({
+          key: 'member_session_owner',
+          value: JSON.stringify({ ownerUserId, guildId }),
+        });
       }
     }
     if (scope.memberSessionDelete) {
       const session = this.readMemberSession(scope.memberSessionDelete);
-      if (this.statements!.deleteMemberSession.run({ tokenHash: scope.memberSessionDelete }).changes) {
-        event.collections.add('sessions'); event.memberIds.add(session!.user_id);
+      if (
+        this.statements!.deleteMemberSession.run({ tokenHash: scope.memberSessionDelete }).changes
+      ) {
+        event.collections.add('sessions');
+        event.memberIds.add(session!.user_id);
       }
     }
     if (scope.memberSession) {
       const record = scope.memberSession;
       this.statements!.deleteExpiredMemberSessions.run({ now: record.created_at });
-      this.statements!.deleteOldMemberSessions.run({ userId: record.user_id, authVersion: record.auth_version });
-      if (this.statements!.countActiveMemberSessions.get({ now: record.created_at })!.count >= 10000) {
+      this.statements!.deleteOldMemberSessions.run({
+        userId: record.user_id,
+        authVersion: record.auth_version,
+      });
+      if (
+        this.statements!.countActiveMemberSessions.get({ now: record.created_at })!.count >= 10000
+      ) {
         throw Object.assign(new Error('登录会话已满，请稍后重试'), { statusCode: 503 });
       }
       this.statements!.insertMemberSession.run(record);
     }
     // 续期只能更新既有会话，不插入令牌，也不广播业务变更导致刷新循环。
-    if (scope.memberSessionExpiry && this.statements!.updateMemberSessionExpiry.run(scope.memberSessionExpiry).changes !== 1) {
+    if (
+      scope.memberSessionExpiry &&
+      this.statements!.updateMemberSessionExpiry.run(scope.memberSessionExpiry).changes !== 1
+    ) {
       throw Object.assign(new Error('会话已失效，请重新登录'), { statusCode: 401 });
     }
   }
@@ -600,26 +1176,58 @@ export class JsonStore {
     return row ? JSON.parse(row.charge) : null;
   }
 
-  readFreeImageUsage(db: import('../quota/fair-share.ts').FairQuotaDatabase, memberId: string, now = Date.now()) {
+  readFreeImageUsage(
+    db: import('../quota/fair-share.ts').FairQuotaDatabase,
+    memberId: string,
+    now = Date.now(),
+  ) {
     return queryFreeImageUsage(this.sqlite!, db, memberId, now);
   }
 
   private persistFairQuotaSettlements(rows: (typeof fairQuotaSettlements.$inferInsert)[]) {
-    if(rows.length&&eventAuthorityEnabled(this.sqlite!))throw new Error('Terminal receipts are written only by the domain projector after cutover.');
+    if (rows.length && eventAuthorityEnabled(this.sqlite!))
+      throw new Error('Terminal receipts are written only by the domain projector after cutover.');
     for (const row of rows) {
       const inserted = this.statements!.insertFairQuotaSettlement.run(row);
-      if (!inserted.changes && !isDeepStrictEqual(this.readFairQuotaSettlement(row.job_id), JSON.parse(row.charge))) {
+      if (
+        !inserted.changes &&
+        !isDeepStrictEqual(this.readFairQuotaSettlement(row.job_id), JSON.parse(row.charge))
+      ) {
         throw Object.assign(new Error(`任务结算凭据冲突：${row.job_id}`), { statusCode: 409 });
       }
     }
   }
 
   readGenerationRequestState(id: string, memberId: string) {
-    const request = this.sqlite!.prepare<unknown[], { id: string; source: string; operation: string; createdAt: string }>(`SELECT id, source, operation, created_at AS createdAt
-      FROM generation_requests WHERE id = ? AND member_id = ?`).get(id, memberId);
+    const request = this.sqlite!.prepare<
+      unknown[],
+      { id: string; source: string; operation: string; createdAt: string }
+    >(
+      `SELECT id, source, operation, created_at AS createdAt
+      FROM generation_requests WHERE id = ? AND member_id = ?`,
+    ).get(id, memberId);
     if (!request) return null;
     // 父归属使用稳定成员 ID；图片仍必须属于对应 child，不能靠可轮换的当前 Key 代认。
-    const jobs = this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; updatedAt: string | null; sampleIndex: number; completedAt: string | null; error: string | null; errorCode: string | null; fairCharge: string | null; cancelledAt: string | null; lateResultAvailable: number | null; referencedImageId: string | null; imageId: string | null }>(`SELECT j.id, j.status, j.model, j.created_at AS createdAt, j.updated_at AS updatedAt,
+    const jobs = this.sqlite!.prepare<
+      unknown[],
+      {
+        id: string;
+        status: string | null;
+        model: string | null;
+        createdAt: string | null;
+        updatedAt: string | null;
+        sampleIndex: number;
+        completedAt: string | null;
+        error: string | null;
+        errorCode: string | null;
+        fairCharge: string | null;
+        cancelledAt: string | null;
+        lateResultAvailable: number | null;
+        referencedImageId: string | null;
+        imageId: string | null;
+      }
+    >(
+      `SELECT j.id, j.status, j.model, j.created_at AS createdAt, j.updated_at AS updatedAt,
       COALESCE(json_extract(j.data, '$.sampleIndex'), 0) AS sampleIndex,
       json_extract(j.data, '$.completedAt') AS completedAt, json_extract(j.data, '$.error') AS error,
       json_extract(j.data, '$.errorCode') AS errorCode, json_extract(j.data, '$.fairCharge') AS fairCharge,
@@ -627,28 +1235,46 @@ export class JsonStore {
       json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
       j.image_id AS referencedImageId, i.id AS imageId
       FROM jobs j LEFT JOIN images i ON i.id = j.image_id AND i.token = j.user_token
-      WHERE j.request_id = ? ORDER BY sampleIndex, j.id`).all(id);
-    return { ...request, jobs: jobs.map(job => ({ ...job, fairCharge: job.fairCharge ? JSON.parse(job.fairCharge) as FairCharge : null })) };
+      WHERE j.request_id = ? ORDER BY sampleIndex, j.id`,
+    ).all(id);
+    return {
+      ...request,
+      jobs: jobs.map((job) => ({
+        ...job,
+        fairCharge: job.fairCharge ? (JSON.parse(job.fairCharge) as FairCharge) : null,
+      })),
+    };
   }
 
-  readGenerationRequestJobIds(requestId:string,memberId:string):string[]|null {
-    const parent=this.statements!.selectGenerationRequestMember.get({id:requestId});
-    if(!parent||parent.member_id!==memberId)return null;
-    const request=readStreamProjection(this.sqlite!,`request:${requestId}`)?.projection;
-    if(!request?.jobs)throw new Error(`Missing authoritative generation request ${requestId}`);
-    return Object.values(request.jobs as Record<string,{id:string;sampleIndex?:number}>)
-      .sort((a,b)=>(a.sampleIndex??0)-(b.sampleIndex??0)||a.id.localeCompare(b.id)).map(job=>job.id);
+  readGenerationRequestJobIds(requestId: string, memberId: string): string[] | null {
+    const parent = this.statements!.selectGenerationRequestMember.get({ id: requestId });
+    if (!parent || parent.member_id !== memberId) return null;
+    const request = readStreamProjection(this.sqlite!, `request:${requestId}`)?.projection;
+    if (!request?.jobs) throw new Error(`Missing authoritative generation request ${requestId}`);
+    return Object.values(request.jobs as Record<string, { id: string; sampleIndex?: number }>)
+      .sort((a, b) => (a.sampleIndex ?? 0) - (b.sampleIndex ?? 0) || a.id.localeCompare(b.id))
+      .map((job) => job.id);
   }
 
-  activeGenerationPayloadBytes(inFlight: { requestId?: string; jobId: string; payloadBytes?: number }[] = []) {
+  activeGenerationPayloadBytes(
+    inFlight: { requestId?: string; jobId: string; payloadBytes?: number }[] = [],
+  ) {
     // 从有界活动索引出发，只取字节元数据；绝不读取所有历史 payload。
-    const held = new Map(this.sqlite!.prepare<unknown[], { id: string; bytes: number }>(`
+    const held = new Map(
+      this.sqlite!.prepare<unknown[], { id: string; bytes: number }>(
+        `
       SELECT id, payload_bytes AS bytes FROM generation_requests
       WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created
         WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)
-    `).all().map(row => [`request:${row.id}`, row.bytes]));
-    for (const row of this.sqlite!.prepare<unknown[], { id: string; bytes: number }>(`SELECT id, payload_bytes AS bytes FROM jobs INDEXED BY idx_jobs_active_created
-      WHERE status IN ('queued', 'pending', 'running') AND request_id IS NULL`).all()) {
+    `,
+      )
+        .all()
+        .map((row) => [`request:${row.id}`, row.bytes]),
+    );
+    for (const row of this.sqlite!.prepare<unknown[], { id: string; bytes: number }>(
+      `SELECT id, payload_bytes AS bytes FROM jobs INDEXED BY idx_jobs_active_created
+      WHERE status IN ('queued', 'pending', 'running') AND request_id IS NULL`,
+    ).all()) {
       held.set(`job:${row.id}`, row.bytes);
     }
     // 逻辑 failed 不代表执行器已经释放输入；按父请求去重，直到 control.finish。
@@ -656,7 +1282,9 @@ export class JsonStore {
       const key = attempt.requestId ? `request:${attempt.requestId}` : `job:${attempt.jobId}`;
       if (held.has(key)) continue;
       const bytes = attempt.requestId
-        ? this.sqlite!.prepare<unknown[], { bytes: number }>('SELECT payload_bytes AS bytes FROM generation_requests WHERE id = ?').get(attempt.requestId)?.bytes
+        ? this.sqlite!.prepare<unknown[], { bytes: number }>(
+            'SELECT payload_bytes AS bytes FROM generation_requests WHERE id = ?',
+          ).get(attempt.requestId)?.bytes
         : attempt.payloadBytes;
       held.set(key, Number(bytes || 0));
     }
@@ -666,17 +1294,31 @@ export class JsonStore {
   }
 
   hasActiveJobs(): boolean {
-    return this.db?.jobs.some(job => ['queued', 'pending', 'running'].includes(job.status || '')) || false;
+    return (
+      this.db?.jobs.some((job) => ['queued', 'pending', 'running'].includes(job.status || '')) ||
+      false
+    );
   }
 
-  updateGenerationProgress(jobId: string, progress: StoreJob['generationProgress']): StoreJob | null {
-    const job = this.db?.jobs.find(item => item.id === jobId);
+  updateGenerationProgress(
+    jobId: string,
+    progress: StoreJob['generationProgress'],
+  ): StoreJob | null {
+    const job = this.db?.jobs.find((item) => item.id === jobId);
     if (!job) return null;
-    job.generationProgress = progress ? { ...progress, total: progress.total || job.request?.steps || 0 } : progress;
+    job.generationProgress = progress
+      ? { ...progress, total: progress.total || job.request?.steps || 0 }
+      : progress;
     return structuredClone(job);
   }
 
-  async findJobContext(id: string): Promise<{ job: StoreJob; account: StoreAccount | null; queue: ReturnType<JsonStore['jobQueueProgress']> } | null> {
+  async findJobContext(
+    id: string,
+  ): Promise<{
+    job: StoreJob;
+    account: StoreAccount | null;
+    queue: ReturnType<JsonStore['jobQueueProgress']>;
+  } | null> {
     await this.ensureLoaded();
     const job = this.db!.jobs.find((item) => item.id === id) || this.selectItemById('jobs', id);
     if (!job) return null;
@@ -686,7 +1328,7 @@ export class JsonStore {
     return {
       job: structuredClone(job),
       account: account ? structuredClone(account) : null,
-      queue: this.jobQueueProgress(job)
+      queue: this.jobQueueProgress(job),
     };
   }
 
@@ -703,23 +1345,31 @@ export class JsonStore {
     return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
   }
 
-  private hydrateArtifactImage(image:StoreItem|null):StoreItem|null {
-    if(!image?.artifactInputRef)return image;
-    const input=readArtifactInput(this.sqlite!,String(image.artifactInputRef),image.artifactInputSha256 as string);
-    if(!input)throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
-    return {...image,...input};
+  private hydrateArtifactImage(image: StoreItem | null): StoreItem | null {
+    if (!image?.artifactInputRef) return image;
+    const input = readArtifactInput(
+      this.sqlite!,
+      String(image.artifactInputRef),
+      image.artifactInputSha256 as string,
+    );
+    if (!input) throw new Error(`Missing protected artifact input ${image.artifactInputRef}`);
+    return { ...image, ...input };
   }
 
   async findImageByCacheKey(cacheKey: string | undefined) {
     await this.ensureLoaded();
-    const row = this.sqlite!.prepare<unknown[], { data: string }>(`
+    const row = this.sqlite!.prepare<unknown[], { data: string }>(
+      `
       SELECT data FROM images
       WHERE cache_key = ? AND COALESCE(mock, 0) = 0 AND mime_type != 'image/svg+xml'
       ORDER BY order_value DESC
       LIMIT 1
-    `).get(String(cacheKey || ''));
+    `,
+    ).get(String(cacheKey || ''));
     if (row) return this.hydrateArtifactImage(safeJson(row.data, null));
-    const image = this.db!.images.find((item) => item.cacheKey === cacheKey && !item.mock && item.mimeType !== 'image/svg+xml');
+    const image = this.db!.images.find(
+      (item) => item.cacheKey === cacheKey && !item.mock && item.mimeType !== 'image/svg+xml',
+    );
     return image ? this.hydrateArtifactImage(structuredClone(image)) : null;
   }
 
@@ -727,10 +1377,18 @@ export class JsonStore {
     await this.ensureLoaded();
     const limit = Math.max(1, Math.min(200, Math.floor(Number(options.limit || 60))));
     const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
-    const q = String(options.q || '').trim().toLowerCase();
-    const tier = String(options.tier || '').trim().toLowerCase();
+    const q = String(options.q || '')
+      .trim()
+      .toLowerCase();
+    const tier = String(options.tier || '')
+      .trim()
+      .toLowerCase();
     const model = String(options.model || '').trim();
-    const page = await this.adminReader!.request('imagePage', { limit, offset, q, tier, model }, 15_000);
+    const page = await this.adminReader!.request(
+      'imagePage',
+      { limit, offset, q, tier, model },
+      15_000,
+    );
     return { ...page, maxCacheImages: this.db!.settings.maxCacheImages };
   }
 
@@ -738,7 +1396,9 @@ export class JsonStore {
     await this.ensureLoaded();
     const limit = Math.max(1, Math.min(500, Math.floor(Number(options.limit || 300))));
     const offset = Math.max(0, Math.floor(Number(options.offset || 0)));
-    const q = String(options.q || '').trim().toLowerCase();
+    const q = String(options.q || '')
+      .trim()
+      .toLowerCase();
     return this.adminReader!.request('userPage', { limit, offset, q }, 15_000);
   }
 
@@ -753,7 +1413,7 @@ export class JsonStore {
     return {
       users: this.db!.users.length,
       enabledAccounts: this.db!.accounts.filter((account) => account.enabled !== false).length,
-      cards: this.db!.cards.length
+      cards: this.db!.cards.length,
     };
   }
 
@@ -762,7 +1422,27 @@ export class JsonStore {
     await this.queue;
     this.flushPendingPersistSync();
     // 只取统计字段，不加载提示词、图片、Key 或 Discord 授权数据。
-    return this.sqlite!.prepare<unknown[], { id: string; status: string | null; model: string | null; createdAt: string | null; memberId: string; username: string; startedAt: string | null; upstreamStartedAt: string | null; upstreamCompletedAt: string | null; errorStatus: number | null; resource: string | null; chargeStatus: string | null; amount: string | number | null; fixed: string | number | null; purchased: string | number | null }>(`
+    return this.sqlite!.prepare<
+      unknown[],
+      {
+        id: string;
+        status: string | null;
+        model: string | null;
+        createdAt: string | null;
+        memberId: string;
+        username: string;
+        startedAt: string | null;
+        upstreamStartedAt: string | null;
+        upstreamCompletedAt: string | null;
+        errorStatus: number | null;
+        resource: string | null;
+        chargeStatus: string | null;
+        amount: string | number | null;
+        fixed: string | number | null;
+        purchased: string | number | null;
+      }
+    >(
+      `
       SELECT j.id, j.status, j.model, j.created_at AS createdAt,
         COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId,
         COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username,
@@ -777,62 +1457,147 @@ export class JsonStore {
         json_extract(j.data, '$.fairCharge.purchased') AS purchased
       FROM jobs j LEFT JOIN users u ON u.token = j.user_token
       WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC
-    `).all(since, until);
+    `,
+    ).all(since, until);
   }
 
-  async readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }: ActivityQuery) {
+  async readActivityDays({
+    since,
+    until,
+    memberId = null,
+    operation = 'generate',
+    dates = null,
+  }: ActivityQuery) {
     await this.ensureLoaded();
     await this.queue.catch(() => {});
     this.flushPendingPersistSync();
-    return this.statsReader!.request('activityDays', { since, until, memberId, operation, dates }, 15_000);
+    return this.statsReader!.request(
+      'activityDays',
+      { since, until, memberId, operation, dates },
+      15_000,
+    );
   }
 
   async readFailureAccounting(before: string | null, now = Date.now()) {
-    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
-    return this.sqlite!.transaction(() => queryFailureAccounting(this.sqlite!, before, now)).deferred();
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    return this.sqlite!.transaction(() =>
+      queryFailureAccounting(this.sqlite!, before, now),
+    ).deferred();
   }
 
-  async readMemberJobPage(user: { id: string; token?: string }, options: { page: number; pageSize: number; q: string; status: string; sort: string; order: string; until: string }) {
-    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
-    const sort = ({ createdAt: 'j.created_at', model: 'j.model', status: 'j.status' } as Record<string, string>)[options.sort] || 'j.created_at';
-    const params = { userId: user.id, token: user.token || '', until: options.until, status: options.status,
-      q: `%${options.q.replace(/[\\%_]/g, '\\$&')}%`, limit: options.pageSize, offset: (options.page - 1) * options.pageSize };
+  async readMemberJobPage(
+    user: { id: string; token?: string },
+    options: {
+      page: number;
+      pageSize: number;
+      q: string;
+      status: string;
+      sort: string;
+      order: string;
+      until: string;
+    },
+  ) {
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    const sort =
+      (
+        { createdAt: 'j.created_at', model: 'j.model', status: 'j.status' } as Record<
+          string,
+          string
+        >
+      )[options.sort] || 'j.created_at';
+    const params = {
+      userId: user.id,
+      token: user.token || '',
+      until: options.until,
+      status: options.status,
+      q: `%${options.q.replace(/[\\%_]/g, '\\$&')}%`,
+      limit: options.pageSize,
+      offset: (options.page - 1) * options.pageSize,
+    };
     const from = `FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1
       WHERE j.user_token = @token AND j.created_at <= @until
         AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1))
         AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\')`;
     return this.sqlite!.transaction(() => {
-      const total = this.sqlite!.prepare<typeof params, { total: number }>(`SELECT COUNT(*) AS total ${from}`).get(params)!.total;
-      const rows = this.sqlite!.prepare<typeof params, { id: string; requestId: string | null; createdAt: string; model: string; status: string; charge: string | null; lateResultAvailable: number | null; imageId: string | null }>(`
+      const total = this.sqlite!.prepare<typeof params, { total: number }>(
+        `SELECT COUNT(*) AS total ${from}`,
+      ).get(params)!.total;
+      const rows = this.sqlite!.prepare<
+        typeof params,
+        {
+          id: string;
+          requestId: string | null;
+          createdAt: string;
+          model: string;
+          status: string;
+          charge: string | null;
+          lateResultAvailable: number | null;
+          imageId: string | null;
+        }
+      >(
+        `
         SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status,
           json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable,
           (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId
-        ${from} ORDER BY ${sort} ${options.order === 'asc' ? 'ASC' : 'DESC'}, j.id DESC LIMIT @limit OFFSET @offset`).all(params);
-      return { total, page: options.page, pageSize: options.pageSize, until: options.until,
-        jobs: rows.map(row => ({ ...row, lateResultAvailable: row.lateResultAvailable === 1, charge: safeJson(row.charge, null) as FairCharge | null })) };
+        ${from} ORDER BY ${sort} ${options.order === 'asc' ? 'ASC' : 'DESC'}, j.id DESC LIMIT @limit OFFSET @offset`,
+      ).all(params);
+      return {
+        total,
+        page: options.page,
+        pageSize: options.pageSize,
+        until: options.until,
+        jobs: rows.map((row) => ({
+          ...row,
+          lateResultAvailable: row.lateResultAvailable === 1,
+          charge: safeJson(row.charge, null) as FairCharge | null,
+        })),
+      };
     }).deferred();
   }
 
   async readMemberLateResults(user: StoreItem) {
-    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
-    return this.sqlite!.prepare<unknown[], { id: string; model: string | null; createdAt: string | null; imageId: string; lateResultAt: string; charge: string | null }>(`SELECT j.id, j.model, j.created_at AS createdAt, j.image_id AS imageId,
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    return this.sqlite!.prepare<
+      unknown[],
+      {
+        id: string;
+        model: string | null;
+        createdAt: string | null;
+        imageId: string;
+        lateResultAt: string;
+        charge: string | null;
+      }
+    >(
+      `SELECT j.id, j.model, j.created_at AS createdAt, j.image_id AS imageId,
       json_extract(j.data, '$.lateResultAt') AS lateResultAt, json_extract(j.data, '$.fairCharge') AS charge
       FROM jobs j JOIN images i ON i.id = j.image_id
       JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1
       WHERE j.user_token = @token AND i.token = @token
         AND json_extract(j.data, '$.lateResultAvailable') = 1 AND json_extract(j.data, '$.lateResultAt') > ''
-      ORDER BY json_extract(j.data, '$.lateResultAt') DESC, j.id DESC LIMIT 10`).all({ userId: user.id, token: user.token })
-      .map(row => ({ ...row, charge: safeJson(row.charge, null) as FairCharge | null }));
+      ORDER BY json_extract(j.data, '$.lateResultAt') DESC, j.id DESC LIMIT 10`,
+    )
+      .all({ userId: user.id, token: user.token })
+      .map((row) => ({ ...row, charge: safeJson(row.charge, null) as FairCharge | null }));
   }
 
   async readMemberImageIds(user: StoreItem, jobIds: unknown[]) {
     const ids = uniqueStrings(jobIds).slice(0, 30);
     if (!ids.length) return new Map();
-    await this.ensureLoaded(); await this.queue.catch(() => {}); this.flushPendingPersistSync();
-    const rows = this.sqlite!.prepare<unknown[], { id: string; imageId: string }>(`SELECT j.id, j.image_id AS imageId FROM jobs j JOIN images i ON i.id = j.image_id
+    await this.ensureLoaded();
+    await this.queue.catch(() => {});
+    this.flushPendingPersistSync();
+    const rows = this.sqlite!.prepare<unknown[], { id: string; imageId: string }>(
+      `SELECT j.id, j.image_id AS imageId FROM jobs j JOIN images i ON i.id = j.image_id
       JOIN users u ON u.id = ? AND u.token = j.user_token AND u.enabled = 1
-      WHERE j.user_token = ? AND i.token = ? AND j.id IN (${ids.map(() => '?').join(',')})`).all(user.id, user.token, user.token, ...ids);
-    return new Map(rows.map(row => [row.id, row.imageId]));
+      WHERE j.user_token = ? AND i.token = ? AND j.id IN (${ids.map(() => '?').join(',')})`,
+    ).all(user.id, user.token, user.token, ...ids);
+    return new Map(rows.map((row) => [row.id, row.imageId]));
   }
 
   async readAdminSummary(options: { fresh?: boolean } = {}) {
@@ -846,15 +1611,19 @@ export class JsonStore {
       accounts: structuredClone(this.db!.accounts),
       jobs: this.selectItems('jobs', "WHERE status = 'failed' ORDER BY order_value DESC LIMIT 50"),
       ...stats,
-      errorJobs: this.selectItems('jobs', `
+      errorJobs: this.selectItems(
+        'jobs',
+        `
         WHERE error_loggable = 1
           AND updated_at >= @cutoff
         ORDER BY updated_at DESC
         LIMIT 100
-      `, { cutoff: statsCutoff }),
+      `,
+        { cutoff: statsCutoff },
+      ),
       imageCount,
       imageTotal: imageCount,
-      cacheImageCount: imageCount
+      cacheImageCount: imageCount,
     };
   }
 
@@ -863,12 +1632,18 @@ export class JsonStore {
     // Job writes must not invalidate this cache: traffic would disable caching entirely.
     const now = Date.now();
     if (this.adminStatsCache) {
-      if (now - this.adminStatsCache.at >= 30_000 && !this.adminStatsPromise && !this.adminFreshStatsPromise) {
+      if (
+        now - this.adminStatsCache.at >= 30_000 &&
+        !this.adminStatsPromise &&
+        !this.adminFreshStatsPromise
+      ) {
         this.refreshAdminStats(now).catch(() => {});
       }
       return structuredClone(this.adminStatsCache.value);
     }
-    return (this.adminFreshStatsPromise || this.refreshAdminStats(now)).catch(() => emptyAdminStats(now));
+    return (this.adminFreshStatsPromise || this.refreshAdminStats(now)).catch(() =>
+      emptyAdminStats(now),
+    );
   }
 
   private async readFreshAdminStats() {
@@ -895,10 +1670,12 @@ export class JsonStore {
       .then((value) => {
         this.adminStatsCache = { at: now, value };
         return structuredClone(value);
-      }).catch((error) => {
+      })
+      .catch((error) => {
         runtimeLog(`Admin stats worker unavailable: ${(error as Error).message}`);
         throw error;
-      }).finally(() => {
+      })
+      .finally(() => {
         this.adminStatsPromise = null;
       });
     return this.adminStatsPromise;
@@ -916,192 +1693,361 @@ export class JsonStore {
 
   async readRaw() {
     await this.ensureLoaded();
-    if ([...this.partialCollections].some((collection) => largeRuntimeCollections.has(collection))) {
-      throw new Error('Refusing to clone full database while large collections are partially loaded.');
+    if (
+      [...this.partialCollections].some((collection) => largeRuntimeCollections.has(collection))
+    ) {
+      throw new Error(
+        'Refusing to clone full database while large collections are partially loaded.',
+      );
     }
     return cloneDb(this.db!);
   }
 
   async write(db: DatabaseInput) {
     await this.ensureLoaded();
-    if(eventAuthorityEnabled(this.sqlite!))throw new Error('A full legacy-state replacement cannot overwrite event authority.');
+    if (eventAuthorityEnabled(this.sqlite!))
+      throw new Error('A full legacy-state replacement cannot overwrite event authority.');
     this.flushPendingPersistSync();
     const safeDb = trimDb(normalizeDb(db));
     this.replaceAll(safeDb);
     this.db = safeDb;
   }
 
-  async enableEventAuthority():Promise<{version:number;commitSeq:string}> {
-    this.queue=this.queue.catch(()=>{}).then(async()=>{
-      await this.ensureLoaded();this.flushPendingPersistSync();
-      const result=activateEventAuthority(this.sqlite!);this.eventOpeningReady=true;
-      this.db=this.loadFromSqlite();return result;
-    });
-    return this.queue as Promise<{version:number;commitSeq:string}>;
+  async enableEventAuthority(): Promise<{ version: number; commitSeq: string }> {
+    this.queue = this.queue
+      .catch(() => {})
+      .then(async () => {
+        await this.ensureLoaded();
+        this.flushPendingPersistSync();
+        const result = activateEventAuthority(this.sqlite!);
+        this.eventOpeningReady = true;
+        this.db = this.loadFromSqlite();
+        return result;
+      });
+    return this.queue as Promise<{ version: number; commitSeq: string }>;
   }
 
-  private persistDomainFacts(scope:Scope,changes:Changes,candidateSettings:Settings):ProjectionRow[] {
-    const authoritative=eventAuthorityEnabled(this.sqlite!);
-    let written:ProjectionRow[]=[];
-    const candidateRows=new Map<string,{item:Record<string,unknown>|null;order?:number}>();
-    for(const change of changes.upserts)candidateRows.set(`${change.collection}:${change.id}`,{item:JSON.parse(change.data!) as Record<string,unknown>,order:change.order});
-    for(const change of changes.deletes)candidateRows.set(`${change.collection}:${change.id}`,{item:null});
-    const candidates={settings:candidateSettings,rows:candidateRows};
-    const relatedStreams=(supplied:StreamProjection[]):StreamProjection[]=>{
-      const streams=new Map(supplied.map(stream=>[stream.streamId,stream]));
-      const include=(id:string)=>{if(!streams.has(id)){const stream=readStreamProjection(this.sqlite!,id);if(stream)streams.set(id,stream);else throw new Error(`Unrecorded domain mutation: ${id}`);}};
+  private persistDomainFacts(
+    scope: Scope,
+    changes: Changes,
+    candidateSettings: Settings,
+  ): ProjectionRow[] {
+    const authoritative = eventAuthorityEnabled(this.sqlite!);
+    let written: ProjectionRow[] = [];
+    const candidateRows = new Map<
+      string,
+      { item: Record<string, unknown> | null; order?: number }
+    >();
+    for (const change of changes.upserts)
+      candidateRows.set(`${change.collection}:${change.id}`, {
+        item: JSON.parse(change.data!) as Record<string, unknown>,
+        order: change.order,
+      });
+    for (const change of changes.deletes)
+      candidateRows.set(`${change.collection}:${change.id}`, { item: null });
+    const candidates = { settings: candidateSettings, rows: candidateRows };
+    const relatedStreams = (supplied: StreamProjection[]): StreamProjection[] => {
+      const streams = new Map(supplied.map((stream) => [stream.streamId, stream]));
+      const include = (id: string) => {
+        if (!streams.has(id)) {
+          const stream = readStreamProjection(this.sqlite!, id);
+          if (stream) streams.set(id, stream);
+          else throw new Error(`Unrecorded domain mutation: ${id}`);
+        }
+      };
       include('sharing:default');
-      for(const change of [...changes.upserts,...changes.deletes]){
-        if(change.collection==='jobs'){
-          const item=change.data?JSON.parse(change.data) as StoreItem:null;
-          if(!item){
-            const prior=this.rowState.jobs.get(change.id);
-            if(prior&&['queued','pending','running'].includes((JSON.parse(prior.data) as StoreItem).status!))throw new Error(`An active job cannot disappear without a lifecycle fact: ${change.id}`);
-            if(!scope.domainBatch?.events.some(event=>event.eventType==='JobHistoryRetired'&&(event.payload.jobIds as string[]).includes(change.id)))throw new Error(`Unrecorded job history retirement ${change.id}`);
+      for (const change of [...changes.upserts, ...changes.deletes]) {
+        if (change.collection === 'jobs') {
+          const item = change.data ? (JSON.parse(change.data) as StoreItem) : null;
+          if (!item) {
+            const prior = this.rowState.jobs.get(change.id);
+            if (
+              prior &&
+              ['queued', 'pending', 'running'].includes(
+                (JSON.parse(prior.data) as StoreItem).status!,
+              )
+            )
+              throw new Error(
+                `An active job cannot disappear without a lifecycle fact: ${change.id}`,
+              );
+            if (
+              !scope.domainBatch?.events.some(
+                (event) =>
+                  event.eventType === 'JobHistoryRetired' &&
+                  (event.payload.jobIds as string[]).includes(change.id),
+              )
+            )
+              throw new Error(`Unrecorded job history retirement ${change.id}`);
             continue;
           }
-          include(`request:${item.requestId||`legacy-${item.id}`}`);
-        }else if(change.collection==='images'){
-          if(!change.data&&!scope.domainBatch?.events.some(event=>event.eventType==='ArtifactHistoryRetired'&&event.payload.artifactId===change.id))throw new Error(`Unrecorded artifact history retirement ${change.id}`);
-          if(readStreamProjection(this.sqlite!,`artifact:${change.id}`))include(`artifact:${change.id}`);
-          else if(!supplied.some(stream=>stream.streamKind==='request'&&(stream.projection?.artifacts as Record<string,unknown>|undefined)?.[change.id])){
-            const image=change.data?JSON.parse(change.data) as StoreItem:null,job=image?.jobId?this.selectItemById('jobs',image.jobId):null;
-            if(!job)throw new Error(`Unrecorded artifact mutation ${change.id}`);include(`request:${job.requestId||`legacy-${job.id}`}`);
+          include(`request:${item.requestId || `legacy-${item.id}`}`);
+        } else if (change.collection === 'images') {
+          if (
+            !change.data &&
+            !scope.domainBatch?.events.some(
+              (event) =>
+                event.eventType === 'ArtifactHistoryRetired' &&
+                event.payload.artifactId === change.id,
+            )
+          )
+            throw new Error(`Unrecorded artifact history retirement ${change.id}`);
+          if (readStreamProjection(this.sqlite!, `artifact:${change.id}`))
+            include(`artifact:${change.id}`);
+          else if (
+            !supplied.some(
+              (stream) =>
+                stream.streamKind === 'request' &&
+                (stream.projection?.artifacts as Record<string, unknown> | undefined)?.[change.id],
+            )
+          ) {
+            const image = change.data ? (JSON.parse(change.data) as StoreItem) : null,
+              job = image?.jobId ? this.selectItemById('jobs', image.jobId) : null;
+            if (!job) throw new Error(`Unrecorded artifact mutation ${change.id}`);
+            include(`request:${job.requestId || `legacy-${job.id}`}`);
           }
-        }else if(change.collection==='accounts')include(`account:${change.id}`);
-        else if(change.collection==='users'){
+        } else if (change.collection === 'accounts') include(`account:${change.id}`);
+        else if (change.collection === 'users') {
           include('sharing:default');
-          const sharing=streams.get('sharing:default')!.projection;
-          if(!(sharing?.memberEligibility as Record<string,unknown>|undefined)?.[change.id])throw new Error(`Unrecorded member eligibility: ${change.id}`);
+          const sharing = streams.get('sharing:default')!.projection;
+          if (!(sharing?.memberEligibility as Record<string, unknown> | undefined)?.[change.id])
+            throw new Error(`Unrecorded member eligibility: ${change.id}`);
         }
       }
       return [...streams.values()];
     };
-    if(scope.domainBatch){
-      const appended=appendDomainCommit(this.sqlite!,scope.domainBatch,{project:(sqlite,commit,streams)=>{
-        if(authoritative)written=applyEventProjection(sqlite,commit,relatedStreams(streams),{verify:true,candidates});
-        else written=coreProjectionRows(sqlite,commit,streams).rows.filter(row=>row.remove);
-      }});
+    if (scope.domainBatch) {
+      const appended = appendDomainCommit(this.sqlite!, scope.domainBatch, {
+        project: (sqlite, commit, streams) => {
+          if (authoritative)
+            written = applyEventProjection(sqlite, commit, relatedStreams(streams), {
+              verify: true,
+              candidates,
+            });
+          else
+            written = coreProjectionRows(sqlite, commit, streams).rows.filter((row) => row.remove);
+        },
+      });
       // Roll back the caller's protected writes as well as discarding its candidate cache.
-      if(appended.duplicate)throw new DuplicateDomainCommand(appended.receipt);
-    }
-    else if(authoritative){
-      const clock=this.sqlite!.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
-      const commit:DomainCommit={commitSeq:clock.value,commandId:'verify-compatible-write',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
-      written=applyEventProjection(this.sqlite!,commit,relatedStreams([]),{verify:true,candidates});
+      if (appended.duplicate) throw new DuplicateDomainCommand(appended.receipt);
+    } else if (authoritative) {
+      const clock = this.sqlite!.prepare(
+        'SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1',
+      ).get() as { value: string };
+      const commit: DomainCommit = {
+        commitSeq: clock.value,
+        commandId: 'verify-compatible-write',
+        fingerprint: '',
+        recordedAt: new Date().toISOString(),
+        receipt: null,
+        events: [],
+      };
+      written = applyEventProjection(this.sqlite!, commit, relatedStreams([]), {
+        verify: true,
+        candidates,
+      });
     }
     return written;
   }
 
-  private refreshDomainRows(written:ProjectionRow[]):void {
-    if(!written.length)return;
-    const settings=this.statements!.selectSettings.get()?.value;
-    if(settings){this.settingsState=settings;this.db!.settings=JSON.parse(settings) as Settings;}
-    for(const row of written){
-      const collection=row.collection,id=String(row.item.id),index=this.db![collection].findIndex(item=>item.id===id);
-      if(row.remove){if(index>=0)this.db![collection].splice(index,1);this.rowState[collection].delete(id);this.orderKeys[collection].delete(id);continue;}
-      const persisted=this.statements!.selectById[collection].get({id});if(!persisted)continue;
-      const item=JSON.parse(persisted.data) as StoreItem;
-      if(index>=0)this.db![collection][index]=item;else this.db![collection].unshift(item);
-      this.rowState[collection].set(id,{data:persisted.data,order:persisted.orderValue});this.orderKeys[collection].set(id,persisted.orderValue);
+  private refreshDomainRows(written: ProjectionRow[]): void {
+    if (!written.length) return;
+    const settings = this.statements!.selectSettings.get()?.value;
+    if (settings) {
+      this.settingsState = settings;
+      this.db!.settings = JSON.parse(settings) as Settings;
     }
-  }
-
-  private includeRetirementChanges(scope:Scope,changes:Changes):void {
-    for(const event of scope.domainBatch?.events||[]){
-      const collection=event.eventType==='JobHistoryRetired'?'jobs':event.eventType==='ArtifactHistoryRetired'?'images':null;
-      if(!collection)continue;
-      const ids=event.eventType==='JobHistoryRetired'?event.payload.jobIds:event.eventType==='ArtifactHistoryRetired'?[event.payload.artifactId]:[];
-      for(const id of ids)if(!changes.deletes.some(change=>change.collection===collection&&change.id===id)&&this.statements!.selectById[collection].get({id}))changes.deletes.push({collection,id});
-    }
-  }
-
-  private trimCommandHistory(db:StoreDatabase,scope:Scope):void {
-    if(process.env.NO_AUTO_DELETE==='true')return;
-    const now=Date.now(),retainMs=clampNumber(process.env.JOB_HISTORY_RETENTION_MS??7*24*60*60*1000,60000,7*24*60*60*1000);
-    if(scope.full||scope.collections.includes('jobs')){
-      const groups=new Map<string,string[]>(),retired=new Set<string>();
-      for(const job of db.jobs){
-        const updated=Date.parse(job.updatedAt||job.createdAt||'');
-        if(!this.canRetireJobHistory(job)||updated&&now-updated<=retainMs)continue;
-        const stream=`request:${job.requestId||`legacy-${job.id}`}`,ids=groups.get(stream)||[];ids.push(job.id);groups.set(stream,ids);retired.add(job.id);
+    for (const row of written) {
+      const collection = row.collection,
+        id = String(row.item.id),
+        index = this.db![collection].findIndex((item) => item.id === id);
+      if (row.remove) {
+        if (index >= 0) this.db![collection].splice(index, 1);
+        this.rowState[collection].delete(id);
+        this.orderKeys[collection].delete(id);
+        continue;
       }
-      for(const [streamId,jobIds] of groups)recordDomainEvent(db,{eventType:'JobHistoryRetired',streamId,occurredAt:now,payload:{jobIds,reason:'automatic_retention',at:now}});
-      db.jobs=db.jobs.filter(job=>!retired.has(job.id));
-    }
-    if(scope.full||scope.collections.includes('images')){
-      const maxCache=clampNumber(db.settings.maxCacheImages,0,MAX_CACHE_IMAGES_LIMIT);
-      this.retireArtifactsInCommand(db,db.images.slice(maxCache).map(image=>image.id),'automatic_retention',true,now);
+      const persisted = this.statements!.selectById[collection].get({ id });
+      if (!persisted) continue;
+      const item = JSON.parse(persisted.data) as StoreItem;
+      if (index >= 0) this.db![collection][index] = item;
+      else this.db![collection].unshift(item);
+      this.rowState[collection].set(id, { data: persisted.data, order: persisted.orderValue });
+      this.orderKeys[collection].set(id, persisted.orderValue);
     }
   }
 
-  async update<T>(mutator: (db: StoreDatabase) => T | Promise<T>, options: PersistenceOptions<T> = {}): Promise<T> {
-    this.queue = this.queue.catch(() => {}).then(async () => {
-      await this.ensureLoaded();
-      // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
-      this.flushPendingPersistSync();
-      try {
-        options.authorize?.(this.db!);
-        const metadata=options.domainCommand;
-        if(metadata?.commandId){
-          const prior=readCommandReceipt(this.sqlite!,metadata.commandId);
-          if(prior){
-            if(!metadata.fingerprint||prior.fingerprint!==metadata.fingerprint)throw Object.assign(new Error(`Command fingerprint conflict: ${metadata.commandId}`),{statusCode:409});
+  private includeRetirementChanges(scope: Scope, changes: Changes): void {
+    for (const event of scope.domainBatch?.events || []) {
+      const collection =
+        event.eventType === 'JobHistoryRetired'
+          ? 'jobs'
+          : event.eventType === 'ArtifactHistoryRetired'
+            ? 'images'
+            : null;
+      if (!collection) continue;
+      const ids =
+        event.eventType === 'JobHistoryRetired'
+          ? event.payload.jobIds
+          : event.eventType === 'ArtifactHistoryRetired'
+            ? [event.payload.artifactId]
+            : [];
+      for (const id of ids)
+        if (
+          !changes.deletes.some((change) => change.collection === collection && change.id === id) &&
+          this.statements!.selectById[collection].get({ id })
+        )
+          changes.deletes.push({ collection, id });
+    }
+  }
+
+  private trimCommandHistory(db: StoreDatabase, scope: Scope): void {
+    if (process.env.NO_AUTO_DELETE === 'true') return;
+    const now = Date.now(),
+      retainMs = clampNumber(
+        process.env.JOB_HISTORY_RETENTION_MS ?? 7 * 24 * 60 * 60 * 1000,
+        60000,
+        7 * 24 * 60 * 60 * 1000,
+      );
+    if (scope.full || scope.collections.includes('jobs')) {
+      const groups = new Map<string, string[]>(),
+        retired = new Set<string>();
+      for (const job of db.jobs) {
+        const updated = Date.parse(job.updatedAt || job.createdAt || '');
+        if (!this.canRetireJobHistory(job) || (updated && now - updated <= retainMs)) continue;
+        const stream = `request:${job.requestId || `legacy-${job.id}`}`,
+          ids = groups.get(stream) || [];
+        ids.push(job.id);
+        groups.set(stream, ids);
+        retired.add(job.id);
+      }
+      for (const [streamId, jobIds] of groups)
+        recordDomainEvent(db, {
+          eventType: 'JobHistoryRetired',
+          streamId,
+          occurredAt: now,
+          payload: { jobIds, reason: 'automatic_retention', at: now },
+        });
+      db.jobs = db.jobs.filter((job) => !retired.has(job.id));
+    }
+    if (scope.full || scope.collections.includes('images')) {
+      const maxCache = clampNumber(db.settings.maxCacheImages, 0, MAX_CACHE_IMAGES_LIMIT);
+      this.retireArtifactsInCommand(
+        db,
+        db.images.slice(maxCache).map((image) => image.id),
+        'automatic_retention',
+        true,
+        now,
+      );
+    }
+  }
+
+  async update<T>(
+    mutator: (db: StoreDatabase) => T | Promise<T>,
+    options: PersistenceOptions<T> = {},
+  ): Promise<T> {
+    this.queue = this.queue
+      .catch(() => {})
+      .then(async () => {
+        await this.ensureLoaded();
+        // 前一次延迟写只能包含前一次变更，不能把本次尚未提交的修改一起刷入。
+        this.flushPendingPersistSync();
+        try {
+          options.authorize?.(this.db!);
+          const metadata = options.domainCommand;
+          if (metadata?.commandId) {
+            const prior = readCommandReceipt(this.sqlite!, metadata.commandId);
+            if (prior) {
+              if (!metadata.fingerprint || prior.fingerprint !== metadata.fingerprint)
+                throw Object.assign(
+                  new Error(`Command fingerprint conflict: ${metadata.commandId}`),
+                  { statusCode: 409 },
+                );
+              options.generationPayloadClaim?.release();
+              return cloneValue(prior.receipt) as T;
+            }
+          }
+          beginDomainCommand(this.db!, options.domainCommand);
+          const result = await mutator(this.db!);
+          if (
+            metadata?.commandId &&
+            metadata.fingerprint &&
+            options.persist !== false &&
+            metadata.receipt === undefined
+          ) {
+            setDomainCommandReceipt(
+              this.db!,
+              options.commandReceipt ? options.commandReceipt(result) : (result as Json),
+            );
+          }
+          const persistOptions = resolvePersistenceOptions(options, result, this.db!);
+          if (eventAuthorityEnabled(this.sqlite!)) persistOptions.immediate = true;
+          const preliminaryScope = persistenceScope(persistOptions);
+          if (shouldPersistUpdate(result, persistOptions) && !preliminaryScope.hasDirtyRows)
+            this.trimCommandHistory(this.db!, preliminaryScope);
+          const domainBatch = finishDomainCommand(this.db!);
+          if (
+            metadata?.commandId &&
+            metadata.fingerprint &&
+            options.persist !== false &&
+            !domainBatch?.events.length
+          ) {
+            const prior = readCommandReceipt(this.sqlite!, metadata.commandId);
+            if (prior?.fingerprint === metadata.fingerprint)
+              throw new DuplicateDomainCommand(prior.receipt);
+            throw Object.assign(new Error('操作已被更新或未产生可提交事实，请刷新后确认结果'), {
+              statusCode: 409,
+            });
+          }
+          if (domainBatch?.events.length) {
+            if (!this.eventOpeningReady) {
+              importOpeningFacts(this.sqlite!);
+              this.eventOpeningReady = true;
+            }
+            persistOptions.domainBatch = domainBatch;
+            persistOptions.includeSettings = true;
+            persistOptions.immediate = true;
+          }
+          const snapshot = cloneValue(result);
+          if (persistOptions.domainBatch && options.persist === false)
+            throw new Error('A domain command cannot discard its recorded facts.');
+          if (persistOptions.domainBatch || shouldPersistUpdate(result, persistOptions)) {
+            const scope = persistenceScope(persistOptions);
+            if (shouldDeferPersist(scope, persistOptions)) {
+              this.schedulePersist(scope);
+            } else {
+              if (!scope.hasDirtyRows)
+                trimDb(this.db!, { collections: scope.full ? null : scope.collections });
+              this.persistIncremental(this.db!, scope);
+            }
+            // 新父记录已进入活动 SQL 统计；下一项串行受理开始前移交临时正文占用。
+            persistOptions.generationPayloadClaim?.release();
+          }
+          return snapshot;
+        } catch (error) {
+          if (this.db) finishDomainCommand(this.db);
+          // SQL 回滚不会还原 JS 对象；只在失败时重载已提交数据，避免每次预扣复制整个热缓存。
+          // 先清空引用，若重载也失败，后续请求不得继续使用污染的内存状态。
+          this.clearPendingPersist();
+          this.db = null;
+          this.db = this.loadFromSqlite();
+          if (error instanceof DuplicateDomainCommand) {
             options.generationPayloadClaim?.release();
-            return cloneValue(prior.receipt) as T;
+            return cloneValue(error.receipt) as T;
           }
+          throw error;
         }
-        beginDomainCommand(this.db!, options.domainCommand);
-        const result = await mutator(this.db!);
-        if(metadata?.commandId&&metadata.fingerprint&&options.persist!==false&&metadata.receipt===undefined){
-          setDomainCommandReceipt(this.db!,options.commandReceipt?options.commandReceipt(result):result as Json);
-        }
-        const persistOptions = resolvePersistenceOptions(options, result, this.db!);
-        if(eventAuthorityEnabled(this.sqlite!))persistOptions.immediate=true;
-        const preliminaryScope=persistenceScope(persistOptions);
-        if(shouldPersistUpdate(result,persistOptions)&&!preliminaryScope.hasDirtyRows)this.trimCommandHistory(this.db!,preliminaryScope);
-        const domainBatch = finishDomainCommand(this.db!);
-        if(metadata?.commandId&&metadata.fingerprint&&options.persist!==false&&!domainBatch?.events.length){
-          const prior=readCommandReceipt(this.sqlite!,metadata.commandId);
-          if(prior?.fingerprint===metadata.fingerprint)throw new DuplicateDomainCommand(prior.receipt);
-          throw Object.assign(new Error('操作已被更新或未产生可提交事实，请刷新后确认结果'),{statusCode:409});
-        }
-        if (domainBatch?.events.length) {
-          if(!this.eventOpeningReady){importOpeningFacts(this.sqlite!);this.eventOpeningReady=true;}
-          persistOptions.domainBatch = domainBatch;
-          persistOptions.includeSettings=true;
-          persistOptions.immediate=true;
-        }
-        const snapshot = cloneValue(result);
-        if (persistOptions.domainBatch && options.persist === false) throw new Error('A domain command cannot discard its recorded facts.');
-        if (persistOptions.domainBatch || shouldPersistUpdate(result, persistOptions)) {
-          const scope = persistenceScope(persistOptions);
-          if (shouldDeferPersist(scope, persistOptions)) {
-            this.schedulePersist(scope);
-          } else {
-            if (!scope.hasDirtyRows) trimDb(this.db!, { collections: scope.full ? null : scope.collections });
-            this.persistIncremental(this.db!, scope);
-          }
-          // 新父记录已进入活动 SQL 统计；下一项串行受理开始前移交临时正文占用。
-          persistOptions.generationPayloadClaim?.release();
-        }
-        return snapshot;
-      } catch (error) {
-        if (this.db) finishDomainCommand(this.db);
-        // SQL 回滚不会还原 JS 对象；只在失败时重载已提交数据，避免每次预扣复制整个热缓存。
-        // 先清空引用，若重载也失败，后续请求不得继续使用污染的内存状态。
-        this.clearPendingPersist();
-        this.db = null;
-        this.db = this.loadFromSqlite();
-        if(error instanceof DuplicateDomainCommand){options.generationPayloadClaim?.release();return cloneValue(error.receipt) as T;}
-        throw error;
-      }
-    });
+      });
     return this.queue as Promise<T>;
   }
 
   private scheduleFlush() {
-    this.schedulePersist({ full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false });
+    this.schedulePersist({
+      full: true,
+      includeSettings: true,
+      collections,
+      dirtyRows: {},
+      hasDirtyRows: false,
+    });
     return this.pendingPersistTimer;
   }
 
@@ -1118,7 +2064,9 @@ export class JsonStore {
 
   async close() {
     if (this.sqlite!) this.flushPendingPersistSync();
-    await Promise.allSettled([this.statsReader?.close(), this.adminReader?.close()].filter(Boolean as unknown as Present));
+    await Promise.allSettled(
+      [this.statsReader?.close(), this.adminReader?.close()].filter(Boolean as unknown as Present),
+    );
     this.statsReader = null;
     this.adminReader = null;
     this.sqlite?.close();
@@ -1155,16 +2103,23 @@ export class JsonStore {
       this.pendingPersistTimer = null;
     }
     const scope = this.pendingPersistScope;
-    if (!scope.hasDirtyRows) trimDb(this.db!, { collections: scope.full ? null : scope.collections });
+    if (!scope.hasDirtyRows)
+      trimDb(this.db!, { collections: scope.full ? null : scope.collections });
     this.persistIncremental(this.db!, scope);
     // 写失败时保留待写范围；下一次更新必须先重试它，不能静默丢掉已接受的延迟变更。
     this.pendingPersistScope = null;
   }
 
-  private selectItems(collection: Collection, clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}): StoreItem[] {
+  private selectItems(
+    collection: Collection,
+    clause = 'ORDER BY order_value DESC',
+    params: Record<string, unknown> = {},
+  ): StoreItem[] {
     const table = collectionTables[collection];
     if (!table) return [];
-    const rows = this.sqlite!.prepare<unknown[], { data: string }>(`SELECT data FROM ${table} ${clause}`).all(params);
+    const rows = this.sqlite!.prepare<unknown[], { data: string }>(
+      `SELECT data FROM ${table} ${clause}`,
+    ).all(params);
     return rows.map((row) => safeJson(row.data, null)).filter(Boolean as unknown as Present);
   }
 
@@ -1179,9 +2134,12 @@ export class JsonStore {
     return this.loadItemForUpdate('jobs', id);
   }
 
-  loadItemForUpdate<C extends Collection>(collection: C, id: string): StoreDatabase[C][number] | null {
+  loadItemForUpdate<C extends Collection>(
+    collection: C,
+    id: string,
+  ): StoreDatabase[C][number] | null {
     // 仅在串行 update 内使用：冷任务仍是旧行，必须恢复原排序及已提交快照，不能按新行分配顺序。
-    const cached = this.db![collection].find(job => job.id === id);
+    const cached = this.db![collection].find((job) => job.id === id);
     if (cached) return cached as StoreDatabase[C][number];
     const row = this.statements!.selectById[collection].get({ id });
     const job = row ? safeJson(row.data, null) : null;
@@ -1189,22 +2147,32 @@ export class JsonStore {
     const order = Number(row!.orderValue);
     this.rowState[collection].set(id, { data: row!.data, order });
     this.orderKeys[collection].set(id, order);
-    const index = this.db![collection].findIndex(item => this.orderKeys[collection].get(item.id)! < order);
+    const index = this.db![collection].findIndex(
+      (item) => this.orderKeys[collection].get(item.id)! < order,
+    );
     this.db![collection].splice(index < 0 ? this.db![collection].length : index, 0, job);
     return job;
   }
 
   readR2Usage() {
-    const rows = this.sqlite!.prepare<[], { bytes: number; images: number; pending: number; errors: number }>(`
+    const rows = this.sqlite!.prepare<
+      [],
+      { bytes: number; images: number; pending: number; errors: number }
+    >(
+      `
       SELECT COALESCE(SUM(json_extract(data, '$.r2.byteLength')), 0) AS bytes,
         COUNT(CASE WHEN json_extract(data, '$.r2.verifiedAt') IS NOT NULL THEN 1 END) AS images,
         COUNT(CASE WHEN json_type(data, '$.r2') = 'object' AND json_extract(data, '$.r2.verifiedAt') IS NULL THEN 1 END) AS pending,
-        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL THEN 1 END) AS errors FROM images`).get()!;
+        COUNT(CASE WHEN json_extract(data, '$.r2Error') IS NOT NULL THEN 1 END) AS errors FROM images`,
+    ).get()!;
     return { ...rows, limitBytes: R2_IMAGE_LIMIT_BYTES };
   }
 
   nextColdImage(now = Date.now()) {
-    return this.selectItems('images', `WHERE mime_type IN ('image/png', 'image/jpeg', 'image/webp')
+    return (
+      this.selectItems(
+        'images',
+        `WHERE mime_type IN ('image/png', 'image/jpeg', 'image/webp')
       AND COALESCE(mock, 0) = 0 AND json_extract(data, '$.file') IS NOT NULL
       AND created_at < @cutoff AND json_extract(data, '$.r2.localRemovedAt') IS NULL
       AND (json_extract(data, '$.r2Error') IS NULL OR json_extract(data, '$.r2LastAttemptAt') < @retry)
@@ -1215,12 +2183,22 @@ export class JsonStore {
           WHERE json_type(data, '$.resultPending') = 'object' AND image_id IS NOT NULL
         UNION SELECT json_extract(data, '$.resultPending.imageId') FROM jobs INDEXED BY idx_jobs_result_pending
           WHERE json_type(data, '$.resultPending') = 'object' AND json_extract(data, '$.resultPending.imageId') IS NOT NULL)
-      ORDER BY order_value ASC LIMIT 1`, { cutoff: new Date(now - 86400000).toISOString(), retry: new Date(now - 3600000).toISOString() })[0] || null;
+      ORDER BY order_value ASC LIMIT 1`,
+        {
+          cutoff: new Date(now - 86400000).toISOString(),
+          retry: new Date(now - 3600000).toISOString(),
+        },
+      )[0] || null
+    );
   }
 
   readOperatingLossSettlements(lossEventId: string) {
     // 仅在已串行化的管理写事务内调用，覆盖已退出热缓存的核销历史。
-    return this.selectItems('ledger', "WHERE source = 'operating_loss_covered' AND json_extract(data, '$.lossEventId') = @id", { id: lossEventId });
+    return this.selectItems(
+      'ledger',
+      "WHERE source = 'operating_loss_covered' AND json_extract(data, '$.lossEventId') = @id",
+      { id: lossEventId },
+    );
   }
 
   async readDueGenerationReviews(now: number, limit = 100) {
@@ -1228,9 +2206,13 @@ export class JsonStore {
     await this.queue.catch(() => {});
     this.flushPendingPersistSync();
     // 谓词与部分索引保持一致；读取持久历史，不漏掉已退出热缓存的失败任务。
-    return this.selectItems('jobs', `WHERE json_extract(data, '$.generationReview.status') = 'pending'
+    return this.selectItems(
+      'jobs',
+      `WHERE json_extract(data, '$.generationReview.status') = 'pending'
       AND json_extract(data, '$.generationReview.deadlineAt') <= @now
-      ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT @limit`, { now, limit });
+      ORDER BY json_extract(data, '$.generationReview.deadlineAt') LIMIT @limit`,
+      { now, limit },
+    );
   }
 
   async readPendingResultJobIds(afterId = '', limit = 100) {
@@ -1238,9 +2220,13 @@ export class JsonStore {
     await this.queue.catch(() => {});
     this.flushPendingPersistSync();
     // 与部分索引使用同一谓词；失败历史保持冷存，逐个恢复时再 loadJobForUpdate。
-    return this.sqlite!.prepare<unknown[], { id: string }>(`SELECT id FROM jobs INDEXED BY idx_jobs_result_pending
+    return this.sqlite!.prepare<unknown[], { id: string }>(
+      `SELECT id FROM jobs INDEXED BY idx_jobs_result_pending
       WHERE json_type(data, '$.resultPending') = 'object' AND id > @afterId
-      ORDER BY id LIMIT @limit`).all({ afterId, limit }).map(row => row.id);
+      ORDER BY id LIMIT @limit`,
+    )
+      .all({ afterId, limit })
+      .map((row) => row.id);
   }
 
   private countRecords(collection: Collection) {
@@ -1254,8 +2240,21 @@ export class JsonStore {
     return jobQueueProgress(job, this.db!.jobs);
   }
 
-  private selectJobStatRows(clause = 'ORDER BY order_value DESC', params: Record<string, unknown> = {}) {
-    const rows = this.sqlite!.prepare<unknown[], { id: string | null; status: string | null; accountId: string | null; createdAt: string | null; updatedAt: string | null }>(`
+  private selectJobStatRows(
+    clause = 'ORDER BY order_value DESC',
+    params: Record<string, unknown> = {},
+  ) {
+    const rows = this.sqlite!.prepare<
+      unknown[],
+      {
+        id: string | null;
+        status: string | null;
+        accountId: string | null;
+        createdAt: string | null;
+        updatedAt: string | null;
+      }
+    >(
+      `
       SELECT
         id,
         status,
@@ -1264,13 +2263,14 @@ export class JsonStore {
         updated_at AS updatedAt
       FROM jobs
       ${clause}
-    `).all(params);
+    `,
+    ).all(params);
     return rows.map((row) => ({
       id: row.id || '',
       status: row.status || '',
       accountId: row.accountId || '',
       createdAt: row.createdAt || '',
-      updatedAt: row.updatedAt || ''
+      updatedAt: row.updatedAt || '',
     }));
   }
 
@@ -1295,81 +2295,227 @@ export class JsonStore {
     if (this.statements) return;
     const db = drizzle(this.sqlite!);
     this.statements = {
-      hasSettings: db.select({ value: sql`1` }).from(appSettings).where(eq(appSettings.key, 'settings')).limit(1).prepare(),
-      hasGenericRecords: db.select({ value: sql`1` }).from(appRecords).limit(1).prepare(),
-      readQueueSequence: db.select({ value: appMeta.value }).from(appMeta).where(eq(appMeta.key, 'queue_sequence')).prepare(),
-      selectSettings: db.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, 'settings')).prepare(),
-      selectGenericRecords: db.select({ id: appRecords.id, orderValue: appRecords.order_value, data: appRecords.data })
-        .from(appRecords).where(eq(appRecords.collection, sql.placeholder('collection'))).orderBy(desc(appRecords.order_value)).prepare(),
-      replaceSettings: db.insert(appSettings).values({ key: 'settings', value: sql.placeholder('value') })
-        .onConflictDoUpdate({ target: appSettings.key, set: { value: sql`excluded.value` } }).prepare(),
-      insertGenerationRequest: db.insert(generationRequests).values(Object.fromEntries(
-        Object.keys(getTableColumns(generationRequests)).map(key => [key, sql.placeholder(key)])
-      ) as SQLiteInsertValue<typeof generationRequests>).prepare(),
-      selectGenerationRequest: db.select({ payload: generationRequests.payload }).from(generationRequests)
-        .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
-      selectGenerationRequestMember: db.select({ member_id: generationRequests.member_id, operation: generationRequests.operation }).from(generationRequests)
-        .where(eq(generationRequests.id, sql.placeholder('id'))).prepare(),
-      insertGenerationIdempotency: db.insert(generationIdempotency).values(Object.fromEntries(
-        Object.keys(getTableColumns(generationIdempotency)).map(key => [key, sql.placeholder(key)])
-      ) as SQLiteInsertValue<typeof generationIdempotency>).prepare(),
-      selectGenerationIdempotency: db.select().from(generationIdempotency).where(and(
-        eq(generationIdempotency.member_id, sql.placeholder('memberId')),
-        eq(generationIdempotency.operation, sql.placeholder('operation')),
-        eq(generationIdempotency.key_hash, sql.placeholder('keyHash'))
-      )).prepare(),
-      selectMemberSession: db.select().from(memberSessions).where(eq(memberSessions.token_hash, sql.placeholder('tokenHash'))).prepare(),
-      selectMemberSessionOwner: db.select({ value: appMeta.value }).from(appMeta).where(eq(appMeta.key, 'member_session_owner')).prepare(),
-      insertMemberSession: db.insert(memberSessions).values(Object.fromEntries(
-        Object.keys(getTableColumns(memberSessions)).map(key => [key, sql.placeholder(key)])
-      ) as SQLiteInsertValue<typeof memberSessions>).prepare(),
-      deleteMemberSession: db.delete(memberSessions).where(eq(memberSessions.token_hash, sql.placeholder('tokenHash'))).prepare(),
-      updateMemberSessionExpiry: db.update(memberSessions).set({ expires_at: sql`${sql.placeholder('expiresAt')}` })
-        .where(eq(memberSessions.token_hash, sql.placeholder('tokenHash'))).prepare(),
-      deleteExpiredMemberSessions: db.delete(memberSessions).where(lte(memberSessions.expires_at, sql.placeholder('now'))).prepare(),
-      deleteOldMemberSessions: db.delete(memberSessions).where(and(
-        eq(memberSessions.user_id, sql.placeholder('userId')), ne(memberSessions.auth_version, sql.placeholder('authVersion'))
-      )).prepare(),
-      countActiveMemberSessions: db.select({ count: count() }).from(memberSessions).where(gt(memberSessions.expires_at, sql.placeholder('now'))).prepare(),
-      deleteChangedOwnerSessions: db.delete(memberSessions).where(or(isNotNull(memberSessions.owner_binding),
-        eq(memberSessions.user_id, sql.placeholder('oldOwnerId')), eq(memberSessions.user_id, sql.placeholder('ownerUserId'))
-      )).prepare(),
-      selectChangedOwnerSessions: db.select({ user_id: memberSessions.user_id }).from(memberSessions).where(or(isNotNull(memberSessions.owner_binding),
-        eq(memberSessions.user_id, sql.placeholder('oldOwnerId')), eq(memberSessions.user_id, sql.placeholder('ownerUserId'))
-      )).prepare(),
-      insertFairQuotaSettlement: db.insert(fairQuotaSettlements).values({ job_id: sql.placeholder('job_id'), charge: sql.placeholder('charge') })
-        .onConflictDoNothing().prepare(),
-      selectFairQuotaSettlement: db.select({ charge: fairQuotaSettlements.charge }).from(fairQuotaSettlements)
-        .where(eq(fairQuotaSettlements.job_id, sql.placeholder('jobId'))).prepare(),
+      hasSettings: db
+        .select({ value: sql`1` })
+        .from(appSettings)
+        .where(eq(appSettings.key, 'settings'))
+        .limit(1)
+        .prepare(),
+      hasGenericRecords: db
+        .select({ value: sql`1` })
+        .from(appRecords)
+        .limit(1)
+        .prepare(),
+      readQueueSequence: db
+        .select({ value: appMeta.value })
+        .from(appMeta)
+        .where(eq(appMeta.key, 'queue_sequence'))
+        .prepare(),
+      selectSettings: db
+        .select({ value: appSettings.value })
+        .from(appSettings)
+        .where(eq(appSettings.key, 'settings'))
+        .prepare(),
+      selectGenericRecords: db
+        .select({ id: appRecords.id, orderValue: appRecords.order_value, data: appRecords.data })
+        .from(appRecords)
+        .where(eq(appRecords.collection, sql.placeholder('collection')))
+        .orderBy(desc(appRecords.order_value))
+        .prepare(),
+      replaceSettings: db
+        .insert(appSettings)
+        .values({ key: 'settings', value: sql.placeholder('value') })
+        .onConflictDoUpdate({ target: appSettings.key, set: { value: sql`excluded.value` } })
+        .prepare(),
+      insertGenerationRequest: db
+        .insert(generationRequests)
+        .values(
+          Object.fromEntries(
+            Object.keys(getTableColumns(generationRequests)).map((key) => [
+              key,
+              sql.placeholder(key),
+            ]),
+          ) as SQLiteInsertValue<typeof generationRequests>,
+        )
+        .prepare(),
+      selectGenerationRequest: db
+        .select({ payload: generationRequests.payload })
+        .from(generationRequests)
+        .where(eq(generationRequests.id, sql.placeholder('id')))
+        .prepare(),
+      selectGenerationRequestMember: db
+        .select({
+          member_id: generationRequests.member_id,
+          operation: generationRequests.operation,
+        })
+        .from(generationRequests)
+        .where(eq(generationRequests.id, sql.placeholder('id')))
+        .prepare(),
+      insertGenerationIdempotency: db
+        .insert(generationIdempotency)
+        .values(
+          Object.fromEntries(
+            Object.keys(getTableColumns(generationIdempotency)).map((key) => [
+              key,
+              sql.placeholder(key),
+            ]),
+          ) as SQLiteInsertValue<typeof generationIdempotency>,
+        )
+        .prepare(),
+      selectGenerationIdempotency: db
+        .select()
+        .from(generationIdempotency)
+        .where(
+          and(
+            eq(generationIdempotency.member_id, sql.placeholder('memberId')),
+            eq(generationIdempotency.operation, sql.placeholder('operation')),
+            eq(generationIdempotency.key_hash, sql.placeholder('keyHash')),
+          ),
+        )
+        .prepare(),
+      selectMemberSession: db
+        .select()
+        .from(memberSessions)
+        .where(eq(memberSessions.token_hash, sql.placeholder('tokenHash')))
+        .prepare(),
+      selectMemberSessionOwner: db
+        .select({ value: appMeta.value })
+        .from(appMeta)
+        .where(eq(appMeta.key, 'member_session_owner'))
+        .prepare(),
+      insertMemberSession: db
+        .insert(memberSessions)
+        .values(
+          Object.fromEntries(
+            Object.keys(getTableColumns(memberSessions)).map((key) => [key, sql.placeholder(key)]),
+          ) as SQLiteInsertValue<typeof memberSessions>,
+        )
+        .prepare(),
+      deleteMemberSession: db
+        .delete(memberSessions)
+        .where(eq(memberSessions.token_hash, sql.placeholder('tokenHash')))
+        .prepare(),
+      updateMemberSessionExpiry: db
+        .update(memberSessions)
+        .set({ expires_at: sql`${sql.placeholder('expiresAt')}` })
+        .where(eq(memberSessions.token_hash, sql.placeholder('tokenHash')))
+        .prepare(),
+      deleteExpiredMemberSessions: db
+        .delete(memberSessions)
+        .where(lte(memberSessions.expires_at, sql.placeholder('now')))
+        .prepare(),
+      deleteOldMemberSessions: db
+        .delete(memberSessions)
+        .where(
+          and(
+            eq(memberSessions.user_id, sql.placeholder('userId')),
+            ne(memberSessions.auth_version, sql.placeholder('authVersion')),
+          ),
+        )
+        .prepare(),
+      countActiveMemberSessions: db
+        .select({ count: count() })
+        .from(memberSessions)
+        .where(gt(memberSessions.expires_at, sql.placeholder('now')))
+        .prepare(),
+      deleteChangedOwnerSessions: db
+        .delete(memberSessions)
+        .where(
+          or(
+            isNotNull(memberSessions.owner_binding),
+            eq(memberSessions.user_id, sql.placeholder('oldOwnerId')),
+            eq(memberSessions.user_id, sql.placeholder('ownerUserId')),
+          ),
+        )
+        .prepare(),
+      selectChangedOwnerSessions: db
+        .select({ user_id: memberSessions.user_id })
+        .from(memberSessions)
+        .where(
+          or(
+            isNotNull(memberSessions.owner_binding),
+            eq(memberSessions.user_id, sql.placeholder('oldOwnerId')),
+            eq(memberSessions.user_id, sql.placeholder('ownerUserId')),
+          ),
+        )
+        .prepare(),
+      insertFairQuotaSettlement: db
+        .insert(fairQuotaSettlements)
+        .values({ job_id: sql.placeholder('job_id'), charge: sql.placeholder('charge') })
+        .onConflictDoNothing()
+        .prepare(),
+      selectFairQuotaSettlement: db
+        .select({ charge: fairQuotaSettlements.charge })
+        .from(fairQuotaSettlements)
+        .where(eq(fairQuotaSettlements.job_id, sql.placeholder('jobId')))
+        .prepare(),
       deleteAllSettings: db.delete(appSettings).prepare(),
       deleteGenericRecords: db.delete(appRecords).prepare(),
-      setMeta: db.insert(appMeta).values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
-        .onConflictDoUpdate({ target: appMeta.key, set: { value: sql`excluded.value` } }).prepare(),
-      hasTypedRecords: {} as Statements['hasTypedRecords'], selectRecords: {} as Statements['selectRecords'], selectById: {} as Statements['selectById'], countRecords: {} as Statements['countRecords'],
-      deleteAllRecords: {} as Statements['deleteAllRecords'], upsertRecord: {} as Statements['upsertRecord'], deleteRecord: {} as Statements['deleteRecord']
+      setMeta: db
+        .insert(appMeta)
+        .values({ key: sql.placeholder('key'), value: sql.placeholder('value') })
+        .onConflictDoUpdate({ target: appMeta.key, set: { value: sql`excluded.value` } })
+        .prepare(),
+      hasTypedRecords: {} as Statements['hasTypedRecords'],
+      selectRecords: {} as Statements['selectRecords'],
+      selectById: {} as Statements['selectById'],
+      countRecords: {} as Statements['countRecords'],
+      deleteAllRecords: {} as Statements['deleteAllRecords'],
+      upsertRecord: {} as Statements['upsertRecord'],
+      deleteRecord: {} as Statements['deleteRecord'],
     };
 
-    for (const [collection, table] of Object.entries(recordTables) as [Collection, typeof recordTables[Collection]][]) {
+    for (const [collection, table] of Object.entries(recordTables) as [
+      Collection,
+      (typeof recordTables)[Collection],
+    ][]) {
       const columns = Object.keys(getTableColumns(table));
-      const values = Object.fromEntries(columns.map(column => [column, sql.placeholder(column)]));
-      const updates = Object.fromEntries(columns.filter(column => column !== 'id')
-        .map(column => [column, sql`excluded.${sql.identifier(column)}`]));
-      this.statements!.hasTypedRecords[collection] = db.select({ value: sql`1` }).from(table).limit(1).prepare();
-      this.statements!.selectRecords[collection] = db.select({ id: table.id, orderValue: table.order_value, data: table.data })
-        .from(table).orderBy(desc(table.order_value)).prepare() as Prepared<DataRow>;
-      this.statements!.selectById[collection] = db.select({ data: table.data, orderValue: table.order_value }).from(table)
-        .where(eq(table.id, sql.placeholder('id'))).limit(1).prepare();
-      this.statements!.countRecords[collection] = db.select({ count: count() }).from(table).prepare();
+      const values = Object.fromEntries(columns.map((column) => [column, sql.placeholder(column)]));
+      const updates = Object.fromEntries(
+        columns
+          .filter((column) => column !== 'id')
+          .map((column) => [column, sql`excluded.${sql.identifier(column)}`]),
+      );
+      this.statements!.hasTypedRecords[collection] = db
+        .select({ value: sql`1` })
+        .from(table)
+        .limit(1)
+        .prepare();
+      this.statements!.selectRecords[collection] = db
+        .select({ id: table.id, orderValue: table.order_value, data: table.data })
+        .from(table)
+        .orderBy(desc(table.order_value))
+        .prepare() as Prepared<DataRow>;
+      this.statements!.selectById[collection] = db
+        .select({ data: table.data, orderValue: table.order_value })
+        .from(table)
+        .where(eq(table.id, sql.placeholder('id')))
+        .limit(1)
+        .prepare();
+      this.statements!.countRecords[collection] = db
+        .select({ count: count() })
+        .from(table)
+        .prepare();
       this.statements!.deleteAllRecords[collection] = db.delete(table).prepare();
       // 准备语句不写入；所有 run 仍由既有 persister 的同步 SQLite 事务统一提交。
-      this.statements!.upsertRecord[collection] = db.insert(table).values(values as SQLiteInsertValue<typeof table>)
-        .onConflictDoUpdate({ target: table.id, set: updates }).prepare();
-      this.statements!.deleteRecord[collection] = db.delete(table).where(eq(table.id, sql.placeholder('id'))).prepare();
+      this.statements!.upsertRecord[collection] = db
+        .insert(table)
+        .values(values as SQLiteInsertValue<typeof table>)
+        .onConflictDoUpdate({ target: table.id, set: updates })
+        .prepare();
+      this.statements!.deleteRecord[collection] = db
+        .delete(table)
+        .where(eq(table.id, sql.placeholder('id')))
+        .prepare();
     }
   }
 
   private hasSqliteData() {
-    return Boolean(this.statements!.hasSettings.get() || this.hasTypedRecords() || this.statements!.hasGenericRecords.get());
+    return Boolean(
+      this.statements!.hasSettings.get() ||
+      this.hasTypedRecords() ||
+      this.statements!.hasGenericRecords.get(),
+    );
   }
 
   private hasTypedRecords() {
@@ -1384,7 +2530,10 @@ export class JsonStore {
       runtimeLog(`Loaded legacy app_records in ${Date.now() - startedAt}ms: ${formatDbCounts(db)}`);
       this.replaceAll(db);
       this.statements!.deleteGenericRecords.run();
-      this.statements!.setMeta.run({ key: 'generic_records_migrated_at', value: new Date().toISOString() });
+      this.statements!.setMeta.run({
+        key: 'generic_records_migrated_at',
+        value: new Date().toISOString(),
+      });
       runtimeLog(`Upgraded app_records to typed tables in ${Date.now() - startedAt}ms`);
       return this.loadFromSqlite();
     }
@@ -1393,7 +2542,7 @@ export class JsonStore {
     const settingsRow = this.statements!.selectSettings.get();
     const db = {
       ...structuredClone(defaultDb),
-      settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
+      settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings,
     };
     const archive = fairQuotaArchive(db.settings);
     if (archive.rows.length) {
@@ -1405,24 +2554,30 @@ export class JsonStore {
     }
     const rowState = emptyCollectionMaps<RowState>();
     const orderKeys = emptyCollectionMaps<number>();
-    const totalCounts = Object.fromEntries(collections.map((collection) => [collection, this.countRecords(collection)]));
+    const totalCounts = Object.fromEntries(
+      collections.map((collection) => [collection, this.countRecords(collection)]),
+    );
     this.partialCollections = new Set();
 
     for (const collection of collections) {
       const rows = this.runtimeRowsForCollection(collection);
       if (rows.length < totalCounts[collection]) this.partialCollections.add(collection);
-      db[collection] = rows.map((row) => {
-        rowState[collection].set(row.id, { data: row.data, order: Number(row.orderValue) });
-        orderKeys[collection].set(row.id, Number(row.orderValue));
-        return safeJson(row.data, null);
-      }).filter(Boolean as unknown as Present);
+      db[collection] = rows
+        .map((row) => {
+          rowState[collection].set(row.id, { data: row.data, order: Number(row.orderValue) });
+          orderKeys[collection].set(row.id, Number(row.orderValue));
+          return safeJson(row.data, null);
+        })
+        .filter(Boolean as unknown as Present);
     }
 
     const normalized = normalizeDb(db);
     this.rowState = rowState;
     this.orderKeys = orderKeys;
     this.settingsState = JSON.stringify(normalized.settings);
-    runtimeLog(`Loaded typed SQLite runtime cache in ${Date.now() - startedAt}ms: ${formatDbCounts(normalized)} total=${formatDbCounts(totalCounts)} partial=${[...this.partialCollections].join(',') || 'none'}`);
+    runtimeLog(
+      `Loaded typed SQLite runtime cache in ${Date.now() - startedAt}ms: ${formatDbCounts(normalized)} total=${formatDbCounts(totalCounts)} partial=${[...this.partialCollections].join(',') || 'none'}`,
+    );
     return normalized;
   }
 
@@ -1431,24 +2586,31 @@ export class JsonStore {
     if (!table) return [];
     if (collection === 'jobs') {
       // Read the small active index separately; OR makes SQLite scan all history.
-      const active = this.sqlite!.prepare<unknown[], DataRow>(`
+      const active = this.sqlite!.prepare<unknown[], DataRow>(
+        `
         SELECT id, order_value AS orderValue, data FROM ${table} INDEXED BY idx_jobs_active_created
         WHERE status IN ('queued', 'pending', 'running')
-      `).all();
-      const recent = this.sqlite!.prepare<unknown[], DataRow>(`
+      `,
+      ).all();
+      const recent = this.sqlite!.prepare<unknown[], DataRow>(
+        `
         SELECT id, order_value AS orderValue, data FROM ${table}
         ORDER BY order_value DESC
         LIMIT @limit
-      `).all({ limit: runtimeCacheLimit('jobs') });
-      return [...new Map([...active, ...recent].map((row) => [row.id, row])).values()]
-        .sort((a, b) => b.orderValue - a.orderValue);
+      `,
+      ).all({ limit: runtimeCacheLimit('jobs') });
+      return [...new Map([...active, ...recent].map((row) => [row.id, row])).values()].sort(
+        (a, b) => b.orderValue - a.orderValue,
+      );
     }
     if (collection === 'images' || collection === 'ledger') {
-      return this.sqlite!.prepare<unknown[], DataRow>(`
+      return this.sqlite!.prepare<unknown[], DataRow>(
+        `
         SELECT id, order_value AS orderValue, data FROM ${table}
         ORDER BY order_value DESC
         LIMIT @limit
-      `).all({ limit: runtimeCacheLimit(collection) });
+      `,
+      ).all({ limit: runtimeCacheLimit(collection) });
     }
     return this.statements!.selectRecords[collection].all();
   }
@@ -1457,17 +2619,20 @@ export class JsonStore {
     const settingsRow = this.statements!.selectSettings.get();
     const db = {
       ...structuredClone(defaultDb),
-      settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings
+      settings: settingsRow ? safeJson(settingsRow.value, defaultSettings) : defaultSettings,
     };
     for (const collection of collections) {
       const rows = this.statements!.selectGenericRecords.all({ collection });
-      db[collection] = rows.map((row) => safeJson(row.data, null)).filter(Boolean as unknown as Present);
+      db[collection] = rows
+        .map((row) => safeJson(row.data, null))
+        .filter(Boolean as unknown as Present);
     }
     return normalizeDb(db);
   }
 
   private replaceAll(db: DatabaseInput) {
-    if(eventAuthorityEnabled(this.sqlite!))throw new Error('A full legacy-state replacement cannot overwrite event authority.');
+    if (eventAuthorityEnabled(this.sqlite!))
+      throw new Error('A full legacy-state replacement cannot overwrite event authority.');
     const safeDb = trimDb(normalizeDb(db));
     const archive = fairQuotaArchive(safeDb.settings);
     safeDb.settings = archive.settings;
@@ -1476,11 +2641,23 @@ export class JsonStore {
     const previousRows = emptyCollectionMaps<RowState>();
     for (const collection of collections) {
       const rows = this.statements!.selectRecords[collection].all();
-      rows.forEach((row, index) => previousRows[collection].set(row.id, { data: row.data, order: rows.length - index }));
+      rows.forEach((row, index) =>
+        previousRows[collection].set(row.id, { data: row.data, order: rows.length - index }),
+      );
     }
     const previousSettings = this.statements!.selectSettings.get()?.value || '';
-    const changes = collectPersistenceChanges({ previousSettings, previousRows, nextSettings: snapshot.settingsData, nextRows: snapshot.rowState });
-    const event = this.describeCommit(changes, snapshot.settingsData, previousRows, previousSettings);
+    const changes = collectPersistenceChanges({
+      previousSettings,
+      previousRows,
+      nextSettings: snapshot.settingsData,
+      nextRows: snapshot.rowState,
+    });
+    const event = this.describeCommit(
+      changes,
+      snapshot.settingsData,
+      previousRows,
+      previousSettings,
+    );
     const startedAt = Date.now();
     const writeAll = this.sqlite!.transaction(() => {
       this.persistFairQuotaSettlements(archive.rows);
@@ -1494,9 +2671,11 @@ export class JsonStore {
           this.statements!.upsertRecord[collection].run(row.sql);
         }
       }
-      this.persistQueueSequence([...snapshot.rowState.jobs.values()].map(row => row.sql!));
+      this.persistQueueSequence([...snapshot.rowState.jobs.values()].map((row) => row.sql!));
       // 显式全库替换才删除失去所有任务引用的父记录；普通完成不会删除历史。
-      this.sqlite!.exec('DELETE FROM generation_requests WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.request_id = generation_requests.id)');
+      this.sqlite!.exec(
+        'DELETE FROM generation_requests WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE jobs.request_id = generation_requests.id)',
+      );
     });
     writeAll();
     db.settings = safeDb.settings;
@@ -1508,7 +2687,9 @@ export class JsonStore {
     this.orderKeys = snapshot.orderKeys;
     this.db = safeDb;
     this.notifyCommit(event);
-    runtimeLog(`SQLite full replace wrote ${formatDbCounts(safeDb)} in ${Date.now() - startedAt}ms`);
+    runtimeLog(
+      `SQLite full replace wrote ${formatDbCounts(safeDb)} in ${Date.now() - startedAt}ms`,
+    );
   }
 
   private clearPendingPersist() {
@@ -1521,51 +2702,102 @@ export class JsonStore {
 
   private persistGenerationIdempotency(row: Idempotency) {
     const contextRef = generationContextRef(row);
-    const existing = this.sqlite!.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?').get(contextRef) as { payload: string } | undefined;
-    if (existing && existing.payload !== row.normalization_context) throw new Error(`Protected normalization context conflict: ${contextRef}`);
-    this.sqlite!.prepare('INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)').run(contextRef,row.normalization_context);
-    if(!eventAuthorityEnabled(this.sqlite!))this.statements!.insertGenerationIdempotency.run(row);
+    const existing = this.sqlite!.prepare(
+      'SELECT payload FROM generation_contexts WHERE context_ref=?',
+    ).get(contextRef) as { payload: string } | undefined;
+    if (existing && existing.payload !== row.normalization_context)
+      throw new Error(`Protected normalization context conflict: ${contextRef}`);
+    this.sqlite!.prepare(
+      'INSERT OR IGNORE INTO generation_contexts(context_ref,payload) VALUES(?,?)',
+    ).run(contextRef, row.normalization_context);
+    if (!eventAuthorityEnabled(this.sqlite!)) this.statements!.insertGenerationIdempotency.run(row);
   }
 
-  private assertDomainFactWrites(scope:Scope,settlements:(typeof fairQuotaSettlements.$inferInsert)[]):void {
-    if(!eventAuthorityEnabled(this.sqlite!))return;
-    const events=scope.domainBatch?.events||[];
-    for(const row of settlements){
-      const prior=this.statements!.selectFairQuotaSettlement.get({jobId:row.job_id});
-      if(prior&&canonicalJson(JSON.parse(prior.charge))===canonicalJson(JSON.parse(row.charge)))continue;
-      const recorded=events.some(event=>(event.eventType==='GenerationSettled'||event.eventType==='GenerationRefunded')&&event.payload.jobId===row.job_id&&canonicalJson(event.payload.charge)===canonicalJson(JSON.parse(row.charge)));
-      if(!recorded)throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
+  private assertDomainFactWrites(
+    scope: Scope,
+    settlements: (typeof fairQuotaSettlements.$inferInsert)[],
+  ): void {
+    if (!eventAuthorityEnabled(this.sqlite!)) return;
+    const events = scope.domainBatch?.events || [];
+    for (const row of settlements) {
+      const prior = this.statements!.selectFairQuotaSettlement.get({ jobId: row.job_id });
+      if (
+        prior &&
+        canonicalJson(JSON.parse(prior.charge)) === canonicalJson(JSON.parse(row.charge))
+      )
+        continue;
+      const recorded = events.some(
+        (event) =>
+          (event.eventType === 'GenerationSettled' || event.eventType === 'GenerationRefunded') &&
+          event.payload.jobId === row.job_id &&
+          canonicalJson(event.payload.charge) === canonicalJson(JSON.parse(row.charge)),
+      );
+      if (!recorded) throw new Error(`Unrecorded terminal settlement ${row.job_id}`);
     }
-    if(scope.generationRequest){
-      const row=scope.generationRequest;
-      const recorded=events.some(event=>event.eventType==='RequestAccepted'&&event.payload.inputRef===row.id&&event.payload.memberId===row.member_id&&event.payload.inputSha256===crypto.createHash('sha256').update(row.payload).digest('hex'));
-      if(!recorded)throw new Error(`Unrecorded generation input ${row.id}`);
+    if (scope.generationRequest) {
+      const row = scope.generationRequest;
+      const recorded = events.some(
+        (event) =>
+          event.eventType === 'RequestAccepted' &&
+          event.payload.inputRef === row.id &&
+          event.payload.memberId === row.member_id &&
+          event.payload.inputSha256 ===
+            crypto.createHash('sha256').update(row.payload).digest('hex'),
+      );
+      if (!recorded) throw new Error(`Unrecorded generation input ${row.id}`);
     }
-    if(scope.generationIdempotency){
-      const row=scope.generationIdempotency;
-      const recorded=events.some(event=>{
-        if(event.eventType==='RequestAccepted'){
-          const mapping=event.payload.idempotency;
-          return !!mapping&&mapping.memberId===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash&&mapping.fingerprint===row.fingerprint
-            &&mapping.jobId===row.job_id&&(mapping.requestId??null)===(row.request_id??null)&&mapping.normalizationContextRef===generationContextRef(row);
+    if (scope.generationIdempotency) {
+      const row = scope.generationIdempotency;
+      const recorded = events.some((event) => {
+        if (event.eventType === 'RequestAccepted') {
+          const mapping = event.payload.idempotency;
+          return (
+            !!mapping &&
+            mapping.memberId === row.member_id &&
+            mapping.operation === row.operation &&
+            mapping.keyHash === row.key_hash &&
+            mapping.fingerprint === row.fingerprint &&
+            mapping.jobId === row.job_id &&
+            (mapping.requestId ?? null) === (row.request_id ?? null) &&
+            mapping.normalizationContextRef === generationContextRef(row)
+          );
         }
-        if(event.eventType==='RequestAliasRegistered'){
-          const mapping=event.payload.idempotency;
-          return event.payload.memberId===row.member_id&&mapping.operation===row.operation&&mapping.keyHash===row.key_hash&&mapping.fingerprint===row.fingerprint
-            &&event.payload.jobId===row.job_id&&(event.payload.requestId??null)===(row.request_id??null)&&mapping.contextRef===generationContextRef(row);
+        if (event.eventType === 'RequestAliasRegistered') {
+          const mapping = event.payload.idempotency;
+          return (
+            event.payload.memberId === row.member_id &&
+            mapping.operation === row.operation &&
+            mapping.keyHash === row.key_hash &&
+            mapping.fingerprint === row.fingerprint &&
+            event.payload.jobId === row.job_id &&
+            (event.payload.requestId ?? null) === (row.request_id ?? null) &&
+            mapping.contextRef === generationContextRef(row)
+          );
         }
         return false;
       });
-      if(!recorded)throw new Error(`Unrecorded generation idempotency ${generationContextRef(row)}`);
+      if (!recorded)
+        throw new Error(`Unrecorded generation idempotency ${generationContextRef(row)}`);
     }
   }
 
   private persistIncremental(db: StoreDatabase, options: ResolvedOptions = {}) {
     const startedAt = Date.now();
     const scope = persistenceScope(options);
-    if (!scope.full && !scope.includeSettings && !scope.collections.length && !scope.generationRequest && !scope.generationIdempotency && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
+    if (
+      !scope.full &&
+      !scope.includeSettings &&
+      !scope.collections.length &&
+      !scope.generationRequest &&
+      !scope.generationIdempotency &&
+      !scope.domainBatch &&
+      !hasMemberSessionChanges(scope)
+    )
+      return;
     if (scope.hasDirtyRows) {
-      const fullCollections = scope.collections.filter((collection) => !scope.dirtyRows[collection]?.size);
+      const fullCollections = scope.collections.filter(
+        (collection) => !scope.dirtyRows[collection]?.size,
+      );
       this.assertFullCollectionsAreLoaded(fullCollections);
       if (fullCollections.length) trimDb(db, { collections: fullCollections });
       this.persistDirtyRows(db, scope, startedAt);
@@ -1573,13 +2805,15 @@ export class JsonStore {
     }
     this.assertFullCollectionsAreLoaded(scope.full ? collections : scope.collections);
     const safeDb = trimDb(normalizeDb(db), { collections: scope.full ? null : scope.collections });
-    const archive = scope.includeSettings ? fairQuotaArchive(safeDb.settings) : { settings: safeDb.settings, rows: [] };
+    const archive = scope.includeSettings
+      ? fairQuotaArchive(safeDb.settings)
+      : { settings: safeDb.settings, rows: [] };
     safeDb.settings = archive.settings;
     const snapshot = buildSnapshotState(safeDb, this.orderKeys, {
       collections: scope.full ? null : scope.collections,
       includeSettings: scope.includeSettings,
       baseRowState: scope.full ? null : this.rowState,
-      baseOrderKeys: scope.full ? null : this.orderKeys
+      baseOrderKeys: scope.full ? null : this.orderKeys,
     });
     const changes = collectPersistenceChanges({
       previousSettings: this.settingsState,
@@ -1587,45 +2821,77 @@ export class JsonStore {
       nextSettings: snapshot.settingsData,
       nextRows: snapshot.rowState,
       includeSettings: scope.includeSettings,
-      collections: scope.full ? collections : scope.collections
+      collections: scope.full ? collections : scope.collections,
     });
-    this.includeRetirementChanges(scope,changes);
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
+    this.includeRetirementChanges(scope, changes);
+    if (
+      !changes.settingsChanged &&
+      !changes.deletes.length &&
+      !changes.upserts.length &&
+      !scope.generationRequest &&
+      !scope.generationIdempotency &&
+      !archive.rows.length &&
+      !scope.domainBatch &&
+      !hasMemberSessionChanges(scope)
+    )
+      return;
 
-    const event = this.describeCommit(changes, snapshot.settingsData, this.rowState, this.settingsState, scope.generationRequest);
+    const event = this.describeCommit(
+      changes,
+      snapshot.settingsData,
+      this.rowState,
+      this.settingsState,
+      scope.generationRequest,
+    );
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
-      const authoritative=eventAuthorityEnabled(this.sqlite!);
-      this.assertDomainFactWrites(scope,archive.rows);
-      if(!authoritative)this.persistFairQuotaSettlements(archive.rows);
+      const authoritative = eventAuthorityEnabled(this.sqlite!);
+      this.assertDomainFactWrites(scope, archive.rows);
+      if (!authoritative) this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
-      if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: snapshot.settingsData });
+      if (scope.generationRequest)
+        this.statements!.insertGenerationRequest.run(scope.generationRequest);
+      if (changes.settingsChanged && !authoritative)
+        this.statements!.replaceSettings.run({ value: snapshot.settingsData });
       for (const change of changes.deletes) {
-        if(!authoritative||!['jobs','users','images'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection))
+          this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        if(!authoritative||!['jobs','accounts','users','images'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
+        if (!authoritative || !['jobs', 'accounts', 'users', 'images'].includes(change.collection))
+          this.statements!.upsertRecord[change.collection].run(change.sql);
       }
-      if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
-      if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
+      if (!authoritative)
+        this.persistQueueSequence(
+          changes.upserts
+            .filter((change) => change.collection === 'jobs')
+            .map((change) => change.sql!),
+        );
+      if (scope.generationIdempotency)
+        this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      projectedRows = this.persistDomainFacts(scope, changes,archive.settings);
+      projectedRows = this.persistDomainFacts(scope, changes, archive.settings);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
     if (scope.includeSettings) this.settingsState = snapshot.settingsData;
-    for (const collection of (scope.full ? collections : scope.collections)) {
+    for (const collection of scope.full ? collections : scope.collections) {
       this.rowState[collection] = snapshot.rowState[collection];
       this.orderKeys[collection] = snapshot.orderKeys[collection];
     }
     const duration = Date.now() - startedAt;
     if (duration >= sqliteSlowLogMs()) {
-      const scopeText = scope.full ? 'full' : ['settings', ...scope.collections].filter((item, index, array) => {
-        if (item !== 'settings') return true;
-        return scope.includeSettings && array.indexOf(item) === index;
-      }).join(',');
-      runtimeLog(`SQLite incremental persist slow: ${duration}ms scope=${scopeText || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
+      const scopeText = scope.full
+        ? 'full'
+        : ['settings', ...scope.collections]
+            .filter((item, index, array) => {
+              if (item !== 'settings') return true;
+              return scope.includeSettings && array.indexOf(item) === index;
+            })
+            .join(',');
+      runtimeLog(
+        `SQLite incremental persist slow: ${duration}ms scope=${scopeText || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`,
+      );
     }
     this.refreshDomainRows(projectedRows);
     this.trimRuntimePartialCaches();
@@ -1636,10 +2902,12 @@ export class JsonStore {
     const changes: Changes = {
       settingsChanged: false,
       deletes: [],
-      upserts: []
+      upserts: [],
     };
     const fullCollections: Collection[] = [];
-    const archive = scope.includeSettings ? fairQuotaArchive(db.settings) : { settings: db.settings, rows: [] };
+    const archive = scope.includeSettings
+      ? fairQuotaArchive(db.settings)
+      : { settings: db.settings, rows: [] };
 
     if (scope.includeSettings) {
       const nextSettings = JSON.stringify(archive.settings);
@@ -1670,7 +2938,7 @@ export class JsonStore {
         const row = {
           data,
           order,
-          sql: sqlRecord(collection, item, order, data)
+          sql: sqlRecord(collection, item, order, data),
         };
         const old = previousRows.get(id);
         if (!old || old.data !== row.data || old.order !== row.order) {
@@ -1685,7 +2953,7 @@ export class JsonStore {
         collections: fullCollections,
         includeSettings: false,
         baseRowState: this.rowState,
-        baseOrderKeys: this.orderKeys
+        baseOrderKeys: this.orderKeys,
       });
       const fullChanges = collectPersistenceChanges({
         previousSettings: this.settingsState,
@@ -1693,34 +2961,60 @@ export class JsonStore {
         nextSettings: snapshot.settingsData,
         nextRows: snapshot.rowState,
         includeSettings: false,
-        collections: fullCollections
+        collections: fullCollections,
       });
       changes.deletes.push(...fullChanges.deletes);
       changes.upserts.push(...fullChanges.upserts);
     }
 
-    this.includeRetirementChanges(scope,changes);
-    if (!changes.settingsChanged && !changes.deletes.length && !changes.upserts.length && !scope.generationRequest && !scope.generationIdempotency && !archive.rows.length && !scope.domainBatch && !hasMemberSessionChanges(scope)) return;
+    this.includeRetirementChanges(scope, changes);
+    if (
+      !changes.settingsChanged &&
+      !changes.deletes.length &&
+      !changes.upserts.length &&
+      !scope.generationRequest &&
+      !scope.generationIdempotency &&
+      !archive.rows.length &&
+      !scope.domainBatch &&
+      !hasMemberSessionChanges(scope)
+    )
+      return;
 
-    const event = this.describeCommit(changes, changes.nextSettings, this.rowState, this.settingsState, scope.generationRequest);
+    const event = this.describeCommit(
+      changes,
+      changes.nextSettings,
+      this.rowState,
+      this.settingsState,
+      scope.generationRequest,
+    );
     let projectedRows: ProjectionRow[] = [];
     const applyChanges = this.sqlite!.transaction(() => {
-      const authoritative=eventAuthorityEnabled(this.sqlite!);
-      this.assertDomainFactWrites(scope,archive.rows);
-      if(!authoritative)this.persistFairQuotaSettlements(archive.rows);
+      const authoritative = eventAuthorityEnabled(this.sqlite!);
+      this.assertDomainFactWrites(scope, archive.rows);
+      if (!authoritative) this.persistFairQuotaSettlements(archive.rows);
       // 父请求和子任务/预扣使用同一个同步事务；任一写入失败全部回滚。
-      if (scope.generationRequest) this.statements!.insertGenerationRequest.run(scope.generationRequest);
-      if (changes.settingsChanged&&!authoritative) this.statements!.replaceSettings.run({ value: changes.nextSettings });
+      if (scope.generationRequest)
+        this.statements!.insertGenerationRequest.run(scope.generationRequest);
+      if (changes.settingsChanged && !authoritative)
+        this.statements!.replaceSettings.run({ value: changes.nextSettings });
       for (const change of changes.deletes) {
-        if(!authoritative||!['jobs','users','images'].includes(change.collection))this.statements!.deleteRecord[change.collection].run({ id: change.id });
+        if (!authoritative || !['jobs', 'users', 'images'].includes(change.collection))
+          this.statements!.deleteRecord[change.collection].run({ id: change.id });
       }
       for (const change of changes.upserts) {
-        if(!authoritative||!['jobs','accounts','users','images'].includes(change.collection))this.statements!.upsertRecord[change.collection].run(change.sql);
+        if (!authoritative || !['jobs', 'accounts', 'users', 'images'].includes(change.collection))
+          this.statements!.upsertRecord[change.collection].run(change.sql);
       }
-      if(!authoritative)this.persistQueueSequence(changes.upserts.filter(change => change.collection === 'jobs').map(change => change.sql!));
-      if (scope.generationIdempotency) this.persistGenerationIdempotency(scope.generationIdempotency);
+      if (!authoritative)
+        this.persistQueueSequence(
+          changes.upserts
+            .filter((change) => change.collection === 'jobs')
+            .map((change) => change.sql!),
+        );
+      if (scope.generationIdempotency)
+        this.persistGenerationIdempotency(scope.generationIdempotency);
       this.persistMemberSessions(scope, event);
-      projectedRows = this.persistDomainFacts(scope, changes,archive.settings);
+      projectedRows = this.persistDomainFacts(scope, changes, archive.settings);
     });
     applyChanges();
     if (scope.includeSettings) db.settings = archive.settings;
@@ -1731,7 +3025,10 @@ export class JsonStore {
       this.orderKeys[change.collection]?.delete(change.id);
     }
     for (const change of changes.upserts) {
-      this.rowState[change.collection]?.set(change.id, { data: change.data!, order: change.order! });
+      this.rowState[change.collection]?.set(change.id, {
+        data: change.data!,
+        order: change.order!,
+      });
       this.orderKeys[change.collection]?.set(change.id, change.order!);
     }
 
@@ -1740,7 +3037,7 @@ export class JsonStore {
         collections: fullCollections,
         includeSettings: false,
         baseRowState: this.rowState,
-        baseOrderKeys: this.orderKeys
+        baseOrderKeys: this.orderKeys,
       });
       for (const collection of fullCollections) {
         this.rowState[collection] = snapshot.rowState[collection];
@@ -1750,7 +3047,9 @@ export class JsonStore {
 
     const duration = Date.now() - startedAt;
     if (duration >= sqliteSlowLogMs()) {
-      runtimeLog(`SQLite dirty-row persist slow: ${duration}ms scope=${scope.collections.join(',') || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`);
+      runtimeLog(
+        `SQLite dirty-row persist slow: ${duration}ms scope=${scope.collections.join(',') || 'none'} upserts=${changes.upserts.length} deletes=${changes.deletes.length} settings=${changes.settingsChanged ? 1 : 0}`,
+      );
     }
     this.refreshDomainRows(projectedRows);
     this.trimRuntimePartialCaches();
@@ -1758,9 +3057,14 @@ export class JsonStore {
   }
 
   private assertFullCollectionsAreLoaded(collectionList: Collection[] = []) {
-    const partial = collectionList.filter((collection) => this.partialCollections.has(collection) && ['jobs', 'images'].includes(collection));
+    const partial = collectionList.filter(
+      (collection) =>
+        this.partialCollections.has(collection) && ['jobs', 'images'].includes(collection),
+    );
     if (partial.length) {
-      throw new Error(`Refusing full persistence for partially loaded collection(s): ${partial.join(',')}`);
+      throw new Error(
+        `Refusing full persistence for partially loaded collection(s): ${partial.join(',')}`,
+      );
     }
   }
 
@@ -1839,8 +3143,8 @@ export class JsonStore {
     const migratedAt = new Date().toISOString();
     this.statements!.setMeta.run({ key: 'schema_version', value: '1' });
     this.statements!.setMeta.run({ key: 'last_migrated_at', value: migratedAt });
-      // 私有部署保护：迁移后保留旧版 JSON 文件。
-      if (process.env.NO_AUTO_DELETE === 'true') return;
+    // 私有部署保护：迁移后保留旧版 JSON 文件。
+    if (process.env.NO_AUTO_DELETE === 'true') return;
     const deleted = [];
     for (const filePath of [this.legacyDbPath, this.legacyBackupPath]) {
       if (!existsSync(filePath)) continue;
@@ -1853,18 +3157,29 @@ export class JsonStore {
       }
     }
     this.statements!.setMeta.run({ key: 'legacy_json_deleted', value: JSON.stringify(deleted) });
-    if (deleted.length) console.log(`Migrated legacy JSON data to SQLite and deleted ${deleted.length} old JSON file(s).`);
+    if (deleted.length)
+      console.log(
+        `Migrated legacy JSON data to SQLite and deleted ${deleted.length} old JSON file(s).`,
+      );
   }
 }
 
-function buildSnapshotState(db: StoreDatabase, previousOrderKeys: CollectionMaps<number>, options: SnapshotOptions = {}) {
+function buildSnapshotState(
+  db: StoreDatabase,
+  previousOrderKeys: CollectionMaps<number>,
+  options: SnapshotOptions = {},
+) {
   const settingsData = options.includeSettings === false ? '' : JSON.stringify(db.settings);
   const hasCollectionOption = options.collections !== undefined && options.collections !== null;
   const targetCollections = hasCollectionOption
     ? normalizeCollectionList(options.collections) || []
     : collections;
-  const rowState = options.baseRowState ? cloneCollectionMaps(options.baseRowState) : emptyCollectionMaps<RowState>();
-  const orderKeys = options.baseOrderKeys ? cloneCollectionMaps(options.baseOrderKeys) : emptyCollectionMaps<number>();
+  const rowState = options.baseRowState
+    ? cloneCollectionMaps(options.baseRowState)
+    : emptyCollectionMaps<RowState>();
+  const orderKeys = options.baseOrderKeys
+    ? cloneCollectionMaps(options.baseOrderKeys)
+    : emptyCollectionMaps<number>();
 
   for (const collection of targetCollections) {
     const items = Array.isArray(db[collection]) ? db[collection] : [];
@@ -1881,7 +3196,7 @@ function buildSnapshotState(db: StoreDatabase, previousOrderKeys: CollectionMaps
       rowState[collection].set(id, {
         data,
         order,
-        sql: sqlRecord(collection, item, order, data)
+        sql: sqlRecord(collection, item, order, data),
       });
     }
   }
@@ -1889,7 +3204,21 @@ function buildSnapshotState(db: StoreDatabase, previousOrderKeys: CollectionMaps
   return { settingsData, rowState, orderKeys };
 }
 
-function collectPersistenceChanges({ previousSettings, previousRows, nextSettings, nextRows, includeSettings = true, collections: targetCollections = collections }: { previousSettings: string; previousRows: CollectionMaps<RowState>; nextSettings: string; nextRows: CollectionMaps<RowState>; includeSettings?: boolean; collections?: Collection[] }): Changes {
+function collectPersistenceChanges({
+  previousSettings,
+  previousRows,
+  nextSettings,
+  nextRows,
+  includeSettings = true,
+  collections: targetCollections = collections,
+}: {
+  previousSettings: string;
+  previousRows: CollectionMaps<RowState>;
+  nextSettings: string;
+  nextRows: CollectionMaps<RowState>;
+  includeSettings?: boolean;
+  collections?: Collection[];
+}): Changes {
   const deletes = [];
   const upserts = [];
   for (const collection of targetCollections) {
@@ -1908,7 +3237,7 @@ function collectPersistenceChanges({ previousSettings, previousRows, nextSetting
   return {
     settingsChanged: includeSettings && previousSettings !== nextSettings,
     deletes,
-    upserts
+    upserts,
   };
 }
 
@@ -1920,14 +3249,38 @@ function shouldPersistUpdate(result: unknown, options: ResolvedOptions = {}) {
 
 function shouldDeferPersist(scope: Scope, options: ResolvedOptions = {}) {
   if (!sqliteBatchWritesEnabled()) return false;
-  if (scope.domainBatch || options.immediate === true || options.defer === false || options.generationRequest || options.generationIdempotency || options.generationPayloadClaim || hasMemberSessionChanges(scope)) return false;
+  if (
+    scope.domainBatch ||
+    options.immediate === true ||
+    options.defer === false ||
+    options.generationRequest ||
+    options.generationIdempotency ||
+    options.generationPayloadClaim ||
+    hasMemberSessionChanges(scope)
+  )
+    return false;
   return Boolean(scope?.hasDirtyRows && !scope.full);
 }
 
-function resolvePersistenceOptions<T>(options: PersistenceOptions<T> = {}, result: T, db: StoreDatabase): ResolvedOptions {
+function resolvePersistenceOptions<T>(
+  options: PersistenceOptions<T> = {},
+  result: T,
+  db: StoreDatabase,
+): ResolvedOptions {
   const resolved: Record<string, unknown> = { ...options };
-  for (const key of ['dirtyRows', 'rows', 'changedRows', 'generationRequest', 'generationIdempotency', 'memberSession', 'memberSessionDelete', 'memberSessionOwner', 'memberSessionExpiry']) {
-    if (typeof resolved[key] === 'function') resolved[key] = (resolved[key] as (result: T, db: StoreDatabase) => unknown)(result, db);
+  for (const key of [
+    'dirtyRows',
+    'rows',
+    'changedRows',
+    'generationRequest',
+    'generationIdempotency',
+    'memberSession',
+    'memberSessionDelete',
+    'memberSessionOwner',
+    'memberSessionExpiry',
+  ]) {
+    if (typeof resolved[key] === 'function')
+      resolved[key] = (resolved[key] as (result: T, db: StoreDatabase) => unknown)(result, db);
   }
   return resolved as ResolvedOptions;
 }
@@ -1962,13 +3315,14 @@ function mergePersistenceScopes(current: Scope | null, next: Scope | null): Scop
     includeSettings: Boolean(current.includeSettings || next.includeSettings),
     collections: [...targetCollections].filter((collection) => collections.includes(collection)),
     dirtyRows,
-    hasDirtyRows: Object.keys(dirtyRows).length > 0
+    hasDirtyRows: Object.keys(dirtyRows).length > 0,
   };
 }
 
 function clonePersistenceScope(scope: Scope | null): Scope | null {
   if (!scope) return null;
-  if (scope.full) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
+  if (scope.full)
+    return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false };
   const dirtyRows: Partial<Record<Collection, Set<string>>> = {};
   for (const [collection, ids] of Object.entries(scope.dirtyRows || {})) {
     dirtyRows[collection as Collection] = new Set(ids || []);
@@ -1978,22 +3332,53 @@ function clonePersistenceScope(scope: Scope | null): Scope | null {
     includeSettings: Boolean(scope.includeSettings),
     collections: normalizeCollectionList(scope.collections) || [],
     dirtyRows,
-    hasDirtyRows: Object.keys(dirtyRows).length > 0
+    hasDirtyRows: Object.keys(dirtyRows).length > 0,
   };
 }
 
 function hasMemberSessionChanges(scope: Writes) {
-  return Boolean(scope.memberSession || scope.memberSessionDelete || scope.memberSessionOwner || scope.memberSessionExpiry);
+  return Boolean(
+    scope.memberSession ||
+    scope.memberSessionDelete ||
+    scope.memberSessionOwner ||
+    scope.memberSessionExpiry,
+  );
 }
 
 function persistenceScope(options: ResolvedOptions = {}): Scope {
-  const writes = { domainBatch: options.domainBatch, generationRequest: options.generationRequest, generationIdempotency: options.generationIdempotency,
-    memberSession: options.memberSession, memberSessionDelete: options.memberSessionDelete, memberSessionOwner: options.memberSessionOwner, memberSessionExpiry: options.memberSessionExpiry };
-  if (options.full === true) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, ...writes };
+  const writes = {
+    domainBatch: options.domainBatch,
+    generationRequest: options.generationRequest,
+    generationIdempotency: options.generationIdempotency,
+    memberSession: options.memberSession,
+    memberSessionDelete: options.memberSessionDelete,
+    memberSessionOwner: options.memberSessionOwner,
+    memberSessionExpiry: options.memberSessionExpiry,
+  };
+  if (options.full === true)
+    return {
+      full: true,
+      includeSettings: true,
+      collections,
+      dirtyRows: {},
+      hasDirtyRows: false,
+      ...writes,
+    };
   const dirtyRows = normalizeDirtyRows(options.dirtyRows ?? options.rows ?? options.changedRows);
   const dirtyCollections = Object.keys(dirtyRows);
-  const raw = options.collections ?? options.changedCollections ?? (dirtyCollections.length ? dirtyCollections : undefined);
-  if (raw === undefined || raw === null) return { full: true, includeSettings: true, collections, dirtyRows: {}, hasDirtyRows: false, ...writes };
+  const raw =
+    options.collections ??
+    options.changedCollections ??
+    (dirtyCollections.length ? dirtyCollections : undefined);
+  if (raw === undefined || raw === null)
+    return {
+      full: true,
+      includeSettings: true,
+      collections,
+      dirtyRows: {},
+      hasDirtyRows: false,
+      ...writes,
+    };
   const values = Array.isArray(raw) ? raw : [raw];
   const includeSettings = values.includes('settings') || options.includeSettings === true;
   const targetCollections = normalizeCollectionList([...values, ...dirtyCollections]);
@@ -2003,7 +3388,7 @@ function persistenceScope(options: ResolvedOptions = {}): Scope {
     collections: targetCollections || [],
     dirtyRows,
     hasDirtyRows: dirtyCollections.length > 0,
-    ...writes
+    ...writes,
   };
 }
 
@@ -2028,14 +3413,8 @@ function normalizeDirtyRows(value: unknown): Partial<Record<Collection, Set<stri
   for (const [rawCollection, rawIds] of entries) {
     const collection = String(rawCollection || '') as Collection;
     if (!collections.includes(collection)) continue;
-    const ids = rawIds instanceof Set
-      ? [...rawIds]
-      : Array.isArray(rawIds)
-        ? rawIds
-        : [rawIds];
-    const selected = ids
-      .map((id) => String(id || '').trim())
-      .filter(Boolean as unknown as Present);
+    const ids = rawIds instanceof Set ? [...rawIds] : Array.isArray(rawIds) ? rawIds : [rawIds];
+    const selected = ids.map((id) => String(id || '').trim()).filter(Boolean as unknown as Present);
     if (!selected.length) continue;
     dirtyRows[collection] = new Set([...(dirtyRows[collection] || []), ...selected]);
   }
@@ -2050,196 +3429,470 @@ function cloneCollectionMaps<T>(source: Partial<CollectionMaps<T>> = {}): Collec
   return maps;
 }
 
-const criticalJobFields = ['id','status','requestId','memberId','accountId','batchId','sampleIndex','queueSeq','queueExpiresAt','deadlineAt','jobAdmissionVersion',
-  'imageId','fairCharge','generationAttempt','generationRefund','generationReview','lateResultAvailable','lateResultAt','resultPending','cancelledAt','cancellationReason','errorCode','diagnosticRef',
-  'upstreamStartedAt','upstreamHeadersAt','upstreamCompletedAt','upstreamHttpStatus'];
-const criticalAccountFields = ['id','enabled','quotaTier','subscriptionActive','subscriptionExpiresAt','v5UsagePercent','quotaFixed','quotaPurchased',
-  'v5UsageIsNegative','quotaCheckedAt','v5UsageTimeUntilNextPercent','quotaError','upstreamStatus','cooldownUntil','upstreamRetryAfterUntil','quotaRetryAfterUntil'];
-const criticalMemberFields = ['id','enabled','acceptingJobs','jobAdmissionVersion','discord'];
-function domainRowValues(collection:ProjectionRow['collection'],item:Record<string,unknown>):Record<string,unknown> {
-  const fields=collection==='jobs'?criticalJobFields:collection==='accounts'?criticalAccountFields:collection==='users'?criticalMemberFields:Object.keys(item);
-  const result:Record<string,unknown>={};
-  for(const key of fields){
-    let value=item[key];
-    if(value===undefined||value===null||value==='')continue;
-    if(collection==='users'&&key==='discord')value=Object.fromEntries(Object.entries(value as Record<string,unknown>).filter(([field])=>['id','guildId','checkedAt','member'].includes(field)));
-    if(['queueExpiresAt','deadlineAt','lateResultAt','cancelledAt','cooldownUntil','quotaCheckedAt','subscriptionExpiresAt'].includes(key)){
-      const timestamp=new Date(value as string|number).getTime();if(Number.isFinite(timestamp))value=timestamp;
+const criticalJobFields = [
+  'id',
+  'status',
+  'requestId',
+  'memberId',
+  'accountId',
+  'batchId',
+  'sampleIndex',
+  'queueSeq',
+  'queueExpiresAt',
+  'deadlineAt',
+  'jobAdmissionVersion',
+  'imageId',
+  'fairCharge',
+  'generationAttempt',
+  'generationRefund',
+  'generationReview',
+  'lateResultAvailable',
+  'lateResultAt',
+  'resultPending',
+  'cancelledAt',
+  'cancellationReason',
+  'errorCode',
+  'diagnosticRef',
+  'upstreamStartedAt',
+  'upstreamHeadersAt',
+  'upstreamCompletedAt',
+  'upstreamHttpStatus',
+];
+const criticalAccountFields = [
+  'id',
+  'enabled',
+  'quotaTier',
+  'subscriptionActive',
+  'subscriptionExpiresAt',
+  'v5UsagePercent',
+  'quotaFixed',
+  'quotaPurchased',
+  'v5UsageIsNegative',
+  'quotaCheckedAt',
+  'v5UsageTimeUntilNextPercent',
+  'quotaError',
+  'upstreamStatus',
+  'cooldownUntil',
+  'upstreamRetryAfterUntil',
+  'quotaRetryAfterUntil',
+];
+const criticalMemberFields = ['id', 'enabled', 'acceptingJobs', 'jobAdmissionVersion', 'discord'];
+function domainRowValues(
+  collection: ProjectionRow['collection'],
+  item: Record<string, unknown>,
+): Record<string, unknown> {
+  const fields =
+    collection === 'jobs'
+      ? criticalJobFields
+      : collection === 'accounts'
+        ? criticalAccountFields
+        : collection === 'users'
+          ? criticalMemberFields
+          : Object.keys(item);
+  const result: Record<string, unknown> = {};
+  for (const key of fields) {
+    let value = item[key];
+    if (value === undefined || value === null || value === '') continue;
+    if (collection === 'users' && key === 'discord')
+      value = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(([field]) =>
+          ['id', 'guildId', 'checkedAt', 'member'].includes(field),
+        ),
+      );
+    if (
+      [
+        'queueExpiresAt',
+        'deadlineAt',
+        'lateResultAt',
+        'cancelledAt',
+        'cooldownUntil',
+        'quotaCheckedAt',
+        'subscriptionExpiresAt',
+      ].includes(key)
+    ) {
+      const timestamp = new Date(value as string | number).getTime();
+      if (Number.isFinite(timestamp)) value = timestamp;
     }
-    result[key]=value;
+    result[key] = value;
   }
   return result;
 }
-function projectionDifference(actual:unknown,expected:unknown,at:string):string|null {
-  if(canonicalJson(actual)===canonicalJson(expected))return null;
-  if(actual&&expected&&typeof actual==='object'&&typeof expected==='object'&&!Array.isArray(actual)&&!Array.isArray(expected)){
-    for(const key of [...new Set([...Object.keys(actual),...Object.keys(expected)])].sort()){
-      const left=(actual as Record<string,unknown>)[key],right=(expected as Record<string,unknown>)[key];
-      if(left===undefined||right===undefined){if(left!==right)return `${at}.${key}`;continue;}
-      const difference=projectionDifference(left,right,`${at}.${key}`);if(difference)return difference;
+function projectionDifference(actual: unknown, expected: unknown, at: string): string | null {
+  if (canonicalJson(actual) === canonicalJson(expected)) return null;
+  if (
+    actual &&
+    expected &&
+    typeof actual === 'object' &&
+    typeof expected === 'object' &&
+    !Array.isArray(actual) &&
+    !Array.isArray(expected)
+  ) {
+    for (const key of [...new Set([...Object.keys(actual), ...Object.keys(expected)])].sort()) {
+      const left = (actual as Record<string, unknown>)[key],
+        right = (expected as Record<string, unknown>)[key];
+      if (left === undefined || right === undefined) {
+        if (left !== right) return `${at}.${key}`;
+        continue;
+      }
+      const difference = projectionDifference(left, right, `${at}.${key}`);
+      if (difference) return difference;
     }
   }
   return at;
 }
 
-export function activateEventAuthority(sqlite:Database.Database):{version:number;commitSeq:string} {
+export function activateEventAuthority(sqlite: Database.Database): {
+  version: number;
+  commitSeq: string;
+} {
   // 已有权威库的版本升级须先于恢复命令；与首次切换的 running 禁止条件不同。
   upgradeEventAuthorityProjections(sqlite);
   importOpeningFacts(sqlite);
-  return sqlite.transaction(()=>{
-    if(sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get())throw new Error('Recover running attempts before switching event authority.');
+  return sqlite.transaction(() => {
+    if (sqlite.prepare("SELECT id FROM jobs WHERE status='running' LIMIT 1").get())
+      throw new Error('Recover running attempts before switching event authority.');
     verifyEventProjections(sqlite);
-    const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
+    const clock = sqlite
+      .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
+      .get() as { value: string };
     // 免费成功与告警的唯一写点改为共同领域事实 projector。
     removeLegacyFreeImageTriggers(sqlite);
     // 精度归一与稳定身份只在已验证投影中；同事务安装后才能标记为权威。
     installEventProjections(sqlite);
-    sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('event_authority',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-      .run(JSON.stringify({version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION,commitSeq:clock.value}));
-    return {version:EVENT_AUTHORITY_VERSION,commitSeq:clock.value};
+    sqlite
+      .prepare(
+        "INSERT INTO app_meta(key,value) VALUES('event_authority',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      )
+      .run(
+        JSON.stringify({
+          version: EVENT_AUTHORITY_VERSION,
+          minimumWriterVersion: EVENT_AUTHORITY_VERSION,
+          commitSeq: clock.value,
+        }),
+      );
+    return { version: EVENT_AUTHORITY_VERSION, commitSeq: clock.value };
   })();
 }
 
-function upgradeEventAuthorityProjections(sqlite:Database.Database):void {
-  sqlite.transaction(()=>{
-    const authority=readCompatibleEventAuthority(sqlite);
-    if(!upgradeEventReducers(sqlite))return;
+function upgradeEventAuthorityProjections(sqlite: Database.Database): void {
+  sqlite.transaction(() => {
+    const authority = readCompatibleEventAuthority(sqlite);
+    if (!upgradeEventReducers(sqlite)) return;
     // Old writers kept these observations only in query rows. Preserve their provenance before stricter verification.
-    let cursor='';
-    for(;;){
-      const row=sqlite.prepare('SELECT id,data,request_id FROM jobs WHERE id>? ORDER BY id LIMIT 1').get(cursor) as {id:string;data:string;request_id:string|null}|undefined;
-      if(!row)break;cursor=row.id;
-      const observed=JSON.parse(row.data) as StoreItem,streamId=`request:${row.request_id||`legacy-${row.id}`}`;
-      const state=readStreamProjection(sqlite,streamId)?.projection;
-      const expected=(state?.jobs as Record<string,StoreItem>|undefined)?.[row.id];
-      if(!expected)continue;
-      const response={dispatchState:observed.upstreamStartedAt?'request_started' as const:'unknown' as const,
-        upstreamStartedAt:null as string|null,upstreamHeadersAt:null as string|null,upstreamCompletedAt:null as string|null,upstreamHttpStatus:null as number|null};
-      let missing=false;
-      for(const field of ['upstreamStartedAt','upstreamHeadersAt','upstreamCompletedAt','upstreamHttpStatus'] as const){
-        if(observed[field]!=null&&observed[field]!==''&&(expected[field]==null||expected[field]==='')){Object.assign(response,{[field]:observed[field]});missing=true;}
+    let cursor = '';
+    for (;;) {
+      const row = sqlite
+        .prepare('SELECT id,data,request_id FROM jobs WHERE id>? ORDER BY id LIMIT 1')
+        .get(cursor) as { id: string; data: string; request_id: string | null } | undefined;
+      if (!row) break;
+      cursor = row.id;
+      const observed = JSON.parse(row.data) as StoreItem,
+        streamId = `request:${row.request_id || `legacy-${row.id}`}`;
+      const state = readStreamProjection(sqlite, streamId)?.projection;
+      const expected = (state?.jobs as Record<string, StoreItem> | undefined)?.[row.id];
+      if (!expected) continue;
+      const response = {
+        dispatchState: observed.upstreamStartedAt
+          ? ('request_started' as const)
+          : ('unknown' as const),
+        upstreamStartedAt: null as string | null,
+        upstreamHeadersAt: null as string | null,
+        upstreamCompletedAt: null as string | null,
+        upstreamHttpStatus: null as number | null,
+      };
+      let missing = false;
+      for (const field of [
+        'upstreamStartedAt',
+        'upstreamHeadersAt',
+        'upstreamCompletedAt',
+        'upstreamHttpStatus',
+      ] as const) {
+        if (
+          observed[field] != null &&
+          observed[field] !== '' &&
+          (expected[field] == null || expected[field] === '')
+        ) {
+          Object.assign(response, { [field]: observed[field] });
+          missing = true;
+        }
       }
-      if(!missing)continue;
-      appendDomainCommit(sqlite,{commandId:`response-evidence-v3:${row.id}`,recordedAt:new Date().toISOString(),actorId:null,actorKind:'system',
-        correlationId:null,causationId:null,expectedVersions:{},receipt:null,events:[{eventType:'ResponseEvidenceRecorded',eventId:`response-evidence-v3:${row.id}:0`,streamId,
-          payload:{jobId:row.id,response,source:'legacy-query-projection',sourceRowSha256:domainDigest(observed)}}]});
+      if (!missing) continue;
+      appendDomainCommit(sqlite, {
+        commandId: `response-evidence-v3:${row.id}`,
+        recordedAt: new Date().toISOString(),
+        actorId: null,
+        actorKind: 'system',
+        correlationId: null,
+        causationId: null,
+        expectedVersions: {},
+        receipt: null,
+        events: [
+          {
+            eventType: 'ResponseEvidenceRecorded',
+            eventId: `response-evidence-v3:${row.id}:0`,
+            streamId,
+            payload: {
+              jobId: row.id,
+              response,
+              source: 'legacy-query-projection',
+              sourceRowSha256: domainDigest(observed),
+            },
+          },
+        ],
+      });
     }
-    if(!authority)return;
+    if (!authority) return;
     verifyEventProjections(sqlite);
     removeLegacyFreeImageTriggers(sqlite);
     installEventProjections(sqlite);
-    sqlite.prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
-      .run(JSON.stringify({...authority,version:EVENT_AUTHORITY_VERSION,minimumWriterVersion:EVENT_AUTHORITY_VERSION}));
+    sqlite
+      .prepare("UPDATE app_meta SET value=? WHERE key='event_authority'")
+      .run(
+        JSON.stringify({
+          ...authority,
+          version: EVENT_AUTHORITY_VERSION,
+          minimumWriterVersion: EVENT_AUTHORITY_VERSION,
+        }),
+      );
   })();
 }
 
-export function verifyEventProjections(sqlite:Database.Database):void {
-  if(!sqlite.inTransaction)throw new Error('Shadow verification requires a consistent database transaction.');
+export function verifyEventProjections(sqlite: Database.Database): void {
+  if (!sqlite.inTransaction)
+    throw new Error('Shadow verification requires a consistent database transaction.');
   assertCurrentEventReducer(sqlite);
   verifyColdDomainFacts(sqlite);
-  const unmapped=sqlite.prepare(`SELECT j.id FROM jobs j LEFT JOIN event_streams s
-    ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`).get() as {id:string}|undefined;
-  if(unmapped)throw new Error(`Unrecorded domain job ${unmapped.id}`);
-  const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string}|undefined;
-  const commit:DomainCommit={commitSeq:clock?.value||'0',commandId:'shadow-verification',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
-  let cursor='';
-  while(true){
-    const rows=sqlite.prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100').all(cursor) as {stream_id:string}[];
-    if(!rows.length)break;
-    const streams=rows.map(row=>readStreamProjection(sqlite,row.stream_id)!);
-    applyEventProjection(sqlite,commit,streams,{verify:true,checkOnly:true});
-    cursor=rows.at(-1)!.stream_id;
+  const unmapped = sqlite
+    .prepare(
+      `SELECT j.id FROM jobs j LEFT JOIN event_streams s
+    ON s.stream_id='request:'||COALESCE(j.request_id,'legacy-'||j.id) WHERE s.stream_id IS NULL LIMIT 1`,
+    )
+    .get() as { id: string } | undefined;
+  if (unmapped) throw new Error(`Unrecorded domain job ${unmapped.id}`);
+  const clock = sqlite
+    .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
+    .get() as { value: string } | undefined;
+  const commit: DomainCommit = {
+    commitSeq: clock?.value || '0',
+    commandId: 'shadow-verification',
+    fingerprint: '',
+    recordedAt: new Date().toISOString(),
+    receipt: null,
+    events: [],
+  };
+  let cursor = '';
+  while (true) {
+    const rows = sqlite
+      .prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100')
+      .all(cursor) as { stream_id: string }[];
+    if (!rows.length) break;
+    const streams = rows.map((row) => readStreamProjection(sqlite, row.stream_id)!);
+    applyEventProjection(sqlite, commit, streams, { verify: true, checkOnly: true });
+    cursor = rows.at(-1)!.stream_id;
   }
 }
 
-function installEventProjections(sqlite:Database.Database):void {
-  const clock=sqlite.prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1').get() as {value:string};
-  const commit:DomainCommit={commitSeq:clock.value,commandId:'install-verified-projections',fingerprint:'',recordedAt:new Date().toISOString(),receipt:null,events:[]};
-  let cursor='';
-  while(true){
-    const rows=sqlite.prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100').all(cursor) as {stream_id:string}[];
-    if(!rows.length)break;
-    applyEventProjection(sqlite,commit,rows.map(row=>readStreamProjection(sqlite,row.stream_id)!));cursor=rows.at(-1)!.stream_id;
+function installEventProjections(sqlite: Database.Database): void {
+  const clock = sqlite
+    .prepare('SELECT CAST(value AS TEXT) AS value FROM event_clock WHERE id=1')
+    .get() as { value: string };
+  const commit: DomainCommit = {
+    commitSeq: clock.value,
+    commandId: 'install-verified-projections',
+    fingerprint: '',
+    recordedAt: new Date().toISOString(),
+    receipt: null,
+    events: [],
+  };
+  let cursor = '';
+  while (true) {
+    const rows = sqlite
+      .prepare('SELECT stream_id FROM event_streams WHERE stream_id>? ORDER BY stream_id LIMIT 100')
+      .all(cursor) as { stream_id: string }[];
+    if (!rows.length) break;
+    applyEventProjection(
+      sqlite,
+      commit,
+      rows.map((row) => readStreamProjection(sqlite, row.stream_id)!),
+    );
+    cursor = rows.at(-1)!.stream_id;
   }
 }
 
-export function applyEventProjection(sqlite:Database.Database,commit:DomainCommit,streams:StreamProjection[],options:{verify?:boolean;checkOnly?:boolean;
-  candidates?:{settings:Settings;rows:Map<string,{item:Record<string,unknown>|null;order?:number}>}}={}):ProjectionRow[] {
-  if(!sqlite.inTransaction)throw new Error('Critical projections require the domain write transaction.');
-  const projection=coreProjectionRows(sqlite,commit,streams);
-  if(projection.fairQuota!==undefined){
-    const row=sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as {value:string}|undefined;
-    const settings=options.candidates?structuredClone(options.candidates.settings):row?JSON.parse(row.value) as Settings:{...defaultSettings};
-    if(options.verify){
-      const actual=settings.fairQuota?fairQuotaArchive({fairQuota:normalizeOpeningQuota(settings.fairQuota)}).settings.fairQuota:null;
-      const expected=fairQuotaArchive({fairQuota:projection.fairQuota}).settings.fairQuota;
-      const mismatch=projectionDifference(actual,expected,'fairQuota');
-      if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+export function applyEventProjection(
+  sqlite: Database.Database,
+  commit: DomainCommit,
+  streams: StreamProjection[],
+  options: {
+    verify?: boolean;
+    checkOnly?: boolean;
+    candidates?: {
+      settings: Settings;
+      rows: Map<string, { item: Record<string, unknown> | null; order?: number }>;
+    };
+  } = {},
+): ProjectionRow[] {
+  if (!sqlite.inTransaction)
+    throw new Error('Critical projections require the domain write transaction.');
+  const projection = coreProjectionRows(sqlite, commit, streams);
+  if (projection.fairQuota !== undefined) {
+    const row = sqlite.prepare("SELECT value FROM app_settings WHERE key='settings'").get() as
+      { value: string } | undefined;
+    const settings = options.candidates
+      ? structuredClone(options.candidates.settings)
+      : row
+        ? (JSON.parse(row.value) as Settings)
+        : { ...defaultSettings };
+    if (options.verify) {
+      const actual = settings.fairQuota
+        ? fairQuotaArchive({ fairQuota: normalizeOpeningQuota(settings.fairQuota) }).settings
+            .fairQuota
+        : null;
+      const expected = fairQuotaArchive({ fairQuota: projection.fairQuota }).settings.fairQuota;
+      const mismatch = projectionDifference(actual, expected, 'fairQuota');
+      if (mismatch)
+        throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
     }
-    settings.fairQuota=projection.fairQuota;
-    if(!options.checkOnly)sqlite.prepare("INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(settings));
+    settings.fairQuota = projection.fairQuota;
+    if (!options.checkOnly)
+      sqlite
+        .prepare(
+          "INSERT INTO app_settings(key,value) VALUES('settings',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(JSON.stringify(settings));
   }
-  const written:ProjectionRow[]=[];
-  for(const projected of projection.rows){
-    const {collection}=projected;
-    const prior=sqlite.prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`).get(projected.item.id) as {data:string;order_value:number}|undefined;
-    const candidate=options.candidates?.rows.get(`${collection}:${projected.item.id}`);
-    const existing=candidate?structuredClone(candidate.item||{}):prior?JSON.parse(prior.data) as Record<string,unknown>:{};
-    if(projected.remove){
-      if(options.verify&&(candidate?candidate.item!==null:prior))throw new Error(`Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`);
-      if(!options.checkOnly)sqlite.prepare(`DELETE FROM ${collection} WHERE id=?`).run(projected.item.id);written.push(projected);continue;
+  const written: ProjectionRow[] = [];
+  for (const projected of projection.rows) {
+    const { collection } = projected;
+    const prior = sqlite
+      .prepare(`SELECT data,order_value FROM ${collection} WHERE id=?`)
+      .get(projected.item.id) as { data: string; order_value: number } | undefined;
+    const candidate = options.candidates?.rows.get(`${collection}:${projected.item.id}`);
+    const existing = candidate
+      ? structuredClone(candidate.item || {})
+      : prior
+        ? (JSON.parse(prior.data) as Record<string, unknown>)
+        : {};
+    if (projected.remove) {
+      if (options.verify && (candidate ? candidate.item !== null : prior))
+        throw new Error(
+          `Domain shadow mismatch at users.${projected.item.id}.removed; commit ${commit.commitSeq}`,
+        );
+      if (!options.checkOnly)
+        sqlite.prepare(`DELETE FROM ${collection} WHERE id=?`).run(projected.item.id);
+      written.push(projected);
+      continue;
     }
-    const expected={...projected.item};
-    if(collection==='jobs'&&!existing.diagnosticRef&&expected.diagnosticRef&&existing.errorDetail===expected.errorDetail)existing.diagnosticRef=expected.diagnosticRef;
-    if(expected.memberId){
-      const member=sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as {data:string}|undefined;
-      const memberData=options.candidates?.rows.get(`users:${expected.memberId}`)?.item||(member?JSON.parse(member.data) as Record<string,unknown>:null);
-      if(memberData?.token){if(collection==='jobs')expected.userToken=existing.userToken||memberData.token;if(collection==='images')expected.token=existing.token||memberData.token;}
-      if(!existing.memberId&&collection==='jobs'){
-        const parent=existing.requestId?sqlite.prepare('SELECT member_id FROM generation_requests WHERE id=?').get(existing.requestId) as {member_id:string}|undefined:undefined;
-        const stableOwner=parent?.member_id||(existing.generationAttempt as {memberId?:string}|undefined)?.memberId||(existing.fairCharge as {userId?:string}|undefined)?.userId;
-        if(stableOwner===expected.memberId||!stableOwner&&existing.userToken&&existing.userToken===memberData?.token)existing.memberId=expected.memberId;
+    const expected = { ...projected.item };
+    if (
+      collection === 'jobs' &&
+      !existing.diagnosticRef &&
+      expected.diagnosticRef &&
+      existing.errorDetail === expected.errorDetail
+    )
+      existing.diagnosticRef = expected.diagnosticRef;
+    if (expected.memberId) {
+      const member = sqlite.prepare('SELECT data FROM users WHERE id=?').get(expected.memberId) as
+        { data: string } | undefined;
+      const memberData =
+        options.candidates?.rows.get(`users:${expected.memberId}`)?.item ||
+        (member ? (JSON.parse(member.data) as Record<string, unknown>) : null);
+      if (memberData?.token) {
+        if (collection === 'jobs') expected.userToken = existing.userToken || memberData.token;
+        if (collection === 'images') expected.token = existing.token || memberData.token;
+      }
+      if (!existing.memberId && collection === 'jobs') {
+        const parent = existing.requestId
+          ? (sqlite
+              .prepare('SELECT member_id FROM generation_requests WHERE id=?')
+              .get(existing.requestId) as { member_id: string } | undefined)
+          : undefined;
+        const stableOwner =
+          parent?.member_id ||
+          (existing.generationAttempt as { memberId?: string } | undefined)?.memberId ||
+          (existing.fairCharge as { userId?: string } | undefined)?.userId;
+        if (
+          stableOwner === expected.memberId ||
+          (!stableOwner && existing.userToken && existing.userToken === memberData?.token)
+        )
+          existing.memberId = expected.memberId;
       }
     }
-    if(options.verify&&['jobs','accounts','users'].includes(collection)){
-      const mismatch=projectionDifference(domainRowValues(collection,existing),domainRowValues(collection,expected),`${collection}.${expected.id}`);
-      if(mismatch)throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
+    if (options.verify && ['jobs', 'accounts', 'users'].includes(collection)) {
+      const mismatch = projectionDifference(
+        domainRowValues(collection, existing),
+        domainRowValues(collection, expected),
+        `${collection}.${expected.id}`,
+      );
+      if (mismatch)
+        throw new Error(`Domain shadow mismatch at ${mismatch}; commit ${commit.commitSeq}`);
     }
-    const item={...existing,...expected};
-    if(collection==='images'&&item.artifactInputRef)delete item.base64;
-    if(collection==='users'&&expected.discord)item.discord={...(existing.discord as object||{}),...(expected.discord as object)};
-    if(collection==='jobs')for(const field of criticalJobFields)if(!(field in expected))delete item[field];
-    const order=projected.order??candidate?.order??prior?.order_value??Date.parse(String(item.createdAt||item.at||commit.recordedAt));
-    const data=JSON.stringify(item);
-    if(prior?.data===data&&prior.order_value===order)continue;
-    const row=sqlRecord(collection,item as StoreItem,order,data);
-    const keys=Object.keys(row);
-    if(!options.checkOnly)sqlite.prepare(`INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map(key=>`@${key}`).join(',')})
-      ON CONFLICT(id) DO UPDATE SET ${keys.filter(key=>key!=='id').map(key=>`${key}=excluded.${key}`).join(',')}`).run(row);
-    written.push({collection,item,order});
+    const item = { ...existing, ...expected };
+    if (collection === 'images' && item.artifactInputRef) delete item.base64;
+    if (collection === 'users' && expected.discord)
+      item.discord = { ...((existing.discord as object) || {}), ...(expected.discord as object) };
+    if (collection === 'jobs')
+      for (const field of criticalJobFields) if (!(field in expected)) delete item[field];
+    const order =
+      projected.order ??
+      candidate?.order ??
+      prior?.order_value ??
+      Date.parse(String(item.createdAt || item.at || commit.recordedAt));
+    const data = JSON.stringify(item);
+    if (prior?.data === data && prior.order_value === order) continue;
+    const row = sqlRecord(collection, item as StoreItem, order, data);
+    const keys = Object.keys(row);
+    if (!options.checkOnly)
+      sqlite
+        .prepare(
+          `INSERT INTO ${collection}(${keys.join(',')}) VALUES(${keys.map((key) => `@${key}`).join(',')})
+      ON CONFLICT(id) DO UPDATE SET ${keys
+        .filter((key) => key !== 'id')
+        .map((key) => `${key}=excluded.${key}`)
+        .join(',')}`,
+        )
+        .run(row);
+    written.push({ collection, item, order });
   }
-  if(projection.queueSequence&&!options.checkOnly){
-    const prior=sqlite.prepare("SELECT value FROM app_meta WHERE key='queue_sequence'").get() as {value:string}|undefined;
-    if(BigInt(projection.queueSequence)>BigInt(prior?.value||'0'))sqlite.prepare("INSERT INTO app_meta(key,value) VALUES('queue_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(projection.queueSequence);
+  if (projection.queueSequence && !options.checkOnly) {
+    const prior = sqlite.prepare("SELECT value FROM app_meta WHERE key='queue_sequence'").get() as
+      { value: string } | undefined;
+    if (BigInt(projection.queueSequence) > BigInt(prior?.value || '0'))
+      sqlite
+        .prepare(
+          "INSERT INTO app_meta(key,value) VALUES('queue_sequence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        )
+        .run(projection.queueSequence);
   }
   return written;
 }
 
-export function sqlRecord(collection: Collection, item: Partial<StoreItem>, order: number, data: string): SqlRow {
+export function sqlRecord(
+  collection: Collection,
+  item: Partial<StoreItem>,
+  order: number,
+  data: string,
+): SqlRow {
   const createdAt = item.createdAt || '';
   const updatedAt = item.updatedAt || '';
   const row: SqlRow = {
     ...emptyRecordRows[collection],
-    id: String(item.id), order_value: Number(order), data,
-    created_at: createdAt || null, updated_at: updatedAt || null, at: item.at || null,
+    id: String(item.id),
+    order_value: Number(order),
+    data,
+    created_at: createdAt || null,
+    updated_at: updatedAt || null,
+    at: item.at || null,
     enabled: item.enabled === undefined ? null : item.enabled !== false ? 1 : 0,
-    balance: numberOrNull(item.balance), route_id: numberOrNull(item.routeId),
-    width: numberOrNull(item.width), height: numberOrNull(item.height),
+    balance: numberOrNull(item.balance),
+    route_id: numberOrNull(item.routeId),
+    width: numberOrNull(item.width),
+    height: numberOrNull(item.height),
     mock: item.mock === undefined ? null : item.mock ? 1 : 0,
     mime_type: item.mimeType || null,
     model: item.model || item.request?.model || null,
     prompt: item.prompt || item.request?.tag || null,
-    full_prompt: item.fullPrompt || item.request?.prompt || null
+    full_prompt: item.fullPrompt || item.request?.prompt || null,
   };
 
   if (collection === 'cards') {
@@ -2304,8 +3957,11 @@ function searchableText(item: Partial<StoreItem>, row: SqlRow) {
     row.full_prompt,
     item.name,
     item.note,
-    item.file
-  ].filter(Boolean as unknown as Present).join('\n').toLowerCase();
+    item.file,
+  ]
+    .filter(Boolean as unknown as Present)
+    .join('\n')
+    .toLowerCase();
 }
 
 function numberOrNull(value: unknown) {
@@ -2315,13 +3971,17 @@ function numberOrNull(value: unknown) {
 
 function isStatsExcludedJob(job: Partial<StoreItem> = {}) {
   if (job.status !== 'failed') return false;
-  return /insufficient balance|额度不足|余额不足/i.test(`${job.error || ''}\n${job.errorDetail || ''}`);
+  return /insufficient balance|额度不足|余额不足/i.test(
+    `${job.error || ''}\n${job.errorDetail || ''}`,
+  );
 }
 
 function isErrorLoggableJob(job: Partial<StoreItem> = {}) {
   if (job.status !== 'failed' || !job.accountId) return false;
   const text = `${job.error || ''}\n${job.errorDetail || ''}`;
-  return !/all NovelAI accounts are busy|server busy|NovelAI returned 429|statusCode"\s*:\s*429|Concurrent generation is locked|concurrent generation|direct generate timeout|AbortError|operation was aborted|job deadline expired|stale timeout|queued job exceeded|running job exceeded|invalid user token|invalid STA1N|密钥额度不足|用户额度不足/i.test(text);
+  return !/all NovelAI accounts are busy|server busy|NovelAI returned 429|statusCode"\s*:\s*429|Concurrent generation is locked|concurrent generation|direct generate timeout|AbortError|operation was aborted|job deadline expired|stale timeout|queued job exceeded|running job exceeded|invalid user token|invalid STA1N|密钥额度不足|用户额度不足/i.test(
+    text,
+  );
 }
 
 function ensureItemIds(collection: Collection, items: StoreItem[]) {
@@ -2340,7 +4000,10 @@ function denseOrderValues(items: StoreItem[]): Map<string, number> {
   return orders;
 }
 
-function assignOrderValues(items: StoreItem[], previousOrders: Map<string, number>): Map<string, number> {
+function assignOrderValues(
+  items: StoreItem[],
+  previousOrders: Map<string, number>,
+): Map<string, number> {
   if (!items.length) return new Map();
   if (!existingOrderSequenceIsStable(items, previousOrders)) return denseOrderValues(items);
 
@@ -2413,7 +4076,11 @@ function chunks<T>(values: T[], size: number): T[][] {
 }
 
 function uniqueStrings(values: unknown[] = []): string[] {
-  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean as unknown as Present))];
+  return [
+    ...new Set(
+      values.map((value) => String(value || '').trim()).filter(Boolean as unknown as Present),
+    ),
+  ];
 }
 
 function trimImageCacheDeleteLimit(value: unknown) {
@@ -2423,8 +4090,19 @@ function trimImageCacheDeleteLimit(value: unknown) {
 }
 
 class SqliteReadWorker {
-  declare dbPath: string; declare name: string; declare worker: Worker | null; declare sequence: number; declare closed: boolean;
-  declare pending: Map<number, { resolve: (result: never) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>;
+  declare dbPath: string;
+  declare name: string;
+  declare worker: Worker | null;
+  declare sequence: number;
+  declare closed: boolean;
+  declare pending: Map<
+    number,
+    {
+      resolve: (result: never) => void;
+      reject: (error: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >;
   constructor(dbPath: string, name: string) {
     this.dbPath = dbPath;
     this.name = name;
@@ -2434,7 +4112,11 @@ class SqliteReadWorker {
     this.closed = false;
   }
 
-  request<K extends ReadTask['type']>(type: K, payload: Extract<ReadTask, { type: K }>['payload'], timeoutMs: number): Promise<ReadResults[K]> {
+  request<K extends ReadTask['type']>(
+    type: K,
+    payload: Extract<ReadTask, { type: K }>['payload'],
+    timeoutMs: number,
+  ): Promise<ReadResults[K]> {
     if (this.closed) return Promise.reject(new Error(`${this.name} reader is closed`));
     this.open();
     const id = ++this.sequence;
@@ -2451,10 +4133,13 @@ class SqliteReadWorker {
     if (this.worker) return;
     // URL 字符串不由 tsc 改写：源码 Node 读取 TS，打包目录只有编译后的 JS。
     const source = new URL('./sqlite-read-worker.ts', import.meta.url);
-    const worker = new Worker(existsSync(source) ? source : new URL('./sqlite-read-worker.js', import.meta.url), {
-      workerData: { dbPath: this.dbPath },
-      execArgv: []
-    });
+    const worker = new Worker(
+      existsSync(source) ? source : new URL('./sqlite-read-worker.js', import.meta.url),
+      {
+        workerData: { dbPath: this.dbPath },
+        execArgv: [],
+      },
+    );
     worker.unref();
     worker.on('message', (message) => {
       const request = this.pending.get(message.id);
@@ -2468,7 +4153,8 @@ class SqliteReadWorker {
     worker.on('exit', (code) => {
       if (this.worker !== worker) return;
       this.worker = null;
-      if (code && !this.closed) this.fail(new Error(`${this.name} reader exited with code ${code}`));
+      if (code && !this.closed)
+        this.fail(new Error(`${this.name} reader exited with code ${code}`));
     });
     this.worker = worker;
   }
@@ -2510,11 +4196,11 @@ function emptyAdminStats(now = Date.now()) {
     jobStats1h: { done: 0, failed: 0, total: 0, successRate: 0 },
     generationSpeed1h: {
       v45: { seconds: null, count: 0 },
-      v5: { seconds: null, count: 0 }
+      v5: { seconds: null, count: 0 },
     },
     accountStats1h: {},
     usageHourlyDays: buckets.keys.map((key) => buckets.map.get(key)),
-    statsRowsRead: 0
+    statsRowsRead: 0,
   };
 }
 
@@ -2527,24 +4213,29 @@ function usageBuckets(now = Date.now(), days = usageChartDays) {
   });
   return {
     keys,
-    map: new Map(keys.map((key) => [key, {
-      date: key,
-      label: key.slice(5),
-      done: 0,
-      failed: 0,
-      total: 0,
-      credits: 0,
-      successRate: 0,
-      hours: Array.from({ length: 24 }, (_, hour) => ({
-        hour,
-        label: `${String(hour).padStart(2, '0')}:00`,
-        done: 0,
-        failed: 0,
-        total: 0,
-        credits: 0,
-        successRate: 0
-      }))
-    }]))
+    map: new Map(
+      keys.map((key) => [
+        key,
+        {
+          date: key,
+          label: key.slice(5),
+          done: 0,
+          failed: 0,
+          total: 0,
+          credits: 0,
+          successRate: 0,
+          hours: Array.from({ length: 24 }, (_, hour) => ({
+            hour,
+            label: `${String(hour).padStart(2, '0')}:00`,
+            done: 0,
+            failed: 0,
+            total: 0,
+            credits: 0,
+            successRate: 0,
+          })),
+        },
+      ]),
+    ),
   };
 }
 
@@ -2560,7 +4251,11 @@ function existingOrderSequenceIsStable(items: StoreItem[], previousOrders: Map<s
   return true;
 }
 
-function orderValuesForRun(length: number, before: number | null | undefined, after: number | null | undefined): number[] {
+function orderValuesForRun(
+  length: number,
+  before: number | null | undefined,
+  after: number | null | undefined,
+): number[] {
   if (before === null && after === null) {
     return Array.from({ length }, (_, index) => length - index);
   }
@@ -2579,7 +4274,9 @@ function orderValuesForRun(length: number, before: number | null | undefined, af
 }
 
 function emptyCollectionMaps<T>(): CollectionMaps<T> {
-  return Object.fromEntries(collections.map((collection) => [collection, new Map<string, T>()])) as CollectionMaps<T>;
+  return Object.fromEntries(
+    collections.map((collection) => [collection, new Map<string, T>()]),
+  ) as CollectionMaps<T>;
 }
 
 function safeJson(text: unknown, fallback: null): StoreItem | null;
@@ -2616,23 +4313,25 @@ function runtimeCacheLimit(collection: Collection) {
   const defaults = {
     jobs: 3000,
     images: 1000,
-    ledger: 1000
+    ledger: 1000,
   };
   const envName = `RUNTIME_${collection.toUpperCase()}_CACHE_LIMIT`;
-  const configured = Number(process.env[envName] || defaults[collection as keyof typeof defaults] || 1000);
+  const configured = Number(
+    process.env[envName] || defaults[collection as keyof typeof defaults] || 1000,
+  );
   if (Number.isFinite(configured) && configured >= 0) return Math.floor(configured);
   return defaults[collection as keyof typeof defaults] || 1000;
 }
 
 function formatDbCounts(db: Partial<Record<Collection, unknown>> = {}) {
-  const count = (value: unknown) => Array.isArray(value) ? value.length : Number(value || 0);
+  const count = (value: unknown) => (Array.isArray(value) ? value.length : Number(value || 0));
   return [
     `users=${count(db.users)}`,
     `accounts=${count(db.accounts)}`,
     `jobs=${count(db.jobs)}`,
     `images=${count(db.images)}`,
     `cards=${count(db.cards)}`,
-    `ledger=${count(db.ledger)}`
+    `ledger=${count(db.ledger)}`,
   ].join(' ');
 }
 
@@ -2655,7 +4354,10 @@ function imageResolutionTier(image: Partial<StoreItem>) {
   return 'standard';
 }
 
-function jobQueueProgress(job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'> | null, jobs: StoreItem[]) {
+function jobQueueProgress(
+  job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'> | null,
+  jobs: StoreItem[],
+) {
   if (!job || !['queued', 'running'].includes(job.status!)) return { progress: 0, total: 0 };
   if (job.status === 'running') {
     const total = Math.max(1, Number(job.queueTotal) || 1);
@@ -2663,7 +4365,9 @@ function jobQueueProgress(job: Pick<StoreItem, 'id' | 'status' | 'queueTotal'> |
   }
   const now = Date.now();
   let ahead = 0;
-  const ordered = [...jobs].reverse().sort((a, b) => (Number(a.queueSeq) || 0) - (Number(b.queueSeq) || 0));
+  const ordered = [...jobs]
+    .reverse()
+    .sort((a, b) => (Number(a.queueSeq) || 0) - (Number(b.queueSeq) || 0));
   for (const item of ordered) {
     if (item.id === job.id) break;
     if (isQueueActiveJob(item, now)) ahead++;
@@ -2681,12 +4385,15 @@ function isQueueActiveJob(job: StoreItem | null, now = Date.now()) {
 function isStaleActiveJob(job: StoreItem | null, now = Date.now()) {
   if (!job || !['queued', 'pending', 'running'].includes(job.status!)) return false;
   if (isExpiredJob(job, now)) return true;
-  const queueDeadline = queuedDeadlineTimestamp(job as StoreItem & { status: string; queueExpiresAt?: string });
+  const queueDeadline = queuedDeadlineTimestamp(
+    job as StoreItem & { status: string; queueExpiresAt?: string },
+  );
   if (queueDeadline && now >= queueDeadline) return true;
   const updatedAt = Date.parse(job.updatedAt || job.createdAt || '');
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
   if (job.status === 'running') return now - updatedAt > staleRunningJobMs();
-  if (job.status === 'queued' && !jobDeadlineTimestamp(job)) return now - updatedAt > staleQueuedJobMs();
+  if (job.status === 'queued' && !jobDeadlineTimestamp(job))
+    return now - updatedAt > staleQueuedJobMs();
   return false;
 }
 
@@ -2701,7 +4408,10 @@ function jobDeadlineTimestamp(job: Partial<StoreItem> = {}) {
 }
 
 function staleQueuedJobMs() {
-  return configuredTimeoutMs('STALE_QUEUED_JOB_MS', configuredTimeoutMs('STALE_ACTIVE_JOB_MS', 30 * 60 * 1000));
+  return configuredTimeoutMs(
+    'STALE_QUEUED_JOB_MS',
+    configuredTimeoutMs('STALE_ACTIVE_JOB_MS', 30 * 60 * 1000),
+  );
 }
 
 function staleRunningJobMs() {
@@ -2710,23 +4420,35 @@ function staleRunningJobMs() {
 
 function accountInflightTimeoutMs() {
   const configured = Number(process.env.ACCOUNT_INFLIGHT_TIMEOUT_MS || 10 * 60 * 1000);
-  return Number.isFinite(configured) && configured > 0 ? Math.max(1000, Math.floor(configured)) : 10 * 60 * 1000;
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1000, Math.floor(configured))
+    : 10 * 60 * 1000;
 }
 
 function configuredTimeoutMs(name: string, fallback: number) {
   const configured = Number(process.env[name] || 0);
-  if (Number.isFinite(configured) && configured > 0) return Math.max(60_000, Math.floor(configured));
+  if (Number.isFinite(configured) && configured > 0)
+    return Math.max(60_000, Math.floor(configured));
   return Math.max(60_000, Math.floor(Number(fallback) || 60_000));
 }
 
-function fairQuotaArchive<T extends Partial<Settings>>(settings: T): { settings: T; rows: (typeof fairQuotaSettlements.$inferInsert)[] } {
+function fairQuotaArchive<T extends Partial<Settings>>(
+  settings: T,
+): { settings: T; rows: (typeof fairQuotaSettlements.$inferInsert)[] } {
   const entries = Object.entries(settings.fairQuota?.reservations || {});
   const terminal = entries.filter(([, charge]) => ['settled', 'refunded'].includes(charge?.status));
   if (!terminal.length) return { settings, rows: [] };
   return {
-    settings: { ...settings, fairQuota: { ...settings.fairQuota!,
-      reservations: Object.fromEntries(entries.filter(([, charge]) => !['settled', 'refunded'].includes(charge?.status))) } },
-    rows: terminal.map(([job_id, charge]) => ({ job_id, charge: JSON.stringify(charge) }))
+    settings: {
+      ...settings,
+      fairQuota: {
+        ...settings.fairQuota!,
+        reservations: Object.fromEntries(
+          entries.filter(([, charge]) => !['settled', 'refunded'].includes(charge?.status)),
+        ),
+      },
+    },
+    rows: terminal.map(([job_id, charge]) => ({ job_id, charge: JSON.stringify(charge) })),
   };
 }
 
@@ -2741,14 +4463,17 @@ function cloneValue<T>(value: T): T {
 
 function trimDb(db: StoreDatabase, options: { collections?: unknown } = {}) {
   const hasCollectionOption = options.collections !== undefined && options.collections !== null;
-  const targetCollections = hasCollectionOption ? normalizeCollectionList(options.collections) || [] : null;
-  const shouldTrim = (collection: Collection) => !hasCollectionOption || targetCollections!.includes(collection);
+  const targetCollections = hasCollectionOption
+    ? normalizeCollectionList(options.collections) || []
+    : null;
+  const shouldTrim = (collection: Collection) =>
+    !hasCollectionOption || targetCollections!.includes(collection);
   const maxCacheImages = clampNumber(db.settings.maxCacheImages, 0, MAX_CACHE_IMAGES_LIMIT);
   db.settings.costPerImage = 1;
   db.settings.maxCacheImages = maxCacheImages;
   db.settings.accountConcurrency = 1;
-    // 私有部署保护：保留历史、图片与账本记录。
-    if (process.env.NO_AUTO_DELETE === 'true') return db;
+  // 私有部署保护：保留历史、图片与账本记录。
+  if (process.env.NO_AUTO_DELETE === 'true') return db;
   // 任务与图片清理由命令在 collector 关闭前作决定，不能在持久化时隐式丢行。
   if (shouldTrim('ledger')) db.ledger = db.ledger.slice(0, 1000);
   return db;
@@ -2762,19 +4487,19 @@ export function normalizeDb(db: DatabaseInput = {}): StoreDatabase {
       accountConcurrency: 1,
       promptApi: {
         ...defaultSettings.promptApi,
-        ...(db.settings?.promptApi || {})
+        ...(db.settings?.promptApi || {}),
       },
       defaults: {
         ...defaultSettings.defaults,
-        ...(db.settings?.defaults || {})
-      }
+        ...(db.settings?.defaults || {}),
+      },
     },
     cards: Array.isArray(db.cards) ? db.cards : [],
     users: Array.isArray(db.users) ? db.users : [],
     accounts: Array.isArray(db.accounts) ? db.accounts : [],
     jobs: Array.isArray(db.jobs) ? db.jobs : [],
     images: Array.isArray(db.images) ? db.images : [],
-    ledger: Array.isArray(db.ledger) ? db.ledger : []
+    ledger: Array.isArray(db.ledger) ? db.ledger : [],
   };
 }
 
