@@ -1,25 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { NAlert, NButton, NCard, NInput } from 'naive-ui'
-import type { LoginOptions } from '../types/member'
+import { ref } from 'vue';
+import { NAlert, NButton, NCard, NInput } from 'naive-ui';
+import type { LoginOptions } from '../types/member';
 
-const props = defineProps<{ options: LoginOptions; busy: boolean; error: string }>()
-const emit = defineEmits<{ login: [credentials: { username: string; password: string }]; discord: [invite: string] }>()
-const username = ref('')
-const password = ref('')
-const invite = ref('')
+const props = defineProps<{ options: LoginOptions; busy: boolean; error: string }>();
+const emit = defineEmits<{
+  login: [credentials: { username: string; password: string }];
+  discord: [invite: string];
+}>();
+const username = ref('');
+const password = ref('');
+const invite = ref('');
 
 function login() {
-  if (props.busy || !username.value.trim() || !password.value) return
-  const credentials = { username: username.value.trim(), password: password.value }
-  password.value = ''
-  emit('login', credentials)
+  if (props.busy || !username.value.trim() || !password.value) return;
+  const credentials = { username: username.value.trim(), password: password.value };
+  password.value = '';
+  emit('login', credentials);
 }
 function discord() {
-  if (props.busy || !props.options.ready) return
-  const value = invite.value.trim()
-  invite.value = ''
-  emit('discord', value)
+  if (props.busy || !props.options.ready) return;
+  const value = invite.value.trim();
+  invite.value = '';
+  emit('discord', value);
 }
 </script>
 
@@ -27,7 +30,13 @@ function discord() {
   <NCard id="login" class="sign-in" :aria-busy="busy" aria-labelledby="loginTitle">
     <template #header><h2 id="loginTitle">登录你的账户</h2></template>
     <p id="loginHint" class="muted">
-      {{ options.discord ? (options.ready ? '使用 Discord 身份登录；仅限受邀的指定服务器成员。' : 'Discord 登录尚未配置完成，请联系管理员。') : '账户由管理员创建。登录后查看个人额度和调用记录。' }}
+      {{
+        options.discord
+          ? options.ready
+            ? '使用 Discord 身份登录；仅限受邀的指定服务器成员。'
+            : 'Discord 登录尚未配置完成，请联系管理员。'
+          : '账户由管理员创建。登录后查看个人额度和调用记录。'
+      }}
     </p>
     <NAlert v-if="error" type="error" role="alert" :show-icon="false">{{ error }}</NAlert>
     <form v-if="options.discord" id="discordForm" @submit.prevent="discord">
@@ -79,10 +88,28 @@ function discord() {
 </template>
 
 <style scoped>
-.sign-in { max-width: 480px; margin: 24px auto; }
-h2 { margin: 0; font-size: 1.25rem; }
-form { display: grid; gap: 12px; margin-top: 20px; }
-label { font-weight: 600; }
-.muted { color: #adb7c6; line-height: 1.7; overflow-wrap: anywhere; }
-form .muted { margin: 0; }
+.sign-in {
+  max-width: 480px;
+  margin: 24px auto;
+}
+h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+form {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+}
+label {
+  font-weight: 600;
+}
+.muted {
+  color: #adb7c6;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+form .muted {
+  margin: 0;
+}
 </style>

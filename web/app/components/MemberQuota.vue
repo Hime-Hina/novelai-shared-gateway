@@ -1,33 +1,52 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NAlert, NButton, NCard, NProgress, NPopover } from 'naive-ui'
-import type { MemberProfile } from '../types/member'
-import { date, number } from '../utils/member-display'
+import { computed } from 'vue';
+import { NAlert, NButton, NCard, NProgress, NPopover } from 'naive-ui';
+import type { MemberProfile } from '../types/member';
+import { date, number } from '../utils/member-display';
 
-const props = defineProps<{ profile: MemberProfile }>()
-const quota = computed(() => props.profile.quota)
+const props = defineProps<{ profile: MemberProfile }>();
+const quota = computed(() => props.profile.quota);
 const sharedRisk = computed(() => {
-  const risk = quota.value?.sharedBalanceRisk
-  return risk && (risk.v5 || risk.anlasFixed || risk.anlasPurchased)
-})
-const statuses: Record<string, string> = { pending_opus: '等待管理员接入有效 Opus', inactive_opus: '账号或订阅不可用', quota_sync_error: '额度同步失败', stale: '额度已过期，等待更新', unknown_balance: '额度不完整，等待更新', ambiguous_opus: '等待管理员选择上游', active: '可提交任务' }
-const status = computed(() => [
-  quota.value?.status !== 'active' || props.profile.acceptingJobs !== false ? statuses[quota.value?.status || ''] || '等待分配额度' : '',
-  props.profile.acceptingJobs === false ? '管理员已停止接单，已有结果仍可查询和下载' : ''
-].filter(Boolean).join(' · '))
-const attention = computed(() => props.profile.acceptingJobs === false || quota.value?.status !== 'active')
+  const risk = quota.value?.sharedBalanceRisk;
+  return risk && (risk.v5 || risk.anlasFixed || risk.anlasPurchased);
+});
+const statuses: Record<string, string> = {
+  pending_opus: '等待管理员接入有效 Opus',
+  inactive_opus: '账号或订阅不可用',
+  quota_sync_error: '额度同步失败',
+  stale: '额度已过期，等待更新',
+  unknown_balance: '额度不完整，等待更新',
+  ambiguous_opus: '等待管理员选择上游',
+  active: '可提交任务',
+};
+const status = computed(() =>
+  [
+    quota.value?.status !== 'active' || props.profile.acceptingJobs !== false
+      ? statuses[quota.value?.status || ''] || '等待分配额度'
+      : '',
+    props.profile.acceptingJobs === false ? '管理员已停止接单，已有结果仍可查询和下载' : '',
+  ]
+    .filter(Boolean)
+    .join(' · '),
+);
+const attention = computed(
+  () => props.profile.acceptingJobs === false || quota.value?.status !== 'active',
+);
 const percentage = computed(() => {
-  const q = quota.value
-  return q && Number.isFinite(q.v5Available) && q.v5Capacity > 0 ? Math.max(0, Math.min(100, q.v5Available / q.v5Capacity * 100)) : null
-})
+  const q = quota.value;
+  return q && Number.isFinite(q.v5Available) && q.v5Capacity > 0
+    ? Math.max(0, Math.min(100, (q.v5Available / q.v5Capacity) * 100))
+    : null;
+});
 const recovery = computed(() => {
-  const q = quota.value
-  if (!q) return '恢复速度未知'
-  if (q.v5RefillLimited) return '恢复时间暂无法可靠估算，请留意共享上游状态'
-  if (q.v5FullRefillSeconds === 0) return '个人已满额；满额期间不累计额外恢复'
-  if (q.v5RefillPerDay > 0) return `当前每天约恢复 ${number(q.v5RefillPerDay)} 个百分点，补满时间${q.v5FullRefillSeconds == null ? '未知' : `约 ${number(q.v5FullRefillSeconds / 3600)} 小时（随成员使用变化）`}`
-  return '恢复速度等待官方数据'
-})
+  const q = quota.value;
+  if (!q) return '恢复速度未知';
+  if (q.v5RefillLimited) return '恢复时间暂无法可靠估算，请留意共享上游状态';
+  if (q.v5FullRefillSeconds === 0) return '个人已满额；满额期间不累计额外恢复';
+  if (q.v5RefillPerDay > 0)
+    return `当前每天约恢复 ${number(q.v5RefillPerDay)} 个百分点，补满时间${q.v5FullRefillSeconds == null ? '未知' : `约 ${number(q.v5FullRefillSeconds / 3600)} 小时（随成员使用变化）`}`;
+  return '恢复速度等待官方数据';
+});
 </script>
 
 <template>
@@ -38,7 +57,11 @@ const recovery = computed(() => {
           我的额度 <span class="count-badge">{{ profile.username }}</span>
         </h2>
         <p id="group" class="section-caption">
-          {{ quota?.member ? `${quota.groupName || '未命名组'} · ${number(quota.groupSize)} 人 · 个人份额 ${number(quota.share == null ? null : quota.share * 100)}%` : '尚未分配到组，请联系管理员' }}
+          {{
+            quota?.member
+              ? `${quota.groupName || '未命名组'} · ${number(quota.groupSize)} 人 · 个人份额 ${number(quota.share == null ? null : quota.share * 100)}%`
+              : '尚未分配到组，请联系管理员'
+          }}
         </p>
       </div>
       <NPopover trigger="click" :style="{ maxWidth: 'min(380px, calc(100vw - 32px))' }">
@@ -59,7 +82,8 @@ const recovery = computed(() => {
     </header>
     <div id="status" class="quota-status" :class="{ attention }" role="status">{{ status }}</div>
     <NAlert v-if="sharedRisk" id="sharedBalanceRisk" type="warning" role="status">
-      检测到未解释的共享余额差额，实际可用额度可能受影响。个人余额保留，派发仍受官方余额限制。检查时间：{{ date(quota?.sharedBalanceRisk?.checkedAt)
+      检测到未解释的共享余额差额，实际可用额度可能受影响。个人余额保留，派发仍受官方余额限制。检查时间：{{
+        date(quota?.sharedBalanceRisk?.checkedAt)
       }}。
     </NAlert>
     <NAlert v-else-if="quota?.sharedBalanceRisk?.pendingAnlasDebit" type="info" role="status"
@@ -103,7 +127,11 @@ const recovery = computed(() => {
     >
       <p>
         成功 {{ quota.freeImages.successful }} 张 · 在途 {{ quota.freeImages.reserved }} 张 ·
-        {{ quota.freeImages.enabled && quota.freeImages.hardLimit !== null ? `上限 ${quota.freeImages.hardLimit} 张` : '未设置硬上限' }}
+        {{
+          quota.freeImages.enabled && quota.freeImages.hardLimit !== null
+            ? `上限 ${quota.freeImages.hardLimit} 张`
+            : '未设置硬上限'
+        }}
       </p>
       <NAlert v-if="quota.freeImages.warning" type="warning"
         >免费图片用量已达到提醒阈值 {{ quota.freeImages.warningThreshold }} 张。</NAlert
@@ -117,13 +145,49 @@ const recovery = computed(() => {
 </template>
 
 <style scoped>
-h2 { overflow-wrap: anywhere; }
-p { line-height: 1.7; overflow-wrap: anywhere; font-size: 13px; }
-.quota-status { min-height: 30px; line-height: 30px; font-size: 12px; color: var(--text-muted); }
-.attention { color: #f2c97d; }
-.quota-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.quota-value { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.amount { display: block; margin-bottom: 12px; font-size: 28px; line-height: 1.3; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.recovery { min-height: 44px; margin-bottom: 0; }
-@media (max-width: 760px) { .quota-grid { grid-template-columns: 1fr; } }
+h2 {
+  overflow-wrap: anywhere;
+}
+p {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.quota-status {
+  min-height: 30px;
+  line-height: 30px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.attention {
+  color: #f2c97d;
+}
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.quota-value {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.amount {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 28px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.recovery {
+  min-height: 44px;
+  margin-bottom: 0;
+}
+@media (max-width: 760px) {
+  .quota-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

@@ -1,13 +1,42 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
-import { NButton, NCard, NSkeleton, NSpace, NCollapse, NCollapseItem, NDrawer, NDrawerContent } from 'naive-ui'
-import { useMemberPortal } from '../composables/useMemberPortal'
-import { date } from '../utils/member-display'
+import { ref, watch } from 'vue';
+import {
+  NButton,
+  NCard,
+  NSkeleton,
+  NSpace,
+  NCollapse,
+  NCollapseItem,
+  NDrawer,
+  NDrawerContent,
+} from 'naive-ui';
+import { useMemberPortal } from '../composables/useMemberPortal';
+import { date } from '../utils/member-display';
 
-const { profile, loginOptions, shared, connection, initializing, working, error, updatedAt, refreshVersion, activityInvalidation,
-  refreshing, initialize, refresh, refreshPage, login, startDiscord, logout, api } = useMemberPortal()
-const apiOpen = ref(false)
-watch(profile, value => { if (!value) apiOpen.value = false })
+const {
+  profile,
+  loginOptions,
+  shared,
+  connection,
+  initializing,
+  working,
+  error,
+  updatedAt,
+  refreshVersion,
+  activityInvalidation,
+  refreshing,
+  initialize,
+  refresh,
+  refreshPage,
+  login,
+  startDiscord,
+  logout,
+  api,
+} = useMemberPortal();
+const apiOpen = ref(false);
+watch(profile, (value) => {
+  if (!value) apiOpen.value = false;
+});
 </script>
 <template>
   <main class="portal">
@@ -87,14 +116,61 @@ watch(profile, value => { if (!value) apiOpen.value = false })
   </main>
 </template>
 <style scoped>
-.portal { max-width: 1200px; margin: auto; padding: 28px 24px 40px; }
-.portal-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
-.brand { font-size: 25px; font-weight: 700; text-decoration: none; color: #f1f5fb; }
-.portal-header p { margin: 4px 0 0; }
-.muted { color: #a9b6ca; }
-.account-content, .initial-state { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; margin-top: 20px; }
-.initial-state { min-height: 520px; align-content: start; }
-.loading-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-footer { margin-top: 30px; font-size: 13px; line-height: 1.7; }
-@media (max-width: 700px) { .portal { padding: 18px 14px 28px; } .portal-header { align-items: start; flex-wrap: wrap; } .loading-cards { grid-template-columns: 1fr; } }
+.portal {
+  max-width: 1200px;
+  margin: auto;
+  padding: 28px 24px 40px;
+}
+.portal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.brand {
+  font-size: 25px;
+  font-weight: 700;
+  text-decoration: none;
+  color: #f1f5fb;
+}
+.portal-header p {
+  margin: 4px 0 0;
+}
+.muted {
+  color: #a9b6ca;
+}
+.account-content,
+.initial-state {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 20px;
+}
+.initial-state {
+  min-height: 520px;
+  align-content: start;
+}
+.loading-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+footer {
+  margin-top: 30px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+@media (max-width: 700px) {
+  .portal {
+    padding: 18px 14px 28px;
+  }
+  .portal-header {
+    align-items: start;
+    flex-wrap: wrap;
+  }
+  .loading-cards {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

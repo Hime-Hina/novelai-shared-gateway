@@ -1,11 +1,23 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NButton, NPopover } from 'naive-ui'
-import { date } from '../utils/member-display'
+import { computed } from 'vue';
+import { NButton, NPopover } from 'naive-ui';
+import { date } from '../utils/member-display';
 
-const props = defineProps<{ connection: string; loading: boolean; updatedAt: number | null; summary: string; disabled?: boolean }>()
-const emit = defineEmits<{ refresh: [] }>()
-const mode = computed(() => props.connection === 'open' ? '实时更新' : props.connection === 'polling' ? '每 30 秒更新' : '连接恢复中 · 每 30 秒补读')
+const props = defineProps<{
+  connection: string;
+  loading: boolean;
+  updatedAt: number | null;
+  summary: string;
+  disabled?: boolean;
+}>();
+const emit = defineEmits<{ refresh: [] }>();
+const mode = computed(() =>
+  props.connection === 'open'
+    ? '实时更新'
+    : props.connection === 'polling'
+      ? '每 30 秒更新'
+      : '连接恢复中 · 每 30 秒补读',
+);
 </script>
 <template>
   <div class="portal-refresh">
@@ -43,9 +55,33 @@ const mode = computed(() => props.connection === 'open' ? '实时更新' : props
   </div>
 </template>
 <style scoped>
-.portal-refresh { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-top: 1px solid #ffffff12; }
-.sync-info { display: flex; align-items: center; flex-wrap: wrap; column-gap: 16px; row-gap: 4px; min-width: 0; }
-.sync-time { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-#refresh { min-width: 140px; }
-p { font-size: 13px; line-height: 1.7; }
+.portal-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid #ffffff12;
+}
+.sync-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 16px;
+  row-gap: 4px;
+  min-width: 0;
+}
+.sync-time {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+#refresh {
+  min-width: 140px;
+}
+p {
+  font-size: 13px;
+  line-height: 1.7;
+}
 </style>

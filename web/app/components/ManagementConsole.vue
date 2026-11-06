@@ -1,23 +1,79 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { NAlert, NButton, NCard, NCheckbox, NInput, NSkeleton, NSpace, NTabPane, NTabs, NPopover, NTag } from 'naive-ui'
-import type { ManagementAlert, ManagementMode } from '../types/management'
-import { useManagementPortal } from '../composables/useManagementPortal'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NCheckbox,
+  NInput,
+  NSkeleton,
+  NSpace,
+  NTabPane,
+  NTabs,
+  NPopover,
+  NTag,
+} from 'naive-ui';
+import type { ManagementAlert, ManagementMode } from '../types/management';
+import { useManagementPortal } from '../composables/useManagementPortal';
 
-const props = defineProps<{ mode: ManagementMode }>()
-const { state, shared, panel, days, usage, usageLoading, busy, connecting, adminToken, remember, sessionVersion,
-  message, messageError, messageVersion, readError, usageError, updatedAt, connection, refreshVersion, activityInvalidation,
-  refreshing, api, run, notify, changed, connect, disconnect, refreshPage, loadUsage } = useManagementPortal(props.mode)
-const groupsDirty = ref(false), policyDirty = ref(false), alerts = ref<ManagementAlert[]>([])
-const hint = computed(() => !state.value ? (connecting.value ? '正在验证管理身份…' : props.mode === 'owner' ? '需要 owner 身份' : '私有管理入口 · 仅管理员可操作')
-  : '成员、分组与共享账户管理')
-function changedSession() { groupsDirty.value = false; policyDirty.value = false; alerts.value = [] }
-watch(sessionVersion, changedSession)
-function beforeUnload(event: BeforeUnloadEvent) {
-  if (groupsDirty.value || policyDirty.value) { event.preventDefault(); event.returnValue = '' }
+const props = defineProps<{ mode: ManagementMode }>();
+const {
+  state,
+  shared,
+  panel,
+  days,
+  usage,
+  usageLoading,
+  busy,
+  connecting,
+  adminToken,
+  remember,
+  sessionVersion,
+  message,
+  messageError,
+  messageVersion,
+  readError,
+  usageError,
+  updatedAt,
+  connection,
+  refreshVersion,
+  activityInvalidation,
+  refreshing,
+  api,
+  run,
+  notify,
+  changed,
+  connect,
+  disconnect,
+  refreshPage,
+  loadUsage,
+} = useManagementPortal(props.mode);
+const groupsDirty = ref(false),
+  policyDirty = ref(false),
+  alerts = ref<ManagementAlert[]>([]);
+const hint = computed(() =>
+  !state.value
+    ? connecting.value
+      ? '正在验证管理身份…'
+      : props.mode === 'owner'
+        ? '需要 owner 身份'
+        : '私有管理入口 · 仅管理员可操作'
+    : '成员、分组与共享账户管理',
+);
+function changedSession() {
+  groupsDirty.value = false;
+  policyDirty.value = false;
+  alerts.value = [];
 }
-onMounted(() => window.addEventListener('beforeunload', beforeUnload))
-onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+watch(sessionVersion, changedSession);
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (groupsDirty.value || policyDirty.value) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload));
+onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 </script>
 
 <template>
@@ -29,7 +85,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
       </div>
       <NSpace v-if="state" id="topActions">
         <NButton v-if="mode === 'owner'" id="disconnect" tag="a" href="/">返回我的额度</NButton>
-        <NButton v-else id="disconnect" @click="disconnect(); changedSession()">断开管理</NButton>
+        <NButton
+          v-else
+          id="disconnect"
+          @click="
+            disconnect();
+            changedSession();
+          "
+          >断开管理</NButton
+        >
       </NSpace>
     </header>
     <PortalToast
@@ -53,18 +117,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
       <div class="account-strip">
         <div class="toolbar-controls">
           <NTag size="small" :bordered="false"
-            >{{ state.users.filter(user => user.enabled).length }} 位成员</NTag
+            >{{ state.users.filter((user) => user.enabled).length }} 位成员</NTag
           ><span>生成中 {{ shared?.running ?? '—' }} / 1 · 排队 {{ shared?.queued ?? '—' }}</span
           ><span>公共 V5 {{ shared?.v5Percent ?? '—' }}%</span>
         </div>
         <NPopover trigger="click" style="max-width: 380px"
           ><template #trigger
-            ><NButton
-              size="small"
-              quaternary
-              :type="alerts.length ? 'warning' : 'default'"
-              >{{ alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警' }}</NButton
-            ></template
+            ><NButton size="small" quaternary :type="alerts.length ? 'warning' : 'default'">{{
+              alerts.length ? alerts.length + ' 项需关注' : '暂无财务告警'
+            }}</NButton></template
           >
           <div id="lossAlerts">
             <p v-for="alert in alerts" :key="alert.id">{{ alert.message }}</p>
@@ -168,7 +229,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
     </section>
     <template v-else-if="!connecting">
       <NCard v-if="mode === 'admin'" class="connect-card" title="连接管理端">
-        <form id="connect" @submit.prevent="changedSession(); connect()">
+        <form
+          id="connect"
+          @submit.prevent="
+            changedSession();
+            connect();
+          "
+        >
           <label for="adminToken">管理员 Key</label>
           <NInput
             v-model:value="adminToken"
@@ -187,16 +254,63 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
   </main>
 </template>
 <style scoped>
-.management { max-width: 1440px; margin: auto; padding: 28px 24px 40px; }
-.management-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-h1 { margin: 0; font-size: 27px; }
-.muted { color: #adb7c6; }
-.dashboard, form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
-.dashboard { margin-top: 20px; }
-.account-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 36px; font-size: 12px; color: var(--text-muted); }
-:deep(.n-tab-pane) { padding-top: 24px; }
-:deep(.n-tab-pane > * + *) { margin-top: 24px; }
-.connect-card { max-width: 510px; margin: 32px auto; }
-form { gap: 14px; }
-@media (max-width: 700px) { .management { padding: 18px 14px 28px; } .management-header { align-items: start; flex-wrap: wrap; } }
+.management {
+  max-width: 1440px;
+  margin: auto;
+  padding: 28px 24px 40px;
+}
+.management-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+h1 {
+  margin: 0;
+  font-size: 27px;
+}
+.muted {
+  color: #adb7c6;
+}
+.dashboard,
+form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+.dashboard {
+  margin-top: 20px;
+}
+.account-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+:deep(.n-tab-pane) {
+  padding-top: 24px;
+}
+:deep(.n-tab-pane > * + *) {
+  margin-top: 24px;
+}
+.connect-card {
+  max-width: 510px;
+  margin: 32px auto;
+}
+form {
+  gap: 14px;
+}
+@media (max-width: 700px) {
+  .management {
+    padding: 18px 14px 28px;
+  }
+  .management-header {
+    align-items: start;
+    flex-wrap: wrap;
+  }
+}
 </style>

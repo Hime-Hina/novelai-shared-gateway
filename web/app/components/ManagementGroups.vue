@@ -1,178 +1,419 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, ref, watch } from 'vue'
-import { NAlert, NButton, NCard, NCheckbox, NInput, NInputNumber, NModal, NSelect, NDataTable, type DataTableColumns } from 'naive-ui'
-import type { ManagementApi, ManagementGroup, ManagementMemberChange, ManagementRun, ManagementState, ManagementUser } from '../types/management'
-import { number } from '../utils/member-display'
+import { computed, h, onBeforeUnmount, ref, watch } from 'vue';
+import {
+  NAlert,
+  NButton,
+  NCard,
+  NCheckbox,
+  NInput,
+  NInputNumber,
+  NModal,
+  NSelect,
+  NDataTable,
+  type DataTableColumns,
+} from 'naive-ui';
+import type {
+  ManagementApi,
+  ManagementGroup,
+  ManagementMemberChange,
+  ManagementRun,
+  ManagementState,
+  ManagementUser,
+} from '../types/management';
+import { number } from '../utils/member-display';
 
-const props = defineProps<{ state: ManagementState; api: ManagementApi; run: ManagementRun; busy: boolean }>()
-const emit = defineEmits<{ changed: [message: string]; notice: [message: string, error?: boolean]; dirty: [dirty: boolean] }>()
-type Mode = 'direct' | 'advanced'
-type GroupPayload = { action: 'preview-groups' | 'groups'; groups: ManagementGroup[]; redistributeRemaining: boolean; expectedConfigVersion: number }
-type GroupResult = Pick<ManagementMemberChange, 'groups' | 'users' | 'configVersion'>
-const groups = ref<ManagementGroup[]>([]), configVersion = ref(0), dirty = ref(false), pending = ref(false)
-const mode = ref<Mode>('direct'), directShares = ref<Record<string, number>>({})
-const redistribute = ref({ direct: true, advanced: false })
-const preview = ref<{ payload: GroupPayload; rows: { id: string; name: string; before: ManagementState['users'][number]['quota']; after: ManagementState['users'][number]['quota'] }[] } | null>(null)
-let active = true, editVersion = 0
-const locked = computed(() => props.busy || pending.value)
-const modeOptions = [{ label: '按成员直接分配（推荐）', value: 'direct' }, { label: '高级：分组与权重', value: 'advanced' }]
-const groupOptions = computed(() => [{ label: '不在任何组', value: '' }, ...groups.value.map(group => ({ label: group.name, value: group.id }))])
-const total = computed(() => mode.value === 'direct' ? Object.values(directShares.value).reduce((sum, value) => sum + value, 0) : groups.value.reduce((sum, group) => sum + group.share * 100, 0))
-const validTotal = computed(() => Number.isFinite(total.value) && Math.abs(total.value - 100) <= 1e-6)
-const percent = (value: number | null | undefined) => value == null ? '未知' : Number.isFinite(value) ? `${number(value * 100)}%` : '待填写'
-const inputNumber = (value: number) => Number.isFinite(value) ? value : null
-const copyGroups = (values: ManagementGroup[]) => values.map(group => ({ ...group, share: group.share ?? .25, members: [...group.members], memberWeights: { ...group.memberWeights } }))
-const groupOf = (id: string) => groups.value.find(group => group.members.includes(id))
+const props = defineProps<{
+  state: ManagementState;
+  api: ManagementApi;
+  run: ManagementRun;
+  busy: boolean;
+}>();
+const emit = defineEmits<{
+  changed: [message: string];
+  notice: [message: string, error?: boolean];
+  dirty: [dirty: boolean];
+}>();
+type Mode = 'direct' | 'advanced';
+type GroupPayload = {
+  action: 'preview-groups' | 'groups';
+  groups: ManagementGroup[];
+  redistributeRemaining: boolean;
+  expectedConfigVersion: number;
+};
+type GroupResult = Pick<ManagementMemberChange, 'groups' | 'users' | 'configVersion'>;
+const groups = ref<ManagementGroup[]>([]),
+  configVersion = ref(0),
+  dirty = ref(false),
+  pending = ref(false);
+const mode = ref<Mode>('direct'),
+  directShares = ref<Record<string, number>>({});
+const redistribute = ref({ direct: true, advanced: false });
+const preview = ref<{
+  payload: GroupPayload;
+  rows: {
+    id: string;
+    name: string;
+    before: ManagementState['users'][number]['quota'];
+    after: ManagementState['users'][number]['quota'];
+  }[];
+} | null>(null);
+let active = true,
+  editVersion = 0;
+const locked = computed(() => props.busy || pending.value);
+const modeOptions = [
+  { label: '按成员直接分配（推荐）', value: 'direct' },
+  { label: '高级：分组与权重', value: 'advanced' },
+];
+const groupOptions = computed(() => [
+  { label: '不在任何组', value: '' },
+  ...groups.value.map((group) => ({ label: group.name, value: group.id })),
+]);
+const total = computed(() =>
+  mode.value === 'direct'
+    ? Object.values(directShares.value).reduce((sum, value) => sum + value, 0)
+    : groups.value.reduce((sum, group) => sum + group.share * 100, 0),
+);
+const validTotal = computed(
+  () => Number.isFinite(total.value) && Math.abs(total.value - 100) <= 1e-6,
+);
+const percent = (value: number | null | undefined) =>
+  value == null ? '未知' : Number.isFinite(value) ? `${number(value * 100)}%` : '待填写';
+const inputNumber = (value: number) => (Number.isFinite(value) ? value : null);
+const copyGroups = (values: ManagementGroup[]) =>
+  values.map((group) => ({
+    ...group,
+    share: group.share ?? 0.25,
+    members: [...group.members],
+    memberWeights: { ...group.memberWeights },
+  }));
+const groupOf = (id: string) => groups.value.find((group) => group.members.includes(id));
 
 function draftShare(id: string) {
-  const group = groupOf(id)
-  if (!group) return 0
-  const sum = group.members.reduce((value, member) => value + (group.memberWeights[member] ?? 1), 0)
-  if (!Number.isFinite(group.share) || !Number.isFinite(sum)) return NaN
-  return sum > 0 ? group.share * (group.memberWeights[id] ?? 1) / sum : group.share === 0 ? 0 : NaN
+  const group = groupOf(id);
+  if (!group) return 0;
+  const sum = group.members.reduce(
+    (value, member) => value + (group.memberWeights[member] ?? 1),
+    0,
+  );
+  if (!Number.isFinite(group.share) || !Number.isFinite(sum)) return NaN;
+  return sum > 0
+    ? (group.share * (group.memberWeights[id] ?? 1)) / sum
+    : group.share === 0
+      ? 0
+      : NaN;
 }
 function readDirectShares() {
-  directShares.value = Object.fromEntries(props.state.users.map(user => [user.id, Number((draftShare(user.id) * 100).toFixed(10))]))
+  directShares.value = Object.fromEntries(
+    props.state.users.map((user) => [user.id, Number((draftShare(user.id) * 100).toFixed(10))]),
+  );
 }
-function setDirty(value: boolean) { dirty.value = value; emit('dirty', value) }
+function setDirty(value: boolean) {
+  dirty.value = value;
+  emit('dirty', value);
+}
 function edited(markDirty = true) {
-  editVersion++
-  preview.value = null
-  if (markDirty) setDirty(true)
+  editVersion++;
+  preview.value = null;
+  if (markDirty) setDirty(true);
 }
 function loadSnapshot() {
-  groups.value = copyGroups(props.state.groups)
-  configVersion.value = props.state.configVersion
-  edited(false); setDirty(false); readDirectShares()
+  groups.value = copyGroups(props.state.groups);
+  configVersion.value = props.state.configVersion;
+  edited(false);
+  setDirty(false);
+  readDirectShares();
 }
 function resetDraft() {
-  if (locked.value) return
+  if (locked.value) return;
   if (props.state.configVersion < configVersion.value) {
-    emit('notice', '分组已保存，但页面配置尚未刷新；请先刷新管理摘要再撤销修改。', true)
-    return
+    emit('notice', '分组已保存，但页面配置尚未刷新；请先刷新管理摘要再撤销修改。', true);
+    return;
   }
-  mode.value = 'direct'; redistribute.value = { direct: true, advanced: false }
-  loadSnapshot()
-  emit('notice', '未保存的分组修改已撤销，已读取最新配置。')
+  mode.value = 'direct';
+  redistribute.value = { direct: true, advanced: false };
+  loadSnapshot();
+  emit('notice', '未保存的分组修改已撤销，已读取最新配置。');
 }
 function switchMode(value: Mode) {
-  mode.value = value
-  if (value === 'direct') readDirectShares()
-  edited(false)
+  mode.value = value;
+  if (value === 'direct') readDirectShares();
+  edited(false);
 }
 function applyDirectShares() {
-  for (const user of props.state.users) if (user.enabled && !groupOf(user.id)) groups.value[0]?.members.push(user.id)
+  for (const user of props.state.users)
+    if (user.enabled && !groupOf(user.id)) groups.value[0]?.members.push(user.id);
   for (const group of groups.value) {
-    group.memberWeights = Object.fromEntries(group.members.map(id => [id, directShares.value[id] ?? 0]))
-    group.share = Object.values(group.memberWeights).reduce((sum, value) => sum + value, 0) / 100
+    group.memberWeights = Object.fromEntries(
+      group.members.map((id) => [id, directShares.value[id] ?? 0]),
+    );
+    group.share = Object.values(group.memberWeights).reduce((sum, value) => sum + value, 0) / 100;
   }
 }
 function changeDirect(id: string, value: number | null) {
-  directShares.value[id] = value ?? NaN
-  applyDirectShares(); edited()
+  directShares.value[id] = value ?? NaN;
+  applyDirectShares();
+  edited();
 }
 function changeGroup(id: string, targetId: string) {
-  const weight = groupOf(id)?.memberWeights[id] ?? 1
+  const weight = groupOf(id)?.memberWeights[id] ?? 1;
   for (const group of groups.value) {
-    group.members = group.members.filter(member => member !== id)
-    delete group.memberWeights[id]
+    group.members = group.members.filter((member) => member !== id);
+    delete group.memberWeights[id];
   }
-  const target = groups.value.find(group => group.id === targetId)
-  if (target) { target.members.push(id); target.memberWeights[id] = weight }
-  edited()
+  const target = groups.value.find((group) => group.id === targetId);
+  if (target) {
+    target.members.push(id);
+    target.memberWeights[id] = weight;
+  }
+  edited();
 }
 function changeWeight(id: string, value: number | null) {
-  const group = groupOf(id)
-  if (group) { group.memberWeights[id] = value ?? NaN; edited() }
+  const group = groupOf(id);
+  if (group) {
+    group.memberWeights[id] = value ?? NaN;
+    edited();
+  }
 }
 function validate() {
   if (mode.value === 'direct') {
-    const values = Object.values(directShares.value)
-    if (values.some(value => !Number.isFinite(value) || value < 0 || value > 100)) throw new Error('每位成员的份额必须在 0% 到 100% 之间。')
-    if (Math.abs(values.reduce((sum, value) => sum + value, 0) - 100) > 1e-6) throw new Error('成员份额合计必须为 100%，请调整后再预览。')
+    const values = Object.values(directShares.value);
+    if (values.some((value) => !Number.isFinite(value) || value < 0 || value > 100))
+      throw new Error('每位成员的份额必须在 0% 到 100% 之间。');
+    if (Math.abs(values.reduce((sum, value) => sum + value, 0) - 100) > 1e-6)
+      throw new Error('成员份额合计必须为 100%，请调整后再预览。');
   }
-  if (groups.value.some(group => !Number.isFinite(group.share) || group.share < 0 || group.share > 1) || Math.abs(groups.value.reduce((sum, group) => sum + group.share, 0) - 1) > 1e-8) throw new Error('四组份额须合计 100%。')
-  if (groups.value.some(group => !group.members.length && group.share !== 0)) throw new Error('空组份额须为 0%。')
-  if (!groups.value.some(group => group.members.length)) throw new Error('至少保留一位已分组成员。')
+  if (
+    groups.value.some(
+      (group) => !Number.isFinite(group.share) || group.share < 0 || group.share > 1,
+    ) ||
+    Math.abs(groups.value.reduce((sum, group) => sum + group.share, 0) - 1) > 1e-8
+  )
+    throw new Error('四组份额须合计 100%。');
+  if (groups.value.some((group) => !group.members.length && group.share !== 0))
+    throw new Error('空组份额须为 0%。');
+  if (!groups.value.some((group) => group.members.length))
+    throw new Error('至少保留一位已分组成员。');
   for (const group of groups.value) {
-    const weights = group.members.map(id => group.memberWeights[id] ?? 1)
-    if (weights.some(weight => !Number.isFinite(weight) || weight < 0 || weight > 1e6)) throw new Error('组内权重须在 0 到 1000000 之间。')
-    if (group.share > 0 && weights.reduce((sum, weight) => sum + weight, 0) <= 0) throw new Error('有份额的组至少一位成员权重须大于 0。')
+    const weights = group.members.map((id) => group.memberWeights[id] ?? 1);
+    if (weights.some((weight) => !Number.isFinite(weight) || weight < 0 || weight > 1e6))
+      throw new Error('组内权重须在 0 到 1000000 之间。');
+    if (group.share > 0 && weights.reduce((sum, weight) => sum + weight, 0) <= 0)
+      throw new Error('有份额的组至少一位成员权重须大于 0。');
   }
 }
 function previewGroups() {
-  if (locked.value) return
+  if (locked.value) return;
   void props.run(async () => {
-    pending.value = true
-    preview.value = null
+    pending.value = true;
+    preview.value = null;
     try {
-      if (mode.value === 'direct') applyDirectShares()
-      validate()
-      const revision = editVersion
-      const payload: GroupPayload = { action: 'preview-groups', groups: copyGroups(groups.value), redistributeRemaining: redistribute.value[mode.value], expectedConfigVersion: configVersion.value }
-      const before = props.state.users.map(user => ({ id: user.id, name: user.username || user.id, before: user.quota ? { ...user.quota } : null }))
-      const result = await props.api<GroupResult>('member-management', payload)
-      if (!active) return
-      if (revision !== editVersion) { emit('notice', '预览期间草稿已修改，请重新预览。'); return }
-      preview.value = { payload: { ...payload, action: 'groups' }, rows: before.map(user => ({ ...user, after: result.users.find(item => item.id === user.id)?.quota ?? null })) }
-    } finally { pending.value = false }
-  })
+      if (mode.value === 'direct') applyDirectShares();
+      validate();
+      const revision = editVersion;
+      const payload: GroupPayload = {
+        action: 'preview-groups',
+        groups: copyGroups(groups.value),
+        redistributeRemaining: redistribute.value[mode.value],
+        expectedConfigVersion: configVersion.value,
+      };
+      const before = props.state.users.map((user) => ({
+        id: user.id,
+        name: user.username || user.id,
+        before: user.quota ? { ...user.quota } : null,
+      }));
+      const result = await props.api<GroupResult>('member-management', payload);
+      if (!active) return;
+      if (revision !== editVersion) {
+        emit('notice', '预览期间草稿已修改，请重新预览。');
+        return;
+      }
+      preview.value = {
+        payload: { ...payload, action: 'groups' },
+        rows: before.map((user) => ({
+          ...user,
+          after: result.users.find((item) => item.id === user.id)?.quota ?? null,
+        })),
+      };
+    } finally {
+      pending.value = false;
+    }
+  });
 }
 function saveGroups() {
-  if (locked.value || !preview.value) return
-  const payload = { ...preview.value.payload, groups: copyGroups(preview.value.payload.groups) }, revision = editVersion
+  if (locked.value || !preview.value) return;
+  const payload = { ...preview.value.payload, groups: copyGroups(preview.value.payload.groups) },
+    revision = editVersion;
   void props.run(async () => {
-    pending.value = true
+    pending.value = true;
     try {
-      const result = await props.api<Pick<GroupResult, 'groups' | 'configVersion'>>('member-management', payload)
-      if (!active) return
-      preview.value = null
+      const result = await props.api<Pick<GroupResult, 'groups' | 'configVersion'>>(
+        'member-management',
+        payload,
+      );
+      if (!active) return;
+      preview.value = null;
       // 只有本次保存的成功响应能推进仍在编辑的草稿版本；后台快照不能替它换版本。
-      configVersion.value = result.configVersion
+      configVersion.value = result.configVersion;
       if (revision === editVersion) {
-        groups.value = copyGroups(result.groups); readDirectShares(); setDirty(false)
-        emit('changed', '分组与额度分配已保存。')
+        groups.value = copyGroups(result.groups);
+        readDirectShares();
+        setDirty(false);
+        emit('changed', '分组与额度分配已保存。');
       } else {
-        setDirty(true)
-        emit('changed', '刚才预览已保存，后续修改仍未保存，请重新预览。')
+        setDirty(true);
+        emit('changed', '刚才预览已保存，后续修改仍未保存，请重新预览。');
       }
-    } finally { pending.value = false }
-  })
+    } finally {
+      pending.value = false;
+    }
+  });
 }
-watch(() => props.state, () => {
-  if (!dirty.value && !pending.value && props.state.configVersion >= configVersion.value) loadSnapshot()
-}, { immediate: true })
-onBeforeUnmount(() => { active = false; preview.value = null })
+watch(
+  () => props.state,
+  () => {
+    if (!dirty.value && !pending.value && props.state.configVersion >= configVersion.value)
+      loadSnapshot();
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  active = false;
+  preview.value = null;
+});
 
-const pagination = { pageSize: 10, showSizePicker: true, pageSizes: [10, 25, 50] }
-const memberColumn = computed(() => ({ title: '成员', key: 'username', sorter: 'default' as const, width: 180,
-  filterOptions: props.state.users.map(user => ({ label: user.username || user.id, value: user.id })),
+const pagination = { pageSize: 10, showSizePicker: true, pageSizes: [10, 25, 50] };
+const memberColumn = computed(() => ({
+  title: '成员',
+  key: 'username',
+  sorter: 'default' as const,
+  width: 180,
+  filterOptions: props.state.users.map((user) => ({
+    label: user.username || user.id,
+    value: user.id,
+  })),
   filter: (value: string | number | boolean, user: ManagementUser) => user.id === value,
-  render: (user: ManagementUser) => (user.username || user.id) + (user.enabled ? '' : '（停用）') }))
-const directColumns = computed<DataTableColumns<ManagementUser>>(() => [memberColumn.value,
-  { title: '当前份额', key: 'share', sorter: (a, b) => (a.quota?.share || 0) - (b.quota?.share || 0), width: 130, render: user => percent(user.quota?.share) },
-  { title: '分配具体份额（%）', key: 'allocation', width: 200, render: user => h(NInputNumber, {
-    value: inputNumber(directShares.value[user.id] ?? 0), min: 0, max: 100, showButton: false,
-    disabled: !user.enabled && !groupOf(user.id), inputProps: { id: 'direct-' + user.id, 'aria-label': (user.username || user.id) + ' 的具体总份额百分比' },
-    'onUpdate:value': value => changeDirect(user.id, value) }) },
-  { title: '当前 V5 余额', key: 'v5', align: 'right', width: 150, sorter: (a, b) => (a.quota?.v5Available || 0) - (b.quota?.v5Available || 0), render: user => number(user.quota?.v5Available) }
-])
-const assignmentColumns = computed<DataTableColumns<ManagementUser>>(() => [memberColumn.value,
-  { title: '目标分组', key: 'group', width: 200, render: user => h(NSelect, { value: groupOf(user.id)?.id || '', options: groupOptions.value, disabled: !user.enabled,
-    'aria-label': (user.username || user.id) + ' 的目标分组', 'onUpdate:value': value => changeGroup(user.id, value) }) },
-  { title: '组内权重', key: 'weight', width: 160, render: user => h(NInputNumber, { value: inputNumber(groupOf(user.id)?.memberWeights[user.id] ?? 1), min: 0, max: 1000000, showButton: false,
-    disabled: !groupOf(user.id), inputProps: { id: 'weight-' + user.id, 'aria-label': (user.username || user.id) + ' 的组内权重' }, 'onUpdate:value': value => changeWeight(user.id, value) }) },
-  { title: '当前总份额', key: 'before', width: 130, render: user => percent(user.quota?.share) },
-  { title: '调整后总份额 / V5 容量', key: 'after', width: 220, render: user => percent(draftShare(user.id)) + ' · V5 容量 ' + (Number.isFinite(draftShare(user.id)) ? number(100 * draftShare(user.id)) : '待填写') }
-])
-type PreviewRow = NonNullable<typeof preview.value>['rows'][number]
+  render: (user: ManagementUser) => (user.username || user.id) + (user.enabled ? '' : '（停用）'),
+}));
+const directColumns = computed<DataTableColumns<ManagementUser>>(() => [
+  memberColumn.value,
+  {
+    title: '当前份额',
+    key: 'share',
+    sorter: (a, b) => (a.quota?.share || 0) - (b.quota?.share || 0),
+    width: 130,
+    render: (user) => percent(user.quota?.share),
+  },
+  {
+    title: '分配具体份额（%）',
+    key: 'allocation',
+    width: 200,
+    render: (user) =>
+      h(NInputNumber, {
+        value: inputNumber(directShares.value[user.id] ?? 0),
+        min: 0,
+        max: 100,
+        showButton: false,
+        disabled: !user.enabled && !groupOf(user.id),
+        inputProps: {
+          id: 'direct-' + user.id,
+          'aria-label': (user.username || user.id) + ' 的具体总份额百分比',
+        },
+        'onUpdate:value': (value) => changeDirect(user.id, value),
+      }),
+  },
+  {
+    title: '当前 V5 余额',
+    key: 'v5',
+    align: 'right',
+    width: 150,
+    sorter: (a, b) => (a.quota?.v5Available || 0) - (b.quota?.v5Available || 0),
+    render: (user) => number(user.quota?.v5Available),
+  },
+]);
+const assignmentColumns = computed<DataTableColumns<ManagementUser>>(() => [
+  memberColumn.value,
+  {
+    title: '目标分组',
+    key: 'group',
+    width: 200,
+    render: (user) =>
+      h(NSelect, {
+        value: groupOf(user.id)?.id || '',
+        options: groupOptions.value,
+        disabled: !user.enabled,
+        'aria-label': (user.username || user.id) + ' 的目标分组',
+        'onUpdate:value': (value) => changeGroup(user.id, value),
+      }),
+  },
+  {
+    title: '组内权重',
+    key: 'weight',
+    width: 160,
+    render: (user) =>
+      h(NInputNumber, {
+        value: inputNumber(groupOf(user.id)?.memberWeights[user.id] ?? 1),
+        min: 0,
+        max: 1000000,
+        showButton: false,
+        disabled: !groupOf(user.id),
+        inputProps: {
+          id: 'weight-' + user.id,
+          'aria-label': (user.username || user.id) + ' 的组内权重',
+        },
+        'onUpdate:value': (value) => changeWeight(user.id, value),
+      }),
+  },
+  { title: '当前总份额', key: 'before', width: 130, render: (user) => percent(user.quota?.share) },
+  {
+    title: '调整后总份额 / V5 容量',
+    key: 'after',
+    width: 220,
+    render: (user) =>
+      percent(draftShare(user.id)) +
+      ' · V5 容量 ' +
+      (Number.isFinite(draftShare(user.id)) ? number(100 * draftShare(user.id)) : '待填写'),
+  },
+]);
+type PreviewRow = NonNullable<typeof preview.value>['rows'][number];
 const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
-  { title: '成员', key: 'name', width: 150, sorter: 'default', filterOptions: (preview.value?.rows || []).map(row => ({ label: row.name, value: row.id })), filter: (value, row) => row.id === value },
-  { title: '份额：当前 → 保存后', key: 'share', width: 190, render: row => percent(row.before?.share) + ' → ' + percent(row.after?.share) },
-  { title: 'V5 余额 / 容量：当前 → 保存后', key: 'v5', width: 280, render: row => `${number(row.before?.v5Available)} / ${number(row.before?.v5Capacity)} → ${number(row.after?.v5Available)} / ${number(row.after?.v5Capacity)}` },
-  { title: '订阅：当前 → 保存后', key: 'fixed', width: 190, render: row => number(row.before?.anlasFixedAvailable) + ' → ' + number(row.after?.anlasFixedAvailable) },
-  { title: '购买：当前 → 保存后', key: 'purchased', width: 190, render: row => number(row.before?.anlasPurchasedAvailable) + ' → ' + number(row.after?.anlasPurchasedAvailable) }
-])
+  {
+    title: '成员',
+    key: 'name',
+    width: 150,
+    sorter: 'default',
+    filterOptions: (preview.value?.rows || []).map((row) => ({ label: row.name, value: row.id })),
+    filter: (value, row) => row.id === value,
+  },
+  {
+    title: '份额：当前 → 保存后',
+    key: 'share',
+    width: 190,
+    render: (row) => percent(row.before?.share) + ' → ' + percent(row.after?.share),
+  },
+  {
+    title: 'V5 余额 / 容量：当前 → 保存后',
+    key: 'v5',
+    width: 280,
+    render: (row) =>
+      `${number(row.before?.v5Available)} / ${number(row.before?.v5Capacity)} → ${number(row.after?.v5Available)} / ${number(row.after?.v5Capacity)}`,
+  },
+  {
+    title: '订阅：当前 → 保存后',
+    key: 'fixed',
+    width: 190,
+    render: (row) =>
+      number(row.before?.anlasFixedAvailable) + ' → ' + number(row.after?.anlasFixedAvailable),
+  },
+  {
+    title: '购买：当前 → 保存后',
+    key: 'purchased',
+    width: 190,
+    render: (row) =>
+      number(row.before?.anlasPurchasedAvailable) +
+      ' → ' +
+      number(row.after?.anlasPurchasedAvailable),
+  },
+]);
 </script>
 
 <template>
@@ -226,7 +467,10 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
             :value="group.name"
             :maxlength="60"
             :input-props="{ id: 'group-name-' + group.id }"
-            @update:value="group.name = $event; edited()"
+            @update:value="
+              group.name = $event;
+              edited();
+            "
           />
           <label :for="'group-share-' + group.id">总份额（%）</label
           ><NInputNumber
@@ -235,7 +479,10 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
             :max="100"
             :show-button="false"
             :input-props="{ id: 'group-share-' + group.id }"
-            @update:value="group.share = $event == null ? NaN : $event / 100; edited()"
+            @update:value="
+              group.share = $event == null ? NaN : $event / 100;
+              edited();
+            "
           />
         </NCard>
       </div>
@@ -266,7 +513,10 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
     <NCheckbox
       id="redistribute"
       :checked="redistribute[mode]"
-      @update:checked="redistribute[mode] = $event; edited()"
+      @update:checked="
+        redistribute[mode] = $event;
+        edited();
+      "
       >同步分配当前剩余余额（推荐）</NCheckbox
     >
     <p class="muted">
@@ -296,15 +546,18 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
       :style="{ width: 'min(1080px, calc(100vw - 32px))' }"
       :mask-closable="!pending"
       :closable="!pending"
-      @update:show="value => { if (!value && !pending) preview = null }"
+      @update:show="
+        (value) => {
+          if (!value && !pending) preview = null;
+        }
+      "
     >
       <template v-if="preview"
-        ><NAlert
-          id="previewDescription"
-          type="info"
-          :show-icon="false"
-          >{{ preview.payload.redistributeRemaining ? '将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。' : '仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样。' }}</NAlert
-        >
+        ><NAlert id="previewDescription" type="info" :show-icon="false">{{
+          preview.payload.redistributeRemaining
+            ? '将保留每组总余额，按组内权重重新分配剩余余额；跨组转移请使用调整额度。'
+            : '仅以后生效：只调整分组、未来恢复与新增额度分配；当前余额保持原样。'
+        }}</NAlert>
         <div
           class="table-scroll preview-table"
           tabindex="0"
@@ -339,19 +592,64 @@ const previewColumns = computed<DataTableColumns<PreviewRow>>(() => [
 </template>
 
 <style scoped>
-section { min-width: 0; }
-h2 { margin: 0; font-size: 1.3rem; }
-p { line-height: 1.7; }
-label { display: block; margin: 10px 0 8px; }
-.toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
-.actions, .notice { margin-top: 20px; }
-.muted, small { color: #adb7c6; }
-.danger { color: #ff9d9d; }
-.group-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
-.table-scroll { max-width: 100%; overflow-x: auto; margin-top: 16px; }
-.table-scroll :deep(table) { min-width: 650px; }
-.table-scroll :deep(.n-input-number) { min-width: 120px; }
-.table-scroll :deep(.n-select) { min-width: 150px; }
-.preview-table :deep(table) { min-width: 840px; }
-@media (max-width: 760px) { .group-grid { grid-template-columns: 1fr; } }
+section {
+  min-width: 0;
+}
+h2 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+p {
+  line-height: 1.7;
+}
+label {
+  display: block;
+  margin: 10px 0 8px;
+}
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+.actions,
+.notice {
+  margin-top: 20px;
+}
+.muted,
+small {
+  color: #adb7c6;
+}
+.danger {
+  color: #ff9d9d;
+}
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 20px;
+}
+.table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-top: 16px;
+}
+.table-scroll :deep(table) {
+  min-width: 650px;
+}
+.table-scroll :deep(.n-input-number) {
+  min-width: 120px;
+}
+.table-scroll :deep(.n-select) {
+  min-width: 150px;
+}
+.preview-table :deep(table) {
+  min-width: 840px;
+}
+@media (max-width: 760px) {
+  .group-grid {
+    grid-template-columns: 1fr;
+  }
+}
 </style>

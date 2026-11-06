@@ -1,28 +1,53 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from 'vue'
-import { NButton, NCard, NCheckbox, NForm, NFormItem, NInputNumber, NSpace } from 'naive-ui'
-import type { FreeImagePolicy } from '../types/member'
-import type { ManagementApi, ManagementRun } from '../types/management'
+import { onBeforeUnmount, ref, watch } from 'vue';
+import { NButton, NCard, NCheckbox, NForm, NFormItem, NInputNumber, NSpace } from 'naive-ui';
+import type { FreeImagePolicy } from '../types/member';
+import type { ManagementApi, ManagementRun } from '../types/management';
 
-const props = defineProps<{ policy?: FreeImagePolicy; api: ManagementApi; run: ManagementRun; busy: boolean }>()
-const emit = defineEmits<{ changed: [message: string] }>()
-const draft = ref<FreeImagePolicy | null>(null), dirty = ref(false), saving = ref(false)
-let active = true
-onBeforeUnmount(() => { active = false })
-watch(() => props.policy, value => { if (value && !dirty.value && !saving.value) draft.value = { ...value } }, { immediate: true })
-function reset() { if (props.policy) draft.value = { ...props.policy }; dirty.value = false }
+const props = defineProps<{
+  policy?: FreeImagePolicy;
+  api: ManagementApi;
+  run: ManagementRun;
+  busy: boolean;
+}>();
+const emit = defineEmits<{ changed: [message: string] }>();
+const draft = ref<FreeImagePolicy | null>(null),
+  dirty = ref(false),
+  saving = ref(false);
+let active = true;
+onBeforeUnmount(() => {
+  active = false;
+});
+watch(
+  () => props.policy,
+  (value) => {
+    if (value && !dirty.value && !saving.value) draft.value = { ...value };
+  },
+  { immediate: true },
+);
+function reset() {
+  if (props.policy) draft.value = { ...props.policy };
+  dirty.value = false;
+}
 async function save() {
-  if (props.busy || saving.value || !draft.value) return
-  const { version, ...policy } = draft.value
-  saving.value = true
+  if (props.busy || saving.value || !draft.value) return;
+  const { version, ...policy } = draft.value;
+  saving.value = true;
   try {
     await props.run(async () => {
-      const result = await props.api<{ policy: FreeImagePolicy }>('member-management', { action: 'free-image-policy', expectedVersion: version, policy })
-      if (!active) return
-      draft.value = { ...result.policy }; dirty.value = false
-      emit('changed', '免费图片策略已保存；滚动窗口用量不会因修改策略而清零。')
-    })
-  } finally { saving.value = false }
+      const result = await props.api<{ policy: FreeImagePolicy }>('member-management', {
+        action: 'free-image-policy',
+        expectedVersion: version,
+        policy,
+      });
+      if (!active) return;
+      draft.value = { ...result.policy };
+      dirty.value = false;
+      emit('changed', '免费图片策略已保存；滚动窗口用量不会因修改策略而清零。');
+    });
+  } finally {
+    saving.value = false;
+  }
 }
 </script>
 
