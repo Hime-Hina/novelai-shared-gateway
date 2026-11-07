@@ -21,13 +21,16 @@ export function readNativeEvents(buffer) {
 export function readNativeSseEvents(buffer) {
   const text = buffer.toString('utf8');
   assert.ok(text.endsWith('\n\n'), 'SSE 帧未完整结束');
-  return text.slice(0, -2).split('\n\n').map(frame => {
-    const lines = frame.split('\n');
-    assert.equal(lines.length, 2, 'SSE 必须包含一行 event 和一行 JSON data');
-    assert.match(lines[0], /^event: (intermediate|final|error)$/);
-    assert.ok(lines[1].startsWith('data: '), 'SSE 缺少 JSON data');
-    const event = JSON.parse(lines[1].slice(6));
-    assert.equal(event.event_type, lines[0].slice(7), 'SSE 事件名与 JSON 类型不一致');
-    return event;
-  });
+  return text
+    .slice(0, -2)
+    .split('\n\n')
+    .map((frame) => {
+      const lines = frame.split('\n');
+      assert.equal(lines.length, 2, 'SSE 必须包含一行 event 和一行 JSON data');
+      assert.match(lines[0], /^event: (intermediate|final|error)$/);
+      assert.ok(lines[1].startsWith('data: '), 'SSE 缺少 JSON data');
+      const event = JSON.parse(lines[1].slice(6));
+      assert.equal(event.event_type, lines[0].slice(7), 'SSE 事件名与 JSON 类型不一致');
+      return event;
+    });
 }

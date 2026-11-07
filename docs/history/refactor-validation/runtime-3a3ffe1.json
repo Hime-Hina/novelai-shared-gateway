@@ -1,0 +1,169 @@
+{
+  "runtimeCommit": "3a3ffe1df9f764e85743761fb714aa7492414b7b",
+  "branch": "codex/event-sourcing-member-generation",
+  "scope": "R01-R11 implementation plus R13/R14 functional/package gates; formal R12 still pending",
+  "environment": {
+    "node": "22.23.4",
+    "platform": "linux-x64",
+    "network": "none",
+    "data": "synthetic only; no production read/write/deploy"
+  },
+  "changeSincePrior": "Admission preflight is read-only; final replay/eligibility/quota recovery/request receipt commit atomically. Native fixture updated. Independent event and interface reviews passed.",
+  "backend": {
+    "fullRun": {
+      "total": 676,
+      "passed": 676,
+      "failed": 0,
+      "skipped": 0,
+      "duration_ms": 278640.12478
+    },
+    "priorTransportFailure": {
+      "platform": "Windows Node22",
+      "case": "member-generation-http initial quote fetch",
+      "result": "TypeError fetch failed without underlying cause; targeted retry14/14 and this full Linux suite passed; root cause not inferred"
+    }
+  },
+  "web": {
+    "typecheck": "passed",
+    "unit": {
+      "files": 16,
+      "passed": 139
+    }
+  },
+  "executor": {
+    "typecheck": "passed",
+    "unit": {
+      "passed": 3
+    },
+    "productionImageHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    },
+    "extractedArchiveHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    }
+  },
+  "actualNuxtExecutor": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "duration_ms": 206248.212332
+  },
+  "build": {
+    "backendSyntaxTypePackage": "passed",
+    "rootProductionImage": "passed",
+    "webProductionImage": "passed; identical image digest to f496 because relevant web source is unchanged",
+    "executorProductionImage": "passed"
+  },
+  "release": {
+    "path": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-3a3ffe1-linux-x64.tar.gz",
+    "bytes": 52568793,
+    "sha256": "f8d90027ac741324466898a7c99f29b90d04450c6205cb585fb6f30dc78ec53d",
+    "checksumFile": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-3a3ffe1-linux-x64.tar.gz.sha256",
+    "symlinks": "Linux cp-a/tar/extract; dependency resolution constrained to extracted package",
+    "migrationsWorkersCLI": "passed actual schema/journal/SQL resources/worker and package replay tools",
+    "privateInputArtifactDiagnosticReplay": "passed through actual backup, max1 then resume then repeat0, source unchanged",
+    "serviceUnits": "systemd-analyze verify passed",
+    "contentsScan": "no .env/.env.*, database or bootstrap credentials",
+    "businessBackup": {
+      "actualFunction": "packaged backup-production.py backup()",
+      "tablesCompared": 24,
+      "sourceUnchanged": true,
+      "replayIntegrity": "ok",
+      "imagesIncluded": false,
+      "carriedPostOpeningPaidBackup": {
+        "sourceEvidence": "candidate-f4966fd-acceptance.json",
+        "actualFunction": "backup-production.py backup()",
+        "tablesCompared": 24,
+        "sourceUnchanged": true,
+        "postOpeningPaidCommands": 3,
+        "restoredFactReceiptTables": 9,
+        "balancesEqual": true,
+        "integrity": "ok",
+        "sourceWriter": 1,
+        "replayedReducerVersions": [
+          2
+        ],
+        "targetAuthority": null,
+        "imagesIncluded": false,
+        "note": "Previous complete three-paid-command backup/replay proof carried forward: backup, storage, event replay and amount code unchanged by admission fix. Final new package additionally reruns the actual backup and private-input/artifact replay."
+      }
+    }
+  },
+  "compatibility": {
+    "preRefactor": "deab4db rejects f781 schema before listen; unchanged migration lineage",
+    "earlyEventWriter": {
+      "old": "1427422",
+      "current": "f4966fd",
+      "version": 2,
+      "minimumWriterVersion": 2,
+      "exitCode": 1,
+      "listened": false,
+      "checkedTables": 24,
+      "allTablesUnchanged": true,
+      "retiredOrphanImages": 0
+    },
+    "carriedForwardReason": "Only admission, two test files and docs differ from f496; version gates, migrations, reducer, CLI and storage unchanged. Actual old-process results retain original candidate version."
+  },
+  "peripheral": {
+    "sourceUnchanged": true,
+    "backupScriptTests": 6,
+    "caddyRealHTTP": 7,
+    "carriedForwardReason": "Backup and Caddy source unchanged"
+  },
+  "reviews": {
+    "prior": {
+      "interfaces": "independent_reviewer passed f781 interface/execution/R11 +48 pure tests/Native assertions; later production source deltas event/DB only",
+      "events": "event_reviewer closed all findings through f496, including writer2 and both R12 optimizations"
+    },
+    "admissionInterface": {
+      "commit": "3a3ffe1df9f764e85743761fb714aa7492414b7b",
+      "result": "passed",
+      "tests": 26,
+      "skipped": 0,
+      "nativeTopLevelAssertions": true,
+      "scope": "interface/shared admission"
+    },
+    "admissionEvents": {
+      "commit": "3a3ffe1df9f764e85743761fb714aa7492414b7b",
+      "result": "passed",
+      "tables": 12,
+      "scope": "atomic event/receipt/quota, final replay priority, concurrency, SQL fault rollback"
+    }
+  },
+  "images": {
+    "backend": "sha256:c1cba78306cd1d06f36786c9ca323f086a546c218cad46e62a0e64797fee0410",
+    "workspace": "sha256:4d39080a4034122072a1ffbefb2ffe77cf9351cf216f33dc9787a15119077b67",
+    "root": "sha256:7c16bcef71fc56759a7375016bc8c49509269561eb26db4f0b31fb59e9e30407",
+    "executor": "sha256:91c6fd746f024c19eeb38f89ad282bc21ce2afe2a77720c385008524a0b2bab0",
+    "web": "sha256:adb666c6e2aa343d6e8ea5d5b487b786f613b5034b07dd085192f75d99d8a8e4",
+    "performance": "sha256:449c9e91c7f162ebf00bf02eeee7e2fe6f3b94ce9e87b5b11b1e826e858511ee"
+  },
+  "logs": [
+    "candidate-3a3ffe1-build.log",
+    "candidate-3a3ffe1-backend-tests.log",
+    "workspace-3a3ffe1-build.log",
+    "workspace-3a3ffe1-checks.log",
+    "runtime-3a3ffe1-build.log",
+    "executor-3a3ffe1-build.log",
+    "web-3a3ffe1-build.log",
+    "executor-3a3ffe1-runtime-tests.log",
+    "release-3a3ffe1-runtime-tests.log",
+    "release-3a3ffe1-stage.log",
+    "release-3a3ffe1-backup-replay-tests.log",
+    "release-3a3ffe1-systemd-tests.log"
+  ],
+  "unverified": [
+    "formal 100k three-round and annual capacity performance awaiting clean rerun",
+    "no real NAI/Discord/R2 provider or production deployment"
+  ],
+  "deferred": [
+    "full official frontend editor",
+    "multi-executor/multi-account/fleet scheduling",
+    "database system migration"
+  ]
+}

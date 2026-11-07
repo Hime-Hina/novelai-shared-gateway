@@ -1,0 +1,151 @@
+{
+  "runtimeCommit": "f4966fd42c789469cb3e55d1d87399c1d0cd417c",
+  "testOnlyFollowups": {
+    "executor": "2d7bacf5adbc4364240180aa379ea7103a952dc8",
+    "backend": "619d9eb"
+  },
+  "branch": "codex/event-sourcing-member-generation",
+  "scope": "R01-R11 implementation + R13/R14 functional/package gates; overall completion awaits R12 full performance evidence",
+  "runtimeSourceUnchangedAfterF496": true,
+  "environment": {
+    "node": "22.23.4",
+    "platform": "linux-x64",
+    "network": "none",
+    "data": "synthetic only; no production read/write/deploy"
+  },
+  "backend": {
+    "fullRun": {
+      "total": 674,
+      "passed": 673,
+      "failed": 1,
+      "skipped": 0,
+      "duration_ms": 275864.354505
+    },
+    "remainingFailure": "stale test expectation event_authority.version=1 after intentional writer/reducer2 change",
+    "affectedFileRerun": {
+      "commit": "619d9eb",
+      "total": 1,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "duration_ms": 9962.020086
+    },
+    "acceptedCoverage": "all674 cases covered: unchanged673 plus the full affected real-HTTP idempotency file rerun; not represented as one single all-pass full-suite execution"
+  },
+  "web": {
+    "typecheck": "passed",
+    "unit": {
+      "files": 16,
+      "passed": 139
+    }
+  },
+  "executor": {
+    "typecheck": "passed",
+    "unit": {
+      "passed": 3
+    },
+    "productionImageHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    },
+    "extractedArchiveHTTP": {
+      "total": 4,
+      "passed": 4,
+      "skipped": 0
+    }
+  },
+  "actualNuxtExecutor": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "duration_ms": 203444.126856
+  },
+  "build": {
+    "backendSyntaxTypePackage": "passed",
+    "rootProductionImage": "passed",
+    "webProductionImage": "passed",
+    "executorProductionImage": "passed"
+  },
+  "release": {
+    "path": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-f4966fd-linux-x64.tar.gz",
+    "bytes": 52568771,
+    "sha256": "a18f3947c56da01ca942caa98334deb3e1e872c9fabf3d0838315917dcc4c78c",
+    "checksumFile": "H:\\TEMP\\nai-refactor-acceptance-20261101-87cc125a90d04581b43070eb5d9df881\\novelai-gateway-f4966fd-linux-x64.tar.gz.sha256",
+    "symlinks": "Linux cp-a/tar/extract; runtime require paths constrained to extracted package",
+    "migrationsWorkersCLI": "passed actual new-schema creation, journal count, all SQL resources, worker, package replay tools",
+    "privateInputArtifactDiagnosticReplay": "passed max1 then resume then repeat0, source file unchanged",
+    "serviceUnits": "systemd-analyze verify passed",
+    "contentsScan": "no .env/.env.*, database or bootstrap credentials",
+    "businessBackup": {
+      "actualFunction": "backup-production.py backup()",
+      "tablesCompared": 24,
+      "sourceUnchanged": true,
+      "postOpeningPaidCommands": 3,
+      "restoredFactReceiptTables": 9,
+      "balancesEqual": true,
+      "integrity": "ok",
+      "sourceWriter": 1,
+      "replayedReducerVersions": [
+        2
+      ],
+      "targetAuthority": null,
+      "imagesIncluded": false,
+      "note": "CLI reconstruction produces an isolated target; activation is a separate startup gate. Business backup explicitly excludes generated image bytes."
+    }
+  },
+  "compatibility": {
+    "preRefactor": "deab4db rejects f781 schema before listen; unchanged migration lineage",
+    "earlyEventWriter": {
+      "old": "1427422",
+      "current": "f4966fd",
+      "version": 2,
+      "minimumWriterVersion": 2,
+      "exitCode": 1,
+      "listened": false,
+      "checkedTables": 24,
+      "allTablesUnchanged": true,
+      "retiredOrphanImages": 0
+    }
+  },
+  "peripheral": {
+    "sourceUnchanged": true,
+    "backupScriptTests": 6,
+    "caddyRealHTTP": 7
+  },
+  "reviews": {
+    "interfaces": "independent_reviewer passed f781 interface/execution/R11 +48 pure tests/Native assertions; later production source deltas event/DB only",
+    "events": "event_reviewer closed all findings through f496, including writer2 and both R12 optimizations"
+  },
+  "images": {
+    "backend": "sha256:65d53d554de2fb7a077683755165f8b2d4f2ab550c967032478fb93443c10d67",
+    "workspace": "sha256:2c665dffad7944b3c88716286bbdb64605a899c7f66a2f2bb05c5e8ef1c549df",
+    "root": "sha256:fafeb9a414f69c195205a8466304de943acb3cc64f18ab12b1027049f87ee088",
+    "executor": "sha256:970f652a82c7fbb44c96242ef3f83bb71cb88fa44174b7f853eef747cadb0343",
+    "web": "sha256:adb666c6e2aa343d6e8ea5d5b487b786f613b5034b07dd085192f75d99d8a8e4",
+    "performance": "sha256:ee63c34b9924b95be296f394b5c1e941bfa474784c8615c8988b35713a3aff4b"
+  },
+  "logs": [
+    "candidate-f4966fd-backend-tests.log",
+    "candidate-f4966fd-idempotency-verified.log",
+    "workspace-f4966fd-checks.log",
+    "executor-f4966fd-runtime-verified.log",
+    "release-f4966fd-runtime-tests.log",
+    "release-f4966fd-replay-tests.log",
+    "release-f4966fd-backup-restore-tests.log",
+    "release-f4966fd-paid-backup-verified.log",
+    "writer-compatibility-f4966fd-tests.log",
+    "release-f4966fd-systemd-tests.log",
+    "release-f4966fd-checksums.log"
+  ],
+  "unverified": [
+    "formal100k3round+annual performance still running",
+    "no real NAI/Discord/R2 provider or production deployment"
+  ],
+  "deferred": [
+    "full official frontend editor",
+    "multi-executor/multi-account/fleet scheduling",
+    "database system migration"
+  ]
+}

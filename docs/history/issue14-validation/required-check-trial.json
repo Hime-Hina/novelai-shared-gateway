@@ -1,0 +1,44 @@
+{
+  "baseline": "7c55c6dad7ec59b04550ee9e2f1a0db6047db791",
+  "issue": "https://github.com/Hime-Hina/novelai-shared-gateway/issues/12",
+  "timeZone": "Asia/Taipei",
+  "testDate": "2026-11-07",
+  "before": {
+    "mainProtected": false,
+    "refactorProtected": false,
+    "rulesets": [],
+    "ghAccount": "Hime-Hina",
+    "ghAdministrationPermission": true
+  },
+  "trial": {
+    "pr": "https://github.com/Hime-Hina/novelai-shared-gateway/pull/15",
+    "baseSha": "046736bf0d942e0651af7c0b2464862d43eb3125",
+    "headSha": "dab9b24f637a5b706dc6a95869eb73108c0872a9",
+    "protection": {
+      "requiredCheck": "required-failure-proof",
+      "strict": true,
+      "enforceAdmins": true
+    },
+    "check": {
+      "url": "https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/42273694634/job/128084463700",
+      "status": "completed",
+      "conclusion": "failure",
+      "startedAt": "2026-11-06T18:46:19Z",
+      "completedAt": "2026-11-06T18:46:22Z"
+    },
+    "mergeableState": "blocked",
+    "attempt": {
+      "httpStatus": 405,
+      "message": "Required status check \"required-failure-proof\" is failing."
+    },
+    "baseAfterAttempt": "046736bf0d942e0651af7c0b2464862d43eb3125",
+    "merged": false,
+    "prClosed": true,
+    "temporaryBranchesAndProtectionDeleted": true
+  },
+  "limits": [
+    "Only isolated branches were protected; main and the refactor branch remain unprotected until the maintainer chooses the applicable protection policy.",
+    "Hime-Hina controls GitHub administration and can edit/remove protection; this shared administrator identity is not an agent sandbox.",
+    "This trial used a deliberate failing Actions job; final product CI is a separate acceptance check."
+  ]
+}

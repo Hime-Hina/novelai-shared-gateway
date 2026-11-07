@@ -1,1 +1,1 @@
-export default defineEventHandler(forwardExecutor)
+export default defineEventHandler(forwardExecutor);

@@ -7,8 +7,11 @@ COPY patches ./patches
 COPY web/package.json ./web/package.json
 RUN pnpm --filter @novelai-gateway/web install --frozen-lockfile
 COPY web ./web
-COPY public/member-events.js ./public/member-events.js
-COPY server/generation-request.ts server/queue-policy.ts server/shared-surface.ts server/shared-status.ts server/shared-capacity.ts server/state-events.ts server/activity-heatmap.ts ./server/
+COPY server/generation/payload-budget.ts ./server/generation/
+COPY server/http/api-surface.ts ./server/http/
+COPY server/quota/shared-status.ts server/quota/shared-capacity.ts server/quota/eligibility.ts ./server/quota/
+COPY server/events/state-notifications.ts ./server/events/
+COPY server/reports/activity-heatmap.ts ./server/reports/
 RUN pnpm --filter @novelai-gateway/web build
 RUN mkdir -p /app/dependency-licenses && find node_modules -type f \( -iname 'license*' -o -iname 'copying*' -o -iname 'notice*' \) -exec cp --parents --target-directory=/app/dependency-licenses -- {} +
 

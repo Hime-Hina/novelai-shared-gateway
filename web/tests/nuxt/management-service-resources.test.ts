@@ -1,114 +1,189 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mountSuspended } from '@nuxt/test-utils/runtime'
-import { enableAutoUnmount } from '@vue/test-utils'
-import ManagementServiceResources from '../../app/components/ManagementServiceResources.vue'
-import type { ServiceResources } from '../../app/types/management'
+import { afterEach, describe, expect, it } from 'vitest';
+import { mountSuspended } from '@nuxt/test-utils/runtime';
+import { enableAutoUnmount } from '@vue/test-utils';
+import ManagementServiceResources from '../../app/components/ManagementServiceResources.vue';
+import type { ServiceResources } from '../../app/types/management';
 
-enableAutoUnmount(afterEach)
+enableAutoUnmount(afterEach);
 const data: ServiceResources = {
-  memory: { rssBytes: 128 * 1024 ** 2, heapUsedBytes: 32 * 1024 ** 2, heapTotalBytes: 64 * 1024 ** 2 },
+  memory: {
+    rssBytes: 128 * 1024 ** 2,
+    heapUsedBytes: 32 * 1024 ** 2,
+    heapTotalBytes: 64 * 1024 ** 2,
+  },
   uptimeSeconds: 90061,
   data: { bytes: 1.5 * 1024 ** 3, checkedAt: '2026-10-21T00:00:00Z' },
-  disk: { usedBytes: 30 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, availableBytes: 65 * 1024 ** 3 }
-}
+  disk: { usedBytes: 30 * 1024 ** 3, totalBytes: 100 * 1024 ** 3, availableBytes: 65 * 1024 ** 3 },
+};
 
 describe('ManagementServiceResources', () => {
   it('显示可读单位、进程与磁盘统计范围，摘要更新时同步显示新结果', async () => {
-    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } })
-    expect(wrapper.get('#serviceMemory').text()).toBe('128 MiB')
-    expect(wrapper.text()).toContain('JS 堆 32 MiB / 64 MiB')
-    expect(wrapper.get('#serviceData').text()).toBe('1.5 GiB')
-    expect(wrapper.get('#serviceDisk').text()).toBe('30 GiB / 100 GiB')
-    expect(wrapper.text()).toContain('可用 65 GiB')
-    expect(wrapper.get('#serviceUptime').text()).toBe('1 天 1 小时 1 分钟')
-    expect(wrapper.text()).toContain('包含其他服务占用')
-    expect(wrapper.text()).toContain('内存不含独立网页服务')
-    expect(wrapper.text()).toContain('每分钟采样')
-    await wrapper.setProps({ data: { ...data, memory: { ...data.memory, rssBytes: 256 * 1024 ** 2 } } })
-    expect(wrapper.get('#serviceMemory').text()).toBe('256 MiB')
-  })
+    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } });
+    expect(wrapper.get('#serviceMemory').text()).toBe('128 MiB');
+    expect(wrapper.text()).toContain('JS 堆 32 MiB / 64 MiB');
+    expect(wrapper.get('#serviceData').text()).toBe('1.5 GiB');
+    expect(wrapper.get('#serviceDisk').text()).toBe('30 GiB / 100 GiB');
+    expect(wrapper.text()).toContain('可用 65 GiB');
+    expect(wrapper.get('#serviceUptime').text()).toBe('1 天 1 小时 1 分钟');
+    expect(wrapper.text()).toContain('包含其他服务占用');
+    expect(wrapper.text()).toContain('内存不含独立网页服务');
+    expect(wrapper.text()).toContain('每分钟采样');
+    await wrapper.setProps({
+      data: { ...data, memory: { ...data.memory, rssBytes: 256 * 1024 ** 2 } },
+    });
+    expect(wrapper.get('#serviceMemory').text()).toBe('256 MiB');
+  });
 
   it('缺失数据不伪造零占用，真实零值照常显示', async () => {
-    const wrapper = await mountSuspended(ManagementServiceResources)
-    expect(wrapper.get('#serviceMemory').text()).toBe('暂不可用')
-    expect(wrapper.get('#serviceData').text()).toBe('暂不可用')
-    expect(wrapper.get('#serviceUptime').text()).toBe('暂不可用')
-    await wrapper.setProps({ data: { ...data, data: null, disk: null } })
-    expect(wrapper.get('#serviceMemory').text()).toBe('128 MiB')
-    expect(wrapper.get('#serviceData').text()).toBe('暂不可用')
-    expect(wrapper.get('#serviceDisk').text()).toBe('暂不可用 / 暂不可用')
-    await wrapper.setProps({ data: { ...data, data: { ...data.data!, bytes: 0 }, uptimeSeconds: 0 } })
-    expect(wrapper.get('#serviceData').text()).toBe('0 B')
-    expect(wrapper.get('#serviceUptime').text()).toBe('0 天 0 小时 0 分钟')
-  })
+    const wrapper = await mountSuspended(ManagementServiceResources);
+    expect(wrapper.get('#serviceMemory').text()).toBe('暂不可用');
+    expect(wrapper.get('#serviceData').text()).toBe('暂不可用');
+    expect(wrapper.get('#serviceUptime').text()).toBe('暂不可用');
+    await wrapper.setProps({ data: { ...data, data: null, disk: null } });
+    expect(wrapper.get('#serviceMemory').text()).toBe('128 MiB');
+    expect(wrapper.get('#serviceData').text()).toBe('暂不可用');
+    expect(wrapper.get('#serviceDisk').text()).toBe('暂不可用 / 暂不可用');
+    await wrapper.setProps({
+      data: { ...data, data: { ...data.data!, bytes: 0 }, uptimeSeconds: 0 },
+    });
+    expect(wrapper.get('#serviceData').text()).toBe('0 B');
+    expect(wrapper.get('#serviceUptime').text()).toBe('0 天 0 小时 0 分钟');
+  });
 
   it('独立显示 R2 卡片，刷新时保留状态行，未配置时隐藏', async () => {
-    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } })
-    expect(wrapper.find('#serviceR2').exists()).toBe(false)
-    await wrapper.setProps({ data: { ...data, r2: { bytes: 1023 * 1024 ** 2, archiveAtBytes: 8_550_000_000, images: 100, pending: 1, errors: 1 } } })
-    expect(wrapper.get('#serviceR2').text()).toBe('1,023 MiB')
-    expect(wrapper.text()).toContain('转冷水位 7.963 GiB')
-    expect(wrapper.get('#serviceR2').element.closest('.n-card')).not.toBe(wrapper.get('#serviceData').element.closest('.n-card'))
-    expect(wrapper.text()).toContain('热图片 100 张')
-    expect(wrapper.text()).toContain('待验证 1 张 · 转存异常 1 张')
-    expect(wrapper.text()).toContain('不设容量硬上限')
-    const status = wrapper.get('#serviceR2Status').element
-    await wrapper.setProps({ data: { ...data, r2: { bytes: 1024 ** 3, archiveAtBytes: 8_550_000_000, images: 101, pending: 0, errors: 0 } } })
-    expect(wrapper.get('#serviceR2').text()).toBe('1 GiB')
-    expect(wrapper.get('#serviceR2Status').element).toBe(status)
-    expect(wrapper.get('#serviceR2Status').text()).toBe('待验证 0 张 · 转存异常 0 张')
-  })
+    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data } });
+    expect(wrapper.find('#serviceR2').exists()).toBe(false);
+    await wrapper.setProps({
+      data: {
+        ...data,
+        r2: {
+          bytes: 1023 * 1024 ** 2,
+          archiveAtBytes: 8_550_000_000,
+          images: 100,
+          pending: 1,
+          errors: 1,
+        },
+      },
+    });
+    expect(wrapper.get('#serviceR2').text()).toBe('1,023 MiB');
+    expect(wrapper.text()).toContain('转冷水位 7.963 GiB');
+    expect(wrapper.get('#serviceR2').element.closest('.n-card')).not.toBe(
+      wrapper.get('#serviceData').element.closest('.n-card'),
+    );
+    expect(wrapper.text()).toContain('热图片 100 张');
+    expect(wrapper.text()).toContain('待验证 1 张 · 转存异常 1 张');
+    expect(wrapper.text()).toContain('不设容量硬上限');
+    const status = wrapper.get('#serviceR2Status').element;
+    await wrapper.setProps({
+      data: {
+        ...data,
+        r2: { bytes: 1024 ** 3, archiveAtBytes: 8_550_000_000, images: 101, pending: 0, errors: 0 },
+      },
+    });
+    expect(wrapper.get('#serviceR2').text()).toBe('1 GiB');
+    expect(wrapper.get('#serviceR2Status').element).toBe(status);
+    expect(wrapper.get('#serviceR2Status').text()).toBe('待验证 0 张 · 转存异常 0 张');
+  });
 
   it('官方 A/B 用量从未知更新为真实零值，保留表格行与失败时的上次统计', async () => {
-    const r2 = { bytes: 1024 ** 3, archiveAtBytes: 8_550_000_000, images: 100, pending: 0, errors: 0 }
-    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, r2 } } })
-    const a = wrapper.get('#serviceR2ClassA').element
-    const b = wrapper.get('#serviceR2ClassB').element
-    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类——')
-    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('未配置官方统计')
-    const operations = { status: 'ready' as const, periodStart: '2026-10-12T00:00:00Z', periodEnd: '2026-11-12T00:00:00Z', checkedAt: '2026-10-24T00:00:00Z',
-      classA: { used: 0, limit: 1_000_000, remaining: 1_000_000 }, classB: { used: 1234, limit: 10_000_000, remaining: 9_998_766 } }
-    await wrapper.setProps({ data: { ...data, r2: { ...r2, operations } } })
-    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类01,000,000')
-    expect(wrapper.get('#serviceR2ClassB').text()).toBe('B 类1,2349,998,766')
-    expect(wrapper.get('#serviceR2Period').text()).toContain('2026-10-12 至 2026-11-12（UTC）')
-    expect(wrapper.text()).toContain('账户共享额度')
-    expect(wrapper.text()).toContain('剩余为估算')
-    await wrapper.setProps({ data: { ...data, r2: { ...r2, operations: { ...operations, status: 'stale' } } } })
-    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('更新失败，显示上次统计')
-    expect(wrapper.get('#serviceR2ClassA').element).toBe(a)
-    expect(wrapper.get('#serviceR2ClassB').element).toBe(b)
-  })
+    const r2 = {
+      bytes: 1024 ** 3,
+      archiveAtBytes: 8_550_000_000,
+      images: 100,
+      pending: 0,
+      errors: 0,
+    };
+    const wrapper = await mountSuspended(ManagementServiceResources, {
+      props: { data: { ...data, r2 } },
+    });
+    const a = wrapper.get('#serviceR2ClassA').element;
+    const b = wrapper.get('#serviceR2ClassB').element;
+    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类——');
+    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('未配置官方统计');
+    const operations = {
+      status: 'ready' as const,
+      periodStart: '2026-10-12T00:00:00Z',
+      periodEnd: '2026-11-12T00:00:00Z',
+      checkedAt: '2026-10-24T00:00:00Z',
+      classA: { used: 0, limit: 1_000_000, remaining: 1_000_000 },
+      classB: { used: 1234, limit: 10_000_000, remaining: 9_998_766 },
+    };
+    await wrapper.setProps({ data: { ...data, r2: { ...r2, operations } } });
+    expect(wrapper.get('#serviceR2ClassA').text()).toBe('A 类01,000,000');
+    expect(wrapper.get('#serviceR2ClassB').text()).toBe('B 类1,2349,998,766');
+    expect(wrapper.get('#serviceR2Period').text()).toContain('2026-10-12 至 2026-11-12（UTC）');
+    expect(wrapper.text()).toContain('账户共享额度');
+    expect(wrapper.text()).toContain('剩余为估算');
+    await wrapper.setProps({
+      data: { ...data, r2: { ...r2, operations: { ...operations, status: 'stale' } } },
+    });
+    expect(wrapper.get('#serviceR2OperationsStatus').text()).toContain('更新失败，显示上次统计');
+    expect(wrapper.get('#serviceR2ClassA').element).toBe(a);
+    expect(wrapper.get('#serviceR2ClassB').element).toBe(b);
+  });
 
   it('并列显示热存储备份与冷存储规模，未知备份容量保持未知', async () => {
-    const r2 = { bytes: 1024 ** 3, archiveAtBytes: 8_550_000_000, images: 100, pending: 0, errors: 0 }
-    const pikpak = { originalBytes: 2 * 1024 ** 3, images: 42, pending: 1, errors: 2 }
-    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, r2, pikpak } } })
-    expect(wrapper.text()).toContain('R2 热存储')
-    expect(wrapper.text()).toContain('PikPak 冷存储')
-    expect(wrapper.get('#servicePikPak').text()).toBe('暂不可用 / 暂不可用')
-    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张')
-    expect(wrapper.get('#servicePikPakStatus').text()).toContain('待释放 R2 1 张 · 转存异常 2 张')
-    expect(wrapper.get('#serviceR2Backups').text()).toContain('暂不可用')
-    await wrapper.setProps({ data: { ...data, pikpak, r2: { ...r2, backups: { bytes: 70 * 1024 ** 2, count: 7, checkedAt: '2026-11-04T00:00:00Z', status: 'ready' } } } })
-    expect(wrapper.get('#serviceR2Backups').text()).toContain('7 份 · 70 MiB')
-    expect(wrapper.text()).toContain('新备份成功后清理旧备份')
-  })
+    const r2 = {
+      bytes: 1024 ** 3,
+      archiveAtBytes: 8_550_000_000,
+      images: 100,
+      pending: 0,
+      errors: 0,
+    };
+    const pikpak = { originalBytes: 2 * 1024 ** 3, images: 42, pending: 1, errors: 2 };
+    const wrapper = await mountSuspended(ManagementServiceResources, {
+      props: { data: { ...data, r2, pikpak } },
+    });
+    expect(wrapper.text()).toContain('R2 热存储');
+    expect(wrapper.text()).toContain('PikPak 冷存储');
+    expect(wrapper.get('#servicePikPak').text()).toBe('暂不可用 / 暂不可用');
+    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张');
+    expect(wrapper.get('#servicePikPakStatus').text()).toContain('待释放 R2 1 张 · 转存异常 2 张');
+    expect(wrapper.get('#serviceR2Backups').text()).toContain('暂不可用');
+    const backups = {
+      bytes: 70 * 1024 ** 2,
+      count: 7,
+      checkedAt: '2026-11-04T00:00:00Z',
+      status: 'ready' as const,
+    };
+    await wrapper.setProps({ data: { ...data, pikpak, r2: { ...r2, backups } } });
+    expect(wrapper.get('#serviceR2Backups').text()).toContain('7 份 · 70 MiB');
+    expect(wrapper.text()).toContain('新备份成功后清理旧备份');
+    const checkedAt = wrapper.get('#serviceR2BackupStatus').text();
+    expect(checkedAt).toContain('备份统计于');
+    await wrapper.setProps({
+      data: { ...data, pikpak, r2: { ...r2, backups: { ...backups, status: 'stale' } } },
+    });
+    expect(wrapper.get('#serviceR2Backups').text()).toContain('7 份 · 70 MiB');
+    expect(wrapper.get('#serviceR2BackupStatus').text()).toContain('更新失败，显示上次统计');
+    expect(wrapper.get('#serviceR2BackupStatus').text()).toContain(checkedAt);
+  });
 
   it('显示账户实际已用和总容量，区别于本站原图规模；失败保留上次统计，真实零值不显示为未知', async () => {
-    const pikpak = { originalBytes: 2 * 1024 ** 3, images: 42, pending: 0, errors: 0 }
-    const quota = { usedBytes: 1024 ** 4, totalBytes: 10 * 1024 ** 4, checkedAt: '2026-11-04T06:00:00Z', status: 'ready' as const }
-    const wrapper = await mountSuspended(ManagementServiceResources, { props: { data: { ...data, pikpak: { ...pikpak, quota } } } })
-    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB')
-    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张')
-    expect(wrapper.text()).toContain('账户用量包含其他目录')
-    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('官方统计')
-    const status = wrapper.get('#servicePikPakQuotaStatus').element
-    await wrapper.setProps({ data: { ...data, pikpak: { ...pikpak, quota: { ...quota, status: 'stale' } } } })
-    expect(wrapper.get('#servicePikPakQuotaStatus').element).toBe(status)
-    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB')
-    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('更新失败，显示上次统计')
-    await wrapper.setProps({ data: { ...data, pikpak: { ...pikpak, quota: { ...quota, usedBytes: 0 } } } })
-    expect(wrapper.get('#servicePikPak').text()).toBe('0 B / 10 TiB')
-  })
-})
+    const pikpak = { originalBytes: 2 * 1024 ** 3, images: 42, pending: 0, errors: 0 };
+    const quota = {
+      usedBytes: 1024 ** 4,
+      totalBytes: 10 * 1024 ** 4,
+      checkedAt: '2026-11-04T06:00:00Z',
+      status: 'ready' as const,
+    };
+    const wrapper = await mountSuspended(ManagementServiceResources, {
+      props: { data: { ...data, pikpak: { ...pikpak, quota } } },
+    });
+    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB');
+    expect(wrapper.text()).toContain('本站归档原图 2 GiB · 42 张');
+    expect(wrapper.text()).toContain('账户用量包含其他目录');
+    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('官方统计');
+    const status = wrapper.get('#servicePikPakQuotaStatus').element;
+    await wrapper.setProps({
+      data: { ...data, pikpak: { ...pikpak, quota: { ...quota, status: 'stale' } } },
+    });
+    expect(wrapper.get('#servicePikPakQuotaStatus').element).toBe(status);
+    expect(wrapper.get('#servicePikPak').text()).toBe('1 TiB / 10 TiB');
+    expect(wrapper.get('#servicePikPakQuotaStatus').text()).toContain('更新失败，显示上次统计');
+    await wrapper.setProps({
+      data: { ...data, pikpak: { ...pikpak, quota: { ...quota, usedBytes: 0 } } },
+    });
+    expect(wrapper.get('#servicePikPak').text()).toBe('0 B / 10 TiB');
+  });
+});

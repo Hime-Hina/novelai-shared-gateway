@@ -1,0 +1,40 @@
+{
+  "stage": "seed",
+  "label": "baseline",
+  "history": 100000,
+  "machine": {
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v22.23.4",
+    "sqlite": "3.53.1",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "logicalCpus": 16,
+    "totalMemory": 20837376000,
+    "filesystem": {
+      "type": 61267,
+      "bsize": 4096,
+      "blocks": 263940717,
+      "bfree": 247579644,
+      "bavail": 234153776,
+      "files": 67108864,
+      "ffree": 65345745
+    }
+  },
+  "fixedActive": 8,
+  "source": "/baseline",
+  "seedMs": 6406.093940000001,
+  "rows": 100000,
+  "synchronous": 2,
+  "checkpoint": [
+    {
+      "busy": 0,
+      "log": 0,
+      "checkpointed": 0
+    }
+  ],
+  "disk": {
+    "database": 151863296,
+    "wal": 0,
+    "shm": 327680
+  }
+}

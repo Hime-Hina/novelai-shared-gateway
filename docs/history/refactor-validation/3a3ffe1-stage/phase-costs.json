@@ -1,0 +1,242 @@
+[
+  {
+    "case": "baseline-1000",
+    "phase": "settlement",
+    "updates": 20,
+    "phaseTotalMs": 60.29792700000041,
+    "phaseP50Ms": 2.754060999999865,
+    "phaseP95Ms": 5.113599000000022,
+    "commitCount": 20.0,
+    "commitTotalMs": 38.425612999999885,
+    "commitMaxMs": 4.2565270000000055,
+    "nativeSqlTotalMs": 43.13465499999904,
+    "prepareTotalMs": null,
+    "nativeCallCount": 260.0,
+    "prepareCount": null,
+    "jsonParse": {
+      "count": 540,
+      "ms": 3.0925199999973074
+    },
+    "diskBeforeCheckpoint": {
+      "database": 1867776,
+      "wal": 4181832,
+      "shm": 32768
+    },
+    "checkpointMs": 4.733936999999969,
+    "diskAfterCheckpoint": {
+      "database": 2002944,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "baseline-1000",
+    "phase": "quota-refresh",
+    "updates": 3,
+    "phaseTotalMs": 8.247592000000168,
+    "phaseP50Ms": 2.8118480000000545,
+    "phaseP95Ms": 3.2036709999999857,
+    "commitCount": 3.0,
+    "commitTotalMs": 4.969392000000198,
+    "commitMaxMs": 2.0146780000000035,
+    "nativeSqlTotalMs": 5.415388000000235,
+    "prepareTotalMs": null,
+    "nativeCallCount": 27.0,
+    "prepareCount": null,
+    "jsonParse": {
+      "count": 78,
+      "ms": 0.495378999998934
+    },
+    "diskBeforeCheckpoint": {
+      "database": 1867776,
+      "wal": 4181832,
+      "shm": 32768
+    },
+    "checkpointMs": 4.733936999999969,
+    "diskAfterCheckpoint": {
+      "database": 2002944,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "candidate-1000",
+    "phase": "settlement",
+    "updates": 20,
+    "phaseTotalMs": 190.1472170000003,
+    "phaseP50Ms": 9.135763000000225,
+    "phaseP95Ms": 12.62145600000008,
+    "commitCount": 20.0,
+    "commitTotalMs": 48.90342899999996,
+    "commitMaxMs": 6.10922000000005,
+    "nativeSqlTotalMs": 68.1313710000012,
+    "prepareTotalMs": 16.652096000000256,
+    "nativeCallCount": 1700.0,
+    "prepareCount": 1320.0,
+    "jsonParse": {
+      "count": 1500,
+      "ms": 10.496209999998655
+    },
+    "diskBeforeCheckpoint": {
+      "database": 6094848,
+      "wal": 4198312,
+      "shm": 32768
+    },
+    "checkpointMs": 4.473099999999931,
+    "diskAfterCheckpoint": {
+      "database": 6139904,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "candidate-1000",
+    "phase": "quota-refresh",
+    "updates": 3,
+    "phaseTotalMs": 24.21902,
+    "phaseP50Ms": 8.177308000000039,
+    "phaseP95Ms": 9.214580000000069,
+    "commitCount": 3.0,
+    "commitTotalMs": 6.986891000000014,
+    "commitMaxMs": 2.6828140000000076,
+    "nativeSqlTotalMs": 8.644224999997732,
+    "prepareTotalMs": 1.5037739999993391,
+    "nativeCallCount": 167.0,
+    "prepareCount": 141.0,
+    "jsonParse": {
+      "count": 176,
+      "ms": 0.988964000000351
+    },
+    "diskBeforeCheckpoint": {
+      "database": 6094848,
+      "wal": 4198312,
+      "shm": 32768
+    },
+    "checkpointMs": 4.473099999999931,
+    "diskAfterCheckpoint": {
+      "database": 6139904,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "baseline-100000",
+    "phase": "settlement",
+    "updates": 20,
+    "phaseTotalMs": 60.48727100000315,
+    "phaseP50Ms": 2.833290999999008,
+    "phaseP95Ms": 4.028048000000126,
+    "commitCount": 20.0,
+    "commitTotalMs": 38.64542900000538,
+    "commitMaxMs": 3.371167999999898,
+    "nativeSqlTotalMs": 42.856471000001875,
+    "prepareTotalMs": null,
+    "nativeCallCount": 260.0,
+    "prepareCount": null,
+    "jsonParse": {
+      "count": 540,
+      "ms": 3.172002000037992
+    },
+    "diskBeforeCheckpoint": {
+      "database": 152027136,
+      "wal": 4144752,
+      "shm": 32768
+    },
+    "checkpointMs": 9.018539000000601,
+    "diskAfterCheckpoint": {
+      "database": 152162304,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "baseline-100000",
+    "phase": "quota-refresh",
+    "updates": 3,
+    "phaseTotalMs": 12.239972999999736,
+    "phaseP50Ms": 4.210542999999234,
+    "phaseP95Ms": 4.578384000000369,
+    "commitCount": 3.0,
+    "commitTotalMs": 9.017766000001757,
+    "commitMaxMs": 3.308649000000514,
+    "nativeSqlTotalMs": 9.430986000007579,
+    "prepareTotalMs": null,
+    "nativeCallCount": 27.0,
+    "prepareCount": null,
+    "jsonParse": {
+      "count": 78,
+      "ms": 0.43370000001323206
+    },
+    "diskBeforeCheckpoint": {
+      "database": 152027136,
+      "wal": 4144752,
+      "shm": 32768
+    },
+    "checkpointMs": 9.018539000000601,
+    "diskAfterCheckpoint": {
+      "database": 152162304,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "candidate-100000",
+    "phase": "settlement",
+    "updates": 20,
+    "phaseTotalMs": 211.08127199999444,
+    "phaseP50Ms": 9.711355000000367,
+    "phaseP95Ms": 18.752703999999994,
+    "commitCount": 20.0,
+    "commitTotalMs": 66.35151900000164,
+    "commitMaxMs": 11.449527000000217,
+    "nativeSqlTotalMs": 88.7048449999661,
+    "prepareTotalMs": 16.945951999994804,
+    "nativeCallCount": 1700.0,
+    "prepareCount": 1320.0,
+    "jsonParse": {
+      "count": 1500,
+      "ms": 10.508218999993005
+    },
+    "diskBeforeCheckpoint": {
+      "database": 555962368,
+      "wal": 4268352,
+      "shm": 32768
+    },
+    "checkpointMs": 5.712690000000293,
+    "diskAfterCheckpoint": {
+      "database": 556015616,
+      "wal": 0,
+      "shm": 32768
+    }
+  },
+  {
+    "case": "candidate-100000",
+    "phase": "quota-refresh",
+    "updates": 3,
+    "phaseTotalMs": 33.194666000002144,
+    "phaseP50Ms": 9.960622999999032,
+    "phaseP95Ms": 15.602831000000151,
+    "commitCount": 3.0,
+    "commitTotalMs": 13.629961000000549,
+    "commitMaxMs": 8.461581999999908,
+    "nativeSqlTotalMs": 15.871187999993708,
+    "prepareTotalMs": 1.6705379999975776,
+    "nativeCallCount": 167.0,
+    "prepareCount": 141.0,
+    "jsonParse": {
+      "count": 176,
+      "ms": 1.0068730000039068
+    },
+    "diskBeforeCheckpoint": {
+      "database": 555962368,
+      "wal": 4268352,
+      "shm": 32768
+    },
+    "checkpointMs": 5.712690000000293,
+    "diskAfterCheckpoint": {
+      "database": 556015616,
+      "wal": 0,
+      "shm": 32768
+    }
+  }
+]

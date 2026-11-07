@@ -1,0 +1,414 @@
+{
+  "scope": "Historical main integration run on November 7, 2026. Network-disabled synthetic R2/PikPak. Daily rotation in this baseline tested the new object, prior to the subsequent verification of the retained set.",
+  "candidate": "f592e61df8be32ff211c3751735a5d21179fc399",
+  "sourceArchiveSha256": "b7a54738e498d4c562788eec1b036292feb479ce41072da9894046fbfa6a38a4",
+  "tree": "e8c72cf72c865d9448981a71ba6316c861bef156",
+  "prMergePreview": "db0a7961d3c60c8c3cc9fba35d969d307378213a",
+  "linuxTestRelease": {
+    "artifact": "https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/42378995090/artifacts/13576769328",
+    "sha256": "7e85588bb3d38bc5c083dc3add38cfed5fa7005dd9d27de72eda800bea9df945"
+  },
+  "largeInput": {
+    "originalReportSha256": "bdefc031aa8f7f23dadb4ae444fc9df5ce2adfe7c52d2634d69c71edbb84e560",
+    "container": "Linux x64, 2 vCPU, 4 GiB memory, Node 22.23.4, Python 3.11.2, no network. Run in /app of a disposable container using frozen dependencies.",
+    "commands": [
+      "pnpm run build",
+      "cp -a .output/backend/server/. server/",
+      "python3 -B tests/deployment/backup-production.test.py",
+      "BACKUP_CAPACITY_CONTAINER=1 BACKUP_CAPACITY_OUTPUT=/tmp/nai-capacity BACKUP_CAPACITY_SHA=f592e61df8be32ff211c3751735a5d21179fc399 node --test tests/integration/r2-backup-capacity.test.mjs"
+    ],
+    "result": {
+      "fixture": {
+        "infillWidth": 1408,
+        "infillHeight": 1408,
+        "infillInputPairs": 4,
+        "opaqueReferenceBytes": 1048576,
+        "inlineResultBytes": 7933752,
+        "sourceSha256": "f592e61df8be32ff211c3751735a5d21179fc399"
+      },
+      "sourceBytes": 118394880,
+      "snapshotDbSha256": "b8fd7dff02671b24049ca3baeebfe8ac0c6be218e9ed83eb0dc5487ce03ffb91",
+      "archiveBytes": 89376479,
+      "archiveSha256": "781ac837091c072363eaae694e76a3a6b60447cafa0cf5aa2e168ada832add5c",
+      "encryptedBytes": 89376515,
+      "encryptedSha256": "8f341cd2b18a431cfd3e3e09860f959edd3e516e494cdca484995b0c27c4a14f",
+      "encryptionOverheadBytes": 36,
+      "nodeHarnessPeakRssBytes": 887222272,
+      "nodeUploadPeakRssBytes": 109498368,
+      "nodeDownloadPeakRssBytes": 109985792,
+      "subprocessRssSource": "Linux VmHWM",
+      "sampledTempPeakBytes": 683745390,
+      "tempSampleIntervalMs": 100,
+      "cgroupMemoryPeakBytes": 1501736960,
+      "timings": {
+        "fixtureMs": 6181.326907000001,
+        "downloadDecryptMs": 445.1471249999995,
+        "extractVerifyMs": 1598.4992169999987,
+        "copyReplayVerifyAndOpenMs": 2647.484832,
+        "snapshotMs": 404.3575410032645,
+        "compressEncryptUploadVerifyMs": 5226.446668006247,
+        "totalMs": 18517.72255
+      },
+      "pythonPeakRssBytes": 105857024,
+      "progress": {
+        "lastCommitSeq": "12",
+        "commits": 12,
+        "events": 26
+      },
+      "summaries": {
+        "event_commits": {
+          "rows": 12,
+          "sha256": "9cfccd487a215bcfdc96a1f72fd561fadd3e40a65d78ce7edf2d89e5022bad87"
+        },
+        "domain_events": {
+          "rows": 26,
+          "sha256": "d02f82acd87b01ca04a1726382f50df8368b989714e66a0d42c86d89686bedd8"
+        },
+        "event_streams": {
+          "rows": 17,
+          "sha256": "b199a4af1d02ac3ca0de4e3be03ac6f582cdbc61d7068816fe79940ba25c35db"
+        },
+        "jobs": {
+          "rows": 5,
+          "sha256": "e9ac8787fd8d31aecdd6735bd18aa5e9288add02759840f77c09062ac8aed625"
+        },
+        "images": {
+          "rows": 5,
+          "sha256": "1392ee73f9f4ccc96410849d2d2993735209a9aca7784349c19cfc5374a7305f"
+        },
+        "ledger": {
+          "rows": 3,
+          "sha256": "9a8e22c576d8ad89d91f7d98f94a39ad66a5ed8738c630df8424c7fbb5d88624"
+        },
+        "fair_quota_settlements": {
+          "rows": 1,
+          "sha256": "8be8d96408679d5ba6775cb94be0523f5e2cf8669f5a9c9b6d1967785d3c8ad4"
+        },
+        "generation_requests": {
+          "rows": 5,
+          "sha256": "4ae115de42acd77dcc2e57ecb7bafabed76c0b7c5e9fc102483ac0749fb2e933"
+        },
+        "generation_contexts": {
+          "rows": 4,
+          "sha256": "4a79a293514285ba2a00e7cb47e6c745f93535a424bab4e45cf2fe624b172490"
+        },
+        "artifact_inputs": {
+          "rows": 1,
+          "sha256": "51daa5ba11e72d5e4dff8b8407c0788cdcca5cd6f8b7145b6edf15e9f918faf5"
+        },
+        "generation_diagnostics": {
+          "rows": 1,
+          "sha256": "51dbe5191a002f39664a2c9891e1d639664b47dbde03970b2ea069c78c8ef1e1"
+        },
+        "generation_idempotency": {
+          "rows": 4,
+          "sha256": "c62655fd07239f985e7f1d5f315f1520163be4d30053d097896569f574ead0c9"
+        }
+      },
+      "replaySummaries": {
+        "event_commits": {
+          "rows": 12,
+          "sha256": "9cfccd487a215bcfdc96a1f72fd561fadd3e40a65d78ce7edf2d89e5022bad87"
+        },
+        "domain_events": {
+          "rows": 26,
+          "sha256": "d02f82acd87b01ca04a1726382f50df8368b989714e66a0d42c86d89686bedd8"
+        },
+        "event_streams": {
+          "rows": 17,
+          "sha256": "b199a4af1d02ac3ca0de4e3be03ac6f582cdbc61d7068816fe79940ba25c35db"
+        },
+        "jobs": {
+          "rows": 5,
+          "sha256": "5457e14d39c1f0155f52feb23183e7d1419fc3ba882534caf6116e144750c0d5"
+        },
+        "images": {
+          "rows": 5,
+          "sha256": "fde369bcfd8c70953fa903bab7c2791b4ef9dd6d058daaba1a176b8691f967ba"
+        },
+        "ledger": {
+          "rows": 3,
+          "sha256": "5e889239a2d8df28c8ffba70f31baac1abc4c46117ebdc317ea8834193e58e03"
+        },
+        "fair_quota_settlements": {
+          "rows": 1,
+          "sha256": "8be8d96408679d5ba6775cb94be0523f5e2cf8669f5a9c9b6d1967785d3c8ad4"
+        },
+        "generation_requests": {
+          "rows": 5,
+          "sha256": "4ae115de42acd77dcc2e57ecb7bafabed76c0b7c5e9fc102483ac0749fb2e933"
+        },
+        "generation_contexts": {
+          "rows": 4,
+          "sha256": "4a79a293514285ba2a00e7cb47e6c745f93535a424bab4e45cf2fe624b172490"
+        },
+        "artifact_inputs": {
+          "rows": 1,
+          "sha256": "51daa5ba11e72d5e4dff8b8407c0788cdcca5cd6f8b7145b6edf15e9f918faf5"
+        },
+        "generation_diagnostics": {
+          "rows": 1,
+          "sha256": "51dbe5191a002f39664a2c9891e1d639664b47dbde03970b2ea069c78c8ef1e1"
+        },
+        "generation_idempotency": {
+          "rows": 4,
+          "sha256": "c62655fd07239f985e7f1d5f315f1520163be4d30053d097896569f574ead0c9"
+        }
+      },
+      "verified": [
+        "manifest",
+        "event facts",
+        "command receipts",
+        "stream projections",
+        "jobs/images/ledger/settlements",
+        "wallets and active reservation",
+        "protected requests/contexts/artifacts/diagnostics",
+        "idempotency",
+        "inline, independently retained local, hot R2 and cold PikPak original bytes",
+        "legacy R2 descriptor SHA-256 fallback to PikPak"
+      ],
+      "limits": {
+        "singlePutBytes": 5363466240,
+        "keep": 7
+      }
+    }
+  },
+  "annual": {
+    "originalReportSha256": "57315e20c8b4d25020f107247a81663d3a934c7494966b28666a1fd6f641b6fb",
+    "source": "Historical synthetic annual fixture, mounted read-only at /bench/final-3eae814-run01/annual/annual-backup.sqlite",
+    "steps": [
+      "Use the Linux test release's bin/node, ops/backup-production.py, and executor/.output/server/node_modules/novelai-shared-gateway.",
+      "Copy annual-backup.sqlite to an isolated live/library.sqlite. Run JsonStore.init() and close() using the compiled server/storage/sqlite-store.js. Compare the original commit and protected-row hashes.",
+      "Use tests/helpers/r2-backup-fixture.mjs in the disposable container for synthetic R2 configuration and the Node fetch preload. Invoke backup-production.py backup() and upload_business_backup() using the release at /opt/novelai-shared-gateway/current.",
+      "Run the packaged scripts/r2-backup.mjs download <receipt> <archive> <r2.env> <key>. Extract into an isolated directory and run python3 ops/backup-production.py --verify <snapshot>.",
+      "Open the restored database through JsonStore.init() and enableEventAuthority(), compare cursor and row hashes, and verify that the original annual file hash is unchanged."
+    ],
+    "result": {
+      "candidate": "f592e61df8be32ff211c3751735a5d21179fc399",
+      "packageCommit": "db0a7961d3c60c8c3cc9fba35d969d307378213a",
+      "packageSha256": "7e85588bb3d38bc5c083dc3add38cfed5fa7005dd9d27de72eda800bea9df945",
+      "network": "none",
+      "cpus": 4,
+      "memoryLimitBytes": 8589934592,
+      "scope": "Synthetic annual fixture with short requests and image descriptors, mock R2, real release package, no production files or image contents.",
+      "timingsMs": {
+        "cloneAnnualSource": 22781.593559999998,
+        "upgradeRestoredAnnualCloneToV4": 1127931.086397,
+        "snapshotCompressEncryptUploadReadback": 81490.93858500011,
+        "downloadAndDecrypt": 2895.1423379997723,
+        "extractAndVerifyManifestAndSqlite": 31046.057573999977,
+        "reopenAndVerifyEventAuthority": 69447.36098200013,
+        "verifyAnnualSourceUnchanged": 4502.468714999966
+      },
+      "sampledWorkspacePeakBytes": 8109702174,
+      "workspaceSampleIntervalMs": 500,
+      "sourceBytes": 2412564480,
+      "sourceSha256": "ce054f735c4fc68e12fae38df0c6d735b7a873669f89ab8afabaae5c616528ea",
+      "before": {
+        "authority": {
+          "version": 2,
+          "minimumWriterVersion": 2,
+          "commitSeq": "3"
+        },
+        "cursor": 781103,
+        "projection": {
+          "reducer_version": 2,
+          "last_commit_seq": 781103,
+          "status": "ready"
+        },
+        "counts": {
+          "event_commits": 781103,
+          "domain_events": 2197323,
+          "event_streams": 36523,
+          "jobs": 73000,
+          "images": 73000,
+          "ledger": 73000,
+          "accounts": 1,
+          "users": 20
+        },
+        "facts": {
+          "event_commits": {
+            "rows": 781103,
+            "sha256": "cf9db54ba8d710e01d75047008dd36946d7849c8e6b1127aaee68c62f20e9d08"
+          },
+          "domain_events": {
+            "rows": 2197323,
+            "sha256": "9732e64dc663da7756bd4efddf689bb3390c57f545d1cd1e3df19ec840fb5052"
+          },
+          "generation_requests": {
+            "rows": 36500,
+            "sha256": "0c46c895e5afebed620ba75884b537abdff8213e8825ee2b5217aa6e68213421"
+          },
+          "generation_contexts": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "artifact_inputs": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_diagnostics": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_idempotency": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "appendedTypes": []
+      },
+      "upgradeOpen": {
+        "initMs": 1115407.825958,
+        "peakRssBytes": 219451392
+      },
+      "upgraded": {
+        "authority": {
+          "version": 4,
+          "minimumWriterVersion": 4,
+          "commitSeq": "3"
+        },
+        "cursor": 781103,
+        "projection": {
+          "reducer_version": 4,
+          "last_commit_seq": 781103,
+          "status": "ready"
+        },
+        "counts": {
+          "event_commits": 781103,
+          "domain_events": 2197323,
+          "event_streams": 36523,
+          "jobs": 73000,
+          "images": 73000,
+          "ledger": 73000,
+          "accounts": 1,
+          "users": 20
+        },
+        "facts": {
+          "event_commits": {
+            "rows": 781103,
+            "sha256": "cf9db54ba8d710e01d75047008dd36946d7849c8e6b1127aaee68c62f20e9d08"
+          },
+          "domain_events": {
+            "rows": 2197323,
+            "sha256": "9732e64dc663da7756bd4efddf689bb3390c57f545d1cd1e3df19ec840fb5052"
+          },
+          "generation_requests": {
+            "rows": 36500,
+            "sha256": "0c46c895e5afebed620ba75884b537abdff8213e8825ee2b5217aa6e68213421"
+          },
+          "generation_contexts": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "artifact_inputs": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_diagnostics": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_idempotency": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "appendedTypes": []
+      },
+      "snapshotDbBytes": 2412564480,
+      "archive": {
+        "byteLength": 435967055,
+        "sha256": "19e1b3bd533d5224e2deb922fc3b23348d9ac6933c81f0abd13e2d60996cd315",
+        "md5": "uH718xbGW+vokDkknLjOpQ=="
+      },
+      "upload": {
+        "peakRssBytes": 109817856,
+        "archiveBytes": 435967055,
+        "retainedLogicalBytes": 5697103985
+      },
+      "download": {
+        "peakRssBytes": 111804416,
+        "archiveBytes": 435967055,
+        "retainedLogicalBytes": 5697104254
+      },
+      "snapshotDbSha256": "105d2bf28aa13ab8affe9339cc2d04f2a22e30b5d3e3e73617b2c398f0967456",
+      "restoredOpen": {
+        "initMs": 109.03079400000001,
+        "enableMs": 55723.999771999996,
+        "authority": {
+          "version": 4,
+          "commitSeq": "781103"
+        },
+        "peakRssBytes": 223735808
+      },
+      "restored": {
+        "authority": {
+          "version": 4,
+          "minimumWriterVersion": 4,
+          "commitSeq": "781103"
+        },
+        "cursor": 781103,
+        "projection": {
+          "reducer_version": 4,
+          "last_commit_seq": 781103,
+          "status": "ready"
+        },
+        "counts": {
+          "event_commits": 781103,
+          "domain_events": 2197323,
+          "event_streams": 36523,
+          "jobs": 73000,
+          "images": 73000,
+          "ledger": 73000,
+          "accounts": 1,
+          "users": 20
+        },
+        "facts": {
+          "event_commits": {
+            "rows": 781103,
+            "sha256": "cf9db54ba8d710e01d75047008dd36946d7849c8e6b1127aaee68c62f20e9d08"
+          },
+          "domain_events": {
+            "rows": 2197323,
+            "sha256": "9732e64dc663da7756bd4efddf689bb3390c57f545d1cd1e3df19ec840fb5052"
+          },
+          "generation_requests": {
+            "rows": 36500,
+            "sha256": "0c46c895e5afebed620ba75884b537abdff8213e8825ee2b5217aa6e68213421"
+          },
+          "generation_contexts": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "artifact_inputs": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_diagnostics": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "generation_idempotency": {
+            "rows": 0,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "appendedTypes": []
+      },
+      "sourceUnchanged": true,
+      "passed": true,
+      "totalMs": 1341104.2669739998,
+      "containerMemoryPeakBytes": 8589934592,
+      "snapshot": {
+        "snapshotMs": 18521.810470003402,
+        "compressEncryptUploadVerifyMs": 62827.43259299605,
+        "pythonPeakRssBytes": 22544384
+      },
+      "encrypted": {
+        "byteLength": 435967091,
+        "sha256": "adbf94adff837408e64aaf41ebab8e103acc22ee593a162456ecf44f643e6792"
+      }
+    }
+  }
+}

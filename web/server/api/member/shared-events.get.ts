@@ -1,4 +1,4 @@
-import { defineEventHandler } from 'h3'
-import { forwardExecutorEvents } from '../../utils/executor-events'
+import { defineEventHandler } from 'h3';
+import { forwardExecutorEvents } from '../../utils/executor-events';
 
-export default defineEventHandler(forwardExecutorEvents)
+export default defineEventHandler(forwardExecutorEvents);

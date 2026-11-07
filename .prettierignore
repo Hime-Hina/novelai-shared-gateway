@@ -1,0 +1,24 @@
+# Generated dependencies, build output and local/private runtime files.
+**/node_modules/**
+**/.nuxt/**
+**/.nitro/**
+**/.output/**
+**/dist/**
+**/coverage/**
+test-results/**
+data/**
+secrets/**
+logs/**
+backups/**
+outputs/**
+_private/**
+
+# Immutable migration bytes, historical evidence and exact external inputs.
+server/migrations/**
+docs/history/**
+**/tests/fixtures/**
+# Independently bundled external MessagePack decoder used by protocol tests.
+tests/helpers/msgpack.mjs
+patches/**
+pnpm-lock.yaml
+**/THIRD_PARTY_NOTICES.md

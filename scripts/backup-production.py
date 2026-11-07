@@ -247,5 +247,9 @@ if __name__ == '__main__':
         main()
     except Exception as error:
         # Config files and SQL rows contain credentials; do not log exception arguments.
-        print('Backup failed:', type(error).__name__, flush=True)
+        # r2-backup.mjs reports a failed retention check separately from upload failure.
+        if isinstance(error, subprocess.CalledProcessError) and error.returncode == 2:
+            print('R2 backup retention aborted; existing backups retained.', flush=True)
+        else:
+            print('Backup failed:', type(error).__name__, flush=True)
         raise SystemExit(1)
