@@ -75,7 +75,11 @@ import {
   openAiFixedSteps,
   openAiSizeTiers,
 } from './protocols/openai-models.ts';
-import { ownerOperation } from './members/owner-operations.ts';
+import {
+  ownerAccountConfiguration,
+  ownerOperation,
+  type OwnerAccountChange,
+} from './members/owner-operations.ts';
 import { adminPromptApiConfig } from './http/prompt-api-settings.ts';
 import {
   DIRECT_URL_MAX_STEPS,
@@ -686,8 +690,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
           body,
           {
             store,
-            updateAccount: (id, input, options) =>
-              updateAccount(id, input, process.env.OWNER_USER_ID || 'local-admin', options),
+            updateAccount: (id, change, options) => updateAccount(id, { owner: change }, options),
             refreshAccountQuotas,
           },
           command,
@@ -904,7 +907,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     assertAdmin(req, url);
     const id = decodeURIComponent(url.pathname.split('/').pop() || '');
     const body = await readJson(req);
-    const account = await updateAccount(id, body);
+    const account = await updateAccount(id, { admin: body });
     scheduleQueueDrain();
     sendJson(res, 200, publicAccount(account));
     return;
@@ -1816,23 +1819,26 @@ function normalizeCacheImageLimit(value: unknown) {
 
 async function updateAccount(
   id: string,
-  body: Body,
-  actorId = 'local-admin',
+  input: { admin: Body } | { owner: OwnerAccountChange },
   command?: Pick<PersistenceOptions<StoreItem>, 'domainCommand' | 'authorize' | 'commandReceipt'>,
 ) {
   return store.update(
     (db) => {
-      const account = db.accounts.find((item) => item.id === id);
+      const now = Date.now();
+      const { account, body } =
+        'owner' in input
+          ? ownerAccountConfiguration(db, id, input.owner, now)
+          : { account: db.accounts.find((item) => item.id === id), body: input.admin };
       if (!account) {
         throw httpError(404, 'account not found.');
       }
-      applyAccountConfiguration(db, account, body, new Date().toISOString());
+      applyAccountConfiguration(db, account, body, new Date(now).toISOString());
       return account;
     },
     {
       collections: ['accounts'],
       ...command,
-      domainCommand: command?.domainCommand || { actorId, actorKind: 'admin' },
+      domainCommand: command?.domainCommand || { actorId: 'local-admin', actorKind: 'admin' },
     },
   );
 }

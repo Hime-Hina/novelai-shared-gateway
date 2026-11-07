@@ -8,6 +8,7 @@ test('store callers cannot access persistence internals or mix member/job/accoun
   const filename = fileURLToPath(new URL('./store-boundary-types.fixture.ts', import.meta.url));
   const source = `
 import type { JsonStore } from '../../server/storage/sqlite-store.ts';
+import type { ownerOperation } from '../../server/members/owner-operations.ts';
 declare const store: JsonStore;
 // @ts-expect-error Raw SQLite is implementation-only.
 store.sqlite?.prepare('DELETE FROM domain_events').run();
@@ -40,6 +41,10 @@ if (context?.account) context.account.queueSeq = 123;
 declare const query: Pick<JsonStore, 'readSettings' | 'findJobContext'>;
 // @ts-expect-error Queries only receive read capabilities.
 query.update(() => null);
+declare const changeOwnerAccount: Parameters<typeof ownerOperation>[3]['updateAccount'];
+await changeOwnerAccount('opus', {kind:'enable',observation:null});
+// @ts-expect-error An owner enable decision must carry the preparation result.
+await changeOwnerAccount('opus', {kind:'enable'});
 `;
   const options = {
     target: ts.ScriptTarget.ES2022,

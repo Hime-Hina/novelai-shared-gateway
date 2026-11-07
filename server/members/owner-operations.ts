@@ -1,4 +1,5 @@
 import type { FairAccount } from '../quota/fair-share.ts';
+import { isUsableOpus } from '../quota/eligibility.ts';
 import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { Json } from '../events/domain-events.ts';
 
@@ -34,12 +35,25 @@ interface OwnerAccount extends Pick<
   | 'subscriptionExpiresAt'
 > {
   id: string;
+  token?: string;
   enabled?: boolean;
   inFlight?: number | string;
 }
-interface OwnerDatabase {
-  accounts: OwnerAccount[];
+interface OwnerDatabase<T extends OwnerAccount = OwnerAccount> {
+  accounts: T[];
   settings: { fairQuota?: { boundAccountId?: string | null } | null };
+}
+type EnableObservation = { id: string; token: string } | { error: unknown } | null;
+export type OwnerAccountChange =
+  | { kind: 'token'; token: string }
+  | { kind: 'pause' }
+  | { kind: 'enable'; observation: EnableObservation };
+interface OwnerQuotaRefresh {
+  checked: number;
+  ok: number;
+  failed: number;
+  ignored?: number;
+  accounts?: Pick<OwnerAccount, 'id' | 'token'>[];
 }
 interface OwnerDependencies {
   store: {
@@ -52,13 +66,13 @@ interface OwnerDependencies {
   refreshAccountQuotas(
     options: { ids: string[] },
     command?: Pick<
-      PersistenceOptions<{ checked: number; ok: number; failed: number; ignored?: number }>,
+      PersistenceOptions<OwnerQuotaRefresh>,
       'domainCommand' | 'authorize' | 'commandReceipt'
     >,
-  ): Promise<{ checked: number; ok: number; failed: number; ignored?: number }>;
+  ): Promise<OwnerQuotaRefresh>;
   updateAccount(
     id: string,
-    change: { token?: string; enabled: boolean },
+    change: OwnerAccountChange,
     command?: Pick<
       PersistenceOptions<OwnerAccount>,
       'domainCommand' | 'authorize' | 'commandReceipt'
@@ -180,11 +194,44 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
   };
 }
 
-function sharedAccount(db: OwnerDatabase) {
+function sharedAccount<T extends OwnerAccount>(db: OwnerDatabase<T>) {
   return (
     db.accounts.find((a) => a.id === db.settings.fairQuota?.boundAccountId) ||
     (!db.settings.fairQuota?.boundAccountId && db.accounts.length === 1 ? db.accounts[0] : null)
   );
+}
+export function ownerAccountConfiguration<T extends OwnerAccount>(
+  db: OwnerDatabase<T>,
+  id: string,
+  change: OwnerAccountChange,
+  now: number,
+) {
+  const account = sharedAccount(db);
+  if (!account) {
+    fail(409, '尚未确定共享上游账户');
+  }
+  if (account.id !== id) {
+    fail(404, '未开放此管理操作');
+  }
+  // 仅在共同提交入口未命中原回执时，才按当前绑定和资格决定是否启用。
+  if (change.kind === 'enable') {
+    const { observation } = change;
+    if (observation && 'error' in observation) {
+      throw observation.error;
+    }
+    if (
+      observation?.id !== account.id ||
+      observation.token !== account.token ||
+      !isUsableOpus({ ...account, enabled: true }, now)
+    ) {
+      fail(409, '未核验到有效 Opus，上游保持暂停');
+    }
+    return { account, body: { enabled: true } };
+  }
+  return {
+    account,
+    body: change.kind === 'token' ? { token: change.token, enabled: false } : { enabled: false },
+  };
 }
 function safeAccount(a: OwnerAccount | null | undefined) {
   return (
@@ -241,11 +288,55 @@ export async function ownerOperation(
   if (path === '/summary' && method === 'GET') {
     return { accounts: account ? [safeAccount(account)] : [] };
   }
+  // 成员路由只为写操作提供已解析的 JSON 对象，GET 不读取正文。
+  const input = body!;
+  const targetId = method === 'PATCH' ? /^\/accounts\/([^/]+)$/.exec(path)?.[1] : undefined;
+  if (targetId) {
+    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
+      fail(400, '只允许更新启用状态或 PST');
+    }
+    let change: OwnerAccountChange;
+    if ('token' in input) {
+      if (
+        typeof input.token !== 'string' ||
+        input.token.length > 4096 ||
+        !/^pst-[A-Za-z0-9_-]+$/.test(input.token)
+      ) {
+        fail(400, '请输入完整 PST');
+      }
+      change = { kind: 'token', token: input.token };
+    } else {
+      if (typeof input.enabled !== 'boolean') {
+        fail(400, 'enabled 必须为布尔值');
+      }
+      change = { kind: 'pause' };
+      if (input.enabled) {
+        let observation: EnableObservation = null;
+        // 只查询已选中的共享账户。使用实际提交观察时返回的来源，网络等待不在写事务内。
+        if (account?.id === targetId) {
+          try {
+            const result = await deps.refreshAccountQuotas({ ids: [targetId] });
+            const applied = result.accounts?.find((item) => item.id === targetId);
+            if (result.ok === 1 && !result.failed && !result.ignored && applied?.token) {
+              observation = { id: applied.id, token: applied.token };
+            }
+          } catch (error) {
+            observation = { error };
+          }
+        }
+        change = { kind: 'enable', observation };
+      }
+    }
+    return safeAccount(
+      await deps.updateAccount(targetId, change, {
+        ...command,
+        commandReceipt: (account) => safeAccount(account) as Json,
+      }),
+    );
+  }
   if (!account) {
     fail(409, '尚未确定共享上游账户');
   }
-  // 成员路由只为写操作提供已解析的 JSON 对象，GET 不读取正文。
-  const input = body!;
   if (path === '/accounts/quota' && method === 'POST') {
     if (
       Object.keys(input).some((k) => k !== 'ids') ||
@@ -273,63 +364,6 @@ export async function ownerOperation(
       failed: result.failed,
       ...(result.ignored === undefined ? {} : { ignored: result.ignored }),
     };
-  }
-  if (path === '/accounts/' + account.id && method === 'PATCH') {
-    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
-      fail(400, '只允许更新启用状态或 PST');
-    }
-    if ('token' in input) {
-      if (
-        typeof input.token !== 'string' ||
-        input.token.length > 4096 ||
-        !/^pst-[A-Za-z0-9_-]+$/.test(input.token)
-      ) {
-        fail(400, '请输入完整 PST');
-      }
-      return safeAccount(
-        await deps.updateAccount(
-          account.id,
-          { token: input.token, enabled: false },
-          { ...command, commandReceipt: (account) => safeAccount(account) as Json },
-        ),
-      );
-    }
-    if (typeof input.enabled !== 'boolean') {
-      fail(400, 'enabled 必须为布尔值');
-    }
-    if (input.enabled) {
-      const result = await deps.refreshAccountQuotas({ ids: [account.id] });
-      const checked = await store.update((db) => sharedAccount(db), { persist: false });
-      const expiry = Number(checked?.subscriptionExpiresAt);
-      let expiresAt: number;
-      if (Number.isFinite(expiry) && expiry > 0) {
-        if (expiry < 1e11) {
-          expiresAt = expiry * 1000;
-        } else {
-          expiresAt = expiry;
-        }
-      } else {
-        expiresAt = Date.parse(checked?.subscriptionExpiresAt as string);
-      }
-      if (
-        result.ok !== 1 ||
-        result.failed ||
-        result.ignored ||
-        checked?.quotaError ||
-        checked?.quotaTier !== 3 ||
-        checked?.subscriptionActive !== true ||
-        (checked.subscriptionExpiresAt && !(expiresAt > Date.now()))
-      ) {
-        fail(409, '未核验到有效 Opus，上游保持暂停');
-      }
-    }
-    return safeAccount(
-      await deps.updateAccount(
-        account.id,
-        { enabled: input.enabled },
-        { ...command, commandReceipt: (account) => safeAccount(account) as Json },
-      ),
-    );
   }
   fail(404, '未开放此管理操作');
 }

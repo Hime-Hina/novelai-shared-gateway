@@ -9,7 +9,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { handleMemberRoutes } from '../../server/members/http-routes.ts';
 import { createMemberSession, isOwner } from '../../server/members/authentication.ts';
-import { ownerOperation, summarizeOwnerUsage } from '../../server/members/owner-operations.ts';
+import {
+  ownerAccountConfiguration,
+  ownerOperation,
+  summarizeOwnerUsage,
+} from '../../server/members/owner-operations.ts';
 import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
 import { sharedSurface } from '../../server/http/api-surface.ts';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
@@ -253,13 +257,13 @@ async function fixture(t) {
       store,
       async refreshAccountQuotas() {
         refreshCount++;
-        return { ...refreshResult, accounts: [account] };
+        return { accounts: [account], ...refreshResult };
       },
-      async updateAccount(id, body) {
-        assert.equal(id, account.id);
+      async updateAccount(id, change) {
+        const { account: target, body } = ownerAccountConfiguration(db, id, change, Date.now());
         updateCount++;
-        Object.assign(account, body);
-        return account;
+        Object.assign(target, body);
+        return target;
       },
     });
   const server = http.createServer(async (req, res) => {
@@ -507,6 +511,14 @@ test('owner 上游操作只允许共享账户的暂停、核验恢复和换 Key�
   assert.equal(account.enabled, false);
   account.subscriptionActive = true;
   setRefreshResult({ checked: 1, ok: 0, failed: 0, ignored: 1 });
+  assert.equal((await call(route, { method: 'PATCH', body: { enabled: true } })).status, 409);
+  assert.equal(account.enabled, false);
+  setRefreshResult({
+    checked: 1,
+    ok: 1,
+    failed: 0,
+    accounts: [{ id: account.id, token: 'pst-synthetic-upstream-secret' }],
+  });
   assert.equal((await call(route, { method: 'PATCH', body: { enabled: true } })).status, 409);
   assert.equal(account.enabled, false);
   setRefreshResult({ checked: 1, ok: 1, failed: 0 });

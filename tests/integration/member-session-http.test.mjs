@@ -29,7 +29,7 @@ async function listen(server) {
   return server.address().port;
 }
 
-async function fixture(t, { owner = false, grace = 30000 } = {}) {
+async function fixture(t, { owner = false, grace = 30000, paused = false, quotaStatus } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-member-session-http-'));
   const adminToken = 'synthetic-admin-member-session-only';
   const initialized = await bootstrap({
@@ -49,6 +49,7 @@ async function fixture(t, { owner = false, grace = 30000 } = {}) {
       (db) => {
         const account = db.accounts[0],
           observation = {
+            ...(paused ? { enabled: false } : {}),
             quotaTier: 3,
             subscriptionActive: true,
             subscriptionExpiresAt: Date.now() + 86400000,
@@ -100,11 +101,17 @@ async function fixture(t, { owner = false, grace = 30000 } = {}) {
   }
   const audit = new Database(path.join(dataDir, 'library.sqlite'), { fileMustExist: true });
   const requests = [];
-  const upstream = http.createServer((req, res) => {
+  const upstream = http.createServer(async (req, res) => {
     requests.push(req.url);
     if (req.url !== '/user/data') {
       res.writeHead(500);
       res.end('unexpected synthetic upstream request');
+      return;
+    }
+    const status = quotaStatus ? await quotaStatus() : 200;
+    if (status !== 200) {
+      res.writeHead(status, { 'content-type': 'text/plain' });
+      res.end('SYNTHETIC_PRIVATE_OWNER_QUOTA_ERROR');
       return;
     }
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -305,6 +312,112 @@ async function openEvents(gateway, cookie) {
     assert.match(text, /event: auth-expired\ndata: \{\}\n\n/);
   };
 }
+
+test(
+  'owner 启用并发重试领取原回执，保留后续暂停、失败观察和当前授权',
+  { timeout: 45000 },
+  async (t) => {
+    const replies = [];
+    const gateway = await fixture(t, {
+      owner: true,
+      paused: true,
+      quotaStatus: () => replies.shift()?.() ?? 200,
+    });
+    const cookie = cookieFor(await gateway.createOfflineSession(0));
+    const { id } = gateway.audit.prepare('SELECT id FROM accounts').get();
+    const current = () =>
+      JSON.parse(gateway.audit.prepare('SELECT data FROM accounts WHERE id=?').get(id).data);
+    const patch = async (key, body = { enabled: true }) => {
+      const response = await gateway.call(`/api/member/owner/accounts/${id}`, {
+        cookie,
+        method: 'PATCH',
+        headers: { 'Idempotency-Key': key },
+        body,
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    const holdEnable = async (key) => {
+      const entered = Promise.withResolvers(),
+        response = Promise.withResolvers();
+      t.after(() => response.resolve(200));
+      replies.push(() => {
+        entered.resolve();
+        return response.promise;
+      });
+      const result = patch(key);
+      await Promise.race([
+        entered.promise,
+        result.then((value) =>
+          assert.fail(`owner enable did not reach upstream: ${JSON.stringify(value)}`),
+        ),
+      ]);
+      return { result, release: () => response.resolve(200) };
+    };
+    const enabledWrites = () =>
+      gateway.audit
+        .prepare(
+          "SELECT COUNT(*) AS n FROM domain_events WHERE event_type='AvailabilityChanged' AND account_id=? AND json_extract(payload,'$.enabled')=1",
+        )
+        .get(id).n;
+    const officialObservations = () =>
+      gateway.audit
+        .prepare(
+          "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' AND account_id=? AND json_extract(payload,'$.kind')='official' ORDER BY rowid",
+        )
+        .all(id);
+    await gateway.start();
+    assert.equal(current().enabled, false);
+    const initialWrites = enabledWrites();
+    for (const pauseFirst of [false, true]) {
+      const key = pauseFirst ? 'enable-before-pause' : 'enable-only';
+      const held = await holdEnable(key);
+      const before = officialObservations();
+      const first = await patch(key);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      assert.equal(first.body.enabled, true);
+      assert.ok(!JSON.stringify(first.body).includes(current().token));
+      const { receipt } = gateway.audit
+        .prepare(
+          "SELECT receipt FROM event_commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq DESC LIMIT 1",
+        )
+        .get();
+      assert.deepEqual(JSON.parse(receipt), first.body);
+      if (pauseFirst) {
+        assert.equal((await patch('later-pause', { enabled: false })).status, 200);
+      }
+      held.release();
+      assert.deepEqual(await held.result, first);
+      assert.equal(current().enabled, !pauseFirst);
+      assert.equal(enabledWrites(), initialWrites + (pauseFirst ? 2 : 1));
+      assert.equal(officialObservations().length, before.length + 1);
+      if (!pauseFirst) {
+        assert.equal((await patch('reset-to-pause', { enabled: false })).status, 200);
+      }
+    }
+
+    const stale = await holdEnable('stale-new-command');
+    const beforeFailure = officialObservations();
+    replies.push(() => 401);
+    assert.equal((await patch('failed-new-command')).status, 409);
+    stale.release();
+    assert.equal((await stale.result).status, 409);
+    const afterFailure = officialObservations();
+    assert.equal(afterFailure.length, beforeFailure.length + 1);
+    assert.equal(JSON.parse(afterFailure.at(-1).payload).observation.upstreamStatus, 'invalid_key');
+    assert.ok(!afterFailure.at(-1).payload.includes('SYNTHETIC_PRIVATE_OWNER_QUOTA_ERROR'));
+    assert.equal(current().enabled, false);
+    assert.equal(enabledWrites(), initialWrites + 2);
+
+    const revoked = await holdEnable('enable-before-revocation');
+    assert.equal((await patch('enable-before-revocation')).status, 200);
+    assert.equal((await patch('enable-before-revocation', { enabled: false })).status, 409);
+    gateway.expire(cookie);
+    revoked.release();
+    assert.equal((await revoked.result).status, 401);
+    assert.equal(enabledWrites(), initialWrites + 3);
+    gateway.assertNoGeneration();
+  },
+);
 
 test(
   '真实管理员批量和单账号修改原子记录可用性事实，事件写入失败不改变账户或账本',
