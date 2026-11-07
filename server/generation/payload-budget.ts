@@ -1,10 +1,12 @@
 const MiB = 1024 * 1024;
-const fail = (statusCode: number, message: string): never => { throw Object.assign(new Error(message), { statusCode }); };
+const fail = (statusCode: number, message: string): never => {
+  throw Object.assign(new Error(message), { statusCode });
+};
 
 export function generationPayloadLimits(env: NodeJS.ProcessEnv = process.env) {
   const request = Number(env.REQUEST_MAX_PAYLOAD_BYTES || 32 * MiB);
   const active = Number(env.QUEUE_MAX_PAYLOAD_BYTES || 64 * MiB);
-  if (![request, active].every(value => Number.isSafeInteger(value) && value > 0)) {
+  if (![request, active].every((value) => Number.isSafeInteger(value) && value > 0)) {
     throw new Error('请求载荷字节上限必须为正整数');
   }
   return { request, active };
@@ -12,7 +14,10 @@ export function generationPayloadLimits(env: NodeJS.ProcessEnv = process.env) {
 
 // 正文读取先临时占用，提交后由 SQL 活动任务接管；失败和断线释放临时占用。
 // 只保存字节数，不把已完成请求或大正文留在这个计数器里。
-export function createGenerationPayloadBudget(readActiveBytes: () => number, limits = generationPayloadLimits()) {
+export function createGenerationPayloadBudget(
+  readActiveBytes: () => number,
+  limits = generationPayloadLimits(),
+) {
   let readingBytes = 0;
   return {
     claim() {
@@ -31,8 +36,8 @@ export function createGenerationPayloadBudget(readActiveBytes: () => number, lim
         release() {
           readingBytes -= bytes;
           bytes = 0;
-        }
+        },
       };
-    }
+    },
   };
 }

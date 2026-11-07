@@ -2,13 +2,15 @@
 
 按用途查阅，不按文件名猜实施状态。计划和目标接口不代表已实现；正式运行版本、发布与回退依据统一看运维发布记录，历史资料中的版本和测量只代表当时阶段。
 
-| 目录 | 内容 |
-| --- | --- |
-| [plans](plans/) | 当前重构与后续扩展计划 |
-| [contracts](contracts/) | 现有 API 行为及目标接口契约 |
+开发入口、架构与 migration 守卫、格式/注释规范和实际验证命令见 [开发与验证](../CONTRIBUTING.md)；当前模块归属见 [服务端](../server/README.md)。
+
+| 目录                          | 内容                                 |
+| ----------------------------- | ------------------------------------ |
+| [plans](plans/)               | 当前重构与后续扩展计划               |
+| [contracts](contracts/)       | 现有 API 行为及目标接口契约          |
 | [architecture](architecture/) | 服务边界、业务规则、数据流和前端接入 |
-| [operations](operations/) | 测试部署、生产发布、备份与回退 |
-| [history](history/) | 已完成阶段、评估、实测与性能基线 |
+| [operations](operations/)     | 测试部署、生产发布、备份与回退       |
+| [history](history/)           | 已完成阶段、评估、实测与性能基线     |
 
 ## 计划
 
@@ -46,5 +48,6 @@
 - [队列基线](history/queue-baseline.md)：排队数据与采样限制。
 - [浏览器基线](history/browser-baseline.md)：首屏、缓存和浏览器验收证据。
 - [事件重构性能验证](history/refactor-performance-evidence.md)：对照方法、正式运行口径、容量和重放证据；小样本与正式结果分别标识。
+- [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 
 新增文档放进对应目录并补充此索引；技术规则维护在所属文档，历史测量保留原日期和证据，不复制多个“当前版本”说明。

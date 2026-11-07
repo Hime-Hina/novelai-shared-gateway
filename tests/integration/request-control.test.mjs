@@ -4,9 +4,17 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { configureFairQuota, syncFairQuota, reserveFairQuota, settleFairQuota } from '../../server/quota/fair-share.ts';
+import {
+  configureFairQuota,
+  syncFairQuota,
+  reserveFairQuota,
+  settleFairQuota,
+} from '../../server/quota/fair-share.ts';
 import { activateNextBatchJob } from '../../server/generation/batch-requests.ts';
-import { publicGenerationRequest, readOwnedGenerationRequest } from '../../server/generation/request-queries.ts';
+import {
+  publicGenerationRequest,
+  readOwnedGenerationRequest,
+} from '../../server/generation/request-queries.ts';
 import { reserveQueuedGeneration } from '../../server/generation/execution.ts';
 import { createRequestControls } from '../../server/generation/delivery.ts';
 
@@ -16,39 +24,90 @@ async function fixture(t, statuses) {
   await store.init();
   t.after(() => store.close());
   const db = { settings: {}, jobs: [], ledger: [] };
-  db.users = ['a', 'b', 'c', 'd'].map(id => ({ id, token: `STA1N-${id}`, enabled: true }));
-  db.accounts = [{ id: 'opus', enabled: true, quotaTier: 3, subscriptionActive: true,
-    quotaFixed: 1000, quotaPurchased: 0, v5UsagePercent: 100, quotaCheckedAt: Date.now(), inFlight: 0 }];
-  configureFairQuota(db, ['a', 'b', 'c', 'd']); syncFairQuota(db);
-  db.jobs = statuses.map((status, sampleIndex) => ({ id: `child-${sampleIndex}`, requestId: 'parent', sampleIndex,
-    status, source: 'novelai-native', userToken: 'STA1N-a', request, createdAt: new Date().toISOString() }));
+  db.users = ['a', 'b', 'c', 'd'].map((id) => ({ id, token: `STA1N-${id}`, enabled: true }));
+  db.accounts = [
+    {
+      id: 'opus',
+      enabled: true,
+      quotaTier: 3,
+      subscriptionActive: true,
+      quotaFixed: 1000,
+      quotaPurchased: 0,
+      v5UsagePercent: 100,
+      quotaCheckedAt: Date.now(),
+      inFlight: 0,
+    },
+  ];
+  configureFairQuota(db, ['a', 'b', 'c', 'd']);
+  syncFairQuota(db);
+  db.jobs = statuses.map((status, sampleIndex) => ({
+    id: `child-${sampleIndex}`,
+    requestId: 'parent',
+    sampleIndex,
+    status,
+    source: 'novelai-native',
+    userToken: 'STA1N-a',
+    request,
+    createdAt: new Date().toISOString(),
+  }));
   const payload = JSON.stringify({ ...request, prompt: 'x'.repeat(100000) });
-  store.sqlite.prepare('INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)')
-    .run('parent', 'a', 'novelai-native', 'generate', new Date().toISOString(), Buffer.byteLength(payload), payload);
+  store.sqlite
+    .prepare(
+      'INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)',
+    )
+    .run(
+      'parent',
+      'a',
+      'novelai-native',
+      'generate',
+      new Date().toISOString(),
+      Buffer.byteLength(payload),
+      payload,
+    );
   await store.write(db);
   const update = store.update.bind(store);
-  store.update = (fn, options) => update(fn, { ...options, immediate: true, includeSettings: true });
+  store.update = (fn, options) =>
+    update(fn, { ...options, immediate: true, includeSettings: true });
   const notifications = [];
-  const getGenerationRequest = async (requestId, memberId) => publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId), {
-    imageUrl: id => `/signed/${id}`, errorMessage: value => value
-  });
-  const ctx = { getGenerationRequest,
-    ...createRequestControls(store, { clearProgress() {}, notify: id => notifications.push(id), schedule() {}, readRequest: getGenerationRequest }),
-    reserveQueuedJob: id => reserveQueuedGeneration(store, id, { dispatchEnabled: () => true, physicalAccountLoad: () => 0 }) };
+  const getGenerationRequest = async (requestId, memberId) =>
+    publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId), {
+      imageUrl: (id) => `/signed/${id}`,
+      errorMessage: (value) => value,
+    });
+  const ctx = {
+    getGenerationRequest,
+    ...createRequestControls(store, {
+      clearProgress() {},
+      notify: (id) => notifications.push(id),
+      schedule() {},
+      readRequest: getGenerationRequest,
+    }),
+    reserveQueuedJob: (id) =>
+      reserveQueuedGeneration(store, id, {
+        dispatchEnabled: () => true,
+        physicalAccountLoad: () => 0,
+      }),
+  };
   return { store, ctx, notifications };
 }
 
-test('请求查询不读大父载荷或热载冷历史，换 Key 后按稳定成员归属签发本人产物', async t => {
+test('请求查询不读大父载荷或热载冷历史，换 Key 后按稳定成员归属签发本人产物', async (t) => {
   const { store, ctx } = await fixture(t, ['done', 'failed', 'done']);
-  await store.update(db => {
-    db.users[0].token = 'STA1N-a-new';
-    db.users[1].token = 'STA1N-a';
-    db.images.push({ id: 'owned', token: 'STA1N-a' }, { id: 'foreign', token: 'STA1N-foreign' });
-    db.jobs[0].imageId = 'owned';
-    db.jobs[1].imageId = 'owned'; db.jobs[1].lateResultAvailable = true;
-    db.jobs[2].imageId = 'foreign';
-  }, { immediate: true });
-  store.sqlite.prepare('UPDATE generation_requests SET payload = ? WHERE id = ?').run('not-json', 'parent');
+  await store.update(
+    (db) => {
+      db.users[0].token = 'STA1N-a-new';
+      db.users[1].token = 'STA1N-a';
+      db.images.push({ id: 'owned', token: 'STA1N-a' }, { id: 'foreign', token: 'STA1N-foreign' });
+      db.jobs[0].imageId = 'owned';
+      db.jobs[1].imageId = 'owned';
+      db.jobs[1].lateResultAvailable = true;
+      db.jobs[2].imageId = 'foreign';
+    },
+    { immediate: true },
+  );
+  store.sqlite
+    .prepare('UPDATE generation_requests SET payload = ? WHERE id = ?')
+    .run('not-json', 'parent');
   store.trimRuntimeCollection('jobs', 0);
   store.trimRuntimeCollection('images', 0);
   const state = await ctx.getGenerationRequest('parent', 'a');
@@ -61,58 +120,96 @@ test('请求查询不读大父载荷或热载冷历史，换 Key 后按稳定成
   assert.equal(store.db.images.length, 0);
   assert.ok(!JSON.stringify(state).includes('STA1N-'));
   assert.ok(!JSON.stringify(state).includes('prompt'));
-  await assert.rejects(ctx.getGenerationRequest('parent', 'b'), error => error.statusCode === 404);
-  await assert.rejects(ctx.cancelGenerationRequest('parent', 'b'), error => error.statusCode === 404);
-  const plan = store.sqlite.prepare('EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE request_id = ?').all('parent');
-  assert.ok(plan.some(row => row.detail.includes('idx_jobs_request_status')));
+  await assert.rejects(
+    ctx.getGenerationRequest('parent', 'b'),
+    (error) => error.statusCode === 404,
+  );
+  await assert.rejects(
+    ctx.cancelGenerationRequest('parent', 'b'),
+    (error) => error.statusCode === 404,
+  );
+  const plan = store.sqlite
+    .prepare('EXPLAIN QUERY PLAN SELECT id FROM jobs WHERE request_id = ?')
+    .all('parent');
+  assert.ok(plan.some((row) => row.detail.includes('idx_jobs_request_status')));
 });
 
-test('取消、任务退款和账本同事务：写失败不通知，重复取消不再退款，running 继续且不复活余图', async t => {
+test('取消、任务退款和账本同事务：写失败不通知，重复取消不再退款，running 继续且不复活余图', async (t) => {
   const { store, ctx, notifications } = await fixture(t, ['queued', 'pending', 'running']);
-  await store.update(db => {
-    for (const job of db.jobs.filter(job => job.status !== 'pending')) reserveFairQuota(db, db.users[0], job, db.accounts[0]);
-    db.accounts[0].inFlight = 1;
-    db.jobs.find(job => job.status === 'running').accountId = 'opus';
-  }, { immediate: true });
+  await store.update(
+    (db) => {
+      for (const job of db.jobs.filter((job) => job.status !== 'pending')) {
+        reserveFairQuota(db, db.users[0], job, db.accounts[0]);
+      }
+      db.accounts[0].inFlight = 1;
+      db.jobs.find((job) => job.status === 'running').accountId = 'opus';
+    },
+    { immediate: true },
+  );
   const before = await store.read();
-  store.sqlite.exec("CREATE TEMP TRIGGER reject_cancel BEFORE INSERT ON jobs WHEN NEW.id='child-1' BEGIN SELECT RAISE(ABORT, 'synthetic cancel failure'); END");
+  store.sqlite.exec(
+    "CREATE TEMP TRIGGER reject_cancel BEFORE INSERT ON jobs WHEN NEW.id='child-1' BEGIN SELECT RAISE(ABORT, 'synthetic cancel failure'); END",
+  );
   await assert.rejects(ctx.cancelGenerationRequest('parent', 'a'), /synthetic cancel failure/);
   assert.deepEqual(await store.read(), before);
   assert.equal(notifications.length, 0);
   store.sqlite.exec('DROP TRIGGER reject_cancel');
-  const results = await Promise.all([ctx.cancelGenerationRequest('parent', 'a'), ctx.cancelGenerationRequest('parent', 'a')]);
-  assert.deepEqual(results.map(result => result.cancelledCount), [2, 0]);
+  const results = await Promise.all([
+    ctx.cancelGenerationRequest('parent', 'a'),
+    ctx.cancelGenerationRequest('parent', 'a'),
+  ]);
+  assert.deepEqual(
+    results.map((result) => result.cancelledCount),
+    [2, 0],
+  );
   assert.equal(notifications.length, 2);
   assert.equal(store.selectItemById('jobs', 'child-0').fairCharge.status, 'refunded');
   assert.equal(store.selectItemById('jobs', 'child-2').fairCharge.status, 'reserved');
   assert.equal(store.db.accounts[0].inFlight, 1);
-  assert.equal(store.db.ledger.filter(event => event.type === 'generation_refunded').length, 1);
+  assert.equal(store.db.ledger.filter((event) => event.type === 'generation_refunded').length, 1);
   assert.equal((await ctx.getGenerationRequest('parent', 'a')).cancellable, false);
-  await store.update(db => {
-    const running = db.jobs.find(job => job.id === 'child-2');
-    settleFairQuota(db, running, true); running.status = 'done';
-    activateNextBatchJob(db, running, store.nextQueueSequence());
-  }, { immediate: true, includeSettings: true, dirtyRows: { jobs: ['child-2'] } });
+  await store.update(
+    (db) => {
+      const running = db.jobs.find((job) => job.id === 'child-2');
+      settleFairQuota(db, running, true);
+      running.status = 'done';
+      activateNextBatchJob(db, running, store.nextQueueSequence());
+    },
+    { immediate: true, includeSettings: true, dirtyRows: { jobs: ['child-2'] } },
+  );
   assert.equal(store.selectItemById('jobs', 'child-1').status, 'failed');
 });
 
-test('取消与派发按同一事务顺序竞争，已派发不撤销，未派发不越过取消', async t => {
+test('取消与派发按同一事务顺序竞争，已派发不撤销，未派发不越过取消', async (t) => {
   for (const dispatchFirst of [true, false]) {
     const { store, ctx } = await fixture(t, ['queued', 'pending']);
     const dispatch = () => ctx.reserveQueuedJob('child-0');
-    const operations = dispatchFirst ? [dispatch(), ctx.cancelGenerationRequest('parent', 'a')]
+    const operations = dispatchFirst
+      ? [dispatch(), ctx.cancelGenerationRequest('parent', 'a')]
       : [ctx.cancelGenerationRequest('parent', 'a'), dispatch()];
     await Promise.all(operations);
-    assert.equal(store.selectItemById('jobs', 'child-0').status, dispatchFirst ? 'running' : 'failed');
+    assert.equal(
+      store.selectItemById('jobs', 'child-0').status,
+      dispatchFirst ? 'running' : 'failed',
+    );
     assert.equal(store.selectItemById('jobs', 'child-1').status, 'failed');
   }
 });
 
-test('部分冷历史下取消只持久化本父待执行任务，终态重复取消不触发全量覆盖', async t => {
+test('部分冷历史下取消只持久化本父待执行任务，终态重复取消不触发全量覆盖', async (t) => {
   const { store, ctx } = await fixture(t, ['queued', 'pending']);
-  await store.update(db => {
-    for (let index = 0; index < 101; index++) db.jobs.unshift({ id: `history-${index}`, status: 'done', createdAt: new Date().toISOString() });
-  }, { immediate: true });
+  await store.update(
+    (db) => {
+      for (let index = 0; index < 101; index++) {
+        db.jobs.unshift({
+          id: `history-${index}`,
+          status: 'done',
+          createdAt: new Date().toISOString(),
+        });
+      }
+    },
+    { immediate: true },
+  );
   store.trimRuntimeCollection('jobs', 0);
   store.refreshPartialCollectionState('jobs');
   assert.equal(store.partialCollections.has('jobs'), true);

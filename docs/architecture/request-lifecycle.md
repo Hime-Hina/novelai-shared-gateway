@@ -87,7 +87,7 @@ close 会清除自己的轮询定时器和等待者，不改变任务。
 ASCII 字符串，不含空格；重复头或非法值拒绝。没有该头时保留现有行为，
 不按 IP、提示词或时间窗口猜测重复请求。第三方客户端无需修改。
 
-Cookie 成员新端点必须提供幂等键与 confirmation，并保存完整 `MemberNormalizationContext` 和原 confirmation；其约束见[成员生成契约](../contracts/member-generation-contract.md)，不使用本节的可选键和有限 defaults 上下文约定。
+Cookie 成员新端点必须提供幂等键与 confirmation，并保存完整 `MemberNormalizationContext` 和原 confirmation；其约束见[成员生成契约](../contracts/member-generation-contract.md)，不使用本节的可选键约定。
 
 持久映射的唯一范围是稳定成员 ID、操作（generate / encode-vibe / upscale）
 与操作键摘要。相同范围同意图复用已有任务，活动任务继续等待，已完成任务
@@ -101,10 +101,13 @@ Cookie 成员新端点必须提供幂等键与 confirmation，并保存完整 `M
 extra_noise_seed 缺省、-1 和固定值仍区分，-1 仍是现有上游随机语义。
 诊断信息、认证 Key、时间和响应 stream 标志不进入指纹。
 
-首次有限默认参数上下文随映射冷存，重试使用该上下文规范化，管理员调整
-默认值不会把原请求变成冲突。上下文仅含模型、画师、负面词及八个生成
-defaults 字段，不复制全部 settings 或额度账本。受理时上下文与规范化输入
-一起计入现有临时载荷上限；提交后执行仅按父 payload 字节占用持久活动预算。
+旧网页、direct、OpenAI 首次有限默认参数上下文随映射冷存，重试使用该上下文规范化，管理员调整默认值不会把原请求变成冲突。上下文仅含模型、画师、负面词及八个生成 defaults 字段，不复制全部 settings 或额度账本。
+
+新受理的 Native 可选幂等 intent 保存 `{native: NativeNormalizationContext}`，普通生图及辅助 parser 在重放时使用首次 defaults、模型/重绘映射、参数名/枚举、限制和辅助操作定义。Native 不采用管理员网页 defaults，所以管理员调整这些值不改变其意图；程序 Native 默认值变化、模型下架、encode-vibe 模型列表或 upscale blur 枚举变化后，同键省略可选值仍可领取首次请求，响应 stream/ZIP/JSON 选择也不改变业务意图。真正修改有效参数仍返回 409；新操作键使用当前定义。
+
+历史 Native 映射只保存有限 defaults 或 `{}` 时走明确的兼容分支：沿用当前 Native parser，不把网页 defaults 冒充历史 Native 定义，也不补造未保存的模型或辅助规则。因此这些旧映射只保证当前定义下的同意图重放；跨程序默认值/模型/辅助定义变化可能返回 409 或 422，不会重新生成或扣费。持有原 requestId 时可通过下述 `GET /api/requests/:id` 查询并领取结果；旧 inline 的 requestId 为 null 时使用原 job 查询接口。
+
+受理时上下文与规范化输入一起计入现有临时载荷上限；提交后执行仅按父 payload 字节占用持久活动预算。以上是已存定义数据的兼容承诺，不保证任意未来 parser 算法或价格算法改写都能重放；不支持原上下文时应保留原请求查询/领取路径。
 
 映射与父/子任务、账本和序号同事务提交；同键并发在串行受理内重查。
 不同键仍可能按原显式缓存规则命中同一活动任务或已有图片，这不表示网关

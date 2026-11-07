@@ -1,59 +1,134 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { activityDate, type ActivityDay, type ActivityOperation } from '../reports/activity-heatmap.ts';
+import {
+  activityDate,
+  type ActivityDay,
+  type ActivityOperation,
+} from '../reports/activity-heatmap.ts';
 import type { images, users } from './sqlite-schema.ts';
 
-export interface ActivityQuery { since: string; until: string; memberId?: string | null; operation?: ActivityOperation; dates?: string[] | null }
-export interface AdminStatsQuery { now?: number; days?: number }
-export interface PageQuery { limit?: number; offset?: number; q?: string }
-export interface ImagePageQuery extends PageQuery { tier?: string; model?: string }
+export interface ActivityQuery {
+  since: string;
+  until: string;
+  memberId?: string | null;
+  operation?: ActivityOperation;
+  dates?: string[] | null;
+}
+export interface AdminStatsQuery {
+  now?: number;
+  days?: number;
+}
+export interface PageQuery {
+  limit?: number;
+  offset?: number;
+  q?: string;
+}
+export interface ImagePageQuery extends PageQuery {
+  tier?: string;
+  model?: string;
+}
 export type ReadTask = { id: number } & (
   | { type: 'adminStats'; payload?: AdminStatsQuery }
   | { type: 'activityDays'; payload: ActivityQuery }
   | { type: 'imagePage'; payload?: ImagePageQuery }
   | { type: 'userPage'; payload?: PageQuery }
 );
-interface AccountStatsRow { status: string | null; accountId: string | null; statsExcluded: number; count: number }
-interface SpeedRow { modelVersion: 'v45' | 'v5' | ''; count: number; durationSeconds: number | null }
-interface UsageRow { date: string | null; hour: number | null; status: string | null; count: number; credits: number | null }
-interface JobStats { done: number; failed: number; total?: number; successRate?: number }
-interface SpeedStats { seconds: number | null; count: number }
+interface AccountStatsRow {
+  status: string | null;
+  accountId: string | null;
+  statsExcluded: number;
+  count: number;
+}
+interface SpeedRow {
+  modelVersion: 'v45' | 'v5' | '';
+  count: number;
+  durationSeconds: number | null;
+}
+interface UsageRow {
+  date: string | null;
+  hour: number | null;
+  status: string | null;
+  count: number;
+  credits: number | null;
+}
+interface JobStats {
+  done: number;
+  failed: number;
+  total?: number;
+  successRate?: number;
+}
+interface SpeedStats {
+  seconds: number | null;
+  count: number;
+}
 type DataRow = Pick<typeof images.$inferSelect | typeof users.$inferSelect, 'data'>;
 
-const sqlite = new Database((workerData as { dbPath: string }).dbPath, { readonly: true, fileMustExist: true });
+const sqlite = new Database((workerData as { dbPath: string }).dbPath, {
+  readonly: true,
+  fileMustExist: true,
+});
 sqlite.pragma('query_only = ON');
 sqlite.pragma('busy_timeout = 3000');
-sqlite.function('activity_time', { deterministic: true }, value => activityDate(value) ? Date.parse(value as string) : null);
+sqlite.function('activity_time', { deterministic: true }, (value) =>
+  activityDate(value) ? Date.parse(value as string) : null,
+);
 
 parentPort!.on('message', ({ id, type, payload = {} }: ReadTask) => {
   try {
-    const result = type === 'adminStats'
-      ? readAdminStats(payload as AdminStatsQuery)
-      : type === 'activityDays'
-        ? readActivityDays(payload as ActivityQuery)
-      : type === 'imagePage'
-        ? readImagePage(payload as ImagePageQuery)
-        : type === 'userPage'
-          ? readUserPage(payload as PageQuery)
-          : (() => { throw new Error(`Unknown read task: ${type}`); })();
+    let result;
+    if (type === 'adminStats') {
+      result = readAdminStats(payload as AdminStatsQuery);
+    } else if (type === 'activityDays') {
+      result = readActivityDays(payload as ActivityQuery);
+    } else if (type === 'imagePage') {
+      result = readImagePage(payload as ImagePageQuery);
+    } else if (type === 'userPage') {
+      result = readUserPage(payload as PageQuery);
+    } else {
+      throw new Error(`Unknown read task: ${type}`);
+    }
     parentPort!.postMessage({ id, result });
   } catch (error) {
-    parentPort!.postMessage({ id, error: (error as { message?: unknown } | null)?.message || String(error) });
+    parentPort!.postMessage({
+      id,
+      error: (error as { message?: unknown } | null)?.message || String(error),
+    });
   }
 });
 
-function readActivityDays({ since, until, memberId = null, operation = 'generate', dates = null }: ActivityQuery): ActivityDay[] {
-  if (dates?.length === 0) return [];
+function readActivityDays({
+  since,
+  until,
+  memberId = null,
+  operation = 'generate',
+  dates = null,
+}: ActivityQuery): ActivityDay[] {
+  if (dates?.length === 0) {
+    return [];
+  }
   // ISO 偏移可跨 UTC 日期；先用现有索引取宽边界，再按严格解析的时间精确过滤。
   const margin = 2 * 86400000;
-  const start = Date.parse(since), end = Date.parse(until), selectedDates = dates?.slice().sort();
-  const lower = selectedDates ? Math.max(start, Date.parse(selectedDates[0] + 'T00:00:00Z') - 8 * 3600000) : start;
-  const upper = selectedDates ? Math.min(end, Date.parse(selectedDates.at(-1) + 'T00:00:00Z') + 16 * 3600000) : end;
-  const params = { since: start, until: end, memberId, operation,
+  const start = Date.parse(since),
+    end = Date.parse(until),
+    selectedDates = dates?.slice().sort();
+  const lower = selectedDates
+    ? Math.max(start, Date.parse(selectedDates[0] + 'T00:00:00Z') - 8 * 3600000)
+    : start;
+  const upper = selectedDates
+    ? Math.min(end, Date.parse(selectedDates.at(-1) + 'T00:00:00Z') + 16 * 3600000)
+    : end;
+  const params = {
+    since: start,
+    until: end,
+    memberId,
+    operation,
     lower: new Date(lower - margin).toISOString().slice(0, 10),
     upper: new Date(upper + margin).toISOString().slice(0, 10),
-    dates: dates === null ? null : JSON.stringify(dates) };
-  return sqlite.prepare<typeof params, ActivityDay>(`
+    dates: dates === null ? null : JSON.stringify(dates),
+  };
+  return sqlite
+    .prepare<typeof params, ActivityDay>(
+      `
     WITH candidates AS (
       SELECT j.created_at,
         COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),
@@ -83,33 +158,49 @@ function readActivityDays({ since, until, memberId = null, operation = 'generate
       SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other
     FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))
     GROUP BY date ORDER BY date
-  `).all(params);
+  `,
+    )
+    .all(params);
 }
 
 function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
   const oneMinuteAgo = new Date(now - 60_000).toISOString();
   const oneHourAgo = new Date(now - 60 * 60_000).toISOString();
   const chartCutoff = new Date(now - days * 24 * 60 * 60_000).toISOString();
-  const requestRow = sqlite.prepare<[string], { total: number }>(`
+  const requestRow = sqlite
+    .prepare<[string], { total: number }>(
+      `
     SELECT COUNT(*) AS total
     FROM jobs INDEXED BY idx_jobs_created_stats
     WHERE created_at >= ?
-  `).get(oneMinuteAgo);
+  `,
+    )
+    .get(oneMinuteAgo);
   // Generation prices start at 1; zero/fractional-cost completions are cached deliveries.
-  const generationRow = sqlite.prepare<{ since: string; now: string }, { total: number }>(`
+  const generationRow = sqlite
+    .prepare<{ since: string; now: string }, { total: number }>(
+      `
     SELECT COUNT(*) AS total
     FROM jobs INDEXED BY idx_jobs_updated_stats
     WHERE updated_at >= @since AND updated_at <= @now
       AND status = 'done' AND cost >= 1
-  `).get({ since: oneMinuteAgo, now: new Date(now).toISOString() });
-  const accountRows = sqlite.prepare<{ since: string }, AccountStatsRow>(`
+  `,
+    )
+    .get({ since: oneMinuteAgo, now: new Date(now).toISOString() });
+  const accountRows = sqlite
+    .prepare<{ since: string }, AccountStatsRow>(
+      `
     SELECT status, account_id AS accountId, stats_excluded AS statsExcluded, COUNT(*) AS count
     FROM jobs INDEXED BY idx_jobs_created_stats
     WHERE created_at >= @since
       AND status IN ('done', 'failed')
     GROUP BY status, account_id, stats_excluded
-  `).all({ since: oneHourAgo });
-  const speedRows = sqlite.prepare<{ since: string }, SpeedRow>(`
+  `,
+    )
+    .all({ since: oneHourAgo });
+  const speedRows = sqlite
+    .prepare<{ since: string }, SpeedRow>(
+      `
     SELECT
       CASE
         WHEN model LIKE 'nai-diffusion-5%' THEN 'v5'
@@ -124,8 +215,12 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
       AND created_at IS NOT NULL
       AND model LIKE 'nai-diffusion-%'
     GROUP BY modelVersion
-  `).all({ since: oneHourAgo });
-  const usageRows = sqlite.prepare<{ cutoff: string }, UsageRow>(`
+  `,
+    )
+    .all({ since: oneHourAgo });
+  const usageRows = sqlite
+    .prepare<{ cutoff: string }, UsageRow>(
+      `
     SELECT
       strftime('%Y-%m-%d', datetime(updated_at, '+8 hours')) AS date,
       CAST(strftime('%H', datetime(updated_at, '+8 hours')) AS INTEGER) AS hour,
@@ -136,13 +231,15 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     WHERE updated_at >= @cutoff
       AND status IN ('done', 'failed')
     GROUP BY date, hour, status
-  `).all({ cutoff: chartCutoff });
+  `,
+    )
+    .all({ cutoff: chartCutoff });
 
   const jobStats = { done: 0, failed: 0 };
   const accountStats: Record<string, JobStats> = {};
   const speed: Record<'v45' | 'v5', SpeedStats> = {
     v45: { seconds: null, count: 0 },
-    v5: { seconds: null, count: 0 }
+    v5: { seconds: null, count: 0 },
   };
   const speedTotals = { v45: 0, v5: 0 };
 
@@ -157,7 +254,9 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     }
   }
   for (const row of speedRows) {
-    if (!speed[row.modelVersion as keyof typeof speed]) continue;
+    if (!speed[row.modelVersion as keyof typeof speed]) {
+      continue;
+    }
     speed[row.modelVersion as keyof typeof speed].count = Number(row.count || 0);
     speedTotals[row.modelVersion as keyof typeof speedTotals] = Number(row.durationSeconds || 0);
   }
@@ -166,7 +265,9 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     const count = speed[version].count;
     speed[version].seconds = count ? Math.max(0, speedTotals[version] / count) : null;
   }
-  for (const accountId of Object.keys(accountStats)) accountStats[accountId] = finalizeStats(accountStats[accountId]);
+  for (const accountId of Object.keys(accountStats)) {
+    accountStats[accountId] = finalizeStats(accountStats[accountId]);
+  }
 
   return {
     requestStats1m: { total: Number(requestRow?.total || 0) },
@@ -175,13 +276,22 @@ function readAdminStats({ now = Date.now(), days = 7 }: AdminStatsQuery = {}) {
     generationSpeed1h: speed,
     accountStats1h: accountStats,
     usageHourlyDays: buildUsageDays(usageRows, now, days),
-    statsRowsRead: accountRows.length + speedRows.length + usageRows.length + 2
+    statsRowsRead: accountRows.length + speedRows.length + usageRows.length + 2,
   };
 }
 
-function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' }: ImagePageQuery = {}) {
+function readImagePage({
+  limit = 60,
+  offset = 0,
+  q = '',
+  tier = '',
+  model = '',
+}: ImagePageQuery = {}) {
   const filters: string[] = [];
-  const params: { limit: number; offset: number; tier?: string; model?: string; q?: string } = { limit, offset };
+  const params: { limit: number; offset: number; tier?: string; model?: string; q?: string } = {
+    limit,
+    offset,
+  };
   if (tier) {
     filters.push('resolution_tier = @tier');
     params.tier = tier;
@@ -195,33 +305,57 @@ function readImagePage({ limit = 60, offset = 0, q = '', tier = '', model = '' }
     params.q = `%${q}%`;
   }
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
-  const total = Number(sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM images').get()?.count || 0);
+  const total = Number(
+    sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM images').get()?.count || 0,
+  );
   const matched = filters.length
-    ? Number(sqlite.prepare<typeof params, { count: number }>(`SELECT COUNT(*) AS count FROM images ${where}`).get(params)?.count || 0)
+    ? Number(
+        sqlite
+          .prepare<typeof params, { count: number }>(
+            `SELECT COUNT(*) AS count FROM images ${where}`,
+          )
+          .get(params)?.count || 0,
+      )
     : total;
-  const rows = sqlite.prepare<typeof params, DataRow>(`
+  const rows = sqlite
+    .prepare<typeof params, DataRow>(
+      `
     SELECT data FROM images
     ${where}
     ORDER BY order_value DESC
     LIMIT @limit OFFSET @offset
-  `).all(params);
+  `,
+    )
+    .all(params);
   return { images: parseRows(rows), total, matched, offset, limit };
 }
 
 function readUserPage({ limit = 300, offset = 0, q = '' }: PageQuery = {}) {
   const params: { limit: number; offset: number; q?: string } = { limit, offset };
   const where = q ? 'WHERE search_text LIKE @q' : '';
-  if (q) params.q = `%${q}%`;
-  const total = Number(sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM users').get()?.count || 0);
+  if (q) {
+    params.q = `%${q}%`;
+  }
+  const total = Number(
+    sqlite.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM users').get()?.count || 0,
+  );
   const matched = q
-    ? Number(sqlite.prepare<typeof params, { count: number }>(`SELECT COUNT(*) AS count FROM users ${where}`).get(params)?.count || 0)
+    ? Number(
+        sqlite
+          .prepare<typeof params, { count: number }>(`SELECT COUNT(*) AS count FROM users ${where}`)
+          .get(params)?.count || 0,
+      )
     : total;
-  const rows = sqlite.prepare<typeof params, DataRow>(`
+  const rows = sqlite
+    .prepare<typeof params, DataRow>(
+      `
     SELECT data FROM users
     ${where}
     ORDER BY order_value DESC
     LIMIT @limit OFFSET @offset
-  `).all(params);
+  `,
+    )
+    .all(params);
   return { users: parseRows(rows), total, matched, offset, limit };
 }
 
@@ -242,7 +376,9 @@ function buildUsageDays(rows: UsageRow[], now: number, days: number) {
   const current = new Date(now + offsetMs);
   const midnight = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate());
   const result = Array.from({ length: days }, (_, index) => {
-    const date = new Date(midnight + (index - days + 1) * 24 * 60 * 60_000).toISOString().slice(0, 10);
+    const date = new Date(midnight + (index - days + 1) * 24 * 60 * 60_000)
+      .toISOString()
+      .slice(0, 10);
     return {
       date,
       label: date.slice(5),
@@ -258,15 +394,17 @@ function buildUsageDays(rows: UsageRow[], now: number, days: number) {
         failed: 0,
         total: 0,
         credits: 0,
-        successRate: 0
-      }))
+        successRate: 0,
+      })),
     };
   });
   const byDate = new Map(result.map((item) => [item.date, item]));
   for (const row of rows) {
     const day = byDate.get(row.date!);
     const hour = Number(row.hour || 0);
-    if (!day || !day.hours[hour]) continue;
+    if (!day || !day.hours[hour]) {
+      continue;
+    }
     const count = Number(row.count || 0);
     const credits = Math.max(0, Number(row.credits || 0));
     if (row.status === 'done') {
@@ -281,7 +419,9 @@ function buildUsageDays(rows: UsageRow[], now: number, days: number) {
   }
   for (const day of result) {
     Object.assign(day, finalizeStats(day));
-    for (const hour of day.hours) Object.assign(hour, finalizeStats(hour));
+    for (const hour of day.hours) {
+      Object.assign(hour, finalizeStats(hour));
+    }
   }
   return result;
 }
@@ -293,4 +433,9 @@ function finalizeStats(value: JobStats) {
   return { done, failed, total, successRate: total ? done / total : 0 };
 }
 
-export type ReadResults = { adminStats: ReturnType<typeof readAdminStats>; activityDays: ActivityDay[]; imagePage: ReturnType<typeof readImagePage>; userPage: ReturnType<typeof readUserPage> };
+export type ReadResults = {
+  adminStats: ReturnType<typeof readAdminStats>;
+  activityDays: ActivityDay[];
+  imagePage: ReturnType<typeof readImagePage>;
+  userPage: ReturnType<typeof readUserPage>;
+};

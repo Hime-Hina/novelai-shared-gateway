@@ -8,13 +8,18 @@ async function directoryBytes(directory: string): Promise<number> {
   let bytes = 0;
   for await (const entry of await opendir(directory)) {
     const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) bytes += await directoryBytes(file);
-    else if (entry.isFile()) {
+    if (entry.isDirectory()) {
+      bytes += await directoryBytes(file);
+    } else if (entry.isFile()) {
       try {
         const info = await lstat(file);
-        if (info.isFile()) bytes += info.size;
+        if (info.isFile()) {
+          bytes += info.size;
+        }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
       }
     }
   }
@@ -23,31 +28,43 @@ async function directoryBytes(directory: string): Promise<number> {
 
 function readDataUsage(directory: string): Promise<DataUsage | null> {
   const cached = dataUsageCache.get(directory);
-  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
   // 图片目录可能很大；一分钟内共用一次异步扫描，包括并发管理请求。
   const result = directoryBytes(directory)
-    .then(bytes => ({ bytes, checkedAt: new Date().toISOString() }))
+    .then((bytes) => ({ bytes, checkedAt: new Date().toISOString() }))
     .catch(() => null);
   const entry = { expiresAt: Infinity, result };
   dataUsageCache.set(directory, entry);
-  void result.then(() => { entry.expiresAt = Date.now() + 60000; });
+  void result.then(() => {
+    entry.expiresAt = Date.now() + 60000;
+  });
   return result;
 }
 
 export async function readServiceResources(dataDir: string | undefined) {
-  const [data, disk] = dataDir ? await Promise.all([
-    readDataUsage(dataDir),
-    statfs(dataDir).then(info => ({
-      totalBytes: info.blocks * info.bsize,
-      usedBytes: (info.blocks - info.bfree) * info.bsize,
-      availableBytes: info.bavail * info.bsize
-    })).catch(() => null)
-  ]) : [null, null];
+  const [data, disk] = dataDir
+    ? await Promise.all([
+        readDataUsage(dataDir),
+        statfs(dataDir)
+          .then((info) => ({
+            totalBytes: info.blocks * info.bsize,
+            usedBytes: (info.blocks - info.bfree) * info.bsize,
+            availableBytes: info.bavail * info.bsize,
+          }))
+          .catch(() => null),
+      ])
+    : [null, null];
   const memory = process.memoryUsage();
   return {
-    memory: { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed, heapTotalBytes: memory.heapTotal },
+    memory: {
+      rssBytes: memory.rss,
+      heapUsedBytes: memory.heapUsed,
+      heapTotalBytes: memory.heapTotal,
+    },
     uptimeSeconds: process.uptime(),
     data,
-    disk
+    disk,
   };
 }

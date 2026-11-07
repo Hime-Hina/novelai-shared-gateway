@@ -1,0 +1,135 @@
+{
+  "fixture": {
+    "width": 512,
+    "height": 512,
+    "inputImageBytes": 1049476,
+    "maskBytes": 1049476,
+    "opaqueReferenceBytes": 1048576,
+    "inlineResultBytes": 1049476,
+    "sourceSha256": "6d64fa184e9199a4bc209ae1d735a95d17115669"
+  },
+  "sourceBytes": 11653120,
+  "archiveBytes": 8527752,
+  "encryptedBytes": 8527788,
+  "encryptionOverheadBytes": 36,
+  "nodeHarnessPeakRssBytes": 199290880,
+  "nodeUploadPeakRssBytes": 129163264,
+  "sampledTempPeakBytes": 63749556,
+  "tempSampleIntervalMs": 100,
+  "cgroupMemoryPeakBytes": 216612864,
+  "timings": {
+    "fixtureMs": 6317.114595,
+    "downloadDecryptMs": 348.124914,
+    "extractVerifyMs": 3896.0890309999995,
+    "copyReplayVerifyAndOpenMs": 4454.4816809999975,
+    "snapshotMs": 3961.8097040001885,
+    "compressEncryptUploadVerifyMs": 3191.487791998952,
+    "totalMs": 24202.376185
+  },
+  "pythonPeakRssBytes": 65888256,
+  "progress": {
+    "lastCommitSeq": "7",
+    "commits": 7,
+    "events": 11
+  },
+  "summaries": {
+    "event_commits": {
+      "rows": 7,
+      "sha256": "95542b903c8438495d1345a64b95bd32c170628e8316a8b4cabbad89820c0b80"
+    },
+    "domain_events": {
+      "rows": 11,
+      "sha256": "b2bd76d8dfe62adbbae5068f82e1edcc3c30d8f9e95dd138de932684c2247abe"
+    },
+    "event_streams": {
+      "rows": 11,
+      "sha256": "08b41b32e26f0247feec6b392a594f795e3ddb3e961fedb40af6d66a2dfa8955"
+    },
+    "jobs": {
+      "rows": 3,
+      "sha256": "7ffd6f1ad41c489e15cd59c8e589e1848194ea965d714f815eb23cf56818fd3d"
+    },
+    "images": {
+      "rows": 1,
+      "sha256": "d2a270dfe3bf5216f9acd7db20377cdd699c42e5cf533c2165465d81ad21cfe0"
+    },
+    "ledger": {
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generation_requests": {
+      "rows": 3,
+      "sha256": "d5518f0de1dd263cf9b6302b8a9f6fa81bebfe5f694b8656a1ebe98908d37360"
+    },
+    "generation_contexts": {
+      "rows": 2,
+      "sha256": "bf758dda5a94dcdfac0f0be94cea83ba34ec234ae9f999a94d344185ac3e6653"
+    },
+    "artifact_inputs": {
+      "rows": 1,
+      "sha256": "94ba765266537d8509eba97b5f1c471268a9a69cc328909868532ad77fe88967"
+    },
+    "generation_idempotency": {
+      "rows": 2,
+      "sha256": "16f0a6a68a6a012d15a5aed36c41d21caa09876ce40e56bbc482a570d01b648c"
+    }
+  },
+  "replaySummaries": {
+    "event_commits": {
+      "rows": 7,
+      "sha256": "95542b903c8438495d1345a64b95bd32c170628e8316a8b4cabbad89820c0b80"
+    },
+    "domain_events": {
+      "rows": 11,
+      "sha256": "b2bd76d8dfe62adbbae5068f82e1edcc3c30d8f9e95dd138de932684c2247abe"
+    },
+    "event_streams": {
+      "rows": 11,
+      "sha256": "08b41b32e26f0247feec6b392a594f795e3ddb3e961fedb40af6d66a2dfa8955"
+    },
+    "jobs": {
+      "rows": 3,
+      "sha256": "e0eb55610c11f611365171f5b5ab7f156fd7c8c683deef0fafdee1e1e0507401"
+    },
+    "images": {
+      "rows": 1,
+      "sha256": "049f7713e488b066bb5d49613bd02c3e41d7ab4e1a3868b074ee0afab606e5b4"
+    },
+    "ledger": {
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generation_requests": {
+      "rows": 3,
+      "sha256": "d5518f0de1dd263cf9b6302b8a9f6fa81bebfe5f694b8656a1ebe98908d37360"
+    },
+    "generation_contexts": {
+      "rows": 2,
+      "sha256": "bf758dda5a94dcdfac0f0be94cea83ba34ec234ae9f999a94d344185ac3e6653"
+    },
+    "artifact_inputs": {
+      "rows": 1,
+      "sha256": "94ba765266537d8509eba97b5f1c471268a9a69cc328909868532ad77fe88967"
+    },
+    "generation_idempotency": {
+      "rows": 2,
+      "sha256": "16f0a6a68a6a012d15a5aed36c41d21caa09876ce40e56bbc482a570d01b648c"
+    }
+  },
+  "verified": [
+    "manifest",
+    "event facts",
+    "command receipts",
+    "stream projections",
+    "jobs/images/ledger",
+    "protected requests/contexts/artifacts",
+    "idempotency",
+    "inline artifact bytes"
+  ],
+  "limits": {
+    "archiveBytes": 52428800,
+    "objectBytes": 67108864,
+    "remoteBytes": 500000000,
+    "keep": 7
+  }
+}

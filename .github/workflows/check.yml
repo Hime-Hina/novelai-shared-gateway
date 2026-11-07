@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           run_install: false
@@ -22,6 +24,12 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm run format:check
+      - run: pnpm run architecture:check
+      - name: Check immutable migration history
+        env:
+          MIGRATION_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '7c55c6dad7ec59b04550ee9e2f1a0db6047db791' }}
+        run: pnpm run migration:check --base "$MIGRATION_BASE"
       - run: node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
       - run: pnpm run typecheck
       - run: pnpm run check
@@ -162,6 +170,38 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  node24-reader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify isolated SQLite readers under Node 24
+        run: node --test --test-concurrency=1 tests/integration/activity-storage.test.mjs tests/integration/activity-heatmap-http.test.mjs
+      - run: pnpm run build
+      - name: Include immutable migration assets in the JavaScript reader package
+        run: cp -R server/migrations .output/backend/server/migrations
+      - name: Verify packaged JavaScript reader under parent-only flags
+        run: >-
+          node --v8-pool-size=2 --input-type=module -e '
+          import assert from "node:assert/strict";
+          import { mkdtemp, rm } from "node:fs/promises";
+          import { tmpdir } from "node:os";
+          import path from "node:path";
+          import { JsonStore } from "./.output/backend/server/storage/sqlite-store.js";
+          const directory = await mkdtemp(path.join(tmpdir(), "nai-reader-node24-"));
+          const store = new JsonStore(directory);
+          try { await store.init(); assert.deepEqual(await store.readActivityDays({since:"2026-01-01T00:00:00Z",until:"2027-01-01T00:00:00Z"}),[]); }
+          finally { await store.close(); await rm(directory,{recursive:true,force:true}); }
+          '
 
   caddy-routing:
     runs-on: ubuntu-latest

@@ -1,0 +1,134 @@
+{
+  "date": "2026-11-07",
+  "timeZone": "Asia/Taipei",
+  "reviewBase": "7c55c6dad7ec59b04550ee9e2f1a0db6047db791",
+  "implementationCommit": "33ae0b17d7efc7b7cb638251b45f9ce9c09ebdd5",
+  "structuralCommit": "571f448fb5d2dd06d93df6292a801b954f395531",
+  "candidate": "6d64fa184e9199a4bc209ae1d735a95d17115669",
+  "runtimeFiles": 223,
+  "runtimeTreeSha256": "19073ec69722b21aecc8819b37be1e074413638422d60b20a2fe633de8541e6e",
+  "windowsNode22": {
+    "tests": 717,
+    "passed": 712,
+    "failed": 0,
+    "skipped": 5,
+    "durationMs": 232233.6412,
+    "logSha256": "a646b134a4af29997d12671dbb9dc4d5c21b8ccef16716b308d35374079f4ee7",
+    "log": "backend-final-windows-2.log"
+  },
+  "linuxNode22": {
+    "tests": 717,
+    "passed": 716,
+    "failed": 0,
+    "skipped": 1,
+    "durationMs": 237120.803265,
+    "logSha256": "40282320d38c8afa2834c7ef9a5029b3be639a78d701adb82f0b5f3ce48ec5dc",
+    "log": "linux-validation/backend-linux-2.log"
+  },
+  "webTransportWindows": {
+    "tests": 16,
+    "passed": 15,
+    "failed": 0,
+    "skipped": 1,
+    "durationMs": 228121.8546,
+    "logSha256": "fa2595451d750777350473f14838756599f011e7282185c202c273a9d2c9ba29",
+    "log": "web-executor-final.log"
+  },
+  "linuxExecutorArtifact": {
+    "tests": 4,
+    "passed": 4,
+    "failed": 0,
+    "skipped": 0,
+    "durationMs": 2354.098099,
+    "logSha256": "00d26e0df0c0dfac3e88ecdcad5d747ec47d204510541d5fd27c5413d73bd291",
+    "log": "executor-linux-runtime.log"
+  },
+  "linuxCaddy": {
+    "tests": 8,
+    "passed": 8,
+    "failed": 0,
+    "skipped": 0,
+    "durationMs": 581.207221,
+    "logSha256": "5e1b65943ec4abbd11b583a64fb4b93dd25675337259bb5f4b659f8c816aba70",
+    "log": "caddy-routing.log"
+  },
+  "boundedFinalBackup": {
+    "tests": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "durationMs": 26015.885776,
+    "logSha256": "9eeea2c6186de29e4bdc0b7729c41f5ebf6d449c1334b7f0fb4981c75f46b616",
+    "log": "backup-capacity-final.log"
+  },
+  "web": {
+    "files": 16,
+    "tests": 147,
+    "passed": 147,
+    "failed": 0,
+    "log": "web-final-tests.log"
+  },
+  "executorUnit": {
+    "tests": 3,
+    "passed": 3,
+    "failed": 0
+  },
+  "staticChecks": [
+    "root/web/executor typechecks",
+    "117 JS/MJS syntax files",
+    "architecture:check",
+    "migration:check",
+    "format:check",
+    "repeat format creates no diff",
+    "git diff --check"
+  ],
+  "formatting": {
+    "prettier": "3.9.10",
+    "initialAstChecks": 289,
+    "additionalVueScriptAstChecks": 20,
+    "deliberateCompressedVueCheck": "failed as required",
+    "structureTools": "temporary only; no permanent structure linter"
+  },
+  "compatibility": {
+    "schema": 1,
+    "reducer": 3,
+    "writer": 3,
+    "minimumWriter": 3,
+    "oldSourceReplay": "upgrade an isolated copy first; originals are never rewritten",
+    "oldV2WriterProbe": "refused upgraded source before migrations; serialized SQLite unchanged"
+  },
+  "earlierFailures": {
+    "windows": {
+      "tests": 717,
+      "passed": 709,
+      "failed": 3,
+      "skipped": 5,
+      "durationMs": 240981.3765,
+      "logSha256": "8ded0a5722c40421f3420614567be10d3c0eb7e4895bfa2a57cb9b1d85089fd7",
+      "log": "backend-final-windows.log"
+    },
+    "linuxIncompleteSourceHarness": {
+      "tests": 713,
+      "passed": 710,
+      "failed": 2,
+      "skipped": 1,
+      "durationMs": 245362.681095,
+      "logSha256": "3a67e5b848c122bced594423268f1abf8ddaf1eb71b31f8849af8d0f0cf885c0",
+      "log": "linux-validation/backend-linux.log"
+    },
+    "reasons": [
+      "Old HTTP fixture asserted writer2 after intended writer3 upgrade.",
+      "Native fixture assumed first-posted request arrived first; proved preview+final reconnect with physical concurrency1; synchronized receipt while preserving assertions/timeouts.",
+      "Backend-only Linux harness omitted web source and full architecture folders; supplied read-only web/executor mounts.",
+      "Initial Node24 compiled smoke missed immutable migration assets; packaging step now includes them."
+    ]
+  },
+  "platformLimits": [
+    "Node24 Windows reader/compiled subset is in node24-141e692.json; Linux Node24 remains a separate CI job.",
+    "Node26 was not run.",
+    "Windows transport has one Linux SIGTERM skip; do not infer it passed here.",
+    "Annual database-only compressed sample is426748997 bytes and unsupported by current backup size policy; no annual encrypted restore.",
+    "No real upstream, production data, production R2 or deployment.",
+    "Actual main/refactor protection policy awaits maintainer selection; isolated failure proof is not an agent sandbox."
+  ]
+}

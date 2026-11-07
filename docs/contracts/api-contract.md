@@ -8,12 +8,12 @@
 
 ## 证据与使用边界
 
-| 证据 | 能证明什么 | 不能证明什么 |
-| --- | --- | --- |
-| [Primary API 文档](https://api.novelai.net/docs/)指向的 [Image API](https://image.novelai.net/docs/index.html)、[doc.json](https://image.novelai.net/docs/doc.json) | 文档列出的路径、字段、媒体类型、状态码 | 所有模型的实际支持组合、当前账户价格、历史前端模块的持续有效性 |
-| 当前源码与离线 HTTP/模块测试 | 网关实际接受、拒绝、转换和输出的行为 | 真实 NAI 会接受所有通过网关校验的参数 |
-| 三个[脱敏客户端样本](../../tests/fixtures/)：`novelai-image-desktop-request.json`、`littlewhitebox-v5-request.json`、`aaalice-v5-curated-request.json` | 桌面客户端别名、旧模板字段、V5 Full/Curated 请求结构的回归 | 对这些客户端所有版本、插件和功能的认证 |
-| `official-image-pricing-20261009.json` 固定报价样本及其来源摘要 | 已核对样本对应的独立预期数值 | 上游逐笔实际账单；尤其 V5 百分点仍是估计 |
+| 证据                                                                                                                                                                | 能证明什么                                                 | 不能证明什么                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- |
+| [Primary API 文档](https://api.novelai.net/docs/)指向的 [Image API](https://image.novelai.net/docs/index.html)、[doc.json](https://image.novelai.net/docs/doc.json) | 文档列出的路径、字段、媒体类型、状态码                     | 所有模型的实际支持组合、当前账户价格、历史前端模块的持续有效性 |
+| 当前源码与离线 HTTP/模块测试                                                                                                                                        | 网关实际接受、拒绝、转换和输出的行为                       | 真实 NAI 会接受所有通过网关校验的参数                          |
+| 三个[脱敏客户端样本](../../tests/fixtures/)：`novelai-image-desktop-request.json`、`littlewhitebox-v5-request.json`、`aaalice-v5-curated-request.json`              | 桌面客户端别名、旧模板字段、V5 Full/Curated 请求结构的回归 | 对这些客户端所有版本、插件和功能的认证                         |
+| `official-image-pricing-20261009.json` 固定报价样本及其来源摘要                                                                                                     | 已核对样本对应的独立预期数值                               | 上游逐笔实际账单；尤其 V5 百分点仍是估计                       |
 
 本次读取的 Image Swagger 为 2.0、`info.version=1.0`，原始响应 113991 字节，SHA-256：`77ee806124d7b97c60699617b7aba00f29e0287257cc665ea645753cc4eeea55`。测试不在线拉取文档；更新官方证据应另行审阅差异，不让外部变化自动扩大透传范围。
 
@@ -21,12 +21,12 @@
 
 以下四种生成操作均为 `POST`，各有同名 `/v1/ai/...` 别名。请求必须有 `Authorization: Bearer STA1N-...`；成员 Key 与共享上游 PST 是两个不同身份。Cookie 或请求体中的 Key 不能替代 Native Bearer 鉴权。共享公网入口还检查启用状态与配置要求的 Discord 资格。
 
-| 操作 | 当前网关成功契约 | 官方定义及差异 |
-| --- | --- | --- |
-| `/ai/generate-image` | 完整及部分成功均`200`，按Accept选择ZIP/JSON；ZIP文件为`image_0.<实际扩展名>`等；部分成功带批次说明 | C03-04依据真实JSON/ZIP的200纠正Swagger201；`images`元素为base64 `image`、`index`和实际`seed` |
-| `/ai/generate-image-stream` | `200`；stream缺省/sse为`text/event-stream`，msgpack为`application/msgpack`；图片保存并结算后发送final | 按真实官方响应接入SSE/base64及MessagePack/binary；Accept不覆盖stream，诊断字段和retry不伪造 |
-| `/ai/encode-vibe` | `201 application/binary`，保留编码原始字节，不套用 JSON 协商 | C03-01 对齐官方成功状态与媒体类型 |
-| `/ai/upscale` | `200`，按 Accept 选择单图 ZIP/JSON；JSON 不虚构放大过程的生成种子 | C03-01 对齐 ZIP/JSON 协商；官方 `seed` 字段并非必填 |
+| 操作                        | 当前网关成功契约                                                                                      | 官方定义及差异                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `/ai/generate-image`        | 完整及部分成功均`200`，按Accept选择ZIP/JSON；ZIP文件为`image_0.<实际扩展名>`等；部分成功带批次说明    | C03-04依据真实JSON/ZIP的200纠正Swagger201；`images`元素为base64 `image`、`index`和实际`seed` |
+| `/ai/generate-image-stream` | `200`；stream缺省/sse为`text/event-stream`，msgpack为`application/msgpack`；图片保存并结算后发送final | 按真实官方响应接入SSE/base64及MessagePack/binary；Accept不覆盖stream，诊断字段和retry不伪造  |
+| `/ai/encode-vibe`           | `201 application/binary`，保留编码原始字节，不套用 JSON 协商                                          | C03-01 对齐官方成功状态与媒体类型                                                            |
+| `/ai/upscale`               | `200`，按 Accept 选择单图 ZIP/JSON；JSON 不虚构放大过程的生成种子                                     | C03-01 对齐 ZIP/JSON 协商；官方 `seed` 字段并非必填                                          |
 
 四种操作成功响应均禁止缓存；流式另带 `no-transform` 与 `X-Accel-Buffering: no`。普通生图带 `X-Nai-Image-Count` 和 `X-Nai-Partial`；流式首帧时完成数量未知，不再提供这两个批次头，客户端应按 final/error 帧或任务查询判断。辅助操作也没有这两个批次头。Native 请求在初步身份验证后获得网关生成的 `X-Nai-Diagnostic-Id`。持久受理后返回 CORS 已暴露的 `X-Nai-Request-Id` 父请求 ID，超时/部分失败响应也保留；受理前拒绝没有父 ID。诊断关联不是幂等保证。
 
@@ -40,23 +40,23 @@ Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务�
 
 JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `request` JSON 字符串或 JSON 文件部件；附件只能是被引用的 `image`、`mask`、`reference_image`、`ref_multiple_0..99`、`director_ref_0..99`，不能有未引用、重复或未知部件。最多 36 个总部件，每个附件非空且不超过 8 MiB。它们被展开成 base64 后执行相同输入校验；附件名不是服务器下载 URL。
 
-| 类别 | 已支持的网关范围 | 拒绝或转换 |
-| --- | --- | --- |
-| 顶层 | `input/model/action/parameters/use_new_shared_trial/allowPurchasedAnlas` | 未知字段（含官方 `url`）返回 422；`input` 必须是非空字符串且最多 50000 字符，`parameters` 必须是对象，否则 400；冗余`parameters.prompt`仅在严格等于input时接受并删除 |
-| 动作 | `generate`（默认）、`img2img`、`infill` | 未知动作 422；重绘按模型映射到 `-inpainting` 名称，5C 重绘明确拒绝，不自动替换为 4.5 |
-| 模型 | V3/Furry V3、V4 Curated Preview/Full、V4.5 Curated/Full、V5 Full/Curated/Full Medium；对应的已列入白名单重绘模型（不含 5C） | 其他名称 422。Swagger 的 model 是字符串，不代表任意名称都有本地计价与路由 |
-| 尺寸、步数、张数 | 宽高各为 128..2048 的整数，总像素 ≤3145728；步数 1..50；张数 1..4（缺省 1） | 不是任意数值钳位。Medium 经专用规则归一到 14 步、`k_euler_ancestral`、`cfg_rescale=0` 及固定负面提示处理 |
-| 种子 | 安全非负整数取模 `2^32`；省略或 -1 随机确定一次 | 小数、低于 -1、不安全整数 422；多图只在此初始种子上递增 |
-| 采样器 | `k_euler`、`k_euler_ancestral`、`k_dpmpp_2m`、`k_dpmpp_2m_sde`、`k_dpmpp_2s_ancestral`、`k_dpmpp_sde`、`k_dpm_2`、`k_dpm_2_ancestral`、`k_dpm_adaptive`、`ddim`、`ddim_v3`、`k_lms` | 默认 `k_dpmpp_2m_sde`；名单表示网关校验接受，并非对每个模型做过上游组合验证 |
-| 引导/调度 | `scale=0..10`，`cfg_rescale=0..1`；调度为 native/karras/exponential/polyexponential，默认 karras | 负面提示 `negative_prompt/uc` 最多 50000 字符；缺少前者时取后者 |
-| 输出/流 | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游；流式路径按`parameters.stream`选择，缺省为sse | 其他格式/stream值422；stream只属于本次响应，不进入持久请求或幂等指纹；V4/V5上游仍请求msgpack |
-| 图生图/重绘 | PNG/JPEG/WebP base64 输入，图片实际尺寸必须等于请求尺寸；strength/noise 0..1；重绘要求同尺寸 PNG mask | 不下载图片 URL；遮罩仅在 infill 有效；图生图/重绘不允许 SMEA；文生图无效的默认 strength/noise 滑块会清理 |
-| 多角色 | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点 | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构 |
-| SMEA | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm | DDIM/ddim_v3、autoSmea 启用、其他模型启用、图生图启用均 422 |
-| Vibe | V3 原图；V4/V4.5 预编码数据；最多 16 个参考，数量与强度对应；旧单图字段归一成数组 | 编码输入限制 2 MiB，基本形态校验不是内部语义验证；V5、重绘、与 Precise 混用被网关拒绝 |
-| Precise Reference | V4.5；最多 16 张；1024×1536 / 1536×1024 / 1472×1472；描述与参考数组一一对应 | 其他模型或与 Vibe 混用 422；主强度 -1..1、secondary -1..2 为网关有限数值边界。已核实官方支持负值，不能将此范围称为官方硬限制；详见 C03-05 |
-| 缓存字段 | cached 形式必须同时给出 data，进入核价后转换为普通数组 | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝 |
-| 客户端别名/空模板 | `uc_preset→ucPreset`、`quality_toggle→qualityToggle`；两名并存必须一致；关闭的 ControlNet/自动放大/LoRA 模板字段可清理 | 启用的未知功能不得透传；启用 ControlNet、LoRA、内联 upscale/upscaled_enhance 返回 422 |
+| 类别              | 已支持的网关范围                                                                                                                                                                    | 拒绝或转换                                                                                                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 顶层              | `input/model/action/parameters/use_new_shared_trial/allowPurchasedAnlas`                                                                                                            | 未知字段（含官方 `url`）返回 422；`input` 必须是非空字符串且最多 50000 字符，`parameters` 必须是对象，否则 400；冗余`parameters.prompt`仅在严格等于input时接受并删除 |
+| 动作              | `generate`（默认）、`img2img`、`infill`                                                                                                                                             | 未知动作 422；重绘按模型映射到 `-inpainting` 名称，5C 重绘明确拒绝，不自动替换为 4.5                                                                                 |
+| 模型              | V3/Furry V3、V4 Curated Preview/Full、V4.5 Curated/Full、V5 Full/Curated/Full Medium；对应的已列入白名单重绘模型（不含 5C）                                                         | 其他名称 422。Swagger 的 model 是字符串，不代表任意名称都有本地计价与路由                                                                                            |
+| 尺寸、步数、张数  | 宽高各为 128..2048 的整数，总像素 ≤3145728；步数 1..50；张数 1..4（缺省 1）                                                                                                         | 不是任意数值钳位。Medium 经专用规则归一到 14 步、`k_euler_ancestral`、`cfg_rescale=0` 及固定负面提示处理                                                             |
+| 种子              | 安全非负整数取模 `2^32`；省略或 -1 随机确定一次                                                                                                                                     | 小数、低于 -1、不安全整数 422；多图只在此初始种子上递增                                                                                                              |
+| 采样器            | `k_euler`、`k_euler_ancestral`、`k_dpmpp_2m`、`k_dpmpp_2m_sde`、`k_dpmpp_2s_ancestral`、`k_dpmpp_sde`、`k_dpm_2`、`k_dpm_2_ancestral`、`k_dpm_adaptive`、`ddim`、`ddim_v3`、`k_lms` | 默认 `k_dpmpp_2m_sde`；名单表示网关校验接受，并非对每个模型做过上游组合验证                                                                                          |
+| 引导/调度         | `scale=0..10`，`cfg_rescale=0..1`；调度为 native/karras/exponential/polyexponential，默认 karras                                                                                    | 负面提示 `negative_prompt/uc` 最多 50000 字符；缺少前者时取后者                                                                                                      |
+| 输出/流           | 可省略或 `image_format='png'/'webp'`；显式格式原样传给上游；流式路径按`parameters.stream`选择，缺省为sse                                                                            | 其他格式/stream值422；stream只属于本次响应，不进入持久请求或幂等指纹；V4/V5上游仍请求msgpack                                                                         |
+| 图生图/重绘       | PNG/JPEG/WebP base64 输入，图片实际尺寸必须等于请求尺寸；strength/noise 0..1；重绘要求同尺寸 PNG mask                                                                               | 不下载图片 URL；遮罩仅在 infill 有效；图生图/重绘不允许 SMEA；文生图无效的默认 strength/noise 滑块会清理                                                             |
+| 多角色            | `v4_prompt/v4_negative_prompt` 的 caption/char_captions；最多 24 个角色，每角色最多 16 个中心点                                                                                     | 坐标 0..1；关闭坐标布局时缺失中心分量补 0.5；`characterPrompts` 只是 UI 元数据，校验后删除；V3 拒绝多角色结构                                                        |
+| SMEA              | V3 文生图的 `sm/sm_dyn`，DYN 必须同时有 sm                                                                                                                                          | DDIM/ddim_v3、autoSmea 启用、其他模型启用、图生图启用均 422                                                                                                          |
+| Vibe              | V3 原图；V4/V4.5 预编码数据；最多 16 个参考，数量与强度对应；旧单图字段归一成数组                                                                                                   | 编码输入限制 2 MiB，基本形态校验不是内部语义验证；V5、重绘、与 Precise 混用被网关拒绝                                                                                |
+| Precise Reference | V4.5；最多 16 张；1024×1536 / 1536×1024 / 1472×1472；描述与参考数组一一对应                                                                                                         | 其他模型或与 Vibe 混用 422；主强度 -1..1、secondary -1..2 为网关有限数值边界。已核实官方支持负值，不能将此范围称为官方硬限制；详见 C03-05                            |
+| 缓存字段          | cached 形式必须同时给出 data，进入核价后转换为普通数组                                                                                                                              | 不信任 `cache_secret_key` 可以免传数据或免费；图片缓存密钥字段被删除；普通和 cached 同时启用拒绝                                                                     |
+| 客户端别名/空模板 | `uc_preset→ucPreset`、`quality_toggle→qualityToggle`；两名并存必须一致；关闭的 ControlNet/自动放大/LoRA 模板字段可清理                                                              | 启用的未知功能不得透传；启用 ControlNet、LoRA、内联 upscale/upscaled_enhance 返回 422                                                                                |
 
 其他已列入白名单的提示/兼容标志包括 `params_version`、预设 ID、legacy 系列、dynamic_thresholding 系列、`skip_cfg_*`、`uncond_scale`、`cfg_sched_eligibility`、`deliberate_euler_ancestral_bug`、`prefer_brownian`、`straight_alpha`、`tag_hint_*` 等；仍逐项检查类型或范围。完整字段与约束以 [native-image.ts](../../server/protocols/native-image.ts) 为准，不能仅因为存在于 Swagger 就跳过校验。实际正向文本使用顶层 `input` 和已验证的角色结构；冗余 `parameters.prompt` 的规则见下文。
 
@@ -64,10 +64,10 @@ JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `
 
 ### 辅助操作
 
-| 操作 | 接受字段及默认值 | 明确拒绝 |
-| --- | --- | --- |
-| encode-vibe | `image/model/information_extracted/allowPurchasedAnlas`；信息提取比例0..1，默认1；可选`focus_seed/info_extract_seed`为安全整数、原值保留；模型限V4/V4.5四种基础模型 | `mask`（即使为空）、`crop_to_mask`、非整数或不能无损表示的seed、其他模型/未知字段 |
-| upscale | `image/model/declared_blur_sigma/scale/width/height/allowPurchasedAnlas`；默认模型 `nai-diffusion-5-curated`、blur=0；blur接受0/0.30/0.35/0.40/0.45/0.50；旧尺寸声明必须与图片一致，scale 如提供只能是 2 | 其他blur值、其他模型、伪造尺寸、输入总像素超过3145728、未知字段；不猜测非列举值如何舍入 |
+| 操作        | 接受字段及默认值                                                                                                                                                                                         | 明确拒绝                                                                                |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| encode-vibe | `image/model/information_extracted/allowPurchasedAnlas`；信息提取比例0..1，默认1；可选`focus_seed/info_extract_seed`为安全整数、原值保留；模型限V4/V4.5四种基础模型                                      | `mask`（即使为空）、`crop_to_mask`、非整数或不能无损表示的seed、其他模型/未知字段       |
+| upscale     | `image/model/declared_blur_sigma/scale/width/height/allowPurchasedAnlas`；默认模型 `nai-diffusion-5-curated`、blur=0；blur接受0/0.30/0.35/0.40/0.45/0.50；旧尺寸声明必须与图片一致，scale 如提供只能是 2 | 其他blur值、其他模型、伪造尺寸、输入总像素超过3145728、未知字段；不猜测非列举值如何舍入 |
 
 F07 后上游产物在成功结算前验证：图片可从二进制、JSON 或 ZIP 取回；ZIP 检查目录、CRC 与解压边界；流必须有合法最终图片且帧/HTTP 传输完整。结果图片边长上限为 16384，允许已接受的8192边长输入产生两倍放大结果；输入仍限8192，结果总像素仍限16777216。单产物上限 64 MiB，msgpack 流累计上限 256 MiB，不把 HTML/空响应/预览当作成功。Vibe 上游同时接受 `application/binary`（Swagger）和 `application/octet-stream`（现有适配），拒绝明显错误文本；不对其套用图片校验或虚构编码魔数。
 
@@ -81,10 +81,10 @@ N03 验收后才开始本项；2026-10-17 重新取得的官方 Swagger 字节�
 
 JSON 图片种子来自首次派发或持久任务中的实际规范化值，随机种子和重启后的结果保持一致。编码按48 KiB原始字节分块转base64，逐张读取已有文件并使用Node流背压，不构造整批base64字符串；首图读取失败仍返回正常错误，发送过程中后续文件失败则中断响应，不能把残缺JSON当作完整结果。下载断线不取消或退款已完成的任务。
 
-| 已核对的固定版本 | 成功判定与响应要求 |
-| --- | --- |
-| [NovelAI Image Desktop 2.5.9](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai.ts#L2279-L2338)，另复核样本对应2.5.7 | 普通生成使用Axios默认2xx判定，显式Accept ZIP/octet-stream并按二进制解码；Vibe按原始字节读取，不能因为其Axios默认Accept包含JSON就改变Vibe格式 |
-| [LittleWhiteBox](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/modules/draw/providers/novelai/novel-draw.js#L1665-L1690) | 浏览器直连使用response.ok且未设置Accept；[服务端代发](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/server-plugin/littlewhitebox-server/providers/novelai/client.js#L194-L200)接受200–299。两种都解析ZIP/图片，缺省不能改成JSON |
+| 已核对的固定版本                                                                                                                                                                             | 成功判定与响应要求                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [NovelAI Image Desktop 2.5.9](https://github.com/2786886095/novelai-image-desktop/blob/40dcf055a27d812fcbcda5a1220399135038a910/electron/ipc/nai.ts#L2279-L2338)，另复核样本对应2.5.7        | 普通生成使用Axios默认2xx判定，显式Accept ZIP/octet-stream并按二进制解码；Vibe按原始字节读取，不能因为其Axios默认Accept包含JSON就改变Vibe格式                                                                                                                                |
+| [LittleWhiteBox](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/modules/draw/providers/novelai/novel-draw.js#L1665-L1690)                           | 浏览器直连使用response.ok且未设置Accept；[服务端代发](https://github.com/RT15548/LittleWhiteBox/blob/9e71caef9ba7b3ca324ce9f1cb06a69ff54d734b/server-plugin/littlewhitebox-server/providers/novelai/client.js#L194-L200)接受200–299。两种都解析ZIP/图片，缺省不能改成JSON   |
 | [Aaalice NAI Launcher](https://github.com/Aaalice233/Aaalice_NAI_Launcher/blob/f92ead236506e61812423ef68d70bffa9e671a1b/lib/data/datasources/remote/nai_generation_transport.dart#L120-L135) | 使用Dio默认2xx判定和通配Accept，普通生成解析ZIP；[Vibe](https://github.com/Aaalice233/Aaalice_NAI_Launcher/blob/f92ead236506e61812423ef68d70bffa9e671a1b/lib/data/datasources/remote/nai_image_enhancement_api_service.dart#L177-L205)直接读取字节，无严格200或媒体类型检查 |
 
 以上为源码与模拟HTTP证据，不是对全部历史客户端的认证。W.O.F 缺少可对应版本的公开源码；LittleWhiteBox 的 Vibe 调用本轮也未取得可靠源码证据，不据此宣称已验证。
@@ -96,11 +96,11 @@ C03-01 源码 [238421e](https://github.com/Hime-Hina/novelai-shared-gateway/comm
 
 2026-10-17 取得的[官方网页静态包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)为113682字节，SHA-256为`d416909d4d4c2f249bc5d1045c4790445accb9de3cce34830f8085e41a760769`。其中`requestStream`主动设置`parameters.stream="msgpack"`，该处未设置Accept；按4字节大端长度解码MessagePack，图片按字节处理。它读取以下字段，结束时检查每个样本是否收到最终图：
 
-| 事件 | 官方网页读取的字段 |
-| --- | --- |
+| 事件         | 官方网页读取的字段      |
+| ------------ | ----------------------- |
 | intermediate | image、samp_ix、step_ix |
-| final | image、samp_ix |
-| error | message、samp_ix |
+| final        | image、samp_ix          |
+| error        | message、samp_ix        |
 
 进度由客户端结合步骤、采样器和样本数量计算，不将门户的`progress/preview`字段当作Native协议。以上为当前官方客户端实现证据，不等于稳定API字段承诺。
 
@@ -148,12 +148,12 @@ WebP与冗余提示词分别提交为[4cc7ed5](https://github.com/Hime-Hina/nove
 
 以下字段已评估，继续明确拒绝启用值，不为覆盖Swagger字段而静默透传：
 
-| 字段 | 依据与当前边界 |
-| --- | --- |
-| 顶层`url` | schema只有string；[官网请求器](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)把自定义模型的aiUrl/inpaintAiUrl提升为body.url，HTTP仍发往固定NAI端点。这是尚未支持的自定义模型/后端路由参数，不能实现成输入图片下载 |
-| `parameters.upscale` | 官网仅在非infill且模型能力e2eUpscale开启时保留；已核对的当前支持模型均关闭此能力，仅custom开启，而网关不接受custom。普通报价没有读取内联字段，不能宣称免费或直接叠加独立放大价；已支持的独立放大继续走`/ai/upscale` |
-| `parameters.upscaled_enhance` | schema仅boolean，已核对官网调用和报价未找到实际使用，语义与收费未证实；不称其“已废弃”或等同upscale |
-| Vibe `mask`、`crop_to_mask` | schema说明base64遮罩和按可见区域外接矩形裁剪；官网确实传mask，但没有可靠确认格式、尺寸关系或通道语义。通用multipart代码同时把原图和遮罩标PNG，标签本身不能证明格式；不把infill的同尺寸PNG规则套用到Vibe。裁剪随遮罩一起保持422 |
+| 字段                          | 依据与当前边界                                                                                                                                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 顶层`url`                     | schema只有string；[官网请求器](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)把自定义模型的aiUrl/inpaintAiUrl提升为body.url，HTTP仍发往固定NAI端点。这是尚未支持的自定义模型/后端路由参数，不能实现成输入图片下载 |
+| `parameters.upscale`          | 官网仅在非infill且模型能力e2eUpscale开启时保留；已核对的当前支持模型均关闭此能力，仅custom开启，而网关不接受custom。普通报价没有读取内联字段，不能宣称免费或直接叠加独立放大价；已支持的独立放大继续走`/ai/upscale`                                    |
+| `parameters.upscaled_enhance` | schema仅boolean，已核对官网调用和报价未找到实际使用，语义与收费未证实；不称其“已废弃”或等同upscale                                                                                                                                                     |
+| Vibe `mask`、`crop_to_mask`   | schema说明base64遮罩和按可见区域外接矩形裁剪；官网确实传mask，但没有可靠确认格式、尺寸关系或通道语义。通用multipart代码同时把原图和遮罩标PNG，标签本身不能证明格式；不把infill的同尺寸PNG规则套用到Vibe。裁剪随遮罩一起保持422                         |
 
 关闭的内联模板值仍按既有规则清理，其他启用值在受理前422。上述[请求包](https://novelai.net/_next/static/chunks/0wi7fejx317_y.js?dpl=b50892a-38995131626-1)与[模型/报价包](https://novelai.net/_next/static/chunks/33ul2lw58_w11.js?dpl=b50892a-38995131626-1)的固定哈希已在前述证据中记录；未来开放需取得相应模型、字段作用与收费依据。本片不增加自定义路由、图片下载或新的计费组合。
 
@@ -185,20 +185,20 @@ Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在�
 
 生成失败对成员只返回固定分类文案，不公开上游JSON/流错误原文、文件路径或堆栈。失败/取消提交、任务等待通知、任务/父请求查询、错误图片及部分批次共用同一公开转换；旧任务在读取时也处理，但不重写历史诊断。管理员错误详情保留原有诊断；成员参数验证仍提供具体的本地校验提示。读取已完成结果时的标准文件系统错误也不回显内部路径。这一边界不改变HTTP状态、结算、取消、冷却或重发规则。
 
-| 状态 | 当前主要触发条件 |
-| --- | --- |
-| 400 | 非法 JSON/对象、缺失或错误的 prompt/parameters、multipart 结构不完整 |
-| 401 | 缺少/无效成员 Bearer Key、停用成员；门户会话未登录 |
-| 402 | 本地成员可用额度不足或购买 Anlas 授权/余额条件不满足（依具体核价路径） |
-| 403 | Discord 资格/成员分组权限、访问其他成员结果、同源或 owner 权限失败；F04 停止接单后的新生成 |
-| 404 | 共享模式未开放的路径/方法、任务或结果不存在 |
-| 406 | 普通生成或放大的 Accept 不接受 ZIP/JSON；受理前拒绝 |
-| 409 | 任务未完成、管理状态冲突、分组版本缺失/过期；已取消的等待任务；同成员同操作同幂等键的有效参数冲突；不是成功生成返回值 |
-| 410 | 幂等映射仍在，但原任务、所需子记录或已完成产物已不可领取；不重新生成。direct 沿用 200 错误图片表达 |
-| 413 / 415 / 422 | 请求过大 / 不支持的 Content-Type / 参数、图片、参考或未核价功能不合法 |
-| 429 | 本地限流、成员/全局未完成任务上限或被识别的上游并发容量拒绝；有持久冷却证据时 `Retry-After` 为响应时剩余秒数向上取整，缺少证据或已到期时省略，不再固定写 30 |
-| 500 | 普通上游生成失败、坏产物、内部失败；普通、流式及辅助操作的非429上游HTTP拒绝通常归为网关500，原状态仅作诊断与账户状态依据 |
-| 503 / 504 | 本地共享账户/账本不可用 / 同步等待或队列期限超时；Native/OpenAI 默认等待上限 10 分钟，可由环境配置改变 |
+| 状态            | 当前主要触发条件                                                                                                                                            |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400             | 非法 JSON/对象、缺失或错误的 prompt/parameters、multipart 结构不完整                                                                                        |
+| 401             | 缺少/无效成员 Bearer Key、停用成员；门户会话未登录                                                                                                          |
+| 402             | 本地成员可用额度不足或购买 Anlas 授权/余额条件不满足（依具体核价路径）                                                                                      |
+| 403             | Discord 资格/成员分组权限、访问其他成员结果、同源或 owner 权限失败；F04 停止接单后的新生成                                                                  |
+| 404             | 共享模式未开放的路径/方法、任务或结果不存在                                                                                                                 |
+| 406             | 普通生成或放大的 Accept 不接受 ZIP/JSON；受理前拒绝                                                                                                         |
+| 409             | 任务未完成、管理状态冲突、分组版本缺失/过期；已取消的等待任务；同成员同操作同幂等键的有效参数冲突；不是成功生成返回值                                       |
+| 410             | 幂等映射仍在，但原任务、所需子记录或已完成产物已不可领取；不重新生成。direct 沿用 200 错误图片表达                                                          |
+| 413 / 415 / 422 | 请求过大 / 不支持的 Content-Type / 参数、图片、参考或未核价功能不合法                                                                                       |
+| 429             | 本地限流、成员/全局未完成任务上限或被识别的上游并发容量拒绝；有持久冷却证据时 `Retry-After` 为响应时剩余秒数向上取整，缺少证据或已到期时省略，不再固定写 30 |
+| 500             | 普通上游生成失败、坏产物、内部失败；普通、流式及辅助操作的非429上游HTTP拒绝通常归为网关500，原状态仅作诊断与账户状态依据                                    |
+| 503 / 504       | 本地共享账户/账本不可用 / 同步等待或队列期限超时；Native/OpenAI 默认等待上限 10 分钟，可由环境配置改变                                                      |
 
 上游401/403另使共享账户进入对应异常状态，但它们不代表成员Key失效；上游402也不是本地成员钱包的402。官方放大接口列出的400/401/402/403/504因此不保证原样返回，这是明确保留的共享网关差异，不能称为逐状态透明代理。成员错误不能暴露PST。请求仍受本地单账户并发和钱包预扣约束，不能因为请求字段在官方文档存在就绕过它们。CORS预检允许`idempotency-key`，用于下述可选网关去重；`x-correlation-id`仍是上游诊断字段，没有官方幂等/结果查询保证。
 
@@ -212,16 +212,16 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 
 以下是独立固定期望，迁移测试不能调用被测报价函数来生成这些 expected：
 
-| 单张案例（Opus 本地规则） | 固定期望 |
-| --- | --- |
-| V4.5 Full，1024×1024，28 步，无参考 | free，0 |
-| 同尺寸 29 步 | anlas，21（估价） |
-| V5 Full/Curated，1024×1024，23 步 | v5，约 0.057803468208092484 个百分点，`estimated=true` |
-| 上例明确按本地 Anlas 续用核价 | anlas，26；不能据此证明上游消耗一定是 Anlas |
-| V4/V4.5 预编码 Vibe 五个参考，标准免费生成 | 附加 2 Anlas；前四个参考无此附加费 |
-| V4.5 标准免费生成一个 Precise Reference | 附加 5 Anlas |
-| encode-vibe | 2 Anlas |
-| upscale，输入≤1048576 / ≤1747627 / ≤2446678 / ≤3145728 像素 | 1 / 2 / 3 / 4 Anlas |
+| 单张案例（Opus 本地规则）                                   | 固定期望                                               |
+| ----------------------------------------------------------- | ------------------------------------------------------ |
+| V4.5 Full，1024×1024，28 步，无参考                         | free，0                                                |
+| 同尺寸 29 步                                                | anlas，21（估价）                                      |
+| V5 Full/Curated，1024×1024，23 步                           | v5，约 0.057803468208092484 个百分点，`estimated=true` |
+| 上例明确按本地 Anlas 续用核价                               | anlas，26；不能据此证明上游消耗一定是 Anlas            |
+| V4/V4.5 预编码 Vibe 五个参考，标准免费生成                  | 附加 2 Anlas；前四个参考无此附加费                     |
+| V4.5 标准免费生成一个 Precise Reference                     | 附加 5 Anlas                                           |
+| encode-vibe                                                 | 2 Anlas                                                |
+| upscale，输入≤1048576 / ≤1747627 / ≤2446678 / ≤3145728 像素 | 1 / 2 / 3 / 4 Anlas                                    |
 
 批次每张独立核价，不等于一次上游原生多图请求的价格；例如本地两张标准 V4.5 可各为免费，而保存的官方批量样本不是这个总价。完整核价边界已由 [native-pricing.test.mjs](../../tests/unit/native-pricing.test.mjs) 的独立官网报价样本覆盖。
 
@@ -229,19 +229,19 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 
 ## 其他现有客户端接口
 
-| 类别 | 当前契约 |
-| --- | --- |
-| `GET /v1/models` | `200 JSON` 的 OpenAI 风格目录；包含基础/2K/4K 尺寸档和采样器组合，这是网关模型别名目录，非 NovelAI `/oa/v1/models` 透传 |
-| `POST /v1/chat/completions` | 成员 Bearer Key；聊天文本必须包含「提示词、尺寸、提示词引导值、缩放引导值、画师串、负面提示词」标签，前四个非空，后两个标签必须存在；可用 `nai` 覆盖部分参数，但不免除标签校验；默认固定 28 步，Medium 后续归一为 14 步 |
-| OpenAI 非流式 | `200 application/json`，`object='chat.completion'`，assistant content 为图片 Markdown 链接；`usage=1/1/2` 是占位值，不是真实文本 token 账单 |
-| OpenAI 流式 | `stream===true` 时 `200 text/event-stream`；`chat.completion.chunk` 的 `choices[].delta.content` 输出队列说明和最终 Markdown，随后 stop 与 `[DONE]`；不是图片二进制流。已开始 SSE 后失败写入内容，不能再改 HTTP 状态 |
-| OpenAI 建连前错误 | `{error:{message,type,param:null,code:type}}`；401/403 为 authentication_error、429 为 rate_limit_error、5xx 为 server_error，其余 invalid_request_error |
-| `GET /generate` | 旧查询参数接口；单图、默认可缓存，`nocache=1/true` 禁缓存；成功直接图片，含 `x-cache`。生成错误通常以 `200 image/svg+xml`、`x-error:1` 返回；公网鉴权401/403例外。不要在迁移中误改为 Native ZIP |
-| `POST /api/jobs` | 网页异步接口，JSON 受理返回 `202` 任务快照；共享模式不开放 `/api/web/jobs`。与 Native/OpenAI 的同步等待契约不同 |
-| `GET /api/jobs/:id` | 仅所属成员或管理员读取 `200 JSON`；核心字段包含 id/source/status、模型/步数/队列位置/进度、imageId/imageUrl、error 与时间；当前状态 pending/queued/running/done/failed；pending 等待前序图片，不占派发位置 |
-| `GET /api/jobs/:id/content` | 完成时返回结果原始媒体类型；未完成409；失败返回200 SVG错误图、`x-error:1`；跨成员403 |
-| `GET /api/images/:id/content` | 所属成员、管理员或有效限时签名才能读取；不存在404、无权403。公网签名有效期15分钟且进程重启失效；签名本身是可转交的访问凭据 |
-| `GET /api/jobs/events` | 成员 Key 的 SSE 预览订阅，消息是 `{jobId,progress,preview}`；重连只能取得仍在内存的最新预览，没有完整事件历史 |
+| 类别                          | 当前契约                                                                                                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /v1/models`              | `200 JSON` 的 OpenAI 风格目录；包含基础/2K/4K 尺寸档和采样器组合，这是网关模型别名目录，非 NovelAI `/oa/v1/models` 透传                                                                                                 |
+| `POST /v1/chat/completions`   | 成员 Bearer Key；聊天文本必须包含「提示词、尺寸、提示词引导值、缩放引导值、画师串、负面提示词」标签，前四个非空，后两个标签必须存在；可用 `nai` 覆盖部分参数，但不免除标签校验；默认固定 28 步，Medium 后续归一为 14 步 |
+| OpenAI 非流式                 | `200 application/json`，`object='chat.completion'`，assistant content 为图片 Markdown 链接；`usage=1/1/2` 是占位值，不是真实文本 token 账单                                                                             |
+| OpenAI 流式                   | `stream===true` 时 `200 text/event-stream`；`chat.completion.chunk` 的 `choices[].delta.content` 输出队列说明和最终 Markdown，随后 stop 与 `[DONE]`；不是图片二进制流。已开始 SSE 后失败写入内容，不能再改 HTTP 状态    |
+| OpenAI 建连前错误             | `{error:{message,type,param:null,code:type}}`；401/403 为 authentication_error、429 为 rate_limit_error、5xx 为 server_error，其余 invalid_request_error                                                                |
+| `GET /generate`               | 旧查询参数接口；单图、默认可缓存，`nocache=1/true` 禁缓存；成功直接图片，含 `x-cache`。生成错误通常以 `200 image/svg+xml`、`x-error:1` 返回；公网鉴权401/403例外。不要在迁移中误改为 Native ZIP                         |
+| `POST /api/jobs`              | 网页异步接口，JSON 受理返回 `202` 任务快照；共享模式不开放 `/api/web/jobs`。与 Native/OpenAI 的同步等待契约不同                                                                                                         |
+| `GET /api/jobs/:id`           | 仅所属成员或管理员读取 `200 JSON`；核心字段包含 id/source/status、模型/步数/队列位置/进度、imageId/imageUrl、error 与时间；当前状态 pending/queued/running/done/failed；pending 等待前序图片，不占派发位置              |
+| `GET /api/jobs/:id/content`   | 完成时返回结果原始媒体类型；未完成409；失败返回200 SVG错误图、`x-error:1`；跨成员403                                                                                                                                    |
+| `GET /api/images/:id/content` | 所属成员、管理员或有效限时签名才能读取；不存在404、无权403。公网签名有效期15分钟且进程重启失效；签名本身是可转交的访问凭据                                                                                              |
+| `GET /api/jobs/events`        | 成员 Key 的 SSE 预览订阅，消息是 `{jobId,progress,preview}`；重连只能取得仍在内存的最新预览，没有完整事件历史                                                                                                           |
 
 OpenAI 非流式/SSE 与 direct 的 HTTP 等待期限只控制连接：direct 默认 60 秒，OpenAI 默认 10 分钟；超时分别沿用错误图片、504 JSON、含超时文字与 `[DONE]` 的 SSE。断线、等待超时或返回图片失败不取消、退款或重建已受理任务。有效的旧 inline 与新父请求 queued 任务在重启后继续；旧 running 仍按未知结果规则处理，不自动重发。新任务的排队期限与执行超时独立于 HTTP 等待期限，已完成结果可从成员任务记录领取。
 
@@ -289,14 +289,14 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 
 ## N03 后的 C03 差异与待核实清单
 
-| 编号 | 当前差异/不确定项 | 后续验收要求 |
-| --- | --- | --- |
-| C03-01 | ZIP/JSON协商和Vibe201/binary已实现；普通生成状态由后续C03-04实测修正为200 | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费 |
-| C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归 | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除 |
-| C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP及[最新联合CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过。非零blur与seed仅模拟验证，双提示词冲突不猜优先级 |
+| 编号   | 当前差异/不确定项                                                                                                    | 后续验收要求                                                                                                                                                                                             |
+| ------ | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C03-01 | ZIP/JSON协商和Vibe201/binary已实现；普通生成状态由后续C03-04实测修正为200                                            | 客户端版本证据、回归和新契约见上节；部分成功仍为网关扩展，不冒充官方原生批次计费                                                                                                                         |
+| C03-02 | 已依据真实响应实现默认SSE、显式MessagePack与stream优先；实时预览、部分失败、断线及冷历史跨格式领取通过本机回归       | [联合Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015523238)已通过；公开代理与客户端部署验收归D01。不伪造上游诊断字段和retry，不把全部逐事件差异称为已消除               |
+| C03-03 | WebP、严格同值冗余prompt、独立blur六档和Vibe两seed已接入；custom路由url、Vibe mask/crop、启用内联放大已评估并保留422 | 参数、收费及拒绝依据见各切片；Vibe实际HTTP及[最新联合CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39015943110)已通过。非零blur与seed仅模拟验证，双提示词冲突不猜优先级           |
 | C03-04 | HTTP错误已补message/statusCode并保留error；普通JSON/ZIP依据实测统一200；映射与批次扩展已审阅，生成错误公开边界已修复 | 保留共享上游身份、独立结算与部分交付语义；所有本轮切片已通过[最终Linux CI](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/39018561882)，错误文本HTTP17/17，不宣称逐状态/逐字节透明代理 |
-| C03-05 | 已依据官方规则拒绝DDIM＋SMEA，核对并保留Precise负值/secondary大于1；其他采样器组合不凭UI缺席直接收窄 | 定向组合、有限数、原值及报价回归见上节；当前接受名单与Precise界限明确为网关范围，未声称全组合上游验证 |
-| C03-06 | 已完成边界核对：Vibe内部格式未公开，当前官方契约没有可依赖的幂等生成/结果重取接口 | 保留opaque产物和本地恢复证据；作为明确限制结案，不宣称任意断电后精确一次上游消费或凭correlation-id找回 |
+| C03-05 | 已依据官方规则拒绝DDIM＋SMEA，核对并保留Precise负值/secondary大于1；其他采样器组合不凭UI缺席直接收窄                 | 定向组合、有限数、原值及报价回归见上节；当前接受名单与Precise界限明确为网关范围，未声称全组合上游验证                                                                                                    |
+| C03-06 | 已完成边界核对：Vibe内部格式未公开，当前官方契约没有可依赖的幂等生成/结果重取接口                                    | 保留opaque产物和本地恢复证据；作为明确限制结案，不宣称任意断电后精确一次上游消费或凭correlation-id找回                                                                                                   |
 
 C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准的安全、账务和生命周期修复按各自计划推进，不必等待 C03；相应行为变更需要独立提交和回归，文档记录改变后的事实。
 
@@ -304,15 +304,15 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 
 新增 [api-contract.test.mjs](../../tests/unit/api-contract.test.mjs) 使用固定客户端输入和独立常量，检查公开路由范围、归一化后的关键参数、明确拒绝及本地核价；不会启动服务、访问真实NAI或读取生产数据库。已有测试补齐外层和边界：
 
-| 证据 | 覆盖 |
-| --- | --- |
-| [native-http.test.mjs](../../tests/integration/native-http.test.mjs) | 隔离网关+模拟上游的真实HTTP，身份/所有权、订阅映射、MessagePack/ZIP、部分失败退款、并发与重启；含200 HTML不能成功结算；OpenAI模型目录、鉴权错误、非流式Markdown结果领取，以及SSE chunk/stop/[DONE]与图片领取 |
-| [provider-features.test.mjs](../../tests/unit/provider-features.test.mjs) | 请求转发、双Vibe二进制类型、上游错误、坏产物、限流读取、ZIP/MessagePack/SOCKS完整性 |
-| [native-body.test.mjs](../../tests/unit/native-body.test.mjs)、[native-image.test.mjs](../../tests/unit/native-image.test.mjs)、[native-client-regression.test.mjs](../../tests/unit/native-client-regression.test.mjs) | multipart、参数/图片拒绝边界、客户端模板与多角色布局 |
-| [native-pricing.test.mjs](../../tests/unit/native-pricing.test.mjs) | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接 |
-| [native-stream.test.mjs](../../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../../tests/integration/native-adapter.test.mjs) | 独立解码与实际 `createNativeHttp`、`native-image`、`native-stream` 模块回归；R11 已移除后端源码截取测试，运行时使用同一协议装配。真实 Nuxt/执行器和当前固定候选证据见[重构计划](../plans/architecture-refactor-plan.md#10-可执行工作包与依赖) |
-| [shared-surface.test.mjs](../../tests/unit/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../../tests/unit/launcher-subscription.test.mjs)、[member-routes.test.mjs](../../tests/integration/member-routes.test.mjs)、[owner-management.test.mjs](../../tests/integration/owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码 |
-| [executor-lifecycle.test.mjs](../../web/tests/integration/executor-lifecycle.test.mjs) | 正式 Nuxt 与 Nitro 产物：Native 别名同键重放、32 MiB multipart 附件、Vibe 原始字节、OpenAI 首帧与预览、超过45秒仍完成、direct 原超时图片、任务权限与签名图、只杀 Nuxt 后执行器继续完成；不再注入测试专用 API 路由 |
-| [executor-stream.test.ts](../../web/tests/nuxt/executor-stream.test.ts)、[caddy-routing.test.mjs](../../tests/deployment/caddy-routing.test.mjs) | Node 流背压、提前拒绝与关停；固定 Caddy 产物验证统一 Nuxt 入口、公私管理隔离、API 不压缩和 SSE 首帧转发。Caddy 用模拟 Nuxt，不代替上行真实业务测试 |
+| 证据                                                                                                                                                                                                                                                                                                             | 覆盖                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [native-http.test.mjs](../../tests/integration/native-http.test.mjs)                                                                                                                                                                                                                                             | 隔离网关+模拟上游的真实HTTP，身份/所有权、订阅映射、MessagePack/ZIP、部分失败退款、并发与重启；含200 HTML不能成功结算；OpenAI模型目录、鉴权错误、非流式Markdown结果领取，以及SSE chunk/stop/[DONE]与图片领取                                  |
+| [provider-features.test.mjs](../../tests/unit/provider-features.test.mjs)                                                                                                                                                                                                                                        | 请求转发、双Vibe二进制类型、上游错误、坏产物、限流读取、ZIP/MessagePack/SOCKS完整性                                                                                                                                                           |
+| [native-body.test.mjs](../../tests/unit/native-body.test.mjs)、[native-image.test.mjs](../../tests/unit/native-image.test.mjs)、[native-client-regression.test.mjs](../../tests/unit/native-client-regression.test.mjs)                                                                                          | multipart、参数/图片拒绝边界、客户端模板与多角色布局                                                                                                                                                                                          |
+| [native-pricing.test.mjs](../../tests/unit/native-pricing.test.mjs)                                                                                                                                                                                                                                              | 保存的独立官网报价样本、免费/付费边界、参考附加费、批次区别与账本衔接                                                                                                                                                                         |
+| [native-stream.test.mjs](../../tests/unit/native-stream.test.mjs)、[native-adapter.test.mjs](../../tests/integration/native-adapter.test.mjs)                                                                                                                                                                    | 独立解码与实际 `createNativeHttp`、`native-image`、`native-stream` 模块回归；R11 已移除后端源码截取测试，运行时使用同一协议装配。真实 Nuxt/执行器和当前固定候选证据见[重构计划](../plans/architecture-refactor-plan.md#10-可执行工作包与依赖) |
+| [shared-surface.test.mjs](../../tests/unit/shared-surface.test.mjs)、[launcher-subscription.test.mjs](../../tests/unit/launcher-subscription.test.mjs)、[member-routes.test.mjs](../../tests/integration/member-routes.test.mjs)、[owner-management.test.mjs](../../tests/integration/owner-management.test.mjs) | 路由权限范围、本地订阅映射、门户与管理状态码                                                                                                                                                                                                  |
+| [executor-lifecycle.test.mjs](../../web/tests/integration/executor-lifecycle.test.mjs)                                                                                                                                                                                                                           | 正式 Nuxt 与 Nitro 产物：Native 别名同键重放、32 MiB multipart 附件、Vibe 原始字节、OpenAI 首帧与预览、超过45秒仍完成、direct 原超时图片、任务权限与签名图、只杀 Nuxt 后执行器继续完成；不再注入测试专用 API 路由                             |
+| [executor-stream.test.ts](../../web/tests/nuxt/executor-stream.test.ts)、[caddy-routing.test.mjs](../../tests/deployment/caddy-routing.test.mjs)                                                                                                                                                                 | Node 流背压、提前拒绝与关停；固定 Caddy 产物验证统一 Nuxt 入口、公私管理隔离、API 不压缩和 SSE 首帧转发。Caddy 用模拟 Nuxt，不代替上行真实业务测试                                                                                            |
 
 这些是当前基线的证据组合，不是“全部官方API契约通过”。OpenAI关键成功/流式路径已在本地隔离HTTP环境覆盖；公网代理的SSE缓冲/断连行为、真实上游非零blur/新模型组合和浏览器兼容性仍需相应迁移/测试部署阶段验收。不能以纯模块测试替代真实HTTP或浏览器证据。

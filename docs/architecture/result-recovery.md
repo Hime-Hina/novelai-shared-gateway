@@ -20,17 +20,21 @@ Opening 保存导入时确实存在的成员/分组、账户与额度、运营�
 
 事件文件单独存在不足以恢复服务。应从同一一致性 SQLite backup 保留完整数据库，并同时保留其匹配的产物与受保护配置：
 
-| 类别 | 必须保留的事实/内容 |
-| --- | --- |
-| 事件与版本 | `domain_events`、`event_commits`、opening/historyId、权威/迁移元数据；投影和游标可校验重建 |
-| 原输入 | `generation_requests`、`generation_contexts` 中的完整参数、首次规范化上下文和确认；事件只存引用/摘要 |
+| 类别         | 必须保留的事实/内容                                                                                        |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
+| 事件与版本   | `domain_events`、`event_commits`、opening/historyId、权威/迁移元数据；投影和游标可校验重建                 |
+| 原输入       | `generation_requests`、`generation_contexts` 中的完整参数、首次规范化上下文和确认；事件只存引用/摘要       |
 | 旧产物与诊断 | `artifact_inputs` 中已有的 inline 字节/提示词，`generation_diagnostics` 中的私有错误详情；各自保留摘要校验 |
-| 认证与部署 | 成员认证、PST、会话、相关配置/签名密钥，以及必要 R2 访问配置，均作为受保护数据保存，不混入公开事件 |
-| 产物字节 | 本地 images 和仍需恢复的完整 `.part`，或可核验的 R2 对象及其 bucket/key/长度/SHA-256 清单 |
+| 认证与部署   | 成员认证、PST、会话、相关配置/签名密钥，以及必要 R2 访问配置，均作为受保护数据保存，不混入公开事件         |
+| 产物字节     | 本地 images 和仍需恢复的完整 `.part`，或可核验的 R2 对象及其 bucket/key/长度/SHA-256 清单                  |
 
 在线备份必须通过 SQLite backup 纳入已提交 WAL；不能只复制正在写入的主文件。现有 `backup-production.py` 的日常业务快照明确标记 `imagesIncluded:false`，不能据此声称图片字节也在该包内。恢复还要核对独立保留的本地文件/R2 对象与清单，缺失字节不能由事件重新生成。部署配置、密码、输入和诊断均属于私有备份。
 
 仓库入口为 `scripts/replay-events.mjs`；发布包入口为 `executor/.output/server/node_modules/novelai-shared-gateway/scripts/replay-events.mjs`。使用同包固定 Node，源为只读一致性备份，目标为新的隔离数据库；续跑只使用同一 historyId 的既有目标：
+
+v1/v2 备份必须先复制到隔离目录，用当前包的 `JsonStore.init()` 完成存储版本升级并关闭，再以该升级副本作为只读重放源；不要启动网关、联网派发或改写原始备份。升级会在同一事务中，把旧查询行中确实存在但旧事件未保存的上游时间/HTTP 状态追加为 `ResponseEvidenceRecorded`，保留 `legacy-query-projection` 来源及来源行摘要；旧事件不重写，缺失字段保持未知，不用派发授权时间或升级时间补造。升级失败回滚，成功后要求当前 writer/reducer。重放入口在创建或写入目标之前拒绝旧版源并提示此步骤，避免把仍可恢复的查询证据静默丢弃；已升级源中的旧事件仍可正常重放。
+
+当前 writer 的 `ArtifactPrepared`、`JobFailed`、`JobCompleted` 和 `LateResultRecovered` 写入类型要求显式提供 `response`。生命周期命令继续用同一证据 helper 表达未知时间或未发送，历史事件读取允许缺字段，版本无需变更。
 
 ```sh
 node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite --max-commits=100
@@ -110,10 +114,10 @@ Windows 无此实现可用的可移植目录 fsync，明确跳过该步骤；Win
 本地合成微基准每模式三轮，各预热 10 次、采样 200 次；一次事务更新账户、
 成员、任务、账本及小型设置。表中为三轮分位值的中位数，单位 ms：
 
-| 环境 | NORMAL P50 / P95 | FULL P50 / P95 |
-| --- | ---: | ---: |
-| Windows Node 22.22.2，本机磁盘 | 0.192 / 0.735 | 0.947 / 1.711 |
-| Linux Node 22.23.3，Docker 挂载 Windows 磁盘，2 CPU | 11.091 / 14.640 | 12.816 / 17.633 |
+| 环境                                                | NORMAL P50 / P95 |  FULL P50 / P95 |
+| --------------------------------------------------- | ---------------: | --------------: |
+| Windows Node 22.22.2，本机磁盘                      |    0.192 / 0.735 |   0.947 / 1.711 |
+| Linux Node 22.23.3，Docker 挂载 Windows 磁盘，2 CPU |  11.091 / 14.640 | 12.816 / 17.633 |
 
 20 次 1 MiB 合成二进制发布，Windows P50/P95 为 3.536/5.156 ms，Linux
 为 29.433/34.706 ms；前者不含目录同步，后者包含。没有用 tmpfs 作为这个

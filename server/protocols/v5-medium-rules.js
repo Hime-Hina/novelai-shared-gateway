@@ -7,4 +7,5 @@ export const V5_MEDIUM_ANLAS_STEP_FACTOR = 1 / 1.06521739;
 // 官方公告称默认规格约省 42% 用量；用于本地百分点估算，不是逐张官方账单。
 export const V5_MEDIUM_USAGE_FACTOR = 0.58;
 /** @param {unknown} model */
-export const isV5MediumModel = model => model === V5_MEDIUM_MODEL || model === V5_MEDIUM_INPAINT_MODEL;
+export const isV5MediumModel = (model) =>
+  model === V5_MEDIUM_MODEL || model === V5_MEDIUM_INPAINT_MODEL;

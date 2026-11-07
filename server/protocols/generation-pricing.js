@@ -1,17 +1,21 @@
 // @ts-check
-import { isV5MediumModel, V5_MEDIUM_STEPS, V5_MEDIUM_ANLAS_STEP_FACTOR } from './v5-medium-rules.js';
+import {
+  isV5MediumModel,
+  V5_MEDIUM_STEPS,
+  V5_MEDIUM_ANLAS_STEP_FACTOR,
+} from './v5-medium-rules.js';
 
 /** @type {Record<string, { width: number, height: number }>} */
 export const sizeMap = {
-  '竖图': { width: 832, height: 1216 },
-  '横图': { width: 1216, height: 832 },
-  '方图': { width: 1024, height: 1024 },
+  竖图: { width: 832, height: 1216 },
+  横图: { width: 1216, height: 832 },
+  方图: { width: 1024, height: 1024 },
   '2K竖图': { width: 1088, height: 1600 },
   '2K横图': { width: 1600, height: 1088 },
   '2K方图': { width: 1344, height: 1344 },
   '4K竖图': { width: 1344, height: 1984 },
   '4K横图': { width: 1984, height: 1344 },
-  '4K方图': { width: 1728, height: 1728 }
+  '4K方图': { width: 1728, height: 1728 },
 };
 
 // Shared site pricing: standard <=28-step images keep 1/8 credits.
@@ -22,10 +26,19 @@ export function generationPrice({ size = '竖图', width, height, model, steps =
   const dimensions = sizeMap[size] || sizeMap['竖图'];
   const pixels = Number(width ?? dimensions.width) * Number(height ?? dimensions.height);
   const medium = isV5MediumModel(model);
-  if (medium) steps = V5_MEDIUM_STEPS;
-  const v5 = medium || ['nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(/** @type {string} */ (model));
-  if (steps <= 28 && pixels <= 1024 * 1024) return v5 ? 8 : 1;
-  const base = Math.ceil(2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * steps * (medium ? V5_MEDIUM_ANLAS_STEP_FACTOR : 1));
+  if (medium) {
+    steps = V5_MEDIUM_STEPS;
+  }
+  const v5 =
+    medium ||
+    ['nai-diffusion-5-full', 'nai-diffusion-5-curated'].includes(/** @type {string} */ (model));
+  if (steps <= 28 && pixels <= 1024 * 1024) {
+    return v5 ? 8 : 1;
+  }
+  const base = Math.ceil(
+    2.951823174884865e-6 * pixels +
+      5.753298233447344e-7 * pixels * steps * (medium ? V5_MEDIUM_ANLAS_STEP_FACTOR : 1),
+  );
   // 与官网一致：先取整，再乘 V5 系数，最后再次取整。
   return Math.max(2, Math.ceil(base * (v5 ? 1.5 : 1)));
 }
