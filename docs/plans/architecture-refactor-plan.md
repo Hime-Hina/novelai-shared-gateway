@@ -665,6 +665,10 @@ node --test --test-reporter=spec @checks
 
 HTTP 状态与业务原因分别表达：Native/OpenAI/成员生成继续使用各自既有不可用错误包络及 503；direct 保留原有 200 错误图片契约，已经开始的流不改写响应头。公开文案明确区分“额度同步失败”“账号或订阅不可用”“额度过期”“额度不完整”等原因，未知原因仍用固定通用提示；不直接回显内部状态串、上游正文、地址或堆栈。Nuxt 的个人额度与共享状态展示使用同一含义，订阅栏标明“上次核验”。
 
+在 [NovelAI 协议适配器](../../server/protocols/novelai-client.ts)，三个余额及可选恢复间隔经 `quotaNumber()` 保留有限数值或未知值，沿用字段别名和空值回退顺序。布尔、数组、空白及溢出保持未知，有效零仍是完整余额。可选恢复间隔未知不阻断完整余额。已提交的观察按原值重放。
+
+[额度刷新协调器](../../server/quota/account-refresh.ts) 按稳定账户 ID 和实际查询凭据的进程内身份，在发起网络请求时分配票号。提交时同时检查当前凭据与该身份最新票号，成功、失败和超时沿同一入口。凭据更换期间的旧查询不能淘汰新凭据观察。换回相同 PST 仍属于原身份，顺序承诺限于单执行器进程。
+
 ### 15.3 已确认问题与最小实施归属
 
 本次核对对象仍为 `0d12c3eff6060b5f69b65a3619b6c9d316a3d154` 后的未提交重构工作区；非 Markdown 摘要为 `a897a8077609d5e128db9f33bb2085f75e0e3c93072de84814a524e9fe6fd0da`。6 个纯内存合成场景确认下列不一致，未访问生产或真实 NAI：
@@ -716,7 +720,7 @@ R18 以 R16/R17 的当前布局为基础。**关闭 R18 前，必须同时验收
 
 ## 16. Issue #14 后续实现与验收（2026-11-07）
 
-本轮读取 [#14](https://github.com/Hime-Hina/novelai-shared-gateway/issues/14) 和 #2–#13，以 `7c55c6d` 为审查基线。功能与架构守卫提交为 `33ae0b1`；纯格式提交为 `ade471f`、`db839a8`、`f87f1f8`、`254f84d`、`f1884b7`，Vue 脚本门禁配置修正为 `993c984`；控制流和关键注释单独提交 `571f448`。最终运行时代码及测试候选为 `6d64fa184e9199a4bc209ae1d735a95d17115669`，包含 `141e692` 的当前 writer 断言和 `6d64fa1` 的确定性 Native 测试前提。后续文档提交不改变该运行时身份；未合并 `main` 或部署生产。
+本轮读取 [#14](https://github.com/Hime-Hina/novelai-shared-gateway/issues/14) 和 #2–#13，以 `7c55c6d` 为审查基线。功能与架构守卫提交为 `33ae0b1`；纯格式提交为 `ade471f`、`db839a8`、`f87f1f8`、`254f84d`、`f1884b7`，Vue 脚本门禁配置修正为 `993c984`；控制流和关键注释单独提交 `571f448`。首轮运行时代码及测试候选为 `6d64fa184e9199a4bc209ae1d735a95d17115669`，包含 `141e692` 的当前 writer 断言和 `6d64fa1` 的确定性 Native 测试前提。16.1 和 16.2 记录首轮候选，PR #16 复审后的提交见 16.5。
 
 ### 16.1 已实现规则与兼容决策
 
@@ -760,10 +764,23 @@ R18 以 R16/R17 的当前布局为基础。**关闭 R18 前，必须同时验收
 
 在独立临时分支的 [PR #15](https://github.com/Hime-Hina/novelai-shared-gateway/pull/15) 设置严格必需检查和 `enforce_admins=true`。真实 Actions 的 `required-failure-proof` 故意失败，PR 的 `mergeable_state=blocked`；使用具备 admin 权限的当前账号尝试合并，GitHub 返回 HTTP 405，明确原因是该必需检查失败。base SHA 保持原值，PR 已关闭且未合并，临时分支与保护已清理。[原始报告](../history/issue14-validation/required-check-trial.json)保存检查链接、SHA、拒绝与清理结果。
 
-本次隔离演练不等于真实 `main` 或重构分支已受保护。拟采用 `offline-validation`、`caddy-routing`、`node24-reader`，真实分支的适用范围已提交维护者选择；未获答复时保留既有配置。维护者 Hime-Hina 控制规则和仓库管理权，当前 agent 使用同一身份也能修改/移除规则；这些门禁可以防止正常流程误合并，不能宣称约束全仓/管理权限的 agent。改变守卫、基线、关键断言或 CI 仍须有设计依据和维护者复核，候选未因本地通过自动合并或发布。
+维护者随后选择仅保护 `main`。GitHub 已回读确认 `offline-validation` 和 `caddy-routing` 为 GitHub Actions 的严格必需检查，管理员同样受限，禁止强推和删除，人工审批要求为零。`node24-reader` 待 workflow 合入 `main` 后补入。PR #16 的目标重构分支仍由维护者复核后合并，GitHub 不在该目标强制上述检查。维护者 Hime-Hina 控制仓库规则，使用同一管理身份的 agent 也能改规则。改变守卫、基线、关键断言或 CI 仍须有设计依据和维护者复核。
 
 ### 16.4 最终备份测量及不支持的规模
 
 候选 `6d64fa1` 的独立 Linux 容器按正式 Python 快照、tar.gz、AES-GCM、R2Storage 上传/回读、下载解密、manifest、事件重放及产物字节读取完成一轮。输入含约 1 MiB 随机 PNG、mask、编码参考和 inline 结果，保留两个完整 normalization contexts、回执和幂等记录；SQLite 11,653,120 B → gzip 8,527,752 B → 加密 8,527,788 B。下载解密、解包校验及重放/重开分别约 0.348 / 3.896 / 4.454 秒；process RSS 和 cgroup 峰值、100ms 临时文件采样及逐表哈希见[最终原始报告](../history/issue14-validation/backup-capacity-6d64fa1.json)。源库/恢复副本的表哈希相同；离线重建的事实、回执、输入及关键语义相同，查询行的瞬时展示字段及 order_value 依既有重建规则不声称字节相同。此有界样本 ledger 为空，不据此单独证明所有金融历史的性能。
 
-前期同一有界样本的[原始测量](../history/issue14-validation/backup-capacity-initial.json)及[源码摘要](../history/issue14-validation/backup-initial-source-hashes.json)保留原标签，不重写成最终 SHA。[已有年度样本](../history/issue14-validation/annual-compression.json)只读压缩为 426,748,997 B，已超过当前 50 MiB/64 MiB，因此没有执行年度完整加密上传与恢复。年度容量/输入保留方案须另行决定；本轮不删除受保护历史、不提高单个常量、不重造年度数据。所有时间、RSS 和临时空间只是单次观测，不是恢复 SLA 或生产吞吐承诺。
+前期同一有界样本的[原始测量](../history/issue14-validation/backup-capacity-initial.json)及[源码摘要](../history/issue14-validation/backup-initial-source-hashes.json)保留原标签。[已有年度样本](../history/issue14-validation/annual-compression.json)只读压缩为 426,748,997 B，已超过该候选的 50 MiB/64 MiB 上限，因此没有执行年度完整加密上传与恢复。所有时间、RSS 和临时空间均为单次观测。
+
+#11 留到主分支集成验收。届时复用 [main 的流式备份方案](https://github.com/Hime-Hina/novelai-shared-gateway/commit/42259a56d6b581a317ca944367db1d66e7d17daf)，用现有样本核对实际对象写入、回读、解密、轮换及事件恢复链路。当前 PR 的候选保留上述旧容量边界。
+
+### 16.5 PR #16 复审后的修复与验证
+
+[独立复审](https://github.com/Hime-Hina/novelai-shared-gateway/pull/16#pullrequestreview-5809690397)以 `0c11b6b` 为基线。以下反例先在旧实现失败，再用同一用例验证修复。
+
+- #3/F1，`f3c1c3d`。上游协议复用 `quotaNumber()` 并删除宽松转换。220 组本地 HTTP 解析组合覆盖四个数值入口和 11 个字段位置。三个真实 HTTP/SQLite 反例在旧实现分别返回 402、429、429，修复后均为 503 和 `unknown_balance`。钱包、在途预留和旧对账基准保留。重开与离线重放核对原回执及额度观察 payload 字节。[协议测试](../../tests/integration/mock-novelai.test.mjs)与[准入和重放测试](../../tests/integration/shared-cooldown-http.test.mjs)。
+- #2/F2，`f9b14c8`。全量查询占满五个并发槽，释放一槽后旧凭据才发起。新凭据的成功和 401 在旧实现都被计为 ignored。修复后新结果各提交一条观察，旧结果均忽略。恢复按账户发票或删掉最新票号校验都会使回归失败。[顺序、回滚和重放测试](../../tests/integration/quota-refresh-ordering.test.mjs)。
+- #5/F3，`88b6fb8`。启用必须提供准备结果，当前账户与订阅检查移入共同 mutator。旧实现的同键迟到请求收到 409。修复后领取原 200，后续暂停保留，独立的 401 观察仍落盘，失效会话仍拒绝。[真实会话/账户命令测试](../../tests/integration/member-session-http.test.mjs)。
+- #6/#7，`d172797`。四类新生命周期写入必须携带 `response`，允许显式未知证据。正负类型用例补齐原约束，旧事件重放仍允许缺字段。owner 用量前端声明接受实际返回的 `null`，金额事实仍由定点账本维护。[写入类型用例](../../tests/unit/domain-event-types.test.mjs)与[历史响应回放](../../tests/integration/response-evidence.test.mjs)。
+
+核对的管理写入口包括 `member-management` 白名单中的成员状态与接单、分组、转移与删除、免费/告警/续用策略，以及运营划入、注资、覆盖、退回、核销五类。它们按 actor、action 和键领取回执，沿已有 mutator 提交。共享账户 PATCH 按 actor、方法、路径与键处理换 PST、暂停、启用，仅启用有事务外核验。共享账户额度 POST 使用同一键规则和刷新事务。当前授权及作用域限制继续检查，秘密/认证输出与只读入口沿[管理契约](../architecture/nuxt-management-portal.md)。
