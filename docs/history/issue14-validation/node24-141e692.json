@@ -1,0 +1,68 @@
+{
+  "copiedHead": "141e69262dd5e39284106722622d603c90ceb3bb",
+  "observedRootHeadAtReport": "141e69262dd5e39284106722622d603c90ceb3bb",
+  "platform": "win32-x64",
+  "os": "Windows-11-10.0.28020-SP0",
+  "nodeVersion": "v24.22.1",
+  "nodeAbi": 137,
+  "pnpmVersion": "10.32.1",
+  "betterSqlite3": "12.10.0",
+  "sqliteVersion": "3.53.1",
+  "isolation": "Refreshed source/test whitelist inside existing isolated temp workspace; preserved initial report/logs/manifests; reused isolated ABI137 dependencies without reinstall or rebuild; root Node22 dependencies untouched.",
+  "checks": {
+    "sourceTsReaderTests": {
+      "passed": 12,
+      "failed": 0,
+      "parentFlags": [
+        "--v8-pool-size=2",
+        "--test-concurrency=1"
+      ],
+      "embeddedRegressionFlags": [
+        "--v8-pool-size=2",
+        "--input-type=module"
+      ],
+      "log": "node24-final-source-reader.tap",
+      "durationMs": 4698.8614
+    },
+    "build": {
+      "passed": true,
+      "log": "node24-final-build.log"
+    },
+    "compiledPackagedSmoke": {
+      "passed": true,
+      "flags": [
+        "--v8-pool-size=2",
+        "--input-type=module"
+      ],
+      "log": "node24-final-compiled-smoke.log",
+      "migrationAssets": "Copied final server/migrations to .output/backend/server/migrations as Dockerfile packages them."
+    },
+    "compiledJsReaderTests": {
+      "passed": 12,
+      "failed": 0,
+      "parentFlags": [
+        "--v8-pool-size=2",
+        "--test-concurrency=1"
+      ],
+      "testAdaptation": "Copied integration/helper test imports and URL .ts suffixes replaced with .js only.",
+      "log": "node24-final-compiled-reader.tap",
+      "durationMs": 3974.7547
+    }
+  },
+  "hashes": {
+    "server/storage/sqlite-store.ts": "c994443f88f5934d2a11a8ce3c1b1a4ff655765e2dfdba5326ecd8865c125991",
+    "server/storage/sqlite-read-worker.ts": "f6a9ce2cc1b9e0f84cfe3efb98c86bdf1cdd872951e025bd239a9c4d32f5c9f1",
+    "tests/integration/activity-storage.test.mjs": "9c4e4fec33a6d486f4e3c9aa4b05994dd7d66ef4b83b35d71bcb602f62c9518b",
+    "tests/integration/activity-heatmap-http.test.mjs": "d4cf3b2cb9b993f47b8d74e08f850114de9120fc5eb7c7685136d5a355a6b271",
+    ".output/backend/server/storage/sqlite-store.js": "ed61d151a4e50c640e1cb8bcac98d1d552f518476ad44733a1fdc3eddee12a21",
+    ".output/backend/server/storage/sqlite-read-worker.js": "b50f264743d9e50b30505dc66532c586f509b90c018ff7083a4e9cab1b597262",
+    "node_modules/.pnpm/better-sqlite3@12.10.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node": "c045b58a00aeb5939d77d1901df4be384dff49ec452de93fdb02efe8d25fa9f5"
+  },
+  "rootRuntimeFileMatch": {
+    "server/storage/sqlite-store.ts": true,
+    "server/storage/sqlite-read-worker.ts": true,
+    "tests/integration/activity-storage.test.mjs": true,
+    "tests/integration/activity-heatmap-http.test.mjs": true
+  },
+  "backupPipelineEvidence": "Previous real bounded Linux backup run and annual compression reports retained unchanged; raw successful run labels source as 7c55c6dad7ec59b04550ee9e2f1a0db6047db791+working-tree. This final Node24 check does not rerun or relabel those prior measurements."
+}

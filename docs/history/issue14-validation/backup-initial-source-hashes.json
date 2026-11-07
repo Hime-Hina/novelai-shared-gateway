@@ -1,0 +1,42 @@
+[
+  {
+    "path": "scripts/r2-backup.mjs",
+    "sha256": "b9cbca27e447e3a64185ed4ae98240c167e6f2cf1c27323e26c9e739282f9df3"
+  },
+  {
+    "path": "scripts/backup-production.py",
+    "sha256": "6479b2632f18612027e4125d7c371934a1bf26cae39683451c05870fcfcee109"
+  },
+  {
+    "path": "tests/helpers/r2-backup-fixture.mjs",
+    "sha256": "664332e2a2bdd23aaa7bc6875d53f02e30f44cdb99e32f5ee8de6da079d73a78"
+  },
+  {
+    "path": "tests/unit/r2-backup.test.mjs",
+    "sha256": "abe9f8a575c80e036ead3f910744572e97aa48bb55d0d39b4b438d0e3e12d159"
+  },
+  {
+    "path": "tests/integration/r2-backup-capacity.test.mjs",
+    "sha256": "f42bc0a4980c110fc7adf17a20800a386ff82c2dc5053b2900300a7fab023e00"
+  },
+  {
+    "path": "server/storage/sqlite-store.ts",
+    "sha256": "87b70f41b104efdd17fead36988739ed1665aab00d176c3fe16976885a4e1df0"
+  },
+  {
+    "path": "server/storage/sqlite-migrations.ts",
+    "sha256": "5f8cb3a09d3e61ca271389708d90227a698c706e2da9281cba0d708b103d753a"
+  },
+  {
+    "path": "server/events/event-store.ts",
+    "sha256": "48d23e4616df516ad260a55ac1fc2029e3e259febf4559c366d6346018f4f9cb"
+  },
+  {
+    "path": "server/events/domain-events.ts",
+    "sha256": "bf0c7ce18bc009bcc3e2fb91a1908ba211067ac77f723e5e1757cb5af703d0de"
+  },
+  {
+    "path": "server/generation/member-contract.ts",
+    "sha256": "9b55d14e3ebbdc74008a4198d07008507c2c37c899d98d61ef805ac408c0b012"
+  }
+]

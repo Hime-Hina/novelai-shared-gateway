@@ -1,0 +1,44 @@
+[
+  {
+    "label": "baseline",
+    "round": 1,
+    "outsideFinalP50Ms": 3.997078999999985,
+    "outsideFinalP95Ms": 5.426434999999856,
+    "outsideFinalMeanMs": 3.756768520000013
+  },
+  {
+    "label": "baseline",
+    "round": 2,
+    "outsideFinalP50Ms": 3.8396130000000994,
+    "outsideFinalP95Ms": 5.823423000000048,
+    "outsideFinalMeanMs": 3.7077917800000044
+  },
+  {
+    "label": "baseline",
+    "round": 3,
+    "outsideFinalP50Ms": 3.755018000000291,
+    "outsideFinalP95Ms": 5.640699999999924,
+    "outsideFinalMeanMs": 3.597433690000025
+  },
+  {
+    "label": "candidate",
+    "round": 3,
+    "outsideFinalP50Ms": 6.9140550000001895,
+    "outsideFinalP95Ms": 9.423601999999846,
+    "outsideFinalMeanMs": 6.38322456999997
+  },
+  {
+    "label": "candidate",
+    "round": 1,
+    "outsideFinalP50Ms": 7.028769999999895,
+    "outsideFinalP95Ms": 11.306203000000096,
+    "outsideFinalMeanMs": 7.048684600000009
+  },
+  {
+    "label": "candidate",
+    "round": 2,
+    "outsideFinalP50Ms": 7.326787000000422,
+    "outsideFinalP95Ms": 11.33253700000023,
+    "outsideFinalMeanMs": 7.016041510000029
+  }
+]

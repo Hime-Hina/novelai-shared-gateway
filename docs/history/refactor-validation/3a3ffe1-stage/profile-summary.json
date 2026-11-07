@@ -1,0 +1,1385 @@
+{
+  "kind": "instrumented-diagnosis-not-acceptance",
+  "cases": [
+    {
+      "name": "baseline-1000",
+      "history": 1000,
+      "label": "baseline",
+      "elapsedMs": 990.5117640000001,
+      "cpuMs": 949.904,
+      "prepareMs": 12.58400800000004,
+      "nativeMs": 266.9009209999959,
+      "commitMs": 222.21622499999944,
+      "jsonParse": {
+        "outside-update": {
+          "count": 1309,
+          "ms": 3.131142000001091
+        },
+        "admission": {
+          "count": 726,
+          "ms": 2.4726780000003146
+        },
+        "other-update": {
+          "count": 1324,
+          "ms": 5.22314600000152
+        },
+        "settlement-adapter": {
+          "count": 540,
+          "ms": 3.0925199999973074
+        },
+        "quota-refresh": {
+          "count": 78,
+          "ms": 0.495378999998934
+        }
+      },
+      "updates": {
+        "read-only": {
+          "count": 22,
+          "ms": 9.938063000000739
+        },
+        "other-update": {
+          "count": 96,
+          "ms": 151.80729300000098
+        },
+        "admission": {
+          "count": 28,
+          "ms": 126.75398100000007
+        },
+        "settlement-adapter": {
+          "count": 20,
+          "ms": 60.29792700000041
+        },
+        "quota-refresh": {
+          "count": 3,
+          "ms": 8.247592000000168
+        }
+      },
+      "phases": {
+        "other-update": {
+          "prepareMs": 0,
+          "nativeMs": 105.29428299999756,
+          "commitMs": 97.97623799999997,
+          "commitCount": 56,
+          "statements": 476,
+          "meanUpdateMs": 1.5813259687500103
+        },
+        "admission": {
+          "prepareMs": 3.080732000000012,
+          "nativeMs": 87.58095799999978,
+          "commitMs": 80.72711599999991,
+          "commitCount": 28,
+          "statements": 727,
+          "meanUpdateMs": 4.526927892857145
+        },
+        "settlement-adapter": {
+          "prepareMs": 0,
+          "nativeMs": 43.13465499999904,
+          "commitMs": 38.425612999999885,
+          "commitCount": 20,
+          "statements": 260,
+          "meanUpdateMs": 3.0148963500000208
+        },
+        "outside-update": {
+          "prepareMs": 8.330068999999753,
+          "nativeMs": 24.940484999999,
+          "commitMs": 0.11384799999950701,
+          "commitCount": 22,
+          "statements": 426
+        },
+        "quota-refresh": {
+          "prepareMs": 0,
+          "nativeMs": 5.415388000000235,
+          "commitMs": 4.969392000000198,
+          "commitCount": 3,
+          "statements": 27,
+          "meanUpdateMs": 2.7491973333333894
+        },
+        "read-only": {
+          "prepareMs": 1.173207000000275,
+          "nativeMs": 0.5351520000002665,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 44,
+          "meanUpdateMs": 0.45173013636366993
+        }
+      },
+      "heatmap": {
+        "cold": {
+          "sql": "\n    WITH activity AS (\n      SELECT activity_time(j.created_at) AS submitted,\n        COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),\n          NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),\n          (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,\n        COALESCE(NULLIF(p.operation, ''), NULLIF(json_extract(j.data, '$.request.operation'), ''),\n          NULLIF(json_extract(j.data, '$.generationAttempt.operation'), ''),\n          NULLIF(json_extract(j.data, '$.request.action'), ''), 'generate') AS operation,\n        CASE WHEN j.status = 'failed' AND NULLIF(json_extract(j.data, '$.cancelledAt'), '') IS NOT NULL\n          THEN 'cancelled' ELSE COALESCE(j.status, 'other') END AS state\n      FROM jobs j INDEXED BY idx_jobs_created_stats\n      LEFT JOIN generation_requests p ON p.id = j.request_id\n      WHERE j.created_at >= @lower AND j.created_at < @upper\n    ), selected AS (\n      SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state\n      FROM activity WHERE submitted >= @since AND submitted < @until\n        AND (@memberId IS NULL OR member = @memberId)\n        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation\n    )\n    SELECT date, COUNT(*) AS total,\n      SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,\n      SUM(state = 'cancelled') AS cancelled, SUM(state = 'queued') AS queued,\n      SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,\n      SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other\n    FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))\n    GROUP BY date ORDER BY date\n  ",
+          "ms": 15.680748999999992,
+          "dateCalls": 2043,
+          "dateMs": 12.416310000000408,
+          "rows": 26
+        },
+        "warmQueries": 20,
+        "meanSqlMs": 8.603751599999999,
+        "meanDateCalls": 2065,
+        "meanDateMs": 5.9286874000016265,
+        "outputRows": [
+          26
+        ]
+      },
+      "topStatements": [
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 7.139885999999933,
+          "cpuMs": 0,
+          "maxMs": 1.2556969999998273
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA integrity_check",
+          "count": 1,
+          "ms": 4.7934079999999994,
+          "cpuMs": 0,
+          "maxMs": 4.7934079999999994
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA wal_checkpoint(TRUNCATE)",
+          "count": 1,
+          "ms": 4.659001999999873,
+          "cpuMs": 0,
+          "maxMs": 4.659001999999873
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status, json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable, (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\') ORDER BY j.created_at DESC, j.id DESC LIMIT @limit OFFSET @offset",
+          "count": 21,
+          "ms": 3.7474810000006755,
+          "cpuMs": 0,
+          "maxMs": 0.29402600000003076
+        },
+        {
+          "phase": "other-update",
+          "kind": "run",
+          "sql": "insert into \"jobs\" (\"id\", \"order_value\", \"data\", \"token\", \"user_token\", \"account_id\", \"status\", \"source\", \"code\", \"cache_key\", \"image_id\", \"created_at\", \"updated_at\", \"at\", \"enabled\", \"balance\", \"route_id\", \"width\", \"height\", \"mock\", \"mime_type\", \"model\", \"prompt\", \"full_prompt\", \"resolution_tier\", \"search_text\", \"request_id\", \"queue_seq\", \"payload_bytes\", \"cost\", \"stats_excluded\", \"error_loggable\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"jobs\".\"id\") do update set \"order_value\" = excluded.\"order_value\", \"data\" = excluded.\"data\", \"token\" = excluded.\"token\", \"user_token\" = excluded.\"user_token\", \"account_id\" = excluded.\"account_id\", \"status\" = excluded.\"status\", \"source\" = excluded.\"source\", \"code\" = excluded.\"code\", \"cache_key\" = excluded.\"cache_key\", \"image_id\" = excluded.\"image_id\", \"created_at\" = excluded.\"created_at\", \"updated_at\" = excluded.\"updated_at\", \"at\" = excluded.\"at\", \"enabled\" = excluded.\"enabled\", \"balance\" = excluded.\"balance\", \"route_id\" = excluded.\"route_id\", \"width\" = excluded.\"width\", \"height\" = excluded.\"height\", \"mock\" = excluded.\"mock\", \"mime_type\" = excluded.\"mime_type\", \"model\" = excluded.\"model\", \"prompt\" = excluded.\"prompt\", \"full_prompt\" = excluded.\"full_prompt\", \"resolution_tier\" = excluded.\"resolution_tier\", \"search_text\" = excluded.\"search_text\", \"request_id\" = excluded.\"request_id\", \"queue_seq\" = excluded.\"queue_seq\", \"payload_bytes\" = excluded.\"payload_bytes\", \"cost\" = excluded.\"cost\", \"stats_excluded\" = excluded.\"stats_excluded\", \"error_loggable\" = excluded.\"error_loggable\"",
+          "count": 40,
+          "ms": 2.8797329999995327,
+          "cpuMs": 0,
+          "maxMs": 0.1911969999999883
+        },
+        {
+          "phase": "admission",
+          "kind": "prepare",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 84,
+          "ms": 2.262269000000174,
+          "cpuMs": 0,
+          "maxMs": 0.06320099999993545
+        },
+        {
+          "phase": "outside-update",
+          "kind": "prepare",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 2.026694000000134,
+          "cpuMs": 0,
+          "maxMs": 0.13699700000006487
+        },
+        {
+          "phase": "admission",
+          "kind": "all",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 84,
+          "ms": 1.6788799999994808,
+          "cpuMs": 0,
+          "maxMs": 0.09918400000003658
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "insert into \"jobs\" (\"id\", \"order_value\", \"data\", \"token\", \"user_token\", \"account_id\", \"status\", \"source\", \"code\", \"cache_key\", \"image_id\", \"created_at\", \"updated_at\", \"at\", \"enabled\", \"balance\", \"route_id\", \"width\", \"height\", \"mock\", \"mime_type\", \"model\", \"prompt\", \"full_prompt\", \"resolution_tier\", \"search_text\", \"request_id\", \"queue_seq\", \"payload_bytes\", \"cost\", \"stats_excluded\", \"error_loggable\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"jobs\".\"id\") do update set \"order_value\" = excluded.\"order_value\", \"data\" = excluded.\"data\", \"token\" = excluded.\"token\", \"user_token\" = excluded.\"user_token\", \"account_id\" = excluded.\"account_id\", \"status\" = excluded.\"status\", \"source\" = excluded.\"source\", \"code\" = excluded.\"code\", \"cache_key\" = excluded.\"cache_key\", \"image_id\" = excluded.\"image_id\", \"created_at\" = excluded.\"created_at\", \"updated_at\" = excluded.\"updated_at\", \"at\" = excluded.\"at\", \"enabled\" = excluded.\"enabled\", \"balance\" = excluded.\"balance\", \"route_id\" = excluded.\"route_id\", \"width\" = excluded.\"width\", \"height\" = excluded.\"height\", \"mock\" = excluded.\"mock\", \"mime_type\" = excluded.\"mime_type\", \"model\" = excluded.\"model\", \"prompt\" = excluded.\"prompt\", \"full_prompt\" = excluded.\"full_prompt\", \"resolution_tier\" = excluded.\"resolution_tier\", \"search_text\" = excluded.\"search_text\", \"request_id\" = excluded.\"request_id\", \"queue_seq\" = excluded.\"queue_seq\", \"payload_bytes\" = excluded.\"payload_bytes\", \"cost\" = excluded.\"cost\", \"stats_excluded\" = excluded.\"stats_excluded\", \"error_loggable\" = excluded.\"error_loggable\"",
+          "count": 28,
+          "ms": 1.6469999999998208,
+          "cpuMs": 0,
+          "maxMs": 0.20587499999999181
+        },
+        {
+          "phase": "settlement-adapter",
+          "kind": "run",
+          "sql": "insert into \"jobs\" (\"id\", \"order_value\", \"data\", \"token\", \"user_token\", \"account_id\", \"status\", \"source\", \"code\", \"cache_key\", \"image_id\", \"created_at\", \"updated_at\", \"at\", \"enabled\", \"balance\", \"route_id\", \"width\", \"height\", \"mock\", \"mime_type\", \"model\", \"prompt\", \"full_prompt\", \"resolution_tier\", \"search_text\", \"request_id\", \"queue_seq\", \"payload_bytes\", \"cost\", \"stats_excluded\", \"error_loggable\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"jobs\".\"id\") do update set \"order_value\" = excluded.\"order_value\", \"data\" = excluded.\"data\", \"token\" = excluded.\"token\", \"user_token\" = excluded.\"user_token\", \"account_id\" = excluded.\"account_id\", \"status\" = excluded.\"status\", \"source\" = excluded.\"source\", \"code\" = excluded.\"code\", \"cache_key\" = excluded.\"cache_key\", \"image_id\" = excluded.\"image_id\", \"created_at\" = excluded.\"created_at\", \"updated_at\" = excluded.\"updated_at\", \"at\" = excluded.\"at\", \"enabled\" = excluded.\"enabled\", \"balance\" = excluded.\"balance\", \"route_id\" = excluded.\"route_id\", \"width\" = excluded.\"width\", \"height\" = excluded.\"height\", \"mock\" = excluded.\"mock\", \"mime_type\" = excluded.\"mime_type\", \"model\" = excluded.\"model\", \"prompt\" = excluded.\"prompt\", \"full_prompt\" = excluded.\"full_prompt\", \"resolution_tier\" = excluded.\"resolution_tier\", \"search_text\" = excluded.\"search_text\", \"request_id\" = excluded.\"request_id\", \"queue_seq\" = excluded.\"queue_seq\", \"payload_bytes\" = excluded.\"payload_bytes\", \"cost\" = excluded.\"cost\", \"stats_excluded\" = excluded.\"stats_excluded\", \"error_loggable\" = excluded.\"error_loggable\"",
+          "count": 20,
+          "ms": 1.6298339999999598,
+          "cpuMs": 0,
+          "maxMs": 0.1520500000001448
+        },
+        {
+          "phase": "outside-update",
+          "kind": "get",
+          "sql": "SELECT COUNT(*) AS total FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\')",
+          "count": 21,
+          "ms": 1.4470460000000003,
+          "cpuMs": 0,
+          "maxMs": 0.11783099999991009
+        },
+        {
+          "phase": "outside-update",
+          "kind": "prepare",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 28,
+          "ms": 1.399181000000567,
+          "cpuMs": 0,
+          "maxMs": 0.11623299999996561
+        }
+      ],
+      "topServerFrames": [
+        {
+          "name": "persistDirtyRows",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1530,
+          "ms": 9.026
+        },
+        {
+          "name": "seconds",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 29,
+          "ms": 6.948
+        },
+        {
+          "name": "resolveGenerationIdempotency",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 2514,
+          "ms": 3.5100000000000002
+        },
+        {
+          "name": "sqlRecord",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1942,
+          "ms": 3.383
+        },
+        {
+          "name": "prepareStatements",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1237,
+          "ms": 3.24
+        },
+        {
+          "name": "route",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 390,
+          "ms": 2.552
+        },
+        {
+          "name": "upgradeGroups",
+          "url": "file:///baseline/server/fair-quota.ts",
+          "line": 86,
+          "ms": 2.192
+        },
+        {
+          "name": "persistenceScope",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1878,
+          "ms": 1.552
+        },
+        {
+          "name": "describeCommit",
+          "url": "file:///baseline/server/store.ts",
+          "line": 210,
+          "ms": 1.488
+        },
+        {
+          "name": "buildSnapshotState",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1749,
+          "ms": 1.413
+        },
+        {
+          "name": "persistIncremental",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1464,
+          "ms": 1.332
+        },
+        {
+          "name": "",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 1,
+          "ms": 1.326
+        },
+        {
+          "name": "",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1015,
+          "ms": 1.233
+        },
+        {
+          "name": "createJob",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 2604,
+          "ms": 1.222
+        },
+        {
+          "name": "isPublicHost",
+          "url": "file:///baseline/server/public-hosts.ts",
+          "line": 7,
+          "ms": 1.221
+        },
+        {
+          "name": "",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1357,
+          "ms": 1.219
+        }
+      ]
+    },
+    {
+      "name": "candidate-1000",
+      "history": 1000,
+      "label": "candidate",
+      "elapsedMs": 1507.437289,
+      "cpuMs": 1581.826,
+      "prepareMs": 76.13438599999813,
+      "nativeMs": 342.2865919999997,
+      "commitMs": 238.19934900000044,
+      "jsonParse": {
+        "outside-update": {
+          "count": 1332,
+          "ms": 3.045098999999169
+        },
+        "read-only": {
+          "count": 50,
+          "ms": 0.25607800000079806
+        },
+        "other-update": {
+          "count": 28,
+          "ms": 0.08849899999927402
+        },
+        "admission": {
+          "count": 1717,
+          "ms": 9.893557000000442
+        },
+        "dispatch": {
+          "count": 1440,
+          "ms": 10.201645999998277
+        },
+        "prepared": {
+          "count": 1160,
+          "ms": 6.614450999999349
+        },
+        "settlement": {
+          "count": 1500,
+          "ms": 10.496209999998655
+        },
+        "quota-refresh": {
+          "count": 176,
+          "ms": 0.988964000000351
+        }
+      },
+      "updates": {
+        "read-only": {
+          "count": 50,
+          "ms": 35.02432199999987
+        },
+        "other-update": {
+          "count": 28,
+          "ms": 7.421651000000111
+        },
+        "admission": {
+          "count": 28,
+          "ms": 266.72990000000004
+        },
+        "dispatch": {
+          "count": 20,
+          "ms": 194.8833790000001
+        },
+        "prepared": {
+          "count": 20,
+          "ms": 141.55317900000023
+        },
+        "settlement": {
+          "count": 20,
+          "ms": 190.1472170000003
+        },
+        "quota-refresh": {
+          "count": 3,
+          "ms": 24.21902
+        }
+      },
+      "phases": {
+        "admission": {
+          "prepareMs": 20.19415999999751,
+          "nativeMs": 108.66013299999952,
+          "commitMs": 85.1501590000006,
+          "commitCount": 28,
+          "statements": 4020,
+          "meanUpdateMs": 9.52606785714286
+        },
+        "settlement": {
+          "prepareMs": 16.652096000000256,
+          "nativeMs": 68.1313710000012,
+          "commitMs": 48.90342899999996,
+          "commitCount": 20,
+          "statements": 3020,
+          "meanUpdateMs": 9.507360850000016
+        },
+        "prepared": {
+          "prepareMs": 11.259985999998435,
+          "nativeMs": 61.55598499999837,
+          "commitMs": 48.67891899999984,
+          "commitCount": 20,
+          "statements": 2240,
+          "meanUpdateMs": 7.0776589500000116
+        },
+        "dispatch": {
+          "prepareMs": 14.912805000002777,
+          "nativeMs": 66.97655200000122,
+          "commitMs": 48.34904200000062,
+          "commitCount": 20,
+          "statements": 2680,
+          "meanUpdateMs": 9.744168950000006
+        },
+        "outside-update": {
+          "prepareMs": 8.291604000000689,
+          "nativeMs": 26.321475000000646,
+          "commitMs": 0.12664899999936097,
+          "commitCount": 23,
+          "statements": 462
+        },
+        "quota-refresh": {
+          "prepareMs": 1.5037739999993391,
+          "nativeMs": 8.644224999997732,
+          "commitMs": 6.986891000000014,
+          "commitCount": 3,
+          "statements": 308,
+          "meanUpdateMs": 8.073006666666666
+        },
+        "read-only": {
+          "prepareMs": 2.588729999998918,
+          "nativeMs": 1.5620660000005273,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 272,
+          "meanUpdateMs": 0.7004864399999974
+        },
+        "other-update": {
+          "prepareMs": 0.7312310000002071,
+          "nativeMs": 0.43478500000048825,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 112,
+          "meanUpdateMs": 0.26505896428571823
+        }
+      },
+      "heatmap": {
+        "cold": {
+          "sql": "\n    WITH activity AS (\n      SELECT activity_time(j.created_at) AS submitted,\n        COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),\n          NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),\n          (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,\n        COALESCE(NULLIF(p.operation, ''), NULLIF(json_extract(j.data, '$.request.operation'), ''),\n          NULLIF(json_extract(j.data, '$.generationAttempt.operation'), ''),\n          NULLIF(json_extract(j.data, '$.request.action'), ''), 'generate') AS operation,\n        CASE WHEN j.status = 'failed' AND NULLIF(json_extract(j.data, '$.cancelledAt'), '') IS NOT NULL\n          THEN 'cancelled' ELSE COALESCE(j.status, 'other') END AS state\n      FROM jobs j INDEXED BY idx_jobs_created_stats\n      LEFT JOIN generation_requests p ON p.id = j.request_id\n      WHERE j.created_at >= @lower AND j.created_at < @upper\n    ), selected AS (\n      SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state\n      FROM activity WHERE submitted >= @since AND submitted < @until\n        AND (@memberId IS NULL OR member = @memberId)\n        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation\n    )\n    SELECT date, COUNT(*) AS total,\n      SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,\n      SUM(state = 'cancelled') AS cancelled, SUM(state = 'queued') AS queued,\n      SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,\n      SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other\n    FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))\n    GROUP BY date ORDER BY date\n  ",
+          "ms": 13.343750999999997,
+          "dateCalls": 2043,
+          "dateMs": 9.292360000002532,
+          "rows": 26
+        },
+        "warmQueries": 20,
+        "meanSqlMs": 8.761852750000013,
+        "meanDateCalls": 2065,
+        "meanDateMs": 5.884438599999465,
+        "outputRows": [
+          26
+        ]
+      },
+      "topStatements": [
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA integrity_check",
+          "count": 1,
+          "ms": 7.304583999999977,
+          "cpuMs": 0,
+          "maxMs": 7.304583999999977
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 28,
+          "ms": 5.921582000000853,
+          "cpuMs": 0,
+          "maxMs": 1.391187000000059
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 5.640341999999578,
+          "cpuMs": 0,
+          "maxMs": 0.5410289999999804
+        },
+        {
+          "phase": "prepared",
+          "kind": "run",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 20,
+          "ms": 5.516685999999822,
+          "cpuMs": 0,
+          "maxMs": 0.43762100000003556
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA wal_checkpoint(TRUNCATE)",
+          "count": 1,
+          "ms": 4.4148560000001,
+          "cpuMs": 0,
+          "maxMs": 4.4148560000001
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status, json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable, (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\') ORDER BY j.created_at DESC, j.id DESC LIMIT @limit OFFSET @offset",
+          "count": 21,
+          "ms": 3.7853990000005524,
+          "cpuMs": 0,
+          "maxMs": 0.2424940000000788
+        },
+        {
+          "phase": "admission",
+          "kind": "prepare",
+          "sql": "SELECT data,order_value FROM users WHERE id=?",
+          "count": 560,
+          "ms": 2.8258020000005217,
+          "cpuMs": 0,
+          "maxMs": 0.07418299999994815
+        },
+        {
+          "phase": "settlement",
+          "kind": "prepare",
+          "sql": "SELECT stream_id,stream_kind,CAST(stream_version AS TEXT) AS stream_version, CAST(last_commit_seq AS TEXT) AS last_commit_seq,last_event_id,reducer_version,projection,projection_sha256 FROM event_streams WHERE stream_id=?",
+          "count": 180,
+          "ms": 2.540377999999805,
+          "cpuMs": 0,
+          "maxMs": 0.09388999999987391
+        },
+        {
+          "phase": "admission",
+          "kind": "prepare",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 28,
+          "ms": 2.5009850000003553,
+          "cpuMs": 0,
+          "maxMs": 0.14559400000007372
+        },
+        {
+          "phase": "outside-update",
+          "kind": "prepare",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 2.4501469999996743,
+          "cpuMs": 0,
+          "maxMs": 0.23711200000002464
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "INSERT INTO event_streams(stream_id,stream_kind,stream_version,last_commit_seq,last_event_id,reducer_version,projection,projection_sha256) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET stream_version=excluded.stream_version,last_commit_seq=excluded.last_commit_seq, last_event_id=excluded.last_event_id,reducer_version=excluded.reducer_version,projection=excluded.projection,projection_sha256=excluded.projection_sha256",
+          "count": 44,
+          "ms": 2.3701220000003786,
+          "cpuMs": 0,
+          "maxMs": 1.361105999999836
+        },
+        {
+          "phase": "dispatch",
+          "kind": "run",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 20,
+          "ms": 2.354831000000445,
+          "cpuMs": 0,
+          "maxMs": 0.43707599999993363
+        }
+      ],
+      "topServerFrames": [
+        {
+          "name": "canonicalJson",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 53,
+          "ms": 86.86100000000003
+        },
+        {
+          "name": "",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 58,
+          "ms": 24.683999999999997
+        },
+        {
+          "name": "applyEventProjection",
+          "url": "file:///app/server/store.ts",
+          "line": 2101,
+          "ms": 12.610000000000001
+        },
+        {
+          "name": "formatAmount",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 34,
+          "ms": 7.9030000000000005
+        },
+        {
+          "name": "persistDirtyRows",
+          "url": "file:///app/server/store.ts",
+          "line": 1592,
+          "ms": 6.888999999999999
+        },
+        {
+          "name": "normalizeLegacyAmountGroup",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 73,
+          "ms": 6.805
+        },
+        {
+          "name": "decimalRatio",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 8,
+          "ms": 6.799
+        },
+        {
+          "name": "sqlRecord",
+          "url": "file:///app/server/store.ts",
+          "line": 2163,
+          "ms": 5.731999999999999
+        },
+        {
+          "name": "normalizeOpeningQuota",
+          "url": "file:///app/server/fair-quota.ts",
+          "line": 120,
+          "ms": 5.644
+        },
+        {
+          "name": "",
+          "url": "file:///app/server/store.ts",
+          "line": 1015,
+          "ms": 5.489000000000001
+        },
+        {
+          "name": "upgradeGroups",
+          "url": "file:///app/server/fair-quota.ts",
+          "line": 94,
+          "ms": 4.398
+        },
+        {
+          "name": "changedJobRows",
+          "url": "file:///app/server/generation-execution.ts",
+          "line": 130,
+          "ms": 3.888
+        },
+        {
+          "name": "assertPublicDomainFact",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 64,
+          "ms": 3.365
+        },
+        {
+          "name": "decimalFraction",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 67,
+          "ms": 3.359
+        },
+        {
+          "name": "beginDomainCommand",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 88,
+          "ms": 2.7350000000000003
+        },
+        {
+          "name": "parseAmount",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 29,
+          "ms": 2.557
+        }
+      ]
+    },
+    {
+      "name": "baseline-100000",
+      "history": 100000,
+      "label": "baseline",
+      "elapsedMs": 19640.27324,
+      "cpuMs": 20548.573,
+      "prepareMs": 15.51497800000368,
+      "nativeMs": 1075.773456000005,
+      "commitMs": 308.4887110000094,
+      "jsonParse": {
+        "outside-update": {
+          "count": 1309,
+          "ms": 3.714724999998708
+        },
+        "admission": {
+          "count": 726,
+          "ms": 2.512289000001374
+        },
+        "other-update": {
+          "count": 1324,
+          "ms": 6.333953000084193
+        },
+        "settlement-adapter": {
+          "count": 540,
+          "ms": 3.172002000037992
+        },
+        "quota-refresh": {
+          "count": 78,
+          "ms": 0.43370000001323206
+        }
+      },
+      "updates": {
+        "read-only": {
+          "count": 22,
+          "ms": 11.89924399999893
+        },
+        "other-update": {
+          "count": 96,
+          "ms": 218.66609899999673
+        },
+        "admission": {
+          "count": 28,
+          "ms": 164.37978499999986
+        },
+        "settlement-adapter": {
+          "count": 20,
+          "ms": 60.48727100000315
+        },
+        "quota-refresh": {
+          "count": 3,
+          "ms": 12.239972999999736
+        }
+      },
+      "phases": {
+        "outside-update": {
+          "prepareMs": 10.337055999989275,
+          "nativeMs": 743.9497870000148,
+          "commitMs": 0.26423199999851477,
+          "commitCount": 22,
+          "statements": 426
+        },
+        "other-update": {
+          "prepareMs": 0,
+          "nativeMs": 162.7258499999831,
+          "commitMs": 154.13799800000243,
+          "commitCount": 56,
+          "statements": 476,
+          "meanUpdateMs": 2.277771864583299
+        },
+        "admission": {
+          "prepareMs": 3.9965980000129093,
+          "nativeMs": 115.9868659999986,
+          "commitMs": 106.41858800000136,
+          "commitCount": 28,
+          "statements": 727,
+          "meanUpdateMs": 5.870706607142852
+        },
+        "settlement-adapter": {
+          "prepareMs": 0,
+          "nativeMs": 42.856471000001875,
+          "commitMs": 38.64542900000538,
+          "commitCount": 20,
+          "statements": 260,
+          "meanUpdateMs": 3.0243635500001576
+        },
+        "quota-refresh": {
+          "prepareMs": 0,
+          "nativeMs": 9.430986000007579,
+          "commitMs": 9.017766000001757,
+          "commitCount": 3,
+          "statements": 27,
+          "meanUpdateMs": 4.079990999999912
+        },
+        "read-only": {
+          "prepareMs": 1.1813240000014957,
+          "nativeMs": 0.8234959999988405,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 44,
+          "meanUpdateMs": 0.5408747272726786
+        }
+      },
+      "heatmap": {
+        "cold": {
+          "sql": "\n    WITH activity AS (\n      SELECT activity_time(j.created_at) AS submitted,\n        COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),\n          NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),\n          (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,\n        COALESCE(NULLIF(p.operation, ''), NULLIF(json_extract(j.data, '$.request.operation'), ''),\n          NULLIF(json_extract(j.data, '$.generationAttempt.operation'), ''),\n          NULLIF(json_extract(j.data, '$.request.action'), ''), 'generate') AS operation,\n        CASE WHEN j.status = 'failed' AND NULLIF(json_extract(j.data, '$.cancelledAt'), '') IS NOT NULL\n          THEN 'cancelled' ELSE COALESCE(j.status, 'other') END AS state\n      FROM jobs j INDEXED BY idx_jobs_created_stats\n      LEFT JOIN generation_requests p ON p.id = j.request_id\n      WHERE j.created_at >= @lower AND j.created_at < @upper\n    ), selected AS (\n      SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state\n      FROM activity WHERE submitted >= @since AND submitted < @until\n        AND (@memberId IS NULL OR member = @memberId)\n        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation\n    )\n    SELECT date, COUNT(*) AS total,\n      SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,\n      SUM(state = 'cancelled') AS cancelled, SUM(state = 'queued') AS queued,\n      SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,\n      SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other\n    FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))\n    GROUP BY date ORDER BY date\n  ",
+          "ms": 835.554533,
+          "dateCalls": 202474,
+          "dateMs": 573.7740999999909,
+          "rows": 365
+        },
+        "warmQueries": 20,
+        "meanSqlMs": 843.2268175999998,
+        "meanDateCalls": 202496,
+        "meanDateMs": 582.5293197001255,
+        "outputRows": [
+          365
+        ]
+      },
+      "topStatements": [
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA integrity_check",
+          "count": 1,
+          "ms": 479.8519039999992,
+          "cpuMs": 0,
+          "maxMs": 479.8519039999992
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 173.29166599999553,
+          "cpuMs": 0,
+          "maxMs": 11.364332999999533
+        },
+        {
+          "phase": "outside-update",
+          "kind": "get",
+          "sql": "SELECT COUNT(*) AS total FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\')",
+          "count": 21,
+          "ms": 35.80667100000471,
+          "cpuMs": 0,
+          "maxMs": 6.715632999999912
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status, json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable, (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\') ORDER BY j.created_at DESC, j.id DESC LIMIT @limit OFFSET @offset",
+          "count": 21,
+          "ms": 33.84358700000507,
+          "cpuMs": 0,
+          "maxMs": 1.9377809999996316
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA wal_checkpoint(TRUNCATE)",
+          "count": 1,
+          "ms": 8.940173000002687,
+          "cpuMs": 0,
+          "maxMs": 8.940173000002687
+        },
+        {
+          "phase": "outside-update",
+          "kind": "get",
+          "sql": "SELECT count(*) AS count FROM jobs WHERE status IN ('queued','pending','running')",
+          "count": 1,
+          "ms": 5.9673189999994065,
+          "cpuMs": 0,
+          "maxMs": 5.9673189999994065
+        },
+        {
+          "phase": "other-update",
+          "kind": "run",
+          "sql": "insert into \"jobs\" (\"id\", \"order_value\", \"data\", \"token\", \"user_token\", \"account_id\", \"status\", \"source\", \"code\", \"cache_key\", \"image_id\", \"created_at\", \"updated_at\", \"at\", \"enabled\", \"balance\", \"route_id\", \"width\", \"height\", \"mock\", \"mime_type\", \"model\", \"prompt\", \"full_prompt\", \"resolution_tier\", \"search_text\", \"request_id\", \"queue_seq\", \"payload_bytes\", \"cost\", \"stats_excluded\", \"error_loggable\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"jobs\".\"id\") do update set \"order_value\" = excluded.\"order_value\", \"data\" = excluded.\"data\", \"token\" = excluded.\"token\", \"user_token\" = excluded.\"user_token\", \"account_id\" = excluded.\"account_id\", \"status\" = excluded.\"status\", \"source\" = excluded.\"source\", \"code\" = excluded.\"code\", \"cache_key\" = excluded.\"cache_key\", \"image_id\" = excluded.\"image_id\", \"created_at\" = excluded.\"created_at\", \"updated_at\" = excluded.\"updated_at\", \"at\" = excluded.\"at\", \"enabled\" = excluded.\"enabled\", \"balance\" = excluded.\"balance\", \"route_id\" = excluded.\"route_id\", \"width\" = excluded.\"width\", \"height\" = excluded.\"height\", \"mock\" = excluded.\"mock\", \"mime_type\" = excluded.\"mime_type\", \"model\" = excluded.\"model\", \"prompt\" = excluded.\"prompt\", \"full_prompt\" = excluded.\"full_prompt\", \"resolution_tier\" = excluded.\"resolution_tier\", \"search_text\" = excluded.\"search_text\", \"request_id\" = excluded.\"request_id\", \"queue_seq\" = excluded.\"queue_seq\", \"payload_bytes\" = excluded.\"payload_bytes\", \"cost\" = excluded.\"cost\", \"stats_excluded\" = excluded.\"stats_excluded\", \"error_loggable\" = excluded.\"error_loggable\"",
+          "count": 40,
+          "ms": 3.5357210000033774,
+          "cpuMs": 0,
+          "maxMs": 0.3568620000005467
+        },
+        {
+          "phase": "admission",
+          "kind": "prepare",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 84,
+          "ms": 2.9481650000129775,
+          "cpuMs": 0,
+          "maxMs": 0.24161199999980454
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "insert into \"jobs\" (\"id\", \"order_value\", \"data\", \"token\", \"user_token\", \"account_id\", \"status\", \"source\", \"code\", \"cache_key\", \"image_id\", \"created_at\", \"updated_at\", \"at\", \"enabled\", \"balance\", \"route_id\", \"width\", \"height\", \"mock\", \"mime_type\", \"model\", \"prompt\", \"full_prompt\", \"resolution_tier\", \"search_text\", \"request_id\", \"queue_seq\", \"payload_bytes\", \"cost\", \"stats_excluded\", \"error_loggable\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict (\"jobs\".\"id\") do update set \"order_value\" = excluded.\"order_value\", \"data\" = excluded.\"data\", \"token\" = excluded.\"token\", \"user_token\" = excluded.\"user_token\", \"account_id\" = excluded.\"account_id\", \"status\" = excluded.\"status\", \"source\" = excluded.\"source\", \"code\" = excluded.\"code\", \"cache_key\" = excluded.\"cache_key\", \"image_id\" = excluded.\"image_id\", \"created_at\" = excluded.\"created_at\", \"updated_at\" = excluded.\"updated_at\", \"at\" = excluded.\"at\", \"enabled\" = excluded.\"enabled\", \"balance\" = excluded.\"balance\", \"route_id\" = excluded.\"route_id\", \"width\" = excluded.\"width\", \"height\" = excluded.\"height\", \"mock\" = excluded.\"mock\", \"mime_type\" = excluded.\"mime_type\", \"model\" = excluded.\"model\", \"prompt\" = excluded.\"prompt\", \"full_prompt\" = excluded.\"full_prompt\", \"resolution_tier\" = excluded.\"resolution_tier\", \"search_text\" = excluded.\"search_text\", \"request_id\" = excluded.\"request_id\", \"queue_seq\" = excluded.\"queue_seq\", \"payload_bytes\" = excluded.\"payload_bytes\", \"cost\" = excluded.\"cost\", \"stats_excluded\" = excluded.\"stats_excluded\", \"error_loggable\" = excluded.\"error_loggable\"",
+          "count": 28,
+          "ms": 2.534283999997683,
+          "cpuMs": 0,
+          "maxMs": 0.27195899999969697
+        },
+        {
+          "phase": "outside-update",
+          "kind": "prepare",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 2.4566400000001067,
+          "cpuMs": 0,
+          "maxMs": 0.17409299999962968
+        },
+        {
+          "phase": "admission",
+          "kind": "all",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 84,
+          "ms": 2.2987299999996367,
+          "cpuMs": 0,
+          "maxMs": 0.1829810000000407
+        },
+        {
+          "phase": "outside-update",
+          "kind": "prepare",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 28,
+          "ms": 2.1002810000028376,
+          "cpuMs": 0,
+          "maxMs": 0.12025800000003528
+        }
+      ],
+      "topServerFrames": [
+        {
+          "name": "seconds",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 29,
+          "ms": 118.588
+        },
+        {
+          "name": "day",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 28,
+          "ms": 57.812999999999995
+        },
+        {
+          "name": "summarizeOwnerUsage",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 53,
+          "ms": 29.131000000000007
+        },
+        {
+          "name": "add",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 35,
+          "ms": 24.159000000000002
+        },
+        {
+          "name": "ownerOperation",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 77,
+          "ms": 11.189000000000002
+        },
+        {
+          "name": "persistDirtyRows",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1530,
+          "ms": 7.582
+        },
+        {
+          "name": "store.update.dirtyRows",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 2632,
+          "ms": 4.4350000000000005
+        },
+        {
+          "name": "",
+          "url": "file:///baseline/server/owner-operations.ts",
+          "line": 63,
+          "ms": 4.099
+        },
+        {
+          "name": "route",
+          "url": "file:///baseline/server/gateway-runtime.ts",
+          "line": 390,
+          "ms": 3.577
+        },
+        {
+          "name": "buildSnapshotState",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1749,
+          "ms": 3.518
+        },
+        {
+          "name": "activityRange",
+          "url": "file:///baseline/server/activity-heatmap.ts",
+          "line": 51,
+          "ms": 3.295
+        },
+        {
+          "name": "",
+          "url": "file:///baseline/server/store.ts",
+          "line": 893,
+          "ms": 3.2860000000000005
+        },
+        {
+          "name": "publishStoredResult",
+          "url": "file:///baseline/server/result-files.ts",
+          "line": 80,
+          "ms": 3.223
+        },
+        {
+          "name": "describeCommit",
+          "url": "file:///baseline/server/store.ts",
+          "line": 210,
+          "ms": 3.1479999999999997
+        },
+        {
+          "name": "cloneCollectionMaps",
+          "url": "file:///baseline/server/store.ts",
+          "line": 1934,
+          "ms": 2.4619999999999997
+        },
+        {
+          "name": "sharedSurface",
+          "url": "file:///baseline/server/shared-surface.ts",
+          "line": 37,
+          "ms": 2.21
+        }
+      ]
+    },
+    {
+      "name": "candidate-100000",
+      "history": 100000,
+      "label": "candidate",
+      "elapsedMs": 20607.557988,
+      "cpuMs": 21513.168,
+      "prepareMs": 78.83679800000215,
+      "nativeMs": 1529.4562149999922,
+      "commitMs": 338.76934800000697,
+      "jsonParse": {
+        "outside-update": {
+          "count": 1332,
+          "ms": 3.3222290000174723
+        },
+        "read-only": {
+          "count": 50,
+          "ms": 0.22419999999999618
+        },
+        "other-update": {
+          "count": 28,
+          "ms": 0.08507600000200455
+        },
+        "admission": {
+          "count": 1717,
+          "ms": 9.399868000022252
+        },
+        "dispatch": {
+          "count": 1440,
+          "ms": 9.753798999909804
+        },
+        "prepared": {
+          "count": 1160,
+          "ms": 6.413810000000012
+        },
+        "settlement": {
+          "count": 1500,
+          "ms": 10.508218999993005
+        },
+        "quota-refresh": {
+          "count": 176,
+          "ms": 1.0068730000039068
+        }
+      },
+      "updates": {
+        "read-only": {
+          "count": 50,
+          "ms": 36.46867800001064
+        },
+        "other-update": {
+          "count": 28,
+          "ms": 7.6115189999958375
+        },
+        "admission": {
+          "count": 28,
+          "ms": 317.7356939999962
+        },
+        "dispatch": {
+          "count": 20,
+          "ms": 209.46209599999634
+        },
+        "prepared": {
+          "count": 20,
+          "ms": 164.44123199999876
+        },
+        "settlement": {
+          "count": 20,
+          "ms": 211.08127199999444
+        },
+        "quota-refresh": {
+          "count": 3,
+          "ms": 33.194666000002144
+        }
+      },
+      "phases": {
+        "outside-update": {
+          "prepareMs": 9.862609999998824,
+          "nativeMs": 1092.578209000005,
+          "commitMs": 0.2654369999964956,
+          "commitCount": 23,
+          "statements": 462
+        },
+        "admission": {
+          "prepareMs": 21.198952000042368,
+          "nativeMs": 153.88489600001594,
+          "commitMs": 116.44536500000709,
+          "commitCount": 28,
+          "statements": 4020,
+          "meanUpdateMs": 11.347703357142722
+        },
+        "prepared": {
+          "prepareMs": 10.56793899999866,
+          "nativeMs": 90.51362500001483,
+          "commitMs": 75.99287500000582,
+          "commitCount": 20,
+          "statements": 2240,
+          "meanUpdateMs": 8.222061599999938
+        },
+        "settlement": {
+          "prepareMs": 16.945951999994804,
+          "nativeMs": 88.7048449999661,
+          "commitMs": 66.35151900000164,
+          "commitCount": 20,
+          "statements": 3020,
+          "meanUpdateMs": 10.554063599999722
+        },
+        "dispatch": {
+          "prepareMs": 15.384185999981128,
+          "nativeMs": 85.67926700000407,
+          "commitMs": 66.07982999999535,
+          "commitCount": 20,
+          "statements": 2680,
+          "meanUpdateMs": 10.473104799999817
+        },
+        "quota-refresh": {
+          "prepareMs": 1.6705379999975776,
+          "nativeMs": 15.871187999993708,
+          "commitMs": 13.629961000000549,
+          "commitCount": 3,
+          "statements": 308,
+          "meanUpdateMs": 11.06488866666738
+        },
+        "read-only": {
+          "prepareMs": 2.522984999998471,
+          "nativeMs": 1.7767829999977494,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 272,
+          "meanUpdateMs": 0.7293735600002128
+        },
+        "other-update": {
+          "prepareMs": 0.6836359999903152,
+          "nativeMs": 0.447401999994554,
+          "commitMs": 0,
+          "commitCount": 0,
+          "statements": 112,
+          "meanUpdateMs": 0.2718399642855656
+        }
+      },
+      "heatmap": {
+        "cold": {
+          "sql": "\n    WITH activity AS (\n      SELECT activity_time(j.created_at) AS submitted,\n        COALESCE(NULLIF(p.member_id, ''), NULLIF(json_extract(j.data, '$.generationAttempt.memberId'), ''),\n          NULLIF(json_extract(j.data, '$.fairCharge.userId'), ''),\n          (SELECT u.id FROM users u WHERE u.token = j.user_token LIMIT 1)) AS member,\n        COALESCE(NULLIF(p.operation, ''), NULLIF(json_extract(j.data, '$.request.operation'), ''),\n          NULLIF(json_extract(j.data, '$.generationAttempt.operation'), ''),\n          NULLIF(json_extract(j.data, '$.request.action'), ''), 'generate') AS operation,\n        CASE WHEN j.status = 'failed' AND NULLIF(json_extract(j.data, '$.cancelledAt'), '') IS NOT NULL\n          THEN 'cancelled' ELSE COALESCE(j.status, 'other') END AS state\n      FROM jobs j INDEXED BY idx_jobs_created_stats\n      LEFT JOIN generation_requests p ON p.id = j.request_id\n      WHERE j.created_at >= @lower AND j.created_at < @upper\n    ), selected AS (\n      SELECT strftime('%Y-%m-%d', submitted / 1000.0, 'unixepoch', '+8 hours') AS date, state\n      FROM activity WHERE submitted >= @since AND submitted < @until\n        AND (@memberId IS NULL OR member = @memberId)\n        AND CASE WHEN operation IN ('generate', 'img2img', 'infill') THEN 'generate' ELSE operation END = @operation\n    )\n    SELECT date, COUNT(*) AS total,\n      SUM(state = 'done') AS done, SUM(state = 'failed') AS failed,\n      SUM(state = 'cancelled') AS cancelled, SUM(state = 'queued') AS queued,\n      SUM(state = 'pending') AS pending, SUM(state = 'running') AS running,\n      SUM(state NOT IN ('done', 'failed', 'cancelled', 'queued', 'pending', 'running')) AS other\n    FROM selected WHERE @dates IS NULL OR date IN (SELECT value FROM json_each(@dates))\n    GROUP BY date ORDER BY date\n  ",
+          "ms": 863.183555,
+          "dateCalls": 202474,
+          "dateMs": 582.1734890000116,
+          "rows": 365
+        },
+        "warmQueries": 20,
+        "meanSqlMs": 848.2673928999999,
+        "meanDateCalls": 202496,
+        "meanDateMs": 575.2168675999674,
+        "outputRows": [
+          365
+        ]
+      },
+      "topStatements": [
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA integrity_check",
+          "count": 1,
+          "ms": 797.1022040000025,
+          "cpuMs": 0,
+          "maxMs": 797.1022040000025
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.status, j.model, j.created_at AS createdAt, COALESCE(u.id, json_extract(j.data, '$.fairCharge.userId'), 'removed') AS memberId, COALESCE(json_extract(u.data, '$.memberAuth.username'), '已移除成员') AS username, json_extract(j.data, '$.startedAt') AS startedAt, json_extract(j.data, '$.upstreamStartedAt') AS upstreamStartedAt, json_extract(j.data, '$.upstreamCompletedAt') AS upstreamCompletedAt, json_extract(j.data, '$.errorStatus') AS errorStatus, json_extract(j.data, '$.fairCharge.resource') AS resource, json_extract(j.data, '$.fairCharge.status') AS chargeStatus, json_extract(j.data, '$.fairCharge.amount') AS amount, json_extract(j.data, '$.fairCharge.fixed') AS fixed, json_extract(j.data, '$.fairCharge.purchased') AS purchased FROM jobs j LEFT JOIN users u ON u.token = j.user_token WHERE j.created_at >= ? AND j.created_at <= ? ORDER BY j.created_at DESC",
+          "count": 21,
+          "ms": 171.74698500000113,
+          "cpuMs": 0,
+          "maxMs": 9.372591999999713
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT DISTINCT reducer_version FROM event_streams UNION SELECT reducer_version FROM projection_versions",
+          "count": 1,
+          "ms": 37.87741500000004,
+          "cpuMs": 0,
+          "maxMs": 37.87741500000004
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "SELECT j.id, j.request_id AS requestId, j.created_at AS createdAt, j.model, j.status, json_extract(j.data, '$.fairCharge') AS charge, json_extract(j.data, '$.lateResultAvailable') AS lateResultAvailable, (SELECT i.id FROM images i WHERE i.id = j.image_id AND i.token = @token) AS imageId FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\') ORDER BY j.created_at DESC, j.id DESC LIMIT @limit OFFSET @offset",
+          "count": 21,
+          "ms": 35.7818630000005,
+          "cpuMs": 0,
+          "maxMs": 2.8684719999982917
+        },
+        {
+          "phase": "outside-update",
+          "kind": "get",
+          "sql": "SELECT COUNT(*) AS total FROM jobs j JOIN users u ON u.id = @userId AND u.token = j.user_token AND u.enabled = 1 WHERE j.user_token = @token AND j.created_at <= @until AND (@status = '' OR j.status = @status OR (@status = 'late' AND json_extract(j.data, '$.lateResultAvailable') = 1)) AND (j.id LIKE @q ESCAPE '\\' OR j.model LIKE @q ESCAPE '\\')",
+          "count": 21,
+          "ms": 32.80907500001126,
+          "cpuMs": 0,
+          "maxMs": 3.988205999999991
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "INSERT INTO event_streams(stream_id,stream_kind,stream_version,last_commit_seq,last_event_id,reducer_version,projection,projection_sha256) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET stream_version=excluded.stream_version,last_commit_seq=excluded.last_commit_seq, last_event_id=excluded.last_event_id,reducer_version=excluded.reducer_version,projection=excluded.projection,projection_sha256=excluded.projection_sha256",
+          "count": 44,
+          "ms": 13.319137000003934,
+          "cpuMs": 0,
+          "maxMs": 10.438974000000599
+        },
+        {
+          "phase": "admission",
+          "kind": "run",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 28,
+          "ms": 5.982635999994727,
+          "cpuMs": 0,
+          "maxMs": 0.5078899999999749
+        },
+        {
+          "phase": "outside-update",
+          "kind": "all",
+          "sql": "PRAGMA wal_checkpoint(TRUNCATE)",
+          "count": 1,
+          "ms": 5.661901999999827,
+          "cpuMs": 0,
+          "maxMs": 5.661901999999827
+        },
+        {
+          "phase": "prepared",
+          "kind": "run",
+          "sql": "INSERT INTO jobs(id,order_value,data,token,user_token,account_id,status,source,code,cache_key,image_id,created_at,updated_at,at,enabled,balance,route_id,width,height,mock,mime_type,model,prompt,full_prompt,resolution_tier,search_text,request_id,queue_seq,payload_bytes,cost,stats_excluded,error_loggable) VALUES(@id,@order_value,@data,@token,@user_token,@account_id,@status,@source,@code,@cache_key,@image_id,@created_at,@updated_at,@at,@enabled,@balance,@route_id,@width,@height,@mock,@mime_type,@model,@prompt,@full_prompt,@resolution_tier,@search_text,@request_id,@queue_seq,@payload_bytes,@cost,@stats_excluded,@error_loggable) ON CONFLICT(id) DO UPDATE SET order_value=excluded.order_value,data=excluded.data,token=excluded.token,user_token=excluded.user_token,account_id=excluded.account_id,status=excluded.status,source=excluded.source,code=excluded.code,cache_key=excluded.cache_key,image_id=excluded.image_id,created_at=excluded.created_at,updated_at=excluded.updated_at,at=excluded.at,enabled=excluded.enabled,balance=excluded.balance,route_id=excluded.route_id,width=excluded.width,height=excluded.height,mock=excluded.mock,mime_type=excluded.mime_type,model=excluded.model,prompt=excluded.prompt,full_prompt=excluded.full_prompt,resolution_tier=excluded.resolution_tier,search_text=excluded.search_text,request_id=excluded.request_id,queue_seq=excluded.queue_seq,payload_bytes=excluded.payload_bytes,cost=excluded.cost,stats_excluded=excluded.stats_excluded,error_loggable=excluded.error_loggable",
+          "count": 20,
+          "ms": 5.565534999999045,
+          "cpuMs": 0,
+          "maxMs": 0.4498269999994591
+        },
+        {
+          "phase": "outside-update",
+          "kind": "get",
+          "sql": "SELECT count(*) AS count FROM jobs WHERE status IN ('queued','pending','running')",
+          "count": 1,
+          "ms": 5.207125000000815,
+          "cpuMs": 0,
+          "maxMs": 5.207125000000815
+        },
+        {
+          "phase": "admission",
+          "kind": "all",
+          "sql": "SELECT id, payload_bytes AS bytes FROM generation_requests WHERE id IN (SELECT request_id FROM jobs INDEXED BY idx_jobs_active_created WHERE status IN ('queued', 'pending', 'running') AND request_id IS NOT NULL)",
+          "count": 84,
+          "ms": 3.01208700000484,
+          "cpuMs": 0,
+          "maxMs": 1.0866419999999835
+        },
+        {
+          "phase": "admission",
+          "kind": "prepare",
+          "sql": "SELECT data,order_value FROM users WHERE id=?",
+          "count": 560,
+          "ms": 2.993242000016039,
+          "cpuMs": 0,
+          "maxMs": 0.10566100000050938
+        }
+      ],
+      "topServerFrames": [
+        {
+          "name": "seconds",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 29,
+          "ms": 119.20499999999996
+        },
+        {
+          "name": "canonicalJson",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 53,
+          "ms": 84.743
+        },
+        {
+          "name": "day",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 28,
+          "ms": 51.87099999999999
+        },
+        {
+          "name": "summarizeOwnerUsage",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 53,
+          "ms": 35.754999999999995
+        },
+        {
+          "name": "",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 58,
+          "ms": 29.33300000000001
+        },
+        {
+          "name": "add",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 35,
+          "ms": 16.111
+        },
+        {
+          "name": "applyEventProjection",
+          "url": "file:///app/server/store.ts",
+          "line": 2101,
+          "ms": 13.801000000000002
+        },
+        {
+          "name": "decimalRatio",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 8,
+          "ms": 12.319999999999999
+        },
+        {
+          "name": "persistDirtyRows",
+          "url": "file:///app/server/store.ts",
+          "line": 1592,
+          "ms": 10.852000000000002
+        },
+        {
+          "name": "formatAmount",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 34,
+          "ms": 9.346000000000002
+        },
+        {
+          "name": "ownerOperation",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 77,
+          "ms": 7.925000000000001
+        },
+        {
+          "name": "normalizeLegacyAmountGroup",
+          "url": "file:///app/server/resource-amounts.ts",
+          "line": 73,
+          "ms": 6.843999999999999
+        },
+        {
+          "name": "",
+          "url": "file:///app/server/owner-operations.ts",
+          "line": 63,
+          "ms": 6.788000000000001
+        },
+        {
+          "name": "upgradeGroups",
+          "url": "file:///app/server/fair-quota.ts",
+          "line": 94,
+          "ms": 6.511
+        },
+        {
+          "name": "describeCommit",
+          "url": "file:///app/server/store.ts",
+          "line": 222,
+          "ms": 5.671
+        },
+        {
+          "name": "assertDomainEvent",
+          "url": "file:///app/server/domain-events.ts",
+          "line": 76,
+          "ms": 5.3839999999999995
+        }
+      ]
+    }
+  ]
+}

@@ -1,28 +1,30 @@
-import { stripTypeScriptTypes } from 'node:module';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
-import vm from 'node:vm';
-
-const source = stripTypeScriptTypes(await readFile(new URL('../../server/gateway-runtime.ts', import.meta.url), 'utf8'), { mode: 'strip' });
-function load(context, names) {
-  const ctx = vm.createContext(context);
-  for (const name of names) {
-    const start = source.search(new RegExp(`function ${name}\\s*\\(`)), end = source.indexOf('\n}', start) + 2;
-    vm.runInContext((source.slice(start - 6, start) === 'async ' ? 'async ' : '') + source.slice(start, end), ctx);
-  }
-  return ctx;
-}
+import { createJobPresentation } from '../../server/generation/request-queries.ts';
+import { createJobDelivery, deliverDirectGeneration } from '../../server/generation/delivery.ts';
 
 test('OpenAI SSE 进度只读小 child，普通任务查询仍返回父请求完整提示词', async () => {
-  const prompt = 'x'.repeat(128000), job = { id: 'job', requestId: 'parent', status: 'queued', request: { model: 'nai-diffusion-4-5-full' } };
+  const prompt = 'x'.repeat(128000),
+    job = {
+      id: 'job',
+      requestId: 'parent',
+      status: 'queued',
+      request: { model: 'nai-diffusion-4-5-full' },
+    };
   let payloadReads = 0;
-  const ctx = load({ store: { findJobContext: async () => ({ job, queue: { progress: 1, total: 2 } }),
-    readGenerationRequest: () => { payloadReads++; return { prompt, tag: prompt, model: job.request.model }; } },
-    jobAccountCost: () => 0, publicGenerationProgress: () => ({}), publicErrorMessage: value => value,
-    publicImageUrl: () => '', jobDurationMs: () => 0
-  }, ['publicJob', 'publicJobSnapshot']);
+  const ctx = createJobPresentation({
+    store: {
+      findJobContext: async () => ({ job, queue: { progress: 1, total: 2 } }),
+      readGenerationRequest: () => {
+        payloadReads++;
+        return { prompt, tag: prompt, model: job.request.model };
+      },
+    },
+    progress: () => ({}),
+    errorMessage: (value) => value,
+    imageUrl: () => '',
+  });
   for (let index = 0; index < 3; index++) {
     const progress = await ctx.publicJobSnapshot('job');
     assert.equal(progress.queuePosition, 1);
@@ -33,18 +35,45 @@ test('OpenAI SSE 进度只读小 child，普通任务查询仍返回父请求完
   assert.equal(payloadReads, 1);
 });
 
-test('SSE close 立即清除轮询等待者与定时器，不继续写入、不取消已受理任务', async () => {
-  const job = { id: 'job', status: 'queued' }, jobWaiters = new Map(), timers = new Set(), writes = [];
-  const response = Object.assign(new EventEmitter(), { destroyed: false, write: value => writes.push(value), end() {} });
-  const ctx = load({ jobWaiters, openAiQueuePollMs: 10000,
-    setTimeout: (fn, ms) => { const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms); timers.add(timer); return timer; },
-    clearTimeout: timer => { timers.delete(timer); clearTimeout(timer); },
-    store: { update: async (fn, options) => { assert.equal(options.persist, false); return fn({ jobs: [job], users: [] }); } },
-    publicJobSnapshot: async () => ({ ...job, queuePosition: 1, queuedCount: 1 }),
-    sendOpenAiStreamHeaders() {}, openAiImageMarkdown: () => 'unused', timeoutJob: () => assert.fail('HTTP close must not cancel job')
-  }, ['streamOpenAiImageJob', 'openAiProgressLine', 'writeOpenAiChunk', 'finishOpenAiStream', 'waitForJobResult', 'removeJobWaiter', 'notifyJobWaiters']);
-  const running = ctx.streamOpenAiImageJob({}, response, { id: 'job' }, 'model', Date.now() + 30000);
-  await new Promise(resolve => setImmediate(resolve));
+test('SSE close 立即清除轮询等待者与定时器，不继续写入、不取消已受理任务', async (t) => {
+  const job = { id: 'job', status: 'queued' },
+    timers = new Set(),
+    writes = [];
+  const response = Object.assign(new EventEmitter(), {
+    destroyed: false,
+    write: (value) => writes.push(value),
+    end() {},
+  });
+  const nativeSetTimeout = globalThis.setTimeout,
+    nativeClearTimeout = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (fn, ms) => {
+    const timer = nativeSetTimeout(() => {
+      timers.delete(timer);
+      fn();
+    }, ms);
+    timers.add(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (timer) => {
+    timers.delete(timer);
+    nativeClearTimeout(timer);
+  });
+  const ctx = createJobDelivery({
+    pollMs: 10000,
+    errorMessage: (value) => value,
+    store: {
+      update: async (fn, options) => {
+        assert.equal(options.persist, false);
+        return fn({ jobs: [job], users: [] });
+      },
+    },
+    snapshot: async () => ({ ...job, queuePosition: 1, queuedCount: 1 }),
+    sendStreamHeaders() {},
+    imageMarkdown: () => 'unused',
+  });
+  const jobWaiters = ctx.waiters;
+  const running = ctx.streamOpenAiImageJob(response, { id: 'job' }, 'model', Date.now() + 30000);
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(jobWaiters.get('job')?.size, 1);
   assert.equal(timers.size, 1);
   const before = writes.length;
@@ -61,15 +90,22 @@ test('SSE close 立即清除轮询等待者与定时器，不继续写入、不�
 test('direct 已完成结果发送失败不重写任务、不退款或重新入队', async () => {
   const job = { id: 'job', status: 'done', imageId: 'image', fairCharge: { status: 'settled' } };
   const failure = new Error('synthetic socket write failed');
-  let accepted = 0;
-  const ctx = load({ isOfficialKey: () => false, directGenerateTimeoutMs: 1000,
-    acceptDirectRequest: async () => { accepted++; return { id: job.id }; },
-    waitForJobResult: async () => ({ saved: { id: job.imageId } }), sendStoredImage: async () => { throw failure; },
-    isNovelAiCapacityError: () => false, markDirectJobFailed: () => { job.status = 'failed'; },
-    removeJob: () => assert.fail('must retain admitted job'), timeoutJob: () => assert.fail('must retain admitted job')
-  }, ['handleDirectGenerate']);
-  await assert.rejects(ctx.handleDirectGenerate(new URL('http://local/generate?token=STA1N-synthetic'), { destroyed: false }), error => error === failure);
-  assert.equal(accepted, 1);
+  let sends = 0;
+  await assert.rejects(
+    deliverDirectGeneration({ destroyed: false }, job, {
+      timeoutMs: 1000,
+      waitForJobResult: async () => ({ saved: { id: job.imageId } }),
+      sendStoredImage: async () => {
+        sends++;
+        throw failure;
+      },
+      isCapacityError: () => false,
+      sendBusyImage: () => assert.fail('must propagate socket failure'),
+      sendTimeoutImage: () => assert.fail('must propagate socket failure'),
+    }),
+    (error) => error === failure,
+  );
+  assert.equal(sends, 1);
   assert.equal(job.status, 'done');
   assert.equal(job.fairCharge.status, 'settled');
   assert.equal(job.imageId, 'image');

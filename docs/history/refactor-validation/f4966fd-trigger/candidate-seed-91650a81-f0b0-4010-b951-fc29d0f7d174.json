@@ -1,0 +1,45 @@
+{
+  "stage": "seed",
+  "label": "candidate",
+  "history": 1000,
+  "machine": {
+    "platform": "linux",
+    "architecture": "x64",
+    "node": "v22.23.4",
+    "sqlite": "3.53.1",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+    "logicalCpus": 16,
+    "totalMemory": 20837376000,
+    "filesystem": {
+      "type": 61267,
+      "bsize": 4096,
+      "blocks": 263940717,
+      "bfree": 247587898,
+      "bavail": 234162030,
+      "files": 67108864,
+      "ffree": 65346068
+    }
+  },
+  "fixedActive": 8,
+  "source": "/app",
+  "seedMs": 58.874972000000014,
+  "authority": {
+    "version": 2,
+    "commitSeq": "13"
+  },
+  "openingMs": 2844.894305,
+  "rows": 1000,
+  "synchronous": 2,
+  "checkpoint": [
+    {
+      "busy": 0,
+      "log": 0,
+      "checkpointed": 0
+    }
+  ],
+  "disk": {
+    "database": 5312512,
+    "wal": 0,
+    "shm": 32768
+  }
+}

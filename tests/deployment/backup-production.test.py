@@ -65,8 +65,20 @@ class BackupTests(unittest.TestCase):
         pinned = self.run_backup(label='cutover')
         daily = [self.run_backup() for _ in range(8)]
         old, latest = daily[0], daily[-1]
-        self.assertTrue(old.exists(), 'Creating a local snapshot must not expire older backups')
-        module.retain_daily_backups(self.destination)
+
+        def upload(snapshot):
+            self.assertEqual(snapshot, latest)
+            self.assertTrue(old.exists(), 'Remote upload must precede expiry')
+            (snapshot / 'r2-backup.json').write_text('{}')
+
+        with (
+            patch.object(module, 'backup', return_value=latest),
+            patch.object(module, 'production_configuration', return_value={}),
+            patch.object(module, 'upload_business_backup', side_effect=upload),
+            patch.object(module, 'clean_archived_images', return_value=(0, 0)),
+            patch('sys.argv', ['backup-production.py']),
+        ):
+            module.main()
         self.assertFalse(old.exists())
         self.assertTrue(pinned.exists())
         self.assertEqual(len(list(self.destination.glob('daily-*'))), 7)

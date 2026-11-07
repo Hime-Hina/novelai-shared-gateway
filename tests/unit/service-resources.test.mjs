@@ -3,21 +3,29 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, statfs, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { readServiceResources } from '../../server/service-resources.ts';
+import { readServiceResources } from '../../server/reports/service-resources.ts';
 
-test('资源采样递归统计数据文件，忽略链接，磁盘使用数据目录所在卷，扫描结果缓存一分钟', async t => {
+test('资源采样递归统计数据文件，忽略链接，磁盘使用数据目录所在卷，扫描结果缓存一分钟', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'nai-resources-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const dataDir = path.join(root, 'data'), outside = path.join(root, 'outside');
+  const dataDir = path.join(root, 'data'),
+    outside = path.join(root, 'outside');
   await mkdir(path.join(dataDir, 'images'), { recursive: true });
   await mkdir(outside);
   await writeFile(path.join(dataDir, 'library.sqlite'), Buffer.alloc(23));
   await writeFile(path.join(dataDir, 'library.sqlite-wal'), Buffer.alloc(5));
   await writeFile(path.join(dataDir, 'images', 'image.png'), Buffer.alloc(41));
   await writeFile(path.join(outside, 'unrelated'), Buffer.alloc(99));
-  await symlink(outside, path.join(dataDir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  await symlink(
+    outside,
+    path.join(dataDir, 'linked'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
-  const [first, concurrent] = await Promise.all([readServiceResources(dataDir), readServiceResources(dataDir)]);
+  const [first, concurrent] = await Promise.all([
+    readServiceResources(dataDir),
+    readServiceResources(dataDir),
+  ]);
   assert.equal(first.data.bytes, 69);
   assert.equal(concurrent.data, first.data);
   assert.ok(first.memory.rssBytes > 0);
@@ -38,7 +46,7 @@ test('资源采样递归统计数据文件，忽略链接，磁盘使用数据�
   assert.notEqual(refreshed.data.checkedAt, first.data.checkedAt);
 });
 
-test('空目录为零，目录缺失或不可扫描返回未知，不妨碍内存与运行时间采样', async t => {
+test('空目录为零，目录缺失或不可扫描返回未知，不妨碍内存与运行时间采样', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'nai-resources-empty-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   assert.equal((await readServiceResources(root)).data.bytes, 0);
@@ -47,7 +55,9 @@ test('空目录为零，目录缺失或不可扫描返回未知，不妨碍内�
   for (const directory of [undefined, path.join(root, 'missing'), file]) {
     const result = await readServiceResources(directory);
     assert.equal(result.data, null);
-    if (directory !== file) assert.equal(result.disk, null);
+    if (directory !== file) {
+      assert.equal(result.disk, null);
+    }
     assert.ok(result.memory.rssBytes > 0);
     assert.ok(result.uptimeSeconds > 0);
   }
