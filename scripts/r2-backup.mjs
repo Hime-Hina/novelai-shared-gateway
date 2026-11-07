@@ -128,16 +128,43 @@ async function main() {
     } finally {
       await receipt.close();
     }
-    const backups = [...existing, { key: object.key, bytes: object.byteLength }]
-      .filter((row) => /^backups\/daily-[0-9TZ.]+\/[a-f0-9]{64}$/.test(row.key))
-      .sort((a, b) => b.key.localeCompare(a.key));
-    for (const old of backups.slice(7)) {
-      await remote.removeBackup({
-        bucket: config.bucket,
-        key: old.key,
-        byteLength: old.bytes,
-        sha256: old.key.split('/').at(-1),
-      });
+    const daily = new Map();
+    for (const row of existing) {
+      const match = /^backups\/daily-[0-9TZ.]+\/([a-f0-9]{64})$/.exec(row.key);
+      if (match) {
+        daily.set(row.key, {
+          bucket: config.bucket,
+          key: row.key,
+          byteLength: row.bytes,
+          sha256: match[1],
+        });
+      }
+    }
+    daily.set(object.key, object);
+    const backups = [...daily.values()].sort((a, b) => b.key.localeCompare(a.key));
+    const expired = backups.slice(7);
+    if (!expired.length) {
+      return;
+    }
+    // 失败尝试也可能留在列表里。所有拟保留对象通过验证后才能删旧份。
+    try {
+      await rm(encrypted);
+      for (const retained of backups.slice(0, 7)) {
+        if (retained.key === object.key) {
+          continue;
+        }
+        await rm(downloaded);
+        await rm(restored);
+        await remote.getFile(retained, downloaded);
+        await decryptBackupFile(downloaded, restored, key);
+      }
+    } catch {
+      console.error('R2 backup retention aborted; existing backups retained.');
+      process.exitCode = 2;
+      return;
+    }
+    for (const old of expired) {
+      await remote.removeBackup(old);
     }
   } finally {
     if (path.dirname(work) !== parent) {
