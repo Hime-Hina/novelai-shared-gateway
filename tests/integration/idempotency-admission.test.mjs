@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { brotliCompressSync } from 'node:zlib';
 import { JsonStore, createId, hashObject } from '../../server/storage/sqlite-store.ts';
 import {
   normalizeNovelAiRequest,
@@ -21,6 +23,7 @@ import {
   requestNormalizationDefaults,
 } from '../../server/generation/request-fingerprint.ts';
 import { parseNativeImageRequest } from '../../server/protocols/native-image.ts';
+import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 import { ImageStorage } from '../../server/storage/r2-storage.ts';
 import {
   createGenerationAdmission,
@@ -165,7 +168,7 @@ const body = () => ({
   nocache: true,
 });
 
-async function atomicFixture(t) {
+async function atomicFixture(t, { seed, artifactAvailable = async () => true } = {}) {
   const initialTime = 1800000000000;
   const store = new JsonStore(await mkdtemp(path.join(tmpdir(), 'nai-atomic-admission-')));
   await store.init();
@@ -192,6 +195,7 @@ async function atomicFixture(t) {
   ];
   fair.configureFairQuota(db, ['a', 'b', 'c', 'd']);
   fair.syncFairQuota(db, initialTime);
+  seed?.(db);
   await store.write(db);
   await store.enableEventAuthority();
   let now = initialTime + 60000,
@@ -204,7 +208,7 @@ async function atomicFixture(t) {
     store,
     payloadBudget: budget,
     now: () => now,
-    artifactAvailable: async () => true,
+    artifactAvailable,
     cleanupStaleActiveJobs: () => cleanup(),
   });
   const submit = (
@@ -222,6 +226,7 @@ async function atomicFixture(t) {
     store,
     budget,
     submit,
+    accept,
     setCleanup: (value) => {
       cleanup = value;
     },
@@ -549,6 +554,96 @@ test('首次completed cache仅绑定本人可读产物，缺失或错配回落ca
       job.id,
     );
   }
+});
+
+test('冷图读取配置暂不可用时仍可重放原回执，缓存复用同一图且不排队', async (t) => {
+  let storage;
+  const input = { ...body(), seed: 42, nocache: false };
+  const normalize = (settings) => ({
+    ...normalizeNovelAiRequest(input, settings, { maxSteps: DIRECT_URL_MAX_STEPS }),
+    allowPurchasedAnlas: false,
+  });
+  const original = Buffer.from(png, 'base64'),
+    sha256 = createHash('sha256').update(original).digest('hex'),
+    createdAt = new Date().toISOString(),
+    pikpak = new PikPakStorage({
+      url: 'https://example.invalid/cold/',
+      username: 'synthetic',
+      password: 'synthetic',
+    }),
+    differentDirectory = new PikPakStorage({
+      ...pikpak.config,
+      url: 'https://example.invalid/other/',
+    });
+  const get = t.mock.method(pikpak.client, 'customRequest', async (filename, options) => {
+    assert.equal(filename, sha256 + '.br');
+    assert.equal(options.method, 'GET');
+    return new Response(brotliCompressSync(original));
+  });
+  const wrongGet = t.mock.method(differentDirectory.client, 'customRequest', async () => {
+    assert.fail('读取前应拒绝不匹配的归档目录');
+  });
+  const { store, accept } = await atomicFixture(t, {
+    artifactAvailable: (image) => storage.available(image),
+    seed: (db) => {
+      db.images.push({
+        id: 'cold-cache',
+        token: 'STA1N-a',
+        cacheKey: requestCacheKey('STA1N-a', normalize(db.settings), 42),
+        mimeType: 'image/png',
+        createdAt,
+        r2: {
+          bucket: 'synthetic-images',
+          key: 'images/cold-cache/' + sha256,
+          byteLength: original.length,
+          sha256,
+          verifiedAt: createdAt,
+          removedAt: createdAt,
+          pikpak: { url: pikpak.config.url, uploadedAt: createdAt },
+        },
+      });
+    },
+  });
+  const admit = (key) =>
+    accept({
+      identity: { memberId: 'a' },
+      intent: generationIntent(key, normalize, { noCache: false }),
+      source: 'web',
+    });
+  const reader = (backend) =>
+    new ImageStorage(store.dataDir, null, (id) => store.findImage(id), backend);
+  storage = reader(pikpak);
+  const image = await store.findImage('cold-cache');
+  const first = await admit('cold-original');
+  const receipt = store.readGenerationIdempotency('a', 'generate', hashObject('cold-original'));
+  assert.equal(first.cacheHit, true);
+  assert.deepEqual(await storage.read(image), original);
+
+  for (const [key, backend] of [
+    ['missing-config', undefined],
+    ['wrong-directory', differentDirectory],
+  ]) {
+    storage = reader(backend);
+    const replay = await admit('cold-original');
+    assert.equal(replay.id, first.id);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(
+      store.readGenerationIdempotency('a', 'generate', hashObject('cold-original')),
+      receipt,
+    );
+    const cached = await admit(key);
+    assert.equal(cached.cacheHit, true);
+    const job = store.selectItemById('jobs', cached.id);
+    assert.equal(job.status, 'done');
+    assert.equal(job.imageId, image.id);
+    assert.equal(store.hasActiveJobs(), false);
+    await assert.rejects(storage.read(image), { statusCode: 503 });
+  }
+  assert.equal(get.mock.callCount(), 1, '受理和重放无需探测远端');
+  assert.equal(wrongGet.mock.callCount(), 0);
+  storage = reader(pikpak);
+  assert.equal((await admit('cold-original')).id, first.id);
+  assert.deepEqual(await storage.read(image), original);
 });
 
 test('有限context与规范化payload合计占原临时预算，落盘只计执行输入；重试也不能绕过', async (t) => {

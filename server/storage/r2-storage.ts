@@ -509,14 +509,7 @@ export class ImageStorage {
         await source.handle.close();
       }
     }
-    const object = source.image.r2;
-    if (object?.verifiedAt) {
-      // 准入只核对有无已配置的读取路径，实际字节在领取时校验。
-      return Boolean(
-        (this.remote && !object.removedAt) ||
-        (this.pikpak && (!object.pikpak || object.pikpak.url === this.pikpak.config.url)),
-      );
-    }
-    return Boolean(source.image.base64);
+    // 持久来源用于复用原结果，读取配置和字节校验由 read() 处理。
+    return Boolean(source.image.r2?.verifiedAt || source.image.base64);
   }
 }

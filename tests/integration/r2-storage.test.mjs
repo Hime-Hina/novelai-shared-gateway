@@ -367,11 +367,11 @@ test('冷图与旧快照从 PikPak 领取时校验原图，无回执的 R2 损�
   });
   const count = f.calls.length;
   assert.equal(await storage.available({ r2: removed }), true);
-  assert.equal(await f.storage.available({ r2: removed }), false);
+  assert.equal(await f.storage.available({ r2: removed }), true);
   assert.equal(
     f.calls.length,
     count,
-    'availability checks configured paths without a network read',
+    'availability checks persisted sources without a network read',
   );
   assert.deepEqual(await storage.read({ r2: removed }), png);
   assert.equal(f.calls.length, count, '已有移除回执时直接读取 PikPak');
