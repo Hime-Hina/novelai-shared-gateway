@@ -126,7 +126,7 @@ export interface ManagementUsage {
     waitSeconds: number | null;
     generationSeconds: number | null;
     resource?: string;
-    amount?: number;
+    amount?: number | null;
     fixed?: number | null;
     purchased?: number | null;
     chargeStatus?: string;

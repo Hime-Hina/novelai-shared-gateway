@@ -34,6 +34,8 @@ Opening 保存导入时确实存在的成员/分组、账户与额度、运营�
 
 v1/v2 备份必须先复制到隔离目录，用当前包的 `JsonStore.init()` 完成存储版本升级并关闭，再以该升级副本作为只读重放源；不要启动网关、联网派发或改写原始备份。升级会在同一事务中，把旧查询行中确实存在但旧事件未保存的上游时间/HTTP 状态追加为 `ResponseEvidenceRecorded`，保留 `legacy-query-projection` 来源及来源行摘要；旧事件不重写，缺失字段保持未知，不用派发授权时间或升级时间补造。升级失败回滚，成功后要求当前 writer/reducer。重放入口在创建或写入目标之前拒绝旧版源并提示此步骤，避免把仍可恢复的查询证据静默丢弃；已升级源中的旧事件仍可正常重放。
 
+当前 writer 的 `ArtifactPrepared`、`JobFailed`、`JobCompleted` 和 `LateResultRecovered` 写入类型要求显式提供 `response`。生命周期命令继续用同一证据 helper 表达未知时间或未发送，历史事件读取允许缺字段，版本无需变更。
+
 ```sh
 node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite --max-commits=100
 node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite

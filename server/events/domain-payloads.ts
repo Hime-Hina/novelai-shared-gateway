@@ -200,7 +200,7 @@ export interface DomainPayloads {
   ArtifactPrepared: {
     jobId: string;
     artifact: ReturnType<typeof describeStoredResult> & { id: string; attemptId: string };
-    response?: ResponseEvidence;
+    response: ResponseEvidence;
   };
   ResponseEvidenceRecorded: {
     jobId: string;
@@ -257,7 +257,7 @@ export interface DomainPayloads {
     charge: FairCharge | null;
     refund: Refund | null;
     review: Review | null;
-    response?: ResponseEvidence;
+    response: ResponseEvidence;
   };
   JobCompleted: {
     jobId: string;
@@ -265,7 +265,7 @@ export interface DomainPayloads {
     accountId: string | null;
     completedAt: EventTime;
     charge: FairCharge | null;
-    response?: ResponseEvidence;
+    response: ResponseEvidence;
   };
   WaitingJobsCancelled: {
     jobIds: string[];
@@ -281,7 +281,7 @@ export interface DomainPayloads {
     at: number;
     refundRetained: true;
     review: Review | null;
-    response?: ResponseEvidence;
+    response: ResponseEvidence;
   };
   FreeImageSucceeded: {
     jobId: string;
