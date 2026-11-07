@@ -7,7 +7,7 @@ import type {
 import { fetchNovelAiAccountQuota } from '../protocols/novelai-client.ts';
 import { withQuotaRequestDeadline } from './refresh-timeout.ts';
 import { syncFairQuota } from './fair-share.ts';
-import { recordDomainEvent } from '../events/domain-events.ts';
+import { domainDigest, recordDomainEvent } from '../events/domain-events.ts';
 import {
   isNovelAiAccountBannedError,
   isNovelAiOutOfTrialImageGenerationError,
@@ -323,7 +323,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     }
   };
 
-  // 网络等待在事务外；实际发起时领票，写事务内再核对票号与凭据，旧响应不产生观察事实。
+  // 同一账户和凭据按实际发起顺序领票。网络等待在事务外，写入前核对最新票号与当前凭据。
   async function refresh(
     ids: string[] = [],
     command?: Pick<
@@ -348,57 +348,64 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
         selected.size ? 'no matching accounts found.' : 'no accounts found.',
       );
     }
-    const results = new Array<QuotaResult>(targets.length),
-      tickets = new Map<string, number>();
+    const attempts = new Map<
+      string,
+      (typeof targets)[number] & {
+        identity: string;
+        ticket: number;
+        startedAt: string;
+        result: QuotaResult;
+      }
+    >();
     let next = 0;
     await Promise.all(
       Array.from({ length: Math.min(5, targets.length) }, async () => {
         while (next < targets.length) {
-          const index = next++,
-            target = targets[index]!;
-          const ticket = (latestTickets.get(target.id) || 0) + 1,
-            at = new Date(clock()).toISOString();
-          latestTickets.set(target.id, ticket);
-          tickets.set(target.id, ticket);
+          const target = targets[next++]!;
+          const identity = domainDigest([target.id, target.token ?? null]);
+          const attempt = {
+            ...target,
+            identity,
+            ticket: (latestTickets.get(identity) || 0) + 1,
+            startedAt: new Date(clock()).toISOString(),
+          };
+          let result: QuotaResult;
+          latestTickets.set(attempt.identity, attempt.ticket);
           try {
-            results[index] = accountQuotaResult(
-              target.id,
-              await fetch(target.token, target.proxyUrl, target.id),
-              at,
-            );
+            const quota = await fetch(attempt.token, attempt.proxyUrl, attempt.id);
+            result = accountQuotaResult(attempt.id, quota, attempt.startedAt);
           } catch (error) {
-            results[index] = accountQuotaErrorResult(target.id, error, at);
+            result = accountQuotaErrorResult(attempt.id, error, attempt.startedAt);
           }
+          attempts.set(attempt.id, { ...attempt, result });
         }
       }),
     );
-    const resultMap = new Map(results.map((result) => [result.id, result]));
-    const tokens = new Map(targets.map((target) => [target.id, target.token]));
     return await store.update(
       (db) => {
         const applied: QuotaResult[] = [];
         for (const account of db.accounts) {
-          const result = resultMap.get(account.id);
+          const attempt = attempts.get(account.id);
           if (
-            !result ||
-            account.token !== tokens.get(account.id) ||
-            latestTickets.get(account.id) !== tickets.get(account.id)
+            !attempt ||
+            account.token !== attempt.token ||
+            latestTickets.get(attempt.identity) !== attempt.ticket
           ) {
             continue;
           }
-          applyAccountQuotaResult(db, account, result, result.quotaCheckedAt);
-          applied.push(result);
+          applyAccountQuotaResult(db, account, attempt.result, attempt.startedAt);
+          applied.push(attempt.result);
         }
         if (applied.length) {
           syncFairQuota(db, clock());
         }
         return {
-          checked: results.length,
+          checked: targets.length,
           ok: applied.filter((result) => result.ok).length,
           failed: applied.filter((result) => !result.ok).length,
-          ignored: results.length - applied.length,
+          ignored: targets.length - applied.length,
           accounts: db.accounts
-            .filter((account) => resultMap.has(account.id))
+            .filter((account) => attempts.has(account.id))
             .map(options.publicAccount),
         };
       },
