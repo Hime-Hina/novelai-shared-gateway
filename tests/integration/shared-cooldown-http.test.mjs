@@ -9,9 +9,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import {
+  JsonStore,
+  applyEventProjection,
+  verifyEventProjections,
+} from '../../server/storage/sqlite-store.ts';
+import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { syncFairQuota } from '../../server/quota/fair-share.ts';
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { copyProtectedFacts, replayDomainEvents } from '../../server/events/event-store.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';
@@ -92,7 +98,8 @@ async function fixture(t, { hold = false } = {}) {
   });
   const calls = [];
   let quotaFailure = false,
-    missingQuotaField = null;
+    missingQuotaField = null,
+    wire = {};
   const upstream = http.createServer(async (req, res) => {
     if (req.url === '/user/data') {
       if (quotaFailure) {
@@ -104,8 +111,12 @@ async function fixture(t, { hold = false } = {}) {
         tier: 3,
         active: true,
         expiresAt: Math.floor(Date.now() / 1000) + 86400,
-        trainingStepsLeft: { fixedTrainingStepsLeft: 10000, purchasedTrainingSteps: 0 },
-        usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0 },
+        trainingStepsLeft: {
+          fixedTrainingStepsLeft: 10000,
+          purchasedTrainingSteps: 0,
+          ...wire.trainingStepsLeft,
+        },
+        usage: { percent: 100, isNegative: false, timeUntilNextPercent: 0, ...wire.usage },
       };
       if (missingQuotaField === 'v5') {
         delete subscription.usage.percent;
@@ -232,13 +243,16 @@ async function fixture(t, { hold = false } = {}) {
     return response.json();
   };
   await start();
+  const fairQuota = () =>
+    JSON.parse(audit.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value)
+      .fairQuota;
   const financialState = () => {
-    const state = JSON.parse(
-      audit.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value,
-    ).fairQuota;
+    const state = fairQuota();
     return {
       balances: state.balances,
       reservations: state.reservations,
+      snapshot: state.snapshot,
+      lastRefillAt: state.lastRefillAt,
       records: Object.fromEntries(
         [
           'jobs',
@@ -250,6 +264,12 @@ async function fixture(t, { hold = false } = {}) {
       ),
     };
   };
+  const quotaEvents = (db) =>
+    db
+      .prepare(
+        "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' ORDER BY commit_seq, event_index",
+      )
+      .all();
   return {
     start,
     stop,
@@ -257,13 +277,15 @@ async function fixture(t, { hold = false } = {}) {
     sharedStatus,
     jobs,
     account,
+    fairQuota,
     calls,
     release,
     financialState,
     memberKey: member.api_key,
-    async observeQuota({ failure = false, missing = null } = {}) {
+    async observeQuota({ failure = false, missing = null, overrides = {} } = {}) {
       quotaFailure = failure;
       missingQuotaField = missing;
+      wire = overrides;
       const response = await call('/api/admin/accounts/quota', {
         body: { ids: [account().id] },
         headers: { 'x-admin-token': adminToken },
@@ -274,10 +296,27 @@ async function fixture(t, { hold = false } = {}) {
     privateEvidence() {
       return {
         log: output,
-        events: audit
-          .prepare("SELECT payload FROM domain_events WHERE event_type='QuotaObserved'")
-          .all(),
+        events: quotaEvents(audit),
       };
+    },
+    verifyReplay() {
+      const target = new Database(':memory:');
+      try {
+        migrateStorage(target);
+        copyProtectedFacts(audit, target);
+        replayDomainEvents(audit, target, { project: applyEventProjection });
+        target.transaction(() => verifyEventProjections(target))();
+        assert.deepEqual(quotaEvents(target), quotaEvents(audit));
+        assert.deepEqual(
+          target.prepare('SELECT data FROM accounts').get(),
+          audit.prepare('SELECT data FROM accounts').get(),
+        );
+        const receipts = (db) =>
+          db.prepare('SELECT command_id, receipt FROM event_commits ORDER BY commit_seq').all();
+        assert.deepEqual(receipts(target), receipts(audit));
+      } finally {
+        target.close();
+      }
     },
     assertAlive() {
       assert.equal(child.exitCode, null);
@@ -391,9 +430,11 @@ test(
     assert.equal(original.status, 429);
     await original.json();
     const requestId = original.headers.get('x-nai-request-id');
+    const history = gateway.privateEvidence().events;
     for (const observation of [
       { failure: true },
       ...['v5', 'fixed', 'purchased'].map((missing) => ({ missing })),
+      { overrides: { usage: { percent: null } } },
     ]) {
       await gateway.observeQuota(observation);
       const expected = observation.failure ? 'quota_sync_error' : 'unknown_balance';
@@ -454,11 +495,74 @@ test(
         /SYNTHETIC_PRIVATE_QUOTA_ROOT/,
       );
     }
+    assert.deepEqual(gateway.privateEvidence().events.slice(0, history.length), history);
+    assert.equal(gateway.account().v5UsagePercent, null);
+    await gateway.stop();
+    gateway.verifyReplay();
+    await gateway.start();
+    assert.equal((await gateway.sharedStatus()).status, 'unknown_balance');
+    const reopened = await gateway.call('/ai/generate-image', {
+      body,
+      key: 'before-quota-failure',
+    });
+    assert.equal(reopened.status, 429);
+    await reopened.json();
+    assert.equal(reopened.headers.get('x-nai-request-id'), requestId);
+    assert.equal(gateway.calls.length, 1);
     await gateway.observeQuota();
     assert.equal((await gateway.sharedStatus()).status, 'cooldown');
     gateway.assertAlive();
   },
 );
+
+test('无效上游余额分别写为未知且禁止 V5 HTTP 预留，有效零及可选间隔不妨碍恢复', async (t) => {
+  const body = {
+    input: 'synthetic wire quota admission',
+    model: 'nai-diffusion-5-full',
+    action: 'generate',
+    parameters: { width: 1024, height: 1024, steps: 23, seed: 7, n_samples: 1 },
+  };
+  const fields = [
+    ['v5UsagePercent', { usage: { percent: null } }],
+    ['quotaFixed', { trainingStepsLeft: { fixedTrainingStepsLeft: false } }],
+    ['quotaPurchased', { trainingStepsLeft: { purchasedTrainingSteps: [] } }],
+  ];
+  for (const [field, overrides] of fields) {
+    await t.test(field, { timeout: 25000 }, async (t) => {
+      const gateway = await fixture(t);
+      await gateway.observeQuota();
+      const before = gateway.financialState();
+      await gateway.observeQuota({ overrides });
+      const saved = gateway.account(),
+        fair = gateway.fairQuota(),
+        shared = await gateway.sharedStatus();
+      const denied = await gateway.call('/ai/generate-image', { body, key: field });
+      const error = await denied.json();
+      assert.deepEqual(
+        [denied.status, saved[field], fair.status, shared.status],
+        [503, null, 'unknown_balance', 'unknown_balance'],
+      );
+      assert.match(error.message, /额度不完整/);
+      assert.equal(denied.headers.get('x-nai-request-id'), null);
+      assert.deepEqual(gateway.financialState(), before);
+      assert.equal(gateway.calls.length, 0);
+
+      await gateway.observeQuota({
+        overrides: { usage: { percent: 0, timeUntilNextPercent: [] } },
+      });
+      const recovered = gateway.account();
+      assert.equal(recovered.v5UsagePercent, 0);
+      assert.equal(recovered.quotaPurchased, 0);
+      assert.equal(recovered.v5UsageTimeUntilNextPercent, null);
+      assert.equal(gateway.fairQuota().status, 'active');
+      assert.equal((await gateway.sharedStatus()).status, 'active');
+      const depleted = await gateway.call('/ai/generate-image', { body, key: 'known-zero' });
+      assert.equal(depleted.status, 402);
+      await depleted.json();
+      assert.equal(gateway.calls.length, 0);
+    });
+  }
+});
 
 test(
   'OpenAI 已发出 SSE 响应头后的容量失败在流内结束，网关继续服务',
@@ -482,6 +586,14 @@ test(
     assert.match(response.headers.get('content-type'), /text\/event-stream/);
     await until(() => gateway.calls.length === 1);
     assert.equal(gateway.jobs()[0].status, 'running');
+    const held = gateway.financialState();
+    assert.equal(Object.values(held.reservations)[0].status, 'reserved');
+    await gateway.observeQuota({
+      overrides: { trainingStepsLeft: { fixedTrainingStepsLeft: false } },
+    });
+    assert.equal(gateway.fairQuota().status, 'unknown_balance');
+    assert.equal((await gateway.sharedStatus()).status, 'unknown_balance');
+    assert.deepEqual(gateway.financialState(), held);
     gateway.release();
     const events = (await response.text())
       .split('\n')

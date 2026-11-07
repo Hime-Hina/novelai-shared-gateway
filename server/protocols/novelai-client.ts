@@ -10,6 +10,7 @@ import type { MemberNormalizationContext } from '../generation/member-contract.t
 import { crc32, validateImageBytes, validateNativeImage } from './native-image.ts';
 import type { ImageMimeType, NativeGenerationRequest } from './native-image.ts';
 import type { PreviewProgress } from '../generation/job-previews.ts';
+import { quotaNumber } from '../quota/eligibility.ts';
 
 interface NormalizationInput {
   size?: unknown;
@@ -703,13 +704,13 @@ export async function fetchNovelAiAccountQuota(
   const stepsLeft = (subscription.trainingStepsLeft ||
     subscription.training_steps_left ||
     {}) as Record<string, unknown>;
-  const fixed = numberOrNull(
+  const fixed = quotaNumber(
     stepsLeft.fixedTrainingStepsLeft ??
       stepsLeft.fixed_training_steps_left ??
       subscription.fixedTrainingStepsLeft ??
       subscription.fixed_training_steps_left,
   );
-  const purchased = numberOrNull(
+  const purchased = quotaNumber(
     stepsLeft.purchasedTrainingSteps ??
       stepsLeft.purchased_training_steps ??
       subscription.purchasedTrainingSteps ??
@@ -779,9 +780,9 @@ export async function fetchNovelAiAccountQuota(
     tier,
     subscriptionActive: subscription.active === true,
     subscriptionExpiresAt: subscription.expiresAt ?? null,
-    v5UsagePercent: numberOrNull(usage.percent),
+    v5UsagePercent: quotaNumber(usage.percent),
     v5UsageIsNegative: Boolean(usage.isNegative ?? usage.is_negative),
-    v5UsageTimeUntilNextPercent: numberOrNull(
+    v5UsageTimeUntilNextPercent: quotaNumber(
       usage.timeUntilNextPercent ?? usage.time_until_next_percent,
     ),
     trialRemainingImages,
@@ -2075,11 +2076,6 @@ function clampNumber(value: unknown, min: number, max: number): number {
     return min;
   }
   return Math.max(min, Math.min(max, number));
-}
-
-function numberOrNull(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
 }
 
 function escapeXml(value: unknown): string {

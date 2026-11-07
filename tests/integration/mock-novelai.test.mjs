@@ -81,6 +81,87 @@ function raw(base, path, extraHeaders, bytes) {
   });
 }
 
+test('官方额度 HTTP 数值保留未知并兼容既有字段别名', async (t) => {
+  let payload;
+  const upstream = http.createServer((req, res) => {
+    assert.equal(req.url, '/user/data');
+    res.setHeader('content-type', 'application/json');
+    res.end(payload);
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => upstream.close(resolve)));
+  const env = { NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstream.address().port}` };
+  const cases = [
+    [undefined, null],
+    ['0', 0],
+    ['-1.25', -1.25],
+    ['"0"', 0],
+    ['"-1"', -1],
+    ['"1e2"', 100],
+    ['null', null],
+    ['""', null],
+    ['"  "', null],
+    ['false', null],
+    ['true', null],
+    ['[]', null],
+    ['[1]', null],
+    ['[[1]]', null],
+    ['{}', null],
+    ['1e999', null],
+    ['"1e999"', null],
+    ['"NaN"', null],
+    ['"0x10"', null],
+    ['" 1 "', null],
+  ];
+  const paths = [
+    ['fixed', 'trainingStepsLeft.fixedTrainingStepsLeft'],
+    ['fixed', 'training_steps_left.fixed_training_steps_left'],
+    ['fixed', 'fixedTrainingStepsLeft'],
+    ['fixed', 'fixed_training_steps_left'],
+    ['purchased', 'trainingStepsLeft.purchasedTrainingSteps'],
+    ['purchased', 'training_steps_left.purchased_training_steps'],
+    ['purchased', 'purchasedTrainingSteps'],
+    ['purchased', 'purchased_training_steps'],
+    ['v5UsagePercent', 'usage.percent'],
+    ['v5UsageTimeUntilNextPercent', 'usage.timeUntilNextPercent'],
+    ['v5UsageTimeUntilNextPercent', 'usage.time_until_next_percent'],
+  ];
+  for (const [field, path] of paths) {
+    await t.test(path, async () => {
+      const results = [];
+      for (const [literal] of cases) {
+        const subscription = { active: true, tier: 3 };
+        if (literal !== undefined) {
+          Object.assign(
+            subscription,
+            path.split('.').reduceRight((value, key) => ({ [key]: value }), 'raw-quota-value'),
+          );
+        }
+        payload = JSON.stringify({ subscription }).replace('"raw-quota-value"', literal);
+        results.push([literal, (await fetchNovelAiAccountQuota(token, env))[field]]);
+      }
+      assert.deepEqual(results, cases);
+    });
+  }
+  payload = JSON.stringify({
+    account: {
+      subscription: {
+        active: true,
+        tier: 3,
+        trainingStepsLeft: { fixedTrainingStepsLeft: null, fixed_training_steps_left: '7' },
+        purchasedTrainingSteps: false,
+        purchased_training_steps: 9,
+      },
+    },
+    usage: { percent: 0, timeUntilNextPercent: null, time_until_next_percent: '2.5' },
+  });
+  const compatible = await fetchNovelAiAccountQuota(token, env);
+  assert.equal(compatible.fixed, 7);
+  assert.equal(compatible.purchased, null);
+  assert.equal(compatible.v5UsagePercent, 0);
+  assert.equal(compatible.v5UsageTimeUntilNextPercent, 2.5);
+});
+
 test(
   '常驻mock与真实provider兼容：合成Opus、PNG及预览/最终MessagePack，余额固定',
   { timeout: 15000 },
