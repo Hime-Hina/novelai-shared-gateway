@@ -73,7 +73,7 @@ def clean_archived_images(source, destination):
     with closing(sqlite3.connect((source / 'library.sqlite').as_uri() + '?mode=ro', uri=True)) as db:
         images = [json.loads(row[0]) for row in db.execute('SELECT data FROM images')]
     archived = {image['file']: image['r2'] for image in images
-                if image.get('file') and image.get('r2', {}).get('verifiedAt')}
+                if image.get('file') and (image.get('r2') or {}).get('verifiedAt')}
     if not archived:
         return 0, 0
     removed, released = 0, 0
