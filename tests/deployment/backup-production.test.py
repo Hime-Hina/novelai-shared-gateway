@@ -28,7 +28,7 @@ class BackupTests(unittest.TestCase):
         self.config.write_text('SECRET=fixture-only')
         with closing(sqlite3.connect(self.source / 'library.sqlite')) as db, db:
             db.execute('CREATE TABLE images (data TEXT)')
-            db.execute('INSERT INTO images VALUES (?)', (json.dumps({'file': 'images/one.png',
+            db.execute('INSERT INTO images VALUES (?)', (json.dumps({'file': 'images/one.png', 'r2': None,
                 'sha256': hashlib.sha256(self.image.read_bytes()).hexdigest(), 'byteLength': self.image.stat().st_size}),))
 
     def run_backup(self, **options):

@@ -112,7 +112,7 @@ test('artifact storage changes without a fact fail and roll back the authoritati
         userToken: 'secret-a',
         status: 'done',
         imageId: image.id,
-        createdAt: at,
+        createdAt: new Date().toISOString(),
       });
     },
     { immediate: true, collections: ['images', 'jobs'] },
