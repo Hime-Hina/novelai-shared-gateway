@@ -210,4 +210,4 @@ pnpm --filter @novelai-gateway/web test
 
 测试集中在 `tests/unit/` 和 `tests/integration/`，合成样本及共享辅助代码分别位于 `tests/fixtures/`、`tests/helpers/`。测试使用合成账户、合成图片与临时目录，不调用官方生图。计价包含 184 个固定的官网基础报价样例和 12 组 PNG/WebP 成对样例，仓库只保存测试参数和数字结果，不依赖本机的官网脚本副本。HTTP 集成测试会启动本机模拟上游与独立网关，核对初始化、成员登录、ZIP／MessagePack、扣费、退款及持久化；临时数据保留在系统临时目录，便于复核。不要用生产数据运行初始化测试，也不要把测试临时凭据或运行日志上传。
 
-<!-- Temporary documentation CI probe 1. -->
+<!-- Temporary documentation CI probe 2. -->
