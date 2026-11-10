@@ -14,9 +14,11 @@ permissions:
   contents: read
 
 jobs:
-  offline-validation:
+  classify-changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.changes.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,6 +32,34 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash .github/ci-docs-only.sh "$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+  backend-tests:
+    needs: classify-changes
+    if: needs.classify-changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify production backup and retention with synthetic data
+        run: python3 tests/deployment/backup-production.test.py
+      - run: exit 1 # Intentional backend failure for this candidate run only
+
+  web-and-package:
+    needs: classify-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
         with:
           run_install: false
@@ -47,30 +77,25 @@ jobs:
       - run: node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
       - run: pnpm run typecheck
       - run: pnpm run check
-      - name: Verify production backup and retention with synthetic data
-        if: steps.changes.outputs.docs_only != 'true'
-        run: python3 tests/deployment/backup-production.test.py
-      - if: steps.changes.outputs.docs_only != 'true'
-        run: pnpm test
       - run: pnpm --filter @novelai-gateway/web typecheck
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/web test
       - run: pnpm --filter @novelai-gateway/executor typecheck
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/executor test
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/executor build
       - name: Verify Nuxt routes, streaming and process isolation
-        if: steps.changes.outputs.docs_only != 'true'
+        if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/web test:executor
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: docker build --tag novelai-shared-gateway:check .
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .
-      - if: steps.changes.outputs.docs_only != 'true'
+      - if: needs.classify-changes.outputs.docs_only != 'true'
         run: docker build --file executor/Dockerfile --tag novelai-shared-gateway-executor:check .
       - name: Verify packaged executor over real HTTP
-        if: steps.changes.outputs.docs_only != 'true'
+        if: needs.classify-changes.outputs.docs_only != 'true'
         run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:rw,uid=1000,gid=1000
@@ -79,7 +104,7 @@ jobs:
           novelai-shared-gateway-executor:check
           node --test /checks/runtime-http.test.mjs
       - name: Export verified Linux test release
-        if: steps.changes.outputs.docs_only != 'true'
+        if: needs.classify-changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -185,7 +210,7 @@ jobs:
             sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
           )
       - name: Upload verified Linux test release
-        if: steps.changes.outputs.docs_only != 'true'
+        if: needs.classify-changes.outputs.docs_only != 'true'
         # Official actions/upload-artifact v4.6.2; upload the tar to retain file modes/symlinks.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -196,6 +221,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  offline-validation:
+    needs: [classify-changes, backend-tests, web-and-package]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful validation results
+        shell: bash
+        env:
+          CLASSIFICATION_RESULT: ${{ needs.classify-changes.result }}
+          DOCS_ONLY: ${{ needs.classify-changes.outputs.docs_only }}
+          BACKEND_RESULT: ${{ needs.backend-tests.result }}
+          PACKAGE_RESULT: ${{ needs.web-and-package.result }}
+        run: |
+          expected_backend=success
+          if [[ "$DOCS_ONLY" == true ]]; then
+            expected_backend=skipped
+          fi
+          printf 'classify-changes=%s backend-tests=%s (expected %s) web-and-package=%s\n' \
+            "$CLASSIFICATION_RESULT" "$BACKEND_RESULT" "$expected_backend" "$PACKAGE_RESULT"
+          [[ "$CLASSIFICATION_RESULT" == success &&
+             "$BACKEND_RESULT" == "$expected_backend" &&
+             "$PACKAGE_RESULT" == success ]]
 
   node24-reader:
     runs-on: ubuntu-latest
