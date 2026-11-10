@@ -50,7 +50,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Verify production backup and retention with synthetic data
         run: python3 tests/deployment/backup-production.test.py
-      - run: exit 1 # Intentional backend failure for this candidate run only
+      - run: pnpm test
 
   web-and-package:
     needs: classify-changes
