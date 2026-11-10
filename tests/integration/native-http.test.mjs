@@ -47,6 +47,10 @@ const body = (model = 'nai-diffusion-5-full', extra = {}) => ({
     ...extra,
   },
 });
+const upstreamToken = 'pst-synthetic-offline-fixture-only';
+const privateMarker = 'synthetic-private-generation-diagnostic';
+const safeFailure = '生成失败，请稍后重试或联系管理员。';
+const legacyKey = 'synthetic-legacy-private-error';
 const near = (actual, expected) =>
   assert.ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 
@@ -98,21 +102,17 @@ async function* streamEvents(response) {
   }
 }
 
-test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 240000 }, async (t) => {
-  let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
+async function nativeFixture(t, { legacy = false } = {}) {
+  const bootstrapDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
   const adminToken = randomBytes(32).toString('hex');
-  const upstreamToken = 'pst-synthetic-offline-fixture-only';
-  const privateMarker = 'synthetic-private-generation-diagnostic';
-  const safeFailure = '生成失败，请稍后重试或联系管理员。';
-  const legacyKey = 'synthetic-legacy-private-error';
-  const legacyError = `ENOENT: no such file or directory, open '${path.join(dataDir, privateMarker)}'`;
-  const legacyRequest = parseNativeImageRequest(body());
   const initialized = await bootstrap({
-    env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir },
+    env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: bootstrapDir },
     log() {},
   });
   const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-  dataDir = await createLegacyDatabaseFixture(dataDir);
+  const dataDir = await createLegacyDatabaseFixture(bootstrapDir);
+  const legacyError = `ENOENT: no such file or directory, open '${path.join(bootstrapDir, privateMarker)}'`;
+  const legacyRequest = parseNativeImageRequest(body());
   const seeded = new JsonStore(dataDir);
   await seeded.init();
   try {
@@ -131,63 +131,69 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       upstreamStatus: 'active',
     });
     syncFairQuota(db);
-    // The file is the sole copy: renaming it below must exercise a real read failure, without an imported inline fallback.
-    await mkdir(path.join(dataDir, 'images'), { recursive: true });
-    await writeFile(path.join(dataDir, 'images', 'img-access-owner.png'), png);
-    db.images.push({
-      id: 'img-access-owner',
-      token: credentials[0].api_key,
-      mimeType: 'image/png',
-      file: 'images/img-access-owner.png',
-      byteLength: png.length,
-      sha256: createHash('sha256').update(png).digest('hex'),
-    });
-    db.jobs.push({
-      id: 'job-access-owner',
-      userToken: credentials[0].api_key,
-      status: 'done',
-      imageId: 'img-access-owner',
-      createdAt: new Date().toISOString(),
-    });
-    db.jobs.push({
-      id: 'job-legacy-private-error',
-      source: 'novelai-native',
-      userToken: credentials[0].api_key,
-      accountId: db.accounts[0].id,
-      status: 'failed',
-      request: legacyRequest,
-      error: legacyError,
-      errorStatus: 500,
-      errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-    });
+    if (legacy) {
+      // The file is the sole copy: renaming it below must exercise a real read failure, without an imported inline fallback.
+      await mkdir(path.join(dataDir, 'images'), { recursive: true });
+      await writeFile(path.join(dataDir, 'images', 'img-access-owner.png'), png);
+      db.images.push({
+        id: 'img-access-owner',
+        token: credentials[0].api_key,
+        mimeType: 'image/png',
+        file: 'images/img-access-owner.png',
+        byteLength: png.length,
+        sha256: createHash('sha256').update(png).digest('hex'),
+      });
+      db.jobs.push({
+        id: 'job-access-owner',
+        userToken: credentials[0].api_key,
+        status: 'done',
+        imageId: 'img-access-owner',
+        createdAt: new Date().toISOString(),
+      });
+      db.jobs.push({
+        id: 'job-legacy-private-error',
+        source: 'novelai-native',
+        userToken: credentials[0].api_key,
+        accountId: db.accounts[0].id,
+        status: 'failed',
+        request: legacyRequest,
+        error: legacyError,
+        errorStatus: 500,
+        errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+    }
     await seeded.write(db);
-    seeded.persistGenerationIdempotency({
-      member_id: credentials[0].user_id,
-      operation: 'generate',
-      key_hash: hashObject(legacyKey),
-      fingerprint: generationRequestFingerprint(legacyRequest, { noCache: true }),
-      normalization_context: '{}',
-      job_id: 'job-legacy-private-error',
-      request_id: null,
-      created_at: new Date().toISOString(),
-    });
+    if (legacy) {
+      seeded.persistGenerationIdempotency({
+        member_id: credentials[0].user_id,
+        operation: 'generate',
+        key_hash: hashObject(legacyKey),
+        fingerprint: generationRequestFingerprint(legacyRequest, { noCache: true }),
+        normalization_context: '{}',
+        job_id: 'job-legacy-private-error',
+        request_id: null,
+        created_at: new Date().toISOString(),
+      });
+    }
   } finally {
     await seeded.close();
   }
 
   const calls = [];
-  let scenario = 'initial HTTP compatibility checks';
-  let failAt = -1,
-    failStatus = 500,
-    officialFixed = 10000,
-    officialV5 = 100;
-  let activeGenerations = 0,
-    maxActiveGenerations = 0,
-    holdNextMs = 0;
-  let malformedNext = false;
+  const mock = {
+    scenario: t.name,
+    failAt: -1,
+    failStatus: 500,
+    maxActiveGenerations: 0,
+    holdNextMs: 0,
+    malformedNext: false,
+  };
+  let officialFixed = 10000,
+    officialV5 = 100,
+    activeGenerations = 0;
   const previewGates = new Map();
   const previewGate = (seed, step, disconnect = false) => {
     let release, receive;
@@ -260,12 +266,12 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       pathname: req.url,
       payload,
       startedAt: Date.now(),
-      scenario,
-      failAtOnReceive: failAt,
+      scenario: mock.scenario,
+      failAtOnReceive: mock.failAt,
     };
     calls.push(call);
     activeGenerations++;
-    maxActiveGenerations = Math.max(maxActiveGenerations, activeGenerations);
+    mock.maxActiveGenerations = Math.max(mock.maxActiveGenerations, activeGenerations);
     let counted = true;
     const inactive = () => {
       if (counted) {
@@ -289,20 +295,20 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       return;
     }
     previewGates.get(payload.parameters.seed)?.receive();
-    const delay = holdNextMs;
-    holdNextMs = 0;
+    const delay = mock.holdNextMs;
+    mock.holdNextMs = 0;
     call.holdMs = delay;
     if (delay) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    call.failAtOnResponse = failAt;
-    if (calls.length === failAt) {
-      call.responseStatus = failStatus;
-      res.writeHead(failStatus, { 'content-type': 'application/json' });
+    call.failAtOnResponse = mock.failAt;
+    if (calls.length === mock.failAt) {
+      call.responseStatus = mock.failStatus;
+      res.writeHead(mock.failStatus, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
           message:
-            failStatus === 429
+            mock.failStatus === 429
               ? 'Concurrent generation limit reached'
               : 'synthetic generation failure',
           diagnostic: privateMarker,
@@ -311,8 +317,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       );
       return;
     }
-    if (malformedNext) {
-      malformedNext = false;
+    if (mock.malformedNext) {
+      mock.malformedNext = false;
       call.responseStatus = 200;
       call.malformed = true;
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -454,17 +460,17 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     let state;
     try {
       state = {
-        scenario,
+        scenario: mock.scenario,
         observedAt: Date.now(),
         request,
         callsAfter: calls.length,
         mock: {
-          failAt,
-          failStatus,
+          failAt: mock.failAt,
+          failStatus: mock.failStatus,
           activeGenerations,
-          maxActiveGenerations,
-          holdNextMs,
-          malformedNext,
+          maxActiveGenerations: mock.maxActiveGenerations,
+          holdNextMs: mock.holdNextMs,
+          malformedNext: mock.malformedNext,
         },
         calls: calls.slice(-16).map((call) => ({
           pathname: call.pathname,
@@ -537,7 +543,12 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         child: { exitCode: child.exitCode, signalCode: child.signalCode },
       };
     } catch (readError) {
-      state = { scenario, request, callsAfter: calls.length, readError: String(readError) };
+      state = {
+        scenario: mock.scenario,
+        request,
+        callsAfter: calls.length,
+        readError: String(readError),
+      };
     }
     const failure = {
       name: error?.name,
@@ -590,6 +601,110 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(response.status, 200);
     return (await response.json()).quota;
   };
+
+  return {
+    dataDir,
+    legacyError,
+    adminToken,
+    credentials,
+    calls,
+    mock,
+    previewGate,
+    auditReader,
+    dispatchEvidence,
+    baseUrl,
+    gatewayPort,
+    env,
+    stop,
+    record,
+    fetchLocal,
+    post,
+    cookies,
+    quota,
+  };
+}
+
+function checkAccounting({ auditReader, dispatchEvidence, calls }, jobs) {
+  const { fairQuota } = JSON.parse(
+    auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value,
+  );
+  assert.deepEqual(fairQuota.reservations, {});
+  const settlements = auditReader
+    .prepare('SELECT charge FROM fair_quota_settlements')
+    .all()
+    .map((row) => JSON.parse(row.charge));
+  assert.ok(settlements.every((charge) => charge.status !== 'reserved'));
+  assert.ok(jobs.every((job) => ['done', 'failed'].includes(job.status)));
+  assert.equal(dispatchEvidence.length, calls.length);
+  for (const dispatched of dispatchEvidence) {
+    assert.equal(dispatched.length, 1);
+    assert.ok(Number.isSafeInteger(dispatched[0].queueSeq) && dispatched[0].queueSeq > 0);
+    assert.equal(dispatched[0].attempt.id, dispatched[0].reservation.attemptId);
+    assert.equal(dispatched[0].reservation.status, 'reserved');
+    assert.deepEqual(JSON.parse(dispatched[0].ledger).attempt, dispatched[0].attempt);
+  }
+  const audit = auditReader
+    .prepare("SELECT data FROM ledger WHERE source LIKE 'generation_%'")
+    .all()
+    .map((row) => JSON.parse(row.data));
+  for (const job of jobs) {
+    const refunds = audit.filter(
+      (event) => event.jobId === job.id && event.type === 'generation_refunded',
+    );
+    const losses = audit.filter(
+      (event) => event.jobId === job.id && event.type === 'generation_loss_suspected',
+    );
+    assert.equal(refunds.length, job.fairCharge?.status === 'refunded' ? 1 : 0);
+    if (!job.fairCharge || job.status === 'done') {
+      assert.equal(losses.length, 0);
+    }
+    if (losses.length) {
+      assert.equal(losses.length, 1);
+      assert.equal(losses[0].actualConsumed, null);
+      assert.equal(losses[0].response.upstreamHttpStatus, job.upstreamHttpStatus);
+    }
+  }
+  return { audit, settlements };
+}
+
+function checkSingleGeneration(fixture, status, settlementStatus) {
+  const jobs = fixture.auditReader
+    .prepare('SELECT data FROM jobs')
+    .all()
+    .map((row) => JSON.parse(row.data));
+  assert.equal(fixture.calls.length, 1);
+  assert.equal(jobs.length, 1);
+  const [job] = jobs;
+  assert.equal(job.status, status);
+  const { audit, settlements } = checkAccounting(fixture, jobs);
+  assert.deepEqual(
+    settlements.map((charge) => charge.status),
+    [settlementStatus],
+  );
+  return { job, audit };
+}
+
+test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 240000 }, async (t) => {
+  const fixture = await nativeFixture(t, { legacy: true });
+  const {
+    dataDir,
+    legacyError,
+    adminToken,
+    credentials,
+    calls,
+    mock,
+    previewGate,
+    auditReader,
+    baseUrl,
+    gatewayPort,
+    env,
+    stop,
+    record,
+    fetchLocal,
+    post,
+    cookies,
+    quota,
+  } = fixture;
 
   await t.test('后端旧门户及静态资源的 GET/HEAD 均为 404，无重定向或成功回退', async () => {
     for (const pathname of [
@@ -914,42 +1029,6 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(calls.length, before + 1);
   });
 
-  await t.test('上游 200 返回 HTML 也按失败退款，不保存为成功图片', async () => {
-    const before = await quota();
-    const beforeCalls = calls.length;
-    malformedNext = true;
-    const response = await post('/ai/generate-image', body());
-    assert.ok(response.status >= 400);
-    assert.equal((await quota()).v5Available, before.v5Available);
-    assert.equal(calls.length, beforeCalls + 1);
-  });
-
-  await t.test('direct 生图仍返回原图片，实际派发使用持久排队序号', async () => {
-    const before = calls.length;
-    const query = new URLSearchParams({
-      token: credentials[0].api_key,
-      prompt: 'direct queue sequence',
-      artist: '',
-      model: 'nai-diffusion-4-5-full',
-      width: '1024',
-      height: '1024',
-      steps: '28',
-      seed: '893',
-      nocache: '1',
-    });
-    const response = await fetchLocal('/generate?' + query);
-    assert.equal(response.status, 200);
-    assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
-    assert.equal(calls.length, before + 1);
-    const row = auditReader
-      .prepare(
-        "SELECT data, queue_seq FROM jobs WHERE source = 'direct' ORDER BY order_value DESC LIMIT 1",
-      )
-      .get();
-    assert.ok(Number.isSafeInteger(row.queue_seq) && row.queue_seq > 0);
-    assert.equal(JSON.parse(row.data).queueSeq, row.queue_seq);
-  });
-
   await t.test(
     'Full、5C 与 Medium 从两个流式路径返回可解码最终图，按实际参数只扣本人',
     async (subtest) => {
@@ -1023,29 +1102,6 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       }
     },
   );
-
-  await t.test('桌面客户端 multipart 别名与普通 ZIP 接口兼容', async () => {
-    const input = body('nai-diffusion-4-5-full', { uc_preset: 0, quality_toggle: false });
-    const form = new FormData();
-    form.append(
-      'request',
-      new Blob([JSON.stringify(input)], { type: 'application/json' }),
-      'request.json',
-    );
-    const before = await quota();
-    const response = await fetchLocal('/v1/ai/generate-image', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${credentials[0].api_key}` },
-      body: form,
-    });
-    assert.equal(response.status, 200);
-    assert.match(response.headers.get('content-type'), /application\/zip/);
-    assert.equal(Buffer.from(await response.arrayBuffer()).readUInt32LE(0), 0x04034b50);
-    assert.equal(calls.at(-1).payload.parameters.ucPreset, 0);
-    assert.equal(calls.at(-1).payload.parameters.qualityToggle, false);
-    assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined);
-    assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);
-  });
 
   await t.test('OpenAI 模型目录、非流式图片领取与流式结束契约通过真实 HTTP 验证', async () => {
     const model = 'nai-diffusion-4-5-full:k_euler_ancestral';
@@ -1127,9 +1183,9 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   await t.test(
     '首图失败保留HTTP错误；批次final先结算，次图预览后断流返回error并退款',
     async (subtest) => {
-      scenario = 'single failure then partial batch';
+      mock.scenario = 'single failure then partial batch';
       let before = await quota();
-      failAt = calls.length + 1;
+      mock.failAt = calls.length + 1;
       const failed = await post('/ai/generate-image', body(), credentials[0].api_key, {
         accept: 'application/json',
       });
@@ -1155,7 +1211,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(failedRequest.jobs[0].error, safeFailure);
       near((await quota()).v5Available, before.v5Available);
       before = await quota();
-      failAt = -1;
+      mock.failAt = -1;
       const beforeCalls = calls.length,
         gate = previewGate(801, 9, true);
       subtest.after(() => gate.release());
@@ -1218,7 +1274,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   await t.test(
     'SSE 部分失败和同键 JSON 重放只公开分类文案，原错误帧留作管理员诊断',
     async (subtest) => {
-      scenario = 'private upstream stream error';
+      mock.scenario = 'private upstream stream error';
       const before = await quota(),
         startCount = calls.length,
         key = 'private-stream-error';
@@ -1294,11 +1350,11 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   await t.test(
     '两位成员同时生图，第一张超过十秒时第二张仍排队，完整结束后才接续',
     async (subtest) => {
-      scenario = 'two members with held first generation';
+      mock.scenario = 'two members with held first generation';
       const before = [await quota(), await quota(1)],
         startCount = calls.length;
-      holdNextMs = 11600;
-      maxActiveGenerations = 0;
+      mock.holdNextMs = 11600;
+      mock.maxActiveGenerations = 0;
       const firstBody = body('nai-diffusion-5-full', { seed: 9001, stream: 'sse' }),
         key = 'live-preview-disconnect-replay';
       const gate = previewGate(9001, 11);
@@ -1386,7 +1442,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         assert.ok(final);
         assert.deepEqual(Buffer.from(final.image), response === replay ? largePng : png);
       }
-      assert.equal(maxActiveGenerations, 1);
+      assert.equal(mock.maxActiveGenerations, 1);
       assert.equal(calls.length - startCount, 2);
       assert.ok(calls[startCount + 1].startedAt - calls[startCount].finishedAt >= 10000);
       const cost = quoteFairRequest(parseNativeImageRequest(body()));
@@ -1397,7 +1453,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   );
 
   await t.test('成员上限与原子停止接单：排队取消，在途结算，恢复不续旧批次', async () => {
-    scenario = 'admission limit and member stop';
+    mock.scenario = 'admission limit and member stop';
     const manage = (value) =>
       fetchLocal('/api/admin/member-management', {
         method: 'POST',
@@ -1411,7 +1467,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const memberId = credentials[0].user_id;
     const startCount = calls.length,
       before = await quota();
-    holdNextMs = 3000;
+    mock.holdNextMs = 3000;
     const batch = post('/ai/generate-image-stream', body('nai-diffusion-5-full', { n_samples: 3 }));
     const startedDeadline = Date.now() + 20000;
     while (calls.length === startCount && Date.now() < startedDeadline) {
@@ -1489,63 +1545,28 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
   });
 
   await t.test('上游并发锁返回 429 与重试时间，预扣退回且不自动重发', async () => {
-    scenario = 'upstream capacity rejection';
+    mock.scenario = 'upstream capacity rejection';
     const before = await quota();
-    failStatus = 429;
-    failAt = calls.length + 1;
+    mock.failStatus = 429;
+    mock.failAt = calls.length + 1;
     const response = await post('/ai/generate-image-stream', body());
     assert.equal(response.status, 429);
     assert.equal(response.headers.get('retry-after'), '30');
     const error = await response.json();
     assert.deepEqual(error, { message: error.error, statusCode: 429, error: error.error });
     near((await quota()).v5Available, before.v5Available);
-    assert.equal(calls.length, failAt);
+    assert.equal(calls.length, mock.failAt);
   });
 
   await stop();
   const persisted = new JsonStore(dataDir);
   await persisted.init();
   try {
-    const snapshot = await persisted.readCollections(['accounts', 'jobs', 'settings']);
+    const snapshot = await persisted.readCollections(['accounts', 'jobs']);
     assert.equal(snapshot.accounts[0].capacityConcurrencyLimit, 1);
-    assert.deepEqual(snapshot.settings.fairQuota.reservations, {});
-    const reservations = persisted.sqlite
-      .prepare('SELECT charge FROM fair_quota_settlements')
-      .all()
-      .map((row) => JSON.parse(row.charge));
-    assert.ok(reservations.some((charge) => charge.status === 'settled'));
-    assert.ok(reservations.some((charge) => charge.status === 'refunded'));
-    assert.ok(reservations.every((charge) => charge.status !== 'reserved'));
-    assert.ok(snapshot.jobs.every((job) => ['done', 'failed'].includes(job.status)));
-    assert.equal(dispatchEvidence.length, calls.length);
-    for (const dispatched of dispatchEvidence) {
-      assert.equal(dispatched.length, 1);
-      assert.ok(Number.isSafeInteger(dispatched[0].queueSeq) && dispatched[0].queueSeq > 0);
-      assert.equal(dispatched[0].attempt.id, dispatched[0].reservation.attemptId);
-      assert.equal(dispatched[0].reservation.status, 'reserved');
-      assert.deepEqual(JSON.parse(dispatched[0].ledger).attempt, dispatched[0].attempt);
-    }
-    const audit = auditReader
-      .prepare("SELECT data FROM ledger WHERE source LIKE 'generation_%'")
-      .all()
-      .map((row) => JSON.parse(row.data));
-    for (const job of snapshot.jobs) {
-      const refunds = audit.filter(
-        (event) => event.jobId === job.id && event.type === 'generation_refunded',
-      );
-      const losses = audit.filter(
-        (event) => event.jobId === job.id && event.type === 'generation_loss_suspected',
-      );
-      assert.equal(refunds.length, job.fairCharge?.status === 'refunded' ? 1 : 0);
-      if (!job.fairCharge || job.status === 'done') {
-        assert.equal(losses.length, 0);
-      }
-      if (losses.length) {
-        assert.equal(losses.length, 1);
-        assert.equal(losses[0].actualConsumed, null);
-        assert.equal(losses[0].response.upstreamHttpStatus, job.upstreamHttpStatus);
-      }
-    }
+    const { audit, settlements } = checkAccounting(fixture, snapshot.jobs);
+    assert.ok(settlements.some((charge) => charge.status === 'settled'));
+    assert.ok(settlements.some((charge) => charge.status === 'refunded'));
     assert.ok(
       audit.some(
         (event) =>
@@ -1747,4 +1768,71 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       await exited;
     }
   });
+});
+
+test('上游 200 返回 HTML 也按失败退款，不保存为成功图片', async (subtest) => {
+  const fixture = await nativeFixture(subtest);
+  const { mock, post, quota } = fixture;
+  const before = await quota();
+  mock.malformedNext = true;
+  const response = await post('/ai/generate-image', body());
+  assert.ok(response.status >= 400);
+  assert.equal((await quota()).v5Available, before.v5Available);
+  const { job, audit } = checkSingleGeneration(fixture, 'failed', 'refunded');
+  assert.ok(!job.imageId);
+  assert.ok(
+    audit.some(
+      (event) =>
+        event.type === 'generation_loss_suspected' && event.response.upstreamHttpStatus === 200,
+    ),
+  );
+});
+
+test('direct 生图仍返回原图片，实际派发使用持久排队序号', async (subtest) => {
+  const fixture = await nativeFixture(subtest);
+  const { credentials, fetchLocal, auditReader } = fixture;
+  const query = new URLSearchParams({
+    token: credentials[0].api_key,
+    prompt: 'direct queue sequence',
+    artist: '',
+    model: 'nai-diffusion-4-5-full',
+    width: '1024',
+    height: '1024',
+    steps: '28',
+    seed: '893',
+    nocache: '1',
+  });
+  const response = await fetchLocal('/generate?' + query);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  checkSingleGeneration(fixture, 'done', 'settled');
+  const row = auditReader.prepare("SELECT data, queue_seq FROM jobs WHERE source = 'direct'").get();
+  assert.ok(Number.isSafeInteger(row.queue_seq) && row.queue_seq > 0);
+  assert.equal(JSON.parse(row.data).queueSeq, row.queue_seq);
+});
+
+test('桌面客户端 multipart 别名与普通 ZIP 接口兼容', async (subtest) => {
+  const fixture = await nativeFixture(subtest);
+  const { credentials, fetchLocal, calls, quota } = fixture;
+  const input = body('nai-diffusion-4-5-full', { uc_preset: 0, quality_toggle: false });
+  const form = new FormData();
+  form.append(
+    'request',
+    new Blob([JSON.stringify(input)], { type: 'application/json' }),
+    'request.json',
+  );
+  const before = await quota();
+  const response = await fetchLocal('/v1/ai/generate-image', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${credentials[0].api_key}` },
+    body: form,
+  });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /application\/zip/);
+  assert.equal(Buffer.from(await response.arrayBuffer()).readUInt32LE(0), 0x04034b50);
+  assert.equal(calls.at(-1).payload.parameters.ucPreset, 0);
+  assert.equal(calls.at(-1).payload.parameters.qualityToggle, false);
+  assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined);
+  assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);
+  checkSingleGeneration(fixture, 'done', 'settled');
 });

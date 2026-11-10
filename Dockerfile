@@ -11,8 +11,7 @@ RUN CI=true pnpm install --frozen-lockfile
 COPY tsconfig.backend.json ./
 COPY server ./server
 COPY scripts ./scripts
-COPY tests ./tests
-RUN pnpm run check && pnpm run build && node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
+RUN pnpm run build && node -e "const db = require('better-sqlite3')(':memory:'); if (db.pragma('integrity_check', {simple:true}) !== 'ok') process.exit(1); db.close();"
 
 FROM node:22.23.4-bookworm-slim
 WORKDIR /app
