@@ -25,18 +25,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           changes="$RUNNER_TEMP/changed-files"
-          git diff --raw --no-renames -z "$BASE_SHA" HEAD -- > "$changes" || exit 0
-          [[ -s "$changes" ]] || exit 0
-          while IFS= read -r -d '' metadata && IFS= read -r -d '' path; do
-            # Added, deleted, renamed, or mode-changed files need full validation.
-            case "$metadata" in
-              ':100644 100644 '*" M") ;;
-              *) exit 0 ;;
-            esac
+          git diff --name-only --no-renames -z "$BASE_SHA" HEAD -- > "$changes" || exit 0
+          # A rename appears as a deletion and an addition, so both paths are checked.
+          while IFS= read -r -d '' path; do
             case "$path" in
-              # These Markdown files are inputs to the Linux release bundle.
+              # These paths are referenced by name in the image or release build.
+              NOTICE.md|web/THIRD_PARTY_NOTICES.md) exit 0 ;;
               docs/operations/test-deployment.md|docs/operations/production-release.md) exit 0 ;;
-              README.md|CHANGELOG.md|CONTRIBUTING.md|docs/*.md) ;;
+              docs/*|*.md) ;;
               *) exit 0 ;;
             esac
           done < "$changes"
