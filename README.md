@@ -6,7 +6,7 @@
 
 文档按计划、接口契约、架构、运维和历史证据分组，统一入口见[文档导航](docs/README.md)。开发、格式和验证命令见[贡献指南](CONTRIBUTING.md)。
 
-当前重构设计与完成依据见[架构重构与成员生成计划](docs/plans/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，实现规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/contracts/member-generation-contract.md)。R00–R14 的历史验收及量化取舍继续保留；R15/R18 后续修复、issue #14 的工程门禁和当前限制统一见计划第 16 节，尚未部署生产。多执行器、多账号/车队调度和数据库系统迁移归[后续扩展计划](docs/plans/scaling-follow-up-plan.md)。
+当前重构设计与完成依据见[架构重构与成员生成计划](docs/plans/architecture-refactor-plan.md)：保留单执行器、单共享 Opus 和 SQLite，实现规则归属、完整事件溯源及[前端能力、统一报价、成员生成接口契约](docs/contracts/member-generation-contract.md)。R00–R14 的历史验收及量化取舍继续保留；R15/R18 后续修复、issue #14 的工程门禁和当前限制统一见计划第 16 节。多执行器、多账号/车队调度和数据库系统迁移归[后续扩展计划](docs/plans/scaling-follow-up-plan.md)。
 
 已完成的前端工程化、实时状态、TypeScript、排队与隔离部署等工作见[上一轮现代化实施记录](docs/history/modernization-plan.md)。接口行为以[API 契约](docs/contracts/api-contract.md)为准，各阶段结果以实际实施记录和对应验收为准。
 
@@ -14,7 +14,7 @@ bob 的正式双服务配置、完整备份、切换与回退边界见[正式发
 
 成员、owner 与私有管理网页及 API 入口位于 `web/`，使用 Nuxt、Vue 3、TypeScript 和 Naive UI。网页只使用 `/`、`/owner`、`/admin`；旧 HTML、JS、CSS 入口已删除，返回 404，不重定向。独立后端 CLI 和根 Docker 镜像只提供 API，网页需启动 Nuxt；Compose 仍提供网页与执行器两个服务。Nuxt 将鉴权、SQLite 和生图调度交给独立执行器；长请求及图片逐块转发，断开网页连接不取消已受理的任务。开发方式和 SSR 样式接入见 [Nuxt 成员页](docs/architecture/nuxt-member-portal.md)，内部边界见[执行服务](docs/architecture/executor-service.md)。
 
-源码已按职责分组，入口和模块归属见 [server/README.md](server/README.md)。后续审计问题与目录整理记录在架构计划 R15–R17；R15 的三项功能问题仍待修复，本次整理不改变其状态。
+源码已按职责分组，入口和模块归属见 [server/README.md](server/README.md)。后续审计问题与目录整理记录在架构计划 R15–R17。
 
 ## 功能
 
