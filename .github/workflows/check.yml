@@ -2,6 +2,8 @@ name: Gateway checks
 
 on:
   push:
+    branches: [main]
+    tags: ['**']
   pull_request:
 
 permissions:
@@ -9,13 +11,21 @@ permissions:
 
 jobs:
   offline-validation:
-    needs: caddy-routing
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify documentation-only CI classification
+        run: python3 tests/deployment/ci-docs-only.test.py
+      - name: Detect documentation-only PR
+        id: changes
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/ci-docs-only.sh "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - uses: pnpm/action-setup@v4
         with:
           run_install: false
@@ -34,19 +44,29 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm run check
       - name: Verify production backup and retention with synthetic data
+        if: steps.changes.outputs.docs_only != 'true'
         run: python3 tests/deployment/backup-production.test.py
-      - run: pnpm test
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: pnpm test
       - run: pnpm --filter @novelai-gateway/web typecheck
-      - run: pnpm --filter @novelai-gateway/web test
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: pnpm --filter @novelai-gateway/web test
       - run: pnpm --filter @novelai-gateway/executor typecheck
-      - run: pnpm --filter @novelai-gateway/executor test
-      - run: pnpm --filter @novelai-gateway/executor build
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: pnpm --filter @novelai-gateway/executor test
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: pnpm --filter @novelai-gateway/executor build
       - name: Verify Nuxt routes, streaming and process isolation
+        if: steps.changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/web test:executor
-      - run: docker build --tag novelai-shared-gateway:check .
-      - run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .
-      - run: docker build --file executor/Dockerfile --tag novelai-shared-gateway-executor:check .
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: docker build --tag novelai-shared-gateway:check .
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: docker build --file web/Dockerfile --tag novelai-shared-gateway-web:check .
+      - if: steps.changes.outputs.docs_only != 'true'
+        run: docker build --file executor/Dockerfile --tag novelai-shared-gateway-executor:check .
       - name: Verify packaged executor over real HTTP
+        if: steps.changes.outputs.docs_only != 'true'
         run: >-
           docker run --rm --network none --read-only
           --tmpfs /tmp:rw,uid=1000,gid=1000
@@ -55,6 +75,7 @@ jobs:
           novelai-shared-gateway-executor:check
           node --test /checks/runtime-http.test.mjs
       - name: Export verified Linux test release
+        if: steps.changes.outputs.docs_only != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -160,6 +181,7 @@ jobs:
             sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
           )
       - name: Upload verified Linux test release
+        if: steps.changes.outputs.docs_only != 'true'
         # Official actions/upload-artifact v4.6.2; upload the tar to retain file modes/symlinks.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
