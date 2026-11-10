@@ -44,9 +44,9 @@ class DocsOnlyTests(unittest.TestCase):
         self.git('add', '--all')
         self.git('commit', '-qm', 'fixture')
 
-    def classify(self, base):
+    def classify(self, *base):
         return subprocess.run(
-            [BASH, CLASSIFIER.as_posix(), base], cwd=self.repo,
+            [BASH, CLASSIFIER.as_posix(), *base], cwd=self.repo,
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
@@ -81,12 +81,26 @@ class DocsOnlyTests(unittest.TestCase):
         self.commit()
         self.assertEqual(self.classify(self.base), 'docs_only=true')
 
-    def test_mixed_changes_and_unavailable_diff_use_full_validation(self):
+    def test_mixed_changes_require_full_validation(self):
         self.write('README.md', 'updated\n')
         self.write('server/new.ts')
         self.commit()
         self.assertEqual(self.classify(self.base), '')
-        self.assertEqual(self.classify('missing-ci-base'), '')
+
+    def test_main_push_compares_all_commits_since_before(self):
+        self.write('server/new.ts')
+        self.commit()
+        self.write('docs/guide.md', 'updated\n')
+        self.commit()
+        self.assertEqual(self.classify('HEAD^'), 'docs_only=true')
+        self.assertEqual(self.classify(self.base), '')
+
+    def test_missing_push_base_requires_full_validation(self):
+        self.write('docs/guide.md', 'updated\n')
+        self.commit()
+        for base in ((), ('',), ('0' * 40,), ('missing-ci-base',)):
+            with self.subTest(base=base):
+                self.assertEqual(self.classify(*base), '')
 
 
 if __name__ == '__main__':

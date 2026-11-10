@@ -23,12 +23,12 @@ jobs:
           fetch-depth: 0
       - name: Verify documentation-only CI classification
         run: python3 tests/deployment/ci-docs-only.test.py
-      - name: Detect documentation-only PR
+      - name: Detect documentation-only changes
         id: changes
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: bash .github/ci-docs-only.sh "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - uses: pnpm/action-setup@v4
         with:
