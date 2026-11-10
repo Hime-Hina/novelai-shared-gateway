@@ -59,8 +59,11 @@ mock 本身仍只允许回环。三个测试服务不启用开机启动；生产
 
 ## CI 产物
 
-`Gateway checks` 的三个检查并行运行。完整验证中，`offline-validation` 的测试、
-类型检查、镜像构建及最终执行器 HTTP 验收通过后导出测试发布包。纯文档 PR 不生成新发布包。
+`Gateway checks` 保留 `offline-validation`、`node24-reader` 和 `caddy-routing` 三个必需检查。
+完整验证中，后端测试与 Web／产包链并行运行，`offline-validation` 汇总变更分类和两条链的结果。
+产包链完成镜像构建和最终执行器 HTTP 验收后上传测试包，取包须等整个 workflow 成功。
+纯文档 PR 和 `main` 推送走轻量检查，不为该提交生成新发布包。取包时可选用已有完整验证的提交，
+或推送指向目标提交的 tag 触发全量验证，为该 SHA 生成发布包。
 发布包目录结构如下。
 
 ```text

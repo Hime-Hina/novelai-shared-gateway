@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+base=$(git rev-parse --verify --quiet --end-of-options "${1:-}^{commit}") || exit 0
 changes=$(mktemp)
 trap 'rm -f -- "$changes"' EXIT
-git diff --name-only --no-renames -z "$1" HEAD -- > "$changes" || exit 0
+git diff --name-only --no-renames -z "$base" HEAD -- > "$changes" || exit 0
 # A rename appears as a deletion and an addition, so both paths are checked.
 while IFS= read -r -d '' path; do
   case "$path" in

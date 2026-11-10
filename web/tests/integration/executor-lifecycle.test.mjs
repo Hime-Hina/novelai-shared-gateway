@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { crc32 } from 'node:zlib';
 import { createRequire } from 'node:module';
 import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
@@ -15,6 +16,7 @@ import {
   readNativeSseEvents,
 } from '../../../tests/helpers/native-stream-client.mjs';
 
+const execFileAsync = promisify(execFile);
 const webRoot = fileURLToPath(new URL('../../', import.meta.url));
 const executorEntry = fileURLToPath(
   new URL('../../../executor/.output/server/start.mjs', import.meta.url),
@@ -108,10 +110,19 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+// 子进程重启期间也为原场景保留端口，避免另一场景选中。
+const fixturePorts = new Set();
 async function listen(server) {
-  server.listen(0, '127.0.0.1');
-  await once(server, 'listening');
-  return server.address().port;
+  while (true) {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address();
+    if (!fixturePorts.has(port)) {
+      fixturePorts.add(port);
+      return port;
+    }
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 async function unusedPort() {
   const reservation = http.createServer(),
@@ -273,7 +284,6 @@ async function fixture(
     );
     return pathToFileURL(filename).href;
   };
-  const { bootstrap } = await import(packaged('scripts/bootstrap.mjs'));
   const { JsonStore } = await import(packaged('server/storage/sqlite-store.js'));
   const { syncFairQuota, quoteFairRequest } = await import(packaged('server/quota/fair-share.js'));
   const { nativeImagesMsgpack } = await import(packaged('server/protocols/native-stream.js'));
@@ -284,11 +294,17 @@ async function fixture(
   const adminToken = 'synthetic-nuxt-executor-admin-token-only';
   const internalToken = 'synthetic-nuxt-executor-internal-token-only';
   const upstreamToken = 'pst-synthetic-nuxt-executor-upstream-only';
-  const initialized = await bootstrap({
-    env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir },
-    log() {},
+  // bootstrap 跨 await 设置 umask，放在独立进程内，避免并行场景互相覆盖。
+  await execFileAsync(process.execPath, [fileURLToPath(packaged('scripts/bootstrap.mjs'))], {
+    env: { ...envBase(), ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir },
+    windowsHide: true,
+    signal: t.signal,
   });
-  const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  const credentialPath = path.join(dataDir, 'bootstrap-credentials.json');
+  if (process.platform !== 'win32') {
+    assert.equal((await stat(credentialPath)).mode & 0o777, 0o600);
+  }
+  const members = JSON.parse(await readFile(credentialPath, 'utf8')).accounts;
   const discordEnv = discord
     ? {
         DISCORD_CLIENT_ID: '123456789012345678',
@@ -904,7 +920,9 @@ globalThis.fetch = (input, options) => {
   };
 }
 
-test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { timeout: 240000 }, async (t) => {
+const lifecycleOptions = { timeout: 240000, concurrency: 2 };
+
+test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifecycleOptions, async (t) => {
   await stat(executorEntry); // A missing build is a failure; never substitute the legacy Node server.
   const ctx = createTestContext({
     rootDir: webRoot,
@@ -932,7 +950,13 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
   const nuxtEntry = path.join(ctx.nuxt.options.nitro.output.dir, 'server', 'index.mjs');
   await stat(nuxtEntry);
 
-  await t.test(
+  const initialUmask = process.umask();
+  const scenarios = [];
+  const scenario = (...args) => {
+    scenarios.push(t.test(...args));
+  };
+
+  scenario(
     '只强杀 Nuxt 不取消在途或排队任务，恢复后仅原成员可查询领取',
     { timeout: 60000 },
     async (sub) => {
@@ -1028,7 +1052,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '丢失202后内部复用同键和正文，身份/Host/Origin/代理链保留，业务错误不重试',
     { timeout: 45000 },
     async (sub) => {
@@ -1134,7 +1158,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '执行器在完整产物sync后强杀，两次启动恢复同一结果且不重复结算，Nuxt保持运行',
     { timeout: 45000 },
     async (sub) => {
@@ -1202,7 +1226,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式 Nuxt GET 保留成员范围，Discord并发刷新先落盘，资格503与执行器重启不丢新令牌',
     { timeout: 45000 },
     async (sub) => {
@@ -1406,7 +1430,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式密码登录保持七天固定期限，Nuxt与执行器重启不丢会话，注销持久生效',
     { timeout: 30000 },
     async (sub) => {
@@ -1477,7 +1501,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式Discord回跳跨Nuxt重启保留state，原303与两个Cookie逐项保留，跨站仅限合法回跳',
     { timeout: 30000 },
     async (sub) => {
@@ -1617,7 +1641,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式管理写入保留权限、版本与32KiB校验，丢失管理回执不重发已提交命令',
     { timeout: 30000 },
     async (sub) => {
@@ -1844,7 +1868,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式 Native 别名共享幂等结果，multipart真实附件保留32MiB边界，Vibe和放大字节可领取',
     { timeout: 45000 },
     async (sub) => {
@@ -2185,7 +2209,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '成员生成经正式Nuxt流式路由接收大JSON与multipart，私有预览超过64KiB且Nuxt重启不取消生成',
     { timeout: 45000 },
     async (sub) => {
@@ -2361,7 +2385,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '成员大正文报价和受理丢失回执不由Nuxt重发，客户端原键重试领取唯一任务',
     { timeout: 30000 },
     async (sub) => {
@@ -2437,7 +2461,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式OpenAI首帧与任务预览实时到达，长于45秒仍完成，任务取消和签名图保留成员边界',
     { timeout: 90000 },
     async (sub) => {
@@ -2634,7 +2658,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式同步生图在Nuxt强杀或收到实时Native帧后断开仍继续，同键重试不再次派发扣费',
     { timeout: 45000 },
     async (sub) => {
@@ -2789,7 +2813,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
     },
   );
 
-  await t.test(
+  scenario(
     '正式 SSE 保持同一客户端连接跨执行器重启，校准新boot后仍接收授权失效',
     { timeout: 45000 },
     async (sub) => {
@@ -2911,4 +2935,7 @@ test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', { tim
       f.checkStorage();
     },
   );
+
+  await Promise.all(scenarios);
+  assert.equal(process.umask(), initialUmask);
 });
