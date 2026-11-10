@@ -17,26 +17,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Verify documentation-only CI classification
+        run: python3 tests/deployment/ci-docs-only.test.py
       - name: Detect documentation-only PR
         id: changes
         if: github.event_name == 'pull_request'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          changes="$RUNNER_TEMP/changed-files"
-          git diff --name-only --no-renames -z "$BASE_SHA" HEAD -- > "$changes" || exit 0
-          # A rename appears as a deletion and an addition, so both paths are checked.
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              # These paths are referenced by name in the image or release build.
-              NOTICE.md|web/THIRD_PARTY_NOTICES.md) exit 0 ;;
-              docs/operations/test-deployment.md|docs/operations/production-release.md) exit 0 ;;
-              docs/*|*.md) ;;
-              *) exit 0 ;;
-            esac
-          done < "$changes"
-          echo 'docs_only=true' >> "$GITHUB_OUTPUT"
+        run: bash .github/ci-docs-only.sh "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - uses: pnpm/action-setup@v4
         with:
           run_install: false

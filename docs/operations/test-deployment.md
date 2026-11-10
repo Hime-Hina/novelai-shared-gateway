@@ -59,8 +59,9 @@ mock 本身仍只允许回环。三个测试服务不启用开机启动；生产
 
 ## CI 产物
 
-`Gateway checks` 的 `offline-validation` 等待 `caddy-routing` 成功，现有测试、
-类型检查、镜像构建及最终执行器 HTTP 验收全部成功后，才导出测试发布包：
+`Gateway checks` 的三个检查并行运行。完整验证中，`offline-validation` 的测试、
+类型检查、镜像构建及最终执行器 HTTP 验收通过后导出测试发布包。纯文档 PR 不生成新发布包。
+发布包目录结构如下。
 
 ```text
 novelai-gateway-test-<commit>-linux-x64/
