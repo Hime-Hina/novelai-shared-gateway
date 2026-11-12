@@ -1,8 +1,8 @@
 # 数据库与数据模型重构草案
 
-更新日期：2026-11-11，Asia/Taipei。草案版本：0.4。源码核对基线：`55e5826d80a39364b0946547a83e2a2ed2f72711`。
+更新日期：2026-11-12，Asia/Taipei。草案版本：0.6。源码核对基线：`55e5826d80a39364b0946547a83e2a2ed2f72711`；实施基于 PR #33 的 `265793c`。
 
-**状态：设计评审，尚无产品实现或生产迁移。** 维护者已基本认可新模型方向，并授权先落实文档、issues 或 Draft PR；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
+**状态：T1 的新 schema、事实契约和提交边界已补齐；T2 的统一输入、BLOB、首次上下文及冷读取已接入新格式存储。现行网关尚未切换，生产未迁移。** 维护者已基本认可新模型方向；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
 
 **已确认的产品决定：D4a 卡密遗留功能、D4b 客户端自带官方 PST 的独立执行模式均淘汰；D8 仅保留为可选政策，具体留存期限后续决定。** 本轮记录决定，功能移除随重构实施；不设置新的自动归档或删除期限。
 
@@ -367,7 +367,7 @@ D4 纳入 T6/T7 及 E01/E06/E09/E11 验收：成员 Native/OpenAI/direct 和绑�
 
 | 工作包 | 内容和 owner                                                           | 依赖/交付                                    |
 | ------ | ---------------------------------------------------------------------- | -------------------------------------------- |
-| T0     | 需求、ER、决策和删除清单                                               | 本文设计评审；当前阶段                       |
+| T0     | 需求、ER、决策和删除清单                                               | 设计基础已提交；评审继续                     |
 | T1     | 新 schema、版本、事实/字段所有权和事件契约，`storage/` + `events/`     | T0；字段级 DDL、约束、重建来源               |
 | T2     | 规范输入、BLOB、上下文和输入查询，`generation/` + `protocols/`         | T1；E04/E08，复用槽位和归一规则              |
 | T3     | 稳定身份、认证隔离、成员移除，`members/`                               | T1；E01，历史归属映射                        |
@@ -381,7 +381,97 @@ D4 纳入 T6/T7 及 E01/E06/E09/E11 验收：成员 Native/OpenAI/direct 和绑�
 
 T7 的处置报告须列明 D4 的未兑权益、官方模式历史产物、可验证来源及迁移/归档去向；淘汰产品模式不要求删除这些历史证据。
 
-本草案 PR 只修改计划及导航，不改变 AGENTS、现行契约、schema、CI 或生产行为。不把文档格式通过称为模型已实现，不关闭 #30/#31/#32。
+PR #33 本身只修改计划和导航；后续实施基于其 `265793c` 开展。T1/T2 已形成可运行的新格式提交、读取和输入回放链路；T3 的认证适配、T4 的完整业务命令/reducer 和 T5–T8 仍未完成。当前没有切换现行 API、账本、旧 SQL/journal、CI 或生产行为，不关闭 #30/#31/#32。
+
+### 9.1 T1 基础：物理字段、格式和生命周期契约
+
+唯一 DDL 为 [`relational-schema.ts`](../../server/storage/relational-schema.ts)，初始化和格式门禁归 [`relational-storage.ts`](../../server/storage/relational-storage.ts)。不维护第二份 ORM DDL，不把这份新 schema 追加进旧库迁移链；它只创建离线空目标。DDL 位于编译模块内，现有后端编译/打包会一并带入，不新增需要另行复制的 SQL 资产。
+
+格式为 `novelai-relational-v1`，writer/minimumWriter 为 5，新格式 reducer 为 1，事件 schema 为 2。现行运行时继续使用旧格式 writer/reducer 4 和事件 v1。新格式保留仅供格式识别的三项 `app_meta`，用旧 writer 已有的 `event_authority` 检查拒绝误开，不改变旧迁移 hash guard。初始化把完整 DDL、标记和 `building` 状态原子提交；非空目标一律拒绝，DDL 中断整笔回滚。这里不提供跳过核对或直接发布 ready 的接口。
+
+`assertRelationalStorageFormat()` 只读核对格式/源码 DDL hash、实际表/索引/触发器结构和外键开启，供离线 building 目标使用。`assertRelationalStorageReady()` 另核对外键引用、reducer、ready 标记和完整提交游标。`ready` 必须由后续 T4/T7 在业务和受保护内容核对通过后安装；格式门禁本身不证明业务投影或输入摘要正确，也不代替 E07。64 位提交/流/队列序号以十进制字符串穿过 JS 边界，不能先读取为 number 再转换。
+
+| 字段/表归属                                                     | 唯一在线表示与恢复来源                                                                                                                                 | 实际业务 owner                                                                                                   |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `commits` / `domain_events`                                     | 原命令、指纹、操作者和安全回执属于 commit；事件只存决定，按提交内索引及流版本唯一；提交和事件禁止 UPDATE/DELETE                                        | `events/` 的事实校验和提交入口；T4 接入业务命令                                                                  |
+| `stream_heads` / `projection_state`                             | 只存版本和游标，不含状态 JSON；由同笔提交及重放构建                                                                                                    | `events/`                                                                                                        |
+| `members` / 各认证表 / `member_sessions`                        | 稳定成员行与密码、可恢复 Key、Discord 授权、会话分表；`auth_epoch` 仅由当前私有快照/认证命令恢复，NULL 表示未恢复或撤销；业务事实不携带它              | `members/`，认证材料由私有备份恢复                                                                               |
+| `sharing_groups` / `group_members` / `sharing_policy`           | 成员唯一当前组，组关系不再复制到成员数组；份额/权重保留原 number 语义；免费、fallback、告警各有明确字段                                                | `quota/`，T4 接入配置、开账及政策 reducer                                                                        |
+| `upstream_accounts` / `upstream_credentials`                    | 账号唯一身份、当前 credential_epoch、冷却及失败次数；PST 只在凭据表，换凭据不新建钱包来源                                                              | `quota/` + `members/`                                                                                            |
+| `generation_inputs` / `input_assets` / `normalization_contexts` | 不可变正文/上下文和每个 input 的附件 BLOB；事件保留引用/摘要。SQL 验证格式和附件长度，T2 验证实际摘要、槽位、语义去重及逻辑字节预算                    | `generation/relational-input.ts` 和 `storage/relational-input-store.ts`，复用 `protocols/`；内容从受保护备份恢复 |
+| `generation_requests` / `generation_jobs`                       | parent 保存一次输入/上下文引用和确认；child 保存索引、实际 seed、状态、顺序、结果及免费成功事实，无 children/request/charge JSON                       | `generation/`，受理和生命周期事件重建                                                                            |
+| `generation_attempts`                                           | job 唯一尝试；响应证据、互斥候选、未知实际消费、核对和待发布描述各自命名。旧凭据代次允许 NULL，不以当前代次补造历史                                    | `generation/accounting.ts` 的新格式接入，T4                                                                      |
+| `wallets` / `charges`                                           | 钱包只有三类可用额；原预扣金额在 charge 唯一保存，终态不能再次结算或退款；不另存 Anlas 合计                                                            | `quota/`，金额继续由 `resource-amounts.ts` 计算                                                                  |
+| `account_quota_state` / `operating_state` / `pending_funding`   | 最新观察与对账基线分别引用；待匹配扣款、fallback 缓冲、债务、运营差额、剩余资金独立保存，无历史数组。恢复/发放累计和展示合计由保存事实计算，不额外复制 | `quota/`，T4 接入观察、恢复、资金及开账 reducer                                                                  |
+| `artifacts` / `artifact_replicas` / `storage_targets`           | 产物稳定所有者、原 input/attempt 和内容身份；副本定位不嵌套。uploaded/verified/deleted 分列，上传确认不冒充内容核验                                    | `storage/`，T5 接入发布与冷热事实；字节独立恢复                                                                  |
+| `idempotency_keys`                                              | 原成员/请求/job/命令身份与可空在线 FK 分开；live 必须有当前请求/job、首次上下文和原 commit，归档可只保留原回执和来源，仍按原成员/操作/键唯一           | `generation/admission.ts` 的新格式接入，T4/T7                                                                    |
+| `generation_diagnostics`                                        | 错误详情及摘要单独保护，事件只引用；不混入公开响应或普通列表                                                                                           | `generation/` + `storage/`                                                                                       |
+
+`charges` 的 `original_*` 是不可变业务身份；`job_id`、钱包二元键及 `attempt_id` 是在线外键。活动收费必须关联真实任务和同成员钱包；归档终态可将在线外键置空，原 ID、金额、终态、来源和新 opening 事件引用仍在。生成旧键同样分离 `original_*` 和在线引用；有在线 commit 时读取其原回执，不再复制一份 JSON；没有该 commit 的历史薄记录才保存 `archived_receipt`。不能把缺行解释为可重新执行。旧键具体 HTTP 分支仍由 D2/T7 的接口评审落实。
+
+跨成员输入/request、job/artifact、artifact/原尝试和 charge/job 关系由 FK 与触发器共同拒绝；首次输入、成员归属、原收费和原键意图不可被普通 UPDATE 改写。活动任务需要 complete 输入和首次上下文，child 索引不能超过原批次数。新金额列为规范十进制 TEXT，保留 12 位小数和原 BigInt 范围，不转成 SQLite 64 位金额或 REAL；恢复速率和配置权重属于非金额字段。
+
+[`relational-fact-contracts.ts`](../../server/events/relational-fact-contracts.ts) 用同一字段表生成写入类型和运行时校验，补齐生命周期、成员、分组/政策、账号/凭据代次、官方观察、恢复/分配、资金、运营、存储及分型 opening facts。未知事件、额外字段、旧 `OpeningStateRecorded`/`LegacyFactRecorded`、隐私字段、非规范金额和未知输入/上下文版本直接拒绝。opening 按实体保存明确字段和来源，不恢复旧 DTO 或通用状态包。金额仍复用原 12 位定点核心；未知官方值和历史凭据代次保留 NULL。
+
+[`relational-events.ts`](../../server/events/relational-events.ts) 校验完整事件 envelope、固定 schema/金额版本、stream owner 及成员/账号身份；[`relational-event-store.ts`](../../server/events/relational-event-store.ts) 要求外层命令事务和明确流前置版本，在保存点内原子追加原回执、事件、流头及游标。相同命令必须匹配操作者和指纹；缺失、落后、失败或未知 reducer 的投影不能推进。重放保留原事件 ID、顺序、时间和回执，校验 history 与完整提交，断点重复必须与原提交及元数据完全相同，不重算种子、价格或调用网络。这里没有 T4 的账务/任务全量 reducer，也不安装 ready。
+
+有区分力的结构与契约检查在 [`relational-storage.test.mjs`](../../tests/integration/relational-storage.test.mjs)、[`relational-events.test.mjs`](../../tests/unit/relational-events.test.mjs) 与[事件类型测试](../../tests/unit/domain-event-types.test.mjs)：缺失旧目标的薄凭据、重复键/重复退款终态、跨成员关联、精确金额、DDL 回滚、相互拒绝、未来格式、实际 DDL 漂移、>2^53 游标、未知/隐私事实、半提交回滚及原提交重放。它们是合成夹具和新格式原语检查，尚非 T7 迁移或真实容量报告。
+
+### 9.2 T1 基础的本地验证（2026-11-11）
+
+Windows，Node 22.23.4，pnpm 10.32.1；独立 Node 24.22.1 环境复用同版本 better-sqlite3 12.10.0 的 ABI137 依赖。没有重编译或替换共享依赖。结果针对本节基础代码，不能解释为 T2–T8 或 E01–E11 全部完成。
+
+| 实际命令/检查                                                                                             | 结果                                                                                           |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `pnpm run architecture:check`、`pnpm run migration:check --base 55e5826d80a39364b0946547a83e2a2ed2f72711` | 通过；历史 SQL/journal、守卫和基线未改                                                         |
+| `pnpm run typecheck`、`pnpm run check`、`pnpm run format:check`                                           | 通过；120 个 JS/MJS 语法检查                                                                   |
+| `node --test tests/integration/relational-storage.test.mjs tests/unit/domain-event-types.test.mjs`        | 11/11 通过，保留原有事件类型断言                                                               |
+| `pnpm test`                                                                                               | 772 项：767 通过、5 项平台/显式开关跳过、0 失败，约 226 秒；包含现行格式的开账、重放和恢复用例 |
+| Web 与 executor 的 `typecheck`、`test`                                                                    | 类型通过；149 与 3 项单元测试通过                                                              |
+| `pnpm --filter @novelai-gateway/executor build`、`test:runtime`                                           | 后端和执行器构建通过；实际 Nitro 产物 HTTP 3 通过、1 项平台跳过                                |
+| `pnpm --filter @novelai-gateway/web test:executor`                                                        | 真实 Nuxt 开发/生产构建与执行器 HTTP：15 通过、1 项平台跳过                                    |
+| 新格式 Node 24 专项                                                                                       | 逐文件 hash 核对的隔离源码及原迁移资产副本，10/10 通过                                         |
+| 打包的新模块                                                                                              | 执行器包内编译 JS 的 DDL 与源码相同；空库初始化、building 拒绝及格式门禁 smoke 通过            |
+| 文档和差异                                                                                                | 71 个本地文件链接存在，`git diff --check` 通过                                                 |
+
+首次专项直接使用终端默认 Node 24 时，现有共享 SQLite 原生模块为 ABI127，因 ABI 不匹配而未执行结构用例；切到仓库指定 Node 22 后通过，再在独立 ABI137 依赖中验证 Node 24。原始后端、Web、执行器及 Node 24 日志位于本地 `H:\TEMP\novelai-db-model-t1-20261111`。
+
+以上为 2026-11-11 的 T1 基础证据；当时未做 Linux/Docker/远端 CI、同规模生产副本转换、v2 业务重放或容量测量。后续 T1/T2 增量及其验收见下面两节，不能手工把原型目标标为 ready 后上线。
+
+### 9.3 T2：统一输入、附件和首次上下文（2026-11-12）
+
+规范化 owner 为 [`generation/relational-input.ts`](../../server/generation/relational-input.ts)，存储、受理引用和权限过滤归 [`storage/relational-input-store.ts`](../../server/storage/relational-input-store.ts)。它们复用现有 `buildNovelAiParameters()`、Native 解析/图像与 Vibe 校验、`recoveredInput()` 和附件槽位，没有再实现一套协议或价格规则。现有 API 的输入 DTO 和附件 URL 保持原契约；T3/T4 后续通过这些窄方法接入真实认证、报价和调度，不把整个 SQLite 句柄暴露给读取模块。
+
+- **唯一正文**：input schema 固定为 1，只存实际协议正文的一种表示。实际 seed 属于 child，样本数属于 parent，兼容 DTO 和出站 Base64 仅在读取/执行边界临时展开；不存顶层参数别名、`nativeParameters` 或旧 DTO 备份。确有不同语义的展示词和原请求 steps 独立保存；已知空字符串、显式 NULL 与缺失值不互相覆盖。partial/unavailable 开账输入仅保留真实已知字段，不能派发或按当前默认值补造。
+- **BLOB**：沿原图、蒙版、V3/V4 Vibe 和 V4.5 Precise 的既有槽位保存原字节，正文仅引用 input 内的 asset ID。单 input 内先比长度/SHA，再比实际字节去重；不按全局摘要跨请求或跨成员合并。读取正文只查附件元数据，不查 BLOB；附件和执行冷读取核验实际长度、SHA、MIME 与保存的原限制，事件和普通列表没有字节或全文。V5 仍沿用原协议支持范围，不放开 Vibe/Precise。
+- **首次上下文**：context schema 固定为 1，按 member/native/direct 三种封闭定义保存规范化版本、原枚举/限制、随机种子意图及 direct 首次 defaults；不接受整个 settings 或认证对象。`(schema_version, sha256)` 唯一且复核内容相同后复用原 ID；事实锚定摘要。重启及当前 defaults/枚举变化不覆盖已保存定义，重试可读取首次上下文；后续改变定义结构须显式处理版本。
+- **事务和预算**：调用者持有事务并先重验当前授权；当前停用、移除或私有 auth epoch 未恢复时拒绝公开读取/受理。暂停新接单允许原命令重领。首次提交原子保存输入、上下文、父子引用及四类事实；SQL 失败即使被调用者捕获也不留半笔。预算取实际展开协议字节与旧规范 DTO 字节的较大值，沿用现有单请求/活动限制，不因 Base64 改 BLOB 而扩大容量。
+- **有界回放**：`replayAcceptedInput()` 从只读 source 校验并复制原输入、上下文、BLOB 和受理事实，按完整提交断点续跑，重复提交零写入。调用者先恢复稳定成员及当前私有认证快照；业务事实不携带或复活 `auth_epoch`。此入口只接受 T2 的四类事实，不代替 T4 账务/生命周期重建或 T7 A/B 转换器，完成后仍为 building。
+
+[`relational-input.test.mjs`](../../tests/integration/relational-input.test.mjs) 覆盖 E04 和输入范围内的 E08：四图共用一份正文、相同原图/蒙版单份 BLOB；三类操作及 JSON/multipart、V3 原图/V4 编码、V4.5 Precise 和 V5 图生图；真实 HTTP mock 的出站语义/计价一致；wraparound 子 seed、首次上下文、跨成员与路径注入、隐私、预算、篡改拒绝、已退休 child、partial 开账，以及只读 source 的重开续跑和原字节回放。首轮用例识别了按当前枚举校验旧上下文、用 Native 清洗覆盖 direct 显式 NULL 的错误，现已在各自 owner 修正并保留回归断言；没有放宽原协议守卫。
+
+本地新格式仍是未发布候选；这次完善了上下文唯一性、输入版本和私有 auth epoch 的 DDL，先前 0.5 原型文件因 schema hash 不同会被拒绝，需重新建立空目标验证，不能手工改 hash 或重写旧库。旧格式 SQL/journal 和运行时 hash guard 未改，生产、归档、D4 退出及 D8 留存未在 T2 提前变更。
+
+### 9.4 T1/T2 增量的本地验证（2026-11-12）
+
+Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码副本、当前精确依赖和既有 better-sqlite3 12.10.0 ABI137 构建。228 个源码/测试文件逐文件 hash 核对，包含旧迁移资产；没有重编译共享原生依赖。以下结果只覆盖已实施范围。
+
+| 实际命令/检查                                                                                                                                                                                                         | 结果                                                                                               |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `pnpm run architecture:check`、`pnpm run migration:check` 及 `--base 55e5826d80a39364b0946547a83e2a2ed2f72711`                                                                                                        | 通过；守卫、可信基线、旧 SQL/journal 和 CI 未改                                                    |
+| 根、Web、executor 的 `typecheck`；`pnpm run check`                                                                                                                                                                    | 通过；122 个 JS/MJS 语法检查                                                                       |
+| 新格式专项：`node --test --test-concurrency=4 tests/unit/relational-events.test.mjs tests/integration/relational-input.test.mjs tests/unit/domain-event-types.test.mjs tests/integration/relational-storage.test.mjs` | Node 22 与隔离 Node 24 均 29/29 通过                                                               |
+| `pnpm --filter @novelai-gateway/web test`、`pnpm --filter @novelai-gateway/executor test`                                                                                                                             | 149 与 3 项通过                                                                                    |
+| `pnpm --filter @novelai-gateway/executor build`、`test:runtime`                                                                                                                                                       | 后端和 executor 构建通过；实际 Nitro 产物 HTTP 3 通过、1 项 Linux SIGTERM 检查在 Windows 跳过      |
+| `pnpm --filter @novelai-gateway/web test:executor`                                                                                                                                                                    | 包含真实 Nuxt 开发/生产构建的联调：15 通过、1 项 Linux SIGTERM 检查在 Windows 跳过                 |
+| Node 24：`node --test --test-concurrency=1 tests/integration/activity-storage.test.mjs tests/integration/activity-heatmap-http.test.mjs`                                                                              | 12/12 通过，保留现行读取 worker 验证                                                               |
+| executor 包内编译 JS 专项                                                                                                                                                                                             | DDL 与源码相同；唯一输入/BLOB/上下文提交、冷读取出站参数、精确回放、重复零写入及 building 拒绝通过 |
+
+源码定稿后的 `pnpm test`：790 项，785 通过、5 项原有平台/开关条件跳过、0 失败，约 214 秒。之后仅扩充同一附件用例的 V4.5 Precise/V5 夹具，Node 22 和 Node 24 均重新完成上述 29 项专项。`pnpm run format:check`、78 个本地文档文件链接及 `git diff --check` 通过。
+
+首轮 Node 24 验证复用的旧依赖目录缺少当前 `webdav`/`fast-xml-parser`，仅类型夹具失败；新建使用当前固定依赖的隔离目录后全项通过。原始日志、隔离副本 hash 清单和编译 JS 检查脚本保留在本地 `H:\TEMP\novelai-db-model-t2-20261112`。新上游 HTTP 检查使用本地 mock，没有调用真实 NAI。
+
+未做本候选的 Linux/Docker/远端 CI、代表性生产副本 A/B 转换、全业务 v2 reducer 重建或物理容量/性能测量。这些仍分别属于 T4/T7/T8；本次未提交生产切换，也未改源生产库、归档或备份。
 
 ## 10. 事实依据与修订
 
@@ -399,3 +489,5 @@ T7 的处置报告须列明 D4 的未兑权益、官方模式历史产物、可�
 | 0.2  | 2026-11-11 | 落实仓库评审草案；澄清 D4/D8/附件；加入获准评估的归档开账路线与恢复闭包；明确未批准的数据删除和产品取舍   |
 | 0.3  | 2026-11-11 | 记录维护者确认：淘汰 D4a/D4b，并纳入迁移及退出验收；D8 可选、后续决定，本轮不新增期限或清理任务           |
 | 0.4  | 2026-11-11 | 澄清结构去重与模型迁移为本轮必做；D8 仅为可选留存政策，暂缓 D8 不暂缓主体重构；补充去重例子及必要冗余边界 |
+| 0.5  | 2026-11-11 | 按 PR #33 开始实施 T1；加入新格式 DDL、初始化/拒绝边界、生命周期类型及结构用例，明确字段归属与未接入范围  |
+| 0.6  | 2026-11-12 | 补齐 T1 事实契约与提交/回放原语；完成 T2 新格式统一输入、BLOB、首次上下文和受理/冷读取；仍不切换现行网关  |

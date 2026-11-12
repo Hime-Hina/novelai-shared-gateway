@@ -693,6 +693,24 @@ function numericList(
   }
   values.forEach((value: unknown) => number(value, min, max, field));
 }
+export function validateVibeEncodingBytes(
+  bytes: Buffer,
+  maxBytes = NATIVE_LIMITS.vibeEncodingBytes,
+): void {
+  if (bytes.length > maxBytes) {
+    fail(413, 'Vibe 编码超过大小限制。');
+  }
+  if (
+    bytes.length < 100 ||
+    bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+    (bytes[0] === 0xff && bytes[1] === 0xd8) ||
+    bytes.toString('ascii', 0, 4) === 'RIFF' ||
+    bytes.toString('ascii', 0, 3) === 'GIF'
+  ) {
+    fail(422, 'V4/V4.5 Vibe 需要预先编码的数据；原图请先调用 encode-vibe。');
+  }
+}
+
 function references(
   parameters: Record<string, unknown>,
   direct: string,
@@ -724,15 +742,7 @@ function references(
       dataUrl: false,
     });
     const bytes = encoded.bytes;
-    if (
-      bytes.length < 100 ||
-      bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
-      (bytes[0] === 0xff && bytes[1] === 0xd8) ||
-      bytes.toString('ascii', 0, 4) === 'RIFF' ||
-      bytes.toString('ascii', 0, 3) === 'GIF'
-    ) {
-      fail(422, 'V4/V4.5 Vibe 需要预先编码的数据；原图请先调用 encode-vibe。');
-    }
+    validateVibeEncodingBytes(bytes, limits.vibeEncodingBytes);
     return encoded.base64;
   });
   if (values.length || Object.hasOwn(parameters, direct) || Object.hasOwn(parameters, cached)) {
