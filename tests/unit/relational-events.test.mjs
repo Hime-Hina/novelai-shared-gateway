@@ -410,6 +410,50 @@ test('新事实重放保留原身份与回执，拒绝不同历史、提交断�
   assert.deepEqual(source.serialize(), sourceBefore);
 });
 
+test('同一命令预先分配事件身份可原子引用，空身份和重复身份不留下半笔提交', (t) => {
+  const source = database(t),
+    target = database(t);
+  const envelope = { ...member(), streamId: 'account:a', accountId: 'a' };
+  const reserved = {
+    ...envelope,
+    eventId: 'reservation-event',
+    eventType: 'QuotaReserved',
+    payload: {
+      jobId: 'j',
+      memberId: 'm1',
+      accountId: 'a',
+      resources: { ...zero },
+      billingMode: 'free',
+      v5Equivalent: '0',
+      sharedV5Reserved: '0',
+      configVersion: 1,
+    },
+  };
+  const settled = {
+    ...envelope,
+    eventId: 'terminal-event',
+    eventType: 'GenerationSettled',
+    payload: {
+      jobId: 'j',
+      reservationEventId: reserved.eventId,
+    },
+  };
+  source.transaction(() => appendRelationalCommit(source, command([reserved, settled])))();
+  const original = readRelationalCommit(source, '1');
+  assert.equal(original.events[0].eventId, reserved.eventId);
+  assert.equal(original.events[1].payload.reservationEventId, original.events[0].eventId);
+  target.transaction(() => replayRelationalCommit(target, original))();
+  assert.deepEqual(readRelationalCommit(target, '1'), original);
+  const checkpoint = source.serialize();
+  for (const eventId of ['', reserved.eventId]) {
+    const next = command([{ ...settled, eventId }]);
+    next.commandId = 'conflicting-identity';
+    next.expectedVersions = { 'account:a': '2' };
+    source.transaction(() => assert.throws(() => appendRelationalCommit(source, next)))();
+    assert.deepEqual(source.serialize(), checkpoint);
+  }
+});
+
 test('原提交事件数独立保存，两个列表同时截短也不能写入事实、流头或游标', (t) => {
   const source = database(t),
     target = database(t);

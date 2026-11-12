@@ -11,6 +11,8 @@ import {
   quoteFairRequest,
   fairQuotaSummary,
   estimateFairQuota,
+  planFairQuotaReservation,
+  fairQuotaSnapshot,
 } from '../../server/quota/fair-share.ts';
 const NOW = 1800000000000;
 const members = ['a', 'b', 'c', 'd'];
@@ -38,6 +40,68 @@ function fixture(percent = 80) {
 }
 const request = { model: 'nai-diffusion-5', width: 1024, height: 1024, steps: 23 };
 const job = (id, r = request) => ({ id, request: { ...r } });
+
+test('窄收费规划与真实预扣共用固定/购买池和 fallback 规则，规划本身不写状态', () => {
+  const zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
+  for (const [model, v5, fixed, purchased, fallback, authorize] of [
+    ['nai-diffusion-5-full', '20', '100', '0', false, false],
+    ['nai-diffusion-5-full', '0', '100', '0', true, false],
+    ['nai-diffusion-4-5-full', '20', '100', '0', false, false],
+    ['nai-diffusion-4-5-full', '20', '0', '100', false, true],
+  ]) {
+    const db = fixture(),
+      s = db.settings.fairQuota,
+      account = db.accounts[0];
+    const paid = { model, width: 1024, height: 1024, steps: 30, allowPurchasedAnlas: authorize };
+    account.quotaFixed = fixed === '0' ? 0 : 10000;
+    account.quotaPurchased = 10000;
+    account.quotaCheckedAt = NOW + 1;
+    syncFairQuota(db, NOW + 1);
+    Object.assign(s.balances.a, {
+      v5Available: v5,
+      anlasFixedAvailable: fixed,
+      anlasPurchasedAvailable: purchased,
+    });
+    s.autoAnlasFallback = fallback;
+    const state = {
+      balance: s.balances.a,
+      autoAnlasFallback: fallback,
+      snapshot: fairQuotaSnapshot(account),
+      availableV5: '80',
+      reserved: { ...zero },
+      reservedAnlas: '0',
+      sharedReservedV5: '0',
+      pending: { ...zero },
+      pendingAnlas: '0',
+      pendingFallback: { ...zero },
+      sharedV5Debt: '0',
+    };
+    const before = structuredClone(state);
+    const planned = planFairQuotaReservation(state, paid, NOW + 1);
+    assert.deepEqual(state, before);
+    const actual = reserveFairQuota(db, { id: 'a' }, job('planned', paid), account, NOW + 1);
+    for (const key of [
+      'resource',
+      'amount',
+      'fixed',
+      'purchased',
+      'billingMode',
+      'sharedV5Reserved',
+      'v5Equivalent',
+    ]) {
+      assert.equal(actual[key], planned[key], key);
+    }
+    if (purchased !== '0') {
+      assert.throws(
+        () => planFairQuotaReservation(state, { ...paid, allowPurchasedAnlas: false }, NOW + 1),
+        /明确授权/,
+      );
+      const mixed = structuredClone(state);
+      mixed.pending.anlasFixed = '1';
+      assert.throws(() => planFairQuotaReservation(mixed, paid, NOW + 1), /不支持混合/);
+    }
+  }
+});
 test('每次观察都校验三种余额，已有钱包与冷却不豁免，完整恢复不重发', () => {
   for (const opened of [false, true]) {
     for (const field of ['v5UsagePercent', 'quotaFixed', 'quotaPurchased']) {

@@ -36,6 +36,8 @@ export type RelationalLifecycleEvent = Extract<
   { eventType: keyof RelationalLifecyclePayloads }
 >;
 export type RelationalEventInput = RelationalFact & {
+  // 命令可预先分配同一提交内互相引用的事件 ID；省略时由存储生成。
+  eventId?: string;
   streamId: string;
   occurredAt: number;
   accountId: string | null;
