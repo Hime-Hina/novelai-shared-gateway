@@ -121,6 +121,13 @@ CREATE TABLE member_sessions (
 CREATE INDEX idx_sessions_member ON member_sessions(member_id);
 CREATE INDEX idx_sessions_expiry ON member_sessions(expires_at);
 
+-- 私有认证当前状态随凭据备份恢复，业务事件回放不能重建 owner 撤销历史。
+CREATE TABLE member_auth_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner_member_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL
+) STRICT;
+
 CREATE TABLE sharing_groups (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,

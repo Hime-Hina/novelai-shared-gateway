@@ -24,5 +24,6 @@ export async function withMemberSessions(t, store) {
       options,
     );
   store.memberSessionTransaction = JsonStore.prototype.memberSessionTransaction.bind(store);
+  store.loginMemberPassword = JsonStore.prototype.loginMemberPassword.bind(store);
   return store;
 }

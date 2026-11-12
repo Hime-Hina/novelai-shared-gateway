@@ -10,7 +10,6 @@ import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   setMemberCredentials,
-  loginMember,
   checkMemberLoginRate,
   createMemberSession,
   authenticateMemberSession,
@@ -18,6 +17,9 @@ import {
   logoutMemberSession,
   isOwner,
   type MemberSession,
+  type MemberPasswordStore,
+  assertMemberRegistrationCapacity,
+  assertMemberCanDisable,
 } from './authentication.ts';
 import {
   configureFairGroups,
@@ -82,7 +84,7 @@ interface MemberDatabase extends FairQuotaDatabase {
   ledger: LedgerRow[];
   settings: { publicBaseUrl?: string; fairQuota?: MemberQuotaState | null };
 }
-type AuthStore = Parameters<typeof authenticateMemberSession>[0];
+type AuthStore = MemberPasswordStore;
 type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
 interface MemberStore extends AuthStore, ActivityStore {
   readMemberSessionState(tokenHash: string): MemberSession | null;
@@ -306,6 +308,39 @@ export function memberPublicBaseUrl(
     db.settings.publicBaseUrl ||
     (env.PUBLIC_HOST ? `https://${env.PUBLIC_HOST}` : '')
   );
+}
+
+export async function handleMemberAuthenticationRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  deps: { store: MemberPasswordStore; env?: NodeJS.ProcessEnv },
+): Promise<boolean> {
+  if (
+    req.method !== 'POST' ||
+    !['/api/member/login', '/api/member/logout'].includes(url.pathname)
+  ) {
+    return false;
+  }
+  sameOrigin(req);
+  const env = deps.env || process.env,
+    store = deps.store;
+  if (url.pathname === '/api/member/logout') {
+    await logoutMemberSession(store, cookie(req));
+    setCookie(req, res, '');
+    reply(res, 200, { ok: true });
+    return true;
+  }
+  if (discordLoginEnabled(env)) {
+    error(403, '本站仅允许 Discord 登录');
+  }
+  const body = await json(req);
+  checkMemberLoginRate(body.username, clientIp(req, env));
+  const user = await store.loginMemberPassword(body.username, body.password);
+  const session = await createMemberSession(store, user, env);
+  setCookie(req, res, session.token, session.expiresAt);
+  reply(res, 200, { ok: true, expiresAt: session.expiresAt });
+  return true;
 }
 
 export async function handleMemberRoutes(
@@ -658,18 +693,17 @@ export async function handleMemberRoutes(
           if (!user) {
             error(404, '成员不存在');
           }
-          if (
-            !body.enabled &&
-            (db.jobs.some(
-              (job) =>
-                job.userToken === user.token &&
-                ['queued', 'pending', 'running'].includes(job.status!),
-            ) ||
-              Object.values(db.settings.fairQuota?.reservations || {}).some(
-                (charge) => charge.userId === user.id && charge.status === 'reserved',
-              ))
-          ) {
-            error(409, '成员仍有排队或生成中的任务，请结清后停用');
+          if (!body.enabled) {
+            assertMemberCanDisable(
+              db.jobs.some(
+                (job) =>
+                  job.userToken === user.token &&
+                  ['queued', 'pending', 'running'].includes(job.status!),
+              ) ||
+                Object.values(db.settings.fairQuota?.reservations || {}).some(
+                  (charge) => charge.userId === user.id && charge.status === 'reserved',
+                ),
+            );
           }
           user.enabled = body.enabled as boolean;
           user.updatedAt = new Date().toISOString();
@@ -763,9 +797,7 @@ export async function handleMemberRoutes(
           inheritDomainCommand(db, draft);
           let userId = body.userId;
           if (!userId) {
-            if (draft.users.length >= 200) {
-              error(409, '账户数已达上限');
-            }
+            assertMemberRegistrationCapacity(draft.users.length);
             const user = {
               id: deps.createId('usr'),
               token: deps.createPublicToken('STA1N'),
@@ -855,24 +887,7 @@ export async function handleMemberRoutes(
     error(400, '不支持的管理操作');
   }
 
-  if (url.pathname === '/api/member/login' && req.method === 'POST') {
-    if (discordEnabled) {
-      error(403, '本站仅允许 Discord 登录');
-    }
-    const body = await json(req);
-    checkMemberLoginRate(body.username, clientIp(req, env));
-    const user = await store.update((db) => loginMember(db, body.username, body.password), {
-      persist: false,
-    });
-    const session = await createMemberSession(store, user, env);
-    setCookie(req, res, session.token, session.expiresAt);
-    reply(res, 200, { ok: true, expiresAt: session.expiresAt });
-    return true;
-  }
-  if (url.pathname === '/api/member/logout' && req.method === 'POST') {
-    await logoutMemberSession(store, cookie(req));
-    setCookie(req, res, '');
-    reply(res, 200, { ok: true });
+  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
     return true;
   }
   let session = await authenticateMemberSession(store, cookie(req), env);

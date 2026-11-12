@@ -40,6 +40,18 @@ export interface MemberSessionStore {
     options: MemberSessionMutation,
   ): Promise<T>;
 }
+export interface MemberPasswordStore extends MemberSessionStore {
+  loginMemberPassword(username: unknown, password: unknown): Promise<MemberUser>;
+}
+export interface MemberApiKeyStore {
+  memberApiKeyTransaction<T>(
+    keyHash: string,
+    authorize: (member: MemberUser | null) => T,
+  ): Promise<T>;
+}
+export interface MemberSessionCommandStore extends MemberSessionStore {
+  assertMemberCommandTransaction(): void;
+}
 type OwnerUser = MemberUser & { enabled: true; discord: { id: string; guildId: string } };
 
 // Node scrypt 的完成回调返回 Buffer；promisify 对重载函数只能推断 unknown。
@@ -55,10 +67,46 @@ const windowMs = 15 * 60 * 1000;
 const fail: (statusCode: number, message: string) => never = (statusCode, message) => {
   throw Object.assign(new Error(message), { statusCode });
 };
-const normalized = (value: unknown): string =>
+export const normalizeMemberUsername = (value: unknown): string =>
   String(value || '')
     .trim()
     .toLowerCase();
+
+function credentialInput(input: { username?: unknown; password?: unknown }) {
+  const username = normalizeMemberUsername(input.username);
+  const password = input.password;
+  if (!/^[a-z0-9][a-z0-9_.-]{2,39}$/.test(username)) {
+    fail(400, '用户名需为 3–40 位字母、数字、下划线、点或短横线');
+  }
+  if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
+    fail(400, '密码需为 12–128 个字符');
+  }
+  return { username, password };
+}
+
+async function deriveCredentials({ username, password }: ReturnType<typeof credentialInput>) {
+  const salt = randomBytes(24).toString('hex');
+  const hash = (await scrypt(password, salt, 64)).toString('hex');
+  return { username, salt, hash, version: randomBytes(16).toString('hex') };
+}
+
+// 密码派生在写事务外完成；各存储提交时重新核对目标和当前授权。
+export function prepareMemberCredentials(input: { username?: unknown; password?: unknown }) {
+  return deriveCredentials(credentialInput(input));
+}
+export type MemberCredentials = Awaited<ReturnType<typeof prepareMemberCredentials>>;
+
+export function assertMemberRegistrationCapacity(count: number): void {
+  if (count >= 200) {
+    fail(409, '账户数已达上限');
+  }
+}
+
+export function assertMemberCanDisable(hasUnfinishedWork: boolean): void {
+  if (hasUnfinishedWork) {
+    fail(409, '成员仍有排队或生成中的任务，请结清后停用');
+  }
+}
 
 export async function setMemberCredentials(
   db: MemberDatabase,
@@ -69,22 +117,13 @@ export async function setMemberCredentials(
   if (!user) {
     fail(404, '账户不存在或未启用');
   }
-  const username = normalized(input.username);
-  const password = input.password;
-  if (!/^[a-z0-9][a-z0-9_.-]{2,39}$/.test(username)) {
-    fail(400, '用户名需为 3–40 位字母、数字、下划线、点或短横线');
-  }
-  if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
-    fail(400, '密码需为 12–128 个字符');
-  }
-  if (db.users.some((u) => u.id !== userId && u.memberAuth?.username === username)) {
+  const fields = credentialInput(input);
+  if (db.users.some((u) => u.id !== userId && u.memberAuth?.username === fields.username)) {
     fail(409, '用户名已存在');
   }
-  const salt = randomBytes(24).toString('hex');
-  const hash = (await scrypt(password, salt, 64)).toString('hex');
-  user.memberAuth = { username, salt, hash, version: randomBytes(16).toString('hex') };
+  user.memberAuth = await deriveCredentials(fields);
   user.updatedAt = new Date().toISOString();
-  return { id: user.id, username };
+  return { id: user.id, username: fields.username };
 }
 
 function prune(map: typeof attempts, now: number): void {
@@ -98,7 +137,7 @@ function prune(map: typeof attempts, now: number): void {
 export function checkMemberLoginRate(username: unknown, remote: unknown, now = Date.now()): void {
   prune(attempts, now);
   const keys = [
-    ...(username === null ? [] : [`user:${normalized(username).slice(0, 128)}`]),
+    ...(username === null ? [] : [`user:${normalizeMemberUsername(username).slice(0, 128)}`]),
     `remote:${String(remote).slice(0, 128)}`,
   ];
   const limits = username === null ? [120] : [10, 120];
@@ -121,7 +160,7 @@ export async function loginMember(
   username: unknown,
   password: unknown,
 ): Promise<MemberUser> {
-  const user = db.users.find((u) => u.memberAuth?.username === normalized(username));
+  const user = db.users.find((u) => u.memberAuth?.username === normalizeMemberUsername(username));
   const auth = user?.memberAuth;
   const candidate = typeof password === 'string' && password.length <= 128 ? password : '';
   // 不存在的账户也执行相同派生过程，避免通过响应时间枚举用户名。
@@ -211,7 +250,10 @@ export function authenticateMemberSession(
   env: NodeJS.ProcessEnv = process.env,
   now?: number,
 ) {
-  return checkMemberSession(store, token, env, now, false);
+  return checkMemberSession(store, token, env, now, false, (user, expiresAt) => ({
+    user,
+    expiresAt,
+  }));
 }
 
 export function renewMemberSession(
@@ -220,15 +262,47 @@ export function renewMemberSession(
   env: NodeJS.ProcessEnv = process.env,
   now?: number,
 ) {
-  return checkMemberSession(store, token, env, now, true);
+  return checkMemberSession(store, token, env, now, true, (user, expiresAt) => ({
+    user,
+    expiresAt,
+  }));
 }
 
-async function checkMemberSession(
+// T4 的受理/变更在同一个已重验会话事务里执行，不能持旧鉴权快照另开写事务。
+export function withAuthenticatedMemberSession<T>(
+  store: MemberSessionCommandStore,
+  token: unknown,
+  env: NodeJS.ProcessEnv,
+  authorized: (user: MemberUser) => T,
+  now?: number,
+) {
+  return checkMemberSession(store, token, env, now, false, (user) => {
+    store.assertMemberCommandTransaction();
+    return authorized(user);
+  });
+}
+
+export function withAuthenticatedMemberApiKey<T>(
+  store: MemberApiKeyStore,
+  key: unknown,
+  authorized: (user: MemberUser) => T,
+): Promise<T | null> {
+  if (typeof key !== 'string' || !key || key.length > 4096) {
+    return Promise.resolve(null);
+  }
+  const hash = createHash('sha256').update(key).digest('hex');
+  return store.memberApiKeyTransaction(hash, (member) =>
+    member?.enabled === true && member.memberAuth?.version ? authorized(member) : null,
+  );
+}
+
+async function checkMemberSession<T>(
   store: MemberSessionStore,
   token: unknown,
   env: NodeJS.ProcessEnv,
   now: number | undefined,
   renew: boolean,
+  authorized: (user: MemberUser, expiresAt: number) => T,
 ) {
   const tokenHash = sessionHash(token);
   if (!tokenHash) {
@@ -272,7 +346,7 @@ async function checkMemberSession(
       if (expiresAt > session.expiresAt) {
         expiry = { tokenHash, expiresAt };
       }
-      return { user, expiresAt };
+      return authorized(user, expiresAt);
     },
     {
       memberSessionDelete: () => revoke,

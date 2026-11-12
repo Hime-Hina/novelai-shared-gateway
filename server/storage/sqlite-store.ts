@@ -71,6 +71,7 @@ import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota/fair-share.ts';
 import type { ProviderRequest } from '../protocols/novelai-client.ts';
 import type { MemberSessionMutation, MemberSessionTransaction } from '../members/authentication.ts';
+import { loginMember } from '../members/authentication.ts';
 import type { recordSharedCompletion } from '../quota/shared-capacity.ts';
 import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from '../generation/accounting.ts';
@@ -1181,6 +1182,10 @@ export class JsonStore {
 
   readMemberSession(tokenHash: string) {
     return this.statements!.selectMemberSession.get({ tokenHash }) || null;
+  }
+
+  loginMemberPassword(username: unknown, password: unknown) {
+    return this.update((db) => loginMember(db, username, password), { persist: false });
   }
 
   readMemberSessionState(tokenHash: string) {

@@ -24,6 +24,14 @@ const mutations = new Set([
   'persistAcceptedInput',
   'replayAcceptedInput',
   'memberSessionTransaction',
+  'memberApiKeyTransaction',
+  'withAuthenticatedMemberSession',
+  'withAuthenticatedMemberApiKey',
+  'registerMember',
+  'setMemberCredentials',
+  'replaceMemberApiKey',
+  'setMemberStatus',
+  'replayMemberCommit',
 ]);
 const persistence = new Set([
   'update',
@@ -91,14 +99,14 @@ export function checkSource(filename, text) {
     }
     if (
       ((query || protocol) &&
-        /(?:events\/relational-event-store|storage\/relational-(?:input-store|storage))\.(?:ts|js)$/.test(
-          target,
-        )) ||
-      (query &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|storage))\.(?:ts|js)$/.test(
             target,
-          ) ||
+          ))) ||
+      (query &&
+        (/(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
+          target,
+        ) ||
           (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*'))))
     ) {
       report(
