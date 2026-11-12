@@ -1,6 +1,6 @@
 # 服务端
 
-T3/T4 的认证接入进度见[数据库计划第 9.6 节](../docs/plans/database-model-redesign.md#96-t3t4稳定身份私有凭据和会话事务)。会话规则继续归 `members/authentication.ts`；存储实现 `memberSessionTransaction()` 的窄事务能力，读取模块使用 type-only `Pick`。旧运行时的 SQL 映射位于 `storage/sqlite-store.ts`，不让新格式认证 owner 依赖旧用户集合或表类型。
+T3/T4 的认证接入进度见[数据库计划第 9.6 节](../docs/plans/database-model-redesign.md#96-t3t4稳定身份私有凭据和会话事务)。会话规则继续归 `members/authentication.ts`，Discord 邀请、OAuth 和刷新归 `members/discord-auth.ts`；存储实现 `memberSessionTransaction()` / `discordAuthenticationTransaction()` 的窄事务能力，读取模块使用 type-only `Pick`。旧运行时的 SQL 映射位于 `storage/sqlite-store.ts`，不让新格式认证 owner 依赖旧用户集合或表类型。
 
 HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非商用许可范围见仓库根目录 NOTICE.md 与 LICENSE。
 

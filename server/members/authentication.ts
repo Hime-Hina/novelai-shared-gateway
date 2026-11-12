@@ -1,5 +1,6 @@
 import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
+import { assertCurrentDiscordMembership } from './discord-auth.ts';
 
 export interface MemberUser {
   id: string;
@@ -278,6 +279,7 @@ export function withAuthenticatedMemberSession<T>(
 ) {
   return checkMemberSession(store, token, env, now, false, (user) => {
     store.assertMemberCommandTransaction();
+    assertCurrentDiscordMembership(user, env);
     return authorized(user);
   });
 }
@@ -286,14 +288,33 @@ export function withAuthenticatedMemberApiKey<T>(
   store: MemberApiKeyStore,
   key: unknown,
   authorized: (user: MemberUser) => T,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T | null> {
+  return checkMemberApiKey(store, key, (member) => {
+    assertCurrentDiscordMembership(member, env);
+    return authorized(member);
+  });
+}
+
+export function authenticateMemberApiKey(store: MemberApiKeyStore, key: unknown) {
+  return checkMemberApiKey(store, key, (member) => member);
+}
+
+function checkMemberApiKey<T>(
+  store: MemberApiKeyStore,
+  key: unknown,
+  authorized: (user: MemberUser) => T,
 ): Promise<T | null> {
   if (typeof key !== 'string' || !key || key.length > 4096) {
     return Promise.resolve(null);
   }
   const hash = createHash('sha256').update(key).digest('hex');
-  return store.memberApiKeyTransaction(hash, (member) =>
-    member?.enabled === true && member.memberAuth?.version ? authorized(member) : null,
-  );
+  return store.memberApiKeyTransaction(hash, (member) => {
+    if (member?.enabled !== true || !member.memberAuth?.version) {
+      return null;
+    }
+    return authorized(member);
+  });
 }
 
 async function checkMemberSession<T>(

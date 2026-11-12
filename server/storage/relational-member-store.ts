@@ -1,6 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  createDiscordInvite,
+  type DiscordUser,
+  type DiscordAuthenticationStore,
+  type DiscordAuthenticationTransaction,
+} from '../members/discord-auth.ts';
+import { domainDigest } from '../events/domain-events.ts';
+import {
   loginMember,
   normalizeMemberUsername,
   prepareMemberCredentials,
@@ -34,7 +41,10 @@ type MemberCommand = Omit<RelationalCommand, 'events' | 'expectedVersions' | 're
 };
 type MemberFact = Extract<
   RelationalFact,
-  { eventType: 'MemberRegistered' | 'MemberStatusChanged' | 'AdmissionChanged' }
+  {
+    eventType:
+      'MemberRegistered' | 'MemberStatusChanged' | 'AdmissionChanged' | 'MemberEligibilityChanged';
+  }
 >;
 export interface PreparedMemberCredentials {
   memberId: string;
@@ -47,7 +57,9 @@ function fail(statusCode: number, message: string): never {
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
 // 私有认证不是业务投影；这里只有稳定 ID 的窄查询和事务，不提供 users/通用 update。
-export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyStore {
+export class RelationalMemberStore
+  implements MemberPasswordStore, MemberApiKeyStore, DiscordAuthenticationStore
+{
   private sqlite: Database.Database;
   constructor(sqlite: Database.Database) {
     assertRelationalStorageFormat(sqlite);
@@ -65,22 +77,33 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
     }
   }
 
-  private authenticationMember(memberId: string): MemberUser | null {
+  private authenticationMember(memberId: string): DiscordUser | null {
     const row = this.sqlite
       .prepare<
         [string],
         {
           id: string;
+          display_name: string;
           status: string;
           auth_epoch: string | null;
           username: string | null;
           discord_id: string | null;
           guild_id: string | null;
+          access_token: string | null;
+          refresh_token: string | null;
+          expires_at: number | null;
+          checked_at: number | null;
+          eligible: number | null;
+          code_hash: string | null;
+          invite_expires_at: number | null;
         }
       >(
-        `SELECT m.id,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id FROM members m
+        `SELECT m.id,m.display_name,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id,
+        d.access_token,d.refresh_token,d.expires_at,d.checked_at,d.eligible,
+        i.code_hash,i.expires_at AS invite_expires_at FROM members m
       LEFT JOIN password_credentials p ON p.member_id=m.id
-      LEFT JOIN discord_bindings d ON d.member_id=m.id WHERE m.id=?`,
+      LEFT JOIN discord_bindings d ON d.member_id=m.id
+      LEFT JOIN discord_invites i ON i.member_id=m.id WHERE m.id=?`,
       )
       .get(memberId);
     if (!row) {
@@ -88,6 +111,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
     }
     return {
       id: row.id,
+      note: row.display_name,
       enabled: row.status === 'active',
       ...(row.auth_epoch
         ? {
@@ -98,7 +122,20 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
           }
         : {}),
       ...(row.discord_id && row.guild_id
-        ? { discord: { id: row.discord_id, guildId: row.guild_id } }
+        ? {
+            discord: {
+              id: row.discord_id,
+              guildId: row.guild_id,
+              ...(row.access_token === null ? {} : { accessToken: row.access_token }),
+              ...(row.refresh_token === null ? {} : { refreshToken: row.refresh_token }),
+              ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
+              ...(row.checked_at === null ? {} : { checkedAt: row.checked_at }),
+              ...(row.eligible === null ? {} : { member: row.eligible === 1 }),
+            },
+          }
+        : {}),
+      ...(row.code_hash && row.invite_expires_at !== null
+        ? { discordInvite: { hash: row.code_hash, expiresAt: row.invite_expires_at } }
         : {}),
     };
   }
@@ -125,7 +162,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
 
   async loginMemberPassword(username: unknown, password: unknown): Promise<MemberUser> {
     const credential = this.sqlite
-      .prepare<[string], { member_id: string; salt: string; password_hash: string }>(
+      .prepare<[string], { member_id: string; salt: string | null; password_hash: string | null }>(
         'SELECT member_id,salt,password_hash FROM password_credentials WHERE username=?',
       )
       .get(normalizeMemberUsername(username));
@@ -136,8 +173,8 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
             ...member,
             memberAuth: {
               ...member.memberAuth,
-              salt: credential.salt,
-              hash: credential.password_hash,
+              salt: credential.salt ?? undefined,
+              hash: credential.password_hash ?? undefined,
             },
           }
         : null;
@@ -282,7 +319,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
       memberId: string;
       displayName: string;
       apiKey: string;
-      credentials: MemberCredentials;
+      credentials?: MemberCredentials;
     },
   ) {
     return this.owningTransaction(() => {
@@ -312,7 +349,9 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
         },
       });
       this.applyMemberEvents(result.events);
-      this.insertCredentials(input.memberId, input.credentials);
+      if (input.credentials) {
+        this.insertCredentials(input.memberId, input.credentials);
+      }
       this.replaceKey(input.memberId, input.apiKey);
       return result;
     });
@@ -356,6 +395,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
   }
 
   private applyMemberEvents(events: RelationalEvent[]) {
+    // 资格事实保留历史；业务回放不能把它还原成当前私有授权或认证 epoch。
     for (const event of events) {
       if (event.eventType === 'MemberRegistered' || event.eventType === 'OpeningMemberRecorded') {
         const p = event.payload;
@@ -388,7 +428,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
             event.eventId,
             event.payload.memberId,
           );
-      } else {
+      } else if (event.eventType !== 'MemberEligibilityChanged') {
         throw new Error("Member replay cannot apply another owner's facts.");
       }
     }
@@ -404,6 +444,7 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
               'OpeningMemberRecorded',
               'MemberStatusChanged',
               'AdmissionChanged',
+              'MemberEligibilityChanged',
             ].includes(event.eventType),
         )
       ) {
@@ -415,6 +456,122 @@ export class RelationalMemberStore implements MemberPasswordStore, MemberApiKeyS
       }
       return result;
     });
+  }
+
+  createMemberDiscordInvite(memberId: string, now = Date.now()) {
+    return this.owningTransaction(() => {
+      const user = this.authenticationMember(memberId);
+      const result = createDiscordInvite({ users: user ? [user] : [] }, memberId, now);
+      this.saveDiscordAuthentication(user!);
+      return result;
+    });
+  }
+
+  private saveDiscordAuthentication(user: DiscordUser, evidence?: 'login' | 'observation') {
+    this.assertMemberCommandTransaction();
+    const current = this.authenticationMember(user.id);
+    if (!current || current.enabled !== true) {
+      fail(401, '成员认证状态已变化，请重试');
+    }
+    const grant = user.discord;
+    if (grant?.id) {
+      this.sqlite
+        .prepare(
+          `INSERT INTO discord_bindings
+        (member_id,discord_id,guild_id,access_token,refresh_token,expires_at,checked_at,eligible)
+        VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(member_id) DO UPDATE SET
+        discord_id=excluded.discord_id,guild_id=excluded.guild_id,access_token=excluded.access_token,
+        refresh_token=excluded.refresh_token,expires_at=excluded.expires_at,
+        checked_at=excluded.checked_at,eligible=excluded.eligible`,
+        )
+        .run(
+          user.id,
+          grant.id,
+          grant.guildId,
+          grant.accessToken ?? null,
+          grant.refreshToken ?? null,
+          grant.expiresAt ?? null,
+          grant.checkedAt ?? null,
+          grant.member === undefined ? null : Number(grant.member),
+        );
+    }
+    if (evidence === 'login') {
+      // OAuth owner 清除旧密码，但保留登录名占用；不能用虚构密码或删除名称替代。
+      this.sqlite
+        .prepare(
+          `INSERT INTO password_credentials(member_id,username,salt,password_hash)
+        VALUES(?,?,NULL,NULL) ON CONFLICT(member_id) DO UPDATE SET
+        username=excluded.username,salt=NULL,password_hash=NULL`,
+        )
+        .run(user.id, user.memberAuth!.username);
+    }
+    if (current.memberAuth?.version !== user.memberAuth?.version) {
+      this.sqlite
+        .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
+        .run(user.memberAuth?.version ?? null, user.id);
+      this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(user.id);
+    }
+    if (user.discordInvite) {
+      this.sqlite
+        .prepare(
+          `INSERT INTO discord_invites(member_id,code_hash,expires_at) VALUES(?,?,?)
+        ON CONFLICT(member_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at`,
+        )
+        .run(user.id, user.discordInvite.hash, user.discordInvite.expiresAt);
+    } else {
+      this.sqlite.prepare('DELETE FROM discord_invites WHERE member_id=?').run(user.id);
+    }
+    if (evidence) {
+      const payload = {
+        memberId: user.id,
+        discordId: grant!.id!,
+        guildId: grant!.guildId!,
+        checkedAt: grant!.checkedAt!,
+        eligible: grant!.member ?? null,
+      };
+      this.commitMember(
+        {
+          commandId: `discord-auth:${randomBytes(16).toString('hex')}`,
+          fingerprint: domainDigest(payload),
+          actorKind: 'system',
+          actorId: null,
+          recordedAt: Date.now(),
+          correlationId: null,
+          causationId: null,
+          policyVersion: 'member-auth-v1',
+          pricingVersion: 'not-priced',
+        },
+        user.id,
+        { eventType: 'MemberEligibilityChanged', payload },
+      );
+    }
+  }
+
+  async discordAuthenticationTransaction<T>(
+    mutate: (transaction: DiscordAuthenticationTransaction) => T,
+  ): Promise<T> {
+    return this.authenticationTransaction(() =>
+      mutate({
+        readMember: (id) => this.authenticationMember(id),
+        findDiscordMember: (id) => {
+          const row = this.sqlite
+            .prepare<[string], { member_id: string }>(
+              'SELECT member_id FROM discord_bindings WHERE discord_id=?',
+            )
+            .get(id);
+          return row ? this.authenticationMember(row.member_id) : null;
+        },
+        findInviteMember: (hash, now) => {
+          const row = this.sqlite
+            .prepare<[string, number], { member_id: string }>(
+              'SELECT member_id FROM discord_invites WHERE code_hash=? AND expires_at>?',
+            )
+            .get(hash, now);
+          return row ? this.authenticationMember(row.member_id) : null;
+        },
+        saveAuthentication: (user, evidence) => this.saveDiscordAuthentication(user, evidence),
+      }),
+    );
   }
 
   readMemberSessionState(tokenHash: string): MemberSession | null {

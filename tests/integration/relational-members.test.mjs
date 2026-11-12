@@ -11,13 +11,18 @@ import {
   prepareMemberCredentials,
   createMemberSession,
   authenticateMemberSession,
+  authenticateMemberApiKey,
   renewMemberSession,
   logoutMemberSession,
   reconcileMemberSessionOwner,
   withAuthenticatedMemberSession,
   withAuthenticatedMemberApiKey,
 } from '../../server/members/authentication.ts';
-import { handleMemberAuthenticationRoutes } from '../../server/members/http-routes.ts';
+import {
+  handleMemberAuthenticationRoutes,
+  handleMemberDiscordAuthenticationRoutes,
+} from '../../server/members/http-routes.ts';
+import { requireDiscordMembership } from '../../server/members/discord-auth.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import {
@@ -68,9 +73,13 @@ function provision(db, members, index) {
     )
     .immediate();
 }
-function fixture(t) {
-  const db = new Database(':memory:');
-  t.after(() => db.close());
+function fixture(t, filename = ':memory:') {
+  const db = new Database(filename);
+  t.after(() => {
+    if (db.open) {
+      db.close();
+    }
+  });
   initializeRelationalStorage(db, 'members-history');
   const members = new RelationalMemberStore(db),
     inputs = new RelationalInputStore(db);
@@ -572,4 +581,431 @@ test('同一现有 HTTP owner 接入关系表：登录/退出、同源、失败�
   assert.equal(logout.status, 200);
   assert.match(logout.headers.get('set-cookie'), /Max-Age=0/);
   assert.equal(await authenticateMemberSession(members, token, {}), null);
+});
+
+const discordEnv = {
+  DISCORD_CLIENT_ID: '123456789012345678',
+  DISCORD_CLIENT_SECRET: 'synthetic-client-secret',
+  DISCORD_GUILD_ID: '1134557553011998840',
+  PUBLIC_BASE_URL: 'https://nai.example',
+  OWNER_USER_ID: 'm1',
+};
+async function discordFixture(t, filename) {
+  const state = fixture(t, filename),
+    { db, members } = state;
+  const upstream = {
+    id: '222222222222222222',
+    member: true,
+    fail: false,
+    refreshes: 0,
+    guildCalls: 0,
+  };
+  const deps = {
+    store: members,
+    env: discordEnv,
+    async discordFetch(url, options) {
+      assert.equal(db.inTransaction, false, 'Discord 网络请求不能持有 SQL 写事务');
+      if (url.endsWith('/oauth2/token')) {
+        const refresh = options.body.get('grant_type') === 'refresh_token';
+        if (refresh) {
+          upstream.refreshes++;
+        }
+        return Response.json({
+          access_token: 'synthetic-discord-access-' + upstream.refreshes,
+          refresh_token: 'synthetic-discord-refresh-' + upstream.refreshes,
+          expires_in: 3600,
+          token_type: 'Bearer',
+          scope: 'identify guilds.members.read',
+        });
+      }
+      if (url.endsWith('/users/@me')) {
+        return Response.json({ id: upstream.id });
+      }
+      upstream.guildCalls++;
+      if (upstream.fail) {
+        return new Response('', { status: 503 });
+      }
+      return upstream.member
+        ? Response.json({ user: { id: upstream.id } })
+        : new Response('', { status: 404 });
+    },
+  };
+  const server = http.createServer(async (req, res) => {
+    try {
+      if (
+        !(await handleMemberDiscordAuthenticationRoutes(
+          req,
+          res,
+          new URL(req.url, discordEnv.PUBLIC_BASE_URL),
+          deps,
+        ))
+      ) {
+        res.writeHead(404);
+        res.end();
+      }
+    } catch (error) {
+      res.writeHead(error.statusCode || 500);
+      res.end(error.message);
+    }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const call = (url, { body, headers = {} } = {}) =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: server.address().port,
+          path: url,
+          method: body === undefined ? 'GET' : 'POST',
+          headers: {
+            host: 'nai.example',
+            origin: 'https://nai.example',
+            'content-type': 'application/json',
+            ...headers,
+          },
+        },
+        (res) => {
+          let text = '';
+          res.on('data', (chunk) => {
+            text += chunk;
+          });
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, text }));
+        },
+      );
+      req.on('error', reject);
+      req.end(body === undefined ? undefined : JSON.stringify(body));
+    });
+  const invite = (id = 'm1', now) =>
+    db.transaction(() => members.createMemberDiscordInvite(id, now))();
+  const start = async (code) => {
+    const response = await call('/api/member/discord/start', {
+      body: code ? { invite: code } : {},
+    });
+    assert.equal(response.status, 200, response.text);
+    const url = new URL(JSON.parse(response.text).authorizationUrl);
+    return {
+      state: url.searchParams.get('state'),
+      cookie: response.headers['set-cookie'][0].split(';')[0],
+    };
+  };
+  const finish = (pending, headers = {}) =>
+    call(
+      '/api/member/discord/callback?' +
+        new URLSearchParams({ state: pending.state, code: 'synthetic-code' }),
+      {
+        headers: {
+          cookie: pending.cookie,
+          origin: 'https://discord.com',
+          'sec-fetch-site': 'cross-site',
+          ...headers,
+        },
+      },
+    );
+  const login = async (code) => {
+    const response = await finish(await start(code));
+    assert.equal(response.status, 303, response.text);
+    const cookie = response.headers['set-cookie'].find((value) =>
+      value.startsWith('nai_member_session='),
+    );
+    assert.ok(cookie);
+    return { token: cookie.split(';')[0].split('=')[1], response };
+  };
+  return { ...state, upstream, deps, call, invite, start, finish, login };
+}
+
+test('Discord 真实 HTTP owner 绑定稳定成员、清除密码、撤销旧 Cookie，私有材料不进入事实/回执', async (t) => {
+  const f = await discordFixture(t),
+    { db, members, inputs } = f;
+  const old = await session(members);
+  const invite = f.invite();
+  assert.equal(
+    db.prepare('SELECT code_hash FROM discord_invites').get().code_hash,
+    digest(invite.code),
+  );
+  const { token, response } = await f.login(invite.code);
+  assert.equal(response.headers.location, 'https://nai.example/');
+  for (const attribute of [/HttpOnly/, /Secure/, /SameSite=Strict/]) {
+    assert.match(response.headers['set-cookie'][1], attribute);
+  }
+  const authenticated = await authenticateMemberSession(members, token, discordEnv);
+  assert.equal(authenticated.user.id, 'm1');
+  assert.ok(authenticated.expiresAt <= Date.now() + 86400000);
+  assert.equal(await authenticateMemberSession(members, old.token, discordEnv), null);
+  assert.deepEqual(
+    db
+      .prepare('SELECT username,salt,password_hash FROM password_credentials WHERE member_id=?')
+      .get('m1'),
+    { username: 'first.member', salt: null, password_hash: null },
+  );
+  await assert.rejects(members.loginMemberPassword('first.member', password), { statusCode: 401 });
+  assert.equal(members.readMemberApiKey('m1'), keys[0]);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM discord_invites').get().n, 0);
+  await requireDiscordMembership(authenticated.user, f.deps);
+  const request = await withAuthenticatedMemberSession(members, token, discordEnv, (user) =>
+    inputs.persistAcceptedInput(
+      metadata('discord-input', user.id),
+      accepted('discord-input', user.id),
+    ),
+  );
+  assert.ok(request);
+  assert.equal(db.prepare('SELECT member_id FROM generation_requests').get().member_id, 'm1');
+  db.prepare("UPDATE discord_bindings SET checked_at=0 WHERE member_id='m1'").run();
+  let invoked = false;
+  await assert.rejects(
+    withAuthenticatedMemberApiKey(
+      members,
+      keys[0],
+      () => {
+        invoked = true;
+      },
+      discordEnv,
+    ),
+    { statusCode: 503 },
+  );
+  assert.equal(invoked, false);
+  const keyMember = await authenticateMemberApiKey(members, keys[0]);
+  assert.equal(keyMember.id, 'm1');
+  await requireDiscordMembership(keyMember, f.deps);
+  await withAuthenticatedMemberApiKey(
+    members,
+    keys[0],
+    (user) =>
+      inputs.persistAcceptedInput(
+        metadata('discord-key-input', user.id),
+        accepted('discord-key-input', user.id),
+      ),
+    discordEnv,
+  );
+  assert.equal(
+    db.prepare("SELECT member_id FROM generation_requests WHERE id='discord-key-input'").get()
+      .member_id,
+    'm1',
+  );
+  const text =
+    JSON.stringify(db.prepare('SELECT payload FROM domain_events').all()) +
+    JSON.stringify(db.prepare('SELECT receipt FROM commits').all()) +
+    JSON.stringify(members.readMember('m1'));
+  for (const secret of [
+    invite.code,
+    digest(invite.code),
+    'synthetic-discord-access',
+    'synthetic-discord-refresh',
+    token,
+    authenticated.user.memberAuth.version,
+    password,
+    credentials[0].salt,
+    credentials[0].hash,
+    keys[0],
+  ]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+  const event = db
+    .prepare(
+      "SELECT payload FROM domain_events WHERE event_type='MemberEligibilityChanged' ORDER BY commit_seq LIMIT 1",
+    )
+    .get();
+  assert.deepEqual(JSON.parse(event.payload), {
+    memberId: 'm1',
+    discordId: f.upstream.id,
+    guildId: discordEnv.DISCORD_GUILD_ID,
+    checkedAt: authenticated.user.discord.checkedAt,
+    eligible: true,
+  });
+});
+
+test('邀请码替换、到期、回调重用和跨成员重复绑定均拒绝；无密码成员可直接完成首次 OAuth', async (t) => {
+  const f = await discordFixture(t),
+    { db, members } = f;
+  const oldInvite = f.invite(),
+    current = f.invite();
+  assert.equal(
+    (await f.call('/api/member/discord/start', { body: { invite: oldInvite.code } })).status,
+    403,
+  );
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        body: { invite: current.code },
+        headers: { origin: 'https://other.invalid' },
+      })
+    ).status,
+    403,
+  );
+  const pending = await f.start(current.code);
+  db.prepare('UPDATE discord_invites SET expires_at=0').run();
+  const checkpoint = db.serialize();
+  assert.equal((await f.finish(pending)).status, 403);
+  assert.deepEqual(db.serialize(), checkpoint);
+  assert.equal((await f.finish(pending)).status, 400);
+  const fresh = f.invite(),
+    simultaneous = await f.start(fresh.code);
+  const first = await f.login(fresh.code);
+  assert.equal((await f.finish(simultaneous)).status, 403);
+  const secondMember = f.invite('m2');
+  assert.equal((await f.finish(await f.start(secondMember.code))).status, 403);
+  const nextLogin = await f.login();
+  assert.equal(await authenticateMemberSession(members, first.token, discordEnv), null);
+  assert.equal(
+    (await authenticateMemberSession(members, nextLogin.token, discordEnv)).user.id,
+    'm1',
+  );
+  db.transaction(() =>
+    members.registerMember(metadata('discord-only-registration'), {
+      memberId: 'm3',
+      displayName: 'discord.only',
+      apiKey: keys[2],
+    }),
+  )();
+  f.upstream.id = '333333333333333333';
+  const discordOnly = await f.login(f.invite('m3').code);
+  assert.equal(
+    (await authenticateMemberSession(members, discordOnly.token, discordEnv)).user.id,
+    'm3',
+  );
+  await assert.rejects(members.loginMemberPassword('discord.only', password), { statusCode: 401 });
+  assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('刷新先持久化且并发去重；随后 503/重开不丢新授权，确认资格丢失才撤销 Cookie', async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nai-relational-discord-'));
+  const filename = path.join(dir, 'library.sqlite');
+  const f = await discordFixture(t, filename),
+    { db, members } = f;
+  let reopened;
+  t.after(async () => {
+    if (reopened?.open) {
+      reopened.close();
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+  const login = await f.login(f.invite().code);
+  db.prepare("UPDATE discord_bindings SET checked_at=0,expires_at=1 WHERE member_id='m1'").run();
+  const user = (await authenticateMemberSession(members, login.token, discordEnv)).user;
+  const oldEpoch = user.memberAuth.version;
+  f.upstream.fail = true;
+  const results = await Promise.allSettled([
+    requireDiscordMembership(user, f.deps),
+    requireDiscordMembership(user, f.deps),
+  ]);
+  assert.ok(
+    results.every((result) => result.status === 'rejected' && result.reason.statusCode === 503),
+  );
+  assert.equal(f.upstream.refreshes, 1);
+  assert.equal(
+    db.prepare("SELECT refresh_token FROM discord_bindings WHERE member_id='m1'").get()
+      .refresh_token,
+    'synthetic-discord-refresh-1',
+  );
+  assert.equal(
+    db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM domain_events WHERE event_type='MemberEligibilityChanged'",
+      )
+      .get().n,
+    1,
+  );
+  assert.ok(await authenticateMemberSession(members, login.token, discordEnv));
+  db.close();
+  reopened = new Database(filename);
+  const restored = new RelationalMemberStore(reopened);
+  f.deps.store = restored;
+  const snapshot = (await authenticateMemberSession(restored, login.token, discordEnv)).user;
+  assert.equal(snapshot.discord.refreshToken, 'synthetic-discord-refresh-1');
+  f.upstream.fail = false;
+  await requireDiscordMembership(snapshot, f.deps);
+  assert.equal(f.upstream.refreshes, 1);
+  assert.equal(
+    (await authenticateMemberSession(restored, login.token, discordEnv)).user.memberAuth.version,
+    oldEpoch,
+  );
+  reopened.prepare("UPDATE discord_bindings SET checked_at=0 WHERE member_id='m1'").run();
+  f.upstream.member = false;
+  await assert.rejects(
+    requireDiscordMembership(
+      (await authenticateMemberSession(restored, login.token, discordEnv)).user,
+      f.deps,
+    ),
+    { statusCode: 403 },
+  );
+  assert.equal(await authenticateMemberSession(restored, login.token, discordEnv), null);
+  let invoked = false;
+  await assert.rejects(
+    withAuthenticatedMemberApiKey(
+      restored,
+      keys[0],
+      () => {
+        invoked = true;
+      },
+      discordEnv,
+    ),
+    { statusCode: 403 },
+  );
+  assert.equal(invoked, false);
+  assert.equal(restored.readMemberApiKey('m1'), keys[0]);
+  assert.equal(
+    reopened.prepare("SELECT eligible FROM discord_bindings WHERE member_id='m1'").get().eligible,
+    0,
+  );
+});
+
+test('OAuth 事实落盘失败同时回滚绑定/密码/epoch/邀请码且不发会话 Cookie', async (t) => {
+  const f = await discordFixture(t),
+    { db } = f;
+  const invite = f.invite(),
+    pending = await f.start(invite.code);
+  db.exec(
+    "CREATE TEMP TRIGGER fail_oauth BEFORE INSERT ON domain_events WHEN NEW.event_type='MemberEligibilityChanged' BEGIN SELECT RAISE(ABORT,'OAuth commit failure'); END",
+  );
+  const checkpoint = db.serialize();
+  const failed = await f.finish(pending);
+  assert.equal(failed.status, 500);
+  assert.ok(
+    failed.headers['set-cookie'].every((cookie) => !cookie.startsWith('nai_member_session=')),
+  );
+  assert.deepEqual(db.serialize(), checkpoint);
+  db.exec('DROP TRIGGER fail_oauth');
+  await f.login(invite.code);
+});
+
+test('含 Discord 资格事实的业务回放保留身份和原提交，私有绑定/授权/邀请/epoch/会话不被复活', async (t) => {
+  const f = await discordFixture(t),
+    { db, members } = f;
+  await f.login(f.invite().code);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'members-history');
+  const rebuilt = new RelationalMemberStore(target);
+  const commits = db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all();
+  for (const { seq } of commits) {
+    const original = readRelationalCommit(db, seq);
+    target.transaction(() => rebuilt.replayMemberCommit(original))();
+    assert.deepEqual(readRelationalCommit(target, seq), original);
+  }
+  assert.deepEqual(rebuilt.readMember('m1'), members.readMember('m1'));
+  for (const table of [
+    'discord_bindings',
+    'discord_invites',
+    'password_credentials',
+    'api_keys',
+    'member_sessions',
+    'member_auth_state',
+  ]) {
+    assert.equal(target.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+  }
+  assert.equal(
+    target.prepare("SELECT auth_epoch FROM members WHERE id='m1'").get().auth_epoch,
+    null,
+  );
+  const checkpoint = target.serialize();
+  target.transaction(() =>
+    rebuilt.replayMemberCommit(readRelationalCommit(db, commits.at(-1).seq)),
+  )();
+  assert.deepEqual(target.serialize(), checkpoint);
 });

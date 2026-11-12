@@ -72,6 +72,7 @@ import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota
 import type { ProviderRequest } from '../protocols/novelai-client.ts';
 import type { MemberSessionMutation, MemberSessionTransaction } from '../members/authentication.ts';
 import { loginMember } from '../members/authentication.ts';
+import type { DiscordAuthenticationTransaction, DiscordUser } from '../members/discord-auth.ts';
 import type { recordSharedCompletion } from '../quota/shared-capacity.ts';
 import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from '../generation/accounting.ts';
@@ -202,6 +203,7 @@ type Settings = typeof defaultSettings & {
   [key: string]: unknown;
 };
 export type StoreUser = Pick<FairUser, keyof FairUser> &
+  Pick<DiscordUser, 'discord' | 'discordInvite'> &
   Pick<
     StoreItem,
     'createdAt' | 'updatedAt' | 'note' | 'balance' | 'acceptingJobs' | 'jobAdmissionVersion'
@@ -1186,6 +1188,42 @@ export class JsonStore {
 
   loginMemberPassword(username: unknown, password: unknown) {
     return this.update((db) => loginMember(db, username, password), { persist: false });
+  }
+
+  discordAuthenticationTransaction<T>(
+    mutate: (transaction: DiscordAuthenticationTransaction) => T,
+  ): Promise<T> {
+    return this.update(
+      (db) =>
+        mutate({
+          readMember: (id) => db.users.find((user) => user.id === id) || null,
+          findDiscordMember: (id) => db.users.find((user) => user.discord?.id === id) || null,
+          findInviteMember: (hash, now) =>
+            db.users.find(
+              (user) => user.discordInvite?.hash === hash && user.discordInvite.expiresAt > now,
+            ) || null,
+          saveAuthentication: (user, evidence) => {
+            if (evidence) {
+              recordDomainEvent(db, {
+                eventType: 'MemberEligibilityChanged',
+                streamId: 'sharing:default',
+                memberId: user.id,
+                payload: {
+                  memberId: user.id,
+                  ...(evidence === 'login' ? { enabled: true } : {}),
+                  discord: {
+                    id: user.discord!.id,
+                    guildId: user.discord!.guildId,
+                    checkedAt: user.discord!.checkedAt,
+                    member: user.discord!.member,
+                  },
+                },
+              });
+            }
+          },
+        }),
+      { collections: ['users'], immediate: true },
+    );
   }
 
   readMemberSessionState(tokenHash: string) {

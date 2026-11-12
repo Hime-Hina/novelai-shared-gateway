@@ -102,6 +102,17 @@ for (const filename of [
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
     ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
+    ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],
+    ['direct Discord invitation', 'authStore.createMemberDiscordInvite(id);'],
+    ['scoped Discord save', 'transaction.saveAuthentication(user);'],
+    [
+      'password HTTP writer',
+      "import { handleMemberAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+    ],
+    [
+      'Discord HTTP writer',
+      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+    ],
     ['direct key mutation', 'authStore.memberApiKeyTransaction(hash,fn);'],
     [
       'relational member store',

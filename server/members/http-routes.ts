@@ -17,6 +17,7 @@ import {
   logoutMemberSession,
   isOwner,
   type MemberSession,
+  type MemberSessionStore,
   type MemberPasswordStore,
   assertMemberRegistrationCapacity,
   assertMemberCanDisable,
@@ -43,6 +44,7 @@ import {
   requireDiscordMembership,
   type DiscordUser,
   type DiscordDependencies,
+  type DiscordAuthenticationStore,
 } from './discord-auth.ts';
 import { clientIp } from '../http/client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting.ts';
@@ -86,7 +88,7 @@ interface MemberDatabase extends FairQuotaDatabase {
 }
 type AuthStore = MemberPasswordStore;
 type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
-interface MemberStore extends AuthStore, ActivityStore {
+interface MemberStore extends AuthStore, ActivityStore, DiscordAuthenticationStore {
   readMemberSessionState(tokenHash: string): MemberSession | null;
   dataDir?: string;
   readR2Usage?: import('../storage/sqlite-store.ts').JsonStore['readR2Usage'];
@@ -343,22 +345,13 @@ export async function handleMemberAuthenticationRoutes(
   return true;
 }
 
-export async function handleMemberRoutes(
+export async function handleMemberDiscordAuthenticationRoutes(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  deps: MemberDependencies,
+  deps: DiscordDependencies & { store: MemberSessionStore },
 ): Promise<boolean> {
-  const member = url.pathname.startsWith('/api/member/');
-  const ownerRoute = url.pathname.startsWith('/api/member/owner/');
-  const admin =
-    url.pathname === '/api/admin/member-management' ||
-    url.pathname === '/api/member/owner/member-management';
-  if (!member && !admin) {
-    return false;
-  }
-  const env = deps.env || process.env,
-    discordEnabled = discordLoginEnabled(env);
+  const env = deps.env || process.env;
   // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
   if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
     const user = await finishDiscordLogin(req, res, url, deps);
@@ -373,6 +366,34 @@ export async function handleMemberRoutes(
     res.end();
     return true;
   }
+  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
+    sameOrigin(req);
+    checkMemberLoginRate(null, clientIp(req, env));
+    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
+    return true;
+  }
+  return false;
+}
+
+export async function handleMemberRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  deps: MemberDependencies,
+): Promise<boolean> {
+  const member = url.pathname.startsWith('/api/member/');
+  const ownerRoute = url.pathname.startsWith('/api/member/owner/');
+  const admin =
+    url.pathname === '/api/admin/member-management' ||
+    url.pathname === '/api/member/owner/member-management';
+  if (!member && !admin) {
+    return false;
+  }
+  if (await handleMemberDiscordAuthenticationRoutes(req, res, url, deps)) {
+    return true;
+  }
+  const env = deps.env || process.env,
+    discordEnabled = discordLoginEnabled(env);
   sameOrigin(req);
   const pageVisit = req.method === 'GET' && req.headers['x-member-activity'] === '1';
   const { store } = deps;
@@ -455,11 +476,6 @@ export async function handleMemberRoutes(
       ready: Boolean(config),
       origin: config?.origin || null,
     });
-    return true;
-  }
-  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
-    checkMemberLoginRate(null, clientIp(req, env));
-    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
     return true;
   }
   if (admin) {
