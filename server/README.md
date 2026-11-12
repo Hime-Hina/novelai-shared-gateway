@@ -28,3 +28,5 @@ SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私
 这些是当前代码边界，不代表生产已完成升级；实际版本与授权以[发布记录](../docs/operations/production-release.md)为准。多执行器、多账号调度和数据库系统迁移仍在[后续计划](../docs/plans/scaling-follow-up-plan.md)。
 
 继续工作先读该计划的目标、事实表和工作包状态，再按所改规则读取具体模块。[API 契约](../docs/contracts/api-contract.md)维护外部行为，[结果恢复](../docs/architecture/result-recovery.md)维护产物提交边界，[发布记录](../docs/operations/production-release.md)维护运行版本与回退证据。
+
+数据库模型重构按 [PR #33 的目标与工作包](../docs/plans/database-model-redesign.md)另行实施。T1 由 `storage/relational-schema.ts` 的唯一 DDL、`storage/relational-storage.ts` 的初始化/格式门禁、`events/relational-fact-contracts.ts` 的单源字段契约及 `events/relational-event-store.ts` 的原子提交/完整提交回放组成；字段 owner 见[第 9.1 节](../docs/plans/database-model-redesign.md#91-t1-基础物理字段格式和生命周期契约)。T2 的 `generation/relational-input.ts` 复用原规范化/槽位/协议规则，`storage/relational-input-store.ts` 保存唯一正文、input 内 BLOB 和首次上下文，提供受理引用、授权输入/附件读取及执行冷读取；范围和回归见[第 9.3 节](../docs/plans/database-model-redesign.md#93-t2统一输入附件和首次上下文2026-11-12)。这些窄入口供 T3/T4 接入，不双写旧 `JsonStore`，也未替换启动入口。新库保持 building，等待完整业务 owner、迁移和重放核对；现行库不会自动转换。

@@ -512,13 +512,15 @@ export function assertMemberGenerationConfirmation(
   }
 }
 
-type RecoverableRequest = Omit<Partial<ProviderRequest>, 'nativeParameters'> & {
+export type RecoverableRequest = Omit<Partial<ProviderRequest>, 'nativeParameters'> & {
+  tag?: string;
+  requestedSteps?: number;
   sampleCount?: number;
   nativeParameters?: Record<string, unknown> | null;
   allowPurchasedAnlas?: unknown;
   confirmation?: MemberGenerationConfirmation;
 };
-function recoveredInput(
+export function recoveredInput(
   request: RecoverableRequest | null | undefined,
 ): Record<string, unknown> | null {
   if (!request) {
@@ -589,18 +591,18 @@ function recoveredInput(
     allowPurchasedAnlas: request.allowPurchasedAnlas === true,
   };
 }
-function inputAssetSlots(input: Record<string, unknown>): {
+export function inputAssetSlots(input: Record<string, unknown>): {
   slot: string;
   owner: Record<string, unknown> | unknown[];
   key: string | number;
-  value: string;
+  value: unknown;
   image: boolean;
 }[] {
   const slots: {
     slot: string;
     owner: Record<string, unknown> | unknown[];
     key: string | number;
-    value: string;
+    value: unknown;
     image: boolean;
   }[] = [];
   const add = (
@@ -610,7 +612,7 @@ function inputAssetSlots(input: Record<string, unknown>): {
     image: boolean,
   ) => {
     const value = (owner as Record<string | number, unknown>)[key];
-    if (typeof value === 'string' && value) {
+    if (value !== undefined && value !== null && value !== '') {
       slots.push({ slot, owner, key, value, image });
     }
   };
@@ -653,10 +655,13 @@ function inputAssetSlots(input: Record<string, unknown>): {
   }
   return slots;
 }
-function decodeInputAsset(
-  asset: { value: string; image: boolean },
-  context?: MemberNormalizationContext,
+export function decodeInputAsset(
+  asset: { value: unknown; image: boolean },
+  context?: Pick<MemberNormalizationContext, 'native'>,
 ) {
+  if (typeof asset.value !== 'string') {
+    fail(410, 'input_unavailable', '原输入附件不可用。');
+  }
   const base64 = asset.value.startsWith('data:')
     ? asset.value.slice(asset.value.indexOf(',') + 1)
     : asset.value;
@@ -686,6 +691,10 @@ function decodeInputAsset(
   }
 }
 
+export function memberInputAssetUrl(requestId: string, slot: string): string {
+  return `/api/member/requests/${encodeURIComponent(requestId)}/inputs/${encodeURIComponent(slot)}`;
+}
+
 export function memberGenerationInput(
   requestId: string,
   request: RecoverableRequest | null | undefined,
@@ -694,12 +703,15 @@ export function memberGenerationInput(
     assets: { slot: string; mimeType: string; byteLength: number; url: string }[] = [];
   if (input) {
     for (const asset of inputAssetSlots(input)) {
+      if (typeof asset.value !== 'string') {
+        continue;
+      }
       const decoded = decodeInputAsset(asset, request?.normalizationContext);
       assets.push({
         slot: asset.slot,
         mimeType: decoded.mimeType,
         byteLength: decoded.bytes.length,
-        url: `/api/member/requests/${encodeURIComponent(requestId)}/inputs/${encodeURIComponent(asset.slot)}`,
+        url: memberInputAssetUrl(requestId, asset.slot),
       });
       (asset.owner as Record<string | number, unknown>)[asset.key] = { slot: asset.slot };
     }
@@ -722,7 +734,9 @@ export function memberGenerationInputAsset(
   if (!input) {
     fail(410, 'input_unavailable', '历史请求未保存完整输入。');
   }
-  const asset = inputAssetSlots(input).find((item) => item.slot === slot);
+  const asset = inputAssetSlots(input).find(
+    (item) => item.slot === slot && typeof item.value === 'string',
+  );
   if (!asset) {
     fail(404, 'input_not_found', '原输入附件不存在。');
   }

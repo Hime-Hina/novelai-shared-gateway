@@ -52,9 +52,10 @@ export interface ProviderRequest {
   operation?: string;
   nativeParameters?: NativeGenerationRequest['nativeParameters'];
   operationParameters?: unknown;
-  normalizationContext?: MemberNormalizationContext;
+  normalizationContext?: Pick<MemberNormalizationContext, 'native'>;
 }
 export interface NormalizedImageRequest extends ProviderRequest {
+  normalizationContext?: MemberNormalizationContext;
   operationParameters?: never;
   tag: string;
   artist: string;

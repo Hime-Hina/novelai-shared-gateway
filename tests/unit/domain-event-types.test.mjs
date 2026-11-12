@@ -10,6 +10,7 @@ test('事件写入判别联合拒绝丢失生命周期事实与错误金额类�
 import {recordDomainEvent,type DomainEventInput,type DomainPayloads} from '../../server/events/domain-events.ts';
 import type {FairCharge} from '../../server/quota/fair-share.ts';
 import type {AccountingJob} from '../../server/generation/accounting.ts';
+import type {RelationalLifecycleFact,RelationalLifecyclePayloads,RelationalPayloads} from '../../server/events/relational-events.ts';
 declare const db: object;
 declare const charge: FairCharge;
 declare const review: NonNullable<AccountingJob['generationReview']>;
@@ -61,6 +62,21 @@ recordDomainEvent(db,{eventType:'QuotaReserved',streamId:'account:opus',payload:
 recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:'artifact:a',payload:{artifactId:'a',reason:'owner_cleared_cache',at:3}});
 // @ts-expect-error A broad event-name variable and arbitrary payload are not a typed write.
 const untyped:DomainEventInput={eventType:'FreeImageSucceeded',streamId:'request:r',payload:{}};
+const relationalResponse = {dispatchState:'unknown',upstreamStartedAt:null,upstreamHeadersAt:null,upstreamCompletedAt:null,upstreamHttpStatus:null} as const;
+const relationalCompletion:RelationalLifecycleFact = {eventType:'JobCompleted',payload:{jobId:'j',artifactId:'a',response:relationalResponse}};
+const relationalReservation:RelationalLifecyclePayloads['QuotaReserved'] = {jobId:'j',memberId:'m',accountId:'opus',resources:{v5:'0.058',anlasFixed:'0',anlasPurchased:'0'},billingMode:'v5',v5Equivalent:'0',sharedV5Reserved:'0',configVersion:1};
+// @ts-expect-error New facts reference original reservation evidence, without a copied charge DTO.
+const copiedCharge:RelationalLifecyclePayloads['GenerationSettled'] = {jobId:'j',reservationEventId:'e',charge};
+// @ts-expect-error New completion still requires actual or explicitly unknown response evidence.
+const missingRelationalResponse:RelationalLifecyclePayloads['JobCompleted'] = {jobId:'j',artifactId:'a'};
+// @ts-expect-error Resource amounts cannot cross the fact boundary as IEEE-754 numbers.
+const numericRelationalReservation:RelationalLifecyclePayloads['QuotaReserved'] = {...relationalReservation,resources:{v5:0.058,anlasFixed:'0',anlasPurchased:'0'}};
+// @ts-expect-error No protected request body may be copied into a job fact.
+const copiedRelationalRequest:RelationalLifecyclePayloads['JobAccepted'] = {jobId:'j',requestId:'r',sampleIndex:0,actualSeed:1,status:'pending',queueSeq:null,queueExpiresAt:null,deadlineAt:null,admissionEpoch:0,cacheKey:null,request:{prompt:'private'}};
+// @ts-expect-error Unknown protected input versions require a format change.
+const unknownInputVersion:RelationalPayloads['InputRegistered'] = {inputId:'i',memberId:'m',inputSchemaVersion:2,inputSha256:'hash',logicalBytes:1};
+// @ts-expect-error Business replay must not recreate a private authentication epoch.
+const authInBusinessFact:RelationalPayloads['MemberRegistered'] = {memberId:'m',displayName:'m',status:'active',acceptingJobs:true,admissionEpoch:0,createdAt:1,authEpoch:'revoked'};
 `;
   const options = {
     target: ts.ScriptTarget.ES2022,

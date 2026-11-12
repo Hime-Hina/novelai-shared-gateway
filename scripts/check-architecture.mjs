@@ -18,6 +18,11 @@ const mutations = new Set([
   'recordDomainEvent',
   'beginDomainCommand',
   'appendDomainCommit',
+  'appendRelationalCommit',
+  'replayRelationalCommit',
+  'initializeRelationalStorage',
+  'persistAcceptedInput',
+  'replayAcceptedInput',
 ]);
 const persistence = new Set([
   'update',
@@ -84,17 +89,21 @@ export function checkSource(filename, text) {
       );
     }
     if (
-      query &&
-      (names.some((name) => mutations.has(name)) ||
-        /(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
+      ((query || protocol) &&
+        /(?:events\/relational-event-store|storage\/relational-(?:input-store|storage))\.(?:ts|js)$/.test(
           target,
-        ) ||
-        (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*')))
+        )) ||
+      (query &&
+        (names.some((name) => mutations.has(name)) ||
+          /(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
+            target,
+          ) ||
+          (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*'))))
     ) {
       report(
         node,
-        `query write capability ${specifier} (${names.join(', ')})`,
-        'a read-only Pick<JsonStore, ...>; mutations belong in generation commands',
+        `adapter/query write capability ${specifier} (${names.join(', ')})`,
+        'a type-only read-only Pick of the owning store; mutations belong in generation commands or offline imports',
       );
     }
   }
@@ -132,6 +141,11 @@ export function checkSource(filename, text) {
         name = callee.text;
       } else if (ts.isPropertyAccessExpression(callee)) {
         name = callee.name.text;
+      } else if (
+        ts.isElementAccessExpression(callee) &&
+        ts.isStringLiteralLike(callee.argumentExpression)
+      ) {
+        name = callee.argumentExpression.text;
       }
       if (
         (callee.kind === ts.SyntaxKind.ImportKeyword || name === 'require') &&
