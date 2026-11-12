@@ -2,7 +2,7 @@
 
 更新日期：2026-11-12，Asia/Taipei。草案版本：0.7。源码核对基线：`55e5826d80a39364b0946547a83e2a2ed2f72711`；实施基于 PR #33 的 `265793c`。
 
-**状态：T1/T2 主体实现已提交，独立审查发现 #34–#38 五项收尾，验收尚未完成、接口未冻结；修复进度见第 9.5 节。现行网关尚未切换，生产未迁移。** 维护者已基本认可新模型方向；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
+**状态：T1/T2 主体实现及独立审查 #34–#38 的修复候选已形成，正在验收、接口未冻结；修复与证据见第 9.5 节。现行网关尚未切换，生产未迁移。** 维护者已基本认可新模型方向；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
 
 **已确认的产品决定：D4a 卡密遗留功能、D4b 客户端自带官方 PST 的独立执行模式均淘汰；D8 仅保留为可选政策，具体留存期限后续决定。** 本轮记录决定，功能移除随重构实施；不设置新的自动归档或删除期限。
 
@@ -482,12 +482,20 @@ Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码
 | [#34](https://github.com/Hime-Hina/novelai-shared-gateway/issues/34) 入口兼容         | `generation/relational-input.ts` 保存入口 owner 已规范化的执行语义，不再重新套用 Native 业务范围；Native/member 自身的原守卫继续生效       | 修复并通过 direct/OpenAI 两个反例的落盘、重开、出站参数和计价对照                     |
 | [#35](https://github.com/Hime-Hina/novelai-shared-gateway/issues/35) 账户流身份       | `events/relational-events.ts` 对全部 account 流要求非空 envelope 账户且与 stream 对齐；payload 的 `accountId`/`originalAccountId` 仍须一致 | 修复并覆盖结算、退款、原预扣及归档开账；T4 仍须在事务中核对真实 job/charge/原预扣关系 |
 | [#36](https://github.com/Hime-Hina/novelai-shared-gateway/issues/36) 原提交边界       | `events/relational-event-store.ts` 保留 source `event_count`，先核对两个事件列表的原长度，再验证连续索引和元数据；断点比较同样携带原事件数 | 修复并覆盖两个列表同时截短、单列表截短、重复零写入；提交/事实/流头/游标均不留半笔     |
-| [#37](https://github.com/Hime-Hina/novelai-shared-gateway/issues/37) 活动预算历史扫描 | `storage/relational-input-store.ts` 和唯一 DDL；从活动 child 索引起查，按 parent 去重，不新增计数器                                        | 待修复及执行计划验证                                                                  |
-| [#38](https://github.com/Hime-Hina/novelai-shared-gateway/issues/38) 新写入口门禁     | 现有 `scripts/check-architecture.mjs`，补齐新事件/输入追加及回放能力，保留合法窄读取和命令 owner                                           | 待修复；守卫修改须随实现 PR 由维护者复核                                              |
+| [#37](https://github.com/Hime-Hina/novelai-shared-gateway/issues/37) 活动预算历史扫描 | `storage/relational-input-store.ts` 和唯一 DDL；从活动 child 索引起查，按 parent 去重，不新增计数器                                        | 修复并通过 4096 个终态 parent 的结果对照及活动覆盖索引计划检查                        |
+| [#38](https://github.com/Hime-Hina/novelai-shared-gateway/issues/38) 新写入口门禁     | 现有 `scripts/check-architecture.mjs`，补齐新事件/输入追加及回放能力，保留合法窄读取和命令 owner                                           | 修复并通过 20 种错误用法和合法读取/命令对照；守卫修改仍须维护者复核                   |
 
 正确性反例先在现有用例中失败（direct 两种参数各 422，错账户及截短提交缺少预期拒绝），修复后新格式四文件专项 33/33 通过。回归入口为 [`relational-input.test.mjs`](../../tests/integration/relational-input.test.mjs) 和 [`relational-events.test.mjs`](../../tests/unit/relational-events.test.mjs)。事件的磁盘字段和版本未改；新增 `eventCount` 只属于离线传递对象，不能由过滤后的列表重算，也不要求给受信源对象另建签名协议。完整原提交验证后，各 owner 才能分派各自投影。
 
 第一阶段（#34–#36）本地验证：Node 22/24 四文件专项各 33/33；`pnpm test` 794 项，789 通过、5 项原有条件跳过、0 失败，约 220 秒。后端类型、架构、可信 `55e5826` 基线迁移历史、122 个 JS/MJS 语法和全仓格式检查通过。日志位于本地 `H:\TEMP\novelai-db-model-review-20261112`；此时 #37/#38 和实现 PR 的远端验收尚待完成。
+
+第二阶段（#37/#38）的失败对照确认原预算计划扫描所有 parent，且查询/协议层的 20 种新写入口用法均被旧守卫放行。修复后，五文件专项 65/65 通过（新格式 34 项、架构 31 项）。预算查询从 `idx_jobs_active_request(request_id,status)` 的活动局部覆盖索引去重 parent，再按主键读取 request/input；四 child、混合状态、两个 parent 共享 input 和全部终态仍维持原计数口径，没有新增预算缓存。验收看执行计划和结果，不设置机器负载相关的毫秒阈值。
+
+新门禁覆盖事件追加/回放、输入受理/回放及初始化的运行时写能力：命名/别名/命名空间、动态导入、require、重导出和直接/下标写调用均有失败对照。读取使用现有 store 的 type-only `Pick`，合法读取、规范化函数、命令和离线导入正常通过。该修改响应 #38 的明确要求，仍须维护者随 PR 复核；未改可信迁移基线、旧 SQL/journal、CI 或远端保护规则，也不把静态守卫称为权限沙箱。新增活动索引改变未发布新格式的 schema hash，旧候选目标应从空库重建验证，不能手工改 hash；现行生产格式不受影响。
+
+第二阶段同一候选本地验证：五文件专项 65/65；隔离 Node 24 新格式 34/34、读取 worker 12/12；`pnpm test` 815 项，810 通过、5 项原有条件跳过、0 失败，约 220 秒。三包类型、Web 149 项和 executor 3 项单元测试、后端/executor 构建、实际 Nitro HTTP（3 通过、1 项 Windows 平台跳过）及编译 JS 的输入/回放检查通过。架构、默认及可信 `55e5826` 基线迁移历史、122 个 JS/MJS 语法、格式和差异检查通过；242 个源码/脚本/测试文件与 Node 24 隔离副本逐文件 hash 相同。此时未在本地重跑 Nuxt HTTP/Docker 全链，远端验收应以实现 PR 的同一提交检查结果为准；不把上述自验写成独立审查通过。
+
+架构反例及合法读取对照见 [`architecture-boundaries.test.mjs`](../../tests/unit/architecture-boundaries.test.mjs)。后续新增写入口仍在同一守卫的写能力集合和依赖检查补齐，入口参数范围继续只在各协议 owner 维护。
 
 ## 10. 事实依据与修订
 

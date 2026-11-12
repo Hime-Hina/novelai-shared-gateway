@@ -234,8 +234,9 @@ export class RelationalInputStore {
     const row = this.sqlite
       .prepare<[], { bytes: number }>(
         `SELECT COALESCE(SUM(i.logical_bytes),0) AS bytes
-      FROM generation_requests r JOIN generation_inputs i ON i.id=r.input_id
-      WHERE EXISTS (SELECT 1 FROM generation_jobs j WHERE j.request_id=r.id AND j.status IN ('queued','pending','running'))`,
+      FROM (SELECT DISTINCT request_id FROM generation_jobs WHERE status IN ('queued','pending','running')) active
+      JOIN generation_requests r ON r.id=active.request_id
+      JOIN generation_inputs i ON i.id=r.input_id`,
       )
       .get()!;
     if (!Number.isSafeInteger(row.bytes) || row.bytes < 0) {

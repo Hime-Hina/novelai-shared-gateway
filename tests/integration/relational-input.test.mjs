@@ -366,6 +366,49 @@ test('预算按原展开载荷而非 BLOB 计；普通更新和读取不在任�
   }
 });
 
+test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不受终态历史影响', (t) => {
+  const { sqlite, store, persist, statements } = fixture(t);
+  persist(accepted());
+  const bytes = sqlite.prepare('SELECT logical_bytes FROM generation_inputs').get().logical_bytes;
+  assert.equal(store.activePayloadBytes(), bytes);
+  for (const [index, status] of ['queued', 'pending', 'running', 'failed'].entries()) {
+    sqlite
+      .prepare('UPDATE generation_jobs SET status=?,queue_seq=? WHERE id=?')
+      .run(status, status === 'queued' ? 1 : null, `r1-${index}`);
+  }
+  assert.equal(store.activePayloadBytes(), bytes);
+  // 只放大关系查询规模，来源引用复用夹具；不把这些行当作迁移或重建验收样本。
+  sqlite.transaction(() => {
+    sqlite.exec(`INSERT INTO generation_requests
+      (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
+      SELECT 'shared',member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
+      FROM generation_requests WHERE id='r1';
+      INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id)
+      SELECT 'shared-child','shared',0,'pending',0,source_event_id FROM generation_requests WHERE id='shared';
+      WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<4096)
+      INSERT INTO generation_requests
+      (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
+      SELECT 'history-'||n,member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
+      FROM history CROSS JOIN generation_requests WHERE id='r1';
+      INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id)
+      SELECT 'child-'||id,id,0,'failed',0,source_event_id FROM generation_requests WHERE id LIKE 'history-%';`);
+  })();
+  assert.equal(store.activePayloadBytes(), bytes * 2);
+  const sql = statements.at(-1);
+  const plan = sqlite
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all()
+    .map((row) => row.detail)
+    .join('\n');
+  t.diagnostic(plan);
+  assert.match(plan, /SCAN generation_jobs USING COVERING INDEX idx_jobs_active_request/);
+  assert.doesNotMatch(plan, /\bSCAN (?:r|generation_requests|i|generation_inputs)\b/);
+  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='r1'").run();
+  assert.equal(store.activePayloadBytes(), bytes);
+  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='shared'").run();
+  assert.equal(store.activePayloadBytes(), 0);
+});
+
 test('存储摘要与不可变事实核对；附件、正文或上下文篡改不会被悄悄覆盖', (t) => {
   const { sqlite, persist, store } = fixture(t);
   persist(accepted(normalized({ image: image64, strength: 0.7 }, { action: 'img2img' })));

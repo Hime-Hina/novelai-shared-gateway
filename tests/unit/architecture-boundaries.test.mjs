@@ -73,6 +73,48 @@ for (const [name, filename, source, alternative] of [
   });
 }
 
+for (const filename of [
+  'server/generation/request-queries.ts',
+  'server/protocols/native-http.ts',
+]) {
+  for (const [name, source] of [
+    [
+      'aliased append',
+      "import { appendRelationalCommit as append } from '../events/relational-event-store.ts'; append(raw,c);",
+    ],
+    [
+      'namespace replay',
+      "import * as facts from '../events/relational-event-store.ts'; facts.replayRelationalCommit(raw,c);",
+    ],
+    ['dynamic writer import', "await import('../events/relational-event-store.js');"],
+    [
+      'writer require alias',
+      "const { replayRelationalCommit: replay } = require('../events/relational-event-store.ts'); replay(raw,c);",
+    ],
+    [
+      'input store construction',
+      "import { RelationalInputStore as Store } from '../storage/relational-input-store.ts'; new Store(raw).persistAcceptedInput(c,a);",
+    ],
+    [
+      'input store re-export',
+      "export { RelationalInputStore as Store } from '../storage/relational-input-store.ts';",
+    ],
+    ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
+    ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
+    ['element acceptance', "inputStore['persistAcceptedInput'](c,a);"],
+    [
+      'database initialization',
+      "import { initializeRelationalStorage as init } from '../storage/relational-storage.ts'; init(raw,'history');",
+    ],
+  ]) {
+    test(`architecture check rejects relational ${name} in ${filename}`, () => {
+      const errors = checkSource(filename, source);
+      assert.ok(errors.length, name);
+      assert.match(errors.join('\n'), /generation.*command|offline import/);
+    });
+  }
+}
+
 test('type-only dependencies, pure readers, transport guards and executor assembly remain legal', () => {
   for (const [filename, source] of [
     [
@@ -93,6 +135,26 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
     ['executor/start.mjs', "await import('novelai-shared-gateway/server/gateway-runtime.js');"],
     ['server/index.ts', "import { startGateway } from './gateway-runtime.ts';"],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberInput' | 'readMemberAsset'>; function read(store: Reader) { return store.readMemberInput('r','m'); }",
+    ],
+    [
+      'server/protocols/native-http.ts',
+      "import { type RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberContext'>; function read(inputStore: Reader) { return inputStore.readMemberContext('r','m'); }",
+    ],
+    [
+      'server/protocols/native-http.ts',
+      "import { prepareRelationalInput } from '../generation/relational-input.ts';",
+    ],
+    [
+      'server/generation/admission.ts',
+      "import { appendRelationalCommit } from '../events/relational-event-store.ts'; appendRelationalCommit(raw,c); inputStore.persistAcceptedInput(c,a);",
+    ],
+    [
+      'scripts/offline-import.mjs',
+      "import { replayRelationalCommit } from '../server/events/relational-event-store.ts'; replayRelationalCommit(raw,c); inputStore.replayAcceptedInput(source,cursor);",
+    ],
   ]) {
     assert.deepEqual(checkSource(filename, source), [], filename);
   }

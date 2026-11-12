@@ -250,6 +250,8 @@ CREATE TABLE generation_jobs (
 ) STRICT;
 CREATE INDEX idx_jobs_queue ON generation_jobs(queue_seq) WHERE status = 'queued';
 CREATE INDEX idx_jobs_request_status ON generation_jobs(request_id, status);
+CREATE INDEX idx_jobs_active_request ON generation_jobs(request_id, status)
+  WHERE status IN ('queued','pending','running');
 CREATE INDEX idx_jobs_free_success ON generation_jobs(free_succeeded_at)
   WHERE free_succeeded_at IS NOT NULL;
 
