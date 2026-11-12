@@ -501,14 +501,10 @@ export class RelationalMemberStore
         );
     }
     if (evidence === 'login') {
-      // OAuth owner 清除旧密码，但保留登录名占用；不能用虚构密码或删除名称替代。
+      // 只清空既有密码并保留用户名占用；展示名回退值不是新的密码身份。
       this.sqlite
-        .prepare(
-          `INSERT INTO password_credentials(member_id,username,salt,password_hash)
-        VALUES(?,?,NULL,NULL) ON CONFLICT(member_id) DO UPDATE SET
-        username=excluded.username,salt=NULL,password_hash=NULL`,
-        )
-        .run(user.id, user.memberAuth!.username);
+        .prepare('UPDATE password_credentials SET salt=NULL,password_hash=NULL WHERE member_id=?')
+        .run(user.id);
     }
     if (current.memberAuth?.version !== user.memberAuth?.version) {
       this.sqlite

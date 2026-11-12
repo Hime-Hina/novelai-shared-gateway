@@ -522,13 +522,21 @@ Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码
 
 ### 9.7 PR #40 独立审查收尾（#41/#42）
 
-[独立审查](https://github.com/Hime-Hina/novelai-shared-gateway/pull/40#pullrequestreview-5877694398)固定在 `22dbc5e`，确认主体拆分可继续，但发现两种可选凭据组合的缺口。[#41](https://github.com/Hime-Hina/novelai-shared-gateway/issues/41) 是真实注册省略密码时没有初始化当前私有 epoch；[#42](https://github.com/Hime-Hina/novelai-shared-gateway/issues/42) 是把 OAuth 的展示名回退值错误保存为唯一密码用户名。PR 保持 Draft，本轮按两个修复阶段分别验证、提交和推送，不扩大到完整 T4 或迁移切换。
+[独立审查](https://github.com/Hime-Hina/novelai-shared-gateway/pull/40#pullrequestreview-5877694398)固定在 `22dbc5e`，确认主体拆分可继续，但发现两种可选凭据组合的缺口。[#41](https://github.com/Hime-Hina/novelai-shared-gateway/issues/41) 是真实注册省略密码时没有初始化当前私有 epoch；[#42](https://github.com/Hime-Hina/novelai-shared-gateway/issues/42) 是把 OAuth 的展示名回退值错误保存为唯一密码用户名。本轮按两个修复阶段分别验证、提交和推送；解除 Draft 以两项反例、完整新候选 CI 均通过为条件，不把自验写成独立复审，也不扩大到完整 T4 或迁移切换。
 
 #41 修复落在 `RelationalMemberStore.registerMember()`：带密码继续使用派生凭据的 epoch，未带密码则在同一真实注册事务生成独立 epoch。Key/会话和准备密码的 epoch 守卫保持；原回执提前返回，重复注册不重新生成 epoch；`applyMemberEvents()` 及业务回放继续只写 NULL。没有密码不再意味着缺失当前认证状态，也没有为纯 Key 成员补造密码。
 
 回归在原 `22dbc5e` 上 2/2 失败，显示 Key 不能鉴权和 NULL epoch；修复后新格式/输入/成员/事件/架构五文件 101/101 通过。新增用例覆盖无 Discord 配置的纯 Key 鉴权与真实 T2 受理、首次设置密码后身份/Key/输入归属稳定、重领注册回执不改变 epoch 或撤销 Cookie、注册 SQL/外层失败整笔回滚，以及纯业务回放不恢复私有认证。用例继续位于 [`relational-members.test.mjs`](../../tests/integration/relational-members.test.mjs)，没有改动认证 owner、schema、旧迁移、架构守卫或 CI。
 
 #41 阶段完整后端 852 项（847 通过、5 项原有条件跳过、0 失败），后端类型、架构、默认及可信 `55e5826` 基线迁移历史、123 个 JS/MJS 语法、全仓格式和差异检查通过。日志在本地 `H:\\TEMP\\novelai-pr40-fixes-20261113`。本修复不回填原型中的 NULL epoch：它也代表尚未恢复的私有认证，不能根据业务事实批量激活；building 原型应从空库验证，现行生产格式未变。
+
+#42 修复落在同一存储 owner 的 `saveDiscordAuthentication()`：OAuth 登录只 UPDATE 当前成员已有密码行，将 salt/hash 同时清空，保留原用户名；原本没有密码行则继续没有。共享 Discord owner 为旧运行时保留的展示性用户名回退不再被新存储转成密码身份。绑定、epoch 变化、会话撤销、邀请码消费及资格事实仍在同一事务，既有 schema 和旧迁移不变。
+
+新增两项真实 OAuth HTTP 回归分别覆盖两个无密码成员重名、无密码展示名与他人真实密码用户名相同；都能完成不同 Discord 身份的合法邀请登录，稳定 ID、Key 和原凭据保持。已有用例继续核对 OAuth 清除旧密码及撤销 Cookie，增加原密码用户名仍被唯一占用的检查；故障注入同时覆盖私有密码 UPDATE 和资格事实 INSERT，整库字节不变、旧 Cookie 仍有效，成功后才撤销。修复后五文件 103/103 通过。
+
+独立负对照使用 `git archive 22dbc5e` 的隔离源码、同版本依赖和完全相同的当前测试文件：19 项中 15 通过、4 失败，失败只对应 #41 的 Key/NULL epoch 和 #42 的两种用户名冲突。该测试文件 SHA-256 为 `475f5b53b50c5c409326f6d61c74481dd1bc8bd962f8e0dc36d8910982798cf2`。因此反例确实识别原错误实现；没有通过删除 epoch 守卫、修改展示名或放宽唯一约束解决问题。以后增加可选凭据仍在现有认证 owner 与本存储方法维护，当前认证状态与具体凭据、展示名与登录名分别保持独立。
+
+#41 已提交推送为 `25794f0`，[CI #144](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43260666845) 成功。#42 最终本地完整后端 854 项（849 通过、5 项原有条件跳过、0 失败），后端类型、架构、默认及可信迁移历史、123 个 JS/MJS 语法、格式和差异检查通过。直接加载编译 JavaScript 的成员专项 19/19；隔离 Node 24 五文件 103/103，244 个源码/脚本/测试文件逐文件 hash 与候选一致，没有重编共享原生依赖。日志仍位于本地 `H:\\TEMP\\novelai-pr40-fixes-20261113`。最终 Linux、三包及发布包 CI 的同一候选结果在 PR #40 更新，不把此前 `22dbc5e` 的绿色 CI 沿用为新候选证明。
 
 ## 10. 事实依据与修订
 
@@ -550,4 +558,4 @@ Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码
 | 0.6  | 2026-11-12 | 补齐 T1 事实契约与提交/回放原语；完成 T2 新格式统一输入、BLOB、首次上下文和受理/冷读取；仍不切换现行网关  |
 | 0.7  | 2026-11-12 | 记录 #34–#38 独立审查收尾；先修入口兼容、账户流身份和原提交事件数，区分主体实现、自验与待完成验收         |
 | 0.8  | 2026-11-12 | T3/T4 接入稳定成员、私有密码/Key/Discord 和真实会话事务；复用认证 owner 与 HTTP，目标仍为 building        |
-| 0.9  | 2026-11-13 | 记录 PR #40 独立审查 #41/#42；先修真实注册的独立私有认证初始化，保持 Draft 等待完整收尾                   |
+| 0.9  | 2026-11-13 | 修复 PR #40 审查 #41/#42 的可选凭据约束；独立初始化 epoch，OAuth 仅清除既有密码，加入旧源码负对照         |

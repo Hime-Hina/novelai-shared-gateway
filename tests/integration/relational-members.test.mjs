@@ -918,6 +918,15 @@ test('Discord 真实 HTTP owner 绑定稳定成员、清除密码、撤销旧 Co
     checkedAt: authenticated.user.discord.checkedAt,
     eligible: true,
   });
+  const conflicting = await members.prepareMemberCredentials('m2', {
+    username: 'first.member',
+    password,
+  });
+  const checkpoint = db.serialize();
+  db.transaction(() =>
+    assert.throws(() => members.setMemberCredentials(conflicting), { statusCode: 409 }),
+  )();
+  assert.deepEqual(db.serialize(), checkpoint);
 });
 
 test('邀请码替换、到期、回调重用和跨成员重复绑定均拒绝；无密码成员可直接完成首次 OAuth', async (t) => {
@@ -971,6 +980,68 @@ test('邀请码替换、到期、回调重用和跨成员重复绑定均拒绝�
   );
   await assert.rejects(members.loginMemberPassword('discord.only', password), { statusCode: 401 });
   assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('#42 两个无密码重名成员可分别绑定不同 Discord，OAuth 不创建密码用户名', async (t) => {
+  const f = await discordFixture(t),
+    { db, members } = f;
+  for (const id of ['m3', 'm4']) {
+    db.transaction(() =>
+      members.registerMember(metadata(`same-name-${id}`), {
+        memberId: id,
+        displayName: 'same.name',
+        apiKey: `synthetic-key-${id}`,
+      }),
+    )();
+  }
+  f.upstream.id = '333333333333333333';
+  const first = await f.login(f.invite('m3').code);
+  f.upstream.id = '444444444444444444';
+  const second = await f.login(f.invite('m4').code);
+  for (const [id, login] of [
+    ['m3', first],
+    ['m4', second],
+  ]) {
+    assert.equal((await authenticateMemberSession(members, login.token, discordEnv)).user.id, id);
+    assert.equal(members.readMember(id).displayName, 'same.name');
+    assert.equal(members.readMemberApiKey(id), `synthetic-key-${id}`);
+    assert.equal(
+      db.prepare('SELECT 1 FROM password_credentials WHERE member_id=?').get(id),
+      undefined,
+    );
+  }
+  assert.deepEqual(
+    db.prepare('SELECT member_id,discord_id FROM discord_bindings ORDER BY member_id').all(),
+    [
+      { member_id: 'm3', discord_id: '333333333333333333' },
+      { member_id: 'm4', discord_id: '444444444444444444' },
+    ],
+  );
+});
+
+test('#42 无密码展示名与其他成员真实密码用户名相同也能 OAuth，原凭据保持', async (t) => {
+  const f = await discordFixture(t),
+    { db, members } = f;
+  const credential = db.prepare("SELECT * FROM password_credentials WHERE member_id='m1'").get();
+  db.transaction(() =>
+    members.registerMember(metadata('same-as-password-name'), {
+      memberId: 'm3',
+      displayName: 'first.member',
+      apiKey: keys[2],
+    }),
+  )();
+  f.upstream.id = '333333333333333333';
+  const login = await f.login(f.invite('m3').code);
+  assert.equal((await authenticateMemberSession(members, login.token, discordEnv)).user.id, 'm3');
+  assert.equal(
+    db.prepare("SELECT 1 FROM password_credentials WHERE member_id='m3'").get(),
+    undefined,
+  );
+  assert.deepEqual(
+    db.prepare("SELECT * FROM password_credentials WHERE member_id='m1'").get(),
+    credential,
+  );
+  assert.equal((await members.loginMemberPassword('first.member', password)).id, 'm1');
 });
 
 test('刷新先持久化且并发去重；随后 503/重开不丢新授权，确认资格丢失才撤销 Cookie', async (t) => {
@@ -1055,23 +1126,31 @@ test('刷新先持久化且并发去重；随后 503/重开不丢新授权，确
   );
 });
 
-test('OAuth 事实落盘失败同时回滚绑定/密码/epoch/邀请码且不发会话 Cookie', async (t) => {
+test('OAuth 私有写入和资格事实失败均回滚绑定/密码/epoch/邀请码/旧会话且不发成功 Cookie', async (t) => {
   const f = await discordFixture(t),
-    { db } = f;
-  const invite = f.invite(),
-    pending = await f.start(invite.code);
-  db.exec(
-    "CREATE TEMP TRIGGER fail_oauth BEFORE INSERT ON domain_events WHEN NEW.event_type='MemberEligibilityChanged' BEGIN SELECT RAISE(ABORT,'OAuth commit failure'); END",
-  );
-  const checkpoint = db.serialize();
-  const failed = await f.finish(pending);
-  assert.equal(failed.status, 500);
-  assert.ok(
-    failed.headers['set-cookie'].every((cookie) => !cookie.startsWith('nai_member_session=')),
-  );
-  assert.deepEqual(db.serialize(), checkpoint);
-  db.exec('DROP TRIGGER fail_oauth');
+    { db, members } = f;
+  const old = await session(members, 'first.member', {}, Date.now());
+  const invite = f.invite();
+  for (const clause of [
+    'BEFORE UPDATE ON password_credentials',
+    "BEFORE INSERT ON domain_events WHEN NEW.event_type='MemberEligibilityChanged'",
+  ]) {
+    const pending = await f.start(invite.code);
+    db.exec(
+      `CREATE TEMP TRIGGER fail_oauth ${clause} BEGIN SELECT RAISE(ABORT,'OAuth commit failure'); END`,
+    );
+    const checkpoint = db.serialize();
+    const failed = await f.finish(pending);
+    assert.equal(failed.status, 500);
+    assert.ok(
+      failed.headers['set-cookie'].every((cookie) => !cookie.startsWith('nai_member_session=')),
+    );
+    assert.deepEqual(db.serialize(), checkpoint);
+    db.exec('DROP TRIGGER fail_oauth');
+    assert.equal((await authenticateMemberSession(members, old.token, {})).user.id, 'm1');
+  }
   await f.login(invite.code);
+  assert.equal(await authenticateMemberSession(members, old.token, discordEnv), null);
 });
 
 test('含 Discord 资格事实的业务回放保留身份和原提交，私有绑定/授权/邀请/epoch/会话不被复活', async (t) => {
