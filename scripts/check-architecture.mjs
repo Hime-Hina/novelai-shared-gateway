@@ -37,6 +37,15 @@ const mutations = new Set([
   'replaceMemberApiKey',
   'setMemberStatus',
   'replayMemberCommit',
+  'acceptGeneration',
+  'dispatchGeneration',
+  'recordGenerationResponse',
+  'prepareGenerationResult',
+  'completeGeneration',
+  'failGeneration',
+  'cancelWaitingGeneration',
+  'closeGenerationReview',
+  'replayGenerationCommit',
 ]);
 const persistence = new Set([
   'update',
@@ -105,7 +114,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

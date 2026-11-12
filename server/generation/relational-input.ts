@@ -517,7 +517,10 @@ export function restoreRelationalWire(
 export function relationalProviderRequest(
   wire: Record<string, unknown>,
   context: RelationalNormalizationContext,
-): ProviderRequest & { allowPurchasedAnlas: boolean } {
+): ProviderRequest & {
+  allowPurchasedAnlas: boolean;
+  operationParameters?: ReturnType<typeof parseNativeAuxiliaryRequest>['operationParameters'];
+} {
   if (wire.operation !== 'generate') {
     const { operation, ...body } = wire;
     return {

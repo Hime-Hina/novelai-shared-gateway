@@ -12,6 +12,7 @@ import {
   fairQuotaSummary,
   estimateFairQuota,
   planFairQuotaReservation,
+  previewFairQuotaReservations,
   fairQuotaSnapshot,
 } from '../../server/quota/fair-share.ts';
 const NOW = 1800000000000;
@@ -52,7 +53,13 @@ test('窄收费规划与真实预扣共用固定/购买池和 fallback 规则，
     const db = fixture(),
       s = db.settings.fairQuota,
       account = db.accounts[0];
-    const paid = { model, width: 1024, height: 1024, steps: 30, allowPurchasedAnlas: authorize };
+    const paid = {
+      model,
+      width: 1024,
+      height: 1024,
+      steps: model.startsWith('nai-diffusion-5') ? 23 : 30,
+      allowPurchasedAnlas: authorize,
+    };
     account.quotaFixed = fixed === '0' ? 0 : 10000;
     account.quotaPurchased = 10000;
     account.quotaCheckedAt = NOW + 1;
@@ -78,8 +85,10 @@ test('窄收费规划与真实预扣共用固定/购买池和 fallback 规则，
     };
     const before = structuredClone(state);
     const planned = planFairQuotaReservation(state, paid, NOW + 1);
+    const batch = previewFairQuotaReservations(state, [paid, paid], NOW + 1);
     assert.deepEqual(state, before);
     const actual = reserveFairQuota(db, { id: 'a' }, job('planned', paid), account, NOW + 1);
+    const next = reserveFairQuota(db, { id: 'a' }, job('planned-next', paid), account, NOW + 1);
     for (const key of [
       'resource',
       'amount',
@@ -90,6 +99,8 @@ test('窄收费规划与真实预扣共用固定/购买池和 fallback 规则，
       'v5Equivalent',
     ]) {
       assert.equal(actual[key], planned[key], key);
+      assert.equal(actual[key], batch[0][key], key);
+      assert.equal(next[key], batch[1][key], key);
     }
     if (purchased !== '0') {
       assert.throws(

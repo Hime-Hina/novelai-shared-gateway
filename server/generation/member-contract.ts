@@ -504,11 +504,18 @@ export function assertMemberGenerationConfirmation(
   quote: ReturnType<typeof quoteMemberGeneration>,
 ): void {
   assertMemberGenerationVersions(confirmation, quote.versions);
-  if (confirmation.requestFingerprint !== quote.requestFingerprint) {
-    fail(409, 'quote_changed', '生成意图与费用确认不一致，请重新报价。', { requote: true });
-  }
+  assertMemberGenerationIntent(confirmation, quote.requestFingerprint);
   for (const charge of quote.charges.perJob) {
     assertMemberGenerationCost(confirmation, charge.resources, quote.charges.total);
+  }
+}
+
+export function assertMemberGenerationIntent(
+  confirmation: MemberGenerationConfirmation,
+  requestFingerprint: string,
+): void {
+  if (confirmation.requestFingerprint !== requestFingerprint) {
+    fail(409, 'quote_changed', '生成意图与费用确认不一致，请重新报价。', { requote: true });
   }
 }
 

@@ -115,16 +115,7 @@ export function activateNextBatchJob(
   queueSeq: number,
   now = Date.now(),
 ): void {
-  if (!job.requestId || job.status !== 'done') {
-    return;
-  }
-  const children = db.jobs.filter((child) => child.requestId === job.requestId);
-  if (children.some((child) => ['failed', 'queued', 'running'].includes(child.status!))) {
-    return;
-  }
-  const next = children
-    .filter((child) => child.status === 'pending')
-    .sort((a, b) => a.sampleIndex! - b.sampleIndex!)[0];
+  const next = nextPendingBatchJob(db.jobs, job);
   if (!next) {
     return;
   }
@@ -150,4 +141,19 @@ export function activateNextBatchJob(
     },
   });
   // queueExpiresAt 沿用首次提交期限；激活只领取新的队尾位置。
+}
+
+export function nextPendingBatchJob<
+  T extends Pick<BatchJob, 'requestId' | 'status' | 'sampleIndex'>,
+>(jobs: T[], job: Pick<BatchJob, 'requestId' | 'status'>): T | undefined {
+  if (!job.requestId || job.status !== 'done') {
+    return;
+  }
+  const children = jobs.filter((child) => child.requestId === job.requestId);
+  if (children.some((child) => ['failed', 'queued', 'running'].includes(child.status!))) {
+    return;
+  }
+  return children
+    .filter((child) => child.status === 'pending')
+    .sort((a, b) => a.sampleIndex! - b.sampleIndex!)[0];
 }

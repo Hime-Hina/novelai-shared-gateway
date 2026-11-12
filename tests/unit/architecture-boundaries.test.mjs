@@ -120,6 +120,24 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     [
+      'generation store construction',
+      "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
+    ],
+    ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
+    ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
+    ...[
+      'acceptGeneration',
+      'dispatchGeneration',
+      'recordGenerationResponse',
+      'prepareGenerationResult',
+      'completeGeneration',
+      'failGeneration',
+      'cancelWaitingGeneration',
+      'closeGenerationReview',
+      'replayGenerationCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
+    ['element refund command', "store['failGeneration'](command,input);"],
+    [
       'authenticated command',
       "import { withAuthenticatedMemberSession as run } from '../members/authentication.ts'; run(store,token,env,fn);",
     ],
@@ -172,6 +190,18 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/protocols/native-http.ts',
       "import { prepareRelationalInput } from '../generation/relational-input.ts';",
+    ],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; type Reader = Pick<RelationalGenerationStore, 'readWallet' | 'readCharge'>; function read(store: Reader) { return store.readCharge('job'); }",
+    ],
+    [
+      'server/generation/execution.ts',
+      "import { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; store.dispatchGeneration(command,input,controls);",
+    ],
+    [
+      'scripts/offline-import.mjs',
+      "import { RelationalGenerationStore } from '../server/storage/relational-generation-store.ts'; store.replayGenerationCommit(source);",
     ],
     [
       'server/generation/admission.ts',

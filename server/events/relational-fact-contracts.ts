@@ -391,6 +391,8 @@ export const relationalPayloadParsers = {
   AvailabilityChanged: fields({ accountId: id, enabled: bool, reason: id }),
   CooldownChanged: fields({
     accountId: id,
+    attemptId: nullable(id),
+    completionKind: nullable(choices('ended', 'success', 'ordinary', 'capacity')),
     cooldownUntil: nullable(integer),
     cooldownReason: nullable(id),
     ordinaryStrikes: integer,

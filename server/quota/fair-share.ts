@@ -1754,6 +1754,45 @@ export function planFairQuotaReservation(
   return q;
 }
 
+// 报价模拟整批预扣；只推进瞬时窄状态，不写钱包、预留或尝试。
+export function previewFairQuotaReservations(
+  state: FairQuotaReservationState,
+  requests: FairRequest[],
+  now = Date.now(),
+) {
+  const draft = structuredClone(state);
+  return requests.map((request) => {
+    const charge = planFairQuotaReservation(draft, request, now);
+    if (charge.resource === 'v5') {
+      draft.balance.v5Available = formatAmount(
+        units(draft.balance.v5Available) - units(charge.amount),
+      );
+      draft.availableV5 = formatAmount(units(draft.availableV5) - units(charge.amount));
+      draft.reserved.v5 = formatAmount(units(draft.reserved.v5) + units(charge.amount));
+    } else if (charge.resource === 'anlas') {
+      draft.balance.anlasFixedAvailable = formatAmount(
+        units(draft.balance.anlasFixedAvailable) - units(charge.fixed),
+      );
+      draft.balance.anlasPurchasedAvailable = formatAmount(
+        units(draft.balance.anlasPurchasedAvailable) - units(charge.purchased),
+      );
+      draft.reserved.anlasFixed = formatAmount(
+        units(draft.reserved.anlasFixed) + units(charge.fixed),
+      );
+      draft.reserved.anlasPurchased = formatAmount(
+        units(draft.reserved.anlasPurchased) + units(charge.purchased),
+      );
+      draft.reservedAnlas = formatAmount(units(draft.reservedAnlas) + units(charge.amount));
+    }
+    draft.sharedReservedV5 = formatAmount(
+      units(draft.sharedReservedV5) +
+        units(charge.sharedV5Reserved) +
+        (charge.resource === 'v5' ? units(charge.amount) : 0n),
+    );
+    return charge;
+  });
+}
+
 // 调用方持有写事务：校验来源和授权后扣成员可用钱包，并一同记录预留事实。
 export function reserveFairQuota(
   db: FairQuotaDatabase,

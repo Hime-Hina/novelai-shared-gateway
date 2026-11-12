@@ -28,7 +28,11 @@ import {
   sharedAccountConcurrency,
   sharedAccountReadyDelay,
 } from '../quota/shared-capacity.ts';
-import { assertFreeImageAdmission, type FreeImageUsage } from '../quota/free-image-policy.ts';
+import {
+  assertFreeImageAdmission,
+  freeImageSuccessWarningThreshold,
+  type FreeImageUsage,
+} from '../quota/free-image-policy.ts';
 import { describeStoredResult, publishStoredResult } from '../storage/result-files.ts';
 import {
   assertMemberAcceptsJobs,
@@ -322,12 +326,7 @@ export function recordFreeImageSuccess(
   usage?: FreeImageUsage,
 ): void {
   if (job.fairCharge?.resource === 'free' && (job.status === 'done' || job.lateResultAvailable)) {
-    const warningThreshold =
-      usage?.enabled &&
-      usage.warningThreshold !== null &&
-      usage.successful + 1 === usage.warningThreshold
-        ? usage.warningThreshold
-        : null;
+    const warningThreshold = freeImageSuccessWarningThreshold(usage);
     recordDomainEvent(db, {
       eventType: 'FreeImageSucceeded',
       streamId: generationStreamId(job),

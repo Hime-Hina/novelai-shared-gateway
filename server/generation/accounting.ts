@@ -78,7 +78,9 @@ export interface RefundEvidence {
 // 共享模式不自动重发原任务：一个任务目前只有一次上游尝试。
 // 本模块只追加证据；钱包变更仍由 fair-quota 在同一个存储事务中执行。
 export const GENERATION_REVIEW_MS = 5 * 60 * 1000;
-export function generationChargeResources(charge: FairCharge): ResourceAmounts {
+export function generationChargeResources(
+  charge: Pick<FairCharge, 'resource' | 'amount' | 'fixed' | 'purchased'>,
+): ResourceAmounts {
   return {
     v5: charge.resource === 'v5' ? charge.amount : '0',
     anlasFixed: charge.resource === 'anlas' ? charge.fixed : '0',
@@ -86,7 +88,12 @@ export function generationChargeResources(charge: FairCharge): ResourceAmounts {
   };
 }
 
-export function generationUpstreamCandidates(charge: FairCharge): UpstreamCandidate[] {
+export function generationUpstreamCandidates(
+  charge: Pick<
+    FairCharge,
+    'resource' | 'amount' | 'fixed' | 'purchased' | 'billingMode' | 'v5Equivalent'
+  >,
+): UpstreamCandidate[] {
   const anlas = {
     resources: { anlasFixed: charge.fixed, anlasPurchased: charge.purchased },
     amountSource: 'quote',
