@@ -351,6 +351,11 @@ export class RelationalMemberStore
       this.applyMemberEvents(result.events);
       if (input.credentials) {
         this.insertCredentials(input.memberId, input.credentials);
+      } else {
+        // 当前认证状态独立于具体凭据；只在真实注册初始化，业务回放仍保留 NULL。
+        this.sqlite
+          .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
+          .run(randomBytes(16).toString('hex'), input.memberId);
       }
       this.replaceKey(input.memberId, input.apiKey);
       return result;

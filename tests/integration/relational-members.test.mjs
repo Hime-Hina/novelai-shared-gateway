@@ -167,6 +167,108 @@ test('真实成员命令原子创建稳定身份/密码/Key，业务事件和普
   await assert.rejects(members.loginMemberPassword('missing', password), { statusCode: 401 });
 });
 
+test('#41 纯 Key 注册独立初始化认证状态，首次设密码和重领回执不改变身份，业务回放不恢复 epoch', async (t) => {
+  const { db, members, inputs } = fixture(t);
+  const input = { memberId: 'm3', displayName: 'Key only', apiKey: keys[2] };
+  const command = metadata('key-only-registration');
+  db.transaction(() => members.registerMember(command, input))();
+  const original = ['1', '2', '3'].map((seq) => readRelationalCommit(db, seq));
+  const user = await authenticateMemberApiKey(members, keys[2]);
+  assert.equal(user?.id, 'm3');
+  assert.match(user.memberAuth.version, /^[a-f0-9]{32}$/);
+  assert.equal(
+    db.prepare("SELECT 1 FROM password_credentials WHERE member_id='m3'").get(),
+    undefined,
+  );
+  assert.equal(JSON.stringify(original).includes(user.memberAuth.version), false);
+  let acceptedMember;
+  await withAuthenticatedMemberApiKey(
+    members,
+    keys[2],
+    (current) => {
+      acceptedMember = current.id;
+      return inputs.persistAcceptedInput(
+        metadata('key-only-input', current.id),
+        accepted('key-only-input', current.id),
+      );
+    },
+    {},
+  );
+  assert.equal(acceptedMember, 'm3');
+  const requestOwner = db
+    .prepare("SELECT member_id,input_id FROM generation_requests WHERE id='key-only-input'")
+    .get();
+  assert.equal(requestOwner.member_id, 'm3');
+  const prepared = await members.prepareMemberCredentials('m3', { username: 'key.only', password });
+  assert.equal(prepared.expectedAuthEpoch, user.memberAuth.version);
+  db.transaction(() => members.setMemberCredentials(prepared))();
+  const login = await createMemberSession(
+    members,
+    await members.loginMemberPassword('key.only', password),
+    {},
+    1000,
+  );
+  assert.equal((await authenticateMemberApiKey(members, keys[2])).id, 'm3');
+  assert.deepEqual(
+    db
+      .prepare("SELECT member_id,input_id FROM generation_requests WHERE id='key-only-input'")
+      .get(),
+    requestOwner,
+  );
+  assert.equal(members.readMemberApiKey('m3'), keys[2]);
+  const checkpoint = db.serialize();
+  db.transaction(() => assert.equal(members.registerMember(command, input).replayed, true))();
+  assert.deepEqual(db.serialize(), checkpoint);
+  assert.equal((await authenticateMemberSession(members, login.token, {}, 1001)).user.id, 'm3');
+
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'members-history');
+  const rebuilt = new RelationalMemberStore(target);
+  for (const commit of original) {
+    target.transaction(() => rebuilt.replayMemberCommit(commit))();
+  }
+  assert.equal(rebuilt.readMember('m3').status, 'active');
+  assert.equal(
+    target.prepare("SELECT auth_epoch FROM members WHERE id='m3'").get().auth_epoch,
+    null,
+  );
+  for (const table of ['password_credentials', 'api_keys', 'member_sessions']) {
+    assert.equal(target.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+  }
+  assert.equal(await authenticateMemberApiKey(rebuilt, keys[2]), null);
+});
+
+test('#41 无密码注册的 SQL 和外层失败回滚成员、私有 epoch、Key、事实及回执', (t) => {
+  const { db, members } = fixture(t);
+  const input = { memberId: 'm3', displayName: 'Key only', apiKey: keys[2] };
+  db.exec(
+    "CREATE TEMP TRIGGER fail_key_only BEFORE INSERT ON api_keys WHEN NEW.member_id='m3' BEGIN SELECT RAISE(ABORT,'private key failure'); END",
+  );
+  const checkpoint = db.serialize();
+  db.transaction(() =>
+    assert.throws(
+      () => members.registerMember(metadata('key-only-sql-failure'), input),
+      /private key failure/,
+    ),
+  )();
+  assert.deepEqual(db.serialize(), checkpoint);
+  db.exec('DROP TRIGGER fail_key_only');
+  assert.throws(
+    () =>
+      db.transaction(() => {
+        members.registerMember(metadata('key-only-outer-failure'), input);
+        assert.match(
+          db.prepare("SELECT auth_epoch FROM members WHERE id='m3'").get().auth_epoch,
+          /^[a-f0-9]{32}$/,
+        );
+        throw Error('outer registration failure');
+      })(),
+    /outer registration failure/,
+  );
+  assert.deepEqual(db.serialize(), checkpoint);
+});
+
 test('创建/凭据更新失败及外层回滚不留下身份、私有 epoch、流或失效会话', async (t) => {
   const { db, members } = fixture(t);
   const token = await session(members),
