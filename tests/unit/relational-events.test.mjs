@@ -60,6 +60,23 @@ function command(events = [member()]) {
     events,
   };
 }
+function accountEvent(fact, accountId = 'a') {
+  return {
+    ...member(fact.payload.memberId || 'm1'),
+    ...fact,
+    accountId,
+    streamId: `account:${accountId}`,
+    streamKind: 'account',
+    eventId: 'e',
+    commitSeq: '1',
+    eventIndex: 0,
+    streamVersion: '1',
+    schemaVersion: 2,
+    correlationId: null,
+    causationId: null,
+    amountVersion: 'decimal-12-v1',
+  };
+}
 
 test('所有 v2 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
   const owners = Object.values(relationalFactStreams).flat();
@@ -123,6 +140,8 @@ test('金额只接受规范十进制，官方未知保持 null；资金来源与
     );
   }
   const huge = `${'9'.repeat(100)}.000000000001`;
+  assert.doesNotThrow(() => parseRelationalEvent(accountEvent(reservation)));
+  assert.throws(() => parseRelationalEvent({ ...accountEvent(reservation), accountId: 'wrong' }));
   assert.equal(
     parseRelationalFact({
       ...reservation,
@@ -230,6 +249,15 @@ test('归档开账允许仅剩旧键/退款凭据，活动对象仍要求完整�
     },
   };
   assert.deepEqual(parseRelationalFact(refund), refund);
+  const opening = accountEvent(refund, 'old-account');
+  assert.doesNotThrow(() => parseRelationalEvent(opening));
+  assert.throws(() =>
+    parseRelationalEvent({
+      ...opening,
+      accountId: 'wrong',
+      streamId: 'account:wrong',
+    }),
+  );
   assert.throws(() =>
     parseRelationalFact({ ...refund, payload: { ...refund.payload, status: 'reserved' } }),
   );
@@ -242,6 +270,48 @@ test('归档开账允许仅剩旧键/退款凭据，活动对象仍要求完整�
       payload: { ...refund.payload, walletAccountId: 'old-account' },
     }),
   );
+});
+
+test('所有账户流直接绑定非空 envelope 账户；结算/退款错配在写入前失败', (t) => {
+  const db = database(t),
+    before = db.serialize();
+  for (const eventType of ['GenerationSettled', 'GenerationRefunded']) {
+    const event = accountEvent({
+      eventType,
+      payload: {
+        jobId: 'j',
+        reservationEventId: 'reservation',
+        ...(eventType === 'GenerationRefunded' ? { lossEventId: null } : {}),
+      },
+    });
+    assert.doesNotThrow(() => parseRelationalEvent(event));
+    for (const changed of [
+      { streamId: 'account:wrong' },
+      { accountId: 'wrong' },
+      { accountId: null },
+      { accountId: '' },
+    ]) {
+      assert.throws(() => parseRelationalEvent({ ...event, ...changed }));
+    }
+    const input = { ...event, streamId: 'account:wrong' };
+    for (const key of [
+      'eventId',
+      'commitSeq',
+      'eventIndex',
+      'streamVersion',
+      'streamKind',
+      'schemaVersion',
+      'correlationId',
+      'causationId',
+      'amountVersion',
+    ]) {
+      delete input[key];
+    }
+    db.transaction(() => {
+      assert.throws(() => appendRelationalCommit(db, command([input])));
+    })();
+    assert.deepEqual(db.serialize(), before);
+  }
 });
 
 test('原子提交保存固定版本、原回执和精确游标；未知内容或旧版本不能写入', (t) => {
@@ -338,4 +408,40 @@ test('新事实重放保留原身份与回执，拒绝不同历史、提交断�
   assert.deepEqual(target.serialize(), before);
   assert.deepEqual(readRelationalEvents(target, '1'), readRelationalEvents(source, '1'));
   assert.deepEqual(source.serialize(), sourceBefore);
+});
+
+test('原提交事件数独立保存，两个列表同时截短也不能写入事实、流头或游标', (t) => {
+  const source = database(t),
+    target = database(t);
+  const original = command([member('m1'), member('m2')]);
+  original.receipt = { memberIds: ['m1', 'm2'] };
+  source.transaction(() => appendRelationalCommit(source, original))();
+  const stored = readRelationalCommit(source, '1'),
+    before = target.serialize();
+  for (const lists of [['events', 'command'], ['events'], ['command']]) {
+    const trimmed = structuredClone(stored);
+    if (lists.includes('events')) {
+      trimmed.events.pop();
+    }
+    if (lists.includes('command')) {
+      trimmed.command.events.pop();
+    }
+    delete trimmed.command.expectedVersions['member:m2'];
+    target.transaction(() => {
+      assert.throws(() => replayRelationalCommit(target, trimmed), /complete original commit/);
+    })();
+    assert.deepEqual(target.serialize(), before);
+  }
+  assert.equal(stored.eventCount, 2);
+  target.transaction(() => replayRelationalCommit(target, stored))();
+  const checkpoint = target.serialize();
+  target.transaction(() => {
+    assert.equal(replayRelationalCommit(target, stored).replayed, true);
+    assert.throws(
+      () => replayRelationalCommit(target, { ...stored, eventCount: 1 }),
+      /complete original commit/,
+    );
+  })();
+  assert.deepEqual(target.serialize(), checkpoint);
+  assert.deepEqual(readRelationalCommit(target, '1'), stored);
 });

@@ -720,6 +720,59 @@ test('direct/OpenAI 的实际正文、独立展示词和首次 defaults 只按�
   assert.equal(store.readMemberContext('r1', 'm1').defaults.defaultNegative, null);
 });
 
+for (const [label, extra] of [
+  ['scale=11', { scale: 11 }],
+  ['sampler=k_dpmpp_3m_sde', { sampler: 'k_dpmpp_3m_sde' }],
+]) {
+  test(`direct/OpenAI 的 ${label} 保存重开后出站与计价不变，Native 仍按原契约拒绝`, async (t) => {
+    assert.throws(() => normalized({ n_samples: 1, ...extra }), { statusCode: 422 });
+    const directory = await mkdtemp(path.join(tmpdir(), 'relational-direct-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const filename = path.join(directory, 'library.sqlite');
+    const settings = { defaults: { steps: 23, scale: 5, cfg: 0 } };
+    const request = normalizeNovelAiRequest(
+      { tag: 'direct input', width: 128, height: 128, seed: 7, ...extra },
+      settings,
+      { maxSteps: 28 },
+    );
+    const expected = buildNovelAiParameters(request),
+      quote = quoteNativeRequest(request);
+    const sqlite = new Database(filename);
+    try {
+      initializeRelationalStorage(sqlite, 'direct-history');
+      seed(sqlite);
+      const store = new RelationalInputStore(sqlite);
+      for (const source of ['direct', 'openai']) {
+        const input = {
+          ...accepted(normalized({ n_samples: 1 }), source),
+          source,
+          request,
+          context: {
+            kind: 'direct',
+            native: nativeNormalizationContext(),
+            defaults: requestNormalizationDefaults(settings),
+          },
+        };
+        sqlite.transaction(() => store.persistAcceptedInput(metadata(source), input)).immediate();
+      }
+    } finally {
+      sqlite.close();
+    }
+    const reopened = new Database(filename);
+    reopened.pragma('foreign_keys=ON');
+    try {
+      const store = new RelationalInputStore(reopened);
+      for (const source of ['direct', 'openai']) {
+        const loaded = store.readJobInput(`${source}-0`);
+        assert.deepEqual(buildNovelAiParameters(loaded), expected);
+        assert.deepEqual(quoteNativeRequest(loaded), quote);
+      }
+    } finally {
+      reopened.close();
+    }
+  });
+}
+
 test('partial/unavailable 输入保留已知、空和 null，但不能进入执行或回填旧 DTO', (t) => {
   const { sqlite, store } = fixture(t),
     body = {

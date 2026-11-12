@@ -3,7 +3,6 @@ import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import { buildNovelAiParameters, type ProviderRequest } from '../protocols/novelai-client.ts';
 import {
   nativeNormalizationContext,
-  parseNativeImageRequest,
   parseNativeAuxiliaryRequest,
   validateImageBytes,
   validateVibeEncodingBytes,
@@ -257,13 +256,8 @@ export function prepareRelationalInput(
     }
     wire.parameters = cleaned.parameters;
     (wire.parameters as Record<string, unknown>).n_samples = sampleCount;
-    const { operation: _operation, ...nativeBody } = wire;
-    // 只验证，不用 Native 的清理结果覆盖 direct 已实际发送的 null/空字段。
-    parseNativeImageRequest(nativeBody, native);
-  } else {
-    const { operation, ...nativeBody } = wire;
-    parseNativeAuxiliaryRequest(nativeBody, operation, native);
   }
+  // 入口 owner 已按各自契约规范化；持久层只校验保存表示，不能借 Native 收窄 direct。
   const wireBytes = Buffer.byteLength(canonicalJson(wire));
   // 保留原规范化 DTO 的活动预算下界；BLOB 去重和别名删除不能扩大受理上限。
   const logicalBytes = Math.max(wireBytes, Buffer.byteLength(JSON.stringify(request)));

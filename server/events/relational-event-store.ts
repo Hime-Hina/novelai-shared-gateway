@@ -280,6 +280,7 @@ export function readRelationalEvents(
 
 export interface StoredRelationalCommit {
   historyId: string;
+  eventCount: number;
   command: RelationalCommand;
   events: RelationalEvent[];
 }
@@ -351,7 +352,7 @@ export function readRelationalCommit(
     events: events.map(eventInput),
   };
   assertCommand(command);
-  return { historyId: history.history_id, command, events };
+  return { historyId: history.history_id, eventCount: row.event_count, command, events };
 }
 
 // 重放只接受原完整提交；保留 ID/时间/回执及决定，不重新选择种子、报价或调用网络。
@@ -364,6 +365,14 @@ export function replayRelationalCommit(
   }
   assertRelationalStorageFormat(sqlite);
   assertCommand(stored.command);
+  if (
+    !Number.isSafeInteger(stored.eventCount) ||
+    stored.eventCount < 1 ||
+    stored.events.length !== stored.eventCount ||
+    stored.command.events.length !== stored.eventCount
+  ) {
+    throw new Error('Relational replay requires one complete original commit.');
+  }
   const events = stored.events.map(parseRelationalEvent);
   const state = sqlite
     .prepare<[], { history_id: string; status: string }>(

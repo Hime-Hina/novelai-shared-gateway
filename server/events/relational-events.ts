@@ -104,6 +104,16 @@ export function parseRelationalEvent(value: unknown): RelationalEvent {
     throw new TypeError('Relational event has the wrong stream owner.');
   }
   const payload = fact.payload as Record<string, unknown>;
+  if (
+    row.streamKind === 'account' &&
+    (typeof row.accountId !== 'string' ||
+      !row.accountId ||
+      row.streamId !== `account:${row.accountId}` ||
+      (typeof payload.originalAccountId === 'string' &&
+        payload.originalAccountId !== row.accountId))
+  ) {
+    throw new TypeError('Relational account stream does not match the fact identity.');
+  }
   for (const key of ['memberId', 'accountId']) {
     if (typeof payload[key] === 'string' && payload[key] !== row[key]) {
       throw new TypeError('Relational event reference does not match the fact identity.');
