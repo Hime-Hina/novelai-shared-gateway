@@ -23,6 +23,7 @@ const mutations = new Set([
   'initializeRelationalStorage',
   'persistAcceptedInput',
   'replayAcceptedInput',
+  'memberSessionTransaction',
 ]);
 const persistence = new Set([
   'update',

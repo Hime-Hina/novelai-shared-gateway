@@ -101,6 +101,7 @@ for (const filename of [
     ],
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
+    ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
     ['element acceptance', "inputStore['persistAcceptedInput'](c,a);"],
     [
       'database initialization',

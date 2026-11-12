@@ -1,8 +1,7 @@
 import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import type { memberSessions } from '../storage/sqlite-schema.ts';
 
-interface MemberUser {
+export interface MemberUser {
   id: string;
   enabled?: boolean;
   updatedAt?: string;
@@ -12,23 +11,34 @@ interface MemberUser {
 interface MemberDatabase {
   users: MemberUser[];
 }
-type MemberSession = typeof memberSessions.$inferSelect;
-interface SessionOwner {
+export interface MemberSession {
+  tokenHash: string;
+  memberId: string;
+  authEpoch: string;
+  createdAt: number;
+  expiresAt: number;
+  ownerBinding: string | null;
+}
+export interface SessionOwner {
   ownerUserId: string;
   guildId: string;
 }
-interface SessionMutation {
-  collections: [];
-  immediate: true;
+export interface MemberSessionMutation {
   memberSession?: () => MemberSession | undefined;
   memberSessionExpiry?: () => { tokenHash: string; expiresAt: number } | undefined;
   memberSessionDelete?: string | (() => string | undefined);
   memberSessionOwner?: SessionOwner;
 }
-interface MemberSessionStore {
-  update<T>(mutator: (db: MemberDatabase) => T | Promise<T>, options: SessionMutation): Promise<T>;
-  readMemberSession(tokenHash: string): MemberSession | null;
-  readMemberSessionOwner(): SessionOwner | null;
+export interface MemberSessionTransaction {
+  readMember(memberId: string): MemberUser | null;
+  readSession(tokenHash: string): MemberSession | null;
+  readOwner(): SessionOwner | null;
+}
+export interface MemberSessionStore {
+  memberSessionTransaction<T>(
+    mutate: (transaction: MemberSessionTransaction) => T,
+    options: MemberSessionMutation,
+  ): Promise<T>;
 }
 type OwnerUser = MemberUser & { enabled: true; discord: { id: string; guildId: string } };
 
@@ -146,31 +156,30 @@ const ownerBinding = (
   isOwner(user, env) ? JSON.stringify([user.id, user.discord.id, env.DISCORD_GUILD_ID]) : null;
 
 export async function reconcileMemberSessionOwner(
-  store: Pick<MemberSessionStore, 'update'>,
+  store: MemberSessionStore,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
-  await store.update(() => {}, {
-    collections: [],
+  await store.memberSessionTransaction(() => {}, {
     memberSessionOwner: ownerConfig(env),
-    immediate: true,
   });
 }
 
 export async function createMemberSession(
-  store: Pick<MemberSessionStore, 'update'>,
+  store: MemberSessionStore,
   userSnapshot: MemberUser,
   env: NodeJS.ProcessEnv = process.env,
   now?: number,
 ) {
   const token = randomBytes(32).toString('base64url');
   let row: MemberSession | undefined;
-  return store.update(
-    (db) => {
+  return store.memberSessionTransaction(
+    (transaction) => {
       const at = now ?? Date.now();
       // 密码/OAuth 校验后可能已被停用、重置或换绑，必须在签发事务内重新核对。
-      const user = db.users.find((user) => user.id === userSnapshot?.id && user.enabled === true);
+      const user = transaction.readMember(userSnapshot?.id);
       if (
-        !user?.memberAuth?.version ||
+        user?.enabled !== true ||
+        !user.memberAuth?.version ||
         user.memberAuth.version !== userSnapshot.memberAuth?.version ||
         ownerBinding(user, env) !== ownerBinding(userSnapshot, env)
       ) {
@@ -180,20 +189,18 @@ export async function createMemberSession(
         expiresAt = at + (binding ? ownerTtl : memberTtl);
       // 32 随机字节的 base64url 固定为 43 字符，必定满足 sessionHash 的现有格式检查。
       row = {
-        token_hash: sessionHash(token)!,
-        user_id: user.id,
-        auth_version: user.memberAuth.version,
-        created_at: at,
-        expires_at: expiresAt,
-        owner_binding: binding,
+        tokenHash: sessionHash(token)!,
+        memberId: user.id,
+        authEpoch: user.memberAuth.version,
+        createdAt: at,
+        expiresAt,
+        ownerBinding: binding,
       };
       return { token, expiresAt };
     },
     {
-      collections: [],
       memberSession: () => row,
       memberSessionOwner: ownerConfig(env),
-      immediate: true,
     },
   );
 }
@@ -230,20 +237,15 @@ async function checkMemberSession(
   const configured = ownerConfig(env);
   let revoke: string | undefined;
   let expiry: { tokenHash: string; expiresAt: number } | undefined;
-  return store.update(
-    (db) => {
+  return store.memberSessionTransaction(
+    (transaction) => {
       const at = now ?? Date.now();
-      const session = store.readMemberSession(tokenHash),
-        previous = store.readMemberSessionOwner();
+      const session = transaction.readSession(tokenHash),
+        previous = transaction.readOwner();
       if (!session) {
         return null;
       }
-      const user = db.users.find(
-        (user) =>
-          user.id === session.user_id &&
-          user.enabled === true &&
-          user.memberAuth?.version === session.auth_version,
-      );
+      const user = transaction.readMember(session.memberId);
       // 撤销发生在提交阶段；首次观察配置变化时也不能先放行旧/新 owner 的 Cookie。
       const ownerChanged =
         previous &&
@@ -251,46 +253,43 @@ async function checkMemberSession(
           previous.guildId !== configured.guildId);
       const affected =
         ownerChanged &&
-        (session.owner_binding !== null ||
-          session.user_id === previous.ownerUserId ||
-          session.user_id === configured.ownerUserId);
+        (session.ownerBinding !== null ||
+          session.memberId === previous.ownerUserId ||
+          session.memberId === configured.ownerUserId);
       if (
-        session.expires_at <= at ||
-        !user ||
+        session.expiresAt <= at ||
+        user?.enabled !== true ||
+        user.memberAuth?.version !== session.authEpoch ||
         affected ||
-        session.owner_binding !== ownerBinding(user, env)
+        session.ownerBinding !== ownerBinding(user, env)
       ) {
         revoke = tokenHash;
         return null;
       }
       const expiresAt = renew
-        ? Math.max(session.expires_at, at + (session.owner_binding ? ownerTtl : memberTtl))
-        : session.expires_at;
-      if (expiresAt > session.expires_at) {
+        ? Math.max(session.expiresAt, at + (session.ownerBinding ? ownerTtl : memberTtl))
+        : session.expiresAt;
+      if (expiresAt > session.expiresAt) {
         expiry = { tokenHash, expiresAt };
       }
       return { user, expiresAt };
     },
     {
-      collections: [],
       memberSessionDelete: () => revoke,
       memberSessionExpiry: () => expiry,
       memberSessionOwner: configured,
-      immediate: true,
     },
   );
 }
 
 export async function logoutMemberSession(
-  store: Pick<MemberSessionStore, 'update'>,
+  store: MemberSessionStore,
   token: unknown,
 ): Promise<void> {
   const tokenHash = sessionHash(token);
   if (tokenHash) {
-    await store.update(() => {}, {
-      collections: [],
+    await store.memberSessionTransaction(() => {}, {
       memberSessionDelete: tokenHash,
-      immediate: true,
     });
   }
 }

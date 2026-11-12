@@ -17,6 +17,7 @@ import {
   renewMemberSession,
   logoutMemberSession,
   isOwner,
+  type MemberSession,
 } from './authentication.ts';
 import {
   configureFairGroups,
@@ -82,16 +83,16 @@ interface MemberDatabase extends FairQuotaDatabase {
   settings: { publicBaseUrl?: string; fairQuota?: MemberQuotaState | null };
 }
 type AuthStore = Parameters<typeof authenticateMemberSession>[0];
-type SessionMutation = Parameters<AuthStore['update']>[1];
 type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
-interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
+interface MemberStore extends AuthStore, ActivityStore {
+  readMemberSessionState(tokenHash: string): MemberSession | null;
   dataDir?: string;
   readR2Usage?: import('../storage/sqlite-store.ts').JsonStore['readR2Usage'];
   readPikPakUsage?: import('../storage/sqlite-store.ts').JsonStore['readPikPakUsage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
   update<T>(
     mutator: (db: MemberDatabase) => T | Promise<T>,
-    options: (SessionMutation | { persist: false } | { collections: string[]; immediate: true }) &
+    options: ({ persist: false } | { collections: string[]; immediate: true }) &
       Pick<PersistenceOptions<T>, 'domainCommand' | 'authorize'>,
   ): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
@@ -372,12 +373,12 @@ export async function handleMemberRoutes(
     const sessionHash = createHash('sha256').update(cookie(req)).digest('hex');
     // 入队前的鉴权可能已过时；领取旧回执和执行新命令都必须检查当前会话与权限。
     authorize = (db) => {
-      const session = store.readMemberSession(sessionHash);
+      const session = store.readMemberSessionState(sessionHash);
       if (
         !session ||
-        session.user_id !== actorId ||
-        session.auth_version !== authVersion ||
-        session.expires_at <= Date.now()
+        session.memberId !== actorId ||
+        session.authEpoch !== authVersion ||
+        session.expiresAt <= Date.now()
       ) {
         error(401, '管理会话已失效，请重新登录');
       }
