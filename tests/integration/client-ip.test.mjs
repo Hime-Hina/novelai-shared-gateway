@@ -68,7 +68,7 @@ async function loginServer(t, env) {
   const deps = {
     env,
     store: {
-      update() {
+      loginMemberPassword() {
         passwordChecks++;
         throw Object.assign(new Error('synthetic invalid credentials'), { statusCode: 401 });
       },

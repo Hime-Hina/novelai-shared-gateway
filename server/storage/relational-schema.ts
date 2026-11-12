@@ -89,8 +89,9 @@ CREATE TABLE members (
 CREATE TABLE password_credentials (
   member_id TEXT PRIMARY KEY REFERENCES members(id),
   username TEXT NOT NULL UNIQUE,
-  salt TEXT NOT NULL,
-  password_hash TEXT NOT NULL
+  salt TEXT,
+  password_hash TEXT,
+  CHECK ((salt IS NULL) = (password_hash IS NULL))
 ) STRICT;
 
 CREATE TABLE api_keys (
@@ -110,6 +111,12 @@ CREATE TABLE discord_bindings (
   eligible INTEGER CHECK (eligible IN (0, 1))
 ) STRICT;
 
+CREATE TABLE discord_invites (
+  member_id TEXT PRIMARY KEY REFERENCES members(id),
+  code_hash TEXT NOT NULL UNIQUE,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE member_sessions (
   token_hash TEXT PRIMARY KEY,
   member_id TEXT NOT NULL REFERENCES members(id),
@@ -120,6 +127,13 @@ CREATE TABLE member_sessions (
 ) STRICT;
 CREATE INDEX idx_sessions_member ON member_sessions(member_id);
 CREATE INDEX idx_sessions_expiry ON member_sessions(expires_at);
+
+-- 私有认证当前状态随凭据备份恢复，业务事件回放不能重建 owner 撤销历史。
+CREATE TABLE member_auth_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner_member_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE sharing_groups (
   id TEXT PRIMARY KEY,

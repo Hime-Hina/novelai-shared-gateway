@@ -12,6 +12,7 @@ export async function withMemberSessions(t, store) {
   store.events = sessions.events;
   store.readMemberSession = (hash) => sessions.readMemberSession(hash);
   store.readMemberSessionOwner = () => sessions.readMemberSessionOwner();
+  store.readMemberSessionState = JsonStore.prototype.readMemberSessionState.bind(store);
   store.update = (fn, options = {}) =>
     update(
       (db) =>
@@ -22,5 +23,9 @@ export async function withMemberSessions(t, store) {
           : fn(db),
       options,
     );
+  store.memberSessionTransaction = JsonStore.prototype.memberSessionTransaction.bind(store);
+  store.loginMemberPassword = JsonStore.prototype.loginMemberPassword.bind(store);
+  store.discordAuthenticationTransaction =
+    JsonStore.prototype.discordAuthenticationTransaction.bind(store);
   return store;
 }

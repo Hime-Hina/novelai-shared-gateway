@@ -10,13 +10,17 @@ import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   setMemberCredentials,
-  loginMember,
   checkMemberLoginRate,
   createMemberSession,
   authenticateMemberSession,
   renewMemberSession,
   logoutMemberSession,
   isOwner,
+  type MemberSession,
+  type MemberSessionStore,
+  type MemberPasswordStore,
+  assertMemberRegistrationCapacity,
+  assertMemberCanDisable,
 } from './authentication.ts';
 import {
   configureFairGroups,
@@ -40,6 +44,7 @@ import {
   requireDiscordMembership,
   type DiscordUser,
   type DiscordDependencies,
+  type DiscordAuthenticationStore,
 } from './discord-auth.ts';
 import { clientIp } from '../http/client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting.ts';
@@ -81,17 +86,17 @@ interface MemberDatabase extends FairQuotaDatabase {
   ledger: LedgerRow[];
   settings: { publicBaseUrl?: string; fairQuota?: MemberQuotaState | null };
 }
-type AuthStore = Parameters<typeof authenticateMemberSession>[0];
-type SessionMutation = Parameters<AuthStore['update']>[1];
+type AuthStore = MemberPasswordStore;
 type ActivityStore = Parameters<typeof readActivityHeatmap>[0];
-interface MemberStore extends Omit<AuthStore, 'update'>, ActivityStore {
+interface MemberStore extends AuthStore, ActivityStore, DiscordAuthenticationStore {
+  readMemberSessionState(tokenHash: string): MemberSession | null;
   dataDir?: string;
   readR2Usage?: import('../storage/sqlite-store.ts').JsonStore['readR2Usage'];
   readPikPakUsage?: import('../storage/sqlite-store.ts').JsonStore['readPikPakUsage'];
   events: Parameters<typeof stateEventsFor>[0]['events'];
   update<T>(
     mutator: (db: MemberDatabase) => T | Promise<T>,
-    options: (SessionMutation | { persist: false } | { collections: string[]; immediate: true }) &
+    options: ({ persist: false } | { collections: string[]; immediate: true }) &
       Pick<PersistenceOptions<T>, 'domainCommand' | 'authorize'>,
   ): Promise<T>;
   readFailureAccounting(before: string | null): Promise<unknown>;
@@ -307,22 +312,46 @@ export function memberPublicBaseUrl(
   );
 }
 
-export async function handleMemberRoutes(
+export async function handleMemberAuthenticationRoutes(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  deps: MemberDependencies,
+  deps: { store: MemberPasswordStore; env?: NodeJS.ProcessEnv },
 ): Promise<boolean> {
-  const member = url.pathname.startsWith('/api/member/');
-  const ownerRoute = url.pathname.startsWith('/api/member/owner/');
-  const admin =
-    url.pathname === '/api/admin/member-management' ||
-    url.pathname === '/api/member/owner/member-management';
-  if (!member && !admin) {
+  if (
+    req.method !== 'POST' ||
+    !['/api/member/login', '/api/member/logout'].includes(url.pathname)
+  ) {
     return false;
   }
+  sameOrigin(req);
   const env = deps.env || process.env,
-    discordEnabled = discordLoginEnabled(env);
+    store = deps.store;
+  if (url.pathname === '/api/member/logout') {
+    await logoutMemberSession(store, cookie(req));
+    setCookie(req, res, '');
+    reply(res, 200, { ok: true });
+    return true;
+  }
+  if (discordLoginEnabled(env)) {
+    error(403, '本站仅允许 Discord 登录');
+  }
+  const body = await json(req);
+  checkMemberLoginRate(body.username, clientIp(req, env));
+  const user = await store.loginMemberPassword(body.username, body.password);
+  const session = await createMemberSession(store, user, env);
+  setCookie(req, res, session.token, session.expiresAt);
+  reply(res, 200, { ok: true, expiresAt: session.expiresAt });
+  return true;
+}
+
+export async function handleMemberDiscordAuthenticationRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  deps: DiscordDependencies & { store: MemberSessionStore },
+): Promise<boolean> {
+  const env = deps.env || process.env;
   // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
   if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
     const user = await finishDiscordLogin(req, res, url, deps);
@@ -337,6 +366,34 @@ export async function handleMemberRoutes(
     res.end();
     return true;
   }
+  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
+    sameOrigin(req);
+    checkMemberLoginRate(null, clientIp(req, env));
+    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
+    return true;
+  }
+  return false;
+}
+
+export async function handleMemberRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  deps: MemberDependencies,
+): Promise<boolean> {
+  const member = url.pathname.startsWith('/api/member/');
+  const ownerRoute = url.pathname.startsWith('/api/member/owner/');
+  const admin =
+    url.pathname === '/api/admin/member-management' ||
+    url.pathname === '/api/member/owner/member-management';
+  if (!member && !admin) {
+    return false;
+  }
+  if (await handleMemberDiscordAuthenticationRoutes(req, res, url, deps)) {
+    return true;
+  }
+  const env = deps.env || process.env,
+    discordEnabled = discordLoginEnabled(env);
   sameOrigin(req);
   const pageVisit = req.method === 'GET' && req.headers['x-member-activity'] === '1';
   const { store } = deps;
@@ -372,12 +429,12 @@ export async function handleMemberRoutes(
     const sessionHash = createHash('sha256').update(cookie(req)).digest('hex');
     // 入队前的鉴权可能已过时；领取旧回执和执行新命令都必须检查当前会话与权限。
     authorize = (db) => {
-      const session = store.readMemberSession(sessionHash);
+      const session = store.readMemberSessionState(sessionHash);
       if (
         !session ||
-        session.user_id !== actorId ||
-        session.auth_version !== authVersion ||
-        session.expires_at <= Date.now()
+        session.memberId !== actorId ||
+        session.authEpoch !== authVersion ||
+        session.expiresAt <= Date.now()
       ) {
         error(401, '管理会话已失效，请重新登录');
       }
@@ -419,11 +476,6 @@ export async function handleMemberRoutes(
       ready: Boolean(config),
       origin: config?.origin || null,
     });
-    return true;
-  }
-  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
-    checkMemberLoginRate(null, clientIp(req, env));
-    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
     return true;
   }
   if (admin) {
@@ -657,18 +709,17 @@ export async function handleMemberRoutes(
           if (!user) {
             error(404, '成员不存在');
           }
-          if (
-            !body.enabled &&
-            (db.jobs.some(
-              (job) =>
-                job.userToken === user.token &&
-                ['queued', 'pending', 'running'].includes(job.status!),
-            ) ||
-              Object.values(db.settings.fairQuota?.reservations || {}).some(
-                (charge) => charge.userId === user.id && charge.status === 'reserved',
-              ))
-          ) {
-            error(409, '成员仍有排队或生成中的任务，请结清后停用');
+          if (!body.enabled) {
+            assertMemberCanDisable(
+              db.jobs.some(
+                (job) =>
+                  job.userToken === user.token &&
+                  ['queued', 'pending', 'running'].includes(job.status!),
+              ) ||
+                Object.values(db.settings.fairQuota?.reservations || {}).some(
+                  (charge) => charge.userId === user.id && charge.status === 'reserved',
+                ),
+            );
           }
           user.enabled = body.enabled as boolean;
           user.updatedAt = new Date().toISOString();
@@ -762,9 +813,7 @@ export async function handleMemberRoutes(
           inheritDomainCommand(db, draft);
           let userId = body.userId;
           if (!userId) {
-            if (draft.users.length >= 200) {
-              error(409, '账户数已达上限');
-            }
+            assertMemberRegistrationCapacity(draft.users.length);
             const user = {
               id: deps.createId('usr'),
               token: deps.createPublicToken('STA1N'),
@@ -854,24 +903,7 @@ export async function handleMemberRoutes(
     error(400, '不支持的管理操作');
   }
 
-  if (url.pathname === '/api/member/login' && req.method === 'POST') {
-    if (discordEnabled) {
-      error(403, '本站仅允许 Discord 登录');
-    }
-    const body = await json(req);
-    checkMemberLoginRate(body.username, clientIp(req, env));
-    const user = await store.update((db) => loginMember(db, body.username, body.password), {
-      persist: false,
-    });
-    const session = await createMemberSession(store, user, env);
-    setCookie(req, res, session.token, session.expiresAt);
-    reply(res, 200, { ok: true, expiresAt: session.expiresAt });
-    return true;
-  }
-  if (url.pathname === '/api/member/logout' && req.method === 'POST') {
-    await logoutMemberSession(store, cookie(req));
-    setCookie(req, res, '');
-    reply(res, 200, { ok: true });
+  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
     return true;
   }
   let session = await authenticateMemberSession(store, cookie(req), env);

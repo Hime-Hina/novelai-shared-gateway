@@ -14,15 +14,21 @@ export interface DiscordUser extends Awaited<ReturnType<typeof loginMember>> {
   discord?: Partial<DiscordGrant> & { checkedAt?: number; member?: boolean };
   discordInvite?: { hash: string; expiresAt: number };
 }
+export interface DiscordAuthenticationTransaction {
+  readMember(memberId: string): DiscordUser | null;
+  findDiscordMember(discordId: string): DiscordUser | null;
+  findInviteMember(inviteHash: string, now: number): DiscordUser | null;
+  saveAuthentication(user: DiscordUser, evidence?: 'login' | 'observation'): void;
+}
+export interface DiscordAuthenticationStore {
+  discordAuthenticationTransaction<T>(
+    mutate: (transaction: DiscordAuthenticationTransaction) => T,
+  ): Promise<T>;
+}
 export interface DiscordDependencies {
   env?: NodeJS.ProcessEnv;
   discordFetch?: typeof fetch;
-  store: {
-    update<T>(
-      mutator: (db: { users: DiscordUser[] }) => T | Promise<T>,
-      options: { persist: false } | { collections: ['users']; immediate: true },
-    ): Promise<T>;
-  };
+  store: DiscordAuthenticationStore;
 }
 interface DiscordConfig {
   clientId: string;
@@ -123,6 +129,29 @@ export function assertDiscordBound(user: DiscordUser, env: NodeJS.ProcessEnv = p
   }
 }
 
+function currentDiscordMembership(user: DiscordUser): boolean {
+  const checkedAt = user.discord?.checkedAt;
+  if (checkedAt !== undefined && checkedAt > Date.now() - 5 * 60000 && checkedAt <= Date.now()) {
+    if (user.discord?.member === true) {
+      return true;
+    }
+    fail('你已不在指定 Discord 服务器，请重新登录验证');
+  }
+  return false;
+}
+
+// 网络验证在写事务外完成；命令内仍按 owner 的同一缓存规则检查当前授权。
+export function assertCurrentDiscordMembership(user: DiscordUser, env: NodeJS.ProcessEnv): void {
+  if (!discordLoginEnabled(env)) {
+    return;
+  }
+  assertDiscordBound(user, env);
+  discordConfig(env);
+  if (!currentDiscordMembership(user)) {
+    fail('Discord 成员资格需要重新验证，请重试', 503);
+  }
+}
+
 function stateCookie(value: string, maxAge: number): string {
   return `${cookieName}=${value}; Path=/api/member/discord; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
 }
@@ -149,22 +178,12 @@ export async function beginDiscordLogin(
   const now = Date.now(),
     inviteHash = body.invite ? hash(body.invite.trim()) : null;
   if (inviteHash) {
-    await deps.store.update(
-      (db) => {
-        if (
-          !db.users.some(
-            (u) =>
-              u.enabled !== false &&
-              !u.discord?.id &&
-              u.discordInvite?.hash === inviteHash &&
-              u.discordInvite.expiresAt > now,
-          )
-        ) {
-          fail('邀请码无效或已过期');
-        }
-      },
-      { persist: false },
-    );
+    await deps.store.discordAuthenticationTransaction((transaction) => {
+      const user = transaction.findInviteMember(inviteHash, now);
+      if (!user || user.enabled === false || user.discord?.id) {
+        fail('邀请码无效或已过期');
+      }
+    });
   }
   for (const [key, value] of states) {
     if (value.expiresAt <= now) {
@@ -337,48 +356,27 @@ export async function finishDiscordLogin(
   }
   const grant = { ...token, id: profile.id, guildId: config.guildId };
   await guildMember(config, grant, deps);
-  return deps.store.update(
-    (db) => {
-      const existing = db.users.find((u) => u.discord?.id === profile.id);
-      const invited =
-        pending.inviteHash &&
-        db.users.find(
-          (u) =>
-            u.discordInvite?.hash === pending.inviteHash && u.discordInvite.expiresAt > Date.now(),
-        );
-      if (pending.inviteHash && (!invited || invited.discord?.id || existing)) {
-        fail('邀请码已使用、已撤销或 Discord 已绑定其他成员');
-      }
-      const user = invited || existing;
-      if (!user || user.enabled === false) {
-        fail('此 Discord 尚未获邀，或成员已停用');
-      }
-      user.discord = { ...grant, checkedAt: Date.now(), member: true };
-      user.memberAuth = {
-        username: user.memberAuth?.username || user.note || user.id,
-        version: randomBytes(16).toString('hex'),
-      };
-      delete user.discordInvite;
-      user.updatedAt = new Date().toISOString();
-      recordDomainEvent(db, {
-        eventType: 'MemberEligibilityChanged',
-        streamId: 'sharing:default',
-        memberId: user.id,
-        payload: {
-          memberId: user.id,
-          enabled: true,
-          discord: {
-            id: grant.id,
-            guildId: grant.guildId,
-            checkedAt: user.discord.checkedAt,
-            member: true,
-          },
-        },
-      });
-      return user;
-    },
-    { collections: ['users'], immediate: true },
-  );
+  return deps.store.discordAuthenticationTransaction((transaction) => {
+    const existing = transaction.findDiscordMember(grant.id);
+    const invited =
+      pending.inviteHash && transaction.findInviteMember(pending.inviteHash, Date.now());
+    if (pending.inviteHash && (!invited || invited.discord?.id || existing)) {
+      fail('邀请码已使用、已撤销或 Discord 已绑定其他成员');
+    }
+    const user = invited || existing;
+    if (!user || user.enabled === false) {
+      fail('此 Discord 尚未获邀，或成员已停用');
+    }
+    user.discord = { ...grant, checkedAt: Date.now(), member: true };
+    user.memberAuth = {
+      username: user.memberAuth?.username || user.note || user.id,
+      version: randomBytes(16).toString('hex'),
+    };
+    delete user.discordInvite;
+    user.updatedAt = new Date().toISOString();
+    transaction.saveAuthentication(user, 'login');
+    return user;
+  });
 }
 
 // 页面与 Key 调用共用验证，最多缓存五分钟；不需要机器人或后台轮询。
@@ -394,11 +392,8 @@ export async function requireDiscordMembership(
   // 上面的启用/绑定检查保证 config 和 discord 存在；缺失时间仍按原比较得到 false。
   const config = discordConfig(env)!,
     original = user.discord!;
-  if (original.checkedAt! > Date.now() - 5 * 60000 && original.checkedAt! <= Date.now()) {
-    if (original.member === true) {
-      return;
-    }
-    fail('你已不在指定 Discord 服务器，请重新登录验证');
+  if (currentDiscordMembership(user)) {
+    return;
   }
   const key = `${config.clientId}:${config.guildId}:${user.id}`;
   if (checks.has(key)) {
@@ -417,16 +412,18 @@ export async function requireDiscordMembership(
         )),
       };
       // 刷新令牌可能轮换，先持久化，避免后续成员查询故障丢失新的授权。
-      await deps.store.update(
-        (db) => {
-          const current = db.users.find((u) => u.id === user.id && u.enabled !== false);
-          if (!current || current.discord?.accessToken !== original.accessToken) {
-            fail('成员认证状态已变化，请重试', 401);
-          }
-          current.discord = { ...grant };
-        },
-        { collections: ['users'], immediate: true },
-      );
+      await deps.store.discordAuthenticationTransaction((transaction) => {
+        const current = transaction.readMember(user.id);
+        if (
+          !current ||
+          current.enabled === false ||
+          current.discord?.accessToken !== original.accessToken
+        ) {
+          fail('成员认证状态已变化，请重试', 401);
+        }
+        current.discord = { ...grant };
+        transaction.saveAuthentication(current);
+      });
     }
     try {
       await guildMember(config, grant, deps);
@@ -436,33 +433,21 @@ export async function requireDiscordMembership(
       }
       membershipError = error;
     }
-    await deps.store.update(
-      (db) => {
-        const current = db.users.find((u) => u.id === user.id && u.enabled !== false);
-        if (!current || current.discord?.accessToken !== grant.accessToken) {
-          fail('成员认证状态已变化，请重试', 401);
-        }
-        current.discord = { ...grant, checkedAt: Date.now(), member: !membershipError };
-        recordDomainEvent(db, {
-          eventType: 'MemberEligibilityChanged',
-          streamId: 'sharing:default',
-          memberId: current.id,
-          payload: {
-            memberId: current.id,
-            discord: {
-              id: grant.id,
-              guildId: grant.guildId,
-              checkedAt: current.discord.checkedAt,
-              member: !membershipError,
-            },
-          },
-        });
-        if (membershipError) {
-          current.memberAuth!.version = randomBytes(16).toString('hex');
-        }
-      },
-      { collections: ['users'], immediate: true },
-    );
+    await deps.store.discordAuthenticationTransaction((transaction) => {
+      const current = transaction.readMember(user.id);
+      if (
+        !current ||
+        current.enabled === false ||
+        current.discord?.accessToken !== grant.accessToken
+      ) {
+        fail('成员认证状态已变化，请重试', 401);
+      }
+      current.discord = { ...grant, checkedAt: Date.now(), member: !membershipError };
+      if (membershipError) {
+        current.memberAuth!.version = randomBytes(16).toString('hex');
+      }
+      transaction.saveAuthentication(current, 'observation');
+    });
     if (membershipError) {
       throw membershipError;
     }
@@ -474,4 +459,3 @@ export async function requireDiscordMembership(
     checks.delete(key);
   }
 }
-import { recordDomainEvent } from '../events/domain-events.ts';

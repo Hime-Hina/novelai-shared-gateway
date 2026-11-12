@@ -70,6 +70,9 @@ import { R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota/fair-share.ts';
 import type { ProviderRequest } from '../protocols/novelai-client.ts';
+import type { MemberSessionMutation, MemberSessionTransaction } from '../members/authentication.ts';
+import { loginMember } from '../members/authentication.ts';
+import type { DiscordAuthenticationTransaction, DiscordUser } from '../members/discord-auth.ts';
 import type { recordSharedCompletion } from '../quota/shared-capacity.ts';
 import type { describeStoredResult } from './result-files.ts';
 import type { AccountingJob } from '../generation/accounting.ts';
@@ -200,6 +203,7 @@ type Settings = typeof defaultSettings & {
   [key: string]: unknown;
 };
 export type StoreUser = Pick<FairUser, keyof FairUser> &
+  Pick<DiscordUser, 'discord' | 'discordInvite'> &
   Pick<
     StoreItem,
     'createdAt' | 'updatedAt' | 'note' | 'balance' | 'acceptingJobs' | 'jobAdmissionVersion'
@@ -1180,6 +1184,94 @@ export class JsonStore {
 
   readMemberSession(tokenHash: string) {
     return this.statements!.selectMemberSession.get({ tokenHash }) || null;
+  }
+
+  loginMemberPassword(username: unknown, password: unknown) {
+    return this.update((db) => loginMember(db, username, password), { persist: false });
+  }
+
+  discordAuthenticationTransaction<T>(
+    mutate: (transaction: DiscordAuthenticationTransaction) => T,
+  ): Promise<T> {
+    return this.update(
+      (db) =>
+        mutate({
+          readMember: (id) => db.users.find((user) => user.id === id) || null,
+          findDiscordMember: (id) => db.users.find((user) => user.discord?.id === id) || null,
+          findInviteMember: (hash, now) =>
+            db.users.find(
+              (user) => user.discordInvite?.hash === hash && user.discordInvite.expiresAt > now,
+            ) || null,
+          saveAuthentication: (user, evidence) => {
+            if (evidence) {
+              recordDomainEvent(db, {
+                eventType: 'MemberEligibilityChanged',
+                streamId: 'sharing:default',
+                memberId: user.id,
+                payload: {
+                  memberId: user.id,
+                  ...(evidence === 'login' ? { enabled: true } : {}),
+                  discord: {
+                    id: user.discord!.id,
+                    guildId: user.discord!.guildId,
+                    checkedAt: user.discord!.checkedAt,
+                    member: user.discord!.member,
+                  },
+                },
+              });
+            }
+          },
+        }),
+      { collections: ['users'], immediate: true },
+    );
+  }
+
+  readMemberSessionState(tokenHash: string) {
+    const row = this.readMemberSession(tokenHash);
+    return row
+      ? {
+          tokenHash: row.token_hash,
+          memberId: row.user_id,
+          authEpoch: row.auth_version,
+          createdAt: row.created_at,
+          expiresAt: row.expires_at,
+          ownerBinding: row.owner_binding,
+        }
+      : null;
+  }
+
+  memberSessionTransaction<T>(
+    mutate: (transaction: MemberSessionTransaction) => T,
+    options: MemberSessionMutation,
+  ): Promise<T> {
+    return this.update(
+      (db) =>
+        mutate({
+          readMember: (id) => db.users.find((user) => user.id === id) || null,
+          readSession: (tokenHash) => this.readMemberSessionState(tokenHash),
+          readOwner: () => this.readMemberSessionOwner(),
+        }),
+      {
+        ...options,
+        memberSession: options.memberSession
+          ? () => {
+              const row = options.memberSession!();
+              return row
+                ? {
+                    token_hash: row.tokenHash,
+                    user_id: row.memberId,
+                    auth_version: row.authEpoch,
+                    created_at: row.createdAt,
+                    expires_at: row.expiresAt,
+                    owner_binding: row.ownerBinding,
+                  }
+                : undefined;
+            }
+          : undefined,
+        collections: [],
+        immediate: true,
+      },
+    );
   }
 
   readMemberSessionOwner(): SessionOwner | null {

@@ -1,5 +1,7 @@
 # 服务端
 
+T3/T4 的认证接入进度见[数据库计划第 9.6 节](../docs/plans/database-model-redesign.md#96-t3t4稳定身份私有凭据和会话事务)。会话规则继续归 `members/authentication.ts`，Discord 邀请、OAuth 和刷新归 `members/discord-auth.ts`；存储实现 `memberSessionTransaction()` / `discordAuthenticationTransaction()` 的窄事务能力，读取模块使用 type-only `Pick`。旧运行时的 SQL 映射位于 `storage/sqlite-store.ts`，不让新格式认证 owner 依赖旧用户集合或表类型。
+
 HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非商用许可范围见仓库根目录 NOTICE.md 与 LICENSE。
 
 当前执行器独占业务写入和上游调度，Nuxt 只通过内部 HTTP 转发。根部 `index.ts` 与独立 Nitro 入口复用 `gateway-runtime.ts`；它们是替代启动方式，不能据此启动两个当前版本的账本写入者。后端只提供 API，不读取或回退到静态门户；网页入口仅由 Nuxt 提供，旧网页与资源地址返回 404。

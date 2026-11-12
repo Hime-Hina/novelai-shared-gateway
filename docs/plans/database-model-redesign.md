@@ -1,8 +1,8 @@
 # 数据库与数据模型重构草案
 
-更新日期：2026-11-12，Asia/Taipei。草案版本：0.7。源码核对基线：`55e5826d80a39364b0946547a83e2a2ed2f72711`；实施基于 PR #33 的 `265793c`。
+更新日期：2026-11-13，Asia/Taipei。草案版本：0.9。源码核对基线：`55e5826d80a39364b0946547a83e2a2ed2f72711`；实施基于 PR #33 的 `265793c`。
 
-**状态：T1/T2 主体实现及独立审查 #34–#38 的修复候选已形成，正在验收、接口未冻结；修复与证据见第 9.5 节。现行网关尚未切换，生产未迁移。** 维护者已基本认可新模型方向；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
+**状态：T1/T2 及 #34–#38 收尾已通过独立复审，PR #39 已解除 Draft；T3/T4 的稳定成员身份、私有凭据和会话事务首批接入已实现，验证与剩余边界见第 9.6 节。现行网关尚未切换，生产未迁移。** 维护者已基本认可新模型方向；完整历史转换成本过高或无法可靠完成时，可以评估封存旧历史、从新开账基线开始。具体迁移路线依据副本试验选择，不把此授权解释为清零余额、删除原图、取消任务或抹去旧键防重。
 
 **已确认的产品决定：D4a 卡密遗留功能、D4b 客户端自带官方 PST 的独立执行模式均淘汰；D8 仅保留为可选政策，具体留存期限后续决定。** 本轮记录决定，功能移除随重构实施；不设置新的自动归档或删除期限。
 
@@ -101,6 +101,7 @@ erDiagram
 | `password_credentials` | member_id 唯一、登录名、密码验证材料                                                                          |
 | `api_keys`             | member_id 唯一、Key 摘要、按产品决定保存的可恢复秘密；当前不新增多 Key 管理功能                               |
 | `discord_bindings`     | member_id、唯一 Discord 身份、授权材料、资格观察；网络失败不等于资格撤销                                      |
+| `discord_invites`      | member_id、唯一邀请码摘要和到期；私有当前状态，不保存邀请码正文，不由业务回放恢复                             |
 | `member_sessions`      | Token 摘要、member_id、auth_epoch、owner 绑定、固定期限                                                       |
 | `sharing_groups`       | 稳定组 ID、名称、份额；当前四组作为政策约束                                                                   |
 | `group_members`        | member_id 唯一、group_id、组内权重；全局有效份额计算得到                                                      |
@@ -497,6 +498,46 @@ Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码
 
 架构反例及合法读取对照见 [`architecture-boundaries.test.mjs`](../../tests/unit/architecture-boundaries.test.mjs)。后续新增写入口仍在同一守卫的写能力集合和依赖检查补齐，入口参数范围继续只在各协议 owner 维护。
 
+### 9.6 T3/T4：稳定身份、私有凭据和会话事务
+
+基线固定为已独立复审的 `2bde9d0`；[PR #39 的复审](https://github.com/Hime-Hina/novelai-shared-gateway/pull/39#pullrequestreview-5870504666)及 [CI #142](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43139044145) 通过。本轮使用独立 `codex/database-model-t3` 分支，不追加提交到已审查的 PR #39；新格式仍为 building，T4 的完整账务/调度和 T7/T8 迁移切换未因此完成。
+
+第一阶段把 [`authentication.ts`](../../server/members/authentication.ts) 的会话 owner 从通用 `update(db.users)` 改为同步的 `memberSessionTransaction()` 窄接口：只读取当前稳定成员、会话和 owner 配置，提交签发、续期或撤销。规则仍在原 owner，包括派生认证后的再次核对、1/7 天期限、owner A→B→A 撤销、时钟回拨和失败不发 Cookie。会话领域字段不再依赖旧 Drizzle 表类型；[`sqlite-store.ts`](../../server/storage/sqlite-store.ts) 在旧运行时边界映射原 SQL 字段，旧表、迁移和通知行为不变。管理命令的排队后授权也读取同一会话视图，未移除再校验。
+
+测试夹具复用实际旧存储适配方法，没有复制会话规则；门禁补上对查询/协议直接调用新事务写入口的拒绝。认证/Discord/会话/HTTP/架构六文件专项 71 项（70 通过、1 项平台跳过），完整后端 817 项（812 通过、5 项原有条件跳过），后端类型、架构、可信迁移历史和语法检查通过。日志在本地 `H:\TEMP\novelai-db-model-t3-20261112`。此阶段是 owner 接口收敛；新关系成员/私有凭据表的接入接续在下一阶段，不能将其写成完整 T3 验收。
+
+第二阶段接入 [`relational-member-store.ts`](../../server/storage/relational-member-store.ts)：稳定成员事实与关系行、私有密码/Key、私有 auth epoch 和会话分别保存。密码派生仍由现有认证 owner 在写事务外完成，提交时按原 epoch 重新核对目标；用户名唯一性由 SQL 保证，凭据变化和会话撤销同事务提交。Key 和用户名变化不改变成员、输入和历史归属；新 Key 保存摘要及 D5 已确认的私有可恢复值，普通成员读取和业务事实均不带认证材料。
+
+`handleMemberAuthenticationRoutes()` 是旧运行时与新格式共用的真实登录/退出 HTTP 入口，复用原同源、32KiB JSON、限流和 Cookie 处理；现有完整成员路由委托此入口。新格式的 Cookie/Key 命令回调在鉴权仍有效的同一个 SQLite 事务里执行，已与 T2 受理实际串联；Cookie 路径还要求真实 SQL 事务断言，旧运行时的串行队列不能冒充此能力。业务回放只恢复稳定身份和业务状态，不恢复密码、Key、私有 epoch、owner 配置或会话。
+
+新增 `member_auth_state` 两列保存私有 owner 配置，解决跨重启 A→B→A 撤销；这是认证当前状态，不进入业务事件或三项格式 `app_meta`。旧 SQL/journal 未变；未发布新格式的 schema hash 改变，旧候选目标须从空库重建。新格式/认证/门禁六文件专项 85/85 通过，包含真实 SQLite 和 HTTP、关闭重开、凭据与外层事务回滚、错误授权零受理、普通/owner 期限、停用未决工作守卫、10000 会话上限和业务回放不复活认证。完整后端 835 项（830 通过、5 项原有条件跳过、0 失败），后端类型、架构、可信迁移历史、123 个 JS/MJS 语法及全仓格式通过。客户端 IP 测试的密码 store 夹具同步实现窄登录接口，原认证失败及限流断言不变。此阶段提交 `948d951`，已推送。
+
+第三阶段把 Discord 的当前身份、邀请码和授权也接入同一关系存储。原 [`discord-auth.ts`](../../server/members/discord-auth.ts) 保留 Host/state/Cookie、邀请有效期、重复绑定、刷新去重、网络错误和资格撤销规则，存储只实现同步 `discordAuthenticationTransaction()`。旧适配继续写原 v1 事件，新格式保存既定 v2 `MemberEligibilityChanged` 的非秘密字段。OAuth 成功在同事务保存绑定、更新私有 epoch、撤销旧会话、消费邀请码和提交资格事实；只有之后的会话签发成功，真实 HTTP callback 才发成功 Cookie。无密码成员能直接获邀，不补造密码材料；已有密码在 OAuth 登录后清空 salt/hash，用户名继续保留占用，因此新格式密码表允许且只允许二者同时为空。
+
+新 `discord_invites` 只保存私有摘要和到期。刷新先提交轮换凭据，再进行成员资格查询；随后 503 不写虚假的资格撤销，关闭重开保留新 refresh token。确认资格丢失才提交否定观察、轮换 epoch 并撤销会话。T4 的网络验证使用原 owner 在写事务外完成；Key 通过 `authenticateMemberApiKey()` 读取已核对的身份后调用同一 Discord owner，Cookie/Key 命令再在同一真实 SQL 事务内复用同一五分钟缓存规则检查当前绑定/资格，失败不进入输入受理。完整成员 HTTP 与新格式共用原 start/callback handler，没有并行 OAuth 协议或新凭据缓存。
+
+回放验证见 [`relational-members.test.mjs`](../../tests/integration/relational-members.test.mjs)：保留原完整提交和回执、重复零写入，但不从身份/资格事件恢复私有密码、Key、Discord 绑定/授权、邀请、epoch、owner 配置或会话。这些仍需 T7 的受保护当前快照恢复；没有在此阶段宣称备份恢复或完整 reducer 已验收。新写入口按 #38 的共同规则补入原架构守卫，查询/协议的直接 Discord 写和邀请写均拒绝，合法读取和 owner 继续通过；此守卫增量须维护者复核，未改 CI、远端保护或可信迁移基线。旧 SQL/journal 未变，新候选 schema hash 再次改变，旧原型仍须空库重建。
+
+第三阶段最终本地验证：完整后端 850 项，845 通过、5 项原有条件跳过、0 失败，约 218 秒。关系成员专项 15/15、架构 51/51；三包类型、Web 单元 149/149、executor 单元 3/3、后端与执行器构建通过。实际 Nuxt HTTP 15 通过/1 项 Windows 平台跳过，Nitro 产物 HTTP 3 通过/1 项 Windows 平台跳过；直接加载最终编译 JavaScript 的成员专项 15/15。Node 24 隔离新格式 48/48、架构 51/51、读取 worker 12/12；244 个源码/脚本/测试文件逐文件 hash 与候选一致，未重编共享原生依赖。架构、默认及可信 `55e5826` 基线迁移历史、123 个 JS/MJS 语法、格式和差异检查通过。日志在本地 `H:\\TEMP\\novelai-db-model-t3-20261112`；远端 Linux/Docker 和独立审查以本阶段实现 PR 的同一候选为准，不能把本地结果写成独立审查通过。
+
+### 9.7 PR #40 独立审查收尾（#41/#42）
+
+[独立审查](https://github.com/Hime-Hina/novelai-shared-gateway/pull/40#pullrequestreview-5877694398)固定在 `22dbc5e`，确认主体拆分可继续，但发现两种可选凭据组合的缺口。[#41](https://github.com/Hime-Hina/novelai-shared-gateway/issues/41) 是真实注册省略密码时没有初始化当前私有 epoch；[#42](https://github.com/Hime-Hina/novelai-shared-gateway/issues/42) 是把 OAuth 的展示名回退值错误保存为唯一密码用户名。本轮按两个修复阶段分别验证、提交和推送；解除 Draft 以两项反例、完整新候选 CI 均通过为条件，不把自验写成独立复审，也不扩大到完整 T4 或迁移切换。
+
+#41 修复落在 `RelationalMemberStore.registerMember()`：带密码继续使用派生凭据的 epoch，未带密码则在同一真实注册事务生成独立 epoch。Key/会话和准备密码的 epoch 守卫保持；原回执提前返回，重复注册不重新生成 epoch；`applyMemberEvents()` 及业务回放继续只写 NULL。没有密码不再意味着缺失当前认证状态，也没有为纯 Key 成员补造密码。
+
+回归在原 `22dbc5e` 上 2/2 失败，显示 Key 不能鉴权和 NULL epoch；修复后新格式/输入/成员/事件/架构五文件 101/101 通过。新增用例覆盖无 Discord 配置的纯 Key 鉴权与真实 T2 受理、首次设置密码后身份/Key/输入归属稳定、重领注册回执不改变 epoch 或撤销 Cookie、注册 SQL/外层失败整笔回滚，以及纯业务回放不恢复私有认证。用例继续位于 [`relational-members.test.mjs`](../../tests/integration/relational-members.test.mjs)，没有改动认证 owner、schema、旧迁移、架构守卫或 CI。
+
+#41 阶段完整后端 852 项（847 通过、5 项原有条件跳过、0 失败），后端类型、架构、默认及可信 `55e5826` 基线迁移历史、123 个 JS/MJS 语法、全仓格式和差异检查通过。日志在本地 `H:\\TEMP\\novelai-pr40-fixes-20261113`。本修复不回填原型中的 NULL epoch：它也代表尚未恢复的私有认证，不能根据业务事实批量激活；building 原型应从空库验证，现行生产格式未变。
+
+#42 修复落在同一存储 owner 的 `saveDiscordAuthentication()`：OAuth 登录只 UPDATE 当前成员已有密码行，将 salt/hash 同时清空，保留原用户名；原本没有密码行则继续没有。共享 Discord owner 为旧运行时保留的展示性用户名回退不再被新存储转成密码身份。绑定、epoch 变化、会话撤销、邀请码消费及资格事实仍在同一事务，既有 schema 和旧迁移不变。
+
+新增两项真实 OAuth HTTP 回归分别覆盖两个无密码成员重名、无密码展示名与他人真实密码用户名相同；都能完成不同 Discord 身份的合法邀请登录，稳定 ID、Key 和原凭据保持。已有用例继续核对 OAuth 清除旧密码及撤销 Cookie，增加原密码用户名仍被唯一占用的检查；故障注入同时覆盖私有密码 UPDATE 和资格事实 INSERT，整库字节不变、旧 Cookie 仍有效，成功后才撤销。修复后五文件 103/103 通过。
+
+独立负对照使用 `git archive 22dbc5e` 的隔离源码、同版本依赖和完全相同的当前测试文件：19 项中 15 通过、4 失败，失败只对应 #41 的 Key/NULL epoch 和 #42 的两种用户名冲突。该测试文件 SHA-256 为 `475f5b53b50c5c409326f6d61c74481dd1bc8bd962f8e0dc36d8910982798cf2`。因此反例确实识别原错误实现；没有通过删除 epoch 守卫、修改展示名或放宽唯一约束解决问题。以后增加可选凭据仍在现有认证 owner 与本存储方法维护，当前认证状态与具体凭据、展示名与登录名分别保持独立。
+
+#41 已提交推送为 `25794f0`，[CI #144](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43260666845) 成功。#42 最终本地完整后端 854 项（849 通过、5 项原有条件跳过、0 失败），后端类型、架构、默认及可信迁移历史、123 个 JS/MJS 语法、格式和差异检查通过。直接加载编译 JavaScript 的成员专项 19/19；隔离 Node 24 五文件 103/103，244 个源码/脚本/测试文件逐文件 hash 与候选一致，没有重编共享原生依赖。日志仍位于本地 `H:\\TEMP\\novelai-pr40-fixes-20261113`。最终 Linux、三包及发布包 CI 的同一候选结果在 PR #40 更新，不把此前 `22dbc5e` 的绿色 CI 沿用为新候选证明。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
@@ -516,3 +557,5 @@ Windows，Node 22.23.4、pnpm 10.32.1；Node 24.22.1 使用新建的隔离源码
 | 0.5  | 2026-11-11 | 按 PR #33 开始实施 T1；加入新格式 DDL、初始化/拒绝边界、生命周期类型及结构用例，明确字段归属与未接入范围  |
 | 0.6  | 2026-11-12 | 补齐 T1 事实契约与提交/回放原语；完成 T2 新格式统一输入、BLOB、首次上下文和受理/冷读取；仍不切换现行网关  |
 | 0.7  | 2026-11-12 | 记录 #34–#38 独立审查收尾；先修入口兼容、账户流身份和原提交事件数，区分主体实现、自验与待完成验收         |
+| 0.8  | 2026-11-12 | T3/T4 接入稳定成员、私有密码/Key/Discord 和真实会话事务；复用认证 owner 与 HTTP，目标仍为 building        |
+| 0.9  | 2026-11-13 | 修复 PR #40 审查 #41/#42 的可选凭据约束；独立初始化 epoch，OAuth 仅清除既有密码，加入旧源码负对照         |

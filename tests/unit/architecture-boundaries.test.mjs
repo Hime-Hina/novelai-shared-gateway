@@ -101,6 +101,28 @@ for (const filename of [
     ],
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
+    ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
+    ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],
+    ['direct Discord invitation', 'authStore.createMemberDiscordInvite(id);'],
+    ['scoped Discord save', 'transaction.saveAuthentication(user);'],
+    [
+      'password HTTP writer',
+      "import { handleMemberAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+    ],
+    [
+      'Discord HTTP writer',
+      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+    ],
+    ['direct key mutation', 'authStore.memberApiKeyTransaction(hash,fn);'],
+    [
+      'relational member store',
+      "import { RelationalMemberStore as Store } from '../storage/relational-member-store.ts'; new Store(raw);",
+    ],
+    ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
+    [
+      'authenticated command',
+      "import { withAuthenticatedMemberSession as run } from '../members/authentication.ts'; run(store,token,env,fn);",
+    ],
     ['element acceptance', "inputStore['persistAcceptedInput'](c,a);"],
     [
       'database initialization',
@@ -135,6 +157,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
     ['executor/start.mjs', "await import('novelai-shared-gateway/server/gateway-runtime.js');"],
     ['server/index.ts', "import { startGateway } from './gateway-runtime.ts';"],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalMemberStore } from '../storage/relational-member-store.ts'; type Reader = Pick<RelationalMemberStore, 'readMember'>; function read(store: Reader) { return store.readMember('m'); }",
+    ],
     [
       'server/generation/request-queries.ts',
       "import type { RelationalInputStore } from '../storage/relational-input-store.ts'; type Reader = Pick<RelationalInputStore, 'readMemberInput' | 'readMemberAsset'>; function read(store: Reader) { return store.readMemberInput('r','m'); }",
