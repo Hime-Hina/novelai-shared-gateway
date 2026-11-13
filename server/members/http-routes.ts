@@ -56,6 +56,7 @@ import {
   stateInvalidation,
 } from '../events/state-notifications.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
+import { handleMemberReadRoutes } from './read-http.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { readR2Backups, readR2Operations } from '../reports/r2-analytics.ts';
 import { readPikPakQuota } from '../storage/pikpak-storage.ts';
@@ -900,57 +901,25 @@ export async function handleMemberRoutes(
     wake();
     return true;
   }
-  if (url.pathname === '/api/member/key') {
-    const publicBase = await store.update((db) => memberPublicBaseUrl(db), { persist: false });
-    const base = publicBase.replace(/\/+$/, '');
-    reply(res, 200, {
-      apiKey: user.token,
-      baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '',
-    });
-    return true;
-  }
-  if (url.pathname === '/api/member/history') {
-    const query = url.searchParams,
-      page = Number(query.get('page') || 1),
-      pageSize = Number(query.get('pageSize') || 25);
-    const q = (query.get('q') || '').trim(),
-      status = query.get('status') || '',
-      sort = query.get('sort') || 'createdAt',
-      order = query.get('order') || 'desc';
-    const until = query.get('until') || new Date().toISOString();
-    if (
-      !Number.isSafeInteger(page) ||
-      page < 1 ||
-      page > 1000000 ||
-      !Number.isSafeInteger(pageSize) ||
-      pageSize < 1 ||
-      pageSize > 100 ||
-      q.length > 200 ||
-      !['', 'done', 'failed', 'running', 'queued', 'pending', 'late'].includes(status) ||
-      !['createdAt', 'model', 'status'].includes(sort) ||
-      !['asc', 'desc'].includes(order) ||
-      !Number.isFinite(Date.parse(until)) ||
-      new Date(until).toISOString() !== until
-    ) {
-      error(400, '历史查询参数无效');
-    }
-    const result = await store.readMemberJobPage(user, {
-      page,
-      pageSize,
-      q,
-      status,
-      sort,
-      order,
-      until,
-    });
-    reply(res, 200, {
-      ...result,
-      jobs: result.jobs.map(({ imageId, charge, ...job }) => ({
-        ...job,
-        imageUrl: imageId ? deps.publicImageUrl(imageId) : '',
-        charge: memberCharge(charge),
-      })),
-    });
+  if (
+    await handleMemberReadRoutes(req, res, url, {
+      publicImageUrl: deps.publicImageUrl,
+      readKey: async () => ({
+        apiKey: user.token,
+        publicBaseUrl: await store.update((db) => memberPublicBaseUrl(db), { persist: false }),
+      }),
+      readHistory: async (options) => {
+        const result = await store.readMemberJobPage(user, options);
+        return {
+          ...result,
+          jobs: result.jobs.map(({ charge, ...job }) => ({
+            ...job,
+            charge: memberCharge(charge),
+          })),
+        };
+      },
+    })
+  ) {
     return true;
   }
   if (url.pathname === '/api/member/me') {

@@ -851,7 +851,10 @@ export class RelationalGenerationStore {
       reserved,
       warningThreshold: policy.warningThreshold,
       hardLimit: policy.hardLimit,
-      warning: policy.warningThreshold !== null && successes.length >= policy.warningThreshold,
+      warning:
+        policy.freeEnabled === 1 &&
+        policy.warningThreshold !== null &&
+        successes.length >= policy.warningThreshold,
       warnedAt:
         policy.warningThreshold === null
           ? null
