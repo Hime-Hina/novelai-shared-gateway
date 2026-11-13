@@ -1409,7 +1409,7 @@ export class RelationalQuotaStore {
             )
             .run(p.version, p.v5_24h, p.fixed24h, p.fixed30d, p.memberAttempts24h, e.eventId);
         }
-        continue;
+        return;
       }
       if (
         !relationalQuotaFacts.has(e.eventType) ||

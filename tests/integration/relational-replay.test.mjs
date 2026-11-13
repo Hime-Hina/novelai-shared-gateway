@@ -230,7 +230,7 @@ test('覆盖只来自五个实际 owner，未实现事实仍明确拒绝', () =>
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 50);
+  assert.equal(relationalReplayFacts().size, 53);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
@@ -240,9 +240,6 @@ test('覆盖只来自五个实际 owner，未实现事实仍明确拒绝', () =>
       'GroupConfigured',
       'GroupMemberAssigned',
       'GroupMemberRemoved',
-      'FallbackPolicyChanged',
-      'FreePolicyChanged',
-      'LossPolicyChanged',
       'FundsTransferred',
       'OpeningFundingRecorded',
       'CachedResultLinked',
@@ -262,6 +259,43 @@ test('覆盖只来自五个实际 owner，未实现事实仍明确拒绝', () =>
       'OpeningIdempotencyRecorded',
     ].sort(),
   );
+});
+
+test('共同回放保留原政策 owner 的决定、独立版本与有限 number 阈值', async (t) => {
+  const env = { OWNER_USER_ID: 'm1' },
+    f = await fixture(t, { env }),
+    quotas = new RelationalQuotaStore(f.db, env);
+  const commands = [
+    { action: 'fallback-policy', enabled: true },
+    {
+      action: 'free-image-policy',
+      expectedVersion: 1,
+      policy: { enabled: true, warningThreshold: null, hardLimit: 5 },
+    },
+    {
+      action: 'loss-alert-policy',
+      expectedVersion: 1,
+      policy: { v5Points24h: 1e-15, fixedAnlas24h: 0, fixedAnlas30d: 9, memberAttempts24h: 0 },
+    },
+  ];
+  for (const [index, command] of commands.entries()) {
+    await withAuthenticatedMemberApiKey(
+      f.members,
+      keys.m1,
+      (member) =>
+        quotas.configureQuotaPolicy(meta(`policy-${index}`, NOW + 10, member.id), command, member),
+      env,
+    );
+  }
+  const r = target(t, f);
+  r.through();
+  const row = (db) => db.prepare('SELECT * FROM sharing_policy WHERE id=1').get();
+  assert.deepEqual(row(r.db), row(f.db));
+  assert.equal(row(r.db).loss_v5_24h, 1e-15);
+  assert.equal(row(r.db).config_version, 1);
+  const once = r.db.serialize();
+  r.through();
+  assert.deepEqual(r.db.serialize(), once);
 });
 
 test('真实鉴权内的混合提交按原顺序跨 member/generation/quota 应用，只保存一份回执，私有另行恢复', async (t) => {
