@@ -108,6 +108,38 @@ const register = (
 });
 const wallet = (f, id = 'm1') => f.generations.readWallet('a', id);
 
+test('普通观察的非法期限保持失败资格，恢复与原提交回放不能把未知变为无期限', async (t) => {
+  const f = await setup(t),
+    before = f.db.serialize(),
+    failed = await f.observe({ subscriptionExpiresAt: 'malformed-expiration' }, NOW + 10);
+  assert.equal(f.quotas.readAccountQuota('a').quotaErrorCode, 'sync_error');
+  assert.equal(f.quotas.readAccountQuota('a').status, 'quota_sync_error');
+  f.refill(NOW + 20, 'after-malformed');
+  assert.equal(f.quotas.readAccountQuota('a').status, 'quota_sync_error');
+  const target = new Database(before);
+  try {
+    target.pragma('foreign_keys=ON');
+    const quotas = new RelationalQuotaStore(target, {});
+    target.transaction(() =>
+      quotas.replayQuotaCommit(readRelationalCommit(f.db, failed.commitSeq)),
+    )();
+    const refilled = f.db
+      .prepare(
+        "SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE command_id='after-malformed'",
+      )
+      .get();
+    if (refilled) {
+      target.transaction(() =>
+        quotas.replayQuotaCommit(readRelationalCommit(f.db, refilled.seq)),
+      )();
+    }
+    assert.equal(databaseState(target), databaseState(f.db));
+    assert.equal(quotas.readAccountQuota('a').status, 'quota_sync_error');
+  } finally {
+    target.close();
+  }
+});
+
 test('同时间的不同观察保留原恢复来源，最新观察与回放分别推进一次', async (t) => {
   for (const offset of [0, 1]) {
     await t.test(`第二次观察时间相差 ${offset}ms`, async (t) => {
