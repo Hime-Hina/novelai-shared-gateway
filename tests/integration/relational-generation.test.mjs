@@ -227,10 +227,12 @@ test('未知失败按原池退款一次并开启原五分钟窗口，关闭核�
     `CREATE TEMP TRIGGER fail_refund BEFORE UPDATE OF status ON charges WHEN NEW.status='refunded' BEGIN SELECT RAISE(ABORT,'refund fault'); END`,
   );
   const before = databaseState(db);
-  db.transaction(() => assert.throws(() => f.fail('unknown-0'), /refund fault/))();
+  db.transaction(() =>
+    assert.throws(() => f.fail('unknown-0', { aborted: false }), /refund fault/),
+  )();
   assert.equal(databaseState(db), before);
   db.exec('DROP TRIGGER fail_refund');
-  const failed = f.fail('unknown-0');
+  const failed = f.fail('unknown-0', { aborted: false });
   assert.deepEqual(g.readWallet('a', 'm1'), wallet);
   assert.equal(g.readCharge('unknown-0').status, 'refunded');
   const attempt = db.prepare('SELECT * FROM generation_attempts').get();
@@ -250,7 +252,7 @@ test('未知失败按原池退款一次并开启原五分钟窗口，关闭核�
     ['failed', 'failed', 'failed'],
   );
   const failedBytes = db.serialize();
-  assert.equal(f.fail('unknown-0').replayed, true);
+  assert.equal(f.fail('unknown-0', { aborted: false }).replayed, true);
   assert.deepEqual(db.serialize(), failedBytes);
   assert.throws(
     () =>
@@ -287,6 +289,7 @@ test('明确未发送只退原预扣，无风险核对；等待取消不制造�
     () =>
       db.transaction(() =>
         g.failGeneration(meta('member-fail-running', NOW + 2, 'm1'), 'cancel-0', {
+          aborted: false,
           errorCode: 'cancel',
           errorStatus: 409,
         }),
@@ -310,7 +313,7 @@ test('明确未发送只退原预扣，无风险核对；等待取消不制造�
       .map((j) => j.status),
     ['running', 'failed', 'failed'],
   );
-  const failed = f.fail('cancel-0', { evidence: { requestStarted: false } });
+  const failed = f.fail('cancel-0', { aborted: false, evidence: { requestStarted: false } });
   assert.equal(
     failed.events.some((e) => e.eventType === 'ReviewOpened'),
     false,
@@ -370,7 +373,7 @@ test('物理结束和逻辑失败复用同一次退避，逻辑退款仍不能�
   await f.accept('running');
   await f.accept('waiting', { memberId: 'm2' });
   f.dispatch('running-0');
-  f.fail('running-0');
+  f.fail('running-0', { aborted: false });
   const before = db.serialize();
   assert.equal(
     f.dispatch('waiting-0', NOW + 3, { dispatchEnabled: () => true, physicalAccountLoad: () => 1 })
@@ -405,7 +408,7 @@ test('物理结束和逻辑失败复用同一次退避，逻辑退款仍不能�
       { kind: 'ordinary' },
     ),
   )();
-  f.fail('waiting-0', {}, NOW + 10007);
+  f.fail('waiting-0', { aborted: false }, NOW + 10007);
   assert.equal(
     db.prepare('SELECT ordinary_strikes FROM upstream_accounts').get().ordinary_strikes,
     2,
@@ -422,7 +425,7 @@ test('迟到结果保留失败与退款、不复活余图，旧凭据结果不�
   await f.accept('late', { samples: 2 });
   const wallet = g.readWallet('a', 'm1');
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   db.prepare(
     'UPDATE upstream_accounts SET credential_epoch=2,cooldown_until=?,ordinary_strikes=3',
   ).run(NOW + 60000);
@@ -521,7 +524,11 @@ test('V5、fixed、purchased 与 fallback 都使用原资源池精确结算或�
       await f.accept(`${name}-refund`, request);
       const beforeRefund = g.readWallet('a', 'm1');
       f.dispatch(`${name}-refund-0`, NOW + 10005);
-      f.fail(`${name}-refund-0`, { evidence: { requestStarted: false } }, NOW + 10006);
+      f.fail(
+        `${name}-refund-0`,
+        { aborted: false, evidence: { requestStarted: false } },
+        NOW + 10006,
+      );
       assert.deepEqual(g.readWallet('a', 'm1'), beforeRefund);
       assert.equal(g.readCharge(`${name}-refund-0`).status, 'refunded');
       assert.deepEqual(db.pragma('foreign_key_check'), []);
@@ -536,7 +543,7 @@ test('免费迟到完整结果仍计滚动限额，重复结果不重复计数',
   const wallet = g.readWallet('a', 'm1');
   f.dispatch('free-0');
   assert.equal(g.readCharge('free-0').billingMode, 'free');
-  f.fail('free-0');
+  f.fail('free-0', { aborted: false });
   await f.publish('free-0');
   assert.deepEqual(g.readWallet('a', 'm1'), wallet);
   assert.deepEqual(
@@ -639,7 +646,7 @@ test('按原提交有界回放开账、授权受理及账务/结果闭环，私�
   f.dispatch('success-0');
   await f.publish('success-0');
   f.dispatch('success-1', NOW + 10005);
-  f.fail('success-1', {}, NOW + 10006);
+  f.fail('success-1', { aborted: false }, NOW + 10006);
   db.transaction(() =>
     f.generations.closeGenerationReview(meta('review-done', NOW + 310006), 'success-1'),
   )();
@@ -729,7 +736,7 @@ test('回放核对实际 job、attempt、原预扣、成员和账号；截短完
   await f.accept('victim');
   f.dispatch('victim-0');
   const snapshot = db.serialize();
-  const terminal = f.fail('victim-0');
+  const terminal = f.fail('victim-0', { aborted: false });
   const original = readRelationalCommit(db, terminal.commitSeq);
   const changes = [
     (stored) => {
@@ -862,7 +869,7 @@ test('原目标已缺失的终态开账凭据独立保留，不能靠同 job ID 
   assert.equal(proof.jobId, null);
   assert.equal(proof.estimated, null);
   const wallet = g.readWallet('a', 'm1');
-  assert.throws(() => f.fail('archived-0'), /不存在/);
+  assert.throws(() => f.fail('archived-0', { aborted: false }), /不存在/);
   await f.accept('archived');
   const before = db.serialize();
   assert.throws(() => f.dispatch('archived-0'), /已有收费/);

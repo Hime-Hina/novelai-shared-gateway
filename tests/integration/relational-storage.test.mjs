@@ -38,7 +38,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 2,
+    schema_version: 3,
     occurred_at: 1000,
     account_id: null,
     member_id: null,

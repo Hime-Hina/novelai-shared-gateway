@@ -131,7 +131,8 @@ export class RelationalCommitReplayer {
       stored.events.some(
         (event) =>
           !relationalGenerationFacts.has(event.eventType) &&
-          !relationalReplicaFacts.has(event.eventType),
+          !relationalReplicaFacts.has(event.eventType) &&
+          !(event.eventType === 'QuotaStatusChanged' && event.payload.generationFailure !== null),
       )
     ) {
       throw new Error('Generation replay requires complete generation/accounting commits.');

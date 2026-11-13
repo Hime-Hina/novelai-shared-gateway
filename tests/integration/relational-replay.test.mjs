@@ -599,7 +599,7 @@ test('退款仍可引用同一完整提交的 ReviewOpened；缺少原核对事�
   await f.accept('unknown');
   f.dispatch('unknown-0');
   const through = f.db.prepare('SELECT MAX(commit_seq) AS n FROM commits').get().n,
-    result = f.fail('unknown-0'),
+    result = f.fail('unknown-0', { aborted: false }),
     stored = readRelationalCommit(f.db, result.commitSeq),
     r = target(t, f);
   r.through(through);

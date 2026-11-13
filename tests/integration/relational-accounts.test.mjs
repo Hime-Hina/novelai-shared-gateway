@@ -561,7 +561,7 @@ test('轮换同时检查真实物理槽和预扣，逻辑退款不提前释放�
         await original.accept('active');
         original.dispatch('active-0');
         if (mode === 'refunded-physical') {
-          original.fail('active-0');
+          original.fail('active-0', { aborted: false });
           assert.equal(original.generations.readCharge('active-0').status, 'refunded');
         }
       }
@@ -779,7 +779,7 @@ test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交�
     old = f.quotas.beginQuotaObservation('a', NOW);
   await original.accept('mixed', { samples: 2 });
   original.dispatch('mixed-0');
-  original.fail('mixed-0');
+  original.fail('mixed-0', { aborted: false });
   f.now(NOW + 10);
   const beforeRotation = f.db.serialize();
   const rotated = await f.run('rotate-B', mutation('token', { token: 'pst-synthetic-B' }));

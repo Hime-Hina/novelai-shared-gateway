@@ -146,12 +146,7 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
   const failure = quotaFailure(error);
   const banned = failure.category === 'banned',
     outOfTrial = failure.category === 'out_of_trial';
-  let upstreamStatus = 'sync_error';
-  if (failure.httpStatus === 401) {
-    upstreamStatus = 'invalid_key';
-  } else if (failure.httpStatus === 403) {
-    upstreamStatus = 'access_denied';
-  }
+  const upstreamStatus = generationCredentialError(false, failure.httpStatus) ?? 'sync_error';
   let disableReason = '';
   if (banned) {
     disableReason = '账号已封禁';
@@ -174,6 +169,17 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
     disableAccount: banned || outOfTrial,
     disableReason,
   };
+}
+
+// 生成失败只确认当前凭据失效，不制造一次官方余额查询或刷新原观察时间。
+export function generationCredentialError(aborted: boolean, httpStatus: number | null) {
+  if (aborted) {
+    return null;
+  }
+  if (httpStatus === 401) {
+    return 'invalid_key' as const;
+  }
+  return httpStatus === 403 ? ('access_denied' as const) : null;
 }
 
 export type QuotaResult =

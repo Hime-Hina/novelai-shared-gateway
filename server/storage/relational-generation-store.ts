@@ -1403,6 +1403,7 @@ export class RelationalGenerationStore {
     failure: {
       errorCode: string;
       errorStatus: number;
+      aborted: boolean;
       cancellationReason?: string;
       evidence?: RefundEvidence;
       completion?: Completion;
@@ -1411,6 +1412,9 @@ export class RelationalGenerationStore {
     return this.owned(() => {
       const job = this.job(jobId);
       this.authorize(metadata, job);
+      if (typeof failure.aborted !== 'boolean') {
+        fail('生成失败必须明确是否取消');
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -1424,7 +1428,9 @@ export class RelationalGenerationStore {
       const attempt = this.attempt(jobId),
         charge = this.readCharge(jobId),
         events: RelationalEventInput[] = [];
-      const response = this.currentResponse(job, attempt, failure.evidence);
+      const response = this.currentResponse(job, attempt, failure.evidence),
+        responseEventId = randomUUID(),
+        failureEventId = randomUUID();
       if (charge) {
         if (charge.status !== 'reserved' || !attempt || charge.attemptId !== attempt.id) {
           fail('原预扣与尝试不一致');
@@ -1439,7 +1445,17 @@ export class RelationalGenerationStore {
             job,
             attempt.accountId,
             metadata.recordedAt,
+            responseEventId,
           ),
+        );
+        events.push(
+          ...this.quotas.planGenerationCredentialFailure(metadata, {
+            attemptId: attempt.id,
+            responseEventId,
+            failureEventId,
+            aborted: failure.aborted,
+            response,
+          }),
           this.event(
             {
               eventType: 'GenerationRefunded',
@@ -1483,12 +1499,14 @@ export class RelationalGenerationStore {
               errorStatus: failure.errorStatus,
               cancellationReason: failure.cancellationReason ?? null,
               diagnosticId: null,
+              aborted: failure.aborted,
               response,
             },
           },
           job,
           attempt?.accountId ?? null,
           metadata.recordedAt,
+          failureEventId,
         ),
         ...this.cancellation(
           job,
@@ -1950,6 +1968,11 @@ export class RelationalGenerationStore {
             c.status !== 'reserved' ||
             c.originalAccountId !== p.accountId ||
             c.originalMemberId !== job.memberId ||
+            this.sqlite
+              .prepare<[string], { epoch: number }>(
+                'SELECT credential_epoch AS epoch FROM upstream_accounts WHERE id=?',
+              )
+              .get(p.accountId)?.epoch !== p.credentialEpoch ||
             c.attemptId ||
             this.attempt(job.id)
           ) {

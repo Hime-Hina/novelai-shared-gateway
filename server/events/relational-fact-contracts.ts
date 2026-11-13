@@ -314,6 +314,7 @@ export const relationalPayloadParsers = {
     errorStatus: positive,
     cancellationReason: nullable(id),
     diagnosticId: nullable(id),
+    aborted: bool,
     response,
   }),
   LateResultRecovered: fields({
@@ -433,7 +434,18 @@ export const relationalPayloadParsers = {
     secondsPerPercent: nullable(number),
     errorCode: nullable(id),
   }),
-  QuotaStatusChanged: fields({ accountId: id, status: id }),
+  QuotaStatusChanged: fields({
+    accountId: id,
+    status: id,
+    generationFailure: nullable(
+      fields({
+        dispatchEventId: id,
+        responseEventId: id,
+        failureEventId: id,
+        errorCode: choices('invalid_key', 'access_denied'),
+      }),
+    ),
+  }),
   QuotaBaselineAdopted: fields({
     accountId: id,
     observationEventId: id,
