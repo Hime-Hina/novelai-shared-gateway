@@ -999,6 +999,8 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 对齐后 Node 22.23.4 四文件 54 项（53 通过、1 项原文件 symlink 跳过），类型及架构检查通过。保留旧 preverified PikPak 谓词的隔离副本运行同一新用例，在真实可读、仅上传的 PikPak 对照上以 `ARTIFACT_CONTENT_UNAVAILABLE` 失败，证明前置限制会收窄现有领取政策。日志为 `reader-pik-aligned-source.log`、`reader-negative-preverified-pik.log`；对齐后的编译、Node 24 和完整后端由 ready 联合候选依次完成。
 
+对齐固定 `9f74a0c` 的独立增量复核通过：原结果文件/reader 两文件，加原 MIME、来源/客户端并发及仅上传 PikPak 的真实实读反例，共 30 项（29 通过、1 项原跳过）。实际 GET 好字节成功而 verified 仍为 NULL、缺失/坏 Brotli 拒绝，Local/R2 原候选门槛、内容检查及 post-ticket 逻辑未放宽，SQL 与源对象不变。固定文件 hash 和日志为原独立目录的 `fixed-files-9f74.json`、`fixed-9f74.log`，不称为真实存储端点验收。
+
 ### 9.28 接续候选的联合验证
 
 本次接续以实际 `main@78887c9` 为已合入基线，保留政策 `fbd6d47`、薄报告 `3f5c164`、副本 `7e8ae8f`、共同回放根因修复 `27375d6` 和 Local 同提交 `53c4676` 的固定成果。整合业务固定为 `bb016ba`，随后 `68f23ab` 与 `e013cbb` 仅更新文档。生成/共同回放逐字等最后 Local 候选；额度闭包保留政策分支的单事实 return 及完整提交共享来源上下文，未重新实现 owner。
