@@ -362,11 +362,6 @@ export function createAccountQuotaQuery(
 export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions<T>) {
   const { store } = options,
     clock = options.now || Date.now;
-  const logger = options.logger || console;
-  let pending: Promise<RefreshResult<T>> | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null,
-    started = false,
-    stopped = false;
   const observationOrder = createQuotaObservationOrder();
 
   const fetch = createAccountQuotaQuery(options);
@@ -460,23 +455,45 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     );
   }
 
-  function refreshEnabled(): Promise<RefreshResult<T>> {
+  const loop = createAccountQuotaRefreshLoop(async () => {
+    const db = await store.readCollections(['accounts']),
+      ids = db.accounts.filter((account) => account.enabled !== false).map((account) => account.id);
+    return ids.length
+      ? await refresh(ids)
+      : { checked: 0, ok: 0, failed: 0, ignored: 0, accounts: [] };
+  }, options);
+  return {
+    refresh,
+    refreshEnabled: loop.refreshEnabled,
+    fetch,
+    start: loop.start,
+    stop: loop.stop,
+    get pending() {
+      return loop.pending;
+    },
+  };
+}
+
+// 原自动轮询骨架；持久化和选取目标仍由各自实际 owner 的一轮刷新提供。
+export function createAccountQuotaRefreshLoop<
+  T extends { checked: number; ok: number; failed: number },
+>(
+  refresh: () => Promise<T>,
+  options: Pick<AccountQuotaRefreshOptions<unknown>, 'logger' | 'refreshIntervalMs'>,
+) {
+  const logger = options.logger || console;
+  let pending: Promise<T> | null = null,
+    timer: ReturnType<typeof setTimeout> | null = null,
+    started = false,
+    stopped = false;
+
+  function refreshEnabled(): Promise<T> {
     if (pending) {
       return pending;
     }
-    pending = (async () => {
-      try {
-        const db = await store.readCollections(['accounts']),
-          ids = db.accounts
-            .filter((account) => account.enabled !== false)
-            .map((account) => account.id);
-        return ids.length
-          ? await refresh(ids)
-          : { checked: 0, ok: 0, failed: 0, ignored: 0, accounts: [] };
-      } finally {
-        pending = null;
-      }
-    })();
+    pending = refresh().finally(() => {
+      pending = null;
+    });
     return pending;
   }
 
@@ -516,9 +533,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     timer = null;
   }
   return {
-    refresh,
     refreshEnabled,
-    fetch,
     start,
     stop,
     get pending() {
