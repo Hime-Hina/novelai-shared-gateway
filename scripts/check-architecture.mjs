@@ -67,6 +67,8 @@ const mutations = new Set([
   'copyRelationalArtifactReplica',
   'verifyRelationalArtifactReplica',
   'planLocalArtifactPublication',
+  'retireJobHistory',
+  'retireArtifactHistory',
   'beginQuotaObservation',
   'recordQuotaObservation',
   'refillQuota',

@@ -183,6 +183,8 @@ for (const filename of [
     ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
     ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
     ['local publication fact planning', 'store.planLocalArtifactPublication(descriptor,now);'],
+    ['job history retirement', 'store.retireJobHistory(metadata,ids,actor,controls);'],
+    ['artifact history retirement', 'store.retireArtifactHistory(metadata,ids,actor,controls);'],
     [
       'replica store alias',
       "import { RelationalReplicaStore as Store } from '../storage/relational-replica-store.ts'; new Store(raw);",

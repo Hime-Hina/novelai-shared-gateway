@@ -65,7 +65,7 @@ export class RelationalRequestStore {
           AND origin.job_id=j.id AND origin.request_id=j.request_id
         LEFT JOIN charges c ON c.job_id=j.id
         LEFT JOIN artifacts a ON a.id=j.artifact_id AND a.member_id=? AND a.retired_at IS NULL
-        WHERE j.request_id=? ORDER BY j.sample_index,j.id`,
+        WHERE j.request_id=? AND j.retired_at IS NULL ORDER BY j.sample_index,j.id`,
       )
       .all(memberId, request.id);
     const createdAt = iso(request.acceptedAt)!;
@@ -100,7 +100,7 @@ export class RelationalRequestStore {
           error: job.errorCode,
           errorCode: job.errorCode,
           cancelledAt: job.cancellationReason ? iso(job.completedAt) : null,
-          lateResultAvailable: job.lateResultAt !== null,
+          lateResultAvailable: job.lateResultAt !== null && job.imageId !== null,
           imageId: job.imageId,
           fairCharge,
         };
@@ -114,7 +114,7 @@ export class RelationalRequestStore {
       const request = this.sqlite
         .prepare<[string, string], RequestRow>(
           `SELECT id,source,operation,model,accepted_at AS acceptedAt
-          FROM generation_requests WHERE id=? AND member_id=?`,
+          FROM generation_requests WHERE id=? AND member_id=? AND retired_at IS NULL`,
         )
         .get(requestId, memberId);
       if (!request) {
@@ -167,15 +167,25 @@ export class RelationalRequestStore {
       const job = this.sqlite
         .prepare<
           [string, string],
-          { status: string; artifactId: string | null; lateResultAt: number | null }
+          {
+            status: string;
+            artifactId: string | null;
+            lateResultAt: number | null;
+            retiredAt: number | null;
+            requestRetiredAt: number | null;
+          }
         >(
-          `SELECT j.status,j.artifact_id AS artifactId,j.late_result_at AS lateResultAt
+          `SELECT j.status,j.artifact_id AS artifactId,j.late_result_at AS lateResultAt,
+          j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt
           FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
           WHERE j.id=? AND r.member_id=?`,
         )
         .get(jobId, memberId);
       if (!job) {
         fail(404, 'job_not_found', '任务不存在。');
+      }
+      if (job.retiredAt !== null || job.requestRetiredAt !== null) {
+        fail(410, 'result_unavailable', '原结果已不可领取。');
       }
       if (!job.artifactId) {
         if (['pending', 'queued', 'running'].includes(job.status)) {
