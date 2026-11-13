@@ -25,6 +25,9 @@ import {
   authenticateMemberSession,
 } from '../../server/members/authentication.ts';
 import { NATIVE_DEFAULTS } from '../../server/protocols/native-image.ts';
+import { R2Storage } from '../../server/storage/r2-storage.ts';
+import { copyRelationalArtifactReplica } from '../../server/storage/relational-replica-io.ts';
+import { rename } from 'node:fs/promises';
 
 const keys = { m1: 'STA1N-relational-native-m1', m2: 'STA1N-relational-native-m2' };
 const input = (parameters = {}, root = {}) => ({
@@ -113,12 +116,13 @@ async function setup(t, options = {}) {
       now: () => clock,
       onError: (event) => errors.push(event),
     });
+  const replicas = { dataDir: f.dir };
   const handle = createRelationalNativeHttp({
     sqlite: f.db,
     events,
     previews,
     payloadBudget: budget,
-    replicas: { dataDir: f.dir },
+    replicas,
     env,
     now: () => clock,
     schedule: runtime.schedule,
@@ -229,6 +233,7 @@ async function setup(t, options = {}) {
     controls,
     budget,
     previews,
+    replicas,
     upstream,
     errors,
     call,
@@ -684,4 +689,99 @@ test('Native准入不提前预扣或拒绝派发期余额，真实dispatch拒绝
     0,
   );
   assert.equal(f.upstream.calls.length, 0);
+});
+
+test('Native原键保留持久R2承诺：缺配置/错目录/模拟GET失败503，恢复后原图零写领取', async (t) => {
+  const f = await setup(t),
+    originalFetch = globalThis.fetch,
+    cloudCalls = [],
+    objects = new Map(),
+    r2 = new R2Storage({
+      accountId: 'a'.repeat(32),
+      bucket: 'native-reference-images',
+      accessKeyId: 'synthetic-private-access',
+      secretAccessKey: 'synthetic-private-secret',
+    });
+  let cloudFailed = false;
+  // 仅模拟云传输；真实R2 client/签名、复制确认owner和字节摘要仍执行，不访问真实云。
+  t.mock.method(globalThis, 'fetch', async (address, options) => {
+    const url = new URL(address);
+    if (!url.hostname.endsWith('.r2.cloudflarestorage.com')) {
+      return originalFetch(address, options);
+    }
+    assert.equal(f.db.inTransaction, false);
+    assert.ok(options.signal);
+    cloudCalls.push(options.method);
+    if (options.method === 'PUT') {
+      objects.set(url.href, Buffer.from(options.body));
+      return new Response(null, { status: 204 });
+    }
+    assert.equal(options.method, 'GET');
+    if (cloudFailed || !objects.has(url.href)) {
+      return new Response(null, { status: 503 });
+    }
+    const bytes = objects.get(url.href);
+    return new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
+  });
+  const first = await f.call(input(), { key: 'cloud-reference' });
+  assert.equal(first.status, 200, first.buffer.toString());
+  const requestId = first.headers.get('x-nai-request-id'),
+    job = f.db
+      .prepare('SELECT artifact_id AS artifactId FROM generation_jobs WHERE request_id=?')
+      .get(requestId);
+  f.replicas.r2 = r2;
+  await copyRelationalArtifactReplica(
+    f.db,
+    job.artifactId,
+    'r2',
+    {
+      ...f.replicas,
+      idle: () => f.controls.size === 0,
+    },
+    () => f.clock,
+  );
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  const file = path.join(f.dir, `images/${job.artifactId}.webp`);
+  await rename(file, `${file}.saved`);
+  const before = databaseState(f.db);
+  const unavailable = async () => {
+    const response = await f.call(input(), { key: 'cloud-reference' });
+    assert.equal(response.status, 503, response.buffer.toString());
+    assert.equal(response.headers.get('x-nai-request-id'), requestId);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.upstream.calls.length, 1);
+  };
+  delete f.replicas.r2;
+  await unavailable();
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  f.replicas.r2 = new R2Storage({ ...r2.config, bucket: 'wrong-native-images' });
+  await unavailable();
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  f.replicas.r2 = r2;
+  cloudFailed = true;
+  await unavailable();
+  assert.deepEqual(cloudCalls, ['PUT', 'GET', 'GET']);
+  cloudFailed = false;
+  const recovered = await f.call(input(), { key: 'cloud-reference' });
+  assert.equal(recovered.status, 200, recovered.buffer.toString());
+  assert.equal(recovered.headers.get('x-nai-request-id'), requestId);
+  assert.deepEqual(recovered.buffer, first.buffer);
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(cloudCalls, ['PUT', 'GET', 'GET', 'GET']);
+  assert.equal(f.upstream.calls.length, 1);
+  const currentKey = 'STA1N-native-cloud-current';
+  f.db.transaction(() => f.members.replaceMemberApiKey('m1', currentKey))();
+  const rotated = databaseState(f.db);
+  assert.equal((await f.call(input(), { key: 'cloud-reference' })).status, 401);
+  assert.deepEqual(cloudCalls, ['PUT', 'GET', 'GET', 'GET']);
+  cloudFailed = true;
+  const currentFailure = await f.call(input(), {
+    key: 'cloud-reference',
+    headers: { authorization: `Bearer ${currentKey}` },
+  });
+  assert.equal(currentFailure.status, 503);
+  assert.equal(currentFailure.headers.get('x-nai-request-id'), requestId);
+  assert.equal(databaseState(f.db), rotated);
+  assert.deepEqual(cloudCalls, ['PUT', 'GET', 'GET', 'GET', 'GET']);
+  assert.equal(f.upstream.calls.length, 1);
 });

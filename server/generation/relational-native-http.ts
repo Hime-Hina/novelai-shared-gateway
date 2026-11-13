@@ -11,7 +11,10 @@ import { RelationalInputStore } from '../storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
 import { RelationalRequestStore } from '../storage/relational-request-store.ts';
 import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
-import { readRelationalArtifactContent } from '../storage/relational-replica-io.ts';
+import {
+  readRelationalArtifactContent,
+  relationalArtifactReferenceAvailable,
+} from '../storage/relational-replica-io.ts';
 import type { RelationalReplicaReadConfiguration } from '../storage/relational-replica-store.ts';
 import {
   createNativeHttp,
@@ -159,12 +162,23 @@ export function createRelationalNativeHttp(deps: {
                   requests.readMemberJobDelivery(jobId, memberId),
                 );
                 if (job.status === 'done' || job.artifactId) {
+                  const artifact = await authorize((memberId) =>
+                    requests.readMemberResult(jobId, memberId),
+                  );
+                  let available = false;
                   try {
-                    await readContent(jobId);
-                  } catch (error) {
-                    if ((error as { statusCode?: number }).statusCode === 401) {
-                      throw error;
-                    }
+                    available = await relationalArtifactReferenceAvailable(
+                      sqlite,
+                      artifact.artifactId,
+                      deps.replicas,
+                    );
+                  } catch {
+                    /* 原引用资格失败不新增意图；实际内容读取和云503仍由后续领取处理。 */
+                  }
+                  const current = await authorize((memberId) =>
+                    requests.readMemberResult(jobId, memberId),
+                  );
+                  if (!available || current.artifactId !== artifact.artifactId) {
                     fail(410, '原请求的任务或结果已不可领取；如需再次生成，请使用新的操作键');
                   }
                 }

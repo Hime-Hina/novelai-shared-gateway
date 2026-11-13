@@ -1223,7 +1223,7 @@ Node 22.23.4 修复后源码专项 29/29、同产品真实编译 CLI 29/29，零
 
 为保留旧 Native 真实拒绝边界，canonical GenStore Native 新受理复用既有 `reservationState()` 的当前 policy、绑定、分组、额度基线和私有凭据检查，并复用原 `freeUsage()` / `assertFreeImageAdmission()`。分组缺失在同一个共享 guard 返回原 403，policy/账号未就绪仍为 503；只在派发期检查的钱包余额不提前拒绝或预扣。免费准入和旧 Native 一样只检查当前 usage 一次，即使多 child 也不提前耗尽整批免费次数；实际每个 child 仍在派发时复核。Native 受理的恢复继续由既有 `refillForGeneration()` / QuotaStore 原命令拥有，和受理同外层事务，不增加 controller 恢复 hook 或另一套金融规划。
 
-结果等待从原 `delivery.ts` 窄提取为共用 `result-waiter.ts`，保留订阅先于冷读、通知、截止与断线清理；关系适配由同一个临时 events 唤醒，只读 RequestStore 新增的本人薄领取 DTO。原实际 seed、失败状态和该 attempt 的原 cooldown 来自已提交行/事实，不能借当前另一任务的冷却或正文推断。产物经原真实 Local/R2/PikPak reader 在 SQL 外读取，读取前后都复核当前 Key 与产物归属；原 bytes 缺失的重放返回 410，不能再次生成。断连只解除本次领取等待，不取消已受理任务或改变预扣/结算；与实际协调器注入同一 controls 所计的 payload budget、events、JobPreviews，未新增业务事实、持久等待表或长期旧/新切换配置。
+结果等待从原 `delivery.ts` 窄提取为共用 `result-waiter.ts`，保留订阅先于冷读、通知、截止与断线清理；关系适配由同一个临时 events 唤醒，只读 RequestStore 新增的本人薄领取 DTO。原实际 seed、失败状态和该 attempt 的原 cooldown 来自已提交行/事实，不能借当前另一任务的冷却或正文推断。产物经原真实 Local/R2/PikPak reader 在 SQL 外读取，读取前后都复核当前 Key 与产物归属；没有持久云承诺且 Local 真正缺失的原键返回 410，已有持久承诺但当前领取失败仍为 503，两者都不能再次生成。断连只解除本次领取等待，不取消已受理任务或改变预扣/结算；与实际协调器注入同一 controls 所计的 payload budget、events、JobPreviews，未新增业务事实、持久等待表或长期旧/新切换配置。
 
 新 localhost 专项先由实际 owner 发布文件，再经唯一 installer 的完整 shadow/33 表/私有/真实 bytes 核对合法进入 ready；HTTP 后接实际 coordinator 与本地真实上游 HTTP，再领取实际发布文件。覆盖同键并发/随机 seed/成员隔离、无键新意图、固定多 child、JSON/ZIP、两种实际流的 preview/final、两种辅助操作与 multipart/BLOB、输入 SQL 故障连恢复全回滚、旧 Key 轮换和慢正文撤销/旧 epoch、免费与共享拒绝边界、派发期余额失败、断线继续及原文件缺失、首次 context defaults，以及十四张公开表的原完整提交联合回放。两个新关系 writer factory 和原库 adapter 是新写能力，架构集合仅追加对应三个名字与 alias-import 拒绝用例，需父任务维护者独立复核。
 
@@ -1234,6 +1234,10 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 固定 `c873ab9` 之后补齐同片的已知诊断来源：原 transport 在生图和辅助操作中各自生成 `X-Nai-Diagnostic-Id`，并将同值传入 `NativeAdmissionOptions.diagnosticId`，关系受理改用现有 command/event `correlationId` 保存它，不新增列或重复派生状态。该值来自网关随机 ID，不采纳客户端同名头或上游 `x-correlation-id` / 同名诊断头。新增合法 ready 真实 HTTP 反例先准确重现原受理关联为 NULL，再验证首次 header 精确绑定原 `RequestAccepted` 和 `readRelationalCommit().command.correlationId`；同键新交付仍生成原 transport 的新 header，但原关联、完整库状态和上游调用数不变。修复后新 Native 专项 13/13，含现有完整提交回放；修复前后证据为 `H:\TEMP\native-diagnostic-correlation-before.log` 与 `native-diagnostic-correlation-after.log`，不重用前置候选的独审或 full 证据。
 
 原 `gateway-runtime.ts` 仍是当前 sole 启动入口，只把原 Native caller 注入改为临时旧 adapter，并复用 Native 自己的公开错误包络；未切换生产入口、未搬 OpenAI parser、未将成员 factory 当作全 #52 完成。本片未改 schema、SQL/journal、金融算法或成员权益配置；完整后端和发布物由父任务总装配后统一排期。
+
+v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败转为 410，会丢失已保存的云来源承诺。复用独立 `b31c03c` 的三个只读 helper：可引用判定核原产物、目标和副本事实；R2 沿原 verified 承诺，PikPak 沿旧合同的 uploaded URL 承诺，不额外要求 verified；云资格不触发 GET，Local 只安全检查非空文件。Native 在原回执和当前 Key 之后核引用资格，并在资格 IO 后再次核当前 Key / 归属；实际领取仍由原 reader 校验完整字节并保留 503，不新增事实、重发、schema4 或缓存受理能力。
+
+新增合法 ready / localhost Native 反例以真实 `R2Storage` client 和复制/确认 owner、模拟云传输保存并核验原字节，准确重现修复前缺配置时 `410 != 503`。修复后缺配置、错 namespace、模拟 GET 失败都保留原父 ID、整库和一次生成；配置恢复领取原图，旧 Key 轮换仍先拒绝、当前 Key 的云失败保持 503。原 Local 真缺失 410 和慢正文凭据拒绝继续通过。Node 22.23.4 Native HTTP / 引用资格 / 原 reader 三文件联合 28/28，零跳过；架构、可信 `3e35e13f87ea7e5c0e6e42135fb420abd72457ba` 迁移历史、类型和格式检查通过。证据为 `H:\TEMP\native-reference-cloud-before.log`、`native-reference-cloud-after.log`、`native-reference-targeted.log`；这些是模拟云传输和实际本地 owner/HTTP 证据，不是任何真实云 GET 或 full 验收。
 
 ### 9.40 #47：恢复与注资分配的原决定完整性
 
