@@ -90,65 +90,67 @@ function stopFact(id, epoch = 1) {
     id,
   );
 }
-async function stopMixed(f, changeResult = (result) => result) {
+function mixedStopCommand(f, memberId = 'm1') {
+  const events = [
+    stopFact('m1'),
+    common(
+      {
+        eventType: 'WaitingJobsCancelled',
+        payload: {
+          jobIds: ['waiting-0', 'waiting-1'],
+          reason: 'member_admission_stopped',
+          errorStatus: 409,
+          cancellationReason: 'member_admission_stopped',
+        },
+      },
+      'request:waiting',
+      'm1',
+    ),
+    common(
+      {
+        eventType: 'AvailabilityChanged',
+        payload: {
+          accountId: 'a',
+          enabled: false,
+          reason: 'paused',
+          observationEventId: null,
+        },
+      },
+      'account:a',
+      null,
+      'a',
+    ),
+    stopFact('m2'),
+  ];
+  const command = meta('mixed-stop', NOW + 3, memberId);
+  delete command.policyVersion;
+  delete command.pricingVersion;
+  return {
+    ...command,
+    expectedVersions: Object.fromEntries(
+      events.map((e) => [
+        e.streamId,
+        f.db
+          .prepare(
+            'SELECT CAST(stream_version AS TEXT) AS version FROM stream_heads WHERE stream_id=?',
+          )
+          .get(e.streamId).version,
+      ]),
+    ),
+    receipt: { stopped: ['m1', 'm2'], cancelled: ['waiting-0', 'waiting-1'] },
+    events,
+  };
+}
+async function stopMixed(f) {
   return withAuthenticatedMemberApiKey(
     f.members,
     keys.m1,
     (member) =>
-      f.db.transaction(() => {
-        assert.equal(member.id, 'm1');
-        const events = [
-          stopFact('m1'),
-          common(
-            {
-              eventType: 'WaitingJobsCancelled',
-              payload: {
-                jobIds: ['waiting-0', 'waiting-1'],
-                reason: 'member_admission_stopped',
-                errorStatus: 409,
-                cancellationReason: 'member_admission_stopped',
-              },
-            },
-            'request:waiting',
-            'm1',
-          ),
-          common(
-            {
-              eventType: 'AvailabilityChanged',
-              payload: {
-                accountId: 'a',
-                enabled: false,
-                reason: 'paused',
-                observationEventId: null,
-              },
-            },
-            'account:a',
-            null,
-            'a',
-          ),
-          stopFact('m2'),
-        ];
-        const command = meta('mixed-stop', NOW + 3, member.id);
-        delete command.policyVersion;
-        delete command.pricingVersion;
-        const result = appendRelationalCommit(f.db, {
-          ...command,
-          expectedVersions: Object.fromEntries(
-            events.map((e) => [
-              e.streamId,
-              f.db
-                .prepare(
-                  'SELECT CAST(stream_version AS TEXT) AS version FROM stream_heads WHERE stream_id=?',
-                )
-                .get(e.streamId).version,
-            ]),
-          ),
-          receipt: { stopped: ['m1', 'm2'], cancelled: ['waiting-0', 'waiting-1'] },
-          events,
-        });
-        new RelationalCommitReplayer(f.db, f.generations).applyCommit(changeResult(result));
-        return result;
-      })(),
+      f.db.transaction(() =>
+        new RelationalCommitReplayer(f.db, f.generations).appendCommit(
+          mixedStopCommand(f, member.id),
+        ),
+      )(),
     {},
   );
 }
@@ -353,30 +355,94 @@ test('第二 owner 已写入后异常被外层捕获，完整提交、回执、�
   assert.deepEqual(r.db.serialize(), once);
 });
 
-test('在线共同投影核对已保存的原事件顺序、数量和回执，错误结果不能留下半个命令', async (t) => {
+test('在线入口不接受自报新写入或重领结果，资金不能重复扣除，新接单状态不能跳过', async (t) => {
+  const f = await fixture(t);
+  const quotas = new RelationalQuotaStore(f.db, { OWNER_USER_ID: 'm1' });
+  const funding = await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    () =>
+      quotas.manageQuotaFunding(meta('contribution-result', NOW, 'm1'), 'a', {
+        action: 'operating-contribute',
+        receipt: 'contribution-result',
+        resource: 'anlasFixed',
+        amount: 10,
+      }),
+    {},
+  );
+  const replayer = new RelationalCommitReplayer(f.db, f.generations),
+    stored = readRelationalCommit(f.db, funding.commitSeq),
+    before = databaseState(f.db),
+    wallet = f.generations.readWallet('a', 'm1').anlasFixed;
+  assert.throws(
+    () =>
+      f.db.transaction(() =>
+        replayer.applyCommit({ ...funding, replayed: false, events: stored.events }),
+      )(),
+    /not a function/,
+  );
+  assert.equal(f.generations.readWallet('a', 'm1').anlasFixed, wallet);
+  assert.equal(databaseState(f.db), before);
+  f.db.transaction(() => {
+    assert.throws(() => replayer.appendCommit(funding), /Invalid relational command/);
+    assert.equal(replayer.appendCommit(stored.command).replayed, true);
+  })();
+  assert.equal(databaseState(f.db), before);
+
+  assert.throws(
+    () =>
+      f.db.transaction(() => {
+        const { policyVersion, pricingVersion, ...command } = meta('fake-replayed-stop', NOW + 3);
+        const result = appendRelationalCommit(f.db, {
+          ...command,
+          expectedVersions: {
+            'member:m1': f.db
+              .prepare(
+                "SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id='member:m1'",
+              )
+              .get().v,
+          },
+          receipt: { stopped: 'm1' },
+          events: [stopFact('m1')],
+        });
+        replayer.applyCommit({ ...result, replayed: true, events: [] });
+      })(),
+    /not a function/,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(replayer['#applyCommit'], undefined);
+  await f.accept('waiting', { samples: 2 });
+  assert.equal((await stopMixed(f)).replayed, false);
+  const once = f.db.serialize();
+  assert.equal((await stopMixed(f)).replayed, true);
+  assert.deepEqual(f.db.serialize(), once);
+});
+
+test('在线受控追加与投影在同一保存点，第二 owner 失败被外层捕获也不留下原事实', async (t) => {
   const f = await fixture(t);
   await f.accept('waiting', { samples: 2 });
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_online_second AFTER UPDATE ON generation_jobs WHEN NEW.id='waiting-0' AND NEW.status='failed' AND (SELECT accepting_jobs FROM members WHERE id='m1')=0 BEGIN SELECT RAISE(ABORT,'online second owner failure'); END",
+  );
   const before = databaseState(f.db);
-  for (const change of [
-    (result) => {
-      result.events.pop();
-      return result;
-    },
-    (result) => {
-      result.events.reverse();
-      return result;
-    },
-    (result) => {
-      result.receipt = { different: true };
-      return result;
-    },
-  ]) {
-    await assert.rejects(
-      stopMixed(f, (result) => change(structuredClone(result))),
-      /saved complete/,
-    );
-    assert.equal(databaseState(f.db), before);
-  }
+  await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    (member) =>
+      f.db.transaction(() => {
+        assert.throws(
+          () =>
+            new RelationalCommitReplayer(f.db, f.generations).appendCommit(
+              mixedStopCommand(f, member.id),
+            ),
+          /online second owner failure/,
+        );
+        assert.equal(databaseState(f.db), before);
+      })(),
+    {},
+  );
+  assert.equal(databaseState(f.db), before);
+  f.db.exec('DROP TRIGGER fail_online_second');
   assert.equal((await stopMixed(f)).replayed, false);
   const once = f.db.serialize();
   assert.equal((await stopMixed(f)).replayed, true);

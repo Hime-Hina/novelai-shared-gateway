@@ -70,7 +70,7 @@ const mutations = new Set([
   'applyAccountEvent',
   'applyReplayedMemberEvent',
   'replayCommit',
-  'applyCommit',
+  'appendCommit',
 ]);
 const persistence = new Set([
   'update',

@@ -140,7 +140,7 @@ for (const filename of [
       'applyAccountEvent',
       'applyReplayedMemberEvent',
       'replayCommit',
-      'applyCommit',
+      'appendCommit',
     ].map((name) => [`direct ${name}`, `store.${name}(input);`]),
     [
       'private snapshot import',
