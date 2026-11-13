@@ -1271,6 +1271,20 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
+### 9.48 单共享账户的实际定时额度刷新
+
+从固定 `3d2bafd` 接续新格式周期观察，只新增 `quota/relational-account-refresh.ts` 和专属专项，并从原 `account-refresh.ts` 窄提 start/stop/pending 的逻辑轮询骨架。原官方 fetch、15 秒独立 deadline、`accountQuotaResult/ErrorResult`、失败分类与顺序票据不复制；旧刷新 API 及批量行为仍走原 owner，新适配不以 JsonStore/StoreDatabase 兼容对象承接写入，也不在本片修改 sole 装配或 HTTP 写入口。
+
+实际调用链原为 gateway-runtime 唯一创建刷新器、监听后 start、失败/完成后再排 60 秒、stop 后允许当前轮落库并等待 pending。新格式只选择 sharing_policy 当前 bound 且 enabled 的单个账户，严格要求合法 ready；不查询已暂停账户，不扩大到历史账户或旧 per-account proxy。新模型没有 proxyUrl 表示，本片不新增兼容列、账户代理配置或认证格式；实际迁移若选定来源使用旧代理，应在迁移盘点中明确，不宣称保留。
+
+sole 装配须把**同一 RelationalQuotaStore 实例**交给自动观察与 AccountStore 启用票据，使同一账户/epoch 的最新发起次序可比较。选取目标后原 owner 领票、原 query 在 SQL 外实际取数，原结果转换绑定票据 startedAt；system 命令以账户/epoch/原十进制 sequence/开始时间确定 ID，并将原结果纳入指纹，同一事务调用 recordQuotaObservation 完成观察、资格、原净预算/分配与各表投影。命令 header 使用 quota-observation-v1 标识执行入口及原 NATIVE_PRICING_VERSION；金额、资格与配置决定仍只在 quota owner 的保存事实中维护。实际 epoch/PST/latest ticket 复核及原 receipt、完整提交回放继续复用 owner，不由刷新器覆盖已撤销私有认证。事件通知只在事务完成后发出，失败不撤销提交或触发重发。
+
+单共享账户只有一个实际 raw fetch 槽。deadline 可以结束本轮等待、保存 timeout 失败观察；底层吞掉 abort 时不会被当作已结束，随后自动轮 checked=0，不新发请求、领票或追加虚假的新失败观察。公开 query 在槽占用时固定拒绝，不无限排队；AccountEnable 的两阶段票据与完成规则仍归账户 owner。raw 真正 settle 后才释放槽，迟到成功/拒绝不回流已结束的旧轮。另保留从公开 query 调用起到 deadline 结束的单个 Promise，使首个微任务之前关闭也看得到 pending；不是请求 registry、后台队列或持久状态。公开 pending 聚合当前逻辑轮/query/raw，stop 不再排下一轮并允许在途命令完成；吞 abort 永不结束时 pending 也持续未完成，由宿主既有 shutdown grace 决定最终退出，不能宣称物理请求已经结束。
+
+专项通过实际 localhost 官方格式 HTTP 与真实 SQLite/ready owner：成功观察/原金融净额、HTTP body 挂起被默认 fetch abort 终止、失败/非法期限保留上次有效余额、401/403 不虚构停用及明确 banned 保存原停用；同 clock/回拨时新启用票据胜过旧结果、A1→B→相同 PST 字节 A2 仍按 epoch 忽略旧响应、暂停中已发起观察保留来源而不复活 enabled。start 幂等、stop/立即 query pending、吞 abort/迟到拒绝、多轮不累积真实请求、合法第二钱包 writes=2 后全表 rollback 与下一票重试、完整共同回放/重复零写/无 PST 或网络重发均有可运行反例。
+
+Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，零跳过；类型、架构、默认与可信 `3d2bafd` 基线迁移历史、受影响文件格式及差异检查通过，最终日志 `H:\TEMP\novelai-relational-account-refresh-final.log`。实现阶段“公开 query 首微任务前 pending 不可见”反例先红后绿，日志 `H:\TEMP\novelai-refresh-immediate-pending-red.log`。隔离 TEMP 副本分别移除 raw 的 pending 等待或自动占用跳过，同一 deadline/关闭反例各 0/1：前者错误宣称物理请求结束，后者无真实请求却重复领票/保存失败；日志 `H:\TEMP\novelai-account-refresh-negative`。独立审查、sole 实际装配与同候选完整发布验证继续由父任务统一推进；未跑 full、compiled、Node 24、真实官方端点或生产切换。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
