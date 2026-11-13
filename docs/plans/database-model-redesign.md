@@ -1271,6 +1271,20 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
+### 9.45 #52：成员历史和当前 Key 的真实 HTTP 窄接入
+
+本片从 `d638220f9c79a340f63098e923fb37029df8b2f1` 继续，范围仅为 `GET /api/member/history` 和 `GET /api/member/key`。原 `members/http-routes.ts` 的 query 解析、参数白名单、公开 history 字段与 Key 的尾斜线/单个 `/v1` 格式归同一 `members/read-http.ts`；旧路由直接调用该 transport，旧收费仅经原 `memberCharge()` 映射一次，关系读取沿第 9.42 节现 DTO。没有构造兼容 JsonStore、旧格式 fallback 或新的格式切换开关。
+
+`createRelationalMemberReadHttp()` 在返回 handler 前和每次请求时检查合法 ready，仅绑定现 `RelationalMemberStore` / `RelationalRequestStore`。原 SameOrigin、Cookie、Discord 资格 owner 及当前会话事务保持；Discord IO 在 SQL 外，返回后以原 token 在 `withAuthenticatedMemberSession()` 中再次检查当前成员/会话/ready，不能用等待前快照签发 URL 或返回 Key。普通 history/key 即使携 `X-Member-Activity: 1` 也不续期；没有改变可见 me 和可见无 query owner 摘要两个既有续期入口。业务读取不改变钱包、收费、输入、提交或回执；原资格检查仍可由其自有 owner 更新认证观察或撤销，不能把这一原认证行为宣称为所有场景全库零写。
+
+history 保留 child 总量、页序、until、状态和 ID/模型字面搜索；`status=late` 沿真实原退款/找回/产物事实，不以当前来源指针推断。公开映射只移除内部 artifact ID 并调用实际已授权 URL capability，NULL/0 与原 charge 均原样通过。Key 在同一当前凭据事务中由 `readMemberApiKey()` 核对 digest 并读取 exact 当前私有值；缺少恢复内容明确 503，不造 Key、不返回假成功 NULL。部署 `publicBaseUrl` 和原 `publicImageUrl` 作为明确能力注入，关系 factory 不读旧库地址或发送成员 Key 给 URL 签名。最终运行时仍须绑定真正配置及既有 15 分钟签名/图片端点 owner；本片实际 localhost 只验证该能力在授权后调用及公开字段，不把测试 URL capability 桩称为真实签名端点验收。
+
+免费用量仍只由既有 GenStore 的 `freeUsage()` 维护；其 `warning` 补原 `freeEnabled` 条件，与原 `readFreeImageUsage()` 规则一致。真实免费成功后关闭免费策略的原 owner 反例，在固定父版本上得到 `warning=true` 而失败，修后保留成功事实且 warning=false。原红例日志为 `H:\TEMP\novelai-free-warning-before.log`。当前 quote 仅内部消费 usage，不发布其完整 DTO；本片没有新增 public usage 方法或假称 me 已接入。后续 profile 必须复用该 owner，不在 HTTP 另行屏蔽警告。
+
+新增实际 localhost 专项先由真实 owner 发布 Local 原字节，再用选定匹配私有快照经唯一完整 shadow/表/保护内容/字节核对入口合法安装 ready，没有手写 ready。覆盖本人/他人 child 页、真实迟到退款、原 query 解析、secret 白名单、当前 Key 轮换/缺失、普通 header 不续期、Bearer/Cookie/Origin/方法、撤销和现 handler 撤下 ready；Discord 临时 503 不泄露 raw 诊断，等待中退出在成员仍 active 时拒绝 Key，等待中停用拒绝 history。普通读取前后全表摘要相等，SQL 捕获无输入正文/BLOB，URL capability 只收本人未退休产物。Node 22.23.4 新专项 5/5（含四项真实 HTTP 与一项原免费 owner 反例），与原真实 history/public-base 及关系查询/生成/认证/免费 owner 七文件联合 31/31，零跳过；backend 类型、架构、默认及可信 `d638220f9c79a340f63098e923fb37029df8b2f1` 迁移历史、改动格式/语法/diff 检查通过。日志为 `H:\TEMP\novelai-member-read-http-final-source.log`、`novelai-member-read-http-seven-final.log`。不运行独立 full、编译包或 Node 24。
+
+现 sole `gateway-runtime.ts` 尚未替换为新只读 factory，最终 publicBaseUrl/签名、真实图片领取和发布物联验仍待共同总装配。本片未接入 me/profile/金融 summary/shared-status/SSE、管理权限写命令或 OpenAI；新共享状态还需稳定成员和薄计数适配，me/owner summary 仍需由现 Quota/fairQuotaSummary/estimate owner 提供正确金融窄读，不能用兼容对象补齐。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
