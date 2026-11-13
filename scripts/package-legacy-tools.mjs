@@ -37,9 +37,11 @@ try {
     throw error;
   }
 }
-const pnpm =
+const pnpmScript =
   process.env.npm_execpath ||
-  path.join(path.dirname(process.execPath), 'node_modules/corepack/dist/pnpm.js');
+  (process.platform === 'win32'
+    ? path.join(path.dirname(process.execPath), 'node_modules/corepack/dist/pnpm.js')
+    : null);
 function run(command, args, cwd = root) {
   const result = spawnSync(command, args, {
     cwd,
@@ -57,7 +59,13 @@ function run(command, args, cwd = root) {
   }
   return result.stdout.trim();
 }
-if (run(process.execPath, [pnpm, '--version']) !== '10.32.1') {
+function runPnpm(args) {
+  if (pnpmScript) {
+    return run(process.execPath, [pnpmScript, ...args]);
+  }
+  return run('pnpm', args);
+}
+if (runPnpm(['--version']) !== '10.32.1') {
   throw new Error('Legacy tools require the pinned pnpm 10.32.1.');
 }
 const work = await mkdtemp(path.join(tmpdir(), 'novelai-legacy-tools-'));
@@ -85,8 +93,7 @@ try {
   run('tar', ['-xf', path.join(work, 'source.tar'), '-C', source]);
   // pnpm 裁剪原锁文件；UI patch 不属于离线工具的生产依赖，不改原始锁文件。
   const options = ['--config.allowUnusedPatches=true', '--config.ignoreScripts=true'];
-  run(process.execPath, [
-    pnpm,
+  runPnpm([
     '--dir',
     source,
     ...options,
@@ -132,8 +139,7 @@ try {
     ) + '\n',
   );
   // 独立 hoisted 布局在 Windows 解包后也不依赖原 pnpm junction 或开发工作树。
-  run(process.execPath, [
-    pnpm,
+  runPnpm([
     '--dir',
     bundle,
     ...options,

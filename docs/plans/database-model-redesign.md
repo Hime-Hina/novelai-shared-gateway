@@ -715,11 +715,15 @@ node --test tests/deployment/legacy-tools.test.mjs
 
 默认 stdout 仅给聚合与来源摘要。显式 `--export` 只写全新私有目录，输出输入/上下文/诊断的身份及摘要和 Local/R2/PikPak 声明清单；提示词、Base64、凭据与诊断原文仍在封存源内。导出的上传/核验时间是原记录声明；工具不访问网络、监听 HTTP、派发任务、上传或删除对象，也不把该清单宣称为外部原图字节核验。失败导出没有最终 `audit.json` 成功回执。
 
-验收入口为 [`tests/deployment/legacy-tools.test.mjs`](../../tests/deployment/legacy-tools.test.mjs)：实际构建/解包后加载包内依赖，以固定旧 owner 创建合成归档，核对受保护输入和产物清单、原 SQL/journal 字节及源文件不变；新 writer 拒旧源、固定旧迁移 guard/审计工具拒新格式，损坏 writer、migration hash、输入、产物私有摘要和包内 SQL 均有拒绝反例。此检查独立执行，不修改浅 checkout 的后端 CI 或声称该 CI 已运行它。它只交付旧解释器与审计资产承接，不实现 A/B 转换、全库恢复、ready 安装、外部归档恢复或生产切换。
+验收入口为 [`tests/deployment/legacy-tools.test.mjs`](../../tests/deployment/legacy-tools.test.mjs)：实际构建/解包后加载包内依赖，以固定旧 owner 创建合成归档，核对受保护输入和产物清单、原 SQL/journal 字节及源文件不变；新 writer 拒旧源、固定旧迁移 guard/审计工具拒新格式，损坏 writer、migration hash、输入、产物私有摘要和包内 SQL 均有拒绝反例。它只交付旧解释器与审计资产承接，不实现 A/B 转换、全库恢复、ready 安装、外部归档恢复或生产切换。
 
 初版 8 项通过后，独立审查复现包祖先链接、导出别名、缺完整中间提交和 JSON/SQL 产物身份冲突仍被接受。本轮从上述物理路径、完整切点和稳定身份边界修正，并保留包内/包外别名、同类 users/jobs ID、私有输入归属和依赖尚未验证即执行的反例。新增回归在初版审计器 SHA-256 `a28c45d3fd4c1a7cee814cdf6ab5047661afff076096e36d918818a3ca309726` 下统计为 17 项中 7 通过、10 失败（含父项，9 个新增拒绝子例均错误接受）；修正后的最终 Windows / Node 22.23.4 实际打包、解包和反例共 19/19 通过，零跳过。
 
 当前架构、以可信 main `1f60907` 为基线的旧迁移历史、后端类型、新文件语法和固定格式检查通过。日志保留在本机 `H:\TEMP\novelai-legacy-pre-review-fix-negative.log` 与 `H:\TEMP\novelai-legacy-review-fix-final.log`。没有重跑完整后端、取得 Linux 包证据、审计真实归档或访问外部存储；这些结果不替代后续统一候选的 CI、独立复审与恢复闭环。
+
+维护者已授权单独增加 Linux 产物证据。后续 CI 提交在原 backend job 的 `pnpm test` 后顺序执行该 deployment 用例，不塞入并发测试 glob；浅 checkout 缺固定旧 commit 时只 fetch 上述 immutable SHA，仍缺失或取得不符即失败，不改用 main/HEAD。Linux 使用 action 已安装的 pnpm 命令并保留精确版本守卫，不要求 Corepack 在线填缓存。既有门禁、超时、旧 SQL/journal 及在线发布包均不变；此 CI 增量仍需维护者复核，实际 Linux 通过以固定新 head 的运行记录为准。
+
+CI 小片的本地定向验证覆盖实际 workflow bootstrap：缺对象精确取回、已有对象不再 fetch、取回失败拒绝；Bash 语法和 YAML 解析通过。更新后的 Windows 包再次完成实际 tar/解包自检，审计器与 19 项验收代码均与前一固定修复提交字节相同。这些是准备证据，不能替代 Linux job 的实际执行。
 
 ## 10. 事实依据与修订
 
