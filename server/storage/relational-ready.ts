@@ -24,6 +24,7 @@ import {
 import { RelationalReplicaStore } from './relational-replica-store.ts';
 import { readRelationalArtifactContent } from './relational-replica-io.ts';
 import { RelationalGenerationStore } from './relational-generation-store.ts';
+import { RelationalConfigurationStore } from './relational-configuration-store.ts';
 import { readPreparedStoredResultContent } from './result-files.ts';
 
 interface RecoverySource {
@@ -40,6 +41,7 @@ function invalid(message: string): never {
 
 function assertCut(sqlite: Database.Database, expected: RecoverySource, building = false) {
   assertRelationalStorageFormat(sqlite);
+  new RelationalConfigurationStore(sqlite).readCurrent();
   const state = readRelationalRecoveryState(sqlite);
   if (
     state.history_id !== expected.historyId ||

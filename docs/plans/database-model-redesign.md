@@ -1271,6 +1271,22 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
+### 9.47 当前规范化配置的显式来源和保护恢复
+
+本片从固定 `3d2bafd7` 接续，只交付 sole 新在线运行时必需的当前配置 owner；不增加当前无 caller 的管理 CRUD，不恢复 PromptAPI 执行/秘密，不选择 A/B 迁移路线。实际旧读取需要三项顶层默认值和八项 defaults，成员入口还需要原 `publicBaseUrl` 回退值。规则继续归 `requestNormalizationDefaults()`、`normalizeNovelAiRequest()` 与 `memberPublicBaseUrl()`，未把当前程序默认、旧请求首次 context 或整个 settings 当作来源。
+
+`RelationalConfigurationStore.initializeGatewayConfiguration()` 只接受 building 目标中的显式 system 初始化，必须给出 originRef 和完整 11 字段（原 null/false/0/空串保留）。相同原命令和完整意图可幂等重领，新的命令不能覆盖已有配置；初始化持有短事务并使用保存点，失败时 profile、事实、回执和 current 行一起回滚。当前没有线上配置修改入口；未来如有实际需求，仍在同一 owner 增加具体带版本前置的命令。
+
+专用 `{kind:'normalization-defaults',values:...}` 闭合 profile 复用 `normalization_contexts` 受保护载体与原规范摘要，原画师/负向文本不放入事件/回执。它不加入 `RelationalNormalizationContext` union，不发 `ContextRegistered`，不能冒充缺 Native 的首次生成定义。唯一 `GatewayConfigurationInitialized` 事实仅保存 profile ID/SHA、公共地址回退值和来源；`gateway_configuration` 单例只持引用、地址与 source event，无额外版本或 settings 副本。新请求只取 profile values 后捕获自己的当前 Native；旧键继续读取原请求/context，无需读取 current。
+
+配置事实有独立完整提交 projector，共同业务 replayer 显式要求匹配的保护源，按同一源完整 commit 验 profile 类型、SHA 与 current 关系。没有任何请求的历史也能恢复 profile；重复回放仍验证源和目标内容，缺失时拒绝，不借重复回放修复保护正文。ready 核对在选定 cut 上显式要求 current 存在且有效，并经完整 shadow、保护内容和全表核对安装；两边都没有配置不能因空表相等而通过。认证私有表清单未扩展，不复制 PromptAPI key 或复活成员/PST/session。
+
+初始化不解释旧格式。将来选定 converter 从封存 source/cut 按固定源版本的有效默认语义导入这 11 个值；不能用候选默认补旧来源，也不能把当前来源变成历史首次定义。公共地址保留已保存回退值，env 优先由原 helper 计算，不把覆盖后的 env 再保存成派生状态。本片沿并行批统一事件 v4，旧 v3 即使具有其自身正确 schema hash 也拒绝，旧 SQL/journal 未改，未增加回到旧模型的开关。
+
+新增反例覆盖：明确来源/未知字段与非 finite、已知空值保真、唯一初始化与同键不同意图、外层 catch SQL 故障全回滚、零请求保护联合回放、源错配和漏源、重复/不完整事实、重复回放缺内容不自愈、生成 parser/孤立 ContextRegistered 守卫保持、缺 current 的 ready 拒绝和真实 owner 初始化后的合法安装，以及历史 A/current B 下新归一化 B、旧键重领与执行 A、完整联合恢复。所有 ready 夹具在备份前调用真实初始化 owner，没有手插 current 或标 ready。
+
+Node 22.23.4 新专项 8/8、配置/输入/完整回放/ready/格式/架构七文件 346/346，以及认证 HTTP/诊断/成员 HTTP/Native HTTP/队列五文件 61/61，均零跳过。五文件首轮的唯一诊断夹具使用了初始化前的 cut，已把真实配置初始化放在该业务之前，同一修正候选全组通过。backend 类型、架构、默认及可信 `3d2bafd7` 迁移历史、改动格式与 diff 检查通过。日志为 `H:\TEMP\novelai-current-configuration-focused.log`、`novelai-current-configuration-seven-files.log`、`novelai-current-configuration-http-runtime.log`。独立审查及错误实现反例随后绑定固定候选；完整后端、编译产物、Node 24、HTTP sole 装配、正式迁移与切换仍由父任务同候选验收，本段不把存储 owner 验证写成线上端点完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

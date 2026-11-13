@@ -229,6 +229,12 @@ const replicaFields = {
 };
 
 export const relationalPayloadParsers = {
+  GatewayConfigurationInitialized: fields({
+    contextId: id,
+    contextSha256: hash,
+    publicBaseUrl: nullable(string),
+    originRef: id,
+  }),
   InputRegistered: fields({
     inputId: id,
     memberId: id,
@@ -724,6 +730,7 @@ export type RelationalFact = {
 }[keyof RelationalPayloads];
 
 export const relationalFactStreams = {
+  configuration: ['GatewayConfigurationInitialized'],
   member: [
     'MemberRegistered',
     'MemberStatusChanged',

@@ -22,6 +22,9 @@ type NormalizationSettings = {
     >
   > | null;
 };
+export type RequestNormalizationDefaults = Omit<NormalizationSettings, 'defaults'> & {
+  defaults: NonNullable<NormalizationSettings['defaults']>;
+};
 
 // 入口已验证 base64；这里按解码字节摘要，不再复制或拼接整段图片文本。
 function imageDigest(value: unknown): unknown {
@@ -91,7 +94,9 @@ export function generationRequestFingerprint(
     .digest('hex');
 }
 
-export function requestNormalizationDefaults(settings: NormalizationSettings = {}) {
+export function requestNormalizationDefaults(
+  settings: NormalizationSettings = {},
+): RequestNormalizationDefaults {
   const pick = (
     source: Record<string, unknown> | null | undefined,
     fields: string[],

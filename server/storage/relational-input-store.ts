@@ -39,6 +39,11 @@ import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
 import { validateImageBytes } from '../protocols/native-image.ts';
 import type { ErrorLogRequest } from '../reports/generation-errors.ts';
+import {
+  parseNormalizationDefaultsProfile,
+  prepareNormalizationDefaultsProfile,
+  configurationUnavailable,
+} from '../generation/normalization-defaults.ts';
 
 type CommandMetadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -1365,6 +1370,99 @@ export class RelationalInputStore {
             ...relationalInputDisplay(input.body, true),
           }
         : {}),
+    };
+  }
+
+  // 专用配置 profile 共享保护内容载体，不注册或放宽任何生成首次 context。
+  stageNormalizationDefaultsProfile(values: unknown) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Configuration content requires the owning transaction.');
+    }
+    const { body, contextId, contextSha256 } = prepareNormalizationDefaultsProfile(values);
+    if (Buffer.byteLength(body) > generationPayloadLimits(this.env).request) {
+      fail(413, 'configuration_too_large', '当前规范化配置超过载荷上限。');
+    }
+    const existing = this.sqlite
+      .prepare<[string], { id: string }>('SELECT id FROM normalization_contexts WHERE id=?')
+      .get(contextId);
+    if (existing) {
+      if (canonicalJson(this.readNormalizationDefaultsProfile(contextId, contextSha256)) !== body) {
+        configurationUnavailable();
+      }
+    } else {
+      this.sqlite
+        .prepare(
+          'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
+        )
+        .run(contextId, contextSha256, body);
+    }
+    return { contextId, contextSha256 };
+  }
+
+  readNormalizationDefaultsProfile(contextId: string, contextSha256: string) {
+    const row = this.sqlite
+      .prepare<[string], { schemaVersion: number; sha256: string; body: string }>(
+        'SELECT schema_version AS schemaVersion,sha256,body FROM normalization_contexts WHERE id=?',
+      )
+      .get(contextId);
+    if (
+      !row ||
+      row.schemaVersion !== 1 ||
+      contextId !== `defaults_${contextSha256}` ||
+      row.sha256 !== contextSha256 ||
+      Buffer.byteLength(row.body) > generationPayloadLimits(this.env).request
+    ) {
+      configurationUnavailable();
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(row.body);
+    } catch {
+      configurationUnavailable();
+    }
+    const profile = parseNormalizationDefaultsProfile(value);
+    if (domainDigest(profile) !== contextSha256) {
+      configurationUnavailable();
+    }
+    return profile;
+  }
+
+  createNormalizationDefaultsProjector(
+    source: RelationalInputStore,
+    stored: ReturnType<typeof readRelationalCommit>,
+    replayed: boolean,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Configuration projection requires the owning transaction.');
+    }
+    const fact = stored.events[0];
+    if (
+      stored.events.length !== 1 ||
+      fact?.eventType !== 'GatewayConfigurationInitialized' ||
+      canonicalJson(readRelationalCommit(source.sqlite, fact.commitSeq)) !== canonicalJson(stored)
+    ) {
+      configurationUnavailable();
+    }
+    const original = source.readNormalizationDefaultsProfile(
+      fact.payload.contextId,
+      fact.payload.contextSha256,
+    );
+    return () => {
+      if (
+        replayed &&
+        !this.sqlite
+          .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+          .get(fact.payload.contextId)
+      ) {
+        configurationUnavailable();
+      }
+      const copied = this.stageNormalizationDefaultsProfile(original.values);
+      if (
+        copied.contextId !== fact.payload.contextId ||
+        copied.contextSha256 !== fact.payload.contextSha256
+      ) {
+        configurationUnavailable();
+      }
     };
   }
 }

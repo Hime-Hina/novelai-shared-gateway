@@ -8,6 +8,8 @@
 
 ## 证据与使用边界
 
+新格式中 direct/OpenAI 所需当前默认值由显式配置 owner 提供，限原 `defaultModel/defaultArtist/defaultNegative` 与八项 defaults；公共成员地址仍按部署 `PUBLIC_BASE_URL`、已保存回退值、`PUBLIC_HOST` 的原顺序读取。当前 profile 与请求首次 context 不同：旧操作键继续解释原首次值，新请求捕获本次 Native 定义，缺当前配置不从最近请求补造。保护 profile 不进入领域事件正文，不作为缺少 Native 的生成 context；无当前配置编辑路由或 PromptAPI 执行功能。实现与恢复边界见[数据库计划第 9.47 节](../plans/database-model-redesign.md#947-当前规范化配置的显式来源和保护恢复)。
+
 | 证据                                                                                                                                                                | 能证明什么                                                 | 不能证明什么                                                   |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- |
 | [Primary API 文档](https://api.novelai.net/docs/)指向的 [Image API](https://image.novelai.net/docs/index.html)、[doc.json](https://image.novelai.net/docs/doc.json) | 文档列出的路径、字段、媒体类型、状态码                     | 所有模型的实际支持组合、当前账户价格、历史前端模块的持续有效性 |

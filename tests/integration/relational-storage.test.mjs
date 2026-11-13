@@ -16,42 +16,48 @@ import { parseAmount } from '../../server/quota/resource-amounts.ts';
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
 
-test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v3 格式门禁，不手补字段或 hash', (t) => {
-  const sqlite = new Database(':memory:');
-  t.after(() => sqlite.close());
-  sqlite.pragma('foreign_keys=ON');
-  const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
-    'CHECK (schema_version = 3)',
-    'CHECK (schema_version = 2)',
+for (const previousVersion of [2, 3])
+  test(
+    '旧关系事件 v' +
+      previousVersion +
+      ' 原型的正确旧 hash 也不能通过 v4 格式门禁，不手补字段或 hash',
+    (t) => {
+      const sqlite = new Database(':memory:');
+      t.after(() => sqlite.close());
+      sqlite.pragma('foreign_keys=ON');
+      const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
+        'CHECK (schema_version = 4)',
+        'CHECK (schema_version = ' + previousVersion + ')',
+      );
+      assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
+      sqlite.exec(previousSchema);
+      const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+      meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
+      meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
+      meta.run(
+        'event_authority',
+        JSON.stringify({
+          version: RELATIONAL_WRITER_VERSION,
+          minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+        }),
+      );
+      sqlite
+        .prepare(
+          "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
+        )
+        .run();
+      const before = sqlite.serialize();
+      assert.throws(
+        () => assertRelationalStorageFormat(sqlite),
+        /Unsupported relational database format/,
+      );
+      assert.throws(
+        () => assertRelationalStorageReady(sqlite),
+        /Unsupported relational database format/,
+      );
+      assert.deepEqual(sqlite.serialize(), before);
+    },
   );
-  assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
-  sqlite.exec(previousSchema);
-  const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
-  meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
-  meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
-  meta.run(
-    'event_authority',
-    JSON.stringify({
-      version: RELATIONAL_WRITER_VERSION,
-      minimumWriterVersion: RELATIONAL_WRITER_VERSION,
-    }),
-  );
-  sqlite
-    .prepare(
-      "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
-    )
-    .run();
-  const before = sqlite.serialize();
-  assert.throws(
-    () => assertRelationalStorageFormat(sqlite),
-    /Unsupported relational database format/,
-  );
-  assert.throws(
-    () => assertRelationalStorageReady(sqlite),
-    /Unsupported relational database format/,
-  );
-  assert.deepEqual(sqlite.serialize(), before);
-});
 
 function insert(sqlite, table, row) {
   const fields = Object.keys(row);
@@ -78,7 +84,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 3,
+    schema_version: 4,
     occurred_at: 1000,
     account_id: null,
     member_id: null,

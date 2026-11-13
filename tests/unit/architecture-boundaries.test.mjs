@@ -190,6 +190,14 @@ for (const filename of [
     ],
     ['dynamic ready installer', "await import('../storage/relational-ready.js');"],
     ['direct ready installation', 'verifyAndInstallRelationalStorage(raw,source);'],
+    ['current configuration initialization', 'initializeGatewayConfiguration(metadata,input);'],
+    ['protected defaults stage', 'stageNormalizationDefaultsProfile(values);'],
+    ['protected defaults projection', 'createNormalizationDefaultsProjector(source,commit,false);'],
+    ['configuration projection', 'createConfigurationProjector(commit,source,false);'],
+    [
+      'dynamic configuration writer',
+      "await import('../storage/relational-configuration-store.js');",
+    ],
     [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
