@@ -1,0 +1,197 @@
+{
+  "format": "legacy-v4-inventory-v1",
+  "scope": "aggregate database preflight; no conversion or external-object verification",
+  "integrity": true,
+  "foreignKeyViolations": 0,
+  "cut": {
+    "lastCommitSeq": "16509",
+    "openingComplete": true,
+    "openingSha256": "3c8664dc7119ada586ee0d1c60dd46842511abb36e2779a5fdf6dc340815bcbc"
+  },
+  "tables": {
+    "users": {
+      "rows": 5,
+      "logicalContentBytes": 2679
+    },
+    "accounts": {
+      "rows": 1,
+      "logicalContentBytes": 1267
+    },
+    "cards": {
+      "rows": 0,
+      "logicalContentBytes": 0
+    },
+    "jobs": {
+      "rows": 9691,
+      "logicalContentBytes": 69045372
+    },
+    "images": {
+      "rows": 9642,
+      "logicalContentBytes": 35850389
+    },
+    "ledger": {
+      "rows": 9683,
+      "logicalContentBytes": 8864470
+    },
+    "generation_requests": {
+      "rows": 9690,
+      "logicalContentBytes": 171047481
+    },
+    "generation_contexts": {
+      "rows": 40,
+      "logicalContentBytes": 125717
+    },
+    "artifact_inputs": {
+      "rows": 8830,
+      "logicalContentBytes": 22220554
+    },
+    "generation_diagnostics": {
+      "rows": 10,
+      "logicalContentBytes": 11635
+    },
+    "generation_idempotency": {
+      "rows": 40,
+      "logicalContentBytes": 125717
+    },
+    "fair_quota_settlements": {
+      "rows": 9652,
+      "logicalContentBytes": 3474791
+    },
+    "free_image_usage": {
+      "rows": 2214,
+      "logicalContentBytes": null
+    },
+    "member_sessions": {
+      "rows": 5,
+      "logicalContentBytes": null
+    },
+    "event_commits": {
+      "rows": 16509,
+      "logicalContentBytes": 176510
+    },
+    "domain_events": {
+      "rows": 77865,
+      "logicalContentBytes": 65169840
+    },
+    "event_streams": {
+      "rows": 39036,
+      "logicalContentBytes": 48341381
+    }
+  },
+  "events": {
+    "commitsWithWrongEventCount": 0,
+    "unknownTypes": 0,
+    "unsupportedSchemaVersions": 0,
+    "invalidProjectionHashes": 0,
+    "byType": {
+      "ArtifactPrepared": 812,
+      "ArtifactPublished": 812,
+      "ArtifactStorageChanged": 6054,
+      "AvailabilityChanged": 2,
+      "CooldownChanged": 812,
+      "DispatchAuthorized": 812,
+      "FreeImageSucceeded": 10,
+      "GenerationSettled": 812,
+      "JobCompleted": 812,
+      "JobFailed": 8,
+      "JobQueued": 1,
+      "LegacyFactRecorded": 8871,
+      "MemberEligibilityChanged": 338,
+      "OpeningStateRecorded": 28764,
+      "QuotaObserved": 12889,
+      "QuotaReserved": 812,
+      "RefillApplied": 8007,
+      "RequestAccepted": 819,
+      "V5CapacityObserved": 6418
+    }
+  },
+  "inputs": {
+    "invalidJson": 0,
+    "wrongPayloadBytes": 0,
+    "invalidArtifactHashes": 0,
+    "invalidDiagnosticHashes": 0,
+    "missingReferencedInputs": 0,
+    "conflictingRequestHashes": 0,
+    "conflictingRequestOwners": 0
+  },
+  "ownership": {
+    "jobsWithoutProvenMember": 0,
+    "jobsWithConflictingMembers": 0,
+    "jobsWithCurrentTokenCandidateOnly": 0,
+    "artifactsWithoutProvenMember": 0,
+    "artifactsWithConflictingMembers": 0,
+    "artifactsWithCurrentTokenCandidateOnly": 0
+  },
+  "liabilities": {
+    "activeJobs": 0,
+    "pendingReviews": 0,
+    "preparedResults": 0,
+    "idempotencyWithoutJob": 0,
+    "idempotencyWithoutRequest": 0,
+    "settlementsWithoutJob": 0,
+    "refundsWithoutJob": 0,
+    "freeUsageWithoutJob": 0
+  },
+  "d4": {
+    "cardRecordsRequiringDisposition": 0,
+    "officialArtifacts": 0,
+    "officialVolatileJobs": "not recoverable from this database; inspect the stopped runtime separately"
+  },
+  "quota": {
+    "members": 5,
+    "reservedCharges": 0,
+    "walletAvailable": {
+      "v5": "57.749368434983",
+      "anlasFixed": "5800",
+      "anlasPurchased": "7230"
+    },
+    "reserved": {
+      "v5": "0",
+      "anlasFixed": "0",
+      "anlasPurchased": "0"
+    },
+    "sharedV5Debt": "0",
+    "unallocatedV5": "0",
+    "operatingAvailable": {
+      "v5": "0",
+      "anlasFixed": "0",
+      "anlasPurchased": "0"
+    },
+    "operatingUnfunded": {
+      "anlasFixed": "0",
+      "anlasPurchased": "0"
+    },
+    "operatingUnattributedReturns": {
+      "anlasFixed": "0",
+      "anlasPurchased": "0"
+    },
+    "pendingExternalFundingCount": 0
+  },
+  "pages": {
+    "pageSize": 4096,
+    "pageCount": 147711,
+    "freePages": 2,
+    "dbstat": {
+      "allocatedBytes": 605016064,
+      "payloadBytes": 531352709,
+      "unusedInAllocatedPages": 69337476
+    }
+  },
+  "unverified": [
+    "A conversion feasibility",
+    "B opening and private snapshot closure",
+    "external object bytes and archive protection",
+    "complete replay and state reconciliation",
+    "production scale and cutover"
+  ],
+  "source": {
+    "declaredCommit": "3caba3dfa0b5d9f582acabfc02e36e7db4af038f",
+    "databaseSha256": "47ea07f440d7652c11ebced52c17883ad821e12411d4dbd046bcc1ed319f4821",
+    "databaseBytes": 605024256
+  },
+  "toolSha256": "0b633af2770d878adca0f0e3ca267f5e7a1805e0eac6ab46b64e891b45854546",
+  "measurement": {
+    "elapsedMs": 6089.2817000000005,
+    "peakRssBytes": 196517888
+  }
+}

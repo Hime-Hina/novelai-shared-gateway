@@ -229,6 +229,7 @@ CREATE TABLE generation_requests (
   context_id TEXT REFERENCES normalization_contexts(id),
   source TEXT NOT NULL,
   operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
+  model TEXT,
   sample_count INTEGER NOT NULL CHECK (sample_count > 0),
   seed_mode TEXT NOT NULL CHECK (seed_mode IN ('fixed', 'random', 'not_applicable', 'unknown')),
   confirmation TEXT CHECK (json_valid(confirmation) AND json_type(confirmation) = 'object'),
@@ -340,6 +341,7 @@ CREATE TABLE charges (
   ${amount('anlas_fixed')},
   ${amount('anlas_purchased')},
   billing_mode TEXT NOT NULL CHECK (billing_mode IN ('free', 'v5', 'anlas', 'anlas_fallback')),
+  estimated INTEGER CHECK (estimated IN (0, 1)),
   ${amount('v5_equivalent')},
   ${amount('shared_v5_reserved')},
   config_version INTEGER NOT NULL CHECK (config_version >= 0),
@@ -559,14 +561,14 @@ ${[
   ['input_assets', 'input_id, asset_id, mime_type, byte_length, sha256, bytes'],
   [
     'generation_requests',
-    'member_id, input_id, context_id, source, operation, sample_count, seed_mode, confirmation, accepted_at',
+    'member_id, input_id, context_id, source, operation, model, sample_count, seed_mode, confirmation, accepted_at',
   ],
   ['generation_jobs', 'request_id, sample_index, actual_seed'],
   ['generation_attempts', 'job_id, account_id, credential_epoch'],
   ['artifacts', 'member_id, input_id, original_attempt_id'],
   [
     'charges',
-    'original_job_id, original_member_id, original_account_id, v5, anlas_fixed, anlas_purchased, billing_mode, v5_equivalent, shared_v5_reserved, config_version, reserved_at, reservation_event_id',
+    'original_job_id, original_member_id, original_account_id, v5, anlas_fixed, anlas_purchased, billing_mode, estimated, v5_equivalent, shared_v5_reserved, config_version, reserved_at, reservation_event_id',
   ],
   [
     'idempotency_keys',
