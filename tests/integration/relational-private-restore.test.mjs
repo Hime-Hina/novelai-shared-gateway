@@ -16,7 +16,7 @@ import {
 } from '../../server/storage/relational-storage.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
-import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { restoreRelationalPrivateSnapshot } from '../../server/storage/relational-private-restore.ts';
 import {
   authenticateMemberApiKey,
@@ -44,8 +44,7 @@ function rebuild(t, saved, changeCommit = () => {}) {
   source.pragma('foreign_keys=ON');
   initializeRelationalStorage(db, 'generation-history');
   const members = new RelationalMemberStore(db),
-    inputs = new RelationalInputStore(db),
-    generations = new RelationalGenerationStore(db);
+    replayer = new RelationalCommitReplayer(db);
   const sourceInputs = new RelationalInputStore(source);
   try {
     for (const { seq } of source
@@ -53,15 +52,7 @@ function rebuild(t, saved, changeCommit = () => {}) {
       .all()) {
       const stored = readRelationalCommit(source, seq);
       changeCommit(stored, seq);
-      db.transaction(() => {
-        if (stored.events.every((event) => event.streamKind === 'member')) {
-          members.replayMemberCommit(stored);
-        } else if (stored.events.some((event) => event.eventType === 'InputRegistered')) {
-          inputs.replayAcceptedInput(sourceInputs, seq);
-        } else {
-          generations.replayGenerationCommit(stored);
-        }
-      })();
+      db.transaction(() => replayer.replayCommit(stored, sourceInputs))();
     }
   } finally {
     source.close();

@@ -367,7 +367,7 @@ test('全局等待和预扣拒绝调整，分组末代不能因number精度重�
   const running = databaseState(f.db);
   await assert.rejects(f.configure('running'), /排队|预留|空闲/);
   assert.equal(databaseState(f.db), running);
-  await f.fail('waiting-0');
+  await f.fail('waiting-0', { aborted: false });
   f.db.prepare('UPDATE sharing_policy SET config_version=?').run(Number.MAX_SAFE_INTEGER);
   const boundary = databaseState(f.db);
   await assert.rejects(

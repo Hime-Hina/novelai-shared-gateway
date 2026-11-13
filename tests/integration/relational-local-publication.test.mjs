@@ -282,7 +282,7 @@ test('final/完整 part 关闭重开后同笔恢复 Local，重试不追加回�
 });
 
 test('退款迟到发布也包含 Local，原退款、失败和批次停止保持不变', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { seconds: 0 });
   await f.accept('late-local', { samples: 2 });
   const wallet = f.generations.readWallet('a', 'm1');
   f.dispatch('late-local-0');

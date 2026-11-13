@@ -29,14 +29,14 @@ function prepare(f, jobId, at = NOW + 3, response = f.response(at)) {
   )();
   return { descriptor, event: result.events[0] };
 }
-async function recoveryFixture(t) {
+async function recoveryFixture(t, options = {}) {
   let reopened;
   t.after(() => {
     if (reopened?.open) {
       reopened.close();
     }
   });
-  const f = await fixture(t);
+  const f = await fixture(t, options);
   return {
     ...f,
     reopen() {
@@ -218,7 +218,7 @@ test('终态 SQL 失败被恢复外层捕获后整笔回滚，已发布文件在
 });
 
 test('退款后重开恢复仍保留失败/原池退款与批次停止，旧尝试不改新凭据冷却', async (t) => {
-  const f = await recoveryFixture(t);
+  const f = await recoveryFixture(t, { seconds: 0 });
   await f.accept('late', { samples: 2 });
   const wallet = f.generations.readWallet('a', 'm1');
   f.dispatch('late-0');
