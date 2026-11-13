@@ -130,7 +130,7 @@ export class RelationalInputStore {
       return null;
     }
     // SQLite TEXT 与摘要必须使用同一有效 UTF-8 表示，保留公共错误 owner 的原截断语义。
-    detail = detail.toWellFormed();
+    detail = Buffer.from(detail, 'utf8').toString('utf8');
     const sha256 = createHash('sha256').update(detail).digest('hex'),
       diagnosticId = `diagnostic:${domainDigest([jobId, sha256])}`,
       byteLength = Buffer.byteLength(detail);

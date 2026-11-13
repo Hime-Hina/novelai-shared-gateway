@@ -999,7 +999,7 @@ SQL 事务外，依具体 replica owner 有界枚举每个非退休产物，至�
 
 独立审查反例发现原 owner 的 trim→slice 可能在 4000 字符处保留截断末尾空白；保护内容不能擅自要求再次 trim 而阻止失败退款。stage/read 共同去掉这一多余表示限制，保留原收敛字节、非空、长度和摘要校验，追加真实失败/退款/完整恢复反例后诊断专项 13/13。修复没有改动原单参 `errorDetailMessage()` 的语义或历史正文。
 
-同一表示边界的 Unicode 反例进一步确认：合法 emoji 被 UTF-16 长度限制切半后，Node 摘要编码与 SQLite TEXT 绑定会产生不同字节。保护内容 owner 在新正文摘要/长度/INSERT 之前仅做一次 `toWellFormed()`，确保三者使用同一有效 UTF-8 文本；公共错误收敛函数和历史持久正文不变，read 不放宽校验或补写。追加半 surrogate、完整 emoji、CJK、换行和原不完整 surrogate 五类实际退款及完整恢复反例后，诊断/公开错误两文件 21/21，零跳过。
+同一表示边界的 Unicode 反例进一步确认：合法 emoji 被 UTF-16 长度限制切半后，Node 摘要编码与 SQLite TEXT 绑定会产生不同字节。保护内容 owner 在新正文摘要/长度/INSERT 之前仅做一次标准 Buffer UTF-8 编码/解码，确保三者使用同一有效 UTF-8 文本，并适用现有 TypeScript lib；公共错误收敛函数和历史持久正文不变，read 不放宽校验或补写。追加半 surrogate、完整 emoji、CJK、换行和原不完整 surrogate 五类实际退款及完整恢复反例后，诊断/公开错误两文件 21/21，零跳过。
 
 ## 10. 事实依据与修订
 
