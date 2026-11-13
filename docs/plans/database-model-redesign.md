@@ -1291,6 +1291,8 @@ history 保留 child 总量、页序、until、状态和 ID/模型字面搜索�
 
 固定 `453fd1d` 独立复审通过：额外两项真实 HTTP 反例分别将旧 Key 转归另一成员，以及在 Discord IO 等待期间轮换本人 Key；原 Cookie 历史与当前私有 Key 仍按稳定成员绑定，原会话期限不变且不发送续期 Cookie。隔离负控仅把 Key 读取移到 IO 之前，精确失败为返回旧 Key 而非当前 Key。两项反例已保留到仓库，与子任务历史和本片原专项联合 13/13；独审证据为 `H:\TEMP\novelai-member-read-independent-453fd1d\INDEPENDENT-REVIEW.md`，整合日志 `H:\TEMP\novelai-member-read-integrated-453fd1d.log`。未把前置 `3d2bafd` 的 full、编译包或 CI 当作这个后继的验证。
 
+[PR #64 首轮 CI 43506366492](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43506366492) 在 `3e35e13` 为后端 1730 项中 1726 通过、1 失败、3 项条件跳过；其他检查通过。失败是原会话重启夹具先释放预选端口、后让子进程重新绑定，在并行套件中触发 `EADDRINUSE`，不是会话期限断言失败。确定性本地反例在释放端口后插入另一监听者，原方式准确失败；新夹具让真实 gateway 使用原已支持的 `PORT=0`，仅在现有离线 preload 观察真实 `listening`，经 IPC 报告当次实际地址，重启后继续访问新地址。未改生产监听实现、现有超时、外联阻断、会话/退出/SSE 断言或跳过条件，也未增加端口重试。原会话八项在 Windows 为 7 通过、1 项原 SIGTERM 条件跳过；日志 `H:\TEMP\novelai-session-port-zero-fixed.log`，确定性反例 `H:\TEMP\novelai-session-port-race-proof.mjs`。修正后候选仍须重新通过实际 CI，未把失败轮改记为绿。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
