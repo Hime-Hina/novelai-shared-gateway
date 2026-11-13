@@ -575,7 +575,7 @@ export class RelationalMemberStore
       receipt &&
       !Array.isArray(receipt) &&
       typeof receipt === 'object' &&
-      ('acceptingJobs' in receipt || 'cancelledJobIds' in receipt)
+      ('acceptingJobs' in receipt || ('id' in receipt && 'cancelledJobIds' in receipt))
     ) {
       const admission = events.filter((event) => event.eventType === 'AdmissionChanged');
       const cancelled = events.flatMap((event) =>

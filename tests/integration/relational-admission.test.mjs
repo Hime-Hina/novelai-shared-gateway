@@ -449,6 +449,41 @@ test('原批次收尾的 member_stopped 原因保留 batch_stopped 语义，不�
   assert.equal(databaseState(r.db), before);
 });
 
+test('普通成员原请求取消的共享 cancelledJobIds 回执不属于接单变更，原序恢复与重领保持', async (t) => {
+  const f = await setup(t);
+  await f.accept('cancel', { memberId: 'm2', samples: 2 });
+  const cancel = () =>
+    withAuthenticatedMemberApiKey(
+      f.members,
+      keys.m2,
+      (actor) =>
+        f.generations.cancelWaitingGeneration(meta('request-cancel', NOW + 5, actor.id), 'cancel'),
+      {},
+    );
+  const result = await cancel();
+  assert.deepEqual(result.receipt, {
+    requestId: 'cancel',
+    cancelledJobIds: ['cancel-0', 'cancel-1'],
+  });
+  assert.equal(f.members.readMember('m2').acceptingJobs, 1);
+  assert.equal(
+    result.events.some((event) => event.eventType === 'AdmissionChanged'),
+    false,
+  );
+  assert.equal(result.events[0].payload.cancellationReason, 'batch_stopped');
+  const before = databaseState(f.db);
+  assert.equal((await cancel()).replayed, true);
+  assert.equal(databaseState(f.db), before);
+  const r = target(t, f),
+    replayed = readRelationalCommit(r.db, result.commitSeq),
+    restored = databaseState(r.db);
+  assert.deepEqual(replayed.command.receipt, result.receipt);
+  assert.equal(replayed.command.actorKind, 'member');
+  assert.equal(replayed.command.actorId, 'm2');
+  r.replay(readRelationalCommit(f.db, result.commitSeq));
+  assert.equal(databaseState(r.db), restored);
+});
+
 test('完整回放拒绝遗漏、伪造、跨成员与逆序取消，异常外层捕获不留半笔', async (t) => {
   const f = await setup(t);
   await f.accept('waiting', { samples: 2 });
