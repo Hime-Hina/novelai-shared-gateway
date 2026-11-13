@@ -1,3 +1,15 @@
+import type { RelationalCommitResult } from '../events/relational-event-store.ts';
+import type {
+  RelationalAccountStore,
+  AccountCommandMetadata,
+  OwnerAccountMutation,
+} from '../storage/relational-account-store.ts';
+import type { MemberUser } from './authentication.ts';
+import {
+  accountQuotaResult,
+  accountQuotaErrorResult,
+  type createAccountQuotaQuery,
+} from '../quota/account-refresh.ts';
 import type { FairAccount } from '../quota/fair-share.ts';
 import { isUsableOpus } from '../quota/eligibility.ts';
 import type { PersistenceOptions } from '../storage/sqlite-store.ts';
@@ -249,6 +261,79 @@ function safeAccount(a: OwnerAccount | null | undefined) {
   );
 }
 
+export function assertOwnerAccountCredentialChangeAllowed(
+  physicalLoad: number,
+  reserved: boolean,
+): void {
+  if (physicalLoad > 0 || reserved) {
+    fail(409, '有在途生成任务，请等待完成后更新密钥');
+  }
+}
+
+export function assertOwnerAccountPst(token: unknown): asserts token is string {
+  if (typeof token !== 'string' || token.length > 4096 || !/^pst-[A-Za-z0-9_-]+$/.test(token)) {
+    fail(400, '请输入完整 PST');
+  }
+}
+
+function accountCommandResult(result: RelationalCommitResult) {
+  const receipt = result.receipt as { error?: { statusCode: number; message: string } };
+  if (receipt.error) {
+    fail(receipt.error.statusCode, receipt.error.message);
+  }
+  return result;
+}
+
+// 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
+export async function ownerAccountCommand(
+  store: Pick<RelationalAccountStore, 'prepareAccountCommand' | 'completeAccountEnable'>,
+  authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
+  metadata: AccountCommandMetadata,
+  input: OwnerAccountMutation,
+  query: ReturnType<typeof createAccountQuotaQuery>,
+) {
+  const prepared = await authorize((member) =>
+    store.prepareAccountCommand(metadata, input, member),
+  );
+  if (!prepared) {
+    fail(401, '会话已失效，请重新登录');
+  }
+  if ('result' in prepared) {
+    return accountCommandResult(prepared.result);
+  }
+  if (input.kind !== 'enable') {
+    throw new Error('Only account enablement may query upstream.');
+  }
+  const { ticket } = prepared;
+  let observation;
+  try {
+    observation = accountQuotaResult(
+      ticket.accountId,
+      await query(ticket.pst, '', ticket.accountId),
+      new Date(ticket.startedAt).toISOString(),
+    );
+  } catch (error) {
+    observation = accountQuotaErrorResult(
+      ticket.accountId,
+      error,
+      new Date(ticket.startedAt).toISOString(),
+    );
+  }
+  const result = await authorize((member) =>
+    store.completeAccountEnable(
+      { ...metadata, recordedAt: Date.now() },
+      input,
+      ticket,
+      observation,
+      member,
+    ),
+  );
+  if (!result) {
+    fail(401, '会话已失效，请重新登录');
+  }
+  return accountCommandResult(result);
+}
+
 export async function ownerOperation(
   url: URL,
   method: string | undefined,
@@ -297,13 +382,7 @@ export async function ownerOperation(
     }
     let change: OwnerAccountChange;
     if ('token' in input) {
-      if (
-        typeof input.token !== 'string' ||
-        input.token.length > 4096 ||
-        !/^pst-[A-Za-z0-9_-]+$/.test(input.token)
-      ) {
-        fail(400, '请输入完整 PST');
-      }
+      assertOwnerAccountPst(input.token);
       change = { kind: 'token', token: input.token };
     } else {
       if (typeof input.enabled !== 'boolean') {

@@ -64,7 +64,7 @@ recordDomainEvent(db,{eventType:'ArtifactHistoryRetired',streamId:'artifact:a',p
 const untyped:DomainEventInput={eventType:'FreeImageSucceeded',streamId:'request:r',payload:{}};
 const relationalResponse = {dispatchState:'unknown',upstreamStartedAt:null,upstreamHeadersAt:null,upstreamCompletedAt:null,upstreamHttpStatus:null} as const;
 const relationalCompletion:RelationalLifecycleFact = {eventType:'JobCompleted',payload:{jobId:'j',artifactId:'a',response:relationalResponse}};
-const relationalReservation:RelationalLifecyclePayloads['QuotaReserved'] = {jobId:'j',memberId:'m',accountId:'opus',resources:{v5:'0.058',anlasFixed:'0',anlasPurchased:'0'},billingMode:'v5',v5Equivalent:'0',sharedV5Reserved:'0',configVersion:1};
+const relationalReservation:RelationalLifecyclePayloads['QuotaReserved'] = {jobId:'j',memberId:'m',accountId:'opus',resources:{v5:'0.058',anlasFixed:'0',anlasPurchased:'0'},billingMode:'v5',estimated:true,v5Equivalent:'0',sharedV5Reserved:'0',configVersion:1};
 // @ts-expect-error New facts reference original reservation evidence, without a copied charge DTO.
 const copiedCharge:RelationalLifecyclePayloads['GenerationSettled'] = {jobId:'j',reservationEventId:'e',charge};
 // @ts-expect-error New completion still requires actual or explicitly unknown response evidence.

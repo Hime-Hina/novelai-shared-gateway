@@ -6,6 +6,7 @@ import type {
 } from '../storage/sqlite-store.ts';
 import { fetchNovelAiAccountQuota } from '../protocols/novelai-client.ts';
 import { withQuotaRequestDeadline } from './refresh-timeout.ts';
+import { quotaTimestamp } from './eligibility.ts';
 import { syncFairQuota } from './fair-share.ts';
 import { domainDigest, recordDomainEvent } from '../events/domain-events.ts';
 import {
@@ -100,6 +101,16 @@ export function disableNovelAiAccount(account: StoreItem): void {
 }
 
 export function accountQuotaResult(id: string, quota: AccountQuota, now: string) {
+  const expires = quota.subscriptionExpiresAt;
+  if (
+    expires !== null &&
+    expires !== undefined &&
+    expires !== '' &&
+    quotaTimestamp(expires) === null
+  ) {
+    // 非空的非法期限不是“无期限”；所有观察入口均记录失败，不能在转换后恢复资格。
+    throw new Error('官方订阅期限格式无效');
+  }
   const noSubscription = isUnsubscribedAccountTier(quota.tier);
   const validTrial =
     quota.trialStatusKnown === true &&
@@ -113,7 +124,8 @@ export function accountQuotaResult(id: string, quota: AccountQuota, now: string)
     quotaPurchased: quota.purchased,
     quotaTier: quota.tier,
     subscriptionActive: quota.subscriptionActive,
-    subscriptionExpiresAt: quota.subscriptionExpiresAt,
+    // 原资格 owner 将数值 0 视为无期限；字符串 '0' 仍是已过期的时间。
+    subscriptionExpiresAt: expires === 0 ? null : expires,
     v5UsagePercent: quota.v5UsagePercent,
     v5UsageIsNegative: quota.v5UsageIsNegative,
     v5UsageTimeUntilNextPercent: quota.v5UsageTimeUntilNextPercent,

@@ -129,11 +129,26 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     [
+      'private snapshot import',
+      "import { restoreRelationalPrivateSnapshot as restore } from '../storage/relational-private-restore.ts'; restore(raw,path,hash);",
+    ],
+    [
+      'dynamic private snapshot import',
+      "await import('../storage/relational-private-restore.js');",
+    ],
+    ['direct private snapshot restore', 'restoreRelationalPrivateSnapshot(raw,path,hash);'],
+    [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
     ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
     ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
+    [
+      'aliased result recovery',
+      "import { recoverRelationalGenerationResults as recover } from '../storage/relational-result-recovery.ts'; recover(raw,dir);",
+    ],
+    ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
+    ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
     ...[
       'acceptGeneration',
       'dispatchGeneration',
@@ -151,6 +166,12 @@ for (const filename of [
       "import { RelationalQuotaStore as Store } from '../storage/relational-quota-store.ts'; new Store(raw);",
     ],
     ['dynamic quota writer', "await import('../storage/relational-quota-store.js');"],
+    [
+      'account construction',
+      "import { RelationalAccountStore as Store } from '../storage/relational-account-store.ts'; new Store(raw,q,controls);",
+    ],
+    ['dynamic account writer', "await import('../storage/relational-account-store.js');"],
+    ['account re-export', "export * from '../storage/relational-account-store.ts';"],
     ['quota re-export', "export * from '../storage/relational-quota-store.ts';"],
     ...[
       'beginQuotaObservation',
@@ -161,6 +182,12 @@ for (const filename of [
       'openAccountQuota',
       'applyQuotaEvents',
       'replayQuotaCommit',
+      'prepareAccountCommand',
+      'completeAccountEnable',
+      'ownerAccountCommand',
+      'replayAccountCommit',
+      'planQuotaObservation',
+      'registerAccountQuota',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [
       'authenticated command',
@@ -227,6 +254,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/execution.ts',
       "import { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; store.dispatchGeneration(command,input,controls);",
+    ],
+    [
+      'server/generation/execution.ts',
+      "import { recoverRelationalGenerationResults } from '../storage/relational-result-recovery.ts';",
     ],
     [
       'scripts/offline-import.mjs',

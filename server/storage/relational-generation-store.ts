@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
+  readRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
   type StoredRelationalCommit,
@@ -144,6 +145,7 @@ interface Charge {
   anlasFixed: string;
   anlasPurchased: string;
   billingMode: 'free' | 'v5' | 'anlas' | 'anlas_fallback';
+  estimated: boolean | null;
   v5Equivalent: string;
   sharedV5Reserved: string;
   configVersion: number;
@@ -229,17 +231,19 @@ export class RelationalGenerationStore {
     );
   }
   readCharge(jobId: string): Charge | null {
-    return (
-      this.sqlite
-        .prepare<[string], Charge>(
-          `SELECT original_job_id AS originalJobId,original_member_id AS originalMemberId,
+    const row = this.sqlite
+      .prepare<[string], Omit<Charge, 'estimated'> & { estimated: number | null }>(
+        `SELECT original_job_id AS originalJobId,original_member_id AS originalMemberId,
       original_account_id AS originalAccountId,job_id AS jobId,attempt_id AS attemptId,status,resolution,v5,anlas_fixed AS anlasFixed,
-      anlas_purchased AS anlasPurchased,billing_mode AS billingMode,v5_equivalent AS v5Equivalent,shared_v5_reserved AS sharedV5Reserved,
+      anlas_purchased AS anlasPurchased,billing_mode AS billingMode,estimated,v5_equivalent AS v5Equivalent,shared_v5_reserved AS sharedV5Reserved,
       config_version AS configVersion,reserved_at AS reservedAt,terminal_at AS terminalAt,reservation_event_id AS reservationEventId,
       terminal_event_id AS terminalEventId FROM charges WHERE original_job_id=?`,
-        )
-        .get(jobId) || null
-    );
+      )
+      .get(jobId);
+    if (!row) {
+      return null;
+    }
+    return { ...row, estimated: row.estimated === null ? null : row.estimated === 1 };
   }
   private attempt(jobId: string): Attempt | null {
     return (
@@ -747,6 +751,7 @@ export class RelationalGenerationStore {
                 accountId: account.id,
                 resources: generationChargeResources(charge),
                 billingMode: charge.billingMode || charge.resource,
+                estimated: charge.estimated,
                 v5Equivalent: charge.v5Equivalent || '0',
                 sharedV5Reserved: charge.sharedV5Reserved || '0',
                 configVersion: charge.configVersion,
@@ -972,6 +977,61 @@ export class RelationalGenerationStore {
         { jobId, attemptId: attempt.id },
       );
     });
+  }
+  readPendingGenerationResultIds(afterId = '', limit = 100): string[] {
+    if (typeof afterId !== 'string' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new TypeError('Invalid pending result page.');
+    }
+    return this.sqlite
+      .prepare<[string, number], { id: string }>(
+        `SELECT a.job_id AS id FROM generation_attempts a INDEXED BY idx_attempts_prepared
+        JOIN generation_jobs j ON j.id=a.job_id
+        WHERE a.prepared_artifact_id IS NOT NULL AND j.artifact_id IS NULL AND a.job_id>?
+        ORDER BY a.job_id LIMIT ?`,
+      )
+      .all(afterId, limit)
+      .map((row) => row.id);
+  }
+  readGenerationResultPreparation(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    if (!attempt || job.artifactId) {
+      fail('任务没有待恢复的准备结果');
+    }
+    const sources = this.sqlite
+      .prepare<[string, string], { eventId: string; commitSeq: string }>(
+        `SELECT event_id AS eventId,CAST(commit_seq AS TEXT) AS commitSeq FROM domain_events
+        WHERE stream_id=? AND event_type='ArtifactPrepared' AND json_extract(payload,'$.attemptId')=?`,
+      )
+      .all(`request:${job.requestId}`, attempt.id);
+    if (sources.length !== 1) {
+      fail('准备结果缺少唯一的原事实');
+    }
+    const event = readRelationalCommit(this.sqlite, sources[0].commitSeq).events.find(
+      (e) => e.eventId === sources[0].eventId,
+    );
+    if (
+      event?.eventType !== 'ArtifactPrepared' ||
+      event.accountId !== attempt.accountId ||
+      event.memberId !== job.memberId
+    ) {
+      fail('准备结果事实归属不符');
+    }
+    const descriptor = {
+      imageId: event.payload.artifactId,
+      file: event.payload.file,
+      operation: job.operation,
+      mimeType: event.payload.mimeType,
+      byteLength: event.payload.byteLength,
+      sha256: event.payload.sha256,
+    };
+    assertStoredResultDescriptor(descriptor);
+    if (canonicalJson(descriptor) !== canonicalJson(this.prepared(job, attempt))) {
+      fail('准备结果与原事实不一致');
+    }
+    // 冷读复用输入 owner 的原请求/归属/摘要核验，不把当前关系行当作原授权。
+    this.inputs.readJobInput(jobId);
+    return { attemptId: attempt.id, event, descriptor };
   }
   private prepared(job: Job, attempt: Attempt): Publication {
     const value = {
@@ -1717,7 +1777,7 @@ export class RelationalGenerationStore {
           const p = e.payload;
           this.sqlite
             .prepare(
-              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,estimated,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             )
             .run(
               p.originalJobId,
@@ -1734,6 +1794,7 @@ export class RelationalGenerationStore {
               p.resources.anlasFixed,
               p.resources.anlasPurchased,
               p.billingMode,
+              p.estimated === null ? null : Number(p.estimated),
               p.v5Equivalent,
               p.sharedV5Reserved,
               p.configVersion,
@@ -1776,7 +1837,7 @@ export class RelationalGenerationStore {
           this.adjustWallet(p.accountId, p.memberId, p.resources, -1, e.eventId);
           this.sqlite
             .prepare(
-              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,NULL,'reserved','live',?,?,?,?,?,?,?,?,?,NULL,?,NULL)`,
+              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,estimated,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,NULL,'reserved','live',?,?,?,?,?,?,?,?,?,?,NULL,?,NULL)`,
             )
             .run(
               p.jobId,
@@ -1790,6 +1851,7 @@ export class RelationalGenerationStore {
               p.resources.anlasFixed,
               p.resources.anlasPurchased,
               p.billingMode,
+              Number(p.estimated),
               p.v5Equivalent,
               p.sharedV5Reserved,
               p.configVersion,
