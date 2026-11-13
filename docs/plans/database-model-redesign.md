@@ -1011,6 +1011,30 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 维护者对 #60 的授权只覆盖该固定候选；本批新增守卫仍需最终复核后正常合并。接单、分组/权益、诊断/历史命令、真实内容领取、合法 ready、迁移和新 HTTP/调度仍继续推进；这份联合测试不表示它们已完成，也不表示生产上线或真实端点全量闭包通过。
 
+### 9.32 人工历史退休：薄标记、保护和完整回放
+
+本片从统一固定 `29924b9` 实现人工历史退休，不新增 D8 期限或自动任务，不依赖尚未选定的完整 archive authority，也不暴露 Local/R2/PikPak 物理删除。旧人工删图可能随后移除 Local 文件；新入口只撤下在线展示/领取，字节继续保护，后续物理释放仍须第 5 节的归档引用闭包与明确授权。
+
+| 约束         | 来源、允许变化与验收                                                                                                                                                                                                                                                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 事实与权威   | JobHistoryRetired 归 generation owner，ArtifactHistoryRetired 归 Replica owner；当前薄行 retired_at 表达在线退休。原 request/job/attempt/charge、输入/附件、幂等键、免费成功及审计来源保持，不照搬旧物理删行。                                                                                                                           |
+| 人工授权     | 两命令只接受当前 owner 的 Key/Cookie 已认证事务，或既有本地管理员边界；复用 assertCurrentOwnerCommand 复查当前成员/owner 配置及认证 epoch，先鉴权再重领回执，不由 metadata.actorId 自证。                                                                                                                                                |
+| 可退休状态   | 复用原 canRetireJobHistory 的终态、无 resultPending、无 pending review 规则；新关系 resultPending 只映射“attempt 有准备且 job 无已发布 artifact”，成功后保留的准备字段不是未决责任。所涉 request 任一 active sibling、仍有未发布准备/核对或 runningControls.has(jobId) 均保护，不能用 SQL terminal 或上游结束时间替代物理 promise 收尾。 |
+| 最小变化     | 人工 job 退休按显式有界选择，按 request 原归属分组产生事实；全 request 的 child 均退休后才标 request 退休。artifact 退休只标产物，保留 job 的原 artifact/late 证据与所有副本引用，展示/领取诚实返回不可用。                                                                                                                              |
+| 幂等与范围   | 选择是 1–200 个规范 ID 的集合，owner 从完整选择和固定人工操作计算意图摘要；同键同选择返回原回执，不同选择冲突。提交中的完整退休集合、分组、归属、reason、回执和指纹一起核对，不能少一项、跨 request 归组或重排后冒充同一命令。                                                                                                           |
+| 原子性与回放 | 追加原事实、回执、流头及所有退休投影属于同一保存点，外层捕获也全表回滚。共同完整提交回放按原序调用真实 owner；不重做当前认证、不生成私有 epoch、不执行 IO，原 actor/回执保持。未决工作与退休后结果不得被后续事实复活。                                                                                                                   |
+| 查询与防重   | 历史分页/详情/结果领取排除退休行；部分 child 退休保留其他在线 child，原请求/旧键仍不能重执行。输入正文保留在唯一 owner，成员读取随请求退休拒绝，内部审计/重放仍可核验，不回填 DTO。                                                                                                                                                      |
+
+原调用者已核对：JsonStore 的 retireJobHistory 被 clearRequestLogs 和旧自动 history retention 使用；canRetireJobHistory 还被 artifact retire 与清理分页复用。retireCachedArtifacts 被 clearCachedImages、trimImageCache 使用，旧 runtime 在发布/恢复/启动清理后调用 trimImageCache，再由 removeStoredImages 删除 Local；R2/PikPak 不随旧 history retire 删除。当前没有直接调用这两个手工 store 方法的 HTTP route，新增关系命令先交付可认证事务调用的内部接口，不凭计划宣称 HTTP 已接入，也不接入旧自动保留路径。
+
+验收包括真实 owner Key/Cookie、普通成员/旧 Key/退出/配置轮换/旧 epoch 重领拒绝；跨成员选择、活动/准备/核对/物理占用及同 request sibling 保护；job 部分/全部退休、artifact 迟到结果与保留原引用；同键原回执、不同选择、SQL 后段故障外层捕获；完整原提交恢复与重复零写入、错误归组/漏集合/回执和指纹篡改拒绝；文件/远端对象、收费/幂等/免费证据与正文均不被删除或改写。架构写能力门禁随新命令补拒绝反例，不减少既有断言，接受维护者增量复核。
+
+实际入口为 GenStore.retireJobHistory 与 ReplicaStore.retireArtifactHistory，显式接收当前认证 actor 和原 running controls 的只读 has 能力。选择是该命令的全部业务输入，owner 直接计算 action/规范 ID 集合的完整指纹，不再依赖外部不透明指纹；完整回放同时校对原回执、指纹、request 分组、成员、reason 和原序。原 canRetireJobHistory 抽为同一无写 helper，旧存储的四处调用仍使用原三个条件，新关系只添加实际关联/物理占用保护，不安装新自动保留任务。产物退休后 source_event_id 指向真实退休事实，不可变元数据按同一 artifact 流中唯一原 Published/Opening 核验，不新增发布副本列。
+
+实际 artifact 引用守卫的原 EXPLAIN 会扫描 jobs 和全部 prepared attempts；本片仅为该真实谓词新增 artifact_id/request_id 和 prepared_artifact_id/job_id 两个部分覆盖索引，并以 UNION ALL 流式逐 request 核对。实际调用捕获的查询计划使用两索引，无全表扫描或临时排序；这不代替同规模容量/耗时验收。未发布 schema hash 因索引变化而更新，旧原型按原 guard 从空 building 库重建；旧 SQL/journal 未改。
+
+当前源码专项 20/20；连 generation/replicas/queries/common replay/storage 六文件 101/101，零跳过。共享旧 helper 的历史/缓存三项与新写门禁四项拒绝反例均通过，类型、架构、默认 migration 检查通过。首轮夹具误用 input.request、截断提交未同步 expectedVersions 和将 Native 免费限额误当受理期拒绝的失败日志保留；修正测试工具，不把这些当产品红例。最终独立复审、编译/Node 24 与完整后端由本片后续固定候选和统一队列候选给出，不沿用前置 reader/ready 的完整绿色结果。日志位于 `H:\TEMP\novelai-db-replicas-20261114`。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

@@ -66,6 +66,7 @@ import { queryFailureAccounting } from '../quota/failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from '../quota/free-image-policy.ts';
 import { activityDate } from '../reports/activity-heatmap.ts';
 import { R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
+import { canRetireJobHistory } from './history-retirement.ts';
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota/fair-share.ts';
@@ -846,7 +847,7 @@ export class JsonStore {
       }
       const active = [...linked.values()].some(
         ({ job }) =>
-          !this.canRetireJobHistory(job) ||
+          !canRetireJobHistory(job) ||
           (job.requestId &&
             this.sqlite!.prepare(
               "SELECT id FROM jobs WHERE request_id=? AND status IN ('queued','pending','running') LIMIT 1",
@@ -968,7 +969,7 @@ export class JsonStore {
           if (!job) {
             continue;
           }
-          if (!this.canRetireJobHistory(job)) {
+          if (!canRetireJobHistory(job)) {
             throw new Error(`Cannot retire active job or unresolved review: ${id}`);
           }
           const stream = `request:${job.requestId || `legacy-${id}`}`,
@@ -990,20 +991,6 @@ export class JsonStore {
         return retired;
       },
       { immediate: true, dirtyRows: (result) => ({ jobs: result }) },
-    );
-  }
-
-  private canRetireJobHistory(job: {
-    id: string;
-    status?: string | null;
-    resultPending?: unknown;
-    generationReview?: { status?: string } | null;
-  }): boolean {
-    return (
-      !!job.status &&
-      !['queued', 'pending', 'running'].includes(job.status) &&
-      !job.resultPending &&
-      job.generationReview?.status !== 'pending'
     );
   }
 
@@ -1041,7 +1028,7 @@ export class JsonStore {
       cursor = rows.at(-1)?.cursor || upperRow;
       const ids = rows
         .filter((row) =>
-          this.canRetireJobHistory({
+          canRetireJobHistory({
             ...row,
             generationReview: row.reviewStatus ? { status: row.reviewStatus } : null,
           }),
@@ -2146,7 +2133,7 @@ export class JsonStore {
         retired = new Set<string>();
       for (const job of db.jobs) {
         const updated = Date.parse(job.updatedAt || job.createdAt || '');
-        if (!this.canRetireJobHistory(job) || (updated && now - updated <= retainMs)) {
+        if (!canRetireJobHistory(job) || (updated && now - updated <= retainMs)) {
           continue;
         }
         const stream = `request:${job.requestId || `legacy-${job.id}`}`,

@@ -166,6 +166,9 @@ export async function copyRelationalArtifactReplica(
   }
   const store = new RelationalReplicaStore(sqlite, configuration),
     artifact = store.readArtifact(artifactId);
+  if (artifact.retiredAt !== null) {
+    throw new Error('Retired artifacts cannot start replica copies.');
+  }
   const destination = target(sqlite, store, artifactId, kind, now);
   let row = store.readArtifactReplica(artifactId, destination.storageTargetId);
   let ticket = store.beginArtifactReplica(artifactId, destination.storageTargetId);

@@ -66,6 +66,16 @@ import type { GenerationDispatchOptions } from '../generation/execution.ts';
 import { RelationalInputStore, type AcceptedInput } from './relational-input-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
+import {
+  assertHistoryRetirementControls,
+  assertRetirableRequest,
+  assertHistoryRetirementCommit,
+  historyRetirementIds,
+  historyRetirementFingerprint,
+  readHistoryJob,
+  type HistoryRetirementControls,
+} from './history-retirement.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -104,6 +114,7 @@ export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ReviewOpened',
   'ReviewClosed',
   'LateResultRecovered',
+  'JobHistoryRetired',
 ]);
 const zero = (): ResourceAmounts => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 const iso = (value: number | null) => (value === null ? undefined : new Date(value).toISOString());
@@ -132,6 +143,7 @@ interface Job {
   currentAdmissionEpoch: number;
   artifactId: string | null;
   freeSucceededAt: number | null;
+  retiredAt: number | null;
 }
 interface Charge {
   originalJobId: string;
@@ -196,7 +208,7 @@ export class RelationalGenerationStore {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.quotas = new RelationalQuotaStore(sqlite, env);
-    this.replicas = new RelationalReplicaStore(sqlite);
+    this.replicas = new RelationalReplicaStore(sqlite, undefined, env);
     this.env = env;
     this.inputs = new RelationalInputStore(sqlite, env);
   }
@@ -213,7 +225,7 @@ export class RelationalGenerationStore {
       r.input_id AS inputId,r.operation,r.source,j.status,j.sample_index AS sampleIndex,CAST(j.queue_seq AS TEXT) AS queueSeq,
       j.queue_expires_at AS queueExpiresAt,j.deadline_at AS deadlineAt,j.admission_epoch AS admissionEpoch,r.confirmation,
       m.status AS memberStatus,m.auth_epoch AS authEpoch,m.accepting_jobs AS acceptingJobs,m.admission_epoch AS currentAdmissionEpoch,
-      j.artifact_id AS artifactId,j.free_succeeded_at AS freeSucceededAt
+      j.artifact_id AS artifactId,j.free_succeeded_at AS freeSucceededAt,j.retired_at AS retiredAt
       FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id JOIN members m ON m.id=r.member_id WHERE j.id=?`,
       )
       .get(id);
@@ -419,14 +431,15 @@ export class RelationalGenerationStore {
           memberId: string;
           contextId: string | null;
           sampleCount: number;
+          retiredAt: number | null;
         }
       >(
-        'SELECT member_id AS memberId,context_id AS contextId,sample_count AS sampleCount FROM generation_requests WHERE id=?',
+        'SELECT member_id AS memberId,context_id AS contextId,sample_count AS sampleCount,retired_at AS retiredAt FROM generation_requests WHERE id=?',
       )
       .get(mapping.requestId);
     const jobs = this.sqlite
-      .prepare<[string | null], { id: string }>(
-        'SELECT id FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+      .prepare<[string | null], { id: string; retiredAt: number | null }>(
+        'SELECT id,retired_at AS retiredAt FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
       )
       .all(mapping.requestId);
     if (
@@ -437,6 +450,8 @@ export class RelationalGenerationStore {
       mapping.originalCommandId !== metadata.commandId ||
       mapping.intentFingerprint !== metadata.fingerprint ||
       request?.memberId !== metadata.actorId ||
+      request.retiredAt !== null ||
+      jobs.some((job) => job.retiredAt !== null) ||
       request.contextId !== mapping.contextId ||
       jobs.length !== request.sampleCount ||
       jobs[0]?.id !== mapping.originalJobId ||
@@ -1134,6 +1149,7 @@ export class RelationalGenerationStore {
       if (
         !attempt ||
         !charge ||
+        job.retiredAt !== null ||
         !['running', 'failed'].includes(job.status) ||
         charge.status === 'settled'
       ) {
@@ -1219,6 +1235,7 @@ export class RelationalGenerationStore {
       if (
         !attempt ||
         !charge ||
+        job.retiredAt !== null ||
         charge.attemptId !== attempt.id ||
         !['running', 'failed'].includes(job.status) ||
         job.artifactId ||
@@ -1536,6 +1553,57 @@ export class RelationalGenerationStore {
       );
     });
   }
+  retireJobHistory(
+    metadata: Omit<Metadata, 'fingerprint'>,
+    jobIds: string[],
+    actor: MemberUser | null,
+    controls: HistoryRetirementControls,
+  ) {
+    return this.owned(() => {
+      const current =
+        actor &&
+        this.sqlite
+          .prepare<[string], { status: string; authEpoch: string | null }>(
+            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+          )
+          .get(actor.id);
+      assertCurrentOwnerCommand(metadata, actor, current, this.env);
+      const ids = historyRetirementIds(jobIds),
+        command = { ...metadata, fingerprint: historyRetirementFingerprint('jobs', ids) },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      assertHistoryRetirementControls(controls);
+      const groups = new Map<string, string[]>();
+      for (const id of ids) {
+        const job = readHistoryJob(this.sqlite, id);
+        if (job.retiredAt !== null) {
+          fail('任务历史已经退休');
+        }
+        const group = groups.get(job.requestId) ?? [];
+        group.push(id);
+        groups.set(job.requestId, group);
+      }
+      const events: RelationalEventInput[] = [];
+      for (const requestId of [...groups.keys()].sort()) {
+        assertRetirableRequest(this.sqlite, requestId, controls);
+        const selected = groups.get(requestId)!;
+        events.push(
+          this.event(
+            {
+              eventType: 'JobHistoryRetired',
+              payload: { jobIds: selected, reason: 'owner_cleared_history' },
+            },
+            this.job(selected[0]),
+            null,
+            metadata.recordedAt,
+          ),
+        );
+      }
+      return this.commit(command, events, { retiredJobIds: ids });
+    });
+  }
   closeGenerationReview(metadata: Metadata, jobId: string) {
     return this.owned(() => {
       const job = this.job(jobId);
@@ -1678,11 +1746,18 @@ export class RelationalGenerationStore {
     const row = this.sqlite
       .prepare<
         [string],
-        { member_id: string; input_id: string; original_attempt_id: string | null }
-      >('SELECT member_id,input_id,original_attempt_id FROM artifacts WHERE id=?')
+        {
+          member_id: string;
+          input_id: string;
+          original_attempt_id: string | null;
+          retired_at: number | null;
+        }
+      >('SELECT member_id,input_id,original_attempt_id,retired_at FROM artifacts WHERE id=?')
       .get(artifactId);
     if (
       !row ||
+      job.retiredAt !== null ||
+      row.retired_at !== null ||
       row.member_id !== job.memberId ||
       row.input_id !== job.inputId ||
       row.original_attempt_id !== attemptId
@@ -1710,6 +1785,28 @@ export class RelationalGenerationStore {
         fail('开账事实缺少已登记来源');
       }
       switch (e.eventType) {
+        case 'JobHistoryRetired': {
+          assertHistoryRetirementCommit(this.sqlite, e, 'jobs');
+          const jobs = e.payload.jobIds.map((id) => readHistoryJob(this.sqlite, id));
+          for (const job of jobs) {
+            if (job.retiredAt !== null) {
+              fail('任务历史已经退休');
+            }
+          }
+          assertRetirableRequest(this.sqlite, jobs[0].requestId);
+          for (const job of jobs) {
+            this.sqlite
+              .prepare('UPDATE generation_jobs SET retired_at=?,source_event_id=? WHERE id=?')
+              .run(e.occurredAt, e.eventId, job.id);
+          }
+          this.sqlite
+            .prepare(
+              `UPDATE generation_requests SET retired_at=?,source_event_id=? WHERE id=?
+            AND NOT EXISTS(SELECT 1 FROM generation_jobs WHERE request_id=? AND retired_at IS NULL)`,
+            )
+            .run(e.occurredAt, e.eventId, jobs[0].requestId, jobs[0].requestId);
+          break;
+        }
         case 'ImportSourceRegistered':
           break;
         case 'CooldownChanged': {
@@ -2003,6 +2100,7 @@ export class RelationalGenerationStore {
           assertStoredResultDescriptor(descriptor);
           if (
             a.preparedArtifactId ||
+            job.retiredAt !== null ||
             !['running', 'failed'].includes(job.status) ||
             p.response.dispatchState === 'not_sent'
           ) {
@@ -2029,6 +2127,7 @@ export class RelationalGenerationStore {
           const job = this.job(a.job_id),
             attempt = this.attempt(job.id)!;
           if (
+            job.retiredAt !== null ||
             e.memberId !== job.memberId ||
             e.accountId !== attempt.accountId ||
             p.memberId !== job.memberId ||

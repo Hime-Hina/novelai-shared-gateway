@@ -80,6 +80,7 @@ interface RequestRow {
   sample_count: number;
   seed_mode: string;
   confirmation: string | null;
+  retired_at: number | null;
 }
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -124,13 +125,17 @@ export class RelationalInputStore {
     if (member?.status !== 'active' || !member.auth_epoch) {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
-    return this.request(requestId, memberId);
+    const request = this.request(requestId, memberId);
+    if (request.retired_at !== null) {
+      unavailable();
+    }
+    return request;
   }
 
   private request(requestId: string, memberId: string): RequestRow {
     const request = this.sqlite
       .prepare<[string, string], RequestRow>(
-        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation FROM generation_requests WHERE id=? AND member_id=?',
+        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
       )
       .get(requestId, memberId);
     if (!request) {
