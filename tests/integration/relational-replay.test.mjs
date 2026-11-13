@@ -34,6 +34,7 @@ import {
   RelationalAccountStore,
   relationalAccountFacts,
 } from '../../server/storage/relational-account-store.ts';
+import { relationalReplicaFacts } from '../../server/storage/relational-replica-store.ts';
 import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
 import {
   initializeRelationalStorage,
@@ -220,19 +221,20 @@ function observe(f, q, id, fixed, at) {
   return f.db.transaction(() => q.recordQuotaObservation(meta(id, at), ticket, result))();
 }
 
-test('覆盖只来自五个实际 owner，未实现事实仍明确拒绝', () => {
+test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () => {
   const owners = [
     relationalMemberFacts,
     relationalInputFacts,
     relationalGenerationFacts,
     relationalQuotaFacts,
     relationalAccountFacts,
+    relationalReplicaFacts,
   ];
   assert.equal(
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 53);
+  assert.equal(relationalReplayFacts().size, 55);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
@@ -251,11 +253,9 @@ test('覆盖只来自五个实际 owner，未实现事实仍明确拒绝', () =>
       'OpeningRequestRecorded',
       'OpeningJobRecorded',
       'OpeningAttemptRecorded',
-      'ArtifactReplicaRecorded',
       'ArtifactHistoryRetired',
       'OpeningArtifactRecorded',
       'OpeningReplicaRecorded',
-      'StorageTargetRegistered',
       'OpeningStorageTargetRecorded',
       'OpeningInputRecorded',
       'OpeningIdempotencyRecorded',

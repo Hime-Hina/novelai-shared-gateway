@@ -67,7 +67,7 @@ function rebuild(t, selected) {
   try {
     for (const { seq } of source
       .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
-      .iterate()) {
+      .all()) {
       db.transaction(() => replayer.replayCommit(readRelationalCommit(source, seq), inputs))();
     }
   } finally {
@@ -103,18 +103,10 @@ function addOneToWallet(db) {
 
 async function acceptAsset(f) {
   const normalized = normalizeMemberGeneration({
-    operation: 'generate',
+    operation: 'encode-vibe',
     model: 'nai-diffusion-4-5-full',
-    input: 'private image input',
-    parameters: {
-      width: 128,
-      height: 128,
-      steps: 10,
-      seed: 42,
-      n_samples: 1,
-      image: image.toString('base64'),
-      strength: 0.7,
-    },
+    image: image.toString('base64'),
+    information_extracted: 0.5,
   });
   return withAuthenticatedMemberApiKey(
     f.members,
@@ -125,7 +117,7 @@ async function acceptAsset(f) {
         requestId: 'asset',
         memberId: 'm1',
         source: 'native',
-        seedMode: 'fixed',
+        seedMode: 'not_applicable',
         confirmation: null,
         request: materializeMemberGeneration(normalized),
         context: { kind: 'native', native: normalized.normalizationContext.native },
@@ -168,7 +160,7 @@ test('完整保护输入 BLOB 在 source 或目标损坏均拒绝；合法 queue
       if (kind === 'target') {
         damage(db);
       }
-      const before = databaseState(db);
+      const before = db.serialize();
       if (kind === 'valid') {
         await verifyAndInstallRelationalStorage(db, selected);
         assertRelationalStorageReady(db);
@@ -179,7 +171,7 @@ test('完整保护输入 BLOB 在 source 或目标损坏均拒绝；合法 queue
       } else {
         await assert.rejects(verifyAndInstallRelationalStorage(db, selected));
         assertBuilding(db);
-        assert.equal(databaseState(db), before);
+        assert.deepEqual(db.serialize(), before);
       }
     });
   }
