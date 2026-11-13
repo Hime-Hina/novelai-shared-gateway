@@ -26,6 +26,7 @@ import {
 } from '../../server/storage/relational-storage.ts';
 import {
   relationalPrivateStateEmpty,
+  relationalPrivateTables,
   restoreRelationalPrivateSnapshot,
 } from '../../server/storage/relational-private-restore.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
@@ -375,11 +376,16 @@ test('最终 ready 更新失败时私有恢复与状态全回滚，移除故障�
 });
 
 test('实际文件读取期间源私有、目标私有或同 cursor 业务变化都被最终核对拒绝', async (t) => {
-  for (const kind of ['target-private', 'target-wallet', 'source-private']) {
+  for (const kind of ['target-private', 'target-revocation', 'target-wallet', 'source-private']) {
     await t.test(kind, async (t) => {
       const f = await completed(t),
         selected = await snapshot(f),
         db = rebuild(t, selected);
+      if (kind === 'target-revocation') {
+        db.transaction(() =>
+          restoreRelationalPrivateSnapshot(db, selected.sourcePath, selected.sourceSha256),
+        )();
+      }
       let changed = false,
         afterChange;
       const realOpen = fsPromises.open;
@@ -389,6 +395,14 @@ test('实际文件读取期间源私有、目标私有或同 cursor 业务变化
           changed = true;
           if (kind === 'target-private') {
             db.prepare("UPDATE members SET auth_epoch='changed-during-io' WHERE id='m1'").run();
+          }
+          if (kind === 'target-revocation') {
+            db.transaction(() => {
+              db.prepare('UPDATE members SET auth_epoch=NULL').run();
+              for (const [table] of relationalPrivateTables) {
+                db.prepare(`DELETE FROM ${table}`).run();
+              }
+            })();
           }
           if (kind === 'target-wallet') {
             addOneToWallet(db);
