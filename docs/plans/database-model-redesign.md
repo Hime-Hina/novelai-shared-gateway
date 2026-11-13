@@ -1113,6 +1113,20 @@ Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、�
 
 父任务独立复核固定 `1c79a34` 的 transport、授权事务、原收费 helper 提取及测试配置变更；另以真实 localhost/owner 反例 3/3 核对：恢复后的输入插入失败整笔回滚、健康重试只恢复一次及原键零写；物理忙派发不恢复、预扣 SQL 失败回滚后正常重试；较晚时点重领原回执不再次恢复。隔离副本仅移除受理恢复调用，同一反例准确重现 402 而非 202，其他两例仍通过，未改候选原字节。证据为 `H:\TEMP\novelai-member-http-independent.log` 与 `-mutant.log`。与诊断片汇合后，五处只验证诊断/退款的 fixture 也显式固定 `seconds: 0`，保留原精确退款断言；时间恢复由实际 HTTP 和上述独立反例验证。联合 HTTP/诊断/输入/共同回放四文件 58/58，零跳过；这仍是本地源码整合证据。
 
+### 9.38 新格式离线联合恢复 CLI
+
+从固定 `43334c8` 增加 `scripts/restore-relational.mjs`，只装配已有格式/快照、InputStore、共同完整提交回放、私有恢复、实际副本读取和唯一 ready installer；业务规则、事实、DDL、守卫、CI 与旧格式解释器不变。操作说明见[新格式离线联合恢复](../operations/relational-recovery.md)。这是所选当前新格式一致性私有快照的恢复入口，不选择 A/B、不自行决定会话取舍，也不转换旧数据库。
+
+六个显式参数绑定 source、SHA、history、完整非零 cut、output 和 data-dir；读取源封存单文件，128 个完整提交一页重建全新 building 暂存库，保护正文由原输入 owner 读取，业务回放不恢复认证或触发外效。唯一 installer 继续负责 shadow、全部表、所选私有切点和真实 Local/R2/PikPak/准备文件核对及 ready 原子转换；原 IO 配置复用既有环境变量 owner，没有任意新认证格式、网络写入或 verified 捷径。
+
+输出同父 private 暂存目录申请 0700/文件 0600；Windows 明确依赖预先限制父目录 ACL。关闭/checkpoint、封存检查、文件同步和源 SHA 复核后，原生硬链接独占发布，不覆盖 output、sidecar 或源；source 的 sidecar 路径也不能作为新 output。发布竞争和清理故障分别保留外部文件、按 inode 身份撤回本次输出；递归清理前确认绝对暂存路径仍是显式父目录的直接子目录。失败只记录固定阶段/错误码，不泄漏正文或认证；没有双格式、续跑状态或手工 ready 路径。
+
+专项通过真实 CLI 子进程核对跨 128 提交分页、全业务/私有表、原 queued/核对期限、退款/退休/诊断、所选 Key 轮换与实际 Local 原图；坏清单、未知格式、缺保护正文/对象、已有输出/sidecar、源路径冲突和发布竞态/清理故障均拒绝且源字节不变。Windows 实际核对大小写、namespace、junction 别名；发布后外部替换 output 再清理故障时保留外部 inode。
+
+Node 22.23.4 源码专项 28/28、同产品真实编译 CLI 28/28，零跳过；后者子进程关闭 TypeScript strip，运行现有 tsc/package-backend 产物及改写后的 `.js` 依赖。类型发射、架构、默认与可信 `43334c8` 基线迁移历史、脚本语法和受影响文件格式/差异检查通过。隔离编译副本删除唯一 installer 后，缺对象反例错误发布并被原断言识别；另在硬链接失败后增加覆盖 rename 的错误实现，原发布竞争反例准确失败，其余边界仍绿。两负控各有一个业务反例失败（含父测试计数各 2 fail），没有修改候选 owner 或生产数据。日志为 `H:\TEMP\novelai-restore-cli-source.log`、`-compiled.log`、`-no-installer.log` 和 `-overwrite.log`，独立审查待固定候选复核。
+
+全量、Node 24、真实端点、同规模及生产切换由统一候选继续验收，不以本地工具通过代替 #48/#53 闭环。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
