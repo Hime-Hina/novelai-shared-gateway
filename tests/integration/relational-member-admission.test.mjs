@@ -318,32 +318,28 @@ test('完整受理提交联合受保护输入回放，薄键首child不能替换
 });
 
 test('当前接单epoch拦截新键，同键仍重领原回执', async (t) => {
-  const f = await fixture(t),
+  const env = { OWNER_USER_ID: 'm1' },
+    f = await fixture(t, { env }),
     admit = bridge(f),
     input = body(f);
   const first = await submit(admit, input);
-  const metadata = meta('stop-new-admission', NOW + 1);
-  delete metadata.policyVersion;
-  delete metadata.pricingVersion;
-  f.db.transaction(() =>
-    new RelationalCommitReplayer(f.db).appendCommit({
-      ...metadata,
-      expectedVersions: { 'member:m1': '1' },
-      receipt: { stopped: true },
-      events: [
-        {
-          streamId: 'member:m1',
-          memberId: 'm1',
-          accountId: null,
-          occurredAt: NOW + 1,
-          policyVersion: 'shared-quota-v1',
-          pricingVersion: 'price1',
-          eventType: 'AdmissionChanged',
-          payload: { memberId: 'm1', acceptingJobs: false, admissionEpoch: 1 },
-        },
-      ],
-    }),
-  )();
+  await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    (member) =>
+      new RelationalMemberStore(f.db, env).changeMemberAdmission(
+        meta('stop-new-admission', NOW + 1, 'm1'),
+        { memberId: 'm1', acceptingJobs: false },
+        member,
+      ),
+    env,
+  );
+  assert.equal(
+    f.db
+      .prepare("SELECT COUNT(*) AS n FROM generation_jobs WHERE status IN ('queued','pending')")
+      .get().n,
+    0,
+  );
   const before = databaseState(f.db);
   assert.deepEqual((await submit(admit, input)).receipt, first.receipt);
   await assert.rejects(submit(admit, input, 'new-after-stop'), (e) => e.statusCode === 403);
