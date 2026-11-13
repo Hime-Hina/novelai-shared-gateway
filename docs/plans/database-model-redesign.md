@@ -1271,6 +1271,22 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
+### 9.50 全业务 Opening owner 与来源闭包
+
+本片从固定 `3d2bafd` 只接新格式 Opening 的业务投影，不解释旧源、不选择 A/B，也不另建迁移器。九类缺口为 Funding、Input、Request、Job、Attempt、Artifact、StorageTarget、Replica 和 Idempotency；正常缓存链接与成员资金命令由各自 owner 接续。依赖顺序为登记来源→保护 Input/Context→Request→Job→Attempt/Charge→Artifact→Replica，幂等来源最后核对；Funding 与 StorageTarget 可以先独立交付。原完整提交仍只保存一次，所有 owner 严格原事件顺序共用同一保存点，不排序或拆开再调用窄 replay。
+
+首个无歧义增量由现 event-store 的小型 `assertRelationalOpeningSource()` 统一来源引用：同 sourceId 的 ImportSourceRegistered 必须唯一、绑定确切 import stream/无成员或账户冒名，并按 commit_seq/event_index 先于 Opening；不能凭 occurredAt、同笔尚未发生的登记或当前来源指针背书。读取登记使用已有 stream 索引与 LIMIT 2，不复制注册表或持久 marker。既有 Gen、Member 和开账额度路径也复用该规则。origin.originalId 保留显式的原实体引用；它不是让在线 owner 解释旧 JSON 的入口，原旧实体存在性仍须独立迁移器用获准源与清单证明。
+
+首片在该基线上实际支持从 61/72 增至 63/72，仅增加 Funding 和 StorageTarget 两个真实 owner，不把其余七类 Opening 提前放行。专项 14/14，含实际新观察恰一次消费开账余额、第二 owner 已写后外层 catch 全表回滚、完整业务回放零网络/无私有认证和合法 installer ready 对照；连 Gen/Member/Quota/Replica/私有恢复/ready/共同回放八文件 201/201。隔离负控将来源 helper 置空，八个缺来源/晚登记/跨来源/重复登记反例均出现 Missing expected exception；另恢复旧 eventId→receipt 拆字符串算法，真实收据消费准确被原来源校验拒绝。候选源字节恢复后专项重新通过。类型、架构、默认及可信 `3d2bafd` 迁移历史、158 文件语法通过；未跑 full。覆盖清单的关键断言只按这两个实际 owner 更新，需维护者复核；日志在本地 `H:\TEMP\novelai-opening-9.50\`。
+
+OpeningFundingRecorded 复用原 FundingRegistered 的列、目标枚举与事务投影，仅保留 cut 时 pending remaining、原 registeredAt/snapshotAt；不贷记钱包、补余额或重放历史充值。后续到账转换从实际登记事实读取原 receipt，不再把 eventId 字符串前缀当作收据；随机 Opening eventId 因而仍由原额度 owner 对观察与剩余预算恰一次消费。OpeningStorageTargetRecorded 复用原目标规范与写入，并在读取时明确核对 Opening 原登记；namespace/credentialRef 不从当前环境补全。新 Opening 只能推进 building，合法 ready 上的原完整提交重复仍可零写。
+
+后续保护内容沿原 InputStore 的摘要、长度、成员和 BLOB 校验读取/复制；OpeningRequest 的原 acceptedAt、未知 model/context 与 OpeningJob 的未知 createdAt、实际零值、原期限保持原表示。Job.artifact 的 deferred FK 不能替代同笔原角色核对；坏图关系必须在保存点内拒绝，使外层 catch 仍可提交无关事务。副本行可表达原 metadata，不等于实际可读：现 Local canonical identity、R2 受约束 identity、PikPak sha.br 有对应 byte owner；gzip、任意旧 Local 路径或 PikPak 任意 key 没有现成 reader，不能标成已验证恢复。ready 始终核对真正可读原字节。
+
+两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
+
+当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

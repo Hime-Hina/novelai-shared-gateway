@@ -7,6 +7,7 @@ import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
   readRelationalCommit,
   readRelationalReceipt,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import {
@@ -2162,16 +2163,8 @@ export class RelationalGenerationStore {
       if (!this.sqlite.inTransaction) {
         throw new Error('Generation projection requires the owning transaction.');
       }
-      if (
-        e.eventType.startsWith('Opening') &&
-        'origin' in e.payload &&
-        !this.sqlite
-          .prepare(
-            "SELECT 1 FROM domain_events WHERE event_type='ImportSourceRegistered' AND stream_id=?",
-          )
-          .get(`import:${e.payload.origin.sourceId}`)
-      ) {
-        fail('开账事实缺少已登记来源');
+      if (e.eventType.startsWith('Opening')) {
+        assertRelationalOpeningSource(this.sqlite, e);
       }
       switch (e.eventType) {
         case 'JobHistoryRetired': {
@@ -2197,6 +2190,7 @@ export class RelationalGenerationStore {
           break;
         }
         case 'ImportSourceRegistered':
+          assertRelationalOpeningSource(this.sqlite, e);
           break;
         case 'CooldownChanged': {
           const p = e.payload;
