@@ -266,6 +266,7 @@ for (const filename of [
       'ownerAccountCommand',
       'replayAccountCommit',
       'planQuotaObservation',
+      'planGenerationCredentialFailure',
       'registerAccountQuota',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [

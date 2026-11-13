@@ -131,7 +131,7 @@ test('artifact 人工退休保留原 job/late/退款与所有字节，读取不�
   const f = await setup(t);
   await f.accept('late', { samples: 2 });
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   await f.publish('late-0');
   const before = evidence(f.db),
     jobs = rows(f.db, 'generation_jobs'),
@@ -238,12 +238,12 @@ test('活动 child、已关闭核对但未发布准备、pending review、物理
             f.response(),
           ),
         )();
-        f.fail('protected-0');
+        f.fail('protected-0', { aborted: false });
         f.db.transaction(() =>
           f.generations.closeGenerationReview(meta('close-prepared', NOW + 300003), 'protected-0'),
         )();
       } else if (kind === 'review') {
-        f.fail('protected-0');
+        f.fail('protected-0', { aborted: false });
       } else if (kind === 'physical' || kind === 'sibling') {
         await f.publish('protected-0');
       }
@@ -348,7 +348,7 @@ test('退休后新结果准备与伪造准备回放拒绝，后台复制也不�
   const f = await setup(t);
   await f.accept('failed');
   f.dispatch('failed-0');
-  f.fail('failed-0');
+  f.fail('failed-0', { aborted: false });
   f.db.transaction(() =>
     f.generations.closeGenerationReview(meta('close-before-retire', NOW + 300003), 'failed-0'),
   )();

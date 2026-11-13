@@ -20,6 +20,7 @@ import {
 } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
+  readRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
   type StoredRelationalCommit,
@@ -52,6 +53,7 @@ import {
 import {
   createQuotaObservationOrder,
   accountQuotaPatch,
+  generationCredentialError,
   type QuotaResult,
 } from '../quota/account-refresh.ts';
 import type {
@@ -66,11 +68,17 @@ import {
   isUsableOpus,
   isQuotaSnapshotFresh,
   quotaNumber,
+  quotaAvailability,
 } from '../quota/eligibility.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
   pricingVersion: string;
+};
+type GenerationFailureSource = {
+  attemptId: string;
+  aborted: boolean;
+  response: RelationalPayloads['ResponseEvidenceRecorded']['response'];
 };
 export type QuotaPolicyChange =
   | { action: 'fallback-policy'; enabled: boolean }
@@ -1243,6 +1251,172 @@ export class RelationalQuotaStore {
       sharedV5Debt: state.sharedV5Debt,
     };
   }
+  private generationDispatch(attemptId: string) {
+    const attempt = this.sqlite
+      .prepare<
+        [string],
+        {
+          jobId: string;
+          accountId: string;
+          memberId: string;
+          requestId: string;
+          credentialEpoch: number | null;
+          status: string;
+          chargeStatus: string;
+        }
+      >(
+        `SELECT a.job_id AS jobId,a.account_id AS accountId,a.credential_epoch AS credentialEpoch,
+        r.member_id AS memberId,j.request_id AS requestId,j.status,c.status AS chargeStatus
+      FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
+        JOIN generation_requests r ON r.id=j.request_id
+      JOIN charges c ON c.job_id=j.id AND c.attempt_id=a.id
+      WHERE a.id=?`,
+      )
+      .get(attemptId);
+    if (!attempt || attempt.status !== 'running' || attempt.chargeStatus !== 'reserved') {
+      fail('凭据失效缺少原在途尝试与预扣');
+    }
+    if (attempt.credentialEpoch === null) {
+      return null;
+    }
+    const rows = this.sqlite
+      .prepare<[string, string], { id: string; seq: string }>(
+        `SELECT event_id AS id,CAST(commit_seq AS TEXT) AS seq FROM domain_events
+      WHERE stream_id=? AND event_type='DispatchAuthorized' AND json_extract(payload,'$.attemptId')=? LIMIT 2`,
+      )
+      .all(`request:${attempt.requestId}`, attemptId);
+    if (rows.length !== 1) {
+      fail('凭据失效缺少唯一原派发事实');
+    }
+    const dispatch = readRelationalCommit(this.sqlite, rows[0].seq).events.find(
+      (e) => e.eventId === rows[0].id,
+    );
+    if (
+      !dispatch ||
+      dispatch.eventType !== 'DispatchAuthorized' ||
+      dispatch.accountId !== attempt.accountId ||
+      dispatch.memberId !== attempt.memberId ||
+      dispatch.payload.accountId !== attempt.accountId ||
+      dispatch.payload.jobId !== attempt.jobId ||
+      dispatch.payload.attemptId !== attemptId ||
+      dispatch.payload.credentialEpoch !== attempt.credentialEpoch
+    ) {
+      fail('凭据失效与原派发归属或代次不符');
+    }
+    return { attempt, dispatch };
+  }
+
+  private generationCredentialDecision(source: GenerationFailureSource, at: number) {
+    const errorCode = generationCredentialError(source.aborted, source.response.upstreamHttpStatus);
+    if (!errorCode) {
+      return null;
+    }
+    const original = this.generationDispatch(source.attemptId);
+    if (
+      !original ||
+      original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch
+    ) {
+      return null;
+    }
+    if (source.response.dispatchState === 'not_sent') {
+      fail('未发送的生成不能声称上游凭据失效');
+    }
+    const accountId = original.attempt.accountId,
+      view = this.state(accountId),
+      status = quotaAvailability({ ...view.account, quotaError: errorCode }, at);
+    return { accountId, status, errorCode, dispatchEventId: original.dispatch.eventId };
+  }
+
+  planGenerationCredentialFailure(
+    metadata: Metadata,
+    source: GenerationFailureSource & { responseEventId: string; failureEventId: string },
+  ): RelationalEventInput[] {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation credential failure planning requires the owning transaction.');
+    }
+    const decision = this.generationCredentialDecision(source, metadata.recordedAt);
+    if (!decision) {
+      return [];
+    }
+    return [
+      this.event(
+        {
+          eventType: 'QuotaStatusChanged',
+          payload: {
+            accountId: decision.accountId,
+            status: decision.status,
+            generationFailure: {
+              dispatchEventId: decision.dispatchEventId,
+              responseEventId: source.responseEventId,
+              failureEventId: source.failureEventId,
+              errorCode: decision.errorCode,
+            },
+          },
+        },
+        decision.accountId,
+        metadata,
+      ),
+    ];
+  }
+
+  // 缺失或重复决定也要拒绝；不能只在存在额度事实时单向校验来源。
+  private assertGenerationFailureDecisions(events: RelationalEvent[]) {
+    const quotaFacts = events.filter((event) => event.eventType === 'QuotaStatusChanged');
+    for (const failure of events.filter((event) => event.eventType === 'JobFailed')) {
+      const claims = quotaFacts.filter(
+          (event) => event.payload.generationFailure?.failureEventId === failure.eventId,
+        ),
+        attempt = this.sqlite
+          .prepare<[string], { id: string }>('SELECT id FROM generation_attempts WHERE job_id=?')
+          .get(failure.payload.jobId);
+      if (!attempt) {
+        if (claims.length) {
+          fail('凭据失效决定缺少真实派发尝试');
+        }
+        continue;
+      }
+      const responses = events
+        .filter((event) => event.eventType === 'ResponseEvidenceRecorded')
+        .filter((event) => event.payload.attemptId === attempt.id);
+      if (
+        responses.length !== 1 ||
+        responses[0].eventIndex >= failure.eventIndex ||
+        responses[0].streamId !== failure.streamId ||
+        responses[0].memberId !== failure.memberId ||
+        responses[0].accountId !== failure.accountId ||
+        canonicalJson(responses[0].payload.response) !== canonicalJson(failure.payload.response)
+      ) {
+        fail('凭据失效决定需要同笔完整且唯一原响应与失败事实');
+      }
+      const response = responses[0],
+        decision = this.generationCredentialDecision(
+          {
+            attemptId: attempt.id,
+            aborted: failure.payload.aborted,
+            response: response.payload.response,
+          },
+          failure.occurredAt,
+        );
+      if (claims.length !== (decision ? 1 : 0)) {
+        fail('凭据失效决定必须按原失败完整且恰一次保存');
+      }
+      if (
+        decision &&
+        (claims[0].payload.accountId !== decision.accountId ||
+          claims[0].payload.status !== decision.status ||
+          canonicalJson(claims[0].payload.generationFailure) !==
+            canonicalJson({
+              dispatchEventId: decision.dispatchEventId,
+              responseEventId: response.eventId,
+              failureEventId: failure.eventId,
+              errorCode: decision.errorCode,
+            }))
+      ) {
+        fail('凭据失效决定不符原失败、响应或派发来源');
+      }
+    }
+  }
+
   refillQuota(metadata: Metadata, accountId: string) {
     return this.owned(() => {
       if (metadata.actorKind === 'member' && metadata.actorId !== this.env.OWNER_USER_ID) {
@@ -1297,7 +1471,10 @@ export class RelationalQuotaStore {
           }
           events.push(
             this.event(
-              { eventType: 'QuotaStatusChanged', payload: { accountId, status: p.status } },
+              {
+                eventType: 'QuotaStatusChanged',
+                payload: { accountId, status: p.status, generationFailure: null },
+              },
               accountId,
               metadata,
             ),
@@ -1733,6 +1910,7 @@ export class RelationalQuotaStore {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
+    this.assertGenerationFailureDecisions(events);
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();
@@ -2038,10 +2216,57 @@ export class RelationalQuotaStore {
           }
           break;
         }
-        case 'QuotaStatusChanged':
+        case 'QuotaStatusChanged': {
+          const origin = e.payload.generationFailure;
+          if (origin) {
+            const response = sources.get(origin.responseEventId),
+              failure = sources.get(origin.failureEventId);
+            if (
+              !response ||
+              response.eventType !== 'ResponseEvidenceRecorded' ||
+              !failure ||
+              failure.eventType !== 'JobFailed'
+            ) {
+              fail('凭据失效缺少同笔原响应与失败事实');
+            }
+            const original = this.generationDispatch(response.payload.attemptId);
+            if (
+              !original ||
+              original.dispatch.eventId !== origin.dispatchEventId ||
+              original.attempt.accountId !== accountId ||
+              original.attempt.credentialEpoch !== a.epoch ||
+              response.commitSeq !== e.commitSeq ||
+              failure.commitSeq !== e.commitSeq ||
+              response.eventIndex >= e.eventIndex ||
+              failure.eventIndex <= e.eventIndex ||
+              response.streamId !== `request:${original.attempt.requestId}` ||
+              failure.streamId !== response.streamId ||
+              response.memberId !== original.attempt.memberId ||
+              failure.memberId !== response.memberId ||
+              response.accountId !== accountId ||
+              failure.accountId !== accountId ||
+              e.memberId !== null ||
+              failure.payload.jobId !== original.attempt.jobId ||
+              canonicalJson(failure.payload.response) !==
+                canonicalJson(response.payload.response) ||
+              response.payload.response.dispatchState === 'not_sent' ||
+              generationCredentialError(
+                failure.payload.aborted,
+                response.payload.response.upstreamHttpStatus,
+              ) !== origin.errorCode ||
+              quotaAvailability(
+                { ...this.state(accountId).account, quotaError: origin.errorCode },
+                e.occurredAt,
+              ) !== e.payload.status
+            ) {
+              fail('凭据失效与同笔原失败、响应、派发或当前代次不符');
+            }
+            q.quotaErrorCode = origin.errorCode;
+          }
           q.status = e.payload.status;
           this.saveAccountQuota(q, e.eventId);
           break;
+        }
         case 'QuotaBaselineAdopted': {
           const p = e.payload,
             observation = this.observation(p.observationEventId, accountId);

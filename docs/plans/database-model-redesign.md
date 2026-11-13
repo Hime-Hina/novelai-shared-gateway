@@ -1125,6 +1125,26 @@ Node 22.23.4 输入/关系查询/现成员 HTTP 三文件 44/44；架构、后�
 
 本片仅交付读取能力与契约补正，不选择 A/B、不打开旧库 fallback、不迁移历史、安装 ready 或进行生产切换。
 
+### 9.35 #52：生成失败的当前凭据失效闭环
+
+原 `finishGenerationFailure()` 仅在明确非 abort、实际上游 401/403 且当前仍为原凭据时记录 invalid_key/access_denied 后退款，不刷新余额或官方观察时间。新格式复用 `quota/account-refresh.ts` 的同一错误分类与 `quotaAvailability()`：凭据身份改由原 `DispatchAuthorized.credentialEpoch` 决定，不能用当前 PST 新造查询票据，也不能因 A1→B→A2 的 PST 字符串再次相同而停用新代次。当前匹配的失败只改变 `account_quota_state.quota_error_code`、原 owner 决定的 status 及来源，保留 enabled、原官方余额、观察 ID/时间/序号和基线/恢复游标；原资源扣退、核对、冷却仍归现有 owner。
+
+`JobFailed.aborted` 为必填 boolean，`failGeneration()` 在回执重领之前也要求调用者明确提供；真实执行器从原 signal/isAbortError、已执行的逻辑 abort 或明确的本地中断决定取得该值，不从 401、超时文字或未知物理完成推断。测试中的普通失败同样逐调用明确 false，helper 不提供 false fallback。旧历史没有保存这一事实时仍由 opening/来源表达未知，不在迁移时补造 false。
+
+`QuotaStatusChanged.generationFailure` 为必填可空对象：普通额度决定显式 NULL；生成失效保存原 dispatchEventId、同笔 responseEventId/failureEventId 及安全错误分类。失败提交严格按 ResponseEvidenceRecorded→QuotaStatusChanged→原退款/Review→可选受保护诊断→JobFailed 应用一次；quota owner 核对实际原尝试/预扣、账户/成员/请求、当前代次、同一完整提交中的原响应与非 abort 失败以及原顺序，复用现状态判定，不复制余额或资格算法。原派发投影也核对当时当前业务代次，不能先伪造 dispatch epoch 再用作失效来源。旧代次的错误不生成该额度事实，仍允许原资源退款、合法结算及原窄回放；窄 generation replay 只额外允许带真实 generationFailure 的这类额度事实，不能接收其他普通 quota/policy 提交。
+
+完整提交创建投影上下文时还从每个 JobFailed 反向核对原决定：有原尝试的失败必须具有同笔唯一原响应，线上规划和回放使用同一个 quota 私有决定函数；当前代次、非 abort 的 401/403 必须恰有一项失效决定，其他失败必须为零。删除或复制额度事实、同时删除响应与额度事实、复制响应即使重建了两个合法事件列表、数量与流版本也整体拒绝；未派发且无原尝试的失败仍允许没有响应或额度事实。此检查在任何 owner 应用之前执行，不新增 applied 标记或持久派生状态。
+
+本轮未发布关系事件版本统一升至 3，由唯一 `RELATIONAL_EVENT_SCHEMA_VERSION` 生成新 DDL CHECK 和 schema hash，旧关系 v2 原型即使有正确旧 hash 也在格式门禁拒绝，须从新空 building 目标重建，不能手补 hash/字段或标记 ready。原 v1 事件、旧 SQL/journal、可信迁移基线、input schema 1 和旧 writer 4 均未改动。同轮其他 required 字段仍由其所属 owner 的实现合并，不保留旧原型在线兼容分支。
+
+验收入口为 [`relational-generation-credential-failure.test.mjs`](../../tests/integration/relational-generation-credential-failure.test.mjs)：当前 401/403 阻止再派发，abort/200 不停用；余额/官方观察不变、原池退款、回执重领零写；模拟旧凭据恢复切点上的 A1→B→A2 保留新观察并完成原池退款及窄回放；第二 owner 已写后异常被外层捕获全表回滚；两个事件列表一致仍拒绝错来源、顺序、abort、分类或代次；伪造原派发代次回滚；共同空业务重建保留真实诊断、错误与原退款，不恢复认证或发网络。旧 prototype 格式拒绝另在 `relational-storage.test.mjs`。本片不新增一般请求排序、持久屏障或 applied 状态，实际协调器的物理完成补证及自动 refill 由对应 owner 片接入，联合候选完整检查另行记录。
+
+完整性修复后的本片专项 25/25，连同诊断/原生成三文件 64/64，额度/共同回放/格式/事件四文件 101/101；类型、架构、默认及可信 `29924b9` 迁移历史、145 文件语法和局部格式检查通过。仅移除共同完整决定检查的负控使四项缺失/重复子场景均出现 Missing expected exception（含父项共 5 fail），还原文件摘要后专项重新 25/25。日志在本地 `H:\TEMP\novelai-credential-failure-20261114\completeness-*.log`；独立复审及同一联合候选的编译产物、Node 24、完整后端验证另外绑定最终提交，不以本片代替。
+
+固定修复 `4af58cad587a234bb5e17d4e99f7561d6f6c22d9` 独立技术复审通过：原四个合法 envelope 的删除/重复反例均拒绝且外层捕获后全表回滚，queued、另一个真实 attempt、abort 和旧 epoch 的合法/伪造矩阵保留，原提交仍可重试及零写重领；独立 8 项与作者 25 项共 33/33，正确旧 v2 DDL/hash 的拒绝另 1/1。24 个相关文件 hash 与固定 Git blob 匹配，证据为 `H:\TEMP\novelai-generation-failure-fixed-4af58ca-20261114\INDEPENDENT-REVIEW.md`。原 `7387738` 缺失/重复决定的四个失败日志保留，不能作为通过候选。
+
+与队列、分组、自动恢复及退役汇合时，保留 NULL 物理结束证明和诊断原票据，同时保留当前失效的完整 source 及 v3 必填字段。后续新增错误/退役用例逐次显式写明非取消，没有在通用 helper 补默认 false；派发代次反例改在原观察同一时点派发，避开合法自动恢复子提交造成的 checkpoint 缺口，仍严格断言真实代次错误并核对原提交可重试。七个关系 HTTP/诊断/凭据失败/队列/退役/错误文件 97/97；完整后端与编译/Node 24 待统一固定版本。
+
 ### 9.36 #52：成员生成 HTTP 的关系 owner 接入
 
 本片从 `29924b9` 继续，保持[成员生成契约](../contracts/member-generation-contract.md)与[成员会话](../architecture/member-sessions.md)的 Cookie、同源、正文预算和不续期规则。`createMemberGenerationHttp()` 只拥有路径、JSON/multipart 读取、公开错误、私有响应和原两段 SSE；其窄能力由 `relational-member-http.ts` 绑定真实 Member/Input/Generation/Request owner 与 `readRelationalArtifactContent()`。旧运行时暂经 `legacy-member-http.ts` 使用同一 transport，原状态/取消 DTO 仍由旧成员路由返回；没有 `JsonStore` 兼容对象、按格式回退或可任意切旧库的配置。

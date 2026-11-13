@@ -286,7 +286,7 @@ test('退款迟到发布也包含 Local，原退款、失败和批次停止保�
   await f.accept('late-local', { samples: 2 });
   const wallet = f.generations.readWallet('a', 'm1');
   f.dispatch('late-local-0');
-  f.fail('late-local-0');
+  f.fail('late-local-0', { aborted: false });
   const result = await f.publish('late-local-0', NOW + 4);
   assertLocal(f.db, 'late-local-0', result.commitSeq);
   assert.equal(result.receipt.refundRetained, true);

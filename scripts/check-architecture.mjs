@@ -89,6 +89,7 @@ const mutations = new Set([
   'ownerAccountCommand',
   'replayAccountCommit',
   'planQuotaObservation',
+  'planGenerationCredentialFailure',
   'registerAccountQuota',
   'createInputProjector',
   'createDiagnosticProjector',

@@ -385,7 +385,7 @@ test('接单完整提交与真实生成联合恢复，重复零写入且不恢�
   await f.change('resume', true);
   await f.accept('fresh', { now: NOW + 14 });
   f.dispatch('fresh-0', NOW + 15);
-  await f.fail('fresh-0');
+  await f.fail('fresh-0', { aborted: false });
   const r = target(t, f);
   for (const table of [
     'generation_requests',

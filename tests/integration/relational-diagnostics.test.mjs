@@ -67,7 +67,7 @@ test('真实捕获先精确脱敏再限长，同笔失败、原资源退款与�
     dispatch = f.dispatch('diagnostic-0').dispatch;
   assert.equal(Object.isFrozen(dispatch), true);
   const detail = `  private-path ${dispatch.pst} ${'x'.repeat(5000)}  `,
-    result = f.fail('diagnostic-0', { diagnostic: { dispatch, error: detail } }),
+    result = f.fail('diagnostic-0', { aborted: false, diagnostic: { dispatch, error: detail } }),
     fact = diagnosticFact(f, result),
     expected = errorDetailMessage(detail, [dispatch.pst]);
   assert.equal(fact.payload.byteLength, Buffer.byteLength(expected));
@@ -93,6 +93,7 @@ test('真实捕获先精确脱敏再限长，同笔失败、原资源退款与�
   const original = f.db.serialize();
   assert.equal(
     f.fail('diagnostic-0', {
+      aborted: false,
       diagnostic: {
         dispatch,
         error: {
@@ -113,9 +114,13 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
   const dispatch = f.dispatch('auth-0').dispatch,
     before = databaseState(f.db);
   for (const invalid of [{ ...dispatch }, null, undefined]) {
-    assert.throws(() => f.fail('auth-0', { diagnostic: { dispatch: invalid, error: 'private' } }), {
-      statusCode: 403,
-    });
+    assert.throws(
+      () =>
+        f.fail('auth-0', { aborted: false, diagnostic: { dispatch: invalid, error: 'private' } }),
+      {
+        statusCode: 403,
+      },
+    );
     assert.equal(databaseState(f.db), before);
   }
   for (const actor of [
@@ -127,6 +132,7 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
       assert.throws(
         () =>
           f.generations.failGeneration({ ...meta('bad-actor'), ...actor }, 'auth-0', {
+            aborted: false,
             errorCode: 'upstream_unavailable',
             errorStatus: 503,
             diagnostic: { dispatch, error: 'private' },
@@ -140,6 +146,7 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
     assert.throws(
       () =>
         new RelationalGenerationStore(f.db).failGeneration(meta('other-owner'), 'auth-0', {
+          aborted: false,
           errorCode: 'upstream_unavailable',
           errorStatus: 503,
           diagnostic: { dispatch, error: 'private' },
@@ -148,7 +155,7 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
     ),
   )();
   assert.equal(databaseState(f.db), before);
-  f.fail('auth-0', { diagnostic: { dispatch, error: 'private' } });
+  f.fail('auth-0', { aborted: false, diagnostic: { dispatch, error: 'private' } });
 });
 
 test('原 trim 后限长允许截断末尾空白，失败退款与诊断原字节仍完整恢复', async (t) => {
@@ -158,7 +165,7 @@ test('原 trim 后限长允许截断末尾空白，失败退款与诊断原字�
     dispatch = f.dispatch('whitespace-0').dispatch,
     raw = `${'x'.repeat(3999)} tail`,
     expected = errorDetailMessage(raw),
-    result = f.fail('whitespace-0', { diagnostic: { dispatch, error: raw } }),
+    result = f.fail('whitespace-0', { aborted: false, diagnostic: { dispatch, error: raw } }),
     fact = diagnosticFact(f, result);
   assert.equal(expected.length, 4000);
   assert.equal(expected.at(-1), ' ');
@@ -190,7 +197,7 @@ test('限长边界的 Unicode 在保护内容 owner 统一为 UTF-8 可保存文
       const wallet = f.generations.readWallet('a', 'm1'),
         dispatch = f.dispatch('unicode-0').dispatch,
         expected = errorDetailMessage(raw).toWellFormed(),
-        result = f.fail('unicode-0', { diagnostic: { dispatch, error: raw } }),
+        result = f.fail('unicode-0', { aborted: false, diagnostic: { dispatch, error: raw } }),
         fact = diagnosticFact(f, result);
       assert.equal(expected.isWellFormed(), true);
       assert.equal(errorDetailMessage(raw), raw.trim().slice(0, 4000));
@@ -226,11 +233,14 @@ test('外层回滚留下的派发快照即使同 attempt 重试也不是原捕�
   const dispatch = f.dispatch('ghost-0').dispatch,
     before = databaseState(f.db);
   assert.deepEqual(ghost, dispatch);
-  assert.throws(() => f.fail('ghost-0', { diagnostic: { dispatch: ghost, error: 'private' } }), {
-    statusCode: 403,
-  });
+  assert.throws(
+    () => f.fail('ghost-0', { aborted: false, diagnostic: { dispatch: ghost, error: 'private' } }),
+    {
+      statusCode: 403,
+    },
+  );
   assert.equal(databaseState(f.db), before);
-  f.fail('ghost-0', { diagnostic: { dispatch, error: 'private' } });
+  f.fail('ghost-0', { aborted: false, diagnostic: { dispatch, error: 'private' } });
 });
 
 test('诊断后续投影 SQL 失败被外层捕获时退款/事实/正文全回滚，可用原命令重试', async (t) => {
@@ -243,7 +253,11 @@ test('诊断后续投影 SQL 失败被外层捕获时退款/事实/正文全回�
   const before = databaseState(f.db);
   f.db.transaction(() =>
     assert.throws(
-      () => f.fail('atomic-0', { diagnostic: { dispatch, error: 'protected private detail' } }),
+      () =>
+        f.fail('atomic-0', {
+          aborted: false,
+          diagnostic: { dispatch, error: 'protected private detail' },
+        }),
       /diagnostic terminal fault/,
     ),
   )();
@@ -251,6 +265,7 @@ test('诊断后续投影 SQL 失败被外层捕获时退款/事实/正文全回�
   f.db.exec('DROP TRIGGER fail_diagnostic_terminal');
   assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_diagnostics').get().n, 0);
   const result = f.fail('atomic-0', {
+    aborted: false,
     diagnostic: { dispatch, error: 'protected private detail' },
   });
   assert.ok(diagnosticFact(f, result));
@@ -272,6 +287,7 @@ test('原在途凭据 epoch 变化仍可诊断与原资源退款，原票据脱�
   const result = f.fail(
       'stale-0',
       {
+        aborted: false,
         diagnostic: { dispatch, error: `old response ${dispatch.pst}` },
         evidence: { requestStarted: true },
         completion: {
@@ -313,6 +329,7 @@ test('真实 A1→B→A2 轮换后原失败回执仍零写且不重捕获诊断'
       env,
     );
   const result = f.fail('rotate-0', {
+      aborted: false,
       diagnostic: { dispatch, error: `old response ${dispatch.pst}` },
     }),
     fact = diagnosticFact(f, result);
@@ -338,6 +355,7 @@ test('真实 A1→B→A2 轮换后原失败回执仍零写且不重捕获诊断'
     repeated = f.fail(
       'rotate-0',
       {
+        aborted: false,
         diagnostic: {
           dispatch,
           error: {
@@ -375,7 +393,10 @@ test('完整提交的保护源、摘要/长度和同笔失败关系不可替换�
   await f.accept('restore');
   const dispatch = f.dispatch('restore-0').dispatch,
     beforeSeq = f.db.prepare('SELECT MAX(commit_seq) AS seq FROM commits').get().seq,
-    result = f.fail('restore-0', { diagnostic: { dispatch, error: 'source private detail' } }),
+    result = f.fail('restore-0', {
+      aborted: false,
+      diagnostic: { dispatch, error: 'source private detail' },
+    }),
     stored = readRelationalCommit(f.db, result.commitSeq),
     fact = diagnosticFact(f, result);
   for (const mode of ['missing-source', 'body', 'wrong-commit', 'missing-reference']) {
@@ -446,6 +467,7 @@ test('诊断与事件联合恢复后可经真实完整核对安装 ready，旧 K
   await f.accept('ready-diagnostic');
   const dispatch = f.dispatch('ready-diagnostic-0').dispatch,
     result = f.fail('ready-diagnostic-0', {
+      aborted: false,
       diagnostic: { dispatch, error: 'protected recovery detail' },
     }),
     fact = diagnosticFact(f, result);

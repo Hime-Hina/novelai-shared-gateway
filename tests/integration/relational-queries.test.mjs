@@ -123,7 +123,7 @@ test('结果读取保留准备/失败/迟到/退休语义及产物原始 input/a
   await f.accept('late', { samples: 2 });
   assert.throws(() => store.readMemberResult('late-0', 'm1'), hasCode('result_not_ready'));
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   assert.throws(() => store.readMemberResult('late-0', 'm1'), hasCode('generation_failed'));
   await f.publish('late-0', NOW + 100);
   const before = databaseState(f.db),

@@ -222,7 +222,7 @@ test('退款后重开恢复仍保留失败/原池退款与批次停止，旧尝�
   await f.accept('late', { samples: 2 });
   const wallet = f.generations.readWallet('a', 'm1');
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   const { descriptor } = prepare(f, 'late-0', NOW + 4);
   await writeFile(path.join(f.dir, descriptor.file) + '.part', image);
   f.db
@@ -323,7 +323,7 @@ test('准备查询按有界 job ID 翻页，拒绝无界参数；恢复不能跨
     await f.accept(id, { now });
     f.dispatch(`${id}-0`, now + 1);
     prepare(f, `${id}-0`, now + 2);
-    f.fail(`${id}-0`, {}, now + 3);
+    f.fail(`${id}-0`, { aborted: false }, now + 3);
   }
   assert.deepEqual(f.generations.readPendingGenerationResultIds('', 2), ['a-0', 'b-0']);
   assert.deepEqual(f.generations.readPendingGenerationResultIds('b-0', 2), ['c-0']);
@@ -348,7 +348,7 @@ test('一百条之后的准备仍被恢复扫描，缺失字节不阻塞后一�
     await f.accept(id, { now });
     f.dispatch(`${id}-0`, now + 1);
     prepare(f, `${id}-0`, now + 2, { ...f.response(now + 2), upstreamCompletedAt: null });
-    f.fail(`${id}-0`, {}, now + 3);
+    f.fail(`${id}-0`, { aborted: false }, now + 3);
   }
   const before = databaseState(f.db),
     outcomes = [];

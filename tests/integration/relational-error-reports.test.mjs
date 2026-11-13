@@ -19,7 +19,7 @@ const iso = (at) => new Date(at).toISOString();
 async function fail(f, id, { detail = 'private stack', memberId = 'm1', at = NOW + 2 } = {}) {
   await f.accept(id, { memberId });
   const dispatch = f.dispatch(`${id}-0`).dispatch;
-  return f.fail(`${id}-0`, { diagnostic: { dispatch, error: detail } }, at);
+  return f.fail(`${id}-0`, { aborted: false, diagnostic: { dispatch, error: detail } }, at);
 }
 function trace(db) {
   const sql = [],
@@ -119,7 +119,7 @@ test('失败时间表达式保留真实 0/未知与开账 header 角色，薄 DT
   const f = await fixture(t, { env: { QUEUE_WAIT_TIMEOUT_MS: String(NOW + 10000) } });
   await f.accept('zero-time', { now: 0 });
   f.dispatch('zero-time-0');
-  f.fail('zero-time-0');
+  f.fail('zero-time-0', { aborted: false });
   const row = new RelationalReportStore(f.db).readErrorLogs(NOW)[0];
   assert.equal(row.createdAt, iso(0));
   assert.equal(row.durationMs, NOW + 2);
@@ -169,7 +169,10 @@ test('旧 route/artist/size 不从当前配置补造；实际受理的不同原�
     {},
   );
   const dispatch = f.dispatch('direct-error-0').dispatch;
-  f.fail('direct-error-0', { diagnostic: { dispatch, error: 'direct private' } });
+  f.fail('direct-error-0', {
+    aborted: false,
+    diagnostic: { dispatch, error: 'direct private' },
+  });
   const row = new RelationalReportStore(f.db).readErrorLogs(NOW)[0];
   assert.equal(row.request.tag, 'subject');
   assert.equal(row.request.prompt, 'artist prefix\nsubject');
