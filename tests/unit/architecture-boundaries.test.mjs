@@ -138,6 +138,8 @@ for (const filename of [
     ['dynamic business replayer', "await import('../storage/relational-replay.js');"],
     ...[
       'createInputProjector',
+      'createDiagnosticProjector',
+      'stageGenerationDiagnostic',
       'createGenerationProjector',
       'createQuotaProjector',
       'applyAccountEvent',

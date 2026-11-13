@@ -1023,6 +1023,24 @@ Node 22.23.4 输入/关系查询/现成员 HTTP 三文件 44/44；架构、后�
 
 本片仅交付读取能力与契约补正，不选择 A/B、不打开旧库 fallback、不迁移历史、安装 ready 或进行生产切换。
 
+### 9.30 T6：真实关系错误/损耗读取与受保护诊断
+
+本片从联合 `8c3c7e9` 接续。原执行诊断经 `errorDetailMessage()` 收敛/限长，再由旧受保护内容机制保存；新 `failGeneration()` 尚固定 diagnosticId=NULL，`DiagnosticRecorded` 没有业务投影 owner，ready 因而明确拒绝诊断。本片先在实际 generation 事务和既有 `RelationalInputStore` 受保护内容边界闭合该缺口，再接复用 `publicErrorLog()` / `publicFailureEvent()` / `failureAccountingAlerts()` 的窄关系读取；不接 HTTP 总装配或其他开账命令。
+
+诊断捕获只接受 system/null 及该 generation owner 首次 dispatch 返回的不可变私有对象。当前 physical owner 没有新关系派发票据来源，故仅为这个已有 dispatch 对象增加私有 WeakMap→原 DispatchAuthorized eventId 绑定；它不保存 applied 状态，不拥有强引用或持久化记录，生命周期随在途对象释放。每次捕获和原回执重领均核对原完整已提交的派发事实、唯一 attempt、原账户及 credentialEpoch，拒绝伪造、另一 owner/任务、外层回滚留下的幽灵对象。账户 A1→B→A2 不撤销原 A1 在途失败、原资源退款或合法诊断；现有冷却代次隔离保持。业务历史恢复不生成或依赖此在线能力，也不重建原 PST。
+
+实际捕获 PST 只在原 `errorDetailMessage(error, knownSecrets)` owner 中精确替换，先脱敏后沿用 4000 字符限制；原单参行为保留，不猜测秘密格式。空收敛结果沿原语义不产生诊断。正文只进入 `generation_diagnostics`，事件只引用原 job、稳定诊断 ID、SHA-256、UTF-8 byteLength 和原 createdAt；原 job 对应唯一原 attempt。字段与失败事实同一提交，正文写入或任何投影失败由外层保存点全部回滚，幂等重领不重处理 error 或再次写正文。
+
+受保护内容仍归 `RelationalInputStore`，只新增诊断专用 stage/read/project 能力；不增加通用 store 或回调。完整提交回放要求相同的 protected source：先核对源完整原提交，再核诊断所属 job、摘要/长度/时间及对应同笔 JobFailed，按原序复制正文并应用失败；重复回放只比较原内容，缺失/损坏不能补成成功。诊断正文不是当前认证，恢复不写 Key、Cookie、epoch 或 PST；仅完整支持并通过原逐表核对后取消 ready 的无诊断 owner 拒绝。
+
+只读报告的详情、旧 route/count/cost 和原请求字段缺失时保留 NULL，不补当前报价或旧默认；普通聚合不读输入正文/附件，诊断只在已鉴权管理详情按需校验读取，报告不回写。后续关系损耗金额在现定点 owner 内准确计算，到兼容 DTO 才转 number，互斥候选和聚合责任继续分别展示。反例覆盖真实票据/幽灵/轮换/幂等、外层 catch 全表回滚、完整提交和保护内容损坏/错源、恢复不复活认证，以及报告原时间/金额/分页/零写入。
+
+诊断首片已用真实 owner 专项 12/12 验证上述捕获、同笔原子性和事件/私有快照联合恢复的合法 ready；连同原 generation、共同 replay、ready、公开错误和架构专项共 284/284，零跳过。真实账户 owner 仍拒绝 reserved 期间轮换：旧在途 epoch 隔离反例明确沿既有 generation 测试以外部恢复后状态表示，另用退款后真实 A1→B→A2 命令核对原回执重领零写，不把前者称为线上轮换。架构守卫仅将两个新投影写方法纳入既有禁止查询/协议层调用集合，并添加相应拒绝反例；这项守卫扩展需维护者复核。关系错误/损耗 SQL 及本候选独立复审、完整发布验证仍接续，不沿用旧批次数量宣称完成。
+
+独立审查反例发现原 owner 的 trim→slice 可能在 4000 字符处保留截断末尾空白；保护内容不能擅自要求再次 trim 而阻止失败退款。stage/read 共同去掉这一多余表示限制，保留原收敛字节、非空、长度和摘要校验，追加真实失败/退款/完整恢复反例后诊断专项 13/13。修复没有改动原单参 `errorDetailMessage()` 的语义或历史正文。
+
+同一表示边界的 Unicode 反例进一步确认：合法 emoji 被 UTF-16 长度限制切半后，Node 摘要编码与 SQLite TEXT 绑定会产生不同字节。保护内容 owner 在新正文摘要/长度/INSERT 之前仅做一次标准 Buffer UTF-8 编码/解码，确保三者使用同一有效 UTF-8 文本，并适用现有 TypeScript lib；公共错误收敛函数和历史持久正文不变，read 不放宽校验或补写。追加半 surrogate、完整 emoji、CJK、换行和原不完整 surrogate 五类实际退款及完整恢复反例后，诊断/公开错误两文件 21/21，零跳过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

@@ -113,9 +113,6 @@ export async function verifyAndInstallRelationalStorage(
   let directory: string | undefined, shadow: Database.Database | undefined;
   try {
     assertCut(source, expected);
-    if (source.prepare('SELECT 1 FROM generation_diagnostics LIMIT 1').get()) {
-      invalid('diagnostic recovery has no implemented owner.');
-    }
     directory = mkdtempSync(path.join(tmpdir(), 'novelai-relational-ready-'));
     shadow = new Database(path.join(directory, 'shadow.sqlite'));
     initializeRelationalStorage(shadow, expected.historyId);
