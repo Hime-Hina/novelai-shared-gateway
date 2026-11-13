@@ -388,7 +388,12 @@ export const relationalPayloadParsers = {
   }),
   AccountBound: fields({ accountId: nullable(id), configVersion: integer }),
   CredentialRotated: fields({ accountId: id, beforeEpoch: positive, credentialEpoch: positive }),
-  AvailabilityChanged: fields({ accountId: id, enabled: bool, reason: id }),
+  AvailabilityChanged: fields({
+    accountId: id,
+    enabled: bool,
+    reason: id,
+    observationEventId: nullable(id),
+  }),
   CooldownChanged: fields({
     accountId: id,
     attemptId: nullable(id),
