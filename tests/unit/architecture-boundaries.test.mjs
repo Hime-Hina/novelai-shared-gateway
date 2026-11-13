@@ -165,6 +165,14 @@ for (const filename of [
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
     ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
+    [
+      'dynamic relational admission',
+      "await import('../generation/relational-member-admission.js');",
+    ],
+    [
+      'namespace relational admission',
+      "import * as admission from '../generation/relational-member-admission.ts';",
+    ],
     ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
     [
       'aliased result recovery',
@@ -193,6 +201,8 @@ for (const filename of [
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ...[
       'acceptGeneration',
+      'createRelationalMemberGenerationAdmission',
+      'admitRelationalMemberGeneration',
       'dispatchGeneration',
       'recordGenerationResponse',
       'prepareGenerationResult',

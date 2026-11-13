@@ -119,7 +119,7 @@ export function generationIntent(
 ): GenerationIntent | null {
   return key
     ? {
-        keyHash: hashObject(key),
+        keyHash: generationIdempotencyKeyHash(key),
         operation: 'generate',
         randomSeed: false,
         noCache: false,
@@ -127,6 +127,10 @@ export function generationIntent(
         normalize,
       }
     : null;
+}
+
+export function generationIdempotencyKeyHash(key: string): string {
+  return hashObject(key);
 }
 
 export function requestCacheKey(
