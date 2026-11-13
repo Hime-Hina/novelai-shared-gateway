@@ -523,22 +523,36 @@ export class RelationalReplicaStore {
   }
   readArtifactCacheReference(artifactId: string) {
     const artifact = this.readArtifact(artifactId);
-    if (artifact.retiredAt !== null) fail('退休产物不能用于新缓存引用');
-    const rows = this.sqlite.prepare<[string], { id: string; kind: Kind }>(
-      `SELECT s.id,s.kind FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id
+    if (artifact.retiredAt !== null) {
+      fail('退休产物不能用于新缓存引用');
+    }
+    const rows = this.sqlite
+      .prepare<[string], { id: string; kind: Kind }>(
+        `SELECT s.id,s.kind FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id
        WHERE r.artifact_id=? ORDER BY s.id`,
-    ).all(artifactId);
+      )
+      .all(artifactId);
     let local = false;
     for (const row of rows) {
       this.readStorageTarget(row.id);
       const replica = this.readArtifactReplica(artifactId, row.id)!;
-      if (row.kind === 'local' && replica.deletedAt === null && replica.uploadedAt !== null && replica.verifiedAt !== null) local = true;
-      if (replica.deletedAt === null && replica.uploadedAt !== null &&
-        ((row.kind === 'r2' && replica.verifiedAt !== null) || row.kind === 'pikpak')) {
-        return {artifact, persistent: true, local};
+      if (
+        row.kind === 'local' &&
+        replica.deletedAt === null &&
+        replica.uploadedAt !== null &&
+        replica.verifiedAt !== null
+      ) {
+        local = true;
+      }
+      if (
+        replica.deletedAt === null &&
+        replica.uploadedAt !== null &&
+        ((row.kind === 'r2' && replica.verifiedAt !== null) || row.kind === 'pikpak')
+      ) {
+        return { artifact, persistent: true, local };
       }
     }
-    return {artifact, persistent: false, local};
+    return { artifact, persistent: false, local };
   }
   private beginTicket(artifactId: string, storageTargetId: string, background: boolean): Ticket {
     const artifact = this.readArtifact(artifactId),

@@ -74,7 +74,13 @@ export interface ReusedGenerationInput {
   noCache: false;
   idempotency?: { keyHash: string; noCache: false };
   sourceJobId: string;
-  cached?: { requestId: string; jobId: string; inputId: string; source: string; artifactId: string; admissionEpoch: number };
+  cached?: {
+    requestId: string;
+    jobId: string;
+    inputId: string;
+    source: string;
+    artifactId: string;
+  };
 }
 interface InputRow {
   id: string;
@@ -149,104 +155,265 @@ export class RelationalInputStore {
   }
 
   private preparedFingerprint(
-    prepared: Pick<PreparedRelationalInput, 'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'>,
+    prepared: Pick<
+      PreparedRelationalInput,
+      'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'
+    >,
     seedMode: AcceptedInput['seedMode'],
     noCache: boolean,
   ) {
     const request = relationalProviderRequest(
-      restoreRelationalWire(prepared.body, prepared.assets, prepared.firstSeed, prepared.sampleCount),
+      restoreRelationalWire(
+        prepared.body,
+        prepared.assets,
+        prepared.firstSeed,
+        prepared.sampleCount,
+      ),
       prepared.context,
     );
     return generationRequestFingerprint(
-      { ...request, operation: prepared.body.operation as string, sampleCount: prepared.sampleCount },
+      {
+        ...request,
+        operation: prepared.body.operation as string,
+        sampleCount: prepared.sampleCount,
+      },
       { randomSeed: seedMode === 'random', noCache },
     );
   }
 
   readGenerationReuseProof(jobId: string) {
-    const job = this.sqlite.prepare<[string], {
-      id: string; requestId: string; memberId: string; cacheKey: string | null;
-      status: string; retiredAt: number | null;
-    }>(`SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.cache_key AS cacheKey,
-      j.status,j.retired_at AS retiredAt FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`).get(jobId);
-    if (!job) unavailable();
+    const job = this.sqlite
+      .prepare<
+        [string],
+        {
+          id: string;
+          requestId: string;
+          memberId: string;
+          cacheKey: string | null;
+          status: string;
+          retiredAt: number | null;
+        }
+      >(
+        `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.cache_key AS cacheKey,
+      j.status,j.retired_at AS retiredAt FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      unavailable();
+    }
     const request = this.request(job.requestId, job.memberId);
-    if (!request.context_id || request.sample_count !== 1 || !['fixed', 'random'].includes(request.seed_mode)) unavailable();
+    if (
+      !request.context_id ||
+      request.sample_count !== 1 ||
+      !['fixed', 'random'].includes(request.seed_mode)
+    ) {
+      unavailable();
+    }
     const input = this.requestInput(request),
       context = this.context(request.context_id),
       firstSeed = this.jobSeed(request.id, job.id);
-    if (!input.body || input.row.completeness !== 'complete' || firstSeed === null) unavailable();
-    const assets = input.assets.map(asset => ({...asset, bytes: this.asset(request.input_id, asset).bytes}));
-    const prepared = {body: input.body, assets, context, firstSeed, sampleCount: 1};
-    const accepted = this.sqlite.prepare<[string], {seq: string}>(
-      "SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted' ORDER BY stream_version LIMIT 1",
-    ).get(`request:${request.id}`);
-    if (!accepted) unavailable();
+    if (!input.body || input.row.completeness !== 'complete' || firstSeed === null) {
+      unavailable();
+    }
+    const assets = input.assets.map((asset) => ({
+      ...asset,
+      bytes: this.asset(request.input_id, asset).bytes,
+    }));
+    const prepared = { body: input.body, assets, context, firstSeed, sampleCount: 1 };
+    const accepted = this.sqlite
+      .prepare<[string], { seq: string }>(
+        "SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted' ORDER BY stream_version LIMIT 1",
+      )
+      .get(`request:${request.id}`);
+    if (!accepted) {
+      unavailable();
+    }
     const stored = readRelationalCommit(this.sqlite, accepted.seq);
     this.assertAcceptedEvents(stored.events, input.body, context, assets, stored.command);
-    if (job.cacheKey === null || job.cacheKey !== relationalInputCacheKey(job.memberId, prepared, request.seed_mode as 'fixed' | 'random')) unavailable();
+    if (
+      job.cacheKey === null ||
+      job.cacheKey !==
+        relationalInputCacheKey(job.memberId, prepared, request.seed_mode as 'fixed' | 'random')
+    ) {
+      unavailable();
+    }
     return { job, request, input, prepared };
   }
 
   // 只在 generation 保存点暂存保护内容；事实与投影由同一个共同提交安装。
-  stageGenerationReuse(metadata: CommandMetadata, input: ReusedGenerationInput) {
-    if (!this.sqlite.inTransaction) throw new Error('Generation reuse requires the owning transaction.');
+  stageGenerationReuse(
+    metadata: CommandMetadata,
+    input: ReusedGenerationInput,
+    admissionEpoch: number,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation reuse requires the owning transaction.');
+    }
     const original = this.readGenerationReuseProof(input.sourceJobId),
       prepared = prepareRelationalInput(
         input.cached ? { ...input.request, seed: original.prepared.firstSeed } : input.request,
         input.context,
         this.env,
       );
-    if (input.noCache !== false || input.context.kind === 'member' || original.job.memberId !== input.memberId || prepared.sampleCount !== 1 ||
-      prepared.body.operation !== 'generate' || !['fixed', 'random'].includes(input.seedMode) ||
+    if (
+      !Number.isSafeInteger(admissionEpoch) ||
+      admissionEpoch < 0 ||
+      input.noCache !== false ||
+      input.context.kind === 'member' ||
+      original.job.memberId !== input.memberId ||
+      prepared.sampleCount !== 1 ||
+      prepared.body.operation !== 'generate' ||
+      !['fixed', 'random'].includes(input.seedMode) ||
       (input.idempotency !== undefined && input.idempotency.noCache !== false) ||
       this.preparedFingerprint(prepared, input.seedMode, false) !== metadata.fingerprint ||
-      relationalInputCacheKey(input.memberId, prepared, input.seedMode) !== original.job.cacheKey) unavailable();
-    const common = {memberId: input.memberId, accountId: null, occurredAt: metadata.recordedAt,
-      policyVersion: metadata.policyVersion, pricingVersion: metadata.pricingVersion};
+      relationalInputCacheKey(input.memberId, prepared, input.seedMode) !== original.job.cacheKey
+    ) {
+      unavailable();
+    }
+    const common = {
+      memberId: input.memberId,
+      accountId: null,
+      occurredAt: metadata.recordedAt,
+      policyVersion: metadata.policyVersion,
+      pricingVersion: metadata.pricingVersion,
+    };
     const events: RelationalCommand['events'] = [];
-    if (!input.cached && !input.idempotency) return {events, receipt: {requestId: original.request.id, jobIds: [original.job.id]}, original};
-    const existing = this.sqlite.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(prepared.contextId);
+    if (!input.cached && !input.idempotency) {
+      return {
+        events,
+        receipt: { requestId: original.request.id, jobIds: [original.job.id] },
+        original,
+      };
+    }
+    const existing = this.sqlite
+      .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+      .get(prepared.contextId);
     if (!existing) {
-      this.sqlite.prepare('INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)')
+      this.sqlite
+        .prepare(
+          'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
+        )
         .run(prepared.contextId, prepared.contextSha256, canonicalJson(prepared.context));
-      events.push({...common, streamId: `context:${prepared.contextId}`, eventType: 'ContextRegistered', payload: {
-        contextId: prepared.contextId, contextSchemaVersion: 1, contextSha256: prepared.contextSha256,
-      }});
-    } else if (canonicalJson(this.context(prepared.contextId)) !== canonicalJson(prepared.context)) unavailable();
-    let requestId = original.request.id, jobId = original.job.id;
+      events.push({
+        ...common,
+        streamId: `context:${prepared.contextId}`,
+        eventType: 'ContextRegistered',
+        payload: {
+          contextId: prepared.contextId,
+          contextSchemaVersion: 1,
+          contextSha256: prepared.contextSha256,
+        },
+      });
+    } else if (
+      canonicalJson(this.context(prepared.contextId)) !== canonicalJson(prepared.context)
+    ) {
+      unavailable();
+    }
+    let requestId = original.request.id,
+      jobId = original.job.id;
     if (input.cached) {
-      requestId = input.cached.requestId; jobId = input.cached.jobId;
+      requestId = input.cached.requestId;
+      jobId = input.cached.jobId;
       let inputId = original.request.input_id;
       // 不同 requestedSteps/display 是已知来访内容；不能为引用原 input 而丢弃。
       if (prepared.sha256 !== original.input.row.sha256) {
         inputId = input.cached.inputId;
         this.stagePreparedInput(inputId, input.memberId, prepared);
-        events.push({...common, streamId: `input:${inputId}`, eventType: 'InputRegistered', payload: {
-          inputId, memberId: input.memberId, inputSchemaVersion: 1, inputSha256: prepared.sha256, logicalBytes: prepared.logicalBytes,
-        }});
+        events.push({
+          ...common,
+          streamId: `input:${inputId}`,
+          eventType: 'InputRegistered',
+          payload: {
+            inputId,
+            memberId: input.memberId,
+            inputSchemaVersion: 1,
+            inputSha256: prepared.sha256,
+            logicalBytes: prepared.logicalBytes,
+          },
+        });
       }
-      events.push({...common, streamId: `request:${requestId}`, eventType: 'RequestAccepted', payload: {
-        requestId, memberId: input.memberId, inputId, contextId: prepared.contextId, source: input.cached.source,
-        operation: 'generate', model: prepared.body.model as string, sampleCount: 1, seedMode: input.seedMode, confirmation: null,
-      }}, {...common, streamId: `request:${requestId}`, eventType: 'JobAccepted', payload: {
-        jobId, requestId, sampleIndex: 0, actualSeed: original.prepared.firstSeed, status: 'done',
-        queueSeq: null, queueExpiresAt: null, deadlineAt: null, admissionEpoch: input.cached.admissionEpoch, cacheKey: original.job.cacheKey,
-      }});
+      events.push(
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'RequestAccepted',
+          payload: {
+            requestId,
+            memberId: input.memberId,
+            inputId,
+            contextId: prepared.contextId,
+            source: input.cached.source,
+            operation: 'generate',
+            model: prepared.body.model as string,
+            sampleCount: 1,
+            seedMode: input.seedMode,
+            confirmation: null,
+          },
+        },
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'JobAccepted',
+          payload: {
+            jobId,
+            requestId,
+            sampleIndex: 0,
+            actualSeed: original.prepared.firstSeed,
+            status: 'done',
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch,
+            cacheKey: original.job.cacheKey,
+          },
+        },
+      );
     }
-    if (input.idempotency) events.push({...common, streamId: `request:${requestId}`, eventType: 'RequestAliasRegistered', payload: {
-      memberId: input.memberId, operation: 'generate', keyHash: input.idempotency.keyHash,
-      intentFingerprint: metadata.fingerprint, noCache: false, seedMode: input.seedMode,
-      requestId, jobId, contextId: prepared.contextId, originalCommandId: metadata.commandId,
-    }});
-    return { events, receipt: {requestId, jobIds: [jobId], ...(input.cached ? {cacheHit: true} : {})}, original };
+    if (input.idempotency) {
+      events.push({
+        ...common,
+        streamId: `request:${requestId}`,
+        eventType: 'RequestAliasRegistered',
+        payload: {
+          memberId: input.memberId,
+          operation: 'generate',
+          keyHash: input.idempotency.keyHash,
+          intentFingerprint: metadata.fingerprint,
+          noCache: false,
+          seedMode: input.seedMode,
+          requestId,
+          jobId,
+          contextId: prepared.contextId,
+          originalCommandId: metadata.commandId,
+        },
+      });
+    }
+    return {
+      events,
+      receipt: { requestId, jobIds: [jobId], ...(input.cached ? { cacheHit: true } : {}) },
+      original,
+    };
   }
 
   private stagePreparedInput(inputId: string, memberId: string, prepared: PreparedRelationalInput) {
-    this.sqlite.prepare("INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,1,'complete',?,?,?)")
+    this.sqlite
+      .prepare(
+        "INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,1,'complete',?,?,?)",
+      )
       .run(inputId, memberId, prepared.sha256, prepared.logicalBytes, canonicalJson(prepared.body));
-    const insert = this.sqlite.prepare('INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)');
-    for (const asset of prepared.assets) insert.run(inputId, asset.assetId, asset.mimeType, asset.byteLength, asset.sha256, asset.bytes);
+    const insert = this.sqlite.prepare(
+      'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
+    );
+    for (const asset of prepared.assets) {
+      insert.run(
+        inputId,
+        asset.assetId,
+        asset.mimeType,
+        asset.byteLength,
+        asset.sha256,
+        asset.bytes,
+      );
+    }
   }
 
   // 只供 generation 原事务暂存；后续事实/投影失败必须随调用者的保存点一起回滚。
@@ -555,7 +722,7 @@ export class RelationalInputStore {
     assets: (RelationalInputAsset & { bytes: Buffer })[],
     command: Pick<
       RelationalCommand,
-      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt'
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
     >,
   ): void {
     const requests = events.filter((event) => event.eventType === 'RequestAccepted');
@@ -569,7 +736,12 @@ export class RelationalInputStore {
     const cached = events.filter((event) => event.eventType === 'CachedResultLinked');
     if (
       (registered.length !== 1 && !(registered.length === 0 && cached.length === 1)) ||
-      registered.some(event => event.payload.inputId !== p.inputId || event.payload.memberId !== p.memberId || event.accountId !== null) ||
+      registered.some(
+        (event) =>
+          event.payload.inputId !== p.inputId ||
+          event.payload.memberId !== p.memberId ||
+          event.accountId !== null,
+      ) ||
       events.some(
         (event) =>
           event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
@@ -613,31 +785,72 @@ export class RelationalInputStore {
       if (child.payload.actualSeed !== expected) {
         unavailable();
       }
-      if (child.payload.cacheKey !== null && child.payload.cacheKey !== relationalInputCacheKey(
-        p.memberId, {body, assets, context, firstSeed: seed, sampleCount: p.sampleCount}, p.seedMode,
-      )) unavailable();
+      if (
+        child.payload.cacheKey !== null &&
+        child.payload.cacheKey !==
+          relationalInputCacheKey(
+            p.memberId,
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+          )
+      ) {
+        unavailable();
+      }
     }
-    if (cached.length && (cached.length !== 1 || children.length !== 1 ||
-      cached[0].payload.jobId !== children[0].payload.jobId || children[0].payload.status !== 'done' ||
-      children[0].payload.queueSeq !== null || children[0].payload.cacheKey === null || p.confirmation !== null)) unavailable();
-    if (!cached.length && children.some(child => child.payload.status === 'done')) unavailable();
-    if (command.receipt && typeof command.receipt === 'object' && 'cacheHit' in command.receipt && !cached.length) unavailable();
-    if (cached.length && (context.kind === 'member' || command.actorKind !== 'member' || command.actorId !== p.memberId ||
-      command.fingerprint !== this.preparedFingerprint({body, assets, context, firstSeed: seed, sampleCount: p.sampleCount}, p.seedMode, false) ||
-      canonicalJson(command.receipt) !== canonicalJson({requestId: p.requestId, jobIds: children.map(child => child.payload.jobId), cacheHit: true}))) unavailable();
+    if (
+      cached.length &&
+      (cached.length !== 1 ||
+        children.length !== 1 ||
+        cached[0].payload.jobId !== children[0].payload.jobId ||
+        children[0].payload.status !== 'done' ||
+        children[0].payload.queueSeq !== null ||
+        children[0].payload.cacheKey === null ||
+        p.confirmation !== null)
+    ) {
+      unavailable();
+    }
+    if (!cached.length && children.some((child) => child.payload.status === 'done')) {
+      unavailable();
+    }
+    if (
+      command.receipt &&
+      typeof command.receipt === 'object' &&
+      'cacheHit' in command.receipt &&
+      !cached.length
+    ) {
+      unavailable();
+    }
+    if (
+      cached.length &&
+      (context.kind === 'member' ||
+        events.some((event) => event.occurredAt !== command.recordedAt) ||
+        command.actorKind !== 'member' ||
+        command.actorId !== p.memberId ||
+        command.fingerprint !==
+          this.preparedFingerprint(
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+            false,
+          ) ||
+        canonicalJson(command.receipt) !==
+          canonicalJson({
+            requestId: p.requestId,
+            jobIds: children.map((child) => child.payload.jobId),
+            cacheHit: true,
+          }))
+    ) {
+      unavailable();
+    }
     const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
     if (aliases.length > 1) {
       unavailable();
     }
     for (const alias of aliases) {
       const a = alias.payload;
-      const request = relationalProviderRequest(
-        restoreRelationalWire(body, assets, seed, p.sampleCount),
-        context,
-      );
-      const requestFingerprint = generationRequestFingerprint(
-        { ...request, operation: p.operation, sampleCount: p.sampleCount },
-        { randomSeed: p.seedMode === 'random', noCache: a.noCache },
+      const requestFingerprint = this.preparedFingerprint(
+        { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+        p.seedMode,
+        a.noCache,
       );
       let intentFingerprint = requestFingerprint;
       if (context.kind === 'member') {
@@ -672,7 +885,7 @@ export class RelationalInputStore {
           canonicalJson({
             requestId: p.requestId,
             jobIds: children.map((child) => child.payload.jobId),
-            ...(cached.length ? {cacheHit: true} : {}),
+            ...(cached.length ? { cacheHit: true } : {}),
           })
       ) {
         unavailable();
@@ -683,23 +896,58 @@ export class RelationalInputStore {
   private assertAliasOnlyEvents(
     events: RelationalCommand['events'],
     context: RelationalNormalizationContext,
-    command: Pick<RelationalCommand, 'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt'>,
+    command: Pick<
+      RelationalCommand,
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
+    >,
     replayed: boolean,
   ) {
-    const aliases = events.filter(event => event.eventType === 'RequestAliasRegistered');
-    if (aliases.length !== 1 || events.some(event => !['ContextRegistered', 'RequestAliasRegistered'].includes(event.eventType))) unavailable();
-    const alias = aliases[0], p = alias.payload;
-    if (context.kind === 'member' || p.noCache !== false || p.operation !== 'generate' ||
-      !['fixed', 'random'].includes(p.seedMode) || alias.accountId !== null || alias.memberId !== p.memberId ||
-      command.actorKind !== 'member' || command.actorId !== p.memberId || p.originalCommandId !== command.commandId ||
-      command.fingerprint !== p.intentFingerprint || events.some(event => event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId)) unavailable();
+    const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
+    if (
+      aliases.length !== 1 ||
+      events.some(
+        (event) => !['ContextRegistered', 'RequestAliasRegistered'].includes(event.eventType),
+      )
+    ) {
+      unavailable();
+    }
+    const alias = aliases[0],
+      p = alias.payload;
+    if (
+      context.kind === 'member' ||
+      p.noCache !== false ||
+      p.operation !== 'generate' ||
+      !['fixed', 'random'].includes(p.seedMode) ||
+      alias.accountId !== null ||
+      alias.memberId !== p.memberId ||
+      command.actorKind !== 'member' ||
+      command.actorId !== p.memberId ||
+      p.originalCommandId !== command.commandId ||
+      command.fingerprint !== p.intentFingerprint ||
+      events.some((event) => event.occurredAt !== command.recordedAt) ||
+      events.some(
+        (event) =>
+          event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
+      )
+    ) {
+      unavailable();
+    }
     const original = this.readGenerationReuseProof(p.jobId);
-    const prepared = {...original.prepared, context};
-    if (original.request.id !== p.requestId || original.job.memberId !== p.memberId ||
-      (!replayed && (original.job.retiredAt !== null || original.request.retired_at !== null || !['queued', 'running'].includes(original.job.status))) ||
+    const prepared = { ...original.prepared, context };
+    if (
+      original.request.id !== p.requestId ||
+      original.job.memberId !== p.memberId ||
+      (!replayed &&
+        (original.job.retiredAt !== null ||
+          original.request.retired_at !== null ||
+          !['queued', 'running'].includes(original.job.status))) ||
       p.intentFingerprint !== this.preparedFingerprint(prepared, p.seedMode, false) ||
       original.job.cacheKey !== relationalInputCacheKey(p.memberId, prepared, p.seedMode) ||
-      canonicalJson(command.receipt) !== canonicalJson({requestId: p.requestId, jobIds: [p.jobId]})) unavailable();
+      canonicalJson(command.receipt) !==
+        canonicalJson({ requestId: p.requestId, jobIds: [p.jobId] })
+    ) {
+      unavailable();
+    }
   }
 
   activePayloadBytes(inFlight: Iterable<{ requestId: string; payloadBytes: number }> = []): number {
@@ -1056,9 +1304,16 @@ export class RelationalInputStore {
       }
     }
     if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-      const alias = stored.events.find(event => event.eventType === 'RequestAliasRegistered');
-      if (!alias) unavailable();
-      this.assertAliasOnlyEvents(stored.events, contexts.get(alias.payload.contextId)!, stored.command, replayed);
+      const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
+      if (!alias) {
+        unavailable();
+      }
+      this.assertAliasOnlyEvents(
+        stored.events,
+        contexts.get(alias.payload.contextId)!,
+        stored.command,
+        replayed,
+      );
     }
     const content = [...inputs].map(([inputId, input]) => ({
       inputId,
@@ -1303,21 +1558,38 @@ export class RelationalInputStore {
     const accepted = stored.events.find((event) => event.eventType === 'RequestAccepted');
     const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
     if (
-      alias?.payload.requestId !== requestId || alias.payload.memberId !== memberId ||
+      alias?.payload.requestId !== requestId ||
+      alias.payload.memberId !== memberId ||
       alias.payload.keyHash !== keyHash ||
       alias.eventId !== sourceEventId
     ) {
       unavailable();
     }
     const mapping = this.readGenerationIdempotency(memberId, alias.payload.operation, keyHash);
-    if (!mapping || mapping.contextId !== alias.payload.contextId || mapping.commitSeq !== commitSeq ||
-      mapping.originalCommandId !== alias.payload.originalCommandId || mapping.intentFingerprint !== alias.payload.intentFingerprint ||
-      mapping.originalJobId !== alias.payload.jobId || mapping.originalRequestId !== requestId || mapping.sourceEventId !== sourceEventId) unavailable();
+    if (
+      !mapping ||
+      mapping.contextId !== alias.payload.contextId ||
+      mapping.commitSeq !== commitSeq ||
+      mapping.originalCommandId !== alias.payload.originalCommandId ||
+      mapping.intentFingerprint !== alias.payload.intentFingerprint ||
+      mapping.originalJobId !== alias.payload.jobId ||
+      mapping.originalRequestId !== requestId ||
+      mapping.sourceEventId !== sourceEventId
+    ) {
+      unavailable();
+    }
     if (!accepted) {
-      this.assertAliasOnlyEvents(stored.events, this.context(alias.payload.contextId), stored.command, true);
+      this.assertAliasOnlyEvents(
+        stored.events,
+        this.context(alias.payload.contextId),
+        stored.command,
+        true,
+      );
       return;
     }
-    if (accepted.payload.requestId !== requestId || accepted.payload.memberId !== memberId) unavailable();
+    if (accepted.payload.requestId !== requestId || accepted.payload.memberId !== memberId) {
+      unavailable();
+    }
     this.assertAcceptedEvents(
       stored.events,
       input.body,
@@ -1329,9 +1601,23 @@ export class RelationalInputStore {
 
   readGenerationIdempotencyContext(memberId: string, operation: string, keyHash: string) {
     const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
-    if (!mapping || mapping.resolution !== 'live' || !mapping.requestId || !mapping.contextId || !mapping.commitSeq) unavailable();
+    if (
+      !mapping ||
+      mapping.resolution !== 'live' ||
+      !mapping.requestId ||
+      !mapping.contextId ||
+      !mapping.commitSeq
+    ) {
+      unavailable();
+    }
     this.ownedRequest(mapping.requestId, memberId);
-    this.assertAcceptedGenerationIntent(mapping.requestId, memberId, mapping.commitSeq, keyHash, mapping.sourceEventId);
+    this.assertAcceptedGenerationIntent(
+      mapping.requestId,
+      memberId,
+      mapping.commitSeq,
+      keyHash,
+      mapping.sourceEventId,
+    );
     return this.context(mapping.contextId);
   }
 

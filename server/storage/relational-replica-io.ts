@@ -17,12 +17,21 @@ export async function relationalArtifactReferenceAvailable(
   artifactId: string,
   configuration: RelationalReplicaReadConfiguration,
 ) {
-  if (sqlite.inTransaction) throw new Error('Cache reference IO cannot hold a SQL transaction.');
+  if (sqlite.inTransaction) {
+    throw new Error('Cache reference IO cannot hold a SQL transaction.');
+  }
   const store = new RelationalReplicaStore(sqlite, configuration);
-  if (store.readArtifactCacheReference(artifactId).persistent) return true;
+  if (store.readArtifactCacheReference(artifactId).persistent) {
+    return true;
+  }
   const local = store.beginArtifactRead(artifactId, 'local');
-  if (!local) return false;
-  const available = await storedResultReferenceAvailable(configuration.dataDir, local.artifact.descriptor);
+  if (!local) {
+    return false;
+  }
+  const available = await storedResultReferenceAvailable(
+    configuration.dataDir,
+    local.artifact.descriptor,
+  );
   store.assertArtifactReplicaTicket(local.ticket);
   return available;
 }

@@ -30,13 +30,15 @@ export function requestCacheKey<T extends object & { requestedSteps?: unknown; s
 ): string {
   const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
   return createHash('sha256')
-    .update(JSON.stringify({
-      owner,
-      request: {
-        ...cacheRequest,
-        seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
-      },
-    }))
+    .update(
+      JSON.stringify({
+        owner,
+        request: {
+          ...cacheRequest,
+          seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
+        },
+      }),
+    )
     .digest('hex');
 }
 

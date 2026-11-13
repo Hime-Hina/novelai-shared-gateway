@@ -53,7 +53,11 @@ export function relationalInputCacheKey(
   input: Pick<PreparedRelationalInput, 'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'>,
   seedMode: 'fixed' | 'random' | 'not_applicable',
 ): string | null {
-  if (input.body.operation !== 'generate' || input.sampleCount !== 1 || seedMode === 'not_applicable') {
+  if (
+    input.body.operation !== 'generate' ||
+    input.sampleCount !== 1 ||
+    seedMode === 'not_applicable'
+  ) {
     return null;
   }
   const request = relationalProviderRequest(
@@ -64,14 +68,20 @@ export function relationalInputCacheKey(
   if (seedMode === 'random') {
     delete parameters.seed;
   }
-  return requestCacheKey(memberId, JSON.parse(canonicalJson({
-    operation: 'generate',
-    action: request.action || 'generate',
-    model: request.model,
-    prompt: request.prompt,
-    nativeParameters: parameters,
-    allowPurchasedAnlas: request.allowPurchasedAnlas,
-  })), seedMode === 'fixed' ? input.firstSeed : '');
+  return requestCacheKey(
+    memberId,
+    JSON.parse(
+      canonicalJson({
+        operation: 'generate',
+        action: request.action || 'generate',
+        model: request.model,
+        prompt: request.prompt,
+        nativeParameters: parameters,
+        allowPurchasedAnlas: request.allowPurchasedAnlas,
+      }),
+    ),
+    seedMode === 'fixed' ? input.firstSeed : '',
+  );
 }
 
 function invalid(): never {

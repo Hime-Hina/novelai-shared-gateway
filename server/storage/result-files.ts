@@ -175,10 +175,14 @@ export async function storedResultReferenceAvailable(dataDir: string, pending: u
   try {
     stat = await lstat(path.resolve(dataDir, pending.file));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
     throw error;
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) throw invalid('path must be a regular file.');
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw invalid('path must be a regular file.');
+  }
   return stat.size > 0;
 }
 

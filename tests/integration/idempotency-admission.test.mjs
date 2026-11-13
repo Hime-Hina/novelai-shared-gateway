@@ -96,8 +96,9 @@ async function fixture(t) {
   const imageStorage = new ImageStorage(store.dataDir, null, (id) => store.findImage(id));
   const ctx = {
     generationIntent,
+    requestCacheKey,
     readGenerationIdempotencyKey,
-      cleanupStaleActiveJobs: async () => {},
+    cleanupStaleActiveJobs: async () => {},
   };
   const accept = createGenerationAdmission({
     store,

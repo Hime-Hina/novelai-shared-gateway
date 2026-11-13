@@ -44,9 +44,16 @@ test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', 
   assert.throws(() =>
     parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: missing }),
   );
-  const {seedMode: _mode, ...withoutMode} = payload;
-  assert.throws(() => parseRelationalFact({eventType: 'RequestAliasRegistered', payload: withoutMode}));
-  assert.throws(() => parseRelationalFact({eventType: 'RequestAliasRegistered', payload: {...payload, seedMode: 'unknown'}}));
+  const { seedMode: _mode, ...withoutMode } = payload;
+  assert.throws(() =>
+    parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: withoutMode }),
+  );
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'RequestAliasRegistered',
+      payload: { ...payload, seedMode: 'unknown' },
+    }),
+  );
   assert.throws(() =>
     parseRelationalFact({
       eventType: 'RequestAliasRegistered',
