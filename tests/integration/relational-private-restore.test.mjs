@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { readFile, readdir, copyFile, link } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, meta, keys, NOW, databaseState } from '../helpers/relational-generation.mjs';
@@ -17,7 +19,10 @@ import {
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import { restoreRelationalPrivateSnapshot } from '../../server/storage/relational-private-restore.ts';
+import {
+  restoreRelationalPrivateSnapshot,
+  openRelationalSnapshot,
+} from '../../server/storage/relational-private-restore.ts';
 import {
   authenticateMemberApiKey,
   authenticateMemberSession,
@@ -62,6 +67,56 @@ function rebuild(t, saved, changeCommit = () => {}) {
 
 const restore = (db, saved) =>
   db.transaction(() => restoreRelationalPrivateSnapshot(db, saved.filename, saved.sha256))();
+
+test('快照以完整64位dev/ino区分相邻大编号，真实硬链接同文件仍拒绝', async (t) => {
+  const f = await fixture(t),
+    saved = await snapshot(f),
+    target = new Database(path.join(f.dir, 'identity-target.sqlite')),
+    alias = path.join(f.dir, 'identity-alias.sqlite');
+  initializeRelationalStorage(target, 'generation-history');
+  await link(saved.filename, alias);
+  const sourceIno = 6917529027678021698n,
+    targetIno = sourceIno + 1n;
+  assert.equal(Number(sourceIno), Number(targetIno));
+  const normalize = (filename) => {
+    const absolute = path.resolve(String(filename));
+    return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+  };
+  const original = fs.statSync,
+    seen = [];
+  t.mock.method(fs, 'statSync', (filename, options) => {
+    const value = original(filename, options),
+      name = normalize(filename);
+    if ([saved.filename, alias, target.name].map(normalize).includes(name)) {
+      seen.push(options?.bigint);
+      const ino = name === normalize(target.name) ? targetIno : sourceIno;
+      value.dev = options?.bigint ? 3259360906n : 3259360906;
+      value.ino = options?.bigint ? ino : Number(ino);
+    }
+    return value;
+  });
+  syncBuiltinESMExports();
+  let opened, same;
+  try {
+    const before = await readFile(saved.filename);
+    assert.doesNotThrow(() => {
+      opened = openRelationalSnapshot(target, saved.filename, saved.sha256);
+    });
+    opened.close();
+    opened = undefined;
+    assert.deepEqual(seen, [true, true]);
+    same = new Database(saved.filename, { readonly: true });
+    assert.throws(() => openRelationalSnapshot(same, alias, saved.sha256), /Private snapshot/);
+    assert.deepEqual(await readFile(saved.filename), before);
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM commits').get().n, 0);
+  } finally {
+    opened?.close();
+    same?.close();
+    target.close();
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
 
 async function privateState(f) {
   const credentials = await f.members.prepareMemberCredentials('m1', {
