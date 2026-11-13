@@ -61,7 +61,7 @@ function mutateSource(db, table, mutate) {
 }
 
 test('真实捕获先精确脱敏再限长，同笔失败、原资源退款与保护正文完整恢复', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { seconds: 0 });
   await f.accept('diagnostic');
   const wallet = f.generations.readWallet('a', 'm1'),
     dispatch = f.dispatch('diagnostic-0').dispatch;
@@ -152,7 +152,7 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
 });
 
 test('原 trim 后限长允许截断末尾空白，失败退款与诊断原字节仍完整恢复', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { seconds: 0 });
   await f.accept('whitespace');
   const wallet = f.generations.readWallet('a', 'm1'),
     dispatch = f.dispatch('whitespace-0').dispatch,
@@ -185,7 +185,7 @@ test('限长边界的 Unicode 在保护内容 owner 统一为 UTF-8 可保存文
     `original\uD800tail`,
   ].entries()) {
     await t.test(String(index), async (t) => {
-      const f = await fixture(t);
+      const f = await fixture(t, { seconds: 0 });
       await f.accept('unicode');
       const wallet = f.generations.readWallet('a', 'm1'),
         dispatch = f.dispatch('unicode-0').dispatch,
@@ -257,7 +257,7 @@ test('诊断后续投影 SQL 失败被外层捕获时退款/事实/正文全回�
 });
 
 test('原在途凭据 epoch 变化仍可诊断与原资源退款，原票据脱敏不改当前凭据或冷却', async (t) => {
-  const f = await fixture(t);
+  const f = await fixture(t, { seconds: 0 });
   await f.accept('stale');
   const wallet = f.generations.readWallet('a', 'm1'),
     dispatch = f.dispatch('stale-0').dispatch;
@@ -298,7 +298,7 @@ test('原在途凭据 epoch 变化仍可诊断与原资源退款，原票据脱�
 
 test('真实 A1→B→A2 轮换后原失败回执仍零写且不重捕获诊断', async (t) => {
   const env = { OWNER_USER_ID: 'm1' },
-    f = await fixture(t, { env });
+    f = await fixture(t, { env, seconds: 0 });
   await f.accept('rotate');
   const wallet = f.generations.readWallet('a', 'm1'),
     dispatch = f.dispatch('rotate-0').dispatch,

@@ -11,10 +11,10 @@ import { JsonStore, createId } from '../../server/storage/sqlite-store.ts';
 import { createMemberSession, logoutMemberSession } from '../../server/members/authentication.ts';
 import { handleMemberRoutes } from '../../server/members/http-routes.ts';
 import {
-  createMemberGenerationHttp,
   memberGenerationError,
   closeMemberGenerationStreams,
 } from '../../server/generation/member-http.ts';
+import { createLegacyMemberGenerationHttp as createMemberGenerationHttp } from '../../server/generation/legacy-member-http.ts';
 import { createGenerationAdmission } from '../../server/generation/admission.ts';
 import {
   createGenerationPayloadBudget,
@@ -148,6 +148,7 @@ async function fixture(t) {
   const handleGeneration = () =>
     createMemberGenerationHttp({
       store,
+      cancelGenerationRequest: unavailable,
       admit: createGenerationAdmission({
         store,
         payloadBudget: budget,

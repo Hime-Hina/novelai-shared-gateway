@@ -1,3 +1,4 @@
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -5,8 +6,6 @@ import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
 } from '../../server/storage/relational-storage.ts';
-import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
-import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import {
   appendRelationalCommit,
@@ -217,8 +216,9 @@ test('预扣、尝试和终态 SQL 故障均回滚整笔事实、钱包、回执
   assert.deepEqual(db.pragma('foreign_key_check'), []);
 });
 
+// 扣退专项固定恢复率为零；非零恢复与 HTTP/受理/派发同点一致由成员 HTTP 时间边界用例覆盖。
 test('未知失败按原池退款一次并开启原五分钟窗口，关闭核对不虚构实际消费', async (t) => {
-  const f = await fixture(t),
+  const f = await fixture(t, { seconds: 0 }),
     { db, generations: g } = f;
   await f.accept('unknown', { samples: 3 });
   const wallet = g.readWallet('a', 'm1');
@@ -278,7 +278,7 @@ test('未知失败按原池退款一次并开启原五分钟窗口，关闭核�
 });
 
 test('明确未发送只退原预扣，无风险核对；等待取消不制造尝试且不能取消运行任务', async (t) => {
-  const f = await fixture(t),
+  const f = await fixture(t, { seconds: 0 }),
     { db, generations: g } = f;
   await f.accept('cancel', { samples: 3 });
   const wallet = g.readWallet('a', 'm1');
@@ -417,7 +417,7 @@ test('物理结束和逻辑失败复用同一次退避，逻辑退款仍不能�
 });
 
 test('迟到结果保留失败与退款、不复活余图，旧凭据结果不能覆盖新凭据冷却', async (t) => {
-  const f = await fixture(t),
+  const f = await fixture(t, { seconds: 0 }),
     { db, generations: g } = f;
   await f.accept('late', { samples: 2 });
   const wallet = g.readWallet('a', 'm1');
@@ -472,7 +472,7 @@ test('V5、fixed、purchased 与 fallback 都使用原资源池精确结算或�
     ],
   ]) {
     await t.test(name, async (t) => {
-      const f = await fixture(t, options),
+      const f = await fixture(t, { ...options, seconds: 0 }),
         { db, generations: g } = f;
       if (name === 'purchased') {
         await f.accept('unauthorized');
@@ -530,7 +530,7 @@ test('V5、fixed、purchased 与 fallback 都使用原资源池精确结算或�
 });
 
 test('免费迟到完整结果仍计滚动限额，重复结果不重复计数', async (t) => {
-  const f = await fixture(t, { freeLimit: 1 }),
+  const f = await fixture(t, { freeLimit: 1, seconds: 0 }),
     { db, generations: g } = f;
   await f.accept('free', { steps: 23, samples: 2 });
   const wallet = g.readWallet('a', 'm1');
@@ -647,25 +647,13 @@ test('按原提交有界回放开账、授权受理及账务/结果闭环，私�
   const target = new Database(':memory:');
   t.after(() => target.close());
   initializeRelationalStorage(target, 'generation-history');
-  const members = new RelationalMemberStore(target),
-    inputs = new RelationalInputStore(target),
-    generations = new RelationalGenerationStore(target, {});
+  const replayer = new RelationalCommitReplayer(target);
   const sequences = db
     .prepare('SELECT CAST(commit_seq AS TEXT) AS n FROM commits ORDER BY commit_seq')
     .all()
     .map((r) => r.n);
-  const replay = (seq) => {
-    const stored = readRelationalCommit(db, seq);
-    if (
-      stored.events.every((e) => ['MemberRegistered', 'MemberApiKeyChanged'].includes(e.eventType))
-    ) {
-      return target.transaction(() => members.replayMemberCommit(stored))();
-    }
-    if (stored.events.some((e) => e.eventType === 'RequestAccepted')) {
-      return target.transaction(() => inputs.replayAcceptedInput(f.inputs, seq))();
-    }
-    return target.transaction(() => generations.replayGenerationCommit(stored))();
-  };
+  const replay = (seq) =>
+    target.transaction(() => replayer.replayCommit(readRelationalCommit(db, seq), f.inputs))();
   for (const seq of sequences.slice(0, 6)) {
     replay(seq);
   }

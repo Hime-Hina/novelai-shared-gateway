@@ -3,7 +3,7 @@ import { RelationalCommitReplayer } from './relational-replay.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
 import { RelationalReplicaStore } from './relational-replica-store.ts';
 import type Database from 'better-sqlite3';
-import { canonicalJson } from '../events/domain-events.ts';
+import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
   readRelationalCommit,
   readRelationalReceipt,
@@ -22,6 +22,8 @@ import type {
 import {
   planFairQuotaReservation,
   previewFairQuotaReservations,
+  decideFairQuotaCharge,
+  advanceFairQuotaReservation,
   fairQuotaSnapshot,
   type FairQuotaReservationState,
   type FairCharge,
@@ -49,6 +51,8 @@ import { nextPendingBatchJob } from '../generation/batch-requests.ts';
 import { memberGenerationCapabilities } from '../generation/capabilities.ts';
 import {
   parseMemberGenerationConfirmation,
+  buildMemberGenerationQuote,
+  type NormalizedMemberGeneration,
   assertMemberGenerationVersions,
   assertMemberGenerationCost,
   addMemberGenerationResources,
@@ -325,6 +329,95 @@ export class RelationalGenerationStore {
       { env: this.env },
     );
   }
+  quoteMemberGeneration(
+    memberId: string,
+    normalized: NormalizedMemberGeneration,
+    now: number,
+    activePayloadBytes: number,
+  ) {
+    return this.sqlite.transaction(() => {
+      const member = this.sqlite
+        .prepare<
+          [string],
+          { status: string; authEpoch: string | null; accepting: number; version: number }
+        >(
+          'SELECT status,auth_epoch AS authEpoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
+        )
+        .get(memberId);
+      if (member?.status !== 'active' || !member.authEpoch) {
+        fail('成员授权已失效', 401);
+      }
+      const policy = this.policy();
+      let state: FairQuotaReservationState | undefined;
+      let unavailable: unknown;
+      try {
+        if (!policy.boundAccountId) {
+          fail('共享账本尚未绑定账号', 503);
+        }
+        state = this.reservationState({ memberId }, policy.boundAccountId, now).state;
+        Object.assign(
+          state,
+          this.quotas.estimateGenerationQuota(policy.boundAccountId, memberId, now),
+        );
+      } catch (error) {
+        state = undefined;
+        unavailable = error;
+      }
+      const wallet = policy.boundAccountId
+        ? this.readWallet(policy.boundAccountId, memberId)
+        : null;
+      const balance = wallet
+        ? {
+            v5Available: wallet.v5,
+            anlasFixedAvailable: wallet.anlasFixed,
+            anlasPurchasedAvailable: wallet.anlasPurchased,
+          }
+        : undefined;
+      const quota = policy.boundAccountId
+        ? this.quotas.readAccountQuota(policy.boundAccountId)
+        : null;
+      const snapshot = quota
+        ? fairQuotaSnapshot({
+            id: quota.accountId,
+            quotaCheckedAt: iso(quota.observedAt),
+            v5UsagePercent: quota.observedV5,
+            v5UsageIsNegative: quota.observedV5 !== null && parseAmount(quota.observedV5) < 0n,
+            quotaFixed: quota.observedAnlasFixed,
+            quotaPurchased: quota.observedAnlasPurchased,
+            v5UsageTimeUntilNextPercent: quota.secondsPerPercent,
+          })
+        : null;
+      return buildMemberGenerationQuote(normalized, {
+        now,
+        env: this.env,
+        versions: this.readMemberGenerationCapabilities(memberId).versions,
+        member: {
+          id: memberId,
+          enabled: true,
+          acceptingJobs: member.accepting === 1,
+          jobAdmissionVersion: member.version,
+        },
+        jobs: this.activeJobs(),
+        activePayloadBytes,
+        freeUsage: this.freeUsage(memberId, policy, now),
+        freeEnabled: policy.freeEnabled === 1,
+        preview: (request) =>
+          decideFairQuotaCharge(
+            state?.balance ?? balance,
+            policy.autoAnlasFallback === 1,
+            state?.snapshot ?? snapshot,
+            request,
+            now,
+          ),
+        reserve: (request) => {
+          if (!state) {
+            throw unavailable;
+          }
+          advanceFairQuotaReservation(state, planFairQuotaReservation(state, request, now));
+        },
+      });
+    })();
+  }
   private authorize(metadata: Metadata, job: Job, systemOnly = false) {
     if (metadata.actorKind === 'member' && (systemOnly || metadata.actorId !== job.memberId)) {
       fail('任务命令归属不符', 403);
@@ -539,6 +632,13 @@ export class RelationalGenerationStore {
           ),
         );
       }
+      if (input.context.kind === 'member') {
+        const policy = this.policy();
+        if (!policy.boundAccountId) {
+          fail('共享账本尚未绑定账号', 503);
+        }
+        this.refillForGeneration(metadata, policy.boundAccountId);
+      }
       const result = this.inputs.persistAcceptedInput(metadata, {
         ...input,
         jobs: input.jobs.map((j, index) => ({
@@ -576,6 +676,19 @@ export class RelationalGenerationStore {
       return result;
     });
   }
+  private refillForGeneration(metadata: Metadata, accountId: string): void {
+    // 恢复仍由原额度命令拥有；与受理/派发共用最外层事务，失败连恢复事实一起回滚。
+    this.quotas.refillQuota(
+      {
+        ...metadata,
+        commandId: `generation-refill:${domainDigest([metadata.commandId, accountId])}`,
+        fingerprint: domainDigest([metadata.fingerprint, accountId, metadata.recordedAt]),
+        actorKind: 'system',
+        actorId: null,
+      },
+      accountId,
+    );
+  }
   private freeUsage(memberId: string, policy: Policy, now: number): FreeImageUsage {
     const successes = this.sqlite
       .prepare<[string, number, number], { at: number; threshold: number | null }>(
@@ -608,7 +721,7 @@ export class RelationalGenerationStore {
       waitingForSettlement: needed > 0 && !next,
     };
   }
-  private reservationState(job: Job, accountId: string, now: number) {
+  private reservationState(job: Pick<Job, 'memberId'>, accountId: string, now: number) {
     const policy = this.policy();
     if (
       !policy.enabled ||
@@ -732,10 +845,11 @@ export class RelationalGenerationStore {
   private dispatchPlan(
     job: Job,
     accountId: string,
-    now: number,
+    metadata: Metadata,
     controls: Pick<GenerationDispatchOptions, 'dispatchEnabled' | 'physicalAccountLoad'>,
   ) {
-    const { policy, account, state } = this.reservationState(job, accountId, now);
+    const now = metadata.recordedAt;
+    const { policy, account } = this.reservationState(job, accountId, now);
     const running = this.sqlite
       .prepare<[string], { n: number }>(
         `SELECT COUNT(*) AS n FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id WHERE a.account_id=? AND j.status='running'`,
@@ -752,6 +866,8 @@ export class RelationalGenerationStore {
     ) {
       return null;
     }
+    this.refillForGeneration(metadata, accountId);
+    const { state } = this.reservationState(job, accountId, now);
     const request = this.inputs.readJobInput(job.id);
     const plan = planFairQuotaReservation(state, request, now);
     const charge = {
@@ -819,7 +935,7 @@ export class RelationalGenerationStore {
       ) {
         fail('任务已过期', 504);
       }
-      const planned = this.dispatchPlan(job, input.accountId, metadata.recordedAt, controls);
+      const planned = this.dispatchPlan(job, input.accountId, metadata, controls);
       if (!planned) {
         return { dispatch: null, queued: true };
       }

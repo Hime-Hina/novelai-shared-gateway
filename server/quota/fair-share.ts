@@ -1643,7 +1643,7 @@ function projectedV5(snapshot: QuotaSnapshot, now: number): bigint | null {
   return minAmount(100n * AMOUNT_SCALE, observed + recovered);
 }
 
-function decideFairQuotaCharge(
+export function decideFairQuotaCharge(
   balance: FairQuotaReservationState['balance'] | undefined,
   autoAnlasFallback: unknown,
   snapshot: QuotaSnapshot | null,
@@ -1844,34 +1844,42 @@ export function previewFairQuotaReservations(
   const draft = structuredClone(state);
   return requests.map((request) => {
     const charge = planFairQuotaReservation(draft, request, now);
-    if (charge.resource === 'v5') {
-      draft.balance.v5Available = formatAmount(
-        units(draft.balance.v5Available) - units(charge.amount),
-      );
-      draft.availableV5 = formatAmount(units(draft.availableV5) - units(charge.amount));
-      draft.reserved.v5 = formatAmount(units(draft.reserved.v5) + units(charge.amount));
-    } else if (charge.resource === 'anlas') {
-      draft.balance.anlasFixedAvailable = formatAmount(
-        units(draft.balance.anlasFixedAvailable) - units(charge.fixed),
-      );
-      draft.balance.anlasPurchasedAvailable = formatAmount(
-        units(draft.balance.anlasPurchasedAvailable) - units(charge.purchased),
-      );
-      draft.reserved.anlasFixed = formatAmount(
-        units(draft.reserved.anlasFixed) + units(charge.fixed),
-      );
-      draft.reserved.anlasPurchased = formatAmount(
-        units(draft.reserved.anlasPurchased) + units(charge.purchased),
-      );
-      draft.reservedAnlas = formatAmount(units(draft.reservedAnlas) + units(charge.amount));
-    }
-    draft.sharedReservedV5 = formatAmount(
-      units(draft.sharedReservedV5) +
-        units(charge.sharedV5Reserved) +
-        (charge.resource === 'v5' ? units(charge.amount) : 0n),
-    );
+    advanceFairQuotaReservation(draft, charge);
     return charge;
   });
+}
+
+// 报价独立副本与整批受理共用同一瞬时预留推进，真实钱包仍由命令提交。
+export function advanceFairQuotaReservation(
+  state: FairQuotaReservationState,
+  charge: ReturnType<typeof planFairQuotaReservation>,
+): void {
+  if (charge.resource === 'v5') {
+    state.balance.v5Available = formatAmount(
+      units(state.balance.v5Available) - units(charge.amount),
+    );
+    state.availableV5 = formatAmount(units(state.availableV5) - units(charge.amount));
+    state.reserved.v5 = formatAmount(units(state.reserved.v5) + units(charge.amount));
+  } else if (charge.resource === 'anlas') {
+    state.balance.anlasFixedAvailable = formatAmount(
+      units(state.balance.anlasFixedAvailable) - units(charge.fixed),
+    );
+    state.balance.anlasPurchasedAvailable = formatAmount(
+      units(state.balance.anlasPurchasedAvailable) - units(charge.purchased),
+    );
+    state.reserved.anlasFixed = formatAmount(
+      units(state.reserved.anlasFixed) + units(charge.fixed),
+    );
+    state.reserved.anlasPurchased = formatAmount(
+      units(state.reserved.anlasPurchased) + units(charge.purchased),
+    );
+    state.reservedAnlas = formatAmount(units(state.reservedAnlas) + units(charge.amount));
+  }
+  state.sharedReservedV5 = formatAmount(
+    units(state.sharedReservedV5) +
+      units(charge.sharedV5Reserved) +
+      (charge.resource === 'v5' ? units(charge.amount) : 0n),
+  );
 }
 
 // 调用方持有写事务：校验来源和授权后扣成员可用钱包，并一同记录预留事实。
