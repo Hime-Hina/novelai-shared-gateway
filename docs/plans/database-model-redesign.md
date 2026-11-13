@@ -794,6 +794,30 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 新写入口加入原架构守卫，并增加 query/protocol 的静态别名、动态导入和直接调用六项拒绝反例；没有减少旧断言，增量随本片接受维护者复核。没有修改新格式 DDL/事实、旧 SQL/journal、依赖或 CI；当前未发布原型仍按原 hash guard 拒绝不兼容 schema。以上是本片自验，不代表独立复审、全业务重建、受保护输入/对象/部署环境恢复或合法 ready 安装通过；没有操作生产或真实外部端点。
 
+### 9.20 #47 简单政策命令契约
+
+本片在固定账户候选 `13cc15c` 上接入当前自动转 Anlas、免费图片和损耗告警政策；不包含分组、权益转移、成员移除或跨 owner 的停止接单。规则分别继续归 `fair-share.ts`、`free-image-policy.ts`、`failure-accounting.ts`；关系命令只读取 `sharing_policy` 的当前字段，复用原 owner 的验证和决定，不构造钱包、任务或旧 DTO 的政策副本。
+
+| 政策         | 权威来源与允许变化                                                                                                                                                                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 自动转 Anlas | 当前 `sharing_policy.auto_anlas_fallback` 与现有 `config_version`。沿原管理入口只接受布尔值且共享账本已启用；一次保存 `FallbackPolicyChanged`，携带当时组配置版本供回放核对，不增加组版本或新的客户端版本参数。旧 HTTP 的内联规则归回原 quota owner，两条真实路径共用。 |
+| 免费图片     | 当前 `free_policy_version`、enabled、warning/hard threshold；原 `configureFreeImages()` 要求 expectedVersion 匹配并验证完整三字段，每次合法新命令按原 owner 增一版。阈值 NULL 与正整数语义不变，不清零已保存的免费成功/在途事实。                                       |
+| 损耗告警     | 当前 `loss_policy_version` 与四个阈值；原 `updateLossAlertPolicy()` 核对 expectedVersion，合法新命令增一版。V5 阈值保留原有限非负 number 的比较语义，Anlas 与次数沿原安全整数约束；告警不批准、扣减或分配余额。                                                         |
+
+V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金额。未发布模型原先将它套用 12 位金额 TEXT 会拒绝合法的 `1e-15` 或长小数；本片将 `LossPolicyChanged.v5_24h`、`OpeningPolicyRecorded.lossV5_24h` 及 `sharing_policy.loss_v5_24h` 改为有限非负 number/REAL，按原 JavaScript number 保真保存。Anlas 告警阈值和次数仍是原安全整数，钱包、预扣、扣退及所有真实资源金额仍为 TEXT/12 位定点。该唯一 DDL 改变新格式 schema hash，旧未发布目标须从空 building 库重建；旧 SQL/journal 与运行时 hash guard 均不改写，不增加兼容解释分支。
+
+命令在原 Key/Cookie 当前鉴权事务内重核当前 owner/认证 epoch，管理员仍经过原本地管理信任边界；metadata、客户端 actorId 或旧回执不能代替当前授权。账户和政策两个真实命令仅共用最小当前 owner 断言，不增加通用 store 或授权状态副本。先做当前授权，再按原命令键和规范化意图重领回执；同键不重写值、增版本或追加事实，不同意图冲突。
+
+每次只保存一个原完整提交，在同一保存点更新政策、事实、回执、流头及投影游标。SQL/投影失败被外层捕获时整笔不变。三类事实使用 `sharing:default`，由同一额度投影读取原保存决定；免费/损耗按原版本前进一次，fallback 核对当前组版本，回放不调用当前配置 owner 或默认值重新决定。与成员、输入或生成事实混合的提交仍交给统一完整提交分派，不拆成多个过滤后的 commit。
+
+政策只影响后续现有判断；不改写已受理请求的原 confirmation、首次上下文、报价版本、免费成功凭据、在途尝试、原收费或退款。新受理与派发继续走原能力/确认/免费资格 owner；损耗告警和免费 warning 变化不能因额外版本体系改变不相关的历史授权。
+
+验收入口为关系政策专项及已有账户、额度、免费、损耗和管理 HTTP 用例：覆盖原 owner 合法/拒绝对照、当前 owner/Key/Cookie/epoch 撤销后重领拒绝、同键零写入、陈旧版本、NULL/零阈值及安全上限、真实 SQL 保存点回滚、政策变化前受理后的派发判断，以及原完整提交恢复和重复零新增。目标仍 building，未接入新格式 HTTP 总装配、ready 或生产。
+
+本片当前实现位于 `RelationalQuotaStore.configureQuotaPolicy()`；三事实进入现有 `relationalQuotaFacts` 与同一投影，未新增政策表或持久历史数组。账户与政策共用 `members/authentication.ts` 的 `assertCurrentOwnerCommand()`，原 Cookie/Key 事务仍持有凭据复核；旧 HTTP fallback 规则已抽入 `configureAnlasFallback()`，免费/损耗 owner 仅收窄实际所读类型，免费事实使用命令原时间。事实字段的 Anlas 阈值校验同步限制原安全整数，不放宽其他金额约束。
+
+当前定向 [`relational-policies.test.mjs`](../../tests/integration/relational-policies.test.mjs) 48/48，含五种 opening 阈值保真/重复回放；账户/额度/架构与早期政策测试合跑 278/278，原免费/管理/成员路由 18/18、原损耗管理 HTTP 1/1。独立复核额外四场景通过，包括最低/最高有限 number、非 12 位小数、原 owner 对照和同提交第二事实失败后的真实全表回滚；新增 opening 五场景及父测试独立 6/6。类型、架构、迁移历史、受影响文件格式与差异检查已通过。完整后端、最终编译/Node 24 及远端同候选 CI 尚待执行，以上定向证据不代表整体重构、HTTP 切换或 ready 验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

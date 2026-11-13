@@ -128,7 +128,7 @@ function openingFacts({
         freeWarningThreshold: freeLimit,
         freeHardLimit: freeLimit,
         lossPolicyVersion: 1,
-        lossV5_24h: '1',
+        lossV5_24h: 1,
         lossFixed24h: '100',
         lossFixed30d: '500',
         lossMemberAttempts24h: 3,

@@ -10,6 +10,10 @@ const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/p
 const mutations = new Set([
   'configureFairQuota',
   'configureFairGroups',
+  'configureAnlasFallback',
+  'configureFreeImages',
+  'updateLossAlertPolicy',
+  'configureQuotaPolicy',
   'manageFairMember',
   'manageOperatingFunding',
   'applyOperatingFunding',

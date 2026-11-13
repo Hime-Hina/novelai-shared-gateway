@@ -656,6 +656,43 @@ export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): F
   return s;
 }
 
+export function configureAnlasFallback(
+  db: {
+    settings: {
+      fairQuota?: Pick<FairQuotaState, 'enabled' | 'autoAnlasFallback' | 'policyHistory'> | null;
+    };
+  },
+  enabled: unknown,
+  actorId: string,
+  now = Date.now(),
+) {
+  if (typeof enabled !== 'boolean') {
+    fail('enabled 必须为布尔值', 400);
+  }
+  const state = db.settings.fairQuota;
+  if (!state?.enabled) {
+    fail('共享账本尚未配置', 409);
+  }
+  state.autoAnlasFallback = enabled;
+  state.policyHistory = [
+    ...(state.policyHistory || []),
+    { at: now, actor: 'administrator', autoAnlasFallback: enabled },
+  ].slice(-1000);
+  recordDomainEvent(db, {
+    eventType: 'PolicyChanged',
+    streamId: 'sharing:default',
+    occurredAt: now,
+    payload: {
+      policy: 'autoAnlasFallback',
+      value: enabled,
+      actorId,
+      actor: 'administrator',
+      at: now,
+    },
+  });
+  return { autoAnlasFallback: enabled };
+}
+
 // 仅由管理员接口调用。额度只存在于叶子钱包，组没有第二份可消费余额。
 export function configureFairGroups(
   db: FairQuotaDatabase,
