@@ -108,6 +108,67 @@ const register = (
 });
 const wallet = (f, id = 'm1') => f.generations.readWallet('a', id);
 
+test('同时间的不同观察保留原恢复来源，最新观察与回放分别推进一次', async (t) => {
+  for (const offset of [0, 1]) {
+    await t.test(`第二次观察时间相差 ${offset}ms`, async (t) => {
+      const f = await setup(t, { seconds: 600 }),
+        at = NOW + 100;
+      const record = (id, startedAt, commitAt) => {
+        const ticket = f.quotas.beginQuotaObservation('a', startedAt),
+          result = accountQuotaResult('a', f.raw(), new Date(startedAt).toISOString()),
+          metadata = meta(id, commitAt);
+        return {
+          ticket,
+          result,
+          metadata,
+          commit: f.db.transaction(() =>
+            f.quotas.recordQuotaObservation(metadata, ticket, result),
+          )(),
+        };
+      };
+      record('baseline-observation', at, at);
+      const original = f.quotas.readAccountQuota('a'),
+        before = f.db.serialize();
+      const saved = record('next-observation', at + offset, NOW + 1000),
+        stored = readRelationalCommit(f.db, saved.commit.commitSeq),
+        observation = stored.events.find((e) => e.eventType === 'QuotaObserved'),
+        refill = stored.events.find((e) => e.eventType === 'RefillApplied'),
+        current = f.quotas.readAccountQuota('a');
+      assert.notEqual(observation.eventId, original.baselineEventId);
+      assert.equal(refill.payload.observationEventId, original.baselineEventId);
+      assert.equal(refill.payload.from, original.refillCursorAt);
+      assert.equal(refill.payload.until, NOW + 1000);
+      assert.equal(refill.payload.budget, '0.0015');
+      assert.equal(current.observationEventId, observation.eventId);
+      assert.equal(current.observedSequence, saved.ticket.sequence);
+      assert.equal(current.refillCursorAt, NOW + 1000);
+      assert.equal(
+        current.baselineEventId,
+        offset ? observation.eventId : original.baselineEventId,
+      );
+      const checkpoint = f.db.serialize();
+      f.db.transaction(() =>
+        f.quotas.recordQuotaObservation(saved.metadata, saved.ticket, saved.result),
+      )();
+      assert.ok(f.db.serialize().equals(checkpoint));
+      f.refill(NOW + 1000, 'same-recovery-window');
+      assert.ok(f.db.serialize().equals(checkpoint));
+      const target = new Database(before);
+      try {
+        target.pragma('foreign_keys=ON');
+        const quotas = new RelationalQuotaStore(target, {});
+        target.transaction(() => quotas.replayQuotaCommit(stored))();
+        assert.equal(databaseState(target), databaseState(f.db));
+        const replayed = target.serialize();
+        target.transaction(() => assert.equal(quotas.replayQuotaCommit(stored).replayed, true))();
+        assert.ok(target.serialize().equals(replayed));
+      } finally {
+        target.close();
+      }
+    });
+  }
+});
+
 test('人工刷新复用当前 owner 身份，普通成员不能提交观察或恢复命令', async (t) => {
   const f = await setup(t),
     { db, quotas: q } = f;

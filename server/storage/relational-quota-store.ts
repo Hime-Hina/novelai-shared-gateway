@@ -669,20 +669,25 @@ export class RelationalQuotaStore {
   ) {
     const accountId = view.q.accountId,
       events: RelationalEventInput[] = [];
-    const sourceAt = (at: number): string => {
-      if (newObservationId && at === fairQuotaSnapshot(view.account).at) {
-        return newObservationId;
+    // 原基线与核对观察是不同角色；时间相同也不能交换事件身份。
+    const baselineAt = (at: number): string => {
+      const id = view.q.baselineEventId;
+      if (!id || this.observation(id, accountId).at !== at) {
+        fail('金融决定缺少原基线引用');
       }
-      if (view.q.baselineEventId && this.observation(view.q.baselineEventId, accountId).at === at) {
-        return view.q.baselineEventId;
-      }
+      return id;
+    };
+    const observationAt = (at: number): string => {
+      const id = newObservationId ?? view.q.observationEventId;
       if (
-        view.q.observationEventId &&
-        this.observation(view.q.observationEventId, accountId).at === at
+        !id ||
+        (newObservationId
+          ? fairQuotaSnapshot(view.account).at
+          : this.observation(id, accountId).at) !== at
       ) {
-        return view.q.observationEventId;
+        fail('金融决定缺少核对观察引用');
       }
-      fail('金融决定缺少原观察引用');
+      return id;
     };
     let allocationSource = newObservationId ?? view.q.observationEventId ?? view.q.baselineEventId;
     for (const raw of facts) {
@@ -712,7 +717,7 @@ export class RelationalQuotaStore {
                 eventType: 'QuotaBaselineAdopted',
                 payload: {
                   accountId,
-                  observationEventId: sourceAt(p.snapshot.at),
+                  observationEventId: observationAt(p.snapshot.at),
                   matchedDebits: { v5: view.q.pendingV5Debit, ...p.matchedDebits },
                   matchedFallbackFixed: p.matchedFallback.fixed,
                   matchedFallbackPurchased: p.matchedFallback.purchased,
@@ -735,7 +740,7 @@ export class RelationalQuotaStore {
                   accountId,
                   from: p.from,
                   until: p.until,
-                  observationEventId: sourceAt(p.snapshotAt),
+                  observationEventId: baselineAt(p.snapshotAt),
                   budget: p.budget,
                   debtRepaid: p.debtRepaid,
                   capacityRecovered: p.capacityRecovered,
@@ -785,7 +790,7 @@ export class RelationalQuotaStore {
                 eventType: 'V5CapacityObserved',
                 payload: {
                   accountId,
-                  observationEventId: sourceAt(p.reconciliation.sourceCheckedAt),
+                  observationEventId: observationAt(p.reconciliation.sourceCheckedAt),
                   capacityGap: p.capacityGap,
                   difference: p.reconciliation.difference,
                   tolerance: p.reconciliation.tolerance,
@@ -809,8 +814,8 @@ export class RelationalQuotaStore {
                   accountId,
                   resource: p.resource as 'anlasFixed' | 'anlasPurchased',
                   amount: p.observedAmount,
-                  beforeObservationEventId: sourceAt(p.beforeSnapshot.at),
-                  afterObservationEventId: sourceAt(p.afterSnapshot.at),
+                  beforeObservationEventId: baselineAt(p.beforeSnapshot.at),
+                  afterObservationEventId: observationAt(p.afterSnapshot.at),
                   evidenceLevel: p.evidenceLevel,
                   actualConsumption: null,
                 },
@@ -834,7 +839,7 @@ export class RelationalQuotaStore {
                     resource: p.resource as 'anlasFixed' | 'anlasPurchased',
                     amount: p.amount,
                     gapEventId: p.gapEventId,
-                    observationEventId: sourceAt(p.snapshotAt),
+                    observationEventId: observationAt(p.snapshotAt),
                     kind: 'observed',
                   },
                 },
@@ -908,7 +913,7 @@ export class RelationalQuotaStore {
                 destination: p.source === 'operator_share' ? 'operating' : p.destination,
                 source: p.source,
                 memberId: p.source === 'operator_share' ? p.memberId : null,
-                observationEventId: registered ? sourceAt(p.snapshotAt) : null,
+                observationEventId: registered ? observationAt(p.snapshotAt) : null,
                 receiptEventId: registered ? p.receiptEventId : null,
               },
             },
