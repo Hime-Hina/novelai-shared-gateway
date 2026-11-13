@@ -215,6 +215,8 @@ for (const filename of [
       'refillQuota',
       'manageQuotaFunding',
       'configureQuotaPolicy',
+      'configureGroups',
+      'assertGroupCommit',
       'configureAnlasFallback',
       'configureFreeImages',
       'updateLossAlertPolicy',

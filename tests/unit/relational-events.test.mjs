@@ -66,6 +66,12 @@ test('资金与恢复事实保存来源预算、V5 本人划入和有符号回�
     },
   };
   assert.deepEqual(parseRelationalFact(allocation), allocation);
+  assert.throws(() =>
+    parseRelationalFact({
+      ...allocation,
+      payload: { ...allocation.payload, reason: 'redistribution' },
+    }),
+  );
   const { sourceEventId: _, ...withoutSource } = allocation.payload;
   assert.throws(() => parseRelationalFact({ ...allocation, payload: withoutSource }));
   const transfer = {
