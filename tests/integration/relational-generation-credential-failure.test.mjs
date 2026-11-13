@@ -53,7 +53,7 @@ function response(f, status, at = NOW + 2) {
   )();
 }
 async function running(t) {
-  const f = await fixture(t);
+  const f = await fixture(t, { seconds: 0 });
   await f.accept('failed');
   const wallet = f.generations.readWallet('a', 'm1');
   const dispatched = f.dispatch('failed-0');
@@ -326,6 +326,25 @@ test('完整提交即使两个列表一致也不能错配来源、反转顺序�
       assert.equal(databaseState(db), before);
     });
   }
+});
+
+test('原派发事实本身必须属于当时当前账户代次，不能先伪造 epoch 再作为失效来源', async (t) => {
+  const f = await fixture(t, { seconds: 0 });
+  await f.accept('failed');
+  const checkpoint = clone(t, f.db),
+    result = f.dispatch('failed-0'),
+    original = readRelationalCommit(f.db, result.commitSeq);
+  const forged = structuredClone(original);
+  forged.events.find((e) => e.eventType === 'DispatchAuthorized').payload.credentialEpoch = 2;
+  resequence(forged, checkpoint);
+  const before = databaseState(checkpoint),
+    replay = new RelationalGenerationStore(checkpoint);
+  checkpoint.transaction(() =>
+    assert.throws(() => replay.replayGenerationCommit(forged), /派发与真实原预扣不一致/),
+  )();
+  assert.equal(databaseState(checkpoint), before);
+  checkpoint.transaction(() => replay.replayGenerationCommit(original))();
+  assert.equal(databaseState(checkpoint), databaseState(f.db));
 });
 
 test('当前失效与退款通过共同完整业务回放恢复，重复零写且不恢复 PST/成员认证或发网络', async (t) => {

@@ -1,17 +1,57 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
+  assertRelationalStorageFormat,
   RELATIONAL_DATABASE_FORMAT,
   RELATIONAL_WRITER_VERSION,
 } from '../../server/storage/relational-storage.ts';
+import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
+
+test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v3 格式门禁，不手补字段或 hash', (t) => {
+  const sqlite = new Database(':memory:');
+  t.after(() => sqlite.close());
+  sqlite.pragma('foreign_keys=ON');
+  const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
+    'CHECK (schema_version = 3)',
+    'CHECK (schema_version = 2)',
+  );
+  assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
+  sqlite.exec(previousSchema);
+  const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+  meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
+  meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
+  meta.run(
+    'event_authority',
+    JSON.stringify({
+      version: RELATIONAL_WRITER_VERSION,
+      minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+    }),
+  );
+  sqlite
+    .prepare(
+      "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
+    )
+    .run();
+  const before = sqlite.serialize();
+  assert.throws(
+    () => assertRelationalStorageFormat(sqlite),
+    /Unsupported relational database format/,
+  );
+  assert.throws(
+    () => assertRelationalStorageReady(sqlite),
+    /Unsupported relational database format/,
+  );
+  assert.deepEqual(sqlite.serialize(), before);
+});
 
 function insert(sqlite, table, row) {
   const fields = Object.keys(row);

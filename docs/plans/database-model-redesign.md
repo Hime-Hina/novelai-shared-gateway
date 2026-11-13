@@ -1029,6 +1029,18 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 同一表示边界的 Unicode 反例进一步确认：合法 emoji 被 UTF-16 长度限制切半后，Node 摘要编码与 SQLite TEXT 绑定会产生不同字节。保护内容 owner 在新正文摘要/长度/INSERT 之前仅做一次标准 Buffer UTF-8 编码/解码，确保三者使用同一有效 UTF-8 文本，并适用现有 TypeScript lib；公共错误收敛函数和历史持久正文不变，read 不放宽校验或补写。追加半 surrogate、完整 emoji、CJK、换行和原不完整 surrogate 五类实际退款及完整恢复反例后，诊断/公开错误两文件 21/21，零跳过。
 
+### 9.35 #52：生成失败的当前凭据失效闭环
+
+原 `finishGenerationFailure()` 仅在明确非 abort、实际上游 401/403 且当前仍为原凭据时记录 invalid_key/access_denied 后退款，不刷新余额或官方观察时间。新格式复用 `quota/account-refresh.ts` 的同一错误分类与 `quotaAvailability()`：凭据身份改由原 `DispatchAuthorized.credentialEpoch` 决定，不能用当前 PST 新造查询票据，也不能因 A1→B→A2 的 PST 字符串再次相同而停用新代次。当前匹配的失败只改变 `account_quota_state.quota_error_code`、原 owner 决定的 status 及来源，保留 enabled、原官方余额、观察 ID/时间/序号和基线/恢复游标；原资源扣退、核对、冷却仍归现有 owner。
+
+`JobFailed.aborted` 为必填 boolean，`failGeneration()` 在回执重领之前也要求调用者明确提供；真实执行器从原 signal/isAbortError、已执行的逻辑 abort 或明确的本地中断决定取得该值，不从 401、超时文字或未知物理完成推断。测试中的普通失败同样逐调用明确 false，helper 不提供 false fallback。旧历史没有保存这一事实时仍由 opening/来源表达未知，不在迁移时补造 false。
+
+`QuotaStatusChanged.generationFailure` 为必填可空对象：普通额度决定显式 NULL；生成失效保存原 dispatchEventId、同笔 responseEventId/failureEventId 及安全错误分类。失败提交严格按 ResponseEvidenceRecorded→QuotaStatusChanged→原退款/Review→可选受保护诊断→JobFailed 应用一次；quota owner 核对实际原尝试/预扣、账户/成员/请求、当前代次、同一完整提交中的原响应与非 abort 失败以及原顺序，复用现状态判定，不复制余额或资格算法。原派发投影也核对当时当前业务代次，不能先伪造 dispatch epoch 再用作失效来源。旧代次的错误不生成该额度事实，仍允许原资源退款、合法结算及原窄回放；窄 generation replay 只额外允许带真实 generationFailure 的这类额度事实，不能接收其他普通 quota/policy 提交。
+
+本轮未发布关系事件版本统一升至 3，由唯一 `RELATIONAL_EVENT_SCHEMA_VERSION` 生成新 DDL CHECK 和 schema hash，旧关系 v2 原型即使有正确旧 hash 也在格式门禁拒绝，须从新空 building 目标重建，不能手补 hash/字段或标记 ready。原 v1 事件、旧 SQL/journal、可信迁移基线、input schema 1 和旧 writer 4 均未改动。同轮其他 required 字段仍由其所属 owner 的实现合并，不保留旧原型在线兼容分支。
+
+验收入口为 [`relational-generation-credential-failure.test.mjs`](../../tests/integration/relational-generation-credential-failure.test.mjs)：当前 401/403 阻止再派发，abort/200 不停用；余额/官方观察不变、原池退款、回执重领零写；模拟旧凭据恢复切点上的 A1→B→A2 保留新观察并完成原池退款及窄回放；第二 owner 已写后异常被外层捕获全表回滚；两个事件列表一致仍拒绝错来源、顺序、abort、分类或代次；伪造原派发代次回滚；共同空业务重建保留真实诊断、错误与原退款，不恢复认证或发网络。旧 prototype 格式拒绝另在 `relational-storage.test.mjs`。本片不新增一般请求排序、持久屏障或 applied 状态，实际协调器的物理完成补证及自动 refill 由对应 owner 片接入，联合候选完整检查另行记录。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
