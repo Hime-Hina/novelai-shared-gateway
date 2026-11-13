@@ -677,7 +677,10 @@ test('原任务仍running也不能在停止接单后伪造完整新alias提交�
     'running',
   );
   const alias = original.events.find((event) => event.eventType === 'RequestAliasRegistered'),
-    command = f.command('forged-new-alias', f.request(), f.context(), 'fixed', false),
+    command = {
+      ...f.command('forged-new-alias', f.request(), f.context(), 'fixed', false),
+      recordedAt: NOW + 2,
+    },
     before = databaseState(f.db);
   await f.authorize(() => {
     assert.throws(
