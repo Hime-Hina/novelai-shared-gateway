@@ -1,3 +1,4 @@
+import { requestCacheKey } from '../../server/generation/request-fingerprint.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -29,7 +30,6 @@ import {
   createGenerationAdmission,
   generationIntent,
   readGenerationIdempotencyKey,
-  requestCacheKey,
   isNoCache,
 } from '../../server/generation/admission.ts';
 import { recordDomainEvent } from '../../server/events/domain-events.ts';
@@ -97,8 +97,7 @@ async function fixture(t) {
   const ctx = {
     generationIntent,
     readGenerationIdempotencyKey,
-    requestCacheKey,
-    cleanupStaleActiveJobs: async () => {},
+      cleanupStaleActiveJobs: async () => {},
   };
   const accept = createGenerationAdmission({
     store,

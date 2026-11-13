@@ -67,7 +67,9 @@ import {
   type RefundEvidence,
 } from '../generation/accounting.ts';
 import type { GenerationDispatchOptions } from '../generation/execution.ts';
-import { RelationalInputStore, type AcceptedInput } from './relational-input-store.ts';
+import { RelationalInputStore, type AcceptedInput, type ReusedGenerationInput } from './relational-input-store.ts';
+import { relationalArtifactReferenceAvailable } from './relational-replica-io.ts';
+import type { RelationalReplicaReadConfiguration } from './relational-replica-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
 import { errorDetailMessage } from '../http/public-errors.ts';
@@ -121,6 +123,7 @@ export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ResponseEvidenceRecorded',
   'ArtifactPrepared',
   'ArtifactPublished',
+  'CachedResultLinked',
   'GenerationSettled',
   'GenerationRefunded',
   'JobCompleted',
@@ -536,6 +539,7 @@ export class RelationalGenerationStore {
       fail('成员授权已失效', 401);
     }
     const prior = readRelationalReceipt(this.sqlite, metadata);
+    const cacheHit = prior && readRelationalCommit(this.sqlite, prior.commitSeq).events.some(event => event.eventType === 'CachedResultLinked');
     const request = this.sqlite
       .prepare<
         [string | null],
@@ -564,11 +568,10 @@ export class RelationalGenerationStore {
       request?.memberId !== metadata.actorId ||
       request.retiredAt !== null ||
       jobs.some((job) => job.retiredAt !== null) ||
-      request.contextId !== mapping.contextId ||
       jobs.length !== request.sampleCount ||
       jobs[0]?.id !== mapping.originalJobId ||
       canonicalJson(prior.receipt) !==
-        canonicalJson({ requestId: mapping.requestId, jobIds: jobs.map((j) => j.id) })
+        canonicalJson({ requestId: mapping.requestId, jobIds: jobs.map((j) => j.id), ...(cacheHit ? {cacheHit: true} : {}) })
     ) {
       throw Object.assign(new Error('原请求的任务或回执不可领取；再次生成须使用新操作键。'), {
         statusCode: 410,
@@ -583,6 +586,90 @@ export class RelationalGenerationStore {
       mapping.sourceEventId,
     );
     return prior;
+  }
+  async findReusableGeneration(
+    input: Pick<ReusedGenerationInput, 'memberId' | 'request' | 'context' | 'seedMode'> & {
+      noCache: boolean; allowActive: boolean;
+    },
+    configuration: RelationalReplicaReadConfiguration,
+  ) {
+    if (this.sqlite.inTransaction) throw new Error('Reuse lookup cannot hold a transaction across file IO.');
+    if (input.noCache || input.context.kind === 'member') return null;
+    const {cacheKey} = this.inputs.generationInputIntent(input.memberId, input.request, input.context, input.seedMode, false);
+    if (!cacheKey) return null;
+    const cached = this.sqlite.prepare<[string, string], {jobId: string; artifactId: string}>(
+      `SELECT j.id AS jobId,a.id AS artifactId FROM generation_jobs j
+       JOIN generation_requests r ON r.id=j.request_id JOIN generation_attempts t ON t.job_id=j.id
+       JOIN artifacts a ON a.original_attempt_id=t.id
+       WHERE j.cache_key=? AND r.member_id=? AND a.retired_at IS NULL ORDER BY a.published_at DESC,a.id LIMIT 100`,
+    ).all(cacheKey, input.memberId);
+    for (const candidate of cached) {
+      this.inputs.readGenerationReuseProof(candidate.jobId);
+      try {
+        if (await relationalArtifactReferenceAvailable(this.sqlite, candidate.artifactId, configuration)) {
+          return {kind: 'artifact' as const, sourceJobId: candidate.jobId, artifactId: candidate.artifactId};
+        }
+      } catch {}
+    }
+    if (!input.allowActive) return null;
+    const active = this.sqlite.prepare<[string, string], {id: string}>(
+      `SELECT j.id FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+       WHERE j.cache_key=? AND r.member_id=? AND r.retired_at IS NULL AND j.retired_at IS NULL
+       AND j.status IN ('queued','running') ORDER BY j.queue_seq,j.id LIMIT 1`,
+    ).get(cacheKey, input.memberId);
+    if (!active) return null;
+    this.inputs.readGenerationReuseProof(active.id);
+    return {kind: 'active' as const, sourceJobId: active.id};
+  }
+
+  reuseGeneration(metadata: Metadata, input: ReusedGenerationInput) {
+    return this.owned(() => {
+      const member = this.sqlite.prepare<[string], {status: string; epoch: string | null; accepting: number; version: number}>(
+        'SELECT status,auth_epoch AS epoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
+      ).get(input.memberId);
+      if (metadata.actorKind !== 'member' || metadata.actorId !== input.memberId || member?.status !== 'active' || !member.epoch) fail('成员授权已失效', 401);
+      if (input.noCache !== false) fail('缓存复用要求显式允许缓存', 400);
+      if (input.idempotency) {
+        const mapping = this.inputs.readGenerationIdempotency(input.memberId, 'generate', input.idempotency.keyHash);
+        if (mapping) {
+          if (mapping.intentFingerprint !== metadata.fingerprint) fail('操作键对应的意图已变化', 409);
+          return this.readAcceptedGenerationReceipt({...metadata, commandId: mapping.originalCommandId}, mapping);
+        }
+      }
+      const prior = readRelationalReceipt(this.sqlite, metadata);
+      if (prior) {
+        if (!input.idempotency) return prior;
+        const mapping = this.inputs.readGenerationIdempotency(input.memberId, 'generate', input.idempotency.keyHash);
+        if (!mapping) fail('原操作键已不可领取', 410);
+        return this.readAcceptedGenerationReceipt(metadata, mapping);
+      }
+      assertMemberAcceptsJobs({acceptingJobs: member.accepting === 1, jobAdmissionVersion: member.version});
+      const source = this.job(input.sourceJobId), policy = this.policy();
+      if (source.memberId !== input.memberId || !policy.enabled || !policy.boundAccountId) fail('共享账本尚未配置', 503);
+      if (input.cached) {
+        const artifact = this.replicas.readArtifact(input.cached.artifactId);
+        const origin = this.sqlite.prepare<[string], {jobId: string}>(
+          'SELECT t.job_id AS jobId FROM artifacts a JOIN generation_attempts t ON t.id=a.original_attempt_id WHERE a.id=?',
+        ).get(artifact.id);
+        if (artifact.retiredAt !== null || artifact.memberId !== input.memberId || origin?.jobId !== source.id) fail('缓存产物不属于原来源');
+        const reference = this.replicas.readArtifactCacheReference(artifact.id);
+        if (!reference.persistent && !reference.local) fail('原产物没有可引用来源');
+      } else if (source.retiredAt !== null || !['queued', 'running'].includes(source.status) || source.admissionEpoch !== member.version) fail('原活动任务已变化');
+      this.refillForGeneration(metadata, policy.boundAccountId);
+      this.reservationState(source, policy.boundAccountId, metadata.recordedAt);
+      const staged = this.inputs.stageGenerationReuse(metadata, {
+        ...input,
+        ...(input.cached ? {cached: {...input.cached, admissionEpoch: member.version}} : {}),
+      });
+      if (!staged.events.length) return {replayed: false, events: [], receipt: staged.receipt};
+      const events: RelationalEventInput[] = staged.events;
+      if (input.cached) events.push({
+        eventType: 'CachedResultLinked', payload: {jobId: input.cached.jobId, artifactId: input.cached.artifactId},
+        streamId: `request:${input.cached.requestId}`, memberId: input.memberId, accountId: null,
+        occurredAt: metadata.recordedAt, policyVersion: metadata.policyVersion, pricingVersion: metadata.pricingVersion,
+      });
+      return this.commit(metadata, events, staged.receipt);
+    });
   }
   readQueuedGenerationIds(limit = 100): string[] {
     this.assertRuntimePage('', limit);
@@ -2537,6 +2624,30 @@ export class RelationalGenerationStore {
               e.occurredAt,
               e.eventId,
             );
+          break;
+        }
+        case 'CachedResultLinked': {
+          const p = e.payload, job = this.eventJob(e, p.jobId);
+          const allowed = new Set(['ContextRegistered', 'InputRegistered', 'RequestAccepted', 'JobAccepted', 'RequestAliasRegistered', 'CachedResultLinked']);
+          if (events.some(event => !allowed.has(event.eventType)) ||
+            events.filter(event => event.eventType === 'CachedResultLinked').length !== 1 ||
+            events.filter(event => event.eventType === 'RequestAccepted').length !== 1 ||
+            events.filter(event => event.eventType === 'JobAccepted').length !== 1 ||
+            e.accountId !== null || job.status !== 'pending' || job.queueSeq !== null ||
+            job.retiredAt !== null || job.memberStatus !== 'active' || !job.acceptingJobs ||
+            job.admissionEpoch !== job.currentAdmissionEpoch || this.attempt(job.id) || this.readCharge(job.id)) fail('缓存引用不能创建执行或费用');
+          const artifact = this.replicas.readArtifact(p.artifactId);
+          const original = this.sqlite.prepare<[string], {attemptId: string; jobId: string}>(
+            'SELECT t.id AS attemptId,t.job_id AS jobId FROM artifacts a JOIN generation_attempts t ON t.id=a.original_attempt_id WHERE a.id=?',
+          ).get(artifact.id);
+          if (!original || artifact.retiredAt !== null || artifact.memberId !== job.memberId || artifact.operation !== job.operation) fail('缓存引用缺少真实原产物');
+          const origin = this.job(original.jobId);
+          if (artifact.memberId !== origin.memberId || artifact.inputId !== origin.inputId) fail('缓存产物与原输入归属不符');
+          const proof = this.inputs.readGenerationReuseProof(origin.id);
+          const current = this.inputs.readGenerationReuseProof(job.id);
+          if (current.job.cacheKey !== proof.job.cacheKey || current.prepared.firstSeed !== proof.prepared.firstSeed) fail('缓存引用与原生成意图不符');
+          this.sqlite.prepare("UPDATE generation_jobs SET status='done',artifact_id=?,completed_at=?,source_event_id=? WHERE id=?")
+            .run(artifact.id, e.occurredAt, e.eventId, job.id);
           break;
         }
         case 'GenerationSettled':

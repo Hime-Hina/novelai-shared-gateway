@@ -5,6 +5,7 @@ import { domainDigest } from '../../server/events/domain-events.ts';
 import {
   parseRelationalFact,
   parseRelationalEvent,
+  RELATIONAL_EVENT_SCHEMA_VERSION,
 } from '../../server/events/relational-events.ts';
 import {
   relationalPayloadParsers,
@@ -33,6 +34,7 @@ test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', 
     contextId: 'c',
     originalCommandId: 'command',
     noCache: false,
+    seedMode: 'fixed',
   };
   for (const noCache of [false, true]) {
     const fact = { eventType: 'RequestAliasRegistered', payload: { ...payload, noCache } };
@@ -42,6 +44,9 @@ test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', 
   assert.throws(() =>
     parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: missing }),
   );
+  const {seedMode: _mode, ...withoutMode} = payload;
+  assert.throws(() => parseRelationalFact({eventType: 'RequestAliasRegistered', payload: withoutMode}));
+  assert.throws(() => parseRelationalFact({eventType: 'RequestAliasRegistered', payload: {...payload, seedMode: 'unknown'}}));
   assert.throws(() =>
     parseRelationalFact({
       eventType: 'RequestAliasRegistered',
@@ -189,7 +194,7 @@ function accountEvent(fact, accountId = 'a') {
     commitSeq: '1',
     eventIndex: 0,
     streamVersion: '1',
-    schemaVersion: 3,
+    schemaVersion: RELATIONAL_EVENT_SCHEMA_VERSION,
     correlationId: null,
     causationId: null,
     amountVersion: 'decimal-12-v1',

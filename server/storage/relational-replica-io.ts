@@ -4,12 +4,28 @@ import {
   publishStoredResult,
   readStoredResultContent,
   assertStoredResultContent,
+  storedResultReferenceAvailable,
 } from './result-files.ts';
 import {
   RelationalReplicaStore,
   type RelationalReplicaConfiguration,
   type RelationalReplicaReadConfiguration,
 } from './relational-replica-store.ts';
+
+export async function relationalArtifactReferenceAvailable(
+  sqlite: Database.Database,
+  artifactId: string,
+  configuration: RelationalReplicaReadConfiguration,
+) {
+  if (sqlite.inTransaction) throw new Error('Cache reference IO cannot hold a SQL transaction.');
+  const store = new RelationalReplicaStore(sqlite, configuration);
+  if (store.readArtifactCacheReference(artifactId).persistent) return true;
+  const local = store.beginArtifactRead(artifactId, 'local');
+  if (!local) return false;
+  const available = await storedResultReferenceAvailable(configuration.dataDir, local.artifact.descriptor);
+  store.assertArtifactReplicaTicket(local.ticket);
+  return available;
+}
 
 // 领取只验证承诺副本，不借用后台确认命令，也不修复或删除任何来源。
 export async function readRelationalArtifactContent(
