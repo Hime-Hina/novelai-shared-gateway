@@ -1,0 +1,327 @@
+{
+  "format": "database-model-archive-recovery-evidence-v1",
+  "measuredDate": "2026-11-14",
+  "platform": "Windows x64",
+  "node": "22.23.4",
+  "source": {
+    "interpreterCommit": "3caba3dfa0b5d9f582acabfc02e36e7db4af038f",
+    "cut": "16509",
+    "sqliteBytes": 605024256,
+    "sha256": "47ea07f440d7652c11ebced52c17883ad821e12411d4dbd046bcc1ed319f4821"
+  },
+  "tool": {
+    "packageCommit": "d5a19f8773b242159b45d98fa285628cef5f6b77",
+    "tarSha256": "daf8b12fc7f863eff23fde6cc9b37fc6487567a749b04979e5a5cb447c4f1dde",
+    "auditScriptSha256": "9ecff2111101ddb0bb282106df95c803c68aa42d0d17db0fcd6c68b0cfbb5e70",
+    "fixedReplayEntrySha256": "f48d74f3897460b0a1ad5e6b78de8082713812b92c8a0eca9eb1d19f4e364359",
+    "verifiedPackageFiles": 4027
+  },
+  "actualAudit": {
+    "elapsedMilliseconds": 21745,
+    "sampledOsPeakWorkingSetBytes": 370548736,
+    "dedicatedTempPeakObservedBytes": 0,
+    "commits": 16509,
+    "events": 77865,
+    "protectedInputs": 9690,
+    "protectedInputBytes": 171047481,
+    "contexts": 40,
+    "artifactInputs": 8830,
+    "diagnostics": 10,
+    "artifacts": 9642,
+    "sourceBytesUnchanged": true,
+    "sourceDirectoryMetadataUnchanged": true,
+    "fromZeroEventRebuild": false
+  },
+  "actualReplay": {
+    "targetExistedAtStart": false,
+    "sourceCachedStreamsCopied": false,
+    "elapsedMilliseconds": 59082,
+    "commits": 16509,
+    "events": 77865,
+    "lastCommitSeq": "16509",
+    "sampledOsPeakWorkingSetBytes": 318832640,
+    "targetDbBytes": 602951680,
+    "targetWalPeakObservedBytes": 180612592,
+    "targetShmPeakObservedBytes": 360448,
+    "dedicatedTempPeakObservedBytes": 14440200,
+    "targetAndTempPeakObservedBytes": 783650484,
+    "sampleIntervalMilliseconds": 250,
+    "networkCallsBlocked": 0,
+    "listensBlocked": 0
+  },
+  "restoredVerification": {
+    "elapsedMilliseconds": 32547,
+    "integrity": true,
+    "foreignKeyViolations": 0,
+    "allStreamProjectionsVerified": true,
+    "requiredHistoryAndProtectedRowsEqual": true,
+    "tables": {
+      "event_commits": {
+        "sourceRows": 16509,
+        "targetRows": 16509,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "domain_events": {
+        "sourceRows": 77865,
+        "targetRows": 77865,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "event_streams": {
+        "sourceRows": 39036,
+        "targetRows": 39036,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "projection_versions": {
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "event_clock": {
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "generation_requests": {
+        "sourceRows": 9690,
+        "targetRows": 9690,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "generation_contexts": {
+        "sourceRows": 40,
+        "targetRows": 40,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "artifact_inputs": {
+        "sourceRows": 8830,
+        "targetRows": 8830,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "generation_diagnostics": {
+        "sourceRows": 10,
+        "targetRows": 10,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "generation_idempotency": {
+        "sourceRows": 40,
+        "targetRows": 40,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "fair_quota_settlements": {
+        "sourceRows": 9652,
+        "targetRows": 9652,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": true
+      },
+      "free_image_usage": {
+        "sourceRows": 2214,
+        "targetRows": 2214,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "users": {
+        "sourceRows": 5,
+        "targetRows": 5,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "accounts": {
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "cards": {
+        "sourceRows": 0,
+        "targetRows": 0,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "jobs": {
+        "sourceRows": 9691,
+        "targetRows": 9691,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": false
+      },
+      "images": {
+        "sourceRows": 9642,
+        "targetRows": 9642,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": false
+      },
+      "ledger": {
+        "sourceRows": 9683,
+        "targetRows": 9683,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": false
+      },
+      "member_sessions": {
+        "sourceRows": 5,
+        "targetRows": 5,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "app_settings": {
+        "sourceRows": 1,
+        "targetRows": 1,
+        "rawRowsEqual": true,
+        "canonicalRowsEqual": true
+      },
+      "app_meta": {
+        "sourceRows": 7,
+        "targetRows": 4,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": false
+      },
+      "event_imports": {
+        "sourceRows": 383,
+        "targetRows": 0,
+        "rawRowsEqual": false,
+        "canonicalRowsEqual": false
+      }
+    }
+  },
+  "repeat": {
+    "elapsedMilliseconds": 2059,
+    "commits": 0,
+    "events": 0,
+    "lastCommitSeq": "16509",
+    "targetBytesUnchanged": true,
+    "sourceBytesUnchanged": true
+  },
+  "queryRowDifferences": {
+    "jobs": {
+      "sourceRows": 9691,
+      "matchingIdentities": 9691,
+      "missingTargetIdentities": 0,
+      "targetExtraIdentities": 0,
+      "rowsWithCanonicalDataChanges": 9681,
+      "sqlColumns": {
+        "order_value": 9691
+      },
+      "dataFields": {
+        "errorDetail": {
+          "missingFromTarget": 9681,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 0
+        },
+        "diagnosticId": {
+          "missingFromTarget": 818,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 818
+        },
+        "payloadBytes": {
+          "missingFromTarget": 820,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 0
+        },
+        "queueTotal": {
+          "missingFromTarget": 820,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 820
+        },
+        "error": {
+          "missingFromTarget": 812,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 0
+        },
+        "generationProgress": {
+          "missingFromTarget": 810,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 810
+        },
+        "sharedCooldown": {
+          "missingFromTarget": 812,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 812
+        }
+      },
+      "otherDataFieldDifferences": 0,
+      "otherSqlColumnDifferences": 0,
+      "defaultDescendingOrderDifferentPositions": 0
+    },
+    "images": {
+      "sourceRows": 9642,
+      "matchingIdentities": 9642,
+      "missingTargetIdentities": 0,
+      "targetExtraIdentities": 0,
+      "rowsWithCanonicalDataChanges": 812,
+      "sqlColumns": {
+        "order_value": 9642,
+        "account_id": 812,
+        "search_text": 812
+      },
+      "dataFields": {
+        "accountId": {
+          "missingFromTarget": 812,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 812
+        }
+      },
+      "otherDataFieldDifferences": 0,
+      "otherSqlColumnDifferences": 0,
+      "defaultDescendingOrderDifferentPositions": 0
+    },
+    "ledger": {
+      "sourceRows": 9683,
+      "matchingIdentities": 9683,
+      "missingTargetIdentities": 0,
+      "targetExtraIdentities": 0,
+      "rowsWithCanonicalDataChanges": 1388,
+      "sqlColumns": {
+        "order_value": 812,
+        "token": 1388,
+        "user_token": 1388,
+        "search_text": 1388
+      },
+      "dataFields": {
+        "token": {
+          "missingFromTarget": 1388,
+          "addedInTarget": 0,
+          "changed": 0,
+          "nonDefaultSourceValues": 1388
+        }
+      },
+      "otherDataFieldDifferences": 0,
+      "otherSqlColumnDifferences": 0,
+      "defaultDescendingOrderDifferentPositions": 2776
+    }
+  },
+  "final": {
+    "sourceBytesUnchanged": true,
+    "sourceDirectoryEntries": 4,
+    "sourceDirectoryMetadataUnchanged": true,
+    "targetAuthorityPresent": false,
+    "targetWalBytes": 0,
+    "targetShmBytes": 32768,
+    "targetRetainedForPrivateReview": true,
+    "completeArchiveClosure": false,
+    "newFormatMigration": false,
+    "newFormatReady": false,
+    "externalObjectBytesVerified": false,
+    "productionChanged": false
+  },
+  "limitations": [
+    "Measurements are Windows Node22 process and 250ms filesystem samples, not Linux throughput, system cache or exact disk I/O traces.",
+    "Old copyProtectedFacts copies selected same-snapshot private rows; no real authentication, deployment-environment or external-artifact restore is exercised.",
+    "Sealed source SQLite remains the complete archive authority; event history alone is insufficient for all retained query and audit evidence.",
+    "A/B selection, origin-preserving conversion, published unified-candidate restore and production cutover remain separate acceptance work."
+  ]
+}

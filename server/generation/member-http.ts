@@ -1,55 +1,48 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { EventEmitter } from 'node:events';
 import { readNativeBody } from '../protocols/native-body.ts';
-import {
-  generationIntent,
-  readGenerationIdempotencyKey,
-  type GenerationPayloadClaim,
-  type createGenerationAdmission,
-} from './admission.ts';
-import { memberGenerationCapabilities } from './capabilities.ts';
-import {
-  normalizeMemberGeneration,
-  materializeMemberGeneration,
-  parseMemberGenerationConfirmation,
-  quoteMemberGeneration,
-  memberGenerationIntentFingerprint,
-  assertMemberGenerationConfirmation,
-  memberGenerationInput,
-  memberGenerationInputAsset,
-  type MemberNormalizationContext,
-  type NormalizedMemberGeneration,
-} from './member-contract.ts';
-import {
-  generationRequestLinks,
-  publicGenerationRequest,
-  readOwnedGenerationRequest,
-} from './request-queries.ts';
-import type {
-  JsonStore,
-  StoreItem,
-  StoredGenerationRequest,
-  StoreDatabase,
-} from '../storage/sqlite-store.ts';
-import type { ImageStorage } from '../storage/r2-storage.ts';
+import { readGenerationIdempotencyKey, type GenerationPayloadClaim } from './admission.ts';
+import { generationRequestLinks, type publicGenerationRequest } from './request-queries.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './batch-requests.ts';
-import { describeStoredResult } from '../storage/result-files.ts';
 import { publicErrorMessage } from '../http/public-errors.ts';
+import { readMemberJson } from '../members/http-request.ts';
 
 type MemberRequest = IncomingMessage & { generationPayloadClaim?: GenerationPayloadClaim };
-interface Dependencies {
-  store: JsonStore;
-  admit: ReturnType<typeof createGenerationAdmission>;
+type Awaitable<T> = T | Promise<T>;
+type State = ReturnType<typeof publicGenerationRequest>;
+export interface MemberGenerationHttpDependencies {
+  streamOwner: object;
+  events: Pick<EventEmitter, 'on' | 'once' | 'off'>;
   budget: ReturnType<typeof createGenerationPayloadBudget>;
-  imageStorage: ImageStorage;
   previews: JobPreviews;
+  capabilities(memberId: string): Awaitable<unknown>;
+  quote(body: unknown, memberId: string, claim: GenerationPayloadClaim): Awaitable<unknown>;
+  submit(
+    req: IncomingMessage,
+    body: unknown,
+    memberId: string,
+    claim: GenerationPayloadClaim,
+  ): Promise<{
+    requestId: string;
+    jobIds: string[];
+    replayed: boolean;
+  }>;
+  readState(requestId: string, memberId: string): Awaitable<State>;
+  cancel(requestId: string, memberId: string): Promise<unknown>;
+  readInput(requestId: string, memberId: string): Awaitable<unknown>;
+  readAsset(
+    requestId: string,
+    memberId: string,
+    slot: string,
+  ): Awaitable<{ bytes: Buffer; mimeType: string }>;
+  readContent(jobId: string, memberId: string): Promise<{ bytes: Buffer; mimeType: string }>;
   scheduleQueueDrain(): void;
-  env?: NodeJS.ProcessEnv;
 }
 const streamCounts = new Map<string, number>();
-const storeStreams = new WeakMap<JsonStore, Set<() => void>>();
-const closingStores = new WeakSet<JsonStore>();
-export function closeMemberGenerationStreams(store: JsonStore): void {
+const storeStreams = new WeakMap<object, Set<() => void>>();
+const closingStores = new WeakSet<object>();
+export function closeMemberGenerationStreams(store: object): void {
   closingStores.add(store);
   for (const close of storeStreams.get(store) || []) {
     close();
@@ -141,26 +134,18 @@ export function memberGenerationError(error: unknown) {
   };
 }
 
-export function createMemberGenerationHttp(deps: Dependencies) {
-  const { store, env = process.env } = deps;
-  const readState = async (requestId: string, memberId: string) =>
-    publicGenerationRequest(await readOwnedGenerationRequest(store, requestId, memberId));
-  const readPayload = async (requestId: string, memberId: string) => {
-    await readOwnedGenerationRequest(store, requestId, memberId);
-    return store.readGenerationRequest(requestId);
-  };
-  const quote = (
-    db: StoreDatabase,
-    user: StoreItem,
-    normalized: NormalizedMemberGeneration,
-    now: number,
-  ) =>
-    quoteMemberGeneration(db, user, normalized, {
-      now,
-      env,
-      freeUsage: store.readFreeImageUsage(db, user.id, now),
-      activePayloadBytes: store.activeGenerationPayloadBytes(),
-    });
+const requestRoute =
+  /^\/api\/member\/requests\/([^/]+)(?:\/(cancel|events|input|inputs\/([^/]+)))?$/;
+const contentRoute = /^\/api\/member\/jobs\/([^/]+)\/content$/;
+export function isMemberGenerationPath(path: string): boolean {
+  return (
+    path.startsWith('/api/member/generation/') || requestRoute.test(path) || contentRoute.test(path)
+  );
+}
+
+export function createMemberGenerationHttp(deps: MemberGenerationHttpDependencies) {
+  const readState = (requestId: string, memberId: string) =>
+    Promise.resolve(deps.readState(requestId, memberId));
   return async function handle(
     req: IncomingMessage,
     res: ServerResponse,
@@ -170,30 +155,22 @@ export function createMemberGenerationHttp(deps: Dependencies) {
   ): Promise<boolean> {
     const base = '/api/member/generation',
       path = url.pathname;
-    const requestPath = path.match(
-      /^\/api\/member\/requests\/([^/]+)\/(events|input|inputs\/([^/]+))$/,
-    );
-    const contentPath = path.match(/^\/api\/member\/jobs\/([^/]+)\/content$/);
+    const requestPath = path.match(requestRoute);
+    const contentPath = path.match(contentRoute);
     if (!path.startsWith(base + '/') && !requestPath && !contentPath) {
       return false;
     }
     try {
       if (path === base + '/capabilities' && req.method === 'GET') {
-        const result = await store.update(
-          (db) =>
-            memberGenerationCapabilities(
-              db,
-              db.users.find((member) => member.id === user.id),
-              { env },
-            ),
-          { persist: false },
-        );
+        const result = await deps.capabilities(user.id);
         reply(res, 200, result);
         return true;
       }
       if ([base + '/quote', base + '/requests'].includes(path) && req.method === 'POST') {
         const submit = path.endsWith('/requests');
-        const key = submit ? readGenerationIdempotencyKey(req, true) : null;
+        if (submit) {
+          readGenerationIdempotencyKey(req, true);
+        }
         const claim = deps.budget.claim();
         (req as MemberRequest).generationPayloadClaim = claim;
         try {
@@ -202,68 +179,11 @@ export function createMemberGenerationHttp(deps: Dependencies) {
             maxBytes: 32 * 1024 * 1024,
           });
           if (!submit) {
-            const normalized = normalizeMemberGeneration(body);
-            claim.resize(Buffer.byteLength(JSON.stringify(normalized.request)));
-            const result = await store.update(
-              (db) =>
-                quote(
-                  db,
-                  db.users.find((member) => member.id === user.id)!,
-                  normalized,
-                  Date.now(),
-                ),
-              { persist: false },
-            );
+            const result = await deps.quote(body, user.id, claim);
             reply(res, 200, result);
             return true;
           }
-          const input = body as Record<string, unknown> | null;
-          if (!input || !['generate', 'upscale', 'encode-vibe'].includes(String(input.operation))) {
-            fail(422, 'invalid_parameters', '生成操作无效。');
-          }
-          const confirmation = parseMemberGenerationConfirmation(input.confirmation);
-          let normalized: NormalizedMemberGeneration;
-          // 受理层在同一串行命令内选择首次上下文并校验新提交；重放沿用原授权，不改用当前报价。
-          const intent = generationIntent(
-            key,
-            (context) => {
-              normalized = normalizeMemberGeneration(input, {
-                normalizationContext: context as unknown as MemberNormalizationContext,
-              });
-              return {
-                ...materializeMemberGeneration(normalized),
-                clientContract: 'member-generation-v1',
-                confirmation,
-              } as StoredGenerationRequest;
-            },
-            {
-              operation: String(input.operation),
-              randomSeed: false,
-              noCache: true,
-              claim,
-              context: () =>
-                normalizeMemberGeneration(input).normalizationContext as unknown as Partial<
-                  StoreDatabase['settings']
-                >,
-              fingerprint: () => memberGenerationIntentFingerprint(normalized!, confirmation),
-              validate: (db, member, _request, now) => {
-                const currentQuote = quote(db, member, normalized!, now);
-                assertMemberGenerationConfirmation(confirmation, currentQuote);
-                const rejection = currentQuote.admission.reasons[0];
-                if (rejection) {
-                  fail(rejection.statusCode, rejection.code, rejection.message);
-                }
-              },
-            },
-          );
-          const result = await deps.admit({
-            identity: { memberId: user.id },
-            intent,
-            claim,
-            batch: true,
-            source: 'member-generation',
-            noCache: true,
-          });
+          const result = await deps.submit(req, body, user.id, claim);
           deps.scheduleQueueDrain();
           const requestId = result.requestId!,
             state = await readState(requestId, user.id),
@@ -284,22 +204,30 @@ export function createMemberGenerationHttp(deps: Dependencies) {
           delete (req as MemberRequest).generationPayloadClaim;
         }
       }
-      if (requestPath && req.method === 'GET') {
+      if (requestPath && requestPath[2] === 'cancel' && req.method === 'POST') {
+        await readMemberJson(req);
+        reply(res, 200, await deps.cancel(decodeURIComponent(requestPath[1]), user.id));
+        return true;
+      }
+      if (requestPath && req.method === 'GET' && requestPath[2] !== 'cancel') {
         const requestId = decodeURIComponent(requestPath[1]),
           mode = requestPath[2];
+        if (!mode) {
+          reply(res, 200, await readState(requestId, user.id));
+          return true;
+        }
         if (mode === 'events') {
-          await readOwnedGenerationRequest(store, requestId, user.id);
+          await readState(requestId, user.id);
           await streamRequest(deps, res, requestId, user.id, revalidate, () =>
             readState(requestId, user.id),
           );
           return true;
         }
-        const payload = await readPayload(requestId, user.id);
         if (mode === 'input') {
-          reply(res, 200, memberGenerationInput(requestId, payload));
+          reply(res, 200, await deps.readInput(requestId, user.id));
           return true;
         }
-        const asset = memberGenerationInputAsset(payload, decodeURIComponent(requestPath[3]));
+        const asset = await deps.readAsset(requestId, user.id, decodeURIComponent(requestPath[3]));
         res.writeHead(200, {
           'content-type': asset.mimeType,
           'content-length': asset.bytes.length,
@@ -310,54 +238,12 @@ export function createMemberGenerationHttp(deps: Dependencies) {
         return true;
       }
       if (contentPath && req.method === 'GET') {
-        const context = await store.findJobContext(decodeURIComponent(contentPath[1])),
-          job = context?.job;
-        const owned =
-          job &&
-          (job.requestId
-            ? store
-                .readGenerationRequestState(job.requestId, user.id)
-                ?.jobs.some((child) => child.id === job.id)
-            : (job.memberId || job.generationAttempt?.memberId || job.fairCharge?.userId) ===
-              user.id);
-        if (!job || !owned) {
-          fail(404, 'job_not_found', '任务不存在。');
-        }
-        if (!job.imageId) {
-          if (['pending', 'queued', 'running'].includes(job.status!)) {
-            fail(409, 'result_not_ready', '结果尚未完成。');
-          }
-          if (job.status === 'done' || job.lateResultAvailable) {
-            fail(410, 'result_unavailable', '原结果已不可领取。');
-          }
-          fail(409, 'generation_failed', '任务未产生可领取的结果。');
-        }
-        const image = await store.findImage(job.imageId);
-        if (!image || image.token !== job.userToken || image.mimeType === 'image/svg+xml') {
-          fail(410, 'result_unavailable', '原结果已不可领取。');
-        }
-        let bytes: Buffer;
-        try {
-          bytes = await deps.imageStorage.read(image);
-          const verified = describeStoredResult(
-            image.id,
-            image.operation || job.request?.operation || 'generate',
-            { mimeType: image.mimeType, buffer: bytes },
-          );
-          if (
-            (image.sha256 && image.sha256 !== verified.sha256) ||
-            (image.byteLength !== undefined && image.byteLength !== verified.byteLength)
-          ) {
-            throw new Error('stored content mismatch');
-          }
-        } catch (error) {
-          if ((error as { statusCode?: number }).statusCode === 503) {
-            fail(503, 'content_temporarily_unavailable', '结果存储暂不可用，请稍后重试。');
-          }
-          fail(410, 'result_unavailable', '原结果已不可领取。');
-        }
+        const { bytes, mimeType } = await deps.readContent(
+          decodeURIComponent(contentPath[1]),
+          user.id,
+        );
         res.writeHead(200, {
-          'content-type': image.mimeType || 'application/octet-stream',
+          'content-type': mimeType,
           'content-length': bytes.length,
           'cache-control': 'private, no-store',
           'x-content-type-options': 'nosniff',
@@ -379,7 +265,7 @@ export function createMemberGenerationHttp(deps: Dependencies) {
 }
 
 async function streamRequest(
-  deps: Dependencies,
+  deps: MemberGenerationHttpDependencies,
   res: ServerResponse,
   requestId: string,
   memberId: string,
@@ -390,7 +276,7 @@ async function streamRequest(
   if (res.destroyed || res.writableEnded) {
     return;
   }
-  if (closingStores.has(deps.store)) {
+  if (closingStores.has(deps.streamOwner)) {
     fail(503, 'executor_closing', '服务正在关闭，请稍后重试。');
   }
   if (
@@ -406,8 +292,8 @@ async function streamRequest(
     first = true,
     previous = '';
   const watched = new Map<string, () => void>();
-  const streams = storeStreams.get(deps.store) || new Set<() => void>();
-  storeStreams.set(deps.store, streams);
+  const streams = storeStreams.get(deps.streamOwner) || new Set<() => void>();
+  storeStreams.set(deps.streamOwner, streams);
   const close = () => {
     if (!closed) {
       res.end();
@@ -421,8 +307,8 @@ async function streamRequest(
     }
     closed = true;
     clearInterval(heartbeat);
-    deps.store.events.off('commit', wake);
-    deps.store.events.off('close', close);
+    deps.events.off('commit', wake);
+    deps.events.off('close', close);
     streams.delete(close);
     for (const unwatch of watched.values()) {
       unwatch();
@@ -537,12 +423,12 @@ async function streamRequest(
   }, 15_000);
   heartbeat.unref();
   streams.add(close);
-  deps.store.events.once('close', close);
+  deps.events.once('close', close);
   res.once('close', stop);
   res.once('error', stop);
   res.on('drain', wake);
   // Subscribe before the first asynchronous read: a commit during it requests a second read.
-  deps.store.events.on('commit', wake);
+  deps.events.on('commit', wake);
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache, no-transform',

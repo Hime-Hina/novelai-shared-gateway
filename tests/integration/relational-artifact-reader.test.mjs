@@ -147,14 +147,24 @@ test('缺失或坏 Local 回退原 R2，R2 不可读再回退实际 br PikPak；
   assert.equal(databaseState(f.db), before);
 });
 
-test('只有 uploaded 的实际 PikPak 字节不冒充承诺，真实验证后才可只读领取', async (t) => {
+test('PikPak 上传回执只允许尝试实读，原字节通过才成功且不写 verified', async (t) => {
   const f = await setup(t, true, true);
   await f.hideLocal();
   f.controls.hotFailed = true;
   const before = databaseState(f.db);
   f.calls.length = 0;
-  await assert.rejects(f.read(), unavailable);
-  assert.deepEqual(f.calls, ['r2:GET']);
+  const result = await f.read();
+  assert.deepEqual(result.buffer, image);
+  assert.equal(result.storageTargetId, f.target('pikpak'));
+  assert.deepEqual(f.calls, ['r2:GET', 'pikpak:GET']);
+  assert.equal(f.store.readArtifactReplica(artifactId, result.storageTargetId).verifiedAt, null);
+  assert.equal(databaseState(f.db), before);
+  f.controls.coldFailed = true;
+  await assert.rejects(f.read(), unavailable, '只有上传标记、真实对象缺失不能成功');
+  f.controls.coldFailed = false;
+  f.controls.corruptCold = true;
+  await assert.rejects(f.read(), unavailable, '上传回执不能替代解压及原内容核对');
+  f.controls.corruptCold = false;
   assert.equal(databaseState(f.db), before);
   f.controls.hotFailed = false;
   await verifyRelationalArtifactReplica(

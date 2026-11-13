@@ -55,11 +55,8 @@ import {
 import { JobPreviews } from './generation/job-previews.ts';
 import { launcherSubscription } from './quota/launcher-subscription.ts';
 import { reconcileMemberSessionOwner } from './members/authentication.ts';
-import {
-  closeMemberGenerationStreams,
-  createMemberGenerationHttp,
-  memberGenerationError,
-} from './generation/member-http.ts';
+import { closeMemberGenerationStreams, memberGenerationError } from './generation/member-http.ts';
+import { createLegacyMemberGenerationHttp } from './generation/legacy-member-http.ts';
 import { handleMemberRoutes } from './members/http-routes.ts';
 import { createNativeHttp } from './protocols/native-http.ts';
 import { imageExtension } from './protocols/native-stream.ts';
@@ -274,9 +271,10 @@ const openAiQueuePollMs = 650;
 
 const jobStreamProgress = new Map<string, Progress>();
 const jobPreviews = new JobPreviews();
-const handleMemberGeneration = createMemberGenerationHttp({
+const handleMemberGeneration = createLegacyMemberGenerationHttp({
   store,
   admit: admitGeneration,
+  cancelGenerationRequest: (requestId, memberId) => cancelGenerationRequest(requestId, memberId),
   budget: generationPayloadBudget,
   imageStorage,
   previews: jobPreviews,

@@ -65,7 +65,7 @@ export async function readRelationalArtifactContent(
       // 某承诺副本不可用时只尝试其他原来源；不把失败写回或泄漏私有 IO 错误。
     }
   }
-  throw Object.assign(new Error('No verified artifact replica has readable original bytes.'), {
+  throw Object.assign(new Error('No confirmed artifact replica has readable original bytes.'), {
     statusCode: 503,
     code: 'ARTIFACT_CONTENT_UNAVAILABLE',
   });

@@ -1,3 +1,9 @@
+import {
+  memberCookieName as cookieName,
+  memberCookie as cookie,
+  assertMemberSameOrigin as sameOrigin,
+  readMemberJson as json,
+} from './http-request.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { formatAmount, parseAmount } from '../quota/resource-amounts.ts';
 import {
@@ -162,7 +168,7 @@ const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => {
   throw Object.assign(new Error(message), { statusCode });
 };
-const cookieName = 'nai_member_session';
+
 const keyedManagementActions = new Set([
   'free-image-policy',
   'loss-alert-policy',
@@ -205,30 +211,6 @@ function managementCommand(
     fingerprint: domainDigest({ operation, body }),
   };
 }
-function cookie(req: IncomingMessage): string {
-  return (
-    String(req.headers.cookie || '')
-      .split(';')
-      .map((s) => s.trim())
-      .find((s) => s.startsWith(cookieName + '='))
-      ?.slice(cookieName.length + 1) || ''
-  );
-}
-function sameOrigin(req: IncomingMessage): void {
-  const host = String(req.headers.host || '');
-  const origin = req.headers.origin;
-  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
-  const expected = `${local ? 'http' : 'https'}://${host}`;
-  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') {
-    throw Object.assign(new Error('此接口仅允许本站访问'), {
-      statusCode: 403,
-      code: 'origin_rejected',
-    });
-  }
-  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) {
-    throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
-  }
-}
 function reply(res: ServerResponse, status: number, value: unknown): void {
   const text = JSON.stringify(value);
   res.writeHead(status, {
@@ -238,30 +220,6 @@ function reply(res: ServerResponse, status: number, value: unknown): void {
     'x-content-type-options': 'nosniff',
   });
   res.end(text);
-}
-async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
-    error(415, '仅接受 JSON');
-  }
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 32768) {
-      error(413, '请求过大');
-    }
-    chunks.push(chunk);
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    error(400, 'JSON 格式错误');
-  }
-  if (!value || Array.isArray(value) || typeof value !== 'object') {
-    error(400, '请求内容无效');
-  }
-  return value as Record<string, unknown>;
 }
 function setCookie(
   req: IncomingMessage,
