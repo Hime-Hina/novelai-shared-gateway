@@ -269,7 +269,7 @@ export function materializeMemberGeneration(
 }
 
 export function memberGenerationIntentFingerprint(
-  normalized: NormalizedMemberGeneration,
+  normalized: Pick<NormalizedMemberGeneration, 'requestFingerprint' | 'confirmation'>,
   confirmation = normalized.confirmation,
 ): string {
   return generationDefinitionDigest({

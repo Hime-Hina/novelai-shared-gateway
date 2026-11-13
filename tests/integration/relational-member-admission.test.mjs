@@ -13,11 +13,20 @@ import { createRelationalMemberGenerationAdmission } from '../../server/generati
 import {
   normalizeMemberGeneration,
   materializeMemberGeneration,
+  memberGenerationIntentFingerprint,
 } from '../../server/generation/member-contract.ts';
 import { prepareRelationalInput } from '../../server/generation/relational-input.ts';
 import { generationIdempotencyKeyHash } from '../../server/generation/admission.ts';
+import {
+  generationRequestFingerprint,
+  requestNormalizationDefaults,
+} from '../../server/generation/request-fingerprint.ts';
+import { normalizeNovelAiRequest } from '../../server/protocols/novelai-client.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
-import { NATIVE_DEFAULTS } from '../../server/protocols/native-image.ts';
+import {
+  NATIVE_DEFAULTS,
+  nativeNormalizationContext,
+} from '../../server/protocols/native-image.ts';
 import {
   createMemberSession,
   authenticateMemberApiKey,
@@ -25,7 +34,10 @@ import {
 } from '../../server/members/authentication.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { canonicalJson } from '../../server/events/domain-events.ts';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
@@ -93,9 +105,13 @@ test('真实Key受理保存薄键、首次随机seed和批次；同键零写入�
   changed.parameters.seed = actual;
   await assert.rejects(submit(admit, changed), (e) => e.code === 'idempotency_conflict');
   assert.equal(databaseState(f.db), before);
+  const fixed = confirmed(f, { ...input, parameters: { ...input.parameters, seed: actual } });
+  const fixedAccepted = await submit(admit, fixed, 'fixed-same-actual-seed');
+  assert.equal(f.inputs.readJobInput(fixedAccepted.receipt.jobIds[0]).seed, actual);
+  assert.notEqual(fixedAccepted.receipt.requestId, requestId);
   const other = await submit(admit, input, undefined, { apiKey: keys.m2 });
   assert.notEqual(other.receipt.requestId, requestId);
-  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n, 2);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n, 3);
   const event = readRelationalCommit(f.db, first.commitSeq).events.at(-1);
   assert.equal(event.eventType, 'RequestAliasRegistered');
   assert.equal(
@@ -422,32 +438,42 @@ test('原协议薄键不能被成员协议另建请求；不可用薄键不会�
     input = body(f, { n_samples: 1 });
   const normalized = normalizeMemberGeneration(input),
     key = 'original-native-key';
+  const originalRequest = materializeMemberGeneration(normalized);
   await withAuthenticatedMemberApiKey(
     f.members,
     keys.m1,
     () =>
-      f.generations.acceptGeneration(meta('native-original', NOW, 'm1'), {
-        inputId: 'native-input',
-        requestId: 'native-request',
-        memberId: 'm1',
-        source: 'native',
-        seedMode: 'random',
-        confirmation: null,
-        request: materializeMemberGeneration(normalized),
-        context: { kind: 'native', native: normalized.normalizationContext.native },
-        idempotencyKeyHash: generationIdempotencyKeyHash(key),
-        jobs: [
-          {
-            jobId: 'native-job',
-            status: 'pending',
-            queueSeq: null,
-            queueExpiresAt: null,
-            deadlineAt: null,
-            admissionEpoch: 0,
-            cacheKey: null,
-          },
-        ],
-      }),
+      f.generations.acceptGeneration(
+        {
+          ...meta('native-original', NOW, 'm1'),
+          fingerprint: generationRequestFingerprint(originalRequest, {
+            randomSeed: true,
+            noCache: true,
+          }),
+        },
+        {
+          inputId: 'native-input',
+          requestId: 'native-request',
+          memberId: 'm1',
+          source: 'native',
+          seedMode: 'random',
+          confirmation: null,
+          request: originalRequest,
+          context: { kind: 'native', native: normalized.normalizationContext.native },
+          idempotency: { keyHash: generationIdempotencyKeyHash(key), noCache: true },
+          jobs: [
+            {
+              jobId: 'native-job',
+              status: 'pending',
+              queueSeq: null,
+              queueExpiresAt: null,
+              deadlineAt: null,
+              admissionEpoch: 0,
+              cacheKey: null,
+            },
+          ],
+        },
+      ),
     {},
   );
   let before = databaseState(f.db);
@@ -460,4 +486,202 @@ test('原协议薄键不能被成员协议另建请求；不可用薄键不会�
   before = databaseState(f.db);
   await assert.rejects(submit(admit, input, 'no-longer-available'), (e) => e.statusCode === 410);
   assert.equal(databaseState(f.db), before);
+});
+
+test('原规范输入约束指纹及确认，互相一致的伪B摘要不能覆盖A', async (t) => {
+  for (const changeConfirmation of [false, true]) {
+    await t.test(changeConfirmation ? '同时伪造确认指纹' : '只伪造命令和薄键指纹', async (t) => {
+      const f = await fixture(t),
+        original = body(f, { seed: 42, n_samples: 1 });
+      const other = confirmed(f, { ...original, input: 'different private B prompt' });
+      const first = await submit(bridge(f), original),
+        forged = new Database(f.db.serialize());
+      const target = new Database(':memory:');
+      t.after(() => {
+        forged.close();
+        target.close();
+      });
+      const fingerprint = memberGenerationIntentFingerprint(
+        normalizeMemberGeneration(other),
+        other.confirmation,
+      );
+      const names = [
+        'commits_append_only_update',
+        'domain_events_append_only_update',
+        'idempotency_keys_identity',
+        'generation_requests_identity',
+      ];
+      const guards = names.map((name) => ({
+        name,
+        sql: forged.prepare('SELECT sql FROM sqlite_schema WHERE name=?').get(name).sql,
+      }));
+      forged.transaction(() => {
+        for (const guard of guards) {
+          forged.exec(`DROP TRIGGER ${guard.name}`);
+        }
+        forged
+          .prepare('UPDATE commits SET fingerprint=? WHERE commit_seq=?')
+          .run(fingerprint, BigInt(first.commitSeq));
+        forged
+          .prepare(
+            "UPDATE domain_events SET payload=json_set(payload,'$.intentFingerprint',?) WHERE event_type='RequestAliasRegistered'",
+          )
+          .run(fingerprint);
+        forged.prepare('UPDATE idempotency_keys SET intent_fingerprint=?').run(fingerprint);
+        if (changeConfirmation) {
+          forged
+            .prepare(
+              "UPDATE domain_events SET payload=json_set(payload,'$.confirmation',json(?)) WHERE event_type='RequestAccepted'",
+            )
+            .run(canonicalJson(other.confirmation));
+          // 投影也保存同一规范确认，排除“只是副本不等”的较早拒绝。
+          forged
+            .prepare('UPDATE generation_requests SET confirmation=?')
+            .run(canonicalJson(other.confirmation));
+        }
+        for (const guard of guards) {
+          forged.exec(guard.sql);
+        }
+      })();
+      assert.deepEqual(forged.pragma('foreign_key_check'), []);
+      const source = new RelationalInputStore(forged);
+      assert.equal(
+        source.readMemberInput(first.receipt.requestId, 'm1').input.input,
+        original.input,
+      );
+      const beforeSource = databaseState(forged);
+      await assert.rejects(
+        submit(
+          bridge({
+            db: forged,
+            members: new RelationalMemberStore(forged),
+            inputs: source,
+            generations: new RelationalGenerationStore(forged, {}),
+          }),
+          other,
+        ),
+        (e) => e.code === 'input_unavailable',
+      );
+      assert.equal(databaseState(forged), beforeSource);
+      initializeRelationalStorage(target, 'generation-history');
+      const replay = new RelationalCommitReplayer(target);
+      for (const seq of ['1', '2', '3']) {
+        target.transaction(() => replay.replayCommit(readRelationalCommit(forged, seq), source))();
+      }
+      const beforeTarget = databaseState(target);
+      target.transaction(() => {
+        assert.throws(
+          () => replay.replayCommit(readRelationalCommit(forged, first.commitSeq), source),
+          (e) => e.code === 'input_unavailable',
+        );
+      })();
+      assert.equal(databaseState(target), beforeTarget);
+      target.transaction(() =>
+        replay.replayCommit(readRelationalCommit(f.db, first.commitSeq), f.inputs),
+      )();
+      assert.deepEqual(
+        target.prepare('SELECT * FROM idempotency_keys').all(),
+        f.db.prepare('SELECT * FROM idempotency_keys').all(),
+      );
+    });
+  }
+});
+
+test('Direct原clamp与noCache真/假意图均从保存事实回放，不收窄为Native输入', async (t) => {
+  const f = await fixture(t),
+    settings = { defaults: { steps: 23, scale: 5, cfg: 0 } };
+  const request = normalizeNovelAiRequest(
+    { tag: 'original direct subject', width: 128, height: 128, steps: 30, scale: 11, seed: 7 },
+    settings,
+    { maxSteps: 28 },
+  );
+  const context = {
+    kind: 'direct',
+    native: nativeNormalizationContext(),
+    defaults: requestNormalizationDefaults(settings),
+  };
+  for (const noCache of [false, true]) {
+    const id = `direct-${noCache}`,
+      metadata = {
+        ...meta(id, NOW, 'm1'),
+        fingerprint: generationRequestFingerprint(request, { randomSeed: false, noCache }),
+      };
+    const accepted = await withAuthenticatedMemberApiKey(
+      f.members,
+      keys.m1,
+      () =>
+        f.generations.acceptGeneration(metadata, {
+          memberId: 'm1',
+          requestId: id,
+          inputId: `input-${id}`,
+          source: 'direct',
+          seedMode: 'fixed',
+          confirmation: null,
+          request,
+          context,
+          idempotency: { keyHash: generationIdempotencyKeyHash(id), noCache },
+          jobs: [
+            {
+              jobId: `job-${id}`,
+              status: 'pending',
+              queueSeq: null,
+              queueExpiresAt: null,
+              deadlineAt: null,
+              admissionEpoch: 0,
+              cacheKey: null,
+            },
+          ],
+        }),
+      {},
+    );
+    const event = readRelationalCommit(f.db, accepted.commitSeq).events.at(-1);
+    assert.equal(event.payload.noCache, noCache);
+    assert.equal(f.inputs.readJobInput(`job-${id}`).requestedSteps, 30);
+    assert.equal(f.inputs.readJobInput(`job-${id}`).steps, 28);
+    f.inputs.assertAcceptedGenerationIntent(
+      id,
+      'm1',
+      accepted.commitSeq,
+      event.payload.keyHash,
+      event.eventId,
+    );
+  }
+  const db = new Database(':memory:');
+  t.after(() => db.close());
+  initializeRelationalStorage(db, 'generation-history');
+  const replay = new RelationalCommitReplayer(db);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    db.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
+  }
+  assert.deepEqual(
+    db.prepare('SELECT * FROM idempotency_keys').all(),
+    f.db.prepare('SELECT * FROM idempotency_keys').all(),
+  );
+});
+
+test('薄键必须反向对应原alias事实，缺失映射不能借command回执绕过', async (t) => {
+  const f = await fixture(t),
+    admit = bridge(f),
+    input = body(f, { n_samples: 1 });
+  const first = await submit(admit, input);
+  const guard = f.db
+    .prepare("SELECT sql FROM sqlite_schema WHERE name='idempotency_keys_identity'")
+    .get().sql;
+  f.db.exec('DROP TRIGGER idempotency_keys_identity');
+  f.db
+    .prepare('UPDATE idempotency_keys SET key_hash=?')
+    .run(generationIdempotencyKeyHash('different-client-key'));
+  f.db.exec(guard);
+  const before = databaseState(f.db);
+  await assert.rejects(
+    submit(admit, input, 'different-client-key'),
+    (e) => e.code === 'input_unavailable',
+  );
+  assert.equal(databaseState(f.db), before);
+  await assert.rejects(submit(admit, input), (e) => e.code === 'result_unavailable');
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 1);
+  assert.equal(f.inputs.readMemberInput(first.receipt.requestId, 'm1').input.input, input.input);
 });

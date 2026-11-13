@@ -530,6 +530,7 @@ export const relationalPayloadParsers = {
     operation,
     keyHash: hash,
     intentFingerprint: hash,
+    noCache: bool,
     requestId: id,
     jobId: id,
     contextId: id,

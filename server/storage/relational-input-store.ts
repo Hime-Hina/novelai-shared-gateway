@@ -28,9 +28,12 @@ import {
 } from '../generation/relational-input.ts';
 import {
   memberInputAssetUrl,
+  assertMemberGenerationIntent,
+  memberGenerationIntentFingerprint,
   type RecoverableRequest,
   type MemberGenerationConfirmation,
 } from '../generation/member-contract.ts';
+import { generationRequestFingerprint } from '../generation/request-fingerprint.ts';
 import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
 
@@ -47,7 +50,7 @@ export interface AcceptedInput {
   confirmation: MemberGenerationConfirmation | null;
   request: RecoverableRequest;
   context: RelationalNormalizationContext;
-  idempotencyKeyHash?: string;
+  idempotency?: { keyHash: string; noCache: boolean };
   jobs: {
     jobId: string;
     status: 'queued' | 'pending';
@@ -262,6 +265,7 @@ export class RelationalInputStore {
     events: RelationalCommand['events'],
     body: Record<string, unknown> | null,
     context: RelationalNormalizationContext,
+    assets: (RelationalInputAsset & { bytes: Buffer })[],
     command: Pick<
       RelationalCommand,
       'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt'
@@ -330,6 +334,29 @@ export class RelationalInputStore {
     }
     for (const alias of aliases) {
       const a = alias.payload;
+      const request = relationalProviderRequest(
+        restoreRelationalWire(body, assets, seed, p.sampleCount),
+        context,
+      );
+      const requestFingerprint = generationRequestFingerprint(
+        { ...request, operation: p.operation, sampleCount: p.sampleCount },
+        { randomSeed: p.seedMode === 'random', noCache: a.noCache },
+      );
+      let intentFingerprint = requestFingerprint;
+      if (context.kind === 'member') {
+        if (!a.noCache || p.confirmation === null) {
+          unavailable();
+        }
+        try {
+          assertMemberGenerationIntent(p.confirmation, requestFingerprint);
+        } catch {
+          unavailable();
+        }
+        intentFingerprint = memberGenerationIntentFingerprint(
+          { requestFingerprint },
+          p.confirmation,
+        );
+      }
       if (
         a.memberId !== p.memberId ||
         alias.memberId !== p.memberId ||
@@ -340,6 +367,7 @@ export class RelationalInputStore {
         a.contextId !== p.contextId ||
         a.originalCommandId !== command.commandId ||
         a.intentFingerprint !== command.fingerprint ||
+        a.intentFingerprint !== intentFingerprint ||
         command.actorKind !== 'member' ||
         command.actorId !== p.memberId ||
         canonicalJson(command.receipt) !==
@@ -508,7 +536,7 @@ export class RelationalInputStore {
           },
         });
       });
-      if (accepted.idempotencyKeyHash !== undefined) {
+      if (accepted.idempotency !== undefined) {
         events.push({
           ...common,
           streamId: `request:${accepted.requestId}`,
@@ -516,7 +544,8 @@ export class RelationalInputStore {
           payload: {
             memberId: accepted.memberId,
             operation: prepared.body.operation as RequestRow['operation'],
-            keyHash: accepted.idempotencyKeyHash,
+            keyHash: accepted.idempotency.keyHash,
+            noCache: accepted.idempotency.noCache,
             intentFingerprint: metadata.fingerprint,
             requestId: accepted.requestId,
             jobId: accepted.jobs[0].jobId,
@@ -529,7 +558,10 @@ export class RelationalInputStore {
         requestId: accepted.requestId,
         jobIds: accepted.jobs.map((job) => job.jobId),
       };
-      this.assertAcceptedEvents(events, prepared.body, prepared.context, { ...metadata, receipt });
+      this.assertAcceptedEvents(events, prepared.body, prepared.context, prepared.assets, {
+        ...metadata,
+        receipt,
+      });
       const expectedVersions = Object.fromEntries(events.map((event) => [event.streamId, '0']));
       const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
       const result = appendRelationalCommit(this.sqlite, {
@@ -677,7 +709,16 @@ export class RelationalInputStore {
           unavailable();
         }
         contexts.set(event.payload.contextId, context);
-        this.assertAcceptedEvents(stored.events, input.body, context, stored.command);
+        this.assertAcceptedEvents(
+          stored.events,
+          input.body,
+          context,
+          input.assets.map((asset) => ({
+            ...asset,
+            bytes: source.asset(event.payload.inputId, asset).bytes,
+          })),
+          stored.command,
+        );
       }
       if (event.eventType === 'InputRegistered') {
         inputs.set(
@@ -801,6 +842,8 @@ export class RelationalInputStore {
             mapping.requestId !== p.requestId ||
             mapping.contextId !== p.contextId ||
             mapping.originalJobId !== p.jobId ||
+            mapping.originalRequestId !== p.requestId ||
+            mapping.sourceEventId !== event.eventId ||
             mapping.commitSeq !== event.commitSeq ||
             mapping.resolution !== 'live'
           ) {
@@ -893,6 +936,8 @@ export class RelationalInputStore {
           [string, string, string],
           {
             intentFingerprint: string;
+            keyHash: string;
+            sourceEventId: string;
             originalCommandId: string;
             originalRequestId: string;
             originalJobId: string;
@@ -902,12 +947,45 @@ export class RelationalInputStore {
             resolution: 'live' | 'archived' | 'unavailable';
           }
         >(
-          `SELECT intent_fingerprint AS intentFingerprint,original_command_id AS originalCommandId,
+          `SELECT intent_fingerprint AS intentFingerprint,key_hash AS keyHash,source_event_id AS sourceEventId,
+      original_command_id AS originalCommandId,
       original_request_id AS originalRequestId,original_job_id AS originalJobId,request_id AS requestId,
       context_id AS contextId,CAST(commit_seq AS TEXT) AS commitSeq,resolution FROM idempotency_keys
       WHERE original_member_id=? AND operation=? AND key_hash=?`,
         )
         .get(memberId, operation, keyHash) || null
+    );
+  }
+
+  assertAcceptedGenerationIntent(
+    requestId: string,
+    memberId: string,
+    commitSeq: string,
+    keyHash: string,
+    sourceEventId: string,
+  ): void {
+    const request = this.ownedRequest(requestId, memberId);
+    if (!request.context_id) {
+      unavailable();
+    }
+    const input = this.requestInput(request),
+      stored = readRelationalCommit(this.sqlite, commitSeq);
+    const accepted = stored.events.find((event) => event.eventType === 'RequestAccepted');
+    const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
+    if (
+      accepted?.payload.requestId !== requestId ||
+      accepted.payload.memberId !== memberId ||
+      alias?.payload.keyHash !== keyHash ||
+      alias.eventId !== sourceEventId
+    ) {
+      unavailable();
+    }
+    this.assertAcceptedEvents(
+      stored.events,
+      input.body,
+      this.context(request.context_id),
+      input.assets.map((asset) => ({ ...asset, bytes: this.asset(request.input_id, asset).bytes })),
+      stored.command,
     );
   }
 

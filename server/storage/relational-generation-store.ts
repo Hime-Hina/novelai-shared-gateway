@@ -438,6 +438,13 @@ export class RelationalGenerationStore {
         code: 'result_unavailable',
       });
     }
+    this.inputs.assertAcceptedGenerationIntent(
+      mapping.requestId!,
+      metadata.actorId!,
+      prior.commitSeq,
+      mapping.keyHash,
+      mapping.sourceEventId,
+    );
     return prior;
   }
   acceptGeneration(metadata: Metadata, input: AcceptedInput) {

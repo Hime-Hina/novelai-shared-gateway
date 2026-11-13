@@ -117,7 +117,7 @@ export function createRelationalMemberGenerationAdmission(deps: Dependencies) {
           confirmation,
           request,
           context,
-          idempotencyKeyHash: keyHash,
+          idempotency: { keyHash, noCache: true },
           jobs: Array.from({ length: request.sampleCount }, () => ({
             jobId: randomUUID(),
             status: 'pending' as const,
@@ -128,6 +128,9 @@ export function createRelationalMemberGenerationAdmission(deps: Dependencies) {
             cacheKey: null,
           })),
         });
+        if (result.replayed) {
+          fail(410, 'result_unavailable', '原操作键映射不完整；不能重新受理或领取无关联回执。');
+        }
         // 同步受理事务成功后由 SQL 活动输入接管；finally 仍负责失败和重放的临时正文。
         claim.release();
         return result;
