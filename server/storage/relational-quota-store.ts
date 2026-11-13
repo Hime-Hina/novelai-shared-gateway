@@ -29,6 +29,7 @@ import {
   fairQuotaSnapshot,
   configureAnlasFallback,
   type FairQuotaSyncState,
+  type FairQuotaReservationState,
   type FairAccount,
   type ResourceAmounts,
 } from '../quota/fair-share.ts';
@@ -880,6 +881,43 @@ export class RelationalQuotaStore {
     );
     events.push(...this.convert(planned.facts, view, metadata, observationId));
     return events;
+  }
+  estimateGenerationQuota(
+    accountId: string,
+    memberId: string,
+    now: number,
+  ): Pick<
+    FairQuotaReservationState,
+    'balance' | 'availableV5' | 'pending' | 'pendingAnlas' | 'pendingFallback' | 'sharedV5Debt'
+  > {
+    // state 只从关系行建立独立金融值；查询复用原恢复规则，不收集或提交规划事实。
+    const view = this.state(accountId),
+      state = syncBoundFairQuota(view.db, view.account, now),
+      balance = state.balances[memberId];
+    if (!balance) {
+      fail('成员钱包尚未恢复', 503);
+    }
+    return {
+      balance,
+      availableV5: formatAmount(
+        state.members.reduce(
+          (total, id) => total + parseAmount(state.balances[id].v5Available),
+          0n,
+        ),
+      ),
+      pending: {
+        v5: state.spent.v5,
+        anlasFixed: state.spent.anlasFixed,
+        anlasPurchased: state.spent.anlasPurchased,
+      },
+      pendingAnlas: state.spent.anlas,
+      pendingFallback: {
+        v5: state.spent.fallbackV5,
+        anlasFixed: state.spent.fallbackFixed,
+        anlasPurchased: state.spent.fallbackPurchased,
+      },
+      sharedV5Debt: state.sharedV5Debt,
+    };
   }
   refillQuota(metadata: Metadata, accountId: string) {
     return this.owned(() => {

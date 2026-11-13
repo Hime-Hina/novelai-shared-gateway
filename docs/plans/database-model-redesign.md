@@ -1011,6 +1011,20 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 维护者对 #60 的授权只覆盖该固定候选；本批新增守卫仍需最终复核后正常合并。接单、分组/权益、诊断/历史命令、真实内容领取、合法 ready、迁移和新 HTTP/调度仍继续推进；这份联合测试不表示它们已完成，也不表示生产上线或真实端点全量闭包通过。
 
+### 9.36 #52：成员生成 HTTP 的关系 owner 接入
+
+本片从 `29924b9` 继续，保持[成员生成契约](../contracts/member-generation-contract.md)与[成员会话](../architecture/member-sessions.md)的 Cookie、同源、正文预算和不续期规则。`createMemberGenerationHttp()` 只拥有路径、JSON/multipart 读取、公开错误、私有响应和原两段 SSE；其窄能力由 `relational-member-http.ts` 绑定真实 Member/Input/Generation/Request owner 与 `readRelationalArtifactContent()`。旧运行时暂经 `legacy-member-http.ts` 使用同一 transport，原状态/取消 DTO 仍由旧成员路由返回；没有 `JsonStore` 兼容对象、按格式回退或可任意切旧库的配置。
+
+身份和凭据由 MemberStore 的当前私有会话事务决定，读取、取消及受理不能凭外层旧快照提交。受理继续把原 Cookie、原正文和原头交给第 9.24 节受理桥；首次上下文、随机 seed、确认指纹与薄键仍只由原 owner 维护。新 HTTP 不接受 Native/Direct 的 API Key 代替 Cookie，也不扩大 owner 跨成员读取权限。取消仅调用 GenStore 的等待任务命令，读取 DTO 仍来自 RequestStore；完整输入/BLOB 与附件归 InputStore，结果领取实际读取并校验原 Local/R2/PikPak 字节。
+
+统一报价 DTO、预算、队列和免费次数检查从原 `quoteMemberGeneration()` 窄提取，收费决定与瞬时整批推进继续共用 `fair-share.ts`，HTTP 不维护另一套费用或幂等规则。关系报价在 QuotaStore 现有独立金融视图上调用原 `syncBoundFairQuota()` 估算恢复，仅返回收费所需六项状态，不提交事实或更新游标。复现反例为：原钱包 V5 为零、当前时点已可恢复，报价允许后原受理仍返回 402；日志 `H:\TEMP\member-http-recovery-before.log` 保留修复前结果。共同修复在 GenStore 新成员受理的授权/receipt/意图/队列校验后，以及实际派发的容量/冷却前置允许后调用原 `refillQuota()`；确定性 system 子命令绑定父命令 ID、原指纹、账号和时点，两次提交共用最外层 SQL 事务，后续失败连恢复事实一起回滚，原 receipt 重放与忙碌派发仍零写入。同点报价→受理→派发正常、恢复只应用一次的反例在新专项通过，不新增另一套恢复公式或 controller hook。
+
+HTTP 与实际协调器必须注入同一 payload budget，`activeBytes()` 只调用该预算原事实读取函数；最终装配须把物理仍持有的 parent 输入也计入，不能在逻辑退款后提早释放。提交/取消的失效通知在当前凭据最外事务完成后发到共同临时 emitter；通知不是事实源，监听失败不会回滚或伪装已提交命令。原扣退专项中五处不测试恢复的 fixture 显式固定 `seconds: 0`，保留原精确钱包/资源/回滚断言；两处完整回放改用现共同 replayer，以包含自动恢复产生的真实 quota 提交，未放宽 generation-only 白名单。
+
+factory 在返回 handler 前严格 `assertRelationalStorageReady()`，不负责安装 ready 或启动监听。新增真实 localhost 专项先通过真实生成 owner 发布文件，再由唯一 `verifyAndInstallRelationalStorage()` 完整 shadow、33 表、私有认证及实际字节核对入口安装；不手写 ready 标记。覆盖同键并发和确认篡改、首次 seed/context、JSON/multipart 与唯一 BLOB 附件、本人/他人结果、等待取消、SSE 状态/预览/撤销、慢正文中撤销凭据，以及输入 SQL 中途失败被 HTTP 捕获后的整笔回滚；合法受理完整提交再回放到 building 新库，私有会话不随业务回放恢复。
+
+Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、原受理桥/生成/成员契约及 ready、共同回放、额度、输入、查询和副本），架构、类型及以 `29924b9f23363b4dadcf1ea52d901d1bec4f9ad9` 为可信基线的迁移历史检查通过；本片未改既有 SQL/journal、事实格式、ready 门禁或检查基线。完整后端、发布物和其他工作包汇合后的验证由父任务统一排期，不以本片通过代替完整 #52、T8 或生产切换。真实上游排队执行由第 9.31 节协调器另行接入，本片仍未替换生产总入口、管理分组或全 Native/OpenAI。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

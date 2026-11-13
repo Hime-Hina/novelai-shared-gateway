@@ -360,9 +360,50 @@ export function quoteMemberGeneration(
   normalized: NormalizedMemberGeneration,
   options: MemberQuoteOptions = {},
 ) {
+  const now = options.now ?? Date.now();
+  const draft = estimateFairQuota(db, now),
+    account = rows(draft.accounts).find(
+      (item) => item.id === draft.settings?.fairQuota?.boundAccountId,
+    );
+  return buildMemberGenerationQuote(normalized, {
+    ...options,
+    versions: memberGenerationCapabilities(db, member, { env: options.env ?? process.env })
+      .versions,
+    member,
+    jobs: rows(db.jobs),
+    freeEnabled: freeImagePolicy(draft).enabled,
+    preview: (request) => previewFairQuotaCharge(draft, member, request, now),
+    reserve: (request, sampleIndex) => {
+      if (!account || !draft.settings?.fairQuota?.enabled) {
+        fail(503, 'upstream_unavailable', '共享 Opus 额度暂不可用。');
+      }
+      reserveFairQuota(
+        draft,
+        member,
+        { id: `quote:${sampleIndex}`, request },
+        account,
+        now,
+        request,
+      );
+    },
+  });
+}
+
+// 同一报价协议与准入检查只消费 owner 的瞬时收费预览，不提交任何业务事实。
+export function buildMemberGenerationQuote(
+  normalized: NormalizedMemberGeneration,
+  options: MemberQuoteOptions & {
+    versions: MemberGenerationVersions;
+    member: MemberGenerationMember;
+    jobs: Parameters<typeof assertQueueAdmission>[0]['jobs'];
+    freeEnabled: boolean;
+    preview(request: MemberGenerationRequest): ReturnType<typeof previewFairQuotaCharge>;
+    reserve(request: MemberGenerationRequest, sampleIndex: number): void;
+  },
+) {
   const now = options.now ?? Date.now(),
-    env = options.env ?? process.env;
-  const versions = memberGenerationCapabilities(db, member, { env }).versions;
+    env = options.env ?? process.env,
+    { member, versions } = options;
   const reasons: MemberGenerationReason[] = [],
     append = (reason: MemberGenerationReason) => {
       if (!reasons.some((item) => item.code === reason.code && item.message === reason.message)) {
@@ -389,16 +430,12 @@ export function quoteMemberGeneration(
     append({ statusCode: 403, code: 'membership_required', message: '成员当前不可生成。' });
   }
   try {
-    assertQueueAdmission({ jobs: rows(db.jobs) }, member, undefined, env, count);
+    assertQueueAdmission({ jobs: options.jobs }, member, undefined, env, count);
   } catch (error) {
     append(
       admissionReason(error, member.acceptingJobs === false ? 'member_stopped' : 'queue_full'),
     );
   }
-  const draft = estimateFairQuota(db, now),
-    account = rows(draft.accounts).find(
-      (item) => item.id === draft.settings?.fairQuota?.boundAccountId,
-    );
   const perJob: {
     sampleIndex: number;
     resource: 'free' | 'v5' | 'anlas';
@@ -410,7 +447,7 @@ export function quoteMemberGeneration(
   const usage = options.freeUsage ? structuredClone(options.freeUsage) : undefined;
   for (let sampleIndex = 0; sampleIndex < count; sampleIndex++) {
     const request = singleGenerationRequest(normalized.request, sampleIndex);
-    const candidate = previewFairQuotaCharge(draft, member, request, now);
+    const candidate = options.preview(request);
     const quote = {
       sampleIndex,
       resource: candidate.resource,
@@ -428,7 +465,7 @@ export function quoteMemberGeneration(
           append(admissionReason(error, 'free_image_limit'));
         }
         usage.reserved++;
-      } else if (freeImagePolicy(draft).enabled) {
+      } else if (options.freeEnabled) {
         append({
           statusCode: 503,
           code: 'upstream_unavailable',
@@ -436,23 +473,8 @@ export function quoteMemberGeneration(
         });
       }
     }
-    if (!account || !draft.settings?.fairQuota?.enabled) {
-      append({
-        statusCode: 503,
-        code: 'upstream_unavailable',
-        message: '共享 Opus 额度暂不可用。',
-      });
-      continue;
-    }
     try {
-      reserveFairQuota(
-        draft,
-        member,
-        { id: `quote:${sampleIndex}`, request },
-        account,
-        now,
-        request,
-      );
+      options.reserve(request, sampleIndex);
     } catch (error) {
       append(
         admissionReason(
