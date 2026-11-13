@@ -451,16 +451,16 @@ CREATE TABLE artifact_replicas (
   artifact_id TEXT NOT NULL REFERENCES artifacts(id),
   storage_target_id TEXT NOT NULL REFERENCES storage_targets(id),
   object_key TEXT NOT NULL,
-  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip')),
+  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip', 'br')),
   uploaded_at INTEGER,
   verified_at INTEGER,
   deleted_at INTEGER,
   last_error_code TEXT,
   ${fact},
   PRIMARY KEY (artifact_id, storage_target_id),
-  UNIQUE (storage_target_id, object_key),
   CHECK (verified_at IS NULL OR uploaded_at IS NOT NULL)
 ) STRICT;
+CREATE INDEX idx_replica_object ON artifact_replicas(storage_target_id, object_key);
 
 CREATE TABLE idempotency_keys (
   original_member_id TEXT NOT NULL,

@@ -703,6 +703,28 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 本轮 Windows / Node 22.23.4 自验：恢复专项 16/16，编译后端 JavaScript 的相同专项 16/16；完整后端 1014 项，1009 通过、5 项既有条件跳过、0 失败。专项包含 101 条真实准备命令的跨页扫描，缺失或失败条目不会阻断下一页。架构专项 111/111；实际 main `1f60907` 的原守卫执行相同断言时，原 105 项通过、新六项因未拦截而失败。编译代码仅移除冷输入核验的负对照，在相同私有输入损坏用例中错误发布成功，按预期触发业务断言失败；恢复该句后通过，未改 source 或放宽断言。架构、默认及可信 main `1f60907` 迁移历史、后端类型、127 文件语法、完整格式和差异检查通过。日志位于本地 `H:\TEMP\novelai-db-recovery-20261114`；未访问真实上游/远端存储、未验证 Linux 发布包或安装 ready，同候选 CI 和独立审查另行记录。
 
+### 9.17 T5 副本首片：目标、确认与内容核验
+
+本片叠加固定 `7a75afd`，不向 PR #55 添加功能。`artifacts` 的原发布/开账事实决定稳定成员、输入、操作、原长度和 SHA；`storage_targets` 的 kind/namespace 决定真实数据来源，部署私有凭据只用于当前 IO，不进入业务事件、回执或回放。Local namespace 为部署数据根下的 `images`；R2 namespace 包含原 account/bucket；PikPak namespace 为无认证信息的规范目录 URL。更换秘密不改变对象来源，配置缺失或 namespace 不同不能把旧对象当成新来源。
+
+目标登记和副本状态属于独立 storage owner，只接受唯一执行器的 system 后台命令，并在命令/重领回执前重核当前空闲资格及实际配置。票据由该 owner 在内存签发，绑定原 artifact/source、target/source、当前副本 source 和私有配置；IO 在事务外，提交确认前重核票据，不能用客户端自报 namespace、摘要或布尔值代替事实身份。写事实、回执和副本投影同一保存点提交，外层捕获错误后不留半笔；跨 IO 的各确认步骤是独立可续跑命令，不宣称网络和 SQLite 原子提交。
+
+R2/PikPak 的实际 IO owner 在构造时复制并冻结配置，PikPak 客户端由同一不可变快照构造，绑定属性也不可替换。目录或凭据轮换通过替换整个配置实例进行；票据仍在提交前核对当前实例实际来源。不能修改公开 `config` 自报 B 而继续让固定 WebDAV client 请求 A，调用方后来修改构造参数的别名也不能改变已安装来源。
+
+副本保留 reserved、uploaded、verified 和故障的独立含义：Local 字节经原文件 owner 核验后登记；R2 复用原 put/get，上传回执先持久化，原字节回读后才记录 verified；PikPak 复用原 Brotli put/get，上传确认不填写 verified，后续实际回读核对后才可填写。新格式补 `br`，保留既有 `identity`/`gzip` 表达；当前在线 IO writer 只写 Local/R2 identity 和 PikPak br，不把 gzip 当成 identity。完整业务提交回放只恢复原身份、状态、时间和回执，绝不调用文件或网络 IO，也不恢复私有配置。
+
+现行 PikPak 按原 SHA 命名 `.br`，不同 artifact/成员可合法引用同一对象。保留 `(artifact_id, storage_target_id)` 主键，将原 `(storage_target_id, object_key)` 唯一限制改为查询索引；同一对象所有有效引用必须具有相同原 SHA、长度和 encoding，引用数按关系查询派生，不增加内容库或持久计数。新未发布 schema hash 改变，旧原型从空 building 库重建；旧 SQL/journal 原字节不变。
+
+本片保留全部源副本，不暴露删除能力。最终源删除仍须核对替代副本、所有在线对象引用、独立归档清单和配置竞态；当前没有选定归档 manifest，不能将“尚未删除”写成归档引用保护已验收。D8 不增加期限，新库不安装 ready，实际 HTTP/调度接入与真实端点验收仍在后续。
+
+实现入口为 `storage/relational-replica-store.ts` 的目标/副本命令和完整提交回放，以及 `storage/relational-replica-io.ts` 的复制/回读编排。复用原 R2/PikPak 传输、Brotli、长度/摘要及文件发布校验，未复制上传协议或增加依赖。架构守卫新增这些写能力的模块/函数边界及二十项 query/protocol 拒绝反例，仍需维护者复核。
+
+Windows / Node 22.23.4 副本专项 18/18，直接编译 JavaScript 同专项 18/18；最终完整后端 1055 项，1050 通过、5 项既有条件跳过、0 失败。架构专项 131/131；默认及可信 main `1f60907` 迁移历史、类型、128 文件语法、完整格式及后端构建通过。测试使用真实 IO 类和 mock fetch，覆盖原 Local 文件、真实 Brotli 字节、上传/核验分离、跨成员共享对象、源保留、丢回执、SQL/读回故障、重开零上传、系统资格及配置竞态和无 IO 完整提交回放；不称为真实存储端点验收。
+
+相同 DDL 检查放回原 `7a75afd` schema，分别在 br CHECK 和共享对象 UNIQUE 约束失败；当前通过。编译代码仅移除同对象引用核对时，相同错误编码拒绝用例因未拒绝而失败；恢复原核对后通过。原架构守卫运行相同断言为原 111 项通过、新二十项预期失败。日志位于 `H:\TEMP\novelai-db-replicas-20261114`。
+
+独立复审先复现可变 `PikPak.config.url` 自报 B、固定 WebDAV client 实际仍请求 A，却把 B 标为 verified 的反例；修复落在既有 IO owner 的不可变配置/客户端绑定，并核对 R2 同类别名。修复后的独立五文件与四项额外反例 71/71，十二个产品/守卫/测试文件 hash 与最终候选逐一一致，原失败和合法实例轮换证据保存在 `H:\TEMP\novelai-replicas-independent-review`。远端同候选 CI 和维护者最终审核另行记录。该技术通过范围不含 OpeningReplica/gzip 字节恢复、归档引用与源删除、自动冷热调度、ready、实际发布包或生产切换；#49 继续开放。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
