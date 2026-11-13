@@ -414,6 +414,7 @@ export const relationalPayloadParsers = {
     secondsPerPercent: nullable(number),
     errorCode: nullable(id),
   }),
+  QuotaStatusChanged: fields({ accountId: id, status: id }),
   QuotaBaselineAdopted: fields({
     accountId: id,
     observationEventId: id,
@@ -436,6 +437,8 @@ export const relationalPayloadParsers = {
   AllocationApplied: fields({
     accountId: id,
     reason: choices('opening', 'funding', 'redistribution'),
+    sourceEventId: id,
+    sourceResources: resources,
     allocations: list(fields({ memberId: id, resources })),
     configVersion: integer,
   }),
@@ -450,7 +453,7 @@ export const relationalPayloadParsers = {
   FundingReceived: fields({
     accountId: id,
     receipt: id,
-    resource: choices('anlasFixed', 'anlasPurchased'),
+    resource: choices('v5', 'anlasFixed', 'anlasPurchased'),
     amount: nonnegative,
     destination: id,
     observationEventId: nullable(id),
@@ -470,7 +473,7 @@ export const relationalPayloadParsers = {
   ReturnClassified: fields({
     accountId: id,
     resource: choices('anlasFixed', 'anlasPurchased'),
-    amount: nonnegative,
+    amount,
     gapEventId: nullable(id),
     observationEventId: id,
     kind: choices('observed', 'gap_correction'),
@@ -699,6 +702,7 @@ export const relationalFactStreams = {
     'AvailabilityChanged',
     'CooldownChanged',
     'QuotaObserved',
+    'QuotaStatusChanged',
     'QuotaBaselineAdopted',
     'RefillApplied',
     'AllocationApplied',
@@ -878,9 +882,17 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   }
   if (
     header.eventType === 'FundingReceived' &&
-    ((row.source === 'operator_share' && row.memberId === null) ||
+    ((row.source !== 'operator_share' && row.resource === 'v5') ||
+      (row.source === 'operator_share' && row.memberId === null) ||
       (row.source === 'registered_external_funding' &&
         (row.receiptEventId === null || row.observationEventId === null)))
+  ) {
+    invalid();
+  }
+  if (
+    header.eventType === 'ReturnClassified' &&
+    row.kind === 'gap_correction' &&
+    parseAmount(row.amount as string) <= 0n
   ) {
     invalid();
   }

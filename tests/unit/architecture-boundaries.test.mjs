@@ -102,6 +102,10 @@ for (const filename of [
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
     ['bound account synchronization', 'syncBoundFairQuota(view,account,now);'],
     [
+      'operating funding owner',
+      "import { applyOperatingFunding as apply } from '../quota/operating-accounting.ts'; apply(view,body,context,now);",
+    ],
+    [
       'aliased synchronization',
       "import { syncBoundFairQuota as sync } from '../quota/fair-share.ts'; sync(view,account,now);",
     ],
@@ -142,6 +146,22 @@ for (const filename of [
       'replayGenerationCommit',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ['element refund command', "store['failGeneration'](command,input);"],
+    [
+      'quota construction',
+      "import { RelationalQuotaStore as Store } from '../storage/relational-quota-store.ts'; new Store(raw);",
+    ],
+    ['dynamic quota writer', "await import('../storage/relational-quota-store.js');"],
+    ['quota re-export', "export * from '../storage/relational-quota-store.ts';"],
+    ...[
+      'beginQuotaObservation',
+      'recordQuotaObservation',
+      'refillQuota',
+      'manageQuotaFunding',
+      'saveAccountQuota',
+      'openAccountQuota',
+      'applyQuotaEvents',
+      'replayQuotaCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [
       'authenticated command',
       "import { withAuthenticatedMemberSession as run } from '../members/authentication.ts'; run(store,token,env,fn);",
@@ -199,6 +219,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/request-queries.ts',
       "import type { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; type Reader = Pick<RelationalGenerationStore, 'readWallet' | 'readCharge'>; function read(store: Reader) { return store.readCharge('job'); }",
+    ],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalQuotaStore } from '../storage/relational-quota-store.ts'; type Reader = Pick<RelationalQuotaStore, 'readAccountQuota'>; function read(store: Reader) { return store.readAccountQuota('account'); }",
     ],
     [
       'server/generation/execution.ts',

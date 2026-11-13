@@ -15,7 +15,7 @@
 ## 计划
 
 - [当前重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源、成员生成接口、工作包与验收。
-- [数据库与数据模型重构草案](plans/database-model-redesign.md)：需求、实体关系、数据所有权、一次迁移与历史归档开账备选；T1/T2 和 T3 认证接入已通过独立复审并合入 main，T4 正在接入账务与任务关系事务；新库保持 building，现行网关未切换，生产未迁移。
+- [数据库与数据模型重构草案](plans/database-model-redesign.md)：需求、实体关系、数据所有权、一次迁移与历史归档开账备选；T1/T2 和 T3 认证接入已通过独立复审并合入 main，T4 已接入生成、额度观察/恢复与运营资金关系事务；新库保持 building，现行网关未切换，生产未迁移。
 - [后续扩展计划](plans/scaling-follow-up-plan.md)：多执行器、多账号/车队及数据库迁移，未纳入当前实施范围。
 
 ## 接口契约

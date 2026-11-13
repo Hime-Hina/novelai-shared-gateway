@@ -12,6 +12,7 @@ const mutations = new Set([
   'configureFairGroups',
   'manageFairMember',
   'manageOperatingFunding',
+  'applyOperatingFunding',
   'syncFairQuota',
   'syncBoundFairQuota',
   'reserveFairQuota',
@@ -47,6 +48,14 @@ const mutations = new Set([
   'cancelWaitingGeneration',
   'closeGenerationReview',
   'replayGenerationCommit',
+  'beginQuotaObservation',
+  'recordQuotaObservation',
+  'refillQuota',
+  'manageQuotaFunding',
+  'saveAccountQuota',
+  'openAccountQuota',
+  'applyQuotaEvents',
+  'replayQuotaCommit',
 ]);
 const persistence = new Set([
   'update',
@@ -115,7 +124,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

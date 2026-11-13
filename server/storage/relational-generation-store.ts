@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RelationalQuotaStore } from './relational-quota-store.ts';
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
@@ -75,7 +76,7 @@ type Completion = Pick<
   NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
   'kind' | 'retryAfterUntil'
 >;
-type Quota = Omit<RelationalPayloads['OpeningQuotaRecorded'], 'origin'>;
+
 const generationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
   'OpeningAccountRecorded',
@@ -109,35 +110,7 @@ function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
-const quotaColumns = {
-  accountId: 'account_id',
-  status: 'status',
-  observationEventId: 'observation_event_id',
-  observedAt: 'observed_at',
-  observedCredentialEpoch: 'observed_credential_epoch',
-  observedSequence: 'observed_sequence',
-  quotaTier: 'quota_tier',
-  subscriptionActive: 'subscription_active',
-  subscriptionExpiresAt: 'subscription_expires_at',
-  quotaErrorCode: 'quota_error_code',
-  observedV5: 'observed_v5',
-  observedAnlasFixed: 'observed_anlas_fixed',
-  observedAnlasPurchased: 'observed_anlas_purchased',
-  secondsPerPercent: 'seconds_per_percent',
-  baselineEventId: 'baseline_event_id',
-  refillCursorAt: 'refill_cursor_at',
-  settlementCursorAt: 'settlement_cursor_at',
-  unallocatedV5: 'unallocated_v5',
-  fallbackFixed: 'fallback_fixed',
-  fallbackPurchased: 'fallback_purchased',
-  sharedV5Debt: 'shared_v5_debt',
-  pendingV5Debit: 'pending_v5_debit',
-  pendingFixedDebit: 'pending_fixed_debit',
-  pendingPurchasedDebit: 'pending_purchased_debit',
-  pendingFallbackV5: 'pending_fallback_v5',
-  pendingFallbackFixed: 'pending_fallback_fixed',
-  pendingFallbackPurchased: 'pending_fallback_purchased',
-} satisfies Record<keyof Quota, string>;
+
 interface Job {
   id: string;
   requestId: string;
@@ -214,10 +187,12 @@ type Policy = {
 export class RelationalGenerationStore {
   private sqlite: Database.Database;
   private inputs: RelationalInputStore;
+  private quotas: RelationalQuotaStore;
   private env: NodeJS.ProcessEnv;
   constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+    this.quotas = new RelationalQuotaStore(sqlite, env);
     this.env = env;
     this.inputs = new RelationalInputStore(sqlite, env);
   }
@@ -279,40 +254,6 @@ export class RelationalGenerationStore {
         )
         .get(jobId) || null
     );
-  }
-  private quota(accountId: string): Quota {
-    const row = this.sqlite
-      .prepare<[string], Quota>(
-        `SELECT ${Object.entries(quotaColumns)
-          .map(
-            ([key, col]) =>
-              `${key === 'observedSequence' ? `CAST(${col} AS TEXT)` : col} AS ${key}`,
-          )
-          .join(',')}
-      FROM account_quota_state WHERE account_id=?`,
-      )
-      .get(accountId);
-    if (!row) {
-      fail('账户账务基线尚未恢复', 503);
-    }
-    return {
-      ...row,
-      subscriptionActive: row.subscriptionActive === null ? null : Boolean(row.subscriptionActive),
-    };
-  }
-  private saveQuota(row: Quota, eventId: string) {
-    this.sqlite
-      .prepare(
-        `UPDATE account_quota_state SET ${Object.entries(quotaColumns)
-          .filter(([k]) => k !== 'accountId')
-          .map(([key, col]) => `${col}=@${key}`)
-          .join(',')},source_event_id=@eventId WHERE account_id=@accountId`,
-      )
-      .run({
-        ...row,
-        subscriptionActive: row.subscriptionActive === null ? null : Number(row.subscriptionActive),
-        eventId,
-      });
   }
   private policy(): Policy {
     const row = this.sqlite
@@ -605,7 +546,7 @@ export class RelationalGenerationStore {
     if (!account?.pst) {
       fail('上游私有凭据尚未恢复', 503);
     }
-    const q = this.quota(accountId);
+    const q = this.quotas.readAccountQuota(accountId);
     if (
       q.observedCredentialEpoch !== account.credentialEpoch ||
       !q.baselineEventId ||
@@ -1746,24 +1687,9 @@ export class RelationalGenerationStore {
               e.eventId,
             );
           break;
-        case 'OpeningQuotaRecorded': {
-          const { origin: _origin, ...p } = e.payload;
-          const values = {
-            ...p,
-            subscriptionActive: p.subscriptionActive === null ? null : Number(p.subscriptionActive),
-            eventId: e.eventId,
-          };
-          this.sqlite
-            .prepare(
-              `INSERT INTO account_quota_state(${Object.values(quotaColumns).join(',')},source_event_id) VALUES(${Object.keys(
-                quotaColumns,
-              )
-                .map((k) => `@${k}`)
-                .join(',')},@eventId)`,
-            )
-            .run(values);
+        case 'OpeningQuotaRecorded':
+          this.quotas.openAccountQuota(e);
           break;
-        }
         case 'OpeningOperatingRecorded': {
           const p = e.payload;
           this.sqlite
@@ -1995,7 +1921,7 @@ export class RelationalGenerationStore {
         case 'GenerationRefunded': {
           const p = e.payload,
             c = this.reservation(e, p.jobId, p.reservationEventId),
-            q = this.quota(c.originalAccountId);
+            q = this.quotas.readAccountQuota(c.originalAccountId);
           if (e.eventType === 'GenerationRefunded') {
             if (e.payload.lossEventId) {
               const risk = events.find((candidate) => candidate.eventId === e.payload.lossEventId);
@@ -2043,7 +1969,7 @@ export class RelationalGenerationStore {
             );
           }
           q.settlementCursorAt = Math.max(q.settlementCursorAt ?? 0, e.occurredAt);
-          this.saveQuota(q, e.eventId);
+          this.quotas.saveAccountQuota(q, e.eventId);
           this.sqlite
             .prepare(
               'UPDATE charges SET status=?,terminal_at=?,terminal_event_id=? WHERE original_job_id=?',

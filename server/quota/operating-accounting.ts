@@ -13,7 +13,7 @@ import {
   type AmountText,
   type AmountInput,
 } from './resource-amounts.ts';
-import { recordDomainEvent } from '../events/domain-events.ts';
+import { recordDomainEvent, canonicalJson } from '../events/domain-events.ts';
 import type {
   FundingReceivedFact,
   ResourceGapFact,
@@ -495,7 +495,10 @@ export function applyOperatingFunding(
             amount: formatAmount(units((previous.request as { amount: AmountInput }).amount)),
           }
         : previous.request;
-    if (JSON.stringify(previousRequest) !== JSON.stringify(request)) {
+    if (
+      previousRequest === undefined ||
+      canonicalJson(previousRequest) !== canonicalJson(request)
+    ) {
       error('该收据已用于不同操作');
     }
     return { eventId: id, duplicate: true };

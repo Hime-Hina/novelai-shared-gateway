@@ -21,6 +21,59 @@ import { initializeRelationalStorage } from '../../server/storage/relational-sto
 const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
+
+test('资金与恢复事实保存来源预算、V5 本人划入和有符号回跳，不能放宽外部资金边界', () => {
+  const allocation = {
+    eventType: 'AllocationApplied',
+    payload: {
+      accountId: 'a',
+      reason: 'funding',
+      sourceEventId: 'observation',
+      sourceResources: { ...zero, anlasFixed: '3' },
+      configVersion: 1,
+      allocations: [{ memberId: 'm1', resources: { ...zero, anlasFixed: '3' } }],
+    },
+  };
+  assert.deepEqual(parseRelationalFact(allocation), allocation);
+  const { sourceEventId: _, ...withoutSource } = allocation.payload;
+  assert.throws(() => parseRelationalFact({ ...allocation, payload: withoutSource }));
+  const transfer = {
+    eventType: 'FundingReceived',
+    payload: {
+      accountId: 'a',
+      receipt: 'receipt',
+      resource: 'v5',
+      amount: '0.1',
+      destination: 'operating',
+      observationEventId: null,
+      receiptEventId: null,
+      source: 'operator_share',
+      memberId: 'm1',
+    },
+  };
+  assert.deepEqual(parseRelationalFact(transfer), transfer);
+  assert.throws(() =>
+    parseRelationalFact({
+      ...transfer,
+      payload: { ...transfer.payload, source: 'declared_external_receipt' },
+    }),
+  );
+  const returned = {
+    eventType: 'ReturnClassified',
+    payload: {
+      accountId: 'a',
+      resource: 'anlasFixed',
+      amount: '-3',
+      gapEventId: 'gap',
+      observationEventId: 'observation',
+      kind: 'observed',
+    },
+  };
+  assert.deepEqual(parseRelationalFact(returned), returned);
+  assert.throws(() =>
+    parseRelationalFact({ ...returned, payload: { ...returned.payload, kind: 'gap_correction' } }),
+  );
+});
 function database(t, historyId = 'history1') {
   const db = new Database(':memory:');
   t.after(() => db.close());
