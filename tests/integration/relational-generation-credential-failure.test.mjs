@@ -268,7 +268,7 @@ function resequence(stored, db) {
   return stored;
 }
 
-test('完整提交即使两个列表一致也不能错配来源、反转顺序、撤销 abort 或换当前 epoch', async (t) => {
+test('完整提交即使两个列表一致也不能缺失、重复或错配原响应与凭据失效决定', async (t) => {
   const f = await running(t);
   const recorded = response(f, 401);
   const checkpoint = clone(t, f.db),
@@ -282,6 +282,10 @@ test('完整提交即使两个列表一致也不能错配来源、反转顺序�
     'classification',
     'order',
     'missing-response',
+    'missing-quota',
+    'duplicate-quota',
+    'missing-response-and-quota',
+    'duplicate-response',
     'epoch',
   ]) {
     await t.test(kind, () => {
@@ -312,6 +316,23 @@ test('完整提交即使两个列表一致也不能错配来源、反转顺序�
       if (kind === 'missing-response') {
         bad.events = bad.events.filter((e) => e.eventType !== 'ResponseEvidenceRecorded');
       }
+      if (kind === 'missing-quota') {
+        bad.events = bad.events.filter((e) => e.eventType !== 'QuotaStatusChanged');
+      }
+      if (kind === 'duplicate-quota') {
+        bad.events.splice(2, 0, { ...structuredClone(quota), eventId: 'duplicate-quota' });
+      }
+      if (kind === 'missing-response-and-quota') {
+        bad.events = bad.events.filter(
+          (e) => !['ResponseEvidenceRecorded', 'QuotaStatusChanged'].includes(e.eventType),
+        );
+      }
+      if (kind === 'duplicate-response') {
+        bad.events.splice(1, 0, {
+          ...structuredClone(bad.events[0]),
+          eventId: 'duplicate-response',
+        });
+      }
       if (kind === 'epoch') {
         db.prepare('UPDATE upstream_accounts SET credential_epoch=3').run();
       }
@@ -324,8 +345,34 @@ test('完整提交即使两个列表一致也不能错配来源、反转顺序�
         ),
       )();
       assert.equal(databaseState(db), before);
+      if (kind !== 'epoch') {
+        db.transaction(() => new RelationalGenerationStore(db).replayGenerationCommit(original))();
+        assert.equal(databaseState(db), databaseState(f.db));
+      }
     });
   }
+});
+
+test('未派发失败没有原尝试、响应或凭据决定，仍可完整回放且重复零写', async (t) => {
+  const f = await fixture(t, { seconds: 0 });
+  await f.accept('queued-failure');
+  const checkpoint = clone(t, f.db),
+    result = f.fail('queued-failure-0', { aborted: false }),
+    original = readRelationalCommit(f.db, result.commitSeq);
+  assert.deepEqual(
+    original.events.map((e) => e.eventType),
+    ['JobFailed'],
+  );
+  assert.equal(original.events[0].payload.response.dispatchState, 'not_sent');
+  const replay = new RelationalGenerationStore(checkpoint);
+  checkpoint.transaction(() => replay.replayGenerationCommit(original))();
+  assert.equal(databaseState(checkpoint), databaseState(f.db));
+  const before = databaseState(checkpoint);
+  assert.equal(
+    checkpoint.transaction(() => replay.replayGenerationCommit(original))().replayed,
+    true,
+  );
+  assert.equal(databaseState(checkpoint), before);
 });
 
 test('原派发事实本身必须属于当时当前账户代次，不能先伪造 epoch 再作为失效来源', async (t) => {

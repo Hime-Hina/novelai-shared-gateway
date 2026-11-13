@@ -58,6 +58,11 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
   policyVersion: string;
   pricingVersion: string;
 };
+type GenerationFailureSource = {
+  attemptId: string;
+  aborted: boolean;
+  response: RelationalPayloads['ResponseEvidenceRecorded']['response'];
+};
 export type QuotaPolicyChange =
   | { action: 'fallback-policy'; enabled: boolean }
   | {
@@ -939,55 +944,115 @@ export class RelationalQuotaStore {
     return { attempt, dispatch };
   }
 
-  planGenerationCredentialFailure(
-    metadata: Metadata,
-    source: {
-      attemptId: string;
-      responseEventId: string;
-      failureEventId: string;
-      aborted: boolean;
-      response: RelationalPayloads['ResponseEvidenceRecorded']['response'];
-    },
-  ): RelationalEventInput[] {
-    if (!this.sqlite.inTransaction) {
-      throw new Error('Generation credential failure planning requires the owning transaction.');
-    }
+  private generationCredentialDecision(source: GenerationFailureSource, at: number) {
     const errorCode = generationCredentialError(source.aborted, source.response.upstreamHttpStatus);
     if (!errorCode) {
-      return [];
+      return null;
     }
     const original = this.generationDispatch(source.attemptId);
     if (
       !original ||
       original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch
     ) {
-      return [];
+      return null;
     }
     if (source.response.dispatchState === 'not_sent') {
       fail('未发送的生成不能声称上游凭据失效');
     }
     const accountId = original.attempt.accountId,
       view = this.state(accountId),
-      status = quotaAvailability({ ...view.account, quotaError: errorCode }, metadata.recordedAt);
+      status = quotaAvailability({ ...view.account, quotaError: errorCode }, at);
+    return { accountId, status, errorCode, dispatchEventId: original.dispatch.eventId };
+  }
+
+  planGenerationCredentialFailure(
+    metadata: Metadata,
+    source: GenerationFailureSource & { responseEventId: string; failureEventId: string },
+  ): RelationalEventInput[] {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation credential failure planning requires the owning transaction.');
+    }
+    const decision = this.generationCredentialDecision(source, metadata.recordedAt);
+    if (!decision) {
+      return [];
+    }
     return [
       this.event(
         {
           eventType: 'QuotaStatusChanged',
           payload: {
-            accountId,
-            status,
+            accountId: decision.accountId,
+            status: decision.status,
             generationFailure: {
-              dispatchEventId: original.dispatch.eventId,
+              dispatchEventId: decision.dispatchEventId,
               responseEventId: source.responseEventId,
               failureEventId: source.failureEventId,
-              errorCode,
+              errorCode: decision.errorCode,
             },
           },
         },
-        accountId,
+        decision.accountId,
         metadata,
       ),
     ];
+  }
+
+  // 缺失或重复决定也要拒绝；不能只在存在额度事实时单向校验来源。
+  private assertGenerationFailureDecisions(events: RelationalEvent[]) {
+    const quotaFacts = events.filter((event) => event.eventType === 'QuotaStatusChanged');
+    for (const failure of events.filter((event) => event.eventType === 'JobFailed')) {
+      const claims = quotaFacts.filter(
+          (event) => event.payload.generationFailure?.failureEventId === failure.eventId,
+        ),
+        attempt = this.sqlite
+          .prepare<[string], { id: string }>('SELECT id FROM generation_attempts WHERE job_id=?')
+          .get(failure.payload.jobId);
+      if (!attempt) {
+        if (claims.length) {
+          fail('凭据失效决定缺少真实派发尝试');
+        }
+        continue;
+      }
+      const responses = events
+        .filter((event) => event.eventType === 'ResponseEvidenceRecorded')
+        .filter((event) => event.payload.attemptId === attempt.id);
+      if (
+        responses.length !== 1 ||
+        responses[0].eventIndex >= failure.eventIndex ||
+        responses[0].streamId !== failure.streamId ||
+        responses[0].memberId !== failure.memberId ||
+        responses[0].accountId !== failure.accountId ||
+        canonicalJson(responses[0].payload.response) !== canonicalJson(failure.payload.response)
+      ) {
+        fail('凭据失效决定需要同笔完整且唯一原响应与失败事实');
+      }
+      const response = responses[0],
+        decision = this.generationCredentialDecision(
+          {
+            attemptId: attempt.id,
+            aborted: failure.payload.aborted,
+            response: response.payload.response,
+          },
+          failure.occurredAt,
+        );
+      if (claims.length !== (decision ? 1 : 0)) {
+        fail('凭据失效决定必须按原失败完整且恰一次保存');
+      }
+      if (
+        decision &&
+        (claims[0].payload.accountId !== decision.accountId ||
+          claims[0].payload.status !== decision.status ||
+          canonicalJson(claims[0].payload.generationFailure) !==
+            canonicalJson({
+              dispatchEventId: decision.dispatchEventId,
+              responseEventId: response.eventId,
+              failureEventId: failure.eventId,
+              errorCode: decision.errorCode,
+            }))
+      ) {
+        fail('凭据失效决定不符原失败、响应或派发来源');
+      }
+    }
   }
 
   refillQuota(metadata: Metadata, accountId: string) {
@@ -1477,6 +1542,7 @@ export class RelationalQuotaStore {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
+    this.assertGenerationFailureDecisions(events);
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();

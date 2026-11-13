@@ -1037,9 +1037,13 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 `QuotaStatusChanged.generationFailure` 为必填可空对象：普通额度决定显式 NULL；生成失效保存原 dispatchEventId、同笔 responseEventId/failureEventId 及安全错误分类。失败提交严格按 ResponseEvidenceRecorded→QuotaStatusChanged→原退款/Review→可选受保护诊断→JobFailed 应用一次；quota owner 核对实际原尝试/预扣、账户/成员/请求、当前代次、同一完整提交中的原响应与非 abort 失败以及原顺序，复用现状态判定，不复制余额或资格算法。原派发投影也核对当时当前业务代次，不能先伪造 dispatch epoch 再用作失效来源。旧代次的错误不生成该额度事实，仍允许原资源退款、合法结算及原窄回放；窄 generation replay 只额外允许带真实 generationFailure 的这类额度事实，不能接收其他普通 quota/policy 提交。
 
+完整提交创建投影上下文时还从每个 JobFailed 反向核对原决定：有原尝试的失败必须具有同笔唯一原响应，线上规划和回放使用同一个 quota 私有决定函数；当前代次、非 abort 的 401/403 必须恰有一项失效决定，其他失败必须为零。删除或复制额度事实、同时删除响应与额度事实、复制响应即使重建了两个合法事件列表、数量与流版本也整体拒绝；未派发且无原尝试的失败仍允许没有响应或额度事实。此检查在任何 owner 应用之前执行，不新增 applied 标记或持久派生状态。
+
 本轮未发布关系事件版本统一升至 3，由唯一 `RELATIONAL_EVENT_SCHEMA_VERSION` 生成新 DDL CHECK 和 schema hash，旧关系 v2 原型即使有正确旧 hash 也在格式门禁拒绝，须从新空 building 目标重建，不能手补 hash/字段或标记 ready。原 v1 事件、旧 SQL/journal、可信迁移基线、input schema 1 和旧 writer 4 均未改动。同轮其他 required 字段仍由其所属 owner 的实现合并，不保留旧原型在线兼容分支。
 
 验收入口为 [`relational-generation-credential-failure.test.mjs`](../../tests/integration/relational-generation-credential-failure.test.mjs)：当前 401/403 阻止再派发，abort/200 不停用；余额/官方观察不变、原池退款、回执重领零写；模拟旧凭据恢复切点上的 A1→B→A2 保留新观察并完成原池退款及窄回放；第二 owner 已写后异常被外层捕获全表回滚；两个事件列表一致仍拒绝错来源、顺序、abort、分类或代次；伪造原派发代次回滚；共同空业务重建保留真实诊断、错误与原退款，不恢复认证或发网络。旧 prototype 格式拒绝另在 `relational-storage.test.mjs`。本片不新增一般请求排序、持久屏障或 applied 状态，实际协调器的物理完成补证及自动 refill 由对应 owner 片接入，联合候选完整检查另行记录。
+
+完整性修复后的本片专项 25/25，连同诊断/原生成三文件 64/64，额度/共同回放/格式/事件四文件 101/101；类型、架构、默认及可信 `29924b9` 迁移历史、145 文件语法和局部格式检查通过。仅移除共同完整决定检查的负控使四项缺失/重复子场景均出现 Missing expected exception（含父项共 5 fail），还原文件摘要后专项重新 25/25。日志在本地 `H:\TEMP\novelai-credential-failure-20261114\completeness-*.log`；独立复审及同一联合候选的编译产物、Node 24、完整后端验证另外绑定最终提交，不以本片代替。
 
 ## 10. 事实依据与修订
 
