@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
@@ -12,18 +13,26 @@ import {
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
+import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
 
-test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v3 格式门禁，不手补字段或 hash', (t) => {
+test('旧关系事件 v3 原型的正确旧 hash 也不能通过 v4 格式门禁，不手补字段或 hash', (t) => {
   const sqlite = new Database(':memory:');
   t.after(() => sqlite.close());
   sqlite.pragma('foreign_keys=ON');
-  const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
-    'CHECK (schema_version = 3)',
-    'CHECK (schema_version = 2)',
+  // 固定实际 v3 Git 的完整 DDL；新表/索引不能让“改当前版本号”冒充正确旧库。
+  const old = JSON.parse(
+    readFileSync(new URL('../fixtures/relational-schema-v3.json', import.meta.url), 'utf8'),
   );
+  assert.equal(old.sourceCommit, '3d2bafd7b19f329027ad081344a94dc20f4f51f2');
+  assert.equal(old.sha256, '95e48652ac9bd9064f960f6bb87f41fde48bbc303ccc3183c553dcdd43f7646b');
+  const previousSchema = old.sql;
+  assert.equal(createHash('sha256').update(previousSchema).digest('hex'), old.sha256);
   assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
   sqlite.exec(previousSchema);
   const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
@@ -48,6 +57,15 @@ test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v3 格式门禁
   );
   assert.throws(
     () => assertRelationalStorageReady(sqlite),
+    /Unsupported relational database format/,
+  );
+  assert.throws(() => new RelationalInputStore(sqlite), /Unsupported relational database format/);
+  assert.throws(
+    () => new RelationalGenerationStore(sqlite),
+    /Unsupported relational database format/,
+  );
+  assert.throws(
+    () => createRelationalNativeHttp({ sqlite }),
     /Unsupported relational database format/,
   );
   assert.deepEqual(sqlite.serialize(), before);
@@ -78,7 +96,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 3,
+    schema_version: RELATIONAL_EVENT_SCHEMA_VERSION,
     occurred_at: 1000,
     account_id: null,
     member_id: null,

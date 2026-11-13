@@ -168,6 +168,7 @@ for (const filename of [
       'createInputProjector',
       'createDiagnosticProjector',
       'stageGenerationDiagnostic',
+      'stageGenerationReuse',
       'createGenerationProjector',
       'createQuotaProjector',
       'applyAccountEvent',
@@ -241,6 +242,7 @@ for (const filename of [
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ...[
       'acceptGeneration',
+      'reuseGeneration',
       'createRelationalMemberGenerationAdmission',
       'createRelationalQueueRuntime',
       'admitRelationalMemberGeneration',

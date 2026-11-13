@@ -295,6 +295,7 @@ CREATE INDEX idx_jobs_free_success ON generation_jobs(free_succeeded_at)
   WHERE free_succeeded_at IS NOT NULL;
 CREATE INDEX idx_jobs_artifact ON generation_jobs(artifact_id,request_id)
   WHERE artifact_id IS NOT NULL;
+CREATE INDEX idx_jobs_cache ON generation_jobs(cache_key,request_id) WHERE cache_key IS NOT NULL;
 
 CREATE TABLE generation_attempts (
   id TEXT PRIMARY KEY,

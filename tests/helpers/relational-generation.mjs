@@ -66,6 +66,7 @@ function meta(id, now = NOW, memberId = null) {
   };
 }
 function openingFacts({
+  openingAt = NOW,
   v5 = '40',
   secondV5 = v5,
   fixed = '4000',
@@ -87,7 +88,7 @@ function openingFacts({
         sourceSha256: 'a'.repeat(64),
         sourceCommit: '4161ea5',
         cutoffSeq: '2',
-        cutoffAt: NOW,
+        cutoffAt: openingAt,
         manifestSha256: 'b'.repeat(64),
         route: 'B',
       },
@@ -155,7 +156,7 @@ function openingFacts({
         accountId: 'a',
         status: 'active',
         observationEventId: 'opening-quota',
-        observedAt: NOW,
+        observedAt: openingAt,
         observedCredentialEpoch: 1,
         observedSequence: '9007199254740993',
         quotaTier: 3,
@@ -167,8 +168,8 @@ function openingFacts({
         observedAnlasPurchased: officialPurchased,
         secondsPerPercent: seconds,
         baselineEventId: baseline ? 'opening-quota' : null,
-        refillCursorAt: baseline ? NOW : null,
-        settlementCursorAt: NOW,
+        refillCursorAt: baseline ? openingAt : null,
+        settlementCursorAt: openingAt,
         unallocatedV5: '0',
         fallbackFixed: '0',
         fallbackPurchased: '0',
@@ -213,7 +214,7 @@ function openingFacts({
     return {
       ...f,
       streamId,
-      occurredAt: NOW,
+      occurredAt: openingAt,
       memberId: p.memberId ?? null,
       accountId: kind === 'account' ? 'a' : null,
       policyVersion: 'shared-quota-v1',
@@ -243,7 +244,7 @@ async function fixture(t, options = {}) {
     generations = new RelationalGenerationStore(db, options.env ?? {});
   for (const id of ['m1', 'm2']) {
     db.transaction(() =>
-      members.registerMember(meta(`register-${id}`), {
+      members.registerMember(meta(`register-${id}`, options.openingAt ?? NOW), {
         memberId: id,
         displayName: id,
         apiKey: keys[id],
@@ -254,7 +255,11 @@ async function fixture(t, options = {}) {
     seed.transaction(() => seedMembers.replayMemberCommit(readRelationalCommit(db, seq)))();
   }
   const events = openingFacts(options);
-  const { policyVersion: _policy, pricingVersion: _pricing, ...command } = meta('opening');
+  const {
+    policyVersion: _policy,
+    pricingVersion: _pricing,
+    ...command
+  } = meta('opening', options.openingAt ?? NOW);
   seed.transaction(() =>
     appendRelationalCommit(seed, {
       ...command,

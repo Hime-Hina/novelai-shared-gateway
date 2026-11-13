@@ -15,7 +15,7 @@ import {
   type RecoverableRequest,
   type MemberNormalizationContext,
 } from './member-contract.ts';
-import { requestNormalizationDefaults } from './request-fingerprint.ts';
+import { requestNormalizationDefaults, requestCacheKey } from './request-fingerprint.ts';
 import { generationPayloadLimits } from './payload-budget.ts';
 import { MEMBER_NORMALIZATION_FORMAT } from './capabilities.ts';
 
@@ -45,6 +45,43 @@ export interface PreparedRelationalInput {
   wireBytes: number;
   sampleCount: number;
   firstSeed: number | null;
+}
+
+// 缓存只比较已保存的有效出站定义；展示、首次默认上下文和随机实际 seed 不参与匹配。
+export function relationalInputCacheKey(
+  memberId: string,
+  input: Pick<PreparedRelationalInput, 'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'>,
+  seedMode: 'fixed' | 'random' | 'not_applicable',
+): string | null {
+  if (
+    input.body.operation !== 'generate' ||
+    input.sampleCount !== 1 ||
+    seedMode === 'not_applicable'
+  ) {
+    return null;
+  }
+  const request = relationalProviderRequest(
+    restoreRelationalWire(input.body, input.assets, input.firstSeed, 1),
+    input.context,
+  );
+  const parameters = buildNovelAiParameters(request);
+  if (seedMode === 'random') {
+    delete parameters.seed;
+  }
+  return requestCacheKey(
+    memberId,
+    JSON.parse(
+      canonicalJson({
+        operation: 'generate',
+        action: request.action || 'generate',
+        model: request.model,
+        prompt: request.prompt,
+        nativeParameters: parameters,
+        allowPurchasedAnlas: request.allowPurchasedAnlas,
+      }),
+    ),
+    seedMode === 'fixed' ? input.firstSeed : '',
+  );
 }
 
 function invalid(): never {

@@ -23,6 +23,25 @@ type NormalizationSettings = {
   > | null;
 };
 
+export function requestCacheKey<T extends object & { requestedSteps?: unknown; seed?: unknown }>(
+  owner: string,
+  request: T,
+  explicitSeed: unknown = '',
+): string {
+  const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        owner,
+        request: {
+          ...cacheRequest,
+          seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
+        },
+      }),
+    )
+    .digest('hex');
+}
+
 // 入口已验证 base64；这里按解码字节摘要，不再复制或拼接整段图片文本。
 function imageDigest(value: unknown): unknown {
   if (typeof value !== 'string' || !value) {

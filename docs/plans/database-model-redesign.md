@@ -1255,6 +1255,8 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 整合修正仅涉及测试：逐次声明非取消；两处不验证恢复的夹具显式 `seconds: 0` 且保留全部精确金额断言；私有恢复改用现唯一完整业务 replayer，保留原保护源、提交篡改及私有撤销检查。相应四文件 100/100。后续分配权限修复、损耗读取、工具及真实 HTTP 耦合汇合后再以固定版本重跑完整套件；目前没有接续候选的编译包、Node 24、远端 CI 或正式发布结论。
 
+固定 `d638220f9c79a340f63098e923fb37029df8b2f1` 汇合上述 owner、Native 与成员子任务历史后，完整后端为 1723 项：1716 通过、2 失败、5 项原条件跳过，耗时 214.896 秒；原日志 `H:\TEMP\novelai-followup-full-d638220.log` 保留。两项旧夹具未对齐 canonical Native 新受理的合法前置：时间 0 的任务仍用未来额度观察，免费成功后才尝试受理第二任务。修正仅涉及三处测试文件：开账夹具允许显式时点并统一原来源、观察、游标及注册时刻，时间 0 的任务在 1 派发、2 失败，仍断言原创建时刻 0 与精确耗时 2；免费限额反例预先排队第二任务，在两类逻辑退役后同时断言新受理 429、既有任务派发拒绝及各自全库零写入，保留原完整回放、收费、认证和免费窗口核对。两文件联合 27/27，证据为 `H:\TEMP\novelai-followup-admission-fixtures-fixed.log`；这不把前一轮失败或尚待执行的完整候选检查记为通过。
+
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
 本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。
@@ -1268,6 +1270,24 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 新增源码专项覆盖实际旧 JsonStore 的多 child 总量、跨页/空页、until、三种排序、状态和字面转义搜索对照；原 child 时点与父时点不同的完整提交；partial Opening 的未知/0 与未来 header、原已归档零收费/未知估算及找回时间 0；真实派发/退款/Local 发布的 12 条迟到历史、本人/他人和任务/产物退休、损坏归属/伪找回时点；换 Key/Cookie/停止接单/停用；重开与共同完整提交回放后同一 DTO。Opening 实体 owner 尚未支持的部分使用明确标注的有来源只读夹具，不冒称已完成开账导入、私有恢复或 ready 安装。业务回放仍不恢复认证，读验证只提供独立当前 epoch。
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
+
+### 9.44 R08：活动别名与原产物缓存复用
+
+本片从 `555172f` 接续，并入已审 Native/历史并集 `3d2bafd` 后交付窄 owner 能力；不装配整个 direct/OpenAI transport。D4 仅退出 cards 与客户端 PST 独立路径，仍保留共享显式缓存。GenStore 的 `findReusableGeneration()` 只查询原 cache key 的有界候选并在 SQL 外检查引用资格；`reuseGeneration()` 在当前认证事务内重核成员/接单 epoch、当前共享 readiness 与原来源，原键回执先于新准入。Native 始终 noCache=true；OpenAI 默认 true、显式允许才复用；direct 无键只找完成缓存，有键和旧 POST jobs 仍可活动合并，caller 用明确 allowActive 保留这个差别。
+
+规则仍由原 owner 持有。原 `requestCacheKey()` 窄移到现有 `request-fingerprint.ts`，旧算法及真实调用者一起迁移；新关系输入先把已保存的有效出站参数规范为稳定键序，排除展示、默认上下文和随机实际 seed，再交同一 helper，以稳定 memberId 限定候选。生成指纹继续使用原 `generationRequestFingerprint()`，保存 noCache/随机意图，不把它与缓存键或 input 摘要混为一个值。每个已存非空 job cache key 都从原保护正文/附件、首次定义和种子意图重新计算，两个 hash 字符串相等不能自证来源。
+
+活动复用只增加必要首次 context 与 RequestAliasRegistered，返回原 request/job；没有新 input、job、attempt、charge 或免费成功。每键的 context、seedMode、command、receipt 和 sourceEvent 均独立，原受理证明与 alias-only 证明分开；重复领取使用该键自己的定义，不再硬绑目标 request.context，也不从目标 actualSeed 猜来访随机/固定意图。无键活动复用没有可登记操作键，仅在相同当前认证/规则核对后返回原身份，不伪造幂等键。InputStore 的窄保护 stage 和共同完整提交仍共享外层保存点。
+
+缓存复用新建小 parent/job 指向原 artifact；完全相同的保护输入引用原 input，已知 requestedSteps/display 不同时保存来访内容，不为强迫 inputId 相等丢展示。原 artifact 的 input、originalAttempt、摘要、原生产 job 和副本不改，新 job 无 queueSeq、attempt、charge 或 FreeImageSucceeded。事实沿已存在的 JobAccepted.status=done 明确缓存决定，安全回执沿旧 owner 的 cacheHit=true；完整提交反向要求恰一同 job/request/member 的 CachedResultLinked，SQL 插入期间暂用 pending 满足立即 CHECK，再由原序 link 安装真 done。缺、换、重、乱序或 done→pending 不能被吞为成功，也不改变普通 T2 pending 的既有语义。若整体替换为另一个自洽、改过规范指纹和原回执的合法命令，不把它虚称为可证明的“同一原提交漏事实”。
+
+引用资格复用计划 5.1：Local 通过原文件 owner 的安全定位与真实 lstat>0，坏非空内容留给领取的原长度/SHA/MIME 核验；已有 verified R2 或 uploaded PikPak 持久来源即使缺配置/错目录仍可引用，资格不 GET、不提升 verified。实际领取仍用原 reader，临时云配置失败保持 503。仅 Local 真缺且无持久来源的新键可 miss；旧键的身份/回执不会变成新生成机会，HTTP 的缺失 410 与临时 503 分类由其既有领取 owner 继续承担。三个只读 helper 已从 v4 工作独立为 v3 固定 `b31c03c` 供 Native 修复复用，没有另造可用性布尔开关或全局 registry。SQL 提交重核真实发布/原 input/attempt/缓存键和未退休状态，Local IO 后继续核原 source-ticket；退休生产 job 不抹掉尚未退休的原产物引用。
+
+未发布关系事件统一升 4，RequestAliasRegistered.seedMode 为 required fixed/random/not_applicable，所有实际正常受理都显式写 accepted.seedMode；不在 helper 默认猜历史。与成员权益同轮保持单个 v4，不各升 5。旧 v3 正确 DDL/hash 从可信 `3d2bafd7b19f329027ad081344a94dc20f4f51f2` 导出为精确测试 fixture（SHA-256 `95e48652ac9bd9064f960f6bb87f41fde48bbc303ccc3183c553dcdd43f7646b`），验证 read/write owner 和 Native handler factory 在使用/listen 前拒绝；不靠改当前 DDL 的数字冒充旧格式。既有 SQL/journal、writer 5、input schema 1 与 runtime hash guard 均保留。原 ready unsupported 反例改用当前仍无 owner 的合法 OpeningRequestRecorded 和正确 request stream，不删拒绝断言。
+
+最小可运行入口为 `relational-generation-reuse.test.mjs`：活动不同键/独立首次上下文和 mode、同实际 seed 的 random/fixed 反例、缓存原 input/展示差异、零钱包免费上限满不重计成功、跨成员/换 Key/停止恢复/退休旧键、Local 坏非空与真缺、合成 R2 持久承诺无 GET、当前认证外层捕获后的 alias/缓存 SQL 故障全回滚，以及完整共同回放和唯一 installer 合法 ready。九种完整 header/双事件列表变异覆盖源 cache key 假证明、alias 指纹互证、种子混淆、link 缺/换/重/乱序和 downgrade；失败目标全表不变，原合法提交随后可重试和零写重领。源零写、fetch 0、目标仍 building、不恢复 Key/会话/PST；合成 R2 客户端结果不称为真实端点验收。
+
+候选薄读原 EXPLAIN 按成员历史查 request/job；增加唯一一个非空 cache_key 索引后，两条实际查询均 SEARCH idx_jobs_cache，未增加缓存表、持久派生计数或新排序框架。可复现前/后计划是 `H:\TEMP\novelai-r08-explain-before.log` / `-after.log`，不以本机耗时代替同规模容量验收。新增 stageGenerationReuse/reuseGeneration 写能力加入既有架构守卫及拒绝反例，需维护者随候选复核。源码定向、独立复审和最终整合结果在固定后追加；不运行本片之外的 full/编译/Node 24，不表示 R08 传输、迁移或生产切换完成。
 
 ## 10. 事实依据与修订
 
