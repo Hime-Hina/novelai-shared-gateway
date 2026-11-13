@@ -41,6 +41,11 @@ import {
 } from '../../server/generation/member-contract.ts';
 import { describeStoredResult } from '../../server/storage/result-files.ts';
 import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
+import { getPatcher } from 'webdav';
+import { R2Storage } from '../../server/storage/r2-storage.ts';
+import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { copyRelationalArtifactReplica } from '../../server/storage/relational-replica-io.ts';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function snapshot(f, name = 'selected') {
@@ -355,6 +360,94 @@ test('已核验标记不能代替真实原图；缺失及同长度损坏均拒�
       assertBuilding(db);
       assert.equal(databaseState(db), before);
       assert.equal(relationalPrivateStateEmpty(db), true);
+    });
+  }
+});
+
+test('PikPak 仅有上传回执时按原政策实读校验后可安装，坏 br 拒绝且不补写 verified', async (t) => {
+  for (const damaged of [false, true]) {
+    await t.test(damaged ? 'corrupt' : 'readable', async (t) => {
+      const f = await completed(t),
+        artifactId = 'artifact-complete-0',
+        objects = new Map(),
+        calls = [],
+        configuration = {
+          dataDir: f.dir,
+          r2: new R2Storage({
+            accountId: 'a'.repeat(32),
+            bucket: 'ready-images',
+            accessKeyId: 'synthetic-access',
+            secretAccessKey: 'synthetic-secret',
+          }),
+          pikpak: new PikPakStorage({
+            url: 'https://dav.pikpak.test/ready/',
+            username: 'synthetic-user',
+            password: 'synthetic-password',
+          }),
+          idle: () => true,
+        };
+      let installing = false,
+        target;
+      getPatcher().patch('fetch', (...args) => globalThis.fetch(...args));
+      t.after(() => getPatcher().restore('fetch'));
+      t.mock.method(globalThis, 'fetch', async (address, options) => {
+        const url = new URL(address),
+          cold = url.hostname === 'dav.pikpak.test';
+        assert.equal(f.db.inTransaction, false);
+        assert.equal(target?.inTransaction ?? false, false);
+        calls.push(`${cold ? 'pikpak' : 'r2'}:${options.method}`);
+        if (!installing && options.method === 'PUT') {
+          objects.set(url.href, Buffer.from(options.body));
+          return new Response(null, { status: 204 });
+        }
+        assert.equal(options.method, 'GET');
+        if (!objects.has(url.href)) {
+          return new Response(null, { status: 404 });
+        }
+        const bytes =
+          installing && damaged && cold
+            ? Buffer.alloc(objects.get(url.href).length)
+            : objects.get(url.href);
+        return new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
+      });
+      await copyRelationalArtifactReplica(f.db, artifactId, 'r2', configuration, () => NOW + 30000);
+      await copyRelationalArtifactReplica(
+        f.db,
+        artifactId,
+        'pikpak',
+        configuration,
+        () => NOW + 40000,
+      );
+      const store = new RelationalReplicaStore(f.db, configuration),
+        coldTarget = store.readConfiguredStorageTarget('pikpak').storageTargetId;
+      assert.equal(store.readArtifactReplica(artifactId, coldTarget).verifiedAt, null);
+      const selected = await snapshot(f);
+      selected.replicas = configuration;
+      target = rebuild(t, selected);
+      await unlink(path.join(f.dir, 'images', `${artifactId}.webp`));
+      for (const key of objects.keys()) {
+        if (new URL(key).hostname !== 'dav.pikpak.test') {
+          objects.delete(key);
+        }
+      }
+      installing = true;
+      calls.length = 0;
+      const before = databaseState(target);
+      if (damaged) {
+        await assert.rejects(verifyAndInstallRelationalStorage(target, selected), {
+          code: 'ARTIFACT_CONTENT_UNAVAILABLE',
+        });
+        assertBuilding(target);
+        assert.equal(databaseState(target), before);
+      } else {
+        await verifyAndInstallRelationalStorage(target, selected);
+        assertRelationalStorageReady(target);
+      }
+      assert.deepEqual(calls, ['r2:GET', 'pikpak:GET']);
+      assert.equal(
+        new RelationalReplicaStore(target).readArtifactReplica(artifactId, coldTarget).verifiedAt,
+        null,
+      );
     });
   }
 });

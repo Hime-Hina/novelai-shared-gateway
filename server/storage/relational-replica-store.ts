@@ -406,10 +406,11 @@ export class RelationalReplicaStore {
       return null;
     }
     const replica = this.readArtifactReplica(artifactId, current.target.storageTargetId);
+    // PikPak 沿第 5.1 节按需实读核验；上传回执不在此提升为持久 verified。
     if (
       !replica ||
       replica.uploadedAt === null ||
-      replica.verifiedAt === null ||
+      (kind !== 'pikpak' && replica.verifiedAt === null) ||
       replica.deletedAt !== null
     ) {
       return null;
