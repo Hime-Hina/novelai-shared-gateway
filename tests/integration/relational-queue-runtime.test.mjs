@@ -253,7 +253,6 @@ test('真实HTTP/PST与冷输入执行，SQL外发布本地字节、原子结算
   runtime.tick();
   assert.equal(f.calls, 1);
   f.clock += 10001;
-  runtime.tick();
   await waitFor(
     () =>
       f.db.prepare("SELECT status FROM generation_jobs WHERE id='batch-1'").get().status === 'done',
