@@ -15,7 +15,11 @@ import type {
   RelationalFact,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { assertStoredResultDescriptor, resultFile } from './result-files.ts';
+import {
+  assertStoredResultDescriptor,
+  resultFile,
+  type describeStoredResult,
+} from './result-files.ts';
 import { r2Config, type R2Storage } from './r2-storage.ts';
 import { pikpakConfig, type PikPakStorage } from './pikpak-storage.ts';
 
@@ -26,6 +30,7 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
 type Kind = RelationalPayloads['StorageTargetRegistered']['kind'];
 type Target = RelationalPayloads['StorageTargetRegistered'];
 type Replica = RelationalPayloads['ArtifactReplicaRecorded'];
+type Publication = ReturnType<typeof describeStoredResult>;
 type ReplicaFact = Extract<
   RelationalFact,
   { eventType: 'StorageTargetRegistered' | 'ArtifactReplicaRecorded' }
@@ -45,9 +50,35 @@ export const relationalReplicaFacts = new Set<RelationalEvent['eventType']>([
 function fail(message: string): never {
   throw Object.assign(new Error(message), { statusCode: 409, code: 'REPLICA_STATE_CONFLICT' });
 }
+const LOCAL_NAMESPACE = 'images';
+function targetIdentity(kind: Kind, namespace: string): Target {
+  return {
+    storageTargetId: `${kind}:${domainDigest(namespace)}`,
+    kind,
+    namespace,
+    credentialRef: kind === 'local' ? null : `deployment:${kind}`,
+  };
+}
+function replicaLocation(
+  publication: Publication,
+  kind: Kind,
+): Pick<Replica, 'objectKey' | 'encoding'> {
+  if (kind === 'local') {
+    return { objectKey: path.posix.basename(publication.file), encoding: 'identity' };
+  }
+  if (kind === 'r2') {
+    return {
+      objectKey: `images/${publication.imageId}/${publication.sha256}`,
+      encoding: 'identity',
+    };
+  }
+  return { objectKey: `${publication.sha256}.br`, encoding: 'br' };
+}
 function assertTarget(target: Target) {
   let valid =
-    target.kind === 'local' && target.namespace === 'images' && target.credentialRef === null;
+    target.kind === 'local' &&
+    target.namespace === LOCAL_NAMESPACE &&
+    target.credentialRef === null;
   if (target.kind === 'r2') {
     valid =
       /^r2:\/\/[a-f0-9]{32}\/[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(target.namespace) &&
@@ -116,7 +147,7 @@ export class RelationalReplicaStore {
       if (typeof config.dataDir !== 'string' || !config.dataDir) {
         fail('缺少本地副本目录');
       }
-      namespace = 'images';
+      namespace = LOCAL_NAMESPACE;
       secret = path.resolve(config.dataDir);
     } else if (kind === 'r2' && config.r2) {
       const current = config.r2.config;
@@ -144,17 +175,40 @@ export class RelationalReplicaStore {
       fail('副本目标当前未配置');
     }
     return {
-      target: {
-        storageTargetId: `${kind}:${domainDigest(namespace)}`,
-        kind,
-        namespace,
-        credentialRef: kind === 'local' ? null : `deployment:${kind}`,
-      } satisfies Target,
+      target: targetIdentity(kind, namespace),
       fingerprint: domainDigest(secret),
     };
   }
   readConfiguredStorageTarget(kind: Kind) {
     return this.configuredTarget(kind).target;
+  }
+  planLocalArtifactPublication(publication: Publication, at: number) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Local publication planning requires the owning command transaction.');
+    }
+    assertStoredResultDescriptor(publication);
+    if (!Number.isSafeInteger(at) || at < 0) {
+      fail('Local 发布缺少有效的原提交时间');
+    }
+    const target = targetIdentity('local', LOCAL_NAMESPACE);
+    const exists = this.isStorageTargetRegistered(target.storageTargetId);
+    return {
+      target: exists
+        ? null
+        : ({ eventType: 'StorageTargetRegistered', payload: target } satisfies ReplicaFact),
+      replica: {
+        eventType: 'ArtifactReplicaRecorded',
+        payload: {
+          artifactId: publication.imageId,
+          storageTargetId: target.storageTargetId,
+          ...replicaLocation(publication, 'local'),
+          uploadedAt: at,
+          verifiedAt: at,
+          deletedAt: null,
+          lastErrorCode: null,
+        },
+      } satisfies ReplicaFact,
+    };
   }
   private source(eventId: string) {
     const row = this.sqlite
@@ -237,6 +291,13 @@ export class RelationalReplicaStore {
     }
     assertTarget(source.payload);
     return row;
+  }
+  isStorageTargetRegistered(storageTargetId: string) {
+    if (!this.sqlite.prepare('SELECT 1 FROM storage_targets WHERE id=?').get(storageTargetId)) {
+      return false;
+    }
+    this.readStorageTarget(storageTargetId);
+    return true;
   }
   readArtifactReplica(artifactId: string, storageTargetId: string) {
     const row =
@@ -389,19 +450,12 @@ export class RelationalReplicaStore {
       const row: Replica = {
         artifactId: ticket.artifactId,
         storageTargetId: ticket.storageTargetId,
-        objectKey:
-          target.kind === 'local'
-            ? path.posix.basename(artifact.descriptor.file)
-            : `images/${artifact.id}/${artifact.sha256}`,
-        encoding: target.kind === 'pikpak' ? 'br' : 'identity',
+        ...replicaLocation(artifact.descriptor, target.kind),
         uploadedAt: previous?.uploadedAt ?? null,
         verifiedAt: previous?.verifiedAt ?? null,
         deletedAt: null,
         lastErrorCode: errorCode,
       };
-      if (target.kind === 'pikpak') {
-        row.objectKey = `${artifact.sha256}.br`;
-      }
       if (phase === 'local_verified') {
         if (target.kind !== 'local' || previous) {
           fail('本地副本已经登记或目标不符');
@@ -462,10 +516,7 @@ export class RelationalReplicaStore {
             artifact = this.readArtifact(p.artifactId),
             target = this.readStorageTarget(p.storageTargetId),
             previous = this.readArtifactReplica(p.artifactId, p.storageTargetId);
-          const objectKey =
-            target.kind === 'local'
-              ? path.posix.basename(artifact.descriptor.file)
-              : `images/${artifact.id}/${artifact.sha256}`;
+          const location = replicaLocation(artifact.descriptor, target.kind);
           const firstReservation =
             !previous &&
             target.kind !== 'local' &&
@@ -503,8 +554,8 @@ export class RelationalReplicaStore {
             event.memberId !== artifact.memberId ||
             event.accountId !== null ||
             p.deletedAt !== null ||
-            p.objectKey !== (target.kind === 'pikpak' ? `${artifact.sha256}.br` : objectKey) ||
-            p.encoding !== (target.kind === 'pikpak' ? 'br' : 'identity') ||
+            p.objectKey !== location.objectKey ||
+            p.encoding !== location.encoding ||
             previous?.deletedAt != null ||
             !(firstReservation || firstLocal || upload || verification || failed)
           ) {

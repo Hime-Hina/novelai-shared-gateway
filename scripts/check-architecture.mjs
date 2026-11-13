@@ -60,6 +60,7 @@ const mutations = new Set([
   'replayReplicaCommit',
   'copyRelationalArtifactReplica',
   'verifyRelationalArtifactReplica',
+  'planLocalArtifactPublication',
   'beginQuotaObservation',
   'recordQuotaObservation',
   'refillQuota',

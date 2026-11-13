@@ -885,6 +885,20 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 
 日志及隔离反例位于本地 `H:\\TEMP\\novelai-reports-*.log` 与 `H:\\TEMP\\novelai-reports-20261114-validation`，独立复审证据位于 `H:\\TEMP\\novelai-reports-independent-review`。既有运行时的产物/HTTP 回归证明当前路径没有被本片破坏；新关系报告仍未接入 HTTP，不把它们写成新格式端点验收。本片不表示 #31、迁移、ready 或真实容量验收完成，最终联合候选与远端 CI 继续补同版本上线证据。新格式仍未发布，schema hash 变化要求从空 building 目标重建，不重写旧迁移或增加旧原型兼容分支。
 
+### 9.22 T5：发布完成与 Local 副本同笔提交
+
+本片从固定 `7e8ae8f` 接续，PR #59 保持原候选。结果仍先由原文件 owner 在 SQL 外校验并发布，命令只接收与原 `ArtifactPrepared` 完全一致的规范描述符；不在 SQL 内重读文件，也不以额外布尔值或新目录配置证明发布。Local 目标继续使用既有 storage owner 的 `images` 逻辑 namespace，身份和副本定位规则只在该 owner 维护。
+
+新成功/退款迟到完成提交的事实顺序为：首次需要时登记 Local 目标；原 `ArtifactPublished`；紧接 Local `ArtifactReplicaRecorded`；原结算或迟到结果、免费/核对/冷却及批次后继。目标先于副本，产物先于副本，全部共享原命令 ID、回执、事务及保存点。普通发布、final/完整 part 恢复都走同一入口；任何后续终态写入失败，目标/产物/Local/收费及后继均回滚，已发布字节保留待重试。不会出现该新命令只提交产物而缺少 Local 事实的窗口。
+
+实际调用链中的准备/完成都属于执行器 IO，只接受 `system/null`，且重领回执前也复核；这仅收紧未发布存储 API 的 `prepareGenerationResult`/`completeGeneration`，不改变管理取消等其他命令。成员停用、凭据撤销或退款不改变原结果归属，系统仍可恢复原结果；退款及批次停止保持原 owner 语义。没有已确认的 admin 结果完成入口，不为这一未接入能力扩展 Replica 授权例外。
+
+在线与离线使用同一完整提交 coordinator，按原顺序委托生成及 Replica owner 的真实单事实投影；不分割原提交、多次写同一 commit 或复制副本规则。历史准备/完成事实仍保留原 actor 和回执，重放不调用新命令的当前授权，也不替旧历史补造不存在的 Local 事实；这些不完整恢复目标保持 building，由完整恢复闭包另行核对。无外部复制/删除、无 ready 安装。
+
+`relational-local-publication.test.mjs` 覆盖普通两张发布与唯一目标复用、admin/member 和非空 system actor 拒绝、SQL 副本或终态中途失败后外层捕获的全表回滚、final/完整 part 重开恢复、退款迟到、混合完整提交原序回放、错误 Local 定位/编码/成员及截断拒绝、重复零写入和旧 admin 历史原样恢复。前六组同样用例在原 `7e8ae8f` 上 10/10 失败，失败来自缺少 Local 事实或未拒绝越权的业务断言；新增旧 admin 对照不计入这次修复前运行。
+
+独立反例通过真实 append 重新生成一致的事件索引/流版本，两种错误业务顺序仍被真实 owner 拒绝并全表回滚；已有 images 目标错误指向 ArtifactPublished 时，完成拒绝、字节保留，修正原来源后重试成功且不重复目标；成员停用/撤销并清除当前 Key 后，system 仍能保存原图归属，不恢复认证或启动下一 child。该三项与本片 11 项同次 14/14、零跳过、外部调用零次，独立证据保存在 `H:\TEMP\novelai-local-publication-independent-review`。本片未新增 schema、事实种类、旧 SQL/journal 或依赖；新增 planner 写能力守卫和 query/protocol 拒绝反例随实现接受维护者复核。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
