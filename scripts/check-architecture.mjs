@@ -13,6 +13,7 @@ const mutations = new Set([
   'manageFairMember',
   'manageOperatingFunding',
   'syncFairQuota',
+  'syncBoundFairQuota',
   'reserveFairQuota',
   'settleFairQuota',
   'recordDomainEvent',

@@ -1,7 +1,6 @@
 import type {
   AnlasResource,
-  FairQuotaDatabase,
-  FairQuotaState,
+  FairQuotaSyncState,
   QuotaSnapshot,
   Resource,
   ResourceAmounts,
@@ -63,7 +62,7 @@ export interface OperatingFundingContext {
   findEvent: (id: string | undefined) => FundingEvent | null | undefined;
   coveredAmount: (id: string) => AmountInput;
 }
-type OperatingDatabase = FairQuotaDatabase & { settings: { fairQuota: FairQuotaState } };
+type OperatingDatabase = { settings: { fairQuota: FairQuotaSyncState }; ledger?: unknown[] };
 interface FundingResult {
   eventId: string;
   duplicate: boolean;
@@ -77,7 +76,7 @@ const error: (message: string) => never = (message) => {
   throw Object.assign(new Error(message), { statusCode: 409 });
 };
 
-export function operatingAccount(s: FairQuotaState): OperatingAccount {
+export function operatingAccount(s: Pick<FairQuotaSyncState, 'operating'>): OperatingAccount {
   const ops = (s.operating ||= readOperatingAccount(s));
   for (const resource of ['v5', 'anlasFixed', 'anlasPurchased'] as const) {
     ops.available[resource] = formatAmount(units(ops.available[resource]));
@@ -93,7 +92,7 @@ export function operatingAccount(s: FairQuotaState): OperatingAccount {
   return ops;
 }
 
-export function readOperatingAccount(s: FairQuotaState): OperatingAccount {
+export function readOperatingAccount(s: Pick<FairQuotaSyncState, 'operating'>): OperatingAccount {
   return (
     s.operating || {
       available: emptyResources(),
@@ -432,7 +431,7 @@ export function matchExternalFunding(
 
 // 调用者必须在现有 store.update 内提供持久 lookup/coverage；不能只查有限的热 ledger。
 export function applyOperatingFunding(
-  db: FairQuotaDatabase,
+  db: { settings?: { fairQuota?: FairQuotaSyncState | null }; ledger?: unknown[] },
   body: OperatingFundingInput,
   { actorId, findEvent, coveredAmount }: OperatingFundingContext,
   now = Date.now(),

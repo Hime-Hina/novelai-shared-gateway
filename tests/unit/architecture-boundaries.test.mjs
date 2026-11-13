@@ -100,6 +100,11 @@ for (const filename of [
       "export { RelationalInputStore as Store } from '../storage/relational-input-store.ts';",
     ],
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
+    ['bound account synchronization', 'syncBoundFairQuota(view,account,now);'],
+    [
+      'aliased synchronization',
+      "import { syncBoundFairQuota as sync } from '../quota/fair-share.ts'; sync(view,account,now);",
+    ],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
     ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
     ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],

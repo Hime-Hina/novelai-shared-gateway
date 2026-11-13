@@ -6,6 +6,7 @@ import {
   configureFairGroups,
   configureFairQuota,
   syncFairQuota,
+  syncBoundFairQuota,
   reserveFairQuota,
   settleFairQuota,
   quoteFairRequest,
@@ -41,6 +42,52 @@ function fixture(percent = 80) {
 }
 const request = { model: 'nai-diffusion-5', width: 1024, height: 1024, steps: 23 };
 const job = (id, r = request) => ({ id, request: { ...r } });
+
+test('窄金融视图复用恢复顺序、份额与游标，不需要旧配置历史、用户或任务正文', () => {
+  const db = fixture(),
+    s = db.settings.fairQuota;
+  s.sharedV5Debt = '0.5';
+  s.operating.v5CapacityGap = '0.2';
+  const financial = Object.fromEntries(
+    [
+      'enabled',
+      'boundAccountId',
+      'members',
+      'groups',
+      'configVersion',
+      'balances',
+      'reservations',
+      'snapshot',
+      'spent',
+      'creditedV5',
+      'lastRefillAt',
+      'lastSettlementAt',
+      'status',
+      'unallocatedV5',
+      'fallbackBuffer',
+      'sharedV5Debt',
+      'operating',
+    ].map((key) => [key, structuredClone(s[key])]),
+  );
+  const target = { settings: { fairQuota: financial }, ledger: [] };
+  syncBoundFairQuota(target, db.accounts[0], NOW + 600000);
+  assert.equal(financial.sharedV5Debt, '0');
+  assert.equal(financial.operating.v5CapacityGap, '0');
+  assert.deepEqual(
+    Object.values(financial.balances).map((b) => b.v5Available),
+    Array(4).fill('20.075'),
+  );
+  assert.equal(financial.lastRefillAt, NOW + 600000);
+  assert.equal('configurationHistory' in financial, false);
+  assert.equal('users' in target, false);
+  const saved = structuredClone(financial);
+  syncBoundFairQuota(target, db.accounts[0], NOW + 600000);
+  assert.deepEqual(financial, saved);
+  syncFairQuota(db, NOW + 600000);
+  for (const key of Object.keys(saved)) {
+    assert.deepEqual(financial[key], s[key], key);
+  }
+});
 
 test('窄收费规划与真实预扣共用固定/购买池和 fallback 规则，规划本身不写状态', () => {
   const zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };

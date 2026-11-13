@@ -160,6 +160,45 @@ export interface FairQuotaState {
   lossAlertPolicy?: Partial<LossAlertPolicy> | null;
   policyHistory?: { at: number; actor: string; autoAnlasFallback: boolean }[];
 }
+// 当前金融状态的窄视图；不包含旧配置历史、用户、任务正文或认证数据。
+export type FairQuotaSyncState = Omit<
+  Pick<
+    FairQuotaState,
+    | 'enabled'
+    | 'boundAccountId'
+    | 'members'
+    | 'groups'
+    | 'configVersion'
+    | 'balances'
+    | 'reservations'
+    | 'snapshot'
+    | 'spent'
+    | 'creditedV5'
+    | 'lastRefillAt'
+    | 'lastSettlementAt'
+    | 'status'
+    | 'unallocatedV5'
+    | 'fallbackBuffer'
+    | 'sharedV5Debt'
+    | 'operating'
+    | 'v5Reconciliation'
+    | 'v5ReconciliationHistory'
+  >,
+  'reservations'
+> & {
+  reservations: Record<
+    string,
+    Pick<
+      FairCharge,
+      'userId' | 'status' | 'resource' | 'amount' | 'fixed' | 'purchased' | 'sharedV5Reserved'
+    >
+  >;
+};
+export interface FairQuotaSyncDatabase {
+  settings: { fairQuota: FairQuotaSyncState };
+  ledger?: unknown[];
+}
+
 type UpgradedField =
   | 'groups'
   | 'configVersion'
@@ -244,9 +283,9 @@ const units = (value: AmountInput | null | undefined): bigint => {
 };
 const normalized = (value: AmountInput | null | undefined): AmountText =>
   formatAmount(units(value));
-const sum = (s: FairQuotaState, field: BalanceField): bigint =>
+const sum = (s: FairQuotaSyncState, field: BalanceField): bigint =>
   Object.values(s.balances).reduce((n, b) => n + units(b[field]), 0n);
-const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): bigint =>
+const held = (s: FairQuotaSyncState, id: string, resource: Resource | 'anlas'): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.userId === id && c.status === 'reserved')
     .reduce((n, c) => {
@@ -260,13 +299,13 @@ const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): bigi
       }
       return n + units(amount);
     }, 0n);
-const sharedHeld = (s: FairQuotaState): bigint =>
+const sharedHeld = (s: FairQuotaSyncState): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.status === 'reserved')
     .reduce((n, c) => n + units(c.resource === 'v5' ? c.amount : c.sharedV5Reserved), 0n);
-const anyHeld = (s: Pick<FairQuotaState, 'reservations'>): boolean =>
+const anyHeld = (s: Pick<FairQuotaSyncState, 'reservations'>): boolean =>
   Object.values(s.reservations).some((c) => c.status === 'reserved');
-const totals = (s: FairQuotaState): void => {
+const totals = (s: FairQuotaSyncState): void => {
   for (const b of Object.values(s.balances)) {
     b.anlasAvailable = formatAmount(
       units(b.anlasFixedAvailable) + units(b.anlasPurchasedAvailable),
@@ -350,9 +389,9 @@ function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
   // 上面的原位升级补齐旧四人账本字段，不重建已有钱包或预留。
   return s as FairQuotaState;
 }
-const groupFor = (s: FairQuotaState, id: string): FairGroup | undefined =>
+const groupFor = (s: FairQuotaSyncState, id: string): FairGroup | undefined =>
   s.groups.find((g) => g.members.includes(id));
-const weight = (s: FairQuotaState, id: string): number => {
+const weight = (s: FairQuotaSyncState, id: string): number => {
   const group = groupFor(s, id);
   if (!group) {
     return 0;
@@ -473,7 +512,7 @@ export function normalizeOpeningQuota(
   return copy;
 }
 
-function exactWeights(s: FairQuotaState): { id: string; weight: bigint }[] {
+function exactWeights(s: FairQuotaSyncState): { id: string; weight: bigint }[] {
   const gcd = (left: bigint, right: bigint): bigint => {
     while (right) {
       const next = left % right;
@@ -503,7 +542,7 @@ function exactWeights(s: FairQuotaState): { id: string; weight: bigint }[] {
     weight: ratio.numerator * (common / ratio.denominator),
   }));
 }
-const capacities = (s: FairQuotaState): Record<string, bigint> =>
+const capacities = (s: FairQuotaSyncState): Record<string, bigint> =>
   allocateAmount(100n * AMOUNT_SCALE, exactWeights(s));
 const recoveryUnits = (milliseconds: number, seconds: number): bigint => {
   const ratio = decimalRatio(seconds);
@@ -530,7 +569,11 @@ type QuotaFact = DomainEventFact<
   | 'GenerationSettled'
   | 'GenerationRefunded'
 >;
-function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
+function quotaFact(
+  db: { settings?: { fairQuota?: Pick<FairQuotaState, 'boundAccountId'> | null } },
+  fact: QuotaFact,
+  now?: number,
+): void {
   const { eventType } = fact;
   const accountId = db.settings?.fairQuota?.boundAccountId;
   const sharing =
@@ -555,7 +598,12 @@ function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
     amountVersion: 'decimal-12-v1',
   });
 }
-function quotaStatus(db: FairQuotaDatabase, s: FairQuotaState, status: string, now: number): void {
+function quotaStatus(
+  db: Parameters<typeof quotaFact>[0],
+  s: FairQuotaSyncState,
+  status: string,
+  now: number,
+): void {
   if (s.status === status) {
     return;
   }
@@ -1081,8 +1129,8 @@ export function manageFairMember(
 }
 
 function distribute(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  db: Parameters<typeof quotaFact>[0],
+  s: FairQuotaSyncState,
   resource: Resource,
   delta: bigint,
   now: number,
@@ -1135,7 +1183,7 @@ function distribute(
 }
 
 export function manageOperatingFunding(
-  db: FairQuotaDatabase,
+  db: { settings?: { fairQuota?: FairQuotaSyncState | null }; ledger?: unknown[] },
   body: OperatingFundingInput,
   options: OperatingFundingContext,
   now = Date.now(),
@@ -1155,7 +1203,7 @@ export function manageOperatingFunding(
 }
 
 // 只让有份额且尚未满额的钱包参与恢复；在途预留同样占容量。
-function v5RecoveryMembers(db: FairQuotaDatabase, s: FairQuotaState, now: number) {
+function v5RecoveryMembers(s: FairQuotaSyncState) {
   const capacity = capacities(s),
     weights = Object.fromEntries(exactWeights(s).map((entry) => [entry.id, entry.weight]));
   return s.members.flatMap((id) => {
@@ -1174,14 +1222,12 @@ function v5RecoveryMembers(db: FairQuotaDatabase, s: FairQuotaState, now: number
 }
 
 function distributeV5Recovery(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  s: FairQuotaSyncState,
   delta: bigint,
-  now: number,
 ): { amount: bigint; allocations: QuotaAllocation[] } {
   let remaining = maxAmount(0n, delta),
     actual = 0n,
-    participants = v5RecoveryMembers(db, s, now);
+    participants = v5RecoveryMembers(s);
   const allocations: Record<string, bigint> = {};
   while (remaining > 0n && participants.length) {
     const allocation = allocateAmount(remaining, participants);
@@ -1214,8 +1260,8 @@ function distributeV5Recovery(
 
 // 官方聚合差额只用于来源核对，不能据此向闲置成员扣款。
 function recordV5Reconciliation(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  db: FairQuotaSyncDatabase,
+  s: FairQuotaSyncState,
   incoming: QuotaSnapshot,
   now: number,
 ) {
@@ -1246,12 +1292,7 @@ function recordV5Reconciliation(
   };
   s.v5Reconciliation = entry;
   // 整数官方快照有一个百分点的精度边界；只记录该边界之外可支持的容量差额。
-  const evidence = reconcileV5Capacity(
-    db as ConfiguredDatabase,
-    maxAmount(0n, -difference - tolerance),
-    incoming,
-    now,
-  );
+  const evidence = reconcileV5Capacity(db, maxAmount(0n, -difference - tolerance), incoming, now);
   const history = (s.v5ReconciliationHistory ||= []),
     previous = history.at(-1);
   // 同一差额不按每分钟刷屏；跨显示格或恢复正常时留痕，审计不包含成员身份与请求内容。
@@ -1334,6 +1375,20 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     quotaFact(db, { eventType: 'QuotaAccountOpened', payload: { memberIds: s.members } }, now);
   }
   const account = accounts.find((a) => a.id === s.boundAccountId);
+  syncBoundFairQuota(db as FairQuotaSyncDatabase, account, now);
+  return s;
+}
+
+// 单一已绑定账户的观察/恢复规则；旧运行时和关系命令使用同一个 owner。
+export function syncBoundFairQuota(
+  db: FairQuotaSyncDatabase,
+  account: FairAccount | undefined,
+  now = Date.now(),
+): FairQuotaSyncState {
+  const s = db.settings.fairQuota;
+  if (!s.enabled) {
+    return s;
+  }
   const status = quotaAvailability(account, now, {
     at: s.snapshot?.at,
     held: anyHeld(s),
@@ -1412,13 +1467,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     // 本地转扣可能仍消耗共享 V5。先用恢复偿还此估算负债，不能重复发放给个人。
     const repaid = minAmount(units(s.sharedV5Debt), elapsed);
     s.sharedV5Debt = formatAmount(units(s.sharedV5Debt) - repaid);
-    const recovery = recoverV5Capacity(
-        db as ConfiguredDatabase,
-        elapsed - repaid,
-        s.lastRefillAt,
-        until,
-        now,
-      ),
+    const recovery = recoverV5Capacity(db, elapsed - repaid, s.lastRefillAt, until, now),
       recovered = recovery.amount;
     const reserves = sharedHeld(s);
     const room = maxAmount(
@@ -1429,12 +1478,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
         sum(s, 'v5Available') -
         units(operatingAccount(s).available.v5),
     );
-    const credited = distributeV5Recovery(
-      db,
-      s,
-      minAmount(elapsed - repaid - recovered, room),
-      now,
-    );
+    const credited = distributeV5Recovery(s, minAmount(elapsed - repaid - recovered, room));
     s.creditedV5 = formatAmount(units(s.creditedV5) + credited.amount);
     refill = {
       ...refill,
@@ -1480,13 +1524,13 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
         matchedFallback[pool] = formatAmount(matched);
       }
       if (delta < 0n) {
-        recordAnlasGap(db as ConfiguredDatabase, resource, -delta, old, incoming, now);
+        recordAnlasGap(db, resource, -delta, old, incoming, now);
       } else if (delta > 0n) {
         distribute(
           db,
           s,
           resource,
-          matchExternalFunding(db as ConfiguredDatabase, resource, delta, incoming, now),
+          matchExternalFunding(db, resource, delta, incoming, now),
           now,
           'funding',
         );
@@ -2013,7 +2057,7 @@ export function fairQuotaSummary(
     available = amountNumber(units(b?.v5Available)),
     reserved = b ? amountNumber(held(s, user.id, 'v5')) : 0;
   const officialRate = s.snapshot?.seconds! > 0 ? 1 / s.snapshot!.seconds! : 0;
-  const participants = v5RecoveryMembers(db, s, now),
+  const participants = v5RecoveryMembers(s),
     recoveringShare = participants.reduce((total, member) => total + member.share, 0);
   const participant = participants.find((member) => member.id === user.id);
   const refillRate = participant ? (officialRate * share) / recoveringShare : 0;

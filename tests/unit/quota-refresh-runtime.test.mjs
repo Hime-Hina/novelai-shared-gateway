@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { withQuotaRequestDeadline } from '../../server/quota/refresh-timeout.ts';
 import { fetchNovelAiAccountQuota } from '../../server/protocols/novelai-client.ts';
 import { normalizeDb } from '../../server/storage/sqlite-store.ts';
-import { createAccountQuotaRefresh } from '../../server/quota/account-refresh.ts';
+import {
+  createAccountQuotaRefresh,
+  createQuotaObservationOrder,
+  accountQuotaPatch,
+  accountQuotaErrorResult,
+} from '../../server/quota/account-refresh.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
 
 const quota = {
@@ -35,6 +40,41 @@ const defer = () => {
   });
   return { promise, resolve, reject };
 };
+
+test('观察票号按发起顺序比较，跨越 2^53 和重开高水位仍精确，不能循环复用', () => {
+  const order = createQuotaObservationOrder();
+  const first = order.issue('a:epoch1', '9007199254740992');
+  const second = order.issue('a:epoch1');
+  assert.equal(first, '9007199254740993');
+  assert.equal(second, '9007199254740994');
+  assert.equal(order.current('a:epoch1', first), false);
+  assert.equal(order.current('a:epoch1', second), true);
+  assert.equal(order.issue('a:epoch2'), '1');
+  assert.equal(createQuotaObservationOrder().issue('a:epoch1', second), '9007199254740995');
+  assert.throws(() => order.issue('full', '9223372036854775807'), /exhausted/);
+});
+
+test('失败观察只更新原 owner 的错误字段，保留上次有效余额与检查时间', () => {
+  const previous = account('one'),
+    at = new Date().toISOString();
+  const patch = accountQuotaPatch(
+    accountQuotaErrorResult('one', new Error('private upstream body'), at),
+    at,
+  );
+  const next = { ...previous, ...patch };
+  for (const key of [
+    'quotaCheckedAt',
+    'quotaFixed',
+    'quotaPurchased',
+    'v5UsagePercent',
+    'subscriptionActive',
+  ]) {
+    assert.equal(next[key], previous[key], key);
+  }
+  assert.equal(next.quotaError.includes('private'), false);
+  assert.equal(next.quotaAttemptedAt, at);
+  assert.equal(next.enabled, true);
+});
 
 function runtime(fetchQuota, accounts = [account('one')], extra = {}) {
   const db = normalizeDb({ accounts, settings: {} });
