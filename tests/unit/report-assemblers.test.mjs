@@ -223,6 +223,12 @@ test('损耗历史直接接收解析事实，白名单、未知候选和原来�
   assert.ok(!JSON.stringify(dto).includes('must-not-return'));
   assert.ok(!JSON.stringify(dto).includes('privateRequest'));
   assert.deepEqual(event, before);
+  const policyEvent = publicFailureEvent(
+    { id: 'policy', type: 'loss_alert_policy_updated', before: null, after: policy },
+    null,
+  );
+  assert.equal(policyEvent.before, null);
+  assert.deepEqual(policyEvent.after, policy);
 });
 
 test('损耗告警在原 owner 比较精确关系金额，超 2^53/阈值超精度不先转 number，旧 number 保留', () => {

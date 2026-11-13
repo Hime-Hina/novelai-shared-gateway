@@ -21,6 +21,8 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 
 SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私有实现；查询/协议使用实际读取方法的窄类型，业务变更经现有命令提交。运行时只通过活动任务判断和瞬时进度方法访问热任务，不为每帧进度追加业务事件。`architecture:check` 固定纯金额/reducer、查询、Web 和装配入口的依赖方向；`migration:check` 比较可信 Git 基线的历史 SQL 字节和 journal 前缀。检查范围、命令和维护者复核要求见 [开发与验证](../CONTRIBUTING.md)，这些检查不代替远端权限与强制合并保护。
 
+新关系报告由 `storage/relational-report-store.ts` 提供薄 SQL：用量、热力图、错误和损耗复用各自原展示 owner；损耗的精确风险汇总/事实适配继续在 `quota/failure-accounting.ts`，候选金额语义归 `generation/accounting.ts`。受保护请求/诊断冷读归 input store，不从旧 JsonStore 回退，也不借报告修改账务。新 HTTP 装配与整体上线验收仍按数据库计划接续。
+
 本分支的账务和任务生命周期以已提交的领域事件为权威；钱包、预留、任务状态、冷结算和免费次数由同一事务更新投影。金额核心使用 12 位定点整数运算，兼容旧 DTO 时才转换为 number。`fairQuotaSummary()` 为纯查询，需要恢复估算时使用独立的 `estimateFairQuota()`；能力、报价与提交共用 Native 规范化和计价规则，Cookie 成员闭环见[成员生成接口](../docs/contracts/member-generation-contract.md)。
 
 首次转换从旧库建立 opening facts，不补造过去没有保存的逐次事件。启动先恢复文件结果和中断任务，再核对事件投影并启用事件权威，成功后才监听及派发；任何不一致会阻止切换。首次升级应按同规模副本的开账、恢复与核对实测安排维护等待，systemd active 或早期健康探针失败都不能单独判断就绪。完整输入、首次规范化上下文、认证数据和产物字节仍需与事件一起备份，重放命令不会调用上游。具体边界、等待和命令见[结果恢复](../docs/architecture/result-recovery.md)。

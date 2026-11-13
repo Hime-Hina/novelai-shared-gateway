@@ -1,10 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { FairCharge, Resource, ResourceAmounts } from './fair-share.ts';
-import type { GenerationAttempt } from '../generation/accounting.ts';
+import {
+  generationCandidateAmountsKnown,
+  type GenerationAttempt,
+} from '../generation/accounting.ts';
 import type { OperatingAccount } from './operating-accounting.ts';
 import { recordDomainEvent } from '../events/domain-events.ts';
-import { parseAmount, decimalRatio, AMOUNT_SCALE } from './resource-amounts.ts';
+import {
+  parseAmount,
+  formatAmount,
+  decimalRatio,
+  AMOUNT_SCALE,
+  amountNumber,
+} from './resource-amounts.ts';
+import type { RelationalEvent, RelationalFact } from '../events/relational-events.ts';
 
 export interface LossAlertPolicy {
   version: number;
@@ -111,6 +121,11 @@ export const FAILURE_EVENT_TYPES = [
   'operating_debits_confirmed',
 ];
 export const FAILURE_EVENT_PREDICATE = `source IN (${FAILURE_EVENT_TYPES.map((type) => `'${type}'`).join(', ')})`;
+export const RELATIONAL_FAILURE_EVENT_PREDICATE = `event_type IN ('DispatchAuthorized','GenerationRefunded','ReviewOpened',
+  'LateResultRecovered','ResourceGapObserved','V5CapacityObserved','FundingRegistered',
+  'FundingReceived','ReturnClassified','DebitsConfirmed','OperatingLossCovered','LossPolicyChanged')
+  OR (event_type='ReviewClosed' AND json_extract(payload,'$.status')='estimated_closed')
+  OR (event_type='RefillApplied' AND json_extract(payload,'$.capacityRecovered')!='0')`;
 const defaults: LossAlertPolicy = {
   version: 1,
   v5Points24h: 1,
@@ -291,11 +306,322 @@ export function publicFailureEvent(event: FailureLedgerEvent, memberName: string
     result.receipt = receiptId.slice('operating-receipt:'.length);
   }
   for (const key of ['before', 'after'] as const) {
-    if (event.type === 'loss_alert_policy_updated' && event[key]) {
-      result[key] = lossAlertPolicy(event[key]);
+    if (event.type === 'loss_alert_policy_updated') {
+      if (event[key] === null) {
+        result[key] = null;
+      } else if (event[key]) {
+        result[key] = lossAlertPolicy(event[key]);
+      }
     }
   }
   return result;
+}
+
+interface FailureRiskAttempt {
+  memberId: string | null;
+  memberName: string | null;
+  firstUnknownAt: number | null;
+  upstreamCandidates: GenerationAttempt['upstreamCandidates'];
+}
+interface FailureAggregate {
+  at: number;
+  resource: Resource;
+  amount: string;
+}
+// 关系查询只提供原薄事实；候选各池取最大值、窗口和汇总仍在损耗 owner 维护。
+export function summarizeRelationalFailureRisk(
+  attempts: Iterable<FailureRiskAttempt>,
+  aggregate: Iterable<FailureAggregate>,
+  now: number,
+) {
+  const zero = () => ({ v5: 0n, anlasFixed: 0n, anlasPurchased: 0n }),
+    summary = () => ({ attempts: 0, unknownAmounts: 0, possible: zero() }),
+    risk = {
+      last24h: summary(),
+      last30d: summary(),
+      aggregate: { last24h: zero(), last30d: zero() },
+    },
+    members = new Map<string | null, MemberRiskRow>(),
+    windows = ['last24h', 'last30d'] as const;
+  let unknownTimeAttempts = 0;
+  for (const attempt of attempts) {
+    const at = attempt.firstUnknownAt;
+    if (at === null) {
+      unknownTimeAttempts++;
+      continue;
+    }
+    if (at < now - 30 * 86400000 || at > now) {
+      continue;
+    }
+    const possible = zero(),
+      candidates = attempt.upstreamCandidates;
+    const unknown = !generationCandidateAmountsKnown(candidates);
+    for (const candidate of candidates) {
+      for (const [resource, amount] of Object.entries(candidate.resources)) {
+        if (!Object.hasOwn(possible, resource)) {
+          throw new Error('Unknown candidate resource.');
+        }
+        const value = parseAmount(amount);
+        if (value < 0n) {
+          throw new Error('Negative candidate resource.');
+        }
+        possible[resource as Resource] =
+          possible[resource as Resource] > value ? possible[resource as Resource] : value;
+      }
+    }
+    for (const window of windows) {
+      if (window === 'last24h' && at < now - 86400000) {
+        continue;
+      }
+      risk[window].attempts++;
+      risk[window].unknownAmounts += Number(unknown);
+      for (const resource of Object.keys(possible) as Resource[]) {
+        risk[window].possible[resource] += possible[resource];
+      }
+    }
+    if (at >= now - 86400000) {
+      const member = members.get(attempt.memberId) ?? {
+        memberId: attempt.memberId,
+        memberName: attempt.memberName,
+        attempts: 0,
+      };
+      member.attempts++;
+      members.set(attempt.memberId, member);
+    }
+  }
+  for (const row of aggregate) {
+    if (row.at < now - 30 * 86400000 || row.at > now) {
+      continue;
+    }
+    const amount = parseAmount(row.amount);
+    if (amount <= 0n) {
+      continue;
+    }
+    risk.aggregate.last30d[row.resource] += amount;
+    if (row.at >= now - 86400000) {
+      risk.aggregate.last24h[row.resource] += amount;
+    }
+  }
+  const money = (value: Record<Resource, bigint>) =>
+    Object.fromEntries(
+      Object.entries(value).map(([resource, amount]) => [resource, formatAmount(amount)]),
+    ) as Record<Resource, string>;
+  return {
+    risk: {
+      last24h: { ...risk.last24h, possible: money(risk.last24h.possible) },
+      last30d: { ...risk.last30d, possible: money(risk.last30d.possible) },
+      aggregate: { last24h: money(risk.aggregate.last24h), last30d: money(risk.aggregate.last30d) },
+    },
+    members: [...members.values()],
+    unknownTimeAttempts,
+  };
+}
+
+export function publicFailureRisk(risk: FailureRisk<string>) {
+  const money = (value: Record<Resource, string>) =>
+    Object.fromEntries(
+      Object.entries(value).map(([resource, amount]) => [
+        resource,
+        amountNumber(parseAmount(amount)),
+      ]),
+    ) as ResourceNumbers;
+  return {
+    last24h: { ...risk.last24h, possible: money(risk.last24h.possible) },
+    last30d: { ...risk.last30d, possible: money(risk.last30d.possible) },
+    aggregate: { last24h: money(risk.aggregate.last24h), last30d: money(risk.aggregate.last30d) },
+  };
+}
+
+interface RelationalFailureContext {
+  actorId: string | null;
+  memberName: string | null;
+  jobId: string | null;
+  attempt: Partial<GenerationAttempt> | null;
+  resources: ResourceAmounts | null;
+  beforePolicy: LossAlertPolicy | null;
+  lossEventId: string | null;
+  closureEventId: string | null;
+  firstUnknownAt: number | null;
+  deadlineAt: number | null;
+}
+// 只解释原业务事实字段；缺少的旧累计/步骤/金额状态不从当前账或报价补造。
+export function publicRelationalFailureEvent(
+  event: RelationalFact &
+    Pick<RelationalEvent, 'eventId' | 'occurredAt' | 'memberId' | 'accountId'>,
+  context: RelationalFailureContext,
+) {
+  const legacy: FailureLedgerEvent = {
+    id: event.eventId,
+    type: '',
+    at: new Date(event.occurredAt).toISOString(),
+    memberId: event.memberId,
+    accountId: event.accountId,
+    actorId: context.actorId,
+    jobId: context.jobId,
+    attempt: context.attempt,
+  };
+  switch (event.eventType) {
+    case 'DispatchAuthorized':
+      Object.assign(legacy, {
+        type: 'generation_reserved',
+        resources: context.resources,
+        upstreamCandidates: event.payload.upstreamCandidates,
+        candidateMode: event.payload.candidateMode,
+      });
+      break;
+    case 'GenerationRefunded':
+      Object.assign(legacy, {
+        type: 'generation_refunded',
+        resources: context.resources,
+        lossEventId: event.payload.lossEventId,
+        evidenceLevel: 'local_refund',
+      });
+      break;
+    case 'ReviewOpened':
+      Object.assign(legacy, {
+        type: 'generation_loss_suspected',
+        firstUnknownAt: new Date(event.payload.firstUnknownAt).toISOString(),
+        deadlineAt: new Date(event.payload.deadlineAt).toISOString(),
+        lossEventId: event.payload.lossEventId,
+        upstreamCandidates: context.attempt?.upstreamCandidates ?? null,
+        evidenceLevel: 'unconfirmed',
+      });
+      break;
+    case 'ReviewClosed': {
+      if (event.payload.status !== 'estimated_closed') {
+        throw new Error(
+          'A recovered review is represented by its original LateResultRecovered fact.',
+        );
+      }
+      const candidates = context.attempt?.upstreamCandidates,
+        known = generationCandidateAmountsKnown(candidates);
+      Object.assign(legacy, {
+        type: 'generation_loss_estimated',
+        lossEventId: event.payload.lossEventId,
+        closureEventId: event.eventId,
+        closedAt: new Date(event.occurredAt).toISOString(),
+        estimateAmountStatus: known ? 'quoted_candidates' : 'unknown',
+        upstreamCandidates: known ? candidates : null,
+        firstUnknownAt:
+          context.firstUnknownAt === null ? null : new Date(context.firstUnknownAt).toISOString(),
+        deadlineAt: context.deadlineAt === null ? null : new Date(context.deadlineAt).toISOString(),
+        evidenceLevel: 'unconfirmed_estimate',
+      });
+      break;
+    }
+    case 'LateResultRecovered':
+      Object.assign(legacy, {
+        type: 'generation_result_recovered',
+        refundRetained: true,
+        evidenceLevel: 'complete_local_result',
+        lossEventId: context.lossEventId,
+        closureEventId: context.closureEventId,
+      });
+      break;
+    case 'ResourceGapObserved':
+      Object.assign(legacy, {
+        type: 'resource_gap_observed',
+        resource: event.payload.resource,
+        observedAmount: event.payload.amount,
+        amount: null,
+        evidenceLevel: event.payload.evidenceLevel,
+      });
+      break;
+    case 'V5CapacityObserved':
+      Object.assign(legacy, {
+        type: 'v5_capacity_observed',
+        resource: 'v5',
+        amount: event.payload.capacityGap,
+        delta: event.payload.delta,
+        evidenceLevel: 'aggregate_capacity',
+      });
+      break;
+    case 'RefillApplied':
+      Object.assign(legacy, {
+        type: 'v5_capacity_recovered',
+        resource: 'v5',
+        amount: event.payload.capacityRecovered,
+        evidenceLevel: 'recovery_rate_estimate',
+      });
+      break;
+    case 'FundingRegistered':
+      Object.assign(legacy, {
+        type: 'operating_funding_registered',
+        resource: event.payload.resource,
+        amount: event.payload.remaining,
+        receiptEventId: `operating-receipt:${event.payload.receipt}`,
+      });
+      break;
+    case 'FundingReceived':
+      Object.assign(legacy, {
+        type: 'operating_funding_received',
+        resource: event.payload.resource,
+        amount: event.payload.amount,
+        receiptEventId: `operating-receipt:${event.payload.receipt}`,
+      });
+      break;
+    case 'ReturnClassified':
+      Object.assign(legacy, {
+        type:
+          event.payload.kind === 'observed'
+            ? 'resource_return_unattributed'
+            : 'resource_gap_reconciled',
+        resource: event.payload.resource,
+        amount: event.payload.kind === 'observed' ? event.payload.amount : null,
+      });
+      break;
+    case 'DebitsConfirmed':
+      Object.assign(legacy, {
+        type: 'operating_debits_confirmed',
+        resource: event.payload.resource,
+        amount: event.payload.amount,
+        allocatedToMembers: event.payload.allocatedToMembers,
+        evidenceLevel: event.payload.evidenceLevel,
+      });
+      break;
+    case 'OperatingLossCovered':
+      Object.assign(legacy, {
+        type: 'operating_loss_covered',
+        resource: event.payload.resource,
+        amount: event.payload.amount,
+        lossEventId: event.payload.lossEventId,
+      });
+      break;
+    case 'LossPolicyChanged': {
+      Object.assign(legacy, {
+        type: 'loss_alert_policy_updated',
+        before: context.beforePolicy,
+        after: relationalLossPolicy(event),
+      });
+      break;
+    }
+    default:
+      throw new Error('No failure report owner for this fact.');
+  }
+  return publicFailureEvent(legacy, context.memberName);
+}
+
+export function relationalLossPolicy(
+  fact: Extract<RelationalFact, { eventType: 'LossPolicyChanged' | 'OpeningPolicyRecorded' }>,
+): LossAlertPolicy {
+  if (fact.eventType === 'LossPolicyChanged') {
+    const p = fact.payload;
+    return {
+      version: p.version,
+      v5Points24h: p.v5_24h,
+      fixedAnlas24h: Number(p.fixed24h),
+      fixedAnlas30d: Number(p.fixed30d),
+      memberAttempts24h: p.memberAttempts24h,
+    };
+  }
+  const p = fact.payload;
+  return {
+    version: p.lossPolicyVersion,
+    v5Points24h: p.lossV5_24h,
+    fixedAnlas24h: Number(p.lossFixed24h),
+    fixedAnlas30d: Number(p.lossFixed30d),
+    memberAttempts24h: p.lossMemberAttempts24h,
+  };
 }
 
 function safeOperating(value: Partial<OperatingAccount> = {}) {
@@ -329,6 +655,19 @@ function safeOperating(value: Partial<OperatingAccount> = {}) {
       ]),
       remaining: Number(item.remaining),
     })),
+  };
+}
+
+export function publicFailureOperating(
+  operating: Partial<OperatingAccount>,
+  pending: Partial<ResourceAmounts> | null | undefined,
+) {
+  return {
+    ...safeOperating(operating),
+    pendingAnlasDebits: {
+      anlasFixed: Number(pending?.anlasFixed || 0),
+      anlasPurchased: Number(pending?.anlasPurchased || 0),
+    },
   };
 }
 
@@ -438,7 +777,7 @@ export function queryFailureAccounting(
       )
       .get() || {};
   const policy = lossAlertPolicy(json<Partial<LossAlertPolicy>>(state.policy)),
-    operating = safeOperating(json<Partial<OperatingAccount>>(state.operating) || {});
+    operating = json<Partial<OperatingAccount>>(state.operating) || {};
   const summaries = sqlite
     .prepare<RiskParameters, RiskRow>(
       `${riskCte} SELECT 'last30d' AS window, ${riskColumns} FROM attempts
@@ -499,13 +838,7 @@ export function queryFailureAccounting(
   return {
     asOf,
     policy,
-    operating: {
-      ...operating,
-      pendingAnlasDebits: {
-        anlasFixed: Number(spent?.anlasFixed || 0),
-        anlasPurchased: Number(spent?.anlasPurchased || 0),
-      },
-    },
+    operating: publicFailureOperating(operating, spent),
     risk,
     alerts,
     events: page.map((row) =>

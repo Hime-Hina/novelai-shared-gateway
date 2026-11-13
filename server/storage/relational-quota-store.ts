@@ -346,6 +346,43 @@ export class RelationalQuotaStore {
         .all(accountId),
     };
   }
+  readFailureAccountingState() {
+    const row = this.sqlite
+      .prepare<
+        [],
+        {
+          accountId: string | null;
+          version: number;
+          v5Points24h: number;
+          fixedAnlas24h: string;
+          fixedAnlas30d: string;
+          memberAttempts24h: number;
+        }
+      >(
+        `SELECT bound_account_id AS accountId,loss_policy_version AS version,
+      loss_v5_24h AS v5Points24h,loss_fixed_24h AS fixedAnlas24h,
+      loss_fixed_30d AS fixedAnlas30d,loss_member_attempts_24h AS memberAttempts24h
+      FROM sharing_policy WHERE id=1`,
+      )
+      .get();
+    if (!row?.accountId) {
+      fail('损耗读取需要已恢复的绑定账户账务基线', 503);
+    }
+    const q = this.readAccountQuota(row.accountId),
+      { accountId, ...policy } = row;
+    return {
+      policy: {
+        ...policy,
+        fixedAnlas24h: Number(policy.fixedAnlas24h),
+        fixedAnlas30d: Number(policy.fixedAnlas30d),
+      },
+      operating: this.operating(accountId),
+      pendingAnlasDebits: {
+        anlasFixed: q.pendingFixedDebit,
+        anlasPurchased: q.pendingPurchasedDebit,
+      },
+    };
+  }
   private saveOperating(accountId: string, p: OperatingAccount, eventId: string) {
     this.sqlite
       .prepare(

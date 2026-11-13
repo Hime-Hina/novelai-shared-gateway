@@ -1061,6 +1061,18 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 原同步 owner 的 12 位精确正/负/零 delta 经实际观察保存，双事件列表共同改错、缺失或超精度均在完整提交回放中拒绝，外层 catch 后全表不变，原合法提交重试及重复零写通过。告警比较继续只在 `failureAccountingAlerts()`：关系金额不先转 number，原 V5 number 阈值用标准十进制比例保留其精度，旧 number 分支原样比较。三文件 71/71，零跳过，覆盖大于 2^53、比 12 位更细的合法阈值和旧合法长小数 number；类型、架构、默认迁移历史和 diff 通过。本段仍是损耗读取的事实/金额前置，分页/汇总 SQL 后续接续。
 
+损耗只读 SQL 现已接续：`RelationalReportStore` 只读取窗口薄行、原事实当前页和 quota owner 的当前账；`failure-accounting.ts` 负责精确风险汇总/事实适配，复用原白名单、告警和运营展示。原 `generation/accounting.ts` 候选金额已知判定逐字提取，由原结案和报告共用，不把原候选可证明的金额状态写成 unknown，也不按当前报价计算。新窗口汇总以 iterator 流式处理小候选元数据，三个资源分别取每尝试最大值后相加；返回兼容 number 之前完成全部定点汇总和比较，没有输入正文/BLOB、缓存或持久派生行。
+
+报告只统计 `retained-facts`，未知原时间单列 `unknownTimeAttempts`，不冒充完整零历史。分页沿原 commit seq/event index，history 绑定且 BigInt 参数入 SQL；估计只取真正 estimated_closed，迟到 recovered 事实不能再计一次估计。旧累计 Anlas 金额和纠正后累计金额没有来源时 NULL，原 observedAmount、正负/零 delta、当前缺口各自保留；政策 before 只取此前权威事实，缺失 NULL。缺少绑定基线时 503，不补零运营账。客户端仅窄化原事件三金额及 before 的 nullable 类型、声明覆盖元数据，未新增 UI；按 Modern Web Guidance 两次检索未知数字/nullable table cell，无匹配本次纯类型变更的指南。
+
+首个实际 EXPLAIN 为窗口尝试和聚合事实全扫；仅新增 `idx_attempt_loss_time` 与 `idx_loss_aggregate_time` 两个局部时间索引。已知窗口和原时间未知分成两个索引范围，修后分别 SEARCH 时间范围/NULL，聚合 SEARCH 原时间范围。分页继续复用现 `(commit_seq,event_index)` 唯一索引、先限 51 条后主键关联，没有新增分页索引；首屏该有序索引扫描不是已证明全历史 O(1)。这些是查询计划证据，不能代替同规模容量/延迟验收。
+
+专项 10/10 覆盖实际退款/估计/迟到、两次下降 200+50 而非累计 200+250、正/负/零容量与恢复、真实资金/返回/核销/确认和政策 before/after、两同名成员、未知金额/时间、边界和未来、超 2^53、原合法 JsonStore owner 对照、分页/BigInt/跨 history 拒绝、重开及全提交回放后零写。原恢复不复活 Key，读取不回填输入或诊断。独立复审、全量和发布包/Node 24 证据随固定候选继续，尚未将新 HTTP/调度/整体 #31 标记完成。
+
+固定前的关联九文件 136/136，零跳过；后端/Web 类型、架构、默认迁移历史、局部格式及 diff 通过。新增错误测试的普通失败调用显式携 `aborted:false`，与 9.35 原捕获票据/非 abort 契约对接，不在 helper 默填。这里未运行第二个并行完整后端，最终统一事件 v3 和同候选发布产物验证由整合批接续。
+
+同一产品的全库格式、145 文件语法、可信原整合基线 `8c3c7e9` 迁移历史也通过；policy before=NULL 的白名单反例补入原展示专项。没有变更旧迁移、journal、CI、写入守卫或产线，查询入口尚未做真实端点或整库同规模性能宣称。
+
 ### 9.31 #52 关系队列与实际执行协调器（2026-11-14，实施中）
 
 基线 `75ff64213b861be36f3d3df8648af96add74e764`。本片只实现供唯一执行器装配的 `generation/relational-queue-runtime.ts`，不切现行总入口、不增加切换旧模型的开关。输入、费用、退款、产物、核对和回放继续由既有关系 owner 决定；协调器只拥有进程中的执行顺序、物理 promise 和瞬时预览。

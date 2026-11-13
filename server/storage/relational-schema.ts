@@ -74,6 +74,8 @@ CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
   WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
 CREATE INDEX idx_job_failure_time ON domain_events(${relationalFailureTimeSql} DESC,event_id DESC)
   WHERE ${relationalFailurePredicate};
+CREATE INDEX idx_loss_aggregate_time ON domain_events(occurred_at)
+  WHERE event_type IN ('ResourceGapObserved','V5CapacityObserved');
 
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
@@ -333,6 +335,8 @@ CREATE TABLE generation_attempts (
 ) STRICT;
 CREATE INDEX idx_attempts_review ON generation_attempts(review_deadline_at)
   WHERE review_status = 'pending';
+CREATE INDEX idx_attempt_loss_time ON generation_attempts(first_unknown_at)
+  WHERE loss_event_id IS NOT NULL;
 CREATE INDEX idx_attempts_prepared ON generation_attempts(job_id)
   WHERE prepared_artifact_id IS NOT NULL;
 CREATE INDEX idx_attempts_prepared_artifact ON generation_attempts(prepared_artifact_id,job_id)

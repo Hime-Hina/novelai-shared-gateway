@@ -275,6 +275,8 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 管理入口的 `GET ?view=losses&before=<可选游标>` 提供按资源分开的候选风险、聚合新增差额、运营余额、软告警及每页 50 条审计记录；查询覆盖 SQLite 冷历史，不把不同证据相加为实耗。`POST action=loss-alert-policy` 带 `expectedVersion` 和四项阈值，返回 `{policy}`；版本冲突为 409，配置与操作者审计同事务提交。阈值与原生成准入无关，完整字段见[失败退款与资源核对](../architecture/failure-accounting.md)。
 
+新关系格式只读适配返回 `coverage=retained-facts`，仅统计保留事实，原时间未知的尝试另列 `risk.unknownTimeAttempts`，不宣称完整零历史。原累计金额/纠正后累计金额或 policy before 缺少来源时为 NULL；单次 observedAmount、signed delta 与当前缺口分别展示。游标绑定 history 和原提交/事件序号，非法或跨 history 为 400；没有已恢复绑定账户基线时为 503，不返回假零账。此只读适配还需新 HTTP 总装配接入；管理授权继续由上述 owner/管理员入口承担。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
 F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回显和图片领取契约。新请求将参数与任务在同一事务持久化，执行时按需读取；旧内联排队记录仍可恢复。网页正文上限保持 2 MiB；Native JSON/multipart 正文上限保持 32 MiB。规范化父参数默认上限 32 MiB，活动载荷默认合计 64 MiB，单次超限为 413，暂满为 429。Native 完整父参数只存一份，各图片子任务不复制输入图片；multipart 展开后仍须满足规范化上限。
