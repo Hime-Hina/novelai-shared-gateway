@@ -129,6 +129,15 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     [
+      'private snapshot import',
+      "import { restoreRelationalPrivateSnapshot as restore } from '../storage/relational-private-restore.ts'; restore(raw,path,hash);",
+    ],
+    [
+      'dynamic private snapshot import',
+      "await import('../storage/relational-private-restore.js');",
+    ],
+    ['direct private snapshot restore', 'restoreRelationalPrivateSnapshot(raw,path,hash);'],
+    [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
