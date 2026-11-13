@@ -241,7 +241,13 @@ export const relationalPayloadParsers = {
     contextSchemaVersion: choices(1),
     contextSha256: hash,
   }),
-  DiagnosticRecorded: fields({ diagnosticId: id, jobId: id, sha256: hash, createdAt: integer }),
+  DiagnosticRecorded: fields({
+    diagnosticId: id,
+    jobId: id,
+    sha256: hash,
+    byteLength: positive,
+    createdAt: integer,
+  }),
   RequestAccepted: fields({
     requestId: id,
     memberId: id,

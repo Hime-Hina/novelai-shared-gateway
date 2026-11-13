@@ -66,6 +66,7 @@ import type { GenerationDispatchOptions } from '../generation/execution.ts';
 import { RelationalInputStore, type AcceptedInput } from './relational-input-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
+import { errorDetailMessage } from '../http/public-errors.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -73,6 +74,13 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
 };
 type Response = RelationalPayloads['ResponseEvidenceRecorded']['response'];
 type Publication = ReturnType<typeof describeStoredResult>;
+type DispatchCapture = Readonly<{
+  jobId: string;
+  attemptId: string;
+  accountId: string;
+  credentialEpoch: number;
+  pst: string;
+}>;
 type Completion = Pick<
   NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
   'kind' | 'retryAfterUntil'
@@ -98,6 +106,7 @@ export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'GenerationRefunded',
   'JobCompleted',
   'JobFailed',
+  'DiagnosticRecorded',
   'WaitingJobsCancelled',
   'JobQueued',
   'FreeImageSucceeded',
@@ -192,6 +201,8 @@ export class RelationalGenerationStore {
   private quotas: RelationalQuotaStore;
   private replicas: RelationalReplicaStore;
   private env: NodeJS.ProcessEnv;
+  // 只绑定已返回的私有 IO 对象与原派发事实；弱引用不维持另一份 applied 状态。
+  private dispatchCaptures = new WeakMap<DispatchCapture, string>();
   constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
@@ -370,12 +381,15 @@ export class RelationalGenerationStore {
           .get(e.streamId)?.v || '0';
     }
     const { policyVersion, pricingVersion, ...command } = metadata;
-    return new RelationalCommitReplayer(this.sqlite, this).appendCommit({
-      ...command,
-      receipt,
-      expectedVersions,
-      events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
-    });
+    return new RelationalCommitReplayer(this.sqlite, this).appendCommit(
+      {
+        ...command,
+        receipt,
+        expectedVersions,
+        events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
+      },
+      this.inputs,
+    );
   }
   private nextQueueSeq(): string {
     return String(
@@ -852,16 +866,18 @@ export class RelationalGenerationStore {
         { jobId: job.id, attemptId: input.attemptId, accountId: account.id },
       );
       // 只有首次提交返回可发送的私有快照；重领回执不能再次连接上游。
-      return {
-        ...result,
-        dispatch: {
-          jobId: job.id,
-          attemptId: input.attemptId,
-          accountId: account.id,
-          credentialEpoch: account.credentialEpoch,
-          pst: account.pst,
-        },
-      };
+      const dispatch = Object.freeze({
+        jobId: job.id,
+        attemptId: input.attemptId,
+        accountId: account.id,
+        credentialEpoch: account.credentialEpoch,
+        pst: account.pst!,
+      });
+      this.dispatchCaptures.set(
+        dispatch,
+        result.events.find((e) => e.eventType === 'DispatchAuthorized')!.eventId,
+      );
+      return { ...result, dispatch };
     });
   }
   private currentResponse(
@@ -1407,6 +1423,7 @@ export class RelationalGenerationStore {
       cancellationReason?: string;
       evidence?: RefundEvidence;
       completion?: Completion;
+      diagnostic?: { dispatch: DispatchCapture; error: unknown };
     },
   ) {
     return this.owned(() => {
@@ -1414,6 +1431,10 @@ export class RelationalGenerationStore {
       this.authorize(metadata, job);
       if (typeof failure.aborted !== 'boolean') {
         fail('生成失败必须明确是否取消');
+      }
+      const capture = failure.diagnostic?.dispatch;
+      if (failure.diagnostic !== undefined) {
+        this.assertDiagnosticCapture(metadata, job, capture!);
       }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
@@ -1489,6 +1510,23 @@ export class RelationalGenerationStore {
       } else if (attempt || job.status === 'running') {
         fail('运行任务缺少原预扣');
       }
+      const diagnostic = capture
+        ? this.inputs.stageGenerationDiagnostic(
+            jobId,
+            errorDetailMessage(failure.diagnostic!.error, [capture.pst]),
+            metadata.recordedAt,
+          )
+        : null;
+      if (diagnostic) {
+        events.push(
+          this.event(
+            { eventType: 'DiagnosticRecorded', payload: diagnostic },
+            job,
+            attempt!.accountId,
+            metadata.recordedAt,
+          ),
+        );
+      }
       events.push(
         this.event(
           {
@@ -1498,7 +1536,7 @@ export class RelationalGenerationStore {
               errorCode: failure.errorCode,
               errorStatus: failure.errorStatus,
               cancellationReason: failure.cancellationReason ?? null,
-              diagnosticId: null,
+              diagnosticId: diagnostic?.diagnosticId ?? null,
               aborted: failure.aborted,
               response,
             },
@@ -1521,6 +1559,39 @@ export class RelationalGenerationStore {
       }
       return this.commit(metadata, events, { jobId, status: 'failed', refunded: charge !== null });
     });
+  }
+  private assertDiagnosticCapture(metadata: Metadata, job: Job, capture: DispatchCapture) {
+    this.authorizeResult(metadata);
+    const eventId = this.dispatchCaptures.get(capture),
+      source =
+        eventId &&
+        this.sqlite
+          .prepare<[string], { seq: string }>(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+          )
+          .get(eventId),
+      event =
+        source &&
+        readRelationalCommit(this.sqlite, source.seq).events.find((e) => e.eventId === eventId),
+      attempt = this.attempt(job.id);
+    if (
+      !event ||
+      event.eventType !== 'DispatchAuthorized' ||
+      !attempt ||
+      capture.jobId !== job.id ||
+      capture.attemptId !== attempt.id ||
+      capture.accountId !== attempt.accountId ||
+      capture.credentialEpoch !== attempt.credentialEpoch ||
+      event.streamId !== `request:${job.requestId}` ||
+      event.memberId !== job.memberId ||
+      event.accountId !== attempt.accountId ||
+      event.payload.jobId !== job.id ||
+      event.payload.attemptId !== attempt.id ||
+      event.payload.accountId !== attempt.accountId ||
+      event.payload.credentialEpoch !== attempt.credentialEpoch
+    ) {
+      fail('诊断捕获缺少真实原派发票据', 403);
+    }
   }
   cancelWaitingGeneration(metadata: Metadata, requestId: string) {
     return this.owned(() => {
@@ -1711,6 +1782,29 @@ export class RelationalGenerationStore {
   createGenerationProjector(events: RelationalEvent[]) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Generation projection requires the owning transaction.');
+    }
+    const diagnostics = events.filter((e) => e.eventType === 'DiagnosticRecorded'),
+      failures = events.filter((e) => e.eventType === 'JobFailed');
+    for (const diagnostic of diagnostics) {
+      const matched = failures.filter(
+        (e) => e.payload.diagnosticId === diagnostic.payload.diagnosticId,
+      );
+      if (
+        matched.length !== 1 ||
+        matched[0].payload.jobId !== diagnostic.payload.jobId ||
+        diagnostic.eventIndex >= matched[0].eventIndex
+      ) {
+        fail('诊断必须属于同笔原失败事实');
+      }
+    }
+    for (const failure of failures) {
+      if (
+        failure.payload.diagnosticId !== null &&
+        diagnostics.filter((e) => e.payload.diagnosticId === failure.payload.diagnosticId)
+          .length !== 1
+      ) {
+        fail('失败事实缺少同笔原诊断');
+      }
     }
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
@@ -2179,6 +2273,21 @@ export class RelationalGenerationStore {
           this.writeResponse(e, a.id, p.response);
           break;
         }
+        case 'DiagnosticRecorded': {
+          const job = this.eventJob(e, e.payload.jobId),
+            attempt = this.attempt(job.id),
+            charge = this.readCharge(job.id);
+          if (
+            !attempt ||
+            job.status !== 'running' ||
+            charge?.status !== 'refunded' ||
+            e.accountId !== attempt.accountId
+          ) {
+            fail('诊断必须绑定原在途尝试及原资源退款');
+          }
+          this.inputs.readGenerationDiagnostic(e.payload.diagnosticId, job.id);
+          break;
+        }
         case 'JobFailed': {
           const p = e.payload,
             job = this.eventJob(e, p.jobId),
@@ -2337,9 +2446,9 @@ export class RelationalGenerationStore {
       }
     };
   }
-  replayGenerationCommit(stored: StoredRelationalCommit) {
+  replayGenerationCommit(stored: StoredRelationalCommit, sourceInputs?: RelationalInputStore) {
     return this.owned(() =>
-      new RelationalCommitReplayer(this.sqlite, this).replayGenerationCommit(stored),
+      new RelationalCommitReplayer(this.sqlite, this).replayGenerationCommit(stored, sourceInputs),
     );
   }
 }

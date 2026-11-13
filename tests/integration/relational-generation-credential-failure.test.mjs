@@ -81,7 +81,13 @@ test('当前凭据 401/403 同笔失效并退款，abort/200 不停用；原观�
       const f = await running(t);
       response(f, status);
       const before = f.quotas.readAccountQuota('a'),
-        result = f.fail('failed-0', { aborted }),
+        result = f.fail('failed-0', {
+          aborted,
+          diagnostic: {
+            dispatch: f.dispatched.dispatch,
+            error: new Error(`private transport ${f.dispatched.dispatch.pst}`),
+          },
+        }),
         after = f.quotas.readAccountQuota('a'),
         stored = readRelationalCommit(f.db, result.commitSeq),
         invalidity = stored.events.find((e) => e.eventType === 'QuotaStatusChanged'),
@@ -325,7 +331,13 @@ test('完整提交即使两个列表一致也不能错配来源、反转顺序�
 test('当前失效与退款通过共同完整业务回放恢复，重复零写且不恢复 PST/成员认证或发网络', async (t) => {
   const f = await running(t);
   response(f, 403);
-  f.fail('failed-0', { aborted: false });
+  f.fail('failed-0', {
+    aborted: false,
+    diagnostic: {
+      dispatch: f.dispatched.dispatch,
+      error: new Error(`private transport ${f.dispatched.dispatch.pst}`),
+    },
+  });
   const rebuilt = new Database(':memory:');
   t.after(() => rebuilt.close());
   initializeRelationalStorage(rebuilt, 'generation-history');
