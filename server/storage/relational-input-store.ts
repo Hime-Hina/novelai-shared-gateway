@@ -72,6 +72,7 @@ interface RequestRow {
   input_id: string;
   context_id: string | null;
   operation: 'generate' | 'upscale' | 'encode-vibe';
+  model: string | null;
   sample_count: number;
   seed_mode: string;
   confirmation: string | null;
@@ -81,6 +82,15 @@ function fail(statusCode: number, code: string, message: string): never {
 }
 function unavailable(): never {
   return fail(410, 'input_unavailable', '原输入或首次上下文不可用。');
+}
+
+function assertRequestBody(
+  body: Record<string, unknown> | null,
+  expected: { operation: string; model: string | null },
+): void {
+  if (body && (body.model !== expected.model || body.operation !== expected.operation)) {
+    unavailable();
+  }
 }
 
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
@@ -108,7 +118,7 @@ export class RelationalInputStore {
   private request(requestId: string, memberId: string): RequestRow {
     const request = this.sqlite
       .prepare<[string, string], RequestRow>(
-        'SELECT id,member_id,input_id,context_id,operation,sample_count,seed_mode,confirmation FROM generation_requests WHERE id=? AND member_id=?',
+        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation FROM generation_requests WHERE id=? AND member_id=?',
       )
       .get(requestId, memberId);
     if (!request) {
@@ -131,6 +141,7 @@ export class RelationalInputStore {
       expected.inputId !== request.input_id ||
       expected.contextId !== request.context_id ||
       expected.operation !== request.operation ||
+      expected.model !== request.model ||
       expected.sampleCount !== request.sample_count ||
       expected.seedMode !== request.seed_mode ||
       canonicalJson(expected.confirmation) !== (request.confirmation ?? 'null')
@@ -228,6 +239,78 @@ export class RelationalInputStore {
       unavailable();
     }
     return { row, body, assets };
+  }
+
+  private requestInput(
+    request: Pick<RequestRow, 'input_id' | 'member_id' | 'operation' | 'model'>,
+  ) {
+    const input = this.input(request.input_id, request.member_id);
+    assertRequestBody(input.body, request);
+    return input;
+  }
+
+  private assertAcceptedEvents(
+    events: RelationalCommand['events'],
+    body: Record<string, unknown> | null,
+    context: RelationalNormalizationContext,
+  ): void {
+    const requests = events.filter((event) => event.eventType === 'RequestAccepted');
+    if (requests.length !== 1 || !body) {
+      unavailable();
+    }
+    const accepted = requests[0],
+      p = accepted.payload;
+    assertRequestBody(body, p);
+    const registered = events.filter((event) => event.eventType === 'InputRegistered');
+    if (
+      registered.length !== 1 ||
+      registered[0].payload.inputId !== p.inputId ||
+      registered[0].payload.memberId !== p.memberId ||
+      registered[0].accountId !== null ||
+      events.some(
+        (event) =>
+          event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
+      )
+    ) {
+      unavailable();
+    }
+    const children = events
+      .filter((event) => event.eventType === 'JobAccepted')
+      .sort((a, b) => a.payload.sampleIndex - b.payload.sampleIndex);
+    if (
+      accepted.memberId !== p.memberId ||
+      accepted.accountId !== null ||
+      children.length !== p.sampleCount ||
+      children.some(
+        (child, index) =>
+          child.payload.requestId !== p.requestId ||
+          child.memberId !== p.memberId ||
+          child.accountId !== null ||
+          child.payload.sampleIndex !== index,
+      ) ||
+      (p.operation === 'generate') === (p.seedMode === 'not_applicable') ||
+      (p.operation === 'generate' &&
+        context.kind === 'member' &&
+        context.member.randomSeed !== (p.seedMode === 'random'))
+    ) {
+      unavailable();
+    }
+    const seed = children[0].payload.actualSeed;
+    if (p.operation === 'generate' && seed === null) {
+      unavailable();
+    }
+    for (const child of children) {
+      const expected =
+        p.operation === 'generate'
+          ? singleGenerationRequest(
+              { seed: seed!, nativeParameters: {} },
+              child.payload.sampleIndex,
+            ).seed
+          : null;
+      if (child.payload.actualSeed !== expected) {
+        unavailable();
+      }
+    }
   }
 
   activePayloadBytes(): number {
@@ -358,6 +441,7 @@ export class RelationalInputStore {
             contextId: prepared.contextId,
             source: accepted.source,
             operation: prepared.body.operation as RequestRow['operation'],
+            model: prepared.body.model as string,
             sampleCount: prepared.sampleCount,
             seedMode: accepted.seedMode,
             confirmation: accepted.confirmation,
@@ -384,6 +468,7 @@ export class RelationalInputStore {
           },
         });
       });
+      this.assertAcceptedEvents(events, prepared.body, prepared.context);
       const expectedVersions = Object.fromEntries(events.map((event) => [event.streamId, '0']));
       const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
       const result = appendRelationalCommit(this.sqlite, {
@@ -434,8 +519,8 @@ export class RelationalInputStore {
         const p = event.payload;
         this.sqlite
           .prepare(
-            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,confirmation,accepted_at,source_event_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             p.requestId,
@@ -444,6 +529,7 @@ export class RelationalInputStore {
             p.contextId,
             p.source,
             p.operation,
+            p.model,
             p.sampleCount,
             p.seedMode,
             p.confirmation === null ? null : canonicalJson(p.confirmation),
@@ -498,7 +584,16 @@ export class RelationalInputStore {
           contexts.set(event.payload.contextId, source.context(event.payload.contextId));
         }
         if (event.eventType === 'RequestAccepted') {
-          contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+          const context =
+              contexts.get(event.payload.contextId) ?? source.context(event.payload.contextId),
+            input =
+              inputs.get(event.payload.inputId) ??
+              source.input(event.payload.inputId, event.payload.memberId);
+          if (input.row.member_id !== event.payload.memberId) {
+            unavailable();
+          }
+          contexts.set(event.payload.contextId, context);
+          this.assertAcceptedEvents(stored.events, input.body, context);
         }
         if (event.eventType === 'InputRegistered') {
           inputs.set(
@@ -506,6 +601,9 @@ export class RelationalInputStore {
             source.input(event.payload.inputId, event.payload.memberId),
           );
         }
+      }
+      if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
+        unavailable();
       }
       const content = [...inputs].map(([inputId, input]) => ({
         inputId,
@@ -634,6 +732,7 @@ export class RelationalInputStore {
 
   readMemberContext(requestId: string, memberId: string): RelationalNormalizationContext {
     const request = this.ownedRequest(requestId, memberId);
+    this.requestInput(request);
     if (!request.context_id) {
       unavailable();
     }
@@ -642,7 +741,7 @@ export class RelationalInputStore {
 
   readMemberInput(requestId: string, memberId: string) {
     const request = this.ownedRequest(requestId, memberId),
-      input = this.input(request.input_id, memberId);
+      input = this.requestInput(request);
     const body = input.body ? structuredClone(input.body) : null;
     const assets: { slot: string; mimeType: string; byteLength: number; url: string }[] = [];
     if (body) {
@@ -695,7 +794,7 @@ export class RelationalInputStore {
 
   readMemberAsset(requestId: string, memberId: string, slotName: string) {
     const request = this.ownedRequest(requestId, memberId),
-      input = this.input(request.input_id, memberId);
+      input = this.requestInput(request);
     if (input.row.completeness !== 'complete' || !input.body || !request.context_id) {
       unavailable();
     }
@@ -748,9 +847,9 @@ export class RelationalInputStore {
     if (!job || !job.context_id) {
       unavailable();
     }
-    this.request(job.request_id, job.member_id);
+    const accepted = this.request(job.request_id, job.member_id);
     const seed = this.jobSeed(job.request_id, jobId);
-    const input = this.input(job.input_id, job.member_id);
+    const input = this.requestInput(accepted);
     if (!input.body || input.row.completeness !== 'complete') {
       unavailable();
     }

@@ -77,6 +77,7 @@ import {
 } from './protocols/openai-models.ts';
 import {
   ownerAccountConfiguration,
+  assertOwnerAccountCredentialChangeAllowed,
   ownerOperation,
   type OwnerAccountChange,
 } from './members/owner-operations.ts';
@@ -1863,14 +1864,13 @@ function applyAccountConfiguration(
 ) {
   // 更换密钥前先检查在途预扣，避免请求结算到另一账户。
   const changingToken = body.token !== undefined && String(body.token).trim() !== account.token;
-  if (
-    changingToken &&
-    (Number(account.inFlight || 0) > 0 ||
+  if (changingToken) {
+    assertOwnerAccountCredentialChangeAllowed(
+      Math.max(Number(account.inFlight || 0), physicalAccountLoad(account.id)),
       Object.values(db.settings.fairQuota?.reservations || {}).some(
         (r) => r.accountId === account.id && r.status === 'reserved',
-      ))
-  ) {
-    throw httpError(409, '有在途生成任务，请等待完成后更新密钥');
+      ),
+    );
   }
   if (changingToken && !String(body.token).trim().startsWith('pst-')) {
     throw httpError(400, '需要有效的 PST 格式密钥');
