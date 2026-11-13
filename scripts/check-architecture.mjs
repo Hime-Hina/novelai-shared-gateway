@@ -14,6 +14,8 @@ const mutations = new Set([
   'configureFreeImages',
   'updateLossAlertPolicy',
   'configureQuotaPolicy',
+  'configureGroups',
+  'assertGroupCommit',
   'manageFairMember',
   'manageOperatingFunding',
   'applyOperatingFunding',

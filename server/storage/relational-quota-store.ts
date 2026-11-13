@@ -1,7 +1,15 @@
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
-import { domainDigest } from '../events/domain-events.ts';
-import { configureFreeImages, type FreeImagePolicy } from '../quota/free-image-policy.ts';
-import { updateLossAlertPolicy, type LossAlertPolicy } from '../quota/failure-accounting.ts';
+import { domainDigest, canonicalJson } from '../events/domain-events.ts';
+import {
+  configureFreeImages,
+  freeImagePolicy,
+  type FreeImagePolicy,
+} from '../quota/free-image-policy.ts';
+import {
+  updateLossAlertPolicy,
+  lossAlertPolicy,
+  type LossAlertPolicy,
+} from '../quota/failure-accounting.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -28,6 +36,14 @@ import {
   manageOperatingFunding,
   fairQuotaSnapshot,
   configureAnlasFallback,
+  configureFairGroups,
+  normalizeFairGroups,
+  assertFairGroupMemberCount,
+  assertFairGroupTransition,
+  allocateFairGroupAmount,
+  type FairQuotaState,
+  type FairQuotaDatabase,
+  type FairGroup,
   type FairQuotaSyncState,
   type FairQuotaReservationState,
   type FairAccount,
@@ -70,6 +86,7 @@ export type QuotaPolicyChange =
     };
 type SharingPolicy = {
   enabled: number;
+  accountId: string | null;
   configVersion: number;
   fallback: number;
   freeVersion: number;
@@ -98,6 +115,8 @@ function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 export const relationalQuotaFacts = new Set<RelationalEvent['eventType']>([
+  'SharingConfigured',
+  'GroupBalancesRedistributed',
   'FallbackPolicyChanged',
   'FreePolicyChanged',
   'LossPolicyChanged',
@@ -401,6 +420,32 @@ export class RelationalQuotaStore {
     }
     return a;
   }
+  private groupState() {
+    const groups = this.sqlite
+        .prepare<[], { id: string; name: string; share: number }>(
+          'SELECT id,name,share FROM sharing_groups ORDER BY id',
+        )
+        .all(),
+      memberships = this.sqlite
+        .prepare<[], { memberId: string; groupId: string; weight: number }>(
+          'SELECT member_id AS memberId,group_id AS groupId,weight FROM group_members ORDER BY member_id',
+        )
+        .all();
+    return {
+      members: memberships.map((member) => member.memberId),
+      groups: groups.map((group): FairGroup => ({
+        ...group,
+        members: memberships
+          .filter((member) => member.groupId === group.id)
+          .map((member) => member.memberId),
+        memberWeights: Object.fromEntries(
+          memberships
+            .filter((member) => member.groupId === group.id)
+            .map((member) => [member.memberId, member.weight]),
+        ),
+      })),
+    };
+  }
   private state(accountId: string) {
     const q = this.readAccountQuota(accountId),
       a = this.account(accountId);
@@ -412,16 +457,7 @@ export class RelationalQuotaStore {
     if (!policy || policy.accountId !== accountId) {
       fail('金融命令只能使用当前绑定账户', 503);
     }
-    const groups = this.sqlite
-      .prepare<[], { id: string; name: string; share: number }>(
-        'SELECT id,name,share FROM sharing_groups ORDER BY id',
-      )
-      .all();
-    const memberships = this.sqlite
-      .prepare<[], { memberId: string; groupId: string; weight: number }>(
-        'SELECT member_id AS memberId,group_id AS groupId,weight FROM group_members ORDER BY member_id',
-      )
-      .all();
+    const configuration = this.groupState();
     const balances = Object.fromEntries(
       this.sqlite
         .prepare<
@@ -514,14 +550,8 @@ export class RelationalQuotaStore {
     const financial: FairQuotaSyncState = {
       enabled: policy.enabled === 1,
       boundAccountId: accountId,
-      members: memberships.map((m) => m.memberId),
-      groups: groups.map((g) => ({
-        ...g,
-        members: memberships.filter((m) => m.groupId === g.id).map((m) => m.memberId),
-        memberWeights: Object.fromEntries(
-          memberships.filter((m) => m.groupId === g.id).map((m) => [m.memberId, m.weight]),
-        ),
-      })),
+      members: configuration.members,
+      groups: configuration.groups,
       configVersion: policy.configVersion,
       balances,
       reservations,
@@ -576,7 +606,7 @@ export class RelationalQuotaStore {
     }
     return { q, account, db: { settings: { fairQuota: financial }, ledger: [] as unknown[] } };
   }
-  private capture<T>(view: ReturnType<RelationalQuotaStore['state']>, run: () => T) {
+  private capture<T>(view: { db: object }, run: () => T) {
     beginDomainCommand(view.db);
     try {
       const result = run();
@@ -625,12 +655,13 @@ export class RelationalQuotaStore {
       receipt,
     });
     this.applyQuotaEvents(result.events);
+    this.assertGroupCommit(result.events, result.receipt);
     return result;
   }
   private sharingPolicy(): SharingPolicy {
     const row = this.sqlite
       .prepare<[], SharingPolicy>(
-        `SELECT enabled,config_version AS configVersion,auto_anlas_fallback AS fallback,
+        `SELECT enabled,bound_account_id AS accountId,config_version AS configVersion,auto_anlas_fallback AS fallback,
       free_policy_version AS freeVersion,free_enabled AS freeEnabled,free_warning_threshold AS warningThreshold,free_hard_limit AS hardLimit,
       loss_policy_version AS lossVersion,loss_v5_24h AS v5_24h,loss_fixed_24h AS fixed24h,loss_fixed_30d AS fixed30d,
       loss_member_attempts_24h AS memberAttempts24h FROM sharing_policy WHERE id=1`,
@@ -641,16 +672,309 @@ export class RelationalQuotaStore {
     }
     return row;
   }
+  private authorizeOwnerCommand(metadata: Metadata, member: MemberUser | null) {
+    const current =
+      member &&
+      this.sqlite
+        .prepare<[string], { status: string; authEpoch: string | null }>(
+          'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+        )
+        .get(member.id);
+    assertCurrentOwnerCommand(metadata, member, current, this.env);
+  }
+  configureGroups(
+    metadata: Metadata,
+    input: { groups: unknown; expectedConfigVersion: number; redistributeRemaining?: boolean },
+    member: MemberUser | null,
+  ) {
+    return this.owned(() => {
+      this.authorizeOwnerCommand(metadata, member);
+      if (
+        !metadata.actorId ||
+        !input ||
+        typeof input !== 'object' ||
+        Array.isArray(input) ||
+        Object.keys(input).some(
+          (key) => !['groups', 'expectedConfigVersion', 'redistributeRemaining'].includes(key),
+        ) ||
+        (input.redistributeRemaining !== undefined &&
+          typeof input.redistributeRemaining !== 'boolean')
+      ) {
+        fail('分组命令无效', 400);
+      }
+      const command = {
+          ...metadata,
+          fingerprint: domainDigest({
+            command: metadata.fingerprint,
+            input: { ...input, redistributeRemaining: input.redistributeRemaining === true },
+          }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const hasPolicy = !!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get(),
+        policy = hasPolicy ? this.sharingPolicy() : null;
+      if (
+        !Number.isSafeInteger(input.expectedConfigVersion) ||
+        input.expectedConfigVersion !== (policy?.configVersion ?? 1)
+      ) {
+        fail('分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
+      }
+      const configuration = this.groupState(),
+        financial = policy?.accountId ? this.state(policy.accountId) : null;
+      if (
+        !policy?.accountId &&
+        this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
+      ) {
+        fail('未绑定账户须先完成账户配置');
+      }
+      const state: FairQuotaState | null = policy
+        ? {
+            ...(financial?.db.settings.fairQuota ?? {
+              enabled: policy.enabled === 1,
+              boundAccountId: null,
+              ...configuration,
+              balances: Object.fromEntries(
+                configuration.members.map((id) => [
+                  id,
+                  {
+                    v5Available: '0',
+                    anlasFixedAvailable: '0',
+                    anlasPurchasedAvailable: '0',
+                    anlasAvailable: '0',
+                  },
+                ]),
+              ),
+              snapshot: null,
+              spent: {
+                ...zero(),
+                anlas: '0',
+                fallbackFixed: '0',
+                fallbackPurchased: '0',
+                fallbackV5: '0',
+              },
+              creditedV5: '0',
+              lastRefillAt: 0,
+              lastSettlementAt: 0,
+              status: 'pending_opus',
+              unallocatedV5: '0',
+              fallbackBuffer: { fixed: '0', purchased: '0' },
+              sharedV5Debt: '0',
+            }),
+            version: 2,
+            configVersion: policy.configVersion,
+            configurationHistory: [],
+            fallbackTotalsByUser: {},
+            // 原分组 owner 的 idle 断言先拒绝预留；合法路径不读取窄预留之外的派发字段。
+            reservations: (financial?.db.settings.fairQuota.reservations ??
+              {}) as FairQuotaState['reservations'],
+            autoAnlasFallback: policy.fallback === 1,
+            freeImagePolicy: {
+              version: policy.freeVersion,
+              enabled: policy.freeEnabled === 1,
+              warningThreshold: policy.warningThreshold,
+              hardLimit: policy.hardLimit,
+            },
+            lossAlertPolicy: {
+              version: policy.lossVersion,
+              v5Points24h: policy.v5_24h,
+              fixedAnlas24h: Number(policy.fixed24h),
+              fixedAnlas30d: Number(policy.fixed30d),
+              memberAttempts24h: policy.memberAttempts24h,
+            },
+          }
+        : null;
+      const db: FairQuotaDatabase = {
+        settings: { fairQuota: state },
+        accounts: financial ? [financial.account] : [],
+        users: this.sqlite
+          .prepare<[], { id: string; enabled: number }>(
+            "SELECT id,(status='active') AS enabled FROM members WHERE status!='removed' ORDER BY id",
+          )
+          .all()
+          .map((user) => ({ id: user.id, enabled: user.enabled === 1 })),
+        jobs: this.sqlite
+          .prepare<[], { id: string; status: string }>(
+            "SELECT id,status FROM generation_jobs WHERE status IN ('queued','pending','running')",
+          )
+          .all(),
+        ledger: [],
+      };
+      const planned = this.capture({ db }, () => {
+          const result = configureFairGroups(db, input.groups, {
+            now: metadata.recordedAt,
+            actorId: metadata.actorId!,
+            redistributeRemaining: input.redistributeRemaining === true,
+          });
+          if (financial) {
+            syncBoundFairQuota(
+              db as { settings: { fairQuota: FairQuotaState } },
+              financial.account,
+              metadata.recordedAt,
+            );
+          }
+          return result;
+        }),
+        result = planned.result,
+        free = freeImagePolicy(db),
+        loss = lossAlertPolicy(result.lossAlertPolicy),
+        anchor = planned.facts.findIndex(
+          (fact) =>
+            fact.eventType === 'SharingConfigured' || fact.eventType === 'AllocationChanged',
+        );
+      if (anchor < 0) {
+        throw new Error('Group owner omitted its configuration decision.');
+      }
+      const events = financial
+        ? this.convert(planned.facts.slice(0, anchor), financial, metadata)
+        : [];
+      const sharingEvent = (fact: RelationalFact): RelationalEventInput => ({
+        ...fact,
+        eventId: randomUUID(),
+        streamId: 'sharing:default',
+        accountId: null,
+        memberId: 'memberId' in fact.payload ? fact.payload.memberId : null,
+        occurredAt: metadata.recordedAt,
+        policyVersion: metadata.policyVersion,
+        pricingVersion: metadata.pricingVersion,
+      });
+      const configurationEvent = sharingEvent({
+        eventType: 'SharingConfigured',
+        payload: {
+          enabled: result.enabled,
+          boundAccountId: result.boundAccountId,
+          configVersion: result.configVersion,
+          autoAnlasFallback: result.autoAnlasFallback === true,
+          freePolicyVersion: free.version,
+          freeEnabled: free.enabled,
+          freeWarningThreshold: free.warningThreshold,
+          freeHardLimit: free.hardLimit,
+          lossPolicyVersion: loss.version,
+          lossV5_24h: loss.v5Points24h,
+          lossFixed24h: String(loss.fixedAnlas24h),
+          lossFixed30d: String(loss.fixedAnlas30d),
+          lossMemberAttempts24h: loss.memberAttempts24h,
+          redistributeRemaining: input.redistributeRemaining === true,
+          groups: result.groups.map((group) => ({
+            groupId: group.id,
+            name: group.name!,
+            share: group.share,
+            members: group.members.map((memberId) => ({
+              memberId,
+              weight: group.memberWeights[memberId],
+            })),
+          })),
+        },
+      });
+      events.push(configurationEvent);
+      for (const fact of planned.facts.slice(anchor + 1)) {
+        if (fact.eventType !== 'FundsTransferred' || fact.payload.kind !== 'redistribution') {
+          if (!financial) {
+            throw new Error('Unbound group owner emitted an account decision.');
+          }
+          events.push(...this.convert([fact], financial, metadata));
+          continue;
+        }
+        const grouped = new Map<string, Map<string, ResourceAmounts>>();
+        for (const redistribution of fact.payload.redistributions) {
+          const allocations =
+            grouped.get(redistribution.groupId) ?? new Map<string, ResourceAmounts>();
+          for (const allocation of redistribution.allocations) {
+            const amount = allocations.get(allocation.memberId) ?? zero();
+            amount[redistribution.resource] = allocation.amount;
+            allocations.set(allocation.memberId, amount);
+          }
+          grouped.set(redistribution.groupId, allocations);
+        }
+        for (const [groupId, allocations] of grouped) {
+          if (!financial || !result.groups.some((group) => group.id === groupId)) {
+            throw new Error('Redistribution omitted its original group source.');
+          }
+          const sourceResources = zero();
+          for (const r of resources) {
+            sourceResources[r] = formatAmount(
+              [...allocations.values()].reduce(
+                (total, allocation) => total + parseAmount(allocation[r]),
+                0n,
+              ),
+            );
+          }
+          events.push(
+            this.event(
+              {
+                eventType: 'GroupBalancesRedistributed',
+                payload: {
+                  accountId: financial.account.id,
+                  configurationEventId: configurationEvent.eventId!,
+                  groupId,
+                  sourceResources,
+                  allocations: [...allocations].map(([memberId, resources]) => ({
+                    memberId,
+                    resources,
+                  })),
+                  configVersion: result.configVersion,
+                },
+              },
+              financial.account.id,
+              metadata,
+            ),
+          );
+        }
+      }
+      return this.commit(command, events, {
+        groups: result.groups.map((group) => ({
+          id: group.id,
+          name: group.name!,
+          share: group.share,
+          members: [...group.members],
+          memberWeights: { ...group.memberWeights },
+        })),
+        status: result.status,
+        configVersion: result.configVersion,
+      });
+    });
+  }
+  assertGroupCommit(events: RelationalEvent[], receipt: Json) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Group validation requires the owning transaction.');
+    }
+    const configurations = events.filter((event) => event.eventType === 'SharingConfigured'),
+      groupReceipt =
+        receipt &&
+        !Array.isArray(receipt) &&
+        typeof receipt === 'object' &&
+        'groups' in receipt &&
+        'status' in receipt &&
+        'configVersion' in receipt;
+    if (!configurations.length && !groupReceipt) {
+      return;
+    }
+    if (configurations.length !== 1 || !groupReceipt) {
+      fail('分组回执必须关联唯一原配置决定');
+    }
+    const p = configurations[0].payload,
+      groups = p.groups.map((group) => ({
+        id: group.groupId,
+        name: group.name,
+        share: group.share,
+        members: group.members.map((member) => member.memberId),
+        memberWeights: Object.fromEntries(
+          group.members.map((member) => [member.memberId, member.weight]),
+        ),
+      })),
+      status = p.boundAccountId ? this.readAccountQuota(p.boundAccountId).status : 'pending_opus';
+    if (
+      receipt.configVersion !== p.configVersion ||
+      receipt.status !== status ||
+      canonicalJson(receipt.groups) !== canonicalJson(groups)
+    ) {
+      fail('分组回执必须保留原完整配置结果');
+    }
+  }
   configureQuotaPolicy(metadata: Metadata, input: QuotaPolicyChange, member: MemberUser | null) {
     return this.owned(() => {
-      const current =
-        member &&
-        this.sqlite
-          .prepare<[string], { status: string; authEpoch: string | null }>(
-            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
-          )
-          .get(member.id);
-      assertCurrentOwnerCommand(metadata, member, current, this.env);
+      this.authorizeOwnerCommand(metadata, member);
       if (!metadata.actorId) {
         fail('政策命令缺少操作人身份', 400);
       }
@@ -1416,6 +1740,186 @@ export class RelationalQuotaStore {
       if (!this.sqlite.inTransaction) {
         throw new Error('Quota projection requires the owning transaction.');
       }
+      if (e.eventType === 'SharingConfigured') {
+        const p = e.payload,
+          configuration = this.groupState();
+        if (
+          e.streamId !== 'sharing:default' ||
+          e.accountId !== null ||
+          e.memberId !== null ||
+          this.sqlite
+            .prepare(
+              "SELECT 1 FROM generation_jobs WHERE status IN ('queued','pending','running') UNION ALL SELECT 1 FROM charges WHERE status='reserved' LIMIT 1",
+            )
+            .get()
+        ) {
+          fail('分组配置必须属于空闲的当前共享流');
+        }
+        const current = this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get()
+          ? this.sharingPolicy()
+          : null;
+        if (
+          p.configVersion !== (current ? current.configVersion + 1 : 2) ||
+          p.boundAccountId !== (current?.accountId ?? null) ||
+          (!current &&
+            (configuration.groups.length ||
+              this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()))
+        ) {
+          fail('分组政策版本或初始绑定不符');
+        }
+        if (current) {
+          const expected = {
+              enabled: current.enabled === 1,
+              boundAccountId: current.accountId,
+              autoAnlasFallback: current.fallback === 1,
+              freePolicyVersion: current.freeVersion,
+              freeEnabled: current.freeEnabled === 1,
+              freeWarningThreshold: current.warningThreshold,
+              freeHardLimit: current.hardLimit,
+              lossPolicyVersion: current.lossVersion,
+              lossV5_24h: current.v5_24h,
+              lossFixed24h: current.fixed24h,
+              lossFixed30d: current.fixed30d,
+              lossMemberAttempts24h: current.memberAttempts24h,
+            },
+            {
+              groups: _groups,
+              configVersion: _version,
+              redistributeRemaining: _redistribute,
+              ...saved
+            } = p;
+          if (canonicalJson(expected) !== canonicalJson(saved)) {
+            fail('分组配置不能改写原绑定或独立政策');
+          }
+        }
+        const groups: FairGroup[] = p.groups.map((group) => ({
+            id: group.groupId,
+            name: group.name,
+            share: group.share,
+            members: group.members.map((member) => member.memberId),
+            memberWeights: Object.fromEntries(
+              group.members.map((member) => [member.memberId, member.weight]),
+            ),
+          })),
+          users = this.sqlite
+            .prepare<[], { id: string; enabled: number }>(
+              "SELECT id,(status='active') AS enabled FROM members WHERE status!='removed' ORDER BY id",
+            )
+            .all()
+            .map((member) => ({ id: member.id, enabled: member.enabled === 1 }));
+        const normalized = normalizeFairGroups(groups, users, configuration);
+        assertFairGroupMemberCount(normalized);
+        const balances = Object.fromEntries(
+          p.boundAccountId
+            ? this.sqlite
+                .prepare<
+                  [string],
+                  {
+                    memberId: string;
+                    v5Available: string;
+                    anlasFixedAvailable: string;
+                    anlasPurchasedAvailable: string;
+                  }
+                >(
+                  `SELECT w.member_id AS memberId,w.v5_available AS v5Available,w.anlas_fixed_available AS anlasFixedAvailable,
+          w.anlas_purchased_available AS anlasPurchasedAvailable FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=?`,
+                )
+                .all(p.boundAccountId)
+                .map(({ memberId, ...balance }) => [
+                  memberId,
+                  {
+                    ...balance,
+                    anlasAvailable: formatAmount(
+                      parseAmount(balance.anlasFixedAvailable) +
+                        parseAmount(balance.anlasPurchasedAvailable),
+                    ),
+                  },
+                ])
+            : [],
+        );
+        assertFairGroupTransition(
+          { groups: configuration.groups, balances },
+          groups,
+          p.redistributeRemaining,
+        );
+        const required =
+            p.redistributeRemaining && p.boundAccountId
+              ? p.groups.filter((group) => group.members.some((member) => member.weight > 0))
+              : [],
+          actual = events.filter(
+            (
+              candidate,
+            ): candidate is Extract<RelationalEvent, { eventType: 'GroupBalancesRedistributed' }> =>
+              candidate.eventType === 'GroupBalancesRedistributed' &&
+              candidate.payload.configurationEventId === e.eventId,
+          ),
+          following = events.slice(e.eventIndex + 1, e.eventIndex + 1 + required.length);
+        if (
+          actual.length !== required.length ||
+          required.some(
+            (group) =>
+              actual.filter((candidate) => candidate.payload.groupId === group.groupId).length !==
+              1,
+          ) ||
+          following.some(
+            (candidate) =>
+              candidate.eventType !== 'GroupBalancesRedistributed' ||
+              candidate.payload.configurationEventId !== e.eventId,
+          )
+        ) {
+          fail('显式重分必须完整紧接原配置决定');
+        }
+        this.sqlite.prepare('DELETE FROM group_members').run();
+        this.sqlite.prepare('DELETE FROM sharing_groups').run();
+        this.sqlite
+          .prepare(
+            `INSERT INTO sharing_policy(id,enabled,bound_account_id,config_version,auto_anlas_fallback,
+          free_policy_version,free_enabled,free_warning_threshold,free_hard_limit,loss_policy_version,loss_v5_24h,
+          loss_fixed_24h,loss_fixed_30d,loss_member_attempts_24h,source_event_id) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled,bound_account_id=excluded.bound_account_id,config_version=excluded.config_version,
+          auto_anlas_fallback=excluded.auto_anlas_fallback,free_policy_version=excluded.free_policy_version,free_enabled=excluded.free_enabled,
+          free_warning_threshold=excluded.free_warning_threshold,free_hard_limit=excluded.free_hard_limit,loss_policy_version=excluded.loss_policy_version,
+          loss_v5_24h=excluded.loss_v5_24h,loss_fixed_24h=excluded.loss_fixed_24h,loss_fixed_30d=excluded.loss_fixed_30d,
+          loss_member_attempts_24h=excluded.loss_member_attempts_24h,source_event_id=excluded.source_event_id`,
+          )
+          .run(
+            Number(p.enabled),
+            p.boundAccountId,
+            p.configVersion,
+            Number(p.autoAnlasFallback),
+            p.freePolicyVersion,
+            Number(p.freeEnabled),
+            p.freeWarningThreshold,
+            p.freeHardLimit,
+            p.lossPolicyVersion,
+            p.lossV5_24h,
+            p.lossFixed24h,
+            p.lossFixed30d,
+            p.lossMemberAttempts24h,
+            e.eventId,
+          );
+        for (const group of p.groups) {
+          this.sqlite
+            .prepare('INSERT INTO sharing_groups(id,name,share,source_event_id) VALUES(?,?,?,?)')
+            .run(group.groupId, group.name, group.share, e.eventId);
+          for (const member of group.members) {
+            this.sqlite
+              .prepare(
+                'INSERT INTO group_members(member_id,group_id,weight,source_event_id) VALUES(?,?,?,?)',
+              )
+              .run(member.memberId, group.groupId, member.weight, e.eventId);
+            if (p.boundAccountId) {
+              this.sqlite
+                .prepare(
+                  `INSERT OR IGNORE INTO wallets(account_id,member_id,v5_available,anlas_fixed_available,anlas_purchased_available,source_event_id)
+              VALUES(?,?,'0','0','0',?)`,
+                )
+                .run(p.boundAccountId, member.memberId, e.eventId);
+            }
+          }
+        }
+        return;
+      }
       if (
         e.eventType === 'FallbackPolicyChanged' ||
         e.eventType === 'FreePolicyChanged' ||
@@ -1458,7 +1962,8 @@ export class RelationalQuotaStore {
       if (
         !relationalQuotaFacts.has(e.eventType) ||
         !e.accountId ||
-        e.streamId !== `account:${e.accountId}`
+        e.streamId !== `account:${e.accountId}` ||
+        ('accountId' in e.payload && e.payload.accountId !== e.accountId)
       ) {
         fail('Quota projection received another owner or account stream');
       }
@@ -1608,6 +2113,93 @@ export class RelationalQuotaStore {
           q.refillCursorAt = p.until;
           this.saveAccountQuota(q, e.eventId);
           this.saveOperating(accountId, ops, e.eventId);
+          break;
+        }
+        case 'GroupBalancesRedistributed': {
+          const p = e.payload,
+            source = sources.get(p.configurationEventId),
+            key = canonicalJson([p.configurationEventId, p.groupId]);
+          this.configuration(p.configVersion);
+          if (
+            !source ||
+            source.eventType !== 'SharingConfigured' ||
+            source.eventIndex >= e.eventIndex ||
+            source.commitSeq !== e.commitSeq ||
+            source.payload.configVersion !== p.configVersion ||
+            !source.payload.redistributeRemaining ||
+            source.payload.boundAccountId !== accountId ||
+            consumed.has(key) ||
+            e.occurredAt !== source.occurredAt ||
+            e.memberId !== null
+          ) {
+            fail('重分缺少本次原共享配置来源');
+          }
+          const group = source.payload.groups.find((group) => group.groupId === p.groupId);
+          if (
+            !group ||
+            !group.members.some((member) => member.weight > 0) ||
+            new Set(p.allocations.map((allocation) => allocation.memberId)).size !==
+              p.allocations.length ||
+            canonicalJson(p.allocations.map((allocation) => allocation.memberId).sort()) !==
+              canonicalJson(group.members.map((member) => member.memberId).sort())
+          ) {
+            fail('重分必须覆盖原组全部成员');
+          }
+          const historicalGroup: FairGroup = {
+            id: group.groupId,
+            name: group.name,
+            share: group.share,
+            members: group.members.map((member) => member.memberId),
+            memberWeights: Object.fromEntries(
+              group.members.map((member) => [member.memberId, member.weight]),
+            ),
+          };
+          const rows = this.sqlite
+            .prepare<
+              [string, string],
+              { memberId: string; v5: string; anlasFixed: string; anlasPurchased: string }
+            >(
+              `SELECT w.member_id AS memberId,w.v5_available AS v5,w.anlas_fixed_available AS anlasFixed,w.anlas_purchased_available AS anlasPurchased
+            FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=? AND g.group_id=?`,
+            )
+            .all(accountId, p.groupId);
+          for (const r of resources) {
+            const budget = rows.reduce((sum, row) => sum + parseAmount(row[r]), 0n);
+            if (
+              budget !== parseAmount(p.sourceResources[r]) ||
+              budget !==
+                p.allocations.reduce(
+                  (sum, allocation) => sum + parseAmount(allocation.resources[r]),
+                  0n,
+                )
+            ) {
+              fail('重分必须守恒该组原钱包的同一资源总量');
+            }
+            const expected = allocateFairGroupAmount(budget, historicalGroup);
+            if (
+              p.allocations.some(
+                (allocation) =>
+                  parseAmount(allocation.resources[r]) !== expected[allocation.memberId],
+              )
+            ) {
+              fail('重分结果与本次保存的原组权重及舍入决定不符');
+            }
+          }
+          for (const allocation of p.allocations) {
+            this.sqlite
+              .prepare(
+                'UPDATE wallets SET v5_available=?,anlas_fixed_available=?,anlas_purchased_available=?,source_event_id=? WHERE account_id=? AND member_id=?',
+              )
+              .run(
+                allocation.resources.v5,
+                allocation.resources.anlasFixed,
+                allocation.resources.anlasPurchased,
+                e.eventId,
+                accountId,
+                allocation.memberId,
+              );
+          }
+          consumed.add(key);
           break;
         }
         case 'AllocationApplied': {
@@ -1904,6 +2496,7 @@ export class RelationalQuotaStore {
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
         this.applyQuotaEvents(result.events);
+        this.assertGroupCommit(result.events, result.receipt);
       }
       return result;
     });

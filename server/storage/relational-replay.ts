@@ -121,6 +121,7 @@ export class RelationalCommitReplayer {
           this.accounts.applyAccountEvent(event);
         }
       }
+      this.quotas.assertGroupCommit(stored.events, stored.command.receipt);
       return result;
     })();
   }

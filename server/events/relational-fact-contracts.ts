@@ -374,18 +374,25 @@ export const relationalPayloadParsers = {
     eligible: nullable(bool),
   }),
   SharingConfigured: fields({
-    enabled: bool,
-    boundAccountId: nullable(id),
-    configVersion: integer,
+    ...policyFields,
+    redistributeRemaining: bool,
+    groups: list(
+      fields({
+        groupId: id,
+        name: string,
+        share: number,
+        members: list(fields({ memberId: id, weight: number })),
+      }),
+    ),
   }),
-  GroupConfigured: fields({ groupId: id, name: string, share: number, configVersion: integer }),
-  GroupMemberAssigned: fields({
-    memberId: id,
+  GroupBalancesRedistributed: fields({
+    accountId: id,
+    configurationEventId: id,
     groupId: id,
-    weight: number,
     configVersion: integer,
+    sourceResources: resources,
+    allocations: list(fields({ memberId: id, resources })),
   }),
-  GroupMemberRemoved: fields({ memberId: id, groupId: id, configVersion: integer }),
   FallbackPolicyChanged: fields({ enabled: bool, configVersion: integer }),
   FreePolicyChanged: fields({
     version: positive,
@@ -461,7 +468,7 @@ export const relationalPayloadParsers = {
   }),
   AllocationApplied: fields({
     accountId: id,
-    reason: choices('opening', 'funding', 'redistribution'),
+    reason: choices('opening', 'funding'),
     sourceEventId: id,
     sourceResources: resources,
     allocations: list(fields({ memberId: id, resources })),
@@ -714,9 +721,6 @@ export const relationalFactStreams = {
   ],
   sharing: [
     'SharingConfigured',
-    'GroupConfigured',
-    'GroupMemberAssigned',
-    'GroupMemberRemoved',
     'FallbackPolicyChanged',
     'FreePolicyChanged',
     'LossPolicyChanged',
@@ -726,6 +730,7 @@ export const relationalFactStreams = {
     'OpeningPolicyRecorded',
   ],
   account: [
+    'GroupBalancesRedistributed',
     'AccountRegistered',
     'CredentialRotated',
     'AvailabilityChanged',
