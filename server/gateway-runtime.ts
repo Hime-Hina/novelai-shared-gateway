@@ -102,6 +102,9 @@ import {
   physicalAccountLoad as countPhysicalAccountLoad,
   createGenerationControls,
   createQueueDispatcher,
+  accountInflightTimeoutMs,
+  novelAiGenerateTimeoutMs,
+  runningJobTimeoutDelay,
 } from './generation/queue-dispatch.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './storage/r2-storage.ts';
 import { PikPakStorage, pikpakConfig } from './storage/pikpak-storage.ts';
@@ -2189,35 +2192,6 @@ function shouldUseJobStreamProgress(job: Partial<StoreItem> = {}) {
     (job.request?.operation || 'generate') === 'generate' &&
     ['web', 'direct', 'openai', 'novelai-native', 'member-generation'].includes(job.source || 'web')
   );
-}
-
-function runningJobTimeoutDelay(job: Partial<StoreItem> = {}) {
-  const deadline = jobDeadlineTimestamp(job);
-  const delays = [novelAiGenerateTimeoutMs()];
-  if (deadline) {
-    delays.push(Math.max(1, deadline - Date.now()));
-  }
-  return Math.max(1, Math.min(...delays));
-}
-
-function jobDeadlineTimestamp(job: Partial<StoreItem> = {}) {
-  const deadline = Date.parse(job.deadlineAt || '');
-  return Number.isFinite(deadline) && deadline > 0 ? deadline : 0;
-}
-
-function novelAiGenerateTimeoutMs() {
-  const configured = Number(process.env.NOVELAI_GENERATE_TIMEOUT_MS || 0);
-  if (Number.isFinite(configured) && configured > 0) {
-    return Math.max(1000, Math.floor(configured));
-  }
-  return Math.max(1, accountInflightTimeoutMs() - 1000);
-}
-
-function accountInflightTimeoutMs() {
-  const configured = Number(process.env.ACCOUNT_INFLIGHT_TIMEOUT_MS || 10 * 60 * 1000);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(1000, Math.floor(configured))
-    : 10 * 60 * 1000;
 }
 
 async function generateWithBoundAccount(

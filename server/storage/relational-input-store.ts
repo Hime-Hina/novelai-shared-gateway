@@ -381,7 +381,7 @@ export class RelationalInputStore {
     }
   }
 
-  activePayloadBytes(): number {
+  activePayloadBytes(inFlight: Iterable<{ requestId: string; payloadBytes: number }> = []): number {
     const row = this.sqlite
       .prepare<[], { bytes: number }>(
         `SELECT COALESCE(SUM(i.logical_bytes),0) AS bytes
@@ -390,10 +390,35 @@ export class RelationalInputStore {
       JOIN generation_inputs i ON i.id=r.input_id`,
       )
       .get()!;
-    if (!Number.isSafeInteger(row.bytes) || row.bytes < 0) {
+    let bytes = row.bytes;
+    const held = new Set<string>();
+    for (const control of inFlight) {
+      if (typeof control.requestId !== 'string' || !control.requestId) {
+        throw new Error('Physical input has no original parent identity.');
+      }
+      if (held.has(control.requestId)) {
+        continue;
+      }
+      held.add(control.requestId);
+      const parent = this.sqlite
+        .prepare<[string], { bytes: number; active: number }>(
+          `SELECT i.logical_bytes AS bytes,EXISTS(SELECT 1 FROM generation_jobs j
+          WHERE j.request_id=r.id AND j.status IN ('queued','pending','running')) AS active
+          FROM generation_requests r JOIN generation_inputs i ON i.id=r.input_id WHERE r.id=?`,
+        )
+        .get(control.requestId);
+      if (!parent?.active) {
+        const heldBytes = parent?.bytes ?? control.payloadBytes;
+        if (!Number.isSafeInteger(heldBytes) || heldBytes < 0) {
+          throw new Error('Unsafe physical input byte total.');
+        }
+        bytes += heldBytes;
+      }
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
       throw new Error('Unsafe active input byte total.');
     }
-    return row.bytes;
+    return bytes;
   }
 
   // 必须由受理命令持有事务；这里不提供独立的正文写入或跨成员 blob 查找 API。

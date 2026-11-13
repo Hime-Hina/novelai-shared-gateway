@@ -1005,6 +1005,26 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 维护者对 #60 的授权只覆盖该固定候选；本批新增守卫仍需最终复核后正常合并。接单、分组/权益、诊断/历史命令、真实内容领取、合法 ready、迁移和新 HTTP/调度仍继续推进；这份联合测试不表示它们已完成，也不表示生产上线或真实端点全量闭包通过。
 
+### 9.31 #52 关系队列与实际执行协调器（2026-11-14，实施中）
+
+基线 `75ff64213b861be36f3d3df8648af96add74e764`。本片只实现供唯一执行器装配的 `generation/relational-queue-runtime.ts`，不切现行总入口、不增加切换旧模型的开关。输入、费用、退款、产物、核对和回放继续由既有关系 owner 决定；协调器只拥有进程中的执行顺序、物理 promise 和瞬时预览。
+
+| 约束           | 权威来源和最小接法                                                                                                                                                                                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 启动与身份     | `start()` 真正执行 `assertRelationalStorageReady()`；正向测试只通过 `verifyAndInstallRelationalStorage()` 安装合成快照。先本地准备结果恢复，再结清中断尝试/原期限和到期核对，成功后才派发。缺失或冲突准备字节阻止启动，不把未完成新库当 ready。根 assembler 保证唯一宿主并注入同一个物理 Map、EventEmitter 和预览 owner，不增另一套全局注册表。                     |
+| 队列与事实     | queued IDs、expired/interrupted/review 页和执行薄元数据归 GenerationStore；页大小最多 100，活动/核对读取走已有局部索引。metadata 从原 RequestAccepted/DispatchAuthorized 取得，当前新派发的政策/计价版本取实际 owner，终态沿原尝试版本，不用当前默认值倒猜历史输入。queue 等候期限只约束 waiting，运行请求仍按原执行期限/控制器。                                   |
+| 派发与秘密     | `dispatchGeneration()` 在 immediate 事务复核当前成员/接单代次、账户、物理槽、收费与原确认，唯一首次提交才返回 PST/credentialEpoch 票据。协调器在任何 await 前登记共享 controls，再用 `readJobInput()` 冷取实际 child seed/BLOB，经原 `generateNovelAiImage()` 发真实协议请求；PST 只在私有在途闭包中，不进事件、回执、通知或共享 controls。                         |
+| 产物与原子性   | 原 `describeStoredResult()` → prepare 关系事务 → SQL 外 `publishStoredResult()` → complete 关系事务。网络失败的响应证据与退款/未知核对在同一最外层 SQL 事务中调用原 owner；其中任一保存失败都回滚全部决定。完整上游产物已取得后的本地发布/结算故障停止派发，保留原准备/预扣，由重启先恢复，不把 SQL/磁盘故障冒充新上游失败。                                        |
+| 物理容量与预算 | 逻辑 failed/退款不删除 control；直到真实网络与文件执行 promise 的 finally 才释放 Map。InputStore 活动预算继续按 parent 去重，逻辑终态但物理仍持有时优先读取原 logicalBytes，缺行才使用 control 已捕获字节下界。HTTP、quote、admission 必须使用根 core 同一 budget 及 controls 的事实源，不能各自只数 SQL active。`stop()` 先关派发/通知，再等待真实 controls.done。 |
+| 冷却与代次     | 已知原 upstreamCompletedAt 的合法冷却行为保持。没有完整响应时间的断流/abort，仅真实物理结束路径可补显式 `{attemptId, credentialEpoch, kind}`；owner 拒空、错尝试和错代次，不把本地 finally 时间填成上游完成。逻辑先超时不补该证明；已结束旧 epoch 只能保存原尝试响应，不能污染新凭据冷却，同尝试退避沿原 owner 去重。                                               |
+| 通知与预览     | 最外层事务成功后在根同一个 EventEmitter 发无载荷 commit，回滚不发；关闭生命周期只发一次 close。JobPreviews 仍只有瞬时帧，逐帧不写业务事实。超时配置的三个原纯函数从旧 gateway-runtime 窄提取到 queue-dispatch，旧调用者复用，未增加另一套默认值或配置。                                                                                                             |
+
+当前 13 组实际路径专项通过：合法 ready/共享 Map、真实 HTTP/PST/本地原字节与结算、真实断流 NULL/gap、发布悬挂时退款/根 budget 拒绝真实认证受理/stop/迟到不补扣、实际 SQL 结算故障后重开恢复不重发、启动中断/原期限/核对关闭、逻辑先超时与原 epoch 的三种物理证明对照、真实成员暂停后恢复、真实 MessagePack 预览、失败事务回滚零通知、ready 后准备字节丢失拒绝、有界只读队列，以及实际辅助操作 HTTP 的原图和二进制编码发布。成功、失败、迟到及重开路径的完整业务提交恢复后钱包/任务/尝试/产物/副本与原库相同，重复零写、源零写、fetch 0，目标仍 building 且不恢复私有认证。日志 `H:\TEMP\novelai-runtime-queue-focused.log`；这些是真实本地 mock 上游 HTTP 与本地文件，不是 NAI、R2 或 PikPak 真实端点验收。
+
+`H:\TEMP\novelai-runtime-queue-negative-controls.mjs` 在独立 TEMP 源码副本分别删除 ready 门禁、遗漏物理输入预算、事务内提前通知和遗漏 NULL 物理结束冷却；四个原检查均明确失败，读到实际 Missing rejection、金额/计数不等的业务断言，没有把加载错误或等待超时当反例。旧已知完成时间的 T4 调用保持不变，未靠修改原物理结束 fixture 掩盖 API 语义扩大。
+
+仍需合并 #52 的共同前置：只读 quote 的恢复估算必须与 canonical accept/dispatch 的实际 quota 恢复一致，不能只在 caller 或 query 各补规则；当前 epoch 的生成 401/403 失效按 9.35 配额 owner 的明确原 response/dispatch/failure 关系接入，协调器显式传 actual signal/`isAbortError()` 的 aborted 决定，不伪造官方额度观察。事件 v3、完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
