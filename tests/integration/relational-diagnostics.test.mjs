@@ -176,6 +176,41 @@ test('原 trim 后限长允许截断末尾空白，失败退款与诊断原字�
   );
 });
 
+test('限长边界的 Unicode 在保护内容 owner 统一为 UTF-8 可保存文本，退款与恢复校验原字节', async (t) => {
+  for (const [index, raw] of [
+    `${'x'.repeat(3999)}😀tail`,
+    `${'x'.repeat(3998)}😀tail`,
+    `${'x'.repeat(3999)}界tail`,
+    `${'x'.repeat(3999)}\ntail`,
+    `original\uD800tail`,
+  ].entries()) {
+    await t.test(String(index), async (t) => {
+      const f = await fixture(t);
+      await f.accept('unicode');
+      const wallet = f.generations.readWallet('a', 'm1'),
+        dispatch = f.dispatch('unicode-0').dispatch,
+        expected = errorDetailMessage(raw).toWellFormed(),
+        result = f.fail('unicode-0', { diagnostic: { dispatch, error: raw } }),
+        fact = diagnosticFact(f, result);
+      assert.equal(expected.isWellFormed(), true);
+      assert.equal(errorDetailMessage(raw), raw.trim().slice(0, 4000));
+      assert.equal(expected, raw.trim().slice(0, 4000).toWellFormed());
+      assert.deepEqual(f.generations.readWallet('a', 'm1'), wallet);
+      assert.equal(
+        f.inputs.readGenerationDiagnostic(fact.payload.diagnosticId, 'unicode-0'),
+        expected,
+      );
+      const target = recovery(t, f);
+      assert.equal(
+        target.inputs.readGenerationDiagnostic(fact.payload.diagnosticId, 'unicode-0'),
+        expected,
+      );
+      assert.equal(fact.payload.byteLength, Buffer.byteLength(expected));
+      assert.equal(fact.payload.sha256, sha256(expected));
+    });
+  }
+});
+
 test('外层回滚留下的派发快照即使同 attempt 重试也不是原捕获票据', async (t) => {
   const f = await fixture(t);
   await f.accept('ghost');
