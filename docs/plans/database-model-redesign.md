@@ -806,6 +806,10 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 实际入口为 `storage/relational-replay.ts` 的具体 `RelationalCommitReplayer`：`replayCommit(stored, sourceInputs?)` 负责一次原完整提交持久化及业务 checkpoint 边界，`applyCommit(result, sourceInputs?)` 只应用数据库中已经保存并核对数量、原事件顺序与回执的提交。生成 owner 的在线命令及窄回放也复用后者，现有授权、准备/发布和 `owned` 保存点仍由原命令持有；新增命令必须把 append 和 apply 包在同一 owner 保存点中，不能在保存点外先写事实再单独捕获投影错误。构造可传入现有 generation 实例避免递归，不引入可插拔 owner 注册或另一套分派。输入存在时的 `sourceInputs` 是原 `RelationalInputStore`，不接旧 JSON fallback。
 
+固定实现 `8f76278` 的验收入口为 [`relational-replay.test.mjs`](../../tests/integration/relational-replay.test.mjs)：Node 22.23.4 专项 15/15，完整 `pnpm test` 为 1,158 项（1,153 通过、5 项既有条件跳过、0 失败）。同次后端构建的 JavaScript 运行同一专项 15/15；只在编译产物中分别将额度上下文改成每事件重建、移除 member 回放清空 epoch，观察/有限资金重复消费及停用/资格恢复两个子例分别准确失败，两轮均为 3 项失败（含父测试）。恢复原产物后专项再次 15/15。日志在本地 `H:\TEMP\novelai-common-replay-20261114`，负控入口分别为 `node --test --test-name-pattern='额度来源消费上下文'` 和 `node --test --test-name-pattern='旧 member replay'`。
+
+架构、默认及可信 `2774984` 基线迁移历史、类型、134 文件语法、全库格式、后端构建和差异检查通过。架构增量保护本片新事务写入口，保留旧断言并加入 query/protocol 的别名、动态导入和直接调用拒绝反例，仍须维护者复核；未修改 DDL、事实格式、旧 SQL/journal、依赖或 CI。本片自验不代表尚缺 owner、Node 24、真实 HTTP/调度接入、完整恢复、ready 安装或生产切换验收；这些检查随整合后的同一候选继续执行，没有操作生产或真实外部端点。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
