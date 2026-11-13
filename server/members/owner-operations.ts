@@ -14,8 +14,10 @@ import type { FairAccount } from '../quota/fair-share.ts';
 import { isUsableOpus } from '../quota/eligibility.ts';
 import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { Json } from '../events/domain-events.ts';
+import { parseAmount, amountNumber } from '../quota/resource-amounts.ts';
+import { activityDate } from '../reports/activity-heatmap.ts';
 
-interface OwnerJobRow {
+export interface OwnerJobRow {
   id: string;
   memberId: string;
   username: string;
@@ -26,6 +28,7 @@ interface OwnerJobRow {
   upstreamStartedAt?: string | null;
   upstreamCompletedAt?: string | null;
   chargeStatus?: string | null;
+  knownNoCharge?: boolean;
   resource?: string | null;
   amount?: number | string | null;
   fixed?: number | string | null;
@@ -97,8 +100,7 @@ const fail: (statusCode: number, message: string) => never = (statusCode, messag
 };
 const dayMs = 86400000,
   offsetMs = 8 * 3600000;
-const day = (value: string | null): string =>
-  new Date(Date.parse(value as string) + offsetMs).toISOString().slice(0, 10);
+const day = (value: string | null): string => activityDate(value) || 'unknown';
 const seconds = (
   start: string | null | undefined,
   end: string | null | undefined,
@@ -116,14 +118,32 @@ const empty = () => ({
   running: 0,
   refunded: 0,
   free: 0,
-  v5: 0,
-  fixed: 0,
-  purchased: 0,
+  v5: 0n as bigint | null,
+  fixed: 0n as bigint | null,
+  purchased: 0n as bigint | null,
   waitSeconds: 0,
   waitCount: 0,
   generationSeconds: 0,
   generationCount: 0,
 });
+// 旧记录的 number 沿用账务 owner 的 nearest 读取规则；新关系文本仍严格保留 12 位精度。
+const usageAmount = (value: number | string) =>
+  parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact');
+function addResource(
+  total: UsageAccumulator,
+  resource: 'v5' | 'fixed' | 'purchased',
+  value: OwnerJobRow['amount'],
+) {
+  const parsed = value == null ? null : usageAmount(value);
+  total[resource] = total[resource] === null || parsed === null ? null : total[resource]! + parsed;
+}
+function resourceNumber(value: bigint | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  const result = amountNumber(value);
+  return Number.isFinite(result) ? result : null;
+}
 function add(total: UsageAccumulator, job: OwnerJobRow): void {
   total.total++;
   if (['done', 'failed', 'queued', 'pending', 'running'].includes(job.status!)) {
@@ -137,12 +157,17 @@ function add(total: UsageAccumulator, job: OwnerJobRow): void {
       total.free++;
     }
     if (job.resource === 'v5') {
-      total.v5 += Number(job.amount) || 0;
+      addResource(total, 'v5', job.amount);
     }
     if (job.resource === 'anlas') {
-      total.fixed += Number(job.fixed) || 0;
-      total.purchased += Number(job.purchased) || 0;
+      addResource(total, 'fixed', job.fixed);
+      addResource(total, 'purchased', job.purchased);
     }
+  }
+  if (job.status === 'done' && !job.chargeStatus && job.knownNoCharge !== true) {
+    total.v5 = null;
+    total.fixed = null;
+    total.purchased = null;
   }
   const wait = seconds(job.createdAt, job.startedAt),
     generation = seconds(job.upstreamStartedAt, job.upstreamCompletedAt);
@@ -156,9 +181,21 @@ function add(total: UsageAccumulator, job: OwnerJobRow): void {
   }
 }
 function finish<T extends UsageAccumulator>(total: T) {
-  const { waitSeconds, waitCount, generationSeconds, generationCount, ...counts } = total;
+  const {
+    waitSeconds,
+    waitCount,
+    generationSeconds,
+    generationCount,
+    v5,
+    fixed,
+    purchased,
+    ...counts
+  } = total;
   return {
     ...counts,
+    v5: resourceNumber(v5),
+    fixed: resourceNumber(fixed),
+    purchased: resourceNumber(purchased),
     averageWaitSeconds: waitCount ? waitSeconds / waitCount : null,
     averageGenerationSeconds: generationCount ? generationSeconds / generationCount : null,
   };
@@ -174,7 +211,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
     for (const [map, key, label] of [
       [members, job.memberId, job.username],
       [models, job.model || 'unknown', job.model || '未知模型'],
-      [dates, day(job.createdAt), day(job.createdAt)],
+      [dates, day(job.createdAt), activityDate(job.createdAt) || '未知日期'],
     ] as const) {
       if (!map.has(key)) {
         map.set(key, { id: key, label, ...empty() });
@@ -183,6 +220,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
     }
   }
   return {
+    coverage: 'retained-records' as const,
     totals: finish(total),
     members: [...members.values()].map(finish),
     models: [...models.values()].map(finish),
@@ -197,10 +235,11 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
       waitSeconds: seconds(j.createdAt, j.startedAt),
       generationSeconds: seconds(j.upstreamStartedAt, j.upstreamCompletedAt),
       resource: j.resource,
-      amount: j.amount == null ? j.amount : Number(j.amount),
-      fixed: j.fixed == null ? j.fixed : Number(j.fixed),
-      purchased: j.purchased == null ? j.purchased : Number(j.purchased),
+      amount: j.amount == null ? j.amount : resourceNumber(usageAmount(j.amount)),
+      fixed: j.fixed == null ? j.fixed : resourceNumber(usageAmount(j.fixed)),
+      purchased: j.purchased == null ? j.purchased : resourceNumber(usageAmount(j.purchased)),
       chargeStatus: j.chargeStatus,
+      knownNoCharge: j.knownNoCharge,
       errorStatus: j.errorStatus,
     })),
   };

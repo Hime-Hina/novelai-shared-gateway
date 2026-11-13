@@ -17,6 +17,7 @@ interface RequestRow {
 interface JobRow {
   id: string;
   sampleIndex: number;
+  createdAt: number | null;
   status: string;
   updatedAt: number;
   completedAt: number | null;
@@ -54,12 +55,14 @@ export class RelationalRequestStore {
   private requestState(request: RequestRow, memberId: string): GenerationRequestState {
     const rows = this.sqlite
       .prepare<[string, string], JobRow>(
-        `SELECT j.id,j.sample_index AS sampleIndex,j.status,e.occurred_at AS updatedAt,
+        `SELECT j.id,j.sample_index AS sampleIndex,origin.created_at AS createdAt,j.status,e.occurred_at AS updatedAt,
         j.completed_at AS completedAt,j.cancellation_reason AS cancellationReason,
         j.late_result_at AS lateResultAt,j.error_code AS errorCode,a.id AS imageId,
         c.status AS chargeStatus,c.billing_mode AS billingMode,c.estimated,c.v5,
         c.anlas_fixed AS fixed,c.anlas_purchased AS purchased
         FROM generation_jobs j JOIN domain_events e ON e.event_id=j.source_event_id
+        LEFT JOIN generation_job_origins origin ON origin.stream_id='request:'||j.request_id
+          AND origin.job_id=j.id AND origin.request_id=j.request_id
         LEFT JOIN charges c ON c.job_id=j.id
         LEFT JOIN artifacts a ON a.id=j.artifact_id AND a.member_id=? AND a.retired_at IS NULL
         WHERE j.request_id=? ORDER BY j.sample_index,j.id`,
@@ -91,7 +94,7 @@ export class RelationalRequestStore {
           sampleIndex: job.sampleIndex,
           status: job.status,
           model: request.model,
-          createdAt,
+          createdAt: iso(job.createdAt),
           updatedAt: iso(job.updatedAt),
           completedAt: iso(job.completedAt),
           error: job.errorCode,

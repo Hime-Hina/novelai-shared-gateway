@@ -56,7 +56,7 @@ function charge(job: Job) {
     refunded: '已退款（本站额度）',
     reserved: '预扣',
   };
-  let amount = '未扣款';
+  let amount = job.knownNoCharge === true ? '未扣款' : '扣费未知';
   if (job.resource === 'free') {
     amount = '免费';
   } else if (job.resource === 'v5') {
@@ -137,10 +137,11 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
     width: 230,
     ellipsis: { tooltip: true },
     filterOptions: [...new Set(props.data?.recent.map((row) => row.model))].map((value) => ({
-      label: value,
-      value,
+      label: value || '未知模型',
+      value: value ?? '',
     })),
-    filter: (value, row) => row.model === value,
+    filter: (value, row) => (row.model ?? '') === value,
+    render: (row) => row.model || '未知模型',
   },
   {
     title: '状态',
@@ -228,7 +229,13 @@ const jobColumns = computed<DataTableColumns<Job>>(() => [
         >
         <NCard size="small"
           ><span class="metric-label">Anlas 消耗</span
-          ><strong id="usageAnlas">{{ number(totals.fixed + totals.purchased) }}</strong>
+          ><strong id="usageAnlas">{{
+            number(
+              totals.fixed === null || totals.purchased === null
+                ? null
+                : totals.fixed + totals.purchased,
+            )
+          }}</strong>
           <p id="usagePools">
             订阅 {{ number(totals.fixed) }} · 购买 {{ number(totals.purchased) }}
           </p></NCard

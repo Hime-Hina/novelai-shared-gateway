@@ -606,6 +606,7 @@ export const relationalPayloadParsers = {
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
+    createdAt: nullable(integer),
     sampleIndex: integer,
     actualSeed: nullable(integer),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),

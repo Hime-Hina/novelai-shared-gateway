@@ -876,6 +876,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
       payload: {
         jobId: 'past-job',
         requestId: 'past',
+        createdAt: 500,
         sampleIndex: 0,
         actualSeed: null,
         status: 'failed',
