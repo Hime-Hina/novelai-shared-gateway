@@ -91,17 +91,12 @@ interface LossAlert {
 type MemberChargeInput = Partial<
   Pick<
     FairCharge,
-    | 'resource'
-    | 'amount'
-    | 'status'
-    | 'estimated'
-    | 'billingMode'
-    | 'v5Equivalent'
-    | 'upstreamBilling'
-    | 'fixed'
-    | 'purchased'
+    'resource' | 'amount' | 'status' | 'v5Equivalent' | 'upstreamBilling' | 'fixed' | 'purchased'
   >
->;
+> & {
+  estimated?: boolean | null;
+  billingMode?: 'free' | 'v5' | 'anlas' | 'anlas_fallback' | null;
+};
 
 export const FAILURE_EVENT_TYPES = [
   'generation_reserved',

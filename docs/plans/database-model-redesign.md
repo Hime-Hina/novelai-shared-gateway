@@ -1215,6 +1215,26 @@ Node 22.23.4 修复后源码专项 29/29、同产品真实编译 CLI 29/29，零
 
 汇合当前 v3 后 CLI 专项 29/29：保留 source/cut/私有及全部业务表、原保护内容和实际 Local 核对；合成未决超时使用原 requestStarted 证据，不把请求时间误传为物理结束证明。编译/Node 24 与新固定完整后端仍由本批统一验证，不沿用前一原型的编译结果。
 
+### 9.39 #52：Native 共享 transport、真实 Key 受理与结果领取
+
+本片从 `39941f8` 继续，外部行为仍归[API 契约](../contracts/api-contract.md)和[请求生命周期](../architecture/request-lifecycle.md)。`protocols/native-http.ts` 只消费当前 Key 预鉴权、原正文受理、结果等待和原字节读取能力，保留原 JSON/ZIP、SSE/MessagePack、Accept、诊断、部分批次和 encode-vibe 201 / upscale 200 的协议。原 Native 参数解析、购买授权、单图报价校验和随机意图判定窄提取到 `generation/native-admission.ts`，旧运行时经 `legacy-native-http.ts` 调同一 transport，未复制 parser、价格或指纹规则。
+
+`createRelationalNativeAdmission()` 在真实当前 Key / Discord 事务内先查 InputStore 原 alias，以首次 Native context 调同一个规范化和 fingerprint owner；同键沿原回执，无键为独立新意图。它不借 Cookie，不构造成员 confirmation，不按当前 defaults 或版本拒绝已受理原键。当前接单 epoch 在读取正文前取自 MemberStore，只有新受理才用原 `assertMemberAcceptsJobs()` 在事务中比较；stop/resume 不能把旧快照改成当前值后继续，原回执先重验当前 Key。输入、BLOB、首次 context、child 和 alias 仍由 Input/Gen owners 一笔原子提交，临时正文在同步受理后移交共同实际 budget，失败不留恢复、输入、映射、任务或回执。
+
+为保留旧 Native 真实拒绝边界，canonical GenStore Native 新受理复用既有 `reservationState()` 的当前 policy、绑定、分组、额度基线和私有凭据检查，并复用原 `freeUsage()` / `assertFreeImageAdmission()`。分组缺失在同一个共享 guard 返回原 403，policy/账号未就绪仍为 503；只在派发期检查的钱包余额不提前拒绝或预扣。免费准入和旧 Native 一样只检查当前 usage 一次，即使多 child 也不提前耗尽整批免费次数；实际每个 child 仍在派发时复核。Native 受理的恢复继续由既有 `refillForGeneration()` / QuotaStore 原命令拥有，和受理同外层事务，不增加 controller 恢复 hook 或另一套金融规划。
+
+结果等待从原 `delivery.ts` 窄提取为共用 `result-waiter.ts`，保留订阅先于冷读、通知、截止与断线清理；关系适配由同一个临时 events 唤醒，只读 RequestStore 新增的本人薄领取 DTO。原实际 seed、失败状态和该 attempt 的原 cooldown 来自已提交行/事实，不能借当前另一任务的冷却或正文推断。产物经原真实 Local/R2/PikPak reader 在 SQL 外读取，读取前后都复核当前 Key 与产物归属；原 bytes 缺失的重放返回 410，不能再次生成。断连只解除本次领取等待，不取消已受理任务或改变预扣/结算；与实际协调器注入同一 controls 所计的 payload budget、events、JobPreviews，未新增业务事实、持久等待表或长期旧/新切换配置。
+
+新 localhost 专项先由实际 owner 发布文件，再经唯一 installer 的完整 shadow/33 表/私有/真实 bytes 核对合法进入 ready；HTTP 后接实际 coordinator 与本地真实上游 HTTP，再领取实际发布文件。覆盖同键并发/随机 seed/成员隔离、无键新意图、固定多 child、JSON/ZIP、两种实际流的 preview/final、两种辅助操作与 multipart/BLOB、输入 SQL 故障连恢复全回滚、旧 Key 轮换和慢正文撤销/旧 epoch、免费与共享拒绝边界、派发期余额失败、断线继续及原文件缺失、首次 context defaults，以及十四张公开表的原完整提交联合回放。两个新关系 writer factory 和原库 adapter 是新写能力，架构集合仅追加对应三个名字与 alias-import 拒绝用例，需父任务维护者独立复核。
+
+Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 owner 八文件联合 129/129、Native 与架构拒绝反例联合 245/245，以及原 adapter/context/connection/queue 四文件 12/12 通过，均零跳过。架构、可信 `39941f86759ddd560e10bea6708804279857071e` 的迁移历史、类型和全部改动文件格式检查通过。日志为 `H:\TEMP\relational-native-http-current.log`、`native-original-sole-http.log`、`native-relational-owner-targeted.log`、`native-http-guards.log` 和 `native-http-extraction.log`；联合计数有重叠，不相加作为独立用例数，原 startup / 单账号 10 秒断言不变。
+
+隔离 TEMP 副本只移除 canonical Native 新受理的 `reservationState()` 调用，同一个合法 ready / 实际 HTTP 反例在停用上游时准确失败：原应立即 503，退化后先留下受理再等到 504。证据为 `H:\TEMP\native-http-canonical-readiness-mutant.log`，候选源未改；不能只把此检查放 HTTP 前置而让 canonical 受理绕过。
+
+固定 `c873ab9` 之后补齐同片的已知诊断来源：原 transport 在生图和辅助操作中各自生成 `X-Nai-Diagnostic-Id`，并将同值传入 `NativeAdmissionOptions.diagnosticId`，关系受理改用现有 command/event `correlationId` 保存它，不新增列或重复派生状态。该值来自网关随机 ID，不采纳客户端同名头或上游 `x-correlation-id` / 同名诊断头。新增合法 ready 真实 HTTP 反例先准确重现原受理关联为 NULL，再验证首次 header 精确绑定原 `RequestAccepted` 和 `readRelationalCommit().command.correlationId`；同键新交付仍生成原 transport 的新 header，但原关联、完整库状态和上游调用数不变。修复后新 Native 专项 13/13，含现有完整提交回放；修复前后证据为 `H:\TEMP\native-diagnostic-correlation-before.log` 与 `native-diagnostic-correlation-after.log`，不重用前置候选的独审或 full 证据。
+
+原 `gateway-runtime.ts` 仍是当前 sole 启动入口，只把原 Native caller 注入改为临时旧 adapter，并复用 Native 自己的公开错误包络；未切换生产入口、未搬 OpenAI parser、未将成员 factory 当作全 #52 完成。本片未改 schema、SQL/journal、金融算法或成员权益配置；完整后端和发布物由父任务总装配后统一排期。
+
 ### 9.40 #47：恢复与注资分配的原决定完整性
 
 独立复审确认原 `RefillApplied` / `AllocationApplied` 仅有守恒校验仍可把正权成员的完整入账转给零权成员；另以合法完整 envelope 证明，将观察型分配的自报预算及入账从 100 同时改为 1000 也会增发。两者都违反第 3.3 节的原决定回放，不是分组重分政策的新选择。
@@ -1234,6 +1254,22 @@ Node 22.23.4 修复后源码专项 29/29、同产品真实编译 CLI 29/29，零
 固定 `39941f86759ddd560e10bea6708804279857071e` 在 Node 22.23.4 的首轮完整后端为 1592 项：1583 通过、4 失败、5 项原条件跳过，耗时 209.746 秒。原日志 `H:\TEMP\novelai-followup-full-39941f8.log` 保留，不能将这轮记为通过。失败分别是组测试遗漏显式 aborted、两处退款夹具把合法自动恢复混入原钱包断言，以及私有恢复夹具仍手工分派到 generation-only 回放而拒绝新增 quota 子提交。
 
 整合修正仅涉及测试：逐次声明非取消；两处不验证恢复的夹具显式 `seconds: 0` 且保留全部精确金额断言；私有恢复改用现唯一完整业务 replayer，保留原保护源、提交篡改及私有撤销检查。相应四文件 100/100。后续分配权限修复、损耗读取、工具及真实 HTTP 耦合汇合后再以固定版本重跑完整套件；目前没有接续候选的编译包、Node 24、远端 CI 或正式发布结论。
+
+固定 `d638220f9c79a340f63098e923fb37029df8b2f1` 汇合上述 owner、Native 与成员子任务历史后，完整后端为 1723 项：1716 通过、2 失败、5 项原条件跳过，耗时 214.896 秒；原日志 `H:\TEMP\novelai-followup-full-d638220.log` 保留。两项旧夹具未对齐 canonical Native 新受理的合法前置：时间 0 的任务仍用未来额度观察，免费成功后才尝试受理第二任务。修正仅涉及三处测试文件：开账夹具允许显式时点并统一原来源、观察、游标及注册时刻，时间 0 的任务在 1 派发、2 失败，仍断言原创建时刻 0 与精确耗时 2；免费限额反例预先排队第二任务，在两类逻辑退役后同时断言新受理 429、既有任务派发拒绝及各自全库零写入，保留原完整回放、收费、认证和免费窗口核对。两文件联合 27/27，证据为 `H:\TEMP\novelai-followup-admission-fixtures-fixed.log`；这不把前一轮失败或尚待执行的完整候选检查记为通过。
+
+### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
+
+本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。
+
+成员身份和当前可读性由原认证事务及 RequestStore 的 active/private epoch 检查决定，归属使用稳定 `member_id`，不比较当前 Key。换 Key 不影响同成员历史或既有合法 Cookie；停止接单仍可读，停用立即拒绝。HTTP 后续须在网络等待后进入原当前会话事务，不以等待前快照授权。成员与产物归属、父子退休状态直接在 SQL 核对，无额外 imageIds 纠偏。内部返回 artifact ID，签名 URL 仍由实际运行时配置 owner 生成，不在查询中读取或发送 Key。
+
+请求详情、子任务页和迟到列表共用同一薄行与原收费组装。创建时间只使用 `generation_job_origins`：普通 `JobAccepted` 的原 header，或 `OpeningJobRecorded.createdAt`，不取当前 `source_event_id` header、父受理日或导入时点。未知 `createdAt/model` 为 NULL，已知时间 0 保留；原时间未知的保留记录不被任意 `until` 排除，按 SQLite NULL 升序首/降序尾排序。`until` 约束已知原创建时点，不承诺对后来导入记录或状态变更形成数据库快照。当前金额先按原定点 owner 合并分池，仅由现 `memberCharge()` 在兼容公开 DTO 边界转 number；原 `estimated` 未知为 NULL，缺收费行为 NULL，已归档收费按 `original_job_id/original_member_id` 保留其真实零和分池，不猜当前报价或 upstreamBilling。类型定义只补实际 nullable 和 billing mode 范围，未改变 formatter 算法或 Web 行为。
+
+迟到列表按原找回时点/ID 倒序取最近 10 条，覆盖冷历史。必须同时有未退休本人父子任务、未退休本人可领取产物、原 refunded 收费与同请求/成员/job/artifact 的不可变找回证据；普通 `LateResultRecovered` 核对原发生时间及 `refundRetained`，开账则核对原 `OpeningJobRecorded.lateResultAt`。已知找回时间 0 有效。失败与原退款不因领取变更，当前来源指针不替代历史找回角色。SVG 等原结果读取不支持的类型继续不产生领取引用，缓存产物的原 input/attempt 不被改写为当前请求。
+
+新增源码专项覆盖实际旧 JsonStore 的多 child 总量、跨页/空页、until、三种排序、状态和字面转义搜索对照；原 child 时点与父时点不同的完整提交；partial Opening 的未知/0 与未来 header、原已归档零收费/未知估算及找回时间 0；真实派发/退款/Local 发布的 12 条迟到历史、本人/他人和任务/产物退休、损坏归属/伪找回时点；换 Key/Cookie/停止接单/停用；重开与共同完整提交回放后同一 DTO。Opening 实体 owner 尚未支持的部分使用明确标注的有来源只读夹具，不冒称已完成开账导入、私有恢复或 ready 安装。业务回放仍不恢复认证，读验证只提供独立当前 epoch。
+
+实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
 ## 10. 事实依据与修订
 

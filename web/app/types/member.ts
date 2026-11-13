@@ -54,14 +54,14 @@ export interface MemberCharge {
   amount: number;
   fixed?: number | null;
   purchased?: number | null;
-  billingMode?: string;
-  estimated?: boolean;
+  billingMode?: string | null;
+  estimated?: boolean | null;
 }
 export interface MemberJob {
   id: string;
   requestId?: string | null;
-  createdAt: string;
-  model: string;
+  createdAt: string | null;
+  model: string | null;
   status: string;
   charge?: MemberCharge | null;
   lateResultAvailable?: boolean;

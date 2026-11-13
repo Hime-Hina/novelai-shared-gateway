@@ -3,23 +3,10 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
 import Negotiator from 'negotiator';
-import type { JsonStore, StoredGenerationRequest, StoreDatabase } from '../storage/sqlite-store.ts';
-import {
-  parseNativeImageRequest,
-  parseNativeAuxiliaryRequest,
-  nativeNormalizationContext,
-  NATIVE_MAX_BODY_BYTES,
-  type NativeNormalizationContext,
-} from './native-image.ts';
+import { NATIVE_MAX_BODY_BYTES } from './native-image.ts';
 import { readNativeBody } from './native-body.ts';
-import { quoteFairRequest } from '../quota/fair-share.ts';
-import { singleGenerationRequest } from '../generation/batch-requests.ts';
-import {
-  generationIntent,
-  type createGenerationAdmission,
-  type GenerationMetadata,
-  type GenerationPayloadClaim,
-} from '../generation/admission.ts';
+import { type GenerationMetadata, type GenerationPayloadClaim } from '../generation/admission.ts';
+import type { NativeAdmissionOptions } from '../generation/native-admission.ts';
 import type { GenerationDeliveryResult } from '../generation/delivery.ts';
 import type { JobPreviews } from '../generation/job-previews.ts';
 import {
@@ -39,9 +26,9 @@ export interface NativeHttpRequest extends IncomingMessage {
 type NativeBatch = GenerationMetadata & { streamType?: 'sse' | 'msgpack' };
 type StoredResult = NonNullable<GenerationDeliveryResult['saved']>;
 type NativeError = Error & { statusCode?: number; cooldownUntil?: unknown };
-interface NativeHttpDependencies {
-  store: Pick<JsonStore, 'readUserByToken'>;
-  admitGeneration: ReturnType<typeof createGenerationAdmission>;
+export interface NativeHttpDependencies {
+  readMember(token: string): Promise<{ admissionVersion: number } | null>;
+  admitNative(options: NativeAdmissionOptions): Promise<GenerationMetadata>;
   readJson(req: NativeHttpRequest, limit: number): Promise<unknown>;
   waitForJobResult(
     jobId: string,
@@ -65,6 +52,14 @@ interface NativeHttpDependencies {
 function error(statusCode: number, message: string): NativeError {
   return Object.assign(new Error(message), { statusCode });
 }
+export function nativeGenerationError(failure: unknown) {
+  const source = failure as Error & { statusCode?: number };
+  const message = publicErrorMessage(source.message || 'Internal server error');
+  const code = Number(source.statusCode);
+  const statusCode = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
+  return { statusCode, body: { message, statusCode, error: message } };
+}
+
 export function nativeRequestDiagnostic(
   body: {
     parameters?: Record<string, unknown>;
@@ -162,8 +157,8 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
     if (!token.startsWith('STA1N-')) {
       throw error(401, 'Existing gateway key required.');
     }
-    const user = await deps.store.readUserByToken(token);
-    if (!user || user.enabled === false) {
+    const user = await deps.readMember(token);
+    if (!user) {
       throw error(401, 'invalid token.');
     }
     let body = (await readNativeBody(req, {
@@ -173,34 +168,14 @@ export function createNativeHttp(deps: NativeHttpDependencies) {
       allowPurchasedAnlas?: unknown;
     } | null;
     logDiagnostic(diagnosticId, 'received', nativeRequestDiagnostic(body));
-    const normalize = (context?: Partial<StoreDatabase['settings']>) => {
-      // Old mappings saved only gateway defaults; they cannot recover earlier Native definitions.
-      const native = context?.native as NativeNormalizationContext | undefined;
-      const request: StoredGenerationRequest = operation
-        ? parseNativeAuxiliaryRequest(body, operation, native)
-        : parseNativeImageRequest(body, native);
-      request.allowPurchasedAnlas = body?.allowPurchasedAnlas === true;
-      quoteFairRequest(singleGenerationRequest(request));
-      return request;
-    };
-    const intent = generationIntent(req.generationIdempotencyKey, normalize, {
+    const batch = await deps.admitNative({
+      token,
+      body,
       operation: operation || 'generate',
-      randomSeed:
-        !operation && (body?.parameters?.seed === undefined || body.parameters.seed === -1),
-      noCache: true,
-      claim: req.generationPayloadClaim,
-      context: () => ({ native: nativeNormalizationContext() }),
-    });
-    const batch = await deps.admitGeneration({
-      identity: { token },
-      request: intent ? null : normalize(),
+      key: req.generationIdempotencyKey,
       diagnosticId,
-      admissionVersion: user.jobAdmissionVersion || 0,
+      admissionVersion: user.admissionVersion,
       claim: req.generationPayloadClaim,
-      intent,
-      batch: true,
-      source: 'novelai-native',
-      noCache: true,
     });
     const streamType = body?.parameters?.stream ?? 'sse';
     body = null;

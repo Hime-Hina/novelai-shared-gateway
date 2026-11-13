@@ -1,3 +1,4 @@
+import { createJobResultWaiter } from './result-waiter.ts';
 import type { ServerResponse } from 'node:http';
 import type { JsonStore, PersistenceOptions, StoreItem } from '../storage/sqlite-store.ts';
 import {
@@ -19,6 +20,7 @@ export interface GenerationDeliveryResult {
   saved?: Pick<StoreItem, 'file' | 'mimeType' | 'r2' | 'base64'> & {
     id?: string;
     imageId?: string;
+    jobId?: string;
     operation?: string;
     sha256?: string;
     byteLength?: number;
@@ -30,11 +32,6 @@ export interface GenerationDeliveryResult {
   cooldownUntil?: string | number | null;
 }
 type Response = ServerResponse & { generationDeliveryTracked?: boolean };
-type Waiter = {
-  resolve(value: GenerationDeliveryResult | null): void;
-  timer: ReturnType<typeof setTimeout>;
-  cleanup(): void;
-};
 type PublicJob = NonNullable<
   Awaited<ReturnType<ReturnType<typeof createJobPresentation>['publicJobSnapshot']>>
 >;
@@ -152,112 +149,45 @@ export function createJobDelivery(deps: {
   pollMs?: number;
   log?(value: object): void;
 }) {
-  const waiters = new Map<string, Set<Waiter>>();
-  function remove(jobId: string, waiter: Waiter) {
-    clearTimeout(waiter.timer);
-    waiter.cleanup();
-    const subscriptions = waiters.get(jobId);
-    subscriptions?.delete(waiter);
-    if (!subscriptions?.size) {
-      waiters.delete(jobId);
-    }
-  }
-  function notifyJobWaiters(jobId: string, payload: GenerationDeliveryResult) {
-    const subscriptions = waiters.get(jobId);
-    if (!subscriptions) {
-      return;
-    }
-    waiters.delete(jobId);
-    if (payload.error) {
-      payload = { ...payload, error: deps.errorMessage(payload.error) };
-    }
-    for (const waiter of subscriptions) {
-      clearTimeout(waiter.timer);
-      waiter.cleanup();
-      waiter.resolve(payload);
-    }
-  }
-  // HTTP 截止或断连只解除领取等待；任务的业务期限、取消和结算由命令层管理。
-  function waitForJobResult(jobId: string, deadline: number, response?: Response) {
-    if (response && !response.generationDeliveryTracked) {
-      response.generationDeliveryTracked = true;
-      const waitingAt = Date.now();
-      const delivered = () => {
-        response.off('finish', delivered);
-        response.off('close', delivered);
-        deps.log?.({
-          event: 'http_delivery',
-          jobId,
-          waitingAt,
-          at: Date.now(),
-          finished: response.writableFinished === true,
-        });
-      };
-      response.once('finish', delivered);
-      response.once('close', delivered);
-    }
-    return new Promise<GenerationDeliveryResult | null>((resolve) => {
-      const timer = setTimeout(
-        () => {
-          remove(jobId, waiter);
-          resolve(null);
-        },
-        Math.max(1, deadline - Date.now()),
-      );
-      const onClose = () => {
-        remove(jobId, waiter);
-        resolve(null);
-      };
-      const waiter: Waiter = { resolve, timer, cleanup: () => response?.off('close', onClose) };
-      if (!waiters.has(jobId)) {
-        waiters.set(jobId, new Set());
-      }
-      waiters.get(jobId)!.add(waiter);
-      if (response?.destroyed) {
-        onClose();
-        return;
-      }
-      response?.once('close', onClose);
-      // Subscribe first; serial read only sees committed state and covers a missed terminal notification.
-      deps.store
-        .update(
-          (db) => {
-            const job =
-              db.jobs.find((item) => item.id === jobId) || deps.store.selectItemById('jobs', jobId);
-            if (!job) {
-              return null;
-            }
-            return {
-              status: job.status,
-              imageId: job.imageId,
-              seed: job.request?.seed,
-              error: job.error,
-              errorStatus: job.errorStatus,
-              cooldownUntil: job.quotaRetryAfterUntil || job.sharedCooldown?.until,
-              balance: db.users.find((user) => user.token === job.userToken)?.balance,
-            };
-          },
-          { persist: false },
-        )
-        .then(async (job) => {
-          if (job?.status === 'failed') {
-            notifyJobWaiters(jobId, {
-              error: job.error,
-              statusCode: job.errorStatus || 500,
-              cooldownUntil: job.cooldownUntil,
-            });
-          } else if (job?.status === 'done') {
-            const saved = await deps.store.findImage(job.imageId!);
-            if (saved) {
-              notifyJobWaiters(jobId, { saved, seed: job.seed, balance: job.balance });
-            }
+  const { waiters, waitForJobResult, notifyJobWaiters } = createJobResultWaiter({
+    errorMessage: deps.errorMessage,
+    log: deps.log,
+    readResult: async (jobId) => {
+      const job = await deps.store.update(
+        (db) => {
+          const job =
+            db.jobs.find((item) => item.id === jobId) || deps.store.selectItemById('jobs', jobId);
+          if (!job) {
+            return null;
           }
-        })
-        .catch(() =>
-          notifyJobWaiters(jobId, { error: '任务状态暂时无法读取，请稍后查询', statusCode: 503 }),
-        );
-    });
-  }
+          return {
+            status: job.status,
+            imageId: job.imageId,
+            seed: job.request?.seed,
+            error: job.error,
+            errorStatus: job.errorStatus,
+            cooldownUntil: job.quotaRetryAfterUntil || job.sharedCooldown?.until,
+            balance: db.users.find((user) => user.token === job.userToken)?.balance,
+          };
+        },
+        { persist: false },
+      );
+      if (job?.status === 'failed') {
+        return {
+          error: job.error,
+          statusCode: job.errorStatus || 500,
+          cooldownUntil: job.cooldownUntil,
+        };
+      }
+      if (job?.status === 'done') {
+        const saved = await deps.store.findImage(job.imageId!);
+        if (saved) {
+          return { saved, seed: job.seed, balance: job.balance };
+        }
+      }
+      return null;
+    },
+  });
   async function streamOpenAiImageJob(
     res: Response,
     job: { id: string },

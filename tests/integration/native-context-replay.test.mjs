@@ -19,7 +19,7 @@ import {
   completeGenerationCommand,
 } from '../../server/generation/execution.ts';
 import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
-import { createNativeHttp } from '../../server/protocols/native-http.ts';
+import { createLegacyNativeHttp as createNativeHttp } from '../../server/generation/legacy-native-http.ts';
 import {
   BASE_MODELS,
   NATIVE_DEFAULTS,

@@ -58,7 +58,8 @@ import { reconcileMemberSessionOwner } from './members/authentication.ts';
 import { closeMemberGenerationStreams, memberGenerationError } from './generation/member-http.ts';
 import { createLegacyMemberGenerationHttp } from './generation/legacy-member-http.ts';
 import { handleMemberRoutes } from './members/http-routes.ts';
-import { createNativeHttp } from './protocols/native-http.ts';
+import { nativeGenerationError } from './protocols/native-http.ts';
+import { createLegacyNativeHttp } from './generation/legacy-native-http.ts';
 import { imageExtension } from './protocols/native-stream.ts';
 import {
   OfficialKeyJobs,
@@ -346,7 +347,7 @@ const accountQuotaRefresh = createAccountQuotaRefresh({
 });
 const { refreshEnabled: refreshEnabledAccountQuotas, fetch: fetchNovelAiAccountQuotaWithTimeout } =
   accountQuotaRefresh;
-const nativeHttp = createNativeHttp({
+const nativeHttp = createLegacyNativeHttp({
   store,
   admitGeneration,
   readJson,
@@ -462,12 +463,8 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
         String(req.url || '').split('?')[0],
       )
     ) {
-      const message = publicErrorMessage(
-        (error as GatewayError).message || 'Internal server error',
-      );
-      const code = Number((error as GatewayError).statusCode);
-      const statusCode = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
-      sendJson(res, statusCode, { message, statusCode, error: message });
+      const payload = nativeGenerationError(error);
+      sendJson(res, payload.statusCode, payload.body);
       return;
     }
     if (req.url?.startsWith('/v1/')) {
