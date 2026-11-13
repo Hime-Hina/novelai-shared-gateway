@@ -303,6 +303,48 @@ test('合法ready Native HTTP 真Key受理、实际队列/文件领取与同键�
   assert.deepEqual(f.errors, []);
 });
 
+test('Native网关诊断header绑定原受理事实和command，原键新交付不改写原关联', async (t) => {
+  const f = await setup(t),
+    clientDiagnostic = 'client-cannot-own-local-diagnostic',
+    upstreamDiagnostic = 'upstream-cannot-own-local-diagnostic';
+  f.upstream.handler = async (_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'image/webp',
+      'x-nai-diagnostic-id': upstreamDiagnostic,
+      'x-correlation-id': upstreamDiagnostic,
+    });
+    res.end(image);
+  };
+  const first = await f.call(input(), {
+    key: 'diagnostic',
+    headers: { 'x-nai-diagnostic-id': clientDiagnostic, 'x-correlation-id': clientDiagnostic },
+  });
+  assert.equal(first.status, 200, first.buffer.toString());
+  const diagnosticId = first.headers.get('x-nai-diagnostic-id'),
+    requestId = first.headers.get('x-nai-request-id');
+  assert.match(diagnosticId, /^[a-f0-9]{16}$/);
+  assert.notEqual(diagnosticId, clientDiagnostic);
+  assert.notEqual(diagnosticId, upstreamDiagnostic);
+  const accepted = f.db
+    .prepare(
+      `SELECT CAST(commit_seq AS TEXT) AS seq,correlation_id AS correlationId FROM domain_events
+      WHERE event_type='RequestAccepted' AND json_extract(payload,'$.requestId')=?`,
+    )
+    .get(requestId);
+  assert.equal(accepted.correlationId, diagnosticId);
+  assert.equal(readRelationalCommit(f.db, accepted.seq).command.correlationId, diagnosticId);
+  const before = databaseState(f.db),
+    replay = await f.call(input(), { key: 'diagnostic' });
+  assert.equal(replay.status, 200, replay.buffer.toString());
+  assert.equal(replay.headers.get('x-nai-request-id'), requestId);
+  assert.match(replay.headers.get('x-nai-diagnostic-id'), /^[a-f0-9]{16}$/);
+  assert.notEqual(replay.headers.get('x-nai-diagnostic-id'), diagnosticId);
+  assert.deepEqual(replay.buffer, first.buffer);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(readRelationalCommit(f.db, accepted.seq).command.correlationId, diagnosticId);
+  assert.equal(f.upstream.calls.length, 1);
+});
+
 test('Native多child沿真实队列逐图收费，JSON/ZIP完整且共同提交回放保留输入/alias/结果', async (t) => {
   const f = await setup(t),
     pending = f.call(input({ n_samples: 2, seed: 42 }), {

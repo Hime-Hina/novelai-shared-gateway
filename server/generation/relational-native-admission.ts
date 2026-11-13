@@ -109,7 +109,7 @@ export function createRelationalNativeAdmission(deps: {
             {
               ...identity,
               recordedAt: deps.now?.() ?? Date.now(),
-              correlationId: null,
+              correlationId: options.diagnosticId,
               causationId: null,
               policyVersion: versions.billingPolicy,
               pricingVersion: versions.pricing,
