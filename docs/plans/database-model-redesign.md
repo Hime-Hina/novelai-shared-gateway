@@ -1057,6 +1057,18 @@ Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、�
 
 父任务独立复核固定 `1c79a34` 的 transport、授权事务、原收费 helper 提取及测试配置变更；另以真实 localhost/owner 反例 3/3 核对：恢复后的输入插入失败整笔回滚、健康重试只恢复一次及原键零写；物理忙派发不恢复、预扣 SQL 失败回滚后正常重试；较晚时点重领原回执不再次恢复。隔离副本仅移除受理恢复调用，同一反例准确重现 402 而非 202，其他两例仍通过，未改候选原字节。证据为 `H:\TEMP\novelai-member-http-independent.log` 与 `-mutant.log`。与诊断片汇合后，五处只验证诊断/退款的 fixture 也显式固定 `seconds: 0`，保留原精确退款断言；时间恢复由实际 HTTP 和上述独立反例验证。联合 HTTP/诊断/输入/共同回放四文件 58/58，零跳过；这仍是本地源码整合证据。
 
+### 9.37 #52：成员认证 HTTP 的窄复用与关系绑定
+
+本片从 `6ab8047` 继续，认证规则仍归[成员会话](../architecture/member-sessions.md)和原 `authentication.ts` / `discord-auth.ts`。现有 password 登录、退出、Discord start/callback、免登录 `login-options` 归 `members/authentication-http.ts` 的同一 dispatcher；旧成员路由调用相同函数，未复制登录、资格、一次性 OAuth state、限流或会话业务。原 Cookie 写入和 JSON reply 窄提取到 `http-request.ts`，沿用既有 Path、HttpOnly、SameSite、Secure、Max-Age/Expires 与两 Cookie 顺序。
+
+OAuth callback 的 GET 跨站例外仍只依赖原 state、浏览器 Cookie、Host 和配置检查；其余写入仍校验本站 Origin。仅启用 Discord 时密码入口仍拒绝；`login-options` 不要求已有会话。退出先提交删除再清 Cookie，登录/续期失败不发成功 Cookie，Key 不因网页登录退出而撤销。`renewMemberCookie()` 只复用原事务续期与 Cookie 帮助函数，原可见 `me` / owner 摘要调用位置不变，不在认证 factory 新增续期端点。
+
+`createRelationalMemberAuthenticationHttp()` 在装配前拒绝非 ready，再绑定真实 `RelationalMemberStore` 调用上述同一 HTTP owner；没有 `JsonStore` 接口、按格式回退或第二套认证路由。新增 localhost 专项先由真实 owner 发布文件，再经唯一完整 shadow/33 表/私有当前状态/实际字节核对入口合法安装 ready，验证登录/退出、密码失败与 SQL 插入失败不留会话或成功 Cookie、普通与可见活动续期、撤销不复活、JSON 上限、原用户名限流、Bearer 不替代密码或 Cookie、OAuth 一次性 state/Cookie/Host 和仅 callback 跨站例外、上游临时失败以及等待外部身份验证期间成员停用后的拒绝。响应不携密码、Key、摘要或 OAuth 私有 token，网络不持有 SQL 事务。
+
+新增导出的续期帮助函数和关系认证 factory 是实际写能力，现架构集合仅追加这两个名字，并加入 aliased import 拒绝反例；原两条 HTTP writer 断言仅更新实际 owner 路径，不放宽拒绝条件。这一守卫增量需父任务维护者独立复核。Node 22.23.4 认证/Discord/关系成员/架构及新合法 ready 真实 HTTP 五文件联合 251/251（含新 HTTP 5 项及新增拒绝反例）、原真实 sole gateway 会话 HTTP 8 项（7 通过、1 项原条件跳过、0 失败）；原 10 秒 startup 断言不变。架构、可信 `6ab8047de9a13da00ec435916cf29f4171c2d2c2` 迁移历史、类型及改动格式检查通过，完整后端与发布物由父任务统一排期。日志为 `H:\TEMP\member-auth-fixed-targeted.log`、`member-auth-sole-session-http.log`，不沿用前片的 full 或发布证据。
+
+原 `server/index.ts` 与 Nitro 的 `executor/gateway-handler.ts` 仍共用旧 `gateway-runtime.ts`，其顶层旧 store、旧启动恢复和 Native/OpenAI/成员 reader 装配尚未切换。本片只交付可接入的认证能力，不能据此声明真实 sole gateway、全 #52 或生产替换完成；后续 Native 的原请求受理/同步领取、OpenAI 消息解析/流错误和成员 `me/key/history/shared-status/events` 各自真实 owner 仍须逐项接通。本片不碰生成、额度、管理组、schema 或迁移历史。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

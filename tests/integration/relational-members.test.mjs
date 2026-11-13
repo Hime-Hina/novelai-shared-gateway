@@ -21,7 +21,7 @@ import {
 import {
   handleMemberAuthenticationRoutes,
   handleMemberDiscordAuthenticationRoutes,
-} from '../../server/members/http-routes.ts';
+} from '../../server/members/authentication-http.ts';
 import { requireDiscordMembership } from '../../server/members/discord-auth.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
