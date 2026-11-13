@@ -512,7 +512,7 @@ export function normalizeOpeningQuota(
   return copy;
 }
 
-function exactWeights(s: FairQuotaSyncState): { id: string; weight: bigint }[] {
+function exactWeights(s: Pick<FairQuotaSyncState, 'groups'>): { id: string; weight: bigint }[] {
   const gcd = (left: bigint, right: bigint): bigint => {
     while (right) {
       const next = left % right;
@@ -541,6 +541,9 @@ function exactWeights(s: FairQuotaSyncState): { id: string; weight: bigint }[] {
     id: ratio.id,
     weight: ratio.numerator * (common / ratio.denominator),
   }));
+}
+export function allocateFairGroupAmount(amount: bigint, group: FairGroup): Record<string, bigint> {
+  return allocateAmount(amount, exactWeights({ groups: [{ ...group, share: 1 }] }));
 }
 const capacities = (s: FairQuotaSyncState): Record<string, bigint> =>
   allocateAmount(100n * AMOUNT_SCALE, exactWeights(s));
@@ -886,10 +889,7 @@ export function configureFairGroups(
         'anlasPurchasedAvailable',
       ] as const) {
         const amount = g.members.reduce((total, id) => total + units(balances[id][field]), 0n);
-        const allocation = allocateAmount(
-          amount,
-          exactWeights({ ...s, groups: [{ ...g, share: 1 }] }),
-        );
+        const allocation = allocateFairGroupAmount(amount, g);
         // 零份额组若全部权重为零，保留已有钱包，避免除零或静默抹去余额。
         if (g.members.some((id) => g.memberWeights[id] > 0)) {
           for (const id of g.members) {

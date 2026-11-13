@@ -642,6 +642,87 @@ test('未用组占位事实已退出，导入OpeningGroup事实保留', () => {
   }
 });
 
+test('完整回放核对同次历史权重和原舍入，守恒不能授权零权重或低权重独吞', async (t) => {
+  for (const weights of [
+    { m1: 1, m2: 0 },
+    { m1: 3, m2: 1 },
+  ]) {
+    await t.test(JSON.stringify(weights), async (t) => {
+      const f = await setup(t, {
+          v5: '60',
+          secondV5: '20',
+          fixed: '4000',
+          purchased: '100',
+          seconds: 0,
+        }),
+        changed = await f.configure('weights', groups(weights), true),
+        stored = readRelationalCommit(f.db, changed.commitSeq);
+      assert.deepEqual(
+        Object.fromEntries(
+          stored.events
+            .find((event) => event.eventType === 'GroupBalancesRedistributed')
+            .payload.allocations.map((allocation) => [allocation.memberId, allocation.resources]),
+        ),
+        weights.m2 === 0
+          ? {
+              m1: { v5: '80', anlasFixed: '8000', anlasPurchased: '200' },
+              m2: { v5: '0', anlasFixed: '0', anlasPurchased: '0' },
+            }
+          : {
+              m1: { v5: '60', anlasFixed: '6000', anlasPurchased: '150' },
+              m2: { v5: '20', anlasFixed: '2000', anlasPurchased: '50' },
+            },
+      );
+      for (const resource of ['v5', 'anlasFixed', 'anlasPurchased']) {
+        await t.test(resource, (t) => {
+          const r = replay(t, f.db, f.inputs, Number(changed.commitSeq) - 1),
+            bad = structuredClone(stored),
+            before = databaseState(r.db),
+            budget = bad.events.find((event) => event.eventType === 'GroupBalancesRedistributed');
+          for (const allocation of budget.payload.allocations) {
+            allocation.resources[resource] =
+              allocation.memberId === 'm2' ? budget.payload.sourceResources[resource] : '0';
+          }
+          resequence(bad, r.db);
+          r.db.transaction(() =>
+            assert.throws(() => r.owner.replayCommit(bad, f.inputs), /权重及舍入/),
+          )();
+          assert.equal(databaseState(r.db), before);
+        });
+      }
+    });
+  }
+  await t.test('one-atomic-unit-rounding', async (t) => {
+    const f = await setup(t, {
+        v5: '0.000000000001',
+        secondV5: '0',
+        fixed: '0',
+        officialFixed: '0',
+        officialV5: '0.000000000001',
+        seconds: 0,
+      }),
+      desired = groups();
+    desired[0].members.reverse();
+    const changed = await f.configure('rounding', desired, true),
+      r = replay(t, f.db, f.inputs, Number(changed.commitSeq) - 1),
+      bad = structuredClone(readRelationalCommit(f.db, changed.commitSeq)),
+      before = databaseState(r.db),
+      budget = bad.events.find((event) => event.eventType === 'GroupBalancesRedistributed'),
+      winner = budget.payload.allocations.find(
+        (allocation) => parseAmount(allocation.resources.v5) > 0n,
+      ).memberId;
+    assert.equal(winner, 'm1');
+    for (const allocation of budget.payload.allocations) {
+      allocation.resources.v5 = allocation.memberId === winner ? '0' : '0.000000000001';
+    }
+    resequence(bad, r.db);
+    r.db.transaction(() =>
+      assert.throws(() => r.owner.replayCommit(bad, f.inputs), /权重及舍入/),
+    )();
+    assert.equal(databaseState(r.db), before);
+  });
+});
+
 test('分组与预算完整提交拒绝伪造来源、偷分、漏分和分叉回执，外层捕获后全表不变', async (t) => {
   const f = await setup(t, { v5: '60', secondV5: '20', seconds: 0 });
   const first = await f.configure('first', groups(), true),

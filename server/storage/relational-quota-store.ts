@@ -40,6 +40,7 @@ import {
   normalizeFairGroups,
   assertFairGroupMemberCount,
   assertFairGroupTransition,
+  allocateFairGroupAmount,
   type FairQuotaState,
   type FairQuotaDatabase,
   type FairGroup,
@@ -2100,6 +2101,15 @@ export class RelationalQuotaStore {
           ) {
             fail('重分必须覆盖原组全部成员');
           }
+          const historicalGroup: FairGroup = {
+            id: group.groupId,
+            name: group.name,
+            share: group.share,
+            members: group.members.map((member) => member.memberId),
+            memberWeights: Object.fromEntries(
+              group.members.map((member) => [member.memberId, member.weight]),
+            ),
+          };
           const rows = this.sqlite
             .prepare<
               [string, string],
@@ -2120,6 +2130,15 @@ export class RelationalQuotaStore {
                 )
             ) {
               fail('重分必须守恒该组原钱包的同一资源总量');
+            }
+            const expected = allocateFairGroupAmount(budget, historicalGroup);
+            if (
+              p.allocations.some(
+                (allocation) =>
+                  parseAmount(allocation.resources[r]) !== expected[allocation.memberId],
+              )
+            ) {
+              fail('重分结果与本次保存的原组权重及舍入决定不符');
             }
           }
           for (const allocation of p.allocations) {
