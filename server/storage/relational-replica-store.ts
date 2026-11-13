@@ -35,10 +35,12 @@ type ReplicaFact = Extract<
   RelationalFact,
   { eventType: 'StorageTargetRegistered' | 'ArtifactReplicaRecorded' }
 >;
-export interface RelationalReplicaConfiguration {
+export interface RelationalReplicaReadConfiguration {
   dataDir: string;
   r2?: R2Storage | null;
   pikpak?: PikPakStorage | null;
+}
+export interface RelationalReplicaConfiguration extends RelationalReplicaReadConfiguration {
   idle(): boolean;
 }
 type Ticket = Readonly<{ artifactId: string; storageTargetId: string }>;
@@ -107,7 +109,7 @@ function assertTarget(target: Target) {
 // 只拥有目标及副本事实；部署秘密、网络、文件及源副本删除不属于业务 replay。
 export class RelationalReplicaStore {
   private sqlite: Database.Database;
-  private configuration?: RelationalReplicaConfiguration;
+  private configuration?: RelationalReplicaReadConfiguration;
   private tickets = new WeakMap<
     Ticket,
     {
@@ -115,9 +117,10 @@ export class RelationalReplicaStore {
       artifactSource: string;
       targetSource: string;
       replicaSource: string | null;
+      background: boolean;
     }
   >();
-  constructor(sqlite: Database.Database, configuration?: RelationalReplicaConfiguration) {
+  constructor(sqlite: Database.Database, configuration?: RelationalReplicaReadConfiguration) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.configuration = configuration;
@@ -129,7 +132,12 @@ export class RelationalReplicaStore {
     return this.sqlite.transaction(run)();
   }
   private active() {
-    if (!this.configuration || !this.configuration.idle()) {
+    if (
+      !this.configuration ||
+      !('idle' in this.configuration) ||
+      typeof this.configuration.idle !== 'function' ||
+      !this.configuration.idle()
+    ) {
       fail('副本后台当前不可执行');
     }
     return this.configuration;
@@ -141,7 +149,10 @@ export class RelationalReplicaStore {
     this.active();
   }
   private configuredTarget(kind: Kind) {
-    const config = this.active();
+    const config = this.configuration;
+    if (!config) {
+      fail('副本目标当前未配置');
+    }
     let namespace: string, secret: unknown;
     if (kind === 'local') {
       if (typeof config.dataDir !== 'string' || !config.dataDir) {
@@ -180,6 +191,7 @@ export class RelationalReplicaStore {
     };
   }
   readConfiguredStorageTarget(kind: Kind) {
+    this.active();
     return this.configuredTarget(kind).target;
   }
   planLocalArtifactPublication(publication: Publication, at: number) {
@@ -233,10 +245,11 @@ export class RelationalReplicaStore {
           mimeType: string;
           byteLength: number;
           sha256: string;
+          retiredAt: number | null;
           sourceEventId: string;
         }
       >(
-        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
+        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,retired_at AS retiredAt,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
       )
       .get(artifactId);
     if (!row) {
@@ -266,6 +279,22 @@ export class RelationalReplicaStore {
     };
     assertStoredResultDescriptor(descriptor);
     return { ...row, descriptor, source };
+  }
+  readRecoverableArtifacts(afterId: string | null, limit: number) {
+    if (
+      (afterId !== null && (typeof afterId !== 'string' || !afterId || afterId.length > 128)) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      fail('产物枚举需要有效游标及 1–100 的上界');
+    }
+    return this.sqlite
+      .prepare<[string, number], { id: string }>(
+        'SELECT id FROM artifacts WHERE retired_at IS NULL AND id>? ORDER BY id LIMIT ?',
+      )
+      .all(afterId ?? '', limit)
+      .map(({ id }) => ({ id, descriptor: this.readArtifact(id).descriptor }));
   }
   readStorageTarget(storageTargetId: string) {
     const row = this.sqlite
@@ -368,17 +397,49 @@ export class RelationalReplicaStore {
     });
   }
   beginArtifactReplica(artifactId: string, storageTargetId: string): Ticket {
+    this.active();
+    return this.beginTicket(artifactId, storageTargetId, true);
+  }
+  beginArtifactRead(artifactId: string, kind: Kind) {
+    const current = this.configuredTarget(kind);
+    if (!this.isStorageTargetRegistered(current.target.storageTargetId)) {
+      return null;
+    }
+    const replica = this.readArtifactReplica(artifactId, current.target.storageTargetId);
+    if (
+      !replica ||
+      replica.uploadedAt === null ||
+      replica.verifiedAt === null ||
+      replica.deletedAt !== null
+    ) {
+      return null;
+    }
+    const artifact = this.readArtifact(artifactId),
+      target = this.readStorageTarget(current.target.storageTargetId),
+      location = replicaLocation(artifact.descriptor, kind);
+    if (replica.objectKey !== location.objectKey || replica.encoding !== location.encoding) {
+      fail('副本读取定位或编码不属于原产物');
+    }
+    return {
+      artifact,
+      target,
+      replica,
+      ticket: this.beginTicket(artifactId, target.storageTargetId, false),
+    };
+  }
+  private beginTicket(artifactId: string, storageTargetId: string, background: boolean): Ticket {
     const artifact = this.readArtifact(artifactId),
       target = this.readStorageTarget(storageTargetId),
       current = this.configuredTarget(target.kind);
     if (
+      artifact.retiredAt !== null ||
       canonicalJson(current.target) !==
-      canonicalJson({
-        storageTargetId,
-        kind: target.kind,
-        namespace: target.namespace,
-        credentialRef: target.credentialRef,
-      })
+        canonicalJson({
+          storageTargetId,
+          kind: target.kind,
+          namespace: target.namespace,
+          credentialRef: target.credentialRef,
+        })
     ) {
       fail('副本目标已不属于当前配置');
     }
@@ -388,6 +449,7 @@ export class RelationalReplicaStore {
       artifactSource: artifact.sourceEventId,
       targetSource: target.sourceEventId,
       replicaSource: this.readArtifactReplica(artifactId, storageTargetId)?.sourceEventId || null,
+      background,
     });
     return ticket;
   }
@@ -396,10 +458,14 @@ export class RelationalReplicaStore {
     if (!issued) {
       fail('副本票据不属于当前后台');
     }
+    if (issued.background) {
+      this.active();
+    }
     const artifact = this.readArtifact(ticket.artifactId),
       target = this.readStorageTarget(ticket.storageTargetId),
       configured = this.configuredTarget(target.kind);
     if (
+      artifact.retiredAt !== null ||
       configured.target.storageTargetId !== target.storageTargetId ||
       issued.configuration !== configured.fingerprint ||
       artifact.sourceEventId !== issued.artifactSource ||
@@ -427,6 +493,9 @@ export class RelationalReplicaStore {
     return this.owned(() => {
       this.authorize(metadata);
       const { issued, artifact, target } = this.checkedTicket(ticket);
+      if (!issued.background) {
+        fail('只读副本票据不能提交状态');
+      }
       if (
         !['reserved', 'uploaded', 'verified', 'local_verified', 'failed'].includes(phase) ||
         (phase === 'failed'

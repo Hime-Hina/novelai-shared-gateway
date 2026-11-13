@@ -852,6 +852,16 @@ Windows / Node 22.23.4 副本专项 18/18，直接编译 JavaScript 同专项 18
 
 同一候选的架构、类型、后端构建、默认及实际 main `78887c9` 迁移历史、136 文件语法与全库格式检查通过。没有修改迁移基线、旧 SQL/journal、hash guard 或 CI；守卫新增内容接受维护者复核，仓库内检查不代替远端审查/合并保护。
 
+### 9.27 T5：只读产物内容与恢复字节核对
+
+本片提供 ready 核对及后续 HTTP 领取共同使用的具体只读 owner，不签发成员权限；HTTP 调用者仍须在所属认证/查询 owner 核对当前成员和结果归属。产物原 SHA、长度、MIME、操作及成员/输入来自原发布事实和关系行；副本可用承诺来自同一产物的 active、uploaded 且 verified 事实，定位只使用其真实目标 namespace、object key 和 encoding，不按当前默认目录猜测旧来源。
+
+`readRelationalArtifactContent(sqlite, artifactId, {dataDir,r2?,pikpak?})` 在 Local、R2、PikPak 候选中读取至少一份实际合法原字节，返回原 descriptor、buffer 和实际 storageTargetId。坏候选可回退其他合法承诺副本，所有候选缺失/损坏、配置不符或只有 uploaded 时拒绝；不把 verified 时间替代真实读取。只支持现实际 writer 的 Local/R2 identity 与 PikPak br，未知/其他编码显式拒绝。IO 前后核对产物、副本、目标来源及当前实际客户端配置；退休或并发变化不能返回旧读取成功。读取不依赖后台空闲资格，不发起上传/删除，不写副本事实、错误状态或私有认证。
+
+`readRecoverableArtifacts(afterId, limit)` 按严格产物 ID 游标和显式上界枚举非退休产物，供完整安装有界核对；不复制全表 DTO 或输入正文。`readStoredResultContent(dataDir, descriptor)` 只核对最终文件；`readPreparedStoredResultContent(dataDir, descriptor)` 核对所有存在的 final/part，任一损坏均拒绝，至少一份完整才返回内容，否则返回 null。两者复用原内容算法，使用只读文件句柄，不同步、重命名、补写、自动完成或退款。prepared 字节存在不意味着已发布，不据此伪造 Local 事实或 ready。
+
+验收覆盖真实 Local/R2/PikPak owner 和 mock 网络、uploaded-only/错误编码/缺失坏字节、namespace/凭据及来源在 IO 等待中变化、读取前后数据库和原文件保持不变、严格分页与退休排除，以及只读准备文件的 final/part 组合、损坏和只读权限。至少一份可读只证明该产物可恢复，不宣称全部冗余健康、归档闭包、真实端点或最终切换通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
