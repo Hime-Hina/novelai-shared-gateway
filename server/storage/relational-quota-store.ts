@@ -922,7 +922,8 @@ export class RelationalQuotaStore {
             p.id,
           );
           events.push(received);
-          if (!newObservationId) {
+          // 登记到账只是观察/扣款确认净额的组成；只有明确新增凭据直接分配。
+          if (p.source === 'declared_external_receipt') {
             allocationSource = p.id;
           }
           break;
@@ -1128,6 +1129,8 @@ export class RelationalQuotaStore {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
+    const sources = new Map(events.map((e) => [e.eventId, e]));
+    const consumed = new Set<string>();
     for (const e of events) {
       if (
         !relationalQuotaFacts.has(e.eventType) ||
@@ -1254,15 +1257,45 @@ export class RelationalQuotaStore {
           this.configuration(p.configVersion);
           if (
             source.accountId !== accountId ||
-            ![
-              'QuotaObserved',
-              'OpeningQuotaRecorded',
-              'FundingReceived',
-              'DebitsConfirmed',
-            ].includes(source.type) ||
+            !['QuotaObserved', 'FundingReceived', 'DebitsConfirmed'].includes(source.type) ||
             new Set(p.allocations.map((x) => x.memberId)).size !== p.allocations.length
           ) {
             fail('分配来源或成员身份不符');
+          }
+          if (source.type === 'FundingReceived' || source.type === 'DebitsConfirmed') {
+            const original = sources.get(p.sourceEventId);
+            if (
+              !original ||
+              original.commitSeq !== e.commitSeq ||
+              original.eventIndex >= e.eventIndex ||
+              consumed.has(p.sourceEventId)
+            ) {
+              fail('有限分配来源必须在同提交内先于分配且仅消费一次');
+            }
+            let resource: keyof ResourceAmounts, amount: string;
+            if (original.eventType === 'FundingReceived') {
+              if (
+                original.payload.destination !== 'members' ||
+                original.payload.source !== 'declared_external_receipt'
+              ) {
+                fail('分配来源不是直接用于成员的资金');
+              }
+              resource = original.payload.resource;
+              amount = original.payload.amount;
+            } else if (original.eventType === 'DebitsConfirmed') {
+              resource = original.payload.resource;
+              amount = original.payload.allocatedToMembers;
+            } else {
+              fail('有限分配来源类型不符');
+            }
+            for (const r of resources) {
+              if (
+                parseAmount(p.sourceResources[r]) !== (r === resource ? parseAmount(amount) : 0n)
+              ) {
+                fail('分配预算与来源原资源、原金额不符');
+              }
+            }
+            consumed.add(p.sourceEventId);
           }
           for (const r of resources) {
             if (

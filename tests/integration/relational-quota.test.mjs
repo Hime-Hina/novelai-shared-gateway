@@ -210,6 +210,386 @@ test('人工刷新复用当前 owner 身份，普通成员不能提交观察或�
   );
 });
 
+test('有限资金来源同时约束用途、原池预算、提交顺序和一次消费', async (t) => {
+  for (const kind of ['funding', 'confirmed']) {
+    await t.test(kind, async (t) => {
+      const f = await setup(t);
+      let body;
+      if (kind === 'funding') {
+        await f.observe({ fixed: '7900' }, NOW + 10);
+        await f.observe({ fixed: '8000' }, NOW + 20);
+        body = register('finite-receipt', 'anlasFixed', 100, 'members', true);
+      } else {
+        await f.accept('finite-job');
+        f.dispatch('finite-job-0');
+        await f.publish('finite-job-0');
+        await f.observe({ fixed: '8000' }, NOW + 10);
+        await f.fund('finite-pending', register('finite-pending', 'anlasFixed', 1), NOW + 11);
+        await f.observe({ fixed: '8000' }, NOW + 12);
+        body = {
+          action: 'operating-confirm-debits',
+          receipt: 'finite-confirmed',
+          resource: 'anlasFixed',
+          amount: 2,
+        };
+      }
+      const snapshot = f.db.serialize(),
+        result = await f.fund('finite-source', body, NOW + 30),
+        stored = readRelationalCommit(f.db, result.commitSeq),
+        allocationIndex = stored.events.findIndex((e) => e.eventType === 'AllocationApplied'),
+        sourceId = stored.events[allocationIndex].payload.sourceEventId,
+        sourceIndex = stored.events.findIndex((e) => e.eventId === sourceId);
+      assert.equal(
+        stored.events[sourceIndex].eventType,
+        kind === 'funding' ? 'FundingReceived' : 'DebitsConfirmed',
+      );
+      assert.equal(
+        stored.events[sourceIndex].payload.allocatedToMembers ?? '100',
+        kind === 'funding' ? '100' : '1',
+      );
+      const changes = [
+        [
+          '跨池',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              const p = events[allocationIndex].payload;
+              p.sourceResources.anlasPurchased = p.sourceResources.anlasFixed;
+              p.sourceResources.anlasFixed = '0';
+              for (const x of p.allocations) {
+                x.resources.anlasPurchased = x.resources.anlasFixed;
+                x.resources.anlasFixed = '0';
+              }
+            }
+          },
+        ],
+        [
+          '同时抬高预算和分配',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              const p = events[allocationIndex].payload;
+              p.sourceResources.anlasFixed = '1000';
+              for (const x of p.allocations) {
+                x.resources.anlasFixed = '500';
+              }
+            }
+          },
+        ],
+        [
+          '自报预算不能替代原预算',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              const p = events[allocationIndex].payload;
+              p.sourceResources.anlasFixed = '0.5';
+              for (const x of p.allocations) {
+                x.resources.anlasFixed = '0.25';
+              }
+            }
+          },
+        ],
+        [
+          '来源必须先于分配',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              [events[sourceIndex], events[allocationIndex]] = [
+                events[allocationIndex],
+                events[sourceIndex],
+              ];
+            }
+            const firstVersion = BigInt(stored.events[0].streamVersion);
+            for (const [index, e] of bad.events.entries()) {
+              e.eventIndex = index;
+              e.streamVersion = String(firstVersion + BigInt(index));
+            }
+          },
+        ],
+        [
+          '同提交不能再次消费',
+          (bad) => {
+            const last = bad.events.at(-1);
+            bad.events.push({
+              ...structuredClone(bad.events[allocationIndex]),
+              eventId: 'second-finite-allocation',
+              eventIndex: bad.events.length,
+              streamVersion: String(BigInt(last.streamVersion) + 1n),
+            });
+            bad.command.events.push(structuredClone(bad.command.events[allocationIndex]));
+            bad.eventCount++;
+          },
+        ],
+      ];
+      if (kind === 'funding') {
+        changes.push([
+          '运营用途不能分给成员',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              events[sourceIndex].payload.destination = 'operating';
+            }
+          },
+        ]);
+      } else {
+        changes.push([
+          '确认总额不能代替成员预算',
+          (bad) => {
+            for (const events of [bad.events, bad.command.events]) {
+              const p = events[allocationIndex].payload;
+              p.sourceResources.anlasFixed = '2';
+              for (const x of p.allocations) {
+                x.resources.anlasFixed = '1';
+              }
+            }
+          },
+        ]);
+      }
+      for (const [name, change] of changes) {
+        await t.test(name, () => {
+          const target = new Database(snapshot);
+          try {
+            target.pragma('foreign_keys=ON');
+            const quotas = new RelationalQuotaStore(target, {}),
+              bad = structuredClone(stored),
+              before = databaseState(target);
+            change(bad);
+            target.transaction(() =>
+              assert.throws(
+                () => quotas.replayQuotaCommit(bad),
+                (error) => error.statusCode === 409 && /来源|分配/.test(error.message),
+              ),
+            )();
+            assert.equal(databaseState(target), before);
+            target.transaction(() => quotas.replayQuotaCommit(stored))();
+            assert.equal(databaseState(target), databaseState(f.db));
+            const checkpoint = target.serialize();
+            target.transaction(() =>
+              assert.equal(quotas.replayQuotaCommit(stored).replayed, true),
+            )();
+            assert.ok(target.serialize().equals(checkpoint));
+          } finally {
+            target.close();
+          }
+        });
+      }
+      await t.test('新提交不能再次消费旧来源', () => {
+        const target = new Database(f.db.serialize());
+        try {
+          target.pragma('foreign_keys=ON');
+          const quotas = new RelationalQuotaStore(target, {}),
+            next = f.refill(NOW + 600100, 'reuse-old-finite-source'),
+            bad = readRelationalCommit(f.db, next.commitSeq),
+            before = databaseState(target);
+          assert.equal(bad.events.length, 1);
+          for (const events of [bad.events, bad.command.events]) {
+            events[0].eventType = 'AllocationApplied';
+            events[0].payload = structuredClone(stored.events[allocationIndex].payload);
+          }
+          target.transaction(() =>
+            assert.throws(
+              () => quotas.replayQuotaCommit(bad),
+              (error) => error.statusCode === 409 && /来源|分配/.test(error.message),
+            ),
+          )();
+          assert.equal(databaseState(target), before);
+          for (const events of [bad.events, bad.command.events]) {
+            events[0].payload.sourceEventId = 'opening-quota';
+          }
+          target.transaction(() =>
+            assert.throws(
+              () => quotas.replayQuotaCommit(bad),
+              (error) => error.statusCode === 409 && /来源|分配/.test(error.message),
+            ),
+          )();
+          assert.equal(databaseState(target), before);
+        } finally {
+          target.close();
+        }
+      });
+    });
+  }
+});
+
+test('登记到账参与观察或确认净额，不能再独立发放给成员', async (t) => {
+  for (const kind of ['observation', 'confirmed']) {
+    await t.test(kind, async (t) => {
+      const f = await setup(t);
+      await f.fund(
+        'component-members',
+        register('component-members', 'anlasFixed', 1, 'members'),
+        NOW + 1,
+      );
+      if (kind === 'confirmed') {
+        await f.accept('component-job');
+        f.dispatch('component-job-0');
+        await f.publish('component-job-0');
+        await f.observe({ fixed: '8000' }, NOW + 10);
+      }
+      const snapshot = f.db.serialize(),
+        result =
+          kind === 'observation'
+            ? await f.observe({ fixed: '8002' }, NOW + 20)
+            : await f.fund(
+                'component-confirm',
+                {
+                  action: 'operating-confirm-debits',
+                  receipt: 'component-confirm',
+                  resource: 'anlasFixed',
+                  amount: 2,
+                },
+                NOW + 20,
+              ),
+        stored = readRelationalCommit(f.db, result.commitSeq),
+        funding = stored.events.find((e) => e.eventType === 'FundingReceived'),
+        allocationIndex = stored.events.findIndex((e) => e.eventType === 'AllocationApplied');
+      assert.equal(funding.payload.source, 'registered_external_funding');
+      const target = new Database(snapshot);
+      try {
+        target.pragma('foreign_keys=ON');
+        const quotas = new RelationalQuotaStore(target, {}),
+          bad = structuredClone(stored),
+          last = bad.events.at(-1),
+          extra = structuredClone(bad.events[allocationIndex]),
+          input = structuredClone(bad.command.events[allocationIndex]),
+          before = databaseState(target);
+        extra.eventId = 'duplicate-component-allocation';
+        extra.eventIndex = bad.events.length;
+        extra.streamVersion = String(BigInt(last.streamVersion) + 1n);
+        for (const e of [extra, input]) {
+          e.payload.sourceEventId = funding.eventId;
+          e.payload.sourceResources.anlasFixed = '1';
+          for (const x of e.payload.allocations) {
+            x.resources.anlasFixed = '0.5';
+          }
+        }
+        bad.events.push(extra);
+        bad.command.events.push(input);
+        bad.eventCount++;
+        target.transaction(() =>
+          assert.throws(
+            () => quotas.replayQuotaCommit(bad),
+            (error) => error.statusCode === 409 && /来源|分配/.test(error.message),
+          ),
+        )();
+        assert.equal(databaseState(target), before);
+        target.transaction(() => quotas.replayQuotaCommit(stored))();
+        assert.equal(databaseState(target), databaseState(f.db));
+        const checkpoint = target.serialize();
+        target.transaction(() => quotas.replayQuotaCommit(stored))();
+        assert.ok(target.serialize().equals(checkpoint));
+      } finally {
+        target.close();
+      }
+    });
+  }
+});
+
+test('已保存观察参与多收据净额核对，分配来源保持观察身份', async (t) => {
+  const f = await setup(t);
+  await f.fund('saved-members', register('saved-members', 'anlasFixed', 10, 'members'), NOW + 10);
+  await f.fund('saved-operating', register('saved-operating', 'anlasFixed', 20), NOW + 11);
+  await f.accept('saved-job');
+  f.dispatch('saved-job-0');
+  const publishing = f.publish('saved-job-0', NOW + 49);
+  const ticket = f.quotas.beginQuotaObservation('a', NOW + 50),
+    result = accountQuotaResult('a', f.raw({ fixed: '8100' }), new Date(NOW + 50).toISOString());
+  f.db.transaction(() =>
+    f.quotas.recordQuotaObservation(meta('saved-observation', NOW + 50), ticket, result),
+  )();
+  await publishing;
+  const before = f.db.serialize(),
+    observationId = f.quotas.readAccountQuota('a').observationEventId,
+    saved = f.refill(NOW + 60, 'use-saved-observation'),
+    stored = readRelationalCommit(f.db, saved.commitSeq);
+  assert.equal(stored.events.filter((e) => e.eventType === 'FundingReceived').length, 2);
+  const allocation = stored.events.find((e) => e.eventType === 'AllocationApplied');
+  assert.equal(allocation.payload.sourceEventId, observationId);
+  assert.equal(allocation.payload.sourceResources.anlasFixed, '80');
+  assert.equal(wallet(f).anlasFixed, '4038');
+  assert.equal(wallet(f, 'm2').anlasFixed, '4040');
+  assert.equal(
+    f.db.prepare('SELECT anlas_fixed_available AS n FROM operating_state').get().n,
+    '20',
+  );
+  const target = new Database(before);
+  try {
+    target.pragma('foreign_keys=ON');
+    const quotas = new RelationalQuotaStore(target, {});
+    target.transaction(() => quotas.replayQuotaCommit(stored))();
+    assert.equal(databaseState(target), databaseState(f.db));
+  } finally {
+    target.close();
+  }
+});
+
+test('初始三池分配与多收据分批到账保持原 owner 结果并能完整回放', async (t) => {
+  const empty = await setup(t, { v5: '0', fixed: '0', baseline: false }),
+    first = empty.db.serialize(),
+    initialized = await empty.observe(
+      { fixed: '8000', purchased: '100', v5UsagePercent: '80' },
+      NOW + 10,
+    ),
+    initial = readRelationalCommit(empty.db, initialized.commitSeq),
+    observation = initial.events.find((e) => e.eventType === 'QuotaObserved');
+  assert.equal(initial.events.filter((e) => e.eventType === 'AllocationApplied').length, 3);
+  for (const e of initial.events.filter((e) => e.eventType === 'AllocationApplied')) {
+    assert.equal(e.payload.sourceEventId, observation.eventId);
+  }
+  assert.equal(wallet(empty).anlasFixed, '4000');
+  assert.equal(wallet(empty).anlasPurchased, '50');
+  assert.equal(wallet(empty).v5, '40');
+  const f = await setup(t);
+  await f.fund(
+    'partial-members-1',
+    register('partial-members-1', 'anlasFixed', 10, 'members'),
+    NOW + 1,
+  );
+  await f.fund(
+    'partial-members-2',
+    register('partial-members-2', 'anlasFixed', 20, 'members'),
+    NOW + 2,
+  );
+  await f.fund('partial-operating', register('partial-operating', 'anlasFixed', 40), NOW + 3);
+  for (const [at, fixed, member, operating, remaining] of [
+    [NOW + 10, '8040', '4015', '10', '30'],
+    [NOW + 20, '8080', '4020', '40', null],
+  ]) {
+    const before = f.db.serialize(),
+      saved = await f.observe({ fixed }, at);
+    const stored = readRelationalCommit(f.db, saved.commitSeq);
+    assert.equal(wallet(f).anlasFixed, member);
+    assert.equal(
+      f.db.prepare('SELECT anlas_fixed_available AS n FROM operating_state').get().n,
+      operating,
+    );
+    assert.equal(
+      f.db.prepare('SELECT remaining FROM pending_funding').get()?.remaining ?? null,
+      remaining,
+    );
+    // 在下一次观察之前核对本次完整提交的投影。
+    const target = new Database(before);
+    try {
+      target.pragma('foreign_keys=ON');
+      const quotas = new RelationalQuotaStore(target, {});
+      target.transaction(() => quotas.replayQuotaCommit(stored))();
+      assert.equal(databaseState(target), databaseState(f.db));
+      const checkpoint = target.serialize();
+      target.transaction(() => quotas.replayQuotaCommit(stored))();
+      assert.ok(target.serialize().equals(checkpoint));
+    } finally {
+      target.close();
+    }
+  }
+  const target = new Database(first);
+  try {
+    target.pragma('foreign_keys=ON');
+    const quotas = new RelationalQuotaStore(target, {});
+    target.transaction(() => quotas.replayQuotaCommit(initial))();
+    assert.equal(databaseState(target), databaseState(empty.db));
+    const checkpoint = target.serialize();
+    target.transaction(() => quotas.replayQuotaCommit(initial))();
+    assert.ok(target.serialize().equals(checkpoint));
+  } finally {
+    target.close();
+  }
+});
+
 test('同毫秒资金登记按原提交顺序匹配，收据字典序不能改变资金归属', async (t) => {
   const f = await setup(t);
   await f.fund('fifo-first', register('z-members-receipt', 'anlasFixed', 100, 'members'), NOW + 10);
