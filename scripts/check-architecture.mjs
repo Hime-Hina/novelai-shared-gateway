@@ -57,6 +57,7 @@ const mutations = new Set([
   'openAccountQuota',
   'applyQuotaEvents',
   'replayQuotaCommit',
+  'restoreRelationalPrivateSnapshot',
 ]);
 const persistence = new Set([
   'update',
@@ -125,7 +126,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|result-recovery|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|result-recovery|private-restore|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&
