@@ -151,9 +151,10 @@ export function createRelationalQueueRuntime(options: {
     name: string,
     code: string,
     status: number,
+    aborted: boolean,
     run?: Active,
     completion?: GenerationPhysicalCompletion,
-    aborted = !!run?.control.controller.signal.aborted,
+    error?: unknown,
   ) {
     const results = sqlite
       .transaction(() => {
@@ -175,6 +176,7 @@ export function createRelationalQueueRuntime(options: {
           aborted,
           ...(run ? { evidence: { requestStarted: !!run.timing.upstreamStartedAt } } : {}),
           ...(completion ? { completion } : {}),
+          ...(run ? { diagnostic: { dispatch: run.dispatch, error } } : {}),
         };
         results.push(
           store.failGeneration(
@@ -264,20 +266,19 @@ export function createRelationalQueueRuntime(options: {
           };
           if (current.status === 'running') {
             const aborted = run.control.controller.signal.aborted || isAbortError(failure);
-            let status = 502;
-            if (kind === 'capacity') {
-              status = 429;
-            } else if (aborted) {
-              status = 504;
+            let status = 429;
+            if (kind !== 'capacity') {
+              status = (failure as { statusCode?: number })?.statusCode || (aborted ? 504 : 500);
             }
             fail(
               current,
               'upstream-failed',
               kind === 'capacity' ? 'upstream_capacity' : 'upstream_failed',
               status,
+              aborted,
               run,
               completion,
-              aborted,
+              failure,
             );
           } else {
             const observed = response(run);
@@ -320,7 +321,16 @@ export function createRelationalQueueRuntime(options: {
       if (control && !control.controller.signal.aborted) {
         control.controller.abort(new Error('Generation deadline expired.'));
       }
-      fail(state, 'expired', 'generation_expired', 504, active.get(id));
+      fail(
+        state,
+        'expired',
+        'generation_expired',
+        504,
+        control?.controller.signal.aborted ?? false,
+        active.get(id),
+        undefined,
+        control?.controller.signal.reason,
+      );
     }
     for (const id of store.readDueGenerationReviewIds(now())) {
       const state = store.readGenerationExecutionState(id);
@@ -396,6 +406,7 @@ export function createRelationalQueueRuntime(options: {
             'dispatch-failed',
             code && /^[a-z_]{1,64}$/.test(code) ? code : 'dispatch_failed',
             status!,
+            false,
           );
         }
       }
@@ -430,7 +441,13 @@ export function createRelationalQueueRuntime(options: {
         }
         for (const id of ids) {
           afterId = id;
-          fail(store.readGenerationExecutionState(id), 'interrupted', 'executor_interrupted', 504);
+          fail(
+            store.readGenerationExecutionState(id),
+            'interrupted',
+            'executor_interrupted',
+            504,
+            false,
+          );
         }
       }
       expire();

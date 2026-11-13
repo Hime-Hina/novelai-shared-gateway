@@ -274,7 +274,11 @@ test('原在途凭据 epoch 变化仍可诊断与原资源退款，原票据脱�
       {
         diagnostic: { dispatch, error: `old response ${dispatch.pst}` },
         evidence: { requestStarted: true },
-        completion: { kind: 'ordinary' },
+        completion: {
+          kind: 'ordinary',
+          attemptId: dispatch.attemptId,
+          credentialEpoch: dispatch.credentialEpoch,
+        },
       },
       NOW + 20,
     ),

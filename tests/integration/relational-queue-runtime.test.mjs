@@ -17,6 +17,8 @@ import {
 } from '../helpers/relational-generation.mjs';
 import { createRelationalQueueRuntime } from '../../server/generation/relational-queue-runtime.ts';
 import { createRelationalMemberGenerationAdmission } from '../../server/generation/relational-member-admission.ts';
+import { createRelationalMemberGenerationHttp } from '../../server/generation/relational-member-http.ts';
+import { closeMemberGenerationStreams } from '../../server/generation/member-http.ts';
 import {
   normalizeMemberGeneration,
   materializeMemberGeneration,
@@ -30,7 +32,11 @@ import { RelationalInputStore } from '../../server/storage/relational-input-stor
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
-import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
+import {
+  withAuthenticatedMemberApiKey,
+  authenticateMemberApiKey,
+  createMemberSession,
+} from '../../server/members/authentication.ts';
 import { readRelationalArtifactContent } from '../../server/storage/relational-replica-io.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
@@ -293,6 +299,10 @@ test('真实HTTP断流保留未知责任及NULL上游完成时间，物理结束
   const attempt = f.db.prepare("SELECT * FROM generation_attempts WHERE job_id='broken-0'").get();
   assert.equal(attempt.upstream_completed_at, null);
   assert.equal(attempt.review_status, 'pending');
+  assert.equal(
+    f.db.prepare("SELECT error_status FROM generation_jobs WHERE id='broken-0'").get().error_status,
+    500,
+  );
   assert.equal(f.generations.readCharge('broken-0').status, 'refunded');
   assert.equal(
     f.db.prepare('SELECT cooldown_until AS at FROM upstream_accounts').get().at,
@@ -889,5 +899,176 @@ test('辅助操作由同一真实HTTP执行链发布原图与二进制编码，�
     assert.equal(content.descriptor.operation, index === 0 ? 'upscale' : 'encode-vibe');
   }
   await runtime.stop();
+  replayAll(t, f);
+});
+
+test('真实成员HTTP与执行器共用Map/预算/事件，退款仍占物理输入且SSE领取原本地字节', async (t) => {
+  const f = await setup(t, undefined, { seconds: 0 });
+  const session = await createMemberSession(
+    f.members,
+    await authenticateMemberApiKey(f.members, keys.m1),
+    {},
+    NOW,
+  );
+  await f.ready();
+  const controls = new Map(),
+    runtime = f.runtime({ controls }),
+    payloadBudget = createGenerationPayloadBudget(
+      () => f.inputs.activePayloadBytes(controls.values()),
+      { request: 32000, active: 20000 },
+    );
+  let commits = 0;
+  f.events.on('commit', (...args) => {
+    assert.equal(f.db.inTransaction, false);
+    assert.deepEqual(args, []);
+    commits++;
+  });
+  const handle = createRelationalMemberGenerationHttp({
+    sqlite: f.db,
+    payloadBudget,
+    events: f.events,
+    previews: runtime.previews,
+    replicas: { dataDir: f.dir },
+    scheduleQueueDrain: runtime.schedule,
+    env: f.env,
+    now: () => f.clock,
+  });
+  const memberServer = createServer(async (req, res) => {
+    if (!(await handle(req, res, new URL(req.url, `http://${req.headers.host}`)))) {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((resolve) => memberServer.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${memberServer.address().port}`,
+    streamAbort = new AbortController();
+  f.beforeStop(async () => {
+    streamAbort.abort();
+    closeMemberGenerationStreams(f.db);
+    memberServer.closeAllConnections();
+    await new Promise((resolve) => memberServer.close(resolve));
+  });
+  const memberFetch = (route, body, key, extra = {}) =>
+    fetch(origin + route, {
+      method: body ? 'POST' : 'GET',
+      headers: {
+        cookie: `nai_member_session=${session.token}`,
+        origin,
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(key ? { 'idempotency-key': key } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...extra,
+    });
+  const first = {
+      operation: 'generate',
+      model: 'nai-diffusion-4-5-full',
+      input: 'a'.repeat(6000),
+      parameters: { width: 128, height: 128, steps: 30, seed: -1 },
+    },
+    second = { ...first, input: 'b'.repeat(6000) };
+  async function confirmed(body) {
+    const result = await memberFetch('/api/member/generation/quote', body);
+    assert.equal(result.status, 200);
+    const quote = await result.json();
+    return {
+      ...body,
+      confirmation: {
+        requestFingerprint: quote.requestFingerprint,
+        versions: quote.versions,
+        maxPerJob: quote.charges.perJob[0].resources,
+        maxTotal: quote.charges.total,
+      },
+    };
+  }
+  const a = await confirmed(first),
+    b = await confirmed(second),
+    originalRename = fsPromises.rename;
+  let release,
+    entered = false;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  fsPromises.rename = async (...args) => {
+    if (String(args[0]).startsWith(f.dir) && String(args[0]).endsWith('.part')) {
+      entered = true;
+      await gate;
+    }
+    return originalRename(...args);
+  };
+  syncBuiltinESMExports();
+  const restore = () => {
+    fsPromises.rename = originalRename;
+    syncBuiltinESMExports();
+    release();
+  };
+  f.beforeStop(restore);
+  await runtime.start();
+  const accepted = await memberFetch('/api/member/generation/requests', a, 'http-physical-a');
+  assert.equal(accepted.status, 202);
+  const receipt = await accepted.json();
+  await waitFor(() => entered);
+  assert.equal(f.calls, 1);
+  assert.equal(runtime.controls, controls);
+  assert.equal(controls.size, 1);
+  assert.equal(payloadBudget.activeBytes(), runtime.activePayloadBytes());
+  assert.ok(payloadBudget.activeBytes() > 6000 && payloadBudget.activeBytes() < 20000);
+  const sse = await memberFetch(`/api/member/requests/${receipt.requestId}/events`, null, null, {
+    signal: streamAbort.signal,
+  });
+  assert.equal(sse.status, 200);
+  let streamText = '';
+  const reader = sse.body.getReader();
+  const reading = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        streamText += Buffer.from(value).toString('utf8');
+      }
+    } catch (error) {
+      if (!streamAbort.signal.aborted) {
+        throw error;
+      }
+    }
+  })();
+  await waitFor(() => streamText.includes('"status":"running"'));
+  controls.get(receipt.jobIds[0]).controller.abort(new Error('Synthetic physical timeout.'));
+  runtime.tick();
+  await waitFor(() => streamText.includes('"status":"failed"'));
+  assert.equal(f.generations.readCharge(receipt.jobIds[0]).status, 'refunded');
+  assert.equal(f.inputs.activePayloadBytes(), 0);
+  assert.ok(payloadBudget.activeBytes() > 6000);
+  const before = databaseState(f.db),
+    priorCommits = commits;
+  const blocked = await memberFetch('/api/member/generation/requests', b, 'http-physical-b');
+  assert.equal(blocked.status, 429);
+  assert.equal((await blocked.json()).code, 'queue_full');
+  assert.equal(databaseState(f.db), before);
+  assert.equal(commits, priorCommits);
+  restore();
+  await waitFor(() => controls.size === 0 && payloadBudget.activeBytes() === 0);
+  await reading;
+  assert.ok(streamText.includes('event: complete\n'));
+  const late = await memberFetch(`/api/member/requests/${receipt.requestId}`);
+  assert.equal(late.status, 200);
+  assert.equal((await late.json()).jobs[0].lateResultAvailable, true);
+  const content = await memberFetch(`/api/member/jobs/${receipt.jobIds[0]}/content`);
+  assert.equal(content.status, 200);
+  assert.deepEqual(Buffer.from(await content.arrayBuffer()), image);
+  f.clock += 10001;
+  const next = await memberFetch('/api/member/generation/requests', b, 'http-physical-b');
+  assert.equal(next.status, 202);
+  const nextReceipt = await next.json();
+  await waitFor(
+    () => f.generations.readGenerationExecutionState(nextReceipt.jobIds[0]).status === 'done',
+  );
+  assert.equal(f.calls, 2);
+  assert.equal(f.generations.readCharge(nextReceipt.jobIds[0]).status, 'settled');
+  assert.ok(commits >= 8);
+  await runtime.stop();
+  await reading;
   replayAll(t, f);
 });

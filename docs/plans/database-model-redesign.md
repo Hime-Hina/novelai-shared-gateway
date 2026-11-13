@@ -1025,11 +1025,13 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 | 冷却与代次     | 已知原 upstreamCompletedAt 的合法冷却行为保持。没有完整响应时间的断流/abort，仅真实物理结束路径可补显式 `{attemptId, credentialEpoch, kind}`；owner 拒空、错尝试和错代次，不把本地 finally 时间填成上游完成。逻辑先超时不补该证明；已结束旧 epoch 只能保存原尝试响应，不能污染新凭据冷却，同尝试退避沿原 owner 去重。                                               |
 | 通知与预览     | 最外层事务成功后在根同一个 EventEmitter 发无载荷 commit，回滚不发；关闭生命周期只发一次 close。JobPreviews 仍只有瞬时帧，逐帧不写业务事实。超时配置的三个原纯函数从旧 gateway-runtime 窄提取到 queue-dispatch，旧调用者复用，未增加另一套默认值或配置。                                                                                                             |
 
-当前 13 组实际路径专项通过：合法 ready/共享 Map、真实 HTTP/PST/本地原字节与结算、真实断流 NULL/gap、发布悬挂时退款/根 budget 拒绝真实认证受理/stop/迟到不补扣、实际 SQL 结算故障后重开恢复不重发、启动中断/原期限/核对关闭、逻辑先超时与原 epoch 的三种物理证明对照、真实成员暂停后恢复、真实 MessagePack 预览、失败事务回滚零通知、ready 后准备字节丢失拒绝、有界只读队列，以及实际辅助操作 HTTP 的原图和二进制编码发布。成功、失败、迟到及重开路径的完整业务提交恢复后钱包/任务/尝试/产物/副本与原库相同，重复零写、源零写、fetch 0，目标仍 building 且不恢复私有认证。日志 `H:\TEMP\novelai-runtime-queue-focused.log`；这些是真实本地 mock 上游 HTTP 与本地文件，不是 NAI、R2 或 PikPak 真实端点验收。
+当前 14 组实际路径专项通过：合法 ready/共享 Map、真实 HTTP/PST/本地原字节与结算、真实断流 NULL/gap、发布悬挂时退款/根 budget 拒绝真实认证受理/stop/迟到不补扣、实际 SQL 结算故障后重开恢复不重发、启动中断/原期限/核对关闭、逻辑先超时与原 epoch 的三种物理证明对照、真实成员暂停后恢复、真实 MessagePack 预览、失败事务回滚零通知、ready 后准备字节丢失拒绝、有界只读队列，实际辅助操作 HTTP 的原图和二进制编码发布，以及 Cookie 成员 HTTP 与执行器共用 Map/budget/events 的实际装配。最后一例经真实 quote/submit 自动唤醒执行，Local rename 悬挂后 signal abort 触发退款和 SSE 终态，物理输入仍使另一真实 POST 返回 429 且数据库/通知零变；真实 finally 后可 GET 原迟到字节，并用原未受理键正常接单结算。成功、失败、迟到及重开路径的完整业务提交恢复后钱包/任务/尝试/产物/副本与原库相同，重复零写、源零写、fetch 0，目标仍 building 且不恢复私有认证。日志 `H:\TEMP\novelai-runtime-queue-focused.log`；这些是真实本地 mock 上游 HTTP 与本地文件，不是 NAI、R2 或 PikPak 真实端点验收。
 
 `H:\TEMP\novelai-runtime-queue-negative-controls.mjs` 在独立 TEMP 源码副本分别删除 ready 门禁、遗漏物理输入预算、事务内提前通知和遗漏 NULL 物理结束冷却；四个原检查均明确失败，读到实际 Missing rejection、金额/计数不等的业务断言，没有把加载错误或等待超时当反例。旧已知完成时间的 T4 调用保持不变，未靠修改原物理结束 fixture 掩盖 API 语义扩大。
 
-仍需合并 #52 的共同前置：只读 quote 的恢复估算必须与 canonical accept/dispatch 的实际 quota 恢复一致，不能只在 caller 或 query 各补规则；当前 epoch 的生成 401/403 失效按 9.35 配额 owner 的明确原 response/dispatch/failure 关系接入，协调器显式传 actual signal/`isAbortError()` 的 aborted 决定，不伪造官方额度观察。事件 v3、完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
+并入 `6ab8047` 后，同树队列、受理桥、关系 HTTP、生成、输入、诊断、ready 和架构八文件联合 341/341，零跳过；后端类型、架构、默认及可信 `75ff642` 迁移历史、受影响文件格式和差异检查通过。日志 `H:\TEMP\novelai-runtime-queue-regression-fixed.log`；未运行完整后端、编译发布物、Node 24 或真实端点验收，留给固定整合候选排期。本片新增架构写能力和原 NULL 诊断 fixture 补全须随候选维护者复核。
+
+已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。当前 epoch 的生成 401/403 失效和事件 v3 等待第 9.35 节修复独审；本片不合入尚未通过候选，也不伪造官方额度观察。完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
 
 ### 9.33 #48/#31：partial 输入的已知内容读取
 
