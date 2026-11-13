@@ -41,7 +41,8 @@ export function resultFile({ imageId, operation, mimeType }: ResultIdentity): st
     throw invalid('operation is invalid.');
   }
   if (
-    !Object.hasOwn(extensions, mimeType as PropertyKey) ||
+    typeof mimeType !== 'string' ||
+    !Object.hasOwn(extensions, mimeType) ||
     (operation === 'encode-vibe') !== (mimeType as string).startsWith('application/')
   ) {
     throw invalid('MIME type does not match the operation.');

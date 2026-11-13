@@ -56,7 +56,9 @@ async function setup(t, hot = false, cold = false) {
     if ((cold ? controls.coldFailed : controls.hotFailed) || !objects.has(url.href)) {
       return new Response(null, { status: 404 });
     }
-    const bytes = objects.get(url.href);
+    const bytes = (cold ? controls.corruptCold : controls.corruptHot)
+      ? Buffer.alloc(image.length)
+      : objects.get(url.href);
     return new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
   });
   if (hot) {
@@ -129,7 +131,7 @@ test('缺失或坏 Local 回退原 R2，R2 不可读再回退实际 br PikPak；
   assert.deepEqual(hot.buffer, image);
   assert.equal(hot.storageTargetId, f.target('r2'));
   await f.hideLocal();
-  f.controls.hotFailed = true;
+  f.controls.corruptHot = true;
   const recovered = await f.read();
   assert.deepEqual(recovered.buffer, image);
   assert.equal(recovered.storageTargetId, cold);
@@ -140,6 +142,9 @@ test('缺失或坏 Local 回退原 R2，R2 不可读再回退实际 br PikPak；
     remote,
   );
   assert.deepEqual(await readFile(`${f.file}.saved`), Buffer.alloc(image.length));
+  f.controls.corruptCold = true;
+  await assert.rejects(f.read(), unavailable, '真实 R2 校验和/Brotli 拒绝后没有其他合法承诺');
+  assert.equal(databaseState(f.db), before);
 });
 
 test('只有 uploaded 的实际 PikPak 字节不冒充承诺，真实验证后才可只读领取', async (t) => {
