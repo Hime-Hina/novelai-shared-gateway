@@ -75,7 +75,7 @@ test('真实退款/核对/结案/迟到仅按原尝试计风险，白名单不�
   const f = await setup(t);
   await f.failed('one');
   await f.failed('two', 'm2');
-  f.db.transaction(() =>
+  const closed = f.db.transaction(() =>
     f.generations.closeGenerationReview(meta('close-one', NOW + 300002), 'one-0'),
   )();
   await f.publish('one-0', NOW + 300004);
@@ -96,7 +96,16 @@ test('真实退款/核对/结案/迟到仅按原尝试计风险，白名单不�
   const recovered = result.events.find((e) => e.type === 'generation_result_recovered');
   assert.equal(recovered.refundRetained, true);
   assert.ok(recovered.lossEventId);
-  assert.ok(recovered.closureEventId);
+  assert.equal(
+    recovered.closureEventId,
+    closed.events.find((e) => e.eventType === 'ReviewClosed').eventId,
+  );
+  assert.notEqual(
+    recovered.closureEventId,
+    f.db
+      .prepare("SELECT closure_event_id AS id FROM generation_attempts WHERE job_id='one-0'")
+      .get().id,
+  );
   assert.equal(result.events.find((e) => e.type === 'generation_reserved').resources.anlasFixed, 2);
   for (const secret of [
     'private-stack',
@@ -147,6 +156,44 @@ test('实际下降只累计本次observedAmount，容量只累计原正delta，�
     ['v5-24h', 'fixed-24h'],
   );
   assert.equal(databaseState(f.db), before);
+});
+
+test('未曾估计的迟到结果关联同笔实际结案，不借其他请求或后来当前投影的结案', async (t) => {
+  const f = await setup(t);
+  await f.failed('pending-recovery');
+  await f.failed('other-estimate');
+  const other = f.db.transaction(() =>
+      f.generations.closeGenerationReview(meta('other-close', NOW + 300002), 'other-estimate-0'),
+    )(),
+    published = await f.publish('pending-recovery-0', NOW + 300004),
+    original = published.events.find((e) => e.eventType === 'ReviewClosed'),
+    before = databaseState(f.db),
+    view = f.reports.readFailureAccounting(null, NOW + 300010),
+    recovered = view.events.find((e) => e.type === 'generation_result_recovered');
+  assert.equal(original.payload.status, 'result_recovered');
+  assert.equal(recovered.closureEventId, original.eventId);
+  assert.notEqual(
+    recovered.closureEventId,
+    other.events.find((e) => e.eventType === 'ReviewClosed').eventId,
+  );
+  assert.equal(
+    view.events.filter(
+      (e) => e.type === 'generation_loss_estimated' && e.jobId === 'pending-recovery-0',
+    ).length,
+    0,
+  );
+  assert.equal(databaseState(f.db), before);
+  const sql = trace(f.db);
+  f.reports.readFailureAccounting(null, NOW + 300010);
+  const query = sql.queries.find((q) => q.includes('WITH page AS MATERIALIZED')),
+    plan = sql.prepare(`EXPLAIN QUERY PLAN ${query}`).all();
+  assert.ok(
+    plan.some((row) => /SEARCH closed USING INDEX .*stream_id=/.test(row.detail)),
+    JSON.stringify(plan),
+  );
+  t.diagnostic(
+    `original-closure: ${JSON.stringify(plan.filter((row) => /closed|ORDER BY/.test(row.detail)))}`,
+  );
 });
 
 test('当前政策与原政策审计分开，资金回执/运营余额复用实际owner且不写派生状态', async (t) => {

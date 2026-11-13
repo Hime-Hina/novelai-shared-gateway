@@ -164,14 +164,24 @@ export class RelationalReportStore {
         rows = this.sqlite
           .prepare<unknown[], FailureHistoryRow>(
             `WITH page AS MATERIALIZED (
-          SELECT event_id,event_type,payload,commit_seq,event_index,occurred_at,member_id,account_id
+          SELECT event_id,event_type,payload,commit_seq,event_index,occurred_at,member_id,account_id,stream_id
           FROM domain_events WHERE (${RELATIONAL_FAILURE_EVENT_PREDICATE}) ${point ? 'AND (commit_seq,event_index)<(?,?)' : ''}
           ORDER BY commit_seq DESC,event_index DESC LIMIT 51
         ) SELECT e.event_id AS eventId,e.event_type AS type,e.payload,CAST(e.commit_seq AS TEXT) AS commitSeq,
           e.event_index AS eventIndex,e.occurred_at AS at,e.member_id AS memberId,e.account_id AS accountId,
           command.actor_id AS actorId,m.display_name AS memberName,COALESCE(json_extract(e.payload,'$.jobId'),a.job_id) AS jobId,
           a.id AS attemptId,r.operation,r.model,a.candidate_mode AS candidateMode,a.upstream_candidates AS upstreamCandidates,
-          c.v5,c.anlas_fixed AS fixed,c.anlas_purchased AS purchased,a.loss_event_id AS lossEventId,a.closure_event_id AS closureEventId,
+          c.v5,c.anlas_fixed AS fixed,c.anlas_purchased AS purchased,a.loss_event_id AS lossEventId,
+          CASE WHEN e.event_type='LateResultRecovered' THEN (
+            SELECT closed.event_id FROM domain_events closed WHERE closed.stream_id=e.stream_id
+              AND closed.event_type='ReviewClosed' AND closed.member_id IS e.member_id AND closed.account_id IS e.account_id
+              AND json_extract(closed.payload,'$.attemptId')=a.id AND json_extract(closed.payload,'$.lossEventId')=a.loss_event_id
+              AND ((json_extract(closed.payload,'$.status')='estimated_closed'
+                AND (closed.commit_seq,closed.event_index)<(e.commit_seq,e.event_index))
+                OR (json_extract(closed.payload,'$.status')='result_recovered'
+                  AND closed.commit_seq=e.commit_seq AND closed.event_index>e.event_index))
+            ORDER BY (json_extract(closed.payload,'$.status')='estimated_closed') DESC,closed.stream_version LIMIT 1
+          ) END AS closureEventId,
           a.first_unknown_at AS firstUnknownAt,a.review_deadline_at AS deadlineAt
           FROM page e JOIN commits command ON command.commit_seq=e.commit_seq
           LEFT JOIN generation_attempts a ON a.id=COALESCE(json_extract(e.payload,'$.attemptId'),

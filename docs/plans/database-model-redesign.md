@@ -1073,6 +1073,10 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 同一产品的全库格式、145 文件语法、可信原整合基线 `8c3c7e9` 迁移历史也通过；policy before=NULL 的白名单反例补入原展示专项。没有变更旧迁移、journal、CI、写入守卫或产线，查询入口尚未做真实端点或整库同规模性能宣称。
 
+独立复审以原 owner 合法执行对照确认 P2：先 estimated 再迟到时，当前 attempt.closure_event_id 已推进到结果找回结案，不能冒充原估计结案。报告只在现有薄 SQL 中按同请求/成员/账户/attempt/loss 的不可变事实角色选择先前 estimated closure；从未 estimated 则选该 LateResult 同笔之后的实际 recovered closure。Gen 当前状态和原事实不改，没有新状态或另一事件影子。定向核同损耗 DTO 其余 link：loss/首次未知/截止由首次 ReviewOpened 赋值后不重置，候选和原 charge 金额保留派发/预扣来源，policy before 已按原事实顺序取，未用最新指针替代历史。
+
+两实际分支及不同请求结案隔离、原估计 ID 与当前 closure 不等的反例均加入原专项，11/11 通过，连同原白名单两文件 18/18、零跳过；类型、架构、默认迁移与 diff 通过。实际闭包来源查询 SEARCH 原 stream 索引。该请求内少量候选角色排序存在 TEMP B-TREE，未声称完全无临时排序，也未新增索引。原独立失败脚本和原 owner 绿色控制保留在 `H:\TEMP\novelai-loss-window-independent-20261114`，固定修复后再绑定独立复审。
+
 ### 9.31 #52 关系队列与实际执行协调器（2026-11-14，实施中）
 
 基线 `75ff64213b861be36f3d3df8648af96add74e764`。本片只实现供唯一执行器装配的 `generation/relational-queue-runtime.ts`，不切现行总入口、不增加切换旧模型的开关。输入、费用、退款、产物、核对和回放继续由既有关系 owner 决定；协调器只拥有进程中的执行顺序、物理 promise 和瞬时预览。
