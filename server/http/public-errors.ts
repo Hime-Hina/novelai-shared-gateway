@@ -4,6 +4,20 @@ interface PublicError {
   name?: string;
   statusCode?: number;
   status?: number;
+  upstreamStatus?: number;
+}
+
+export function isNovelAiCapacityError(error: unknown): boolean {
+  const failure = error as PublicError;
+  if (Number(failure?.upstreamStatus) === 429) {
+    return true;
+  }
+  if ([401, 403].includes(Number(failure?.upstreamStatus))) {
+    return false;
+  }
+  return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(
+    String(failure?.message || error || ''),
+  );
 }
 
 export const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';

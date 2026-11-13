@@ -245,9 +245,8 @@ const numericFields = <T extends object, K extends keyof T>(
       amount == null ? amount : Number(amount),
     ]),
   );
-function safeEvent(row: HistoryRow) {
-  const event = JSON.parse(row.data) as FailureLedgerEvent,
-    attempt = event.attempt || {},
+export function publicFailureEvent(event: FailureLedgerEvent, memberName: string | null) {
+  const attempt = event.attempt || {},
     request = event.request || {};
   const result: Record<string, unknown> = pick(event, [
     'id',
@@ -272,7 +271,7 @@ function safeEvent(row: HistoryRow) {
     'closedAt',
     'candidateMode',
   ]);
-  result.memberName = row.memberName || (event.memberId ? '已移除成员' : null);
+  result.memberName = memberName || (event.memberId ? '已移除成员' : null);
   Object.assign(result, numericFields(event, ['amount', 'observedAmount', 'delta']));
   Object.assign(result, pick(attempt, ['operation', 'model']));
   if (event.resources || attempt.localReserved) {
@@ -356,6 +355,66 @@ const riskCte = `WITH attempts AS (
 const riskColumns = `COUNT(*) AS attempts, COALESCE(SUM(unknownAmount),0) AS unknownAmounts,
   COALESCE(SUM(v5),0) AS v5, COALESCE(SUM(anlasFixed),0) AS anlasFixed, COALESCE(SUM(anlasPurchased),0) AS anlasPurchased`;
 
+export function failureAccountingAlerts(
+  policy: LossAlertPolicy,
+  risk: FailureRisk,
+  members: readonly MemberRiskRow[],
+) {
+  const alerts: LossAlert[] = [],
+    warn = (id: string, message: string) => alerts.push({ id, level: 'warning', message });
+  const threshold = (value: number, limit: number) => value > 0 && value >= limit;
+  // 尝试风险和聚合差额可能重叠：分别比较阈值，以 OR 提示，不能相加冒充消费。
+  if (
+    threshold(risk.last24h.possible.v5, policy.v5Points24h) ||
+    threshold(risk.aggregate.last24h.v5, policy.v5Points24h)
+  ) {
+    warn(
+      'v5-24h',
+      '最近 24 小时 V5 候选风险或聚合容量差额达到观察阈值；两者未相加，不代表已确认单次消费，也不限制调用。',
+    );
+  }
+  if (
+    threshold(risk.last24h.possible.anlasFixed, policy.fixedAnlas24h) ||
+    threshold(risk.aggregate.last24h.anlasFixed, policy.fixedAnlas24h)
+  ) {
+    warn(
+      'fixed-24h',
+      '最近 24 小时固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
+    );
+  }
+  if (
+    threshold(risk.last30d.possible.anlasFixed, policy.fixedAnlas30d) ||
+    threshold(risk.aggregate.last30d.anlasFixed, policy.fixedAnlas30d)
+  ) {
+    warn(
+      'fixed-30d',
+      '最近 30 天固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
+    );
+  }
+  if (risk.last30d.possible.anlasPurchased > 0 || risk.aggregate.last30d.anlasPurchased > 0) {
+    warn(
+      'purchased-30d',
+      '最近 30 天有购买 Anlas 候选风险或聚合差额，请核对保留的记录；两者未相加，不代表已确认单次消费。',
+    );
+  }
+  if (risk.last30d.unknownAmounts) {
+    alerts.push({
+      id: 'amount-unknown',
+      level: 'info',
+      message: '存在金额未定的尝试风险；未将其当作零消费。',
+    });
+  }
+  for (const member of members) {
+    if (threshold(member.attempts, policy.memberAttempts24h)) {
+      warn(
+        `member-24h:${member.memberId || 'unknown'}`,
+        `成员 ${member.memberName || `已移除成员（${member.memberId || '未知'}）`} 最近 24 小时有 ${member.attempts} 次疑似损耗；仅提示频率，不停止退款或调用。`,
+      );
+    }
+  }
+  return alerts;
+}
+
 export function queryFailureAccounting(
   sqlite: Database.Database,
   before?: string | null,
@@ -410,64 +469,13 @@ export function queryFailureAccounting(
       }
     }
   }
-  const alerts: LossAlert[] = [],
-    warn = (id: string, message: string) => alerts.push({ id, level: 'warning', message });
-  const threshold = (value: number, limit: number) => value > 0 && value >= limit;
-  // 尝试风险和聚合差额可能重叠：分别比较阈值，以 OR 提示，不能相加冒充消费。
-  if (
-    threshold(risk.last24h.possible.v5, policy.v5Points24h) ||
-    threshold(risk.aggregate.last24h.v5, policy.v5Points24h)
-  ) {
-    warn(
-      'v5-24h',
-      '最近 24 小时 V5 候选风险或聚合容量差额达到观察阈值；两者未相加，不代表已确认单次消费，也不限制调用。',
-    );
-  }
-  if (
-    threshold(risk.last24h.possible.anlasFixed, policy.fixedAnlas24h) ||
-    threshold(risk.aggregate.last24h.anlasFixed, policy.fixedAnlas24h)
-  ) {
-    warn(
-      'fixed-24h',
-      '最近 24 小时固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
-    );
-  }
-  if (
-    threshold(risk.last30d.possible.anlasFixed, policy.fixedAnlas30d) ||
-    threshold(risk.aggregate.last30d.anlasFixed, policy.fixedAnlas30d)
-  ) {
-    warn(
-      'fixed-30d',
-      '最近 30 天固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
-    );
-  }
-  if (risk.last30d.possible.anlasPurchased > 0 || risk.aggregate.last30d.anlasPurchased > 0) {
-    warn(
-      'purchased-30d',
-      '最近 30 天有购买 Anlas 候选风险或聚合差额，请核对保留的记录；两者未相加，不代表已确认单次消费。',
-    );
-  }
-  if (risk.last30d.unknownAmounts) {
-    alerts.push({
-      id: 'amount-unknown',
-      level: 'info',
-      message: '存在金额未定的尝试风险；未将其当作零消费。',
-    });
-  }
   const members = sqlite
     .prepare<RiskParameters, MemberRiskRow>(
       `${riskCte} SELECT a.memberId, COUNT(*) AS attempts, json_extract(u.data, '$.memberAuth.username') AS memberName
     FROM attempts a LEFT JOIN users u ON u.id = a.memberId WHERE a.at >= @since24 GROUP BY a.memberId`,
     )
     .all(params);
-  for (const member of members) {
-    if (threshold(member.attempts, policy.memberAttempts24h)) {
-      warn(
-        `member-24h:${member.memberId || 'unknown'}`,
-        `成员 ${member.memberName || `已移除成员（${member.memberId || '未知'}）`} 最近 24 小时有 ${member.attempts} 次疑似损耗；仅提示频率，不停止退款或调用。`,
-      );
-    }
-  }
+  const alerts = failureAccountingAlerts(policy, risk, members);
   const rows = sqlite
     .prepare<{ order?: number; id?: string }, HistoryRow>(
       `SELECT l.id, l.order_value AS orderValue, l.data,
@@ -494,7 +502,9 @@ export function queryFailureAccounting(
     },
     risk,
     alerts,
-    events: page.map(safeEvent),
+    events: page.map((row) =>
+      publicFailureEvent(JSON.parse(row.data) as FailureLedgerEvent, row.memberName),
+    ),
     nextCursor:
       rows.length > 50
         ? Buffer.from(JSON.stringify([last!.orderValue, last!.id])).toString('base64url')

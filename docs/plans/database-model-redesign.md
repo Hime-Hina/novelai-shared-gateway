@@ -746,6 +746,18 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 日志及隔离反例位于本地 `H:\\TEMP\\novelai-reports-*.log` 与 `H:\\TEMP\\novelai-reports-20261114-validation`，独立复审证据位于 `H:\\TEMP\\novelai-reports-independent-review`。既有运行时的产物/HTTP 回归证明当前路径没有被本片破坏；新关系报告仍未接入 HTTP，不把它们写成新格式端点验收。本片不表示 #31、迁移、ready 或真实容量验收完成，最终联合候选与远端 CI 继续补同版本上线证据。新格式仍未发布，schema hash 变化要求从空 building 目标重建，不重写旧迁移或增加旧原型兼容分支。
 
+### 9.25 T6：错误与损耗的共同展示入口
+
+当前片先从既有实际调用链提取展示 owner，供整合后的关系读取接入。管理错误来自 gateway 的已鉴权摘要，选择窗口/分类后才冷读请求；损耗来自 `queryFailureAccounting()` 的原 SQL 读取，告警、互斥候选与聚合差额分开展示的规则继续归 `quota/failure-accounting.ts`。本片不写诊断、事实、钱包或私有内容，也不提前接入另一套关系查询。
+
+错误 DTO 只展示原来源已保存的字段：缺少 accountRouteId/retryCount/cost/accountCost/queueTotal、原时间、诊断或请求字段时保留 NULL；数值 0 与空字符串是明确值，不当未知。原 requestedSteps 缺少时不能用 routed steps 冒充，完成时间缺少时不能拿 updatedAt 冒充。安全错误文案和诊断长度继续复用 `http/public-errors.ts`，共享容量错误分类移回这个既有错误 owner，执行与查询共用。原规范输入、首次上下文和诊断的正确来源及私有校验仍由实际输入/generation owner 负责。
+
+损耗展示入口只接收已读取的窄数据，保留原尝试风险、聚合差额、成员频率、资金和历史分页含义；不会读取数据库或重新聚合另一套账目。关系格式的精确金额、原事件次序/游标、未知责任及诊断读取将在实际整合 SHA 上接入，不把旧 SQL 的结构当新格式事实。反例需覆盖已知零/未知、原字段缺失、隐私白名单、非相加告警和现有真实调用路径。
+
+实际入口是 `reports/generation-errors.ts` 的选择和白名单 DTO、原 `public-errors.ts` 的共同错误分类，以及 `quota/failure-accounting.ts` 的 `publicFailureEvent()` / `failureAccountingAlerts()`。gateway 在现有管理鉴权之后只适配原行、脱敏标签与选中请求的冷读取。损耗原 SQL、资金转换、分页及告警算法保留，关系读取尚未添加。耗时继续归 `generation/request-queries.ts`，终态只使用原 completedAt；没有足够原时间时返回 NULL，所有展示调用共用这一修正。
+
+六文件定向 44/44、backend 类型、架构与迁移检查通过。`report-assemblers.test.mjs` 区分未知与已知零、保留合法旧 number/数字文本、原步数与路由步数、真实 timestamp 0、完整白名单和不相加告警；`native-http.test.mjs` 已在现有真实 HTTP 诊断回归补充缺字段 NULL 与原步数来源断言，随独立技术复审后的完整检查执行。当前候选尚未完成该轮 HTTP/全量验证，不将纯展示提取写成新格式端点或诊断恢复已完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
