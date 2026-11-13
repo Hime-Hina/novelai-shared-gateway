@@ -858,6 +858,8 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 
 当前定向 [`relational-policies.test.mjs`](../../tests/integration/relational-policies.test.mjs) 48/48，含五种 opening 阈值保真/重复回放；账户/额度/架构与早期政策测试合跑 278/278，原免费/管理/成员路由 18/18、原损耗管理 HTTP 1/1。独立复核额外四场景通过，包括最低/最高有限 number、非 12 位小数、原 owner 对照和同提交第二事实失败后的真实全表回滚；新增 opening 五场景及父测试独立 6/6。类型、架构、迁移历史、受影响文件格式与差异检查已通过。完整后端、最终编译/Node 24 及远端同候选 CI 尚待执行，以上定向证据不代表整体重构、HTTP 切换或 ready 验收。
 
+固定候选 `fbd6d477aaba7c6485d749e0df9c56112d03da5b` 随后完成 Windows / Node 22.23.4 的完整后端：1114 项、1109 通过、5 项既有跳过、0 失败（228.9 秒），未改变并发、等待阈值或断言。隔离全源码副本 474 个 tracked 文件逐项 SHA-256 一致，后端构建通过；编译 JavaScript 的政策/账户/额度三文件 153/153，74 个 server 产物逐项一致。隔离 Node 24.22.1 的政策/账户/额度/新库/原 SQLite worker 五文件 173/173，254 个源与 fixture/manifest 文件逐项一致，未重编共享原生依赖。日志、候选哈希清单和验证 JSON 位于本地 `H:\TEMP\novelai-policies-validation-20261114` 与 `H:\TEMP\novelai-policies-*.log`。远端同候选 CI、实际 Linux 发布包及新格式 HTTP/ready 验收仍由后续完整闭环记录。
+
 ### 9.21 T6：关系用量、owner 统计与调用热力图
 
 本片继续 #31 的只读报告路径。`summarizeOwnerUsage()` 保有统计/展示规则，`readActivityHeatmap()` 保有窗口、参数和成员范围规则；关系 store 只提供这两个 owner 所需的窄 SQL 读取，不调用旧 JsonStore 或回填正文。HTTP 接入仍属 #52，历史写命令由其实际 owner 交付。
@@ -904,6 +906,24 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 接入共同边界修复后的固定业务候选 `53c4676`，完整后端 1,213 项（1,208 通过、5 项既有条件跳过、0 失败）；由同次后端构建的实际 JavaScript 运行 Local/replica/common 三文件 45/45，隔离 Node 24.22.1 同组三文件 45/45、零跳过，122 个源码、包描述、用例及 fixture 文件 hash 与候选一致，未重编共享原生模块。独立复核比较原八个受审文件的增量，Replica store/IO 逐字未变，生成/共同入口只接入受控追加与真实两事实白名单，历史 admin 对照继续保留原 command；三项独立反例与 Local 再次 14/14，证据绑定同一业务 SHA。原 planner 守卫在相同 query/protocol 两项反例下因未拒绝而 2/2 失败，当前完整后端保留这些断言通过。以上日志保存在 `H:\TEMP\novelai-db-replicas-20261114`，独立固定文件清单和运行日志保存在 `H:\TEMP\novelai-local-publication-independent-review`。真实存储端点、全部冗余健康、归档引用/删除、合法 ready 与同候选发布切换仍未验收，#49 保持开放。
 
 同一候选的架构、类型、后端构建、默认及实际 main `78887c9` 迁移历史、136 文件语法与全库格式检查通过。没有修改迁移基线、旧 SQL/journal、hash guard 或 CI；守卫新增内容接受维护者复核，仓库内检查不代替远端审查/合并保护。
+
+### 9.26 #47 成员停止与恢复接单契约
+
+本片基于共同完整提交 owner，接入原 `generation/queue-policy.ts` 的 `setMemberAdmission()`，只改变稳定成员 ID 对应的接单状态，不扩展分组、转移或移除。`members.accepting_jobs` 与 `admission_epoch` 是当前权威值：只有接单中变为停止时增加一次安全整数代次；重复停止和恢复保持原代次。同毫秒停止再恢复也不能让旧请求继续提交；安全整数上界不能因 number 精度重用代次。
+
+命令在原 Key/Cookie 鉴权事务中先重核当前 owner、认证 epoch 或本地管理员边界，再按原命令键及完整意图重领回执。新命令调用原 queue owner 的窄成员/等待任务视图，保留原回执、错误文案与事件顺序；不会重新规范化历史 confirmation、收费或授权。目标成员的 queued/pending 意图全部取消，running、原预扣及物理槽继续由原生成 owner 收尾。新模型预扣发生在派发时，等待意图出现 charge/attempt 属于不一致并整笔拒绝，不能补造退款。
+
+一次完整提交先保存 member 流的 `AdmissionChanged`，再保存原 request 流的 `WaitingJobsCancelled`；通过共同 `appendCommit()` 在同一 owner 保存点追加和投影。成员 owner 在投影前一次核对完整接单决定：`member_stopped` 取消必须非空、关联本提交前置的最新暂停、原 owner 原因、409 和原命令时间；实际接单回执的成员、布尔结果及有序取消 ID 必须等于该完整决定。成员投影再验证合法代次及当时所有等待意图的完整取消集合，生成 owner 保留其原未派发/无预扣尝试条件。缺失、重复、跨成员、错流、逆序、伪造代次或分叉回执均拒绝。失败被外层捕获时事实、回执、流头、游标和业务行全部不变。恢复接单不会恢复已取消任务、私有凭据或撤销的认证。
+
+验收入口为关系接单专项及原队列 owner 用例：原 owner 对照、多个请求与同名成员、同毫秒停止/恢复、旧请求与新请求、当前授权撤销后的回执重领、保存点中途故障、混合派发/结算/接单的完整提交恢复与重复零新增。目标仍 building；此处不代表新格式 HTTP 装配、ready、生产迁移或切换验收。
+
+当前实现为 `RelationalMemberStore.changeMemberAdmission()`，复用原领域命令事实收集与当前 owner 断言；共同回放向原成员 owner 显式传入该次完整提交。`assertMemberAdmissionCommit()` 持有完整决定证明，原停止文案只在 queue owner 的 `MEMBER_STOPPED_MESSAGE` 维护。不把原批次的 `cancellationReason=batch_stopped`、`reason=member_stopped` 当作管理暂停；认证撤销后的真实批次收尾与回放继续合法。架构守卫新增接单写入口/完整决定校验及查询/协议负例；原共同回放的合成 stop fixture 同步使用真实 owner 的取消代码和文案，未修改既有历史 SQL 或事实字段。原 owner 安全上界反例已实际复现：MAX_SAFE_INTEGER 后两次暂停会重用同一不安全 number；修复在首次溢出前拒绝，合法末代的重复停止与恢复保留。
+
+产品候选固定为 `27ef3fd40b0605df9db6a5702ac9a4d0f4f77c17`。本地初步接单与原队列专项 26/26，另与成员、共同回放及架构五文件首轮 246/246（新增等待异常/disabled 对照前）；类型、架构及迁移历史检查通过。故障用例在真实成员和第一任务已落行后令第二 SQL 写入失败，外层捕获仍核对全表原切点；未新增 trigger 或绕过格式/hash guard。独立审查、完整后端、编译/Node 24 和远端同候选 CI 仍待完成，后续证据继续附在本节。
+
+独立审查在该初始候选复现两例：只改停止原因仍写入伪造错误；删除暂停事实并保留空取消时，回执声称停止但成员与等待意图未改变。修复候选 `79d80f1780436189e8019ad6141105968aef3784` 将证明收回上述完整决定边界，删除仅凭当前任务状态的局部补丁。原审查脚本在旧候选 0/2、修后 2/2；本地与接单/队列/共同回放合跑 55/55，另架构负例 187/187、类型与架构检查通过。新增回归包含伪造原因、无前置暂停的空/非空取消、伪装普通批次取消、时间/回执成员/状态/集合篡改及原批次合法对照。固定修复后的独立复审、全后端和产物/Node 24 证据待同候选补齐；此前证据不替代修复候选验收。
+
+同一产品候选随后独立复审通过：原两例及合法 envelope 的遗漏、逆序、跨暂停、原原因/时间/409 和回执篡改矩阵，连同真实原序重复零写、第二 SQL 故障保持运行预扣、末代暂停/恢复对照，额外 18/18；源接单/队列/共同回放 53/53。独立审查确认原 P2 闭环，无新增 finding；日志位于本地 `H:\TEMP\novelai-admission-independent-review\admission-fixed-79d80f1.log` 与 `source-79d80f1.log`。完整后端、产物、Node 24 及远端 CI 仍待协调后验证。
 
 ### 9.28 接续候选的联合验证
 

@@ -86,3 +86,19 @@ test('停止只取消未派发任务，恢复不续旧批次、不改变登录�
   );
   assert.doesNotThrow(() => assertMemberAcceptsJobs(user, 1));
 });
+
+test('接单代次到安全整数边界后不能因暂停恢复重用，合法末代仍可恢复或重复停止', () => {
+  const user = { id: 'a', acceptingJobs: true, jobAdmissionVersion: Number.MAX_SAFE_INTEGER - 1 },
+    db = { users: [user], jobs: [] };
+  setMemberAdmission(db, 'a', false, () => {}, now);
+  assert.equal(user.jobAdmissionVersion, Number.MAX_SAFE_INTEGER);
+  setMemberAdmission(db, 'a', false, () => {}, now);
+  setMemberAdmission(db, 'a', true, () => {}, now);
+  const before = structuredClone(db);
+  assert.throws(() => setMemberAdmission(db, 'a', false, () => {}, now), /安全边界/);
+  assert.deepEqual(db, before);
+  for (const invalid of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    user.jobAdmissionVersion = invalid;
+    assert.throws(() => setMemberAdmission(db, 'a', true, () => {}, now), /安全边界/);
+  }
+});

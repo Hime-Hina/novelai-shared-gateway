@@ -128,6 +128,9 @@ for (const filename of [
       "import { RelationalMemberStore as Store } from '../storage/relational-member-store.ts'; new Store(raw);",
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
+    ['member admission command', 'memberStore.changeMemberAdmission(command,input,actor);'],
+    ['member admission commit', 'memberStore.assertMemberAdmissionCommit(events,receipt);'],
+    ['queue admission owner', 'setMemberAdmission(view,id,false,refund);'],
     [
       'business replayer construction',
       "import { RelationalCommitReplayer as Replayer } from '../storage/relational-replay.ts'; new Replayer(raw);",
