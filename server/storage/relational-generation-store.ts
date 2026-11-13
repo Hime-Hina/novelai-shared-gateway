@@ -304,6 +304,13 @@ export class RelationalGenerationStore {
       },
     };
   }
+  readMemberGenerationCapabilities(memberId: string) {
+    return memberGenerationCapabilities(
+      this.policyView(this.policy()),
+      { id: memberId },
+      { env: this.env },
+    );
+  }
   private authorize(metadata: Metadata, job: Job, systemOnly = false) {
     if (metadata.actorKind === 'member' && (systemOnly || metadata.actorId !== job.memberId)) {
       fail('任务命令归属不符', 403);
@@ -379,6 +386,60 @@ export class RelationalGenerationStore {
       )
       .all();
   }
+  readAcceptedGenerationReceipt(
+    metadata: Metadata,
+    mapping: NonNullable<ReturnType<RelationalInputStore['readGenerationIdempotency']>>,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation receipt requires the current authenticated transaction.');
+    }
+    const member = this.sqlite
+      .prepare<[string | null], { status: string; epoch: string | null }>(
+        'SELECT status,auth_epoch AS epoch FROM members WHERE id=?',
+      )
+      .get(metadata.actorId);
+    if (metadata.actorKind !== 'member' || member?.status !== 'active' || !member.epoch) {
+      fail('成员授权已失效', 401);
+    }
+    const prior = readRelationalReceipt(this.sqlite, metadata);
+    const request = this.sqlite
+      .prepare<
+        [string | null],
+        {
+          memberId: string;
+          contextId: string | null;
+          sampleCount: number;
+        }
+      >(
+        'SELECT member_id AS memberId,context_id AS contextId,sample_count AS sampleCount FROM generation_requests WHERE id=?',
+      )
+      .get(mapping.requestId);
+    const jobs = this.sqlite
+      .prepare<[string | null], { id: string }>(
+        'SELECT id FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+      )
+      .all(mapping.requestId);
+    if (
+      !prior ||
+      mapping.resolution !== 'live' ||
+      mapping.requestId !== mapping.originalRequestId ||
+      prior.commitSeq !== mapping.commitSeq ||
+      mapping.originalCommandId !== metadata.commandId ||
+      mapping.intentFingerprint !== metadata.fingerprint ||
+      request?.memberId !== metadata.actorId ||
+      request.contextId !== mapping.contextId ||
+      jobs.length !== request.sampleCount ||
+      jobs[0]?.id !== mapping.originalJobId ||
+      canonicalJson(prior.receipt) !==
+        canonicalJson({ requestId: mapping.requestId, jobIds: jobs.map((j) => j.id) })
+    ) {
+      throw Object.assign(new Error('原请求的任务或回执不可领取；再次生成须使用新操作键。'), {
+        statusCode: 410,
+        code: 'result_unavailable',
+      });
+    }
+    return prior;
+  }
   acceptGeneration(metadata: Metadata, input: AcceptedInput) {
     return this.owned(() => {
       const m = this.sqlite
@@ -425,11 +486,7 @@ export class RelationalGenerationStore {
         const confirmation = parseMemberGenerationConfirmation(input.confirmation);
         assertMemberGenerationVersions(
           confirmation,
-          memberGenerationCapabilities(
-            this.policyView(this.policy()),
-            { id: input.memberId },
-            { env: this.env },
-          ).versions,
+          this.readMemberGenerationCapabilities(input.memberId).versions,
         );
         const request = { ...input.request, normalizationContext: input.context.member };
         if (typeof request.model !== 'string' || typeof request.prompt !== 'string') {

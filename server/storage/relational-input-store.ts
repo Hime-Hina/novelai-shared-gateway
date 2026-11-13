@@ -47,6 +47,7 @@ export interface AcceptedInput {
   confirmation: MemberGenerationConfirmation | null;
   request: RecoverableRequest;
   context: RelationalNormalizationContext;
+  idempotencyKeyHash?: string;
   jobs: {
     jobId: string;
     status: 'queued' | 'pending';
@@ -98,6 +99,7 @@ export const relationalInputFacts = new Set<RelationalEvent['eventType']>([
   'ContextRegistered',
   'RequestAccepted',
   'JobAccepted',
+  'RequestAliasRegistered',
 ]);
 
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
@@ -260,6 +262,10 @@ export class RelationalInputStore {
     events: RelationalCommand['events'],
     body: Record<string, unknown> | null,
     context: RelationalNormalizationContext,
+    command: Pick<
+      RelationalCommand,
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt'
+    >,
   ): void {
     const requests = events.filter((event) => event.eventType === 'RequestAccepted');
     if (requests.length !== 1 || !body) {
@@ -315,6 +321,33 @@ export class RelationalInputStore {
             ).seed
           : null;
       if (child.payload.actualSeed !== expected) {
+        unavailable();
+      }
+    }
+    const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
+    if (aliases.length > 1) {
+      unavailable();
+    }
+    for (const alias of aliases) {
+      const a = alias.payload;
+      if (
+        a.memberId !== p.memberId ||
+        alias.memberId !== p.memberId ||
+        alias.accountId !== null ||
+        a.operation !== p.operation ||
+        a.requestId !== p.requestId ||
+        a.jobId !== children[0].payload.jobId ||
+        a.contextId !== p.contextId ||
+        a.originalCommandId !== command.commandId ||
+        a.intentFingerprint !== command.fingerprint ||
+        command.actorKind !== 'member' ||
+        command.actorId !== p.memberId ||
+        canonicalJson(command.receipt) !==
+          canonicalJson({
+            requestId: p.requestId,
+            jobIds: children.map((child) => child.payload.jobId),
+          })
+      ) {
         unavailable();
       }
     }
@@ -475,14 +508,35 @@ export class RelationalInputStore {
           },
         });
       });
-      this.assertAcceptedEvents(events, prepared.body, prepared.context);
+      if (accepted.idempotencyKeyHash !== undefined) {
+        events.push({
+          ...common,
+          streamId: `request:${accepted.requestId}`,
+          eventType: 'RequestAliasRegistered',
+          payload: {
+            memberId: accepted.memberId,
+            operation: prepared.body.operation as RequestRow['operation'],
+            keyHash: accepted.idempotencyKeyHash,
+            intentFingerprint: metadata.fingerprint,
+            requestId: accepted.requestId,
+            jobId: accepted.jobs[0].jobId,
+            contextId: prepared.contextId,
+            originalCommandId: metadata.commandId,
+          },
+        });
+      }
+      const receipt = {
+        requestId: accepted.requestId,
+        jobIds: accepted.jobs.map((job) => job.jobId),
+      };
+      this.assertAcceptedEvents(events, prepared.body, prepared.context, { ...metadata, receipt });
       const expectedVersions = Object.fromEntries(events.map((event) => [event.streamId, '0']));
       const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
       const result = appendRelationalCommit(this.sqlite, {
         ...command,
         events,
         expectedVersions,
-        receipt: { requestId: accepted.requestId, jobIds: accepted.jobs.map((job) => job.jobId) },
+        receipt,
       });
       if (!contextExists) {
         this.sqlite
@@ -563,6 +617,31 @@ export class RelationalInputStore {
             p.cacheKey,
             event.eventId,
           );
+      } else if (event.eventType === 'RequestAliasRegistered') {
+        const p = event.payload;
+        this.sqlite
+          .prepare(
+            `INSERT INTO idempotency_keys(
+          original_member_id,operation,key_hash,intent_fingerprint,original_request_id,
+          original_job_id,original_command_id,request_id,commit_seq,context_id,resolution,
+          origin_ref,archived_receipt,created_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,'live',?,NULL,?,?)`,
+          )
+          .run(
+            p.memberId,
+            p.operation,
+            p.keyHash,
+            p.intentFingerprint,
+            p.requestId,
+            p.jobId,
+            p.originalCommandId,
+            p.requestId,
+            BigInt(event.commitSeq),
+            p.contextId,
+            event.eventId,
+            event.occurredAt,
+            event.eventId,
+          );
       }
     }
   }
@@ -598,7 +677,7 @@ export class RelationalInputStore {
           unavailable();
         }
         contexts.set(event.payload.contextId, context);
-        this.assertAcceptedEvents(stored.events, input.body, context);
+        this.assertAcceptedEvents(stored.events, input.body, context, stored.command);
       }
       if (event.eventType === 'InputRegistered') {
         inputs.set(
@@ -711,6 +790,25 @@ export class RelationalInputStore {
         if (!replayed) {
           this.applyAcceptedEvents([event]);
         }
+      } else if (event.eventType === 'RequestAliasRegistered') {
+        if (replayed) {
+          const p = event.payload;
+          const mapping = this.readGenerationIdempotency(p.memberId, p.operation, p.keyHash);
+          if (
+            !mapping ||
+            mapping.intentFingerprint !== p.intentFingerprint ||
+            mapping.originalCommandId !== p.originalCommandId ||
+            mapping.requestId !== p.requestId ||
+            mapping.contextId !== p.contextId ||
+            mapping.originalJobId !== p.jobId ||
+            mapping.commitSeq !== event.commitSeq ||
+            mapping.resolution !== 'live'
+          ) {
+            unavailable();
+          }
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
       } else {
         throw new Error("Input projection cannot apply another owner's facts.");
       }
@@ -786,6 +884,31 @@ export class RelationalInputStore {
       unavailable();
     }
     return this.context(request.context_id);
+  }
+
+  readGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
+    return (
+      this.sqlite
+        .prepare<
+          [string, string, string],
+          {
+            intentFingerprint: string;
+            originalCommandId: string;
+            originalRequestId: string;
+            originalJobId: string;
+            requestId: string | null;
+            contextId: string | null;
+            commitSeq: string | null;
+            resolution: 'live' | 'archived' | 'unavailable';
+          }
+        >(
+          `SELECT intent_fingerprint AS intentFingerprint,original_command_id AS originalCommandId,
+      original_request_id AS originalRequestId,original_job_id AS originalJobId,request_id AS requestId,
+      context_id AS contextId,CAST(commit_seq AS TEXT) AS commitSeq,resolution FROM idempotency_keys
+      WHERE original_member_id=? AND operation=? AND key_hash=?`,
+        )
+        .get(memberId, operation, keyHash) || null
+    );
   }
 
   readMemberInput(requestId: string, memberId: string) {

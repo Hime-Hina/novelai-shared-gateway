@@ -44,6 +44,8 @@ const mutations = new Set([
   'setMemberStatus',
   'replayMemberCommit',
   'acceptGeneration',
+  'createRelationalMemberGenerationAdmission',
+  'admitRelationalMemberGeneration',
   'dispatchGeneration',
   'recordGenerationResponse',
   'prepareGenerationResult',
@@ -150,7 +152,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|generation\/relational-member-admission|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

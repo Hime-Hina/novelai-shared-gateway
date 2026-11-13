@@ -885,6 +885,24 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 
 日志及隔离反例位于本地 `H:\\TEMP\\novelai-reports-*.log` 与 `H:\\TEMP\\novelai-reports-20261114-validation`，独立复审证据位于 `H:\\TEMP\\novelai-reports-independent-review`。既有运行时的产物/HTTP 回归证明当前路径没有被本片破坏；新关系报告仍未接入 HTTP，不把它们写成新格式端点验收。本片不表示 #31、迁移、ready 或真实容量验收完成，最终联合候选与远端 CI 继续补同版本上线证据。新格式仍未发布，schema hash 变化要求从空 building 目标重建，不重写旧迁移或增加旧原型兼容分支。
 
+### 9.24 #52 成员生成受理桥（2026-11-14，未装配 HTTP）
+
+本片以 `5207f7562e7dbdfad9ffa28573793322d5150a16` 为基线，只提供随后真实成员 HTTP 可直接调用的 `createRelationalMemberGenerationAdmission()`。规范继续归[成员生成契约第 5 节](../contracts/member-generation-contract.md#5-费用确认受理与幂等)，不启动 building 新库、不改 ready、不替换现行运行时；HTTP 路由/同源/正文读取、调度、发布包端点和切换验收仍未完成。
+
+| 约束             | 本片权威来源及行为                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 身份与代次       | 原 `withAuthenticatedMemberSession()` / `withAuthenticatedMemberApiKey()` 在关系成员 owner 的同一 immediate 事务内重验当前凭据、auth epoch 与 Discord 资格；正文不能指定 memberId、账户或费用来源。原回执也先经过当前认证。                                                                                                                      |
+| 意图与首次上下文 | 原 `readGenerationIdempotencyKey()`、键摘要、`normalizeMemberGeneration()` 和确认规范化共同服务旧/新 caller。先按 `(memberId, operation, keyHash)` 查映射，再按已保存上下文比较意图和原确认；最新默认值/政策、取消、队列和余额不覆盖已受理操作。随机意图保留，首次实际 uint32 seed 只在新受理时 materialize，child 沿原规则派生。                |
+| 薄键事实         | 复用已有 `RequestAliasRegistered`，与 Context/Input/Request/Job 在同一提交保存；Input owner 核对同成员、操作、请求、首 child、上下文、原 command/fingerprint 和完整回执。`idempotency_keys` 只投影关联和摘要，不复制请求正文、首次上下文或完整回执。归档/不可用映射明确返回 410，不生成第二批。OpeningIdempotency 的迁移投影仍属后续离线 owner。 |
+| 当前准入与原子性 | 新请求由既有 `acceptGeneration()` 校验当前接单 epoch/队列、能力/计价版本、指纹、实际逐图收费与免费次数；上限不足或任何 SQL 失败回滚事实、正文/BLOB、薄键、回执和任务。外层捕获异常也不能保留半笔受理。临时 payload claim 在同一同步受理后由 SQL 活动输入接管，失败/重放释放。物理在途占用仍由调用方传入原 payload budget 的活动字节读取 owner。  |
+| 完整恢复与边界   | 共同 `RelationalCommitReplayer` 按原完整提交和受保护输入应用 RequestAliasRegistered，重复核对映射后零写入；不调用上游，不恢复当前私有认证，目标仍 building。只读能力描述复用原 capabilities owner 和已有关系 policyView，不构造通用旧 JsonStore 副本；新格式 quote 端点尚待接入。                                                                |
+
+新增受理 factory/命令加入既有架构写能力守卫，查询/协议不得直接取得该写能力；这是 #52 的具体装配需求，须与本片代码一起经维护者复核。现行旧 caller 仅把同一键摘要提成共享小函数，没有改变旧受理和事件/SQL 历史。
+
+专项 `relational-member-admission.test.mjs` 11 组通过：真实 Key/Cookie、随机意图与首次实际 seed、等值确认金额、同键原 defaults 与取消回执、当前 epoch/撤销、跨成员/跨协议薄键、归档不可用拒绝、两种辅助操作的私有附件、SQL 中途失败、外层捕获后的保存点原子性、活动正文预算移交，以及完整提交/受保护输入回放和首 child 关联反例。联合输入、生成、共同回放、真实旧成员 HTTP、旧幂等受理及架构守卫七文件 279/279，类型、架构、历史迁移和差异检查通过；日志 `H:\TEMP\novelai-runtime-admission-focused.log`。
+
+TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` 在隔离源码副本分别改用当前上下文、延迟预算移交、删除首 child 关系守卫，三个原检查均明确失败；日志分别证明合法旧键被错误拒绝、第二笔被重复预算阻塞、伪造首 child 被错误接受，未把加载/依赖错误当成业务反例。本片完整检查和独立审查结果在候选固定后补录，不表示 #52、新格式 HTTP、合法 ready 安装、迁移或生产切换已验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
