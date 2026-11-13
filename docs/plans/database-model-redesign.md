@@ -1033,6 +1033,8 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 自动续图回归在首图完成后只推进测试时钟，不再次手动 tick，实际定时器在原 gap 后派发下一 child。真实 accept owner 会用原 `queueDeadline()` 固化等待期限，输入参数的 NULL 不是最终 JobAccepted 的 NULL；现 OpeningJobRecorded 尚未有回放 owner，不把 parser 允许的 nullable 字段冒充合法 ready 路径，也不因此增加另一轮询机制。
 
+固定 `6541d0cac708a0127eda798d21c9c45c0e2feb70` 独立技术复审通过，原 14 组加两组独立反例同次 16/16、零跳过：真实 HTTP→Local rename 悬挂、逻辑退款后，共用物理 Map 仍使真实账户轮换 owner 拒绝且全库零变，实际 finally 释放后才允许；真实上游 503 在诊断已暂存、原事实已追加及 charge 已退款后，由 JobFailed 投影触发 SQL 故障，原事务全部回滚且不发假 commit，重开只恢复未知责任、不重发上游。检查同时核对已知完成时间的原 gap、NULL 时间的原 attempt/epoch 证明及显式 abort 来源；没有新增确认问题。独立脚本、日志和 11 个文件 hash 在 `H:\TEMP\novelai-runtime-independent-20261114`，源 tracked clean；`d88ac5d` 到该固定点的产品逐字相同，独审不包含待修 9.35、完整后端或发布/真实存储端点验收。
+
 已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。当前 epoch 的生成 401/403 失效和事件 v3 等待第 9.35 节修复独审；本片不合入尚未通过候选，也不伪造官方额度观察。完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
 
 ### 9.33 #48/#31：partial 输入的已知内容读取
