@@ -50,6 +50,7 @@
 - [浏览器基线](history/browser-baseline.md)：首屏、缓存和浏览器验收证据。
 - [事件重构性能验证](history/refactor-performance-evidence.md)：对照方法、正式运行口径、容量和重放证据；小样本与正式结果分别标识。
 - [数据模型迁移前置盘点](history/database-model-preflight.md)：固定线上副本的聚合盘点、终态开账类别试验、实际回放覆盖及待决定的恢复范围；不代表正式迁移或切换验收。
+- [真实旧归档恢复验证](history/database-model-archive-recovery-20261114.md)：固定旧包的真实源审计、从零事件重建、资源测量及历史查询/审计来源缺口；不代表完整归档或新格式 ready。
 - [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 
 新增文档放进对应目录并补充此索引；技术规则维护在所属文档，历史测量保留原日期和证据，不复制多个“当前版本”说明。
