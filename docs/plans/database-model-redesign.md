@@ -907,6 +907,16 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 
 同一候选的架构、类型、后端构建、默认及实际 main `78887c9` 迁移历史、136 文件语法与全库格式检查通过。没有修改迁移基线、旧 SQL/journal、hash guard 或 CI；守卫新增内容接受维护者复核，仓库内检查不代替远端审查/合并保护。
 
+### 9.23 #50 离线完整核对与 ready 安装契约
+
+`storage/relational-ready.ts` 的 `verifyAndInstallRelationalStorage(target, source)` 仅接收离线 building 目标和明确选定的受保护一致性源：源路径及 SHA-256、history ID、非零完整最终提交切点和实际副本读取配置。源为封存的只读单文件，不能与目标同一文件；开始、私有恢复和最终安装都核对原 SHA。当前入口不定义全新空服务 bootstrap，不把格式、外键或游标相等当作完整恢复证明，也不自动转换旧库。
+
+在临时磁盘 shadow 从空库依原完整提交顺序重建，复用唯一业务回放、输入及私有恢复 owner。实际源包含任何尚无投影的事实，或包含尚无恢复 owner 的非空诊断，都整体拒绝；不忽略未知类别、不把原始事件存下就当业务已恢复。重建源与 shadow、目标与 shadow 均逐表、逐主键有界比较，覆盖当前 DDL 全部表；metadata 精确核对，projection 状态只容许 building 到 ready 的这一步变化。业务行不能缺少或多出，原 queued/未决责任、期限及 NULL 保持；私有全空只放宽私有集合，不能替代业务核对。目标私有若非空必须与选定快照完全一致，同 public commitSeq 的另一份私有快照不能覆盖。
+
+SQL 事务外，依具体 replica owner 有界枚举每个非退休产物，至少一份 active、verified 候选必须经实际 Local/R2/PikPak 定位、配置和字节验证。仅 uploaded 的回执不够，verified 时间也不能代替本次读取；若一个候选坏但另一份原事实/配置/字节均合法，可继续恢复。这只证明每个承诺在线产物至少一份可读，不宣称每份冗余或独立归档闭包全健康。准备结果还须由生成 owner 核验原准备事实和输入，并由只读 result-files owner 核验存在的 final/part；至少一份完整字节且无原 owner 认定的冲突，才能安装。不会调用 publisher、补发布、退款或重新请求上游。
+
+对象 IO 前仅保留私有状态的瞬时有界指纹；IO 后在最终写事务重新核对选定源、完整切点、全部业务表及当前私有状态，才调用原私有恢复并安装 ready。最终状态更新失败时私有恢复与状态一并回滚。没有长期 applied/核对通过标记，没有其他原始 ready 写入口，也不允许 SQL 事务跨异步对象 IO。目标若在 IO 期间变化，安装者拒绝且不覆盖其他写入。完整候选的专项、独立审查和发布证据随实现固定后记录，本契约不代表未实现事实或生产切换验收已通过。
+
 ### 9.26 #47 成员停止与恢复接单契约
 
 本片基于共同完整提交 owner，接入原 `generation/queue-policy.ts` 的 `setMemberAdmission()`，只改变稳定成员 ID 对应的接单状态，不扩展分组、转移或移除。`members.accepting_jobs` 与 `admission_epoch` 是当前权威值：只有接单中变为停止时增加一次安全整数代次；重复停止和恢复保持原代次。同毫秒停止再恢复也不能让旧请求继续提交；安全整数上界不能因 number 精度重用代次。
@@ -926,6 +936,16 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 同一产品候选随后独立复审通过：原两例及合法 envelope 的遗漏、逆序、跨暂停、原原因/时间/409 和回执篡改矩阵，连同真实原序重复零写、第二 SQL 故障保持运行预扣、末代暂停/恢复对照，额外 18/18；源接单/队列/共同回放 53/53。独立审查确认原 P2 闭环，无新增 finding；日志位于本地 `H:\TEMP\novelai-admission-independent-review\admission-fixed-79d80f1.log` 与 `source-79d80f1.log`。完整后端、产物、Node 24 及远端 CI 仍待协调后验证。
 
 与 Local 发布片真实整合后发现普通请求取消也返回 `cancelledJobIds`，仅凭该公共字段会误拒合法的成员取消。`0f8a102eb47cb502eba8ecf1bd256f768255dc0d` 按接单的 `acceptingJobs` 或成员 `id` 与取消列表组合判别，原普通请求的 `requestId` 回执继续归原生成 owner。新增非 owner 成员真实 Key 取消、原 actor/回执、重复零写及完整恢复正对照；接单/Local/共同回放 61/61，原独立反例矩阵 18/18 与类型检查通过，未修改 Local 合法调用断言。该修复后的独立复核与完整候选验证继续由后续整合记录。
+
+### 9.27 T5：只读产物内容与恢复字节核对
+
+本片提供 ready 核对及后续 HTTP 领取共同使用的具体只读 owner，不签发成员权限；HTTP 调用者仍须在所属认证/查询 owner 核对当前成员和结果归属。产物原 SHA、长度、MIME、操作及成员/输入来自原发布事实和关系行；副本可用承诺来自同一产物的 active、uploaded 且 verified 事实，定位只使用其真实目标 namespace、object key 和 encoding，不按当前默认目录猜测旧来源。
+
+`readRelationalArtifactContent(sqlite, artifactId, {dataDir,r2?,pikpak?})` 在 Local、R2、PikPak 候选中读取至少一份实际合法原字节，返回原 descriptor、buffer 和实际 storageTargetId。坏候选可回退其他合法承诺副本，所有候选缺失/损坏、配置不符或只有 uploaded 时拒绝；不把 verified 时间替代真实读取。只支持现实际 writer 的 Local/R2 identity 与 PikPak br，未知/其他编码显式拒绝。IO 前后核对产物、副本、目标来源及当前实际客户端配置；退休或并发变化不能返回旧读取成功。读取不依赖后台空闲资格，不发起上传/删除，不写副本事实、错误状态或私有认证。
+
+`readRecoverableArtifacts(afterId, limit)` 按严格产物 ID 游标和显式上界枚举非退休产物，供完整安装有界核对；不复制全表 DTO 或输入正文。`readStoredResultContent(dataDir, descriptor)` 只核对最终文件；`readPreparedStoredResultContent(dataDir, descriptor)` 核对所有存在的 final/part，任一损坏均拒绝，至少一份完整才返回内容，否则返回 null。两者复用原内容算法，使用只读文件句柄，不同步、重命名、补写、自动完成或退款。prepared 字节存在不意味着已发布，不据此伪造 Local 事实或 ready。
+
+验收覆盖真实 Local/R2/PikPak owner 和 mock 网络、uploaded-only/错误编码/缺失坏字节、namespace/凭据及来源在 IO 等待中变化、读取前后数据库和原文件保持不变、严格分页与退休排除，以及只读准备文件的 final/part 组合、损坏和只读权限。至少一份可读只证明该产物可恢复，不宣称全部冗余健康、归档闭包、真实端点或最终切换通过。
 
 ### 9.28 接续候选的联合验证
 

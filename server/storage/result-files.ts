@@ -41,7 +41,8 @@ export function resultFile({ imageId, operation, mimeType }: ResultIdentity): st
     throw invalid('operation is invalid.');
   }
   if (
-    !Object.hasOwn(extensions, mimeType as PropertyKey) ||
+    typeof mimeType !== 'string' ||
+    !Object.hasOwn(extensions, mimeType) ||
     (operation === 'encode-vibe') !== (mimeType as string).startsWith('application/')
   ) {
     throw invalid('MIME type does not match the operation.');
@@ -86,7 +87,11 @@ export function assertStoredResultDescriptor(
     throw invalid('descriptor is invalid.');
   }
 }
-function checkContent(pending: StoredResultDescriptor, buffer: unknown): asserts buffer is Buffer {
+export function assertStoredResultContent(
+  pending: unknown,
+  buffer: unknown,
+): asserts buffer is Buffer {
+  assertStoredResultDescriptor(pending);
   if (!Buffer.isBuffer(buffer) || buffer.length !== pending.byteLength) {
     throw invalid('length does not match the descriptor.');
   }
@@ -117,6 +122,7 @@ export function describeStoredResult(
 async function readCandidate(
   file: string,
   pending: StoredResultDescriptor,
+  writable = false,
 ): Promise<Buffer | null> {
   let stat;
   try {
@@ -133,15 +139,43 @@ async function readCandidate(
   if (stat.size !== pending.byteLength) {
     throw invalid('file length does not match the descriptor.');
   }
-  const handle = await open(file, 'r+');
+  const handle = await open(file, writable ? 'r+' : 'r');
   try {
     const buffer = await handle.readFile();
-    checkContent(pending, buffer);
-    await handle.sync();
+    assertStoredResultContent(pending, buffer);
+    if (writable) {
+      await handle.sync();
+    }
     return buffer;
   } finally {
     await handle.close();
   }
+}
+async function resultDirectory(dataDir: string): Promise<string> {
+  const directory = path.resolve(dataDir, 'images'),
+    stat = await lstat(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw invalid('images directory must not be a symbolic link.');
+  }
+  return directory;
+}
+
+export async function readStoredResultContent(dataDir: string, pending: unknown) {
+  assertStoredResultDescriptor(pending);
+  await resultDirectory(dataDir);
+  const buffer = await readCandidate(path.resolve(dataDir, pending.file), pending);
+  return buffer ? { buffer, mimeType: pending.mimeType } : null;
+}
+
+// 准备结果保持发布器的冲突语义：所有存在的 final/part 都须完整，读取绝不推进发布。
+export async function readPreparedStoredResultContent(dataDir: string, pending: unknown) {
+  assertStoredResultDescriptor(pending);
+  await resultDirectory(dataDir);
+  const file = path.resolve(dataDir, pending.file),
+    final = await readCandidate(file, pending),
+    partial = await readCandidate(`${file}.part`, pending),
+    buffer = final ?? partial;
+  return buffer ? { buffer, mimeType: pending.mimeType } : null;
 }
 async function syncDirectory(directory: string): Promise<void> {
   // Windows 无可移植的目录 fsync；仅 Linux 等支持平台保证此目录项同步步骤。
@@ -165,17 +199,13 @@ export async function publishStoredResult(
 ): Promise<ResultContent | null> {
   assertStoredResultDescriptor(pending);
   if (buffer !== undefined) {
-    checkContent(pending, buffer);
+    assertStoredResultContent(pending, buffer);
   }
-  const directory = path.resolve(dataDir, 'images'),
-    stat = await lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) {
-    throw invalid('images directory must not be a symbolic link.');
-  }
+  const directory = await resultDirectory(dataDir);
   const file = path.resolve(dataDir, pending.file),
     partial = `${file}.part`;
-  const existing = await readCandidate(file, pending),
-    staged = await readCandidate(partial, pending);
+  const existing = await readCandidate(file, pending, true),
+    staged = await readCandidate(partial, pending, true);
   if (existing) {
     await syncDirectory(directory);
     return { buffer: buffer ?? existing, mimeType: pending.mimeType };

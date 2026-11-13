@@ -155,6 +155,12 @@ for (const filename of [
     ],
     ['direct private snapshot restore', 'restoreRelationalPrivateSnapshot(raw,path,hash);'],
     [
+      'ready installer alias',
+      "import { verifyAndInstallRelationalStorage as install } from '../storage/relational-ready.ts'; install(raw,source);",
+    ],
+    ['dynamic ready installer', "await import('../storage/relational-ready.js');"],
+    ['direct ready installation', 'verifyAndInstallRelationalStorage(raw,source);'],
+    [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
