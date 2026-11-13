@@ -18,6 +18,9 @@ function amount(name: string, nullable = false): string {
 }
 
 const fact = 'source_event_id TEXT NOT NULL REFERENCES domain_events(event_id)';
+// 开账事实时刻不能冒充未知的原实体创建时间；所有查询共用此角色解释。
+const jobCreatedAtSql = `CASE WHEN event_type = 'OpeningJobRecorded'
+  THEN json_extract(payload, '$.createdAt') ELSE occurred_at END`;
 
 export const RELATIONAL_SCHEMA_SQL = `
 CREATE TABLE app_meta (
@@ -57,6 +60,13 @@ CREATE TABLE domain_events (
   UNIQUE (commit_seq, event_index),
   UNIQUE (stream_id, stream_version)
 ) STRICT;
+
+CREATE VIEW generation_job_origins AS
+SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
+  json_extract(payload, '$.requestId') AS request_id, ${jobCreatedAtSql} AS created_at
+FROM domain_events WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
+  WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
 
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')

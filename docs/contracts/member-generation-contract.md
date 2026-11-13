@@ -249,6 +249,8 @@ V5/Anlas fallback 是互斥收费路径，不能把两者加起来显示成单�
 - **附件读取**：input 中的图片/编码字段使用本响应 assets 中的稳定槽位引用，assets 给出 slot、合法 MIME、长度和上述 Cookie 读取 URL。slot 只从该请求的已验证附件字段/数组索引映射，不拼任意磁盘路径；复用浏览器先读取字节再作为新 JSON/multipart 输入，不让服务器下载 URL。复用原 generation_requests 数据，不额外复制一套素材库。历史输入本来未保存则 recoverable=false，不能猜出原蒙版或提示词。
 - **产物读取**：新 Cookie 内容接口仅在存在完整可领取结果时返回 200 与实际 MIME/原始字节。未完成为 409 result_not_ready，失败无结果为 409 generation_failed，原产物被清理为 410 result_unavailable；他人或不存在的 job 为 404。退款后的完整迟到结果返回 200，不补扣。旧 `/api/jobs/:id/content` 的 SVG 错误图兼容行为保持，不复制到新接口。
 
+新关系格式的 request 状态继续区分父受理与 child 原创建时刻：job.createdAt 来自原 JobAccepted 事实，历史 Opening 仅使用有来源的可空 createdAt 字段；未知返回 NULL，不能回填父受理时间、开账/迁移日或 0。调用热力图不把未知日期归入任一天，owner 全部保留记录可显示“未知日期”分组。
+
 所有请求/附件/产物都重复校验成员归属；停止接单成员仍可查看、取消等待及领取既有结果。合法会员会话失效时返回认证错误，不把它伪装成结果丢失。输入响应不泄漏内部账号、PST、会话、签名密钥或与该成员无关的规范化上下文。
 
 ## 7. 错误与传输契约

@@ -122,13 +122,14 @@ export interface ManagementUsageCounts {
   running: number;
   refunded: number;
   free: number;
-  v5: number;
-  fixed: number;
-  purchased: number;
+  v5: number | null;
+  fixed: number | null;
+  purchased: number | null;
   averageWaitSeconds: number | null;
   averageGenerationSeconds: number | null;
 }
 export interface ManagementUsage {
+  coverage?: 'retained-records';
   days: (ManagementUsageCounts & { id: string; label: string })[];
   since: string;
   until: string;
@@ -140,17 +141,18 @@ export interface ManagementUsage {
     id: string;
     memberId: string;
     username: string;
-    model: string;
+    model: string | null;
     status: string;
-    createdAt: string;
+    createdAt: string | null;
     waitSeconds: number | null;
     generationSeconds: number | null;
-    resource?: string;
+    resource?: string | null;
     amount?: number | null;
     fixed?: number | null;
     purchased?: number | null;
-    chargeStatus?: string;
-    errorStatus?: number;
+    chargeStatus?: string | null;
+    knownNoCharge?: boolean;
+    errorStatus?: number | null;
   }[];
 }
 export interface ManagementLossPolicy {
