@@ -291,6 +291,14 @@ test('encode-vibe 两种 binary MIME 按不透明非空数据保存和恢复，�
     assert.equal(pending.file, `images/img_vibe_${index}.bin`);
     assert.equal((await publishStoredResult(directory, pending, bytes)).buffer, bytes);
     assert.deepEqual(await publishStoredResult(directory, pending), { buffer: bytes, mimeType });
+    assert.deepEqual(await readStoredResultContent(directory, pending), {
+      buffer: bytes,
+      mimeType,
+    });
+    assert.deepEqual(await readPreparedStoredResultContent(directory, pending), {
+      buffer: bytes,
+      mimeType,
+    });
     await writeFile(path.join(directory, pending.file), Buffer.from([0, 255, 19, 43]));
     await assert.rejects(publishStoredResult(directory, pending), invalid);
     assert.throws(
