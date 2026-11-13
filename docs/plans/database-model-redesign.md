@@ -1195,6 +1195,26 @@ OAuth callback 的 GET 跨站例外仍只依赖原 state、浏览器 Cookie、Ho
 
 固定认证候选 `8f846f4` 已经父任务逐函数核对原登录、Discord、Cookie 和续期提取；原五项加两个独立实际 localhost 反例 7/7。合法安装后撤下 ready 状态，既有 handler 的后续登录拒绝、无 Cookie 且私有数据不变；真实重置凭据后，旧 Cookie 在可见页面续期前拒绝，不复活旧会话。证据为 `H:\TEMP\novelai-auth-http-independent.log`。与成员生成 HTTP、ready 及架构反例汇合后四文件 268/268、类型检查通过；没有以新 auth factory 代替唯一生产入口、原 Native/OpenAI 或发布物验收。
 
+### 9.38 新格式离线联合恢复 CLI
+
+从固定 `43334c8` 增加 `scripts/restore-relational.mjs`，只装配已有格式/快照、InputStore、共同完整提交回放、私有恢复、实际副本读取和唯一 ready installer；业务规则、事实、DDL、守卫、CI 与旧格式解释器不变。操作说明见[新格式离线联合恢复](../operations/relational-recovery.md)。这是所选当前新格式一致性私有快照的恢复入口，不选择 A/B、不自行决定会话取舍，也不转换旧数据库。
+
+六个显式参数绑定 source、SHA、history、完整非零 cut、output 和 data-dir；读取源封存单文件，128 个完整提交一页重建全新 building 暂存库，保护正文由原输入 owner 读取，业务回放不恢复认证或触发外效。唯一 installer 继续负责 shadow、全部表、所选私有切点和真实 Local/R2/PikPak/准备文件核对及 ready 原子转换；原 IO 配置复用既有环境变量 owner，没有任意新认证格式、网络写入或 verified 捷径。
+
+输出同父 private 暂存目录申请 0700/文件 0600；Windows 明确依赖预先限制父目录 ACL。关闭/checkpoint、封存检查、文件同步和源 SHA 复核后，原生硬链接独占发布，不覆盖 output、sidecar 或源；source 的 sidecar 路径也不能作为新 output。独占硬链接是最终成功点，全部可拒绝恢复的检查在之前完成，之后不对可变 output 路径做撤回/删除。剩余私有暂存清理失败以成功回执中的 stagingCleanup=incomplete 和 stagingPath 准确报告；递归清理前确认绝对暂存路径仍是显式父目录的直接子目录。发布前失败只记录固定阶段/错误码，不泄漏正文或认证；没有双格式、续跑状态或手工 ready 路径。
+
+专项通过真实 CLI 子进程核对跨 128 提交分页、全业务/私有表、原 queued/核对期限、退款/退休/诊断、所选 Key 轮换与实际 Local 原图；坏清单、未知格式、缺保护正文/对象、已有输出/sidecar、源路径冲突和发布竞态均拒绝且源字节不变。Windows 实际核对大小写、namespace、junction 别名；发布后清理故障仍成功并准确报告私有暂存路径，外部替换 output 不被删除。
+
+独立复核 `83e3312` 在源码与编译 CLI 均复现发布后 stat→unlink 的可变路径竞态：旧 stat 返回后替换 output，随后 unlink 会删除外部文件。不能用重复 stat 根治；已撤掉发布后的 output 检查与删除，将唯一 exclusive link 作为成功点。原失败语义用例改为检查成功/残留的准确回执，并保留原 stat 后替换反例，验证新路径根本不会进入 output 撤回窗口；不是忽略 cleanup 异常或伪装恢复失败。旧编译副本在新发布专项有三个子用例准确失败（含父计数 4 fail），日志 `H:\TEMP\novelai-restore-cli-retract-old.log`；新发布专项 5/5。
+
+Node 22.23.4 修复后源码专项 29/29、同产品真实编译 CLI 29/29，零跳过；后者子进程关闭 TypeScript strip，运行现有 tsc/package-backend 产物及改写后的 `.js` 依赖。类型发射、架构、默认与可信 `43334c8` 基线迁移历史、脚本语法和受影响文件格式/差异检查通过。隔离编译副本删除唯一 installer 后，缺对象反例错误发布并被原断言识别；另在硬链接失败后增加覆盖 rename 的错误实现，原发布竞争反例准确失败，其余边界仍绿。两负控在修复后重跑，各有一个业务反例失败（含父测试计数各 2 fail），没有修改候选 owner 或生产数据。日志为 `H:\TEMP\novelai-restore-cli-source-final.log`、`-compiled-final.log`、`-no-installer-final.log` 和 `-overwrite-final.log`，独立审查待固定候选复核。
+
+全量、Node 24、真实端点、同规模及生产切换由统一候选继续验收，不以本地工具通过代替 #48/#53 闭环。
+
+修复 `d6435e6710218448e4dfb8d4513c0f09b40b7258` 已独立技术复审通过：源码及关闭 TypeScript strip 的真实编译入口共 14/14，保留原 `83e3312` 在 stat 之后真实写入外部替换文件却被误删的反例。固定版本在独占发布后不再读写 output，清理只处理私有 stage；前置失败不发布，已发布后的清理失败准确返回成功及残留路径。原源、已存在硬链接、发布竞态、保护正文、篡改钱包、无秘密错误和真实 ready 均有可运行对照，22 个源码及 105 个编译文件摘要已绑定审查报告 `H:\TEMP\novelai-restore-cli-independent-83e3312\INDEPENDENT-REVIEW.md`。
+
+汇合当前 v3 后 CLI 专项 29/29：保留 source/cut/私有及全部业务表、原保护内容和实际 Local 核对；合成未决超时使用原 requestStarted 证据，不把请求时间误传为物理结束证明。编译/Node 24 与新固定完整后端仍由本批统一验证，不沿用前一原型的编译结果。
+
 ### 9.41 接续整合验证记录
 
 固定 `39941f86759ddd560e10bea6708804279857071e` 在 Node 22.23.4 的首轮完整后端为 1592 项：1583 通过、4 失败、5 项原条件跳过，耗时 209.746 秒。原日志 `H:\TEMP\novelai-followup-full-39941f8.log` 保留，不能将这轮记为通过。失败分别是组测试遗漏显式 aborted、两处退款夹具把合法自动恢复混入原钱包断言，以及私有恢复夹具仍手工分派到 generation-only 回放而拒绝新增 quota 子提交。

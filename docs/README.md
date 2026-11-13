@@ -39,6 +39,7 @@
 
 - [正式发布与回退](operations/production-release.md)：当前发布记录、生产配置、备份及回退依据。
 - [隔离测试部署](operations/test-deployment.md)：测试环境、模拟上游、发布产物和阶段验收。
+- [关系格式离线恢复](operations/relational-recovery.md)：完整提交与保护内容重建、所选私有快照及合法 ready 安装；不解释旧格式或执行生产切换。
 
 ## 历史与证据
 
