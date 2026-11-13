@@ -14,7 +14,7 @@ import type {
   RelationalFact,
 } from '../events/relational-events.ts';
 import { relationalFactStream } from '../events/relational-fact-contracts.ts';
-import type { MemberUser } from '../members/authentication.ts';
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
 import {
   assertOwnerAccountPst,
   assertOwnerAccountCredentialChangeAllowed,
@@ -86,28 +86,14 @@ export class RelationalAccountStore {
     return this.sqlite.transaction(run)();
   }
   private authorize(metadata: AccountCommandMetadata, member: MemberUser | null) {
-    if (metadata.actorKind === 'admin' && member === null) {
-      return;
-    }
     const current =
       member &&
       this.sqlite
-        .prepare<[string], { status: string; auth_epoch: string | null }>(
-          'SELECT status,auth_epoch FROM members WHERE id=?',
+        .prepare<[string], { status: string; authEpoch: string | null }>(
+          'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
         )
         .get(member.id);
-    if (
-      metadata.actorKind !== 'member' ||
-      !member ||
-      metadata.actorId !== member.id ||
-      member.id !== this.env.OWNER_USER_ID ||
-      !member.enabled ||
-      !member.memberAuth?.version ||
-      current?.status !== 'active' ||
-      current.auth_epoch !== member.memberAuth.version
-    ) {
-      fail('账户配置需要当前 owner 或本地管理员授权', 403);
-    }
+    assertCurrentOwnerCommand(metadata, member, current, this.env);
   }
   private command(metadata: AccountCommandMetadata, input: OwnerAccountMutation) {
     // 轮换的秘密不进入事实；命令意图摘要仍区分不同 PST，防止同键不同操作。

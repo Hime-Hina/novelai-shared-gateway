@@ -184,7 +184,8 @@ CREATE TABLE sharing_policy (
   free_warning_threshold INTEGER CHECK (free_warning_threshold > 0),
   free_hard_limit INTEGER CHECK (free_hard_limit > 0),
   loss_policy_version INTEGER NOT NULL CHECK (loss_policy_version > 0),
-  ${amount('loss_v5_24h')},
+  -- 这是只用于告警比较的原生 number 阈值，不是钱包金额。
+  loss_v5_24h REAL NOT NULL CHECK (loss_v5_24h >= 0 AND loss_v5_24h <= 1.7976931348623157e308),
   ${amount('loss_fixed_24h')},
   ${amount('loss_fixed_30d')},
   loss_member_attempts_24h INTEGER NOT NULL CHECK (loss_member_attempts_24h >= 0),

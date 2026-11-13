@@ -24,6 +24,7 @@ import {
 } from './authentication.ts';
 import {
   configureFairGroups,
+  configureAnlasFallback,
   fairQuotaSummary,
   estimateFairQuota,
   syncFairQuota,
@@ -650,36 +651,8 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'fallback-policy') {
-      if (typeof body.enabled !== 'boolean') {
-        error(400, 'enabled 必须为布尔值');
-      }
-      const enabled = body.enabled;
       const result = await updateManagement(
-        (db) => {
-          const state = db.settings.fairQuota;
-          if (!state?.enabled) {
-            error(409, '共享账本尚未配置');
-          }
-          state.autoAnlasFallback = enabled;
-          const at = Date.now();
-          state.policyHistory = [
-            ...(state.policyHistory || []),
-            { at, actor: 'administrator', autoAnlasFallback: enabled },
-          ].slice(-1000);
-          recordDomainEvent(db, {
-            eventType: 'PolicyChanged',
-            streamId: 'sharing:default',
-            occurredAt: at,
-            payload: {
-              policy: 'autoAnlasFallback',
-              value: enabled,
-              actorId,
-              actor: 'administrator',
-              at,
-            },
-          });
-          return { autoAnlasFallback: enabled };
-        },
+        (db) => configureAnlasFallback(db, body.enabled, actorId),
         { collections: ['settings'], immediate: true },
       );
       reply(res, 200, result);

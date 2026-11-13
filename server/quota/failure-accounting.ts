@@ -1,12 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type {
-  FairCharge,
-  FairQuotaDatabase,
-  FairQuotaState,
-  Resource,
-  ResourceAmounts,
-} from './fair-share.ts';
+import type { FairCharge, Resource, ResourceAmounts } from './fair-share.ts';
 import type { GenerationAttempt } from '../generation/accounting.ts';
 import type { OperatingAccount } from './operating-accounting.ts';
 import { recordDomainEvent } from '../events/domain-events.ts';
@@ -19,9 +13,9 @@ export interface LossAlertPolicy {
   memberAttempts24h: number;
 }
 type PolicyField = Exclude<keyof LossAlertPolicy, 'version'>;
-type PolicyDatabase = FairQuotaDatabase & {
+type PolicyDatabase = {
   settings: {
-    fairQuota?: (FairQuotaState & { lossAlertPolicy?: Partial<LossAlertPolicy> | null }) | null;
+    fairQuota?: { lossAlertPolicy?: Partial<LossAlertPolicy> | null } | null;
   };
   ledger: unknown[];
 };
