@@ -116,11 +116,19 @@ for (const filename of [
     ['scoped Discord save', 'transaction.saveAuthentication(user);'],
     [
       'password HTTP writer',
-      "import { handleMemberAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+      "import { handleMemberAuthenticationRoutes as login } from '../members/authentication-http.ts'; login(req,res,url,deps);",
     ],
     [
       'Discord HTTP writer',
-      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/authentication-http.ts'; login(req,res,url,deps);",
+    ],
+    [
+      'aliased session renewal HTTP writer',
+      "import { renewMemberCookie as renew } from '../members/authentication-http.ts'; renew(req,res,store,env);",
+    ],
+    [
+      'relational authentication HTTP writer factory',
+      "import { createRelationalMemberAuthenticationHttp as create } from '../members/relational-authentication-http.ts'; create(deps);",
     ],
     ['direct key mutation', 'authStore.memberApiKeyTransaction(hash,fn);'],
     [

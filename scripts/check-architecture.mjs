@@ -38,6 +38,8 @@ const mutations = new Set([
   'saveAuthentication',
   'handleMemberAuthenticationRoutes',
   'handleMemberDiscordAuthenticationRoutes',
+  'renewMemberCookie',
+  'createRelationalMemberAuthenticationHttp',
   'memberApiKeyTransaction',
   'withAuthenticatedMemberSession',
   'withAuthenticatedMemberApiKey',

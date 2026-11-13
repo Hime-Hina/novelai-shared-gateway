@@ -1,4 +1,4 @@
-import type { IncomingMessage } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export const memberCookieName = 'nai_member_session';
 function error(statusCode: number, message: string): never {
@@ -51,4 +51,27 @@ export async function readMemberJson(req: IncomingMessage): Promise<Record<strin
     error(400, '请求内容无效');
   }
   return value as Record<string, unknown>;
+}
+
+export function replyMemberJson(res: ServerResponse, status: number, value: unknown): void {
+  const text = JSON.stringify(value);
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-length': Buffer.byteLength(text),
+    'x-content-type-options': 'nosniff',
+  });
+  res.end(text);
+}
+export function setMemberCookie(
+  req: IncomingMessage,
+  res: ServerResponse,
+  token: string,
+  expiresAt = 0,
+  additional: string[] = [],
+): void {
+  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''));
+  const maxAge = token ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0;
+  const value = `${memberCookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${maxAge}; Expires=${new Date(expiresAt).toUTCString()}${local ? '' : '; Secure'}`;
+  res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
 }
