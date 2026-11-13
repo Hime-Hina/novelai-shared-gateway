@@ -1033,7 +1033,7 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 实际 artifact 引用守卫的原 EXPLAIN 会扫描 jobs 和全部 prepared attempts；本片仅为该真实谓词新增 artifact_id/request_id 和 prepared_artifact_id/job_id 两个部分覆盖索引，并以 UNION ALL 流式逐 request 核对。实际调用捕获的查询计划使用两索引，无全表扫描或临时排序；这不代替同规模容量/耗时验收。未发布 schema hash 因索引变化而更新，旧原型按原 guard 从空 building 库重建；旧 SQL/journal 未改。
 
-当前源码专项 20/20；连 generation/replicas/queries/common replay/storage 六文件 101/101，零跳过。共享旧 helper 的历史/缓存三项与新写门禁四项拒绝反例均通过，类型、架构、默认 migration 检查通过。首轮夹具误用 input.request、截断提交未同步 expectedVersions 和将 Native 免费限额误当受理期拒绝的失败日志保留；修正测试工具，不把这些当产品红例。最终独立复审、编译/Node 24 与完整后端由本片后续固定候选和统一队列候选给出，不沿用前置 reader/ready 的完整绿色结果。日志位于 `H:\TEMP\novelai-db-replicas-20261114`。
+当前源码专项 20/20；连 generation/replicas/queries/common replay/storage 六文件 101/101，零跳过。共享旧 helper 的历史/缓存三项与新写门禁四项拒绝反例均通过，类型、架构、默认及可信 main `78887c9` migration 检查通过。固定业务候选 `3b9e901` 的隔离负控分别移除完整选择指纹比较或物理 controls.has：前者漏集合两子例均报 Missing expected exception，后者仅 physical 子例报 Missing expected rejection；还原后原两组 9/9，候选源码未修改。首轮夹具误用 input.request、截断提交未同步 expectedVersions 和将 Native 免费限额误当受理期拒绝的失败日志保留；修正测试工具，不把这些当产品红例。最终独立复审、编译/Node 24 与完整后端由本片后续固定候选和统一队列候选给出，不沿用前置 reader/ready 的完整绿色结果。日志位于 `H:\TEMP\novelai-db-replicas-20261114`。
 
 ## 10. 事实依据与修订
 
