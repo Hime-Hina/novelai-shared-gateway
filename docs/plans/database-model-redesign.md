@@ -1123,7 +1123,9 @@ Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、�
 
 验收包括原零权/正权盗分和自报净预算膨胀红例、非零比例和最小尾数、原恢复速率/负债/容量优先级、观察扣款/抵消/返回和资金归属组合、配置后来变化的原序完整恢复、缺少/篡改组成事实，以及真实第二钱包 SQL 失败外层捕获后全表回滚。原先要求错误采纳先写两个钱包的测试对齐为原决定预校验零钱包写入；有限来源跨 owner 消费与真实后段 SQL 故障的回滚反例继续保留。这些关键断言的变化须随候选接受维护者复核。未改变旧 SQL/journal、留存政策、生产入口或 ready 安装。
 
-固定产品 `43654c510c403aa690252bbc8bb537de9e9879e7`：新增专项 63/63，连账户、分组、额度和共同回放五文件 243/243；同一产品的十文件联合（再含原 fair quota、集成、结算、运营资金和首组预览）363/363，零跳过。原 reviewer 两个零权反例及另增 100→1000 预算反例均已从红转绿；源码类型、架构、默认及可信 `78887c9` 旧迁移历史、格式和差异检查通过。真实第二钱包 AFTER UPDATE 故障明确观察到两次写入后整笔回滚；完整业务恢复不产生上游请求，也不恢复 PST。证据分别为 `H:\TEMP\novelai-allocation-rights-final-product.log`、`H:\TEMP\novelai-allocation-rights-43654c5-ten.log` 与 `H:\TEMP\novelai-allocation-rights-original-fixed.log`。独立复审正在固定候选进行；完整后端、编译发布物、Node 24 及统一事件 v3 整合由父任务的同候选队列验证，不借用前一片全量证据。
+固定产品 `43654c510c403aa690252bbc8bb537de9e9879e7`：新增专项 63/63，连账户、分组、额度和共同回放五文件 243/243；同一产品的十文件联合（再含原 fair quota、集成、结算、运营资金和首组预览）363/363，零跳过。原 reviewer 两个零权反例及另增 100→1000 预算反例均已从红转绿；源码类型、架构、默认及可信 `78887c9` 旧迁移历史、格式和差异检查通过。真实第二钱包 AFTER UPDATE 故障明确观察到两次写入后整笔回滚；完整业务恢复不产生上游请求，也不恢复 PST。证据分别为 `H:\TEMP\novelai-allocation-rights-final-product.log`、`H:\TEMP\novelai-allocation-rights-43654c5-ten.log` 与 `H:\TEMP\novelai-allocation-rights-original-fixed.log`。完整后端、编译发布物、Node 24 及统一事件 v3 整合由父任务的同候选队列验证，不借用前一片全量证据。
+
+独立复审已绑定产品 `43654c5` 通过：原两个反例保持原字节，旧 `0df3c70` 的 0/2 红转为 2/2 绿；额外九项在旧候选为两合法对照绿、七个真实 mutation 红，固定候选 9/9 全绿。新增矩阵还覆盖正权 3:1 交换、删光观察同步/只删分配、恢复窗口偷进未来、扣款确认净 2 先匹配运营资金 1 却伪造 split 与成员分配，以及返回 50 应抵消旧 gap 100 却伪造成员 credit。与本片新专项同次 74/74；既有观察采纳与跨 owner 消费专项 9/9，有限来源仍在真实 memberApplied 后拒绝重复消费。原 sync 完整 payload 与有意义的来源 ID、独立规划边界和真实第二钱包回滚已静态及运行复核，无剩余 finding。日志为 `H:\TEMP\novelai-groups-independent-review\allocation-rights-74-final.log`、同目录 `existing-context.log`；这仍是本地源码证据，未代替统一发布/端点验收。
 
 ## 10. 事实依据与修订
 
