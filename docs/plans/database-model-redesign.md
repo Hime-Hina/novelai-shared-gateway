@@ -1287,6 +1287,10 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 Node 22.23.4 新专项 8/8、配置/输入/完整回放/ready/格式/架构七文件 346/346，以及认证 HTTP/诊断/成员 HTTP/Native HTTP/队列五文件 61/61，均零跳过。五文件首轮的唯一诊断夹具使用了初始化前的 cut，已把真实配置初始化放在该业务之前，同一修正候选全组通过。backend 类型、架构、默认及可信 `3d2bafd7` 迁移历史、改动格式与 diff 检查通过。日志为 `H:\TEMP\novelai-current-configuration-focused.log`、`novelai-current-configuration-seven-files.log`、`novelai-current-configuration-http-runtime.log`。独立审查及错误实现反例随后绑定固定候选；完整后端、编译产物、Node 24、HTTP sole 装配、正式迁移与切换仍由父任务同候选验收，本段不把存储 owner 验证写成线上端点完成。
 
+技术产品固定 `9f546567c52623b2ed2d8ee9fc3a3d46eaee32a8`，25 个改动文件与该 Git 对象逐项核对。TEMP ready 负控最初被前置私有恢复的 Number 文件号误判挡住，没有把这次提前拒绝计作反例成功；实际 NTFS 两个不同 inode 为 `6917529027678021698/1699`，默认 Number 同为 `6917529027678022000`。该问题由私有恢复 owner 独立固定 `7c7652bc817891b64752d3ccafb63d763e167d00`，不混入本片产品。
+
+仅在 `9f546567` 的 TEMP 归档副本加载 `7c7652bc` 精确私有恢复源码后，原 8/8 对照通过；分别移除 current 显式核对、重复回放目标 profile 存在核对，原相同业务断言精确失败为 `Missing expected rejection/exception`。证据在 `H:\TEMP\novelai-current-configuration-negative-9f54656-20261114` 的 `baseline.log`、`negative-ready-current.log`、`negative-replayed-repair.log` 和 `negative-evidence.json`，后者明确两固定来源及 ready/input/private 三文件恢复 SHA。真实 Number 提前误拒记录保留在 `identity-probe-number-stat-original.log`。独立技术复审由另一 agent 按固定产品进行；父任务仍需把已审依赖纳入同一候选完成整体恢复与发布验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
