@@ -1201,6 +1201,20 @@ OAuth callback 的 GET 跨站例外仍只依赖原 state、浏览器 Cookie、Ho
 
 整合修正仅涉及测试：逐次声明非取消；两处不验证恢复的夹具显式 `seconds: 0` 且保留全部精确金额断言；私有恢复改用现唯一完整业务 replayer，保留原保护源、提交篡改及私有撤销检查。相应四文件 100/100。后续分配权限修复、损耗读取、工具及真实 HTTP 耦合汇合后再以固定版本重跑完整套件；目前没有接续候选的编译包、Node 24、远端 CI 或正式发布结论。
 
+### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
+
+本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。
+
+成员身份和当前可读性由原认证事务及 RequestStore 的 active/private epoch 检查决定，归属使用稳定 `member_id`，不比较当前 Key。换 Key 不影响同成员历史或既有合法 Cookie；停止接单仍可读，停用立即拒绝。HTTP 后续须在网络等待后进入原当前会话事务，不以等待前快照授权。成员与产物归属、父子退休状态直接在 SQL 核对，无额外 imageIds 纠偏。内部返回 artifact ID，签名 URL 仍由实际运行时配置 owner 生成，不在查询中读取或发送 Key。
+
+请求详情、子任务页和迟到列表共用同一薄行与原收费组装。创建时间只使用 `generation_job_origins`：普通 `JobAccepted` 的原 header，或 `OpeningJobRecorded.createdAt`，不取当前 `source_event_id` header、父受理日或导入时点。未知 `createdAt/model` 为 NULL，已知时间 0 保留；原时间未知的保留记录不被任意 `until` 排除，按 SQLite NULL 升序首/降序尾排序。`until` 约束已知原创建时点，不承诺对后来导入记录或状态变更形成数据库快照。当前金额先按原定点 owner 合并分池，仅由现 `memberCharge()` 在兼容公开 DTO 边界转 number；原 `estimated` 未知为 NULL，缺收费行为 NULL，已归档收费按 `original_job_id/original_member_id` 保留其真实零和分池，不猜当前报价或 upstreamBilling。类型定义只补实际 nullable 和 billing mode 范围，未改变 formatter 算法或 Web 行为。
+
+迟到列表按原找回时点/ID 倒序取最近 10 条，覆盖冷历史。必须同时有未退休本人父子任务、未退休本人可领取产物、原 refunded 收费与同请求/成员/job/artifact 的不可变找回证据；普通 `LateResultRecovered` 核对原发生时间及 `refundRetained`，开账则核对原 `OpeningJobRecorded.lateResultAt`。已知找回时间 0 有效。失败与原退款不因领取变更，当前来源指针不替代历史找回角色。SVG 等原结果读取不支持的类型继续不产生领取引用，缓存产物的原 input/attempt 不被改写为当前请求。
+
+新增源码专项覆盖实际旧 JsonStore 的多 child 总量、跨页/空页、until、三种排序、状态和字面转义搜索对照；原 child 时点与父时点不同的完整提交；partial Opening 的未知/0 与未来 header、原已归档零收费/未知估算及找回时间 0；真实派发/退款/Local 发布的 12 条迟到历史、本人/他人和任务/产物退休、损坏归属/伪找回时点；换 Key/Cookie/停止接单/停用；重开与共同完整提交回放后同一 DTO。Opening 实体 owner 尚未支持的部分使用明确标注的有来源只读夹具，不冒称已完成开账导入、私有恢复或 ready 安装。业务回放仍不恢复认证，读验证只提供独立当前 epoch。
+
+实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
