@@ -134,11 +134,16 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   return text;
 }
 
-export function errorDetailMessage(error: unknown): string {
+export function errorDetailMessage(error: unknown, knownSecrets: readonly string[] = []): string {
   const value = error as PublicError;
-  return String(value?.stack || value?.message || error || '')
-    .trim()
-    .slice(0, 4000);
+  let detail = String(value?.stack || value?.message || error || '').trim();
+  // 原在途凭据只供捕获时精确脱敏，不能进入事件、回执或恢复状态。
+  for (const secret of knownSecrets) {
+    if (secret) {
+      detail = detail.replaceAll(secret, '[REDACTED]');
+    }
+  }
+  return detail.slice(0, 4000);
 }
 
 export function isAbortError(error: unknown): boolean {
