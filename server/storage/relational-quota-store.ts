@@ -1131,6 +1131,7 @@ export class RelationalQuotaStore {
     }
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
+    const observationResources = new Map<string, Set<string>>();
     for (const e of events) {
       if (
         !relationalQuotaFacts.has(e.eventType) ||
@@ -1261,6 +1262,30 @@ export class RelationalQuotaStore {
             new Set(p.allocations.map((x) => x.memberId)).size !== p.allocations.length
           ) {
             fail('分配来源或成员身份不符');
+          }
+          if (source.type === 'QuotaObserved') {
+            // 采纳可后于分配；真实采纳校验失败仍由整个命令保存点回滚。
+            if (
+              !events.some(
+                (adoption) =>
+                  adoption.eventType === 'QuotaBaselineAdopted' &&
+                  adoption.accountId === accountId &&
+                  adoption.commitSeq === e.commitSeq &&
+                  adoption.payload.observationEventId === p.sourceEventId,
+              )
+            ) {
+              fail('观察型分配缺少本次同账户同观察的基线采纳');
+            }
+            const used = observationResources.get(p.sourceEventId) ?? new Set<string>();
+            for (const r of resources) {
+              if (parseAmount(p.sourceResources[r]) > 0n) {
+                if (used.has(r)) {
+                  fail('同观察同资源的分配来源不能重复消费');
+                }
+                used.add(r);
+              }
+            }
+            observationResources.set(p.sourceEventId, used);
           }
           if (source.type === 'FundingReceived' || source.type === 'DebitsConfirmed') {
             const original = sources.get(p.sourceEventId);

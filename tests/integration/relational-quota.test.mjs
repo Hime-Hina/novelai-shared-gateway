@@ -590,6 +590,147 @@ test('初始三池分配与多收据分批到账保持原 owner 结果并能完�
   }
 });
 
+test('观察型分配绑定有效采纳并按观察和资源仅消费一次，失败由保存点整笔回滚', async (t) => {
+  for (const mode of [
+    'later-commit',
+    'same-before-adoption',
+    'same-after-adoption',
+    'readopt-old',
+    'invalid-adoption',
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await setup(t),
+        snapshot = f.db.serialize(),
+        saved = await f.observe({ fixed: '9000' }, NOW + 10),
+        stored = readRelationalCommit(f.db, saved.commitSeq),
+        allocationIndex = stored.events.findIndex((e) => e.eventType === 'AllocationApplied'),
+        adoptionIndex = stored.events.findIndex((e) => e.eventType === 'QuotaBaselineAdopted');
+      assert.ok(allocationIndex < adoptionIndex);
+      assert.equal(wallet(f).anlasFixed, '4500');
+      assert.equal(wallet(f, 'm2').anlasFixed, '4500');
+      let before = snapshot,
+        bad = structuredClone(stored);
+      const insert = (index, eventIndex) => {
+        const event = {
+            ...structuredClone(bad.events[0]),
+            eventType: stored.events[eventIndex].eventType,
+            payload: structuredClone(stored.events[eventIndex].payload),
+          },
+          input = {
+            ...structuredClone(bad.command.events[0]),
+            eventType: event.eventType,
+            payload: structuredClone(event.payload),
+          };
+        event.eventId = `extra-${mode}`;
+        bad.events.splice(index, 0, event);
+        bad.command.events.splice(index, 0, input);
+        bad.eventCount++;
+        const firstVersion = BigInt(bad.events[0].streamVersion);
+        for (const [i, e] of bad.events.entries()) {
+          e.eventIndex = i;
+          e.streamVersion = String(firstVersion + BigInt(i));
+        }
+      };
+      if (mode === 'later-commit' || mode === 'readopt-old') {
+        before = f.db.serialize();
+        const next = f.refill(NOW + 600100, `reuse-observation-${mode}`);
+        bad = readRelationalCommit(f.db, next.commitSeq);
+        assert.equal(bad.events.length, 1);
+        for (const events of [bad.events, bad.command.events]) {
+          events[0].eventType = 'AllocationApplied';
+          events[0].payload = structuredClone(stored.events[allocationIndex].payload);
+        }
+        if (mode === 'readopt-old') {
+          insert(bad.events.length, adoptionIndex);
+        }
+      } else if (mode === 'invalid-adoption') {
+        const observed = stored.events.findIndex((e) => e.eventType === 'QuotaObserved');
+        for (const events of [bad.events, bad.command.events]) {
+          events[observed].payload.observedAt = NOW;
+        }
+      } else {
+        insert(
+          mode === 'same-before-adoption' ? adoptionIndex : bad.events.length,
+          allocationIndex,
+        );
+      }
+      const target = new Database(before);
+      try {
+        target.pragma('foreign_keys=ON');
+        let walletWrites = 0;
+        target.function('observe_wallet_write', () => {
+          walletWrites++;
+        });
+        target.exec(`CREATE TEMP TRIGGER observation_wallet_probe
+          AFTER UPDATE OF anlas_fixed_available ON wallets
+          BEGIN SELECT observe_wallet_write(); END;`);
+        const quotas = new RelationalQuotaStore(target, {}),
+          unchanged = databaseState(target);
+        target.transaction(() =>
+          assert.throws(
+            () => quotas.replayQuotaCommit(bad),
+            (error) => error.statusCode === 409 && /来源|分配|采纳|基线/.test(error.message),
+          ),
+        )();
+        if (mode === 'invalid-adoption' || mode === 'readopt-old') {
+          assert.equal(walletWrites, 2, '先应用两个钱包，再由真正的采纳检查拒绝');
+        }
+        assert.equal(databaseState(target), unchanged);
+        if (mode !== 'later-commit' && mode !== 'readopt-old') {
+          target.transaction(() => quotas.replayQuotaCommit(stored))();
+          assert.equal(databaseState(target), databaseState(f.db));
+          const checkpoint = target.serialize();
+          target.transaction(() => assert.equal(quotas.replayQuotaCommit(stored).replayed, true))();
+          assert.ok(target.serialize().equals(checkpoint));
+        }
+      } finally {
+        target.close();
+      }
+    });
+  }
+});
+
+test('初始观察可各分配三池，但任一已消费资源不能在同提交再次分配', async (t) => {
+  const f = await setup(t, { v5: '0', fixed: '0', baseline: false }),
+    before = f.db.serialize(),
+    saved = await f.observe({ fixed: '8000', purchased: '100', v5UsagePercent: '80' }, NOW + 10),
+    stored = readRelationalCommit(f.db, saved.commitSeq),
+    adoptionIndex = stored.events.findIndex((e) => e.eventType === 'QuotaBaselineAdopted');
+  for (const resource of ['v5', 'anlasFixed', 'anlasPurchased']) {
+    await t.test(resource, () => {
+      const index = stored.events.findIndex(
+        (e) => e.eventType === 'AllocationApplied' && e.payload.sourceResources[resource] !== '0',
+      );
+      assert.ok(index > adoptionIndex);
+      const target = new Database(before);
+      try {
+        target.pragma('foreign_keys=ON');
+        const quotas = new RelationalQuotaStore(target, {}),
+          bad = structuredClone(stored),
+          extra = structuredClone(stored.events[index]),
+          unchanged = databaseState(target);
+        extra.eventId = `extra-opening-${resource}`;
+        extra.eventIndex = bad.events.length;
+        extra.streamVersion = String(BigInt(bad.events.at(-1).streamVersion) + 1n);
+        bad.events.push(extra);
+        bad.command.events.push(structuredClone(stored.command.events[index]));
+        bad.eventCount++;
+        target.transaction(() =>
+          assert.throws(
+            () => quotas.replayQuotaCommit(bad),
+            (error) => error.statusCode === 409 && /来源|分配|采纳/.test(error.message),
+          ),
+        )();
+        assert.equal(databaseState(target), unchanged);
+        target.transaction(() => quotas.replayQuotaCommit(stored))();
+        assert.equal(databaseState(target), databaseState(f.db));
+      } finally {
+        target.close();
+      }
+    });
+  }
+});
+
 test('同毫秒资金登记按原提交顺序匹配，收据字典序不能改变资金归属', async (t) => {
   const f = await setup(t);
   await f.fund('fifo-first', register('z-members-receipt', 'anlasFixed', 100, 'members'), NOW + 10);
