@@ -167,6 +167,25 @@ export async function readStoredResultContent(dataDir: string, pending: unknown)
   return buffer ? { buffer, mimeType: pending.mimeType } : null;
 }
 
+// 缓存受理只沿原可引用语义检查安全路径和非空文件；完整内容校验仍由领取负责。
+export async function storedResultReferenceAvailable(dataDir: string, pending: unknown) {
+  assertStoredResultDescriptor(pending);
+  await resultDirectory(dataDir);
+  let stat;
+  try {
+    stat = await lstat(path.resolve(dataDir, pending.file));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw invalid('path must be a regular file.');
+  }
+  return stat.size > 0;
+}
+
 // 准备结果保持发布器的冲突语义：所有存在的 final/part 都须完整，读取绝不推进发布。
 export async function readPreparedStoredResultContent(dataDir: string, pending: unknown) {
   assertStoredResultDescriptor(pending);
