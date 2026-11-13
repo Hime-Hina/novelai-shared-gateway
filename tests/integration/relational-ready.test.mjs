@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import fsPromises, { readFile, writeFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
@@ -371,6 +372,35 @@ test('最终 ready 更新失败时私有恢复与状态全回滚，移除故障�
   assertBuilding(db);
   assert.equal(relationalPrivateStateEmpty(db), true);
   db.exec('DROP TRIGGER fail_ready');
+  await verifyAndInstallRelationalStorage(db, selected);
+  assertRelationalStorageReady(db);
+});
+
+test('临时私有 shadow 清理失败也不能留下已经安装的 ready 或恢复的私有认证', async (t) => {
+  const f = await completed(t),
+    selected = await snapshot(f),
+    db = rebuild(t, selected);
+  const before = databaseState(db),
+    realRemove = fs.rmSync;
+  let failed = false;
+  t.mock.method(fs, 'rmSync', (filename, options) => {
+    if (!failed && String(filename).includes('novelai-relational-ready-')) {
+      failed = true;
+      throw new Error('shadow cleanup failure');
+    }
+    return realRemove(filename, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(verifyAndInstallRelationalStorage(db, selected), /shadow cleanup failure/);
+    assert.equal(failed, true);
+    assertBuilding(db);
+    assert.equal(databaseState(db), before);
+    assert.equal(relationalPrivateStateEmpty(db), true);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
   await verifyAndInstallRelationalStorage(db, selected);
   assertRelationalStorageReady(db);
 });

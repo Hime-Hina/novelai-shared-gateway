@@ -210,6 +210,11 @@ export async function verifyAndInstallRelationalStorage(
         if (relationalSnapshotSha256(source.name) !== expected.sourceSha256) {
           invalid('the selected source snapshot changed.');
         }
+        // 临时私有副本清理失败也须回滚安装，不能先提交 ready 再失败退出。
+        rebuilt.close();
+        shadow = undefined;
+        rmSync(directory!, { recursive: true, force: true });
+        directory = undefined;
       })
       .immediate();
     return {
