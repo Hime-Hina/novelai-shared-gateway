@@ -1317,6 +1317,8 @@ Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，
 
 固定 `c7d1b91` 的四文件独立复审通过：原三文件 45/45、另两项独立反例 2/2，零跳过。公开 raw query 占槽期间三轮自动跳过，不仅全表不变，下一 central ticket 仍精确为原 sequence+1；deadline 后 stop/pending 继续等 raw，迟到无新事实。同步 raw throw 即使含精确 PST 仍安全分类，原有效余额/时点保留、槽释放后下一观察正常且无事务跨网络。四文件 Git blob 与源摘要一致，adapter SHA256 `c6a88e5152e81fdcc40bca5c137ff9d0320411d7df52b137f0fbd8a26e487bcd`。证据 `H:\TEMP\novelai-account-refresh-independent-c7d1b91-20261114\INDEPENDENT-REVIEW.md`；父整合与成员只读 HTTP 四文件联合 52/52，日志 `H:\TEMP\novelai-account-refresh-member-read-integrated.log`。最终 sole 装配仍须注入同一 QuotaStore，未将源级复审当作实际总装配验收。
 
+整合同时发现新周期刷新 factory 未进入原写能力集合；已有成员/Native/认证 HTTP writer 经 namespace 或动态导入后捕获别名，也能逃过仅按调用名识别的检查。最小修正在原集合登记三个实际 factory，并在现 owner 模块匹配中补齐这些已持有写能力的 HTTP/刷新模块，不新增检查框架。查询和 protocol 的 26 个新增负控先为 26 失败、原 233 项通过，修后 259/259；原 type-only reader、纯 transport 和宿主装配正对照仍通过，真实全树 architecture 检查通过。证据 `H:\TEMP\novelai-refresh-writer-guard-before.log` 与 `novelai-refresh-writer-guard-after.log`。这是需维护者复核的守卫增量，不将源码检查视作 agent 权限沙箱，也未修改远端保护或 SQL 历史。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

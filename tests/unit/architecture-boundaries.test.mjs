@@ -2,6 +2,53 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkArchitecture, checkSource } from '../../scripts/check-architecture.mjs';
 
+const writerFactories = [
+  ['createRelationalAccountQuotaRefresh', '../quota/relational-account-refresh.ts'],
+  ['createRelationalMemberGenerationHttp', '../generation/relational-member-http.ts'],
+  ['createLegacyMemberGenerationHttp', '../generation/legacy-member-http.ts'],
+  ['createRelationalNativeAdmission', '../generation/relational-native-admission.ts'],
+  ['createRelationalNativeHttp', '../generation/relational-native-http.ts'],
+  ['createLegacyNativeHttp', '../generation/legacy-native-http.ts'],
+  ['createRelationalMemberAuthenticationHttp', '../members/relational-authentication-http.ts'],
+  ['handleMemberAuthenticationRoutes', '../members/authentication-http.ts'],
+];
+
+for (const filename of [
+  'server/generation/request-queries.ts',
+  'server/protocols/native-http.ts',
+]) {
+  for (const [name, modulePath] of writerFactories) {
+    test(`${filename} rejects namespace capture of ${name}`, () => {
+      assert.ok(
+        checkSource(
+          filename,
+          `import * as writer from '${modulePath}'; const run = writer.${name}; run(deps);`,
+        ).some((error) => /write capability/.test(error)),
+      );
+    });
+  }
+  for (const [name, modulePath] of writerFactories.slice(0, 3)) {
+    test(`${filename} rejects aliased ${name}`, () => {
+      assert.ok(
+        checkSource(filename, `import { ${name} as run } from '${modulePath}'; run(deps);`).some(
+          (error) => /write capability/.test(error),
+        ),
+      );
+    });
+  }
+  for (const [name, source] of [
+    [
+      'dynamic quota refresh',
+      "const writer = await import('../quota/relational-account-refresh.js'); const run = writer.createRelationalAccountQuotaRefresh; run(deps);",
+    ],
+    ['quota refresh re-export', "export * from '../quota/relational-account-refresh.ts';"],
+  ]) {
+    test(`${filename} rejects ${name}`, () => {
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
+}
+
 test('current production imports respect the concrete architecture boundaries', () => {
   assert.deepEqual(checkArchitecture(), []);
 });

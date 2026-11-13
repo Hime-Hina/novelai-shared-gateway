@@ -56,6 +56,8 @@ const mutations = new Set([
   'replayMemberCommit',
   'acceptGeneration',
   'createRelationalMemberGenerationAdmission',
+  'createRelationalMemberGenerationHttp',
+  'createLegacyMemberGenerationHttp',
   'createRelationalQueueRuntime',
   'admitRelationalMemberGeneration',
   'dispatchGeneration',
@@ -78,6 +80,7 @@ const mutations = new Set([
   'retireJobHistory',
   'retireArtifactHistory',
   'beginQuotaObservation',
+  'createRelationalAccountQuotaRefresh',
   'recordQuotaObservation',
   'refillQuota',
   'manageQuotaFunding',
@@ -170,7 +173,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|generation\/relational-(?:member-admission|queue-runtime)|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&
