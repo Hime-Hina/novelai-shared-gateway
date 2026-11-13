@@ -683,13 +683,20 @@ test('完整退休提交按原选择/分组/原序回放；同改事实和回执
 
 test('空业务库恢复两类退休不复活认证、结果、收费或免费窗口，所有原事实和输入仍可核对', async (t) => {
   const f = await setup(t, { freeLimit: 1 });
+  await f.accept('still-free-limit', { steps: 23 });
   await complete(f, 'free', NOW, { steps: 23 });
   const saved = evidence(f.db);
   await f.retireArtifacts('free-image-retire', ['artifact-free-0']);
   await f.retireJobs('free-history-retire', ['free-0']);
   assert.deepEqual(evidence(f.db), saved);
-  await f.accept('still-free-limit', { steps: 23, now: NOW + 100000 });
+  const checkpoint = f.db.serialize();
+  await assert.rejects(f.accept('new-free-limit', { steps: 23, now: NOW + 100000 }), {
+    statusCode: 429,
+    code: 'free_image_limit',
+  });
+  assert.ok(f.db.serialize().equals(checkpoint));
   assert.throws(() => f.dispatch('still-free-limit-0', NOW + 100001), /免费|限额/);
+  assert.ok(f.db.serialize().equals(checkpoint));
   const target = new Database(':memory:');
   try {
     initializeRelationalStorage(target, 'generation-history');

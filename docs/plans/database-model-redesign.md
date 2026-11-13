@@ -1255,6 +1255,8 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 整合修正仅涉及测试：逐次声明非取消；两处不验证恢复的夹具显式 `seconds: 0` 且保留全部精确金额断言；私有恢复改用现唯一完整业务 replayer，保留原保护源、提交篡改及私有撤销检查。相应四文件 100/100。后续分配权限修复、损耗读取、工具及真实 HTTP 耦合汇合后再以固定版本重跑完整套件；目前没有接续候选的编译包、Node 24、远端 CI 或正式发布结论。
 
+固定 `d638220f9c79a340f63098e923fb37029df8b2f1` 汇合上述 owner、Native 与成员子任务历史后，完整后端为 1723 项：1716 通过、2 失败、5 项原条件跳过，耗时 214.896 秒；原日志 `H:\TEMP\novelai-followup-full-d638220.log` 保留。两项旧夹具未对齐 canonical Native 新受理的合法前置：时间 0 的任务仍用未来额度观察，免费成功后才尝试受理第二任务。修正仅涉及三处测试文件：开账夹具允许显式时点并统一原来源、观察、游标及注册时刻，时间 0 的任务在 1 派发、2 失败，仍断言原创建时刻 0 与精确耗时 2；免费限额反例预先排队第二任务，在两类逻辑退役后同时断言新受理 429、既有任务派发拒绝及各自全库零写入，保留原完整回放、收费、认证和免费窗口核对。两文件联合 27/27，证据为 `H:\TEMP\novelai-followup-admission-fixtures-fixed.log`；这不把前一轮失败或尚待执行的完整候选检查记为通过。
+
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
 本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。

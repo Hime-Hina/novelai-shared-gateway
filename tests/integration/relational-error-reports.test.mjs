@@ -116,13 +116,13 @@ test('失败时间表达式保留真实 0/未知与开账 header 角色，薄 DT
   } finally {
     db.close();
   }
-  const f = await fixture(t, { env: { QUEUE_WAIT_TIMEOUT_MS: String(NOW + 10000) } });
+  const f = await fixture(t, { openingAt: 0 });
   await f.accept('zero-time', { now: 0 });
-  f.dispatch('zero-time-0');
-  f.fail('zero-time-0', { aborted: false });
-  const row = new RelationalReportStore(f.db).readErrorLogs(NOW)[0];
+  f.dispatch('zero-time-0', 1);
+  f.fail('zero-time-0', { aborted: false }, 2);
+  const row = new RelationalReportStore(f.db).readErrorLogs(2)[0];
   assert.equal(row.createdAt, iso(0));
-  assert.equal(row.durationMs, NOW + 2);
+  assert.equal(row.durationMs, 2);
 });
 
 test('旧 route/artist/size 不从当前配置补造；实际受理的不同原步数与路由步数保留', async (t) => {
