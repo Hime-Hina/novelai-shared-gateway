@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RelationalCommitReplayer } from './relational-replay.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
@@ -8,6 +9,7 @@ import {
   readRelationalReceipt,
   replayRelationalCommit,
   type StoredRelationalCommit,
+  type RelationalCommitResult,
 } from '../events/relational-event-store.ts';
 import {
   relationalFactStream,
@@ -78,7 +80,7 @@ type Completion = Pick<
   'kind' | 'retryAfterUntil'
 >;
 
-const generationFacts = new Set<RelationalEvent['eventType']>([
+export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
   'OpeningAccountRecorded',
   'OpeningGroupRecorded',
@@ -360,7 +362,7 @@ export class RelationalGenerationStore {
       expectedVersions,
       events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
     });
-    this.applyEvents(result.events);
+    this.applyEvents(result);
     return result;
   }
   private nextQueueSeq(): string {
@@ -1616,8 +1618,14 @@ export class RelationalGenerationStore {
       fail('产物与原任务/输入/尝试归属不符');
     }
   }
-  private applyEvents(events: RelationalEvent[]): void {
-    for (const e of events) {
+  createGenerationProjector(events: RelationalEvent[]) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation projection requires the owning transaction.');
+    }
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Generation projection requires the owning transaction.');
+      }
       if (
         e.eventType.startsWith('Opening') &&
         'origin' in e.payload &&
@@ -2232,16 +2240,19 @@ export class RelationalGenerationStore {
         default:
           throw new Error(`Generation replay cannot apply another owner's fact: ${e.eventType}`);
       }
-    }
+    };
+  }
+  private applyEvents(result: RelationalCommitResult): void {
+    new RelationalCommitReplayer(this.sqlite, this).applyCommit(result);
   }
   replayGenerationCommit(stored: StoredRelationalCommit) {
     return this.owned(() => {
-      if (stored.events.some((e) => !generationFacts.has(e.eventType))) {
+      if (stored.events.some((e) => !relationalGenerationFacts.has(e.eventType))) {
         throw new Error('Generation replay requires complete generation/accounting commits.');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
-        this.applyEvents(result.events);
+        this.applyEvents(result);
       }
       return result;
     });

@@ -1,0 +1,123 @@
+import type Database from 'better-sqlite3';
+import { canonicalJson } from '../events/domain-events.ts';
+import {
+  replayRelationalCommit,
+  readRelationalCommit,
+  type RelationalCommitResult,
+  type StoredRelationalCommit,
+} from '../events/relational-event-store.ts';
+import { RelationalMemberStore, relationalMemberFacts } from './relational-member-store.ts';
+import { RelationalInputStore, relationalInputFacts } from './relational-input-store.ts';
+import {
+  RelationalGenerationStore,
+  relationalGenerationFacts,
+} from './relational-generation-store.ts';
+import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-store.ts';
+import { RelationalAccountStore, relationalAccountFacts } from './relational-account-store.ts';
+import { relationalPrivateStateEmpty } from './relational-private-restore.ts';
+
+export function relationalReplayFacts() {
+  return new Set([
+    ...relationalMemberFacts,
+    ...relationalInputFacts,
+    ...relationalGenerationFacts,
+    ...relationalQuotaFacts,
+    ...relationalAccountFacts,
+  ]);
+}
+
+function assertSupported(events: StoredRelationalCommit['events']) {
+  const supported = relationalReplayFacts();
+  if (events.some((event) => !supported.has(event.eventType))) {
+    throw new Error('Business projection has no owner for this complete commit.');
+  }
+}
+
+// 完整提交只保存一次；各 owner 保留原校验，按原事件顺序在同一保存点应用。
+export class RelationalCommitReplayer {
+  private sqlite: Database.Database;
+  private members: RelationalMemberStore;
+  private inputs: RelationalInputStore;
+  private generations: RelationalGenerationStore;
+  private quotas: RelationalQuotaStore;
+  private accounts: RelationalAccountStore;
+
+  constructor(sqlite: Database.Database, generations?: RelationalGenerationStore) {
+    this.sqlite = sqlite;
+    this.members = new RelationalMemberStore(sqlite);
+    this.inputs = new RelationalInputStore(sqlite);
+    this.generations = generations ?? new RelationalGenerationStore(sqlite);
+    this.quotas = new RelationalQuotaStore(sqlite);
+    // 离线回放没有物理执行器；账户投影不运行授权、网络查询或派发命令。
+    this.accounts = new RelationalAccountStore(sqlite, this.quotas, new Map());
+  }
+
+  applyCommit(result: RelationalCommitResult, sourceInputs?: RelationalInputStore) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Business projection requires the owning command transaction.');
+    }
+    return this.sqlite.transaction(() => {
+      const stored = readRelationalCommit(this.sqlite, result.commitSeq);
+      if (
+        typeof result.replayed !== 'boolean' ||
+        canonicalJson(result.receipt) !== canonicalJson(stored.command.receipt) ||
+        (result.replayed
+          ? result.events.length !== 0
+          : canonicalJson(result.events) !== canonicalJson(stored.events))
+      ) {
+        throw new Error('Business projection requires the saved complete original commit.');
+      }
+      assertSupported(stored.events);
+      const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
+      if (hasInput && !sourceInputs) {
+        throw new Error('Input replay requires the matching protected source.');
+      }
+      const applyInput = hasInput
+        ? this.inputs.createInputProjector(sourceInputs!, stored, result.replayed)
+        : null;
+      if (result.replayed) {
+        if (applyInput) {
+          for (const event of stored.events) {
+            if (relationalInputFacts.has(event.eventType)) {
+              applyInput(event);
+            }
+          }
+        }
+        return result;
+      }
+      const applyGeneration = this.generations.createGenerationProjector(stored.events),
+        applyQuota = this.quotas.createQuotaProjector(stored.events);
+      for (const event of stored.events) {
+        if (relationalMemberFacts.has(event.eventType)) {
+          this.members.applyReplayedMemberEvent(event);
+        } else if (relationalInputFacts.has(event.eventType)) {
+          applyInput!(event);
+        } else if (relationalGenerationFacts.has(event.eventType)) {
+          applyGeneration(event);
+        } else if (relationalQuotaFacts.has(event.eventType)) {
+          applyQuota(event);
+        } else {
+          this.accounts.applyAccountEvent(event);
+        }
+      }
+      return result;
+    })();
+  }
+
+  replayCommit(stored: StoredRelationalCommit, sourceInputs?: RelationalInputStore) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Business replay requires the owning offline transaction.');
+    }
+    return this.sqlite.transaction(() => {
+      assertSupported(stored.events);
+      const result = replayRelationalCommit(this.sqlite, stored);
+      // 私有快照在最终业务切点恢复；不能从带当前认证的 checkpoint 继续推进历史。
+      if (!result.replayed && !relationalPrivateStateEmpty(this.sqlite)) {
+        throw new Error(
+          'New business replay requires a checkpoint without private authentication.',
+        );
+      }
+      return this.applyCommit(result, sourceInputs);
+    })();
+  }
+}

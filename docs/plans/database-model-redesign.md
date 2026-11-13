@@ -794,6 +794,22 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 新写入口加入原架构守卫，并增加 query/protocol 的静态别名、动态导入和直接调用六项拒绝反例；没有减少旧断言，增量随本片接受维护者复核。没有修改新格式 DDL/事实、旧 SQL/journal、依赖或 CI；当前未发布原型仍按原 hash guard 拒绝不兼容 schema。以上是本片自验，不代表独立复审、全业务重建、受保护输入/对象/部署环境恢复或合法 ready 安装通过；没有操作生产或真实外部端点。
 
+### 9.19 跨 owner 完整提交回放前置
+
+本片从固定整合基线 `2774984` 接续 #50，只汇总已实际支持的事实。当前 74 类事实中，member 5 类、input/context/受理 4 类、generation 25 类、quota 13 类及账户注册/首绑/轮换 3 类共 50 类有实际投影；其余 24 类政策/分组/权益、历史退休、副本及其他 opening 仍拒绝，不通过保存原始事件冒充已重建。覆盖清单直接复用所属 owner 的事实集合，后续新命令须在同批加入自己的投影与回放反例。
+
+同一原提交只调用一次完整提交原语，依原事件顺序进入所属投影；所有 owner、事实、回执、流头和投影游标受同一个保存点保护，任何后段错误即使被外层捕获也全笔回滚。额度投影的来源、采纳关系、有限来源及观察资源消费集合按完整提交建立一次，不随单事件分派重置；退款核对仍看到原提交的完整 `ReviewOpened` 事实。不得按 owner 排序、过滤成多个提交或调用多个公开 replay。
+
+受保护输入由原 input owner 校验来源完整提交、归属、正文/BLOB/首次上下文及摘要，并按原事实顺序复制；不能从另一段历史取同名输入，也不能为重复回放修补缺失的内容。重复完整提交先核对原 checkpoint，业务投影不再应用，输入内容仍核验。新统一入口只向没有当前私有认证的业务 checkpoint 推进新提交，复用第 9.16 节的显式私有表判断；私有恢复后的原提交重复仍为零写入，但推进新事实必须拒绝。原 member replay 对停用/移除或资格明确失效事实只清空 epoch、撤销 Cookie；后续 active/资格恢复不能生成 epoch 或复活旧认证，在线 owner 保留原随机轮换行为。业务回放不调用 NAI/Discord/上传/删除、不恢复认证秘密；私有当前状态只由第 9.16 节入口恢复。目标仍为 building，本片不安装 ready，也不宣称尚缺 owner 的事实已通过完整恢复。
+
+验收包括成员接单/状态与等待任务取消的真实跨 owner 混合提交、第二个 owner 写入后故障的全表回滚、额度同提交消费上下文不重置、退款/核对原关联、输入来源及摘要冲突、完整提交缺失/重排/checkpoint 冲突、未知 owner、重复零写入和零外部调用。
+
+实际入口为 `storage/relational-replay.ts` 的具体 `RelationalCommitReplayer`：`replayCommit(stored, sourceInputs?)` 负责一次原完整提交持久化及业务 checkpoint 边界，`applyCommit(result, sourceInputs?)` 只应用数据库中已经保存并核对数量、原事件顺序与回执的提交。生成 owner 的在线命令及窄回放也复用后者，现有授权、准备/发布和 `owned` 保存点仍由原命令持有；新增命令必须把 append 和 apply 包在同一 owner 保存点中，不能在保存点外先写事实再单独捕获投影错误。构造可传入现有 generation 实例避免递归，不引入可插拔 owner 注册或另一套分派。输入存在时的 `sourceInputs` 是原 `RelationalInputStore`，不接旧 JSON fallback。
+
+固定实现 `8f76278` 的验收入口为 [`relational-replay.test.mjs`](../../tests/integration/relational-replay.test.mjs)：Node 22.23.4 专项 15/15，完整 `pnpm test` 为 1,158 项（1,153 通过、5 项既有条件跳过、0 失败）。同次后端构建的 JavaScript 运行同一专项 15/15；只在编译产物中分别将额度上下文改成每事件重建、移除 member 回放清空 epoch，观察/有限资金重复消费及停用/资格恢复两个子例分别准确失败，两轮均为 3 项失败（含父测试）。恢复原产物后专项再次 15/15。日志在本地 `H:\TEMP\novelai-common-replay-20261114`，负控入口分别为 `node --test --test-name-pattern='额度来源消费上下文'` 和 `node --test --test-name-pattern='旧 member replay'`。
+
+架构、默认及可信 `2774984` 基线迁移历史、类型、134 文件语法、全库格式、后端构建和差异检查通过。架构增量保护本片新事务写入口，保留旧断言并加入 query/protocol 的别名、动态导入和直接调用拒绝反例，仍须维护者复核；未修改 DDL、事实格式、旧 SQL/journal、依赖或 CI。本片自验不代表尚缺 owner、Node 24、真实 HTTP/调度接入、完整恢复、ready 安装或生产切换验收；这些检查随整合后的同一候选继续执行，没有操作生产或真实外部端点。
+
 ### 9.20 #47 简单政策命令契约
 
 本片在固定账户候选 `13cc15c` 上接入当前自动转 Anlas、免费图片和损耗告警政策；不包含分组、权益转移、成员移除或跨 owner 的停止接单。规则分别继续归 `fair-share.ts`、`free-image-policy.ts`、`failure-accounting.ts`；关系命令只读取 `sharing_policy` 的当前字段，复用原 owner 的验证和决定，不构造钱包、任务或旧 DTO 的政策副本。
