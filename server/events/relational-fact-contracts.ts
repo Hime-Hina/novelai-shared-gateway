@@ -221,7 +221,7 @@ const replicaFields = {
   artifactId: id,
   storageTargetId: id,
   objectKey: id,
-  encoding: choices('identity', 'gzip'),
+  encoding: choices('identity', 'gzip', 'br'),
   uploadedAt: nullable(integer),
   verifiedAt: nullable(integer),
   deletedAt: nullable(integer),

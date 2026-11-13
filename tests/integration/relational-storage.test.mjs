@@ -577,6 +577,76 @@ test('产物属于原成员，缓存复用保留原 input/attempt，上传确认
   assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
 });
 
+test('副本 DDL 保留 identity/gzip/br，未知编码被拒绝', (t) => {
+  const sqlite = fixture(t);
+  insert(sqlite, 'artifacts', artifact());
+  insert(sqlite, 'artifacts', artifact({ id: 'image2', member_id: 'm2', input_id: 'i2' }));
+  for (const encoding of ['identity', 'gzip', 'br']) {
+    insert(sqlite, 'storage_targets', {
+      id: encoding,
+      kind: 'pikpak',
+      namespace: `synthetic/${encoding}`,
+      ...fact,
+    });
+    insert(sqlite, 'artifact_replicas', {
+      artifact_id: 'image1',
+      storage_target_id: encoding,
+      object_key: 'same-object',
+      encoding,
+      uploaded_at: 1,
+      ...fact,
+    });
+  }
+  assert.throws(
+    () =>
+      insert(sqlite, 'artifact_replicas', {
+        artifact_id: 'image2',
+        storage_target_id: 'gzip',
+        object_key: 'bad-encoding',
+        encoding: 'deflate',
+        ...fact,
+      }),
+    /CHECK/,
+  );
+  assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
+});
+
+test('独立产物可引用同对象且按 target/key 索引查询，不以对象定位合并所有者', (t) => {
+  const sqlite = fixture(t);
+  insert(sqlite, 'artifacts', artifact());
+  insert(sqlite, 'artifacts', artifact({ id: 'image2', member_id: 'm2', input_id: 'i2' }));
+  insert(sqlite, 'storage_targets', { id: 'r2', kind: 'r2', namespace: 'synthetic/r2', ...fact });
+  for (const artifactId of ['image1', 'image2']) {
+    insert(sqlite, 'artifact_replicas', {
+      artifact_id: artifactId,
+      storage_target_id: 'r2',
+      object_key: 'same-object',
+      encoding: 'identity',
+      uploaded_at: 1,
+      ...fact,
+    });
+  }
+  assert.equal(
+    sqlite
+      .prepare(
+        "SELECT COUNT(*) AS n FROM artifact_replicas WHERE storage_target_id='r2' AND object_key='same-object'",
+      )
+      .get().n,
+    2,
+  );
+  assert.match(
+    JSON.stringify(
+      sqlite
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT artifact_id FROM artifact_replicas WHERE storage_target_id='r2' AND object_key='same-object'",
+        )
+        .all(),
+    ),
+    /idx_replica_object/,
+  );
+  assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
+});
+
 test('原目标缺失的旧键和退款薄凭据保留原身份，外键开启仍能开账和防重', (t) => {
   const sqlite = fixture(t);
   const key = {

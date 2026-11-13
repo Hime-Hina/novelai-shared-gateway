@@ -53,6 +53,13 @@ const mutations = new Set([
   'closeGenerationReview',
   'replayGenerationCommit',
   'recoverRelationalGenerationResults',
+  'registerStorageTarget',
+  'beginArtifactReplica',
+  'recordArtifactReplica',
+  'applyReplicaEvents',
+  'replayReplicaCommit',
+  'copyRelationalArtifactReplica',
+  'verifyRelationalArtifactReplica',
   'beginQuotaObservation',
   'recordQuotaObservation',
   'refillQuota',
@@ -143,7 +150,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

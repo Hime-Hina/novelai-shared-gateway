@@ -29,7 +29,7 @@ function invalid(message: string, cause?: unknown): Error & { code: string } {
     code: 'ERR_STORED_RESULT_INVALID',
   });
 }
-function resultFile({ imageId, operation, mimeType }: ResultIdentity): string {
+export function resultFile({ imageId, operation, mimeType }: ResultIdentity): string {
   if (
     typeof imageId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(imageId) ||
