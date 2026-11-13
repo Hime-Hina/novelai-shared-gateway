@@ -858,6 +858,8 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 
 当前定向 [`relational-policies.test.mjs`](../../tests/integration/relational-policies.test.mjs) 48/48，含五种 opening 阈值保真/重复回放；账户/额度/架构与早期政策测试合跑 278/278，原免费/管理/成员路由 18/18、原损耗管理 HTTP 1/1。独立复核额外四场景通过，包括最低/最高有限 number、非 12 位小数、原 owner 对照和同提交第二事实失败后的真实全表回滚；新增 opening 五场景及父测试独立 6/6。类型、架构、迁移历史、受影响文件格式与差异检查已通过。完整后端、最终编译/Node 24 及远端同候选 CI 尚待执行，以上定向证据不代表整体重构、HTTP 切换或 ready 验收。
 
+固定候选 `fbd6d477aaba7c6485d749e0df9c56112d03da5b` 随后完成 Windows / Node 22.23.4 的完整后端：1114 项、1109 通过、5 项既有跳过、0 失败（228.9 秒），未改变并发、等待阈值或断言。隔离全源码副本 474 个 tracked 文件逐项 SHA-256 一致，后端构建通过；编译 JavaScript 的政策/账户/额度三文件 153/153，74 个 server 产物逐项一致。隔离 Node 24.22.1 的政策/账户/额度/新库/原 SQLite worker 五文件 173/173，254 个源与 fixture/manifest 文件逐项一致，未重编共享原生依赖。日志、候选哈希清单和验证 JSON 位于本地 `H:\TEMP\novelai-policies-validation-20261114` 与 `H:\TEMP\novelai-policies-*.log`。远端同候选 CI、实际 Linux 发布包及新格式 HTTP/ready 验收仍由后续完整闭环记录。
+
 ### 9.21 T6：关系用量、owner 统计与调用热力图
 
 本片继续 #31 的只读报告路径。`summarizeOwnerUsage()` 保有统计/展示规则，`readActivityHeatmap()` 保有窗口、参数和成员范围规则；关系 store 只提供这两个 owner 所需的窄 SQL 读取，不调用旧 JsonStore 或回填正文。HTTP 接入仍属 #52，历史写命令由其实际 owner 交付。
@@ -884,6 +886,20 @@ V5 告警阈值只参与原 owner 的只读统计比较，不属于可消费金�
 本地最终后端 1016 项：1011 通过、5 项原有条件跳过、0 失败；定向七文件 80/80、原 owner 合法汇总及 SQL 读取对照 2/2。Web 全量 150/150、执行器单元 3/3、三包类型与构建通过；实际 Nitro 产物回归 3 通过/1 原有条件跳过，真实 Nuxt→执行器集成 15 通过/1 原有条件跳过。Node 24.22.1 隔离八文件 82/82、零跳过，239 个源/测试/夹具逐文件 SHA-256 与候选相同，未重编共享依赖。实际执行器发布包的编译 JavaScript 查询/报告专项 24/24，75 个后端编译文件与包内版本完全一致，专项目录无 TypeScript 源码。架构、默认及可信 `fcc770f` 基线迁移历史、128 文件语法、完整格式和差异检查通过。
 
 日志及隔离反例位于本地 `H:\\TEMP\\novelai-reports-*.log` 与 `H:\\TEMP\\novelai-reports-20261114-validation`，独立复审证据位于 `H:\\TEMP\\novelai-reports-independent-review`。既有运行时的产物/HTTP 回归证明当前路径没有被本片破坏；新关系报告仍未接入 HTTP，不把它们写成新格式端点验收。本片不表示 #31、迁移、ready 或真实容量验收完成，最终联合候选与远端 CI 继续补同版本上线证据。新格式仍未发布，schema hash 变化要求从空 building 目标重建，不重写旧迁移或增加旧原型兼容分支。
+
+### 9.26 #47 成员停止与恢复接单契约
+
+本片基于共同完整提交 owner，接入原 `generation/queue-policy.ts` 的 `setMemberAdmission()`，只改变稳定成员 ID 对应的接单状态，不扩展分组、转移或移除。`members.accepting_jobs` 与 `admission_epoch` 是当前权威值：只有接单中变为停止时增加一次安全整数代次；重复停止和恢复保持原代次。同毫秒停止再恢复也不能让旧请求继续提交；安全整数上界不能因 number 精度重用代次。
+
+命令在原 Key/Cookie 鉴权事务中先重核当前 owner、认证 epoch 或本地管理员边界，再按原命令键及完整意图重领回执。新命令调用原 queue owner 的窄成员/等待任务视图，保留原回执、错误文案与事件顺序；不会重新规范化历史 confirmation、收费或授权。目标成员的 queued/pending 意图全部取消，running、原预扣及物理槽继续由原生成 owner 收尾。新模型预扣发生在派发时，等待意图出现 charge/attempt 属于不一致并整笔拒绝，不能补造退款。
+
+一次完整提交先保存 member 流的 `AdmissionChanged`，再保存原 request 流的 `WaitingJobsCancelled`；通过共同 `appendCommit()` 在同一 owner 保存点追加和投影。成员投影验证合法代次及当时所有等待意图的完整取消集合，生成投影验证取消时原成员已停止或原请求代次失效；缺失、重复、跨成员、错流、逆序及伪造代次均拒绝。失败被外层捕获时事实、回执、流头、游标和业务行全部不变。恢复接单不会恢复已取消任务、私有凭据或撤销的认证。
+
+验收入口为关系接单专项及原队列 owner 用例：原 owner 对照、多个请求与同名成员、同毫秒停止/恢复、旧请求与新请求、当前授权撤销后的回执重领、保存点中途故障、混合派发/结算/接单的完整提交恢复与重复零新增。目标仍 building；此处不代表新格式 HTTP 装配、ready、生产迁移或切换验收。
+
+当前实现为 `RelationalMemberStore.changeMemberAdmission()`，复用原领域命令事实收集与当前 owner 断言；共同回放只向原成员投影显式传入该次完整提交。生成 owner 对 `member_stopped` 增加原接单状态/代次的顺序核对，不改变原批次失败、超时或认证撤销的其他取消理由。架构守卫新增两条接单写入口及查询/协议负例；原共同回放的合成 stop fixture 同步使用真实 owner 的 `member_stopped` 取消代码，未修改既有历史 SQL 或事实字段。原 owner 安全上界反例已实际复现：MAX_SAFE_INTEGER 后两次暂停会重用同一不安全 number；修复在首次溢出前拒绝，合法末代的重复停止与恢复保留。
+
+产品候选固定为 `27ef3fd40b0605df9db6a5702ac9a4d0f4f77c17`。本地初步接单与原队列专项 26/26，另与成员、共同回放及架构五文件首轮 246/246（新增等待异常/disabled 对照前）；类型、架构及迁移历史检查通过。故障用例在真实成员和第一任务已落行后令第二 SQL 写入失败，外层捕获仍核对全表原切点；未新增 trigger 或绕过格式/hash guard。独立审查、完整后端、编译/Node 24 和远端同候选 CI 仍待完成，后续证据继续附在本节。
 
 ## 10. 事实依据与修订
 
