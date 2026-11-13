@@ -8,6 +8,7 @@ import {
   createQuotaObservationOrder,
   accountQuotaPatch,
   accountQuotaErrorResult,
+  accountQuotaResult,
 } from '../../server/quota/account-refresh.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
 
@@ -40,6 +41,53 @@ const defer = () => {
   });
   return { promise, resolve, reject };
 };
+
+test('非空非法订阅期限不能降为无期限，原刷新入口记录失败并保留有效快照', async () => {
+  assert.throws(
+    () =>
+      accountQuotaResult(
+        'one',
+        { ...quota, subscriptionExpiresAt: 'malformed-expiration' },
+        new Date().toISOString(),
+      ),
+    /期限格式/,
+  );
+  const f = runtime(async () => ({ ...quota, subscriptionExpiresAt: 'malformed-expiration' })),
+    original = structuredClone(f.db.accounts[0]);
+  const result = await f.refresh.refresh();
+  assert.equal(result.failed, 1);
+  assert.equal(result.ok, 0);
+  assert.equal(f.db.accounts[0].subscriptionExpiresAt, original.subscriptionExpiresAt);
+  assert.equal(f.db.accounts[0].quotaFixed, original.quotaFixed);
+  assert.ok(f.db.accounts[0].quotaError);
+  for (const expires of [
+    undefined,
+    null,
+    0,
+    '',
+    new Date(Date.now() + 86400000).toISOString(),
+    Date.now() + 86400000,
+  ]) {
+    assert.equal(
+      accountQuotaResult(
+        'one',
+        { ...quota, subscriptionExpiresAt: expires },
+        new Date().toISOString(),
+      ).ok,
+      true,
+    );
+  }
+  assert.equal(
+    accountQuotaResult('one', { ...quota, subscriptionExpiresAt: 0 }, new Date().toISOString())
+      .subscriptionExpiresAt,
+    null,
+  );
+  assert.equal(
+    accountQuotaResult('one', { ...quota, subscriptionExpiresAt: '0' }, new Date().toISOString())
+      .subscriptionExpiresAt,
+    '0',
+  );
+});
 
 test('观察票号按发起顺序比较，跨越 2^53 和重开高水位仍精确，不能循环复用', () => {
   const order = createQuotaObservationOrder();

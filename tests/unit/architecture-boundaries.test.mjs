@@ -129,6 +129,29 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     [
+      'business replayer construction',
+      "import { RelationalCommitReplayer as Replayer } from '../storage/relational-replay.ts'; new Replayer(raw);",
+    ],
+    ['dynamic business replayer', "await import('../storage/relational-replay.js');"],
+    ...[
+      'createInputProjector',
+      'createGenerationProjector',
+      'createQuotaProjector',
+      'applyAccountEvent',
+      'applyReplayedMemberEvent',
+      'replayCommit',
+      'applyCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(input);`]),
+    [
+      'private snapshot import',
+      "import { restoreRelationalPrivateSnapshot as restore } from '../storage/relational-private-restore.ts'; restore(raw,path,hash);",
+    ],
+    [
+      'dynamic private snapshot import',
+      "await import('../storage/relational-private-restore.js');",
+    ],
+    ['direct private snapshot restore', 'restoreRelationalPrivateSnapshot(raw,path,hash);'],
+    [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
@@ -175,6 +198,12 @@ for (const filename of [
       "import { RelationalQuotaStore as Store } from '../storage/relational-quota-store.ts'; new Store(raw);",
     ],
     ['dynamic quota writer', "await import('../storage/relational-quota-store.js');"],
+    [
+      'account construction',
+      "import { RelationalAccountStore as Store } from '../storage/relational-account-store.ts'; new Store(raw,q,controls);",
+    ],
+    ['dynamic account writer', "await import('../storage/relational-account-store.js');"],
+    ['account re-export', "export * from '../storage/relational-account-store.ts';"],
     ['quota re-export', "export * from '../storage/relational-quota-store.ts';"],
     ...[
       'beginQuotaObservation',
@@ -185,6 +214,12 @@ for (const filename of [
       'openAccountQuota',
       'applyQuotaEvents',
       'replayQuotaCommit',
+      'prepareAccountCommand',
+      'completeAccountEnable',
+      'ownerAccountCommand',
+      'replayAccountCommit',
+      'planQuotaObservation',
+      'registerAccountQuota',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [
       'authenticated command',

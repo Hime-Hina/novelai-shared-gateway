@@ -39,7 +39,12 @@ import type {
 } from '../quota/operating-accounting.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { quotaTimestamp as isoTimestamp } from '../quota/eligibility.ts';
+import {
+  quotaTimestamp as isoTimestamp,
+  isUsableOpus,
+  isQuotaSnapshotFresh,
+  quotaNumber,
+} from '../quota/eligibility.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -182,6 +187,9 @@ export class RelationalQuotaStore {
       fail('开账额度缺少原事实或登记来源');
     }
     const { origin: _origin, ...p } = e.payload;
+    this.insertAccountQuota(p, e.eventId);
+  }
+  private insertAccountQuota(p: AccountQuota, eventId: string) {
     this.sqlite
       .prepare(
         `INSERT INTO account_quota_state(${Object.values(quotaColumns).join(',')},source_event_id) VALUES(${Object.keys(
@@ -193,8 +201,50 @@ export class RelationalQuotaStore {
       .run({
         ...p,
         subscriptionActive: p.subscriptionActive === null ? null : Number(p.subscriptionActive),
-        eventId: e.eventId,
+        eventId,
       });
+  }
+  registerAccountQuota(event: Extract<RelationalEvent, { eventType: 'AccountRegistered' }>) {
+    if (
+      !this.sqlite.inTransaction ||
+      !this.sqlite
+        .prepare(
+          "SELECT 1 FROM domain_events WHERE event_id=? AND event_type='AccountRegistered' AND account_id=?",
+        )
+        .get(event.eventId, event.payload.accountId)
+    ) {
+      fail('初始额度状态缺少账户注册事实');
+    }
+    const q: AccountQuota = {
+      accountId: event.payload.accountId,
+      status: 'inactive_opus',
+      observationEventId: null,
+      observedAt: null,
+      observedCredentialEpoch: null,
+      observedSequence: null,
+      quotaTier: null,
+      subscriptionActive: null,
+      subscriptionExpiresAt: null,
+      quotaErrorCode: null,
+      observedV5: null,
+      observedAnlasFixed: null,
+      observedAnlasPurchased: null,
+      secondsPerPercent: null,
+      baselineEventId: null,
+      refillCursorAt: null,
+      settlementCursorAt: null,
+      unallocatedV5: '0',
+      fallbackFixed: '0',
+      fallbackPurchased: '0',
+      sharedV5Debt: '0',
+      pendingV5Debit: '0',
+      pendingFixedDebit: '0',
+      pendingPurchasedDebit: '0',
+      pendingFallbackV5: '0',
+      pendingFallbackFixed: '0',
+      pendingFallbackPurchased: '0',
+    };
+    this.insertAccountQuota(q, event.eventId);
   }
   private operating(accountId: string): OperatingAccount {
     const p = this.sqlite
@@ -565,85 +615,110 @@ export class RelationalQuotaStore {
       if (prior) {
         return prior;
       }
-      const a = this.account(ticket.accountId),
-        q = this.readAccountQuota(ticket.accountId);
-      if (
-        a.epoch !== ticket.credentialEpoch ||
-        a.pst !== ticket.pst ||
-        !this.order.current(`${a.id}:${a.epoch}`, ticket.sequence) ||
-        BigInt(ticket.sequence) <= BigInt(q.observedSequence ?? '0')
-      ) {
+      const planned = this.planQuotaObservation(metadata, ticket, result);
+      if (!planned) {
         return { ignored: true };
       }
-      if (
-        result.id !== ticket.accountId ||
-        result.quotaCheckedAt !== new Date(ticket.startedAt).toISOString()
-      ) {
-        fail('观察结果账户不符');
-      }
-      const view = this.state(a.id);
-      Object.assign(
-        view.account,
-        accountQuotaPatch(result, new Date(ticket.startedAt).toISOString()),
-      );
-      const snapshot = fairQuotaSnapshot(view.account),
-        observationId = randomUUID();
-      const money = (v: unknown) =>
-        (typeof v === 'string' || typeof v === 'number') && Number.isFinite(Number(v))
-          ? formatAmount(parseAmount(v, typeof v === 'number' ? 'nearest' : 'exact'))
-          : null;
-      const events: RelationalEventInput[] = [
-        this.event(
-          {
-            eventType: 'QuotaObserved',
-            payload: {
-              accountId: a.id,
-              credentialEpoch: a.epoch,
-              sequence: ticket.sequence,
-              observedAt: snapshot.at,
-              quotaTier: typeof view.account.quotaTier === 'number' ? view.account.quotaTier : null,
-              subscriptionActive:
-                typeof view.account.subscriptionActive === 'boolean'
-                  ? view.account.subscriptionActive
-                  : null,
-              subscriptionExpiresAt: isoTimestamp(view.account.subscriptionExpiresAt),
-              v5:
-                view.account.v5UsageIsNegative && snapshot.v5 !== null
-                  ? '0'
-                  : money(view.account.v5UsagePercent),
-              anlasFixed: snapshot.anlasFixed,
-              anlasPurchased: snapshot.anlasPurchased,
-              secondsPerPercent: snapshot.seconds,
-              errorCode: result.ok ? null : result.upstreamStatus,
-            },
-          },
-          a.id,
-          metadata,
-          observationId,
-        ),
-      ];
-      if (result.disableAccount && a.enabled === 1) {
-        events.push(
-          this.event(
-            {
-              eventType: 'AvailabilityChanged',
-              payload: { accountId: a.id, enabled: false, reason: result.disableReason },
-            },
-            a.id,
-            metadata,
-          ),
-        );
-      }
-      const planned = this.capture(view, () =>
-        syncBoundFairQuota(view.db, view.account, metadata.recordedAt),
-      );
-      events.push(...this.convert(planned.facts, view, metadata, observationId));
-      return this.commit(metadata, events, {
-        accountId: a.id,
+      return this.commit(metadata, planned, {
+        accountId: ticket.accountId,
         sequence: ticket.sequence,
         ok: result.ok,
       });
     });
+  }
+  // 账户启用与额度决定共用一笔提交，规划不追加事实或推进投影。
+  planQuotaObservation(metadata: Metadata, ticket: Ticket, result: QuotaResult, enable = false) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Quota observation planning requires the owning transaction.');
+    }
+    const a = this.account(ticket.accountId),
+      q = this.readAccountQuota(ticket.accountId);
+    if (
+      a.epoch !== ticket.credentialEpoch ||
+      a.pst !== ticket.pst ||
+      !this.order.current(`${a.id}:${a.epoch}`, ticket.sequence) ||
+      BigInt(ticket.sequence) <= BigInt(q.observedSequence ?? '0')
+    ) {
+      return null;
+    }
+    if (
+      result.id !== ticket.accountId ||
+      result.quotaCheckedAt !== new Date(ticket.startedAt).toISOString()
+    ) {
+      fail('观察结果账户不符');
+    }
+    const view = this.state(a.id);
+    Object.assign(
+      view.account,
+      accountQuotaPatch(result, new Date(ticket.startedAt).toISOString()),
+    );
+    const verified =
+      enable &&
+      result.ok &&
+      isUsableOpus({ ...view.account, enabled: true }, metadata.recordedAt) &&
+      isQuotaSnapshotFresh(ticket.startedAt, metadata.recordedAt);
+    if (verified) {
+      view.account.enabled = true;
+    }
+    const snapshot = fairQuotaSnapshot(view.account),
+      observationId = randomUUID(),
+      tier = quotaNumber(view.account.quotaTier);
+    const money = (v: unknown) =>
+      (typeof v === 'string' || typeof v === 'number') && Number.isFinite(Number(v))
+        ? formatAmount(parseAmount(v, typeof v === 'number' ? 'nearest' : 'exact'))
+        : null;
+    const events: RelationalEventInput[] = [
+      this.event(
+        {
+          eventType: 'QuotaObserved',
+          payload: {
+            accountId: a.id,
+            credentialEpoch: a.epoch,
+            sequence: ticket.sequence,
+            observedAt: snapshot.at,
+            quotaTier: tier !== null && Number.isSafeInteger(tier) ? tier : null,
+            subscriptionActive:
+              typeof view.account.subscriptionActive === 'boolean'
+                ? view.account.subscriptionActive
+                : null,
+            subscriptionExpiresAt: isoTimestamp(view.account.subscriptionExpiresAt),
+            v5:
+              view.account.v5UsageIsNegative && snapshot.v5 !== null
+                ? '0'
+                : money(view.account.v5UsagePercent),
+            anlasFixed: snapshot.anlasFixed,
+            anlasPurchased: snapshot.anlasPurchased,
+            secondsPerPercent: snapshot.seconds,
+            errorCode: result.ok ? null : result.upstreamStatus,
+          },
+        },
+        a.id,
+        metadata,
+        observationId,
+      ),
+    ];
+    if (verified || (result.disableAccount && a.enabled === 1)) {
+      events.push(
+        this.event(
+          {
+            eventType: 'AvailabilityChanged',
+            payload: {
+              accountId: a.id,
+              enabled: verified,
+              reason: verified ? 'verified_opus' : result.disableReason,
+              observationEventId: verified ? observationId : null,
+            },
+          },
+          a.id,
+          metadata,
+        ),
+      );
+    }
+    const planned = this.capture(view, () =>
+      syncBoundFairQuota(view.db, view.account, metadata.recordedAt),
+    );
+    events.push(...this.convert(planned.facts, view, metadata, observationId));
+    return events;
   }
   refillQuota(metadata: Metadata, accountId: string) {
     return this.owned(() => {
@@ -1125,14 +1200,17 @@ export class RelationalQuotaStore {
     }
     return formatAmount(next);
   }
-  private applyQuotaEvents(events: RelationalEvent[]) {
+  createQuotaProjector(events: RelationalEvent[]) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();
-    for (const e of events) {
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Quota projection requires the owning transaction.');
+      }
       if (
         !relationalQuotaFacts.has(e.eventType) ||
         !e.accountId ||
@@ -1170,11 +1248,47 @@ export class RelationalQuotaStore {
           this.saveAccountQuota(q, e.eventId);
           break;
         }
-        case 'AvailabilityChanged':
-          this.sqlite
-            .prepare('UPDATE upstream_accounts SET enabled=?,source_event_id=? WHERE id=?')
-            .run(Number(e.payload.enabled), e.eventId, accountId);
+        case 'AvailabilityChanged': {
+          const p = e.payload;
+          if (p.enabled) {
+            if (
+              !p.observationEventId ||
+              p.observationEventId !== q.observationEventId ||
+              q.observedCredentialEpoch !== a.epoch ||
+              q.quotaErrorCode !== null ||
+              !isQuotaSnapshotFresh(q.observedAt, e.occurredAt) ||
+              !isUsableOpus(
+                {
+                  enabled: true,
+                  quotaTier: q.quotaTier,
+                  subscriptionActive: q.subscriptionActive,
+                  subscriptionExpiresAt: iso(q.subscriptionExpiresAt),
+                },
+                e.occurredAt,
+              )
+            ) {
+              fail('启用缺少当前代次的最新有效 Opus 观察');
+            }
+            const observed = this.sqlite
+              .prepare<[string], { event_type: string; account_id: string | null }>(
+                'SELECT event_type,account_id FROM domain_events WHERE event_id=?',
+              )
+              .get(p.observationEventId);
+            if (observed?.event_type !== 'QuotaObserved' || observed.account_id !== accountId) {
+              fail('启用依据不是该账户的实际查询观察');
+            }
+          } else if (p.observationEventId !== null) {
+            fail('暂停不能引用启用观察');
+          }
+          if (
+            this.sqlite
+              .prepare('UPDATE upstream_accounts SET enabled=?,source_event_id=? WHERE id=?')
+              .run(Number(p.enabled), e.eventId, accountId).changes !== 1
+          ) {
+            fail('可用性事实缺少实际账户');
+          }
           break;
+        }
         case 'QuotaStatusChanged':
           q.status = e.payload.status;
           this.saveAccountQuota(q, e.eventId);
@@ -1514,6 +1628,12 @@ export class RelationalQuotaStore {
         default:
           fail(`Unsupported quota projection ${e.eventType}`);
       }
+    };
+  }
+  applyQuotaEvents(events: RelationalEvent[]) {
+    const apply = this.createQuotaProjector(events);
+    for (const event of events) {
+      apply(event);
     }
   }
   private configuration(version: number) {

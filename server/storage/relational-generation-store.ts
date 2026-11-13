@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RelationalCommitReplayer } from './relational-replay.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
@@ -8,6 +9,7 @@ import {
   readRelationalReceipt,
   replayRelationalCommit,
   type StoredRelationalCommit,
+  type RelationalCommitResult,
 } from '../events/relational-event-store.ts';
 import {
   relationalFactStream,
@@ -78,7 +80,7 @@ type Completion = Pick<
   'kind' | 'retryAfterUntil'
 >;
 
-const generationFacts = new Set<RelationalEvent['eventType']>([
+export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
   'OpeningAccountRecorded',
   'OpeningGroupRecorded',
@@ -145,6 +147,7 @@ interface Charge {
   anlasFixed: string;
   anlasPurchased: string;
   billingMode: 'free' | 'v5' | 'anlas' | 'anlas_fallback';
+  estimated: boolean | null;
   v5Equivalent: string;
   sharedV5Reserved: string;
   configVersion: number;
@@ -230,17 +233,19 @@ export class RelationalGenerationStore {
     );
   }
   readCharge(jobId: string): Charge | null {
-    return (
-      this.sqlite
-        .prepare<[string], Charge>(
-          `SELECT original_job_id AS originalJobId,original_member_id AS originalMemberId,
+    const row = this.sqlite
+      .prepare<[string], Omit<Charge, 'estimated'> & { estimated: number | null }>(
+        `SELECT original_job_id AS originalJobId,original_member_id AS originalMemberId,
       original_account_id AS originalAccountId,job_id AS jobId,attempt_id AS attemptId,status,resolution,v5,anlas_fixed AS anlasFixed,
-      anlas_purchased AS anlasPurchased,billing_mode AS billingMode,v5_equivalent AS v5Equivalent,shared_v5_reserved AS sharedV5Reserved,
+      anlas_purchased AS anlasPurchased,billing_mode AS billingMode,estimated,v5_equivalent AS v5Equivalent,shared_v5_reserved AS sharedV5Reserved,
       config_version AS configVersion,reserved_at AS reservedAt,terminal_at AS terminalAt,reservation_event_id AS reservationEventId,
       terminal_event_id AS terminalEventId FROM charges WHERE original_job_id=?`,
-        )
-        .get(jobId) || null
-    );
+      )
+      .get(jobId);
+    if (!row) {
+      return null;
+    }
+    return { ...row, estimated: row.estimated === null ? null : row.estimated === 1 };
   }
   private attempt(jobId: string): Attempt | null {
     return (
@@ -357,7 +362,7 @@ export class RelationalGenerationStore {
       expectedVersions,
       events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
     });
-    this.applyEvents(result.events);
+    this.applyEvents(result);
     return result;
   }
   private nextQueueSeq(): string {
@@ -748,6 +753,7 @@ export class RelationalGenerationStore {
                 accountId: account.id,
                 resources: generationChargeResources(charge),
                 billingMode: charge.billingMode || charge.resource,
+                estimated: charge.estimated,
                 v5Equivalent: charge.v5Equivalent || '0',
                 sharedV5Reserved: charge.sharedV5Reserved || '0',
                 configVersion: charge.configVersion,
@@ -1612,8 +1618,14 @@ export class RelationalGenerationStore {
       fail('产物与原任务/输入/尝试归属不符');
     }
   }
-  private applyEvents(events: RelationalEvent[]): void {
-    for (const e of events) {
+  createGenerationProjector(events: RelationalEvent[]) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation projection requires the owning transaction.');
+    }
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Generation projection requires the owning transaction.');
+      }
       if (
         e.eventType.startsWith('Opening') &&
         'origin' in e.payload &&
@@ -1773,7 +1785,7 @@ export class RelationalGenerationStore {
           const p = e.payload;
           this.sqlite
             .prepare(
-              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,estimated,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             )
             .run(
               p.originalJobId,
@@ -1790,6 +1802,7 @@ export class RelationalGenerationStore {
               p.resources.anlasFixed,
               p.resources.anlasPurchased,
               p.billingMode,
+              p.estimated === null ? null : Number(p.estimated),
               p.v5Equivalent,
               p.sharedV5Reserved,
               p.configVersion,
@@ -1832,7 +1845,7 @@ export class RelationalGenerationStore {
           this.adjustWallet(p.accountId, p.memberId, p.resources, -1, e.eventId);
           this.sqlite
             .prepare(
-              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,NULL,'reserved','live',?,?,?,?,?,?,?,?,?,NULL,?,NULL)`,
+              `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,estimated,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,NULL,'reserved','live',?,?,?,?,?,?,?,?,?,?,NULL,?,NULL)`,
             )
             .run(
               p.jobId,
@@ -1846,6 +1859,7 @@ export class RelationalGenerationStore {
               p.resources.anlasFixed,
               p.resources.anlasPurchased,
               p.billingMode,
+              Number(p.estimated),
               p.v5Equivalent,
               p.sharedV5Reserved,
               p.configVersion,
@@ -2226,16 +2240,19 @@ export class RelationalGenerationStore {
         default:
           throw new Error(`Generation replay cannot apply another owner's fact: ${e.eventType}`);
       }
-    }
+    };
+  }
+  private applyEvents(result: RelationalCommitResult): void {
+    new RelationalCommitReplayer(this.sqlite, this).applyCommit(result);
   }
   replayGenerationCommit(stored: StoredRelationalCommit) {
     return this.owned(() => {
-      if (stored.events.some((e) => !generationFacts.has(e.eventType))) {
+      if (stored.events.some((e) => !relationalGenerationFacts.has(e.eventType))) {
         throw new Error('Generation replay requires complete generation/accounting commits.');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
-        this.applyEvents(result.events);
+        this.applyEvents(result);
       }
       return result;
     });
