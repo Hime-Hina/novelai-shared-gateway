@@ -121,7 +121,6 @@ export class RelationalInputStore {
     if (
       typeof detail !== 'string' ||
       detail.length > 4000 ||
-      detail.trim() !== detail ||
       !Number.isSafeInteger(createdAt) ||
       createdAt < 0
     ) {
@@ -195,7 +194,6 @@ export class RelationalInputStore {
         p.byteLength !== row.byteLength ||
         !body ||
         body.detail.length > 4000 ||
-        body.detail.trim() !== body.detail ||
         createHash('sha256').update(body.detail).digest('hex') !== p.sha256
       ) {
         diagnosticUnavailable();

@@ -151,6 +151,31 @@ test('诊断只接受原 owner 不可伪造对象、当前 system/null 和持久
   f.fail('auth-0', { diagnostic: { dispatch, error: 'private' } });
 });
 
+test('原 trim 后限长允许截断末尾空白，失败退款与诊断原字节仍完整恢复', async (t) => {
+  const f = await fixture(t);
+  await f.accept('whitespace');
+  const wallet = f.generations.readWallet('a', 'm1'),
+    dispatch = f.dispatch('whitespace-0').dispatch,
+    raw = `${'x'.repeat(3999)} tail`,
+    expected = errorDetailMessage(raw),
+    result = f.fail('whitespace-0', { diagnostic: { dispatch, error: raw } }),
+    fact = diagnosticFact(f, result);
+  assert.equal(expected.length, 4000);
+  assert.equal(expected.at(-1), ' ');
+  assert.deepEqual(f.generations.readWallet('a', 'm1'), wallet);
+  assert.equal(f.generations.readCharge('whitespace-0').status, 'refunded');
+  assert.equal(f.db.prepare('SELECT status FROM generation_jobs').get().status, 'failed');
+  assert.equal(
+    f.inputs.readGenerationDiagnostic(fact.payload.diagnosticId, 'whitespace-0'),
+    expected,
+  );
+  const target = recovery(t, f);
+  assert.equal(
+    target.inputs.readGenerationDiagnostic(fact.payload.diagnosticId, 'whitespace-0'),
+    expected,
+  );
+});
+
 test('外层回滚留下的派发快照即使同 attempt 重试也不是原捕获票据', async (t) => {
   const f = await fixture(t);
   await f.accept('ghost');
