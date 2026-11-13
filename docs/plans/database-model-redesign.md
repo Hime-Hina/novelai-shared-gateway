@@ -1011,6 +1011,18 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 维护者对 #60 的授权只覆盖该固定候选；本批新增守卫仍需最终复核后正常合并。接单、分组/权益、诊断/历史命令、真实内容领取、合法 ready、迁移和新 HTTP/调度仍继续推进；这份联合测试不表示它们已完成，也不表示生产上线或真实端点全量闭包通过。
 
+### 9.33 #48/#31：partial 输入的已知内容读取
+
+历史输入缺少首次 Native 定义时保持 partial / `recoverable=false`，不因此丢弃已知正文或附件；准确语义补在[成员输入契约第 6 节](../contracts/member-generation-contract.md#6-查询预览参数复用与领取)。现有 Web 只有请求查询、取消和结果领取，没有输入恢复 DTO/编辑器调用，因此本片不加能力字段、持久状态或 UI。已知 `input` 字段和 `assets` 白名单 URL 可供客户端读取/显式复制为新意图，再按当前规则报价确认并使用新键。
+
+规则仅落在 `RelationalInputStore.readMemberAsset()`：当前成员、原请求/input 事实归属及内容摘要、槽位、同 input 的 BLOB 长度/SHA 仍是必经边界。完整输入保留已保存首次上下文校验；partial 图片用现有安全解码核对真实 PNG/JPEG/WebP MIME，opaque 已知字节只允许 application/octet-stream。它不解释 Native/Vibe 执行语义、不补 action/seed/sampleCount/当前默认，也不放宽 `readJobInput()`、原 POST 重放或旧费用授权。
+
+反例沿原输入测试入口增加有来源 partial 正文/附件：空串/NULL/缺省不变；合法图片和短 opaque 原字节可领取；错误 MIME、非白名单槽位、跨成员、同长度坏 SHA、当前认证撤销均拒绝；缺首次上下文仍不能冷派发。全部只读结果和拒绝核对数据库不变，fixture 只构造 opening 事实及相符保护行，不将它称为完整迁移或 opening owner 回放。
+
+Node 22.23.4 输入/关系查询/现成员 HTTP 三文件 44/44；架构、后端类型、默认及可信 `29924b9` 基线的旧迁移历史、受影响文件格式和差异检查通过。临时恢复旧 complete-only 门槛后，同一新增反例在合法 partial 图片领取处明确失败，修正后通过；日志保存在本地 `H:\TEMP\novelai-partial-inputs-review`。完整后端与独立审查待统一安排，不把现旧 HTTP 回归称为新格式 partial 端点验收。
+
+本片仅交付读取能力与契约补正，不选择 A/B、不打开旧库 fallback、不迁移历史、安装 ready 或进行生产切换。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

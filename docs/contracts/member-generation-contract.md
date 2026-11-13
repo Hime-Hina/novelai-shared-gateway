@@ -251,6 +251,10 @@ V5/Anlas fallback 是互斥收费路径，不能把两者加起来显示成单�
 
 新关系格式的 request 状态继续区分父受理与 child 原创建时刻：job.createdAt 来自原 JobAccepted 事实，历史 Opening 仅使用有来源的可空 createdAt 字段；未知返回 NULL，不能回填父受理时间、开账/迁移日或 0。调用热力图不把未知日期归入任一天，owner 全部保留记录可显示“未知日期”分组。
 
+历史 partial 输入的 `recoverable=false` 表示无法完整还原首次生成语义，不代表已知字段或附件已经丢失。`input` 仍返回实际保存的已知字段、空串和 NULL，`assets` 仍列出该请求的已知白名单槽位；不补当前 Native 定义、action、seed 或 sampleCount。成员可以读取并复制这些已知内容，编辑为新意图后按当前规则重新报价、确认并使用新操作键；这不重放旧 POST、不继承原费用授权，也不允许旧 partial 任务派发。未保存正文的 unavailable 输入仍返回 `input=null` 和 `recoverable=false`。
+
+partial 附件领取仍核对当前成员、原 request/input 归属和来源摘要、槽位、同 input 的 BLOB 长度与 SHA。图片复用现有 PNG/JPEG/WebP 安全解码并核对保存 MIME；已知二进制只以 `application/octet-stream` 原样读取，不将它解释成已满足 Native/Vibe 派发条件。完整输入继续按保存的首次上下文校验，partial 字节读取不伪造该上下文。坏摘要、缺字节或无效内容返回 input_unavailable；非本人的请求或不存在的白名单槽位返回对应 404。
+
 所有请求/附件/产物都重复校验成员归属；停止接单成员仍可查看、取消等待及领取既有结果。合法会员会话失效时返回认证错误，不把它伪装成结果丢失。输入响应不泄漏内部账号、PST、会话、签名密钥或与该成员无关的规范化上下文。
 
 ## 7. 错误与传输契约

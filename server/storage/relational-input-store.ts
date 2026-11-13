@@ -36,6 +36,7 @@ import {
 import { generationRequestFingerprint } from '../generation/request-fingerprint.ts';
 import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
+import { validateImageBytes } from '../protocols/native-image.ts';
 
 type CommandMetadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -1045,10 +1046,16 @@ export class RelationalInputStore {
   readMemberAsset(requestId: string, memberId: string, slotName: string) {
     const request = this.ownedRequest(requestId, memberId),
       input = this.requestInput(request);
-    if (input.row.completeness !== 'complete' || !input.body || !request.context_id) {
+    if (!input.body) {
       unavailable();
     }
-    const context = this.context(request.context_id);
+    let context: RelationalNormalizationContext | null = null;
+    if (input.row.completeness === 'complete') {
+      if (!request.context_id) {
+        unavailable();
+      }
+      context = this.context(request.context_id);
+    }
     const slot = relationalAssetSlots(input.body, input.assets).find(
       (entry) => entry.slot === slotName,
     );
@@ -1058,7 +1065,22 @@ export class RelationalInputStore {
     const assetId = (slot.value as { assetId: string }).assetId;
     const descriptor = input.assets.find((asset) => asset.assetId === assetId)!;
     const asset = this.asset(request.input_id, descriptor);
-    validateRelationalAssetBytes({ ...descriptor, bytes: asset.bytes }, slot.image, context);
+    if (context) {
+      validateRelationalAssetBytes({ ...descriptor, bytes: asset.bytes }, slot.image, context);
+    } else {
+      // 历史已知字节可复制；缺首次定义不能补成 Native 派发资格。
+      try {
+        if (slot.image || asset.mimeType.startsWith('image/')) {
+          if (validateImageBytes(asset.bytes).mimeType !== asset.mimeType) {
+            unavailable();
+          }
+        } else if (asset.mimeType !== 'application/octet-stream') {
+          unavailable();
+        }
+      } catch {
+        unavailable();
+      }
+    }
     return asset;
   }
 
