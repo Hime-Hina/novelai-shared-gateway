@@ -79,6 +79,7 @@ test('当前凭据 401/403 同笔失效并退款，abort/200 不停用；原观�
   ]) {
     await t.test(`${status}/${aborted}`, async (t) => {
       const f = await running(t);
+      await f.accept('next', { now: NOW + 1 });
       response(f, status);
       const before = f.quotas.readAccountQuota('a'),
         result = f.fail('failed-0', {
@@ -126,8 +127,12 @@ test('当前凭据 401/403 同笔失效并退款，abort/200 不停用；原观�
       const once = f.db.serialize();
       assert.equal(f.fail('failed-0', { aborted }).replayed, true);
       assert.deepEqual(f.db.serialize(), once);
-      await f.accept('next');
       if (expected) {
+        const rejected = databaseState(f.db);
+        await assert.rejects(f.accept('unavailable-new', { now: NOW + 11000 }), {
+          statusCode: 503,
+        });
+        assert.equal(databaseState(f.db), rejected);
         assert.throws(() => f.dispatch('next-0', NOW + 11000), /额度基线不可用/);
       } else {
         assert.ok(f.dispatch('next-0', NOW + 11000).dispatch);

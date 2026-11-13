@@ -130,6 +130,26 @@ for (const filename of [
       'relational authentication HTTP writer factory',
       "import { createRelationalMemberAuthenticationHttp as create } from '../members/relational-authentication-http.ts'; create(deps);",
     ],
+    ...[
+      [
+        'Native raw admission writer',
+        '../generation/relational-native-admission.ts',
+        'createRelationalNativeAdmission',
+      ],
+      [
+        'relational Native HTTP writer',
+        '../generation/relational-native-http.ts',
+        'createRelationalNativeHttp',
+      ],
+      [
+        'legacy Native HTTP writer',
+        '../generation/legacy-native-http.ts',
+        'createLegacyNativeHttp',
+      ],
+    ].map(([label, path, name]) => [
+      label,
+      `import { ${name} as create } from '${path}'; create(deps);`,
+    ]),
     ['direct key mutation', 'authStore.memberApiKeyTransaction(hash,fn);'],
     [
       'relational member store',
