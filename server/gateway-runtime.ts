@@ -36,7 +36,6 @@ import {
 } from './generation/delivery.ts';
 import {
   completeGenerationCommand,
-  isNovelAiCapacityError,
   reconcileGenerationReviewsCommand,
   recoverPendingGenerationResultsCommand,
   reserveQueuedGeneration,
@@ -91,11 +90,13 @@ import {
 } from './protocols/novelai-client.ts';
 import {
   errorDetailMessage,
+  isNovelAiCapacityError,
   isAbortError,
   isInsufficientBalanceError,
   isTimeoutResultMessage,
   publicErrorMessage,
 } from './http/public-errors.ts';
+import { selectErrorLogJobs, publicErrorLog } from './reports/generation-errors.ts';
 import { privateAccessAllowed } from './http/public-hosts.ts';
 import {
   physicalAccountLoad as countPhysicalAccountLoad,
@@ -2582,92 +2583,14 @@ function hourlyUsageStatsByDay(jobs: StoreItem[], days = usageChartDays) {
 }
 
 function errorLogs(jobs: StoreItem[], db: Partial<StoreDatabase> = {}, limit = 100) {
-  const cutoff = Date.now() - errorLogRetentionMs;
-  return jobs
-    .filter((job) => job.status === 'failed')
-    .filter(isAccountErrorLogJob)
-    .filter((job) => {
-      const timestamp = Date.parse(job.updatedAt || job.createdAt || '');
-      return timestamp && timestamp >= cutoff;
-    })
-    .sort(
-      (a, b) =>
-        Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''),
-    )
-    .slice(0, limit)
-    .map((job) => publicErrorLog(job, db));
-}
-
-function isAccountErrorLogJob(job: StoreItem) {
-  if (!job?.accountId) {
-    return false;
-  }
-  const text = `${job.error || ''}\n${job.errorDetail || ''}`;
-  if (isNovelAiCapacityError({ message: text })) {
-    return false;
-  }
-  if (
-    /all NovelAI accounts are busy|server busy|direct generate timeout|AbortError|operation was aborted/i.test(
-      text,
-    )
-  ) {
-    return false;
-  }
-  if (/job deadline expired|stale timeout|queued job exceeded|running job exceeded/i.test(text)) {
-    return false;
-  }
-  if (/invalid user token|invalid STA1N|密钥额度不足|用户额度不足/i.test(text)) {
-    return false;
-  }
-  return true;
-}
-
-function publicErrorLog(job: StoreItem, db: Partial<StoreDatabase> = {}) {
-  const request = generationRequestForErrorLog(store, job);
-  const account =
-    job.accountId && Array.isArray(db.accounts)
-      ? db.accounts!.find((item) => item.id === job.accountId)
-      : null;
-  return {
-    id: job.id,
-    source: job.source || 'web',
-    userToken: maskToken(job.userToken || ''),
-    accountId: job.accountId || '',
-    accountRouteId: account?.routeId || 0,
-    status: job.status,
-    error: publicErrorMessage(job.error || ''),
-    errorDetail: errorDetailMessage(job.errorDetail || job.error || ''),
-    retryCount: Number(job.retryCount || 0),
-    cost: Number(job.cost || 0),
-    accountCost: jobAccountCost(job),
-    queueTotal: Number(job.queueTotal || 0),
-    durationMs: jobDurationMs(job),
-    request: errorLogRequest(request),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    completedAt: job.completedAt || (['done', 'failed'].includes(job.status!) ? job.updatedAt : ''),
-    beijingDate: beijingDateKey(Date.parse(job.updatedAt || job.createdAt || '')),
-  };
-}
-
-function errorLogRequest(request: RequestSummary = {}) {
-  return {
-    tag: request.tag || '',
-    prompt: request.prompt || '',
-    artist: request.artist || '',
-    negative: request.negative || '',
-    model: request.model || '',
-    size: request.size || '',
-    width: request.width || 0,
-    height: request.height || 0,
-    requestedSteps: request.requestedSteps ?? request.steps ?? 0,
-    routedSteps: request.steps ?? 0,
-    scale: request.scale ?? '',
-    cfg: request.cfg ?? '',
-    sampler: request.sampler || '',
-    noiseSchedule: request.noiseSchedule || '',
-    seed: request.seed ?? '',
-  };
+  return selectErrorLogJobs(jobs, Date.now() - errorLogRetentionMs, limit).map((job) => {
+    const account = db.accounts?.find((item) => item.id === job.accountId);
+    return publicErrorLog(job, generationRequestForErrorLog(store, job), {
+      maskedUserToken: job.userToken == null ? null : maskToken(job.userToken),
+      accountRouteId: account?.routeId ?? null,
+      durationMs: jobDurationMs(job),
+    });
+  });
 }
 
 function recentBeijingDateKeys(days: number) {

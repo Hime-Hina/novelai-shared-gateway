@@ -917,6 +917,22 @@ SQL 事务外，依具体 replica owner 有界枚举每个非退休产物，至�
 
 对象 IO 前仅保留私有状态的瞬时有界指纹；IO 后在最终写事务重新核对选定源、完整切点、全部业务表及当前私有状态，才调用原私有恢复并安装 ready。最终状态更新失败时私有恢复与状态一并回滚。没有长期 applied/核对通过标记，没有其他原始 ready 写入口，也不允许 SQL 事务跨异步对象 IO。目标若在 IO 期间变化，安装者拒绝且不覆盖其他写入。完整候选的专项、独立审查和发布证据随实现固定后记录，本契约不代表未实现事实或生产切换验收已通过。
 
+### 9.25 T6：错误与损耗的共同展示入口
+
+当前片先从既有实际调用链提取展示 owner，供整合后的关系读取接入。管理错误来自 gateway 的已鉴权摘要，选择窗口/分类后才冷读请求；损耗来自 `queryFailureAccounting()` 的原 SQL 读取，告警、互斥候选与聚合差额分开展示的规则继续归 `quota/failure-accounting.ts`。本片不写诊断、事实、钱包或私有内容，也不提前接入另一套关系查询。
+
+错误 DTO 只展示原来源已保存的字段：缺少 accountRouteId/retryCount/cost/accountCost/queueTotal、原时间、诊断或请求字段时保留 NULL；数值 0 与空字符串是明确值，不当未知。原 requestedSteps 缺少时不能用 routed steps 冒充，完成时间缺少时不能拿 updatedAt 冒充。安全错误文案和诊断长度继续复用 `http/public-errors.ts`，共享容量错误分类移回这个既有错误 owner，执行与查询共用。原规范输入、首次上下文和诊断的正确来源及私有校验仍由实际输入/generation owner 负责。
+
+损耗展示入口只接收已读取的窄数据，保留原尝试风险、聚合差额、成员频率、资金和历史分页含义；不会读取数据库或重新聚合另一套账目。关系格式的精确金额、原事件次序/游标、未知责任及诊断读取将在实际整合 SHA 上接入，不把旧 SQL 的结构当新格式事实。反例需覆盖已知零/未知、原字段缺失、隐私白名单、非相加告警和现有真实调用路径。
+
+实际入口是 `reports/generation-errors.ts` 的选择和白名单 DTO、原 `public-errors.ts` 的共同错误分类，以及 `quota/failure-accounting.ts` 的 `publicFailureEvent()` / `failureAccountingAlerts()`。gateway 在现有管理鉴权之后只适配原行、脱敏标签与选中请求的冷读取。损耗原 SQL、资金转换、分页及告警算法保留，关系读取尚未添加。耗时继续归 `generation/request-queries.ts`，终态只使用原 completedAt；没有足够原时间时返回 NULL，所有展示调用共用这一修正。
+
+`report-assemblers.test.mjs` 区分未知与已知零、保留合法旧 number/数字文本、原步数与路由步数、真实 timestamp 0、完整白名单和不相加告警；原 `native-http.test.mjs` 的真实 HTTP 诊断回归另断言缺字段 NULL 与原步数来源。固定 `12a8585` 已独立复核完整差异、全部耗时调用、原容量分类及损耗 SQL/告警/白名单，并以额外 3/3 反例和原展示 6/6 复核未知时间、原 number、步数和隐私边界，未发现确认问题。业务文件在下述验证期间保持该候选原字节。
+
+最终后端 1022 项：1017 通过、5 项原有条件跳过、0 失败，包含新增真实 Native HTTP 断言；定向六文件 44/44、Web 全量 150/150、执行器单元 3/3、三包类型和 backend/executor 构建通过。实际 Nitro 产物回归为 3 通过/1 原有条件跳过；实际执行器包内编译 JavaScript 的 Native HTTP 加展示专项 24/24、零跳过，专项目录没有 TypeScript 源码，76 个后端编译文件与包内版本完全一致。Node 24.22.1 隔离九实际文件 58/58，241 个源/测试/夹具逐文件 SHA-256 与候选相同，未重编共享依赖。架构、默认及可信 `3f5c164` 迁移历史、129 文件语法、完整格式和差异检查通过。
+
+日志及隔离产物位于本地 `H:\\TEMP\\novelai-assembler-*.log`、`H:\\TEMP\\novelai-report-assemblers-*.log` 与 `H:\\TEMP\\novelai-assembler-validation`；独立复现脚本/证据为 `H:\\TEMP\\novelai-assembler-independent.test.mjs/.log`。本片证明当前真实旧 HTTP 和实际编译包继续遵守可空字段及隐私契约，仍未接入新关系错误/损耗查询或诊断保存，不表示新格式 HTTP、联合恢复、ready 或最终切换完成。
+
 ### 9.26 #47 成员停止与恢复接单契约
 
 本片基于共同完整提交 owner，接入原 `generation/queue-policy.ts` 的 `setMemberAdmission()`，只改变稳定成员 ID 对应的接单状态，不扩展分组、转移或移除。`members.accepting_jobs` 与 `admission_epoch` 是当前权威值：只有接单中变为停止时增加一次安全整数代次；重复停止和恢复保持原代次。同毫秒停止再恢复也不能让旧请求继续提交；安全整数上界不能因 number 精度重用代次。
