@@ -278,7 +278,7 @@ test('同 cursor 的钱包差一、缺行、多行、正文或私有错配都拒
   }
 });
 
-test('选择源须有明确非零完整切点，未知事实与无 owner 诊断即使目标复制一致也不能 ready', async (t) => {
+test('选择源须有明确非零完整切点，未实现事实与无原事实的诊断即使目标复制一致也不能 ready', async (t) => {
   for (const kind of ['history', 'cut', 'hash', 'empty', 'unsupported', 'diagnostic']) {
     await t.test(kind, async (t) => {
       const f = await completed(t);
@@ -288,23 +288,23 @@ test('选择源须有明确非零完整切点，未知事实与无 owner 诊断�
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'sharing:default': f.db
+              'request:complete': f.db
                 .prepare(
-                  "SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id='sharing:default'",
+                  "SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id='request:complete'",
                 )
                 .get().v,
             },
-            receipt: { configured: true },
+            receipt: { linked: true },
             events: [
               {
-                eventType: 'SharingConfigured',
-                streamId: 'sharing:default',
-                memberId: null,
+                eventType: 'CachedResultLinked',
+                streamId: 'request:complete',
+                memberId: 'm1',
                 accountId: null,
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
-                payload: { enabled: true, boundAccountId: 'a', configVersion: 1 },
+                payload: { jobId: 'complete-0', artifactId: 'artifact-complete-0' },
               },
             ],
           }),
@@ -334,7 +334,10 @@ test('选择源须有明确非零完整切点，未知事实与无 owner 诊断�
         selected.finalCommitSeq = '0';
       }
       const before = databaseState(db);
-      await assert.rejects(verifyAndInstallRelationalStorage(db, selected));
+      await assert.rejects(
+        verifyAndInstallRelationalStorage(db, selected),
+        kind === 'unsupported' ? /Business projection has no owner/ : undefined,
+      );
       assertBuilding(db);
       assert.equal(databaseState(db), before);
     });

@@ -1031,6 +1031,8 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 独立审查在该初始候选发现仅核守恒会接受零权重或低权重成员独吞原组资金，合法完整 envelope 的原反例在旧候选 0/3（含父测试）。`0df3c70fcb49a76eceda6c4193f3dd850e0b238a` 将原单组确定性分配提为同一 owner helper，按保存输入核对每个成员、每个资源及最小单位余数；真实分配算法未另写一套。原审查脚本本地修后 3/3，连同新组、额度和原 fair-share/preview 五文件合跑 195/195、类型检查通过。新增正例明确核对 1:0、3:1 的三资源结果，反例逐资源篡改及 12 位最小单位余数归属均拒绝；固定修复后的独立复审与统一候选整体证据继续补录。
 
+分组进入共同 owner 后，ready 原“未实现 owner”反例中的 SharingConfigured 已成为合法受支持事实。整合只将夹具换为仍无 owner 的合法 CachedResultLinked，保持真实请求流与原序，并增加明确的无业务 owner 错误断言；没有删去拒绝检查或放宽 installer。该完整六类拒绝矩阵共 7/7。限定同类审查另发现 RefillApplied/AllocationApplied 可将原决定改给零权重成员，已交额度 owner 单独修复；分组本片通过不能替代这两条原分配路径的闭环。
+
 ### 9.30 T6：真实关系错误/损耗读取与受保护诊断
 
 本片从联合 `8c3c7e9` 接续。原执行诊断经 `errorDetailMessage()` 收敛/限长，再由旧受保护内容机制保存；新 `failGeneration()` 尚固定 diagnosticId=NULL，`DiagnosticRecorded` 没有业务投影 owner，ready 因而明确拒绝诊断。本片先在实际 generation 事务和既有 `RelationalInputStore` 受保护内容边界闭合该缺口，再接复用 `publicErrorLog()` / `publicFailureEvent()` / `failureAccountingAlerts()` 的窄关系读取；不接 HTTP 总装配或其他开账命令。
@@ -1124,6 +1126,8 @@ OAuth callback 的 GET 跨站例外仍只依赖原 state、浏览器 Cookie、Ho
 新增导出的续期帮助函数和关系认证 factory 是实际写能力，现架构集合仅追加这两个名字，并加入 aliased import 拒绝反例；原两条 HTTP writer 断言仅更新实际 owner 路径，不放宽拒绝条件。这一守卫增量需父任务维护者独立复核。Node 22.23.4 认证/Discord/关系成员/架构及新合法 ready 真实 HTTP 五文件联合 251/251（含新 HTTP 5 项及新增拒绝反例）、原真实 sole gateway 会话 HTTP 8 项（7 通过、1 项原条件跳过、0 失败）；原 10 秒 startup 断言不变。架构、可信 `6ab8047de9a13da00ec435916cf29f4171c2d2c2` 迁移历史、类型及改动格式检查通过，完整后端与发布物由父任务统一排期。日志为 `H:\TEMP\member-auth-fixed-targeted.log`、`member-auth-sole-session-http.log`，不沿用前片的 full 或发布证据。
 
 原 `server/index.ts` 与 Nitro 的 `executor/gateway-handler.ts` 仍共用旧 `gateway-runtime.ts`，其顶层旧 store、旧启动恢复和 Native/OpenAI/成员 reader 装配尚未切换。本片只交付可接入的认证能力，不能据此声明真实 sole gateway、全 #52 或生产替换完成；后续 Native 的原请求受理/同步领取、OpenAI 消息解析/流错误和成员 `me/key/history/shared-status/events` 各自真实 owner 仍须逐项接通。本片不碰生成、额度、管理组、schema 或迁移历史。
+
+固定认证候选 `8f846f4` 已经父任务逐函数核对原登录、Discord、Cookie 和续期提取；原五项加两个独立实际 localhost 反例 7/7。合法安装后撤下 ready 状态，既有 handler 的后续登录拒绝、无 Cookie 且私有数据不变；真实重置凭据后，旧 Cookie 在可见页面续期前拒绝，不复活旧会话。证据为 `H:\TEMP\novelai-auth-http-independent.log`。与成员生成 HTTP、ready 及架构反例汇合后四文件 268/268、类型检查通过；没有以新 auth factory 代替唯一生产入口、原 Native/OpenAI 或发布物验收。
 
 ## 10. 事实依据与修订
 
