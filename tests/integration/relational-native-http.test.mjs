@@ -785,3 +785,74 @@ test('Native原键保留持久R2承诺：缺配置/错目录/模拟GET失败503�
   assert.deepEqual(cloudCalls, ['PUT', 'GET', 'GET', 'GET', 'GET']);
   assert.equal(f.upstream.calls.length, 1);
 });
+
+test('独立：多child旧键先核全体引用，真缺失410不GET，冷承诺暂不可读503不重发', async (t) => {
+  const f = await setup(t),
+    originalFetch = globalThis.fetch;
+  const r2 = new R2Storage({
+    accountId: 'c'.repeat(32),
+    bucket: 'independent-native',
+    accessKeyId: 'synthetic-access',
+    secretAccessKey: 'synthetic-secret',
+  });
+  const objects = new Map(),
+    cloudCalls = [];
+  t.mock.method(globalThis, 'fetch', async (address, options) => {
+    const url = new URL(address);
+    if (!url.hostname.endsWith('.r2.cloudflarestorage.com')) return originalFetch(address, options);
+    cloudCalls.push(options.method);
+    assert.equal(f.db.inTransaction, false);
+    if (options.method === 'PUT') {
+      objects.set(url.href, Buffer.from(options.body));
+      return new Response(null, { status: 204 });
+    }
+    assert.equal(options.method, 'GET');
+    const bytes = objects.get(url.href);
+    assert.ok(bytes);
+    return new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
+  });
+  const body = input({ n_samples: 2, seed: 52 });
+  const pending = f.call(body, { key: 'independent-batch-reference' });
+  await waitFor(() => f.upstream.calls.length === 1 && f.controls.size === 0);
+  f.advance();
+  const first = await pending;
+  assert.equal(first.status, 200, first.buffer.toString());
+  const requestId = first.headers.get('x-nai-request-id');
+  const jobs = f.db
+    .prepare(
+      'SELECT artifact_id AS id FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+    )
+    .all(requestId);
+  assert.equal(jobs.length, 2);
+  f.replicas.r2 = r2;
+  await copyRelationalArtifactReplica(
+    f.db,
+    jobs[0].id,
+    'r2',
+    { ...f.replicas, idle: () => f.controls.size === 0 },
+    () => f.clock,
+  );
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  for (const { id } of jobs) {
+    const file = path.join(f.dir, `images/${id}.webp`);
+    await rename(file, file + '.saved');
+  }
+  delete f.replicas.r2;
+  const before = databaseState(f.db);
+  const missing = await f.call(body, {
+    endpoint: '/v1/ai/generate-image',
+    key: 'independent-batch-reference',
+  });
+  assert.equal(missing.status, 410, missing.buffer.toString());
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  assert.equal(f.upstream.calls.length, 2);
+  const second = path.join(f.dir, `images/${jobs[1].id}.webp`);
+  await rename(second + '.saved', second);
+  const temporary = await f.call(body, { key: 'independent-batch-reference' });
+  assert.equal(temporary.status, 503, temporary.buffer.toString());
+  assert.equal(temporary.headers.get('x-nai-request-id'), requestId);
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(cloudCalls, ['PUT', 'GET']);
+  assert.equal(f.upstream.calls.length, 2);
+});

@@ -1239,6 +1239,8 @@ v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败�
 
 新增合法 ready / localhost Native 反例以真实 `R2Storage` client 和复制/确认 owner、模拟云传输保存并核验原字节，准确重现修复前缺配置时 `410 != 503`。修复后缺配置、错 namespace、模拟 GET 失败都保留原父 ID、整库和一次生成；配置恢复领取原图，旧 Key 轮换仍先拒绝、当前 Key 的云失败保持 503。原 Local 真缺失 410 和慢正文凭据拒绝继续通过。Node 22.23.4 Native HTTP / 引用资格 / 原 reader 三文件联合 28/28，零跳过；架构、可信 `3e35e13f87ea7e5c0e6e42135fb420abd72457ba` 迁移历史、类型和格式检查通过。证据为 `H:\TEMP\native-reference-cloud-before.log`、`native-reference-cloud-after.log`、`native-reference-targeted.log`；这些是模拟云传输和实际本地 owner/HTTP 证据，不是任何真实云 GET 或 full 验收。
 
+该引用资格 helper 固定 `b31c03c` 独审通过：原两项及新增三项 5/5，覆盖非空但坏 Local 不提前 open/read/hash、PikPak 仅 uploaded 的原持久承诺且缺/错配置实际 reader 503/GET 0，以及 Local stat 等待中真实退休使原 ticket 拒绝、零新写且保留字节。Native 增量固定 `0337978` 另独审 2/2：原单图与新增两 child 实际 HTTP；首 child 有云承诺而末 child 真缺时整体 410 且无多余 GET，恢复末 child Local 后同一旧键改为临时 503，原 parent、全库和两次原生成不变。仅换回原 Native 产品时两项均精确 `410 !== 503` 失败；新增多 child 反例已保留。证据为 `H:\TEMP\novelai-reference-eligibility-independent-20261114\review.md` 和 `H:\TEMP\novelai-native-availability-independent-0337978\INDEPENDENT-REVIEW.md`。云传输明确为模拟，真实 R2/PikPak client、复制/确认和内容 reader 执行；不写成真实云端点验收。本修正独立回补事件 v3，未夹带 R08 的 v4 缓存受理、alias 或 schema/index 改动，完整后继验证另行绑定。
+
 ### 9.40 #47：恢复与注资分配的原决定完整性
 
 独立复审确认原 `RefillApplied` / `AllocationApplied` 仅有守恒校验仍可把正权成员的完整入账转给零权成员；另以合法完整 envelope 证明，将观察型分配的自报预算及入账从 100 同时改为 1000 也会增发。两者都违反第 3.3 节的原决定回放，不是分组重分政策的新选择。
