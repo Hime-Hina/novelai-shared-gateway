@@ -53,6 +53,7 @@ function convert(event) {
         originRef: `${sourceId}:${event.commitSeq}:${event.eventIndex}`,
         resources: generationChargeResources(c),
         billingMode: c.resource,
+        estimated: null,
         v5Equivalent: '0',
         sharedV5Reserved: '0',
         configVersion: c.configVersion,

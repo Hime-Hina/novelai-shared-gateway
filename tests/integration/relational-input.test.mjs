@@ -860,6 +860,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
         contextId: null,
         source: 'historical',
         operation: 'generate',
+        model: body.model,
         sampleCount: 1,
         seedMode: 'unknown',
         confirmation: null,
@@ -913,7 +914,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
         .run(sha, logicalBytes, JSON.stringify(body));
       sqlite
         .prepare(
-          "INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id) VALUES('past','m1','partial',NULL,'historical','generate',1,'unknown',500,?)",
+          "INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,accepted_at,source_event_id) VALUES('past','m1','partial',NULL,'historical','generate','historical',1,'unknown',500,?)",
         )
         .run(result.events[1].eventId);
       sqlite

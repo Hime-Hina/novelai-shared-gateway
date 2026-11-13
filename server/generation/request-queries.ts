@@ -6,7 +6,32 @@ import {
 } from './member-contract.ts';
 import { singleGenerationRequest } from './batch-requests.ts';
 
-type State = NonNullable<ReturnType<JsonStore['readGenerationRequestState']>>;
+export interface GenerationRequestState {
+  id: string;
+  source: string;
+  operation: string;
+  createdAt: string;
+  jobs: {
+    id: string;
+    sampleIndex: number;
+    status: string | null;
+    model: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+    completedAt: string | null;
+    error: string | null;
+    errorCode?: string | null;
+    cancelledAt: string | null;
+    lateResultAvailable: boolean | number | null;
+    imageId: string | null;
+    fairCharge:
+      | (Parameters<typeof memberGenerationChargeResources>[0] & {
+          status: string;
+          estimated: boolean | null;
+        })
+      | null;
+  }[];
+}
 type PresentedJob = Pick<
   StoreItem,
   | 'id'
@@ -128,7 +153,7 @@ export function generationRequestLinks(requestId: string) {
 }
 
 export function publicGenerationRequest(
-  request: State,
+  request: GenerationRequestState,
   options: {
     imageUrl?(imageId: string): string;
     errorMessage?(message: string): string;

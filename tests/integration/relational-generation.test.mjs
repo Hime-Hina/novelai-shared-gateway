@@ -840,6 +840,7 @@ test('原目标已缺失的终态开账凭据独立保留，不能靠同 job ID 
             originRef: 'old-job-archive',
             resources: { v5: '0', anlasFixed: '9.123456789012', anlasPurchased: '0' },
             billingMode: 'anlas',
+            estimated: null,
             v5Equivalent: '0',
             sharedV5Reserved: '0',
             configVersion: 1,
@@ -859,6 +860,7 @@ test('原目标已缺失的终态开账凭据独立保留，不能靠同 job ID 
   const proof = g.readCharge('archived-0');
   assert.equal(proof.resolution, 'unavailable');
   assert.equal(proof.jobId, null);
+  assert.equal(proof.estimated, null);
   const wallet = g.readWallet('a', 'm1');
   assert.throws(() => f.fail('archived-0'), /不存在/);
   await f.accept('archived');
