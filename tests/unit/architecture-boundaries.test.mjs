@@ -134,6 +134,12 @@ for (const filename of [
     ],
     ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
     ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
+    [
+      'aliased result recovery',
+      "import { recoverRelationalGenerationResults as recover } from '../storage/relational-result-recovery.ts'; recover(raw,dir);",
+    ],
+    ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
+    ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
     ...[
       'acceptGeneration',
       'dispatchGeneration',
@@ -227,6 +233,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/execution.ts',
       "import { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; store.dispatchGeneration(command,input,controls);",
+    ],
+    [
+      'server/generation/execution.ts',
+      "import { recoverRelationalGenerationResults } from '../storage/relational-result-recovery.ts';",
     ],
     [
       'scripts/offline-import.mjs',
