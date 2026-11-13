@@ -21,19 +21,19 @@ node scripts/restore-relational.mjs --source /private/selected.sqlite --sha256 <
 
 CLI 在输出同父目录创建私有 `.restore-relational-*` 暂存目录，以 128 个完整提交为一页，从空的 `building` 库调用共同 replayer。业务回放本身不恢复私有认证；唯一 installer 在完整 shadow、各表、来源、保护正文、实际对象和当前私有切点核对后恢复选定私有状态并提交 ready。CLI 随后 checkpoint、关闭并封存单文件、同步文件、再次核对源 SHA，以不覆盖的原生硬链接发布输出。
 
-现有输出、输出 sidecar、源路径和源 sidecar 路径均拒绝使用。发布竞争不会替换既有文件。若发布后的暂存清理失败，CLI 仅在文件身份仍属于本次发布时撤回自己的输出链接；不会删除源或外部替换的输出。清理前核对暂存绝对路径确实是指定输出父目录的直接子目录。没有 resume 或复用先前半成品的机制。
+现有输出、输出 sidecar、源路径和源 sidecar 路径均拒绝使用，发布竞争不会替换既有文件。**独占硬链接成功就是恢复的最终成功点**：所有可能拒绝恢复的业务、来源、封存和输出检查均在之前完成，之后绝不依据可变 output 路径撤回或删除输出。清理只处理本次私有暂存目录，先核对绝对路径确实是指定输出父目录的直接子目录。发布后若暂存清理失败，恢复仍成功，以 `stagingCleanup: "incomplete"` 和 `stagingPath` 报告保留下来的私有目录；其中可能保留另一份指向同一恢复库的硬链接。由维护者核对后清理，不应再恢复到现有输出。没有 resume 或复用先前半成品的机制。
 
 成功退出码为 0，stdout 仅有一行 JSON，例如：
 
 ```json
-{"restored":true,"commitsRestored":"142","artifactsVerified":1,"preparedResultsVerified":0}
+{"restored":true,"commitsRestored":"142","artifactsVerified":1,"preparedResultsVerified":0,"stagingCleanup":"complete"}
 ```
 
-失败退出码为 1，stderr 只给固定错误码 `RELATIONAL_RESTORE_FAILED` 和阶段 `arguments`、`paths`、`source`、`replay`、`verify`、`seal`、`publish` 或 `cleanup`，不输出 owner 异常、源路径、正文、Key 或 PST。不要据此放宽验证；按阶段核对获准清单和来源文件。`cleanup` 表示文件系统未完成清理，或进程被强制终止时，应在输出父目录检查本次暂存与输出身份并由维护者处理；不得把暂存库作为已成功交付的输出。重新执行使用新的、尚不存在的输出路径。
+发布前失败退出码为 1，stderr 只给固定错误码 `RELATIONAL_RESTORE_FAILED` 和阶段 `arguments`、`paths`、`source`、`replay`、`verify`、`seal`、`publish` 或 `cleanup`，不输出 owner 异常、源路径、正文、Key 或 PST。不要据此放宽验证；按阶段核对获准清单和来源文件。失败的 `cleanup` 指发布前的错误处理也未完成私有暂存清理；与发布成功后的 `stagingCleanup` 警示分别处理。若进程被强制终止或文件系统清理失败，应在显式输出父目录检查本次暂存与输出，由维护者处理；不得仅依据暂存目录存在认定恢复成功。再次恢复应使用新的、尚不存在的输出路径。
 
 ## 验收和切换边界
 
-专属入口为 `tests/integration/restore-relational.test.mjs`。它真实启动 CLI 子进程，以真实 owner 产生跨页提交、保护正文、轮换私有认证、queued 责任、待核对退款、人工历史退休、诊断和真实 Local 产物；恢复后逐表核对、检查 ready 与原字节，拒绝坏 SHA/cut/history/格式、缺正文或对象、输出覆盖、发布竞争与清理故障。文件系统故障只注入发布边界，不替换业务 replayer、installer 或对象验证。
+专属入口为 `tests/integration/restore-relational.test.mjs`。它真实启动 CLI 子进程，以真实 owner 产生跨页提交、保护正文、轮换私有认证、queued 责任、待核对退款、人工历史退休、诊断和真实 Local 产物；恢复后逐表核对、检查 ready 与原字节，拒绝坏 SHA/cut/history/格式、缺正文或对象及输出覆盖。发布竞争保留既有文件，发布后清理故障仍成功并准确留下私有暂存路径，外部替换输出不被删除；原 stat→unlink 竞态有可运行反例。文件系统故障只注入发布边界，不替换业务 replayer、installer 或对象验证。
 
 编译入口可用同一专项验证：先执行现有后端构建，将 `RESTORE_RELATIONAL_TEST_ENTRY` 设为 `.output/backend/scripts/restore-relational.mjs` 再运行该测试。该模式在 CLI 子进程关闭 TypeScript strip，确认实际编译入口及其 `.js` 依赖可运行。
 

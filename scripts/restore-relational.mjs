@@ -1,4 +1,4 @@
-import { chmod, link, lstat, mkdtemp, open, realpath, rm, unlink } from 'node:fs/promises';
+import { chmod, link, lstat, mkdtemp, open, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import Database from 'better-sqlite3';
@@ -54,7 +54,7 @@ let phase = 'arguments',
   source,
   output,
   published = false,
-  identity;
+  receipt;
 try {
   const { values, tokens } = parseArgs({
     strict: true,
@@ -172,26 +172,17 @@ try {
   } finally {
     await sealed.close();
   }
-  identity = await lstat(filename, { bigint: true });
-
   phase = 'publish';
   await assertOutputAbsent(output);
-  // Same-parent hard link is an atomic, exclusive publication; rename could overwrite.
+  receipt = {
+    restored: true,
+    commitsRestored: String(commitsRestored),
+    artifactsVerified: verified.artifactsVerified,
+    preparedResultsVerified: verified.preparedResultsVerified,
+  };
+  // Final success point: never revoke publication through the mutable output pathname.
   await link(filename, output);
   published = true;
-  for (const suffix of sidecars.slice(1)) {
-    await assertAbsent(output + suffix);
-  }
-  await removeStage(parent, stage);
-  stage = undefined;
-  console.log(
-    JSON.stringify({
-      restored: true,
-      commitsRestored: String(commitsRestored),
-      artifactsVerified: verified.artifactsVerified,
-      preparedResultsVerified: verified.preparedResultsVerified,
-    }),
-  );
 } catch {
   // Never expose owner exceptions: they can contain private diagnostics or IO credentials.
   let cleanupFailed = false;
@@ -199,21 +190,6 @@ try {
     try {
       if (handle?.open) {
         handle.close();
-      }
-    } catch {
-      cleanupFailed = true;
-    }
-  }
-  if (published) {
-    try {
-      const current = await lstat(output, { bigint: true }).catch((error) => {
-        if (error.code !== 'ENOENT') {
-          throw error;
-        }
-        return null;
-      });
-      if (current?.dev === identity.dev && current?.ino === identity.ino) {
-        await unlink(output);
       }
     } catch {
       cleanupFailed = true;
@@ -234,4 +210,20 @@ try {
     }),
   );
   process.exitCode = 1;
+}
+
+if (published) {
+  let stagingCleanup = 'complete';
+  try {
+    await removeStage(parent, stage);
+  } catch {
+    stagingCleanup = 'incomplete';
+  }
+  console.log(
+    JSON.stringify({
+      ...receipt,
+      stagingCleanup,
+      ...(stagingCleanup === 'incomplete' ? { stagingPath: stage } : {}),
+    }),
+  );
 }

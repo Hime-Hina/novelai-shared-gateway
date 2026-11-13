@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile, readdir, writeFile, unlink, stat, symlink } from 'node:fs/promises';
+import { readFile, readdir, writeFile, unlink, stat, symlink, realpath } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -160,6 +160,8 @@ test('实际 CLI 分页重建完整业务与所选私有状态，唯一 installe
   assert.equal(result.stderr, '');
   const receipt = JSON.parse(result.stdout);
   assert.equal(receipt.restored, true);
+  assert.equal(receipt.stagingCleanup, 'complete');
+  assert.equal(receipt.stagingPath, undefined);
   assert.ok(BigInt(receipt.commitsRestored) > 128n);
   assert.equal(receipt.artifactsVerified, 1);
   assert.ok(!JSON.stringify(result).includes('protected detail'));
@@ -317,17 +319,19 @@ test('既有 output、sidecar、源路径及重复参数不会被覆盖', async 
   }
 });
 
-test('真实子进程发布竞态和暂存清理故障均撤回本次输出，保留外部既有文件', async (t) => {
-  for (const kind of ['race', 'cleanup', 'replacement']) {
+test('独占发布是最终成功点；清理故障诚实报告残留且不撤销或删除外部替换输出', async (t) => {
+  for (const kind of ['race', 'cleanup', 'replacement', 'stat-replacement']) {
     await t.test(kind, async (t) => {
       const f = await completed(t),
         config = await selected(f),
+        canonicalParent = await realpath(path.dirname(config.output)),
+        canonicalOutput = path.join(canonicalParent, path.basename(config.output)),
         preload = path.join(f.dir, 'publication-fault.mjs');
       // Fault only the filesystem publication boundary; all replay/installer/Local IO stays real.
       await writeFile(
         preload,
         `import fs from 'node:fs/promises';
-const link = fs.link, rm = fs.rm;
+const link = fs.link, rm = fs.rm, lstat = fs.lstat;
 ${
   kind === 'race'
     ? `fs.link = async (source, output) => {
@@ -340,39 +344,73 @@ fs.rm = async (filename, options) => {
     failed = true;
     ${
       kind === 'replacement'
-        ? `await fs.unlink(${JSON.stringify(config.output)});
-    await fs.writeFile(${JSON.stringify(config.output)}, 'external replacement', {flag: 'wx'});`
+        ? `await fs.unlink(${JSON.stringify(canonicalOutput)});
+    await fs.writeFile(${JSON.stringify(canonicalOutput)}, 'external replacement', {flag: 'wx'});`
         : ''
     }
     throw new Error('secret cleanup failure');
   }
   return rm(filename, options);
+};
+${
+  kind === 'stat-replacement'
+    ? `fs.lstat = async (filename, ...options) => {
+  const original = await lstat(filename, ...options);
+  if (failed && filename === ${JSON.stringify(canonicalOutput)}) {
+    await fs.unlink(filename);
+    await fs.writeFile(filename, 'replacement after stat', {flag: 'wx'});
+  }
+  return original;
 };`
+    : ''
+}`
 }
 import {syncBuiltinESMExports} from 'node:module';
 syncBuiltinESMExports();
 `,
       );
       const result = await run(config, { preload });
-      assert.equal(result.code, 1, JSON.stringify(result));
-      assert.equal(result.stdout, '');
-      assert.deepEqual(JSON.parse(result.stderr), {
-        restored: false,
-        code: 'RELATIONAL_RESTORE_FAILED',
-        phase: 'publish',
-      });
+      assert.equal(result.code, kind === 'race' ? 1 : 0, JSON.stringify(result));
+      if (kind === 'race') {
+        assert.equal(result.stdout, '');
+        assert.deepEqual(JSON.parse(result.stderr), {
+          restored: false,
+          code: 'RELATIONAL_RESTORE_FAILED',
+          phase: 'publish',
+        });
+      } else {
+        assert.equal(result.stderr, '');
+        const receipt = JSON.parse(result.stdout);
+        assert.equal(receipt.restored, true);
+        assert.equal(receipt.stagingCleanup, 'incomplete');
+        assert.equal(path.dirname(receipt.stagingPath), canonicalParent);
+        assert.equal(path.basename(receipt.stagingPath).startsWith('.restore-relational-'), true);
+        const retained = new Database(path.join(receipt.stagingPath, 'recovered.sqlite'), {
+          readonly: true,
+        });
+        try {
+          assertRelationalStorageReady(retained);
+        } finally {
+          retained.close();
+        }
+      }
       if (kind === 'race' || kind === 'replacement') {
         assert.equal(
           await readFile(config.output, 'utf8'),
           kind === 'race' ? 'racing output' : 'external replacement',
         );
       } else {
-        await assert.rejects(stat(config.output), { code: 'ENOENT' });
+        const restored = new Database(config.output, { readonly: true });
+        try {
+          assertRelationalStorageReady(restored);
+        } finally {
+          restored.close();
+        }
       }
       assert.equal(relationalSnapshotSha256(config.source), config.sha256);
-      assert.deepEqual(
-        (await readdir(f.dir)).filter((name) => name.startsWith('.restore-relational-')),
-        [],
+      assert.equal(
+        (await readdir(f.dir)).filter((name) => name.startsWith('.restore-relational-')).length,
+        kind === 'race' ? 0 : 1,
       );
     });
   }
