@@ -219,4 +219,41 @@ export class RelationalRequestStore {
       return artifact;
     })();
   }
+
+  readMemberJobDelivery(jobId: string, memberId: string) {
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      const job = this.sqlite
+        .prepare<
+          [string, string],
+          {
+            status: string;
+            requestId: string;
+            seed: number | null;
+            artifactId: string | null;
+            error: string | null;
+            errorStatus: number | null;
+            cooldownUntil: number | null;
+            retiredAt: number | null;
+            requestRetiredAt: number | null;
+          }
+        >(
+          `SELECT j.status,j.request_id AS requestId,j.actual_seed AS seed,j.artifact_id AS artifactId,
+        j.error_code AS error,j.error_status AS errorStatus,j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt,
+        (SELECT json_extract(e.payload,'$.cooldownUntil') FROM domain_events e
+          WHERE e.event_type='CooldownChanged' AND e.stream_id='account:'||a.account_id
+          AND json_extract(e.payload,'$.attemptId')=a.id ORDER BY e.stream_version DESC LIMIT 1) AS cooldownUntil
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        LEFT JOIN generation_attempts a ON a.job_id=j.id WHERE j.id=? AND r.member_id=?`,
+        )
+        .get(jobId, memberId);
+      if (!job) {
+        fail(404, 'job_not_found', '任务不存在。');
+      }
+      if (job.retiredAt !== null || job.requestRetiredAt !== null) {
+        fail(410, 'result_unavailable', '原结果已不可领取。');
+      }
+      return job;
+    })();
+  }
 }

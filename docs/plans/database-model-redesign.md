@@ -1175,6 +1175,24 @@ OAuth callback 的 GET 跨站例外仍只依赖原 state、浏览器 Cookie、Ho
 
 固定认证候选 `8f846f4` 已经父任务逐函数核对原登录、Discord、Cookie 和续期提取；原五项加两个独立实际 localhost 反例 7/7。合法安装后撤下 ready 状态，既有 handler 的后续登录拒绝、无 Cookie 且私有数据不变；真实重置凭据后，旧 Cookie 在可见页面续期前拒绝，不复活旧会话。证据为 `H:\TEMP\novelai-auth-http-independent.log`。与成员生成 HTTP、ready 及架构反例汇合后四文件 268/268、类型检查通过；没有以新 auth factory 代替唯一生产入口、原 Native/OpenAI 或发布物验收。
 
+### 9.39 #52：Native 共享 transport、真实 Key 受理与结果领取
+
+本片从 `39941f8` 继续，外部行为仍归[API 契约](../contracts/api-contract.md)和[请求生命周期](../architecture/request-lifecycle.md)。`protocols/native-http.ts` 只消费当前 Key 预鉴权、原正文受理、结果等待和原字节读取能力，保留原 JSON/ZIP、SSE/MessagePack、Accept、诊断、部分批次和 encode-vibe 201 / upscale 200 的协议。原 Native 参数解析、购买授权、单图报价校验和随机意图判定窄提取到 `generation/native-admission.ts`，旧运行时经 `legacy-native-http.ts` 调同一 transport，未复制 parser、价格或指纹规则。
+
+`createRelationalNativeAdmission()` 在真实当前 Key / Discord 事务内先查 InputStore 原 alias，以首次 Native context 调同一个规范化和 fingerprint owner；同键沿原回执，无键为独立新意图。它不借 Cookie，不构造成员 confirmation，不按当前 defaults 或版本拒绝已受理原键。当前接单 epoch 在读取正文前取自 MemberStore，只有新受理才用原 `assertMemberAcceptsJobs()` 在事务中比较；stop/resume 不能把旧快照改成当前值后继续，原回执先重验当前 Key。输入、BLOB、首次 context、child 和 alias 仍由 Input/Gen owners 一笔原子提交，临时正文在同步受理后移交共同实际 budget，失败不留恢复、输入、映射、任务或回执。
+
+为保留旧 Native 真实拒绝边界，canonical GenStore Native 新受理复用既有 `reservationState()` 的当前 policy、绑定、分组、额度基线和私有凭据检查，并复用原 `freeUsage()` / `assertFreeImageAdmission()`。分组缺失在同一个共享 guard 返回原 403，policy/账号未就绪仍为 503；只在派发期检查的钱包余额不提前拒绝或预扣。免费准入和旧 Native 一样只检查当前 usage 一次，即使多 child 也不提前耗尽整批免费次数；实际每个 child 仍在派发时复核。Native 受理的恢复继续由既有 `refillForGeneration()` / QuotaStore 原命令拥有，和受理同外层事务，不增加 controller 恢复 hook 或另一套金融规划。
+
+结果等待从原 `delivery.ts` 窄提取为共用 `result-waiter.ts`，保留订阅先于冷读、通知、截止与断线清理；关系适配由同一个临时 events 唤醒，只读 RequestStore 新增的本人薄领取 DTO。原实际 seed、失败状态和该 attempt 的原 cooldown 来自已提交行/事实，不能借当前另一任务的冷却或正文推断。产物经原真实 Local/R2/PikPak reader 在 SQL 外读取，读取前后都复核当前 Key 与产物归属；原 bytes 缺失的重放返回 410，不能再次生成。断连只解除本次领取等待，不取消已受理任务或改变预扣/结算；与实际协调器注入同一 controls 所计的 payload budget、events、JobPreviews，未新增业务事实、持久等待表或长期旧/新切换配置。
+
+新 localhost 专项先由实际 owner 发布文件，再经唯一 installer 的完整 shadow/33 表/私有/真实 bytes 核对合法进入 ready；HTTP 后接实际 coordinator 与本地真实上游 HTTP，再领取实际发布文件。覆盖同键并发/随机 seed/成员隔离、无键新意图、固定多 child、JSON/ZIP、两种实际流的 preview/final、两种辅助操作与 multipart/BLOB、输入 SQL 故障连恢复全回滚、旧 Key 轮换和慢正文撤销/旧 epoch、免费与共享拒绝边界、派发期余额失败、断线继续及原文件缺失、首次 context defaults，以及十四张公开表的原完整提交联合回放。两个新关系 writer factory 和原库 adapter 是新写能力，架构集合仅追加对应三个名字与 alias-import 拒绝用例，需父任务维护者独立复核。
+
+Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 owner 八文件联合 129/129、Native 与架构拒绝反例联合 245/245，以及原 adapter/context/connection/queue 四文件 12/12 通过，均零跳过。架构、可信 `39941f86759ddd560e10bea6708804279857071e` 的迁移历史、类型和全部改动文件格式检查通过。日志为 `H:\TEMP\relational-native-http-current.log`、`native-original-sole-http.log`、`native-relational-owner-targeted.log`、`native-http-guards.log` 和 `native-http-extraction.log`；联合计数有重叠，不相加作为独立用例数，原 startup / 单账号 10 秒断言不变。
+
+隔离 TEMP 副本只移除 canonical Native 新受理的 `reservationState()` 调用，同一个合法 ready / 实际 HTTP 反例在停用上游时准确失败：原应立即 503，退化后先留下受理再等到 504。证据为 `H:\TEMP\native-http-canonical-readiness-mutant.log`，候选源未改；不能只把此检查放 HTTP 前置而让 canonical 受理绕过。
+
+原 `gateway-runtime.ts` 仍是当前 sole 启动入口，只把原 Native caller 注入改为临时旧 adapter，并复用 Native 自己的公开错误包络；未切换生产入口、未搬 OpenAI parser、未将成员 factory 当作全 #52 完成。本片未改 schema、SQL/journal、金融算法或成员权益配置；完整后端和发布物由父任务总装配后统一排期。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

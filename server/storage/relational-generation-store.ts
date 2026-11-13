@@ -22,6 +22,7 @@ import type {
 import {
   planFairQuotaReservation,
   previewFairQuotaReservations,
+  quoteFairRequest,
   decideFairQuotaCharge,
   advanceFairQuotaReservation,
   fairQuotaSnapshot,
@@ -521,7 +522,7 @@ export class RelationalGenerationStore {
       .all();
   }
   readAcceptedGenerationReceipt(
-    metadata: Metadata,
+    metadata: Pick<Metadata, 'commandId' | 'fingerprint' | 'actorKind' | 'actorId'>,
     mapping: NonNullable<ReturnType<RelationalInputStore['readGenerationIdempotency']>>,
   ) {
     if (!this.sqlite.inTransaction) {
@@ -757,10 +758,17 @@ export class RelationalGenerationStore {
           ),
         );
       }
-      if (input.context.kind === 'member') {
+      if (input.context.kind === 'member' || input.context.kind === 'native') {
         const policy = this.policy();
         if (!policy.boundAccountId) {
           fail('共享账本尚未绑定账号', 503);
+        }
+        if (input.context.kind === 'native') {
+          this.reservationState(
+            { memberId: input.memberId },
+            policy.boundAccountId,
+            metadata.recordedAt,
+          );
         }
         this.refillForGeneration(metadata, policy.boundAccountId);
       }
@@ -774,6 +782,12 @@ export class RelationalGenerationStore {
           admissionEpoch: m.version,
         })),
       });
+      if (input.context.kind === 'native') {
+        const policy = this.policy();
+        if (quoteFairRequest(this.inputs.readJobInput(input.jobs[0].jobId)).resource === 'free') {
+          assertFreeImageAdmission(this.freeUsage(input.memberId, policy, metadata.recordedAt));
+        }
+      }
       if (input.context.kind === 'member') {
         const policy = this.policy();
         if (!policy.boundAccountId) {
@@ -848,12 +862,11 @@ export class RelationalGenerationStore {
   }
   private reservationState(job: Pick<Job, 'memberId'>, accountId: string, now: number) {
     const policy = this.policy();
-    if (
-      !policy.enabled ||
-      policy.boundAccountId !== accountId ||
-      !this.sqlite.prepare('SELECT 1 FROM group_members WHERE member_id=?').get(job.memberId)
-    ) {
-      fail('共享账本只能使用当前分组与绑定账号', 503);
+    if (!policy.enabled || policy.boundAccountId !== accountId) {
+      fail('共享账本只能使用当前绑定账号', 503);
+    }
+    if (!this.sqlite.prepare('SELECT 1 FROM group_members WHERE member_id=?').get(job.memberId)) {
+      fail('该 Key 未加入共享账本', 403);
     }
     const account = this.sqlite
       .prepare<
