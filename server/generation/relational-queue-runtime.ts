@@ -1,0 +1,505 @@
+import { randomUUID } from 'node:crypto';
+import type { EventEmitter } from 'node:events';
+import type Database from 'better-sqlite3';
+import { domainDigest } from '../events/domain-events.ts';
+import type { RelationalCommitResult } from '../events/relational-event-store.ts';
+import {
+  RelationalGenerationStore,
+  type GenerationPhysicalCompletion,
+} from '../storage/relational-generation-store.ts';
+import { RelationalInputStore } from '../storage/relational-input-store.ts';
+import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
+import { recoverRelationalGenerationResults } from '../storage/relational-result-recovery.ts';
+import { describeStoredResult, publishStoredResult } from '../storage/result-files.ts';
+import { generateNovelAiImage } from '../protocols/novelai-client.ts';
+import { isAbortError } from '../http/public-errors.ts';
+import { sharedAccountReadyDelay, sharedAccountConcurrency } from '../quota/shared-capacity.ts';
+import { generationResponseEvidence } from './accounting.ts';
+import { sharedFailureKind, type GenerationTiming } from './execution.ts';
+import { JobPreviews } from './job-previews.ts';
+import {
+  createGenerationControls,
+  physicalAccountLoad,
+  runningJobTimeoutDelay,
+  type RunningControl,
+} from './queue-dispatch.ts';
+
+type State = ReturnType<RelationalGenerationStore['readGenerationExecutionState']>;
+type Metadata = Parameters<RelationalGenerationStore['dispatchGeneration']>[0];
+type Response = Parameters<RelationalGenerationStore['recordGenerationResponse']>[2];
+type Dispatch = NonNullable<
+  ReturnType<RelationalGenerationStore['dispatchGeneration']>['dispatch']
+>;
+type Active = {
+  state: State;
+  dispatch: Dispatch;
+  control: RunningControl;
+  timing: GenerationTiming;
+  phase: 'preflight' | 'upstream' | 'commit';
+};
+export function createRelationalQueueRuntime(options: {
+  sqlite: Database.Database;
+  dataDir: string;
+  generations: RelationalGenerationStore;
+  inputs: RelationalInputStore;
+  controls: Map<string, RunningControl>;
+  events: Pick<EventEmitter, 'emit'>;
+  previews?: JobPreviews;
+  env?: NodeJS.ProcessEnv;
+  now?(): number;
+  onError?(event: { code: string; jobId?: string }): void;
+}) {
+  const { sqlite, generations: store, inputs } = options;
+  if (!(options.controls instanceof Map) || typeof options.events?.emit !== 'function') {
+    throw new TypeError('Shared physical controls and commit events are required.');
+  }
+  const env = options.env ?? process.env,
+    now = options.now ?? Date.now;
+  const previews = options.previews ?? new JobPreviews();
+  const active = new Map<string, Active>();
+  let phase: 'created' | 'starting' | 'running' | 'stopping' | 'stopped' | 'faulted' = 'created';
+  let timer: ReturnType<typeof setTimeout> | null = null,
+    scheduledAt = 0,
+    ticking = false;
+  let startup: Promise<void> | null = null;
+  let shutdown: Promise<void> | null = null;
+  const controls = createGenerationControls({
+    controls: options.controls,
+    timeoutDelay: (job) => runningJobTimeoutDelay(job, env, now()),
+    schedule: () => schedule(),
+  });
+  const report = (error: unknown, jobId?: string) => {
+    const code = String((error as { code?: unknown })?.code ?? 'GENERATION_RUNTIME_FAILED');
+    try {
+      options.onError?.({
+        code: /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : 'GENERATION_RUNTIME_FAILED',
+        ...(jobId ? { jobId } : {}),
+      });
+    } catch {}
+  };
+  const emit = (event: 'commit' | 'close') => {
+    try {
+      options.events.emit(event);
+    } catch (error) {
+      report(error);
+    }
+  };
+  const notify = (...results: (RelationalCommitResult | null | undefined)[]) => {
+    if (results.some((result) => result && !result.replayed)) {
+      emit('commit');
+    }
+  };
+  const metadata = (state: State, name: string, intent: object): Metadata => ({
+    commandId: `executor:${name}:${state.attemptId ?? state.id}`,
+    fingerprint: domainDigest({ jobId: state.id, ...intent }),
+    actorKind: 'system',
+    actorId: null,
+    recordedAt: now(),
+    correlationId: null,
+    causationId: state.eventId,
+    policyVersion: state.policyVersion,
+    pricingVersion: state.pricingVersion,
+  });
+  const response = (run: Active): Response => {
+    const evidence = generationResponseEvidence(
+      { id: run.state.id, ...run.timing },
+      { requestStarted: !!run.timing.upstreamStartedAt },
+    );
+    const timestamp = (value: string | null) => (value === null ? null : Date.parse(value));
+    return {
+      dispatchState: evidence.dispatchState,
+      upstreamStartedAt: timestamp(evidence.upstreamStartedAt),
+      upstreamHeadersAt: timestamp(evidence.upstreamHeadersAt),
+      upstreamCompletedAt: timestamp(evidence.upstreamCompletedAt),
+      upstreamHttpStatus: evidence.upstreamHttpStatus,
+    };
+  };
+  function clearTimer() {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = null;
+    scheduledAt = 0;
+  }
+  function fault(error: unknown, jobId?: string) {
+    phase = 'faulted';
+    clearTimer();
+    report(error, jobId);
+  }
+  function schedule(delay = 0) {
+    if (phase !== 'running') {
+      return;
+    }
+    const at = now() + Math.max(0, delay);
+    if (timer && at >= scheduledAt) {
+      return;
+    }
+    clearTimer();
+    scheduledAt = at;
+    timer = setTimeout(
+      () => {
+        timer = null;
+        scheduledAt = 0;
+        tick();
+      },
+      Math.max(0, delay),
+    );
+    timer.unref();
+  }
+  function fail(
+    state: State,
+    name: string,
+    code: string,
+    status: number,
+    aborted: boolean,
+    run?: Active,
+    completion?: GenerationPhysicalCompletion,
+    error?: unknown,
+  ) {
+    const results = sqlite
+      .transaction(() => {
+        const results: RelationalCommitResult[] = [];
+        if (run) {
+          const observed = response(run);
+          results.push(
+            store.recordGenerationResponse(
+              metadata(state, `${name}-response`, { observed, completion: completion ?? null }),
+              state.id,
+              observed,
+              completion,
+            ),
+          );
+        }
+        const failure = {
+          errorCode: code,
+          errorStatus: status,
+          aborted,
+          ...(run ? { evidence: { requestStarted: !!run.timing.upstreamStartedAt } } : {}),
+          ...(completion ? { completion } : {}),
+          ...(run ? { diagnostic: { dispatch: run.dispatch, error } } : {}),
+        };
+        results.push(
+          store.failGeneration(
+            metadata(state, name, { code, status, aborted, completion: completion ?? null }),
+            state.id,
+            failure,
+          ),
+        );
+        return results;
+      })
+      .immediate();
+    notify(...results);
+    previews.clear(state.id);
+  }
+  async function runGeneration(run: Active) {
+    let descriptor: ReturnType<typeof describeStoredResult> | null = null,
+      failure: unknown;
+    try {
+      if (
+        store.readGenerationExecutionState(run.state.id).status !== 'running' ||
+        run.control.controller.signal.aborted
+      ) {
+        throw new Error('Generation stopped before upstream dispatch.');
+      }
+      const request = inputs.readJobInput(run.state.id);
+      run.phase = 'upstream';
+      const image = await generateNovelAiImage(request, { token: run.dispatch.pst }, env, {
+        signal: run.control.controller.signal,
+        onUpstreamTiming: (event) => Object.assign(run.timing, event),
+        onProgress: (progress) =>
+          previews.update(
+            {
+              id: run.state.id,
+              userToken: run.state.memberId,
+              status: store.readGenerationExecutionState(run.state.id).status,
+            },
+            progress,
+          ),
+      });
+      run.phase = 'commit';
+      descriptor = describeStoredResult(randomUUID(), run.state.operation, image);
+      notify(
+        sqlite
+          .transaction(() =>
+            store.prepareGenerationResult(
+              metadata(run.state, 'prepare-result', { descriptor, response: response(run) }),
+              run.state.id,
+              descriptor!,
+              response(run),
+            ),
+          )
+          .immediate(),
+      );
+      await publishStoredResult(options.dataDir, descriptor, image.buffer);
+    } catch (error) {
+      failure = error;
+    } finally {
+      try {
+        const current = store.readGenerationExecutionState(run.state.id);
+        if (failure && run.phase === 'commit') {
+          // 已取得完整产物后的本地失败保留准备/原预扣；重启先恢复，不能冒充新的上游失败。
+          fault(failure, run.state.id);
+        } else if (descriptor && !failure) {
+          notify(
+            sqlite
+              .transaction(() =>
+                store.completeGeneration(
+                  metadata(run.state, 'complete-result', { descriptor }),
+                  run.state.id,
+                  descriptor!,
+                ),
+              )
+              .immediate(),
+          );
+        } else {
+          const kind = sharedFailureKind(
+            { failurePhase: run.phase, upstreamTiming: run.timing },
+            failure,
+          );
+          const completion: GenerationPhysicalCompletion = {
+            attemptId: run.dispatch.attemptId,
+            credentialEpoch: run.dispatch.credentialEpoch,
+            kind,
+            ...(run.timing.upstreamRetryAfterUntil
+              ? { retryAfterUntil: run.timing.upstreamRetryAfterUntil }
+              : {}),
+          };
+          if (current.status === 'running') {
+            const aborted = run.control.controller.signal.aborted || isAbortError(failure);
+            let status = 429;
+            if (kind !== 'capacity') {
+              status = (failure as { statusCode?: number })?.statusCode || (aborted ? 504 : 500);
+            }
+            fail(
+              current,
+              'upstream-failed',
+              kind === 'capacity' ? 'upstream_capacity' : 'upstream_failed',
+              status,
+              aborted,
+              run,
+              completion,
+              failure,
+            );
+          } else {
+            const observed = response(run);
+            notify(
+              sqlite
+                .transaction(() =>
+                  store.recordGenerationResponse(
+                    metadata(current, 'physical-ended', { observed, completion }),
+                    current.id,
+                    observed,
+                    completion,
+                  ),
+                )
+                .immediate(),
+            );
+          }
+        }
+      } catch (error) {
+        fault(error, run.state.id);
+      } finally {
+        active.delete(run.state.id);
+        previews.clear(run.state.id);
+        controls.finishRunningJobControl(run.state.id, run.control);
+      }
+    }
+  }
+  function expire() {
+    const ids = new Set(store.readExpiredGenerationIds(now()));
+    for (const [jobId, run] of active) {
+      if (run.control.controller.signal.aborted) {
+        ids.add(jobId);
+      }
+    }
+    for (const id of ids) {
+      const state = store.readGenerationExecutionState(id);
+      if (!['queued', 'pending', 'running'].includes(state.status)) {
+        continue;
+      }
+      const control = active.get(id)?.control;
+      if (control && !control.controller.signal.aborted) {
+        control.controller.abort(new Error('Generation deadline expired.'));
+      }
+      fail(
+        state,
+        'expired',
+        'generation_expired',
+        504,
+        control?.controller.signal.aborted ?? false,
+        active.get(id),
+        undefined,
+        control?.controller.signal.reason,
+      );
+    }
+    for (const id of store.readDueGenerationReviewIds(now())) {
+      const state = store.readGenerationExecutionState(id);
+      notify(
+        sqlite
+          .transaction(() => store.closeGenerationReview(metadata(state, 'review-close', {}), id))
+          .immediate(),
+      );
+    }
+  }
+  function tick() {
+    if (phase !== 'running' || ticking) {
+      return;
+    }
+    clearTimer();
+    ticking = true;
+    try {
+      expire();
+      for (const id of store.readQueuedGenerationIds()) {
+        if (phase !== 'running') {
+          break;
+        }
+        const state = store.readGenerationExecutionState(id),
+          account = store.readBoundGenerationAccount();
+        if (
+          !account?.enabled ||
+          sharedAccountReadyDelay(account, now()) > 0 ||
+          physicalAccountLoad(controls.controls, account.id) >= sharedAccountConcurrency()
+        ) {
+          continue;
+        }
+        const accountId = account.id;
+        try {
+          const versions = store.readMemberGenerationCapabilities(state.memberId).versions;
+          const meta = {
+            ...metadata(state, 'dispatch', { accountId }),
+            policyVersion: versions.billingPolicy,
+            pricingVersion: versions.pricing,
+          };
+          const result = sqlite
+            .transaction(() =>
+              store.dispatchGeneration(
+                meta,
+                { jobId: id, accountId, attemptId: randomUUID() },
+                {
+                  dispatchEnabled: () => phase === 'running',
+                  physicalAccountLoad: (id) => physicalAccountLoad(controls.controls, id),
+                },
+              ),
+            )
+            .immediate();
+          if (result.dispatch) {
+            const control = controls.createRunningJobControl({ ...state, accountId });
+            const run: Active = {
+              state: store.readGenerationExecutionState(id),
+              dispatch: result.dispatch,
+              control,
+              timing: {},
+              phase: 'preflight',
+            };
+            active.set(id, run);
+            notify('commitSeq' in result ? result : null);
+            void runGeneration(run);
+          }
+        } catch (error) {
+          const code = (error as { code?: string }).code,
+            status = (error as { statusCode?: number }).statusCode;
+          if (!Number.isInteger(status) || status! < 400 || status! > 599) {
+            throw error;
+          }
+          fail(
+            state,
+            'dispatch-failed',
+            code && /^[a-z_]{1,64}$/.test(code) ? code : 'dispatch_failed',
+            status!,
+            false,
+          );
+        }
+      }
+    } catch (error) {
+      fault(error);
+    } finally {
+      ticking = false;
+      const wake = phase === 'running' ? store.readNextGenerationWakeAt() : null;
+      if (phase === 'running' && (wake !== null || controls.controls.size)) {
+        schedule(wake === null ? 1000 : Math.max(1, Math.min(1000, wake - now())));
+      }
+    }
+  }
+  async function initialize() {
+    try {
+      assertRelationalStorageReady(sqlite);
+      if (controls.controls.size) {
+        throw new Error('A physical executor already owns this database.');
+      }
+      const recovered = await recoverRelationalGenerationResults(sqlite, options.dataDir, { now });
+      if (recovered.fileMissing || recovered.unresolved) {
+        throw new Error('Prepared results require recovery before dispatch.');
+      }
+      if (recovered.completed) {
+        emit('commit');
+      }
+      let afterId = '';
+      for (;;) {
+        const ids = store.readInterruptedGenerationIds(afterId);
+        if (!ids.length) {
+          break;
+        }
+        for (const id of ids) {
+          afterId = id;
+          fail(
+            store.readGenerationExecutionState(id),
+            'interrupted',
+            'executor_interrupted',
+            504,
+            false,
+          );
+        }
+      }
+      expire();
+      if (phase === 'starting') {
+        phase = 'running';
+        schedule();
+      }
+    } catch (error) {
+      fault(error);
+      throw error;
+    }
+  }
+  return {
+    controls: controls.controls,
+    previews,
+    schedule,
+    tick,
+    activePayloadBytes: () => inputs.activePayloadBytes(controls.controls.values()),
+    start() {
+      if (['stopping', 'stopped', 'faulted'].includes(phase)) {
+        return Promise.reject(new Error('Executor cannot be restarted in place.'));
+      }
+      if (startup) {
+        return startup;
+      }
+      if (phase !== 'created') {
+        return Promise.reject(new Error('Executor cannot be restarted in place.'));
+      }
+      phase = 'starting';
+      startup = initialize();
+      return startup;
+    },
+    stop() {
+      if (shutdown) {
+        return shutdown;
+      }
+      phase = 'stopping';
+      clearTimer();
+      emit('close');
+      shutdown = (async () => {
+        if (startup) {
+          try {
+            await startup;
+          } catch {}
+        }
+        await Promise.all([...controls.controls.values()].map((control) => control.done));
+        phase = 'stopped';
+      })();
+      return shutdown;
+    },
+    get status() {
+      return phase;
+    },
+  };
+}

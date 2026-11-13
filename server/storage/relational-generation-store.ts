@@ -99,6 +99,11 @@ type Completion = Pick<
   NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
   'kind' | 'retryAfterUntil'
 >;
+export type GenerationPhysicalCompletion = Completion & {
+  attemptId: string;
+  credentialEpoch: number;
+  kind: NonNullable<Completion['kind']>;
+};
 
 export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
@@ -578,6 +583,111 @@ export class RelationalGenerationStore {
       mapping.sourceEventId,
     );
     return prior;
+  }
+  readQueuedGenerationIds(limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number], { id: string }>(
+        "SELECT id FROM generation_jobs WHERE status='queued' ORDER BY queue_seq LIMIT ?",
+      )
+      .all(limit)
+      .map((row) => row.id);
+  }
+  private assertRuntimePage(afterId: string, limit: number) {
+    if (typeof afterId !== 'string' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new TypeError('Invalid generation runtime page.');
+    }
+  }
+  readInterruptedGenerationIds(afterId = '', limit = 100): string[] {
+    this.assertRuntimePage(afterId, limit);
+    return this.sqlite
+      .prepare<[string, number], { id: string }>(
+        `SELECT id FROM generation_jobs INDEXED BY idx_jobs_active_request
+        WHERE status IN ('queued','pending','running') AND status='running' AND id>? ORDER BY id LIMIT ?`,
+      )
+      .all(afterId, limit)
+      .map((row) => row.id);
+  }
+  readExpiredGenerationIds(now: number, limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number, number, number], { id: string }>(
+        `SELECT id FROM generation_jobs INDEXED BY idx_jobs_active_request WHERE status IN ('queued','pending','running') AND
+      (deadline_at<=? OR (status IN ('queued','pending') AND queue_expires_at<=?)) ORDER BY id LIMIT ?`,
+      )
+      .all(now, now, limit)
+      .map((row) => row.id);
+  }
+  readDueGenerationReviewIds(now: number, limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number, number], { id: string }>(
+        `SELECT job_id AS id FROM generation_attempts INDEXED BY idx_attempts_review WHERE review_status='pending'
+      AND review_deadline_at<=? ORDER BY review_deadline_at,job_id LIMIT ?`,
+      )
+      .all(now, limit)
+      .map((row) => row.id);
+  }
+  readNextGenerationWakeAt(): number | null {
+    return this.sqlite
+      .prepare<[], { at: number | null }>(
+        `SELECT MIN(at) AS at FROM (
+      SELECT deadline_at AS at FROM generation_jobs INDEXED BY idx_jobs_active_request WHERE status IN ('queued','pending','running')
+      UNION ALL SELECT queue_expires_at FROM generation_jobs INDEXED BY idx_jobs_active_request
+      WHERE status IN ('queued','pending','running') AND status!='running'
+      UNION ALL SELECT review_deadline_at FROM generation_attempts INDEXED BY idx_attempts_review WHERE review_status='pending'
+    )`,
+      )
+      .get()!.at;
+  }
+  readBoundGenerationAccount() {
+    const row = this.sqlite
+      .prepare<[], { id: string; enabled: number; cooldownUntil: number | null }>(
+        `SELECT a.id,a.enabled,a.cooldown_until AS cooldownUntil FROM upstream_accounts a
+      JOIN sharing_policy p ON p.bound_account_id=a.id WHERE p.id=1`,
+      )
+      .get();
+    return row ? { ...row, enabled: row.enabled === 1 } : null;
+  }
+  readGenerationExecutionState(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    const origin = this.sqlite
+      .prepare<
+        [string, string],
+        {
+          eventId: string;
+          policyVersion: string;
+          pricingVersion: string;
+        }
+      >(
+        `SELECT event_id AS eventId,policy_version AS policyVersion,pricing_version AS pricingVersion
+      FROM domain_events WHERE stream_id=? AND (event_type='RequestAccepted' OR
+      (event_type='DispatchAuthorized' AND json_extract(payload,'$.jobId')=?))
+      ORDER BY stream_version DESC LIMIT 1`,
+      )
+      .get(`request:${job.requestId}`, jobId);
+    const input = this.sqlite
+      .prepare<[string], { bytes: number }>(
+        'SELECT logical_bytes AS bytes FROM generation_inputs WHERE id=?',
+      )
+      .get(job.inputId);
+    if (!origin || !input) {
+      fail('任务执行缺少原输入或提交元数据', 410);
+    }
+    return {
+      id: job.id,
+      requestId: job.requestId,
+      memberId: job.memberId,
+      operation: job.operation,
+      status: job.status,
+      deadlineAt: job.deadlineAt,
+      queueExpiresAt: job.queueExpiresAt,
+      payloadBytes: input.bytes,
+      attemptId: attempt?.id ?? null,
+      credentialEpoch: attempt?.credentialEpoch ?? null,
+      ...origin,
+    };
   }
   acceptGeneration(metadata: Metadata, input: AcceptedInput) {
     return this.owned(() => {
@@ -1068,6 +1178,22 @@ export class RelationalGenerationStore {
     }
     return next;
   }
+  private assertPhysicalCompletion(
+    attempt: Attempt,
+    completion: Completion | GenerationPhysicalCompletion,
+  ) {
+    const proof = completion as Partial<GenerationPhysicalCompletion>;
+    if (
+      !proof ||
+      proof.attemptId !== attempt.id ||
+      !Number.isSafeInteger(proof.credentialEpoch) ||
+      (proof.credentialEpoch ?? 0) <= 0 ||
+      proof.credentialEpoch !== attempt.credentialEpoch ||
+      !['ended', 'success', 'ordinary', 'capacity'].includes(proof.kind ?? '')
+    ) {
+      fail('物理结束证明不属于原尝试和凭据代次');
+    }
+  }
   private cooldown(
     job: Job,
     attempt: Attempt,
@@ -1162,7 +1288,7 @@ export class RelationalGenerationStore {
     metadata: Metadata,
     jobId: string,
     response: Response,
-    completion: Completion = {},
+    completion?: Completion | GenerationPhysicalCompletion,
   ) {
     return this.owned(() => {
       const job = this.job(jobId);
@@ -1176,6 +1302,14 @@ export class RelationalGenerationStore {
         fail('任务没有派发尝试');
       }
       const merged = this.mergeResponse(this.currentResponse(job, attempt), response);
+      if (
+        completion !== undefined &&
+        (merged.upstreamCompletedAt === null ||
+          'attemptId' in completion ||
+          'credentialEpoch' in completion)
+      ) {
+        this.assertPhysicalCompletion(attempt, completion);
+      }
       return this.commit(
         metadata,
         [
@@ -1188,8 +1322,10 @@ export class RelationalGenerationStore {
             attempt.accountId,
             metadata.recordedAt,
           ),
-          ...(attempt.upstreamCompletedAt === null && merged.upstreamCompletedAt !== null
-            ? this.cooldown(job, attempt, metadata.recordedAt, completion)
+          // 显式 completion 来自已结束的物理 promise；不把断流结束冒充完整响应时间。
+          ...((attempt.upstreamCompletedAt === null && merged.upstreamCompletedAt !== null) ||
+          (completion !== undefined && merged.upstreamCompletedAt === null)
+            ? this.cooldown(job, attempt, metadata.recordedAt, completion ?? {})
             : []),
         ],
         { jobId, attemptId: attempt.id },
@@ -1554,7 +1690,7 @@ export class RelationalGenerationStore {
       errorStatus: number;
       cancellationReason?: string;
       evidence?: RefundEvidence;
-      completion?: Completion;
+      completion?: Completion | GenerationPhysicalCompletion;
       diagnostic?: { dispatch: DispatchCapture; error: unknown };
     },
   ) {
@@ -1578,6 +1714,18 @@ export class RelationalGenerationStore {
       const attempt = this.attempt(jobId),
         charge = this.readCharge(jobId),
         events: RelationalEventInput[] = [];
+      if (failure.completion !== undefined) {
+        if (!attempt) {
+          fail('物理结束缺少原尝试');
+        }
+        if (
+          attempt.upstreamCompletedAt === null ||
+          'attemptId' in failure.completion ||
+          'credentialEpoch' in failure.completion
+        ) {
+          this.assertPhysicalCompletion(attempt, failure.completion);
+        }
+      }
       const response = this.currentResponse(job, attempt, failure.evidence);
       if (charge) {
         if (charge.status !== 'reserved' || !attempt || charge.attemptId !== attempt.id) {
@@ -1669,8 +1817,8 @@ export class RelationalGenerationStore {
           metadata.recordedAt,
         ),
       );
-      if (attempt && response.upstreamCompletedAt !== null) {
-        events.push(...this.cooldown(job, attempt, metadata.recordedAt, failure.completion || {}));
+      if (attempt && (response.upstreamCompletedAt !== null || failure.completion !== undefined)) {
+        events.push(...this.cooldown(job, attempt, metadata.recordedAt, failure.completion ?? {}));
       }
       return this.commit(metadata, events, { jobId, status: 'failed', refunded: charge !== null });
     });

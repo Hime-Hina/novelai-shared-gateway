@@ -180,6 +180,14 @@ for (const filename of [
       "await import('../generation/relational-member-admission.js');",
     ],
     [
+      'dynamic relational queue runtime',
+      "await import('../generation/relational-queue-runtime.js');",
+    ],
+    [
+      'namespace relational queue runtime',
+      "import * as queue from '../generation/relational-queue-runtime.ts';",
+    ],
+    [
       'namespace relational admission',
       "import * as admission from '../generation/relational-member-admission.ts';",
     ],
@@ -214,6 +222,7 @@ for (const filename of [
     ...[
       'acceptGeneration',
       'createRelationalMemberGenerationAdmission',
+      'createRelationalQueueRuntime',
       'admitRelationalMemberGeneration',
       'dispatchGeneration',
       'recordGenerationResponse',

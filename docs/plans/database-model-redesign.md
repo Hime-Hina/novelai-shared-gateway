@@ -1061,6 +1061,32 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 原同步 owner 的 12 位精确正/负/零 delta 经实际观察保存，双事件列表共同改错、缺失或超精度均在完整提交回放中拒绝，外层 catch 后全表不变，原合法提交重试及重复零写通过。告警比较继续只在 `failureAccountingAlerts()`：关系金额不先转 number，原 V5 number 阈值用标准十进制比例保留其精度，旧 number 分支原样比较。三文件 71/71，零跳过，覆盖大于 2^53、比 12 位更细的合法阈值和旧合法长小数 number；类型、架构、默认迁移历史和 diff 通过。本段仍是损耗读取的事实/金额前置，分页/汇总 SQL 后续接续。
 
+### 9.31 #52 关系队列与实际执行协调器（2026-11-14，实施中）
+
+基线 `75ff64213b861be36f3d3df8648af96add74e764`。本片只实现供唯一执行器装配的 `generation/relational-queue-runtime.ts`，不切现行总入口、不增加切换旧模型的开关。输入、费用、退款、产物、核对和回放继续由既有关系 owner 决定；协调器只拥有进程中的执行顺序、物理 promise 和瞬时预览。
+
+| 约束           | 权威来源和最小接法                                                                                                                                                                                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 启动与身份     | `start()` 真正执行 `assertRelationalStorageReady()`；正向测试只通过 `verifyAndInstallRelationalStorage()` 安装合成快照。先本地准备结果恢复，再结清中断尝试/原期限和到期核对，成功后才派发。缺失或冲突准备字节阻止启动，不把未完成新库当 ready。根 assembler 保证唯一宿主并注入同一个物理 Map、EventEmitter 和预览 owner，不增另一套全局注册表。                     |
+| 队列与事实     | queued IDs、expired/interrupted/review 页和执行薄元数据归 GenerationStore；页大小最多 100，活动/核对读取走已有局部索引。metadata 从原 RequestAccepted/DispatchAuthorized 取得，当前新派发的政策/计价版本取实际 owner，终态沿原尝试版本，不用当前默认值倒猜历史输入。queue 等候期限只约束 waiting，运行请求仍按原执行期限/控制器。                                   |
+| 派发与秘密     | `dispatchGeneration()` 在 immediate 事务复核当前成员/接单代次、账户、物理槽、收费与原确认，唯一首次提交才返回 PST/credentialEpoch 票据。协调器在任何 await 前登记共享 controls，再用 `readJobInput()` 冷取实际 child seed/BLOB，经原 `generateNovelAiImage()` 发真实协议请求；PST 只在私有在途闭包中，不进事件、回执、通知或共享 controls。                         |
+| 产物与原子性   | 原 `describeStoredResult()` → prepare 关系事务 → SQL 外 `publishStoredResult()` → complete 关系事务。网络失败的响应证据与退款/未知核对在同一最外层 SQL 事务中调用原 owner；其中任一保存失败都回滚全部决定。完整上游产物已取得后的本地发布/结算故障停止派发，保留原准备/预扣，由重启先恢复，不把 SQL/磁盘故障冒充新上游失败。                                        |
+| 物理容量与预算 | 逻辑 failed/退款不删除 control；直到真实网络与文件执行 promise 的 finally 才释放 Map。InputStore 活动预算继续按 parent 去重，逻辑终态但物理仍持有时优先读取原 logicalBytes，缺行才使用 control 已捕获字节下界。HTTP、quote、admission 必须使用根 core 同一 budget 及 controls 的事实源，不能各自只数 SQL active。`stop()` 先关派发/通知，再等待真实 controls.done。 |
+| 冷却与代次     | 已知原 upstreamCompletedAt 的合法冷却行为保持。没有完整响应时间的断流/abort，仅真实物理结束路径可补显式 `{attemptId, credentialEpoch, kind}`；owner 拒空、错尝试和错代次，不把本地 finally 时间填成上游完成。逻辑先超时不补该证明；已结束旧 epoch 只能保存原尝试响应，不能污染新凭据冷却，同尝试退避沿原 owner 去重。                                               |
+| 通知与预览     | 最外层事务成功后在根同一个 EventEmitter 发无载荷 commit，回滚不发；关闭生命周期只发一次 close。JobPreviews 仍只有瞬时帧，逐帧不写业务事实。超时配置的三个原纯函数从旧 gateway-runtime 窄提取到 queue-dispatch，旧调用者复用，未增加另一套默认值或配置。                                                                                                             |
+
+当前 14 组实际路径专项通过：合法 ready/共享 Map、真实 HTTP/PST/本地原字节与结算、真实断流 NULL/gap、发布悬挂时退款/根 budget 拒绝真实认证受理/stop/迟到不补扣、实际 SQL 结算故障后重开恢复不重发、启动中断/原期限/核对关闭、逻辑先超时与原 epoch 的三种物理证明对照、真实成员暂停后恢复、真实 MessagePack 预览、失败事务回滚零通知、ready 后准备字节丢失拒绝、有界只读队列，实际辅助操作 HTTP 的原图和二进制编码发布，以及 Cookie 成员 HTTP 与执行器共用 Map/budget/events 的实际装配。最后一例经真实 quote/submit 自动唤醒执行，Local rename 悬挂后 signal abort 触发退款和 SSE 终态，物理输入仍使另一真实 POST 返回 429 且数据库/通知零变；真实 finally 后可 GET 原迟到字节，并用原未受理键正常接单结算。成功、失败、迟到及重开路径的完整业务提交恢复后钱包/任务/尝试/产物/副本与原库相同，重复零写、源零写、fetch 0，目标仍 building 且不恢复私有认证。日志 `H:\TEMP\novelai-runtime-queue-focused.log`；这些是真实本地 mock 上游 HTTP 与本地文件，不是 NAI、R2 或 PikPak 真实端点验收。
+
+`H:\TEMP\novelai-runtime-queue-negative-controls.mjs` 在独立 TEMP 源码副本分别删除 ready 门禁、遗漏物理输入预算、事务内提前通知和遗漏 NULL 物理结束冷却；四个原检查均明确失败，读到实际 Missing rejection、金额/计数不等的业务断言，没有把加载错误或等待超时当反例。旧已知完成时间的 T4 调用保持不变，未靠修改原物理结束 fixture 掩盖 API 语义扩大。
+
+并入 `6ab8047` 后，同树队列、受理桥、关系 HTTP、生成、输入、诊断、ready 和架构八文件联合 341/341，零跳过；后端类型、架构、默认及可信 `75ff642` 迁移历史、受影响文件格式和差异检查通过。日志 `H:\TEMP\novelai-runtime-queue-regression-fixed.log`；未运行完整后端、编译发布物、Node 24 或真实端点验收，留给固定整合候选排期。本片新增架构写能力和原 NULL 诊断 fixture 补全须随候选维护者复核。
+
+自动续图回归在首图完成后只推进测试时钟，不再次手动 tick，实际定时器在原 gap 后派发下一 child。真实 accept owner 会用原 `queueDeadline()` 固化等待期限，输入参数的 NULL 不是最终 JobAccepted 的 NULL；现 OpeningJobRecorded 尚未有回放 owner，不把 parser 允许的 nullable 字段冒充合法 ready 路径，也不因此增加另一轮询机制。
+
+固定 `6541d0cac708a0127eda798d21c9c45c0e2feb70` 独立技术复审通过，原 14 组加两组独立反例同次 16/16、零跳过：真实 HTTP→Local rename 悬挂、逻辑退款后，共用物理 Map 仍使真实账户轮换 owner 拒绝且全库零变，实际 finally 释放后才允许；真实上游 503 在诊断已暂存、原事实已追加及 charge 已退款后，由 JobFailed 投影触发 SQL 故障，原事务全部回滚且不发假 commit，重开只恢复未知责任、不重发上游。检查同时核对已知完成时间的原 gap、NULL 时间的原 attempt/epoch 证明及显式 abort 来源；没有新增确认问题。独立脚本、日志和 11 个文件 hash 在 `H:\TEMP\novelai-runtime-independent-20261114`，源 tracked clean；`d88ac5d` 到该固定点的产品逐字相同，独审不包含待修 9.35、完整后端或发布/真实存储端点验收。
+
+已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。当前 epoch 的生成 401/403 失效和事件 v3 等待第 9.35 节修复独审；本片不合入尚未通过候选，也不伪造官方额度观察。完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
+
 ### 9.32 人工历史退休：薄标记、保护和完整回放
 
 本片从统一固定 `29924b9` 实现人工历史退休，不新增 D8 期限或自动任务，不依赖尚未选定的完整 archive authority，也不暴露 Local/R2/PikPak 物理删除。旧人工删图可能随后移除 Local 文件；新入口只撤下在线展示/领取，字节继续保护，后续物理释放仍须第 5 节的归档引用闭包与明确授权。
