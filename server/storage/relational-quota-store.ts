@@ -1058,6 +1058,11 @@ export class RelationalQuotaStore {
         case 'V5CapacityObserved': {
           const p = raw.payload;
           const evidence = p.evidence?.find((e) => e.type === 'v5_capacity_observed');
+          // 原 owner 在容量相等时不产生 evidence；这是原已知零变化，不从 difference 推算。
+          const delta = evidence ? evidence.delta : '0';
+          if (typeof delta !== 'string') {
+            fail('容量事实缺少原 owner 的精确变化金额');
+          }
           events.push(
             this.event(
               {
@@ -1066,6 +1071,7 @@ export class RelationalQuotaStore {
                   accountId,
                   observationEventId: observationAt(p.reconciliation.sourceCheckedAt),
                   capacityGap: p.capacityGap,
+                  delta,
                   difference: p.reconciliation.difference,
                   tolerance: p.reconciliation.tolerance,
                   status: p.reconciliation.status,
@@ -1690,6 +1696,11 @@ export class RelationalQuotaStore {
         case 'V5CapacityObserved': {
           const p = e.payload;
           this.observation(p.observationEventId, accountId);
+          if (
+            formatAmount(parseAmount(p.capacityGap) - parseAmount(ops.v5CapacityGap)) !== p.delta
+          ) {
+            fail('容量变化必须等于原运营账前后值');
+          }
           if (ops.v5CapacityGap !== p.capacityGap) {
             ops.v5GapEventId = p.capacityGap === '0' ? null : e.eventId;
           }

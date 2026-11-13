@@ -1062,6 +1062,10 @@ Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、�
 
 错误查询专项 7/7，连同输入、请求、用量/热力图和共同展示五文件 52/52、零跳过，覆盖 canonical 相等省略/独立原步数、partial/旧 DTO 未知、两成员/旧 Key 轮换、时间 0/Opening 未知、损坏及跨成员保护内容、过滤超过一批、索引计划、迟到/重开和完整业务回放后零写入。Opening 时间表达式仅作为 SQL 事实角色对照；完整开账业务恢复和新 HTTP 装配仍由各自片交付，不把该合成 SQL 对照写成旧历史全链恢复验收。
 
+损耗读取先核对当前事实表示：`ResourceGapObserved.amount` 是原同步 owner 的本次 observedAmount，历史累计 amount 没有来源时 NULL；`V5CapacityObserved` 按维护者选定路线补存原 owner evidence.delta 的 signed 精确标量，未生成 evidence 在该原 owner 中明确表示容量未变化，故原已知 delta=0。投影核对原运营账 before→after 差值与原 delta，不能拿 difference/capacityGap 代替。没有新持久列、当前重报价或逐页全史回放；旧 Opening 无原变化值时保持 NULL。这项未发布必填字段与 9.35 的统一事件 v3 候选整合，不为旧原型增加在线兼容分支。
+
+原同步 owner 的 12 位精确正/负/零 delta 经实际观察保存，双事件列表共同改错、缺失或超精度均在完整提交回放中拒绝，外层 catch 后全表不变，原合法提交重试及重复零写通过。告警比较继续只在 `failureAccountingAlerts()`：关系金额不先转 number，原 V5 number 阈值用标准十进制比例保留其精度，旧 number 分支原样比较。三文件 71/71，零跳过，覆盖大于 2^53、比 12 位更细的合法阈值和旧合法长小数 number；类型、架构、默认迁移历史和 diff 通过。本段仍是损耗读取的事实/金额前置，分页/汇总 SQL 后续接续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

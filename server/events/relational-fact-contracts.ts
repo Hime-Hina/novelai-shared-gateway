@@ -520,6 +520,7 @@ export const relationalPayloadParsers = {
     accountId: id,
     observationEventId: id,
     capacityGap: nonnegative,
+    delta: amount,
     difference: amount,
     tolerance: nonnegative,
     status: choices('source_below_local', 'source_above_local', 'within_precision'),

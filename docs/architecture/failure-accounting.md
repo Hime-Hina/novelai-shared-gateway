@@ -95,6 +95,8 @@ F03 本片当时尚未覆盖“文件写成后、SQLite 提交前崩溃”的孤
 
 共同展示入口是本模块的 `publicFailureEvent()` 和 `failureAccountingAlerts()`：它们接收已解析的窄数据，不读写数据库，也不重算另一套聚合。既有 `queryFailureAccounting()` 继续负责原 SQL 汇总、原时序分页与解析，事件白名单和软告警只在上述入口维护；后续关系读取复用它们。该提取本身不表示关系损耗查询、诊断保存或完整恢复已接入。
 
+关系金额在汇总及告警比较期间保留规范 12 位定点文本；原 `failureAccountingAlerts()` 共同边界以 BigInt 和原 number 阈值的精确十进制比例比较，完成后才允许转兼容 DTO number。旧在线 number 沿原生 number 比较，不因历史超过 12 位小数而拒绝。`V5CapacityObserved.delta` 保存原 quota owner 的实际 signed 变化（相等时原已知 0），投影核对原运营账前后值；不能以当前容量或 difference 代替历史变化。新 `ResourceGapObserved.amount` 是本次下降 `observedAmount`，没有原累计金额来源的历史 DTO `amount` 为 NULL；旧 Opening 不凭 header 或当前账补造变化金额。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和 `charge.fixed` / `charge.purchased`；历史没有分池字段时为 `null`，不伪造为零。`me.lateResults` 从 SQLite 本人完整历史按 `lateResultAt` 倒序取至多 10 条，字段为 `id/model/createdAt/lateResultAt/imageUrl/charge`。签发前同时验证有效成员、任务所属 Key 和图片所属 Key，缺失或不匹配的图片不签发。沿用现有 15 分钟签名链接，不在 URL 放 Key；成员 Cookie 的 `/api/member` 路径不会阻止领取 `/api/images/.../content`。领取保留原失败状态和分池退款，不发上游请求，也不再次扣款。
 
 `0003_failure_accounting_queries.sql` 只添加三个索引：损耗类型/时间、按顺序分页的损耗历史部分索引、成员迟到结果 JSON 表达式部分索引。数据库当前共有 4 条迁移。Drizzle Kit 对 JSON 表达式的转义已按 schema 意图校准；分页显式使用有序部分索引，避免规划器转而按类型扫描后将整段历史排序。滚动汇总在 SQLite 内计算，只将有限标量和当前页事件载入 JS。部署前仍须备份，迁移只能向前；不对生产执行 schema push。

@@ -224,3 +224,35 @@ test('损耗历史直接接收解析事实，白名单、未知候选和原来�
   assert.ok(!JSON.stringify(dto).includes('privateRequest'));
   assert.deepEqual(event, before);
 });
+
+test('损耗告警在原 owner 比较精确关系金额，超 2^53/阈值超精度不先转 number，旧 number 保留', () => {
+  const value = risk();
+  value.last24h.possible.v5 = '9007199254740993.999999999999';
+  const huge = { ...policy, v5Points24h: 9007199254740994 },
+    before = structuredClone(value);
+  assert.deepEqual(failureAccountingAlerts(huge, value, []), []);
+  assert.deepEqual(value, before);
+  value.last24h.possible.v5 = '9007199254740994';
+  assert.deepEqual(
+    failureAccountingAlerts(huge, value, []).map((a) => a.id),
+    ['v5-24h'],
+  );
+  value.last24h.possible.v5 = '0.000000000001';
+  assert.deepEqual(
+    failureAccountingAlerts({ ...policy, v5Points24h: 1.000000000001e-12 }, value, []),
+    [],
+  );
+  assert.deepEqual(
+    failureAccountingAlerts({ ...policy, v5Points24h: 1e-13 }, value, []).map((a) => a.id),
+    ['v5-24h'],
+  );
+  value.last24h.possible.v5 = 0.21175719010416666;
+  assert.deepEqual(
+    failureAccountingAlerts({ ...policy, v5Points24h: 0.21175719010416666 }, value, []).map(
+      (a) => a.id,
+    ),
+    ['v5-24h'],
+  );
+  value.last24h.possible.v5 = '0.21175719010416666';
+  assert.throws(() => failureAccountingAlerts(policy, value, []), /12 decimal/);
+});

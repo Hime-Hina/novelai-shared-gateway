@@ -4,6 +4,7 @@ import type { FairCharge, Resource, ResourceAmounts } from './fair-share.ts';
 import type { GenerationAttempt } from '../generation/accounting.ts';
 import type { OperatingAccount } from './operating-accounting.ts';
 import { recordDomainEvent } from '../events/domain-events.ts';
+import { parseAmount, decimalRatio, AMOUNT_SCALE } from './resource-amounts.ts';
 
 export interface LossAlertPolicy {
   version: number;
@@ -43,13 +44,13 @@ interface HistoryRow {
 }
 type RiskWindow = 'last24h' | 'last30d';
 type ResourceNumbers = Record<Resource, number>;
-interface RiskSummary {
+interface RiskSummary<T = number> {
   attempts: number;
   unknownAmounts: number;
-  possible: ResourceNumbers;
+  possible: Record<Resource, T>;
 }
-type FailureRisk = Record<RiskWindow, RiskSummary> & {
-  aggregate: Record<RiskWindow, ResourceNumbers>;
+type FailureRisk<T = number> = Record<RiskWindow, RiskSummary<T>> & {
+  aggregate: Record<RiskWindow, Record<Resource, T>>;
 };
 interface RiskRow extends ResourceNumbers {
   window: RiskWindow;
@@ -351,12 +352,20 @@ const riskColumns = `COUNT(*) AS attempts, COALESCE(SUM(unknownAmount),0) AS unk
 
 export function failureAccountingAlerts(
   policy: LossAlertPolicy,
-  risk: FailureRisk,
+  risk: FailureRisk<number | string>,
   members: readonly MemberRiskRow[],
 ) {
   const alerts: LossAlert[] = [],
     warn = (id: string, message: string) => alerts.push({ id, level: 'warning', message });
-  const threshold = (value: number, limit: number) => value > 0 && value >= limit;
+  const threshold = (value: number | string, limit: number) => {
+    // 旧 number 保留原比较；关系金额先精确比较，到兼容 DTO 才能转 number。
+    if (typeof value === 'number') {
+      return value > 0 && value >= limit;
+    }
+    const units = parseAmount(value),
+      boundary = decimalRatio(limit);
+    return units > 0n && units * boundary.denominator >= boundary.numerator * AMOUNT_SCALE;
+  };
   // 尝试风险和聚合差额可能重叠：分别比较阈值，以 OR 提示，不能相加冒充消费。
   if (
     threshold(risk.last24h.possible.v5, policy.v5Points24h) ||
@@ -385,7 +394,10 @@ export function failureAccountingAlerts(
       '最近 30 天固定 Anlas 候选风险或聚合差额达到观察阈值；两者未相加，不代表已确认单次消费。',
     );
   }
-  if (risk.last30d.possible.anlasPurchased > 0 || risk.aggregate.last30d.anlasPurchased > 0) {
+  if (
+    threshold(risk.last30d.possible.anlasPurchased, 0) ||
+    threshold(risk.aggregate.last30d.anlasPurchased, 0)
+  ) {
     warn(
       'purchased-30d',
       '最近 30 天有购买 Anlas 候选风险或聚合差额，请核对保留的记录；两者未相加，不代表已确认单次消费。',
