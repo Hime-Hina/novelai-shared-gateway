@@ -124,8 +124,16 @@ export function setMemberAdmission<D extends AdmissionState>(
   if (!user) {
     fail(404, '成员不存在');
   }
+  const admissionVersion = user.jobAdmissionVersion ?? 0;
+  if (
+    !Number.isSafeInteger(admissionVersion) ||
+    admissionVersion < 0 ||
+    (!acceptingJobs && user.acceptingJobs !== false && admissionVersion === Number.MAX_SAFE_INTEGER)
+  ) {
+    fail(409, '成员接单代次已达安全边界');
+  }
   if (!acceptingJobs && user.acceptingJobs !== false) {
-    user.jobAdmissionVersion = (user.jobAdmissionVersion || 0) + 1;
+    user.jobAdmissionVersion = admissionVersion + 1;
   }
   user.acceptingJobs = acceptingJobs;
   user.updatedAt = new Date(now).toISOString();

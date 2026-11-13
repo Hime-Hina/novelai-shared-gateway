@@ -2112,7 +2112,10 @@ export class RelationalGenerationStore {
             if (
               !['queued', 'pending'].includes(job.status) ||
               this.readCharge(id) ||
-              this.attempt(id)
+              this.attempt(id) ||
+              (e.payload.cancellationReason === 'member_stopped' &&
+                job.acceptingJobs === 1 &&
+                job.admissionEpoch === job.currentAdmissionEpoch)
             ) {
               fail('取消只能终止未派发意图');
             }

@@ -100,7 +100,7 @@ function mixedStopCommand(f, memberId = 'm1') {
           jobIds: ['waiting-0', 'waiting-1'],
           reason: 'member_admission_stopped',
           errorStatus: 409,
-          cancellationReason: 'member_admission_stopped',
+          cancellationReason: 'member_stopped',
         },
       },
       'request:waiting',

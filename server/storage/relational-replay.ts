@@ -91,7 +91,7 @@ export class RelationalCommitReplayer {
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {
         if (relationalMemberFacts.has(event.eventType)) {
-          this.members.applyReplayedMemberEvent(event);
+          this.members.applyReplayedMemberEvent(event, stored.events);
         } else if (relationalInputFacts.has(event.eventType)) {
           applyInput!(event);
         } else if (relationalGenerationFacts.has(event.eventType)) {
