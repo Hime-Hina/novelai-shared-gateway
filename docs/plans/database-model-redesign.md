@@ -1257,6 +1257,10 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 固定 `d638220f9c79a340f63098e923fb37029df8b2f1` 汇合上述 owner、Native 与成员子任务历史后，完整后端为 1723 项：1716 通过、2 失败、5 项原条件跳过，耗时 214.896 秒；原日志 `H:\TEMP\novelai-followup-full-d638220.log` 保留。两项旧夹具未对齐 canonical Native 新受理的合法前置：时间 0 的任务仍用未来额度观察，免费成功后才尝试受理第二任务。修正仅涉及三处测试文件：开账夹具允许显式时点并统一原来源、观察、游标及注册时刻，时间 0 的任务在 1 派发、2 失败，仍断言原创建时刻 0 与精确耗时 2；免费限额反例预先排队第二任务，在两类逻辑退役后同时断言新受理 429、既有任务派发拒绝及各自全库零写入，保留原完整回放、收费、认证和免费窗口核对。两文件联合 27/27，证据为 `H:\TEMP\novelai-followup-admission-fixtures-fixed.log`；这不把前一轮失败或尚待执行的完整候选检查记为通过。
 
+修正后固定 `3d2bafd7b19f329027ad081344a94dc20f4f51f2` 的完整后端为 1723 项：1718 通过、0 失败、5 项原条件跳过，216.273 秒。全 workspace 格式、157 文件语法、三包类型及 Web 150 / executor 3 通过。隔离的实际编译 JavaScript 26 文件在 Node 22 与独立 ABI137 Node 24 各 598/598、零跳过；运行目录不含 `.ts` 且禁用 strip-types，CLI 指向真实编译入口。530 源文件、两套各 190 文件运行目录和 native 摘要前后不变；Node 24 实际编译 reader smoke 通过。证据为 `H:\TEMP\novelai-followup-full-3d2bafd.log` 与 `H:\TEMP\novelai-next-validation-3d2bafd\VALIDATION.md`。
+
+[PR #63 的 CI 43504209676](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43504209676) 六项全绿。head `3d2bafd` 与 CI merge `ab87f46` 同 tree `78ab61fa4ff8462ed8f824f14f35d188c204f209`；Linux 后端 1723 项中 1720 通过、3 项平台/环境条件跳过，Nuxt→executor 16/16、包内真实 HTTP 4/4、三个 Docker 构建及发布 tar 解压检查通过。实际发布 artifact `14075607338` 的 ZIP 为 55,482,045 B，SHA256 `93b1417c282896fe959b3a5a2dc27206ccc4dea8969880a8538c738beedbf50c`。跨 owner 独审三项覆盖实际 401 与原键/轮换、非零恢复和输入 SQL 故障回滚、真实迟到结果及业务事件/私有快照联合恢复，产品及整合夹具均核对，无剩余 finding。候选仍含旧在线入口、旧 reader 和 35 项 SQL/journal 资产；其编译 reader、包内旧模型用例和绿色 CI 均不能写成 D4 退出、选定迁移或生产切换完成。
+
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
 本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。
@@ -1284,6 +1288,8 @@ history 保留 child 总量、页序、until、状态和 ID/模型字面搜索�
 新增实际 localhost 专项先由真实 owner 发布 Local 原字节，再用选定匹配私有快照经唯一完整 shadow/表/保护内容/字节核对入口合法安装 ready，没有手写 ready。覆盖本人/他人 child 页、真实迟到退款、原 query 解析、secret 白名单、当前 Key 轮换/缺失、普通 header 不续期、Bearer/Cookie/Origin/方法、撤销和现 handler 撤下 ready；Discord 临时 503 不泄露 raw 诊断，等待中退出在成员仍 active 时拒绝 Key，等待中停用拒绝 history。普通读取前后全表摘要相等，SQL 捕获无输入正文/BLOB，URL capability 只收本人未退休产物。Node 22.23.4 新专项 5/5（含四项真实 HTTP 与一项原免费 owner 反例），与原真实 history/public-base 及关系查询/生成/认证/免费 owner 七文件联合 31/31，零跳过；backend 类型、架构、默认及可信 `d638220f9c79a340f63098e923fb37029df8b2f1` 迁移历史、改动格式/语法/diff 检查通过。日志为 `H:\TEMP\novelai-member-read-http-final-source.log`、`novelai-member-read-http-seven-final.log`。不运行独立 full、编译包或 Node 24。
 
 现 sole `gateway-runtime.ts` 尚未替换为新只读 factory，最终 publicBaseUrl/签名、真实图片领取和发布物联验仍待共同总装配。本片未接入 me/profile/金融 summary/shared-status/SSE、管理权限写命令或 OpenAI；新共享状态还需稳定成员和薄计数适配，me/owner summary 仍需由现 Quota/fairQuotaSummary/estimate owner 提供正确金融窄读，不能用兼容对象补齐。
+
+固定 `453fd1d` 独立复审通过：额外两项真实 HTTP 反例分别将旧 Key 转归另一成员，以及在 Discord IO 等待期间轮换本人 Key；原 Cookie 历史与当前私有 Key 仍按稳定成员绑定，原会话期限不变且不发送续期 Cookie。隔离负控仅把 Key 读取移到 IO 之前，精确失败为返回旧 Key 而非当前 Key。两项反例已保留到仓库，与子任务历史和本片原专项联合 13/13；独审证据为 `H:\TEMP\novelai-member-read-independent-453fd1d\INDEPENDENT-REVIEW.md`，整合日志 `H:\TEMP\novelai-member-read-integrated-453fd1d.log`。未把前置 `3d2bafd` 的 full、编译包或 CI 当作这个后继的验证。
 
 ## 10. 事实依据与修订
 

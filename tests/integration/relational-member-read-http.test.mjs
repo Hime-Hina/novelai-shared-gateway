@@ -345,3 +345,75 @@ test('免费用量原owner在策略关闭后仍保留成功事实而不展示已
   assert.equal(result.warning, false);
   assert.equal(databaseState(f.db), before);
 });
+
+test('独立：旧Key转归他人后，原Cookie和当前Key仍各自绑定稳定成员', async (t) => {
+  const f = await setup(t, {
+    beforeReady: (f) => f.accept('foreign', { memberId: 'm2' }),
+  });
+  f.db.transaction(() => {
+    f.members.replaceMemberApiKey('m1', 'independent-current-m1');
+    f.members.replaceMemberApiKey('m2', keys.m1);
+  })();
+  const before = databaseState(f.db);
+  const own = await f.call('/api/member/history?memberId=m2');
+  const other = await f.call('/api/member/history', { member: 'm2' });
+  assert.deepEqual(
+    own.body.jobs.map((j) => j.id),
+    ['existing-0'],
+  );
+  assert.deepEqual(
+    other.body.jobs.map((j) => j.id),
+    ['foreign-0'],
+  );
+  assert.equal((await f.call('/api/member/key')).body.apiKey, 'independent-current-m1');
+  assert.equal((await f.call('/api/member/key', { member: 'm2' })).body.apiKey, keys.m1);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('独立：Discord等待中轮换Key后只领取本人的当前Key，旧快照不得覆盖轮换', async (t) => {
+  const env = {
+    DISCORD_CLIENT_ID: '123456789012345678',
+    DISCORD_CLIENT_SECRET: 'synthetic-independent-secret',
+    DISCORD_GUILD_ID: '1134557553011998840',
+    PUBLIC_BASE_URL: 'https://member.example',
+  };
+  let fetched = 0;
+  const f = await setup(t, {
+    env,
+    beforeReady: async (f) => {
+      await f.members.discordAuthenticationTransaction((transaction) => {
+        const member = transaction.readMember('m1');
+        member.discord = {
+          id: '222222222222222222',
+          guildId: env.DISCORD_GUILD_ID,
+          accessToken: 'synthetic-independent-access',
+          refreshToken: 'synthetic-independent-refresh',
+          expiresAt: Date.now() + 3600000,
+          checkedAt: 0,
+          member: true,
+        };
+        transaction.saveAuthentication(member, 'login');
+      });
+    },
+    discordFetch: async () => {
+      fetched++;
+      assert.equal(f.db.inTransaction, false);
+      f.db.transaction(() => f.members.replaceMemberApiKey('m1', 'rotated-during-io'))();
+      return Response.json({ user: { id: '222222222222222222' } });
+    },
+  });
+  const originalExpiry = f.db
+    .prepare('SELECT expires_at FROM member_sessions WHERE member_id=?')
+    .get('m1').expires_at;
+  const response = await f.call('/api/member/key', { headers: { 'x-member-activity': '1' } });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.apiKey, 'rotated-during-io');
+  assert.equal(f.members.readMemberApiKey('m1'), 'rotated-during-io');
+  assert.equal(await authenticateMemberApiKey(f.members, keys.m1), null);
+  assert.equal(
+    f.db.prepare('SELECT expires_at FROM member_sessions WHERE member_id=?').get('m1').expires_at,
+    originalExpiry,
+  );
+  assert.equal(response.headers.has('set-cookie'), false);
+  assert.equal(fetched, 1);
+});
