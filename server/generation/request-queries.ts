@@ -67,7 +67,7 @@ export function jobAccountCost(job: Pick<StoreItem, 'accountCost'>): number {
 }
 
 export function jobDurationMs(
-  job: Pick<StoreItem, 'createdAt' | 'status' | 'completedAt'>,
+  job: { createdAt?: string | null; status?: string | null; completedAt?: string | null },
   now = Date.now(),
 ) {
   const started = Date.parse(job.createdAt || '');

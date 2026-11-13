@@ -21,6 +21,7 @@ import {
   relationalInputDigest,
   restoreRelationalWire,
   relationalProviderRequest,
+  relationalInputDisplay,
   validateRelationalInputBody,
   validateRelationalAssetBytes,
   type RelationalInputAsset,
@@ -37,6 +38,7 @@ import { generationRequestFingerprint } from '../generation/request-fingerprint.
 import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
 import { validateImageBytes } from '../protocols/native-image.ts';
+import type { ErrorLogRequest } from '../reports/generation-errors.ts';
 
 type CommandMetadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -1142,6 +1144,41 @@ export class RelationalInputStore {
     );
   }
 
+  // 管理入口先鉴权、限量；这里共用原输入关系/摘要校验，不恢复附件或按当前默认生成参数。
+  readErrorLogRequest(jobId: string): ErrorLogRequest {
+    const job = this.sqlite
+      .prepare<[string], { requestId: string; memberId: string }>(
+        `SELECT j.request_id AS requestId,r.member_id AS memberId FROM generation_jobs j
+        JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      unavailable();
+    }
+    const request = this.request(job.requestId, job.memberId),
+      { body, row } = this.requestInput(request),
+      display = relationalInputDisplay(body, row.completeness === 'complete'),
+      parameters = (body?.parameters ?? {}) as Record<string, unknown>,
+      text = (value: unknown) => (typeof value === 'string' ? value : null),
+      numeric = (value: unknown) =>
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
+    return {
+      tag: display.tag,
+      prompt: text(body?.input),
+      model: request.model,
+      width: numeric(parameters.width),
+      height: numeric(parameters.height),
+      requestedSteps: display.requestedSteps,
+      steps: numeric(parameters.steps),
+      negative: text(parameters.negative_prompt),
+      scale: numeric(parameters.scale),
+      cfg: numeric(parameters.cfg_rescale),
+      sampler: text(parameters.sampler),
+      noiseSchedule: text(parameters.noise_schedule),
+      seed: this.jobSeed(job.requestId, jobId),
+    };
+  }
+
   readMemberInput(requestId: string, memberId: string) {
     const request = this.ownedRequest(requestId, memberId),
       input = this.requestInput(request);
@@ -1295,8 +1332,7 @@ export class RelationalInputStore {
       sampleCount: 1,
       ...(wire.operation === 'generate'
         ? {
-            tag: (input.body.displayPrompt ?? wire.input) as string,
-            requestedSteps: (input.body.requestedSteps ?? request.steps) as number,
+            ...relationalInputDisplay(input.body, true),
           }
         : {}),
     };

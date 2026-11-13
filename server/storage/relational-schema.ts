@@ -21,6 +21,11 @@ const fact = 'source_event_id TEXT NOT NULL REFERENCES domain_events(event_id)';
 // 开账事实时刻不能冒充未知的原实体创建时间；所有查询共用此角色解释。
 const jobCreatedAtSql = `CASE WHEN event_type = 'OpeningJobRecorded'
   THEN json_extract(payload, '$.createdAt') ELSE occurred_at END`;
+// 失败报告与时间索引共用原失败角色，开账 header 仍只表示开账发生时刻。
+export const relationalFailureTimeSql = `CASE WHEN event_type='JobFailed' THEN occurred_at
+  ELSE json_extract(payload,'$.completedAt') END`;
+export const relationalFailurePredicate = `event_type IN ('JobFailed','OpeningJobRecorded')
+  AND (event_type='JobFailed' OR json_extract(payload,'$.status')='failed')`;
 
 export const RELATIONAL_SCHEMA_SQL = `
 CREATE TABLE app_meta (
@@ -67,6 +72,8 @@ SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
 FROM domain_events WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
 CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
   WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_failure_time ON domain_events(${relationalFailureTimeSql} DESC,event_id DESC)
+  WHERE ${relationalFailurePredicate};
 
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')

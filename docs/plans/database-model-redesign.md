@@ -1056,6 +1056,11 @@ factory 在返回 handler 前严格 `assertRelationalStorageReady()`，不负责
 Node 22.23.4 十三文件联合 273/273（含新关系 HTTP 7、旧 HTTP 15、原受理桥/生成/成员契约及 ready、共同回放、额度、输入、查询和副本），架构、类型及以 `29924b9f23363b4dadcf1ea52d901d1bec4f9ad9` 为可信基线的迁移历史检查通过；本片未改既有 SQL/journal、事实格式、ready 门禁或检查基线。完整后端、发布物和其他工作包汇合后的验证由父任务统一排期，不以本片通过代替完整 #52、T8 或生产切换。真实上游排队执行由第 9.31 节协调器另行接入，本片仍未替换生产总入口、管理分组或全 Native/OpenAI。
 
 父任务独立复核固定 `1c79a34` 的 transport、授权事务、原收费 helper 提取及测试配置变更；另以真实 localhost/owner 反例 3/3 核对：恢复后的输入插入失败整笔回滚、健康重试只恢复一次及原键零写；物理忙派发不恢复、预扣 SQL 失败回滚后正常重试；较晚时点重领原回执不再次恢复。隔离副本仅移除受理恢复调用，同一反例准确重现 402 而非 202，其他两例仍通过，未改候选原字节。证据为 `H:\TEMP\novelai-member-http-independent.log` 与 `-mutant.log`。与诊断片汇合后，五处只验证诊断/退款的 fixture 也显式固定 `seconds: 0`，保留原精确退款断言；时间恢复由实际 HTTP 和上述独立反例验证。联合 HTTP/诊断/输入/共同回放四文件 58/58，零跳过；这仍是本地源码整合证据。
+错误关系读取由现 `RelationalReportStore` 取原失败/开账的薄字段，经 `selectErrorLogJobs()` 原过滤后才冷读请求并交 `publicErrorLog()`；只有过滤必需的已保存诊断预先按需校验。原 JobFailed 时间独立于 late result 的最后来源指针，Opening 的原 completedAt 与未知 NULL 分开。输入 owner 新增窄 `readErrorLogRequest()`，共用原请求/输入事实及摘要，只读正文和资产元数据，不展开 BLOB、不运行当前规范化；没有旧路由、费用、计数、artist/size 或历史 Key 标签时保持 NULL。complete v1 的 displayPrompt/requestedSteps 是相等省略编码，与 `readJobInput()` 共同复用 `relationalInputDisplay()` 解码；partial 和旧 DTO 没有该编码保证，不能按字段缺失猜值。
+
+首个真实 EXPLAIN 显示 SCAN jobs 并临时排序，故唯一 DDL 仅新增 `idx_job_failure_time` 局部表达式时间/ID 索引；该索引与读取共用原失败时间表达式和事实谓词。修后实际范围查询 SEARCH 索引，按任务/请求/原尝试主键关联，不再全任务扫描或为该顺序排序。不存在新任务时间副本或历史迁移改写；当前新格式仍须由空 building 库重建。查询以每批 100 候选顺序读取并应用原过滤，过滤一整批后继续稳定时间/ID 分页，至多返回 100；普通统计不调用这个冷详情入口。
+
+错误查询专项 7/7，连同输入、请求、用量/热力图和共同展示五文件 52/52、零跳过，覆盖 canonical 相等省略/独立原步数、partial/旧 DTO 未知、两成员/旧 Key 轮换、时间 0/Opening 未知、损坏及跨成员保护内容、过滤超过一批、索引计划、迟到/重开和完整业务回放后零写入。Opening 时间表达式仅作为 SQL 事实角色对照；完整开账业务恢复和新 HTTP 装配仍由各自片交付，不把该合成 SQL 对照写成旧历史全链恢复验收。
 
 ## 10. 事实依据与修订
 

@@ -4,6 +4,10 @@ import type { ActivityDay, readActivityHeatmap } from '../reports/activity-heatm
 import { activityDate } from '../reports/activity-heatmap.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { RelationalInputStore } from './relational-input-store.ts';
+import { selectErrorLogJobs, publicErrorLog } from '../reports/generation-errors.ts';
+import { jobDurationMs } from '../generation/request-queries.ts';
+import { relationalFailureTimeSql, relationalFailurePredicate } from './relational-schema.ts';
 
 type ActivityQuery = Parameters<Parameters<typeof readActivityHeatmap>[0]['readActivityDays']>[0];
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
@@ -31,6 +35,17 @@ interface UsageRow {
   purchased: string | null;
   knownNoCharge: number;
 }
+interface ErrorRow {
+  id: string;
+  source: string;
+  accountId: string;
+  status: string;
+  error: string | null;
+  createdAt: number | null;
+  failedAt: number;
+  eventId: string;
+  diagnosticId: string | null;
+}
 
 // 授权继续归现有成员/owner/admin 入口；这里不解释旧模型或持有业务写能力。
 export class RelationalReportStore {
@@ -38,6 +53,90 @@ export class RelationalReportStore {
   constructor(sqlite: Database.Database) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+  }
+
+  readErrorLogs(since: number, limit = 100) {
+    if (
+      !Number.isSafeInteger(since) ||
+      since < 0 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      throw Object.assign(new Error('错误记录查询范围无效。'), { statusCode: 400 });
+    }
+    return this.sqlite.transaction(() => {
+      const inputs = new RelationalInputStore(this.sqlite),
+        result: ReturnType<typeof publicErrorLog>[] = [];
+      let before: { at: number; id: string } | null = null;
+      while (result.length < limit) {
+        const rows: ErrorRow[] = this.sqlite
+          .prepare<unknown[], ErrorRow>(
+            `SELECT j.id,r.source,a.account_id AS accountId,j.status,j.error_code AS error,
+            origin.created_at AS createdAt,${relationalFailureTimeSql} AS failedAt,e.event_id AS eventId,
+            CASE WHEN e.event_type='JobFailed' THEN json_extract(e.payload,'$.diagnosticId') END AS diagnosticId
+            FROM domain_events e INDEXED BY idx_job_failure_time
+            JOIN generation_jobs j ON j.id=json_extract(e.payload,'$.jobId')
+            JOIN generation_requests r ON r.id=j.request_id
+            JOIN generation_attempts a ON a.job_id=j.id
+            LEFT JOIN generation_job_origins origin ON origin.stream_id=e.stream_id
+              AND origin.job_id=j.id AND origin.request_id=r.id
+            WHERE ${relationalFailurePredicate}
+              AND e.stream_id='request:'||r.id AND e.member_id=r.member_id
+              AND j.status='failed' AND j.retired_at IS NULL AND r.retired_at IS NULL
+              AND ${relationalFailureTimeSql}>=?
+              ${before ? `AND (${relationalFailureTimeSql},e.event_id)<(?,?)` : ''}
+            ORDER BY ${relationalFailureTimeSql} DESC,e.event_id DESC LIMIT 100`,
+          )
+          .all(...(before ? [since, before.at, before.id] : [since]));
+        if (!rows.length) {
+          break;
+        }
+        for (const row of rows) {
+          let errorDetail: string | null = null;
+          if (row.diagnosticId !== null) {
+            try {
+              errorDetail = inputs.readGenerationDiagnostic(row.diagnosticId, row.id);
+            } catch (error) {
+              if ((error as { code?: string }).code !== 'diagnostic_unavailable') {
+                throw error;
+              }
+            }
+          }
+          const job = {
+            ...row,
+            errorDetail,
+            createdAt: iso(row.createdAt),
+            updatedAt: iso(row.failedAt),
+            completedAt: iso(row.failedAt),
+          };
+          if (!selectErrorLogJobs([job], since, 1).length) {
+            continue;
+          }
+          let request: ReturnType<RelationalInputStore['readErrorLogRequest']> | null = null;
+          try {
+            request = inputs.readErrorLogRequest(row.id);
+          } catch (error) {
+            if ((error as { code?: string }).code !== 'input_unavailable') {
+              throw error;
+            }
+          }
+          result.push(
+            publicErrorLog(job, request, {
+              maskedUserToken: null,
+              accountRouteId: null,
+              durationMs: jobDurationMs(job),
+            }),
+          );
+          if (result.length === limit) {
+            break;
+          }
+        }
+        const last = rows.at(-1)!;
+        before = { at: last.failedAt, id: last.eventId };
+      }
+      return result;
+    })();
   }
 
   async readOwnerJobRows(since: string, until: string): Promise<OwnerJobRow[]> {
