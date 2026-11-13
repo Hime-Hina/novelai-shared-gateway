@@ -1263,6 +1263,8 @@ v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败�
 
 固定 `d638220f9c79a340f63098e923fb37029df8b2f1` 汇合上述 owner、Native 与成员子任务历史后，完整后端为 1723 项：1716 通过、2 失败、5 项原条件跳过，耗时 214.896 秒；原日志 `H:\TEMP\novelai-followup-full-d638220.log` 保留。两项旧夹具未对齐 canonical Native 新受理的合法前置：时间 0 的任务仍用未来额度观察，免费成功后才尝试受理第二任务。修正仅涉及三处测试文件：开账夹具允许显式时点并统一原来源、观察、游标及注册时刻，时间 0 的任务在 1 派发、2 失败，仍断言原创建时刻 0 与精确耗时 2；免费限额反例预先排队第二任务，在两类逻辑退役后同时断言新受理 429、既有任务派发拒绝及各自全库零写入，保留原完整回放、收费、认证和免费窗口核对。两文件联合 27/27，证据为 `H:\TEMP\novelai-followup-admission-fixtures-fixed.log`；这不把前一轮失败或尚待执行的完整候选检查记为通过。
 
+后续 #64 的首轮 Linux CI 发现原会话重启夹具在释放预选端口后被并行监听抢占，`EADDRINUSE` 并非期限/撤销断言失败。已将固定 `5cf9835` 的测试修正逐字回补本分支：真实 gateway 使用原已支持的 `PORT=0`，现有离线 preload 只观察真实 listening 并通过 IPC 回报当次地址。未改生产监听、原超时、外联阻断、会话/SSE 断言或条件跳过，也未增加端口重试。该固定测试独审通过，Windows 原八项 7 通过、1 项原 SIGTERM 跳过；文件 SHA256 `ea4b531d32a7a3e51e7f316cb8d3561536b3f46fc7c7d101ffdf636ec92be14e`，证据 `H:\TEMP\novelai-session-port-review-5cf9835-20261114\INDEPENDENT-REVIEW.md`。修正后的本候选仍由新的 CI 验证，前置 `3d2bafd` 的结果不替代后继验证。
+
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
 本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。
