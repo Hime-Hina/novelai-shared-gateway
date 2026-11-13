@@ -98,7 +98,7 @@ function mixedStopCommand(f, memberId = 'm1') {
         eventType: 'WaitingJobsCancelled',
         payload: {
           jobIds: ['waiting-0', 'waiting-1'],
-          reason: 'member_admission_stopped',
+          reason: '管理员已停止此成员接单，未派发任务已取消',
           errorStatus: 409,
           cancellationReason: 'member_stopped',
         },

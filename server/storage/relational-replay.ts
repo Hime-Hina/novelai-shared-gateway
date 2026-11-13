@@ -87,6 +87,7 @@ export class RelationalCommitReplayer {
         }
         return result;
       }
+      this.members.assertMemberAdmissionCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {

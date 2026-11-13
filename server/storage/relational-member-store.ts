@@ -6,7 +6,12 @@ import {
   type DiscordAuthenticationStore,
   type DiscordAuthenticationTransaction,
 } from '../members/discord-auth.ts';
-import { domainDigest, beginDomainCommand, finishDomainCommand } from '../events/domain-events.ts';
+import {
+  domainDigest,
+  canonicalJson,
+  beginDomainCommand,
+  finishDomainCommand,
+} from '../events/domain-events.ts';
 import {
   loginMember,
   normalizeMemberUsername,
@@ -36,7 +41,7 @@ import type {
   RelationalEventInput,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { setMemberAdmission } from '../generation/queue-policy.ts';
+import { setMemberAdmission, MEMBER_STOPPED_MESSAGE } from '../generation/queue-policy.ts';
 import { RelationalCommitReplayer } from './relational-replay.ts';
 
 type MemberCommand = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
@@ -538,6 +543,59 @@ export class RelationalMemberStore
     });
   }
 
+  assertMemberAdmissionCommit(events: RelationalEvent[], receipt: RelationalCommand['receipt']) {
+    this.assertMemberCommandTransaction();
+    const decisions = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>
+    >();
+    for (const event of events) {
+      if (event.eventType === 'AdmissionChanged') {
+        decisions.set(event.payload.memberId, event);
+      } else if (
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.payload.cancellationReason === 'member_stopped'
+      ) {
+        const decision = event.memberId ? decisions.get(event.memberId) : undefined;
+        if (
+          !decision ||
+          decision.payload.acceptingJobs ||
+          !event.payload.jobIds.length ||
+          event.payload.reason !== MEMBER_STOPPED_MESSAGE ||
+          event.payload.errorStatus !== 409 ||
+          event.accountId !== null ||
+          event.occurredAt !== decision.occurredAt
+        ) {
+          fail(409, '停止接单取消必须保留同提交原停止决定');
+        }
+      }
+    }
+    // 原接单回执的判别字段绑定同一保存决定，不能删光事实后保存“成功停止”。
+    if (
+      receipt &&
+      !Array.isArray(receipt) &&
+      typeof receipt === 'object' &&
+      ('acceptingJobs' in receipt || 'cancelledJobIds' in receipt)
+    ) {
+      const admission = events.filter((event) => event.eventType === 'AdmissionChanged');
+      const cancelled = events.flatMap((event) =>
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.memberId === receipt.id &&
+        event.payload.cancellationReason === 'member_stopped'
+          ? event.payload.jobIds
+          : [],
+      );
+      if (
+        admission.length !== 1 ||
+        admission[0].payload.memberId !== receipt.id ||
+        admission[0].payload.acceptingJobs !== receipt.acceptingJobs ||
+        canonicalJson(cancelled) !== canonicalJson(receipt.cancelledJobIds)
+      ) {
+        fail(409, '接单回执必须匹配原完整接单决定');
+      }
+    }
+  }
+
   private assertAdmissionChange(
     event: Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>,
     completeEvents: RelationalEvent[],
@@ -654,6 +712,7 @@ export class RelationalMemberStore
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
+        this.assertMemberAdmissionCommit(result.events, result.receipt);
         for (const event of result.events) {
           this.applyReplayedMemberEvent(event, result.events);
         }

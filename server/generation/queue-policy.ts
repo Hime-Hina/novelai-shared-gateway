@@ -35,6 +35,7 @@ function fail(statusCode: number, message: string): never {
 }
 const unfinished = new Set(['queued', 'pending', 'running']);
 const waiting = new Set(['queued', 'pending']);
+export const MEMBER_STOPPED_MESSAGE = '管理员已停止此成员接单，未派发任务已取消';
 
 export function queuePolicy(env: NodeJS.ProcessEnv = process.env) {
   const limits = {
@@ -158,7 +159,7 @@ export function setMemberAdmission<D extends AdmissionState>(
       ) {
         continue;
       }
-      const message = '管理员已停止此成员接单，未派发任务已取消';
+      const message = MEMBER_STOPPED_MESSAGE;
       refund(db, job, message);
       job.status = 'failed';
       job.error = job.errorDetail = message;

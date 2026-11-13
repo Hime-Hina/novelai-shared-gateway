@@ -44,6 +44,7 @@ const mutations = new Set([
   'setMemberStatus',
   'setMemberAdmission',
   'changeMemberAdmission',
+  'assertMemberAdmissionCommit',
   'replayMemberCommit',
   'acceptGeneration',
   'dispatchGeneration',

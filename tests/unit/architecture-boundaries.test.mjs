@@ -129,6 +129,7 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     ['member admission command', 'memberStore.changeMemberAdmission(command,input,actor);'],
+    ['member admission commit', 'memberStore.assertMemberAdmissionCommit(events,receipt);'],
     ['queue admission owner', 'setMemberAdmission(view,id,false,refund);'],
     [
       'business replayer construction',

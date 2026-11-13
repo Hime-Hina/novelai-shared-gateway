@@ -430,6 +430,25 @@ test('接单完整提交与真实生成联合恢复，重复零写入且不恢�
   assert.equal(databaseState(r.db), once);
 });
 
+test('原批次收尾的 member_stopped 原因保留 batch_stopped 语义，不要求伪造接单决定', async (t) => {
+  const f = await setup(t);
+  await f.accept('batch', { samples: 2 });
+  f.dispatch('batch-0');
+  f.db.prepare("UPDATE members SET auth_epoch=NULL WHERE id='m1'").run();
+  const completed = await f.publish('batch-0', NOW + 12),
+    cancelled = completed.events.find((event) => event.eventType === 'WaitingJobsCancelled');
+  assert.equal(cancelled.payload.reason, 'member_stopped');
+  assert.equal(cancelled.payload.cancellationReason, 'batch_stopped');
+  const r = target(t, f),
+    before = databaseState(r.db);
+  assert.equal(
+    r.db.prepare("SELECT status FROM generation_jobs WHERE id='batch-1'").get().status,
+    'failed',
+  );
+  r.replay(readRelationalCommit(f.db, completed.commitSeq));
+  assert.equal(databaseState(r.db), before);
+});
+
 test('完整回放拒绝遗漏、伪造、跨成员与逆序取消，异常外层捕获不留半笔', async (t) => {
   const f = await setup(t);
   await f.accept('waiting', { samples: 2 });
@@ -452,8 +471,39 @@ test('完整回放拒绝遗漏、伪造、跨成员与逆序取消，异常外�
     duplicate: (s) => {
       s.events[1].payload.jobIds.push(s.events[1].payload.jobIds[0]);
     },
-    reason: (s) => {
+    reasonCode: (s) => {
       s.events[1].payload.cancellationReason = 'batch_stopped';
+    },
+    reason: (s) => {
+      s.events[1].payload.reason = 'forged-not-the-original-stop-decision';
+    },
+    noStopEmpty: (s) => {
+      s.events = [s.events[1]];
+      s.events[0].payload.jobIds = [];
+    },
+    noStopNonempty: (s) => {
+      s.events.shift();
+    },
+    noStopOrdinaryCancellation: (s) => {
+      s.events.shift();
+      for (const event of s.events) {
+        event.payload.cancellationReason = 'batch_stopped';
+      }
+    },
+    emptyLinkedCancellation: (s) => {
+      s.events[1].payload.jobIds = [];
+    },
+    time: (s) => {
+      s.events[1].occurredAt += 1;
+    },
+    receiptIds: (s) => {
+      s.command.receipt.cancelledJobIds.pop();
+    },
+    receiptState: (s) => {
+      s.command.receipt.acceptingJobs = true;
+    },
+    receiptMember: (s) => {
+      s.command.receipt.id = 'm2';
     },
     order: (s) => {
       s.events.push(s.events.shift());
