@@ -862,6 +862,16 @@ Windows / Node 22.23.4 副本专项 18/18，直接编译 JavaScript 同专项 18
 
 验收覆盖真实 Local/R2/PikPak owner 和 mock 网络、uploaded-only/错误编码/缺失坏字节、namespace/凭据及来源在 IO 等待中变化、读取前后数据库和原文件保持不变、严格分页与退休排除，以及只读准备文件的 final/part 组合、损坏和只读权限。至少一份可读只证明该产物可恢复，不宣称全部冗余健康、归档闭包、真实端点或最终切换通过。
 
+实现复用 `relational-replica-store.ts` 的来源/定位规则、原易失票据及实际 R2/PikPak IO owner；读票据与后台票据保持明确作用域，读票据不能提交任何状态，后台命令仍复核 idle。`result-files.ts` 抽取同一内容校验和只读文件读取，原 publisher 的 `r+`/sync/rename 顺序保留。独立审查发现原 MIME owner 会接受 boxed String 的 binary MIME，已在共同 `resultFile()` 先要求 primitive string，所有描述符、发布和只读调用复用这一修复，不在新入口增加兼容分支。
+
+固定修复版 `0abb473`：Node 22.23.4 的结果文件/reader 两文件 25 项（24 通过、1 项原 Windows 文件 symlink 条件跳过）；实际编译 JavaScript 的 reader/result-files/replicas/Local 四文件 54 项（53 通过、同一旧跳过），隔离 Node 24.22.1 同组同结果。123 个源码、包描述、用例与 fixture 文件 hash 相同，使用既有 ABI137 依赖，未重编共享原生模块。Windows images junction 拒绝用例实际运行通过，不将其计入旧文件 symlink 跳过。原始两轮测试夹具错误（SQLite transaction 返回 Promise、零字节写被 Node 短路及只读连接关闭顺序）日志保留，修正仅在测试工具，不计为产品反例。
+
+负控只改隔离副本：移除读取后票据核对时，五类配置/来源/退休竞态均因未拒绝而失败（含父测试 6 项失败）；只把只读 open 改为 r+ 时，相同文件句柄反例失败；移除 primitive MIME 校验时，相同 boxed MIME 断言失败。原产品未改，隔离副本各次恢复。实现与日志位于 `H:\TEMP\novelai-db-replicas-20261114`，不使用失败的 setup 结果冒充业务反例。
+
+独立复审在同一修复 SHA 上重放原 MIME 两项反例并通过；额外验证 R2 GET 等待中经真实 owner 写入新副本失败事实后，旧票据丢弃并回退原 verified PikPak，reader 不追加写；PikPak WebDAV 等待中轮换客户端/凭据时旧成功拒绝，新请求合法，原图、远端对象及 SQL 不变；非法 primitive/boxed/Symbol kind 拒绝。固定两文件加四项独立反例共 29 项（28 通过、1 项原跳过），五个受审产品/测试文件 hash 与候选一致，证据在 `H:\TEMP\novelai-artifact-reader-independent`。本片完整后端由包含该固定 reader 的 ready 联合候选承担，最终发布包/切换另行验收，不能沿用第 9.22 节的旧完整后端结果；ready 安装由第 9.23 节的具体工具和独立验收负责，本片没有安装 ready。
+
+同一修复版的类型、架构、默认及可信 main `78887c9` 迁移历史、137 文件语法、全库格式及后端构建通过。没有新增 DDL、事件、持久派生状态、依赖、迁移基线或 CI。编译验证的测试副本仍是 ignored 生成文件，最终发布包须在干净构建中核对实际 tar 内容，不把本地专项目录当成已验收发布产物。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
