@@ -78,7 +78,9 @@ export interface RefundEvidence {
 // 共享模式不自动重发原任务：一个任务目前只有一次上游尝试。
 // 本模块只追加证据；钱包变更仍由 fair-quota 在同一个存储事务中执行。
 export const GENERATION_REVIEW_MS = 5 * 60 * 1000;
-function localResources(charge: FairCharge): ResourceAmounts {
+export function generationChargeResources(
+  charge: Pick<FairCharge, 'resource' | 'amount' | 'fixed' | 'purchased'>,
+): ResourceAmounts {
   return {
     v5: charge.resource === 'v5' ? charge.amount : '0',
     anlasFixed: charge.resource === 'anlas' ? charge.fixed : '0',
@@ -86,7 +88,12 @@ function localResources(charge: FairCharge): ResourceAmounts {
   };
 }
 
-function upstreamCandidates(charge: FairCharge): UpstreamCandidate[] {
+export function generationUpstreamCandidates(
+  charge: Pick<
+    FairCharge,
+    'resource' | 'amount' | 'fixed' | 'purchased' | 'billingMode' | 'v5Equivalent'
+  >,
+): UpstreamCandidate[] {
   const anlas = {
     resources: { anlasFixed: charge.fixed, anlasPurchased: charge.purchased },
     amountSource: 'quote',
@@ -147,8 +154,8 @@ export function recordGenerationAttempt(
     source: job.source || null,
     configVersion: charge.configVersion,
     reservedAt: charge.reservedAt,
-    localReserved: localResources(charge),
-    upstreamCandidates: upstreamCandidates(charge),
+    localReserved: generationChargeResources(charge),
+    upstreamCandidates: generationUpstreamCandidates(charge),
     candidateMode: 'alternatives',
     sharedV5Reserved: charge.sharedV5Reserved || '0',
     // 旧版残留预扣不能补造派发前快照；派发意图也不等于请求已到达 NAI。
@@ -212,7 +219,7 @@ export function recordGenerationRefund(
   const response = generationResponseEvidence(job, evidence),
     { dispatchState } = response;
   const refund = appendEvent(db, attempt, 'generation_refunded', now, {
-    resources: localResources(charge),
+    resources: generationChargeResources(charge),
     refundedAt: now,
     evidenceLevel: 'local_refund',
     response,

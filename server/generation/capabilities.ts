@@ -21,7 +21,7 @@ import { applyV5MediumParameters, V5_MEDIUM_PROFILE } from '../protocols/v5-medi
 import { generationPayloadLimits } from './batch-requests.ts';
 import { queuePolicy } from './queue-policy.ts';
 import { freeImagePolicy } from '../quota/free-image-policy.ts';
-import type { FairQuotaDatabase, FairUser } from '../quota/fair-share.ts';
+import type { FairQuotaState, FairUser } from '../quota/fair-share.ts';
 
 export type MemberGenerationOperation = 'generate' | 'upscale' | 'encode-vibe';
 export interface FieldCapability {
@@ -404,7 +404,14 @@ export function generationModels(): ModelCapability[] {
 }
 
 export function memberGenerationCapabilities(
-  db: FairQuotaDatabase,
+  db: {
+    settings?: {
+      fairQuota?: Pick<
+        FairQuotaState,
+        'enabled' | 'autoAnlasFallback' | 'groups' | 'freeImagePolicy'
+      > | null;
+    };
+  },
   _member?: Pick<FairUser, 'id'>,
   { env = process.env }: { env?: NodeJS.ProcessEnv } = {},
 ) {

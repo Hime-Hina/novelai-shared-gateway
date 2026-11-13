@@ -160,6 +160,45 @@ export interface FairQuotaState {
   lossAlertPolicy?: Partial<LossAlertPolicy> | null;
   policyHistory?: { at: number; actor: string; autoAnlasFallback: boolean }[];
 }
+// 当前金融状态的窄视图；不包含旧配置历史、用户、任务正文或认证数据。
+export type FairQuotaSyncState = Omit<
+  Pick<
+    FairQuotaState,
+    | 'enabled'
+    | 'boundAccountId'
+    | 'members'
+    | 'groups'
+    | 'configVersion'
+    | 'balances'
+    | 'reservations'
+    | 'snapshot'
+    | 'spent'
+    | 'creditedV5'
+    | 'lastRefillAt'
+    | 'lastSettlementAt'
+    | 'status'
+    | 'unallocatedV5'
+    | 'fallbackBuffer'
+    | 'sharedV5Debt'
+    | 'operating'
+    | 'v5Reconciliation'
+    | 'v5ReconciliationHistory'
+  >,
+  'reservations'
+> & {
+  reservations: Record<
+    string,
+    Pick<
+      FairCharge,
+      'userId' | 'status' | 'resource' | 'amount' | 'fixed' | 'purchased' | 'sharedV5Reserved'
+    >
+  >;
+};
+export interface FairQuotaSyncDatabase {
+  settings: { fairQuota: FairQuotaSyncState };
+  ledger?: unknown[];
+}
+
 type UpgradedField =
   | 'groups'
   | 'configVersion'
@@ -244,9 +283,9 @@ const units = (value: AmountInput | null | undefined): bigint => {
 };
 const normalized = (value: AmountInput | null | undefined): AmountText =>
   formatAmount(units(value));
-const sum = (s: FairQuotaState, field: BalanceField): bigint =>
+const sum = (s: FairQuotaSyncState, field: BalanceField): bigint =>
   Object.values(s.balances).reduce((n, b) => n + units(b[field]), 0n);
-const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): bigint =>
+const held = (s: FairQuotaSyncState, id: string, resource: Resource | 'anlas'): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.userId === id && c.status === 'reserved')
     .reduce((n, c) => {
@@ -260,13 +299,13 @@ const held = (s: FairQuotaState, id: string, resource: Resource | 'anlas'): bigi
       }
       return n + units(amount);
     }, 0n);
-const sharedHeld = (s: FairQuotaState): bigint =>
+const sharedHeld = (s: FairQuotaSyncState): bigint =>
   Object.values(s.reservations)
     .filter((c) => c.status === 'reserved')
     .reduce((n, c) => n + units(c.resource === 'v5' ? c.amount : c.sharedV5Reserved), 0n);
-const anyHeld = (s: Pick<FairQuotaState, 'reservations'>): boolean =>
+const anyHeld = (s: Pick<FairQuotaSyncState, 'reservations'>): boolean =>
   Object.values(s.reservations).some((c) => c.status === 'reserved');
-const totals = (s: FairQuotaState): void => {
+const totals = (s: FairQuotaSyncState): void => {
   for (const b of Object.values(s.balances)) {
     b.anlasAvailable = formatAmount(
       units(b.anlasFixedAvailable) + units(b.anlasPurchasedAvailable),
@@ -350,9 +389,9 @@ function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
   // 上面的原位升级补齐旧四人账本字段，不重建已有钱包或预留。
   return s as FairQuotaState;
 }
-const groupFor = (s: FairQuotaState, id: string): FairGroup | undefined =>
+const groupFor = (s: FairQuotaSyncState, id: string): FairGroup | undefined =>
   s.groups.find((g) => g.members.includes(id));
-const weight = (s: FairQuotaState, id: string): number => {
+const weight = (s: FairQuotaSyncState, id: string): number => {
   const group = groupFor(s, id);
   if (!group) {
     return 0;
@@ -473,7 +512,7 @@ export function normalizeOpeningQuota(
   return copy;
 }
 
-function exactWeights(s: FairQuotaState): { id: string; weight: bigint }[] {
+function exactWeights(s: FairQuotaSyncState): { id: string; weight: bigint }[] {
   const gcd = (left: bigint, right: bigint): bigint => {
     while (right) {
       const next = left % right;
@@ -503,7 +542,7 @@ function exactWeights(s: FairQuotaState): { id: string; weight: bigint }[] {
     weight: ratio.numerator * (common / ratio.denominator),
   }));
 }
-const capacities = (s: FairQuotaState): Record<string, bigint> =>
+const capacities = (s: FairQuotaSyncState): Record<string, bigint> =>
   allocateAmount(100n * AMOUNT_SCALE, exactWeights(s));
 const recoveryUnits = (milliseconds: number, seconds: number): bigint => {
   const ratio = decimalRatio(seconds);
@@ -530,7 +569,11 @@ type QuotaFact = DomainEventFact<
   | 'GenerationSettled'
   | 'GenerationRefunded'
 >;
-function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
+function quotaFact(
+  db: { settings?: { fairQuota?: Pick<FairQuotaState, 'boundAccountId'> | null } },
+  fact: QuotaFact,
+  now?: number,
+): void {
   const { eventType } = fact;
   const accountId = db.settings?.fairQuota?.boundAccountId;
   const sharing =
@@ -555,7 +598,12 @@ function quotaFact(db: FairQuotaDatabase, fact: QuotaFact, now?: number): void {
     amountVersion: 'decimal-12-v1',
   });
 }
-function quotaStatus(db: FairQuotaDatabase, s: FairQuotaState, status: string, now: number): void {
+function quotaStatus(
+  db: Parameters<typeof quotaFact>[0],
+  s: FairQuotaSyncState,
+  status: string,
+  now: number,
+): void {
   if (s.status === status) {
     return;
   }
@@ -1081,8 +1129,8 @@ export function manageFairMember(
 }
 
 function distribute(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  db: Parameters<typeof quotaFact>[0],
+  s: FairQuotaSyncState,
   resource: Resource,
   delta: bigint,
   now: number,
@@ -1135,7 +1183,7 @@ function distribute(
 }
 
 export function manageOperatingFunding(
-  db: FairQuotaDatabase,
+  db: { settings?: { fairQuota?: FairQuotaSyncState | null }; ledger?: unknown[] },
   body: OperatingFundingInput,
   options: OperatingFundingContext,
   now = Date.now(),
@@ -1155,7 +1203,7 @@ export function manageOperatingFunding(
 }
 
 // 只让有份额且尚未满额的钱包参与恢复；在途预留同样占容量。
-function v5RecoveryMembers(db: FairQuotaDatabase, s: FairQuotaState, now: number) {
+function v5RecoveryMembers(s: FairQuotaSyncState) {
   const capacity = capacities(s),
     weights = Object.fromEntries(exactWeights(s).map((entry) => [entry.id, entry.weight]));
   return s.members.flatMap((id) => {
@@ -1174,14 +1222,12 @@ function v5RecoveryMembers(db: FairQuotaDatabase, s: FairQuotaState, now: number
 }
 
 function distributeV5Recovery(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  s: FairQuotaSyncState,
   delta: bigint,
-  now: number,
 ): { amount: bigint; allocations: QuotaAllocation[] } {
   let remaining = maxAmount(0n, delta),
     actual = 0n,
-    participants = v5RecoveryMembers(db, s, now);
+    participants = v5RecoveryMembers(s);
   const allocations: Record<string, bigint> = {};
   while (remaining > 0n && participants.length) {
     const allocation = allocateAmount(remaining, participants);
@@ -1214,8 +1260,8 @@ function distributeV5Recovery(
 
 // 官方聚合差额只用于来源核对，不能据此向闲置成员扣款。
 function recordV5Reconciliation(
-  db: FairQuotaDatabase,
-  s: FairQuotaState,
+  db: FairQuotaSyncDatabase,
+  s: FairQuotaSyncState,
   incoming: QuotaSnapshot,
   now: number,
 ) {
@@ -1246,12 +1292,7 @@ function recordV5Reconciliation(
   };
   s.v5Reconciliation = entry;
   // 整数官方快照有一个百分点的精度边界；只记录该边界之外可支持的容量差额。
-  const evidence = reconcileV5Capacity(
-    db as ConfiguredDatabase,
-    maxAmount(0n, -difference - tolerance),
-    incoming,
-    now,
-  );
+  const evidence = reconcileV5Capacity(db, maxAmount(0n, -difference - tolerance), incoming, now);
   const history = (s.v5ReconciliationHistory ||= []),
     previous = history.at(-1);
   // 同一差额不按每分钟刷屏；跨显示格或恢复正常时留痕，审计不包含成员身份与请求内容。
@@ -1284,7 +1325,7 @@ function recordV5Reconciliation(
   );
 }
 
-function readSnapshot(a: FairAccount): QuotaSnapshot {
+export function fairQuotaSnapshot(a: FairAccount): QuotaSnapshot {
   const percent = number(a.v5UsagePercent),
     fixed = number(a.quotaFixed),
     purchased = number(a.quotaPurchased);
@@ -1334,6 +1375,20 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     quotaFact(db, { eventType: 'QuotaAccountOpened', payload: { memberIds: s.members } }, now);
   }
   const account = accounts.find((a) => a.id === s.boundAccountId);
+  syncBoundFairQuota(db as FairQuotaSyncDatabase, account, now);
+  return s;
+}
+
+// 单一已绑定账户的观察/恢复规则；旧运行时和关系命令使用同一个 owner。
+export function syncBoundFairQuota(
+  db: FairQuotaSyncDatabase,
+  account: FairAccount | undefined,
+  now = Date.now(),
+): FairQuotaSyncState {
+  const s = db.settings.fairQuota;
+  if (!s.enabled) {
+    return s;
+  }
   const status = quotaAvailability(account, now, {
     at: s.snapshot?.at,
     held: anyHeld(s),
@@ -1343,7 +1398,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
   if (status !== 'active' || !account) {
     return s;
   }
-  const incoming = readSnapshot(account);
+  const incoming = fairQuotaSnapshot(account);
   if (!s.snapshot) {
     s.snapshot = incoming;
     s.lastRefillAt = now;
@@ -1412,13 +1467,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
     // 本地转扣可能仍消耗共享 V5。先用恢复偿还此估算负债，不能重复发放给个人。
     const repaid = minAmount(units(s.sharedV5Debt), elapsed);
     s.sharedV5Debt = formatAmount(units(s.sharedV5Debt) - repaid);
-    const recovery = recoverV5Capacity(
-        db as ConfiguredDatabase,
-        elapsed - repaid,
-        s.lastRefillAt,
-        until,
-        now,
-      ),
+    const recovery = recoverV5Capacity(db, elapsed - repaid, s.lastRefillAt, until, now),
       recovered = recovery.amount;
     const reserves = sharedHeld(s);
     const room = maxAmount(
@@ -1429,12 +1478,7 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
         sum(s, 'v5Available') -
         units(operatingAccount(s).available.v5),
     );
-    const credited = distributeV5Recovery(
-      db,
-      s,
-      minAmount(elapsed - repaid - recovered, room),
-      now,
-    );
+    const credited = distributeV5Recovery(s, minAmount(elapsed - repaid - recovered, room));
     s.creditedV5 = formatAmount(units(s.creditedV5) + credited.amount);
     refill = {
       ...refill,
@@ -1480,13 +1524,13 @@ export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuot
         matchedFallback[pool] = formatAmount(matched);
       }
       if (delta < 0n) {
-        recordAnlasGap(db as ConfiguredDatabase, resource, -delta, old, incoming, now);
+        recordAnlasGap(db, resource, -delta, old, incoming, now);
       } else if (delta > 0n) {
         distribute(
           db,
           s,
           resource,
-          matchExternalFunding(db as ConfiguredDatabase, resource, delta, incoming, now),
+          matchExternalFunding(db, resource, delta, incoming, now),
           now,
           'funding',
         );
@@ -1563,9 +1607,9 @@ function projectedV5(snapshot: QuotaSnapshot, now: number): bigint | null {
 }
 
 function decideFairQuotaCharge(
-  s: Pick<FairQuotaState, 'balances' | 'autoAnlasFallback'>,
-  user: Pick<FairUser, 'id'>,
-  account: FairAccount | undefined,
+  balance: FairQuotaReservationState['balance'] | undefined,
+  autoAnlasFallback: unknown,
+  snapshot: QuotaSnapshot | null,
   request: FairRequest,
   now: number,
 ) {
@@ -1574,11 +1618,9 @@ function decideFairQuotaCharge(
   let v5Equivalent = 0n,
     sharedV5Reserved = 0n,
     fallback = false;
-  const balance = s.balances[user.id],
-    snapshot = account ? readSnapshot(account) : null;
   if (
     quote.resource === 'v5' &&
-    s.autoAnlasFallback === true &&
+    autoAnlasFallback === true &&
     units(balance?.v5Available) < amount
   ) {
     fallback = true;
@@ -1617,7 +1659,182 @@ export function previewFairQuotaCharge(
   const draft = estimateFairQuota(db, now),
     s = draft.settings?.fairQuota;
   const account = rows(draft.accounts).find((entry) => entry.id === s?.boundAccountId);
-  return decideFairQuotaCharge(s || { balances: {} }, user, account, request, now);
+  return decideFairQuotaCharge(
+    s?.balances[user.id],
+    s?.autoAnlasFallback,
+    account ? fairQuotaSnapshot(account) : null,
+    request,
+    now,
+  );
+}
+
+export interface FairQuotaReservationState {
+  balance: Pick<FairBalance, 'v5Available' | 'anlasFixedAvailable' | 'anlasPurchasedAvailable'>;
+  autoAnlasFallback?: unknown;
+  snapshot: QuotaSnapshot;
+  availableV5: AmountText;
+  reserved: ResourceAmounts;
+  reservedAnlas: AmountText;
+  sharedReservedV5: AmountText;
+  pending: ResourceAmounts;
+  pendingAnlas: AmountText;
+  pendingFallback: ResourceAmounts;
+  sharedV5Debt: AmountText;
+}
+
+// 新旧存储共用同一收费决定；输入只是当前钱包/观察/活动预留，不修改账本。
+export function planFairQuotaReservation(
+  state: FairQuotaReservationState,
+  request: FairRequest = {},
+  now = Date.now(),
+) {
+  const q = decideFairQuotaCharge(
+      state.balance,
+      state.autoAnlasFallback,
+      state.snapshot,
+      request,
+      now,
+    ),
+    amount = units(q.amount),
+    fixed = units(q.fixed),
+    purchased = units(q.purchased);
+  if (q.resource === 'anlas') {
+    // 官方固定已明确耗尽时，本地保留的固定权益不能挡住原已授权的纯购买池调用。
+    const officialFixed = state.snapshot.anlasFixed;
+    if (purchased > 0n && request?.allowPurchasedAnlas !== true) {
+      fail(
+        `${officialFixed === '0' ? '官方固定 Anlas 已耗尽' : '个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`,
+      );
+    }
+    if (purchased > units(state.balance.anlasPurchasedAvailable)) {
+      fail('个人购买 Anlas 不足');
+    }
+    if (purchased > 0n) {
+      // 上游优先使用固定余额，不能指定购买池；禁止混用导致其他成员被扣款。
+      const official = state.snapshot,
+        fixedReserved = units(state.reserved.anlasFixed);
+      if (
+        fixed > 0n ||
+        official.anlasFixed !== '0' ||
+        fixedReserved > 0n ||
+        units(state.pending.anlasFixed) > 0n ||
+        units(state.pendingFallback.anlasFixed) > 0n
+      ) {
+        fail(
+          '暂不能使用购买 Anlas：请等待官方固定余额完全耗尽并完成对账；不支持混合固定与购买余额',
+        );
+      }
+    }
+  }
+  if (q.resource !== 'free') {
+    const available =
+      q.resource === 'v5'
+        ? units(state.balance.v5Available)
+        : units(state.balance.anlasFixedAvailable) + units(state.balance.anlasPurchasedAvailable);
+    if (available < amount) {
+      fail(
+        q.resource === 'v5'
+          ? '个人 V5 恢复额度不足，请等待恢复；不会自动扣 Anlas'
+          : '个人 Anlas 不足',
+      );
+    }
+    if (
+      q.resource === 'v5' &&
+      units(state.availableV5) -
+        units(state.sharedV5Debt) -
+        units(state.sharedReservedV5) +
+        units(state.reserved.v5) -
+        amount <
+        AMOUNT_SCALE
+    ) {
+      fail('V5 公共额度已达到安全保留边界，请等待恢复');
+    }
+    // 未结清并发会延后账本校准，但新快照下降必须立即限制派发。
+    const latest = state.snapshot;
+    const reserved =
+      q.resource === 'v5' ? units(state.sharedReservedV5) : units(state.reservedAnlas);
+    let projected: bigint | null;
+    if (q.resource === 'v5') {
+      projected = projectedV5(latest, now);
+    } else {
+      projected = latest.anlas === null ? null : units(latest.anlas);
+    }
+    const margin = q.resource === 'v5' ? AMOUNT_SCALE : 0n;
+    const fallbackSpent =
+      q.resource === 'v5'
+        ? units(state.pendingFallback.v5)
+        : units(state.pendingFallback.anlasFixed) + units(state.pendingFallback.anlasPurchased);
+    if (
+      projected === null ||
+      projected -
+        reserved -
+        (q.resource === 'v5' ? units(state.pending.v5) : units(state.pendingAnlas)) -
+        fallbackSpent -
+        amount <
+        margin
+    ) {
+      fail('官方公共额度不足或等待并发对账，请稍后重试');
+    }
+    if (q.resource === 'anlas') {
+      for (const [resource, amount] of [
+        ['anlasFixed', fixed],
+        ['anlasPurchased', purchased],
+      ] as const) {
+        const globalHeld = units(state.reserved[resource]);
+        const pendingFallback = units(
+          resource === 'anlasFixed'
+            ? state.pendingFallback.anlasFixed
+            : state.pendingFallback.anlasPurchased,
+        );
+        if (
+          units(latest[resource]) - globalHeld - units(state.pending[resource]) - pendingFallback <
+          amount
+        ) {
+          fail('官方 Anlas 子余额不足或等待并发对账');
+        }
+      }
+    }
+  }
+  return q;
+}
+
+// 报价模拟整批预扣；只推进瞬时窄状态，不写钱包、预留或尝试。
+export function previewFairQuotaReservations(
+  state: FairQuotaReservationState,
+  requests: FairRequest[],
+  now = Date.now(),
+) {
+  const draft = structuredClone(state);
+  return requests.map((request) => {
+    const charge = planFairQuotaReservation(draft, request, now);
+    if (charge.resource === 'v5') {
+      draft.balance.v5Available = formatAmount(
+        units(draft.balance.v5Available) - units(charge.amount),
+      );
+      draft.availableV5 = formatAmount(units(draft.availableV5) - units(charge.amount));
+      draft.reserved.v5 = formatAmount(units(draft.reserved.v5) + units(charge.amount));
+    } else if (charge.resource === 'anlas') {
+      draft.balance.anlasFixedAvailable = formatAmount(
+        units(draft.balance.anlasFixedAvailable) - units(charge.fixed),
+      );
+      draft.balance.anlasPurchasedAvailable = formatAmount(
+        units(draft.balance.anlasPurchasedAvailable) - units(charge.purchased),
+      );
+      draft.reserved.anlasFixed = formatAmount(
+        units(draft.reserved.anlasFixed) + units(charge.fixed),
+      );
+      draft.reserved.anlasPurchased = formatAmount(
+        units(draft.reserved.anlasPurchased) + units(charge.purchased),
+      );
+      draft.reservedAnlas = formatAmount(units(draft.reservedAnlas) + units(charge.amount));
+    }
+    draft.sharedReservedV5 = formatAmount(
+      units(draft.sharedReservedV5) +
+        units(charge.sharedV5Reserved) +
+        (charge.resource === 'v5' ? units(charge.amount) : 0n),
+    );
+    return charge;
+  });
 }
 
 // 调用方持有写事务：校验来源和授权后扣成员可用钱包，并一同记录预留事实。
@@ -1659,104 +1876,40 @@ export function reserveFairQuota(
     job.fairCharge = previous;
     return previous;
   }
-  const q = decideFairQuotaCharge(s, user, account, request || {}, now),
+  const q = planFairQuotaReservation(
+      {
+        balance: s.balances[user.id],
+        autoAnlasFallback: s.autoAnlasFallback,
+        snapshot: fairQuotaSnapshot(account),
+        availableV5: formatAmount(sum(s, 'v5Available')),
+        reserved: {
+          v5: formatAmount(s.members.reduce((n, id) => n + held(s, id, 'v5'), 0n)),
+          anlasFixed: formatAmount(s.members.reduce((n, id) => n + held(s, id, 'anlasFixed'), 0n)),
+          anlasPurchased: formatAmount(
+            s.members.reduce((n, id) => n + held(s, id, 'anlasPurchased'), 0n),
+          ),
+        },
+        sharedReservedV5: formatAmount(sharedHeld(s)),
+        reservedAnlas: formatAmount(s.members.reduce((n, id) => n + held(s, id, 'anlas'), 0n)),
+        pending: {
+          v5: s.spent.v5,
+          anlasFixed: s.spent.anlasFixed,
+          anlasPurchased: s.spent.anlasPurchased,
+        },
+        pendingFallback: {
+          v5: s.spent.fallbackV5,
+          anlasFixed: s.spent.fallbackFixed,
+          anlasPurchased: s.spent.fallbackPurchased,
+        },
+        pendingAnlas: s.spent.anlas,
+        sharedV5Debt: s.sharedV5Debt,
+      },
+      request || {},
+      now,
+    ),
     amount = units(q.amount),
     fixed = units(q.fixed),
     purchased = units(q.purchased);
-  const field = q.resource === 'v5' ? 'v5Available' : 'anlasAvailable';
-  if (q.resource === 'anlas') {
-    // 官方固定已明确耗尽时，本地保留的固定权益不能挡住原已授权的纯购买池调用。
-    const officialFixed = readSnapshot(account).anlasFixed;
-    if (purchased > 0n && request?.allowPurchasedAnlas !== true) {
-      fail(
-        `${officialFixed === '0' ? '官方固定 Anlas 已耗尽' : '个人固定 Anlas 不足'}；未经明确授权不会扣购买 Anlas`,
-      );
-    }
-    if (purchased > units(s.balances[user.id].anlasPurchasedAvailable)) {
-      fail('个人购买 Anlas 不足');
-    }
-    if (purchased > 0n) {
-      // 上游优先使用固定余额，不能指定购买池；禁止混用导致其他成员被扣款。
-      const official = readSnapshot(account),
-        fixedReserved = s.members.reduce((n, id) => n + held(s, id, 'anlasFixed'), 0n);
-      if (
-        fixed > 0n ||
-        official.anlasFixed !== '0' ||
-        fixedReserved > 0n ||
-        units(s.spent.anlasFixed) > 0n ||
-        units(s.spent.fallbackFixed) > 0n
-      ) {
-        fail(
-          '暂不能使用购买 Anlas：请等待官方固定余额完全耗尽并完成对账；不支持混合固定与购买余额',
-        );
-      }
-    }
-  }
-  if (q.resource !== 'free') {
-    const available =
-      q.resource === 'v5'
-        ? units(s.balances[user.id].v5Available)
-        : units(s.balances[user.id].anlasFixedAvailable) +
-          units(s.balances[user.id].anlasPurchasedAvailable);
-    if (available < amount) {
-      fail(
-        q.resource === 'v5'
-          ? '个人 V5 恢复额度不足，请等待恢复；不会自动扣 Anlas'
-          : '个人 Anlas 不足',
-      );
-    }
-    if (
-      q.resource === 'v5' &&
-      sum(s, field) -
-        units(s.sharedV5Debt) -
-        sharedHeld(s) +
-        s.members.reduce((n, id) => n + held(s, id, 'v5'), 0n) -
-        amount <
-        AMOUNT_SCALE
-    ) {
-      fail('V5 公共额度已达到安全保留边界，请等待恢复');
-    }
-    // 未结清并发会延后账本校准，但新快照下降必须立即限制派发。
-    const latest = readSnapshot(account);
-    const reserved =
-      q.resource === 'v5'
-        ? sharedHeld(s)
-        : s.members.reduce((n, id) => n + held(s, id, q.resource as 'anlas'), 0n);
-    let projected: bigint | null;
-    if (q.resource === 'v5') {
-      projected = projectedV5(latest, now);
-    } else {
-      projected = latest.anlas === null ? null : units(latest.anlas);
-    }
-    const margin = q.resource === 'v5' ? AMOUNT_SCALE : 0n;
-    const fallbackSpent =
-      q.resource === 'v5'
-        ? units(s.spent.fallbackV5)
-        : units(s.spent.fallbackFixed) + units(s.spent.fallbackPurchased);
-    if (
-      projected === null ||
-      projected - reserved - units(s.spent[q.resource]) - fallbackSpent - amount < margin
-    ) {
-      fail('官方公共额度不足或等待并发对账，请稍后重试');
-    }
-    if (q.resource === 'anlas') {
-      for (const [resource, amount] of [
-        ['anlasFixed', fixed],
-        ['anlasPurchased', purchased],
-      ] as const) {
-        const globalHeld = s.members.reduce((n, id) => n + held(s, id, resource), 0n);
-        const pendingFallback = units(
-          resource === 'anlasFixed' ? s.spent.fallbackFixed : s.spent.fallbackPurchased,
-        );
-        if (
-          units(latest[resource]) - globalHeld - units(s.spent[resource]) - pendingFallback <
-          amount
-        ) {
-          fail('官方 Anlas 子余额不足或等待并发对账');
-        }
-      }
-    }
-  }
   const charge = {
     ...q,
     configVersion: s.configVersion,
@@ -1780,7 +1933,7 @@ export function reserveFairQuota(
   }
   s.reservations[job.id] = charge;
   job.fairCharge = charge;
-  recordGenerationAttempt(db, job, charge, readSnapshot(account), now);
+  recordGenerationAttempt(db, job, charge, fairQuotaSnapshot(account), now);
   quotaFact(
     db,
     {
@@ -1904,7 +2057,7 @@ export function fairQuotaSummary(
     available = amountNumber(units(b?.v5Available)),
     reserved = b ? amountNumber(held(s, user.id, 'v5')) : 0;
   const officialRate = s.snapshot?.seconds! > 0 ? 1 / s.snapshot!.seconds! : 0;
-  const participants = v5RecoveryMembers(db, s, now),
+  const participants = v5RecoveryMembers(s),
     recoveringShare = participants.reduce((total, member) => total + member.share, 0);
   const participant = participants.find((member) => member.id === user.id);
   const refillRate = participant ? (officialRate * share) / recoveringShare : 0;

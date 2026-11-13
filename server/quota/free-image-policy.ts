@@ -20,7 +20,16 @@ export interface FreeImageUsage {
   waitingForSettlement: boolean;
 }
 const day = 86400000;
-export function freeImagePolicy(db: FairQuotaDatabase): FreeImagePolicy {
+export function freeImageSuccessWarningThreshold(usage?: FreeImageUsage): number | null {
+  return usage?.enabled &&
+    usage.warningThreshold !== null &&
+    usage.successful + 1 === usage.warningThreshold
+    ? usage.warningThreshold
+    : null;
+}
+export function freeImagePolicy(db: {
+  settings?: { fairQuota?: { freeImagePolicy?: FreeImagePolicy } | null };
+}): FreeImagePolicy {
   return (
     db.settings?.fairQuota?.freeImagePolicy || {
       version: 1,

@@ -58,6 +58,10 @@ CREATE TABLE domain_events (
   UNIQUE (stream_id, stream_version)
 ) STRICT;
 
+CREATE INDEX idx_quota_loss_coverage ON domain_events(
+  json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
+) WHERE event_type = 'OperatingLossCovered';
+
 CREATE TABLE stream_heads (
   stream_id TEXT PRIMARY KEY,
   stream_kind TEXT NOT NULL,

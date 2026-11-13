@@ -156,7 +156,7 @@ export function appendRelationalCommit(
     head.version = streamVersion;
     return parseRelationalEvent({
       ...input,
-      eventId: randomUUID(),
+      eventId: input.eventId ?? randomUUID(),
       commitSeq,
       eventIndex,
       streamKind: head.kind,

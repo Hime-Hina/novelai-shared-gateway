@@ -164,7 +164,7 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
   };
 }
 
-type QuotaResult =
+export type QuotaResult =
   ReturnType<typeof accountQuotaResult> | ReturnType<typeof accountQuotaErrorResult>;
 
 export function recordOfficialObservation(
@@ -205,24 +205,17 @@ export function recordOfficialObservation(
   });
 }
 
-export function applyAccountQuotaResult(
-  db: StoreDatabase,
-  account: StoreItem,
-  result: QuotaResult,
-  now: string,
-): void {
+export function accountQuotaPatch(result: QuotaResult, now: string) {
   if (!result.ok) {
-    account.quotaError = result.quotaError;
-    account.upstreamStatus = result.upstreamStatus;
-    account.quotaAttemptedAt = now;
-    account.updatedAt = now;
-    if (result.disableAccount) {
-      disableNovelAiAccount(account);
-    }
-    recordOfficialObservation(db, account, now);
-    return;
+    return {
+      quotaError: result.quotaError,
+      upstreamStatus: result.upstreamStatus,
+      quotaAttemptedAt: now,
+      updatedAt: now,
+      ...(result.disableAccount ? { enabled: false } : {}),
+    };
   }
-  Object.assign(account, {
+  return {
     trialRemainingImages: result.trialRemainingImages,
     trialUsedImages: result.trialUsedImages,
     trialEligible: result.trialEligible,
@@ -241,11 +234,37 @@ export function applyAccountQuotaResult(
     quotaError: result.quotaError,
     upstreamStatus: result.upstreamStatus,
     updatedAt: now,
-  });
-  if (result.disableAccount) {
-    disableNovelAiAccount(account);
-  }
+    ...(result.disableAccount ? { enabled: false } : {}),
+  };
+}
+
+export function applyAccountQuotaResult(
+  db: StoreDatabase,
+  account: StoreItem,
+  result: QuotaResult,
+  now: string,
+): void {
+  Object.assign(account, accountQuotaPatch(result, now));
   recordOfficialObservation(db, account, now);
+}
+
+// 同一身份只接收最新发起的响应；字符串票号跨越 JS 安全整数边界。
+export function createQuotaObservationOrder() {
+  const latest = new Map<string, bigint>();
+  return {
+    issue(identity: string, after = '0'): string {
+      const next =
+        (latest.get(identity) ?? 0n) > BigInt(after) ? latest.get(identity)! : BigInt(after);
+      if (next >= 9_223_372_036_854_775_807n) {
+        throw new Error('Quota observation sequence exhausted.');
+      }
+      latest.set(identity, next + 1n);
+      return String(next + 1n);
+    },
+    current(identity: string, ticket: string) {
+      return latest.get(identity) === BigInt(ticket);
+    },
+  };
 }
 
 interface AccountQuotaRefreshOptions<T> {
@@ -267,18 +286,16 @@ interface RefreshResult<T> {
   accounts: T[];
 }
 
-export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions<T>) {
-  const { store } = options,
-    clock = options.now || Date.now;
-  const logger = options.logger || console,
-    fetchQuota = options.fetchQuota || fetchNovelAiAccountQuota;
-  let pending: Promise<RefreshResult<T>> | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null,
-    started = false,
-    stopped = false;
-  const latestTickets = new Map<string, number>();
-
-  const fetch = async (
+export function createAccountQuotaQuery(
+  options: Pick<
+    AccountQuotaRefreshOptions<unknown>,
+    'now' | 'logger' | 'fetchQuota' | 'env' | 'requestTimeoutMs'
+  >,
+) {
+  const clock = options.now || Date.now;
+  const logger = options.logger || console;
+  const fetchQuota = options.fetchQuota || fetchNovelAiAccountQuota;
+  return async (
     token: string | undefined,
     proxyUrl: unknown = '',
     accountId: string | null = null,
@@ -322,6 +339,19 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
       });
     }
   };
+}
+
+export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions<T>) {
+  const { store } = options,
+    clock = options.now || Date.now;
+  const logger = options.logger || console;
+  let pending: Promise<RefreshResult<T>> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null,
+    started = false,
+    stopped = false;
+  const observationOrder = createQuotaObservationOrder();
+
+  const fetch = createAccountQuotaQuery(options);
 
   // 同一账户和凭据按实际发起顺序领票。网络等待在事务外，写入前核对最新票号与当前凭据。
   async function refresh(
@@ -352,7 +382,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
       string,
       (typeof targets)[number] & {
         identity: string;
-        ticket: number;
+        ticket: string;
         startedAt: string;
         result: QuotaResult;
       }
@@ -366,11 +396,10 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
           const attempt = {
             ...target,
             identity,
-            ticket: (latestTickets.get(identity) || 0) + 1,
+            ticket: observationOrder.issue(identity),
             startedAt: new Date(clock()).toISOString(),
           };
           let result: QuotaResult;
-          latestTickets.set(attempt.identity, attempt.ticket);
           try {
             const quota = await fetch(attempt.token, attempt.proxyUrl, attempt.id);
             result = accountQuotaResult(attempt.id, quota, attempt.startedAt);
@@ -389,7 +418,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
           if (
             !attempt ||
             account.token !== attempt.token ||
-            latestTickets.get(attempt.identity) !== attempt.ticket
+            !observationOrder.current(attempt.identity, attempt.ticket)
           ) {
             continue;
           }

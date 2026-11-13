@@ -69,7 +69,9 @@ function contentHash(operation: unknown, mimeType: unknown, buffer: unknown): st
   }
   return createHash('sha256').update(buffer).digest('hex');
 }
-function checkDescriptor(value: unknown): asserts value is StoredResultDescriptor {
+export function assertStoredResultDescriptor(
+  value: unknown,
+): asserts value is StoredResultDescriptor {
   const pending = value as
     Partial<Record<keyof StoredResultDescriptor, unknown>> | null | undefined;
   if (
@@ -161,7 +163,7 @@ export async function publishStoredResult(
   pending: unknown,
   buffer?: unknown,
 ): Promise<ResultContent | null> {
-  checkDescriptor(pending);
+  assertStoredResultDescriptor(pending);
   if (buffer !== undefined) {
     checkContent(pending, buffer);
   }

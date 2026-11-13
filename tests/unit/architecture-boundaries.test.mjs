@@ -100,6 +100,15 @@ for (const filename of [
       "export { RelationalInputStore as Store } from '../storage/relational-input-store.ts';",
     ],
     ['direct acceptance', 'inputStore.persistAcceptedInput(c,a);'],
+    ['bound account synchronization', 'syncBoundFairQuota(view,account,now);'],
+    [
+      'operating funding owner',
+      "import { applyOperatingFunding as apply } from '../quota/operating-accounting.ts'; apply(view,body,context,now);",
+    ],
+    [
+      'aliased synchronization',
+      "import { syncBoundFairQuota as sync } from '../quota/fair-share.ts'; sync(view,account,now);",
+    ],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
     ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
     ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],
@@ -119,6 +128,40 @@ for (const filename of [
       "import { RelationalMemberStore as Store } from '../storage/relational-member-store.ts'; new Store(raw);",
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
+    [
+      'generation store construction',
+      "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
+    ],
+    ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
+    ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
+    ...[
+      'acceptGeneration',
+      'dispatchGeneration',
+      'recordGenerationResponse',
+      'prepareGenerationResult',
+      'completeGeneration',
+      'failGeneration',
+      'cancelWaitingGeneration',
+      'closeGenerationReview',
+      'replayGenerationCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
+    ['element refund command', "store['failGeneration'](command,input);"],
+    [
+      'quota construction',
+      "import { RelationalQuotaStore as Store } from '../storage/relational-quota-store.ts'; new Store(raw);",
+    ],
+    ['dynamic quota writer', "await import('../storage/relational-quota-store.js');"],
+    ['quota re-export', "export * from '../storage/relational-quota-store.ts';"],
+    ...[
+      'beginQuotaObservation',
+      'recordQuotaObservation',
+      'refillQuota',
+      'manageQuotaFunding',
+      'saveAccountQuota',
+      'openAccountQuota',
+      'applyQuotaEvents',
+      'replayQuotaCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [
       'authenticated command',
       "import { withAuthenticatedMemberSession as run } from '../members/authentication.ts'; run(store,token,env,fn);",
@@ -172,6 +215,22 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/protocols/native-http.ts',
       "import { prepareRelationalInput } from '../generation/relational-input.ts';",
+    ],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; type Reader = Pick<RelationalGenerationStore, 'readWallet' | 'readCharge'>; function read(store: Reader) { return store.readCharge('job'); }",
+    ],
+    [
+      'server/generation/request-queries.ts',
+      "import type { RelationalQuotaStore } from '../storage/relational-quota-store.ts'; type Reader = Pick<RelationalQuotaStore, 'readAccountQuota'>; function read(store: Reader) { return store.readAccountQuota('account'); }",
+    ],
+    [
+      'server/generation/execution.ts',
+      "import { RelationalGenerationStore } from '../storage/relational-generation-store.ts'; store.dispatchGeneration(command,input,controls);",
+    ],
+    [
+      'scripts/offline-import.mjs',
+      "import { RelationalGenerationStore } from '../server/storage/relational-generation-store.ts'; store.replayGenerationCommit(source);",
     ],
     [
       'server/generation/admission.ts',
