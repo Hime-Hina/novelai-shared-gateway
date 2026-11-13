@@ -37,6 +37,10 @@ function target(
   now: () => number,
 ) {
   const value = store.readConfiguredStorageTarget(kind);
+  // Local 目标可已随原发布提交登记；不再用另一命令重复建立同一来源。
+  if (store.isStorageTargetRegistered(value.storageTargetId)) {
+    return value;
+  }
   // 全部署的目标登记命令不随某张产物重复建立；原回执仍先重核当前后台/配置。
   const command = metadata(store, artifactId, `target:${value.storageTargetId}`, null, now);
   command.commandId = `storage-target:${value.storageTargetId}`;

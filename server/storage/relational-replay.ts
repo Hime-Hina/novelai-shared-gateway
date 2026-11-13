@@ -15,6 +15,7 @@ import {
 import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-store.ts';
 import { RelationalAccountStore, relationalAccountFacts } from './relational-account-store.ts';
 import { relationalPrivateStateEmpty } from './relational-private-restore.ts';
+import { RelationalReplicaStore, relationalReplicaFacts } from './relational-replica-store.ts';
 
 export function relationalReplayFacts() {
   return new Set([
@@ -23,6 +24,7 @@ export function relationalReplayFacts() {
     ...relationalGenerationFacts,
     ...relationalQuotaFacts,
     ...relationalAccountFacts,
+    ...relationalReplicaFacts,
   ]);
 }
 
@@ -41,6 +43,7 @@ export class RelationalCommitReplayer {
   private generations: RelationalGenerationStore;
   private quotas: RelationalQuotaStore;
   private accounts: RelationalAccountStore;
+  private replicas: RelationalReplicaStore;
 
   constructor(sqlite: Database.Database, generations?: RelationalGenerationStore) {
     this.sqlite = sqlite;
@@ -50,6 +53,7 @@ export class RelationalCommitReplayer {
     this.quotas = new RelationalQuotaStore(sqlite);
     // 离线回放没有物理执行器；账户投影不运行授权、网络查询或派发命令。
     this.accounts = new RelationalAccountStore(sqlite, this.quotas, new Map());
+    this.replicas = new RelationalReplicaStore(sqlite);
   }
 
   applyCommit(result: RelationalCommitResult, sourceInputs?: RelationalInputStore) {
@@ -96,6 +100,8 @@ export class RelationalCommitReplayer {
           applyGeneration(event);
         } else if (relationalQuotaFacts.has(event.eventType)) {
           applyQuota(event);
+        } else if (relationalReplicaFacts.has(event.eventType)) {
+          this.replicas.applyReplicaEvents([event]);
         } else {
           this.accounts.applyAccountEvent(event);
         }

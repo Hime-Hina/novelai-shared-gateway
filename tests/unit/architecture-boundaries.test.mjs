@@ -163,6 +163,7 @@ for (const filename of [
     ],
     ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
     ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
+    ['local publication fact planning', 'store.planLocalArtifactPublication(descriptor,now);'],
     [
       'replica store alias',
       "import { RelationalReplicaStore as Store } from '../storage/relational-replica-store.ts'; new Store(raw);",
