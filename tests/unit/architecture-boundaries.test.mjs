@@ -140,6 +140,24 @@ for (const filename of [
     ],
     ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
     ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
+    [
+      'replica store alias',
+      "import { RelationalReplicaStore as Store } from '../storage/relational-replica-store.ts'; new Store(raw);",
+    ],
+    ['dynamic replica IO', "await import('../storage/relational-replica-io.js');"],
+    [
+      'replica IO alias',
+      "import { copyRelationalArtifactReplica as copy } from '../storage/relational-replica-io.ts'; copy(raw,id,kind,config);",
+    ],
+    ...[
+      'registerStorageTarget',
+      'beginArtifactReplica',
+      'recordArtifactReplica',
+      'applyReplicaEvents',
+      'replayReplicaCommit',
+      'copyRelationalArtifactReplica',
+      'verifyRelationalArtifactReplica',
+    ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ...[
       'acceptGeneration',
       'dispatchGeneration',

@@ -22,6 +22,37 @@ const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
 
+test('副本事实保留实际 identity/gzip/br 编码，PikPak Brotli 不能错标或被未知编码替代', () => {
+  const payload = {
+    artifactId: 'a',
+    storageTargetId: 's',
+    objectKey: 'original',
+    uploadedAt: 1,
+    verifiedAt: null,
+    deletedAt: null,
+    lastErrorCode: null,
+  };
+  for (const encoding of ['identity', 'gzip', 'br']) {
+    for (const eventType of ['ArtifactReplicaRecorded', 'OpeningReplicaRecorded']) {
+      const fact = {
+        eventType,
+        payload: {
+          ...payload,
+          encoding,
+          ...(eventType === 'OpeningReplicaRecorded' ? { origin } : {}),
+        },
+      };
+      assert.deepEqual(parseRelationalFact(fact), fact);
+    }
+  }
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'ArtifactReplicaRecorded',
+      payload: { ...payload, encoding: 'deflate' },
+    }),
+  );
+});
+
 test('资金与恢复事实保存来源预算、V5 本人划入和有符号回跳，不能放宽外部资金边界', () => {
   const allocation = {
     eventType: 'AllocationApplied',
