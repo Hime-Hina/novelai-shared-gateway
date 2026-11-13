@@ -14,10 +14,7 @@ import {
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { recoverRelationalGenerationResults } from '../../server/storage/relational-result-recovery.ts';
-import {
-  appendRelationalCommit,
-  readRelationalCommit,
-} from '../../server/events/relational-event-store.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
@@ -394,7 +391,7 @@ test('旧契约可产生的原 admin 准备/完成历史原样回放，不改 ac
         ]),
       );
       // 合成旧未发布 owner 允许的原提交；不会调用新 IO 命令或在回放时重写 actor。
-      const result = appendRelationalCommit(f.db, {
+      return new RelationalCommitReplayer(f.db, f.generations).appendCommit({
         ...command,
         actorKind: 'admin',
         actorId: 'historical-operator',
@@ -402,8 +399,6 @@ test('旧契约可产生的原 admin 准备/完成历史原样回放，不改 ac
         receipt,
         events,
       });
-      new RelationalCommitReplayer(f.db, f.generations).applyCommit(result);
-      return result;
     })();
   const prepared = appendHistorical(
     'historical-prepare',

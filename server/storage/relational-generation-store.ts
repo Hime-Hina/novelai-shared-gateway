@@ -1,16 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { RelationalCommitReplayer } from './relational-replay.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
-import { RelationalReplicaStore, relationalReplicaFacts } from './relational-replica-store.ts';
+import { RelationalReplicaStore } from './relational-replica-store.ts';
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
-  appendRelationalCommit,
   readRelationalCommit,
   readRelationalReceipt,
-  replayRelationalCommit,
   type StoredRelationalCommit,
-  type RelationalCommitResult,
 } from '../events/relational-event-store.ts';
 import {
   relationalFactStream,
@@ -366,14 +363,12 @@ export class RelationalGenerationStore {
           .get(e.streamId)?.v || '0';
     }
     const { policyVersion, pricingVersion, ...command } = metadata;
-    const result = appendRelationalCommit(this.sqlite, {
+    return new RelationalCommitReplayer(this.sqlite, this).appendCommit({
       ...command,
       receipt,
       expectedVersions,
       events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
     });
-    this.applyEvents(result);
-    return result;
   }
   private nextQueueSeq(): string {
     return String(
@@ -2255,24 +2250,9 @@ export class RelationalGenerationStore {
       }
     };
   }
-  private applyEvents(result: RelationalCommitResult): void {
-    new RelationalCommitReplayer(this.sqlite, this).applyCommit(result);
-  }
   replayGenerationCommit(stored: StoredRelationalCommit) {
-    return this.owned(() => {
-      if (
-        stored.events.some(
-          (e) =>
-            !relationalGenerationFacts.has(e.eventType) && !relationalReplicaFacts.has(e.eventType),
-        )
-      ) {
-        throw new Error('Generation replay requires complete generation/accounting commits.');
-      }
-      const result = replayRelationalCommit(this.sqlite, stored);
-      if (!result.replayed) {
-        this.applyEvents(result);
-      }
-      return result;
-    });
+    return this.owned(() =>
+      new RelationalCommitReplayer(this.sqlite, this).replayGenerationCommit(stored),
+    );
   }
 }

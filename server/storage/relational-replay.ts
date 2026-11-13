@@ -1,11 +1,13 @@
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
+  appendRelationalCommit,
   replayRelationalCommit,
   readRelationalCommit,
   type RelationalCommitResult,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
+import type { RelationalCommand } from '../events/relational-events.ts';
 import { RelationalMemberStore, relationalMemberFacts } from './relational-member-store.ts';
 import { RelationalInputStore, relationalInputFacts } from './relational-input-store.ts';
 import {
@@ -56,7 +58,7 @@ export class RelationalCommitReplayer {
     this.replicas = new RelationalReplicaStore(sqlite);
   }
 
-  applyCommit(result: RelationalCommitResult, sourceInputs?: RelationalInputStore) {
+  #applyCommit(result: RelationalCommitResult, sourceInputs?: RelationalInputStore) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Business projection requires the owning command transaction.');
     }
@@ -110,6 +112,34 @@ export class RelationalCommitReplayer {
     })();
   }
 
+  appendCommit(command: RelationalCommand, sourceInputs?: RelationalInputStore) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Business append requires the owning command transaction.');
+    }
+    return this.sqlite.transaction(() =>
+      this.#applyCommit(appendRelationalCommit(this.sqlite, command), sourceInputs),
+    )();
+  }
+
+  // 保留原生成 owner 的窄回放边界；全业务回放仍要求没有当前私有认证。
+  replayGenerationCommit(stored: StoredRelationalCommit) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation replay requires the owning import transaction.');
+    }
+    if (
+      stored.events.some(
+        (event) =>
+          !relationalGenerationFacts.has(event.eventType) &&
+          !relationalReplicaFacts.has(event.eventType),
+      )
+    ) {
+      throw new Error('Generation replay requires complete generation/accounting commits.');
+    }
+    return this.sqlite.transaction(() =>
+      this.#applyCommit(replayRelationalCommit(this.sqlite, stored)),
+    )();
+  }
+
   replayCommit(stored: StoredRelationalCommit, sourceInputs?: RelationalInputStore) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Business replay requires the owning offline transaction.');
@@ -123,7 +153,7 @@ export class RelationalCommitReplayer {
           'New business replay requires a checkpoint without private authentication.',
         );
       }
-      return this.applyCommit(result, sourceInputs);
+      return this.#applyCommit(result, sourceInputs);
     })();
   }
 }

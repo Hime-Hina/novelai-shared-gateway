@@ -826,7 +826,11 @@ Windows / Node 22.23.4 副本专项 18/18，直接编译 JavaScript 同专项 18
 
 验收包括成员接单/状态与等待任务取消的真实跨 owner 混合提交、第二个 owner 写入后故障的全表回滚、额度同提交消费上下文不重置、退款/核对原关联、输入来源及摘要冲突、完整提交缺失/重排/checkpoint 冲突、未知 owner、重复零写入和零外部调用。
 
-实际入口为 `storage/relational-replay.ts` 的具体 `RelationalCommitReplayer`：`replayCommit(stored, sourceInputs?)` 负责一次原完整提交持久化及业务 checkpoint 边界，`applyCommit(result, sourceInputs?)` 只应用数据库中已经保存并核对数量、原事件顺序与回执的提交。生成 owner 的在线命令及窄回放也复用后者，现有授权、准备/发布和 `owned` 保存点仍由原命令持有；新增命令必须把 append 和 apply 包在同一 owner 保存点中，不能在保存点外先写事实再单独捕获投影错误。构造可传入现有 generation 实例避免递归，不引入可插拔 owner 注册或另一套分派。输入存在时的 `sourceInputs` 是原 `RelationalInputStore`，不接旧 JSON fallback。
+实际入口为 `storage/relational-replay.ts` 的具体 `RelationalCommitReplayer`：`replayCommit(stored, sourceInputs?)` 负责一次原完整提交持久化及业务 checkpoint 边界；`appendCommit(command, sourceInputs?)` 在同一保存点实际追加命令后进入共同私有投影，核对已保存提交的数量、原事件顺序与回执。调用者不能提交自报 `replayed` 的结果或再次提交一个已保存的新写入结果。生成 owner 的在线命令调用 `appendCommit()`；原 `replayGenerationCommit()` 委托共同类中同名的受控窄入口，只接受原生成/账务白名单并保留原私有 checkpoint 语义，不放宽全业务回放的私有边界。现有授权、准备/发布和 `owned` 事务仍由原命令持有；新增命令不得先独立保存原事实再调用另一投影入口。构造可传入现有 generation 实例避免递归，不引入可插拔 owner 注册、applied 旁表或另一套分派。输入存在时的 `sourceInputs` 是原 `RelationalInputStore`，不接旧 JSON fallback。
+
+前置实现 `8f76278` 的验收入口为 [`relational-replay.test.mjs`](../../tests/integration/relational-replay.test.mjs)：Node 22.23.4 当时专项 15/15，完整 `pnpm test` 为 1,158 项（1,153 通过、5 项既有条件跳过、0 失败）。同次后端构建的 JavaScript 运行同一专项 15/15；只在编译产物中分别将额度上下文改成每事件重建、移除 member 回放清空 epoch，观察/有限资金重复消费及停用/资格恢复两个子例分别准确失败，两轮均为 3 项失败（含父测试）。恢复原产物后专项再次 15/15。日志在本地 `H:\TEMP\novelai-common-replay-20261114`，负控入口分别为 `node --test --test-name-pattern='额度来源消费上下文'` 和 `node --test --test-name-pattern='旧 member replay'`。
+
+独立复核随后以同一时间的真实资金贡献证明，接受调用者自报的结果可以再次扣款，伪造 `replayed: true` 也能跳过新接单事实的首次投影。本轮删除公开结果投影入口，改由上述受控追加/回放调用唯一的 JavaScript `#applyCommit`。新回归分别拒绝这两条原路径，合法原命令重领仍零写入；在线第二 owner 已写后发生 SQL 故障，即使外层捕获并提交，事实、回执、流头、游标与业务表仍全表回滚。修复后 common、generation、recovery 和架构四文件 189/189；此前完整测试和编译证据只属于前置版本，修复版的完整及发布候选验证须重新记录，不能沿用前置绿色结果。
 
 ### 9.22 T5：发布完成与 Local 副本同笔提交
 
