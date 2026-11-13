@@ -1200,14 +1200,17 @@ export class RelationalQuotaStore {
     }
     return formatAmount(next);
   }
-  applyQuotaEvents(events: RelationalEvent[]) {
+  createQuotaProjector(events: RelationalEvent[]) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();
-    for (const e of events) {
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Quota projection requires the owning transaction.');
+      }
       if (
         !relationalQuotaFacts.has(e.eventType) ||
         !e.accountId ||
@@ -1625,6 +1628,12 @@ export class RelationalQuotaStore {
         default:
           fail(`Unsupported quota projection ${e.eventType}`);
       }
+    };
+  }
+  applyQuotaEvents(events: RelationalEvent[]) {
+    const apply = this.createQuotaProjector(events);
+    for (const event of events) {
+      apply(event);
     }
   }
   private configuration(version: number) {

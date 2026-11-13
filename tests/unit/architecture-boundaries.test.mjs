@@ -129,6 +129,20 @@ for (const filename of [
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     [
+      'business replayer construction',
+      "import { RelationalCommitReplayer as Replayer } from '../storage/relational-replay.ts'; new Replayer(raw);",
+    ],
+    ['dynamic business replayer', "await import('../storage/relational-replay.js');"],
+    ...[
+      'createInputProjector',
+      'createGenerationProjector',
+      'createQuotaProjector',
+      'applyAccountEvent',
+      'applyReplayedMemberEvent',
+      'replayCommit',
+      'applyCommit',
+    ].map((name) => [`direct ${name}`, `store.${name}(input);`]),
+    [
       'private snapshot import',
       "import { restoreRelationalPrivateSnapshot as restore } from '../storage/relational-private-restore.ts'; restore(raw,path,hash);",
     ],

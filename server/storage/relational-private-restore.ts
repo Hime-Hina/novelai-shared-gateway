@@ -16,6 +16,13 @@ const privateTables = [
   ['upstream_credentials', 'account_id'],
 ] as const;
 
+export function relationalPrivateStateEmpty(sqlite: Database.Database): boolean {
+  return (
+    !sqlite.prepare('SELECT 1 FROM members WHERE auth_epoch IS NOT NULL LIMIT 1').get() &&
+    privateTables.every(([table]) => !sqlite.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get())
+  );
+}
+
 function invalid(): never {
   throw new Error('Private snapshot does not match the offline relational recovery target.');
 }
@@ -181,9 +188,7 @@ export function restoreRelationalPrivateSnapshot(
         const equal =
           sameRows(source, target, epochs) &&
           privateQueries.every((query) => sameRows(source, target, query));
-        const empty =
-          !target.prepare('SELECT 1 FROM members WHERE auth_epoch IS NOT NULL LIMIT 1').get() &&
-          privateTables.every(([table]) => !target.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get());
+        const empty = relationalPrivateStateEmpty(target);
         if (!equal && !empty) {
           invalid();
         }
