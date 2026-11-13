@@ -575,9 +575,16 @@ test('额度来源消费上下文不被跨 owner 分派重置，观察与有限�
       );
       const before = databaseState(r.db);
       r.db.transaction(() =>
-        assert.throws(() => r.replayer.replayCommit(bad), /重复消费|仅消费一次/),
+        assert.throws(
+          () => r.replayer.replayCommit(bad),
+          /重复消费|仅消费一次|同步金融事实与原观察、净预算、配置及分配决定不符/,
+        ),
       )();
-      assert.equal(memberApplied, true);
+      assert.equal(
+        memberApplied,
+        kind === 'finite',
+        '观察决定先核对，有限资金仍验证跨 owner 消费上下文',
+      );
       assert.equal(databaseState(r.db), before);
       assert.equal(r.replay(stored).replayed, false);
       const once = r.db.serialize();

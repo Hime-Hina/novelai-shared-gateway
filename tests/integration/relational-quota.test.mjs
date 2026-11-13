@@ -705,7 +705,7 @@ test('观察型分配绑定有效采纳并按观察和资源仅消费一次，�
           ),
         )();
         if (mode === 'invalid-adoption' || mode === 'readopt-old') {
-          assert.equal(walletWrites, 2, '先应用两个钱包，再由真正的采纳检查拒绝');
+          assert.equal(walletWrites, 0, '原同步决定检查在钱包写入前拒绝无效采纳');
         }
         assert.equal(databaseState(target), unchanged);
         if (mode !== 'later-commit' && mode !== 'readopt-old') {

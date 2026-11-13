@@ -1179,14 +1179,12 @@ export function manageFairMember(
   return result;
 }
 
-function distribute(
-  db: Parameters<typeof quotaFact>[0],
+// 普通开账/注资按全部原份额分配；V5 容量截断后不改用恢复的未满额水位规则。
+export function planFairQuotaAllocation(
   s: FairQuotaSyncState,
   resource: Resource,
   delta: bigint,
-  now: number,
-  reason: 'opening' | 'funding',
-): bigint {
+): { amount: bigint; allocations: QuotaAllocation[] } {
   const field = `${resource}Available` as const;
   if (delta >= 0n) {
     let actual = 0n;
@@ -1202,11 +1200,32 @@ function distribute(
               maxAmount(0n, capacity[id] - held(s, id, 'v5') - units(b[field])),
             )
           : (allocation[id] ?? 0n);
-      b[field] = formatAmount(units(b[field]) + add);
       actual += add;
       if (add > 0n) {
         allocations.push({ memberId: id, amount: formatAmount(add) });
       }
+    }
+    return { amount: actual, allocations };
+  }
+  // 负差额没有成员归属证据，必须另记运营待承担，不能按份额削减钱包。
+  return { amount: 0n, allocations: [] };
+}
+
+function distribute(
+  db: Parameters<typeof quotaFact>[0],
+  s: FairQuotaSyncState,
+  resource: Resource,
+  delta: bigint,
+  now: number,
+  reason: 'opening' | 'funding',
+): bigint {
+  const field = `${resource}Available` as const,
+    { amount, allocations } = planFairQuotaAllocation(s, resource, delta);
+  if (delta >= 0n) {
+    const additions = new Map(allocations.map((entry) => [entry.memberId, units(entry.amount)]));
+    for (const id of s.members) {
+      const b = s.balances[id];
+      b[field] = formatAmount(units(b[field]) + (additions.get(id) ?? 0n));
     }
     totals(s);
     if (allocations.length) {
@@ -1227,10 +1246,8 @@ function distribute(
         now,
       );
     }
-    return actual;
   }
-  // 负差额没有成员归属证据，必须另记运营待承担，不能按份额削减钱包。
-  return 0n;
+  return amount;
 }
 
 export function manageOperatingFunding(

@@ -42,6 +42,7 @@ import {
   assertFairGroupMemberCount,
   assertFairGroupTransition,
   allocateFairGroupAmount,
+  planFairQuotaAllocation,
   type FairQuotaState,
   type FairQuotaDatabase,
   type FairGroup,
@@ -61,6 +62,7 @@ import type {
   OperatingFundingInput,
   OperatingFundingContext,
 } from '../quota/operating-accounting.ts';
+import { matchExternalFunding } from '../quota/operating-accounting.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import {
@@ -664,7 +666,7 @@ export class RelationalQuotaStore {
   private event(
     fact: RelationalFact,
     accountId: string,
-    metadata: Metadata,
+    metadata: Pick<Metadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
     eventId: string = randomUUID(),
   ): RelationalEventInput {
     return {
@@ -1473,7 +1475,7 @@ export class RelationalQuotaStore {
   private convert(
     facts: DomainEventInput[],
     view: ReturnType<RelationalQuotaStore['state']>,
-    metadata: Metadata,
+    metadata: Pick<Metadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
     newObservationId?: string,
   ) {
     const accountId = view.q.accountId,
@@ -1951,6 +1953,220 @@ export class RelationalQuotaStore {
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();
+    const checkedSync = new Set<string>();
+    const checkedConfirmations = new Set<string>();
+    const syncFunding = (fact: RelationalEvent) =>
+      fact.eventType === 'FundingReceived' &&
+      fact.payload.source === 'registered_external_funding' &&
+      events.some(
+        (adoption) =>
+          adoption.eventType === 'QuotaBaselineAdopted' &&
+          adoption.accountId === fact.accountId &&
+          adoption.payload.observationEventId === fact.payload.observationEventId &&
+          fact.eventIndex < adoption.eventIndex,
+      );
+    const decision = (fact: RelationalEventInput) => ({
+      eventType: fact.eventType,
+      payload: fact.payload,
+      // 收据/差额事实的 ID 是后续来源；其他生成的 envelope ID 不参与金融决定。
+      sourceId:
+        ['FundingReceived', 'ResourceGapObserved', 'ReturnClassified'].includes(fact.eventType) ||
+        (fact.eventType === 'V5CapacityObserved' && fact.payload.delta !== '0')
+          ? fact.eventId
+          : null,
+      occurredAt: fact.occurredAt,
+      accountId: fact.accountId,
+      memberId: fact.memberId,
+      policyVersion: fact.policyVersion,
+      pricingVersion: fact.pricingVersion,
+    });
+    // 在本提交的第一个同步金融事实前取得原序切点。规划只改独立 view，不投影或查询上游。
+    // 同时核对到账/返回组成，不能以分配事实自报的预算替代原观察净额。
+    const assertSyncDecisions = (e: RelationalEvent, accountId: string, q: AccountQuota) => {
+      const observationId = q.observationEventId,
+        configVersion = this.sharingPolicy().configVersion,
+        key = canonicalJson([accountId, observationId, configVersion]);
+      if (checkedSync.has(key)) {
+        return;
+      }
+      const view = this.state(accountId);
+      if (e.eventType === 'QuotaObserved') {
+        // 核验启用先保存观察，再投影可用性；只在独立 view 使用引用该观察的原启用决定。
+        // 实际 AvailabilityChanged 仍须经过自己的观察/代次校验，失败由保存点整笔回滚。
+        const availability = events.filter(
+          (fact) =>
+            fact.eventType === 'AvailabilityChanged' &&
+            fact.accountId === accountId &&
+            fact.payload.enabled &&
+            fact.payload.observationEventId === e.eventId &&
+            fact.eventIndex > e.eventIndex,
+        );
+        if (availability.length > 1) {
+          fail('观察不能同时属于多个账户可用性决定');
+        }
+        if (availability[0]?.eventType === 'AvailabilityChanged') {
+          view.account.enabled = availability[0].payload.enabled;
+        }
+      }
+      const belongs = (fact: RelationalEventInput) => {
+        if (fact.accountId !== accountId) {
+          return false;
+        }
+        switch (fact.eventType) {
+          case 'RefillApplied':
+            return (
+              fact.payload.configVersion === configVersion &&
+              fact.payload.observationEventId === view.q.baselineEventId
+            );
+          case 'AllocationApplied':
+            return (
+              fact.payload.configVersion === configVersion &&
+              fact.payload.sourceEventId === observationId
+            );
+          case 'QuotaBaselineAdopted':
+          case 'V5CapacityObserved':
+            return fact.payload.observationEventId === observationId;
+          case 'FundingReceived':
+            return (
+              fact.payload.source === 'registered_external_funding' &&
+              fact.payload.observationEventId === observationId &&
+              (!('eventIndex' in fact) || syncFunding(fact as RelationalEvent)) &&
+              events.some(
+                (adoption) =>
+                  adoption.eventType === 'QuotaBaselineAdopted' &&
+                  adoption.accountId === accountId &&
+                  adoption.payload.observationEventId === observationId,
+              )
+            );
+          case 'ReturnClassified':
+            return (
+              fact.payload.kind === 'observed' && fact.payload.observationEventId === observationId
+            );
+          case 'ResourceGapObserved':
+            return fact.payload.afterObservationEventId === observationId;
+          default:
+            return false;
+        }
+      };
+      const planned = this.capture(view, () =>
+          syncBoundFairQuota(view.db, view.account, e.occurredAt),
+        ),
+        expected = this.convert(planned.facts, view, {
+          recordedAt: e.occurredAt,
+          policyVersion: e.policyVersion,
+          pricingVersion: e.pricingVersion,
+        });
+      if (
+        canonicalJson(expected.filter(belongs).map(decision)) !==
+        canonicalJson(events.filter(belongs).map(decision))
+      ) {
+        fail('同步金融事实与原观察、净预算、配置及分配决定不符');
+      }
+      checkedSync.add(key);
+    };
+    // 人工扣款确认的到账组成使用同一资金 owner；不能把运营归属冒充可分配净额。
+    const assertConfirmationDecisions = (e: RelationalEvent, accountId: string) => {
+      const confirmations = events.filter(
+        (fact) => fact.eventType === 'DebitsConfirmed' && fact.accountId === accountId,
+      );
+      if (confirmations.length !== 1) {
+        fail('登记到账缺少本次唯一原扣款确认');
+      }
+      const source = confirmations[0];
+      if (source.eventType !== 'DebitsConfirmed') {
+        fail('扣款确认来源类型不符');
+      }
+      if (checkedConfirmations.has(source.eventId)) {
+        return;
+      }
+      const view = this.state(accountId),
+        snapshot = view.db.settings.fairQuota.snapshot;
+      if (!snapshot || e.eventIndex > source.eventIndex) {
+        fail('扣款确认缺少原金融切点');
+      }
+      const planned = this.capture(view, () => {
+          syncBoundFairQuota(view.db, view.account, source.occurredAt);
+          if (view.db.settings.fairQuota.status !== 'active') {
+            fail('扣款确认缺少原有效观察');
+          }
+          return matchExternalFunding(
+            view.db,
+            source.payload.resource,
+            parseAmount(source.payload.amount),
+            snapshot,
+            source.occurredAt,
+            source.eventId,
+          );
+        }),
+        expected = this.convert(planned.facts, view, {
+          recordedAt: source.occurredAt,
+          policyVersion: source.policyVersion,
+          pricingVersion: source.pricingVersion,
+        }),
+        actual = events.filter(
+          (fact) =>
+            fact.accountId === accountId &&
+            fact.eventType === 'FundingReceived' &&
+            fact.payload.source === 'registered_external_funding' &&
+            !syncFunding(fact),
+        );
+      if (
+        source.payload.allocatedToMembers !== formatAmount(planned.result) ||
+        actual.some((fact) => fact.eventIndex >= source.eventIndex) ||
+        canonicalJson(expected.map(decision)) !== canonicalJson(actual.map(decision))
+      ) {
+        fail('扣款确认净预算或原收据、资源、资金归属不符');
+      }
+      checkedConfirmations.add(source.eventId);
+    };
+    const assertFundingAllocation = (
+      source: RelationalEvent,
+      accountId: string,
+      resource: keyof ResourceAmounts,
+      amount: string,
+    ) => {
+      const state = this.state(accountId).db.settings.fairQuota,
+        planned = planFairQuotaAllocation(state, resource, parseAmount(amount)),
+        allocations = events.filter(
+          (fact) =>
+            fact.eventType === 'AllocationApplied' && fact.payload.sourceEventId === source.eventId,
+        ),
+        expected = planned.allocations.length
+          ? [
+              this.event(
+                {
+                  eventType: 'AllocationApplied',
+                  payload: {
+                    accountId,
+                    reason: 'funding',
+                    sourceEventId: source.eventId,
+                    sourceResources: { ...zero(), [resource]: amount },
+                    allocations: planned.allocations.map((allocation) => ({
+                      memberId: allocation.memberId,
+                      resources: { ...zero(), [resource]: allocation.amount },
+                    })),
+                    configVersion: state.configVersion,
+                  },
+                },
+                accountId,
+                {
+                  recordedAt: source.occurredAt,
+                  policyVersion: source.policyVersion,
+                  pricingVersion: source.pricingVersion,
+                },
+              ),
+            ]
+          : [];
+      // 首次分配必须完整存在；后续重复仍由同提交 consumed 守卫逐原序拒绝。
+      if (
+        (expected.length === 0 && allocations.length > 0) ||
+        allocations.some((fact) => fact.eventIndex <= source.eventIndex) ||
+        canonicalJson(expected.map(decision)) !==
+          canonicalJson(allocations.slice(0, 1).map(decision))
+      ) {
+        fail('有限资金来源缺少原配置、权重和容量决定的完整分配');
+      }
+    };
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Quota projection requires the owning transaction.');
@@ -1973,6 +2189,9 @@ export class RelationalQuotaStore {
         const current = this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get()
           ? this.sharingPolicy()
           : null;
+        if (current?.accountId) {
+          assertSyncDecisions(e, current.accountId, this.readAccountQuota(current.accountId));
+        }
         if (
           p.configVersion !== (current ? current.configVersion + 1 : 2) ||
           p.boundAccountId !== (current?.accountId ?? null) ||
@@ -2186,6 +2405,44 @@ export class RelationalQuotaStore {
         q = this.readAccountQuota(accountId),
         a = this.account(accountId),
         ops = this.operating(accountId);
+      if (
+        [
+          'RefillApplied',
+          'QuotaBaselineAdopted',
+          'V5CapacityObserved',
+          'ResourceGapObserved',
+          'FundingRegistered',
+          'FundingReceived',
+          'DebitsConfirmed',
+          'OperatingLossCovered',
+          'ReturnClassified',
+        ].includes(e.eventType) ||
+        (e.eventType === 'AllocationApplied' &&
+          this.fact(e.payload.sourceEventId).type === 'QuotaObserved')
+      ) {
+        assertSyncDecisions(e, accountId, q);
+      }
+      if (
+        e.eventType === 'DebitsConfirmed' ||
+        (e.eventType === 'FundingReceived' &&
+          e.payload.source === 'registered_external_funding' &&
+          !syncFunding(e))
+      ) {
+        assertConfirmationDecisions(e, accountId);
+      }
+      if (e.eventType === 'DebitsConfirmed') {
+        assertFundingAllocation(e, accountId, e.payload.resource, e.payload.allocatedToMembers);
+      } else if (
+        e.eventType === 'FundingReceived' &&
+        e.payload.source === 'declared_external_receipt'
+      ) {
+        assertFundingAllocation(
+          e,
+          accountId,
+          e.payload.resource,
+          e.payload.destination === 'members' ? e.payload.amount : '0',
+        );
+      }
       switch (e.eventType) {
         case 'QuotaObserved': {
           const p = e.payload;
@@ -2210,6 +2467,7 @@ export class RelationalQuotaStore {
             secondsPerPercent: p.secondsPerPercent,
           });
           this.saveAccountQuota(q, e.eventId);
+          assertSyncDecisions(e, accountId, q);
           break;
         }
         case 'AvailabilityChanged': {
