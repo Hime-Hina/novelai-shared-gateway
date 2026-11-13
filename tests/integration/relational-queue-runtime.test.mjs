@@ -195,6 +195,7 @@ function replayAll(t, f, source = f.db) {
     globalThis.fetch = fetch;
   }
   assert.equal(network, 0);
+  return target;
 }
 
 test('只有正式installer就绪库可启动，物理Map和关闭通知复用根core', async (t) => {
@@ -314,6 +315,163 @@ test('真实HTTP断流保留未知责任及NULL上游完成时间，物理结束
   await waitFor(() => f.calls === 2);
   await runtime.stop();
   replayAll(t, f);
+});
+
+test('实际上游401/403经协调器非abort失败同笔失效退款，后续派发拒绝且完整恢复不复活认证', async (t) => {
+  for (const [status, errorCode] of [
+    [401, 'invalid_key'],
+    [403, 'access_denied'],
+  ]) {
+    await t.test(String(status), async (t) => {
+      const f = await setup(
+        t,
+        (req, res) => {
+          assert.equal(req.url, '/ai/generate-image');
+          assert.equal(req.headers.authorization, 'Bearer synthetic-upstream-pst');
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: `synthetic ${status}: synthetic-upstream-pst` }));
+        },
+        { seconds: 0 },
+      );
+      await f.accept('denied', { steps: 30 });
+      await f.accept('next', { memberId: 'm2', steps: 30 });
+      await f.ready();
+      const quotas = new RelationalQuotaStore(f.db),
+        beforeQuota = quotas.readAccountQuota('a'),
+        wallets = f.db
+          .prepare(
+            'SELECT account_id,member_id,v5_available,anlas_fixed_available,anlas_purchased_available FROM wallets ORDER BY member_id',
+          )
+          .all();
+      const officialFields = [
+        'observationEventId',
+        'observedAt',
+        'observedCredentialEpoch',
+        'observedSequence',
+        'quotaTier',
+        'subscriptionActive',
+        'subscriptionExpiresAt',
+        'observedV5',
+        'observedAnlasFixed',
+        'observedAnlasPurchased',
+        'secondsPerPercent',
+        'baselineEventId',
+        'refillCursorAt',
+      ];
+      let failureNotifications = 0;
+      const observe = (...args) => {
+        assert.equal(f.db.inTransaction, false);
+        assert.deepEqual(args, []);
+        if (f.generations.readGenerationExecutionState('denied-0').status === 'failed') {
+          failureNotifications++;
+          assert.equal(quotas.readAccountQuota('a').quotaErrorCode, errorCode);
+          assert.equal(f.generations.readCharge('denied-0').status, 'refunded');
+          assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_diagnostics').get().n, 1);
+        }
+      };
+      f.events.on('commit', observe);
+      const runtime = f.runtime();
+      await runtime.start();
+      runtime.tick();
+      await waitFor(
+        () =>
+          f.generations.readGenerationExecutionState('denied-0').status === 'failed' &&
+          runtime.controls.size === 0,
+      );
+      f.events.off('commit', observe);
+      assert.equal(failureNotifications, 1);
+      assert.equal(runtime.status, 'running');
+      assert.equal(f.calls, 1);
+      const afterQuota = quotas.readAccountQuota('a');
+      assert.equal(afterQuota.status, 'quota_sync_error');
+      assert.equal(afterQuota.quotaErrorCode, errorCode);
+      for (const key of officialFields) {
+        assert.deepEqual(afterQuota[key], beforeQuota[key], key);
+      }
+      assert.equal(f.db.prepare('SELECT enabled FROM upstream_accounts').get().enabled, 1);
+      assert.deepEqual(
+        f.db
+          .prepare(
+            'SELECT account_id,member_id,v5_available,anlas_fixed_available,anlas_purchased_available FROM wallets ORDER BY member_id',
+          )
+          .all(),
+        wallets,
+      );
+      const { seq } = f.db
+        .prepare(
+          "SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_type='JobFailed' AND json_extract(payload,'$.jobId')='denied-0'",
+        )
+        .get();
+      const stored = readRelationalCommit(f.db, seq),
+        invalidity = stored.events.find((event) => event.eventType === 'QuotaStatusChanged'),
+        response = stored.events.find((event) => event.eventType === 'ResponseEvidenceRecorded'),
+        failed = stored.events.find((event) => event.eventType === 'JobFailed'),
+        refund = stored.events.find((event) => event.eventType === 'GenerationRefunded'),
+        diagnostic = stored.events.find((event) => event.eventType === 'DiagnosticRecorded');
+      assert.ok(invalidity);
+      assert.ok(response);
+      assert.ok(failed);
+      assert.ok(refund);
+      assert.ok(diagnostic);
+      assert.equal(failed.payload.aborted, false);
+      assert.equal(response.payload.response.upstreamHttpStatus, status);
+      assert.notEqual(response.payload.response.upstreamStartedAt, null);
+      assert.notEqual(response.payload.response.upstreamHeadersAt, null);
+      assert.notEqual(response.payload.response.upstreamCompletedAt, null);
+      const source = invalidity.payload.generationFailure,
+        dispatch = JSON.parse(
+          f.db
+            .prepare('SELECT payload FROM domain_events WHERE event_id=?')
+            .get(source.dispatchEventId).payload,
+        );
+      assert.equal(dispatch.jobId, 'denied-0');
+      assert.equal(dispatch.credentialEpoch, 1);
+      assert.equal(source.errorCode, errorCode);
+      assert.equal(source.responseEventId, response.eventId);
+      assert.equal(source.failureEventId, failed.eventId);
+      assert.ok(response.eventIndex < invalidity.eventIndex);
+      assert.ok(invalidity.eventIndex < refund.eventIndex);
+      assert.ok(refund.eventIndex < diagnostic.eventIndex);
+      assert.ok(diagnostic.eventIndex < failed.eventIndex);
+      assert.equal(
+        stored.events.some((event) => event.eventType === 'QuotaObserved'),
+        false,
+      );
+      assert.equal(JSON.stringify(stored).includes('synthetic-upstream-pst'), false);
+      const detail = f.inputs.readGenerationDiagnostic(diagnostic.payload.diagnosticId, 'denied-0');
+      assert.match(detail, new RegExp(`synthetic ${status}: \\[REDACTED\\]`));
+      assert.equal(detail.includes('synthetic-upstream-pst'), false);
+      f.clock += 10001;
+      runtime.tick();
+      await waitFor(() => f.generations.readGenerationExecutionState('next-0').status === 'failed');
+      assert.equal(f.calls, 1);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_attempts').get().n, 1);
+      assert.equal(f.generations.readCharge('next-0'), null);
+      assert.equal(
+        f.db.prepare("SELECT error_status FROM generation_jobs WHERE id='next-0'").get()
+          .error_status,
+        503,
+      );
+      await runtime.stop();
+      const rebuilt = replayAll(t, f);
+      assert.equal(
+        new RelationalQuotaStore(rebuilt).readAccountQuota('a').quotaErrorCode,
+        errorCode,
+      );
+      assert.equal(
+        new RelationalInputStore(rebuilt).readGenerationDiagnostic(
+          diagnostic.payload.diagnosticId,
+          'denied-0',
+        ),
+        detail,
+      );
+      assert.equal(rebuilt.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n, 0);
+      assert.equal(
+        rebuilt.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+        0,
+      );
+    });
+  }
 });
 
 test('本地发布仍悬挂时逻辑退款不释放物理槽/父输入，stop等待真实finally且迟到不补扣', async (t) => {

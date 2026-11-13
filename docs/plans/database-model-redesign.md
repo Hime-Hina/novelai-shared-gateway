@@ -1101,7 +1101,7 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 固定 `6541d0cac708a0127eda798d21c9c45c0e2feb70` 独立技术复审通过，原 14 组加两组独立反例同次 16/16、零跳过：真实 HTTP→Local rename 悬挂、逻辑退款后，共用物理 Map 仍使真实账户轮换 owner 拒绝且全库零变，实际 finally 释放后才允许；真实上游 503 在诊断已暂存、原事实已追加及 charge 已退款后，由 JobFailed 投影触发 SQL 故障，原事务全部回滚且不发假 commit，重开只恢复未知责任、不重发上游。检查同时核对已知完成时间的原 gap、NULL 时间的原 attempt/epoch 证明及显式 abort 来源；没有新增确认问题。独立脚本、日志和 11 个文件 hash 在 `H:\TEMP\novelai-runtime-independent-20261114`，源 tracked clean；`d88ac5d` 到该固定点的产品逐字相同，独审不包含待修 9.35、完整后端或发布/真实存储端点验收。
 
-已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。当前 epoch 的生成 401/403 失效和事件 v3 等待第 9.35 节修复独审；本片不合入尚未通过候选，也不伪造官方额度观察。完整受影响回归、独立审查和整合候选上线证据在固定后补录。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
+已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。第 9.35 节固定修复独审后，当前 epoch 的生成 401/403 失效与事件 v3 已进入父任务并集 `39941f8`；实际协调器的两条 HTTP 耦合验收见该节末段，不伪造官方额度观察。完整受影响回归和整合候选上线证据继续绑定最终固定版本。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
 
 ### 9.32 人工历史退休：薄标记、保护和完整回放
 
@@ -1160,6 +1160,10 @@ Node 22.23.4 输入/关系查询/现成员 HTTP 三文件 44/44；架构、后�
 固定修复 `4af58cad587a234bb5e17d4e99f7561d6f6c22d9` 独立技术复审通过：原四个合法 envelope 的删除/重复反例均拒绝且外层捕获后全表回滚，queued、另一个真实 attempt、abort 和旧 epoch 的合法/伪造矩阵保留，原提交仍可重试及零写重领；独立 8 项与作者 25 项共 33/33，正确旧 v2 DDL/hash 的拒绝另 1/1。24 个相关文件 hash 与固定 Git blob 匹配，证据为 `H:\TEMP\novelai-generation-failure-fixed-4af58ca-20261114\INDEPENDENT-REVIEW.md`。原 `7387738` 缺失/重复决定的四个失败日志保留，不能作为通过候选。
 
 与队列、分组、自动恢复及退役汇合时，保留 NULL 物理结束证明和诊断原票据，同时保留当前失效的完整 source 及 v3 必填字段。后续新增错误/退役用例逐次显式写明非取消，没有在通用 helper 补默认 false；派发代次反例改在原观察同一时点派发，避开合法自动恢复子提交造成的 checkpoint 缺口，仍严格断言真实代次错误并核对原提交可重试。七个关系 HTTP/诊断/凭据失败/队列/退役/错误文件 97/97；完整后端与编译/Node 24 待统一固定版本。
+
+并集 `39941f86759ddd560e10bea6708804279857071e` 的实际耦合仅增加队列测试，不改已审产品：两个真实 localhost 上游分别返回 401/403，经原 `generateNovelAiImage()` 和协调器 catch 提交明确 aborted=false，核对同笔原响应→失效 source→退款→脱敏诊断→JobFailed，原 dispatch 代次/响应/失败 ID 一致。账户 enabled、官方观察 ID/时间/序号/余额和基线游标保持，钱包各原资源精确退回；原 gap 后另一已受理任务经实际调度得到 503、没有新 attempt 或第二次 HTTP。共同完整回放保留失效和原诊断字节，源零写、重复零写、fetch 0、目标仍 building 且无 Key/会话/PST/认证 epoch。
+
+队列全文件 17/17（原 14 加新参数化父项及两例），零跳过；仅新耦合入口 3/3。两个独立 TEMP 副本分别错误传 aborted=true 或删除原派发诊断捕获，两条真实 HTTP 检查都明确失败（各含父项 3 fail），没有把加载错误或等待超时当反例。日志为 `H:\TEMP\novelai-runtime-auth-failure-coupling.log`、`-queue.log`、`-negative-controls.log`，负控脚本为 `H:\TEMP\novelai-runtime-auth-failure-negative-controls.mjs`。本片不重复直接 owner 的完整矩阵；独立增量审查及最终完整后端、编译发布物、Node 24 和真实端点验收由父任务接续。
 
 ### 9.36 #52：成员生成 HTTP 的关系 owner 接入
 
