@@ -664,16 +664,17 @@ export const relationalPayloadParsers = {
   }),
   OpeningRequestRecorded: fields({
     requestId: id,
+    originalRequestId: nullable(id),
     memberId: id,
     inputId: id,
     contextId: nullable(id),
-    source: id,
-    operation,
+    source: nullable(id),
+    operation: nullable(operation),
     model: nullable(id),
     sampleCount: nullable(positive),
     seedMode: choices('fixed', 'random', 'not_applicable', 'unknown'),
     confirmation,
-    acceptedAt: integer,
+    acceptedAt: nullable(integer),
     retiredAt: nullable(integer),
     origin,
   }),
@@ -681,13 +682,13 @@ export const relationalPayloadParsers = {
     jobId: id,
     requestId: id,
     createdAt: nullable(integer),
-    sampleIndex: integer,
+    sampleIndex: nullable(integer),
     actualSeed: nullable(number),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
     deadlineAt: nullable(integer),
-    admissionEpoch: integer,
+    admissionEpoch: nullable(integer),
     artifactId: nullable(id),
     cacheKey: nullable(hash),
     completedAt: nullable(integer),
@@ -734,11 +735,11 @@ export const relationalPayloadParsers = {
     memberId: id,
     inputId: id,
     originalAttemptId: nullable(id),
-    operation,
+    operation: nullable(operation),
     mimeType: id,
     byteLength: positive,
     sha256: hash,
-    publishedAt: integer,
+    publishedAt: nullable(integer),
     retiredAt: nullable(integer),
     origin,
   }),
@@ -930,9 +931,6 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   ) {
     invalid();
   }
-  if (row.verifiedAt !== undefined && row.verifiedAt !== null && row.uploadedAt === null) {
-    invalid();
-  }
   if (header.eventType === 'OpeningChargeRecorded') {
     if (
       (row.status === 'reserved' &&
@@ -1032,12 +1030,14 @@ export function parseRelationalFact(value: unknown): RelationalFact {
       invalid();
     }
   }
-  if (
-    header.eventType === 'OpeningJobRecorded' &&
-    row.status === 'done' &&
-    (row.artifactId === null || row.completedAt === null)
-  ) {
-    invalid();
+  if (header.eventType === 'OpeningJobRecorded') {
+    if (
+      (row.status === 'done' && row.artifactId === null) ||
+      (['queued', 'pending', 'running'].includes(row.status as string) &&
+        (row.sampleIndex === null || row.admissionEpoch === null))
+    ) {
+      invalid();
+    }
   }
   return { eventType: header.eventType, payload } as RelationalFact;
 }

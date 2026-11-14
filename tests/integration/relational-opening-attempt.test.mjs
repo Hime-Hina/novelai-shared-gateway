@@ -94,6 +94,7 @@ function open(f, options = {}) {
     );
     const request = event('OpeningRequestRecorded', {
       requestId,
+      originalRequestId: requestId,
       memberId: 'm1',
       inputId: `${name}-input`,
       contextId: definition.context_id,
