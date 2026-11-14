@@ -1791,6 +1791,24 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 根在已审 owner GET/政策并集上整合，MemberStore 与专项保持 0b 的精确 Git 字节；真实成员管理、原成员与接单三文件 72/72、零跳过，6.893 秒。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式与 diff 通过，日志 `H:/TEMP/novelai-member-owner-root-{joint,type,static,format}.log`。新增的 owner 能力仅此两命令，既有 admission 与 system 边界不扩张；后续 HTTP 传参/总装配仍须实际验证。
 
+### 9.63 成员 Key 的个人配额与启动器订阅读取
+
+本片从 `24f3d0c` 接续，同步固定并集 `0ad2c033dc6e01b0f20341c2093b4325249b8aed` 后接通现 sharedSurface 的五个 GET：`/api/me/quota` 与 `/user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription`。旧 sole 与关系适配共用纯 path/verb 判定，token 继续由原 gatewayKeyFrom 取精确 `Bearer ` header，否则 query token、x-user-token 依次优先；Cookie/admin header 不能替代实际成员 Key，不增加官方 PST 透传。PUBLIC 前置、可信管理员例外及 Host/CORS 规则仍归中央 router，不在薄适配复制全局政策或扩展被 sharedSurface 排除的路径。
+
+个人配额只调用 QuotaStore.readMemberQuotaSummary，非 NULL 时补 Gen 原 freeImages；保留 `{fairQuota: null}`、已知零、未知 NULL 与原完整 DTO。四个启动器别名共用 QuotaStore.readLauncherSubscription 和原 launcherSubscriptionFromQuota，保留整数化、到期和非分组 403，不从官方钱包或当前默认重造本地权益。查询不提交恢复、钱包、游标或费用事实，不续 Cookie。
+
+当前 relational-request-http 的 ready/Key→Discord IO→原稳定 member/auth epoch/currentKey 复核提为同一个窄授权 helper，原 Request caller 一并使用。Key 与 Discord 写事务分别在当前 ready 下执行，网络 IO 不持 SQL；后续只读/同步发送仍在原当前 Key 授权回调内。MemberStore 复用同一 db/events notifier；不新建 Key generation 来证明无法从现事实证明的 ABA 历史。验收包括真实合法 ready localhost、五入口/完整 DTO/实际到期/unknown 与零、Key 转归/撤销/epoch/ready/Discord 反例、query_only 零写和公开回放无秘密；此片不替换 sole 启动或扩展管理业务。
+
+在线认证保留原 Key owner 的 `BEGIN IMMEDIATE`，SQLite `query_only` 会拒绝该事务开始；HTTP 实际请求以全表摘要比较零写，Quota/launcher/freeUsage 三个真正窄读另在 query_only 下验证。Discord 到期观察可能由原 owner 提交一条 MemberEligibilityChanged 与对应私有状态，不能把合法成员事实误称金融写入，也不能用 HTTP 的只读称谓跳过该授权动作；撤 ready 在其写事务前拒绝。observation 尾部 SQL 故障由原事务整体回滚且无通知，健康重试一次后后续读取无新事实。未知期限保留 NULL，已知零余额仍为零；启动器是否 active、完整字段和整数化直接对照原 launcherSubscription，不重算金融。
+
+两个实际 writer 来源 `createRelationalQuotaHttp`、`authorizeRelationalMemberApiKey` 同时登记原 mutations 与整模块闭包；中央 writerFactories 为 18 条，namespace/dynamic 保持全表循环，新两源另覆盖 named/injected/require/re-export/export*，保留 type-only 与纯 named reader 正例。这是现有守卫的最小并集，需维护者复核，不构成 agent 权限沙箱。没有新增 SQL、DDL、事件字段/版本、钱包或派生认证状态；旧历史解释不变。
+
+Node22 新合法 ready/localhost 专项 12/12，与原 Request HTTP、Quota/launcher owner、路径/Public 契约及架构矩阵九文件同次 508/508、零跳过；原 sole 的实际 idempotency HTTP 用例独立 1/1，原 startup 十秒断言未放宽。类型、architecture、默认与可信 24f3d0c 的 migration 检查通过。隔离 TEMP 中移除原稳定 member/epoch 复核，两条跨 IO 授权断言精确失败；移除 observation ready guard，一条撤 ready 后零写断言精确失败；移除同 notifier 注入，原通知断言精确失败。用 0ad 原守卫跑同一新增来源矩阵 28/28 失败，新守卫同矩阵 28/28 通过；type-only/纯 reader 正例与恢复产品后的 12/12 均通过。证据为 `H:/TEMP/novelai-subscription-http-union.log`、`novelai-subscription-http-legacy-caller.log` 和 `novelai-subscription-http-negative-evidence.json`。固定候选独审另记录；未运行 full、compiled、Node24、sole 切换、依赖重建或真实云端验证，不沿用父并集的 full 结果。
+
+固定 `ccb364645dd25f2a7baabe813d21905ecee08a21` 独立技术复审通过，无剩余确认问题：原 quota/Request 27、formatter/surface/实际架构 466、新同 server HTTP/边界 4，共 497/497、零跳过，恢复后四例不重复计数。独立同服务器区分五 GET 与 Raw 的 Bearer 大小写/tab/query 优先级；旧慢取消仍按最初身份拒绝而新 quota 正常读取转归后的当前成员；Key 行尚存但 private auth epoch 撤下时六路径全部拒绝；新 writer 的 query/protocol 类型/纯 parser/装配边界正负例通过。错用另一 token parser、移除稳定身份/epoch 和恢复旧 guard 的三个隔离错误实现分别泄漏错误成员 DTO、实际取消转归成员任务或漏新 writer，均触发明确业务断言，恢复后通过。十一文件 Git/blob 与十九个不变权威文件绑定，原 Request 正文/取消/DTO/sign/schedule 后半逐字不变。报告 `H:/TEMP/novelai-subscription-independent-evidence/INDEPENDENT-REVIEW.md`、`reviewed-files.json`、`static-comparisons.json`；本片不表示原全局 PUBLIC/Host/CORS/sole 或真实云验证已完成。
+
+根在 owner GET、三政策 POST 与成员权限并集上整合，八技术/归属文件与 ccb 精确字节相同，API 契约和计划保留双方已审内容。五 GET/Raw/原配额摘要/启动器/路径/Public/架构九文件同次 508/508、零跳过，19.952 秒，backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式和 diff 通过，日志 `H:/TEMP/novelai-subscription-http-root-{joint,type,static,format}.log`。两原 parser 仍分别拥有不同 token 优先级，当前 ready/member/epoch/Discord 边界共用同 helper，守卫保持十八个实际 writer 全表。统一全量、编译及实际发布物另验，不借 0ad 的 632×2 结果。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

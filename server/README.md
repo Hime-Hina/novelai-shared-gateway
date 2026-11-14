@@ -19,6 +19,8 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 
 根 `gateway-runtime.ts` 负责装配和 HTTP/进程生命周期，仍包含账号管理与统计适配。OpenAI 解析和 Native/OpenAI/Direct 客户端 transport 归现有 `protocols/`，关系 HTTP 绑定归 `generation/relational-*-http.ts`；图片分享签名由 `http/public-image.ts` 的同一进程实例提供，原 sole caller 继续注入原实际能力，尚未因此切换 sole 启动入口。后续真实需求触及其他规则时，分别归入现有 `members/`/`quota/`、`reports/` owner；不按文件行数机械拆分。默认数据位置仍为仓库根下的 `data/`。SQL、journal 和快照仍在 `migrations/`，文件字节与版本不因源码移动变化。没有旧平铺模块的转发或重导出。
 
+个人配额和四个启动器订阅 GET 的关系绑定归 `quota/relational-quota-http.ts`，只组合 Quota/Gen 原窄读；旧 sole 与新绑定共用 `protocols/quota-http.ts` 的五路径判定。当前 Key→Discord IO→原稳定身份/epoch/ready 的授权回调归 `members/relational-api-key-access.ts`，Bearer 父请求查询与取消也复用它。金融估算仍归 Quota owner，PUBLIC/Host/CORS 仍归中央路由；薄 HTTP 不续 Cookie、不恢复官方 PST 模式。
+
 SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私有实现；查询/协议使用实际读取方法的窄类型，业务变更经现有命令提交。运行时只通过活动任务判断和瞬时进度方法访问热任务，不为每帧进度追加业务事件。`architecture:check` 固定纯金额/reducer、查询、Web 和装配入口的依赖方向；`migration:check` 比较可信 Git 基线的历史 SQL 字节和 journal 前缀。检查范围、命令和维护者复核要求见 [开发与验证](../CONTRIBUTING.md)，这些检查不代替远端权限与强制合并保护。
 
 新关系报告由 `storage/relational-report-store.ts` 提供薄 SQL：用量、热力图、错误和损耗复用各自原展示 owner；损耗的精确风险汇总/事实适配继续在 `quota/failure-accounting.ts`，候选金额语义归 `generation/accounting.ts`。受保护请求/诊断冷读归 input store，不从旧 JsonStore 回退，也不借报告修改账务。新 HTTP 装配与整体上线验收仍按数据库计划接续。

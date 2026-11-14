@@ -235,6 +235,8 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 
 `GET /user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription` 都返回 `200 JSON` 的本地映射：`tier/active/expiresAt/trainingStepsLeft/perks/usage`。固定/购买 Anlas 取调用者可用余额的非负整数，usage 表示本地 V5 可用量；不是共享账户原始余额，不公开 PST 或其他成员份额。活跃 Opus 还要求绑定账户、有效订阅与到期信息。不要把这个映射误当作完整 `/user/data` 透传。
 
+这四个别名与 `GET /api/me/quota` 使用原网关 token 入口：精确 `Bearer ` header 优先，否则 query `token`、`x-user-token` 依次取值，Cookie 不作为替代。PUBLIC 前置与 Host/CORS 继续归中央路由；这些路径不提供独立官方 PST 模式，也不返回上游原订阅透传。`/api/me/quota` 返回 `{fairQuota}`，关闭/未知账本可为 NULL，非 NULL 时保留原完整个人配额与 `freeImages`。新关系适配只读当前 owner 的估算，不提交钱包恢复或续期 Cookie；Discord 资格观察仍由原认证事务持有，IO 后重核原稳定成员、auth epoch、当前 Key 和 ready。
+
 ## 其他现有客户端接口
 
 | 类别                          | 当前契约                                                                                                                                                                                                                |
