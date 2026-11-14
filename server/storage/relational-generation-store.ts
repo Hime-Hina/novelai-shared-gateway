@@ -1167,7 +1167,7 @@ export class RelationalGenerationStore {
     }
     const total = this.sqlite
       .prepare<[string], { v5: string }>(
-        `SELECT w.v5_available AS v5 FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=?`,
+        `SELECT w.v5_available AS v5 FROM wallets w WHERE w.account_id=?`,
       )
       .all(accountId)
       .reduce((sum, w) => sum + parseAmount(w.v5), 0n);

@@ -1026,10 +1026,10 @@ export function applyFairMemberChange(
     shareChanges: { userId: string; beforeShare: number; afterShare: number }[] = [];
   const transferred: ResourceAmounts = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
   if (body.action === 'transfer-quota') {
-    if (!s.balances[target.id]) {
+    if (!s.members.includes(target.id) || !s.balances[target.id]) {
       fail('转账接收成员必须已加入共享分组', 400);
     }
-    if (!s.balances[source.id]) {
+    if (!s.members.includes(source.id) || !s.balances[source.id]) {
       fail('转出成员未加入共享分组', 400);
     }
     if (
@@ -1065,7 +1065,7 @@ export function applyFairMemberChange(
   } else {
     const originalShares = Object.fromEntries(s.members.map((id) => [id, weight(s, id)]));
     const originalGroup = groupFor(s, source.id);
-    if (!s.balances[target.id]) {
+    if (!s.members.includes(target.id)) {
       if (!originalGroup) {
         fail('删除未分组成员时，请选择已分组成员接收；双方均未分组无法继承份额', 400);
       }
@@ -1080,7 +1080,7 @@ export function applyFairMemberChange(
       originalGroup.memberWeights[target.id] = memberWeight;
       delete originalGroup.memberWeights[source.id];
       s.members = s.members.map((id) => (id === source.id ? target.id : id));
-      s.balances[target.id] = emptyBalance();
+      s.balances[target.id] ||= emptyBalance();
       autoJoined = {
         userId: target.id,
         groupId: originalGroup.id,
@@ -1752,7 +1752,7 @@ export function previewFairQuotaCharge(
     s = draft.settings?.fairQuota;
   const account = rows(draft.accounts).find((entry) => entry.id === s?.boundAccountId);
   return decideFairQuotaCharge(
-    s?.balances[user.id],
+    s?.members.includes(user.id) ? s.balances[user.id] : undefined,
     s?.autoAnlasFallback,
     account ? fairQuotaSnapshot(account) : null,
     request,
@@ -2144,7 +2144,7 @@ export function fairQuotaSummary(
   if (!s?.enabled) {
     return null;
   }
-  const raw = s.balances[user.id],
+  const raw = s.members.includes(user.id) ? s.balances[user.id] : undefined,
     b = raw,
     group = groupFor(s, user.id),
     share = weight(s, user.id);

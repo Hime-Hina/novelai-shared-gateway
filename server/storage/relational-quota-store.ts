@@ -515,6 +515,7 @@ export class RelationalQuotaStore {
       fail('金融命令只能使用当前绑定账户', 503);
     }
     const configuration = this.groupState();
+    // 钱包责任归原账户，不能用当前组资格过滤物理预算；新分配仍只遍历 configuration.members。
     const balances = Object.fromEntries(
       this.sqlite
         .prepare<
@@ -526,7 +527,7 @@ export class RelationalQuotaStore {
             anlasPurchasedAvailable: string;
           }
         >(
-          `SELECT w.member_id AS memberId,w.v5_available AS v5Available,w.anlas_fixed_available AS anlasFixedAvailable,w.anlas_purchased_available AS anlasPurchasedAvailable FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=? ORDER BY w.member_id`,
+          `SELECT w.member_id AS memberId,w.v5_available AS v5Available,w.anlas_fixed_available AS anlasFixedAvailable,w.anlas_purchased_available AS anlasPurchasedAvailable FROM wallets w WHERE w.account_id=? ORDER BY w.member_id`,
         )
         .all(accountId)
         .map(({ memberId, ...b }) => [
@@ -1574,14 +1575,14 @@ export class RelationalQuotaStore {
     const view = this.state(accountId),
       state = syncBoundFairQuota(view.db, view.account, now),
       balance = state.balances[memberId];
-    if (!balance) {
+    if (!state.members.includes(memberId) || !balance) {
       fail('成员钱包尚未恢复', 503);
     }
     return {
       balance,
       availableV5: formatAmount(
-        state.members.reduce(
-          (total, id) => total + parseAmount(state.balances[id].v5Available),
+        Object.values(state.balances).reduce(
+          (total, balance) => total + parseAmount(balance.v5Available),
           0n,
         ),
       ),
@@ -2802,7 +2803,7 @@ export class RelationalQuotaStore {
                   }
                 >(
                   `SELECT w.member_id AS memberId,w.v5_available AS v5Available,w.anlas_fixed_available AS anlasFixedAvailable,
-          w.anlas_purchased_available AS anlasPurchasedAvailable FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=?`,
+          w.anlas_purchased_available AS anlasPurchasedAvailable FROM wallets w WHERE w.account_id=?`,
                 )
                 .all(p.boundAccountId)
                 .map(({ memberId, ...balance }) => [
