@@ -754,6 +754,7 @@ test('单提交投影闭包离开所属事务后不能继续写入', async (t) =
     stored = readRelationalCommit(f.db, result.commitSeq),
     r = target(t, f);
   r.through(3);
+  r.replay(accepted);
   const quotas = new RelationalQuotaStore(r.db),
     generations = new RelationalGenerationStore(r.db),
     inputs = new RelationalInputStore(r.db);
@@ -766,7 +767,7 @@ test('单提交投影闭包离开所属事务后不能继续写入', async (t) =
       generations.createGenerationProjector(stored.events),
       stored.events.find((event) => event.eventType === 'WaitingJobsCancelled'),
     ],
-    [inputs.createInputProjector(f.inputs, accepted, false), accepted.events[0]],
+    [inputs.createInputProjector(f.inputs, accepted, true), accepted.events[0]],
   ])();
   const before = databaseState(r.db);
   for (const [apply, event] of stages) {
