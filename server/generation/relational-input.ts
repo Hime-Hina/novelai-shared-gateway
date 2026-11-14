@@ -22,6 +22,7 @@ import {
 import { requestNormalizationDefaults, requestCacheKey } from './request-fingerprint.ts';
 import { generationPayloadLimits } from './payload-budget.ts';
 import { MEMBER_NORMALIZATION_FORMAT } from './capabilities.ts';
+import { singleGenerationRequest } from './batch-requests.ts';
 
 export const RELATIONAL_INPUT_VERSION = 1;
 export type RelationalNormalizationContext =
@@ -49,6 +50,28 @@ export interface PreparedRelationalInput {
   wireBytes: number;
   sampleCount: number;
   firstSeed: number | null;
+}
+
+// Direct 的单图 literal seed 沿原 owner 保留；Native/member 才有 uint32 批次回绕。
+export function relationalChildSeed(
+  seed: number,
+  sampleIndex: number,
+  context: RelationalNormalizationContext,
+): number {
+  if (
+    !Number.isFinite(seed) ||
+    !Number.isSafeInteger(sampleIndex) ||
+    sampleIndex < 0 ||
+    (context.kind === 'direct'
+      ? sampleIndex !== 0
+      : !Number.isSafeInteger(seed) || seed < 0 || seed > 4294967295)
+  ) {
+    invalid();
+  }
+  return singleGenerationRequest(
+    context.kind === 'direct' ? { seed } : { seed, nativeParameters: {} },
+    sampleIndex,
+  ).seed;
 }
 
 // 复用旧 direct 缓存等价；出站丢掉的原选择只取保存值，不按当前默认反推。
@@ -316,13 +339,12 @@ export function prepareRelationalInput(
       !Number.isSafeInteger(sampleCount) ||
       sampleCount < 1 ||
       sampleCount > native.limits.samplesMax ||
-      firstSeed === null ||
-      !Number.isSafeInteger(firstSeed) ||
-      firstSeed < 0 ||
-      firstSeed > 4294967295
+      (context.kind === 'direct' && sampleCount !== 1) ||
+      firstSeed === null
     ) {
       invalid();
     }
+    relationalChildSeed(firstSeed, 0, context);
     // 复用实际出站构造器，随后正文只留一种参数表示；seed/count 归 child/parent。
     const parameters = buildNovelAiParameters({
       ...request,
@@ -606,6 +628,7 @@ export function restoreRelationalWire(
   assets: (RelationalInputAsset & { bytes: Buffer })[],
   seed: number | null,
   sampleCount: number,
+  context: RelationalNormalizationContext,
 ): Record<string, unknown> {
   const wire = structuredClone(body);
   for (const slot of relationalAssetSlots(wire, assets)) {
@@ -624,11 +647,11 @@ export function restoreRelationalWire(
   delete wire.requestedSteps;
   delete wire.cacheSelection;
   if (wire.operation === 'generate') {
-    if (seed === null || !Number.isSafeInteger(seed) || seed < 0 || seed > 4294967295) {
+    if (seed === null || (context.kind === 'direct' && sampleCount !== 1)) {
       invalid();
     }
     const parameters = wire.parameters as Record<string, unknown>;
-    parameters.seed = seed;
+    parameters.seed = relationalChildSeed(seed, 0, context);
     parameters.n_samples = sampleCount;
   }
   return wire;

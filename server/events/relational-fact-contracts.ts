@@ -264,7 +264,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     requestId: id,
     sampleIndex: integer,
-    actualSeed: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'done'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
@@ -636,7 +636,7 @@ export const relationalPayloadParsers = {
     requestId: id,
     createdAt: nullable(integer),
     sampleIndex: integer,
-    actualSeed: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
@@ -849,9 +849,6 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     ) {
       invalid();
     }
-  }
-  if (typeof row.actualSeed === 'number' && row.actualSeed > 4294967295) {
-    invalid();
   }
   if (
     (typeof row.share === 'number' && row.share < 0) ||

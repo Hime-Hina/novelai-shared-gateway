@@ -20,6 +20,7 @@ import {
   relationalAssetSlots,
   relationalInputDigest,
   restoreRelationalWire,
+  relationalChildSeed,
   relationalProviderRequest,
   relationalInputDisplay,
   validateRelationalInputBody,
@@ -37,7 +38,6 @@ import {
   type MemberGenerationConfirmation,
 } from '../generation/member-contract.ts';
 import { generationRequestFingerprint } from '../generation/request-fingerprint.ts';
-import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
 import { validateImageBytes } from '../protocols/native-image.ts';
 import type { ErrorLogRequest } from '../reports/generation-errors.ts';
@@ -168,6 +168,7 @@ export class RelationalInputStore {
         prepared.assets,
         prepared.firstSeed,
         prepared.sampleCount,
+        prepared.context,
       ),
       prepared.context,
     );
@@ -777,10 +778,7 @@ export class RelationalInputStore {
     for (const child of children) {
       const expected =
         p.operation === 'generate'
-          ? singleGenerationRequest(
-              { seed: seed!, nativeParameters: {} },
-              child.payload.sampleIndex,
-            ).seed
+          ? relationalChildSeed(seed!, child.payload.sampleIndex, context)
           : null;
       if (child.payload.actualSeed !== expected) {
         unavailable();
@@ -1114,10 +1112,7 @@ export class RelationalInputStore {
         const actualSeed =
           prepared.firstSeed === null
             ? null
-            : singleGenerationRequest(
-                { seed: prepared.firstSeed, nativeParameters: {} },
-                sampleIndex,
-              ).seed;
+            : relationalChildSeed(prepared.firstSeed, sampleIndex, prepared.context);
         events.push({
           ...common,
           streamId: `request:${accepted.requestId}`,
@@ -1832,7 +1827,7 @@ export class RelationalInputStore {
       )!;
       validateRelationalAssetBytes(asset, slot.image, context);
     }
-    const wire = restoreRelationalWire(input.body, assets, seed, 1);
+    const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);
     return {
       ...request,

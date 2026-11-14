@@ -24,6 +24,14 @@ import {
   materializeMemberGeneration,
 } from '../../server/generation/member-contract.ts';
 import { prepareRelationalInput } from '../../server/generation/relational-input.ts';
+import { normalizeNovelAiRequest } from '../../server/protocols/novelai-client.ts';
+import { nativeNormalizationContext } from '../../server/protocols/native-image.ts';
+import {
+  requestNormalizationDefaults,
+  generationRequestFingerprint,
+  requestCacheKey,
+} from '../../server/generation/request-fingerprint.ts';
+import { generationIdempotencyKeyHash } from '../../server/generation/admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import { relationalSnapshotSha256 } from '../../server/storage/relational-private-restore.ts';
@@ -1227,5 +1235,306 @@ test('真实成员HTTP与执行器共用Map/预算/事件，退款仍占物理�
   assert.ok(commits >= 8);
   await runtime.stop();
   await reading;
+  replayAll(t, f);
+});
+
+function scopedSeedAdmission(f, id, request, context) {
+  return [
+    {
+      ...meta(`accept-${id}`, NOW, 'm1'),
+      fingerprint: generationRequestFingerprint(request, { noCache: true }),
+    },
+    {
+      memberId: 'm1',
+      inputId: `input-${id}`,
+      requestId: id,
+      source: context.kind === 'member' ? 'member-generation' : context.kind,
+      request,
+      context,
+      seedMode: 'fixed',
+      confirmation: null,
+      idempotency: { keyHash: generationIdempotencyKeyHash(id), noCache: true },
+      jobs: Array.from({ length: request.sampleCount || 1 }, (_, index) => ({
+        jobId: `${id}-${index}`,
+        status: 'pending',
+        queueSeq: null,
+        deadlineAt: null,
+        queueExpiresAt: null,
+        admissionEpoch: 0,
+        cacheKey: context.kind === 'direct' ? requestCacheKey('m1', request, request.seed) : null,
+      })),
+    },
+  ];
+}
+
+test('Direct有限Number seed经正式ready、真实队列HTTP和完整回放逐值保留，单图不套Native取模', async (t) => {
+  for (const seed of [
+    0,
+    -1,
+    -2,
+    1.5,
+    4294967296,
+    Number.MAX_VALUE,
+    -Number.MAX_VALUE,
+    Number.MIN_VALUE,
+  ]) {
+    await t.test(String(seed), async (t) => {
+      const sent = [],
+        f = await setup(
+          t,
+          (req, res, body) => {
+            assert.equal(req.url, '/ai/generate-image');
+            sent.push(body.parameters.seed);
+            res.writeHead(200, { 'content-type': 'image/webp' });
+            res.end(image);
+          },
+          { seconds: 0 },
+        );
+      const context = {
+          kind: 'direct',
+          native: nativeNormalizationContext(),
+          defaults: requestNormalizationDefaults({}),
+        },
+        request = normalizeNovelAiRequest(
+          {
+            tag: 'direct seed',
+            model: 'nai-diffusion-4-5-full',
+            width: 128,
+            height: 128,
+            steps: 30,
+            seed,
+          },
+          {},
+        ),
+        args = scopedSeedAdmission(f, 'direct', request, context);
+      const accepted = await withAuthenticatedMemberApiKey(
+        f.members,
+        keys.m1,
+        () => f.generations.acceptGeneration(...args),
+        {},
+      );
+      assert.equal(f.inputs.readJobInput('direct-0').seed, seed);
+      assert.equal(
+        f.db.prepare('SELECT actual_seed AS seed FROM generation_jobs').get().seed,
+        seed,
+      );
+      await f.ready();
+      const run = f.runtime();
+      await run.start();
+      run.tick();
+      await waitFor(
+        () =>
+          f.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get('direct-0').status ===
+          'done',
+      );
+      await run.stop();
+      assert.deepEqual(sent, [seed]);
+      const once = databaseState(f.db),
+        retry = await withAuthenticatedMemberApiKey(
+          f.members,
+          keys.m1,
+          () => f.generations.acceptGeneration(...args),
+          {},
+        );
+      assert.equal(retry.replayed, true);
+      assert.deepEqual(retry.receipt, accepted.receipt);
+      assert.equal(databaseState(f.db), once);
+      assert.equal(f.inputs.readGenerationReuseProof('direct-0').prepared.firstSeed, seed);
+      const cached = await f.generations.findReusableGeneration(
+        { memberId: 'm1', request, context, seedMode: 'fixed', noCache: false, allowActive: false },
+        { dataDir: f.dir },
+      );
+      assert.equal(cached.kind, 'artifact');
+      const hit = await withAuthenticatedMemberApiKey(
+        f.members,
+        keys.m1,
+        () =>
+          f.generations.reuseGeneration(
+            {
+              ...meta('cached-direct', NOW, 'm1'),
+              fingerprint: generationRequestFingerprint(request, { noCache: false }),
+            },
+            {
+              memberId: 'm1',
+              request,
+              context,
+              seedMode: 'fixed',
+              noCache: false,
+              sourceJobId: cached.sourceJobId,
+              idempotency: { keyHash: generationIdempotencyKeyHash('cached'), noCache: false },
+              cached: {
+                requestId: 'cached',
+                jobId: 'cached-0',
+                inputId: 'cached-input',
+                source: 'direct',
+                artifactId: cached.artifactId,
+              },
+            },
+          ),
+        {},
+      );
+      assert.equal(hit.receipt.cacheHit, true);
+      assert.equal(f.calls, 1);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_attempts').get().n, 1);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM charges').get().n, 1);
+      const restored = replayAll(t, f);
+      assert.equal(new RelationalInputStore(restored).readJobInput('direct-0').seed, seed);
+      assert.equal(new RelationalInputStore(restored).readJobInput('cached-0').seed, seed);
+    });
+  }
+});
+
+test('Direct非有限seed与Native非法seed均在真实owner拒绝且零写；Native合法uint32批次继续wrap', async (t) => {
+  const f = await setup(t, undefined, { seconds: 0 }),
+    direct = {
+      kind: 'direct',
+      native: nativeNormalizationContext(),
+      defaults: requestNormalizationDefaults({}),
+    },
+    make = (seed) =>
+      normalizeNovelAiRequest(
+        {
+          tag: 'seed boundary',
+          model: 'nai-diffusion-4-5-full',
+          width: 128,
+          height: 128,
+          steps: 30,
+          seed,
+        },
+        {},
+      );
+  for (const seed of [NaN, Infinity, -Infinity]) {
+    const args = scopedSeedAdmission(f, String(seed), make(seed), direct),
+      before = databaseState(f.db);
+    await withAuthenticatedMemberApiKey(
+      f.members,
+      keys.m1,
+      () => {
+        assert.throws(() => f.generations.acceptGeneration(...args), { code: 'input_unavailable' });
+        return true;
+      },
+      {},
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  for (const kind of ['native', 'member']) {
+    const normalized = normalizeMemberGeneration({
+        operation: 'generate',
+        model: 'nai-diffusion-4-5-full',
+        input: 'native range',
+        parameters: { width: 128, height: 128, steps: 30, seed: 42 },
+      }),
+      context =
+        kind === 'native'
+          ? { kind, native: normalized.normalizationContext.native }
+          : { kind, member: normalized.normalizationContext };
+    for (const seed of [-1, -2, 1.5, 4294967296, Number.MAX_VALUE]) {
+      const request = { ...materializeMemberGeneration(normalized), seed },
+        args = scopedSeedAdmission(f, `${kind}-${seed}`, request, context),
+        before = databaseState(f.db);
+      if (kind === 'member') {
+        args[1].confirmation = {
+          requestFingerprint: generationRequestFingerprint(request, { noCache: true }),
+          versions: f.generations.readMemberGenerationCapabilities('m1').versions,
+          maxPerJob: { v5: '100', anlasFixed: '4000', anlasPurchased: '4000' },
+          maxTotal: { v5: '100', anlasFixed: '4000', anlasPurchased: '4000' },
+        };
+      }
+      await withAuthenticatedMemberApiKey(
+        f.members,
+        keys.m1,
+        () => {
+          assert.throws(() => f.generations.acceptGeneration(...args), {
+            code: 'input_unavailable',
+          });
+          return true;
+        },
+        {},
+      );
+      assert.equal(databaseState(f.db), before);
+    }
+  }
+  assert.equal(f.calls, 0);
+  const random = normalizeMemberGeneration({
+      operation: 'generate',
+      model: 'nai-diffusion-4-5-full',
+      input: 'native random',
+      parameters: { width: 128, height: 128, steps: 30, seed: -1 },
+    }),
+    materialized = materializeMemberGeneration(random);
+  assert.equal(random.randomSeed, true);
+  assert.ok(
+    Number.isSafeInteger(materialized.seed) &&
+      materialized.seed >= 0 &&
+      materialized.seed <= 4294967295,
+  );
+  const normalized = normalizeMemberGeneration({
+      operation: 'generate',
+      model: 'nai-diffusion-4-5-full',
+      input: 'native wrap',
+      parameters: { width: 128, height: 128, steps: 30, seed: 4294967295, n_samples: 2 },
+    }),
+    context = { kind: 'native', native: normalized.normalizationContext.native },
+    args = scopedSeedAdmission(f, 'native-wrap', materializeMemberGeneration(normalized), context);
+  await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    () => f.generations.acceptGeneration(...args),
+    {},
+  );
+  assert.deepEqual(
+    f.db
+      .prepare('SELECT actual_seed AS seed FROM generation_jobs ORDER BY sample_index')
+      .all()
+      .map((row) => row.seed),
+    [4294967295, 0],
+  );
+  assert.equal(f.inputs.readJobInput('native-wrap-1').seed, 0);
+  replayAll(t, f);
+});
+
+test('Direct有限seed的末段SQL故障被当前Key外层捕获后全库回滚，原键合法重试并完整回放', async (t) => {
+  const f = await setup(t, undefined, { seconds: 0 }),
+    context = {
+      kind: 'direct',
+      native: nativeNormalizationContext(),
+      defaults: requestNormalizationDefaults({}),
+    },
+    request = normalizeNovelAiRequest(
+      {
+        tag: 'seed rollback',
+        model: 'nai-diffusion-4-5-full',
+        width: 128,
+        height: 128,
+        steps: 30,
+        seed: 1.5,
+      },
+      {},
+    ),
+    args = scopedSeedAdmission(f, 'seed-rollback', request, context);
+  f.db.exec(
+    "CREATE TEMP TRIGGER seed_tail_fault AFTER INSERT ON generation_jobs WHEN NEW.id='seed-rollback-0' BEGIN SELECT RAISE(ABORT,'seed tail fault'); END",
+  );
+  const before = databaseState(f.db);
+  await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    () => {
+      assert.throws(() => f.generations.acceptGeneration(...args), /seed tail fault/);
+      return true;
+    },
+    {},
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.calls, 0);
+  f.db.exec('DROP TRIGGER seed_tail_fault');
+  const accepted = await withAuthenticatedMemberApiKey(
+    f.members,
+    keys.m1,
+    () => f.generations.acceptGeneration(...args),
+    {},
+  );
+  assert.equal(accepted.replayed, false);
+  assert.equal(f.inputs.readJobInput('seed-rollback-0').seed, 1.5);
   replayAll(t, f);
 });
