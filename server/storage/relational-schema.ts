@@ -266,7 +266,7 @@ CREATE TABLE generation_requests (
   source TEXT NOT NULL,
   operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
   model TEXT,
-  sample_count INTEGER NOT NULL CHECK (sample_count > 0),
+  sample_count INTEGER CHECK (sample_count > 0),
   seed_mode TEXT NOT NULL CHECK (seed_mode IN ('fixed', 'random', 'not_applicable', 'unknown')),
   confirmation TEXT CHECK (json_valid(confirmation) AND json_type(confirmation) = 'object'),
   accepted_at INTEGER NOT NULL,
@@ -571,12 +571,13 @@ CREATE TRIGGER job_input_${operation.toLowerCase()} BEFORE ${operation} ON gener
 BEGIN
   SELECT RAISE(ABORT, 'sample index exceeds accepted request') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r
-    WHERE r.id = NEW.request_id AND NEW.sample_index < r.sample_count
+    WHERE r.id = NEW.request_id AND (r.sample_count IS NULL OR NEW.sample_index < r.sample_count)
   );
   SELECT RAISE(ABORT, 'active job requires complete input and first context')
   WHERE NEW.status IN ('queued', 'pending', 'running') AND NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN generation_inputs i ON i.id = r.input_id
     WHERE r.id = NEW.request_id AND i.completeness = 'complete' AND r.context_id IS NOT NULL
+      AND r.sample_count IS NOT NULL
       AND r.seed_mode != 'unknown'
   );
 END;

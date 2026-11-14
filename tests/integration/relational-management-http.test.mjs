@@ -31,6 +31,7 @@ import { readServiceResources } from '../../server/reports/service-resources.ts'
 import { readActivityHeatmap, activityDate } from '../../server/reports/activity-heatmap.ts';
 import { RelationalReportStore } from '../../server/storage/relational-report-store.ts';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
+import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
@@ -549,7 +550,7 @@ test('owner summary真实官方0不补未知值，当前凭据错误只返回原
   assert.ok(!missing.text.includes('synthetic-upstream-pst'));
 });
 
-test('新增owner GET沿同一实际Cookie/owner/同源门禁，POST和admin别名不开放', async (t) => {
+test('新增owner GET沿同一Cookie/owner/同源门禁，POST与admin统计不开放且admin摘要独立鉴权', async (t) => {
   const f = await setup(t),
     before = databaseState(f.db);
   for (const route of [summary, statistics]) {
@@ -566,8 +567,11 @@ test('新增owner GET沿同一实际Cookie/owner/同源门禁，POST和admin别�
           headers: { 'x-admin-token': adminToken },
         })
       ).status,
-      404,
+      route === summary ? 200 : 404,
     );
+    if (route === summary) {
+      assert.equal((await f.call('/api/admin/summary')).status, 403);
+    }
   }
   assert.equal(databaseState(f.db), before);
 });
@@ -3471,7 +3475,7 @@ test('账户兼容manual quota POST保留owner原counts回执和admin原raw账�
         headers: { 'x-admin-token': adminToken },
       })
     ).status,
-    400,
+    404,
   );
   await refresh.stop();
 });
@@ -5542,4 +5546,594 @@ test('私有备注随真实组创建SQL尾错整笔回滚无通知，健康重�
   assert.deepEqual(success.body, { id: success.body.id, username: body.username, groupId: 'g' });
   assert.equal(f.members.readManagementMemberProfile(success.body.id).note, body.note);
   assert.equal(notices, 1);
+});
+
+test('admin新增默认true通过实际Opus GET后原子201，显式false零IO且不改当前共享池', async (t) => {
+  const f = await accountPatchFixture(t),
+    headers = { 'x-admin-token': adminToken },
+    pool = () =>
+      JSON.stringify([
+        f.db.prepare('SELECT * FROM sharing_policy').all(),
+        f.db.prepare("SELECT * FROM account_quota_state WHERE account_id='a'").all(),
+        f.db.prepare("SELECT * FROM wallets WHERE account_id='a' ORDER BY member_id").all(),
+        f.db.prepare("SELECT * FROM operating_state WHERE account_id='a'").all(),
+      ]),
+    before = pool();
+  for (const [enabled, expected, calls] of [
+    [undefined, true, 1],
+    [true, true, 2],
+    [false, false, 2],
+  ]) {
+    const result = await f.call('/api/admin/accounts', {
+      method: 'POST',
+      headers,
+      body: {
+        token: 'pst-default-real-opus',
+        name: 'new independent account',
+        weight: 1 + Number.EPSILON,
+        ...(enabled !== undefined ? { enabled } : {}),
+      },
+    });
+    assert.equal(result.status, 201, result.text);
+    assert.equal(result.body.enabled, expected);
+    assert.equal(result.body.weight, 1 + Number.EPSILON);
+    assert.equal(result.headers.get('set-cookie'), null);
+    assert.equal(f.calls.length, calls);
+    assert.equal(pool(), before);
+    assert.ok(!result.text.includes('pst-default-real-opus'));
+    assert.equal(Object.hasOwn(result.body, 'accountIntent'), false);
+    const row = f.db
+      .prepare('SELECT credential_epoch,enabled FROM upstream_accounts WHERE id=?')
+      .get(result.body.id);
+    assert.deepEqual(row, { credential_epoch: 1, enabled: Number(expected) });
+    assert.equal(
+      f.db
+        .prepare('SELECT pst,proxy_url FROM upstream_credentials WHERE account_id=?')
+        .get(result.body.id).pst,
+      'pst-default-real-opus',
+    );
+    const seq = f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq,
+      stored = readRelationalCommit(f.db, String(seq));
+    assert.deepEqual(
+      stored.events.map((e) => e.eventType),
+      expected
+        ? ['AccountRegistered', 'QuotaObserved', 'AvailabilityChanged']
+        : ['AccountRegistered'],
+    );
+    if (expected) {
+      assert.equal(stored.events[1].payload.connectionSourceEventId, stored.events[0].eventId);
+      assert.equal(stored.command.receipt.accountIntent.verified, true);
+    }
+  }
+  const selected = await sealCurrentAccountSource(f),
+    target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const owner = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => owner.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  assert.equal(target.prepare('SELECT COUNT(*) n FROM upstream_credentials').get().n, 0);
+  await verifyAndInstallRelationalStorage(target, selected);
+  assert.deepEqual(
+    target.prepare('SELECT * FROM upstream_accounts ORDER BY id').all(),
+    f.db.prepare('SELECT * FROM upstream_accounts ORDER BY id').all(),
+  );
+});
+
+test('新增默认启用的真实非Opus/网络失败与SQL尾错零持久化，不发布半个账户，健康重试一次通知', async (t) => {
+  for (const mode of [
+    'non-opus',
+    'upstream-error',
+    'expiry',
+    'private-tail',
+    'availability-tail',
+  ]) {
+    await t.test(mode, async (t) => {
+      const f = await accountPatchFixture(t),
+        headers = { 'x-admin-token': adminToken },
+        body = { token: 'pst-new-account-errors', name: 'atomic new account' };
+      if (mode === 'non-opus') {
+        f.upstream.payload.subscription.tier = 2;
+      }
+      if (mode === 'upstream-error') {
+        f.upstream.status = 503;
+      }
+      if (mode === 'expiry') {
+        f.upstream.payload.subscription.expiresAt = NOW - 1;
+      }
+      if (mode === 'private-tail') {
+        f.db.exec(
+          "CREATE TEMP TRIGGER fail_new_account BEFORE INSERT ON upstream_credentials WHEN NEW.account_id<>'a' BEGIN SELECT RAISE(ABORT,'synthetic registration private tail'); END",
+        );
+      }
+      if (mode === 'availability-tail') {
+        f.db.exec(
+          "CREATE TEMP TRIGGER fail_new_account BEFORE UPDATE ON upstream_accounts WHEN NEW.id<>'a' AND NEW.enabled=1 BEGIN SELECT RAISE(ABORT,'synthetic registration availability tail'); END",
+        );
+      }
+      const before = databaseState(f.db),
+        notices = f.notifications,
+        result = await f.call('/api/admin/accounts', { method: 'POST', headers, body });
+      assert.equal(result.status, mode.endsWith('tail') ? 500 : 409, result.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.notifications, notices);
+      assert.equal(f.calls.length, 1);
+      assert.ok(!result.text.includes(body.token));
+      if (mode.endsWith('tail')) {
+        f.db.exec('DROP TRIGGER fail_new_account');
+      }
+      f.upstream.payload.subscription.tier = 3;
+      f.upstream.payload.subscription.expiresAt = NOW + 86400000;
+      f.upstream.status = 200;
+      const healthy = await f.call('/api/admin/accounts', { method: 'POST', headers, body });
+      assert.equal(healthy.status, 201, healthy.text);
+      assert.equal(healthy.body.enabled, true);
+      assert.equal(f.notifications, notices + 1);
+      assert.equal(f.calls.length, 2);
+    });
+  }
+});
+
+test('新账户GET等待期间再次核当前admin/ready/政策与身份CAS，失败不能覆盖竞争账户', async (t) => {
+  for (const mode of ['admin', 'ready', 'policy', 'identity']) {
+    await t.test(mode, async (t) => {
+      const f = await accountPatchFixture(t);
+      let capturedId;
+      if (mode === 'identity') {
+        f.setHandler(
+          createRelationalManagementHttp({
+            sqlite: f.db,
+            events: f.events,
+            dataDir: f.dir,
+            controls: f.controls,
+            quotas: f.quotas,
+            env: f.env,
+            now: () => f.clock,
+            assertAdmin: (req, url) => assertAdminToken(req, url, adminToken, f.env),
+            queryAccountQuota: (...args) => {
+              capturedId = args[2];
+              return f.query(...args);
+            },
+          }),
+        );
+      }
+      let started, release;
+      const began = new Promise((r) => (started = r)),
+        held = new Promise((r) => (release = r));
+      f.upstream.onQuery = async () => {
+        started();
+        await held;
+      };
+      const endpoint =
+          '/api/admin/accounts' + (mode === 'admin' ? '?adminToken=' + adminToken : ''),
+        headers = mode === 'admin' ? {} : { 'x-admin-token': adminToken },
+        pending = f.call(endpoint, {
+          method: 'POST',
+          headers,
+          body: { token: 'pst-new-account-held', name: 'held new account' },
+        });
+      await began;
+      assert.equal(f.db.inTransaction, false);
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM upstream_accounts').get().n, 1);
+      try {
+        if (mode === 'admin') {
+          f.env.PUBLIC_MODE = 'true';
+        }
+        if (mode === 'ready') {
+          f.db.prepare("UPDATE projection_state SET status='building'").run();
+        }
+        if (mode === 'policy') {
+          const groups = [
+              ...f.quotas.readQuotaConfiguration().groups,
+              ...['g2', 'g3', 'g4'].map((id) => ({
+                id,
+                name: id,
+                share: 0,
+                members: [],
+                memberWeights: {},
+              })),
+            ],
+            changed = await f.call(admin, {
+              method: 'POST',
+              headers: { 'x-admin-token': adminToken },
+              body: { action: 'groups', expectedConfigVersion: 1, groups },
+            });
+          assert.equal(changed.status, 200, changed.text);
+        }
+        if (mode === 'identity') {
+          assert.equal(typeof capturedId, 'string');
+          const accounts = new RelationalAccountStore(f.db, f.quotas, f.controls, f.env);
+          f.db.transaction(() =>
+            accounts.prepareAccountCommand(
+              { ...meta('competing-new-id', f.clock), actorKind: 'admin', actorId: 'local-admin' },
+              {
+                kind: 'register',
+                accountId: capturedId,
+                displayName: 'competing source',
+                token: 'pst-competing-source',
+                configVersion: 1,
+                bind: false,
+              },
+              null,
+            ),
+          )();
+        }
+        const before = databaseState(f.db),
+          notices = f.notifications;
+        release();
+        const result = await pending;
+        assert.equal(
+          result.status,
+          { admin: 401, ready: 500, policy: 409, identity: 409 }[mode],
+          result.text,
+        );
+        assert.equal(databaseState(f.db), before);
+        assert.equal(f.notifications, notices);
+        if (mode === 'identity') {
+          assert.equal(
+            f.db.prepare('SELECT pst FROM upstream_credentials WHERE account_id=?').get(capturedId)
+              .pst,
+            'pst-competing-source',
+          );
+        }
+      } finally {
+        release();
+        await pending;
+      }
+    });
+  }
+});
+
+test('新注册慢body和缺query能力仍当前授权先行，Cookie不替代admin且零raw/零事实', async (t) => {
+  const bare = await setup(t),
+    before = databaseState(bare.db),
+    body = { token: 'pst-no-query-source' };
+  assert.equal((await bare.call('/api/admin/accounts', { method: 'POST', body })).status, 403);
+  assert.equal(
+    (
+      await bare.call('/api/admin/accounts', {
+        method: 'POST',
+        headers: { 'x-admin-token': adminToken },
+        body,
+      })
+    ).status,
+    503,
+  );
+  assert.equal(databaseState(bare.db), before);
+  for (const mode of ['admin', 'ready']) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await accountPatchFixture(t, {
+          onBodyRead() {
+            begin?.();
+          },
+        }),
+        started = new Promise((r) => (begin = r)),
+        endpoint = '/api/admin/accounts' + (mode === 'admin' ? '?adminToken=' + adminToken : ''),
+        headers = mode === 'admin' ? {} : { 'x-admin-token': adminToken },
+        held = await holdPolicyBody(t, f, endpoint, started, headers, {
+          token: 'pst-slow-new-account',
+        });
+      if (mode === 'admin') {
+        f.env.PUBLIC_MODE = 'true';
+      } else {
+        f.db.prepare("UPDATE projection_state SET status='building'").run();
+      }
+      const before = databaseState(f.db),
+        notices = f.notifications,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'admin' ? 401 : 500, result.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.notifications, notices);
+    });
+  }
+});
+
+test('admin单目标quota保留原ids/accounts解析和显式PST读取，非bound观察不分配，owner不能越过绑定', async (t) => {
+  const f = await accountPatchFixture(t),
+    headers = { 'x-admin-token': adminToken },
+    created = await f.call('/api/admin/accounts', {
+      method: 'POST',
+      headers,
+      body: { token: 'pst-extra-raw-read', enabled: false },
+    });
+  assert.equal(created.status, 201, created.text);
+  const id = created.body.id,
+    bound = () =>
+      JSON.stringify([
+        f.db.prepare("SELECT * FROM account_quota_state WHERE account_id='a'").all(),
+        f.db.prepare('SELECT * FROM wallets ORDER BY account_id,member_id').all(),
+        f.db.prepare('SELECT * FROM operating_state ORDER BY account_id').all(),
+        f.db.prepare('SELECT * FROM sharing_policy').all(),
+      ]),
+    before = bound();
+  for (const body of [{ ids: [id] }, { accounts: ' ' + id + ' ' }, { ids: ['not-present', id] }]) {
+    const result = await f.call('/api/admin/accounts/quota', { method: 'POST', headers, body });
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.body.ok, 1);
+    assert.equal(result.body.accounts[0].id, id);
+    assert.equal(result.body.accounts[0].enabled, false);
+    assert.equal(result.body.accounts[0].token, 'pst-extra-raw-read');
+    assert.equal(result.body.accounts[0].proxyUrl, '');
+    assert.equal(bound(), before);
+    assert.equal(result.headers.get('set-cookie'), null);
+  }
+  const snapshot = databaseState(f.db),
+    calls = f.calls.length;
+  assert.equal(
+    (await f.call('/api/member/owner/accounts/quota', { method: 'POST', body: { ids: [id] } }))
+      .status,
+    400,
+  );
+  assert.equal(databaseState(f.db), snapshot);
+  assert.equal(f.calls.length, calls);
+});
+
+test('新账户遇实际sharedRefresh物理busy零新观察，不能作废唯一已发自动GET', async (t) => {
+  const f = await accountPatchFixture(t);
+  let started, release;
+  const began = new Promise((r) => (started = r)),
+    held = new Promise((r) => (release = r));
+  f.upstream.onQuery = async () => {
+    started();
+    await held;
+  };
+  const refresh = createRelationalAccountQuotaRefresh({
+    sqlite: f.db,
+    quotas: f.quotas,
+    events: f.events,
+    env: f.quotaEnv,
+    now: () => f.clock,
+    logger: { log() {}, error() {} },
+  });
+  f.setHandler(
+    createRelationalManagementHttp({
+      sqlite: f.db,
+      events: f.events,
+      dataDir: f.dir,
+      controls: f.controls,
+      quotas: f.quotas,
+      env: f.env,
+      now: () => f.clock,
+      assertAdmin: (req, url) => assertAdminToken(req, url, adminToken, f.env),
+      queryAccountQuota: refresh.fetch,
+    }),
+  );
+  const auto = refresh.refreshEnabled();
+  await began;
+  try {
+    const before = databaseState(f.db),
+      notices = f.notifications,
+      result = await f.call('/api/admin/accounts', {
+        method: 'POST',
+        headers: { 'x-admin-token': adminToken },
+        body: { token: 'pst-new-busy' },
+      });
+    assert.equal(result.status, 409, result.text);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.notifications, notices);
+    assert.equal(f.calls.length, 1);
+    release();
+    const observed = await auto;
+    assert.equal(observed.ok, 1);
+    assert.equal(observed.ignored, 0);
+    const healthy = await f.call('/api/admin/accounts', {
+      method: 'POST',
+      headers: { 'x-admin-token': adminToken },
+      body: { token: 'pst-new-busy' },
+    });
+    assert.equal(healthy.status, 201, healthy.text);
+    assert.equal(f.calls.length, 2);
+  } finally {
+    release();
+    await auto;
+    await refresh.stop();
+  }
+});
+
+async function httpBatchExtra(f) {
+  const added = await f.call('/api/admin/accounts', {
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { token: 'pst-http-batch-extra', name: 'batch extra', enabled: false, weight: 1 },
+  });
+  assert.equal(added.status, 201, added.text);
+  return added.body.id;
+}
+
+test('账户批次HTTP原多目标quota raw DTO及bulk true真实GET，同一通知与完整提交不切绑定', async (t) => {
+  const f = await accountPatchFixture(t),
+    extra = await httpBatchExtra(f),
+    expectedIds = new RelationalAccountStore(f.db, f.quotas, f.controls, f.env)
+      .readAccountManagementDirectory()
+      .map((a) => a.id),
+    headers = { 'x-admin-token': adminToken },
+    seq = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n,
+    notice = f.notifications,
+    quota = await f.call('/api/admin/accounts/quota', {
+      method: 'POST',
+      headers,
+      body: { accounts: ['unknown', extra, 'a', 'a'] },
+    });
+  assert.equal(quota.status, 200, quota.text);
+  assert.deepEqual(Object.keys(quota.body).sort(), [
+    'accounts',
+    'checked',
+    'failed',
+    'ignored',
+    'ok',
+  ]);
+  assert.deepEqual(
+    [quota.body.checked, quota.body.ok, quota.body.failed, quota.body.ignored],
+    [2, 2, 0, 0],
+  );
+  assert.deepEqual(
+    quota.body.accounts.map((a) => a.id),
+    expectedIds,
+  );
+  assert.equal(quota.body.accounts.find((a) => a.id === extra).token, 'pst-http-batch-extra');
+  assert.equal(quota.headers.get('set-cookie'), null);
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.notifications, notice + 1);
+  assert.equal(f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n, seq + 1);
+  assert.equal(f.db.prepare('SELECT bound_account_id id FROM sharing_policy').get().id, 'a');
+  assert.equal(
+    f.db
+      .prepare('SELECT baseline_event_id id FROM account_quota_state WHERE account_id=?')
+      .get(extra).id,
+    null,
+  );
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT COUNT(*) n FROM wallets WHERE account_id=? AND (v5_available!='0' OR anlas_fixed_available!='0' OR anlas_purchased_available!='0')",
+      )
+      .get(extra).n,
+    0,
+  );
+  const enabled = await f.call('/api/admin/accounts', {
+    method: 'PATCH',
+    headers,
+    body: { ids: [extra, 'a'], enabled: true, weight: 2.125 },
+  });
+  assert.equal(enabled.status, 200, enabled.text);
+  assert.deepEqual(
+    enabled.body.accounts.map((a) => [a.id, a.enabled, a.weight]),
+    expectedIds.map((id) => [id, true, 2.125]),
+  );
+  assert.equal(f.calls.length, 4, 'combined weight changes are not fresh no-ops');
+  assert.equal(enabled.text.includes('pst-http-batch-extra'), false);
+  assert.equal(f.notifications, notice + 2);
+  const before = databaseState(f.db),
+    noops = f.notifications;
+  const repeated = await f.call('/api/admin/accounts', {
+    method: 'PATCH',
+    headers,
+    body: { ids: [extra, 'a'], enabled: true, weight: 2.125 },
+  });
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.deepEqual(repeated.body, enabled.body);
+  assert.equal(f.calls.length, 4);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, noops);
+  assert.equal(
+    (
+      await f.call('/api/member/owner/accounts/quota', {
+        method: 'POST',
+        body: { ids: ['a', extra] },
+      })
+    ).status,
+    400,
+  );
+  assert.equal(f.calls.length, 4);
+});
+
+test('账户批次HTTP一成功一真实失败仍一笔观察，409不改请求weight且健康请求可重试', async (t) => {
+  const f = await accountPatchFixture(t),
+    extra = await httpBatchExtra(f),
+    headers = { 'x-admin-token': adminToken },
+    before = f.db.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    seq = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n,
+    notice = f.notifications,
+    good = f.upstream.payload;
+  f.upstream.onQuery = () => {
+    const failed = f.calls.at(-1).authorization === 'Bearer pst-http-batch-extra';
+    f.upstream.status = failed ? 503 : 200;
+    f.upstream.payload = failed ? { message: 'synthetic upstream quota failure' } : good;
+  };
+  const failed = await f.call('/api/admin/accounts', {
+    method: 'PATCH',
+    headers,
+    body: { ids: ['a', extra], enabled: true, weight: 7.5 },
+  });
+  assert.equal(failed.status, 409, failed.text);
+  assert.equal(failed.text.includes('pst-http-batch-extra'), false);
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(
+    f.db.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    before,
+  );
+  assert.equal(f.notifications, notice + 1);
+  const stored = readRelationalCommit(f.db, String(seq + 1));
+  assert.equal(stored.events.filter((e) => e.eventType === 'QuotaObserved').length, 2);
+  assert.equal(
+    stored.events.some(
+      (e) =>
+        e.eventType === 'AccountConfigurationChanged' ||
+        (e.eventType === 'AvailabilityChanged' && e.payload.enabled),
+    ),
+    false,
+  );
+  f.upstream.onQuery = null;
+  f.upstream.status = 200;
+  f.upstream.payload = good;
+  const healthy = await f.call('/api/admin/accounts', {
+    method: 'PATCH',
+    headers,
+    body: { ids: ['a', extra], enabled: true, weight: 7.5 },
+  });
+  assert.equal(healthy.status, 200, healthy.text);
+  assert.equal(f.calls.length, 4);
+  assert.deepEqual(
+    healthy.body.accounts.map((a) => [a.enabled, a.weight]),
+    [
+      [true, 7.5],
+      [true, 7.5],
+    ],
+  );
+  assert.equal(f.notifications, notice + 2);
+});
+
+test('账户批次HTTP第二真实GET后重核较早connection和当前admin，不能保存半批或覆盖竞争私有值', async (t) => {
+  for (const mode of ['connection', 'admin', 'ready']) {
+    await t.test(mode, async (t) => {
+      const f = await accountPatchFixture(t),
+        extra = await httpBatchExtra(f),
+        firstId = new RelationalAccountStore(
+          f.db,
+          f.quotas,
+          f.controls,
+          f.env,
+        ).readAccountManagementDirectory()[0].id,
+        endpoint =
+          '/api/admin/accounts/quota' + (mode === 'admin' ? '?adminToken=' + adminToken : ''),
+        headers = mode === 'admin' ? {} : { 'x-admin-token': adminToken };
+      let expected, notices;
+      f.upstream.onQuery = async () => {
+        if (f.calls.length !== 2) {
+          return;
+        }
+        if (mode === 'connection') {
+          const changed = await f.patch(
+            { proxy: 'socks5://127.0.0.1:1080' },
+            {
+              route: '/api/admin/accounts/' + encodeURIComponent(firstId),
+              headers: { 'x-admin-token': adminToken },
+            },
+          );
+          assert.equal(changed.status, 200, changed.text);
+        } else if (mode === 'admin') {
+          f.env.PUBLIC_MODE = 'true';
+        } else {
+          f.db.prepare("UPDATE projection_state SET status='building'").run();
+        }
+        expected = databaseState(f.db);
+        notices = f.notifications;
+      };
+      const result = await f.call(endpoint, {
+        method: 'POST',
+        headers,
+        body: { ids: ['a', extra] },
+      });
+      assert.equal(result.status, { connection: 409, admin: 401, ready: 500 }[mode], result.text);
+      assert.equal(f.calls.length, 2);
+      assert.equal(databaseState(f.db), expected);
+      assert.equal(f.notifications, notices);
+    });
+  }
 });

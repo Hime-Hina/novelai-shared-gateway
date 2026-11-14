@@ -608,7 +608,7 @@ export class RelationalGenerationStore {
         {
           memberId: string;
           contextId: string | null;
-          sampleCount: number;
+          sampleCount: number | null;
           retiredAt: number | null;
         }
       >(

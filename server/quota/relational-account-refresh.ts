@@ -6,6 +6,7 @@ import { fetchNovelAiAccountQuota } from '../protocols/novelai-client.ts';
 import { NATIVE_PRICING_VERSION } from '../protocols/native-pricing.ts';
 import type { RelationalQuotaStore } from '../storage/relational-quota-store.ts';
 import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
+import type { RelationalGenerationLifecycle } from '../generation/relational-queue-runtime.ts';
 import {
   accountQuotaResult,
   accountQuotaErrorResult,
@@ -25,6 +26,7 @@ export function createRelationalAccountQuotaRefresh(options: {
   requestTimeoutMs?: number;
   refreshIntervalMs?: number;
   logger?: Pick<Console, 'log' | 'error'>;
+  runtime?: Pick<RelationalGenerationLifecycle, 'assertAccepting'>;
 }) {
   const { sqlite, quotas } = options,
     clock = options.now || Date.now,
@@ -35,6 +37,7 @@ export function createRelationalAccountQuotaRefresh(options: {
     querying: ReturnType<ReturnType<typeof createAccountQuotaQuery>> | null = null;
   const query = createAccountQuotaQuery({
     ...options,
+    assertAccepting: () => options.runtime?.assertAccepting(),
     fetchQuota: (...args) => {
       if (sqlite.inTransaction) {
         throw new Error('Quota queries cannot hold a SQL transaction across network IO.');
@@ -104,7 +107,7 @@ export function createRelationalAccountQuotaRefresh(options: {
     let ticket: ReturnType<RelationalQuotaStore['beginQuotaObservation']> | undefined;
     let result: QuotaResult;
     try {
-      const quota = await fetch(source.pst, source.proxyUrl, account.id, () => {
+      const quota = await fetch(source.pst, source.proxyUrl, account.id, () => () => {
         assertRelationalStorageReady(sqlite);
         if (enabledAccount()?.id !== account.id) {
           throw Object.assign(new Error('自动额度查询发起前绑定或启用状态已变化'), {

@@ -439,7 +439,7 @@ export async function installReady(f) {
   const selected = {
     sourcePath,
     sourceSha256: relationalSnapshotSha256(sourcePath),
-    historyId: 'generation-history',
+    historyId: f.db.prepare('SELECT history_id id FROM projection_state WHERE id=1').get().id,
     finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get()
       .seq,
     replicas: { dataDir: f.dir },
