@@ -409,14 +409,18 @@ export class RelationalMemberStore
     return row.recoverable_key;
   }
 
-  private assertBusinessActor(metadata: MemberCommand) {
-    if (!['admin', 'system'].includes(metadata.actorKind)) {
-      fail(403, '成员变更需要管理命令');
-    }
+  private authorizeOwnerCommand(metadata: MemberCommand, actor: MemberUser | null) {
+    const current =
+      actor &&
+      this.sqlite
+        .prepare<[string], { status: string; authEpoch: string | null }>(
+          'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+        )
+        .get(actor.id);
+    assertCurrentOwnerCommand(metadata, actor, current, this.env);
   }
 
   private commitMember(metadata: MemberCommand, memberId: string, fact: MemberFact) {
-    this.assertBusinessActor(metadata);
     const streamId = `member:${memberId}`;
     const version =
       this.sqlite
@@ -451,9 +455,12 @@ export class RelationalMemberStore
       apiKey: string;
       credentials?: MemberCredentials;
     },
+    actor: MemberUser | null = null,
   ) {
     return this.owningTransaction(() => {
-      this.assertBusinessActor(metadata);
+      if (metadata.actorKind !== 'system') {
+        this.authorizeOwnerCommand(metadata, actor);
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -494,9 +501,23 @@ export class RelationalMemberStore
     });
   }
 
-  setMemberStatus(metadata: MemberCommand, memberId: string, status: 'active' | 'disabled') {
+  setMemberStatus(
+    metadata: MemberCommand,
+    memberId: string,
+    status: 'active' | 'disabled',
+    actor: MemberUser | null = null,
+  ) {
     return this.owningTransaction(() => {
-      this.assertBusinessActor(metadata);
+      if (metadata.actorKind !== 'system') {
+        this.authorizeOwnerCommand(metadata, actor);
+      }
+      if (
+        metadata.actorKind === 'member' &&
+        memberId === this.env.OWNER_USER_ID &&
+        status === 'disabled'
+      ) {
+        fail(409, '不能停用或删除当前 owner');
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -534,14 +555,7 @@ export class RelationalMemberStore
     actor: MemberUser | null,
   ) {
     return this.owningTransaction(() => {
-      const current =
-        actor &&
-        this.sqlite
-          .prepare<[string], { status: string; authEpoch: string | null }>(
-            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
-          )
-          .get(actor.id);
-      assertCurrentOwnerCommand(metadata, actor, current, this.env);
+      this.authorizeOwnerCommand(metadata, actor);
       if (
         !metadata.actorId ||
         !input ||

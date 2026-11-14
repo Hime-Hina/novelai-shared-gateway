@@ -1777,6 +1777,20 @@ Windows Node 22 源码管理 HTTP 最终 26/26；同政策 owner、旧 member-ro
 
 根与已审 750 的 GET 并集在入口明确区分 method/字面路径，并同时保留 GET 的精确续期条件、POST 的当前 member 参数及 admin notifier 外层。管理/原政策/旧成员路由/事务通知四文件同次 108/108、零跳过，25.794 秒，实际包含 summary/statistics POST 404、GET 原响应/不续期、三政策旧回执/慢正文/SQL rollback/公共回放及通知边界。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式/diff 通过；日志 `H:/TEMP/novelai-management-policies-root-{joint,type,static,format}.log`。新根完整及编译/发布检查随后统一执行，不沿用 0ad 的检查为本并集背书。
 
+### 9.65 成员注册与状态命令的当前 owner 接缝
+
+基于固定根 `24f3d0c`，仅补 `RelationalMemberStore.registerMember()` 与 `setMemberStatus()` 的可选当前 actor 参数，供后续原管理 POST 调用，不接 HTTP、凭据重置、邀请、删除或分组。权威身份为稳定 member ID、当前 `members.status/auth_epoch` 及服务器 owner 配置；复用 `assertCurrentOwnerCommand()` 和既有 `changeMemberAdmission()` 的窄查询，当前授权在旧 receipt 之前。Discord/Key/Cookie 资格仍由原认证事务 owner 核验，不把 metadata 或快照当 HTTP 授权。admin 默认 null 与内部 system 原行为保留，admission 不新增 system 权限。
+
+owner 本人停用的原 409 规则归入状态命令；admin/system 保留应急停用。公共方法已完成当前授权，私有 `commitMember()` 不再重复旧 admin/system 限制，其三个调用来源仍仅为这两命令及内部 system Discord audit。没有新权限层、票据、状态表或事实格式；原命令 ID/fingerprint/actor 回执关系、密码/Key 初始化、停用撤销、savepoint 和公共回放路径不变。
+
+新增 `relational-member-management.test.mjs`：当前 owner 的真实 Key/Cookie 注册与停启、同名不同 ID、当前 stable ID/owner 配置/active/epoch 和失效 Key/Cookie 在原回执前拒绝、Discord 过期/丢失资格沿原认证 owner 拒绝、自停用与 admin/system 正常对照。SQL 在私有 Key 插入或 Cookie 删除之后故障，外层捕获仍回滚全部业务/私有/事实/流/回执且零幽灵通知；原键重试成功，后续旧 receipt 零写、不覆盖后来启用。磁盘重开与完整成员公共提交重放保留身份/状态和原 journal/receipt；不恢复私有 epoch、密码、Key、Discord、邀请、owner 配置或 Cookie，网络调用为零。
+
+作者专项 20/20；与原 `relational-members`、`relational-admission` 三文件同次 72/72、零跳过，日志 `H:/TEMP/novelai-member-owner-union.log`。精确旧根同一合法 owner 用例 0/1、原 admin/system 限制报 403；TEMP 删除同一个共享 owner verifier，12 个授权子例全部失败（含父共 13 fail）。原字节用例与日志保留在 `H:/TEMP/novelai-member-owner-negative-20261114/`，错误变体仅存在于 TEMP 且已恢复正确候选。backend 类型、architecture、默认与可信根 `24f3d0c` migration 历史、188 个 JS/MJS 语法通过；格式/diff 和最后候选复跑随固定提交登记。未执行 full/compiled/Node24/生产或变更架构守卫；此接缝不表示管理 POST 或整体切换已完成，独立审查待固定候选。
+
+固定 `0b553d18ba2b1293e742ba80770390fa75ee7c51` 独立技术复审通过：原三文件 72 项与三条独立反例同次 75/75、零跳过，四文件 Git blob/SHA 绑定。真实同认证事务 system 停用/重启 owner 后旧 actor 领取两个旧 receipt 均拒绝，鲜活 callback 可零写重领；对齐 metadata/owner ID 但使用他人 epoch 的 actor 仍拒绝，body 内 member 不成为可信 actor。随后私有密码/Key/epoch 改变不因旧注册 receipt 复活；原生重复 Key 的 SQL 失败由外层捕获仍全表回滚、零通知，可健康重试一次。完整公共回放零 fetch/无私有认证，重复 total_changes 为零。仅把当前 epoch 错取 actor 快照的变体精确漏掉 403，恢复后通过。逐调用确认 private commitMember 只由已授权 register/status 和硬编码 system/null Discord audit 调用，admission 不放宽 system。报告 `H:/TEMP/novelai-member-owner-independent-20261114/INDEPENDENT-REVIEW.md` 与 `reviewed-files-0b553d1.json`；本片不表示未来 HTTP 已正确传入当前 actor，调用者必须使用现授权回调。
+
+根在已审 owner GET/政策并集上整合，MemberStore 与专项保持 0b 的精确 Git 字节；真实成员管理、原成员与接单三文件 72/72、零跳过，6.893 秒。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式与 diff 通过，日志 `H:/TEMP/novelai-member-owner-root-{joint,type,static,format}.log`。新增的 owner 能力仅此两命令，既有 admission 与 system 边界不扩张；后续 HTTP 传参/总装配仍须实际验证。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
