@@ -2209,3 +2209,13 @@ Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与
 技术固定 `5f55403970ae089c4f17fec3fc4d7722b365698f` 基于纯基础并集 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`：已审根 de52 的 sole/18 actions 与已审 Account closure 6708 全部保留，旧 gateway 不复活。七相关文件同次 **445/445、零 skip、69.575 秒**；新 HTTP/Opening 原序/资金/完整 envelope/SQL 尾错/公共与 selected-private 恢复专项为其中35项。架构与事件单元 **471/471、零 skip**，类型、architecture、默认与可信 main88 migration、200文件语法、格式和 diff 通过。四项隔离错误实现分别忽略 MemberRemoved 原序、漏绑定钱包、漏完整首配 recipe、漏 Opening 序号校验，均在实际业务断言失败；恢复同 Git 源后35/35。证据 `H:/TEMP/novelai-fair-quota-evidence-20261115/` 的 fixed-5f-seven.log、guard-events.log、negative-evidence.json 与 reviewed-source-5f55403.json。
 
 9.86 并集曾暴露正向 SOCKS/TLS 夹具缺根已要求的 runtime 参数：仅将 admit 构造移到已有真实 runtime.start 后并注入同实例，原外网/秘密/隧道断言和缺参负控不改；实际场景复验通过。新 missing-sync 反例初版删除 account facts 却保留多余 stream 前置，被 T1 提前拒绝，已按真实剩余 streams 生成合法 envelope，现确由业务完整性识错；原失败日志保留并排除通过证据。作者工作树新测试的 CRLF 经 Prettier 规范为 Git LF，index 内容不变，前后 raw hash 分别封存，最终十三文件逐字匹配 Git。当前仅源码定向闭环，独立复审与父发布并集仍待完成；未跑 full/build/compiled/Node24/native 或生产，不选 A/B、不解释旧在线模型。新增 configureMemberIds 守卫名单/单元及必要断言须维护者复核。
+
+#### 9.86.1 独立复审的预留与逐池责任修复
+
+固定66/5f在独审中确认两项P2，保持NOTPASS，原445绿色不能替代业务反例：`managementView(false)`仍用空 reservations，导致真实held+新官方观察时误规划基线采纳并被正确的共同同步validator拒绝；无基线钱包guard只看Anlas合计，fixed正权益与purchased负责任可抵消成零而错误初贷。修复在同一原financial/management view保留实际预留，并逐V5/fixed/purchased核原非零值，未放宽金融、完整提交、来源或held门禁。
+
+原FullCharge类型不足以表达SQL同步所需窄预留，故原FairQuotaState/Database及upgrader/config/sync签名按同一必要预留形状参数化，默认仍FullCharge；没有新runtime模式/flag或补造费用、时点、pricing、当前值。SQL同步预留明确保存原user/status/resource/amount/fixed/purchased/sharedHeld，避免把不完整Full元数据交旧normalizer补v5Equivalent。`fair-share.ts`类型擦除后的完整63,206字节JS与66逐字相同（SHA7704c2b83a795290ce3b516818d46ebefb198bf048eb0575fc7186d71b295826），金融算法没有改动。
+
+原held程序的后置“SQL完全不变”过严：原owner在held且恢复窗口推进时，即使预算0也保存RefillApplied推进游标。独审保留原红程序/日志，另封v2核完整原facts/convert/游标，原66仍在相同业务处红，修后原字节1/1通过。作者新增真实V5与fallback预留两路径，核原zero-budget游标事实、外catch保存点全回滚/零通知、旧receipt及同原时点零写、已退款后健康同步、同账户不同原观察角色错配拒绝和完整公共回放不复活认证；真实ready signed Opening Wallet +5/-5逐池责任反例现在503且零业务写。初版新夹具曾误用4.5模型期待V5，以及在已有SQL内再开notifier边界，均按实际原调用修正而非弱化断言；这些准备错误日志不计业务红。
+
+后继已普通合入根已审c2cf（Report/backup及基础Account闭包）；实际SOCKS正向测试沿根同一runtime构造，旧66证据和新修复验证分别封存。作者同候选七文件 **449/449、零skip、82.381秒**（新fair-quota39项包含其中），架构与事实单元 **471/471、零skip**；类型、architecture、默认与可信main88 migration、格式/diff通过。日志 `postreview-seven.log`、`postreview-unit.log` 与 `postreview-type-only-fair-share.json` 在原9.86证据目录；独审原held v2已在作者树原字节1/1，正式同fixed复审另记。未做full/build/compiled/Node24/native/真实云端或切换。

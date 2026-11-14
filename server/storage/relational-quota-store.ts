@@ -821,7 +821,11 @@ export class RelationalQuotaStore {
           return [
             c.id,
             {
-              ...c,
+              userId: c.userId,
+              status: c.status,
+              fixed: c.fixed,
+              purchased: c.purchased,
+              sharedV5Reserved: c.sharedV5Reserved,
               resource,
               amount:
                 resource === 'v5'
@@ -892,7 +896,10 @@ export class RelationalQuotaStore {
     if (
       (!snapshot &&
         (Object.values(balances).some(
-          (b) => parseAmount(b.v5Available) !== 0n || parseAmount(b.anlasAvailable) !== 0n,
+          (b) =>
+            parseAmount(b.v5Available) !== 0n ||
+            parseAmount(b.anlasFixedAvailable) !== 0n ||
+            parseAmount(b.anlasPurchasedAvailable) !== 0n,
         ) ||
           Object.keys(reservations).length ||
           ops.pendingExternalFunding.length ||
@@ -1026,7 +1033,7 @@ export class RelationalQuotaStore {
     if (financial && requireIdle) {
       assertFairQuotaIdle(financial.db);
     }
-    const state: FairQuotaState | null = policy
+    const state: FairQuotaState<FairQuotaSyncState['reservations'][string]> | null = policy
       ? {
           ...(financial?.db.settings.fairQuota ?? {
             enabled: policy.enabled === 1,
@@ -1063,12 +1070,13 @@ export class RelationalQuotaStore {
           configVersion: policy.configVersion,
           configurationHistory: [],
           fallbackTotalsByUser: {},
-          // 同一原 owner 已拒绝实际预留；管理决定不需要伪造完整收费对象。
-          reservations: {},
+          reservations: financial?.db.settings.fairQuota.reservations ?? {},
           ...this.policyParameters(policy),
         }
       : null;
-    const db: FairQuotaDatabase & { users: FairUser[] } = {
+    const db: FairQuotaDatabase<FairQuotaSyncState['reservations'][string]> & {
+      users: FairUser[];
+    } = {
       settings: { fairQuota: state },
       accounts: financial ? [financial.account] : [],
       users: this.sqlite
@@ -1649,11 +1657,7 @@ export class RelationalQuotaStore {
           redistributeRemaining: input.redistributeRemaining === true,
         });
         if (financial) {
-          syncBoundFairQuota(
-            db as { settings: { fairQuota: FairQuotaState } },
-            financial.account,
-            metadata.recordedAt,
-          );
+          syncBoundFairQuota(db as FairQuotaSyncDatabase, financial.account, metadata.recordedAt);
         }
         return result;
       }),
@@ -1691,8 +1695,8 @@ export class RelationalQuotaStore {
     });
   }
   private sharingConfigurationEvent(
-    db: FairQuotaDatabase,
-    state: FairQuotaState,
+    db: FairQuotaDatabase<FairQuotaSyncState['reservations'][string]>,
+    state: FairQuotaState<FairQuotaSyncState['reservations'][string]>,
     metadata: Metadata,
     redistributeRemaining: boolean,
   ) {

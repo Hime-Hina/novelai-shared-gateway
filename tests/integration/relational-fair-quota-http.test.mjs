@@ -34,6 +34,10 @@ import { verifyAndInstallRelationalStorage } from '../../server/storage/relation
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
 import { assertAdminToken } from '../../server/http/admin-access.ts';
 import { authenticateMemberApiKey } from '../../server/members/authentication.ts';
+import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import { syncFairQuota } from '../../server/quota/fair-share.ts';
+import { beginDomainCommand, finishDomainCommand } from '../../server/events/domain-events.ts';
+import { relationalStateNotificationsFor } from '../../server/events/relational-state-notifications.ts';
 
 const ids = ['m4', 'm2', 'm3', 'm1'],
   adminToken = 'synthetic-fair-quota-admin';
@@ -47,6 +51,7 @@ async function setup(
     disabled = false,
     baseline = false,
     wallets = false,
+    walletResources = null,
     quota = {},
     sharingOrder = false,
   } = {},
@@ -96,6 +101,9 @@ async function setup(
         event.eventId = `${original.eventType}-${i}`;
         if (event.eventType === 'OpeningWalletRecorded') {
           event.eventId += `-${event.payload.memberId}`;
+          if (walletResources !== null) {
+            event.payload.available = { ...walletResources };
+          }
         }
         event.accountId = accountId;
         event.streamId = `account:${accountId}`;
@@ -394,6 +402,227 @@ test('fair-quota已有账本重确认沿原成员顺序，真实预留不被分�
   assert.equal(databaseState(f.db), stable);
 });
 
+test('重确认保留原普通和fallback预留：新观察不越过held，原游标事实/退款后同步与完整回放一致', async (t) => {
+  t.mock.method(globalThis, 'fetch', () => assert.fail('此 owner 反例不访问网络'));
+  for (const fallback of [false, true]) {
+    await t.test(`fallback ${fallback}`, async (t) => {
+      const f = await fixture(t, {
+          seconds: 0,
+          fallback,
+          ...(fallback ? { v5: '0', secondV5: '40' } : {}),
+        }),
+        quotas = new RelationalQuotaStore(f.db);
+      for (const memberId of ['m3', 'm4']) {
+        f.db.transaction(() =>
+          f.members.registerMember(meta(`held-${memberId}`), {
+            memberId,
+            displayName: memberId,
+            apiKey: `synthetic-key-${memberId}`,
+          }),
+        )();
+      }
+      f.db.transaction(() =>
+        quotas.configureGroups(
+          command('held-four'),
+          {
+            expectedConfigVersion: 1,
+            groups: [
+              { id: 'g', members: ids, share: 1 },
+              ...['z', 'a', 'b'].map((id) => ({ id, members: [], share: 0 })),
+            ],
+          },
+          null,
+        ),
+      )();
+      f.accept('held-observation', { model: 'nai-diffusion-5-full', steps: 23 });
+      f.dispatch('held-observation-0');
+      const held = f.db.prepare("SELECT * FROM charges WHERE status='reserved'").all();
+      assert.equal(held.length, 1);
+      assert.equal(held[0].billing_mode, fallback ? 'anlas_fallback' : 'v5');
+      const oldBaseline = quotas.readAccountQuota('a').baselineEventId,
+        observe = (id, at) => {
+          const ticket = quotas.beginQuotaObservation('a', at),
+            q = quotas.readAccountQuota('a');
+          return f.db.transaction(() =>
+            quotas.recordQuotaObservation(
+              meta(id, at),
+              ticket,
+              accountQuotaResult(
+                'a',
+                {
+                  tier: 3,
+                  subscriptionActive: true,
+                  subscriptionExpiresAt: null,
+                  fixed: q.observedAnlasFixed,
+                  purchased: q.observedAnlasPurchased,
+                  v5UsagePercent: q.observedV5,
+                  v5UsageTimeUntilNextPercent: q.secondsPerPercent,
+                },
+                new Date(at).toISOString(),
+              ),
+            ),
+          )();
+        },
+        decision = (event) => ({
+          eventType: event.eventType,
+          payload: event.payload,
+          streamId: event.streamId,
+          accountId: event.accountId,
+          memberId: event.memberId,
+          occurredAt: event.occurredAt,
+          policyVersion: event.policyVersion,
+          pricingVersion: event.pricingVersion,
+        }),
+        expected = (metadata) => {
+          const view = quotas.state('a'),
+            control = structuredClone(view.db);
+          control.accounts = [structuredClone(view.account)];
+          beginDomainCommand(control);
+          syncFairQuota(control, metadata.recordedAt);
+          const facts = finishDomainCommand(control).events;
+          return {
+            control,
+            events: quotas.convert(facts, view, {
+              ...metadata,
+              policyVersion: 'fair-quota-confirmation-v1',
+            }),
+          };
+        };
+      observe('held-new-observation', NOW + 10);
+      const observedId = quotas.readAccountQuota('a').observationEventId,
+        metadata = { ...command('held-new-confirmation'), recordedAt: NOW + 20 },
+        original = expected(metadata),
+        wallets = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all();
+      assert.equal(quotas.readAccountQuota('a').baselineEventId, oldBaseline);
+      assert.notEqual(observedId, oldBaseline);
+      assert.equal(
+        original.events.some(
+          (event) => event.eventType === 'RefillApplied' && event.payload.budget === '0',
+        ),
+        true,
+      );
+      const prefix = String(f.db.prepare('SELECT MAX(commit_seq) AS n FROM commits').get().n),
+        emitter = new EventEmitter(),
+        notices = [],
+        notifications = relationalStateNotificationsFor(f.db, emitter),
+        confirm = (metadata) =>
+          notifications.commit(() =>
+            f.db.transaction(() => quotas.configureMemberIds(metadata, ids)).immediate(),
+          );
+      emitter.on('commit', (event) => notices.push(event));
+      f.db.exec(
+        "CREATE TEMP TRIGGER held_tail BEFORE UPDATE ON account_quota_state WHEN NEW.refill_cursor_at>OLD.refill_cursor_at BEGIN SELECT RAISE(ABORT,'held-tail'); END",
+      );
+      const stable = databaseState(f.db);
+      notifications.commit(() =>
+        f.db
+          .transaction(() =>
+            assert.throws(() => quotas.configureMemberIds(metadata, ids), /held-tail/),
+          )
+          .immediate(),
+      );
+      assert.equal(databaseState(f.db), stable);
+      assert.deepEqual(notices, []);
+      f.db.exec('DROP TRIGGER held_tail');
+      const accepted = confirm(metadata),
+        stored = readRelationalCommit(f.db, accepted.commitSeq);
+      assert.deepEqual(accepted.events.map(decision), original.events.map(decision));
+      assert.equal(
+        quotas.readAccountQuota('a').refillCursorAt,
+        original.control.settings.fairQuota.lastRefillAt,
+      );
+      assert.equal(quotas.readAccountQuota('a').baselineEventId, oldBaseline);
+      assert.deepEqual(f.db.prepare("SELECT * FROM charges WHERE status='reserved'").all(), held);
+      assert.deepEqual(f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), wallets);
+      assert.equal(notices.length, 1);
+      const after = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+      assert.equal(confirm(metadata).replayed, true);
+      assert.equal(confirm({ ...metadata, commandId: 'held-same-time' }).unchanged, true);
+      assert.equal(databaseState(f.db), after);
+      assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+      assert.equal(notices.length, 1);
+
+      f.fail(
+        'held-observation-0',
+        { aborted: false, evidence: { requestStarted: false } },
+        NOW + 30,
+      );
+      assert.equal(
+        f.db.prepare("SELECT count(*) AS n FROM charges WHERE status='reserved'").get().n,
+        0,
+      );
+      observe('after-refund-observation', NOW + 40);
+      const healthyMetadata = { ...command('after-refund-confirm'), recordedAt: NOW + 50 },
+        healthy = expected(healthyMetadata),
+        result = confirm(healthyMetadata);
+      assert.deepEqual((result.events ?? []).map(decision), healthy.events.map(decision));
+      assert.equal(
+        quotas.readAccountQuota('a').baselineEventId,
+        quotas.readAccountQuota('a').observationEventId,
+      );
+
+      const target = new Database(':memory:');
+      let badSource;
+      try {
+        initializeRelationalStorage(target, 'generation-history');
+        for (const { seq } of f.db
+          .prepare(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq<=? ORDER BY commit_seq',
+          )
+          .all(Number(prefix))) {
+          target.transaction(() =>
+            new RelationalCommitReplayer(target).replayCommit(
+              readRelationalCommit(f.db, seq),
+              f.inputs,
+            ),
+          )();
+        }
+        badSource = new Database(target.serialize());
+        badSource.pragma('foreign_keys=ON');
+        const mixed = structuredClone(stored.command);
+        mixed.events.find(
+          (event) => event.eventType === 'RefillApplied',
+        ).payload.observationEventId = observedId;
+        badSource.transaction(() => appendRelationalCommit(badSource, mixed))();
+        const untouched = databaseState(target);
+        target.transaction(() =>
+          assert.throws(
+            () =>
+              new RelationalCommitReplayer(target).replayCommit(
+                readRelationalCommit(badSource, stored.events[0].commitSeq),
+              ),
+            /公平分配确认|同步金融事实|恢复来源/,
+          ),
+        )();
+        assert.equal(databaseState(target), untouched);
+        for (const { seq } of f.db
+          .prepare(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq>? ORDER BY commit_seq',
+          )
+          .all(Number(prefix))) {
+          target.transaction(() =>
+            new RelationalCommitReplayer(target).replayCommit(
+              readRelationalCommit(f.db, seq),
+              f.inputs,
+            ),
+          )();
+        }
+        for (const table of ['wallets', 'charges', 'account_quota_state', 'operating_state']) {
+          assert.deepEqual(
+            target.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+            f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+          );
+        }
+        assert.equal(target.prepare('SELECT count(*) AS n FROM api_keys').get().n, 0);
+      } finally {
+        badSource?.close();
+        target.close();
+      }
+    });
+  }
+});
+
 test('Sharing与MemberRemoved原顺序不等于ID排序或组flatMap，自动加入按原位置替换', async (t) => {
   const f = await setup(t);
   assert.equal((await f.call()).status, 200);
@@ -510,6 +739,32 @@ test('Opening不是额外预算：已有钱包不可重开账，原已采纳资�
       }
     });
   }
+});
+
+test('Opening无基线各池权益与负债不能跨fixed/purchased抵消成零后再贷', async (t) => {
+  const f = await setup(t, {
+      accounts: 1,
+      wallets: true,
+      walletResources: { v5: '0', anlasFixed: '5', anlasPurchased: '-5' },
+    }),
+    before = databaseState(f.db);
+  assertRelationalStorageReady(f.db);
+  assert.deepEqual(
+    f.db
+      .prepare(
+        'SELECT anlas_fixed_available AS fixed,anlas_purchased_available AS purchased FROM wallets ORDER BY member_id',
+      )
+      .all(),
+    [
+      { fixed: '5', purchased: '-5' },
+      { fixed: '5', purchased: '-5' },
+    ],
+  );
+  const response = await f.call();
+  assert.equal(response.status, 503);
+  assert.match(response.body.error, /缺少金融基线/);
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(f.notices, []);
 });
 
 test('Opening原观察时点/三池未知保持未知，暂停与旧代次不被HTTP初配启用或默认填满', async (t) => {
