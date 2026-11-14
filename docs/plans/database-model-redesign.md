@@ -2221,6 +2221,16 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 作者最终七文件 **450/450、零跳过，80.201秒**，事件/架构单元471项与三错误实现负控另记；恢复后专项40项。最终文档子提交 `07c5070` 仅补四行证据，十二条非文档 Git/raw 字节等于4da，独审已重绑且没有无故重复运行。根从已审备注 `cb5e87a` 普通合入4da，十三文件逐一重算共同基线并集，HTTP保留原 note 新建/读取与 fair-quota 整段，其他路径不变，证明 `H:/TEMP/novelai-fair-quota-root-preservation.json`。管理HTTP、fair-quota、私有恢复、完整回放四文件同次 **242/242、零跳过，78.248秒**；类型、architecture、默认与可信 main88迁移、200文件语法及变更格式通过，日志 `H:/TEMP/novelai-fair-quota-root-*`。未以此替代当前完整后端、双 Node 编译、三包、CI实际发行物或生产迁移/端点/容量验收，守卫增量仍需维护者复核。
 
+### 9.90 原成员会话 HTTP child 的关系夹具
+
+本片仅迁移 `tests/integration/member-session-http.test.mjs` 与本节，不改产品 owner、schema、历史资产或独立 owner-session-bridge 工具。来源为已审 Note/fair-quota 并集 `eeaba678`，实际启动与初始数据复用 `tests/helpers/relational-child.mjs` 的 bootstrap、真实监听地址、localhost 上游和 IO 前拒绝旧 Store/外联；完整公共回放、所选私有同 cut 恢复及唯一 installer 接合以父并集的同源列清单为准，不复制第二套种库/ready 工具，也不手写 epoch、冷却或 ready。
+
+原八个会话用例的期限、Cookie/当前身份/授权、owner A→B→A、密码重置与无关成员隔离、SSE 撤销和退出/重开断言保留：45 秒用例、15 秒启动/请求、POSIX 30 秒关闭用例与 5 秒结束上界、原 Windows SIGTERM skip 均不延长或删除。普通首次启动通过真实 admin enable/额度查询建立原官方观察；后续重启不重设被测试修改的账户。owner 缓存 Discord 资格经原私有认证事务保存，离线 Cookie 经当前真实 Key 认证及原签发 owner；本片未新增 Discord 网络等待覆盖，仍由既有关系 HTTP 组件/独审承担，不放行外联或新增产品配置旗标。
+
+旧 JSON 账户、event_commits 和 ledger 的断言按当前事实角色核对：账户行、同笔 AccountConfigurationChanged 的两目标/权重、真正 enabled 变化的 AvailabilityChanged、唯一完整 bulk intent/回执及全表失败回滚。已暂停的 peer 不制造第二条假可用性变化。终止 SSE 时分别核对实际任务/尝试、原扣退、三池钱包与金融事实，允许原查询及零预算恢复游标合法收尾，不把元数据提交冒充新生图或扣退。新增最小 Cookie/Key 转归边界证明会话仍绑定稳定成员，Bearer/query Key 不代替 Cookie，停用再启用不能复活旧 Cookie。
+
+当前为单文件实现与静态准备；真实 child 原文件验收、源 SHA/同 cut 公私恢复证据、必要负控及独审在父并集恢复夹具冻结后登记。不把本节写成已完成整体发布、Node24、Linux SIGTERM、实云或切换验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

@@ -2,20 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash, randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { createMemberSession } from '../../server/members/authentication.ts';
+import {
+  createMemberSession,
+  authenticateMemberApiKey,
+} from '../../server/members/authentication.ts';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const memberTtl = 7 * 86400000,
   ownerTtl = 24 * 3600000;
 const cookieFor = (session) => `nai_member_session=${session.token}`;
@@ -30,76 +25,64 @@ async function listen(server) {
 }
 
 async function fixture(t, { owner = false, grace = 30000, paused = false, quotaStatus } = {}) {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-member-session-http-'));
-  const adminToken = 'synthetic-admin-member-session-only';
-  const initialized = await bootstrap({
-    env: {
-      ADMIN_TOKEN: adminToken,
-      NOVELAI_TOKEN: 'pst-synthetic-member-session-only',
-      DATA_DIR: dataDir,
-    },
-    log() {},
-  });
-  const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  const state = await childFixture(t, 'member-session-http');
+  const { members } = state;
+  const adminToken = state.env.ADMIN_TOKEN;
   const guildId = '1134557553011998840';
-  const seeded = new JsonStore(dataDir);
-  await seeded.init();
-  try {
-    await seeded.update(
-      (db) => {
-        const account = db.accounts[0],
-          observation = {
-            ...(paused ? { enabled: false } : {}),
-            quotaTier: 3,
-            subscriptionActive: true,
-            subscriptionExpiresAt: Date.now() + 86400000,
-            quotaFixed: 10000,
-            quotaPurchased: 0,
-            v5UsagePercent: 100,
-            quotaCheckedAt: new Date().toISOString(),
-          };
-        Object.assign(account, observation);
-        recordDomainEvent(db, {
-          eventType: 'QuotaObserved',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          payload: { kind: 'official', accountId: account.id, observation },
-        });
-        syncFairQuota(db);
-        if (owner) {
-          db.users.forEach((user, index) => {
-            user.discord = {
-              id: `22222222222222222${index}`,
-              guildId,
-              member: true,
-              checkedAt: Date.now(),
-              accessToken: 'synthetic-access',
-              refreshToken: 'synthetic-refresh',
-              expiresAt: Date.now() + 3600000,
-            };
-            recordDomainEvent(db, {
-              eventType: 'MemberEligibilityChanged',
-              streamId: 'sharing:default',
-              memberId: user.id,
-              payload: {
-                memberId: user.id,
-                discord: {
-                  id: user.discord.id,
-                  guildId,
-                  member: true,
-                  checkedAt: user.discord.checkedAt,
-                },
-              },
-            });
-          });
-        }
-      },
-      { immediate: true },
-    );
-  } finally {
-    await seeded.close();
+  const env = {
+    PUBLIC_HOST: 'session.example',
+    SHUTDOWN_GRACE_MS: String(grace),
+    PUBLIC_BASE_URL: owner ? 'https://session.example' : 'http://127.0.0.1',
+  };
+  if (owner) {
+    Object.assign(env, {
+      OWNER_USER_ID: members[0].user_id,
+      DISCORD_GUILD_ID: guildId,
+      DISCORD_CLIENT_ID: '123456789012345678',
+      DISCORD_CLIENT_SECRET: 'synthetic-session-client-secret',
+    });
   }
-  const audit = new Database(path.join(dataDir, 'library.sqlite'), { fileMustExist: true });
+  let running,
+    exited,
+    activated = false;
+  const memberStore = async (run) => {
+    assert.ok(!running || running.exit, 'offline member changes require the gateway to be stopped');
+    const db = new Database(state.filename, { fileMustExist: true });
+    try {
+      return await run(new RelationalMemberStore(db, env));
+    } finally {
+      db.close();
+    }
+  };
+  if (owner) {
+    await memberStore(async (store) => {
+      for (const [index, member] of members.entries()) {
+        await store.discordAuthenticationTransaction((transaction) => {
+          const user = transaction.readMember(member.user_id);
+          user.discord = {
+            id: `22222222222222222${index}`,
+            guildId,
+            member: true,
+            checkedAt: Date.now(),
+            accessToken: 'synthetic-access',
+            refreshToken: 'synthetic-refresh',
+            expiresAt: Date.now() + 3600000,
+          };
+          transaction.saveAuthentication(user, 'observation');
+        });
+      }
+    });
+  }
+  const read = (sql, ...parameters) => query(state, sql, ...parameters);
+  // Only the original failure/time fixtures use direct SQL; business setup goes through its owner.
+  const execute = (sql, ...parameters) => {
+    const db = new Database(state.filename, { fileMustExist: true });
+    try {
+      return parameters.length ? db.prepare(sql).run(...parameters) : db.exec(sql);
+    } finally {
+      db.close();
+    }
+  };
   const requests = [];
   const upstream = http.createServer(async (req, res) => {
     requests.push(req.url);
@@ -128,106 +111,27 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
     );
   });
   const upstreamPort = await listen(upstream);
-  let base = 'http://127.0.0.1';
-  // 预置 owner grant 只用于离线认证；任何意外的 Discord/NAI 外联都会失败。
-  const preload = path.join(dataDir, 'deny-external-fetch.mjs');
-  await writeFile(
-    preload,
-    `import { Server } from 'node:http';
-const listen = Server.prototype.listen;
-Server.prototype.listen = function (...args) {
-  this.once('listening', () => process.send({ memberSessionTestPort: this.address().port }));
-  return listen.apply(this, args);
-};
-const original = globalThis.fetch;
-globalThis.fetch = (input, options) => {
-  const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
-  if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('External fetch blocked by synthetic session test');
-  return original(input, options);
-};\n`,
-  );
-  const env = Object.fromEntries(
-    ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-      .filter((key) => process.env[key])
-      .map((key) => [key, process.env[key]]),
-  );
-  Object.assign(env, {
-    ADMIN_TOKEN: adminToken,
-    DATA_DIR: dataDir,
-    HOST: '127.0.0.1',
-    PORT: '0',
-    PUBLIC_HOST: 'session.example',
-    SHUTDOWN_GRACE_MS: String(grace),
-    PUBLIC_BASE_URL: owner ? 'https://session.example' : base,
-    NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-  });
-  if (owner) {
-    Object.assign(env, {
-      OWNER_USER_ID: members[0].user_id,
-      DISCORD_GUILD_ID: guildId,
-      DISCORD_CLIENT_ID: '123456789012345678',
-      DISCORD_CLIENT_SECRET: 'synthetic-session-client-secret',
-    });
-  }
-  let child,
-    exited,
-    output = '';
-  const record = (chunk) => {
-    output = (output + chunk.toString()).slice(-16000);
-  };
+  const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`;
+  let base;
   const start = async (ownerUserId = env.OWNER_USER_ID) => {
     if (owner) {
       env.OWNER_USER_ID = ownerUserId;
     }
-    child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, 'server/index.ts'], {
-      cwd: root,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    });
-    exited = once(child, 'exit');
-    child.stdout.on('data', record);
-    child.stderr.on('data', record);
-    await new Promise((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timer);
-        child.off('message', ready);
-        child.off('exit', failed);
-        child.off('error', failed);
-      };
-      const ready = (message) => {
-        if (
-          !Number.isSafeInteger(message?.memberSessionTestPort) ||
-          message.memberSessionTestPort <= 0
-        ) {
-          return;
-        }
-        base = `http://127.0.0.1:${message.memberSessionTestPort}`;
-        cleanup();
-        resolve();
-      };
-      const failed = (cause) => {
-        cleanup();
-        reject(new Error(`synthetic gateway failed ${cause}: ${output}`));
-      };
-      const timer = setTimeout(() => failed('startup timeout'), 15000);
-      child.on('message', ready);
-      child.once('exit', failed);
-      child.once('error', failed);
-    });
+    running = await launchGateway(state, upstreamOrigin, env);
+    exited = once(running.child, 'exit');
+    base = running.origin;
+    if (!paused && !activated) {
+      await enableAccount(state, running);
+      activated = true;
+    }
   };
   const stop = async () => {
-    if (child?.exitCode === null && child?.signalCode === null) {
-      child.kill('SIGKILL');
-    }
-    if (exited) {
-      await exited;
+    if (running) {
+      await running.kill();
     }
   };
   t.after(async () => {
     await stop();
-    audit.close();
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
   });
@@ -256,28 +160,21 @@ globalThis.fetch = (input, options) => {
     assert.equal(response.headers.get('set-cookie'), null);
     return response.json();
   };
-  const createOfflineSession = async (index, now = Date.now()) => {
-    assert.ok(
-      !child || child.exitCode !== null || child.signalCode !== null,
-      'session fixture writes require the gateway to be stopped',
-    );
-    const store = new JsonStore(dataDir);
-    await store.init();
-    try {
-      const user = await store.update(
-        (db) => db.users.find((item) => item.id === members[index].user_id),
-        { persist: false },
-      );
-      return await createMemberSession(store, user, env, now);
-    } finally {
-      await store.close();
-    }
-  };
+  const createOfflineSession = (index, now = Date.now()) =>
+    memberStore(async (store) => {
+      const memberId = members[index].user_id;
+      const member = await authenticateMemberApiKey(store, store.readMemberApiKey(memberId));
+      assert.equal(member?.id, memberId);
+      return createMemberSession(store, member, env, now);
+    });
   const expire = (cookie) =>
-    audit
-      .prepare('UPDATE member_sessions SET expires_at = ? WHERE token_hash = ?')
-      .run(Date.now() - 1, tokenHash(cookie));
+    execute(
+      'UPDATE member_sessions SET expires_at = ? WHERE token_hash = ?',
+      Date.now() - 1,
+      tokenHash(cookie),
+    );
   return {
+    state,
     start,
     stop,
     call,
@@ -285,14 +182,21 @@ globalThis.fetch = (input, options) => {
     me,
     createOfflineSession,
     expire,
-    audit,
+    read,
+    execute,
+    memberStore,
     members,
     adminToken,
-    child: () => child,
+    accountId: state.accountId,
+    privateToken: state.env.NOVELAI_TOKEN,
+    child: () => running.child,
     exit: () => exited,
     assertNoGeneration() {
       assert.ok(requests.every((url) => url === '/user/data'));
-      assert.doesNotMatch(output, /External fetch blocked/);
+      for (const child of state.children) {
+        assert.doesNotMatch(child.output, /denied upstream before IO|must not load legacy SQLite/);
+      }
+      assert.equal(read('SELECT COUNT(*) AS n FROM generation_jobs')[0].n, 0);
     },
   };
 }
@@ -332,9 +236,11 @@ test(
       quotaStatus: () => replies.shift()?.() ?? 200,
     });
     const cookie = cookieFor(await gateway.createOfflineSession(0));
-    const { id } = gateway.audit.prepare('SELECT id FROM accounts').get();
-    const current = () =>
-      JSON.parse(gateway.audit.prepare('SELECT data FROM accounts WHERE id=?').get(id).data);
+    const id = gateway.accountId;
+    const current = () => {
+      const account = gateway.read('SELECT id,enabled FROM upstream_accounts WHERE id=?', id)[0];
+      return { ...account, enabled: account.enabled === 1 };
+    };
     const patch = async (key, body = { enabled: true }) => {
       const response = await gateway.call(`/api/member/owner/accounts/${id}`, {
         cookie,
@@ -362,17 +268,15 @@ test(
       return { result, release: () => response.resolve(200) };
     };
     const enabledWrites = () =>
-      gateway.audit
-        .prepare(
-          "SELECT COUNT(*) AS n FROM domain_events WHERE event_type='AvailabilityChanged' AND account_id=? AND json_extract(payload,'$.enabled')=1",
-        )
-        .get(id).n;
+      gateway.read(
+        "SELECT COUNT(*) AS n FROM domain_events WHERE event_type='AvailabilityChanged' AND account_id=? AND json_extract(payload,'$.enabled')=1",
+        id,
+      )[0].n;
     const officialObservations = () =>
-      gateway.audit
-        .prepare(
-          "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' AND account_id=? AND json_extract(payload,'$.kind')='official' ORDER BY rowid",
-        )
-        .all(id);
+      gateway.read(
+        "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' AND account_id=? ORDER BY commit_seq,event_index",
+        id,
+      );
     await gateway.start();
     assert.equal(current().enabled, false);
     const initialWrites = enabledWrites();
@@ -383,12 +287,10 @@ test(
       const first = await patch(key);
       assert.equal(first.status, 200, JSON.stringify(first.body));
       assert.equal(first.body.enabled, true);
-      assert.ok(!JSON.stringify(first.body).includes(current().token));
-      const { receipt } = gateway.audit
-        .prepare(
-          "SELECT receipt FROM event_commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq DESC LIMIT 1",
-        )
-        .get();
+      assert.ok(!JSON.stringify(first.body).includes(gateway.privateToken));
+      const { receipt } = gateway.read(
+        "SELECT receipt FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq DESC LIMIT 1",
+      )[0];
       assert.deepEqual(JSON.parse(receipt), first.body);
       if (pauseFirst) {
         assert.equal((await patch('later-pause', { enabled: false })).status, 200);
@@ -411,7 +313,7 @@ test(
     assert.equal((await stale.result).status, 409);
     const afterFailure = officialObservations();
     assert.equal(afterFailure.length, beforeFailure.length + 1);
-    assert.equal(JSON.parse(afterFailure.at(-1).payload).observation.upstreamStatus, 'invalid_key');
+    assert.equal(JSON.parse(afterFailure.at(-1).payload).errorCode, 'invalid_key');
     assert.ok(!afterFailure.at(-1).payload.includes('SYNTHETIC_PRIVATE_OWNER_QUOTA_ERROR'));
     assert.equal(current().enabled, false);
     assert.equal(enabledWrites(), initialWrites + 2);
@@ -433,11 +335,7 @@ test(
   async (t) => {
     const gateway = await fixture(t);
     const officialObservations = () =>
-      gateway.audit
-        .prepare(
-          "SELECT COUNT(*) AS n FROM domain_events WHERE event_type='QuotaObserved' AND json_extract(payload,'$.kind')='official'",
-        )
-        .get().n;
+      gateway.read("SELECT COUNT(*) AS n FROM domain_events WHERE event_type='QuotaObserved'")[0].n;
     const seededObservations = officialObservations();
     await gateway.start();
     const refreshDeadline = Date.now() + 15000;
@@ -449,7 +347,7 @@ test(
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const headers = { 'x-admin-token': gateway.adminToken };
-    const originalId = gateway.audit.prepare('SELECT id FROM accounts').get().id;
+    const originalId = gateway.accountId;
     const added = await gateway.call('/api/admin/accounts', {
       headers,
       body: {
@@ -462,29 +360,25 @@ test(
     const peer = await added.json(),
       ids = [originalId, peer.id];
     const readAccounts = () =>
-      gateway.audit
-        .prepare('SELECT data FROM accounts ORDER BY id')
-        .all()
-        .map((row) => {
-          const account = JSON.parse(row.data);
-          return { id: account.id, enabled: account.enabled, weight: account.weight };
-        });
+      gateway.read('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').map((row) => {
+        return { id: row.id, enabled: row.enabled === 1, weight: row.weight };
+      });
     const snapshot = () =>
       Object.fromEntries(
-        ['accounts', 'ledger', 'domain_events', 'event_commits'].map((table) => [
-          table,
-          gateway.audit.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
-        ]),
+        gateway
+          .read("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+          .map(({ name }) => [
+            name,
+            gateway.read(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`),
+          ]),
       );
     const availabilityEvents = () =>
-      gateway.audit
-        .prepare(
-          "SELECT * FROM domain_events WHERE event_type='AvailabilityChanged' ORDER BY commit_seq,event_index",
-        )
-        .all();
+      gateway.read(
+        "SELECT * FROM domain_events WHERE event_type='AvailabilityChanged' ORDER BY commit_seq,event_index",
+      );
     const before = snapshot(),
       beforeAvailability = availabilityEvents().length;
-    gateway.audit.exec(
+    gateway.execute(
       "CREATE TRIGGER synthetic_availability_failure BEFORE INSERT ON domain_events WHEN NEW.event_type='AvailabilityChanged' BEGIN SELECT RAISE(ABORT, 'synthetic availability storage failure'); END",
     );
     try {
@@ -498,11 +392,11 @@ test(
         assert.deepEqual(
           snapshot(),
           before,
-          'rejected account commands must leave all durable facts and ledger rows unchanged',
+          'rejected account commands must leave all durable facts, private state and financial rows unchanged',
         );
       }
     } finally {
-      gateway.audit.exec('DROP TRIGGER synthetic_availability_failure');
+      gateway.execute('DROP TRIGGER synthetic_availability_failure');
     }
     const bulk = await gateway.call('/api/admin/accounts', {
       method: 'PATCH',
@@ -522,29 +416,48 @@ test(
     );
     assert.deepEqual(readAccounts(), expectedBulk);
     const bulkEvents = availabilityEvents().slice(beforeAvailability);
-    assert.equal(bulkEvents.length, 2);
     assert.equal(
-      new Set(bulkEvents.map((event) => event.commit_seq)).size,
+      bulkEvents.length,
+      1,
+      'the already paused peer must not get a fabricated state change',
+    );
+    const configured = gateway.read(
+      "SELECT * FROM domain_events WHERE event_type='AccountConfigurationChanged' AND commit_seq=? ORDER BY event_index",
+      bulkEvents[0].commit_seq,
+    );
+    assert.equal(configured.length, 2);
+    assert.equal(
+      new Set([...bulkEvents, ...configured].map((event) => event.commit_seq)).size,
       1,
       'bulk intent must have one atomic commit',
     );
-    assert.deepEqual(bulkEvents.map((event) => event.account_id).sort(), [...ids].sort());
+    assert.deepEqual(configured.map((event) => event.account_id).sort(), [...ids].sort());
     for (const event of bulkEvents) {
       assert.equal(event.actor_kind, 'admin');
       assert.equal(event.actor_id, 'local-admin');
       const payload = JSON.parse(event.payload);
       assert.equal(payload.accountId, event.account_id);
       assert.equal(payload.enabled, false);
-      assert.equal(payload.weight, 7);
+    }
+    for (const event of configured) {
+      assert.equal(event.actor_kind, 'admin');
+      assert.equal(event.actor_id, 'local-admin');
+      assert.equal(JSON.parse(event.payload).accountId, event.account_id);
+      assert.equal(JSON.parse(event.payload).weight, 7);
     }
     assert.equal(
-      gateway.audit
-        .prepare(
-          "SELECT COUNT(*) AS n FROM ledger WHERE json_extract(data,'$.type')='update-accounts'",
-        )
-        .get().n,
+      gateway.read(
+        "SELECT COUNT(*) AS n FROM commits WHERE json_extract(receipt,'$.accountIntent.kind')='bulk'",
+      )[0].n,
       1,
     );
+    const intent = JSON.parse(
+      gateway.read('SELECT receipt FROM commits WHERE commit_seq=?', bulkEvents[0].commit_seq)[0]
+        .receipt,
+    ).accountIntent;
+    assert.deepEqual([...intent.ids].sort(), [...ids].sort());
+    assert.equal(intent.weight, 7);
+    assert.equal(intent.enabled, false);
     await gateway.stop();
     await gateway.start();
     assert.deepEqual(readAccounts(), expectedBulk);
@@ -568,7 +481,13 @@ test(
     assert.equal(singleEvents[0].actor_kind, 'admin');
     assert.equal(singleEvents[0].actor_id, 'local-admin');
     assert.equal(JSON.parse(singleEvents[0].payload).enabled, true);
-    assert.equal(JSON.parse(singleEvents[0].payload).weight, 11);
+    const singleConfigured = gateway.read(
+      "SELECT payload FROM domain_events WHERE event_type='AccountConfigurationChanged' AND commit_seq=? AND account_id=?",
+      singleEvents[0].commit_seq,
+      originalId,
+    );
+    assert.equal(singleConfigured.length, 1);
+    assert.equal(JSON.parse(singleConfigured[0].payload).weight, 11);
     await gateway.stop();
     await gateway.start();
     assert.deepEqual(readAccounts(), expectedSingle);
@@ -594,15 +513,13 @@ for (const owner of [false, true]) {
       const hash = tokenHash(cookie);
       const endpoint = owner ? '/api/member/owner/member-management' : '/api/member/me';
       const prior = Date.now() + 10000;
-      gateway.audit
-        .prepare('UPDATE member_sessions SET expires_at=? WHERE token_hash=?')
-        .run(prior, hash);
+      gateway.execute('UPDATE member_sessions SET expires_at=? WHERE token_hash=?', prior, hash);
       const ordinary = await gateway.call(endpoint, { cookie });
       assert.equal(ordinary.status, 200);
       assert.equal(ordinary.headers.get('set-cookie'), null);
       await ordinary.json();
       assert.equal(
-        gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash)
+        gateway.read('SELECT expires_at FROM member_sessions WHERE token_hash=?', hash)[0]
           .expires_at,
         prior,
       );
@@ -614,7 +531,7 @@ for (const owner of [false, true]) {
       assert.equal(crossSite.headers.get('set-cookie'), null);
       await crossSite.text();
       assert.equal(
-        gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash)
+        gateway.read('SELECT expires_at FROM member_sessions WHERE token_hash=?', hash)[0]
           .expires_at,
         prior,
       );
@@ -623,9 +540,7 @@ for (const owner of [false, true]) {
         after = Date.now();
       assert.equal(visit.status, 200);
       const value = await visit.json(),
-        renewed = gateway.audit
-          .prepare('SELECT * FROM member_sessions WHERE token_hash=?')
-          .get(hash);
+        renewed = gateway.read('SELECT * FROM member_sessions WHERE token_hash=?', hash)[0];
       assert.ok(renewed.expires_at >= before + ttl && renewed.expires_at <= after + ttl);
       assert.equal(visit.headers.get('set-cookie').split(';')[0], cookie);
       assert.equal(
@@ -644,11 +559,11 @@ for (const owner of [false, true]) {
       assert.equal(unrelated.headers.get('set-cookie'), null);
       await unrelated.json();
       assert.equal(
-        gateway.audit.prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?').get(hash)
+        gateway.read('SELECT expires_at FROM member_sessions WHERE token_hash=?', hash)[0]
           .expires_at,
         renewed.expires_at,
       );
-      gateway.audit.exec(
+      gateway.execute(
         "CREATE TRIGGER synthetic_renewal_failure BEFORE UPDATE ON member_sessions BEGIN SELECT RAISE(ABORT, 'synthetic renewal failure'); END",
       );
       try {
@@ -660,13 +575,12 @@ for (const owner of [false, true]) {
         assert.equal(failed.headers.get('set-cookie'), null);
         await failed.text();
         assert.equal(
-          gateway.audit
-            .prepare('SELECT expires_at FROM member_sessions WHERE token_hash=?')
-            .get(hash).expires_at,
+          gateway.read('SELECT expires_at FROM member_sessions WHERE token_hash=?', hash)[0]
+            .expires_at,
           renewed.expires_at,
         );
       } finally {
-        gateway.audit.exec('DROP TRIGGER synthetic_renewal_failure');
+        gateway.execute('DROP TRIGGER synthetic_renewal_failure');
       }
       await gateway.stop();
       await gateway.start();
@@ -680,9 +594,7 @@ for (const owner of [false, true]) {
       assert.equal(expired.headers.get('set-cookie'), null);
       await expired.text();
       assert.equal(
-        gateway.audit
-          .prepare('SELECT token_hash FROM member_sessions WHERE token_hash=?')
-          .get(hash),
+        gateway.read('SELECT token_hash FROM member_sessions WHERE token_hash=?', hash)[0],
         undefined,
       );
       gateway.assertNoGeneration();
@@ -717,9 +629,10 @@ test(
     );
     assert.equal((await gateway.me(cookie)).sessionExpiresAt, session.expiresAt);
     assert.equal((await gateway.me(cookie)).sessionExpiresAt, session.expiresAt);
-    const row = gateway.audit
-      .prepare('SELECT * FROM member_sessions WHERE token_hash = ?')
-      .get(tokenHash(cookie));
+    const row = gateway.read(
+      'SELECT * FROM member_sessions WHERE token_hash = ?',
+      tokenHash(cookie),
+    )[0];
     assert.equal(row.expires_at, session.expiresAt);
     assert.ok(!JSON.stringify(row).includes(cookie.slice(cookie.indexOf('=') + 1)));
     await gateway.stop();
@@ -744,8 +657,8 @@ test(
   async (t) => {
     const gateway = await fixture(t);
     await gateway.start();
-    const count = gateway.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n;
-    gateway.audit.exec(
+    const count = gateway.read('SELECT COUNT(*) AS n FROM member_sessions')[0].n;
+    gateway.execute(
       "CREATE TRIGGER synthetic_session_failure BEFORE INSERT ON member_sessions BEGIN SELECT RAISE(ABORT, 'synthetic session storage failure'); END",
     );
     try {
@@ -753,12 +666,9 @@ test(
       assert.equal(failed.status, 500);
       assert.equal(failed.headers.get('set-cookie'), null);
       await failed.text();
-      assert.equal(
-        gateway.audit.prepare('SELECT COUNT(*) AS n FROM member_sessions').get().n,
-        count,
-      );
+      assert.equal(gateway.read('SELECT COUNT(*) AS n FROM member_sessions')[0].n, count);
     } finally {
-      gateway.audit.exec('DROP TRIGGER synthetic_session_failure');
+      gateway.execute('DROP TRIGGER synthetic_session_failure');
     }
     const login = await gateway.login(1);
     assert.equal(login.status, 200);
@@ -827,9 +737,10 @@ test(
     for (const session of [owner, member]) {
       // 启动时即撤销，不能依赖浏览器恰好在角色变化期间访问一次。
       assert.equal(
-        gateway.audit
-          .prepare('SELECT token_hash FROM member_sessions WHERE token_hash = ?')
-          .get(tokenHash(cookieFor(session))),
+        gateway.read(
+          'SELECT token_hash FROM member_sessions WHERE token_hash = ?',
+          tokenHash(cookieFor(session)),
+        )[0],
         undefined,
       );
       assert.equal(
@@ -852,6 +763,95 @@ test(
       401,
     );
     assert.equal((await gateway.me(cookieFor(unrelated))).sessionExpiresAt, unrelated.expiresAt);
+    gateway.assertNoGeneration();
+  },
+);
+
+test(
+  'Cookie 绑定稳定成员，Key 换绑不切换会话身份，停用再启用不复活旧 Cookie',
+  { timeout: 45000 },
+  async (t) => {
+    const gateway = await fixture(t);
+    await gateway.start();
+    const sessions = [];
+    for (const index of [0, 1]) {
+      const response = await gateway.login(index);
+      assert.equal(response.status, 200);
+      sessions.push({
+        cookie: response.headers.get('set-cookie').split(';')[0],
+        value: await response.json(),
+      });
+    }
+    const memberId = gateway.members[0].user_id;
+    const originalEpoch = gateway.read('SELECT auth_epoch FROM members WHERE id=?', memberId)[0]
+      .auth_epoch;
+    await gateway.stop();
+    let originalKey;
+    await gateway.memberStore(async (store) => {
+      originalKey = store.readMemberApiKey(memberId);
+      store.replaceMemberApiKey(memberId, 'synthetic-current-key-for-session-owner');
+      store.replaceMemberApiKey(gateway.members[1].user_id, originalKey);
+    });
+    assert.equal(
+      gateway.read('SELECT auth_epoch FROM members WHERE id=?', memberId)[0].auth_epoch,
+      originalEpoch,
+    );
+    await gateway.start();
+    for (const [index, session] of sessions.entries()) {
+      const profile = await gateway.me(session.cookie);
+      assert.equal(profile.username, gateway.members[index].username);
+      assert.equal(profile.sessionExpiresAt, session.value.expiresAt);
+      assert.equal(
+        gateway.read(
+          'SELECT member_id FROM member_sessions WHERE token_hash=?',
+          tokenHash(session.cookie),
+        )[0].member_id,
+        gateway.members[index].user_id,
+      );
+    }
+    const noCookie = await gateway.call(`/api/member/me?token=${encodeURIComponent(originalKey)}`, {
+      headers: { authorization: `Bearer ${originalKey}` },
+    });
+    assert.equal(noCookie.status, 401);
+    assert.equal(noCookie.headers.get('set-cookie'), null);
+    await noCookie.text();
+    await gateway.stop();
+    await gateway.memberStore((store) => {
+      for (const status of ['disabled', 'active']) {
+        const commandId = `session-fixture:${randomUUID()}`;
+        store.setMemberStatus(
+          {
+            commandId,
+            fingerprint: createHash('sha256').update(commandId).digest('hex'),
+            actorKind: 'system',
+            actorId: null,
+            recordedAt: Date.now(),
+            correlationId: null,
+            causationId: null,
+            policyVersion: 'member-status-fixture',
+            pricingVersion: 'none',
+          },
+          memberId,
+          status,
+        );
+      }
+    });
+    assert.equal(
+      gateway.read(
+        'SELECT token_hash FROM member_sessions WHERE token_hash=?',
+        tokenHash(sessions[0].cookie),
+      )[0],
+      undefined,
+    );
+    await gateway.start();
+    assert.equal(
+      (await gateway.call('/api/member/me', { cookie: sessions[0].cookie })).status,
+      401,
+    );
+    assert.equal(
+      (await gateway.me(sessions[1].cookie)).sessionExpiresAt,
+      sessions[1].value.expiresAt,
+    );
     gateway.assertNoGeneration();
   },
 );
@@ -898,10 +898,20 @@ test(
       { authorization: 'Bearer ' + gateway.members[0].api_key },
       ': connected',
     );
-    const counts = () =>
-      ['jobs', 'fair_quota_settlements', 'ledger'].map(
-        (table) => gateway.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n,
-      );
+    const counts = () => ({
+      jobs: gateway.read('SELECT COUNT(*) AS n FROM generation_jobs')[0].n,
+      attempts: gateway.read('SELECT COUNT(*) AS n FROM generation_attempts')[0].n,
+      settlements: gateway.read(
+        'SELECT original_job_id,status,v5,anlas_fixed,anlas_purchased FROM charges ORDER BY original_job_id',
+      ),
+      wallets: gateway.read(
+        'SELECT account_id,member_id,v5_available,anlas_fixed_available,anlas_purchased_available FROM wallets ORDER BY account_id,member_id',
+      ),
+      // 普通观察和零预算恢复游标可完成；原生成扣退及实际金额不得因关机改变。
+      financialFacts: gateway.read(
+        "SELECT COUNT(*) AS n FROM domain_events WHERE event_type IN ('QuotaReserved','QuotaRefunded','QuotaSettled','JobFailed','JobCompleted','ArtifactPublished','LateResultRecorded','AllocationApplied','FundsTransferred','FundingRegistered','FundingReceived','OperatingContributed','GapCovered','DebitsConfirmed','ReturnClassified')",
+      )[0].n,
+    });
     const before = counts(),
       started = Date.now();
     gateway.child().kill('SIGTERM');
