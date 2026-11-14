@@ -392,6 +392,8 @@ test('归档开账允许仅剩旧键/退款凭据，活动对象仍要求完整�
       originalRequestId: 'missing-request',
       originalJobId: 'missing-job',
       originalCommandId: 'missing-command',
+      noCache: null,
+      seedMode: null,
       requestId: null,
       commitSeq: null,
       contextId: null,

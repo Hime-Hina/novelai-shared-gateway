@@ -123,6 +123,8 @@ export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'OpeningQuotaRecorded',
   'OpeningOperatingRecorded',
   'OpeningChargeRecorded',
+  'OpeningJobRecorded',
+  'OpeningArtifactRecorded',
   'CooldownChanged',
   'QuotaReserved',
   'DispatchAuthorized',
@@ -552,6 +554,25 @@ export class RelationalGenerationStore {
       .get(metadata.actorId);
     if (metadata.actorKind !== 'member' || member?.status !== 'active' || !member.epoch) {
       fail('成员授权已失效', 401);
+    }
+    const opening = this.inputs.readOpeningGenerationIdempotency(
+      mapping.memberId,
+      mapping.operation,
+      mapping.keyHash,
+    );
+    if (opening) {
+      const p = opening.event.payload;
+      if (
+        canonicalJson(mapping) !== canonicalJson(opening.mapping) ||
+        p.resolution !== 'live' ||
+        p.originalMemberId !== metadata.actorId ||
+        p.originalCommandId !== metadata.commandId ||
+        p.intentFingerprint !== metadata.fingerprint ||
+        opening.receipt === null
+      ) {
+        fail('原请求的任务或回执不可领取；再次生成须使用新操作键。', 410);
+      }
+      return { replayed: true, events: [], receipt: opening.receipt };
     }
     const prior = readRelationalReceipt(this.sqlite, metadata);
     const cacheHit =
@@ -2373,6 +2394,18 @@ export class RelationalGenerationStore {
     }
     const diagnostics = events.filter((e) => e.eventType === 'DiagnosticRecorded'),
       failures = events.filter((e) => e.eventType === 'JobFailed');
+    const openingArtifacts = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'OpeningArtifactRecorded' }>
+    >();
+    for (const event of events) {
+      if (event.eventType === 'OpeningArtifactRecorded') {
+        if (openingArtifacts.has(event.payload.artifactId)) {
+          fail('同笔开账产物重复登记');
+        }
+        openingArtifacts.set(event.payload.artifactId, event);
+      }
+    }
     for (const diagnostic of diagnostics) {
       const matched = failures.filter(
         (e) => e.payload.diagnosticId === diagnostic.payload.diagnosticId,
@@ -2402,6 +2435,137 @@ export class RelationalGenerationStore {
         assertRelationalOpeningSource(this.sqlite, e);
       }
       switch (e.eventType) {
+        case 'OpeningJobRecorded': {
+          const p = e.payload,
+            request = this.sqlite
+              .prepare<[string], { memberId: string; operation: string; retiredAt: number | null }>(
+                'SELECT member_id AS memberId,operation,retired_at AS retiredAt FROM generation_requests WHERE id=?',
+              )
+              .get(p.requestId);
+          if (
+            !request ||
+            e.memberId !== request.memberId ||
+            e.accountId !== null ||
+            (request.operation !== 'generate' && p.actualSeed !== null) ||
+            (['pending', 'queued', 'running'].includes(p.status) &&
+              (request.retiredAt !== null || p.retiredAt !== null || p.artifactId !== null))
+          ) {
+            fail('开账任务与原请求/生命周期角色不符');
+          }
+          if (p.status === 'running') {
+            fail('运行态开账任务需要原尝试和预扣责任的完整 owner');
+          }
+          if (p.artifactId !== null) {
+            const existing = this.sqlite
+                .prepare<[string], { memberId: string; operation: string }>(
+                  'SELECT member_id AS memberId,operation FROM artifacts WHERE id=?',
+                )
+                .get(p.artifactId),
+              planned = openingArtifacts.get(p.artifactId),
+              artifact = existing ?? planned?.payload;
+            if (
+              !artifact ||
+              artifact.memberId !== request.memberId ||
+              artifact.operation !== request.operation
+            ) {
+              fail('开账任务缺少同成员/操作的唯一原产物');
+            }
+          }
+          this.sqlite
+            .prepare(
+              `INSERT INTO generation_jobs(id,request_id,sample_index,actual_seed,status,queue_seq,queue_expires_at,deadline_at,admission_epoch,artifact_id,cache_key,completed_at,error_code,error_status,cancellation_reason,late_result_at,free_succeeded_at,free_warning_threshold,retired_at,source_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              p.jobId,
+              p.requestId,
+              p.sampleIndex,
+              p.actualSeed,
+              p.status,
+              p.queueSeq === null ? null : BigInt(p.queueSeq),
+              p.queueExpiresAt,
+              p.deadlineAt,
+              p.admissionEpoch,
+              p.artifactId,
+              p.cacheKey,
+              p.completedAt,
+              p.errorCode,
+              p.errorStatus,
+              p.cancellationReason,
+              p.lateResultAt,
+              p.freeSucceededAt,
+              p.freeWarningThreshold,
+              p.retiredAt,
+              e.eventId,
+            );
+          this.inputs.readJobSeed(p.jobId);
+          if (['pending', 'queued', 'running'].includes(p.status)) {
+            this.inputs.readJobInput(p.jobId);
+          }
+          break;
+        }
+        case 'OpeningArtifactRecorded': {
+          const p = e.payload,
+            input = this.sqlite
+              .prepare<[string, string], { operation: unknown }>(
+                "SELECT json_extract(body,'$.operation') AS operation FROM generation_inputs WHERE id=? AND member_id=?",
+              )
+              .get(p.inputId, p.memberId);
+          if (!input || (input.operation !== null && input.operation !== p.operation)) {
+            fail('开账产物与原输入/操作归属不符');
+          }
+          if (p.originalAttemptId === null) {
+            if (e.accountId !== null) {
+              fail('未知原尝试的开账产物不能声明账户角色');
+            }
+          } else {
+            const original = this.sqlite
+              .prepare<
+                [string],
+                {
+                  accountId: string;
+                  memberId: string;
+                  inputId: string;
+                  operation: string;
+                  artifactId: string | null;
+                }
+              >(
+                `SELECT a.account_id AS accountId,r.member_id AS memberId,r.input_id AS inputId,r.operation,j.artifact_id AS artifactId
+              FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
+              JOIN generation_requests r ON r.id=j.request_id WHERE a.id=?`,
+              )
+              .get(p.originalAttemptId);
+            if (
+              !original ||
+              original.accountId !== e.accountId ||
+              original.memberId !== p.memberId ||
+              original.inputId !== p.inputId ||
+              original.operation !== p.operation ||
+              original.artifactId !== p.artifactId
+            ) {
+              fail('开账产物与已知原尝试/任务/输入角色不符');
+            }
+          }
+          this.sqlite
+            .prepare(
+              `INSERT INTO artifacts(id,member_id,input_id,original_attempt_id,operation,mime_type,byte_length,sha256,published_at,retired_at,source_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              p.artifactId,
+              p.memberId,
+              p.inputId,
+              p.originalAttemptId,
+              p.operation,
+              p.mimeType,
+              p.byteLength,
+              p.sha256,
+              p.publishedAt,
+              p.retiredAt,
+              e.eventId,
+            );
+          break;
+        }
         case 'JobHistoryRetired': {
           assertHistoryRetirementCommit(this.sqlite, e, 'jobs');
           const jobs = e.payload.jobIds.map((id) => readHistoryJob(this.sqlite, id));

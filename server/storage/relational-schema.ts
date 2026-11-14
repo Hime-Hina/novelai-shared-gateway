@@ -519,9 +519,9 @@ CREATE TABLE idempotency_keys (
   PRIMARY KEY (original_member_id, operation, key_hash),
   CHECK (request_id IS NULL OR request_id = original_request_id),
   CHECK (resolution != 'live' OR
-    (request_id IS NOT NULL AND commit_seq IS NOT NULL AND context_id IS NOT NULL)),
-  CHECK ((commit_seq IS NOT NULL AND archived_receipt IS NULL)
-    OR (commit_seq IS NULL AND archived_receipt IS NOT NULL)),
+    (request_id IS NOT NULL AND context_id IS NOT NULL
+      AND (commit_seq IS NOT NULL OR archived_receipt IS NOT NULL))),
+  CHECK (commit_seq IS NULL OR archived_receipt IS NULL),
   FOREIGN KEY (request_id, original_member_id) REFERENCES generation_requests(id, member_id)
 ) STRICT;
 
@@ -545,11 +545,18 @@ BEGIN
   );
 END;
 CREATE TRIGGER job_artifact_owner_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs
-WHEN NEW.artifact_id IS NOT NULL
+WHEN NEW.artifact_id IS NOT NULL AND EXISTS (SELECT 1 FROM artifacts WHERE id=NEW.artifact_id)
 BEGIN
   SELECT RAISE(ABORT, 'job member does not own artifact') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN artifacts a ON a.member_id = r.member_id
     WHERE r.id = NEW.request_id AND a.id = NEW.artifact_id
+  );
+END;
+CREATE TRIGGER artifact_job_owner_${operation.toLowerCase()} BEFORE ${operation} ON artifacts
+BEGIN
+  SELECT RAISE(ABORT, 'artifact member does not own linked job') WHERE EXISTS (
+    SELECT 1 FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+    WHERE j.artifact_id=NEW.id AND r.member_id != NEW.member_id
   );
 END;
 CREATE TRIGGER job_input_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs

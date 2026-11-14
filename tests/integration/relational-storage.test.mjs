@@ -77,6 +77,11 @@ for (const previous of [
     commit: 'e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01',
     sha256: '94ebf80c768c334466ef21bec0c01df6ae5f58b30792cd037ff6820d0511b796',
   },
+  {
+    name: 'relational-schema-v5.json',
+    commit: 'bb0b60b80a967b695189b3dd11c13672b0e4fefd',
+    sha256: 'a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd',
+  },
 ]) {
   test(`旧原型 ${previous.name} 的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash`, (t) => {
     const sqlite = new Database(':memory:');
