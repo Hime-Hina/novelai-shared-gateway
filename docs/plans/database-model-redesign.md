@@ -1609,6 +1609,20 @@ Node22 新目录 3/3，与原成员认证及权益三文件共 102/102、零跳�
 
 技术固定 `e028451880970972e7aa140d8a8edf7b3b5ed2a0` 独立复审 6/6、零跳过，四文件 Git blob/SHA 与作者源一致。稳定 ID/登录名/展示名碰撞、真实 Discord 撤销后的 metadata、同一公共 cut 两套选定私有用户名、业务回放认证为空和 query_only 全表/total_changes 零写均有独立反例；按 username 错查身份的 TEMP 负控准确失败。报告 `H:\TEMP\novelai-member-directory-independent-20261114\INDEPENDENT-REVIEW.md`。与成员/权益/真实读取/通知/Shared 六文件汇合 142/142，类型、架构、可信实际 main 迁移和 diff 通过；管理 HTTP 权限和最终发布仍另验。
 
+### 9.58 账户管理安全 metadata 窄读
+
+现共享 surface 允许 admin/owner 的 summary GET 和账户 PATCH，不恢复旧账户 GET 或设置 API。`ManagementUpstream` 只消费 ID、启用状态、物理 inFlight 及官方额度字段；额度、政策和真实物理占用仍由既有 QuotaStore、配置读和共同 controls 提供。本片仅在 AccountStore 提供 `readAccountManagementDirectory()`、`readAccountManagementProfile(accountId)` 与 `readSharedAccountManagementProfile()`，返回 `{id,name,enabled,credentialEpoch,createdAt}`。当前名称/启用/代次来自已有账户投影，原创建时间只取同账户最初 AccountRegistered 的 occurredAt，保留真实 0；Opening 未保存原创建时间，返回 NULL，不能借导入、冷却、暂停或凭据轮换的时间补值。未知账户 profile 返回 NULL，列表按稳定 ID 排序，不补 routeId、weight、旧累计计数或代理配置。
+
+共享选择只抽出原 owner 的 `selectSharedAccount(accounts, boundAccountId)`：优先确切当前绑定；只有未绑定且唯一候选才使用该候选。多个未绑账户、缺失的绑定目标均不猜选，名称、启用或读取顺序不能替代账户身份。旧 owner 配置/摘要继续复用这一处规则，关系读不构造旧 settings/users/jobs/tokens 数据库。
+
+普通 SQL 与输出均不取 PST、grant、credentialRef 或私有代理 URL，也不生成掩码或新增 reveal 开关。既有 admin summary 确有 `?revealTokens=1` 经现 admin 入口与 assertAdmin 保护后显式返回 PST/代理 URL 的功能；现 owner summary 即使携该参数也始终脱敏。该真实 admin caller 须在后续管理 HTTP 装配中使用独立、当前受保护的私有能力保留，不能把秘密字段混入本片普通列表，亦不能默认为已移除。此处不改 HTTP 授权、写命令、ready 或事实格式。
+
+专项以真实首次注册、暂停、凭据轮换和原完整公共回放，另以 Opening 同名多账户、原创建未知、已暂停账户真实任务收尾的 CooldownChanged 来源验证字段；原账户创建时间不随当前 source_event_id 改变。每种窄读均在 `PRAGMA query_only` 下比较全表摘要，并捕获实际 SQL 拒绝访问私有认证表/列；点查与创建来源使用原稳定 ID/流版本索引，不新建缓存、投影列或索引。当前能力不等于 admin/owner HTTP 总装配、显式 reveal 授权或同候选发布验收。
+
+Node 22.23.4 新专项 3/3，连原账户生命周期、owner 管理与启动器配置四文件 62/62，零跳过；类型、架构、默认及可信 `88d2c26` 迁移历史、受影响格式和差异检查通过。日志 `H:\TEMP\novelai-account-management-context.log`、`novelai-account-management-type.log` 和 `novelai-account-management-static.log`。未跑 full、compiled、Node 24、管理 HTTP 或显式 reveal；固定源码的独立复审与父统一装配仍待接续。
+
+固定 `cea3128c0ed055ea2f2e015fe473f2a782d03baf` 独立复审 5/5、零跳过，四文件 Git blob/SHA256 匹配；原注册 2000、后续轮换 clock 0、暂停与同名新候选的对照仍只用真实初始时间和原 bound 身份，纯公共回放无 PST，query_only/全表/total_changes 均零写。错取当前 source 事件时间的 TEMP 负控两例精准失败，报告 `H:\TEMP\novelai-account-management-independent-cea3128-20261114\INDEPENDENT-REVIEW.md`。与原账户、启动器、成员目录和 Shared 五文件汇合 60/60，类型、架构、可信实际 main 迁移和差异检查通过；实际管理/显式 reveal 授权与最终发布包另验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
