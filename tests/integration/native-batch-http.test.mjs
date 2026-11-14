@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
 import { readFile, rename } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
@@ -11,6 +10,7 @@ import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-
 import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { assertStoredResultContent } from '../../server/storage/result-files.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import {
@@ -602,7 +602,7 @@ test(
     assert.ok(artifact.startsWith(path.join(dataDir, 'images') + path.sep));
     const originalBytes = await readFile(artifact);
     assert.equal(originalBytes.length, stored.byteLength);
-    assert.equal(createHash('sha256').update(originalBytes).digest('hex'), stored.sha256);
+    assertStoredResultContent(stored, originalBytes);
     assert.deepEqual(originalBytes, webp);
     await rename(artifact, artifact + '.missing-for-test');
     const beforeMissing = calls.length,
@@ -618,7 +618,7 @@ test(
     await rename(artifact + '.missing-for-test', artifact);
     const restoredBytes = await readFile(artifact);
     assert.equal(restoredBytes.length, stored.byteLength);
-    assert.equal(createHash('sha256').update(restoredBytes).digest('hex'), stored.sha256);
+    assertStoredResultContent(stored, restoredBytes);
     assert.deepEqual(restoredBytes, originalBytes);
     await stop();
     assert.ok(fixture.children.every((child) => child.exit));
@@ -679,7 +679,15 @@ test(
     }
     assert.equal(replayFetches, 0);
     // readonly 打开 WAL header 也会留下 sidecar；关闭所有句柄后归档完整原文件组。
-    const archivedDatabase = path.join(fixture.directory, 'before-reopen.sqlite');
+    assert.ok(fixture.children.every((child) => child.exit));
+    for (const sqlite of [localRead, original, sealed, source, rebuilt]) {
+      assert.equal(sqlite.open, false);
+    }
+    const archivedDatabase = path.join(fixture.directory, 'before-reopen.sqlite'),
+      fixtureRoot = path.resolve(fixture.directory) + path.sep;
+    for (const filename of [fixture.filename, archivedDatabase, rebuiltPath]) {
+      assert.ok(path.resolve(filename).startsWith(fixtureRoot));
+    }
     await rename(fixture.filename, archivedDatabase);
     for (const suffix of ['-wal', '-shm', '-journal']) {
       try {
