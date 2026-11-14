@@ -16,6 +16,7 @@ import {
 import { R2Storage } from '../../server/storage/r2-storage.ts';
 import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { parseRelationalFact } from '../../server/events/relational-fact-contracts.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { describeRetainedSnapshot } from '../../scripts/retained-sources.mjs';
@@ -115,7 +116,7 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
   const f = await setup(t);
   register(f, 'r2');
   const reserved = f.store.beginArtifactReplica('artifact-replica-0', f.target('r2'));
-  record(f, 'normal-reservation', reserved, 'reserved');
+  const reservation = record(f, 'normal-reservation', reserved, 'reserved');
   const beforeUpload = databaseState(f.db);
   assert.throws(
     () =>
@@ -128,6 +129,25 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
     /待核验/,
   );
   assert.equal(databaseState(f.db), beforeUpload);
+  const forged = structuredClone(readRelationalCommit(f.db, reservation.commitSeq).command);
+  forged.commandId = 'forged-verification-envelope';
+  forged.fingerprint = meta(forged.commandId).fingerprint;
+  forged.expectedVersions = {
+    'artifact:artifact-replica-0': f.db
+      .prepare('SELECT CAST(stream_version AS TEXT) version FROM stream_heads WHERE stream_id=?')
+      .get('artifact:artifact-replica-0').version,
+  };
+  forged.events[0].payload.verifiedAt = forged.events[0].occurredAt;
+  assert.doesNotThrow(() =>
+    parseRelationalFact({
+      eventType: forged.events[0].eventType,
+      payload: forged.events[0].payload,
+    }),
+  );
+  f.db.transaction(() =>
+    assert.throws(() => new RelationalCommitReplayer(f.db).appendCommit(forged), /状态迁移/),
+  )();
+  assert.equal(databaseState(f.db), beforeUpload, '共同事实边界也拒绝从未上传的普通确认并整笔回滚');
   await f.copy('r2');
   const original = f.store.readArtifact('artifact-replica-0');
   const hot = f.target('r2'),
