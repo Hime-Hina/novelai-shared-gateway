@@ -140,6 +140,7 @@ function open(f, options = {}) {
       jobId,
       accountId: 'a',
       credentialEpoch: null,
+      connectionSourceEventId: null,
       authorizedAt: null,
       response,
       candidateMode: 'unknown',
@@ -925,6 +926,7 @@ test('OpeningAttempt required nullable coverage, original identities and pending
     jobId: 'j',
     accountId: 'u',
     credentialEpoch: null,
+    connectionSourceEventId: null,
     authorizedAt: null,
     response,
     candidateMode: 'unknown',
@@ -960,11 +962,19 @@ test('OpeningAttempt required nullable coverage, original identities and pending
 });
 
 test('Opening response credential effects require real original authorization and the exact current epoch; public replay restores no auth', async (t) => {
-  for (const [name, credentialEpoch, authorizedAt, expected] of [
+  for (const [
+    name,
+    credentialEpoch,
+    authorizedAt,
+    expected,
+    connectionSourceEventId = 'opening-account',
+    cooldownExpected = expected,
+  ] of [
     ['known', 1, 0, true],
     ['unknown-authorization', 1, null, false],
     ['unknown-epoch', null, 0, false],
     ['different-epoch', 2, 0, false],
+    ['unknown-connection', 1, 0, false, null, true],
   ]) {
     await t.test(name, async (t) => {
       const f = await source(t);
@@ -974,6 +984,7 @@ test('Opening response credential effects require real original authorization an
         attempt: {
           reviewStatus: null,
           credentialEpoch,
+          connectionSourceEventId,
           authorizedAt,
           response: {
             ...response,
@@ -1045,7 +1056,7 @@ test('Opening response credential effects require real original authorization an
       const cooldowns = readRelationalCommit(f.db, failed.commitSeq).events.filter(
         (e) => e.eventType === 'CooldownChanged',
       );
-      assert.equal(cooldowns.length, Number(expected));
+      assert.equal(cooldowns.length, Number(cooldownExpected));
       assert.equal(
         f.db.prepare("SELECT pst FROM upstream_credentials WHERE account_id='a'").get().pst,
         before,

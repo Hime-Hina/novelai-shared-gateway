@@ -3,6 +3,8 @@ import { generationContextRef } from '../generation/request-fingerprint.ts';
 import { createId } from './record-values.ts';
 export { generationContextRef } from '../generation/request-fingerprint.ts';
 export { createId, hashObject } from './record-values.ts';
+
+import { isStatsExcludedJob } from '../reports/admin-statistics.ts';
 import { emitStoreEvent } from '../events/state-notifications.ts';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
@@ -4451,15 +4453,6 @@ function numberOrNull(value: unknown) {
   return Number.isFinite(number) ? number : null;
 }
 
-function isStatsExcludedJob(job: Partial<StoreItem> = {}) {
-  if (job.status !== 'failed') {
-    return false;
-  }
-  return /insufficient balance|额度不足|余额不足/i.test(
-    `${job.error || ''}\n${job.errorDetail || ''}`,
-  );
-}
-
 function isErrorLoggableJob(job: Partial<StoreItem> = {}) {
   if (job.status !== 'failed' || !job.accountId) {
     return false;
@@ -5069,13 +5062,6 @@ export function normalizeDb(db: DatabaseInput = {}): StoreDatabase {
 
 export function createPublicToken(prefix = 'STD') {
   return `${prefix}-${crypto.randomBytes(18).toString('base64url')}`;
-}
-
-export function maskToken(token = '') {
-  if (token.length <= 12) {
-    return token ? '******' : '';
-  }
-  return `${token.slice(0, 6)}...${token.slice(-4)}`;
 }
 
 function clampNumber(value: unknown, min: number, max: number) {
