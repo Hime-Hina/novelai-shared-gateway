@@ -1013,7 +1013,15 @@ test('admin终态公共DTO与回放保留FreeImageSucceeded后的原失败时间
   );
   assert.equal(
     publicGenerationRequest(requests.readMemberRequest('admin-api-null', 'm1')).jobs[0].updatedAt,
-    '',
+    null,
+  );
+  assert.equal(
+    publicGenerationRequest(requests.readMemberRequest('admin-api-zero', 'm1')).jobs[0].completedAt,
+    iso(0),
+  );
+  assert.equal(
+    publicGenerationRequest(requests.readMemberRequest('admin-api-null', 'm1')).jobs[0].completedAt,
+    null,
   );
   for (const reader of [requests, restored]) {
     assert.equal(reader.readApiJob('admin-api-zero-0').updatedAt, iso(0));
