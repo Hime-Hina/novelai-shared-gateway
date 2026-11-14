@@ -885,6 +885,9 @@ test('完整成员提交的父子角色、配置、预算、移除身份、回�
         'duplicate-funds',
         'reverse-funds',
         'reverse-identity',
+        'identity-account',
+        'identity-policy',
+        'identity-price',
         'receipt-role',
         'receipt-money',
         'receipt-groups',
@@ -895,7 +898,8 @@ test('完整成员提交的父子角色、配置、预算、移除身份、回�
       ]) {
         if (
           action === 'transfer' &&
-          ['only-identity', 'no-identity', 'reverse-identity'].includes(mutation)
+          (['only-identity', 'no-identity', 'reverse-identity'].includes(mutation) ||
+            mutation.startsWith('identity-'))
         )
           continue;
         await t.test(mutation, (t) =>
@@ -914,6 +918,9 @@ test('完整成员提交的父子角色、配置、预算、移除身份、回�
             if (mutation === 'only-identity') bad.events = [identity];
             if (mutation === 'no-identity')
               bad.events = bad.events.filter((event) => event !== identity);
+            if (mutation === 'identity-account') identity.accountId = 'unrelated-account';
+            if (mutation === 'identity-policy') identity.policyVersion = 'unrelated-policy';
+            if (mutation === 'identity-price') identity.pricingVersion = 'unrelated-price';
             if (mutation === 'old-source') funds.payload.configurationEventId = 'opening-quota';
             if (mutation === 'wrong-role') funds.payload.fromMemberId = funds.payload.toMemberId;
             if (mutation === 'wrong-account') {

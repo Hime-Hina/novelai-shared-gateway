@@ -723,7 +723,10 @@ export class RelationalMemberStore
       removed[0].eventType !== 'MemberStatusChanged' ||
       removed[0].payload.memberId !== decisions[0].payload.sourceMemberId ||
       removed[0].eventIndex <= decisions[0].eventIndex ||
-      removed[0].occurredAt !== decisions[0].occurredAt
+      removed[0].occurredAt !== decisions[0].occurredAt ||
+      removed[0].accountId !== null ||
+      removed[0].policyVersion !== decisions[0].policyVersion ||
+      removed[0].pricingVersion !== decisions[0].pricingVersion
     ) {
       fail(409, '成员身份移除必须属于同笔原权益移除决定');
     }
