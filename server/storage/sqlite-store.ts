@@ -3,6 +3,8 @@ import { generationContextRef } from '../generation/request-fingerprint.ts';
 import { createId } from './record-values.ts';
 export { generationContextRef } from '../generation/request-fingerprint.ts';
 export { createId, hashObject } from './record-values.ts';
+
+import { isStatsExcludedJob } from '../reports/admin-statistics.ts';
 import { emitStoreEvent } from '../events/state-notifications.ts';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
@@ -4449,15 +4451,6 @@ function searchableText(item: Partial<StoreItem>, row: SqlRow) {
 function numberOrNull(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
-}
-
-function isStatsExcludedJob(job: Partial<StoreItem> = {}) {
-  if (job.status !== 'failed') {
-    return false;
-  }
-  return /insufficient balance|额度不足|余额不足/i.test(
-    `${job.error || ''}\n${job.errorDetail || ''}`,
-  );
 }
 
 function isErrorLoggableJob(job: Partial<StoreItem> = {}) {

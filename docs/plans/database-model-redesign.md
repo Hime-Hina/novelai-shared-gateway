@@ -2109,6 +2109,26 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 根在新 sole/正常包并集 `de809e2` 上整合，七条产品/测试/helper 路径逐字等于固定 059，计划保留双方完整追加块，证明 `H:/TEMP/novelai-child-http-root-preservation.json`。两个真实 child 与 Direct/OpenAI 四文件串行同次 **55/55、零跳过，101.859 秒**；类型、architecture、可信实际 main `88d2c26` migration 与变更格式通过，日志 `H:/TEMP/novelai-child-http-root-{joint,type,static}.log`。旧工具源码/两行接线保持作者实际打包 22 项的字节，未重跑不变的 187 秒套件。此后继没有自己的完整后端、编译双 runtime、实际新正常发布物/CI，不借旧 b427/b2 结论；其余原 child/Nuxt/Docker 与账户闭包修复、查询、迁移和最终同版本验收继续接续。
 
+### 9.82 admin 摘要的关系统计、逻辑产物数与失败选择
+
+基于固定根 `64e1171`，只在现 ReportStore/RequestStore 提供窄读，原 `sqlite-read-worker` 的日/小时桶和成功率、原 serializer 的余额失败排除最小搬到 `reports/admin-statistics.ts`，由真实旧生产 caller 与新关系 caller 复用。不新增统计 worker、缓存、持久派生列/表、事件/DDL，未接半份 admin summary、账户 reveal 或新的 HTTP 路由。完整 admin summary 的设置、账户宽 DTO/秘密边界和 sole 装配仍由后续原 owner 接合。
+
+`readAdminSummaryStats()` 按 child 的原创建时间统计一分钟请求数；旧一分钟“生成数”只计 done 且原 display cost≥1，不以真实收费或物理执行次数替换。`JobAccepted` 可复用原显示 owner 的已知 0，Opening 没保存原 job cost 则 NULL，不能用 cacheSelection.cost 或当前报价猜历史。done/failed 的一小时统计及原账户分组仍应用原余额排除条件；七天北京时间小时桶的 failed 数不应用这条排除，done 次数和 credits 继续分别沿原 display cost 规则。速度仍是 V4.5/V5 从原创建至原终态的端到端均值，包括免费/cache done，不替换成上游耗时。
+
+失败排除确有可用原来源：仅对原创建时间落在一小时窗口的 failed 索引候选读取 `JobFailed.diagnosticId` 指向的受保护 TEXT，每份最多 4000 字符，经现 InputStore 核对 job/原事实/hash/长度。诊断条数成本随该窗口失败数增长，不能把它声称为全纯 COUNT/无冷读；普通计数、模型与时间聚合不读输入正文或附件 BLOB。已有引用内容损坏/失配明确不可用，不静默降为无诊断。缺来源且代码不能证明时，只有对应失败/总量/成功率为 NULL；原安全代码能证明排除、已知 done、已知模型及起止等来源继续使用，不把整个历史一律改成未知。
+
+时间统一回到共同 `jobColumns/readApiJob`：done/failed 只取原 `j.completed_at`，真实 0/NULL 保留；late、FreeImageSucceeded、结案等后继不移动终态日。活动状态只认可受理/入队/派发的状态事件 header，Opening 事实 header 只表示开账发生。原创建时间仍归 `generation_job_origins`，不借父请求、当前导入或最新事件补齐。无法定位的历史使相关统计或日期/小时桶保持 NULL，已知空桶仍为 0，不新增嵌套 coverage 框架。
+
+`readLogicalArtifactCount()` 只数未退休 published artifacts，一张原产物多份副本仍只计一次，不当成磁盘/实云容量。`readManagementFailedJobs()` 先限最多 50 条，再复用现 thin job 和原输入 owner 冷读 ≤50 个 canonical 请求，无附件读取；新 JobAccepted 按真实 commit/index 插入序，区别于最近失败时间。Opening 未保存原 `order_value`，当前只能稳定 ID 确定性尾序并标 `originalOrderKnown=false`；这不是旧原序等价，最终选定迁移须从真实旧排序/归档保留来源或明确行为决定闭合。执行账户只取原实际尝试/既有产物来源，原收费账户是金融归属，不能用同 job/member 的 `charges.original_account_id` 冒充物理执行；缺执行来源仍 NULL。
+
+Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与历史退休六文件同次 **82/82、零跳过，20.112 秒**；类型、architecture、193 文件语法、默认及可信实际 main `88d2c26` migration、八路径格式和 diff 检查通过。原合法 JsonStore/生产 worker 六种统计 DTO 对照、query_only/全表 hash/total_changes 零写、paid 但 display0、有效/坏/缺诊断、late 与真实 FreeImageSucceeded 后继、Opening0/NULL/已知速度、资金 A 但执行未知、原失败顺序/50 限量、公共回放及重开均有可运行检查。临时错误变体分别用收费代显示价、最新 header 代终态、读取第 51 份正文、收费池代执行账户，四项均精准业务断言红；恢复原源后八项新检查全绿。源与日志见 `H:/TEMP/novelai-admin-report-reads-{final-union,restored}.log`、`H:/TEMP/novelai-admin-report-reads-negative-results.json`。旧 worker/serializer 除移出纯函数及 import 外 AST 相同，搬移的桶与排除函数 body 逐字相同，原已知数值成功率六例相同，证明见 `H:/TEMP/novelai-admin-report-reads-static.json`。
+
+实际 SQL 计划中，一小时失败范围使用 `SEARCH ... idx_job_created_time`，再按原 stream 索引核诊断来源；最近 50 失败仍扫描薄 origin 索引并用临时 B-tree 排序，不声称没有扫描、排序或已过同规模容量性能验收。本片是未发布底层 DTO/读取约定，必要 nullable 和历史排序限制需由最终维护者复核，不擅自退役旧 summary 行为；尚待独立审查与最终完整 summary 装配。未执行 full、build、compiled、Node24、native 安装、实云或生产。
+
+固定 `8381e4f4e9fff1099cdbbbaaffe558c4fa03a77b` 独审通过：两条新来源边界与原失败 50/终态 DTO 同次 **4/4、零跳过**，实际只冷读创建窗内的诊断，窗内损坏明确拒绝；Opening 缺证只影响相应未知指标，不抹掉已知执行账户或其他已知数。query_only、全表摘要、total_changes 零写，公共完整回放不恢复凭据/epoch 或 fetch。八差异、十三关联权威和三十五历史资产精确绑定，报告 `H:/TEMP/novelai-admin-report-reads-independent-20261115/INDEPENDENT-REVIEW.md`（SHA256 `63dc8d29a33a80cd8053dda6b538d53cbc0d3aba3f0aeae0403e9788bbec745d`）。旧 worker 六统计 DTO 对照不冒充完整十三字段 admin HTTP；Opening 原排序和 nullable 的维护者复核条件保留。
+
+根在已审真实 child/Direct 修复 `de52e2a` 上整合：五条新查询/统计/测试路径逐字等于固定 838，旧 JsonStore 只保留根纯 import 提取并复用原 classifier 搬移，计划完整并集，证明 `H:/TEMP/novelai-admin-report-reads-root-preservation.json`。报表、查询、历史、请求/成员/退休与管理/Direct/OpenAI 九文件同次 **285/285、零跳过，68.998 秒**；类型、architecture、可信实际 main `88d2c26` migration 与局部格式通过，日志 `H:/TEMP/novelai-admin-report-reads-root-{joint,type,static,format}.log`。未接完整 admin summary，也未在该根运行 full、编译双 runtime、实际发布包/CI 或容量验收；不借旧候选结果。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
