@@ -189,6 +189,12 @@ erDiagram
 
 `RefillApplied` 的预算、偿债、容量恢复和成员分配保存原 owner 的决定，回放验证来源、原游标、资源与金额关系，不重新运行当前政策。适配接口若只有时间而不足以确定来源，应从命令上下文显式传递角色对应的事件 ID；不能为所有事实统一设置“旧观察优先”或“新观察优先”。同时间、不同有效序号的新观察应能保存，基线是否推进仍按原条件决定（[#44](https://github.com/Hime-Hina/novelai-shared-gateway/issues/44)）。
 
+官方展示原值与金融 V5 定点值分别表达。`QuotaObserved` 和 `OpeningQuotaRecorded` 必填可空 `v5UsagePercent: number | null`、`v5UsageIsNegative: boolean | null`，保存原查询归一化 owner 决定后的官方标量；80/true 与 0/false 虽有相同金融 0，仍须可逆区分。既有 `v5` / `observedV5`、钱包和金融决定维持原规则，不把官方 number 当作 12 位钱包金额或在回放时重算后覆盖事实。Opening 无原证据时明确 NULL，不从金融符号、0、当前默认值或后来的观察补造 false/0。
+
+失败查询遵守原 `accountQuotaPatch`：保留此前实际已知官方值及原观察时点，事实仍标记失败，不宣称取得新成功观察。金融视图不能用金额正负反推原 negative：真实原 JsonStore 成功保存 -5/false 后遇到网络失败仍保留该值；新命令必须一致，不能延续有损适配把金融 -5 改成 0。金融 snapshot 本身负责数值边界；不改写已存历史事实，也不增加新的分配规则。完整提交按本事实之前的原账户流切点核对此保留来源，不能借同笔后来观察或金融 0 冒充原官方值。`readOfficialQuotaV5(accountId)` 只读原事实两个标量，SharedSource 薄绑定，不增派生投影列、状态缓存或 settings 副本。本必填契约使用明确预发布事件 4→5 格式门禁，正确旧 v4 完整 DDL/hash 也必须零写拒绝；输入/context 各自 schema 版本不变，旧 SQL/journal 不改。
+
+本片完整产品固定 `ce017a3c1205176d58ee9676507b06dd9fddfee7`（含两原标量及事件 v5）。[官方原值专项](../../tests/integration/relational-official-v5.test.mjs) 覆盖真实原 JsonStore/刷新 owner 的成功→ECONNRESET 对照、80/true 与 0/false、独立 NULL/0 和 finite 精度、同毫秒来源、同完整提交失败前切点、完整/重复回放及原生后段 SQL 故障被外层捕获仍全表回滚。成功查询但金融字段不完整仍保留真实成功分类；网络失败才保留此前原值，不混淆两种角色。旧 `2704262` 把有损视图的失败金融 0 当作正向断言，已由真实原 owner 反例纠正；修复只删除四处金融符号→原 flag 推断，不改写已存事实或另外运行一套资金算法。Node 22.23.4 专项 20/20、相关七文件 205/205，类型、架构、可信 main `88d2c264` 的迁移历史与 diff 检查通过。独立复审 24/24（20 专项及 4 独立场景），确认金融值单独偷用同笔后来观察也被原子拒绝。以上为局部源码证据，尚待新 v5 并集的完整套件、编译产物、真实端点及切换验收。
+
 #### 3.3.2 分配预算与有限来源消费
 
 `AllocationApplied.sourceEventId` 必须说明分配的实际来源。`sourceResources` 如保留，是原决定的可核对预算；对已有明确金额的有限来源，它不能成为另一份独立权威。不能仅证明“分配总额不超过分配自己填写的预算”。当前直接有限来源的契约如下：

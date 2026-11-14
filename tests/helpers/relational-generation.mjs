@@ -167,6 +167,9 @@ function openingFacts({
         subscriptionActive: true,
         subscriptionExpiresAt: null,
         quotaErrorCode: null,
+        // 原历史夹具只有金融值，不能据此伪造官方 flag；实际已知值由专项显式提供。
+        v5UsagePercent: null,
+        v5UsageIsNegative: null,
         observedV5: officialV5,
         observedAnlasFixed: officialFixed,
         observedAnlasPurchased: officialPurchased,

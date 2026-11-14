@@ -27,6 +27,7 @@ import {
   assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
+import { parseRelationalFact } from '../events/relational-events.ts';
 import type {
   RelationalCommand,
   RelationalEvent,
@@ -119,7 +120,14 @@ type SharingPolicy = {
   fixed30d: string;
   memberAttempts24h: number;
 };
-export type AccountQuota = Omit<RelationalPayloads['OpeningQuotaRecorded'], 'origin'>;
+type OfficialQuotaV5 = Pick<
+  RelationalPayloads['QuotaObserved'],
+  'v5UsagePercent' | 'v5UsageIsNegative'
+>;
+export type AccountQuota = Omit<
+  RelationalPayloads['OpeningQuotaRecorded'],
+  'origin' | keyof OfficialQuotaV5
+>;
 type Quota = AccountQuota;
 type Ticket = {
   accountId: string;
@@ -131,6 +139,15 @@ type Ticket = {
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
 const zero = (): ResourceAmounts => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 const iso = (n: number | null) => (n === null ? undefined : new Date(n).toISOString());
+const observedAmount = (value: unknown) =>
+  (typeof value === 'string' || typeof value === 'number') && Number.isFinite(Number(value))
+    ? formatAmount(parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact'))
+    : null;
+function financialObservedV5(account: FairAccount, snapshot: ReturnType<typeof fairQuotaSnapshot>) {
+  return account.v5UsageIsNegative && snapshot.v5 !== null
+    ? '0'
+    : observedAmount(account.v5UsagePercent);
+}
 function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
@@ -224,6 +241,36 @@ export class RelationalQuotaStore {
       subscriptionActive: row.subscriptionActive === null ? null : Boolean(row.subscriptionActive),
     };
   }
+  private officialQuotaV5(accountId: string, beforeVersion?: string): OfficialQuotaV5 {
+    const row = this.sqlite
+      .prepare<(string | bigint)[], { type: string; payload: string }>(
+        `SELECT event_type AS type,payload FROM domain_events WHERE stream_id=? AND account_id=?
+        AND event_type IN ('QuotaObserved','OpeningQuotaRecorded')
+        ${beforeVersion === undefined ? '' : 'AND stream_version<?'} ORDER BY stream_version DESC LIMIT 1`,
+      )
+      .get(
+        ...(beforeVersion === undefined
+          ? [`account:${accountId}`, accountId]
+          : [`account:${accountId}`, accountId, BigInt(beforeVersion)]),
+      );
+    if (!row) {
+      return { v5UsagePercent: null, v5UsageIsNegative: null };
+    }
+    const fact = parseRelationalFact({ eventType: row.type, payload: JSON.parse(row.payload) });
+    if (
+      (fact.eventType !== 'QuotaObserved' && fact.eventType !== 'OpeningQuotaRecorded') ||
+      fact.payload.accountId !== accountId
+    ) {
+      fail('官方 V5 原事实身份不符', 503);
+    }
+    return {
+      v5UsagePercent: fact.payload.v5UsagePercent,
+      v5UsageIsNegative: fact.payload.v5UsageIsNegative,
+    };
+  }
+  readOfficialQuotaV5(accountId: string): OfficialQuotaV5 {
+    return this.officialQuotaV5(accountId);
+  }
   saveAccountQuota(row: Quota, eventId: string) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
@@ -260,7 +307,23 @@ export class RelationalQuotaStore {
       fail('开账额度缺少原事实或登记来源');
     }
     assertRelationalOpeningSource(this.sqlite, e);
-    const { origin: _origin, ...p } = e.payload;
+    const original = {
+      id: e.payload.accountId,
+      v5UsagePercent: e.payload.v5UsagePercent,
+      v5UsageIsNegative: e.payload.v5UsageIsNegative,
+    };
+    if (
+      original.v5UsagePercent !== null &&
+      financialObservedV5(original, fairQuotaSnapshot(original)) !== e.payload.observedV5
+    ) {
+      fail('开账官方原值与原金融 V5 表示不符');
+    }
+    const {
+      origin: _origin,
+      v5UsagePercent: _percent,
+      v5UsageIsNegative: _negative,
+      ...p
+    } = e.payload;
     this.insertAccountQuota(p, e.eventId);
   }
   private insertAccountQuota(p: AccountQuota, eventId: string) {
@@ -578,6 +641,7 @@ export class RelationalQuotaStore {
           ];
         }),
     );
+    // 金融金额不是原 negative 标量；snapshot 自行处理数值边界，不能从符号伪造原信息。
     const account: FairAccount = {
       id: accountId,
       enabled: a.enabled === 1,
@@ -587,7 +651,6 @@ export class RelationalQuotaStore {
       quotaCheckedAt: iso(q.observedAt),
       quotaError: q.observedCredentialEpoch === a.epoch ? q.quotaErrorCode : 'credential_changed',
       v5UsagePercent: q.observedV5,
-      v5UsageIsNegative: q.observedV5 !== null && parseAmount(q.observedV5) < 0n,
       quotaFixed: q.observedAnlasFixed,
       quotaPurchased: q.observedAnlasPurchased,
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
@@ -599,7 +662,6 @@ export class RelationalQuotaStore {
         ...account,
         quotaCheckedAt: iso(old.at),
         v5UsagePercent: old.v5,
-        v5UsageIsNegative: old.v5 !== null && parseAmount(old.v5) < 0n,
         quotaFixed: old.anlasFixed,
         quotaPurchased: old.anlasPurchased,
         v5UsageTimeUntilNextPercent: old.seconds,
@@ -1503,13 +1565,16 @@ export class RelationalQuotaStore {
     if (verified) {
       view.account.enabled = true;
     }
+    const originalV5: OfficialQuotaV5 = result.ok
+      ? {
+          v5UsagePercent: quotaNumber(result.v5UsagePercent),
+          v5UsageIsNegative:
+            typeof result.v5UsageIsNegative === 'boolean' ? result.v5UsageIsNegative : null,
+        }
+      : this.readOfficialQuotaV5(a.id);
     const snapshot = fairQuotaSnapshot(view.account),
       observationId = randomUUID(),
       tier = quotaNumber(view.account.quotaTier);
-    const money = (v: unknown) =>
-      (typeof v === 'string' || typeof v === 'number') && Number.isFinite(Number(v))
-        ? formatAmount(parseAmount(v, typeof v === 'number' ? 'nearest' : 'exact'))
-        : null;
     const events: RelationalEventInput[] = [
       this.event(
         {
@@ -1525,10 +1590,8 @@ export class RelationalQuotaStore {
                 ? view.account.subscriptionActive
                 : null,
             subscriptionExpiresAt: isoTimestamp(view.account.subscriptionExpiresAt),
-            v5:
-              view.account.v5UsageIsNegative && snapshot.v5 !== null
-                ? '0'
-                : money(view.account.v5UsagePercent),
+            ...originalV5,
+            v5: financialObservedV5(view.account, snapshot),
             anlasFixed: snapshot.anlasFixed,
             anlasPurchased: snapshot.anlasPurchased,
             secondsPerPercent: snapshot.seconds,
@@ -3039,6 +3102,31 @@ export class RelationalQuotaStore {
             BigInt(p.sequence) <= BigInt(q.observedSequence ?? '0')
           ) {
             fail('观察代次或序号已经过期');
+          }
+          if (p.errorCode) {
+            const previous = this.officialQuotaV5(accountId, e.streamVersion),
+              original = this.state(accountId).account,
+              snapshot = fairQuotaSnapshot(original);
+            if (
+              canonicalJson(previous) !==
+                canonicalJson({
+                  v5UsagePercent: p.v5UsagePercent,
+                  v5UsageIsNegative: p.v5UsageIsNegative,
+                }) ||
+              p.observedAt !== snapshot.at ||
+              p.v5 !== financialObservedV5(original, snapshot)
+            ) {
+              fail('失败观察必须保留此前原官方值、观察时点及原金融决定');
+            }
+          } else {
+            const original = {
+              id: accountId,
+              v5UsagePercent: p.v5UsagePercent,
+              v5UsageIsNegative: p.v5UsageIsNegative,
+            };
+            if (p.v5 !== financialObservedV5(original, fairQuotaSnapshot(original))) {
+              fail('官方原值与原金融 V5 表示不符');
+            }
           }
           Object.assign(q, {
             observationEventId: e.eventId,
