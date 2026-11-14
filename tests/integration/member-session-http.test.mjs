@@ -136,11 +136,16 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
   const upstreamPort = await listen(upstream);
   const upstreamOrigin = `http://127.0.0.1:${upstreamPort}`;
   let base;
-  const start = async (ownerUserId = env.OWNER_USER_ID) => {
+  const start = async (ownerUserId = env.OWNER_USER_ID, startupImport) => {
     if (owner) {
       env.OWNER_USER_ID = ownerUserId;
     }
-    running = await launchGateway(state, upstreamOrigin, env);
+    running = await launchGateway(state, upstreamOrigin, {
+      ...env,
+      ...(startupImport
+        ? { NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(startupImport)}` }
+        : {}),
+    });
     exited = once(running.child, 'exit');
     base = running.origin;
     if (!paused && !activated) {
@@ -837,27 +842,73 @@ test(
     );
     await gateway.stop();
     const beforeOwnerChange = gateway.snapshot();
-    gateway.execute(
-      "CREATE TRIGGER synthetic_owner_change_failure BEFORE UPDATE ON member_auth_state BEGIN SELECT RAISE(ABORT, 'synthetic owner change failure'); END",
+    const mainSchema = gateway.read('PRAGMA main.schema_version')[0].schema_version;
+    assert.equal(
+      gateway.read(
+        'SELECT COUNT(*) AS n FROM member_sessions WHERE owner_binding IS NOT NULL OR member_id IN (?,?)',
+        gateway.members[0].user_id,
+        gateway.members[1].user_id,
+      )[0].n,
+      2,
     );
-    try {
-      await assert.rejects(
-        gateway.start(gateway.members[1].user_id),
-        /actual child startup failed:/,
-      );
-      assert.equal(
-        gateway.state.children.at(-1).origin,
-        null,
-        'failed coordination must not listen',
-      );
-      assert.deepEqual(
-        gateway.snapshot(),
-        beforeOwnerChange,
-        'a late owner-state SQL failure rolls back all session deletions and private state',
-      );
-    } finally {
-      gateway.execute('DROP TRIGGER synthetic_owner_change_failure');
-    }
+    // main DDL 会被 hash guard 先挡住；仅在真实连接删除会话后注入 TEMP 末端故障。
+    const startupFault = `
+      import { createRequire } from 'node:module';
+      import net from 'node:net';
+      const require = createRequire(${JSON.stringify(new URL('../../package.json', import.meta.url).href)});
+      const Database = require('better-sqlite3'), prepare = Database.prototype.prepare;
+      const listen = net.Server.prototype.listen, armed = new WeakSet();
+      net.Server.prototype.listen = function (...args) {
+        process.stderr.write('SYNTHETIC_OWNER_LISTEN_ATTEMPT\\n');
+        return listen.apply(this, args);
+      };
+      Database.prototype.prepare = function (sql, ...args) {
+        if (/^\\s*INSERT INTO member_auth_state\\b/.test(sql) && !armed.has(this)) {
+          if (!this.inTransaction) {
+            throw new Error('synthetic metadata must remain in its original transaction');
+          }
+          const schemaBefore = this.pragma('main.schema_version', { simple: true });
+          this.exec("CREATE TEMP TRIGGER synthetic_owner_tail_failure BEFORE UPDATE ON main.member_auth_state BEGIN SELECT CASE WHEN (SELECT COUNT(*) FROM member_sessions WHERE owner_binding IS NOT NULL OR member_id IN(OLD.owner_member_id,NEW.owner_member_id))=0 THEN RAISE(ABORT,'synthetic-after-session-deletes') ELSE RAISE(ABORT,'synthetic-delete-path-not-reached') END; END");
+          const schemaAfter = this.pragma('main.schema_version', { simple: true });
+          if (schemaBefore !== schemaAfter) {
+            throw new Error('synthetic fault changed main schema');
+          }
+          const previous = prepare.call(this, 'SELECT owner_member_id FROM member_auth_state WHERE id=1').get();
+          const affectedSessionsRemaining = prepare.call(this, 'SELECT COUNT(*) AS n FROM member_sessions WHERE owner_binding IS NOT NULL OR member_id IN (?,?)').get(previous.owner_member_id, process.env.OWNER_USER_ID).n;
+          armed.add(this);
+          process.stderr.write('SYNTHETIC_OWNER_FAULT_ARMED ' + JSON.stringify({ schemaBefore, schemaAfter, affectedSessionsRemaining, inTransaction: this.inTransaction }) + '\\n');
+        }
+        return prepare.call(this, sql, ...args);
+      };
+    `;
+    await assert.rejects(
+      gateway.start(gateway.members[1].user_id, startupFault),
+      /actual child startup failed:/,
+    );
+    const failedStart = gateway.state.children.at(-1);
+    assert.equal(failedStart.origin, null, 'failed coordination must not listen');
+    assert.equal(failedStart.exit.code, 1);
+    assert.doesNotMatch(failedStart.output, /SYNTHETIC_OWNER_LISTEN_ATTEMPT/);
+    assert.match(failedStart.output, /SQLITE_CONSTRAINT_TRIGGER/);
+    assert.match(failedStart.output, /synthetic-after-session-deletes/);
+    assert.doesNotMatch(
+      failedStart.output,
+      /synthetic-delete-path-not-reached|Unsupported relational/,
+    );
+    const stage = /SYNTHETIC_OWNER_FAULT_ARMED (\{[^\n]+\})/.exec(failedStart.output);
+    assert.ok(stage, 'native fault must reach the actual metadata statement after session deletes');
+    assert.deepEqual(JSON.parse(stage[1]), {
+      schemaBefore: mainSchema,
+      schemaAfter: mainSchema,
+      affectedSessionsRemaining: 0,
+      inTransaction: true,
+    });
+    t.diagnostic(`native owner metadata fault after delete: ${stage[1]}`);
+    assert.deepEqual(
+      gateway.snapshot(),
+      beforeOwnerChange,
+      'a late owner-state SQL failure rolls back all session deletions and private state',
+    );
     await gateway.start(gateway.members[1].user_id);
     for (const session of [owner, member]) {
       // 启动时即撤销，不能依赖浏览器恰好在角色变化期间访问一次。

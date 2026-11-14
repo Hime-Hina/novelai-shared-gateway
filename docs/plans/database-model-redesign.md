@@ -2255,6 +2255,10 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 最终同一精确源整文件 **8 通过、0 失败、1 原 Windows SIGTERM skip，25.146 秒**，证据 `accepted-run.log` / `accepted-run-source.json`。包含两次选定公私源 CLI/真实 child 重开、原有效 Cookie/expiry 与 logout 后 401、公共回放私有空且零外联、原账户同笔/失败回滚、可见续期和原 Cookie/当前授权边界。CLI 恢复组合用例 4.357 秒、角色组合 3.634 秒、新增稳定身份组合 3.010 秒；均保持原 45 秒期限。前两轮失败程序和日志原样保留。该作者局部源码结果待固定候选独立审查；没有把 Windows skip 当 Linux SIGTERM、新旧生产会话策略、Node24、同根发布包/full、实云、容量或迁移切换验收。
 
+独审在固定 `f05cd0a` 发现故障验证缺口：stop 后的持久 main TRIGGER 先被正确的 installed-schema guard 拒绝，原 generic 启动失败/全表不变并未执行会话 DELETE 后的末端 UPSERT。原源码和上述运行计数保留，但撤回该旧注入对末端回滚的证明，不据此判定产品原子性存在错误。后继仅改测试与本节，runtime 七行与共享 helper 不变：利用原 child env 能力给单失败进程传标准 NODE_OPTIONS/dataURL preload，拦实际 metadata INSERT 的 prepare，在原事务/DELETE 后给该真实连接安装 TEMP trigger。明确核原 main.schema_version 不变、受影响会话已从 2 变 0、原事务仍活动、原生 SQLITE_CONSTRAINT_TRIGGER/指定 RAISE、没有监听尝试、完整回滚和无注入健康重试；不放宽 schema guard，不伪造 private 行或增加产品故障配置。
+
+修后只运行原角色单用例，**1/1、零 skip，4.249 秒**：实际阶段为 main schema `84→84`、剩余受影响会话 `0`、`inTransaction=true`，指定原生末端错误、0 监听、全表回滚、健康重试与原 A→B→A/401 均通过，日志为 `followup-role.log` / `followup-role-source.json`。其余原用例、产品七行、schema guard 和十五个原权威保持，复用 f05 已封存的完整文件执行结果；没有把旧 false-green 注入算成负控或将两次检查相加为新整文件运行。后继待原独立审查者重绑复验；纠正记录见 `H:/TEMP/novelai-member-session-fixture-20261115/REVIEW-CORRECTION.md`。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
