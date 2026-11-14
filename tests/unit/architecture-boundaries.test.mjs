@@ -11,6 +11,24 @@ const writerFactories = [
   ['createLegacyNativeHttp', '../generation/legacy-native-http.ts'],
   ['createRelationalMemberAuthenticationHttp', '../members/relational-authentication-http.ts'],
   ['handleMemberAuthenticationRoutes', '../members/authentication-http.ts'],
+  ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
+  ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
+  ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
+];
+
+// 同一已登记写命令的混合来源；只限制整模块能力，保留明确的纯 named reader。
+const mixedWriterSources = [
+  ['ownerAccountCommand', '../members/owner-operations.ts'],
+  ['applyOperatingFunding', '../quota/operating-accounting.ts'],
+  ['withAuthenticatedMemberSession', '../members/authentication.ts'],
+  ['setMemberAdmission', '../generation/queue-policy.ts'],
+  ['prepareGenerationResult', '../generation/execution.ts'],
+  ['closeGenerationReview', '../generation/accounting.ts'],
+  ['configureFreeImages', '../quota/free-image-policy.ts'],
+  ['updateLossAlertPolicy', '../quota/failure-accounting.ts'],
+  ['appendDomainCommit', '../events/event-store.ts'],
+  ['beginDomainCommand', '../events/domain-events.ts'],
+  ['JsonStore', '../storage/sqlite-store.ts'],
 ];
 
 for (const filename of [
@@ -24,6 +42,61 @@ for (const filename of [
           filename,
           `import * as writer from '${modulePath}'; const run = writer.${name}; run(deps);`,
         ).some((error) => /write capability/.test(error)),
+      );
+    });
+  }
+  for (const [name, modulePath] of mixedWriterSources) {
+    const invoke = name === 'JsonStore' ? 'new run(dataDir);' : 'run(deps);';
+    for (const source of [
+      `import * as writer from '${modulePath}'; const run = writer.${name}; ${invoke}`,
+      `const writer = await import('${modulePath.replace('.ts', '.js')}'); const run = writer.${name}; ${invoke}`,
+    ]) {
+      test(`${filename} rejects captured mixed writer ${name}: ${source}`, () => {
+        assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+      });
+    }
+  }
+  for (const [name, source] of [
+    [
+      'named legacy store capture',
+      "import { JsonStore as Ledger } from '../storage/sqlite-store.ts'; const ledger = new Ledger(dataDir); const run = ledger.memberSessionTransaction.bind(ledger); run(mutate);",
+    ],
+    [
+      'named legacy store re-export',
+      "export { JsonStore as ProtocolWriter } from '../storage/sqlite-store.ts';",
+    ],
+  ]) {
+    test(`${filename} rejects ${name}`, () => {
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
+  for (const [name, modulePath] of [
+    ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
+    ['ownerOperation', '../members/owner-operations.ts'],
+  ]) {
+    test(`${filename} rejects named and injected ${name}`, () => {
+      assert.ok(
+        checkSource(filename, `import { ${name} as run } from '${modulePath}'; run(deps);`).length,
+      );
+      assert.ok(checkSource(filename, `deps.${name}(input);`).length);
+    });
+  }
+  for (const [name, modulePath] of writerFactories.slice(-3)) {
+    test(`${filename} rejects dynamic capture of ${name}`, () => {
+      const source = `const writer = await import('${modulePath.replace('.ts', '.js')}'); const run = writer.${name}; run(deps);`;
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
+  for (const modulePath of [
+    '../members/relational-read-http.ts',
+    '../members/owner-operations.ts',
+    '../quota/operating-accounting.ts',
+  ]) {
+    test(`${filename} rejects writer star re-export ${modulePath}`, () => {
+      assert.ok(
+        checkSource(filename, `export * from '${modulePath}';`).some((error) =>
+          /write capability/.test(error),
+        ),
       );
     });
   }
@@ -156,6 +229,15 @@ for (const filename of [
       'aliased synchronization',
       "import { syncBoundFairQuota as sync } from '../quota/fair-share.ts'; sync(view,account,now);",
     ],
+    [
+      'captured quota namespace writer',
+      "import * as quota from '../quota/fair-share.ts'; const configure=quota.configureFairGroups; configure(view,groups,now);",
+    ],
+    [
+      'captured dynamic quota writer',
+      "const quota=await import('../quota/fair-share.js'); const configure=quota.configureFairGroups; configure(view,groups,now);",
+    ],
+    ['quota namespace re-export', "export * from '../quota/fair-share.ts';"],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
     ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
     ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],
@@ -178,6 +260,16 @@ for (const filename of [
       "import { createRelationalMemberAuthenticationHttp as create } from '../members/relational-authentication-http.ts'; create(deps);",
     ],
     ...[
+      [
+        'API raw admission writer',
+        '../generation/relational-api-admission.ts',
+        'createRelationalApiGenerationAdmission',
+      ],
+      [
+        'relational OpenAI HTTP writer',
+        '../generation/relational-openai-http.ts',
+        'createRelationalOpenAiHttp',
+      ],
       [
         'Native raw admission writer',
         '../generation/relational-native-admission.ts',
@@ -205,6 +297,12 @@ for (const filename of [
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     ['member admission command', 'memberStore.changeMemberAdmission(command,input,actor);'],
     ['member admission commit', 'memberStore.assertMemberAdmissionCommit(events,receipt);'],
+    ['member removal commit', 'memberStore.assertMemberRemovalCommit(events);'],
+    ['member quota decision owner', 'applyFairMemberChange(view,draft,input,now);'],
+    [
+      'aliased member decision owner',
+      "import { applyFairMemberChange as change } from '../quota/fair-share.ts'; change(view,draft,input,now);",
+    ],
     ['queue admission owner', 'setMemberAdmission(view,id,false,refund);'],
     [
       'business replayer construction',
@@ -215,6 +313,7 @@ for (const filename of [
       'createInputProjector',
       'createDiagnosticProjector',
       'stageGenerationDiagnostic',
+      'stageGenerationReuse',
       'createGenerationProjector',
       'createQuotaProjector',
       'applyAccountEvent',
@@ -298,6 +397,7 @@ for (const filename of [
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ...[
       'acceptGeneration',
+      'reuseGeneration',
       'createRelationalMemberGenerationAdmission',
       'createRelationalQueueRuntime',
       'admitRelationalMemberGeneration',
@@ -330,6 +430,7 @@ for (const filename of [
       'manageQuotaFunding',
       'configureQuotaPolicy',
       'configureGroups',
+      'manageMemberQuota',
       'assertGroupCommit',
       'configureAnlasFallback',
       'configureFreeImages',
@@ -373,6 +474,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/request-queries.ts',
       "import { fairQuotaSummary } from '../quota/fair-share.ts'; createHash('sha256').update('safe');",
+    ],
+    [
+      'server/protocols/native-http.ts',
+      "import { fairQuotaSummary } from '../quota/fair-share.ts'; fairQuotaSummary(view,member);",
     ],
     [
       'web/app/types/member.ts',
@@ -430,5 +535,56 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
   ]) {
     assert.deepEqual(checkSource(filename, source), [], filename);
+  }
+});
+
+test('mixed writer modules retain pure named readers and type-only capability descriptions', () => {
+  for (const filename of [
+    'server/generation/request-queries.ts',
+    'server/protocols/native-http.ts',
+  ]) {
+    assert.deepEqual(
+      checkSource(
+        filename,
+        "import type { JsonStore as Ledger } from '../storage/sqlite-store.ts'; type Shape = Pick<Ledger, 'memberSessionTransaction'>;",
+      ),
+      [],
+    );
+    for (const [name, modulePath] of [
+      ['summarizeOwnerUsage', '../members/owner-operations.ts'],
+      ['ownerAccountConfiguration', '../members/owner-operations.ts'],
+      ['readOperatingAccount', '../quota/operating-accounting.ts'],
+      ['isOwner', '../members/authentication.ts'],
+      ['queueDeadline', '../generation/queue-policy.ts'],
+      ['generationJobDeadline', '../generation/execution.ts'],
+      ['generationChargeResources', '../generation/accounting.ts'],
+      ['freeImageSuccessWarningThreshold', '../quota/free-image-policy.ts'],
+      ['memberCharge', '../quota/failure-accounting.ts'],
+    ]) {
+      assert.deepEqual(
+        checkSource(filename, `import { ${name} as read } from '${modulePath}'; read(input);`),
+        [],
+      );
+    }
+    for (const [name, modulePath] of [...writerFactories, ...mixedWriterSources]) {
+      assert.deepEqual(
+        checkSource(filename, `import { type ${name} as Capability } from '${modulePath}';`),
+        [],
+      );
+      assert.deepEqual(checkSource(filename, `export type * from '${modulePath}';`), []);
+    }
+  }
+  for (const [name, modulePath] of [
+    ['canonicalJson', '../events/domain-events.ts'],
+    ['readCommandReceipt', '../events/event-store.ts'],
+    ['createId', '../storage/sqlite-store.ts'],
+  ]) {
+    assert.deepEqual(
+      checkSource(
+        'server/protocols/native-http.ts',
+        `import { ${name} as read } from '${modulePath}'; read(input);`,
+      ),
+      [],
+    );
   }
 });

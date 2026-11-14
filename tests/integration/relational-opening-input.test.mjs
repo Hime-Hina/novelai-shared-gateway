@@ -22,6 +22,7 @@ import {
 import {
   prepareRelationalInput,
   assertRelationalCompleteInput,
+  relationalInputCacheKey,
 } from '../../server/generation/relational-input.ts';
 import {
   parseNativeImageRequest,
@@ -606,7 +607,17 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
     assert.throws(() => appendDirect({ ...prepared.body, parameters }));
     assert.equal(databaseState(f.db), beforeDirect);
   }
+  assert.throws(() => appendDirect({ ...prepared.body, action: 'img2img' }));
+  assert.equal(databaseState(f.db), beforeDirect);
   appendDirect(prepared.body);
+  const historicalBody = structuredClone(prepared.body);
+  delete historicalBody.cacheSelection;
+  const historicalBefore = structuredClone(historicalBody);
+  assert.doesNotThrow(() =>
+    assertRelationalCompleteInput(historicalBody, prepared.assets, context, 1),
+  );
+  assert.equal(relationalInputCacheKey('m1', { ...prepared, body: historicalBody }, 'fixed'), null);
+  assert.deepEqual(historicalBody, historicalBefore);
   const blank = prepareRelationalInput(
     normalizeNovelAiRequest(
       {

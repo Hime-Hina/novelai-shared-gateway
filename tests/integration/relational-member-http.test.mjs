@@ -6,6 +6,8 @@ import { createServer, request as httpRequest } from 'node:http';
 import { EventEmitter, once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { fixture, keys, NOW, image, databaseState } from '../helpers/relational-generation.mjs';
 import {
@@ -496,5 +498,72 @@ test('关系 HTTP 额度暂不可用时仍返回原分池报价与拒绝原因�
   assert.equal(unavailable.body.admission.allowed, false);
   assert.equal(unavailable.body.admission.reasons[0].code, 'upstream_unavailable');
   assert.deepEqual(unavailable.body.charges, current.charges);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('成员HTTP实际正文等待中撤下ready，当前Cookie仍有效也不受理', async (t) => {
+  const f = await setup(t),
+    body = input(),
+    quote = (await f.json('/api/member/generation/quote', { method: 'POST', body })).body,
+    text = JSON.stringify({ ...body, confirmation: confirmation(quote) }),
+    incoming = once(f.server, 'request');
+  const outgoing = httpRequest(f.origin + '/api/member/generation/requests', {
+    method: 'POST',
+    headers: {
+      cookie: `nai_member_session=${f.sessions.m1.token}`,
+      origin: f.origin,
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(text),
+      'idempotency-key': 'withdrawn-ready-upload',
+    },
+  });
+  const response = new Promise((resolve, reject) => {
+    outgoing.on('response', async (res) => {
+      for await (const chunk of res) {
+        /* 完整消费响应，避免把提前断线误判为拒绝。 */
+      }
+      resolve(res.statusCode);
+    });
+    outgoing.on('error', reject);
+  });
+  outgoing.write(text.slice(0, 20));
+  const [upload] = await incoming;
+  await once(upload, 'data');
+  f.db.prepare("UPDATE projection_state SET status='building'").run();
+  const before = databaseState(f.db);
+  outgoing.end(text.slice(20));
+  assert.equal(await response, 500);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('成员结果实际文件IO后撤下ready，不返回已读取的原bytes', async (t) => {
+  const f = await setup(t);
+  let before;
+  const originalOpen = fs.open;
+  const mocked = t.mock.method(fs, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]).startsWith(path.join(f.dir, 'images') + path.sep)) {
+      const read = handle.readFile.bind(handle);
+      handle.readFile = async (...values) => {
+        const bytes = await read(...values);
+        if (!before) {
+          f.db.prepare("UPDATE projection_state SET status='building'").run();
+          before = databaseState(f.db);
+        }
+        return bytes;
+      };
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const response = await f.fetchMember('/api/member/jobs/existing-0/content'),
+    bytes = Buffer.from(await response.arrayBuffer());
+  assert.ok(before);
+  assert.equal(response.status, 500, bytes.toString());
+  assert.notDeepEqual(bytes, image);
   assert.equal(databaseState(f.db), before);
 });

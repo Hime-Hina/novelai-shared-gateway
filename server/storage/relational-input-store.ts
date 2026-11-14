@@ -21,11 +21,14 @@ import {
   relationalAssetSlots,
   relationalInputDigest,
   restoreRelationalWire,
+  relationalChildSeed,
   relationalProviderRequest,
   relationalInputDisplay,
   validateRelationalInputBody,
   validateRelationalAssetBytes,
   assertRelationalCompleteInput,
+  relationalInputCacheKey,
+  type PreparedRelationalInput,
   type RelationalInputAsset,
   type RelationalNormalizationContext,
 } from '../generation/relational-input.ts';
@@ -37,7 +40,6 @@ import {
   type MemberGenerationConfirmation,
 } from '../generation/member-contract.ts';
 import { generationRequestFingerprint } from '../generation/request-fingerprint.ts';
-import { singleGenerationRequest } from '../generation/batch-requests.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
 import { validateImageBytes } from '../protocols/native-image.ts';
 import type { ErrorLogRequest } from '../reports/generation-errors.ts';
@@ -70,6 +72,22 @@ export interface AcceptedInput {
     admissionEpoch: number;
     cacheKey: string | null;
   }[];
+}
+export interface ReusedGenerationInput {
+  memberId: string;
+  request: RecoverableRequest;
+  context: RelationalNormalizationContext;
+  seedMode: 'fixed' | 'random';
+  noCache: false;
+  idempotency?: { keyHash: string; noCache: false };
+  sourceJobId: string;
+  cached?: {
+    requestId: string;
+    jobId: string;
+    inputId: string;
+    source: string;
+    artifactId: string;
+  };
 }
 interface InputRow {
   id: string;
@@ -264,6 +282,273 @@ export class RelationalInputStore {
         asset.bytes,
       );
     }
+  }
+
+  generationInputIntent(
+    memberId: string,
+    request: RecoverableRequest,
+    context: RelationalNormalizationContext,
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+  ) {
+    const prepared = prepareRelationalInput(request, context, this.env);
+    return {
+      fingerprint: this.preparedFingerprint(prepared, seedMode, noCache),
+      cacheKey: relationalInputCacheKey(memberId, prepared, seedMode),
+    };
+  }
+
+  private preparedFingerprint(
+    prepared: Pick<
+      PreparedRelationalInput,
+      'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'
+    >,
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+  ) {
+    const request = relationalProviderRequest(
+      restoreRelationalWire(
+        prepared.body,
+        prepared.assets,
+        prepared.firstSeed,
+        prepared.sampleCount,
+        prepared.context,
+      ),
+      prepared.context,
+    );
+    return generationRequestFingerprint(
+      {
+        ...request,
+        operation: prepared.body.operation as string,
+        sampleCount: prepared.sampleCount,
+      },
+      { randomSeed: seedMode === 'random', noCache },
+    );
+  }
+
+  readGenerationReuseProof(jobId: string) {
+    const job = this.sqlite
+      .prepare<
+        [string],
+        {
+          id: string;
+          requestId: string;
+          memberId: string;
+          cacheKey: string | null;
+          status: string;
+          retiredAt: number | null;
+        }
+      >(
+        `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.cache_key AS cacheKey,
+      j.status,j.retired_at AS retiredAt FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      unavailable();
+    }
+    const request = this.request(job.requestId, job.memberId);
+    if (
+      !request.context_id ||
+      request.sample_count !== 1 ||
+      !['fixed', 'random'].includes(request.seed_mode)
+    ) {
+      unavailable();
+    }
+    const input = this.requestInput(request),
+      context = this.context(request.context_id),
+      firstSeed = this.jobSeed(request.id, job.id);
+    if (!input.body || input.row.completeness !== 'complete' || firstSeed === null) {
+      unavailable();
+    }
+    const assets = input.assets.map((asset) => ({
+      ...asset,
+      bytes: this.asset(request.input_id, asset).bytes,
+    }));
+    const prepared = { body: input.body, assets, context, firstSeed, sampleCount: 1 };
+    const accepted = this.sqlite
+      .prepare<[string], { seq: string }>(
+        "SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted' ORDER BY stream_version LIMIT 1",
+      )
+      .get(`request:${request.id}`);
+    if (!accepted) {
+      unavailable();
+    }
+    const stored = readRelationalCommit(this.sqlite, accepted.seq);
+    this.assertAcceptedEvents(stored.events, input.body, context, assets, stored.command);
+    if (
+      job.cacheKey === null ||
+      job.cacheKey !==
+        relationalInputCacheKey(job.memberId, prepared, request.seed_mode as 'fixed' | 'random')
+    ) {
+      unavailable();
+    }
+    return { job, request, input, prepared };
+  }
+
+  // 只在 generation 保存点暂存保护内容；事实与投影由同一个共同提交安装。
+  stageGenerationReuse(
+    metadata: CommandMetadata,
+    input: ReusedGenerationInput,
+    admissionEpoch: number,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation reuse requires the owning transaction.');
+    }
+    const original = this.readGenerationReuseProof(input.sourceJobId),
+      incoming = prepareRelationalInput(input.request, input.context, this.env);
+    if (
+      !Number.isSafeInteger(admissionEpoch) ||
+      admissionEpoch < 0 ||
+      input.noCache !== false ||
+      input.context.kind === 'member' ||
+      original.job.memberId !== input.memberId ||
+      incoming.sampleCount !== 1 ||
+      incoming.body.operation !== 'generate' ||
+      !['fixed', 'random'].includes(input.seedMode) ||
+      (input.idempotency !== undefined && input.idempotency.noCache !== false) ||
+      this.preparedFingerprint(incoming, input.seedMode, false) !== metadata.fingerprint ||
+      relationalInputCacheKey(input.memberId, incoming, input.seedMode) !== original.job.cacheKey
+    ) {
+      unavailable();
+    }
+    const prepared =
+      input.cached && input.seedMode === 'random'
+        ? { ...incoming, firstSeed: original.prepared.firstSeed }
+        : incoming;
+    const common = {
+      memberId: input.memberId,
+      accountId: null,
+      occurredAt: metadata.recordedAt,
+      policyVersion: metadata.policyVersion,
+      pricingVersion: metadata.pricingVersion,
+    };
+    const events: RelationalCommand['events'] = [];
+    if (!input.cached && !input.idempotency) {
+      return {
+        events,
+        receipt: { requestId: original.request.id, jobIds: [original.job.id] },
+        original,
+      };
+    }
+    const existing = this.sqlite
+      .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+      .get(prepared.contextId);
+    if (!existing) {
+      this.insertContext(prepared.contextId, prepared.context);
+      events.push({
+        ...common,
+        streamId: `context:${prepared.contextId}`,
+        eventType: 'ContextRegistered',
+        payload: {
+          contextId: prepared.contextId,
+          contextSchemaVersion: 1,
+          contextSha256: prepared.contextSha256,
+        },
+      });
+    } else if (
+      canonicalJson(this.context(prepared.contextId)) !== canonicalJson(prepared.context)
+    ) {
+      unavailable();
+    }
+    let requestId = original.request.id,
+      jobId = original.job.id;
+    if (input.cached) {
+      requestId = input.cached.requestId;
+      jobId = input.cached.jobId;
+      let inputId = original.request.input_id;
+      // 不同 requestedSteps/display 是已知来访内容；不能为引用原 input 而丢弃。
+      if (prepared.sha256 !== original.input.row.sha256) {
+        inputId = input.cached.inputId;
+        this.stagePreparedInput(inputId, input.memberId, prepared);
+        events.push({
+          ...common,
+          streamId: `input:${inputId}`,
+          eventType: 'InputRegistered',
+          payload: {
+            inputId,
+            memberId: input.memberId,
+            inputSchemaVersion: 1,
+            inputSha256: prepared.sha256,
+            logicalBytes: prepared.logicalBytes,
+          },
+        });
+      }
+      events.push(
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'RequestAccepted',
+          payload: {
+            requestId,
+            memberId: input.memberId,
+            inputId,
+            contextId: prepared.contextId,
+            source: input.cached.source,
+            operation: 'generate',
+            model: prepared.body.model as string,
+            sampleCount: 1,
+            seedMode: input.seedMode,
+            confirmation: null,
+          },
+        },
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'JobAccepted',
+          payload: {
+            jobId,
+            requestId,
+            sampleIndex: 0,
+            actualSeed: original.prepared.firstSeed,
+            status: 'done',
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch,
+            cacheKey: original.job.cacheKey,
+          },
+        },
+      );
+    }
+    if (input.idempotency) {
+      events.push({
+        ...common,
+        streamId: `request:${requestId}`,
+        eventType: 'RequestAliasRegistered',
+        payload: {
+          memberId: input.memberId,
+          operation: 'generate',
+          keyHash: input.idempotency.keyHash,
+          intentFingerprint: metadata.fingerprint,
+          noCache: false,
+          seedMode: input.seedMode,
+          requestId,
+          jobId,
+          contextId: prepared.contextId,
+          originalCommandId: metadata.commandId,
+        },
+      });
+    }
+    return {
+      events,
+      receipt: { requestId, jobIds: [jobId], ...(input.cached ? { cacheHit: true } : {}) },
+      original,
+    };
+  }
+
+  private stagePreparedInput(inputId: string, memberId: string, prepared: PreparedRelationalInput) {
+    this.insertInput({
+      row: {
+        id: inputId,
+        member_id: memberId,
+        schema_version: 1,
+        completeness: 'complete',
+        sha256: prepared.sha256,
+        logical_bytes: prepared.logicalBytes,
+        body: canonicalJson(prepared.body),
+      },
+      assets: prepared.assets,
+    });
   }
 
   // 只供 generation 原事务暂存；后续事实/投影失败必须随调用者的保存点一起回滚。
@@ -572,7 +857,7 @@ export class RelationalInputStore {
     assets: (RelationalInputAsset & { bytes: Buffer })[],
     command: Pick<
       RelationalCommand,
-      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt'
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
     >,
   ): void {
     const requests = events.filter((event) => event.eventType === 'RequestAccepted');
@@ -584,11 +869,15 @@ export class RelationalInputStore {
     assertRequestBody(body, p);
     assertRequestSeedMode(p, context);
     const registered = events.filter((event) => event.eventType === 'InputRegistered');
+    const cached = events.filter((event) => event.eventType === 'CachedResultLinked');
     if (
-      registered.length !== 1 ||
-      registered[0].payload.inputId !== p.inputId ||
-      registered[0].payload.memberId !== p.memberId ||
-      registered[0].accountId !== null ||
+      (registered.length !== 1 && !(registered.length === 0 && cached.length === 1)) ||
+      registered.some(
+        (event) =>
+          event.payload.inputId !== p.inputId ||
+          event.payload.memberId !== p.memberId ||
+          event.accountId !== null,
+      ) ||
       events.some(
         (event) =>
           event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
@@ -620,14 +909,66 @@ export class RelationalInputStore {
     for (const child of children) {
       const expected =
         p.operation === 'generate'
-          ? singleGenerationRequest(
-              { seed: seed!, nativeParameters: {} },
-              child.payload.sampleIndex,
-            ).seed
+          ? relationalChildSeed(seed!, child.payload.sampleIndex, context)
           : null;
       if (child.payload.actualSeed !== expected) {
         unavailable();
       }
+      if (
+        child.payload.cacheKey !== null &&
+        child.payload.cacheKey !==
+          relationalInputCacheKey(
+            p.memberId,
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+          )
+      ) {
+        unavailable();
+      }
+    }
+    if (
+      cached.length &&
+      (cached.length !== 1 ||
+        children.length !== 1 ||
+        cached[0].payload.jobId !== children[0].payload.jobId ||
+        children[0].payload.status !== 'done' ||
+        children[0].payload.queueSeq !== null ||
+        children[0].payload.cacheKey === null ||
+        p.confirmation !== null)
+    ) {
+      unavailable();
+    }
+    if (!cached.length && children.some((child) => child.payload.status === 'done')) {
+      unavailable();
+    }
+    if (
+      command.receipt &&
+      typeof command.receipt === 'object' &&
+      'cacheHit' in command.receipt &&
+      !cached.length
+    ) {
+      unavailable();
+    }
+    if (
+      cached.length &&
+      (context.kind === 'member' ||
+        events.some((event) => event.occurredAt !== command.recordedAt) ||
+        command.actorKind !== 'member' ||
+        command.actorId !== p.memberId ||
+        command.fingerprint !==
+          this.preparedFingerprint(
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+            false,
+          ) ||
+        canonicalJson(command.receipt) !==
+          canonicalJson({
+            requestId: p.requestId,
+            jobIds: children.map((child) => child.payload.jobId),
+            cacheHit: true,
+          }))
+    ) {
+      unavailable();
     }
     const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
     if (aliases.length > 1) {
@@ -635,13 +976,10 @@ export class RelationalInputStore {
     }
     for (const alias of aliases) {
       const a = alias.payload;
-      const request = relationalProviderRequest(
-        restoreRelationalWire(body, assets, seed, p.sampleCount),
-        context,
-      );
-      const requestFingerprint = generationRequestFingerprint(
-        { ...request, operation: p.operation, sampleCount: p.sampleCount },
-        { randomSeed: p.seedMode === 'random', noCache: a.noCache },
+      const requestFingerprint = this.preparedFingerprint(
+        { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+        p.seedMode,
+        a.noCache,
       );
       let intentFingerprint = requestFingerprint;
       if (context.kind === 'member') {
@@ -663,6 +1001,7 @@ export class RelationalInputStore {
         alias.memberId !== p.memberId ||
         alias.accountId !== null ||
         a.operation !== p.operation ||
+        a.seedMode !== p.seedMode ||
         a.requestId !== p.requestId ||
         a.jobId !== children[0].payload.jobId ||
         a.contextId !== p.contextId ||
@@ -675,10 +1014,68 @@ export class RelationalInputStore {
           canonicalJson({
             requestId: p.requestId,
             jobIds: children.map((child) => child.payload.jobId),
+            ...(cached.length ? { cacheHit: true } : {}),
           })
       ) {
         unavailable();
       }
+    }
+  }
+
+  private assertAliasOnlyEvents(
+    events: RelationalCommand['events'],
+    context: RelationalNormalizationContext,
+    command: Pick<
+      RelationalCommand,
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
+    >,
+    replayed: boolean,
+  ) {
+    const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
+    if (
+      aliases.length !== 1 ||
+      events.some(
+        (event) => !['ContextRegistered', 'RequestAliasRegistered'].includes(event.eventType),
+      )
+    ) {
+      unavailable();
+    }
+    const alias = aliases[0],
+      p = alias.payload;
+    if (
+      context.kind === 'member' ||
+      p.noCache !== false ||
+      p.operation !== 'generate' ||
+      !['fixed', 'random'].includes(p.seedMode) ||
+      alias.accountId !== null ||
+      alias.memberId !== p.memberId ||
+      command.actorKind !== 'member' ||
+      command.actorId !== p.memberId ||
+      p.originalCommandId !== command.commandId ||
+      command.fingerprint !== p.intentFingerprint ||
+      events.some((event) => event.occurredAt !== command.recordedAt) ||
+      events.some(
+        (event) =>
+          event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
+      )
+    ) {
+      unavailable();
+    }
+    const original = this.readGenerationReuseProof(p.jobId);
+    const prepared = { ...original.prepared, context };
+    if (
+      original.request.id !== p.requestId ||
+      original.job.memberId !== p.memberId ||
+      (!replayed &&
+        (original.job.retiredAt !== null ||
+          original.request.retired_at !== null ||
+          !['queued', 'running'].includes(original.job.status))) ||
+      p.intentFingerprint !== this.preparedFingerprint(prepared, p.seedMode, false) ||
+      original.job.cacheKey !== relationalInputCacheKey(p.memberId, prepared, p.seedMode) ||
+      canonicalJson(command.receipt) !==
+        canonicalJson({ requestId: p.requestId, jobIds: [p.jobId] })
+    ) {
+      unavailable();
     }
   }
 
@@ -846,10 +1243,7 @@ export class RelationalInputStore {
         const actualSeed =
           prepared.firstSeed === null
             ? null
-            : singleGenerationRequest(
-                { seed: prepared.firstSeed, nativeParameters: {} },
-                sampleIndex,
-              ).seed;
+            : relationalChildSeed(prepared.firstSeed, sampleIndex, prepared.context);
         events.push({
           ...common,
           streamId: `request:${accepted.requestId}`,
@@ -872,6 +1266,7 @@ export class RelationalInputStore {
             operation: prepared.body.operation as RequestRow['operation'],
             keyHash: accepted.idempotency.keyHash,
             noCache: accepted.idempotency.noCache,
+            seedMode: accepted.seedMode,
             intentFingerprint: metadata.fingerprint,
             requestId: accepted.requestId,
             jobId: accepted.jobs[0].jobId,
@@ -899,18 +1294,7 @@ export class RelationalInputStore {
       if (!contextExists) {
         this.insertContext(prepared.contextId, prepared.context);
       }
-      this.insertInput({
-        row: {
-          id: accepted.inputId,
-          member_id: accepted.memberId,
-          schema_version: 1,
-          completeness: 'complete',
-          sha256: prepared.sha256,
-          logical_bytes: prepared.logicalBytes,
-          body: canonicalJson(prepared.body),
-        },
-        assets: prepared.assets,
-      });
+      this.stagePreparedInput(accepted.inputId, accepted.memberId, prepared);
       this.applyAcceptedEvents(result.events);
       return result;
     })();
@@ -954,7 +1338,8 @@ export class RelationalInputStore {
             p.requestId,
             p.sampleIndex,
             p.actualSeed,
-            p.status,
+            // 缓存 done 意图必须与同笔 link 一起验证；SQL 中间 pending 只用于满足立即外键/CHECK。
+            p.status === 'done' ? 'pending' : p.status,
             p.queueSeq === null ? null : BigInt(p.queueSeq),
             p.queueExpiresAt,
             p.deadlineAt,
@@ -1143,9 +1528,21 @@ export class RelationalInputStore {
         }
         inputs.set(p.inputId, input);
       }
+      if (event.eventType === 'RequestAliasRegistered') {
+        contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+      }
     }
     if (!opening && !stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-      unavailable();
+      const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
+      if (!alias) {
+        unavailable();
+      }
+      this.assertAliasOnlyEvents(
+        stored.events,
+        contexts.get(alias.payload.contextId)!,
+        stored.command,
+        replayed,
+      );
     }
     const content = [...inputs].map(([inputId, input]) => ({
       inputId,
@@ -1375,11 +1772,36 @@ export class RelationalInputStore {
     const accepted = stored.events.find((event) => event.eventType === 'RequestAccepted');
     const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
     if (
-      accepted?.payload.requestId !== requestId ||
-      accepted.payload.memberId !== memberId ||
-      alias?.payload.keyHash !== keyHash ||
+      alias?.payload.requestId !== requestId ||
+      alias.payload.memberId !== memberId ||
+      alias.payload.keyHash !== keyHash ||
       alias.eventId !== sourceEventId
     ) {
+      unavailable();
+    }
+    const mapping = this.readGenerationIdempotency(memberId, alias.payload.operation, keyHash);
+    if (
+      !mapping ||
+      mapping.contextId !== alias.payload.contextId ||
+      mapping.commitSeq !== commitSeq ||
+      mapping.originalCommandId !== alias.payload.originalCommandId ||
+      mapping.intentFingerprint !== alias.payload.intentFingerprint ||
+      mapping.originalJobId !== alias.payload.jobId ||
+      mapping.originalRequestId !== requestId ||
+      mapping.sourceEventId !== sourceEventId
+    ) {
+      unavailable();
+    }
+    if (!accepted) {
+      this.assertAliasOnlyEvents(
+        stored.events,
+        this.context(alias.payload.contextId),
+        stored.command,
+        true,
+      );
+      return;
+    }
+    if (accepted.payload.requestId !== requestId || accepted.payload.memberId !== memberId) {
       unavailable();
     }
     this.assertAcceptedEvents(
@@ -1389,6 +1811,28 @@ export class RelationalInputStore {
       input.assets.map((asset) => ({ ...asset, bytes: this.asset(request.input_id, asset).bytes })),
       stored.command,
     );
+  }
+
+  readGenerationIdempotencyContext(memberId: string, operation: string, keyHash: string) {
+    const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
+    if (
+      !mapping ||
+      mapping.resolution !== 'live' ||
+      !mapping.requestId ||
+      !mapping.contextId ||
+      !mapping.commitSeq
+    ) {
+      unavailable();
+    }
+    this.ownedRequest(mapping.requestId, memberId);
+    this.assertAcceptedGenerationIntent(
+      mapping.requestId,
+      memberId,
+      mapping.commitSeq,
+      keyHash,
+      mapping.sourceEventId,
+    );
+    return this.context(mapping.contextId);
   }
 
   // 管理入口先鉴权、限量；这里共用原输入关系/摘要校验，不恢复附件或按当前默认生成参数。
@@ -1465,6 +1909,7 @@ export class RelationalInputStore {
     if (body) {
       delete body.displayPrompt;
       delete body.requestedSteps;
+      delete body.cacheSelection;
     }
     return {
       contractVersion: 1,
@@ -1592,7 +2037,7 @@ export class RelationalInputStore {
     }
     const context = this.context(job.context_id);
     const assets = this.validatedAssets(input, context);
-    const wire = restoreRelationalWire(input.body, assets, seed, 1);
+    const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);
     return {
       ...request,

@@ -290,23 +290,39 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'request:complete': f.db
-                .prepare(
-                  "SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id='request:complete'",
-                )
-                .get().v,
+              'idempotency:m1:generate:unsupported-opening': '0',
             },
-            receipt: { linked: true },
+            receipt: { opening: true },
             events: [
               {
-                eventType: 'CachedResultLinked',
-                streamId: 'request:complete',
+                // 合法归档幂等事实仍没有业务 owner；已实现的 input/request 不再充当缺口占位。
+                eventType: 'OpeningIdempotencyRecorded',
+                streamId: 'idempotency:m1:generate:unsupported-opening',
                 memberId: 'm1',
                 accountId: null,
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
-                payload: { jobId: 'complete-0', artifactId: 'artifact-complete-0' },
+                payload: {
+                  originalMemberId: 'm1',
+                  operation: 'generate',
+                  keyHash: 'c'.repeat(64),
+                  intentFingerprint: 'd'.repeat(64),
+                  originalRequestId: 'original-archived-request',
+                  originalJobId: 'original-archived-job',
+                  originalCommandId: 'original-archived-command',
+                  requestId: null,
+                  commitSeq: null,
+                  contextId: null,
+                  resolution: 'archived',
+                  originRef: 'synthetic-archive:original-key',
+                  archivedReceipt: {
+                    requestId: 'original-archived-request',
+                    jobIds: ['original-archived-job'],
+                  },
+                  createdAt: 0,
+                  origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-original-key' },
+                },
               },
             ],
           }),

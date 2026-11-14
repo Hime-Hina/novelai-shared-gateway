@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import {
-  fixture,
+  fixture as buildingFixture,
+  installReady,
   meta,
   keys,
   NOW,
@@ -47,6 +48,11 @@ const header = (key = 'synthetic-client-key') => ({
   headers: { 'idempotency-key': key },
   rawHeaders: ['Idempotency-Key', key],
 });
+async function fixture(t, options) {
+  const f = await buildingFixture(t, options);
+  await installReady(f);
+  return f;
+}
 function body(f, parameters = {}) {
   const input = {
     operation: 'generate',
@@ -70,6 +76,7 @@ function confirmed(f, input) {
 function bridge(f, overrides = {}) {
   return createRelationalMemberGenerationAdmission({
     ...f,
+    sqlite: f.db,
     payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
     env: {},
     now: () => NOW,
@@ -79,6 +86,21 @@ function bridge(f, overrides = {}) {
 function submit(admit, input, key, credential = { apiKey: keys.m1 }) {
   return admit({ credential, request: header(key), body: input });
 }
+
+test('在线成员受理桥拒绝building，只有唯一installer合法ready后才受理', async (t) => {
+  const f = await buildingFixture(t),
+    admit = bridge(f),
+    input = body(f),
+    before = databaseState(f.db);
+  await assert.rejects(submit(admit, input), /incomplete/);
+  assert.equal(databaseState(f.db), before);
+  await installReady(f);
+  const accepted = await submit(admit, input);
+  assert.equal(accepted.replayed, false);
+  const saved = databaseState(f.db);
+  assert.deepEqual((await submit(admit, input)).receipt, accepted.receipt);
+  assert.equal(databaseState(f.db), saved);
+});
 
 test('真实Key受理保存薄键、首次随机seed和批次；同键零写入并隔离成员', async (t) => {
   const f = await fixture(t),
@@ -121,7 +143,7 @@ test('真实Key受理保存薄键、首次随机seed和批次；同键零写入�
   assert.ok(
     !JSON.stringify(readRelationalCommit(f.db, first.commitSeq)).includes('synthetic-client-key'),
   );
-  assert.throws(() => assertRelationalStorageReady(f.db), /incomplete/);
+  assertRelationalStorageReady(f.db);
 });
 
 test('同键沿首次默认值重领取消回执，新键仍使用当前定义并重新确认', async (t) => {
@@ -295,7 +317,11 @@ test('完整受理提交联合受保护输入回放，薄键首child不能替换
   forgedSource.exec(appendOnly);
   initializeRelationalStorage(rejectedTarget, 'generation-history');
   const rejectedReplay = new RelationalCommitReplayer(rejectedTarget);
-  for (const seq of ['1', '2', '3']) {
+  for (const { seq } of forgedSource
+    .prepare(
+      'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq<? ORDER BY commit_seq',
+    )
+    .all(BigInt(first.commitSeq))) {
     rejectedTarget.transaction(() =>
       rejectedReplay.replayCommit(
         readRelationalCommit(forgedSource, seq),
@@ -561,7 +587,11 @@ test('原规范输入约束指纹及确认，互相一致的伪B摘要不能覆�
       assert.equal(databaseState(forged), beforeSource);
       initializeRelationalStorage(target, 'generation-history');
       const replay = new RelationalCommitReplayer(target);
-      for (const seq of ['1', '2', '3']) {
+      for (const { seq } of forged
+        .prepare(
+          'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq<? ORDER BY commit_seq',
+        )
+        .all(BigInt(first.commitSeq))) {
         target.transaction(() => replay.replayCommit(readRelationalCommit(forged, seq), source))();
       }
       const beforeTarget = databaseState(target);

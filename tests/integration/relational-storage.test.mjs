@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
@@ -12,6 +13,11 @@ import {
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
+import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
+import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
@@ -59,6 +65,69 @@ for (const previousVersion of [2, 3])
     },
   );
 
+for (const previous of [
+  {
+    name: 'relational-schema-v3.json',
+    commit: '3d2bafd7b19f329027ad081344a94dc20f4f51f2',
+    sha256: '95e48652ac9bd9064f960f6bb87f41fde48bbc303ccc3183c553dcdd43f7646b',
+  },
+  {
+    name: 'relational-schema-v4-integer-seed.json',
+    commit: 'e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01',
+    sha256: '94ebf80c768c334466ef21bec0c01df6ae5f58b30792cd037ff6820d0511b796',
+  },
+]) {
+  test(`旧原型 ${previous.name} 的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash`, (t) => {
+    const sqlite = new Database(':memory:');
+    t.after(() => sqlite.close());
+    sqlite.pragma('foreign_keys=ON');
+    // 固定实际 Git 的完整 DDL；不能由改写当前版本号或字段冒充正确旧库。
+    const old = JSON.parse(
+      readFileSync(new URL(`../fixtures/${previous.name}`, import.meta.url), 'utf8'),
+    );
+    assert.equal(old.sourceCommit, previous.commit);
+    assert.equal(old.sha256, previous.sha256);
+    const previousSchema = old.sql;
+    assert.equal(createHash('sha256').update(previousSchema).digest('hex'), old.sha256);
+    assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
+    sqlite.exec(previousSchema);
+    const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+    meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
+    meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
+    meta.run(
+      'event_authority',
+      JSON.stringify({
+        version: RELATIONAL_WRITER_VERSION,
+        minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+      }),
+    );
+    sqlite
+      .prepare(
+        "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
+      )
+      .run();
+    const before = sqlite.serialize();
+    assert.throws(
+      () => assertRelationalStorageFormat(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => assertRelationalStorageReady(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(() => new RelationalInputStore(sqlite), /Unsupported relational database format/);
+    assert.throws(
+      () => new RelationalGenerationStore(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalNativeHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.deepEqual(sqlite.serialize(), before);
+  });
+}
+
 function insert(sqlite, table, row) {
   const fields = Object.keys(row);
   sqlite
@@ -84,7 +153,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 4,
+    schema_version: RELATIONAL_EVENT_SCHEMA_VERSION,
     occurred_at: 1000,
     account_id: null,
     member_id: null,
@@ -233,6 +302,55 @@ function artifact(overrides = {}) {
     ...overrides,
   };
 }
+
+test('唯一actual_seed REAL保留有限Number及未知NULL，物理边界拒绝无穷值', (t) => {
+  const seeds = [
+    0,
+    -1,
+    -2,
+    1.5,
+    4294967296,
+    Number.MAX_VALUE,
+    -Number.MAX_VALUE,
+    Number.MIN_VALUE,
+    null,
+  ];
+  for (const [index, seed] of seeds.entries()) {
+    const sqlite = fixture(t);
+    insert(sqlite, 'generation_jobs', {
+      id: `seed-${index}`,
+      request_id: 'r1',
+      sample_index: 1,
+      actual_seed: seed,
+      status: 'pending',
+      admission_epoch: 0,
+      ...fact,
+    });
+    const row = sqlite
+      .prepare(
+        'SELECT actual_seed AS seed,typeof(actual_seed) AS type FROM generation_jobs WHERE id=?',
+      )
+      .get(`seed-${index}`);
+    assert.equal(row.seed, seed);
+    assert.equal(row.type, seed === null ? 'null' : 'real');
+  }
+  for (const seed of [Infinity, -Infinity]) {
+    const sqlite = fixture(t);
+    assert.throws(
+      () =>
+        insert(sqlite, 'generation_jobs', {
+          id: 'nonfinite',
+          request_id: 'r1',
+          sample_index: 1,
+          actual_seed: seed,
+          status: 'pending',
+          admission_epoch: 0,
+          ...fact,
+        }),
+      /CHECK/,
+    );
+  }
+});
 
 test('新格式独立初始化为 building，没有旧通用记录、正文影子或流投影', (t) => {
   const sqlite = database(t);

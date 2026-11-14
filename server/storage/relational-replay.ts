@@ -126,6 +126,7 @@ export class RelationalCommitReplayer {
         throw new Error('Opening facts require an offline building target.');
       }
       this.members.assertMemberAdmissionCommit(stored.events, stored.command.receipt);
+      this.members.assertMemberRemovalCommit(stored.events);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {

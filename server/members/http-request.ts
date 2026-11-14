@@ -1,6 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export const memberCookieName = 'nai_member_session';
+export function gatewayKeyFrom(req: Pick<IncomingMessage, 'headers'>, url: URL): string {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) {
+    return header.slice(7).trim();
+  }
+  return String(url.searchParams.get('token') || req.headers['x-user-token'] || '').trim();
+}
 function error(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }

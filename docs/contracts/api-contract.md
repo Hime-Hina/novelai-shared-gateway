@@ -255,6 +255,8 @@ OpenAI 非流式/SSE 与 direct 的 HTTP 等待期限只控制连接：direct �
 
 OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接等待者和定时器；普通 `GET /api/jobs/:id` 继续回显完整提示词。direct 明确缓存命中仍返回 `x-cache: hit`，不会为了重建连接重新生成已有结果。
 
+OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓存等价规则，支持完成产物复用与活动任务合并。模型目录保留 Bearer、query `token` 和 `x-user-token` 的原 Key 来源与优先序；POST 生图仍仅接受 Bearer Key。原中央入口已经认证的管理员可读目录，此只读权限不授予生图写入能力。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界
@@ -264,6 +266,8 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 密码登录成功回包增加 `expiresAt`（整数 Unix 毫秒），`GET /api/member/me` 增加 `sessionExpiresAt`；JSON 正文不回传会话令牌或摘要。SSE 建连时仍使用正常 HTTP 鉴权；连接内确认资格/会话失效发送 `auth-expired` 并结束，Discord 503 或网络错误只中断连接。页面在 SSE 永久关闭时最多补一次状态鉴权检查，401/403 清除密钥展示并显示重新登录，503 保留页面。
 
 `me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 在副本中估算额度，不同步钱包或提交额度事件；鉴权、Discord 资格缓存及符合条件的可见访问续期仍有各自的持久化边界。Nuxt 继续通过执行器接口取得鉴权后的响应，不能因额度查询纯读就绕过这些守卫直接读取 SQLite。
+
+关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见数据库计划第 9.49 节。
 
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 
@@ -293,7 +297,7 @@ direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，d
 
 ### 父请求查询、领取与取消
 
-`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
+`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO 结构和业务字段。每次读取可重新签发限时领取链接，包含该链接的 `revision` 也可随之更新，不承诺跨时完整字节相等。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
 
 DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。counts 包含 `total/queued/pending/running/done/failed`，failed 包含取消项；jobs 每项包含 `id/index/status/model/createdAt/updatedAt/completedAt/error/cancelled/lateResultAvailable/imageUrl`，index 从零开始。父状态从子任务派生为 running、queued、pending、done、partial、cancelled、failed 或 empty，不额外保存一份状态。查询不返回完整参数、提示词或认证信息。图片归属校验后签发既有下载链接，迟到完整结果也可领取。
 

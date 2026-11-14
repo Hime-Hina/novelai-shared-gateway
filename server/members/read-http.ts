@@ -4,8 +4,64 @@ import type {
   MemberJobPageOptions,
 } from '../storage/relational-request-store.ts';
 import { replyMemberJson } from './http-request.ts';
+import type { fairQuotaSummary } from '../quota/fair-share.ts';
+import type { FreeImageUsage } from '../quota/free-image-policy.ts';
+import type { memberCharge } from '../quota/failure-accounting.ts';
 
 type HistoryPage = ReturnType<RelationalRequestStore['readMemberJobPage']>;
+type ProfileJob = Omit<HistoryPage['jobs'][number], 'requestId' | 'createdAt' | 'status'> & {
+  requestId?: string | null;
+  createdAt?: string | null;
+  status?: string;
+};
+export interface MemberMeState {
+  username: string | undefined;
+  owner: boolean;
+  sessionExpiresAt: number;
+  acceptingJobs: boolean;
+  quota:
+    (NonNullable<ReturnType<typeof fairQuotaSummary>> & { freeImages?: FreeImageUsage }) | null;
+  jobs: ProfileJob[];
+  lateResults: {
+    id: string;
+    model: string | null;
+    createdAt?: string | null;
+    lateResultAt: string;
+    imageId: string | null;
+    charge: ReturnType<typeof memberCharge>;
+  }[];
+}
+
+export function publicMemberProfile(state: MemberMeState, imageUrl: (id: string) => string) {
+  return {
+    username: state.username,
+    owner: state.owner,
+    sessionExpiresAt: state.sessionExpiresAt,
+    acceptingJobs: state.acceptingJobs,
+    quota: state.quota,
+    jobs: state.jobs.map((job) => ({
+      id: job.id,
+      requestId: job.requestId,
+      createdAt: job.createdAt,
+      lateResultAvailable: job.lateResultAvailable,
+      imageId: job.imageId || '',
+      model: job.model,
+      status: job.status,
+      charge: job.charge,
+      imageUrl: job.imageId ? imageUrl(job.imageId) : '',
+    })),
+    lateResults: state.lateResults.map(
+      ({ id, model, createdAt, lateResultAt, imageId, charge }) => ({
+        id,
+        model,
+        createdAt,
+        lateResultAt,
+        imageUrl: imageId ? imageUrl(imageId) : '',
+        charge,
+      }),
+    ),
+  };
+}
 interface Dependencies {
   readHistory(options: MemberJobPageOptions): Promise<
     Omit<HistoryPage, 'jobs'> & {
