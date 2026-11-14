@@ -41,7 +41,7 @@ const admin = '/api/admin/member-management',
   summary = '/api/member/owner/summary',
   statistics = '/api/member/owner/statistics',
   adminToken = 'synthetic-private-admin-token';
-async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {}) {
+async function setup(t, { env = {}, beforeReady, resources, discordFetch, onBodyRead } = {}) {
   const currentEnv = {
       OWNER_USER_ID: 'm1',
       DISCORD_GUILD_ID: '1134557553011998840',
@@ -108,6 +108,15 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {})
       },
     }),
     server = createServer(async (req, res) => {
+      if (onBodyRead) {
+        const iterate = req[Symbol.asyncIterator].bind(req);
+        req[Symbol.asyncIterator] = async function* () {
+          for await (const chunk of iterate()) {
+            onBodyRead();
+            yield chunk;
+          }
+        };
+      }
       try {
         if (await activeHandle(req, res, new URL(req.url, `http://${req.headers.host}`))) return;
         res.writeHead(404);
@@ -131,13 +140,21 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {})
   });
   const call = (
     url = owner,
-    { member = 'm1', cookie = sessions[member].token, headers = {}, method = 'GET' } = {},
+    { member = 'm1', cookie = sessions[member].token, headers = {}, method = 'GET', body } = {},
   ) =>
     new Promise((resolve, reject) => {
       // raw HTTP 保留实际 Host/Origin；fetch 可能重写 Host，不能用它证明该门禁。
       const req = httpRequest(
         origin + url,
-        { method, headers: { cookie: `nai_member_session=${cookie}`, origin, ...headers } },
+        {
+          method,
+          headers: {
+            cookie: `nai_member_session=${cookie}`,
+            origin,
+            ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+            ...headers,
+          },
+        },
         (res) => {
           let text = '';
           res.setEncoding('utf8');
@@ -157,7 +174,7 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {})
         },
       );
       req.on('error', reject);
-      req.end();
+      req.end(body === undefined ? undefined : JSON.stringify(body));
     });
   return {
     ...f,
@@ -1101,4 +1118,359 @@ test('实际已删除成员不再列为管理对象，仍保留原历史与转�
   );
   assert.equal(view.body.configVersion, 2);
   assert.equal(databaseState(f.db), before);
+});
+const freePolicy = (expectedVersion = 1) => ({
+  action: 'free-image-policy',
+  expectedVersion,
+  policy: { enabled: true, warningThreshold: 2, hardLimit: 5 },
+});
+const lossPolicy = (expectedVersion = 1) => ({
+  action: 'loss-alert-policy',
+  expectedVersion,
+  policy: {
+    v5Points24h: 0.1234567890123456,
+    fixedAnlas24h: 0,
+    fixedAnlas30d: 9,
+    memberAttempts24h: 0,
+  },
+});
+function policyNotifications(f) {
+  const seen = [];
+  f.events.on('commit', (event) => {
+    assert.equal(f.db.inTransaction, false);
+    seen.push({
+      event,
+      row: f.db.prepare('SELECT * FROM sharing_policy WHERE id=1').get(),
+    });
+  });
+  return seen;
+}
+
+test('三政策真实POST沿当前admin或owner与原回执，重复零写且提交后恰一次通知', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    financial = () =>
+      domainDigest(
+        [
+          'wallets',
+          'charges',
+          'account_quota_state',
+          'operating_state',
+          'generation_requests',
+          'generation_jobs',
+          'generation_attempts',
+          'idempotency_keys',
+        ].map((table) => [table, f.db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all()]),
+      ),
+    financialBefore = financial(),
+    cases = [];
+  for (const [actor, endpoint] of [
+    ['admin', admin],
+    ['member', owner],
+  ]) {
+    for (const [body, eventType, expected] of [
+      [
+        { action: 'fallback-policy', enabled: actor === 'admin' },
+        'FallbackPolicyChanged',
+        { autoAnlasFallback: actor === 'admin' },
+      ],
+      [
+        freePolicy(actor === 'admin' ? 1 : 2),
+        'FreePolicyChanged',
+        { policy: { ...freePolicy().policy, version: actor === 'admin' ? 2 : 3 } },
+      ],
+      [
+        lossPolicy(actor === 'admin' ? 1 : 2),
+        'LossPolicyChanged',
+        { policy: { ...lossPolicy().policy, version: actor === 'admin' ? 2 : 3 } },
+      ],
+    ]) {
+      const headers = {
+          'idempotency-key': 'same-key-scoped-by-actor-and-action',
+          'x-member-activity': '1',
+          ...(actor === 'admin' ? { 'x-admin-token': adminToken } : {}),
+        },
+        intent = { ...body, actorId: 'forged-body-actor', actorKind: 'system' },
+        response = await f.call(endpoint, { method: 'POST', headers, body: intent });
+      assert.equal(response.status, 200, response.text);
+      assert.deepEqual(response.body, expected);
+      assert.equal(response.headers.get('set-cookie'), null);
+      const seq = f.db
+          .prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits')
+          .get().seq,
+        stored = readRelationalCommit(f.db, seq);
+      assert.equal(stored.command.actorKind, actor);
+      assert.equal(stored.command.actorId, actor === 'admin' ? 'local-admin' : 'm1');
+      assert.equal(stored.command.recordedAt, f.clock);
+      assert.equal(stored.events.length, 1);
+      assert.equal(stored.events[0].eventType, eventType);
+      assert.deepEqual(stored.command.receipt, expected);
+      assert.equal(seen.length, cases.length + 1);
+      assert.deepEqual(seen.at(-1).event.collections, ['settings']);
+      assert.equal(seen.at(-1).event.allMembers, true);
+      cases.push({ endpoint, headers, intent, expected });
+    }
+  }
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  f.advance();
+  for (const { endpoint, headers, intent, expected } of cases) {
+    const response = await f.call(endpoint, { method: 'POST', headers, body: intent });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, expected);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, 6);
+  assert.equal(f.resourceCalls, 0);
+  const reordered = await f.call(owner, {
+    method: 'POST',
+    headers: cases[4].headers,
+    body: Object.fromEntries(Object.entries(cases[4].intent).reverse()),
+  });
+  assert.equal(reordered.status, 200, reordered.text);
+  assert.deepEqual(reordered.body, cases[4].expected);
+  assert.equal(databaseState(f.db), before);
+  const conflict = await f.call(owner, {
+    method: 'POST',
+    headers: cases[3].headers,
+    body: { ...cases[3].intent, enabled: true },
+  });
+  assert.equal(conflict.status, 409, conflict.text);
+  const stale = await f.call(owner, {
+    method: 'POST',
+    headers: { 'idempotency-key': 'new-stale' },
+    body: freePolicy(1),
+  });
+  assert.equal(stale.status, 409, stale.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, 6);
+  const expiry = f.db.prepare('SELECT * FROM member_sessions ORDER BY token_hash').all();
+  for (let i = 0; i < 2; i++) {
+    const response = await f.call(owner, {
+      method: 'POST',
+      headers: { 'x-member-activity': '1' },
+      body: { action: 'fallback-policy', enabled: true },
+    });
+    assert.equal(response.status, 200, response.text);
+  }
+  assert.equal(seen.length, 8);
+  assert.deepEqual(f.db.prepare('SELECT * FROM member_sessions ORDER BY token_hash').all(), expiry);
+  const ids = f.db
+    .prepare(
+      "SELECT command_id FROM commits WHERE command_id NOT LIKE 'management:%' ORDER BY commit_seq DESC LIMIT 2",
+    )
+    .all();
+  assert.equal(new Set(ids.map((r) => r.command_id)).size, 2);
+  assert.ok(ids.every((r) => /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(r.command_id)));
+  assert.equal(financial(), financialBefore);
+});
+
+test('政策POST保留原单ASCII幂等键、JSON、版本与本站边界，未接action不落库', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    before = databaseState(f.db);
+  for (const [headers, body, status] of [
+    [{ 'idempotency-key': '' }, freePolicy(), 400],
+    [{ 'idempotency-key': 'a'.repeat(129) }, freePolicy(), 400],
+    [{ 'idempotency-key': 'has space' }, freePolicy(), 400],
+    [{ 'idempotency-key': '\u00e9' }, freePolicy(), 400],
+    [{ 'idempotency-key': ['duplicate', 'duplicate'] }, freePolicy(), 400],
+    [{ 'content-type': 'text/plain' }, freePolicy(), 415],
+    [{ origin: '' }, freePolicy(), 403],
+    [{}, { action: 'groups', groups: [] }, 400],
+    [{}, { action: 'fallback-policy', enabled: 'true' }, 400],
+    [{}, { ...freePolicy(), policy: { enabled: true, warningThreshold: 0, hardLimit: 1 } }, 400],
+    [{}, { ...lossPolicy(), expectedVersion: 0 }, 409],
+    [{}, { ...freePolicy(), extra: 'x'.repeat(32768) }, 413],
+  ]) {
+    const response = await f.call(owner, { method: 'POST', headers, body });
+    assert.equal(response.status, status, response.text);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(databaseState(f.db), before);
+  }
+  const nonowner = await f.call(owner, { method: 'POST', member: 'm2', body: freePolicy() });
+  assert.equal(nonowner.status, 403, nonowner.text);
+  const missingAdmin = await f.call(admin, { method: 'POST', body: freePolicy() });
+  assert.equal(missingAdmin.status, 403, missingAdmin.text);
+  const wrongHost = await f.call(admin, {
+    method: 'POST',
+    headers: { host: 'untrusted.example', 'x-admin-token': adminToken },
+    body: freePolicy(),
+  });
+  assert.equal(wrongHost.status, 404, wrongHost.text);
+  for (const path of ['/api/member/owner/summary', '/api/member/owner/statistics']) {
+    const unrelated = await f.call(path, { method: 'POST', body: freePolicy() });
+    assert.equal(unrelated.status, 404, unrelated.text);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, 0);
+});
+async function holdPolicyBody(t, f, endpoint, started, headers = {}) {
+  const text = JSON.stringify(freePolicy()),
+    request = httpRequest(f.origin + endpoint, {
+      method: 'POST',
+      headers: {
+        origin: f.origin,
+        cookie: `nai_member_session=${f.sessions.m1.token}`,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(text),
+        'idempotency-key': 'held-policy',
+        ...headers,
+      },
+    });
+  t.after(() => request.destroy());
+  const response = new Promise((resolve, reject) => {
+    request.on('error', reject);
+    request.on('response', (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (body += chunk));
+      res.on('end', () => resolve({ status: res.statusCode, text: body, headers: res.headers }));
+    });
+  });
+  request.write(text.slice(0, -1));
+  await Promise.race([
+    started,
+    response.then((res) => {
+      throw Error('POST returned before consuming body: ' + res.status);
+    }),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(Error('body not consumed')), 3000);
+      timer.unref();
+    }),
+  ]);
+  return {
+    finish: () => {
+      request.end(text.slice(-1));
+      return response;
+    },
+  };
+}
+
+test('慢正文后政策POST重核当前Cookie、epoch ABA、owner、ready与admin边界', async (t) => {
+  for (const mode of ['cookie', 'epoch-ABA', 'owner', 'ready', 'admin-query']) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, { onBodyRead: () => begin?.() }),
+        seen = policyNotifications(f),
+        endpoint = mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner;
+      if (mode === 'cookie') {
+        const first = await f.call(owner, {
+          method: 'POST',
+          headers: { 'idempotency-key': 'held-policy' },
+          body: freePolicy(),
+        });
+        assert.equal(first.status, 200, first.text);
+      }
+      const policyNotified = seen.filter(({ event }) =>
+          event.collections.includes('settings'),
+        ).length,
+        started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, endpoint, started);
+      if (mode === 'cookie') {
+        await logoutMemberSession(f.members, f.sessions.m1.token);
+      } else if (mode === 'epoch-ABA') {
+        const epoch = f.db.prepare("SELECT auth_epoch FROM members WHERE id='m1'").get().auth_epoch;
+        // 当前 active→disabled→active 角色回到原值，原 epoch/Cookie 仍必须撤销。
+        f.db.transaction(() => f.members.setMemberStatus(meta('held-disable'), 'm1', 'disabled'))();
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('held-reactivate'), 'm1', 'active'),
+        )();
+        assert.notEqual(
+          f.db.prepare("SELECT auth_epoch FROM members WHERE id='m1'").get().auth_epoch,
+          epoch,
+        );
+        assert.equal((await authenticateMemberApiKey(f.members, keys.m1)).id, 'm1');
+      } else if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'ready') {
+        // 已合法安装后的故障，不把损坏 marker 当合法 ready 夹具。
+        f.db.prepare("UPDATE projection_state SET status='failed' WHERE id=1").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      // owner 配置协调本身可清理会话；只断言不得新增政策提交/通知或续 Cookie。
+      const policy = f.db.prepare('SELECT * FROM sharing_policy').all(),
+        cut = f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.deepEqual(f.db.prepare('SELECT * FROM sharing_policy').all(), policy);
+      assert.equal(
+        f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+        cut,
+      );
+      assert.equal(
+        seen.filter(({ event }) => event.collections.includes('settings')).length,
+        policyNotified,
+      );
+    });
+  }
+});
+
+test('政策POST末尾SQL故障全表回滚无通知，同键重试及完整公共回放不复活私有认证', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    headers = { 'x-admin-token': adminToken, 'idempotency-key': 'rollback-policy' };
+  f.db.exec(
+    "CREATE TRIGGER fail_policy AFTER UPDATE OF free_policy_version ON sharing_policy BEGIN SELECT RAISE(ABORT,'synthetic policy tail failure'); END",
+  );
+  const before = databaseState(f.db),
+    failed = await f.call(admin, { method: 'POST', headers, body: freePolicy() });
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, 0);
+  f.db.exec('DROP TRIGGER fail_policy');
+  const response = await f.call(admin, { method: 'POST', headers, body: freePolicy() });
+  assert.equal(response.status, 200, response.text);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].row.free_policy_version, 2);
+  for (const body of [lossPolicy(), { action: 'fallback-policy', enabled: true }]) {
+    assert.equal((await f.call(owner, { method: 'POST', body })).status, 200);
+  }
+  assert.equal(seen.length, 3);
+  const target = new Database(':memory:');
+  initializeRelationalStorage(target, 'generation-history');
+  t.after(() => target.close());
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  let network = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    network++;
+    throw Error('replay must not fetch');
+  });
+  for (const { seq } of commits)
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  assert.deepEqual(
+    target.prepare('SELECT * FROM sharing_policy').all(),
+    f.db.prepare('SELECT * FROM sharing_policy').all(),
+  );
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'upstream_credentials',
+    'member_sessions',
+    'discord_bindings',
+  ])
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0);
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const rebuilt = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits)
+    target.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), inputs).replayed, true),
+    )();
+  assert.equal(databaseState(target), rebuilt);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(network, 0);
 });

@@ -1763,6 +1763,20 @@ Windows Node 22 源码管理 HTTP、旧 owner、关系报表及账户目录四�
 
 根在冻结 `0ad2c03` 后整合本片，原 owner 操作/管理/报表/账户窄读四文件同次 54/54、零跳过，18.270 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式和 diff 通过，工厂、原 owner 提取和管理专项与 750 精确字节相同。Report 保留原已审 OpeningAttempt 风险逻辑，仅在原统计查询补登录名列；日志 `H:/TEMP/novelai-owner-read-root-{joint,type,static,format}.log`。第一次命令预检发现不存在的 unit 路径并在 test runner 前退出，未当成产品反例或测试通过；随后核实原 integration 路径，以上结果仅指真实四文件执行。后继政策/Member owner/订阅及统一发布仍另验。
 
+### 9.64 管理三政策 POST 的关系接入
+
+本片从管理 GET 最终受审 `db5f320` 独立接续同一 factory，只增加 `fallback-policy/free-image-policy/loss-alert-policy`。权威规则、版本和 typed receipt 已由 `RelationalQuotaStore.configureQuotaPolicy()` 及原 fallback/free/loss owner 拥有；HTTP 不重写金额或阈值公式、不增加政策事实/DDL，也不扩其他 action。管理元数据从原 `http-routes.ts` 纯提取到 `http/management-command.ts`，旧 caller 默认 admin 的输出不变；关系 caller 显式绑定当前 owner member 或平台 admin 身份，UUID/提交时间由服务器生成，单个可见 ASCII 键及完整正文意图沿原规则隔离。原 input/context/event 版本均不变。
+
+正文 IO 后在原 authorize 事务复核 Cookie、稳定 ID/epoch、Discord、当前 owner、ready、Host/同源与 admin capability，再领取旧回执或执行新命令。owner 传当次授权回调里的当前 member，不使用请求前快照或正文 actor；admin POST 复用同一 `RelationalStateNotifications.commit()` 包裹实际 immediate 最外层事务，GET 仍为原只读事务。没有空私有会话事务桥、手工 emit 或已授权布尔。原精确可见 owner 续期增加显式 GET 限制，任何政策 POST 都不续 Cookie。
+
+验收包括真实合法 ready 的 admin/owner 三政策、typed 回包、同键原回执零写与完整意图冲突、独立版本 409、无键新 UUID、慢 TCP 正文期间退出/active→disabled→active 认证代次撤销/owner 改变/ready 故障/PUBLIC query 撤权；旧回执也不得绕过当前授权。实际 projection UPDATE 后触发 SQL 失败时全表/原事实/回执/游标不变且没有政策通知，移除故障后同键可重试；成功恰一次在提交后通知 settings。全部公共完整提交从零回放及重复零写核对原政策，Key/密码/PST/Discord/会话和 auth epoch 均不随回放恢复，网络调用为零。
+
+Windows Node 22 源码管理 HTTP 最终 26/26；同政策 owner、旧 member-routes 与原通知事务四文件 93/93、零跳过。无新 HTTP 桥时首次实际 POST 为 404，准确触发原 200 断言；复用正文前会话（保留真实事务）、移除 admin 通知外层和恢复旧泛续期条件的三项临时退化分别在原授权、通知次数和 Cookie 断言失败，恢复原字节后四文件通过。直接提取固定 `db5f320` 中原函数 AST 执行，默认元数据/错误 13/13 相同，显式 member 只改变实际 actorKind 1/1；无键/单键/128 边界/非法字符/重复 raw header 均包含在对照内。类型、架构、默认与可信 `db5f320` 迁移历史、语法及局部格式检查通过。固定候选仍须独立审查；未运行 full/compiled/Node 24、未切 sole、未生产操作。
+
+固定 `ff2302bedbf80294d309f97a0884272fe53cf18d` 独立技术复审通过，原二十六项与三条独立真实 HTTP 反例同次 29/29、零跳过，14.607 秒；原 metadata AST 对照 13 默认及 1 member 全通过，六文件 hash 绑定。四个同键并发只提交一次、两个冲突意图为 200/409，正文命令/时间/actor 不成为权威；owner 实际 A→B→A 协调后旧 Cookie 即便重领原 receipt 也 401，新 Cookie 可用；真实 held charge 下 NULL/0 政策编辑不改八张金融/任务表，actor/action 幂等隔离保留。缓存正文前 member 的错误实现保留真实 SQLite/notifier仍精确产生 200≠401，恢复后原例通过。报告 `H:/TEMP/novelai-management-policies-independent-20261114/INDEPENDENT-REVIEW.md` 与 `reviewed-files.json`。父合并保留真实 controls Map，POST 仅两个 member-management 字面路径，summary/statistics 不因共享 owner 身份而开放 POST，任何 POST 不续 Cookie。
+
+根与已审 750 的 GET 并集在入口明确区分 method/字面路径，并同时保留 GET 的精确续期条件、POST 的当前 member 参数及 admin notifier 外层。管理/原政策/旧成员路由/事务通知四文件同次 108/108、零跳过，25.794 秒，实际包含 summary/statistics POST 404、GET 原响应/不续期、三政策旧回执/慢正文/SQL rollback/公共回放及通知边界。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式/diff 通过；日志 `H:/TEMP/novelai-management-policies-root-{joint,type,static,format}.log`。新根完整及编译/发布检查随后统一执行，不沿用 0ad 的检查为本并集背书。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
