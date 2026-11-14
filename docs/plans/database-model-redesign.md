@@ -2197,6 +2197,22 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 根从 `c2cf5d0` 普通合入，文档补证前整个 tracked tree 与固定 b50 完全一致，不重跑不变的234项。新增验证认证适配/公共私有列分类的既有 member-read HTTP 与 ready 两文件交点，**58/58、零跳过，20.601 秒**；类型、architecture、默认及可信实际 main `88d2c26` 迁移、199个语法文件和变更格式通过。日志 `H:/TEMP/novelai-member-note-root-*`，保留证明 `H:/TEMP/novelai-member-note-root-preservation.json`。无 full/build/compiled/Node24/native/install、真实云端或生产操作，整体发布/迁移/sole切换不借本片单项测试宣称完成。
 
+### 9.85 请求控制与共享冷却的真实 child 来源迁移
+
+`request-control-http.test.mjs` 和 `shared-cooldown-http.test.mjs` 复用 9.81 的实际 bootstrap/child helper；新树来自 root `de809e2` 与已审 `059675f`，不改两者冻结源。原账户、任务、图片、预扣和 cooldown 手 SQL 种值替为 canonical owner 与实际 localhost 上游：先合法 ready 且暂停，再原管理启用/官方读取，查询身份只用生成凭据与真实 bound ID。两项 NovelAI URL 显式 loopback，外源 fetch 在 IO 前拒绝。SQL 只作审计；不写 ready/epoch/截止/队列或冷却，不延原 20s、45s、25s、35s 及 startup/领取上限。
+
+请求控制组先由另一成员真正生成图片（单列一次 setup），经过原真实 10s 间隔，再受理 Native 三子任务，仅完成首图，形成实际 done/queued/pending。停进程后用当前 Key 事务调用原 Key owner，重启再验 Cookie/Bearer 稳定成员、跨签发秒的完整业务 DTO、真实图片/签名 ACL、CSRF、取消及新 Web/Native/辅助操作的 request ID；原等待任务与两个待派发 child 取消不预扣。旧 not-JSON 保护正文是损坏源形状，不在新库伪造；真正要保留的“薄查询不读正文/BLOB”改由 Node 原生 preload 的 SQLite 只读计数证明：先实际 SELECT body 正校准 1，再两条真实摘要读取 0。原 parentless 旧 job 不用不存在 ID 404 冒充：新组只验确实存在的 canonical child 的 job200/request-by-child404；独立 076 原测试仍核 parentless job、原 receipt.requestId=NULL、稳定成员、保护输入/SHA 和原图。两种来源形状不能互称等价，历史在线/归档去向仍服从尚未选择的 A/B。
+
+共享冷却组保留真正 429/300 秒持久截止、跨秒剩余 Retry-After、SIGKILL 后原键/原失败与一次退款，真实刷新失败、三种余额 unknown/零、所有生成入口的新意图拒绝和原受理领取，及 SSE 已发头后的真实容量错误。财务核对改读实际 wallets/charges/基线游标/任务关系与原 CooldownChanged 票据，不构造旧 DB 兼容视图。两组共用新增 `assertChildPublicReplay`，只在所有实际 child 结束后，以 readonly source 和唯一 complete-commit/Input owner 重放，复用官方 private 表枚举/Empty 与 sameRelationalRows，按 PK 核当前公共表，不运行鉴权或 fetch。当前私有列排除与 Ready/privateQueries 完全相同；Note owner 落地须同步这个 caller 的权威公共投影，不把当前 auth_epoch 排除表当成长期规范。
+
+迁移保留的原断言揭示三个非 D4 产品遗漏并获准同片最小修复。其一，runtime 已存 `upstream_capacity`，交付却把安全码当原诊断转为 generic；现在原 `public-errors.ts` 只识别这个已分类码，单一原公开容量常量由 execution、公开转换和 Member fallback 共用，其他未知码及 raw 上游/URL/凭据仍原 generic。其二，原两条 Cookie request 读取/取消早于 generation transport，曾与 Raw 共用签名/error formatter，新适配遗漏 options；现只给这两个原 literal 注入实际 shared signer 和原公共 formatter，先当前 Cookie/epoch/ready 读取再签名，取消提交后展示。必传实际 signer，不新建 MAC 实例，不借 APIKey。其余 generation/events/input 语义、Origin/Discord 与续期位置保持；组件显式禁止 Cookie 路径走 Key 事务，并区分 alias 与 primary 原错误/图片路径。其三，Gen 原持久 status 预先给出 generic 拒绝，遮掉同一 `quotaAvailability` 已知的同步失败/余额不完整原因；仅把最终 status 拒绝移到该可用性判断后。当前 epoch、原 baseline 身份守卫仍在前，status/view 不一致仍在钱包读取及预留前拒绝，不改拒绝集合、来源或金额。
+
+早期 checkpoint `e336cdc` 只包含局部绿，完整 shared 原因是尚未接入 `/api/admin/accounts/quota` 的 404；原路径和断言保留，未以 PATCH 启用代替。后继普通合入已审 Schema7 root `c2cf5d0`，合法管理员刷新补现入口要求的 Origin 后，真实组继续识别上述 Gen 原因遗漏。最终两 file **8/8、零跳过，28.112 秒**，request 主体 **13.649 秒**仍在原 20s 内；覆盖额外取消完整 DTO、SQL 正 1/薄读 0、原冷却/退款/重启和停 child 后完整公共回放。六个受影响组件 file **112/112、零跳过，47.927 秒**，包括真实 Cookie-only 签名/取消、Direct 容量失败、Native/OpenAI/Member 安全错误、Gen 三项身份/状态拒绝对照及原执行/幂等/回放；同一矩阵单跑不重复累计。四个隔离负控分别删除容量映射、alias 签名选项、alias error mapper 和恢复原 Gen status 顺序，在原并发文案、真实图片路径、两种原 generic 及原额度原因上精准失败，最后逐字还原。类型、architecture、默认及可信 `c2cf5d0` migration、199 项语法检查通过；未跑 full、构建、原生安装或外部服务，不据此宣称 D4 整体或生产验收完成。
+
+固定 `a92379d3c4bd4ce4fd2d262faa10641f158702a6` 非作者独审通过，报告 `H:/TEMP/novelai-request-control-independent-a923-20261115/INDEPENDENT-REVIEW.md`，SHA256 `7cc66e9e07b539902c1738c95b8a018e4a921d7187d3a2858854bfc1b8a9558a`。五个独立新例 **5/5、零跳过，2.511秒**：精确安全 code/未知 generic、实际进程签名与 Cookie-only ACL、Discord依赖等待中实际退出或ready撤回拒绝读取/取消/签名、六种身份/可用性读取故障在钱包前拒绝且全表不变。作者120 distinct为其真实8child及112组件，不重标独审执行；没有额外长child或full验证。
+
+根在已审 fair+note `eeaba67` 上普通接入；五个产品 owner 与七个非helper测试逐字等于a923，文档并存原fair及note事实。已知私有备注的接合复用同一 private-restore owner 的两字段只读清单：Ready和真实child公共回放都由它排除auth_epoch/note_json，原实际私有SELECT字符串、empty、typed复制和源SHA规则保持，不加通用框架或放宽业务列核对。证明 `H:/TEMP/novelai-request-control-root-preservation.json`。两组原真实child **8/8、零跳过，25.929秒**，同根备注三文件筛选六目标 **6/6、零跳过，5.419秒**；类型、architecture、默认与可信main88迁移、200文件语法及变更格式通过，日志 `H:/TEMP/novelai-request-control-root-*`。没有借此关闭parentless旧done/缺输入归档范围或整体发行物验收。
+
 ### 9.86 原 fair-quota 首配、重确认与成员顺序
 
 实际 caller 为既有 `POST /api/admin/fair-quota`（含 Web executor-lifecycle 场景）；它不是 `groups` 的版本化重配置。薄 HTTP 复用管理 factory 当前管理员、Host/Origin/ready 及提交后 notifier，正文仍 2MiB，只消费四个当前启用的原有序 memberIds，不解释幂等头或其它政策字段。Quota owner 复用 `configureFairQuota` / `syncFairQuota` / `syncBoundFairQuota`；没有政策时允许 pending/ambiguous，唯一 eligible 才规划一笔 SharingConfigured→AccountBound→原同步金融事实，无决定时不存空提交。AccountBound 复用原四条件；原注册的零钱包 INSERT 只对真实当前成员补缺，精确 PK 冲突不覆盖既有权益。
