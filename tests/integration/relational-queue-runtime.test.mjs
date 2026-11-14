@@ -241,9 +241,17 @@ test('真实HTTP/PST与冷输入执行，SQL外发布本地字节、原子结算
   });
   await f.accept('batch', { samples: 2, member: true, steps: 30 });
   await f.ready();
-  f.events.on('commit', (...args) => {
-    assert.equal(f.db.inTransaction, false);
-    assert.deepEqual(args, []);
+  const commitObservations = [];
+  f.events.on('commit', (...args) =>
+    commitObservations.push({ args, inTransaction: f.db.inTransaction }),
+  );
+  t.after(() => {
+    assert.ok(commitObservations.length > 0);
+    for (const event of commitObservations) {
+      assert.equal(event.inTransaction, false);
+      assert.equal(event.args.length, 1);
+      assert.ok(Array.isArray(event.args[0].collections));
+    }
   });
   const errors = [],
     runtime = f.runtime({
@@ -371,7 +379,7 @@ test('实际上游401/403经协调器非abort失败同笔失效退款，后续�
       let failureNotifications = 0;
       const observe = (...args) => {
         assert.equal(f.db.inTransaction, false);
-        assert.deepEqual(args, []);
+        assert.ok(Array.isArray(args[0]?.collections));
         if (f.generations.readGenerationExecutionState('denied-0').status === 'failed') {
           failureNotifications++;
           assert.equal(quotas.readAccountQuota('a').quotaErrorCode, errorCode);
@@ -1087,10 +1095,18 @@ test('真实成员HTTP与执行器共用Map/预算/事件，退款仍占物理�
       { request: 32000, active: 20000 },
     );
   let commits = 0;
+  const commitObservations = [];
   f.events.on('commit', (...args) => {
-    assert.equal(f.db.inTransaction, false);
-    assert.deepEqual(args, []);
+    commitObservations.push({ args, inTransaction: f.db.inTransaction });
     commits++;
+  });
+  t.after(() => {
+    assert.ok(commitObservations.length > 0);
+    for (const event of commitObservations) {
+      assert.equal(event.inTransaction, false);
+      assert.equal(event.args.length, 1);
+      assert.ok(Array.isArray(event.args[0].collections));
+    }
   });
   const handle = createRelationalMemberGenerationHttp({
     sqlite: f.db,

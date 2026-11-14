@@ -1,3 +1,5 @@
+import type { EventEmitter } from 'node:events';
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -22,6 +24,7 @@ function fail(statusCode: number, message: string): never {
 
 export function createRelationalMemberReadHttp(deps: {
   sqlite: Database.Database;
+  events: EventEmitter;
   publicBaseUrl: string;
   publicImageUrl(imageId: string): string;
   env?: NodeJS.ProcessEnv;
@@ -30,7 +33,11 @@ export function createRelationalMemberReadHttp(deps: {
 }) {
   const { sqlite, env = process.env } = deps;
   assertRelationalStorageReady(sqlite);
-  const members = new RelationalMemberStore(sqlite, env),
+  const members = new RelationalMemberStore(
+      sqlite,
+      env,
+      relationalStateNotificationsFor(sqlite, deps.events),
+    ),
     requests = new RelationalRequestStore(sqlite),
     generations = new RelationalGenerationStore(sqlite, env),
     quotas = new RelationalQuotaStore(sqlite, env),

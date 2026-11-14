@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fixture, meta, keys, NOW, databaseState } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
@@ -69,6 +69,7 @@ async function setup(
     configuration = { publicBaseUrl: 'https://entry.example/root///' };
   const handle = createRelationalMemberReadHttp({
     sqlite: f.db,
+    events: new EventEmitter(),
     env,
     discordFetch,
     get publicBaseUrl() {

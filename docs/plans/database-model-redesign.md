@@ -1495,6 +1495,24 @@ OpeningFundingRecorded 复用原 FundingRegistered 的列、目标枚举与事�
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
 
+### 9.52 新格式最外层提交后状态通知
+
+本片从 `d0a008a` 接续，遵守[提交后状态通知](../architecture/state-events.md)的原 StateEvent/hub/SSE 合同。`relationalStateNotificationsFor(sqlite,events)` 为同库和同一个真实 EventEmitter 返回唯一长期通知对象；可直接交给 `stateEventsFor()`，不能每请求另包 `{events}`。新工厂及安全 emitter 的可写能力登记、namespace/dynamic/re-export 反例须维护者复核；没有修改事件/表/SQL、增设持久通知游标或另一个业务 writer。
+
+成员 Key/Cookie/Discord 和经它们授权的管理命令在 `RelationalMemberStore.authenticationTransaction()` 的原同步顶层 COMMIT 后通知；系统队列和额度刷新围住各自原同步 transaction。Gen/Quota/Account/Member 内部保存点、完整回放和 ready 不广播，原网络和文件 IO 不入 SQL。本次调用前后只有瞬时 64 位 cut，按最终完整提交确定公开失效；外层回滚和被 catch 的失败保存点不留幽灵事件，原 receipt/alias-only 无新增可见状态不作业务广播。MemberStore 对本次触及成员保留原/最终窄认证比较，真实私有撤销即使无公共事实也以 sessions 唤醒鉴权；签发、续期及无变化读取不广播。
+
+活动失效复用热力图的 child 原 `generation_job_origins` 与稳定 member/date 配对，点查使用原 stream 索引；不按当前 Key、parent、当前 header 或“今天”猜归属/日期，不冷读正文/BLOB/诊断。响应证据、image reference 和普通时间更新不因其被提交就重算热力图。安全 rawListeners 派发复用同一 helper，监听器 throw/reject 不改变已提交结果或阻断其他订阅者；广播前释放本次收集上下文，允许监听器立即重入当前鉴权。
+
+本片只接通实际关系写路径到既有 hub，不增加尚未完成的 shared-status/shared-events 路由或 sole 生产装配。base 尚无 R08 alias-only 命令 owner，相关零广播必须在精确固定 R08 并集上验证，不能用 raw append 伪造业务验收。源码反例和定向证据在固定候选后补齐，未将其写为全量、实际发布物或线上切换通过。
+
+Node 22.23.4 新关系反例 10/10，含保存点失败被 catch 后仍只广播最终成员、注册前私有基线、owner 绑定仅影响对应成员、私有 logout/epoch/Discord 撤销、签发/续期/私有 token 刷新零广播、立即重入鉴权、原 child 上海日期与原 0 时刻、响应更新不重算日期、同库/hub 身份及真实 SQL 索引/不读保护内容；与原 hub、旧存储通知和活动统计四文件共 35/35。成员/Native/auth/read HTTP、队列 runtime 与额度刷新六文件 71/71，架构专项 289/289，均零跳过。原旧通知专项识别了提取时丢失失败日志的问题，已保留固定安全文本日志并同组重跑通过。backend 类型、架构、默认及可信 `d0a008a` 迁移历史、168 文件语法、改动格式和 diff 通过。日志为 `H:\TEMP\novelai-state-notifications-core-final.log`、`novelai-state-notifications-http-runtime-final.log`、`novelai-state-notifications-architecture.log`。错误实现负控、精确 R08 联合与独立复审另绑定固定产品；本片未运行 full、编译产物、Node24、真实外端点或生产变更。
+
+技术产品固定 `d7d98b7a1d5ff94b0031ae0f480d5bf46b6657db`。独立 TEMP 归档先以原 10/10 作对照，再分别只改一处：把本次 cut 前界错误包含上笔、把私有候选一律当成功、改用本笔 header 日、广播时保留旧收集上下文，原同一组分别出现 7、4、2、1 个实际行为失败；没有加载或语法失败。删除新 writer 模块来源登记时，原架构 289 项中 8 个捕获反例准确失败。原 source/guard 最后恢复 SHA 并记录在 `H:\TEMP\novelai-state-notifications-negative-d7d98b7-20261114\negative-evidence.json`。18 改动文件的固定 Gitblob/SHA 为 `H:\TEMP\novelai-state-notifications-d7d98b7-reviewed-files.json`，实现/验证交接为 `H:\TEMP\novelai-state-notifications-REVIEW-HANDOFF.md`；独立复审正在同一技术产品进行，不把作者负控冒充独立结论。
+
+独立审查随后识别 P2：失败私有保存点留下候选后，同一真实签发事务新增会话或删除已过期旧会话，整个 session 集合比较会误报撤销。原独立 5 项中 3 绿、这两项红；原日志保留，未把 `d7`/文档后继当作独审通过。修复只把非会话授权与原会话身份/有效期分开，最终比较原会话的消失/变权；成员 owner 在原签发清理点给出本次实际时间、成员和 epoch 条件，新增签发、过期及旧 epoch 清理不构成撤销。清理角色在同库 notifier 的共同外层上下文，支持候选来自 MemberStore A、真实签发/清理由 B 执行。真实旧 Cookie 注销与新签发同笔仍只唤醒本人，不禁合法事务组合、不丢弃失败候选、不改变原 SQL/认证决定。两红回归另补同一路径的旧 epoch 行清理；在原 `d7` 归档中三个子例均红（含父计数 4 fail），注销加签发正对照绿。修复后新关系专项 15/15、加原 hub 20/20，作者仅重定向原独立脚本 imports 后 5/5；backend 类型、架构、默认及可信 `d0a008a` 迁移、改动格式与 diff 通过。证据为 `H:\TEMP\novelai-state-events-P2-original-confirmation.log`、`novelai-state-events-P2-regression-red.log`、`novelai-state-events-P2-complete-role-red.log`、`novelai-state-events-P2-fixed-targeted.log` 和 `novelai-state-events-P2-author-fixed-5.log`；修复候选另交独立冻结复审，没有重跑 full/71 HTTP/289 架构专项冒充本次证据。
+
+修复固定 `d2bd015016c8ada3fbac5df7053f4eaa6fee23c2` 已独立技术复审通过：新关系 15、原 hub 5 及原独立 5 项同次 25/25，零跳过，两条原红闭合，真实注销加签发、Key ABA/no-op、同步监听者重入和跨 MemberStore 实例保留。精确 `e7cf9675` R08 与最终通知增量另有真实 alias-only/原回执/完整离线回放联合 1/1；它是限定场景的精确来源联合，不替代父候选全库整合。18 个固定改动文件 SHA/Gitblob 全匹配，独立源保持 clean。报告为 `H:\TEMP\novelai-state-events-independent-20261114\REVIEW-PASS-d2.md`，同目录 `fixed-d2-focused.log`、`joint-e7-fixed-d2-alias.log`、`reviewed-files-d2.json` 及 `joint-e7-fixed-d2-files.json` 分别保留执行和联合范围。该 PASS 未把前驱 71/289 重标为最终全量，未执行 full/compiled/Node24/真实外端点或声称新 shared-events 已接通；同候选发布、SSE/sole 装配及维护者审查仍由父任务接续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

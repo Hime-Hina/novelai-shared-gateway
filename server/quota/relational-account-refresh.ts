@@ -1,3 +1,4 @@
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import { domainDigest } from '../events/domain-events.ts';
@@ -17,7 +18,7 @@ import {
 export function createRelationalAccountQuotaRefresh(options: {
   sqlite: Database.Database;
   quotas: RelationalQuotaStore;
-  events: Pick<EventEmitter, 'emit'>;
+  events: EventEmitter;
   fetchQuota?: typeof fetchNovelAiAccountQuota;
   env?: NodeJS.ProcessEnv;
   now?(): number;
@@ -29,6 +30,7 @@ export function createRelationalAccountQuotaRefresh(options: {
     clock = options.now || Date.now,
     rawFetch = options.fetchQuota || fetchNovelAiAccountQuota;
   assertRelationalStorageReady(sqlite);
+  const notifications = relationalStateNotificationsFor(sqlite, options.events);
   let physical: ReturnType<typeof fetchNovelAiAccountQuota> | null = null,
     querying: ReturnType<ReturnType<typeof createAccountQuotaQuery>> | null = null;
   const query = createAccountQuotaQuery({
@@ -101,30 +103,27 @@ export function createRelationalAccountQuotaRefresh(options: {
       result = accountQuotaErrorResult(account.id, error, at);
     }
     const identity = [ticket.accountId, ticket.credentialEpoch, ticket.sequence, ticket.startedAt];
-    const committed = sqlite.transaction(() =>
-      quotas.recordQuotaObservation(
-        {
-          commandId: `quota-refresh:${domainDigest(identity)}`,
-          fingerprint: domainDigest({ identity, result }),
-          actorKind: 'system',
-          actorId: null,
-          recordedAt: clock(),
-          correlationId: null,
-          causationId: null,
-          policyVersion: 'quota-observation-v1',
-          pricingVersion: NATIVE_PRICING_VERSION,
-        },
-        ticket,
-        result,
-      ),
-    )();
+    const committed = notifications.commit(() =>
+      sqlite.transaction(() =>
+        quotas.recordQuotaObservation(
+          {
+            commandId: `quota-refresh:${domainDigest(identity)}`,
+            fingerprint: domainDigest({ identity, result }),
+            actorKind: 'system',
+            actorId: null,
+            recordedAt: clock(),
+            correlationId: null,
+            causationId: null,
+            policyVersion: 'quota-observation-v1',
+            pricingVersion: NATIVE_PRICING_VERSION,
+          },
+          ticket,
+          result,
+        ),
+      )(),
+    );
     if ('ignored' in committed) {
       return { checked: 1, ok: 0, failed: 0, ignored: 1 };
-    }
-    try {
-      options.events.emit('commit');
-    } catch {
-      /* 通知失败不能改写已经提交的观察或使它重发。 */
     }
     return { checked: 1, ok: Number(result.ok), failed: Number(!result.ok), ignored: 0 };
   }, options);
