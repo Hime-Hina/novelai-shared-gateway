@@ -279,6 +279,8 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 新关系入口没有与旧 `users.balance` 同义的单值，故不发送 `x-balance`，不以 0 或三池折算值代替。移除此 header 不处置历史余额权益；其迁移或封存责任仍按 D4 保留。任务 detail 的 `accountRouteId/accountCost` 无原来源时为 null，`accountId` 只取实际尝试或原产物来源；新接单 `cost=0` 沿原兼容定义，历史未知不套 0。原创建、更新或完成时间缺失时保持 null，不使用开账时间冒充。实际入口接入与未切换范围见[数据库计划第 9.53 节](../plans/database-model-redesign.md#953-52direct-与异步任务-http-关系接入)。
 
+旧 Native 的 parentless job、web inline 输入、旧键绑定和独立 PNG 的解释由[固定旧归档工具](../operations/legacy-archive-lookup.md)承接，普通新运行时不加载旧 owner。归档保留原输入字节/SHA、稳定成员及保存排序；原 normalization context 为 `{}` 时不补成当前 Native context。原私有失败详情保留在选定源及保护诊断中，公开查询只返回原白名单和摘要，不把原 ENOENT 路径或凭据带入 stdout。原 job 缺父、诊断 ID、模型或完成时间时保持 NULL；原图片没有 jobId/operation/createdAt 也不由当前任务关系猜补。本地图仅在显式 data-dir 实读校验后报告已核原字节。此承接证据不决定 A/B 历史在线范围，也不代替持久 queueSeq 在真实逆物理排序重启中的验收。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界
