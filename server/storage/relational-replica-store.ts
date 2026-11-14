@@ -51,7 +51,7 @@ export function hasArtifactReplicaPresence(
   return (
     !!replica &&
     replica.deletedAt === null &&
-    (replica.uploadedAt !== null || replica.verifiedAt !== null)
+    (replica.uploadedAt != null || replica.verifiedAt != null)
   );
 }
 type ReplicaFact = Extract<
