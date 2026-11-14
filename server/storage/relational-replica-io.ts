@@ -8,6 +8,7 @@ import {
 } from './result-files.ts';
 import {
   RelationalReplicaStore,
+  hasArtifactReplicaPresence,
   type RelationalReplicaConfiguration,
   type RelationalReplicaReadConfiguration,
 } from './relational-replica-store.ts';
@@ -77,7 +78,6 @@ export async function readRelationalArtifactContent(
           byteLength: artifact.byteLength,
           pikpak: {
             url: target.namespace,
-            uploadedAt: new Date(replica.uploadedAt!).toISOString(),
           },
         });
       } else {
@@ -199,7 +199,7 @@ export async function copyRelationalArtifactReplica(
   let source: { ticket: Ticket; key: string } | undefined;
   // 来源资格先于目的预留；没有开始 IO 的拒绝不冒充目的副本故障。
   // 已上传的 PikPak 重领只核原目的，不重新要求已经不参与本次 IO 的 R2。
-  if (kind === 'pikpak' && row?.uploadedAt == null) {
+  if (kind === 'pikpak' && !hasArtifactReplicaPresence(row)) {
     const sourceTarget = store.readConfiguredStorageTarget('r2'),
       sourceReplica = store.readArtifactReplica(artifactId, sourceTarget.storageTargetId);
     if (sourceReplica?.verifiedAt == null) {
@@ -212,7 +212,7 @@ export async function copyRelationalArtifactReplica(
   }
   const destination = target(sqlite, store, artifactId, kind, now);
   let ticket = store.beginArtifactReplica(artifactId, destination.storageTargetId);
-  if (row && row.uploadedAt !== null) {
+  if (row && hasArtifactReplicaPresence(row)) {
     if (kind === 'r2' && (row.verifiedAt === null || row.lastErrorCode !== null)) {
       await verifyRelationalArtifactReplica(
         sqlite,
@@ -233,16 +233,22 @@ export async function copyRelationalArtifactReplica(
     if (kind === 'r2') {
       const local = target(sqlite, store, artifactId, 'local', now),
         localTicket = store.beginArtifactReplica(artifactId, local.storageTargetId);
-      const content = await publishStoredResult(configuration.dataDir, artifact.descriptor);
+      // Opening只读取已存在原图；不能借publisher补成新的Local发布/上传历史。
+      const historical = artifact.source.eventType === 'OpeningArtifactRecorded';
+      const content = historical
+        ? await readStoredResultContent(configuration.dataDir, artifact.descriptor)
+        : await publishStoredResult(configuration.dataDir, artifact.descriptor);
       if (!content) {
         throw new Error('Local artifact bytes are unavailable.');
       }
       store.assertArtifactReplicaTicket(localTicket);
       const localReplica = store.readArtifactReplica(artifactId, local.storageTargetId);
-      if (!localReplica) {
-        record(sqlite, store, localTicket, 'local_verified', now);
-      } else if (localReplica.lastErrorCode !== null) {
-        record(sqlite, store, localTicket, 'verified', now);
+      if (!historical) {
+        if (!localReplica) {
+          record(sqlite, store, localTicket, 'local_verified', now);
+        } else if (localReplica.lastErrorCode !== null) {
+          record(sqlite, store, localTicket, 'verified', now);
+        }
       }
       store.assertArtifactReplicaTicket(ticket);
       await configuration.r2!.put(
@@ -263,6 +269,7 @@ export async function copyRelationalArtifactReplica(
         byteLength: artifact.byteLength,
       };
       const bytes = await configuration.r2!.get(object);
+      assertStoredResultContent(artifact.descriptor, bytes);
       store.assertArtifactReplicaTicket(source!.ticket);
       store.assertArtifactReplicaTicket(ticket);
       await configuration.pikpak!.put(object, bytes);
@@ -299,7 +306,7 @@ export async function verifyRelationalArtifactReplica(
     destination = store.readStorageTarget(storageTargetId),
     ticket = store.beginArtifactReplica(artifactId, storageTargetId),
     replica = store.readArtifactReplica(artifactId, storageTargetId);
-  if (!replica || replica.uploadedAt === null || replica.deletedAt !== null) {
+  if (!replica || !hasArtifactReplicaPresence(replica)) {
     throw new Error('Artifact replica has no confirmed upload.');
   }
   try {
@@ -316,12 +323,12 @@ export async function verifyRelationalArtifactReplica(
         ...object,
         pikpak: {
           url: destination.namespace,
-          uploadedAt: new Date(replica.uploadedAt).toISOString(),
         },
       });
     } else {
       throw new Error('Replica encoding is not supported by this IO owner.');
     }
+    assertStoredResultContent(artifact.descriptor, bytes);
     store.assertArtifactReplicaTicket(ticket);
     if (replica.verifiedAt === null || replica.lastErrorCode !== null) {
       record(sqlite, store, ticket, 'verified', now);

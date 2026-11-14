@@ -18,7 +18,9 @@ import type {
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import {
   assertStoredResultDescriptor,
-  resultFile,
+  assertReadableStoredResultDescriptor,
+  readableResultFile,
+  type ReadableStoredResultDescriptor,
   type describeStoredResult,
 } from './result-files.ts';
 import { r2Config, R2_PIKPAK_THRESHOLD_BYTES, type R2Storage } from './r2-storage.ts';
@@ -42,6 +44,16 @@ type Kind = RelationalPayloads['StorageTargetRegistered']['kind'];
 type Target = RelationalPayloads['StorageTargetRegistered'];
 type Replica = RelationalPayloads['ArtifactReplicaRecorded'];
 type Publication = ReturnType<typeof describeStoredResult>;
+// 原verified承诺证明副本曾存在；未知uploaded时点不等于从未上传。
+export function hasArtifactReplicaPresence(
+  replica: Pick<Replica, 'uploadedAt' | 'verifiedAt' | 'deletedAt'> | null | undefined,
+) {
+  return (
+    !!replica &&
+    replica.deletedAt === null &&
+    (replica.uploadedAt != null || replica.verifiedAt != null)
+  );
+}
 type ReplicaFact = Extract<
   RelationalFact,
   { eventType: 'StorageTargetRegistered' | 'ArtifactReplicaRecorded' }
@@ -76,7 +88,7 @@ function targetIdentity(kind: Kind, namespace: string): Target {
   };
 }
 function replicaLocation(
-  publication: Publication,
+  publication: ReadableStoredResultDescriptor,
   kind: Kind,
 ): Pick<Replica, 'objectKey' | 'encoding'> {
   if (kind === 'local') {
@@ -261,7 +273,8 @@ export class RelationalReplicaStore {
           id: string;
           memberId: string;
           inputId: string;
-          operation: string;
+          operation: string | null;
+          publishedAt: number | null;
           mimeType: string;
           byteLength: number;
           sha256: string;
@@ -269,7 +282,7 @@ export class RelationalReplicaStore {
           sourceEventId: string;
         }
       >(
-        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,retired_at AS retiredAt,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
+        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,published_at AS publishedAt,retired_at AS retiredAt,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
       )
       .get(artifactId);
     if (!row) {
@@ -302,6 +315,9 @@ export class RelationalReplicaStore {
       source.payload.memberId !== row.memberId ||
       source.payload.inputId !== row.inputId ||
       source.payload.operation !== row.operation ||
+      (source.eventType === 'ArtifactPublished'
+        ? source.occurredAt
+        : source.payload.publishedAt) !== row.publishedAt ||
       source.payload.mimeType !== row.mimeType ||
       source.payload.byteLength !== row.byteLength ||
       source.payload.sha256 !== row.sha256
@@ -310,13 +326,17 @@ export class RelationalReplicaStore {
     }
     const descriptor = {
       imageId: row.id,
-      file: resultFile({ imageId: row.id, operation: row.operation, mimeType: row.mimeType }),
+      file: readableResultFile({
+        imageId: row.id,
+        operation: row.operation,
+        mimeType: row.mimeType,
+      }),
       operation: row.operation,
       mimeType: row.mimeType,
       byteLength: row.byteLength,
       sha256: row.sha256,
     };
-    assertStoredResultDescriptor(descriptor);
+    assertReadableStoredResultDescriptor(descriptor);
     return { ...row, descriptor, source };
   }
   readRecoverableArtifacts(afterId: string | null, limit: number) {
@@ -403,7 +423,7 @@ export class RelationalReplicaStore {
               AND r.deleted_at IS NULL AND r.verified_at IS NOT NULL AND r.last_error_code IS NULL
               AND r.encoding='identity' AND r.object_key='images/'||a.id||'/'||a.sha256
               AND (r.verified_at<? OR ?)
-              AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.uploaded_at IS NULL
+              AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.uploaded_at IS NULL AND d.verified_at IS NULL
                 AND d.encoding='br' AND d.object_key=a.sha256||'.br'
                 AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))
             ORDER BY r.verified_at,a.published_at,a.id LIMIT 1`,
@@ -434,10 +454,10 @@ export class RelationalReplicaStore {
           AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.encoding='identity'
             AND d.object_key='images/'||a.id||'/'||a.sha256
             AND (d.last_error_code IS NULL OR (e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
-          AND ((d.uploaded_at IS NOT NULL AND (d.verified_at IS NULL OR d.last_error_code IS NOT NULL))
+          AND (((d.uploaded_at IS NOT NULL OR d.verified_at IS NOT NULL) AND (d.verified_at IS NULL OR d.last_error_code IS NOT NULL))
             OR (origin.event_type='ArtifactPublished' AND a.published_at<?
               AND l.deleted_at IS NULL AND l.verified_at IS NOT NULL
-              AND (d.artifact_id IS NULL OR (d.uploaded_at IS NULL
+              AND (d.artifact_id IS NULL OR (d.uploaded_at IS NULL AND d.verified_at IS NULL
                 AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
         ORDER BY a.published_at,a.id LIMIT 1`,
       )
@@ -632,7 +652,7 @@ export class RelationalReplicaStore {
     // PikPak 沿第 5.1 节按需实读核验；上传回执不在此提升为持久 verified。
     if (
       !replica ||
-      replica.uploadedAt === null ||
+      !hasArtifactReplicaPresence(replica) ||
       (kind !== 'pikpak' && replica.verifiedAt === null) ||
       replica.deletedAt !== null
     ) {
@@ -664,15 +684,13 @@ export class RelationalReplicaStore {
       const replica = this.readArtifactReplica(artifactId, row.id)!;
       if (
         row.kind === 'local' &&
-        replica.deletedAt === null &&
-        replica.uploadedAt !== null &&
+        hasArtifactReplicaPresence(replica) &&
         replica.verifiedAt !== null
       ) {
         local = true;
       }
       if (
-        replica.deletedAt === null &&
-        replica.uploadedAt !== null &&
+        hasArtifactReplicaPresence(replica) &&
         ((row.kind === 'r2' && replica.verifiedAt !== null) || row.kind === 'pikpak')
       ) {
         return { artifact, persistent: true, local };
@@ -797,19 +815,24 @@ export class RelationalReplicaStore {
         lastErrorCode: errorCode,
       };
       if (phase === 'local_verified') {
-        if (target.kind !== 'local' || previous) {
+        if (
+          target.kind !== 'local' ||
+          previous ||
+          artifact.source.eventType !== 'ArtifactPublished'
+        ) {
           fail('本地副本已经登记或目标不符');
         }
+        assertStoredResultDescriptor(artifact.descriptor);
         row.uploadedAt = row.verifiedAt = metadata.recordedAt;
       } else if (phase === 'uploaded') {
-        if (!previous || previous.uploadedAt !== null) {
+        if (!previous || hasArtifactReplicaPresence(previous)) {
           fail('副本没有待确认的上传');
         }
         row.uploadedAt = metadata.recordedAt;
       } else if (phase === 'verified') {
         if (
           !previous ||
-          previous.uploadedAt === null ||
+          !hasArtifactReplicaPresence(previous) ||
           (previous.verifiedAt !== null && previous.lastErrorCode === null)
         ) {
           fail('副本没有待核验的上传');
@@ -888,19 +911,20 @@ export class RelationalReplicaStore {
             p.lastErrorCode === null;
           const firstLocal =
             !previous &&
+            artifact.source.eventType === 'ArtifactPublished' &&
             target.kind === 'local' &&
             p.uploadedAt === event.occurredAt &&
             p.verifiedAt === event.occurredAt &&
             p.lastErrorCode === null;
           const upload =
             previous &&
-            previous.uploadedAt === null &&
+            !hasArtifactReplicaPresence(previous) &&
             p.uploadedAt === event.occurredAt &&
             p.verifiedAt === null &&
             p.lastErrorCode === null;
           const verification =
             previous &&
-            previous.uploadedAt !== null &&
+            hasArtifactReplicaPresence(previous) &&
             p.uploadedAt === previous.uploadedAt &&
             p.lastErrorCode === null &&
             ((previous.verifiedAt === null && p.verifiedAt === event.occurredAt) ||

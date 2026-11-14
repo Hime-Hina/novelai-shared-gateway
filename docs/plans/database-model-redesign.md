@@ -2444,6 +2444,16 @@ PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/pl
 
 根在 `c653bf2` 上整合整个76 lineage，十一非plan路径逐字等于独审固定源；仅新增Replica只读分页、一个实际CLI及普通包seed，原9.87–9.92/当前DDL/账户/会话/Native/汇总源保持。当前格式下两个完整Node文件 **14/14、零跳过，15.631秒**，包括原R2六例、source五例、两个R2保护例和新的共同校验矩阵；类型、architecture、默认与可信main88迁移、203文件语法、两Python模块AST及变更格式通过。证据 `H:/TEMP/novelai-retained-checkpoint-root-preservation.json` 和 root-* 日志。作者13/原Python8+新3实际管道和独审原反例分列复用，未无故重跑250秒。当前仍只保存来源和保护信息；所有产物源保留，archive依赖列表原导出绑定与checkpoint之后来源需后续核对，coverage始终unknown。新正常发布包/compiled/Node24、LinuxNode22正向恢复与成功轮换、掉电/实云/同规模容量性能/生产切换尚未验，不借source检查冒充。
 
+#### 9.98.2 冷读描述符与副本存在承诺
+
+只读描述符继续归原`result-files`：新增readableResultFile/assertReadableStoredResultDescriptor，operation可明确NULL，其余原ID、MIME枚举、规范路径、长度/SHA及图像结构校验保持。NULL按MIME核严格图片或opaque域，不补generate/encode；正常resultFile、describe、descriptor写入收窄、publisher和prepared读取仍要求已知operation，文件final/part及fsync边界不变。相同nullable结构不能成为新业务执行、Local发布或收费依据。
+
+Replica owner统一以未deleted且uploadedAt或verifiedAt至少一项已知表示原存在承诺；known0保留，不能把verified已知/uploaded未知当作从未上传。冷读/cache、copy重领、verify及调度同规则：R2原verified承诺可实GET并清当前错误而保留原NULL/known0；正常reserved没有任何上传/验证前态仍不得首次verified，已确认前态也不得被普通uploaded覆盖。未知publishedAt不取得24h资格；有原verifiedAt的R2仍按原7d/登记水位规则处理，不把开账header当年龄。SQL候选与原source/namespace/控制门禁保持，无持久bool/refcount或新timer。
+
+Opening复制Local只读既有final，不调用publisher或写local_verified补造过去Local上传；实际新R2/Pik PUT/GET分别记录本次真实上传/核验时点，不改旧artifact publishedAt。正常ArtifactPublished仍沿原publisher恢复和首次Local确认，writer/reducer同时保已知描述符界线。Pik实读仅需原namespace/key/hash/len，不用new Date(NULL)造1970时间，也不收窄原uploaded-URL可读政策或每次额外GET；Brotli/原长/hash/MIME及IO后票据/source/config重核保持。无旧解释器、源DELETE、归档重定向或9.99实现。
+
+本分片在独立c653树静态推进；合法NULL的共同facts/DDL由Core片负责，不能SQL改NULL绕过旧DDL，也不能把source字段不完整时的单个内部一致性验证称为真实旧503/7行迁移闭环。复验命令、技术fixed与原source/负控证据在完成后补记，目前不声明测试、发布物或生产已通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

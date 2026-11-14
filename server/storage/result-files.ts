@@ -21,6 +21,9 @@ interface StoredResultDescriptor {
   byteLength: number;
   sha256: string;
 }
+export type ReadableStoredResultDescriptor = Omit<StoredResultDescriptor, 'operation'> & {
+  operation: ResultOperation | null;
+};
 type ResultIdentity = { imageId?: unknown; operation?: unknown; mimeType?: unknown };
 type ResultContent = { buffer: Buffer; mimeType: ResultMime };
 
@@ -29,7 +32,7 @@ function invalid(message: string, cause?: unknown): Error & { code: string } {
     code: 'ERR_STORED_RESULT_INVALID',
   });
 }
-export function resultFile({ imageId, operation, mimeType }: ResultIdentity): string {
+export function readableResultFile({ imageId, operation, mimeType }: ResultIdentity): string {
   if (
     typeof imageId !== 'string' ||
     !/^[A-Za-z0-9_-]{1,128}$/.test(imageId) ||
@@ -37,23 +40,30 @@ export function resultFile({ imageId, operation, mimeType }: ResultIdentity): st
   ) {
     throw invalid('imageId is invalid.');
   }
-  if (!['generate', 'upscale', 'encode-vibe'].includes(operation as string)) {
+  if (operation !== null && !['generate', 'upscale', 'encode-vibe'].includes(operation as string)) {
     throw invalid('operation is invalid.');
   }
   if (
     typeof mimeType !== 'string' ||
     !Object.hasOwn(extensions, mimeType) ||
-    (operation === 'encode-vibe') !== (mimeType as string).startsWith('application/')
+    (operation !== null &&
+      (operation === 'encode-vibe') !== (mimeType as string).startsWith('application/'))
   ) {
     throw invalid('MIME type does not match the operation.');
   }
   return `images/${imageId}.${extensions[mimeType as ResultMime]}`;
 }
-function contentHash(operation: unknown, mimeType: unknown, buffer: unknown): string {
+export function resultFile(identity: ResultIdentity): string {
+  if (identity.operation === null) {
+    throw invalid('operation is invalid.');
+  }
+  return readableResultFile(identity);
+}
+function contentHash(mimeType: ResultMime, buffer: unknown): string {
   if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_RESULT_BYTES) {
     throw invalid('byte length is invalid.');
   }
-  if (operation !== 'encode-vibe') {
+  if (!mimeType.startsWith('application/')) {
     let image;
     try {
       image = validateImageBytes(buffer, {
@@ -70,14 +80,14 @@ function contentHash(operation: unknown, mimeType: unknown, buffer: unknown): st
   }
   return createHash('sha256').update(buffer).digest('hex');
 }
-export function assertStoredResultDescriptor(
+export function assertReadableStoredResultDescriptor(
   value: unknown,
-): asserts value is StoredResultDescriptor {
+): asserts value is ReadableStoredResultDescriptor {
   const pending = value as
     Partial<Record<keyof StoredResultDescriptor, unknown>> | null | undefined;
   if (
     !pending ||
-    pending.file !== resultFile(pending) ||
+    pending.file !== readableResultFile(pending) ||
     !Number.isSafeInteger(pending.byteLength) ||
     (pending.byteLength as number) < 1 ||
     (pending.byteLength as number) > MAX_RESULT_BYTES ||
@@ -87,15 +97,23 @@ export function assertStoredResultDescriptor(
     throw invalid('descriptor is invalid.');
   }
 }
+export function assertStoredResultDescriptor(
+  value: unknown,
+): asserts value is StoredResultDescriptor {
+  assertReadableStoredResultDescriptor(value);
+  if (value.operation === null) {
+    throw invalid('operation is invalid.');
+  }
+}
 export function assertStoredResultContent(
   pending: unknown,
   buffer: unknown,
 ): asserts buffer is Buffer {
-  assertStoredResultDescriptor(pending);
+  assertReadableStoredResultDescriptor(pending);
   if (!Buffer.isBuffer(buffer) || buffer.length !== pending.byteLength) {
     throw invalid('length does not match the descriptor.');
   }
-  if (contentHash(pending.operation, pending.mimeType, buffer) !== pending.sha256) {
+  if (contentHash(pending.mimeType, buffer) !== pending.sha256) {
     throw invalid('hash does not match the descriptor.');
   }
 }
@@ -107,7 +125,7 @@ export function describeStoredResult(
 ): StoredResultDescriptor {
   const mimeType = image?.mimeType,
     file = resultFile({ imageId, operation, mimeType });
-  const sha256 = contentHash(operation, mimeType, image?.buffer);
+  const sha256 = contentHash(mimeType as ResultMime, image?.buffer);
   // resultFile/contentHash 已验证标识、操作、媒体类型和 Buffer；不重复运行图片校验。
   return {
     imageId: imageId as string,
@@ -121,7 +139,7 @@ export function describeStoredResult(
 
 async function readCandidate(
   file: string,
-  pending: StoredResultDescriptor,
+  pending: ReadableStoredResultDescriptor,
   writable = false,
 ): Promise<Buffer | null> {
   let stat;
@@ -161,7 +179,7 @@ async function resultDirectory(dataDir: string): Promise<string> {
 }
 
 export async function readStoredResultContent(dataDir: string, pending: unknown) {
-  assertStoredResultDescriptor(pending);
+  assertReadableStoredResultDescriptor(pending);
   await resultDirectory(dataDir);
   const buffer = await readCandidate(path.resolve(dataDir, pending.file), pending);
   return buffer ? { buffer, mimeType: pending.mimeType } : null;
@@ -169,7 +187,7 @@ export async function readStoredResultContent(dataDir: string, pending: unknown)
 
 // 缓存受理只沿原可引用语义检查安全路径和非空文件；完整内容校验仍由领取负责。
 export async function storedResultReferenceAvailable(dataDir: string, pending: unknown) {
-  assertStoredResultDescriptor(pending);
+  assertReadableStoredResultDescriptor(pending);
   await resultDirectory(dataDir);
   let stat;
   try {
