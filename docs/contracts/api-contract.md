@@ -299,7 +299,9 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
 
-关系管理 POST 的三政策 action 为 `fallback-policy`、`free-image-policy` 和 `loss-alert-policy`；字段、版本、阈值和回包继续归原 quota 政策 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行政策命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按原 actor/操作隔离并绑定完整原正文；重复返回原回包且零写，冲突为 409，缺键由服务生成新命令 ID。POST 不续 Cookie；政策事实、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原政策决定，不联网或恢复私有认证；具体反例见数据库计划第 9.64 节。
+关系管理 POST 的三政策 action 为 `fallback-policy`、`free-image-policy` 和 `loss-alert-policy`；字段、版本、阈值和回包继续归原 quota 政策 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行政策命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID 可为 `local-admin`，不会与同名本机管理员作用域相撞。重复返回原回包且零写，冲突为 409，缺键由服务生成新命令 ID。POST 不续 Cookie；政策事实、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原政策决定，不联网或恢复私有认证；具体反例见数据库计划第 9.64、9.72.1 节。
+
+本轮未发布关系候选的管理命令 scope 已加入真实身份类型，旧哈希与新哈希不互相尝试。共同 helper 的两个 legacy caller 也会使用新哈希，不能把此候选作为旧线上库的独立热修升级；旧线上键和回执的解释交独立旧工具及选定迁移保留、核对，不改写旧记录或猜测原角色。最终部署必须随 sole 退出旧运行路径与迁移核对完成，不得因哈希变化静默重复旧线上命令；旧关系原型的 parser/hash parity 也不能冒充本候选结论。
 
 相同两个字面 member-management POST 另接 `preview-groups` 和 `groups`。输入保留原 `groups/expectedConfigVersion/redistributeRemaining`，类型与版本规则由同一 quota owner 校验，不从正文采用 actor、command 或 time。预览不创建命令、回执或事实，也不校验无关的 Idempotency-Key；返回原 configVersion、改后 groups/users quota 与布尔重分意图。提交沿原全正文幂等摘要，当前授权先于旧回执，新决定才核原组版本和空闲/有限来源；预览不是权益预留，后来 held 或组版本变化可使提交拒绝。独立 free/loss/fallback 政策不增加组版本，组决定保留其当前值。两 action 均不续 Cookie，summary/statistics 的 POST 不因此开放；组事实/钱包/回执/通知及完整公共回放见数据库计划第 9.72 节。其余管理写入继续各片接续，不表示 sole 已切换。
 

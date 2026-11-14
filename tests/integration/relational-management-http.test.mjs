@@ -1475,6 +1475,100 @@ test('政策POST末尾SQL故障全表回滚无通知，同键重试及完整公�
   assert.equal(network, 0);
 });
 
+test('管理作用域HTTP：合法local-admin稳定成员与真正admin同key仍独立，组和政策原回执各自零写', async (t) => {
+  const ownerId = 'local-admin',
+    ownerKey = 'synthetic-local-admin-member-key',
+    f = await setup(t, {
+      env: { OWNER_USER_ID: ownerId },
+      beforeReady: async (f) => {
+        f.db.transaction(() =>
+          f.members.registerMember(meta('register-local-admin-owner'), {
+            memberId: ownerId,
+            displayName: 'actual owner',
+            apiKey: ownerKey,
+          }),
+        )();
+        await f.members.discordAuthenticationTransaction((tx) => {
+          const member = tx.readMember(ownerId);
+          member.discord = {
+            id: '444444444444444444',
+            guildId: '1134557553011998840',
+            accessToken: 'synthetic-owner-access',
+            refreshToken: 'synthetic-owner-refresh',
+            expiresAt: NOW + 86400000,
+            checkedAt: NOW,
+            member: true,
+          };
+          tx.saveAuthentication(member, 'login');
+        });
+      },
+    }),
+    session = await createMemberSession(
+      f.members,
+      await authenticateMemberApiKey(f.members, ownerKey),
+      f.env,
+      f.clock,
+    ),
+    key = 'same-key-and-id-distinct-real-roles',
+    seen = policyNotifications(f),
+    ownerHeaders = { 'idempotency-key': key, 'x-member-activity': '1' },
+    adminHeaders = { ...ownerHeaders, 'x-admin-token': adminToken },
+    ownerGroup = managementGroupBody('groups', 1),
+    adminGroup = managementGroupBody('groups', 2, { m1: 1, m2: 1 });
+  const first = await f.call(owner, {
+    method: 'POST',
+    cookie: session.token,
+    headers: ownerHeaders,
+    body: ownerGroup,
+  });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.configVersion, 2);
+  const second = await f.call(admin, { method: 'POST', headers: adminHeaders, body: adminGroup });
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.body.configVersion, 3);
+  const ownerPolicy = { action: 'fallback-policy', enabled: true, actorKind: 'admin' },
+    adminPolicy = { action: 'fallback-policy', enabled: false, actorKind: 'member' },
+    third = await f.call(owner, {
+      method: 'POST',
+      cookie: session.token,
+      headers: ownerHeaders,
+      body: ownerPolicy,
+    }),
+    fourth = await f.call(admin, { method: 'POST', headers: adminHeaders, body: adminPolicy });
+  assert.equal(third.status, 200, third.text);
+  assert.deepEqual(third.body, { autoAnlasFallback: true });
+  assert.equal(fourth.status, 200, fourth.text);
+  assert.deepEqual(fourth.body, { autoAnlasFallback: false });
+  const commands = f.db
+    .prepare(
+      "SELECT command_id,actor_kind,actor_id FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq",
+    )
+    .all();
+  assert.equal(new Set(commands.map((c) => c.command_id)).size, 4);
+  assert.deepEqual(
+    commands.map((c) => c.actor_kind),
+    ['member', 'admin', 'member', 'admin'],
+  );
+  assert.ok(commands.every((c) => c.actor_id === ownerId));
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    notifications = seen.length;
+  for (const [endpoint, cookie, headers, body, expected] of [
+    [owner, session.token, ownerHeaders, ownerGroup, first.body],
+    [admin, f.sessions.m1.token, adminHeaders, adminGroup, second.body],
+    [owner, session.token, ownerHeaders, ownerPolicy, third.body],
+    [admin, f.sessions.m1.token, adminHeaders, adminPolicy, fourth.body],
+  ]) {
+    const response = await f.call(endpoint, { method: 'POST', cookie, headers, body });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, expected);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, notifications);
+});
+
 function managementGroupBody(
   action = 'groups',
   expectedConfigVersion = 1,

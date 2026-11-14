@@ -1817,6 +1817,16 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 backend 类型、architecture、默认与可信根 `5987606` migration 历史、191 个语法文件通过；格式/diff 随固定候选收尾。未执行 full/build/compiled/Node24/native、真实云、生产或切换；独立审查待固定候选。本片不表示整个管理面或新格式 sole 已完成。
 
+#### 9.72.1 独立审查修正实际身份类型的管理键作用域
+
+`ac1c341` 独立真实 HTTP 反例确认：稳定 owner memberId 合法等于 `local-admin` 时，owner 与真正本机管理员的同 key/同 action 原来都散列 `[actorId,operation,key]`，第二位实际 actor 被错误 409。T1 的 actorKind 不符拒绝本身正确，不能禁止合法成员 ID 或在查询处绕过；修复唯一纯 `managementCommand()`，作用域改为 `[actorKind,actorId,operation,key]`，其中身份由当前授权 callback 提供，正文 actor 字段不作权威。没有新身份保留字、兼容分支、双解释或守卫变化。
+
+真实合法 register→Discord 绑定→Cookie→installer→localhost 覆盖同名 owner/admin 在 groups 和 fallback-policy 的同键独立提交及各自旧 receipt 零写，客户端自报类型不能改变 scope。纯 helper 同时核对政策和实际账户操作字符串，默认 admin 与显式 admin 等价、member 分离、原 ASCII 单头边界与无 key 行为保持；旧 `member-routes` 默认 caller 回归随同执行。精确原 helper 的相同四项检查为 1 pass/3 fail，新实现 4/4；原独立红例脚本及摘要由审查者保留并在固定后复核，未将其范围改写成新作者测试。
+
+历史影响必须与最终迁移处理：共同 helper 也被两个 legacy caller 使用，因此带 key 的默认哈希输出已改变，旧第 9.64 节 AST/hash parity 只属于其固定候选，不再是此后继结论；头解析/错误和缺省 actorKind 仍相同。旧线上 command ID/receipt 不改写，不从旧 ID 串猜真实角色，不回退尝试两种哈希。旧线上 key 的解释由独立旧工具与选定迁移保存、核对；此 pending 候选不能单独作为旧线上热修升级，也不得因新哈希静默重复旧命令。部署仍以最终 sole 退出旧路径及迁移验收为条件，本片没有生产授权或旧运行时热修。
+
+作者 helper/真实管理 HTTP/旧 member-routes 三文件同次 64/64、零跳过，33.782 秒，`H:/TEMP/novelai-management-scope-union.log`；backend 类型、architecture、默认与可信 ac1 迁移、192 文件语法、格式与 diff 通过。未执行 full/build/compiled/Node24/native 或生产。原独立角色碰撞由原审查者按固定后继、原字节程序复验，不用作者的新增检查替代独审结论。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
