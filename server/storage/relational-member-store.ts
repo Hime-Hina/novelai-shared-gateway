@@ -65,6 +65,35 @@ export interface PreparedMemberCredentials {
   expectedAuthEpoch: string;
   credentials: MemberCredentials;
 }
+export interface RelationalMemberManagementProfile {
+  id: string;
+  displayName: string;
+  status: 'active' | 'disabled';
+  acceptingJobs: boolean;
+  username: string | null;
+  discordId: string | null;
+  inviteExpiresAt: number | null;
+}
+type ManagementProfileRow = Omit<RelationalMemberManagementProfile, 'acceptingJobs'> & {
+  acceptingJobs: number;
+};
+const managementProfileSelect = `SELECT m.id,m.display_name AS displayName,m.status,
+  m.accepting_jobs AS acceptingJobs,p.username,d.discord_id AS discordId,
+  i.expires_at AS inviteExpiresAt FROM members m
+  LEFT JOIN password_credentials p ON p.member_id=m.id
+  LEFT JOIN discord_bindings d ON d.member_id=m.id
+  LEFT JOIN discord_invites i ON i.member_id=m.id`;
+function managementProfile(row: ManagementProfileRow): RelationalMemberManagementProfile {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.status,
+    acceptingJobs: row.acceptingJobs === 1,
+    username: row.username,
+    discordId: row.discordId,
+    inviteExpiresAt: row.inviteExpiresAt,
+  };
+}
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
@@ -235,6 +264,25 @@ export class RelationalMemberStore
         )
         .get(memberId) || null
     );
+  }
+
+  // 仅提供管理展示来源，不代表 caller 已有管理权；实际 HTTP 仍核当前会话/owner/admin。
+  readManagementMemberProfiles(): RelationalMemberManagementProfile[] {
+    return this.sqlite
+      .prepare<[], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.status!='removed' ORDER BY m.id`,
+      )
+      .all()
+      .map(managementProfile);
+  }
+
+  readManagementMemberProfile(memberId: string): RelationalMemberManagementProfile | null {
+    const row = this.sqlite
+      .prepare<[string], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.id=? AND m.status!='removed'`,
+      )
+      .get(memberId);
+    return row ? managementProfile(row) : null;
   }
 
   async loginMemberPassword(username: unknown, password: unknown): Promise<MemberUser> {

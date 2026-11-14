@@ -281,6 +281,8 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
 
+关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
+
 F04 为这两个成员管理入口新增 `action='member-admission'`、`userId` 与布尔 `acceptingJobs`。停止接单在同一事务设置禁止状态、取消未派发任务并退款；已取得派发资格的 running 任务仍可正常完成。恢复不会复活已取消任务或旧 Native 批次剩余图片，登录与历史查询不受该状态影响。成员 `me` 和管理员成员列表新增 `acceptingJobs`；取消任务仍使用现有 `failed` 状态。默认成员/全局未完成上限分别为4/16，排队等待十分钟，参数和当前只计已创建子任务的边界见 [README](../../README.md#额度语义与限制)。
 
 F03 在相同管理入口新增运营份额划入、明确来源注资登记、关联损耗核销与聚合返回纠正四种操作，字段与资金语义见[失败退款与资源核对](../architecture/failure-accounting.md#资金来源与核销)。同一收据同一操作可重试，冲突为 409；来源固定为配置中的 owner，不能指定其他成员的钱包。它们是管理扩展，不改变 Native/OpenAI 生图响应，也不增加补偿资金准入门槛。

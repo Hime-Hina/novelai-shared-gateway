@@ -1597,6 +1597,18 @@ Node 22.23.4 新关系专项 4/4 与原展示专项 7/7，连摘要、政策、�
 
 固定 `2a417850580bd7995d3ae32023da9d6dd8bd47fa` 独立复审 13/13、零跳过，五文件按 Git blob/SHA256 绑定，报告 `H:\TEMP\novelai-launcher-management-independent-20261114\INDEPENDENT-REVIEW.md`。独立测试将 48 组余额/账户边界与精确固定的提取前 launcher 全字段对照，并在真实观察/SQLite/query_only 下核对原毫秒期限、本人余额和重复零写。与 Shared/官方原值/权益汇合后六文件 128/128，报告/损耗/金融摘要三文件另 24/24，类型、架构、可信实际 main 迁移与 diff 通过；不把分组数量相加作一次全套，也不代替四个实际 HTTP 别名和最终 sole 的验收。
 
+### 9.57 管理成员安全目录与单成员资料
+
+本片从实际 `6dfc97211e3c1e29549a6659a5e539c6be61ec51` 独立接续，只在 MemberStore 新增 `readManagementMemberProfiles()` 与 `readManagementMemberProfile(id)`。真实调用者为 owner/admin 的 member-management 摘要及 ManagementMembers/Groups；现仓库没有实际 `/api/users` 路由，admin summary 也只消费成员总数。本片不添加 HTTP、管理写命令、金融/任务 view、旧 users 对象或 schema。
+
+安全白名单只读 members 的稳定 ID、display_name、active/disabled 状态和 accepting_jobs，原 password_credentials.username、discord_bindings.discord_id 及 discord_invites.expires_at。展示名不同于登录身份，缺用户名/绑定/邀请截止保留 null，真实截止 0 有效；绑定不冒充当前 Discord 资格。SQL 只选这些 metadata，不加载 Key、密码、auth epoch、grant、session、邀请码或摘要。removed 身份不再作为当前管理目标，列表排除且单资料返回 null；其原历史仍由各自审计 owner 保留。同名资料仍以稳定 ID 分开，不能据目录内容或同名把 caller 当 owner。
+
+现注册 owner 对当前非 removed 成员有 200 上界，真实管理组件本地分页并同时用全名单选择分组/转交目标，因此本片不新造分页框架，也不默默 LIMIT 丢行。目录方法不做 HTTP 授权、不续期/写认证或钱包、不访问网络；后续实际管理 HTTP 在当前认证边界内组合本片 metadata、现 Quota 配置/摘要和 Request/Gen 活动来源，不重建旧 users/settings。反例覆盖 query_only/全表零写、同展示名不同 ID、Key-only、disabled/removed、原绑定及未知/0、重开和业务/私有恢复边界，固定证据随后追加。
+
+Node22 新目录 3/3，与原成员认证及权益三文件共 102/102、零跳过；类型、架构、默认和可信 `6dfc972` 迁移、179 文件语法、改动格式及 diff 通过。独立 TEMP 同字节新用例只把 `username` 的 null 错补为 displayName，三项均出现实际断言失败，排除把两种身份混用的错误实现；作者源未改。证据为 `H:\TEMP\novelai-member-directory-context.log`、`novelai-member-directory-negative-fallback.log`。首轮无观察时间的绑定夹具误请求 login 资格事实，被原 parser 正确拒绝，改用原仅私有保存路径保留未知观察，不放宽事实验证。邀请截止 0 亦明确属于回滚的私有行表示故障检查，不冒称一次真实签发。完整业务回放仅恢复公共身份；原用户名/Discord/邀请 metadata 必须由匹配选定私有快照恢复。这里没有完成管理 HTTP 或其授权/续期、发布物/全量或生产验收；独立复审另绑定固定产品。
+
+技术固定 `e028451880970972e7aa140d8a8edf7b3b5ed2a0` 独立复审 6/6、零跳过，四文件 Git blob/SHA 与作者源一致。稳定 ID/登录名/展示名碰撞、真实 Discord 撤销后的 metadata、同一公共 cut 两套选定私有用户名、业务回放认证为空和 query_only 全表/total_changes 零写均有独立反例；按 username 错查身份的 TEMP 负控准确失败。报告 `H:\TEMP\novelai-member-directory-independent-20261114\INDEPENDENT-REVIEW.md`。与成员/权益/真实读取/通知/Shared 六文件汇合 142/142，类型、架构、可信实际 main 迁移和 diff 通过；管理 HTTP 权限和最终发布仍另验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
