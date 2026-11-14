@@ -1597,6 +1597,20 @@ Node 22.23.4 新关系专项 4/4 与原展示专项 7/7，连摘要、政策、�
 
 固定 `2a417850580bd7995d3ae32023da9d6dd8bd47fa` 独立复审 13/13、零跳过，五文件按 Git blob/SHA256 绑定，报告 `H:\TEMP\novelai-launcher-management-independent-20261114\INDEPENDENT-REVIEW.md`。独立测试将 48 组余额/账户边界与精确固定的提取前 launcher 全字段对照，并在真实观察/SQLite/query_only 下核对原毫秒期限、本人余额和重复零写。与 Shared/官方原值/权益汇合后六文件 128/128，报告/损耗/金融摘要三文件另 24/24，类型、架构、可信实际 main 迁移与 diff 通过；不把分组数量相加作一次全套，也不代替四个实际 HTTP 别名和最终 sole 的验收。
 
+### 9.59 Bearer 父请求查询与取消
+
+本片从实际 `c8e20b0afc62e93a95d5220c0d6c936f4117ef03` 独立接续，新增 `createRelationalRequestHttp`，只匹配 `GET /api/requests/:id` 与 `POST /api/requests/:id/cancel`。原 gateway-runtime 约 982 的路由只认 Bearer、取消先读 32768 字节 JSON，复用 `publicGenerationRequest` 完整公开格式；本片保留同样能力注入，不恢复 `/api/users`、其他 D4/被 surface 排除路径或通用 store。
+
+实际认证继续由 MemberStore/原 API Key helper 拥有；本地窄委托只在每次真实 Key 事务 callback 中加入 ready 检查，不复制密码、Key 或 Discord 规则。Discord 和正文 IO 不持 SQL；返回后以原 token 当前事务核对初始 stable member 与初始 authEpoch，再读当前 target ACL。Key 转归别人、当前 Key 撤销、认证代次变化、ready 撤下均拒绝。原同成员 Key 轮换保留 Cookie/epoch；内部显式同 literal 重授同成员且 epoch 未变时仍按原当前 Key 语义，不能为猜测历史 ABA 新建 registry、随机代次或持久状态。
+
+Cookie 取消块只窄提取为 `cancelRelationalGenerationRequest`：当前 ACL、服务器 UUID/摘要、原 Gen primitive 与当前状态快照在同一既有事务完成；Cookie 的认证、同源/CSRF 和稳定身份边界保持。原 formatter 在事务后组装公开 DTO，平台签名回调不入 SQL。取消不信任客户端 actor/command/receipt；无 waiting 的重复为 0、不写新事实/回执。当前 Gen 在 dispatch 时才预扣，waiting 被取消时没有 charge/attempt，不能套用旧在线提前预扣表示来造退款；running 原预扣不取消，真实执行继续收尾，前序成功不复活已取消余图。失败的真实外层 SQL 回滚完整状态且不留幽灵通知，通知继续用相同 DB/emitter 的原 notifier。
+
+新 factory 与共享取消函数按现 mutations Set、专用 writer module regex 和已有矩阵成对登记，query/protocol 禁止动态/namespace/named 捕获，type-only 仍允许；这是有实际写能力来源的最小并集，需维护者复核，不构成 agent/操作系统权限沙箱。没有新 AST 框架、事件/SQL/schema 或金融算法。
+
+验收使用合法 installer 的真实 SQLite/Local 字节、现 Native/Direct factory 与真实队列 coordinator、本机合成上游。测试组合给新请求入口和原 Direct image reader 注入同一个真实 `createPublicImageAccess`，领取签名 URL 得到原图字节且坏签名拒绝；不是用签名桩替代联验，也不宣称真实外云或 sole 发布。慢正文拒绝的全表对照显式停止后台 coordinator，避免把独立的真实派发误判为被拒取消的写入；两 child 运行/取消则保持 coordinator 开启，实际 running 结算、waiting 不再派发。实际 strict active alias 沿原 requestId，退款后的迟到图保留、历史退休后不可取消；完整公共提交回放精确保持任务、charge、wallet、artifact 与原 receipt，不访问网络或复活 Key/PST/authEpoch。
+
+作者 Node22 新真实 HTTP 专项 15 项、原 Cookie 回归与架构矩阵三文件同次 418/418、零跳过；backend 类型、架构、默认及可信 `c8e20b0` 迁移历史、182 文件语法、改动格式/diff 通过。旧守卫基线在同一 TEMP 矩阵中两项 type-only 正例通过、十项新实际写能力捕获漏例失败；现守卫 12/12。作者临时移除初始 stableMember/authEpoch 对比，原慢正文转归与代次变化两项精确变红（含父计数 3 fail），撤 Key/ready 正分支仍过，恢复产品后联合检查全绿。日志为 `H:\TEMP\novelai-request-http-candidate-source.log`、`novelai-request-http-original-identity-negative.log` 和 `novelai-request-http-guard-negative-20261114\before.log`/`after.log`。初轮夹具纠正了旧 setup 已换 Key 导致的失效 accept closure、原 notifier 外层要求和把真实并发派发当作拒绝写入的错误对照，未绕过原 owner 或 ready；当前受理走真实 NativeAdmission。固定候选的独立复审及父同候选发布仍另行记录，没有运行 full/compiled/Node24 或原始外云。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
