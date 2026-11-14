@@ -1989,6 +1989,16 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 该生命周期后继最终源码 sole+inert **32/32、零 skip，75.283 秒**；受理/成员 HTTP/Raw 取消三文件 **41/41、零 skip，14.282 秒**；Queue/Native/OpenAI/Direct/Opening 幂等/退休/Shared 七文件与原完整回放同次 **144/144、零 skip，67.604 秒**。证据分别 `H:/TEMP/novelai-sole-lifecycle-{source-final,bridges-fixed,owner-joint}.log`。隔离 `H:/TEMP/novelai-sole-lifecycle-negative-20261114` 的四个精确负控分别移除 API 新受理 guard、Member guard、delivery 当前状态和 response finish 等待：依次 1pass/4fail、3/2、1/2、0/1（含父计数），均在对应真实业务断言失败，最后一项已返回完整大 bytes 但主 DB.close 证据缺失，不能用 exit0 冒充干净关闭。四个原件在 finally 还原，`results.json` 绑定被改模块的原 SHA。backend type、architecture、默认/可信88 migration、局部格式/语法/diff 另核；未跑 full/build/compiled/Node24/安装/云/生产。独立复审与后继发布物仍只绑定各自最终候选，不继承 b3 的未通过结论。
 
+### 9.83 日常整库备份退出旧图片清理
+
+本片只调整 `scripts/backup-production.py` 的实际 daily caller：删除加密上传、回读和本地七份轮换之后无条件调用的旧 `clean_archived_images()` 及其日志。SQLite backup API、配置/密钥/bootstrap 凭据、逐文件 SHA、完整性核验、加密上传和验证后轮换顺序均保留；`cutover-*` 不进入日常轮换。`--verify` 对旧全图片备份的严格解释及显式 `--clean-archived-images` 仍是独立旧归档工具能力，未新增在线格式分支或第二套 parser。本片不释放新关系 Local/R2/PikPak 字节，不改变 D8 期限，也不部署或运行生产 timer。
+
+新增 Python 专项以真实离线 bootstrap 建立非空完整 history 的合法 ready 源，先断言不存在旧 `images` 表、四份密码/Key、一份 PST 及保护 profile，再运行未替换 backup/verify/cleanup 的默认 `main()`。仅生产绝对路径映射到私有夹具、子进程路径指向源码；云端 fetch 复用现有 `r2-backup-fixture`。原 AES-GCM、流式上传、下载解密比对和回执均真实执行，不能称真实 R2 端点验收。原源码在成功上传后精确报 `sqlite3.OperationalError: no such table: images`（`H:/TEMP/novelai-backup-daily-red.log`）；最小删除后同路径通过（`H:/TEMP/novelai-backup-daily-green.log`）。全表计数/摘要比较源与备份，随后实际 restore CLI 执行完整公共重放、选定当前私有恢复和唯一 installer，再比较全部表及原源文件 SHA；未手写 ready，也未 mock installer。
+
+本地验证使用未修改的 Linux CPython **3.12.12**（官方 python-build-standalone `20251209`，archive SHA256 `0233aa8f4e8f3314a9be071f68a289f25f6c33b368ad8b2a1726c09981d00d2f`，来源/实算核对在 `H:/TEMP/novelai-backup-daily-tools-20261115/provenance.json`）。原七项在 WSL ext4 **7/7**；新增链在 WSL Python、NTFS 夹具与原 Windows Node22/ABI127 路径桥接下 **1/1**，未安装或重建 WSL Node/native。桥仅转换子进程路径，未改 Python、fsync 或测试逻辑；原 Windows Python 基线七项中六个 readonly-fsync `EBADF` 属 POSIX 环境不符，另存 `novelai-backup-daily-python-baseline.log`，不算本次业务红例。真正 Linux Node/Python CI 仍须同候选复验，不能把跨平台桥接称为该证据。
+
+原旧全图片缺图拒绝、显式清理保留 live 原图/先持久化远端恢复依据、上传或轮换失败留旧份、七份 daily 与 cutover 保护断言均保留；原 retention 测试移除 cleanup mock。另原 R2 备份六项 **6/6**（包括 70 MiB、保留集合 GCM 失败不开始删除、cutover/回执不覆盖），传输仍为本地模拟存储。类型、架构、默认及可信 `88d2c26` migration、改动文档格式和 diff 另核；没有 full/build/compiled/native 安装/实云/生产操作。后续副本释放需按归档引用权威独立完成；此片不代表容量回收或上线闭环已验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
