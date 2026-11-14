@@ -531,45 +531,53 @@ test('parentless未知操作实际Local清单经selected-private唯一ready并�
   assert.equal(f.db.prepare('SELECT status FROM projection_state').get().status, 'ready');
   const restoredPath = path.join(f.dir, 'restored.sqlite'),
     restored = new Database(restoredPath);
-  initializeRelationalStorage(restored, 'generation-history');
-  const replayer = new RelationalCommitReplayer(restored);
-  for (const { seq } of f.db
-    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
-    .all()) {
-    restored.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
+  try {
+    initializeRelationalStorage(restored, 'generation-history');
+    const replayer = new RelationalCommitReplayer(restored);
+    for (const { seq } of f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      restored.transaction(() =>
+        replayer.replayCommit(readRelationalCommit(f.db, seq), f.inputs),
+      )();
+    }
+    assert.equal(restored.prepare('SELECT COUNT(*) n FROM api_keys').get().n, 0);
+    await verifyAndInstallRelationalStorage(restored, selected);
+    assertRelationalStorageReady(restored);
+  } finally {
+    restored.close();
   }
-  assert.equal(restored.prepare('SELECT COUNT(*) n FROM api_keys').get().n, 0);
-  await verifyAndInstallRelationalStorage(restored, selected);
-  assertRelationalStorageReady(restored);
-  restored.close();
   f.db.close();
   const reopened = new Database(restoredPath);
-  t.after(() => reopened.close());
-  assertRelationalStorageReady(reopened);
-  const before = databaseState(reopened),
-    result = await readRelationalArtifactContent(reopened, original.image.id, { dataDir: f.dir });
-  assert.deepEqual(result.buffer, bytes);
-  assert.equal(result.descriptor.operation, null);
-  assert.equal(
-    new RelationalInputStore(reopened).readOriginalRequestId('structural-container'),
-    null,
-  );
-  assert.equal(
-    reopened.prepare('SELECT published_at FROM artifacts WHERE id=?').get(original.image.id)
-      .published_at,
-    null,
-  );
-  const replica = reopened
-    .prepare('SELECT uploaded_at,verified_at FROM artifact_replicas WHERE artifact_id=?')
-    .get(original.image.id);
-  assert.deepEqual(replica, { uploaded_at: null, verified_at: verifiedAt });
-  assert.ok(
-    reopened.prepare('SELECT COUNT(*) n FROM api_keys').get().n > 0,
-    '原选定私有快照必须参与联合恢复',
-  );
-  assert.equal(databaseState(reopened), before);
-  assert.equal(
-    createHash('sha256').update(readFileSync(selected.sourcePath)).digest('hex'),
-    selected.sourceSha256,
-  );
+  try {
+    assertRelationalStorageReady(reopened);
+    const before = databaseState(reopened),
+      result = await readRelationalArtifactContent(reopened, original.image.id, { dataDir: f.dir });
+    assert.deepEqual(result.buffer, bytes);
+    assert.equal(result.descriptor.operation, null);
+    assert.equal(
+      new RelationalInputStore(reopened).readOriginalRequestId('structural-container'),
+      null,
+    );
+    assert.equal(
+      reopened.prepare('SELECT published_at FROM artifacts WHERE id=?').get(original.image.id)
+        .published_at,
+      null,
+    );
+    const replica = reopened
+      .prepare('SELECT uploaded_at,verified_at FROM artifact_replicas WHERE artifact_id=?')
+      .get(original.image.id);
+    assert.deepEqual(replica, { uploaded_at: null, verified_at: verifiedAt });
+    assert.ok(
+      reopened.prepare('SELECT COUNT(*) n FROM api_keys').get().n > 0,
+      '原选定私有快照必须参与联合恢复',
+    );
+    assert.equal(databaseState(reopened), before);
+    assert.equal(
+      createHash('sha256').update(readFileSync(selected.sourcePath)).digest('hex'),
+      selected.sourceSha256,
+    );
+  } finally {
+    reopened.close();
+  }
 });
