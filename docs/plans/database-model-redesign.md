@@ -1955,6 +1955,18 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 该闭包修复作者原四红程序原字节仅imports loader重绑后4/4，七受影响文件292/292、零skip56.994s，类型/架构通过；原观测来源 guard 单独移除后 observed-role 精准失败，不被新闭包掩盖。共同/窄校验各自停用负控分别15失败/5失败，恢复新与来源矩阵25/25；future-configuration 现在只证明完整意图/后果顺序闭包，单独来源角色仍由 dispatch-role/observed-role 实际拒因证明，不混算。日志为同TEMP的 closure-original-fixed-final.log、closure-seven-final.log、closure-negative-evidence.json。该修复不改事件7/DDL/hash/旧SQL，不混默认true后继；固定后独立复审及父新候选完整验收继续。
 
+#### 9.80.1 非绑定观察与默认启用新增
+
+本后继从独立通过的 `6708bd9f03236551fb5a1d50e442be52ff45b664` 开始，不改变原39的 NOTPASS。6708 独审报告为 `H:/TEMP/novelai-account-independent-20261115/INDEPENDENT-REVIEW-6708.md`，原四红程序逐字仅 loader 重绑后4/4，独立25项及后续 prior/noop/DTO、TLS/privateReady、HTTP分别通过；其schema7/DDL未改变。
+
+原观察构造仍由 QuotaStore 的 accountQuotaPatch/官方 snapshot/Opus/时效 owner 决定，仅把非bound观察与单bound金融同步分开。admin可真实刷新/核验任一已有账户，owner仍限当前绑定；非bound不分配、不切绑定，不写另一个共享金融池。绑定账户的完整同步规划、来源与预算校验保留，非法非bound资金事实仍拒绝。原集合解析的纯 collectValues 从 gateway 移至现 owner-operations 复用，不复制选择规则；多目标原子观察与 bulk true 尚由紧接的下一片完成。
+
+POST admin/accounts 默认或显式 true 使用原唯一query实际槽，owner创建不可伪造的临时注册准备，绑定真实未来注册eventId、私有PST/代理、政策与新身份。实际start回调重新核当前admin/ready、身份/stream/event确实不存在、原准备和政策后才领票发GET；不能用普通同形对象或现有账户触发该缺身份例外。最终同一保存点 Registered(false)→Observed(精确引用前置注册)→Availability(true)，最后安装私有对。原失败/非Opus/过期、新身份竞争、撤权、ready或政策变化和SQL尾错均零新增持久状态。原private对象只保存来源能力，没有结果缓存或回放applied标志；精确票据释放不取消更新票，也不提前释放raw物理占用。旧内部回执仍先当前授权、零IO且不重装秘密。
+
+新增默认true/显式true各实际localhost Opus GET后201，显式false零IO；原绑定/全部金融状态不变，选定private和真实Local经唯一installer恢复。非bound成功/失败保留原官方NULL/0/负标志；完整公共回放无认证和网络。当前相同11文件872/872、零skip64.246s覆盖账户、HTTP、金融、恢复、ready、实际刷新及架构；其后仅发起前公开事实验证的小改由4/4窄回归核对，新增非法权重早拒且无GET。实际slot忙组合证明唯一原自动GET成功、无伪观察/票号/回执；慢正文和网络期间撤admin/ready/政策/身份竞争、public/private SQL尾错及健康retry均有原数据库/通知断言。新注册合法完整envelope的丢观察/丢可用性/重复/重排/错源以及原6708四红仍拒绝。
+
+三TEMP负控分别放行克隆准备、漏精确新ID票号释放、漏原观察来源校验，均在原断言失败；恢复源raw hash后针对集通过。最终技术hash、命令和负控绑定在同TEMP `HANDOFF-OBSERVATIONS.md` 与 manifest，固定后独审和父同候选发布验收另行进行。没有新fact/schema/DDL/旧SQL/在线兼容路径；新增四个实际写方法只补既有mutation集合及反例，需维护者复核。真实Opus门槛与旧新增只保存enabled的行为差异明示保留。未跑full/build/compiled/Node24/native/真实云或生产；本片不称多目标批次、完整admin聚合或整体切换完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

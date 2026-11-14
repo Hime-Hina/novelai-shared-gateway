@@ -43,6 +43,7 @@ import {
   safeAccount,
   ownerAccountPatch,
   adminAccountPatch,
+  collectValues,
   ownerAccountCommand,
   selectSharedAccount,
   ownerStatisticsRange,
@@ -196,33 +197,33 @@ export function createRelationalManagementHttp(deps: {
           pricingVersion: 'none',
         };
       if (req.method === 'POST') {
-        // 新生命周期要求真实 Opus 才能启用；不为第二账户伪造资格或改选共享池。
-        if (body.enabled !== false) {
-          fail(409, '新账户启用尚需当前共享绑定与真实 Opus 核验，请先显式 enabled:false');
-        }
         const id = randomUUID();
-        await authorize((actor) => {
-          const directory = accounts.readAccountManagementDirectory(),
-            parsed = adminAccountPatch(id, {
-              ...body,
-              name: body.name || `NovelAI ${directory.length + 1}`,
-              weight: body.weight || 1,
-            });
-          return accounts.prepareAccountCommand(
-            metadata,
-            {
-              kind: 'register',
-              accountId: id,
-              displayName: parsed.changes.displayName!,
-              token: String(body.token || '').trim(),
-              weight: parsed.changes.weight,
-              proxyUrl: parsed.changes.proxyUrl,
-              configVersion: quotas.readQuotaConfiguration().configVersion,
-              bind: false,
-            },
-            actor,
-          );
+        const input = await authorize(() => {
+          const parsed = adminAccountPatch(id, {
+            ...body,
+            name: body.name || `NovelAI ${accounts.readAccountManagementDirectory().length + 1}`,
+            weight: body.weight || 1,
+          });
+          return {
+            kind: 'register' as const,
+            accountId: id,
+            displayName: parsed.changes.displayName!,
+            token: String(body.token || '').trim(),
+            weight: parsed.changes.weight,
+            proxyUrl: parsed.changes.proxyUrl,
+            configVersion: quotas.readQuotaConfiguration().configVersion,
+            bind: false,
+            enabled: body.enabled !== false,
+          };
         });
+        await ownerAccountCommand(
+          accounts,
+          authorize,
+          metadata,
+          input,
+          deps.queryAccountQuota,
+          now,
+        );
         replyMemberJson(
           res,
           201,
@@ -231,14 +232,7 @@ export function createRelationalManagementHttp(deps: {
         return true;
       }
       // 原集合解析接受 ids/accounts 的数组或单值，忽略未命中的 ID，但不得全无命中。
-      const value = body.ids || body.accounts;
-      let values: unknown[] = [];
-      if (Array.isArray(value)) {
-        values = value;
-      } else if (value !== undefined && value !== null && value !== '') {
-        values = [value];
-      }
-      const ids = values.map((id) => String(id).trim()).filter(Boolean),
+      const ids = collectValues(body.ids || body.accounts),
         changes = adminAccountPatch('', { weight: body.weight, enabled: body.enabled }).changes;
       if (!ids.length) {
         fail(400, 'account ids are required.');
@@ -288,21 +282,38 @@ export function createRelationalManagementHttp(deps: {
       return true;
     }
     if (accountQuotaRoute) {
-      const body = await readMemberJson(req),
+      const body = await readMemberJson(req);
+      let profile: ReturnType<RelationalAccountStore['readSharedAccountManagementProfile']> = null;
+      if (ownerRoute) {
         profile = await authorize(() => accounts.readSharedAccountManagementProfile());
-      if (!profile) {
-        fail(409, '尚未确定共享上游账户');
-      }
-      if (
-        Object.keys(body).some((key) => key !== 'ids') ||
-        (ownerRoute &&
-          (!Array.isArray(body.ids) || body.ids.length !== 1 || body.ids[0] !== profile.id)) ||
-        (adminRoute &&
-          body.ids !== undefined &&
-          (!Array.isArray(body.ids) ||
-            (body.ids.length !== 0 && (body.ids.length !== 1 || body.ids[0] !== profile.id))))
-      ) {
-        fail(400, '仅可刷新当前共享账户');
+        if (!profile) {
+          fail(409, '尚未确定共享上游账户');
+        }
+        if (
+          Object.keys(body).some((key) => key !== 'ids') ||
+          !Array.isArray(body.ids) ||
+          body.ids.length !== 1 ||
+          body.ids[0] !== profile.id
+        ) {
+          fail(400, '仅可刷新当前共享账户');
+        }
+      } else {
+        const ids = collectValues(body.ids || body.accounts),
+          selected = await authorize(() =>
+            accounts
+              .readAccountManagementDirectory()
+              .filter((account) => !ids.length || ids.includes(account.id)),
+          );
+        if (!selected.length) {
+          fail(
+            ids.length ? 404 : 400,
+            ids.length ? 'no matching accounts found.' : 'no accounts found.',
+          );
+        }
+        if (selected.length !== 1) {
+          fail(409, '尚不支持多账户刷新');
+        }
+        profile = selected[0]!;
       }
       const actorId = commandActorId,
         actorKind = ownerRoute ? 'member' : 'admin',

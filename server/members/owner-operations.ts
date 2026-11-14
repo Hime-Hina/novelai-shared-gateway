@@ -390,6 +390,16 @@ export function adminAccountPatch(
   return { kind: 'configure', accountId, changes };
 }
 
+export function collectValues(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item: unknown) => String(item).trim()).filter(Boolean);
+  }
+  if (value === undefined || value === null || value === '') {
+    return [];
+  }
+  return [String(value).trim()].filter(Boolean);
+}
+
 function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
@@ -412,7 +422,10 @@ function accountCommandResult<T extends { receipt: Json }>(result: T): T {
 export async function ownerAccountCommand(
   store: Pick<
     RelationalAccountStore,
-    'prepareAccountCommand' | 'startAccountEnable' | 'completeAccountEnable'
+    | 'prepareAccountCommand'
+    | 'startAccountEnable'
+    | 'completeAccountEnable'
+    | 'releaseAccountRegistration'
   >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
@@ -429,73 +442,84 @@ export async function ownerAccountCommand(
   if ('result' in prepared) {
     return accountCommandResult(prepared.result);
   }
-  if (input.kind !== 'enable' && input.kind !== 'observe' && input.kind !== 'configure') {
-    throw new Error('Only account observation may query upstream.');
-  }
-  if (!query) {
-    fail(503, '账户额度查询尚未配置');
-  }
-  let ticket: AccountEnableTicket | undefined,
-    prior: RelationalCommitResult | undefined,
-    observation;
   try {
-    const quota = await query(
-      prepared.prepared.pst,
-      prepared.prepared.configuration?.proxyUrl ?? prepared.prepared.proxyUrl,
-      prepared.prepared.accountId,
-      async () => {
-        const started = await authorize((member) =>
-          store.startAccountEnable(
-            { ...metadata, recordedAt: now() },
-            input,
-            prepared.prepared,
-            member,
-          ),
-        );
-        if (!started) {
-          fail(401, '会话已失效，请重新登录');
-        }
-        if ('result' in started) {
-          prior = started.result;
-          throw new Error('Account command already completed.');
-        }
-        ticket = started.ticket;
-      },
-    );
-    if (!ticket) {
-      throw new Error('Account quota query did not start its observation.');
+    if (
+      input.kind !== 'enable' &&
+      input.kind !== 'observe' &&
+      input.kind !== 'configure' &&
+      input.kind !== 'register'
+    ) {
+      throw new Error('Only account observation may query upstream.');
     }
-    observation = accountQuotaResult(
-      ticket.accountId,
-      quota,
-      new Date(ticket.startedAt).toISOString(),
-    );
-  } catch (error) {
-    if (prior) {
-      return accountCommandResult(prior);
+    if (!query) {
+      fail(503, '账户额度查询尚未配置');
     }
-    if (!ticket) {
-      throw error;
+    let ticket: AccountEnableTicket | undefined,
+      prior: RelationalCommitResult | undefined,
+      observation;
+    try {
+      const quota = await query(
+        prepared.prepared.pst,
+        prepared.prepared.configuration?.proxyUrl ?? prepared.prepared.proxyUrl,
+        prepared.prepared.accountId,
+        async () => {
+          const started = await authorize((member) =>
+            store.startAccountEnable(
+              { ...metadata, recordedAt: now() },
+              input,
+              prepared.prepared,
+              member,
+            ),
+          );
+          if (!started) {
+            fail(401, '会话已失效，请重新登录');
+          }
+          if ('result' in started) {
+            prior = started.result;
+            throw new Error('Account command already completed.');
+          }
+          ticket = started.ticket;
+        },
+      );
+      if (!ticket) {
+        throw new Error('Account quota query did not start its observation.');
+      }
+      observation = accountQuotaResult(
+        ticket.accountId,
+        quota,
+        new Date(ticket.startedAt).toISOString(),
+      );
+    } catch (error) {
+      if (prior) {
+        return accountCommandResult(prior);
+      }
+      if (!ticket) {
+        throw error;
+      }
+      observation = accountQuotaErrorResult(
+        ticket.accountId,
+        error,
+        new Date(ticket.startedAt).toISOString(),
+      );
     }
-    observation = accountQuotaErrorResult(
-      ticket.accountId,
-      error,
-      new Date(ticket.startedAt).toISOString(),
+    const result = await authorize((member) =>
+      store.completeAccountEnable(
+        { ...metadata, recordedAt: now() },
+        input,
+        ticket!,
+        observation,
+        member,
+      ),
     );
+    if (!result) {
+      fail(401, '会话已失效，请重新登录');
+    }
+    return accountCommandResult(result);
+  } finally {
+    if (input.kind === 'register') {
+      store.releaseAccountRegistration(prepared.prepared);
+    }
   }
-  const result = await authorize((member) =>
-    store.completeAccountEnable(
-      { ...metadata, recordedAt: now() },
-      input,
-      ticket!,
-      observation,
-      member,
-    ),
-  );
-  if (!result) {
-    fail(401, '会话已失效，请重新登录');
-  }
-  return accountCommandResult(result);
 }
 
 export async function ownerOperation(

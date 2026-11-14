@@ -282,6 +282,11 @@ export function createQuotaObservationOrder() {
     current(identity: string, ticket: string) {
       return latest.get(identity) === BigInt(ticket);
     },
+    forget(identity: string, ticket: string) {
+      if (latest.get(identity) === BigInt(ticket)) {
+        latest.delete(identity);
+      }
+    },
   };
 }
 

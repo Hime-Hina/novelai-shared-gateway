@@ -82,6 +82,7 @@ import {
   normalizeAccountProxyUrl,
   assertOwnerAccountCredentialChangeAllowed,
   ownerOperation,
+  collectValues,
   type OwnerAccountChange,
 } from './members/owner-operations.ts';
 import { adminPromptApiConfig } from './http/prompt-api-settings.ts';
@@ -2394,16 +2395,6 @@ function adminRuntimeSettings(settings: Partial<Settings> = {}) {
     ...settings,
     promptApi: adminPromptApiConfig(settings.promptApi),
   };
-}
-
-function collectValues(value: unknown) {
-  if (Array.isArray(value)) {
-    return value.map((item: unknown) => String(item).trim()).filter(Boolean);
-  }
-  if (value === undefined || value === null || value === '') {
-    return [];
-  }
-  return [String(value).trim()].filter(Boolean);
 }
 
 async function readJson(req: GatewayRequest, maxBytes = 2 * 1024 * 1024): Promise<Body> {

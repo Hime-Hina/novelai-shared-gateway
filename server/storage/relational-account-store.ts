@@ -14,6 +14,7 @@ import type {
   RelationalEventInput,
   RelationalFact,
 } from '../events/relational-events.ts';
+import { parseRelationalFact } from '../events/relational-events.ts';
 import { relationalFactStream } from '../events/relational-fact-contracts.ts';
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
 import {
@@ -29,8 +30,14 @@ import {
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
 import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-store.ts';
 import type { QuotaResult } from '../quota/account-refresh.ts';
-import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { relationalAccountConnectionSource } from './relational-account-connection.ts';
+import {
+  assertRelationalStorageFormat,
+  assertRelationalStorageReady,
+} from './relational-storage.ts';
+import {
+  relationalAccountConnectionSource,
+  assertRelationalAccountRegistrationAbsent,
+} from './relational-account-connection.ts';
 import { quotaNumber } from '../quota/eligibility.ts';
 
 export type AccountCommandMetadata = Omit<
@@ -50,6 +57,7 @@ export type OwnerAccountMutation =
       weight?: number;
       proxyUrl?: string;
       bind?: boolean;
+      enabled?: boolean;
     }
   | { kind: 'pause'; accountId: string }
   | { kind: 'token'; accountId: string; token: string }
@@ -72,7 +80,14 @@ type AccountConfiguration = {
 };
 type AccountIntent =
   | { kind: 'bulk'; ids: string[]; weight?: number; enabled?: false }
-  | { kind: 'register'; accountId: string; displayName: string; weight: number; bind: boolean }
+  | {
+      kind: 'register';
+      accountId: string;
+      displayName: string;
+      weight: number;
+      bind: boolean;
+      verified?: true;
+    }
   | {
       kind: 'mutation';
       accountId: string;
@@ -92,6 +107,7 @@ export type AccountEnableTicket = ReturnType<RelationalQuotaStore['beginQuotaObs
   commandId: string;
   fingerprint: string;
   configuration?: AccountConfiguration;
+  registration?: { displayName: string; weight: number };
 };
 export type AccountEnablePreparation = Omit<AccountEnableTicket, 'sequence' | 'startedAt'>;
 
@@ -129,6 +145,15 @@ export class RelationalAccountStore {
   private quotas: RelationalQuotaStore;
   private env: NodeJS.ProcessEnv;
   private controls: Parameters<typeof physicalAccountLoad>[0];
+  // 仅真实 owner 创建的临时准备/实际票据可使用尚无当前身份的例外；不是回放 applied 状态或结果缓存。
+  #registrations = new WeakMap<
+    AccountEnablePreparation,
+    {
+      prepared: AccountEnablePreparation;
+      context: string;
+      ticket?: AccountEnableTicket;
+    }
+  >();
   constructor(
     sqlite: Database.Database,
     quotas: RelationalQuotaStore,
@@ -406,6 +431,7 @@ export class RelationalAccountStore {
           'weight',
           'proxyUrl',
           'bind',
+          'enabled',
         ];
       } else if (input?.kind === 'token') {
         allowed = ['kind', 'accountId', 'token'];
@@ -425,6 +451,9 @@ export class RelationalAccountStore {
       }
       if (input.kind === 'configure' && (member !== null || metadata.actorKind !== 'admin')) {
         fail('只有本地管理员可以修改账户档案或代理', 403);
+      }
+      if (input.kind === 'register' && input.enabled === true) {
+        assertRelationalStorageReady(this.sqlite);
       }
       const command = this.command(metadata, input),
         prior = readRelationalReceipt(this.sqlite, command);
@@ -446,10 +475,24 @@ export class RelationalAccountStore {
         ) {
           fail('账户名称需为 1–80 个字符', 400);
         }
+        // 真正发起前先用事实 owner 验证公开注册决定；不能先 GET 再在追加时才发现非法权重。
+        parseRelationalFact({
+          eventType: 'AccountRegistered',
+          payload: {
+            accountId: input.accountId,
+            displayName: input.displayName,
+            weight: input.weight ?? 1,
+            enabled: false,
+            credentialEpoch: 1,
+          },
+        });
         const policy = this.policy(),
           binding = input.bind !== false;
         if (input.bind !== undefined && typeof input.bind !== 'boolean') {
           fail('账户注册绑定参数无效', 400);
+        }
+        if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
+          fail('账户注册启用参数无效', 400);
         }
         if (!binding && (member !== null || metadata.actorKind !== 'admin')) {
           fail('只有本地管理员可以新增未绑定账户', 403);
@@ -461,6 +504,32 @@ export class RelationalAccountStore {
               this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()))
         ) {
           fail('仅允许在未绑定共享账户时首次注册');
+        }
+        if (input.enabled === true) {
+          if (binding || member !== null || metadata.actorKind !== 'admin') {
+            fail('仅本地管理员可以核验新增未绑定账户', 403);
+          }
+          const eventId = randomUUID();
+          assertRelationalAccountRegistrationAbsent(this.sqlite, input.accountId, eventId);
+          const prepared: AccountEnablePreparation = Object.freeze({
+            accountId: input.accountId,
+            credentialEpoch: 1,
+            pst: input.token,
+            proxyUrl: input.proxyUrl ?? '',
+            connectionSourceEventId: eventId,
+            availabilityEventId: eventId,
+            configVersion: policy.version,
+            authEpoch: null,
+            commandId: command.commandId,
+            fingerprint: command.fingerprint,
+            registration: Object.freeze({
+              displayName: input.displayName,
+              weight: input.weight ?? 1,
+            }),
+          });
+          const { recordedAt: _at, ...context } = command;
+          this.#registrations.set(prepared, { prepared, context: canonicalJson(context) });
+          return { prepared };
         }
         const intent: AccountIntent = {
             kind: 'register',
@@ -482,7 +551,7 @@ export class RelationalAccountStore {
         return { result };
       }
       const account =
-        input.kind === 'configure' && member === null
+        member === null && metadata.actorKind === 'admin'
           ? this.account(input.accountId)
           : this.boundAccount(input.accountId);
       if (input.kind === 'configure') {
@@ -540,7 +609,6 @@ export class RelationalAccountStore {
           );
         }
         if (changes.enabled === true && !changingToken) {
-          this.boundAccount(account.id);
           return {
             prepared: {
               ...this.quotas.prepareQuotaObservation(account.id),
@@ -751,6 +819,8 @@ export class RelationalAccountStore {
   private planRegistration(
     metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
     intent: Extract<AccountIntent, { kind: 'register' }>,
+    observed?: Extract<RelationalEventInput, { eventType: 'QuotaObserved' }>,
+    registrationEventId?: string,
   ) {
     const events: RelationalEventInput[] = [
       this.event(metadata, {
@@ -764,11 +834,34 @@ export class RelationalAccountStore {
         },
       }),
     ];
+    if (registrationEventId) {
+      events[0].eventId = registrationEventId;
+    }
     if (intent.bind) {
       events.push(
         this.event(metadata, {
           eventType: 'AccountBound',
           payload: { accountId: intent.accountId, configVersion: this.policy().version + 1 },
+        }),
+      );
+    }
+    if (intent.verified) {
+      if (intent.bind || !observed?.eventId) {
+        fail('新账户核验缺少原完整观察');
+      }
+      events.push(
+        {
+          ...this.event(metadata, { eventType: 'QuotaObserved', payload: observed.payload }),
+          eventId: observed.eventId,
+        },
+        this.event(metadata, {
+          eventType: 'AvailabilityChanged',
+          payload: {
+            accountId: intent.accountId,
+            enabled: true,
+            reason: 'verified_opus',
+            observationEventId: observed.eventId,
+          },
         }),
       );
     }
@@ -902,21 +995,35 @@ export class RelationalAccountStore {
     } else if (intent.kind === 'register') {
       if (
         Object.keys(intent).some(
-          (key) => !['kind', 'accountId', 'displayName', 'weight', 'bind'].includes(key),
+          (key) =>
+            !['kind', 'accountId', 'displayName', 'weight', 'bind', 'verified'].includes(key),
         ) ||
         typeof intent.bind !== 'boolean' ||
         (intent.bind === false && row.actorKind !== 'admin') ||
+        (intent.verified !== undefined &&
+          (intent.verified !== true || intent.bind || row.actorKind !== 'admin')) ||
         this.sqlite.prepare('SELECT 1 FROM upstream_accounts WHERE id=?').get(intent.accountId) ||
         (intent.bind &&
           (this.policy().accountId !== null ||
             this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get())) ||
         saved.accountId !== intent.accountId ||
-        saved.enabled !== false ||
+        saved.enabled !== Boolean(intent.verified) ||
         events.length !== owned.length
       ) {
         fail('账户注册完整决定与原安全意图不符');
       }
-      expected.push(...this.planRegistration(metadata, intent));
+      const observations = owned.filter((event) => event.eventType === 'QuotaObserved');
+      if (observations.length !== Number(Boolean(intent.verified))) {
+        fail('账户注册缺少原完整核验观察');
+      }
+      const observed = observations[0];
+      expected.push(
+        ...this.planRegistration(
+          metadata,
+          intent,
+          observed?.eventType === 'QuotaObserved' ? observed : undefined,
+        ),
+      );
     } else if (intent.kind === 'mutation') {
       if (
         Object.keys(intent).some(
@@ -1009,13 +1116,64 @@ export class RelationalAccountStore {
       fail('账户完整事实与原安全意图/前态规划不符');
     }
   }
+  private registrationSource(
+    command: AccountCommandMetadata,
+    input: Extract<OwnerAccountMutation, { kind: 'register' }>,
+    source: AccountEnablePreparation,
+    member: MemberUser | null,
+    started: boolean,
+  ) {
+    const state = this.#registrations.get(source),
+      original = state?.prepared;
+    const { recordedAt: _at, ...context } = command;
+    if (
+      !state ||
+      !original ||
+      !original.registration ||
+      member !== null ||
+      command.actorKind !== 'admin' ||
+      source !== (started ? state.ticket : state.prepared) ||
+      (!started && state.ticket !== undefined) ||
+      state.context !== canonicalJson(context) ||
+      input.enabled !== true ||
+      input.bind !== false ||
+      input.accountId !== original.accountId ||
+      input.token !== original.pst ||
+      (input.proxyUrl ?? '') !== original.proxyUrl ||
+      input.configVersion !== original.configVersion ||
+      input.displayName !== original.registration?.displayName ||
+      (input.weight ?? 1) !== original.registration.weight ||
+      original.configVersion !== this.policy().version
+    ) {
+      fail('新账户准备、授权或原注册来源已变化');
+    }
+    assertRelationalAccountRegistrationAbsent(
+      this.sqlite,
+      original.accountId,
+      original.connectionSourceEventId,
+    );
+    return state;
+  }
+  releaseAccountRegistration(source: AccountEnablePreparation) {
+    const state = this.#registrations.get(source);
+    if (state) {
+      if (state.ticket) {
+        this.quotas.releaseAccountRegistrationObservation(state.ticket);
+        this.#registrations.delete(state.ticket);
+      }
+      this.#registrations.delete(state.prepared);
+    }
+  }
   private enableSource(
     command: AccountCommandMetadata,
     input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
     source: AccountEnablePreparation,
     member: MemberUser | null,
   ) {
-    const account = this.boundAccount(input.accountId);
+    const account =
+      member === null && command.actorKind === 'admin'
+        ? this.account(input.accountId)
+        : this.boundAccount(input.accountId);
     if (
       source.commandId !== command.commandId ||
       source.fingerprint !== command.fingerprint ||
@@ -1057,16 +1215,36 @@ export class RelationalAccountStore {
   // 准备不领取观察号；只有 query owner 已取得实际槽后，才在发起前复核并开始观察。
   startAccountEnable(
     metadata: AccountCommandMetadata,
-    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' | 'register' }>,
     prepared: AccountEnablePreparation,
     member: MemberUser | null,
   ): { result: RelationalCommitResult } | { ticket: AccountEnableTicket } {
     return this.owned(() => {
       this.authorize(metadata, member);
+      if (input.kind === 'register') {
+        assertRelationalStorageReady(this.sqlite);
+      }
       const command = this.command(metadata, input),
         prior = readRelationalReceipt(this.sqlite, command);
       if (prior) {
         return { result: prior };
+      }
+      if (input.kind === 'register') {
+        const source = this.registrationSource(command, input, prepared, member, false),
+          issued = this.quotas.beginAccountRegistrationObservation(
+            {
+              accountId: prepared.accountId,
+              credentialEpoch: prepared.credentialEpoch,
+              pst: prepared.pst,
+              proxyUrl: prepared.proxyUrl,
+              connectionSourceEventId: prepared.connectionSourceEventId,
+            },
+            metadata.recordedAt,
+          ),
+          ticket: AccountEnableTicket = Object.freeze({ ...prepared, ...issued });
+        source.ticket = ticket;
+        this.#registrations.set(ticket, source);
+        return { ticket };
       }
       const { account, current } = this.enableSource(command, input, prepared, member);
       if (!current) {
@@ -1082,17 +1260,47 @@ export class RelationalAccountStore {
   }
   completeAccountEnable(
     metadata: AccountCommandMetadata,
-    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' | 'register' }>,
     ticket: AccountEnableTicket,
     result: QuotaResult,
     member: MemberUser | null,
   ) {
     return this.owned(() => {
       this.authorize(metadata, member);
+      if (input.kind === 'register') {
+        assertRelationalStorageReady(this.sqlite);
+      }
       const command = this.command(metadata, input),
         prior = readRelationalReceipt(this.sqlite, command);
       if (prior) {
         return prior;
+      }
+      if (input.kind === 'register') {
+        const source = this.registrationSource(command, input, ticket, member, true),
+          events = this.quotas.planAccountRegistrationObservation(command, ticket, result),
+          observed = events.find((event) => event.eventType === 'QuotaObserved'),
+          intent: Extract<AccountIntent, { kind: 'register' }> = {
+            kind: 'register',
+            accountId: ticket.accountId,
+            displayName: source.prepared.registration!.displayName,
+            weight: source.prepared.registration!.weight,
+            bind: false,
+            verified: true,
+          },
+          committed = this.commit(
+            command,
+            this.planRegistration(
+              command,
+              intent,
+              observed?.eventType === 'QuotaObserved' ? observed : undefined,
+              ticket.connectionSourceEventId,
+            ),
+            undefined,
+            undefined,
+            intent,
+          );
+        this.writeConnection(ticket.accountId, ticket.pst, ticket.proxyUrl);
+        return committed;
       }
       const { account, current } = this.enableSource(command, input, ticket, member);
       const ignored = {

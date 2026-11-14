@@ -43,7 +43,7 @@ import {
   restoreRelationalPrivateSnapshot,
 } from '../../server/storage/relational-private-restore.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
-import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import { accountQuotaResult, accountQuotaErrorResult } from '../../server/quota/account-refresh.ts';
 import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
 
@@ -1000,4 +1000,432 @@ test('单账户组合原意图拒遗漏profile/轮换/暂停及重复重排，�
     );
   assert.deepEqual(safe.receipt, { accountId: 'a', enabled: false });
   assert.equal(databaseState(f.db), before);
+});
+
+test('非绑定真实官方观察与启用保留原值，不能同步/分配或切换现共享金融池', async (t) => {
+  const f = await fixture(t),
+    env = { OWNER_USER_ID: 'm1' },
+    quotas = new RelationalQuotaStore(f.db, env),
+    accounts = new RelationalAccountStore(f.db, quotas, new Map(), env),
+    admin = (id) => ({ ...meta(id), actorKind: 'admin', actorId: 'local-admin' }),
+    authorize = async (run) => f.db.transaction(() => run(null))();
+  f.db.transaction(() =>
+    accounts.prepareAccountCommand(
+      admin('passive-register'),
+      {
+        kind: 'register',
+        accountId: 'extra',
+        displayName: 'extra',
+        token: 'pst-passive-extra',
+        configVersion: 1,
+        bind: false,
+      },
+      null,
+    ),
+  )();
+  const pool = () =>
+      JSON.stringify([
+        f.db.prepare('SELECT * FROM sharing_policy').all(),
+        f.db.prepare("SELECT * FROM account_quota_state WHERE account_id='a'").all(),
+        f.db.prepare('SELECT * FROM wallets ORDER BY account_id,member_id').all(),
+        f.db.prepare('SELECT * FROM operating_state ORDER BY account_id').all(),
+        f.db.prepare('SELECT * FROM charges').all(),
+      ]),
+    before = pool(),
+    ticket = quotas.beginQuotaObservation('extra', NOW),
+    observed = f.db.transaction(() =>
+      quotas.recordQuotaObservation(
+        admin('passive-observed'),
+        ticket,
+        accountQuotaResult(
+          'extra',
+          { ...official(), v5UsageIsNegative: true },
+          new Date(NOW).toISOString(),
+        ),
+      ),
+    )();
+  assert.deepEqual(
+    observed.events.map((e) => e.eventType),
+    ['QuotaObserved'],
+  );
+  assert.equal(pool(), before);
+  assert.deepEqual(quotas.readOfficialQuotaV5('extra'), {
+    v5UsagePercent: 80,
+    v5UsageIsNegative: true,
+  });
+  assert.equal(quotas.readAccountQuota('extra').baselineEventId, null);
+  assert.equal(quotas.readAccountQuota('extra').status, 'inactive_opus');
+  const failedTicket = quotas.beginQuotaObservation('extra', NOW + 1),
+    failed = f.db.transaction(() =>
+      quotas.recordQuotaObservation(
+        admin('passive-failed'),
+        failedTicket,
+        accountQuotaErrorResult(
+          'extra',
+          Object.assign(new Error('synthetic read reset'), { code: 'ECONNRESET' }),
+          new Date(NOW + 1).toISOString(),
+        ),
+      ),
+    )();
+  assert.equal(failed.events[0].payload.errorCode, 'sync_error');
+  assert.deepEqual(quotas.readOfficialQuotaV5('extra'), {
+    v5UsagePercent: 80,
+    v5UsageIsNegative: true,
+  });
+  assert.equal(pool(), before);
+  const enabled = await ownerAccountCommand(
+    accounts,
+    authorize,
+    admin('passive-enable'),
+    { kind: 'configure', accountId: 'extra', changes: { enabled: true } },
+    async (_pst, _proxy, _id, start) => {
+      await start();
+      return official();
+    },
+    () => NOW + 2,
+  );
+  assert.equal(enabled.receipt.enabled, true);
+  assert.equal(
+    f.db.prepare("SELECT enabled FROM upstream_accounts WHERE id='extra'").get().enabled,
+    1,
+  );
+  assert.equal(pool(), before);
+  assert.equal(f.db.prepare('SELECT bound_account_id id FROM sharing_policy').get().id, 'a');
+  assert.equal(quotas.readAccountQuota('extra').baselineEventId, null);
+  const unchanged = databaseState(f.db),
+    funding = {
+      action: 'operating-register-funding',
+      resource: 'anlasFixed',
+      amount: 10,
+      receipt: 'passive-funding-receipt',
+    };
+  f.db.transaction(() =>
+    assert.throws(
+      () => quotas.manageQuotaFunding(admin('no-passive-finance'), 'extra', funding),
+      /金融命令只能使用当前绑定账户/,
+    ),
+  )();
+  assert.equal(databaseState(f.db), unchanged);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const owner = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => owner.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  assert.deepEqual(
+    target.prepare('SELECT * FROM account_quota_state ORDER BY account_id').all(),
+    f.db.prepare('SELECT * FROM account_quota_state ORDER BY account_id').all(),
+  );
+  assert.equal(relationalPrivateStateEmpty(target), true);
+  assert.ok(
+    f.db
+      .transaction(() => quotas.manageQuotaFunding(admin('healthy-bound-finance'), 'a', funding))()
+      .events.some((e) => e.eventType === 'FundingRegistered'),
+  );
+});
+
+test('新增核验只能使用实际owner准备/开始对象，伪造克隆与existing身份例外拒绝，失败释放新ID票号', async (t) => {
+  const f = await fixture(t);
+  await installReady(f);
+  const { accounts, quotas } = setup(f),
+    metadata = { ...meta('new-capability'), actorKind: 'admin', actorId: 'local-admin' },
+    input = {
+      kind: 'register',
+      accountId: 'future',
+      displayName: 'future',
+      token: 'pst-future-source',
+      configVersion: 1,
+      bind: false,
+      enabled: true,
+    },
+    prepare = (id) =>
+      f.db.transaction(() =>
+        accounts.prepareAccountCommand({ ...metadata, commandId: id }, input, null),
+      )();
+  const prepared = prepare('new-capability').prepared,
+    before = databaseState(f.db);
+  for (const weight of [0, 101, NaN, Infinity]) {
+    f.db.transaction(() =>
+      assert.throws(() =>
+        accounts.prepareAccountCommand(
+          { ...metadata, commandId: 'invalid-weight' },
+          { ...input, weight },
+          null,
+        ),
+      ),
+    )();
+    assert.equal(databaseState(f.db), before);
+  }
+  assert.equal(Object.isFrozen(prepared), true);
+  assert.equal(Object.isFrozen(prepared.registration), true);
+  for (const fake of [{ ...prepared }, Object.create(prepared), { ...prepared, accountId: 'a' }]) {
+    f.db.transaction(() =>
+      assert.throws(() => accounts.startAccountEnable(metadata, input, fake, null), /新账户准备/),
+    )();
+    assert.equal(databaseState(f.db), before);
+  }
+  f.db.transaction(() =>
+    assert.throws(
+      () =>
+        quotas.beginAccountRegistrationObservation(
+          {
+            accountId: 'a',
+            credentialEpoch: 1,
+            pst: 'synthetic-upstream-pst',
+            proxyUrl: '',
+            connectionSourceEventId: 'opening-account',
+          },
+          NOW,
+        ),
+      /新账户身份或来源已经存在/,
+    ),
+  )();
+  const started = f.db.transaction(() =>
+    accounts.startAccountEnable(metadata, input, prepared, null),
+  )().ticket;
+  assert.equal(started.sequence, '1');
+  assert.equal(Object.isFrozen(started), true);
+  f.db.transaction(() =>
+    assert.throws(() => accounts.startAccountEnable(metadata, input, prepared, null), /新账户准备/),
+  )();
+  f.db.transaction(() =>
+    assert.throws(
+      () =>
+        accounts.completeAccountEnable(
+          metadata,
+          input,
+          { ...started },
+          accountQuotaResult('future', official(), new Date(NOW).toISOString()),
+          null,
+        ),
+      /新账户准备/,
+    ),
+  )();
+  assert.equal(databaseState(f.db), before);
+  accounts.releaseAccountRegistration(prepared);
+  f.db.transaction(() =>
+    assert.throws(
+      () =>
+        accounts.completeAccountEnable(
+          metadata,
+          input,
+          started,
+          accountQuotaResult('future', official(), new Date(NOW).toISOString()),
+          null,
+        ),
+      /新账户准备/,
+    ),
+  )();
+  const secondMetadata = { ...metadata, commandId: 'released-capability' },
+    second = prepare(secondMetadata.commandId).prepared,
+    secondTicket = f.db.transaction(() =>
+      accounts.startAccountEnable(secondMetadata, input, second, null),
+    )().ticket;
+  assert.equal(
+    secondTicket.sequence,
+    '1',
+    'released absent identity must not accumulate volatile order entries',
+  );
+  const result = f.db.transaction(() =>
+    accounts.completeAccountEnable(
+      secondMetadata,
+      input,
+      secondTicket,
+      accountQuotaResult('future', official(), new Date(NOW).toISOString()),
+      null,
+    ),
+  )();
+  accounts.releaseAccountRegistration(second);
+  assert.deepEqual(
+    result.events.map((e) => e.eventType),
+    ['AccountRegistered', 'QuotaObserved', 'AvailabilityChanged'],
+  );
+  assert.equal(result.events[1].payload.connectionSourceEventId, result.events[0].eventId);
+  f.db.prepare("DELETE FROM upstream_credentials WHERE account_id='future'").run();
+  const withdrawn = databaseState(f.db),
+    prior = await ownerAccountCommand(
+      accounts,
+      async (run) => f.db.transaction(() => run(null))(),
+      secondMetadata,
+      input,
+      () => assert.fail('prior registration cannot requery'),
+    );
+  assert.deepEqual(prior.receipt, { accountId: 'future', enabled: true });
+  assert.equal(databaseState(f.db), withdrawn);
+  const newerInput = { ...input, accountId: 'newer-source' },
+    oldMeta = { ...metadata, commandId: 'older-new-source' },
+    newMeta = { ...metadata, commandId: 'newer-new-source' },
+    oldPrep = f.db.transaction(() => accounts.prepareAccountCommand(oldMeta, newerInput, null))()
+      .prepared,
+    newPrep = f.db.transaction(() => accounts.prepareAccountCommand(newMeta, newerInput, null))()
+      .prepared,
+    oldTicket = f.db.transaction(() =>
+      accounts.startAccountEnable(oldMeta, newerInput, oldPrep, null),
+    )().ticket,
+    newTicket = f.db.transaction(() =>
+      accounts.startAccountEnable(newMeta, newerInput, newPrep, null),
+    )().ticket;
+  assert.equal(oldTicket.sequence, '1');
+  assert.equal(newTicket.sequence, '2');
+  accounts.releaseAccountRegistration(oldPrep);
+  const latest = f.db.transaction(() =>
+    accounts.completeAccountEnable(
+      newMeta,
+      newerInput,
+      newTicket,
+      accountQuotaResult(newerInput.accountId, official(), new Date(NOW).toISOString()),
+      null,
+    ),
+  )();
+  assert.equal(
+    latest.receipt.enabled,
+    true,
+    'cleaning older preparation must not cancel the newer actual ticket',
+  );
+  accounts.releaseAccountRegistration(newPrep);
+});
+
+test('新增actual-start外层授权事务尾失败即使没返回ticket，也释放中央序号而不发raw或保存事实', async (t) => {
+  const f = await fixture(t);
+  await installReady(f);
+  const { accounts } = setup(f),
+    metadata = { ...meta('new-start-tail'), actorKind: 'admin', actorId: 'local-admin' },
+    input = {
+      kind: 'register',
+      accountId: 'start-tail',
+      displayName: 'start-tail',
+      token: 'pst-start-tail',
+      configVersion: 1,
+      bind: false,
+      enabled: true,
+    };
+  let stages = 0,
+    raw = 0;
+  const before = databaseState(f.db),
+    authorize = async (run) =>
+      f.db.transaction(() => {
+        const result = run(null);
+        stages++;
+        if (stages === 2) {
+          throw new Error('synthetic actual-start auth tail');
+        }
+        return result;
+      })();
+  await assert.rejects(
+    ownerAccountCommand(
+      accounts,
+      authorize,
+      metadata,
+      input,
+      async (_pst, _proxy, _id, start) => {
+        await start();
+        raw++;
+        return official();
+      },
+      () => NOW,
+    ),
+    /synthetic actual-start auth tail/,
+  );
+  assert.equal(raw, 0);
+  assert.equal(databaseState(f.db), before);
+  const prepared = f.db.transaction(() => accounts.prepareAccountCommand(metadata, input, null))()
+      .prepared,
+    ticket = f.db.transaction(() => accounts.startAccountEnable(metadata, input, prepared, null))()
+      .ticket;
+  assert.equal(ticket.sequence, '1');
+  accounts.releaseAccountRegistration(prepared);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('新增真实核验的三事实完整闭包与原连接角色分别验证，公共回放不产生私有认证', async (t) => {
+  const f = await fixture(t);
+  await installReady(f);
+  const { accounts } = setup(f),
+    metadata = {
+      ...meta('registered-with-observation'),
+      actorKind: 'admin',
+      actorId: 'local-admin',
+    },
+    input = {
+      kind: 'register',
+      accountId: 'verified-source',
+      displayName: 'verified source',
+      token: 'pst-verified-source',
+      configVersion: 1,
+      bind: false,
+      enabled: true,
+    },
+    result = await ownerAccountCommand(
+      accounts,
+      async (run) => f.db.transaction(() => run(null))(),
+      metadata,
+      input,
+      async (_pst, _proxy, _id, start) => {
+        await start();
+        return official();
+      },
+      () => NOW,
+    ),
+    stored = readRelationalCommit(f.db, result.commitSeq);
+  assert.equal(stored.command.receipt.accountIntent.verified, true);
+  for (const mode of [
+    'missing-observed',
+    'missing-availability',
+    'duplicate',
+    'reverse',
+    'wrong-source',
+    'missing-proof',
+  ]) {
+    await t.test(mode, (t) => {
+      const { target, owner, inputs } = publicPrefix(t, f, result.commitSeq),
+        bad = structuredClone(stored);
+      if (mode === 'missing-observed') {
+        bad.events = bad.events.filter((e) => e.eventType !== 'QuotaObserved');
+      }
+      if (mode === 'missing-availability') {
+        bad.events = bad.events.filter((e) => e.eventType !== 'AvailabilityChanged');
+      }
+      if (mode === 'duplicate') {
+        bad.events.push({ ...bad.events[1], eventId: 'duplicate-new-observed' });
+      }
+      if (mode === 'reverse') {
+        bad.events.reverse();
+      }
+      if (mode === 'wrong-source') {
+        bad.events[1].payload.connectionSourceEventId = 'opening-account';
+      }
+      if (mode === 'missing-proof') {
+        delete bad.command.receipt.accountIntent.verified;
+      }
+      resequence(bad, target);
+      const before = databaseState(target);
+      let error;
+      target.transaction(() => {
+        try {
+          owner.replayCommit(bad, inputs);
+        } catch (caught) {
+          error = caught;
+        }
+      })();
+      assert.match(
+        error?.message ?? '',
+        mode === 'wrong-source' ? /观察代次或序号已经过期/ : /账户.*(完整|核验|意图)/,
+      );
+      assert.equal(databaseState(target), before);
+      target.transaction(() => owner.replayCommit(stored, inputs))();
+      const same = databaseState(target);
+      assert.equal(target.transaction(() => owner.replayCommit(stored, inputs))().replayed, true);
+      assert.equal(databaseState(target), same);
+      assert.equal(relationalPrivateStateEmpty(target), true);
+      assert.equal(
+        target.prepare("SELECT enabled FROM upstream_accounts WHERE id='verified-source'").get()
+          .enabled,
+        1,
+      );
+    });
+  }
 });

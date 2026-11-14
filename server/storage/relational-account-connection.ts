@@ -2,6 +2,24 @@ import type Database from 'better-sqlite3';
 import type { RelationalEvent } from '../events/relational-events.ts';
 import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
 
+export function assertRelationalAccountRegistrationAbsent(
+  sqlite: Database.Database,
+  accountId: string,
+  eventId: string,
+) {
+  if (
+    sqlite
+      .prepare(
+        `SELECT 1 FROM upstream_accounts WHERE id=?
+    UNION ALL SELECT 1 FROM stream_heads WHERE stream_id=?
+    UNION ALL SELECT 1 FROM domain_events WHERE event_id=? OR stream_id=? LIMIT 1`,
+      )
+      .get(accountId, `account:${accountId}`, eventId, `account:${accountId}`)
+  ) {
+    throw Object.assign(new Error('新账户身份或来源已经存在'), { statusCode: 409 });
+  }
+}
+
 export function assertRelationalAccountConnections(sqlite: Database.Database): void {
   for (const row of sqlite
     .prepare<[], { accountId: string; enabled: number; proxyUrl: string | null }>(
