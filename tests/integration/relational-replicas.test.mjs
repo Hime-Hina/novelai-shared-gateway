@@ -113,12 +113,25 @@ function register(f, kind, id = `target-${kind}`) {
 
 test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故障及新复制保留原NULL与0', async (t) => {
   const f = await setup(t);
+  register(f, 'r2');
+  const reserved = f.store.beginArtifactReplica('artifact-replica-0', f.target('r2'));
+  record(f, 'normal-reservation', reserved, 'reserved');
+  const beforeUpload = databaseState(f.db);
+  assert.throws(
+    () =>
+      record(
+        f,
+        'cannot-verify-before-upload',
+        f.store.beginArtifactReplica('artifact-replica-0', f.target('r2')),
+        'verified',
+      ),
+    /待核验/,
+  );
+  assert.equal(databaseState(f.db), beforeUpload);
   await f.copy('r2');
   const original = f.store.readArtifact('artifact-replica-0');
   const hot = f.target('r2'),
     local = f.target('local');
-  const checkpoint = f.db.serialize();
-  const cutoff = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n;
   const facts = ['history-confirmed', 'history-local'].flatMap((artifactId) => {
     const origin = { sourceId: 'synthetic-opening', originalId: artifactId };
     const remote = artifactId === 'history-confirmed';
@@ -128,7 +141,7 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
         payload: {
           artifactId,
           memberId: 'm1',
-          inputId: original.inputId,
+          inputId: 'history-unknown-input',
           originalAttemptId: null,
           operation: null,
           mimeType: original.mimeType,
@@ -164,14 +177,46 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
     }));
   });
   const { policyVersion: _p, pricingVersion: _v, ...command } = meta('history-unknown-times');
-  f.db.transaction(() =>
-    new RelationalCommitReplayer(f.db).appendCommit({
-      ...command,
-      expectedVersions: { 'artifact:history-confirmed': '0', 'artifact:history-local': '0' },
-      receipt: { imported: true },
-      events: facts,
-    }),
-  )();
+  f.db.transaction(() => {
+    const input = f.inputs.stageOpeningInput({
+      inputId: 'history-unknown-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...command,
+        expectedVersions: {
+          'input:history-unknown-input': '0',
+          'artifact:history-confirmed': '0',
+          'artifact:history-local': '0',
+        },
+        receipt: { imported: true },
+        events: [
+          {
+            eventType: 'OpeningInputRecorded',
+            payload: {
+              ...input,
+              origin: { sourceId: 'synthetic-opening', originalId: 'history-confirmed' },
+            },
+            streamId: 'input:history-unknown-input',
+            memberId: 'm1',
+            accountId: null,
+            occurredAt: NOW,
+            policyVersion: 'shared-quota-v1',
+            pricingVersion: 'price1',
+          },
+          ...facts,
+        ],
+      },
+      f.inputs,
+    );
+  })();
+  const checkpoint = f.db.serialize();
+  const cutoff = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n;
   f.objects.set(
     `https://${'a'.repeat(32)}.r2.cloudflarestorage.com/replica-images/images/history-confirmed/${original.sha256}`,
     image,

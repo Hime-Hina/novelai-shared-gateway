@@ -126,7 +126,6 @@ test('封存只读 SQLite 和繁忙执行器仍可领取真实 Local，数据库
 test('Opening未知operation的Local图/opaque及仅namespace的Pik冷读保原字节，NULL不合成时间或写观察', async (t) => {
   const f = await setup(t);
   f.db.transaction(() => f.store.registerStorageTarget(meta('history-reader-pik'), 'pikpak'))();
-  const original = f.store.readArtifact(artifactId);
   const entries = [
     { id: 'history-local-image', mimeType: 'image/webp', bytes: image, kind: 'local' },
     {
@@ -149,7 +148,7 @@ test('Opening未知operation的Local图/opaque及仅namespace的Pik冷读保原�
         payload: {
           artifactId: entry.id,
           memberId: 'm1',
-          inputId: original.inputId,
+          inputId: 'history-reader-input',
           originalAttemptId: null,
           operation: null,
           mimeType: entry.mimeType,
@@ -185,14 +184,43 @@ test('Opening未知operation的Local图/opaque及仅namespace的Pik冷读保原�
     }));
   });
   const { policyVersion: _p, pricingVersion: _v, ...command } = meta('history-reader-unknown');
-  f.db.transaction(() =>
-    new RelationalCommitReplayer(f.db).appendCommit({
-      ...command,
-      expectedVersions: Object.fromEntries(entries.map((entry) => [`artifact:${entry.id}`, '0'])),
-      receipt: { imported: true },
-      events: facts,
-    }),
-  )();
+  f.db.transaction(() => {
+    const input = f.inputs.stageOpeningInput({
+      inputId: 'history-reader-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...command,
+        expectedVersions: {
+          'input:history-reader-input': '0',
+          ...Object.fromEntries(entries.map((entry) => [`artifact:${entry.id}`, '0'])),
+        },
+        receipt: { imported: true },
+        events: [
+          {
+            eventType: 'OpeningInputRecorded',
+            payload: {
+              ...input,
+              origin: { sourceId: 'synthetic-opening', originalId: entries[0].id },
+            },
+            streamId: 'input:history-reader-input',
+            memberId: 'm1',
+            accountId: null,
+            occurredAt: NOW,
+            policyVersion: 'shared-quota-v1',
+            pricingVersion: 'price1',
+          },
+          ...facts,
+        ],
+      },
+      f.inputs,
+    );
+  })();
   for (const entry of entries) {
     if (entry.kind === 'local') {
       await writeFile(path.join(f.dir, entry.file), entry.bytes);
