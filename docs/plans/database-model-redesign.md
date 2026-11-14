@@ -2005,6 +2005,22 @@ Node22 新真实 ready/localhost 专项 11/11（含五项慢正文），管理 H
 
 根在 credentials `f0eb284` 上整合，只追加原邀请十行 early branch、原私有邀请签名/授权和安全 expiry 比较，两个私有命令共用一份 verifier；原资金/权益/政策/组/Key 分派保留。全部十四条原测试编辑与双方完整追加块保留，合并证明 `H:/TEMP/novelai-invite-root-merge.json`；十二条受影响集成文件同次 **361/361、零跳过，71.771 秒**，类型、architecture、可信实际 main `88d2c26` migration 通过，日志 `H:/TEMP/novelai-invite-root-{joint,type,static}.log`。没有把本后继计入 b427 的完整后端、编译包或 CI；后续新 sole、账户保留行为、私有 note 和最终同候选整体恢复/发布仍需完成。
 
+### 9.82 admin 摘要的关系统计、逻辑产物数与失败选择
+
+基于固定根 `64e1171`，只在现 ReportStore/RequestStore 提供窄读，原 `sqlite-read-worker` 的日/小时桶和成功率、原 serializer 的余额失败排除最小搬到 `reports/admin-statistics.ts`，由真实旧生产 caller 与新关系 caller 复用。不新增统计 worker、缓存、持久派生列/表、事件/DDL，未接半份 admin summary、账户 reveal 或新的 HTTP 路由。完整 admin summary 的设置、账户宽 DTO/秘密边界和 sole 装配仍由后续原 owner 接合。
+
+`readAdminSummaryStats()` 按 child 的原创建时间统计一分钟请求数；旧一分钟“生成数”只计 done 且原 display cost≥1，不以真实收费或物理执行次数替换。`JobAccepted` 可复用原显示 owner 的已知 0，Opening 没保存原 job cost 则 NULL，不能用 cacheSelection.cost 或当前报价猜历史。done/failed 的一小时统计及原账户分组仍应用原余额排除条件；七天北京时间小时桶的 failed 数不应用这条排除，done 次数和 credits 继续分别沿原 display cost 规则。速度仍是 V4.5/V5 从原创建至原终态的端到端均值，包括免费/cache done，不替换成上游耗时。
+
+失败排除确有可用原来源：仅对原创建时间落在一小时窗口的 failed 索引候选读取 `JobFailed.diagnosticId` 指向的受保护 TEXT，每份最多 4000 字符，经现 InputStore 核对 job/原事实/hash/长度。诊断条数成本随该窗口失败数增长，不能把它声称为全纯 COUNT/无冷读；普通计数、模型与时间聚合不读输入正文或附件 BLOB。已有引用内容损坏/失配明确不可用，不静默降为无诊断。缺来源且代码不能证明时，只有对应失败/总量/成功率为 NULL；原安全代码能证明排除、已知 done、已知模型及起止等来源继续使用，不把整个历史一律改成未知。
+
+时间统一回到共同 `jobColumns/readApiJob`：done/failed 只取原 `j.completed_at`，真实 0/NULL 保留；late、FreeImageSucceeded、结案等后继不移动终态日。活动状态只认可受理/入队/派发的状态事件 header，Opening 事实 header 只表示开账发生。原创建时间仍归 `generation_job_origins`，不借父请求、当前导入或最新事件补齐。无法定位的历史使相关统计或日期/小时桶保持 NULL，已知空桶仍为 0，不新增嵌套 coverage 框架。
+
+`readLogicalArtifactCount()` 只数未退休 published artifacts，一张原产物多份副本仍只计一次，不当成磁盘/实云容量。`readManagementFailedJobs()` 先限最多 50 条，再复用现 thin job 和原输入 owner 冷读 ≤50 个 canonical 请求，无附件读取；新 JobAccepted 按真实 commit/index 插入序，区别于最近失败时间。Opening 未保存原 `order_value`，当前只能稳定 ID 确定性尾序并标 `originalOrderKnown=false`；这不是旧原序等价，最终选定迁移须从真实旧排序/归档保留来源或明确行为决定闭合。执行账户只取原实际尝试/既有产物来源，原收费账户是金融归属，不能用同 job/member 的 `charges.original_account_id` 冒充物理执行；缺执行来源仍 NULL。
+
+Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与历史退休六文件同次 **82/82、零跳过，20.112 秒**；类型、architecture、193 文件语法、默认及可信实际 main `88d2c26` migration、八路径格式和 diff 检查通过。原合法 JsonStore/生产 worker 六种统计 DTO 对照、query_only/全表 hash/total_changes 零写、paid 但 display0、有效/坏/缺诊断、late 与真实 FreeImageSucceeded 后继、Opening0/NULL/已知速度、资金 A 但执行未知、原失败顺序/50 限量、公共回放及重开均有可运行检查。临时错误变体分别用收费代显示价、最新 header 代终态、读取第 51 份正文、收费池代执行账户，四项均精准业务断言红；恢复原源后八项新检查全绿。源与日志见 `H:/TEMP/novelai-admin-report-reads-{final-union,restored}.log`、`H:/TEMP/novelai-admin-report-reads-negative-results.json`。旧 worker/serializer 除移出纯函数及 import 外 AST 相同，搬移的桶与排除函数 body 逐字相同，原已知数值成功率六例相同，证明见 `H:/TEMP/novelai-admin-report-reads-static.json`。
+
+实际 SQL 计划中，一小时失败范围使用 `SEARCH ... idx_job_created_time`，再按原 stream 索引核诊断来源；最近 50 失败仍扫描薄 origin 索引并用临时 B-tree 排序，不声称没有扫描、排序或已过同规模容量性能验收。本片是未发布底层 DTO/读取约定，必要 nullable 和历史排序限制需由最终维护者复核，不擅自退役旧 summary 行为；尚待独立审查与最终完整 summary 装配。未执行 full、build、compiled、Node24、native 安装、实云或生产。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
