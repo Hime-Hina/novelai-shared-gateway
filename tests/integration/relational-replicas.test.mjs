@@ -18,6 +18,7 @@ import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
+import { describeRetainedSnapshot } from '../../scripts/retained-sources.mjs';
 
 async function setup(t, second = false) {
   const f = await fixture(t);
@@ -180,6 +181,26 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
   for (const id of ['history-confirmed', 'history-local']) {
     const dependency = dependencies.find((row) => row.id === id);
     assert.ok(dependency, '保留源不能漏掉未知operation的既有来源');
+    assert.equal(dependency.descriptor.operation, null);
+    assert.equal(dependency.replicas[0].replica.uploadedAt, null);
+    assert.equal(dependency.replicas[0].replica.verifiedAt, id === 'history-confirmed' ? 0 : null);
+  }
+  const captured = path.join(f.dir, 'nullable-opening-source.sqlite');
+  await f.db.backup(captured);
+  const snapshot = new Database(captured);
+  snapshot.pragma('journal_mode=DELETE');
+  snapshot.close();
+  const jsonl = path.join(f.dir, 'nullable-dependencies.jsonl');
+  const description = await describeRetainedSnapshot(captured, jsonl, f.dir);
+  assert.equal(description.format, 'relational', '合法NULL不能静默退成opaque或空依赖');
+  assert.equal(description.dependencies, 'known');
+  const saved = (await readFile(jsonl, 'utf8'))
+    .trim()
+    .split('\n')
+    .map((row) => JSON.parse(row));
+  for (const id of ['history-confirmed', 'history-local']) {
+    const dependency = saved.find((row) => row.kind === 'artifact' && row.id === id);
+    assert.ok(dependency);
     assert.equal(dependency.descriptor.operation, null);
     assert.equal(dependency.replicas[0].replica.uploadedAt, null);
     assert.equal(dependency.replicas[0].replica.verifiedAt, id === 'history-confirmed' ? 0 : null);
