@@ -1644,6 +1644,23 @@ test('账户PATCH真实ready Cookie轮换/暂停/Opus核验共用owner，原回�
     { route: accountAdmin, key: 'same-transport-key', headers: { 'x-admin-token': adminToken } },
   );
   assert.equal(admin.status, 200, admin.text);
+  assert.equal(f.notifications, count + 1, 'admin PATCH also publishes exactly once after commit');
+  const adminState = databaseState(f.db);
+  assert.deepEqual(
+    (
+      await f.patch(
+        { enabled: false },
+        {
+          route: accountAdmin,
+          key: 'same-transport-key',
+          headers: { 'x-admin-token': adminToken },
+        },
+      )
+    ).body,
+    admin.body,
+  );
+  assert.equal(databaseState(f.db), adminState);
+  assert.equal(f.notifications, count + 1);
   const actors = f.db
     .prepare(
       "SELECT actor_kind,actor_id FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq",
