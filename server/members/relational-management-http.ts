@@ -42,6 +42,10 @@ import { readServiceResources } from '../reports/service-resources.ts';
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
 import type { OperatingFundingInput } from '../quota/operating-accounting.ts';
 import { quotaNumber } from '../quota/eligibility.ts';
+import { publicRelationalJob } from '../generation/request-queries.ts';
+import type { JobPreviews } from '../generation/job-previews.ts';
+import { publicErrorMessage } from '../http/public-errors.ts';
+import { finalizeStats } from '../reports/admin-statistics.ts';
 import {
   safeAccount,
   ownerAccountPatch,
@@ -69,6 +73,8 @@ export function createRelationalManagementHttp(deps: {
   events: EventEmitter;
   dataDir: string;
   controls: Parameters<typeof physicalAccountLoad>[0];
+  previews: Pick<JobPreviews, 'frames'>;
+  imageUrl(artifactId: string): string;
   assertAdmin(req: IncomingMessage, url: URL): void;
   readServiceResources?: typeof readServiceResources;
   queryAccountQuota?: ReturnType<typeof createAccountQuotaQuery>;
@@ -98,6 +104,7 @@ export function createRelationalManagementHttp(deps: {
         url.pathname === '/api/admin/accounts' && ['POST', 'PATCH'].includes(req.method!),
       memberManagementRoute = url.pathname === '/api/member/owner/member-management',
       summaryRoute = url.pathname === '/api/member/owner/summary',
+      adminSummaryRoute = req.method === 'GET' && url.pathname === '/api/admin/summary',
       statisticsRoute = url.pathname === '/api/member/owner/statistics',
       ownerRoute =
         memberManagementRoute ||
@@ -106,6 +113,7 @@ export function createRelationalManagementHttp(deps: {
         ((accountPatchRoute || accountQuotaRoute) && accountRoute![1] === 'member/owner'),
       adminRoute =
         url.pathname === '/api/admin/member-management' ||
+        adminSummaryRoute ||
         accountCollectionRoute ||
         ((accountPatchRoute || accountQuotaRoute) && accountRoute![1] === 'admin');
     if (
@@ -660,7 +668,52 @@ export function createRelationalManagementHttp(deps: {
       replyMemberJson(res, 200, receipt);
       return true;
     }
-    if (summaryRoute) {
+    if (adminSummaryRoute) {
+      await authorize(() => null);
+      const at = now(),
+        stats = await reports.readAdminSummaryStats(at);
+      const data = await authorize((actor) => {
+        const imageCount = reports.readLogicalArtifactCount(),
+          jobs = requests.readManagementFailedJobs().map((job) =>
+            publicRelationalJob(job, job.request, {
+              imageUrl: deps.imageUrl,
+              errorMessage: (message) => publicErrorMessage(message, { generation: true }),
+              generationProgress: deps.previews.frames.get(job.id)?.progress ?? {},
+              now: at,
+            }),
+          );
+        // 统计 await 后才复核当前管理员并读取当前私有连接；不缓存旧 PST/proxy。
+        return {
+          settings: {
+            ...configuration.readAdminSettings(),
+            fairQuota: quotas.readAdminQuotaConfiguration(),
+          },
+          userCount: members.readManagementMemberCount(),
+          accounts: accounts.readAccountManagementDirectory().map(({ id }) => {
+            const { cooldownReason: _reason, ...profile } = accounts.readAdminAccountProfile(
+              id,
+              url.searchParams.get('revealTokens') === '1',
+              actor,
+            );
+            return {
+              ...profile,
+              stats1h: stats.accountStats1h[id] ?? finalizeStats({ done: 0, failed: 0 }),
+            };
+          }),
+          imageCount,
+          imageTotal: imageCount,
+          cacheImageCount: imageCount,
+          requestStats1m: stats.requestStats1m,
+          generationStats1m: stats.generationStats1m,
+          jobStats1h: stats.jobStats1h,
+          generationSpeed1h: stats.generationSpeed1h,
+          usageHourlyDays: stats.usageHourlyDays,
+          errorLogs: reports.readErrorLogs(Math.max(0, at - 7 * 86400000), 100),
+          jobs,
+        };
+      });
+      replyMemberJson(res, 200, data);
+    } else if (summaryRoute) {
       const data = await authorize(() => {
         const source = quotas.readSharedStatusSource(),
           account = selectSharedAccount(source.accounts, source.boundAccountId);

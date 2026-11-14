@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { JsonStore, StoreItem } from '../storage/sqlite-store.ts';
+import type { RelationalRequestStore } from '../storage/relational-request-store.ts';
+import type { RelationalInputStore } from '../storage/relational-input-store.ts';
 import {
   addMemberGenerationResources,
   memberGenerationChargeResources,
@@ -76,6 +78,44 @@ export function jobDurationMs(
   }
   const ended = ['done', 'failed'].includes(job.status!) ? Date.parse(job.completedAt || '') : now;
   return !Number.isFinite(ended) || ended < started ? null : ended - started;
+}
+
+// Direct 和管理列表展示同一已提交任务；未知历史不借当前计价或更新时间补值。
+export function publicRelationalJob(
+  job: ReturnType<RelationalRequestStore['readApiJob']>,
+  input: ReturnType<RelationalInputStore['readErrorLogRequest']>,
+  options: {
+    imageUrl(id: string): string;
+    errorMessage(message: string): string;
+    generationProgress?: unknown;
+    now: number;
+  },
+) {
+  return {
+    id: job.id,
+    source: job.source,
+    requestId: job.requestId,
+    status: job.status,
+    prompt: input.tag,
+    model: job.model,
+    requestedSteps: input.requestedSteps,
+    routedSteps: input.steps,
+    accountId: job.accountId,
+    accountRouteId: null,
+    cost: job.currentAccepted ? generationCost() : null,
+    accountCost: null,
+    generationProgress: options.generationProgress ?? {},
+    imageId: job.imageId ?? '',
+    imageUrl: job.imageId ? options.imageUrl(job.imageId) : '',
+    lateResultAvailable: job.lateResultAvailable,
+    error: options.errorMessage(job.errorCode || ''),
+    queuePosition: job.queuePosition,
+    queuedCount: job.queuedCount,
+    durationMs: jobDurationMs(job, options.now),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status) ? null : ''),
+  };
 }
 
 export function generationRequestForErrorLog(

@@ -921,6 +921,23 @@ export class RelationalQuotaStore {
       };
     })();
   }
+  readAdminQuotaConfiguration() {
+    return this.sqlite.transaction(() => {
+      if (!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get()) {
+        return null;
+      }
+      const policy = this.sharingPolicy(),
+        groups = this.groupState();
+      return {
+        enabled: policy.enabled === 1,
+        boundAccountId: policy.accountId,
+        members: groups.members,
+        groups: groups.groups,
+        configVersion: policy.configVersion,
+        ...this.policyParameters(policy),
+      };
+    })();
+  }
   private authorizeOwnerCommand(
     metadata: Pick<Metadata, 'actorKind' | 'actorId'>,
     member: MemberUser | null,
