@@ -8,6 +8,7 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 // Shared transport guards contain no database or command assembly.
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
+  'JsonStore',
   'configureFairQuota',
   'configureFairGroups',
   'configureAnlasFallback',
@@ -17,6 +18,9 @@ const mutations = new Set([
   'configureGroups',
   'assertGroupCommit',
   'manageFairMember',
+  'applyFairMemberChange',
+  'manageMemberQuota',
+  'assertMemberRemovalCommit',
   'manageOperatingFunding',
   'applyOperatingFunding',
   'syncFairQuota',
@@ -31,6 +35,11 @@ const mutations = new Set([
   'initializeRelationalStorage',
   'persistAcceptedInput',
   'stageGenerationDiagnostic',
+  'initializeGatewayConfiguration',
+  'stageNormalizationDefaultsProfile',
+  'createNormalizationDefaultsProjector',
+  'createConfigurationProjector',
+  'stageGenerationReuse',
   'replayAcceptedInput',
   'memberSessionTransaction',
   'discordAuthenticationTransaction',
@@ -40,7 +49,10 @@ const mutations = new Set([
   'handleMemberDiscordAuthenticationRoutes',
   'renewMemberCookie',
   'createRelationalMemberAuthenticationHttp',
+  'createRelationalMemberReadHttp',
   'createRelationalNativeAdmission',
+  'createRelationalApiGenerationAdmission',
+  'createRelationalOpenAiHttp',
   'createRelationalNativeHttp',
   'createLegacyNativeHttp',
   'memberApiKeyTransaction',
@@ -55,7 +67,10 @@ const mutations = new Set([
   'assertMemberAdmissionCommit',
   'replayMemberCommit',
   'acceptGeneration',
+  'reuseGeneration',
   'createRelationalMemberGenerationAdmission',
+  'createRelationalMemberGenerationHttp',
+  'createLegacyMemberGenerationHttp',
   'createRelationalQueueRuntime',
   'admitRelationalMemberGeneration',
   'dispatchGeneration',
@@ -78,6 +93,7 @@ const mutations = new Set([
   'retireJobHistory',
   'retireArtifactHistory',
   'beginQuotaObservation',
+  'createRelationalAccountQuotaRefresh',
   'recordQuotaObservation',
   'refillQuota',
   'manageQuotaFunding',
@@ -90,6 +106,7 @@ const mutations = new Set([
   'prepareAccountCommand',
   'completeAccountEnable',
   'ownerAccountCommand',
+  'ownerOperation',
   'replayAccountCommit',
   'planQuotaObservation',
   'planGenerationCredentialFailure',
@@ -170,14 +187,16 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|generation\/relational-(?:member-admission|queue-runtime)|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          // 混合 owner 的整模块含已登记写命令；明确的纯 named reader 继续允许。
+          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events)|storage\/sqlite-store)\.(?:ts|js)$/.test(
+            target,
+          ) &&
+            names.includes('*')) ||
+          /(?:events\/relational-event-store|members\/(?:(?:relational-)?authentication-http|relational-read-http)|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|api-admission|openai-http|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&
-        (/(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
-          target,
-        ) ||
-          (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*'))))
+        /(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(target))
     ) {
       report(
         node,

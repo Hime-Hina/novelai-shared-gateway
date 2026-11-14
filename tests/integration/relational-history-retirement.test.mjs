@@ -5,6 +5,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import {
   fixture,
+  installReady,
   meta,
   keys,
   NOW,
@@ -166,8 +167,9 @@ test('artifact 人工退休保留原 job/late/退款与所有字节，读取不�
 });
 
 test('真实受理桥原键保留；图退休只返回原回执，任一原 child 历史退休后不再执行旧键', async (t) => {
-  const f = await setup(t),
-    input = {
+  const f = await setup(t);
+  await installReady(f);
+  const input = {
       operation: 'generate',
       model: 'nai-diffusion-4-5-full',
       input: 'retirement idempotency input',
@@ -184,6 +186,7 @@ test('真实受理桥原键保留；图退休只返回原回执，任一原 chil
     },
     admit = createRelationalMemberGenerationAdmission({
       ...f,
+      sqlite: f.db,
       payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
       env: f.env,
       now: () => NOW,

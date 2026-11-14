@@ -24,6 +24,7 @@ import {
 import {
   generationRequestFingerprint,
   requestNormalizationDefaults,
+  requestCacheKey,
 } from './request-fingerprint.ts';
 import {
   domainDigest,
@@ -131,21 +132,6 @@ export function generationIntent(
 
 export function generationIdempotencyKeyHash(key: string): string {
   return hashObject(key);
-}
-
-export function requestCacheKey(
-  token: string,
-  request: Request,
-  explicitSeed: unknown = '',
-): string {
-  const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
-  return hashObject({
-    owner: token,
-    request: {
-      ...cacheRequest,
-      seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
-    },
-  });
 }
 
 export function isNoCache(value: unknown): boolean {

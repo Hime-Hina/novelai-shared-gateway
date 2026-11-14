@@ -22,6 +22,28 @@ type NormalizationSettings = {
     >
   > | null;
 };
+export type RequestNormalizationDefaults = Omit<NormalizationSettings, 'defaults'> & {
+  defaults: NonNullable<NormalizationSettings['defaults']>;
+};
+
+export function requestCacheKey<T extends object & { requestedSteps?: unknown; seed?: unknown }>(
+  owner: string,
+  request: T,
+  explicitSeed: unknown = '',
+): string {
+  const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        owner,
+        request: {
+          ...cacheRequest,
+          seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
+        },
+      }),
+    )
+    .digest('hex');
+}
 
 // 入口已验证 base64；这里按解码字节摘要，不再复制或拼接整段图片文本。
 function imageDigest(value: unknown): unknown {
@@ -91,7 +113,9 @@ export function generationRequestFingerprint(
     .digest('hex');
 }
 
-export function requestNormalizationDefaults(settings: NormalizationSettings = {}) {
+export function requestNormalizationDefaults(
+  settings: NormalizationSettings = {},
+): RequestNormalizationDefaults {
   const pick = (
     source: Record<string, unknown> | null | undefined,
     fields: string[],

@@ -1,3 +1,4 @@
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -464,6 +465,7 @@ test('完整提交的保护源、摘要/长度和同笔失败关系不可替换�
 
 test('诊断与事件联合恢复后可经真实完整核对安装 ready，旧 Key 不复活', async (t) => {
   const f = await fixture(t);
+  initializeFixtureConfiguration(f.db);
   await f.accept('ready-diagnostic');
   const dispatch = f.dispatch('ready-diagnostic-0').dispatch,
     result = f.fail('ready-diagnostic-0', {

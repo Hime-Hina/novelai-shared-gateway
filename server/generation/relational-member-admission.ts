@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import type { IncomingMessage } from 'node:http';
 import { domainDigest } from '../events/domain-events.ts';
 import type { RelationalInputStore } from '../storage/relational-input-store.ts';
@@ -21,8 +22,10 @@ import {
 } from './member-contract.ts';
 import { prepareRelationalInput } from './relational-input.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
+import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 
 interface Dependencies {
+  sqlite: Database.Database;
   members: RelationalMemberStore;
   inputs: Pick<RelationalInputStore, 'readGenerationIdempotency' | 'readMemberContext'>;
   generations: Pick<
@@ -50,6 +53,7 @@ export function createRelationalMemberGenerationAdmission(deps: Dependencies) {
     const claim = options.claim ?? deps.payloadBudget.claim();
     try {
       const authorized = (member: { id: string }) => {
+        assertRelationalStorageReady(deps.sqlite);
         const key = readGenerationIdempotencyKey(options.request, true)!;
         const input = options.body as { operation?: unknown; confirmation?: unknown } | null;
         if (!input || !['generate', 'upscale', 'encode-vibe'].includes(String(input.operation))) {

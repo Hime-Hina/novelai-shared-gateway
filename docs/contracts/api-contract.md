@@ -8,6 +8,8 @@
 
 ## 证据与使用边界
 
+新格式中 direct/OpenAI 所需当前默认值由显式配置 owner 提供，限原 `defaultModel/defaultArtist/defaultNegative` 与八项 defaults；公共成员地址仍按部署 `PUBLIC_BASE_URL`、已保存回退值、`PUBLIC_HOST` 的原顺序读取。当前 profile 与请求首次 context 不同：旧操作键继续解释原首次值，新请求捕获本次 Native 定义，缺当前配置不从最近请求补造。保护 profile 不进入领域事件正文，不作为缺少 Native 的生成 context；无当前配置编辑路由或 PromptAPI 执行功能。实现与恢复边界见[数据库计划第 9.47 节](../plans/database-model-redesign.md#947-当前规范化配置的显式来源和保护恢复)。
+
 | 证据                                                                                                                                                                | 能证明什么                                                 | 不能证明什么                                                   |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------- |
 | [Primary API 文档](https://api.novelai.net/docs/)指向的 [Image API](https://image.novelai.net/docs/index.html)、[doc.json](https://image.novelai.net/docs/doc.json) | 文档列出的路径、字段、媒体类型、状态码                     | 所有模型的实际支持组合、当前账户价格、历史前端模块的持续有效性 |
@@ -253,6 +255,8 @@ OpenAI 非流式/SSE 与 direct 的 HTTP 等待期限只控制连接：direct �
 
 OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接等待者和定时器；普通 `GET /api/jobs/:id` 继续回显完整提示词。direct 明确缓存命中仍返回 `x-cache: hit`，不会为了重建连接重新生成已有结果。
 
+OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓存等价规则，支持完成产物复用与活动任务合并。模型目录保留 Bearer、query `token` 和 `x-user-token` 的原 Key 来源与优先序；POST 生图仍仅接受 Bearer Key。原中央入口已经认证的管理员可读目录，此只读权限不授予生图写入能力。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界
@@ -262,6 +266,8 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 密码登录成功回包增加 `expiresAt`（整数 Unix 毫秒），`GET /api/member/me` 增加 `sessionExpiresAt`；JSON 正文不回传会话令牌或摘要。SSE 建连时仍使用正常 HTTP 鉴权；连接内确认资格/会话失效发送 `auth-expired` 并结束，Discord 503 或网络错误只中断连接。页面在 SSE 永久关闭时最多补一次状态鉴权检查，401/403 清除密钥展示并显示重新登录，503 保留页面。
 
 `me/key/shared-status` 返回 JSON；`me` 包含自己的 quota 和最近30条任务，`key` 返回自己的 apiKey/baseUrl。`GET me` 在副本中估算额度，不同步钱包或提交额度事件；鉴权、Discord 资格缓存及符合条件的可见访问续期仍有各自的持久化边界。Nuxt 继续通过执行器接口取得鉴权后的响应，不能因额度查询纯读就绕过这些守卫直接读取 SQLite。
+
+关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见数据库计划第 9.49 节。
 
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 

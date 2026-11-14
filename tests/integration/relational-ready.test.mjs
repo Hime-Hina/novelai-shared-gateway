@@ -1,3 +1,4 @@
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -50,6 +51,7 @@ import { copyRelationalArtifactReplica } from '../../server/storage/relational-r
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function snapshot(f, name = 'selected') {
   const sourcePath = path.join(f.dir, `${name}.sqlite`);
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const sealed = new Database(sourcePath);
   sealed.pragma('journal_mode=DELETE');
@@ -288,23 +290,38 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'request:complete': f.db
-                .prepare(
-                  "SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id='request:complete'",
-                )
-                .get().v,
+              'request:unsupported-opening': '0',
             },
-            receipt: { linked: true },
+            receipt: { opening: true },
             events: [
               {
-                eventType: 'CachedResultLinked',
-                streamId: 'request:complete',
+                // 合法 opening request 身份/来源仍没有业务投影 owner；不能借新 cache owner 绕过 ready。
+                eventType: 'OpeningRequestRecorded',
+                streamId: 'request:unsupported-opening',
                 memberId: 'm1',
                 accountId: null,
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
-                payload: { jobId: 'complete-0', artifactId: 'artifact-complete-0' },
+                payload: {
+                  requestId: 'unsupported-opening',
+                  memberId: 'm1',
+                  inputId: f.db
+                    .prepare("SELECT input_id FROM generation_requests WHERE id='complete'")
+                    .get().input_id,
+                  contextId: f.db
+                    .prepare("SELECT context_id FROM generation_requests WHERE id='complete'")
+                    .get().context_id,
+                  source: 'legacy-archive',
+                  operation: 'generate',
+                  model: 'nai-diffusion-4-5-full',
+                  sampleCount: 1,
+                  seedMode: 'fixed',
+                  confirmation: null,
+                  acceptedAt: NOW,
+                  retiredAt: null,
+                  origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-request' },
+                },
               },
             ],
           }),

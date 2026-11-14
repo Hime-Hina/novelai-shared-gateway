@@ -275,13 +275,13 @@ export function withAuthenticatedMemberSession<T>(
   store: MemberSessionCommandStore,
   token: unknown,
   env: NodeJS.ProcessEnv,
-  authorized: (user: MemberUser) => T,
+  authorized: (user: MemberUser, expiresAt: number) => T,
   now?: number,
 ) {
-  return checkMemberSession(store, token, env, now, false, (user) => {
+  return checkMemberSession(store, token, env, now, false, (user, expiresAt) => {
     store.assertMemberCommandTransaction();
     assertCurrentDiscordMembership(user, env);
-    return authorized(user);
+    return authorized(user, expiresAt);
   });
 }
 

@@ -35,6 +35,7 @@ import {
   relationalAccountFacts,
 } from '../../server/storage/relational-account-store.ts';
 import { relationalReplicaFacts } from '../../server/storage/relational-replica-store.ts';
+import { relationalConfigurationFacts } from '../../server/storage/relational-configuration-store.ts';
 import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
 import {
   initializeRelationalStorage,
@@ -221,7 +222,7 @@ function observe(f, q, id, fixed, at) {
   return f.db.transaction(() => q.recordQuotaObservation(meta(id, at), ticket, result))();
 }
 
-test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () => {
+test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () => {
   const owners = [
     relationalMemberFacts,
     relationalInputFacts,
@@ -229,26 +230,23 @@ test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () =>
     relationalQuotaFacts,
     relationalAccountFacts,
     relationalReplicaFacts,
+    relationalConfigurationFacts,
   ];
   assert.equal(
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 61);
+  assert.equal(relationalReplayFacts().size, 68);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
       .sort(),
     [
-      'FundsTransferred',
-      'OpeningFundingRecorded',
-      'CachedResultLinked',
       'OpeningRequestRecorded',
       'OpeningJobRecorded',
       'OpeningAttemptRecorded',
       'OpeningArtifactRecorded',
       'OpeningReplicaRecorded',
-      'OpeningStorageTargetRecorded',
       'OpeningInputRecorded',
       'OpeningIdempotencyRecorded',
     ].sort(),
@@ -499,13 +497,16 @@ test('完整提交缺失、重排、不同历史、checkpoint 及未实现 owner
       bad.historyId = 'different';
     },
     (bad) => {
-      bad.events[2].eventType = 'FundsTransferred';
+      bad.events[2].eventType = 'OpeningFundingRecorded';
       bad.events[2].payload = {
         accountId: 'a',
-        fromMemberId: 'm1',
-        toMemberId: 'm2',
-        resources: { v5: '1', anlasFixed: '0', anlasPurchased: '0' },
-        reason: 'transfer',
+        receipt: 'unsupported-opening-funding',
+        resource: 'anlasFixed',
+        destination: 'members',
+        remaining: '1',
+        registeredAt: NOW,
+        snapshotAt: NOW,
+        origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-funding' },
       };
       resequence(bad, r.db);
     },

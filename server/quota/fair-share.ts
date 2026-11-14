@@ -184,8 +184,9 @@ export type FairQuotaSyncState = Omit<
     | 'v5Reconciliation'
     | 'v5ReconciliationHistory'
   >,
-  'reservations'
+  'reservations' | 'v5Reconciliation'
 > & {
+  v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
   reservations: Record<
     string,
     Pick<
@@ -241,6 +242,14 @@ export interface FairQuotaDatabase {
   jobs?: AccountingJob[] | Record<string, AccountingJob> | null;
   ledger?: unknown[];
 }
+export type FairMemberQuotaState = Omit<FairQuotaState, 'v5Reconciliation'> & {
+  v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
+};
+export type FairMemberQuotaDatabase = Omit<FairQuotaDatabase, 'settings'> & {
+  settings?: { fairQuota?: FairMemberQuotaState | null };
+};
+export type FairQuotaSummaryState = FairQuotaSyncState &
+  Pick<FairQuotaState, 'autoAnlasFallback' | 'fallbackTotalsByUser'>;
 type ConfiguredDatabase = FairQuotaDatabase & { settings: { fairQuota: FairQuotaState } };
 interface GroupInput {
   id?: unknown;
@@ -254,7 +263,7 @@ interface GroupOptions {
   redistributeRemaining?: unknown;
   actorId?: string;
 }
-interface MemberChange {
+export interface MemberChange {
   action?: string;
   expectedConfigVersion?: unknown;
   fromUserId?: string;
@@ -613,7 +622,10 @@ function quotaStatus(
   s.status = status;
   quotaFact(db, { eventType: 'AvailabilityChanged', payload: { kind: 'quota', status } }, now);
 }
-export function assertFairQuotaIdle(db: FairQuotaDatabase): void {
+export function assertFairQuotaIdle(db: {
+  settings?: { fairQuota?: Pick<FairQuotaSyncState, 'reservations'> | null };
+  jobs?: FairQuotaDatabase['jobs'];
+}): void {
   if (
     anyHeld(db.settings?.fairQuota || { reservations: {} }) ||
     rows(db.jobs).some((job) => ['queued', 'pending', 'running'].includes(job.status as string))
@@ -976,7 +988,19 @@ export function manageFairMember(
   if (body.action !== 'preview-delete-member') {
     inheritDomainCommand(db, draft);
   }
-  const s = syncFairQuota(draft, now);
+  syncFairQuota(draft, now);
+  return applyFairMemberChange(db, draft, body, now);
+}
+
+// 已同步的独立管理 view 与旧包装入口共用同一决定；摘要只需要原核对状态。
+export function applyFairMemberChange(
+  db: FairMemberQuotaDatabase & { users: FairUser[] },
+  draft: FairMemberQuotaDatabase & { users: FairUser[] },
+  body: MemberChange,
+  now: number,
+) {
+  assertFairQuotaIdle(draft);
+  const s = draft.settings?.fairQuota;
   if (!s?.enabled) {
     fail('共享账本尚未配置', 409);
   }
@@ -1002,10 +1026,10 @@ export function manageFairMember(
     shareChanges: { userId: string; beforeShare: number; afterShare: number }[] = [];
   const transferred: ResourceAmounts = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
   if (body.action === 'transfer-quota') {
-    if (!s.balances[target.id]) {
+    if (!s.members.includes(target.id) || !s.balances[target.id]) {
       fail('转账接收成员必须已加入共享分组', 400);
     }
-    if (!s.balances[source.id]) {
+    if (!s.members.includes(source.id) || !s.balances[source.id]) {
       fail('转出成员未加入共享分组', 400);
     }
     if (
@@ -1041,7 +1065,7 @@ export function manageFairMember(
   } else {
     const originalShares = Object.fromEntries(s.members.map((id) => [id, weight(s, id)]));
     const originalGroup = groupFor(s, source.id);
-    if (!s.balances[target.id]) {
+    if (!s.members.includes(target.id)) {
       if (!originalGroup) {
         fail('删除未分组成员时，请选择已分组成员接收；双方均未分组无法继承份额', 400);
       }
@@ -1056,7 +1080,7 @@ export function manageFairMember(
       originalGroup.memberWeights[target.id] = memberWeight;
       delete originalGroup.memberWeights[source.id];
       s.members = s.members.map((id) => (id === source.id ? target.id : id));
-      s.balances[target.id] = emptyBalance();
+      s.balances[target.id] ||= emptyBalance();
       autoJoined = {
         userId: target.id,
         groupId: originalGroup.id,
@@ -1728,7 +1752,7 @@ export function previewFairQuotaCharge(
     s = draft.settings?.fairQuota;
   const account = rows(draft.accounts).find((entry) => entry.id === s?.boundAccountId);
   return decideFairQuotaCharge(
-    s?.balances[user.id],
+    s?.members.includes(user.id) ? s.balances[user.id] : undefined,
     s?.autoAnlasFallback,
     account ? fairQuotaSnapshot(account) : null,
     request,
@@ -2112,7 +2136,7 @@ export function estimateFairQuota<T extends FairQuotaDatabase>(db: T, now = Date
 }
 
 export function fairQuotaSummary(
-  db: FairQuotaDatabase,
+  db: { settings?: { fairQuota?: FairQuotaSummaryState | null } },
   user: Pick<FairUser, 'id'>,
   now = Date.now(),
 ) {
@@ -2120,7 +2144,7 @@ export function fairQuotaSummary(
   if (!s?.enabled) {
     return null;
   }
-  const raw = s.balances[user.id],
+  const raw = s.members.includes(user.id) ? s.balances[user.id] : undefined,
     b = raw,
     group = groupFor(s, user.id),
     share = weight(s, user.id);

@@ -51,6 +51,7 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
     generations = new RelationalGenerationStore(sqlite, env),
     requests = new RelationalRequestStore(sqlite),
     admit = createRelationalMemberGenerationAdmission({
+      sqlite,
       members,
       inputs,
       generations,
@@ -90,6 +91,7 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
           sessionToken,
           env,
           (member) => {
+            assertRelationalStorageReady(sqlite);
             if (member.id !== session.user.id) {
               fail(401, 'session_expired', '成员认证已失效。');
             }
@@ -196,7 +198,7 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
           env,
           discordFetch: deps.discordFetch,
         });
-        return true;
+        return authorize(() => true);
       });
     } catch (error) {
       const payload = memberGenerationError(error);

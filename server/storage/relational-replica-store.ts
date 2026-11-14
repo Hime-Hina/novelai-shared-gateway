@@ -6,6 +6,7 @@ import {
   readRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import type {
@@ -57,6 +58,7 @@ type Ticket = Readonly<{ artifactId: string; storageTargetId: string }>;
 type Phase = 'reserved' | 'uploaded' | 'verified' | 'local_verified' | 'failed';
 export const relationalReplicaFacts = new Set<RelationalEvent['eventType']>([
   'StorageTargetRegistered',
+  'OpeningStorageTargetRecorded',
   'ArtifactReplicaRecorded',
   'ArtifactHistoryRetired',
 ]);
@@ -342,19 +344,28 @@ export class RelationalReplicaStore {
       fail('副本目标不存在');
     }
     const source = this.source(row.sourceEventId);
+    let payload: Target;
+    if (source.eventType === 'StorageTargetRegistered') {
+      payload = source.payload;
+    } else if (source.eventType === 'OpeningStorageTargetRecorded') {
+      assertRelationalOpeningSource(this.sqlite, source);
+      const { origin: _origin, ...original } = source.payload;
+      payload = original;
+    } else {
+      fail('副本目标缺少原登记事实');
+    }
     if (
-      source.eventType !== 'StorageTargetRegistered' ||
-      canonicalJson(source.payload) !==
-        canonicalJson({
-          storageTargetId: row.storageTargetId,
-          kind: row.kind,
-          namespace: row.namespace,
-          credentialRef: row.credentialRef,
-        })
+      canonicalJson(payload) !==
+      canonicalJson({
+        storageTargetId: row.storageTargetId,
+        kind: row.kind,
+        namespace: row.namespace,
+        credentialRef: row.credentialRef,
+      })
     ) {
       fail('副本目标与原登记事实不一致');
     }
-    assertTarget(source.payload);
+    assertTarget(payload);
     return row;
   }
   isStorageTargetRegistered(storageTargetId: string) {
@@ -706,8 +717,14 @@ export class RelationalReplicaStore {
           this.sqlite
             .prepare('UPDATE artifacts SET retired_at=?,source_event_id=? WHERE id=?')
             .run(event.occurredAt, event.eventId, artifact.id);
-        } else if (event.eventType === 'StorageTargetRegistered') {
+        } else if (
+          event.eventType === 'StorageTargetRegistered' ||
+          event.eventType === 'OpeningStorageTargetRecorded'
+        ) {
           const p = event.payload;
+          if (event.eventType === 'OpeningStorageTargetRecorded') {
+            assertRelationalOpeningSource(this.sqlite, event);
+          }
           assertTarget(p);
           if (event.memberId !== null || event.accountId !== null) {
             fail('目标登记不能冒充成员或上游账户');

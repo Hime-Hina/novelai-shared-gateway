@@ -219,6 +219,13 @@ CREATE TABLE normalization_contexts (
   UNIQUE (schema_version, sha256)
 ) STRICT;
 
+CREATE TABLE gateway_configuration (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  normalization_context_id TEXT NOT NULL REFERENCES normalization_contexts(id),
+  public_base_url TEXT,
+  ${fact}
+) STRICT;
+
 CREATE TABLE generation_inputs (
   id TEXT PRIMARY KEY,
   member_id TEXT NOT NULL REFERENCES members(id),
@@ -266,7 +273,7 @@ CREATE TABLE generation_jobs (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES generation_requests(id),
   sample_index INTEGER NOT NULL CHECK (sample_index >= 0),
-  actual_seed INTEGER CHECK (actual_seed BETWEEN 0 AND 4294967295),
+  actual_seed REAL CHECK (actual_seed BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
   status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'done', 'failed')),
   queue_seq INTEGER UNIQUE CHECK (queue_seq > 0),
   queue_expires_at INTEGER,
@@ -295,6 +302,7 @@ CREATE INDEX idx_jobs_free_success ON generation_jobs(free_succeeded_at)
   WHERE free_succeeded_at IS NOT NULL;
 CREATE INDEX idx_jobs_artifact ON generation_jobs(artifact_id,request_id)
   WHERE artifact_id IS NOT NULL;
+CREATE INDEX idx_jobs_cache ON generation_jobs(cache_key,request_id) WHERE cache_key IS NOT NULL;
 
 CREATE TABLE generation_attempts (
   id TEXT PRIMARY KEY,
@@ -391,6 +399,8 @@ CREATE TABLE charges (
 ) STRICT;
 CREATE INDEX idx_charges_reserved ON charges(original_account_id, original_member_id)
   WHERE status = 'reserved';
+CREATE INDEX idx_charges_fallback_summary ON charges(original_account_id, original_member_id)
+  WHERE billing_mode = 'anlas_fallback' AND status = 'settled';
 
 CREATE TABLE account_quota_state (
   account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id),

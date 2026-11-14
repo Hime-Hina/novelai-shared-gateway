@@ -23,6 +23,8 @@ SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私
 
 新关系报告由 `storage/relational-report-store.ts` 提供薄 SQL：用量、热力图、错误和损耗复用各自原展示 owner；损耗的精确风险汇总/事实适配继续在 `quota/failure-accounting.ts`，候选金额语义归 `generation/accounting.ts`。受保护请求/诊断冷读归 input store，不从旧 JsonStore 回退，也不借报告修改账务。新 HTTP 装配与整体上线验收仍按数据库计划接续。
 
+当前规范化配置由 `storage/relational-configuration-store.ts` 显式系统初始化：11 个原默认值的专用保护 profile 与成员公共地址回退值，单一来源事实和单例投影；未配置明确不可用。profile 共享 `normalization_contexts` 载体，保护内容归 InputStore，既有生成 context 仍必须包含 Native 定义。没有管理 CRUD、任意 settings 对象或 PromptAPI 秘密恢复；读取与原 helper 语义、完整回放及 ready 验收见[第 9.47 节](../docs/plans/database-model-redesign.md#947-当前规范化配置的显式来源和保护恢复)。
+
 本分支的账务和任务生命周期以已提交的领域事件为权威；钱包、预留、任务状态、冷结算和免费次数由同一事务更新投影。金额核心使用 12 位定点整数运算，兼容旧 DTO 时才转换为 number。`fairQuotaSummary()` 为纯查询，需要恢复估算时使用独立的 `estimateFairQuota()`；能力、报价与提交共用 Native 规范化和计价规则，Cookie 成员闭环见[成员生成接口](../docs/contracts/member-generation-contract.md)。
 
 首次转换从旧库建立 opening facts，不补造过去没有保存的逐次事件。启动先恢复文件结果和中断任务，再核对事件投影并启用事件权威，成功后才监听及派发；任何不一致会阻止切换。首次升级应按同规模副本的开账、恢复与核对实测安排维护等待，systemd active 或早期健康探针失败都不能单独判断就绪。完整输入、首次规范化上下文、认证数据和产物字节仍需与事件一起备份，重放命令不会调用上游。具体边界、等待和命令见[结果恢复](../docs/architecture/result-recovery.md)。

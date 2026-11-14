@@ -228,7 +228,21 @@ const replicaFields = {
   lastErrorCode: nullable(id),
 };
 
+const sharingGroups = list(
+  fields({
+    groupId: id,
+    name: string,
+    share: number,
+    members: list(fields({ memberId: id, weight: number })),
+  }),
+);
 export const relationalPayloadParsers = {
+  GatewayConfigurationInitialized: fields({
+    contextId: id,
+    contextSha256: hash,
+    publicBaseUrl: nullable(string),
+    originRef: id,
+  }),
   InputRegistered: fields({
     inputId: id,
     memberId: id,
@@ -264,7 +278,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     requestId: id,
     sampleIndex: integer,
-    actualSeed: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'done'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
@@ -377,14 +391,20 @@ export const relationalPayloadParsers = {
   SharingConfigured: fields({
     ...policyFields,
     redistributeRemaining: bool,
-    groups: list(
-      fields({
-        groupId: id,
-        name: string,
-        share: number,
-        members: list(fields({ memberId: id, weight: number })),
-      }),
-    ),
+    groups: sharingGroups,
+  }),
+  MemberTransferred: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
+    boundAccountId: nullable(id),
+    configVersion: integer,
+  }),
+  MemberRemoved: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
+    boundAccountId: nullable(id),
+    configVersion: integer,
+    groups: sharingGroups,
   }),
   GroupBalancesRedistributed: fields({
     accountId: id,
@@ -488,10 +508,12 @@ export const relationalPayloadParsers = {
   }),
   FundsTransferred: fields({
     accountId: id,
-    fromMemberId: nullable(id),
-    toMemberId: nullable(id),
+    configurationEventId: id,
+    configVersion: integer,
+    fromMemberId: id,
+    toMemberId: id,
     resources,
-    reason: choices('transfer', 'member_removal', 'operator_share', 'operator_return'),
+    reason: choices('transfer', 'member_removal'),
   }),
   FundingRegistered: fields(fundingFields),
   FundingReceived: fields({
@@ -557,6 +579,7 @@ export const relationalPayloadParsers = {
     keyHash: hash,
     intentFingerprint: hash,
     noCache: bool,
+    seedMode: choices('fixed', 'random', 'not_applicable'),
     requestId: id,
     jobId: id,
     contextId: id,
@@ -635,7 +658,7 @@ export const relationalPayloadParsers = {
     requestId: id,
     createdAt: nullable(integer),
     sampleIndex: integer,
-    actualSeed: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
@@ -724,6 +747,7 @@ export type RelationalFact = {
 }[keyof RelationalPayloads];
 
 export const relationalFactStreams = {
+  configuration: ['GatewayConfigurationInitialized'],
   member: [
     'MemberRegistered',
     'MemberStatusChanged',
@@ -733,6 +757,8 @@ export const relationalFactStreams = {
   ],
   sharing: [
     'SharingConfigured',
+    'MemberTransferred',
+    'MemberRemoved',
     'FallbackPolicyChanged',
     'FreePolicyChanged',
     'LossPolicyChanged',
@@ -848,9 +874,6 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     ) {
       invalid();
     }
-  }
-  if (typeof row.actualSeed === 'number' && row.actualSeed > 4294967295) {
-    invalid();
   }
   if (
     (typeof row.share === 'number' && row.share < 0) ||
