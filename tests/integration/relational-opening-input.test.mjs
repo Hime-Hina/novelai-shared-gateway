@@ -118,8 +118,10 @@ function event(eventType, payload) {
   };
 }
 function request(inputId = 'historical', changes = {}) {
+  const requestId = changes.requestId ?? `request-${inputId}`;
   return event('OpeningRequestRecorded', {
-    requestId: `request-${inputId}`,
+    requestId,
+    originalRequestId: requestId,
     memberId: 'm1',
     inputId,
     contextId: null,
