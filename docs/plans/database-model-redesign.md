@@ -2249,6 +2249,8 @@ POST admin/accounts 默认或显式 true 使用原唯一query实际槽，owner�
 
 纯AST架构边界单元 **478/478、零skip，1.123秒**，不加载SQL/业务owner/HTTP或child。`relational-groups.test.mjs` 的原“真实在线首次配置显式保存原政策，随后账户首绑和官方观察开账，不借opening初始化”仅增加合法installer和新native activation接口适配，本片尚未执行该首例；原金额/不借Opening及完整回放断言保留，交非作者独审的独占source槽补核，不将旧组专项日志计入当前候选验证。
 
+非作者独审在固定5abb实际补跑该首例，0/1在完整回放阶段报告 `Protected content replay requires matching protected source`：合法installer追加的ConfigurationInitialized需要原受保护正文，而组测试的旧replay helper未提供来源。后继仅让该helper默认使用同一source的RelationalInputStore，显式传入来源的旧调用保持原样；从空building回放、原政策/钱包金额、无Opening及全部回放断言不变。不改产品、事实、DDL或guard，也不跳过真实配置初始化；原5abb及独审红日志保留，后继实际验证与技术hash另记。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

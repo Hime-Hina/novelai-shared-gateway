@@ -16,6 +16,7 @@ import { RelationalQuotaStore } from '../../server/storage/relational-quota-stor
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
@@ -59,7 +60,12 @@ async function setup(t, options = {}) {
     );
   return { ...f, env, quotas, configure };
 }
-function replay(t, source, inputs, until = Number.MAX_SAFE_INTEGER) {
+function replay(
+  t,
+  source,
+  inputs = new RelationalInputStore(source),
+  until = Number.MAX_SAFE_INTEGER,
+) {
   const db = new Database(':memory:');
   t.after(() => db.close());
   initializeRelationalStorage(db, 'generation-history');
