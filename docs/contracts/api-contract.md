@@ -42,6 +42,8 @@ MessagePack 帧是「4 字节大端帧长 + 一个 MessagePack 对象」。预�
 
 Native 客户端断线或 HTTP 等待超时只结束等待，已受理且业务期限仍有效的批次继续。普通接口超时时，若尚无图片返回 504，已有图片则沿用部分结果格式；流式尚未发送首帧时保留 HTTP 错误状态，已发送预览或 final 时用 error 帧结束。这不表示其余图片一定已终止，随后可在成员任务记录领取。排队期限从整批提交起计算，激活下一张不重置；运行后使用执行超时。有效 queued/pending 在重启后恢复；未知的旧 running 不重发，并终止剩余图片。停止接单原子取消 queued/pending，在途图片保持结算资格，恢复接单不复活已取消任务。
 
+上述批次的关系子进程夹具与同切点公共/选定私有恢复证据见[第 9.89 节](../plans/database-model-redesign.md#989-native-批次真实-child-来源迁移)。它使用真实本地 HTTP 和模拟上游，不代表真实 NAI 端点验收，也不把当前正常受理的 parent/child 当作旧 Opening 来源的等价迁移证明。
+
 ### 输入范围与规范化
 
 JSON 与 multipart 总请求上限均为 32 MiB。multipart 必须只有一个 `request` JSON 字符串或 JSON 文件部件；附件只能是被引用的 `image`、`mask`、`reference_image`、`ref_multiple_0..99`、`director_ref_0..99`，不能有未引用、重复或未知部件。最多 36 个总部件，每个附件非空且不超过 8 MiB。它们被展开成 base64 后执行相同输入校验；附件名不是服务器下载 URL。

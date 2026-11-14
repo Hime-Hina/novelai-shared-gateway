@@ -2,20 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rename } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readFile, rename, access } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
 import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
+import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import {
+  initializeRelationalStorage,
+  assertRelationalStorageReady,
+} from '../../server/storage/relational-storage.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
+import {
+  relationalSnapshotSha256,
+  relationalPrivateStateEmpty,
+  sameRelationalPrivateState,
+  readRelationalRecoveryState,
+} from '../../server/storage/relational-private-restore.ts';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64',
@@ -53,45 +62,9 @@ test(
   '真实 Native HTTP：公平批次、ZIP/JSON 协商、幂等冷重取与断线恢复',
   { timeout: 150000 },
   async (t) => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-batch-http-'));
-    const adminToken = 'synthetic-admin-token-for-offline-batch-test';
-    const initialized = await bootstrap({
-      env: {
-        ADMIN_TOKEN: adminToken,
-        NOVELAI_TOKEN: 'pst-synthetic-offline-batch-fixture-only',
-        DATA_DIR: dataDir,
-      },
-      log() {},
-    });
-    const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-    const store = new JsonStore(dataDir);
-    await store.init();
-    await store.update(
-      (db) => {
-        const account = db.accounts[0],
-          observation = {
-            quotaTier: 3,
-            subscriptionActive: true,
-            subscriptionExpiresAt: Date.now() + 86400000,
-            quotaFixed: 10000,
-            quotaPurchased: 0,
-            v5UsagePercent: 100,
-            quotaCheckedAt: new Date().toISOString(),
-          };
-        Object.assign(account, observation);
-        recordDomainEvent(db, {
-          eventType: 'QuotaObserved',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          payload: { kind: 'official', accountId: account.id, observation },
-        });
-        syncFairQuota(db);
-      },
-      { immediate: true },
-    );
-    await store.close();
-    const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
-    t.after(() => audit.close());
+    const fixture = await childFixture(t, 'native-batch'),
+      dataDir = fixture.dataDir,
+      credentials = fixture.members;
     const calls = [],
       upstreamEvents = [],
       releases = new Map();
@@ -126,6 +99,7 @@ test(
       calls.push(seed);
       upstreamEvent(seed, 'received', {
         imageFormat: payload.parameters.image_format,
+        samples: payload.parameters.n_samples,
         redundantPrompt: Object.hasOwn(payload.parameters, 'prompt'),
         originalInput: payload.input === '  synthetic batch  ',
       });
@@ -150,37 +124,39 @@ test(
       res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([image]) : image);
     });
     const upstreamPort = await listen(upstream);
-    const portReservation = http.createServer();
-    const port = await listen(portReservation);
-    await new Promise((resolve) => portReservation.close(resolve));
-    const base = `http://127.0.0.1:${port}`;
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
-    );
-    Object.assign(env, {
-      ADMIN_TOKEN: adminToken,
-      DATA_DIR: dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-      NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    });
-    let child,
-      exited,
-      output = '',
-      fetchFailure;
+    const env = {};
+    let server, base, fetchFailure;
     const rows = () =>
-      audit
-        .prepare('SELECT data FROM jobs')
-        .all()
-        .map((row) => JSON.parse(row.data));
+      query(
+        fixture,
+        `SELECT j.*,r.member_id,r.source,a.id AS attempt_id,c.status AS charge_status
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        LEFT JOIN generation_attempts a ON a.job_id=j.id
+        LEFT JOIN charges c ON c.job_id=j.id ORDER BY j.rowid`,
+      );
+    const factCounts = () =>
+      [
+        'generation_jobs',
+        'generation_requests',
+        'idempotency_keys',
+        'charges',
+        'wallets',
+        'domain_events',
+        'commits',
+      ].map((table) => query(fixture, `SELECT COUNT(*) AS n FROM ${table}`)[0].n);
+    const readInput = (requestId, memberId) => {
+      const sqlite = new Database(fixture.filename, { readonly: true });
+      try {
+        return new RelationalInputStore(sqlite).readMemberInput(requestId, memberId).input;
+      } finally {
+        sqlite.close();
+      }
+    };
     const redact = (value) => {
       let text = String(value);
       for (const secret of [
-        adminToken,
-        'pst-synthetic-offline-batch-fixture-only',
+        fixture.env.ADMIN_TOKEN,
+        fixture.env.NOVELAI_TOKEN,
         ...credentials.flatMap((member) => [member.api_key, member.password]),
       ]) {
         if (secret) {
@@ -197,58 +173,15 @@ test(
           phase,
           calls,
           upstreamEvents,
-          child: { exitCode: child?.exitCode, signalCode: child?.signalCode },
+          child: server?.exit,
           fetchFailure: fetchFailure && { seed: fetchFailure.seed, at: fetchFailure.at },
-          jobs: rows().map((job) =>
-            Object.fromEntries(
-              [
-                'id',
-                'requestId',
-                'sampleIndex',
-                'status',
-                'queueSeq',
-                'createdAt',
-                'startedAt',
-                'updatedAt',
-                'completedAt',
-                'queueExpiresAt',
-                'deadlineAt',
-                'upstreamStartedAt',
-                'upstreamHeadersAt',
-                'upstreamCompletedAt',
-                'upstreamHttpStatus',
-                'errorStatus',
-                'sharedCooldown',
-                'imageId',
-              ]
-                .map((key) => [key, job[key]])
-                .concat([
-                  ['seed', job.request?.seed],
-                  ['chargeStatus', job.fairCharge?.status],
-                  ['resultPending', Boolean(job.resultPending)],
-                  ['error', String(job.error || '').slice(0, 300)],
-                ]),
-            ),
+          jobs: rows(),
+          accounts: query(
+            fixture,
+            `SELECT a.id,a.enabled,a.cooldown_until,a.cooldown_reason,a.capacity_strikes,
+            q.status,q.observed_at FROM upstream_accounts a
+            LEFT JOIN account_quota_state q ON q.account_id=a.id`,
           ),
-          accounts: audit
-            .prepare('SELECT data FROM accounts')
-            .all()
-            .map((row) => {
-              const account = JSON.parse(row.data);
-              return Object.fromEntries(
-                [
-                  'id',
-                  'enabled',
-                  'inFlight',
-                  'cooldownUntil',
-                  'cooldownReason',
-                  'ordinaryStrikeCount',
-                  'capacityStrikeCount',
-                  'quotaCheckedAt',
-                  'upstreamStatus',
-                ].map((key) => [key, account[key]]),
-              );
-            }),
         };
       } catch (readError) {
         state = { phase, readError: String(readError), calls, upstreamEvents };
@@ -265,7 +198,7 @@ test(
       };
       return new Error(
         redact(
-          `[native-batch-state] ${JSON.stringify({ failure, state })}\nchild tail:\n${output.slice(-10000)}`,
+          `[native-batch-state] ${JSON.stringify({ failure, state })}\nchild tail:\n${server?.output.slice(-10000)}`,
         ),
         { cause: error },
       );
@@ -274,12 +207,12 @@ test(
       if (fetchFailure) {
         throw fetchFailure.error;
       }
-      if (child?.exitCode !== null || child?.signalCode !== null) {
+      if (server.exit) {
         throw new Error('synthetic gateway exited while waiting');
       }
       // seed 101 的模拟失败及其未派发余图是本例预期；其他失败应立即保留现场。
       const failed = rows().find(
-        (job) => job.status === 'failed' && ![101, 102, 103].includes(job.request?.seed),
+        (job) => job.status === 'failed' && ![101, 102, 103].includes(job.actual_seed),
       );
       if (failed) {
         throw new Error(`unexpected terminal job: ${failed.id}`);
@@ -321,51 +254,22 @@ test(
       }
     };
     const start = async () => {
-      child = spawn(process.execPath, ['server/index.ts'], {
-        cwd: root,
-        env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      exited = once(child, 'exit');
-      child.stderr.on('data', (chunk) => {
-        output = (output + chunk.toString()).slice(-16000);
-      });
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(diagnosticError('startup', new Error('synthetic gateway startup timeout'))),
-          15000,
-        );
-        child.stdout.on('data', (chunk) => {
-          output = (output + chunk.toString()).slice(-16000);
-          if (chunk.toString().includes('Nai2API listening')) {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-        child.once('exit', (code) => {
-          clearTimeout(timer);
-          reject(diagnosticError('startup', new Error(`synthetic gateway exited ${code}`)));
-        });
-      });
+      server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, env);
+      base = server.origin;
     };
-    const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) {
-        child.kill(signal);
-      }
-      if (exited) {
-        await exited;
-      }
-    };
+    const stop = async (signal) => (signal === 'SIGKILL' ? server.kill() : server.stop());
     t.after(async () => {
       for (const release of releases.values()) {
         release();
       }
-      await stop();
+      if (server && !server.exit) {
+        await stop();
+      }
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
     });
     await start();
+    await enableAccount(fixture, server);
     const post = (value, member = 0, { accept, key, route = '/ai/generate-image' } = {}) => {
       const pending = fetch(base + route, {
         method: 'POST',
@@ -390,7 +294,7 @@ test(
     await rejected.json();
     assert.equal(rows().length, 0);
     assert.equal(calls.length, 0);
-    assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 0);
+    assert.equal(query(fixture, 'SELECT COUNT(*) AS n FROM generation_requests')[0].n, 0);
     const invalidFormat = body(50, 1);
     invalidFormat.parameters.image_format = 'avif';
     const invalidResponse = await post(invalidFormat);
@@ -398,13 +302,7 @@ test(
     await invalidResponse.json();
     assert.equal(rows().length, 0);
     assert.equal(calls.length, 0);
-    const beforeInvalidPrompt = [
-      'jobs',
-      'generation_requests',
-      'generation_idempotency',
-      'fair_quota_settlements',
-      'ledger',
-    ].map((table) => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+    const beforeInvalidPrompt = factCounts();
     for (const prompt of ['synthetic-conflicting-private-prompt', null, 42]) {
       const invalidPrompt = body(50, 1);
       invalidPrompt.parameters.prompt = prompt;
@@ -415,16 +313,7 @@ test(
         /synthetic-conflicting-private-prompt|synthetic batch/,
       );
     }
-    assert.deepEqual(
-      [
-        'jobs',
-        'generation_requests',
-        'generation_idempotency',
-        'fair_quota_settlements',
-        'ledger',
-      ].map((table) => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n),
-      beforeInvalidPrompt,
-    );
+    assert.deepEqual(factCounts(), beforeInvalidPrompt);
     assert.equal(calls.length, 0);
 
     const aBody = body(100, 4),
@@ -435,15 +324,20 @@ test(
       bKey = 'complete-batch-format-replay';
     const a = post(aBody, 0, { key: aKey });
     await until(() => calls.includes(100), 'A1 reaches mock upstream');
-    const first = rows().filter((job) => job.request.seed === 100)[0];
-    const aRows = rows().filter((job) => job.requestId === first.requestId);
+    const first = rows().filter((job) => job.actual_seed === 100)[0];
+    const aRows = rows().filter((job) => job.request_id === first.request_id);
     assert.equal(aRows.length, 4);
     assert.equal(aRows.filter((job) => job.status === 'pending').length, 3);
-    assert.ok(aRows.every((job) => !job.request.prompt && !job.request.nativeParameters));
-    assert.equal(audit.prepare('SELECT COUNT(*) AS n FROM generation_requests').get().n, 1);
+    assert.ok(aRows.every((job) => !Object.hasOwn(job, 'request')));
+    const persistedA = readInput(first.request_id, credentials[0].user_id);
+    assert.equal(persistedA.model, aBody.model);
+    assert.equal(persistedA.parameters.seed, aBody.parameters.seed);
+    assert.equal(persistedA.parameters.n_samples, 4);
+    assert.equal(Object.hasOwn(persistedA.parameters, 'prompt'), false);
+    assert.equal(query(fixture, 'SELECT COUNT(*) AS n FROM generation_requests')[0].n, 1);
     const b = post(bBody, 1, { accept: 'application/json', key: bKey });
     await until(
-      () => rows().some((job) => job.request.seed === 4294967295 && job.status === 'queued'),
+      () => rows().some((job) => job.actual_seed === 4294967295 && job.status === 'queued'),
       'B queued behind A1',
     );
     releases.get(100)();
@@ -480,15 +374,17 @@ test(
     assert.equal(manifest.completed, 1);
     assert.equal(manifest.remaining, 3);
     const ended = rows()
-      .filter((job) => job.requestId === first.requestId)
-      .sort((a, b) => a.sampleIndex - b.sampleIndex);
+      .filter((job) => job.request_id === first.request_id)
+      .sort((a, b) => a.sample_index - b.sample_index);
     assert.deepEqual(
       ended.map((job) => job.status),
       ['done', 'failed', 'failed', 'failed'],
     );
-    assert.ok(ended.slice(2).every((job) => !job.fairCharge && !job.generationAttempt));
-    assert.equal(new Set(ended.map((job) => job.queueExpiresAt)).size, 1);
-    assert.ok(ended[1].queueSeq > rows().find((job) => job.request.seed === 4294967295).queueSeq);
+    assert.equal(ended[0].charge_status, 'settled');
+    assert.equal(ended[1].charge_status, 'refunded');
+    assert.ok(ended.slice(2).every((job) => !job.charge_status && !job.attempt_id));
+    assert.equal(new Set(ended.map((job) => job.queue_expires_at)).size, 1);
+    assert.ok(ended[1].queue_seq > rows().find((job) => job.actual_seed === 4294967295).queue_seq);
     const partialReplay = await post(aBody, 0, { accept: 'application/json', key: aKey });
     assert.equal(partialReplay.status, 200);
     assert.equal(partialReplay.headers.get('x-nai-partial'), 'true');
@@ -498,23 +394,25 @@ test(
     assert.equal(calls.length, 4);
     assert.equal(rows().length, 6);
     const bId = bResponse.headers.get('x-nai-request-id');
-    const persistedB = JSON.parse(
-      audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(bId).payload,
-    );
-    assert.equal(persistedB.prompt, bBody.input);
-    assert.equal(Object.hasOwn(persistedB.nativeParameters, 'prompt'), false);
+    const persistedB = readInput(bId, credentials[1].user_id);
+    assert.equal(persistedB.input, bBody.input);
+    assert.equal(Object.hasOwn(persistedB.parameters, 'prompt'), false);
     const bRows = rows()
-      .filter((job) => job.requestId === bId)
-      .sort((a, b) => a.sampleIndex - b.sampleIndex);
+      .filter((job) => job.request_id === bId)
+      .sort((a, b) => a.sample_index - b.sample_index);
     const bSettlements = () =>
-      audit
-        .prepare(
-          'SELECT job_id, charge FROM fair_quota_settlements WHERE job_id IN (?, ?) ORDER BY job_id',
-        )
-        .all(...bRows.map((job) => job.id));
+      query(
+        fixture,
+        'SELECT * FROM charges WHERE job_id IN (?, ?) ORDER BY job_id',
+        ...bRows.map((job) => job.id),
+      );
     const settledB = bSettlements();
     assert.equal(settledB.length, 2);
-    assert.ok(settledB.every((row) => JSON.parse(row.charge).status === 'settled'));
+    assert.ok(
+      settledB.every(
+        (row) => row.status === 'settled' && row.original_member_id === credentials[1].user_id,
+      ),
+    );
 
     // 断开同步 HTTP 连接后，已受理的两张仍继续；首张完成后停进程，重启恢复已排队的第二张。
     const disconnected = http.request(base + '/ai/generate-image-stream', {
@@ -527,32 +425,42 @@ test(
     disconnected.on('error', () => {});
     disconnected.end(JSON.stringify(body(300, 2)));
     await until(() => calls.includes(300), 'disconnected batch starts');
+    // 故意 destroy 的 ECONNRESET 沿原 error listener 忽略，只等待实际 close。
+    const disconnectedClosed = new Promise((resolve) => disconnected.once('close', resolve));
     disconnected.destroy();
+    await disconnectedClosed;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const physical = rows().find((job) => job.actual_seed === 300);
+    assert.equal(physical.status, 'running');
+    assert.equal(physical.charge_status, 'reserved');
+    assert.equal(calls.includes(301), false);
+    assert.equal(
+      upstreamEvents.some((event) => event.seed === 300 && event.event === 'closed'),
+      false,
+    );
     releases.get(300)();
     await until(
-      () => rows().some((job) => job.request.seed === 300 && job.status === 'done'),
+      () => rows().some((job) => job.actual_seed === 300 && job.status === 'done'),
       'disconnected first image completes',
     );
-    const queued = rows().find((job) => job.request.seed === 301);
+    const queued = rows().find((job) => job.actual_seed === 301);
     assert.equal(queued.status, 'queued');
     await stop('SIGKILL');
-    env.RUNTIME_JOBS_CACHE_LIMIT = '0';
-    env.RUNTIME_IMAGES_CACHE_LIMIT = '0';
     await start();
     await until(
-      () => rows().some((job) => job.request.seed === 301 && job.status === 'done'),
+      () => rows().some((job) => job.actual_seed === 301 && job.status === 'done'),
       'queued second image resumes',
     );
     assert.equal(calls.filter((seed) => seed === 300).length, 1);
     assert.equal(calls.filter((seed) => seed === 301).length, 1);
-    assert.equal(rows().find((job) => job.id === queued.id).queueSeq, queued.queueSeq);
+    assert.equal(rows().find((job) => job.id === queued.id).queue_seq, queued.queue_seq);
     assert.ok(
       rows()
-        .filter((job) => [300, 301].includes(job.request.seed))
-        .every((job) => job.imageId),
+        .filter((job) => [300, 301].includes(job.actual_seed))
+        .every((job) => job.artifact_id),
     );
 
-    // 已完成任务/图片未装入重启热缓存；两种格式均从 SQLite 和原文件重新领取。
+    // 新 child 未执行这些旧任务；两种格式均由关系 owner 从 SQLite 和原文件重新领取。
     const beforeReplay = calls.length;
     const replayBody = { ...bBody, parameters: { ...bBody.parameters } };
     delete replayBody.parameters.prompt;
@@ -649,13 +557,7 @@ test(
         assert.deepEqual(Buffer.from(await image.arrayBuffer()), webp);
       }
     }
-    const beforeConflict = [
-      'jobs',
-      'generation_requests',
-      'generation_idempotency',
-      'fair_quota_settlements',
-      'ledger',
-    ].map((table) => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
+    const beforeConflict = factCounts();
     const conflict = await post(
       { ...bBody, parameters: { ...bBody.parameters, image_format: 'png' } },
       1,
@@ -663,16 +565,7 @@ test(
     );
     assert.equal(conflict.status, 409);
     await conflict.json();
-    assert.deepEqual(
-      [
-        'jobs',
-        'generation_requests',
-        'generation_idempotency',
-        'fair_quota_settlements',
-        'ledger',
-      ].map((table) => audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n),
-      beforeConflict,
-    );
+    assert.deepEqual(factCounts(), beforeConflict);
     assert.equal(calls.length, beforeReplay);
     assert.deepEqual(bSettlements(), settledB);
 
@@ -683,24 +576,34 @@ test(
     const timedOut = await observed(post(body(400, 1)), 'HTTP deadline response');
     assert.equal(timedOut.status, 504);
     await timedOut.json();
-    assert.ok(
-      ['queued', 'running'].includes(rows().find((job) => job.request.seed === 400).status),
-    );
+    assert.ok(['queued', 'running'].includes(rows().find((job) => job.actual_seed === 400).status));
     await until(() => calls.includes(400), 'accepted job starts after HTTP deadline');
     releases.get(400)();
     await until(
-      () => rows().some((job) => job.request.seed === 400 && job.status === 'done'),
+      () => rows().some((job) => job.actual_seed === 400 && job.status === 'done'),
       'accepted job completes after HTTP deadline',
     );
     assert.equal(calls.filter((seed) => seed === 400).length, 1);
 
-    const stored = JSON.parse(
-      audit.prepare('SELECT data FROM images WHERE id = ?').get(bRows[0].imageId).data,
-    );
+    const localRead = new Database(fixture.filename, { readonly: true });
+    let stored;
+    try {
+      const replicas = new RelationalReplicaStore(localRead, { dataDir }),
+        local = replicas.beginArtifactRead(bRows[0].artifact_id, 'local');
+      assert.ok(local);
+      stored = local.artifact.descriptor;
+      replicas.assertArtifactReplicaTicket(local.ticket);
+    } finally {
+      localRead.close();
+    }
     assert.equal(stored.mimeType, 'image/webp');
     assert.match(stored.file, /\.webp$/);
     const artifact = path.resolve(dataDir, stored.file);
     assert.ok(artifact.startsWith(path.join(dataDir, 'images') + path.sep));
+    const originalBytes = await readFile(artifact);
+    assert.equal(originalBytes.length, stored.byteLength);
+    assert.equal(createHash('sha256').update(originalBytes).digest('hex'), stored.sha256);
+    assert.deepEqual(originalBytes, webp);
     await rename(artifact, artifact + '.missing-for-test');
     const beforeMissing = calls.length,
       jobCount = rows().length;
@@ -710,5 +613,94 @@ test(
     assert.equal(calls.length, beforeMissing);
     assert.equal(rows().length, jobCount);
     assert.deepEqual(bSettlements(), settledB);
+
+    // 归还同一原图后才验证完整可启动恢复，不伪造可用性或任务执行状态。
+    await rename(artifact + '.missing-for-test', artifact);
+    const restoredBytes = await readFile(artifact);
+    assert.equal(restoredBytes.length, stored.byteLength);
+    assert.equal(createHash('sha256').update(restoredBytes).digest('hex'), stored.sha256);
+    assert.deepEqual(restoredBytes, originalBytes);
+    await stop();
+    assert.ok(fixture.children.every((child) => child.exit));
+
+    const sourcePath = path.join(fixture.directory, 'batch-cut.sqlite'),
+      rebuiltPath = path.join(fixture.directory, 'rebuilt.sqlite'),
+      original = new Database(fixture.filename, { readonly: true });
+    try {
+      await original.backup(sourcePath);
+    } finally {
+      original.close();
+    }
+    const sealed = new Database(sourcePath);
+    sealed.pragma('journal_mode=DELETE');
+    sealed.close();
+    const sourceSha256 = relationalSnapshotSha256(sourcePath),
+      source = new Database(sourcePath, { readonly: true }),
+      rebuilt = new Database(rebuiltPath),
+      cut = readRelationalRecoveryState(source),
+      actualFetch = globalThis.fetch;
+    let replayFetches = 0;
+    globalThis.fetch = () => {
+      replayFetches++;
+      throw new Error('offline batch replay denied network before IO');
+    };
+    try {
+      initializeRelationalStorage(rebuilt, cut.history_id);
+      const inputs = new RelationalInputStore(source),
+        replayer = new RelationalCommitReplayer(rebuilt);
+      for (const { seq } of source
+        .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+        .all()) {
+        rebuilt.transaction(() =>
+          replayer.replayCommit(readRelationalCommit(source, seq), inputs),
+        )();
+      }
+      assert.equal(relationalPrivateStateEmpty(rebuilt), true);
+      const installed = await verifyAndInstallRelationalStorage(rebuilt, {
+        sourcePath,
+        sourceSha256,
+        historyId: cut.history_id,
+        finalCommitSeq: cut.last_commit_seq,
+        replicas: { dataDir },
+      });
+      assert.equal(
+        installed.artifactsVerified,
+        source.prepare('SELECT COUNT(*) AS n FROM artifacts').get().n,
+      );
+      assertRelationalStorageReady(rebuilt);
+      assert.equal(sameRelationalPrivateState(source, rebuilt), true);
+      assert.equal(readRelationalRecoveryState(rebuilt).last_commit_seq, cut.last_commit_seq);
+      assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
+      rebuilt.pragma('journal_mode=DELETE');
+    } finally {
+      globalThis.fetch = actualFetch;
+      rebuilt.close();
+      source.close();
+    }
+    assert.equal(replayFetches, 0);
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      await assert.rejects(access(fixture.filename + suffix), { code: 'ENOENT' });
+    }
+    await rename(fixture.filename, path.join(fixture.directory, 'before-reopen.sqlite'));
+    await rename(rebuiltPath, fixture.filename);
+    const restoredCut = factCounts();
+    await start();
+    const recovered = await post(replayBody, 1, { accept: 'application/json', key: bKey });
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.headers.get('x-nai-request-id'), bId);
+    assert.deepEqual(await recovered.json(), bResult);
+    assert.equal(calls.length, beforeMissing);
+    assert.deepEqual(factCounts(), restoredCut);
+    assert.deepEqual(bSettlements(), settledB);
+    await stop();
+    assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
+    assert.deepEqual(calls, [100, 4294967295, 101, 0, 300, 301, 400]);
+    assert.ok(
+      upstreamEvents
+        .filter((event) => event.event === 'received')
+        .every((event) => event.samples === 1),
+    );
+    assert.equal(rows().length, 9);
+    assert.equal(query(fixture, 'SELECT COUNT(*) AS n FROM generation_attempts')[0].n, 7);
   },
 );

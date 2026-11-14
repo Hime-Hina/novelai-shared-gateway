@@ -2197,6 +2197,16 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 根从 `c2cf5d0` 普通合入，文档补证前整个 tracked tree 与固定 b50 完全一致，不重跑不变的234项。新增验证认证适配/公共私有列分类的既有 member-read HTTP 与 ready 两文件交点，**58/58、零跳过，20.601 秒**；类型、architecture、默认及可信实际 main `88d2c26` 迁移、199个语法文件和变更格式通过。日志 `H:/TEMP/novelai-member-note-root-*`，保留证明 `H:/TEMP/novelai-member-note-root-preservation.json`。无 full/build/compiled/Node24/native/install、真实云端或生产操作，整体发布/迁移/sole切换不借本片单项测试宣称完成。
 
+### 9.89 Native 批次真实 child 来源迁移
+
+`native-batch-http.test.mjs` 仅迁移原一个 150 秒真实 backend child 用例，不改产品 owner 或共享 helper。独立树从已审 `cb5e87a` 普通合入已审 `4da7c704`，复用现 `childFixture/launchGateway/enableAccount/query`：真实 bootstrap 经公共/选定私有来源和唯一 installer 生成暂停 ready 库，再实际 `server/index.ts`、当前管理员启用与 localhost 官方读取。两个 NovelAI origin 显式 loopback，外源 fetch 在 IO 前拒绝，子进程禁止加载旧 Store/migrations。没有 SQL 种身份、ready、额度、冷却或队列；原 Native 无成员报价确认字段，不加 Cookie confirmation 或其他协议。
+
+原模型、1024 尺寸、23 步、seed `100/4294967295/300/400` 与原 HTTP body 保持。A 四图和 B 两图按 `A1→B1→A2→B2` 交错，uint32 尾值下一张仍为 0；A 第二张真实失败/退款，其后余图没有 attempt 或 charge。实际门闩观察断开等待后首图仍 running/reserved、上游未关闭且下一图尚未派发；释放后成功，SIGKILL 再启动仅续原 queued child，原 queue_seq 不变。原 ZIP/JSON、WebP、SSE/MessagePack、同键协商重领、接收 JSON 头后断线、参数冲突零写、100ms 仅 HTTP 超时以及 Local 丢失 410 零再发断言保留；原 150s/45s/90s/5s 上限不延长。旧 JsonStore 种值、旧热缓存开关和旧表审计退出，输入由 InputStore 冷读，费用/尝试/成员归属改读真实关系，不构造兼容旧 DTO。
+
+最后仅归还先前移走的同一原图，按原 artifact SHA256/长度和原 bytes 复核；真实停完所有 child 后封存同一切点。完整提交和唯一 Input owner 回放产生的目标必须私有全空，再由官方选定 sourceSHA 和唯一 installer 逐一核原 Local bytes、完整公共/私有状态并成为 ready；不复制私有表/列名单或维护第二套公共摘要。随后关闭数据库，将这个合法重建库放回同一临时 DATA_DIR，再由实际 child 重开，使用原 Key 领取原 B 回执、ID 与图片，attempt、提交、费用和上游次数不增加，选定源 SHA 仍不变。预期完整调用序列保持七次，九个 job、七个 attempt；这些都来自本次真实正常受理，不是历史 parentless 或 Opening 形状的替代。旧历史去向仍按未决 A/B 与独立旧工具证据处理。
+
+首轮 42.085 秒失败原样保留：新加 `events.once(request,'close')` 会因刻意 `destroy()` 的 ECONNRESET 拒绝 Promise，即使原 error listener 忽略该预期错误。相同 Node 的纯标准库 `error→close` 复现明确区分 once 拒绝与原 close listener 成功；后继只将这个观察器改为等待 close 的 Promise，保留所有业务断言，不吞非预期 fetch 失败，不把夹具失败记成产品 500、超时或已确认漏洞。真实完整执行与静态证据在固定候选交接中记录。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
