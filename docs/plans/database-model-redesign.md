@@ -1955,6 +1955,24 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 根在 `d646286` Account/heatmap/Key 并集上整合，组预览与 Key 读取都留在命令分派前，成员、组与政策分别调用各自原 owner；保留所有共同基线测试修改与完整追加块，只合并相同慢正文 helper。共同 helper 和新 unit 精确等于 9b9，QuotaStore 保持原根字节。六文件同次 **185/185、零跳过，47.191 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、七文件格式和 diff 通过，日志 `H:/TEMP/novelai-groups-http-root-{joint,type,static,format}.log`，合并证明 `root-test-merge.json` 在同前缀。原 8cb 全量和 0ad 编译/CI 不能替代该新并集的后续统一验证。
 
+### 9.74 唯一关系运行入口装配
+
+基于已审固定根 `8cb09ef`，合并 `69d7bb5`（含 `3a18d8b` 的真实离线 bootstrap）及后继固定根 `b42719d` 的 Account actual-start、Member heatmap、管理 Key/Groups。只替换 `gateway-runtime.ts`，保留根 `server/index.ts` 与 Nitro/executor 的 `startGateway/handleGatewayRequest`，删除 JsonStore、旧在线开账、OfficialKeyJobs、inline 搬移和旧 cold/backup 循环的装配；独立旧解释/归档工具未改，D8 留存政策不变。没有环境切回旧库、在线初始化、自动迁移或 ready bypass。普通发布包仍发射旧资产，整体 D4 退出不能仅凭此次入口删除判完成。
+
+来源与不变量：已存在 `library.sqlite` 的当前 schema/hash、writer/reducer、完整 ready cut、外键和保护配置由原 owner 验证。直接 readonly SQLite 也会创建 WAL/SHM，不能作为无效源零改动保证。现以 DATA_DIR 受保护 ACL 下的独占磁盘副本纳入已存在 WAL/journal，64KiB 流式摘要及 BigInt dev/ino/size/mtimeNs/ctimeNs 前后复核，副本恢复并通过原 ready/FK/config owner 后才首次打开真实源并二次核对。真实无效源 DB/sidecar 保持不变，但临时副本有 O(DB+WAL+journal) 空间/IO；单 writer、静止启动源是前提，不宣称阻断不合作外部 writer 全部 TOCTOU。清理只限本次独占目录且复核目录身份；Windows ACL 由部署保护，不把 chmod 当 ACL 验证。
+
+一个 canonical QuotaStore、sharedRefresh.fetch、controls Map、emitter、payload budget、previews、配置和 Local/R2/Pik reader 配置接入既有 HTTP factories。管理启用与后台观察共享实际 query slot/onStart 票号；暂停 bootstrap 不自动查询。Cookie/Discord、当前代次、Host/Origin/PUBLIC、STA1N 前缀和协议 error 仍由原 helper/factory 核对。进程只有一个签名能力，OpenAI 沿原绝对 URL，签名可转交且重启失效。`/api/admin/ping` 只复用实际 admin capability；尚无新 factory 的 admin summary/reveal 及其它未交付操作明确不可用，不虚构旧 DTO。
+
+生命周期按原 queue `prepare` → 实际监听成功 → 再核当前 ready → `activate` → 唯一 refresh loop。EADDRINUSE、prepared 字节损坏、监听期间 ready 失效都不派发。关闭先禁止新请求并 stop 调度，等待真实 physical controls 和 raw quota Promise；共同 result-waiter 在 drained 时先冷读终态，再仅结束仍 waiting 的 HTTP，既有 handler/响应结束后才关 DB。真实反例已发现旧统一 503 会抢掉已 done Native 文件领取，故在唯一 waiter 增加最小 drain，由 API delivery 监听，不复制任务判定或取消 queued 业务。重启继续原 queued 事实。
+
+新增 `tests/integration/relational-sole-runtime.test.mjs` 启动实际 `server/index.ts` 子进程，并在模块加载层拒绝旧 SQLite owner。合法 source 全由真 bootstrap/命令/installer 形成，无手动 ready。真实 localhost mock 上游覆盖暂停启动零 GET、admin 启用实际查询、Native/Raw/Local/OpenAI/Direct、原回执零写、Cookie/非 owner/秘密白名单、Host/Origin/PUBLIC/admin、真实登记但非 STA1N Key、签名重启、真实 EADDR、损坏 prepared、关闭 raw/physical/HTTP 与 queued 重启。另以 SIGKILL 留下真实 committed-WAL-only 新 cut 和 hot journal，正确恢复；错 hash 仅在 WAL 或有 hot journal 的源仍拒绝且原全部字节不变。Windows 子进程关闭用测试 IPC 触发实际 SIGTERM handler，不冒称 Windows 原生发送 POSIX signal。
+
+同轮后继门禁必须迁移实际旧 child 夹具（`connection-lifecycle-http/native-http/native-batch-http/idempotency-http/request-control-http/result-recovery-http/shared-cooldown-http/member-session-http/r2-history-http/generation-review/failure-accounting` 等）、`tests/helpers/browser-baseline.mjs`、`executor/tests/integration/runtime-http.test.mjs` 的旧 JsonStore seed/断言，以及 CI Node24 reader 的旧 normal-package probe；保留其授权、rollback、断线、产物与内部 token 反例，不删除或 skip。再收紧普通包实际入口/bootstrap/restore 闭包并验证同一候选的 emitted JS、Linux/Docker/Nuxt/Node24、完整包、离线 restore→真 sole 和同规模切换。此批不跑 full/build/compiled/安装/真实云端/生产；作者专项、负控和独审证据分别追加，不能继承父候选的 full 结论。
+
+作者最终实际源码 child+原 inert import 同次 **19/19、零 skip，58.586 秒**，日志 `H:/TEMP/novelai-sole-runtime-source-final.log`。隔离副本三种负控分别把预检缩为 main-only、在 listen 前 activate、关闭时抢先给全部 HTTP 503：前者使合法 hot journal 恢复失败且仅 WAL 的错 hash 被实际打开、checkpoint 后原字节改变（2 pass/3 fail，含父计数），后两者分别真实 EADDR 前发送上游（0/1）和 done Native 被抢成 503（1/2）。恢复产品后 19 项通过。证据 `H:/TEMP/novelai-sole-negative-20261114/{results.json,no-wal.log,early-activate.log,premature-http-503.log}`；首轮 hot fixture 的空 interval 未保留 DB 引用，可能被 GC 提前 rollback，故该 ENOENT 记录另存并排除，最终回调保留实际 DB，反例不再依赖该错误。
+
+既有 Native/OpenAI/Direct/Queue 四文件单并发联合 **101/101、零 skip，53.119 秒**，保持原预算、回执、流/批次、来源、完整回放和 rollback 断言；日志 `H:/TEMP/novelai-sole-runtime-owner-joint.log`。backend typecheck、architecture、默认及可信 main `88d2c26` migration、改动格式/语法/diff 检查绑定当前源码；架构守卫、旧 SQL/journal、fact/DDL 和 critical assertions 均未修改。普通入口大替换与新增生命周期反例需维护者及独立审查复核，不以作者检查或父 full 冒称同候选整体验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

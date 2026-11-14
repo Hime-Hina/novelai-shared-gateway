@@ -81,7 +81,9 @@ export function createRelationalApiDelivery(deps: {
     },
   });
   const refresh = () => delivery.refresh();
+  const drain = () => void delivery.drain();
   deps.events.on('commit', refresh);
+  deps.events.on('drained', drain);
   return {
     readJob: (jobId: string) =>
       authorize((memberId) => requests.readMemberJobDelivery(jobId, memberId)),
@@ -124,6 +126,7 @@ export function createRelationalApiDelivery(deps: {
     },
     close() {
       deps.events.off('commit', refresh);
+      deps.events.off('drained', drain);
     },
   };
 }
