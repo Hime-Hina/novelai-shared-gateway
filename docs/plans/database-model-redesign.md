@@ -526,6 +526,7 @@ Windows，Node 22.23.4，pnpm 10.32.1；独立 Node 24.22.1 环境复用同版�
 - **唯一正文**：input schema 固定为 1，只存实际协议正文的一种表示。实际 seed 属于 child，样本数属于 parent，兼容 DTO 和出站 Base64 仅在读取/执行边界临时展开；不存顶层参数别名、`nativeParameters` 或旧 DTO 备份。确有不同语义的展示词和原请求 steps 独立保存；已知空字符串、显式 NULL 与缺失值不互相覆盖。partial/unavailable 开账输入仅保留真实已知字段，不能派发或按当前默认值补造。
 - **BLOB**：沿原图、蒙版、V3/V4 Vibe 和 V4.5 Precise 的既有槽位保存原字节，正文仅引用 input 内的 asset ID。单 input 内先比长度/SHA，再比实际字节去重；不按全局摘要跨请求或跨成员合并。读取正文只查附件元数据，不查 BLOB；附件和执行冷读取核验实际长度、SHA、MIME 与保存的原限制，事件和普通列表没有字节或全文。V5 仍沿用原协议支持范围，不放开 Vibe/Precise。
 - **首次上下文**：context schema 固定为 1，按 member/native/direct 三种封闭定义保存规范化版本、原枚举/限制、随机种子意图及 direct 首次 defaults；不接受整个 settings 或认证对象。`(schema_version, sha256)` 唯一且复核内容相同后复用原 ID；事实锚定摘要。重启及当前 defaults/枚举变化不覆盖已保存定义，重试可读取首次上下文；后续改变定义结构须显式处理版本。
+- **原注册绑定**：每条 `ContextRegistered` / `InputRegistered` 必须是该 stream 唯一的原注册 event，并逐条复核本次 schema、SHA 与 input 字节计数；不能借同 ID 的首条事实替后来矛盾或重复注册背书。普通 v3 受理反例见 [`relational-content-registration.test.mjs`](../../tests/integration/relational-content-registration.test.mjs)：当前 Key 事务捕获错误后全库不变，完整业务回放同样拒绝，原合法提交仍可继续并重复零写入。修复前同摘要重复 context 与错误摘要 context 均被接受；重复 input 在旧 v3 仅撞底层 UNIQUE，现由同一 Input owner 在复制前拒绝。未改事件格式、DDL 或旧 SQL。
 - **事务和预算**：调用者持有事务并先重验当前授权；当前停用、移除或私有 auth epoch 未恢复时拒绝公开读取/受理。暂停新接单允许原命令重领。首次提交原子保存输入、上下文、父子引用及四类事实；SQL 失败即使被调用者捕获也不留半笔。预算取实际展开协议字节与旧规范 DTO 字节的较大值，沿用现有单请求/活动限制，不因 Base64 改 BLOB 而扩大容量。
 - **有界回放**：`replayAcceptedInput()` 从只读 source 校验并复制原输入、上下文、BLOB 和受理事实，按完整提交断点续跑，重复提交零写入。调用者先恢复稳定成员及当前私有认证快照；业务事实不携带或复活 `auth_epoch`。此入口只接受 T2 的四类事实，不代替 T4 账务/生命周期重建或 T7 A/B 转换器，完成后仍为 building。
 
