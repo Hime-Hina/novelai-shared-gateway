@@ -2173,7 +2173,7 @@ Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与
 
 根在来源读取/日常备份 `fceb1f2` 上复用已审组件基础 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`（de52 + 39 + 6708），无未审 9.86 字段或 writer。七个关键 owner/DDL/replay/新 sole 文件逐字等于该基础，旧 SQLStore 同时保留根 record/classifier 提取与已审 mask 单 owner；完整管理测试双方原编辑和追加块保留。唯一新的正向夹具接合是把实际 SOCKS 测试的 admission 构造移到同一真实 runtime.start 后并注入该 runtime，不改原断言或缺参负控。证明 `H:/TEMP/novelai-account-6708-root-foundation-preservation.json`。Account/管理/回放/私有/ready/refresh/账户目录/成员读九文件同次 **366/366、零跳过，73.304 秒**；类型、architecture、可信实际 main `88d2c26` migration 和变更格式通过，日志 `H:/TEMP/novelai-account-6708-root-{joint,type,static,format}.log`。未以此冒称 full、同根编译双 runtime、三包、CI/实际发行物或生产验收；格式 6 仅由固定合成夹具验证拒绝，不保留在线格式切换。后续仍须同候选完整闭环。
 
-### 9.85 请求控制与共享冷却的真实 child 来源迁移（待同 Schema7 联合）
+### 9.85 请求控制与共享冷却的真实 child 来源迁移
 
 `request-control-http.test.mjs` 和 `shared-cooldown-http.test.mjs` 复用 9.81 的实际 bootstrap/child helper；新树来自 root `de809e2` 与已审 `059675f`，不改两者冻结源。原账户、任务、图片、预扣和 cooldown 手 SQL 种值替为 canonical owner 与实际 localhost 上游：先合法 ready 且暂停，再原管理启用/官方读取，查询身份只用生成凭据与真实 bound ID。两项 NovelAI URL 显式 loopback，外源 fetch 在 IO 前拒绝。SQL 只作审计；不写 ready/epoch/截止/队列或冷却，不延原 20s、45s、25s、35s 及 startup/领取上限。
 
@@ -2181,9 +2181,9 @@ Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与
 
 共享冷却组保留真正 429/300 秒持久截止、跨秒剩余 Retry-After、SIGKILL 后原键/原失败与一次退款，真实刷新失败、三种余额 unknown/零、所有生成入口的新意图拒绝和原受理领取，及 SSE 已发头后的真实容量错误。财务核对改读实际 wallets/charges/基线游标/任务关系与原 CooldownChanged 票据，不构造旧 DB 兼容视图。两组共用新增 `assertChildPublicReplay`，只在所有实际 child 结束后，以 readonly source 和唯一 complete-commit/Input owner 重放，复用官方 private 表枚举/Empty 与 sameRelationalRows，按 PK 核当前公共表，不运行鉴权或 fetch。当前私有列排除与 Ready/privateQueries 完全相同；Note owner 落地须同步这个 caller 的权威公共投影，不把当前 auth_epoch 排除表当成长期规范。
 
-迁移保留的原断言揭示两个非 D4 产品遗漏并获准同片最小修复。其一，runtime 已存 `upstream_capacity`，交付却把安全码当原诊断转为 generic；现在原 `public-errors.ts` 只识别这个已分类码，单一原公开容量常量由 execution、公开转换和 Member fallback 共用，其他未知码及 raw 上游/URL/凭据仍原 generic。其二，原两条 Cookie request 读取/取消早于 generation transport，曾与 Raw 共用签名/error formatter，新适配遗漏 options；现只给这两个原 literal 注入实际 shared signer 和原公共 formatter，先当前 Cookie/epoch/ready 读取再签名，取消提交后展示。必传实际 signer，不新建 MAC 实例，不借 APIKey。其余 generation/events/input 语义、Origin/Discord 与续期位置保持；组件显式禁止 Cookie 路径走 Key 事务，并区分 alias 与 primary 原错误/图片路径。
+迁移保留的原断言揭示三个非 D4 产品遗漏并获准同片最小修复。其一，runtime 已存 `upstream_capacity`，交付却把安全码当原诊断转为 generic；现在原 `public-errors.ts` 只识别这个已分类码，单一原公开容量常量由 execution、公开转换和 Member fallback 共用，其他未知码及 raw 上游/URL/凭据仍原 generic。其二，原两条 Cookie request 读取/取消早于 generation transport，曾与 Raw 共用签名/error formatter，新适配遗漏 options；现只给这两个原 literal 注入实际 shared signer 和原公共 formatter，先当前 Cookie/epoch/ready 读取再签名，取消提交后展示。必传实际 signer，不新建 MAC 实例，不借 APIKey。其余 generation/events/input 语义、Origin/Discord 与续期位置保持；组件显式禁止 Cookie 路径走 Key 事务，并区分 alias 与 primary 原错误/图片路径。其三，Gen 原持久 status 预先给出 generic 拒绝，遮掉同一 `quotaAvailability` 已知的同步失败/余额不完整原因；仅把最终 status 拒绝移到该可用性判断后。当前 epoch、原 baseline 身份守卫仍在前，status/view 不一致仍在钱包读取及预留前拒绝，不改拒绝集合、来源或金额。
 
-当前技术 checkpoint `e336cdc` 不是最终 PASS：原 request 主体在 20s 内 12.901 秒通过，SQL 正 1/薄读 0；Native 首个 429/重启/退款子例通过，另有 Cookie/Direct 窄组件和公开错误检查。后继新增取消 DTO/安全断言仍需最终联合。三个隔离负控分别删除容量映射、alias 签名选项和 alias error mapper，在原 Native 并发文案、真实图片路径及两种原 generic 上精准失败，最后逐字还原。完整 shared 组仍保留原 `/api/admin/accounts/quota` 断言，等待已审 Account 9.80 的 Schema7 正式并集，不以 PATCH 启用代替，也不把局部绿算作全组通过；最终证据在该依赖接好后另行固定。
+早期 checkpoint `e336cdc` 只包含局部绿，完整 shared 原因是尚未接入 `/api/admin/accounts/quota` 的 404；原路径和断言保留，未以 PATCH 启用代替。后继普通合入已审 Schema7 root `c2cf5d0`，合法管理员刷新补现入口要求的 Origin 后，真实组继续识别上述 Gen 原因遗漏。最终两 file **8/8、零跳过，28.112 秒**，request 主体 **13.649 秒**仍在原 20s 内；覆盖额外取消完整 DTO、SQL 正 1/薄读 0、原冷却/退款/重启和停 child 后完整公共回放。六个受影响组件 file **112/112、零跳过，47.927 秒**，包括真实 Cookie-only 签名/取消、Direct 容量失败、Native/OpenAI/Member 安全错误、Gen 三项身份/状态拒绝对照及原执行/幂等/回放；同一矩阵单跑不重复累计。四个隔离负控分别删除容量映射、alias 签名选项、alias error mapper 和恢复原 Gen status 顺序，在原并发文案、真实图片路径、两种原 generic 及原额度原因上精准失败，最后逐字还原。类型、architecture、默认及可信 `c2cf5d0` migration、199 项语法检查通过；未跑 full、构建、原生安装或外部服务，不据此宣称 D4 整体或生产验收完成。
 
 ## 10. 事实依据与修订
 

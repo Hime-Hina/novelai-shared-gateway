@@ -167,12 +167,6 @@ async function fixture(t, { hold = false } = {}) {
       ].map((table) => [table, query(fixture, `SELECT * FROM ${table} ORDER BY rowid`)]),
     ),
   });
-  const quotaEvents = (db) =>
-    db
-      .prepare(
-        "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' ORDER BY commit_seq,event_index",
-      )
-      .all();
   return {
     start,
     stop,
@@ -191,7 +185,7 @@ async function fixture(t, { hold = false } = {}) {
       wire = overrides;
       const response = await call('/api/admin/accounts/quota', {
         body: { ids: [account().id] },
-        headers: { 'x-admin-token': fixture.env.ADMIN_TOKEN },
+        headers: { origin: base, 'x-admin-token': fixture.env.ADMIN_TOKEN },
       });
       assert.equal(response.status, 200, await response.clone().text());
       return response.json();

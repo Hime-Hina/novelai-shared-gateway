@@ -110,7 +110,9 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   }
   if (generation && text) {
     const classified = classifiedGenerationFailureMessage(text);
-    if (classified) return classified;
+    if (classified) {
+      return classified;
+    }
     if (
       /(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text)
     ) {

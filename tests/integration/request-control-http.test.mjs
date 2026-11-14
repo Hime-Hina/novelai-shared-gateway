@@ -145,8 +145,9 @@ test(
         'SELECT cooldown_until FROM upstream_accounts WHERE id=?',
         fixture.accountId,
       )[0].cooldown_until;
-    if (cooldown > Date.now())
+    if (cooldown > Date.now()) {
       await new Promise((resolve) => setTimeout(resolve, cooldown - Date.now()));
+    }
     const batch = await call('/ai/generate-image', {
       key: credentials[0].api_key,
       body: {

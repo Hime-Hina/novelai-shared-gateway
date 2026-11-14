@@ -179,7 +179,9 @@ export function assertChildPublicReplay(fixture) {
         "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
       )
       .all()) {
-      if (privateNames.has(name)) continue;
+      if (privateNames.has(name)) {
+        continue;
+      }
       // Same current exclusions as Ready.assertSameTables/privateQueries. The pending Note
       // private-column owner must replace this with its canonical projection when it lands.
       const columns = source.prepare(`PRAGMA table_info("${name}")`).all(),
