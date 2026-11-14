@@ -48,7 +48,7 @@ function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 
-// 管理读取和政策命令共用当前授权，业务规则继续由各自 owner 拥有。
+// 管理读取、政策与组配置共用当前授权，业务规则继续由各自 owner 拥有。
 export function createRelationalManagementHttp(deps: {
   sqlite: Database.Database;
   events: EventEmitter;
@@ -158,9 +158,29 @@ export function createRelationalManagementHttp(deps: {
       };
     }
     if (req.method === 'POST') {
-      const body = await readMemberJson(req);
+      const body = await readMemberJson(req),
+        groupInput = {
+          groups: body.groups,
+          expectedConfigVersion: body.expectedConfigVersion as number,
+          redistributeRemaining: body.redistributeRemaining as boolean | undefined,
+        };
+      if (body.action === 'preview-groups') {
+        const preview = await authorize((member) =>
+          quotas.previewGroups(
+            {
+              actorId: member?.id ?? 'local-admin',
+              actorKind: member ? 'member' : 'admin',
+              recordedAt: now(),
+            },
+            groupInput,
+            member,
+          ),
+        );
+        replyMemberJson(res, 200, preview);
+        return true;
+      }
       if (
-        !['fallback-policy', 'free-image-policy', 'loss-alert-policy'].includes(
+        !['fallback-policy', 'free-image-policy', 'loss-alert-policy', 'groups'].includes(
           body.action as string,
         )
       ) {
@@ -168,11 +188,10 @@ export function createRelationalManagementHttp(deps: {
       }
       const receipt = await authorize((member) => {
         const actorId = member?.id ?? 'local-admin',
-          actorKind = member ? 'member' : 'admin',
+          actorKind: 'member' | 'admin' = member ? 'member' : 'admin',
           operation = `member-management:${body.action}`,
-          command = managementCommand(req, actorId, operation, body, actorKind);
-        return quotas.configureQuotaPolicy(
-          {
+          command = managementCommand(req, actorId, operation, body, actorKind),
+          metadata = {
             commandId: command.commandId ?? randomUUID(),
             fingerprint: command.fingerprint ?? domainDigest({ operation, body }),
             actorId,
@@ -182,9 +201,11 @@ export function createRelationalManagementHttp(deps: {
             causationId: null,
             policyVersion: 'quota-policy-v1',
             pricingVersion: 'none',
-          },
-          body as QuotaPolicyChange,
-          member,
+          };
+        return (
+          body.action === 'groups'
+            ? quotas.configureGroups(metadata, groupInput, member)
+            : quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member)
         ).receipt;
       });
       replyMemberJson(res, 200, receipt);

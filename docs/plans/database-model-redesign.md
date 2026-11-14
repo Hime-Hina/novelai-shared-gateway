@@ -1803,6 +1803,20 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 作者新专项 12/12，与原 groups/member-rights 三文件同次 149/149、零跳过，6.361 秒，日志 `H:/TEMP/novelai-group-preview-union.log`；原提交的幂等、末 SQL 故障回滚与完整公共回放反例保持。TEMP 精确旧根缺预览入口的合法用例 1 fail；预览插入实际 no-op UPDATE，query_only 的八场景全部拒绝（含父 9 fail）；删除预览当前授权则隐私边界用例 1 fail，恢复同字节候选 12/12。证据在 `H:/TEMP/novelai-group-preview-negative-20261114/`。backend 类型、architecture、默认与可信根 `0ad2c03` 迁移历史、190 个语法文件通过，格式/diff 随候选固定。未执行 full/build/compiled/Node24/native 或生产；关系 preview POST、全管理入口和整体切换继续分片，独立审查待固定候选。
 
+### 9.72 两条管理路径的组预览与提交 HTTP
+
+基于固定根 `5987606` 并接已独审的 `1db7b1f` 核心（独立 152/152，四源 hash 绑定），只为两个字面 member-management POST 加 `preview-groups/groups`。依赖在本支以 `cb02cfa` 接入，仅计划文档与根已有段落做并集，QuotaStore、核心专项和原 U02 契约与 1db 技术字节一致；本片不改核心规划。Member/Account 后继 HTTP、Bootstrap/Sole 不在范围内，父整合保留各片的 Meta/frame 和真实 controls Map。
+
+复用唯一当前 authorize、原 32768 字节 JSON owner 及 no-renew 条件：正文读完后，仍在当前 Cookie/Discord/member/epoch/owner/ready 或本机 admin 事务内调用核心。客户端 actor/command/time 不能成为权限或元数据来源。预览先于 `managementCommand()`，只传服务器 actor/time 和原三个 group 输入字段，不创建命令、回执或事实，不因无关 Idempotency-Key 失败。提交复用原 actor/action/完整正文摘要和服务端元数据，原 receipt 在当前授权后、新版本规划前重领。preview 是读数，不预留组权益；held 或组 configVersion 改变会阻止新提交。独立 free/loss/fallback 不增加组版本，后来的组决定保留其当前值，HTTP 不添加另一套失效规则。
+
+原 DTO 沿同一 owner 返回：预览保留旧 configVersion、改后 groups/users quota 和布尔重分，提交返回原 groups/status/新版本 receipt。两 action 均不续 Cookie，summary/statistics POST 仍 404；没有扩大 API surface、旧格式兼容或金融/空闲算法。管理组写入的账户/账务/settings 失效合并为同一次真正提交后通知，不误写成只改 settings。
+
+新增真实 installer/localhost HTTP 15/15，覆盖 owner/admin 预览全表摘要/total_changes/commits/通知零变化、非法组/版本/布尔、无关非法/重复操作键不影响预览、原 Cookie 不续期、两无关 POST 不开放、服务器元数据与完整 body fingerprint、后来组版本下旧 receipt 零写及当前授权、预览后真实预扣/版本变化拒绝、两 action 的慢正文 logout/epoch 停启/owner/ready 变化。当前 owner 配置协调可能合法清理私有会话，此类拒绝单独核政策/提交/通知不变，不冒称鉴权维护全无写入。
+
+第二钱包真实 UPDATE 后原生 SQL 故障使全部 public/private/流/回执回滚且零通知；移除故障后原键提交一次，重复零变化。完整公共提交从零恢复组/钱包/原 journal、重复 total_changes 零，七种私有表和 member auth epoch 不恢复，fetch 为零。Group HTTP、核心 preview 和原 groups 三文件同次 125/125、零跳过，36.104 秒，`H:/TEMP/novelai-group-http-union.log`。精确旧 HTTP 候选同用例 400≠200；TEMP 给 preview 加无关命令头校验精准失败；实际 SAVEPOINT 内 no-op 写库再回滚仍被 total_changes 123≠124 识别，恢复后通过。证据在 `H:/TEMP/novelai-group-http-negative-20261114/`。
+
+backend 类型、architecture、默认与可信根 `5987606` migration 历史、191 个语法文件通过；格式/diff 随固定候选收尾。未执行 full/build/compiled/Node24/native、真实云、生产或切换；独立审查待固定候选。本片不表示整个管理面或新格式 sole 已完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
