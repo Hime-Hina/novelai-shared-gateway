@@ -313,6 +313,10 @@ DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。count
 
 上述两条路径均提供 `POST .../:id/cancel`，JSON 正文 `{}`；Cookie 入口沿用同源 Origin/CSRF。返回同一 DTO 加本次 `cancelledCount`，重复取消为 0。只取消 queued/pending 并原子退款，running 继续完成，已完成图片保留。取消与派发串行提交，不会由迟到结果或前序成功重新激活余图。成员页提供批次详情、刷新、结果领取及取消按钮；管理员成员统计也单列 pending，不混入可派发 queued。
 
+新关系 Bearer 适配只认原大小写不敏感的 Authorization Bearer，不从 query/body token、Cookie、admin 或上游 PST 推断成员；现有合法 Key 不另加格式前缀要求。工厂、请求及实际 Key 事务均核 ready，Discord IO 在 SQL 外；首次稳定成员、原 `memberAuth.version` 和当前原 Key 的所属/有效性在 IO 后及取消正文读取后重新核对。跨成员转归或实际认证代次变化拒绝；原私有 owner 同成员换 Key 不撤销 Cookie/认证 epoch，若内部明确将同一 literal 重授原成员且 epoch 未变，仍沿现当前 Key 授权语义，不声称能辨别其历史轮换。
+
+取消正文仍由原平台 JSON 读取能力执行 32768 **字节**上限，空正文沿原能力解释为 `{}`，客户端 metadata/Idempotency-Key 不成为取消回执。Cookie/Bearer 共用一处服务端 metadata、当前请求 ACL 和 `cancelWaitingGeneration` 事务块，重复无 waiting 返回 0、不追加事实或回执。关系 owner 在派发时才预扣，未派发 waiting 无 charge 时不伪造退款；running 的真实预扣保留并在原执行收尾结算。结果 DTO 与签名能力仍用原展示/平台 owner，URL 回调在授权事务结束后调用；未退休的迟到原图可领取，已退休请求沿原查询 owner 返回 404。具体接入与反例见数据库计划 9.59，本段不表示 sole 发布装配已切换。
+
 ## N03 后的 C03 差异与待核实清单
 
 | 编号   | 当前差异/不确定项                                                                                                    | 后续验收要求                                                                                                                                                                                             |

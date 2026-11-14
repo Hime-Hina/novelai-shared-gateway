@@ -15,6 +15,8 @@ const writerFactories = [
   ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
   ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
   ['createRelationalDirectHttp', '../generation/relational-direct-http.ts'],
+  ['createRelationalRequestHttp', '../generation/relational-request-http.ts'],
+  ['cancelRelationalGenerationRequest', '../generation/relational-request-http.ts'],
   ['relationalStateNotificationsFor', '../events/relational-state-notifications.ts'],
 ];
 
@@ -120,7 +122,7 @@ for (const filename of [
       assert.ok(checkSource(filename, `deps.${name}(input);`).length);
     });
   }
-  for (const [name, modulePath] of writerFactories.slice(-3)) {
+  for (const [name, modulePath] of writerFactories) {
     test(`${filename} rejects dynamic capture of ${name}`, () => {
       const source = `const writer = await import('${modulePath.replace('.ts', '.js')}'); const run = writer.${name}; run(deps);`;
       assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
