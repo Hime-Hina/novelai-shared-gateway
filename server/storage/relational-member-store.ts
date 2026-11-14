@@ -361,8 +361,9 @@ export class RelationalMemberStore
     this.replaceAuthenticationEpoch(memberId, credentials.version);
   }
 
-  setMemberCredentials(prepared: PreparedMemberCredentials) {
+  setMemberCredentials(prepared: PreparedMemberCredentials, actor: MemberUser | null) {
     return this.owningTransaction(() => {
+      this.authorizePrivateCommand(actor);
       const current = this.authenticationMember(prepared.memberId);
       if (current?.enabled !== true || current.memberAuth?.version !== prepared.expectedAuthEpoch) {
         fail(401, '成员认证状态已变化，请重新确认');
@@ -409,7 +410,19 @@ export class RelationalMemberStore
     return row.recoverable_key;
   }
 
-  private authorizeOwnerCommand(metadata: MemberCommand, actor: MemberUser | null) {
+  private authorizePrivateCommand(actor: MemberUser | null | undefined) {
+    if (actor === undefined) {
+      fail(403, '私有变更需要当前 owner 或本地管理员授权');
+    }
+    this.authorizeOwnerCommand(
+      { actorKind: actor ? 'member' : 'admin', actorId: actor?.id ?? 'local-admin' },
+      actor,
+    );
+  }
+  private authorizeOwnerCommand(
+    metadata: Pick<MemberCommand, 'actorKind' | 'actorId'>,
+    actor: MemberUser | null,
+  ) {
     const current =
       actor &&
       this.sqlite

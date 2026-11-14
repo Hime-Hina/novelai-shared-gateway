@@ -1752,7 +1752,7 @@ test('资金旧回执先复核真实owner和当前epoch，正文元数据不能�
     username: 'funding-current-owner',
     password: 'synthetic-current-owner-password',
   });
-  f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+  f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
   rejected(metadata, originalMember);
   const before = databaseState(f.db);
   await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) => {

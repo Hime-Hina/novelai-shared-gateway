@@ -201,7 +201,7 @@ test('#41 纯 Key 注册独立初始化认证状态，首次设密码和重领�
   assert.equal(requestOwner.member_id, 'm3');
   const prepared = await members.prepareMemberCredentials('m3', { username: 'key.only', password });
   assert.equal(prepared.expectedAuthEpoch, user.memberAuth.version);
-  db.transaction(() => members.setMemberCredentials(prepared))();
+  db.transaction(() => members.setMemberCredentials(prepared, null))();
   const login = await createMemberSession(
     members,
     await members.loginMemberPassword('key.only', password),
@@ -294,21 +294,21 @@ test('创建/凭据更新失败及外层回滚不留下身份、私有 epoch、�
     "CREATE TEMP TRIGGER fail_credentials BEFORE UPDATE ON password_credentials BEGIN SELECT RAISE(ABORT,'credential failure'); END",
   );
   db.transaction(() =>
-    assert.throws(() => members.setMemberCredentials(prepared), /credential failure/),
+    assert.throws(() => members.setMemberCredentials(prepared, null), /credential failure/),
   )();
   assert.deepEqual(db.serialize(), before);
   db.exec('DROP TRIGGER fail_credentials');
   assert.throws(
     () =>
       db.transaction(() => {
-        members.setMemberCredentials(prepared);
+        members.setMemberCredentials(prepared, null);
         throw Error('outer rollback');
       })(),
     /outer rollback/,
   );
   assert.deepEqual(db.serialize(), before);
   assert.equal((await authenticateMemberSession(members, token.token, {}, 1001)).user.id, 'm1');
-  assert.throws(() => members.setMemberCredentials(prepared), /owning authenticated/);
+  assert.throws(() => members.setMemberCredentials(prepared, null), /owning authenticated/);
   assert.throws(() => members.replaceMemberApiKey('m1', 'new-key'), /owning authenticated/);
 });
 
@@ -419,7 +419,7 @@ test('用户名/密码重置保持稳定身份，旧 Cookie 立即撤销；派�
     members,
     token.token,
     {},
-    () => members.setMemberCredentials(current),
+    () => members.setMemberCredentials(current, null),
     1001,
   );
   assert.equal(await authenticateMemberSession(members, token.token, {}, 1002), null);
@@ -432,7 +432,7 @@ test('用户名/密码重置保持稳定身份，旧 Cookie 立即撤销；派�
   assert.equal(await withAuthenticatedMemberApiKey(members, keys[0], (user) => user.id), 'm1');
   const before = db.serialize();
   db.transaction(() =>
-    assert.throws(() => members.setMemberCredentials(stale), { statusCode: 401 }),
+    assert.throws(() => members.setMemberCredentials(stale, null), { statusCode: 401 }),
   )();
   assert.deepEqual(db.serialize(), before);
   const duplicate = await members.prepareMemberCredentials('m1', {
@@ -440,7 +440,7 @@ test('用户名/密码重置保持稳定身份，旧 Cookie 立即撤销；派�
     password,
   });
   db.transaction(() =>
-    assert.throws(() => members.setMemberCredentials(duplicate), { statusCode: 409 }),
+    assert.throws(() => members.setMemberCredentials(duplicate, null), { statusCode: 409 }),
   )();
   assert.deepEqual(db.serialize(), before);
 });
@@ -924,7 +924,7 @@ test('Discord 真实 HTTP owner 绑定稳定成员、清除密码、撤销旧 Co
   });
   const checkpoint = db.serialize();
   db.transaction(() =>
-    assert.throws(() => members.setMemberCredentials(conflicting), { statusCode: 409 }),
+    assert.throws(() => members.setMemberCredentials(conflicting, null), { statusCode: 409 }),
   )();
   assert.deepEqual(db.serialize(), checkpoint);
 });

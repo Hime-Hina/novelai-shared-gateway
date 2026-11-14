@@ -1971,6 +1971,24 @@ Node22 新并集权益目标 15/15、零跳过；管理 HTTP、权益 owner、�
 
 根在资金 `a2513ac` 并集上整合，保留资金和权益两个独立分派、原只读分支、全部非重叠测试编辑及两个完整追加块。管理 HTTP、权益、资金、账户、MemberRead、通知和 helper 七文件同次 **357/357、零跳过，84.640 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式及 diff 通过。日志 `H:/TEMP/novelai-member-rights-funding-root-{joint,type,static,format}.log`，合并证明 `H:/TEMP/novelai-member-rights-root-merge.json`。此后继不借 b427 的全量、编译包或 CI 验证；新并集整体发布验收另做。
 
+### 9.76 管理 credentials 私有写接入
+
+本片从固定 `8cb09ef4e69a3441d1beb83d1bc4166338f1cfde` 独立继续，仅接两个 literal 管理 POST 的 `credentials`；不取未审 sole/账户字段/member-key/invite WIP。核对原 `http-routes`、`ManagementMembers` 和 `authentication` 后保留实际两种调用：新建成员可选入组、生成私有 Key；已有成员更新密码但不换 Key。原回包只有 `{id,username,groupId?}`，分发另走 member-key；原 server/Web keyed 集合都不含 credentials，因此本片不为私有操作新增公共事实、回执、私有 idem 表或 Header 承诺。新请求是明确新重置，同 prepared expectedEpoch CAS 第二次 401，不能重装后来的旧认证；秘密及其可猜测的原始意图摘要不写公共指纹。
+
+`RelationalMemberStore.setMemberCredentials(prepared,actualActor)` 的 actor 改为必传；undefined 403，不默许管理员。真实当前 actor/null 从 HTTP 当前 authorize callback 传入，私有 owner 复用既有 owner verifier 再核 DB active/epoch/当前 owner。与邀请码私有写共同需要的窄 `authorizePrivateCommand` 只拒绝省略并委托原 verifier，不建第二套角色规则。现有测试初始化/应急私有调用显式传本地 admin/null，原普通业务注册/状态/system 边界不改。密码 KDF 在 SQL 外，完成后当前 Cookie/owner/epoch/ready/admin 与目标 expectedEpoch 均重核；更新的私有 hash/epoch/Cookie 同一保存点和原 notifier 提交。
+
+新建复用原 `registerMember`，公开 MemberRegistered 仅保存稳定 ID/原初始展示名及身份字段，私有密码与 Key 留在认证表。指定 groupId 时克隆当前完整 groups、append 新稳定 ID，并在同一次实际 authorize SQL 外层事务调用现 `configureGroups`，复用全部金额、恢复、权重、版本和 idle 规则；不复制算法。固定基线旧 credentials 路径本就调用 `configureFairGroups`，该 owner 对 active jobs/held 409，原 `member-routes` 也有 held 拒绝后 refunded 才成功的原子创建对照；没有找到或假设另一个更宽松 assign helper。本片无 group 新建在 held 时仍允许，有 group 创建保持原拒绝；组缺失或第二 owner 故障必须撤销整笔新 Member/Key/密码/所有提交和游标，不能留半个用户。
+
+Discord 启用时保留新建服务端随机密码/更新 409。目标登录名由原 credentialInput 规范化，用户名唯一占用、密码长度/KDF 与私有版本仍由原 owner 维护；body 的 member/actor 不构成授权。旧 note 写入没有当前事实表示，候选明确 400 并列真实缺口，未宣称已退役；只读 Key/邀请码与其他管理命令继续独立交付。
+
+实际 HTTP 专项 15/15、零跳过：覆盖原非 keyed Header/DTO、同 prepared CAS、真实当前 owner/epoch、慢正文与 KDF 期间撤权、Discord 随机密码/更新拒绝，以及 held 时无组创建成功/有组拒绝。真实第二 owner 和私有 Cookie DELETE 尾故障均全表回滚、零通知；健康重试恰一次通知。公共完整回放不安装私有认证或 fetch；同业务 cut 的旧/新 private 快照 SHA 不同，错源安装拒绝，选定源经唯一 installer 和真实 Local 字节核对后恢复当前密码，旧密码仍拒绝。
+
+管理 HTTP/成员/成员管理/私有恢复/认证 HTTP 五文件 126/126；其余显式 admin fixture 的历史退休/请求/成员只读/quota HTTP/通知五文件 74/74，均零跳过。类型、architecture、默认及可信实际 main `88d2c26` migration、语法、局部格式/diff 检查和错误实现负控另随固定交付记录封存。没有为此编造密码重置公共事实，未改 schema/event 版本或 legacy SQL/journal。独立审查待固定候选；本片不表示 full、实际发布物/官方端点或 sole 切换完成。
+
+固定 `9519d5293e77748c1f9f2c2283ce66db6e5f1852` 独审通过。原十五专项与五条独立反例同次 **20/20、零跳过**；真实并发重置只有首个 expectedEpoch CAS 成功，KDF 期间目标停用/删除或登录名被其他提交占用均拒绝且无幽灵成员/通知，移除 CAS 的错误实现精准得到 200≠401，恢复后通过。十四文件 Git/raw 精确绑定，报告 `H:/TEMP/novelai-credentials-independent-20261114/INDEPENDENT-REVIEW.md`（SHA256 `a7a51f47e29ccf23abc00407123d62306d98226903893d985eaf57233dca43e9`）。
+
+根在资金、权益并集 `cdbff71` 上整合，保留所有原管理分派、完整追加测试及单一私有 verifier；三条后继内部初始化 fixture 显式传可信本地 admin/null，不放宽业务调用授权或负向省略参数用例。十一条受影响集成文件同次 **347/347、零跳过，63.566 秒**，日志 `H:/TEMP/novelai-credentials-root-joint.log`；backend 类型、architecture、可信实际 main `88d2c26` migration 已通过，合并保留证明 `H:/TEMP/novelai-credentials-root-merge.json`。此后继不借 b427 全量、编译包或 CI；note 表示、邀请并集与最终同候选发布验收继续完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

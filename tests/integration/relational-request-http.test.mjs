@@ -401,7 +401,7 @@ test('慢正文后复核原稳定成员与原authEpoch/当前Key/ready，拒绝�
           f.notifier.commit(() =>
             f.db.transaction(() => {
               if (mode === 'auth-epoch') {
-                f.members.setMemberCredentials(prepared);
+                f.members.setMemberCredentials(prepared, null);
               } else {
                 f.members.replaceMemberApiKey('m1', 'synthetic-current-replacement');
                 if (mode === 'transfer') {

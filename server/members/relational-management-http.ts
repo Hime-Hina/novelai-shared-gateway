@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import { domainDigest } from '../events/domain-events.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -19,6 +19,8 @@ import {
   authenticateMemberSession,
   withAuthenticatedMemberSession,
   isOwner,
+  prepareMemberCredentials,
+  assertMemberRegistrationCapacity,
   type MemberUser,
 } from './authentication.ts';
 import {
@@ -288,9 +290,104 @@ export function createRelationalManagementHttp(deps: {
           'delete-member',
           'groups',
           ...operatingActions,
+          'credentials',
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
+      }
+      if (body.action === 'credentials') {
+        const updating = Boolean(body.userId),
+          hasGroup = body.groupId !== undefined && body.groupId !== null && body.groupId !== '';
+        const validate = () => {
+          if (discordLoginEnabled(env) && updating) {
+            fail(409, 'Discord 成员不使用登录密码');
+          }
+          if (hasGroup && (typeof body.groupId !== 'string' || updating)) {
+            fail(400, '只有创建新成员时可以指定 groupId');
+          }
+          if (body.note !== undefined) {
+            fail(400, '当前成员模型尚未支持备注');
+          }
+          if (updating && typeof body.userId !== 'string') {
+            fail(404, '账户不存在或未启用');
+          }
+        };
+        await authorize(() => {
+          validate();
+          if (!updating) {
+            assertMemberRegistrationCapacity(members.readManagementMemberProfiles().length);
+          }
+        });
+        // credentials 沿原私有非 keyed 契约；KDF 在 SQL 外，不把秘密或其意图摘要写入公共回执。
+        const fields = discordLoginEnabled(env)
+            ? { ...body, password: randomBytes(32).toString('base64url') }
+            : body,
+          prepared = updating
+            ? {
+                kind: 'update' as const,
+                value: await members.prepareMemberCredentials(body.userId as string, fields),
+              }
+            : { kind: 'create' as const, value: await prepareMemberCredentials(fields) };
+        const result = await authorize((member) => {
+          validate();
+          if (prepared.kind === 'update') {
+            return members.setMemberCredentials(prepared.value, member);
+          }
+          const credentials = prepared.value,
+            memberId = randomUUID(),
+            actorId = member?.id ?? 'local-admin',
+            actorKind = member ? 'member' : 'admin',
+            metadata: Parameters<RelationalMemberStore['registerMember']>[0] = {
+              commandId: randomUUID(),
+              fingerprint: domainDigest({ operation: 'register-management-member', memberId }),
+              actorId,
+              actorKind,
+              recordedAt: now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'member-management-v1',
+              pricingVersion: 'none',
+            };
+          members.registerMember(
+            metadata,
+            {
+              memberId,
+              displayName: credentials.username,
+              apiKey: `STA1N-${randomBytes(18).toString('base64url')}`,
+              credentials,
+            },
+            member,
+          );
+          if (hasGroup) {
+            const policy = quotas.readQuotaConfiguration(),
+              groups = structuredClone(policy.groups),
+              group = groups.find((item) => item.id === body.groupId);
+            if (!group) {
+              fail(400, '指定的共享组不存在');
+            }
+            group.members.push(memberId);
+            quotas.configureGroups(
+              {
+                ...metadata,
+                commandId: randomUUID(),
+                fingerprint: domainDigest({
+                  operation: 'assign-created-member',
+                  memberId,
+                  groupId: group.id,
+                }),
+              },
+              { groups, expectedConfigVersion: policy.configVersion },
+              member,
+            );
+          }
+          return {
+            id: memberId,
+            username: credentials.username,
+            ...(hasGroup ? { groupId: body.groupId } : {}),
+          };
+        });
+        replyMemberJson(res, 200, result);
+        return true;
       }
       const receipt = await authorize((member) => {
         const actorId = member?.id ?? 'local-admin',

@@ -237,6 +237,10 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 
 这四个别名与 `GET /api/me/quota` 使用原网关 token 入口：精确 `Bearer ` header 优先，否则 query `token`、`x-user-token` 依次取值，Cookie 不作为替代。PUBLIC 前置与 Host/CORS 继续归中央路由；这些路径不提供独立官方 PST 模式，也不返回上游原订阅透传。`/api/me/quota` 返回 `{fairQuota}`，关闭/未知账本可为 NULL，非 NULL 时保留原完整个人配额与 `freeImages`。新关系适配只读当前 owner 的估算，不提交钱包恢复或续期 Cookie；Discord 资格观察仍由原认证事务持有，IO 后重核原稳定成员、auth epoch、当前 Key 和 ready。
 
+成员管理 `POST action=credentials` 保留原私有、非 keyed 契约：新建返回 `{id,username,groupId?}`，生成私有 Key；更新已有成员密码返回 `{id,username}`，保留原 Key、换认证代次并撤销 Cookie。原入口未承诺 `Idempotency-Key`，此操作仍忽略该 header：同一 prepared 对象的 CAS 重复拒绝 401，不重装旧材料；新 HTTP 请求是明确的新重置，不伪造可领取旧认证的回执。密码、salt/hash、Key 及其秘密意图摘要不写公共事实/回执；更新只改变私有状态，联合恢复必须选择实际 SHA 匹配、业务切点一致的私有快照，同业务 cut 的不同 private hash 不能互换。
+
+密码派生在 SQL 外，最终经同一当前 owner Cookie/稳定 ID/epoch/ready 或本机 admin 授权回调；私有 setter 还复核实际 actor 的当前 owner 身份和 DB epoch，省略 actor 不默认管理员。新建可不入组；给 `groupId` 时复用原全组 owner 同事务加入，原 held/active 409、预算/权重与失败整笔回滚规则不变。Discord 启用时新建使用服务端随机密码，已有成员更新仍为 409。私有凭据操作不续 Cookie；分发 Key 和邀请码由各自原读取/私有入口承担，不由 credentials 回包泄露。旧 `note` 有真实 API 来源但当前模型尚无表示，本候选明确 400 并保留为未完成项，不当作 D4 已退能力。
+
 ## 其他现有客户端接口
 
 | 类别                          | 当前契约                                                                                                                                                                                                                |
