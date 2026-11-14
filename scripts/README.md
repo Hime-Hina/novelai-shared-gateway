@@ -2,13 +2,15 @@
 
 首次启动前在项目根目录运行 `pnpm run bootstrap`。先使用 `pnpm install --frozen-lockfile` 安装锁定依赖；只使用新数据目录，不会覆盖现有数据库，详见仓库根目录 README.md。
 
-bootstrap 只建立全新关系库：真实注册四成员、配置四组、注册并暂停上游、显式初始化当前默认值，再以独立同切点保护源完成唯一 ready 安装并无覆盖发布。没有旧格式模式、上游观察或生成请求。一次性凭据先保存，失败不更换身份重试；保留的 `.bootstrap.lock`、`bootstrap-credentials.json` 与 `.bootstrap-*` 私有暂存目录须由部署者核查。新空库的有效 Opus 验证由后续账户启用的原两阶段命令完成。当前旧 sole/旧发布包夹具尚需配套替换，不能把本 CLI 的源码验证当成现 sole 可启动证据；实现和验收边界见[数据库计划第 9.65 节](../docs/plans/database-model-redesign.md#965-新空库的唯一离线-bootstrap)。
+bootstrap 只建立全新关系库：真实注册四成员、配置四组、注册并暂停上游、显式初始化当前默认值，再以独立同切点保护源完成唯一 ready 安装并无覆盖发布。没有旧格式模式、上游观察或生成请求。一次性凭据先保存，失败不更换身份重试；保留的 `.bootstrap.lock`、`bootstrap-credentials.json` 与 `.bootstrap-*` 私有暂存目录须由部署者核查。新空库的有效 Opus 验证由后续账户启用的原两阶段命令完成。不能把本 CLI 的源码验证当成同候选普通发布包、HTTP 和调度的整体验收；实现和验收边界见[数据库计划第 9.65 节](../docs/plans/database-model-redesign.md#965-新空库的唯一离线-bootstrap)。
 
 完整后端测试使用 `pnpm test`，默认最多并行运行 4 个测试文件。各文件会创建 SQLite、读 worker 及测试网关进程，按全部逻辑 CPU 同时启动会争抢资源，导致旧历史开账超过测试的 10 秒启动等待；该等待和业务断言保持不变。此限制只作用于测试文件，不改变用例内部的并发请求或服务的队列并发。CI 复用同一个命令，无须另外指定参数。
 
-`pnpm run build` 将后端源码编译到 `.output/backend/`，保留 `server/` 的职责子目录，再运行 `package-backend.mjs` 写入使用 JavaScript 入口的发布包元数据；Docker 和执行器复用这一文件。源码的 `pnpm start`/`dev` 使用 Node 原生 TypeScript 支持，发布产物仍直接运行编译后的 JavaScript。独立后端只提供 API，网页由 Nuxt 提供；已删除旧静态入口和根 `public/`。整理后构建应先清理受控生成目录，防止旧平铺 JavaScript 掩盖错误引用。
+`pnpm run build` 先编译后端，再由 `package-backend.mjs` 从普通 `server/index.js`、`bootstrap.mjs`、`restore-relational.mjs`、实际备份服务所用 `r2-backup.mjs` 和隔离测试 unit 所用 `mock-novelai.mjs` 递归保留完整 JavaScript 运行依赖，移除其余发射文件与旧构建残留。计算型模块引用、未改写的 TypeScript、缺失文件和非生产依赖会阻止交付。Docker 与执行器只复制这份 `.output/backend/`，不补入源脚本或旧 SQL/journal；执行器重建会先清理自己的受控业务包目录。源码 `pnpm start`/`dev` 使用 Node 原生 TypeScript，普通发布包只运行包内 JavaScript，提供 `start`、`bootstrap` 和 `restore` 命令。
 
-离线重放使用 `node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite [--max-commits=100] [--through=COMMIT]`，参数使用等号。源库只读，目标须为新的隔离库或同一历史的续跑目标；游标停在完整提交边界，完成后重复运行不新增业务效果。CLI 不生成图片、不请求上游、不复制本地/R2 产物；必须同时保留完整输入/上下文、inline 产物、私有诊断、认证和实际文件/R2 清单。版本、opening、退休与恢复限制见[结果恢复](../docs/architecture/result-recovery.md)。发布包工具仍位于 `executor/.output/server/node_modules/novelai-shared-gateway/scripts/`，已有 `package-runtime.mjs` 复制编译脚本及完整 SQL/journal，CI 对解包结果运行离线重放检查。
+普通包离线恢复使用 `node scripts/restore-relational.mjs --source /private/selected.sqlite --sha256 SHA256 --history HISTORY_ID --cut COMMIT_SEQ --output /private/new/library.sqlite --data-dir /private/artifacts`。六项参数须显式给定，目标必须不存在；完整公共提交和保护内容先重放，再由唯一 installer 核对同切点所选私有快照与产物并安装 ready。恢复不监听、不调用上游，不解释旧库；实际限制见[关系格式离线恢复](../docs/operations/relational-recovery.md)。首次 bootstrap 账户仍暂停，启动不会自动启用，须通过当前管理账户命令完成真实 Opus 查询与启用。
+
+以下 `replay-events.mjs`、`create-test-copy.mjs` 和一次性 `bridge-owner-session.mjs` 是旧格式源工具，不随普通包交付。旧格式的独立固定工具与归档验收仍单独维护，仓库历史 SQL/journal 及可信迁移守卫不变。历史离线重放使用 `node scripts/replay-events.mjs --source=/private/backup/library.sqlite --target=/private/rebuild/library.sqlite [--max-commits=100] [--through=COMMIT]`，参数使用等号。源库只读，目标须为新的隔离库或同一历史的续跑目标；游标停在完整提交边界，完成后重复运行不新增业务效果。CLI 不生成图片、不请求上游、不复制本地/R2 产物；必须同时保留完整输入/上下文、inline 产物、私有诊断、认证和实际文件/R2 清单。版本、opening、退休与恢复限制见[结果恢复](../docs/architecture/result-recovery.md)。
 
 隔离测试上游使用 `node scripts/mock-novelai.mjs --port 19081 --delay-ms 1000`。只绑定回环地址，接受固定合成凭据，返回固定图片与余额，不访问真实 NAI。支持范围、凭据和独立 systemd 配置见 [测试部署说明](../docs/operations/test-deployment.md#常驻合成上游)；不能用这些响应证明官方计费或生成质量。
 
