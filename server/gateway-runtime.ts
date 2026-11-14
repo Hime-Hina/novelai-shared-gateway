@@ -1,3 +1,4 @@
+import { defaultArtist2_5D } from './generation/normalization-defaults.ts';
 import { requestCacheKey } from './generation/request-fingerprint.ts';
 import { matchesAdminToken, assertAdminToken } from './http/admin-access.ts';
 import type {
@@ -115,7 +116,6 @@ import {
   MAX_CACHE_IMAGES_LIMIT,
   createId,
   createPublicToken,
-  defaultArtist2_5D,
   hashObject,
   legacyDefaultArtist,
   maskToken,

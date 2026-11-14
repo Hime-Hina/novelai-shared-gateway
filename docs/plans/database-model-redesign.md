@@ -1745,6 +1745,20 @@ PR #66 固定 `8b11fa6b4ec70b02b8e5110cab0a553fc35d9416`，基于 #65 `b472b652e
 
 该固定候选的远端 [CI 43586396178](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43586396178) 后续六项全部成功；实际 checkout 合并提交 `fb15b055ffbc80eca68be3c576d1704a20331369`，Git tree `7edf842fa01f6e78faa0cd426678a8af28510231` 与 8b 完全一致。Linux 后端 2278 项为 2275 pass、3 个原有条件 skip、0 fail，203.521 秒，另旧工具 19/19；Web 151、executor 3、Nuxt/进程隔离 16、真实发布包 Docker HTTP 4，原 Node24 reader、三 Docker build 和离线检查均通过。实际 artifact `14109844173` 下载 ZIP 为 55,512,623 B，SHA256 `28ac39332fcb6d06e0aa86099f44518f4f2de84a1fd9fab22a9ab4d6ffd6e4ac`；其中 tar 为 55,511,946 B，SHA256 `51846f8298ef63fd117c312303fd5f262cdb11ff648b944619fa851e5b846277`，与包内 sha256 文件相符。安全聚合证据 `H:/TEMP/novelai-v6-pr66-release/CI-VERIFICATION.json`、`verified-artifact.json` 和原 workflow/job logs；这是该固定树的真实 CI 测试制品，不是后继源、生产部署或云端验收。
 
+### 9.65 新空库的唯一离线 bootstrap
+
+现 `scripts/bootstrap.mjs` 的全新安装入口改用真实 Member 注册、首次 SharingConfigured、账户首次注册/绑定和 Configuration 系统初始化；没有 Opening、ImportSource 或旧 Store 写路径。四个原等份组及一次性用户名/密码/STA1N Key 的交付语义保留，政策初值由原 Quota owner 决定。账户初态按已审账户契约暂停、代次 1、钱包/运营余额 0、官方观察未知。首次有效 Opus 必须由后续真实账户启用入口经过 prepare/query/complete 的当前授权和代次复核，不在 bootstrap 自动启用或联网。
+
+预检、持久独占锁及先保存一次性私有凭据继续保护现有文件；全部真实初始化命令只在本次私有 staging 候选中提交。同一最终 cut 的独立封存源、保护 profile 与私有认证经唯一 ready installer 的完整 shadow/全表核对后，候选封存并无覆盖发布为 library.sqlite。失败不发布半成品，已有凭据/锁保留供人工核查，不生成第二套身份覆盖它们；不得手写 ready 或以源/目标同为空代替 config 验证。
+
+11 项初始规范化值仅纯提取给新配置与当前旧实际消费者共用，不复制整个 legacy settings 或把 Native defaults 当 Direct 默认配置。POSIX umask/mode 的证据和 Windows 预保护 ACL 前置分别说明；脚本不把 chmod 当 Windows ACL 验证。本片不切换仍为旧格式的 sole，也不宣称其发布包/HTTP 已接上新空库。只读 scope 依据固定 `0ad2c03`，记录在 `H:\TEMP\novelai-new-bootstrap-scope-0ad2c03.md`；实际可运行验证与独立审查随后绑定固定候选。
+
+Windows Node 22 源码新 bootstrap 8/8；联合当前配置、首次分组、账户生命周期和原 Store 五文件 127/127、零跳过，8.931 秒。新用例全部使用真实 SQLite/原 owner/唯一 installer，原 MemoryStore 两用例的语义转入真实并发、scrypt 和保护检查，未保留假 Store。实际 CLI 子进程以 preload 禁止 fetch/http/https/TCP/listen，成功仍只输出凭据路径；注入私有异常时 stdout 空、stderr 只给原安全错误。公开回放认证为空，选定同 cut 的完整私有/配置恢复后合法 ready 且重开一致；同公共 cut 的另一私有用户名来源被拒，候选仍 building。第四成员的真实 UNIQUE 故障回滚全部成员/事实/库内凭据，真实 ready SQL trigger 故障不发布库，锁和先交付身份不替换。
+
+原固定 `0ad2c03` 的 11 项值（含原字符串和转义）与新纯来源 SHA-256 同为 `6dbf29d608b97a66773fc940936ff3d611c38b7267bbd6baf96dd1c36b99e47c`；将 scale 改为 Native 的 5 会失败。另在隔离完整源码副本分别跳过 installer、逐成员独立提交、错用 scale5、原样输出 CLI 私有异常，四项均在业务 ERR_ASSERTION 失败，正常副本 8/8。证据为 `H:\TEMP\novelai-new-bootstrap-context.log`、`novelai-new-bootstrap-defaults-proof.log` 及 `novelai-new-bootstrap-negative-0b96d980-e9a5-45f7-97c0-7b702d7b115e\results.json`。类型、架构、默认及可信 main `88d2c26` 迁移、188 文件语法、局部格式和 diff 通过；固定摘要随后交独审。
+
+本片没有直接 JsonStore 初始化/旧 DTO 写入；现 AccountStore 的共同物理 helper 仍经 queue-dispatch/execution 传递加载旧 store 模块，该 D4 发布依赖清除仍属后继，不能把本片描述为旧代码闭包已消失。当前 sole 与包内 HTTP/browser 基线仍依赖旧 bootstrap 后填充 JsonStore，必须在统一新 sole 候选更新后验证。未跑 full、compiled、Node 24 或三包/实际包验收，未验证 Linux mode/Windows ACL、真实官方/云端或生产切换；source CLI 成功不替代这些上线条件。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
