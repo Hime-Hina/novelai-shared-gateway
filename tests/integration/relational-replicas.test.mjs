@@ -176,6 +176,14 @@ test('Opening已确认R2上传时间未知仍冷读/重领零PUT，实际清故�
     image,
   );
   await writeFile(path.join(f.dir, 'images/history-local.webp'), image);
+  const dependencies = f.store.readRetainedArtifactDependencies();
+  for (const id of ['history-confirmed', 'history-local']) {
+    const dependency = dependencies.find((row) => row.id === id);
+    assert.ok(dependency, '保留源不能漏掉未知operation的既有来源');
+    assert.equal(dependency.descriptor.operation, null);
+    assert.equal(dependency.replicas[0].replica.uploadedAt, null);
+    assert.equal(dependency.replicas[0].replica.verifiedAt, id === 'history-confirmed' ? 0 : null);
+  }
   const before = databaseState(f.db);
   f.calls.length = 0;
   assert.deepEqual(
