@@ -1977,6 +1977,10 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 当前作者最终19相关文件（含架构专项）955/955、零跳过，107.112s；类型、架构、194个JS/MJS语法、格式、diff、默认与可信main `88d2c26` 迁移历史均通过。TEMP隔离四负控分别移除代理新来源、派发连接引用校验、误取当前代理及停用实际owner支持校验，原断言精准失败；恢复后的四源rawSHA与本候选一致，最终联合955项覆盖恢复后的正确源。证据在 `H:/TEMP/novelai-account-preservation-b427/` 的 target-union-final.log、negative-evidence.json 与交接manifest。以上为作者源证据，固定候选独立复审与父同候选发布物/远端CI仍待完成；后继默认启用不混入这些计数。
 
+首片固定 `39b1c3b3b76abc06a5512557bef69720509e88db` 独审确认同一完整提交 P2，保持 NOTPASS：合法重签 envelope 删去某 bulk 目标全部事实或全部暂停事实，原 receipt 仍声称两目标完成；同根因扩查的单账户组合丢配置、首注册丢绑定也被接受。绿色955不能替代此闭包。后继独立分支在内部安全 receipt 保存原公开意图（目标、weight/false、应有连接/凭据变化或bind），不存秘密、摘要或before profile；AccountStore三个局部规划由在线与共同/窄回放复用，按原序前态校完整有序全集/唯一性。mixed no-op 不能被强迫伪造事实；全no-op非keyed200零持久化。外部DTO仅去内部intent，仍取原存外部字段，不借当前值重造旧回包。独立初始化/分组的 AccountBound 仍由其所属完整政策规划及原四条件校验，不强迫它伪装账户注册。
+
+该闭包修复作者原四红程序原字节仅imports loader重绑后4/4，七受影响文件292/292、零skip56.994s，类型/架构通过；原观测来源 guard 单独移除后 observed-role 精准失败，不被新闭包掩盖。共同/窄校验各自停用负控分别15失败/5失败，恢复新与来源矩阵25/25；future-configuration 现在只证明完整意图/后果顺序闭包，单独来源角色仍由 dispatch-role/observed-role 实际拒因证明，不混算。日志为同TEMP的 closure-original-fixed-final.log、closure-seven-final.log、closure-negative-evidence.json。该修复不改事件7/DDL/hash/旧SQL，不混默认true后继；固定后独立复审及父新候选完整验收继续。
+
 ### 9.74 运营资金 HTTP 接入的原结果与幂等来源
 
 只接既有两个 member-management POST 中五个 `operating-*` action，继续复用原 `manageOperatingFunding`、同步金融规划和当前 owner/admin 授权，不扩展账户选择、金融算法或共享 surface。本人划入固定部署 owner，账户固定当前 bound，正文不能自报 actor、命令、时间或另选资金来源。HTTP 沿现同一 authorize/notifier，Body IO 后复核当前 owner/Cookie/epoch 或本机 admin/ready，再薄绑定 quota 命令。预览、member-key、成员、账户 PATCH 和组/政策分派均保留；POST 仍只在两个 member-management literal 开放，不续 Cookie。
@@ -2131,9 +2135,43 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 根在新 sole/正常包并集 `de809e2` 上整合，七条产品/测试/helper 路径逐字等于固定 059，计划保留双方完整追加块，证明 `H:/TEMP/novelai-child-http-root-preservation.json`。两个真实 child 与 Direct/OpenAI 四文件串行同次 **55/55、零跳过，101.859 秒**；类型、architecture、可信实际 main `88d2c26` migration 与变更格式通过，日志 `H:/TEMP/novelai-child-http-root-{joint,type,static}.log`。旧工具源码/两行接线保持作者实际打包 22 项的字节，未重跑不变的 187 秒套件。此后继没有自己的完整后端、编译双 runtime、实际新正常发布物/CI，不借旧 b427/b2 结论；其余原 child/Nuxt/Docker 与账户闭包修复、查询、迁移和最终同版本验收继续接续。
 
-首片固定 `39b1c3b3b76abc06a5512557bef69720509e88db` 独审确认同一完整提交 P2，保持 NOTPASS：合法重签 envelope 删去某 bulk 目标全部事实或全部暂停事实，原 receipt 仍声称两目标完成；同根因扩查的单账户组合丢配置、首注册丢绑定也被接受。绿色955不能替代此闭包。后继独立分支在内部安全 receipt 保存原公开意图（目标、weight/false、应有连接/凭据变化或bind），不存秘密、摘要或before profile；AccountStore三个局部规划由在线与共同/窄回放复用，按原序前态校完整有序全集/唯一性。mixed no-op 不能被强迫伪造事实；全no-op非keyed200零持久化。外部DTO仅去内部intent，仍取原存外部字段，不借当前值重造旧回包。独立初始化/分组的 AccountBound 仍由其所属完整政策规划及原四条件校验，不强迫它伪装账户注册。
+### 9.82 admin 摘要的关系统计、逻辑产物数与失败选择
 
-该闭包修复作者原四红程序原字节仅imports loader重绑后4/4，七受影响文件292/292、零skip56.994s，类型/架构通过；原观测来源 guard 单独移除后 observed-role 精准失败，不被新闭包掩盖。共同/窄校验各自停用负控分别15失败/5失败，恢复新与来源矩阵25/25；future-configuration 现在只证明完整意图/后果顺序闭包，单独来源角色仍由 dispatch-role/observed-role 实际拒因证明，不混算。日志为同TEMP的 closure-original-fixed-final.log、closure-seven-final.log、closure-negative-evidence.json。该修复不改事件7/DDL/hash/旧SQL，不混默认true后继；固定后独立复审及父新候选完整验收继续。
+基于固定根 `64e1171`，只在现 ReportStore/RequestStore 提供窄读，原 `sqlite-read-worker` 的日/小时桶和成功率、原 serializer 的余额失败排除最小搬到 `reports/admin-statistics.ts`，由真实旧生产 caller 与新关系 caller 复用。不新增统计 worker、缓存、持久派生列/表、事件/DDL，未接半份 admin summary、账户 reveal 或新的 HTTP 路由。完整 admin summary 的设置、账户宽 DTO/秘密边界和 sole 装配仍由后续原 owner 接合。
+
+`readAdminSummaryStats()` 按 child 的原创建时间统计一分钟请求数；旧一分钟“生成数”只计 done 且原 display cost≥1，不以真实收费或物理执行次数替换。`JobAccepted` 可复用原显示 owner 的已知 0，Opening 没保存原 job cost 则 NULL，不能用 cacheSelection.cost 或当前报价猜历史。done/failed 的一小时统计及原账户分组仍应用原余额排除条件；七天北京时间小时桶的 failed 数不应用这条排除，done 次数和 credits 继续分别沿原 display cost 规则。速度仍是 V4.5/V5 从原创建至原终态的端到端均值，包括免费/cache done，不替换成上游耗时。
+
+失败排除确有可用原来源：仅对原创建时间落在一小时窗口的 failed 索引候选读取 `JobFailed.diagnosticId` 指向的受保护 TEXT，每份最多 4000 字符，经现 InputStore 核对 job/原事实/hash/长度。诊断条数成本随该窗口失败数增长，不能把它声称为全纯 COUNT/无冷读；普通计数、模型与时间聚合不读输入正文或附件 BLOB。已有引用内容损坏/失配明确不可用，不静默降为无诊断。缺来源且代码不能证明时，只有对应失败/总量/成功率为 NULL；原安全代码能证明排除、已知 done、已知模型及起止等来源继续使用，不把整个历史一律改成未知。
+
+时间统一回到共同 `jobColumns/readApiJob`：done/failed 只取原 `j.completed_at`，真实 0/NULL 保留；late、FreeImageSucceeded、结案等后继不移动终态日。活动状态只认可受理/入队/派发的状态事件 header，Opening 事实 header 只表示开账发生。原创建时间仍归 `generation_job_origins`，不借父请求、当前导入或最新事件补齐。无法定位的历史使相关统计或日期/小时桶保持 NULL，已知空桶仍为 0，不新增嵌套 coverage 框架。
+
+`readLogicalArtifactCount()` 只数未退休 published artifacts，一张原产物多份副本仍只计一次，不当成磁盘/实云容量。`readManagementFailedJobs()` 先限最多 50 条，再复用现 thin job 和原输入 owner 冷读 ≤50 个 canonical 请求，无附件读取；新 JobAccepted 按真实 commit/index 插入序，区别于最近失败时间。Opening 未保存原 `order_value`，当前只能稳定 ID 确定性尾序并标 `originalOrderKnown=false`；这不是旧原序等价，最终选定迁移须从真实旧排序/归档保留来源或明确行为决定闭合。执行账户只取原实际尝试/既有产物来源，原收费账户是金融归属，不能用同 job/member 的 `charges.original_account_id` 冒充物理执行；缺执行来源仍 NULL。
+
+Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与历史退休六文件同次 **82/82、零跳过，20.112 秒**；类型、architecture、193 文件语法、默认及可信实际 main `88d2c26` migration、八路径格式和 diff 检查通过。原合法 JsonStore/生产 worker 六种统计 DTO 对照、query_only/全表 hash/total_changes 零写、paid 但 display0、有效/坏/缺诊断、late 与真实 FreeImageSucceeded 后继、Opening0/NULL/已知速度、资金 A 但执行未知、原失败顺序/50 限量、公共回放及重开均有可运行检查。临时错误变体分别用收费代显示价、最新 header 代终态、读取第 51 份正文、收费池代执行账户，四项均精准业务断言红；恢复原源后八项新检查全绿。源与日志见 `H:/TEMP/novelai-admin-report-reads-{final-union,restored}.log`、`H:/TEMP/novelai-admin-report-reads-negative-results.json`。旧 worker/serializer 除移出纯函数及 import 外 AST 相同，搬移的桶与排除函数 body 逐字相同，原已知数值成功率六例相同，证明见 `H:/TEMP/novelai-admin-report-reads-static.json`。
+
+实际 SQL 计划中，一小时失败范围使用 `SEARCH ... idx_job_created_time`，再按原 stream 索引核诊断来源；最近 50 失败仍扫描薄 origin 索引并用临时 B-tree 排序，不声称没有扫描、排序或已过同规模容量性能验收。本片是未发布底层 DTO/读取约定，必要 nullable 和历史排序限制需由最终维护者复核，不擅自退役旧 summary 行为；尚待独立审查与最终完整 summary 装配。未执行 full、build、compiled、Node24、native 安装、实云或生产。
+
+固定 `8381e4f4e9fff1099cdbbbaaffe558c4fa03a77b` 独审通过：两条新来源边界与原失败 50/终态 DTO 同次 **4/4、零跳过**，实际只冷读创建窗内的诊断，窗内损坏明确拒绝；Opening 缺证只影响相应未知指标，不抹掉已知执行账户或其他已知数。query_only、全表摘要、total_changes 零写，公共完整回放不恢复凭据/epoch 或 fetch。八差异、十三关联权威和三十五历史资产精确绑定，报告 `H:/TEMP/novelai-admin-report-reads-independent-20261115/INDEPENDENT-REVIEW.md`（SHA256 `63dc8d29a33a80cd8053dda6b538d53cbc0d3aba3f0aeae0403e9788bbec745d`）。旧 worker 六统计 DTO 对照不冒充完整十三字段 admin HTTP；Opening 原排序和 nullable 的维护者复核条件保留。
+
+根在已审真实 child/Direct 修复 `de52e2a` 上整合：五条新查询/统计/测试路径逐字等于固定 838，旧 JsonStore 只保留根纯 import 提取并复用原 classifier 搬移，计划完整并集，证明 `H:/TEMP/novelai-admin-report-reads-root-preservation.json`。报表、查询、历史、请求/成员/退休与管理/Direct/OpenAI 九文件同次 **285/285、零跳过，68.998 秒**；类型、architecture、可信实际 main `88d2c26` migration 与局部格式通过，日志 `H:/TEMP/novelai-admin-report-reads-root-{joint,type,static,format}.log`。未接完整 admin summary，也未在该根运行 full、编译双 runtime、实际发布包/CI 或容量验收；不借旧候选结果。
+
+### 9.83 日常整库备份退出旧图片清理
+
+本片只调整 `scripts/backup-production.py` 的实际 daily caller：删除加密上传、回读和本地七份轮换之后无条件调用的旧 `clean_archived_images()` 及其日志。SQLite backup API、配置/密钥/bootstrap 凭据、逐文件 SHA、完整性核验、加密上传和验证后轮换顺序均保留；`cutover-*` 不进入日常轮换。`--verify` 对旧全图片备份的严格解释及显式 `--clean-archived-images` 仍是独立旧归档工具能力，未新增在线格式分支或第二套 parser。本片不释放新关系 Local/R2/PikPak 字节，不改变 D8 期限，也不部署或运行生产 timer。
+
+新增 Python 专项以真实离线 bootstrap 建立非空完整 history 的合法 ready 源，先断言不存在旧 `images` 表、四份密码/Key、一份 PST 及保护 profile，再运行未替换 backup/verify/cleanup 的默认 `main()`。仅生产绝对路径映射到私有夹具、子进程路径指向源码；云端 fetch 复用现有 `r2-backup-fixture`。原 AES-GCM、流式上传、下载解密比对和回执均真实执行，不能称真实 R2 端点验收。原源码在成功上传后精确报 `sqlite3.OperationalError: no such table: images`（`H:/TEMP/novelai-backup-daily-red.log`）；最小删除后同路径通过（`H:/TEMP/novelai-backup-daily-green.log`）。全表计数/摘要比较源与备份，随后实际 restore CLI 执行完整公共重放、选定当前私有恢复和唯一 installer，再比较全部表及原源文件 SHA；未手写 ready，也未 mock installer。
+
+本地验证使用未修改的 Linux CPython **3.12.12**（官方 python-build-standalone `20251209`，archive SHA256 `0233aa8f4e8f3314a9be071f68a289f25f6c33b368ad8b2a1726c09981d00d2f`，来源/实算核对在 `H:/TEMP/novelai-backup-daily-tools-20261115/provenance.json`）。原七项在 WSL ext4 **7/7**；新增链在 WSL Python、NTFS 夹具与原 Windows Node22/ABI127 路径桥接下 **1/1**，未安装或重建 WSL Node/native。桥仅转换子进程路径，未改 Python、fsync 或测试逻辑；原 Windows Python 基线七项中六个 readonly-fsync `EBADF` 属 POSIX 环境不符，另存 `novelai-backup-daily-python-baseline.log`，不算本次业务红例。真正 Linux Node/Python CI 仍须同候选复验，不能把跨平台桥接称为该证据。
+
+原旧全图片缺图拒绝、显式清理保留 live 原图/先持久化远端恢复依据、上传或轮换失败留旧份、七份 daily 与 cutover 保护断言均保留；原 retention 测试移除 cleanup mock。另原 R2 备份六项 **6/6**（包括 70 MiB、保留集合 GCM 失败不开始删除、cutover/回执不覆盖），传输仍为本地模拟存储。类型、架构、默认及可信 `88d2c26` migration、改动文档格式和 diff 另核；没有 full/build/compiled/native 安装/实云/生产操作。后续副本释放需按归档引用权威独立完成；此片不代表容量回收或上线闭环已验收。
+
+固定 `bdbef65113c67acc3aa4529f5fcc96a8208502fb` 独审通过。精确 Git export 在真实 Linux CPython 3.12.12/POSIX 上运行原七项，另新库加密/私有恢复一项和独立无 R2 配置的 default main 一项，共 **9/9、零跳过**；把产品精确换回旧两行后，独立 main 在真实 `SELECT data FROM images` 失败，finally 恢复候选后同程序通过。没有 mock backup、cleanup、fsync 或 installer，也没有真实网络/外部目录删除。四文件 Git/raw、原七项断言保留、解释器归档/ELF 与路径桥明确绑定，报告 `H:/TEMP/novelai-backup-independent-bdb-20261115/INDEPENDENT-REVIEW.md`（SHA256 `13b43b91051cd4776bdbfbd37c8d59d72eb9c688578609564851cd37d6ec7b90`）。作者十四项另保留，不计独审新跑；这仍不是原生 Linux CI、外部产物字节或真实 R2 验收。
+
+根在报表来源 `a511587` 上合入，产品、Python 测试及发布运维说明三路径逐字等于固定 bdb，仅计划保留完整并集与本证据；Python AST 和局部文档格式通过，证明 `H:/TEMP/novelai-backup-root-preservation.json`。复用上述同产品已完成的独审九项和原十四项，不为无差异重复实际备份/恢复或冒称根新跑；最终同候选格式 7 的业务数据库/私有状态/外部字节联合恢复另行验收。没有部署或执行生产备份/轮换/删除。
+
+固定闭包修复 `6708bd9f03236551fb5a1d50e442be52ff45b664` 独审通过，原 39 保持 NOTPASS。四条原红程序不改字节，仅 loader 指向固定源后 **4/4**；来源/闭包/窄回放 25/25、后来当前状态不同的原 receipt/no-op/DTO 1/1、真实 TLS/UTF16/所选私有恢复 2/2、新 HTTP 13/13 分别记录，不累加。独立只停用 Observed 来源比较时，来源案例精确失败，恢复后 5/5，证明新闭包没有掩盖原来源门禁。三十五 Git/raw、七条修复差异和事件 7/DDL 原字节绑定，报告 `H:/TEMP/novelai-account-independent-20261115/INDEPENDENT-REVIEW-6708.md`（SHA256 `6c8ae335f012bbb0654768df9770d4c972555ec29626d5dfb591e532a06d8287`）。默认 true/非绑定观察、私有 note、完整 admin summary 和最终发布物不在该通过范围。
+
+根在来源读取/日常备份 `fceb1f2` 上复用已审组件基础 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`（de52 + 39 + 6708），无未审 9.86 字段或 writer。七个关键 owner/DDL/replay/新 sole 文件逐字等于该基础，旧 SQLStore 同时保留根 record/classifier 提取与已审 mask 单 owner；完整管理测试双方原编辑和追加块保留。唯一新的正向夹具接合是把实际 SOCKS 测试的 admission 构造移到同一真实 runtime.start 后并注入该 runtime，不改原断言或缺参负控。证明 `H:/TEMP/novelai-account-6708-root-foundation-preservation.json`。Account/管理/回放/私有/ready/refresh/账户目录/成员读九文件同次 **366/366、零跳过，73.304 秒**；类型、architecture、可信实际 main `88d2c26` migration 和变更格式通过，日志 `H:/TEMP/novelai-account-6708-root-{joint,type,static,format}.log`。未以此冒称 full、同根编译双 runtime、三包、CI/实际发行物或生产验收；格式 6 仅由固定合成夹具验证拒绝，不保留在线格式切换。后续仍须同候选完整闭环。
 
 ### 9.84 原私有成员备注的登记、读取与联合恢复
 
