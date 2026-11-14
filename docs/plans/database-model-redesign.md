@@ -1438,6 +1438,8 @@ Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，
 
 原同一 `checkSource` 矩阵在旧守卫为 298 通过、60 失败，修正后 358/358、零跳过；反例包含真实 factory 的 named/injected 调用、namespace/dynamic 捕获及三重点 owner 的整包重导出，正边覆盖混合 owner 的纯 named readers 和 type-only 能力描述。原红例用可信 `b6e5f48` 守卫逐字复跑，未通过修改业务或放宽断言转绿；证据为 `H:\TEMP\novelai-writer-guard-independent-b680f81-20261114\guard-before-exact.log`、同目录 `guard-after.log` 及有界清单。实际全树 architecture 通过，业务 owner、CI、旧 SQL/journal、可信基线和远端保护未变。此守卫增量须维护者独立复核，统一 full、发布包及生产切换仍由父任务候选验收。
 
+独审在同一有限清单内另确认 `JsonStore` 实际写容器的 named runtime import/re-export 仍能在 protocol 中漏过：捕获原已登记 memberSessionTransaction 后调用别名，不经过星号导入。仅在原 Set 补实际构造器名字，保留 type-only JsonStore 与纯 createId；其他来源规则冻结。沿该清单真实 writer classes 的 named-import/re-export × query/protocol 36 项核对，只有此两种 protocol 形式遗漏。原 `49b73a3` 对新增同一矩阵为 360 通过、2 失败；补名后 362/362、零跳过。原红例为同目录 `named-store-before-49.log`，修后 `named-store-after.log`；此前独审 392 项不替代这个新缺口的红绿验证，修正仍须绑定后继候选独立复验。
+
 ### 9.47 当前规范化配置的显式来源和保护恢复
 
 本片从固定 `3d2bafd7` 接续，只交付 sole 新在线运行时必需的当前配置 owner；不增加当前无 caller 的管理 CRUD，不恢复 PromptAPI 执行/秘密，不选择 A/B 迁移路线。实际旧读取需要三项顶层默认值和八项 defaults，成员入口还需要原 `publicBaseUrl` 回退值。规则继续归 `requestNormalizationDefaults()`、`normalizeNovelAiRequest()` 与 `memberPublicBaseUrl()`，未把当前程序默认、旧请求首次 context 或整个 settings 当作来源。

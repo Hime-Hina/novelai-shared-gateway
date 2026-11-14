@@ -56,6 +56,20 @@ for (const filename of [
       });
     }
   }
+  for (const [name, source] of [
+    [
+      'named legacy store capture',
+      "import { JsonStore as Ledger } from '../storage/sqlite-store.ts'; const ledger = new Ledger(dataDir); const run = ledger.memberSessionTransaction.bind(ledger); run(mutate);",
+    ],
+    [
+      'named legacy store re-export',
+      "export { JsonStore as ProtocolWriter } from '../storage/sqlite-store.ts';",
+    ],
+  ]) {
+    test(`${filename} rejects ${name}`, () => {
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
   for (const [name, modulePath] of [
     ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
     ['ownerOperation', '../members/owner-operations.ts'],
@@ -527,6 +541,13 @@ test('mixed writer modules retain pure named readers and type-only capability de
     'server/generation/request-queries.ts',
     'server/protocols/native-http.ts',
   ]) {
+    assert.deepEqual(
+      checkSource(
+        filename,
+        "import type { JsonStore as Ledger } from '../storage/sqlite-store.ts'; type Shape = Pick<Ledger, 'memberSessionTransaction'>;",
+      ),
+      [],
+    );
     for (const [name, modulePath] of [
       ['summarizeOwnerUsage', '../members/owner-operations.ts'],
       ['ownerAccountConfiguration', '../members/owner-operations.ts'],

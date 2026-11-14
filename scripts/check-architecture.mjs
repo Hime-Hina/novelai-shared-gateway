@@ -8,6 +8,7 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 // Shared transport guards contain no database or command assembly.
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
+  'JsonStore',
   'configureFairQuota',
   'configureFairGroups',
   'configureAnlasFallback',
