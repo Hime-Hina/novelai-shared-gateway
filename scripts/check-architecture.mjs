@@ -179,14 +179,12 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
+          (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*')) ||
           /(?:events\/relational-event-store|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&
-        (/(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(
-          target,
-        ) ||
-          (/quota\/fair-share\.(?:ts|js)$/.test(target) && names.includes('*'))))
+        /(?:storage\/sqlite-store|events\/(?:event-store|domain-events))\.(?:ts|js)$/.test(target))
     ) {
       report(
         node,

@@ -156,6 +156,15 @@ for (const filename of [
       'aliased synchronization',
       "import { syncBoundFairQuota as sync } from '../quota/fair-share.ts'; sync(view,account,now);",
     ],
+    [
+      'captured quota namespace writer',
+      "import * as quota from '../quota/fair-share.ts'; const configure=quota.configureFairGroups; configure(view,groups,now);",
+    ],
+    [
+      'captured dynamic quota writer',
+      "const quota=await import('../quota/fair-share.js'); const configure=quota.configureFairGroups; configure(view,groups,now);",
+    ],
+    ['quota namespace re-export', "export * from '../quota/fair-share.ts';"],
     ['direct input replay', 'inputStore.replayAcceptedInput(source,cursor);'],
     ['direct session mutation', 'authStore.memberSessionTransaction(fn,options);'],
     ['direct Discord mutation', 'authStore.discordAuthenticationTransaction(fn);'],
@@ -373,6 +382,10 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     [
       'server/generation/request-queries.ts',
       "import { fairQuotaSummary } from '../quota/fair-share.ts'; createHash('sha256').update('safe');",
+    ],
+    [
+      'server/protocols/native-http.ts',
+      "import { fairQuotaSummary } from '../quota/fair-share.ts'; fairQuotaSummary(view,member);",
     ],
     [
       'web/app/types/member.ts',

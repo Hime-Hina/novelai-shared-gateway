@@ -1386,6 +1386,8 @@ Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，
 
 整合同时发现新周期刷新 factory 未进入原写能力集合；已有成员/Native/认证 HTTP writer 经 namespace 或动态导入后捕获别名，也能逃过仅按调用名识别的检查。最小修正在原集合登记三个实际 factory，并在现 owner 模块匹配中补齐这些已持有写能力的 HTTP/刷新模块，不新增检查框架。查询和 protocol 的 26 个新增负控先为 26 失败、原 233 项通过，修后 259/259；原 type-only reader、纯 transport 和宿主装配正对照仍通过，真实全树 architecture 检查通过。证据 `H:\TEMP\novelai-refresh-writer-guard-before.log` 与 `novelai-refresh-writer-guard-after.log`。这是需维护者复核的守卫增量，不将源码检查视作 agent 权限沙箱，也未修改远端保护或 SQL 历史。
 
+权益独审另确认原 fair-share writer 模块的 namespace/dynamic 捕获在 protocol 中仍能漏过检查，query 已有同类限制。最小修正仅把该既有模块的星号来源限制同时应用到 protocol，命名导入的纯 fairQuotaSummary 仍合法；没有扩展检查框架或改变远端权限。原共同矩阵新增 namespace 捕获、动态捕获及整模块重导出六例，修前 276 通过、3 个 protocol 反例失败，修后 279/279；实际全树 architecture 通过。日志为 H:/TEMP/novelai-quota-captured-protocol-guard-before.log 与 -after.log。该守卫增量仍需维护者复核，不作为 agent 权限沙箱，也不代替权益和整合验收。
+
 ### 9.47 当前规范化配置的显式来源和保护恢复
 
 本片从固定 `3d2bafd7` 接续，只交付 sole 新在线运行时必需的当前配置 owner；不增加当前无 caller 的管理 CRUD，不恢复 PromptAPI 执行/秘密，不选择 A/B 迁移路线。实际旧读取需要三项顶层默认值和八项 defaults，成员入口还需要原 `publicBaseUrl` 回退值。规则继续归 `requestNormalizationDefaults()`、`normalizeNovelAiRequest()` 与 `memberPublicBaseUrl()`，未把当前程序默认、旧请求首次 context 或整个 settings 当作来源。
