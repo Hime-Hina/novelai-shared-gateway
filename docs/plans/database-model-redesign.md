@@ -1929,6 +1929,22 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 根在 `d646286` Account/heatmap/Key 并集上整合，组预览与 Key 读取都留在命令分派前，成员、组与政策分别调用各自原 owner；保留所有共同基线测试修改与完整追加块，只合并相同慢正文 helper。共同 helper 和新 unit 精确等于 9b9，QuotaStore 保持原根字节。六文件同次 **185/185、零跳过，47.191 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、七文件格式和 diff 通过，日志 `H:/TEMP/novelai-groups-http-root-{joint,type,static,format}.log`，合并证明 `root-test-merge.json` 在同前缀。原 8cb 全量和 0ad 编译/CI 不能替代该新并集的后续统一验证。
 
+### 9.74 运营资金 HTTP 接入的原结果与幂等来源
+
+只接既有两个 member-management POST 中五个 `operating-*` action，继续复用原 `manageOperatingFunding`、同步金融规划和当前 owner/admin 授权，不扩展账户选择、金融算法或共享 surface。本人划入固定部署 owner，账户固定当前 bound，正文不能自报 actor、命令、时间或另选资金来源。HTTP 沿现同一 authorize/notifier，Body IO 后复核当前 owner/Cookie/epoch 或本机 admin/ready，再薄绑定 quota 命令。预览、member-key、成员、账户 PATCH 和组/政策分派均保留；POST 仍只在两个 member-management literal 开放，不续 Cookie。
+
+实际旧 JsonStore/localhost 对照证明：首键首次返回 false，重复首键仍 false；同时间相同业务收据的新键无事实为 409；推进同步时点后，新键以原 `RefillApplied` 等真实事实提交，原结果为 true，重复该键仍 true，换正文 409。原关系实现却丢弃同步事实，返回旧提交且未保存新键，随后相同新键的其他意图可以执行。反例与实际旧控制在本地 `H:/TEMP/novelai-operating-contract-20261114/contract-before.log`。
+
+修复仅在 QuotaStore 资金入口允许无 commandId，复用当前 owner verifier 并先于原 receipt；有事实保存原业务 duplicate，无事实不建立 keyed receipt。旧无标志的合法回执须由同提交原人工决定证明 false，不增加默认猜测；公共和额度完整回放共用同一来源验证。HTTP 通过同 owner 的窄 `readBoundAccountId()` 读取原绑定，不为取一个 ID 构建 shared-status/金融 DTO 或读取 PST。原 receipt 在新绑定/金融规划前返回；NULL 或其他池只拒绝新决定，不制造空串账户或选择任意候选。没有新增事件类型、SQL、算法、持久状态、通知 registry 或架构守卫。
+
+新增核心四项和真实 ready/localhost 九项涵盖五 action 的原回包、固定 owner 钱包/当前 bound、未来登记不贷钱包、真实观察后扣款确认、原当前差额纠正和同池核销、首 true 后原键重领/换正文 409，以及五 action 正文等待中的 Cookie/epoch/owner/ready/admin 撤销。原认证协调可发 sessions 撤销通知，不能把它冒称业务幽灵；拒绝没有金融/任务/回执写入或金融通知。原生 SQLite 第二钱包尾错由外层捕获后全表与命令/游标不变，健康重试只发一次整笔通知；完整公共回放保持金融/事实/回执一致，私有认证为空、零网络，重复回放 total_changes 为零。
+
+六文件核心联合 188/188、九项新增 HTTP 及最终四项核心 13/13 均为零跳过，具体日志 `H:/TEMP/novelai-operating-core-union.log`、`novelai-operating-http-second.log`、`novelai-operating-final-focused.log`。原管理 HTTP/额度/权益/开账/共同回放七文件同候选 **297/297、零跳过，54.143 秒**，`H:/TEMP/novelai-operating-final-union.log`；backend 类型、architecture、默认与可信固定 b427 迁移、193 文件语法、十三文件格式和 diff 通过。独立技术复审另登记；未运行 full/build/compiled/Node24/native 或生产，不沿用父相关证据。后续同类资金 HTTP 只在现管理 dispatcher 绑定该命令，不在传输层重建金额或收据规则。
+
+固定 `9d96443e8896a6ea1aae87852f184dfe6acb439e` 资金片独审通过。原十三专项与新增四条反例恢复后同次 **17/17、零跳过，8.096 秒**；作者七文件 297 项只引用，不计独审新跑。真实正数恢复预算证明业务重复的新键保留原 RefillApplied、原 true 结果和键；该窗口消费后有键无事实 409、无键 true 零写。慢正文密码 epoch 轮换后，旧 receipt 也先拒旧 Cookie，新 Cookie 可零写重领原 false；SQL 尾错全公私回滚、零通知、同键健康重试 true/重领 true/改正文 409/旧键 false。完整公共 router 用合法公共 prefix 拒绝五种资金回执来源或 true/false 移位，不被私有门禁提前遮挡；同笔合法旧无标志 false 和新 true 均可完整恢复且不生私有认证。吞实际 sync 与漏 full-router validator 两个负控分别精准失败，原字节恢复后通过。报告 `H:/TEMP/novelai-operating-independent-9d96443-20261114/INDEPENDENT-REVIEW.md`，十三文件及七个不变权威有 Git/raw 绑定；初版夹具的错误恢复窗口/含私有源公共 prefix 失败另存并排除。
+
+根在 `b42719d` 上合入该片，追加本证据前 staged tree 与独审 9d 候选 tree 完全相同，工作字节无额外差异；因此复用该固定源已完成的 297 项、独立 17 项和类型/架构/历史/格式结果，不把重复执行或后继文档当作新行为验证。证明 `H:/TEMP/novelai-operating-root-preservation.json`。新增后继不在 b427 的完整后端、编译矩阵、CI 或发布物证据内；最终并集统一验证另行完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

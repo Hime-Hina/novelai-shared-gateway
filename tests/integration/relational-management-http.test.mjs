@@ -3242,3 +3242,359 @@ test('组管理HTTP第二钱包尾错整笔回滚零通知，健康重试一次�
   assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
   assert.equal(fetches, 0);
 });
+
+const operatingBody = (action, receipt, amount = 1, extra = {}) => ({
+  action,
+  receipt,
+  resource: 'anlasFixed',
+  amount,
+  ...extra,
+});
+function observeOperating(f, id, fixed) {
+  const quotas = new RelationalQuotaStore(f.db, f.env),
+    ticket = quotas.beginQuotaObservation('a', f.clock),
+    current = quotas.readAccountQuota('a');
+  f.db.transaction(() =>
+    quotas.recordQuotaObservation(
+      meta(id, f.clock + 1),
+      ticket,
+      accountQuotaResult(
+        'a',
+        {
+          tier: 3,
+          subscriptionActive: true,
+          subscriptionExpiresAt: null,
+          fixed,
+          purchased: current.observedAnlasPurchased,
+          v5UsagePercent: current.observedV5,
+          v5UsageTimeUntilNextPercent: current.secondsPerPercent,
+        },
+        new Date(f.clock).toISOString(),
+      ),
+    ),
+  )();
+  f.advance(2);
+}
+
+test('运营资金HTTP五action复用真实bound与owner来源，回包/审计和原键原结果一致', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    cases = [];
+  observeOperating(f, 'funding-initial-observation', '8000');
+  async function execute(body, asAdmin = false) {
+    const endpoint = asAdmin ? admin : owner,
+      headers = {
+        'idempotency-key': body.receipt,
+        'x-member-activity': '1',
+        ...(asAdmin ? { 'x-admin-token': adminToken } : {}),
+      },
+      input = {
+        ...body,
+        accountId: 'forged-other-pool',
+        fromUserId: 'm2',
+        actorId: 'm2',
+        actorKind: 'system',
+        commandId: 'client-command',
+        recordedAt: 0,
+      },
+      notified = seen.length,
+      response = await f.call(endpoint, { method: 'POST', headers, body: input });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, {
+      eventId: 'operating-receipt:' + body.receipt,
+      duplicate: false,
+    });
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(seen.length, notified + 1);
+    const stored = readRelationalCommit(
+      f.db,
+      f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+    );
+    assert.equal(stored.command.actorKind, asAdmin ? 'admin' : 'member');
+    assert.equal(stored.command.actorId, asAdmin ? 'local-admin' : 'm1');
+    assert.equal(stored.command.recordedAt, f.clock);
+    assert.notEqual(stored.command.commandId, input.commandId);
+    assert.ok(stored.events.every((event) => event.accountId === 'a'));
+    assert.equal(stored.command.receipt.duplicate, false);
+    cases.push({ endpoint, headers, input, expected: response.body });
+    return response;
+  }
+  const wallets = f.db
+    .prepare('SELECT member_id,anlas_fixed_available FROM wallets ORDER BY member_id')
+    .all();
+  await execute(operatingBody('operating-contribute', 'http-owner-contribute', 10));
+  assert.equal(
+    f.db.prepare("SELECT anlas_fixed_available AS n FROM wallets WHERE member_id='m1'").get().n,
+    String(Number(wallets[0].anlas_fixed_available) - 10),
+  );
+  assert.equal(
+    f.db.prepare("SELECT anlas_fixed_available AS n FROM wallets WHERE member_id='m2'").get().n,
+    wallets[1].anlas_fixed_available,
+  );
+  const afterContribute = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all();
+  await execute(operatingBody('operating-register-funding', 'http-future-register', 3), true);
+  assert.equal(f.db.prepare('SELECT remaining FROM pending_funding').get().remaining, '3');
+  assert.deepEqual(f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), afterContribute);
+  observeOperating(f, 'funding-confirm-observation', '8000');
+  await execute(operatingBody('operating-confirm-debits', 'http-confirm-debits', 2));
+  assert.equal(
+    f.db.prepare('SELECT pending_fixed_debit AS n FROM account_quota_state').get().n,
+    '0',
+  );
+  assert.equal(f.db.prepare('SELECT remaining FROM pending_funding').get().remaining, '1');
+  observeOperating(f, 'funding-down', '7900');
+  observeOperating(f, 'funding-up', '8000');
+  let lossEventId = f.db.prepare('SELECT fixed_gap_event_id AS id FROM operating_state').get().id;
+  await execute(
+    operatingBody('operating-reconcile-return', 'http-return-correction', 20, { lossEventId }),
+    true,
+  );
+  lossEventId = f.db.prepare('SELECT fixed_gap_event_id AS id FROM operating_state').get().id;
+  await execute(operatingBody('operating-cover-loss', 'http-cover-loss', 5, { lossEventId }));
+  assert.equal(f.db.prepare('SELECT unfunded_fixed AS n FROM operating_state').get().n, '75');
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    notified = seen.length;
+  f.advance();
+  for (const item of cases) {
+    const response = await f.call(item.endpoint, {
+      method: 'POST',
+      headers: item.headers,
+      body: item.input,
+    });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, item.expected);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, notified);
+});
+
+test('运营资金HTTP区分原false与首笔true回执，完整正文换意图冲突、无事实新key409/无key零写', async (t) => {
+  const f = await setup(t),
+    body = operatingBody('operating-contribute', 'http-duplicate-receipt'),
+    firstHeaders = { 'idempotency-key': 'http-funding-first' },
+    first = await f.call(owner, { method: 'POST', headers: firstHeaders, body });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.duplicate, false);
+  let before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  const noKey = await f.call(owner, { method: 'POST', body });
+  assert.equal(noKey.status, 200, noKey.text);
+  assert.deepEqual(noKey.body, { ...first.body, duplicate: true });
+  const noFacts = await f.call(owner, {
+    method: 'POST',
+    headers: { 'idempotency-key': 'http-funding-no-facts' },
+    body,
+  });
+  assert.equal(noFacts.status, 409, noFacts.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  f.advance(1);
+  const duplicateHeaders = { 'idempotency-key': 'http-first-result-true' },
+    duplicate = await f.call(owner, { method: 'POST', headers: duplicateHeaders, body });
+  assert.equal(duplicate.status, 200, duplicate.text);
+  assert.deepEqual(duplicate.body, noKey.body);
+  const stored = readRelationalCommit(
+    f.db,
+    f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+  );
+  assert.equal(stored.command.receipt.duplicate, true);
+  assert.ok(stored.events.some((event) => event.eventType === 'RefillApplied'));
+  before = databaseState(f.db);
+  changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  const reclaimed = await f.call(owner, { method: 'POST', headers: duplicateHeaders, body }),
+    conflict = await f.call(owner, {
+      method: 'POST',
+      headers: duplicateHeaders,
+      body: { ...body, receipt: 'different-business-receipt', amount: 2 },
+    }),
+    old = await f.call(owner, { method: 'POST', headers: firstHeaders, body });
+  assert.equal(reclaimed.status, 200, reclaimed.text);
+  assert.deepEqual(reclaimed.body, duplicate.body);
+  assert.equal(conflict.status, 409, conflict.text);
+  assert.equal(old.status, 200, old.text);
+  assert.deepEqual(old.body, first.body);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('运营资金HTTP原权限/正文边界不扩surface，五action慢正文仍复核当前授权', async (t) => {
+  const actions = [
+    'operating-contribute',
+    'operating-register-funding',
+    'operating-cover-loss',
+    'operating-reconcile-return',
+    'operating-confirm-debits',
+  ];
+  for (const [index, mode] of ['cookie', 'epoch', 'owner', 'ready', 'admin'].entries()) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, { onBodyRead: () => begin?.() }),
+        seen = policyNotifications(f),
+        body = operatingBody(actions[index], 'http-held-funding'),
+        endpoint = mode === 'admin' ? admin + '?adminToken=' + adminToken : owner;
+      if (mode === 'cookie') {
+        const first = await f.call(owner, {
+          method: 'POST',
+          headers: { 'idempotency-key': 'held-policy' },
+          body,
+        });
+        assert.equal(first.status, 200, first.text);
+      }
+      const started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, endpoint, started, {}, body);
+      if (mode === 'cookie') {
+        await logoutMemberSession(f.members, f.sessions.m1.token);
+      }
+      if (mode === 'epoch') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('funding-disable'), 'm1', 'disabled'),
+        )();
+        f.db.transaction(() => f.members.setMemberStatus(meta('funding-enable'), 'm1', 'active'))();
+      }
+      if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      }
+      if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed'").run();
+      }
+      if (mode === 'admin') {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const cut = f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n,
+        financial = domainDigest(
+          ['wallets', 'account_quota_state', 'operating_state', 'pending_funding'].map((table) =>
+            f.db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all(),
+          ),
+        ),
+        notified = seen.length,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n, cut);
+      assert.equal(
+        domainDigest(
+          ['wallets', 'account_quota_state', 'operating_state', 'pending_funding'].map((table) =>
+            f.db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all(),
+          ),
+        ),
+        financial,
+      );
+      assert.ok(
+        seen
+          .slice(notified)
+          .every(({ event }) => event.collections.every((name) => name === 'sessions')),
+      );
+    });
+  }
+  const f = await setup(t),
+    before = databaseState(f.db),
+    body = operatingBody(actions[0], 'http-invalid-funding');
+  for (const [endpoint, options, status] of [
+    [owner, { member: 'm2', body }, 403],
+    [admin, { body }, 403],
+    [owner, { body: { ...body, userId: 'm2' } }, 403],
+    [owner, { body: { ...body, action: 'operating-new-action' } }, 400],
+    [owner, { body: { ...body, amount: -1 } }, 409],
+    [owner, { body: { ...body, resource: 'unknown' } }, 409],
+    [owner, { body: { ...body, receipt: 'short' } }, 409],
+    [owner, { body: { ...body, extra: 'x'.repeat(32768) } }, 413],
+    [summary, { body }, 404],
+    [statistics, { body }, 404],
+  ]) {
+    const result = await f.call(endpoint, { method: 'POST', ...options });
+    assert.equal(result.status, status, result.text);
+    assert.equal(databaseState(f.db), before);
+  }
+});
+
+test('运营资金HTTP第二钱包SQL尾错全回滚无幽灵通知，retry单通知且完整公共回放无认证/网络', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f);
+  observeOperating(f, 'funding-fault-down', '7900');
+  observeOperating(f, 'funding-fault-up', '8000');
+  const body = operatingBody('operating-register-funding', 'http-funding-atomic', 10, {
+      destination: 'members',
+      fromUnattributed: true,
+    }),
+    headers = { 'x-admin-token': adminToken, 'idempotency-key': 'http-funding-atomic-key' };
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_second_funding AFTER UPDATE OF anlas_fixed_available ON wallets WHEN NEW.member_id='m2' AND NEW.anlas_fixed_available!=OLD.anlas_fixed_available BEGIN SELECT RAISE(ABORT,'second funding wallet fault'); END",
+  );
+  const before = databaseState(f.db),
+    notified = seen.length,
+    failed = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, notified);
+  f.db.exec('DROP TRIGGER fail_second_funding');
+  const success = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(success.status, 200, success.text);
+  assert.equal(success.body.duplicate, false);
+  assert.equal(seen.length, notified + 1);
+  assert.equal(seen.at(-1).event.collections.includes('ledger'), true);
+  const saved = databaseState(f.db),
+    duplicate = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(duplicate.status, 200, duplicate.text);
+  assert.deepEqual(duplicate.body, success.body);
+  assert.equal(databaseState(f.db), saved);
+  assert.equal(seen.length, notified + 1);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw Error('public funding replay must not fetch');
+  });
+  for (const { seq } of commits) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  for (const table of [
+    'commits',
+    'domain_events',
+    'stream_heads',
+    'wallets',
+    'pending_funding',
+    'operating_state',
+    'account_quota_state',
+  ]) {
+    const rows = (db) =>
+      db
+        .prepare('SELECT * FROM ' + table + ' ORDER BY rowid')
+        .safeIntegers()
+        .all();
+    assert.deepEqual(rows(target), rows(f.db), table);
+  }
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'upstream_credentials',
+    'member_sessions',
+    'discord_bindings',
+    'discord_invites',
+    'member_auth_state',
+  ]) {
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
+  }
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const replayed = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits) {
+    target.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), inputs).replayed, true),
+    )();
+  }
+  assert.equal(databaseState(target), replayed);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+});

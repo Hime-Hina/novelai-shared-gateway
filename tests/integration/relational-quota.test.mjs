@@ -27,6 +27,9 @@ import {
   manageOperatingFunding,
 } from '../../server/quota/fair-share.ts';
 import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
+import { domainDigest } from '../../server/events/domain-events.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { relationalPrivateTables } from '../../server/storage/relational-private-restore.ts';
 
 async function setup(t, options = {}) {
   const f = await fixture(t, { seconds: 0, ...options }),
@@ -79,7 +82,7 @@ async function setup(t, options = {}) {
     withAuthenticatedMemberApiKey(
       f.members,
       keys[memberId],
-      () => quotas.manageQuotaFunding(meta(id, at, memberId), 'a', body),
+      (member) => quotas.manageQuotaFunding(meta(id, at, memberId), 'a', body, member),
       {},
     );
   const refill = (at, id = `refill-${at}`) =>
@@ -983,7 +986,7 @@ test('资金命令复用当前认证与部署 owner，本人来源不可由正�
   assert.equal(wallet(f).anlasFixed, '3990');
   assert.equal(wallet(f, 'm2').anlasFixed, '4000');
   before = db.serialize();
-  assert.equal((await f.fund('same-receipt-new-command', body)).replayed, true);
+  await assert.rejects(f.fund('same-receipt-new-command', body), /未产生可提交事实/);
   assert.ok(db.serialize().equals(before));
   await assert.rejects(f.fund('changed-receipt', { ...body, amount: 11 }), /不同操作/);
   assert.ok(db.serialize().equals(before));
@@ -1024,9 +1027,12 @@ test('净充值中确认原普通扣款后才匹配已登记资金，剩余按�
   assert.equal(wallet(f, 'm2').anlasFixed, '4000.5');
   assert.equal(db.prepare('SELECT anlas_fixed_available AS n FROM operating_state').get().n, '1');
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM pending_funding').get().n, 0);
-  const saved = db.serialize();
-  assert.equal((await f.fund('same-net-receipt', body, NOW + 10)).replayed, true);
-  assert.ok(db.serialize().equals(saved));
+  const savedWallet = wallet(f),
+    duplicate = await f.fund('same-net-receipt', body, NOW + 10);
+  assert.equal(duplicate.replayed, false);
+  assert.equal(duplicate.response.duplicate, true);
+  assert.ok(duplicate.events.some((event) => event.eventType === 'RefillApplied'));
+  assert.deepEqual(wallet(f), savedWallet);
 });
 
 test('待归属新增与快照纠正分别处理，只用同池运营可用核销当前差额', async (t) => {
@@ -1207,7 +1213,13 @@ test('观察、恢复与资金 SQL 故障被外层捕获仍整笔回滚，原票
     body = register('atomic-funding-receipt', 'anlasFixed', 100);
   db.transaction(() =>
     assert.throws(
-      () => q.manageQuotaFunding(meta('atomic-funding', NOW + 12, 'm1'), 'a', body),
+      () =>
+        q.manageQuotaFunding(
+          { ...meta('atomic-funding', NOW + 12), actorKind: 'admin' },
+          'a',
+          body,
+          null,
+        ),
       /funding fault/,
     ),
   )();
@@ -1272,26 +1284,34 @@ test('收据在 SQLite 关闭重开后仍按原规范请求去重，已完成匹
     reopened.pragma('foreign_keys=ON');
     const q = new RelationalQuotaStore(reopened, { OWNER_USER_ID: 'm1' }),
       members = new RelationalMemberStore(reopened),
-      before = reopened.serialize();
+      before = q.readAccountQuota('a');
     const duplicate = await withAuthenticatedMemberApiKey(
       members,
       keys.m1,
-      () => q.manageQuotaFunding(meta('cold-new-command', NOW + 30, 'm1'), 'a', body),
+      (member) => q.manageQuotaFunding(meta('cold-new-command', NOW + 30, 'm1'), 'a', body, member),
       {},
     );
-    assert.equal(duplicate.replayed, true);
-    assert.ok(reopened.serialize().equals(before));
+    assert.equal(duplicate.replayed, false);
+    assert.equal(duplicate.response.duplicate, true);
+    assert.equal(q.readAccountQuota('a').observedSequence, before.observedSequence);
+    assert.ok(duplicate.events.some((event) => event.eventType === 'RefillApplied'));
+    const saved = reopened.serialize();
     await assert.rejects(
       withAuthenticatedMemberApiKey(
         members,
         keys.m1,
-        () =>
-          q.manageQuotaFunding(meta('cold-changed', NOW + 30, 'm1'), 'a', { ...body, amount: 101 }),
+        (member) =>
+          q.manageQuotaFunding(
+            meta('cold-changed', NOW + 30, 'm1'),
+            'a',
+            { ...body, amount: 101 },
+            member,
+          ),
         {},
       ),
       /不同操作/,
     );
-    assert.ok(reopened.serialize().equals(before));
+    assert.ok(reopened.serialize().equals(saved));
   } finally {
     reopened.close();
   }
@@ -1638,4 +1658,234 @@ test('关系命令与原实际同步/资金 owner 在相同观察和确认序列
     },
     NOW + 60,
   );
+});
+
+test('资金原始重复结果随真实同步提交绑定新键，无事实只允许无键零写重领', async (t) => {
+  const f = await setup(t),
+    body = contribute('business-result-receipt', 'anlasFixed', 10),
+    run = (commandId, input = body, at = NOW + 10) =>
+      withAuthenticatedMemberApiKey(f.members, keys.m1, (member) =>
+        f.quotas.manageQuotaFunding(
+          { ...meta('funding-result', at, 'm1'), commandId, fingerprint: domainDigest(input) },
+          'a',
+          input,
+          member,
+        ),
+      ),
+    first = await run('business-first');
+  assert.deepEqual(first.response, { eventId: first.receipt.eventId, duplicate: false });
+  let before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual((await run('business-first')).response, first.response);
+  assert.deepEqual((await run(undefined)).response, { ...first.response, duplicate: true });
+  await assert.rejects(run('key-without-facts'), /未产生可提交事实/);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(
+    f.db.prepare("SELECT 1 FROM commits WHERE command_id='key-without-facts'").get(),
+    undefined,
+  );
+  await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) => {
+    const metadata = { ...meta('unused', NOW + 10, 'm1'), fingerprint: domainDigest(body) };
+    assert.deepEqual(
+      f.quotas.manageQuotaFunding({ ...metadata, commandId: 'business-first' }, null, body, member)
+        .response,
+      first.response,
+    );
+    for (const accountId of [null, 'another-account']) {
+      assert.throws(
+        () => f.quotas.manageQuotaFunding(metadata, accountId, body, member),
+        /当前绑定共享账户/,
+      );
+    }
+  });
+  assert.equal(databaseState(f.db), before);
+
+  const walletBefore = wallet(f),
+    duplicate = await run('business-sync', body, NOW + 11);
+  assert.equal(duplicate.replayed, false);
+  assert.deepEqual(duplicate.response, { ...first.response, duplicate: true });
+  assert.ok(duplicate.events.some((event) => event.eventType === 'RefillApplied'));
+  assert.equal(
+    duplicate.events.some((event) => event.eventId === first.response.eventId),
+    false,
+  );
+  assert.deepEqual(wallet(f), walletBefore);
+  assert.equal(duplicate.receipt.duplicate, true);
+  assert.equal(Object.hasOwn(duplicate.receipt, 'funding'), false);
+  before = databaseState(f.db);
+  changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual((await run('business-sync', body, NOW + 99)).response, duplicate.response);
+  await assert.rejects(run('business-sync', { ...body, amount: 11 }, NOW + 99), {
+    code: 'idempotency_conflict',
+  });
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('资金旧回执先复核真实owner和当前epoch，正文元数据不能代替当前资格', async (t) => {
+  const f = await setup(t),
+    env = { OWNER_USER_ID: 'm1' },
+    q = new RelationalQuotaStore(f.db, env),
+    metadata = meta('funding-current-owner', NOW + 10, 'm1'),
+    body = contribute('current-owner-receipt', 'anlasFixed', 1);
+  let originalMember;
+  await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) => {
+    originalMember = member;
+    return q.manageQuotaFunding(metadata, 'a', body, member);
+  });
+  const rejected = (actor, member) => {
+    const before = databaseState(f.db);
+    f.db.transaction(() =>
+      assert.throws(() => q.manageQuotaFunding(actor, 'a', body, member), {
+        statusCode: 403,
+      }),
+    )();
+    assert.equal(databaseState(f.db), before);
+  };
+  env.OWNER_USER_ID = 'm2';
+  rejected(metadata, originalMember);
+  env.OWNER_USER_ID = 'm1';
+  rejected({ ...metadata, actorId: 'm2' }, originalMember);
+  rejected({ ...metadata, actorKind: 'system' }, null);
+  const prepared = await f.members.prepareMemberCredentials('m1', {
+    username: 'funding-current-owner',
+    password: 'synthetic-current-owner-password',
+  });
+  f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+  rejected(metadata, originalMember);
+  const before = databaseState(f.db);
+  await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) => {
+    assert.notEqual(member.memberAuth.version, originalMember.memberAuth.version);
+    assert.equal(q.manageQuotaFunding(metadata, 'a', body, member).response.duplicate, false);
+  });
+  assert.equal(databaseState(f.db), before);
+});
+
+test('资金重复同步尾部SQL错误整笔回滚，重试保存原true结果且不会重扣钱包', async (t) => {
+  const f = await setup(t),
+    body = contribute('rollback-result-receipt', 'anlasFixed', 10);
+  const first = await f.fund('rollback-original', body, NOW + 10),
+    member = await withAuthenticatedMemberApiKey(f.members, keys.m1, (current) => current),
+    before = databaseState(f.db),
+    originalWallet = wallet(f);
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_duplicate_sync BEFORE UPDATE ON account_quota_state BEGIN SELECT RAISE(ABORT,'duplicate sync tail'); END",
+  );
+  f.db.transaction(() =>
+    assert.throws(
+      () => f.quotas.manageQuotaFunding(meta('rollback-sync', NOW + 11, 'm1'), 'a', body, member),
+      /duplicate sync tail/,
+    ),
+  )();
+  assert.equal(databaseState(f.db), before);
+  f.db.exec('DROP TRIGGER fail_duplicate_sync');
+  const retried = await f.fund('rollback-sync', body, NOW + 11);
+  assert.deepEqual(retried.response, { eventId: first.response.eventId, duplicate: true });
+  assert.deepEqual(wallet(f), originalWallet);
+  const saved = databaseState(f.db);
+  assert.deepEqual((await f.fund('rollback-sync', body, NOW + 12)).response, retried.response);
+  assert.equal(databaseState(f.db), saved);
+});
+
+test('资金回放同owner证明旧false及新true原来源，错结果全回滚且不恢复私有认证', async (t) => {
+  const f = await setup(t),
+    body = contribute('replay-result-receipt', 'anlasFixed', 10),
+    first = await f.fund('replay-result-first', body, NOW + 10),
+    beforeDuplicate = f.db.serialize(),
+    duplicate = await f.fund('replay-result-sync', body, NOW + 11),
+    storedDuplicate = readRelationalCommit(f.db, duplicate.commitSeq);
+  for (const mutate of [
+    (receipt) => {
+      receipt.duplicate = false;
+    },
+    (receipt) => {
+      delete receipt.duplicate;
+    },
+    (receipt) => {
+      delete receipt.eventId;
+    },
+    (receipt) => {
+      receipt.accountId = 'other-account';
+    },
+    (receipt) => {
+      receipt.eventId = 'missing-source';
+    },
+    (receipt) => {
+      receipt.eventId = f.db
+        .prepare("SELECT event_id AS id FROM domain_events WHERE event_type='OpeningQuotaRecorded'")
+        .get().id;
+    },
+  ]) {
+    const db = new Database(beforeDuplicate);
+    try {
+      db.pragma('foreign_keys=ON');
+      const q = new RelationalQuotaStore(db),
+        before = databaseState(db),
+        bad = structuredClone(storedDuplicate);
+      mutate(bad.command.receipt);
+      db.transaction(() => assert.throws(() => q.replayQuotaCommit(bad)))();
+      assert.equal(databaseState(db), before);
+      db.transaction(() => q.replayQuotaCommit(storedDuplicate))();
+      assert.equal(q.assertFundingReceipt(duplicate).duplicate, true);
+    } finally {
+      db.close();
+    }
+  }
+  t.mock.method(globalThis, 'fetch', () => {
+    throw new Error('replay must not call network');
+  });
+  for (const legacyReceipt of [false, true]) {
+    const db = new Database(':memory:');
+    try {
+      initializeRelationalStorage(db, 'generation-history');
+      const replayer = new RelationalCommitReplayer(db),
+        source = new RelationalInputStore(f.db),
+        commits = f.db
+          .prepare('SELECT CAST(commit_seq AS TEXT) AS n FROM commits ORDER BY commit_seq')
+          .all()
+          .map(({ n }) => readRelationalCommit(f.db, n));
+      if (legacyReceipt) {
+        delete commits.find((commit) => commit.events[0].commitSeq === first.commitSeq).command
+          .receipt.duplicate;
+      }
+      for (const commit of commits) {
+        db.transaction(() => replayer.replayCommit(commit, source))();
+      }
+      assert.deepEqual(
+        db.prepare('SELECT * FROM wallets ORDER BY rowid').all(),
+        f.db.prepare('SELECT * FROM wallets ORDER BY rowid').all(),
+      );
+      assert.equal(
+        new RelationalQuotaStore(db).assertFundingReceipt({
+          commitSeq: first.commitSeq,
+          receipt: JSON.parse(
+            db
+              .prepare('SELECT receipt FROM commits WHERE commit_seq=?')
+              .get(BigInt(first.commitSeq)).receipt,
+          ),
+        }).duplicate,
+        false,
+      );
+      assert.equal(new RelationalQuotaStore(db).assertFundingReceipt(duplicate).duplicate, true);
+      for (const [table] of relationalPrivateTables) {
+        assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+      }
+      assert.ok(
+        db
+          .prepare('SELECT auth_epoch AS epoch FROM members')
+          .all()
+          .every(({ epoch }) => epoch === null),
+      );
+      const before = databaseState(db),
+        changes = db.prepare('SELECT total_changes() AS n').get().n;
+      for (const commit of commits) {
+        db.transaction(() => assert.equal(replayer.replayCommit(commit, source).replayed, true))();
+      }
+      assert.equal(databaseState(db), before);
+      assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+    } finally {
+      db.close();
+    }
+  }
 });
