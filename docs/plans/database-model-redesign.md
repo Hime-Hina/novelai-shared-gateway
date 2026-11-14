@@ -1301,6 +1301,8 @@ v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败�
 
 后续 #64 的首轮 Linux CI 发现原会话重启夹具在释放预选端口后被并行监听抢占，`EADDRINUSE` 并非期限/撤销断言失败。已将固定 `5cf9835` 的测试修正逐字回补本分支：真实 gateway 使用原已支持的 `PORT=0`，现有离线 preload 只观察真实 listening 并通过 IPC 回报当次地址。未改生产监听、原超时、外联阻断、会话/SSE 断言或条件跳过，也未增加端口重试。该固定测试独审通过，Windows 原八项 7 通过、1 项原 SIGTERM 跳过；文件 SHA256 `ea4b531d32a7a3e51e7f316cb8d3561536b3f46fc7c7d101ffdf636ec92be14e`，证据 `H:\TEMP\novelai-session-port-review-5cf9835-20261114\INDEPENDENT-REVIEW.md`。修正后的本候选仍由新的 CI 验证，前置 `3d2bafd` 的结果不替代后继验证。
 
+[PR #63 后继 CI 43509538675](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43509538675) 另暴露原请求 HTTP 测试的跨秒假设：Bearer 与 Cookie 查询各自重新签发 15 分钟图片链接，链接进入内容 `revision`，因此不能断言两个独立读取的完整字节相等。专项沿真实 `server/index.ts`、签名 owner 和 Local 原图，强制跨过签发秒；原深等稳定失败于 `expires/signature/revision`，修正只从比较中排除这三项瞬时值，保留所有其他 DTO 字段及 URL 来源和路径的精确一致，并断言两个真实 revision 均为 64 位十六进制且不同。分别领取两条原签名 URL，核对 15 分钟期限、PNG 类型与原始字节；分别篡改路径、期限、签名并以合法非归属 Key 验证拒绝，原 CSRF、取消、重复取消、未知/跨成员请求、Key 撤销及受理请求 ID 断言不变。未改生产 revision、时钟、签名、超时或重试。原红例 `H:\TEMP\novelai-request-snapshot-cross-second-before.log` 保留，修正后的请求三文件源码专项 5/5、零跳过，日志 `H:\TEMP\novelai-request-snapshot-cross-second-union.log`；类型、架构、默认及可信 `858e6a2` 迁移历史通过。该局部测试修正不代替候选的新 CI、统一发布包或新关系运行时总装配验收。
+
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
 本片从 `e89408b` 继续，只新增 `RelationalRequestStore.readMemberJobPage(memberId, options)` 和 `readMemberLateResults(memberId)`，供后续真实成员 `history` 与 `me` 装配复用。前者直接分页子任务，保留现 Web 的 `page/pageSize/total/until`、创建时间/模型/状态排序和同值时 ID 倒序，不展开有限父请求页后再分页；相同入口的第一页 30 项可供 `me.jobs` 使用。参数上限、状态和排序白名单、规范 ISO `until` 与原入口一致。成员 `q` 的权威来源是原 `sqlite-store.readMemberJobPage()` 的转义 ID/模型 LIKE，Web 提示为“搜索模型或任务 ID”；管理/图片 serializer 的 `search_text` 不属于这个查询。真实旧 JsonStore 对照确认：索引正文含提示词标记，但成员查询只命中 ID/模型，不命中提示词、tag 或参数。本片不创建另一份索引正文，也不为搜索读取输入或附件。

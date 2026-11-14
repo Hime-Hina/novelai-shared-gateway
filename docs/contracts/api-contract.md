@@ -289,7 +289,7 @@ direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，d
 
 ### 父请求查询、领取与取消
 
-`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
+`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO 结构和业务字段。每次读取可重新签发限时领取链接，包含该链接的 `revision` 也可随之更新，不承诺跨时完整字节相等。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
 
 DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。counts 包含 `total/queued/pending/running/done/failed`，failed 包含取消项；jobs 每项包含 `id/index/status/model/createdAt/updatedAt/completedAt/error/cancelled/lateResultAvailable/imageUrl`，index 从零开始。父状态从子任务派生为 running、queued、pending、done、partial、cancelled、failed 或 empty，不额外保存一份状态。查询不返回完整参数、提示词或认证信息。图片归属校验后签发既有下载链接，迟到完整结果也可领取。
 
