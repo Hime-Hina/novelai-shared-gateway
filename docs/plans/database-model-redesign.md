@@ -1678,6 +1678,16 @@ admin 保留严格本机 Host、原 privateAccessAllowed/同源及每次 assertA
 
 Windows Node 22 源码管理 HTTP 及九个相关文件共 461/461；随后将测试客户端收紧为真实 Node HTTP（保留实际 Host/Origin），补核配置 PUBLIC_HOST 的合法 owner 与本机 admin 区分，管理专项最终 17/17、零跳过。全部正常源先由原业务命令/Opening owner 建立，再经唯一 installer 的完整 shadow、选定私有与真实 Local 文件核对进入 ready；近期统计的 0/NULL/退休/跨成员用实际 Opening 实体和 29 条真实失败验证。五项临时退化分别移除 IO 后当前 session 检查、以 displayName 冒充 username、改用父受理时间排序、缓存 admin 授权及移除严格本机 Host，均在原业务断言精准失败，恢复原字节后 17/17。热力图 nullable 登录名的 Nuxt 用例先出现 NULL label 反例，最小稳定 ID 回退后 11/11；backend/web type、架构、语法、默认与可信 `8b11fa6` 迁移历史和局部格式检查通过。日志及逐文件 hash 随固定候选交独立审查；未运行本片 full/compiled/Node 24，未切主入口、未提供 admin 原始 Key/PST reveal 或写命令，也不借前置 CI 宣称新管理 GET 总体验收完成。
 
+### 9.64 管理三政策 POST 的关系接入
+
+本片从管理 GET 最终受审 `db5f320` 独立接续同一 factory，只增加 `fallback-policy/free-image-policy/loss-alert-policy`。权威规则、版本和 typed receipt 已由 `RelationalQuotaStore.configureQuotaPolicy()` 及原 fallback/free/loss owner 拥有；HTTP 不重写金额或阈值公式、不增加政策事实/DDL，也不扩其他 action。管理元数据从原 `http-routes.ts` 纯提取到 `http/management-command.ts`，旧 caller 默认 admin 的输出不变；关系 caller 显式绑定当前 owner member 或平台 admin 身份，UUID/提交时间由服务器生成，单个可见 ASCII 键及完整正文意图沿原规则隔离。原 input/context/event 版本均不变。
+
+正文 IO 后在原 authorize 事务复核 Cookie、稳定 ID/epoch、Discord、当前 owner、ready、Host/同源与 admin capability，再领取旧回执或执行新命令。owner 传当次授权回调里的当前 member，不使用请求前快照或正文 actor；admin POST 复用同一 `RelationalStateNotifications.commit()` 包裹实际 immediate 最外层事务，GET 仍为原只读事务。没有空私有会话事务桥、手工 emit 或已授权布尔。原精确可见 owner 续期增加显式 GET 限制，任何政策 POST 都不续 Cookie。
+
+验收包括真实合法 ready 的 admin/owner 三政策、typed 回包、同键原回执零写与完整意图冲突、独立版本 409、无键新 UUID、慢 TCP 正文期间退出/active→disabled→active 认证代次撤销/owner 改变/ready 故障/PUBLIC query 撤权；旧回执也不得绕过当前授权。实际 projection UPDATE 后触发 SQL 失败时全表/原事实/回执/游标不变且没有政策通知，移除故障后同键可重试；成功恰一次在提交后通知 settings。全部公共完整提交从零回放及重复零写核对原政策，Key/密码/PST/Discord/会话和 auth epoch 均不随回放恢复，网络调用为零。
+
+Windows Node 22 源码管理 HTTP 最终 26/26；同政策 owner、旧 member-routes 与原通知事务四文件 93/93、零跳过。无新 HTTP 桥时首次实际 POST 为 404，准确触发原 200 断言；复用正文前会话（保留真实事务）、移除 admin 通知外层和恢复旧泛续期条件的三项临时退化分别在原授权、通知次数和 Cookie 断言失败，恢复原字节后四文件通过。直接提取固定 `db5f320` 中原函数 AST 执行，默认元数据/错误 13/13 相同，显式 member 只改变实际 actorKind 1/1；无键/单键/128 边界/非法字符/重复 raw header 均包含在对照内。类型、架构、默认与可信 `db5f320` 迁移历史、语法及局部格式检查通过。固定候选仍须独立审查；未运行 full/compiled/Node 24、未切 sole、未生产操作。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
