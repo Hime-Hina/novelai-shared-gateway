@@ -794,6 +794,42 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 新写入口加入原架构守卫，并增加 query/protocol 的静态别名、动态导入和直接调用六项拒绝反例；没有减少旧断言，增量随本片接受维护者复核。没有修改新格式 DDL/事实、旧 SQL/journal、依赖或 CI；当前未发布原型仍按原 hash guard 拒绝不兼容 schema。以上是本片自验，不代表独立复审、全业务重建、受保护输入/对象/部署环境恢复或合法 ready 安装通过；没有操作生产或真实外部端点。
 
+### 9.18 T7 前置：固定旧格式的独立只读工具包
+
+#51 的旧格式解释承接先独立于 A/B 转换准备。`scripts/package-legacy-tools.mjs` 从实际生产旧版本 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f` 的 Git 对象导出源码、SQL/journal 和原 package/lock，使用固定 pnpm 的离线生产依赖及已安装的同版本原生 SQLite 绑定组装平台专属 tar。原 SQL、journal 和源码不重编、不重写；正常在线发布和 CI 未为本工具增加旧模型入口。
+
+包保留 `SOURCE_PACKAGE.json`、`SOURCE_LOCK.yaml`；运行 package/锁文件仅裁剪成独立离线工具的生产依赖。`LEGACY_TOOLS.json` 保存固定 source commit/tree、原 metadata 摘要、Node/平台/ABI 及逐文件摘要。构建先验证独立目录，再对实际 tar 解包目录验证；不会用开发工作树 junction 的成功替代解包验收。消费方先验证发布 tar 的外部 SHA-256，再执行包内检查；清单本身不提供签名或来源认证。
+
+构建需完整 Git 历史中已有上述对象、Node 22.23.4、pnpm 10.32.1 和已安装的同版本 SQLite 原生依赖；离线 store 缺项或原生 ABI 不符时拒绝，不回源下载。包不内置 Node，运行时必须匹配构建清单的平台、架构、Node 与 ABI。
+
+```sh
+node scripts/package-legacy-tools.mjs --output=/private/new-legacy-tools-output
+tar -xzf /private/new-legacy-tools-output/novelai-legacy-tools-3caba3d-PLATFORM-ARCH.tar.gz -C /private/unpacked
+node /private/unpacked/legacy-tools/scripts/audit-legacy-archive.mjs --verify-package
+node /private/unpacked/legacy-tools/scripts/audit-legacy-archive.mjs --source=/sealed/library.sqlite --export=/private/new-archive-manifests
+node --test tests/deployment/legacy-tools.test.mjs
+```
+
+审计只接收已封存、无 WAL/SHM/journal sidecar 的 DELETE 模式单文件快照；若备份仍为 WAL 模式，先另建工作副本并完成一致性封存，不让工具 checkpoint 或升级原始归档。SQLite 主库句柄始终为 `readonly`，旧 SQL 仅用于独立内存参考库核对表结构和原 migration journal/hash；不调用 `JsonStore.init()`。复用固定旧 owner 的 `verifyEventProjections()` 核对已有影子行、流摘要与冷凭据；该 owner 所需 TEMP 表仅在内存，核对期间暂时关闭 `query_only`，主库只读权限不变，结束立即恢复。源文件及目录前后保持不变。
+
+包身份以实际物理根目录为边界：每个清单文件及链接的祖先解析后都必须仍在同一包内，合法的包内别名保留；先完成路径和摘要验证，再导入 SQLite 等包内依赖。导出沿用同一物理边界，解析已存在父目录后仅创建新目录，不能经包外 junction/symlink 别名把文件写入包内。摘要相同不能替代目录归属。
+
+当前归档切点取 `event_clock` 与 `projection_versions.core` 的同值 ready 游标；完整提交必须从 1 连续到该切点，逐提交事件数/索引继续由原 `readDomainCommits()` 核对，流头还须关联该历史中的原末事件。`event_authority.commitSeq` 是原启用切点，不作为后续当前游标。缺失中间提交、clock/core 失配或非 ready 的快照均拒绝，不将仍可读取的提交列表当作完整历史。
+
+通用记录的 SQL 稳定 ID 是当前行身份，users/accounts/cards/jobs/images/ledger 的 JSON ID 必须与之相同；业务归属继续由固定事实及原投影 owner 核对。产物清单使用 SQL ID，私有产物输入还须匹配原 artifact 流的 ID、成员、输入引用和摘要，不能把两个各自合法但关联错误的行导出为同一产物。未知 writer、格式、原资产漂移、残缺完整提交、受保护内容关系或摘要冲突均拒绝。
+
+默认 stdout 仅给聚合与来源摘要。显式 `--export` 只写全新私有目录，输出输入/上下文/诊断的身份及摘要和 Local/R2/PikPak 声明清单；提示词、Base64、凭据与诊断原文仍在封存源内。导出的上传/核验时间是原记录声明；工具不访问网络、监听 HTTP、派发任务、上传或删除对象，也不把该清单宣称为外部原图字节核验。失败导出没有最终 `audit.json` 成功回执。
+
+验收入口为 [`tests/deployment/legacy-tools.test.mjs`](../../tests/deployment/legacy-tools.test.mjs)：实际构建/解包后加载包内依赖，以固定旧 owner 创建合成归档，核对受保护输入和产物清单、原 SQL/journal 字节及源文件不变；新 writer 拒旧源、固定旧迁移 guard/审计工具拒新格式，损坏 writer、migration hash、输入、产物私有摘要和包内 SQL 均有拒绝反例。它只交付旧解释器与审计资产承接，不实现 A/B 转换、全库恢复、ready 安装、外部归档恢复或生产切换。
+
+初版 8 项通过后，独立审查复现包祖先链接、导出别名、缺完整中间提交和 JSON/SQL 产物身份冲突仍被接受。本轮从上述物理路径、完整切点和稳定身份边界修正，并保留包内/包外别名、同类 users/jobs ID、私有输入归属和依赖尚未验证即执行的反例。新增回归在初版审计器 SHA-256 `a28c45d3fd4c1a7cee814cdf6ab5047661afff076096e36d918818a3ca309726` 下统计为 17 项中 7 通过、10 失败（含父项，9 个新增拒绝子例均错误接受）；修正后的最终 Windows / Node 22.23.4 实际打包、解包和反例共 19/19 通过，零跳过。
+
+当前架构、以可信 main `1f60907` 为基线的旧迁移历史、后端类型、新文件语法和固定格式检查通过。日志保留在本机 `H:\TEMP\novelai-legacy-pre-review-fix-negative.log` 与 `H:\TEMP\novelai-legacy-review-fix-final.log`。没有重跑完整后端、取得 Linux 包证据、审计真实归档或访问外部存储；这些结果不替代后续统一候选的 CI、独立复审与恢复闭环。
+
+维护者已授权单独增加 Linux 产物证据。后续 CI 提交在原 backend job 的 `pnpm test` 后顺序执行该 deployment 用例，不塞入并发测试 glob；浅 checkout 缺固定旧 commit 时只 fetch 上述 immutable SHA，仍缺失或取得不符即失败，不改用 main/HEAD。Linux 使用 action 已安装的 pnpm 命令并保留精确版本守卫，不要求 Corepack 在线填缓存。既有门禁、超时、旧 SQL/journal 及在线发布包均不变；此 CI 增量仍需维护者复核，实际 Linux 通过以固定新 head 的运行记录为准。
+
+CI 小片的本地定向验证覆盖实际 workflow bootstrap：缺对象精确取回、已有对象不再 fetch、取回失败拒绝；Bash 语法和 YAML 解析通过。更新后的 Windows 包再次完成实际 tar/解包自检，审计器与 19 项验收代码均与前一固定修复提交字节相同。这些是准备证据，不能替代 Linux job 的实际执行。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
