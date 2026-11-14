@@ -1791,6 +1791,22 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 根在已审 owner GET/政策并集上整合，MemberStore 与专项保持 0b 的精确 Git 字节；真实成员管理、原成员与接单三文件 72/72、零跳过，6.893 秒。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式与 diff 通过，日志 `H:/TEMP/novelai-member-owner-root-{joint,type,static,format}.log`。新增的 owner 能力仅此两命令，既有 admission 与 system 边界不扩张；后续 HTTP 传参/总装配仍须实际验证。
 
+### 9.68 当前绑定账户的双角色 PATCH
+
+本片从固定 `5987606085c0fdef0991c98916bebf016037d068` 的独立工作树接入两个既有账户路径，只扩 `relational-management-http` 的 PATCH 分派，复用同一当前 owner Cookie/Discord/epoch/ready 与 local admin 的 authorize 闭包。`ownerAccountPatch` 从原 `ownerOperation` 提取严格单 `token|enabled` 规则；PST/暂停/启用仍由 `ownerAccountCommand` → AccountStore prepare/complete → QuotaStore 原观察规划提交，没有第二套资格或金额规则。完成时钟可注入，其他调用默认仍为 `Date.now`。既有业务事实、schema/格式、SQL/journal 和回放能力不变。
+
+正文和真实网络均在 SQL 外。管理 factory 可注入与自动刷新相同的 QuotaStore 与 `queryAccountQuota=sharedRefresh.fetch`，防止两个 owner 实例各自发同序票；未配置 query 的启用在 prepare 后 503 fail closed，不提交失败观察，暂停/轮换无需网络。prepare 和 complete 每次都重进真实当前授权事务；admin PATCH 与 POST 一样由唯一 notifier 的 immediate 事务持有，异常外层捕获也不能留下半笔事实、回执、私有 PST、投影或通知。启用沿原有效 Opus、观察时效/顺序、PST/epoch、绑定/政策/可用性来源复核，失败观察按原 owner 保存原失败回执后报错，不把失败伪装成成功。
+
+经核对的现 Web `ManagementUpstream` 两角色 PATCH 只提交 PST 或布尔启用，均不消费响应正文。本片明确采用新关系 AccountStore 原已保存 `{accountId,enabled,error?}` receipt，对外区别于旧 owner safeAccount/admin publicAccount 宽 DTO；成功旧 receipt 当前授权后零 IO/零重决定，不重启已被后来暂停的账户。原 actor/原操作与 raw intent 决定幂等身份，metadata 的 actor/time 来自服务器；PST 只保存在私有凭据，命令指纹不含明文。此 DTO 契约与双角色真实核验需随本片保留维护者最终审查。
+
+未接的真实旧能力有明确来源，不能归入 D4 删除：
+
+- 旧 admin `applyAccountConfiguration` 将 `name` 更新为最多 80 字符，`publicAccount.name` 返回它；新 `display_name` 只有注册/Opening 来源，没有后续名称命令。后继应在账户 owner 补真实变更事实和回放，再接相应写/读，不以新注册或当前展示值伪造历史。
+- `proxyUrl|socksProxy|proxy` 在旧 add/PATCH 中择值并经 `normalizeAccountProxyUrl` 保存为账户 proxyUrl。原额度 refresh 把该保存值传入 `createAccountQuotaQuery`；生成/放大/编码的 `accountProxyUrl` 也将它送入原 SOCKS transport。`publicAccount` 默认脱敏、显式 reveal 返回原 URL；9.58 的 PST/代理显式 reveal 保留要求仍有效。新私有模型、快照、开账、dispatch 和 PATCH 尚无这条源链：后继须按选定旧副本保全 exact 私有代理来源，并让同一账户 owner/IO 和授权 reveal 使用，不能从 env 默认值猜代理或称已迁移。源清单中的非空代理在完成前仍是上线阻塞。
+- 旧 `weight` 在 add/PATCH/bulk 中 clamp 1..100 并由 publicAccount 返回；当前唯一绑定账户 dispatch 只看绑定、实际容量与 controls，不按账户 weight 选账号，且新模型没有权威列/事实。该兼容字段仍需后续基于其实际单账户用途落实，不能默认为 1 冒充迁移来源，也不能自行扩展多账户调度。
+
+当前两角色遇上述字段明确 400。bulk PATCH、账户注册 POST、单/批额度刷新 POST、admin summary/reveal 与 sole 总装配另行接续；本片不自动执行 bootstrap 后的额度联网或生产切换。新专项目标为合法 ready/Local 与 localhost mock 真实 query，等待撤权/轮换/暂停/政策改变、最新票号、失败 Opus、外层捕获 SQL 尾错、单通知/重复零写和完整公共回放无私有复活；mock 不代表真实官方端点验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

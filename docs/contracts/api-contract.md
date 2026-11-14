@@ -281,6 +281,12 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
 
+关系账户 `PATCH /api/member/owner/accounts/:id` 与 `PATCH /api/admin/accounts/:id` 当前只接受一个字段：完整 PST `token` 或布尔 `enabled`。只操作当前绑定账户；PST 轮换先检查该账户所有成员的 reserved 责任与实际物理 controls，再更新私有凭据并保持暂停。启用必须经原 query owner 的真实额度响应、有效 Opus 和最新观察核验；网络在 SQL 外，完成时重核当前 owner Cookie/epoch/ready 或本地 admin、原绑定/政策/可用性来源与 credential epoch。两个角色都不支持绕过核验启用。总装配须注入与定时刷新相同的 QuotaStore 和 `sharedRefresh.fetch`；没有实际 query 能力时启用为 503，暂停和 PST 轮换不查网络。
+
+本片关系 PATCH 的成功回包明确收窄为 AccountStore 已保存的 `{accountId,enabled}`，失败观察的原 receipt 含 `{error:{statusCode,message}}` 并以对应错误返回；不再返回旧 owner `safeAccount` 或 admin `publicAccount` 宽 DTO。现 Web PATCH 不消费正文，展示继续从已鉴权读取接口取得。`Idempotency-Key` 沿原 actor/路径操作隔离与指纹，同一原回执须先通过当前授权；命中后不查网络、不按后来配置/余额重算，也不覆盖后续暂停或轮换。没有幂等键仍是新命令；PST 只进私有表，不进事实、回执或日志。这些 PATCH 不续期 Cookie。
+
+原 admin 的 `name`、`proxyUrl|socksProxy|proxy` 和 `weight` 写入/宽 DTO、显式 PST/代理 reveal 仍是未完成迁移项，不属于 D4 已确认退出范围。当前 PATCH 明确 400 拒绝这些字段，不静默丢失、不用环境默认代理冒充已保存来源；字段/读取及所选源保全的后继见数据库计划第 9.68 节。bulk 账户 PATCH、注册 POST、额度刷新 POST、admin summary/reveal 与唯一在线装配不由本片实现。
+
 关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
 
 F04 为这两个成员管理入口新增 `action='member-admission'`、`userId` 与布尔 `acceptingJobs`。停止接单在同一事务设置禁止状态、取消未派发任务并退款；已取得派发资格的 running 任务仍可正常完成。恢复不会复活已取消任务或旧 Native 批次剩余图片，登录与历史查询不受该状态影响。成员 `me` 和管理员成员列表新增 `acceptingJobs`；取消任务仍使用现有 `failed` 状态。默认成员/全局未完成上限分别为4/16，排队等待十分钟，参数和当前只计已创建子任务的边界见 [README](../../README.md#额度语义与限制)。
