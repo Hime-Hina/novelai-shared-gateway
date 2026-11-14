@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import { constants, createReadStream, createWriteStream, realpathSync } from 'node:fs';
 import { copyFile, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -6,6 +6,14 @@ import { pipeline } from 'node:stream/promises';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { R2Storage, r2Config, fileChecksums } from '../server/storage/r2-storage.ts';
+import {
+  readRetainedSourceProtection,
+  beginRetainedRemote,
+  confirmRetainedRemote,
+  enrollExistingRemote,
+  beginRetainedRemoteRetirement,
+  confirmRetainedRetirement,
+} from '../server/storage/retained-sources.ts';
 
 const magic = Buffer.from('NAIR2B1\0');
 export function encryptBackup(archive, key) {
@@ -75,7 +83,8 @@ async function decryptBackupFile(input, output, key) {
 }
 
 async function main() {
-  const [mode, input, output, envFile, keyFile, snapshotName] = process.argv.slice(2);
+  const [mode, input, output, envFile, keyFile, snapshotName, registry, sourceId] =
+    process.argv.slice(2);
   if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile) {
     throw new Error('Invalid backup arguments');
   }
@@ -85,6 +94,7 @@ async function main() {
   }
   const remote = new R2Storage(config),
     key = await readFile(keyFile);
+  const namespace = `r2://${remote.config.accountId}/${remote.config.bucket}`;
   const parent = path.resolve(path.dirname(output)),
     work = await mkdtemp(path.join(parent, '.r2-transfer-'));
   try {
@@ -93,6 +103,9 @@ async function main() {
       restored = path.join(work, 'restored');
     if (mode === 'download') {
       const receipt = JSON.parse(await readFile(input, 'utf8'));
+      if (receipt.namespace !== undefined && receipt.namespace !== namespace) {
+        throw new Error('Backup belongs to another R2 namespace');
+      }
       await remote.getFile(receipt, downloaded);
       await decryptBackupFile(downloaded, restored, key);
       await copyFile(restored, output, constants.COPYFILE_EXCL);
@@ -101,16 +114,35 @@ async function main() {
     if (!/^daily-[0-9TZ.]+$/.test(snapshotName || '')) {
       throw new Error('Only daily business backups are uploaded');
     }
+    if (!registry) {
+      throw new Error('A retained-source registry is required before upload');
+    }
+    await readRetainedSourceProtection(registry);
     const original = await fileChecksums(input);
     await encryptBackupFile(input, encrypted, key);
     const { byteLength, sha256 } = await fileChecksums(encrypted);
     const object = {
+      namespace,
       bucket: config.bucket,
       key: `backups/${snapshotName}/${sha256}`,
       byteLength,
       sha256,
     };
     const existing = await remote.listBackups();
+    for (const row of existing) {
+      const match = /^backups\/(?:daily|cutover)-[0-9TZ.]+\/([a-f0-9]{64})$/.exec(row.key);
+      if (match) {
+        await enrollExistingRemote(registry, {
+          namespace,
+          bucket: config.bucket,
+          key: row.key,
+          byteLength: row.bytes,
+          sha256: match[1],
+        });
+      }
+    }
+    // PUT前先持久化独立remote责任；本地轮换不能撤销它。
+    const protection = await beginRetainedRemote(registry, object, sourceId, original.sha256);
     await remote.putFile(object, encrypted);
     await remote.getFile(object, downloaded);
     await decryptBackupFile(downloaded, restored, key);
@@ -120,16 +152,20 @@ async function main() {
     }
     const receipt = await open(output, 'wx', 0o600);
     try {
-      await receipt.writeFile(JSON.stringify(object, null, 2) + '\n');
+      await receipt.writeFile(
+        JSON.stringify({ ...object, retainedSource: protection }, null, 2) + '\n',
+      );
       await receipt.sync();
     } finally {
       await receipt.close();
     }
+    await confirmRetainedRemote(registry, protection.sourceId, protection.holdId, object);
     const daily = new Map();
     for (const row of existing) {
       const match = /^backups\/daily-[0-9TZ.]+\/([a-f0-9]{64})$/.exec(row.key);
       if (match) {
         daily.set(row.key, {
+          namespace,
           bucket: config.bucket,
           key: row.key,
           byteLength: row.bytes,
@@ -160,8 +196,24 @@ async function main() {
       process.exitCode = 2;
       return;
     }
+    const retentionProof = {
+      namespace,
+      listingSha256: createHash('sha256').update(JSON.stringify(existing)).digest('hex'),
+      retainedSha256: createHash('sha256')
+        .update(JSON.stringify(backups.slice(0, 7)))
+        .digest('hex'),
+    };
     for (const old of expired) {
+      const protectedOld = await enrollExistingRemote(registry, old);
+      await beginRetainedRemoteRetirement(
+        registry,
+        protectedOld.sourceId,
+        protectedOld.holdId,
+        old,
+        retentionProof,
+      );
       await remote.removeBackup(old);
+      await confirmRetainedRetirement(registry, protectedOld.sourceId, protectedOld.holdId, old);
     }
   } finally {
     if (path.dirname(work) !== parent) {

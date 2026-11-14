@@ -355,6 +355,35 @@ export class RelationalReplicaStore {
       .all(afterId ?? '', limit)
       .map(({ id }) => ({ id, descriptor: this.readArtifact(id).descriptor }));
   }
+  // 保留源枚举不能用在线可恢复列表：退休行的原副本承诺仍属于该封存源。
+  readRetainedArtifactDependencies(afterId = '') {
+    if (typeof afterId !== 'string' || afterId.length > 128) {
+      fail('保留源枚举需要原产物游标');
+    }
+    return this.sqlite
+      .prepare<[string], { id: string }>(
+        'SELECT id FROM artifacts WHERE id>? ORDER BY id LIMIT 100',
+      )
+      .all(afterId)
+      .map(({ id }) => {
+        const artifact = this.readArtifact(id);
+        const replicas = this.sqlite
+          .prepare<[string], { id: string }>(
+            'SELECT storage_target_id AS id FROM artifact_replicas WHERE artifact_id=? ORDER BY storage_target_id',
+          )
+          .all(id)
+          .map(({ id: targetId }) => ({
+            target: this.readStorageTarget(targetId),
+            replica: this.readArtifactReplica(id, targetId)!,
+          }));
+        return {
+          id,
+          descriptor: artifact.descriptor,
+          sourceEventId: artifact.sourceEventId,
+          replicas,
+        };
+      });
+  }
   readDueArtifactReplica(now: number): {
     artifactId: string;
     kind: 'r2' | 'pikpak';
