@@ -2247,6 +2247,8 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 首轮 42.085 秒失败原样保留：新加 `events.once(request,'close')` 会因刻意 `destroy()` 的 ECONNRESET 拒绝 Promise，即使原 error listener 忽略该预期错误。相同 Node 的纯标准库 `error→close` 复现明确区分 once 拒绝与原 close listener 成功；后继只将这个观察器改为等待 close 的 Promise，保留所有业务断言，不吞非预期 fetch 失败，不把夹具失败记成产品 500、超时或已确认漏洞。真实完整执行与静态证据在固定候选交接中记录。
 
+第二轮 63.512 秒在原图路径断言短路：新 replica.object_key 是文件名，不是旧 image.file 的完整相对路径。产品角色没有矛盾；夹具改从实际 ReplicaStore 的原发布来源读取只读 Local descriptor/ticket，继续核原 images 边界、MIME、SHA 和长度，不复制 namespace 或文件名算法。两轮失败源码/SHA/日志均单独保留，不累加为通过。后继普通合入固定 root `5ca121f`，消费已审 fair/Note/9.85 和当前权威私有列来源；相对该并集仍只有此测试与两份文档，产品、共享 helper 和历史 SQL 字节不改。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
