@@ -2195,6 +2195,20 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 无 full/build/compiled/Node24/native/install、真实云端或生产操作。独立审查由非作者另验，整体发布/迁移/sole切换不借本片单项测试宣称完成。
 
+### 9.88 完整 admin summary 的关系薄装配
+
+原完整范围以 `H:/TEMP/novelai-admin-summary-scope-20261114/SCOPE.md` 固定：旧 exact GET `/api/admin/summary` 是十三字段，Web 当前只用 accounts 不构成删其余字段或 reveal 的授权。原规则分别归 Report838（child 窗口、display cost、小时桶、逻辑产物计数、错误）和 Request（全局失败50条）、Account6708（当前宽配置、mask/reveal、物理占用）、Configuration（唯一11标量 profile/stored URL）、Quota（当前共享配置/有证据成员原序）、Member（排除removed的计数）。本片不改 Schema/fact/金额命令或账户、fair-quota、sole 生命周期写路径。
+
+基础是已审 Note b50（包含c2），普通合入已审 fair-quota 4da；唯一管理 route 分派冲突同时保留两条完整路径。新增 exact admin GET 复用现 factory 的当前授权回调，先授权再读统计，await 返回后再次复核当前 admin/Host/private/同源/PUBLIC/ready，之后才从同一当前事务读 mask/reveal PST/proxy。仅字面 revealTokens=1；owner Cookie/Key不变成admin，PUBLIC query不授权。无新缓存/registry/状态、刷新或通知，不清真实仍未结束的 control。原进程 imageUrl/JobPreviews 由现 shared 实例传入，所有实际 factory caller 同批显式补齐。
+
+完整十三顶层逐项组装；Report 的 diagnosticRowsRead 和内部 accountStats1h map 不对外扩字段。Account 原 getter 实际29字段（含额外cooldownReason），summary仅静态剥该额外字段，保持旧exact28，其他账户响应不改。Member新增一条COUNT，避免为计数读取私有note/username。Direct现任务映射只原样移到原 request-queries 纯函数，同 Direct 和失败列表共用；来源/NULL、generationCost真实0、输入、时间、late、队列、签名与预览语义不变，不造第二套旧Job DTO或Store。
+
+settings只返回真实profile/stored URL与Quota只读配置。缺少选定来源的serviceName/costPerImage/maxCacheImages/accountConcurrency/mockWhenNoAccount/promptApi明确NULL，不把默认空PromptAPI冒充已知未配置；fairQuota无policy为NULL，有policy只给真实配置和原有证据成员顺序，不调managementView、不做idle/sync/refill或拼旧完整金融状态。NULL并不是丢弃原迁移来源/功能的批准，原任意设置、缺失历史、完整迁移与发布条件仍须后续闭合。
+
+新增真实localhost/唯一installer ready专项先12项通过，再加无policy/原非字典四成员顺序后同次13/13、零skip、7.930秒。覆盖13/28精确键和值、已知Anlas收费却display cost0、late后的原失败时点、真实逻辑两图/非副本、UTC+8统计、物理control未被清、query_only/全表/total_changes/通知零变；真实admin/Host/private/PUBLIC/ready等待后失效、IO前不读私有getter、等待中实际PST/proxy轮换后只给当前值、失败50原受理序与错误时序分开、51st输入不可用、公共回放无auth、选定快照合法ready/重开、统计故障不补零/吐秘密。原试跑的五处夹具错误（取错收费资源、ready既有500预期、非法PST、immutable输入写故障、异步清理顺序）单独保留并修在夹具，未放宽业务/ready/不可变校验。
+
+当前小集日志在 `H:/TEMP/novelai-admin-summary-988-20261115/`；与父任务串行源/child排期协调，受影响Direct/管理/fair/报告交集与固定非作者独审尚待补齐，不借13项标整体验收。未full/build/compiled/Node24/native/install、真实外部云或生产。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

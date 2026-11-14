@@ -32,6 +32,8 @@ import {
 } from '../../server/storage/relational-private-restore.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
+import { JobPreviews } from '../../server/generation/job-previews.ts';
+import { createPublicImageAccess } from '../../server/http/public-image.ts';
 import { assertAdminToken } from '../../server/http/admin-access.ts';
 import { authenticateMemberApiKey } from '../../server/members/authentication.ts';
 import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
@@ -153,6 +155,8 @@ async function setup(
       sqlite: db,
       events,
       controls: new Map(),
+      previews: new JobPreviews(),
+      imageUrl: createPublicImageAccess(env, () => NOW).imageUrl,
       dataDir: dir,
       env,
       now: () => NOW,
