@@ -416,3 +416,5 @@ C03 仅在 N03 完整迁移验收后实施。F01–F12、A01/R01 等已经批准
 | [executor-stream.test.ts](../../web/tests/nuxt/executor-stream.test.ts)、[caddy-routing.test.mjs](../../tests/deployment/caddy-routing.test.mjs)                                                                                                                                                                 | Node 流背压、提前拒绝与关停；固定 Caddy 产物验证统一 Nuxt 入口、公私管理隔离、API 不压缩和 SSE 首帧转发。Caddy 用模拟 Nuxt，不代替上行真实业务测试                                                                                            |
 
 这些是当前基线的证据组合，不是“全部官方API契约通过”。OpenAI关键成功/流式路径已在本地隔离HTTP环境覆盖；公网代理的SSE缓冲/断连行为、真实上游非零blur/新模型组合和浏览器兼容性仍需相应迁移/测试部署阶段验收。不能以纯模块测试替代真实HTTP或浏览器证据。
+
+Native HTTP 的新格式真实子进程夹具迁移范围见[数据库计划 9.94](../plans/database-model-redesign.md#994-native-http-正常路径的真实关系子进程夹具)。正常受理任务的权限、诊断、图片领取与重启证据不代替旧 parentless 任务、原 ENOENT/`{}` 幂等上下文或逆物理顺序源的历史恢复验收；这些原样本的归档承接另行记录。

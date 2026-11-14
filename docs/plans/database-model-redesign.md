@@ -2293,6 +2293,23 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 根在已审复制/关闭 `bb308a5` 上普通整合，十一非plan文件逐字等于0dfe；配置/成员/额度只新增原窄读，原命令与Source/guard保持。新增唯一sole实际HTTP验收放在原暂停bootstrap门禁场景：完整13字段与28账户字段、真实成员数量/暂停状态/逻辑图0、默认不泄秘密、显式reveal当前PST、Cookie不变admin、无SetCookie，且既有零上游/全部原门禁断言保留。完整新摘要文件 **14/14、零跳过，9.300秒**，该真实sole场景 **1/1、零跳过，2.004秒**。类型、architecture、默认及可信 main88迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-admin-summary-root-preservation.json`，日志 `H:/TEMP/novelai-admin-summary-root-*`。这是真实源码sole路径，尚非最终编译/发行物/Nuxt整套或迁移/容量/真实云端验收，不借旧Web ac9的失败记录翻案。
 
+### 9.94 Native HTTP 正常路径的真实关系子进程夹具
+
+本片只迁移 `tests/integration/native-http.test.mjs`，基础固定为 `a87f9279e782694a9f2a10b1e3e19ce078154f75`。复用唯一 `relational-child.mjs` 的真实离线 bootstrap、公共与获选私有来源、完整内容和唯一 installer，以及实际 `server/index.ts` 子进程、当前管理员启用账户和真实 loopback 官方额度 GET；不种旧 JsonStore、不写 SQL ready/epoch/排队/冷却投影。两个 NAI origin 显式 loopback，子进程在 IO 前拒绝其他网络及旧 Store/migrations 加载。本片不修改产品、事件/DDL、共享 helper 或 guard。
+
+| 原验收                               | 正常路径的权威来源与保留边界                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 真派发时已有预扣、一次扣退与部分批次 | 上游收到请求时只读核 Job→Attempt→Charge→Wallet 身份、当前账户 epoch、原 reservation event 所在完整提交的 QuotaReserved→DispatchAuthorized 顺序及连接来源；终态核真实 charges、GenerationRefunded 和 ReviewOpened，不重算金融。                                                                                                                                                                                           |
+| ACL、签名领取、缺图与私有诊断        | 复用原大提示词真实生成任务及原实际失败任务，不增加生成；Local 路径取真实 ReplicaStore descriptor/ticket，保护正文/诊断取 InputStore。原缺图 HTTP500 断言保留，若新 reader 实际返回503须先留真实响应和共同 owner 来源，再单独处理契约差异。                                                                                                                                                                               |
+| 报价、收费、停止接单、背压和幂等     | 原 Full/5C/Medium、OpenAI/Direct/multipart、ZIP/JSON/SSE/MessagePack、同键领取、原资源费用和退款断言保留。实际上游 PST 仅为服务私有凭据，不能替代普通成员 Key。Report 的 retryCount/cost/accountCost/queueTotal 缺原来源保持 NULL，不把普通新 job 的已知 display cost0 套到错误/历史角色。                                                                                                                               |
+| 重启与回放                           | seed901/902 经正常 POST 真实排队后停进程，完整公共提交通过原 helper 在一致 cut 回放且不复活私有状态/不发网络，再实际重开原库领取同两任务；不修改队列序号/冷却。原旧段曾直接清冷却，新夹具只在实际 stop 后只读已保存 cooldown_until 并等它自然到期，仍在原240s内完成 setup，不称缩短恢复。外层240s、HTTP45s、启动15s、重开后原20s轮询、慢客户端5s、11600ms持有、至少10s接续间隔、8MiB图片及主流程17次上游生成断言不放宽。 |
+
+旧源的全文件 Git blob `eb781db5810a2e1339e5eff44bf59675538a3549`、原文 SHA256 `35d0f9e209c3b19a3c64f2b2553d8d8fa1ad5086dcaecab9d0df9159e3f4fb7d` 及原字段/输入/PNG/断言片段封存在 `H:/TEMP/novelai-native-http-a87-original/`。原 `job-access-owner`/独立图片无父来源、`job-legacy-private-error` 的 raw ENOENT 与别名 context=`{}`、web902 的 parentless/steps28/legacyInline 输入由独立9.95归档测试承接；正常父任务不是这些旧角色的等价证明。旧重启特意把物理 order_value 与 queueSeq 置反，新正常受理没有该可写历史形状；这一原重启反例仍缺独立来源承接，9.89活跃公平顺序不冒充完成。历史线上/A-B范围尚未决定。
+
+静态类型、architecture、默认及可信 a87 migration、改动格式和语法通过。首个获准的最窄 TEMP 探针逐字复用本夹具与 IO 前 guard，真实生成seed891一次，签名200/匿名未签401/本人200/其他成员403先通过；真实 Local descriptor 文件改名后 GET content 实际503，原500断言精准失败，test1.529s/file2.099s。wire body为安全英文 `No confirmed artifact replica has readable original bytes.`，共同 reader 的 `ARTIFACT_CONTENT_UNAVAILABLE` 既有503经过中央普通错误分支原样返回；原文件已 finally 恢复、实际stop及完整公共回放完成。日志、TEMP源码及摘要封存 `H:/TEMP/novelai-native-http-994-20261115/`，不把这次真实路径差异或静态绿色记为主文件通过，原500断言尚未改变。
+
+尚未执行本候选原四个实际子进程测试或取得通过结论；后续契约决定、实际运行、源码摘要和独审证据按父任务串行排期补入，不借依赖的旧绿色或其他 Native 文件宣称本片完成。未 full/build/compiled/Node24/native install、真实云端或生产。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
