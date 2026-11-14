@@ -9,6 +9,7 @@ import {
   replyMemberJson as reply,
 } from './http-request.ts';
 import { createHash, randomBytes } from 'node:crypto';
+import { managementCommand } from '../http/management-command.ts';
 import { formatAmount, parseAmount } from '../quota/resource-amounts.ts';
 import {
   domainDigest,
@@ -167,33 +168,6 @@ const keyedManagementActions = new Set([
   'member-admission',
   'groups',
 ]);
-function managementCommand(
-  req: IncomingMessage,
-  actorId: string,
-  operation: string,
-  body: Record<string, unknown>,
-): DomainCommandMetadata {
-  const key = req.headers['idempotency-key'];
-  if (key === undefined) {
-    return { actorId, actorKind: 'admin' };
-  }
-  if (
-    typeof key !== 'string' ||
-    !/^[\x21-\x7e]{1,128}$/.test(key) ||
-    req.rawHeaders.filter(
-      (value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key',
-    ).length !== 1
-  ) {
-    error(400, 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
-  }
-  // 键按已鉴权 actor 和操作隔离；指纹只取提交意图，不取新生成的事件或时间。
-  return {
-    actorId,
-    actorKind: 'admin',
-    commandId: `management:${domainDigest([actorId, operation, key])}`,
-    fingerprint: domainDigest({ operation, body }),
-  };
-}
 function recentActivity(db: MemberDatabase, user: MemberUser) {
   const jobs = db.jobs.filter((job) => job.userToken === user.token).slice(0, 30);
   return {

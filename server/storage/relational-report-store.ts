@@ -374,7 +374,7 @@ export class RelationalReportStore {
     return this.sqlite.transaction(() =>
       this.sqlite
         .prepare<unknown[], UsageRow>(
-          `SELECT j.id,r.member_id AS memberId,m.display_name AS username,r.model,j.status,
+          `SELECT j.id,r.member_id AS memberId,COALESCE(p.username,'已移除成员') AS username,r.model,j.status,
         origin.created_at AS createdAt,a.authorized_at AS startedAt,
         a.upstream_started_at AS upstreamStartedAt,a.upstream_completed_at AS upstreamCompletedAt,
         j.error_status AS errorStatus,c.status AS chargeStatus,
@@ -384,7 +384,7 @@ export class RelationalReportStore {
           AND cached.event_type='CachedResultLinked' AND json_extract(cached.payload,'$.jobId')=j.id
           AND json_extract(cached.payload,'$.artifactId')=j.artifact_id) AS knownNoCharge
         FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
-        JOIN members m ON m.id=r.member_id
+        LEFT JOIN password_credentials p ON p.member_id=r.member_id
         LEFT JOIN generation_job_origins origin ON origin.stream_id='request:'||r.id
           AND origin.job_id=j.id AND origin.request_id=r.id
         LEFT JOIN generation_attempts a ON a.job_id=j.id LEFT JOIN charges c ON c.job_id=j.id

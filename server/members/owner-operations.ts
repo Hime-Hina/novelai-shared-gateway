@@ -3,6 +3,7 @@ import type {
   RelationalAccountStore,
   AccountCommandMetadata,
   OwnerAccountMutation,
+  AccountEnableTicket,
 } from '../storage/relational-account-store.ts';
 import type { MemberUser } from './authentication.ts';
 import {
@@ -246,7 +247,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
 }
 
 export function selectSharedAccount<T extends { id: string }>(
-  accounts: T[],
+  accounts: readonly T[],
   boundAccountId: string | null | undefined,
 ) {
   return (
@@ -290,7 +291,7 @@ export function ownerAccountConfiguration<T extends OwnerAccount>(
     body: change.kind === 'token' ? { token: change.token, enabled: false } : { enabled: false },
   };
 }
-function safeAccount(a: OwnerAccount | null | undefined) {
+export function safeAccount(a: OwnerAccount | null | undefined) {
   return (
     a && {
       id: a.id,
@@ -304,6 +305,20 @@ function safeAccount(a: OwnerAccount | null | undefined) {
       quotaError: a.quotaError ? '官方额度同步失败，请重新验证凭据' : '',
     }
   );
+}
+
+export function ownerStatisticsRange(params: URLSearchParams, now: number) {
+  const days = Number(params.get('days') || 7);
+  if (![0, 1, 7, 30, 365].includes(days)) {
+    fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+  }
+  const since =
+    days === 0
+      ? ''
+      : new Date(
+          Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
+        ).toISOString();
+  return { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
 }
 
 export function assertOwnerAccountCredentialChangeAllowed(
@@ -321,6 +336,21 @@ export function assertOwnerAccountPst(token: unknown): asserts token is string {
   }
 }
 
+// 两个账户 PATCH 入口共享原单字段规则；名称、代理与多账户权重不映射到当前模型。
+export function ownerAccountPatch(accountId: string, input: Record<string, unknown>) {
+  if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0]!)) {
+    fail(400, '只允许更新启用状态或 PST');
+  }
+  if ('token' in input) {
+    assertOwnerAccountPst(input.token);
+    return { kind: 'token' as const, accountId, token: input.token };
+  }
+  if (typeof input.enabled !== 'boolean') {
+    fail(400, 'enabled 必须为布尔值');
+  }
+  return { kind: input.enabled ? ('enable' as const) : ('pause' as const), accountId };
+}
+
 function accountCommandResult(result: RelationalCommitResult) {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
@@ -331,11 +361,15 @@ function accountCommandResult(result: RelationalCommitResult) {
 
 // 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
 export async function ownerAccountCommand(
-  store: Pick<RelationalAccountStore, 'prepareAccountCommand' | 'completeAccountEnable'>,
+  store: Pick<
+    RelationalAccountStore,
+    'prepareAccountCommand' | 'startAccountEnable' | 'completeAccountEnable'
+  >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
   input: OwnerAccountMutation,
-  query: ReturnType<typeof createAccountQuotaQuery>,
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  now: () => number = Date.now,
 ) {
   const prepared = await authorize((member) =>
     store.prepareAccountCommand(metadata, input, member),
@@ -349,15 +383,46 @@ export async function ownerAccountCommand(
   if (input.kind !== 'enable') {
     throw new Error('Only account enablement may query upstream.');
   }
-  const { ticket } = prepared;
-  let observation;
+  if (!query) {
+    fail(503, '账户额度查询尚未配置');
+  }
+  let ticket: AccountEnableTicket | undefined,
+    prior: RelationalCommitResult | undefined,
+    observation;
   try {
+    const quota = await query(prepared.prepared.pst, '', prepared.prepared.accountId, async () => {
+      const started = await authorize((member) =>
+        store.startAccountEnable(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          member,
+        ),
+      );
+      if (!started) {
+        fail(401, '会话已失效，请重新登录');
+      }
+      if ('result' in started) {
+        prior = started.result;
+        throw new Error('Account command already completed.');
+      }
+      ticket = started.ticket;
+    });
+    if (!ticket) {
+      throw new Error('Account quota query did not start its observation.');
+    }
     observation = accountQuotaResult(
       ticket.accountId,
-      await query(ticket.pst, '', ticket.accountId),
+      quota,
       new Date(ticket.startedAt).toISOString(),
     );
   } catch (error) {
+    if (prior) {
+      return accountCommandResult(prior);
+    }
+    if (!ticket) {
+      throw error;
+    }
     observation = accountQuotaErrorResult(
       ticket.accountId,
       error,
@@ -366,9 +431,9 @@ export async function ownerAccountCommand(
   }
   const result = await authorize((member) =>
     store.completeAccountEnable(
-      { ...metadata, recordedAt: Date.now() },
+      { ...metadata, recordedAt: now() },
       input,
-      ticket,
+      ticket!,
       observation,
       member,
     ),
@@ -389,22 +454,11 @@ export async function ownerOperation(
   const path = url.pathname.slice('/api/member/owner'.length),
     { store } = deps;
   if (path === '/statistics' && method === 'GET') {
-    const days = Number(url.searchParams.get('days') || 7);
-    if (![0, 1, 7, 30, 365].includes(days)) {
-      fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
-    }
-    const now = Date.now(),
-      since =
-        days === 0
-          ? ''
-          : new Date(
-              Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
-            ).toISOString();
+    const range = ownerStatisticsRange(url.searchParams, Date.now());
     // 既有响应的 days 是逐日统计数组，会覆盖查询范围的天数；保持键顺序和输出形态。
-    const range = { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
     return {
       ...range,
-      ...summarizeOwnerUsage(await store.readOwnerJobRows(since, new Date(now).toISOString())),
+      ...summarizeOwnerUsage(await store.readOwnerJobRows(range.since, range.until)),
     };
   }
   // 原回执仍受当前授权约束；命中后不再触发外部额度查询或重新决定账户配置。
@@ -422,19 +476,13 @@ export async function ownerOperation(
   const input = body!;
   const targetId = method === 'PATCH' ? /^\/accounts\/([^/]+)$/.exec(path)?.[1] : undefined;
   if (targetId) {
-    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
-      fail(400, '只允许更新启用状态或 PST');
-    }
+    const patch = ownerAccountPatch(targetId, input);
     let change: OwnerAccountChange;
-    if ('token' in input) {
-      assertOwnerAccountPst(input.token);
-      change = { kind: 'token', token: input.token };
+    if (patch.kind === 'token') {
+      change = { kind: 'token', token: patch.token };
     } else {
-      if (typeof input.enabled !== 'boolean') {
-        fail(400, 'enabled 必须为布尔值');
-      }
       change = { kind: 'pause' };
-      if (input.enabled) {
+      if (patch.kind === 'enable') {
         let observation: EnableObservation = null;
         // 只查询已选中的共享账户。使用实际提交观察时返回的来源，网络等待不在写事务内。
         if (account?.id === targetId) {

@@ -197,7 +197,7 @@ test('真实 HTTP 查询在 SQL 外；原转换与原金融事实同笔提交、
   assert.equal(requests, 1);
 });
 
-test('共用票据 owner：同一时钟或时钟回拨时，后发启用观察胜过旧自动查询', async (t) => {
+test('共用票据 owner：准备不作废已发查询，同钟或回拨的真正后发才领下一票', async (t) => {
   for (const rollback of [false, true]) {
     await t.test(String(rollback), async (t) => {
       const older = defer();
@@ -215,19 +215,22 @@ test('共用票据 owner：同一时钟或时钟回拨时，后发启用观察�
         prepared = await f.authorize((member) =>
           f.accounts.prepareAccountCommand(command, input, member),
         );
-      assert.ok(prepared.ticket);
+      assert.ok(prepared.prepared);
+      assert.equal('sequence' in prepared.prepared, false);
       assert.throws(() => f.refresh.fetch('synthetic', '', 'a'), /has not finished/);
-      const before = databaseState(f.db);
       older.resolve(rawQuota('9999'));
-      assert.deepEqual(await pending, { checked: 1, ok: 0, failed: 0, ignored: 1 });
-      assert.equal(databaseState(f.db), before);
-      const result = accountQuotaResult(
-        'a',
-        await f.refresh.fetch(prepared.ticket.pst, '', 'a'),
-        new Date(prepared.ticket.startedAt).toISOString(),
-      );
+      assert.deepEqual(await pending, { checked: 1, ok: 1, failed: 0, ignored: 0 });
+      assert.equal(f.quotas.readAccountQuota('a').observedAnlasFixed, '9999');
+      let ticket;
+      const quota = await f.refresh.fetch(prepared.prepared.pst, '', 'a', async () => {
+        const started = await f.authorize((member) =>
+          f.accounts.startAccountEnable(command, input, prepared.prepared, member),
+        );
+        ticket = started.ticket;
+      });
+      const result = accountQuotaResult('a', quota, new Date(ticket.startedAt).toISOString());
       await f.authorize((member) =>
-        f.accounts.completeAccountEnable(command, input, prepared.ticket, result, member),
+        f.accounts.completeAccountEnable(command, input, ticket, result, member),
       );
       assert.equal(f.quotas.readAccountQuota('a').observedAnlasFixed, '8200');
       assert.equal(f.quotas.readAccountQuota('a').observedSequence, '9007199254740995');
@@ -572,4 +575,31 @@ test('building/SQL内查询和缺私有凭据均不取数；通知失败不撤�
   await assert.rejects(f.refresh.refreshEnabled(), /私有凭据/);
   assert.equal(databaseState(f.db), before);
   assert.equal(calls, 1);
+});
+
+test('automatic actual start rechecks paused binding and private credential source without issuing a fake observation', async (t) => {
+  for (const mode of ['pause', 'credential', 'ready'])
+    await t.test(mode, async (t) => {
+      let calls = 0;
+      const f = await setup(t, {
+        fetchQuota: async () => {
+          calls++;
+          return rawQuota();
+        },
+      });
+      // The query owner already owns its single slot; its first microtask has not started fetch yet.
+      const pending = f.refresh.refreshEnabled();
+      if (mode === 'pause') await f.command('pause-before-actual-start', 'pause');
+      if (mode === 'credential')
+        await f.command('rotate-before-actual-start', 'token', {
+          token: 'pst-before-actual-start',
+        });
+      if (mode === 'ready') f.db.prepare("UPDATE projection_state SET status='building'").run();
+      const before = databaseState(f.db);
+      await assert.rejects(pending, /变化|incomplete/);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(calls, 0);
+      assert.equal(f.logs.length, 0);
+      assert.equal(f.refresh.pending, null);
+    });
 });

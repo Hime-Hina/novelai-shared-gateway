@@ -13,6 +13,8 @@ const writerFactories = [
   ['handleMemberAuthenticationRoutes', '../members/authentication-http.ts'],
   ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
   ['createRelationalManagementHttp', '../members/relational-management-http.ts'],
+  ['createRelationalQuotaHttp', '../quota/relational-quota-http.ts'],
+  ['authorizeRelationalMemberApiKey', '../members/relational-api-key-access.ts'],
   ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
   ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
   ['createRelationalDirectHttp', '../generation/relational-direct-http.ts'],
@@ -86,6 +88,23 @@ for (const filename of [
         ).some((error) => /write capability/.test(error)),
       );
     });
+  }
+  for (const [name, modulePath] of writerFactories.filter(([name]) =>
+    ['createRelationalQuotaHttp', 'authorizeRelationalMemberApiKey'].includes(name),
+  )) {
+    for (const source of [
+      `import { ${name} as run } from '${modulePath}'; run(deps);`,
+      `deps.${name}(input);`,
+      `export { ${name} as run } from '${modulePath}';`,
+      `const writer = require('${modulePath.replace('.ts', '.js')}'); const run=writer.${name}; run(deps);`,
+      `export * from '${modulePath}';`,
+    ]) {
+      test(`${filename} rejects new quota/auth writer ${source}`, () => {
+        assert.ok(
+          checkSource(filename, source).some((error) => /write (?:capability|call)/.test(error)),
+        );
+      });
+    }
   }
   for (const [name, modulePath] of mixedWriterSources) {
     const invoke = name === 'JsonStore' ? 'new run(dataDir);' : 'run(deps);';
@@ -608,6 +627,8 @@ test('mixed writer modules retain pure named readers and type-only capability de
       ['generationChargeResources', '../generation/accounting.ts'],
       ['freeImageSuccessWarningThreshold', '../quota/free-image-policy.ts'],
       ['memberCharge', '../quota/failure-accounting.ts'],
+      ['launcherSubscriptionFromQuota', '../quota/launcher-subscription.ts'],
+      ['quotaHttpRoute', '../protocols/quota-http.ts'],
     ]) {
       assert.deepEqual(
         checkSource(filename, `import { ${name} as read } from '${modulePath}'; read(input);`),
@@ -636,3 +657,16 @@ test('mixed writer modules retain pure named readers and type-only capability de
     );
   }
 });
+
+for (const filename of [
+  'server/generation/request-queries.ts',
+  'server/protocols/native-http.ts',
+]) {
+  test(`${filename} rejects actual account observation start`, () => {
+    assert.ok(
+      checkSource(filename, 'accounts.startAccountEnable(metadata,input,source,actor);').some(
+        (error) => error.includes('write call startAccountEnable'),
+      ),
+    );
+  });
+}
