@@ -317,13 +317,16 @@ export function createAccountQuotaQuery(
     token: string | undefined,
     proxyUrl: unknown = '',
     accountId: string | null = null,
+    onStart?: () => void | Promise<void>,
   ) => {
     const startedAt = performance.now();
+    let started = false;
     try {
-      const quota = await withQuotaRequestDeadline(
-        (signal) => fetchQuota(token!, options.env || process.env, { signal, proxyUrl }),
-        options.requestTimeoutMs ?? 15_000,
-      );
+      const quota = await withQuotaRequestDeadline(async (signal) => {
+        await onStart?.();
+        started = true;
+        return fetchQuota(token!, options.env || process.env, { signal, proxyUrl });
+      }, options.requestTimeoutMs ?? 15_000);
       logger.log(
         '[quota-query]',
         JSON.stringify({
@@ -338,6 +341,9 @@ export function createAccountQuotaQuery(
       );
       return quota;
     } catch (error) {
+      if (!started) {
+        throw error;
+      }
       const failure = quotaFailure(error);
       logger.log(
         '[quota-query]',
