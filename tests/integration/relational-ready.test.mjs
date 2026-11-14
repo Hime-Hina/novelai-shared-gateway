@@ -290,37 +290,38 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'request:unsupported-opening': '0',
+              'idempotency:m1:generate:unsupported-opening': '0',
             },
             receipt: { opening: true },
             events: [
               {
-                // 合法 opening request 身份/来源仍没有业务投影 owner；不能借新 cache owner 绕过 ready。
-                eventType: 'OpeningRequestRecorded',
-                streamId: 'request:unsupported-opening',
+                // 合法归档幂等事实仍没有业务 owner；已实现的 input/request 不再充当缺口占位。
+                eventType: 'OpeningIdempotencyRecorded',
+                streamId: 'idempotency:m1:generate:unsupported-opening',
                 memberId: 'm1',
                 accountId: null,
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
                 payload: {
-                  requestId: 'unsupported-opening',
-                  memberId: 'm1',
-                  inputId: f.db
-                    .prepare("SELECT input_id FROM generation_requests WHERE id='complete'")
-                    .get().input_id,
-                  contextId: f.db
-                    .prepare("SELECT context_id FROM generation_requests WHERE id='complete'")
-                    .get().context_id,
-                  source: 'legacy-archive',
+                  originalMemberId: 'm1',
                   operation: 'generate',
-                  model: 'nai-diffusion-4-5-full',
-                  sampleCount: 1,
-                  seedMode: 'fixed',
-                  confirmation: null,
-                  acceptedAt: NOW,
-                  retiredAt: null,
-                  origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-request' },
+                  keyHash: 'c'.repeat(64),
+                  intentFingerprint: 'd'.repeat(64),
+                  originalRequestId: 'original-archived-request',
+                  originalJobId: 'original-archived-job',
+                  originalCommandId: 'original-archived-command',
+                  requestId: null,
+                  commitSeq: null,
+                  contextId: null,
+                  resolution: 'archived',
+                  originRef: 'synthetic-archive:original-key',
+                  archivedReceipt: {
+                    requestId: 'original-archived-request',
+                    jobIds: ['original-archived-job'],
+                  },
+                  createdAt: 0,
+                  origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-original-key' },
                 },
               },
             ],

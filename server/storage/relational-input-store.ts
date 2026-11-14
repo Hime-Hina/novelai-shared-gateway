@@ -6,6 +6,7 @@ import {
   readRelationalReceipt,
   readRelationalCommit,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
 } from '../events/relational-event-store.ts';
 import {
   parseRelationalFact,
@@ -25,6 +26,7 @@ import {
   relationalInputDisplay,
   validateRelationalInputBody,
   validateRelationalAssetBytes,
+  assertRelationalCompleteInput,
   relationalInputCacheKey,
   type PreparedRelationalInput,
   type RelationalInputAsset,
@@ -122,7 +124,26 @@ function assertRequestBody(
   body: Record<string, unknown> | null,
   expected: { operation: string; model: string | null },
 ): void {
-  if (body && (body.model !== expected.model || body.operation !== expected.operation)) {
+  if (
+    body &&
+    ((body.model != null && body.model !== expected.model) ||
+      (body.operation != null && body.operation !== expected.operation))
+  ) {
+    unavailable();
+  }
+}
+
+function assertRequestSeedMode(
+  request: { operation: string; seedMode: string },
+  context?: RelationalNormalizationContext,
+) {
+  if (
+    request.seedMode !== 'unknown' &&
+    ((request.operation === 'generate') === (request.seedMode === 'not_applicable') ||
+      (request.operation === 'generate' &&
+        context?.kind === 'member' &&
+        context.member.randomSeed !== (request.seedMode === 'random')))
+  ) {
     unavailable();
   }
 }
@@ -133,6 +154,8 @@ export const relationalInputFacts = new Set<RelationalEvent['eventType']>([
   'RequestAccepted',
   'JobAccepted',
   'RequestAliasRegistered',
+  'OpeningInputRecorded',
+  'OpeningRequestRecorded',
 ]);
 
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
@@ -143,6 +166,122 @@ export class RelationalInputStore {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.env = env;
+  }
+
+  // 离线调用者须把保护内容暂存与原 Opening 提交放在同一保存点；这里不解释旧格式。
+  stageOpeningInput(input: {
+    inputId: string;
+    memberId: string;
+    completeness: InputRow['completeness'];
+    body: Record<string, unknown> | null;
+    logicalBytes: number;
+    assets: (RelationalInputAsset & { bytes: Buffer })[];
+  }) {
+    this.assertOpeningStage();
+    return this.sqlite.transaction(() => {
+      const assets = input.assets.map(({ bytes: _bytes, ...asset }) => asset);
+      if (input.body === null) {
+        if (input.completeness !== 'unavailable' || input.logicalBytes !== 0 || assets.length) {
+          unavailable();
+        }
+      } else {
+        if (input.completeness === 'unavailable') {
+          unavailable();
+        }
+        validateRelationalInputBody(input.body, input.completeness === 'complete');
+        relationalAssetSlots(input.body, assets);
+      }
+      for (const asset of input.assets) {
+        if (
+          !Buffer.isBuffer(asset.bytes) ||
+          asset.bytes.length !== asset.byteLength ||
+          createHash('sha256').update(asset.bytes).digest('hex') !== asset.sha256
+        ) {
+          unavailable();
+        }
+      }
+      const payload = {
+        inputId: input.inputId,
+        memberId: input.memberId,
+        inputSchemaVersion: 1 as const,
+        completeness: input.completeness,
+        inputSha256:
+          input.body === null
+            ? null
+            : relationalInputDigest(input.body, assets, input.logicalBytes),
+        logicalBytes: input.logicalBytes,
+      };
+      this.insertInput({
+        row: {
+          id: input.inputId,
+          member_id: input.memberId,
+          schema_version: 1,
+          completeness: input.completeness,
+          sha256: payload.inputSha256,
+          logical_bytes: input.logicalBytes,
+          body: input.body === null ? null : canonicalJson(input.body),
+        },
+        assets: input.assets,
+      });
+      return payload;
+    })();
+  }
+
+  stageOpeningContext(contextId: string, value: RelationalNormalizationContext) {
+    this.assertOpeningStage();
+    const context = parseRelationalNormalizationContext(value);
+    this.insertContext(contextId, context);
+    return { contextId, contextSchemaVersion: 1 as const, contextSha256: domainDigest(context) };
+  }
+
+  private assertOpeningStage() {
+    if (
+      !this.sqlite.inTransaction ||
+      this.sqlite
+        .prepare<[], { status: string }>('SELECT status FROM projection_state WHERE id=1')
+        .get()?.status !== 'building'
+    ) {
+      throw new Error('Opening content requires the owning offline building transaction.');
+    }
+  }
+
+  private insertContext(contextId: string, context: RelationalNormalizationContext) {
+    this.sqlite
+      .prepare('INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)')
+      .run(contextId, domainDigest(context), canonicalJson(context));
+  }
+
+  private insertInput(input: {
+    row: InputRow;
+    assets: (RelationalInputAsset & { bytes: Buffer })[];
+  }) {
+    const row = input.row;
+    this.sqlite
+      .prepare(
+        'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
+      )
+      .run(
+        row.id,
+        row.member_id,
+        row.schema_version,
+        row.completeness,
+        row.sha256,
+        row.logical_bytes,
+        row.body,
+      );
+    const insert = this.sqlite.prepare(
+      'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
+    );
+    for (const asset of input.assets) {
+      insert.run(
+        row.id,
+        asset.assetId,
+        asset.mimeType,
+        asset.byteLength,
+        asset.sha256,
+        asset.bytes,
+      );
+    }
   }
 
   generationInputIntent(
@@ -295,11 +434,7 @@ export class RelationalInputStore {
       .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
       .get(prepared.contextId);
     if (!existing) {
-      this.sqlite
-        .prepare(
-          'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-        )
-        .run(prepared.contextId, prepared.contextSha256, canonicalJson(prepared.context));
+      this.insertContext(prepared.contextId, prepared.context);
       events.push({
         ...common,
         streamId: `context:${prepared.contextId}`,
@@ -402,24 +537,18 @@ export class RelationalInputStore {
   }
 
   private stagePreparedInput(inputId: string, memberId: string, prepared: PreparedRelationalInput) {
-    this.sqlite
-      .prepare(
-        "INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,1,'complete',?,?,?)",
-      )
-      .run(inputId, memberId, prepared.sha256, prepared.logicalBytes, canonicalJson(prepared.body));
-    const insert = this.sqlite.prepare(
-      'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
-    );
-    for (const asset of prepared.assets) {
-      insert.run(
-        inputId,
-        asset.assetId,
-        asset.mimeType,
-        asset.byteLength,
-        asset.sha256,
-        asset.bytes,
-      );
-    }
+    this.insertInput({
+      row: {
+        id: inputId,
+        member_id: memberId,
+        schema_version: 1,
+        completeness: 'complete',
+        sha256: prepared.sha256,
+        logical_bytes: prepared.logicalBytes,
+        body: canonicalJson(prepared.body),
+      },
+      assets: prepared.assets,
+    });
   }
 
   // 只供 generation 原事务暂存；后续事实/投影失败必须随调用者的保存点一起回滚。
@@ -738,6 +867,7 @@ export class RelationalInputStore {
     const accepted = requests[0],
       p = accepted.payload;
     assertRequestBody(body, p);
+    assertRequestSeedMode(p, context);
     const registered = events.filter((event) => event.eventType === 'InputRegistered');
     const cached = events.filter((event) => event.eventType === 'CachedResultLinked');
     if (
@@ -768,11 +898,7 @@ export class RelationalInputStore {
           child.memberId !== p.memberId ||
           child.accountId !== null ||
           child.payload.sampleIndex !== index,
-      ) ||
-      (p.operation === 'generate') === (p.seedMode === 'not_applicable') ||
-      (p.operation === 'generate' &&
-        context.kind === 'member' &&
-        context.member.randomSeed !== (p.seedMode === 'random'))
+      )
     ) {
       unavailable();
     }
@@ -1166,11 +1292,7 @@ export class RelationalInputStore {
         receipt,
       });
       if (!contextExists) {
-        this.sqlite
-          .prepare(
-            'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-          )
-          .run(prepared.contextId, prepared.contextSha256, canonicalJson(prepared.context));
+        this.insertContext(prepared.contextId, prepared.context);
       }
       this.stagePreparedInput(accepted.inputId, accepted.memberId, prepared);
       this.applyAcceptedEvents(result.events);
@@ -1180,12 +1302,12 @@ export class RelationalInputStore {
 
   private applyAcceptedEvents(events: RelationalEvent[]): void {
     for (const event of events) {
-      if (event.eventType === 'RequestAccepted') {
+      if (event.eventType === 'RequestAccepted' || event.eventType === 'OpeningRequestRecorded') {
         const p = event.payload;
         this.sqlite
           .prepare(
-            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,source_event_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             p.requestId,
@@ -1198,7 +1320,10 @@ export class RelationalInputStore {
             p.sampleCount,
             p.seedMode,
             p.confirmation === null ? null : canonicalJson(p.confirmation),
-            event.occurredAt,
+            event.eventType === 'OpeningRequestRecorded'
+              ? event.payload.acceptedAt
+              : event.occurredAt,
+            event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
             event.eventId,
           );
       } else if (event.eventType === 'JobAccepted') {
@@ -1268,6 +1393,24 @@ export class RelationalInputStore {
     }
     const contexts = new Map<string, RelationalNormalizationContext>();
     const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
+    const opening = stored.events.some(
+      (event) =>
+        event.eventType === 'OpeningInputRecorded' || event.eventType === 'OpeningRequestRecorded',
+    );
+    if (
+      opening &&
+      (stored.command.actorKind !== 'system' ||
+        stored.command.actorId !== null ||
+        stored.events.some(
+          (event) =>
+            relationalInputFacts.has(event.eventType) &&
+            event.eventType !== 'OpeningInputRecorded' &&
+            event.eventType !== 'OpeningRequestRecorded' &&
+            event.eventType !== 'ContextRegistered',
+        ))
+    ) {
+      unavailable();
+    }
     for (const event of stored.events) {
       if (event.eventType === 'ContextRegistered') {
         const p = event.payload,
@@ -1297,6 +1440,7 @@ export class RelationalInputStore {
           unavailable();
         }
         contexts.set(event.payload.contextId, context);
+        source.assertCompleteInput(input, context, event.payload.sampleCount);
         this.assertAcceptedEvents(
           stored.events,
           input.body,
@@ -1308,7 +1452,60 @@ export class RelationalInputStore {
           stored.command,
         );
       }
-      if (event.eventType === 'InputRegistered') {
+      if (event.eventType === 'OpeningRequestRecorded') {
+        assertRelationalOpeningSource(this.sqlite, event);
+        const p = event.payload,
+          input = inputs.get(p.inputId) ?? source.input(p.inputId, p.memberId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('RequestAccepted','OpeningRequestRecorded') LIMIT 2",
+            )
+            .all(event.streamId);
+        if (registrations.length !== 1 || registrations[0].eventId !== event.eventId) {
+          unavailable();
+        }
+        if (
+          stored.events.some(
+            (registered) =>
+              registered.eventIndex >= event.eventIndex &&
+              (registered.eventType === 'InputRegistered' ||
+                registered.eventType === 'OpeningInputRecorded') &&
+              registered.payload.inputId === p.inputId,
+          )
+        ) {
+          unavailable();
+        }
+        assertRequestBody(input.body, p);
+        assertRequestSeedMode(p);
+        inputs.set(p.inputId, input);
+        if (p.contextId !== null) {
+          if (
+            !this.sqlite
+              .prepare(
+                `SELECT 1 FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered'
+                  AND (commit_seq < ? OR (commit_seq = ? AND event_index < ?)) LIMIT 1`,
+              )
+              .get(
+                `context:${p.contextId}`,
+                BigInt(event.commitSeq),
+                BigInt(event.commitSeq),
+                event.eventIndex,
+              )
+          ) {
+            unavailable();
+          }
+          const context = contexts.get(p.contextId) ?? source.context(p.contextId);
+          assertRequestSeedMode(p, context);
+          if (input.row.completeness === 'complete') {
+            source.assertCompleteInput(input, context, p.sampleCount);
+          }
+          contexts.set(p.contextId, context);
+        }
+      }
+      if (event.eventType === 'InputRegistered' || event.eventType === 'OpeningInputRecorded') {
+        if (event.eventType === 'OpeningInputRecorded') {
+          assertRelationalOpeningSource(this.sqlite, event);
+        }
         const p = event.payload,
           input = source.input(p.inputId, p.memberId),
           registrations = this.sqlite
@@ -1317,7 +1514,10 @@ export class RelationalInputStore {
             )
             .all(event.streamId);
         if (
-          input.row.completeness !== 'complete' ||
+          input.row.completeness !==
+            (event.eventType === 'OpeningInputRecorded'
+              ? event.payload.completeness
+              : 'complete') ||
           p.inputSchemaVersion !== input.row.schema_version ||
           p.inputSha256 !== input.row.sha256 ||
           p.logicalBytes !== input.row.logical_bytes ||
@@ -1332,7 +1532,7 @@ export class RelationalInputStore {
         contexts.set(event.payload.contextId, source.context(event.payload.contextId));
       }
     }
-    if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
+    if (!opening && !stored.events.some((event) => event.eventType === 'RequestAccepted')) {
       const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
       if (!alias) {
         unavailable();
@@ -1369,20 +1569,16 @@ export class RelationalInputStore {
         if (replayed) {
           unavailable();
         }
-        this.sqlite
-          .prepare(
-            'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-          )
-          .run(contextId, domainDigest(context), canonicalJson(context));
+        this.insertContext(contextId, context);
       }
     };
     const byInput = new Map(content.map((input) => [input.inputId, input]));
-    const copyInput = (inputId: string) => {
+    const copyInput = (inputId: string, existingOnly = false) => {
       const input = byInput.get(inputId);
       if (!input) {
         unavailable();
       }
-      if (replayed || source.sqlite === this.sqlite) {
+      if (replayed || existingOnly || source.sqlite === this.sqlite) {
         const existing = this.input(input.inputId, input.row.member_id);
         if (
           canonicalJson(existing) !==
@@ -1401,32 +1597,7 @@ export class RelationalInputStore {
         }
         return;
       }
-      this.sqlite
-        .prepare(
-          'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
-        )
-        .run(
-          input.row.id,
-          input.row.member_id,
-          input.row.schema_version,
-          input.row.completeness,
-          input.row.sha256,
-          input.row.logical_bytes,
-          input.row.body,
-        );
-      const insert = this.sqlite.prepare(
-        'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
-      );
-      for (const asset of input.assets) {
-        insert.run(
-          input.inputId,
-          asset.assetId,
-          asset.mimeType,
-          asset.byteLength,
-          asset.sha256,
-          asset.bytes,
-        );
-      }
+      this.insertInput(input);
     };
     return (event: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
@@ -1434,8 +1605,22 @@ export class RelationalInputStore {
       }
       if (event.eventType === 'ContextRegistered') {
         copyContext(event.payload.contextId);
-      } else if (event.eventType === 'InputRegistered') {
+      } else if (
+        event.eventType === 'InputRegistered' ||
+        event.eventType === 'OpeningInputRecorded'
+      ) {
         copyInput(event.payload.inputId);
+      } else if (event.eventType === 'OpeningRequestRecorded') {
+        const p = event.payload;
+        copyInput(p.inputId, true);
+        if (p.contextId !== null) {
+          copyContext(p.contextId);
+        }
+        if (replayed) {
+          this.request(p.requestId, p.memberId);
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
       } else if (event.eventType === 'RequestAccepted') {
         copyContext(event.payload.contextId);
         if (!replayed) {
@@ -1796,6 +1981,35 @@ export class RelationalInputStore {
     return { mimeType: descriptor.mimeType, bytes: row.bytes };
   }
 
+  private validatedAssets(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+  ) {
+    if (!input.body) {
+      unavailable();
+    }
+    const assets = input.assets.map((descriptor) => ({
+      ...descriptor,
+      bytes: this.asset(input.row.id, descriptor).bytes,
+    }));
+    for (const slot of relationalAssetSlots(input.body, assets)) {
+      const asset = assets.find(
+        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
+      )!;
+      validateRelationalAssetBytes(asset, slot.image, context);
+    }
+    return assets;
+  }
+
+  private assertCompleteInput(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+    sampleCount: number,
+  ) {
+    const assets = this.validatedAssets(input, context);
+    assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
+  }
+
   readJobInput(jobId: string) {
     const job = this.sqlite
       .prepare<
@@ -1822,16 +2036,7 @@ export class RelationalInputStore {
       unavailable();
     }
     const context = this.context(job.context_id);
-    const assets = input.assets.map((descriptor) => ({
-      ...descriptor,
-      bytes: this.asset(job.input_id, descriptor).bytes,
-    }));
-    for (const slot of relationalAssetSlots(input.body, assets)) {
-      const asset = assets.find(
-        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
-      )!;
-      validateRelationalAssetBytes(asset, slot.image, context);
-    }
+    const assets = this.validatedAssets(input, context);
     const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);
     return {
