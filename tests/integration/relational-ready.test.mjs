@@ -1,3 +1,4 @@
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -50,6 +51,7 @@ import { copyRelationalArtifactReplica } from '../../server/storage/relational-r
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function snapshot(f, name = 'selected') {
   const sourcePath = path.join(f.dir, `${name}.sqlite`);
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const sealed = new Database(sourcePath);
   sealed.pragma('journal_mode=DELETE');

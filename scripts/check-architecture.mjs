@@ -31,6 +31,10 @@ const mutations = new Set([
   'initializeRelationalStorage',
   'persistAcceptedInput',
   'stageGenerationDiagnostic',
+  'initializeGatewayConfiguration',
+  'stageNormalizationDefaultsProfile',
+  'createNormalizationDefaultsProjector',
+  'createConfigurationProjector',
   'replayAcceptedInput',
   'memberSessionTransaction',
   'discordAuthenticationTransaction',
@@ -173,7 +177,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

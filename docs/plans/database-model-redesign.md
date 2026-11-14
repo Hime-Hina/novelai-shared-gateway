@@ -1355,6 +1355,28 @@ Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，
 
 整合同时发现新周期刷新 factory 未进入原写能力集合；已有成员/Native/认证 HTTP writer 经 namespace 或动态导入后捕获别名，也能逃过仅按调用名识别的检查。最小修正在原集合登记三个实际 factory，并在现 owner 模块匹配中补齐这些已持有写能力的 HTTP/刷新模块，不新增检查框架。查询和 protocol 的 26 个新增负控先为 26 失败、原 233 项通过，修后 259/259；原 type-only reader、纯 transport 和宿主装配正对照仍通过，真实全树 architecture 检查通过。证据 `H:\TEMP\novelai-refresh-writer-guard-before.log` 与 `novelai-refresh-writer-guard-after.log`。这是需维护者复核的守卫增量，不将源码检查视作 agent 权限沙箱，也未修改远端保护或 SQL 历史。
 
+### 9.47 当前规范化配置的显式来源和保护恢复
+
+本片从固定 `3d2bafd7` 接续，只交付 sole 新在线运行时必需的当前配置 owner；不增加当前无 caller 的管理 CRUD，不恢复 PromptAPI 执行/秘密，不选择 A/B 迁移路线。实际旧读取需要三项顶层默认值和八项 defaults，成员入口还需要原 `publicBaseUrl` 回退值。规则继续归 `requestNormalizationDefaults()`、`normalizeNovelAiRequest()` 与 `memberPublicBaseUrl()`，未把当前程序默认、旧请求首次 context 或整个 settings 当作来源。
+
+`RelationalConfigurationStore.initializeGatewayConfiguration()` 只接受 building 目标中的显式 system 初始化，必须给出 originRef 和完整 11 字段（原 null/false/0/空串保留）。相同原命令和完整意图可幂等重领，新的命令不能覆盖已有配置；初始化持有短事务并使用保存点，失败时 profile、事实、回执和 current 行一起回滚。当前没有线上配置修改入口；未来如有实际需求，仍在同一 owner 增加具体带版本前置的命令。
+
+专用 `{kind:'normalization-defaults',values:...}` 闭合 profile 复用 `normalization_contexts` 受保护载体与原规范摘要，原画师/负向文本不放入事件/回执。它不加入 `RelationalNormalizationContext` union，不发 `ContextRegistered`，不能冒充缺 Native 的首次生成定义。唯一 `GatewayConfigurationInitialized` 事实仅保存 profile ID/SHA、公共地址回退值和来源；`gateway_configuration` 单例只持引用、地址与 source event，无额外版本或 settings 副本。新请求只取 profile values 后捕获自己的当前 Native；旧键继续读取原请求/context，无需读取 current。
+
+配置事实有独立完整提交 projector，共同业务 replayer 显式要求匹配的保护源，按同一源完整 commit 验 profile 类型、SHA 与 current 关系。没有任何请求的历史也能恢复 profile；重复回放仍验证源和目标内容，缺失时拒绝，不借重复回放修复保护正文。ready 核对在选定 cut 上显式要求 current 存在且有效，并经完整 shadow、保护内容和全表核对安装；两边都没有配置不能因空表相等而通过。认证私有表清单未扩展，不复制 PromptAPI key 或复活成员/PST/session。
+
+初始化不解释旧格式。将来选定 converter 从封存 source/cut 按固定源版本的有效默认语义导入这 11 个值；不能用候选默认补旧来源，也不能把当前来源变成历史首次定义。公共地址保留已保存回退值，env 优先由原 helper 计算，不把覆盖后的 env 再保存成派生状态。本片沿并行批统一事件 v4，旧 v3 即使具有其自身正确 schema hash 也拒绝，旧 SQL/journal 未改，未增加回到旧模型的开关。
+
+新增反例覆盖：明确来源/未知字段与非 finite、已知空值保真、唯一初始化与同键不同意图、外层 catch SQL 故障全回滚、零请求保护联合回放、源错配和漏源、重复/不完整事实、重复回放缺内容不自愈、生成 parser/孤立 ContextRegistered 守卫保持、缺 current 的 ready 拒绝和真实 owner 初始化后的合法安装，以及历史 A/current B 下新归一化 B、旧键重领与执行 A、完整联合恢复。所有 ready 夹具在备份前调用真实初始化 owner，没有手插 current 或标 ready。
+
+Node 22.23.4 新专项 8/8、配置/输入/完整回放/ready/格式/架构七文件 346/346，以及认证 HTTP/诊断/成员 HTTP/Native HTTP/队列五文件 61/61，均零跳过。五文件首轮的唯一诊断夹具使用了初始化前的 cut，已把真实配置初始化放在该业务之前，同一修正候选全组通过。backend 类型、架构、默认及可信 `3d2bafd7` 迁移历史、改动格式与 diff 检查通过。日志为 `H:\TEMP\novelai-current-configuration-focused.log`、`novelai-current-configuration-seven-files.log`、`novelai-current-configuration-http-runtime.log`。独立审查及错误实现反例随后绑定固定候选；完整后端、编译产物、Node 24、HTTP sole 装配、正式迁移与切换仍由父任务同候选验收，本段不把存储 owner 验证写成线上端点完成。
+
+技术产品固定 `9f546567c52623b2ed2d8ee9fc3a3d46eaee32a8`，25 个改动文件与该 Git 对象逐项核对。TEMP ready 负控最初被前置私有恢复的 Number 文件号误判挡住，没有把这次提前拒绝计作反例成功；实际 NTFS 两个不同 inode 为 `6917529027678021698/1699`，默认 Number 同为 `6917529027678022000`。该问题由私有恢复 owner 独立固定 `7c7652bc817891b64752d3ccafb63d763e167d00`，不混入本片产品。
+
+仅在 `9f546567` 的 TEMP 归档副本加载 `7c7652bc` 精确私有恢复源码后，原 8/8 对照通过；分别移除 current 显式核对、重复回放目标 profile 存在核对，原相同业务断言精确失败为 `Missing expected rejection/exception`。证据在 `H:\TEMP\novelai-current-configuration-negative-9f54656-20261114` 的 `baseline.log`、`negative-ready-current.log`、`negative-replayed-repair.log` 和 `negative-evidence.json`，后者明确两固定来源及 ready/input/private 三文件恢复 SHA。真实 Number 提前误拒记录保留在 `identity-probe-number-stat-original.log`。独立技术复审由另一 agent 按固定产品进行；父任务仍需把已审依赖纳入同一候选完成整体恢复与发布验收。
+
+独立复审已按固定配置 `9f546567` 与文档后继 `ef9b4b8` 收尾，配置产品无新增 finding；单独配置先经原 8 项及独立 4 项 12/12，再仅在 TEMP 合入精确私有恢复修复 `7c7652bc`，最终配置 8 项、独立 5 项和文件身份 2 项共 15/15，零跳过。额外反例核对同 profile SHA 但不同来源/地址的完整提交拒绝、current 错指真实成员事实不修复、真实 AFTER INSERT 后外层 catch 全表回滚、ready 原回执零写及管理员/新命令拒绝、两边同缺 current 拒绝，以及原省略默认值的 raw 意图确实使用首次 A 重归一化、current B 同键冲突。隔离副本只删除 `assertCut` 的一行 current 读取后，原业务断言精确失败为 `Missing expected rejection`（0/1），已解除 Number 文件号提前误拒的遮蔽。独立报告和文件摘要分别为 `H:\TEMP\novelai-configuration-INDEPENDENT-REVIEW.md`、`H:\TEMP\novelai-configuration-reviewed-files.json`，最终日志为 `H:\TEMP\novelai-configuration-and-bigint-15-final.log`，负控为 `H:\TEMP\novelai-configuration-independent-negative\no-current.log`。该复审没有修改产品或执行 full；实际 sole/R08 HTTP、同候选发布物和总体恢复验收仍由父任务接续。
+
 ### 9.50 全业务 Opening owner 与来源闭包
 
 本片从固定 `3d2bafd` 只接新格式 Opening 的业务投影，不解释旧源、不选择 A/B，也不另建迁移器。九类缺口为 Funding、Input、Request、Job、Attempt、Artifact、StorageTarget、Replica 和 Idempotency；正常缓存链接与成员资金命令由各自 owner 接续。依赖顺序为登记来源→保护 Input/Context→Request→Job→Attempt/Charge→Artifact→Replica，幂等来源最后核对；Funding 与 StorageTarget 可以先独立交付。原完整提交仍只保存一次，所有 owner 严格原事件顺序共用同一保存点，不排序或拆开再调用窄 replay。

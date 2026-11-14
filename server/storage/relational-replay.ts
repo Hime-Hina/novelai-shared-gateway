@@ -18,6 +18,10 @@ import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-s
 import { RelationalAccountStore, relationalAccountFacts } from './relational-account-store.ts';
 import { relationalPrivateStateEmpty } from './relational-private-restore.ts';
 import { RelationalReplicaStore, relationalReplicaFacts } from './relational-replica-store.ts';
+import {
+  RelationalConfigurationStore,
+  relationalConfigurationFacts,
+} from './relational-configuration-store.ts';
 
 export function relationalReplayFacts() {
   return new Set([
@@ -27,6 +31,7 @@ export function relationalReplayFacts() {
     ...relationalQuotaFacts,
     ...relationalAccountFacts,
     ...relationalReplicaFacts,
+    ...relationalConfigurationFacts,
   ]);
 }
 
@@ -46,6 +51,7 @@ export class RelationalCommitReplayer {
   private quotas: RelationalQuotaStore;
   private accounts: RelationalAccountStore;
   private replicas: RelationalReplicaStore;
+  private configuration: RelationalConfigurationStore;
 
   constructor(sqlite: Database.Database, generations?: RelationalGenerationStore) {
     this.sqlite = sqlite;
@@ -56,6 +62,7 @@ export class RelationalCommitReplayer {
     // 离线回放没有物理执行器；账户投影不运行授权、网络查询或派发命令。
     this.accounts = new RelationalAccountStore(sqlite, this.quotas, new Map());
     this.replicas = new RelationalReplicaStore(sqlite);
+    this.configuration = new RelationalConfigurationStore(sqlite);
   }
 
   #applyCommit(result: RelationalCommitResult, sourceInputs?: RelationalInputStore) {
@@ -76,7 +83,10 @@ export class RelationalCommitReplayer {
       assertSupported(stored.events);
       const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
       const hasDiagnostic = stored.events.some((event) => event.eventType === 'DiagnosticRecorded');
-      if ((hasInput || hasDiagnostic) && !sourceInputs) {
+      const hasConfiguration = stored.events.some((event) =>
+        relationalConfigurationFacts.has(event.eventType),
+      );
+      if ((hasInput || hasDiagnostic || hasConfiguration) && !sourceInputs) {
         throw new Error('Protected content replay requires the matching protected source.');
       }
       const applyInput = hasInput
@@ -85,7 +95,11 @@ export class RelationalCommitReplayer {
       const applyDiagnostic = hasDiagnostic
         ? this.inputs.createDiagnosticProjector(sourceInputs!, stored, result.replayed)
         : null;
+      const applyConfiguration = hasConfiguration
+        ? this.configuration.createConfigurationProjector(stored, sourceInputs!, result.replayed)
+        : null;
       if (result.replayed) {
+        applyConfiguration?.();
         if (applyInput) {
           for (const event of stored.events) {
             if (relationalInputFacts.has(event.eventType)) {
@@ -115,7 +129,9 @@ export class RelationalCommitReplayer {
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {
-        if (relationalMemberFacts.has(event.eventType)) {
+        if (relationalConfigurationFacts.has(event.eventType)) {
+          applyConfiguration!();
+        } else if (relationalMemberFacts.has(event.eventType)) {
           this.members.applyReplayedMemberEvent(event, stored.events);
         } else if (relationalInputFacts.has(event.eventType)) {
           applyInput!(event);

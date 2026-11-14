@@ -189,14 +189,14 @@ function accountEvent(fact, accountId = 'a') {
     commitSeq: '1',
     eventIndex: 0,
     streamVersion: '1',
-    schemaVersion: 3,
+    schemaVersion: 4,
     correlationId: null,
     causationId: null,
     amountVersion: 'decimal-12-v1',
   };
 }
 
-test('所有 v3 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
+test('所有 v4 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
   const owners = Object.values(relationalFactStreams).flat();
   assert.equal(new Set(owners).size, owners.length);
   assert.deepEqual([...owners].sort(), Object.keys(relationalPayloadParsers).sort());

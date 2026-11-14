@@ -1,3 +1,4 @@
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -54,6 +55,7 @@ async function setup(t, options = {}) {
   f.dispatch('existing-0', NOW);
   await f.publish('existing-0');
   const sourcePath = path.join(f.dir, 'selected.sqlite');
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const sealed = new Database(sourcePath);
   sealed.pragma('journal_mode=DELETE');

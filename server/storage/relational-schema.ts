@@ -219,6 +219,13 @@ CREATE TABLE normalization_contexts (
   UNIQUE (schema_version, sha256)
 ) STRICT;
 
+CREATE TABLE gateway_configuration (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  normalization_context_id TEXT NOT NULL REFERENCES normalization_contexts(id),
+  public_base_url TEXT,
+  ${fact}
+) STRICT;
+
 CREATE TABLE generation_inputs (
   id TEXT PRIMARY KEY,
   member_id TEXT NOT NULL REFERENCES members(id),

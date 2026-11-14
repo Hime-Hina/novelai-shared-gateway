@@ -35,6 +35,7 @@ import {
   relationalAccountFacts,
 } from '../../server/storage/relational-account-store.ts';
 import { relationalReplicaFacts } from '../../server/storage/relational-replica-store.ts';
+import { relationalConfigurationFacts } from '../../server/storage/relational-configuration-store.ts';
 import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
 import {
   initializeRelationalStorage,
@@ -221,7 +222,7 @@ function observe(f, q, id, fixed, at) {
   return f.db.transaction(() => q.recordQuotaObservation(meta(id, at), ticket, result))();
 }
 
-test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () => {
+test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () => {
   const owners = [
     relationalMemberFacts,
     relationalInputFacts,
@@ -229,12 +230,13 @@ test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () =>
     relationalQuotaFacts,
     relationalAccountFacts,
     relationalReplicaFacts,
+    relationalConfigurationFacts,
   ];
   assert.equal(
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 63);
+  assert.equal(relationalReplayFacts().size, 64);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
