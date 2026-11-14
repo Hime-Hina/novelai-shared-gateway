@@ -1973,6 +1973,10 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 既有 Native/OpenAI/Direct/Queue 四文件单并发联合 **101/101、零 skip，53.119 秒**，保持原预算、回执、流/批次、来源、完整回放和 rollback 断言；日志 `H:/TEMP/novelai-sole-runtime-owner-joint.log`。backend typecheck、architecture、默认及可信 main `88d2c26` migration、改动格式/语法/diff 检查绑定当前源码；架构守卫、旧 SQL/journal、fact/DDL 和 critical assertions 均未修改。普通入口大替换与新增生命周期反例需维护者及独立审查复核，不以作者检查或父 full 冒称同候选整体验收。
 
+首次固定 `b9feee4` 后自核原装配发现 HTTP 领取误用物理 `NOVELAI_GENERATE_TIMEOUT_MS`，遗漏原 Direct `DIRECT_GENERATE_TIMEOUT_MS`（默认 60 秒）与 Native/OpenAI `OPENAI_CHAT_TIMEOUT_MS`（默认 10 分钟）；该固定不能视为最终通过。最小后继只恢复原两参数，物理超时仍归原 queue owner。新增真实 Direct/Native/OpenAI 短领取期限、上游仍 running 后实际完成的三例：原 b9 同一脚本四项全红（含父），错误接受真正 500ms 后的产物而非预期 100ms 领取超时；修复四项绿。负证据 `H:/TEMP/novelai-sole-negative-20261114/physical-timeout-original-b9.log`，修复 `H:/TEMP/novelai-sole-runtime-timeouts.log`；没有把 HTTP 期限变成退款或物理槽释放。
+
+该最小后继的完整 sole child+inert 源码最终 **23/23、零 skip，64.880 秒**（`H:/TEMP/novelai-sole-runtime-source-timeout-fixed.log`）；类型/architecture/可信 88 migration/格式及 diff 再验通过。原四文件 101 项对应的 waiter/API delivery 产品逐字未变，不为此次平台期限参数重复该矩阵；先前三类负控仍准确绑定 b9 原产品，新增期限负控也直接运行 b9 原产品，不把历史副本说成最终发布包。最终 fixed、独立复审和后继同候选构建分别记录。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

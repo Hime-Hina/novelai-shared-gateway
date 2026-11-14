@@ -27,7 +27,6 @@ import { createRelationalAccountQuotaRefresh } from './quota/relational-account-
 import { createGenerationPayloadBudget } from './generation/payload-budget.ts';
 import { JobPreviews } from './generation/job-previews.ts';
 import type { RunningControl } from './generation/queue-dispatch.ts';
-import { novelAiGenerateTimeoutMs } from './generation/queue-dispatch.ts';
 import { createRelationalNativeHttp } from './generation/relational-native-http.ts';
 import { createRelationalOpenAiHttp } from './generation/relational-openai-http.ts';
 import { createRelationalDirectHttp } from './generation/relational-direct-http.ts';
@@ -408,7 +407,7 @@ async function start(handler: http.RequestListener) {
         publicImageUrl: imageUrl,
         schedule: queue.schedule,
         scheduleQueueDrain: queue.schedule,
-        timeoutMs: novelAiGenerateTimeoutMs(env),
+        timeoutMs: Number(env.OPENAI_CHAT_TIMEOUT_MS || 10 * 60_000),
       },
       assertAdmin = (req: IncomingMessage, url: URL) => assertAdminToken(req, url, adminToken, env),
       memberHandlers = [
@@ -445,6 +444,7 @@ async function start(handler: http.RequestListener) {
         }),
         createRelationalDirectHttp({
           ...shared,
+          timeoutMs: Number(env.DIRECT_GENERATE_TIMEOUT_MS || 60_000),
           readNormalizationDefaults: () => configuration.readCurrent().normalizationDefaults,
           validImageSignature: access.validSignature,
           isAdminRead: (req, url) => matchesAdminToken(req, url, adminToken, env),

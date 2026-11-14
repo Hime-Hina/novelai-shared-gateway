@@ -34,6 +34,17 @@ const nativeInput = () => ({
   action: 'generate',
   parameters: { width: 128, height: 128, steps: 23, seed: 42 },
 });
+const openAiInput = () => ({
+  model: 'nai-diffusion-4-5-full:k_euler_ancestral',
+  messages: [
+    {
+      role: 'user',
+      content:
+        '提示词: sole OpenAI image\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:',
+    },
+  ],
+  nai: { width: 128, height: 128 },
+});
 async function fresh(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'nai-relational-sole-')),
     dataDir = path.join(dir, 'data'),
@@ -434,17 +445,7 @@ test(
     assert.equal((await call(server, imageRoute)).status, 401);
     const openai = await call(server, '/v1/chat/completions', {
       token,
-      body: {
-        model: 'nai-diffusion-4-5-full:k_euler_ancestral',
-        messages: [
-          {
-            role: 'user',
-            content:
-              '提示词: sole OpenAI image\n画师串:\n尺寸: 方图\n提示词引导值: 5\n缩放引导值: 0\n负面提示词:',
-          },
-        ],
-        nai: { width: 128, height: 128 },
-      },
+      body: openAiInput(),
     });
     assert.equal(openai.status, 200, openai.bytes.toString());
     const signed = openai.json().choices[0].message.content.match(/!\[image\]\(([^)]+)\)/)[1];
@@ -720,6 +721,66 @@ test('关闭等待真实quota网络、已派发generation与HTTP响应，再关D
         assert.equal(f.upstream.generation, 2);
       }
       await restarted.stop();
+    });
+  }
+});
+
+test('sole沿原Direct和Native/OpenAI领取期限，不把HTTP超时当物理上游结束', async (t) => {
+  for (const kind of ['direct', 'native', 'openai']) {
+    await t.test(kind, async (t) => {
+      const f = await fresh(t);
+      f.upstream = await upstream(t);
+      const server = await (
+        await launch(t, f, {
+          env: {
+            DIRECT_GENERATE_TIMEOUT_MS: '100',
+            OPENAI_CHAT_TIMEOUT_MS: '100',
+            NOVELAI_GENERATE_TIMEOUT_MS: '5000',
+          },
+        })
+      ).ready();
+      await enable(f, server);
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      f.upstream.hold = () => gate;
+      t.after(() => release());
+      const token = f.credentials.accounts[0].api_key,
+        pending =
+          kind === 'direct'
+            ? call(
+                server,
+                `/generate?token=${token}&tag=timeout-proof&width=128&height=128&steps=23&seed=12`,
+              )
+            : call(server, kind === 'native' ? '/ai/generate-image' : '/v1/chat/completions', {
+                token,
+                body: kind === 'native' ? nativeInput() : openAiInput(),
+              });
+      await waitFor(() => f.upstream.active === 1);
+      // 错用物理5000ms的变体会在500ms收到真产物，精确误返200，不靠测试timeout假红。
+      const timer = setTimeout(release, 500);
+      t.after(() => clearTimeout(timer));
+      const response = await pending;
+      clearTimeout(timer);
+      if (kind === 'direct') {
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get('x-timeout'), '1');
+        assert.notDeepEqual(response.bytes, image);
+      } else {
+        assert.equal(response.status, 504, response.bytes.toString());
+      }
+      assert.equal(f.upstream.active, 1, 'HTTP deadline must not release actual physical work');
+      assert.equal(
+        query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='running'")[0].n,
+        1,
+      );
+      release();
+      await waitFor(
+        () => query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='done'")[0].n === 1,
+      );
+      assert.equal(f.upstream.generation, 1);
+      await server.stop();
     });
   }
 });
