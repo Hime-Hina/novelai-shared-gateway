@@ -2005,6 +2005,10 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 探针改为上述新格式运行与恢复；删除普通包中创建旧 JsonStore、旧 migration/reader 资产和 replay-events 的期望。仓库历史不可变检查及固定旧工具 Linux 检查保留，不增加跳过条件或 ENV 旧模式。backend 旧 child fixture、executor runtime HTTP 和 Nuxt 业务 fixture 由各原 owner 同批后继接续，本片不删除其断言，也不把其当前未整合状态称为 CI 全绿。
 
+包装后继从冻结 `23ddbc0` 新建分支，合并已独立技术通过的 sole `46462a3`，形成实际受验源码 `d63d5d75c1b8860ee5d6da2ea58d0a73c83d8f34` / tree `7faf50d732244c2c37969c8691dddaa7cfc3572a`。唯一冲突是 9.75 末追加与本节相邻，按原节次保留双方；除该计划拼接外，所有 sole 文件和包装文件分别逐字等于两个固定来源，未重写业务或测试。sole 原 `b3b0df5` 仍为 NOTPASS，不用本片包装探针翻案；其后继独审报告 SHA256 `fd9feb5f771c6f5f4098d9319477021e90ff4058fe06e2d772cf16cbe68ae93a` 单独证明原 late admission、drain、真主库关闭与背压不变量。
+
+该新联合候选重新实际 backend build、普通包 Node 22 探针 **6/6、零 skip，10.053 秒**、actual executor/Nitro build、独立新目录 Node 24 探针 **6/6、零 skip，9.402 秒**，均本轮首跑通过。实测后台仍 111 文件、执行器同 111 份字节加三许可证共 114，隔离 Node 24 的 111 份字节与本轮新 emit 完全相同；32 个并集改动文件的 Git/blob/raw SHA、旧 35 资产及两个原生绑定前后核对保存于 `H:/TEMP/novelai-normal-package-464-20261114/fixed-d63d5d7-source-package-manifest.json`。没有安装或重建 native，没有借旧 b3/旧 b427 产物。后继格式 7、其它 source child/executor/Nuxt 业务夹具、统一 full、实际 Linux 制品 CI 及最终切换仍由相同最终候选接续，本轮未重跑或冒称其通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
