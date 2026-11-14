@@ -2091,6 +2091,24 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 根在已审管理十八 action、私有凭据/邀请及旧归档工具并集 `ef607ca` 上整合该新入口/包。四十二条差异中三十八条精确保持固定父或原删除，只有两条测试 fixture 合入后继显式 admin/null 与必传 runtime capability，以及两份契约/计划文档的完整并集；所有产品与包/CI 文件保持固定 b2 字节。保留证明 `H:/TEMP/novelai-sole-package-root-preservation.{py,json}`。十四条受影响源码集成文件同次 **384/384、零跳过，208.860 秒**；类型、architecture、默认及可信实际 main `88d2c26` migration、局部格式和 196 文件语法均通过，日志 `H:/TEMP/novelai-sole-package-root-{joint,type,static,format,syntax}.log`。尚未在该根重建实际包或运行完整后端/CI，不借 b427 或 b2 的制品字节；其余原进程/Docker/Nuxt 夹具、账户保留行为、后台副本与备份路径、迁移及最终同候选验收继续接续。远端 main 和生产未切换。
 
+### 9.81 两组真实 backend child 的关系来源迁移
+
+`connection-lifecycle-http.test.mjs` 与 `idempotency-http.test.mjs` 从旧 `JsonStore` 种值改为原 bootstrap 的完整合法 ready、默认暂停账户，再启动实际 `server/index.ts`，以现 admin PATCH 启用并真实读取本地 `/user/data`。共用最小 `tests/helpers/relational-child.mjs`，按 `sharing_policy.bound_account_id` 和 bootstrap 生成凭据读取身份，不猜唯一账户。每个 child 都明确设置两项 NovelAI URL 为同一合成本地上游，fetch 在 IO 前拒绝其他源，module hook 拒绝旧 Store/migrations；全部审计 SQL 只读。账户启停、免费策略、接单变化走现 HTTP；停机后 Key 轮换和历史退休只调用原 canonical owner 及其授权/事务，不改投影或 ready marker。生命周期依赖已独审的 `46462a3`，不继承旧 b3 未通过结论。
+
+原六个 Direct/OpenAI 超时与断线请求全部保留。首请求的真实物理 IO gate 代替原 SQL cooldown：100ms 领取期限后仍有实际上游占用和原 epoch 预扣，后续请求保持 queued；完成首图后 SIGKILL，重启继续五张，缓存领取不增加 attempt/charge。幂等组保留三并发、跨成员、跨协议响应形态、两 child 随机意图、辅助操作、取消、断连后找回、原 Key 撤销、新 Key 领取、停止接单、账户暂停、文件丢失、历史退休、Cookie 报价确认和真实 MessagePack 预览。它只多用第四成员的一次实际 setup 请求持有物理槽；setup、原 Web 和最终 Member 各一次执行，其他取消与 alias 均不预扣。原 150s/60s 总上限、15s startup、100ms/500ms 领取超时与 5s 局部条件不放宽，正常 10s 派发间隔使用真实时间，不伪造冷却或时钟。公共完整 commit 回放逐表比较任务、输入、attempt、charge、wallet、quota 与原回执，私有凭据和 epoch 不由公共回放复活，禁止网络。
+
+旧测试的默认 artist/scale 离线改写没有当前配置更新 API 的等价来源，不能以 SQL 改 profile 冒充在线操作。child 改验首次 input/context 字节跨真实重启不变；现 `relational-direct-http` 与 `relational-openai-http` 组件测试继续实际改变 `readNormalizationDefaults` 返回值并证明同键仍使用首次 context，这是组件验收，不声称新增正常配置更新入口，也不将默认值行为列为 D4 退役。
+
+原两项 `legacy-direct`/`legacy-openai` inline source 的身份、input SHA 和完整保护正文转到独立旧工具：`tests/helpers/legacy-inline-archive.mjs` 由现 `tests/deployment/legacy-tools.test.mjs` 在实际解包后无条件调用，沿原 CI legacy tool 步骤执行，不运行旧 main。同一真实旧库还通过普通新 child 证明格式拒绝、源字节和目录不变、无旧模块加载/网络/监听。先消费已审 `07624c6` 实际 bundle，以 manifest 和工具自身 `--verify-package` 核身份；随后按父任务明确授权并入原审 076，CLI 与运维正文逐字不变，deployment 对 076 只有 helper 的 import+调用两行，导航保留并集。最终在本源码实际运行仓库标准 legacy tool 打包/解包与全套检查，不用缓存 bundle 代替 CI 接线。
+
+迁移保留下来的“原已完成 Local 文件丢失后 POST 同键必须 410”在真实 child 揭示 9.53 漏口：GET/Native/OpenAI 重领已调用原 `ApiDelivery.validateReplay`，POST `/api/jobs` 只返回 snapshot。现将原 GET 校验移到同文件共享 accept 的 `result.replayed` 分支，复用原当前 Key/ready/引用资格 owner；新受理不增加这项检查。原 child 的 202≠410 修前日志留存，窄真实 owner 用例另验正常重领 202、真丢失 410、恢复原字节 202，均原 id、零新事实、零新派发/收费，并完整回放。无 schema/历史 SQL/金融或缓存等价规则变更。后续新 child 复用同 helper；受理和交付规则仍修改对应实际 owner。
+
+当前候选 Node22 源码定向结果：两组 child 同次串行 **2/2、零 skip、78.070 秒**（53.625/23.759 秒）；Direct/OpenAI 组件及其共同 owner 回归 **53/53、零 skip、14.496 秒**，包含当前默认值改变后的首次 context 和完整回放。已审实际旧 bundle 的两输入与普通新入口拒绝对照先完成 **4/4、零 skip、8.328 秒**（含父计数）；合入 076 后本源码标准 `tests/deployment/legacy-tools.test.mjs` 实际打包、解包及原 19+新增三项共 **22/22、零 skip、187.264 秒**，不与前面的缓存 bundle 四项重复合算。仅删除新增共享重领校验的隔离负控在新窄用例精准失败 `202 != 410`，原 source 逐字还原；child 迁移初期的表示/事务夹具错误和真实产品修前红日志均保留，不计通过。backend type、architecture、默认及可信 `46462a3` migration、变更文件格式、MJS 语法与 diff 检查通过。除这次明确获授权的标准旧工具打包套件外，未跑 full/backend 或 executor build/compiled/完整 CI/Node24/安装或重建共享 native/真实云或生产；独立审查与父并集另行绑定。
+
+固定 `059675fbc9b192b3b35870b88e0311acf957d3fc` 的 9.81 独审通过。原 Local 丢失窄例与五条独立边界同次 **6/6、零跳过**：POST replay 实际文件 IO 后撤 Key/ready、引用资格与内容损坏的不同职责，以及 stopped 时旧 done 回执仍可读/新受理拒绝；原 query/receipt/全表摘要无新写、无新执行。十二差异、十九关联 owner、三十五历史资产、技术源 763、旧工具 076 与两行接线均精确绑定。报告 `H:/TEMP/novelai-child-http-independent-20261115/INDEPENDENT-REVIEW.md`（SHA256 `f78259da7f8563c5b13e21a7a082e017520faa7e9322f86c9500646823f82264`）。原哈希引用元数据笔误另封更正补记，原失败 binder 与 Archive 报告字节未改；不影响固定产品和上述审查结论。
+
+根在新 sole/正常包并集 `de809e2` 上整合，七条产品/测试/helper 路径逐字等于固定 059，计划保留双方完整追加块，证明 `H:/TEMP/novelai-child-http-root-preservation.json`。两个真实 child 与 Direct/OpenAI 四文件串行同次 **55/55、零跳过，101.859 秒**；类型、architecture、可信实际 main `88d2c26` migration 与变更格式通过，日志 `H:/TEMP/novelai-child-http-root-{joint,type,static}.log`。旧工具源码/两行接线保持作者实际打包 22 项的字节，未重跑不变的 187 秒套件。此后继没有自己的完整后端、编译双 runtime、实际新正常发布物/CI，不借旧 b427/b2 结论；其余原 child/Nuxt/Docker 与账户闭包修复、查询、迁移和最终同版本验收继续接续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

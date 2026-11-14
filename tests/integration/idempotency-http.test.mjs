@@ -2,21 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rename } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rename } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { EVENT_AUTHORITY_VERSION } from '../../server/events/event-store.ts';
-import { setMemberAdmission } from '../../server/generation/queue-policy.ts';
+import { resultFile } from '../../server/storage/result-files.ts';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
+import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -38,69 +37,36 @@ async function until(predicate, timeout = 5000) {
 }
 
 test(
-  'HTTP 幂等跨并发、断线、重启、默认值变化和 Key 轮换保留同一任务，丢失结果不重生',
+  'HTTP 幂等跨并发、断线、重启、首次 context 和 Key 轮换保留同一任务，丢失结果不重生',
   { timeout: 60000 },
   async (t) => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-idempotency-http-'));
-    const adminToken = 'synthetic-admin-idempotency-http-only';
-    const initialized = await bootstrap({
-      env: {
-        ADMIN_TOKEN: adminToken,
-        NOVELAI_TOKEN: 'pst-synthetic-idempotency-only',
-        DATA_DIR: dataDir,
-      },
-      log() {},
-    });
-    const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-    const editOffline = async (mutate) => {
-      const store = new JsonStore(dataDir);
-      await store.init();
+    const fixture = await childFixture(t, 'idempotency-http'),
+      { dataDir, members } = fixture,
+      adminToken = fixture.env.ADMIN_TOKEN;
+    const jobs = () =>
+      query(
+        fixture,
+        `SELECT j.*,r.id AS requestId,r.member_id AS memberId,r.source,
+      j.artifact_id AS imageId FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id ORDER BY j.queue_seq`,
+      );
+    const withOfflineOwners = async (mutate) => {
+      assert.ok(!server || server.exit, 'offline commands must not race the actual child writer');
+      const db = new Database(fixture.filename);
+      db.pragma('foreign_keys=ON');
       try {
-        await store.update(mutate, { immediate: true });
+        return await mutate(
+          db,
+          new RelationalMemberStore(db, fixture.env),
+          new RelationalGenerationStore(db, fixture.env),
+        );
       } finally {
-        await store.close();
+        db.close();
       }
     };
-    await editOffline((db) => {
-      const account = db.accounts[0],
-        observation = {
-          quotaTier: 3,
-          subscriptionActive: true,
-          subscriptionExpiresAt: Date.now() + 86400000,
-          quotaFixed: 10000,
-          quotaPurchased: 0,
-          v5UsagePercent: 100,
-          quotaCheckedAt: new Date().toISOString(),
-          v5UsageIsNegative: false,
-          v5UsageTimeUntilNextPercent: 0,
-          quotaError: '',
-        };
-      Object.assign(account, observation);
-      recordDomainEvent(db, {
-        eventType: 'QuotaObserved',
-        streamId: `account:${account.id}`,
-        accountId: account.id,
-        payload: { kind: 'official', accountId: account.id, observation },
-      });
-      account.cooldownUntil = new Date(Date.now() + 900000).toISOString();
-      recordDomainEvent(db, {
-        eventType: 'CooldownChanged',
-        streamId: `account:${account.id}`,
-        accountId: account.id,
-        payload: { cooldownUntil: account.cooldownUntil },
-      });
-      db.settings.defaultArtist = 'first default artist';
-      syncFairQuota(db);
-    });
-    const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
-    t.after(() => audit.close());
-    const jobs = () =>
-      audit
-        .prepare('SELECT data FROM jobs')
-        .all()
-        .map((row) => JSON.parse(row.data));
     const calls = [];
-    let previewGate;
+    let previewGate, releaseSetup, releaseWeb;
+    const setupGate = new Promise((resolve) => (releaseSetup = resolve)),
+      webGate = new Promise((resolve) => (releaseWeb = resolve));
     const upstream = http.createServer(async (req, res) => {
       if (req.url === '/user/data') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -122,6 +88,8 @@ test(
         chunks.push(chunk);
       }
       calls.push({ path: req.url, body: JSON.parse(Buffer.concat(chunks)) });
+      if (calls.length === 1) await setupGate;
+      if (calls.length === 2) await webGate;
       if (previewGate) {
         assert.equal(
           req.url,
@@ -141,66 +109,20 @@ test(
       });
       res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
     });
-    const upstreamPort = await listen(upstream),
-      reservation = http.createServer(),
-      port = await listen(reservation);
-    await new Promise((resolve) => reservation.close(resolve));
-    const base = `http://127.0.0.1:${port}`;
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
-    );
-    Object.assign(env, {
-      ADMIN_TOKEN: adminToken,
-      DATA_DIR: dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      DIRECT_GENERATE_TIMEOUT_MS: '100',
-      OPENAI_CHAT_TIMEOUT_MS: '500',
-      NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-      NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    });
-    let child,
-      exited,
-      output = '';
+    const upstreamPort = await listen(upstream);
+    let server, base;
     const start = async () => {
-      child = spawn(process.execPath, ['server/index.ts'], {
-        cwd: root,
-        env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+      server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, {
+        DIRECT_GENERATE_TIMEOUT_MS: '100',
+        OPENAI_CHAT_TIMEOUT_MS: '500',
       });
-      exited = once(child, 'exit');
-      child.stderr.on('data', (chunk) => {
-        output += chunk.toString();
-      });
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(output)), 15000);
-        child.stdout.on('data', (chunk) => {
-          output += chunk.toString();
-          if (chunk.toString().includes('Nai2API listening')) {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-        child.once('exit', (code) => {
-          clearTimeout(timer);
-          reject(new Error(`synthetic gateway exited ${code}: ${output}`));
-        });
-      });
+      base = server.origin;
     };
-    const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) {
-        child.kill(signal);
-      }
-      if (exited) {
-        await exited;
-      }
-    };
+    const stop = async (signal) => (signal === 'SIGKILL' ? server.kill() : server.stop());
     t.after(async () => {
+      releaseSetup();
+      releaseWeb();
       previewGate?.release();
-      await stop();
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
     });
@@ -222,16 +144,27 @@ test(
       return result;
     };
     await start();
-    assert.equal(
-      JSON.parse(
-        audit.prepare("SELECT value FROM app_meta WHERE key = 'event_authority'").get().value,
-      ).version,
-      EVENT_AUTHORITY_VERSION,
-    );
+    await enableAccount(fixture, server);
     for (const key of [undefined, 'null-input']) {
       assert.equal((await call('/ai/generate-image', { body: null, key })).status, 400);
     }
     assert.equal(jobs().length, 0);
+    // A real fourth-member execution occupies the sole physical slot; no cooldown/projection seed.
+    const setupResponse = await call('/api/jobs', {
+      member: 3,
+      body: {
+        prompt: 'physical setup gate',
+        model,
+        width: 128,
+        height: 128,
+        steps: 23,
+        seed: 123,
+        nocache: true,
+      },
+    });
+    assert.equal(setupResponse.status, 202);
+    const setup = await setupResponse.json();
+    await until(() => calls.length === 1);
     const webBody = {
       prompt: 'stable random web operation',
       model,
@@ -246,26 +179,28 @@ test(
     const accepted = await Promise.all(webResponses.map((response) => response.json())),
       first = accepted[0];
     assert.ok(accepted.every((job) => job.id === first.id && job.requestId === first.requestId));
-    assert.equal(jobs().length, 1);
-    const acceptedFact = audit
-      .prepare(
-        `SELECT c.receipt, e.actor_id, e.actor_kind, e.correlation_id FROM domain_events e
-    JOIN event_commits c ON c.commit_seq = e.commit_seq WHERE e.event_type = 'RequestAccepted' AND json_extract(e.payload, '$.requestId') = ?`,
-      )
-      .get(first.requestId);
+    assert.equal(jobs().length, 2);
+    const acceptedFact = query(
+      fixture,
+      `SELECT c.receipt,c.actor_id,c.actor_kind,e.correlation_id FROM domain_events e
+    JOIN commits c ON c.commit_seq = e.commit_seq WHERE e.event_type = 'RequestAccepted' AND json_extract(e.payload, '$.requestId') = ?`,
+      first.requestId,
+    )[0];
     assert.deepEqual(JSON.parse(acceptedFact.receipt), {
-      id: first.id,
       requestId: first.requestId,
       jobIds: [first.id],
-      count: 1,
     });
     assert.equal(acceptedFact.actor_id, members[0].user_id);
     assert.equal(acceptedFact.actor_kind, 'member');
-    assert.equal(acceptedFact.correlation_id, first.requestId);
+    assert.equal(
+      acceptedFact.correlation_id,
+      null,
+      'Direct acceptance has no gateway diagnostic ID',
+    );
     const alias = await call('/api/jobs', { body: webBody, key: 'web-cache-alias' });
     assert.equal(alias.status, 202);
     assert.equal((await alias.json()).id, first.id);
-    assert.equal(jobs().length, 1);
+    assert.equal(jobs().length, 2);
     assert.equal(
       (
         await call('/api/jobs', {
@@ -280,27 +215,29 @@ test(
     const other = await otherMember.json();
     assert.notEqual(other.id, first.id);
     await cancel(other.requestId, 1);
-    const initialPayload = JSON.parse(
-      audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(first.requestId)
-        .payload,
-    );
+    const savedInput = () =>
+        query(
+          fixture,
+          `SELECT r.input_id,r.context_id,i.body,c.body AS context
+      FROM generation_requests r JOIN generation_inputs i ON i.id=r.input_id
+      JOIN normalization_contexts c ON c.id=r.context_id WHERE r.id=?`,
+          first.requestId,
+        )[0],
+      initialPayload = savedInput(),
+      initialSeed = jobs().find((job) => job.id === first.id).actual_seed;
+    releaseSetup();
+    await until(() => jobs().find((job) => job.id === setup.id)?.status === 'done');
     await stop('SIGKILL');
-    await editOffline((db) => {
-      db.settings.defaultArtist = 'changed default artist';
-      db.settings.defaults.scale = 8;
-    });
     await start();
     const afterRestart = await call('/api/jobs', { body: webBody, key: 'web-operation' });
     assert.equal(afterRestart.status, 202);
     assert.equal((await afterRestart.json()).id, first.id);
     assert.deepEqual(
-      JSON.parse(
-        audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(first.requestId)
-          .payload,
-      ),
+      savedInput(),
       initialPayload,
+      'first input/context bytes survive actual child restart',
     );
-    assert.equal(jobs().length, 2);
+    assert.equal(jobs().length, 3);
 
     // Native 两种响应形态共享同一次操作；一次受理两张后，重复提交不能再占两张容量。
     const nativeBody = {
@@ -408,7 +345,7 @@ test(
     assert.equal(chatA.headers.get('x-nai-request-id'), chatB.headers.get('x-nai-request-id'));
     assert.match(await chatB.text(), /data: \[DONE\]/);
     await cancel(chatA.headers.get('x-nai-request-id'), 1);
-    assert.equal(calls.length, 0);
+    assert.ok(calls.length <= 2, 'cancelled requests never escape the actual occupied slot');
 
     // 在受理提交后直接断开连接，再用同一 key 找回；不能依赖第一次 HTTP 回包。
     const beforeDisconnect = jobs().length;
@@ -447,20 +384,19 @@ test(
     assert.equal(jobs().length, beforeDisconnect + 1);
     await cancel(recovered.headers.get('x-nai-request-id'), 1);
 
-    await stop('SIGKILL');
-    await editOffline((db) => {
-      db.accounts[0].cooldownUntil = '';
-      recordDomainEvent(db, {
-        eventType: 'CooldownChanged',
-        streamId: `account:${db.accounts[0].id}`,
-        accountId: db.accounts[0].id,
-        payload: { cooldownUntil: '' },
-      });
-    });
-    await start();
+    // Honor the original real scheduler gap; the 5s completion assertion starts once physical IO begins.
+    const cooldown = query(
+      fixture,
+      'SELECT cooldown_until FROM upstream_accounts WHERE id=?',
+      fixture.accountId,
+    )[0].cooldown_until;
+    if (cooldown > Date.now())
+      await new Promise((resolve) => setTimeout(resolve, cooldown - Date.now()));
+    await until(() => calls.length === 2);
+    releaseWeb();
     await until(() => jobs().find((job) => job.id === first.id)?.status === 'done');
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].body.parameters.seed, initialPayload.seed);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].body.parameters.seed, initialSeed);
     const done = await call('/api/jobs', { body: webBody, key: 'web-operation' });
     const result = await done.json();
     assert.equal(done.status, 202, JSON.stringify(result));
@@ -469,16 +405,7 @@ test(
     const image = await fetch(base + result.imageUrl);
     assert.equal(image.status, 200);
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
-    const cachedBody = {
-      ...webBody,
-      artist: initialPayload.artist,
-      negative: initialPayload.negative,
-      size: initialPayload.size,
-      scale: initialPayload.scale,
-      cfg: initialPayload.cfg,
-      sampler: initialPayload.sampler,
-      noise_schedule: initialPayload.noiseSchedule,
-    };
+    const cachedBody = { ...webBody };
     const cached = await call('/api/jobs', { body: cachedBody, key: 'completed-cache-operation' });
     const cachedJob = await cached.json();
     assert.equal(cached.status, 202, JSON.stringify(cachedJob));
@@ -491,17 +418,20 @@ test(
     });
     assert.equal(cachedAgain.status, 202);
     assert.equal((await cachedAgain.json()).id, cachedJob.id);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     const policy = await fetch(base + '/api/admin/member-management', {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: base, 'x-admin-token': adminToken },
       body: JSON.stringify({
         action: 'free-image-policy',
-        expectedVersion: 1,
+        expectedVersion: query(
+          fixture,
+          'SELECT free_policy_version FROM sharing_policy WHERE id=1',
+        )[0].free_policy_version,
         policy: { enabled: true, warningThreshold: 1, hardLimit: 1 },
       }),
     });
-    assert.equal(policy.status, 200);
+    assert.equal(policy.status, 200, await policy.text());
     const quota = await (await call('/api/me/quota')).json();
     assert.equal(quota.fairQuota.freeImages.successful, 1);
     assert.equal(quota.fairQuota.freeImages.warning, true);
@@ -530,25 +460,45 @@ test(
     const cacheAtLimit = await call('/api/jobs', { body: cachedBody, key: 'cached-at-free-limit' });
     assert.equal(cacheAtLimit.status, 202);
     assert.equal((await cacheAtLimit.json()).status, 'done');
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
+    const settledWallets = query(fixture, 'SELECT * FROM wallets ORDER BY account_id,member_id'),
+      settledCharges = query(fixture, 'SELECT * FROM charges ORDER BY original_job_id');
+    assert.equal(settledCharges.length, 2);
+    assert.ok(
+      settledCharges.every(
+        (charge) => charge.status === 'settled' && charge.original_account_id === fixture.accountId,
+      ),
+    );
     const replacementKey = 'STA1N-synthetic-idempotency-rotated-key';
     await stop('SIGKILL');
-    await editOffline((db) => {
-      const user = db.users.find((user) => user.id === members[0].user_id);
-      user.token = replacementKey;
-      setMemberAdmission(db, user.id, false, () => {
-        throw new Error('synthetic fixture unexpectedly retained a waiting job');
-      });
-      const account = db.accounts[0];
-      account.enabled = false;
-      recordDomainEvent(db, {
-        eventType: 'AvailabilityChanged',
-        streamId: `account:${account.id}`,
-        accountId: account.id,
-        payload: { accountId: account.id, enabled: false, reason: 'synthetic pause' },
-      });
+    await withOfflineOwners(async (_db, memberStore) => {
+      assert.equal(
+        await withAuthenticatedMemberApiKey(memberStore, members[0].api_key, (member) => {
+          assert.equal(member.id, members[0].user_id);
+          memberStore.replaceMemberApiKey(member.id, replacementKey);
+          return true;
+        }),
+        true,
+      );
     });
     await start();
+    assert.equal((await call('/api/jobs', { body: webBody, key: 'web-operation' })).status, 401);
+    const admission = await fetch(base + '/api/admin/member-management', {
+      method: 'POST',
+      headers: { origin: base, 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({
+        action: 'member-admission',
+        userId: members[0].user_id,
+        acceptingJobs: false,
+      }),
+    });
+    assert.equal(admission.status, 200, await admission.text());
+    const paused = await fetch(base + `/api/admin/accounts/${fixture.accountId}`, {
+      method: 'PATCH',
+      headers: { origin: base, 'content-type': 'application/json', 'x-admin-token': adminToken },
+      body: JSON.stringify({ enabled: false }),
+    });
+    assert.equal(paused.status, 200, await paused.text());
     const rotated = await call('/api/jobs', {
       body: webBody,
       key: 'web-operation',
@@ -556,12 +506,26 @@ test(
     });
     assert.equal(rotated.status, 202);
     assert.equal((await rotated.json()).id, first.id);
-    assert.equal(calls.length, 1);
-    await stop('SIGKILL');
-    const stored = JSON.parse(
-      audit.prepare('SELECT data FROM images WHERE id = ?').get(result.imageId).data,
+    assert.deepEqual(
+      query(fixture, 'SELECT * FROM wallets ORDER BY account_id,member_id'),
+      settledWallets,
     );
-    const artifact = path.resolve(dataDir, stored.file);
+    assert.deepEqual(
+      query(fixture, 'SELECT * FROM charges ORDER BY original_job_id'),
+      settledCharges,
+    );
+    assert.ok(
+      query(fixture, 'SELECT admission_epoch FROM members WHERE id=?', members[0].user_id)[0]
+        .admission_epoch > jobs().find((job) => job.id === first.id).admission_epoch,
+    );
+    assert.equal(calls.length, 2);
+    await stop('SIGKILL');
+    const stored = query(
+      fixture,
+      'SELECT id AS imageId,operation,mime_type AS mimeType FROM artifacts WHERE id=?',
+      result.imageId,
+    )[0];
+    const artifact = path.resolve(dataDir, resultFile(stored));
     assert.ok(artifact.startsWith(path.join(dataDir, 'images') + path.sep));
     await rename(artifact, artifact + '.missing-for-test');
     await start();
@@ -570,43 +534,41 @@ test(
         .status,
       410,
     );
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     await stop('SIGKILL');
-    const retention = new JsonStore(dataDir);
-    await retention.init();
-    try {
-      await retention.retireJobHistory([first.id]);
-    } finally {
-      await retention.close();
-    }
+    await withOfflineOwners((db, _members, generations) =>
+      db
+        .transaction(() =>
+          generations.retireJobHistory(
+            {
+              commandId: 'synthetic-idempotency-retire',
+              actorKind: 'admin',
+              actorId: 'local-admin',
+              recordedAt: Date.now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'history-retirement-v1',
+              pricingVersion: 'none',
+            },
+            [first.id],
+            null,
+            new Map(),
+          ),
+        )
+        .immediate(),
+    );
     await start();
     assert.equal(
       (await call('/api/jobs', { body: webBody, key: 'web-operation', token: replacementKey }))
         .status,
       410,
     );
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
 
     // The same process also serves the Cookie contract while events own every business write.
     await stop('SIGKILL');
-    await editOffline((db) => {
-      const account = db.accounts[0];
-      account.enabled = true;
-      account.cooldownUntil = '';
-      recordDomainEvent(db, {
-        eventType: 'AvailabilityChanged',
-        streamId: `account:${account.id}`,
-        accountId: account.id,
-        payload: { accountId: account.id, enabled: true, reason: 'synthetic resume' },
-      });
-      recordDomainEvent(db, {
-        eventType: 'CooldownChanged',
-        streamId: `account:${account.id}`,
-        accountId: account.id,
-        payload: { cooldownUntil: '' },
-      });
-    });
     await start();
+    await enableAccount(fixture, server);
     const login = await fetch(base + '/api/member/login', {
       method: 'POST',
       headers: { origin: base, 'content-type': 'application/json' },
@@ -691,63 +653,81 @@ test(
     const content = await memberCall(`/api/member/jobs/${receipt.jobIds[0]}/content`);
     assert.equal(content.status, 200);
     assert.deepEqual(Buffer.from(await content.arrayBuffer()), png);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
+    assert.deepEqual(savedInput(), initialPayload);
+    const charges = query(fixture, 'SELECT * FROM charges ORDER BY original_job_id');
+    assert.equal(
+      charges.length,
+      3,
+      'cancelled queued requests and cached aliases never reserve money',
+    );
+    assert.ok(
+      charges.every(
+        (charge) => charge.status === 'settled' && charge.original_account_id === fixture.accountId,
+      ),
+    );
+    assert.equal(query(fixture, 'SELECT count(*) AS n FROM generation_attempts')[0].n, 3);
     await stop();
 
-    const replayPath = path.join(dataDir, 'rebuilt.sqlite');
-    const replay = spawnSync(
-      process.execPath,
-      [
-        'scripts/replay-events.mjs',
-        `--source=${path.join(dataDir, 'library.sqlite')}`,
-        `--target=${replayPath}`,
-      ],
-      { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true },
-    );
-    assert.equal(replay.status, 0, replay.stderr);
-    const replayed = JSON.parse(replay.stdout);
-    assert.equal(replayed.dispatches, 0);
-    assert.equal(replayed.networkCalls, 0);
-    const rebuilt = new Database(replayPath, { readonly: true });
+    // Public complete-commit replay has no private credentials and performs no IO.
+    const source = new Database(fixture.filename, { readonly: true }),
+      rebuilt = new Database(path.join(dataDir, 'rebuilt.sqlite'));
+    const actualFetch = globalThis.fetch;
+    let replayFetches = 0;
+    globalThis.fetch = () => {
+      replayFetches++;
+      throw new Error('public replay denied network before IO');
+    };
     try {
+      const history = source
+        .prepare('SELECT history_id FROM projection_state WHERE id=1')
+        .get().history_id;
+      initializeRelationalStorage(rebuilt, history);
+      const inputs = new RelationalInputStore(source),
+        replayer = new RelationalCommitReplayer(rebuilt);
+      for (const { seq } of source
+        .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+        .all()) {
+        rebuilt.transaction(() =>
+          replayer.replayCommit(readRelationalCommit(source, seq), inputs),
+        )();
+      }
       assert.equal(rebuilt.pragma('integrity_check', { simple: true }), 'ok');
-      const quotaAt = (db) =>
-        JSON.parse(db.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value)
-          .fairQuota;
-      assert.deepEqual(quotaAt(rebuilt), quotaAt(audit));
       for (const [table, order] of [
-        ['generation_idempotency', 'member_id,operation,key_hash'],
-        ['fair_quota_settlements', 'job_id'],
-        ['free_image_usage', 'job_id'],
+        ['commits', 'commit_seq'],
+        ['domain_events', 'commit_seq,event_index'],
+        ['idempotency_keys', 'original_member_id,operation,key_hash'],
+        ['wallets', 'account_id,member_id'],
+        ['charges', 'original_job_id'],
+        ['account_quota_state', 'account_id'],
+        ['generation_jobs', 'id'],
+        ['generation_attempts', 'id'],
+        ['generation_requests', 'id'],
+        ['generation_inputs', 'id'],
       ]) {
         const rows = (db) => db.prepare(`SELECT * FROM ${table} ORDER BY ${order}`).all();
-        assert.deepEqual(rows(rebuilt), rows(audit), table);
+        assert.deepEqual(rows(rebuilt), rows(source), table);
       }
-      const liveJob = jobs().find((job) => job.id === receipt.jobIds[0]),
-        restoredJob = JSON.parse(
-          rebuilt.prepare('SELECT data FROM jobs WHERE id = ?').get(liveJob.id).data,
-        );
-      for (const field of [
-        'id',
-        'status',
-        'memberId',
-        'requestId',
-        'imageId',
-        'fairCharge',
-        'generationAttempt',
+      for (const table of [
+        'api_keys',
+        'password_credentials',
+        'upstream_credentials',
+        'member_sessions',
       ]) {
-        assert.deepEqual(restoredJob[field], liveJob[field], field);
+        assert.equal(rebuilt.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
       }
-      assert.equal(
+      assert.ok(
         rebuilt
-          .prepare('SELECT payload FROM generation_requests WHERE id = ?')
-          .get(receipt.requestId).payload,
-        audit.prepare('SELECT payload FROM generation_requests WHERE id = ?').get(receipt.requestId)
-          .payload,
+          .prepare('SELECT auth_epoch FROM members')
+          .all()
+          .every((row) => row.auth_epoch === null),
       );
     } finally {
+      globalThis.fetch = actualFetch;
+      source.close();
       rebuilt.close();
     }
-    assert.equal(calls.length, 2, 'offline replay cannot generate or contact the mock upstream');
+    assert.equal(replayFetches, 0);
+    assert.equal(calls.length, 3, 'offline replay cannot generate or contact the mock upstream');
   },
 );
