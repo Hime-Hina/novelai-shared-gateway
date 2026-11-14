@@ -5071,13 +5071,6 @@ export function createPublicToken(prefix = 'STD') {
   return `${prefix}-${crypto.randomBytes(18).toString('base64url')}`;
 }
 
-export function maskToken(token = '') {
-  if (token.length <= 12) {
-    return token ? '******' : '';
-  }
-  return `${token.slice(0, 6)}...${token.slice(-4)}`;
-}
-
 function clampNumber(value: unknown, min: number, max: number) {
   const number = Number(value);
   if (!Number.isFinite(number)) {

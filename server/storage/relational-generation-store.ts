@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { RelationalCommitReplayer } from './relational-replay.ts';
+import { relationalAccountConnectionSource } from './relational-account-connection.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
 import { RelationalReplicaStore } from './relational-replica-store.ts';
 import type Database from 'better-sqlite3';
@@ -103,6 +104,8 @@ type DispatchCapture = Readonly<{
   accountId: string;
   credentialEpoch: number;
   pst: string;
+  proxyUrl: string;
+  connectionSourceEventId: string;
 }>;
 type Completion = Pick<
   NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
@@ -1144,7 +1147,7 @@ export class RelationalGenerationStore {
   }
   private reservationState(job: Pick<Job, 'memberId'>, accountId: string, now: number) {
     const result = this.reservationFacts(job, accountId, now);
-    if (!result.account.pst) {
+    if (!result.account.pst || result.account.proxyUrl === null) {
       fail('上游私有凭据尚未恢复', 503);
     }
     return result;
@@ -1167,9 +1170,10 @@ export class RelationalGenerationStore {
           credentialEpoch: number;
           cooldownUntil: number | null;
           pst: string | null;
+          proxyUrl: string | null;
         }
       >(
-        `SELECT a.id,a.enabled,a.credential_epoch AS credentialEpoch,a.cooldown_until AS cooldownUntil,c.pst
+        `SELECT a.id,a.enabled,a.credential_epoch AS credentialEpoch,a.cooldown_until AS cooldownUntil,c.pst,c.proxy_url AS proxyUrl
       FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
       )
       .get(accountId);
@@ -1397,6 +1401,8 @@ export class RelationalGenerationStore {
                 jobId: job.id,
                 accountId: account.id,
                 credentialEpoch: account.credentialEpoch,
+                connectionSourceEventId: this.quotas.prepareQuotaObservation(account.id)
+                  .connectionSourceEventId,
                 candidateMode: 'alternatives',
                 upstreamCandidates: generationUpstreamCandidates(charge),
               },
@@ -1415,6 +1421,9 @@ export class RelationalGenerationStore {
         accountId: account.id,
         credentialEpoch: account.credentialEpoch,
         pst: account.pst!,
+        proxyUrl: account.proxyUrl!,
+        connectionSourceEventId: this.quotas.prepareQuotaObservation(account.id)
+          .connectionSourceEventId,
       });
       this.dispatchCaptures.set(
         dispatch,
@@ -2103,10 +2112,22 @@ export class RelationalGenerationStore {
       } else if (attempt || job.status === 'running') {
         fail('运行任务缺少原预扣');
       }
+      const secrets = capture ? [capture.pst, capture.proxyUrl] : [];
+      if (capture?.proxyUrl) {
+        const proxy = new URL(capture.proxyUrl);
+        for (const value of [proxy.username, proxy.password]) {
+          secrets.push(value);
+          try {
+            secrets.push(decodeURIComponent(value));
+          } catch {
+            // 原 SOCKS owner 会拒绝无效编码；错误捕获仍须退款，不能再次抛解码异常。
+          }
+        }
+      }
       const diagnostic = capture
         ? this.inputs.stageGenerationDiagnostic(
             jobId,
-            errorDetailMessage(failure.diagnostic!.error, [capture.pst]),
+            errorDetailMessage(failure.diagnostic!.error, secrets),
             metadata.recordedAt,
           )
         : null;
@@ -2771,6 +2792,9 @@ export class RelationalGenerationStore {
           const p = e.payload,
             job = this.eventJob(e, p.jobId, p.accountId);
           if (
+            (p.connectionSourceEventId !== null &&
+              p.connectionSourceEventId !==
+                relationalAccountConnectionSource(this.sqlite, p.accountId, e)) ||
             e.streamId !== `request:${job.requestId}` ||
             e.accountId !== p.accountId ||
             this.attempt(job.id)
@@ -3002,11 +3026,12 @@ export class RelationalGenerationStore {
           const p = e.payload;
           this.sqlite
             .prepare(
-              `INSERT INTO upstream_accounts(id,display_name,enabled,credential_epoch,cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,capacity_limited_until,capacity_last_error_at,source_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+              `INSERT INTO upstream_accounts(id,display_name_json,weight,enabled,credential_epoch,cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,capacity_limited_until,capacity_last_error_at,source_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
             )
             .run(
               p.accountId,
-              p.displayName,
+              JSON.stringify(p.displayName),
+              p.weight,
               Number(p.enabled),
               p.credentialEpoch,
               p.cooldownUntil,
@@ -3212,6 +3237,8 @@ export class RelationalGenerationStore {
             job = this.eventJob(e, p.jobId, p.accountId),
             c = this.readCharge(job.id);
           if (
+            p.connectionSourceEventId !==
+              relationalAccountConnectionSource(this.sqlite, p.accountId, e) ||
             job.status !== 'queued' ||
             !c ||
             c.status !== 'reserved' ||

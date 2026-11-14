@@ -74,7 +74,7 @@ function setup(t, options = {}) {
       receipt: { opened: true },
     }),
   )();
-  db.prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)').run(
+  db.prepare("INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,'')").run(
     'a',
     'synthetic-pst',
   );
