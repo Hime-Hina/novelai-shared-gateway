@@ -2129,6 +2129,20 @@ Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与
 
 根在已审真实 child/Direct 修复 `de52e2a` 上整合：五条新查询/统计/测试路径逐字等于固定 838，旧 JsonStore 只保留根纯 import 提取并复用原 classifier 搬移，计划完整并集，证明 `H:/TEMP/novelai-admin-report-reads-root-preservation.json`。报表、查询、历史、请求/成员/退休与管理/Direct/OpenAI 九文件同次 **285/285、零跳过，68.998 秒**；类型、architecture、可信实际 main `88d2c26` migration 与局部格式通过，日志 `H:/TEMP/novelai-admin-report-reads-root-{joint,type,static,format}.log`。未接完整 admin summary，也未在该根运行 full、编译双 runtime、实际发布包/CI 或容量验收；不借旧候选结果。
 
+### 9.83 日常整库备份退出旧图片清理
+
+本片只调整 `scripts/backup-production.py` 的实际 daily caller：删除加密上传、回读和本地七份轮换之后无条件调用的旧 `clean_archived_images()` 及其日志。SQLite backup API、配置/密钥/bootstrap 凭据、逐文件 SHA、完整性核验、加密上传和验证后轮换顺序均保留；`cutover-*` 不进入日常轮换。`--verify` 对旧全图片备份的严格解释及显式 `--clean-archived-images` 仍是独立旧归档工具能力，未新增在线格式分支或第二套 parser。本片不释放新关系 Local/R2/PikPak 字节，不改变 D8 期限，也不部署或运行生产 timer。
+
+新增 Python 专项以真实离线 bootstrap 建立非空完整 history 的合法 ready 源，先断言不存在旧 `images` 表、四份密码/Key、一份 PST 及保护 profile，再运行未替换 backup/verify/cleanup 的默认 `main()`。仅生产绝对路径映射到私有夹具、子进程路径指向源码；云端 fetch 复用现有 `r2-backup-fixture`。原 AES-GCM、流式上传、下载解密比对和回执均真实执行，不能称真实 R2 端点验收。原源码在成功上传后精确报 `sqlite3.OperationalError: no such table: images`（`H:/TEMP/novelai-backup-daily-red.log`）；最小删除后同路径通过（`H:/TEMP/novelai-backup-daily-green.log`）。全表计数/摘要比较源与备份，随后实际 restore CLI 执行完整公共重放、选定当前私有恢复和唯一 installer，再比较全部表及原源文件 SHA；未手写 ready，也未 mock installer。
+
+本地验证使用未修改的 Linux CPython **3.12.12**（官方 python-build-standalone `20251209`，archive SHA256 `0233aa8f4e8f3314a9be071f68a289f25f6c33b368ad8b2a1726c09981d00d2f`，来源/实算核对在 `H:/TEMP/novelai-backup-daily-tools-20261115/provenance.json`）。原七项在 WSL ext4 **7/7**；新增链在 WSL Python、NTFS 夹具与原 Windows Node22/ABI127 路径桥接下 **1/1**，未安装或重建 WSL Node/native。桥仅转换子进程路径，未改 Python、fsync 或测试逻辑；原 Windows Python 基线七项中六个 readonly-fsync `EBADF` 属 POSIX 环境不符，另存 `novelai-backup-daily-python-baseline.log`，不算本次业务红例。真正 Linux Node/Python CI 仍须同候选复验，不能把跨平台桥接称为该证据。
+
+原旧全图片缺图拒绝、显式清理保留 live 原图/先持久化远端恢复依据、上传或轮换失败留旧份、七份 daily 与 cutover 保护断言均保留；原 retention 测试移除 cleanup mock。另原 R2 备份六项 **6/6**（包括 70 MiB、保留集合 GCM 失败不开始删除、cutover/回执不覆盖），传输仍为本地模拟存储。类型、架构、默认及可信 `88d2c26` migration、改动文档格式和 diff 另核；没有 full/build/compiled/native 安装/实云/生产操作。后续副本释放需按归档引用权威独立完成；此片不代表容量回收或上线闭环已验收。
+
+固定 `bdbef65113c67acc3aa4529f5fcc96a8208502fb` 独审通过。精确 Git export 在真实 Linux CPython 3.12.12/POSIX 上运行原七项，另新库加密/私有恢复一项和独立无 R2 配置的 default main 一项，共 **9/9、零跳过**；把产品精确换回旧两行后，独立 main 在真实 `SELECT data FROM images` 失败，finally 恢复候选后同程序通过。没有 mock backup、cleanup、fsync 或 installer，也没有真实网络/外部目录删除。四文件 Git/raw、原七项断言保留、解释器归档/ELF 与路径桥明确绑定，报告 `H:/TEMP/novelai-backup-independent-bdb-20261115/INDEPENDENT-REVIEW.md`（SHA256 `13b43b91051cd4776bdbfbd37c8d59d72eb9c688578609564851cd37d6ec7b90`）。作者十四项另保留，不计独审新跑；这仍不是原生 Linux CI、外部产物字节或真实 R2 验收。
+
+根在报表来源 `a511587` 上合入，产品、Python 测试及发布运维说明三路径逐字等于固定 bdb，仅计划保留完整并集与本证据；Python AST 和局部文档格式通过，证明 `H:/TEMP/novelai-backup-root-preservation.json`。复用上述同产品已完成的独审九项和原十四项，不为无差异重复实际备份/恢复或冒称根新跑；最终同候选格式 7 的业务数据库/私有状态/外部字节联合恢复另行验收。没有部署或执行生产备份/轮换/删除。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
