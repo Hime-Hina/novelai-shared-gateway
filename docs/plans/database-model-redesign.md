@@ -2213,6 +2213,8 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 根在已审 fair+note `eeaba67` 上普通接入；五个产品 owner 与七个非helper测试逐字等于a923，文档并存原fair及note事实。已知私有备注的接合复用同一 private-restore owner 的两字段只读清单：Ready和真实child公共回放都由它排除auth_epoch/note_json，原实际私有SELECT字符串、empty、typed复制和源SHA规则保持，不加通用框架或放宽业务列核对。证明 `H:/TEMP/novelai-request-control-root-preservation.json`。两组原真实child **8/8、零跳过，25.929秒**，同根备注三文件筛选六目标 **6/6、零跳过，5.419秒**；类型、architecture、默认与可信main88迁移、200文件语法及变更格式通过，日志 `H:/TEMP/novelai-request-control-root-*`。没有借此关闭parentless旧done/缺输入归档范围或整体发行物验收。
 
+根新增三文件私有列接合随后由非作者固定 `5ca121f` 极窄静态复审通过，报告 `H:/TEMP/novelai-private-member-columns-independent-5ca-20261115/INDEPENDENT-REVIEW.md`，SHA256 `46a8ea3cda477de668b5bba81d0abbe0970e57690c97b5cc87d5ad70ad82d09b`。精确逆替换证明 private empty/typed copy/hash 及其余函数不变，原两字段 SELECT 字符串相同，六处清单使用和 Ready 最终 includePrivate 核对未放宽。该轮只执行静态源证明与30个表达式组合，未把它们写成 SQL/HTTP/源码运行测试，也未重跑既有5/120。
+
 ### 9.86 原 fair-quota 首配、重确认与成员顺序
 
 实际 caller 为既有 `POST /api/admin/fair-quota`（含 Web executor-lifecycle 场景）；它不是 `groups` 的版本化重配置。薄 HTTP 复用管理 factory 当前管理员、Host/Origin/ready 及提交后 notifier，正文仍 2MiB，只消费四个当前启用的原有序 memberIds，不解释幂等头或其它政策字段。Quota owner 复用 `configureFairQuota` / `syncFairQuota` / `syncBoundFairQuota`；没有政策时允许 pending/ambiguous，唯一 eligible 才规划一笔 SharingConfigured→AccountBound→原同步金融事实，无决定时不存空提交。AccountBound 复用原四条件；原注册的零钱包 INSERT 只对真实当前成员补缺，精确 PK 冲突不覆盖既有权益。
@@ -2236,6 +2238,36 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 固定修复 `4da7c704c5778d79500d8c673a9a8117a8f47df1` 由非作者独立复审通过，报告 `H:/TEMP/novelai-fair-quota-independent-20261115/INDEPENDENT-REVIEW.md`，SHA256 `061c14b8a26d48d615c75e145d7294ad074552d270a8cdc6f5ee992317a3ec9e`。三原业务反例及三控制保持封存字节，**6/6、零跳过，3.819秒**；原 held 反例先纠正未到达的过严零写后置，真实 owner 合法的零预算 RefillApplied 游标必须保留，旧错误程序和日志仍另存。成员精确 Map、三池和 held 修复不改变金额算法：必要泛型/签名类型擦除后 67,640 字节 JavaScript 摘要完全相同。原66及中间455不重标通过。
 
 作者最终七文件 **450/450、零跳过，80.201秒**，事件/架构单元471项与三错误实现负控另记；恢复后专项40项。最终文档子提交 `07c5070` 仅补四行证据，十二条非文档 Git/raw 字节等于4da，独审已重绑且没有无故重复运行。根从已审备注 `cb5e87a` 普通合入4da，十三文件逐一重算共同基线并集，HTTP保留原 note 新建/读取与 fair-quota 整段，其他路径不变，证明 `H:/TEMP/novelai-fair-quota-root-preservation.json`。管理HTTP、fair-quota、私有恢复、完整回放四文件同次 **242/242、零跳过，78.248秒**；类型、architecture、默认与可信 main88迁移、200文件语法及变更格式通过，日志 `H:/TEMP/novelai-fair-quota-root-*`。未以此替代当前完整后端、双 Node 编译、三包、CI实际发行物或生产迁移/端点/容量验收，守卫增量仍需维护者复核。
+
+### 9.87 云复制和验证的实际装配，保留全部来源
+
+本片基于已审 `de52e2a`，只在 ReplicaStore 增加返回至多一项的当前 due 查询、GenStore 的 SQL `EXISTS` 活动/未发布 prepared 窄读，以及 sole 成功 listen→ready 复核→queue.activate 后的一份 timer。ReplicaIO 的原 `copyRelationalArtifactReplica()` / `verifyRelationalArtifactReplica()` 逐字复用：Local→R2 PUT、真实 GET 后 verified；R2 verified→PikPak br PUT 后 uploaded，不新增预删除 GET。没有新 fact/DDL/版本、持久队列、计数缓存、配置开关或旧在线模式，也没有 Local unlink、R2 DELETE 或 PikPak 删除。
+
+原政策仍为 PNG/JPEG/WebP Local 超过 24h、R2 原 verifiedAt 超过 7d 或原 `8,550,000,000 B` 本站水位、失败 1h 重试。首轮 60s；原目的 sourceEventId 真正变化才视为进展并 1s 后再试，无候选/错误 60s；R2 uploaded 未 verified 走原 verify，Pik uploaded 不被当成仍需复制的成功回执。水位只按当前 R2 target 的未 deleted identity 登记/预留、物理 objectKey 去重，以原字节长度计；不冒称全云容量，不用未知 gzip/br 原图长度代替物理压缩长度，也不缓存或新增派生持久量。聚合扫描当前登记表，尚无同规模成本验收。
+
+水位反例用真实 Opening owner 登记的合成元数据：128 个 64MiB 引用但只有 127 个物理 key 时未过水位，再加第 128 个不同 key 才触发。没有生成/上传 8.55GB 字节，也没有测量真实端点容量或性能；Opening 角色枚举同样是数据库选择验证，不冒称这些元数据夹具已经通过实际对象 ready 核验。
+
+全局 idle 复用当前 queue phase、同一实际 controls Map 和 Gen SQL queued/pending/running/未发布 prepared 责任，每轮及原票据复核检查当前 ready。云/文件 IO 始终在 SQL 外；原凭据、namespace、来源、当前空闲和尾 SQL 回滚守卫保留。停止先清 timer，queue 进入 stopping 后不发新复制，等待真正 inflight promise，再结束 HTTP 和关闭主 SQLite；不 fake cancel、提前清 Map 或延长 grace。错误只记录固定安全类别，不输出对象、凭据或异常参数。
+
+来源限制明确保留：OpeningArtifact 没有原 mock 标记，自动 Local 24h 复制仅选真 ArtifactPublished；OpeningReplica 的未知失败时刻不从导入 header 推出一小时重试。Opening 已知原 verifiedAt、无 error 且当前 owner 支持原定位的 R2 可按原时刻复制到 PikPak；任意旧定位/gzip 不猜成规范路径，BIN 不增加期限。这些缺口需要迁移原证据，不能称已完成全部历史冷热闭环。更不以当前零引用判断孤儿；源释放继续等待归档/备份引用权威，本片没有关闭容量回收任务。
+
+新增检查复用真 owner/完整提交与唯一 installer：due 的 24h/7d/1h、R2 已 uploaded 只重 GET、Pik 旧回执不空转、当前 namespace/同物理对象去重水位、Opening 已知/未知来源；SQL pending 和失败后 prepared 责任未完成前保持 busy。真实 sole 子进程以 Node 原生测试时钟推进原 timer，验证 listen 前零复制、EADDR 零预留、60s→R2 PUT/GET→7d Pik PUT 且不 GET/不删源、held PUT 中 ready 撤销不确认、shutdown 等实际 IO 和主 DB.close。真实 Native localhost 请求在逻辑 504 后仍由未完成 raw promise 占用 physical Map（SQL active=0、health=200），复制不得开始，关闭继续等待原物理请求。测试只替换云 HTTP transport、时钟和观测主 DB.close；没有生产测试配置或常量 running lifecycle。原副本配置/来源变更、尾 SQL 外 catch 回滚、完整公共回放零网络/不复活私有认证用例一同运行。作者最终计数、负控与独审证据另记；未跑 full/build/compiled/native 安装/实云/生产，不沿用父候选发布验收。
+
+作者最终副本 owner **24/24、零 skip，8.328s**（`H:/TEMP/novelai-replica-scheduler-owner-final.log`）；sole 新五项和原实际大响应/晚领取/raw关闭重启联合 **12/12、零 skip，38.574s**（`H:/TEMP/novelai-replica-scheduler-sole-target.log`）。隔离副本分别移除 physical Map 守卫、关闭的 inflight await、物理 key 去重：精准在已到场的原业务断言失败（错误预留 R2、held IO 时已 exit0、未过水位却选择 Pik），恢复原字节同三例 **3/3**。原 `de52e2a` gateway 同一真实监听正向因没有调度而无法产生 R2 确认，业务反例失败；原源没有改动。负证据及原 SHA 在 `H:/TEMP/novelai-replica-scheduler-negative-20261115/`。早期新夹具中的 system/admin、缺 DATA_DIR、错误列名和 100ms 未达到原 1000ms timeout 下限等设置错误不作业务红例，最终均先断言真实 listener、SQL/raw 占用再验保护。backend 类型、architecture、默认/可信 `88d2c26` migration、局部 Prettier/diff 全过；没有改架构守卫、旧 SQL/journal 或关键既有断言。独立审查仍需绑定最终固定提交。
+
+#### 9.87 后继：队列唤醒与独立 IO 的关闭顺序
+
+首次固定 `cb3b173` 的独审为 **NOTPASS**，原报告 `H:/TEMP/novelai-replica-scheduler-independent-20261115/INDEPENDENT-REVIEW.md`（SHA256 `d099eab6d1063f1a4301f4a1d38f585bf78af5a08b47a94220b67746dc9cdb52`）。真实 bootstrap→Native 结果→held R2 verification GET 期间，另一原 Native waiter 已在 running 时读到 queued/null；关闭后 queue 已 stopped，却因 `await replicaCopy` 在唯一 `drained` 前面而仍无 HTTP。释放 cloud 后才503/closeDB/exit0；不是 listener 未到、错误输入或旧回执没有发起 IO 的假反例。
+
+最小后继只把独立 `refresh.pending` 和 `replicaCopy` 的 await 移到原 drained、实际 HTTP 完成及 disconnected 之后、真实 SQLite.close 之前。原 queue.stop 仍先等待实际 generation physical 控制完成；停 timer 仍尽早，关闭仍等待 actual quota/copy/raw/响应全部结束才关库。无需新状态、重复 drained、取消事实、清 Map 或延长期限。quota 也存在同一等待次序：新增实际 admin PATCH、新 Idempotency-Key 的 localhost quota GET 持有原 raw promise，不能借启动的旧 enable 回执（重领零 IO）假造到场。只移动 cloud、仍在 drained 前等待 quota 的变体也使同一 queued waiter 挂起，故本次在唯一关闭 owner 修正共同顺序。
+
+原审者程序 SHA256 `608936df52558d585bf293f7201a0c642e06a8dfc9eda9b0764c61527e21f70f` 原字节保留在新 TEMP；仅 loader 将结果 JSON 定址新目录，imports 指向固定后继源。原 250ms、全部业务断言和原 JSON（SHA256 `297205c7251835bdaeed9d3e975929235f7efadbd9209590e36cec54cda436aa`）不改。该原四项 **4/4、零 skip，5.762s**；held GET 释放前已 HTTP503/drained，主 DB 仍开着，释放后才实际 close/exit0，queued 责任与 NativeCalls=2 保留。`loader-proof.json` 记录反向替换等于原完整源及原 loaded SHA，不把业务修改称为 loader 绑定。
+
+仓库新增 replica/quota 两个真实 queued-waiter 对照，与原复制、ready 撤销、physical-only、真实 48MiB 背压、晚领取、raw 关闭与重启联合 **14/14、零 skip，41.812s**（`H:/TEMP/novelai-replica-shutdown-final-target.log`）。把 copy await 放回 drained 前，原审者程序精准在 HTTP settled=false 失败；仅把 quota await 放回同处，新 quota 场景也精准 false!=true。两种变体只改隔离 TEMP 并 finally 恢复，不触原 cb3/report/program。固定后继、反例和原四项证据在 `H:/TEMP/novelai-replica-shutdown-20261115/`；首次 quota 夹具重领旧键而未实际 GET 的失败被明确排除，最终先核实际请求计数与 held IO 到场。类型、architecture、默认/可信88 migration、改动格式/diff 再核，无业务 fact/DDL/private source/时间政策变化，无 full/build/compiled/native/实云/生产。原独审者仍须复核最终固定版本，作者检查不关闭 cb3 finding。
+
+固定 `638a0a34c06b90ff78cbdcefc91206b4b698df35` 非作者复审通过，报告 `H:/TEMP/novelai-replica-shutdown-independent-20261115/INDEPENDENT-REVIEW.md`，SHA256 `28c56bc571b9e03d22d7a37f26a12b29f27015a64d59996631a426f5244bb6a9`。原四例及新增随机新键真实quota等待一例，共五个独立场景通过。外部 spawn preload 补强六个实际服务child的IO前localhost guard后，同四例 **4/4、零跳过，5.782秒**、同quota例 **1/1、零跳过，2.808秒**再次通过，不增加unique数。首轮仅显式localhost配置的限制及原绿另存，原程序608、helper、250ms、mock clock、旧cb3红/JSON297205均原字节保留；两轮观察逐字段相同。该复审不把作者14项或两个逆序变体重算为独立执行。
+
+根在 `5ca121f` 上普通合入全部七路径先决与修复；六个非plan文件逐个重算共同基线并集，保留原账户连接/格式7和9.85状态原因 guard，旧格式SQL/journal/DDL不变。仅额外删除helper已失效的两行“Note待接合”注释，没有改变其运行字节。副本owner整文件 **24/24、零跳过，7.758秒**；sole所选复制、两个queued唤醒、真实物理占用、48MiB背压、晚领和quota/生成重启交点 **19/19、零跳过，48.909秒**，共43 distinct。类型、architecture、默认与可信 main88 迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-replica-root-preservation.json`，日志 `H:/TEMP/novelai-replica-root-{owner,sole,type,architecture,default-migration,trusted-migration,syntax,format}.log`。这仍是复制保持源及关闭顺序验收，尚无归档/备份引用清单、source DELETE、最终实际发行物、真实云端或容量/生产释放结论。
 
 ## 10. 事实依据与修订
 

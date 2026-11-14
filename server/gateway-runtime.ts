@@ -51,7 +51,11 @@ import { cooldownRetryAfter } from './quota/shared-capacity.ts';
 import { quotaHttpRoute } from './protocols/quota-http.ts';
 import { r2Config, R2Storage } from './storage/r2-storage.ts';
 import { pikpakConfig, PikPakStorage } from './storage/pikpak-storage.ts';
-import type { RelationalReplicaReadConfiguration } from './storage/relational-replica-store.ts';
+import {
+  RelationalReplicaStore,
+  type RelationalReplicaConfiguration,
+} from './storage/relational-replica-store.ts';
+import { copyRelationalArtifactReplica } from './storage/relational-replica-io.ts';
 import type { GenerationPayloadClaim } from './generation/admission.ts';
 
 type Request = IncomingMessage & { generationPayloadClaim?: GenerationPayloadClaim };
@@ -294,6 +298,8 @@ async function start(handler: http.RequestListener) {
   }
   const sqlite = openRuntimeDatabase(dataDir);
   let server: http.Server | undefined, shutdown: Promise<void> | undefined;
+  let replicaTimer: ReturnType<typeof setTimeout> | undefined,
+    replicaCopy: Promise<void> | undefined;
   const requests = new Map<ServerResponse, Request>(),
     handlers = new Set<Promise<void>>();
   const events = new EventEmitter().setMaxListeners(0),
@@ -323,6 +329,7 @@ async function start(handler: http.RequestListener) {
       return shutdown;
     }
     closing = true;
+    clearTimeout(replicaTimer);
     shutdown = (async () => {
       const disconnected = server?.listening
         ? new Promise<void>((resolve, reject) =>
@@ -332,7 +339,6 @@ async function start(handler: http.RequestListener) {
       const stopped = queue.stop();
       previews.closeSubscriptions();
       await refresh.stop();
-      await refresh.pending;
       await stopped;
       // 唯一领取 owner 先冷读已完成结果，仅结束仍等待的 HTTP；不抢先覆盖正在读取的产物。
       events.emit('drained');
@@ -363,6 +369,9 @@ async function start(handler: http.RequestListener) {
       );
       server?.closeIdleConnections();
       await disconnected;
+      // 独立额度/副本 IO 仍须真完成才关库；不能阻挡 stopped 队列唤醒已有 HTTP 领取。
+      await refresh.pending;
+      await replicaCopy;
       sqlite.close();
     })();
     return shutdown;
@@ -399,10 +408,17 @@ async function start(handler: http.RequestListener) {
     }
     const r2 = r2Config(env),
       pikpak = pikpakConfig(env),
-      replicas: RelationalReplicaReadConfiguration = {
+      replicas: RelationalReplicaConfiguration = {
         dataDir,
         ...(r2 ? { r2: new R2Storage(r2) } : {}),
         ...(pikpak ? { pikpak: new PikPakStorage(pikpak) } : {}),
+        idle() {
+          if (closing || queue.status !== 'running' || controls.size) {
+            return false;
+          }
+          assertRelationalStorageReady(sqlite);
+          return !generations.hasActiveGenerationResponsibilities();
+        },
       },
       access = createPublicImageAccess(env),
       imageUrl = access.imageUrl,
@@ -473,6 +489,37 @@ async function start(handler: http.RequestListener) {
         createRelationalRequestHttp(shared),
         createRelationalQuotaHttp(shared),
       ];
+    const replicaStore = new RelationalReplicaStore(sqlite, replicas);
+    function scheduleReplicaCopy(delay: number) {
+      if (closing || !replicas.r2) {
+        return;
+      }
+      replicaTimer = setTimeout(() => {
+        replicaTimer = undefined;
+        let progress = false;
+        replicaCopy = (async () => {
+          if (!replicas.idle()) {
+            return;
+          }
+          const due = replicaStore.readDueArtifactReplica(Date.now());
+          if (due) {
+            const current = await copyRelationalArtifactReplica(
+              sqlite,
+              due.artifactId,
+              due.kind,
+              replicas,
+            );
+            progress = current.sourceEventId !== due.sourceEventId;
+          }
+        })()
+          .catch(() => console.error('[runtime] Replica copy or verification failed.'))
+          .finally(() => {
+            replicaCopy = undefined;
+            scheduleReplicaCopy(progress ? 1000 : 60000);
+          });
+      }, delay);
+      replicaTimer.unref();
+    }
     serve = async (req, res) => {
       if (closing || queue.status !== 'running') {
         fail(503, '服务正在关闭或尚未就绪，请稍后重试。');
@@ -567,6 +614,7 @@ async function start(handler: http.RequestListener) {
     assertRelationalStorageReady(sqlite);
     queue.activate();
     refresh.start();
+    scheduleReplicaCopy(60000);
     process.once('SIGTERM', () => {
       console.log('[runtime] SIGTERM received; draining.');
       void exitAfterStop(0);

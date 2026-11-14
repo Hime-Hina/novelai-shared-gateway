@@ -14,6 +14,8 @@ import {
 import { R2Storage } from '../../server/storage/r2-storage.ts';
 import { PikPakStorage } from '../../server/storage/pikpak-storage.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 
 async function setup(t, second = false) {
   const f = await fixture(t);
@@ -105,6 +107,244 @@ function record(f, id, ticket, phase, error = null) {
 function register(f, kind, id = `target-${kind}`) {
   return f.db.transaction(() => f.store.registerStorageTarget(meta(id), kind))();
 }
+
+test('后台候选沿原24h/7d，只复制一次；已上传R2先验证，Pik回执不形成空转', async (t) => {
+  const f = await setup(t);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 24 * 3600000), null);
+  let due = f.store.readDueArtifactReplica(NOW + 24 * 3600000 + 100);
+  assert.deepEqual(due, { artifactId: 'artifact-replica-0', kind: 'r2', sourceEventId: null });
+  const hot = await f.copy('r2');
+  assert.notEqual(hot.sourceEventId, due.sourceEventId);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 30000 + 7 * 86400000), null);
+  due = f.store.readDueArtifactReplica(NOW + 30000 + 7 * 86400000 + 1);
+  assert.equal(due.kind, 'pikpak');
+  await f.copy('pikpak');
+  const before = databaseState(f.db),
+    calls = f.calls.length;
+  assert.equal(f.store.readDueArtifactReplica(NOW + 30 * 86400000), null);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.calls.length, calls);
+  assert.deepEqual(await readFile(path.join(f.dir, 'images/artifact-replica-0.webp')), image);
+});
+
+test('已上传但回读失败的R2只在原失败1h后重验，不重PUT也不把旧回执算进展', async (t) => {
+  const f = await setup(t);
+  f.controls.failRead = true;
+  await assert.rejects(f.copy('r2'));
+  const original = f.store.readArtifactReplica('artifact-replica-0', f.target('r2'));
+  assert.equal(original.uploadedAt, NOW + 30000);
+  assert.equal(original.verifiedAt, null);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 30000 + 3600000), null);
+  const due = f.store.readDueArtifactReplica(NOW + 30000 + 3600000 + 1);
+  assert.equal(due.kind, 'r2');
+  f.controls.failRead = false;
+  const row = await f.copy('r2');
+  assert.notEqual(row.sourceEventId, due.sourceEventId);
+  assert.deepEqual(f.calls, ['r2:PUT', 'r2:GET', 'r2:GET']);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40000), null);
+});
+
+test('本站水位按当前R2物理key去重预留，不把跨引用或别namespace算成全云容量', async (t) => {
+  const f = await setup(t);
+  await f.copy('r2');
+  const target = f.target('r2'),
+    artifact = f.store.readArtifact('artifact-replica-0');
+  function opening(index, objectIndex) {
+    const artifactId = `pressure-${index}`,
+      origin = { sourceId: 'synthetic-opening', originalId: `pressure-${index}` };
+    const facts = [
+      {
+        eventType: 'OpeningArtifactRecorded',
+        payload: {
+          artifactId,
+          memberId: 'm1',
+          inputId: artifact.inputId,
+          originalAttemptId: null,
+          operation: 'generate',
+          mimeType: 'image/webp',
+          byteLength: 64 * 1024 * 1024,
+          sha256: artifact.sha256,
+          publishedAt: NOW,
+          retiredAt: null,
+          origin,
+        },
+      },
+      {
+        eventType: 'OpeningReplicaRecorded',
+        payload: {
+          artifactId,
+          storageTargetId: target,
+          objectKey: `images/legacy-${objectIndex}/${artifact.sha256}`,
+          encoding: 'identity',
+          uploadedAt: null,
+          verifiedAt: null,
+          deletedAt: null,
+          lastErrorCode: null,
+          origin,
+        },
+      },
+    ];
+    const { policyVersion, pricingVersion, ...command } = meta(`pressure-import-${index}`);
+    f.db.transaction(() =>
+      new RelationalCommitReplayer(f.db).appendCommit({
+        ...command,
+        expectedVersions: { [`artifact:${artifactId}`]: '0' },
+        receipt: { imported: index },
+        events: facts.map((fact) => ({
+          ...fact,
+          streamId: `artifact:${artifactId}`,
+          memberId: 'm1',
+          accountId: null,
+          occurredAt: NOW,
+          policyVersion,
+          pricingVersion,
+        })),
+      }),
+    )();
+  }
+  // 128 references but only 127 physical 64MiB reservations remain below the original watermark.
+  for (let index = 0; index < 128; index++) opening(index, Math.min(index, 126));
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40000), null);
+  opening(128, 127);
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40000).kind, 'pikpak');
+  f.configuration.r2 = new R2Storage({ ...f.configuration.r2.config, bucket: 'other-images' });
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40000), null);
+});
+
+test('Opening不猜mock或失败时刻；仅原verifiedAt已知无error的R2可成为到期Pik候选', async (t) => {
+  const f = await setup(t);
+  register(f, 'r2');
+  const hot = f.target('r2'),
+    local = f.target('local'),
+    original = f.store.readArtifact('artifact-replica-0');
+  const facts = ['opening-known', 'opening-failed', 'opening-local'].flatMap((artifactId) => {
+    const origin = { sourceId: 'synthetic-opening', originalId: artifactId };
+    return [
+      {
+        eventType: 'OpeningArtifactRecorded',
+        payload: {
+          artifactId,
+          memberId: 'm1',
+          inputId: original.inputId,
+          originalAttemptId: null,
+          operation: 'generate',
+          mimeType: 'image/webp',
+          byteLength: image.length,
+          sha256: original.sha256,
+          publishedAt: NOW - 30 * 86400000,
+          retiredAt: null,
+          origin,
+        },
+      },
+      {
+        eventType: 'OpeningReplicaRecorded',
+        payload: {
+          artifactId,
+          storageTargetId: artifactId === 'opening-local' ? local : hot,
+          objectKey:
+            artifactId === 'opening-local'
+              ? artifactId + '.webp'
+              : `images/${artifactId}/${original.sha256}`,
+          encoding: 'identity',
+          uploadedAt: NOW,
+          verifiedAt: NOW,
+          deletedAt: null,
+          lastErrorCode: artifactId === 'opening-failed' ? 'ORIGINAL_ERROR' : null,
+          origin,
+        },
+      },
+    ].map((fact) => ({
+      ...fact,
+      streamId: `artifact:${artifactId}`,
+      memberId: 'm1',
+      accountId: null,
+      occurredAt: NOW + 20 * 86400000,
+      policyVersion: 'shared-quota-v1',
+      pricingVersion: 'price1',
+    }));
+  });
+  const {
+    policyVersion: _p,
+    pricingVersion: _v,
+    ...command
+  } = meta('opening-selector', NOW + 20 * 86400000);
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).appendCommit({
+      ...command,
+      expectedVersions: Object.fromEntries(facts.map((f) => [f.streamId, '0'])),
+      receipt: { imported: true },
+      events: facts,
+    }),
+  )();
+  const due = f.store.readDueArtifactReplica(NOW + 20 * 86400000 + 1);
+  assert.equal(due.artifactId, 'opening-known');
+  assert.equal(due.kind, 'pikpak');
+  // Disable Pik configuration: neither unknown failed time nor old Local declaration may be guessed into R2 work.
+  f.configuration.pikpak = null;
+  await copyRelationalArtifactReplica(
+    f.db,
+    'artifact-replica-0',
+    'r2',
+    f.configuration,
+    () => NOW + 20 * 86400000 + 2,
+  );
+  assert.equal(f.store.readDueArtifactReplica(NOW + 40 * 86400000), null);
+});
+
+test('后台SQL资格覆盖真实pending与失败后未发布prepared责任，完成后才为空', async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.generations.hasActiveGenerationResponsibilities(), false);
+  await f.accept('responsibility', { samples: 2 });
+  assert.equal(f.generations.hasActiveGenerationResponsibilities(), true);
+  assert.equal(
+    f.db.prepare("SELECT status FROM generation_jobs WHERE id='responsibility-1'").get().status,
+    'pending',
+  );
+  f.dispatch('responsibility-0');
+  assert.equal(f.generations.hasActiveGenerationResponsibilities(), true);
+  const descriptor = describeStoredResult('prepared-responsibility', 'generate', {
+    buffer: image,
+    mimeType: 'image/webp',
+  });
+  f.db.transaction(() =>
+    f.generations.prepareGenerationResult(
+      meta('prepare-responsibility', NOW + 3),
+      'responsibility-0',
+      descriptor,
+      f.response(),
+    ),
+  )();
+  f.fail('responsibility-0', { aborted: false, evidence: { requestStarted: true } }, NOW + 5);
+  assert.equal(
+    f.db.prepare("SELECT status FROM generation_jobs WHERE id='responsibility-0'").get().status,
+    'failed',
+  );
+  assert.equal(f.generations.hasActiveGenerationResponsibilities(), true);
+  await publishStoredResult(f.dir, descriptor, image);
+  f.db.transaction(() =>
+    f.generations.completeGeneration(
+      meta('late-responsibility', NOW + 6),
+      'responsibility-0',
+      descriptor,
+    ),
+  )();
+  assert.equal(f.generations.hasActiveGenerationResponsibilities(), false);
+});
+
+test('真实queued/pending责任接同idle能力时不开始任何复制IO或预留', async (t) => {
+  const f = await setup(t);
+  await f.accept('waiting-owner', { samples: 2, now: NOW + 20000 });
+  assert.equal(
+    f.db.prepare("SELECT status FROM generation_jobs WHERE id='waiting-owner-1'").get().status,
+    'pending',
+  );
+  f.configuration.idle = () => !f.generations.hasActiveGenerationResponsibilities();
+  const before = databaseState(f.db);
+  assert.throws(() => f.store.readDueArtifactReplica(NOW + 2 * 86400000), /不可执行/);
+  await assert.rejects(f.copy('r2'), /不可执行/);
+  assert.equal(f.calls.length, 0);
+  assert.equal(databaseState(f.db), before);
+});
 
 test('Local→R2 保留原图并分别确认上传/回读，PikPak 实际使用 br 且上传不冒充 verified', async (t) => {
   const f = await setup(t);

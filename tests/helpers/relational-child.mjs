@@ -183,8 +183,6 @@ export function assertChildPublicReplay(fixture) {
       if (privateNames.has(name)) {
         continue;
       }
-      // Same current exclusions as Ready.assertSameTables/privateQueries. The pending Note
-      // private-column owner must replace this with its canonical projection when it lands.
       const columns = source.prepare(`PRAGMA table_info("${name}")`).all(),
         selected = columns.filter(
           (column) =>

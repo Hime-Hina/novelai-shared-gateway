@@ -552,6 +552,16 @@ export class RelationalGenerationStore {
       )
       .all();
   }
+  hasActiveGenerationResponsibilities(): boolean {
+    return !!this.sqlite
+      .prepare(
+        `SELECT 1 WHERE EXISTS (
+      SELECT 1 FROM generation_jobs WHERE status IN ('queued','pending','running')) OR EXISTS (
+      SELECT 1 FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
+      WHERE a.prepared_artifact_id IS NOT NULL AND j.artifact_id IS NULL)`,
+      )
+      .get();
+  }
   readAcceptedGenerationReceipt(
     metadata: Pick<Metadata, 'commandId' | 'fingerprint' | 'actorKind' | 'actorId'>,
     mapping: NonNullable<ReturnType<RelationalInputStore['readGenerationIdempotency']>>,

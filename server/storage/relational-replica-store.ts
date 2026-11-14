@@ -21,7 +21,7 @@ import {
   resultFile,
   type describeStoredResult,
 } from './result-files.ts';
-import { r2Config, type R2Storage } from './r2-storage.ts';
+import { r2Config, R2_PIKPAK_THRESHOLD_BYTES, type R2Storage } from './r2-storage.ts';
 import { pikpakConfig, type PikPakStorage } from './pikpak-storage.ts';
 import { RelationalCommitReplayer } from './relational-replay.ts';
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
@@ -334,6 +334,86 @@ export class RelationalReplicaStore {
       )
       .all(afterId ?? '', limit)
       .map(({ id }) => ({ id, descriptor: this.readArtifact(id).descriptor }));
+  }
+  readDueArtifactReplica(now: number): {
+    artifactId: string;
+    kind: 'r2' | 'pikpak';
+    sourceEventId: string | null;
+  } | null {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      fail('副本调度缺少有效当前时间');
+    }
+    const configuration = this.active();
+    if (!configuration.r2) {
+      return null;
+    }
+    const hot = this.configuredTarget('r2').target.storageTargetId,
+      local = this.configuredTarget('local').target.storageTargetId,
+      retry = now - 3600000;
+    if (configuration.pikpak) {
+      // 本站当前目标的 identity 登记/预留按物理对象去重；不是全云或未知压缩长度的容量。
+      const bytes = this.sqlite
+        .prepare<[string], { bytes: bigint }>(
+          `SELECT COALESCE(SUM(bytes),0) AS bytes FROM (
+          SELECT MAX(a.byte_length) AS bytes FROM artifact_replicas r JOIN artifacts a ON a.id=r.artifact_id
+          WHERE r.storage_target_id=? AND r.deleted_at IS NULL AND r.encoding='identity' GROUP BY r.object_key)`,
+        )
+        .safeIntegers()
+        .get(hot)!.bytes;
+      const cold = this.configuredTarget('pikpak').target.storageTargetId,
+        candidate = this.sqlite
+          .prepare<
+            [string, string, number, number, number],
+            { artifactId: string; sourceEventId: string | null }
+          >(
+            `SELECT a.id AS artifactId,d.source_event_id AS sourceEventId FROM artifacts a
+            JOIN artifact_replicas r ON r.artifact_id=a.id AND r.storage_target_id=?
+            LEFT JOIN artifact_replicas d ON d.artifact_id=a.id AND d.storage_target_id=?
+            LEFT JOIN domain_events e ON e.event_id=d.source_event_id
+            WHERE a.retired_at IS NULL AND a.mime_type IN ('image/png','image/jpeg','image/webp')
+              AND r.deleted_at IS NULL AND r.verified_at IS NOT NULL AND r.last_error_code IS NULL
+              AND r.encoding='identity' AND r.object_key='images/'||a.id||'/'||a.sha256
+              AND (r.verified_at<? OR ?)
+              AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.uploaded_at IS NULL
+                AND d.encoding='br' AND d.object_key=a.sha256||'.br'
+                AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))
+            ORDER BY r.verified_at,a.published_at,a.id LIMIT 1`,
+          )
+          .get(
+            hot,
+            cold,
+            now - 7 * 86400000,
+            bytes >= BigInt(R2_PIKPAK_THRESHOLD_BYTES) ? 1 : 0,
+            retry,
+          );
+      if (candidate) {
+        return { ...candidate, kind: 'pikpak' };
+      }
+    }
+    // Opening 没有原 mock/失败尝试时刻；不以开账 header 时间补造自动复制或重试资格。
+    const candidate = this.sqlite
+      .prepare<
+        [string, string, number, number, number],
+        { artifactId: string; sourceEventId: string | null }
+      >(
+        `SELECT a.id AS artifactId,d.source_event_id AS sourceEventId FROM artifacts a
+        JOIN domain_events origin ON origin.event_id=a.source_event_id
+        LEFT JOIN artifact_replicas l ON l.artifact_id=a.id AND l.storage_target_id=?
+        LEFT JOIN artifact_replicas d ON d.artifact_id=a.id AND d.storage_target_id=?
+        LEFT JOIN domain_events e ON e.event_id=d.source_event_id
+        WHERE a.retired_at IS NULL AND a.mime_type IN ('image/png','image/jpeg','image/webp')
+          AND (d.artifact_id IS NULL OR (d.deleted_at IS NULL AND d.encoding='identity'
+            AND d.object_key='images/'||a.id||'/'||a.sha256
+            AND (d.last_error_code IS NULL OR (e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
+          AND ((d.uploaded_at IS NOT NULL AND (d.verified_at IS NULL OR d.last_error_code IS NOT NULL))
+            OR (origin.event_type='ArtifactPublished' AND a.published_at<?
+              AND l.deleted_at IS NULL AND l.verified_at IS NOT NULL
+              AND (d.artifact_id IS NULL OR (d.uploaded_at IS NULL
+                AND e.event_type='ArtifactReplicaRecorded' AND e.occurred_at<?))))
+        ORDER BY a.published_at,a.id LIMIT 1`,
+      )
+      .get(local, hot, retry, now - 86400000, retry);
+    return candidate ? { ...candidate, kind: 'r2' } : null;
   }
   readStorageTarget(storageTargetId: string) {
     const row = this.sqlite
