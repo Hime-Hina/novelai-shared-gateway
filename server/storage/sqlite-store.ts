@@ -1,4 +1,8 @@
 import { initialNormalizationDefaults } from '../generation/normalization-defaults.ts';
+import { generationContextRef } from '../generation/request-fingerprint.ts';
+import { createId } from './record-values.ts';
+export { generationContextRef } from '../generation/request-fingerprint.ts';
+export { createId, hashObject } from './record-values.ts';
 import { emitStoreEvent } from '../events/state-notifications.ts';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
@@ -99,9 +103,6 @@ type SqlRow = typeof recordTables.cards.$inferSelect &
   >;
 type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
-export const generationContextRef = (
-  row: Pick<Idempotency, 'member_id' | 'operation' | 'key_hash'>,
-): string => `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
 type MemberSession = typeof memberSessions.$inferInsert;
 interface SessionOwner {
   ownerUserId: string;
@@ -5066,17 +5067,8 @@ export function normalizeDb(db: DatabaseInput = {}): StoreDatabase {
   };
 }
 
-export function createId(prefix = 'item') {
-  const random = crypto.randomBytes(5).toString('hex');
-  return `${prefix}_${Date.now().toString(36)}_${random}`;
-}
-
 export function createPublicToken(prefix = 'STD') {
   return `${prefix}-${crypto.randomBytes(18).toString('base64url')}`;
-}
-
-export function hashObject(value: unknown) {
-  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
 export function maskToken(token = '') {

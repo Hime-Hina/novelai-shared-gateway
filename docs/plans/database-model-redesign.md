@@ -1759,6 +1759,18 @@ Windows Node 22 源码新 bootstrap 8/8；联合当前配置、首次分组、�
 
 本片没有直接 JsonStore 初始化/旧 DTO 写入；现 AccountStore 的共同物理 helper 仍经 queue-dispatch/execution 传递加载旧 store 模块，该 D4 发布依赖清除仍属后继，不能把本片描述为旧代码闭包已消失。当前 sole 与包内 HTTP/browser 基线仍依赖旧 bootstrap 后填充 JsonStore，必须在统一新 sole 候选更新后验证。未跑 full、compiled、Node 24 或三包/实际包验收，未验证 Linux mode/Windows ACL、真实官方/云端或生产切换；source CLI 成功不替代这些上线条件。
 
+### 9.69 关系入口的旧运行时 helper 导入闭包
+
+本片基于固定 bootstrap `3a18d8bb0aad1a367cf265a5620b3f97f72fc91d`，不改其 CLI、默认 11 值、装配、管理或金融规则。实际 value import 图中，bootstrap→RelationalAccountStore→queue-dispatch→execution→sqlite-store；关系 API/Native/OpenAI/member 的受理或 HTTP→admission→sqlite-store。旧 Store 再加载 sqlite-migrations 及持有后者的 event-store；不实例化 JsonStore 不能证明没有加载旧运行时。其余直接旧 Store 依赖均为 type-only，保留现有类型边界。
+
+最小修复只切两个共同 import 根：原 createId/hashObject 正文移入 `storage/record-values.ts`，旧 Store 与受理、执行三个实际 caller 共用；原 generationContextRef 归已有纯 `generation/request-fingerprint.ts`，参数保留原三个非 NULL 字符串，不改变 context 引用格式。旧 Store import 并临时 re-export 同一个函数供原 caller，普通旧 main 继续正常；没有复制 ID、JSON 摘要、收据、错误分类或金融算法，没有接口影子、配置或独立状态。physical controls/timeout/sharedFailureKind 的正文、先后与原调用者完全不动，因为切开这两个根后已不再导致加载旧 Store。
+
+验收从真实模块加载区分错误实现：子进程 ESM load hook 先证明确实拒绝 sqlite-store 和 sqlite-migrations，再实际导入全部关系 adapters/stores/runtime 入口，并让真实 bootstrap CLI 在同 hook 下通过唯一 installer 取得 ready、保存四成员和原私有凭据。临时 re-export 与新 owner 必须是同一函数；原 JSON 属性顺序、undefined/BigInt/circular 错误、随机 ID 格式、context 引用和原业务回归保持。静态 value/re-export/literal dynamic 根同时盘点，type-only 不算运行时加载。本片没有删除普通包/旧 main、重写历史 SQL、切换 sole、扩展旧格式解释或宣称 D4 整体完成；固定候选的实际结果和独审随后绑定。
+
+Node22 新专项 3/3；连原 bootstrap、幂等受理、Native 冷上下文回放、确认预扣、失败分类、物理槽、关系账户和队列九文件同次 132/132、零跳过，13.707 秒。静态图的 37 roots 为 bootstrap 加 36 个关系模块，闭包从 102 到 98：旧 Store/schema/migrations、旧 event-store/quota-projections 五模块退出，加一个纯 record-values；value/re-export/literal dynamic 路径不再进入旧 Store/migrations。三个移动函数正文逐字相同，四个受影响文件除 imports/re-exports 和被移函数外的全部语句相同，原 bootstrap、physical controls/timeout/error 分类及关系 caller 文件字节不变。证据 `H:/TEMP/novelai-relational-imports-static-comparisons.json` 和 graph-before/after JSON。
+
+隔离 TEMP 将同一两条加载断言放回精确 3a 源，2/2 实际 assertion 红并记录被禁止的旧 Store load；当前候选 3/3 绿。分别只恢复 execution→Store 或 admission→Store import，前者使入口和 CLI 两条都红，后者只使关系入口红、CLI 正对照仍绿；恢复后 3/3 绿。负例先自证 hook 有效，再因指定旧模块的实际 load 触发断言，不把语法错误或缺包算作证据。日志 `H:/TEMP/novelai-relational-imports-union.log`、`novelai-relational-imports-negative-evidence.json`。类型、architecture、默认及可信 3a 的迁移历史、受影响格式与 diff 检查通过；不运行 full/build/compiled/依赖重建/生产动作，也不沿用父并集的发布结果。独立复审另绑定固定源。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
