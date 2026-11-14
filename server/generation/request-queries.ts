@@ -205,7 +205,7 @@ export function publicGenerationRequest(
     model: job.model,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
-    completedAt: job.completedAt,
+    completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status!) ? null : ''),
     error:
       options.errorMessage?.(job.error || '') ||
       classifiedGenerationFailureMessage(job.error) ||

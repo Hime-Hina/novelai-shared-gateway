@@ -308,6 +308,11 @@ test('历史原行缺父不产生公开批次，已知父的NULL时间/位置分
       'container:parent-b',
       'container:parent-a',
     ]);
+    assert.equal(
+      publicGenerationRequest(requests.readMemberRequest('current', 'm1')).jobs[0].completedAt,
+      '',
+      '正常活动请求沿原未完成 DTO，终态未知才是 NULL',
+    );
     const unknown = publicGenerationRequest(requests.readMemberRequest('container:parent-a', 'm1'));
     assert.equal(unknown.createdAt, null);
     assert.equal(unknown.source, null);

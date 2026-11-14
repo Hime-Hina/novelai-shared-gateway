@@ -418,6 +418,13 @@ test('全部操作与取消按原状态分类，已退休对象不再显示且 S
       {},
     );
   }
+  const requests = new RelationalRequestStore(f.db);
+  for (const operation of ['upscale', 'encode-vibe']) {
+    const source = requests.readMemberRequest(operation, 'm1'),
+      presented = publicGenerationRequest(source);
+    assert.equal(presented.jobs[0].model, source.jobs[0].model);
+    assert.equal(presented.jobs[0].completedAt, '');
+  }
   const queries = [],
     prepare = f.db.prepare.bind(f.db);
   f.db.prepare = (sql) => {
@@ -454,6 +461,36 @@ test('全部操作与取消按原状态分类，已退休对象不再显示且 S
   f.db.prepare('UPDATE generation_requests SET retired_at=? WHERE id=?').run(NOW, 'cancel');
   assert.deepEqual(await reports.readActivityDays({ ...query, operation: 'generate' }), []);
   assert.equal((await reports.readOwnerJobRows('', iso(NOW + day))).length, 1);
+});
+
+test('辅助操作薄DTO保留原NULL model而不添加空串或当前模型，活动未完成沿原空串', () => {
+  // 纯展示接口的 nullable 输入；不宣称当前 aux 正规化 producer 会产生缺模型的受理事实。
+  const request = {
+    id: 'auxiliary',
+    source: 'native',
+    operation: 'upscale',
+    createdAt: iso(0),
+    jobs: [
+      {
+        id: 'auxiliary-0',
+        sampleIndex: 0,
+        status: 'queued',
+        model: null,
+        createdAt: iso(0),
+        updatedAt: iso(0),
+        completedAt: null,
+        error: null,
+        cancelledAt: null,
+        lateResultAvailable: false,
+        imageId: null,
+        fairCharge: null,
+      },
+    ],
+  };
+  const dto = publicGenerationRequest(request);
+  assert.equal(dto.jobs[0].model, null);
+  assert.equal(dto.jobs[0].completedAt, '');
+  assert.equal(dto.createdAt, iso(0));
 });
 
 test('关系查询使用原创建时间局部索引；重开后结果相同、读取不回填投影', async (t) => {
