@@ -2249,7 +2249,13 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 新增真实localhost/唯一installer ready专项先12项通过，再加无policy/原非字典四成员顺序后同次13/13、零skip、7.930秒。覆盖13/28精确键和值、已知Anlas收费却display cost0、late后的原失败时点、真实逻辑两图/非副本、UTC+8统计、物理control未被清、query_only/全表/total_changes/通知零变；真实admin/Host/private/PUBLIC/ready等待后失效、IO前不读私有getter、等待中实际PST/proxy轮换后只给当前值、失败50原受理序与错误时序分开、51st输入不可用、公共回放无auth、选定快照合法ready/重开、统计故障不补零/吐秘密。原试跑的五处夹具错误（取错收费资源、ready既有500预期、非法PST、immutable输入写故障、异步清理顺序）单独保留并修在夹具，未放宽业务/ready/不可变校验。
 
-当前小集日志在 `H:/TEMP/novelai-admin-summary-988-20261115/`；与父任务串行源/child排期协调，受影响Direct/管理/fair/报告交集与固定非作者独审尚待补齐，不借13项标整体验收。未full/build/compiled/Node24/native/install、真实外部云或生产。
+随后普通合入父固定 `5ca121fb76a6f63a011a48bae630789f7f976302`，保留其唯一私有member列常量、Ready与childhelper共同来源以及原请求/错误分类。公开URL类型只同步既有ManagementSummary的stored publicBaseUrl为string或NULL，未改界面。补真实合法Opening的原ctime/completed/cost未知、导入header不能补值；第二个真实paused非bound账户取合法ID `toString`。原新装配直接索引普通accountStats对象导致该无样本账户继承prototype函数，实际HTTP精准缺stats1h；Report原Map/fromEntries的有样本累加本就安全，只在薄查询加Object.hasOwn，保同例中原a账户done1/failed1与toString真0。原红/同例1绿均保留，没有限制合法ID或新增字典框架。
+
+按父独占source槽排期，新增summary（含上述Opening）/完整Direct/admin报告/必要管理GET与真实Native控制/公平配置入口五文件选定同次 **69/69、零skip、17.641秒**，实际完整argv及日志 `selected-joint-first.log` 在 `H:/TEMP/novelai-admin-summary-988-20261115/`；不是盲重跑全450/234。backend类型、architecture、默认与可信88历史通过。原b50精确导出仅叠同字节新测试，合法请求实际404≠200，证明入口此前缺失。
+
+固定技术394697d的TEMP单点负控分别识别：只漏最终auth复核但保留SQL事务时五种撤权实际200（含父6失败）；给原members排序、把request计数当generation、给未知serviceName补旧默认各1失败。原首次“删整个authorize连事务也删”被Account owning-transaction先500拦，另存且不计目标反例；精确负控到达对应业务断言。finally逐字恢复后对应八项8/8通过，产品/测试最终摘要绑定独立交接。没有修改root/冻结父候选或用外网失败作通过依据。
+
+当前源测试槽已释放，固定非作者独审和最终sole/发行物/迁移联合验收另计，不借69项标整体完成。未full/build/compiled/Node24/native/install、真实外部云或生产；Web仅一个nullable类型行，本片不借后端类型检查宣称Web发布验证。
 
 ## 10. 事实依据与修订
 
