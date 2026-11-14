@@ -204,7 +204,12 @@ export function createRelationalManagementHttp(deps: {
       return true;
     }
     if (req.method === 'POST') {
-      const body = await readMemberJson(req);
+      const body = await readMemberJson(req),
+        groupInput = {
+          groups: body.groups,
+          expectedConfigVersion: body.expectedConfigVersion as number,
+          redistributeRemaining: body.redistributeRemaining as boolean | undefined,
+        };
       if (body.action === 'member-key') {
         const result = await authorize(() => {
           if (typeof body.userId !== 'string') {
@@ -224,6 +229,21 @@ export function createRelationalManagementHttp(deps: {
         replyMemberJson(res, 200, result);
         return true;
       }
+      if (body.action === 'preview-groups') {
+        const preview = await authorize((member) =>
+          quotas.previewGroups(
+            {
+              actorId: member?.id ?? 'local-admin',
+              actorKind: member ? 'member' : 'admin',
+              recordedAt: now(),
+            },
+            groupInput,
+            member,
+          ),
+        );
+        replyMemberJson(res, 200, preview);
+        return true;
+      }
       if (
         ![
           'fallback-policy',
@@ -231,13 +251,14 @@ export function createRelationalManagementHttp(deps: {
           'loss-alert-policy',
           'member-status',
           'member-admission',
+          'groups',
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
       }
       const receipt = await authorize((member) => {
         const actorId = member?.id ?? 'local-admin',
-          actorKind = member ? 'member' : 'admin',
+          actorKind: 'member' | 'admin' = member ? 'member' : 'admin',
           operation = `member-management:${body.action}`,
           command = managementCommand(req, actorId, operation, body, actorKind),
           metadata: Parameters<RelationalMemberStore['setMemberStatus']>[0] = {
@@ -282,7 +303,11 @@ export function createRelationalManagementHttp(deps: {
           ).receipt as { id: string; acceptingJobs: boolean; cancelledJobIds: string[] };
           return { ...saved, cancelledCount: saved.cancelledJobIds.length };
         }
-        return quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member).receipt;
+        return (
+          body.action === 'groups'
+            ? quotas.configureGroups(metadata, groupInput, member)
+            : quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member)
+        ).receipt;
       });
       replyMemberJson(res, 200, receipt);
       return true;

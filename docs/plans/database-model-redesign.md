@@ -1901,6 +1901,34 @@ Node22 新专项 12/12；与原管理 HTTP、成员自身读取、成员认证 c
 
 根在 `6fc9de3` 的 Account/Member heatmap 并集上整合，删除新只读十九行后 factory 逐字等于前一根；双方全部测试编辑和追加块均保留，完全相同的慢正文 helper 只保留一份。四文件同次 **139/139、零跳过，52.822 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式及 diff 通过。日志 `H:/TEMP/novelai-member-key-root-{joint,type,static,format}.log`，`root-merge.json` 为同前缀的合并保留证明。本片不轮换 Key、不产生秘密回执，后续组预览等只读动作仍须在管理命令分派前；最终编译、发布物与 sole 另验。
 
+### 9.72 两条管理路径的组预览与提交 HTTP
+
+基于固定根 `5987606` 并接已独审的 `1db7b1f` 核心（独立 152/152，四源 hash 绑定），只为两个字面 member-management POST 加 `preview-groups/groups`。依赖在本支以 `cb02cfa` 接入，仅计划文档与根已有段落做并集，QuotaStore、核心专项和原 U02 契约与 1db 技术字节一致；本片不改核心规划。Member/Account 后继 HTTP、Bootstrap/Sole 不在范围内，父整合保留各片的 Meta/frame 和真实 controls Map。
+
+复用唯一当前 authorize、原 32768 字节 JSON owner 及 no-renew 条件：正文读完后，仍在当前 Cookie/Discord/member/epoch/owner/ready 或本机 admin 事务内调用核心。客户端 actor/command/time 不能成为权限或元数据来源。预览先于 `managementCommand()`，只传服务器 actor/time 和原三个 group 输入字段，不创建命令、回执或事实，不因无关 Idempotency-Key 失败。提交复用原 actor/action/完整正文摘要和服务端元数据，原 receipt 在当前授权后、新版本规划前重领。preview 是读数，不预留组权益；held 或组 configVersion 改变会阻止新提交。独立 free/loss/fallback 不增加组版本，后来的组决定保留其当前值，HTTP 不添加另一套失效规则。
+
+原 DTO 沿同一 owner 返回：预览保留旧 configVersion、改后 groups/users quota 和布尔重分，提交返回原 groups/status/新版本 receipt。两 action 均不续 Cookie，summary/statistics POST 仍 404；没有扩大 API surface、旧格式兼容或金融/空闲算法。管理组写入的账户/账务/settings 失效合并为同一次真正提交后通知，不误写成只改 settings。
+
+新增真实 installer/localhost HTTP 15/15，覆盖 owner/admin 预览全表摘要/total_changes/commits/通知零变化、非法组/版本/布尔、无关非法/重复操作键不影响预览、原 Cookie 不续期、两无关 POST 不开放、服务器元数据与完整 body fingerprint、后来组版本下旧 receipt 零写及当前授权、预览后真实预扣/版本变化拒绝、两 action 的慢正文 logout/epoch 停启/owner/ready 变化。当前 owner 配置协调可能合法清理私有会话，此类拒绝单独核政策/提交/通知不变，不冒称鉴权维护全无写入。
+
+第二钱包真实 UPDATE 后原生 SQL 故障使全部 public/private/流/回执回滚且零通知；移除故障后原键提交一次，重复零变化。完整公共提交从零恢复组/钱包/原 journal、重复 total_changes 零，七种私有表和 member auth epoch 不恢复，fetch 为零。Group HTTP、核心 preview 和原 groups 三文件同次 125/125、零跳过，36.104 秒，`H:/TEMP/novelai-group-http-union.log`。精确旧 HTTP 候选同用例 400≠200；TEMP 给 preview 加无关命令头校验精准失败；实际 SAVEPOINT 内 no-op 写库再回滚仍被 total_changes 123≠124 识别，恢复后通过。证据在 `H:/TEMP/novelai-group-http-negative-20261114/`。
+
+backend 类型、architecture、默认与可信根 `5987606` migration 历史、191 个语法文件通过；格式/diff 随固定候选收尾。未执行 full/build/compiled/Node24/native、真实云、生产或切换；独立审查待固定候选。本片不表示整个管理面或新格式 sole 已完成。
+
+#### 9.72.1 独立审查修正实际身份类型的管理键作用域
+
+`ac1c341` 独立真实 HTTP 反例确认：稳定 owner memberId 合法等于 `local-admin` 时，owner 与真正本机管理员的同 key/同 action 原来都散列 `[actorId,operation,key]`，第二位实际 actor 被错误 409。T1 的 actorKind 不符拒绝本身正确，不能禁止合法成员 ID 或在查询处绕过；修复唯一纯 `managementCommand()`，作用域改为 `[actorKind,actorId,operation,key]`，其中身份由当前授权 callback 提供，正文 actor 字段不作权威。没有新身份保留字、兼容分支、双解释或守卫变化。
+
+真实合法 register→Discord 绑定→Cookie→installer→localhost 覆盖同名 owner/admin 在 groups 和 fallback-policy 的同键独立提交及各自旧 receipt 零写，客户端自报类型不能改变 scope。纯 helper 同时核对政策和实际账户操作字符串，默认 admin 与显式 admin 等价、member 分离、原 ASCII 单头边界与无 key 行为保持；旧 `member-routes` 默认 caller 回归随同执行。精确原 helper 的相同四项检查为 1 pass/3 fail，新实现 4/4；原独立红例脚本及摘要由审查者保留并在固定后复核，未将其范围改写成新作者测试。
+
+历史影响必须与最终迁移处理：共同 helper 也被两个 legacy caller 使用，因此带 key 的默认哈希输出已改变，旧第 9.64 节 AST/hash parity 只属于其固定候选，不再是此后继结论；头解析/错误和缺省 actorKind 仍相同。旧线上 command ID/receipt 不改写，不从旧 ID 串猜真实角色，不回退尝试两种哈希。旧线上 key 的解释由独立旧工具与选定迁移保存、核对；此 pending 候选不能单独作为旧线上热修升级，也不得因新哈希静默重复旧命令。部署仍以最终 sole 退出旧路径及迁移验收为条件，本片没有生产授权或旧运行时热修。
+
+作者 helper/真实管理 HTTP/旧 member-routes 三文件同次 64/64、零跳过，33.782 秒，`H:/TEMP/novelai-management-scope-union.log`；backend 类型、architecture、默认与可信 ac1 迁移、192 文件语法、格式与 diff 通过。未执行 full/build/compiled/Node24/native 或生产。原独立角色碰撞由原审查者按固定后继、原字节程序复验，不用作者的新增检查替代独审结论。
+
+固定 `9b9ee86993386aad67fbc9c8ba70259d97a7c245`（原 ac1 的后继）独审通过，原 ac1 的 actorKind 碰撞维持 NOT PASS。原封存五节点程序逐字不变，ac1 四过一红，修复五过；同次 helper、完整管理 HTTP、旧 member-routes 和独立程序 69/69、零跳过，30.539 秒。实际合法同名 owner/admin 在组与政策动作独立取键、各旧回执零写；account 操作字符串和默认 kind 另有 helper 检查，不冒充新 Account HTTP 已验。十三个受审源文件及作者六文件精确 Git/raw 绑定，只有共同 helper scope tuple/注释改变；无 old lookup、保留 ID、双解释或 T1 放宽。报告 `H:/TEMP/novelai-group-http-independent-evidence-ac1c341/INDEPENDENT-REVIEW.md`（SHA256 `8adef9f6026127452437fc67886ace9c43b8d7b7b83393de731ed43fdcfe30cc`），原红日志/JSON 和修复证据分别保留。旧 hash 的部署/迁移限制仍按 9.72.1，不把本片作旧线上独立热修。
+
+根在 `d646286` Account/heatmap/Key 并集上整合，组预览与 Key 读取都留在命令分派前，成员、组与政策分别调用各自原 owner；保留所有共同基线测试修改与完整追加块，只合并相同慢正文 helper。共同 helper 和新 unit 精确等于 9b9，QuotaStore 保持原根字节。六文件同次 **185/185、零跳过，47.191 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、七文件格式和 diff 通过，日志 `H:/TEMP/novelai-groups-http-root-{joint,type,static,format}.log`，合并证明 `root-test-merge.json` 在同前缀。原 8cb 全量和 0ad 编译/CI 不能替代该新并集的后续统一验证。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

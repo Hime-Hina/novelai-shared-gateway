@@ -1302,7 +1302,7 @@ test('政策POST保留原单ASCII幂等键、JSON、版本与本站边界，未�
     [{ 'idempotency-key': ['duplicate', 'duplicate'] }, freePolicy(), 400],
     [{ 'content-type': 'text/plain' }, freePolicy(), 415],
     [{ origin: '' }, freePolicy(), 403],
-    [{}, { action: 'groups', groups: [] }, 400],
+    [{}, { action: 'unsupported-management-action' }, 400],
     [{}, { action: 'fallback-policy', enabled: 'true' }, 400],
     [{}, { ...freePolicy(), policy: { enabled: true, warningThreshold: 0, hardLimit: 1 } }, 400],
     [{}, { ...lossPolicy(), expectedVersion: 0 }, 409],
@@ -2834,4 +2834,411 @@ test('member-key 私有恢复不足/校验损坏/移除目标拒绝，SQL末尾�
       }
     });
   }
+});
+
+test('管理作用域HTTP：合法local-admin稳定成员与真正admin同key仍独立，组和政策原回执各自零写', async (t) => {
+  const ownerId = 'local-admin',
+    ownerKey = 'synthetic-local-admin-member-key',
+    f = await setup(t, {
+      env: { OWNER_USER_ID: ownerId },
+      beforeReady: async (f) => {
+        f.db.transaction(() =>
+          f.members.registerMember(meta('register-local-admin-owner'), {
+            memberId: ownerId,
+            displayName: 'actual owner',
+            apiKey: ownerKey,
+          }),
+        )();
+        await f.members.discordAuthenticationTransaction((tx) => {
+          const member = tx.readMember(ownerId);
+          member.discord = {
+            id: '444444444444444444',
+            guildId: '1134557553011998840',
+            accessToken: 'synthetic-owner-access',
+            refreshToken: 'synthetic-owner-refresh',
+            expiresAt: NOW + 86400000,
+            checkedAt: NOW,
+            member: true,
+          };
+          tx.saveAuthentication(member, 'login');
+        });
+      },
+    }),
+    session = await createMemberSession(
+      f.members,
+      await authenticateMemberApiKey(f.members, ownerKey),
+      f.env,
+      f.clock,
+    ),
+    key = 'same-key-and-id-distinct-real-roles',
+    seen = policyNotifications(f),
+    ownerHeaders = { 'idempotency-key': key, 'x-member-activity': '1' },
+    adminHeaders = { ...ownerHeaders, 'x-admin-token': adminToken },
+    ownerGroup = managementGroupBody('groups', 1),
+    adminGroup = managementGroupBody('groups', 2, { m1: 1, m2: 1 });
+  const first = await f.call(owner, {
+    method: 'POST',
+    cookie: session.token,
+    headers: ownerHeaders,
+    body: ownerGroup,
+  });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.configVersion, 2);
+  const second = await f.call(admin, { method: 'POST', headers: adminHeaders, body: adminGroup });
+  assert.equal(second.status, 200, second.text);
+  assert.equal(second.body.configVersion, 3);
+  const ownerPolicy = { action: 'fallback-policy', enabled: true, actorKind: 'admin' },
+    adminPolicy = { action: 'fallback-policy', enabled: false, actorKind: 'member' },
+    third = await f.call(owner, {
+      method: 'POST',
+      cookie: session.token,
+      headers: ownerHeaders,
+      body: ownerPolicy,
+    }),
+    fourth = await f.call(admin, { method: 'POST', headers: adminHeaders, body: adminPolicy });
+  assert.equal(third.status, 200, third.text);
+  assert.deepEqual(third.body, { autoAnlasFallback: true });
+  assert.equal(fourth.status, 200, fourth.text);
+  assert.deepEqual(fourth.body, { autoAnlasFallback: false });
+  const commands = f.db
+    .prepare(
+      "SELECT command_id,actor_kind,actor_id FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq",
+    )
+    .all();
+  assert.equal(new Set(commands.map((c) => c.command_id)).size, 4);
+  assert.deepEqual(
+    commands.map((c) => c.actor_kind),
+    ['member', 'admin', 'member', 'admin'],
+  );
+  assert.ok(commands.every((c) => c.actor_id === ownerId));
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    notifications = seen.length;
+  for (const [endpoint, cookie, headers, body, expected] of [
+    [owner, session.token, ownerHeaders, ownerGroup, first.body],
+    [admin, f.sessions.m1.token, adminHeaders, adminGroup, second.body],
+    [owner, session.token, ownerHeaders, ownerPolicy, third.body],
+    [admin, f.sessions.m1.token, adminHeaders, adminPolicy, fourth.body],
+  ]) {
+    const response = await f.call(endpoint, { method: 'POST', cookie, headers, body });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, expected);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, notifications);
+});
+
+function managementGroupBody(
+  action = 'groups',
+  expectedConfigVersion = 1,
+  weights = { m1: 3, m2: 1 },
+) {
+  return {
+    action,
+    expectedConfigVersion,
+    redistributeRemaining: true,
+    groups: [
+      { id: 'g', name: 'shared', share: 1, members: ['m1', 'm2'], memberWeights: weights },
+      ...['g2', 'g3', 'g4'].map((id) => ({
+        id,
+        name: id,
+        share: 0,
+        members: [],
+        memberWeights: {},
+      })),
+    ],
+  };
+}
+
+test('组管理HTTP预览沿真实owner/admin零写，原DTO/版本不持久化且无关操作键不成为命令', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    intent = {
+      ...managementGroupBody('preview-groups'),
+      actorKind: 'system',
+      actorId: 'm2',
+      recordedAt: -1,
+      commandId: 'register-m1',
+      fingerprint: 'a'.repeat(64),
+    };
+  for (const [endpoint, headers] of [
+    [owner, { 'idempotency-key': 'not a management key', 'x-member-activity': '1' }],
+    [
+      admin,
+      {
+        'x-admin-token': adminToken,
+        'idempotency-key': ['duplicate', 'duplicate'],
+        'x-member-activity': '1',
+      },
+    ],
+  ]) {
+    const response = await f.call(endpoint, { method: 'POST', headers, body: intent });
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.body.configVersion, 1);
+    assert.equal(response.body.redistributeRemaining, true);
+    assert.deepEqual(response.body.groups, intent.groups);
+    assert.deepEqual(
+      response.body.users.map((u) => u.id),
+      ['m1', 'm2'],
+    );
+    assert.equal(response.body.users[0].quota.v5Available, 75);
+    assert.equal(response.body.users[1].quota.v5Available, 25);
+    assert.equal(Object.hasOwn(response.body, 'receipt'), false);
+    assert.equal(Object.hasOwn(response.body, 'commandId'), false);
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  }
+  for (const action of ['preview-groups', 'groups'])
+    for (const body of [
+      { ...intent, action, groups: [] },
+      { ...intent, action, redistributeRemaining: 'true' },
+      { ...intent, action, expectedConfigVersion: 0 },
+    ]) {
+      const response = await f.call(owner, { method: 'POST', body });
+      assert.equal(response.status, body.expectedConfigVersion === 0 ? 409 : 400, response.text);
+      assert.equal(databaseState(f.db), before);
+    }
+  assert.equal((await f.call(owner, { method: 'POST', member: 'm2', body: intent })).status, 403);
+  for (const endpoint of [summary, statistics]) {
+    const unrelated = await f.call(endpoint, { method: 'POST', body: intent });
+    assert.equal(unrelated.status, 404, unrelated.text);
+  }
+  assert.equal(seen.length, 0);
+  assert.equal(f.resourceCalls, 0);
+});
+
+test('组管理HTTP提交沿原完整正文回执，后来的组版本前仍可重领且不复活旧决定', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    body = {
+      ...managementGroupBody(),
+      actorKind: 'admin',
+      actorId: 'local-admin',
+      commandId: 'client-command',
+      recordedAt: -1,
+    },
+    headers = { 'idempotency-key': 'original-group', 'x-member-activity': '1' };
+  const preview = await f.call(owner, {
+      method: 'POST',
+      body: { ...body, action: 'preview-groups' },
+    }),
+    first = await f.call(owner, { method: 'POST', headers, body });
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(first.body.groups, preview.body.groups);
+  assert.equal(first.body.configVersion, 2);
+  assert.equal(first.headers.get('set-cookie'), null);
+  assert.equal(seen.length, 1);
+  const seq = f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+    stored = readRelationalCommit(f.db, seq);
+  assert.equal(stored.command.actorKind, 'member');
+  assert.equal(stored.command.actorId, 'm1');
+  assert.equal(stored.command.recordedAt, f.clock);
+  assert.notEqual(stored.command.commandId, 'client-command');
+  // 独立政策不增加组版本；新组决定必须保留它，不能复活预览时的政策。
+  const policy = await f.call(admin, {
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken },
+    body: { action: 'fallback-policy', enabled: true },
+  });
+  assert.equal(policy.status, 200, policy.text);
+  const later = await f.call(admin, {
+    method: 'POST',
+    headers: { 'x-admin-token': adminToken, 'idempotency-key': 'later-group' },
+    body: managementGroupBody('groups', 2, { m1: 1, m2: 1 }),
+  });
+  assert.equal(later.status, 200, later.text);
+  assert.equal(later.body.configVersion, 3);
+  assert.equal(
+    f.db.prepare('SELECT auto_anlas_fallback FROM sharing_policy').get().auto_anlas_fallback,
+    1,
+  );
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    notified = seen.length;
+  const retry = await f.call(owner, { method: 'POST', headers, body });
+  assert.equal(retry.status, 200, retry.text);
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(retry.headers.get('set-cookie'), null);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, notified);
+  const conflict = await f.call(owner, {
+    method: 'POST',
+    headers,
+    body: { ...body, actorId: 'different-client-field' },
+  });
+  assert.equal(conflict.status, 409, conflict.text);
+  assert.equal(databaseState(f.db), before);
+  await logoutMemberSession(f.members, f.sessions.m1.token);
+  const revoked = await f.call(owner, { method: 'POST', headers, body });
+  assert.equal(revoked.status, 401, revoked.text);
+  assert.equal(seen.filter(({ event }) => event.collections.includes('settings')).length, notified);
+});
+
+test('组管理HTTP预览不是权益预留，后来真实held或组版本变化使新提交拒绝', async (t) => {
+  for (const mode of ['held', 'version'])
+    await t.test(mode, async (t) => {
+      const f = await setup(t),
+        seen = policyNotifications(f),
+        body = managementGroupBody();
+      const preview = await f.call(owner, {
+        method: 'POST',
+        body: { ...body, action: 'preview-groups' },
+      });
+      assert.equal(preview.status, 200, preview.text);
+      if (mode === 'held') {
+        await f.accept('after-preview', { now: f.clock });
+        f.dispatch('after-preview-0', f.clock + 1);
+        f.advance(2);
+        assert.ok(f.db.prepare("SELECT 1 FROM charges WHERE status='reserved'").get());
+      } else {
+        const changed = await f.call(admin, {
+          method: 'POST',
+          headers: { 'x-admin-token': adminToken },
+          body: managementGroupBody('groups', 1, { m1: 1, m2: 1 }),
+        });
+        assert.equal(changed.status, 200, changed.text);
+      }
+      const before = databaseState(f.db),
+        notified = seen.length,
+        denied = await f.call(owner, {
+          method: 'POST',
+          headers: { 'idempotency-key': 'fresh-after-preview' },
+          body,
+        });
+      assert.equal(denied.status, 409, denied.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(seen.length, notified);
+    });
+});
+
+test('组管理HTTP两action正文后重核Cookie/epoch/owner/ready，旧receipt也不绕授权', async (t) => {
+  for (const action of ['preview-groups', 'groups'])
+    for (const mode of ['cookie', 'epoch', 'owner', 'ready'])
+      await t.test(action + ':' + mode, async (t) => {
+        let begin;
+        const f = await setup(t, { onBodyRead: () => begin?.() }),
+          seen = policyNotifications(f),
+          body = managementGroupBody(action),
+          headers = { 'idempotency-key': 'held-group' };
+        if (action === 'groups') {
+          const original = await f.call(owner, { method: 'POST', headers, body });
+          assert.equal(original.status, 200, original.text);
+        }
+        const started = new Promise((resolve) => {
+            begin = resolve;
+          }),
+          held = await holdPolicyBody(t, f, owner, started, headers, body);
+        if (mode === 'cookie') await logoutMemberSession(f.members, f.sessions.m1.token);
+        if (mode === 'epoch') {
+          f.db.transaction(() =>
+            f.members.setMemberStatus(meta('disable-held-owner'), 'm1', 'disabled'),
+          )();
+          f.db.transaction(() =>
+            f.members.setMemberStatus(meta('enable-held-owner'), 'm1', 'active'),
+          )();
+        }
+        if (mode === 'owner') f.env.OWNER_USER_ID = 'm2';
+        if (mode === 'ready')
+          f.db.prepare("UPDATE projection_state SET status='failed' WHERE id=1").run();
+        const policy = f.db.prepare('SELECT * FROM sharing_policy').all(),
+          cut = f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n,
+          notified = seen.filter(({ event }) => event.collections.includes('settings')).length,
+          response = await held.finish();
+        assert.equal(response.status, mode === 'ready' ? 500 : 401, response.text);
+        assert.equal(response.headers['set-cookie'], undefined);
+        assert.deepEqual(f.db.prepare('SELECT * FROM sharing_policy').all(), policy);
+        assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n, cut);
+        assert.equal(
+          seen.filter(({ event }) => event.collections.includes('settings')).length,
+          notified,
+        );
+      });
+});
+
+test('组管理HTTP第二钱包尾错整笔回滚零通知，健康重试一次且完整回放不复活私有认证', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    body = managementGroupBody(),
+    headers = { 'x-admin-token': adminToken, 'idempotency-key': 'atomic-group' };
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_second_group AFTER UPDATE OF v5_available ON wallets WHEN NEW.member_id='m2' AND NEW.v5_available!=OLD.v5_available BEGIN SELECT RAISE(ABORT,'second group wallet fault'); END",
+  );
+  const before = databaseState(f.db),
+    failed = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, 0);
+  f.db.exec('DROP TRIGGER fail_second_group');
+  const success = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(success.status, 200, success.text);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].row.config_version, 2);
+  assert.deepEqual(seen[0].event.collections, ['accounts', 'ledger', 'settings']);
+  const saved = databaseState(f.db),
+    duplicate = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(duplicate.status, 200, duplicate.text);
+  assert.deepEqual(duplicate.body, success.body);
+  assert.equal(databaseState(f.db), saved);
+  assert.equal(seen.length, 1);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  let fetches = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    fetches++;
+    throw Error('public replay must not fetch');
+  });
+  for (const { seq } of commits)
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  for (const table of [
+    'wallets',
+    'sharing_policy',
+    'sharing_groups',
+    'group_members',
+    'account_quota_state',
+    'commits',
+    'domain_events',
+    'stream_heads',
+  ]) {
+    const rows = (db) =>
+      db
+        .prepare('SELECT * FROM ' + table + ' ORDER BY rowid')
+        .safeIntegers()
+        .all();
+    assert.deepEqual(rows(target), rows(f.db), table);
+  }
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'upstream_credentials',
+    'member_sessions',
+    'discord_bindings',
+    'discord_invites',
+    'member_auth_state',
+  ])
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const rebuilt = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits)
+    target.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), inputs).replayed, true),
+    )();
+  assert.equal(databaseState(target), rebuilt);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(fetches, 0);
 });
