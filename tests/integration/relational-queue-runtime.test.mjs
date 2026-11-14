@@ -778,6 +778,7 @@ test('本地发布仍悬挂时逻辑退款不释放物理槽/父输入，stop等
   );
   const admit = createRelationalMemberGenerationAdmission({
     sqlite: f.db,
+    runtime,
     members: f.members,
     inputs: f.inputs,
     generations: f.generations,
@@ -1232,6 +1233,7 @@ test('辅助操作由同一真实HTTP执行链发布原图与二进制编码，�
   const payloadBudget = createGenerationPayloadBudget(() => f.inputs.activePayloadBytes());
   const admit = createRelationalMemberGenerationAdmission({
     sqlite: f.db,
+    runtime: f.commandOnlyRuntime,
     members: f.members,
     inputs: f.inputs,
     generations: f.generations,
@@ -1321,6 +1323,7 @@ test('真实成员HTTP与执行器共用Map/预算/事件，退款仍占物理�
   });
   const handle = createRelationalMemberGenerationHttp({
     sqlite: f.db,
+    runtime,
     payloadBudget,
     events: f.events,
     previews: runtime.previews,
@@ -1768,4 +1771,37 @@ test('Direct有限seed的末段SQL故障被当前Key外层捕获后全库回滚�
   assert.equal(accepted.replayed, false);
   assert.equal(f.inputs.readJobInput('seed-rollback-0').seed, 1.5);
   replayAll(t, f);
+});
+
+test('受理能力读取同一个runtime当前phase，prepare/stop不因旧running值继续允许受理', async (t) => {
+  const f = await setup(t);
+  await f.ready();
+  const runtime = f.runtime();
+  assert.equal(runtime.status, 'created');
+  assert.throws(
+    () => runtime.assertAccepting(),
+    (error) => error.statusCode === 503,
+  );
+  await runtime.prepare();
+  assert.equal(runtime.status, 'prepared');
+  assert.throws(
+    () => runtime.assertAccepting(),
+    (error) => error.statusCode === 503,
+  );
+  runtime.activate();
+  assert.equal(runtime.status, 'running');
+  runtime.assertAccepting();
+  const stopped = runtime.stop();
+  assert.equal(runtime.status, 'stopping');
+  assert.throws(
+    () => runtime.assertAccepting(),
+    (error) => error.statusCode === 503,
+  );
+  await stopped;
+  assert.equal(runtime.status, 'stopped');
+  assert.throws(
+    () => runtime.assertAccepting(),
+    (error) => error.statusCode === 503,
+  );
+  assert.equal(f.calls, 0);
 });

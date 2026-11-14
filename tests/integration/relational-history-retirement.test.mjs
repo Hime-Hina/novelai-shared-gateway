@@ -186,6 +186,7 @@ test('真实受理桥原键保留；图退休只返回原回执，任一原 chil
     },
     admit = createRelationalMemberGenerationAdmission({
       ...f,
+      runtime: f.commandOnlyRuntime,
       sqlite: f.db,
       payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
       env: f.env,

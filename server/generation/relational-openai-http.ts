@@ -28,6 +28,7 @@ import { createRelationalApiGenerationAdmission } from './relational-api-admissi
 import { createRelationalApiDelivery } from './relational-api-delivery.ts';
 import { createOpenAiJobStream } from './delivery.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -38,6 +39,7 @@ export function createRelationalOpenAiHttp(deps: {
   events: EventEmitter;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   readNormalizationDefaults(): OpenAiNormalizationDefaults;
   readJson(req: OpenAiHttpRequest, limit: number): Promise<unknown>;
   imageUrl(req: OpenAiHttpRequest, artifactId: string): string;
@@ -66,6 +68,7 @@ export function createRelationalOpenAiHttp(deps: {
     inputs,
     generations,
     payloadBudget: deps.payloadBudget,
+    runtime: deps.runtime,
     replicas: deps.replicas,
     env,
     now: deps.now,
@@ -126,6 +129,7 @@ export function createRelationalOpenAiHttp(deps: {
         env,
         replicas: deps.replicas,
         events: deps.events,
+        runtime: deps.runtime,
         now: deps.now,
       });
       try {

@@ -1,5 +1,9 @@
 # API 契约与迁移基线（C02/C03）
 
+未发布的关系候选现由普通 `server/index.ts` 与 Nitro 共享的 `gateway-runtime.ts` 装配关系 HTTP factories，删除旧在线 Store 分支。此阶段仅接已有真实能力，`/api/admin/summary`（含旧 revealTokens）和尚未交付的管理 action 仍明确不可用，不补旧集合或虚构统计；后继必须完成真实调用者和发布物验收才能上线。Host、Origin、CORS、PUBLIC 的 STA1N Key 前缀和 admin header 门禁仍由原 helper/factory 维护，Cookie/Discord/原 epoch 授权不被平台 admin 或官方 PST 代替。OpenAI 返回绝对限时签名 URL，所有入口共用一个进程签名密钥；签名可转交、重启失效。新入口的实际范围和反例见[第 9.75 节](../plans/database-model-redesign.md#975-唯一关系运行入口装配)。
+
+在途生成请求的正文、缓存或认证 IO 可能晚于关闭结束：所有新 accept/reuse 在原当前授权事务、原键回执检查后复核同一 runtime phase，不因旧授权或一次通知继续入队；原合法回执仍按实际终态领取。drained 只唤醒读取，晚注册的领取同样从当前 stopped phase 结束非终态等待；已 done 字节继续真实读取，不统一改成 503。内部不可用保持各原协议包装，Direct 为 HTTP200+x-error 且非 x-timeout。HTTP 领取期限沿原 Direct 60 秒/Native 与 OpenAI 10 分钟和其原环境配置，HTTP 截止不释放物理任务或伪造退款。
+
 新增的 Cookie 会话能力描述、统一报价和成员生成接口见[成员生成接口契约](member-generation-contract.md)，已在重构分支实现，最终验收状态见[当前计划](../plans/architecture-refactor-plan.md)。下文继续描述兼容接口；新契约不改变 Native Bearer 鉴权、旧状态码和响应格式，也不表示多账号或其他数据库已被支持。
 
 协议核对日期：2026-10-17；部署状态更新：2026-10-19。范围为 `FAIR_SHARE_MODE=true` 的当前共享网关，包含 Native、OpenAI 风格生图、成员门户、任务与结果接口；不是 NovelAI 全量 API 的兼容声明。下文记录当前分支行为；F03 故障处理、F06 持久请求/可选幂等、F10 结果恢复、F12 冷却、A01 持久会话及 R01 细粒度事件已接入。Nuxt 与独立执行器的迁移边界和实际验证见[执行服务](../architecture/executor-service.md)，dff5ee4 已完成[正式发布与真实验收](../operations/production-release.md)。

@@ -17,8 +17,6 @@ FROM node:22.23.4-bookworm-slim
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/.output/backend/server ./server
-COPY --from=build /app/server/migrations ./server/migrations
-COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/.output/backend/scripts ./scripts
 COPY --from=build /app/.output/backend/package.json ./
 COPY pnpm-lock.yaml LICENSE NOTICE.md UPSTREAM-LICENSE ./
