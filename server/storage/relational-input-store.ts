@@ -1724,6 +1724,7 @@ export class RelationalInputStore {
     if (body) {
       delete body.displayPrompt;
       delete body.requestedSteps;
+      delete body.cacheSelection;
     }
     return {
       contractVersion: 1,

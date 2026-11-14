@@ -14,12 +14,15 @@ import {
 import {
   normalizeNovelAiRequest,
   DIRECT_URL_MAX_STEPS,
+  buildNovelAiParameters,
 } from '../../server/protocols/novelai-client.ts';
 import { nativeNormalizationContext } from '../../server/protocols/native-image.ts';
 import {
   requestNormalizationDefaults,
   generationRequestFingerprint,
+  requestCacheKey,
 } from '../../server/generation/request-fingerprint.ts';
+import { prepareRelationalInput } from '../../server/generation/relational-input.ts';
 import { generationIdempotencyKeyHash } from '../../server/generation/admission.ts';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
@@ -916,4 +919,149 @@ test('别名和缓存后续SQL投影故障被当前认证外层捕获，保护�
   f.db.exec('DROP TRIGGER fail_cache');
   assert.equal((await f.authorize(() => f.generations.reuseGeneration(...args))).replayed, false);
   replay(t, f);
+});
+
+test('direct缓存从唯一正文及最小原选择精确复算旧key，保留空词、多行、cost JSON值和purchase字段缺省', async (t) => {
+  const f = await setup(t),
+    ctx = f.context();
+  const cases = [
+    {},
+    { artist: '', tag: '' },
+    { artist: 'same', tag: 'same' },
+    { artist: 'first\nsecond', tag: '' },
+    { artist: '', tag: 'first\nsecond' },
+    { artist: 'first', tag: 'second' },
+    { artist: 'first\nsecond', tag: 'third\nfourth' },
+    { size: '横图' },
+    { size: ' ' },
+    { cost: '' },
+    { cost: null },
+    { cost: false },
+    { cost: 0 },
+    { cost: -1 },
+    { cost: 'invalid' },
+    { cost: Infinity },
+    { sampler: 'unsupported-original-sampler' },
+  ];
+  for (const changes of cases) {
+    for (const purchase of [undefined, false, true]) {
+      const normalized = f.request(changes),
+        original = {
+          ...normalized,
+          ...(purchase === undefined ? {} : { allowPurchasedAnlas: purchase }),
+        },
+        request = {
+          ...original,
+          normalizationContext: { native: ctx.native },
+          action: 'generate',
+          operation: 'generate',
+        };
+      for (const seedMode of ['fixed', 'random']) {
+        const expected = requestCacheKey(
+            'm1',
+            original,
+            seedMode === 'random' ? '' : original.seed,
+          ),
+          actual = f.inputs.generationInputIntent('m1', request, ctx, seedMode, false);
+        assert.equal(actual.cacheKey, expected, JSON.stringify({ changes, purchase, seedMode }));
+      }
+      const prepared = prepareRelationalInput(request, ctx);
+      assert.equal(Object.hasOwn(prepared.body, 'artist'), false);
+      assert.equal(Object.hasOwn(prepared.body, 'tag'), false);
+      assert.equal(prepared.body.cacheSelection.purchaseField, purchase !== undefined);
+      assert.equal(
+        Object.hasOwn(prepared.body.cacheSelection, 'cost'),
+        normalized.cost !== undefined,
+      );
+      assert.equal(
+        Object.hasOwn(prepared.body.cacheSelection, 'sampler'),
+        normalized.sampler !== prepared.body.parameters.sampler,
+      );
+    }
+  }
+  const plain = f.request(),
+    extraNativeParameter = {
+      ...plain,
+      nativeParameters: { ...buildNovelAiParameters(plain), sm: true },
+    };
+  assert.equal(
+    f.inputs.generationInputIntent('m1', extraNativeParameter, ctx, 'fixed', false).cacheKey,
+    null,
+  );
+});
+
+test('同出站但旧缓存key不同的原选择不能合并活动请求或缓存；相同旧key仍复用并完整回放', async (t) => {
+  const pairs = [
+    ['size', {}, { size: '横图' }],
+    ['artist-tag-split', { artist: 'first', tag: 'second' }, { artist: '', tag: 'first\nsecond' }],
+    ['cost-presence', {}, { cost: 0 }],
+    [
+      'sampler-rewrite',
+      { sampler: 'unsupported-original-sampler' },
+      { sampler: 'k_euler_ancestral' },
+    ],
+    ['purchase-presence', {}, {}],
+  ];
+  for (const [label, first, second] of pairs) {
+    await t.test(label, async (t) => {
+      const f = await setup(t),
+        ctx = f.context(),
+        a = f.request(first),
+        b = {
+          ...f.request(second),
+          ...(label === 'purchase-presence' ? { allowPurchasedAnlas: false } : {}),
+        };
+      assert.equal(generationRequestFingerprint(a), generationRequestFingerprint(b));
+      assert.notEqual(requestCacheKey('m1', a, a.seed), requestCacheKey('m1', b, b.seed));
+      await f.acceptCachedSource('source', a, ctx);
+      const lookup = (request) =>
+        f.generations.findReusableGeneration(
+          {
+            memberId: 'm1',
+            request,
+            context: ctx,
+            seedMode: 'fixed',
+            noCache: false,
+            allowActive: true,
+          },
+          { dataDir: f.dir },
+        );
+      const before = databaseState(f.db);
+      assert.equal(await lookup(b), null);
+      await assert.rejects(f.reuse('wrong-active', 'source-0', b, ctx), /意图|来源|复用|输入/);
+      assert.equal(databaseState(f.db), before);
+      const equivalent = {
+        ...a,
+        requestedSteps: 999,
+        normalizationContext: { native: ctx.native },
+      };
+      assert.deepEqual(await lookup(equivalent), { kind: 'active', sourceJobId: 'source-0' });
+      const alias = await f.reuse('same-active', 'source-0', equivalent, ctx);
+      assert.equal(alias.receipt.requestId, 'source');
+      f.dispatch('source-0');
+      await f.publish('source-0');
+      const artifact = f.db.prepare('SELECT id FROM artifacts').get().id,
+        afterPublish = databaseState(f.db);
+      assert.equal(await lookup(b), null);
+      await assert.rejects(
+        f.reuse('wrong-cache', 'source-0', b, ctx, 'fixed', artifact),
+        /意图|来源|复用|输入/,
+      );
+      assert.equal(databaseState(f.db), afterPublish);
+      assert.deepEqual(await lookup(equivalent), {
+        kind: 'artifact',
+        sourceJobId: 'source-0',
+        artifactId: artifact,
+      });
+      const hit = await f.reuse('same-cache', 'source-0', equivalent, ctx, 'fixed', artifact);
+      assert.equal(hit.receipt.cacheHit, true);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_attempts').get().n, 1);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM charges').get().n, 1);
+      assert.equal(
+        Object.hasOwn(f.inputs.readMemberInput('same-cache', 'm1').input, 'cacheSelection'),
+        false,
+      );
+      replay(t, f);
+    });
+  }
 });
