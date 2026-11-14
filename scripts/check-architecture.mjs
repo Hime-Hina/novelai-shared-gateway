@@ -54,10 +54,13 @@ const mutations = new Set([
   'renewMemberCookie',
   'createRelationalMemberAuthenticationHttp',
   'createRelationalMemberReadHttp',
+  'createRelationalManagementHttp',
   'createRelationalNativeAdmission',
   'createRelationalApiGenerationAdmission',
   'createRelationalOpenAiHttp',
   'createRelationalDirectHttp',
+  'createRelationalRequestHttp',
+  'cancelRelationalGenerationRequest',
   'createRelationalNativeHttp',
   'createLegacyNativeHttp',
   'memberApiKeyTransaction',
@@ -197,7 +200,7 @@ export function checkSource(filename, text) {
             target,
           ) &&
             names.includes('*')) ||
-          /(?:events\/relational-(?:event-store|state-notifications)|members\/(?:(?:relational-)?authentication-http|relational-read-http)|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|api-admission|openai-http|direct-http|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-(?:event-store|state-notifications)|members\/(?:(?:relational-)?authentication-http|relational-(?:read|management)-http)|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|api-admission|openai-http|direct-http|request-http|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

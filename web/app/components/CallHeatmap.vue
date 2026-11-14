@@ -29,7 +29,7 @@ const props = withDefaults(
   defineProps<{
     api: MemberApi;
     endpoint: string;
-    members?: { id: string; username: string }[];
+    members?: { id: string; username: string | null }[];
     active?: boolean;
     refreshVersion?: number;
     invalidation?: ActivityInvalidation;
@@ -90,7 +90,10 @@ const statuses = [
 ];
 const memberOptions = computed(() => [
   { label: '全部成员', value: '' },
-  ...(props.members || []).map((member) => ({ label: member.username, value: member.id })),
+  ...(props.members || []).map((member) => ({
+    label: member.username || member.id,
+    value: member.id,
+  })),
 ]);
 const days = computed(() =>
   snapshot.value ? activityDates(snapshot.value.from, snapshot.value.to) : [],

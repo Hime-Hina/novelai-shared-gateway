@@ -8,6 +8,14 @@ import type { fairQuotaSummary } from '../quota/fair-share.ts';
 import type { FreeImageUsage } from '../quota/free-image-policy.ts';
 import type { memberCharge } from '../quota/failure-accounting.ts';
 
+// 部署配置优先，历史库配置只作原回退；成员与管理读取入口共用此顺序。
+export function resolveMemberPublicBaseUrl(
+  stored: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return env.PUBLIC_BASE_URL || stored || (env.PUBLIC_HOST ? `https://${env.PUBLIC_HOST}` : '');
+}
+
 type HistoryPage = ReturnType<RelationalRequestStore['readMemberJobPage']>;
 type ProfileJob = Omit<HistoryPage['jobs'][number], 'requestId' | 'createdAt' | 'status'> & {
   requestId?: string | null;

@@ -293,6 +293,12 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 新关系格式只读适配返回 `coverage=retained-facts`，仅统计保留事实，原时间未知的尝试另列 `risk.unknownTimeAttempts`，不宣称完整零历史。原累计金额/纠正后累计金额或 policy before 缺少来源时为 NULL；单次 observedAmount、signed delta 与当前缺口分别展示。游标绑定 history 和原提交/事件序号，非法或跨 history 为 400；没有已恢复绑定账户基线时为 503，不返回假零账。此只读适配还需新 HTTP 总装配接入；管理授权继续由上述 owner/管理员入口承担。
 
+关系管理 GET 已提供独立适配：`/api/admin/member-management` 保留本机 Host、私有访问边界和当前管理员 capability；`PUBLIC_MODE=true` 时 query `adminToken` 不授予权限。`/api/member/owner/member-management` 只接受当前 owner Cookie/Discord 身份，外部 IO 后再核对同一稳定 ID、认证代次、当前 owner 与 ready。只有该精确 owner 路径的可见、无 query GET 沿原会话 owner 续期；静态 admin、普通读取、带 query 的 heatmap/losses 都不续期，字面 `/api/member/owner/summary` 不是本接口别名。
+
+默认摘要保留 groups/status/shared/政策版本、公共地址、成员 quota/freeImages 与最近 30 条状态统计。username 只取当前登录名，缺失为 NULL；displayName 单独提供，不能替代登录身份。当前模型没有 note 事实，返回 NULL，不冒充空备注。disabled 成员仍可管理，removed 不在当前名单，原历史按各报告 owner 保留。最近统计按原 Job 创建时间选取，保留真实 0 和未知 NULL，排除退休 parent/child；不以父受理时间或导入时间替代。读取允许真实在途预扣，不提交钱包、任务或配置；Discord 资格观察和可见续期仍有原有私有写入边界。
+
+服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。本片只有 GET，没有实现管理 POST 或切换 sole 运行入口；整体发布验收见数据库计划第 9.60 节。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
 成员 `GET /api/member/history` 按子任务分页，保留 `page/pageSize/total/until` 与创建时间、模型、状态排序；`q` 只按字面搜索任务 ID 和模型，不搜索提示词或输入参数。关系读取的原创建时间、模型或估算标志缺少来源时保持 `null`，已知时间 0 不变；未知原创建时间仍属于保留历史，不借用开账日或父受理日。`GET /api/member/key` 从当前私有 owner 返回 exact 当前 Key 和明确部署配置生成的单个 `/v1` 入口，缺少可恢复 Key 为 503，不通过 GET 创建。关系只读绑定的两个入口均不续期，也不以 Bearer 代替 Cookie；现可见 `me` 与无 query 的 owner 摘要续期规则不变。实际总装配与签名端点验收范围见数据库计划第 9.45 节。
@@ -312,6 +318,10 @@ direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，d
 DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。counts 包含 `total/queued/pending/running/done/failed`，failed 包含取消项；jobs 每项包含 `id/index/status/model/createdAt/updatedAt/completedAt/error/cancelled/lateResultAvailable/imageUrl`，index 从零开始。父状态从子任务派生为 running、queued、pending、done、partial、cancelled、failed 或 empty，不额外保存一份状态。查询不返回完整参数、提示词或认证信息。图片归属校验后签发既有下载链接，迟到完整结果也可领取。
 
 上述两条路径均提供 `POST .../:id/cancel`，JSON 正文 `{}`；Cookie 入口沿用同源 Origin/CSRF。返回同一 DTO 加本次 `cancelledCount`，重复取消为 0。只取消 queued/pending 并原子退款，running 继续完成，已完成图片保留。取消与派发串行提交，不会由迟到结果或前序成功重新激活余图。成员页提供批次详情、刷新、结果领取及取消按钮；管理员成员统计也单列 pending，不混入可派发 queued。
+
+新关系 Bearer 适配只认原大小写不敏感的 Authorization Bearer，不从 query/body token、Cookie、admin 或上游 PST 推断成员；现有合法 Key 不另加格式前缀要求。工厂、请求及实际 Key 事务均核 ready，Discord IO 在 SQL 外；首次稳定成员、原 `memberAuth.version` 和当前原 Key 的所属/有效性在 IO 后及取消正文读取后重新核对。跨成员转归或实际认证代次变化拒绝；原私有 owner 同成员换 Key 不撤销 Cookie/认证 epoch，若内部明确将同一 literal 重授原成员且 epoch 未变，仍沿现当前 Key 授权语义，不声称能辨别其历史轮换。
+
+取消正文仍由原平台 JSON 读取能力执行 32768 **字节**上限，空正文沿原能力解释为 `{}`，客户端 metadata/Idempotency-Key 不成为取消回执。Cookie/Bearer 共用一处服务端 metadata、当前请求 ACL 和 `cancelWaitingGeneration` 事务块，重复无 waiting 返回 0、不追加事实或回执。关系 owner 在派发时才预扣，未派发 waiting 无 charge 时不伪造退款；running 的真实预扣保留并在原执行收尾结算。结果 DTO 与签名能力仍用原展示/平台 owner，URL 回调在授权事务结束后调用；未退休的迟到原图可领取，已退休请求沿原查询 owner 返回 404。具体接入与反例见数据库计划 9.59，本段不表示 sole 发布装配已切换。
 
 ## N03 后的 C03 差异与待核实清单
 

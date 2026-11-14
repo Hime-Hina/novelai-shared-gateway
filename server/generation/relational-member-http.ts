@@ -1,9 +1,7 @@
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { EventEmitter } from 'node:events';
-import { domainDigest } from '../events/domain-events.ts';
 import {
   authenticateMemberSession,
   withAuthenticatedMemberSession,
@@ -26,6 +24,7 @@ import {
 import { createRelationalMemberGenerationAdmission } from './relational-member-admission.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import { publicGenerationRequest } from './request-queries.ts';
+import { cancelRelationalGenerationRequest } from './relational-request-http.ts';
 import type { JobPreviews } from './job-previews.ts';
 
 interface Dependencies {
@@ -132,31 +131,14 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
             publicGenerationRequest(requests.readMemberRequest(requestId, memberId)),
           ),
         cancel: async (requestId) => {
-          const result = await authorize((memberId) => {
-            requests.readMemberRequest(requestId, memberId);
-            const result = generations.cancelWaitingGeneration(
-              {
-                commandId: randomUUID(),
-                fingerprint: domainDigest(['cancel', requestId]),
-                actorKind: 'member',
-                actorId: memberId,
-                recordedAt: now(),
-                correlationId: null,
-                causationId: null,
-                policyVersion: 'member-cancel-v1',
-                pricingVersion: 'none',
-              },
-              requestId,
-            );
-            return {
-              ...publicGenerationRequest(requests.readMemberRequest(requestId, memberId)),
-              cancelledCount: result
-                ? (result.receipt as { cancelledJobIds: string[] }).cancelledJobIds.length
-                : 0,
-            };
-          });
+          const result = await authorize((memberId) =>
+            cancelRelationalGenerationRequest(requests, generations, requestId, memberId, now()),
+          );
           deps.scheduleQueueDrain();
-          return result;
+          return {
+            ...publicGenerationRequest(result.request),
+            cancelledCount: result.cancelledCount,
+          };
         },
         readInput: (requestId) =>
           authorize((memberId) => inputs.readMemberInput(requestId, memberId)),

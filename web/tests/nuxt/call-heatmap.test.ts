@@ -91,6 +91,15 @@ const cells = (wrapper: Wrapper) => wrapper.findComponent(NHeatmap).props('data'
 const query = (path: string) => new URL(path, 'https://synthetic.invalid/').searchParams;
 
 describe('CallHeatmap', () => {
+  it('Key-only未知登录名只显示稳定ID，不伪造用户名', async () => {
+    const { wrapper } = await fixture(undefined, true);
+    await wrapper.setProps({ members: [{ id: 'member/key-only', username: null }] });
+    expect(select(wrapper, 'heatmapMember').props('options')).toEqual([
+      { label: '全部成员', value: '' },
+      { label: 'member/key-only', value: 'member/key-only' },
+    ]);
+  });
+
   it('每周、每月只汇总一次，空日期保留，累计逐日增长', async () => {
     const dates = activityDates('2024-02-28', '2024-03-04'),
       values = new Map([

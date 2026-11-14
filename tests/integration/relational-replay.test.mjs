@@ -222,7 +222,7 @@ function observe(f, q, id, fixed, at) {
   return f.db.transaction(() => q.recordQuotaObservation(meta(id, at), ticket, result))();
 }
 
-test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () => {
+test('七个实际 owner 完整覆盖全部事实且登记不重叠', () => {
   const owners = [
     relationalMemberFacts,
     relationalInputFacts,
@@ -236,12 +236,12 @@ test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () =>
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 74);
+  assert.equal(relationalReplayFacts().size, 75);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
       .sort(),
-    ['OpeningAttemptRecorded'],
+    [],
   );
 });
 
@@ -465,7 +465,7 @@ test('在线受控追加与投影在同一保存点，第二 owner 失败被外�
   assert.deepEqual(f.db.serialize(), once);
 });
 
-test('完整提交缺失、重排、不同历史、checkpoint 及未实现 owner 均拒绝且零部分写入', async (t) => {
+test('完整提交缺失、重排、异史、篡改事实、checkpoint 及缺失 owner 登记均拒绝且零部分写入', async (t) => {
   const f = await fixture(t);
   await f.accept('waiting', { samples: 2 });
   const through = f.db.prepare('SELECT MAX(commit_seq) AS n FROM commits').get().n,
@@ -492,13 +492,13 @@ test('完整提交缺失、重排、不同历史、checkpoint 及未实现 owner
       bad.events[2].eventType = 'OpeningFundingRecorded';
       bad.events[2].payload = {
         accountId: 'a',
-        receipt: 'unsupported-opening-funding',
+        receipt: 'tampered-opening-funding',
         resource: 'anlasFixed',
         destination: 'members',
         remaining: '1',
         registeredAt: NOW,
         snapshotAt: NOW,
-        origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-funding' },
+        origin: { sourceId: 'synthetic-opening', originalId: 'tampered-funding' },
       };
       resequence(bad, r.db);
     },
@@ -508,6 +508,16 @@ test('完整提交缺失、重排、不同历史、checkpoint 及未实现 owner
     change(bad);
     assert.throws(() => r.replay(bad));
     assert.equal(databaseState(r.db), before);
+  }
+  const registered = stored.events.find((event) => relationalGenerationFacts.has(event.eventType));
+  assert.ok(registered);
+  const beforeMissingOwner = databaseState(r.db);
+  try {
+    assert.equal(relationalGenerationFacts.delete(registered.eventType), true);
+    assert.throws(() => r.replay(stored), /Business projection has no owner/);
+    assert.equal(databaseState(r.db), beforeMissingOwner);
+  } finally {
+    relationalGenerationFacts.add(registered.eventType);
   }
   r.replay(stored);
   const conflict = structuredClone(stored),

@@ -125,11 +125,17 @@ export class RelationalRequestStore {
   }
 
   readSharedJobCounts(memberId: string, now: number): SharedJobCounts {
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      return this.readManagementSharedJobCounts(now);
+    })();
+  }
+
+  readManagementSharedJobCounts(now: number): SharedJobCounts {
     if (!Number.isSafeInteger(now) || now < 0) {
       fail(400, 'invalid_parameters', '共享状态时间无效。');
     }
     return this.sqlite.transaction(() => {
-      this.assertMember(memberId);
       // 当前组驱动既有 member/request 索引，避免轮询从全部已退组历史扫描起。
       return this.sqlite
         .prepare<[number, number], SharedJobCounts>(
@@ -146,6 +152,25 @@ export class RelationalRequestStore {
         )
         .get(now - 3600000, now)!;
     })();
+  }
+
+  readManagementRecentActivity(memberId: string) {
+    return this.sqlite
+      .prepare<
+        [string],
+        { total: number; done: number; failed: number; queued: number; running: number }
+      >(
+        `SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE status='done') AS done,
+      COUNT(*) FILTER (WHERE status='failed') AS failed,
+      COUNT(*) FILTER (WHERE status IN ('pending','queued')) AS queued,
+      COUNT(*) FILTER (WHERE status='running') AS running FROM (
+        SELECT j.status FROM generation_requests r JOIN generation_jobs j ON j.request_id=r.id
+        JOIN generation_job_origins origin ON origin.job_id=j.id AND origin.request_id=r.id
+        WHERE r.member_id=? AND r.retired_at IS NULL AND j.retired_at IS NULL
+        ORDER BY origin.created_at DESC,j.id DESC LIMIT 30
+      )`,
+      )
+      .get(memberId)!;
   }
 
   private requestState(request: RequestRow, memberId: string): GenerationRequestState {

@@ -120,6 +120,7 @@ export const RELATIONAL_FAILURE_EVENT_PREDICATE = `event_type IN ('DispatchAutho
   'LateResultRecovered','ResourceGapObserved','V5CapacityObserved','FundingRegistered',
   'FundingReceived','ReturnClassified','DebitsConfirmed','OperatingLossCovered','LossPolicyChanged')
   OR (event_type='ReviewClosed' AND json_extract(payload,'$.status')='estimated_closed')
+  OR (event_type='OpeningAttemptRecorded' AND json_extract(payload,'$.reviewStatus') IS NOT NULL)
   OR (event_type='RefillApplied' AND json_extract(payload,'$.capacityRecovered')!='0')`;
 const defaults: LossAlertPolicy = {
   version: 1,
@@ -317,6 +318,7 @@ interface FailureRiskAttempt {
   memberName: string | null;
   firstUnknownAt: number | null;
   upstreamCandidates: GenerationAttempt['upstreamCandidates'];
+  candidateMode?: string;
 }
 interface FailureAggregate {
   at: number;
@@ -350,7 +352,8 @@ export function summarizeRelationalFailureRisk(
     }
     const possible = zero(),
       candidates = attempt.upstreamCandidates;
-    const unknown = !generationCandidateAmountsKnown(candidates);
+    const unknown =
+      attempt.candidateMode === 'unknown' || !generationCandidateAmountsKnown(candidates);
     for (const candidate of candidates) {
       for (const [resource, amount] of Object.entries(candidate.resources)) {
         if (!Object.hasOwn(possible, resource)) {
@@ -456,6 +459,37 @@ export function publicRelationalFailureEvent(
     attempt: context.attempt,
   };
   switch (event.eventType) {
+    case 'OpeningAttemptRecorded': {
+      const p = event.payload;
+      const amounts = (value: Record<string, string | null>) =>
+        Object.fromEntries(
+          Object.entries(value).map(([key, amount]) => [
+            key,
+            amount === null ? null : amountNumber(parseAmount(amount)),
+          ]),
+        );
+      return {
+        id: event.eventId,
+        type: 'opening_attempt_recorded',
+        at: legacy.at,
+        memberId: event.memberId,
+        memberName: context.memberName,
+        accountId: event.accountId,
+        jobId: p.jobId,
+        attemptId: p.attemptId,
+        reviewStatus: p.reviewStatus,
+        firstUnknownAt: p.firstUnknownAt === null ? null : new Date(p.firstUnknownAt).toISOString(),
+        deadlineAt: p.reviewDeadlineAt === null ? null : new Date(p.reviewDeadlineAt).toISOString(),
+        closedAt: p.reviewClosedAt === null ? null : new Date(p.reviewClosedAt).toISOString(),
+        originalLossEventId: p.originalLossEventId,
+        originalClosureEventId: p.originalClosureEventId,
+        actualConsumed: p.actualConsumption === null ? null : amounts(p.actualConsumption),
+        lossCoverageRemaining: amounts(p.lossCoverageRemaining),
+        candidateMode: p.candidateMode,
+        upstreamCandidates: p.upstreamCandidates,
+        evidenceLevel: 'opening_snapshot',
+      };
+    }
     case 'DispatchAuthorized':
       Object.assign(legacy, {
         type: 'generation_reserved',

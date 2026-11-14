@@ -63,6 +63,7 @@ interface FailureAttemptRow {
   memberName: string | null;
   firstUnknownAt: number | null;
   upstreamCandidates: string;
+  candidateMode: string;
 }
 interface FailureHistoryRow {
   eventId: string;
@@ -142,7 +143,7 @@ export class RelationalReportStore {
           SELECT id FROM generation_attempts WHERE loss_event_id IS NOT NULL AND first_unknown_at>=? AND first_unknown_at<=?
           UNION ALL SELECT id FROM generation_attempts WHERE loss_event_id IS NOT NULL AND first_unknown_at IS NULL
           ) SELECT r.member_id AS memberId,
-          m.display_name AS memberName,a.first_unknown_at AS firstUnknownAt,a.upstream_candidates AS upstreamCandidates
+          m.display_name AS memberName,a.first_unknown_at AS firstUnknownAt,a.upstream_candidates AS upstreamCandidates,a.candidate_mode AS candidateMode
           FROM eligible selected JOIN generation_attempts a ON a.id=selected.id
           JOIN generation_jobs j ON j.id=a.job_id
           JOIN generation_requests r ON r.id=j.request_id LEFT JOIN members m ON m.id=r.member_id`),
@@ -174,13 +175,17 @@ export class RelationalReportStore {
           c.v5,c.anlas_fixed AS fixed,c.anlas_purchased AS purchased,a.loss_event_id AS lossEventId,
           CASE WHEN e.event_type='LateResultRecovered' THEN (
             SELECT closed.event_id FROM domain_events closed WHERE closed.stream_id=e.stream_id
-              AND closed.event_type='ReviewClosed' AND closed.member_id IS e.member_id AND closed.account_id IS e.account_id
-              AND json_extract(closed.payload,'$.attemptId')=a.id AND json_extract(closed.payload,'$.lossEventId')=a.loss_event_id
-              AND ((json_extract(closed.payload,'$.status')='estimated_closed'
+              AND closed.member_id IS e.member_id AND closed.account_id IS e.account_id
+              AND json_extract(closed.payload,'$.attemptId')=a.id
+              AND ((closed.event_type='OpeningAttemptRecorded' AND closed.event_id=a.loss_event_id
+                AND json_extract(closed.payload,'$.reviewStatus')='estimated_closed'
+                AND (closed.commit_seq,closed.event_index)<(e.commit_seq,e.event_index))
+                OR (closed.event_type='ReviewClosed' AND json_extract(closed.payload,'$.lossEventId')=a.loss_event_id
+                AND ((json_extract(closed.payload,'$.status')='estimated_closed'
                 AND (closed.commit_seq,closed.event_index)<(e.commit_seq,e.event_index))
                 OR (json_extract(closed.payload,'$.status')='result_recovered'
-                  AND closed.commit_seq=e.commit_seq AND closed.event_index>e.event_index))
-            ORDER BY (json_extract(closed.payload,'$.status')='estimated_closed') DESC,closed.stream_version LIMIT 1
+                  AND closed.commit_seq=e.commit_seq AND closed.event_index>e.event_index))))
+            ORDER BY (closed.event_type='OpeningAttemptRecorded' OR json_extract(closed.payload,'$.status')='estimated_closed') DESC,closed.stream_version LIMIT 1
           ) END AS closureEventId,
           a.first_unknown_at AS firstUnknownAt,a.review_deadline_at AS deadlineAt
           FROM page e JOIN commits command ON command.commit_seq=e.commit_seq

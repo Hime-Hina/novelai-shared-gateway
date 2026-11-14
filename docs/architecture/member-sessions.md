@@ -16,6 +16,10 @@ owner 连续 1 天未访问后过期，普通成员连续 7 天未访问后过�
 Nuxt 与保留的旧网页只在可见时，为个人 `me` 或 owner 的管理摘要请求附加
 `X-Member-Activity: 1`。现有可见页面 30 秒补读也算访问；隐藏后停止补读。
 服务端仅在这两个 GET 入口完成同源检查、会话鉴权和 Discord 成员验证后续期。
+管理摘要特指精确 `/api/member/owner/member-management`，且 URL 无任何 query；
+字面 `/api/member/owner/summary`、静态 `/api/admin/member-management`、普通 GET，
+以及带 query 的 heatmap/losses 等读取都不属于此续期入口。续期继续复用原会话 owner，
+不自行计算期限；Discord 和服务资源 IO 后仍复核当前会话、owner/epoch 与 ready 才返回管理数据。
 普通 API 查询、客户端生图、SSE 心跳、后台标签页和 Discord token 刷新不续期。
 不使用鼠标轨迹判断活动，也没有另加心跳请求或浏览器存储中的登录令牌。
 
