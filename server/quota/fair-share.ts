@@ -184,8 +184,9 @@ export type FairQuotaSyncState = Omit<
     | 'v5Reconciliation'
     | 'v5ReconciliationHistory'
   >,
-  'reservations'
+  'reservations' | 'v5Reconciliation'
 > & {
+  v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
   reservations: Record<
     string,
     Pick<
@@ -241,6 +242,8 @@ export interface FairQuotaDatabase {
   jobs?: AccountingJob[] | Record<string, AccountingJob> | null;
   ledger?: unknown[];
 }
+export type FairQuotaSummaryState = FairQuotaSyncState &
+  Pick<FairQuotaState, 'autoAnlasFallback' | 'fallbackTotalsByUser'>;
 type ConfiguredDatabase = FairQuotaDatabase & { settings: { fairQuota: FairQuotaState } };
 interface GroupInput {
   id?: unknown;
@@ -613,7 +616,10 @@ function quotaStatus(
   s.status = status;
   quotaFact(db, { eventType: 'AvailabilityChanged', payload: { kind: 'quota', status } }, now);
 }
-export function assertFairQuotaIdle(db: FairQuotaDatabase): void {
+export function assertFairQuotaIdle(db: {
+  settings?: { fairQuota?: Pick<FairQuotaSyncState, 'reservations'> | null };
+  jobs?: FairQuotaDatabase['jobs'];
+}): void {
   if (
     anyHeld(db.settings?.fairQuota || { reservations: {} }) ||
     rows(db.jobs).some((job) => ['queued', 'pending', 'running'].includes(job.status as string))
@@ -2112,7 +2118,7 @@ export function estimateFairQuota<T extends FairQuotaDatabase>(db: T, now = Date
 }
 
 export function fairQuotaSummary(
-  db: FairQuotaDatabase,
+  db: { settings?: { fairQuota?: FairQuotaSummaryState | null } },
   user: Pick<FairUser, 'id'>,
   now = Date.now(),
 ) {

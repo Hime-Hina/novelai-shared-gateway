@@ -398,6 +398,8 @@ CREATE TABLE charges (
 ) STRICT;
 CREATE INDEX idx_charges_reserved ON charges(original_account_id, original_member_id)
   WHERE status = 'reserved';
+CREATE INDEX idx_charges_fallback_summary ON charges(original_account_id, original_member_id)
+  WHERE billing_mode = 'anlas_fallback' AND status = 'settled';
 
 CREATE TABLE account_quota_state (
   account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id),
