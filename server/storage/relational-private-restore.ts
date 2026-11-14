@@ -8,6 +8,7 @@ import { readRelationalCommit } from '../events/relational-event-store.ts';
 import { assertRelationalStorageFormat, RELATIONAL_REDUCER_VERSION } from './relational-storage.ts';
 import { assertRelationalAccountConnections } from './relational-account-connection.ts';
 
+export const relationalPrivateMemberColumns = ['auth_epoch', 'note_json'] as const;
 export const relationalPrivateTables = [
   ['password_credentials', 'member_id'],
   ['api_keys', 'member_id'],
@@ -18,7 +19,7 @@ export const relationalPrivateTables = [
   ['upstream_credentials', 'account_id'],
 ] as const;
 const privateQueries = [
-  'SELECT id,auth_epoch,note_json FROM members ORDER BY id',
+  `SELECT id,${relationalPrivateMemberColumns.join(',')} FROM members ORDER BY id`,
   ...relationalPrivateTables.map(([table, key]) => `SELECT * FROM ${table} ORDER BY ${key}`),
 ];
 

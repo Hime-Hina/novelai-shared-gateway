@@ -1181,11 +1181,7 @@ export class RelationalGenerationStore {
       fail('共享账号不存在', 503);
     }
     const q = this.quotas.readAccountQuota(accountId);
-    if (
-      q.observedCredentialEpoch !== account.credentialEpoch ||
-      !q.baselineEventId ||
-      q.status !== 'active'
-    ) {
+    if (q.observedCredentialEpoch !== account.credentialEpoch || !q.baselineEventId) {
       fail('账户额度基线不可用', 503);
     }
     const view = {
@@ -1223,6 +1219,9 @@ export class RelationalGenerationStore {
     });
     if (availability !== 'active') {
       fail(`共享 Opus 额度暂不可用：${availability}`, 503);
+    }
+    if (q.status !== 'active') {
+      fail('账户额度基线不可用', 503);
     }
     const wallet = this.readWallet(accountId, job.memberId);
     if (!wallet) {

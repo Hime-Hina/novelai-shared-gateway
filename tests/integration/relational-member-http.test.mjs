@@ -1,3 +1,5 @@
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { createPublicImageAccess } from '../../server/http/public-image.ts';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -76,6 +78,7 @@ async function setup(t, options = {}) {
   const events = new EventEmitter(),
     previews = new JobPreviews();
   let drains = 0;
+  const imageAccess = createPublicImageAccess(options.env ?? {}, () => NOW + 10010);
   const handle = createRelationalMemberGenerationHttp({
     sqlite: f.db,
     runtime: f.commandOnlyRuntime,
@@ -85,6 +88,7 @@ async function setup(t, options = {}) {
     replicas: { dataDir: f.dir },
     env: options.env ?? {},
     now: () => NOW + 10010,
+    publicImageUrl: imageAccess.imageUrl,
     scheduleQueueDrain: () => {
       drains++;
     },
@@ -169,6 +173,7 @@ async function setup(t, options = {}) {
   };
   return {
     ...f,
+    imageAccess,
     events,
     previews,
     origin,
@@ -567,4 +572,66 @@ test('成员结果实际文件IO后撤下ready，不返回已读取的原bytes',
   assert.equal(response.status, 500, bytes.toString());
   assert.notDeepEqual(bytes, image);
   assert.equal(databaseState(f.db), before);
+});
+
+test('原Cookie请求alias用真实签名能力且不借APIKey，events仍原Cookie内容路径', async (t) => {
+  const f = await setup(t, {
+    env: {
+      PUBLIC_MODE: 'true',
+      NOVELAI_API_URL: 'http://127.0.0.1:1',
+      NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1',
+    },
+  });
+  const actualFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    assert.equal(url.protocol, 'http:');
+    assert.equal(url.hostname, '127.0.0.1', 'component refuses external IO before fetch');
+    return actualFetch(input, options);
+  });
+  await f.accept('cancel-alias', { now: NOW + 10010 });
+  assert.throws(
+    () => createRelationalMemberGenerationHttp({ sqlite: f.db }),
+    /shared public image signer/,
+  );
+  const apiKeyRead = t.mock.method(
+    RelationalMemberStore.prototype,
+    'memberApiKeyTransaction',
+    () => {
+      assert.fail('Cookie alias cannot require an API Key');
+    },
+  );
+  const alias = await f.json('/api/member/requests/existing', {
+    headers: { authorization: 'Bearer deliberately-invalid-key' },
+  });
+  assert.equal(alias.status, 200);
+  const imageUrl = new URL(alias.body.jobs[0].imageUrl, f.origin);
+  assert.match(imageUrl.pathname, /^\/api\/images\/[^/]+\/content$/);
+  assert.equal(f.imageAccess.validSignature(imageUrl), true);
+  const cancelled = await f.json('/api/member/requests/existing/cancel', {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(cancelled.status, 200);
+  assert.equal(cancelled.body.cancelledCount, 0);
+  const { cancelledCount, ...state } = cancelled.body;
+  assert.deepEqual(state, alias.body);
+  const stream = await f.stream('/api/member/requests/existing/events');
+  const frame = await stream.until('snapshot');
+  const data = JSON.parse(frame.match(/event: snapshot\ndata: ([^\n]+)/)[1]);
+  assert.equal(data.jobs[0].imageUrl, '/api/member/jobs/existing-0/content');
+  stream.abort();
+  const failed = await f.json('/api/member/requests/cancel-alias/cancel', {
+    method: 'POST',
+    body: {},
+  });
+  assert.equal(failed.status, 200);
+  assert.equal(failed.body.cancelledCount, 1);
+  assert.equal(failed.body.jobs[0].error, '生成失败，请稍后重试或联系管理员。');
+  const primary = await f.stream('/api/member/requests/cancel-alias/events');
+  const primaryFrame = await primary.until('snapshot');
+  const primaryData = JSON.parse(primaryFrame.match(/event: snapshot\ndata: ([^\n]+)/)[1]);
+  assert.equal(primaryData.jobs[0].error, '生成失败，请查看任务状态。');
+  primary.abort();
+  assert.equal(apiKeyRead.mock.callCount(), 0);
 });

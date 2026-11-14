@@ -4,7 +4,7 @@ import { setup, keys, waitFor, replicateMockR2 } from '../helpers/relational-api
 import { image, databaseState, meta } from '../helpers/relational-generation.mjs';
 import { createRelationalDirectHttp } from '../../server/generation/relational-direct-http.ts';
 import { createPublicImageAccess } from '../../server/http/public-image.ts';
-import { publicErrorMessage } from '../../server/http/public-errors.ts';
+import { generationCapacityMessage, publicErrorMessage } from '../../server/http/public-errors.ts';
 import Database from 'better-sqlite3';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
@@ -15,6 +15,7 @@ import path from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { encode } from '@msgpack/msgpack';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 
 const input = (values = {}) => ({
@@ -901,4 +902,91 @@ test('Direct实际Discord撤销在原事务完成后通知同一runtime，不受
   assert.deepEqual(commits[0].memberIds, ['m1']);
   assert.ok(commits[0].collections.includes('sessions'));
   assert.equal(commits[0].allMembers, false);
+});
+
+test('真实容量失败Direct仍busy图片，详情同已分类公开文案且原重领零新预扣', async (t) => {
+  const f = await fixture(t, { env: { NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1' } });
+  const actualFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    assert.equal(url.protocol, 'http:');
+    assert.equal(url.hostname, '127.0.0.1', 'component refuses external IO before fetch');
+    return actualFetch(input, options);
+  });
+  f.upstream.handler = async (_req, res) => {
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '300' });
+    res.end(
+      JSON.stringify({
+        message: 'Concurrent generation is locked private pst-body https://private.invalid',
+      }),
+    );
+  };
+  const first = await f.direct(input({ nocache: true }), { key: 'classified-capacity' });
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('x-busy'), '1');
+  const requestId = first.headers.get('x-nai-request-id'),
+    job = f.db
+      .prepare('SELECT id,error_code FROM generation_jobs WHERE request_id=?')
+      .get(requestId);
+  assert.equal(job.error_code, 'upstream_capacity');
+  const detail = await f.get(`/api/jobs/${job.id}?token=${keys.m1}`);
+  assert.equal(detail.status, 200);
+  assert.equal(json(detail).error, generationCapacityMessage);
+  const before = databaseState(f.db),
+    replay = await f.direct(input({ nocache: true }), { key: 'classified-capacity' });
+  assert.equal(replay.headers.get('x-busy'), '1');
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.upstream.calls.length, 1);
+  assert.equal(
+    f.db.prepare('SELECT status FROM charges WHERE original_job_id=?').get(job.id).status,
+    'refunded',
+  );
+  assertReplay(t, f);
+});
+
+test('Gen完整baseline视图故障仍先守epoch/原baseline，持久status与可用view不等也拒绝', async (t) => {
+  const f = await fixture(t, { env: { NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1' } });
+  const actualFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
+    assert.equal(url.protocol, 'http:');
+    assert.equal(url.hostname, '127.0.0.1');
+    return actualFetch(input, options);
+  });
+  // Isolated readonly-source fault injection, not a forged legal projection or historical fact.
+  const originalRead = RelationalQuotaStore.prototype.readAccountQuota;
+  for (const [name, alter] of [
+    [
+      'epoch',
+      (q) => ({
+        ...q,
+        observedCredentialEpoch: q.observedCredentialEpoch + 1,
+        status: 'unknown_balance',
+        observedV5: null,
+      }),
+    ],
+    [
+      'baseline',
+      (q) => ({ ...q, baselineEventId: null, status: 'unknown_balance', observedV5: null }),
+    ],
+    ['status-view', (q) => ({ ...q, status: 'unknown_balance' })],
+  ]) {
+    const mocked = t.mock.method(
+      RelationalQuotaStore.prototype,
+      'readAccountQuota',
+      function (...args) {
+        return alter(originalRead.apply(this, args));
+      },
+    );
+    const before = databaseState(f.db);
+    try {
+      const response = await f.post(input({ nocache: true }), { key: 'readiness-fault-' + name });
+      assert.equal(response.status, 503, response.buffer.toString());
+      assert.equal(json(response).error, '账户额度基线不可用', name);
+      assert.equal(databaseState(f.db), before, name);
+      assert.equal(f.upstream.calls.length, 0);
+    } finally {
+      mocked.mock.restore();
+    }
+  }
 });

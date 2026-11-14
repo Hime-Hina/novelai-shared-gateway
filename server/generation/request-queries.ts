@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { classifiedGenerationFailureMessage } from '../http/public-errors.ts';
 import type { JsonStore, StoreItem } from '../storage/sqlite-store.ts';
 import type { RelationalRequestStore } from '../storage/relational-request-store.ts';
 import type { RelationalInputStore } from '../storage/relational-input-store.ts';
@@ -206,7 +207,9 @@ export function publicGenerationRequest(
     updatedAt: job.updatedAt || '',
     completedAt: job.completedAt || '',
     error:
-      options.errorMessage?.(job.error || '') || (job.error ? '生成失败，请查看任务状态。' : ''),
+      options.errorMessage?.(job.error || '') ||
+      classifiedGenerationFailureMessage(job.error) ||
+      (job.error ? '生成失败，请查看任务状态。' : ''),
     errorCode: 'errorCode' in job ? job.errorCode || null : null,
     cancelled: Boolean(job.cancelledAt),
     lateResultAvailable: Boolean(job.lateResultAvailable),
