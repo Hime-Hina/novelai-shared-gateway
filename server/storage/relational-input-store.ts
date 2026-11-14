@@ -887,7 +887,22 @@ export class RelationalInputStore {
     const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
     for (const event of stored.events) {
       if (event.eventType === 'ContextRegistered') {
-        contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+        const p = event.payload,
+          context = source.context(p.contextId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered' LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          p.contextSchemaVersion !== 1 ||
+          p.contextSha256 !== domainDigest(context) ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        contexts.set(p.contextId, context);
       }
       if (event.eventType === 'RequestAccepted') {
         const context =
@@ -911,10 +926,24 @@ export class RelationalInputStore {
         );
       }
       if (event.eventType === 'InputRegistered') {
-        inputs.set(
-          event.payload.inputId,
-          source.input(event.payload.inputId, event.payload.memberId),
-        );
+        const p = event.payload,
+          input = source.input(p.inputId, p.memberId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('InputRegistered','OpeningInputRecorded') LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          input.row.completeness !== 'complete' ||
+          p.inputSchemaVersion !== input.row.schema_version ||
+          p.inputSha256 !== input.row.sha256 ||
+          p.logicalBytes !== input.row.logical_bytes ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        inputs.set(p.inputId, input);
       }
     }
     if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
