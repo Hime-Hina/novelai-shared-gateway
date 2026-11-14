@@ -1102,8 +1102,8 @@ test('非绑定真实官方观察与启用保留原值，不能同步/分配或�
     };
   f.db.transaction(() =>
     assert.throws(
-      () => quotas.manageQuotaFunding(admin('no-passive-finance'), 'extra', funding),
-      /金融命令只能使用当前绑定账户/,
+      () => quotas.manageQuotaFunding(admin('no-passive-finance'), 'extra', funding, null),
+      { message: '资金操作只接受当前绑定共享账户', statusCode: 409 },
     ),
   )();
   assert.equal(databaseState(f.db), unchanged);
@@ -1124,7 +1124,9 @@ test('非绑定真实官方观察与启用保留原值，不能同步/分配或�
   assert.equal(relationalPrivateStateEmpty(target), true);
   assert.ok(
     f.db
-      .transaction(() => quotas.manageQuotaFunding(admin('healthy-bound-finance'), 'a', funding))()
+      .transaction(() =>
+        quotas.manageQuotaFunding(admin('healthy-bound-finance'), 'a', funding, null),
+      )()
       .events.some((e) => e.eventType === 'FundingRegistered'),
   );
 });
