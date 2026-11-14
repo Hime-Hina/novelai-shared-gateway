@@ -31,6 +31,7 @@ import {
 } from '../../server/storage/relational-storage.ts';
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
 import {
   withAuthenticatedMemberApiKey,
   authenticateMemberApiKey,
@@ -286,11 +287,11 @@ test('新成员事实必填字段闭合，不能将旧占位缺省为合法资�
   );
 });
 
-test('正确v3原型DDL与旧hash仍不能通过v4，缺成员决定新必填字段不能解释为默认', (t) => {
+test('正确v3原型DDL与旧hash仍不能通过当前格式，缺成员决定新必填字段不能解释为默认', (t) => {
   const db = new Database(':memory:');
   t.after(() => db.close());
   const old = RELATIONAL_SCHEMA_SQL.replace(
-    'CHECK (schema_version = 4)',
+    'CHECK (schema_version = ' + RELATIONAL_EVENT_SCHEMA_VERSION + ')',
     'CHECK (schema_version = 3)',
   );
   assert.notEqual(old, RELATIONAL_SCHEMA_SQL);

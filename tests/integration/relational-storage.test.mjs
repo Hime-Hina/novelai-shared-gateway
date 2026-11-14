@@ -26,13 +26,13 @@ for (const previousVersion of [2, 3])
   test(
     '旧关系事件 v' +
       previousVersion +
-      ' 原型的正确旧 hash 也不能通过 v4 格式门禁，不手补字段或 hash',
+      ' 原型的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash',
     (t) => {
       const sqlite = new Database(':memory:');
       t.after(() => sqlite.close());
       sqlite.pragma('foreign_keys=ON');
       const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
-        'CHECK (schema_version = 4)',
+        'CHECK (schema_version = ' + RELATIONAL_EVENT_SCHEMA_VERSION + ')',
         'CHECK (schema_version = ' + previousVersion + ')',
       );
       assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
