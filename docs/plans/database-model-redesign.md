@@ -2193,7 +2193,33 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 随后普通合入父已验的完整基础 `c2cf5d0b451260a85dbdab7ca35ae2af449e7eb0`，保留 Report/backup 后继与真实 runtime 夹具修正；本片相对该基础仍仅十一文件，Schema/facts/账户及代理恢复来源不改。新增报告 owner 交集后，六文件同次 **234/234、零跳过，71.492 秒**，日志 `c2-union-final.log`；类型/architecture/默认及可信88历史通过。事件版本7，实际DDL SHA256仍为 `61bc06c3a4c675a5dd07073457a0d7c56be7d7db3f784f13fec7f880724369db`。此前216和负控的全部产品/测试字节保持，新统计是该明确并集的实际运行；不是完整后端或发布物验收，也未消费9.86尚未冻结工作。
 
-无 full/build/compiled/Node24/native/install、真实云端或生产操作。独立审查由非作者另验，整体发布/迁移/sole切换不借本片单项测试宣称完成。
+固定 `b50a4f6ec2ff66ccf8813215f0a75e696318fc81` 的非作者独审通过，报告 `H:/TEMP/novelai-member-notes-independent-20261115/INDEPENDENT-REVIEW.md`，SHA256 `2e5361f05ee825b0294471649fee35f143a80842695a764c9e6deb05cb559548`。十一文件及十项权威源逐字核对；独立重跑备注目标六项，加四个新反例，共 **10/10、零跳过**：同业务 cut 的不同备注源精确选取、仅已知空备注拒覆盖、实际停用及删除后的选定私有恢复都不复活 Key/Cookie。公共回放备注未知，重复恢复零写。作者四个负控仍是作者证据，未重标独立执行。
+
+根从 `c2cf5d0` 普通合入，文档补证前整个 tracked tree 与固定 b50 完全一致，不重跑不变的234项。新增验证认证适配/公共私有列分类的既有 member-read HTTP 与 ready 两文件交点，**58/58、零跳过，20.601 秒**；类型、architecture、默认及可信实际 main `88d2c26` 迁移、199个语法文件和变更格式通过。日志 `H:/TEMP/novelai-member-note-root-*`，保留证明 `H:/TEMP/novelai-member-note-root-preservation.json`。无 full/build/compiled/Node24/native/install、真实云端或生产操作，整体发布/迁移/sole切换不借本片单项测试宣称完成。
+
+### 9.86 原 fair-quota 首配、重确认与成员顺序
+
+实际 caller 为既有 `POST /api/admin/fair-quota`（含 Web executor-lifecycle 场景）；它不是 `groups` 的版本化重配置。薄 HTTP 复用管理 factory 当前管理员、Host/Origin/ready 及提交后 notifier，正文仍 2MiB，只消费四个当前启用的原有序 memberIds，不解释幂等头或其它政策字段。Quota owner 复用 `configureFairQuota` / `syncFairQuota` / `syncBoundFairQuota`；没有政策时允许 pending/ambiguous，唯一 eligible 才规划一笔 SharingConfigured→AccountBound→原同步金融事实，无决定时不存空提交。AccountBound 复用原四条件；原注册的零钱包 INSERT 只对真实当前成员补缺，精确 PK 冲突不覆盖既有权益。
+
+原成员顺序从当前 group_members.source_event_id 精确定位 SharingConfigured / MemberRemoved，或有来源的 OpeningGroupMemberRecorded.memberOrdinal（原零基连续唯一、未知 NULL）。MemberRemoved 必填可空 memberIds 保存原完整决定，不能再以组 flatMap 或 ID 排序伪造全局顺序；未知只保留读取，不规划需该原序的变更。仍为未发布事件7，不改旧 SQL/journal，不建立 ordinal 投影或第二设置/状态表。
+
+技术固定 `5f55403970ae089c4f17fec3fc4d7722b365698f` 基于纯基础并集 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`：已审根 de52 的 sole/18 actions 与已审 Account closure 6708 全部保留，旧 gateway 不复活。七相关文件同次 **445/445、零 skip、69.575 秒**；新 HTTP/Opening 原序/资金/完整 envelope/SQL 尾错/公共与 selected-private 恢复专项为其中35项。架构与事件单元 **471/471、零 skip**，类型、architecture、默认与可信 main88 migration、200文件语法、格式和 diff 通过。四项隔离错误实现分别忽略 MemberRemoved 原序、漏绑定钱包、漏完整首配 recipe、漏 Opening 序号校验，均在实际业务断言失败；恢复同 Git 源后35/35。证据 `H:/TEMP/novelai-fair-quota-evidence-20261115/` 的 fixed-5f-seven.log、guard-events.log、negative-evidence.json 与 reviewed-source-5f55403.json。
+
+9.86 并集曾暴露正向 SOCKS/TLS 夹具缺根已要求的 runtime 参数：仅将 admit 构造移到已有真实 runtime.start 后并注入同实例，原外网/秘密/隧道断言和缺参负控不改；实际场景复验通过。新 missing-sync 反例初版删除 account facts 却保留多余 stream 前置，被 T1 提前拒绝，已按真实剩余 streams 生成合法 envelope，现确由业务完整性识错；原失败日志保留并排除通过证据。作者工作树新测试的 CRLF 经 Prettier 规范为 Git LF，index 内容不变，前后 raw hash 分别封存，最终十三文件逐字匹配 Git。当前仅源码定向闭环，独立复审与父发布并集仍待完成；未跑 full/build/compiled/Node24/native 或生产，不选 A/B、不解释旧在线模型。新增 configureMemberIds 守卫名单/单元及必要断言须维护者复核。
+
+#### 9.86.1 独立复审的预留、逐池责任与精确身份修复
+
+固定66/5f在独审中确认三项P2，保持NOTPASS，原445绿色不能替代业务反例：`managementView(false)`仍用空 reservations，导致真实held+新官方观察时误规划基线采纳并被正确的共同同步validator拒绝；无基线钱包guard只看Anlas合计，fixed正权益与purchased负责任可抵消成零而错误初贷。修复在同一原financial/management view保留实际预留，并逐V5/fixed/purchased核原非零值，未放宽金融、完整提交、来源或held门禁。 第三项是memberOrder集合结构核验用localeCompare排序，合法不同opaque IDs `stable-é` / `stable-e\u0301` 排序等价但原序不同，首配误409；改为精确ID Map核原成员集合、组和权重，不做NFC、不禁合法ID、不将字面排序冒充原序。真实注册→唯一installer→HTTP→公共回放反例通过。
+
+原FullCharge类型不足以表达SQL同步所需窄预留，故原FairQuotaState/Database及upgrader/config/sync签名按同一必要预留形状参数化，默认仍FullCharge；没有新runtime模式/flag或补造费用、时点、pricing、当前值。SQL同步预留明确保存原user/status/resource/amount/fixed/purchased/sharedHeld，避免把不完整Full元数据交旧normalizer补v5Equivalent。`fair-share.ts`类型擦除后的完整63,206字节JS与66逐字相同（SHA7704c2b83a795290ce3b516818d46ebefb198bf048eb0575fc7186d71b295826），金融算法没有改动。
+
+原held程序的后置“SQL完全不变”过严：原owner在held且恢复窗口推进时，即使预算0也保存RefillApplied推进游标。独审保留原红程序/日志，另封v2核完整原facts/convert/游标，原66仍在相同业务处红，修后原字节1/1通过。作者新增真实V5与fallback预留两路径，核原zero-budget游标事实、外catch保存点全回滚/零通知、旧receipt及同原时点零写、已退款后健康同步、同账户不同原观察角色错配拒绝和完整公共回放不复活认证；真实ready signed Opening Wallet +5/-5逐池责任反例现在503且零业务写。初版新夹具曾误用4.5模型期待V5，以及在已有SQL内再开notifier边界，均按实际原调用修正而非弱化断言；这些准备错误日志不计业务红。
+
+后继已普通合入根已审c2cf（Report/backup及基础Account闭包）；实际SOCKS正向测试沿根同一runtime构造，旧66证据和新修复验证分别封存。作者同候选七文件 **449/449、零skip、82.381秒**（新fair-quota39项包含其中），架构与事实单元 **471/471、零skip**；类型、architecture、默认与可信main88 migration、格式/diff通过。日志 `postreview-seven.log`、`postreview-unit.log` 与 `postreview-type-only-fair-share.json` 在原9.86证据目录；独审原held v2已在作者树原字节1/1，正式同fixed复审另记。未做full/build/compiled/Node24/native/真实云端或切换。
+
+固定修复 `4da7c704c5778d79500d8c673a9a8117a8f47df1` 由非作者独立复审通过，报告 `H:/TEMP/novelai-fair-quota-independent-20261115/INDEPENDENT-REVIEW.md`，SHA256 `061c14b8a26d48d615c75e145d7294ad074552d270a8cdc6f5ee992317a3ec9e`。三原业务反例及三控制保持封存字节，**6/6、零跳过，3.819秒**；原 held 反例先纠正未到达的过严零写后置，真实 owner 合法的零预算 RefillApplied 游标必须保留，旧错误程序和日志仍另存。成员精确 Map、三池和 held 修复不改变金额算法：必要泛型/签名类型擦除后 67,640 字节 JavaScript 摘要完全相同。原66及中间455不重标通过。
+
+作者最终七文件 **450/450、零跳过，80.201秒**，事件/架构单元471项与三错误实现负控另记；恢复后专项40项。最终文档子提交 `07c5070` 仅补四行证据，十二条非文档 Git/raw 字节等于4da，独审已重绑且没有无故重复运行。根从已审备注 `cb5e87a` 普通合入4da，十三文件逐一重算共同基线并集，HTTP保留原 note 新建/读取与 fair-quota 整段，其他路径不变，证明 `H:/TEMP/novelai-fair-quota-root-preservation.json`。管理HTTP、fair-quota、私有恢复、完整回放四文件同次 **242/242、零跳过，78.248秒**；类型、architecture、默认与可信 main88迁移、200文件语法及变更格式通过，日志 `H:/TEMP/novelai-fair-quota-root-*`。未以此替代当前完整后端、双 Node 编译、三包、CI实际发行物或生产迁移/端点/容量验收，守卫增量仍需维护者复核。
 
 ### 9.88 完整 admin summary 的关系薄装配
 
@@ -2235,23 +2261,3 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 | 0.12 | 2026-11-13 | 在 main 补齐观察角色、分配来源及消费边界，加入跨对象反例验收；0.10/0.11 的 T4 实施记录见未合并 PR #43，#44/#45 仍待修复                     |
 | 0.13 | 2026-11-13 | 记录 `7025582` 复审；补齐观察型分配与有效基线采纳、同观察同资源一次消费的关系，保留先前观察和初始三池；#44 通过待合并，#45 观察型消费待修复 |
 | 0.14 | 2026-11-13 | 记录 `c786f8f` 独立复审通过、原始反例拒绝及旧源码负对照；#44/#45 待合入后关闭，新库和完整恢复边界保持不变                                   |
-
-### 9.86 原 fair-quota 首配、重确认与成员顺序
-
-实际 caller 为既有 `POST /api/admin/fair-quota`（含 Web executor-lifecycle 场景）；它不是 `groups` 的版本化重配置。薄 HTTP 复用管理 factory 当前管理员、Host/Origin/ready 及提交后 notifier，正文仍 2MiB，只消费四个当前启用的原有序 memberIds，不解释幂等头或其它政策字段。Quota owner 复用 `configureFairQuota` / `syncFairQuota` / `syncBoundFairQuota`；没有政策时允许 pending/ambiguous，唯一 eligible 才规划一笔 SharingConfigured→AccountBound→原同步金融事实，无决定时不存空提交。AccountBound 复用原四条件；原注册的零钱包 INSERT 只对真实当前成员补缺，精确 PK 冲突不覆盖既有权益。
-
-原成员顺序从当前 group_members.source_event_id 精确定位 SharingConfigured / MemberRemoved，或有来源的 OpeningGroupMemberRecorded.memberOrdinal（原零基连续唯一、未知 NULL）。MemberRemoved 必填可空 memberIds 保存原完整决定，不能再以组 flatMap 或 ID 排序伪造全局顺序；未知只保留读取，不规划需该原序的变更。仍为未发布事件7，不改旧 SQL/journal，不建立 ordinal 投影或第二设置/状态表。
-
-技术固定 `5f55403970ae089c4f17fec3fc4d7722b365698f` 基于纯基础并集 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`：已审根 de52 的 sole/18 actions 与已审 Account closure 6708 全部保留，旧 gateway 不复活。七相关文件同次 **445/445、零 skip、69.575 秒**；新 HTTP/Opening 原序/资金/完整 envelope/SQL 尾错/公共与 selected-private 恢复专项为其中35项。架构与事件单元 **471/471、零 skip**，类型、architecture、默认与可信 main88 migration、200文件语法、格式和 diff 通过。四项隔离错误实现分别忽略 MemberRemoved 原序、漏绑定钱包、漏完整首配 recipe、漏 Opening 序号校验，均在实际业务断言失败；恢复同 Git 源后35/35。证据 `H:/TEMP/novelai-fair-quota-evidence-20261115/` 的 fixed-5f-seven.log、guard-events.log、negative-evidence.json 与 reviewed-source-5f55403.json。
-
-9.86 并集曾暴露正向 SOCKS/TLS 夹具缺根已要求的 runtime 参数：仅将 admit 构造移到已有真实 runtime.start 后并注入同实例，原外网/秘密/隧道断言和缺参负控不改；实际场景复验通过。新 missing-sync 反例初版删除 account facts 却保留多余 stream 前置，被 T1 提前拒绝，已按真实剩余 streams 生成合法 envelope，现确由业务完整性识错；原失败日志保留并排除通过证据。作者工作树新测试的 CRLF 经 Prettier 规范为 Git LF，index 内容不变，前后 raw hash 分别封存，最终十三文件逐字匹配 Git。当前仅源码定向闭环，独立复审与父发布并集仍待完成；未跑 full/build/compiled/Node24/native 或生产，不选 A/B、不解释旧在线模型。新增 configureMemberIds 守卫名单/单元及必要断言须维护者复核。
-
-#### 9.86.1 独立复审的预留、逐池责任与精确身份修复
-
-固定66/5f在独审中确认三项P2，保持NOTPASS，原445绿色不能替代业务反例：`managementView(false)`仍用空 reservations，导致真实held+新官方观察时误规划基线采纳并被正确的共同同步validator拒绝；无基线钱包guard只看Anlas合计，fixed正权益与purchased负责任可抵消成零而错误初贷。修复在同一原financial/management view保留实际预留，并逐V5/fixed/purchased核原非零值，未放宽金融、完整提交、来源或held门禁。 第三项是memberOrder集合结构核验用localeCompare排序，合法不同opaque IDs `stable-é` / `stable-e\u0301` 排序等价但原序不同，首配误409；改为精确ID Map核原成员集合、组和权重，不做NFC、不禁合法ID、不将字面排序冒充原序。真实注册→唯一installer→HTTP→公共回放反例通过。
-
-原FullCharge类型不足以表达SQL同步所需窄预留，故原FairQuotaState/Database及upgrader/config/sync签名按同一必要预留形状参数化，默认仍FullCharge；没有新runtime模式/flag或补造费用、时点、pricing、当前值。SQL同步预留明确保存原user/status/resource/amount/fixed/purchased/sharedHeld，避免把不完整Full元数据交旧normalizer补v5Equivalent。`fair-share.ts`类型擦除后的完整63,206字节JS与66逐字相同（SHA7704c2b83a795290ce3b516818d46ebefb198bf048eb0575fc7186d71b295826），金融算法没有改动。
-
-原held程序的后置“SQL完全不变”过严：原owner在held且恢复窗口推进时，即使预算0也保存RefillApplied推进游标。独审保留原红程序/日志，另封v2核完整原facts/convert/游标，原66仍在相同业务处红，修后原字节1/1通过。作者新增真实V5与fallback预留两路径，核原zero-budget游标事实、外catch保存点全回滚/零通知、旧receipt及同原时点零写、已退款后健康同步、同账户不同原观察角色错配拒绝和完整公共回放不复活认证；真实ready signed Opening Wallet +5/-5逐池责任反例现在503且零业务写。初版新夹具曾误用4.5模型期待V5，以及在已有SQL内再开notifier边界，均按实际原调用修正而非弱化断言；这些准备错误日志不计业务红。
-
-后继已普通合入根已审c2cf（Report/backup及基础Account闭包）；实际SOCKS正向测试沿根同一runtime构造，旧66证据和新修复验证分别封存。作者同候选七文件 **449/449、零skip、82.381秒**（新fair-quota39项包含其中），架构与事实单元 **471/471、零skip**；类型、architecture、默认与可信main88 migration、格式/diff通过。日志 `postreview-seven.log`、`postreview-unit.log` 与 `postreview-type-only-fair-share.json` 在原9.86证据目录；独审原held v2已在作者树原字节1/1，正式同fixed复审另记。未做full/build/compiled/Node24/native/真实云端或切换。
