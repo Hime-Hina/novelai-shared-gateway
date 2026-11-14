@@ -23,6 +23,8 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 
 SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私有实现；查询/协议使用实际读取方法的窄类型，业务变更经现有命令提交。运行时只通过活动任务判断和瞬时进度方法访问热任务，不为每帧进度追加业务事件。`architecture:check` 固定纯金额/reducer、查询、Web 和装配入口的依赖方向；`migration:check` 比较可信 Git 基线的历史 SQL 字节和 journal 前缀。检查范围、命令和维护者复核要求见 [开发与验证](../CONTRIBUTING.md)，这些检查不代替远端权限与强制合并保护。
 
+原记录 ID 与 JSON 摘要共用纯 `storage/record-values.ts`，幂等 context 引用共用 `generation/request-fingerprint.ts`；受理、执行不再为这些函数加载旧 Store。旧 Store 暂时 re-export 同一函数供原入口，关系 bootstrap/adapters/stores 的运行时闭包不加载旧 Store/migrations；type-only 旧类型不产生加载，普通旧 main 的退出仍按 D4 另行完成。
+
 新关系报告由 `storage/relational-report-store.ts` 提供薄 SQL：用量、热力图、错误和损耗复用各自原展示 owner；损耗的精确风险汇总/事实适配继续在 `quota/failure-accounting.ts`，候选金额语义归 `generation/accounting.ts`。受保护请求/诊断冷读归 input store，不从旧 JsonStore 回退，也不借报告修改账务。新 HTTP 装配与整体上线验收仍按数据库计划接续。
 
 当前规范化配置由 `storage/relational-configuration-store.ts` 显式系统初始化：11 个原默认值的专用保护 profile 与成员公共地址回退值，单一来源事实和单例投影；未配置明确不可用。profile 共享 `normalization_contexts` 载体，保护内容归 InputStore，既有生成 context 仍必须包含 Native 定义。没有管理 CRUD、任意 settings 对象或 PromptAPI 秘密恢复；读取与原 helper 语义、完整回放及 ready 验收见[第 9.47 节](../docs/plans/database-model-redesign.md#947-当前规范化配置的显式来源和保护恢复)。

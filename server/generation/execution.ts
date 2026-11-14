@@ -1,10 +1,10 @@
-import {
-  createId,
-  type JsonStore,
-  type PersistenceOptions,
-  type StoreDatabase,
-  type StoreItem,
-  type StoredGenerationRequest,
+import { createId } from '../storage/record-values.ts';
+import type {
+  JsonStore,
+  PersistenceOptions,
+  StoreDatabase,
+  StoreItem,
+  StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
 import { isNovelAiCapacityError } from '../http/public-errors.ts';
 import {

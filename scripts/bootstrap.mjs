@@ -1,8 +1,7 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, lstat, open } from 'node:fs/promises';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdir, lstat, open, realpath, mkdtemp, link, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { recordDomainEvent } from '../server/events/domain-events.ts';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 class BootstrapError extends Error {}
@@ -54,87 +53,57 @@ async function ensureAbsent(filename) {
   reject('数据目录已有数据库、初始化记录或凭据，拒绝覆盖；请在首次启动服务之前初始化。');
 }
 
-export async function bootstrap({ env = process.env, dependencies, log = console.log } = {}) {
-  const config = readConfig(env);
-  const protectedNames = [
-    'library.sqlite',
-    'library.sqlite-wal',
-    'library.sqlite-shm',
-    'library.json',
-    'library.json.bak',
-    'bootstrap-credentials.json',
-    '.bootstrap.lock',
-  ];
+export async function bootstrap({ env = process.env, log = console.log } = {}) {
+  const config = readConfig(env),
+    protectedNames = [
+      'library.sqlite',
+      'library.sqlite-wal',
+      'library.sqlite-shm',
+      'library.sqlite-journal',
+      'library.json',
+      'library.json.bak',
+      'bootstrap-credentials.json',
+      '.bootstrap.lock',
+    ];
   for (const name of protectedNames) {
     await ensureAbsent(path.join(config.dataDir, name));
   }
-  // 依赖在文件预检后加载；不会导入服务入口，不启动 HTTP 服务或上游请求。
-  const deps = dependencies || {
-    ...(await import('../server/storage/sqlite-store.ts')),
-    ...(await import('../server/members/authentication.ts')),
-    ...(await import('../server/quota/fair-share.ts')),
-  };
-  if (!dependencies) {
-    // 提前验证原生 SQLite 依赖，避免依赖损坏时留下半初始化目录。
-    const { default: Database } = await import('better-sqlite3');
-    const probe = new Database(':memory:');
-    probe.close();
-  }
-  const createdAt = new Date().toISOString();
-  const credentials = config.names.map((username) => ({
-    user_id: deps.createId('usr'),
-    username,
-    password: randomBytes(24).toString('base64url'),
-    api_key: deps.createPublicToken('STA1N'),
-  }));
-  const users = credentials.map((member) => ({
-    id: member.user_id,
-    token: member.api_key,
-    balance: 0,
-    enabled: true,
-    acceptingJobs: true,
-    jobAdmissionVersion: 0,
-    note: member.username,
-    createdAt,
-  }));
-  const prepared = { users };
+  // 预检通过后才加载真实 owner；不创建旧 Store 或启动服务、网络能力。
+  const { default: Database } = await import('better-sqlite3'),
+    { prepareMemberCredentials } = await import('../server/members/authentication.ts'),
+    { RelationalMemberStore } = await import('../server/storage/relational-member-store.ts'),
+    { RelationalQuotaStore } = await import('../server/storage/relational-quota-store.ts'),
+    { RelationalAccountStore } = await import('../server/storage/relational-account-store.ts'),
+    { RelationalConfigurationStore } =
+      await import('../server/storage/relational-configuration-store.ts'),
+    { initializeRelationalStorage } = await import('../server/storage/relational-storage.ts'),
+    { verifyAndInstallRelationalStorage } = await import('../server/storage/relational-ready.ts'),
+    { relationalSnapshotSha256 } = await import('../server/storage/relational-private-restore.ts'),
+    { initialNormalizationDefaults } =
+      await import('../server/generation/normalization-defaults.ts'),
+    { domainDigest } = await import('../server/events/domain-events.ts');
+  const probe = new Database(':memory:');
+  probe.close();
+  const at = Date.now(),
+    createdAt = new Date(at).toISOString(),
+    credentials = config.names.map((username) => ({
+      user_id: 'usr_' + randomUUID(),
+      username,
+      password: randomBytes(24).toString('base64url'),
+      api_key: 'STA1N-' + randomBytes(18).toString('base64url'),
+    })),
+    prepared = [];
   for (const member of credentials) {
-    await deps.setMemberCredentials(prepared, member.user_id, {
-      username: member.username,
-      password: member.password,
-    });
+    prepared.push(await prepareMemberCredentials(member));
   }
-  const account = {
-    id: deps.createId('acct'),
-    name: 'Shared Opus',
-    token: config.upstreamToken,
-    enabled: true,
-    weight: 1,
-    inFlight: 0,
-    total: 0,
-    failures: 0,
-    quotaPoints: null,
-    quotaFixed: null,
-    quotaPurchased: null,
-    quotaTier: null,
-    subscriptionActive: null,
-    subscriptionExpiresAt: null,
-    v5UsagePercent: null,
-    v5UsageIsNegative: false,
-    v5UsageTimeUntilNextPercent: null,
-    quotaCheckedAt: '',
-    quotaError: '',
-    cooldownUntil: '',
-    createdAt,
-  };
-  const credentialPath = path.join(config.dataDir, 'bootstrap-credentials.json');
-  let store, lock;
   const oldMask = process.umask(0o077);
+  let target, lock, stage, dataDir, credentialPath;
   try {
     await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
-    // 独占记录在成功后也保留。并发启动或中断后重试都不会覆盖另一份初始化数据。
+    dataDir = await realpath(config.dataDir);
+    credentialPath = path.join(dataDir, 'bootstrap-credentials.json');
     try {
-      lock = await open(path.join(config.dataDir, '.bootstrap.lock'), 'wx', 0o600);
+      lock = await open(path.join(dataDir, '.bootstrap.lock'), 'wx', 0o600);
     } catch (error) {
       if (error.code === 'EEXIST') {
         reject('已有初始化记录，拒绝重复运行。');
@@ -146,12 +115,11 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     await lock.close();
     lock = null;
     for (const name of protectedNames.filter((name) => name !== '.bootstrap.lock')) {
-      await ensureAbsent(path.join(config.dataDir, name));
+      await ensureAbsent(path.join(dataDir, name));
     }
-    // 在持久化用户前保存一次性随机凭据，避免已建账户却无法找回初始密码。
+    // 先持久化同一套可领取凭据；任何失败/重复都不换一套身份覆盖它。
     const output = await open(credentialPath, 'wx', 0o600);
     try {
-      await output.chmod(0o600);
       await output.writeFile(
         JSON.stringify({ createdAt, accounts: credentials }, null, 2) + '\n',
         'utf8',
@@ -160,80 +128,131 @@ export async function bootstrap({ env = process.env, dependencies, log = console
     } finally {
       await output.close();
     }
-    store = new deps.JsonStore(config.dataDir);
-    await store.init();
-    await store.update(
-      (db) => {
-        if (
-          ['users', 'accounts', 'cards', 'jobs', 'images', 'ledger'].some(
-            (name) => (db[name] || []).length,
-          ) ||
-          db.settings?.fairQuota
-        ) {
-          reject('数据库并非空白，初始化已停止，未覆盖现有账户。');
-        }
-        db.users = prepared.users;
-        db.accounts = [account];
-        for (const user of prepared.users) {
-          recordDomainEvent(db, {
-            eventType: 'MemberEligibilityChanged',
-            streamId: 'sharing:default',
-            memberId: user.id,
-            occurredAt: createdAt,
-            payload: {
-              memberId: user.id,
-              enabled: true,
-              acceptingJobs: true,
-              jobAdmissionVersion: 0,
-              createdAt,
-              actorId: 'bootstrap',
-            },
-          });
-        }
-        recordDomainEvent(db, {
-          eventType: 'AccountRegistered',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          occurredAt: createdAt,
-          payload: {
-            accountId: account.id,
-            name: account.name,
-            enabled: true,
-            weight: 1,
-            v5UsageIsNegative: false,
-            createdAt,
-          },
-        });
-        deps.configureFairQuota(
-          db,
-          credentials.map((member) => member.user_id),
+    stage = await mkdtemp(path.join(dataDir, '.bootstrap-'));
+    const filename = path.join(stage, 'candidate.sqlite'),
+      empty = await open(filename, 'wx', 0o600);
+    await empty.close();
+    target = new Database(filename);
+    const historyId = randomUUID();
+    initializeRelationalStorage(target, historyId);
+    const members = new RelationalMemberStore(target, env),
+      quotas = new RelationalQuotaStore(target, env),
+      accounts = new RelationalAccountStore(target, quotas, new Map(), env),
+      configuration = new RelationalConfigurationStore(target),
+      metadata = (id, actorKind = 'system') => ({
+        commandId: 'bootstrap:' + id,
+        fingerprint: domainDigest({ historyId, id }),
+        actorKind,
+        actorId: actorKind === 'admin' ? 'bootstrap' : null,
+        recordedAt: at,
+        correlationId: null,
+        causationId: null,
+        policyVersion: 'bootstrap-v1',
+        pricingVersion: 'not-applicable',
+      });
+    target
+      .transaction(() => {
+        credentials.forEach((member, index) =>
+          members.registerMember(metadata(member.user_id), {
+            memberId: member.user_id,
+            displayName: member.username,
+            apiKey: member.api_key,
+            credentials: prepared[index],
+          }),
         );
-        // 不预发额度。首次官方刷新确认有效 Opus 后，才按真实剩余资源初始化。
-        db.settings.fairQuota.autoAnlasFallback = false;
-        const at = Date.parse(createdAt);
-        db.settings.fairQuota.policyHistory = [
-          { at, actor: 'administrator', autoAnlasFallback: false },
-        ];
-        recordDomainEvent(db, {
-          eventType: 'PolicyChanged',
-          streamId: 'sharing:default',
-          occurredAt: createdAt,
-          payload: { policy: 'autoAnlasFallback', value: false, at, actorId: 'bootstrap' },
+        const groups = credentials.map((member, i) => ({
+            id: 'group_' + (i + 1),
+            name: `第 ${i + 1} 组`,
+            share: 0.25,
+            members: [member.user_id],
+            memberWeights: { [member.user_id]: 1 },
+          })),
+          configured = quotas.configureGroups(
+            metadata('groups', 'admin'),
+            {
+              groups,
+              expectedConfigVersion: 1,
+            },
+            null,
+          );
+        accounts.prepareAccountCommand(
+          metadata('account', 'admin'),
+          {
+            kind: 'register',
+            accountId: 'acct_' + randomUUID(),
+            displayName: 'Shared Opus',
+            token: config.upstreamToken,
+            configVersion: configured.receipt.configVersion,
+          },
+          null,
+        );
+        configuration.initializeGatewayConfiguration(metadata('configuration'), {
+          normalizationDefaults: initialNormalizationDefaults,
+          publicBaseUrl: '',
+          originRef: 'bootstrap:built-in-defaults-v1',
         });
-      },
-      { collections: ['settings', 'users', 'accounts'], includeSettings: true, immediate: true },
-    );
-    await store.flush();
-    await store.close();
-    store = null;
+      })
+      .immediate();
+    const sourcePath = path.join(stage, 'selected.sqlite');
+    const sourceFile = await open(sourcePath, 'wx', 0o600);
+    await sourceFile.close();
+    await target.backup(sourcePath);
+    const sealedSource = new Database(sourcePath, { fileMustExist: true });
+    try {
+      sealedSource.pragma('journal_mode=DELETE');
+    } finally {
+      sealedSource.close();
+    }
+    const selected = {
+      sourcePath,
+      sourceSha256: relationalSnapshotSha256(sourcePath),
+      historyId,
+      finalCommitSeq: target
+        .prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits')
+        .get().seq,
+      replicas: { dataDir },
+    };
+    await verifyAndInstallRelationalStorage(target, selected);
+    target.pragma('wal_checkpoint(TRUNCATE)');
+    target.pragma('journal_mode=DELETE');
+    target.close();
+    target = undefined;
+    relationalSnapshotSha256(filename);
+    const sealed = await open(filename, 'r+');
+    try {
+      await sealed.sync();
+    } finally {
+      await sealed.close();
+    }
+    for (const name of protectedNames.filter(
+      (name) => !['.bootstrap.lock', 'bootstrap-credentials.json'].includes(name),
+    )) {
+      await ensureAbsent(path.join(dataDir, name));
+    }
+    // 最后才公布完整 ready 文件；link 拒绝同名竞争，已发布后不通过可变路径撤回。
+    await link(filename, path.join(dataDir, 'library.sqlite'));
   } finally {
-    if (lock) {
-      await lock.close();
+    try {
+      if (lock) {
+        await lock.close();
+      }
+    } finally {
+      try {
+        if (target?.open) {
+          target.close();
+        }
+      } finally {
+        process.umask(oldMask);
+      }
     }
-    if (store) {
-      await store.close();
+  }
+  try {
+    if (path.dirname(stage) !== dataDir || !path.basename(stage).startsWith('.bootstrap-')) {
+      throw new Error('Invalid bootstrap staging directory.');
     }
-    process.umask(oldMask);
+    await rm(stage, { recursive: true, force: true });
+  } catch {
+    log(`初始化临时目录未能清理，请保留受保护状态并核查：${stage}`);
   }
   log(`初始化完成；四个成员的登录凭据和 API Key 已保存至：${credentialPath}`);
   return { credentialPath, memberCount: 4 };

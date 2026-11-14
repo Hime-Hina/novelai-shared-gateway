@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { buildNovelAiParameters } from '../protocols/novelai-client.ts';
 
+export const generationContextRef = (row: {
+  member_id: string;
+  operation: string;
+  key_hash: string;
+}): string => `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
+
 interface FingerprintRequest {
   operation?: string;
   action?: string;
