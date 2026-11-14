@@ -1807,6 +1807,10 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 当前两角色遇上述字段明确 400。bulk PATCH、账户注册 POST、单/批额度刷新 POST、admin summary/reveal 与 sole 总装配另行接续；本片不自动执行 bootstrap 后的额度联网或生产切换。新专项目标为合法 ready/Local 与 localhost mock 真实 query，等待撤权/轮换/暂停/政策改变、最新票号、失败 Opus、外层捕获 SQL 尾错、单通知/重复零写和完整公共回放无私有复活；mock 不代表真实官方端点验收。
 
+产品固定 `26aa31868a94f7ca59aeea92073fbe1c3b82e713`，仅测试增强后继 `316fccec195538983a1e4276401ee41b450e9e43` 不改产品字节。新账户 HTTP 专项 20/20；产品固定点的原账户、账户管理目录/自动刷新、旧 owner 与新管理 HTTP 五文件同次 139/139、零跳过，32.477 秒（`H:/TEMP/novelai-account-patch-final-context.log`）。后继增强 admin 一次真实通知/重复零通知断言后，20/20 在恢复正确候选的隔离树复验。三项 TEMP 错误实现逐一识别：忽略共享 QuotaStore 时旧观察错误 200≠409；删除完成授权的 ready 检查时真实网络等待后错误 200≠500；admin PATCH 不经 notifier 时真实提交通知 3≠4。错误变体均只在隔离 TEMP，源恢复逐字 Git 匹配。初版 admin 负控指出了正例未断言通知的覆盖缺口，316 只补该断言，并非产品修复；不将该初次绿色变体写成验证通过。
+
+backend 类型、实际 architecture、默认及可信实际 main `88d2c26` 历史 migration、190 个 JS/MJS 语法、五文件格式/diff 已通过。作者交接、精确文件/日志摘要与负控在 `H:/TEMP/novelai-account-patch-316fcce/`；独立审查仍待完成，未跑 full、compiled、Node 24、真实云端、生产或 sole 切换。已有 139 项不是新后继的另一次联合运行计数，后继验证范围如上分别绑定。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
