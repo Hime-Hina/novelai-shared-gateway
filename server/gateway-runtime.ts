@@ -55,6 +55,7 @@ import {
 } from './generation/batch-requests.ts';
 import { JobPreviews } from './generation/job-previews.ts';
 import { launcherSubscription } from './quota/launcher-subscription.ts';
+import { quotaHttpRoute } from './protocols/quota-http.ts';
 import { reconcileMemberSessionOwner } from './members/authentication.ts';
 import { closeMemberGenerationStreams, memberGenerationError } from './generation/member-http.ts';
 import { createLegacyMemberGenerationHttp } from './generation/legacy-member-http.ts';
@@ -801,15 +802,8 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
   }
 
   // 第三方 NAI 启动器只读取调用者本地钱包，不转发共享上游的原始订阅数据。
-  if (
-    method === 'GET' &&
-    [
-      '/user/subscription',
-      '/v1/user/subscription',
-      '/ai/user/subscription',
-      '/v1/ai/user/subscription',
-    ].includes(url.pathname)
-  ) {
+  const quotaRoute = quotaHttpRoute(method, url.pathname);
+  if (quotaRoute === 'subscription') {
     const subscription = await store.update(
       (db) => launcherSubscription(db, getUserOrThrow(db, tokenFrom(req, url))),
       { collections: ['settings'] },
@@ -838,7 +832,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     return;
   }
 
-  if (method === 'GET' && url.pathname === '/api/me/quota') {
+  if (quotaRoute === 'quota') {
     const quota = await store.update(
       (db) => {
         const user = getUserOrThrow(db, tokenFrom(req, url));
