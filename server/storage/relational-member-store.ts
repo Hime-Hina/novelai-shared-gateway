@@ -73,13 +73,15 @@ export interface RelationalMemberManagementProfile {
   username: string | null;
   discordId: string | null;
   inviteExpiresAt: number | null;
+  note: string | null;
 }
-type ManagementProfileRow = Omit<RelationalMemberManagementProfile, 'acceptingJobs'> & {
+type ManagementProfileRow = Omit<RelationalMemberManagementProfile, 'acceptingJobs' | 'note'> & {
   acceptingJobs: number;
+  noteJson: string | null;
 };
 const managementProfileSelect = `SELECT m.id,m.display_name AS displayName,m.status,
   m.accepting_jobs AS acceptingJobs,p.username,d.discord_id AS discordId,
-  i.expires_at AS inviteExpiresAt FROM members m
+  i.expires_at AS inviteExpiresAt,m.note_json AS noteJson FROM members m
   LEFT JOIN password_credentials p ON p.member_id=m.id
   LEFT JOIN discord_bindings d ON d.member_id=m.id
   LEFT JOIN discord_invites i ON i.member_id=m.id`;
@@ -92,7 +94,18 @@ function managementProfile(row: ManagementProfileRow): RelationalMemberManagemen
     username: row.username,
     discordId: row.discordId,
     inviteExpiresAt: row.inviteExpiresAt,
+    note: memberNote(row.noteJson),
   };
+}
+function memberNote(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (typeof decoded === 'string') return decoded;
+  } catch {
+    // 校验失败不在错误中带出原私有备注。
+  }
+  fail(503, '成员私有备注校验失败');
 }
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -138,9 +151,10 @@ export class RelationalMemberStore
             key_hash: string | null;
             username: string | null;
             inviteExpiresAt: number | null;
+            note_json: string | null;
           }
         >(
-          `SELECT m.auth_epoch,k.key_hash,p.username,i.expires_at AS inviteExpiresAt FROM members m
+          `SELECT m.auth_epoch,k.key_hash,p.username,i.expires_at AS inviteExpiresAt,m.note_json FROM members m
         LEFT JOIN api_keys k ON k.member_id=m.id LEFT JOIN password_credentials p ON p.member_id=m.id
         LEFT JOIN discord_invites i ON i.member_id=m.id
         WHERE m.id=?`,
@@ -165,6 +179,7 @@ export class RelationalMemberStore
                 key: member.key_hash,
                 username: member.username,
                 inviteExpiresAt: member.inviteExpiresAt,
+                note: member.note_json,
               }
             : null,
         ),
@@ -196,7 +211,7 @@ export class RelationalMemberStore
         [string],
         {
           id: string;
-          display_name: string;
+          note_json: string | null;
           status: string;
           auth_epoch: string | null;
           username: string | null;
@@ -211,7 +226,7 @@ export class RelationalMemberStore
           invite_expires_at: number | null;
         }
       >(
-        `SELECT m.id,m.display_name,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id,
+        `SELECT m.id,m.note_json,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id,
         d.access_token,d.refresh_token,d.expires_at,d.checked_at,d.eligible,
         i.code_hash,i.expires_at AS invite_expires_at FROM members m
       LEFT JOIN password_credentials p ON p.member_id=m.id
@@ -224,7 +239,7 @@ export class RelationalMemberStore
     }
     return {
       id: row.id,
-      note: row.display_name,
+      note: memberNote(row.note_json) ?? undefined,
       enabled: row.status === 'active',
       ...(row.auth_epoch
         ? {
@@ -474,6 +489,7 @@ export class RelationalMemberStore
       displayName: string;
       apiKey: string;
       credentials?: MemberCredentials;
+      note?: string | null;
     },
     actor: MemberUser | null = null,
   ) {
@@ -487,6 +503,9 @@ export class RelationalMemberStore
       }
       if (this.sqlite.prepare('SELECT 1 FROM members WHERE id=?').get(input.memberId)) {
         fail(409, '成员身份已存在');
+      }
+      if (input.note !== undefined && input.note !== null && typeof input.note !== 'string') {
+        fail(400, '成员备注必须是已知字符串或未知值');
       }
       const count = this.sqlite
         .prepare<[], { count: number }>(
@@ -508,6 +527,11 @@ export class RelationalMemberStore
         },
       });
       this.applyMemberEvents(result.events);
+      if (input.note !== undefined) {
+        this.sqlite
+          .prepare('UPDATE members SET note_json=? WHERE id=?')
+          .run(input.note === null ? null : JSON.stringify(input.note), input.memberId);
+      }
       if (input.credentials) {
         this.insertCredentials(input.memberId, input.credentials);
       } else {

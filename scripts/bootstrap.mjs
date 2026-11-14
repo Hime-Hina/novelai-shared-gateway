@@ -156,6 +156,7 @@ export async function bootstrap({ env = process.env, log = console.log } = {}) {
           members.registerMember(metadata(member.user_id), {
             memberId: member.user_id,
             displayName: member.username,
+            note: member.username,
             apiKey: member.api_key,
             credentials: prepared[index],
           }),

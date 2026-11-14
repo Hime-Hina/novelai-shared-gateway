@@ -30,6 +30,7 @@ const password = 'synthetic-directory-password',
     'username',
     'discordId',
     'inviteExpiresAt',
+    'note',
   ];
 
 function registerNamed(f) {
@@ -39,6 +40,7 @@ function registerNamed(f) {
       displayName: 'm1',
       apiKey: namedKey,
       credentials,
+      note: 'private directory note',
     }),
   )();
 }
@@ -97,11 +99,13 @@ test('管理目录按稳定ID分开同名成员，保留Key-only未知身份且q
       username: null,
       discordId: null,
       inviteExpiresAt: invite.expiresAt,
+      note: null,
     });
     assert.equal(rows[2].username, 'original.login');
     assert.equal(rows[2].displayName, 'm1');
     assert.equal(rows[2].discordId, '222222222222222222');
     assert.equal(rows[2].inviteExpiresAt, null);
+    assert.equal(rows[2].note, 'private directory note');
     assert.equal(f.members.readManagementMemberProfile('original.login'), null);
     assert.equal(f.members.readManagementMemberProfile("m1' OR 1=1 --"), null);
   } finally {
@@ -149,6 +153,7 @@ test('disabled仍是管理目标，实际权益移除后不再列出；未知与
     username: null,
     discordId: null,
     inviteExpiresAt: null,
+    note: null,
   });
   assert.equal(f.members.readManagementMemberProfiles().length, 2);
   const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null, NOW))(),
@@ -231,6 +236,7 @@ test('重开保持目录；完整业务回放不补私有用户名/绑定，选�
       username: null,
       discordId: null,
       inviteExpiresAt: null,
+      note: null,
     })),
   );
   assert.equal(databaseState(target), beforePrivate);

@@ -4886,3 +4886,20 @@ test('Discord邀请过期保留私有原期限；公开回放不恢复邀请，�
   assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, expiry);
   assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
 });
+
+test('私有备注新建沿原120码元与默认规则，GET不借displayName且不公开原备注', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment }),
+    value = 'private-note-' + 'x'.repeat(108) + '😀',
+    expected = String(value || '管理员创建的成员').slice(0, 120),
+    body = credentials({ username: 'private.note.boundary', note: value }),
+    created = await credentialPost(f, body);
+  assert.equal(created.status, 200, created.text);
+  assert.deepEqual(created.body, { id: created.body.id, username: body.username });
+  const state = await f.call(admin, { headers: { 'x-admin-token': adminToken } });
+  assert.equal(state.status, 200, state.text);
+  const member = state.body.users.find((user) => user.id === created.body.id);
+  assert.equal(member.note, expected);
+  assert.equal(member.displayName, body.username);
+  assert.equal(member.username, body.username);
+  assert.equal(f.db.prepare('SELECT note_json FROM members WHERE id=?').get(created.body.id).note_json, JSON.stringify(expected));
+});
