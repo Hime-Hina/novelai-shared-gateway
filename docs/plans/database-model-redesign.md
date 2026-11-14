@@ -2407,6 +2407,16 @@ TEMP仅撤回未知分支的定义校验调用，原独审同程序精准 Missin
 
 根在 `5e62968` 上接入整个 lineage，九个非plan路径逐字等于909，含五个实际产品owner及准确旧格式fixture；原会话/复制/Native/汇总源与四个原计划小节保留，仅将9.92移到事实修订前。两完整Opening与完整汇总的实际新DDL交点 **45/45、零跳过，14.574 秒**；类型、architecture、默认与可信main88迁移、201文件语法和变更格式通过。证明 `H:/TEMP/novelai-opening-definition-root-preservation.json`，日志 `H:/TEMP/novelai-opening-definition-root-*`。格式仍未发布event7/writer5，DDL SHA256 `2314a5a3e20179083ca93a8a886ff8aaa83205ce395069b447a54a76c5be7c8a`；原61bc库由现格式guard拒绝，不能在线改ready或绕过旧hash。尚无同根最终发行矩阵/实际迁移与容量/真实端点或生产切换证据；类似正文定义规则仍在唯一 relational-input owner 维护。
 
+#### 9.98.2 冷读描述符与副本存在承诺
+
+只读描述符继续归原`result-files`：新增readableResultFile/assertReadableStoredResultDescriptor，operation可明确NULL，其余原ID、MIME枚举、规范路径、长度/SHA及图像结构校验保持。NULL按MIME核严格图片或opaque域，不补generate/encode；正常resultFile、describe、descriptor写入收窄、publisher和prepared读取仍要求已知operation，文件final/part及fsync边界不变。相同nullable结构不能成为新业务执行、Local发布或收费依据。
+
+Replica owner统一以未deleted且uploadedAt或verifiedAt至少一项已知表示原存在承诺；known0保留，不能把verified已知/uploaded未知当作从未上传。冷读/cache、copy重领、verify及调度同规则：R2原verified承诺可实GET并清当前错误而保留原NULL/known0；正常reserved没有任何上传/验证前态仍不得首次verified，已确认前态也不得被普通uploaded覆盖。未知publishedAt不取得24h资格；有原verifiedAt的R2仍按原7d/登记水位规则处理，不把开账header当年龄。SQL候选与原source/namespace/控制门禁保持，无持久bool/refcount或新timer。
+
+Opening复制Local只读既有final，不调用publisher或写local_verified补造过去Local上传；实际新R2/Pik PUT/GET分别记录本次真实上传/核验时点，不改旧artifact publishedAt。正常ArtifactPublished仍沿原publisher恢复和首次Local确认，writer/reducer同时保已知描述符界线。Pik实读仅需原namespace/key/hash/len，不用new Date(NULL)造1970时间，也不收窄原uploaded-URL可读政策或每次额外GET；Brotli/原长/hash/MIME及IO后票据/source/config重核保持。无旧解释器、源DELETE、归档重定向或9.99实现。
+
+本分片在独立c653树静态推进；合法NULL的共同facts/DDL由Core片负责，不能SQL改NULL绕过旧DDL，也不能把source字段不完整时的单个内部一致性验证称为真实旧503/7行迁移闭环。复验命令、技术fixed与原source/负控证据在完成后补记，目前不声明测试、发布物或生产已通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
