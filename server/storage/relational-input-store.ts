@@ -250,26 +250,26 @@ export class RelationalInputStore {
       throw new Error('Generation reuse requires the owning transaction.');
     }
     const original = this.readGenerationReuseProof(input.sourceJobId),
-      prepared = prepareRelationalInput(
-        input.cached ? { ...input.request, seed: original.prepared.firstSeed } : input.request,
-        input.context,
-        this.env,
-      );
+      incoming = prepareRelationalInput(input.request, input.context, this.env);
     if (
       !Number.isSafeInteger(admissionEpoch) ||
       admissionEpoch < 0 ||
       input.noCache !== false ||
       input.context.kind === 'member' ||
       original.job.memberId !== input.memberId ||
-      prepared.sampleCount !== 1 ||
-      prepared.body.operation !== 'generate' ||
+      incoming.sampleCount !== 1 ||
+      incoming.body.operation !== 'generate' ||
       !['fixed', 'random'].includes(input.seedMode) ||
       (input.idempotency !== undefined && input.idempotency.noCache !== false) ||
-      this.preparedFingerprint(prepared, input.seedMode, false) !== metadata.fingerprint ||
-      relationalInputCacheKey(input.memberId, prepared, input.seedMode) !== original.job.cacheKey
+      this.preparedFingerprint(incoming, input.seedMode, false) !== metadata.fingerprint ||
+      relationalInputCacheKey(input.memberId, incoming, input.seedMode) !== original.job.cacheKey
     ) {
       unavailable();
     }
+    const prepared =
+      input.cached && input.seedMode === 'random'
+        ? { ...incoming, firstSeed: original.prepared.firstSeed }
+        : incoming;
     const common = {
       memberId: input.memberId,
       accountId: null,
@@ -1270,7 +1270,22 @@ export class RelationalInputStore {
     const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
     for (const event of stored.events) {
       if (event.eventType === 'ContextRegistered') {
-        contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+        const p = event.payload,
+          context = source.context(p.contextId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered' LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          p.contextSchemaVersion !== 1 ||
+          p.contextSha256 !== domainDigest(context) ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        contexts.set(p.contextId, context);
       }
       if (event.eventType === 'RequestAccepted') {
         const context =
@@ -1294,10 +1309,24 @@ export class RelationalInputStore {
         );
       }
       if (event.eventType === 'InputRegistered') {
-        inputs.set(
-          event.payload.inputId,
-          source.input(event.payload.inputId, event.payload.memberId),
-        );
+        const p = event.payload,
+          input = source.input(p.inputId, p.memberId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('InputRegistered','OpeningInputRecorded') LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          input.row.completeness !== 'complete' ||
+          p.inputSchemaVersion !== input.row.schema_version ||
+          p.inputSha256 !== input.row.sha256 ||
+          p.logicalBytes !== input.row.logical_bytes ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        inputs.set(p.inputId, input);
       }
       if (event.eventType === 'RequestAliasRegistered') {
         contexts.set(event.payload.contextId, source.context(event.payload.contextId));
@@ -1695,6 +1724,7 @@ export class RelationalInputStore {
     if (body) {
       delete body.displayPrompt;
       delete body.requestedSteps;
+      delete body.cacheSelection;
     }
     return {
       contractVersion: 1,
