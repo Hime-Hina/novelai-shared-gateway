@@ -84,7 +84,7 @@ def verify(snapshot):
         expected = (snapshot / 'retained-catalog.sha256').read_text().strip()
         if not re.fullmatch(r'[a-f0-9]{64}', expected) or digest(safe_file(snapshot, 'retained-catalog/registry.json')) != expected:
             raise ValueError('Retained catalog checkpoint differs')
-        catalog = retained_sources(snapshot / 'retained-catalog', 'read')
+        catalog = retained_sources(snapshot / 'retained-catalog', 'read', {'checkpointSha256': expected})
         if catalog['registryId'] != manifest['retainedSource']['registryId']:
             raise ValueError('Retained catalog belongs to another registry')
     return manifest

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
@@ -233,4 +233,69 @@ test('missing catalog or unsupported coverage never becomes an empty complete in
   catalog.coverage = 'complete';
   await writeFile(file, JSON.stringify(catalog));
   await assert.rejects(readRetainedSourceProtection(registry));
+});
+test('checkpoint reads and restores reject the same incomplete proof before creating output', async (t) => {
+  const { root, registry } = await temporary(t);
+  const manifest = path.join(root, 'selected-manifest.json');
+  const dependencies = path.join(root, 'selected-dependencies.jsonl');
+  await writeFile(manifest, '{"selected":"original source"}');
+  await writeFile(dependencies, '{"kind":"unknown-dependencies"}\n');
+  const capture = await beginRetainedCapture(registry, 'daily', path.join(root, 'snapshot'));
+  await bindRetainedCapture(
+    registry,
+    capture.sourceId,
+    manifest,
+    {
+      format: 'opaque',
+      sourceSha256: null,
+      manifestSha256: await retainedFileSha256(manifest),
+      dependenciesSha256: await retainedFileSha256(dependencies),
+      dependencies: 'unknown',
+      historyId: null,
+      finalCommitSeq: null,
+    },
+    dependencies,
+  );
+  const checkpoint = path.join(root, 'checkpoint');
+  const sealed = await checkpointRetainedSources(registry, checkpoint);
+  const markerFile = path.join(checkpoint, 'checkpoint.json');
+  const registryFile = path.join(checkpoint, 'registry.json');
+  const proofFile = path.join(checkpoint, 'sources', capture.sourceId, 'dependencies.jsonl');
+  const marker = JSON.parse(await readFile(markerFile, 'utf8'));
+  const cases = [
+    [markerFile, null],
+    [markerFile, JSON.stringify({ ...marker, format: 'unknown-checkpoint' })],
+    [markerFile, JSON.stringify({ ...marker, registryId: randomUUID() })],
+    [markerFile, JSON.stringify({ ...marker, sha256: '0'.repeat(64) })],
+    [markerFile, JSON.stringify({ ...marker, unsupported: true })],
+    [registryFile, JSON.stringify({ ...JSON.parse(await readFile(registryFile)), revision: 99 })],
+    [proofFile, null],
+  ];
+  assert.deepEqual(
+    await readRetainedSourceProtection(checkpoint, sealed.sha256),
+    await readRetainedSourceProtection(registry),
+  );
+  for (const [index, [filename, changed]] of cases.entries()) {
+    const original = await readFile(filename);
+    if (changed === null) {
+      await rm(filename);
+    } else {
+      await writeFile(filename, changed);
+    }
+    const output = path.join(root, 'refused-' + index);
+    try {
+      await assert.rejects(readRetainedSourceProtection(checkpoint, sealed.sha256));
+      await assert.rejects(restoreRetainedSources(output, checkpoint, sealed.sha256));
+      await assert.rejects(lstat(output), { code: 'ENOENT' });
+    } finally {
+      await writeFile(filename, original);
+    }
+  }
+  await assert.rejects(restoreRetainedSources(path.join(root, 'no-hash'), checkpoint));
+  const restored = path.join(root, 'healthy-restored');
+  await restoreRetainedSources(restored, checkpoint, sealed.sha256);
+  assert.deepEqual(
+    await readRetainedSourceProtection(restored),
+    await readRetainedSourceProtection(registry),
+  );
 });

@@ -2294,6 +2294,14 @@ PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/pl
 
 删去域校验的TEMP错误实现使用原foreign-domain断言，精准报`Missing expected rejection`；原实现控制恢复1/1，产品字节始终未改。Windows远端7+1坏+7健康序列确实完成最后七份GCM GET，因无法证明uploader域而保持preparing/十五份且零DELETE；受支持Linux Node22上的同域恢复及成功收敛、Linux RSS条件分支、POSIX目录fsync/断电、编译发布物、实云和生产仍未验。旧首次10项及短Python4项日志保留为前置范围，不冒充最新结果。backend类型、架构、可信bb308a5迁移历史、局部格式和差异检查通过；完整命令/源码与工具摘要见`H:/TEMP/novelai-retained-sources-20261115/`交接。独立审查待固定候选完成，下一片继续持久删除责任与原IO闭环，当前全部source仍保留。
 
+### 9.93.1 checkpoint完整性共同校验（4db独审P2后继）
+
+原`4db5453`保持NOTPASS及冻结。非作者真实CPython/Node桥反例先完成健康SQLite capture/checkpoint、backup verify和真正restore，再仅删checkpoint.json而保留registry/manifest/proof/SHA；真正restore拒绝，但Python.verify仍通过，原`assertRaises`精准未抛。这是备份验证与恢复的caller断裂，不能用GCM认证或前置250秒自检替代修复。
+
+后继只把原owner的锁/registry/schema/SHA/marker及所需source证明读取收敛为一个私有函数。既有read命令接受可选checkpointSha256，Python.verify附原外部SHA；restore也调用同一函数，仍要求明确SHA和全新输出，不通过创建TEMP恢复来verify。marker仍是原三字段格式，registry revision由其整文件SHA绑定；缺失/错format/id/hash/额外未知字段、源proof缺失或registry变化均拒绝，普通live registry读不要求checkpoint marker。未增加持久状态、DDL、事实、删除能力或第二份Python JSON规范；unknown/reconcile及原no-overwrite保持。实际复验与固定SHA在完成后交接，不沿用4db旧绿作为后继结果。
+
+原独审程序和driver保持原SHA（6b877671…/683e1df0…），仅用外部loader重绑新source，Linux CPython3.12/原Windows Node22桥复验1/1、1.758秒；共同core仍新而仅退回原Python caller，精确同line40报`Exception not raised`、1.665秒，恢复caller后1/1、1.723秒。source原五项加新共同拒绝矩阵六项同次6/6、零跳过、1.296秒，矩阵含坏marker语义/缺证明，且拒绝不创建输出。类型、架构、可信4db迁移历史、局部格式/diff通过。证据在`H:/TEMP/novelai-retained-checkpoint-fix-20261115/`；原4db NOTPASS/红例不改，未重跑原13或250秒Python组、未新增build/实云/生产或LinuxNode22正向恢复证据，固定后交原非作者复审。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

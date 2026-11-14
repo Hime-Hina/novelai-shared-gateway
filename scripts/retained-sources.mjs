@@ -118,7 +118,7 @@ async function main() {
   if (mode === 'init') {
     result = await initializeRetainedSources(registry);
   } else if (mode === 'read') {
-    result = await readRetainedSourceProtection(registry);
+    result = await readRetainedSourceProtection(registry, request.checkpointSha256);
   } else if (mode === 'begin') {
     result = await beginRetainedCapture(registry, request.category, request.location);
   } else if (mode === 'describe') {

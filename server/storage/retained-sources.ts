@@ -408,7 +408,7 @@ async function mutate<T>(root: string, change: (registry: Registry, root: string
     }
   }
 }
-export async function readRetainedSourceProtection(root: string) {
+async function readProtectedRetainedRegistry(root: string, checkpointSha256?: string) {
   root = await directory(root);
   if (
     !(await absent(path.join(root, 'lease.json'))) ||
@@ -417,6 +417,25 @@ export async function readRetainedSourceProtection(root: string) {
     fail();
   }
   const registry = await readRegistry(root);
+  if (checkpointSha256 !== undefined) {
+    if (
+      typeof checkpointSha256 !== 'string' ||
+      !hashPattern.test(checkpointSha256) ||
+      (await retainedFileSha256(path.join(root, 'registry.json'))) !== checkpointSha256
+    ) {
+      fail();
+    }
+    const marker = JSON.parse((await bytes(path.join(root, 'checkpoint.json'))).toString());
+    if (
+      !same(marker, {
+        format: 'novelai-retained-checkpoint-v1',
+        registryId: registry.registryId,
+        sha256: checkpointSha256,
+      })
+    ) {
+      fail();
+    }
+  }
   for (const source of registry.sources) {
     if (!source.holds.some((hold) => hold.state !== 'retired') || !source.binding?.manifestSha256) {
       continue;
@@ -437,6 +456,11 @@ export async function readRetainedSourceProtection(root: string) {
       fail();
     }
   }
+  return registry;
+}
+// checkpoint读取和restore共用完整证明校验；普通live registry读取不要求checkpoint标记。
+export async function readRetainedSourceProtection(root: string, checkpointSha256?: string) {
+  const registry = await readProtectedRetainedRegistry(root, checkpointSha256);
   return { ...registry, releaseAllowed: false as const };
 }
 function source(registry: Registry, id: string) {
@@ -893,28 +917,10 @@ export async function restoreRetainedSources(
   expectedSha256: string,
 ) {
   filename = await directory(filename);
-  if (
-    !(await absent(path.join(filename, 'lease.json'))) ||
-    !(await absent(path.join(filename, 'recovery.lock')))
-  ) {
+  if (typeof expectedSha256 !== 'string' || !hashPattern.test(expectedSha256)) {
     fail();
   }
-  const registryFile = path.join(filename, 'registry.json');
-  if (
-    !hashPattern.test(expectedSha256) ||
-    (await retainedFileSha256(registryFile)) !== expectedSha256
-  ) {
-    fail();
-  }
-  const restored = validate(JSON.parse((await bytes(registryFile)).toString()));
-  const marker = JSON.parse((await bytes(path.join(filename, 'checkpoint.json'))).toString());
-  if (
-    marker.format !== 'novelai-retained-checkpoint-v1' ||
-    marker.registryId !== restored.registryId ||
-    marker.sha256 !== expectedSha256
-  ) {
-    fail();
-  }
+  const restored = await readProtectedRetainedRegistry(filename, expectedSha256);
   // checkpoint 的外部 SHA 来自已验证包；恢复保留责任，不把目录缺失解释成空保护域。
   await directory(path.dirname(path.resolve(root)));
   await mkdir(path.resolve(root), { mode: 0o700 });
