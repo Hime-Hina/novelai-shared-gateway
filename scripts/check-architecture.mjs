@@ -49,6 +49,8 @@ const mutations = new Set([
   'renewMemberCookie',
   'createRelationalMemberAuthenticationHttp',
   'createRelationalNativeAdmission',
+  'createRelationalApiGenerationAdmission',
+  'createRelationalOpenAiHttp',
   'createRelationalNativeHttp',
   'createLegacyNativeHttp',
   'memberApiKeyTransaction',

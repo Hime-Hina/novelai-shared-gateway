@@ -1366,6 +1366,30 @@ Node 22.23.4 源码验证：新权益/摘要、私有恢复及凭据失效四文
 
 候选薄读原 EXPLAIN 按成员历史查 request/job；增加唯一一个非空 cache_key 索引后，两条实际查询均 SEARCH idx_jobs_cache，未增加缓存表、持久派生计数或新排序框架。可复现前/后计划是 `H:\TEMP\novelai-r08-explain-before.log` / `-after.log`，不以本机耗时代替同规模容量验收。新增 stageGenerationReuse/reuseGeneration 写能力加入既有架构守卫及拒绝反例，需维护者随候选复核。源码定向、独立复审和最终整合结果在固定后追加；不运行本片之外的 full/编译/Node 24，不表示 R08 传输、迁移或生产切换完成。
 
+### 9.46 #52：OpenAI 共享 HTTP 与关系受理/领取
+
+本片从 `d638220` 继续，外部行为仍归 [API 契约](../contracts/api-contract.md#其他现有客户端接口) 与 [请求生命周期](../architecture/request-lifecycle.md)。原 sole runtime 的中文标签、最后用户消息和文本片段、模型/尺寸档、28 步与 Medium 归一化 parser 原样归入 `protocols/openai-chat.ts`；模型目录、JSON completion、SSE 队列说明/Markdown/stop/DONE 和公开错误包络复用同一 transport / delivery 函数，原 caller 继续直接注入原实际能力，不维护两套 router 或 parser。
+
+Native 的当前 Key 事务、首次上下文/fingerprint、原 alias/receipt 和载荷 claim 交接窄提为共同 `relational-api-admission.ts`；两种协议的薄状态等待、本人产物冷读、实际 IO 后当前 Key 复核和原结果缺失规则归共同 `relational-api-delivery.ts`。OpenAI 使用既有 `kind:'direct'` 上下文保存有限 defaults 与 Native 定义，保留随机 seed 意图和缺省 `noCache=true`；没有 Cookie confirmation，也不延续独立用户 PST 的旧 official 模式。新意图在 canonical GenStore 复用原共享 readiness、refill 和免费次数 owner，派发期余额仍在派发期判断，受理失败连恢复/输入/alias/回执一起回滚。
+
+新 factory 必须先合法 ready，注入与协调器同一 payload budget/events，读取原产物字节后才提供成功 Markdown；JSON 建连前失败保留状态与 OpenAI envelope，SSE 建连后失败沿原文本/DONE 结束，不取消任务。RequestStore 的领取 DTO 只增加由真实 queued 序号计算的位置和总数，不反复读取完整提示词。断线和同步超时只移除等待者，在途任务与物理输入仍由协调器持有；旧 Key 撤销、正文期间 stop/resume 的原 epoch、原键换交付格式和完整业务提交回放分别验证。
+
+当前 defaults 通过必需的窄 `readNormalizationDefaults` 由实际配置 owner 注入，只在新意图读取；原键不访问当前 defaults。实际配置 owner 的补全归第 9.47 节，原签名/绝对图片 URL 继续由 sole 平台能力注入；合成 fixture 的显式配置与 localhost URL 只验证接点，不代表生产配置或签名 reader 已经闭环。GET 目录复用原 Bearer/query `token`/`x-user-token` 读取，POST 仍仅 Bearer；原中央已认证 admin 的目录只读接点在 sole 装配保留，不向 writer 伪造成员 Key 或新增 bypass。
+
+显式 `nocache=0` 接第 9.44 节同一 `findReusableGeneration/reuseGeneration` owner：缓存资格 IO 在 SQL 外，第二次当前 Key 事务先重查原键、再复核成员/epoch并提交；无键完成缓存产生新 parent/job、活动合并返回原任务，新键保存独立首次 context/receipt。生产任务的 cache key 也由 InputStore 的实际输入意图 owner 生成，不重写缓存公式。原方图改横图但覆盖出站宽高同为 128 的实际 HTTP 反例在旧 R08 候选精准失败（实际 1 次、期望 2 次），接最终已独审产品 `f02a55e` / 文档 `e7cf967` 后转绿；不沿用先前 17/297 的通过数替代该反例。
+
+Node 22.23.4 新关系 OpenAI 实际 lawful-ready/localhost HTTP 18/18、原缓存尺寸反例 1/1、类型检查通过，日志为 `H:\TEMP\openai-r08-final-http.log`、`H:\TEMP\openai-cache-profile-after-r08-final.log` 和 `H:\TEMP\openai-final-typecheck.log`。专项覆盖默认不缓存、无键新意图、显式完成/活动复用、同键 JSON/SSE 重领、当前 Key/慢正文 admission epoch、实际文件 IO 后撤销、最后 alias SQL 失败连 refill/input/receipt 全回滚、断线/截止不取消、原结果缺失 410、持久云承诺与实际领取 503，以及十四张公开表完整提交回放时 fetch=0且不恢复私有凭据。R2 使用真实 client/复制确认 owner 和模拟传输，不称为真实云端验收。
+
+原实际 sole 连接 HTTP 与架构反例联合 242/242，共享提取受影响的五项 Native HTTP 加旧 v3 factory 门禁 6/6，均零跳过；日志为 `H:\TEMP\openai-final-shared-transport.log` 与 `H:\TEMP\openai-final-shared-native-gates.log`。架构、可信 `d638220f9c79a340f63098e923fb37029df8b2f1` 迁移历史、全部改动文件格式和 diff 检查通过；原 startup 10 秒断言未变，未运行 full、全套 Native 或 Node 24。本片没有自行改 SQL/journal、事实 schema 或共同缓存规则，第 9.44 节已审 owner 按原完整提交并入。
+
+独审 `b95e724` 发现 P2：目录在 Discord IO 后只查成员 active，期间合法换 Key 后旧 Key 仍能返回 200。后继将目录与 POST 的共同检查改为原 `withAuthenticatedMemberApiKey`，在当前 Key 事务中同时重核 ready，再读取 admission epoch；不把仍 active 的成员 ID 当作原凭据。真实 ready/localhost 中的 Discord IO 换 Key 与撤下 ready 两项反例加入原专项后 21/21、类型检查通过（`H:\TEMP\openai-post-discord-auth-fix.log`）；当前新 Key 仍能零写读取目录。原独审失败证据保留在 `H:\TEMP\novelai-openai-independent-b95e724-20261114\models-rotation-repro.log`，原候选不记为已审通过。
+
+同一独审进一步确认：只在 Discord 后检查不够，正文、缓存资格及产物 IO 之后仍须在当前凭据事务中核 ready。共同 `relational-api-admission` 现在必需实际 sqlite，每次原键读取或新受理（含缓存 IO 后重入）都调用同一门禁；Native/OpenAI 的共同 delivery 在每次当前 Key 读取和 IO 后也核门禁。成员在线 admission 桥同样必需 sqlite，成员 HTTP 的当前 Cookie 读取、取消和 IO 后检查共用原 ready 门禁；没有关闭 Gen/Input/离线完整提交在 building 的业务能力，也没有可省略的安全 guard 或在线开关。真实正文、缓存 stat、文件读取后撤下 ready 的 Native/OpenAI 反例 7/7，含目录修复的 OpenAI 专项 28/28（`H:\TEMP\openai-shared-ready-final-http.log`）；原独立 body/final JSON/SSE 红例仍保留在上述独审目录。
+
+成员桥原十四处 building 业务 fixture 现在先备份真实源，再复用唯一 installer 完成 shadow/33表/private/已有 bytes 核对；测试 helper `installReady` 不改默认 building fixture，不补 ready marker。该改变只适配在线桥的明确安全边界，没有其他实际 building 生产 caller。旧 `b95e724` 在独立 TEMP 原源上精准失败于 building 调用缺少预期拒绝（`H:\TEMP\member-online-building-before-b95.log`），修后同一 building 零写拒绝、合法安装后正常受理及同键零写。成员受理/HTTP 含慢正文与原图 IO 撤 ready 26/26，相关 history/queue 三项 3/3、共享 Native/旧格式门禁 6/6（`H:\TEMP\member-online-ready-boundaries.log`、`H:\TEMP\member-online-bridge-existing-callers.log`、`H:\TEMP\api-online-ready-native-gates.log`）；前两文件约 5.1 秒，首条合法 fixture 约 0.36 秒。完整后端及 sole 装配仍由父任务统一排期。
+
+两个新的写能力符号 `createRelationalApiGenerationAdmission` 与 `createRelationalOpenAiHttp` 仅追加到现架构集合，并各留 query/protocol 的 alias-import 拒绝反例；OpenAI factory 也加入实际旧 v3 DDL/hash 的拒绝检查，需父任务维护者独审。未增加 settings 表、缓存 registry、双写或任意旧/新库切换配置；未切换 sole gateway，未宣称完整 #52 或发布物验收，full 由父任务统一排期。同 runtime notifier 的 MemberStore 第三参与替换旧 post-admit 临时通知由父任务统一装配；本片不另建通知注册或派发规则。Direct 任意有限 seed 的表示修正另归共同 T2 owner，本片 OpenAI parser 不接收该 seed 参数。
+
 独立审查发现 `c0fb9ec` 的两类共同来源缺口：同 ID 后补矛盾 ContextRegistered 被接受，重复旧 InputRegistered 在线接受却不能从空库完整恢复。共同 v3 修复 `5ea2e51` 已独立通过 16/16，普通受理与同提交重复注册均在原 Input owner 逐本次 eventId/唯一性/schema/SHA/bytes 拒绝；在本片接回为 `326b33e`，没有 alias 特判或跳过重复 INSERT。严格旧 key 回归新增同出站但 size、artist/tag 拆分、cost presence、被改写 sampler、purchase presence 不同的五组实际 owner 反例；先前出站匹配实现五组均错误命中活动请求，修后活动/完成缓存均 miss，真正相同旧 key 仍正常命中并完整回放。缓存投影还必须经原出站 owner 重建出完全相同参数，任意额外 Native 参数不能被忽略后进入 direct 缓存。cost 的缺失/空串/NULL/false/零/非有限 JSON 值、空 artist/tag、多行和同文本，以及新增控制元数据不改变旧 key 均有对照。当前源码专项 27/27，连普通注册、input、共同 replay、ready、Native admission、storage 与 event 八文件 127/127、零跳过，类型和架构检查通过；首轮覆盖清单遗漏本片实际新增 CachedResultLinked，按精确 owner 集合修为 62，未删未实现 owner 拒绝断言。原负控和复跑日志为 `H:\TEMP\novelai-r08-strict-key-original.log`、`novelai-r08-strict-cache.log` 和 `novelai-r08-strict-regression.log`。该轮固定后仍需独立复审，局部结果未作为整体通过。
 
 后续自审及独立反例在 `0db25df` 同时确认：缓存 stage 先把来访 seed 替为产物实际 seed，再核指纹，导致当前 Key 下 fixed 43 配原 fixed 42 的 metadata 会错误接受；真实 HTTP 虽已按来访 raw 算指纹，canonical owner 仍须自己核真实入参。修复只调整原 stage：先用 incoming Prepared 复核原 GF、严格缓存键及载荷下界，验证后随机缓存命中仅采用原结果 seed，不重新 prepare 改写来访 logicalBytes。合法 fixed 42、random 777 引用原 actual 42、来访更长 seed 的原预算和完整回放均保留对照；原红/绿日志为 `H:\TEMP\novelai-r08-incoming-seed-before.log` / `-after.log`。`0db25df` 不作为最终通过候选。

@@ -979,12 +979,12 @@ export class RelationalGenerationStore {
           ),
         );
       }
-      if (input.context.kind === 'member' || input.context.kind === 'native') {
+      {
         const policy = this.policy();
         if (!policy.boundAccountId) {
           fail('共享账本尚未绑定账号', 503);
         }
-        if (input.context.kind === 'native') {
+        if (input.context.kind !== 'member') {
           this.reservationState(
             { memberId: input.memberId },
             policy.boundAccountId,
@@ -1003,7 +1003,7 @@ export class RelationalGenerationStore {
           admissionEpoch: m.version,
         })),
       });
-      if (input.context.kind === 'native') {
+      if (input.context.kind !== 'member') {
         const policy = this.policy();
         if (quoteFairRequest(this.inputs.readJobInput(input.jobs[0].jobId)).resource === 'free') {
           assertFreeImageAdmission(this.freeUsage(input.memberId, policy, metadata.recordedAt));

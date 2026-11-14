@@ -550,6 +550,7 @@ test('本地发布仍悬挂时逻辑退款不释放物理槽/父输入，stop等
     },
   );
   const admit = createRelationalMemberGenerationAdmission({
+    sqlite: f.db,
     members: f.members,
     inputs: f.inputs,
     generations: f.generations,
@@ -1000,8 +1001,10 @@ test('辅助操作由同一真实HTTP执行链发布原图与二进制编码，�
       res.end(image);
     }
   });
+  await f.ready();
   const payloadBudget = createGenerationPayloadBudget(() => f.inputs.activePayloadBytes());
   const admit = createRelationalMemberGenerationAdmission({
+    sqlite: f.db,
     members: f.members,
     inputs: f.inputs,
     generations: f.generations,
@@ -1034,7 +1037,6 @@ test('辅助操作由同一真实HTTP执行链发布原图与二进制编码，�
     });
     requests.push(accepted.receipt);
   }
-  await f.ready();
   const runtime = f.runtime();
   await runtime.start();
   runtime.tick();

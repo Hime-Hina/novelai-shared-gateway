@@ -58,6 +58,7 @@ import { reconcileMemberSessionOwner } from './members/authentication.ts';
 import { closeMemberGenerationStreams, memberGenerationError } from './generation/member-http.ts';
 import { createLegacyMemberGenerationHttp } from './generation/legacy-member-http.ts';
 import { handleMemberRoutes } from './members/http-routes.ts';
+import { gatewayKeyFrom as tokenFrom } from './members/http-request.ts';
 import { nativeGenerationError } from './protocols/native-http.ts';
 import { createLegacyNativeHttp } from './generation/legacy-native-http.ts';
 import { imageExtension } from './protocols/native-stream.ts';
@@ -67,11 +68,8 @@ import {
   officialKeyError,
   officialKeyOwner,
 } from './protocols/official-key-jobs.ts';
-import {
-  openAiModelsResponse as listOpenAiModels,
-  openAiFixedSteps,
-  openAiSizeTiers,
-} from './protocols/openai-models.ts';
+import { parseOpenAiImageRequest } from './protocols/openai-chat.ts';
+import { createOpenAiHttp, openAiGenerationError } from './protocols/openai-http.ts';
 import {
   ownerAccountConfiguration,
   assertOwnerAccountCredentialChangeAllowed,
@@ -91,7 +89,6 @@ import {
   isNovelAiCapacityError,
   isAbortError,
   isInsufficientBalanceError,
-  isTimeoutResultMessage,
   publicErrorMessage,
 } from './http/public-errors.ts';
 import { selectErrorLogJobs, publicErrorLog } from './reports/generation-errors.ts';
@@ -363,6 +360,14 @@ const nativeHttp = createLegacyNativeHttp({
         JSON.stringify({ time: new Date().toISOString(), id, event, ...details }),
     ),
 });
+const openAiHttp = createOpenAiHttp({
+  accept: acceptOpenAiRequest,
+  waitForJobResult,
+  stream: (req, res, job, deadline) => streamOpenAiImageJob(req, res, job, job.model, deadline),
+  imageMarkdown: openAiImageMarkdown,
+  sendJson,
+  timeoutMs: openAiChatTimeoutMs,
+});
 
 // 旧入口与 Nitro listener 共用一个宿主；恢复完成前不监听，监听成功后才派发。
 export async function startGateway(handler: http.RequestListener) {
@@ -468,12 +473,8 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
       return;
     }
     if (req.url?.startsWith('/v1/')) {
-      sendOpenAiError(
-        res,
-        (error as GatewayError).statusCode || 500,
-        publicErrorMessage((error as GatewayError).message || 'Internal server error'),
-        openAiErrorType(error),
-      );
+      const payload = openAiGenerationError(error);
+      sendJson(res, payload.statusCode, payload.body);
       return;
     }
     sendJson(res, (error as GatewayError).statusCode || 500, {
@@ -757,13 +758,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     return;
   }
 
-  if (method === 'GET' && url.pathname === '/v1/models') {
-    sendJson(res, 200, openAiModelsResponse());
-    return;
-  }
-
-  if (method === 'POST' && url.pathname === '/v1/chat/completions') {
-    await handleOpenAiChatCompletion(req, res);
+  if (await openAiHttp(req, res, url)) {
     return;
   }
 
@@ -1294,187 +1289,6 @@ async function acceptOpenAiRequest(req: GatewayRequest) {
   };
 }
 
-async function handleOpenAiChatCompletion(req: GatewayRequest, res: GatewayResponse) {
-  const job = await acceptOpenAiRequest(req);
-  if (job.requestId) {
-    res.setHeader('X-Nai-Request-Id', job.requestId);
-  }
-  if (res.destroyed) {
-    return;
-  }
-  const deadline = Date.now() + openAiChatTimeoutMs;
-  if (job.stream) {
-    await streamOpenAiImageJob(req, res, job, job.model, deadline);
-    return;
-  }
-  const result = await waitForJobResult(job.id, deadline, res);
-  if (res.destroyed) {
-    return;
-  }
-  if (!result) {
-    throw httpError(504, 'direct generate timeout');
-  }
-  if (result.error) {
-    throw Object.assign(
-      httpError(
-        result.statusCode || (isTimeoutResultMessage(result.error) ? 504 : 500),
-        result.error,
-      ),
-      { cooldownUntil: result.cooldownUntil },
-    );
-  }
-  sendJson(
-    res,
-    200,
-    openAiChatCompletionResponse({
-      model: job.model,
-      content: openAiImageMarkdown(req, result.saved!),
-      id: `chatcmpl-${job.id}`,
-    }),
-  );
-}
-
-function openAiModelsResponse() {
-  return listOpenAiModels();
-}
-
-function parseOpenAiImageRequest(body: Body = {}, settings: Partial<Settings> = {}) {
-  const modelParts = parseOpenAiModel(
-    body.model || settings.defaultModel || 'nai-diffusion-4-5-full',
-  );
-  const messageText = lastUserMessageText(body.messages || []);
-  const fields = parseChinesePromptFields(messageText);
-  validateOpenAiPromptFormat(fields, messageText);
-  const nai: Body = body.nai && typeof body.nai === 'object' ? (body.nai as Body) : {};
-  const prompt = String(nai.tag || nai.prompt || fields.tag || '').trim();
-  const negative =
-    String(nai.negative ?? fields.negative ?? '').trim() || settings.defaultNegative || '';
-  const sizeName = String(nai.size ?? fields.size ?? settings.defaults?.size ?? '竖图').trim();
-  const tierSize = modelParts.tier?.sizes?.[sizeName];
-
-  const request: Body & { tag: string; model: string } = {
-    tag: prompt,
-    model: modelParts.model,
-    artist: nai.artist ?? fields.artist ?? settings.defaultArtist ?? '',
-    size: sizeName,
-    width: tierSize?.width ?? nai.width,
-    height: tierSize?.height ?? nai.height,
-    steps: openAiFixedSteps,
-    scale: nai.scale ?? fields.scale ?? settings.defaults?.scale,
-    cfg: nai.cfg ?? fields.cfg ?? settings.defaults?.cfg,
-    sampler: nai.sampler ?? fields.sampler ?? modelParts.sampler ?? settings.defaults?.sampler,
-    negative,
-    nocache: nai.nocache ?? body!.nocache ?? '1',
-    noise_schedule:
-      nai.noise_schedule ?? nai.noiseSchedule ?? settings.defaults?.noiseSchedule ?? 'karras',
-  };
-
-  return {
-    model: modelParts.original,
-    request,
-  };
-}
-
-function validateOpenAiPromptFormat(fields: Record<string, string>, messageText: string) {
-  const requiredFields = ['tag', 'size', 'scale', 'cfg'];
-  const missing = requiredFields.some((key) => !String(fields[key] ?? '').trim());
-  const optionalFieldsPresent =
-    Object.hasOwn(fields, 'artist') && Object.hasOwn(fields, 'negative');
-  if (missing || !optionalFieldsPresent) {
-    throw httpError(400, openAiPromptFormatError());
-  }
-}
-
-function openAiPromptFormatError() {
-  return '请求格式错误，请参考群内使用指南';
-}
-
-function parseOpenAiModel(modelValue: unknown) {
-  const original = String(modelValue || 'nai-diffusion-4-5-full');
-  const tierMatch = original.match(/^\[(2K|4K)\]\s*(.+)$/i);
-  const tierName = tierMatch ? tierMatch[1].toUpperCase() : '';
-  const modelWithSampler = tierMatch ? tierMatch[2] : original;
-  const [model, sampler] = modelWithSampler.split(':');
-  return {
-    original,
-    tierName,
-    tier: openAiSizeTiers[tierName] || null,
-    model: model || 'nai-diffusion-4-5-full',
-    sampler: sampler || '',
-  };
-}
-
-function lastUserMessageText(messages: unknown) {
-  const list: { role?: unknown; content?: unknown }[] = Array.isArray(messages) ? messages : [];
-  const message = [...list].reverse().find((item) => item?.role === 'user') || list.at(-1);
-  return messageContentText(message?.content || '');
-}
-
-function messageContentText(content: unknown) {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return String(content || '');
-  }
-  return content
-    .map((part: string | { type?: unknown; text?: unknown } | null) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-      if (part?.type === 'text') {
-        return part.text || '';
-      }
-      return part?.text || '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function parseChinesePromptFields(text: string) {
-  const fieldNames: Record<string, string> = {
-    提示词: 'tag',
-    畫師串: 'artist',
-    画师串: 'artist',
-    尺寸: 'size',
-    提示词引导值: 'scale',
-    提示詞引導值: 'scale',
-    缩放引导值: 'cfg',
-    縮放引導值: 'cfg',
-    负面提示词: 'negative',
-    負面提示詞: 'negative',
-    采样器: 'sampler',
-    採樣器: 'sampler',
-  };
-  const fields: Record<string, string> = {};
-  let currentKey = '';
-  for (const rawLine of String(text || '').split(/\r?\n/)) {
-    const line = rawLine.trimEnd();
-    const match = line.match(/^([^:：]{1,16})\s*[:：]\s*(.*)$/);
-    const key = match ? fieldNames[match[1].trim()] : '';
-    if (key) {
-      currentKey = key;
-      fields[currentKey] = appendFieldValue(fields[currentKey], match![2]);
-      continue;
-    }
-    if (currentKey && line.trim()) {
-      fields[currentKey] = appendFieldValue(fields[currentKey], line);
-    }
-  }
-  return fields;
-}
-
-function appendFieldValue(current: string, value: string) {
-  const text = String(value || '').trim();
-  if (!current) {
-    return text;
-  }
-  if (!text) {
-    return current;
-  }
-  return `${current}\n${text}`;
-}
-
 function streamOpenAiImageJob(
   req: GatewayRequest,
   res: GatewayResponse,
@@ -1493,35 +1307,6 @@ function openAiImageMarkdown(
 ) {
   const imageId = imageOrJob.imageId || imageOrJob.id;
   return `![image](${absoluteUrl(req, publicImageUrl(imageId!))})`;
-}
-
-function openAiChatCompletionResponse({
-  model,
-  content,
-  id,
-}: {
-  model: string;
-  content: string;
-  id: string;
-}) {
-  return {
-    id,
-    object: 'chat.completion',
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [
-      {
-        index: 0,
-        message: { role: 'assistant', content },
-        finish_reason: 'stop',
-      },
-    ],
-    usage: {
-      prompt_tokens: 1,
-      completion_tokens: 1,
-      total_tokens: 2,
-    },
-  };
 }
 
 function sendOpenAiStreamHeaders(res: GatewayResponse) {
@@ -2800,22 +2585,6 @@ function sendJson(res: GatewayResponse, statusCode: number, payload: unknown) {
   res.end(body);
 }
 
-function sendOpenAiError(
-  res: GatewayResponse,
-  statusCode: number,
-  message: string,
-  type = 'invalid_request_error',
-) {
-  sendJson(res, statusCode, {
-    error: {
-      message: publicErrorMessage(message),
-      type,
-      param: null,
-      code: type,
-    },
-  });
-}
-
 function sendImage(
   res: GatewayResponse,
   statusCode: number,
@@ -2943,32 +2712,10 @@ function corsHeaders() {
   };
 }
 
-function tokenFrom(req: GatewayRequest, url: URL) {
-  const header = req.headers.authorization || '';
-  if (header.startsWith('Bearer ')) {
-    return header.slice(7).trim();
-  }
-  return String(url.searchParams.get('token') || req.headers['x-user-token'] || '').trim();
-}
-
 function bearerToken(req: GatewayRequest) {
   const header = String(req.headers.authorization || '');
   const match = header.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : '';
-}
-
-function openAiErrorType(error: unknown) {
-  const statusCode = Number((error as GatewayError)?.statusCode || 500);
-  if (statusCode === 401 || statusCode === 403) {
-    return 'authentication_error';
-  }
-  if (statusCode === 429) {
-    return 'rate_limit_error';
-  }
-  if (statusCode >= 500) {
-    return 'server_error';
-  }
-  return 'invalid_request_error';
 }
 
 function isAdmin(req: GatewayRequest, url: URL) {

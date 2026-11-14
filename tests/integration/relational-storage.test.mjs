@@ -17,6 +17,7 @@ import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
+import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
@@ -109,6 +110,10 @@ test('固定实际 Git 完整 DDL 的旧关系事件 v3 原型的正确旧 hash 
   );
   assert.throws(
     () => createRelationalNativeHttp({ sqlite }),
+    /Unsupported relational database format/,
+  );
+  assert.throws(
+    () => createRelationalOpenAiHttp({ sqlite }),
     /Unsupported relational database format/,
   );
   assert.deepEqual(sqlite.serialize(), before);

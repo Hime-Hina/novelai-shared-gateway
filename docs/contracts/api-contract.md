@@ -255,6 +255,8 @@ OpenAI 非流式/SSE 与 direct 的 HTTP 等待期限只控制连接：direct �
 
 OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接等待者和定时器；普通 `GET /api/jobs/:id` 继续回显完整提示词。direct 明确缓存命中仍返回 `x-cache: hit`，不会为了重建连接重新生成已有结果。
 
+OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓存等价规则，支持完成产物复用与活动任务合并。模型目录保留 Bearer、query `token` 和 `x-user-token` 的原 Key 来源与优先序；POST 生图仍仅接受 Bearer Key。原中央入口已经认证的管理员可读目录，此只读权限不授予生图写入能力。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界

@@ -188,7 +188,32 @@ export function createJobDelivery(deps: {
       return null;
     },
   });
-  async function streamOpenAiImageJob(
+  const streamOpenAiImageJob = createOpenAiJobStream<PublicJob>({ ...deps, waitForJobResult });
+  return { waiters, waitForJobResult, notifyJobWaiters, streamOpenAiImageJob };
+}
+
+export function createOpenAiJobStream<
+  Snapshot extends {
+    status?: string;
+    queuePosition?: number;
+    queuedCount?: number;
+    error?: string | null;
+    imageId?: string | null;
+  },
+>(deps: {
+  snapshot(jobId: string): Promise<Snapshot | null>;
+  sendStreamHeaders(res: Response): void;
+  imageMarkdown(job: Snapshot): string;
+  waitForJobResult(
+    jobId: string,
+    deadline: number,
+    response?: Response,
+  ): Promise<GenerationDeliveryResult | null>;
+  pollMs?: number;
+  now?(): number;
+}) {
+  const now = deps.now ?? Date.now;
+  return async function streamOpenAiImageJob(
     res: Response,
     job: { id: string },
     model: string,
@@ -200,7 +225,7 @@ export function createJobDelivery(deps: {
     writeOpenAiChunk(res, { id, model, content: '<think>\n任务已提交，正在进入队列\n' });
     let lastLine = '',
       reachedRunning = false;
-    while (!res.destroyed && Date.now() < deadline) {
+    while (!res.destroyed && now() < deadline) {
       const snapshot = await deps.snapshot(job.id);
       if (res.destroyed) {
         return;
@@ -242,15 +267,14 @@ export function createJobDelivery(deps: {
         finishOpenAiStream(res, id, model);
         return;
       }
-      await waitForJobResult(job.id, Math.min(deadline, Date.now() + (deps.pollMs ?? 650)), res);
+      await deps.waitForJobResult(job.id, Math.min(deadline, now() + (deps.pollMs ?? 650)), res);
     }
     if (res.destroyed) {
       return;
     }
     writeOpenAiChunk(res, { id, model, content: '连接超时\n</think>\n连接超时\n' });
     finishOpenAiStream(res, id, model);
-  }
-  return { waiters, waitForJobResult, notifyJobWaiters, streamOpenAiImageJob };
+  };
 }
 
 export function writeOpenAiChunk(
