@@ -577,7 +577,20 @@ sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 将投入运行的恢复目录，否则后续原地修改会污染备份。备份权限与原数据目录的服务用户
 权限不同，正式恢复前须重新设置 `nai-gateway` 的归属与访问权限。
 
-执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
+新关系候选的实际 sole 在成功监听并激活队列后，复用同一 R2/PikPak 客户端启动一个复制 timer：
+首轮 60 秒，一轮最多一个候选；真正新增上传/验证事实后 1 秒再试，否则 60 秒。
+当前 queue 必须 running、真实 physical Map 为空、SQL 无 queued/pending/running 或未发布 prepared 责任，
+且每次原 IO 票据的前后复核仍须当前 ready。关闭取消 timer，等待真正在途 IO 后才关闭数据库。
+仅为 PNG/JPEG/WebP 沿用 Local 超过 24 小时、R2 原 verifiedAt 超过七天或本站水位、失败一小时重试；
+BIN 不新增期限。本站水位只按当前目标的 identity 登记/预留物理 key 去重，
+不是整个云账户用量，也不把未知 gzip/br 物理长度当原图长度。
+
+新候选目前只复制和验证，**保留全部 Local/R2 来源**；PikPak 上传后不新增删除前 GET 或伪 verified。
+Opening Local 没有原 mock 标记时不自动复制，失败尝试时刻未知时不以开账时间代替；
+已知原 verifiedAt、无 error 且原定位受当前 reader 支持的 R2 可以复制到 PikPak。
+历史来源覆盖、源释放与容量回收仍须归档/备份引用权威和独立验收，此片没有生产部署或真实云端验收。
+
+既有旧执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
 使用 Standard 私有桶，凭据仅授予该桶对象读写；不启用公开访问。空闲时逐张处理生成超过
 24 小时的 PNG/JPEG/WebP，跳过 mock、活动及待恢复结果。先持久预留容量，条件 PUT 后
 GET 回读验证完整字节及 SHA-256，再持久化 R2 凭据，最后移除本地副本；失败保留副本并

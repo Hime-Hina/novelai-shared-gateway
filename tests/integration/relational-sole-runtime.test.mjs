@@ -13,6 +13,8 @@ import { bootstrap } from '../../scripts/bootstrap.mjs';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
+import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { createRelationalNativeAdmission } from '../../server/generation/relational-native-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
 import { describeStoredResult } from '../../server/storage/result-files.ts';
@@ -21,6 +23,9 @@ import {
   meta,
   commandOnlyRuntime,
   databaseState,
+  fixture as generationFixture,
+  installReady,
+  NOW,
 } from '../helpers/relational-generation.mjs';
 import { authenticateMemberApiKey } from '../../server/members/authentication.ts';
 
@@ -302,6 +307,304 @@ async function acceptQueued(f) {
   });
   return { db, generations, result };
 }
+
+async function replicaSource(t, { pause = true } = {}) {
+  const children = [];
+  t.after(async () => {
+    for (const state of children) {
+      if (!state.exit) {
+        state.child.kill('SIGKILL');
+        await state.finished;
+      }
+    }
+  });
+  const f = await generationFixture(t);
+  await f.accept('cold-runtime');
+  f.dispatch('cold-runtime-0');
+  await f.publish('cold-runtime-0');
+  if (pause) {
+    f.db.transaction(() =>
+      new RelationalAccountStore(
+        f.db,
+        new RelationalQuotaStore(f.db),
+        new Map(),
+      ).prepareAccountCommand(
+        { ...meta('pause-cold-runtime', NOW + 10), actorKind: 'admin' },
+        { kind: 'pause', accountId: 'a' },
+        null,
+      ),
+    )();
+  }
+  await installReady(f);
+  f.db.close();
+  return {
+    ...f,
+    dataDir: f.dir,
+    filename: path.join(f.dir, 'library.sqlite'),
+    children,
+    env: {
+      DATA_DIR: f.dir,
+      ADMIN_TOKEN: randomUUID() + randomUUID(),
+      R2_ACCOUNT_ID: 'a'.repeat(32),
+      R2_BUCKET: 'runtime-replicas',
+      R2_ACCESS_KEY_ID: 'synthetic-access',
+      R2_SECRET_ACCESS_KEY: 'synthetic-secret',
+    },
+  };
+}
+function replicaClockHook(f, hold = false, ignoreGenerationAbort = false) {
+  return `
+    import {mock} from 'node:test';
+    import Database from ${JSON.stringify(databaseModule)};
+    import {getPatcher} from ${JSON.stringify(import.meta.resolve('webdav'))};
+    mock.timers.enable({apis:['setTimeout','Date'],now:${NOW + 2 * 86400000}});
+    let release; const objects=new Map();
+    process.on('message',message=>{
+      if(message?.tick){mock.timers.tick(message.tick);process.send?.({tick:message.tick});}
+      if(message==='release-replica')release?.();
+    });
+    const originalClose=Database.prototype.close;
+    Database.prototype.close=function(...args){
+      const main=this.name===${JSON.stringify(f.filename)};const result=originalClose.apply(this,args);
+      if(main)process.send?.({replica:'dbclosed'});return result;
+    };
+    const actualFetch=globalThis.fetch;
+    getPatcher().patch('fetch',(...args)=>globalThis.fetch(...args));
+    globalThis.fetch=async(address,options)=>{
+      const url=new URL(address);
+      if(url.hostname==='127.0.0.1')return actualFetch(address,
+        ${ignoreGenerationAbort ? "url.pathname.includes('generate')?{...options,signal:undefined}:options" : 'options'});
+      const cold=url.hostname==='dav.pikpak.test';
+      if(!cold&&!url.hostname.endsWith('.r2.cloudflarestorage.com'))throw Error('Unexpected external endpoint');
+      process.send?.({replica:(cold?'pikpak:':'')+options.method});
+      if(options.method==='PUT'){
+        objects.set(url.href,Buffer.from(options.body));
+        if(${hold})await new Promise(resolve=>release=resolve);
+        return new Response(null,{status:204});
+      }
+      if(options.method!=='GET')throw Error('No source deletion');
+      const bytes=objects.get(url.href);return new Response(bytes,{headers:{'content-length':String(bytes.length)}});
+    };
+  `;
+}
+function replicaMessages(server) {
+  const messages = [];
+  server.child.on('message', (message) => messages.push(message));
+  return messages;
+}
+
+test('复制timer只在真实listen后60s启动，进展后1s收敛且保留所有源', async (t) => {
+  const f = await replicaSource(t),
+    server = await launch(t, f, {
+      hook: replicaClockHook(f),
+      env: {
+        PIKPAK_WEBDAV_URL: 'https://dav.pikpak.test/archive/',
+        PIKPAK_WEBDAV_USERNAME: 'synthetic-user',
+        PIKPAK_WEBDAV_PASSWORD: 'synthetic-password',
+      },
+    }),
+    messages = replicaMessages(server);
+  await server.ready();
+  assert.equal(
+    messages.some((m) => m.replica === 'PUT'),
+    false,
+  );
+  server.child.send({ tick: 59999 });
+  await waitFor(() => messages.some((m) => m.tick === 59999));
+  assert.equal(
+    messages.some((m) => m.replica === 'PUT'),
+    false,
+  );
+  server.child.send({ tick: 1 });
+  await waitFor(
+    () =>
+      query(
+        f,
+        "SELECT COUNT(*) n FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='r2' AND r.verified_at IS NOT NULL",
+      )[0].n === 1,
+  );
+  assert.deepEqual(
+    messages.filter((m) => ['PUT', 'GET'].includes(m.replica)).map((m) => m.replica),
+    ['PUT', 'GET'],
+  );
+  server.child.send({ tick: 1000 });
+  await waitFor(() => messages.some((m) => m.tick === 1000));
+  assert.equal(messages.filter((m) => m.replica === 'PUT').length, 1);
+  server.child.send({ tick: 7 * 86400000 + 1 });
+  await waitFor(
+    () =>
+      query(
+        f,
+        "SELECT COUNT(*) n FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='pikpak' AND r.uploaded_at IS NOT NULL AND r.verified_at IS NULL",
+      )[0].n === 1,
+  );
+  assert.equal(messages.filter((m) => m.replica === 'pikpak:PUT').length, 1);
+  assert.equal(
+    messages.some((m) => m.replica === 'pikpak:GET'),
+    false,
+    'Pik upload policy does not add a pre-deletion GET',
+  );
+  assert.equal(
+    query(f, 'SELECT COUNT(*) n FROM artifact_replicas WHERE deleted_at IS NOT NULL')[0].n,
+    0,
+  );
+  assert.deepEqual(await readFile(path.join(f.dir, 'images/artifact-cold-runtime-0.webp')), image);
+  await server.stop();
+  assert.ok(messages.some((m) => m.replica === 'dbclosed'));
+});
+
+test('真实EADDR拒绝时没有复制目标预留或云IO', async (t) => {
+  const f = await replicaSource(t);
+  const taken = createServer();
+  taken.listen(0, '127.0.0.1');
+  await once(taken, 'listening');
+  t.after(() => new Promise((resolve) => taken.close(resolve)));
+  const rejected = await launch(t, f, { port: taken.address().port, hook: replicaClockHook(f) }),
+    rejectedMessages = replicaMessages(rejected);
+  await rejected.finished;
+  assert.notEqual(rejected.exit.code, 0);
+  assert.match(rejected.stderr, /EADDRINUSE/);
+  assert.equal(
+    rejectedMessages.some((m) => m.replica === 'PUT'),
+    false,
+  );
+  assert.equal(query(f, "SELECT COUNT(*) n FROM storage_targets WHERE kind='r2'")[0].n, 0);
+});
+
+test('shutdown等待实际复制IO后才关闭主库，不fake确认或释放来源', async (t) => {
+  const f = await replicaSource(t),
+    server = await launch(t, f, { hook: replicaClockHook(f, true) }),
+    messages = replicaMessages(server);
+  await server.ready();
+  server.child.send({ tick: 60000 });
+  await waitFor(() => messages.some((m) => m.replica === 'PUT'));
+  server.child.send('shutdown');
+  await waitFor(() => server.stdout.includes('SIGTERM received'));
+  await delay(50);
+  assert.equal(server.exit, null);
+  assert.equal(
+    messages.some((m) => m.replica === 'dbclosed'),
+    false,
+  );
+  server.child.send('release-replica');
+  await server.finished;
+  assert.equal(server.exit.code, 0, server.stderr);
+  assert.ok(messages.some((m) => m.replica === 'dbclosed'));
+  assert.equal(messages.filter((m) => m.replica === 'PUT').length, 1);
+  assert.equal(
+    query(
+      f,
+      "SELECT COUNT(*) n FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='r2' AND r.uploaded_at IS NOT NULL",
+    )[0].n,
+    0,
+  );
+  assert.deepEqual(await readFile(path.join(f.dir, 'images/artifact-cold-runtime-0.webp')), image);
+});
+
+test('复制IO期间ready撤销拒绝确认，实际Local来源保持且不输出私有错误', async (t) => {
+  const f = await replicaSource(t),
+    server = await launch(t, f, { hook: replicaClockHook(f, true) }),
+    messages = replicaMessages(server);
+  await server.ready();
+  server.child.send({ tick: 60000 });
+  await waitFor(() => messages.some((m) => m.replica === 'PUT'));
+  const fault = new Database(f.filename);
+  fault.prepare("UPDATE projection_state SET status='building'").run();
+  fault.close();
+  assert.equal(query(f, 'SELECT status FROM projection_state')[0].status, 'building');
+  server.child.send('release-replica');
+  await waitFor(() => server.stderr.includes('Replica copy or verification failed.'));
+  assert.equal(
+    query(
+      f,
+      "SELECT COUNT(*) n FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id WHERE s.kind='r2' AND r.uploaded_at IS NOT NULL",
+    )[0].n,
+    0,
+  );
+  assert.deepEqual(await readFile(path.join(f.dir, 'images/artifact-cold-runtime-0.webp')), image);
+  assert.equal(server.stderr.includes('synthetic-secret'), false);
+  await server.stop();
+});
+
+test('真实Native逻辑失败后physical仍活时不复制，关闭等原raw结束且不fake释放', async (t) => {
+  const f = await fresh(t);
+  f.upstream = await upstream(t);
+  let server = await (await launch(t, f)).ready();
+  await enable(f, server);
+  const original = await call(server, '/ai/generate-image', {
+    token: f.credentials.accounts[0].api_key,
+    body: nativeInput(),
+  });
+  assert.equal(original.status, 200);
+  await server.stop();
+  const source = query(f, 'SELECT id FROM artifacts')[0].id;
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  f.upstream.hold = (req) => (req.url === '/user/data' ? undefined : gate);
+  t.after(() => release());
+  server = await launch(t, f, {
+    env: {
+      R2_ACCOUNT_ID: 'a'.repeat(32),
+      R2_BUCKET: 'runtime-replicas',
+      R2_ACCESS_KEY_ID: 'synthetic-access',
+      R2_SECRET_ACCESS_KEY: 'synthetic-secret',
+      NOVELAI_GENERATE_TIMEOUT_MS: '1000',
+    },
+    hook: replicaClockHook(f, false, true),
+  });
+  const messages = replicaMessages(server);
+  await server.ready();
+  await waitFor(() => query(f, 'SELECT MAX(observed_at) n FROM account_quota_state')[0].n >= NOW);
+  const body = nativeInput();
+  body.parameters.seed++;
+  const pending = call(server, '/ai/generate-image', {
+    token: f.credentials.accounts[0].api_key,
+    body,
+  });
+  await waitFor(
+    () => query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='queued'")[0].n === 1,
+  );
+  server.child.send({ tick: 1 });
+  await waitFor(() => f.upstream.generation === 2 && f.upstream.active === 1);
+  // Native physical timeout uses the mock setTimeout clock; the actual localhost request deliberately ignores abort.
+  server.child.send({ tick: 1001 });
+  await waitFor(
+    () => query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='failed'")[0].n === 1,
+  );
+  const failed = await pending;
+  assert.equal(failed.status, 504);
+  assert.equal(
+    f.upstream.active,
+    1,
+    'the physical localhost request must still be held after logical failure',
+  );
+  assert.equal(
+    query(
+      f,
+      "SELECT COUNT(*) n FROM generation_jobs WHERE status IN ('queued','pending','running')",
+    )[0].n,
+    0,
+  );
+  assert.equal((await call(server, '/api/health')).status, 200);
+  server.child.send({ tick: 60000 });
+  await waitFor(() => messages.some((m) => m.tick === 60000));
+  assert.equal(
+    messages.some((m) => m.replica === 'PUT'),
+    false,
+    'actual physical-only occupancy must block archive IO',
+  );
+  assert.equal(query(f, "SELECT COUNT(*) n FROM storage_targets WHERE kind='r2'")[0].n, 0);
+  server.child.send('shutdown');
+  await waitFor(() => server.stdout.includes('SIGTERM received'));
+  await delay(50);
+  assert.equal(server.exit, null);
+  release();
+  await server.finished;
+  assert.equal(server.exit.code, 0, server.stderr);
+  assert.ok(messages.some((m) => m.replica === 'dbclosed'));
+  assert.equal(f.upstream.generation, 2);
+  assert.deepEqual(await readFile(path.join(f.dataDir, 'images', source + '.webp')), image);
+});
 async function leaveRecoveryFiles(t, f, kind) {
   const code = `
     import Database from 'better-sqlite3';

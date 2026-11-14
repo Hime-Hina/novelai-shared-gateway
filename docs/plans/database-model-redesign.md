@@ -2109,6 +2109,22 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 根在新 sole/正常包并集 `de809e2` 上整合，七条产品/测试/helper 路径逐字等于固定 059，计划保留双方完整追加块，证明 `H:/TEMP/novelai-child-http-root-preservation.json`。两个真实 child 与 Direct/OpenAI 四文件串行同次 **55/55、零跳过，101.859 秒**；类型、architecture、可信实际 main `88d2c26` migration 与变更格式通过，日志 `H:/TEMP/novelai-child-http-root-{joint,type,static}.log`。旧工具源码/两行接线保持作者实际打包 22 项的字节，未重跑不变的 187 秒套件。此后继没有自己的完整后端、编译双 runtime、实际新正常发布物/CI，不借旧 b427/b2 结论；其余原 child/Nuxt/Docker 与账户闭包修复、查询、迁移和最终同版本验收继续接续。
 
+### 9.87 云复制和验证的实际装配，保留全部来源
+
+本片基于已审 `de52e2a`，只在 ReplicaStore 增加返回至多一项的当前 due 查询、GenStore 的 SQL `EXISTS` 活动/未发布 prepared 窄读，以及 sole 成功 listen→ready 复核→queue.activate 后的一份 timer。ReplicaIO 的原 `copyRelationalArtifactReplica()` / `verifyRelationalArtifactReplica()` 逐字复用：Local→R2 PUT、真实 GET 后 verified；R2 verified→PikPak br PUT 后 uploaded，不新增预删除 GET。没有新 fact/DDL/版本、持久队列、计数缓存、配置开关或旧在线模式，也没有 Local unlink、R2 DELETE 或 PikPak 删除。
+
+原政策仍为 PNG/JPEG/WebP Local 超过 24h、R2 原 verifiedAt 超过 7d 或原 `8,550,000,000 B` 本站水位、失败 1h 重试。首轮 60s；原目的 sourceEventId 真正变化才视为进展并 1s 后再试，无候选/错误 60s；R2 uploaded 未 verified 走原 verify，Pik uploaded 不被当成仍需复制的成功回执。水位只按当前 R2 target 的未 deleted identity 登记/预留、物理 objectKey 去重，以原字节长度计；不冒称全云容量，不用未知 gzip/br 原图长度代替物理压缩长度，也不缓存或新增派生持久量。聚合扫描当前登记表，尚无同规模成本验收。
+
+水位反例用真实 Opening owner 登记的合成元数据：128 个 64MiB 引用但只有 127 个物理 key 时未过水位，再加第 128 个不同 key 才触发。没有生成/上传 8.55GB 字节，也没有测量真实端点容量或性能；Opening 角色枚举同样是数据库选择验证，不冒称这些元数据夹具已经通过实际对象 ready 核验。
+
+全局 idle 复用当前 queue phase、同一实际 controls Map 和 Gen SQL queued/pending/running/未发布 prepared 责任，每轮及原票据复核检查当前 ready。云/文件 IO 始终在 SQL 外；原凭据、namespace、来源、当前空闲和尾 SQL 回滚守卫保留。停止先清 timer，queue 进入 stopping 后不发新复制，等待真正 inflight promise，再结束 HTTP 和关闭主 SQLite；不 fake cancel、提前清 Map 或延长 grace。错误只记录固定安全类别，不输出对象、凭据或异常参数。
+
+来源限制明确保留：OpeningArtifact 没有原 mock 标记，自动 Local 24h 复制仅选真 ArtifactPublished；OpeningReplica 的未知失败时刻不从导入 header 推出一小时重试。Opening 已知原 verifiedAt、无 error 且当前 owner 支持原定位的 R2 可按原时刻复制到 PikPak；任意旧定位/gzip 不猜成规范路径，BIN 不增加期限。这些缺口需要迁移原证据，不能称已完成全部历史冷热闭环。更不以当前零引用判断孤儿；源释放继续等待归档/备份引用权威，本片没有关闭容量回收任务。
+
+新增检查复用真 owner/完整提交与唯一 installer：due 的 24h/7d/1h、R2 已 uploaded 只重 GET、Pik 旧回执不空转、当前 namespace/同物理对象去重水位、Opening 已知/未知来源；SQL pending 和失败后 prepared 责任未完成前保持 busy。真实 sole 子进程以 Node 原生测试时钟推进原 timer，验证 listen 前零复制、EADDR 零预留、60s→R2 PUT/GET→7d Pik PUT 且不 GET/不删源、held PUT 中 ready 撤销不确认、shutdown 等实际 IO 和主 DB.close。真实 Native localhost 请求在逻辑 504 后仍由未完成 raw promise 占用 physical Map（SQL active=0、health=200），复制不得开始，关闭继续等待原物理请求。测试只替换云 HTTP transport、时钟和观测主 DB.close；没有生产测试配置或常量 running lifecycle。原副本配置/来源变更、尾 SQL 外 catch 回滚、完整公共回放零网络/不复活私有认证用例一同运行。作者最终计数、负控与独审证据另记；未跑 full/build/compiled/native 安装/实云/生产，不沿用父候选发布验收。
+
+作者最终副本 owner **24/24、零 skip，8.328s**（`H:/TEMP/novelai-replica-scheduler-owner-final.log`）；sole 新五项和原实际大响应/晚领取/raw关闭重启联合 **12/12、零 skip，38.574s**（`H:/TEMP/novelai-replica-scheduler-sole-target.log`）。隔离副本分别移除 physical Map 守卫、关闭的 inflight await、物理 key 去重：精准在已到场的原业务断言失败（错误预留 R2、held IO 时已 exit0、未过水位却选择 Pik），恢复原字节同三例 **3/3**。原 `de52e2a` gateway 同一真实监听正向因没有调度而无法产生 R2 确认，业务反例失败；原源没有改动。负证据及原 SHA 在 `H:/TEMP/novelai-replica-scheduler-negative-20261115/`。早期新夹具中的 system/admin、缺 DATA_DIR、错误列名和 100ms 未达到原 1000ms timeout 下限等设置错误不作业务红例，最终均先断言真实 listener、SQL/raw 占用再验保护。backend 类型、architecture、默认/可信 `88d2c26` migration、局部 Prettier/diff 全过；没有改架构守卫、旧 SQL/journal 或关键既有断言。独立审查仍需绑定最终固定提交。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
