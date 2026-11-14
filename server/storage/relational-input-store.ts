@@ -776,16 +776,7 @@ export class RelationalInputStore {
     if (!request) {
       fail(404, 'request_not_found', '请求不存在。');
     }
-    const registered = this.registeredFact(`request:${requestId}`, [
-      'RequestAccepted',
-      'OpeningRequestRecorded',
-    ]);
-    if (
-      registered.eventType !== 'RequestAccepted' &&
-      registered.eventType !== 'OpeningRequestRecorded'
-    ) {
-      unavailable();
-    }
+    const registered = readRelationalRequestOrigin(this.sqlite, requestId);
     const expected = registered.payload;
     if (
       expected.requestId !== request.id ||
@@ -795,7 +786,7 @@ export class RelationalInputStore {
       expected.operation !== request.operation ||
       expected.source !== request.source ||
       (registered.eventType === 'RequestAccepted'
-        ? this.requestAcceptedAt(requestId)
+        ? registered.occurredAt
         : registered.payload.acceptedAt) !== request.accepted_at ||
       expected.model !== request.model ||
       expected.sampleCount !== request.sample_count ||
@@ -805,10 +796,6 @@ export class RelationalInputStore {
       unavailable();
     }
     return request;
-  }
-
-  private requestAcceptedAt(requestId: string) {
-    return readRelationalRequestOrigin(this.sqlite, requestId).occurredAt;
   }
 
   // 原parent身份只由唯一原接受事实证明；当前FK容器/时间/ID形状都不能代替它。

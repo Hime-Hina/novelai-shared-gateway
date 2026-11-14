@@ -2486,3 +2486,5 @@ OpeningRequest 新增 required nullable `originalRequestId`，只存原事实，
 #### 9.98.1 核心 owner 与可运行反例
 
 事实解析与唯一 DDL 保存真实未知；InputStore 维护原 parent/定义/seed 来源；GenerationStore 在活动和执行入口共用已知执行条件。新增 `relational-opening-precision.test.mjs` 直接从独立原行形状断言缺失字段，覆盖 NULL/0 投影、parentless 授权隔离、公共原序回放无网络或私有认证、第二 owner SQL 故障的外层捕获回滚/健康重试/重复，以及实际旧 DDL 正确 hash 零写拒绝。五个既有合成 Opening fixture 仅显式声明其本来已知的原 parent，不给产品 parser 默认填值。静态技术点和实际运行证据分别记录；这些测试当前未运行，未标 PASS。
+
+静态读组复核指出首检查点 `603df1c` 的 request 投影核对仍经旧 registeredFact 扫描整个公共 request stream。后继改为复用唯一原接受角色 helper，保留原字段 compare，新增禁止整 stream 展开的薄读断言；不复制 source 规则或读取正文。此为同一未验收片的静态修正，不把旧检查点称为薄读验收通过。

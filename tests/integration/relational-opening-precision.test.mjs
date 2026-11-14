@@ -272,6 +272,12 @@ test('已知原parent只返回其证明；0和已知历史操作仍原值，薄�
     false,
   );
   assert.equal(
+    queries.some((sql) =>
+      /SELECT event_type,payload FROM domain_events WHERE stream_id=\?/i.test(sql),
+    ),
+    false,
+  );
+  assert.equal(
     f.db
       .prepare("SELECT accepted_at FROM generation_requests WHERE id='structural-container'")
       .get().accepted_at,
