@@ -2249,6 +2249,8 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 第二轮 63.512 秒在原图路径断言短路：新 replica.object_key 是文件名，不是旧 image.file 的完整相对路径。产品角色没有矛盾；夹具改从实际 ReplicaStore 的原发布来源读取只读 Local descriptor/ticket，继续核原 images 边界、MIME、SHA 和长度，不复制 namespace 或文件名算法。两轮失败源码/SHA/日志均单独保留，不累加为通过。后继普通合入固定 root `5ca121f`，消费已审 fair/Note/9.85 和当前权威私有列来源；相对该并集仍只有此测试与两份文档，产品、共享 helper 和历史 SQL 字节不改。
 
+第三轮 65.073 秒已到达完整公共/私有及真实 Local 的唯一 ready 验证，随后新增的“原库 sidecar 必须不存在”夹具条件失败。同 Node/ABI 的最小 SQLite 探针确认：writer 关闭清除 WAL 后，readonly 打开原 WAL header 并 backup、关闭仍会留下 WAL/SHM。修正只在所有 child/数据库已关闭后，将原库与存在的 sidecar 整组归档到原临时目录同前缀，只有确实不存在的文件允许缺席；其他错误继续拒绝，不删除旧 WAL、手改业务或让重建库套用旧 WAL。这仍是夹具生命周期错误，原红及探针各自保留，不标产品问题或整体通过。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

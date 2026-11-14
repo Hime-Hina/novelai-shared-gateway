@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { readFile, rename, access } from 'node:fs/promises';
+import { readFile, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -678,10 +678,18 @@ test(
       source.close();
     }
     assert.equal(replayFetches, 0);
+    // readonly 打开 WAL header 也会留下 sidecar；关闭所有句柄后归档完整原文件组。
+    const archivedDatabase = path.join(fixture.directory, 'before-reopen.sqlite');
+    await rename(fixture.filename, archivedDatabase);
     for (const suffix of ['-wal', '-shm', '-journal']) {
-      await assert.rejects(access(fixture.filename + suffix), { code: 'ENOENT' });
+      try {
+        await rename(fixture.filename + suffix, archivedDatabase + suffix);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          throw error;
+        }
+      }
     }
-    await rename(fixture.filename, path.join(fixture.directory, 'before-reopen.sqlite'));
     await rename(rebuiltPath, fixture.filename);
     const restoredCut = factCounts();
     await start();
