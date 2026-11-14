@@ -337,8 +337,7 @@ CREATE TABLE generation_attempts (
       AND prepared_byte_length IS NULL AND prepared_sha256 IS NULL)
     OR (prepared_artifact_id IS NOT NULL AND prepared_file IS NOT NULL AND prepared_mime_type IS NOT NULL
       AND prepared_byte_length IS NOT NULL AND prepared_sha256 IS NOT NULL)),
-  CHECK (review_status IS NULL OR
-    (first_unknown_at IS NOT NULL AND review_deadline_at IS NOT NULL AND loss_event_id IS NOT NULL)),
+  CHECK (review_status IS NULL OR loss_event_id IS NOT NULL),
   UNIQUE (id, job_id, account_id)
 ) STRICT;
 CREATE INDEX idx_attempts_review ON generation_attempts(review_deadline_at)

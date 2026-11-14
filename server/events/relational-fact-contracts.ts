@@ -693,12 +693,17 @@ export const relationalPayloadParsers = {
     candidateMode: choices('known', 'alternatives', 'unknown'),
     upstreamCandidates: list(candidate),
     actualConsumption: nullable(resources),
+    lossCoverageRemaining: fields({
+      v5: nullable(nonnegative),
+      anlasFixed: nullable(nonnegative),
+      anlasPurchased: nullable(nonnegative),
+    }),
     reviewStatus: nullable(choices('pending', 'estimated_closed', 'result_recovered')),
     firstUnknownAt: nullable(integer),
     reviewDeadlineAt: nullable(integer),
     reviewClosedAt: nullable(integer),
-    lossEventId: nullable(id),
-    closureEventId: nullable(id),
+    originalLossEventId: nullable(id),
+    originalClosureEventId: nullable(id),
     preparedArtifactId: nullable(id),
     preparedFile: nullable(id),
     preparedMimeType: nullable(id),
@@ -990,8 +995,11 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     ].map((key) => row[key]);
     if (
       (prepared.some((entry) => entry !== null) && prepared.some((entry) => entry === null)) ||
-      (row.reviewStatus !== null &&
-        (row.firstUnknownAt === null || row.reviewDeadlineAt === null || row.lossEventId === null))
+      (row.reviewStatus === 'pending' &&
+        (row.reviewClosedAt !== null || row.originalClosureEventId !== null)) ||
+      (row.firstUnknownAt !== null &&
+        row.reviewDeadlineAt !== null &&
+        (row.reviewDeadlineAt as number) < (row.firstUnknownAt as number))
     ) {
       invalid();
     }

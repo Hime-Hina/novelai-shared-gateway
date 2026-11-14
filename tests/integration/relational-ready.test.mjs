@@ -286,57 +286,40 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
       const f = await completed(t);
       if (kind === 'unsupported') {
         const { policyVersion, pricingVersion, ...command } = meta('unknown-owner', NOW + 20);
+        const replica = f.db
+          .prepare(
+            `SELECT artifact_id AS artifactId,storage_target_id AS storageTargetId,
+          object_key AS objectKey,encoding,uploaded_at AS uploadedAt,verified_at AS verifiedAt,
+          deleted_at AS deletedAt,last_error_code AS lastErrorCode FROM artifact_replicas LIMIT 1`,
+          )
+          .get();
+        const streamId = `artifact:${replica.artifactId}`;
         f.db.transaction(() =>
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'request:complete': f.db
+              [streamId]: f.db
                 .prepare(
                   'SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id=?',
                 )
-                .get('request:complete').v,
+                .get(streamId).v,
             },
             receipt: { opening: true },
             events: [
               {
-                // 合法原尝试仍缺 owner；已完成幂等不能继续充当缺口占位。
-                eventType: 'OpeningAttemptRecorded',
-                streamId: 'request:complete',
+                // Replica 是当前真实剩余 owner；不再以已完成 Attempt 充当缺口占位。
+                eventType: 'OpeningReplicaRecorded',
+                streamId,
                 memberId: 'm1',
-                accountId: 'a',
+                accountId: null,
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
                 payload: {
-                  attemptId: 'unsupported-original-attempt',
-                  jobId: 'complete-0',
-                  accountId: 'a',
-                  credentialEpoch: null,
-                  authorizedAt: null,
-                  response: {
-                    dispatchState: 'unknown',
-                    upstreamStartedAt: null,
-                    upstreamHeadersAt: null,
-                    upstreamCompletedAt: null,
-                    upstreamHttpStatus: null,
-                  },
-                  candidateMode: 'unknown',
-                  upstreamCandidates: [],
-                  actualConsumption: null,
-                  reviewStatus: null,
-                  firstUnknownAt: null,
-                  reviewDeadlineAt: null,
-                  reviewClosedAt: null,
-                  lossEventId: null,
-                  closureEventId: null,
-                  preparedArtifactId: null,
-                  preparedFile: null,
-                  preparedMimeType: null,
-                  preparedByteLength: null,
-                  preparedSha256: null,
+                  ...replica,
                   origin: {
                     sourceId: 'synthetic-opening',
-                    originalId: 'unsupported-original-attempt',
+                    originalId: 'unsupported-original-replica',
                   },
                 },
               },

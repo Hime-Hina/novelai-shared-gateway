@@ -1531,6 +1531,20 @@ OpeningIdempotency 的 `commitSeq` 只指新时间线中真正的原在线提交
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
 
+OpeningAttempt 的同轮 v6 契约将原来源与当前状态锚分开：`originalLossEventId` / `originalClosureEventId` 是 required nullable 的原归档不透明身份，不借新库同号事件背书。已知核对状态的 local loss/closure FK 指本次真实 OpeningAttempt cut 事实；它证明导入时状态，不冒充过去的 ReviewOpened/ReviewClosed。消费时核原 attempt/job/request/member/account、来源登记和对应角色。原日期未知保留 NULL，不能用 import 时间补值；无已知 deadline 不自动结案，pending 不能带已知结案时间/身份。原 pending、estimated_closed、result_recovered 不改成新的 unknown 状态。
+
+`actualConsumption` 仍只表示原已知上游消费。新增 required `lossCoverageRemaining`，三个资源各为规范非负金额或 NULL：已知零保存 `"0"`，未知不能从原成本、报价、本地预扣或全局差额分摊。该字段只保留 cut primary，不增加钱包、独立可变预算或 OperatingLossCovered 资格；尝试风险与聚合差额继续非叠加。ReviewClosed 的 NULL 表示没有新增消费证据，不能擦除已知成本；不具明确更正事实的非 NULL 冲突拒绝。
+
+live running 开账须同一原完整提交中唯一 Job → Attempt → Charge，原序和成员/请求/账户/尝试/原资源及真实 live reserved 责任全部闭合；导入本身不执行预扣、退款或结算。OpeningCharge 的新 reservation/terminal 锚只能是它自己的真实 snapshot，原旧身份由 origin/archive 保留。缺失来源只保留归档证据，不能补当前凭据、成本或虚假普通事实。后续中断退款、prepared 实际 Local 字节恢复和核对调整继续调用现 Gen owner，执行元数据/descriptor 只增加对真实 Opening snapshot 的窄来源识别。未知候选与已证明免费空候选分开，退款后保留未知责任；可能已发送的 paid running 若声称已知空候选却没有免费证明，拒绝该 live 角色，不补造报价；已知 epoch 的凭据响应副作用还须原授权证明及当前 exact epoch，回放不恢复私有 auth/PST、不发网络。
+
+本片验收覆盖已知/未知日期和金额、两项各 100/全局 150 不推逐笔预算、原序/错序/跨对象闭包、错误被外层 catch 后全表/事实/回执/游标回滚、合法重试及重复零写、完整回放零 fetch/私有认证、合法 ready 重开一次退款和真实 prepared 字节恢复不重发。事件仍为统一未发布 6，input/context 1，旧 SQL/journal 不变。
+
+Attempt owner 在同一 Gen projector 内接入，当前实际覆盖 74/75，剩余仅 OpeningReplicaRecorded；覆盖/ready 反例因而改用真实剩余 Replica，不留已完成 Attempt 占位。新 `relational-generation-sources.ts` 只共用实际 Opening 尝试的薄来源读取，核原不可变 attempt/job/request/member/account/epoch 与唯一 source 登记；它不是另一套调度器或 writer。原 review CHECK 仅放开未知原日期，local anchor FK 仍保留；预算只在不可变 Opening fact 保存，不增另一份可变账。缺原退款凭据的 archived pending 仍在风险/审计中保留，但不加入自动 deadline/wake 处理，不能反复尝试无来源的结案。
+
+专项 18/18、零跳过：真实 Opening 字段/原序闭包、actualConsumption 的 NULL/冲突、明确零与未知预算、实际 quota 观察形成全局 150 而不倒推逐笔、原授权已知/未知及 exact epoch 的凭据与冷却副作用、缺 Charge 责任保留、外层 catch 回滚/重试、原完整提交与完整重建后全部再领零写。合法 ready 后真正关闭并重开 SQLite，原 coordinator 只退款一次或从真实 Local 原字节恢复迟到结果，保留已知成本和原退款；已知导入估计结案的 late 关联保留 Opening 状态锚，不冒充普通 ReviewClosed。缺失/损坏字节在合法安装后的原启动核对中阻止派发。另一个从未派发的 Opening queued 任务在 localhost mock 上游执行一次、实际 seed 42，完整回放仍零 fetch、零成员 auth epoch/Key/PST。没有将 mock 计为真实 NAI/云端验收。
+
+十一文件最终相关回归 249/249，类型、架构、默认/可信 `ed985cfc` 迁移历史、所改文件格式及差异检查通过。四个隔离 TEMP 负控分别恢复 NULL 擦成本、把未知空候选当免费、跳过 running 闭包、跳过原授权证明，均在对应实际断言失败；精确候选源恢复后 18/18。证据为 `H:\TEMP\novelai-opening-attempt-{focused-final,union-final,typecheck,architecture,migration,format}.log`、`negative-{positive,erase-cost,unknown-free,missing-closure,missing-authorization,restored}.log` 与 `negative-evidence.json`。这些是作者局部源码验证，独审须绑定最终 fixed SHA；未跑 full、编译包、Node 24、依赖/native 重建、真实云端或生产操作，所选旧源 converter/归档责任和 sole 总装配仍由总任务接续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
