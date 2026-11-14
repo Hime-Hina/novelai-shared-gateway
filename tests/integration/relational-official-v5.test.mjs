@@ -440,7 +440,7 @@ test('Opening已知两个原值与金融值各自保留，无原证据NULL不被
   )();
   assert.equal(databaseState(badTarget.db), empty);
 });
-test('缺失negative与缺失percent独立保持NULL，数值负percent不改原失败金融转换', async (t) => {
+test('缺失negative与缺失percent独立保持NULL，数值负percent失败仍保留原金融值', async (t) => {
   const unknown = await fixture(t, { seconds: 0 }),
     uq = new RelationalQuotaStore(unknown.db),
     first = observe(unknown, uq, { v5UsagePercent: 80, v5UsageIsNegative: undefined });
@@ -456,7 +456,7 @@ test('缺失negative与缺失percent独立保持NULL，数值负percent不改原
     third = observe(negative, nq, { v5UsagePercent: -5, v5UsageIsNegative: false });
   assert.equal(third.payload.v5, '-5');
   const retained = failure(negative, nq);
-  assert.equal(retained.payload.v5, '0');
+  assert.equal(retained.payload.v5, third.payload.v5);
   assert.deepEqual(nq.readOfficialQuotaV5('a'), { v5UsagePercent: -5, v5UsageIsNegative: false });
   const restored = restore(t, negative.db);
   assert.deepEqual(restored.quotas.readAccountQuota('a'), nq.readAccountQuota('a'));
@@ -497,4 +497,142 @@ test('同毫秒不同原事实按stream代次保留后来官方值，不以时�
   assert.deepEqual(q.readOfficialQuotaV5('a'), { v5UsagePercent: 0, v5UsageIsNegative: false });
   const r = restore(t, f.db);
   assert.deepEqual(r.quotas.readOfficialQuotaV5('a'), q.readOfficialQuotaV5('a'));
+});
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { JsonStore } from '../../server/storage/sqlite-store.ts';
+import { createAccountQuotaRefresh } from '../../server/quota/account-refresh.ts';
+import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
+test('actual原JsonStore成功后网络失败保留-5false，新命令不能由金融符号改写原观察', async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'nai-official-original-owner-')),
+    legacy = new JsonStore(dir);
+  await legacy.init();
+  t.after(async () => {
+    await legacy.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const db = structuredClone(legacy.db);
+  db.users = ['m1', 'm2', 'm3', 'm4'].map((id) => ({
+    id,
+    token: 'synthetic-' + id,
+    enabled: true,
+  }));
+  db.accounts = [
+    {
+      id: 'a',
+      token: 'synthetic-pst',
+      enabled: true,
+      quotaTier: 3,
+      subscriptionActive: true,
+      subscriptionExpiresAt: NOW + 86400000,
+      quotaFixed: 8000,
+      quotaPurchased: 0,
+      v5UsagePercent: 80,
+      v5UsageIsNegative: false,
+      v5UsageTimeUntilNextPercent: 0,
+      quotaCheckedAt: new Date(NOW).toISOString(),
+    },
+  ];
+  configureFairQuota(
+    db,
+    db.users.map((u) => u.id),
+  );
+  syncFairQuota(db, NOW);
+  await legacy.write(db);
+  await legacy.enableEventAuthority();
+  let time = NOW + 10,
+    calls = 0;
+  const refresh = createAccountQuotaRefresh({
+    store: legacy,
+    now: () => time,
+    logger: { log() {}, error() {} },
+    publicAccount: (a) => ({
+      v5UsagePercent: a.v5UsagePercent,
+      v5UsageIsNegative: a.v5UsageIsNegative,
+      quotaCheckedAt: a.quotaCheckedAt,
+    }),
+    publicErrorMessage: () => '',
+    fetchQuota: async () => {
+      if (calls++ === 0) {
+        return {
+          tier: 3,
+          subscriptionActive: true,
+          subscriptionExpiresAt: NOW + 86400000,
+          fixed: 8000,
+          purchased: 0,
+          v5UsagePercent: -5,
+          v5UsageIsNegative: false,
+          v5UsageTimeUntilNextPercent: 0,
+        };
+      }
+      throw Object.assign(new Error('synthetic network error'), { code: 'ECONNRESET' });
+    },
+  });
+  const success = await refresh.refresh(['a']);
+  time = NOW + 20;
+  const failed = await refresh.refresh(['a']);
+  assert.equal(success.ok, 1);
+  assert.equal(failed.failed, 1);
+  assert.deepEqual(failed.accounts, success.accounts);
+  assert.deepEqual(success.accounts, [
+    {
+      v5UsagePercent: -5,
+      v5UsageIsNegative: false,
+      quotaCheckedAt: new Date(NOW + 10).toISOString(),
+    },
+  ]);
+  const events = legacy.sqlite
+    .prepare(
+      "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' AND json_extract(payload,'$.kind')='official' ORDER BY commit_seq,event_index",
+    )
+    .all()
+    .map((row) => JSON.parse(row.payload));
+  assert.equal(events.at(-1).observation.v5UsagePercent, -5);
+  assert.equal(events.at(-1).observation.v5UsageIsNegative, false);
+  assert.ok(events.at(-1).observation.quotaError);
+  const f = await fixture(t, { seconds: 0 }),
+    quotas = new RelationalQuotaStore(f.db),
+    first = observe(f, quotas, { v5UsagePercent: -5, v5UsageIsNegative: false }),
+    second = failure(f, quotas);
+  assert.equal(first.payload.v5, '-5');
+  assert.deepEqual(
+    {
+      v5UsagePercent: second.payload.v5UsagePercent,
+      v5UsageIsNegative: second.payload.v5UsageIsNegative,
+    },
+    failed.accounts.map(({ quotaCheckedAt, ...v5 }) => v5)[0],
+  );
+  assert.equal(second.payload.observedAt, Date.parse(failed.accounts[0].quotaCheckedAt));
+  assert.equal(
+    second.payload.v5,
+    first.payload.v5,
+    'mere network failure cannot reinterpret the unchanged original observation',
+  );
+  const rebuilt = restore(t, f.db);
+  assert.deepEqual(rebuilt.quotas.readAccountQuota('a'), quotas.readAccountQuota('a'));
+  assert.deepEqual(rebuilt.quotas.readOfficialQuotaV5('a'), quotas.readOfficialQuotaV5('a'));
+  assert.equal(rebuilt.db.prepare('SELECT COUNT(*) AS n FROM upstream_credentials').get().n, 0);
+  assert.equal(rebuilt.db.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
+  const beforeFault = databaseState(f.db);
+  let writes = 0;
+  f.db.function('negative_source_write', () => {
+    writes++;
+    return 0;
+  });
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_negative_source AFTER UPDATE ON account_quota_state BEGIN SELECT negative_source_write();SELECT RAISE(ABORT,'synthetic negative source fault');END",
+  );
+  f.db.transaction(() =>
+    assert.throws(() => failure(f, quotas, NOW + 30), /synthetic negative source fault/),
+  )();
+  assert.equal(writes, 1);
+  assert.equal(databaseState(f.db), beforeFault);
+  assert.equal(quotas.readAccountQuota('a').observedV5, first.payload.v5);
+  assert.deepEqual(quotas.readOfficialQuotaV5('a'), {
+    v5UsagePercent: -5,
+    v5UsageIsNegative: false,
+  });
+  f.db.exec('DROP TRIGGER fail_negative_source');
+  assert.equal(failure(f, quotas, NOW + 30).payload.v5, first.payload.v5);
 });

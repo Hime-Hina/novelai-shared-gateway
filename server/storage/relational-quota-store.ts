@@ -641,6 +641,7 @@ export class RelationalQuotaStore {
           ];
         }),
     );
+    // 金融金额不是原 negative 标量；snapshot 自行处理数值边界，不能从符号伪造原信息。
     const account: FairAccount = {
       id: accountId,
       enabled: a.enabled === 1,
@@ -650,7 +651,6 @@ export class RelationalQuotaStore {
       quotaCheckedAt: iso(q.observedAt),
       quotaError: q.observedCredentialEpoch === a.epoch ? q.quotaErrorCode : 'credential_changed',
       v5UsagePercent: q.observedV5,
-      v5UsageIsNegative: q.observedV5 !== null && parseAmount(q.observedV5) < 0n,
       quotaFixed: q.observedAnlasFixed,
       quotaPurchased: q.observedAnlasPurchased,
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
@@ -662,7 +662,6 @@ export class RelationalQuotaStore {
         ...account,
         quotaCheckedAt: iso(old.at),
         v5UsagePercent: old.v5,
-        v5UsageIsNegative: old.v5 !== null && parseAmount(old.v5) < 0n,
         quotaFixed: old.anlasFixed,
         quotaPurchased: old.anlasPurchased,
         v5UsageTimeUntilNextPercent: old.seconds,
