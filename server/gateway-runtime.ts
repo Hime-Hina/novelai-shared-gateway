@@ -22,6 +22,8 @@ import { RelationalInputStore } from './storage/relational-input-store.ts';
 import { RelationalGenerationStore } from './storage/relational-generation-store.ts';
 import { RelationalQuotaStore } from './storage/relational-quota-store.ts';
 import { RelationalConfigurationStore } from './storage/relational-configuration-store.ts';
+import { RelationalMemberStore } from './storage/relational-member-store.ts';
+import { relationalStateNotificationsFor } from './events/relational-state-notifications.ts';
 import { createRelationalQueueRuntime } from './generation/relational-queue-runtime.ts';
 import { createRelationalAccountQuotaRefresh } from './quota/relational-account-refresh.ts';
 import { createGenerationPayloadBudget } from './generation/payload-budget.ts';
@@ -38,6 +40,7 @@ import { createRelationalMemberReadHttp } from './members/relational-read-http.t
 import { createRelationalManagementHttp } from './members/relational-management-http.ts';
 import { resolveMemberPublicBaseUrl } from './members/read-http.ts';
 import { gatewayKeyFrom } from './members/http-request.ts';
+import { reconcileMemberSessionOwner } from './members/authentication.ts';
 import { sharedSurface } from './http/api-surface.ts';
 import { privateAccessAllowed } from './http/public-hosts.ts';
 import { assertAdminToken, matchesAdminToken } from './http/admin-access.ts';
@@ -546,6 +549,10 @@ async function start(handler: http.RequestListener) {
       fail(404, 'not found.');
     };
     await queue.prepare();
+    await reconcileMemberSessionOwner(
+      new RelationalMemberStore(sqlite, env, relationalStateNotificationsFor(sqlite, events)),
+      env,
+    );
     server = http.createServer((req, res) => {
       requests.set(res, req);
       const done = () => requests.delete(res);

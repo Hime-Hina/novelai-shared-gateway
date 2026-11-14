@@ -2,14 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdir, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import Database from 'better-sqlite3';
 import {
   createMemberSession,
   authenticateMemberApiKey,
+  withAuthenticatedMemberApiKey,
 } from '../../server/members/authentication.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
-import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
+import {
+  childFixture,
+  launchGateway,
+  enableAccount,
+  query,
+  assertChildPublicReplay,
+} from '../helpers/relational-child.mjs';
+import {
+  readRelationalRecoveryState,
+  relationalSnapshotSha256,
+} from '../../server/storage/relational-private-restore.ts';
 
 const memberTtl = 7 * 86400000,
   ownerTtl = 24 * 3600000;
@@ -49,7 +65,7 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
     assert.ok(!running || running.exit, 'offline member changes require the gateway to be stopped');
     const db = new Database(state.filename, { fileMustExist: true });
     try {
-      return await run(new RelationalMemberStore(db, env));
+      return await run(new RelationalMemberStore(db, env), env);
     } finally {
       db.close();
     }
@@ -74,6 +90,13 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
     });
   }
   const read = (sql, ...parameters) => query(state, sql, ...parameters);
+  const snapshot = () =>
+    Object.fromEntries(
+      read("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").map(({ name }) => [
+        name,
+        read(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`),
+      ]),
+    );
   // Only the original failure/time fixtures use direct SQL; business setup goes through its owner.
   const execute = (sql, ...parameters) => {
     const db = new Database(state.filename, { fileMustExist: true });
@@ -130,6 +153,72 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
       await running.kill();
     }
   };
+  const restoreCurrentCut = async () => {
+    assert.ok(running?.exit, 'selected private restore requires the actual child stopped');
+    assertChildPublicReplay(state);
+    const liveFilename = state.filename;
+    const directory = path.join(state.directory, `session-recovery-${state.children.length}`);
+    assert.equal(path.dirname(directory), state.directory);
+    const sourcePath = path.join(directory, 'source.sqlite');
+    const output = path.join(directory, 'data', 'library.sqlite');
+    assert.notEqual(sourcePath, liveFilename);
+    assert.notEqual(output, liveFilename);
+    await mkdir(path.dirname(output), { recursive: true });
+    const live = new Database(liveFilename, { readonly: true });
+    try {
+      await live.backup(sourcePath);
+    } finally {
+      live.close();
+    }
+    const source = new Database(sourcePath);
+    let selected;
+    try {
+      source.pragma('journal_mode=DELETE');
+      selected = readRelationalRecoveryState(source);
+    } finally {
+      source.close();
+    }
+    // SHA 属于明确封存的单文件快照，不冒称原活库/WAL 的物理 SHA。
+    const sourceSha = relationalSnapshotSha256(sourcePath);
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        '--import',
+        'data:text/javascript,globalThis.fetch=()=>{throw new Error("session restore forbids network before IO")}',
+        fileURLToPath(new URL('../../scripts/restore-relational.mjs', import.meta.url)),
+        '--source',
+        sourcePath,
+        '--sha256',
+        sourceSha,
+        '--history',
+        selected.history_id,
+        '--cut',
+        selected.last_commit_seq,
+        '--output',
+        output,
+        '--data-dir',
+        state.dataDir,
+      ],
+      {
+        windowsHide: true,
+        signal: t.signal,
+        env: Object.fromEntries(
+          ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
+            .filter((key) => process.env[key])
+            .map((key) => [key, process.env[key]]),
+        ),
+      },
+    );
+    assert.equal(JSON.parse(stdout).restored, true);
+    assert.equal(relationalSnapshotSha256(sourcePath), sourceSha);
+    assert.equal((await stat(liveFilename)).isFile(), true, 'original source remains for audit');
+    state.filename = output;
+    state.dataDir = path.dirname(output);
+    state.env.DATA_DIR = state.dataDir;
+    t.diagnostic(
+      `selected sealed session snapshot ${sourceSha}; history ${selected.history_id}; cut ${selected.last_commit_seq}`,
+    );
+  };
   t.after(async () => {
     await stop();
     upstream.closeAllConnections();
@@ -177,12 +266,14 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
     state,
     start,
     stop,
+    restoreCurrentCut,
     call,
     login,
     me,
     createOfflineSession,
     expire,
     read,
+    snapshot,
     execute,
     memberStore,
     members,
@@ -191,6 +282,7 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
     privateToken: state.env.NOVELAI_TOKEN,
     child: () => running.child,
     exit: () => exited,
+    quotaRequestCount: () => requests.length,
     assertNoGeneration() {
       assert.ok(requests.every((url) => url === '/user/data'));
       for (const child of state.children) {
@@ -282,8 +374,6 @@ test(
     const initialWrites = enabledWrites();
     for (const pauseFirst of [false, true]) {
       const key = pauseFirst ? 'enable-before-pause' : 'enable-only';
-      const held = await holdEnable(key);
-      const before = officialObservations();
       const first = await patch(key);
       assert.equal(first.status, 200, JSON.stringify(first.body));
       assert.equal(first.body.enabled, true);
@@ -291,40 +381,57 @@ test(
       const { receipt } = gateway.read(
         "SELECT receipt FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq DESC LIMIT 1",
       )[0];
-      assert.deepEqual(JSON.parse(receipt), first.body);
+      const { accountIntent, ...externalReceipt } = JSON.parse(receipt);
+      assert.equal(accountIntent.kind, 'mutation');
+      assert.deepEqual(externalReceipt, first.body);
+      const held = await holdEnable(`${key}-pending`);
+      const before = officialObservations(),
+        stored = gateway.snapshot(),
+        requests = gateway.quotaRequestCount();
+      assert.deepEqual(await patch(key), first);
+      assert.equal((await patch(`${key}-busy`)).status, 409);
+      assert.equal(gateway.quotaRequestCount(), requests, 'busy and prior receipt perform no IO');
+      assert.deepEqual(gateway.snapshot(), stored, 'busy and prior receipt write no state');
       if (pauseFirst) {
         assert.equal((await patch('later-pause', { enabled: false })).status, 200);
       }
-      held.release();
-      assert.deepEqual(await held.result, first);
+      assert.deepEqual(await patch(key), first, 'a prior receipt does not overwrite later pause');
       assert.equal(current().enabled, !pauseFirst);
-      assert.equal(enabledWrites(), initialWrites + (pauseFirst ? 2 : 1));
-      assert.equal(officialObservations().length, before.length + 1);
+      held.release();
+      const completed = await held.result;
+      if (pauseFirst) {
+        assert.equal(completed.status, 409);
+      } else {
+        assert.deepEqual(completed, first);
+      }
+      assert.equal(current().enabled, !pauseFirst);
+      // A 与未被暂停作废的独立 B 各保存一次真实核验，不把 B 当成 A 的回执重领。
+      assert.equal(enabledWrites(), initialWrites + (pauseFirst ? 3 : 2));
+      assert.equal(officialObservations().length, before.length + Number(!pauseFirst));
       if (!pauseFirst) {
         assert.equal((await patch('reset-to-pause', { enabled: false })).status, 200);
       }
     }
 
-    const stale = await holdEnable('stale-new-command');
     const beforeFailure = officialObservations();
     replies.push(() => 401);
     assert.equal((await patch('failed-new-command')).status, 409);
-    stale.release();
-    assert.equal((await stale.result).status, 409);
     const afterFailure = officialObservations();
     assert.equal(afterFailure.length, beforeFailure.length + 1);
     assert.equal(JSON.parse(afterFailure.at(-1).payload).errorCode, 'invalid_key');
     assert.ok(!afterFailure.at(-1).payload.includes('SYNTHETIC_PRIVATE_OWNER_QUOTA_ERROR'));
     assert.equal(current().enabled, false);
-    assert.equal(enabledWrites(), initialWrites + 2);
+    assert.equal(enabledWrites(), initialWrites + 3);
 
-    const revoked = await holdEnable('enable-before-revocation');
+    assert.equal((await patch('enable-before-revocation')).status, 200);
+    const revoked = await holdEnable('pending-before-revocation');
     assert.equal((await patch('enable-before-revocation')).status, 200);
     assert.equal((await patch('enable-before-revocation', { enabled: false })).status, 409);
     gateway.expire(cookie);
+    assert.equal((await patch('enable-before-revocation')).status, 401);
     revoked.release();
     assert.equal((await revoked.result).status, 401);
-    assert.equal(enabledWrites(), initialWrites + 3);
+    assert.equal(enabledWrites(), initialWrites + 4);
     gateway.assertNoGeneration();
   },
 );
@@ -363,18 +470,10 @@ test(
       gateway.read('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').map((row) => {
         return { id: row.id, enabled: row.enabled === 1, weight: row.weight };
       });
-    const snapshot = () =>
-      Object.fromEntries(
-        gateway
-          .read("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
-          .map(({ name }) => [
-            name,
-            gateway.read(`SELECT * FROM "${name.replaceAll('"', '""')}" ORDER BY rowid`),
-          ]),
-      );
+    const snapshot = gateway.snapshot;
     const availabilityEvents = () =>
       gateway.read(
-        "SELECT * FROM domain_events WHERE event_type='AvailabilityChanged' ORDER BY commit_seq,event_index",
+        "SELECT e.*,c.actor_kind,c.actor_id FROM domain_events e JOIN commits c USING(commit_seq) WHERE e.event_type='AvailabilityChanged' ORDER BY e.commit_seq,e.event_index",
       );
     const before = snapshot(),
       beforeAvailability = availabilityEvents().length;
@@ -422,7 +521,7 @@ test(
       'the already paused peer must not get a fabricated state change',
     );
     const configured = gateway.read(
-      "SELECT * FROM domain_events WHERE event_type='AccountConfigurationChanged' AND commit_seq=? ORDER BY event_index",
+      "SELECT e.*,c.actor_kind,c.actor_id FROM domain_events e JOIN commits c USING(commit_seq) WHERE e.event_type='AccountConfigurationChanged' AND e.commit_seq=? ORDER BY e.event_index",
       bulkEvents[0].commit_seq,
     );
     assert.equal(configured.length, 2);
@@ -636,6 +735,7 @@ test(
     assert.equal(row.expires_at, session.expiresAt);
     assert.ok(!JSON.stringify(row).includes(cookie.slice(cookie.indexOf('=') + 1)));
     await gateway.stop();
+    await gateway.restoreCurrentCut();
     await gateway.start();
     assert.equal((await gateway.me(cookie)).sessionExpiresAt, session.expiresAt);
     const expiredEvent = await openEvents(gateway, cookie);
@@ -645,6 +745,7 @@ test(
     await logout.json();
     await expiredEvent();
     await gateway.stop();
+    await gateway.restoreCurrentCut();
     await gateway.start();
     assert.equal((await gateway.call('/api/member/me', { cookie })).status, 401);
     gateway.assertNoGeneration();
@@ -716,9 +817,11 @@ test(
     const owner = await gateway.createOfflineSession(0, now),
       member = await gateway.createOfflineSession(1, now),
       unrelated = await gateway.createOfflineSession(2, now);
+    const authEpochs = gateway.read('SELECT id,auth_epoch FROM members ORDER BY id');
     assert.equal(owner.expiresAt, now + ownerTtl);
     assert.equal(member.expiresAt, now + memberTtl);
     await gateway.start();
+    assert.deepEqual(gateway.read('SELECT id,auth_epoch FROM members ORDER BY id'), authEpochs);
     assert.equal((await gateway.me(cookieFor(owner))).owner, true);
     assert.equal((await gateway.me(cookieFor(owner))).sessionExpiresAt, owner.expiresAt);
     assert.equal((await gateway.me(cookieFor(member))).owner, false);
@@ -733,6 +836,28 @@ test(
       403,
     );
     await gateway.stop();
+    const beforeOwnerChange = gateway.snapshot();
+    gateway.execute(
+      "CREATE TRIGGER synthetic_owner_change_failure BEFORE UPDATE ON member_auth_state BEGIN SELECT RAISE(ABORT, 'synthetic owner change failure'); END",
+    );
+    try {
+      await assert.rejects(
+        gateway.start(gateway.members[1].user_id),
+        /actual child startup failed:/,
+      );
+      assert.equal(
+        gateway.state.children.at(-1).origin,
+        null,
+        'failed coordination must not listen',
+      );
+      assert.deepEqual(
+        gateway.snapshot(),
+        beforeOwnerChange,
+        'a late owner-state SQL failure rolls back all session deletions and private state',
+      );
+    } finally {
+      gateway.execute('DROP TRIGGER synthetic_owner_change_failure');
+    }
     await gateway.start(gateway.members[1].user_id);
     for (const session of [owner, member]) {
       // 启动时即撤销，不能依赖浏览器恰好在角色变化期间访问一次。
@@ -787,10 +912,28 @@ test(
       .auth_epoch;
     await gateway.stop();
     let originalKey;
-    await gateway.memberStore(async (store) => {
+    await gateway.memberStore(async (store, env) => {
       originalKey = store.readMemberApiKey(memberId);
-      store.replaceMemberApiKey(memberId, 'synthetic-current-key-for-session-owner');
-      store.replaceMemberApiKey(gateway.members[1].user_id, originalKey);
+      for (const [id, key] of [
+        [memberId, 'synthetic-current-key-for-session-owner'],
+        [gateway.members[1].user_id, originalKey],
+      ]) {
+        const updated = await withAuthenticatedMemberApiKey(
+          store,
+          store.readMemberApiKey(id),
+          (member) => {
+            assert.equal(member.id, id);
+            store.replaceMemberApiKey(id, key);
+            return member.id;
+          },
+          env,
+        );
+        assert.equal(updated, id);
+      }
+      assert.equal(
+        (await authenticateMemberApiKey(store, originalKey)).id,
+        gateway.members[1].user_id,
+      );
     });
     assert.equal(
       gateway.read('SELECT auth_epoch FROM members WHERE id=?', memberId)[0].auth_epoch,
@@ -815,27 +958,15 @@ test(
     assert.equal(noCookie.status, 401);
     assert.equal(noCookie.headers.get('set-cookie'), null);
     await noCookie.text();
+    for (const enabled of [false, true]) {
+      const changed = await gateway.call('/api/admin/member-management', {
+        headers: { 'x-admin-token': gateway.adminToken },
+        body: { action: 'member-status', userId: memberId, enabled },
+      });
+      assert.equal(changed.status, 200);
+      await changed.json();
+    }
     await gateway.stop();
-    await gateway.memberStore((store) => {
-      for (const status of ['disabled', 'active']) {
-        const commandId = `session-fixture:${randomUUID()}`;
-        store.setMemberStatus(
-          {
-            commandId,
-            fingerprint: createHash('sha256').update(commandId).digest('hex'),
-            actorKind: 'system',
-            actorId: null,
-            recordedAt: Date.now(),
-            correlationId: null,
-            causationId: null,
-            policyVersion: 'member-status-fixture',
-            pricingVersion: 'none',
-          },
-          memberId,
-          status,
-        );
-      }
-    });
     assert.equal(
       gateway.read(
         'SELECT token_hash FROM member_sessions WHERE token_hash=?',
@@ -853,6 +984,8 @@ test(
       sessions[1].value.expiresAt,
     );
     gateway.assertNoGeneration();
+    await gateway.stop();
+    assertChildPublicReplay(gateway.state);
   },
 );
 

@@ -2239,13 +2239,21 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 ### 9.90 原成员会话 HTTP child 的关系夹具
 
-本片仅迁移 `tests/integration/member-session-http.test.mjs` 与本节，不改产品 owner、schema、历史资产或独立 owner-session-bridge 工具。来源为已审 Note/fair-quota 并集 `eeaba678`，实际启动与初始数据复用 `tests/helpers/relational-child.mjs` 的 bootstrap、真实监听地址、localhost 上游和 IO 前拒绝旧 Store/外联；完整公共回放、所选私有同 cut 恢复及唯一 installer 接合以父并集的同源列清单为准，不复制第二套种库/ready 工具，也不手写 epoch、冷却或 ready。
+本片迁移 `tests/integration/member-session-http.test.mjs`，原启动反例确认真实遗漏后另获准最小修复 `gateway-runtime.ts`；schema、历史资产及独立 owner-session-bridge 工具不改。来源为已审 Note/fair-quota 并集 `eeaba678`，再普通合入 `5ca121f` 的已审 9.85/canonical private 列接合；实际启动与初始数据复用 `tests/helpers/relational-child.mjs` 的 bootstrap、真实监听地址、localhost 上游和 IO 前拒绝旧 Store/外联。公共回放直接使用 `assertChildPublicReplay()`，Ready 与 helper 均复用 `relationalPrivateMemberColumns`，不复制第二套种库/ready 工具，不手列 auth-only 私有列，也不手写 epoch、冷却或 ready。
 
 原八个会话用例的期限、Cookie/当前身份/授权、owner A→B→A、密码重置与无关成员隔离、SSE 撤销和退出/重开断言保留：45 秒用例、15 秒启动/请求、POSIX 30 秒关闭用例与 5 秒结束上界、原 Windows SIGTERM skip 均不延长或删除。普通首次启动通过真实 admin enable/额度查询建立原官方观察；后续重启不重设被测试修改的账户。owner 缓存 Discord 资格经原私有认证事务保存，离线 Cookie 经当前真实 Key 认证及原签发 owner；本片未新增 Discord 网络等待覆盖，仍由既有关系 HTTP 组件/独审承担，不放行外联或新增产品配置旗标。
 
 旧 JSON 账户、event_commits 和 ledger 的断言按当前事实角色核对：账户行、同笔 AccountConfigurationChanged 的两目标/权重、真正 enabled 变化的 AvailabilityChanged、唯一完整 bulk intent/回执及全表失败回滚。已暂停的 peer 不制造第二条假可用性变化。终止 SSE 时分别核对实际任务/尝试、原扣退、三池钱包与金融事实，允许原查询及零预算恢复游标合法收尾，不把元数据提交冒充新生图或扣退。新增最小 Cookie/Key 转归边界证明会话仍绑定稳定成员，Bearer/query Key 不代替 Cookie，停用再启用不能复活旧 Cookie。
 
-当前为单文件实现与静态准备；真实 child 原文件验收、源 SHA/同 cut 公私恢复证据、必要负控及独审在父并集恢复夹具冻结后登记。不把本节写成已完成整体发布、Node24、Linux SIGTERM、实云或切换验收。
+普通会话原有两个强杀 stop 点分别调用唯一 `restore-relational.mjs`：SQLite.backup 把实际 DB/WAL 的一致逻辑状态封入独立 DELETE 单文件，用该快照 SHA/history/cut 和六显式参数选定当前 private，经原 installer 恢复到同一 fixture 根下的新 DATA_DIR 后实际启动。原活库/WAL 不覆盖、不移走，快照 SHA 不冒称活库物理 SHA；前后源快照 SHA 必须相同。第一个恢复保持原有效 Cookie/expiry，logout 后的当前选定源恢复仍须 401；公回放须保持全部私有认证为空。CLI 无外部环境凭据、fetch 在 IO 前拒绝，并受原测试 AbortSignal/deadline 管理。
+
+原旧并发场景依赖首 key 尚未完成时再发第二个 raw 查询，与已审单 raw 繁忙边界不符。现按已保存回执的真实语义先完成 key A，再挂起新 key B：繁忙时 A 仍零 IO/零写领取原回包，新 key C 为 409 且不领取观察票号；后来暂停不能被 A 的回包或 B 的旧结果覆盖，Cookie 撤销也先于原回执。该变更不声明保留旧在途合并行为。事件 actor 从原 commit 读取，内部 accountIntent 与外部原回执明确区分；Key 换绑由各成员的真实当前 Key 认证事务执行。
+
+原 A→B→A child 断言发现 sole 启动未调用现 `reconcileMemberSessionOwner()`。修复只在原准备完成、监听/派发之前以实际 env、同 DB/emitter/notifier 的 MemberStore 调用该原 owner；不复制角色规则、不延迟到首次请求。原协调失败沿启动失败路径拒绝监听并清理。增强原角色用例核同 owner 启动不改变 auth epoch，以及原 member_auth_state 尾部 SQL 故障使已删除会话/私有状态全笔回滚后健康重试。
+
+原八个用例名/timeout/skip 已按 AST 与基线核对，新加一个稳定 Cookie/Key 边界用例。Node22 backend 类型、architecture、默认及可信 main `88d2c26` migration、四文件格式、语法和 diff 通过；日志位于 `H:/TEMP/novelai-member-session-fixture-20261115/`。首轮真实文件 4 通过、4 失败、1 原 Windows skip，17.751 秒；原失败程序和 SHA 封存于 `first-run-test-source.mjs`、`first-run-source.json` 与 `first-run.log`。修后角色原用例连同尾错/同 owner 检查 1/1、零 skip，3.908 秒，见 `role-fixed.log` / `role-fixed-source.json`。第二整轮原八项全部通过，新增用例停启夹具仍缺原事务，7 通过、1 失败、1 原 skip，21.131 秒，源码/日志保留于 `second-run-*`；后改为真实 admin `member-status` POST，服务器产生 actor/metadata，并在最终停止后完整公回放检查认证仍为空。
+
+最终同一精确源整文件 **8 通过、0 失败、1 原 Windows SIGTERM skip，25.146 秒**，证据 `accepted-run.log` / `accepted-run-source.json`。包含两次选定公私源 CLI/真实 child 重开、原有效 Cookie/expiry 与 logout 后 401、公共回放私有空且零外联、原账户同笔/失败回滚、可见续期和原 Cookie/当前授权边界。CLI 恢复组合用例 4.357 秒、角色组合 3.634 秒、新增稳定身份组合 3.010 秒；均保持原 45 秒期限。前两轮失败程序和日志原样保留。该作者局部源码结果待固定候选独立审查；没有把 Windows skip 当 Linux SIGTERM、新旧生产会话策略、Node24、同根发布包/full、实云、容量或迁移切换验收。
 
 ## 10. 事实依据与修订
 
