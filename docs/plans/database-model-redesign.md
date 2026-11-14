@@ -1695,6 +1695,16 @@ PR #66 固定 `8b11fa6b4ec70b02b8e5110cab0a553fc35d9416`，基于 #65 `b472b652e
 
 同一固定源三包类型与构建通过，Web 16 文件 151/151、executor 3/3，真实 backend→Nitro→runtime package 和 Web production build 均成功。127 个包内产品逐项等于独立 Git export build，35 个历史资产相同；tracked 578 文件前后摘要 `438c72a131cb91e2e570e2c803cef06ddd2c3608106653d55a75408542344d15`，HEAD/tree/branch 不变且 clean，无安装或共享 native 重编。报告 `H:/TEMP/novelai-v6-8b11fa6-packages-report.md` 及配套 result/stages/log。独立整合复核正在进行；远端原 CI `43586396178` 正在检查相同候选，Linux/Docker/Nuxt E2E/实际发布包 HTTP 尚待结果。74/75 是事实类型覆盖，不表示整体验收比例，剩余 Attempt 仍由唯一 installer 拒绝；sole/D4 清除、选定迁移、真实云端、同规模容量性能和切换继续推进。
 
+### 9.65 成员注册与状态命令的当前 owner 接缝
+
+基于固定根 `24f3d0c`，仅补 `RelationalMemberStore.registerMember()` 与 `setMemberStatus()` 的可选当前 actor 参数，供后续原管理 POST 调用，不接 HTTP、凭据重置、邀请、删除或分组。权威身份为稳定 member ID、当前 `members.status/auth_epoch` 及服务器 owner 配置；复用 `assertCurrentOwnerCommand()` 和既有 `changeMemberAdmission()` 的窄查询，当前授权在旧 receipt 之前。Discord/Key/Cookie 资格仍由原认证事务 owner 核验，不把 metadata 或快照当 HTTP 授权。admin 默认 null 与内部 system 原行为保留，admission 不新增 system 权限。
+
+owner 本人停用的原 409 规则归入状态命令；admin/system 保留应急停用。公共方法已完成当前授权，私有 `commitMember()` 不再重复旧 admin/system 限制，其三个调用来源仍仅为这两命令及内部 system Discord audit。没有新权限层、票据、状态表或事实格式；原命令 ID/fingerprint/actor 回执关系、密码/Key 初始化、停用撤销、savepoint 和公共回放路径不变。
+
+新增 `relational-member-management.test.mjs`：当前 owner 的真实 Key/Cookie 注册与停启、同名不同 ID、当前 stable ID/owner 配置/active/epoch 和失效 Key/Cookie 在原回执前拒绝、Discord 过期/丢失资格沿原认证 owner 拒绝、自停用与 admin/system 正常对照。SQL 在私有 Key 插入或 Cookie 删除之后故障，外层捕获仍回滚全部业务/私有/事实/流/回执且零幽灵通知；原键重试成功，后续旧 receipt 零写、不覆盖后来启用。磁盘重开与完整成员公共提交重放保留身份/状态和原 journal/receipt；不恢复私有 epoch、密码、Key、Discord、邀请、owner 配置或 Cookie，网络调用为零。
+
+作者专项 20/20；与原 `relational-members`、`relational-admission` 三文件同次 72/72、零跳过，日志 `H:/TEMP/novelai-member-owner-union.log`。精确旧根同一合法 owner 用例 0/1、原 admin/system 限制报 403；TEMP 删除同一个共享 owner verifier，12 个授权子例全部失败（含父共 13 fail）。原字节用例与日志保留在 `H:/TEMP/novelai-member-owner-negative-20261114/`，错误变体仅存在于 TEMP 且已恢复正确候选。backend 类型、architecture、默认与可信根 `24f3d0c` migration 历史、188 个 JS/MJS 语法通过；格式/diff 和最后候选复跑随固定提交登记。未执行 full/compiled/Node24/生产或变更架构守卫；此接缝不表示管理 POST 或整体切换已完成，独立审查待固定候选。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
