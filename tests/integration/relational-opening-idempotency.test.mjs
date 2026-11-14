@@ -168,6 +168,7 @@ function opened(f, id, count = 2, requestChanges = {}, jobChanges = {}) {
         memberId: 'm1',
         payload: {
           requestId: `opened-${id}`,
+          originalRequestId: `opened-${id}`,
           memberId: 'm1',
           inputId: original.input_id,
           contextId: original.context_id,
