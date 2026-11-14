@@ -36,7 +36,10 @@ import { initializeRelationalStorage } from '../../server/storage/relational-sto
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { createGenerationControls } from '../../server/generation/queue-dispatch.ts';
-import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import { accountQuotaResult, createAccountQuotaQuery } from '../../server/quota/account-refresh.ts';
+import { createRelationalAccountQuotaRefresh } from '../../server/quota/relational-account-refresh.ts';
+import { fetchNovelAiAccountQuota } from '../../server/protocols/novelai-client.ts';
+import { relationalStateNotificationsFor } from '../../server/events/relational-state-notifications.ts';
 import {
   setup as setupNative,
   input as nativeInput,
@@ -48,7 +51,18 @@ const admin = '/api/admin/member-management',
   summary = '/api/member/owner/summary',
   statistics = '/api/member/owner/statistics',
   adminToken = 'synthetic-private-admin-token';
-async function setup(t, { env = {}, beforeReady, resources, discordFetch, onBodyRead } = {}) {
+async function setup(
+  t,
+  {
+    env = {},
+    beforeReady,
+    resources,
+    discordFetch,
+    onBodyRead,
+    queryAccountQuota,
+    quotaStore,
+  } = {},
+) {
   const currentEnv = {
       OWNER_USER_ID: 'm1',
       DISCORD_GUILD_ID: '1134557553011998840',
@@ -103,6 +117,8 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch, onBody
       dataDir: f.dir,
       env: currentEnv,
       discordFetch,
+      queryAccountQuota,
+      quotas: quotaStore?.(f.db, currentEnv),
       now: () => clock,
       assertAdmin(req, url) {
         adminChecks++;
@@ -1921,4 +1937,638 @@ test('真实Native队列physical pending时禁用409，停止仅取消waiting且
     );
   assert.equal((await manage(memberStatus(false), 'idle-disable')).status, 200);
   assertMemberManagementPublicReplay(t, n);
+});
+
+const accountOwner = '/api/member/owner/accounts/a',
+  accountAdmin = '/api/admin/accounts/a';
+async function accountPatchFixture(t, options = {}) {
+  let f, quotas;
+  const calls = [],
+    logs = [],
+    upstream = {
+      status: 200,
+      onQuery: null,
+      payload: {
+        subscription: {
+          tier: 3,
+          active: true,
+          expiresAt: NOW + 86400000,
+          trainingStepsLeft: { fixedTrainingStepsLeft: 8000, purchasedTrainingSteps: 0 },
+          usage: { percent: 80, isNegative: false, timeUntilNextPercent: 600 },
+        },
+      },
+    },
+    server = createServer(async (req, res) => {
+      calls.push({ path: req.url, authorization: req.headers.authorization });
+      assert.equal(f.db.inTransaction, false, 'real quota HTTP must run outside SQL');
+      if (req.url === '/user/data') {
+        await upstream.onQuery?.();
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(upstream.payload));
+      } else {
+        assert.equal(req.url, '/ai/trial-status');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ remaining_image_actions: 0, eligible_for_image_gens: false }));
+      }
+    });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const quotaEnv = { NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${server.address().port}` };
+  const query = createAccountQuotaQuery({
+    env: quotaEnv,
+    now: () => f.clock,
+    logger: { log: (...args) => logs.push(args), error: (...args) => logs.push(args) },
+    fetchQuota: (...args) => {
+      assert.equal(f.db.inTransaction, false);
+      return fetchNovelAiAccountQuota(...args);
+    },
+  });
+  f = await setup(t, {
+    ...options,
+    queryAccountQuota: query,
+    quotaStore: () => quotas,
+    async beforeReady(f, env) {
+      quotas = new RelationalQuotaStore(f.db, env);
+      await options.beforeReady?.(f, env);
+    },
+    onBodyRead() {
+      assert.equal(f.db.inTransaction, false, 'body must be read outside SQL');
+      options.onBodyRead?.();
+    },
+  });
+  let notifications = 0;
+  f.events.on('commit', () => notifications++);
+  const patch = (body, { route = accountOwner, key, headers = {}, ...rest } = {}) =>
+    f.call(route, {
+      method: 'PATCH',
+      body,
+      headers: { ...(key ? { 'idempotency-key': key } : {}), ...headers },
+      ...rest,
+    });
+  return {
+    ...f,
+    upstream,
+    calls,
+    logs,
+    patch,
+    query,
+    quotaEnv,
+    quotas,
+    get notifications() {
+      return notifications;
+    },
+    // Preserve the live clock accessor instead of a spread snapshot.
+    get clock() {
+      return f.clock;
+    },
+  };
+}
+function patchHistory(db) {
+  return JSON.stringify(
+    [
+      'commits',
+      'domain_events',
+      'stream_heads',
+      'upstream_accounts',
+      'upstream_credentials',
+      'account_quota_state',
+      'wallets',
+      'charges',
+      'generation_jobs',
+    ].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()),
+  );
+}
+
+test('账户PATCH真实ready Cookie轮换/暂停/Opus核验共用owner，原回执重领零IO且actor和操作隔离', async (t) => {
+  const f = await accountPatchFixture(t),
+    before = databaseState(f.db);
+  for (const body of [
+    {},
+    { enabled: 'true' },
+    { token: 'not-pst' },
+    { enabled: false, token: 'pst-rejected' },
+  ]) {
+    assert.equal((await f.patch(body)).status, 400);
+    assert.equal(databaseState(f.db), before);
+  }
+  const rotated = await f.patch({ token: 'pst-http-rotated' }, { key: 'same-transport-key' });
+  assert.equal(rotated.status, 200, rotated.text);
+  assert.deepEqual(rotated.body, { accountId: 'a', enabled: false });
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.notifications, 1);
+  assert.equal(
+    f.db.prepare("SELECT credential_epoch FROM upstream_accounts WHERE id='a'").get()
+      .credential_epoch,
+    2,
+  );
+  assert.equal(
+    f.db.prepare("SELECT pst FROM upstream_credentials WHERE account_id='a'").get().pst,
+    'pst-http-rotated',
+  );
+  const enabled = await f.patch({ enabled: true }, { key: 'enable-http' });
+  assert.equal(enabled.status, 200, enabled.text);
+  assert.deepEqual(enabled.body, { accountId: 'a', enabled: true });
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0].authorization, 'Bearer pst-http-rotated');
+  assert.equal(f.notifications, 2);
+  assert.equal(
+    f.db
+      .prepare("SELECT observed_credential_epoch FROM account_quota_state WHERE account_id='a'")
+      .get().observed_credential_epoch,
+    2,
+  );
+  const paused = await f.patch({ enabled: false }, { key: 'pause-http' });
+  assert.equal(paused.status, 200);
+  const snapshot = databaseState(f.db),
+    count = f.notifications;
+  assert.deepEqual((await f.patch({ enabled: true }, { key: 'enable-http' })).body, enabled.body);
+  assert.equal(databaseState(f.db), snapshot, 'old success must not re-enable after a later pause');
+  assert.equal(f.notifications, count);
+  assert.equal(f.calls.length, 1);
+  assert.equal((await f.patch({ enabled: false }, { key: 'enable-http' })).status, 409);
+  const admin = await f.patch(
+    { enabled: false },
+    { route: accountAdmin, key: 'same-transport-key', headers: { 'x-admin-token': adminToken } },
+  );
+  assert.equal(admin.status, 200, admin.text);
+  assert.equal(f.notifications, count + 1, 'admin PATCH also publishes exactly once after commit');
+  const adminState = databaseState(f.db);
+  assert.deepEqual(
+    (
+      await f.patch(
+        { enabled: false },
+        {
+          route: accountAdmin,
+          key: 'same-transport-key',
+          headers: { 'x-admin-token': adminToken },
+        },
+      )
+    ).body,
+    admin.body,
+  );
+  assert.equal(databaseState(f.db), adminState);
+  assert.equal(f.notifications, count + 1);
+  const actors = f.db
+    .prepare(
+      "SELECT actor_kind,actor_id FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq",
+    )
+    .all();
+  assert.deepEqual(actors, [
+    { actor_kind: 'member', actor_id: 'm1' },
+    { actor_kind: 'member', actor_id: 'm1' },
+    { actor_kind: 'member', actor_id: 'm1' },
+    { actor_kind: 'admin', actor_id: 'local-admin' },
+  ]);
+  for (const secret of ['pst-http-rotated', keys.m1, f.sessions.m1.token]) {
+    assert.ok(!JSON.stringify(f.db.prepare('SELECT * FROM domain_events').all()).includes(secret));
+    assert.ok(!JSON.stringify(f.db.prepare('SELECT receipt FROM commits').all()).includes(secret));
+    assert.ok(!JSON.stringify(f.logs).includes(secret));
+  }
+  assert.equal(rotated.headers.get('set-cookie'), null);
+  await logoutMemberSession(f.members, f.sessions.m1.token);
+  const revoked = databaseState(f.db);
+  assert.equal((await f.patch({ enabled: true }, { key: 'enable-http' })).status, 401);
+  assert.equal(databaseState(f.db), revoked);
+  assert.equal(f.calls.length, 1);
+});
+
+test('账户PATCH仍需当前Cookie或local admin且同源，Bearer不替代；admin旧未表示字段明确拒绝', async (t) => {
+  const f = await accountPatchFixture(t),
+    before = databaseState(f.db);
+  const cases = [
+    [{ cookie: '', headers: { authorization: `Bearer ${keys.m1}` } }, 401],
+    [{ member: 'm2' }, 403],
+    [{ headers: { origin: 'https://different.example' } }, 404],
+    [{ route: accountAdmin }, 403],
+    [
+      { route: accountAdmin, headers: { 'x-admin-token': adminToken, host: 'management.example' } },
+      404,
+    ],
+  ];
+  for (const [options, status] of cases) {
+    assert.equal((await f.patch({ enabled: false }, options)).status, status);
+    assert.equal(databaseState(f.db), before);
+  }
+  for (const field of ['name', 'weight', 'proxyUrl', 'socksProxy', 'proxy']) {
+    assert.equal(
+      (
+        await f.patch(
+          { [field]: field === 'weight' ? 5 : 'unsupported' },
+          { route: accountAdmin, headers: { 'x-admin-token': adminToken } },
+        )
+      ).status,
+      400,
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  assert.equal(
+    (await f.patch({ enabled: true }, { route: '/api/member/owner/accounts/not-bound' })).status,
+    404,
+  );
+  assert.equal(f.calls.length, 0);
+});
+
+test('账户PATCH真实额度失败或非Opus保留失败观察/原回执，重领不重新查询', async (t) => {
+  for (const mode of ['non-opus', 'http403', 'expired'])
+    await t.test(mode, async (t) => {
+      const f = await accountPatchFixture(t);
+      await f.patch({ enabled: false });
+      if (mode === 'non-opus') f.upstream.payload.subscription.tier = 2;
+      if (mode === 'expired') f.upstream.payload.subscription.expiresAt = NOW - 1;
+      if (mode === 'http403') {
+        f.upstream.status = 403;
+        f.upstream.payload = { error: 'pst-upstream-secret private body' };
+      }
+      const result = await f.patch({ enabled: true }, { key: 'failure-receipt' });
+      assert.equal(result.status, 409, result.text);
+      assert.equal(
+        f.db.prepare("SELECT enabled FROM upstream_accounts WHERE id='a'").get().enabled,
+        0,
+      );
+      assert.equal(f.calls.length, 1);
+      assert.equal(f.notifications, 2);
+      assert.ok(!result.text.includes('pst-upstream-secret'));
+      const before = databaseState(f.db),
+        notifications = f.notifications;
+      f.upstream.status = 200;
+      f.upstream.payload = { subscription: { tier: 3, active: true } };
+      assert.deepEqual(
+        await f.patch({ enabled: true }, { key: 'failure-receipt' }).then((r) => r.body),
+        result.body,
+      );
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.notifications, notifications);
+      assert.equal(f.calls.length, 1);
+    });
+});
+
+test('账户PATCH网络等待后原owner/Cookie/epoch/ready/凭据/暂停/政策/admin逐项复核，拒绝不追加旧观察', async (t) => {
+  for (const mode of ['owner', 'cookie', 'epoch', 'ready', 'rotate', 'pause', 'policy', 'admin'])
+    await t.test(mode, async (t) => {
+      const f = await accountPatchFixture(t);
+      await f.patch({ enabled: false });
+      let release, entered;
+      const gate = new Promise((r) => (release = r)),
+        started = new Promise((r) => (entered = r));
+      f.upstream.onQuery = async () => {
+        entered();
+        await gate;
+      };
+      const response = f.patch(
+        { enabled: true },
+        {
+          key: 'waiting-' + mode,
+          ...(mode === 'admin' ? { route: accountAdmin + '?adminToken=' + adminToken } : {}),
+        },
+      );
+      await started;
+      try {
+        if (mode === 'owner') f.env.OWNER_USER_ID = 'm2';
+        if (mode === 'cookie') await logoutMemberSession(f.members, f.sessions.m1.token);
+        if (mode === 'epoch') {
+          const prepared = await f.members.prepareMemberCredentials('m1', {
+            username: 'changed.current',
+            password: 'synthetic-patch-password',
+          });
+          f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        }
+        if (mode === 'ready') f.db.prepare("UPDATE projection_state SET status='building'").run();
+        if (mode === 'rotate')
+          assert.equal((await f.patch({ token: 'pst-new-current' })).status, 200);
+        if (mode === 'pause') assert.equal((await f.patch({ enabled: false })).status, 200);
+        if (mode === 'policy') {
+          const q = new RelationalQuotaStore(f.db, f.env),
+            groups = [
+              ...q.readQuotaConfiguration().groups,
+              ...['g2', 'g3', 'g4'].map((id) => ({
+                id,
+                name: id,
+                share: 0,
+                members: [],
+                memberWeights: {},
+              })),
+            ];
+          await withAuthenticatedMemberApiKey(
+            f.members,
+            keys.m1,
+            (actor) =>
+              q.configureGroups(
+                meta('policy-during-query', f.clock, 'm1'),
+                { expectedConfigVersion: 1, groups },
+                actor,
+              ),
+            f.env,
+          );
+        }
+        if (mode === 'admin') f.env.PUBLIC_MODE = 'true';
+        const before = patchHistory(f.db);
+        release();
+        const result = await response;
+        assert.equal(
+          result.status,
+          {
+            owner: 401,
+            cookie: 401,
+            epoch: 401,
+            ready: 500,
+            rotate: 409,
+            pause: 409,
+            policy: 409,
+            admin: 401,
+          }[mode],
+          result.text,
+        );
+        assert.equal(patchHistory(f.db), before);
+        assert.equal(
+          f.db.prepare("SELECT enabled FROM upstream_accounts WHERE id='a'").get().enabled,
+          0,
+        );
+        assert.equal(f.calls.length, 1);
+      } finally {
+        release();
+      }
+    });
+});
+
+test('账户PATCH轮换全账户physical/reserved守卫与SQL尾错全回滚，健康重试/单通知和公共重放无私有外效', async (t) => {
+  const f = await accountPatchFixture(t);
+  // 已退款也不代表真实物理槽已释放。
+  const running = createGenerationControls({
+      controls: f.controls,
+      timeoutDelay: () => 60000,
+      schedule() {},
+    }),
+    control = running.createRunningJobControl({ id: 'late-physical', accountId: 'a' });
+  t.after(() => running.finishRunningJobControl('late-physical', control));
+  let before = databaseState(f.db);
+  assert.equal((await f.patch({ token: 'pst-blocked' })).status, 409);
+  assert.equal(databaseState(f.db), before);
+  running.finishRunningJobControl('late-physical', control);
+  f.accept('other-member-reserved', { memberId: 'm2' });
+  f.dispatch('other-member-reserved-0', f.clock);
+  before = databaseState(f.db);
+  assert.equal((await f.patch({ token: 'pst-blocked' })).status, 409);
+  assert.equal(databaseState(f.db), before);
+  f.fail('other-member-reserved-0', { aborted: false });
+  // 故障发生在CredentialRotated/Availability投影之后的真实私有PST写入。
+  f.db.exec(
+    "CREATE TEMP TRIGGER patch_private_fault BEFORE INSERT ON upstream_credentials BEGIN SELECT RAISE(ABORT,'patch private fault'); END",
+  );
+  before = databaseState(f.db);
+  const notifications = f.notifications;
+  assert.equal(
+    (await f.patch({ token: 'pst-retry-current' }, { key: 'retry-rotate' })).status,
+    500,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, notifications);
+  f.db.exec('DROP TRIGGER patch_private_fault');
+  assert.equal(
+    (await f.patch({ token: 'pst-retry-current' }, { key: 'retry-rotate' })).status,
+    200,
+  );
+  assert.equal(f.notifications, notifications + 1);
+  const snapshot = databaseState(f.db);
+  assert.equal(
+    (await f.patch({ token: 'pst-retry-current' }, { key: 'retry-rotate' })).status,
+    200,
+  );
+  assert.equal(databaseState(f.db), snapshot);
+  assert.equal(f.notifications, notifications + 1);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    source = new RelationalInputStore(f.db);
+  const fetch = t.mock.method(globalThis, 'fetch', () => assert.fail('public replay cannot fetch'));
+  try {
+    for (const { seq } of f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), source))();
+    }
+  } finally {
+    fetch.mock.restore();
+  }
+  for (const table of [
+    'commits',
+    'domain_events',
+    'stream_heads',
+    'upstream_accounts',
+    'account_quota_state',
+    'wallets',
+    'charges',
+    'generation_jobs',
+  ]) {
+    assert.deepEqual(
+      target.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+      f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+      table,
+    );
+  }
+  assert.equal(target.prepare('SELECT COUNT(*) AS n FROM upstream_credentials').get().n, 0);
+  assert.equal(target.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
+  assert.ok(
+    target
+      .prepare('SELECT auth_epoch FROM members')
+      .all()
+      .every((r) => r.auth_epoch === null),
+  );
+});
+
+test('账户PATCH正文等待后当前授权拒绝且不查上游；未注入实际query能力503而暂停可用', async (t) => {
+  for (const mode of ['owner', 'admin'])
+    await t.test(mode, async (t) => {
+      let f;
+      f = await accountPatchFixture(t, {
+        onBodyRead() {
+          if (mode === 'owner') f.env.OWNER_USER_ID = 'm2';
+          else f.env.PUBLIC_MODE = 'true';
+        },
+      });
+      const before = patchHistory(f.db),
+        result = await f.patch(
+          { enabled: true },
+          mode === 'admin' ? { route: accountAdmin + '?adminToken=' + adminToken } : {},
+        );
+      assert.equal(result.status, 401, result.text);
+      assert.equal(patchHistory(f.db), before);
+      assert.equal(f.calls.length, 0);
+    });
+  const f = await setup(t),
+    before = patchHistory(f.db);
+  const result = await f.call(accountOwner, { method: 'PATCH', body: { enabled: true } });
+  assert.equal(result.status, 503, result.text);
+  assert.equal(patchHistory(f.db), before);
+  assert.equal(
+    (await f.call(accountOwner, { method: 'PATCH', body: { enabled: false } })).status,
+    200,
+  );
+});
+
+test('账户PATCH与实际共享QuotaStore发起顺序一致，晚发票据使旧观察失效；启用SQL尾错全表回滚重试只通知一次', async (t) => {
+  const f = await accountPatchFixture(t);
+  await f.patch({ enabled: false });
+  let later;
+  f.upstream.onQuery = () => {
+    later = f.quotas.beginQuotaObservation('a', f.clock);
+  };
+  let before = databaseState(f.db),
+    notifications = f.notifications;
+  assert.equal((await f.patch({ enabled: true }, { key: 'old-observation' })).status, 409);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, notifications);
+  assert.ok(later.sequence);
+  f.upstream.onQuery = null;
+  f.db.exec(
+    "CREATE TEMP TRIGGER patch_enable_fault BEFORE UPDATE ON upstream_accounts WHEN NEW.enabled=1 BEGIN SELECT RAISE(ABORT,'patch enable fault'); END",
+  );
+  before = databaseState(f.db);
+  assert.equal((await f.patch({ enabled: true }, { key: 'enable-retry' })).status, 500);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, notifications);
+  f.db.exec('DROP TRIGGER patch_enable_fault');
+  const result = await f.patch({ enabled: true }, { key: 'enable-retry' });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(f.notifications, notifications + 1);
+  before = databaseState(f.db);
+  const calls = f.calls.length;
+  assert.deepEqual((await f.patch({ enabled: true }, { key: 'enable-retry' })).body, result.body);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, notifications + 1);
+  assert.equal(f.calls.length, calls);
+});
+
+async function sharedAccountPatch(f, t, options = {}) {
+  const refresh = createRelationalAccountQuotaRefresh({
+    sqlite: f.db,
+    quotas: f.quotas,
+    events: f.events,
+    env: { ...f.env, ...f.quotaEnv },
+    now: () => f.clock,
+    logger: { log() {}, error() {} },
+    ...options,
+  });
+  f.setHandler(
+    createRelationalManagementHttp({
+      sqlite: f.db,
+      quotas: f.quotas,
+      queryAccountQuota: refresh.fetch,
+      events: f.events,
+      controls: f.controls,
+      dataDir: f.dir,
+      env: f.env,
+      now: () => f.clock,
+      assertAdmin: (req, url) => assertAdminToken(req, url, adminToken, f.env),
+    }),
+  );
+  t.after(() => refresh.stop());
+  return refresh;
+}
+
+test('账户PATCH实际shared query繁忙无GET不得领票或伪观察，唯一原成功响应与busy旧receipt保持有效', async (t) => {
+  const f = await accountPatchFixture(t),
+    refresh = await sharedAccountPatch(f, t);
+  const saved = await f.patch({ enabled: true }, { key: 'original-success' });
+  assert.equal(saved.status, 200, saved.text);
+  let release, enter;
+  const gate = new Promise((r) => (release = r)),
+    entered = new Promise((r) => (enter = r));
+  f.upstream.onQuery = async () => {
+    enter();
+    await gate;
+  };
+  const original = refresh.refreshEnabled();
+  await entered;
+  try {
+    const before = databaseState(f.db),
+      calls = f.calls.length;
+    const busy = await f.patch({ enabled: true }, { key: 'busy-must-not-save' });
+    assert.equal(busy.status, 409, busy.text);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, calls);
+    assert.deepEqual(
+      (await f.patch({ enabled: true }, { key: 'original-success' })).body,
+      saved.body,
+    );
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, calls);
+    release();
+    assert.deepEqual(await original, { checked: 1, ok: 1, failed: 0, ignored: 0 });
+  } finally {
+    release();
+  }
+  f.upstream.onQuery = null;
+  assert.equal(
+    (await f.patch({ enabled: true }, { key: 'busy-must-not-save' })).status,
+    200,
+    'local rejection saved no receipt, same key can actually start',
+  );
+  assert.equal(f.calls.length, 3);
+});
+
+test('账户PATCH已发真实query超时可提交失败观察，raw吞abort仍占槽且stop等实际HTTPsettle', async (t) => {
+  const f = await accountPatchFixture(t),
+    refresh = await sharedAccountPatch(f, t, {
+      requestTimeoutMs: 100,
+      fetchQuota: (token, env, options) =>
+        fetchNovelAiAccountQuota(token, env, { ...options, signal: undefined }),
+    });
+  let release, enter;
+  const gate = new Promise((r) => (release = r)),
+    entered = new Promise((r) => (enter = r));
+  f.upstream.onQuery = async () => {
+    enter();
+    await gate;
+  };
+  const pending = f.patch({ enabled: true }, { key: 'timed-real-query' });
+  await entered;
+  try {
+    const timeout = await pending;
+    assert.equal(timeout.status, 409, timeout.text);
+    assert.equal(f.calls.length, 1);
+    const before = databaseState(f.db),
+      observed = f.db
+        .prepare(
+          "SELECT CAST(observed_sequence AS TEXT) seq FROM account_quota_state WHERE account_id='a'",
+        )
+        .get().seq;
+    assert.equal((await f.patch({ enabled: true }, { key: 'busy-after-deadline' })).status, 409);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(
+      (await f.patch({ enabled: true }, { key: 'timed-real-query' })).body,
+      timeout.body,
+    );
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, 1);
+    let stopped = false;
+    refresh.stop();
+    const stop = refresh.pending.then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(stopped, false);
+    assert.ok(refresh.pending);
+    release();
+    await stop;
+    assert.equal(stopped, true);
+    assert.equal(refresh.pending, null);
+    assert.equal(databaseState(f.db), before, 'late raw success cannot rewrite timed observation');
+    f.upstream.onQuery = null;
+    assert.equal((await f.patch({ enabled: true }, { key: 'busy-after-deadline' })).status, 200);
+    assert.ok(
+      BigInt(
+        f.db
+          .prepare(
+            "SELECT CAST(observed_sequence AS TEXT) seq FROM account_quota_state WHERE account_id='a'",
+          )
+          .get().seq,
+      ) > BigInt(observed),
+    );
+  } finally {
+    release();
+  }
 });

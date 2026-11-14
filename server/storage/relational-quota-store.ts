@@ -1689,18 +1689,38 @@ export class RelationalQuotaStore {
       );
     });
   }
-  beginQuotaObservation(accountId: string, startedAt = Date.now()): Ticket {
-    const a = this.account(accountId),
-      q = this.readAccountQuota(accountId);
-    if (!a.pst || !Number.isSafeInteger(startedAt) || startedAt < 0) {
+  prepareQuotaObservation(accountId: string): Omit<Ticket, 'sequence' | 'startedAt'> {
+    const a = this.account(accountId);
+    if (!a.pst) {
       fail('观察缺少当前私有凭据或实际时间', 503);
     }
+    return { accountId, credentialEpoch: a.epoch, pst: a.pst };
+  }
+  beginQuotaObservation(
+    accountId: string,
+    startedAt = Date.now(),
+    expected?: ReturnType<RelationalQuotaStore['prepareQuotaObservation']>,
+  ): Ticket {
+    const source = this.prepareQuotaObservation(accountId),
+      q = this.readAccountQuota(accountId);
+    if (!Number.isSafeInteger(startedAt) || startedAt < 0) {
+      fail('观察缺少当前私有凭据或实际时间', 503);
+    }
+    if (
+      expected &&
+      (expected.accountId !== source.accountId ||
+        expected.credentialEpoch !== source.credentialEpoch ||
+        expected.pst !== source.pst)
+    ) {
+      fail('额度查询发起前原凭据已变化');
+    }
     return {
-      accountId,
-      credentialEpoch: a.epoch,
-      sequence: this.order.issue(`${accountId}:${a.epoch}`, q.observedSequence ?? '0'),
+      ...source,
+      sequence: this.order.issue(
+        `${accountId}:${source.credentialEpoch}`,
+        q.observedSequence ?? '0',
+      ),
       startedAt,
-      pst: a.pst,
     };
   }
   recordQuotaObservation(metadata: Metadata, ticket: Ticket, result: QuotaResult) {

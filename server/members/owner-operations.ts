@@ -3,6 +3,7 @@ import type {
   RelationalAccountStore,
   AccountCommandMetadata,
   OwnerAccountMutation,
+  AccountEnableTicket,
 } from '../storage/relational-account-store.ts';
 import type { MemberUser } from './authentication.ts';
 import {
@@ -335,6 +336,21 @@ export function assertOwnerAccountPst(token: unknown): asserts token is string {
   }
 }
 
+// 两个账户 PATCH 入口共享原单字段规则；名称、代理与多账户权重不映射到当前模型。
+export function ownerAccountPatch(accountId: string, input: Record<string, unknown>) {
+  if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0]!)) {
+    fail(400, '只允许更新启用状态或 PST');
+  }
+  if ('token' in input) {
+    assertOwnerAccountPst(input.token);
+    return { kind: 'token' as const, accountId, token: input.token };
+  }
+  if (typeof input.enabled !== 'boolean') {
+    fail(400, 'enabled 必须为布尔值');
+  }
+  return { kind: input.enabled ? ('enable' as const) : ('pause' as const), accountId };
+}
+
 function accountCommandResult(result: RelationalCommitResult) {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
@@ -345,11 +361,15 @@ function accountCommandResult(result: RelationalCommitResult) {
 
 // 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
 export async function ownerAccountCommand(
-  store: Pick<RelationalAccountStore, 'prepareAccountCommand' | 'completeAccountEnable'>,
+  store: Pick<
+    RelationalAccountStore,
+    'prepareAccountCommand' | 'startAccountEnable' | 'completeAccountEnable'
+  >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
   input: OwnerAccountMutation,
-  query: ReturnType<typeof createAccountQuotaQuery>,
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  now: () => number = Date.now,
 ) {
   const prepared = await authorize((member) =>
     store.prepareAccountCommand(metadata, input, member),
@@ -363,15 +383,46 @@ export async function ownerAccountCommand(
   if (input.kind !== 'enable') {
     throw new Error('Only account enablement may query upstream.');
   }
-  const { ticket } = prepared;
-  let observation;
+  if (!query) {
+    fail(503, '账户额度查询尚未配置');
+  }
+  let ticket: AccountEnableTicket | undefined,
+    prior: RelationalCommitResult | undefined,
+    observation;
   try {
+    const quota = await query(prepared.prepared.pst, '', prepared.prepared.accountId, async () => {
+      const started = await authorize((member) =>
+        store.startAccountEnable(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          member,
+        ),
+      );
+      if (!started) {
+        fail(401, '会话已失效，请重新登录');
+      }
+      if ('result' in started) {
+        prior = started.result;
+        throw new Error('Account command already completed.');
+      }
+      ticket = started.ticket;
+    });
+    if (!ticket) {
+      throw new Error('Account quota query did not start its observation.');
+    }
     observation = accountQuotaResult(
       ticket.accountId,
-      await query(ticket.pst, '', ticket.accountId),
+      quota,
       new Date(ticket.startedAt).toISOString(),
     );
   } catch (error) {
+    if (prior) {
+      return accountCommandResult(prior);
+    }
+    if (!ticket) {
+      throw error;
+    }
     observation = accountQuotaErrorResult(
       ticket.accountId,
       error,
@@ -380,9 +431,9 @@ export async function ownerAccountCommand(
   }
   const result = await authorize((member) =>
     store.completeAccountEnable(
-      { ...metadata, recordedAt: Date.now() },
+      { ...metadata, recordedAt: now() },
       input,
-      ticket,
+      ticket!,
       observation,
       member,
     ),
@@ -425,19 +476,13 @@ export async function ownerOperation(
   const input = body!;
   const targetId = method === 'PATCH' ? /^\/accounts\/([^/]+)$/.exec(path)?.[1] : undefined;
   if (targetId) {
-    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
-      fail(400, '只允许更新启用状态或 PST');
-    }
+    const patch = ownerAccountPatch(targetId, input);
     let change: OwnerAccountChange;
-    if ('token' in input) {
-      assertOwnerAccountPst(input.token);
-      change = { kind: 'token', token: input.token };
+    if (patch.kind === 'token') {
+      change = { kind: 'token', token: patch.token };
     } else {
-      if (typeof input.enabled !== 'boolean') {
-        fail(400, 'enabled 必须为布尔值');
-      }
       change = { kind: 'pause' };
-      if (input.enabled) {
+      if (patch.kind === 'enable') {
         let observation: EnableObservation = null;
         // 只查询已选中的共享账户。使用实际提交观察时返回的来源，网络等待不在写事务内。
         if (account?.id === targetId) {
