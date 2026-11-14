@@ -27,6 +27,7 @@ import {
   validateRelationalInputBody,
   validateRelationalAssetBytes,
   assertRelationalCompleteInput,
+  assertRelationalInputDefinition,
   relationalInputCacheKey,
   type PreparedRelationalInput,
   type RelationalInputAsset,
@@ -1546,8 +1547,11 @@ export class RelationalInputStore {
           assertRequestSeedMode(p, context);
           if (input.row.completeness === 'complete') {
             if (p.sampleCount === null) {
-              // 正文和附件可完整保存；缺原批次数不能伪造完整请求的 wire 往返。
-              source.validatedAssets(input, context);
+              assertRelationalInputDefinition(
+                input.body!,
+                source.validatedAssets(input, context),
+                context,
+              );
             } else {
               source.assertCompleteInput(input, context, p.sampleCount);
             }

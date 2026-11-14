@@ -2307,3 +2307,13 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 TEMP 精确源两项语义负控分别把投影NULL改为1、用TypeScript非空断言绕过共同knownSampleCount，分别在实际fact/row读取关系和ready/HTTP后的readJobInput业务断言失败（后者Missing expected exception），没有把parser/加载/错误DDL前置拦截算目标。原字节finally还原、九路径SHA全同，恢复后原五项 **5/5**；`negative-evidence.json` / `reproduce-negatives.py` 与各日志绑定。准确旧5ca DDL/hash夹具来自固定Git原件，现guard拒绝且原临时库字节不变。
 
 类型、architecture、默认/可信88 migration、改动格式/MJS语法/diff检查通过。首轮测试句柄cleanup顺序的Windows EBUSY和次轮误读业务receipt.commitSeq/公开DTO sampleIndex两类测试准备错误及原字节均封存，不计作产品业务红；修正为及时close、真实command_id→TEXTseq、原公开index后通过。没有full/build/compiled/Node24/新native/真实云或生产操作；独立复审与父并集待固定候选，A/B、13旧键、旧会话决定不被本片批准。
+
+#### 9.92.1 独审修正：未知数量不豁免已知正文定义
+
+`7ae35a3` 保持 NOTPASS。独立反例在同一原捕获 Native context/complete body 只增加未知参数，原严格 helper及 known-count Opening 均拒绝且全表不变，NULL 分支却只核附件而接受；其完整公共重建后，实际唯一installer还安装了ready。原观察的ready不是验收通过，独审报告与原反例/首日志保存在 `H:/TEMP/novelai-opening-unknown-count-independent-20261115/`，原作者29绿不能覆盖该P2。
+
+后继在原 `generation/relational-input.ts` 提取唯一私有严格parser→canonical wire往返，原完整入口仍传原数量，原实际seed/首次意图关系仍归原owner；新增void的正文定义入口供数量未知但context已知时复用。仅用局部固定seed0/单图帧检查与数量/seed无关的原正文定义，不返回wire、不改body/hash、qty、事实或DTO，不把通过该校验当完整原请求/活动/live证明。InputStore未知分支沿原BLOB/slot/MIME校验后调用它；有来源的Native/member、Medium、Direct广范围及辅助操作规则不再缺席。缺首次context仍是原安全只读未知，不用当前定义补历史。
+
+此为已证正确性缺口所需第5产品owner范围，未增状态/兼容模式/私有来源/Schema或event版本；DDL hash仍为2314a5a3…c5be7c8a，旧SQL/journal与架构门禁不变。原共享A knowncount/B NULL、已知context/seed/原图/收费与恢复门禁同候选回归。作者 Node22 两完整 Opening 文件 **31/31、零 skip，5.480 秒**，包含原29控制与新增Medium/辅助操作和自洽坏来源两项。原独审坏参数程序四文件逐SHA不改，作者首次复跑 **1/1、零 skip**；这不是非作者复审。Native/旧保存参数名、Direct、Medium、encode-vibe/upscale 在known/NULL下同拒坏正文；Direct原宽范围及真实数量2拒绝保留，定义局部校验前后body/hash/count/seed不写回。坏来源facts/projection/cut齐全，完整公共重放在原参数422处全表回滚，实际unique installer仍building，target及封存source SHA不变。
+
+TEMP仅撤回未知分支的定义校验调用，原独审同程序精准 Missing expected exception；finally恢复五路径SHA全同后原程序再 **1/1**。证据 `H:/TEMP/novelai-opening-input-definition-fix-20261115/` 的source-owner-first、original-negative-fixed-first、removed-definition-call-negative、removed-definition-restored-control日志与manifest/owner-body-comparison。首个新Medium夹具误用Native normalized DTO没有的operation而在fact parser失败，已按prepare.body.operation的实际owner修正；首日志/字节保留，不算正文规则业务红。原严格实现体提取前后逐字相同，类型、architecture、默认/可信88 migration、格式/语法/diff通过；原7ae NOTPASS记录不覆盖。未做full/build/compiled/Node24/native/真实云/生产或真实旧源读取；最终非作者复审待固定后继。
