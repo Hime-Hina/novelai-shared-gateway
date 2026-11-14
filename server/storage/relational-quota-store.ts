@@ -1,4 +1,5 @@
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
+import { assertOwnerAccountInitialBinding } from '../members/owner-operations.ts';
 import { RelationalCommitReplayer } from './relational-replay.ts';
 import { relationalAccountConnectionSource } from './relational-account-connection.ts';
 import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
@@ -40,6 +41,8 @@ import type {
 } from '../events/relational-events.ts';
 import {
   syncBoundFairQuota,
+  syncFairQuota,
+  configureFairQuota,
   manageOperatingFunding,
   fairQuotaSnapshot,
   configureAnlasFallback,
@@ -558,12 +561,12 @@ export class RelationalQuotaStore {
         )
         .all(),
       memberships = this.sqlite
-        .prepare<[], { memberId: string; groupId: string; weight: number }>(
-          'SELECT member_id AS memberId,group_id AS groupId,weight FROM group_members ORDER BY member_id',
+        .prepare<[], { memberId: string; groupId: string; weight: number; sourceId: string }>(
+          'SELECT member_id AS memberId,group_id AS groupId,weight,source_event_id AS sourceId FROM group_members ORDER BY member_id',
         )
         .all();
     return {
-      members: memberships.map((member) => member.memberId),
+      members: this.memberOrder(memberships),
       groups: groups.map((group): FairGroup => ({
         ...group,
         members: memberships
@@ -576,6 +579,81 @@ export class RelationalQuotaStore {
         ),
       })),
     };
+  }
+  private memberOrder(
+    rows: { memberId: string; groupId: string; weight: number; sourceId: string }[],
+  ) {
+    if (!rows.length) {
+      return [];
+    }
+    const sources = [...new Set(rows.map((row) => row.sourceId))].map((id) => this.fact(id)),
+      original = sources[0];
+    if (sources.length === 1 && ['SharingConfigured', 'MemberRemoved'].includes(original.type)) {
+      const fact = parseRelationalFact({ eventType: original.type, payload: original.payload });
+      if (fact.eventType !== 'SharingConfigured' && fact.eventType !== 'MemberRemoved') {
+        fail('成员顺序缺少原配置事实');
+      }
+      const members =
+          fact.eventType === 'MemberRemoved'
+            ? fact.payload.memberIds
+            : fact.payload.groups.flatMap((group) =>
+                group.members.map((member) => member.memberId),
+              ),
+        saved = fact.payload.groups.flatMap((group) =>
+          group.members.map((member) => ({
+            memberId: member.memberId,
+            groupId: group.groupId,
+            weight: member.weight,
+          })),
+        );
+      if (
+        canonicalJson(saved.sort((a, b) => a.memberId.localeCompare(b.memberId))) !==
+        canonicalJson(
+          rows
+            .map(({ sourceId: _source, ...row }) => row)
+            .sort((a, b) => a.memberId.localeCompare(b.memberId)),
+        )
+      ) {
+        fail('当前成员必须来自原完整配置事实');
+      }
+      if (
+        members !== null &&
+        (new Set(members).size !== rows.length ||
+          members.length !== rows.length ||
+          members.some((id) => !rows.some((row) => row.memberId === id)))
+      ) {
+        fail('原成员顺序必须完整且唯一覆盖当前成员');
+      }
+      return members;
+    }
+    const ordinals = rows.map((row) => {
+      const source = this.fact(row.sourceId),
+        fact = parseRelationalFact({ eventType: source.type, payload: source.payload });
+      if (
+        fact.eventType !== 'OpeningGroupMemberRecorded' ||
+        fact.payload.memberId !== row.memberId ||
+        fact.payload.groupId !== row.groupId ||
+        fact.payload.weight !== row.weight
+      ) {
+        fail('开账成员顺序缺少原同成员来源');
+      }
+      return { memberId: row.memberId, ordinal: fact.payload.memberOrdinal };
+    });
+    if (ordinals.every((row) => row.ordinal === null)) {
+      return null;
+    }
+    ordinals.sort((a, b) => (a.ordinal ?? -1) - (b.ordinal ?? -1));
+    if (ordinals.some((row, index) => row.ordinal !== index)) {
+      fail('开账成员原序号必须从零连续且唯一，未知不能补排序');
+    }
+    return ordinals.map((row) => row.memberId);
+  }
+  private orderedGroupState() {
+    const state = this.groupState();
+    if (state.members === null) {
+      fail('原成员顺序未知，不能规划账本变更', 503);
+    }
+    return { ...state, members: state.members };
   }
   private quotaAccount(
     a: { id: string; enabled: number; epoch: number },
@@ -673,8 +751,6 @@ export class RelationalQuotaStore {
     })();
   }
   private state(accountId: string) {
-    const q = this.readAccountQuota(accountId),
-      a = this.account(accountId);
     const policy = this.sqlite
       .prepare<[], { enabled: number; accountId: string | null; configVersion: number }>(
         'SELECT enabled,bound_account_id AS accountId,config_version AS configVersion FROM sharing_policy WHERE id=1',
@@ -683,7 +759,15 @@ export class RelationalQuotaStore {
     if (!policy || policy.accountId !== accountId) {
       fail('金融命令只能使用当前绑定账户', 503);
     }
-    const configuration = this.groupState();
+    return this.financialState(accountId, policy, this.orderedGroupState());
+  }
+  private financialState(
+    accountId: string,
+    policy: { enabled: number; configVersion: number },
+    configuration: { members: string[]; groups: FairGroup[] },
+  ) {
+    const q = this.readAccountQuota(accountId),
+      a = this.account(accountId);
     // 钱包责任归原账户，不能用当前组资格过滤物理预算；新分配仍只遍历 configuration.members。
     const balances = Object.fromEntries(
       this.sqlite
@@ -934,12 +1018,12 @@ export class RelationalQuotaStore {
         .get(member.id);
     assertCurrentOwnerCommand(metadata, member, current, this.env);
   }
-  private managementView() {
+  private managementView(requireIdle = true) {
     const hasPolicy = !!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get(),
       policy = hasPolicy ? this.sharingPolicy() : null;
-    const configuration = this.groupState(),
+    const configuration = this.orderedGroupState(),
       financial = policy?.accountId ? this.state(policy.accountId) : null;
-    if (financial) {
+    if (financial && requireIdle) {
       assertFairQuotaIdle(financial.db);
     }
     const state: FairQuotaState | null = policy
@@ -1278,6 +1362,7 @@ export class RelationalQuotaStore {
             configVersion: state.configVersion,
             ...(!transfer
               ? {
+                  memberIds: [...state.members],
                   groups: state.groups.map((group) => ({
                     groupId: group.id,
                     name: group.name!,
@@ -1361,6 +1446,182 @@ export class RelationalQuotaStore {
       fail('分组命令无效', 400);
     }
   }
+  private planFairQuotaConfirmation(metadata: Metadata, memberIds: unknown) {
+    const view = this.managementView(false),
+      { db, policy } = view;
+    if (
+      !Array.isArray(memberIds) ||
+      memberIds.some((id) => !db.users.some((user) => user.id === id && user.enabled !== false))
+    ) {
+      fail('请选择已启用的成员', 400);
+    }
+    const configured = this.capture(view, () => configureFairQuota(db, memberIds)),
+      initial = configured.facts.length > 0,
+      state = configured.result,
+      configuration = structuredClone(state);
+    db.accounts = this.sqlite
+      .prepare<[], { id: string }>('SELECT id FROM upstream_accounts ORDER BY id')
+      .all()
+      .map(({ id }) => this.quotaAccount(this.account(id), this.readAccountQuota(id)));
+    let financial = view.financial;
+    if (state.enabled && state.boundAccountId === null) {
+      const eligible = db.accounts.filter((account) => isUsableOpus(account, metadata.recordedAt));
+      if (eligible.length === 1) {
+        const binding = { accountId: eligible[0].id, configVersion: state.configVersion + 1 };
+        assertOwnerAccountInitialBinding(
+          { accountId: null, version: state.configVersion },
+          binding,
+          !!this.sqlite
+            .prepare('SELECT 1 FROM upstream_accounts WHERE id=?')
+            .get(binding.accountId),
+        );
+        financial = this.financialState(
+          binding.accountId,
+          { enabled: Number(state.enabled), configVersion: binding.configVersion },
+          state,
+        );
+        // 同一原账户资产/责任全部保留；绑定前只使用规划的成员与版本，不改 SQL。
+        Object.assign(state, financial.db.settings.fairQuota, { boundAccountId: null });
+        for (const memberId of state.members) {
+          state.balances[memberId] ??= configuration.balances[memberId];
+        }
+      }
+    }
+    const synced = this.capture(view, () => syncFairQuota(db, metadata.recordedAt)),
+      events: RelationalEventInput[] = initial
+        ? [this.sharingConfigurationEvent(db, configuration, metadata, false)]
+        : [];
+    if (state.boundAccountId !== (policy?.accountId ?? null)) {
+      if (!financial || !synced.facts.some((fact) => fact.eventType === 'AccountBound')) {
+        fail('首次绑定缺少原账户决定');
+      }
+      events.push({
+        ...this.event(
+          {
+            eventType: 'AccountBound',
+            payload: {
+              accountId: state.boundAccountId,
+              configVersion: state.configVersion,
+            },
+          },
+          financial.account.id,
+          metadata,
+        ),
+        streamId: 'sharing:default',
+      });
+    }
+    const facts = synced.facts.filter(
+      (fact) => !['AccountBound', 'QuotaAccountOpened'].includes(fact.eventType),
+    );
+    if (financial) {
+      events.push(...this.convert(facts, financial, metadata));
+    } else if (facts.some((fact) => fact.eventType !== 'AvailabilityChanged')) {
+      fail('未绑定首配不能产生账户金融决定');
+    }
+    return {
+      events,
+      receipt: {
+        fairQuotaConfirmation: {
+          status: state.status,
+          members: [...state.members],
+          globalConcurrency: 4,
+        },
+      },
+    };
+  }
+  // 原 API 不解释幂等头；有决定时保存完整原意图，无决定时不产生空提交。
+  configureMemberIds(metadata: Metadata, memberIds: unknown) {
+    return this.owned(() => {
+      this.authorizeOwnerCommand(metadata, null);
+      if (metadata.actorKind !== 'admin') {
+        fail('公平分配配置仅管理员可执行', 403);
+      }
+      if (!Array.isArray(memberIds)) {
+        fail('公平分配需要四个不同的用户 ID', 400);
+      }
+      const command = {
+          ...metadata,
+          policyVersion: 'fair-quota-confirmation-v1',
+          fingerprint: domainDigest({ operation: 'fair-quota', memberIds }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const planned = this.planFairQuotaConfirmation(command, memberIds);
+      if (!planned.events.length) {
+        return { unchanged: true, receipt: planned.receipt };
+      }
+      return new RelationalCommitReplayer(this.sqlite).appendCommit(
+        this.command(command, planned.events, planned.receipt),
+      );
+    });
+  }
+  private assertFairQuotaConfirmation(events: RelationalEvent[], receipt: Json) {
+    const response =
+      receipt && !Array.isArray(receipt) && typeof receipt === 'object'
+        ? receipt.fairQuotaConfirmation
+        : undefined;
+    if (
+      response === undefined &&
+      !events.some((event) => event.policyVersion === 'fair-quota-confirmation-v1')
+    ) {
+      return false;
+    }
+    if (!response || Array.isArray(response) || typeof response !== 'object' || !events.length) {
+      fail('公平分配确认必须保留原完整回执');
+    }
+    const stored = readRelationalCommit(this.sqlite, events[0].commitSeq),
+      metadata = {
+        ...stored.command,
+        policyVersion: 'fair-quota-confirmation-v1',
+        pricingVersion: events[0].pricingVersion,
+      },
+      planned = this.planFairQuotaConfirmation(metadata, response.members);
+    if (
+      metadata.actorKind !== 'admin' ||
+      metadata.fingerprint !==
+        domainDigest({ operation: 'fair-quota', memberIds: response.members }) ||
+      canonicalJson(receipt) !== canonicalJson(planned.receipt) ||
+      planned.events.length !== events.length
+    ) {
+      fail('公平分配确认不符原管理员意图或完整决定');
+    }
+    const ids = new Map(
+        planned.events.map((event, index) => [event.eventId!, events[index].eventId]),
+      ),
+      replaceIds = (value: Json): Json => {
+        if (typeof value === 'string') {
+          return ids.get(value) ?? value;
+        }
+        if (Array.isArray(value)) {
+          return value.map(replaceIds);
+        }
+        if (value && typeof value === 'object') {
+          return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, replaceIds(item)]),
+          );
+        }
+        return value;
+      },
+      decision = (event: RelationalEventInput) => ({
+        eventType: event.eventType,
+        payload: event.payload,
+        streamId: event.streamId,
+        accountId: event.accountId,
+        memberId: event.memberId,
+        occurredAt: event.occurredAt,
+        policyVersion: event.policyVersion,
+        pricingVersion: event.pricingVersion,
+      });
+    if (
+      canonicalJson(planned.events.map((event) => replaceIds(decision(event) as Json))) !==
+      canonicalJson(events.map(decision))
+    ) {
+      fail('公平分配确认必须完整保留原配置、唯一绑定及金融来源顺序');
+    }
+    return true;
+  }
   private planGroupConfiguration(
     metadata: Pick<Metadata, 'actorId' | 'recordedAt'>,
     input: GroupConfigurationInput,
@@ -1429,6 +1690,53 @@ export class RelationalQuotaStore {
       };
     });
   }
+  private sharingConfigurationEvent(
+    db: FairQuotaDatabase,
+    state: FairQuotaState,
+    metadata: Metadata,
+    redistributeRemaining: boolean,
+  ) {
+    const sharingEvent = (fact: RelationalFact): RelationalEventInput => ({
+      ...fact,
+      eventId: randomUUID(),
+      streamId: 'sharing:default',
+      accountId: null,
+      memberId: 'memberId' in fact.payload ? fact.payload.memberId : null,
+      occurredAt: metadata.recordedAt,
+      policyVersion: metadata.policyVersion,
+      pricingVersion: metadata.pricingVersion,
+    });
+    const free = freeImagePolicy(db),
+      loss = lossAlertPolicy(state.lossAlertPolicy);
+    return sharingEvent({
+      eventType: 'SharingConfigured',
+      payload: {
+        enabled: state.enabled,
+        boundAccountId: state.boundAccountId,
+        configVersion: state.configVersion,
+        autoAnlasFallback: state.autoAnlasFallback === true,
+        freePolicyVersion: free.version,
+        freeEnabled: free.enabled,
+        freeWarningThreshold: free.warningThreshold,
+        freeHardLimit: free.hardLimit,
+        lossPolicyVersion: loss.version,
+        lossV5_24h: loss.v5Points24h,
+        lossFixed24h: String(loss.fixedAnlas24h),
+        lossFixed30d: String(loss.fixedAnlas30d),
+        lossMemberAttempts24h: loss.memberAttempts24h,
+        redistributeRemaining: redistributeRemaining,
+        groups: state.groups.map((group) => ({
+          groupId: group.id,
+          name: group.name!,
+          share: group.share,
+          members: group.members.map((memberId) => ({
+            memberId,
+            weight: group.memberWeights[memberId],
+          })),
+        })),
+      },
+    });
+  }
   configureGroups(metadata: Metadata, input: GroupConfigurationInput, member: MemberUser | null) {
     return this.owned(() => {
       this.authorizeOwnerCommand(metadata, member);
@@ -1445,50 +1753,16 @@ export class RelationalQuotaStore {
         return prior;
       }
       const { db, financial, planned, anchor } = this.planGroupConfiguration(metadata, input),
-        result = planned.result,
-        free = freeImagePolicy(db),
-        loss = lossAlertPolicy(result.lossAlertPolicy);
+        result = planned.result;
       const events = financial
         ? this.convert(planned.facts.slice(0, anchor), financial, metadata)
         : [];
-      const sharingEvent = (fact: RelationalFact): RelationalEventInput => ({
-        ...fact,
-        eventId: randomUUID(),
-        streamId: 'sharing:default',
-        accountId: null,
-        memberId: 'memberId' in fact.payload ? fact.payload.memberId : null,
-        occurredAt: metadata.recordedAt,
-        policyVersion: metadata.policyVersion,
-        pricingVersion: metadata.pricingVersion,
-      });
-      const configurationEvent = sharingEvent({
-        eventType: 'SharingConfigured',
-        payload: {
-          enabled: result.enabled,
-          boundAccountId: result.boundAccountId,
-          configVersion: result.configVersion,
-          autoAnlasFallback: result.autoAnlasFallback === true,
-          freePolicyVersion: free.version,
-          freeEnabled: free.enabled,
-          freeWarningThreshold: free.warningThreshold,
-          freeHardLimit: free.hardLimit,
-          lossPolicyVersion: loss.version,
-          lossV5_24h: loss.v5Points24h,
-          lossFixed24h: String(loss.fixedAnlas24h),
-          lossFixed30d: String(loss.fixedAnlas30d),
-          lossMemberAttempts24h: loss.memberAttempts24h,
-          redistributeRemaining: input.redistributeRemaining === true,
-          groups: result.groups.map((group) => ({
-            groupId: group.id,
-            name: group.name!,
-            share: group.share,
-            members: group.members.map((memberId) => ({
-              memberId,
-              weight: group.memberWeights[memberId],
-            })),
-          })),
-        },
-      });
+      const configurationEvent = this.sharingConfigurationEvent(
+        db,
+        result,
+        metadata,
+        input.redistributeRemaining === true,
+      );
       events.push(configurationEvent);
       for (const fact of planned.facts.slice(anchor + 1)) {
         if (fact.eventType !== 'FundsTransferred' || fact.payload.kind !== 'redistribution') {
@@ -1560,6 +1834,29 @@ export class RelationalQuotaStore {
   assertGroupCommit(events: RelationalEvent[], receipt: Json) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Group validation requires the owning transaction.');
+    }
+    const configuration = this.groupState();
+    if (events.some((event) => event.policyVersion === 'fair-quota-confirmation-v1')) {
+      // 原序前完整规划器已核决定；原序后再核公开回执确实指向当前结果。
+      const confirmation =
+          receipt && !Array.isArray(receipt) && typeof receipt === 'object'
+            ? receipt.fairQuotaConfirmation
+            : null,
+        policy = this.sharingPolicy();
+      if (
+        !confirmation ||
+        Array.isArray(confirmation) ||
+        typeof confirmation !== 'object' ||
+        canonicalJson(confirmation.members) !== canonicalJson(configuration.members) ||
+        confirmation.globalConcurrency !== 4 ||
+        (policy.accountId &&
+          confirmation.status !== this.readAccountQuota(policy.accountId).status) ||
+        (!policy.accountId &&
+          !['pending_opus', 'ambiguous_opus'].includes(String(confirmation.status)))
+      ) {
+        fail('公平分配回执必须保留当前原成员顺序及绑定结果');
+      }
+      return;
     }
     const configurations = events.filter((event) => event.eventType === 'SharingConfigured'),
       groupReceipt =
@@ -2746,6 +3043,7 @@ export class RelationalQuotaStore {
           'autoJoined',
           'shareChanges',
         ].some((key) => key in receipt);
+    const fairQuotaConfirmation = this.assertFairQuotaConfirmation(events, receipt);
     if (memberChanges.length || memberTransfers.length || memberReceipt) {
       if (memberChanges.length !== 1 || !memberReceipt) fail('成员权益回执必须有唯一原共享决定');
       const change = memberChanges[0];
@@ -3091,18 +3389,19 @@ export class RelationalQuotaStore {
         if (
           p.configVersion !== state.configVersion ||
           (e.eventType === 'MemberRemoved' &&
-            canonicalJson(e.payload.groups) !==
-              canonicalJson(
-                state.groups.map((group) => ({
-                  groupId: group.id,
-                  name: group.name,
-                  share: group.share,
-                  members: group.members.map((memberId) => ({
-                    memberId,
-                    weight: group.memberWeights[memberId],
+            (canonicalJson(e.payload.memberIds) !== canonicalJson(state.members) ||
+              canonicalJson(e.payload.groups) !==
+                canonicalJson(
+                  state.groups.map((group) => ({
+                    groupId: group.id,
+                    name: group.name,
+                    share: group.share,
+                    members: group.members.map((memberId) => ({
+                      memberId,
+                      weight: group.memberWeights[memberId],
+                    })),
                   })),
-                })),
-              )) ||
+                ))) ||
           canonicalJson(receipt) !== canonicalJson(planned.result) ||
           stored?.fingerprint !==
             domainDigest({ operation: 'member-quota', input: body } as unknown as Json)
@@ -3154,16 +3453,17 @@ export class RelationalQuotaStore {
       }
       if (e.eventType === 'SharingConfigured') {
         const p = e.payload,
-          configuration = this.groupState();
+          configuration = this.orderedGroupState();
         if (
           e.streamId !== 'sharing:default' ||
           e.accountId !== null ||
           e.memberId !== null ||
-          this.sqlite
-            .prepare(
-              "SELECT 1 FROM generation_jobs WHERE status IN ('queued','pending','running') UNION ALL SELECT 1 FROM charges WHERE status='reserved' LIMIT 1",
-            )
-            .get()
+          (!fairQuotaConfirmation &&
+            this.sqlite
+              .prepare(
+                "SELECT 1 FROM generation_jobs WHERE status IN ('queued','pending','running') UNION ALL SELECT 1 FROM charges WHERE status='reserved' LIMIT 1",
+              )
+              .get())
         ) {
           fail('分组配置必须属于空闲的当前共享流');
         }
@@ -3173,12 +3473,17 @@ export class RelationalQuotaStore {
         if (current?.accountId) {
           assertSyncDecisions(e, current.accountId, this.readAccountQuota(current.accountId));
         }
+        let initialVersion = 2;
+        if (fairQuotaConfirmation) {
+          initialVersion = 1;
+        }
         if (
-          p.configVersion !== (current ? current.configVersion + 1 : 2) ||
+          p.configVersion !== (current ? current.configVersion + 1 : initialVersion) ||
           p.boundAccountId !== (current?.accountId ?? null) ||
+          (!current && configuration.groups.length) ||
           (!current &&
-            (configuration.groups.length ||
-              this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()))
+            !fairQuotaConfirmation &&
+            this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get())
         ) {
           fail('分组政策版本或初始绑定不符');
         }
@@ -3399,7 +3704,9 @@ export class RelationalQuotaStore {
           'ReturnClassified',
         ].includes(e.eventType) ||
         (e.eventType === 'AllocationApplied' &&
-          this.fact(e.payload.sourceEventId).type === 'QuotaObserved')
+          ['QuotaObserved', 'OpeningQuotaRecorded'].includes(
+            this.fact(e.payload.sourceEventId).type,
+          ))
       ) {
         assertSyncDecisions(e, accountId, q);
       }
@@ -3780,12 +4087,17 @@ export class RelationalQuotaStore {
           this.configuration(p.configVersion);
           if (
             source.accountId !== accountId ||
-            !['QuotaObserved', 'FundingReceived', 'DebitsConfirmed'].includes(source.type) ||
+            ![
+              'QuotaObserved',
+              'OpeningQuotaRecorded',
+              'FundingReceived',
+              'DebitsConfirmed',
+            ].includes(source.type) ||
             new Set(p.allocations.map((x) => x.memberId)).size !== p.allocations.length
           ) {
             fail('分配来源或成员身份不符');
           }
-          if (source.type === 'QuotaObserved') {
+          if (['QuotaObserved', 'OpeningQuotaRecorded'].includes(source.type)) {
             // 采纳可后于分配；真实采纳校验失败仍由整个命令保存点回滚。
             if (
               !events.some(

@@ -213,7 +213,7 @@ erDiagram
 - 观察型分配必须属于同一完整提交中同账户、针对该核对观察的一次有效 `QuotaBaselineAdopted`，不能仅检查存在同名事实。核对观察本身可以在先前提交保存；分配可以先于或后于采纳事实，保持原 owner 的事件顺序。采纳继续验证第 3.3.1 节的状态与基线推进条件，因此新提交不能再次采纳并消费已经采纳的同一观察。
 - 同一核对中，同一观察、同一非零预算资源只能应用一份分配决定；同时覆盖该资源的两个 `AllocationApplied` 必须拒绝，即使两者金额完全一致且都在自报预算内。按资源判断，允许首次开账同观察的三池各分配一次；没有分配时不要求生成分配事实。使用本次完整提交内的观察/资源集合即可，无需新持久状态。只检查采纳存在而不检查资源重复，或只对两类直接来源检查消费，都不足以满足此约束。
 - 登记到账的 `FundingReceived` 可能只是观察或扣款确认预算的组成凭据。已计入该预算的到账不能再作为独立成员分配来源二次发放。转换必须保留“直接分配”与“参与净额计算”的角色，不能简单取最后出现的资金事件作为来源。
-- `OpeningQuotaRecorded` 表达已核对的迁移开账状态，不能因其是允许的事件类型便再次发放同一权益。其与钱包开账的关系，以及未来 `redistribution` 的来源/消费边界，在对应 T4 政策或 T7 契约中先明确再接入；本节不宣称这些路径已验收。
+- `OpeningQuotaRecorded` 表达已核对的迁移开账状态，不是额外预算。首配只在原 `baselineEventId` 为 NULL、全部原钱包/预扣/运营资产及未决责任为零、原 `observationEventId` 指向同账户且原观察时间、凭据代次与三池余额满足既有同步 owner 时，才允许原 initial 分配；NULL 或 import envelope 时间不能补造官方观察。已有基线继续原净观察/恢复流程，有权益而无基线明确拒绝。分配仍需同笔有效基线采纳、原资源净预算及同观察单次消费，不能因新增共享绑定再次发放既有 Opening 权益。此窄入口不代替转换器的完整来源核对或整体迁移验收。
 
 观察型一次消费只约束 `AllocationApplied`；`RefillApplied` 仍按原基线与恢复游标分段推进。消费次数与生命周期校验不等于重新证明任意修改后的观察净额，不能据此宣称完整业务 reducer 已验收；原 owner 的预算决定与其余关系校验继续保留。
 
@@ -2161,3 +2161,11 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 | 0.12 | 2026-11-13 | 在 main 补齐观察角色、分配来源及消费边界，加入跨对象反例验收；0.10/0.11 的 T4 实施记录见未合并 PR #43，#44/#45 仍待修复                     |
 | 0.13 | 2026-11-13 | 记录 `7025582` 复审；补齐观察型分配与有效基线采纳、同观察同资源一次消费的关系，保留先前观察和初始三池；#44 通过待合并，#45 观察型消费待修复 |
 | 0.14 | 2026-11-13 | 记录 `c786f8f` 独立复审通过、原始反例拒绝及旧源码负对照；#44/#45 待合入后关闭，新库和完整恢复边界保持不变                                   |
+
+### 9.86 原 fair-quota 首配、重确认与成员顺序
+
+实际 caller 为既有 `POST /api/admin/fair-quota`（含 Web executor-lifecycle 场景）；它不是 `groups` 的版本化重配置。薄 HTTP 复用管理 factory 当前管理员、Host/Origin/ready 及提交后 notifier，正文仍 2MiB，只消费四个当前启用的原有序 memberIds，不解释幂等头或其它政策字段。Quota owner 复用 `configureFairQuota` / `syncFairQuota` / `syncBoundFairQuota`；没有政策时允许 pending/ambiguous，唯一 eligible 才规划一笔 SharingConfigured→AccountBound→原同步金融事实，无决定时不存空提交。AccountBound 复用原四条件；原注册的零钱包 INSERT 只对真实当前成员补缺，精确 PK 冲突不覆盖既有权益。
+
+原成员顺序从当前 group_members.source_event_id 精确定位 SharingConfigured / MemberRemoved，或有来源的 OpeningGroupMemberRecorded.memberOrdinal（原零基连续唯一、未知 NULL）。MemberRemoved 必填可空 memberIds 保存原完整决定，不能再以组 flatMap 或 ID 排序伪造全局顺序；未知只保留读取，不规划需该原序的变更。仍为未发布事件7，不改旧 SQL/journal，不建立 ordinal 投影或第二设置/状态表。
+
+作者定向验收正在收尾：新实际 HTTP、Opening 资金/原序反例、有效 T1 envelope 业务拒绝、SQL 尾错与完整公共/选定私有恢复由 `tests/integration/relational-fair-quota-http.test.mjs` 承担；现有 groups/member-rights/quota 三文件 197/197 已过。最终候选必须先并入独审通过的 Account closure 修复与根已审18 actions/sole 入口，再记录同候选窄验证及独立审查。本段尚不宣称 full、发布包、云端或切换完成。新增 configureMemberIds 守卫登记需维护者复核。

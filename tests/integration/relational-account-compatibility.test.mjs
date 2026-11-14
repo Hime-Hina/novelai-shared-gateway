@@ -581,15 +581,6 @@ test('保存的私有SOCKS真实握手/TLS贯通自动观察、manual enable及�
     f.db.prepare("SELECT proxy_url FROM upstream_credentials WHERE account_id='a'").get().proxy_url,
     nextProxyUrl,
   );
-  const admit = createRelationalMemberGenerationAdmission({
-    sqlite: f.db,
-    members: f.members,
-    inputs: f.inputs,
-    generations: f.generations,
-    payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
-    env,
-    now: () => clock,
-  });
   const runtime = createRelationalQueueRuntime({
     sqlite: f.db,
     generations: f.generations,
@@ -603,6 +594,16 @@ test('保存的私有SOCKS真实握手/TLS贯通自动观察、manual enable及�
   });
   t.after(() => runtime.stop());
   await runtime.start();
+  const admit = createRelationalMemberGenerationAdmission({
+    sqlite: f.db,
+    runtime,
+    members: f.members,
+    inputs: f.inputs,
+    generations: f.generations,
+    payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
+    env,
+    now: () => clock,
+  });
   for (const operation of ['generate', 'upscale', 'encode-vibe']) {
     const body =
       operation === 'generate'
