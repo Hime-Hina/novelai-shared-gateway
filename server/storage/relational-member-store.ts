@@ -32,6 +32,7 @@ import {
   appendRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import type {
@@ -656,6 +657,9 @@ export class RelationalMemberStore
     // 资格事实保留历史；业务回放不能把它还原成当前私有授权或认证 epoch。
     for (const event of events) {
       if (event.eventType === 'MemberRegistered' || event.eventType === 'OpeningMemberRecorded') {
+        if (event.eventType === 'OpeningMemberRecorded') {
+          assertRelationalOpeningSource(this.sqlite, event);
+        }
         const p = event.payload;
         this.sqlite
           .prepare(

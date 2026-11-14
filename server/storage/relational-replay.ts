@@ -100,6 +100,17 @@ export class RelationalCommitReplayer {
         }
         return result;
       }
+      if (
+        stored.events.some(
+          (event) =>
+            event.eventType === 'ImportSourceRegistered' || event.eventType.startsWith('Opening'),
+        ) &&
+        this.sqlite
+          .prepare<[], { status: string }>('SELECT status FROM projection_state WHERE id=1')
+          .get()?.status !== 'building'
+      ) {
+        throw new Error('Opening facts require an offline building target.');
+      }
       this.members.assertMemberAdmissionCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);

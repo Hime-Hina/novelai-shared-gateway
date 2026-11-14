@@ -23,6 +23,7 @@ import {
   readRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import type {
@@ -137,6 +138,7 @@ export const relationalQuotaFacts = new Set<RelationalEvent['eventType']>([
   'RefillApplied',
   'AllocationApplied',
   'FundingRegistered',
+  'OpeningFundingRecorded',
   'FundingReceived',
   'ResourceGapObserved',
   'ReturnClassified',
@@ -241,15 +243,11 @@ export class RelationalQuotaStore {
         .prepare(
           "SELECT 1 FROM domain_events WHERE event_id=? AND event_type='OpeningQuotaRecorded' AND account_id=?",
         )
-        .get(e.eventId, e.payload.accountId) ||
-      !this.sqlite
-        .prepare(
-          "SELECT 1 FROM domain_events WHERE event_type='ImportSourceRegistered' AND stream_id=?",
-        )
-        .get(`import:${e.payload.origin.sourceId}`)
+        .get(e.eventId, e.payload.accountId)
     ) {
       fail('开账额度缺少原事实或登记来源');
     }
+    assertRelationalOpeningSource(this.sqlite, e);
     const { origin: _origin, ...p } = e.payload;
     this.insertAccountQuota(p, e.eventId);
   }
@@ -1719,9 +1717,34 @@ export class RelationalQuotaStore {
         case 'FundingReceived': {
           const p = raw.payload;
           const registered = p.source === 'registered_external_funding';
-          const receipt = registered
-            ? p.receiptEventId.replace(/^operating-receipt:/, '')
-            : p.id.replace(/^operating-receipt:/, '');
+          let receipt: string;
+          if (registered) {
+            // 开账 eventId 是不透明身份；收据文本只来自确切的原登记事实。
+            const planned = events.find(
+              (event) =>
+                event.eventType === 'FundingRegistered' && event.eventId === p.receiptEventId,
+            );
+            const saved = planned ? null : this.fact(p.receiptEventId);
+            if (
+              saved &&
+              (!['FundingRegistered', 'OpeningFundingRecorded'].includes(saved.type) ||
+                saved.accountId !== accountId)
+            ) {
+              fail('到账缺少同账户原资金登记');
+            }
+            const source = planned?.payload ?? saved!.payload;
+            if (
+              !('receipt' in source) ||
+              typeof source.receipt !== 'string' ||
+              source.resource !== p.resource ||
+              source.destination !== p.destination
+            ) {
+              fail('到账与原收据、资源或归属不符');
+            }
+            receipt = source.receipt;
+          } else {
+            receipt = p.id.replace(/^operating-receipt:/, '');
+          }
           const received = this.event(
             {
               eventType: 'FundingReceived',
@@ -2860,8 +2883,12 @@ export class RelationalQuotaStore {
           this.saveOperating(accountId, ops, e.eventId);
           break;
         }
-        case 'FundingRegistered': {
+        case 'FundingRegistered':
+        case 'OpeningFundingRecorded': {
           const p = e.payload;
+          if (e.eventType === 'OpeningFundingRecorded') {
+            assertRelationalOpeningSource(this.sqlite, e);
+          }
           if (!['members', 'operating'].includes(p.destination)) {
             fail('资金归属无效');
           }
