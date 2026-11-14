@@ -1,3 +1,4 @@
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -46,7 +47,11 @@ function fail(statusCode: number, code: string, message: string): never {
 export function createRelationalMemberGenerationHttp(deps: Dependencies) {
   const { sqlite, env = process.env } = deps;
   assertRelationalStorageReady(sqlite);
-  const members = new RelationalMemberStore(sqlite, env),
+  const members = new RelationalMemberStore(
+      sqlite,
+      env,
+      relationalStateNotificationsFor(sqlite, deps.events),
+    ),
     inputs = new RelationalInputStore(sqlite, env),
     generations = new RelationalGenerationStore(sqlite, env),
     requests = new RelationalRequestStore(sqlite),
@@ -59,13 +64,6 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
       now: deps.now,
     });
   const now = deps.now ?? Date.now;
-  const notify = () => {
-    try {
-      deps.events.emit('commit');
-    } catch {
-      // 失效通知失败不能把已提交命令伪装成失败；SSE 心跳仍会重读事实。
-    }
-  };
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
     if (!isMemberGenerationPath(url.pathname)) {
       return false;
@@ -125,9 +123,6 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
         submit: async (request, body, _memberId, claim) => {
           const result = await admit({ credential: { sessionToken }, request, body, claim });
           const receipt = result.receipt as { requestId: string; jobIds: string[] };
-          if (!result.replayed) {
-            notify();
-          }
           return { ...receipt, replayed: result.replayed };
         },
         readState: (requestId) =>
@@ -158,9 +153,6 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
                 : 0,
             };
           });
-          if (result.cancelledCount) {
-            notify();
-          }
           deps.scheduleQueueDrain();
           return result;
         },

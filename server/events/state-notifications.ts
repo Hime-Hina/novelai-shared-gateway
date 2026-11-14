@@ -7,7 +7,7 @@ interface StateVersion {
   version: number;
   updatedAt: string;
 }
-interface StateEvent extends Partial<StateVersion> {
+export interface StateEvent extends Partial<StateVersion> {
   collections?: readonly string[];
   memberIds?: readonly string[];
   activityChanges?: readonly { readonly memberId: string | null; readonly date: string }[];
@@ -37,6 +37,19 @@ const businessCollections = new Set([
   'ledger',
   'cards',
 ]);
+
+// 一个监听器失败不能改变已提交结果，也不能截断其余订阅者。
+export function emitStoreEvent(events: EventEmitter, name: string, event?: unknown): void {
+  for (const listener of events.rawListeners(name)) {
+    try {
+      Promise.resolve(listener.call(events, event)).catch(() =>
+        console.error('[runtime] Store event listener failed.'),
+      );
+    } catch {
+      console.error('[runtime] Store event listener failed.');
+    }
+  }
+}
 
 export function mergeStateEvents(
   previous: StateEvent | undefined,

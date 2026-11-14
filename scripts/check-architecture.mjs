@@ -8,6 +8,8 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 // Shared transport guards contain no database or command assembly.
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
+  'emitStoreEvent',
+  'relationalStateNotificationsFor',
   'configureFairQuota',
   'configureFairGroups',
   'configureAnlasFallback',
@@ -177,7 +179,8 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          (/events\/state-notifications\.(?:ts|js)$/.test(target) && names.includes('*')) ||
+          /(?:events\/relational-(?:event-store|state-notifications)|members\/(?:relational-)?authentication-http|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

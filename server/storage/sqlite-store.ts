@@ -1,3 +1,4 @@
+import { emitStoreEvent } from '../events/state-notifications.ts';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import crypto from 'node:crypto';
@@ -507,19 +508,7 @@ export class JsonStore {
   }
 
   private emitStoreEvent(name: string, event?: unknown) {
-    // 通知错误不能把已提交的事务变成失败，也不能阻止其他订阅者。
-    for (const listener of this.events.rawListeners(name)) {
-      try {
-        const pending = listener.call(this.events, event);
-        if (pending?.then) {
-          Promise.resolve(pending).catch((error) =>
-            console.error('[runtime] Store event listener failed:', error),
-          );
-        }
-      } catch (error) {
-        console.error('[runtime] Store event listener failed:', error);
-      }
-    }
+    emitStoreEvent(this.events, name, event);
   }
 
   private notifyCommit(event: CommitDraft) {
