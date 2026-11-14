@@ -83,7 +83,8 @@ function commandFixture(
       overrides.authorize ?? authorize,
       { ...meta(id, Date.now(), 'm1'), ...overrides.metadata },
       input,
-      async (pst) => {
+      async (pst, _proxy, _id, start) => {
+        await start?.();
         queries++;
         assert.equal(db.inTransaction, false);
         assert.equal(pst, db.prepare('SELECT pst FROM upstream_credentials').get().pst);
@@ -91,10 +92,18 @@ function commandFixture(
         return response;
       },
     );
-  const prepare = (id, input = mutation('enable')) =>
-    authorize((member) =>
-      accounts.prepareAccountCommand(meta(id, Date.now(), 'm1'), input, member),
-    );
+  const prepare = async (id, input = mutation('enable')) => {
+    const metadata = meta(id, Date.now(), 'm1'),
+      prepared = await authorize((member) =>
+        accounts.prepareAccountCommand(metadata, input, member),
+      );
+    // 此窄 owner 夹具明确模拟实际发起；单独准备不得推进观察顺序。
+    return 'prepared' in prepared
+      ? authorize((member) =>
+          accounts.startAccountEnable(metadata, input, prepared.prepared, member),
+        )
+      : prepared;
+  };
   const complete = (
     id,
     ticket,
@@ -867,4 +876,75 @@ test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交�
   } finally {
     target.close();
   }
+});
+
+test('账户准备不领取票，实际开始前凭据或授权变化不发查询、不写观察，健康新调用可重试', async (t) => {
+  for (const mode of ['credential', 'owner'])
+    await t.test(mode, async (t) => {
+      const f = await fresh(t);
+      await f.run('start-register', registration);
+      let calls = 0;
+      const metadata = meta('before-start', NOW, 'm1'),
+        input = mutation('enable');
+      await assert.rejects(
+        ownerAccountCommand(
+          f.accounts,
+          f.authorize,
+          metadata,
+          input,
+          async (_pst, _proxy, _id, start) => {
+            if (mode === 'credential')
+              await f.run('change-before-start', mutation('token', { token: 'pst-start-new' }));
+            else f.env.OWNER_USER_ID = 'm2';
+            const before = databaseState(f.db);
+            try {
+              await start();
+              calls++;
+              return rawQuota();
+            } finally {
+              assert.equal(databaseState(f.db), before);
+            }
+          },
+        ),
+        { statusCode: mode === 'owner' ? 403 : 409 },
+      );
+      assert.equal(calls, 0);
+      f.env.OWNER_USER_ID = 'm1';
+      const before = f.quotas.readAccountQuota('a').observedSequence;
+      const result = await f.run('healthy-actual-start', input);
+      assert.equal(result.receipt.enabled, true);
+      assert.equal(
+        f.quotas.readAccountQuota('a').observedSequence,
+        String(BigInt(before ?? '0') + 1n),
+      );
+    });
+});
+
+test('账户准备与实际start之间已有同键原回执时零raw IO返回，不按后来可用性重决定', async (t) => {
+  const f = await fresh(t);
+  await f.run('concurrent-register', registration);
+  const input = mutation('enable');
+  let raw = 0,
+    committed;
+  const result = await ownerAccountCommand(
+    f.accounts,
+    f.authorize,
+    meta('same-command', NOW, 'm1'),
+    input,
+    async (_pst, _proxy, _id, start) => {
+      committed = await f.run('same-command', input);
+      const before = databaseState(f.db);
+      try {
+        await start();
+        raw++;
+        return rawQuota();
+      } finally {
+        assert.equal(databaseState(f.db), before);
+      }
+    },
+  );
+  assert.deepEqual(result.receipt, committed.receipt);
+  assert.equal(result.replayed, true);
+  assert.equal(raw, 0);
+  assert.equal(f.queries(), 1, 'only the other actually started query ran');
 });

@@ -51,6 +51,8 @@ export type AccountEnableTicket = ReturnType<RelationalQuotaStore['beginQuotaObs
   commandId: string;
   fingerprint: string;
 };
+export type AccountEnablePreparation = Omit<AccountEnableTicket, 'sequence' | 'startedAt'>;
+
 type Account = {
   id: string;
   displayName: string;
@@ -240,7 +242,7 @@ export class RelationalAccountStore {
     metadata: AccountCommandMetadata,
     input: OwnerAccountMutation,
     member: MemberUser | null,
-  ): { result: RelationalCommitResult } | { ticket: AccountEnableTicket } {
+  ): { result: RelationalCommitResult } | { prepared: AccountEnablePreparation } {
     return this.owned(() => {
       this.authorize(metadata, member);
       let allowed = ['kind', 'accountId'];
@@ -305,8 +307,8 @@ export class RelationalAccountStore {
       const account = this.boundAccount(input.accountId);
       if (input.kind === 'enable') {
         return {
-          ticket: {
-            ...this.quotas.beginQuotaObservation(account.id, metadata.recordedAt),
+          prepared: {
+            ...this.quotas.prepareQuotaObservation(account.id),
             availabilityEventId: this.availabilityEventId(account.id),
             configVersion: this.policy().version,
             authEpoch: member?.memberAuth?.version ?? null,
@@ -378,6 +380,48 @@ export class RelationalAccountStore {
       return { result };
     });
   }
+  private enableSource(
+    command: AccountCommandMetadata,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
+    source: AccountEnablePreparation,
+    member: MemberUser | null,
+  ) {
+    const account = this.boundAccount(input.accountId);
+    if (
+      source.commandId !== command.commandId ||
+      source.fingerprint !== command.fingerprint ||
+      source.accountId !== account.id ||
+      source.availabilityEventId !== this.availabilityEventId(account.id) ||
+      source.configVersion !== this.policy().version ||
+      source.authEpoch !== (member?.memberAuth?.version ?? null)
+    ) {
+      fail('核验期间账户配置或授权已变化');
+    }
+    return account;
+  }
+  // 准备不领取观察号；只有 query owner 已取得实际槽后，才在发起前复核并开始观察。
+  startAccountEnable(
+    metadata: AccountCommandMetadata,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
+    prepared: AccountEnablePreparation,
+    member: MemberUser | null,
+  ): { result: RelationalCommitResult } | { ticket: AccountEnableTicket } {
+    return this.owned(() => {
+      this.authorize(metadata, member);
+      const command = this.command(metadata, input),
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return { result: prior };
+      }
+      const account = this.enableSource(command, input, prepared, member);
+      return {
+        ticket: {
+          ...prepared,
+          ...this.quotas.beginQuotaObservation(account.id, metadata.recordedAt, prepared),
+        },
+      };
+    });
+  }
   completeAccountEnable(
     metadata: AccountCommandMetadata,
     input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
@@ -392,17 +436,7 @@ export class RelationalAccountStore {
       if (prior) {
         return prior;
       }
-      const account = this.boundAccount(input.accountId);
-      if (
-        ticket.commandId !== command.commandId ||
-        ticket.fingerprint !== command.fingerprint ||
-        ticket.accountId !== account.id ||
-        ticket.availabilityEventId !== this.availabilityEventId(account.id) ||
-        ticket.configVersion !== this.policy().version ||
-        ticket.authEpoch !== (member?.memberAuth?.version ?? null)
-      ) {
-        fail('核验期间账户配置或授权已变化');
-      }
+      this.enableSource(command, input, ticket, member);
       const events = this.quotas.planQuotaObservation(command, ticket, result, true);
       if (!events) {
         fail('核验观察已经过期，上游保持暂停');

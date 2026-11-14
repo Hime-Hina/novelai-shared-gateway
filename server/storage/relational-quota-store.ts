@@ -95,6 +95,11 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
   pricingVersion: string;
 };
 type FundingMetadata = Omit<Metadata, 'commandId'> & { commandId?: string };
+type GroupConfigurationInput = {
+  groups: unknown;
+  expectedConfigVersion: number;
+  redistributeRemaining?: boolean;
+};
 type GenerationFailureSource = {
   attemptId: string;
   aborted: boolean;
@@ -1328,26 +1333,96 @@ export class RelationalQuotaStore {
       );
     });
   }
-  configureGroups(
-    metadata: Metadata,
-    input: { groups: unknown; expectedConfigVersion: number; redistributeRemaining?: boolean },
+  private assertGroupConfigurationInput(
+    actorId: Metadata['actorId'],
+    input: GroupConfigurationInput,
+  ) {
+    if (
+      !actorId ||
+      !input ||
+      typeof input !== 'object' ||
+      Array.isArray(input) ||
+      Object.keys(input).some(
+        (key) => !['groups', 'expectedConfigVersion', 'redistributeRemaining'].includes(key),
+      ) ||
+      (input.redistributeRemaining !== undefined &&
+        typeof input.redistributeRemaining !== 'boolean')
+    ) {
+      fail('分组命令无效', 400);
+    }
+  }
+  private planGroupConfiguration(
+    metadata: Pick<Metadata, 'actorId' | 'recordedAt'>,
+    input: GroupConfigurationInput,
+  ) {
+    const hasPolicy = !!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get(),
+      policy = hasPolicy ? this.sharingPolicy() : null,
+      configVersion = policy?.configVersion ?? 1;
+    if (
+      !Number.isSafeInteger(input.expectedConfigVersion) ||
+      input.expectedConfigVersion !== configVersion
+    ) {
+      fail('分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
+    }
+    if (
+      !policy?.accountId &&
+      this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
+    ) {
+      fail('未绑定账户须先完成账户配置');
+    }
+    const { db, financial } = this.managementView(),
+      planned = this.capture({ db }, () => {
+        const result = configureFairGroups(db, input.groups, {
+          now: metadata.recordedAt,
+          actorId: metadata.actorId!,
+          redistributeRemaining: input.redistributeRemaining === true,
+        });
+        if (financial) {
+          syncBoundFairQuota(
+            db as { settings: { fairQuota: FairQuotaState } },
+            financial.account,
+            metadata.recordedAt,
+          );
+        }
+        return result;
+      }),
+      anchor = planned.facts.findIndex(
+        (fact) => fact.eventType === 'SharingConfigured' || fact.eventType === 'AllocationChanged',
+      );
+    if (anchor < 0) {
+      throw new Error('Group owner omitted its configuration decision.');
+    }
+    return { db, financial, planned, anchor, configVersion };
+  }
+  previewGroups(
+    metadata: Pick<Metadata, 'actorKind' | 'actorId' | 'recordedAt'>,
+    input: GroupConfigurationInput,
     member: MemberUser | null,
   ) {
     return this.owned(() => {
       this.authorizeOwnerCommand(metadata, member);
-      if (
-        !metadata.actorId ||
-        !input ||
-        typeof input !== 'object' ||
-        Array.isArray(input) ||
-        Object.keys(input).some(
-          (key) => !['groups', 'expectedConfigVersion', 'redistributeRemaining'].includes(key),
-        ) ||
-        (input.redistributeRemaining !== undefined &&
-          typeof input.redistributeRemaining !== 'boolean')
-      ) {
-        fail('分组命令无效', 400);
-      }
+      this.assertGroupConfigurationInput(metadata.actorId, input);
+      const { db, planned, configVersion } = this.planGroupConfiguration(metadata, input),
+        state = planned.result,
+        reconciliation = state.v5Reconciliation;
+      this.enrichQuotaSummary(state);
+      // 新规划的核对决定优先于读取时原已提交状态；展示补充不改变提交规划的输入。
+      state.v5Reconciliation = reconciliation ?? state.v5Reconciliation;
+      return {
+        groups: planned.result.groups,
+        users: db.users.map((user) => ({
+          id: user.id,
+          quota: fairQuotaSummary(db, user, metadata.recordedAt),
+        })),
+        redistributeRemaining: input.redistributeRemaining === true,
+        configVersion,
+      };
+    });
+  }
+  configureGroups(metadata: Metadata, input: GroupConfigurationInput, member: MemberUser | null) {
+    return this.owned(() => {
+      this.authorizeOwnerCommand(metadata, member);
+      this.assertGroupConfigurationInput(metadata.actorId, input);
       const command = {
           ...metadata,
           fingerprint: domainDigest({
@@ -1359,46 +1434,10 @@ export class RelationalQuotaStore {
       if (prior) {
         return prior;
       }
-      const hasPolicy = !!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get(),
-        policy = hasPolicy ? this.sharingPolicy() : null;
-      if (
-        !Number.isSafeInteger(input.expectedConfigVersion) ||
-        input.expectedConfigVersion !== (policy?.configVersion ?? 1)
-      ) {
-        fail('分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
-      }
-      if (
-        !policy?.accountId &&
-        this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
-      ) {
-        fail('未绑定账户须先完成账户配置');
-      }
-      const { db, financial } = this.managementView();
-      const planned = this.capture({ db }, () => {
-          const result = configureFairGroups(db, input.groups, {
-            now: metadata.recordedAt,
-            actorId: metadata.actorId!,
-            redistributeRemaining: input.redistributeRemaining === true,
-          });
-          if (financial) {
-            syncBoundFairQuota(
-              db as { settings: { fairQuota: FairQuotaState } },
-              financial.account,
-              metadata.recordedAt,
-            );
-          }
-          return result;
-        }),
+      const { db, financial, planned, anchor } = this.planGroupConfiguration(metadata, input),
         result = planned.result,
         free = freeImagePolicy(db),
-        loss = lossAlertPolicy(result.lossAlertPolicy),
-        anchor = planned.facts.findIndex(
-          (fact) =>
-            fact.eventType === 'SharingConfigured' || fact.eventType === 'AllocationChanged',
-        );
-      if (anchor < 0) {
-        throw new Error('Group owner omitted its configuration decision.');
-      }
+        loss = lossAlertPolicy(result.lossAlertPolicy);
       const events = financial
         ? this.convert(planned.facts.slice(0, anchor), financial, metadata)
         : [];
@@ -1651,18 +1690,38 @@ export class RelationalQuotaStore {
       );
     });
   }
-  beginQuotaObservation(accountId: string, startedAt = Date.now()): Ticket {
-    const a = this.account(accountId),
-      q = this.readAccountQuota(accountId);
-    if (!a.pst || !Number.isSafeInteger(startedAt) || startedAt < 0) {
+  prepareQuotaObservation(accountId: string): Omit<Ticket, 'sequence' | 'startedAt'> {
+    const a = this.account(accountId);
+    if (!a.pst) {
       fail('观察缺少当前私有凭据或实际时间', 503);
     }
+    return { accountId, credentialEpoch: a.epoch, pst: a.pst };
+  }
+  beginQuotaObservation(
+    accountId: string,
+    startedAt = Date.now(),
+    expected?: ReturnType<RelationalQuotaStore['prepareQuotaObservation']>,
+  ): Ticket {
+    const source = this.prepareQuotaObservation(accountId),
+      q = this.readAccountQuota(accountId);
+    if (!Number.isSafeInteger(startedAt) || startedAt < 0) {
+      fail('观察缺少当前私有凭据或实际时间', 503);
+    }
+    if (
+      expected &&
+      (expected.accountId !== source.accountId ||
+        expected.credentialEpoch !== source.credentialEpoch ||
+        expected.pst !== source.pst)
+    ) {
+      fail('额度查询发起前原凭据已变化');
+    }
     return {
-      accountId,
-      credentialEpoch: a.epoch,
-      sequence: this.order.issue(`${accountId}:${a.epoch}`, q.observedSequence ?? '0'),
+      ...source,
+      sequence: this.order.issue(
+        `${accountId}:${source.credentialEpoch}`,
+        q.observedSequence ?? '0',
+      ),
       startedAt,
-      pst: a.pst,
     };
   }
   recordQuotaObservation(metadata: Metadata, ticket: Ticket, result: QuotaResult) {

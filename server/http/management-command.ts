@@ -24,11 +24,11 @@ export function managementCommand(
       { statusCode: 400 },
     );
   }
-  // 键按已鉴权 actor 和操作隔离；指纹只取提交意图，不取新生成的事件或时间。
+  // 键按已鉴权类型、稳定 ID 和操作隔离；指纹不取新生成的事件或时间。
   return {
     actorId,
     actorKind,
-    commandId: `management:${domainDigest([actorId, operation, key])}`,
+    commandId: `management:${domainDigest([actorKind, actorId, operation, key])}`,
     fingerprint: domainDigest({ operation, body }),
   };
 }
