@@ -336,6 +336,7 @@ test('金额只接受规范十进制，官方未知保持 null；资金来源与
     payload: {
       accountId: 'a',
       credentialEpoch: 3,
+      connectionSourceEventId: 'account-connection-source',
       sequence: '9007199254740993',
       observedAt: 10,
       v5UsagePercent: null,

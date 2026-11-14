@@ -236,7 +236,7 @@ test('七个实际 owner 完整覆盖全部事实且登记不重叠', () => {
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 75);
+  assert.equal(relationalReplayFacts().size, 76);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
@@ -377,13 +377,18 @@ test('在线入口不接受自报新写入或重领结果，资金不能重复�
   const funding = await withAuthenticatedMemberApiKey(
     f.members,
     keys.m1,
-    () =>
-      quotas.manageQuotaFunding(meta('contribution-result', NOW, 'm1'), 'a', {
-        action: 'operating-contribute',
-        receipt: 'contribution-result',
-        resource: 'anlasFixed',
-        amount: 10,
-      }),
+    (member) =>
+      quotas.manageQuotaFunding(
+        meta('contribution-result', NOW, 'm1'),
+        'a',
+        {
+          action: 'operating-contribute',
+          receipt: 'contribution-result',
+          resource: 'anlasFixed',
+          amount: 10,
+        },
+        member,
+      ),
     {},
   );
   const replayer = new RelationalCommitReplayer(f.db, f.generations),
@@ -543,15 +548,20 @@ test('额度来源消费上下文不被跨 owner 分派重置，观察与有限�
           : await withAuthenticatedMemberApiKey(
               f.members,
               keys.m1,
-              () =>
-                q.manageQuotaFunding(meta('finite', NOW + 30, 'm1'), 'a', {
-                  action: 'operating-register-funding',
-                  receipt: 'finite-receipt',
-                  resource: 'anlasFixed',
-                  amount: 100,
-                  destination: 'members',
-                  fromUnattributed: true,
-                }),
+              (member) =>
+                q.manageQuotaFunding(
+                  meta('finite', NOW + 30, 'm1'),
+                  'a',
+                  {
+                    action: 'operating-register-funding',
+                    receipt: 'finite-receipt',
+                    resource: 'anlasFixed',
+                    amount: 100,
+                    destination: 'members',
+                    fromUnattributed: true,
+                  },
+                  member,
+                ),
               {},
             );
       const stored = readRelationalCommit(f.db, result.commitSeq),

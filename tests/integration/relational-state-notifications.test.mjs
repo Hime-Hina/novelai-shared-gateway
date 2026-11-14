@@ -181,7 +181,7 @@ test('私有epoch/key变更外层rollback无唤醒，成功提交后重入鉴权
     () =>
       notifier.commit(() =>
         f.db.transaction(() => {
-          members.setMemberCredentials(prepared);
+          members.setMemberCredentials(prepared, null);
           throw Error('private rollback');
         })(),
       ),
@@ -193,7 +193,7 @@ test('私有epoch/key变更外层rollback无唤醒，成功提交后重入鉴权
   events.on('commit', () =>
     rechecks.push(authenticateMemberSession(members, session.token, {}, NOW + 1)),
   );
-  notifier.commit(() => f.db.transaction(() => members.setMemberCredentials(prepared))());
+  notifier.commit(() => f.db.transaction(() => members.setMemberCredentials(prepared, null))());
   assert.equal(commits.length, 1);
   assert.deepEqual(await Promise.all(rechecks), [null]);
   assert.ok(commits[0].event.collections.includes('sessions'));

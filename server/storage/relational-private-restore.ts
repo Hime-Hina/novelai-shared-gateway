@@ -6,6 +6,7 @@ import { serialize } from 'node:v8';
 import Database from 'better-sqlite3';
 import { readRelationalCommit } from '../events/relational-event-store.ts';
 import { assertRelationalStorageFormat, RELATIONAL_REDUCER_VERSION } from './relational-storage.ts';
+import { assertRelationalAccountConnections } from './relational-account-connection.ts';
 
 export const relationalPrivateTables = [
   ['password_credentials', 'member_id'],
@@ -200,6 +201,7 @@ export function openRelationalSnapshot(
     source.pragma('foreign_keys=ON');
     source.pragma('query_only=ON');
     assertRelationalStorageFormat(source);
+    assertRelationalAccountConnections(source);
     return source;
   } catch (error) {
     source.close();

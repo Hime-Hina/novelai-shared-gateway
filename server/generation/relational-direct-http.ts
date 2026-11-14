@@ -202,6 +202,18 @@ export function createRelationalDirectHttp(deps: {
         completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status) ? null : ''),
       };
     };
+    const createDelivery = () =>
+      createRelationalApiDelivery({
+        sqlite,
+        members,
+        requests,
+        token,
+        replicas: deps.replicas,
+        events: deps.events,
+        runtime: deps.runtime,
+        env,
+        now,
+      });
     const accept = async (
       body: Record<string, unknown>,
       source: 'direct' | 'web',
@@ -235,6 +247,14 @@ export function createRelationalDirectHttp(deps: {
           };
         },
       });
+      if (result.replayed) {
+        const delivery = createDelivery();
+        try {
+          await delivery.validateReplay(result.jobIds);
+        } finally {
+          delivery.close();
+        }
+      }
       deps.schedule();
       return result;
     };
@@ -278,21 +298,8 @@ export function createRelationalDirectHttp(deps: {
               'direct',
               version!,
             ),
-            delivery = createRelationalApiDelivery({
-              sqlite,
-              members,
-              requests,
-              token,
-              replicas: deps.replicas,
-              events: deps.events,
-              runtime: deps.runtime,
-              env,
-              now,
-            });
+            delivery = createDelivery();
           try {
-            if (accepted.replayed) {
-              await delivery.validateReplay(accepted.jobIds);
-            }
             const sendError = (kind: 'busy' | 'timeout', until?: string) => {
               const image = generationErrorImage(kind, until, now());
               deps.sendImage(res, image.statusCode, image.mimeType, image.buffer, image.headers);

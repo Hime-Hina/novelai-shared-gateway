@@ -212,6 +212,8 @@ Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在�
 | 500             | 普通上游生成失败、坏产物、内部失败；普通、流式及辅助操作的非429上游HTTP拒绝通常归为网关500，原状态仅作诊断与账户状态依据                                    |
 | 503 / 504       | 本地共享账户/账本不可用 / 同步等待或队列期限超时；Native/OpenAI 默认等待上限 10 分钟，可由环境配置改变                                                      |
 
+`POST /api/jobs` 对同键已完成回执同样核对原结果引用资格：Local 原文件真正丢失返回 410，不新建或重新执行；恢复原字节后仍可领取同一任务。当前 Key 与 ready 在引用 IO 前后继续复核，云端持久承诺的实际领取错误仍沿原规则。
+
 上游401/403另使共享账户进入对应异常状态，但它们不代表成员Key失效；上游402也不是本地成员钱包的402。官方放大接口列出的400/401/402/403/504因此不保证原样返回，这是明确保留的共享网关差异，不能称为逐状态透明代理。成员错误不能暴露PST。请求仍受本地单账户并发和钱包预扣约束，不能因为请求字段在官方文档存在就绕过它们。CORS预检允许`idempotency-key`，用于下述可选网关去重；`x-correlation-id`仍是上游诊断字段，没有官方幂等/结果查询保证。
 
 F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期）换成绝对截止，正文中断或产物校验失败也保留该证据；本地 120 秒退避上限不截短更长的上游要求。尚未发送响应头的普通失败也可能带剩余等待头，direct 仍保持 200 错误图片格式；已开始的 SSE 不能事后改写响应头。同步等待超时只结束等待，不凭空新增任务冷却。HTTP 200 流内的明确并发错误仍按容量拒绝分类，真实状态保留用于诊断。
@@ -240,6 +242,10 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 `GET /user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription` 都返回 `200 JSON` 的本地映射：`tier/active/expiresAt/trainingStepsLeft/perks/usage`。固定/购买 Anlas 取调用者可用余额的非负整数，usage 表示本地 V5 可用量；不是共享账户原始余额，不公开 PST 或其他成员份额。活跃 Opus 还要求绑定账户、有效订阅与到期信息。不要把这个映射误当作完整 `/user/data` 透传。
 
 这四个别名与 `GET /api/me/quota` 使用原网关 token 入口：精确 `Bearer ` header 优先，否则 query `token`、`x-user-token` 依次取值，Cookie 不作为替代。PUBLIC 前置与 Host/CORS 继续归中央路由；这些路径不提供独立官方 PST 模式，也不返回上游原订阅透传。`/api/me/quota` 返回 `{fairQuota}`，关闭/未知账本可为 NULL，非 NULL 时保留原完整个人配额与 `freeImages`。新关系适配只读当前 owner 的估算，不提交钱包恢复或续期 Cookie；Discord 资格观察仍由原认证事务持有，IO 后重核原稳定成员、auth epoch、当前 Key 和 ready。
+
+成员管理 `POST action=credentials` 保留原私有、非 keyed 契约：新建返回 `{id,username,groupId?}`，生成私有 Key；更新已有成员密码返回 `{id,username}`，保留原 Key、换认证代次并撤销 Cookie。原入口未承诺 `Idempotency-Key`，此操作仍忽略该 header：同一 prepared 对象的 CAS 重复拒绝 401，不重装旧材料；新 HTTP 请求是明确的新重置，不伪造可领取旧认证的回执。密码、salt/hash、Key 及其秘密意图摘要不写公共事实/回执；更新只改变私有状态，联合恢复必须选择实际 SHA 匹配、业务切点一致的私有快照，同业务 cut 的不同 private hash 不能互换。
+
+密码派生在 SQL 外，最终经同一当前 owner Cookie/稳定 ID/epoch/ready 或本机 admin 授权回调；私有 setter 还复核实际 actor 的当前 owner 身份和 DB epoch，省略 actor 不默认管理员。新建可不入组；给 `groupId` 时复用原全组 owner 同事务加入，原 held/active 409、预算/权重与失败整笔回滚规则不变。Discord 启用时新建使用服务端随机密码，已有成员更新仍为 409。私有凭据操作不续 Cookie；分发 Key 和邀请码由各自原读取/私有入口承担，不由 credentials 回包泄露。旧 `note` 有真实 API 来源但当前模型尚无表示，本候选明确 400 并保留为未完成项，不当作 D4 已退能力。
 
 ## 其他现有客户端接口
 
@@ -287,13 +293,21 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
 
-关系账户 `PATCH /api/member/owner/accounts/:id` 与 `PATCH /api/admin/accounts/:id` 当前只接受一个字段：完整 PST `token` 或布尔 `enabled`。只操作当前绑定账户；PST 轮换先检查该账户所有成员的 reserved 责任与实际物理 controls，再更新私有凭据并保持暂停。启用必须经原 query owner 的真实额度响应、有效 Opus 和最新观察核验；网络在 SQL 外，完成时重核当前 owner Cookie/epoch/ready 或本地 admin、原绑定/政策/可用性来源与 credential epoch。两个角色都不支持绕过核验启用。总装配须注入与定时刷新相同的 QuotaStore 和 `sharedRefresh.fetch`；没有实际 query 能力时启用为 503，暂停和 PST 轮换不查网络。
+关系账户 `PATCH /api/member/owner/accounts/:id` 保留 owner 仅对当前绑定账户单字段完整 PST `token` 或布尔 `enabled` 的权限。`PATCH /api/admin/accounts/:id` 恢复原 admin 的组合 `name`、`weight`、`proxyUrl|socksProxy|proxy`、`token`、`enabled` 配置；名称沿原 String/slice80，投影以单个 JSON string 列 `display_name_json` 保留合法孤立代理，三写者与两窄读统一 stringify/parse，不从事件另补读值。权重沿原 Number/clamp1–100，合法小数保真。name/weight/proxy 允许原 held 和实际 physical 请求在途，proxy 不自动暂停；只有 PST 真轮换检查原账户所有成员 reserved 与实际 controls，再原子保存 PST/已选代理并暂停。代理真变更但当前 PST 缺失时为 503 零写，可同一组合提交新 PST 与代理，不接受成功后丢值。
+
+`POST /api/admin/accounts` 已接显式 `enabled:false` 的原新增暂停账户，包括在已绑定账户旁新增第二账户，返回 201 与原 mask 账户字段，不改变共享绑定或启用第二调度。`PATCH /api/admin/accounts` 保留原 ids/accounts 数组或单值解析、过滤不存在 ID、无命中404；weight 小数及 enabled:false 同一完整提交、整笔回滚，返回 `{accounts}`。单个当前绑定账户 enabled:true 复用真实 Opus 核验。原 POST 的 enabled 默认 true、非绑定账户真实观察与单/批启用尚待后继分离观察和单绑定金融同步，不把目前拒绝视为批准的功能退役，也不先保存暂停账户再异步假装原子成功。admin 集合命令同样非 keyed，当前授权先行，无秘密公共回执。
+
+两个角色启用均须原 query owner 的真实额度响应、有效 Opus 和最新观察；网络在 SQL 外，actual-start 与完成时重核当前 Cookie/epoch/ready 或本地 admin、绑定/政策、PST 代次及连接来源。组合代理与启用先用不可变目标代理完成查询，最终一笔保存配置/观察/可用性和私有值，不先提交半笔配置。没有实际 query 能力时启用为 503；总装配须注入同一 QuotaStore 和 `sharedRefresh.fetch`。只改展示名称/权重不会作废已发 GET，也不会覆盖查询期间后来保存的未指定展示字段。
 
 观察票号只代表原 query owner 已取得实际槽并准备调用 raw fetch 的发起；账户准备只保留私有来源，不领取票号。手动启用与自动刷新都在同一个 query 的 actual-start 回调重核来源、领取精确序号和时点，再发起网络。发起前的本机繁忙、缺能力或授权/凭据变化不是官方失败：不新增观察、提交、回执或 observed-seq，也不作废唯一已发的请求；繁忙为 409。已发后的真实网络失败或超时才沿原失败 owner 保存观察；截止结束不释放尚未 settle 的 raw 物理占用。命中旧回执先通过当前授权，繁忙不阻挡零 IO 重领。
 
-本片关系 PATCH 的成功回包明确收窄为 AccountStore 已保存的 `{accountId,enabled}`，失败观察的原 receipt 含 `{error:{statusCode,message}}` 并以对应错误返回；不再返回旧 owner `safeAccount` 或 admin `publicAccount` 宽 DTO。现 Web PATCH 不消费正文，展示继续从已鉴权读取接口取得。`Idempotency-Key` 沿原 actor/路径操作隔离与指纹，同一原回执须先通过当前授权；命中后不查网络、不按后来配置/余额重算，也不覆盖后续暂停或轮换。没有幂等键仍是新命令；PST 只进私有表，不进事实、回执或日志。这些 PATCH 不续期 Cookie。
+owner 关系 PATCH 的 `{accountId,enabled}` / `{error:{statusCode,message}}` 保存回执仍为第 9.68 节的外部 DTO 收窄提案，不能称为原 `safeAccount` 字节兼容；现 Web 不消费其正文，最终维护者复核须明确该差异。owner 的 Idempotency-Key 按真实 actor/路径隔离，当前授权后才返回原回执，零 IO 且不按后来配置/余额重造结果。admin 宽配置沿旧实际非 keyed 契约，不因该头产生可领取私有结果或可猜测的代理/PST 公共摘要；新 HTTP 是新管理决定。admin PATCH 返回当前原宽字段和默认 mask；未保存的原历史计数、routeId、trial、stats/时点等为 NULL，不伪造零/默认权重。两角色都不续 Cookie。
 
-原 admin 的 `name`、`proxyUrl|socksProxy|proxy` 和 `weight` 写入/宽 DTO、显式 PST/代理 reveal 仍是未完成迁移项，不属于 D4 已确认退出范围。当前 PATCH 明确 400 拒绝这些字段，不静默丢失、不用环境默认代理冒充已保存来源；字段/读取及所选源保全的后继见数据库计划第 9.68 节。bulk 账户 PATCH、注册 POST、额度刷新 POST、admin summary/reveal 与唯一在线装配不由本片实现。
+账户内部业务回执另保存最小 `accountIntent`，用于从原序前态验证完整目标及应有注册/绑定/配置/凭据轮换/观察/可用性后果：bulk 保存原规范 ids 与公开 weight/false 意图，配置只声明公开输入与应有连接/凭据变化布尔，注册声明应有 bind。它不含 PST、代理或其可猜测摘要，不存 before/current profile。在线、共同回放与账户窄回放复用账户 owner 的同一规划/校验，不能只凭幸存事实仍合法就接受遗漏。bulk mixed no-op 目标保留于原意图并从前态判定无需事实，全 no-op admin 非 keyed 请求 200 零持久化；原已保存命令重复仍先当前授权后领取原回执。外部 owner 回包仅剥去该内部字段，保留原先保存的外部字段，不读当前账户假装旧结果；admin 仍由当前权限读取 mask DTO。
+
+`POST /api/member/owner/accounts/quota` 仅接当前绑定账户的单个 ids，返回原 `{checked,ok,failed,ignored}`；刷新不启用已暂停账户。owner 的有事实成功/失败保存原 counts 回执，当前授权后重领不重新查询；原 keyed 过期零事实请求仍为 409。`POST /api/admin/accounts/quota` 保留原非 keyed 及 raw accounts 回包（受当前本机 admin 授权，PST/代理不进公共回执），缺省/空 ids 选当前账户。等待中连接已变的 nonkeyed 请求为 ignored 零事实；实际 slot busy 不领票、不制造观察，也不作废唯一已发请求。
+
+代理只由选定私有来源保存；NULL 未知不能默认为直连，空串表示来源明确无代理。代理 A→B→A 仍取得新事件来源，旧查询和旧 401/403 不影响当前连接；原尝试的收费、退款和同账户容量责任仍归原 owner。完整公共回放不恢复代理或 PST，选定 SHA/同 cut 私有快照经唯一 ready 安装核对；格式升级与 localhost 真 SOCKS/TLS 验证见第 9.80 节。name/proxy/weight 不是 D4 退出项。完整 admin summary/reveal GET 聚合、上述非绑定观察/启用及新建默认启用、旧源转换和唯一在线装配仍由后继接续；只交 accounts 数据不能称为完成 `/api/admin/summary`。
 
 关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
 
@@ -313,7 +327,9 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
 
-关系管理 POST 目前接 `fallback-policy`、`free-image-policy`、`loss-alert-policy`、`member-status`、`member-admission` 和 `groups`；规则与回包继续归原政策、成员和组 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID `local-admin` 与同名本机管理员作用域独立；重复返回原回包且零写，冲突为 409，缺键由服务生成新命令 ID。POST 不续 Cookie；业务事实与私有当前状态、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原决定，不联网或恢复私有认证；政策字段与版本反例见数据库计划第 9.64 节，其他 action 尚未接入。
+关系管理 POST 目前接 `fallback-policy`、`free-image-policy`、`loss-alert-policy`、`member-status`、`member-admission`、`groups`、`transfer-quota`、`delete-member` 和下述五个运营资金 action；规则与回包继续归原政策、成员、组和资金 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID `local-admin` 与同名本机管理员作用域独立；重复返回原回包且零写，冲突为 409，缺键的新决定由服务生成命令 ID。POST 不续 Cookie；业务事实与私有当前状态、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原决定，不联网或恢复私有认证；政策字段与版本反例见数据库计划第 9.64 节，其他 action 尚未接入。
+
+同两个 member-management POST 的 `discord-invite` 保留原非 keyed 私有邀请操作：正文后重验当前 owner/admin、epoch/ready，未启用 Discord 为 409，目标不存在/停用为 404、已绑定为 409；返回原 `{code,expiresAt}`，只保存七天邀请摘要及截止。每次新请求都生成新码并撤销旧码，附带的 Idempotency-Key 不参与该操作，也不生成公共事件、receipt 或私有明文结果缓存。OAuth state、失效与一次性兑现仍由原 Discord owner 校验；公共回放不恢复邀请，匹配选定私有源才能恢复原摘要/截止。管理目录仅因可空 inviteExpiresAt 实际变化在最外层成功提交后通知，同毫秒换码且安全目录未变不额外通知；原码/摘要不放进通知。
 
 `member-status` 接 `userId` 与布尔 `enabled`，返回原 `{id,enabled}`；`member-admission` 接 `userId` 与布尔 `acceptingJobs`，返回原 `{id,acceptingJobs,cancelledJobIds,cancelledCount}`。无效布尔为 400，缺失或不存在目标为 404，不将数字或对象强转成成员 ID。同键重领返回原状态/取消结果，不覆盖后来恢复；停用和恢复不复活旧 Cookie。owner 本人停用 409、未结清任务/预扣的忙碌检查及 admin 原应急能力都复用成员状态 owner。停止接单保留 running 和原预扣，仅由原取消 owner 处理 queued/pending；恢复不复活旧 child，当前 disabled 目标仍可管理。实际 Native/队列、私有与业务回滚及公共回放证据见数据库计划第 9.70 节。
 
@@ -322,6 +338,14 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 本轮未发布关系候选的管理命令 scope 已加入真实身份类型，旧哈希与新哈希不互相尝试。共同 helper 的两个 legacy caller 也会使用新哈希，不能把此候选作为旧线上库的独立热修升级；旧线上键和回执的解释交独立旧工具及选定迁移保留、核对，不改写旧记录或猜测原角色。最终部署必须随 sole 退出旧运行路径与迁移核对完成，不得因哈希变化静默重复旧线上命令；旧关系原型的 parser/hash parity 也不能冒充本候选结论。
 
 相同两个字面 member-management POST 另接 `preview-groups` 和 `groups`。输入保留原 `groups/expectedConfigVersion/redistributeRemaining`，类型与版本规则由同一 quota owner 校验，不从正文采用 actor、command 或 time。预览不创建命令、回执或事实，也不校验无关的 Idempotency-Key；返回原 configVersion、改后 groups/users quota 与布尔重分意图。提交沿原全正文幂等摘要，当前授权先于旧回执，新决定才核原组版本和空闲/有限来源；预览不是权益预留，后来 held 或组版本变化可使提交拒绝。独立 free/loss/fallback 政策不增加组版本，组决定保留其当前值。两 action 均不续 Cookie，summary/statistics 的 POST 不因此开放；组事实/钱包/回执/通知及完整公共回放见数据库计划第 9.72 节。其余管理写入继续各片接续，不表示 sole 已切换。
+
+两个字面 member-management POST 接 `operating-contribute`、`operating-register-funding`、`operating-cover-loss`、`operating-reconcile-return`、`operating-confirm-debits`，返回原 `{eventId,duplicate}`；字段及五类资金决定归[资金来源与核销](../architecture/failure-accounting.md#资金来源与核销)。账户只取当前共享绑定，划入来源固定部署 owner，正文 `accountId/fromUserId/actor/command/time` 不授予来源或权限；旧 `userId` 指向他人时为 403。业务收据与 HTTP 命令键分别防重：首键原结果为 false，另一新键若伴随真实同步事实可首次得到 true，同键始终保留原始结果；无事实的新键为 409，无键重复可零写返回 true。不存在空事实或空提交的特殊通道。POST 不续 Cookie、不扩大 summary/statistics 路径；当前身份/epoch、资金来源、原回执与完整公共回放验收见数据库计划第 9.74 节。
+
+完整 admin summary 的底层预发布关系读取约定见数据库计划 9.82，尚未接完整 HTTP 聚合。保留原生产 worker 的 child 数、display cost、排除条件、端到端速度与七天北京时间小时桶口径，不能把真实 Anlas/V5 收费、父请求数或上游耗时冒充这些旧显示指标。新 `JobAccepted` 的 display cost 沿原 owner 明确为 0；Opening 没保存该来源则未知，不使用输入缓存选择价或当前报价补齐。失败排除只对一小时创建窗口内候选按原 classifier 读取实际受保护诊断，每份最多 4000 字符；无输入正文/附件读取，已有诊断损坏明确拒绝。缺诊断且代码不足以证明时，仅对应失败/总量/成功率为 null，已知 done、其他账户及其他指标继续保留。
+
+创建时间、模型、终态时间或 display cost 缺来源时，对应统计值或可定位日/小时桶保留 null；无法定位的终态不能计入导入当天，已知空桶仍为 0。terminal 的更新时间只取原 `completed_at`，保留真实 0 和 null；迟到产物、免费成功计数及结案不移动原终态时间。活动状态仅使用真实受理/入队/派发角色的事件时刻，Opening header 不当原业务时间。最近失败最多 50 条先按新受理事实 commit/index 的原插入序选取，再冷读各自唯一 canonical 输入；Opening 未保存旧集合顺序，当前以稳定 ID 确定性尾序且原顺序标为未知，不冒称与旧 `order_value` 等价。最终迁移仍须保留真实旧排序来源或明确相应行为决定。逻辑产物数只数未退休 published artifact，不数副本、文件或字节。以上未发布 DTO 的必要 nullable 与历史排序限制需随最终完整 summary 由维护者复核，不表示已退役旧 API 或完成 sole 切换。
+
+两个现管理 POST 的权益三 action 直接绑定 `manageMemberQuota`：`transfer-quota` 沿原 fromUserId/toUserId/resource/amount/expectedConfigVersion；删除和预览沿原 userId/transferToUserId/expectedConfigVersion，完整业务字段由原 owner 校验。`preview-delete-member` 跳过管理命令键，只返回原预览 DTO 和原 configVersion，真正零 SQL 写入、零事实/回执/通知；新提交仍需核对该版本。转账和删除在当前授权后才可重领原回执，金额/原账户/角色/组/来源/忙碌规则不在 HTTP 重写。删除同笔转移原权益、保存 removed 身份并撤销当前 epoch/会话；重复不得再转钱或复活凭据。owner 自删/预览自删为 409，本机 admin 保留原应急范围；真实共享 physical Map 仍有 promise 时拒绝调整，不能以逻辑结算释放物理责任。原 DTO 保留 groups/transferred/autoJoined/shareChanges/users 与来源角色，未知和零不补猜值，细节见第 9.43、9.77 节。
 
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 

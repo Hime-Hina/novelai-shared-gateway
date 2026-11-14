@@ -17,6 +17,7 @@ import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { Json } from '../events/domain-events.ts';
 import { parseAmount, amountNumber } from '../quota/resource-amounts.ts';
 import { activityDate } from '../reports/activity-heatmap.ts';
+import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
 
 export interface OwnerJobRow {
   id: string;
@@ -351,10 +352,58 @@ export function ownerAccountPatch(accountId: string, input: Record<string, unkno
   return { kind: input.enabled ? ('enable' as const) : ('pause' as const), accountId };
 }
 
-function accountCommandResult(result: RelationalCommitResult) {
+export function normalizeAccountProxyUrl(value: unknown = ''): string {
+  try {
+    return normalizeSocksProxyUrl(value);
+  } catch (error) {
+    fail(400, error instanceof Error ? error.message : 'invalid SOCKS5 proxy URL.');
+  }
+}
+
+export function adminAccountPatch(
+  accountId: string,
+  input: Record<string, unknown>,
+): Extract<OwnerAccountMutation, { kind: 'configure' }> {
+  const changes: Extract<OwnerAccountMutation, { kind: 'configure' }>['changes'] = {};
+  if (input.name !== undefined) {
+    changes.displayName = String(input.name).slice(0, 80);
+  }
+  if (input.weight !== undefined) {
+    const value = Number(input.weight);
+    changes.weight = Number.isFinite(value) ? Math.max(1, Math.min(100, value)) : 1;
+  }
+  if (input.proxyUrl !== undefined || input.socksProxy !== undefined || input.proxy !== undefined) {
+    changes.proxyUrl = normalizeAccountProxyUrl(
+      input.proxyUrl || input.socksProxy || input.proxy || '',
+    );
+  }
+  if (input.token !== undefined) {
+    changes.token = String(input.token).trim();
+    assertOwnerAccountPst(changes.token);
+  }
+  if (input.enabled !== undefined) {
+    if (typeof input.enabled !== 'boolean') {
+      fail(400, 'enabled 必须为布尔值');
+    }
+    changes.enabled = input.enabled;
+  }
+  return { kind: 'configure', accountId, changes };
+}
+
+function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
     fail(receipt.error.statusCode, receipt.error.message);
+  }
+  if (
+    result.receipt &&
+    typeof result.receipt === 'object' &&
+    !Array.isArray(result.receipt) &&
+    'accountIntent' in result.receipt
+  ) {
+    // 内部原安全意图只用于完整回放；外部仍领取原先保存的字段，不从当前账户重造旧回包。
+    const { accountIntent: _intent, ...external } = result.receipt;
+    return { ...result, receipt: external };
   }
   return result;
 }
@@ -380,8 +429,8 @@ export async function ownerAccountCommand(
   if ('result' in prepared) {
     return accountCommandResult(prepared.result);
   }
-  if (input.kind !== 'enable') {
-    throw new Error('Only account enablement may query upstream.');
+  if (input.kind !== 'enable' && input.kind !== 'observe' && input.kind !== 'configure') {
+    throw new Error('Only account observation may query upstream.');
   }
   if (!query) {
     fail(503, '账户额度查询尚未配置');
@@ -390,24 +439,29 @@ export async function ownerAccountCommand(
     prior: RelationalCommitResult | undefined,
     observation;
   try {
-    const quota = await query(prepared.prepared.pst, '', prepared.prepared.accountId, async () => {
-      const started = await authorize((member) =>
-        store.startAccountEnable(
-          { ...metadata, recordedAt: now() },
-          input,
-          prepared.prepared,
-          member,
-        ),
-      );
-      if (!started) {
-        fail(401, '会话已失效，请重新登录');
-      }
-      if ('result' in started) {
-        prior = started.result;
-        throw new Error('Account command already completed.');
-      }
-      ticket = started.ticket;
-    });
+    const quota = await query(
+      prepared.prepared.pst,
+      prepared.prepared.configuration?.proxyUrl ?? prepared.prepared.proxyUrl,
+      prepared.prepared.accountId,
+      async () => {
+        const started = await authorize((member) =>
+          store.startAccountEnable(
+            { ...metadata, recordedAt: now() },
+            input,
+            prepared.prepared,
+            member,
+          ),
+        );
+        if (!started) {
+          fail(401, '会话已失效，请重新登录');
+        }
+        if ('result' in started) {
+          prior = started.result;
+          throw new Error('Account command already completed.');
+        }
+        ticket = started.ticket;
+      },
+    );
     if (!ticket) {
       throw new Error('Account quota query did not start its observation.');
     }
@@ -538,4 +592,56 @@ export async function ownerOperation(
     };
   }
   fail(404, '未开放此管理操作');
+}
+
+export function maskToken(token = '') {
+  if (token.length <= 12) {
+    return token ? '******' : '';
+  }
+  return `${token.slice(0, 6)}...${token.slice(-4)}`;
+}
+
+export function accountTierText(tier: unknown, fallback = '会员未查询') {
+  if (tier === null || tier === undefined || tier === '') {
+    return fallback;
+  }
+  const value = Number(tier);
+  const tierNames: Record<number, string> = {
+    0: '无订阅',
+    1: 'Tablet 会员',
+    2: 'Scroll 会员',
+    3: 'Opus 会员',
+  };
+  if (Number.isFinite(value)) {
+    return tierNames[value] || `Tier ${value}`;
+  }
+  const key = String(tier).trim().toLowerCase();
+  return (
+    {
+      none: '无订阅',
+      paper: '无订阅',
+      tablet: 'Tablet 会员',
+      scroll: 'Scroll 会员',
+      opus: 'Opus 会员',
+    }[key] || String(tier)
+  );
+}
+
+export function maskProxyUrl(value: unknown = '') {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  try {
+    const url = new URL(text);
+    if (url.password) {
+      url.password = '******';
+    }
+    if (url.username) {
+      url.username = `${url.username.slice(0, 2)}***`;
+    }
+    return url.toString();
+  } catch {
+    return text.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:******@');
+  }
 }

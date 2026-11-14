@@ -810,7 +810,7 @@ function accountProxyUrl(account: ProviderAccount = {}): string {
   return normalizeSocksProxyUrl(account.proxyUrl || account.socksProxy || account.proxy || '');
 }
 
-function normalizeSocksProxyUrl(value: unknown = ''): string {
+export function normalizeSocksProxyUrl(value: unknown = ''): string {
   const text = String(value || '').trim();
   if (!text) {
     return '';

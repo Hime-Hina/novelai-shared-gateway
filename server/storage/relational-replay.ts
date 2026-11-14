@@ -81,6 +81,7 @@ export class RelationalCommitReplayer {
         throw new Error('Business projection requires the saved complete original commit.');
       }
       assertSupported(stored.events);
+      this.quotas.assertFundingReceipt(result);
       const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
       const hasDiagnostic = stored.events.some((event) => event.eventType === 'DiagnosticRecorded');
       const hasConfiguration = stored.events.some((event) =>
@@ -127,6 +128,7 @@ export class RelationalCommitReplayer {
       }
       this.members.assertMemberAdmissionCommit(stored.events, stored.command.receipt);
       this.members.assertMemberRemovalCommit(stored.events);
+      this.accounts.assertAccountCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {

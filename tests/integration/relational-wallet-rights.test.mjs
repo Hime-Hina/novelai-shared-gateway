@@ -74,7 +74,7 @@ function setup(t, options = {}) {
       receipt: { opened: true },
     }),
   )();
-  db.prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)').run(
+  db.prepare("INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,'')").run(
     'a',
     'synthetic-pst',
   );
@@ -435,12 +435,17 @@ test('旧钱包不能代替运营者当前分组资格，拒绝决定前后全�
     before = databaseState(f.db);
   await assert.rejects(
     () =>
-      withAuthenticatedMemberApiKey(f.members, keys.m2, () =>
-        quotas.manageQuotaFunding(meta('former-contribute', NOW + 1, 'm2'), 'a', {
-          action: 'operating-contribute',
-          resource: 'anlasFixed',
-          amount: 1,
-        }),
+      withAuthenticatedMemberApiKey(f.members, keys.m2, (member) =>
+        quotas.manageQuotaFunding(
+          meta('former-contribute', NOW + 1, 'm2'),
+          'a',
+          {
+            action: 'operating-contribute',
+            resource: 'anlasFixed',
+            amount: 1,
+          },
+          member,
+        ),
       ),
     /需要已分组的运营者/,
   );

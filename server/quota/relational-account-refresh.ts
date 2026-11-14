@@ -104,7 +104,7 @@ export function createRelationalAccountQuotaRefresh(options: {
     let ticket: ReturnType<RelationalQuotaStore['beginQuotaObservation']> | undefined;
     let result: QuotaResult;
     try {
-      const quota = await fetch(source.pst, '', account.id, () => {
+      const quota = await fetch(source.pst, source.proxyUrl, account.id, () => {
         assertRelationalStorageReady(sqlite);
         if (enabledAccount()?.id !== account.id) {
           throw Object.assign(new Error('自动额度查询发起前绑定或启用状态已变化'), {

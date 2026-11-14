@@ -101,9 +101,11 @@ function openingFacts({
     },
     {
       eventType: 'OpeningAccountRecorded',
+      eventId: 'opening-account',
       payload: {
         accountId: 'a',
         displayName: 'shared',
+        weight: 1,
         enabled: true,
         credentialEpoch: 1,
         cooldownUntil: null,
@@ -279,7 +281,7 @@ async function fixture(t, options = {}) {
   )();
   db.transaction(() => generations.replayGenerationCommit(readRelationalCommit(seed, '3')))();
   // 私有当前凭据不在开账事实中，测试显式模拟受保护快照恢复。
-  db.prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)').run(
+  db.prepare("INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,'')").run(
     'a',
     'synthetic-upstream-pst',
   );

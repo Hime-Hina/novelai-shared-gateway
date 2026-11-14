@@ -34,15 +34,20 @@ async function setup(t, options = {}) {
       ),
     );
   const fund = (receipt, resource, amount, destination = 'members', at = NOW + 20, extra = {}) =>
-    withAuthenticatedMemberApiKey(f.members, keys.m1, () =>
-      quotas.manageQuotaFunding(meta(receipt, at, 'm1'), 'a', {
-        action: 'operating-register-funding',
-        receipt,
-        resource,
-        amount,
-        destination,
-        ...extra,
-      }),
+    withAuthenticatedMemberApiKey(f.members, keys.m1, (member) =>
+      quotas.manageQuotaFunding(
+        meta(receipt, at, 'm1'),
+        'a',
+        {
+          action: 'operating-register-funding',
+          receipt,
+          resource,
+          amount,
+          destination,
+          ...extra,
+        },
+        member,
+      ),
     );
   const observe = (changes, at = NOW + 30) => {
     const q = quotas.readAccountQuota('a'),
@@ -395,13 +400,18 @@ test('直接凭据和人工扣款确认仍复用原加权分配，运营到账�
             ? await f.fund('direct-rights', 'anlasFixed', 3, 'members', NOW + 50, {
                 fromUnattributed: true,
               })
-            : await withAuthenticatedMemberApiKey(f.members, keys.m1, () =>
-                f.quotas.manageQuotaFunding(meta('confirmed-rights', NOW + 50, 'm1'), 'a', {
-                  action: 'operating-confirm-debits',
-                  receipt: 'confirmed-rights',
-                  resource: 'anlasFixed',
-                  amount: 2,
-                }),
+            : await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) =>
+                f.quotas.manageQuotaFunding(
+                  meta('confirmed-rights', NOW + 50, 'm1'),
+                  'a',
+                  {
+                    action: 'operating-confirm-debits',
+                    receipt: 'confirmed-rights',
+                    resource: 'anlasFixed',
+                    amount: 2,
+                  },
+                  member,
+                ),
               ),
         stored = readRelationalCommit(f.db, result.commitSeq),
         allocation = stored.events.find((event) => event.eventType === 'AllocationApplied');

@@ -1,3 +1,4 @@
+import { buildUsageDays, finalizeStats } from '../reports/admin-statistics.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import {
@@ -369,68 +370,6 @@ function parseRows(rows: DataRow[]): unknown[] {
     }
   }
   return values;
-}
-
-function buildUsageDays(rows: UsageRow[], now: number, days: number) {
-  const offsetMs = 8 * 60 * 60_000;
-  const current = new Date(now + offsetMs);
-  const midnight = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate());
-  const result = Array.from({ length: days }, (_, index) => {
-    const date = new Date(midnight + (index - days + 1) * 24 * 60 * 60_000)
-      .toISOString()
-      .slice(0, 10);
-    return {
-      date,
-      label: date.slice(5),
-      done: 0,
-      failed: 0,
-      total: 0,
-      credits: 0,
-      successRate: 0,
-      hours: Array.from({ length: 24 }, (_, hour) => ({
-        hour,
-        label: `${String(hour).padStart(2, '0')}:00`,
-        done: 0,
-        failed: 0,
-        total: 0,
-        credits: 0,
-        successRate: 0,
-      })),
-    };
-  });
-  const byDate = new Map(result.map((item) => [item.date, item]));
-  for (const row of rows) {
-    const day = byDate.get(row.date!);
-    const hour = Number(row.hour || 0);
-    if (!day || !day.hours[hour]) {
-      continue;
-    }
-    const count = Number(row.count || 0);
-    const credits = Math.max(0, Number(row.credits || 0));
-    if (row.status === 'done') {
-      day.done += count;
-      day.credits += credits;
-      day.hours[hour].done += count;
-      day.hours[hour].credits += credits;
-    } else if (row.status === 'failed') {
-      day.failed += count;
-      day.hours[hour].failed += count;
-    }
-  }
-  for (const day of result) {
-    Object.assign(day, finalizeStats(day));
-    for (const hour of day.hours) {
-      Object.assign(hour, finalizeStats(hour));
-    }
-  }
-  return result;
-}
-
-function finalizeStats(value: JobStats) {
-  const done = Number(value.done || 0);
-  const failed = Number(value.failed || 0);
-  const total = done + failed;
-  return { done, failed, total, successRate: total ? done / total : 0 };
 }
 
 export type ReadResults = {

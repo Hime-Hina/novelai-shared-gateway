@@ -81,6 +81,10 @@ CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
 ) WHERE event_type = 'OperatingLossCovered';
 
+CREATE INDEX idx_account_connection_source ON domain_events(stream_id,stream_version)
+WHERE member_id IS NULL AND (event_type IN ('AccountRegistered','OpeningAccountRecorded')
+  OR (event_type='AccountConfigurationChanged' AND json_extract(payload,'$.connectionChanged')=1));
+
 CREATE TABLE stream_heads (
   stream_id TEXT PRIMARY KEY,
   stream_kind TEXT NOT NULL,
@@ -100,6 +104,8 @@ CREATE TABLE projection_state (
 CREATE TABLE members (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
+  -- 旧私有备注保存 JSON string，保留原 JS UTF-16（包括合法 slice 产生的孤立代理）；NULL 为未知。
+  note_json TEXT CHECK (note_json IS NULL OR (json_valid(note_json) AND json_type(note_json)='text')),
   status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'removed')),
   accepting_jobs INTEGER NOT NULL CHECK (accepting_jobs IN (0, 1)),
   -- 认证 epoch 只由私有快照/认证命令维护；未恢复或撤销时 NULL，业务重放不得重建它。
@@ -175,7 +181,9 @@ CREATE INDEX idx_group_members_group ON group_members(group_id);
 
 CREATE TABLE upstream_accounts (
   id TEXT PRIMARY KEY,
-  display_name TEXT NOT NULL,
+  -- 原 JS.slice(0,80) 可产生孤立代理，JSON string 保留原 UTF-16 码元。
+  display_name_json TEXT NOT NULL CHECK (json_valid(display_name_json) AND json_type(display_name_json)='text'),
+  weight REAL CHECK (weight IS NULL OR (weight>=1 AND weight<=100)),
   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
   credential_epoch INTEGER NOT NULL CHECK (credential_epoch > 0),
   cooldown_until INTEGER,
@@ -189,7 +197,8 @@ CREATE TABLE upstream_accounts (
 
 CREATE TABLE upstream_credentials (
   account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id),
-  pst TEXT NOT NULL
+  pst TEXT NOT NULL,
+  proxy_url TEXT
 ) STRICT;
 
 CREATE TABLE sharing_policy (

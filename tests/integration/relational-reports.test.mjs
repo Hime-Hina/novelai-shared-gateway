@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -19,6 +20,10 @@ import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { summarizeOwnerUsage } from '../../server/members/owner-operations.ts';
 import { readActivityHeatmap } from '../../server/reports/activity-heatmap.ts';
 import { publicGenerationRequest } from '../../server/generation/request-queries.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import { relationalPrivateTables } from '../../server/storage/relational-private-restore.ts';
 import {
   normalizeMemberGeneration,
   materializeMemberGeneration,
@@ -521,4 +526,599 @@ test('关系查询使用原创建时间局部索引；重开后结果相同、�
   } finally {
     withoutIndex.close();
   }
+});
+
+function openingJob(
+  f,
+  id,
+  { createdAt = NOW, completedAt = NOW, errorCode = 'historical_failure', status = 'failed' } = {},
+) {
+  return f.db.transaction(() => {
+    const inputs = new RelationalInputStore(f.db),
+      origin = { sourceId: 'synthetic-opening', originalId: id },
+      body = {
+        operation: 'generate',
+        model: 'nai-diffusion-4-5-full',
+        input: null,
+        parameters: {},
+      },
+      staged = inputs.stageOpeningInput({
+        inputId: id,
+        memberId: 'm1',
+        completeness: 'partial',
+        body,
+        logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+        assets: [],
+      }),
+      common = {
+        memberId: 'm1',
+        accountId: null,
+        occurredAt: NOW + day,
+        policyVersion: 'historical',
+        pricingVersion: 'historical',
+      },
+      events = [
+        {
+          ...common,
+          eventType: 'OpeningInputRecorded',
+          streamId: 'input:' + id,
+          payload: { ...staged, origin },
+        },
+        {
+          ...common,
+          eventType: 'OpeningRequestRecorded',
+          streamId: 'request:' + id,
+          payload: {
+            requestId: id,
+            memberId: 'm1',
+            inputId: id,
+            contextId: null,
+            source: 'historical',
+            operation: 'generate',
+            model: body.model,
+            sampleCount: 1,
+            seedMode: 'unknown',
+            confirmation: null,
+            acceptedAt: NOW + day,
+            retiredAt: null,
+            origin,
+          },
+        },
+        {
+          ...common,
+          eventType: 'OpeningJobRecorded',
+          streamId: 'request:' + id,
+          payload: {
+            jobId: id + '-0',
+            requestId: id,
+            createdAt,
+            sampleIndex: 0,
+            actualSeed: null,
+            status,
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch: 0,
+            artifactId: status === 'done' ? 'artifact-' + id : null,
+            cacheKey: null,
+            completedAt,
+            errorCode: status === 'done' ? null : errorCode,
+            errorStatus: status === 'done' ? null : 500,
+            cancellationReason: null,
+            lateResultAt: null,
+            freeSucceededAt: null,
+            freeWarningThreshold: null,
+            retiredAt: null,
+            origin,
+          },
+        },
+      ],
+      { policyVersion: _p, pricingVersion: _r, ...metadata } = meta('opening-' + id);
+    if (status === 'done') {
+      events.splice(2, 0, {
+        ...common,
+        eventType: 'OpeningArtifactRecorded',
+        streamId: 'artifact:artifact-' + id,
+        payload: {
+          artifactId: 'artifact-' + id,
+          memberId: 'm1',
+          inputId: id,
+          originalAttemptId: null,
+          operation: 'generate',
+          mimeType: 'image/webp',
+          byteLength: image.length,
+          sha256: createHash('sha256').update(image).digest('hex'),
+          publishedAt: completedAt,
+          retiredAt: null,
+          origin,
+        },
+      });
+    }
+    return new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...metadata,
+        events,
+        receipt: null,
+        expectedVersions: Object.fromEntries(events.map((event) => [event.streamId, '0'])),
+      },
+      inputs,
+    );
+  })();
+}
+
+test('admin窄统计沿原生产worker口径：真实paid但display0，diagnostic排除与小时桶各自保留原规则', async (t) => {
+  const f = await fixture(t),
+    reports = new RelationalReportStore(f.db),
+    at = NOW + 60000;
+  await f.accept('admin-paid');
+  f.dispatch('admin-paid-0');
+  await f.publish('admin-paid-0');
+  assert.equal(f.generations.readCharge('admin-paid-0').anlasFixed, '2');
+  for (const [id, error, offset] of [
+    ['admin-excluded', 'upstream insufficient balance', 10010],
+    ['admin-failed', 'ordinary provider failure', 20020],
+  ]) {
+    await f.accept(id, { now: NOW + offset });
+    const dispatched = f.dispatch(id + '-0', NOW + offset + 1);
+    f.fail(
+      id + '-0',
+      { aborted: false, diagnostic: { dispatch: dispatched.dispatch, error: new Error(error) } },
+      NOW + offset + 2,
+    );
+  }
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  f.db.pragma('query_only=ON');
+  let result;
+  try {
+    result = reports.readAdminSummaryStats(at);
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+  assert.deepEqual(result.requestStats1m, { total: 3 });
+  assert.deepEqual(result.generationStats1m, { total: 0 });
+  assert.deepEqual(result.jobStats1h, { done: 1, failed: 1, total: 2, successRate: 0.5 });
+  assert.deepEqual(result.accountStats1h.a, result.jobStats1h);
+  assert.equal(result.diagnosticRowsRead, 2);
+  assert.equal(
+    result.usageHourlyDays.reduce((sum, d) => sum + d.done, 0),
+    0,
+  );
+  assert.equal(
+    result.usageHourlyDays.reduce((sum, d) => sum + d.failed, 0),
+    2,
+    'usage does not apply balance exclusion',
+  );
+  assert.equal(
+    result.usageHourlyDays.reduce((sum, d) => sum + d.credits, 0),
+    0,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  const dir = await mkdtemp(path.join(tmpdir(), 'nai-admin-stats-parity-')),
+    legacy = new JsonStore(dir);
+  await legacy.init();
+  t.after(async () => {
+    await legacy.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  const db = structuredClone(legacy.db);
+  db.accounts = [{ id: 'a', enabled: true }];
+  db.jobs = [
+    {
+      id: 'admin-paid-0',
+      accountId: 'a',
+      status: 'done',
+      createdAt: iso(NOW),
+      updatedAt: iso(NOW + 4),
+      model: 'nai-diffusion-4-5-full',
+      cost: 0,
+    },
+    {
+      id: 'admin-excluded-0',
+      accountId: 'a',
+      status: 'failed',
+      createdAt: iso(NOW + 10010),
+      updatedAt: iso(NOW + 10012),
+      model: 'nai-diffusion-4-5-full',
+      cost: 0,
+      error: 'upstream_failed',
+      errorDetail: 'upstream insufficient balance',
+    },
+    {
+      id: 'admin-failed-0',
+      accountId: 'a',
+      status: 'failed',
+      createdAt: iso(NOW + 20020),
+      updatedAt: iso(NOW + 20022),
+      model: 'nai-diffusion-4-5-full',
+      cost: 0,
+      error: 'upstream_failed',
+      errorDetail: 'ordinary provider failure',
+    },
+  ];
+  await legacy.write(db);
+  t.mock.method(Date, 'now', () => at);
+  const expected = await legacy.readAdminSummaryStats({ fresh: true });
+  for (const key of [
+    'requestStats1m',
+    'generationStats1m',
+    'jobStats1h',
+    'accountStats1h',
+    'generationSpeed1h',
+    'usageHourlyDays',
+  ]) {
+    assert.deepEqual(result[key], expected[key], key);
+  }
+  db.jobs.push({
+    id: 'historical-positive-display',
+    accountId: 'a',
+    status: 'done',
+    createdAt: iso(NOW + 30000),
+    updatedAt: iso(NOW + 30004),
+    model: 'nai-diffusion-5-full',
+    cost: 1.5,
+  });
+  await legacy.write(db);
+  const positive = await legacy.readAdminSummaryStats({ fresh: true });
+  assert.equal(positive.generationStats1m.total, 1);
+  assert.equal(
+    positive.usageHourlyDays.reduce((sum, item) => sum + item.credits, 0),
+    1.5,
+  );
+  assert.equal(
+    positive.usageHourlyDays.reduce((sum, item) => sum + item.done, 0),
+    1,
+  );
+  const diagnostic = f.db
+    .prepare("SELECT id,detail FROM generation_diagnostics WHERE job_id='admin-excluded-0'")
+    .get();
+  f.db
+    .prepare('UPDATE generation_diagnostics SET detail=? WHERE id=?')
+    .run('self-consistent-looking corrupt detail', diagnostic.id);
+  const corrupted = databaseState(f.db);
+  assert.throws(() => reports.readAdminSummaryStats(at), { code: 'diagnostic_unavailable' });
+  assert.equal(databaseState(f.db), corrupted);
+  f.db
+    .prepare('UPDATE generation_diagnostics SET detail=? WHERE id=?')
+    .run(diagnostic.detail, diagnostic.id);
+});
+
+test('admin窄读终态时间不随late/FreeImageSucceeded漂移，逻辑产物不按副本计且退休后不计', async (t) => {
+  const f = await fixture(t),
+    reports = new RelationalReportStore(f.db),
+    requests = new RelationalRequestStore(f.db);
+  await f.accept('admin-late');
+  const dispatch = f.dispatch('admin-late-0');
+  f.fail(
+    'admin-late-0',
+    {
+      aborted: false,
+      diagnostic: { dispatch: dispatch.dispatch, error: new Error('ordinary failure') },
+    },
+    NOW + 2,
+  );
+  const original = reports.readAdminSummaryStats(NOW + 60000);
+  assert.equal(reports.readLogicalArtifactCount(), 0);
+  await f.publish('admin-late-0', NOW + day);
+  assert.equal(reports.readLogicalArtifactCount(), 1);
+  assert.equal(requests.readApiJob('admin-late-0').updatedAt, iso(NOW + 2));
+  assert.equal(requests.readManagementFailedJobs()[0].updatedAt, iso(NOW + 2));
+  assert.deepEqual(reports.readAdminSummaryStats(NOW + 60000), original);
+  assert.ok(f.db.prepare('SELECT COUNT(*) n FROM artifact_replicas').get().n >= 1);
+  const replicas = new RelationalReplicaStore(f.db);
+  f.db.transaction(() =>
+    replicas.retireArtifactHistory(
+      { ...meta('admin-artifact-retire', NOW + day + 10), actorKind: 'admin' },
+      ['artifact-admin-late-0'],
+      null,
+      new Map(),
+    ),
+  )();
+  assert.equal(reports.readLogicalArtifactCount(), 0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM artifacts').get().n, 1);
+});
+
+test('admin窄读Opening保留ctime/completed0和未知，缺原cost/诊断/顺序不借import时间或当前收费', async (t) => {
+  const f = await fixture(t),
+    reports = new RelationalReportStore(f.db),
+    requests = new RelationalRequestStore(f.db);
+  openingJob(f, 'admin-opening-zero', { createdAt: 0, completedAt: 0 });
+  openingJob(f, 'admin-opening-unknown', { createdAt: null, completedAt: null });
+  const zero = requests.readApiJob('admin-opening-zero-0'),
+    unknown = requests.readApiJob('admin-opening-unknown-0');
+  assert.equal(zero.createdAt, iso(0));
+  assert.equal(zero.updatedAt, iso(0));
+  assert.equal(unknown.createdAt, null);
+  assert.equal(unknown.updatedAt, null);
+  const rows = requests.readManagementFailedJobs();
+  assert.ok(rows.every((row) => row.originalOrderKnown === false));
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ['admin-opening-zero-0', 'admin-opening-unknown-0'],
+  );
+  assert.ok(rows.every((row) => row.request.requestedSteps === null));
+  const result = reports.readAdminSummaryStats(NOW + 60000);
+  assert.equal(result.requestStats1m.total, null);
+  assert.equal(result.jobStats1h.done, 0);
+  assert.equal(result.jobStats1h.failed, null);
+  assert.equal(result.jobStats1h.total, null);
+  assert.equal(result.usageHourlyDays[0].failed, null);
+  assert.equal(result.usageHourlyDays[0].done, 0);
+  assert.equal(result.diagnosticRowsRead, 0);
+});
+
+test('admin失败50按原受理序不是最近失败，limit先于冷读，查询/重开/完整公共回放不写入或复活认证', async (t) => {
+  const f = await fixture(t),
+    requests = new RelationalRequestStore(f.db),
+    reports = new RelationalReportStore(f.db);
+  for (let index = 0; index < 51; index++) {
+    const id = 'admin-page-' + String(index).padStart(2, '0');
+    await f.accept(id, { now: NOW + index });
+    f.fail(id + '-0', { aborted: true }, NOW + 1000 - index);
+  }
+  const originalRead = RelationalInputStore.prototype.readErrorLogRequest,
+    selected = [];
+  t.mock.method(RelationalInputStore.prototype, 'readErrorLogRequest', function (id) {
+    assert.notEqual(id, 'admin-page-00-0', 'the 51st canonical input is poisoned');
+    selected.push(id);
+    return originalRead.call(this, id);
+  });
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  f.db.pragma('query_only=ON');
+  try {
+    const result = requests.readManagementFailedJobs();
+    assert.equal(result.length, 50);
+    assert.equal(result[0].id, 'admin-page-50-0');
+    assert.equal(result.at(-1).id, 'admin-page-01-0');
+    assert.ok(result.every((row) => row.originalOrderKnown));
+    assert.equal(result[0].updatedAt, iso(NOW + 950));
+    assert.equal(result.at(-1).updatedAt, iso(NOW + 999));
+    assert.deepEqual(reports.readAdminSummaryStats(NOW + 60000).requestStats1m, { total: 51 });
+    assert.throws(() => requests.readManagementFailedJobs(51), { statusCode: 400 });
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+  assert.equal(selected.length, 50);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  const expected = reports.readAdminSummaryStats(NOW + 60000),
+    target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replayer = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  t.mock.method(globalThis, 'fetch', () => assert.fail('public admin stats replay must not fetch'));
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  assert.deepEqual(new RelationalReportStore(target).readAdminSummaryStats(NOW + 60000), expected);
+  assert.deepEqual(
+    new RelationalRequestStore(target).readManagementFailedJobs(),
+    requests.readManagementFailedJobs(),
+  );
+  for (const [table] of relationalPrivateTables) {
+    assert.equal(target.prepare('SELECT COUNT(*) n FROM ' + table).get().n, 0, table);
+  }
+  const publicState = databaseState(target),
+    readChanges = target.prepare('SELECT total_changes() n').get().n;
+  new RelationalReportStore(target).readAdminSummaryStats(NOW + 60000);
+  new RelationalRequestStore(target).readManagementFailedJobs();
+  assert.equal(databaseState(target), publicState);
+  assert.equal(target.prepare('SELECT total_changes() n').get().n, readChanges);
+  const reopened = new Database(path.join(f.dir, 'library.sqlite'));
+  try {
+    assert.deepEqual(
+      new RelationalReportStore(reopened).readAdminSummaryStats(NOW + 60000),
+      expected,
+    );
+  } finally {
+    reopened.close();
+  }
+});
+
+test('admin终态公共DTO与回放保留FreeImageSucceeded后的原失败时间及Opening真实0/NULL', async (t) => {
+  const f = await fixture(t, { freeLimit: 10 }),
+    requests = new RelationalRequestStore(f.db);
+  await f.accept('admin-free-late', { steps: 28 });
+  const dispatched = f.dispatch('admin-free-late-0');
+  assert.equal(f.generations.readCharge('admin-free-late-0').billingMode, 'free');
+  f.fail(
+    'admin-free-late-0',
+    {
+      aborted: false,
+      diagnostic: { dispatch: dispatched.dispatch, error: new Error('free provider failed') },
+    },
+    NOW + 2,
+  );
+  await f.publish('admin-free-late-0', NOW + day);
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT e.event_type type FROM generation_jobs j JOIN domain_events e ON e.event_id=j.source_event_id WHERE j.id='admin-free-late-0'",
+      )
+      .get().type,
+    'FreeImageSucceeded',
+  );
+  assert.equal(requests.readApiJob('admin-free-late-0').updatedAt, iso(NOW + 2));
+  assert.equal(
+    publicGenerationRequest(requests.readMemberRequest('admin-free-late', 'm1')).jobs[0].updatedAt,
+    iso(NOW + 2),
+  );
+  openingJob(f, 'admin-api-zero', { createdAt: 0, completedAt: 0 });
+  openingJob(f, 'admin-api-null', { createdAt: null, completedAt: null });
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replayer = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  const restored = new RelationalRequestStore(target);
+  assert.throws(() => restored.readMemberRequest('admin-api-zero', 'm1'), {
+    code: 'session_expired',
+  });
+  assert.equal(
+    publicGenerationRequest(requests.readMemberRequest('admin-api-zero', 'm1')).jobs[0].updatedAt,
+    iso(0),
+  );
+  assert.equal(
+    publicGenerationRequest(requests.readMemberRequest('admin-api-null', 'm1')).jobs[0].updatedAt,
+    '',
+  );
+  for (const reader of [requests, restored]) {
+    assert.equal(reader.readApiJob('admin-api-zero-0').updatedAt, iso(0));
+    assert.equal(reader.readApiJob('admin-api-null-0').updatedAt, null);
+    // 公共回放不恢复成员资格；已授权管理读的原薄时间仍保留NULL。
+    assert.equal(reader.readApiJob('admin-free-late-0').updatedAt, iso(NOW + 2));
+  }
+});
+
+test('admin薄统计实际SQL范围计划、不读canonical输入/assetBLOB，未知诊断只影响可疑失败数', async (t) => {
+  const f = await fixture(t),
+    reports = new RelationalReportStore(f.db),
+    requests = new RelationalRequestStore(f.db);
+  await f.accept('admin-no-diagnostic');
+  f.fail('admin-no-diagnostic-0', { aborted: true });
+  const original = f.db.prepare.bind(f.db),
+    captured = [];
+  f.db.prepare = function (sql) {
+    assert.doesNotMatch(sql, /\b(?:FROM|JOIN)\s+(?:generation_inputs|input_assets)\b/i);
+    captured.push(sql);
+    return original(sql);
+  };
+  let result;
+  try {
+    result = reports.readAdminSummaryStats(NOW + 60000);
+    reports.readLogicalArtifactCount();
+  } finally {
+    f.db.prepare = original;
+  }
+  assert.equal(result.jobStats1h.done, 0);
+  assert.equal(result.jobStats1h.failed, null);
+  assert.equal(result.generationStats1m.total, 0);
+  assert.equal(result.requestStats1m.total, 1);
+  assert.equal(result.diagnosticRowsRead, 0);
+  const sql = captured.find((sql) =>
+      sql.includes('SELECT id,accountId,error,diagnosticId,serverCancellation'),
+    ),
+    plan = original('EXPLAIN QUERY PLAN ' + sql).all(NOW + 60000 - 3600000);
+  assert.ok(
+    plan.some((row) => /SEARCH domain_events USING INDEX idx_job_created_time/.test(row.detail)),
+    JSON.stringify(plan),
+  );
+  t.diagnostic('admin failed window: ' + JSON.stringify(plan));
+  const selected = [];
+  f.db.prepare = function (sql) {
+    selected.push(sql);
+    return original(sql);
+  };
+  try {
+    requests.readManagementFailedJobs();
+  } finally {
+    f.db.prepare = original;
+  }
+  const selection = selected.find((sql) =>
+      sql.includes("(origin.event_type='JobAccepted') AS orderKnown"),
+    ),
+    selectionPlan = original('EXPLAIN QUERY PLAN ' + selection).all(50);
+  t.diagnostic('admin failed50: ' + JSON.stringify(selectionPlan));
+});
+
+test('admin已知Opening模型和原起止保留速度，唯缺legacy displaycost的原生成数/credits为NULL', async (t) => {
+  const f = await fixture(t),
+    reports = new RelationalReportStore(f.db);
+  await f.accept('admin-known-current');
+  f.dispatch('admin-known-current-0');
+  await f.publish('admin-known-current-0');
+  openingJob(f, 'admin-known-history', {
+    status: 'done',
+    createdAt: NOW + 122,
+    completedAt: NOW + 123,
+  });
+  const result = reports.readAdminSummaryStats(NOW + 60000),
+    date = iso(NOW + 8 * 3600000).slice(0, 10),
+    bucket = result.usageHourlyDays.find((row) => row.date === date);
+  assert.equal(result.requestStats1m.total, 2);
+  assert.equal(result.jobStats1h.done, 2);
+  assert.equal(result.jobStats1h.failed, 0);
+  assert.equal(result.generationStats1m.total, null);
+  assert.equal(result.generationSpeed1h.v45.count, 2);
+  assert.ok(result.generationSpeed1h.v45.seconds > 0);
+  assert.equal(bucket.done, null);
+  assert.equal(bucket.credits, null);
+  assert.equal(bucket.failed, 0);
+});
+
+test('admin执行账户不能由同job/member的原收费池冒充：Opening收费A已知但无attempt来源仍未知', async (t) => {
+  const f = await fixture(t),
+    id = 'admin-financial-only';
+  openingJob(f, id, { createdAt: NOW, completedAt: NOW + 1 });
+  const {
+      policyVersion: _p,
+      pricingVersion: _r,
+      ...metadata
+    } = meta('admin-financial-only-charge'),
+    eventId = 'admin-financial-only-charge-source',
+    origin = { sourceId: 'synthetic-opening', originalId: 'admin-financial-only-charge-original' },
+    event = {
+      eventId,
+      eventType: 'OpeningChargeRecorded',
+      streamId: 'account:a',
+      accountId: 'a',
+      memberId: 'm1',
+      occurredAt: NOW + day,
+      policyVersion: 'historical',
+      pricingVersion: 'historical',
+      payload: {
+        originalJobId: id + '-0',
+        originalMemberId: 'm1',
+        originalAccountId: 'a',
+        jobId: null,
+        walletAccountId: null,
+        walletMemberId: null,
+        attemptId: null,
+        status: 'refunded',
+        resolution: 'archived',
+        originRef: 'old-financial-only',
+        resources: { v5: '0', anlasFixed: '7', anlasPurchased: '0' },
+        billingMode: 'anlas',
+        estimated: null,
+        v5Equivalent: '0',
+        sharedV5Reserved: '0',
+        configVersion: 1,
+        reservedAt: 0,
+        terminalAt: 0,
+        reservationEventId: eventId,
+        terminalEventId: eventId,
+        origin,
+      },
+    };
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).appendCommit({
+      ...metadata,
+      receipt: null,
+      events: [event],
+      expectedVersions: {
+        'account:a': f.db
+          .prepare(
+            "SELECT CAST(stream_version AS TEXT) v FROM stream_heads WHERE stream_id='account:a'",
+          )
+          .get().v,
+      },
+    }),
+  )();
+  assert.equal(f.generations.readCharge(id + '-0').originalAccountId, 'a');
+  assert.equal(f.generations.readCharge(id + '-0').anlasFixed, '7');
+  assert.equal(new RelationalRequestStore(f.db).readApiJob(id + '-0').accountId, null);
+  assert.equal(
+    new RelationalReportStore(f.db).readAdminSummaryStats(NOW + 60000).accountStats1h.a,
+    undefined,
+  );
 });

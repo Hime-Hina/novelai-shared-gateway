@@ -1,5 +1,7 @@
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
 import { RelationalCommitReplayer } from './relational-replay.ts';
+import { relationalAccountConnectionSource } from './relational-account-connection.ts';
+import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
 import { domainDigest, canonicalJson } from '../events/domain-events.ts';
 import {
   configureFreeImages,
@@ -94,6 +96,7 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
   policyVersion: string;
   pricingVersion: string;
 };
+type FundingMetadata = Omit<Metadata, 'commandId'> & { commandId?: string };
 type GroupConfigurationInput = {
   groups: unknown;
   expectedConfigVersion: number;
@@ -159,6 +162,8 @@ type Ticket = {
   sequence: string;
   startedAt: number;
   pst: string;
+  proxyUrl: string;
+  connectionSourceEventId: string;
 };
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
 const unboundQuotaStatus = 'pending_opus';
@@ -534,8 +539,11 @@ export class RelationalQuotaStore {
   }
   private account(accountId: string) {
     const a = this.sqlite
-      .prepare<[string], { id: string; enabled: number; epoch: number; pst: string | null }>(
-        `SELECT a.id,a.enabled,a.credential_epoch AS epoch,c.pst FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
+      .prepare<
+        [string],
+        { id: string; enabled: number; epoch: number; pst: string | null; proxyUrl: string | null }
+      >(
+        `SELECT a.id,a.enabled,a.credential_epoch AS epoch,c.pst,c.proxy_url AS proxyUrl FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
       )
       .get(accountId);
     if (!a) {
@@ -588,6 +596,9 @@ export class RelationalQuotaStore {
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
     };
   }
+  readBoundAccountId() {
+    return this.sharingPolicy().accountId;
+  }
   readSharedStatusSource(): Omit<SharedStatusSource, 'counts'> {
     return this.sqlite.transaction(() => {
       const boundAccountId =
@@ -611,7 +622,7 @@ export class RelationalQuotaStore {
       const rows = this.sqlite
         .prepare<[string | null, string | null], Row>(
           `SELECT a.id,a.enabled,a.credential_epoch AS epoch,
-          EXISTS(SELECT 1 FROM upstream_credentials c WHERE c.account_id=a.id AND c.pst!='') AS configured,
+          EXISTS(SELECT 1 FROM upstream_credentials c WHERE c.account_id=a.id AND c.pst!='' AND c.proxy_url IS NOT NULL) AS configured,
           a.cooldown_until AS cooldownUntil,a.cooldown_reason AS cooldownReason,
           q.account_id AS quotaAccountId,q.quota_tier AS quotaTier,
           q.subscription_active AS subscriptionActive,q.subscription_expires_at AS subscriptionExpiresAt,
@@ -1690,11 +1701,36 @@ export class RelationalQuotaStore {
     });
   }
   prepareQuotaObservation(accountId: string): Omit<Ticket, 'sequence' | 'startedAt'> {
-    const a = this.account(accountId);
-    if (!a.pst) {
+    const a = this.account(accountId),
+      connectionSourceEventId = relationalAccountConnectionSource(this.sqlite, accountId);
+    if (!a.pst || a.proxyUrl === null || !connectionSourceEventId) {
       fail('观察缺少当前私有凭据或实际时间', 503);
     }
-    return { accountId, credentialEpoch: a.epoch, pst: a.pst };
+    try {
+      if (normalizeSocksProxyUrl(a.proxyUrl) !== a.proxyUrl) {
+        fail('观察缺少获选的规范连接来源', 503);
+      }
+    } catch {
+      fail('观察缺少获选的规范连接来源', 503);
+    }
+    return {
+      accountId,
+      credentialEpoch: a.epoch,
+      pst: a.pst,
+      proxyUrl: a.proxyUrl,
+      connectionSourceEventId,
+    };
+  }
+  readAccountQuotaSnapshot(accountId: string) {
+    if (
+      !this.sqlite.prepare('SELECT 1 FROM account_quota_state WHERE account_id=?').get(accountId)
+    ) {
+      return null;
+    }
+    return {
+      ...this.quotaAccount(this.account(accountId), this.readAccountQuota(accountId)),
+      ...this.readOfficialQuotaV5(accountId),
+    };
   }
   beginQuotaObservation(
     accountId: string,
@@ -1710,7 +1746,9 @@ export class RelationalQuotaStore {
       expected &&
       (expected.accountId !== source.accountId ||
         expected.credentialEpoch !== source.credentialEpoch ||
-        expected.pst !== source.pst)
+        expected.pst !== source.pst ||
+        expected.proxyUrl !== source.proxyUrl ||
+        expected.connectionSourceEventId !== source.connectionSourceEventId)
     ) {
       fail('额度查询发起前原凭据已变化');
     }
@@ -1753,6 +1791,8 @@ export class RelationalQuotaStore {
     if (
       a.epoch !== ticket.credentialEpoch ||
       a.pst !== ticket.pst ||
+      a.proxyUrl !== ticket.proxyUrl ||
+      relationalAccountConnectionSource(this.sqlite, a.id) !== ticket.connectionSourceEventId ||
       !this.order.current(`${a.id}:${a.epoch}`, ticket.sequence) ||
       BigInt(ticket.sequence) <= BigInt(q.observedSequence ?? '0')
     ) {
@@ -1794,6 +1834,7 @@ export class RelationalQuotaStore {
           payload: {
             accountId: a.id,
             credentialEpoch: a.epoch,
+            connectionSourceEventId: ticket.connectionSourceEventId,
             sequence: ticket.sequence,
             observedAt: snapshot.at,
             quotaTier: tier !== null && Number.isSafeInteger(tier) ? tier : null,
@@ -1918,7 +1959,11 @@ export class RelationalQuotaStore {
       if (opening.payload.authorizedAt === null) {
         return null;
       }
-      return { attempt, dispatch: opening };
+      return {
+        attempt,
+        dispatch: opening,
+        connectionSourceEventId: opening.payload.connectionSourceEventId,
+      };
     }
     if (rows.length !== 1) {
       fail('凭据失效缺少唯一原派发事实');
@@ -1938,10 +1983,14 @@ export class RelationalQuotaStore {
     ) {
       fail('凭据失效与原派发归属或代次不符');
     }
-    return { attempt, dispatch };
+    return { attempt, dispatch, connectionSourceEventId: dispatch.payload.connectionSourceEventId };
   }
 
-  private generationCredentialDecision(source: GenerationFailureSource, at: number) {
+  private generationCredentialDecision(
+    source: GenerationFailureSource,
+    at: number,
+    before?: RelationalEvent,
+  ) {
     const errorCode = generationCredentialError(source.aborted, source.response.upstreamHttpStatus);
     if (!errorCode) {
       return null;
@@ -1949,7 +1998,10 @@ export class RelationalQuotaStore {
     const original = this.generationDispatch(source.attemptId);
     if (
       !original ||
-      original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch
+      original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch ||
+      original.connectionSourceEventId === null ||
+      original.connectionSourceEventId !==
+        relationalAccountConnectionSource(this.sqlite, original.attempt.accountId, before)
     ) {
       return null;
     }
@@ -2031,6 +2083,7 @@ export class RelationalQuotaStore {
             response: response.payload.response,
           },
           failure.occurredAt,
+          failure,
         );
       if (claims.length !== (decision ? 1 : 0)) {
         fail('凭据失效决定必须按原失败完整且恰一次保存');
@@ -2479,19 +2532,92 @@ export class RelationalQuotaStore {
     }
     return { id, type, accountId, resource, amount };
   }
-  manageQuotaFunding(metadata: Metadata, accountId: string, body: OperatingFundingInput) {
+  assertFundingReceipt(result: { receipt: Json; commitSeq?: string }) {
+    const receipt = result.receipt;
+    if (
+      !receipt ||
+      Array.isArray(receipt) ||
+      typeof receipt !== 'object' ||
+      !('eventId' in receipt || 'funding' in receipt || 'duplicate' in receipt)
+    ) {
+      return null;
+    }
+    if (
+      typeof receipt.eventId !== 'string' ||
+      typeof receipt.accountId !== 'string' ||
+      !result.commitSeq
+    ) {
+      fail('资金回执缺少原提交或账户来源');
+    }
+    const source = this.fact(receipt.eventId),
+      manual =
+        source.type === 'FundingRegistered' ||
+        source.type === 'OperatingLossCovered' ||
+        source.type === 'DebitsConfirmed' ||
+        (source.type === 'ReturnClassified' && source.payload.kind === 'gap_correction') ||
+        (source.type === 'FundingReceived' &&
+          ['operator_share', 'declared_external_receipt'].includes(String(source.payload.source))),
+      earlier = BigInt(source.commitSeq) < BigInt(result.commitSeq);
+    if (
+      !manual ||
+      source.accountId !== receipt.accountId ||
+      BigInt(source.commitSeq) > BigInt(result.commitSeq)
+    ) {
+      fail('资金回执必须引用本账户已经发生的原人工资金决定');
+    }
+    let duplicate: boolean;
+    if (receipt.duplicate === undefined) {
+      // 旧回执没有标志；同提交的原人工决定才能证明首次处理，不能猜较早引用的结果。
+      if (earlier || !receipt.funding) {
+        fail('旧资金回执缺少可证明的原处理结果');
+      }
+      duplicate = false;
+    } else {
+      if (typeof receipt.duplicate !== 'boolean') {
+        fail('资金回执的原重复决定无效');
+      }
+      duplicate = receipt.duplicate;
+    }
+    if (
+      duplicate !== earlier ||
+      (!duplicate &&
+        (!receipt.funding ||
+          Array.isArray(receipt.funding) ||
+          typeof receipt.funding !== 'object' ||
+          receipt.funding.id !== receipt.eventId))
+    ) {
+      fail('资金回执与原人工决定的提交关系不符');
+    }
+    return { eventId: receipt.eventId, duplicate };
+  }
+  manageQuotaFunding(
+    metadata: FundingMetadata,
+    accountId: string | null,
+    body: OperatingFundingInput,
+    member: MemberUser | null,
+  ) {
     return this.owned(() => {
+      this.authorizeOwnerCommand(metadata, member);
       const actorId = this.env.OWNER_USER_ID;
-      if (
-        !actorId ||
-        metadata.actorKind === 'system' ||
-        (metadata.actorKind === 'member' && metadata.actorId !== actorId)
-      ) {
+      if (!actorId) {
         fail('资金操作需要当前 owner 或管理员授权', 403);
       }
-      const prior = readRelationalReceipt(this.sqlite, metadata);
+      const prior =
+        metadata.commandId === undefined
+          ? null
+          : readRelationalReceipt(this.sqlite, {
+              ...metadata,
+              commandId: metadata.commandId,
+            });
       if (prior) {
-        return prior;
+        const response = this.assertFundingReceipt(prior);
+        if (!response) {
+          fail('原命令不是资金处理回执');
+        }
+        return { ...prior, response };
+      }
+      if (!accountId || this.sharingPolicy().accountId !== accountId) {
+        fail('资金操作只接受当前绑定共享账户');
       }
       const view = this.state(accountId);
       const planned = this.capture(view, () => {
@@ -2507,28 +2633,50 @@ export class RelationalQuotaStore {
           metadata.recordedAt,
         );
       });
-      if (planned.result.duplicate) {
+      const events = this.convert(planned.facts, view, metadata);
+      if (!events.length) {
+        if (metadata.commandId !== undefined) {
+          fail('操作未产生可提交事实，请刷新后确认结果');
+        }
         const event = this.fact(planned.result.eventId);
+        const receipt = JSON.parse(
+          this.sqlite
+            .prepare<[bigint], { receipt: string }>(
+              'SELECT receipt FROM commits WHERE commit_seq=?',
+            )
+            .get(BigInt(event.commitSeq))!.receipt,
+        ) as Json;
+        if (!this.assertFundingReceipt({ commitSeq: event.commitSeq, receipt })) {
+          fail('原资金决定缺少有效回执');
+        }
         return {
           replayed: true,
           commitSeq: event.commitSeq,
-          receipt: JSON.parse(
-            this.sqlite
-              .prepare<[bigint], { receipt: string }>(
-                'SELECT receipt FROM commits WHERE commit_seq=?',
-              )
-              .get(BigInt(event.commitSeq))!.receipt,
-          ),
+          receipt,
+          response: planned.result,
         };
       }
-      const funding = view.db.ledger.find(
-        (raw) => (raw as { id?: string }).id === planned.result.eventId,
-      );
-      return this.commit(metadata, this.convert(planned.facts, view, metadata), {
+      const funding =
+        !planned.result.duplicate &&
+        view.db.ledger.find((raw) => (raw as { id?: string }).id === planned.result.eventId);
+      const receipt: Record<string, Json> = {
         accountId,
         eventId: planned.result.eventId,
-        funding,
-      } as Json);
+        duplicate: planned.result.duplicate,
+      };
+      if (funding) {
+        receipt.funding = funding as Json;
+      }
+      const result = this.commit(
+        { ...metadata, commandId: metadata.commandId ?? randomUUID() },
+        events,
+        receipt,
+      );
+      const response = this.assertFundingReceipt(result);
+      if (!response) {
+        fail('资金命令未保存原处理结果');
+      }
+      return { ...result, response };
     });
   }
   private wallet(
@@ -3322,6 +3470,8 @@ export class RelationalQuotaStore {
           const p = e.payload;
           if (
             p.credentialEpoch !== a.epoch ||
+            p.connectionSourceEventId !==
+              relationalAccountConnectionSource(this.sqlite, accountId, e) ||
             BigInt(p.sequence) <= BigInt(q.observedSequence ?? '0')
           ) {
             fail('观察代次或序号已经过期');
@@ -3429,6 +3579,9 @@ export class RelationalQuotaStore {
               original.dispatch.eventId !== origin.dispatchEventId ||
               original.attempt.accountId !== accountId ||
               original.attempt.credentialEpoch !== a.epoch ||
+              original.connectionSourceEventId === null ||
+              original.connectionSourceEventId !==
+                relationalAccountConnectionSource(this.sqlite, accountId, e) ||
               response.commitSeq !== e.commitSeq ||
               failure.commitSeq !== e.commitSeq ||
               response.eventIndex >= e.eventIndex ||
@@ -3917,6 +4070,7 @@ export class RelationalQuotaStore {
         fail('Quota replay requires one complete quota commit');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
+      this.assertFundingReceipt(result);
       if (!result.replayed) {
         this.applyQuotaEvents(result.events);
         this.assertGroupCommit(result.events, result.receipt);

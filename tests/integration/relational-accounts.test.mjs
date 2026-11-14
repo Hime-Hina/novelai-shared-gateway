@@ -16,6 +16,7 @@ import {
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import {
   RelationalQuotaStore,
   relationalQuotaFacts,
@@ -219,6 +220,88 @@ test('账户真实首绑保持暂停与未知额度，核验一次分配并保�
   );
   await assert.rejects(f.run('second-account', { ...registration, accountId: 'b' }), /首次注册/);
   assert.throws(() => assertRelationalStorageReady(f.db), /incomplete/);
+});
+
+test('原首注册安全意图完整保留绑定，缺绑定/重复/逆序不能被合法完整envelope藏掉', async (t) => {
+  const f = await fresh(t),
+    result = await f.run('closed-register', registration),
+    stored = readRelationalCommit(f.db, result.commitSeq);
+  assert.equal(stored.command.receipt.accountIntent.bind, true);
+  for (const mode of ['missing-bind', 'duplicate', 'reverse', 'missing-intent']) {
+    await t.test(mode, (t) => {
+      const target = new Database(':memory:');
+      t.after(() => target.close());
+      initializeRelationalStorage(target, 'account-history');
+      const replayer = new RelationalCommitReplayer(target),
+        inputs = new RelationalInputStore(f.db);
+      for (const { seq } of f.db
+        .prepare(
+          'SELECT CAST(commit_seq AS TEXT) seq FROM commits WHERE commit_seq<? ORDER BY commit_seq',
+        )
+        .all(BigInt(result.commitSeq))) {
+        target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+      }
+      const bad = structuredClone(stored),
+        versions = new Map();
+      if (mode === 'missing-bind') {
+        bad.events = bad.events.filter((e) => e.eventType !== 'AccountBound');
+      }
+      if (mode === 'duplicate') {
+        bad.events.push({ ...bad.events[0], eventId: 'duplicate-register' });
+      }
+      if (mode === 'reverse') {
+        bad.events.reverse();
+      }
+      if (mode === 'missing-intent') {
+        delete bad.command.receipt.accountIntent;
+      }
+      bad.command.expectedVersions = {};
+      bad.events = bad.events.map((event, eventIndex) => {
+        if (!versions.has(event.streamId)) {
+          const old =
+            target
+              .prepare('SELECT CAST(stream_version AS TEXT) v FROM stream_heads WHERE stream_id=?')
+              .get(event.streamId)?.v ?? '0';
+          versions.set(event.streamId, BigInt(old));
+          bad.command.expectedVersions[event.streamId] = old;
+        }
+        versions.set(event.streamId, versions.get(event.streamId) + 1n);
+        return { ...event, eventIndex, streamVersion: String(versions.get(event.streamId)) };
+      });
+      bad.eventCount = bad.events.length;
+      bad.command.events = bad.events.map((event) =>
+        Object.fromEntries(
+          [
+            'eventType',
+            'payload',
+            'streamId',
+            'occurredAt',
+            'accountId',
+            'memberId',
+            'policyVersion',
+            'pricingVersion',
+          ].map((key) => [key, event[key]]),
+        ),
+      );
+      const before = databaseState(target);
+      let error;
+      target.transaction(() => {
+        try {
+          new RelationalAccountStore(
+            target,
+            new RelationalQuotaStore(target),
+            new Map(),
+          ).replayAccountCommit(bad);
+        } catch (caught) {
+          error = caught;
+        }
+      })();
+      assert.match(error?.message ?? '', /账户.*(完整|安全|意图)/);
+      assert.equal(databaseState(target), before);
+      target.transaction(() => replayer.replayCommit(stored, inputs))();
+      assert.equal(target.prepare('SELECT bound_account_id id FROM sharing_policy').get().id, 'a');
+    });
+  }
 });
 
 test('账户命令拒绝未知操作和额外字段，授权与拥有者事务不能由元数据自证', async (t) => {

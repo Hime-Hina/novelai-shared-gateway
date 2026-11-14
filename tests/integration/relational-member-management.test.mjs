@@ -135,7 +135,7 @@ test('两命令在原回执前核当前 stable ID/owner/active/epoch，metadata 
             username: 'changed.owner',
             password,
           });
-          f.write(() => f.members.setMemberCredentials(prepared));
+          f.write(() => f.members.setMemberCredentials(prepared, null));
         }
         if (change === 'disabled') {
           f.write(() => f.members.setMemberStatus(meta('disable-owner'), 'm1', 'disabled'));

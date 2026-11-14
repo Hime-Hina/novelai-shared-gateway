@@ -82,6 +82,11 @@ for (const previous of [
     commit: 'bb0b60b80a967b695189b3dd11c13672b0e4fefd',
     sha256: 'a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd',
   },
+  {
+    name: 'relational-schema-v6.json',
+    commit: 'b42719d30c387912ec768ed9f1f7a85ae5d7099e',
+    sha256: 'e131bf7ac1317832ee67371551e886949791dac68800afd2459c4b737b82e009',
+  },
 ]) {
   test(`旧原型 ${previous.name} 的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash`, (t) => {
     const sqlite = new Database(':memory:');
@@ -210,7 +215,7 @@ function fixture(t) {
     });
     insert(sqlite, 'upstream_accounts', {
       id: `a${n}`,
-      display_name: `account ${n}`,
+      display_name_json: JSON.stringify(`account ${n}`),
       enabled: 1,
       credential_epoch: 1,
       ordinary_strikes: 0,

@@ -98,6 +98,7 @@ test('账户窄读只取安全当前字段和真实注册时点，0不变为未�
   const expected = {
     id: 'stable-account',
     name: 'original name',
+    weight: 1,
     enabled: false,
     credentialEpoch: 1,
     createdAt: 0,
@@ -127,10 +128,17 @@ test('账户窄读只取安全当前字段和真实注册时点，0不变为未�
     accounts.readAccountManagementProfile('stable-account'),
   );
   assert.deepEqual(result, rotated);
-  assert.deepEqual(Object.keys(result), ['id', 'name', 'enabled', 'credentialEpoch', 'createdAt']);
+  assert.deepEqual(Object.keys(result), [
+    'id',
+    'name',
+    'weight',
+    'enabled',
+    'credentialEpoch',
+    'createdAt',
+  ]);
   assert.doesNotMatch(
     JSON.stringify(result),
-    /pst-|token|grant|proxy|credentialRef|routeId|weight|failures|total/,
+    /pst-|token|grant|proxy|credentialRef|routeId|failures|total/,
   );
   const plan = db.prepare(`EXPLAIN QUERY PLAN ${statements[0]}`).all('stable-account');
   assert.match(JSON.stringify(plan), /SEARCH a USING INDEX/);
@@ -155,9 +163,10 @@ test('Opening多账户以稳定ID读取，原创建未知不借导入/冷却时�
   const payload = {
       ...opening.payload,
       accountId: 'b',
-      displayName: 'shared',
+      displayName: 'x'.repeat(79) + '😀'.slice(0, 1),
       enabled: false,
       credentialEpoch: 7,
+      weight: null,
       origin: { ...opening.payload.origin, originalId: 'original-b' },
     },
     {
@@ -185,8 +194,22 @@ test('Opening多账户以稳定ID读取，原创建未知不借导入/冷却时�
       ],
     }),
   )();
-  const a = { id: 'a', name: 'shared', enabled: true, credentialEpoch: 1, createdAt: null },
-    b = { id: 'b', name: 'shared', enabled: false, credentialEpoch: 7, createdAt: null };
+  const a = {
+      id: 'a',
+      name: 'shared',
+      weight: 1,
+      enabled: true,
+      credentialEpoch: 1,
+      createdAt: null,
+    },
+    b = {
+      id: 'b',
+      name: payload.displayName,
+      weight: null,
+      enabled: false,
+      credentialEpoch: 7,
+      createdAt: null,
+    };
   assert.deepEqual(readonly(t, f.db, () => accounts.readAccountManagementDirectory()).result, [
     a,
     b,
@@ -196,6 +219,23 @@ test('Opening多账户以稳定ID读取，原创建未知不借导入/冷却时�
     a,
   );
   assert.deepEqual(readonly(t, f.db, () => accounts.readAccountManagementProfile('b')).result, b);
+  const beforeAdminRead = databaseState(f.db);
+  const archived = f.db.transaction(() => accounts.readAdminAccountProfile('b', true, null))();
+  assert.equal(archived.weight, null);
+  assert.equal(archived.quotaTier, null);
+  assert.equal(archived.quotaFixed, null);
+  assert.equal(archived.proxyUrl, null);
+  assert.equal(archived.token, null);
+  assert.equal(databaseState(f.db), beforeAdminRead);
+  await assert.rejects(
+    withAuthenticatedMemberApiKey(
+      f.members,
+      keys.m1,
+      (actor) => accounts.readAdminAccountProfile('a', true, actor),
+      env,
+    ),
+    { statusCode: 403 },
+  );
   assert.equal(
     readonly(t, f.db, () => accounts.readAccountManagementProfile("b' OR 1=1 --")).result,
     null,

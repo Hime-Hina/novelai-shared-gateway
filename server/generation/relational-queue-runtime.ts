@@ -197,19 +197,24 @@ export function createRelationalQueueRuntime(options: {
       }
       const request = inputs.readJobInput(run.state.id);
       run.phase = 'upstream';
-      const image = await generateNovelAiImage(request, { token: run.dispatch.pst }, env, {
-        signal: run.control.controller.signal,
-        onUpstreamTiming: (event) => Object.assign(run.timing, event),
-        onProgress: (progress) =>
-          previews.update(
-            {
-              id: run.state.id,
-              userToken: run.state.memberId,
-              status: store.readGenerationExecutionState(run.state.id).status,
-            },
-            progress,
-          ),
-      });
+      const image = await generateNovelAiImage(
+        request,
+        { token: run.dispatch.pst, proxyUrl: run.dispatch.proxyUrl },
+        env,
+        {
+          signal: run.control.controller.signal,
+          onUpstreamTiming: (event) => Object.assign(run.timing, event),
+          onProgress: (progress) =>
+            previews.update(
+              {
+                id: run.state.id,
+                userToken: run.state.memberId,
+                status: store.readGenerationExecutionState(run.state.id).status,
+              },
+              progress,
+            ),
+        },
+      );
       run.phase = 'commit';
       descriptor = describeStoredResult(randomUUID(), run.state.operation, image);
       notifications.commit(() =>
