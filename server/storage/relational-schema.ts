@@ -545,11 +545,18 @@ BEGIN
   );
 END;
 CREATE TRIGGER job_artifact_owner_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs
-WHEN NEW.artifact_id IS NOT NULL
+WHEN NEW.artifact_id IS NOT NULL AND EXISTS (SELECT 1 FROM artifacts WHERE id=NEW.artifact_id)
 BEGIN
   SELECT RAISE(ABORT, 'job member does not own artifact') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN artifacts a ON a.member_id = r.member_id
     WHERE r.id = NEW.request_id AND a.id = NEW.artifact_id
+  );
+END;
+CREATE TRIGGER artifact_job_owner_${operation.toLowerCase()} BEFORE ${operation} ON artifacts
+BEGIN
+  SELECT RAISE(ABORT, 'artifact member does not own linked job') WHERE EXISTS (
+    SELECT 1 FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+    WHERE j.artifact_id=NEW.id AND r.member_id != NEW.member_id
   );
 END;
 CREATE TRIGGER job_input_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs

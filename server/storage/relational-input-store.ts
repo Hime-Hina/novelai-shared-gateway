@@ -2010,6 +2010,24 @@ export class RelationalInputStore {
     assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
   }
 
+  // 历史种子只按原事实/已知 context 核对；缺正文不使已知 literal 变为未知或当前默认。
+  readJobSeed(jobId: string) {
+    const row = this.sqlite
+      .prepare<[string], { requestId: string; contextId: string | null }>(
+        `SELECT j.request_id AS requestId,r.context_id AS contextId FROM generation_jobs j
+         JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!row) {
+      unavailable();
+    }
+    const seed = this.jobSeed(row.requestId, jobId);
+    if (seed !== null && row.contextId !== null) {
+      relationalChildSeed(seed, 0, this.context(row.contextId));
+    }
+    return seed;
+  }
+
   readJobInput(jobId: string) {
     const job = this.sqlite
       .prepare<
