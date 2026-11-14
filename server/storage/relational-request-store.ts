@@ -340,7 +340,8 @@ export class RelationalRequestStore {
         .prepare<unknown[], RequestRow>(
           `SELECT r.id,r.source,r.operation,r.model,r.accepted_at AS acceptedAt
           FROM generation_requests r JOIN generation_request_origins origin
-            ON origin.request_id=r.id AND origin.original_request_id IS NOT NULL
+            ON origin.stream_id='request:'||r.id AND origin.request_id=r.id
+            AND origin.original_request_id IS NOT NULL
           WHERE r.member_id=? AND r.retired_at IS NULL ${cursor}
           ORDER BY r.accepted_at DESC,r.id DESC LIMIT ?`,
         )

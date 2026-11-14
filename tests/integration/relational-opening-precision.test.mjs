@@ -167,6 +167,12 @@ function empty(t) {
   t.after(() => db.close());
   return db;
 }
+function repeatOpening(f, result) {
+  const stored = readRelationalCommit(f.db, result.events[0].commitSeq);
+  return f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).appendCommit(stored.command, f.inputs),
+  )();
+}
 
 test('原parentless行只形成当前FK容器；创建零不冒完成、受理、发布时点或文件MIME操作', async (t) => {
   const f = await fixture(t);
@@ -204,7 +210,7 @@ test('原parentless行只形成当前FK容器；创建零不冒完成、受理�
     (error) => error.statusCode === 410,
   );
   assert.equal(databaseState(f.db), before);
-  assert.deepEqual(appendOpening(f).receipt, result.receipt);
+  assert.deepEqual(repeatOpening(f, result).receipt, result.receipt);
   assert.equal(databaseState(f.db), before);
 
   const target = empty(t),
@@ -282,6 +288,15 @@ test('已知原parent只返回其证明；0和已知历史操作仍原值，薄�
     ),
     false,
   );
+  const originQuery = queries.find((sql) => sql.includes('FROM generation_request_origins o'));
+  assert.ok(originQuery);
+  assert.ok(
+    f.db
+      .prepare(`EXPLAIN QUERY PLAN ${originQuery}`)
+      .all('request:structural-container', 'structural-container')
+      .some((row) => row.detail.includes('stream_id=?')),
+    '薄来源读取必须复用既有stream索引，不能逐child扫描整个事件历史',
+  );
   assert.equal(
     f.db
       .prepare("SELECT accepted_at FROM generation_requests WHERE id='structural-container'")
@@ -316,18 +331,31 @@ test('活动Opening不能借NULL、结构容器或文件MIME取得执行权；�
 
 test('Opening第二owner写入失败不留下原事实、正文、游标或回执，健康重试和重复零写', async (t) => {
   const f = await fixture(t);
-  f.db.exec(
-    "CREATE TRIGGER fail_precision_artifact BEFORE INSERT ON artifacts BEGIN SELECT RAISE(ABORT,'precision SQL tail'); END",
-  );
-  const before = databaseState(f.db);
-  f.db.transaction(() => {
-    assert.throws(() => appendOpening(f), /precision SQL tail/);
-  })();
+  const before = databaseState(f.db),
+    prepare = f.db.prepare.bind(f.db);
+  let attempted = 0;
+  f.db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (sql.includes('INSERT INTO artifacts(')) {
+      statement.run = () => {
+        attempted++;
+        throw new Error('precision SQL tail');
+      };
+    }
+    return statement;
+  };
+  try {
+    f.db.transaction(() => {
+      assert.throws(() => appendOpening(f), /precision SQL tail/);
+    })();
+  } finally {
+    f.db.prepare = prepare;
+  }
+  assert.equal(attempted, 1, '故障必须实际到达第二owner的artifact SQL，不能由格式或前置guard遮蔽');
   assert.equal(databaseState(f.db), before);
-  f.db.exec('DROP TRIGGER fail_precision_artifact');
-  appendOpening(f);
+  const result = appendOpening(f);
   const healthy = databaseState(f.db);
-  assert.equal(appendOpening(f).replayed, true);
+  assert.equal(repeatOpening(f, result).replayed, true);
   assert.equal(databaseState(f.db), healthy);
 });
 
@@ -395,11 +423,15 @@ test('实际c653旧DDL及正确旧hash在同event7也零写拒绝，不能用改
   for (const check of [
     () => assertRelationalStorageFormat(db),
     () => assertRelationalStorageReady(db),
-    () => initializeRelationalStorage(db, 'old'),
     () => new RelationalInputStore(db),
     () => new RelationalGenerationStore(db),
   ]) {
     assert.throws(check, /Unsupported relational database format/);
     assert.deepEqual(db.serialize(), before);
   }
+  assert.throws(
+    () => initializeRelationalStorage(db, 'old'),
+    /Relational initialization requires an empty target; migrate offline/,
+  );
+  assert.deepEqual(db.serialize(), before);
 });

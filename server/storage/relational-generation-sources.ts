@@ -8,7 +8,7 @@ import {
 // 薄查询只展开唯一原请求元数据，不读取整笔 child 或受保护 input/context。
 export function readRelationalRequestOrigin(sqlite: Database.Database, requestId: string) {
   const rows = sqlite
-    .prepare<[string], Record<string, unknown>>(
+    .prepare<[string, string], Record<string, unknown>>(
       `SELECT o.original_request_id AS originalRequestId,e.event_id AS eventId,
       CAST(e.commit_seq AS TEXT) AS commitSeq,e.event_index AS eventIndex,
       e.stream_id AS streamId,e.stream_kind AS streamKind,CAST(e.stream_version AS TEXT) AS streamVersion,
@@ -17,9 +17,9 @@ export function readRelationalRequestOrigin(sqlite: Database.Database, requestId
       e.account_id AS accountId,e.policy_version AS policyVersion,e.pricing_version AS pricingVersion,
       e.amount_version AS amountVersion,e.payload
       FROM generation_request_origins o JOIN domain_events e ON e.event_id=o.event_id
-      WHERE o.request_id=? LIMIT 2`,
+      WHERE o.stream_id=? AND o.request_id=? LIMIT 2`,
     )
-    .all(requestId);
+    .all(`request:${requestId}`, requestId);
   if (rows.length !== 1) {
     throw new Error('请求缺少唯一原接受来源。');
   }
