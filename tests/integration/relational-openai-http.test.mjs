@@ -4,7 +4,13 @@ import { request as httpRequest } from 'node:http';
 import { EventEmitter, once } from 'node:events';
 import Database from 'better-sqlite3';
 import { image, databaseState, meta } from '../helpers/relational-generation.mjs';
-import { setup, keys, waitFor, replicateMockR2 } from '../helpers/relational-api-http.mjs';
+import {
+  setup,
+  input as nativeInput,
+  keys,
+  waitFor,
+  replicateMockR2,
+} from '../helpers/relational-api-http.mjs';
 import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
 import { openAiGenerationError } from '../../server/protocols/openai-http.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
@@ -797,6 +803,127 @@ test('OpenAI目录在Discord实际IO后重核原Key与ready，成员仍active不
         await healthy.arrayBuffer();
         assert.equal(databaseState(f.db), before);
       }
+    });
+  }
+});
+
+test('共同API受理在实际正文IO撤下ready后拒绝，Native/OpenAI都零业务提交', async (t) => {
+  for (const protocol of ['openai', 'native']) {
+    await t.test(protocol, { timeout: 10000 }, async (t) => {
+      let f, before;
+      const options = {
+        onBodyChunk() {
+          if (!before) {
+            f.db.prepare("UPDATE projection_state SET status='building'").run();
+            before = databaseState(f.db);
+          }
+        },
+      };
+      f = await (protocol === 'openai' ? fixture(t, options) : setup(t, options));
+      const controller = new AbortController(),
+        committed = new Promise((resolve) =>
+          f.events.once('commit', () => resolve({ kind: 'commit' })),
+        ),
+        pending = f.call(protocol === 'openai' ? input() : nativeInput(), {
+          key: 'withdrawn-body-ready',
+          signal: controller.signal,
+        });
+      const outcome = await Promise.race([
+        pending.then((response) => ({ kind: 'response', response })),
+        committed,
+      ]);
+      controller.abort();
+      await pending.catch(() => {});
+      assert.ok(before);
+      assert.equal(outcome.kind, 'response', '撤下ready后不能提交新的受理');
+      assert.equal(outcome.response.status, 500);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.upstream.calls.length, 0);
+    });
+  }
+});
+
+test(
+  '共同API缓存资格实际stat后撤下ready，重入当前Key事务不能追加cached回执',
+  { timeout: 10000 },
+  async (t) => {
+    const f = await fixture(t),
+      body = input({}, { nocache: '0' });
+    assert.equal((await f.call(body, { key: 'ready-cache-source' })).status, 200);
+    const file = f.db
+      .prepare(
+        "SELECT p.object_key FROM artifact_replicas p JOIN generation_jobs j ON j.artifact_id=p.artifact_id JOIN generation_requests r ON r.id=j.request_id JOIN storage_targets s ON s.id=p.storage_target_id WHERE r.source='openai' AND s.kind='local'",
+      )
+      .get();
+    let before;
+    const originalStat = fs.lstat;
+    const mocked = t.mock.method(fs, 'lstat', async (...args) => {
+      const stat = await originalStat(...args);
+      if (!before && String(args[0]) === path.join(f.dir, 'images', file.object_key)) {
+        f.db.prepare("UPDATE projection_state SET status='building'").run();
+        before = databaseState(f.db);
+      }
+      return stat;
+    });
+    syncBuiltinESMExports();
+    t.after(() => {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    });
+    const controller = new AbortController(),
+      committed = new Promise((resolve) =>
+        f.events.once('commit', () => resolve({ kind: 'commit' })),
+      ),
+      pending = f.call(body, { key: 'withdrawn-cache-ready', signal: controller.signal });
+    const outcome = await Promise.race([
+      pending.then((response) => ({ kind: 'response', response })),
+      committed,
+    ]);
+    controller.abort();
+    await pending.catch(() => {});
+    assert.ok(before, '真实缓存资格stat必须先执行');
+    assert.equal(outcome.kind, 'response');
+    assert.equal(outcome.response.status, 500);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.upstream.calls.length, 1);
+  },
+);
+
+test('共同API实际读取原文件后撤下ready，不交付Native原bytes或OpenAI成功链接', async (t) => {
+  for (const protocol of ['openai', 'native']) {
+    await t.test(protocol, async (t) => {
+      const f = await (protocol === 'openai' ? fixture(t) : setup(t)),
+        body = protocol === 'openai' ? input() : nativeInput();
+      assert.equal((await f.call(body, { key: 'ready-io' })).status, 200);
+      let before;
+      const originalOpen = fs.open;
+      const mocked = t.mock.method(fs, 'open', async (...args) => {
+        const handle = await originalOpen(...args);
+        if (String(args[0]).startsWith(path.join(f.dir, 'images') + path.sep)) {
+          const read = handle.readFile.bind(handle);
+          handle.readFile = async (...values) => {
+            const bytes = await read(...values);
+            if (!before) {
+              f.db.prepare("UPDATE projection_state SET status='building'").run();
+              before = databaseState(f.db);
+            }
+            return bytes;
+          };
+        }
+        return handle;
+      });
+      syncBuiltinESMExports();
+      t.after(() => {
+        mocked.mock.restore();
+        syncBuiltinESMExports();
+      });
+      const response = await f.call(body, { key: 'ready-io' });
+      assert.ok(before);
+      assert.equal(response.status, 500, response.buffer.toString());
+      assert.doesNotMatch(response.buffer.toString(), /!\[image\]/);
+      assert.notDeepEqual(response.buffer, image);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.upstream.calls.length, 1);
     });
   }
 });

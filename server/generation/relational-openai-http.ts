@@ -56,6 +56,7 @@ export function createRelationalOpenAiHttp(deps: {
     generations = new RelationalGenerationStore(sqlite, env),
     requests = new RelationalRequestStore(sqlite);
   const admit = createRelationalApiGenerationAdmission({
+    sqlite,
     members,
     inputs,
     generations,

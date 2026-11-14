@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type Database from 'better-sqlite3';
 import { domainDigest } from '../events/domain-events.ts';
 import { withAuthenticatedMemberApiKey } from '../members/authentication.ts';
 import type { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -12,6 +13,7 @@ import type { RecoverableRequest } from './member-contract.ts';
 import type { GenerationPayloadClaim } from './admission.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import type { RelationalReplicaReadConfiguration } from '../storage/relational-replica-store.ts';
+import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -37,6 +39,7 @@ export interface RelationalApiAdmissionOptions {
 
 // API 原键/首次上下文与当前 Key 授权共用一个真实受理事务，不借成员 Cookie/confirmation。
 export function createRelationalApiGenerationAdmission(deps: {
+  sqlite: Database.Database;
   members: RelationalMemberStore;
   inputs: Pick<
     RelationalInputStore,
@@ -71,6 +74,8 @@ export function createRelationalApiGenerationAdmission(deps: {
           deps.members,
           options.token,
           (member) => {
+            // 正文和缓存资格 IO 后都回到同一当前凭据事务；工厂曾 ready 不代表此刻仍可写。
+            assertRelationalStorageReady(deps.sqlite);
             if (search && search.memberId !== member.id) {
               fail(401, 'invalid_token', 'invalid token.');
             }

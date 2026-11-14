@@ -8,6 +8,7 @@ import {
   relationalArtifactReferenceAvailable,
 } from '../storage/relational-replica-io.ts';
 import type { RelationalReplicaReadConfiguration } from '../storage/relational-replica-store.ts';
+import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 import { publicErrorMessage } from '../http/public-errors.ts';
 import { createJobResultWaiter } from './result-waiter.ts';
 import type { GenerationDeliveryResult } from './delivery.ts';
@@ -32,7 +33,10 @@ export function createRelationalApiDelivery(deps: {
     const result = await withAuthenticatedMemberApiKey(
       members,
       token,
-      (member) => ({ value: read(member.id) }),
+      (member) => {
+        assertRelationalStorageReady(sqlite);
+        return { value: read(member.id) };
+      },
       env,
     );
     if (!result) {

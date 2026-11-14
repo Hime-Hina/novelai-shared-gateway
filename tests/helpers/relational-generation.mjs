@@ -25,6 +25,9 @@ import { domainDigest } from '../../server/events/domain-events.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
 import { quoteFairRequest } from '../../server/quota/fair-share.ts';
+import { randomUUID } from 'node:crypto';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
+import { relationalSnapshotSha256 } from '../../server/storage/relational-private-restore.ts';
 
 const NOW = 1800000000000,
   keys = { m1: 'synthetic-key-m1', m2: 'synthetic-key-m2' };
@@ -414,6 +417,26 @@ async function fixture(t, options = {}) {
     fail,
     controls,
   };
+}
+
+// 在线适配测试也必须完整安装；building 业务 owner fixture 本身不自动取得在线资格。
+export async function installReady(f) {
+  const sourcePath = path.join(f.dir, `ready-source-${randomUUID()}.sqlite`);
+  await f.db.backup(sourcePath);
+  const source = new Database(sourcePath);
+  source.pragma('journal_mode=DELETE');
+  source.close();
+  const selected = {
+    sourcePath,
+    sourceSha256: relationalSnapshotSha256(sourcePath),
+    historyId: 'generation-history',
+    finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get()
+      .seq,
+    replicas: { dataDir: f.dir },
+  };
+  await verifyAndInstallRelationalStorage(f.db, selected);
+  assertRelationalStorageReady(f.db);
+  return selected;
 }
 
 export { NOW, keys, image, zero, meta, openingFacts, databaseState, fixture };

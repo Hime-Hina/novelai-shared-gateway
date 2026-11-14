@@ -42,6 +42,7 @@ export function createRelationalNativeHttp(deps: {
     generations = new RelationalGenerationStore(sqlite, env),
     requests = new RelationalRequestStore(sqlite);
   const admit = createRelationalNativeAdmission({
+    sqlite,
     members,
     inputs,
     generations,
