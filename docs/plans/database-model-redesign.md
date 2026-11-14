@@ -2253,6 +2253,10 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 第四轮 65.775 秒已在合法重建库的真实 child 领取原 B 图片，新增的“重开前到领取后所有提交都不变”条件误计立即启动的自动额度观察：真实 source/role 小探针确认，单独的 `quota-refresh` 系统命令产生 `QuotaObserved/V5CapacityObserved/QuotaBaselineAdopted`，并非回执重建任务。新断言在真实 quota GET 已进入但未响应时取原状态，严格核回执前后零写，再 release 原响应，读完整提交核原系统 actor、账户及凭据代次；不关自动刷新、改日期、允许任意“+3”或复制事件白名单。小探针实际合法 bootstrap/child/Native 原键、全表摘要零变及独立观察为 **1/1、零跳过，2.006 秒**；它的两个准备错误（流式模拟错误返回 PNG、误把 envelope.command 当成 envelope 根字段）也单独封存，不计产品红或替代完整原文件。
 
+技术源 `55145e7` 的第五轮原完整文件 **1/1、零跳过，用例 65.298 秒／整个文件 65.780 秒**，仍为原 150 秒上限。原生成调用全序列七次、九个 job/七个 attempt、完整格式协商/公平批次/余图未派发/原预扣退款、断线持有物理请求、SIGKILL 恢复、原图缺失 410 零再发、完整公共及选定私有回放/真实 Local/唯一 ready，以及实际重开领取均到底通过。原回执前后全计数、钱包/attempt 全行和原 charges 不变；释放独立真实 quota 请求后，完整系统观察提交按源角色和当前 epoch 核对。日志及运行前 HEAD/Node/源码 SHA 分别为 `H:/TEMP/novelai-native-batch-fifth.log`、`novelai-native-batch-fifth-identity.json`。小探针与前四轮不累加为多个完整用例通过；未运行 full、构建、原生安装、真实云端或真实 NAI，不由此宣称整体 D4 或生产验收完成。
+
+随后 backend 类型、architecture、默认及可信 `5ca121f` migration、200 个语法文件、三差异文件格式与 diff 检查通过。原 body/常量/ZIP parser、HTTP POST、等待 helper、SSE/MessagePack 协商逐字保真；模拟上游除样本数审计及仅最后重开的真实 quota IO gate 外逐字相同。独审交接固定三个差异路径和未改产品/helper，后继文档不改变已通过的测试源码字节。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
