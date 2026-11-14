@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import Database from 'better-sqlite3';
@@ -8,7 +9,10 @@ import { fixture, meta, NOW } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import {
+  initializeRelationalStorage,
+  assertRelationalStorageFormat,
+} from '../../server/storage/relational-storage.ts';
 import {
   appendRelationalCommit,
   readRelationalCommit,
@@ -927,6 +931,125 @@ test('Opening 原保护内容进入唯一ready安装；安装后新Opening窄回
   })();
   assert.equal(databaseState(target), before);
   assert.equal(relationalSnapshotSha256(sourcePath), selected.sourceSha256);
+});
+
+test('Opening未知数量与已知数量共享complete正文和BLOB，不降级或复制输入', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  const original = f.inputs.readMemberContext('definition', 'm1'),
+    image = png(),
+    prepared = prepareRelationalInput(
+      parseNativeImageRequest(
+        {
+          model: 'nai-diffusion-4-5-full',
+          input: 'known body',
+          action: 'img2img',
+          parameters: {
+            width: 128,
+            height: 128,
+            steps: 30,
+            seed: 7,
+            n_samples: 2,
+            image: image.toString('base64'),
+            strength: 0.7,
+          },
+        },
+        original.native,
+      ),
+      original,
+    );
+  const shared = 'shared-complete',
+    contextId = f.db
+      .prepare("SELECT context_id FROM generation_requests WHERE id='definition'")
+      .get().context_id;
+  append(
+    f,
+    {
+      inputId: shared,
+      completeness: 'complete',
+      body: prepared.body,
+      logicalBytes: prepared.logicalBytes,
+      assets: prepared.assets,
+    },
+    [
+      request(shared, {
+        requestId: 'known-count',
+        model: prepared.body.model,
+        contextId,
+        sampleCount: 2,
+        seedMode: 'fixed',
+      }),
+      request(shared, {
+        requestId: 'unknown-count',
+        model: prepared.body.model,
+        sampleCount: null,
+        seedMode: 'fixed',
+      }),
+    ],
+  );
+  const input = f.inputs.readMemberInput('unknown-count', 'm1');
+  assert.equal(input.recoverable, false);
+  assert.equal(Object.hasOwn(input.input.parameters, 'n_samples'), false);
+  assert.equal(input.assets.length, 1);
+  assert.deepEqual(
+    f.inputs.readMemberAsset('unknown-count', 'm1', 'parameters.image').bytes,
+    image,
+  );
+  assert.equal(
+    f.db.prepare('SELECT completeness FROM generation_inputs WHERE id=?').get(shared).completeness,
+    'complete',
+  );
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT COUNT(DISTINCT input_id) AS n FROM generation_requests WHERE id IN ('known-count','unknown-count')",
+      )
+      .get().n,
+    1,
+  );
+  const target = empty(t);
+  replayUntil(target, f.db);
+  assert.equal(
+    target.prepare("SELECT sample_count FROM generation_requests WHERE id='unknown-count'").get()
+      .sample_count,
+    null,
+  );
+  assert.deepEqual(
+    target.prepare('SELECT * FROM input_assets WHERE input_id=?').all(shared),
+    f.db.prepare('SELECT * FROM input_assets WHERE input_id=?').all(shared),
+  );
+});
+
+test('Opening未知数量格式拒绝正确旧5ca DDL/hash，不修改原临时库或旧历史', (t) => {
+  const old = JSON.parse(
+      readFileSync(new URL('../fixtures/relational-schema-v7-known-count.json', import.meta.url)),
+    ),
+    db = new Database(':memory:');
+  t.after(() => db.close());
+  assert.equal(old.sourceCommit, '5ca121fb76a6f63a011a48bae630789f7f976302');
+  assert.equal(createHash('sha256').update(old.sql).digest('hex'), old.schemaSha256);
+  db.exec(old.sql);
+  const insert = db.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+  insert.run('database_format', 'novelai-relational-v1');
+  insert.run('schema_sha256', old.schemaSha256);
+  insert.run(
+    'event_authority',
+    JSON.stringify({ version: old.writerVersion, minimumWriterVersion: old.writerVersion }),
+  );
+  db.prepare(
+    "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-five-ca',?,0,'building')",
+  ).run(old.reducerVersion);
+  assert.equal(
+    db
+      .prepare('PRAGMA table_info(generation_requests)')
+      .all()
+      .find((c) => c.name === 'sample_count').notnull,
+    1,
+  );
+  const before = db.serialize();
+  assert.throws(() => assertRelationalStorageFormat(db), /Unsupported relational database format/);
+  assert.throws(() => new RelationalInputStore(db), /Unsupported relational database format/);
+  assert.deepEqual(db.serialize(), before);
 });
 
 test('Opening 复制后请求SQL失败：外层捕获仍回滚全表/完整提交，原提交可重试', async (t) => {

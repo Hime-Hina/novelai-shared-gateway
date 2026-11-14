@@ -2295,3 +2295,15 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 | 0.12 | 2026-11-13 | 在 main 补齐观察角色、分配来源及消费边界，加入跨对象反例验收；0.10/0.11 的 T4 实施记录见未合并 PR #43，#44/#45 仍待修复                     |
 | 0.13 | 2026-11-13 | 记录 `7025582` 复审；补齐观察型分配与有效基线采纳、同观察同资源一次消费的关系，保留先前观察和初始三池；#44 通过待合并，#45 观察型消费待修复 |
 | 0.14 | 2026-11-13 | 记录 `c786f8f` 独立复审通过、原始反例拒绝及旧源码负对照；#44/#45 待合入后关闭，新库和完整恢复边界保持不变                                   |
+
+### 9.92 Opening 原请求数量未知的独立表示
+
+本片从固定 `bb308a5af1a0f49de5594fc9681c755fc251451a` 接续，仅让 `OpeningRequestRecorded.sampleCount` 和请求列允许 NULL。正常受理仍为正数；原数量归 Request，complete 只描述规范 body/槽位，不包含 seed/count。同成员的已知 count 请求与未知 count 终态请求可共享原 complete Input、BLOB、context 和已知 seed，不降级或复制内容，不以 child 数量/位置/当前默认补原数量。旧归档解释和 A/B/13键/会话决定不在本片。
+
+数量必需的原完整 wire 校验仍归 InputStore 的同一完整请求边界，live 原键及执行复用该拒 NULL；活动 DDL guard要求已知数量。未知请求保已知字段/安全附件/原结果，input GET为 recoverable=false 且无补造 n_samples，编辑为新意图仍用明确新数量、新键、当前报价确认。原收费/退款/原回执及完整 source/cut/member 证明不变；正常已知数量 index 上界保留。
+
+格式仍同一个未发布 event7/writer5，唯一 DDL hash 随可空列及活动保护变化；准确旧5ca DDL/hash夹具从固定 Git 原件导出，由原格式 guard拒绝，不改旧SQL/journal、不手改ready或添加在线旧库fallback。没有新增 writer/architecture 白名单；DDL和关键反例增量仍需维护者复核。Node22 原两完整 Opening 文件同次 **29/29、零 skip，5.148 秒**（`H:/TEMP/novelai-opening-unknown-count-evidence-20261115/source-owner.log`）；原五条聚焦另为 **5/5、零 skip，2.426 秒**，两者重叠不相加。实际同 complete Input 的 A=count2/B=NULL、B 仅一个原位置7的 child及已知context/seed，Cookie 原query/input与Local字节、Native/Member原键410零重发、显式新键/count2的当前quote/confirm受理均通过；完整公共回放不复活私有Key/epoch、匹配selected private与唯一installer、磁盘close/reopen、共享BLOB/缺context安全读取、活动/live拒NULL、末SQL被外catch的全回滚与原提交重复0写均覆盖。
+
+TEMP 精确源两项语义负控分别把投影NULL改为1、用TypeScript非空断言绕过共同knownSampleCount，分别在实际fact/row读取关系和ready/HTTP后的readJobInput业务断言失败（后者Missing expected exception），没有把parser/加载/错误DDL前置拦截算目标。原字节finally还原、九路径SHA全同，恢复后原五项 **5/5**；`negative-evidence.json` / `reproduce-negatives.py` 与各日志绑定。准确旧5ca DDL/hash夹具来自固定Git原件，现guard拒绝且原临时库字节不变。
+
+类型、architecture、默认/可信88 migration、改动格式/MJS语法/diff检查通过。首轮测试句柄cleanup顺序的Windows EBUSY和次轮误读业务receipt.commitSeq/公开DTO sampleIndex两类测试准备错误及原字节均封存，不计作产品业务红；修正为及时close、真实command_id→TEXTseq、原公开index后通过。没有full/build/compiled/Node24/新native/真实云或生产操作；独立复审与父并集待固定候选，A/B、13旧键、旧会话决定不被本片批准。

@@ -105,7 +105,7 @@ interface RequestRow {
   context_id: string | null;
   operation: 'generate' | 'upscale' | 'encode-vibe';
   model: string | null;
-  sample_count: number;
+  sample_count: number | null;
   seed_mode: string;
   confirmation: string | null;
   retired_at: number | null;
@@ -115,6 +115,12 @@ function fail(statusCode: number, code: string, message: string): never {
 }
 function unavailable(): never {
   return fail(410, 'input_unavailable', '原输入或首次上下文不可用。');
+}
+function knownSampleCount(sampleCount: number | null): number {
+  if (sampleCount === null) {
+    unavailable();
+  }
+  return sampleCount;
 }
 function diagnosticUnavailable(): never {
   return fail(410, 'diagnostic_unavailable', '原诊断正文或来源不可用。');
@@ -1539,7 +1545,12 @@ export class RelationalInputStore {
           const context = contexts.get(p.contextId) ?? source.context(p.contextId);
           assertRequestSeedMode(p, context);
           if (input.row.completeness === 'complete') {
-            source.assertCompleteInput(input, context, p.sampleCount);
+            if (p.sampleCount === null) {
+              // 正文和附件可完整保存；缺原批次数不能伪造完整请求的 wire 往返。
+              source.validatedAssets(input, context);
+            } else {
+              source.assertCompleteInput(input, context, p.sampleCount);
+            }
           }
           contexts.set(p.contextId, context);
         }
@@ -1862,7 +1873,7 @@ export class RelationalInputStore {
       unavailable();
     }
     assertRequestSeedMode({ operation: p.operation, seedMode: p.seedMode }, context);
-    const assets = this.assertCompleteInput(input, context, request.sample_count),
+    const { assets, sampleCount } = this.assertCompleteInput(input, context, request.sample_count),
       jobs = this.sqlite
         .prepare<
           [string],
@@ -1878,7 +1889,7 @@ export class RelationalInputStore {
         )
         .all(p.requestId);
     if (
-      jobs.length !== request.sample_count ||
+      jobs.length !== sampleCount ||
       jobs[0]?.id !== p.originalJobId ||
       jobs.some(
         (job, index) => job.sample_index !== index || (!replayed && job.retired_at !== null),
@@ -1904,7 +1915,7 @@ export class RelationalInputStore {
     if (
       p.intentFingerprint !==
       this.idempotencyIntentFingerprint(
-        { body: input.body!, assets, context, firstSeed: seed, sampleCount: request.sample_count },
+        { body: input.body!, assets, context, firstSeed: seed, sampleCount },
         p.seedMode,
         p.noCache,
         confirmation,
@@ -2140,11 +2151,11 @@ export class RelationalInputStore {
         (slot.owner as Record<string | number, unknown>)[slot.key] = { slot: slot.slot };
       }
     }
-    let recoverable = input.row.completeness === 'complete';
-    if (recoverable) {
-      if (!request.context_id) {
-        unavailable();
-      }
+    let recoverable =
+      input.row.completeness === 'complete' &&
+      request.sample_count !== null &&
+      request.context_id !== null;
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
       this.context(request.context_id);
     }
     if (body?.operation === 'generate' && recoverable) {
@@ -2182,10 +2193,7 @@ export class RelationalInputStore {
       unavailable();
     }
     let context: RelationalNormalizationContext | null = null;
-    if (input.row.completeness === 'complete') {
-      if (!request.context_id) {
-        unavailable();
-      }
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
       context = this.context(request.context_id);
     }
     const slot = relationalAssetSlots(input.body, input.assets).find(
@@ -2255,11 +2263,12 @@ export class RelationalInputStore {
   private assertCompleteInput(
     input: ReturnType<RelationalInputStore['input']>,
     context: RelationalNormalizationContext,
-    sampleCount: number,
+    sampleCount: number | null,
   ) {
+    sampleCount = knownSampleCount(sampleCount);
     const assets = this.validatedAssets(input, context);
     assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
-    return assets;
+    return { assets, sampleCount };
   }
 
   // 历史种子只按原事实/已知 context 核对；缺正文不使已知 literal 变为未知或当前默认。
@@ -2306,6 +2315,7 @@ export class RelationalInputStore {
       unavailable();
     }
     const context = this.context(job.context_id);
+    knownSampleCount(accepted.sample_count);
     const assets = this.validatedAssets(input, context);
     const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);
