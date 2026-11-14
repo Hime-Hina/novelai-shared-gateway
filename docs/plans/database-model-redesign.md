@@ -2125,6 +2125,16 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 作者最终副本 owner **24/24、零 skip，8.328s**（`H:/TEMP/novelai-replica-scheduler-owner-final.log`）；sole 新五项和原实际大响应/晚领取/raw关闭重启联合 **12/12、零 skip，38.574s**（`H:/TEMP/novelai-replica-scheduler-sole-target.log`）。隔离副本分别移除 physical Map 守卫、关闭的 inflight await、物理 key 去重：精准在已到场的原业务断言失败（错误预留 R2、held IO 时已 exit0、未过水位却选择 Pik），恢复原字节同三例 **3/3**。原 `de52e2a` gateway 同一真实监听正向因没有调度而无法产生 R2 确认，业务反例失败；原源没有改动。负证据及原 SHA 在 `H:/TEMP/novelai-replica-scheduler-negative-20261115/`。早期新夹具中的 system/admin、缺 DATA_DIR、错误列名和 100ms 未达到原 1000ms timeout 下限等设置错误不作业务红例，最终均先断言真实 listener、SQL/raw 占用再验保护。backend 类型、architecture、默认/可信 `88d2c26` migration、局部 Prettier/diff 全过；没有改架构守卫、旧 SQL/journal 或关键既有断言。独立审查仍需绑定最终固定提交。
 
+#### 9.87 后继：队列唤醒与独立 IO 的关闭顺序
+
+首次固定 `cb3b173` 的独审为 **NOTPASS**，原报告 `H:/TEMP/novelai-replica-scheduler-independent-20261115/INDEPENDENT-REVIEW.md`（SHA256 `d099eab6d1063f1a4301f4a1d38f585bf78af5a08b47a94220b67746dc9cdb52`）。真实 bootstrap→Native 结果→held R2 verification GET 期间，另一原 Native waiter 已在 running 时读到 queued/null；关闭后 queue 已 stopped，却因 `await replicaCopy` 在唯一 `drained` 前面而仍无 HTTP。释放 cloud 后才503/closeDB/exit0；不是 listener 未到、错误输入或旧回执没有发起 IO 的假反例。
+
+最小后继只把独立 `refresh.pending` 和 `replicaCopy` 的 await 移到原 drained、实际 HTTP 完成及 disconnected 之后、真实 SQLite.close 之前。原 queue.stop 仍先等待实际 generation physical 控制完成；停 timer 仍尽早，关闭仍等待 actual quota/copy/raw/响应全部结束才关库。无需新状态、重复 drained、取消事实、清 Map 或延长期限。quota 也存在同一等待次序：新增实际 admin PATCH、新 Idempotency-Key 的 localhost quota GET 持有原 raw promise，不能借启动的旧 enable 回执（重领零 IO）假造到场。只移动 cloud、仍在 drained 前等待 quota 的变体也使同一 queued waiter 挂起，故本次在唯一关闭 owner 修正共同顺序。
+
+原审者程序 SHA256 `608936df52558d585bf293f7201a0c642e06a8dfc9eda9b0764c61527e21f70f` 原字节保留在新 TEMP；仅 loader 将结果 JSON 定址新目录，imports 指向固定后继源。原 250ms、全部业务断言和原 JSON（SHA256 `297205c7251835bdaeed9d3e975929235f7efadbd9209590e36cec54cda436aa`）不改。该原四项 **4/4、零 skip，5.762s**；held GET 释放前已 HTTP503/drained，主 DB 仍开着，释放后才实际 close/exit0，queued 责任与 NativeCalls=2 保留。`loader-proof.json` 记录反向替换等于原完整源及原 loaded SHA，不把业务修改称为 loader 绑定。
+
+仓库新增 replica/quota 两个真实 queued-waiter 对照，与原复制、ready 撤销、physical-only、真实 48MiB 背压、晚领取、raw 关闭与重启联合 **14/14、零 skip，41.812s**（`H:/TEMP/novelai-replica-shutdown-final-target.log`）。把 copy await 放回 drained 前，原审者程序精准在 HTTP settled=false 失败；仅把 quota await 放回同处，新 quota 场景也精准 false!=true。两种变体只改隔离 TEMP 并 finally 恢复，不触原 cb3/report/program。固定后继、反例和原四项证据在 `H:/TEMP/novelai-replica-shutdown-20261115/`；首次 quota 夹具重领旧键而未实际 GET 的失败被明确排除，最终先核实际请求计数与 held IO 到场。类型、architecture、默认/可信88 migration、改动格式/diff 再核，无业务 fact/DDL/private source/时间政策变化，无 full/build/compiled/native/实云/生产。原独审者仍须复核最终固定版本，作者检查不关闭 cb3 finding。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

@@ -393,6 +393,164 @@ function replicaMessages(server) {
   return messages;
 }
 
+async function tickReplicaClock(server, messages, n) {
+  const previous = messages.filter((m) => m.tick === n).length;
+  server.child.send({ tick: n });
+  await waitFor(() => messages.filter((m) => m.tick === n).length === previous + 1);
+}
+
+for (const independentIO of ['replica', 'quota']) {
+  test(`队列已停止先唤醒原queued HTTP，再等待独立${independentIO} IO关库`, async (t) => {
+    const f = await fresh(t);
+    f.upstream = await upstream(t);
+    let server = await (await launch(t, f)).ready();
+    await enable(f, server);
+    assert.equal(
+      (
+        await call(server, '/ai/generate-image', {
+          token: f.credentials.accounts[0].api_key,
+          body: nativeInput(),
+        })
+      ).status,
+      200,
+    );
+    await server.stop();
+    const marker = "if(options.method!=='GET')throw Error('No source deletion');",
+      base = replicaClockHook(f);
+    assert.equal(base.split(marker).length, 2);
+    const hook =
+      base.replace(
+        marker,
+        marker +
+          (independentIO === 'replica' ? 'await new Promise(resolve=>release=resolve);' : ''),
+      ) +
+      `
+      const {EventEmitter:ObservedEmitter}=await import('node:events'),originalEmit=ObservedEmitter.prototype.emit;
+      ObservedEmitter.prototype.emit=function(name,...args){if(name==='drained')process.send?.({drainedObserved:true});return Reflect.apply(originalEmit,this,[name,...args]);};
+      registerHooks({load(url,context,next){const result=next(url,context);let source=String(result.source);
+        if(url.endsWith('/server/generation/relational-queue-runtime.ts')){const marker="phase = 'stopped';";if(source.split(marker).length!==2)throw Error('queue phase observation marker missing');source=source.replace(marker,marker+"process.send?.({queueStoppedObserved:true});");return {...result,source};}
+        if(url.endsWith('/server/generation/relational-api-delivery.ts')){const marker='return null;';if(source.split(marker).length!==2)throw Error('waiter cold-read observation marker missing');source=source.replace(marker,"process.send?.({initialWaitJob:jobId,initialWaitPhase:deps.runtime.status});"+marker);return {...result,source};}
+        return result;
+      }});
+    `;
+    server = await launch(t, f, {
+      hook,
+      env:
+        independentIO === 'replica'
+          ? {
+              R2_ACCOUNT_ID: 'a'.repeat(32),
+              R2_BUCKET: 'runtime-replicas',
+              R2_ACCESS_KEY_ID: 'synthetic-access',
+              R2_SECRET_ACCESS_KEY: 'synthetic-secret',
+            }
+          : {},
+    });
+    const messages = replicaMessages(server);
+    await server.ready();
+    await waitFor(() => query(f, 'SELECT MAX(observed_at) n FROM account_quota_state')[0].n >= NOW);
+    await tickReplicaClock(server, messages, 60000);
+    if (independentIO === 'replica') await waitFor(() => messages.some((m) => m.replica === 'GET'));
+    const warm = nativeInput();
+    warm.parameters.seed = 43;
+    const warming = call(server, '/ai/generate-image', {
+      token: f.credentials.accounts[0].api_key,
+      body: warm,
+    });
+    await waitFor(
+      () =>
+        query(f, "SELECT id FROM generation_jobs WHERE actual_seed=43 AND status='queued'")
+          .length === 1,
+    );
+    await tickReplicaClock(server, messages, 1);
+    assert.equal((await warming).status, 200);
+    await waitFor(() => f.upstream.active === 0);
+    const queued = nativeInput();
+    queued.parameters.seed = 44;
+    let settled = false;
+    const pending = call(server, '/ai/generate-image', {
+      token: f.credentials.accounts[0].api_key,
+      body: queued,
+    }).then((value) => {
+      settled = true;
+      return value;
+    });
+    await waitFor(
+      () =>
+        query(f, "SELECT id FROM generation_jobs WHERE actual_seed=44 AND status='queued'")
+          .length === 1,
+    );
+    const job = query(f, 'SELECT id FROM generation_jobs WHERE actual_seed=44')[0].id;
+    await waitFor(() =>
+      messages.some((m) => m.initialWaitJob === job && m.initialWaitPhase === 'running'),
+    );
+    let releaseQuota, quotaPending;
+    if (independentIO === 'quota') {
+      const gate = new Promise((resolve) => (releaseQuota = resolve));
+      t.after(() => releaseQuota());
+      f.upstream.hold = (req) => (req.url === '/user/data' ? gate : undefined);
+      const queries = f.upstream.quota;
+      // 新键发起真实查询；启动启用的原回执重领不会产生 held IO。
+      quotaPending = call(server, `/api/admin/accounts/${f.accountId}`, {
+        method: 'PATCH',
+        headers: {
+          'x-admin-token': f.env.ADMIN_TOKEN,
+          'idempotency-key': 'held-independent-quota',
+        },
+        body: { enabled: true },
+      });
+      await waitFor(() => f.upstream.active === 1);
+      assert.equal(f.upstream.quota, queries + 1);
+      assert.equal(
+        f.upstream.generation,
+        2,
+        'the held request must be quota, not the queued generation',
+      );
+    }
+    server.child.send('shutdown');
+    await waitFor(() => messages.some((m) => m.queueStoppedObserved));
+    await delay(250);
+    const beforeRelease = {
+      httpSettled: settled,
+      drained: messages.some((m) => m.drainedObserved),
+      mainDbClosed: messages.some((m) => m.replica === 'dbclosed'),
+      exit: server.exit,
+      queuedStatus: query(f, 'SELECT status FROM generation_jobs WHERE id=?', job)[0].status,
+    };
+    if (independentIO === 'replica') server.child.send('release-replica');
+    else releaseQuota();
+    const response = await pending;
+    if (quotaPending) assert.equal((await quotaPending).status, 200);
+    await server.finished;
+    t.diagnostic(
+      JSON.stringify({
+        independentIO,
+        beforeRelease,
+        httpStatus: response.status,
+        afterExit: server.exit,
+        mainDbClosed: messages.some((m) => m.replica === 'dbclosed'),
+        nativeCalls: f.upstream.generation,
+      }),
+    );
+    assert.equal(
+      beforeRelease.httpSettled,
+      true,
+      'existing queued HTTP cannot wait for unrelated IO after its queue stops',
+    );
+    assert.equal(beforeRelease.drained, true);
+    assert.equal(beforeRelease.mainDbClosed, false);
+    assert.equal(beforeRelease.exit, null);
+    assert.equal(beforeRelease.queuedStatus, 'queued');
+    assert.equal(response.status, 503, response.bytes.toString());
+    assert.equal(server.exit.code, 0, server.stderr);
+    assert.ok(messages.some((m) => m.replica === 'dbclosed'));
+    assert.equal(f.upstream.generation, 2);
+    assert.equal(
+      query(f, 'SELECT status FROM generation_jobs WHERE id=?', job)[0].status,
+      'queued',
+    );
+  });
+}
+
 test('复制timer只在真实listen后60s启动，进展后1s收敛且保留所有源', async (t) => {
   const f = await replicaSource(t),
     server = await launch(t, f, {

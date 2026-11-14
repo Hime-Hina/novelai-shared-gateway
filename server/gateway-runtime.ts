@@ -339,9 +339,7 @@ async function start(handler: http.RequestListener) {
       const stopped = queue.stop();
       previews.closeSubscriptions();
       await refresh.stop();
-      await refresh.pending;
       await stopped;
-      await replicaCopy;
       // 唯一领取 owner 先冷读已完成结果，仅结束仍等待的 HTTP；不抢先覆盖正在读取的产物。
       events.emit('drained');
       for (const req of requests.values()) {
@@ -371,6 +369,9 @@ async function start(handler: http.RequestListener) {
       );
       server?.closeIdleConnections();
       await disconnected;
+      // 独立额度/副本 IO 仍须真完成才关库；不能阻挡 stopped 队列唤醒已有 HTTP 领取。
+      await refresh.pending;
+      await replicaCopy;
       sqlite.close();
     })();
     return shutdown;
