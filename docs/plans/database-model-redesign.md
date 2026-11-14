@@ -1867,6 +1867,22 @@ backend 类型、实际 architecture、默认及可信实际 main `88d2c26` 历�
 
 根在 `8cb09ef` 已审并集上整合：四个账户/查询实现文件逐字等于 `33ac3fe`；QuotaStore 原六十四个不受影响成员保持 `8cb09ef`，两个 actual-start 成员逐字等于修复候选；十八 writer 的守卫仅追加一个 `startAccountEnable` 名字。HTTP 测试以原共同基线保留双方所有独立编辑及两个完整追加测试块，没有删改断言。八文件同次 **743/743、零跳过，49.846 秒**，类型、architecture、可信实际 main `88d2c26` 迁移、十五文件格式和 diff 通过；日志 `H:/TEMP/novelai-account-start-root-{joint,type,static,format}.log`，保留证明 `root-preservation.json` 与 `root-test-merge.json` 位于同前缀。该并集全量与发布物后验，不沿用 `8cb09ef` 或 `0ad2c03` 的整体验证。
 
+### 9.71 成员门户 heatmap GET 的关系接入
+
+Portal 首页的 `LazyCallHeatmap endpoint="heatmap"` 实际调用 `/api/member/heatmap`，含 operation 切换与 SSE 失效后的 dates 增量。关系成员读取工厂只接回这条既有 GET，复用 ReportStore 和 `readActivityHeatmap` 原 UTC+8 一年范围、参数检查、状态分类及 retained-records DTO。成员过滤只能来自已认证 Cookie 的当前稳定 ID，禁止所有 memberId query 参数；正文、API Key 或 owner 配置都不能改读域，owner 在普通成员路径也只看本人。
+
+沿同一个 Cookie/Discord/active/认证 epoch/ready 授权边界，读取前取得真实 actor，Report await 后再次复核当前身份与 ready 再返回。heatmap 不续期、不签图片 URL、不读取 prompt/BLOB、不提交金融或任务状态；Discord 真实观察的既有私有/资格事实仍属于认证 owner，不假称这些必要观察零写。原 Job 时间与 Opening 有来源的 0/NULL 继续由同一 report SQL 解释，未知不填父受理、导入或当前日期。没有新算法、缓存、事件、表、授权层或旧 Store 适配；可区分反例与固定验证随后追加。
+
+Windows Node 22 源码新 heatmap 9/9；原成员读取、Shared HTTP、关系报表和旧热力图 HTTP 四文件 46/46、零跳过，26.628 秒。两个最初路由反例均在真实 localhost HTTP 的 404 断言失败后转绿。真实三操作、原 generate 默认/UTC+8 日期增量及非法参数、GET 正文/Key query/Authorization 不扩成员范围、原 Key 转给他人后 Cookie 仍按稳定成员、取消与真实历史退休均有运行证据。Opening 的原 0 在包含它的范围内计一次，NULL 不计且不改源值；未把父受理时间充当 child 起点。完整公共回放的 Key/密码/PST/Discord/会话和认证代次均为空，匹配选定私有/保护输入经唯一 installer 后恢复本人结果，磁盘重开一致。
+
+报表真实 SQL 异步返回后退出、密码代次轮换、停用及 ready 故障均拒绝返回旧桶，IO 不持有 SQL 事务。真实 Discord 临时 503 和等待中退出不读取 report 或签图，金融/任务行不变，既有认证观察可正常保存。带真实输入附件的业务 SQL 捕获未加载 input/context/BLOB，普通缓存认证查询比较全库序列化与 total_changes 零变化且无 Set-Cookie；没有为 query_only 放宽原认证维护。工厂直接拒非 GET 的 403 沿原行为，sole 的 api-surface 仍只允许 GET，未在本片改变 HTTP 白名单或管理路由。
+
+隔离副本放开 member filter、删除末次授权、用父受理时间替换原 child 时间、让 heatmap 续期的四种变体均在原业务 ERR_ASSERTION 失败，正常副本 9/9；证据为 `H:\TEMP\novelai-member-heatmap-context.log` 和 `H:\TEMP\novelai-member-heatmap-negative-2dfb7fab-eaed-42c4-b8c3-a41ece90c8ae\results.json`。类型、架构、默认及可信 main `88d2c26` 迁移历史、语法和改动格式/diff 随固定候选核对。初次含附件夹具的旧 JSON 摘要 helper 不支持 BLOB，已仅在新用例改用真实 SQLite serialize 比较，没有修改产品来绕过该测试表示限制。未跑 full/build/compiled/Node 24 或生产/云端；此 GET 接线不表示 sole 已切换，独立审查随后绑定固定源码。
+
+固定 `eaf1fe90eae76282d7d39fdc6768be6ed0e4fb0f` 独审通过：原四文件 46 与新增三条真实 HTTP 反例同次 49/49、零跳过，21.536 秒。UTC+8 午夜两侧逐 child/逐成员隔离，query/body/header 的其它 Key 不改变 Cookie 范围且 activity 不续期；真实 SQL await 期间密码 epoch 轮换后，即便原 owner 合法重发相同 Cookie literal，旧请求仍 401、鲜活请求 200。完整公共回放无私有认证，同 cut 两份选定私有源分别保留/退出 Cookie 后经 installer、磁盘重开保留各自决定，零 fetch。删除 epoch、扩大成员过滤或续期的三种负控均精确失败；原并行测试与负控共用目录造成的 48/49 记录明确排除，最终固定源码前后 hash 相同。报告 `H:/TEMP/novelai-member-heatmap-independent-20261114/INDEPENDENT-REVIEW.md`（SHA256 `8896ea44cd8928ec76220c725ad8f1a86699ab93fc88f4befcc46845c8834e34`）。
+
+根在 `6477ac6` 账户实际发起边界并集上整合，MemberRead factory 和测试保持 eaf 精确字节；原四文件同次 46/46、零跳过，32.458 秒。类型、architecture、可信实际 main `88d2c26` 迁移、三文件格式及 diff 通过，日志 `H:/TEMP/novelai-member-heatmap-root-{joint,type,static,format}.log`。该源码阶段不表示普通启动入口或新发布包已采用 Member heatmap。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
