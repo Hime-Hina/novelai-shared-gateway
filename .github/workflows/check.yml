@@ -95,6 +95,9 @@ jobs:
         run: pnpm --filter @novelai-gateway/executor test
       - if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/executor build
+      - name: Verify normal JavaScript package entry and offline recovery
+        if: needs.classify-changes.outputs.docs_only != 'true'
+        run: node --no-experimental-strip-types --test tests/deployment/normal-package.test.mjs
       - name: Verify Nuxt routes, streaming and process isolation
         if: needs.classify-changes.outputs.docs_only != 'true'
         run: pnpm --filter @novelai-gateway/web test:executor
@@ -140,7 +143,7 @@ jobs:
           cp pnpm-lock.yaml "$release_dir/pnpm-lock.yaml"
           cp deploy/systemd/*.service deploy/production-*.env.example "$release_dir/systemd/"
           cp docs/operations/test-deployment.md docs/operations/production-release.md "$release_dir/docs/"
-          cp scripts/backup-production.py scripts/bridge-owner-session.mjs "$release_dir/ops/"
+          cp scripts/backup-production.py "$release_dir/ops/"
           mkdir -p "$RUNNER_TEMP/unit-check"
           for unit in "$release_dir/systemd/"*.service; do
             sed -e "s|/opt/novelai-shared-gateway-test/current|$release_dir|g" \
@@ -160,61 +163,15 @@ jobs:
           tar -C "$RUNNER_TEMP" -czf "dist/$release_name.tar.gz" "$release_name"
           mkdir -p "$RUNNER_TEMP/release-check"
           tar -C "$RUNNER_TEMP/release-check" -xzf "dist/$release_name.tar.gz"
-          # Validate the extracted Linux tree without workspace dependency fallback.
+          # The normal release is tested through its actual JS entry and recovery CLI.
+          test -f "$RUNNER_TEMP/release-check/$release_name/web/.output/server/index.mjs"
           docker run --rm --network none --read-only --entrypoint /release/bin/node \
             --tmpfs /tmp:rw,uid=1000,gid=1000 \
             --mount "type=bind,source=$RUNNER_TEMP/release-check/$release_name,target=/release,readonly" \
-            novelai-shared-gateway-executor:check --input-type=module -e '
-              import assert from "node:assert/strict";
-              import { createRequire } from "node:module";
-              import { access, mkdtemp, readFile, readdir } from "node:fs/promises";
-              import { spawnSync } from "node:child_process";
-              const root = "/release/executor/.output/server/node_modules/novelai-shared-gateway/";
-              await assert.rejects(access(root + "public"), { code: "ENOENT" });
-              const serverEntries = await readdir(root + "server", { withFileTypes: true });
-              assert.deepEqual(serverEntries.filter(entry => entry.isFile() && entry.name.endsWith(".js")).map(entry => entry.name).sort(), ["gateway-runtime.js", "index.js"]);
-              const require = createRequire(root + "package.json");
-              assert.ok(require.resolve("better-sqlite3").startsWith("/release/executor/node_modules/"));
-              const db = require("better-sqlite3") (":memory:");
-              const { migrateStorage } = await import(root + "server/storage/sqlite-migrations.js");
-              migrateStorage(db);
-              assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
-              const journal = JSON.parse(await readFile(root + "server/migrations/meta/_journal.json", "utf8"));
-              assert.equal(db.prepare("SELECT COUNT(*) n FROM __drizzle_migrations").get().n, journal.entries.length);
-              for (const entry of journal.entries) await access(root + "server/migrations/" + entry.tag + ".sql");
-              for (const table of ["domain_events", "event_commits", "event_streams", "generation_contexts", "artifact_inputs", "generation_diagnostics"])
-                assert.ok(db.prepare("SELECT name FROM sqlite_schema WHERE type=? AND name=?").get("table", table));
-              db.close();
-              for (const entry of ["server/storage/sqlite-read-worker.js", "server/events/event-store.js", "server/events/domain-events.js", "server/generation/admission.js", "scripts/replay-events.mjs", "scripts/create-test-copy.mjs"])
-                await access(root + entry);
-              await access("/release/web/.output/server/index.mjs");
-              const { JsonStore } = await import(root + "server/storage/sqlite-store.js");
-              const { readArtifactInput } = await import(root + "server/events/event-store.js");
-              const directory = await mkdtemp("/tmp/nai-release-replay-");
-              const source = new JsonStore(directory + "/source"); await source.init();
-              const at = "2026-11-01T00:00:00.000Z", inline = "c3ludGhldGljLXBhY2thZ2UtYXJ0aWZhY3Q=";
-              await source.write({ settings: source.db.settings, accounts: [], cards: [], ledger: [],
-                users: [{ id: "member", token: "synthetic-package-member", enabled: true }],
-                jobs: [{ id: "package-job", userToken: "synthetic-package-member", status: "failed", createdAt: at, imageId: "package-image", errorDetail: "synthetic private diagnostic",
-                  request: { model: "nai-diffusion-4-5-full", prompt: "synthetic private input" } }],
-                images: [{ id: "package-image", token: "synthetic-package-member", base64: inline, prompt: "synthetic private input", mimeType: "application/octet-stream", createdAt: at }] });
-              source.sqlite.prepare("INSERT INTO generation_idempotency VALUES (?,?,?,?,?,?,?,?)").run("member", "generate", "synthetic-key-hash", "synthetic-intent", "{\"defaultNegative\":\"synthetic private default\"}", "package-job", null, at);
-              await source.enableEventAuthority(); const sourcePath = source.dbPath; await source.close();
-              const original = await readFile(sourcePath), targetPath = directory + "/rebuilt.sqlite";
-              const run = (...options) => {
-                const result = spawnSync(process.execPath, [root + "scripts/replay-events.mjs", "--source=" + sourcePath, "--target=" + targetPath, ...options], { encoding: "utf8", timeout: 15000 });
-                assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
-              };
-              assert.equal(run("--max-commits=1").commits, 1);
-              const complete = run(); assert.ok(complete.commits > 0); assert.equal(complete.networkCalls, 0); assert.equal(complete.dispatches, 0);
-              assert.equal(run().commits, 0); assert.deepEqual(await readFile(sourcePath), original);
-              const rebuilt = require("better-sqlite3")(targetPath, { readonly: true });
-              assert.equal(rebuilt.prepare("SELECT status FROM jobs WHERE id=?").get("package-job").status, "failed");
-              assert.equal(readArtifactInput(rebuilt, "package-image").base64, inline);
-              assert.ok(rebuilt.prepare("SELECT payload FROM generation_contexts").get().payload.includes("synthetic private default"));
-              assert.equal(rebuilt.prepare("SELECT detail FROM generation_diagnostics").get().detail, "synthetic private diagnostic");
-              assert.equal(rebuilt.pragma("integrity_check", { simple: true }), "ok"); rebuilt.close();
-            '
+            --mount "type=bind,source=${{ github.workspace }}/tests/deployment/normal-package.test.mjs,target=/checks/normal-package.test.mjs,readonly" \
+            -e NORMAL_PACKAGE_ROOT=/release/executor/.output/server/node_modules/novelai-shared-gateway \
+            -e NORMAL_PACKAGE_DEPENDENCIES=/release/executor/node_modules \
+            novelai-shared-gateway-executor:check --no-experimental-strip-types --test /checks/normal-package.test.mjs
           (
             cd dist
             sha256sum "$release_name.tar.gz" > "$release_name.tar.gz.sha256"
@@ -269,24 +226,11 @@ jobs:
           node-version: '24.22.1'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Verify isolated SQLite readers under Node 24
-        run: node --test --test-concurrency=1 tests/integration/activity-storage.test.mjs tests/integration/activity-heatmap-http.test.mjs
+      - name: Verify normal package closure rules under Node 24
+        run: node --test tests/unit/package-backend.test.mjs
       - run: pnpm run build
-      - name: Include immutable migration assets in the JavaScript reader package
-        run: cp -R server/migrations .output/backend/server/migrations
-      - name: Verify packaged JavaScript reader under parent-only flags
-        run: >-
-          node --v8-pool-size=2 --input-type=module -e '
-          import assert from "node:assert/strict";
-          import { mkdtemp, rm } from "node:fs/promises";
-          import { tmpdir } from "node:os";
-          import path from "node:path";
-          import { JsonStore } from "./.output/backend/server/storage/sqlite-store.js";
-          const directory = await mkdtemp(path.join(tmpdir(), "nai-reader-node24-"));
-          const store = new JsonStore(directory);
-          try { await store.init(); assert.deepEqual(await store.readActivityDays({since:"2026-01-01T00:00:00Z",until:"2027-01-01T00:00:00Z"}),[]); }
-          finally { await store.close(); await rm(directory,{recursive:true,force:true}); }
-          '
+      - name: Verify normal JavaScript entry, offline recovery and restart under Node 24
+        run: node --no-experimental-strip-types --test tests/deployment/normal-package.test.mjs
 
   caddy-routing:
     runs-on: ubuntu-latest

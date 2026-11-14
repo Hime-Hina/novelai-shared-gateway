@@ -40,6 +40,7 @@ import { deliverDirectGeneration, generationErrorImage } from './delivery.ts';
 import { generationCost, jobDurationMs } from './request-queries.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -51,6 +52,7 @@ export function createRelationalDirectHttp(deps: {
   previews: JobPreviews;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   readNormalizationDefaults(): NonNullable<Parameters<typeof requestNormalizationDefaults>[0]>;
   readJson(req: DirectHttpRequest, limit: number): Promise<unknown>;
   imageUrl(artifactId: string): string;
@@ -87,6 +89,7 @@ export function createRelationalDirectHttp(deps: {
       inputs,
       generations,
       payloadBudget: deps.payloadBudget,
+      runtime: deps.runtime,
       replicas: deps.replicas,
       env,
       now,
@@ -199,6 +202,18 @@ export function createRelationalDirectHttp(deps: {
         completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status) ? null : ''),
       };
     };
+    const createDelivery = () =>
+      createRelationalApiDelivery({
+        sqlite,
+        members,
+        requests,
+        token,
+        replicas: deps.replicas,
+        events: deps.events,
+        runtime: deps.runtime,
+        env,
+        now,
+      });
     const accept = async (
       body: Record<string, unknown>,
       source: 'direct' | 'web',
@@ -232,6 +247,14 @@ export function createRelationalDirectHttp(deps: {
           };
         },
       });
+      if (result.replayed) {
+        const delivery = createDelivery();
+        try {
+          await delivery.validateReplay(result.jobIds);
+        } finally {
+          delivery.close();
+        }
+      }
       deps.schedule();
       return result;
     };
@@ -275,20 +298,8 @@ export function createRelationalDirectHttp(deps: {
               'direct',
               version!,
             ),
-            delivery = createRelationalApiDelivery({
-              sqlite,
-              members,
-              requests,
-              token,
-              replicas: deps.replicas,
-              events: deps.events,
-              env,
-              now,
-            });
+            delivery = createDelivery();
           try {
-            if (accepted.replayed) {
-              await delivery.validateReplay(accepted.jobIds);
-            }
             const sendError = (kind: 'busy' | 'timeout', until?: string) => {
               const image = generationErrorImage(kind, until, now());
               deps.sendImage(res, image.statusCode, image.mimeType, image.buffer, image.headers);

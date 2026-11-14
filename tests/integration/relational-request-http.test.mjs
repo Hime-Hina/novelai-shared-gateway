@@ -94,6 +94,8 @@ async function fixture(t, { env = {}, discordFetch } = {}) {
     members = new RelationalMemberStore(f.db, currentEnv, notifier),
     admit = createRelationalNativeAdmission({
       sqlite: f.db,
+      // 下方 accept 仅准备取消/ACL 源事实，部分用例明确停止调度；真实 HTTP 仍用 deps.runtime。
+      runtime: f.commandOnlyRuntime,
       members,
       inputs: f.inputs,
       generations: f.generations,
@@ -401,7 +403,7 @@ test('慢正文后复核原稳定成员与原authEpoch/当前Key/ready，拒绝�
           f.notifier.commit(() =>
             f.db.transaction(() => {
               if (mode === 'auth-epoch') {
-                f.members.setMemberCredentials(prepared);
+                f.members.setMemberCredentials(prepared, null);
               } else {
                 f.members.replaceMemberApiKey('m1', 'synthetic-current-replacement');
                 if (mode === 'transfer') {

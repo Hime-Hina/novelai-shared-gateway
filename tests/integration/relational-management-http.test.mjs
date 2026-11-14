@@ -14,6 +14,7 @@ import {
   image,
 } from '../helpers/relational-generation.mjs';
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
+import { createRelationalMemberAuthenticationHttp } from '../../server/members/relational-authentication-http.ts';
 import { assertAdminToken, matchesAdminToken } from '../../server/http/admin-access.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
 import {
@@ -34,7 +35,11 @@ import { RelationalCommitReplayer } from '../../server/storage/relational-replay
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
-import { relationalSnapshotSha256 } from '../../server/storage/relational-private-restore.ts';
+import {
+  relationalSnapshotSha256,
+  relationalPrivateStateSha256,
+  relationalPrivateStateEmpty,
+} from '../../server/storage/relational-private-restore.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { createGenerationControls } from '../../server/generation/queue-dispatch.ts';
 import { accountQuotaResult, createAccountQuotaQuery } from '../../server/quota/account-refresh.ts';
@@ -84,19 +89,21 @@ async function setup(
   f.dispatch('existing-0', NOW);
   await f.publish('existing-0');
   for (const id of ['m1', 'm2']) {
-    await f.members.discordAuthenticationTransaction((tx) => {
-      const member = tx.readMember(id);
-      member.discord = {
-        id: id === 'm1' ? '222222222222222222' : '333333333333333333',
-        guildId: currentEnv.DISCORD_GUILD_ID,
-        accessToken: `synthetic-private-access-${id}`,
-        refreshToken: `synthetic-private-refresh-${id}`,
-        expiresAt: NOW + 86400000,
-        checkedAt: NOW,
-        member: true,
-      };
-      tx.saveAuthentication(member, 'login');
-    });
+    if (currentEnv.DISCORD_GUILD_ID) {
+      await f.members.discordAuthenticationTransaction((tx) => {
+        const member = tx.readMember(id);
+        member.discord = {
+          id: id === 'm1' ? '222222222222222222' : '333333333333333333',
+          guildId: currentEnv.DISCORD_GUILD_ID,
+          accessToken: `synthetic-private-access-${id}`,
+          refreshToken: `synthetic-private-refresh-${id}`,
+          expiresAt: NOW + 86400000,
+          checkedAt: NOW,
+          member: true,
+        };
+        tx.saveAuthentication(member, 'login');
+      });
+    }
     sessions[id] = await createMemberSession(
       f.members,
       await authenticateMemberApiKey(f.members, keys[id]),
@@ -437,7 +444,7 @@ test('owner statistics沿原UTC+8范围及days数组，登录名不借展示名�
           username: 'actual.login',
           password: 'synthetic-owner-statistics-password',
         });
-        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
         f.accept('named-history', { memberId: 'm2' });
         f.fail('named-history-0', { aborted: false });
       },
@@ -573,7 +580,7 @@ test('新增owner GET在真实Discord IO后重核owner、epoch和ready，不返�
                 username: 'rotated.owner',
                 password: 'synthetic-rotated-owner-password',
               });
-              f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+              f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
             }
             if (kind === 'ready') f.db.prepare("UPDATE projection_state SET status='failed'").run();
             return Response.json({ user: { id: '222222222222222222' } });
@@ -881,7 +888,7 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
           username: 'stats.actual',
           password: 'synthetic-restored-statistics-password',
         });
-        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
         f.accept('named-stats', { memberId: 'm2' });
         f.fail('named-stats-0', { aborted: false });
       },
@@ -1681,6 +1688,11 @@ function assertMemberManagementPublicReplay(t, f) {
     'generation_jobs',
     'charges',
     'wallets',
+    'sharing_policy',
+    'sharing_groups',
+    'group_members',
+    'account_quota_state',
+    'operating_state',
     'commits',
     'domain_events',
     'stream_heads',
@@ -1709,6 +1721,8 @@ function assertMemberManagementPublicReplay(t, f) {
     'upstream_credentials',
     'member_sessions',
     'discord_bindings',
+    'discord_invites',
+    'member_auth_state',
   ])
     assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
   assert.equal(
@@ -1869,6 +1883,10 @@ test('真实Native队列physical pending时禁用409，停止仅取消waiting且
     charges = n.db.prepare('SELECT * FROM charges ORDER BY rowid').all(),
     wallets = n.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
     before = databaseState(n.db);
+  for (const body of [rightsTransfer(), rightsRemoval('preview-delete-member'), rightsRemoval()]) {
+    assert.equal((await manage(body)).status, 409);
+    assert.equal(databaseState(n.db), before);
+  }
   assert.equal((await manage(memberStatus(false))).status, 409);
   assert.equal(databaseState(n.db), before);
   const stopped = await manage(memberAdmission(false), 'native-stop');
@@ -2249,7 +2267,7 @@ test('账户PATCH网络等待后原owner/Cookie/epoch/ready/凭据/暂停/政策
             username: 'changed.current',
             password: 'synthetic-patch-password',
           });
-          f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+          f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
         }
         if (mode === 'ready') f.db.prepare("UPDATE projection_state SET status='building'").run();
         if (mode === 'rotate')
@@ -3730,4 +3748,1629 @@ test('原admin新增第二paused账户和bulk合法小数权重保存单笔完�
     target.prepare('SELECT pst FROM upstream_credentials WHERE account_id=?').get(id).pst,
     'pst-synthetic-disabled-management-account',
   );
+});
+
+const operatingBody = (action, receipt, amount = 1, extra = {}) => ({
+  action,
+  receipt,
+  resource: 'anlasFixed',
+  amount,
+  ...extra,
+});
+function observeOperating(f, id, fixed) {
+  const quotas = new RelationalQuotaStore(f.db, f.env),
+    ticket = quotas.beginQuotaObservation('a', f.clock),
+    current = quotas.readAccountQuota('a');
+  f.db.transaction(() =>
+    quotas.recordQuotaObservation(
+      meta(id, f.clock + 1),
+      ticket,
+      accountQuotaResult(
+        'a',
+        {
+          tier: 3,
+          subscriptionActive: true,
+          subscriptionExpiresAt: null,
+          fixed,
+          purchased: current.observedAnlasPurchased,
+          v5UsagePercent: current.observedV5,
+          v5UsageTimeUntilNextPercent: current.secondsPerPercent,
+        },
+        new Date(f.clock).toISOString(),
+      ),
+    ),
+  )();
+  f.advance(2);
+}
+
+test('运营资金HTTP五action复用真实bound与owner来源，回包/审计和原键原结果一致', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    cases = [];
+  observeOperating(f, 'funding-initial-observation', '8000');
+  async function execute(body, asAdmin = false) {
+    const endpoint = asAdmin ? admin : owner,
+      headers = {
+        'idempotency-key': body.receipt,
+        'x-member-activity': '1',
+        ...(asAdmin ? { 'x-admin-token': adminToken } : {}),
+      },
+      input = {
+        ...body,
+        accountId: 'forged-other-pool',
+        fromUserId: 'm2',
+        actorId: 'm2',
+        actorKind: 'system',
+        commandId: 'client-command',
+        recordedAt: 0,
+      },
+      notified = seen.length,
+      response = await f.call(endpoint, { method: 'POST', headers, body: input });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, {
+      eventId: 'operating-receipt:' + body.receipt,
+      duplicate: false,
+    });
+    assert.equal(response.headers.get('set-cookie'), null);
+    assert.equal(seen.length, notified + 1);
+    const stored = readRelationalCommit(
+      f.db,
+      f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+    );
+    assert.equal(stored.command.actorKind, asAdmin ? 'admin' : 'member');
+    assert.equal(stored.command.actorId, asAdmin ? 'local-admin' : 'm1');
+    assert.equal(stored.command.recordedAt, f.clock);
+    assert.notEqual(stored.command.commandId, input.commandId);
+    assert.ok(stored.events.every((event) => event.accountId === 'a'));
+    assert.equal(stored.command.receipt.duplicate, false);
+    cases.push({ endpoint, headers, input, expected: response.body });
+    return response;
+  }
+  const wallets = f.db
+    .prepare('SELECT member_id,anlas_fixed_available FROM wallets ORDER BY member_id')
+    .all();
+  await execute(operatingBody('operating-contribute', 'http-owner-contribute', 10));
+  assert.equal(
+    f.db.prepare("SELECT anlas_fixed_available AS n FROM wallets WHERE member_id='m1'").get().n,
+    String(Number(wallets[0].anlas_fixed_available) - 10),
+  );
+  assert.equal(
+    f.db.prepare("SELECT anlas_fixed_available AS n FROM wallets WHERE member_id='m2'").get().n,
+    wallets[1].anlas_fixed_available,
+  );
+  const afterContribute = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all();
+  await execute(operatingBody('operating-register-funding', 'http-future-register', 3), true);
+  assert.equal(f.db.prepare('SELECT remaining FROM pending_funding').get().remaining, '3');
+  assert.deepEqual(f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), afterContribute);
+  observeOperating(f, 'funding-confirm-observation', '8000');
+  await execute(operatingBody('operating-confirm-debits', 'http-confirm-debits', 2));
+  assert.equal(
+    f.db.prepare('SELECT pending_fixed_debit AS n FROM account_quota_state').get().n,
+    '0',
+  );
+  assert.equal(f.db.prepare('SELECT remaining FROM pending_funding').get().remaining, '1');
+  observeOperating(f, 'funding-down', '7900');
+  observeOperating(f, 'funding-up', '8000');
+  let lossEventId = f.db.prepare('SELECT fixed_gap_event_id AS id FROM operating_state').get().id;
+  await execute(
+    operatingBody('operating-reconcile-return', 'http-return-correction', 20, { lossEventId }),
+    true,
+  );
+  lossEventId = f.db.prepare('SELECT fixed_gap_event_id AS id FROM operating_state').get().id;
+  await execute(operatingBody('operating-cover-loss', 'http-cover-loss', 5, { lossEventId }));
+  assert.equal(f.db.prepare('SELECT unfunded_fixed AS n FROM operating_state').get().n, '75');
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    notified = seen.length;
+  f.advance();
+  for (const item of cases) {
+    const response = await f.call(item.endpoint, {
+      method: 'POST',
+      headers: item.headers,
+      body: item.input,
+    });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, item.expected);
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(seen.length, notified);
+});
+
+test('运营资金HTTP区分原false与首笔true回执，完整正文换意图冲突、无事实新key409/无key零写', async (t) => {
+  const f = await setup(t),
+    body = operatingBody('operating-contribute', 'http-duplicate-receipt'),
+    firstHeaders = { 'idempotency-key': 'http-funding-first' },
+    first = await f.call(owner, { method: 'POST', headers: firstHeaders, body });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.duplicate, false);
+  let before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  const noKey = await f.call(owner, { method: 'POST', body });
+  assert.equal(noKey.status, 200, noKey.text);
+  assert.deepEqual(noKey.body, { ...first.body, duplicate: true });
+  const noFacts = await f.call(owner, {
+    method: 'POST',
+    headers: { 'idempotency-key': 'http-funding-no-facts' },
+    body,
+  });
+  assert.equal(noFacts.status, 409, noFacts.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  f.advance(1);
+  const duplicateHeaders = { 'idempotency-key': 'http-first-result-true' },
+    duplicate = await f.call(owner, { method: 'POST', headers: duplicateHeaders, body });
+  assert.equal(duplicate.status, 200, duplicate.text);
+  assert.deepEqual(duplicate.body, noKey.body);
+  const stored = readRelationalCommit(
+    f.db,
+    f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+  );
+  assert.equal(stored.command.receipt.duplicate, true);
+  assert.ok(stored.events.some((event) => event.eventType === 'RefillApplied'));
+  before = databaseState(f.db);
+  changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  const reclaimed = await f.call(owner, { method: 'POST', headers: duplicateHeaders, body }),
+    conflict = await f.call(owner, {
+      method: 'POST',
+      headers: duplicateHeaders,
+      body: { ...body, receipt: 'different-business-receipt', amount: 2 },
+    }),
+    old = await f.call(owner, { method: 'POST', headers: firstHeaders, body });
+  assert.equal(reclaimed.status, 200, reclaimed.text);
+  assert.deepEqual(reclaimed.body, duplicate.body);
+  assert.equal(conflict.status, 409, conflict.text);
+  assert.equal(old.status, 200, old.text);
+  assert.deepEqual(old.body, first.body);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('运营资金HTTP原权限/正文边界不扩surface，五action慢正文仍复核当前授权', async (t) => {
+  const actions = [
+    'operating-contribute',
+    'operating-register-funding',
+    'operating-cover-loss',
+    'operating-reconcile-return',
+    'operating-confirm-debits',
+  ];
+  for (const [index, mode] of ['cookie', 'epoch', 'owner', 'ready', 'admin'].entries()) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, { onBodyRead: () => begin?.() }),
+        seen = policyNotifications(f),
+        body = operatingBody(actions[index], 'http-held-funding'),
+        endpoint = mode === 'admin' ? admin + '?adminToken=' + adminToken : owner;
+      if (mode === 'cookie') {
+        const first = await f.call(owner, {
+          method: 'POST',
+          headers: { 'idempotency-key': 'held-policy' },
+          body,
+        });
+        assert.equal(first.status, 200, first.text);
+      }
+      const started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, endpoint, started, {}, body);
+      if (mode === 'cookie') {
+        await logoutMemberSession(f.members, f.sessions.m1.token);
+      }
+      if (mode === 'epoch') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('funding-disable'), 'm1', 'disabled'),
+        )();
+        f.db.transaction(() => f.members.setMemberStatus(meta('funding-enable'), 'm1', 'active'))();
+      }
+      if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      }
+      if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed'").run();
+      }
+      if (mode === 'admin') {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const cut = f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n,
+        financial = domainDigest(
+          ['wallets', 'account_quota_state', 'operating_state', 'pending_funding'].map((table) =>
+            f.db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all(),
+          ),
+        ),
+        notified = seen.length,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n, cut);
+      assert.equal(
+        domainDigest(
+          ['wallets', 'account_quota_state', 'operating_state', 'pending_funding'].map((table) =>
+            f.db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all(),
+          ),
+        ),
+        financial,
+      );
+      assert.ok(
+        seen
+          .slice(notified)
+          .every(({ event }) => event.collections.every((name) => name === 'sessions')),
+      );
+    });
+  }
+  const f = await setup(t),
+    before = databaseState(f.db),
+    body = operatingBody(actions[0], 'http-invalid-funding');
+  for (const [endpoint, options, status] of [
+    [owner, { member: 'm2', body }, 403],
+    [admin, { body }, 403],
+    [owner, { body: { ...body, userId: 'm2' } }, 403],
+    [owner, { body: { ...body, action: 'operating-new-action' } }, 400],
+    [owner, { body: { ...body, amount: -1 } }, 409],
+    [owner, { body: { ...body, resource: 'unknown' } }, 409],
+    [owner, { body: { ...body, receipt: 'short' } }, 409],
+    [owner, { body: { ...body, extra: 'x'.repeat(32768) } }, 413],
+    [summary, { body }, 404],
+    [statistics, { body }, 404],
+  ]) {
+    const result = await f.call(endpoint, { method: 'POST', ...options });
+    assert.equal(result.status, status, result.text);
+    assert.equal(databaseState(f.db), before);
+  }
+});
+
+test('运营资金HTTP第二钱包SQL尾错全回滚无幽灵通知，retry单通知且完整公共回放无认证/网络', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f);
+  observeOperating(f, 'funding-fault-down', '7900');
+  observeOperating(f, 'funding-fault-up', '8000');
+  const body = operatingBody('operating-register-funding', 'http-funding-atomic', 10, {
+      destination: 'members',
+      fromUnattributed: true,
+    }),
+    headers = { 'x-admin-token': adminToken, 'idempotency-key': 'http-funding-atomic-key' };
+  f.db.exec(
+    "CREATE TEMP TRIGGER fail_second_funding AFTER UPDATE OF anlas_fixed_available ON wallets WHEN NEW.member_id='m2' AND NEW.anlas_fixed_available!=OLD.anlas_fixed_available BEGIN SELECT RAISE(ABORT,'second funding wallet fault'); END",
+  );
+  const before = databaseState(f.db),
+    notified = seen.length,
+    failed = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen.length, notified);
+  f.db.exec('DROP TRIGGER fail_second_funding');
+  const success = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(success.status, 200, success.text);
+  assert.equal(success.body.duplicate, false);
+  assert.equal(seen.length, notified + 1);
+  assert.equal(seen.at(-1).event.collections.includes('ledger'), true);
+  const saved = databaseState(f.db),
+    duplicate = await f.call(admin, { method: 'POST', headers, body });
+  assert.equal(duplicate.status, 200, duplicate.text);
+  assert.deepEqual(duplicate.body, success.body);
+  assert.equal(databaseState(f.db), saved);
+  assert.equal(seen.length, notified + 1);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  t.mock.method(globalThis, 'fetch', async () => {
+    throw Error('public funding replay must not fetch');
+  });
+  for (const { seq } of commits) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  for (const table of [
+    'commits',
+    'domain_events',
+    'stream_heads',
+    'wallets',
+    'pending_funding',
+    'operating_state',
+    'account_quota_state',
+  ]) {
+    const rows = (db) =>
+      db
+        .prepare('SELECT * FROM ' + table + ' ORDER BY rowid')
+        .safeIntegers()
+        .all();
+    assert.deepEqual(rows(target), rows(f.db), table);
+  }
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'upstream_credentials',
+    'member_sessions',
+    'discord_bindings',
+    'discord_invites',
+    'member_auth_state',
+  ]) {
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
+  }
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const replayed = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits) {
+    target.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), inputs).replayed, true),
+    )();
+  }
+  assert.equal(databaseState(target), replayed);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+const rightsTransfer = (version = 1, amount = 100) => ({
+  action: 'transfer-quota',
+  expectedConfigVersion: version,
+  fromUserId: 'm2',
+  toUserId: 'm1',
+  resource: 'anlasFixed',
+  amount,
+});
+const rightsRemoval = (action = 'delete-member', version = 1) => ({
+  action,
+  expectedConfigVersion: version,
+  userId: 'm2',
+  transferToUserId: 'm1',
+});
+const rightsNoDiscord = () => {
+  throw Error('unexpected rights-test Discord IO');
+};
+
+test('权益POST真实转账及只读删除预览沿原DTO，重领旧回执不再转钱或复活已删除认证', async (t) => {
+  const f = await setup(t, { discordFetch: rightsNoDiscord }),
+    seen = policyNotifications(f),
+    beforeWallets = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
+    headers = { 'idempotency-key': 'rights-transfer' },
+    first = await f.call(owner, { method: 'POST', headers, body: rightsTransfer() });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.fromUserId, 'm2');
+  assert.equal(first.body.toUserId, 'm1');
+  assert.deepEqual(first.body.transferred, { v5: 0, anlasFixed: 100, anlasPurchased: 0 });
+  assert.equal(first.body.configVersion, 2);
+  const firstCommit = readRelationalCommit(
+      f.db,
+      f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+    ),
+    movement = firstCommit.events.find((e) => e.eventType === 'FundsTransferred');
+  assert.equal(firstCommit.command.actorKind, 'member');
+  assert.equal(firstCommit.command.actorId, 'm1');
+  assert.equal(movement.payload.fromMemberId, 'm2');
+  assert.equal(movement.payload.toMemberId, 'm1');
+  assert.deepEqual(movement.payload.resources, { v5: '0', anlasFixed: '100', anlasPurchased: '0' });
+  for (const row of beforeWallets) {
+    const after = f.db.prepare('SELECT * FROM wallets WHERE member_id=?').get(row.member_id);
+    assert.equal(
+      Number(after.anlas_fixed_available) - Number(row.anlas_fixed_available),
+      row.member_id === 'm1' ? 100 : -100,
+    );
+    assert.equal(after.v5_available, row.v5_available);
+    assert.equal(after.anlas_purchased_available, row.anlas_purchased_available);
+  }
+  const once = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  assert.deepEqual(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer() })).body,
+    first.body,
+  );
+  assert.equal(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer(1, 101) })).status,
+    409,
+  );
+  assert.equal(databaseState(f.db), once);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  assert.equal(seen.length, 1);
+  const original = RelationalQuotaStore.prototype.manageMemberQuota;
+  t.mock.method(
+    RelationalQuotaStore.prototype,
+    'manageMemberQuota',
+    function (metadata, input, ...rest) {
+      assert.equal(f.db.inTransaction, true);
+      assert.equal(rest[1], f.controls);
+      if (input.action !== 'preview-delete-member')
+        return original.call(this, metadata, input, ...rest);
+      f.db.pragma('query_only=ON');
+      try {
+        return original.call(this, metadata, input, ...rest);
+      } finally {
+        f.db.pragma('query_only=OFF');
+      }
+    },
+  );
+  const previewBody = rightsRemoval('preview-delete-member', 2),
+    preview = await f.call(owner, {
+      method: 'POST',
+      body: previewBody,
+      headers: { 'idempotency-key': 'not a command key' },
+    });
+  assert.equal(preview.status, 200, preview.text);
+  assert.equal(preview.body.configVersion, 2);
+  assert.equal(preview.headers.get('set-cookie'), null);
+  assert.deepEqual((await f.call(owner, { method: 'POST', body: previewBody })).body, preview.body);
+  assert.equal(databaseState(f.db), once);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  assert.equal(seen.length, 1);
+  const removed = await f.call(owner, {
+    method: 'POST',
+    body: rightsRemoval('delete-member', 2),
+    headers: { 'idempotency-key': 'rights-delete' },
+  });
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual({ ...removed.body, configVersion: 2 }, preview.body);
+  assert.equal(removed.body.configVersion, 3);
+  assert.equal(f.members.readMember('m2').status, 'removed');
+  assert.equal(f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch, null);
+  assert.equal(
+    f.db.prepare("SELECT COUNT(*) n FROM member_sessions WHERE member_id='m2'").get().n,
+    0,
+  );
+  assert.equal(await authenticateMemberApiKey(f.members, keys.m2), null);
+  assert.equal(
+    await authenticateMemberSession(f.members, f.sessions.m2.token, f.env, f.clock),
+    null,
+  );
+  const deleted = databaseState(f.db),
+    afterChanges = f.db.prepare('SELECT total_changes() n').get().n;
+  assert.deepEqual(
+    (
+      await f.call(owner, {
+        method: 'POST',
+        body: rightsRemoval('delete-member', 2),
+        headers: { 'idempotency-key': 'rights-delete' },
+      })
+    ).body,
+    removed.body,
+  );
+  assert.equal(databaseState(f.db), deleted);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, afterChanges);
+  assert.equal(seen.length, 2);
+  f.db.transaction(() =>
+    f.members.setMemberStatus(meta('rights-owner-disabled'), 'm1', 'disabled'),
+  )();
+  assert.equal(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer() })).status,
+    401,
+  );
+  assertMemberManagementPublicReplay(t, f);
+});
+
+test('权益POST保持原金额/角色/版本与owner自删限制，本机admin保留应急删除', async (t) => {
+  const f = await setup(t, { discordFetch: rightsNoDiscord }),
+    before = databaseState(f.db);
+  for (const [body, status] of [
+    [rightsTransfer(1, 0.5), 400],
+    [rightsTransfer(1, 0), 400],
+    [{ ...rightsTransfer(), toUserId: 'm2' }, 400],
+    [{ ...rightsTransfer(), fromUserId: 'missing' }, 404],
+    [rightsTransfer(0), 409],
+    [rightsTransfer(2), 409],
+    [{ ...rightsTransfer(), actorKind: 'admin' }, 400],
+    [{ ...rightsRemoval('preview-delete-member'), userId: 'm1', transferToUserId: 'm2' }, 409],
+    [{ ...rightsRemoval(), userId: 'm1', transferToUserId: 'm2' }, 409],
+  ]) {
+    const result = await f.call(owner, { method: 'POST', body });
+    assert.equal(result.status, status, result.text);
+    assert.equal(databaseState(f.db), before);
+  }
+  assert.equal(
+    (await f.call(owner, { method: 'POST', member: 'm2', body: rightsTransfer() })).status,
+    403,
+  );
+  const body = { ...rightsRemoval(), userId: 'm1', transferToUserId: 'm2' },
+    result = await f.call(admin, {
+      method: 'POST',
+      body,
+      headers: { 'x-admin-token': adminToken, 'idempotency-key': 'emergency-owner-removal' },
+    });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.body.deletedUserId, 'm1');
+  assert.equal(await authenticateMemberApiKey(f.members, keys.m1), null);
+  assert.equal((await f.call(owner)).status, 401);
+  const source = readRelationalCommit(
+    f.db,
+    f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+  );
+  assert.equal(source.command.actorKind, 'admin');
+  assert.equal(source.command.actorId, 'local-admin');
+  assertMemberManagementPublicReplay(t, f);
+});
+
+test('权益POST真正waiting/held和同一个待收尾physical Map都阻止调整，释放后沿原owner执行', async (t) => {
+  for (const phase of ['waiting', 'held', 'physical']) {
+    await t.test(phase, async (t) => {
+      const f = await setup(t, { discordFetch: rightsNoDiscord });
+      let controls, control;
+      if (phase === 'physical') {
+        // 原控制owner创建真实待settle promise；已完成SQL不能替它释放当前共享Map。
+        assert.equal(
+          f.db.prepare("SELECT status FROM generation_jobs WHERE id='existing-0'").get().status,
+          'done',
+        );
+        controls = createGenerationControls({
+          controls: f.controls,
+          timeoutDelay: () => 60000,
+          schedule() {},
+        });
+        control = controls.createRunningJobControl({ id: 'existing-0', accountId: 'a' });
+        t.after(() => controls.finishRunningJobControl('existing-0', control));
+      } else {
+        await f.accept('rights-duty', { memberId: 'm2' });
+        if (phase === 'held') f.dispatch('rights-duty-0');
+      }
+      const before = databaseState(f.db);
+      for (const body of [
+        rightsTransfer(),
+        rightsRemoval('preview-delete-member'),
+        rightsRemoval(),
+      ]) {
+        const result = await f.call(admin, {
+          method: 'POST',
+          body,
+          headers: { 'x-admin-token': adminToken },
+        });
+        assert.equal(result.status, 409, result.text);
+        assert.equal(databaseState(f.db), before);
+      }
+      if (phase === 'physical') {
+        assert.equal(f.controls.size, 1);
+        controls.finishRunningJobControl('existing-0', control);
+        await control.done;
+        const result = await f.call(owner, { method: 'POST', body: rightsTransfer() });
+        assert.equal(result.status, 200, result.text);
+      }
+    });
+  }
+});
+
+test('权益POST末尾真实SQL失败全表回滚无通知，同键健康重试和完整公共回放', async (t) => {
+  for (const action of ['transfer-quota', 'delete-member']) {
+    await t.test(action, async (t) => {
+      const f = await setup(t, { discordFetch: rightsNoDiscord }),
+        seen = policyNotifications(f),
+        body = action === 'transfer-quota' ? rightsTransfer() : rightsRemoval(),
+        headers = { 'idempotency-key': 'rights-rollback' };
+      f.db.exec(
+        action === 'transfer-quota'
+          ? "CREATE TRIGGER fail_rights_tail AFTER UPDATE ON wallets WHEN NEW.member_id='m1' BEGIN SELECT RAISE(ABORT,'synthetic rights target tail'); END"
+          : "CREATE TRIGGER fail_rights_tail AFTER DELETE ON member_sessions WHEN OLD.member_id='m2' BEGIN SELECT RAISE(ABORT,'synthetic rights private tail'); END",
+      );
+      const before = databaseState(f.db),
+        failed = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(failed.status, 500, failed.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(seen.length, 0);
+      f.db.exec('DROP TRIGGER fail_rights_tail');
+      const result = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(result.status, 200, result.text);
+      assert.equal(seen.length, 1);
+      const once = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() n').get().n;
+      assert.deepEqual((await f.call(owner, { method: 'POST', headers, body })).body, result.body);
+      assert.equal(databaseState(f.db), once);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+      assert.equal(seen.length, 1);
+      assertMemberManagementPublicReplay(t, f);
+    });
+  }
+});
+
+test('权益POST慢正文后的当前权限仍先于原receipt，preview不因旧header变成写入', async (t) => {
+  for (const mode of [
+    'transfer-epoch',
+    'delete-logout',
+    'preview-owner',
+    'preview-ready',
+    'admin-query',
+  ]) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, { discordFetch: rightsNoDiscord, onBodyRead: () => begin?.() }),
+        body = mode.startsWith('preview')
+          ? rightsRemoval('preview-delete-member')
+          : mode.startsWith('delete')
+            ? rightsRemoval()
+            : rightsTransfer(),
+        endpoint = mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner,
+        headers = { 'idempotency-key': 'rights-old-receipt' };
+      if (!mode.startsWith('preview')) {
+        const saved = await f.call(endpoint, { method: 'POST', body, headers });
+        assert.equal(saved.status, 200, saved.text);
+      }
+      const started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, endpoint, started, headers, body);
+      if (mode === 'transfer-epoch') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('rights-disable'), 'm1', 'disabled'),
+        )();
+        f.db.transaction(() => f.members.setMemberStatus(meta('rights-enable'), 'm1', 'active'))();
+      } else if (mode === 'delete-logout') {
+        await logoutMemberSession(f.members, f.sessions.m1.token);
+      } else if (mode === 'preview-owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'preview-ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed'").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const cut = f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+        wallets = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
+        result = await held.finish();
+      assert.equal(result.status, mode === 'preview-ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.equal(
+        f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+        cut,
+      );
+      assert.deepEqual(f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), wallets);
+    });
+  }
+});
+
+const credentials = (patch = {}) => ({
+  action: 'credentials',
+  username: 'new.credentials.member',
+  password: 'synthetic-credentials-password',
+  ...patch,
+});
+async function credentialGroups(f, env) {
+  const quotas = new RelationalQuotaStore(f.db, env),
+    groups = [
+      ...quotas.readQuotaConfiguration().groups,
+      ...['g2', 'g3', 'g4'].map((id) => ({
+        id,
+        name: id,
+        share: 0,
+        members: [],
+        memberWeights: {},
+      })),
+    ];
+  f.db.transaction(() =>
+    quotas.configureGroups(
+      {
+        ...meta('credential-fixture-groups', NOW + 20),
+        actorKind: 'admin',
+        actorId: 'local-admin',
+      },
+      { expectedConfigVersion: 1, groups },
+      null,
+    ),
+  )();
+}
+const passwordEnvironment = {
+  DISCORD_CLIENT_ID: '',
+  DISCORD_CLIENT_SECRET: '',
+  DISCORD_GUILD_ID: '',
+};
+const credentialPost = (f, body, { endpoint, headers = {}, ...options } = {}) => {
+  const target = endpoint ?? (f.env.DISCORD_GUILD_ID ? owner : admin);
+  return f.call(target, {
+    method: 'POST',
+    body,
+    headers: {
+      ...(target.startsWith('/api/admin/') ? { 'x-admin-token': adminToken } : {}),
+      ...headers,
+    },
+    ...options,
+  });
+};
+
+test('credentials真实POST创建仅私有密码和Key，原非keyedheader不造公共secret回执，held时不入组创建仍允许', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment, beforeReady: credentialGroups }),
+    known = credentials(),
+    header = { 'idempotency-key': 'not a keyed command', 'x-member-activity': '1' };
+  const first = await credentialPost(f, known, { headers: header });
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(first.body, { id: first.body.id, username: known.username });
+  assert.equal(first.headers.get('set-cookie'), null);
+  const key = f.members.readMemberApiKey(first.body.id);
+  assert.match(key, /^STA1N-[A-Za-z0-9_-]{24}$/);
+  assert.equal(
+    (await f.members.loginMemberPassword(known.username, known.password)).id,
+    first.body.id,
+  );
+  const cut = f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq,
+    before = databaseState(f.db);
+  assert.equal(
+    (await credentialPost(f, known, { headers: header })).status,
+    409,
+    'new HTTP create is not a saved private receipt',
+  );
+  assert.equal(databaseState(f.db), before);
+  f.accept('credentials-held', { memberId: 'm2' });
+  assert.ok(f.dispatch('credentials-held-0', f.clock).dispatch);
+  assert.equal(f.generations.readCharge('credentials-held-0').status, 'reserved');
+  const created = await credentialPost(f, credentials({ username: 'held.unassigned' }));
+  assert.equal(created.status, 200, created.text);
+  assert.equal(
+    f.db.prepare('SELECT 1 FROM group_members WHERE member_id=?').get(created.body.id),
+    undefined,
+  );
+  const publicText =
+    JSON.stringify(f.db.prepare('SELECT * FROM commits').all()) +
+    JSON.stringify(f.db.prepare('SELECT * FROM domain_events').all());
+  for (const value of [known.password, key, 'password_hash', 'salt', 'expectedAuthEpoch']) {
+    assert.ok(!publicText.includes(value));
+  }
+  assert.ok(
+    !publicText.includes(domainDigest(known)),
+    'public fingerprint must not be a dictionary oracle for a private password',
+  );
+  assert.ok(f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq > cut);
+});
+
+test('credentials新建group保留原完整owner和held拒绝，组失败或第二owner SQL尾错全表原子回滚', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment, beforeReady: credentialGroups });
+  let seen = 0;
+  f.events.on('commit', () => seen++);
+  let before = databaseState(f.db);
+  for (const groupId of ['missing', 5]) {
+    const result = await credentialPost(f, credentials({ groupId }));
+    assert.equal(result.status, 400, result.text);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(seen, 0);
+  }
+  f.accept('group-credentials-held', { memberId: 'm2' });
+  assert.ok(f.dispatch('group-credentials-held-0', f.clock).dispatch);
+  assert.equal(f.generations.readCharge('group-credentials-held-0').status, 'reserved');
+  before = databaseState(f.db);
+  assert.equal((await credentialPost(f, credentials({ groupId: 'g' }))).status, 409);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen, 0);
+  f.fail('group-credentials-held-0', { aborted: false }, f.clock + 1);
+  f.advance(2);
+  f.db.exec(
+    "CREATE TEMP TRIGGER credential_group_tail AFTER UPDATE ON sharing_policy BEGIN SELECT RAISE(ABORT,'credential group tail'); END",
+  );
+  before = databaseState(f.db);
+  assert.equal((await credentialPost(f, credentials({ groupId: 'g' }))).status, 500);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen, 0);
+  f.db.exec('DROP TRIGGER credential_group_tail');
+  const result = await credentialPost(f, credentials({ groupId: 'g' }));
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.body, {
+    id: result.body.id,
+    username: 'new.credentials.member',
+    groupId: 'g',
+  });
+  assert.equal(
+    f.db.prepare('SELECT group_id FROM group_members WHERE member_id=?').get(result.body.id)
+      .group_id,
+    'g',
+  );
+  assert.equal(seen, 1, 'registration and group commits publish once at real outer boundary');
+  assert.equal(
+    (
+      await f.members.loginMemberPassword(
+        'new.credentials.member',
+        'synthetic-credentials-password',
+      )
+    ).id,
+    result.body.id,
+  );
+});
+
+test('credentials私有更新保留Key且撤Cookie，重复HTTP为新重置、原prepared CAS不能再装旧认证', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment }),
+    key = f.members.readMemberApiKey('m2'),
+    body = credentials({ userId: 'm2', username: 'updated.credentials' }),
+    cut = f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq;
+  let count = 0;
+  f.events.on('commit', () => count++);
+  const result = await credentialPost(f, body, {
+    headers: { 'idempotency-key': 'ignored-private-key' },
+  });
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.body, { id: 'm2', username: 'updated.credentials' });
+  assert.equal(f.members.readMemberApiKey('m2'), key);
+  assert.equal(
+    await authenticateMemberSession(f.members, f.sessions.m2.token, f.env, f.clock),
+    null,
+  );
+  assert.equal((await f.members.loginMemberPassword(body.username, body.password)).id, 'm2');
+  assert.equal(
+    f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq,
+    cut,
+    'password operation has no invented public commit',
+  );
+  const epoch = f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch;
+  assert.equal(
+    (await credentialPost(f, body, { headers: { 'idempotency-key': 'ignored-private-key' } }))
+      .status,
+    200,
+  );
+  assert.notEqual(
+    f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch,
+    epoch,
+  );
+  assert.equal(count, 2);
+  const store = new RelationalMemberStore(f.db, f.env),
+    prepared = await store.prepareMemberCredentials('m2', {
+      username: 'private.prepared',
+      password: 'synthetic-new-prepared-password',
+    }),
+    actor = await authenticateMemberApiKey(store, keys.m1);
+  f.db.transaction(() => store.setMemberCredentials(prepared, actor))();
+  const before = databaseState(f.db);
+  assert.throws(() => f.db.transaction(() => store.setMemberCredentials(prepared, actor))(), {
+    statusCode: 401,
+  });
+  assert.equal(databaseState(f.db), before);
+});
+
+test('credentials Discord新建用原随机密码且更新409，私有owner拒undefined/非owner/旧actor epoch', async (t) => {
+  const f = await setup(t),
+    body = credentials({ password: 'short client password' }),
+    result = await credentialPost(f, body);
+  assert.equal(result.status, 200, result.text);
+  await assert.rejects(f.members.loginMemberPassword(body.username, body.password), {
+    statusCode: 401,
+  });
+  assert.equal((await credentialPost(f, credentials({ userId: 'm2' }))).status, 409);
+  const store = new RelationalMemberStore(f.db, f.env),
+    prepared = await store.prepareMemberCredentials('m2', {
+      username: 'private.owner.checked',
+      password: 'synthetic-owner-checked-password',
+    }),
+    actor = await authenticateMemberApiKey(f.members, keys.m1),
+    other = await authenticateMemberApiKey(f.members, keys.m2),
+    before = databaseState(f.db);
+  for (const candidate of [
+    undefined,
+    other,
+    { ...actor, memberAuth: { ...actor.memberAuth, version: '0'.repeat(32) } },
+  ]) {
+    assert.throws(() => f.db.transaction(() => store.setMemberCredentials(prepared, candidate))(), {
+      statusCode: 403,
+    });
+    assert.equal(databaseState(f.db), before);
+  }
+  f.db.transaction(() => store.setMemberCredentials(prepared, null))();
+  assert.equal(
+    (
+      await f.members.loginMemberPassword(
+        'private.owner.checked',
+        'synthetic-owner-checked-password',
+      )
+    ).id,
+    'm2',
+  );
+  assert.equal((await credentialPost(f, credentials({ note: 'old note field' }))).status, 400);
+});
+
+test('credentials KDF完成后重核Cookie/owner/ready和target epoch，正文及密码工作均在SQL外', async (t) => {
+  for (const mode of ['admin-query', 'ready', 'target']) {
+    await t.test(mode, async (t) => {
+      const f = await setup(t, { env: passwordEnvironment }),
+        original = RelationalMemberStore.prototype.prepareMemberCredentials;
+      let enter, release;
+      const entered = new Promise((r) => (enter = r)),
+        gate = new Promise((r) => (release = r));
+      const mock = t.mock.method(
+        RelationalMemberStore.prototype,
+        'prepareMemberCredentials',
+        async function (...args) {
+          assert.equal(f.db.inTransaction, false);
+          const value = await original.apply(this, args);
+          enter();
+          await gate;
+          return value;
+        },
+      );
+      const pending = credentialPost(
+        f,
+        credentials({ userId: 'm2' }),
+        mode === 'admin-query'
+          ? { endpoint: admin + '?adminToken=' + adminToken, headers: { 'x-admin-token': '' } }
+          : {},
+      );
+      await Promise.race([
+        entered,
+        pending.then((r) => {
+          throw Error('returned before private work: ' + r.text);
+        }),
+      ]);
+      try {
+        if (mode === 'admin-query') {
+          f.env.PUBLIC_MODE = 'true';
+        }
+        if (mode === 'ready') {
+          f.db.prepare("UPDATE projection_state SET status='building'").run();
+        }
+        if (mode === 'target') {
+          const newer = await original.call(f.members, 'm2', {
+            username: 'newer.current',
+            password: 'synthetic-newer-private-password',
+          });
+          f.db.transaction(() => f.members.setMemberCredentials(newer, null))();
+        }
+        const before = databaseState(f.db);
+        release();
+        const result = await pending;
+        assert.equal(
+          result.status,
+          { 'admin-query': 401, ready: 500, target: 401 }[mode],
+          result.text,
+        );
+        assert.equal(databaseState(f.db), before);
+      } finally {
+        release();
+        mock.mock.restore();
+      }
+    });
+  }
+});
+
+test('credentials慢正文和新建KDF期间撤Cookie/epoch/owner/ready均无私有安装，不接受body actor自证', async (t) => {
+  for (const mode of ['cookie', 'epoch', 'owner', 'ready']) {
+    await t.test('new KDF ' + mode, async (t) => {
+      const f = await setup(t),
+        original = RelationalMemberStore.prototype.readManagementMemberProfiles;
+      const changed =
+        mode === 'epoch'
+          ? await f.members.prepareMemberCredentials('m1', {
+              username: 'new.owner.epoch',
+              password: 'synthetic-owner-new-password',
+            })
+          : null;
+      let before, resolve, reject;
+      const entered = new Promise((a, b) => {
+        resolve = a;
+        reject = b;
+      });
+      const mock = t.mock.method(
+        RelationalMemberStore.prototype,
+        'readManagementMemberProfiles',
+        function () {
+          const result = original.call(this);
+          queueMicrotask(async () => {
+            try {
+              assert.equal(
+                f.db.inTransaction,
+                false,
+                'new password work starts after original auth commit',
+              );
+              if (mode === 'cookie') {
+                await logoutMemberSession(f.members, f.sessions.m1.token);
+              }
+              if (mode === 'epoch') {
+                f.db.transaction(() => f.members.setMemberCredentials(changed, null))();
+              }
+              if (mode === 'owner') {
+                f.env.OWNER_USER_ID = 'm2';
+                await authenticateMemberSession(f.members, f.sessions.m1.token, f.env, f.clock);
+              }
+              if (mode === 'ready') {
+                f.db.prepare("UPDATE projection_state SET status='building'").run();
+              }
+              before = databaseState(f.db);
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          });
+          return result;
+        },
+      );
+      const pending = credentialPost(
+        f,
+        credentials({
+          member: { id: 'm1', enabled: true },
+          actorKind: 'admin',
+          actorId: 'local-admin',
+        }),
+      );
+      try {
+        await Promise.race([
+          entered,
+          pending.then((r) => {
+            throw Error('no preparation observed: ' + r.text);
+          }),
+        ]);
+        const result = await pending;
+        assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+        assert.equal(databaseState(f.db), before);
+      } finally {
+        mock.mock.restore();
+      }
+    });
+  }
+  let begin;
+  const f = await setup(t, { onBodyRead: () => begin?.() }),
+    body = credentials();
+  const started = new Promise((r) => (begin = r)),
+    held = await holdPolicyBody(t, f, owner, started, {}, body);
+  await logoutMemberSession(f.members, f.sessions.m1.token);
+  const before = databaseState(f.db),
+    response = await held.finish();
+  assert.equal(response.status, 401, response.text);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('credentials实际private SQL尾错外catch全表回滚无通知，健康新重置只通知一次', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment }),
+    first = credentials({ userId: 'm2', username: 'tail.original' });
+  assert.equal((await credentialPost(f, first)).status, 200);
+  const session = await createMemberSession(
+      f.members,
+      await f.members.loginMemberPassword(first.username, first.password),
+      f.env,
+      f.clock,
+    ),
+    next = credentials({
+      userId: 'm2',
+      username: 'tail.current',
+      password: 'synthetic-current-password',
+    });
+  let seen = 0;
+  f.events.on('commit', () => seen++);
+  f.db.exec(
+    "CREATE TEMP TRIGGER credential_private_tail AFTER DELETE ON member_sessions WHEN OLD.member_id='m2' BEGIN SELECT RAISE(ABORT,'credential private tail'); END",
+  );
+  const before = databaseState(f.db),
+    cut = f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq;
+  assert.equal(
+    (await credentialPost(f, next, { headers: { 'idempotency-key': 'still-not-keyed' } })).status,
+    500,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(seen, 0);
+  assert.equal((await f.members.loginMemberPassword(first.username, first.password)).id, 'm2');
+  assert.ok(await authenticateMemberSession(f.members, session.token, f.env, f.clock));
+  f.db.exec('DROP TRIGGER credential_private_tail');
+  const success = await credentialPost(f, next, {
+    headers: { 'idempotency-key': 'still-not-keyed' },
+  });
+  assert.equal(success.status, 200, success.text);
+  assert.equal(seen, 1);
+  assert.equal(await authenticateMemberSession(f.members, session.token, f.env, f.clock), null);
+  assert.equal((await f.members.loginMemberPassword(next.username, next.password)).id, 'm2');
+  await assert.rejects(f.members.loginMemberPassword(first.username, first.password), {
+    statusCode: 401,
+  });
+  assert.equal(f.db.prepare('SELECT MAX(commit_seq) seq FROM commits').get().seq, cut);
+});
+
+test('credentials非keyed私有变更由选定SHA同cut联合恢复，业务回放不安装秘密或把旧private备份换成新源', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment, beforeReady: credentialGroups }),
+    body = credentials({ groupId: 'g' }),
+    created = await credentialPost(f, body);
+  assert.equal(created.status, 200, created.text);
+  const backup = async (name) => {
+    const filename = path.join(f.dir, name + '.sqlite');
+    await f.db.backup(filename);
+    const sealed = new Database(filename);
+    sealed.pragma('journal_mode=DELETE');
+    sealed.close();
+    return {
+      sourcePath: filename,
+      sourceSha256: relationalSnapshotSha256(filename),
+      historyId: 'generation-history',
+      finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get()
+        .seq,
+      replicas: { dataDir: f.dir },
+    };
+  };
+  const old = await backup('credentials-private-old'),
+    hashBefore = relationalPrivateStateSha256(f.db),
+    reset = { ...body, userId: created.body.id, password: 'synthetic-reset-private-password' };
+  delete reset.groupId;
+  assert.equal((await credentialPost(f, reset)).status, 200);
+  const selected = await backup('credentials-private-current');
+  assert.equal(old.finalCommitSeq, selected.finalCommitSeq);
+  assert.notEqual(old.sourceSha256, selected.sourceSha256);
+  assert.notEqual(relationalPrivateStateSha256(f.db), hashBefore);
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replayer = new RelationalCommitReplayer(target),
+    source = new RelationalInputStore(f.db),
+    network = t.mock.method(globalThis, 'fetch', () =>
+      assert.fail('private/public recovery cannot fetch'),
+    );
+  try {
+    for (const { seq } of f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), source))();
+    }
+    assert.equal(relationalPrivateStateEmpty(target), true);
+    const before = databaseState(target);
+    await assert.rejects(
+      verifyAndInstallRelationalStorage(target, { ...selected, sourcePath: old.sourcePath }),
+      /match|snapshot|Private/i,
+    );
+    assert.equal(databaseState(target), before);
+    assert.equal(target.prepare('SELECT status FROM projection_state').get().status, 'building');
+    await verifyAndInstallRelationalStorage(target, selected);
+    assert.equal(relationalPrivateStateSha256(target), relationalPrivateStateSha256(f.db));
+    const restored = new RelationalMemberStore(target, f.env);
+    assert.equal(
+      (await restored.loginMemberPassword(body.username, reset.password)).id,
+      created.body.id,
+    );
+    await assert.rejects(restored.loginMemberPassword(body.username, body.password), {
+      statusCode: 401,
+    });
+    assert.equal(relationalSnapshotSha256(old.sourcePath), old.sourceSha256);
+    assert.equal(relationalSnapshotSha256(selected.sourcePath), selected.sourceSha256);
+    assert.equal(network.mock.callCount(), 0);
+  } finally {
+    network.mock.restore();
+  }
+});
+
+const invitationBody = (userId = 'invite-target') => ({ action: 'discord-invite', userId });
+async function setupInvitation(t, options = {}) {
+  const f = await setup(t, {
+      ...options,
+      beforeReady: async (f, env) => {
+        f.db.transaction(() =>
+          f.members.registerMember(meta('register-invite-target'), {
+            memberId: 'invite-target',
+            displayName: 'invited member',
+            apiKey: 'synthetic-invite-target-key',
+          }),
+        )();
+        await options.beforeReady?.(f, env);
+      },
+    }),
+    notifier = relationalStateNotificationsFor(f.db, f.events);
+  return {
+    ...f,
+    notifier,
+    liveMembers: new RelationalMemberStore(f.db, f.env, notifier),
+    get clock() {
+      return f.clock;
+    },
+  };
+}
+function invitationInvariant(f) {
+  return Object.fromEntries(
+    [
+      'commits',
+      'domain_events',
+      'stream_heads',
+      'generation_requests',
+      'generation_jobs',
+      'generation_attempts',
+      'charges',
+      'wallets',
+      'account_quota_state',
+      'idempotency_keys',
+      'members',
+      'member_sessions',
+      'api_keys',
+      'password_credentials',
+    ].map((name) => [
+      name,
+      f.db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).safeIntegers().all(),
+    ]),
+  );
+}
+function inviteNotices(f) {
+  const notices = [];
+  f.events.on('commit', (event) => {
+    assert.equal(f.db.inTransaction, false);
+    notices.push({ event, profile: f.liveMembers.readManagementMemberProfile('invite-target') });
+  });
+  return notices;
+}
+
+test('Discord邀请真实POST仅返回原私有DTO，每次新操作替换；同ms同目录0额外notice，expiry变更提交后一次', async (t) => {
+  const f = await setupInvitation(t),
+    notices = inviteNotices(f),
+    before = invitationInvariant(f),
+    headers = {
+      'idempotency-key': ['ignored invalid key', 'ignored duplicate'],
+      'x-member-activity': '1',
+    },
+    first = await f.call(owner, { method: 'POST', headers, body: invitationBody() });
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(Object.keys(first.body), ['code', 'expiresAt']);
+  assert.match(first.body.code, /^[A-Za-z0-9_-]{32}$/);
+  assert.equal(first.body.expiresAt, f.clock + 7 * 86400000);
+  assert.equal(first.headers.get('set-cookie'), null);
+  assert.equal(f.db.serialize().includes(Buffer.from(first.body.code)), false);
+  assert.equal(notices.length, 1);
+  assert.deepEqual(notices[0].event.collections, ['users']);
+  assert.deepEqual(notices[0].event.memberIds, ['invite-target']);
+  assert.equal(notices[0].profile.inviteExpiresAt, first.body.expiresAt);
+  assert.ok(!JSON.stringify(notices).includes(first.body.code));
+  const repeated = await f.call(owner, { method: 'POST', headers, body: invitationBody() });
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.notEqual(repeated.body.code, first.body.code);
+  assert.equal(repeated.body.expiresAt, first.body.expiresAt);
+  assert.equal(notices.length, 1, '新的原码不是公共目录字段，不能为同ms相同安全DTO额外发通知');
+  f.advance(1);
+  const third = await f.call(admin, {
+    method: 'POST',
+    headers: { ...headers, 'x-admin-token': adminToken },
+    body: invitationBody(),
+  });
+  assert.equal(third.status, 200, third.text);
+  assert.notEqual(third.body.code, repeated.body.code);
+  assert.equal(third.body.expiresAt, first.body.expiresAt + 1);
+  assert.equal(notices.length, 2);
+  assert.deepEqual(notices[1].event.collections, ['users']);
+  assert.equal(notices[1].profile.inviteExpiresAt, third.body.expiresAt);
+  assert.deepEqual(invitationInvariant(f), before);
+  for (const [userId, status] of [
+    ['m2', 409],
+    ['missing', 404],
+    [null, 404],
+    [42, 404],
+    [{ id: 'invite-target' }, 404],
+  ]) {
+    assert.equal(
+      (await f.call(owner, { method: 'POST', body: invitationBody(userId) })).status,
+      status,
+    );
+  }
+  assert.equal(
+    (
+      await f.call(owner, {
+        method: 'POST',
+        member: 'm2',
+        body: { ...invitationBody(), actorKind: 'admin', actorId: 'm1' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await f.call(admin, { method: 'POST', body: invitationBody() })).status, 403);
+  const actor = await authenticateMemberApiKey(f.liveMembers, keys.m1);
+  f.notifier.commit(() =>
+    f.db.transaction(() =>
+      f.liveMembers.setMemberStatus(
+        meta('disable-invitation-target', f.clock, 'm1'),
+        'invite-target',
+        'disabled',
+        actor,
+      ),
+    )(),
+  );
+  const saved = databaseState(f.db);
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 404);
+  assert.equal(databaseState(f.db), saved);
+  for (const key of ['DISCORD_GUILD_ID', 'DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET']) {
+    f.env[key] = '';
+  }
+  assert.equal(
+    (
+      await f.call(admin, {
+        method: 'POST',
+        headers: { 'x-admin-token': adminToken },
+        body: invitationBody(),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(databaseState(f.db), saved);
+});
+
+test('Discord邀请canonical私有owner拒缺actor/非owner/旧epoch，不能由metadata自证', async (t) => {
+  const f = await setupInvitation(t),
+    actor = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+    other = await authenticateMemberApiKey(f.liveMembers, keys.m2),
+    before = databaseState(f.db),
+    notices = inviteNotices(f);
+  for (const candidate of [undefined, other, { actorKind: 'admin', actorId: 'local-admin' }]) {
+    assert.throws(
+      () =>
+        f.notifier.commit(() =>
+          f.db.transaction(() =>
+            f.liveMembers.createMemberDiscordInvite('invite-target', candidate, f.clock),
+          )(),
+        ),
+      { statusCode: 403 },
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  const prepared = await f.liveMembers.prepareMemberCredentials('m1', {
+    username: 'invite.current.owner',
+    password: 'synthetic-invite-owner-new-password',
+  });
+  f.notifier.commit(() =>
+    f.db.transaction(() => f.liveMembers.setMemberCredentials(prepared, actor))(),
+  );
+  const changed = databaseState(f.db),
+    count = notices.length;
+  assert.throws(
+    () =>
+      f.notifier.commit(() =>
+        f.db.transaction(() =>
+          f.liveMembers.createMemberDiscordInvite('invite-target', actor, f.clock),
+        )(),
+      ),
+    { statusCode: 403 },
+  );
+  assert.equal(databaseState(f.db), changed);
+  assert.equal(notices.length, count);
+  const current = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+    accepted = f.notifier.commit(() =>
+      f.db.transaction(() =>
+        f.liveMembers.createMemberDiscordInvite('invite-target', current, f.clock),
+      )(),
+    );
+  assert.match(accepted.code, /^[A-Za-z0-9_-]{32}$/);
+});
+
+test('Discord邀请慢正文后重核实际Cookie/epoch/owner/ready/admin，拒绝不签发邀请或续Cookie', async (t) => {
+  for (const mode of ['cookie', 'epoch', 'owner', 'ready', 'admin-query']) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setupInvitation(t, { onBodyRead: () => begin?.() }),
+        notices = inviteNotices(f),
+        started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        endpoint = mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner,
+        held = await holdPolicyBody(t, f, endpoint, started, {}, invitationBody());
+      if (mode === 'cookie') {
+        await logoutMemberSession(f.liveMembers, f.sessions.m1.token);
+      } else if (mode === 'epoch') {
+        const actor = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+          prepared = await f.liveMembers.prepareMemberCredentials('m1', {
+            username: 'held.invite.owner',
+            password: 'synthetic-held-invite-password',
+          });
+        f.notifier.commit(() =>
+          f.db.transaction(() => f.liveMembers.setMemberCredentials(prepared, actor))(),
+        );
+      } else if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed' WHERE id=1").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const invites = f.db.prepare('SELECT * FROM discord_invites').all(),
+        cut = f.db.prepare('SELECT COUNT(*) n FROM commits').get().n,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.deepEqual(f.db.prepare('SELECT * FROM discord_invites').all(), invites);
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM commits').get().n, cut);
+      assert.equal(
+        notices.filter(
+          ({ event }) =>
+            event.collections.includes('users') && event.memberIds.includes('invite-target'),
+        ).length,
+        0,
+      );
+    });
+  }
+});
+
+test('Discord邀请私有SQL尾错/外catch全表回滚0notice，健康重试新操作且不存receipt', async (t) => {
+  const f = await setupInvitation(t),
+    notices = inviteNotices(f);
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 200);
+  f.advance(1);
+  const before = databaseState(f.db),
+    expiry = f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt,
+    count = notices.length;
+  f.db.exec(
+    "CREATE TEMP TRIGGER invitation_tail_fault AFTER UPDATE ON discord_invites BEGIN SELECT RAISE(ABORT,'invitation tail fault'); END",
+  );
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 500);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(notices.length, count);
+  f.notifier.commit(() =>
+    f.db.transaction(() => {
+      try {
+        f.liveMembers.createMemberDiscordInvite('invite-target', null, f.clock);
+      } catch (error) {
+        assert.match(error.message, /invitation tail fault/);
+      }
+    })(),
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, expiry);
+  assert.equal(notices.length, count);
+  f.db.exec('DROP TRIGGER invitation_tail_fault');
+  const retried = await f.call(owner, { method: 'POST', body: invitationBody() });
+  assert.equal(retried.status, 200, retried.text);
+  assert.equal(retried.body.expiresAt, expiry + 1);
+  assert.equal(notices.length, count + 1);
+});
+
+test('Discord邀请新码替换/一次性兑现复用真实OAuth owner，consume尾错回滚后可重新授权且仅提交一次通知', async (t) => {
+  let f;
+  const discordFetch = async (url) => {
+    assert.equal(f.db.inTransaction, false);
+    if (url.endsWith('/oauth2/token')) {
+      return Response.json({
+        access_token: 'synthetic-invitation-access',
+        refresh_token: 'synthetic-invitation-refresh',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'identify guilds.members.read',
+      });
+    }
+    return Response.json(
+      url.endsWith('/users/@me')
+        ? { id: '555555555555555555' }
+        : { user: { id: '555555555555555555' } },
+    );
+  };
+  f = await setupInvitation(t, { discordFetch });
+  const auth = createRelationalMemberAuthenticationHttp({
+      sqlite: f.db,
+      events: f.events,
+      env: f.env,
+      discordFetch,
+    }),
+    notices = inviteNotices(f);
+  f.setHandler(
+    async (req, res, url) => (await auth(req, res, url)) || (await f.handle(req, res, url)),
+  );
+  const headers = { host: 'management.example', origin: 'https://management.example' },
+    start = async (code) => {
+      const r = await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: code },
+        headers,
+      });
+      assert.equal(r.status, 200, r.text);
+      return {
+        state: new URL(r.body.authorizationUrl).searchParams.get('state'),
+        cookie: r.headers.get('set-cookie').split(';')[0],
+      };
+    },
+    finish = (pending) =>
+      f.call(
+        '/api/member/discord/callback?' +
+          new URLSearchParams({ state: pending.state, code: 'synthetic-grant-code' }),
+        { headers: { ...headers, cookie: pending.cookie, origin: 'https://discord.com' } },
+      );
+  const first = await f.call(owner, { method: 'POST', body: invitationBody() }),
+    oldFlow = await start(first.body.code),
+    second = await f.call(owner, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'same-does-not-replay' },
+      body: invitationBody(),
+    });
+  assert.equal((await finish(oldFlow)).status, 403);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: first.body.code },
+        headers,
+      })
+    ).status,
+    403,
+  );
+  const flow = await start(second.body.code),
+    before = databaseState(f.db),
+    count = notices.length;
+  f.db.exec(
+    "CREATE TEMP TRIGGER invitation_consume_fault AFTER DELETE ON discord_invites WHEN OLD.member_id='invite-target' BEGIN SELECT RAISE(ABORT,'invitation consume fault'); END",
+  );
+  const failed = await finish(flow);
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal((failed.headers.get('set-cookie') || '').includes('nai_member_session='), false);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(notices.length, count);
+  f.db.exec('DROP TRIGGER invitation_consume_fault');
+  const done = await finish(await start(second.body.code));
+  assert.equal(done.status, 303, done.text);
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, null);
+  assert.equal(
+    f.liveMembers.readManagementMemberProfile('invite-target').discordId,
+    '555555555555555555',
+  );
+  assert.equal(notices.length, count + 1);
+  assert.ok(notices.at(-1).event.collections.includes('users'));
+  assert.ok(notices.at(-1).event.collections.includes('sessions'));
+  assert.equal(notices.at(-1).profile.inviteExpiresAt, null);
+  assert.equal((await finish(flow)).status, 400);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: second.body.code },
+        headers,
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 409);
+  assert.ok(
+    !JSON.stringify(f.db.prepare('SELECT payload FROM domain_events').all()).includes(
+      second.body.code,
+    ),
+  );
+});
+
+test('Discord邀请过期保留私有原期限；公开回放不恢复邀请，匹配选定私有源SHA才恢复同一摘要', async (t) => {
+  const f = await setupInvitation(t),
+    issued = await f.call(owner, { method: 'POST', body: invitationBody() });
+  assert.equal(issued.status, 200, issued.text);
+  const sourcePath = path.join(f.dir, 'selected-invitation.sqlite');
+  await f.db.backup(sourcePath);
+  const sealed = new Database(sourcePath);
+  sealed.pragma('journal_mode=DELETE');
+  sealed.close();
+  const sourceSha256 = relationalSnapshotSha256(sourcePath),
+    originalInvite = f.db.prepare('SELECT * FROM discord_invites').all(),
+    target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  let fetches = 0;
+  t.mock.method(globalThis, 'fetch', () => {
+    fetches++;
+    assert.fail('invitation public replay cannot fetch');
+  });
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  for (const name of [
+    'discord_invites',
+    'discord_bindings',
+    'api_keys',
+    'member_sessions',
+    'upstream_credentials',
+  ]) {
+    assert.equal(target.prepare(`SELECT COUNT(*) n FROM ${name}`).get().n, 0);
+  }
+  assert.equal(
+    target.prepare('SELECT COUNT(*) n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  await verifyAndInstallRelationalStorage(target, { ...f.selected, sourcePath, sourceSha256 });
+  assert.deepEqual(target.prepare('SELECT * FROM discord_invites').all(), originalInvite);
+  assert.equal(fetches, 0);
+  const restoredAuth = createRelationalMemberAuthenticationHttp({
+    sqlite: target,
+    events: new EventEmitter(),
+    env: f.env,
+    discordFetch: () => assert.fail('valid invite start must stay offline'),
+  });
+  f.setHandler(restoredAuth);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: issued.body.code },
+        headers: { host: 'management.example', origin: 'https://management.example' },
+      })
+    ).status,
+    200,
+  );
+  const expiry = issued.body.expiresAt;
+  f.advance(expiry - f.clock + 1);
+  const auth = createRelationalMemberAuthenticationHttp({
+    sqlite: f.db,
+    events: f.events,
+    env: f.env,
+    discordFetch: () => assert.fail('expired invite must reject before OAuth network'),
+  });
+  f.setHandler(auth);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: issued.body.code },
+        headers: { host: 'management.example', origin: 'https://management.example' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, expiry);
+  assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
 });

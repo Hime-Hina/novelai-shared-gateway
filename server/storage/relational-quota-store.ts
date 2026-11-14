@@ -96,6 +96,7 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
   policyVersion: string;
   pricingVersion: string;
 };
+type FundingMetadata = Omit<Metadata, 'commandId'> & { commandId?: string };
 type GroupConfigurationInput = {
   groups: unknown;
   expectedConfigVersion: number;
@@ -594,6 +595,9 @@ export class RelationalQuotaStore {
       quotaPurchased: q.observedAnlasPurchased,
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
     };
+  }
+  readBoundAccountId() {
+    return this.sharingPolicy().accountId;
   }
   readSharedStatusSource(): Omit<SharedStatusSource, 'counts'> {
     return this.sqlite.transaction(() => {
@@ -2528,19 +2532,92 @@ export class RelationalQuotaStore {
     }
     return { id, type, accountId, resource, amount };
   }
-  manageQuotaFunding(metadata: Metadata, accountId: string, body: OperatingFundingInput) {
+  assertFundingReceipt(result: { receipt: Json; commitSeq?: string }) {
+    const receipt = result.receipt;
+    if (
+      !receipt ||
+      Array.isArray(receipt) ||
+      typeof receipt !== 'object' ||
+      !('eventId' in receipt || 'funding' in receipt || 'duplicate' in receipt)
+    ) {
+      return null;
+    }
+    if (
+      typeof receipt.eventId !== 'string' ||
+      typeof receipt.accountId !== 'string' ||
+      !result.commitSeq
+    ) {
+      fail('资金回执缺少原提交或账户来源');
+    }
+    const source = this.fact(receipt.eventId),
+      manual =
+        source.type === 'FundingRegistered' ||
+        source.type === 'OperatingLossCovered' ||
+        source.type === 'DebitsConfirmed' ||
+        (source.type === 'ReturnClassified' && source.payload.kind === 'gap_correction') ||
+        (source.type === 'FundingReceived' &&
+          ['operator_share', 'declared_external_receipt'].includes(String(source.payload.source))),
+      earlier = BigInt(source.commitSeq) < BigInt(result.commitSeq);
+    if (
+      !manual ||
+      source.accountId !== receipt.accountId ||
+      BigInt(source.commitSeq) > BigInt(result.commitSeq)
+    ) {
+      fail('资金回执必须引用本账户已经发生的原人工资金决定');
+    }
+    let duplicate: boolean;
+    if (receipt.duplicate === undefined) {
+      // 旧回执没有标志；同提交的原人工决定才能证明首次处理，不能猜较早引用的结果。
+      if (earlier || !receipt.funding) {
+        fail('旧资金回执缺少可证明的原处理结果');
+      }
+      duplicate = false;
+    } else {
+      if (typeof receipt.duplicate !== 'boolean') {
+        fail('资金回执的原重复决定无效');
+      }
+      duplicate = receipt.duplicate;
+    }
+    if (
+      duplicate !== earlier ||
+      (!duplicate &&
+        (!receipt.funding ||
+          Array.isArray(receipt.funding) ||
+          typeof receipt.funding !== 'object' ||
+          receipt.funding.id !== receipt.eventId))
+    ) {
+      fail('资金回执与原人工决定的提交关系不符');
+    }
+    return { eventId: receipt.eventId, duplicate };
+  }
+  manageQuotaFunding(
+    metadata: FundingMetadata,
+    accountId: string | null,
+    body: OperatingFundingInput,
+    member: MemberUser | null,
+  ) {
     return this.owned(() => {
+      this.authorizeOwnerCommand(metadata, member);
       const actorId = this.env.OWNER_USER_ID;
-      if (
-        !actorId ||
-        metadata.actorKind === 'system' ||
-        (metadata.actorKind === 'member' && metadata.actorId !== actorId)
-      ) {
+      if (!actorId) {
         fail('资金操作需要当前 owner 或管理员授权', 403);
       }
-      const prior = readRelationalReceipt(this.sqlite, metadata);
+      const prior =
+        metadata.commandId === undefined
+          ? null
+          : readRelationalReceipt(this.sqlite, {
+              ...metadata,
+              commandId: metadata.commandId,
+            });
       if (prior) {
-        return prior;
+        const response = this.assertFundingReceipt(prior);
+        if (!response) {
+          fail('原命令不是资金处理回执');
+        }
+        return { ...prior, response };
+      }
+      if (!accountId || this.sharingPolicy().accountId !== accountId) {
+        fail('资金操作只接受当前绑定共享账户');
       }
       const view = this.state(accountId);
       const planned = this.capture(view, () => {
@@ -2556,28 +2633,50 @@ export class RelationalQuotaStore {
           metadata.recordedAt,
         );
       });
-      if (planned.result.duplicate) {
+      const events = this.convert(planned.facts, view, metadata);
+      if (!events.length) {
+        if (metadata.commandId !== undefined) {
+          fail('操作未产生可提交事实，请刷新后确认结果');
+        }
         const event = this.fact(planned.result.eventId);
+        const receipt = JSON.parse(
+          this.sqlite
+            .prepare<[bigint], { receipt: string }>(
+              'SELECT receipt FROM commits WHERE commit_seq=?',
+            )
+            .get(BigInt(event.commitSeq))!.receipt,
+        ) as Json;
+        if (!this.assertFundingReceipt({ commitSeq: event.commitSeq, receipt })) {
+          fail('原资金决定缺少有效回执');
+        }
         return {
           replayed: true,
           commitSeq: event.commitSeq,
-          receipt: JSON.parse(
-            this.sqlite
-              .prepare<[bigint], { receipt: string }>(
-                'SELECT receipt FROM commits WHERE commit_seq=?',
-              )
-              .get(BigInt(event.commitSeq))!.receipt,
-          ),
+          receipt,
+          response: planned.result,
         };
       }
-      const funding = view.db.ledger.find(
-        (raw) => (raw as { id?: string }).id === planned.result.eventId,
-      );
-      return this.commit(metadata, this.convert(planned.facts, view, metadata), {
+      const funding =
+        !planned.result.duplicate &&
+        view.db.ledger.find((raw) => (raw as { id?: string }).id === planned.result.eventId);
+      const receipt: Record<string, Json> = {
         accountId,
         eventId: planned.result.eventId,
-        funding,
-      } as Json);
+        duplicate: planned.result.duplicate,
+      };
+      if (funding) {
+        receipt.funding = funding as Json;
+      }
+      const result = this.commit(
+        { ...metadata, commandId: metadata.commandId ?? randomUUID() },
+        events,
+        receipt,
+      );
+      const response = this.assertFundingReceipt(result);
+      if (!response) {
+        fail('资金命令未保存原处理结果');
+      }
+      return { ...result, response };
     });
   }
   private wallet(
@@ -3971,6 +4070,7 @@ export class RelationalQuotaStore {
         fail('Quota replay requires one complete quota commit');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
+      this.assertFundingReceipt(result);
       if (!result.replayed) {
         this.applyQuotaEvents(result.events);
         this.assertGroupCommit(result.events, result.receipt);

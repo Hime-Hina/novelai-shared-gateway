@@ -186,6 +186,7 @@ test('真实受理桥原键保留；图退休只返回原回执，任一原 chil
     },
     admit = createRelationalMemberGenerationAdmission({
       ...f,
+      runtime: f.commandOnlyRuntime,
       sqlite: f.db,
       payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
       env: f.env,
@@ -527,7 +528,7 @@ test('当前 owner Key/Cookie 和 epoch 先于重领；旧 Key、退出、普通
     username: 'owner.history',
     password: 'synthetic-password-history',
   });
-  f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+  f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
   before = databaseState(f.db);
   f.db.transaction(() =>
     assert.throws(

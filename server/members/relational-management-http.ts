@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import { domainDigest } from '../events/domain-events.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -19,6 +19,8 @@ import {
   authenticateMemberSession,
   withAuthenticatedMemberSession,
   isOwner,
+  prepareMemberCredentials,
+  assertMemberRegistrationCapacity,
   type MemberUser,
 } from './authentication.ts';
 import {
@@ -38,6 +40,7 @@ import { publicSharedAccountStatus } from '../quota/shared-status.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
+import type { OperatingFundingInput } from '../quota/operating-accounting.ts';
 import { quotaNumber } from '../quota/eligibility.ts';
 import {
   safeAccount,
@@ -52,6 +55,13 @@ import {
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
+const operatingActions = [
+  'operating-contribute',
+  'operating-register-funding',
+  'operating-cover-loss',
+  'operating-reconcile-return',
+  'operating-confirm-debits',
+];
 
 // 管理读取和命令共用当前授权，业务规则继续由各自 owner 拥有。
 export function createRelationalManagementHttp(deps: {
@@ -392,6 +402,16 @@ export function createRelationalManagementHttp(deps: {
           expectedConfigVersion: body.expectedConfigVersion as number,
           redistributeRemaining: body.redistributeRemaining as boolean | undefined,
         };
+      if (body.action === 'discord-invite') {
+        const result = await authorize((member) => {
+          if (!discordLoginEnabled(env)) {
+            fail(409, 'Discord 登录未启用');
+          }
+          return members.createMemberDiscordInvite(body.userId, member, now());
+        });
+        replyMemberJson(res, 200, result);
+        return true;
+      }
       if (body.action === 'member-key') {
         const result = await authorize(() => {
           if (typeof body.userId !== 'string') {
@@ -426,6 +446,31 @@ export function createRelationalManagementHttp(deps: {
         replyMemberJson(res, 200, preview);
         return true;
       }
+      if (body.action === 'preview-delete-member') {
+        const preview = await authorize((member) =>
+          quotas.manageMemberQuota(
+            {
+              commandId: randomUUID(),
+              fingerprint: domainDigest({
+                operation: 'member-management:preview-delete-member',
+                body,
+              }),
+              actorId: member?.id ?? 'local-admin',
+              actorKind: member ? 'member' : 'admin',
+              recordedAt: now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'member-management-v1',
+              pricingVersion: 'none',
+            },
+            body as Parameters<RelationalQuotaStore['manageMemberQuota']>[1],
+            member,
+            deps.controls,
+          ),
+        );
+        replyMemberJson(res, 200, preview);
+        return true;
+      }
       if (
         ![
           'fallback-policy',
@@ -433,10 +478,108 @@ export function createRelationalManagementHttp(deps: {
           'loss-alert-policy',
           'member-status',
           'member-admission',
+          'transfer-quota',
+          'delete-member',
           'groups',
+          ...operatingActions,
+          'credentials',
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
+      }
+      if (body.action === 'credentials') {
+        const updating = Boolean(body.userId),
+          hasGroup = body.groupId !== undefined && body.groupId !== null && body.groupId !== '';
+        const validate = () => {
+          if (discordLoginEnabled(env) && updating) {
+            fail(409, 'Discord 成员不使用登录密码');
+          }
+          if (hasGroup && (typeof body.groupId !== 'string' || updating)) {
+            fail(400, '只有创建新成员时可以指定 groupId');
+          }
+          if (body.note !== undefined) {
+            fail(400, '当前成员模型尚未支持备注');
+          }
+          if (updating && typeof body.userId !== 'string') {
+            fail(404, '账户不存在或未启用');
+          }
+        };
+        await authorize(() => {
+          validate();
+          if (!updating) {
+            assertMemberRegistrationCapacity(members.readManagementMemberProfiles().length);
+          }
+        });
+        // credentials 沿原私有非 keyed 契约；KDF 在 SQL 外，不把秘密或其意图摘要写入公共回执。
+        const fields = discordLoginEnabled(env)
+            ? { ...body, password: randomBytes(32).toString('base64url') }
+            : body,
+          prepared = updating
+            ? {
+                kind: 'update' as const,
+                value: await members.prepareMemberCredentials(body.userId as string, fields),
+              }
+            : { kind: 'create' as const, value: await prepareMemberCredentials(fields) };
+        const result = await authorize((member) => {
+          validate();
+          if (prepared.kind === 'update') {
+            return members.setMemberCredentials(prepared.value, member);
+          }
+          const credentials = prepared.value,
+            memberId = randomUUID(),
+            actorId = member?.id ?? 'local-admin',
+            actorKind = member ? 'member' : 'admin',
+            metadata: Parameters<RelationalMemberStore['registerMember']>[0] = {
+              commandId: randomUUID(),
+              fingerprint: domainDigest({ operation: 'register-management-member', memberId }),
+              actorId,
+              actorKind,
+              recordedAt: now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'member-management-v1',
+              pricingVersion: 'none',
+            };
+          members.registerMember(
+            metadata,
+            {
+              memberId,
+              displayName: credentials.username,
+              apiKey: `STA1N-${randomBytes(18).toString('base64url')}`,
+              credentials,
+            },
+            member,
+          );
+          if (hasGroup) {
+            const policy = quotas.readQuotaConfiguration(),
+              groups = structuredClone(policy.groups),
+              group = groups.find((item) => item.id === body.groupId);
+            if (!group) {
+              fail(400, '指定的共享组不存在');
+            }
+            group.members.push(memberId);
+            quotas.configureGroups(
+              {
+                ...metadata,
+                commandId: randomUUID(),
+                fingerprint: domainDigest({
+                  operation: 'assign-created-member',
+                  memberId,
+                  groupId: group.id,
+                }),
+              },
+              { groups, expectedConfigVersion: policy.configVersion },
+              member,
+            );
+          }
+          return {
+            id: memberId,
+            username: credentials.username,
+            ...(hasGroup ? { groupId: body.groupId } : {}),
+          };
+        });
+        replyMemberJson(res, 200, result);
+        return true;
       }
       const receipt = await authorize((member) => {
         const actorId = member?.id ?? 'local-admin',
@@ -451,11 +594,36 @@ export function createRelationalManagementHttp(deps: {
             recordedAt: now(),
             correlationId: null,
             causationId: null,
-            policyVersion: ['member-status', 'member-admission'].includes(body.action as string)
+            policyVersion: [
+              'member-status',
+              'member-admission',
+              'transfer-quota',
+              'delete-member',
+            ].includes(body.action as string)
               ? 'member-management-v1'
               : 'quota-policy-v1',
             pricingVersion: 'none',
           };
+        if (operatingActions.includes(body.action as string)) {
+          if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) {
+            fail(403, '只能从运营者本人已归属份额划入');
+          }
+          return quotas.manageQuotaFunding(
+            { ...metadata, commandId: command.commandId },
+            quotas.readBoundAccountId(),
+            body as OperatingFundingInput,
+            member,
+          ).response;
+        }
+        if (['transfer-quota', 'delete-member'].includes(body.action as string)) {
+          const result = quotas.manageMemberQuota(
+            metadata,
+            body as Parameters<RelationalQuotaStore['manageMemberQuota']>[1],
+            member,
+            deps.controls,
+          );
+          return 'receipt' in result ? result.receipt : result;
+        }
         if (body.action === 'member-status') {
           if (typeof body.enabled !== 'boolean') {
             fail(400, 'enabled 必须为布尔值');
