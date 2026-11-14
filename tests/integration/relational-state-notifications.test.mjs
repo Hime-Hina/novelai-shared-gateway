@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { fixture, meta, NOW, keys, databaseState } from '../helpers/relational-generation.mjs';
 import { relationalStateNotificationsFor } from '../../server/events/relational-state-notifications.ts';
 import { stateEventsFor, stateInvalidation } from '../../server/events/state-notifications.ts';
@@ -355,4 +356,88 @@ test('仅私有Discord资格撤销也唤醒鉴权，不把token或checkedAt刷�
     transaction.saveAuthentication(user);
   });
   assert.equal(commits.length, 1, '只刷新私有token/checkedAt不广播');
+});
+
+test('失败私有候选后真实签发及两种原清理都保持安静', async (t) => {
+  for (const kind of ['new', 'expired', 'obsolete']) {
+    await t.test(kind, async (t) => {
+      const f = await fixture(t),
+        { members, commits, notifier } = notifications(f);
+      const user = await authenticateMemberApiKey(members, keys.m1);
+      let old = null;
+      if (kind === 'expired') {
+        old = await createMemberSession(members, user, {}, NOW);
+      } else if (kind === 'obsolete') {
+        // 现签发owner可清理的旧epoch私有行；不是新的业务受理或ready导入证明。
+        old = { token: 's'.repeat(43), expiresAt: NOW + 60000 };
+        const epoch = user.memberAuth.version;
+        await f.members.memberSessionTransaction(() => {}, {
+          memberSession: () => ({
+            tokenHash: createHash('sha256').update(old.token).digest('hex'),
+            memberId: 'm1',
+            authEpoch: (epoch[0] === '0' ? '1' : '0') + epoch.slice(1),
+            ownerBinding: null,
+            createdAt: NOW,
+            expiresAt: old.expiresAt,
+          }),
+        });
+      }
+      const at = kind === 'expired' ? old.expiresAt + 1 : NOW;
+      // 实际factory会有多个MemberStore：候选来自A，签发/清理由B在共同context中完成。
+      const signer = new RelationalMemberStore(f.db, {}, notifier);
+      const original = signer.memberSessionTransaction.bind(signer);
+      const sessionStore = {
+        memberSessionTransaction: (mutate, options) =>
+          original((transaction) => {
+            try {
+              f.db.transaction(() => {
+                members.replaceMemberApiKey('m1', 'synthetic-rolled-back-before-issuance');
+                throw Error('private rollback before issuance');
+              })();
+            } catch (error) {
+              assert.match(error.message, /private rollback before issuance/);
+            }
+            return mutate(transaction);
+          }, options),
+      };
+      const publicCount = f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n;
+      const signed = await createMemberSession(sessionStore, user, {}, at);
+      assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM commits').get().n, publicCount);
+      assert.ok(await authenticateMemberApiKey(members, keys.m1));
+      assert.ok(await authenticateMemberSession(members, signed.token, {}, at + 1));
+      if (old) {
+        assert.equal(await authenticateMemberSession(members, old.token, {}, at + 1), null);
+      }
+      assert.deepEqual(commits, []);
+    });
+  }
+});
+
+test('同一真实签发事务注销原Cookie仍准确唤醒本人，保留新Cookie和其他成员', async (t) => {
+  const f = await fixture(t),
+    { members, commits } = notifications(f);
+  const user = await authenticateMemberApiKey(members, keys.m1);
+  const old = await createMemberSession(members, user, {}, NOW);
+  const other = await createMemberSession(
+    members,
+    await authenticateMemberApiKey(members, keys.m2),
+    {},
+    NOW,
+  );
+  const original = members.memberSessionTransaction.bind(members);
+  const sessionStore = {
+    memberSessionTransaction: (mutate, options) =>
+      original(mutate, {
+        ...options,
+        memberSessionDelete: createHash('sha256').update(old.token).digest('hex'),
+      }),
+  };
+  const signed = await createMemberSession(sessionStore, user, {}, NOW + 1);
+  assert.equal(commits.length, 1);
+  assert.deepEqual(commits[0].event.collections, ['sessions']);
+  assert.deepEqual(commits[0].event.memberIds, ['m1']);
+  assert.equal(await authenticateMemberSession(members, old.token, {}, NOW + 2), null);
+  assert.ok(await authenticateMemberSession(members, signed.token, {}, NOW + 2));
+  assert.ok(await authenticateMemberSession(members, other.token, {}, NOW + 2));
+  assert.equal(commits.length, 1);
 });

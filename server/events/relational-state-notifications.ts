@@ -6,11 +6,22 @@ import type { RelationalEvent } from './relational-events.ts';
 import { emitStoreEvent, type StateEvent } from './state-notifications.ts';
 import { activityDate } from '../reports/activity-heatmap.ts';
 
-type PrivateMemberState = { member: string; authorization: string };
+type PrivateMemberState = {
+  member: string;
+  authorization: string;
+  sessions: readonly {
+    tokenHash: string;
+    authEpoch: string;
+    ownerBinding: string | null;
+    expiresAt: number;
+  }[];
+};
+type SessionCleanup = { memberId: string; authEpoch: string; createdAt: number };
 export interface RelationalStateNotifications {
   readonly events: EventEmitter;
   commit<T>(write: () => T): T;
   trackMember(memberId: string, read: () => PrivateMemberState): void;
+  markSessionCleanup(row: SessionCleanup): void;
 }
 const notifications = new WeakMap<Database.Database, RelationalStateNotifications>();
 
@@ -55,6 +66,7 @@ export function relationalStateNotificationsFor(
   }
   let tracked: Map<string, { before: PrivateMemberState; read: () => PrivateMemberState }> | null =
     null;
+  let sessionCleanup: SessionCleanup | null = null;
   const cut = () =>
     sqlite
       .prepare<[], { seq: string }>(
@@ -140,7 +152,25 @@ export function relationalStateNotificationsFor(
         collections.add('users');
         memberIds.add(memberId);
       }
-      if (change.before.authorization !== after.authorization) {
+      const sessions = new Map(after.sessions.map((session) => [session.tokenHash, session]));
+      // 只比较原会话撤销；签发新增及原owner实际清理的过期/旧epoch行不构成撤销。
+      const revoked = change.before.sessions.some((session) => {
+        if (
+          sessionCleanup &&
+          (session.expiresAt <= sessionCleanup.createdAt ||
+            (memberId === sessionCleanup.memberId &&
+              session.authEpoch !== sessionCleanup.authEpoch))
+        ) {
+          return false;
+        }
+        const current = sessions.get(session.tokenHash);
+        return (
+          !current ||
+          current.authEpoch !== session.authEpoch ||
+          current.ownerBinding !== session.ownerBinding
+        );
+      });
+      if (change.before.authorization !== after.authorization || revoked) {
         collections.add('sessions');
         memberIds.add(memberId);
       }
@@ -160,6 +190,7 @@ export function relationalStateNotificationsFor(
       }
       const before = cut();
       tracked = new Map();
+      sessionCleanup = null;
       try {
         const result = write();
         if (
@@ -172,6 +203,7 @@ export function relationalStateNotificationsFor(
           const event = describe(before, cut());
           // 订阅者可立即重新鉴权；此时必须已离开本次收集上下文。
           tracked = null;
+          sessionCleanup = null;
           if (event.collections!.length) {
             emitStoreEvent(
               events,
@@ -193,6 +225,7 @@ export function relationalStateNotificationsFor(
         return result;
       } finally {
         tracked = null;
+        sessionCleanup = null;
       }
     },
     trackMember(memberId: string, read: () => PrivateMemberState) {
@@ -202,6 +235,12 @@ export function relationalStateNotificationsFor(
       if (!tracked.has(memberId)) {
         tracked.set(memberId, { before: read(), read });
       }
+    },
+    markSessionCleanup(row: SessionCleanup) {
+      if (!tracked) {
+        throw new Error('Session cleanup requires the notified outer command boundary.');
+      }
+      sessionCleanup = { ...row };
     },
   });
   notifications.set(sqlite, notifier);

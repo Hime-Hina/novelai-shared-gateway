@@ -112,8 +112,11 @@ export class RelationalMemberStore
         )
         .get(memberId);
       const sessions = this.sqlite
-        .prepare(
-          'SELECT token_hash,auth_epoch,owner_binding FROM member_sessions WHERE member_id=? ORDER BY token_hash',
+        .prepare<
+          [string],
+          { tokenHash: string; authEpoch: string; ownerBinding: string | null; expiresAt: number }
+        >(
+          'SELECT token_hash AS tokenHash,auth_epoch AS authEpoch,owner_binding AS ownerBinding,expires_at AS expiresAt FROM member_sessions WHERE member_id=? ORDER BY token_hash',
         )
         .all(memberId);
       const discord = this.sqlite
@@ -132,10 +135,10 @@ export class RelationalMemberStore
         authorization: JSON.stringify({
           epoch: member?.auth_epoch ?? null,
           key: member?.key_hash ?? null,
-          sessions,
           discord: discord ?? null,
           owner: owner?.ownerUserId === memberId ? owner : null,
         }),
+        sessions,
       };
     });
   }
@@ -996,6 +999,11 @@ export class RelationalMemberStore
       }
       const row = options.memberSession?.();
       if (row) {
+        this.notifications?.markSessionCleanup({
+          memberId: row.memberId,
+          authEpoch: row.authEpoch,
+          createdAt: row.createdAt,
+        });
         this.sqlite.prepare('DELETE FROM member_sessions WHERE expires_at<=?').run(row.createdAt);
         this.sqlite
           .prepare('DELETE FROM member_sessions WHERE member_id=? AND auth_epoch!=?')

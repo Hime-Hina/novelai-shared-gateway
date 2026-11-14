@@ -1410,6 +1410,8 @@ Node 22.23.4 新关系反例 10/10，含保存点失败被 catch 后仍只广播
 
 技术产品固定 `d7d98b7a1d5ff94b0031ae0f480d5bf46b6657db`。独立 TEMP 归档先以原 10/10 作对照，再分别只改一处：把本次 cut 前界错误包含上笔、把私有候选一律当成功、改用本笔 header 日、广播时保留旧收集上下文，原同一组分别出现 7、4、2、1 个实际行为失败；没有加载或语法失败。删除新 writer 模块来源登记时，原架构 289 项中 8 个捕获反例准确失败。原 source/guard 最后恢复 SHA 并记录在 `H:\TEMP\novelai-state-notifications-negative-d7d98b7-20261114\negative-evidence.json`。18 改动文件的固定 Gitblob/SHA 为 `H:\TEMP\novelai-state-notifications-d7d98b7-reviewed-files.json`，实现/验证交接为 `H:\TEMP\novelai-state-notifications-REVIEW-HANDOFF.md`；独立复审正在同一技术产品进行，不把作者负控冒充独立结论。
 
+独立审查随后识别 P2：失败私有保存点留下候选后，同一真实签发事务新增会话或删除已过期旧会话，整个 session 集合比较会误报撤销。原独立 5 项中 3 绿、这两项红；原日志保留，未把 `d7`/文档后继当作独审通过。修复只把非会话授权与原会话身份/有效期分开，最终比较原会话的消失/变权；成员 owner 在原签发清理点给出本次实际时间、成员和 epoch 条件，新增签发、过期及旧 epoch 清理不构成撤销。清理角色在同库 notifier 的共同外层上下文，支持候选来自 MemberStore A、真实签发/清理由 B 执行。真实旧 Cookie 注销与新签发同笔仍只唤醒本人，不禁合法事务组合、不丢弃失败候选、不改变原 SQL/认证决定。两红回归另补同一路径的旧 epoch 行清理；在原 `d7` 归档中三个子例均红（含父计数 4 fail），注销加签发正对照绿。修复后新关系专项 15/15、加原 hub 20/20，作者仅重定向原独立脚本 imports 后 5/5；backend 类型、架构、默认及可信 `d0a008a` 迁移、改动格式与 diff 通过。证据为 `H:\TEMP\novelai-state-events-P2-original-confirmation.log`、`novelai-state-events-P2-regression-red.log`、`novelai-state-events-P2-complete-role-red.log`、`novelai-state-events-P2-fixed-targeted.log` 和 `novelai-state-events-P2-author-fixed-5.log`；修复候选另交独立冻结复审，没有重跑 full/71 HTTP/289 架构专项冒充本次证据。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
