@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { verifyLegacyInlineArchive } from '../helpers/legacy-inline-archive.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
@@ -122,6 +123,7 @@ seal.close();
   const audit = (...options) => run(script, ['--source=' + sourcePath, ...options], directory);
   const verified = run(script, ['--verify-package'], directory);
   assert.equal(verified.status, 0, verified.stderr);
+  await verifyLegacyInlineArchive(t, bundle, directory);
   const exported = path.join(directory, 'export');
   const result = spawnSync(
     process.execPath,

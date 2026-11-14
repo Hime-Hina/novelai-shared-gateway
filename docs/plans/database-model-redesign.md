@@ -1989,6 +1989,20 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 该生命周期后继最终源码 sole+inert **32/32、零 skip，75.283 秒**；受理/成员 HTTP/Raw 取消三文件 **41/41、零 skip，14.282 秒**；Queue/Native/OpenAI/Direct/Opening 幂等/退休/Shared 七文件与原完整回放同次 **144/144、零 skip，67.604 秒**。证据分别 `H:/TEMP/novelai-sole-lifecycle-{source-final,bridges-fixed,owner-joint}.log`。隔离 `H:/TEMP/novelai-sole-lifecycle-negative-20261114` 的四个精确负控分别移除 API 新受理 guard、Member guard、delivery 当前状态和 response finish 等待：依次 1pass/4fail、3/2、1/2、0/1（含父计数），均在对应真实业务断言失败，最后一项已返回完整大 bytes 但主 DB.close 证据缺失，不能用 exit0 冒充干净关闭。四个原件在 finally 还原，`results.json` 绑定被改模块的原 SHA。backend type、architecture、默认/可信88 migration、局部格式/语法/diff 另核；未跑 full/build/compiled/Node24/安装/云/生产。独立复审与后继发布物仍只绑定各自最终候选，不继承 b3 的未通过结论。
 
+### 9.81 两组真实 backend child 的关系来源迁移
+
+`connection-lifecycle-http.test.mjs` 与 `idempotency-http.test.mjs` 从旧 `JsonStore` 种值改为原 bootstrap 的完整合法 ready、默认暂停账户，再启动实际 `server/index.ts`，以现 admin PATCH 启用并真实读取本地 `/user/data`。共用最小 `tests/helpers/relational-child.mjs`，按 `sharing_policy.bound_account_id` 和 bootstrap 生成凭据读取身份，不猜唯一账户。每个 child 都明确设置两项 NovelAI URL 为同一合成本地上游，fetch 在 IO 前拒绝其他源，module hook 拒绝旧 Store/migrations；全部审计 SQL 只读。账户启停、免费策略、接单变化走现 HTTP；停机后 Key 轮换和历史退休只调用原 canonical owner 及其授权/事务，不改投影或 ready marker。生命周期依赖已独审的 `46462a3`，不继承旧 b3 未通过结论。
+
+原六个 Direct/OpenAI 超时与断线请求全部保留。首请求的真实物理 IO gate 代替原 SQL cooldown：100ms 领取期限后仍有实际上游占用和原 epoch 预扣，后续请求保持 queued；完成首图后 SIGKILL，重启继续五张，缓存领取不增加 attempt/charge。幂等组保留三并发、跨成员、跨协议响应形态、两 child 随机意图、辅助操作、取消、断连后找回、原 Key 撤销、新 Key 领取、停止接单、账户暂停、文件丢失、历史退休、Cookie 报价确认和真实 MessagePack 预览。它只多用第四成员的一次实际 setup 请求持有物理槽；setup、原 Web 和最终 Member 各一次执行，其他取消与 alias 均不预扣。原 150s/60s 总上限、15s startup、100ms/500ms 领取超时与 5s 局部条件不放宽，正常 10s 派发间隔使用真实时间，不伪造冷却或时钟。公共完整 commit 回放逐表比较任务、输入、attempt、charge、wallet、quota 与原回执，私有凭据和 epoch 不由公共回放复活，禁止网络。
+
+旧测试的默认 artist/scale 离线改写没有当前配置更新 API 的等价来源，不能以 SQL 改 profile 冒充在线操作。child 改验首次 input/context 字节跨真实重启不变；现 `relational-direct-http` 与 `relational-openai-http` 组件测试继续实际改变 `readNormalizationDefaults` 返回值并证明同键仍使用首次 context，这是组件验收，不声称新增正常配置更新入口，也不将默认值行为列为 D4 退役。
+
+原两项 `legacy-direct`/`legacy-openai` inline source 的身份、input SHA 和完整保护正文转到独立旧工具：`tests/helpers/legacy-inline-archive.mjs` 由现 `tests/deployment/legacy-tools.test.mjs` 在实际解包后无条件调用，沿原 CI legacy tool 步骤执行，不运行旧 main。同一真实旧库还通过普通新 child 证明格式拒绝、源字节和目录不变、无旧模块加载/网络/监听。本地只消费已审 `07624c6` 实际 bundle，先校验 manifest 和工具自身 `--verify-package`；该查找能力依赖父任务并入已审 621/076，未在本片重新打包或运行旧工具全套，不能把已有 bundle 的证据当成本片源码发布包验收。
+
+迁移保留下来的“原已完成 Local 文件丢失后 POST 同键必须 410”在真实 child 揭示 9.53 漏口：GET/Native/OpenAI 重领已调用原 `ApiDelivery.validateReplay`，POST `/api/jobs` 只返回 snapshot。现将原 GET 校验移到同文件共享 accept 的 `result.replayed` 分支，复用原当前 Key/ready/引用资格 owner；新受理不增加这项检查。原 child 的 202≠410 修前日志留存，窄真实 owner 用例另验正常重领 202、真丢失 410、恢复原字节 202，均原 id、零新事实、零新派发/收费，并完整回放。无 schema/历史 SQL/金融或缓存等价规则变更。后续新 child 复用同 helper；受理和交付规则仍修改对应实际 owner。
+
+当前候选 Node22 源码定向结果：两组 child 同次串行 **2/2、零 skip、78.070 秒**（53.625/23.759 秒）；Direct/OpenAI 组件及其共同 owner 回归 **53/53、零 skip、14.496 秒**，包含当前默认值改变后的首次 context 和完整回放。已审实际旧 bundle 的两输入与普通新入口拒绝对照 **4/4、零 skip、8.328 秒**（含父计数），没有重跑旧包 19 全套。仅删除新增共享重领校验的隔离负控在新窄用例精准失败 `202 != 410`，原 source 逐字还原；child 迁移初期的表示/事务夹具错误和真实产品修前红日志均保留，不计通过。backend type、architecture、默认及可信 `46462a3` migration、九文件格式、六 MJS 语法与 diff 检查通过。未跑 full/build/compiled/package/CI/Node24/安装/真实云或生产；独立审查与父并集另行绑定。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
