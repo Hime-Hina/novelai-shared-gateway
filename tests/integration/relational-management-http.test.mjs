@@ -1656,6 +1656,11 @@ function assertMemberManagementPublicReplay(t, f) {
     'generation_jobs',
     'charges',
     'wallets',
+    'sharing_policy',
+    'sharing_groups',
+    'group_members',
+    'account_quota_state',
+    'operating_state',
     'commits',
     'domain_events',
     'stream_heads',
@@ -1684,6 +1689,8 @@ function assertMemberManagementPublicReplay(t, f) {
     'upstream_credentials',
     'member_sessions',
     'discord_bindings',
+    'discord_invites',
+    'member_auth_state',
   ])
     assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
   assert.equal(
@@ -1844,6 +1851,10 @@ test('真实Native队列physical pending时禁用409，停止仅取消waiting且
     charges = n.db.prepare('SELECT * FROM charges ORDER BY rowid').all(),
     wallets = n.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
     before = databaseState(n.db);
+  for (const body of [rightsTransfer(), rightsRemoval('preview-delete-member'), rightsRemoval()]) {
+    assert.equal((await manage(body)).status, 409);
+    assert.equal(databaseState(n.db), before);
+  }
   assert.equal((await manage(memberStatus(false))).status, 409);
   assert.equal(databaseState(n.db), before);
   const stopped = await manage(memberAdmission(false), 'native-stop');
@@ -1921,4 +1932,313 @@ test('真实Native队列physical pending时禁用409，停止仅取消waiting且
     );
   assert.equal((await manage(memberStatus(false), 'idle-disable')).status, 200);
   assertMemberManagementPublicReplay(t, n);
+});
+
+const rightsTransfer = (version = 1, amount = 100) => ({
+  action: 'transfer-quota',
+  expectedConfigVersion: version,
+  fromUserId: 'm2',
+  toUserId: 'm1',
+  resource: 'anlasFixed',
+  amount,
+});
+const rightsRemoval = (action = 'delete-member', version = 1) => ({
+  action,
+  expectedConfigVersion: version,
+  userId: 'm2',
+  transferToUserId: 'm1',
+});
+const rightsNoDiscord = () => {
+  throw Error('unexpected rights-test Discord IO');
+};
+
+test('权益POST真实转账及只读删除预览沿原DTO，重领旧回执不再转钱或复活已删除认证', async (t) => {
+  const f = await setup(t, { discordFetch: rightsNoDiscord }),
+    seen = policyNotifications(f),
+    beforeWallets = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
+    headers = { 'idempotency-key': 'rights-transfer' },
+    first = await f.call(owner, { method: 'POST', headers, body: rightsTransfer() });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.body.fromUserId, 'm2');
+  assert.equal(first.body.toUserId, 'm1');
+  assert.deepEqual(first.body.transferred, { v5: 0, anlasFixed: 100, anlasPurchased: 0 });
+  assert.equal(first.body.configVersion, 2);
+  const firstCommit = readRelationalCommit(
+      f.db,
+      f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+    ),
+    movement = firstCommit.events.find((e) => e.eventType === 'FundsTransferred');
+  assert.equal(firstCommit.command.actorKind, 'member');
+  assert.equal(firstCommit.command.actorId, 'm1');
+  assert.equal(movement.payload.fromMemberId, 'm2');
+  assert.equal(movement.payload.toMemberId, 'm1');
+  assert.deepEqual(movement.payload.resources, { v5: '0', anlasFixed: '100', anlasPurchased: '0' });
+  for (const row of beforeWallets) {
+    const after = f.db.prepare('SELECT * FROM wallets WHERE member_id=?').get(row.member_id);
+    assert.equal(
+      Number(after.anlas_fixed_available) - Number(row.anlas_fixed_available),
+      row.member_id === 'm1' ? 100 : -100,
+    );
+    assert.equal(after.v5_available, row.v5_available);
+    assert.equal(after.anlas_purchased_available, row.anlas_purchased_available);
+  }
+  const once = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  assert.deepEqual(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer() })).body,
+    first.body,
+  );
+  assert.equal(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer(1, 101) })).status,
+    409,
+  );
+  assert.equal(databaseState(f.db), once);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  assert.equal(seen.length, 1);
+  const original = RelationalQuotaStore.prototype.manageMemberQuota;
+  t.mock.method(
+    RelationalQuotaStore.prototype,
+    'manageMemberQuota',
+    function (metadata, input, ...rest) {
+      assert.equal(f.db.inTransaction, true);
+      assert.equal(rest[1], f.controls);
+      if (input.action !== 'preview-delete-member')
+        return original.call(this, metadata, input, ...rest);
+      f.db.pragma('query_only=ON');
+      try {
+        return original.call(this, metadata, input, ...rest);
+      } finally {
+        f.db.pragma('query_only=OFF');
+      }
+    },
+  );
+  const previewBody = rightsRemoval('preview-delete-member', 2),
+    preview = await f.call(owner, {
+      method: 'POST',
+      body: previewBody,
+      headers: { 'idempotency-key': 'not a command key' },
+    });
+  assert.equal(preview.status, 200, preview.text);
+  assert.equal(preview.body.configVersion, 2);
+  assert.equal(preview.headers.get('set-cookie'), null);
+  assert.deepEqual((await f.call(owner, { method: 'POST', body: previewBody })).body, preview.body);
+  assert.equal(databaseState(f.db), once);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  assert.equal(seen.length, 1);
+  const removed = await f.call(owner, {
+    method: 'POST',
+    body: rightsRemoval('delete-member', 2),
+    headers: { 'idempotency-key': 'rights-delete' },
+  });
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual({ ...removed.body, configVersion: 2 }, preview.body);
+  assert.equal(removed.body.configVersion, 3);
+  assert.equal(f.members.readMember('m2').status, 'removed');
+  assert.equal(f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch, null);
+  assert.equal(
+    f.db.prepare("SELECT COUNT(*) n FROM member_sessions WHERE member_id='m2'").get().n,
+    0,
+  );
+  assert.equal(await authenticateMemberApiKey(f.members, keys.m2), null);
+  assert.equal(
+    await authenticateMemberSession(f.members, f.sessions.m2.token, f.env, f.clock),
+    null,
+  );
+  const deleted = databaseState(f.db),
+    afterChanges = f.db.prepare('SELECT total_changes() n').get().n;
+  assert.deepEqual(
+    (
+      await f.call(owner, {
+        method: 'POST',
+        body: rightsRemoval('delete-member', 2),
+        headers: { 'idempotency-key': 'rights-delete' },
+      })
+    ).body,
+    removed.body,
+  );
+  assert.equal(databaseState(f.db), deleted);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, afterChanges);
+  assert.equal(seen.length, 2);
+  f.db.transaction(() =>
+    f.members.setMemberStatus(meta('rights-owner-disabled'), 'm1', 'disabled'),
+  )();
+  assert.equal(
+    (await f.call(owner, { method: 'POST', headers, body: rightsTransfer() })).status,
+    401,
+  );
+  assertMemberManagementPublicReplay(t, f);
+});
+
+test('权益POST保持原金额/角色/版本与owner自删限制，本机admin保留应急删除', async (t) => {
+  const f = await setup(t, { discordFetch: rightsNoDiscord }),
+    before = databaseState(f.db);
+  for (const [body, status] of [
+    [rightsTransfer(1, 0.5), 400],
+    [rightsTransfer(1, 0), 400],
+    [{ ...rightsTransfer(), toUserId: 'm2' }, 400],
+    [{ ...rightsTransfer(), fromUserId: 'missing' }, 404],
+    [rightsTransfer(0), 409],
+    [rightsTransfer(2), 409],
+    [{ ...rightsTransfer(), actorKind: 'admin' }, 400],
+    [{ ...rightsRemoval('preview-delete-member'), userId: 'm1', transferToUserId: 'm2' }, 409],
+    [{ ...rightsRemoval(), userId: 'm1', transferToUserId: 'm2' }, 409],
+  ]) {
+    const result = await f.call(owner, { method: 'POST', body });
+    assert.equal(result.status, status, result.text);
+    assert.equal(databaseState(f.db), before);
+  }
+  assert.equal(
+    (await f.call(owner, { method: 'POST', member: 'm2', body: rightsTransfer() })).status,
+    403,
+  );
+  const body = { ...rightsRemoval(), userId: 'm1', transferToUserId: 'm2' },
+    result = await f.call(admin, {
+      method: 'POST',
+      body,
+      headers: { 'x-admin-token': adminToken, 'idempotency-key': 'emergency-owner-removal' },
+    });
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.body.deletedUserId, 'm1');
+  assert.equal(await authenticateMemberApiKey(f.members, keys.m1), null);
+  assert.equal((await f.call(owner)).status, 401);
+  const source = readRelationalCommit(
+    f.db,
+    f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+  );
+  assert.equal(source.command.actorKind, 'admin');
+  assert.equal(source.command.actorId, 'local-admin');
+  assertMemberManagementPublicReplay(t, f);
+});
+
+test('权益POST真正waiting/held和同一个待收尾physical Map都阻止调整，释放后沿原owner执行', async (t) => {
+  for (const phase of ['waiting', 'held', 'physical']) {
+    await t.test(phase, async (t) => {
+      const f = await setup(t, { discordFetch: rightsNoDiscord });
+      let controls, control;
+      if (phase === 'physical') {
+        // 原控制owner创建真实待settle promise；已完成SQL不能替它释放当前共享Map。
+        assert.equal(
+          f.db.prepare("SELECT status FROM generation_jobs WHERE id='existing-0'").get().status,
+          'done',
+        );
+        controls = createGenerationControls({
+          controls: f.controls,
+          timeoutDelay: () => 60000,
+          schedule() {},
+        });
+        control = controls.createRunningJobControl({ id: 'existing-0', accountId: 'a' });
+        t.after(() => controls.finishRunningJobControl('existing-0', control));
+      } else {
+        await f.accept('rights-duty', { memberId: 'm2' });
+        if (phase === 'held') f.dispatch('rights-duty-0');
+      }
+      const before = databaseState(f.db);
+      for (const body of [
+        rightsTransfer(),
+        rightsRemoval('preview-delete-member'),
+        rightsRemoval(),
+      ]) {
+        const result = await f.call(admin, {
+          method: 'POST',
+          body,
+          headers: { 'x-admin-token': adminToken },
+        });
+        assert.equal(result.status, 409, result.text);
+        assert.equal(databaseState(f.db), before);
+      }
+      if (phase === 'physical') {
+        assert.equal(f.controls.size, 1);
+        controls.finishRunningJobControl('existing-0', control);
+        await control.done;
+        const result = await f.call(owner, { method: 'POST', body: rightsTransfer() });
+        assert.equal(result.status, 200, result.text);
+      }
+    });
+  }
+});
+
+test('权益POST末尾真实SQL失败全表回滚无通知，同键健康重试和完整公共回放', async (t) => {
+  for (const action of ['transfer-quota', 'delete-member']) {
+    await t.test(action, async (t) => {
+      const f = await setup(t, { discordFetch: rightsNoDiscord }),
+        seen = policyNotifications(f),
+        body = action === 'transfer-quota' ? rightsTransfer() : rightsRemoval(),
+        headers = { 'idempotency-key': 'rights-rollback' };
+      f.db.exec(
+        action === 'transfer-quota'
+          ? "CREATE TRIGGER fail_rights_tail AFTER UPDATE ON wallets WHEN NEW.member_id='m1' BEGIN SELECT RAISE(ABORT,'synthetic rights target tail'); END"
+          : "CREATE TRIGGER fail_rights_tail AFTER DELETE ON member_sessions WHEN OLD.member_id='m2' BEGIN SELECT RAISE(ABORT,'synthetic rights private tail'); END",
+      );
+      const before = databaseState(f.db),
+        failed = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(failed.status, 500, failed.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(seen.length, 0);
+      f.db.exec('DROP TRIGGER fail_rights_tail');
+      const result = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(result.status, 200, result.text);
+      assert.equal(seen.length, 1);
+      const once = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() n').get().n;
+      assert.deepEqual((await f.call(owner, { method: 'POST', headers, body })).body, result.body);
+      assert.equal(databaseState(f.db), once);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+      assert.equal(seen.length, 1);
+      assertMemberManagementPublicReplay(t, f);
+    });
+  }
+});
+
+test('权益POST慢正文后的当前权限仍先于原receipt，preview不因旧header变成写入', async (t) => {
+  for (const mode of [
+    'transfer-epoch',
+    'delete-logout',
+    'preview-owner',
+    'preview-ready',
+    'admin-query',
+  ]) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, { discordFetch: rightsNoDiscord, onBodyRead: () => begin?.() }),
+        body = mode.startsWith('preview')
+          ? rightsRemoval('preview-delete-member')
+          : mode.startsWith('delete')
+            ? rightsRemoval()
+            : rightsTransfer(),
+        endpoint = mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner,
+        headers = { 'idempotency-key': 'rights-old-receipt' };
+      if (!mode.startsWith('preview')) {
+        const saved = await f.call(endpoint, { method: 'POST', body, headers });
+        assert.equal(saved.status, 200, saved.text);
+      }
+      const started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, endpoint, started, headers, body);
+      if (mode === 'transfer-epoch') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('rights-disable'), 'm1', 'disabled'),
+        )();
+        f.db.transaction(() => f.members.setMemberStatus(meta('rights-enable'), 'm1', 'active'))();
+      } else if (mode === 'delete-logout') {
+        await logoutMemberSession(f.members, f.sessions.m1.token);
+      } else if (mode === 'preview-owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'preview-ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed'").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const cut = f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+        wallets = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
+        result = await held.finish();
+      assert.equal(result.status, mode === 'preview-ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.equal(
+        f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+        cut,
+      );
+      assert.deepEqual(f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), wallets);
+    });
+  }
 });

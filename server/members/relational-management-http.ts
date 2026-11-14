@@ -166,6 +166,9 @@ export function createRelationalManagementHttp(deps: {
           'loss-alert-policy',
           'member-status',
           'member-admission',
+          'transfer-quota',
+          'preview-delete-member',
+          'delete-member',
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
@@ -174,7 +177,10 @@ export function createRelationalManagementHttp(deps: {
         const actorId = member?.id ?? 'local-admin',
           actorKind = member ? 'member' : 'admin',
           operation = `member-management:${body.action}`,
-          command = managementCommand(req, actorId, operation, body, actorKind),
+          command: ReturnType<typeof managementCommand> =
+            body.action === 'preview-delete-member'
+              ? { actorId, actorKind }
+              : managementCommand(req, actorId, operation, body, actorKind),
           metadata: Parameters<RelationalMemberStore['setMemberStatus']>[0] = {
             commandId: command.commandId ?? randomUUID(),
             fingerprint: command.fingerprint ?? domainDigest({ operation, body }),
@@ -183,11 +189,30 @@ export function createRelationalManagementHttp(deps: {
             recordedAt: now(),
             correlationId: null,
             causationId: null,
-            policyVersion: ['member-status', 'member-admission'].includes(body.action as string)
+            policyVersion: [
+              'member-status',
+              'member-admission',
+              'transfer-quota',
+              'preview-delete-member',
+              'delete-member',
+            ].includes(body.action as string)
               ? 'member-management-v1'
               : 'quota-policy-v1',
             pricingVersion: 'none',
           };
+        if (
+          ['transfer-quota', 'preview-delete-member', 'delete-member'].includes(
+            body.action as string,
+          )
+        ) {
+          const result = quotas.manageMemberQuota(
+            metadata,
+            body as Parameters<RelationalQuotaStore['manageMemberQuota']>[1],
+            member,
+            deps.controls,
+          );
+          return 'receipt' in result ? result.receipt : result;
+        }
         if (body.action === 'member-status') {
           if (typeof body.enabled !== 'boolean') {
             fail(400, 'enabled 必须为布尔值');

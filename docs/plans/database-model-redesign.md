@@ -1837,6 +1837,20 @@ Node22 新合法 ready/localhost 专项 12/12，与原 Request HTTP、Quota/laun
 
 根在 `b339eb2` 组预览与订阅读取并集上整合，管理 factory 与 HTTP 测试保持 `fbf7707` 的精确字节，两个契约文档保留已审内容。管理 HTTP、成员 owner、接单和旧路由四文件同次 107/107、零跳过，44.373 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移、四文件格式及 diff 通过。日志 `H:/TEMP/novelai-management-members-root-{joint,type,static,format}.log`。完整全量、实际编译和发布物另验，未将新命令源码检查称为 sole 已接入。
 
+### 9.77 权益转账、删除与只读预览的管理 HTTP
+
+从固定 `8cb09ef4e69a3441d1beb83d1bc4166338f1cfde` 追原 http-routes / manageFairMember / Web transfer与delete dialog，原三 action 与第 9.43 节的 `RelationalQuotaStore.manageMemberQuota` 已具有同一金融规则与回包。本片只在两个现管理 POST 加薄分派，直接交完整业务 body、当前授权 callback member 和实际 deps.controls；原 Member/Quota/planner/私有撤销/共同 replay 不变，不复制份额/金额/组规则或完整 draft 模型。
+
+正文 IO 后沿现 authorize 重核 current admin 或同一 owner Cookie/稳定成员/epoch/Discord/ready；写沿原 managementCommand 的完整原 body 与 actor 元数据，再由原 owner 在 prior 前核当前权限。预览不调用 managementCommand，只有现 owner 签名需要的临时服务 metadata，不持久化或领取客户端键；原 owner 在独立 view 上计划，直接返回无 receipt 包装的原 DTO，SQL、事实、游标、钱包及通知均零写。原 configVersion 保留，真正提交仍复核。现 actorKind/合法 ID 隔离 helper 的父后继另行合并，本片不重复改、也不禁合法成员 ID。
+
+转账保留原 source/receiver/account/resource/amount，资金只转一次；删除由同一完整提交保存 MemberRemoved + 原 FundsTransferred + MemberStatusChanged(removed)，原 member owner 将 auth_epoch 置 NULL 并撤会话，原私有记录可保留但不能登录/再次启用。旧 receipt 仍先核当前权限，重领不再同步、转钱或复活私有认证。原 owner 自删/预览自删限制、本机 admin 应急、全局 waiting/held/原池/未决核对和当前实际 physical Map 均由原 owner 处理。
+
+新增源码目标覆盖真实合法 ready/localhost 的转账、query_only 预览与实删 DTO 等价，完整原回执/异意图、源与接收者原 ID、金额/版本/自删/admin、等待/预留和同一物理 Map 的拒绝与释放、SQL 目标钱包及私有 session 删除末端故障的全表回滚/零通知/健康重试、慢正文 epoch ABA/logout/owner/ready/admin 撤权先于旧 prior。公共完整提交回放比较组/金融/任务/原成员表，不联网、不复活七类私有认证，重复 total_changes 为零。原真实 Native/mock 上游/队列在途场景也验证三个 action 均拒绝；另终态 SQL 但物理 Map 未收尾的区分例使用原 createGenerationControls 的待完成 promise，明确不冒充实际外部上游挂起。
+
+固定前必要检查和错误实现负控按后续日志补录；原未接 action 的同新增目标 15/15 失败，薄接入首次 15/15 通过。初次测试重复导入既有 authenticateMemberSession 导致加载失败已移除，保留独立日志而不计入负控；TypeScript 条件 metadata 使用原 managementCommand ReturnType 明确仅类型，不添加默认规则。独立审查、父并集、sole/发布/生产切换另验，不沿用前驱 full 或 ce7 的 Key 读取证据。
+
+Node22 最终原管理 HTTP、权益 owner、成员 core 与关系通知四文件同次 179/179、零跳过，25.383 秒，`H:/TEMP/novelai-member-rights-http-joint.log`。类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式、语法和 diff 通过。仅让 preview 也读取管理命令键，真实预览被非法 header 误拒为 400，单例准确失败；仅把实际 Map 换成空 Map，waiting/held 两正拒绝仍过、物理收尾场景错误返回 200，父计 2 fail/2 pass。两变体均在本隔离工作树 finally 恢复原字节后运行最终 179；证据 `H:/TEMP/novelai-member-rights-http-evidence-20261114/{negative-evidence.json,static-comparisons.json}`。原授权前半和 member-status/admission/政策/GET 后半逐字不变，九个业务 owner/caller 文件保持根字节；没有 full/build/compiled/native/install 或生产操作。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
