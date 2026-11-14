@@ -2293,6 +2293,30 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 根在已审复制/关闭 `bb308a5` 上普通整合，十一非plan文件逐字等于0dfe；配置/成员/额度只新增原窄读，原命令与Source/guard保持。新增唯一sole实际HTTP验收放在原暂停bootstrap门禁场景：完整13字段与28账户字段、真实成员数量/暂停状态/逻辑图0、默认不泄秘密、显式reveal当前PST、Cookie不变admin、无SetCookie，且既有零上游/全部原门禁断言保留。完整新摘要文件 **14/14、零跳过，9.300秒**，该真实sole场景 **1/1、零跳过，2.004秒**。类型、architecture、默认及可信 main88迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-admin-summary-root-preservation.json`，日志 `H:/TEMP/novelai-admin-summary-root-*`。这是真实源码sole路径，尚非最终编译/发行物/Nuxt整套或迁移/容量/真实云端验收，不借旧Web ac9的失败记录翻案。
 
+### 9.89 Native 批次真实 child 来源迁移
+
+`native-batch-http.test.mjs` 仅迁移原一个 150 秒真实 backend child 用例，不改产品 owner 或共享 helper。独立树从已审 `cb5e87a` 普通合入已审 `4da7c704`，复用现 `childFixture/launchGateway/enableAccount/query`：真实 bootstrap 经公共/选定私有来源和唯一 installer 生成暂停 ready 库，再实际 `server/index.ts`、当前管理员启用与 localhost 官方读取。两个 NovelAI origin 显式 loopback，外源 fetch 在 IO 前拒绝，子进程禁止加载旧 Store/migrations。没有 SQL 种身份、ready、额度、冷却或队列；原 Native 无成员报价确认字段，不加 Cookie confirmation 或其他协议。
+
+原模型、1024 尺寸、23 步、seed `100/4294967295/300/400` 与原 HTTP body 保持。A 四图和 B 两图按 `A1→B1→A2→B2` 交错，uint32 尾值下一张仍为 0；A 第二张真实失败/退款，其后余图没有 attempt 或 charge。实际门闩观察断开等待后首图仍 running/reserved、上游未关闭且下一图尚未派发；释放后成功，SIGKILL 再启动仅续原 queued child，原 queue_seq 不变。原 ZIP/JSON、WebP、SSE/MessagePack、同键协商重领、接收 JSON 头后断线、参数冲突零写、100ms 仅 HTTP 超时以及 Local 丢失 410 零再发断言保留；原 150s/45s/90s/5s 上限不延长。旧 JsonStore 种值、旧热缓存开关和旧表审计退出，输入由 InputStore 冷读，费用/尝试/成员归属改读真实关系，不构造兼容旧 DTO。
+
+最后仅归还先前移走的同一原图，按原 artifact SHA256/长度和原 bytes 复核；真实停完所有 child 后封存同一切点。完整提交和唯一 Input owner 回放产生的目标必须私有全空，再由官方选定 sourceSHA 和唯一 installer 逐一核原 Local bytes、完整公共/私有状态并成为 ready；不复制私有表/列名单或维护第二套公共摘要。随后关闭数据库，将这个合法重建库放回同一临时 DATA_DIR，再由实际 child 重开。启动时真实官方额度 GET 持有网络门闩，原 Key 领取原 B 回执、ID 与图片，前后完整计数、原钱包、attempt 和费用不变，生成上游次数不增加；释放该查询后，合法自动观察提交按原 owner 另行核对，选定源 SHA 始终不变。预期完整生成调用序列保持七次，九个 job、七个 attempt；这些都来自本次真实正常受理，不是历史 parentless 或 Opening 形状的替代。旧历史去向仍按未决 A/B 与独立旧工具证据处理。
+
+首轮 42.084 秒失败原样保留：新加 `events.once(request,'close')` 会因刻意 `destroy()` 的 ECONNRESET 拒绝 Promise，即使原 error listener 忽略该预期错误。相同 Node 的纯标准库 `error→close` 复现明确区分 once 拒绝与原 close listener 成功；后继只将这个观察器改为等待 close 的 Promise，保留所有业务断言，不吞非预期 fetch 失败，不把夹具失败记成产品 500、超时或已确认漏洞。真实完整执行与静态证据在固定候选交接中记录。
+
+第二轮 63.512 秒在原图路径断言短路：新 replica.object_key 是文件名，不是旧 image.file 的完整相对路径。产品角色没有矛盾；夹具改从实际 ReplicaStore 的原发布来源读取只读 Local descriptor/ticket，继续核原 images 边界、MIME、SHA 和长度，不复制 namespace 或文件名算法。两轮失败源码/SHA/日志均单独保留，不累加为通过。后继普通合入固定 root `5ca121f`，消费已审 fair/Note/9.85 和当前权威私有列来源；相对该并集仍只有此测试与两份文档，产品、共享 helper 和历史 SQL 字节不改。
+
+第三轮 65.073 秒已到达完整公共/私有及真实 Local 的唯一 ready 验证，随后新增的“原库 sidecar 必须不存在”夹具条件失败。同 Node/ABI 的最小 SQLite 探针确认：writer 关闭清除 WAL 后，readonly 打开原 WAL header 并 backup、关闭仍会留下 WAL/SHM。修正只在所有 child/数据库已关闭后，将原库与存在的 sidecar 整组归档到原临时目录同前缀，只有确实不存在的文件允许缺席；其他错误继续拒绝，不删除旧 WAL、手改业务或让重建库套用旧 WAL。这仍是夹具生命周期错误，原红及探针各自保留，不标产品问题或整体通过。
+
+第四轮 65.775 秒已在合法重建库的真实 child 领取原 B 图片，新增的“重开前到领取后所有提交都不变”条件误计立即启动的自动额度观察：真实 source/role 小探针确认，单独的 `quota-refresh` 系统命令产生 `QuotaObserved/V5CapacityObserved/QuotaBaselineAdopted`，并非回执重建任务。新断言在真实 quota GET 已进入但未响应时取原状态，严格核回执前后零写，再 release 原响应，读完整提交核原系统 actor、账户及凭据代次；不关自动刷新、改日期、允许任意“+3”或复制事件白名单。小探针实际合法 bootstrap/child/Native 原键、全表摘要零变及独立观察为 **1/1、零跳过，2.006 秒**；它的两个准备错误（流式模拟错误返回 PNG、误把 envelope.command 当成 envelope 根字段）也单独封存，不计产品红或替代完整原文件。
+
+技术源 `55145e7` 的第五轮原完整文件 **1/1、零跳过，用例 65.298 秒／整个文件 65.780 秒**，仍为原 150 秒上限。原生成调用全序列七次、九个 job/七个 attempt、完整格式协商/公平批次/余图未派发/原预扣退款、断线持有物理请求、SIGKILL 恢复、原图缺失 410 零再发、完整公共及选定私有回放/真实 Local/唯一 ready，以及实际重开领取均到底通过。原回执前后全计数、钱包/attempt 全行和原 charges 不变；释放独立真实 quota 请求后，完整系统观察提交按源角色和当前 epoch 核对。日志及运行前 HEAD/Node/源码 SHA 分别为 `H:/TEMP/novelai-native-batch-fifth.log`、`novelai-native-batch-fifth-identity.json`。小探针与前四轮不累加为多个完整用例通过；未运行 full、构建、原生安装、真实云端或真实 NAI，不由此宣称整体 D4 或生产验收完成。
+
+随后 backend 类型、architecture、默认及可信 `5ca121f` migration、200 个语法文件、三差异文件格式与 diff 检查通过。原 body/常量/ZIP parser、HTTP POST、等待 helper、SSE/MessagePack 协商逐字保真；模拟上游除样本数审计及仅最后重开的真实 quota IO gate 外逐字相同。独审交接固定三个差异路径和未改产品/helper，后继文档不改变已通过的测试源码字节。
+
+固定 `baa70689cae443c5f0242dd59039816e0cb7c262` 已由非作者独立技术复审 **PASS**，报告 `H:/TEMP/novelai-native-batch-independent-baa7068-20261115/INDEPENDENT-REVIEW.md`，SHA256 `8f29dee69654a356954d0d797a0f94aecc9da016dfbd4367089723a9a07ba715`。同一原 150 秒单例独立 **1/1、零跳过，66.072 秒**；归档路径逃逸在任何 rename 前拒绝、真实 readonly backup sidecar 整组保留、非 ENOENT 错误不继续发布三个不同边界 **3/3**。四次真实 source child 均显式在入口前加载低层 loopback guard，原守卫与作者五轮原证据未覆盖。末尾三种自动 quota facts 是实际诊断记录；精确断言为一个 quota-refresh/system/null envelope 与首观察账户/代次，未声称 exact-array 或该新 cut 的额外全回放。
+
+根在已审会话协调 `62953de` 上普通整合：只改本测试与 API/计划，所有产品和 helper 逐字保持629，会话/复制/管理汇总原证据不变；测试逐字等于上述独审执行源，SHA256 `e3cdb5ec4596b5f11ffbf8a26a39cc29ce1caf213fc2d00e66180426bc93b06f`。本次复用作者/独审的完整单例，不重复第三次 65 秒运行，也不写成根已执行最终 Native/整套发布矩阵。根保留证明为 `H:/TEMP/novelai-native-batch-root-preservation.json`；最终同候选 source/full、编译双 Node、三包及真实部署交点仍待后续统一验证。
+
 ### 9.90 原成员会话 HTTP child 的关系夹具
 
 本片迁移 `tests/integration/member-session-http.test.mjs`，原启动反例确认真实遗漏后另获准最小修复 `gateway-runtime.ts`；schema、历史资产及独立 owner-session-bridge 工具不改。来源为已审 Note/fair-quota 并集 `eeaba678`，再普通合入 `5ca121f` 的已审 9.85/canonical private 列接合；实际启动与初始数据复用 `tests/helpers/relational-child.mjs` 的 bootstrap、真实监听地址、localhost 上游和 IO 前拒绝旧 Store/外联。公共回放直接使用 `assertChildPublicReplay()`，Ready 与 helper 均复用 `relationalPrivateMemberColumns`，不复制第二套种库/ready 工具，不手列 auth-only 私有列，也不手写 epoch、冷却或 ready。
