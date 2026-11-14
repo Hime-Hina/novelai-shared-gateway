@@ -22,6 +22,7 @@ import {
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { relationalGenerationFacts } from '../../server/storage/relational-generation-store.ts';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
@@ -280,70 +281,10 @@ test('同 cursor 的钱包差一、缺行、多行、正文或私有错配都拒
   }
 });
 
-test('选择源须有明确非零完整切点，未实现事实与无原事实的诊断即使目标复制一致也不能 ready', async (t) => {
-  for (const kind of ['history', 'cut', 'hash', 'empty', 'unsupported', 'diagnostic']) {
+test('选择源须有明确非零完整切点，缺失 owner 登记与无原事实的诊断即使目标复制一致也不能 ready', async (t) => {
+  for (const kind of ['history', 'cut', 'hash', 'empty', 'missing-owner', 'diagnostic']) {
     await t.test(kind, async (t) => {
       const f = await completed(t);
-      if (kind === 'unsupported') {
-        const { policyVersion, pricingVersion, ...command } = meta('unknown-owner', NOW + 20);
-        f.db.transaction(() =>
-          appendRelationalCommit(f.db, {
-            ...command,
-            expectedVersions: {
-              'request:complete': f.db
-                .prepare(
-                  'SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id=?',
-                )
-                .get('request:complete').v,
-            },
-            receipt: { opening: true },
-            events: [
-              {
-                // 合法原尝试仍缺 owner；已完成幂等不能继续充当缺口占位。
-                eventType: 'OpeningAttemptRecorded',
-                streamId: 'request:complete',
-                memberId: 'm1',
-                accountId: 'a',
-                occurredAt: NOW + 20,
-                policyVersion,
-                pricingVersion,
-                payload: {
-                  attemptId: 'unsupported-original-attempt',
-                  jobId: 'complete-0',
-                  accountId: 'a',
-                  credentialEpoch: null,
-                  authorizedAt: null,
-                  response: {
-                    dispatchState: 'unknown',
-                    upstreamStartedAt: null,
-                    upstreamHeadersAt: null,
-                    upstreamCompletedAt: null,
-                    upstreamHttpStatus: null,
-                  },
-                  candidateMode: 'unknown',
-                  upstreamCandidates: [],
-                  actualConsumption: null,
-                  reviewStatus: null,
-                  firstUnknownAt: null,
-                  reviewDeadlineAt: null,
-                  reviewClosedAt: null,
-                  lossEventId: null,
-                  closureEventId: null,
-                  preparedArtifactId: null,
-                  preparedFile: null,
-                  preparedMimeType: null,
-                  preparedByteLength: null,
-                  preparedSha256: null,
-                  origin: {
-                    sourceId: 'synthetic-opening',
-                    originalId: 'unsupported-original-attempt',
-                  },
-                },
-              },
-            ],
-          }),
-        )();
-      }
       if (kind === 'diagnostic') {
         f.db
           .prepare(
@@ -367,13 +308,24 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
       if (kind === 'empty') {
         selected.finalCommitSeq = '0';
       }
-      const before = databaseState(db);
-      await assert.rejects(
-        verifyAndInstallRelationalStorage(db, selected),
-        kind === 'unsupported' ? /Business projection has no owner/ : undefined,
-      );
+      const before = databaseState(db),
+        sourceBefore = sha256(await readFile(selected.sourcePath));
+      try {
+        if (kind === 'missing-owner') {
+          assert.equal(relationalGenerationFacts.delete('ArtifactPublished'), true);
+        }
+        await assert.rejects(
+          verifyAndInstallRelationalStorage(db, selected),
+          kind === 'missing-owner' ? /Business projection has no owner/ : undefined,
+        );
+      } finally {
+        if (kind === 'missing-owner') {
+          relationalGenerationFacts.add('ArtifactPublished');
+        }
+      }
       assertBuilding(db);
       assert.equal(databaseState(db), before);
+      assert.equal(sha256(await readFile(selected.sourcePath)), sourceBefore);
     });
   }
 });

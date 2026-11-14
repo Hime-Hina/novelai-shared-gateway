@@ -13,6 +13,7 @@ import {
 } from '../quota/failure-accounting.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { readRelationalOpeningAttempt } from './relational-generation-sources.ts';
 import {
   beginDomainCommand,
   finishDomainCommand,
@@ -1833,6 +1834,17 @@ export class RelationalQuotaStore {
       WHERE stream_id=? AND event_type='DispatchAuthorized' AND json_extract(payload,'$.attemptId')=? LIMIT 2`,
       )
       .all(`request:${attempt.requestId}`, attemptId);
+    const opening = readRelationalOpeningAttempt(this.sqlite, attemptId);
+    if (opening) {
+      if (rows.length) {
+        fail('开账尝试不能冒充另一原在线派发');
+      }
+      // 原 epoch 不能单独证明一次授权；未知授权时间不借当前私有凭据补全。
+      if (opening.payload.authorizedAt === null) {
+        return null;
+      }
+      return { attempt, dispatch: opening };
+    }
     if (rows.length !== 1) {
       fail('凭据失效缺少唯一原派发事实');
     }
