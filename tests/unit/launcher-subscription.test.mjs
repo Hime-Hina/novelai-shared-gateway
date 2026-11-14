@@ -1,7 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launcherSubscription } from '../../server/quota/launcher-subscription.ts';
-import { configureFairQuota, syncFairQuota } from '../../server/quota/fair-share.ts';
+import {
+  launcherSubscription,
+  launcherSubscriptionFromQuota,
+} from '../../server/quota/launcher-subscription.ts';
+import {
+  configureFairQuota,
+  syncFairQuota,
+  fairQuotaSummary,
+} from '../../server/quota/fair-share.ts';
 const NOW = 1800000000000;
 function fixture() {
   const db = {
@@ -65,6 +72,15 @@ test('无共享成员和停用成员不能取得启动器订阅', () => {
       (e) => e.statusCode === 403,
     );
   }
+});
+test('窄展示输入不能用另一池资格背书本人的绑定账本', () => {
+  const db = fixture(),
+    summary = fairQuotaSummary(db, db.users[0], NOW),
+    result = launcherSubscriptionFromQuota(summary, { ...db.accounts[0], id: 'another-pool' }, NOW);
+  assert.equal(result.active, false);
+  assert.equal(result.expiresAt, 0);
+  assert.equal(result.usage.percent, 20);
+  assert.equal(result.trainingStepsLeft.fixedTrainingStepsLeft, 2500);
 });
 test('过期、停用、非Opus、配额过期与同步错误不会被启动器误认为有效订阅', () => {
   for (const patch of [

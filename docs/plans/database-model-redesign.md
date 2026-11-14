@@ -1571,6 +1571,20 @@ Node 22.23.4 的合法 ready/真实 localhost Direct 专项 23 项与原 JobPrev
 
 固定 `0de0e050a9eb9e79483617d4405a142f23e8962e` 独立复审 19/19、零跳过，15 文件与候选 Git blob/SHA256 一致；错误的新 wrapper/hub 与 IO 前 Cookie 缓存两个负控分别被真实连接身份和多泄一帧断言识别。报告 `H:\TEMP\novelai-shared-independent-20261114\review-0de.md`。与已审 Direct、Opening Input 和官方原值 v5 汇合后，关系读取/通知/API 七文件 109/109，原成员 transport 4/4，Web presentation 11/11；backend/Web 类型、架构、可信 main `88d2c26` 迁移与 diff 通过。以上为后继窄联合，不冒充前置 `6dfc972` 的完整后端或编译产物验证，sole 与容量仍待验。
 
+### 9.56 启动器订阅与当前政策窄读
+
+四个既有 GET 路径 `/user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription` 仍共用 `quota/launcher-subscription` 的个人展示规则。本片先交付关系读取能力，不接入旧 gateway 的总装配。成员启用与已入共享组的 403 边界、Anlas 保守整数化、个人 V5 百分点和恢复秒数只在原展示 owner 维护；旧数据库入口与关系入口共用抽出的窄 DTO 函数。`QuotaStore.readLauncherSubscription(memberId, now)` 先核当前成员状态，再复用 `readMemberQuotaSummary` 的独立恢复估算，从该摘要的确切 `boundAccountId` 薄读订阅资格和已知到期时间，不借另一池或后来绑定的期限。缺失期限保持原 inactive/tier 0/expiresAt 0；已知零值、余额和失败不互相替代。DTO 不携成员/上游标识、私有认证或其他成员钱包。
+
+读取不写金融事实、配置、游标或钱包，也不执行命令或网络。真实 held 允许读取预扣后的个人余额，缺金融基线继续 503；未绑定且已配置的成员保持原零余额 inactive 展示。公开展示事实可以完整回放，私有认证不随之恢复；原展示 owner 不以 PST 或 ready 判定 active，因此该 DTO 不能充当调度、认证或 ready 证明。实际 HTTP 调用者仍须按当前 Key/Cookie 与授权 owner 执行校验。
+
+`readQuotaConfiguration()` 只返回当前 `groups/configVersion/autoAnlasFallback/freeImagePolicy/lossAlertPolicy`，供既有 owner/admin 政策 UI 的后续薄绑定复用，不构造 users/jobs/tokens/settings 兼容集合。版本、nullable 免费阈值及 REAL 损耗阈值来自原政策列，不用当前默认补历史；原 managementView 与损耗报告共用同一字段映射。该配置读取独立于绑定、金融基线及空闲守卫，未初始化仍 503，政策修改继续归既有命令 owner。
+
+验收使用原 `launcherSubscription` 逐字段对照、真实观察期限、另一池合法 Opening、当前成员停用/非成员、真实预扣和账户暂停、未绑定真实配置/政策命令与完整公共回放。`PRAGMA query_only` 下执行每类读取并比较全表摘要，区分未知期限与真实零余额、队友余额与本人余额，保留高精度政策和 NULL，不触及旧 SQL、格式版本、依赖或生产数据。实际四 aliases、管理 HTTP、通知及同候选完整发布验收留给后续总装配。
+
+Node 22.23.4 新关系专项 4/4 与原展示专项 7/7，连摘要、政策、组、报告、损耗报告和运营账务八文件 156/156，零跳过；类型、架构、默认及可信 `88d2c26` 迁移历史、受影响格式和差异检查通过。日志 `H:\TEMP\novelai-launcher-configuration-context.log`、`novelai-launcher-configuration-type.log` 与 `novelai-launcher-configuration-static.log`。未跑 full、compiled、Node 24 或真实四别名 HTTP；独立审查和统一候选验收由父任务接续。
+
+固定 `2a417850580bd7995d3ae32023da9d6dd8bd47fa` 独立复审 13/13、零跳过，五文件按 Git blob/SHA256 绑定，报告 `H:\TEMP\novelai-launcher-management-independent-20261114\INDEPENDENT-REVIEW.md`。独立测试将 48 组余额/账户边界与精确固定的提取前 launcher 全字段对照，并在真实观察/SQLite/query_only 下核对原毫秒期限、本人余额和重复零写。与 Shared/官方原值/权益汇合后六文件 128/128，报告/损耗/金融摘要三文件另 24/24，类型、架构、可信实际 main 迁移与 diff 通过；不把分组数量相加作一次全套，也不代替四个实际 HTTP 别名和最终 sole 的验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

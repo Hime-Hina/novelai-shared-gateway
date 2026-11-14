@@ -75,6 +75,10 @@ import type {
 } from '../quota/operating-accounting.ts';
 import { matchExternalFunding } from '../quota/operating-accounting.ts';
 import { parseAmount, formatAmount, amountNumber } from '../quota/resource-amounts.ts';
+import {
+  assertLauncherSubscriptionMember,
+  launcherSubscriptionFromQuota,
+} from '../quota/launcher-subscription.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import {
   quotaTimestamp as isoTimestamp,
@@ -436,36 +440,14 @@ export class RelationalQuotaStore {
     };
   }
   readFailureAccountingState() {
-    const row = this.sqlite
-      .prepare<
-        [],
-        {
-          accountId: string | null;
-          version: number;
-          v5Points24h: number;
-          fixedAnlas24h: string;
-          fixedAnlas30d: string;
-          memberAttempts24h: number;
-        }
-      >(
-        `SELECT bound_account_id AS accountId,loss_policy_version AS version,
-      loss_v5_24h AS v5Points24h,loss_fixed_24h AS fixedAnlas24h,
-      loss_fixed_30d AS fixedAnlas30d,loss_member_attempts_24h AS memberAttempts24h
-      FROM sharing_policy WHERE id=1`,
-      )
-      .get();
-    if (!row?.accountId) {
+    const row = this.sharingPolicy();
+    if (!row.accountId) {
       fail('损耗读取需要已恢复的绑定账户账务基线', 503);
     }
-    const q = this.readAccountQuota(row.accountId),
-      { accountId, ...policy } = row;
+    const q = this.readAccountQuota(row.accountId);
     return {
-      policy: {
-        ...policy,
-        fixedAnlas24h: Number(policy.fixedAnlas24h),
-        fixedAnlas30d: Number(policy.fixedAnlas30d),
-      },
-      operating: this.operating(accountId),
+      policy: this.policyParameters(row).lossAlertPolicy,
+      operating: this.operating(row.accountId),
       pendingAnlasDebits: {
         anlasFixed: q.pendingFixedDebit,
         anlasPurchased: q.pendingPurchasedDebit,
@@ -892,6 +874,35 @@ export class RelationalQuotaStore {
     }
     return row;
   }
+  private policyParameters(policy: SharingPolicy) {
+    return {
+      autoAnlasFallback: policy.fallback === 1,
+      freeImagePolicy: {
+        version: policy.freeVersion,
+        enabled: policy.freeEnabled === 1,
+        warningThreshold: policy.warningThreshold,
+        hardLimit: policy.hardLimit,
+      },
+      lossAlertPolicy: {
+        version: policy.lossVersion,
+        v5Points24h: policy.v5_24h,
+        fixedAnlas24h: Number(policy.fixed24h),
+        fixedAnlas30d: Number(policy.fixed30d),
+        memberAttempts24h: policy.memberAttempts24h,
+      },
+    };
+  }
+  // 配置读取不依赖金融基线或空闲检查，不补历史默认值。
+  readQuotaConfiguration() {
+    return this.sqlite.transaction(() => {
+      const policy = this.sharingPolicy();
+      return {
+        groups: this.groupState().groups,
+        configVersion: policy.configVersion,
+        ...this.policyParameters(policy),
+      };
+    })();
+  }
   private authorizeOwnerCommand(metadata: Metadata, member: MemberUser | null) {
     const current =
       member &&
@@ -949,20 +960,7 @@ export class RelationalQuotaStore {
           fallbackTotalsByUser: {},
           // 同一原 owner 已拒绝实际预留；管理决定不需要伪造完整收费对象。
           reservations: {},
-          autoAnlasFallback: policy.fallback === 1,
-          freeImagePolicy: {
-            version: policy.freeVersion,
-            enabled: policy.freeEnabled === 1,
-            warningThreshold: policy.warningThreshold,
-            hardLimit: policy.hardLimit,
-          },
-          lossAlertPolicy: {
-            version: policy.lossVersion,
-            v5Points24h: policy.v5_24h,
-            fixedAnlas24h: Number(policy.fixed24h),
-            fixedAnlas30d: Number(policy.fixed30d),
-            memberAttempts24h: policy.memberAttempts24h,
-          },
+          ...this.policyParameters(policy),
         }
       : null;
     const db: FairQuotaDatabase & { users: FairUser[] } = {
@@ -1051,6 +1049,51 @@ export class RelationalQuotaStore {
       this.enrichQuotaSummary(state, memberId);
       syncBoundFairQuota(db, view.account, now);
       return fairQuotaSummary(db, { id: memberId }, now);
+    })();
+  }
+  readLauncherSubscription(memberId: string, now: number) {
+    return this.sqlite.transaction(() => {
+      const row = this.sqlite
+          .prepare<[string], { id: string; enabled: number }>(
+            "SELECT id,(status='active') AS enabled FROM members WHERE id=?",
+          )
+          .get(memberId),
+        member = row && { id: row.id, enabled: row.enabled === 1 };
+      assertLauncherSubscriptionMember(member);
+      const quota = this.readMemberQuotaSummary(memberId, now),
+        account = quota?.boundAccountId
+          ? this.sqlite
+              .prepare<
+                [string],
+                {
+                  id: string;
+                  enabled: number;
+                  quotaTier: number | null;
+                  subscriptionActive: number | null;
+                  subscriptionExpiresAt: number | null;
+                }
+              >(
+                `SELECT a.id,a.enabled,q.quota_tier AS quotaTier,q.subscription_active AS subscriptionActive,
+                q.subscription_expires_at AS subscriptionExpiresAt FROM upstream_accounts a
+                JOIN account_quota_state q ON q.account_id=a.id WHERE a.id=?`,
+              )
+              .get(quota.boundAccountId)
+          : undefined;
+      return launcherSubscriptionFromQuota(
+        quota,
+        account && {
+          ...account,
+          enabled: account.enabled === 1,
+          subscriptionActive:
+            account.subscriptionActive === null ? null : account.subscriptionActive === 1,
+          // SQL 保存毫秒；ISO 保留其量纲，不能把早期毫秒值再次当作秒。
+          subscriptionExpiresAt:
+            account.subscriptionExpiresAt === null
+              ? null
+              : new Date(account.subscriptionExpiresAt).toISOString(),
+        },
+        now,
+      );
     })();
   }
   private assertMemberRightsIdle(
