@@ -139,7 +139,7 @@ test('完整admin summary实际13字段保留原统计与28账户来源，真实
   assert.equal(view.body.settings.publicBaseUrl, config.publicBaseUrl); assert.notEqual(view.body.settings.publicBaseUrl, f.env.PUBLIC_BASE_URL);
   for (const key of ['serviceName','costPerImage','maxCacheImages','accountConcurrency','mockWhenNoAccount','promptApi']) assert.equal(view.body.settings[key], null, key);
   assert.deepEqual(view.body.settings.fairQuota, f.quotas.readAdminQuotaConfiguration());
-  assert.equal(view.body.settings.fairQuota.members, null, 'Opening without an ordinal is genuinely unknown');
+  assert.deepEqual(view.body.settings.fairQuota.members, ['m1', 'm2']);
   assert.ok(!view.text.includes('synthetic-upstream-pst')); assert.ok(!view.text.includes('demo:secret'));
   assert.equal(f.physical.controls.get('physical-unresolved'), control); assert.equal(control.controller.signal.aborted, false);
   assert.equal(databaseState(f.db), before); assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes); assert.equal(f.notifications, 0);

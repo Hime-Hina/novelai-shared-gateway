@@ -411,6 +411,7 @@ export const relationalPayloadParsers = {
     targetMemberId: id,
     boundAccountId: nullable(id),
     configVersion: integer,
+    memberIds: nullable(list(id)),
     groups: sharingGroups,
   }),
   GroupBalancesRedistributed: fields({
@@ -620,7 +621,13 @@ export const relationalPayloadParsers = {
     origin,
   }),
   OpeningGroupRecorded: fields({ groupId: id, name: string, share: number, origin }),
-  OpeningGroupMemberRecorded: fields({ memberId: id, groupId: id, weight: number, origin }),
+  OpeningGroupMemberRecorded: fields({
+    memberId: id,
+    groupId: id,
+    weight: number,
+    memberOrdinal: nullable(integer),
+    origin,
+  }),
   OpeningPolicyRecorded: fields({ ...policyFields, origin }),
   OpeningAccountRecorded: fields({
     accountId: id,

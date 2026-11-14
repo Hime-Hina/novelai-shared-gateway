@@ -106,6 +106,7 @@ export function createRelationalManagementHttp(deps: {
       summaryRoute = url.pathname === '/api/member/owner/summary',
       adminSummaryRoute = req.method === 'GET' && url.pathname === '/api/admin/summary',
       statisticsRoute = url.pathname === '/api/member/owner/statistics',
+      fairQuotaRoute = req.method === 'POST' && url.pathname === '/api/admin/fair-quota',
       ownerRoute =
         memberManagementRoute ||
         summaryRoute ||
@@ -114,6 +115,7 @@ export function createRelationalManagementHttp(deps: {
       adminRoute =
         url.pathname === '/api/admin/member-management' ||
         adminSummaryRoute ||
+        fairQuotaRoute ||
         accountCollectionRoute ||
         ((accountPatchRoute || accountQuotaRoute) && accountRoute![1] === 'admin');
     if (
@@ -198,6 +200,31 @@ export function createRelationalManagementHttp(deps: {
           ? notifications.commit(() => sqlite.transaction(write).immediate())
           : sqlite.transaction(write)();
       };
+    }
+    if (fairQuotaRoute) {
+      const body = await readMemberJson(req, 2 * 1024 * 1024),
+        result = await authorize(() =>
+          quotas.configureMemberIds(
+            {
+              commandId: randomUUID(),
+              fingerprint: domainDigest({ operation: 'fair-quota', requestId: randomUUID() }),
+              actorId: 'local-admin',
+              actorKind: 'admin',
+              recordedAt: now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'fair-quota-confirmation-v1',
+              pricingVersion: 'none',
+            },
+            body.memberIds,
+          ),
+        );
+      replyMemberJson(
+        res,
+        200,
+        (result.receipt as { fairQuotaConfirmation: unknown }).fairQuotaConfirmation,
+      );
+      return true;
     }
     if (accountCollectionRoute) {
       const body = await readMemberJson(req),
