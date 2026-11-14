@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { deflateSync } from 'node:zlib';
 import Database from 'better-sqlite3';
 import { fixture, meta, NOW } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
@@ -20,6 +20,13 @@ import {
   materializeMemberGeneration,
 } from '../../server/generation/member-contract.ts';
 import { prepareRelationalInput } from '../../server/generation/relational-input.ts';
+import {
+  parseNativeImageRequest,
+  nativeNormalizationContext,
+  crc32,
+} from '../../server/protocols/native-image.ts';
+import { normalizeNovelAiRequest } from '../../server/protocols/novelai-client.ts';
+import { requestNormalizationDefaults } from '../../server/generation/request-fingerprint.ts';
 
 const origin = { sourceId: 'synthetic-opening', originalId: 'original-input' };
 const body = {
@@ -34,6 +41,27 @@ const asset = {
   sha256: createHash('sha256').update(bytes).digest('hex'),
   bytes,
 };
+function png() {
+  const chunk = (name, bytes) => {
+      const head = Buffer.alloc(8),
+        tail = Buffer.alloc(4);
+      head.writeUInt32BE(bytes.length);
+      head.write(name, 4);
+      tail.writeUInt32BE(crc32(Buffer.concat([Buffer.from(name), bytes])));
+      return Buffer.concat([head, bytes, tail]);
+    },
+    header = Buffer.alloc(13);
+  header.writeUInt32BE(128);
+  header.writeUInt32BE(128, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([
+    Buffer.from('89504e470d0a1a0a', 'hex'),
+    chunk('IHDR', header),
+    chunk('IDAT', deflateSync(Buffer.alloc(513 * 128))),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
 function databaseState(db) {
   return JSON.stringify(
     db
@@ -341,14 +369,38 @@ test('Opening complete 已知上下文必须核实际附件MIME和图像内容�
     originalBody = JSON.parse(
       f.db.prepare('SELECT body FROM generation_inputs WHERE id=?').get(original.input_id).body,
     ),
+    image = png(),
+    context = JSON.parse(
+      f.db.prepare('SELECT body FROM normalization_contexts WHERE id=?').get(original.context_id)
+        .body,
+    ),
+    prepared = prepareRelationalInput(
+      parseNativeImageRequest(
+        {
+          input: originalBody.input,
+          model: originalBody.model,
+          action: 'img2img',
+          parameters: {
+            ...originalBody.parameters,
+            seed: 7,
+            n_samples: 1,
+            image: image.toString('base64'),
+            strength: 0.7,
+          },
+        },
+        context.native,
+      ),
+      context,
+    ),
     complete = {
-      ...originalBody,
-      action: 'img2img',
-      parameters: { ...originalBody.parameters, image: { assetId: 'original' }, strength: 0.7 },
+      ...prepared.body,
+      parameters: { ...prepared.body.parameters, image: { assetId: 'original' } },
     },
-    image = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
     before = databaseState(f.db);
-  for (const bytes of [asset.bytes, image]) {
+  for (const [bytes, mimeType] of [
+    [asset.bytes, 'image/png'],
+    [image, 'image/webp'],
+  ]) {
     assert.throws(() =>
       append(
         f,
@@ -360,7 +412,7 @@ test('Opening complete 已知上下文必须核实际附件MIME和图像内容�
           assets: [
             {
               ...asset,
-              mimeType: 'image/png',
+              mimeType,
               bytes,
               byteLength: bytes.length,
               sha256: createHash('sha256').update(bytes).digest('hex'),
@@ -382,7 +434,7 @@ test('Opening complete 已知上下文必须核实际附件MIME和图像内容�
       assets: [
         {
           ...asset,
-          mimeType: 'image/webp',
+          mimeType: 'image/png',
           bytes: image,
           byteLength: image.length,
           sha256: createHash('sha256').update(image).digest('hex'),
@@ -404,6 +456,196 @@ test('Opening complete 已知上下文必须核实际附件MIME和图像内容�
   assert.deepEqual(
     target.prepare("SELECT * FROM input_assets WHERE input_id='complete-image'").all(),
     f.db.prepare("SELECT * FROM input_assets WHERE input_id='complete-image'").all(),
+  );
+});
+
+test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Direct保留原build范围', async (t) => {
+  const f = await fixture(t);
+  f.accept('original-definition');
+  const original = f.db
+      .prepare("SELECT * FROM generation_requests WHERE id='original-definition'")
+      .get(),
+    saved = JSON.parse(
+      f.db.prepare('SELECT body FROM generation_inputs WHERE id=?').get(original.input_id).body,
+    ),
+    before = databaseState(f.db);
+  for (const parameters of [
+    { ...saved.parameters, not_an_original_parameter: true },
+    { ...saved.parameters, width: 127 },
+  ]) {
+    const body = { ...saved, parameters };
+    assert.throws(() =>
+      append(
+        f,
+        {
+          inputId: 'invalid-definition',
+          completeness: 'complete',
+          body,
+          assets: [],
+          logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+        },
+        [request('invalid-definition', { model: original.model, contextId: original.context_id })],
+      ),
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  const oldNative = JSON.parse(
+    f.db.prepare('SELECT body FROM normalization_contexts WHERE id=?').get(original.context_id)
+      .body,
+  ).native;
+  oldNative.parameterNames = oldNative.parameterNames.filter((name) => name !== 'sm');
+  const appendOldDefinition = (body) =>
+    f.db.transaction(() => {
+      const inputs = new RelationalInputStore(f.db),
+        registered = event(
+          'ContextRegistered',
+          inputs.stageOpeningContext('original-old-definition', {
+            kind: 'native',
+            native: oldNative,
+          }),
+        ),
+        input = event('OpeningInputRecorded', {
+          ...inputs.stageOpeningInput({
+            inputId: 'old-definition',
+            memberId: 'm1',
+            completeness: 'complete',
+            body,
+            logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+            assets: [],
+          }),
+          origin,
+        });
+      return new RelationalCommitReplayer(f.db).appendCommit(
+        command(f.db, 'old-definition-import', [
+          registered,
+          input,
+          request('old-definition', {
+            model: original.model,
+            contextId: 'original-old-definition',
+          }),
+        ]),
+        inputs,
+      );
+    })();
+  assert.throws(() =>
+    appendOldDefinition({ ...saved, parameters: { ...saved.parameters, sm: false } }),
+  );
+  assert.equal(databaseState(f.db), before);
+  appendOldDefinition(saved);
+  const context = {
+      kind: 'direct',
+      native: nativeNormalizationContext(),
+      defaults: requestNormalizationDefaults({}),
+    },
+    prepared = prepareRelationalInput(
+      normalizeNovelAiRequest(
+        {
+          tag: 'original direct',
+          model: 'nai-diffusion-3',
+          width: 128,
+          height: 128,
+          steps: 23,
+          scale: 20,
+          cfg: 0,
+          sampler: 'original-direct-sampler',
+          noiseSchedule: 'original-direct-schedule',
+          seed: 7,
+        },
+        context.defaults,
+      ),
+      context,
+    ),
+    originalBody = structuredClone(prepared.body);
+  assert.equal(prepared.body.parameters.scale, 20);
+  assert.throws(() =>
+    parseNativeImageRequest(
+      {
+        input: prepared.body.input,
+        model: prepared.body.model,
+        action: prepared.body.action,
+        parameters: { ...prepared.body.parameters, seed: 7, n_samples: 1 },
+      },
+      context.native,
+    ),
+  );
+  f.db.transaction(() => {
+    const store = new RelationalInputStore(f.db),
+      registered = event(
+        'ContextRegistered',
+        store.stageOpeningContext(prepared.contextId, context),
+      ),
+      input = event('OpeningInputRecorded', {
+        ...store.stageOpeningInput({
+          inputId: 'original-direct',
+          memberId: 'm1',
+          completeness: 'complete',
+          body: prepared.body,
+          logicalBytes: prepared.logicalBytes,
+          assets: prepared.assets,
+        }),
+        origin,
+      });
+    new RelationalCommitReplayer(f.db).appendCommit(
+      command(f.db, 'direct-original-definition', [
+        registered,
+        input,
+        request('original-direct', { model: prepared.body.model, contextId: prepared.contextId }),
+      ]),
+      store,
+    );
+  })();
+  assert.deepEqual(prepared.body, originalBody);
+  assert.equal(Object.hasOwn(prepared.body.parameters, 'seed'), false);
+  assert.equal(Object.hasOwn(prepared.body.parameters, 'n_samples'), false);
+  const target = empty(t);
+  replayUntil(target, f.db);
+  assert.deepEqual(
+    JSON.parse(
+      target.prepare("SELECT body FROM generation_inputs WHERE id='original-direct'").get().body,
+    ),
+    originalBody,
+  );
+  assert.equal(
+    target
+      .prepare("SELECT seed_mode FROM generation_requests WHERE id='request-original-direct'")
+      .get().seed_mode,
+    'unknown',
+  );
+});
+
+test('Opening 请求操作与已知种子模式遵守同一原角色，unknown保持未知', async (t) => {
+  const f = await fixture(t),
+    before = databaseState(f.db);
+  for (const changes of [
+    { operation: 'generate', seedMode: 'not_applicable' },
+    { operation: 'upscale', seedMode: 'fixed' },
+  ]) {
+    assert.throws(
+      () =>
+        append(
+          f,
+          {
+            inputId: 'roles',
+            completeness: 'unavailable',
+            body: null,
+            assets: [],
+            logicalBytes: 0,
+          },
+          [request('roles', changes)],
+        ),
+      (e) => e.statusCode === 410,
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  append(
+    f,
+    { inputId: 'roles', completeness: 'unavailable', body: null, assets: [], logicalBytes: 0 },
+    [request('roles', { operation: 'upscale', seedMode: 'unknown' })],
+  );
+  assert.equal(
+    f.db.prepare("SELECT seed_mode FROM generation_requests WHERE id='request-roles'").get()
+      .seed_mode,
+    'unknown',
   );
 });
 

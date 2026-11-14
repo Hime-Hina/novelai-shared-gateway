@@ -25,6 +25,7 @@ import {
   relationalInputDisplay,
   validateRelationalInputBody,
   validateRelationalAssetBytes,
+  assertRelationalCompleteInput,
   type RelationalInputAsset,
   type RelationalNormalizationContext,
 } from '../generation/relational-input.ts';
@@ -109,6 +110,21 @@ function assertRequestBody(
     body &&
     ((body.model != null && body.model !== expected.model) ||
       (body.operation != null && body.operation !== expected.operation))
+  ) {
+    unavailable();
+  }
+}
+
+function assertRequestSeedMode(
+  request: { operation: string; seedMode: string },
+  context?: RelationalNormalizationContext,
+) {
+  if (
+    request.seedMode !== 'unknown' &&
+    ((request.operation === 'generate') === (request.seedMode === 'not_applicable') ||
+      (request.operation === 'generate' &&
+        context?.kind === 'member' &&
+        context.member.randomSeed !== (request.seedMode === 'random')))
   ) {
     unavailable();
   }
@@ -566,6 +582,7 @@ export class RelationalInputStore {
     const accepted = requests[0],
       p = accepted.payload;
     assertRequestBody(body, p);
+    assertRequestSeedMode(p, context);
     const registered = events.filter((event) => event.eventType === 'InputRegistered');
     if (
       registered.length !== 1 ||
@@ -592,11 +609,7 @@ export class RelationalInputStore {
           child.memberId !== p.memberId ||
           child.accountId !== null ||
           child.payload.sampleIndex !== index,
-      ) ||
-      (p.operation === 'generate') === (p.seedMode === 'not_applicable') ||
-      (p.operation === 'generate' &&
-        context.kind === 'member' &&
-        context.member.randomSeed !== (p.seedMode === 'random'))
+      )
     ) {
       unavailable();
     }
@@ -1042,6 +1055,7 @@ export class RelationalInputStore {
           unavailable();
         }
         contexts.set(event.payload.contextId, context);
+        source.assertCompleteInput(input, context, event.payload.sampleCount);
         this.assertAcceptedEvents(
           stored.events,
           input.body,
@@ -1077,6 +1091,7 @@ export class RelationalInputStore {
           unavailable();
         }
         assertRequestBody(input.body, p);
+        assertRequestSeedMode(p);
         inputs.set(p.inputId, input);
         if (p.contextId !== null) {
           if (
@@ -1095,8 +1110,9 @@ export class RelationalInputStore {
             unavailable();
           }
           const context = contexts.get(p.contextId) ?? source.context(p.contextId);
+          assertRequestSeedMode(p, context);
           if (input.row.completeness === 'complete') {
-            source.validatedAssets(input, context);
+            source.assertCompleteInput(input, context, p.sampleCount);
           }
           contexts.set(p.contextId, context);
         }
@@ -1538,6 +1554,15 @@ export class RelationalInputStore {
       validateRelationalAssetBytes(asset, slot.image, context);
     }
     return assets;
+  }
+
+  private assertCompleteInput(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+    sampleCount: number,
+  ) {
+    const assets = this.validatedAssets(input, context);
+    assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
   }
 
   readJobInput(jobId: string) {

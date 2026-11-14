@@ -3,6 +3,7 @@ import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import { buildNovelAiParameters, type ProviderRequest } from '../protocols/novelai-client.ts';
 import {
   nativeNormalizationContext,
+  parseNativeImageRequest,
   parseNativeAuxiliaryRequest,
   validateImageBytes,
   validateVibeEncodingBytes,
@@ -217,6 +218,54 @@ export function relationalInputDigest(
   });
 }
 
+function canonicalGenerationWire(request: RecoverableRequest, native: NativeNormalizationContext) {
+  const parameters = buildNovelAiParameters({
+      ...request,
+      normalizationContext: { native },
+    } as ProviderRequest),
+    wire = recoveredInput({ ...request, nativeParameters: parameters });
+  if (!wire) {
+    invalid();
+  }
+  return wire;
+}
+
+// seed/count 不在规范正文中；这里只用临时确定值校验与种子无关的原定义，不恢复历史意图。
+export function assertRelationalCompleteInput(
+  body: Record<string, unknown>,
+  assets: (RelationalInputAsset & { bytes: Buffer })[],
+  context: RelationalNormalizationContext,
+  sampleCount: number,
+) {
+  const wire = restoreRelationalWire(body, assets, 0, sampleCount),
+    native = inputNativeContext(context);
+  let expected: Record<string, unknown> | null;
+  if (wire.operation === 'generate') {
+    const { operation: _operation, ...nativeBody } = wire,
+      request =
+        context.kind === 'direct'
+          ? { ...relationalProviderRequest(wire, context), sampleCount }
+          : {
+              ...parseNativeImageRequest(nativeBody, native),
+              allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+            };
+    expected = canonicalGenerationWire(request, native);
+  } else {
+    const { operation, ...nativeBody } = wire,
+      request = parseNativeAuxiliaryRequest(nativeBody, operation, native);
+    if (request.sampleCount !== sampleCount) {
+      invalid();
+    }
+    expected = recoveredInput({
+      ...request,
+      allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+    });
+  }
+  if (canonicalJson(expected) !== canonicalJson(wire)) {
+    invalid();
+  }
+}
+
 export function prepareRelationalInput(
   request: RecoverableRequest,
   capturedContext: RelationalNormalizationContext,
@@ -246,14 +295,7 @@ export function prepareRelationalInput(
       invalid();
     }
     // 复用实际出站构造器，随后正文只留一种参数表示；seed/count 归 child/parent。
-    const parameters = buildNovelAiParameters({
-      ...request,
-      normalizationContext: { native },
-    } as ProviderRequest);
-    const cleaned = recoveredInput({ ...request, nativeParameters: parameters });
-    if (!cleaned) {
-      invalid();
-    }
+    const cleaned = canonicalGenerationWire(request, native);
     wire.parameters = cleaned.parameters;
     (wire.parameters as Record<string, unknown>).n_samples = sampleCount;
   }
