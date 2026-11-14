@@ -256,9 +256,29 @@ test('拥有旧钱包不授予新的派发、恢复或转账资格，重新入�
   };
   assert.equal(databaseState(f.db), before);
   const pending = setup(t, { v5: '20', secondV5: '50', officialV5: '70', seconds: 0 });
-  await withAuthenticatedMemberApiKey(pending.members, keys.m2, () =>
-    pending.generations.acceptGeneration(meta('off-accept', NOW + 1, 'm2'), input),
+  const beforeAdmission = databaseState(pending.db);
+  await assert.rejects(
+    () =>
+      withAuthenticatedMemberApiKey(pending.members, keys.m2, () =>
+        pending.generations.acceptGeneration(meta('off-accept', NOW + 1, 'm2'), input),
+      ),
+    { statusCode: 403 },
   );
+  assert.equal(databaseState(pending.db), beforeAdmission);
+  // 历史等待夹具：原 Gen 受理将 pending 意图保存为 queued；T2 保存原保护输入/事实，
+  // 不把它当作当前 Gen 在线新接单，随后完整 common 回放复核原事实与保护内容。
+  pending.db.transaction(() =>
+    new RelationalInputStore(pending.db).persistAcceptedInput(
+      meta('historical-off-accept', NOW, 'm2'),
+      { ...input, jobs: input.jobs.map((job) => ({ ...job, status: 'queued', queueSeq: '1' })) },
+    ),
+  )();
+  const historical = replay(t, pending.db),
+    job = new RelationalGenerationStore(historical.db).readGenerationExecutionState('off-job');
+  assert.equal(job.memberId, 'm2');
+  assert.equal(job.status, 'queued');
+  assert.ok(job.payloadBytes > 0);
+  sameFinancial(pending.db, historical.db);
   const queued = databaseState(pending.db);
   pending.db.transaction(() =>
     assert.throws(
@@ -268,7 +288,7 @@ test('拥有旧钱包不授予新的派发、恢复或转账资格，重新入�
           { jobId: 'off-job', accountId: 'a', attemptId: 'off-attempt' },
           { dispatchEnabled: () => true, physicalAccountLoad: () => 0 },
         ),
-      /当前分组/,
+      { statusCode: 403 },
     ),
   )();
   assert.equal(databaseState(pending.db), queued);
