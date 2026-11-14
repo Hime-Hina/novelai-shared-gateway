@@ -1291,6 +1291,8 @@ Node 22.23.4 新专项 8/8、配置/输入/完整回放/ready/格式/架构七�
 
 仅在 `9f546567` 的 TEMP 归档副本加载 `7c7652bc` 精确私有恢复源码后，原 8/8 对照通过；分别移除 current 显式核对、重复回放目标 profile 存在核对，原相同业务断言精确失败为 `Missing expected rejection/exception`。证据在 `H:\TEMP\novelai-current-configuration-negative-9f54656-20261114` 的 `baseline.log`、`negative-ready-current.log`、`negative-replayed-repair.log` 和 `negative-evidence.json`，后者明确两固定来源及 ready/input/private 三文件恢复 SHA。真实 Number 提前误拒记录保留在 `identity-probe-number-stat-original.log`。独立技术复审由另一 agent 按固定产品进行；父任务仍需把已审依赖纳入同一候选完成整体恢复与发布验收。
 
+独立复审已按固定配置 `9f546567` 与文档后继 `ef9b4b8` 收尾，配置产品无新增 finding；单独配置先经原 8 项及独立 4 项 12/12，再仅在 TEMP 合入精确私有恢复修复 `7c7652bc`，最终配置 8 项、独立 5 项和文件身份 2 项共 15/15，零跳过。额外反例核对同 profile SHA 但不同来源/地址的完整提交拒绝、current 错指真实成员事实不修复、真实 AFTER INSERT 后外层 catch 全表回滚、ready 原回执零写及管理员/新命令拒绝、两边同缺 current 拒绝，以及原省略默认值的 raw 意图确实使用首次 A 重归一化、current B 同键冲突。隔离副本只删除 `assertCut` 的一行 current 读取后，原业务断言精确失败为 `Missing expected rejection`（0/1），已解除 Number 文件号提前误拒的遮蔽。独立报告和文件摘要分别为 `H:\TEMP\novelai-configuration-INDEPENDENT-REVIEW.md`、`H:\TEMP\novelai-configuration-reviewed-files.json`，最终日志为 `H:\TEMP\novelai-configuration-and-bigint-15-final.log`，负控为 `H:\TEMP\novelai-configuration-independent-negative\no-current.log`。该复审没有修改产品或执行 full；实际 sole/R08 HTTP、同候选发布物和总体恢复验收仍由父任务接续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
