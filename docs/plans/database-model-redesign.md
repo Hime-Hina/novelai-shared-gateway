@@ -1678,6 +1678,20 @@ admin 保留严格本机 Host、原 privateAccessAllowed/同源及每次 assertA
 
 Windows Node 22 源码管理 HTTP 及九个相关文件共 461/461；随后将测试客户端收紧为真实 Node HTTP（保留实际 Host/Origin），补核配置 PUBLIC_HOST 的合法 owner 与本机 admin 区分，管理专项最终 17/17、零跳过。全部正常源先由原业务命令/Opening owner 建立，再经唯一 installer 的完整 shadow、选定私有与真实 Local 文件核对进入 ready；近期统计的 0/NULL/退休/跨成员用实际 Opening 实体和 29 条真实失败验证。五项临时退化分别移除 IO 后当前 session 检查、以 displayName 冒充 username、改用父受理时间排序、缓存 admin 授权及移除严格本机 Host，均在原业务断言精准失败，恢复原字节后 17/17。热力图 nullable 登录名的 Nuxt 用例先出现 NULL label 反例，最小稳定 ID 回退后 11/11；backend/web type、架构、语法、默认与可信 `8b11fa6` 迁移历史和局部格式检查通过。日志及逐文件 hash 随固定候选交独立审查；未运行本片 full/compiled/Node 24，未切主入口、未提供 admin 原始 Key/PST reveal 或写命令，也不借前置 CI 宣称新管理 GET 总体验收完成。
 
+### 9.62 owner 账户摘要与用量统计 GET
+
+只接实际 `/api/member/owner/summary` 与 `/api/member/owner/statistics`，复用第 9.60 节同一管理 HTTP 的当前 Cookie、Discord、稳定 member/epoch、owner、ready、私网及同源授权。新路径不会续期；原可见且无 query 的 `GET /owner/member-management` 活动续期条件不变。异步资格或报表读取后必须重新授权，失败不返回先前读出的数据。
+
+summary 由 QuotaStore 的共享账户/原官方观察窄来源、原 `selectSharedAccount` 和安全账户 mapper 生成。多个未绑定候选不猜账户，未知官方数值仍为 NULL；物理 inFlight 必须来自装配共同 controls，不能用 SQL running 行或固定 0。statistics 使用 ReportStore 原 Job 起点及收费事实、`summarizeOwnerUsage` 和原 UTC+8 范围规则，只允许全部、1、7、30、365 天；响应 `days` 保持既有逐日数组覆盖范围数字的形态。统计登录标签取原 `password_credentials.username`，不把 displayName 当登录身份；缺用户名继续使用旧报表标签，稳定成员 ID 仍是分组身份。
+
+没有新命令、事件、持久派生状态或旧 Store 适配；普通读取不加载输入/产物正文，不触外部生成/存储。合法 ready、真实 HTTP、0/NULL/未知费用及日期、真实物理槽、当前撤销、范围边界、完整公共回放与选定私有恢复的可运行证据在固定候选后追加；这里只说明本片契约，不代表其已验收。
+
+Windows Node 22 源码管理 HTTP、旧 owner、关系报表及账户目录四文件 54/54、零跳过；新管理 HTTP 本文件含 32 项。初始两个新 GET 均在真实 HTTP 返回 404 的断言失败，接入后通过；合法 fixture 只经原唯一 installer 进入 ready。真实 controls 保留 SQL 已终态后的物理槽，另账户槽不计入所选账户。受控窄来源另核多个未绑候选、缺绑定目标不猜选及唯一未绑候选，不冒充持久配置变更。原官方 V5 未知与实际观察 0 分开，兼容 DTO 的 Anlas 在边界由原 quotaNumber 转 number/NULL，当前凭据缺失只用原安全错误提示。所有范围及非法 days、原 days 数组、登录名/展示名区别、原 Job 0/NULL 与未知费用、退休和跨成员历史均有反例；完整公共回放不带私有用户名，选定私有恢复后原 Cookie 可读取，关闭重开仍相同。
+
+新两路由沿实际 Discord IO 后重核 owner/epoch/ready，statistics 的异步窄读后再核当前 owner/Cookie/ready；不会返回旧 accounts/recent。业务窄 reader 在 query_only 下通过，实际 HTTP 比较全表摘要及 total_changes 零实际变化；不把原认证事务的零行维护语句冒称完全没有写 SQL。报表 SQL 捕获只选原 username，不读密码 salt/hash、PST 或输入/产物正文，输出无凭据。原 HTTP 初次 query_only 试验被既有认证维护正确拒绝，未修改认证规则来消除该试验限制。
+
+隔离 TEMP 仅改物理槽为 0、用展示名冒充登录名、移除报表 await 后授权、放宽新路径续期的四种错误实现，均在原业务断言明确失败；正常副本同组通过，产品源字节不变。最终四文件 54/54 为 18.352 秒，证据为 `H:\TEMP\novelai-owner-read-http-context-final.log` 与 `H:\TEMP\novelai-owner-read-http-negative-4ee1aabd-85e0-455d-9c3f-41b24994b00f\results.json`。类型、架构、默认及可信实际 main `88d2c26` 迁移历史、187 文件语法和局部格式检查通过，静态日志索引为 `H:\TEMP\novelai-owner-read-http-static.json`。现工厂名/模块沿第 9.60 节登记，既有工厂来源守卫缺口的独立 `db5f320` 修复由父并集，未在本片另改守卫。未跑 full/compiled/Node 24 或三包构建，未切 sole，也未接 POST、admin summary/reveal 或云验收；固定候选的独立审查仍单独记录。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
