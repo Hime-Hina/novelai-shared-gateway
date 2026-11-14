@@ -2105,6 +2105,18 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 当前候选 Node22 源码定向结果：两组 child 同次串行 **2/2、零 skip、78.070 秒**（53.625/23.759 秒）；Direct/OpenAI 组件及其共同 owner 回归 **53/53、零 skip、14.496 秒**，包含当前默认值改变后的首次 context 和完整回放。已审实际旧 bundle 的两输入与普通新入口拒绝对照先完成 **4/4、零 skip、8.328 秒**（含父计数）；合入 076 后本源码标准 `tests/deployment/legacy-tools.test.mjs` 实际打包、解包及原 19+新增三项共 **22/22、零 skip、187.264 秒**，不与前面的缓存 bundle 四项重复合算。仅删除新增共享重领校验的隔离负控在新窄用例精准失败 `202 != 410`，原 source 逐字还原；child 迁移初期的表示/事务夹具错误和真实产品修前红日志均保留，不计通过。backend type、architecture、默认及可信 `46462a3` migration、变更文件格式、MJS 语法与 diff 检查通过。除这次明确获授权的标准旧工具打包套件外，未跑 full/backend 或 executor build/compiled/完整 CI/Node24/安装或重建共享 native/真实云或生产；独立审查与父并集另行绑定。
 
+### 9.85 请求控制与共享冷却的真实 child 来源迁移（待同 Schema7 联合）
+
+`request-control-http.test.mjs` 和 `shared-cooldown-http.test.mjs` 复用 9.81 的实际 bootstrap/child helper；新树来自 root `de809e2` 与已审 `059675f`，不改两者冻结源。原账户、任务、图片、预扣和 cooldown 手 SQL 种值替为 canonical owner 与实际 localhost 上游：先合法 ready 且暂停，再原管理启用/官方读取，查询身份只用生成凭据与真实 bound ID。两项 NovelAI URL 显式 loopback，外源 fetch 在 IO 前拒绝。SQL 只作审计；不写 ready/epoch/截止/队列或冷却，不延原 20s、45s、25s、35s 及 startup/领取上限。
+
+请求控制组先由另一成员真正生成图片（单列一次 setup），经过原真实 10s 间隔，再受理 Native 三子任务，仅完成首图，形成实际 done/queued/pending。停进程后用当前 Key 事务调用原 Key owner，重启再验 Cookie/Bearer 稳定成员、跨签发秒的完整业务 DTO、真实图片/签名 ACL、CSRF、取消及新 Web/Native/辅助操作的 request ID；原等待任务与两个待派发 child 取消不预扣。旧 not-JSON 保护正文是损坏源形状，不在新库伪造；真正要保留的“薄查询不读正文/BLOB”改由 Node 原生 preload 的 SQLite 只读计数证明：先实际 SELECT body 正校准 1，再两条真实摘要读取 0。原 parentless 旧 job 不用不存在 ID 404 冒充：新组只验确实存在的 canonical child 的 job200/request-by-child404；独立 076 原测试仍核 parentless job、原 receipt.requestId=NULL、稳定成员、保护输入/SHA 和原图。两种来源形状不能互称等价，历史在线/归档去向仍服从尚未选择的 A/B。
+
+共享冷却组保留真正 429/300 秒持久截止、跨秒剩余 Retry-After、SIGKILL 后原键/原失败与一次退款，真实刷新失败、三种余额 unknown/零、所有生成入口的新意图拒绝和原受理领取，及 SSE 已发头后的真实容量错误。财务核对改读实际 wallets/charges/基线游标/任务关系与原 CooldownChanged 票据，不构造旧 DB 兼容视图。两组共用新增 `assertChildPublicReplay`，只在所有实际 child 结束后，以 readonly source 和唯一 complete-commit/Input owner 重放，复用官方 private 表枚举/Empty 与 sameRelationalRows，按 PK 核当前公共表，不运行鉴权或 fetch。当前私有列排除与 Ready/privateQueries 完全相同；Note owner 落地须同步这个 caller 的权威公共投影，不把当前 auth_epoch 排除表当成长期规范。
+
+迁移保留的原断言揭示两个非 D4 产品遗漏并获准同片最小修复。其一，runtime 已存 `upstream_capacity`，交付却把安全码当原诊断转为 generic；现在原 `public-errors.ts` 只识别这个已分类码，单一原公开容量常量由 execution、公开转换和 Member fallback 共用，其他未知码及 raw 上游/URL/凭据仍原 generic。其二，原两条 Cookie request 读取/取消早于 generation transport，曾与 Raw 共用签名/error formatter，新适配遗漏 options；现只给这两个原 literal 注入实际 shared signer 和原公共 formatter，先当前 Cookie/epoch/ready 读取再签名，取消提交后展示。必传实际 signer，不新建 MAC 实例，不借 APIKey。其余 generation/events/input 语义、Origin/Discord 与续期位置保持；组件显式禁止 Cookie 路径走 Key 事务，并区分 alias 与 primary 原错误/图片路径。
+
+当前技术 checkpoint `e336cdc` 不是最终 PASS：原 request 主体在 20s 内 12.901 秒通过，SQL 正 1/薄读 0；Native 首个 429/重启/退款子例通过，另有 Cookie/Direct 窄组件和公开错误检查。后继新增取消 DTO/安全断言仍需最终联合。三个隔离负控分别删除容量映射、alias 签名选项和 alias error mapper，在原 Native 并发文案、真实图片路径及两种原 generic 上精准失败，最后逐字还原。完整 shared 组仍保留原 `/api/admin/accounts/quota` 断言，等待已审 Account 9.80 的 Schema7 正式并集，不以 PATCH 启用代替，也不把局部绿算作全组通过；最终证据在该依赖接好后另行固定。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
