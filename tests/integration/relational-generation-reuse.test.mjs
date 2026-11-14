@@ -11,6 +11,7 @@ import {
   image,
   databaseState,
 } from '../helpers/relational-generation.mjs';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import {
   normalizeNovelAiRequest,
   DIRECT_URL_MAX_STEPS,
@@ -287,6 +288,7 @@ test('缓存小job引用原产物/input，不新attempt/charge/freecount且整�
     before,
   );
   assert.ok(cached.events.some((event) => event.eventType === 'CachedResultLinked'));
+  initializeFixtureConfiguration(f.db);
   replay(t, f);
   const sourcePath = path.join(f.dir, 'selected-reuse.sqlite');
   await f.db.backup(sourcePath);
