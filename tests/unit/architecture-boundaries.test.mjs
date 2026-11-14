@@ -26,6 +26,7 @@ const writerFactories = [
 // 同一已登记写命令的混合来源；只限制整模块能力，保留明确的纯 named reader。
 const mixedWriterSources = [
   ['ownerAccountCommand', '../members/owner-operations.ts'],
+  ['adminAccountBatchCommand', '../members/owner-operations.ts'],
   ['applyOperatingFunding', '../quota/operating-accounting.ts'],
   ['withAuthenticatedMemberSession', '../members/authentication.ts'],
   ['setMemberAdmission', '../generation/queue-policy.ts'],
@@ -510,6 +511,14 @@ for (const filename of [
       'prepareAccountCommand',
       'configureAccounts',
       'completeAccountEnable',
+      'beginAccountRegistrationObservation',
+      'planAccountRegistrationObservation',
+      'releaseAccountRegistrationObservation',
+      'releaseAccountRegistration',
+      'prepareAccountBatch',
+      'startAccountBatchObservation',
+      'completeAccountBatch',
+      'adminAccountBatchCommand',
       'ownerAccountCommand',
       'replayAccountCommit',
       'planQuotaObservation',

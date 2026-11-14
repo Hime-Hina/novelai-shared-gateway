@@ -2343,6 +2343,44 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 根在 `a87f927` 的已审复制/停机及完整汇总上普通整合：运行时逐字等于根源加上述七行，会话文件逐字等于396，两个既有计划小节完整保留。真实角色变更、稳定 Cookie 和原 sole 鉴权/管理汇总交点 **3/3、零跳过，11.597 秒**，包含实际故障阶段/回滚而非只断言启动失败；八次实际 child 均在入口前显式加载 loopback socket/fetch guard。类型、architecture、默认及可信 main88 迁移、201 文件语法和变更格式通过；保留证明 `H:/TEMP/novelai-member-session-root-preservation.json`，日志 `H:/TEMP/novelai-member-session-root-*`。启动仅调用原认证 owner；后续相似会话规则仍在该 owner 维护。尚未执行最终同根 full/发行物、Node24、Linux SIGTERM、实云或生产迁移与切换。
 
+### 9.91 非绑定观察与默认启用新增
+
+本后继从独立通过的 `6708bd9f03236551fb5a1d50e442be52ff45b664` 开始，不改变原39的 NOTPASS。6708 独审报告为 `H:/TEMP/novelai-account-independent-20261115/INDEPENDENT-REVIEW-6708.md`，原四红程序逐字仅 loader 重绑后4/4，独立25项及后续 prior/noop/DTO、TLS/privateReady、HTTP分别通过；其schema7/DDL未改变。
+
+原观察构造仍由 QuotaStore 的 accountQuotaPatch/官方 snapshot/Opus/时效 owner 决定，仅把非bound观察与单bound金融同步分开。admin可真实刷新/核验任一已有账户，owner仍限当前绑定；非bound不分配、不切绑定，不写另一个共享金融池。绑定账户的完整同步规划、来源与预算校验保留，非法非bound资金事实仍拒绝。原集合解析的纯 collectValues 从 gateway 移至现 owner-operations 复用，不复制选择规则；多目标原子观察与 bulk true 尚由紧接的下一片完成。
+
+POST admin/accounts 默认或显式 true 使用原唯一query实际槽，owner创建不可伪造的临时注册准备，绑定真实未来注册eventId、私有PST/代理、政策与新身份。实际start回调重新核当前admin/ready、身份/stream/event确实不存在、原准备和政策后才领票发GET；不能用普通同形对象或现有账户触发该缺身份例外。最终同一保存点 Registered(false)→Observed(精确引用前置注册)→Availability(true)，最后安装私有对。原失败/非Opus/过期、新身份竞争、撤权、ready或政策变化和SQL尾错均零新增持久状态。原private对象只保存来源能力，没有结果缓存或回放applied标志；精确票据释放不取消更新票，也不提前释放raw物理占用。旧内部回执仍先当前授权、零IO且不重装秘密。
+
+新增默认true/显式true各实际localhost Opus GET后201，显式false零IO；原绑定/全部金融状态不变，选定private和真实Local经唯一installer恢复。非bound成功/失败保留原官方NULL/0/负标志；完整公共回放无认证和网络。当前相同11文件872/872、零skip64.246s覆盖账户、HTTP、金融、恢复、ready、实际刷新及架构；其后仅发起前公开事实验证的小改由4/4窄回归核对，新增非法权重早拒且无GET。实际slot忙组合证明唯一原自动GET成功、无伪观察/票号/回执；慢正文和网络期间撤admin/ready/政策/身份竞争、public/private SQL尾错及健康retry均有原数据库/通知断言。新注册合法完整envelope的丢观察/丢可用性/重复/重排/错源以及原6708四红仍拒绝。
+
+三TEMP负控分别放行克隆准备、漏精确新ID票号释放、漏原观察来源校验，均在原断言失败；恢复源raw hash后针对集通过。最终技术hash、命令和负控绑定在同TEMP `HANDOFF-OBSERVATIONS.md` 与 manifest，固定后独审和父同候选发布验收另行进行。没有新fact/schema/DDL/旧SQL/在线兼容路径；新增四个实际写方法只补既有mutation集合及反例，需维护者复核。真实Opus门槛与旧新增只保存enabled的行为差异明示保留。未跑full/build/compiled/Node24/native/真实云或生产；本片不称多目标批次、完整admin聚合或整体切换完成。
+
+#### 9.91.1 多目标实际观察与整组启用的后继契约
+
+本片在614/99115冻结后另分支，普通同步已审根cb5/4da及eeaba，保持note、原成员顺序、Report和sole来源；接合fixture只给资金owner补必传真实admin/null，并精确断言当前绑定409，不绕过新增前置。多目标quota为同一实际观察批次；批量true只对缺少当前真实fresh Opus proof者查询，既有来源明确、当前epoch/连接/错误状态与时效均有效、已启用且请求weight不变的真实no-op才跳过GET；disabled→true或同时改变weight仍须本次真实核验。未知Opening观察不能冒用当前连接。准备在当前授权事务内只读取原来源而不领号，必要真实网络在SQL外；实际slot回调先核当前admin/ready/政策/私有来源/CAS，授权SQL成功返回后才激活领号发GET，最后一笔复核、事实、回执和投影。原单账户query错误转换由现owner私有函数供两调用者共用，不复制官方转换/金融算法。
+
+请求启用和weight只有全部目标资格有效才整组应用。任一真正官方失败保存全部实际发生观察及原owner要求的安全资格/禁用决定，409且不应用请求启用/weight，也不额外停用其他有效目标。任何尚未start的busy/缺能力/授权/ready/政策/凭据/连接/身份或票据失效是整笔前置失败，零持久化；已发生只读GET不被伪称回滚。仅当前bound同步金融，非bound不分配、切绑定或成为第二调度。public安全batch intent保存有序目标和每目标应有观察/原安全决定及整组是否应用；完整前态规划同时供在线/共同/窄回放，丢一组、全删、重复、乱序和部分应用须拒绝。receipt不含PST/代理、摘要、before/current profile；原receipt仍先当前授权、零网络领取且不安装旧私有值。该段为正在实现的验收合同，最终固定与验证证据另列，不借872或父242称本片已通过。
+
+真实共同slot反例发现：在授权SQL内提前领号，外层SQL尾错虽回滚全部表且没有第二个GET，仍会留下易失新票而把唯一已发GET的合法结果变成ignored。根修只把原发起切点移至授权SQL成功后的原query激活：一次闭包重核当前来源/授权及新出现的原receipt，所有SQL读验证先完成，issue之后没有SQL或await。共同query先拒绝已过deadline或真实queue已停止，再同步激活；自动producer也沿同一切点，sole注入原queue，不加状态表、序号cache或补偿回滚。原程序和756.7645ms业务红保留；v2仅将旧ticket角色断言适配为start角色，原SQL尾错位置、raw1、全表不变及旧GET必须ok1的断言不改。当前v2 1/1、手工/自动真实stop、SQL外一次激活/owner代次/ready/跨owner/lateprior及等待超时9/9通过；修前真实stop校准仍精确raw1!=0，后续必要回归、负控和独审另记。
+
+原三核心首轮141项127过/14失败，是夹具把online与building回放阶段混用，日志不改标通过。修复只让明确online源经唯一installer；纯command fixture保持building，原私有checkpoint由共同回放从0建building后按选定SHA/samecut恢复，保留真实旧凭据存在→窄回放清除的断言，不手改ready。完整公共回放删除手写分派器而复用共同入口；比较仍保留history/cursor/reducer和所有业务行，只明确区分源ready与目标building的安装状态，私有内容另按原owner摘要核对。修后三核心 **145/145、零skip，23.781秒**；增加的4节点是原先被ready前置挡住的既有来源角色子例实际到场，不是新增测试。产品未为这些夹具修改。
+
+共同start的五精准错误实现分别在旧raw被ignored、SQL内错误激活、停机后raw1、自动停机产生伪观察、过期授权迟到raw1处失败；恢复原字节后13/13（与batch中的第二start子例有重叠，不累加）。batch五错误实现分别核完整后果、失败安全规划、weight变化不能冒no-op、本批无实际观察不能夹带其它合法金融同步、原连接来源；恢复后17/17。失败规划负控被同owner完整性验证拒绝，首先表现为错误业务响应且没有完成应保存的官方观察，不声称它已写入部分weight。原6708四个完整envelope反例保持程序字节、只重绑source，4/4通过。原始红、负控及每次恢复hash均封存在 `H:/TEMP/novelai-account-preservation-b427`。
+
+最终必要localhost HTTP与causality原7项 **7/7、零skip，3.469秒**，原quota-refresh-runtime单元 **17/17、零skip，1.047秒**；二者显式加载fetch/Socket/TLS/http/https的loopback preIO guard，三文件没有实际child。它们不与三核心或恢复组重叠累加。slot/start边界使用真实共同query/SQL/queue和计数合成raw响应，真实HTTP及原SOCKS/TLS另有localhost证据，均不是实际NovelAI端点验收。类型、architecture、默认/可信main88迁移历史、变更格式/语法和diff通过；schema7/61bc、76事实owner和历史SQL/journal不变。新增三batch命令与实际factory只登记原mutation集合和反例表，夹具关键断言变化与此守卫增量须维护者复核。最终技术hash、17路径清单及非作者独审另记；未跑full/build/compiled/Node24/native/真实云、生产迁移或切换，不据本片宣布整体账户或上线验收完成。
+
+纯AST架构边界单元 **478/478、零skip，1.123秒**，不加载SQL/业务owner/HTTP或child。`relational-groups.test.mjs` 的原“真实在线首次配置显式保存原政策，随后账户首绑和官方观察开账，不借opening初始化”仅增加合法installer和新native activation接口适配，本片尚未执行该首例；原金额/不借Opening及完整回放断言保留，交非作者独审的独占source槽补核，不将旧组专项日志计入当前候选验证。
+
+非作者独审在固定5abb实际补跑该首例，0/1在完整回放阶段报告 `Protected content replay requires matching protected source`：合法installer追加的ConfigurationInitialized需要原受保护正文，而组测试的旧replay helper未提供来源。后继仅让该helper默认使用同一source的RelationalInputStore，显式传入来源的旧调用保持原样；从空building回放、原政策/钱包金额、无Opening及全部回放断言不变。不改产品、事实、DDL或guard，也不跳过真实配置初始化；原5abb及独审红日志保留，后继实际验证与技术hash另记。
+
+固定后继 `cf1e22831cdd393d3d805786743961369b76973c`（产品5abb）已由非作者独审 **PASS**，报告 `H:/TEMP/novelai-account-batches-independent-5abb-20261115/INDEPENDENT-REVIEW.md`，SHA256 `40c19a700c4b3886c738bf27dfeff91a97e9956c8f0c5871ea29b772ffc50945`。五个独立边界 **5/5、零跳过，2.149 秒**，含真实 localhost 超时仍占物理槽、连接ABA/当前权限、失败batch的完整金融与安全暂停和原回放；封存原SQL-tail-v2 **1/1** 确认后续原生SQL尾错、0新raw/0SQL变化且旧唯一GET仍成功，只有接口谓词ticket→start的一字适配，非真实NAI。原组首次配置缺protected source的真红仍保留；cf1仅给现有回放helper补原InputStore来源，原组单例独审 **1/1**，金额/noOpening/全回放原断言不变。
+
+根在 `f0e9096` 的新DDL/会话/复制/Native/完整汇总上普通整合：十八路径逐一核共同基线，四个重叠产品/管理测试精确自动并集，其余非文档逐字等于独审固定源；原9.92五产品与其他四节保持。仅将两个测试文件中三个旧案例对齐已审行为：禁用资格拒绝改断言精确503及inactive_opus/quota_sync_error，仍核零charge/全回放/不复活；admin仅summary独立鉴权200、无admin403，statistics/POST及owner/Origin原拒绝保留。该小diff非作者静态PASS，报告 `H:/TEMP/novelai-account-root-join-diagnosis-20261115/DIAGNOSIS.md`，SHA256 `7630fa30f181fa0f849bda44bfb928924f816665e27797de5b697f6041653308`；仍列维护者最终关键断言复核。
+
+首次根五文件391项为386pass/5fail、零跳过，107.343秒：三处上述旧案例和一次注册HTTP503用例mock未收到GET（连同父汇总计5）。后者在业务409、全表/通知不变均通过后，原GET计数0≠1；完全不改源/传输的原父单例窄重跑 **6/6，2.735秒**。根因仍未知，不能由窄绿称keepalive问题已修。三案例及原注册父组 **9/9、零跳过，3.969秒**；角色/稳定Cookie/实际sole与真实quota和generation停机重启交点 **6/6、零跳过，23.125秒**，实际child在入口前加载低层guard。
+
+对齐后的同五完整文件加原样只读localhost观察器重验 **391/391、零跳过，103.347秒**；观察器与旧b427诊断完整字节相同，只改日志目的，不修改fetch/dispatcher/端口/连接/超时或clock。该次未复现首红，原107秒日志、窄组、当前source/observer SHA均保留，不写为已解释或修复网络故障。类型、architecture、默认与可信main88迁移、201文件语法和十八路径格式通过，证据 `H:/TEMP/novelai-account-batches-root-preservation.json` 与 root-* 日志。本并集仍event7/writer5/DDL2314，不借该391替代完整后端、编译22/24、三包、实际发行物、实云/迁移/容量与生产切换；守卫、默认true新增Opus门槛和外部DTO差异仍需维护者最终复核。
+
 ### 9.92 Opening 原请求数量未知的独立表示
 
 本片从固定 `bb308a5af1a0f49de5594fc9681c755fc251451a` 接续，仅让 `OpeningRequestRecorded.sampleCount` 和请求列允许 NULL。正常受理仍为正数；原数量归 Request，complete 只描述规范 body/槽位，不包含 seed/count。同成员的已知 count 请求与未知 count 终态请求可共享原 complete Input、BLOB、context 和已知 seed，不降级或复制内容，不以 child 数量/位置/当前默认补原数量。旧归档解释和 A/B/13键/会话决定不在本片。

@@ -326,7 +326,7 @@ async function start(handler: http.RequestListener) {
         queueMicrotask(() => void exitAfterStop(1));
       },
     }),
-    refresh = createRelationalAccountQuotaRefresh({ sqlite, quotas, events, env });
+    refresh = createRelationalAccountQuotaRefresh({ sqlite, quotas, events, env, runtime: queue });
   function stop() {
     if (shutdown) {
       return shutdown;

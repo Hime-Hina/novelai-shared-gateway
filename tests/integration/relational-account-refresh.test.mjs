@@ -223,10 +223,13 @@ test('共用票据 owner：准备不作废已发查询，同钟或回拨的真�
       assert.equal(f.quotas.readAccountQuota('a').observedAnlasFixed, '9999');
       let ticket;
       const quota = await f.refresh.fetch(prepared.prepared.pst, '', 'a', async () => {
-        const started = await f.authorize((member) =>
+        const authorized = await f.authorize((member) =>
           f.accounts.startAccountEnable(command, input, prepared.prepared, member),
         );
-        ticket = started.ticket;
+        return () => {
+          const started = 'start' in authorized ? authorized.start() : authorized;
+          ticket = started.ticket;
+        };
       });
       const result = accountQuotaResult('a', quota, new Date(ticket.startedAt).toISOString());
       await f.authorize((member) =>

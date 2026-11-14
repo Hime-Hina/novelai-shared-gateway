@@ -4,12 +4,15 @@ import type {
   AccountCommandMetadata,
   OwnerAccountMutation,
   AccountEnableTicket,
+  AccountEnablePreparation,
+  AdminAccountBatch,
 } from '../storage/relational-account-store.ts';
 import type { MemberUser } from './authentication.ts';
 import {
   accountQuotaResult,
   accountQuotaErrorResult,
   type createAccountQuotaQuery,
+  type QuotaResult,
 } from '../quota/account-refresh.ts';
 import type { FairAccount } from '../quota/fair-share.ts';
 import { isUsableOpus } from '../quota/eligibility.ts';
@@ -407,6 +410,16 @@ export function adminAccountPatch(
   return { kind: 'configure', accountId, changes };
 }
 
+export function collectValues(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item: unknown) => String(item).trim()).filter(Boolean);
+  }
+  if (value === undefined || value === null || value === '') {
+    return [];
+  }
+  return [String(value).trim()].filter(Boolean);
+}
+
 function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
@@ -425,11 +438,78 @@ function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   return result;
 }
 
+async function queryAccountObservation(
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  source: AccountEnablePreparation,
+  start: () => Promise<ReturnType<RelationalAccountStore['startAccountEnable']> | null>,
+): Promise<
+  { result: RelationalCommitResult } | { ticket: AccountEnableTicket; observation: QuotaResult }
+> {
+  if (!query) {
+    fail(503, '账户额度查询尚未配置');
+  }
+  let ticket: AccountEnableTicket | undefined, prior: RelationalCommitResult | undefined;
+  try {
+    const quota = await query(
+      source.pst,
+      source.configuration?.proxyUrl ?? source.proxyUrl,
+      source.accountId,
+      async () => {
+        const authorized = await start();
+        if (!authorized) {
+          fail(401, '会话已失效，请重新登录');
+        }
+        if ('result' in authorized) {
+          prior = authorized.result;
+          throw new Error('Account command already completed.');
+        }
+        return () => {
+          const started = authorized.start();
+          if ('result' in started) {
+            prior = started.result;
+            throw new Error('Account command already completed.');
+          }
+          ticket = started.ticket;
+        };
+      },
+    );
+    if (!ticket) {
+      throw new Error('Account quota query did not start its observation.');
+    }
+    return {
+      ticket,
+      observation: accountQuotaResult(
+        ticket.accountId,
+        quota,
+        new Date(ticket.startedAt).toISOString(),
+      ),
+    };
+  } catch (error) {
+    if (prior) {
+      return { result: prior };
+    }
+    if (!ticket) {
+      throw error;
+    }
+    return {
+      ticket,
+      observation: accountQuotaErrorResult(
+        ticket.accountId,
+        error,
+        new Date(ticket.startedAt).toISOString(),
+      ),
+    };
+  }
+}
+
 // 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
 export async function ownerAccountCommand(
   store: Pick<
     RelationalAccountStore,
-    'prepareAccountCommand' | 'startAccountEnable' | 'completeAccountEnable'
+    | 'prepareAccountCommand'
+    | 'startAccountEnable'
+    | 'completeAccountEnable'
+    | 'releaseAccountRegistration'
   >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
@@ -446,67 +526,94 @@ export async function ownerAccountCommand(
   if ('result' in prepared) {
     return accountCommandResult(prepared.result);
   }
-  if (input.kind !== 'enable' && input.kind !== 'observe' && input.kind !== 'configure') {
-    throw new Error('Only account observation may query upstream.');
-  }
-  if (!query) {
-    fail(503, '账户额度查询尚未配置');
-  }
-  let ticket: AccountEnableTicket | undefined,
-    prior: RelationalCommitResult | undefined,
-    observation;
   try {
-    const quota = await query(
-      prepared.prepared.pst,
-      prepared.prepared.configuration?.proxyUrl ?? prepared.prepared.proxyUrl,
-      prepared.prepared.accountId,
-      async () => {
-        const started = await authorize((member) =>
-          store.startAccountEnable(
-            { ...metadata, recordedAt: now() },
-            input,
-            prepared.prepared,
-            member,
-          ),
-        );
-        if (!started) {
-          fail(401, '会话已失效，请重新登录');
-        }
-        if ('result' in started) {
-          prior = started.result;
-          throw new Error('Account command already completed.');
-        }
-        ticket = started.ticket;
-      },
-    );
-    if (!ticket) {
-      throw new Error('Account quota query did not start its observation.');
+    if (
+      input.kind !== 'enable' &&
+      input.kind !== 'observe' &&
+      input.kind !== 'configure' &&
+      input.kind !== 'register'
+    ) {
+      throw new Error('Only account observation may query upstream.');
     }
-    observation = accountQuotaResult(
-      ticket.accountId,
-      quota,
-      new Date(ticket.startedAt).toISOString(),
+    const observed = await queryAccountObservation(query, prepared.prepared, () =>
+      authorize((member) =>
+        store.startAccountEnable(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          member,
+        ),
+      ),
     );
-  } catch (error) {
-    if (prior) {
-      return accountCommandResult(prior);
+    if ('result' in observed) {
+      return accountCommandResult(observed.result);
     }
-    if (!ticket) {
-      throw error;
-    }
-    observation = accountQuotaErrorResult(
-      ticket.accountId,
-      error,
-      new Date(ticket.startedAt).toISOString(),
+    const result = await authorize((member) =>
+      store.completeAccountEnable(
+        { ...metadata, recordedAt: now() },
+        input,
+        observed.ticket,
+        observed.observation,
+        member,
+      ),
     );
+    if (!result) {
+      fail(401, '会话已失效，请重新登录');
+    }
+    return accountCommandResult(result);
+  } finally {
+    if (input.kind === 'register') {
+      store.releaseAccountRegistration(prepared.prepared);
+    }
   }
-  const result = await authorize((member) =>
-    store.completeAccountEnable(
+}
+
+export async function adminAccountBatchCommand(
+  store: Pick<
+    RelationalAccountStore,
+    'prepareAccountBatch' | 'startAccountBatchObservation' | 'completeAccountBatch'
+  >,
+  authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
+  metadata: AccountCommandMetadata,
+  input: AdminAccountBatch,
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  now: () => number = Date.now,
+) {
+  const prepared = await authorize((actor) => store.prepareAccountBatch(metadata, input, actor));
+  if (!prepared) {
+    fail(401, '会话已失效，请重新登录');
+  }
+  if ('result' in prepared) {
+    return accountCommandResult(prepared.result);
+  }
+  const observations: { ticket: AccountEnableTicket; result: QuotaResult }[] = [];
+  for (const source of prepared.prepared.sources) {
+    if (source.freshObservationEventId !== null) {
+      continue;
+    }
+    const result = await queryAccountObservation(query, source, () =>
+      authorize((actor) =>
+        store.startAccountBatchObservation(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          source.accountId,
+          actor,
+        ),
+      ),
+    );
+    if ('result' in result) {
+      return accountCommandResult(result.result);
+    }
+    observations.push({ ticket: result.ticket, result: result.observation });
+  }
+  const result = await authorize((actor) =>
+    store.completeAccountBatch(
       { ...metadata, recordedAt: now() },
       input,
-      ticket!,
-      observation,
-      member,
+      prepared.prepared,
+      observations,
+      actor,
     ),
   );
   if (!result) {
