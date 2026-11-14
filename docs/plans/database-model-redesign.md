@@ -2189,7 +2189,9 @@ privateQueries/摘要/相等/empty 与复制扩原 members 私有字段组，not
 
 Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 bootstrap 五文件同次 **216/216、零跳过，67.005 秒**，日志 `H:/TEMP/novelai-member-notes-984-20261115/owner-context-final.log`。第一次 215 项仅原“note不支持400”断言过期；现改为独立新用户名的合法 note200 与实际值，不改成碰撞409或删原权限断言。backend 类型、architecture、默认与可信88迁移、局部格式/diff 通过。原合法 HTTP400失败证据保持。
 
-四种仅TEMP错误实现分别识别：只知空note被当成empty的布尔反例；直接放行非空私有目标时实际恢复缺少应有拒绝；把note当公共shadow字段时真实installer拒members不等；把未知note补displayName时目录值错。四变体各在原业务断言失败，未加载/语法失败不计；finally恢复字节后两对应原目标再次通过。源/日志/原表达式12项程序摘要与固定交接在 `H:/TEMP/novelai-member-notes-984-20261115/`。基础258的无关Account SOCKS夹具修复、Root报告/备份后继及最终并集另验，216不是完整后端或发布产物验收。
+四种仅TEMP错误实现分别识别：只知空note被当成empty的布尔反例；直接放行非空私有目标时实际恢复缺少应有拒绝；把note当公共shadow字段时真实installer拒members不等；把未知note补displayName时目录值错。四变体各在原业务断言失败，未加载/语法失败不计；finally恢复字节后两对应原目标再次通过。源/日志/原表达式12项程序摘要与固定交接在 `H:/TEMP/novelai-member-notes-984-20261115/`。
+
+随后普通合入父已验的完整基础 `c2cf5d0b451260a85dbdab7ca35ae2af449e7eb0`，保留 Report/backup 后继与真实 runtime 夹具修正；本片相对该基础仍仅十一文件，Schema/facts/账户及代理恢复来源不改。新增报告 owner 交集后，六文件同次 **234/234、零跳过，71.492 秒**，日志 `c2-union-final.log`；类型/architecture/默认及可信88历史通过。事件版本7，实际DDL SHA256仍为 `61bc06c3a4c675a5dd07073457a0d7c56be7d7db3f784f13fec7f880724369db`。此前216和负控的全部产品/测试字节保持，新统计是该明确并集的实际运行；不是完整后端或发布物验收，也未消费9.86尚未冻结工作。
 
 无 full/build/compiled/Node24/native/install、真实云端或生产操作。独立审查由非作者另验，整体发布/迁移/sole切换不借本片单项测试宣称完成。
 
