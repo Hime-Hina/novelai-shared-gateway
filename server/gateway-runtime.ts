@@ -76,6 +76,10 @@ import { createDirectHttp, directRequestErrorImage } from './protocols/direct-ht
 import { createPublicImageAccess } from './http/public-image.ts';
 import {
   ownerAccountConfiguration,
+  maskToken,
+  maskProxyUrl,
+  accountTierText,
+  normalizeAccountProxyUrl,
   assertOwnerAccountCredentialChangeAllowed,
   ownerOperation,
   type OwnerAccountChange,
@@ -119,7 +123,6 @@ import {
   defaultArtist2_5D,
   hashObject,
   legacyDefaultArtist,
-  maskToken,
 } from './storage/sqlite-store.ts';
 
 import type { PreviewProgress } from './generation/job-previews.ts';
@@ -1444,32 +1447,6 @@ function reconcileGenerationReviews(now = Date.now()) {
   return reconcileGenerationReviewsCommand(store, { now: () => now, readStoredImage });
 }
 
-function accountTierText(tier: unknown, fallback = '会员未查询') {
-  if (tier === null || tier === undefined || tier === '') {
-    return fallback;
-  }
-  const value = Number(tier);
-  const tierNames: Record<number, string> = {
-    0: '无订阅',
-    1: 'Tablet 会员',
-    2: 'Scroll 会员',
-    3: 'Opus 会员',
-  };
-  if (Number.isFinite(value)) {
-    return tierNames[value] || `Tier ${value}`;
-  }
-  const key = String(tier).trim().toLowerCase();
-  return (
-    {
-      none: '无订阅',
-      paper: '无订阅',
-      tablet: 'Tablet 会员',
-      scroll: 'Scroll 会员',
-      opus: 'Opus 会员',
-    }[key] || String(tier)
-  );
-}
-
 async function cleanupInterruptedStartupJobs() {
   const startedAt = Date.now(),
     result = await failureHandlers.cleanupInterruptedStartupJobs();
@@ -2410,70 +2387,6 @@ function normalizeAccountCost(value: unknown) {
 
 function isQuotaFailureJob(job: StoreItem) {
   return job?.status === 'failed' && isInsufficientBalanceError({ message: job.error });
-}
-
-function normalizeAccountProxyUrl(value: unknown = '') {
-  const text = String(value || '').trim();
-  if (!text) {
-    return '';
-  }
-  const rawProxy = parseHostPortUserPassProxy(text);
-  if (rawProxy) {
-    return rawProxy;
-  }
-  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `socks5://${text}`;
-  let url: URL;
-  try {
-    url = new URL(withScheme.replace(/^sock5:\/\//i, 'socks5://'));
-  } catch {
-    throw httpError(400, 'invalid SOCKS5 proxy URL.');
-  }
-  if (!['socks5:', 'socks5h:'].includes(url.protocol)) {
-    throw httpError(400, 'only socks5:// and socks5h:// proxies are supported.');
-  }
-  if (!url.hostname) {
-    throw httpError(400, 'SOCKS5 proxy host is required.');
-  }
-  if (!url.port) {
-    url.port = '1080';
-  }
-  return url.toString();
-}
-
-function parseHostPortUserPassProxy(value: unknown = '') {
-  const parts = String(value || '')
-    .trim()
-    .split(':');
-  if (parts.length !== 4) {
-    return '';
-  }
-  const [host, port, username, password] = parts.map((part) => part.trim());
-  if (!host || !port || !username || !password || !/^\d{1,5}$/.test(port)) {
-    return '';
-  }
-  const url = new URL(`socks5://${host}:${port}`);
-  url.username = username;
-  url.password = password;
-  return url.toString();
-}
-
-function maskProxyUrl(value: unknown = '') {
-  const text = String(value || '').trim();
-  if (!text) {
-    return '';
-  }
-  try {
-    const url = new URL(text);
-    if (url.password) {
-      url.password = '******';
-    }
-    if (url.username) {
-      url.username = `${url.username.slice(0, 2)}***`;
-    }
-    return url.toString();
-  } catch {
-    return text.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:******@');
-  }
 }
 
 function adminRuntimeSettings(settings: Partial<Settings> = {}) {

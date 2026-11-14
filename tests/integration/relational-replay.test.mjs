@@ -236,7 +236,7 @@ test('七个实际 owner 完整覆盖全部事实且登记不重叠', () => {
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 75);
+  assert.equal(relationalReplayFacts().size, 76);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))

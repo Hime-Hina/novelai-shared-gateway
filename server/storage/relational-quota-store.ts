@@ -1,5 +1,7 @@
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
 import { RelationalCommitReplayer } from './relational-replay.ts';
+import { relationalAccountConnectionSource } from './relational-account-connection.ts';
+import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
 import { domainDigest, canonicalJson } from '../events/domain-events.ts';
 import {
   configureFreeImages,
@@ -159,6 +161,8 @@ type Ticket = {
   sequence: string;
   startedAt: number;
   pst: string;
+  proxyUrl: string;
+  connectionSourceEventId: string;
 };
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
 const unboundQuotaStatus = 'pending_opus';
@@ -534,8 +538,11 @@ export class RelationalQuotaStore {
   }
   private account(accountId: string) {
     const a = this.sqlite
-      .prepare<[string], { id: string; enabled: number; epoch: number; pst: string | null }>(
-        `SELECT a.id,a.enabled,a.credential_epoch AS epoch,c.pst FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
+      .prepare<
+        [string],
+        { id: string; enabled: number; epoch: number; pst: string | null; proxyUrl: string | null }
+      >(
+        `SELECT a.id,a.enabled,a.credential_epoch AS epoch,c.pst,c.proxy_url AS proxyUrl FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
       )
       .get(accountId);
     if (!a) {
@@ -611,7 +618,7 @@ export class RelationalQuotaStore {
       const rows = this.sqlite
         .prepare<[string | null, string | null], Row>(
           `SELECT a.id,a.enabled,a.credential_epoch AS epoch,
-          EXISTS(SELECT 1 FROM upstream_credentials c WHERE c.account_id=a.id AND c.pst!='') AS configured,
+          EXISTS(SELECT 1 FROM upstream_credentials c WHERE c.account_id=a.id AND c.pst!='' AND c.proxy_url IS NOT NULL) AS configured,
           a.cooldown_until AS cooldownUntil,a.cooldown_reason AS cooldownReason,
           q.account_id AS quotaAccountId,q.quota_tier AS quotaTier,
           q.subscription_active AS subscriptionActive,q.subscription_expires_at AS subscriptionExpiresAt,
@@ -1690,11 +1697,36 @@ export class RelationalQuotaStore {
     });
   }
   prepareQuotaObservation(accountId: string): Omit<Ticket, 'sequence' | 'startedAt'> {
-    const a = this.account(accountId);
-    if (!a.pst) {
+    const a = this.account(accountId),
+      connectionSourceEventId = relationalAccountConnectionSource(this.sqlite, accountId);
+    if (!a.pst || a.proxyUrl === null || !connectionSourceEventId) {
       fail('观察缺少当前私有凭据或实际时间', 503);
     }
-    return { accountId, credentialEpoch: a.epoch, pst: a.pst };
+    try {
+      if (normalizeSocksProxyUrl(a.proxyUrl) !== a.proxyUrl) {
+        fail('观察缺少获选的规范连接来源', 503);
+      }
+    } catch {
+      fail('观察缺少获选的规范连接来源', 503);
+    }
+    return {
+      accountId,
+      credentialEpoch: a.epoch,
+      pst: a.pst,
+      proxyUrl: a.proxyUrl,
+      connectionSourceEventId,
+    };
+  }
+  readAccountQuotaSnapshot(accountId: string) {
+    if (
+      !this.sqlite.prepare('SELECT 1 FROM account_quota_state WHERE account_id=?').get(accountId)
+    ) {
+      return null;
+    }
+    return {
+      ...this.quotaAccount(this.account(accountId), this.readAccountQuota(accountId)),
+      ...this.readOfficialQuotaV5(accountId),
+    };
   }
   beginQuotaObservation(
     accountId: string,
@@ -1710,7 +1742,9 @@ export class RelationalQuotaStore {
       expected &&
       (expected.accountId !== source.accountId ||
         expected.credentialEpoch !== source.credentialEpoch ||
-        expected.pst !== source.pst)
+        expected.pst !== source.pst ||
+        expected.proxyUrl !== source.proxyUrl ||
+        expected.connectionSourceEventId !== source.connectionSourceEventId)
     ) {
       fail('额度查询发起前原凭据已变化');
     }
@@ -1753,6 +1787,8 @@ export class RelationalQuotaStore {
     if (
       a.epoch !== ticket.credentialEpoch ||
       a.pst !== ticket.pst ||
+      a.proxyUrl !== ticket.proxyUrl ||
+      relationalAccountConnectionSource(this.sqlite, a.id) !== ticket.connectionSourceEventId ||
       !this.order.current(`${a.id}:${a.epoch}`, ticket.sequence) ||
       BigInt(ticket.sequence) <= BigInt(q.observedSequence ?? '0')
     ) {
@@ -1794,6 +1830,7 @@ export class RelationalQuotaStore {
           payload: {
             accountId: a.id,
             credentialEpoch: a.epoch,
+            connectionSourceEventId: ticket.connectionSourceEventId,
             sequence: ticket.sequence,
             observedAt: snapshot.at,
             quotaTier: tier !== null && Number.isSafeInteger(tier) ? tier : null,
@@ -1918,7 +1955,11 @@ export class RelationalQuotaStore {
       if (opening.payload.authorizedAt === null) {
         return null;
       }
-      return { attempt, dispatch: opening };
+      return {
+        attempt,
+        dispatch: opening,
+        connectionSourceEventId: opening.payload.connectionSourceEventId,
+      };
     }
     if (rows.length !== 1) {
       fail('凭据失效缺少唯一原派发事实');
@@ -1938,10 +1979,14 @@ export class RelationalQuotaStore {
     ) {
       fail('凭据失效与原派发归属或代次不符');
     }
-    return { attempt, dispatch };
+    return { attempt, dispatch, connectionSourceEventId: dispatch.payload.connectionSourceEventId };
   }
 
-  private generationCredentialDecision(source: GenerationFailureSource, at: number) {
+  private generationCredentialDecision(
+    source: GenerationFailureSource,
+    at: number,
+    before?: RelationalEvent,
+  ) {
     const errorCode = generationCredentialError(source.aborted, source.response.upstreamHttpStatus);
     if (!errorCode) {
       return null;
@@ -1949,7 +1994,10 @@ export class RelationalQuotaStore {
     const original = this.generationDispatch(source.attemptId);
     if (
       !original ||
-      original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch
+      original.attempt.credentialEpoch !== this.account(original.attempt.accountId).epoch ||
+      original.connectionSourceEventId === null ||
+      original.connectionSourceEventId !==
+        relationalAccountConnectionSource(this.sqlite, original.attempt.accountId, before)
     ) {
       return null;
     }
@@ -2031,6 +2079,7 @@ export class RelationalQuotaStore {
             response: response.payload.response,
           },
           failure.occurredAt,
+          failure,
         );
       if (claims.length !== (decision ? 1 : 0)) {
         fail('凭据失效决定必须按原失败完整且恰一次保存');
@@ -3322,6 +3371,8 @@ export class RelationalQuotaStore {
           const p = e.payload;
           if (
             p.credentialEpoch !== a.epoch ||
+            p.connectionSourceEventId !==
+              relationalAccountConnectionSource(this.sqlite, accountId, e) ||
             BigInt(p.sequence) <= BigInt(q.observedSequence ?? '0')
           ) {
             fail('观察代次或序号已经过期');
@@ -3429,6 +3480,9 @@ export class RelationalQuotaStore {
               original.dispatch.eventId !== origin.dispatchEventId ||
               original.attempt.accountId !== accountId ||
               original.attempt.credentialEpoch !== a.epoch ||
+              original.connectionSourceEventId === null ||
+              original.connectionSourceEventId !==
+                relationalAccountConnectionSource(this.sqlite, accountId, e) ||
               response.commitSeq !== e.commitSeq ||
               failure.commitSeq !== e.commitSeq ||
               response.eventIndex >= e.eventIndex ||

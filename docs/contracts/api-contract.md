@@ -283,13 +283,19 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
 
-关系账户 `PATCH /api/member/owner/accounts/:id` 与 `PATCH /api/admin/accounts/:id` 当前只接受一个字段：完整 PST `token` 或布尔 `enabled`。只操作当前绑定账户；PST 轮换先检查该账户所有成员的 reserved 责任与实际物理 controls，再更新私有凭据并保持暂停。启用必须经原 query owner 的真实额度响应、有效 Opus 和最新观察核验；网络在 SQL 外，完成时重核当前 owner Cookie/epoch/ready 或本地 admin、原绑定/政策/可用性来源与 credential epoch。两个角色都不支持绕过核验启用。总装配须注入与定时刷新相同的 QuotaStore 和 `sharedRefresh.fetch`；没有实际 query 能力时启用为 503，暂停和 PST 轮换不查网络。
+关系账户 `PATCH /api/member/owner/accounts/:id` 保留 owner 仅对当前绑定账户单字段完整 PST `token` 或布尔 `enabled` 的权限。`PATCH /api/admin/accounts/:id` 恢复原 admin 的组合 `name`、`weight`、`proxyUrl|socksProxy|proxy`、`token`、`enabled` 配置；名称沿原 String/slice80，投影以单个 JSON string 列 `display_name_json` 保留合法孤立代理，三写者与两窄读统一 stringify/parse，不从事件另补读值。权重沿原 Number/clamp1–100，合法小数保真。name/weight/proxy 允许原 held 和实际 physical 请求在途，proxy 不自动暂停；只有 PST 真轮换检查原账户所有成员 reserved 与实际 controls，再原子保存 PST/已选代理并暂停。代理真变更但当前 PST 缺失时为 503 零写，可同一组合提交新 PST 与代理，不接受成功后丢值。
+
+`POST /api/admin/accounts` 已接显式 `enabled:false` 的原新增暂停账户，包括在已绑定账户旁新增第二账户，返回 201 与原 mask 账户字段，不改变共享绑定或启用第二调度。`PATCH /api/admin/accounts` 保留原 ids/accounts 数组或单值解析、过滤不存在 ID、无命中404；weight 小数及 enabled:false 同一完整提交、整笔回滚，返回 `{accounts}`。单个当前绑定账户 enabled:true 复用真实 Opus 核验。原 POST 的 enabled 默认 true、非绑定账户真实观察与单/批启用尚待后继分离观察和单绑定金融同步，不把目前拒绝视为批准的功能退役，也不先保存暂停账户再异步假装原子成功。admin 集合命令同样非 keyed，当前授权先行，无秘密公共回执。
+
+两个角色启用均须原 query owner 的真实额度响应、有效 Opus 和最新观察；网络在 SQL 外，actual-start 与完成时重核当前 Cookie/epoch/ready 或本地 admin、绑定/政策、PST 代次及连接来源。组合代理与启用先用不可变目标代理完成查询，最终一笔保存配置/观察/可用性和私有值，不先提交半笔配置。没有实际 query 能力时启用为 503；总装配须注入同一 QuotaStore 和 `sharedRefresh.fetch`。只改展示名称/权重不会作废已发 GET，也不会覆盖查询期间后来保存的未指定展示字段。
 
 观察票号只代表原 query owner 已取得实际槽并准备调用 raw fetch 的发起；账户准备只保留私有来源，不领取票号。手动启用与自动刷新都在同一个 query 的 actual-start 回调重核来源、领取精确序号和时点，再发起网络。发起前的本机繁忙、缺能力或授权/凭据变化不是官方失败：不新增观察、提交、回执或 observed-seq，也不作废唯一已发的请求；繁忙为 409。已发后的真实网络失败或超时才沿原失败 owner 保存观察；截止结束不释放尚未 settle 的 raw 物理占用。命中旧回执先通过当前授权，繁忙不阻挡零 IO 重领。
 
-本片关系 PATCH 的成功回包明确收窄为 AccountStore 已保存的 `{accountId,enabled}`，失败观察的原 receipt 含 `{error:{statusCode,message}}` 并以对应错误返回；不再返回旧 owner `safeAccount` 或 admin `publicAccount` 宽 DTO。现 Web PATCH 不消费正文，展示继续从已鉴权读取接口取得。`Idempotency-Key` 沿原 actor/路径操作隔离与指纹，同一原回执须先通过当前授权；命中后不查网络、不按后来配置/余额重算，也不覆盖后续暂停或轮换。没有幂等键仍是新命令；PST 只进私有表，不进事实、回执或日志。这些 PATCH 不续期 Cookie。
+owner 关系 PATCH 的 `{accountId,enabled}` / `{error:{statusCode,message}}` 保存回执仍为第 9.68 节的外部 DTO 收窄提案，不能称为原 `safeAccount` 字节兼容；现 Web 不消费其正文，最终维护者复核须明确该差异。owner 的 Idempotency-Key 按真实 actor/路径隔离，当前授权后才返回原回执，零 IO 且不按后来配置/余额重造结果。admin 宽配置沿旧实际非 keyed 契约，不因该头产生可领取私有结果或可猜测的代理/PST 公共摘要；新 HTTP 是新管理决定。admin PATCH 返回当前原宽字段和默认 mask；未保存的原历史计数、routeId、trial、stats/时点等为 NULL，不伪造零/默认权重。两角色都不续 Cookie。
 
-原 admin 的 `name`、`proxyUrl|socksProxy|proxy` 和 `weight` 写入/宽 DTO、显式 PST/代理 reveal 仍是未完成迁移项，不属于 D4 已确认退出范围。当前 PATCH 明确 400 拒绝这些字段，不静默丢失、不用环境默认代理冒充已保存来源；字段/读取及所选源保全的后继见数据库计划第 9.68 节。bulk 账户 PATCH、注册 POST、额度刷新 POST、admin summary/reveal 与唯一在线装配不由本片实现。
+`POST /api/member/owner/accounts/quota` 仅接当前绑定账户的单个 ids，返回原 `{checked,ok,failed,ignored}`；刷新不启用已暂停账户。owner 的有事实成功/失败保存原 counts 回执，当前授权后重领不重新查询；原 keyed 过期零事实请求仍为 409。`POST /api/admin/accounts/quota` 保留原非 keyed 及 raw accounts 回包（受当前本机 admin 授权，PST/代理不进公共回执），缺省/空 ids 选当前账户。等待中连接已变的 nonkeyed 请求为 ignored 零事实；实际 slot busy 不领票、不制造观察，也不作废唯一已发请求。
+
+代理只由选定私有来源保存；NULL 未知不能默认为直连，空串表示来源明确无代理。代理 A→B→A 仍取得新事件来源，旧查询和旧 401/403 不影响当前连接；原尝试的收费、退款和同账户容量责任仍归原 owner。完整公共回放不恢复代理或 PST，选定 SHA/同 cut 私有快照经唯一 ready 安装核对；格式升级与 localhost 真 SOCKS/TLS 验证见第 9.80 节。name/proxy/weight 不是 D4 退出项。完整 admin summary/reveal GET 聚合、上述非绑定观察/启用及新建默认启用、旧源转换和唯一在线装配仍由后继接续；只交 accounts 数据不能称为完成 `/api/admin/summary`。
 
 关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
 

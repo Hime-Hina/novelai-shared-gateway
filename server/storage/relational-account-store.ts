@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
-import { domainDigest } from '../events/domain-events.ts';
+import { randomUUID } from 'node:crypto';
+import { domainDigest, type Json } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
   readRelationalReceipt,
@@ -20,11 +21,17 @@ import {
   assertOwnerAccountCredentialChangeAllowed,
   ownerAccountConfiguration,
   selectSharedAccount,
+  maskToken,
+  maskProxyUrl,
+  accountTierText,
+  normalizeAccountProxyUrl,
 } from '../members/owner-operations.ts';
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
 import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-store.ts';
 import type { QuotaResult } from '../quota/account-refresh.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { relationalAccountConnectionSource } from './relational-account-connection.ts';
+import { quotaNumber } from '../quota/eligibility.ts';
 
 export type AccountCommandMetadata = Omit<
   RelationalCommand,
@@ -40,16 +47,36 @@ export type OwnerAccountMutation =
       displayName: string;
       token: string;
       configVersion: number;
+      weight?: number;
+      proxyUrl?: string;
+      bind?: boolean;
     }
   | { kind: 'pause'; accountId: string }
   | { kind: 'token'; accountId: string; token: string }
-  | { kind: 'enable'; accountId: string };
+  | { kind: 'enable'; accountId: string }
+  | { kind: 'observe'; accountId: string }
+  | { kind: 'configure'; accountId: string; changes: AdminAccountChanges };
+export interface AdminAccountChanges {
+  displayName?: string;
+  weight?: number;
+  proxyUrl?: string;
+  token?: string;
+  enabled?: boolean;
+}
+type AccountConfiguration = {
+  displayName: string;
+  weight: number | null;
+  proxyUrl: string | null;
+  connectionChanged: boolean;
+  eventId: string;
+};
 export type AccountEnableTicket = ReturnType<RelationalQuotaStore['beginQuotaObservation']> & {
   availabilityEventId: string;
   configVersion: number;
   authEpoch: string | null;
   commandId: string;
   fingerprint: string;
+  configuration?: AccountConfiguration;
 };
 export type AccountEnablePreparation = Omit<AccountEnableTicket, 'sequence' | 'startedAt'>;
 
@@ -59,10 +86,13 @@ type Account = {
   enabled: number;
   epoch: number;
   pst: string | null;
+  proxyUrl: string | null;
+  weight: number | null;
 };
 export interface AccountManagementProfile {
   id: string;
   name: string;
+  weight: number | null;
   enabled: boolean;
   credentialEpoch: number;
   createdAt: number | null;
@@ -75,6 +105,7 @@ export const relationalAccountFacts = new Set<RelationalEvent['eventType']>([
   'AccountRegistered',
   'AccountBound',
   'CredentialRotated',
+  'AccountConfigurationChanged',
 ]);
 
 // 业务决定复用账户/额度 owner；这里只保存私有凭据、事实和同笔关系投影。
@@ -99,7 +130,7 @@ export class RelationalAccountStore {
     // 账户当前来源会随轮换或冷却改变；原创建时间只来自注册，Opening 的导入时间不是创建时间。
     const rows = this.sqlite
       .prepare<string[], Omit<AccountManagementProfile, 'enabled'> & { enabled: number }>(
-        `SELECT a.id,a.display_name AS name,a.enabled,a.credential_epoch AS credentialEpoch,
+        `SELECT a.id,a.display_name_json AS name,a.weight,a.enabled,a.credential_epoch AS credentialEpoch,
         (SELECT CASE WHEN e.event_type='AccountRegistered' THEN e.occurred_at ELSE NULL END
           FROM domain_events e WHERE e.stream_id='account:'||a.id
           AND e.event_type IN ('AccountRegistered','OpeningAccountRecorded')
@@ -107,13 +138,75 @@ export class RelationalAccountStore {
         FROM upstream_accounts a ${parameters.length ? 'WHERE a.id=?' : ''} ORDER BY a.id`,
       )
       .all(...parameters);
-    return rows.map((row) => ({ ...row, enabled: row.enabled === 1 }));
+    return rows.map((row) => ({
+      ...row,
+      name: JSON.parse(row.name) as string,
+      enabled: row.enabled === 1,
+    }));
   }
   readAccountManagementDirectory() {
     return this.managementAccounts([]);
   }
   readAccountManagementProfile(accountId: string) {
     return this.managementAccounts([accountId])[0] ?? null;
+  }
+  readAdminAccountProfile(accountId: string, reveal: boolean, actor: MemberUser | null) {
+    return this.owned(() => {
+      if (actor !== null) {
+        fail('只有本地管理员可以读取账户私有配置', 403);
+      }
+      const account = this.account(accountId),
+        quota = this.quotas.readAccountQuotaSnapshot(accountId),
+        publicAccount = this.sqlite
+          .prepare<[string], { cooldownUntil: number | null; cooldownReason: string | null }>(
+            'SELECT cooldown_until AS cooldownUntil,cooldown_reason AS cooldownReason FROM upstream_accounts WHERE id=?',
+          )
+          .get(accountId)!;
+      const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
+      const fixed = quotaNumber(quota?.quotaFixed),
+        purchased = quotaNumber(quota?.quotaPurchased);
+      let token = account.pst,
+        proxyUrl = account.proxyUrl;
+      if (!reveal) {
+        if (token !== null) {
+          token = maskToken(token);
+        }
+        if (proxyUrl !== null) {
+          proxyUrl = maskProxyUrl(proxyUrl);
+        }
+      }
+      return {
+        id: account.id,
+        routeId: null,
+        name: account.displayName,
+        token,
+        proxyUrl,
+        hasProxy: account.proxyUrl === null ? null : Boolean(account.proxyUrl),
+        enabled: account.enabled === 1,
+        weight: account.weight,
+        inFlight: physicalAccountLoad(this.controls, account.id),
+        total: null,
+        failures: null,
+        quotaPoints: fixed === null && purchased === null ? null : (fixed ?? 0) + (purchased ?? 0),
+        quotaFixed: fixed,
+        quotaPurchased: purchased,
+        quotaTier: quota?.quotaTier ?? null,
+        quotaTierText: accountTierText(quota?.quotaTier),
+        trialRemainingImages: null,
+        trialUsedImages: null,
+        trialEligible: null,
+        trialStatusKnown: false,
+        v5UsagePercent: quota?.v5UsagePercent ?? null,
+        v5UsageIsNegative: quota?.v5UsageIsNegative ?? null,
+        v5UsageTimeUntilNextPercent: quota?.v5UsageTimeUntilNextPercent ?? null,
+        quotaCheckedAt: quota?.quotaCheckedAt ?? null,
+        quotaError: quota?.quotaError ?? null,
+        cooldownUntil: iso(publicAccount.cooldownUntil),
+        cooldownReason: publicAccount.cooldownReason,
+        stats1h: null,
+        lastUsedAt: null,
+      };
+    });
   }
   readSharedAccountManagementProfile() {
     return this.sqlite.transaction(() => {
@@ -142,20 +235,49 @@ export class RelationalAccountStore {
     assertCurrentOwnerCommand(metadata, member, current, this.env);
   }
   private command(metadata: AccountCommandMetadata, input: OwnerAccountMutation) {
-    // 轮换的秘密不进入事实；命令意图摘要仍区分不同 PST，防止同键不同操作。
+    // owner 原 keyed PST 意图区分不同凭据；admin 非 keyed 连接不发布低熵秘密摘要。
+    if (input.kind === 'configure') {
+      if (!input.changes || typeof input.changes !== 'object' || Array.isArray(input.changes)) {
+        fail('账户配置参数无效', 400);
+      }
+      const { proxyUrl, token, ...publicChanges } = input.changes;
+      // 原 admin 私有配置是非 keyed；绑定公开意图，不发布低熵代理密码的可猜测摘要。
+      return {
+        ...metadata,
+        fingerprint: domainDigest({
+          command: metadata.fingerprint,
+          accountId: input.accountId,
+          changes: publicChanges,
+          hasProxyInput: proxyUrl !== undefined,
+          hasTokenInput: token !== undefined,
+        }),
+      };
+    }
+    if (input.kind === 'register') {
+      const { proxyUrl, token, ...publicInput } = input;
+      const original = input.bind === false ? publicInput : { ...publicInput, token };
+      return {
+        ...metadata,
+        fingerprint: domainDigest({
+          command: metadata.fingerprint,
+          input: original,
+          hasProxyInput: proxyUrl !== undefined,
+        }),
+      };
+    }
     return { ...metadata, fingerprint: domainDigest({ command: metadata.fingerprint, input }) };
   }
   private account(id: string): Account {
     const row = this.sqlite
       .prepare<[string], Account>(
-        `SELECT a.id,a.display_name AS displayName,a.enabled,a.credential_epoch AS epoch,
-      c.pst FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
+        `SELECT a.id,a.display_name_json AS displayName,a.weight,a.enabled,a.credential_epoch AS epoch,
+      c.pst,c.proxy_url AS proxyUrl FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
       )
       .get(id);
     if (!row) {
       fail('上游账户不存在', 404);
     }
-    return row;
+    return { ...row, displayName: JSON.parse(row.displayName) as string };
   }
   private availabilityEventId(accountId: string) {
     // 同行的冷却投影会更新 source_event_id；可用性身份只来自实际配置事实。
@@ -207,6 +329,7 @@ export class RelationalAccountStore {
     metadata: AccountCommandMetadata,
     events: RelationalEventInput[],
     error?: { statusCode: number; message: string },
+    receipt?: Json,
   ) {
     const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
     let enabled =
@@ -233,7 +356,7 @@ export class RelationalAccountStore {
             .get(e.streamId)?.v ?? '0',
         ]),
       ),
-      receipt: { accountId: events[0].accountId, enabled, ...(error ? { error } : {}) },
+      receipt: receipt ?? { accountId: events[0].accountId, enabled, ...(error ? { error } : {}) },
     });
     this.applyAccountEvents(result.events);
     return result;
@@ -247,20 +370,34 @@ export class RelationalAccountStore {
       this.authorize(metadata, member);
       let allowed = ['kind', 'accountId'];
       if (input?.kind === 'register') {
-        allowed = ['kind', 'accountId', 'displayName', 'token', 'configVersion'];
+        allowed = [
+          'kind',
+          'accountId',
+          'displayName',
+          'token',
+          'configVersion',
+          'weight',
+          'proxyUrl',
+          'bind',
+        ];
       } else if (input?.kind === 'token') {
         allowed = ['kind', 'accountId', 'token'];
+      } else if (input?.kind === 'configure') {
+        allowed = ['kind', 'accountId', 'changes'];
       }
       if (
         !input ||
-        !['register', 'pause', 'token', 'enable'].includes(input.kind) ||
-        Object.keys(input).length !== allowed.length ||
+        !['register', 'pause', 'token', 'enable', 'observe', 'configure'].includes(input.kind) ||
+        (input.kind !== 'register' && Object.keys(input).length !== allowed.length) ||
         Object.keys(input).some((key) => !allowed.includes(key)) ||
         typeof input.accountId !== 'string' ||
         !input.accountId ||
         input.accountId.includes('\0')
       ) {
         fail('账户配置参数无效', 400);
+      }
+      if (input.kind === 'configure' && (member !== null || metadata.actorKind !== 'admin')) {
+        fail('只有本地管理员可以修改账户档案或代理', 403);
       }
       const command = this.command(metadata, input),
         prior = readRelationalReceipt(this.sqlite, command);
@@ -270,17 +407,31 @@ export class RelationalAccountStore {
       if (input.kind === 'register') {
         assertOwnerAccountPst(input.token);
         if (
+          input.proxyUrl !== undefined &&
+          normalizeAccountProxyUrl(input.proxyUrl) !== input.proxyUrl
+        ) {
+          fail('代理来源必须是规范 SOCKS5 地址', 400);
+        }
+        if (
           typeof input.displayName !== 'string' ||
           !input.displayName ||
           input.displayName.length > 80
         ) {
           fail('账户名称需为 1–80 个字符', 400);
         }
-        const policy = this.policy();
+        const policy = this.policy(),
+          binding = input.bind !== false;
+        if (input.bind !== undefined && typeof input.bind !== 'boolean') {
+          fail('账户注册绑定参数无效', 400);
+        }
+        if (!binding && (member !== null || metadata.actorKind !== 'admin')) {
+          fail('只有本地管理员可以新增未绑定账户', 403);
+        }
         if (
-          policy.accountId !== null ||
           policy.version !== input.configVersion ||
-          this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
+          (binding &&
+            (policy.accountId !== null ||
+              this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()))
         ) {
           fail('仅允许在未绑定共享账户时首次注册');
         }
@@ -290,22 +441,133 @@ export class RelationalAccountStore {
             payload: {
               accountId: input.accountId,
               displayName: input.displayName,
+              weight: input.weight ?? 1,
               enabled: false,
               credentialEpoch: 1,
             },
           }),
-          this.event(command, {
-            eventType: 'AccountBound',
-            payload: { accountId: input.accountId, configVersion: policy.version + 1 },
-          }),
+          ...(binding
+            ? [
+                this.event(command, {
+                  eventType: 'AccountBound',
+                  payload: { accountId: input.accountId, configVersion: policy.version + 1 },
+                }),
+              ]
+            : []),
         ]);
         this.sqlite
-          .prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)')
-          .run(input.accountId, input.token);
+          .prepare('INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,?)')
+          .run(input.accountId, input.token, input.proxyUrl ?? '');
         return { result };
       }
-      const account = this.boundAccount(input.accountId);
-      if (input.kind === 'enable') {
+      const account =
+        input.kind === 'configure' && member === null
+          ? this.account(input.accountId)
+          : this.boundAccount(input.accountId);
+      if (input.kind === 'configure') {
+        if (member !== null || metadata.actorKind !== 'admin') {
+          fail('只有本地管理员可以修改账户档案或代理', 403);
+        }
+        const changes = input.changes;
+        if (
+          !changes ||
+          Object.keys(changes).some(
+            (key) => !['displayName', 'weight', 'proxyUrl', 'token', 'enabled'].includes(key),
+          ) ||
+          (changes.displayName !== undefined &&
+            (typeof changes.displayName !== 'string' || changes.displayName.length > 80)) ||
+          (changes.weight !== undefined &&
+            (!Number.isFinite(changes.weight) || changes.weight < 1 || changes.weight > 100)) ||
+          (changes.enabled !== undefined && typeof changes.enabled !== 'boolean') ||
+          (changes.proxyUrl !== undefined &&
+            normalizeAccountProxyUrl(changes.proxyUrl) !== changes.proxyUrl)
+        ) {
+          fail('账户配置参数无效', 400);
+        }
+        if (changes.token !== undefined) {
+          assertOwnerAccountPst(changes.token);
+        }
+        if (
+          changes.proxyUrl !== undefined &&
+          changes.proxyUrl !== account.proxyUrl &&
+          !account.pst &&
+          changes.token === undefined
+        ) {
+          fail('当前私有 PST 尚未恢复，请同时提供 PST 与代理配置', 503);
+        }
+        const configuration: AccountConfiguration = {
+          displayName: changes.displayName ?? account.displayName,
+          weight: changes.weight ?? account.weight,
+          proxyUrl: changes.proxyUrl ?? account.proxyUrl,
+          connectionChanged:
+            changes.proxyUrl !== undefined && changes.proxyUrl !== account.proxyUrl,
+          eventId: randomUUID(),
+        };
+        const changingToken = changes.token !== undefined && changes.token !== account.pst;
+        const configuringProfile =
+          changes.displayName !== undefined ||
+          changes.weight !== undefined ||
+          changes.proxyUrl !== undefined;
+        if (changingToken) {
+          assertOwnerAccountCredentialChangeAllowed(
+            physicalAccountLoad(this.controls, account.id),
+            !!this.sqlite
+              .prepare(
+                "SELECT 1 FROM charges WHERE original_account_id=? AND status='reserved' LIMIT 1",
+              )
+              .get(account.id),
+          );
+        }
+        if (changes.enabled === true && !changingToken) {
+          this.boundAccount(account.id);
+          return {
+            prepared: {
+              ...this.quotas.prepareQuotaObservation(account.id),
+              availabilityEventId: this.availabilityEventId(account.id),
+              configVersion: this.policy().version,
+              authEpoch: null,
+              commandId: command.commandId,
+              fingerprint: command.fingerprint,
+              ...(configuringProfile ? { configuration } : {}),
+            },
+          };
+        }
+        const events =
+          configuringProfile || (!changingToken && changes.enabled === undefined)
+            ? this.configurationEvents(command, account, configuration)
+            : [];
+        if (changingToken) {
+          events.push(
+            this.event(command, {
+              eventType: 'CredentialRotated',
+              payload: {
+                accountId: account.id,
+                beforeEpoch: account.epoch,
+                credentialEpoch: account.epoch + 1,
+              },
+            }),
+          );
+        }
+        if (changingToken || changes.enabled === false) {
+          events.push(
+            this.event(command, {
+              eventType: 'AvailabilityChanged',
+              payload: {
+                accountId: account.id,
+                enabled: false,
+                reason: changingToken ? 'credential_replaced' : 'owner_paused',
+                observationEventId: null,
+              },
+            }),
+          );
+        }
+        const result = this.commit(command, events);
+        if (configuration.connectionChanged || changingToken) {
+          this.writeConnection(account.id, changes.token ?? account.pst, configuration.proxyUrl);
+        }
+        return { result };
+      }
+      if (input.kind === 'enable' || input.kind === 'observe') {
         return {
           prepared: {
             ...this.quotas.prepareQuotaObservation(account.id),
@@ -373,16 +635,80 @@ export class RelationalAccountStore {
       if (input.kind === 'token' && input.token !== account.pst) {
         this.sqlite
           .prepare(
-            'INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET pst=excluded.pst',
+            'INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET pst=excluded.pst,proxy_url=excluded.proxy_url',
           )
-          .run(account.id, input.token);
+          .run(account.id, input.token, account.proxyUrl);
       }
       return { result };
     });
   }
+  configureAccounts(
+    metadata: AccountCommandMetadata,
+    input: { ids: string[]; weight?: number; enabled?: false },
+    actor: MemberUser | null,
+  ) {
+    return this.owned(() => {
+      this.authorize(metadata, actor);
+      if (actor !== null || metadata.actorKind !== 'admin') {
+        fail('只有本地管理员可以批量修改账户', 403);
+      }
+      if (
+        !Array.isArray(input.ids) ||
+        !input.ids.length ||
+        input.ids.some((id) => typeof id !== 'string' || !id) ||
+        (input.weight !== undefined &&
+          (!Number.isFinite(input.weight) || input.weight < 1 || input.weight > 100)) ||
+        (input.enabled !== undefined && input.enabled !== false)
+      ) {
+        fail('批量账户配置参数无效', 400);
+      }
+      const command = {
+          ...metadata,
+          fingerprint: domainDigest({ command: metadata.fingerprint, input }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const ids = new Set(input.ids),
+        selected = this.managementAccounts([]).filter((account) => ids.has(account.id));
+      if (!selected.length) {
+        fail('no matching accounts found.', 404);
+      }
+      const events: RelationalEventInput[] = [];
+      for (const profile of selected) {
+        const account = this.account(profile.id);
+        events.push(
+          ...this.configurationEvents(command, account, {
+            displayName: account.displayName,
+            weight: input.weight ?? account.weight,
+            proxyUrl: account.proxyUrl,
+            connectionChanged: false,
+            eventId: randomUUID(),
+          }),
+        );
+        if (input.enabled === false) {
+          events.push(
+            this.event(command, {
+              eventType: 'AvailabilityChanged',
+              payload: {
+                accountId: account.id,
+                enabled: false,
+                reason: 'owner_paused',
+                observationEventId: null,
+              },
+            }),
+          );
+        }
+      }
+      return this.commit(command, events, undefined, {
+        accountIds: selected.map((account) => account.id),
+      });
+    });
+  }
   private enableSource(
     command: AccountCommandMetadata,
-    input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
     source: AccountEnablePreparation,
     member: MemberUser | null,
   ) {
@@ -391,18 +717,44 @@ export class RelationalAccountStore {
       source.commandId !== command.commandId ||
       source.fingerprint !== command.fingerprint ||
       source.accountId !== account.id ||
-      source.availabilityEventId !== this.availabilityEventId(account.id) ||
-      source.configVersion !== this.policy().version ||
-      source.authEpoch !== (member?.memberAuth?.version ?? null)
+      (input.kind !== 'observe' &&
+        source.availabilityEventId !== this.availabilityEventId(account.id)) ||
+      (input.kind !== 'observe' && source.configVersion !== this.policy().version) ||
+      source.authEpoch !== (member?.memberAuth?.version ?? null) ||
+      (input.kind === 'configure' &&
+        (input.changes.displayName !== undefined ||
+          input.changes.weight !== undefined ||
+          input.changes.proxyUrl !== undefined)) !== Boolean(source.configuration) ||
+      (input.kind === 'configure' &&
+        (input.changes.enabled !== true ||
+          (input.changes.token !== undefined && input.changes.token !== account.pst))) ||
+      (source.configuration &&
+        (input.kind !== 'configure' ||
+          member !== null ||
+          (input.changes.displayName !== undefined &&
+            source.configuration.displayName !== input.changes.displayName) ||
+          (input.changes.weight !== undefined &&
+            source.configuration.weight !== input.changes.weight) ||
+          source.configuration.proxyUrl !== (input.changes.proxyUrl ?? account.proxyUrl) ||
+          source.configuration.connectionChanged !==
+            (input.changes.proxyUrl !== undefined && input.changes.proxyUrl !== account.proxyUrl)))
     ) {
       fail('核验期间账户配置或授权已变化');
     }
-    return account;
+    const current =
+      source.credentialEpoch === account.epoch &&
+      source.pst === account.pst &&
+      source.proxyUrl === account.proxyUrl &&
+      source.connectionSourceEventId === relationalAccountConnectionSource(this.sqlite, account.id);
+    if (!current && input.kind !== 'observe') {
+      fail('核验期间账户配置或授权已变化');
+    }
+    return { account, current };
   }
   // 准备不领取观察号；只有 query owner 已取得实际槽后，才在发起前复核并开始观察。
   startAccountEnable(
     metadata: AccountCommandMetadata,
-    input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
     prepared: AccountEnablePreparation,
     member: MemberUser | null,
   ): { result: RelationalCommitResult } | { ticket: AccountEnableTicket } {
@@ -413,7 +765,10 @@ export class RelationalAccountStore {
       if (prior) {
         return { result: prior };
       }
-      const account = this.enableSource(command, input, prepared, member);
+      const { account, current } = this.enableSource(command, input, prepared, member);
+      if (!current) {
+        fail('额度查询发起前原连接已变化');
+      }
       return {
         ticket: {
           ...prepared,
@@ -424,7 +779,7 @@ export class RelationalAccountStore {
   }
   completeAccountEnable(
     metadata: AccountCommandMetadata,
-    input: Extract<OwnerAccountMutation, { kind: 'enable' }>,
+    input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' }>,
     ticket: AccountEnableTicket,
     result: QuotaResult,
     member: MemberUser | null,
@@ -436,24 +791,106 @@ export class RelationalAccountStore {
       if (prior) {
         return prior;
       }
-      this.enableSource(command, input, ticket, member);
-      const events = this.quotas.planQuotaObservation(command, ticket, result, true);
+      const { account, current } = this.enableSource(command, input, ticket, member);
+      const ignored = {
+        ignored: true as const,
+        receipt: { checked: 1, ok: 0, failed: 0, ignored: 1 },
+      };
+      if (!current) {
+        return ignored;
+      }
+      const events = this.quotas.planQuotaObservation(
+        command,
+        ticket,
+        result,
+        input.kind !== 'observe',
+      );
       if (!events) {
+        if (input.kind === 'observe') {
+          return ignored;
+        }
         fail('核验观察已经过期，上游保持暂停');
+      }
+      if (input.kind === 'observe') {
+        return this.commit(command, events, undefined, {
+          checked: 1,
+          ok: Number(result.ok),
+          failed: Number(!result.ok),
+          ignored: 0,
+        });
+      }
+      const prefix =
+        ticket.configuration && input.kind === 'configure'
+          ? this.configurationEvents(
+              command,
+              account,
+              {
+                ...ticket.configuration,
+                displayName: input.changes.displayName ?? account.displayName,
+                weight: input.changes.weight ?? account.weight,
+              },
+              ticket.startedAt,
+            )
+          : [];
+      if (ticket.configuration?.connectionChanged) {
+        for (const event of events) {
+          if (event.eventType === 'QuotaObserved') {
+            event.payload.connectionSourceEventId = ticket.configuration.eventId;
+          }
+        }
       }
       const verified = events.some(
         (event) => event.eventType === 'AvailabilityChanged' && event.payload.enabled,
       );
       // 失败观察/封禁决定也必须落库；公开错误在认证事务提交后才抛出。
       if (verified) {
-        return this.commit(command, events);
+        const committed = this.commit(command, [...prefix, ...events]);
+        if (ticket.configuration?.connectionChanged) {
+          this.writeConnection(account.id, account.pst, ticket.configuration.proxyUrl);
+        }
+        return committed;
       }
       let message = '未核验到有效 Opus，上游未启用';
       if (!result.ok) {
         message = result.quotaError;
       }
-      return this.commit(command, events, { statusCode: 409, message });
+      const committed = this.commit(command, [...prefix, ...events], { statusCode: 409, message });
+      if (ticket.configuration?.connectionChanged) {
+        this.writeConnection(account.id, account.pst, ticket.configuration.proxyUrl);
+      }
+      return committed;
     });
+  }
+  private configurationEvents(
+    metadata: AccountCommandMetadata,
+    account: Account,
+    configuration: AccountConfiguration,
+    at = metadata.recordedAt,
+  ): RelationalEventInput[] {
+    return [
+      {
+        ...this.event(metadata, {
+          eventType: 'AccountConfigurationChanged',
+          payload: {
+            accountId: account.id,
+            displayName: configuration.displayName,
+            weight: configuration.weight,
+            connectionChanged: configuration.connectionChanged,
+          },
+        }),
+        eventId: configuration.eventId,
+        occurredAt: at,
+      },
+    ];
+  }
+  private writeConnection(accountId: string, pst: string | null, proxyUrl: string | null) {
+    if (pst !== null) {
+      this.sqlite
+        .prepare(
+          'INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET pst=excluded.pst,proxy_url=excluded.proxy_url',
+        )
+        .run(accountId, pst, proxyUrl);
+    }
   }
   private registerQuota(event: Extract<RelationalEvent, { eventType: 'AccountRegistered' }>) {
     this.quotas.registerAccountQuota(event);
@@ -477,20 +914,27 @@ export class RelationalAccountStore {
     }
     switch (event.eventType) {
       case 'AccountRegistered': {
-        const p = event.payload;
+        const p = event.payload,
+          command = this.sqlite
+            .prepare<[string], { kind: string }>(
+              'SELECT actor_kind AS kind FROM commits WHERE commit_seq=CAST(? AS INTEGER)',
+            )
+            .get(event.commitSeq);
         if (
           p.enabled ||
           p.credentialEpoch !== 1 ||
-          this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
+          p.displayName.length > 80 ||
+          (this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get() &&
+            command?.kind !== 'admin')
         ) {
-          fail('首次账户注册必须暂停且使用初始代次');
+          fail('账户注册必须暂停、使用初始代次且新增账户需原管理员决定');
         }
         this.sqlite
           .prepare(
-            `INSERT INTO upstream_accounts(id,display_name,enabled,credential_epoch,ordinary_strikes,capacity_strikes,source_event_id)
-            VALUES(?,?,0,1,0,0,?)`,
+            `INSERT INTO upstream_accounts(id,display_name_json,weight,enabled,credential_epoch,ordinary_strikes,capacity_strikes,source_event_id)
+            VALUES(?,?,?,0,1,0,0,?)`,
           )
-          .run(p.accountId, p.displayName, event.eventId);
+          .run(p.accountId, JSON.stringify(p.displayName), p.weight, event.eventId);
         this.registerQuota(event);
         break;
       }
@@ -514,7 +958,17 @@ export class RelationalAccountStore {
       }
       case 'CredentialRotated': {
         const p = event.payload,
-          account = this.boundAccount(p.accountId);
+          account = this.account(p.accountId);
+        if (
+          this.policy().accountId !== account.id &&
+          this.sqlite
+            .prepare<[string], { kind: string }>(
+              'SELECT actor_kind AS kind FROM commits WHERE commit_seq=CAST(? AS INTEGER)',
+            )
+            .get(event.commitSeq)?.kind !== 'admin'
+        ) {
+          fail('未绑定账户凭据轮换缺少原管理员决定');
+        }
         if (p.beforeEpoch !== account.epoch) {
           fail('凭据轮换的原代次不符');
         }
@@ -535,6 +989,35 @@ export class RelationalAccountStore {
             'UPDATE upstream_accounts SET credential_epoch=?,enabled=0,source_event_id=? WHERE id=?',
           )
           .run(p.credentialEpoch, event.eventId, account.id);
+        break;
+      }
+      case 'AccountConfigurationChanged': {
+        const p = event.payload,
+          account = this.account(p.accountId),
+          command = this.sqlite
+            .prepare<[string], { kind: string }>(
+              'SELECT actor_kind AS kind FROM commits WHERE commit_seq=CAST(? AS INTEGER)',
+            )
+            .get(event.commitSeq);
+        if (
+          command?.kind !== 'admin' ||
+          event.memberId !== null ||
+          p.displayName.length > 80 ||
+          (p.weight === null && account.weight !== null)
+        ) {
+          fail('账户档案修改缺少原管理员决定');
+        }
+        this.sqlite
+          .prepare(
+            'UPDATE upstream_accounts SET display_name_json=?,weight=?,source_event_id=? WHERE id=?',
+          )
+          .run(JSON.stringify(p.displayName), p.weight, event.eventId, account.id);
+        if (p.connectionChanged) {
+          // 公共回放只能撤销旧连接；新私有值由实际命令或选定快照安装。
+          this.sqlite
+            .prepare('UPDATE upstream_credentials SET proxy_url=NULL WHERE account_id=?')
+            .run(account.id);
+        }
         break;
       }
       default:

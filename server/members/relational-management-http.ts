@@ -42,6 +42,7 @@ import { quotaNumber } from '../quota/eligibility.ts';
 import {
   safeAccount,
   ownerAccountPatch,
+  adminAccountPatch,
   ownerAccountCommand,
   selectSharedAccount,
   ownerStatisticsRange,
@@ -81,6 +82,10 @@ export function createRelationalManagementHttp(deps: {
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
     const accountRoute = url.pathname.match(/^\/api\/(member\/owner|admin)\/accounts\/([^/]+)$/),
       accountPatchRoute = req.method === 'PATCH' && Boolean(accountRoute),
+      accountQuotaRoute =
+        req.method === 'POST' && Boolean(accountRoute) && accountRoute![2] === 'quota',
+      accountCollectionRoute =
+        url.pathname === '/api/admin/accounts' && ['POST', 'PATCH'].includes(req.method!),
       memberManagementRoute = url.pathname === '/api/member/owner/member-management',
       summaryRoute = url.pathname === '/api/member/owner/summary',
       statisticsRoute = url.pathname === '/api/member/owner/statistics',
@@ -88,14 +93,15 @@ export function createRelationalManagementHttp(deps: {
         memberManagementRoute ||
         summaryRoute ||
         statisticsRoute ||
-        (accountPatchRoute && accountRoute![1] === 'member/owner'),
+        ((accountPatchRoute || accountQuotaRoute) && accountRoute![1] === 'member/owner'),
       adminRoute =
         url.pathname === '/api/admin/member-management' ||
-        (accountPatchRoute && accountRoute![1] === 'admin');
+        accountCollectionRoute ||
+        ((accountPatchRoute || accountQuotaRoute) && accountRoute![1] === 'admin');
     if (
       (!ownerRoute && !adminRoute) ||
-      (!['GET', 'POST'].includes(req.method!) && !accountPatchRoute) ||
-      (req.method === 'POST' && !memberManagementRoute && !adminRoute)
+      (!['GET', 'POST'].includes(req.method!) && !accountPatchRoute && !accountCollectionRoute) ||
+      (req.method === 'POST' && !memberManagementRoute && !adminRoute && !accountQuotaRoute)
     ) {
       return false;
     }
@@ -175,19 +181,190 @@ export function createRelationalManagementHttp(deps: {
           : sqlite.transaction(write)();
       };
     }
+    if (accountCollectionRoute) {
+      const body = await readMemberJson(req),
+        operation = `${req.method}:${url.pathname}`,
+        metadata = {
+          commandId: randomUUID(),
+          fingerprint: domainDigest({ operation, requestId: randomUUID() }),
+          actorId: 'local-admin',
+          actorKind: 'admin' as const,
+          recordedAt: now(),
+          correlationId: null,
+          causationId: null,
+          policyVersion: 'account-management-v1',
+          pricingVersion: 'none',
+        };
+      if (req.method === 'POST') {
+        // 新生命周期要求真实 Opus 才能启用；不为第二账户伪造资格或改选共享池。
+        if (body.enabled !== false) {
+          fail(409, '新账户启用尚需当前共享绑定与真实 Opus 核验，请先显式 enabled:false');
+        }
+        const id = randomUUID();
+        await authorize((actor) => {
+          const directory = accounts.readAccountManagementDirectory(),
+            parsed = adminAccountPatch(id, {
+              ...body,
+              name: body.name || `NovelAI ${directory.length + 1}`,
+              weight: body.weight || 1,
+            });
+          return accounts.prepareAccountCommand(
+            metadata,
+            {
+              kind: 'register',
+              accountId: id,
+              displayName: parsed.changes.displayName!,
+              token: String(body.token || '').trim(),
+              weight: parsed.changes.weight,
+              proxyUrl: parsed.changes.proxyUrl,
+              configVersion: quotas.readQuotaConfiguration().configVersion,
+              bind: false,
+            },
+            actor,
+          );
+        });
+        replyMemberJson(
+          res,
+          201,
+          await authorize((actor) => accounts.readAdminAccountProfile(id, false, actor)),
+        );
+        return true;
+      }
+      // 原集合解析接受 ids/accounts 的数组或单值，忽略未命中的 ID，但不得全无命中。
+      const value = body.ids || body.accounts;
+      let values: unknown[] = [];
+      if (Array.isArray(value)) {
+        values = value;
+      } else if (value !== undefined && value !== null && value !== '') {
+        values = [value];
+      }
+      const ids = values.map((id) => String(id).trim()).filter(Boolean),
+        changes = adminAccountPatch('', { weight: body.weight, enabled: body.enabled }).changes;
+      if (!ids.length) {
+        fail(400, 'account ids are required.');
+      }
+      if (changes.enabled === true) {
+        const selected = await authorize(() =>
+          accounts.readAccountManagementDirectory().filter((account) => ids.includes(account.id)),
+        );
+        if (!selected.length) {
+          fail(404, 'no matching accounts found.');
+        }
+        if (
+          selected.length !== 1 ||
+          selected[0]!.id !==
+            (await authorize(() => accounts.readSharedAccountManagementProfile()))?.id
+        ) {
+          fail(409, '批量启用未绑定账户尚未接入真实 Opus 核验');
+        }
+        await ownerAccountCommand(
+          accounts,
+          authorize,
+          metadata,
+          { kind: 'configure', accountId: selected[0]!.id, changes },
+          deps.queryAccountQuota,
+          now,
+        );
+        replyMemberJson(res, 200, {
+          accounts: await authorize((actor) =>
+            selected.map((account) => accounts.readAdminAccountProfile(account.id, false, actor)),
+          ),
+        });
+        return true;
+      }
+      const saved = await authorize((actor) =>
+          accounts.configureAccounts(
+            metadata,
+            { ids, weight: changes.weight, enabled: changes.enabled === false ? false : undefined },
+            actor,
+          ),
+        ),
+        selected = (saved.receipt as { accountIds: string[] }).accountIds;
+      replyMemberJson(res, 200, {
+        accounts: await authorize((actor) =>
+          selected.map((id) => accounts.readAdminAccountProfile(id, false, actor)),
+        ),
+      });
+      return true;
+    }
+    if (accountQuotaRoute) {
+      const body = await readMemberJson(req),
+        profile = await authorize(() => accounts.readSharedAccountManagementProfile());
+      if (!profile) {
+        fail(409, '尚未确定共享上游账户');
+      }
+      if (
+        Object.keys(body).some((key) => key !== 'ids') ||
+        (ownerRoute &&
+          (!Array.isArray(body.ids) || body.ids.length !== 1 || body.ids[0] !== profile.id)) ||
+        (adminRoute &&
+          body.ids !== undefined &&
+          (!Array.isArray(body.ids) ||
+            (body.ids.length !== 0 && (body.ids.length !== 1 || body.ids[0] !== profile.id))))
+      ) {
+        fail(400, '仅可刷新当前共享账户');
+      }
+      const actorId = commandActorId,
+        actorKind = ownerRoute ? 'member' : 'admin',
+        operation = `POST:${url.pathname}`,
+        command: ReturnType<typeof managementCommand> = adminRoute
+          ? { actorId, actorKind }
+          : managementCommand(req, actorId, operation, body, actorKind),
+        result = await ownerAccountCommand(
+          accounts,
+          authorize,
+          {
+            commandId: command.commandId ?? randomUUID(),
+            fingerprint:
+              command.fingerprint ?? domainDigest({ operation, requestId: randomUUID() }),
+            actorId,
+            actorKind,
+            recordedAt: now(),
+            correlationId: null,
+            causationId: null,
+            policyVersion: 'account-observation-v1',
+            pricingVersion: 'none',
+          },
+          { kind: 'observe', accountId: profile.id },
+          deps.queryAccountQuota,
+          now,
+        );
+      if (ownerRoute && command.commandId && 'ignored' in result) {
+        // 原 keyed 零事实命令同样为409，不为过期查询编造可重领事实。
+        fail(409, '操作已被更新或未产生可提交事实，请刷新后确认结果');
+      }
+      const response = adminRoute
+        ? {
+            ...(result.receipt as object),
+            accounts: [
+              await authorize((actor) => accounts.readAdminAccountProfile(profile.id, true, actor)),
+            ],
+          }
+        : result.receipt;
+      replyMemberJson(res, 200, response);
+      return true;
+    }
     if (accountPatchRoute) {
       const body = await readMemberJson(req),
-        input = ownerAccountPatch(decodeURIComponent(accountRoute![2]!), body),
+        input = adminRoute
+          ? adminAccountPatch(decodeURIComponent(accountRoute![2]!), body)
+          : ownerAccountPatch(decodeURIComponent(accountRoute![2]!), body),
         actorId = commandActorId,
         actorKind = ownerRoute ? 'member' : 'admin',
         operation = `PATCH:${url.pathname}`,
-        command = managementCommand(req, actorId, operation, body, actorKind);
+        command: ReturnType<typeof managementCommand> = adminRoute
+          ? { actorId, actorKind }
+          : managementCommand(req, actorId, operation, body, actorKind);
       const result = await ownerAccountCommand(
         accounts,
         authorize,
         {
           commandId: command.commandId ?? randomUUID(),
-          fingerprint: command.fingerprint ?? domainDigest({ operation, body }),
+          fingerprint:
+            command.fingerprint ??
+            (adminRoute
+              ? domainDigest({ operation, requestId: randomUUID() })
+              : domainDigest({ operation, body })),
           actorId,
           actorKind,
           recordedAt: now(),
@@ -200,7 +377,12 @@ export function createRelationalManagementHttp(deps: {
         deps.queryAccountQuota,
         now,
       );
-      replyMemberJson(res, 200, result.receipt);
+      const response = adminRoute
+        ? await authorize((actor) =>
+            accounts.readAdminAccountProfile(input.accountId, false, actor),
+          )
+        : result.receipt;
+      replyMemberJson(res, 200, response);
       return true;
     }
     if (req.method === 'POST') {
