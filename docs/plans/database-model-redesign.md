@@ -1664,6 +1664,20 @@ Windows 完整后端在前置 f3dd59ccb91aa51d97b4317835b376e3220bebf8 为 2,021
 
 此批仍是中间核心候选。官方 V5 原百分比/负值标记的不可逆来源缺口由后继事实表示修复；新通知、Direct/shared/SSE、完整 Opening、选定迁移路线、旧在线路径与普通包清除、真实外部端点、同规模恢复/容量及切换验收继续推进。普通 sole 入口和历史 SQL 仍存在；Mock 云传输不称为真实云验证，没有生产迁移、删除或切换，也没有手标 ready。
 
+### 9.60 管理摘要、热力图与损耗 GET 的关系接入
+
+本片从实际 `dc35269` 开始，按依赖接入已审统一 `8b11fa6`（Opening 实体/幂等/副本、格式 6）；只提供独立 `createRelationalManagementHttp()`，不切换 sole、不实现 POST。两条既有路径为 `/api/admin/member-management` 与 `/api/member/owner/member-management`，默认摘要及 `view=heatmap/losses` 的字段/分页继续由原消费方和 owner 定义。没有旧 users/accounts/settings Store 适配集合、事件格式或 SQL/journal 增量。
+
+管理 metadata 只由现 Member 安全目录提供，disabled 可管理、removed 不再列为当前目标；username 与 displayName 分开，缺登录名/Discord/邀请截止为 NULL，note 无现模型事实也明确 NULL。客户端声明同步 nullable，热力图的无登录名选项显示稳定 ID，不把 displayName 冒充登录名。Quota 配置、每人金融摘要和免费使用量、共享状态、当前公共地址分别复用原 owner；顶层 quota status 在 QuotaStore 内独立估算，未绑定沿同一 owner 原有 pending 定义，不借任意成员或 Shared 展示状态。RequestStore 新管理窄读复用同一共享 SQL，并按原 Job 时间取最近 30 条，原 0/NULL、退休和成员边界不从父受理/导入时间猜测。Gen 仅增加管理 freeUsage 薄封装，让 disabled 的历史计数可读，原成员准入检查不变。
+
+admin 保留严格本机 Host、原 privateAccessAllowed/同源及每次 assertAdmin；仅将旧 token 判断/断言纯提到 `http/admin-access.ts`，原 secret 加载、精确比较、PUBLIC query 拒绝与 401/403 不变。owner 沿原 Cookie/Discord/isOwner 和当前 session 事务，Discord/资源 IO 后重新核对原稳定 ID/epoch、当前 owner 和 ready，再读取摘要。没有保存旧 authorized 布尔或在资源等待前读取并返回旧 metadata。续期按实际原代码保留精确可见、无 query owner member-management；普通 GET、带 query 的各 view 与静态 admin 均不续，复用原 renewMemberCookie，不自己计算期限。精确条件同步原 session 契约，避免把管理摘要误写成字面 owner/summary。
+
+服务资源使用原实际 FS/进程/卷 owner，允许同一平台能力注入；测试区分真实 FS 与受控等待 callback，未声称读取真实 Discord/R2/PikPak 云端，也不以在线副本引用数或字节冒充云容量。heatmap 与 losses 复用原 report SQL/参数 owner，损耗仍为每页 50 条、history 绑定的原 cursor。跨 IO 撤销授权时不发 users/resources，读取不提交金融/任务/配置；原 Discord 观察、当前 owner 配置协调和精确可见续期的私有写入单独保留。
+
+本片新增工厂含认证/续期能力，仅在现架构 mutations 名单登记这一实际名字，沿 query/protocol 的原 named/injected 矩阵增加两例；旧守卫 0/2，新守卫 2/2，没有放宽 import 或增加另一框架。这一守卫增量及当前 nullable DTO 契约须维护者复核。
+
+Windows Node 22 源码管理 HTTP 及九个相关文件共 461/461；随后将测试客户端收紧为真实 Node HTTP（保留实际 Host/Origin），补核配置 PUBLIC_HOST 的合法 owner 与本机 admin 区分，管理专项最终 17/17、零跳过。全部正常源先由原业务命令/Opening owner 建立，再经唯一 installer 的完整 shadow、选定私有与真实 Local 文件核对进入 ready；近期统计的 0/NULL/退休/跨成员用实际 Opening 实体和 29 条真实失败验证。五项临时退化分别移除 IO 后当前 session 检查、以 displayName 冒充 username、改用父受理时间排序、缓存 admin 授权及移除严格本机 Host，均在原业务断言精准失败，恢复原字节后 17/17。热力图 nullable 登录名的 Nuxt 用例先出现 NULL label 反例，最小稳定 ID 回退后 11/11；backend/web type、架构、语法、默认与可信 `8b11fa6` 迁移历史和局部格式检查通过。日志及逐文件 hash 随固定候选交独立审查；未运行本片 full/compiled/Node 24，未切主入口、未提供 admin 原始 Key/PST reveal 或写命令，也不借前置 CI 宣称新管理 GET 总体验收完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

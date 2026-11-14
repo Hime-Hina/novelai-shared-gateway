@@ -1,4 +1,5 @@
 import { requestCacheKey } from './generation/request-fingerprint.ts';
+import { matchesAdminToken, assertAdminToken } from './http/admin-access.ts';
 import type {
   GenerationReservation as Reservation,
   GenerationQueueReservation as QueueReservation,
@@ -2671,23 +2672,11 @@ function bearerToken(req: GatewayRequest) {
 }
 
 function isAdmin(req: GatewayRequest, url: URL) {
-  const header = String(req.headers['x-admin-token'] || '');
-  const query =
-    process.env.PUBLIC_MODE === 'true' ? '' : String(url.searchParams.get('adminToken') || '');
-  return Boolean(adminToken) && (header === adminToken || query === adminToken);
+  return matchesAdminToken(req, url, adminToken);
 }
 
 function assertAdmin(req: GatewayRequest, url: URL) {
-  if (isAdmin(req, url)) {
-    return;
-  }
-  const suppliedToken = String(
-    req.headers['x-admin-token'] || url.searchParams.get('adminToken') || '',
-  ).trim();
-  throw httpError(
-    suppliedToken ? 401 : 403,
-    suppliedToken ? 'invalid token.' : 'admin token required.',
-  );
+  assertAdminToken(req, url, adminToken);
 }
 
 function clamp(value: number, min: number, max: number) {

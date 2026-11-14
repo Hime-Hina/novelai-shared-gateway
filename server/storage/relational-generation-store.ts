@@ -377,6 +377,10 @@ export class RelationalGenerationStore {
       return this.freeUsage(memberId, this.policy(), now);
     })();
   }
+  readManagementMemberFreeImageUsage(memberId: string, now: number): FreeImageUsage {
+    // 管理目录也含 disabled；当前管理授权归 HTTP，统计仍复用同一免费窗口 owner。
+    return this.sqlite.transaction(() => this.freeUsage(memberId, this.policy(), now))();
+  }
   quoteMemberGeneration(
     memberId: string,
     normalized: NormalizedMemberGeneration,

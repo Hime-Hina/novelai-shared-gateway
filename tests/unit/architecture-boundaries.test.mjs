@@ -111,6 +111,7 @@ for (const filename of [
   }
   for (const [name, modulePath] of [
     ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
+    ['createRelationalManagementHttp', '../members/relational-management-http.ts'],
     ['ownerOperation', '../members/owner-operations.ts'],
   ]) {
     test(`${filename} rejects named and injected ${name}`, () => {
