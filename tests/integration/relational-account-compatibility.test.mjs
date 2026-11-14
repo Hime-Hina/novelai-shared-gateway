@@ -408,7 +408,12 @@ test('合法完整envelope仍拒跨角色连接ref、同笔未来配置与缺失
         try {
           owner.replayCommit(bad, inputs);
         } catch (error) {
-          assert.match(error.message, /派发与真实原预扣|观察代次或序号|凭据失效决定必须/);
+          assert.match(
+            error.message,
+            mode === 'future-configuration'
+              ? /账户完整事实与原安全意图\/前态规划不符/
+              : /派发与真实原预扣|观察代次或序号|凭据失效决定必须/,
+          );
           rejected = true;
         }
       })();
@@ -798,4 +803,201 @@ test('当前连接来源使用小型事实索引，原序切点不扫描全部�
     .all('a', 'account:a', null, null, null, null);
   assert.match(JSON.stringify(plan), /idx_account_connection_source/);
   assert.doesNotMatch(JSON.stringify(plan), /SCAN|TEMP B-TREE/);
+});
+
+test('账户原安全意图用前态规划完整bulk集合/暂停/顺序，mixed no-op合法且全noop不编事实', async (t) => {
+  const f = await fixture(t),
+    { accounts, configure } = setup(f),
+    admin = (id) => ({ ...meta(id), actorKind: 'admin', actorId: 'local-admin' }),
+    register = (id, weight) =>
+      f.db.transaction(() =>
+        accounts.prepareAccountCommand(
+          admin('register-' + id),
+          {
+            kind: 'register',
+            accountId: id,
+            displayName: id,
+            token: 'pst-synthetic-' + id,
+            configVersion: 1,
+            bind: false,
+            weight,
+          },
+          null,
+        ),
+      )();
+  register('extra', 1);
+  register('noop', 2.5);
+  configure('a-weight', { weight: 2.5 });
+  const input = { ids: ['a', 'extra', 'noop', 'absent', 'extra'], weight: 2.5, enabled: false },
+    result = f.db.transaction(() =>
+      accounts.configureAccounts(admin('closed-bulk'), input, null),
+    )(),
+    stored = readRelationalCommit(f.db, result.commitSeq);
+  assert.deepEqual(stored.command.receipt.accountIds, ['a', 'extra', 'noop']);
+  assert.deepEqual(stored.command.receipt.accountIntent, { kind: 'bulk', ...input });
+  assert.deepEqual(
+    stored.events.map((e) => [e.eventType, e.accountId]),
+    [
+      ['AvailabilityChanged', 'a'],
+      ['AccountConfigurationChanged', 'extra'],
+    ],
+  );
+  for (const mode of [
+    'target',
+    'all-availability',
+    'duplicate',
+    'reverse',
+    'receipt-target',
+    'missing-intent',
+    'wrong-actor',
+  ]) {
+    await t.test(mode, (t) => {
+      const { target, owner, inputs } = publicPrefix(t, f, result.commitSeq),
+        bad = structuredClone(stored);
+      if (mode === 'target') {
+        bad.events = bad.events.filter((e) => e.accountId !== 'extra');
+      }
+      if (mode === 'all-availability') {
+        bad.events = bad.events.filter((e) => e.eventType !== 'AvailabilityChanged');
+      }
+      if (mode === 'duplicate') {
+        bad.events.push({ ...bad.events[1], eventId: 'duplicate-account-configuration' });
+      }
+      if (mode === 'reverse') {
+        bad.events.reverse();
+      }
+      if (mode === 'receipt-target') {
+        bad.command.receipt.accountIds = ['a', 'extra'];
+      }
+      if (mode === 'missing-intent') {
+        delete bad.command.receipt.accountIntent;
+      }
+      if (mode === 'wrong-actor') {
+        bad.command.actorKind = 'member';
+        bad.command.actorId = 'm1';
+      }
+      resequence(bad, target);
+      const before = databaseState(target);
+      let error;
+      target.transaction(() => {
+        try {
+          owner.replayCommit(bad, inputs);
+        } catch (caught) {
+          error = caught;
+        }
+      })();
+      assert.match(error?.message ?? '', /账户.*(完整|安全|意图)/);
+      assert.equal(databaseState(target), before);
+      target.transaction(() => owner.replayCommit(stored, inputs))();
+      assert.deepEqual(
+        target.prepare('SELECT weight,enabled FROM upstream_accounts ORDER BY id').all(),
+        [
+          { weight: 2.5, enabled: 0 },
+          { weight: 2.5, enabled: 0 },
+          { weight: 2.5, enabled: 0 },
+        ],
+      );
+      const same = databaseState(target);
+      assert.equal(target.transaction(() => owner.replayCommit(stored, inputs))().replayed, true);
+      assert.equal(databaseState(target), same);
+    });
+  }
+  const before = databaseState(f.db);
+  assert.equal(
+    f.db.transaction(() => accounts.configureAccounts(admin('closed-bulk'), input, null))()
+      .replayed,
+    true,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(
+    f.db.transaction(() => accounts.configureAccounts(admin('all-noop'), input, null))().ignored,
+    true,
+  );
+  assert.equal(databaseState(f.db), before);
+});
+
+test('单账户组合原意图拒遗漏profile/轮换/暂停及重复重排，原内部意图不进入外部回包', async (t) => {
+  const f = await fixture(t),
+    { accounts, configure } = setup(f),
+    result = configure('single-closure', {
+      displayName: 'required-profile',
+      weight: 2.25,
+      proxyUrl: 'socks5://127.0.0.1:19001',
+      token: 'pst-private-replacement',
+      enabled: false,
+    }).result,
+    stored = readRelationalCommit(f.db, result.commitSeq);
+  assert.equal(stored.command.receipt.accountIntent.credentialChanged, true);
+  assert.equal(stored.command.receipt.accountIntent.connectionChanged, true);
+  const publicText = JSON.stringify(stored);
+  assert.ok(!publicText.includes('pst-private-replacement'));
+  assert.ok(!publicText.includes('socks5://'));
+  for (const mode of [
+    'profile',
+    'credential',
+    'availability',
+    'duplicate',
+    'reverse',
+    'missing-intent',
+  ]) {
+    await t.test(mode, (t) => {
+      const { target, owner, inputs } = publicPrefix(t, f, result.commitSeq),
+        bad = structuredClone(stored);
+      const removed = {
+        profile: 'AccountConfigurationChanged',
+        credential: 'CredentialRotated',
+        availability: 'AvailabilityChanged',
+      }[mode];
+      if (removed) {
+        bad.events = bad.events.filter((e) => e.eventType !== removed);
+      }
+      if (mode === 'duplicate') {
+        bad.events.push({ ...bad.events[0], eventId: 'duplicate-profile' });
+      }
+      if (mode === 'reverse') {
+        bad.events.reverse();
+      }
+      if (mode === 'missing-intent') {
+        delete bad.command.receipt.accountIntent;
+      }
+      resequence(bad, target);
+      const before = databaseState(target);
+      let error;
+      target.transaction(() => {
+        try {
+          owner.replayCommit(bad, inputs);
+        } catch (caught) {
+          error = caught;
+        }
+      })();
+      assert.match(error?.message ?? '', /账户.*(完整|安全|意图)/);
+      assert.equal(databaseState(target), before);
+      target.transaction(() => owner.replayCommit(stored, inputs))();
+      assert.equal(
+        target.prepare("SELECT credential_epoch FROM upstream_accounts WHERE id='a'").get()
+          .credential_epoch,
+        2,
+      );
+    });
+  }
+  const before = databaseState(f.db),
+    safe = await ownerAccountCommand(
+      accounts,
+      async (run) => f.db.transaction(() => run(null))(),
+      { ...meta('single-closure'), actorKind: 'admin', actorId: 'local-admin' },
+      {
+        kind: 'configure',
+        accountId: 'a',
+        changes: {
+          displayName: 'required-profile',
+          weight: 2.25,
+          proxyUrl: 'socks5://127.0.0.1:19001',
+          token: 'pst-private-replacement',
+          enabled: false,
+        },
+      },
+      undefined,
+    );
+  assert.deepEqual(safe.receipt, { accountId: 'a', enabled: false });
+  assert.equal(databaseState(f.db), before);
 });

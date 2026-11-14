@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { domainDigest, type Json } from '../events/domain-events.ts';
+import { canonicalJson, domainDigest, type Json } from '../events/domain-events.ts';
 import {
   appendRelationalCommit,
   readRelationalReceipt,
@@ -70,6 +70,21 @@ type AccountConfiguration = {
   connectionChanged: boolean;
   eventId: string;
 };
+type AccountIntent =
+  | { kind: 'bulk'; ids: string[]; weight?: number; enabled?: false }
+  | { kind: 'register'; accountId: string; displayName: string; weight: number; bind: boolean }
+  | {
+      kind: 'mutation';
+      accountId: string;
+      displayName?: string;
+      weight?: number;
+      profile: boolean;
+      connectionChanged: boolean;
+      credentialChanged: boolean;
+      profileAt?: number;
+      observe: boolean;
+      availability: { enabled: boolean; reason: string } | null;
+    };
 export type AccountEnableTicket = ReturnType<RelationalQuotaStore['beginQuotaObservation']> & {
   availabilityEventId: string;
   configVersion: number;
@@ -310,7 +325,10 @@ export class RelationalAccountStore {
     }
     return this.account(id);
   }
-  private event(metadata: AccountCommandMetadata, fact: RelationalFact): RelationalEventInput {
+  private event(
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
+    fact: RelationalFact,
+  ): RelationalEventInput {
     const accountId = 'accountId' in fact.payload ? fact.payload.accountId : null;
     return {
       ...fact,
@@ -330,6 +348,7 @@ export class RelationalAccountStore {
     events: RelationalEventInput[],
     error?: { statusCode: number; message: string },
     receipt?: Json,
+    intent?: AccountIntent,
   ) {
     const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
     let enabled =
@@ -356,8 +375,16 @@ export class RelationalAccountStore {
             .get(e.streamId)?.v ?? '0',
         ]),
       ),
-      receipt: receipt ?? { accountId: events[0].accountId, enabled, ...(error ? { error } : {}) },
+      receipt: {
+        ...((receipt ?? {
+          accountId: events[0].accountId,
+          enabled,
+          ...(error ? { error } : {}),
+        }) as object),
+        ...(intent ? { accountIntent: intent as unknown as Json } : {}),
+      },
     });
+    this.assertAccountCommit(result.events, result.receipt);
     this.applyAccountEvents(result.events);
     return result;
   }
@@ -435,26 +462,20 @@ export class RelationalAccountStore {
         ) {
           fail('仅允许在未绑定共享账户时首次注册');
         }
-        const result = this.commit(command, [
-          this.event(command, {
-            eventType: 'AccountRegistered',
-            payload: {
-              accountId: input.accountId,
-              displayName: input.displayName,
-              weight: input.weight ?? 1,
-              enabled: false,
-              credentialEpoch: 1,
-            },
-          }),
-          ...(binding
-            ? [
-                this.event(command, {
-                  eventType: 'AccountBound',
-                  payload: { accountId: input.accountId, configVersion: policy.version + 1 },
-                }),
-              ]
-            : []),
-        ]);
+        const intent: AccountIntent = {
+            kind: 'register',
+            accountId: input.accountId,
+            displayName: input.displayName,
+            weight: input.weight ?? 1,
+            bind: binding,
+          },
+          result = this.commit(
+            command,
+            this.planRegistration(command, intent),
+            undefined,
+            undefined,
+            intent,
+          );
         this.sqlite
           .prepare('INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,?)')
           .run(input.accountId, input.token, input.proxyUrl ?? '');
@@ -532,36 +553,27 @@ export class RelationalAccountStore {
             },
           };
         }
-        const events =
-          configuringProfile || (!changingToken && changes.enabled === undefined)
-            ? this.configurationEvents(command, account, configuration)
-            : [];
-        if (changingToken) {
-          events.push(
-            this.event(command, {
-              eventType: 'CredentialRotated',
-              payload: {
-                accountId: account.id,
-                beforeEpoch: account.epoch,
-                credentialEpoch: account.epoch + 1,
-              },
-            }),
+        const intent: AccountIntent = {
+            kind: 'mutation',
+            accountId: account.id,
+            profile: configuringProfile || (!changingToken && changes.enabled === undefined),
+            ...(changes.displayName !== undefined ? { displayName: changes.displayName } : {}),
+            ...(changes.weight !== undefined ? { weight: changes.weight } : {}),
+            connectionChanged: configuration.connectionChanged,
+            credentialChanged: changingToken,
+            observe: false,
+            availability:
+              changingToken || changes.enabled === false
+                ? { enabled: false, reason: changingToken ? 'credential_replaced' : 'owner_paused' }
+                : null,
+          },
+          result = this.commit(
+            command,
+            this.planMutation(command, intent, undefined, configuration.eventId),
+            undefined,
+            undefined,
+            intent,
           );
-        }
-        if (changingToken || changes.enabled === false) {
-          events.push(
-            this.event(command, {
-              eventType: 'AvailabilityChanged',
-              payload: {
-                accountId: account.id,
-                enabled: false,
-                reason: changingToken ? 'credential_replaced' : 'owner_paused',
-                observationEventId: null,
-              },
-            }),
-          );
-        }
-        const result = this.commit(command, events);
         if (configuration.connectionChanged || changingToken) {
           this.writeConnection(account.id, changes.token ?? account.pst, configuration.proxyUrl);
         }
@@ -597,7 +609,6 @@ export class RelationalAccountStore {
         change,
         metadata.recordedAt,
       );
-      const events: RelationalEventInput[] = [];
       if (input.kind === 'token' && input.token !== account.pst) {
         assertOwnerAccountCredentialChangeAllowed(
           physicalAccountLoad(this.controls, account.id),
@@ -609,29 +620,26 @@ export class RelationalAccountStore {
               .get(account.id),
           ),
         );
-        events.push(
-          this.event(command, {
-            eventType: 'CredentialRotated',
-            payload: {
-              accountId: account.id,
-              beforeEpoch: account.epoch,
-              credentialEpoch: account.epoch + 1,
-            },
-          }),
-        );
       }
-      events.push(
-        this.event(command, {
-          eventType: 'AvailabilityChanged',
-          payload: {
-            accountId: account.id,
+      const intent: AccountIntent = {
+          kind: 'mutation',
+          accountId: account.id,
+          profile: false,
+          connectionChanged: false,
+          credentialChanged: input.kind === 'token' && input.token !== account.pst,
+          observe: false,
+          availability: {
             enabled: false,
             reason: input.kind === 'token' ? 'credential_replaced' : 'owner_paused',
-            observationEventId: null,
           },
-        }),
-      );
-      const result = this.commit(command, events);
+        },
+        result = this.commit(
+          command,
+          this.planMutation(command, intent),
+          undefined,
+          undefined,
+          intent,
+        );
       if (input.kind === 'token' && input.token !== account.pst) {
         this.sqlite
           .prepare(
@@ -670,41 +678,336 @@ export class RelationalAccountStore {
       if (prior) {
         return prior;
       }
-      const ids = new Set(input.ids),
-        selected = this.managementAccounts([]).filter((account) => ids.has(account.id));
-      if (!selected.length) {
-        fail('no matching accounts found.', 404);
+      const intent: AccountIntent = {
+          kind: 'bulk',
+          ids: [...input.ids],
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          ...(input.enabled === false ? { enabled: false as const } : {}),
+        },
+        planned = this.planBulkAccounts(command, intent),
+        receipt = { accountIds: planned.accountIds, accountIntent: intent as unknown as Json };
+      if (!planned.events.length) {
+        // 原 admin 非 keyed 的全 no-op 无业务事实，不制造持久化回执；mixed no-op 仍保留完整目标意图。
+        return { ignored: true, receipt };
       }
-      const events: RelationalEventInput[] = [];
-      for (const profile of selected) {
-        const account = this.account(profile.id);
+      return this.commit(
+        command,
+        planned.events,
+        undefined,
+        { accountIds: planned.accountIds },
+        intent,
+      );
+    });
+  }
+  private planBulkAccounts(
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
+    input: Extract<AccountIntent, { kind: 'bulk' }>,
+  ) {
+    if (
+      !Array.isArray(input.ids) ||
+      !input.ids.length ||
+      input.ids.some((id) => typeof id !== 'string' || !id) ||
+      (input.weight !== undefined &&
+        (!Number.isFinite(input.weight) || input.weight < 1 || input.weight > 100)) ||
+      (input.enabled !== undefined && input.enabled !== false)
+    ) {
+      fail('批量账户安全意图无效');
+    }
+    const ids = new Set(input.ids),
+      selected = this.managementAccounts([]).filter((account) => ids.has(account.id)),
+      events: RelationalEventInput[] = [];
+    if (!selected.length) {
+      fail('no matching accounts found.', 404);
+    }
+    for (const profile of selected) {
+      const account = this.account(profile.id);
+      if (input.weight !== undefined && input.weight !== account.weight) {
         events.push(
-          ...this.configurationEvents(command, account, {
+          ...this.configurationEvents(metadata, account, {
             displayName: account.displayName,
-            weight: input.weight ?? account.weight,
+            weight: input.weight,
             proxyUrl: account.proxyUrl,
             connectionChanged: false,
             eventId: randomUUID(),
           }),
         );
-        if (input.enabled === false) {
-          events.push(
-            this.event(command, {
-              eventType: 'AvailabilityChanged',
-              payload: {
-                accountId: account.id,
-                enabled: false,
-                reason: 'owner_paused',
-                observationEventId: null,
-              },
-            }),
-          );
-        }
       }
-      return this.commit(command, events, undefined, {
-        accountIds: selected.map((account) => account.id),
+      if (input.enabled === false && account.enabled !== 0) {
+        events.push(
+          this.event(metadata, {
+            eventType: 'AvailabilityChanged',
+            payload: {
+              accountId: account.id,
+              enabled: false,
+              reason: 'owner_paused',
+              observationEventId: null,
+            },
+          }),
+        );
+      }
+    }
+    return { accountIds: selected.map((account) => account.id), events };
+  }
+  private planRegistration(
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
+    intent: Extract<AccountIntent, { kind: 'register' }>,
+  ) {
+    const events: RelationalEventInput[] = [
+      this.event(metadata, {
+        eventType: 'AccountRegistered',
+        payload: {
+          accountId: intent.accountId,
+          displayName: intent.displayName,
+          weight: intent.weight,
+          enabled: false,
+          credentialEpoch: 1,
+        },
+      }),
+    ];
+    if (intent.bind) {
+      events.push(
+        this.event(metadata, {
+          eventType: 'AccountBound',
+          payload: { accountId: intent.accountId, configVersion: this.policy().version + 1 },
+        }),
+      );
+    }
+    return events;
+  }
+  private planMutation(
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
+    intent: Extract<AccountIntent, { kind: 'mutation' }>,
+    observed?: Extract<RelationalEventInput, { eventType: 'QuotaObserved' }>,
+    configurationEventId?: string,
+  ) {
+    const account = this.account(intent.accountId),
+      events: RelationalEventInput[] = [];
+    if (intent.profile) {
+      events.push(
+        ...this.configurationEvents(
+          metadata,
+          account,
+          {
+            displayName: intent.displayName ?? account.displayName,
+            weight: intent.weight ?? account.weight,
+            proxyUrl: null,
+            connectionChanged: intent.connectionChanged,
+            eventId: configurationEventId ?? randomUUID(),
+          },
+          intent.profileAt ?? metadata.recordedAt,
+        ),
+      );
+    }
+    if (intent.credentialChanged) {
+      events.push(
+        this.event(metadata, {
+          eventType: 'CredentialRotated',
+          payload: {
+            accountId: account.id,
+            beforeEpoch: account.epoch,
+            credentialEpoch: account.epoch + 1,
+          },
+        }),
+      );
+    }
+    if (intent.observe) {
+      if (!observed?.eventId) {
+        fail('账户完整修改缺少原观察决定');
+      }
+      events.push({
+        ...this.event(metadata, { eventType: 'QuotaObserved', payload: observed.payload }),
+        eventId: observed.eventId,
       });
+    }
+    if (intent.availability) {
+      events.push(
+        this.event(metadata, {
+          eventType: 'AvailabilityChanged',
+          payload: {
+            accountId: account.id,
+            ...intent.availability,
+            observationEventId: intent.availability.enabled ? (observed?.eventId ?? null) : null,
+          },
+        }),
+      );
+    }
+    return events;
+  }
+  // 原安全意图和原序前态共同确定完整后果；不能由幸存事实推测被删目标/暂停/轮换/绑定。
+  assertAccountCommit(events: RelationalEvent[], receipt: Json) {
+    const saved = receipt as {
+        accountId?: unknown;
+        accountIds?: unknown;
+        enabled?: unknown;
+        accountIntent?: AccountIntent;
+      },
+      intent = saved?.accountIntent,
+      owned = events.filter((event) =>
+        [
+          'AccountRegistered',
+          'AccountBound',
+          'AccountConfigurationChanged',
+          'CredentialRotated',
+          'AvailabilityChanged',
+          'QuotaObserved',
+        ].includes(event.eventType),
+      );
+    if (!intent) {
+      if (
+        Object.hasOwn(Object(receipt), 'accountIds') ||
+        (Object.hasOwn(Object(receipt), 'accountId') &&
+          Object.hasOwn(Object(receipt), 'enabled')) ||
+        events.some((event) =>
+          ['AccountRegistered', 'AccountConfigurationChanged', 'CredentialRotated'].includes(
+            event.eventType,
+          ),
+        )
+      ) {
+        fail('账户完整提交缺少原安全意图');
+      }
+      return;
+    }
+    if (!events.length || !intent || typeof intent !== 'object') {
+      fail('账户完整提交缺少原安全意图');
+    }
+    const row = this.sqlite
+      .prepare<[string], { recordedAt: number; actorKind: string }>(
+        'SELECT recorded_at AS recordedAt,actor_kind AS actorKind FROM commits WHERE commit_seq=CAST(? AS INTEGER)',
+      )
+      .get(events[0].commitSeq);
+    if (!row || !['member', 'admin'].includes(row.actorKind)) {
+      fail('账户原安全意图缺少执行角色');
+    }
+    const metadata = {
+        recordedAt: row.recordedAt,
+        policyVersion: events[0].policyVersion,
+        pricingVersion: events[0].pricingVersion,
+      },
+      expected: RelationalEventInput[] = [];
+    if (intent.kind === 'bulk') {
+      if (
+        row.actorKind !== 'admin' ||
+        Object.keys(intent).some((key) => !['kind', 'ids', 'weight', 'enabled'].includes(key))
+      ) {
+        fail('批量账户原安全意图无效');
+      }
+      const planned = this.planBulkAccounts(metadata, intent);
+      if (
+        canonicalJson(saved.accountIds as Json) !== canonicalJson(planned.accountIds) ||
+        events.length !== owned.length
+      ) {
+        fail('批量账户完整目标与原安全意图不符');
+      }
+      expected.push(...planned.events);
+    } else if (intent.kind === 'register') {
+      if (
+        Object.keys(intent).some(
+          (key) => !['kind', 'accountId', 'displayName', 'weight', 'bind'].includes(key),
+        ) ||
+        typeof intent.bind !== 'boolean' ||
+        (intent.bind === false && row.actorKind !== 'admin') ||
+        this.sqlite.prepare('SELECT 1 FROM upstream_accounts WHERE id=?').get(intent.accountId) ||
+        (intent.bind &&
+          (this.policy().accountId !== null ||
+            this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get())) ||
+        saved.accountId !== intent.accountId ||
+        saved.enabled !== false ||
+        events.length !== owned.length
+      ) {
+        fail('账户注册完整决定与原安全意图不符');
+      }
+      expected.push(...this.planRegistration(metadata, intent));
+    } else if (intent.kind === 'mutation') {
+      if (
+        Object.keys(intent).some(
+          (key) =>
+            ![
+              'kind',
+              'accountId',
+              'displayName',
+              'weight',
+              'profile',
+              'connectionChanged',
+              'credentialChanged',
+              'profileAt',
+              'observe',
+              'availability',
+            ].includes(key),
+        ) ||
+        ![intent.profile, intent.connectionChanged, intent.credentialChanged, intent.observe].every(
+          (value) => typeof value === 'boolean',
+        ) ||
+        (intent.displayName !== undefined &&
+          (typeof intent.displayName !== 'string' || intent.displayName.length > 80)) ||
+        (intent.weight !== undefined &&
+          (!Number.isFinite(intent.weight) || intent.weight < 1 || intent.weight > 100)) ||
+        (!intent.profile && (intent.displayName !== undefined || intent.weight !== undefined)) ||
+        (intent.credentialChanged && intent.observe) ||
+        (intent.profileAt !== undefined &&
+          (!intent.profile || !Number.isSafeInteger(intent.profileAt) || intent.profileAt < 0)) ||
+        (intent.connectionChanged && !intent.profile) ||
+        (intent.availability !== null &&
+          (!intent.availability ||
+            typeof intent.availability.enabled !== 'boolean' ||
+            typeof intent.availability.reason !== 'string' ||
+            Object.keys(intent.availability).some(
+              (key) => !['enabled', 'reason'].includes(key),
+            ))) ||
+        (!intent.observe &&
+          intent.availability !== null &&
+          (intent.availability.enabled ||
+            !['owner_paused', 'credential_replaced'].includes(intent.availability.reason))) ||
+        (intent.credentialChanged &&
+          (intent.availability?.enabled !== false ||
+            intent.availability.reason !== 'credential_replaced')) ||
+        saved.accountId !== intent.accountId
+      ) {
+        fail('账户修改原安全意图无效');
+      }
+      const account = this.account(intent.accountId);
+      if (
+        row.actorKind !== 'admin' &&
+        (intent.profile || intent.connectionChanged || this.policy().accountId !== account.id)
+      ) {
+        fail('账户修改原安全意图越权');
+      }
+      const observations = owned.filter((event) => event.eventType === 'QuotaObserved');
+      if (
+        observations.length !== Number(intent.observe) ||
+        (!intent.observe && events.length !== owned.length)
+      ) {
+        fail('账户完整修改缺少原观察决定');
+      }
+      const observed = observations[0];
+      expected.push(
+        ...this.planMutation(
+          metadata,
+          intent,
+          observed?.eventType === 'QuotaObserved' ? observed : undefined,
+        ),
+      );
+      if (saved.enabled !== (intent.availability?.enabled ?? account.enabled === 1)) {
+        fail('账户原回执与完整可用性决定不符');
+      }
+    } else {
+      fail('账户原安全意图种类无效');
+    }
+    const decision = (event: RelationalEventInput) => ({
+      eventType: event.eventType,
+      payload: event.payload,
+      streamId: event.streamId,
+      accountId: event.accountId,
+      memberId: event.memberId,
+      occurredAt: event.occurredAt,
+      policyVersion: event.policyVersion,
+      pricingVersion: event.pricingVersion,
     });
+    if (
+      canonicalJson(expected.map(decision) as unknown as Json) !==
+      canonicalJson(owned.map(decision) as unknown as Json)
+    ) {
+      fail('账户完整事实与原安全意图/前态规划不符');
+    }
   }
   private enableSource(
     command: AccountCommandMetadata,
@@ -819,19 +1122,6 @@ export class RelationalAccountStore {
           ignored: 0,
         });
       }
-      const prefix =
-        ticket.configuration && input.kind === 'configure'
-          ? this.configurationEvents(
-              command,
-              account,
-              {
-                ...ticket.configuration,
-                displayName: input.changes.displayName ?? account.displayName,
-                weight: input.changes.weight ?? account.weight,
-              },
-              ticket.startedAt,
-            )
-          : [];
       if (ticket.configuration?.connectionChanged) {
         for (const event of events) {
           if (event.eventType === 'QuotaObserved') {
@@ -842,9 +1132,43 @@ export class RelationalAccountStore {
       const verified = events.some(
         (event) => event.eventType === 'AvailabilityChanged' && event.payload.enabled,
       );
+      const availability = events.find((event) => event.eventType === 'AvailabilityChanged'),
+        intent: AccountIntent = {
+          kind: 'mutation',
+          accountId: account.id,
+          profile: Boolean(ticket.configuration),
+          ...(input.kind === 'configure' && input.changes.displayName !== undefined
+            ? { displayName: input.changes.displayName }
+            : {}),
+          ...(input.kind === 'configure' && input.changes.weight !== undefined
+            ? { weight: input.changes.weight }
+            : {}),
+          connectionChanged: ticket.configuration?.connectionChanged ?? false,
+          credentialChanged: false,
+          ...(ticket.configuration && ticket.startedAt !== command.recordedAt
+            ? { profileAt: ticket.startedAt }
+            : {}),
+          observe: true,
+          availability:
+            availability?.eventType === 'AvailabilityChanged'
+              ? { enabled: availability.payload.enabled, reason: availability.payload.reason }
+              : null,
+        };
+      const observed = events.find((event) => event.eventType === 'QuotaObserved'),
+        complete = [
+          ...this.planMutation(
+            command,
+            intent,
+            observed?.eventType === 'QuotaObserved' ? observed : undefined,
+            ticket.configuration?.eventId,
+          ),
+          ...events.filter(
+            (event) => !['QuotaObserved', 'AvailabilityChanged'].includes(event.eventType),
+          ),
+        ];
       // 失败观察/封禁决定也必须落库；公开错误在认证事务提交后才抛出。
       if (verified) {
-        const committed = this.commit(command, [...prefix, ...events]);
+        const committed = this.commit(command, complete, undefined, undefined, intent);
         if (ticket.configuration?.connectionChanged) {
           this.writeConnection(account.id, account.pst, ticket.configuration.proxyUrl);
         }
@@ -854,7 +1178,13 @@ export class RelationalAccountStore {
       if (!result.ok) {
         message = result.quotaError;
       }
-      const committed = this.commit(command, [...prefix, ...events], { statusCode: 409, message });
+      const committed = this.commit(
+        command,
+        complete,
+        { statusCode: 409, message },
+        undefined,
+        intent,
+      );
       if (ticket.configuration?.connectionChanged) {
         this.writeConnection(account.id, account.pst, ticket.configuration.proxyUrl);
       }
@@ -862,7 +1192,7 @@ export class RelationalAccountStore {
     });
   }
   private configurationEvents(
-    metadata: AccountCommandMetadata,
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
     account: Account,
     configuration: AccountConfiguration,
     at = metadata.recordedAt,
@@ -1047,6 +1377,7 @@ export class RelationalAccountStore {
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
+        this.assertAccountCommit(result.events, result.receipt);
         this.applyAccountEvents(result.events);
       }
       return result;

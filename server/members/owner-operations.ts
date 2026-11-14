@@ -395,6 +395,16 @@ function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   if (receipt.error) {
     fail(receipt.error.statusCode, receipt.error.message);
   }
+  if (
+    result.receipt &&
+    typeof result.receipt === 'object' &&
+    !Array.isArray(result.receipt) &&
+    'accountIntent' in result.receipt
+  ) {
+    // 内部原安全意图只用于完整回放；外部仍领取原先保存的字段，不从当前账户重造旧回包。
+    const { accountIntent: _intent, ...external } = result.receipt;
+    return { ...result, receipt: external };
+  }
   return result;
 }
 
