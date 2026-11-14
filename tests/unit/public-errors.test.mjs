@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { publicErrorMessage } from '../../server/http/public-errors.ts';
+import {
+  publicErrorMessage,
+  classifiedGenerationFailureMessage,
+  generationCapacityMessage,
+} from '../../server/http/public-errors.ts';
 
 test('额度不可用的所有公开读取和重复生成转换保留固定原因', () => {
   const reasons = {
@@ -46,4 +50,60 @@ test('安全查询原因经历史和生成重复转换仍保留，未知生成�
     publicErrorMessage('private upstream body pst-secret', { generation: true }),
     '生成失败，请稍后重试或联系管理员。',
   );
+});
+
+test('唯一已分类容量码跨 Native/OpenAI/Direct/Member 展示仍为原公开文本，未知诊断保持原generic', async () => {
+  const { nativeGenerationError } = await import('../../server/protocols/native-http.ts');
+  const { openAiGenerationError } = await import('../../server/protocols/openai-http.ts');
+  const { publicGenerationRequest } = await import('../../server/generation/request-queries.ts');
+  const snapshot = (error) => ({
+    id: 'request',
+    source: 'novelai-native',
+    operation: 'generate',
+    createdAt: '',
+    jobs: [
+      {
+        id: 'job',
+        sampleIndex: 0,
+        status: 'failed',
+        model: null,
+        createdAt: null,
+        updatedAt: null,
+        completedAt: null,
+        error,
+        cancelledAt: null,
+        lateResultAvailable: false,
+        imageId: null,
+        fairCharge: null,
+      },
+    ],
+  });
+  const code = 'upstream_capacity',
+    message = publicErrorMessage(code, { generation: true }),
+    failure = Object.assign(new Error(message), { statusCode: 429 });
+  assert.equal(classifiedGenerationFailureMessage(code), generationCapacityMessage);
+  assert.equal(nativeGenerationError(failure).body.message, generationCapacityMessage);
+  assert.equal(openAiGenerationError(failure).body.error.message, generationCapacityMessage);
+  assert.equal(
+    publicGenerationRequest(snapshot(code), {
+      errorMessage: (value) => publicErrorMessage(value, { generation: true }),
+    }).jobs[0].error,
+    generationCapacityMessage,
+  );
+  assert.equal(publicGenerationRequest(snapshot(code)).jobs[0].error, generationCapacityMessage);
+  for (const unknown of [
+    'upstream_failed',
+    'constructor',
+    'private upstream body https://secret.invalid?token=pst-secret\nError: private stack',
+  ]) {
+    assert.equal(classifiedGenerationFailureMessage(unknown), undefined);
+    assert.equal(
+      publicErrorMessage(unknown, { generation: true }),
+      '生成失败，请稍后重试或联系管理员。',
+    );
+    assert.equal(
+      publicGenerationRequest(snapshot(unknown)).jobs[0].error,
+      '生成失败，请查看任务状态。',
+    );
+  }
 });

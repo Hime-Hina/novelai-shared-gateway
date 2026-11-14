@@ -13,6 +13,7 @@ import {
 import {
   openRelationalSnapshot,
   readRelationalRecoveryState,
+  relationalPrivateMemberColumns,
   relationalPrivateStateEmpty,
   relationalPrivateStateSha256,
   relationalPrivateTables,
@@ -84,7 +85,7 @@ function assertSameTables(
         !(
           !includePrivate &&
           name === 'members' &&
-          ['auth_epoch', 'note_json'].includes(column.name)
+          relationalPrivateMemberColumns.some((privateColumn) => privateColumn === column.name)
         ),
     );
     const keys = columns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk);

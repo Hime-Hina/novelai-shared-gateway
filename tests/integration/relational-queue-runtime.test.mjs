@@ -1,3 +1,4 @@
+import { createPublicImageAccess } from '../../server/http/public-image.ts';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1328,6 +1329,7 @@ test('真实成员HTTP与执行器共用Map/预算/事件，退款仍占物理�
     events: f.events,
     previews: runtime.previews,
     replicas: { dataDir: f.dir },
+    publicImageUrl: createPublicImageAccess(f.env, () => f.clock).imageUrl,
     scheduleQueueDrain: runtime.schedule,
     env: f.env,
     now: () => f.clock,

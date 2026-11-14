@@ -2,17 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
-import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
+import Database from 'better-sqlite3';
+import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
+import {
+  childFixture,
+  launchGateway,
+  enableAccount,
+  query,
+  assertChildPublicReplay,
+} from '../helpers/relational-child.mjs';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64',
@@ -27,88 +28,27 @@ test(
   '请求 API 的 Bearer/Cookie 跨秒同归属查询、CSRF 取消、真实签名领取与受理请求 ID',
   { timeout: 20000 },
   async (t) => {
-    let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-request-api-'));
-    const adminToken = 'synthetic-admin-for-request-api-test';
-    const initialized = await bootstrap({
-      env: {
-        ADMIN_TOKEN: adminToken,
-        NOVELAI_TOKEN: 'pst-synthetic-offline-request-api-only',
-        DATA_DIR: dataDir,
-      },
-      log() {},
-    });
-    const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-    dataDir = await createLegacyDatabaseFixture(dataDir);
+    const fixture = await childFixture(t, 'request-api'),
+      credentials = fixture.members;
     const newKey = 'STA1N-synthetic-replacement-key';
-    const store = new JsonStore(dataDir);
-    await store.init();
-    const legacyPayload = 'not-json-must-not-be-loaded-by-query';
-    const db = await store.read();
-    const observation = {
-      quotaTier: 3,
-      subscriptionActive: true,
-      subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000,
-      quotaPurchased: 0,
-      v5UsagePercent: 100,
-      quotaCheckedAt: new Date().toISOString(),
+    const waitFor = async (predicate) => {
+      const deadline = Date.now() + 5000;
+      while (!predicate()) {
+        assert.ok(Date.now() < deadline, 'actual request fixture did not settle');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
     };
-    Object.assign(db.accounts[0], observation, {
-      cooldownUntil: new Date(Date.now() + 900000).toISOString(),
-    });
-    syncFairQuota(db);
-    db.users.find((user) => user.id === credentials[0].user_id).token = newKey;
-    db.images.push(
-      {
-        id: 'owned-image',
-        token: credentials[0].api_key,
-        mimeType: 'image/png',
-        base64: png.toString('base64'),
-      },
-      {
-        id: 'foreign-image',
-        token: credentials[1].api_key,
-        mimeType: 'image/png',
-        base64: png.toString('base64'),
-      },
-    );
-    db.jobs = ['done', 'queued', 'pending'].map((status, sampleIndex) => ({
-      id: `old-child-${sampleIndex}`,
-      requestId: 'owned-parent',
-      sampleIndex,
-      source: 'novelai-native',
-      userToken: credentials[0].api_key,
-      status,
-      request: { model: 'nai-diffusion-4-5-full' },
-      imageId: sampleIndex === 0 ? 'owned-image' : 'foreign-image',
-      createdAt: new Date().toISOString(),
-      queueExpiresAt: new Date(Date.now() + 600000).toISOString(),
-    }));
-    db.jobs.push({
-      id: 'inline',
-      userToken: newKey,
-      status: 'done',
-      createdAt: new Date().toISOString(),
-    });
-    store.sqlite
-      .prepare(
-        'INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)',
-      )
-      .run(
-        'owned-parent',
-        credentials[0].user_id,
-        'novelai-native',
-        'generate',
-        new Date().toISOString(),
-        100,
-        legacyPayload,
-      );
-    await store.write(db);
-    await store.close();
     let generationCalls = 0;
-    const upstream = http.createServer((req, res) => {
+    const upstream = http.createServer(async (req, res) => {
       if (req.url !== '/user/data') {
+        for await (const chunk of req) {
+        }
         generationCalls++;
+        res.writeHead(200, {
+          'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : 'image/png',
+        });
+        res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
+        return;
       }
       res.setHeader('content-type', 'application/json');
       res.end(
@@ -123,58 +63,45 @@ test(
         }),
       );
     });
-    const upstreamPort = await listen(upstream),
-      reservation = http.createServer(),
-      port = await listen(reservation);
-    await new Promise((resolve) => reservation.close(resolve));
-    const base = `http://127.0.0.1:${port}`;
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
-    );
-    Object.assign(env, {
-      ADMIN_TOKEN: adminToken,
-      DATA_DIR: dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      OPENAI_CHAT_TIMEOUT_MS: '100',
-      NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-      NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    });
-    const child = spawn(process.execPath, ['server/index.ts'], {
-      cwd: root,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const exited = once(child, 'exit');
-    let output = '';
-    child.stderr.on('data', (chunk) => {
-      output += chunk.toString();
-    });
+    const upstreamPort = await listen(upstream);
+    // Trace only protected content selects, not harmless input byte-count metadata.
+    const trace = `
+      import Database from ${JSON.stringify(import.meta.resolve('better-sqlite3'))};
+      const prepare = Database.prototype.prepare;
+      let armed = false, reads = [];
+      Database.prototype.prepare = function(sql) {
+        if (armed && /\\bselect\\b/i.test(sql) && /generation_inputs|input_assets|normalization_contexts/i.test(sql)
+          && /\\bbody\\b|\\bbytes\\b|select\\s+\\*/i.test(sql)) reads.push(sql);
+        return prepare.call(this, sql);
+      };
+      process.on('message', message => {
+        if (message === 'trace-prove') {
+          reads = []; armed = true;
+          const db = new Database(process.env.DATA_DIR + '/library.sqlite', {readonly:true});
+          try { db.prepare('SELECT body FROM generation_inputs LIMIT 1').get(); } finally { db.close(); }
+          armed = false; process.send({trace:'proved', count:reads.length}); reads = [];
+        }
+        if (message === 'trace-begin') { reads = []; armed = true; process.send({trace:'begun'}); }
+        if (message === 'trace-end') { armed = false; process.send({trace:'ended', reads}); }
+      });
+    `;
+    let server, base;
+    const start = async () => {
+      server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, {
+        OPENAI_CHAT_TIMEOUT_MS: '100',
+        NODE_OPTIONS: `--import=data:text/javascript,${encodeURIComponent(trace)}`,
+      });
+      base = server.origin;
+    };
     t.after(async () => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill();
-      }
-      await exited;
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
     });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(output)), 15000);
-      child.stdout.on('data', (chunk) => {
-        output += chunk.toString();
-        if (chunk.toString().includes('Nai2API listening')) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-      child.once('exit', (code) => {
-        clearTimeout(timer);
-        reject(new Error(`synthetic gateway exited ${code}: ${output}`));
-      });
-    });
+    const traceMessage = async (message) => {
+      const reply = once(server.child, 'message');
+      server.child.send(message);
+      return (await reply)[0];
+    };
     const call = (path, { key, cookie, body, origin } = {}) =>
       fetch(base + path, {
         method: body === undefined ? 'GET' : 'POST',
@@ -187,14 +114,99 @@ test(
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(5000),
       });
+    await start();
+    await enableAccount(fixture, server);
+    const foreignAccepted = await call('/api/jobs', {
+      key: credentials[1].api_key,
+      body: {
+        prompt: 'foreign actual result',
+        model: 'nai-diffusion-4-5-full',
+        width: 128,
+        height: 128,
+        steps: 23,
+        seed: 91,
+        nocache: true,
+      },
+    });
+    assert.equal(foreignAccepted.status, 202);
+    const foreignJob = await foreignAccepted.json();
+    await waitFor(
+      () =>
+        query(fixture, 'SELECT status FROM generation_jobs WHERE id=?', foreignJob.id)[0].status ===
+        'done',
+    );
+    const foreignImageId = query(
+        fixture,
+        'SELECT artifact_id FROM generation_jobs WHERE id=?',
+        foreignJob.id,
+      )[0].artifact_id,
+      cooldown = query(
+        fixture,
+        'SELECT cooldown_until FROM upstream_accounts WHERE id=?',
+        fixture.accountId,
+      )[0].cooldown_until;
+    if (cooldown > Date.now()) {
+      await new Promise((resolve) => setTimeout(resolve, cooldown - Date.now()));
+    }
+    const batch = await call('/ai/generate-image', {
+      key: credentials[0].api_key,
+      body: {
+        input: 'owned real three-child request',
+        model: 'nai-diffusion-4-5-full',
+        parameters: { width: 128, height: 128, steps: 23, seed: 42, n_samples: 3 },
+      },
+    });
+    assert.ok([200, 504].includes(batch.status));
+    const ownedParent = batch.headers.get('x-nai-request-id');
+    assert.ok(ownedParent);
+    await batch.arrayBuffer();
+    const children = () =>
+      query(
+        fixture,
+        'SELECT * FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+        ownedParent,
+      );
+    await waitFor(() => children()[0]?.status === 'done');
+    assert.deepEqual(
+      children().map((child) => child.status),
+      ['done', 'queued', 'pending'],
+    );
+    const ownedImageId = children()[0].artifact_id;
+    assert.equal(
+      generationCalls,
+      2,
+      'one actual foreign setup image plus the original first child',
+    );
+    await server.kill();
+    const sqlite = new Database(fixture.filename);
+    sqlite.pragma('foreign_keys=ON');
+    try {
+      assert.equal(
+        await withAuthenticatedMemberApiKey(
+          new RelationalMemberStore(sqlite, fixture.env),
+          credentials[0].api_key,
+          (member) => {
+            assert.equal(member.id, credentials[0].user_id);
+            new RelationalMemberStore(sqlite, fixture.env).replaceMemberApiKey(member.id, newKey);
+            return true;
+          },
+        ),
+        true,
+      );
+    } finally {
+      sqlite.close();
+    }
+    await start();
     const login = await call('/api/member/login', {
       body: { username: credentials[0].username, password: credentials[0].password },
       origin: base,
     });
     assert.equal(login.status, 200);
     const cookie = login.headers.get('set-cookie').split(';')[0];
+    assert.deepEqual(await traceMessage('trace-prove'), { trace: 'proved', count: 1 });
+    assert.deepEqual(await traceMessage('trace-begin'), { trace: 'begun' });
     const bearerStartedAt = Date.now(),
-      bearer = await call('/api/requests/owned-parent', { key: newKey });
+      bearer = await call(`/api/requests/${ownedParent}`, { key: newKey });
     assert.equal(bearer.status, 200);
     const expected = await bearer.json(),
       bearerReturnedAt = Date.now(),
@@ -203,10 +215,17 @@ test(
     // 真正跨过签发秒，不能依赖两个独立读取恰好发生在同一秒。
     await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextSecond - Date.now()) + 10));
     const memberStartedAt = Date.now(),
-      member = await call('/api/member/requests/owned-parent', { cookie });
+      member = await call(`/api/member/requests/${ownedParent}`, { cookie });
     assert.equal(member.status, 200);
     const actual = await member.json(),
       memberReturnedAt = Date.now();
+    const traced = await traceMessage('trace-end');
+    assert.equal(traced.trace, 'ended');
+    assert.deepEqual(
+      traced.reads,
+      [],
+      'both actual thin queries must not select protected body/BLOB',
+    );
     const businessSnapshot = ({ revision, jobs, ...snapshot }) => {
       assert.match(revision, /^[a-f0-9]{64}$/);
       return {
@@ -236,7 +255,7 @@ test(
       const signed = new URL(snapshot.jobs[0].imageUrl, base),
         expires = Number(signed.searchParams.get('expires'));
       assert.equal(signed.origin, base);
-      assert.equal(signed.pathname, '/api/images/owned-image/content');
+      assert.equal(signed.pathname, `/api/images/${ownedImageId}/content`);
       assert.deepEqual([...signed.searchParams.keys()].sort(), ['expires', 'signature']);
       assert.match(signed.searchParams.get('signature'), /^[a-f0-9]{64}$/);
       assert.ok(expires >= Math.floor(startedAt / 1000) + 900);
@@ -248,7 +267,7 @@ test(
       const foreign = new URL(signed),
         changedExpiry = new URL(signed),
         changedSignature = new URL(signed);
-      foreign.pathname = '/api/images/foreign-image/content';
+      foreign.pathname = `/api/images/${foreignImageId}/content`;
       changedExpiry.searchParams.set('expires', String(expires - 1));
       const signature = signed.searchParams.get('signature');
       changedSignature.searchParams.set(
@@ -267,36 +286,45 @@ test(
       assert.equal((await call(signed.pathname, { key: credentials[1].api_key })).status, 403);
     }
     assert.equal(
-      (await call('/api/requests/owned-parent', { key: credentials[1].api_key })).status,
+      (await call(`/api/requests/${ownedParent}`, { key: credentials[1].api_key })).status,
       404,
     );
     assert.equal(
-      (await call('/api/requests/owned-parent/cancel', { key: credentials[1].api_key, body: {} }))
+      (await call(`/api/requests/${ownedParent}/cancel`, { key: credentials[1].api_key, body: {} }))
         .status,
       404,
     );
     assert.equal(
-      (await call('/api/requests/owned-parent', { key: credentials[0].api_key })).status,
+      (await call(`/api/requests/${ownedParent}`, { key: credentials[0].api_key })).status,
       401,
     );
     for (const origin of [undefined, 'https://evil.invalid']) {
       assert.equal(
-        (await call('/api/member/requests/owned-parent/cancel', { cookie, body: {}, origin }))
+        (await call(`/api/member/requests/${ownedParent}/cancel`, { cookie, body: {}, origin }))
           .status,
         403,
       );
     }
-    const cancelled = await call('/api/member/requests/owned-parent/cancel', {
+    const cancelled = await call(`/api/member/requests/${ownedParent}/cancel`, {
       cookie,
       body: {},
       origin: base,
     });
     assert.equal(cancelled.status, 200);
-    assert.equal((await cancelled.json()).cancelledCount, 2);
-    const repeated = await call('/api/requests/owned-parent/cancel', { key: newKey, body: {} });
+    const cancelledState = await cancelled.json();
+    assert.equal(cancelledState.cancelledCount, 2);
+    const { cancelledCount, ...cancelledSnapshot } = cancelledState;
+    const rawCancelled = await call(`/api/requests/${ownedParent}`, { key: newKey });
+    assert.equal(rawCancelled.status, 200);
+    assert.deepEqual(
+      businessSnapshot(cancelledSnapshot),
+      businessSnapshot(await rawCancelled.json()),
+    );
+    const repeated = await call(`/api/requests/${ownedParent}/cancel`, { key: newKey, body: {} });
     assert.equal((await repeated.json()).cancelledCount, 0);
-    assert.equal((await call('/api/requests/inline', { key: newKey })).status, 404);
-    assert.equal((await call('/api/jobs/inline', { key: newKey })).status, 200);
+    // Existing canonical child id remains distinct from its parent route; this is not a parentless legacy fixture.
+    assert.equal((await call(`/api/requests/${children()[0].id}`, { key: newKey })).status, 404);
+    assert.equal((await call(`/api/jobs/${children()[0].id}`, { key: newKey })).status, 200);
 
     const web = await call('/api/jobs', {
       key: newKey,
@@ -345,6 +373,20 @@ test(
         1,
       );
     }
-    assert.equal(generationCalls, 0);
+    assert.equal(generationCalls, 2);
+    assert.equal(query(fixture, 'SELECT count(*) AS n FROM generation_attempts')[0].n, 2);
+    const charges = query(fixture, 'SELECT * FROM charges ORDER BY rowid');
+    assert.equal(
+      charges.length,
+      2,
+      'cancelled queued/pending children and new waiting requests never reserve money',
+    );
+    assert.ok(
+      charges.every(
+        (charge) => charge.status === 'settled' && charge.original_account_id === fixture.accountId,
+      ),
+    );
+    await server.stop();
+    assertChildPublicReplay(fixture);
   },
 );

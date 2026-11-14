@@ -6,7 +6,7 @@ import type {
   StoreItem,
   StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
-import { isNovelAiCapacityError } from '../http/public-errors.ts';
+import { isNovelAiCapacityError, generationCapacityMessage } from '../http/public-errors.ts';
 import {
   reserveFairQuota,
   settleFairQuota,
@@ -1135,7 +1135,7 @@ async function finishGenerationFailure(
   }
   let message: string;
   if (!aborted && capacity) {
-    message = 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。';
+    message = generationCapacityMessage;
   } else if (!aborted && failure?.upstreamStatus === 401) {
     message = '共享 Opus Key 已失效，请联系管理员更新凭据';
   } else if (!aborted && failure?.upstreamStatus === 403) {

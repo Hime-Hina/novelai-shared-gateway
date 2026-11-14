@@ -1,3 +1,4 @@
+import { publicErrorMessage } from '../http/public-errors.ts';
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -36,6 +37,7 @@ interface Dependencies {
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
   runtime: RelationalGenerationLifecycle;
   scheduleQueueDrain(): void;
+  publicImageUrl(artifactId: string): string;
   env?: NodeJS.ProcessEnv;
   discordFetch?: DiscordDependencies['discordFetch'];
   now?(): number;
@@ -48,6 +50,9 @@ function fail(statusCode: number, code: string, message: string): never {
 export function createRelationalMemberGenerationHttp(deps: Dependencies) {
   const { sqlite, env = process.env } = deps;
   assertRelationalStorageReady(sqlite);
+  if (typeof deps.publicImageUrl !== 'function') {
+    throw new Error('Member HTTP requires the shared public image signer.');
+  }
   const members = new RelationalMemberStore(
       sqlite,
       env,
@@ -104,6 +109,20 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
         }
         return result.value;
       };
+      // 原两条 Cookie 读取/取消 literal 早于 generation transport，复用 Raw 的同一展示规则。
+      const legacySnapshot =
+        (req.method === 'GET' && /^\/api\/member\/requests\/[^/]+$/.test(url.pathname)) ||
+        (req.method === 'POST' && /^\/api\/member\/requests\/[^/]+\/cancel$/.test(url.pathname));
+      const present = (request: Parameters<typeof publicGenerationRequest>[0]) =>
+        publicGenerationRequest(
+          request,
+          legacySnapshot
+            ? {
+                imageUrl: deps.publicImageUrl,
+                errorMessage: (message) => publicErrorMessage(message, { generation: true }),
+              }
+            : undefined,
+        );
       const handle = createMemberGenerationHttp({
         streamOwner: sqlite,
         events: deps.events,
@@ -129,17 +148,15 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
           const receipt = result.receipt as { requestId: string; jobIds: string[] };
           return { ...receipt, replayed: result.replayed };
         },
-        readState: (requestId) =>
-          authorize((memberId) =>
-            publicGenerationRequest(requests.readMemberRequest(requestId, memberId)),
-          ),
+        readState: async (requestId) =>
+          present(await authorize((memberId) => requests.readMemberRequest(requestId, memberId))),
         cancel: async (requestId) => {
           const result = await authorize((memberId) =>
             cancelRelationalGenerationRequest(requests, generations, requestId, memberId, now()),
           );
           deps.scheduleQueueDrain();
           return {
-            ...publicGenerationRequest(result.request),
+            ...present(result.request),
             cancelledCount: result.cancelledCount,
           };
         },
