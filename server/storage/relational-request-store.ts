@@ -351,12 +351,17 @@ export class RelationalRequestStore {
             error: string | null;
             errorStatus: number | null;
             cooldownUntil: number | null;
+            queuePosition: number | null;
+            queuedCount: number;
             retiredAt: number | null;
             requestRetiredAt: number | null;
           }
         >(
           `SELECT j.status,j.request_id AS requestId,j.actual_seed AS seed,j.artifact_id AS artifactId,
         j.error_code AS error,j.error_status AS errorStatus,j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt,
+        CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
+          WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) END AS queuePosition,
+        (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
         (SELECT json_extract(e.payload,'$.cooldownUntil') FROM domain_events e
           WHERE e.event_type='CooldownChanged' AND e.stream_id='account:'||a.account_id
           AND json_extract(e.payload,'$.attemptId')=a.id ORDER BY e.stream_version DESC LIMIT 1) AS cooldownUntil

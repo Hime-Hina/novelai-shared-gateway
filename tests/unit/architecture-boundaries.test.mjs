@@ -132,6 +132,16 @@ for (const filename of [
     ],
     ...[
       [
+        'API raw admission writer',
+        '../generation/relational-api-admission.ts',
+        'createRelationalApiGenerationAdmission',
+      ],
+      [
+        'relational OpenAI HTTP writer',
+        '../generation/relational-openai-http.ts',
+        'createRelationalOpenAiHttp',
+      ],
+      [
         'Native raw admission writer',
         '../generation/relational-native-admission.ts',
         'createRelationalNativeAdmission',
