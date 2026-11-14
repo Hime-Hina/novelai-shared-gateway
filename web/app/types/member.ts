@@ -81,8 +81,8 @@ export interface MemberProfile {
 }
 export interface BatchJob {
   id: string;
-  index: number;
-  model: string;
+  index: number | null;
+  model: string | null;
   status: string;
   cancelled: boolean;
   imageUrl?: string;
