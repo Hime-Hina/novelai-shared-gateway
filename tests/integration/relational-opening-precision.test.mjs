@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { fixture, meta, NOW, databaseState } from '../helpers/relational-generation.mjs';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import {
+  fixture,
+  meta,
+  NOW,
+  databaseState,
+  installReady,
+} from '../helpers/relational-generation.mjs';
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
@@ -19,6 +27,8 @@ import {
 } from '../../server/storage/relational-storage.ts';
 import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-events.ts';
+import { readRelationalArtifactContent } from '../../server/storage/relational-replica-io.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 
 // 与旧503夹具相同的原行粒度：只有child创建日和文件创建日，没有原parent或发布/完成时点。
 // 此处的稳定member映射是选定来源的显式证明，不从文件MIME/ID/日期推断业务字段。
@@ -43,14 +53,18 @@ const hash = createHash('sha256').update(bytes).digest('hex');
 const origin = (originalId) => ({ sourceId: 'precision-source', originalId });
 function event(eventType, payload) {
   const kind = relationalFactStream(eventType),
-    field = { import: 'sourceId', input: 'inputId', request: 'requestId', artifact: 'artifactId' }[
-      kind
-    ];
+    field = {
+      import: 'sourceId',
+      input: 'inputId',
+      request: 'requestId',
+      artifact: 'artifactId',
+      storage: 'storageTargetId',
+    }[kind];
   return {
     eventType,
     payload,
     streamId: `${kind}:${payload[field]}`,
-    memberId: ['import'].includes(kind) ? null : (payload.memberId ?? 'm1'),
+    memberId: ['import', 'storage'].includes(kind) ? null : (payload.memberId ?? 'm1'),
     accountId: null,
     occurredAt: NOW + 20,
     policyVersion: 'original-policy',
@@ -70,8 +84,10 @@ function appendOpening(f, options = {}) {
       inputId: 'precision-input',
       memberId: 'm1',
       completeness: definition ? 'complete' : 'unavailable',
-      body: definition ? JSON.parse(definition.body) : null,
-      logicalBytes: definition?.logical_bytes ?? 0,
+      body: definition ? (options.body ?? JSON.parse(definition.body)) : null,
+      logicalBytes: options.body
+        ? Buffer.byteLength(JSON.stringify(options.body))
+        : (definition?.logical_bytes ?? 0),
       assets: [],
     });
     const events = [
@@ -364,6 +380,32 @@ test('即使Input/context/执行元数据全部已知，parentless容器仍不�
   f.accept('definition');
   const r = f.db.prepare("SELECT * FROM generation_requests WHERE id='definition'").get(),
     before = databaseState(f.db);
+  const saved = JSON.parse(
+    f.db.prepare('SELECT body FROM generation_inputs WHERE id=?').get(r.input_id).body,
+  );
+  const bad = { ...saved, parameters: { ...saved.parameters, width: 127 } };
+  for (const sampleCount of [1, null]) {
+    f.db.transaction(() => {
+      assert.throws(
+        () =>
+          appendOpening(f, {
+            complete: true,
+            body: bad,
+            request: {
+              contextId: r.context_id,
+              source: r.source,
+              operation: r.operation,
+              model: r.model,
+              sampleCount,
+              seedMode: r.seed_mode,
+              acceptedAt: 0,
+            },
+          }),
+        (error) => error.statusCode === 422 && /width 必须是/.test(error.message),
+      );
+    })();
+    assert.equal(databaseState(f.db), before, '已知/未知count坏正文都必须在原参数422处全表回滚');
+  }
   f.db.transaction(() => {
     assert.throws(
       () =>
@@ -434,4 +476,100 @@ test('实际c653旧DDL及正确旧hash在同event7也零写拒绝，不能用改
     /Relational initialization requires an empty target; migrate offline/,
   );
   assert.deepEqual(db.serialize(), before);
+});
+
+test('parentless未知操作实际Local清单经selected-private唯一ready并磁盘重开仍保NULL与原字节', async (t) => {
+  const f = await fixture(t);
+  appendOpening(f);
+  const file = path.join(f.dir, original.image.file);
+  await writeFile(file, bytes);
+  const observed = readFileSync(file);
+  assert.equal(createHash('sha256').update(observed).digest('hex'), hash);
+  // 此时点是本次清单实际读文件的核验，不是从旧image.createdAt猜上传或发布时间。
+  const verifiedAt = NOW + 20,
+    events = [
+      event('OpeningStorageTargetRecorded', {
+        storageTargetId: 'precision-local',
+        kind: 'local',
+        namespace: 'images',
+        credentialRef: null,
+        origin: origin(original.image.file),
+      }),
+      event('OpeningReplicaRecorded', {
+        artifactId: original.image.id,
+        storageTargetId: 'precision-local',
+        objectKey: path.posix.basename(original.image.file),
+        encoding: 'identity',
+        uploadedAt: null,
+        verifiedAt,
+        deletedAt: null,
+        lastErrorCode: null,
+        origin: origin(original.image.file),
+      }),
+    ];
+  const {
+    policyVersion: _p,
+    pricingVersion: _v,
+    ...metadata
+  } = meta('precision-inventory', verifiedAt);
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...metadata,
+        fingerprint: domainDigest(events),
+        receipt: { inventoryVerified: true },
+        events,
+        expectedVersions: {
+          'storage:precision-local': '0',
+          [`artifact:${original.image.id}`]: '1',
+        },
+      },
+      f.inputs,
+    ),
+  )();
+  const selected = await installReady(f);
+  assert.equal(f.db.prepare('SELECT status FROM projection_state').get().status, 'ready');
+  const restoredPath = path.join(f.dir, 'restored.sqlite'),
+    restored = new Database(restoredPath);
+  initializeRelationalStorage(restored, 'generation-history');
+  const replayer = new RelationalCommitReplayer(restored);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    restored.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
+  }
+  assert.equal(restored.prepare('SELECT COUNT(*) n FROM api_keys').get().n, 0);
+  await verifyAndInstallRelationalStorage(restored, selected);
+  assertRelationalStorageReady(restored);
+  restored.close();
+  f.db.close();
+  const reopened = new Database(restoredPath);
+  t.after(() => reopened.close());
+  assertRelationalStorageReady(reopened);
+  const before = databaseState(reopened),
+    result = await readRelationalArtifactContent(reopened, original.image.id, { dataDir: f.dir });
+  assert.deepEqual(result.buffer, bytes);
+  assert.equal(result.descriptor.operation, null);
+  assert.equal(
+    new RelationalInputStore(reopened).readOriginalRequestId('structural-container'),
+    null,
+  );
+  assert.equal(
+    reopened.prepare('SELECT published_at FROM artifacts WHERE id=?').get(original.image.id)
+      .published_at,
+    null,
+  );
+  const replica = reopened
+    .prepare('SELECT uploaded_at,verified_at FROM artifact_replicas WHERE artifact_id=?')
+    .get(original.image.id);
+  assert.deepEqual(replica, { uploaded_at: null, verified_at: verifiedAt });
+  assert.ok(
+    reopened.prepare('SELECT COUNT(*) n FROM api_keys').get().n > 0,
+    '原选定私有快照必须参与联合恢复',
+  );
+  assert.equal(databaseState(reopened), before);
+  assert.equal(
+    createHash('sha256').update(readFileSync(selected.sourcePath)).digest('hex'),
+    selected.sourceSha256,
+  );
 });
