@@ -19,7 +19,10 @@ import {
   normalizeMemberGeneration,
   materializeMemberGeneration,
 } from '../../server/generation/member-contract.ts';
-import { prepareRelationalInput } from '../../server/generation/relational-input.ts';
+import {
+  prepareRelationalInput,
+  assertRelationalCompleteInput,
+} from '../../server/generation/relational-input.ts';
 import {
   parseNativeImageRequest,
   nativeNormalizationContext,
@@ -568,32 +571,62 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
       context.native,
     ),
   );
-  f.db.transaction(() => {
-    const store = new RelationalInputStore(f.db),
-      registered = event(
-        'ContextRegistered',
-        store.stageOpeningContext(prepared.contextId, context),
-      ),
-      input = event('OpeningInputRecorded', {
-        ...store.stageOpeningInput({
-          inputId: 'original-direct',
-          memberId: 'm1',
-          completeness: 'complete',
-          body: prepared.body,
-          logicalBytes: prepared.logicalBytes,
-          assets: prepared.assets,
-        }),
-        origin,
-      });
-    new RelationalCommitReplayer(f.db).appendCommit(
-      command(f.db, 'direct-original-definition', [
-        registered,
-        input,
-        request('original-direct', { model: prepared.body.model, contextId: prepared.contextId }),
-      ]),
-      store,
-    );
-  })();
+  const appendDirect = (body) =>
+    f.db.transaction(() => {
+      const store = new RelationalInputStore(f.db),
+        registered = event(
+          'ContextRegistered',
+          store.stageOpeningContext(prepared.contextId, context),
+        ),
+        input = event('OpeningInputRecorded', {
+          ...store.stageOpeningInput({
+            inputId: 'original-direct',
+            memberId: 'm1',
+            completeness: 'complete',
+            body,
+            logicalBytes: prepared.logicalBytes,
+            assets: prepared.assets,
+          }),
+          origin,
+        });
+      new RelationalCommitReplayer(f.db).appendCommit(
+        command(f.db, 'direct-original-definition', [
+          registered,
+          input,
+          request('original-direct', { model: prepared.body.model, contextId: prepared.contextId }),
+        ]),
+        store,
+      );
+    })();
+  const beforeDirect = databaseState(f.db);
+  for (const parameters of [
+    { ...prepared.body.parameters, not_a_direct_parameter: true },
+    { ...prepared.body.parameters, scale: false },
+  ]) {
+    assert.throws(() => appendDirect({ ...prepared.body, parameters }));
+    assert.equal(databaseState(f.db), beforeDirect);
+  }
+  appendDirect(prepared.body);
+  const blank = prepareRelationalInput(
+    normalizeNovelAiRequest(
+      {
+        tag: '',
+        artist: '',
+        model: 'nai-diffusion-3',
+        width: 128,
+        height: 128,
+        steps: 23,
+        scale: 20,
+        cfg: 0,
+        sampler: 'original-direct-sampler',
+        seed: 7,
+      },
+      context.defaults,
+    ),
+    context,
+  );
+  assert.equal(blank.body.input, '');
+  assert.doesNotThrow(() => assertRelationalCompleteInput(blank.body, blank.assets, context, 1));
   assert.deepEqual(prepared.body, originalBody);
   assert.equal(Object.hasOwn(prepared.body.parameters, 'seed'), false);
   assert.equal(Object.hasOwn(prepared.body.parameters, 'n_samples'), false);

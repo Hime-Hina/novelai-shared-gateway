@@ -241,15 +241,29 @@ export function assertRelationalCompleteInput(
     native = inputNativeContext(context);
   let expected: Record<string, unknown> | null;
   if (wire.operation === 'generate') {
-    const { operation: _operation, ...nativeBody } = wire,
-      request =
-        context.kind === 'direct'
-          ? { ...relationalProviderRequest(wire, context), sampleCount }
-          : {
-              ...parseNativeImageRequest(nativeBody, native),
-              allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
-            };
-    expected = canonicalGenerationWire(request, native);
+    if (context.kind === 'direct') {
+      const parameters = wire.parameters as Record<string, unknown>;
+      // Direct 的原 DTO 没有 nativeParameters；不能借透传分支为外加字段背书。
+      expected = recoveredInput({
+        ...relationalProviderRequest(wire, context),
+        nativeParameters: undefined,
+        sampleCount,
+        scale: parameters.scale,
+        cfg: parameters.cfg_rescale,
+        sampler: parameters.sampler,
+        noiseSchedule: parameters.noise_schedule,
+        negative: parameters.negative_prompt,
+      } as RecoverableRequest);
+    } else {
+      const { operation: _operation, ...nativeBody } = wire;
+      expected = canonicalGenerationWire(
+        {
+          ...parseNativeImageRequest(nativeBody, native),
+          allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+        },
+        native,
+      );
+    }
   } else {
     const { operation, ...nativeBody } = wire,
       request = parseNativeAuxiliaryRequest(nativeBody, operation, native);
