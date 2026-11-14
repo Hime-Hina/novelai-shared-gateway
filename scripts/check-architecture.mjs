@@ -18,6 +18,7 @@ const mutations = new Set([
   'updateLossAlertPolicy',
   'configureQuotaPolicy',
   'configureGroups',
+  'configureMemberIds',
   'assertGroupCommit',
   'manageFairMember',
   'applyFairMemberChange',

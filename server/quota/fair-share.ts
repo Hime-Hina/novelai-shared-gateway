@@ -132,7 +132,11 @@ interface V5Reconciliation {
   personalDelta: AmountText;
   policy: string;
 }
-export interface FairQuotaState {
+type SyncReservation = Pick<
+  FairCharge,
+  'userId' | 'status' | 'resource' | 'amount' | 'fixed' | 'purchased' | 'sharedV5Reserved'
+>;
+export interface FairQuotaState<Reservation extends SyncReservation = FairCharge> {
   version: number;
   enabled: boolean;
   members: string[];
@@ -141,7 +145,7 @@ export interface FairQuotaState {
   configVersion: number;
   configurationHistory: unknown[];
   balances: Record<string, FairBalance>;
-  reservations: Record<string, FairCharge>;
+  reservations: Record<string, Reservation>;
   snapshot: QuotaSnapshot | null;
   spent: FairSpent;
   creditedV5: AmountText;
@@ -187,13 +191,7 @@ export type FairQuotaSyncState = Omit<
   'reservations' | 'v5Reconciliation'
 > & {
   v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
-  reservations: Record<
-    string,
-    Pick<
-      FairCharge,
-      'userId' | 'status' | 'resource' | 'amount' | 'fixed' | 'purchased' | 'sharedV5Reserved'
-    >
-  >;
+  reservations: Record<string, SyncReservation>;
 };
 export interface FairQuotaSyncDatabase {
   settings: { fairQuota: FairQuotaSyncState };
@@ -209,7 +207,10 @@ type UpgradedField =
   | 'fallbackTotalsByUser'
   | 'sharedV5Debt'
   | 'spent';
-type LegacyFairQuotaState = Omit<FairQuotaState, UpgradedField> &
+type LegacyFairQuotaState<Reservation extends SyncReservation> = Omit<
+  FairQuotaState<Reservation>,
+  UpgradedField
+> &
   Partial<Omit<Pick<FairQuotaState, UpgradedField>, 'groups' | 'spent'>> & {
     groups?: (Omit<FairGroup, 'share' | 'memberWeights'> &
       Partial<Pick<FairGroup, 'share' | 'memberWeights'>>)[];
@@ -235,14 +236,14 @@ export interface FairUser {
   token?: string;
   enabled?: boolean;
 }
-export interface FairQuotaDatabase {
-  settings?: { fairQuota?: FairQuotaState | null };
+export interface FairQuotaDatabase<Reservation extends SyncReservation = FairCharge> {
+  settings?: { fairQuota?: FairQuotaState<Reservation> | null };
   users?: FairUser[];
   accounts?: FairAccount[] | Record<string, FairAccount> | null;
   jobs?: AccountingJob[] | Record<string, AccountingJob> | null;
   ledger?: unknown[];
 }
-export type FairMemberQuotaState = Omit<FairQuotaState, 'v5Reconciliation'> & {
+export type FairMemberQuotaState = Omit<FairQuotaState<SyncReservation>, 'v5Reconciliation'> & {
   v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
 };
 export type FairMemberQuotaDatabase = Omit<FairQuotaDatabase, 'settings'> & {
@@ -328,7 +329,9 @@ const emptyBalance = (): FairBalance => ({
   anlasFixedAvailable: '0',
   anlasPurchasedAvailable: '0',
 });
-function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
+function upgradeGroups<Reservation extends SyncReservation>(
+  s: LegacyFairQuotaState<Reservation>,
+): FairQuotaState<Reservation> {
   if (!s.groups) {
     s.groups = s.members.map((id, i) => ({
       id: `group_${i + 1}`,
@@ -394,9 +397,9 @@ function upgradeGroups(s: LegacyFairQuotaState): FairQuotaState {
       units(s.snapshot.anlasFixed) + units(s.snapshot.anlasPurchased),
     );
   }
-  totals(s as FairQuotaState);
+  totals(s as FairQuotaState<Reservation>);
   // 上面的原位升级补齐旧四人账本字段，不重建已有钱包或预留。
-  return s as FairQuotaState;
+  return s as FairQuotaState<Reservation>;
 }
 const groupFor = (s: FairQuotaSyncState, id: string): FairGroup | undefined =>
   s.groups.find((g) => g.members.includes(id));
@@ -408,7 +411,10 @@ const weight = (s: FairQuotaSyncState, id: string): number => {
   const total = group.members.reduce((n, member) => n + (group.memberWeights?.[member] ?? 1), 0);
   return total > 0 ? (group.share ?? 0.25) * ((group.memberWeights?.[id] ?? 1) / total) : 0;
 };
-function normalizeCharge(charge: FairCharge): FairCharge {
+function normalizeCharge<
+  Charge extends Pick<FairCharge, 'amount' | 'fixed' | 'purchased'> &
+    Partial<Pick<FairCharge, 'billingMode' | 'v5Equivalent' | 'sharedV5Reserved'>>,
+>(charge: Charge): Charge {
   charge.amount = normalized(charge.amount);
   charge.fixed = normalized(charge.fixed);
   charge.purchased = normalized(charge.purchased);
@@ -634,7 +640,10 @@ export function assertFairQuotaIdle(db: {
   }
 }
 
-export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): FairQuotaState {
+export function configureFairQuota<Reservation extends SyncReservation>(
+  db: FairQuotaDatabase<Reservation>,
+  memberIds: unknown,
+): FairQuotaState<Reservation> {
   if (
     !Array.isArray(memberIds) ||
     memberIds.length !== 4 ||
@@ -650,7 +659,7 @@ export function configureFairQuota(db: FairQuotaDatabase, memberIds: unknown): F
     }
     return upgradeGroups(db.settings.fairQuota);
   }
-  const s = (db.settings.fairQuota = upgradeGroups({
+  const s = (db.settings.fairQuota = upgradeGroups<Reservation>({
     version: 2,
     enabled: true,
     members: [...memberIds],
@@ -838,11 +847,11 @@ export function assertFairGroupTransition(
 }
 
 // 仅由管理员接口调用。额度只存在于叶子钱包，组没有第二份可消费余额。
-export function configureFairGroups(
-  db: FairQuotaDatabase,
+export function configureFairGroups<Reservation extends SyncReservation>(
+  db: FairQuotaDatabase<Reservation>,
   groups: unknown,
   options: GroupOptions = {},
-): FairQuotaState {
+): FairQuotaState<Reservation> {
   const normalized = normalizeFairGroups(groups, rows(db.users), db.settings?.fairQuota),
     members = new Set(normalized.flatMap((group) => group.members));
   assertFairQuotaIdle(db);
@@ -1449,7 +1458,10 @@ export function fairQuotaSnapshot(a: FairAccount): QuotaSnapshot {
 }
 
 // 官方快照是资格与来源对账依据，成员钱包独立保留；查询失败不能抹掉已分配权益。
-export function syncFairQuota(db: FairQuotaDatabase, now = Date.now()): FairQuotaState | null {
+export function syncFairQuota<Reservation extends SyncReservation>(
+  db: FairQuotaDatabase<Reservation>,
+  now = Date.now(),
+): FairQuotaState<Reservation> | null {
   const s = db.settings?.fairQuota;
   if (!s?.enabled) {
     return s || null;

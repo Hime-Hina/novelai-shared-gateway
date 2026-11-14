@@ -35,7 +35,10 @@ export function assertMemberSameOrigin(req: IncomingMessage): void {
     throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
   }
 }
-export async function readMemberJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+export async function readMemberJson(
+  req: IncomingMessage,
+  maxBytes = 32768,
+): Promise<Record<string, unknown>> {
   if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
     error(415, '仅接受 JSON');
   }
@@ -43,7 +46,7 @@ export async function readMemberJson(req: IncomingMessage): Promise<Record<strin
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 32768) {
+    if (size > maxBytes) {
       error(413, '请求过大');
     }
     chunks.push(chunk);

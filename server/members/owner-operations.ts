@@ -331,6 +331,23 @@ export function assertOwnerAccountCredentialChangeAllowed(
   }
 }
 
+export function assertOwnerAccountInitialBinding(
+  policy: { accountId: string | null; version: number },
+  binding: { accountId: string | null; configVersion: number },
+  accountExists: boolean,
+): asserts binding is { accountId: string; configVersion: number } {
+  if (
+    policy.accountId !== null ||
+    binding.accountId === null ||
+    binding.configVersion !== policy.version + 1
+  ) {
+    fail(409, '首次绑定的原政策或账户不符');
+  }
+  if (!accountExists) {
+    fail(404, '上游账户不存在');
+  }
+}
+
 export function assertOwnerAccountPst(token: unknown): asserts token is string {
   if (typeof token !== 'string' || token.length > 4096 || !/^pst-[A-Za-z0-9_-]+$/.test(token)) {
     fail(400, '请输入完整 PST');
