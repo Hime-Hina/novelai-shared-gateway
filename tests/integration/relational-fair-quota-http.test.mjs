@@ -54,6 +54,7 @@ async function setup(
     walletResources = null,
     quota = {},
     sharingOrder = false,
+    initialMembers = ids,
   } = {},
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), 'nai-fair-quota-')),
@@ -68,7 +69,7 @@ async function setup(
     }
     await rm(dir, { recursive: true, force: true });
   });
-  for (const memberId of ids) {
+  for (const memberId of initialMembers) {
     db.transaction(() =>
       members.registerMember(meta(`member-${memberId}`, NOW), {
         memberId,
@@ -122,7 +123,7 @@ async function setup(
     if (sharingOrder) {
       events.push(originals.find((event) => event.eventType === 'OpeningGroupRecorded'));
       const template = originals.find((event) => event.eventType === 'OpeningGroupMemberRecorded');
-      for (const [memberOrdinal, memberId] of ids.entries()) {
+      for (const [memberOrdinal, memberId] of initialMembers.entries()) {
         const event = structuredClone(template);
         event.memberId = memberId;
         Object.assign(event.payload, { memberId, memberOrdinal });
@@ -185,7 +186,7 @@ async function setup(
     await new Promise((resolve) => server.close(resolve));
   });
   const call = (
-    body = { memberIds: ids },
+    body = { memberIds: initialMembers },
     headers = {},
     route = '/api/admin/fair-quota',
     method = 'POST',
@@ -693,6 +694,50 @@ test('Sharing与MemberRemoved原顺序不等于ID排序或组flatMap，自动加
     assert.equal(
       await authenticateMemberApiKey(new RelationalMemberStore(target), 'synthetic-key-m4'),
       null,
+    );
+  } finally {
+    target.close();
+  }
+});
+
+test('合法不同opaque成员ID即使locale等价也按精确身份核原source集合并保原序', async (t) => {
+  const members = ['m1', 'stable-é', 'stable-e\u0301', 'm4'],
+    f = await setup(t, { initialMembers: members });
+  assert.notEqual(members[1], members[2]);
+  assert.equal(members[1].localeCompare(members[2]), 0);
+  const response = await f.call();
+  assert.equal(response.status, 200, JSON.stringify(response.body));
+  assert.deepEqual(response.body.members, members);
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM group_members').get().n, 4);
+  const stable = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.equal((await f.call()).status, 200);
+  assert.equal(databaseState(f.db), stable);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal((await f.call({ memberIds: [...members].reverse() })).status, 409);
+  assert.equal(databaseState(f.db), stable);
+  const target = new Database(':memory:');
+  try {
+    initializeRelationalStorage(target, 'generation-history');
+    for (const { seq } of f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() =>
+        new RelationalCommitReplayer(target).replayCommit(
+          readRelationalCommit(f.db, seq),
+          new RelationalInputStore(f.db),
+        ),
+      )();
+    }
+    target.transaction(() =>
+      new RelationalQuotaStore(target).configureMemberIds(
+        command('exact-restored-members'),
+        members,
+      ),
+    )();
+    assert.deepEqual(
+      target.prepare('SELECT * FROM group_members ORDER BY member_id').all(),
+      f.db.prepare('SELECT * FROM group_members ORDER BY member_id').all(),
     );
   } finally {
     target.close();

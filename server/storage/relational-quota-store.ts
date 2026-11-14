@@ -606,13 +606,14 @@ export class RelationalQuotaStore {
             weight: member.weight,
           })),
         );
+      const savedById = new Map(saved.map((member) => [member.memberId, member]));
       if (
-        canonicalJson(saved.sort((a, b) => a.memberId.localeCompare(b.memberId))) !==
-        canonicalJson(
-          rows
-            .map(({ sourceId: _source, ...row }) => row)
-            .sort((a, b) => a.memberId.localeCompare(b.memberId)),
-        )
+        savedById.size !== saved.length ||
+        savedById.size !== rows.length ||
+        rows.some((row) => {
+          const member = savedById.get(row.memberId);
+          return !member || member.groupId !== row.groupId || member.weight !== row.weight;
+        })
       ) {
         fail('当前成员必须来自原完整配置事实');
       }

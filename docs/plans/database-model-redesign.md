@@ -2210,9 +2210,9 @@ Node22 原 Report/Request、成员历史、Bearer request HTTP、Cookie HTTP 与
 
 9.86 并集曾暴露正向 SOCKS/TLS 夹具缺根已要求的 runtime 参数：仅将 admit 构造移到已有真实 runtime.start 后并注入同实例，原外网/秘密/隧道断言和缺参负控不改；实际场景复验通过。新 missing-sync 反例初版删除 account facts 却保留多余 stream 前置，被 T1 提前拒绝，已按真实剩余 streams 生成合法 envelope，现确由业务完整性识错；原失败日志保留并排除通过证据。作者工作树新测试的 CRLF 经 Prettier 规范为 Git LF，index 内容不变，前后 raw hash 分别封存，最终十三文件逐字匹配 Git。当前仅源码定向闭环，独立复审与父发布并集仍待完成；未跑 full/build/compiled/Node24/native 或生产，不选 A/B、不解释旧在线模型。新增 configureMemberIds 守卫名单/单元及必要断言须维护者复核。
 
-#### 9.86.1 独立复审的预留与逐池责任修复
+#### 9.86.1 独立复审的预留、逐池责任与精确身份修复
 
-固定66/5f在独审中确认两项P2，保持NOTPASS，原445绿色不能替代业务反例：`managementView(false)`仍用空 reservations，导致真实held+新官方观察时误规划基线采纳并被正确的共同同步validator拒绝；无基线钱包guard只看Anlas合计，fixed正权益与purchased负责任可抵消成零而错误初贷。修复在同一原financial/management view保留实际预留，并逐V5/fixed/purchased核原非零值，未放宽金融、完整提交、来源或held门禁。
+固定66/5f在独审中确认三项P2，保持NOTPASS，原445绿色不能替代业务反例：`managementView(false)`仍用空 reservations，导致真实held+新官方观察时误规划基线采纳并被正确的共同同步validator拒绝；无基线钱包guard只看Anlas合计，fixed正权益与purchased负责任可抵消成零而错误初贷。修复在同一原financial/management view保留实际预留，并逐V5/fixed/purchased核原非零值，未放宽金融、完整提交、来源或held门禁。 第三项是memberOrder集合结构核验用localeCompare排序，合法不同opaque IDs `stable-é` / `stable-e\u0301` 排序等价但原序不同，首配误409；改为精确ID Map核原成员集合、组和权重，不做NFC、不禁合法ID、不将字面排序冒充原序。真实注册→唯一installer→HTTP→公共回放反例通过。
 
 原FullCharge类型不足以表达SQL同步所需窄预留，故原FairQuotaState/Database及upgrader/config/sync签名按同一必要预留形状参数化，默认仍FullCharge；没有新runtime模式/flag或补造费用、时点、pricing、当前值。SQL同步预留明确保存原user/status/resource/amount/fixed/purchased/sharedHeld，避免把不完整Full元数据交旧normalizer补v5Equivalent。`fair-share.ts`类型擦除后的完整63,206字节JS与66逐字相同（SHA7704c2b83a795290ce3b516818d46ebefb198bf048eb0575fc7186d71b295826），金融算法没有改动。
 
