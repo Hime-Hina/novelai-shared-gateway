@@ -29,14 +29,14 @@ function prepare(f, jobId, at = NOW + 3, response = f.response(at)) {
   )();
   return { descriptor, event: result.events[0] };
 }
-async function recoveryFixture(t) {
+async function recoveryFixture(t, options = {}) {
   let reopened;
   t.after(() => {
     if (reopened?.open) {
       reopened.close();
     }
   });
-  const f = await fixture(t);
+  const f = await fixture(t, options);
   return {
     ...f,
     reopen() {
@@ -218,11 +218,11 @@ test('终态 SQL 失败被恢复外层捕获后整笔回滚，已发布文件在
 });
 
 test('退款后重开恢复仍保留失败/原池退款与批次停止，旧尝试不改新凭据冷却', async (t) => {
-  const f = await recoveryFixture(t);
+  const f = await recoveryFixture(t, { seconds: 0 });
   await f.accept('late', { samples: 2 });
   const wallet = f.generations.readWallet('a', 'm1');
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   const { descriptor } = prepare(f, 'late-0', NOW + 4);
   await writeFile(path.join(f.dir, descriptor.file) + '.part', image);
   f.db
@@ -323,7 +323,7 @@ test('准备查询按有界 job ID 翻页，拒绝无界参数；恢复不能跨
     await f.accept(id, { now });
     f.dispatch(`${id}-0`, now + 1);
     prepare(f, `${id}-0`, now + 2);
-    f.fail(`${id}-0`, {}, now + 3);
+    f.fail(`${id}-0`, { aborted: false }, now + 3);
   }
   assert.deepEqual(f.generations.readPendingGenerationResultIds('', 2), ['a-0', 'b-0']);
   assert.deepEqual(f.generations.readPendingGenerationResultIds('b-0', 2), ['c-0']);
@@ -348,7 +348,7 @@ test('一百条之后的准备仍被恢复扫描，缺失字节不阻塞后一�
     await f.accept(id, { now });
     f.dispatch(`${id}-0`, now + 1);
     prepare(f, `${id}-0`, now + 2, { ...f.response(now + 2), upstreamCompletedAt: null });
-    f.fail(`${id}-0`, {}, now + 3);
+    f.fail(`${id}-0`, { aborted: false }, now + 3);
   }
   const before = databaseState(f.db),
     outcomes = [];

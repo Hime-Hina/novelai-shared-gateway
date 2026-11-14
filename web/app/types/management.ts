@@ -179,9 +179,9 @@ export interface ManagementLossEvent {
   operation?: string;
   model?: string;
   resource?: ManagementResource;
-  amount?: number;
-  observedAmount?: number;
-  delta?: number;
+  amount?: number | null;
+  observedAmount?: number | null;
+  delta?: number | null;
   resources?: Partial<ManagementResources>;
   upstreamCandidates?: { resources: Partial<ManagementResources>; amountSource?: string }[] | null;
   evidenceLevel?: string;
@@ -194,14 +194,16 @@ export interface ManagementLossEvent {
   firstUnknownAt?: string;
   deadlineAt?: string;
   closedAt?: string;
-  before?: ManagementLossPolicy;
+  before?: ManagementLossPolicy | null;
   after?: ManagementLossPolicy;
 }
 export interface ManagementLosses {
   asOf: string;
+  coverage?: 'retained-facts';
   policy: ManagementLossPolicy;
   alerts: ManagementAlert[];
   risk: {
+    unknownTimeAttempts?: number;
     last24h: { attempts: number; unknownAmounts: number; possible: ManagementResources };
     last30d: { attempts: number; unknownAmounts: number; possible: ManagementResources };
     aggregate: { last24h: ManagementResources; last30d: ManagementResources };

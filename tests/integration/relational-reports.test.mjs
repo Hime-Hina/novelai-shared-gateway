@@ -165,7 +165,7 @@ test('owner 用量复用实际行与原汇总 owner，三池不重复计费、�
   await f.publish('success-0');
   await f.accept('late');
   assert.ok(f.dispatch('late-0', NOW + 10005).dispatch);
-  f.fail('late-0', {}, NOW + 10006);
+  f.fail('late-0', { aborted: false }, NOW + 10006);
   await f.publish('late-0', NOW + 10007);
   await f.accept('cached');
   // 缓存命令/投影属后续生命周期片；此处仅验证已有明确事实的查询，不模拟实际 HTTP 缓存命中。

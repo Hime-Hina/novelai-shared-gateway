@@ -22,6 +22,16 @@ import {
 } from './result-files.ts';
 import { r2Config, type R2Storage } from './r2-storage.ts';
 import { pikpakConfig, type PikPakStorage } from './pikpak-storage.ts';
+import { RelationalCommitReplayer } from './relational-replay.ts';
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
+import {
+  assertHistoryRetirementControls,
+  assertRetirableArtifact,
+  assertHistoryRetirementCommit,
+  historyRetirementIds,
+  historyRetirementFingerprint,
+  type HistoryRetirementControls,
+} from './history-retirement.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -35,10 +45,12 @@ type ReplicaFact = Extract<
   RelationalFact,
   { eventType: 'StorageTargetRegistered' | 'ArtifactReplicaRecorded' }
 >;
-export interface RelationalReplicaConfiguration {
+export interface RelationalReplicaReadConfiguration {
   dataDir: string;
   r2?: R2Storage | null;
   pikpak?: PikPakStorage | null;
+}
+export interface RelationalReplicaConfiguration extends RelationalReplicaReadConfiguration {
   idle(): boolean;
 }
 type Ticket = Readonly<{ artifactId: string; storageTargetId: string }>;
@@ -46,6 +58,7 @@ type Phase = 'reserved' | 'uploaded' | 'verified' | 'local_verified' | 'failed';
 export const relationalReplicaFacts = new Set<RelationalEvent['eventType']>([
   'StorageTargetRegistered',
   'ArtifactReplicaRecorded',
+  'ArtifactHistoryRetired',
 ]);
 function fail(message: string): never {
   throw Object.assign(new Error(message), { statusCode: 409, code: 'REPLICA_STATE_CONFLICT' });
@@ -107,7 +120,8 @@ function assertTarget(target: Target) {
 // 只拥有目标及副本事实；部署秘密、网络、文件及源副本删除不属于业务 replay。
 export class RelationalReplicaStore {
   private sqlite: Database.Database;
-  private configuration?: RelationalReplicaConfiguration;
+  private configuration?: RelationalReplicaReadConfiguration;
+  private env: NodeJS.ProcessEnv;
   private tickets = new WeakMap<
     Ticket,
     {
@@ -115,12 +129,18 @@ export class RelationalReplicaStore {
       artifactSource: string;
       targetSource: string;
       replicaSource: string | null;
+      background: boolean;
     }
   >();
-  constructor(sqlite: Database.Database, configuration?: RelationalReplicaConfiguration) {
+  constructor(
+    sqlite: Database.Database,
+    configuration?: RelationalReplicaReadConfiguration,
+    env: NodeJS.ProcessEnv = process.env,
+  ) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.configuration = configuration;
+    this.env = env;
   }
   private owned<T>(run: () => T): T {
     if (!this.sqlite.inTransaction) {
@@ -129,7 +149,12 @@ export class RelationalReplicaStore {
     return this.sqlite.transaction(run)();
   }
   private active() {
-    if (!this.configuration || !this.configuration.idle()) {
+    if (
+      !this.configuration ||
+      !('idle' in this.configuration) ||
+      typeof this.configuration.idle !== 'function' ||
+      !this.configuration.idle()
+    ) {
       fail('副本后台当前不可执行');
     }
     return this.configuration;
@@ -141,7 +166,10 @@ export class RelationalReplicaStore {
     this.active();
   }
   private configuredTarget(kind: Kind) {
-    const config = this.active();
+    const config = this.configuration;
+    if (!config) {
+      fail('副本目标当前未配置');
+    }
     let namespace: string, secret: unknown;
     if (kind === 'local') {
       if (typeof config.dataDir !== 'string' || !config.dataDir) {
@@ -180,6 +208,7 @@ export class RelationalReplicaStore {
     };
   }
   readConfiguredStorageTarget(kind: Kind) {
+    this.active();
     return this.configuredTarget(kind).target;
   }
   planLocalArtifactPublication(publication: Publication, at: number) {
@@ -233,16 +262,36 @@ export class RelationalReplicaStore {
           mimeType: string;
           byteLength: number;
           sha256: string;
+          retiredAt: number | null;
           sourceEventId: string;
         }
       >(
-        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
+        'SELECT id,member_id AS memberId,input_id AS inputId,operation,mime_type AS mimeType,byte_length AS byteLength,sha256,retired_at AS retiredAt,source_event_id AS sourceEventId FROM artifacts WHERE id=?',
       )
       .get(artifactId);
     if (!row) {
       fail('副本产物不存在');
     }
-    const source = this.source(row.sourceEventId);
+    let source = this.source(row.sourceEventId);
+    if (source.eventType === 'ArtifactHistoryRetired') {
+      if (
+        source.payload.artifactId !== row.id ||
+        source.memberId !== row.memberId ||
+        source.accountId !== null ||
+        row.retiredAt !== source.occurredAt
+      ) {
+        fail('退休产物与原退休事实不一致');
+      }
+      const original = this.sqlite
+        .prepare<[string], { eventId: string }>(
+          "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('ArtifactPublished','OpeningArtifactRecorded')",
+        )
+        .all(`artifact:${row.id}`);
+      if (original.length !== 1) {
+        fail('退休产物缺少唯一的原发布事实');
+      }
+      source = this.source(original[0].eventId);
+    }
     if (
       (source.eventType !== 'ArtifactPublished' &&
         source.eventType !== 'OpeningArtifactRecorded') ||
@@ -266,6 +315,22 @@ export class RelationalReplicaStore {
     };
     assertStoredResultDescriptor(descriptor);
     return { ...row, descriptor, source };
+  }
+  readRecoverableArtifacts(afterId: string | null, limit: number) {
+    if (
+      (afterId !== null && (typeof afterId !== 'string' || !afterId || afterId.length > 128)) ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      fail('产物枚举需要有效游标及 1–100 的上界');
+    }
+    return this.sqlite
+      .prepare<[string, number], { id: string }>(
+        'SELECT id FROM artifacts WHERE retired_at IS NULL AND id>? ORDER BY id LIMIT ?',
+      )
+      .all(afterId ?? '', limit)
+      .map(({ id }) => ({ id, descriptor: this.readArtifact(id).descriptor }));
   }
   readStorageTarget(storageTargetId: string) {
     const row = this.sqlite
@@ -367,18 +432,141 @@ export class RelationalReplicaStore {
       return this.append(command, { eventType: 'StorageTargetRegistered', payload: target }, null);
     });
   }
+  retireArtifactHistory(
+    metadata: Omit<Metadata, 'fingerprint'>,
+    artifactIds: string[],
+    actor: MemberUser | null,
+    controls: HistoryRetirementControls,
+  ) {
+    return this.owned(() => {
+      const current =
+        actor &&
+        this.sqlite
+          .prepare<[string], { status: string; authEpoch: string | null }>(
+            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+          )
+          .get(actor.id);
+      assertCurrentOwnerCommand(metadata, actor, current, this.env);
+      const ids = historyRetirementIds(artifactIds),
+        command = { ...metadata, fingerprint: historyRetirementFingerprint('artifacts', ids) },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      assertHistoryRetirementControls(controls);
+      const { policyVersion, pricingVersion, ...envelope } = command;
+      const events = ids.map((artifactId) => {
+        const artifact = this.readArtifact(artifactId);
+        if (artifact.retiredAt !== null) {
+          fail('产物历史已经退休');
+        }
+        assertRetirableArtifact(this.sqlite, artifactId, controls);
+        return {
+          eventType: 'ArtifactHistoryRetired' as const,
+          payload: { artifactId, reason: 'owner_cleared_cache' },
+          streamId: `artifact:${artifactId}`,
+          memberId: artifact.memberId,
+          accountId: null,
+          occurredAt: metadata.recordedAt,
+          policyVersion,
+          pricingVersion,
+        };
+      });
+      return new RelationalCommitReplayer(this.sqlite).appendCommit({
+        ...envelope,
+        events,
+        expectedVersions: Object.fromEntries(
+          events.map((event) => [
+            event.streamId,
+            this.sqlite
+              .prepare<[string], { value: string }>(
+                'SELECT CAST(stream_version AS TEXT) AS value FROM stream_heads WHERE stream_id=?',
+              )
+              .get(event.streamId)?.value ?? '0',
+          ]),
+        ),
+        receipt: { retiredArtifactIds: ids },
+      });
+    });
+  }
   beginArtifactReplica(artifactId: string, storageTargetId: string): Ticket {
+    this.active();
+    return this.beginTicket(artifactId, storageTargetId, true);
+  }
+  beginArtifactRead(artifactId: string, kind: Kind) {
+    const current = this.configuredTarget(kind);
+    if (!this.isStorageTargetRegistered(current.target.storageTargetId)) {
+      return null;
+    }
+    const replica = this.readArtifactReplica(artifactId, current.target.storageTargetId);
+    // PikPak 沿第 5.1 节按需实读核验；上传回执不在此提升为持久 verified。
+    if (
+      !replica ||
+      replica.uploadedAt === null ||
+      (kind !== 'pikpak' && replica.verifiedAt === null) ||
+      replica.deletedAt !== null
+    ) {
+      return null;
+    }
+    const artifact = this.readArtifact(artifactId),
+      target = this.readStorageTarget(current.target.storageTargetId),
+      location = replicaLocation(artifact.descriptor, kind);
+    if (replica.objectKey !== location.objectKey || replica.encoding !== location.encoding) {
+      fail('副本读取定位或编码不属于原产物');
+    }
+    return {
+      artifact,
+      target,
+      replica,
+      ticket: this.beginTicket(artifactId, target.storageTargetId, false),
+    };
+  }
+  readArtifactCacheReference(artifactId: string) {
+    const artifact = this.readArtifact(artifactId);
+    if (artifact.retiredAt !== null) {
+      fail('退休产物不能用于新缓存引用');
+    }
+    const rows = this.sqlite
+      .prepare<[string], { id: string; kind: Kind }>(
+        `SELECT s.id,s.kind FROM artifact_replicas r JOIN storage_targets s ON s.id=r.storage_target_id
+       WHERE r.artifact_id=? ORDER BY s.id`,
+      )
+      .all(artifactId);
+    let local = false;
+    for (const row of rows) {
+      this.readStorageTarget(row.id);
+      const replica = this.readArtifactReplica(artifactId, row.id)!;
+      if (
+        row.kind === 'local' &&
+        replica.deletedAt === null &&
+        replica.uploadedAt !== null &&
+        replica.verifiedAt !== null
+      ) {
+        local = true;
+      }
+      if (
+        replica.deletedAt === null &&
+        replica.uploadedAt !== null &&
+        ((row.kind === 'r2' && replica.verifiedAt !== null) || row.kind === 'pikpak')
+      ) {
+        return { artifact, persistent: true, local };
+      }
+    }
+    return { artifact, persistent: false, local };
+  }
+  private beginTicket(artifactId: string, storageTargetId: string, background: boolean): Ticket {
     const artifact = this.readArtifact(artifactId),
       target = this.readStorageTarget(storageTargetId),
       current = this.configuredTarget(target.kind);
     if (
+      artifact.retiredAt !== null ||
       canonicalJson(current.target) !==
-      canonicalJson({
-        storageTargetId,
-        kind: target.kind,
-        namespace: target.namespace,
-        credentialRef: target.credentialRef,
-      })
+        canonicalJson({
+          storageTargetId,
+          kind: target.kind,
+          namespace: target.namespace,
+          credentialRef: target.credentialRef,
+        })
     ) {
       fail('副本目标已不属于当前配置');
     }
@@ -388,6 +576,7 @@ export class RelationalReplicaStore {
       artifactSource: artifact.sourceEventId,
       targetSource: target.sourceEventId,
       replicaSource: this.readArtifactReplica(artifactId, storageTargetId)?.sourceEventId || null,
+      background,
     });
     return ticket;
   }
@@ -396,10 +585,14 @@ export class RelationalReplicaStore {
     if (!issued) {
       fail('副本票据不属于当前后台');
     }
+    if (issued.background) {
+      this.active();
+    }
     const artifact = this.readArtifact(ticket.artifactId),
       target = this.readStorageTarget(ticket.storageTargetId),
       configured = this.configuredTarget(target.kind);
     if (
+      artifact.retiredAt !== null ||
       configured.target.storageTargetId !== target.storageTargetId ||
       issued.configuration !== configured.fingerprint ||
       artifact.sourceEventId !== issued.artifactSource ||
@@ -427,6 +620,9 @@ export class RelationalReplicaStore {
     return this.owned(() => {
       this.authorize(metadata);
       const { issued, artifact, target } = this.checkedTicket(ticket);
+      if (!issued.background) {
+        fail('只读副本票据不能提交状态');
+      }
       if (
         !['reserved', 'uploaded', 'verified', 'local_verified', 'failed'].includes(phase) ||
         (phase === 'failed'
@@ -493,14 +689,24 @@ export class RelationalReplicaStore {
         const original = readRelationalCommit(this.sqlite, event.commitSeq),
           source = original.events.find((entry) => entry.eventId === event.eventId);
         if (
-          original.command.actorKind !== 'system' ||
-          original.command.actorId !== null ||
+          (event.eventType !== 'ArtifactHistoryRetired' &&
+            (original.command.actorKind !== 'system' || original.command.actorId !== null)) ||
           !source ||
           canonicalJson(source) !== canonicalJson(event)
         ) {
           fail('副本投影与原完整提交不符');
         }
-        if (event.eventType === 'StorageTargetRegistered') {
+        if (event.eventType === 'ArtifactHistoryRetired') {
+          assertHistoryRetirementCommit(this.sqlite, event, 'artifacts');
+          const artifact = this.readArtifact(event.payload.artifactId);
+          if (artifact.retiredAt !== null) {
+            fail('产物历史已经退休');
+          }
+          assertRetirableArtifact(this.sqlite, artifact.id);
+          this.sqlite
+            .prepare('UPDATE artifacts SET retired_at=?,source_event_id=? WHERE id=?')
+            .run(event.occurredAt, event.eventId, artifact.id);
+        } else if (event.eventType === 'StorageTargetRegistered') {
           const p = event.payload;
           assertTarget(p);
           if (event.memberId !== null || event.accountId !== null) {
@@ -551,6 +757,7 @@ export class RelationalReplicaStore {
             p.lastErrorCode !== null &&
             /^[A-Z0-9_]{1,64}$/.test(p.lastErrorCode);
           if (
+            artifact.retiredAt !== null ||
             event.memberId !== artifact.memberId ||
             event.accountId !== null ||
             p.deletedAt !== null ||

@@ -1,3 +1,13 @@
+import {
+  handleMemberAuthenticationRoutes,
+  renewMemberCookie as renewCookie,
+} from './authentication-http.ts';
+import {
+  memberCookie as cookie,
+  assertMemberSameOrigin as sameOrigin,
+  readMemberJson as json,
+  replyMemberJson as reply,
+} from './http-request.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { formatAmount, parseAmount } from '../quota/resource-amounts.ts';
 import {
@@ -10,14 +20,9 @@ import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   setMemberCredentials,
-  checkMemberLoginRate,
-  createMemberSession,
   authenticateMemberSession,
-  renewMemberSession,
-  logoutMemberSession,
   isOwner,
   type MemberSession,
-  type MemberSessionStore,
   type MemberPasswordStore,
   assertMemberRegistrationCapacity,
   assertMemberCanDisable,
@@ -38,16 +43,12 @@ import { configureFreeImages, freeImagePolicy } from '../quota/free-image-policy
 import { sharedAccountStatus } from '../quota/shared-status.ts';
 import {
   discordLoginEnabled,
-  discordConfig,
   createDiscordInvite,
-  beginDiscordLogin,
-  finishDiscordLogin,
   requireDiscordMembership,
   type DiscordUser,
   type DiscordDependencies,
   type DiscordAuthenticationStore,
 } from './discord-auth.ts';
-import { clientIp } from '../http/client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting.ts';
 import {
   stateEventsFor,
@@ -162,7 +163,7 @@ const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => {
   throw Object.assign(new Error(message), { statusCode });
 };
-const cookieName = 'nai_member_session';
+
 const keyedManagementActions = new Set([
   'free-image-policy',
   'loss-alert-policy',
@@ -205,91 +206,6 @@ function managementCommand(
     fingerprint: domainDigest({ operation, body }),
   };
 }
-function cookie(req: IncomingMessage): string {
-  return (
-    String(req.headers.cookie || '')
-      .split(';')
-      .map((s) => s.trim())
-      .find((s) => s.startsWith(cookieName + '='))
-      ?.slice(cookieName.length + 1) || ''
-  );
-}
-function sameOrigin(req: IncomingMessage): void {
-  const host = String(req.headers.host || '');
-  const origin = req.headers.origin;
-  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
-  const expected = `${local ? 'http' : 'https'}://${host}`;
-  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') {
-    throw Object.assign(new Error('此接口仅允许本站访问'), {
-      statusCode: 403,
-      code: 'origin_rejected',
-    });
-  }
-  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) {
-    throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
-  }
-}
-function reply(res: ServerResponse, status: number, value: unknown): void {
-  const text = JSON.stringify(value);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-    'x-content-type-options': 'nosniff',
-  });
-  res.end(text);
-}
-async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
-    error(415, '仅接受 JSON');
-  }
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 32768) {
-      error(413, '请求过大');
-    }
-    chunks.push(chunk);
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    error(400, 'JSON 格式错误');
-  }
-  if (!value || Array.isArray(value) || typeof value !== 'object') {
-    error(400, '请求内容无效');
-  }
-  return value as Record<string, unknown>;
-}
-function setCookie(
-  req: IncomingMessage,
-  res: ServerResponse,
-  token: string,
-  expiresAt = 0,
-  additional: string[] = [],
-): void {
-  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''));
-  const maxAge = token ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0;
-  const value = `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${maxAge}; Expires=${new Date(expiresAt).toUTCString()}${local ? '' : '; Secure'}`;
-  res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
-}
-
-async function renewCookie(
-  req: IncomingMessage,
-  res: ServerResponse,
-  store: MemberStore,
-  env: NodeJS.ProcessEnv,
-) {
-  const session = await renewMemberSession(store, cookie(req), env);
-  if (!session) {
-    error(401, '登录已失效，请重新登录');
-  }
-  setCookie(req, res, cookie(req), session.expiresAt);
-  return session;
-}
-
 function recentActivity(db: MemberDatabase, user: MemberUser) {
   const jobs = db.jobs.filter((job) => job.userToken === user.token).slice(0, 30);
   return {
@@ -313,69 +229,6 @@ export function memberPublicBaseUrl(
   );
 }
 
-export async function handleMemberAuthenticationRoutes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  deps: { store: MemberPasswordStore; env?: NodeJS.ProcessEnv },
-): Promise<boolean> {
-  if (
-    req.method !== 'POST' ||
-    !['/api/member/login', '/api/member/logout'].includes(url.pathname)
-  ) {
-    return false;
-  }
-  sameOrigin(req);
-  const env = deps.env || process.env,
-    store = deps.store;
-  if (url.pathname === '/api/member/logout') {
-    await logoutMemberSession(store, cookie(req));
-    setCookie(req, res, '');
-    reply(res, 200, { ok: true });
-    return true;
-  }
-  if (discordLoginEnabled(env)) {
-    error(403, '本站仅允许 Discord 登录');
-  }
-  const body = await json(req);
-  checkMemberLoginRate(body.username, clientIp(req, env));
-  const user = await store.loginMemberPassword(body.username, body.password);
-  const session = await createMemberSession(store, user, env);
-  setCookie(req, res, session.token, session.expiresAt);
-  reply(res, 200, { ok: true, expiresAt: session.expiresAt });
-  return true;
-}
-
-export async function handleMemberDiscordAuthenticationRoutes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  deps: DiscordDependencies & { store: MemberSessionStore },
-): Promise<boolean> {
-  const env = deps.env || process.env;
-  // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
-  if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
-    const user = await finishDiscordLogin(req, res, url, deps);
-    const session = await createMemberSession(deps.store, user, env);
-    // finishDiscordLogin 已确认配置并设置单个 state Cookie，保持两个 Cookie 的原顺序。
-    setCookie(req, res, session.token, session.expiresAt, [res.getHeader('Set-Cookie') as string]);
-    res.writeHead(303, {
-      location: discordConfig(env)!.origin + '/',
-      'cache-control': 'no-store',
-      'referrer-policy': 'no-referrer',
-    });
-    res.end();
-    return true;
-  }
-  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
-    sameOrigin(req);
-    checkMemberLoginRate(null, clientIp(req, env));
-    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
-    return true;
-  }
-  return false;
-}
-
 export async function handleMemberRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -390,7 +243,7 @@ export async function handleMemberRoutes(
   if (!member && !admin) {
     return false;
   }
-  if (await handleMemberDiscordAuthenticationRoutes(req, res, url, deps)) {
+  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
     return true;
   }
   const env = deps.env || process.env,
@@ -466,18 +319,6 @@ export async function handleMemberRoutes(
       reply(res, 200, result);
       return true;
     }
-  }
-  if (url.pathname === '/api/member/login-options' && req.method === 'GET') {
-    let config;
-    try {
-      config = discordConfig(env);
-    } catch {}
-    reply(res, 200, {
-      discord: discordEnabled,
-      ready: Boolean(config),
-      origin: config?.origin || null,
-    });
-    return true;
   }
   if (admin) {
     // 原私有管理 API 保持本机与密钥校验；owner 别名已经过独立会话鉴权。
@@ -876,9 +717,6 @@ export async function handleMemberRoutes(
     error(400, '不支持的管理操作');
   }
 
-  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
-    return true;
-  }
   let session = await authenticateMemberSession(store, cookie(req), env);
   const user = session?.user as MemberUser | undefined;
   if (!user) {

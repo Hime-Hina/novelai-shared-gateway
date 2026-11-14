@@ -116,18 +116,49 @@ for (const filename of [
     ['scoped Discord save', 'transaction.saveAuthentication(user);'],
     [
       'password HTTP writer',
-      "import { handleMemberAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+      "import { handleMemberAuthenticationRoutes as login } from '../members/authentication-http.ts'; login(req,res,url,deps);",
     ],
     [
       'Discord HTTP writer',
-      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/http-routes.ts'; login(req,res,url,deps);",
+      "import { handleMemberDiscordAuthenticationRoutes as login } from '../members/authentication-http.ts'; login(req,res,url,deps);",
     ],
+    [
+      'aliased session renewal HTTP writer',
+      "import { renewMemberCookie as renew } from '../members/authentication-http.ts'; renew(req,res,store,env);",
+    ],
+    [
+      'relational authentication HTTP writer factory',
+      "import { createRelationalMemberAuthenticationHttp as create } from '../members/relational-authentication-http.ts'; create(deps);",
+    ],
+    ...[
+      [
+        'Native raw admission writer',
+        '../generation/relational-native-admission.ts',
+        'createRelationalNativeAdmission',
+      ],
+      [
+        'relational Native HTTP writer',
+        '../generation/relational-native-http.ts',
+        'createRelationalNativeHttp',
+      ],
+      [
+        'legacy Native HTTP writer',
+        '../generation/legacy-native-http.ts',
+        'createLegacyNativeHttp',
+      ],
+    ].map(([label, path, name]) => [
+      label,
+      `import { ${name} as create } from '${path}'; create(deps);`,
+    ]),
     ['direct key mutation', 'authStore.memberApiKeyTransaction(hash,fn);'],
     [
       'relational member store',
       "import { RelationalMemberStore as Store } from '../storage/relational-member-store.ts'; new Store(raw);",
     ],
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
+    ['member admission command', 'memberStore.changeMemberAdmission(command,input,actor);'],
+    ['member admission commit', 'memberStore.assertMemberAdmissionCommit(events,receipt);'],
+    ['queue admission owner', 'setMemberAdmission(view,id,false,refund);'],
     [
       'business replayer construction',
       "import { RelationalCommitReplayer as Replayer } from '../storage/relational-replay.ts'; new Replayer(raw);",
@@ -135,6 +166,8 @@ for (const filename of [
     ['dynamic business replayer', "await import('../storage/relational-replay.js');"],
     ...[
       'createInputProjector',
+      'createDiagnosticProjector',
+      'stageGenerationDiagnostic',
       'createGenerationProjector',
       'createQuotaProjector',
       'applyAccountEvent',
@@ -152,10 +185,32 @@ for (const filename of [
     ],
     ['direct private snapshot restore', 'restoreRelationalPrivateSnapshot(raw,path,hash);'],
     [
+      'ready installer alias',
+      "import { verifyAndInstallRelationalStorage as install } from '../storage/relational-ready.ts'; install(raw,source);",
+    ],
+    ['dynamic ready installer', "await import('../storage/relational-ready.js');"],
+    ['direct ready installation', 'verifyAndInstallRelationalStorage(raw,source);'],
+    [
       'generation store construction',
       "import { RelationalGenerationStore as Store } from '../storage/relational-generation-store.ts'; new Store(raw);",
     ],
     ['dynamic generation writer', "await import('../storage/relational-generation-store.js');"],
+    [
+      'dynamic relational admission',
+      "await import('../generation/relational-member-admission.js');",
+    ],
+    [
+      'dynamic relational queue runtime',
+      "await import('../generation/relational-queue-runtime.js');",
+    ],
+    [
+      'namespace relational queue runtime',
+      "import * as queue from '../generation/relational-queue-runtime.ts';",
+    ],
+    [
+      'namespace relational admission',
+      "import * as admission from '../generation/relational-member-admission.ts';",
+    ],
     ['generation writer re-export', "export * from '../storage/relational-generation-store.ts';"],
     [
       'aliased result recovery',
@@ -164,6 +219,8 @@ for (const filename of [
     ['dynamic result recovery', "await import('../storage/relational-result-recovery.js');"],
     ['direct result recovery', 'recoverRelationalGenerationResults(raw,dir);'],
     ['local publication fact planning', 'store.planLocalArtifactPublication(descriptor,now);'],
+    ['job history retirement', 'store.retireJobHistory(metadata,ids,actor,controls);'],
+    ['artifact history retirement', 'store.retireArtifactHistory(metadata,ids,actor,controls);'],
     [
       'replica store alias',
       "import { RelationalReplicaStore as Store } from '../storage/relational-replica-store.ts'; new Store(raw);",
@@ -184,6 +241,9 @@ for (const filename of [
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     ...[
       'acceptGeneration',
+      'createRelationalMemberGenerationAdmission',
+      'createRelationalQueueRuntime',
+      'admitRelationalMemberGeneration',
       'dispatchGeneration',
       'recordGenerationResponse',
       'prepareGenerationResult',
@@ -212,6 +272,8 @@ for (const filename of [
       'refillQuota',
       'manageQuotaFunding',
       'configureQuotaPolicy',
+      'configureGroups',
+      'assertGroupCommit',
       'configureAnlasFallback',
       'configureFreeImages',
       'updateLossAlertPolicy',
@@ -224,6 +286,7 @@ for (const filename of [
       'ownerAccountCommand',
       'replayAccountCommit',
       'planQuotaObservation',
+      'planGenerationCredentialFailure',
       'registerAccountQuota',
     ].map((name) => [`direct ${name}`, `store.${name}(command,input);`]),
     [

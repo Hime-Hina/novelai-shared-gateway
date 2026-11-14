@@ -1,10 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, stat, symlink, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { deflateSync, crc32 } from 'node:zlib';
-import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
+import {
+  describeStoredResult,
+  publishStoredResult,
+  readStoredResultContent,
+  readPreparedStoredResultContent,
+} from '../../server/storage/result-files.ts';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -91,6 +96,103 @@ test('完整 part 在恢复时验证后发布；没有 part 或 final 才返回 
   assert.deepEqual(await publishStoredResult(directory, pending), image);
   assert.deepEqual(await readFile(file), png);
   await assert.rejects(stat(partial), { code: 'ENOENT' });
+});
+
+test('只读 final/准备结果用 r 句柄且不 sync、发布或修改 final/part', async (t) => {
+  const directory = await fixture(),
+    pending = describeStoredResult('img_read', 'generate', image),
+    file = path.join(directory, pending.file),
+    partial = `${file}.part`;
+  assert.equal(await readStoredResultContent(directory, pending), null);
+  assert.equal(await readPreparedStoredResultContent(directory, pending), null);
+  await writeFile(partial, png);
+  const before = await stat(partial);
+  const handle = await open(partial, 'r'),
+    prototype = Object.getPrototypeOf(handle),
+    originalRead = handle.readFile;
+  await handle.close();
+  t.mock.method(prototype, 'sync', () => {
+    throw new Error('只读核对不能 fsync');
+  });
+  t.mock.method(prototype, 'readFile', async function (...args) {
+    // Node 短路零长度写；相同首字节能区分 r/r+，错误实现也不改变测试原文。
+    await assert.rejects(this.write(png.subarray(0, 1), 0, 1, 0), /EBADF|bad file descriptor/i);
+    return originalRead.apply(this, args);
+  });
+  assert.equal(await readStoredResultContent(directory, pending), null);
+  assert.deepEqual(await readPreparedStoredResultContent(directory, pending), image);
+  await assert.rejects(stat(file), { code: 'ENOENT' });
+  assert.equal((await stat(partial)).mtimeMs, before.mtimeMs);
+  await writeFile(file, png);
+  assert.deepEqual(await readStoredResultContent(directory, pending), image);
+  assert.deepEqual(await readPreparedStoredResultContent(directory, pending), image);
+  assert.deepEqual(await readFile(partial), png);
+});
+
+test('只读准备核对拒绝任一损坏 final/part，最终领取不读取尚未发布的 part', async () => {
+  const directory = await fixture(),
+    pending = describeStoredResult('img_read_bad', 'generate', image),
+    file = path.join(directory, pending.file),
+    partial = `${file}.part`,
+    corrupted = Buffer.from(png);
+  corrupted[40] ^= 1;
+  await writeFile(file, png);
+  await writeFile(partial, corrupted);
+  assert.deepEqual(await readStoredResultContent(directory, pending), image);
+  await assert.rejects(readPreparedStoredResultContent(directory, pending), invalid);
+  assert.deepEqual(await readFile(partial), corrupted);
+  await writeFile(file, corrupted);
+  await writeFile(partial, png);
+  await assert.rejects(readStoredResultContent(directory, pending), invalid);
+  await assert.rejects(readPreparedStoredResultContent(directory, pending), invalid);
+  assert.deepEqual(await readFile(file), corrupted);
+});
+
+test('只读 final/part 不跨越 images 目录链接，Windows junction 同样拒绝', async () => {
+  const outside = await fixture(),
+    linkedRoot = await mkdtemp(path.join(tmpdir(), 'nai-read-result-link-')),
+    pending = describeStoredResult('img_read_link', 'generate', image),
+    file = path.join(outside, pending.file);
+  await writeFile(file, png);
+  await symlink(
+    path.join(outside, 'images'),
+    path.join(linkedRoot, 'images'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  await assert.rejects(readStoredResultContent(linkedRoot, pending), invalid);
+  await assert.rejects(readPreparedStoredResultContent(linkedRoot, pending), invalid);
+  assert.deepEqual(await readFile(file), png);
+});
+
+test('二进制 MIME 必须是 primitive 枚举，boxed String 不能进入描述符或只读结果', async () => {
+  const directory = await fixture(),
+    bytes = Buffer.from([0, 255, 19, 42]);
+  for (const mimeType of ['application/octet-stream', 'application/binary']) {
+    const pending = describeStoredResult('img_mime_enum', 'encode-vibe', {
+      buffer: bytes,
+      mimeType,
+    });
+    await writeFile(path.join(directory, pending.file), bytes);
+    const boxed = new String(mimeType);
+    assert.throws(
+      () =>
+        describeStoredResult('img_mime_enum', 'encode-vibe', { buffer: bytes, mimeType: boxed }),
+      invalid,
+    );
+    await assert.rejects(
+      readStoredResultContent(directory, { ...pending, mimeType: boxed }),
+      invalid,
+    );
+    await assert.rejects(
+      readPreparedStoredResultContent(directory, { ...pending, mimeType: boxed }),
+      invalid,
+    );
+    assert.deepEqual(await readStoredResultContent(directory, pending), {
+      buffer: bytes,
+      mimeType,
+    });
+    assert.deepEqual(await readFile(path.join(directory, pending.file)), bytes);
+  }
 });
 
 test('WebP 以 .webp 和固定 SHA256 发布，重新读取及完整 part 恢复仍是原字节', async () => {
@@ -236,6 +338,14 @@ test('encode-vibe 两种 binary MIME 按不透明非空数据保存和恢复，�
     assert.equal(pending.file, `images/img_vibe_${index}.bin`);
     assert.equal((await publishStoredResult(directory, pending, bytes)).buffer, bytes);
     assert.deepEqual(await publishStoredResult(directory, pending), { buffer: bytes, mimeType });
+    assert.deepEqual(await readStoredResultContent(directory, pending), {
+      buffer: bytes,
+      mimeType,
+    });
+    assert.deepEqual(await readPreparedStoredResultContent(directory, pending), {
+      buffer: bytes,
+      mimeType,
+    });
     await writeFile(path.join(directory, pending.file), Buffer.from([0, 255, 19, 43]));
     await assert.rejects(publishStoredResult(directory, pending), invalid);
     assert.throws(

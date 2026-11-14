@@ -1,3 +1,4 @@
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -5,8 +6,6 @@ import path from 'node:path';
 import { fixture, meta, NOW, keys, databaseState } from '../helpers/relational-generation.mjs';
 import { RelationalRequestStore } from '../../server/storage/relational-request-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
-import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
-import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { publicGenerationRequest } from '../../server/generation/request-queries.ts';
 import {
   normalizeMemberGeneration,
@@ -124,7 +123,7 @@ test('结果读取保留准备/失败/迟到/退休语义及产物原始 input/a
   await f.accept('late', { samples: 2 });
   assert.throws(() => store.readMemberResult('late-0', 'm1'), hasCode('result_not_ready'));
   f.dispatch('late-0');
-  f.fail('late-0');
+  f.fail('late-0', { aborted: false });
   assert.throws(() => store.readMemberResult('late-0', 'm1'), hasCode('generation_failed'));
   await f.publish('late-0', NOW + 100);
   const before = databaseState(f.db),
@@ -363,22 +362,12 @@ test('完整提交重建与关闭重开后状态 DTO 一致，原输入只冷读
     target = new Database(':memory:');
   t.after(() => target.close());
   initializeRelationalStorage(target, 'generation-history');
-  const members = new RelationalMemberStore(target),
-    inputs = new RelationalInputStore(target),
-    generations = new RelationalGenerationStore(target, {});
+  const inputs = new RelationalInputStore(target),
+    replayer = new RelationalCommitReplayer(target);
   for (const { seq } of f.db
     .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
     .all()) {
-    const stored = readRelationalCommit(f.db, seq);
-    target.transaction(() => {
-      if (stored.events.every((event) => event.eventType === 'MemberRegistered')) {
-        members.replayMemberCommit(stored);
-      } else if (stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-        inputs.replayAcceptedInput(f.inputs, seq);
-      } else {
-        generations.replayGenerationCommit(stored);
-      }
-    })();
+    target.transaction(() => replayer.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
   }
   const store = new RelationalRequestStore(target);
   assert.throws(() => store.readMemberRequest('restored', 'm1'), hasCode('session_expired'));

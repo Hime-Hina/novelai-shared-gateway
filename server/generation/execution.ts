@@ -6,6 +6,7 @@ import {
   type StoreItem,
   type StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
+import { isNovelAiCapacityError } from '../http/public-errors.ts';
 import {
   reserveFairQuota,
   settleFairQuota,
@@ -1078,19 +1079,6 @@ export async function recoverPendingGenerationResultsCommand(
     }
   }
   return result;
-}
-
-export function isNovelAiCapacityError(error: unknown): boolean {
-  const failure = error as GenerationError;
-  if (Number(failure?.upstreamStatus) === 429) {
-    return true;
-  }
-  if ([401, 403].includes(Number(failure?.upstreamStatus))) {
-    return false;
-  }
-  return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(
-    String(failure?.message || error || ''),
-  );
 }
 
 export function sharedFailureKind(

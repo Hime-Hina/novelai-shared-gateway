@@ -22,6 +22,34 @@ const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
 
+test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', () => {
+  const payload = {
+    memberId: 'm',
+    operation: 'generate',
+    keyHash: hash,
+    intentFingerprint: hash,
+    requestId: 'r',
+    jobId: 'j',
+    contextId: 'c',
+    originalCommandId: 'command',
+    noCache: false,
+  };
+  for (const noCache of [false, true]) {
+    const fact = { eventType: 'RequestAliasRegistered', payload: { ...payload, noCache } };
+    assert.deepEqual(parseRelationalFact(fact), fact);
+  }
+  const { noCache: _, ...missing } = payload;
+  assert.throws(() =>
+    parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: missing }),
+  );
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'RequestAliasRegistered',
+      payload: { ...payload, noCache: 0 },
+    }),
+  );
+});
+
 test('副本事实保留实际 identity/gzip/br 编码，PikPak Brotli 不能错标或被未知编码替代', () => {
   const payload = {
     artifactId: 'a',
@@ -66,6 +94,12 @@ test('资金与恢复事实保存来源预算、V5 本人划入和有符号回�
     },
   };
   assert.deepEqual(parseRelationalFact(allocation), allocation);
+  assert.throws(() =>
+    parseRelationalFact({
+      ...allocation,
+      payload: { ...allocation.payload, reason: 'redistribution' },
+    }),
+  );
   const { sourceEventId: _, ...withoutSource } = allocation.payload;
   assert.throws(() => parseRelationalFact({ ...allocation, payload: withoutSource }));
   const transfer = {
@@ -155,14 +189,14 @@ function accountEvent(fact, accountId = 'a') {
     commitSeq: '1',
     eventIndex: 0,
     streamVersion: '1',
-    schemaVersion: 2,
+    schemaVersion: 3,
     correlationId: null,
     causationId: null,
     amountVersion: 'decimal-12-v1',
   };
 }
 
-test('所有 v2 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
+test('所有 v3 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
   const owners = Object.values(relationalFactStreams).flat();
   assert.equal(new Set(owners).size, owners.length);
   assert.deepEqual([...owners].sort(), Object.keys(relationalPayloadParsers).sort());

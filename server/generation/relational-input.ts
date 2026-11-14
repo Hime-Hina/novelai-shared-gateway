@@ -513,6 +513,18 @@ export function restoreRelationalWire(
   return wire;
 }
 
+// complete v1 省略与规范正文相等的显示值；partial 没有这个编码保证。
+export function relationalInputDisplay(body: Record<string, unknown> | null, complete: boolean) {
+  const parameters = body?.parameters as Record<string, unknown> | null | undefined,
+    tag = body?.displayPrompt ?? (complete ? body?.input : null),
+    requestedSteps = body?.requestedSteps ?? (complete ? parameters?.steps : null);
+  return {
+    tag: typeof tag === 'string' ? tag : null,
+    requestedSteps:
+      typeof requestedSteps === 'number' && Number.isFinite(requestedSteps) ? requestedSteps : null,
+  };
+}
+
 // 仅在执行边界展开 Base64 和兼容现有上游客户端 DTO，不把此临时对象写回关系状态。
 export function relationalProviderRequest(
   wire: Record<string, unknown>,

@@ -99,9 +99,9 @@ function mixedStopCommand(f, memberId = 'm1') {
         eventType: 'WaitingJobsCancelled',
         payload: {
           jobIds: ['waiting-0', 'waiting-1'],
-          reason: 'member_admission_stopped',
+          reason: '管理员已停止此成员接单，未派发任务已取消',
           errorStatus: 409,
-          cancellationReason: 'member_admission_stopped',
+          cancellationReason: 'member_stopped',
         },
       },
       'request:waiting',
@@ -234,26 +234,18 @@ test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () =>
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 55);
+  assert.equal(relationalReplayFacts().size, 61);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
       .sort(),
     [
-      'SharingConfigured',
-      'GroupConfigured',
-      'GroupMemberAssigned',
-      'GroupMemberRemoved',
       'FundsTransferred',
       'OpeningFundingRecorded',
       'CachedResultLinked',
-      'JobHistoryRetired',
-      'RequestAliasRegistered',
-      'DiagnosticRecorded',
       'OpeningRequestRecorded',
       'OpeningJobRecorded',
       'OpeningAttemptRecorded',
-      'ArtifactHistoryRetired',
       'OpeningArtifactRecorded',
       'OpeningReplicaRecorded',
       'OpeningStorageTargetRecorded',
@@ -583,9 +575,16 @@ test('额度来源消费上下文不被跨 owner 分派重置，观察与有限�
       );
       const before = databaseState(r.db);
       r.db.transaction(() =>
-        assert.throws(() => r.replayer.replayCommit(bad), /重复消费|仅消费一次/),
+        assert.throws(
+          () => r.replayer.replayCommit(bad),
+          /重复消费|仅消费一次|同步金融事实与原观察、净预算、配置及分配决定不符/,
+        ),
       )();
-      assert.equal(memberApplied, true);
+      assert.equal(
+        memberApplied,
+        kind === 'finite',
+        '观察决定先核对，有限资金仍验证跨 owner 消费上下文',
+      );
       assert.equal(databaseState(r.db), before);
       assert.equal(r.replay(stored).replayed, false);
       const once = r.db.serialize();
@@ -600,7 +599,7 @@ test('退款仍可引用同一完整提交的 ReviewOpened；缺少原核对事�
   await f.accept('unknown');
   f.dispatch('unknown-0');
   const through = f.db.prepare('SELECT MAX(commit_seq) AS n FROM commits').get().n,
-    result = f.fail('unknown-0'),
+    result = f.fail('unknown-0', { aborted: false }),
     stored = readRelationalCommit(f.db, result.commitSeq),
     r = target(t, f);
   r.through(through);
@@ -755,6 +754,7 @@ test('单提交投影闭包离开所属事务后不能继续写入', async (t) =
     stored = readRelationalCommit(f.db, result.commitSeq),
     r = target(t, f);
   r.through(3);
+  r.replay(accepted);
   const quotas = new RelationalQuotaStore(r.db),
     generations = new RelationalGenerationStore(r.db),
     inputs = new RelationalInputStore(r.db);
@@ -767,7 +767,7 @@ test('单提交投影闭包离开所属事务后不能继续写入', async (t) =
       generations.createGenerationProjector(stored.events),
       stored.events.find((event) => event.eventType === 'WaitingJobsCancelled'),
     ],
-    [inputs.createInputProjector(f.inputs, accepted, false), accepted.events[0]],
+    [inputs.createInputProjector(f.inputs, accepted, true), accepted.events[0]],
   ])();
   const before = databaseState(r.db);
   for (const [apply, event] of stages) {

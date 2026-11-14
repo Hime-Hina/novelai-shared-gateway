@@ -1,10 +1,100 @@
 import type Database from 'better-sqlite3';
 import { domainDigest } from '../events/domain-events.ts';
-import { publishStoredResult } from './result-files.ts';
+import {
+  publishStoredResult,
+  readStoredResultContent,
+  assertStoredResultContent,
+  storedResultReferenceAvailable,
+} from './result-files.ts';
 import {
   RelationalReplicaStore,
   type RelationalReplicaConfiguration,
+  type RelationalReplicaReadConfiguration,
 } from './relational-replica-store.ts';
+
+export async function relationalArtifactReferenceAvailable(
+  sqlite: Database.Database,
+  artifactId: string,
+  configuration: RelationalReplicaReadConfiguration,
+) {
+  if (sqlite.inTransaction) {
+    throw new Error('Cache reference IO cannot hold a SQL transaction.');
+  }
+  const store = new RelationalReplicaStore(sqlite, configuration);
+  if (store.readArtifactCacheReference(artifactId).persistent) {
+    return true;
+  }
+  const local = store.beginArtifactRead(artifactId, 'local');
+  if (!local) {
+    return false;
+  }
+  const available = await storedResultReferenceAvailable(
+    configuration.dataDir,
+    local.artifact.descriptor,
+  );
+  store.assertArtifactReplicaTicket(local.ticket);
+  return available;
+}
+
+// 领取只验证承诺副本，不借用后台确认命令，也不修复或删除任何来源。
+export async function readRelationalArtifactContent(
+  sqlite: Database.Database,
+  artifactId: string,
+  configuration: RelationalReplicaReadConfiguration,
+) {
+  if (sqlite.inTransaction) {
+    throw new Error('Artifact reads cannot hold a transaction across network or file IO.');
+  }
+  const store = new RelationalReplicaStore(sqlite, configuration),
+    original = store.readArtifact(artifactId);
+  for (const kind of ['local', 'r2', 'pikpak'] as const) {
+    try {
+      const source = store.beginArtifactRead(artifactId, kind);
+      if (!source || source.artifact.sourceEventId !== original.sourceEventId) {
+        continue;
+      }
+      const { artifact, target, replica } = source;
+      let buffer: Buffer;
+      if (kind === 'local') {
+        const content = await readStoredResultContent(configuration.dataDir, artifact.descriptor);
+        if (!content) {
+          continue;
+        }
+        buffer = content.buffer;
+      } else if (kind === 'r2' && configuration.r2) {
+        const client = configuration.r2;
+        buffer = await client.get({
+          bucket: client.config.bucket,
+          key: replica.objectKey,
+          sha256: artifact.sha256,
+          byteLength: artifact.byteLength,
+        });
+      } else if (kind === 'pikpak' && configuration.pikpak) {
+        const client = configuration.pikpak;
+        buffer = await client.get({
+          key: `images/${artifact.id}/${artifact.sha256}`,
+          sha256: artifact.sha256,
+          byteLength: artifact.byteLength,
+          pikpak: {
+            url: target.namespace,
+            uploadedAt: new Date(replica.uploadedAt!).toISOString(),
+          },
+        });
+      } else {
+        continue;
+      }
+      assertStoredResultContent(artifact.descriptor, buffer);
+      store.assertArtifactReplicaTicket(source.ticket);
+      return { descriptor: artifact.descriptor, buffer, storageTargetId: target.storageTargetId };
+    } catch {
+      // 某承诺副本不可用时只尝试其他原来源；不把失败写回或泄漏私有 IO 错误。
+    }
+  }
+  throw Object.assign(new Error('No confirmed artifact replica has readable original bytes.'), {
+    statusCode: 503,
+    code: 'ARTIFACT_CONTENT_UNAVAILABLE',
+  });
+}
 
 type Ticket = ReturnType<RelationalReplicaStore['beginArtifactReplica']>;
 type Phase = Parameters<RelationalReplicaStore['recordArtifactReplica']>[2];
@@ -101,6 +191,9 @@ export async function copyRelationalArtifactReplica(
   }
   const store = new RelationalReplicaStore(sqlite, configuration),
     artifact = store.readArtifact(artifactId);
+  if (artifact.retiredAt !== null) {
+    throw new Error('Retired artifacts cannot start replica copies.');
+  }
   const destination = target(sqlite, store, artifactId, kind, now);
   let row = store.readArtifactReplica(artifactId, destination.storageTargetId);
   let ticket = store.beginArtifactReplica(artifactId, destination.storageTargetId);

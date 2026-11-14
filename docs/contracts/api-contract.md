@@ -185,6 +185,12 @@ Native 的生成、流式生成、Vibe 和放大路径（含 `/v1` 别名）在�
 
 生成失败对成员只返回固定分类文案，不公开上游JSON/流错误原文、文件路径或堆栈。失败/取消提交、任务等待通知、任务/父请求查询、错误图片及部分批次共用同一公开转换；旧任务在读取时也处理，但不重写历史诊断。管理员错误详情保留原有诊断；成员参数验证仍提供具体的本地校验提示。读取已完成结果时的标准文件系统错误也不回显内部路径。这一边界不改变HTTP状态、结算、取消、冷却或重发规则。
 
+管理摘要的 `errorLogs` 由 `reports/generation-errors.ts` 选择和展示，鉴权继续归原管理入口。没有保存的来源、账户路由、重试/队列次数、旧积分费用、原时间、诊断及请求字段返回 `null`；原本明确保存的 `0`、空文本和合法 number 保留其含义。`request.requestedSteps` 只来自原请求字段，不能用实际路由步数填充；缺少原完成时间时，`completedAt` 和终态 `durationMs` 不使用最后更新时刻推算。其他任务展示也复用同一耗时 owner，真实 Unix 时间 `0` 和已知零耗时有效，未知或负时长为 `null`。管理员诊断只展示已保存的详情并保留既有长度限制，不用公开错误文案补造详情。这些可空字段适用于旧在线读取与后续关系 DTO，读取不改写历史。
+
+新关系格式的失败诊断由原 generation 事务捕获，仅接受 system/null 和首次真实派发返回的不可变私有对象；核对其持久原派发事实、原 attempt 和原 credentialEpoch，不要求原在途凭据仍为当前账户凭据。实际原 PST 在 `errorDetailMessage` 中精确替换后再限长，正文归受保护内容，事件和回执不携正文或 PST。失败退款、诊断引用与正文同笔回滚，原回执重领仍先核票据而不重捕获。该易失对象不由历史恢复重建；完整提交恢复依赖匹配的受保护源、原摘要和长度，并且不恢复当前认证。具体关系与验收见[重构 9.30](../plans/database-model-redesign.md#930-t6真实关系错误损耗读取与受保护诊断)。
+
+关系错误读取在 `RelationalReportStore.readErrorLogs()` 中按原失败事实时间选取，迟到结果不改变原失败时间；Opening 使用原 `completedAt`，未知不能当开账当天。输入和诊断共用 `RelationalInputStore` 原归属/摘要校验，只有管理入口已鉴权且经过原错误过滤的请求才冷读，不加载附件 BLOB。complete v1 规范输入的显示字段由原去重编码解释：未保存独立 `displayPrompt` / `requestedSteps` 时，分别表示与原正文 / 原规范步数相同；读取和执行共用此解码。partial 或旧 DTO 没有该保证，仍保留 NULL。关系格式没有旧原 Key 标签或路由/积分次数来源时，不借当前 Key/路由/报价补造。
+
 | 状态            | 当前主要触发条件                                                                                                                                            |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 400             | 非法 JSON/对象、缺失或错误的 prompt/parameters、multipart 结构不完整                                                                                        |
@@ -269,6 +275,8 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 管理入口的 `GET ?view=losses&before=<可选游标>` 提供按资源分开的候选风险、聚合新增差额、运营余额、软告警及每页 50 条审计记录；查询覆盖 SQLite 冷历史，不把不同证据相加为实耗。`POST action=loss-alert-policy` 带 `expectedVersion` 和四项阈值，返回 `{policy}`；版本冲突为 409，配置与操作者审计同事务提交。阈值与原生成准入无关，完整字段见[失败退款与资源核对](../architecture/failure-accounting.md)。
 
+新关系格式只读适配返回 `coverage=retained-facts`，仅统计保留事实，原时间未知的尝试另列 `risk.unknownTimeAttempts`，不宣称完整零历史。原累计金额/纠正后累计金额或 policy before 缺少来源时为 NULL；单次 observedAmount、signed delta 与当前缺口分别展示。游标绑定 history 和原提交/事件序号，非法或跨 history 为 400；没有已恢复绑定账户基线时为 503，不返回假零账。此只读适配还需新 HTTP 总装配接入；管理授权继续由上述 owner/管理员入口承担。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
 F06 网页 `POST /api/jobs` 保留原 `202`、任务查询、完整提示词回显和图片领取契约。新请求将参数与任务在同一事务持久化，执行时按需读取；旧内联排队记录仍可恢复。网页正文上限保持 2 MiB；Native JSON/multipart 正文上限保持 32 MiB。规范化父参数默认上限 32 MiB，活动载荷默认合计 64 MiB，单次超限为 413，暂满为 429。Native 完整父参数只存一份，各图片子任务不复制输入图片；multipart 展开后仍须满足规范化上限。
@@ -281,7 +289,7 @@ direct/OpenAI 同样保存完整父请求；OpenAI 保持 2 MiB 正文上限，d
 
 ### 父请求查询、领取与取消
 
-`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
+`GET /api/requests/:id` 使用成员 Bearer；`GET /api/member/requests/:id` 使用成员 Cookie，两者返回相同 DTO 结构和业务字段。每次读取可重新签发限时领取链接，包含该链接的 `revision` 也可随之更新，不承诺跨时完整字节相等。归属按稳定成员 ID 判断，本人轮换 Key 后仍能读取；其他成员或未知 ID 为 404。网页任务与 `me.jobs[]` 增加 `requestId`；旧 inline 任务为 null，继续使用原 job 接口。
 
 DTO 为 `{id,source,operation,createdAt,status,cancellable,counts,jobs}`。counts 包含 `total/queued/pending/running/done/failed`，failed 包含取消项；jobs 每项包含 `id/index/status/model/createdAt/updatedAt/completedAt/error/cancelled/lateResultAvailable/imageUrl`，index 从零开始。父状态从子任务派生为 running、queued、pending、done、partial、cancelled、failed 或 empty，不额外保存一份状态。查询不返回完整参数、提示词或认证信息。图片归属校验后签发既有下载链接，迟到完整结果也可领取。
 

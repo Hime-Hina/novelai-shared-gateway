@@ -790,6 +790,13 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     ).json();
     const diagnostic = summary.errorLogs.find((item) => item.id === persisted.id);
     assert.ok(diagnostic?.errorDetail.includes(privateMarker));
+    for (const field of ['retryCount', 'cost', 'accountCost', 'queueTotal']) {
+      assert.equal(persisted[field], undefined, '合成旧记录没有该字段');
+      assert.equal(diagnostic[field], null, `${field} 不能在真实 HTTP 读取时补零`);
+    }
+    assert.equal(diagnostic.request.requestedSteps, persisted.request.requestedSteps ?? null);
+    assert.equal(diagnostic.request.routedSteps, persisted.request.steps);
+    assert.equal(diagnostic.completedAt, persisted.completedAt);
   });
 
   await t.test('已保存图片读取失败不在成员响应中公开 filesystem 路径', async () => {

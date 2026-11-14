@@ -6,13 +6,19 @@ import {
   type DiscordAuthenticationStore,
   type DiscordAuthenticationTransaction,
 } from '../members/discord-auth.ts';
-import { domainDigest } from '../events/domain-events.ts';
+import {
+  domainDigest,
+  canonicalJson,
+  beginDomainCommand,
+  finishDomainCommand,
+} from '../events/domain-events.ts';
 import {
   loginMember,
   normalizeMemberUsername,
   prepareMemberCredentials,
   assertMemberRegistrationCapacity,
   assertMemberCanDisable,
+  assertCurrentOwnerCommand,
   type MemberApiKeyStore,
   type MemberCredentials,
   type MemberPasswordStore,
@@ -32,8 +38,11 @@ import type {
   RelationalCommand,
   RelationalEvent,
   RelationalFact,
+  RelationalEventInput,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { setMemberAdmission, MEMBER_STOPPED_MESSAGE } from '../generation/queue-policy.ts';
+import { RelationalCommitReplayer } from './relational-replay.ts';
 
 type MemberCommand = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -69,9 +78,11 @@ export class RelationalMemberStore
   implements MemberPasswordStore, MemberApiKeyStore, DiscordAuthenticationStore
 {
   private sqlite: Database.Database;
-  constructor(sqlite: Database.Database) {
+  private env: NodeJS.ProcessEnv;
+  constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+    this.env = env;
   }
 
   private owningTransaction<T>(write: () => T): T {
@@ -406,7 +417,242 @@ export class RelationalMemberStore
     });
   }
 
-  private applyMemberEvents(events: RelationalEvent[]) {
+  changeMemberAdmission(
+    metadata: MemberCommand,
+    input: { memberId: string; acceptingJobs: boolean },
+    actor: MemberUser | null,
+  ) {
+    return this.owningTransaction(() => {
+      const current =
+        actor &&
+        this.sqlite
+          .prepare<[string], { status: string; authEpoch: string | null }>(
+            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+          )
+          .get(actor.id);
+      assertCurrentOwnerCommand(metadata, actor, current, this.env);
+      if (
+        !metadata.actorId ||
+        !input ||
+        typeof input.memberId !== 'string' ||
+        !input.memberId ||
+        typeof input.acceptingJobs !== 'boolean' ||
+        Object.keys(input).some((key) => !['memberId', 'acceptingJobs'].includes(key))
+      ) {
+        fail(400, '成员接单命令无效');
+      }
+      const command = {
+          ...metadata,
+          fingerprint: domainDigest({ command: metadata.fingerprint, input }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const member = this.readMember(input.memberId);
+      if (!member || member.status === 'removed') {
+        fail(404, '成员不存在');
+      }
+      const jobs = this.sqlite
+          .prepare<[string], { id: string; requestId: string; memberId: string; status: string }>(
+            `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.status
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        WHERE r.member_id=? AND j.status IN ('queued','pending') ORDER BY j.rowid`,
+          )
+          .all(input.memberId),
+        view = {
+          users: [
+            {
+              id: member.id,
+              acceptingJobs: member.acceptingJobs === 1,
+              jobAdmissionVersion: member.admissionEpoch,
+            },
+          ],
+          jobs,
+        };
+      beginDomainCommand(view);
+      const receipt = setMemberAdmission(
+        view,
+        input.memberId,
+        input.acceptingJobs,
+        (_db, job) => {
+          if (
+            this.sqlite
+              .prepare(
+                `SELECT 1 FROM charges WHERE original_job_id=?
+          UNION ALL SELECT 1 FROM generation_attempts WHERE job_id=? LIMIT 1`,
+              )
+              .get(job.id, job.id)
+          ) {
+            fail(409, '等待意图不能持有预扣或派发尝试');
+          }
+        },
+        metadata.recordedAt,
+      );
+      const original = finishDomainCommand(view)!;
+      const events: RelationalEventInput[] = original.events.map((event) => {
+        let fact: MemberFact | Extract<RelationalFact, { eventType: 'WaitingJobsCancelled' }>;
+        if (event.eventType === 'AdmissionChanged') {
+          fact = {
+            eventType: 'AdmissionChanged',
+            payload: {
+              memberId: event.payload.memberId,
+              acceptingJobs: event.payload.acceptingJobs,
+              admissionEpoch: event.payload.jobAdmissionVersion,
+            },
+          };
+        } else if (event.eventType === 'WaitingJobsCancelled') {
+          fact = {
+            eventType: 'WaitingJobsCancelled',
+            payload: {
+              jobIds: event.payload.jobIds,
+              reason: event.payload.reason,
+              errorStatus: event.payload.errorStatus,
+              cancellationReason: event.payload.cancellationReason,
+            },
+          };
+        } else {
+          throw new Error('Admission owner emitted an unsupported fact.');
+        }
+        return {
+          ...fact,
+          streamId: event.eventType === 'AdmissionChanged' ? `member:${member.id}` : event.streamId,
+          memberId: member.id,
+          accountId: null,
+          occurredAt: metadata.recordedAt,
+          policyVersion: metadata.policyVersion,
+          pricingVersion: metadata.pricingVersion,
+        };
+      });
+      const expectedVersions: Record<string, string> = {};
+      for (const event of events) {
+        expectedVersions[event.streamId] =
+          this.sqlite
+            .prepare<[string], { version: string }>(
+              'SELECT CAST(stream_version AS TEXT) AS version FROM stream_heads WHERE stream_id=?',
+            )
+            .get(event.streamId)?.version || '0';
+      }
+      const { policyVersion: _policy, pricingVersion: _pricing, ...saved } = command;
+      return new RelationalCommitReplayer(this.sqlite).appendCommit({
+        ...saved,
+        expectedVersions,
+        receipt,
+        events,
+      });
+    });
+  }
+
+  assertMemberAdmissionCommit(events: RelationalEvent[], receipt: RelationalCommand['receipt']) {
+    this.assertMemberCommandTransaction();
+    const decisions = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>
+    >();
+    for (const event of events) {
+      if (event.eventType === 'AdmissionChanged') {
+        decisions.set(event.payload.memberId, event);
+      } else if (
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.payload.cancellationReason === 'member_stopped'
+      ) {
+        const decision = event.memberId ? decisions.get(event.memberId) : undefined;
+        if (
+          !decision ||
+          decision.payload.acceptingJobs ||
+          !event.payload.jobIds.length ||
+          event.payload.reason !== MEMBER_STOPPED_MESSAGE ||
+          event.payload.errorStatus !== 409 ||
+          event.accountId !== null ||
+          event.occurredAt !== decision.occurredAt
+        ) {
+          fail(409, '停止接单取消必须保留同提交原停止决定');
+        }
+      }
+    }
+    // 原接单回执的判别字段绑定同一保存决定，不能删光事实后保存“成功停止”。
+    if (
+      receipt &&
+      !Array.isArray(receipt) &&
+      typeof receipt === 'object' &&
+      ('acceptingJobs' in receipt || ('id' in receipt && 'cancelledJobIds' in receipt))
+    ) {
+      const admission = events.filter((event) => event.eventType === 'AdmissionChanged');
+      const cancelled = events.flatMap((event) =>
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.memberId === receipt.id &&
+        event.payload.cancellationReason === 'member_stopped'
+          ? event.payload.jobIds
+          : [],
+      );
+      if (
+        admission.length !== 1 ||
+        admission[0].payload.memberId !== receipt.id ||
+        admission[0].payload.acceptingJobs !== receipt.acceptingJobs ||
+        canonicalJson(cancelled) !== canonicalJson(receipt.cancelledJobIds)
+      ) {
+        fail(409, '接单回执必须匹配原完整接单决定');
+      }
+    }
+  }
+
+  private assertAdmissionChange(
+    event: Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>,
+    completeEvents: RelationalEvent[],
+  ) {
+    const p = event.payload,
+      member = this.readMember(p.memberId);
+    if (
+      !member ||
+      member.status === 'removed' ||
+      event.streamId !== `member:${p.memberId}` ||
+      event.memberId !== p.memberId ||
+      event.accountId !== null ||
+      !Number.isSafeInteger(
+        member.admissionEpoch + (member.acceptingJobs === 1 && !p.acceptingJobs ? 1 : 0),
+      ) ||
+      p.admissionEpoch !==
+        member.admissionEpoch + (member.acceptingJobs === 1 && !p.acceptingJobs ? 1 : 0)
+    ) {
+      fail(409, '接单事实与原成员或代次不符');
+    }
+    if (p.acceptingJobs) {
+      return;
+    }
+    const waiting = this.sqlite
+        .prepare<[string], { id: string; requestId: string }>(
+          `SELECT j.id,j.request_id AS requestId FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+      WHERE r.member_id=? AND j.status IN ('queued','pending')`,
+        )
+        .all(p.memberId),
+      expected = new Map(waiting.map((job) => [job.id, job.requestId]));
+    for (const candidate of completeEvents.filter((item) => item.eventIndex > event.eventIndex)) {
+      if (candidate.eventType === 'AdmissionChanged' && candidate.payload.memberId === p.memberId) {
+        break;
+      }
+      if (
+        candidate.eventType !== 'WaitingJobsCancelled' ||
+        candidate.memberId !== p.memberId ||
+        candidate.payload.cancellationReason !== 'member_stopped'
+      ) {
+        continue;
+      }
+      if (candidate.payload.errorStatus !== 409 || candidate.accountId !== null) {
+        fail(409, '停止接单取消事实无效');
+      }
+      for (const id of candidate.payload.jobIds) {
+        if (!expected.has(id) || candidate.streamId !== `request:${expected.get(id)}`) {
+          fail(409, '停止接单取消集合与原等待意图不符');
+        }
+        expected.delete(id);
+      }
+    }
+    if (expected.size) {
+      fail(409, '停止接单缺少原等待意图的取消事实');
+    }
+  }
+
+  private applyMemberEvents(events: RelationalEvent[], completeEvents = events) {
     // 资格事实保留历史；业务回放不能把它还原成当前私有授权或认证 epoch。
     for (const event of events) {
       if (event.eventType === 'MemberRegistered' || event.eventType === 'OpeningMemberRecorded') {
@@ -430,6 +676,7 @@ export class RelationalMemberStore
           .prepare('UPDATE members SET status=?,source_event_id=? WHERE id=?')
           .run(event.payload.status, event.eventId, event.payload.memberId);
       } else if (event.eventType === 'AdmissionChanged') {
+        this.assertAdmissionChange(event, completeEvents);
         this.sqlite
           .prepare(
             'UPDATE members SET accepting_jobs=?,admission_epoch=?,source_event_id=? WHERE id=?',
@@ -446,9 +693,9 @@ export class RelationalMemberStore
     }
   }
 
-  applyReplayedMemberEvent(event: RelationalEvent) {
+  applyReplayedMemberEvent(event: RelationalEvent, completeEvents: RelationalEvent[]) {
     this.assertMemberCommandTransaction();
-    this.applyMemberEvents([event]);
+    this.applyMemberEvents([event], completeEvents);
     if (
       (event.eventType === 'MemberStatusChanged' && event.payload.status !== 'active') ||
       (event.eventType === 'MemberEligibilityChanged' && event.payload.eligible === false)
@@ -465,8 +712,9 @@ export class RelationalMemberStore
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
+        this.assertMemberAdmissionCommit(result.events, result.receipt);
         for (const event of result.events) {
-          this.applyReplayedMemberEvent(event);
+          this.applyReplayedMemberEvent(event, result.events);
         }
       }
       return result;

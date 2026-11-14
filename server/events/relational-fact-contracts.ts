@@ -241,7 +241,13 @@ export const relationalPayloadParsers = {
     contextSchemaVersion: choices(1),
     contextSha256: hash,
   }),
-  DiagnosticRecorded: fields({ diagnosticId: id, jobId: id, sha256: hash, createdAt: integer }),
+  DiagnosticRecorded: fields({
+    diagnosticId: id,
+    jobId: id,
+    sha256: hash,
+    byteLength: positive,
+    createdAt: integer,
+  }),
   RequestAccepted: fields({
     requestId: id,
     memberId: id,
@@ -314,6 +320,7 @@ export const relationalPayloadParsers = {
     errorStatus: positive,
     cancellationReason: nullable(id),
     diagnosticId: nullable(id),
+    aborted: bool,
     response,
   }),
   LateResultRecovered: fields({
@@ -368,18 +375,25 @@ export const relationalPayloadParsers = {
     eligible: nullable(bool),
   }),
   SharingConfigured: fields({
-    enabled: bool,
-    boundAccountId: nullable(id),
-    configVersion: integer,
+    ...policyFields,
+    redistributeRemaining: bool,
+    groups: list(
+      fields({
+        groupId: id,
+        name: string,
+        share: number,
+        members: list(fields({ memberId: id, weight: number })),
+      }),
+    ),
   }),
-  GroupConfigured: fields({ groupId: id, name: string, share: number, configVersion: integer }),
-  GroupMemberAssigned: fields({
-    memberId: id,
+  GroupBalancesRedistributed: fields({
+    accountId: id,
+    configurationEventId: id,
     groupId: id,
-    weight: number,
     configVersion: integer,
+    sourceResources: resources,
+    allocations: list(fields({ memberId: id, resources })),
   }),
-  GroupMemberRemoved: fields({ memberId: id, groupId: id, configVersion: integer }),
   FallbackPolicyChanged: fields({ enabled: bool, configVersion: integer }),
   FreePolicyChanged: fields({
     version: positive,
@@ -433,7 +447,18 @@ export const relationalPayloadParsers = {
     secondsPerPercent: nullable(number),
     errorCode: nullable(id),
   }),
-  QuotaStatusChanged: fields({ accountId: id, status: id }),
+  QuotaStatusChanged: fields({
+    accountId: id,
+    status: id,
+    generationFailure: nullable(
+      fields({
+        dispatchEventId: id,
+        responseEventId: id,
+        failureEventId: id,
+        errorCode: choices('invalid_key', 'access_denied'),
+      }),
+    ),
+  }),
   QuotaBaselineAdopted: fields({
     accountId: id,
     observationEventId: id,
@@ -455,7 +480,7 @@ export const relationalPayloadParsers = {
   }),
   AllocationApplied: fields({
     accountId: id,
-    reason: choices('opening', 'funding', 'redistribution'),
+    reason: choices('opening', 'funding'),
     sourceEventId: id,
     sourceResources: resources,
     allocations: list(fields({ memberId: id, resources })),
@@ -514,6 +539,7 @@ export const relationalPayloadParsers = {
     accountId: id,
     observationEventId: id,
     capacityGap: nonnegative,
+    delta: amount,
     difference: amount,
     tolerance: nonnegative,
     status: choices('source_below_local', 'source_above_local', 'within_precision'),
@@ -530,6 +556,7 @@ export const relationalPayloadParsers = {
     operation,
     keyHash: hash,
     intentFingerprint: hash,
+    noCache: bool,
     requestId: id,
     jobId: id,
     contextId: id,
@@ -706,9 +733,6 @@ export const relationalFactStreams = {
   ],
   sharing: [
     'SharingConfigured',
-    'GroupConfigured',
-    'GroupMemberAssigned',
-    'GroupMemberRemoved',
     'FallbackPolicyChanged',
     'FreePolicyChanged',
     'LossPolicyChanged',
@@ -718,6 +742,7 @@ export const relationalFactStreams = {
     'OpeningPolicyRecorded',
   ],
   account: [
+    'GroupBalancesRedistributed',
     'AccountRegistered',
     'CredentialRotated',
     'AvailabilityChanged',

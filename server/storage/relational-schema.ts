@@ -21,6 +21,11 @@ const fact = 'source_event_id TEXT NOT NULL REFERENCES domain_events(event_id)';
 // 开账事实时刻不能冒充未知的原实体创建时间；所有查询共用此角色解释。
 const jobCreatedAtSql = `CASE WHEN event_type = 'OpeningJobRecorded'
   THEN json_extract(payload, '$.createdAt') ELSE occurred_at END`;
+// 失败报告与时间索引共用原失败角色，开账 header 仍只表示开账发生时刻。
+export const relationalFailureTimeSql = `CASE WHEN event_type='JobFailed' THEN occurred_at
+  ELSE json_extract(payload,'$.completedAt') END`;
+export const relationalFailurePredicate = `event_type IN ('JobFailed','OpeningJobRecorded')
+  AND (event_type='JobFailed' OR json_extract(payload,'$.status')='failed')`;
 
 export const RELATIONAL_SCHEMA_SQL = `
 CREATE TABLE app_meta (
@@ -67,6 +72,10 @@ SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
 FROM domain_events WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
 CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
   WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_failure_time ON domain_events(${relationalFailureTimeSql} DESC,event_id DESC)
+  WHERE ${relationalFailurePredicate};
+CREATE INDEX idx_loss_aggregate_time ON domain_events(occurred_at)
+  WHERE event_type IN ('ResourceGapObserved','V5CapacityObserved');
 
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
@@ -284,6 +293,8 @@ CREATE INDEX idx_jobs_active_request ON generation_jobs(request_id, status)
   WHERE status IN ('queued','pending','running');
 CREATE INDEX idx_jobs_free_success ON generation_jobs(free_succeeded_at)
   WHERE free_succeeded_at IS NOT NULL;
+CREATE INDEX idx_jobs_artifact ON generation_jobs(artifact_id,request_id)
+  WHERE artifact_id IS NOT NULL;
 
 CREATE TABLE generation_attempts (
   id TEXT PRIMARY KEY,
@@ -324,7 +335,11 @@ CREATE TABLE generation_attempts (
 ) STRICT;
 CREATE INDEX idx_attempts_review ON generation_attempts(review_deadline_at)
   WHERE review_status = 'pending';
+CREATE INDEX idx_attempt_loss_time ON generation_attempts(first_unknown_at)
+  WHERE loss_event_id IS NOT NULL;
 CREATE INDEX idx_attempts_prepared ON generation_attempts(job_id)
+  WHERE prepared_artifact_id IS NOT NULL;
+CREATE INDEX idx_attempts_prepared_artifact ON generation_attempts(prepared_artifact_id,job_id)
   WHERE prepared_artifact_id IS NOT NULL;
 
 CREATE TABLE wallets (

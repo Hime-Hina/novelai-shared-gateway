@@ -127,16 +127,19 @@ async function fixture(t, { owner = false, grace = 30000, paused = false, quotaS
       }),
     );
   });
-  const upstreamPort = await listen(upstream),
-    reservation = http.createServer(),
-    port = await listen(reservation);
-  await new Promise((resolve) => reservation.close(resolve));
-  const base = `http://127.0.0.1:${port}`;
+  const upstreamPort = await listen(upstream);
+  let base = 'http://127.0.0.1';
   // 预置 owner grant 只用于离线认证；任何意外的 Discord/NAI 外联都会失败。
   const preload = path.join(dataDir, 'deny-external-fetch.mjs');
   await writeFile(
     preload,
-    `const original = globalThis.fetch;
+    `import { Server } from 'node:http';
+const listen = Server.prototype.listen;
+Server.prototype.listen = function (...args) {
+  this.once('listening', () => process.send({ memberSessionTestPort: this.address().port }));
+  return listen.apply(this, args);
+};
+const original = globalThis.fetch;
 globalThis.fetch = (input, options) => {
   const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('External fetch blocked by synthetic session test');
@@ -152,7 +155,7 @@ globalThis.fetch = (input, options) => {
     ADMIN_TOKEN: adminToken,
     DATA_DIR: dataDir,
     HOST: '127.0.0.1',
-    PORT: String(port),
+    PORT: '0',
     PUBLIC_HOST: 'session.example',
     SHUTDOWN_GRACE_MS: String(grace),
     PUBLIC_BASE_URL: owner ? 'https://session.example' : base,
@@ -181,7 +184,7 @@ globalThis.fetch = (input, options) => {
       cwd: root,
       env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     exited = once(child, 'exit');
     child.stdout.on('data', record);
@@ -189,22 +192,27 @@ globalThis.fetch = (input, options) => {
     await new Promise((resolve, reject) => {
       const cleanup = () => {
         clearTimeout(timer);
-        child.stdout.off('data', ready);
+        child.off('message', ready);
         child.off('exit', failed);
         child.off('error', failed);
       };
-      const ready = (chunk) => {
-        if (chunk.toString().includes('Nai2API listening')) {
-          cleanup();
-          resolve();
+      const ready = (message) => {
+        if (
+          !Number.isSafeInteger(message?.memberSessionTestPort) ||
+          message.memberSessionTestPort <= 0
+        ) {
+          return;
         }
+        base = `http://127.0.0.1:${message.memberSessionTestPort}`;
+        cleanup();
+        resolve();
       };
       const failed = (cause) => {
         cleanup();
         reject(new Error(`synthetic gateway failed ${cause}: ${output}`));
       };
       const timer = setTimeout(() => failed('startup timeout'), 15000);
-      child.stdout.on('data', ready);
+      child.on('message', ready);
       child.once('exit', failed);
       child.once('error', failed);
     });

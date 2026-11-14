@@ -20,6 +20,7 @@ export function createGenerationPayloadBudget(
 ) {
   let readingBytes = 0;
   return {
+    activeBytes: readActiveBytes,
     claim() {
       let bytes = 0;
       return {

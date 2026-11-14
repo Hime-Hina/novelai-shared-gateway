@@ -394,7 +394,7 @@ test('三政策混合真实生成、退款历史从空库完整提交重建，�
   await f.manage('loss-precise', loss(1, { v5Points24h: 1e-15 }));
   await f.accept('generation');
   f.dispatch('generation-0');
-  f.fail('generation-0');
+  f.fail('generation-0', { aborted: false });
   await f.manage('loss-zero', loss(2, { v5Points24h: 0 }));
   const target = new Database(':memory:');
   try {

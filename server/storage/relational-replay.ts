@@ -75,11 +75,15 @@ export class RelationalCommitReplayer {
       }
       assertSupported(stored.events);
       const hasInput = stored.events.some((event) => relationalInputFacts.has(event.eventType));
-      if (hasInput && !sourceInputs) {
-        throw new Error('Input replay requires the matching protected source.');
+      const hasDiagnostic = stored.events.some((event) => event.eventType === 'DiagnosticRecorded');
+      if ((hasInput || hasDiagnostic) && !sourceInputs) {
+        throw new Error('Protected content replay requires the matching protected source.');
       }
       const applyInput = hasInput
         ? this.inputs.createInputProjector(sourceInputs!, stored, result.replayed)
+        : null;
+      const applyDiagnostic = hasDiagnostic
+        ? this.inputs.createDiagnosticProjector(sourceInputs!, stored, result.replayed)
         : null;
       if (result.replayed) {
         if (applyInput) {
@@ -89,16 +93,25 @@ export class RelationalCommitReplayer {
             }
           }
         }
+        for (const event of stored.events) {
+          if (event.eventType === 'DiagnosticRecorded') {
+            applyDiagnostic!(event);
+          }
+        }
         return result;
       }
+      this.members.assertMemberAdmissionCommit(stored.events, stored.command.receipt);
       const applyGeneration = this.generations.createGenerationProjector(stored.events),
         applyQuota = this.quotas.createQuotaProjector(stored.events);
       for (const event of stored.events) {
         if (relationalMemberFacts.has(event.eventType)) {
-          this.members.applyReplayedMemberEvent(event);
+          this.members.applyReplayedMemberEvent(event, stored.events);
         } else if (relationalInputFacts.has(event.eventType)) {
           applyInput!(event);
         } else if (relationalGenerationFacts.has(event.eventType)) {
+          if (event.eventType === 'DiagnosticRecorded') {
+            applyDiagnostic!(event);
+          }
           applyGeneration(event);
         } else if (relationalQuotaFacts.has(event.eventType)) {
           applyQuota(event);
@@ -108,6 +121,7 @@ export class RelationalCommitReplayer {
           this.accounts.applyAccountEvent(event);
         }
       }
+      this.quotas.assertGroupCommit(stored.events, stored.command.receipt);
       return result;
     })();
   }
@@ -122,7 +136,7 @@ export class RelationalCommitReplayer {
   }
 
   // 保留原生成 owner 的窄回放边界；全业务回放仍要求没有当前私有认证。
-  replayGenerationCommit(stored: StoredRelationalCommit) {
+  replayGenerationCommit(stored: StoredRelationalCommit, sourceInputs?: RelationalInputStore) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Generation replay requires the owning import transaction.');
     }
@@ -130,13 +144,14 @@ export class RelationalCommitReplayer {
       stored.events.some(
         (event) =>
           !relationalGenerationFacts.has(event.eventType) &&
-          !relationalReplicaFacts.has(event.eventType),
+          !relationalReplicaFacts.has(event.eventType) &&
+          !(event.eventType === 'QuotaStatusChanged' && event.payload.generationFailure !== null),
       )
     ) {
       throw new Error('Generation replay requires complete generation/accounting commits.');
     }
     return this.sqlite.transaction(() =>
-      this.#applyCommit(replayRelationalCommit(this.sqlite, stored)),
+      this.#applyCommit(replayRelationalCommit(this.sqlite, stored), sourceInputs),
     )();
   }
 

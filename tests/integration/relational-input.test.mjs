@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { createServer } from 'node:http';
@@ -816,16 +817,40 @@ for (const [label, extra] of [
   });
 }
 
-test('partial/unavailable 输入保留已知、空和 null，但不能进入执行或回填旧 DTO', (t) => {
+test('partial 输入可复制已知字段和已校验附件，缺首次上下文仍不能执行或补默认', (t) => {
   const { sqlite, store } = fixture(t),
     body = {
       operation: 'generate',
       model: 'historical',
       input: '',
-      parameters: { negative_prompt: null },
+      parameters: {
+        negative_prompt: null,
+        image: { assetId: 'image' },
+        mask: { assetId: 'wrong-mime' },
+        reference_image_multiple: [{ assetId: 'opaque' }],
+        director_reference_images: [{ assetId: 'unsafe-mime' }],
+      },
     };
+  const assets = [
+    { assetId: 'image', mimeType: 'image/png', bytes: image },
+    { assetId: 'wrong-mime', mimeType: 'image/jpeg', bytes: image },
+    {
+      assetId: 'opaque',
+      mimeType: 'application/octet-stream',
+      bytes: Buffer.from('saved opaque bytes, without a proven Native definition'),
+    },
+    { assetId: 'unsafe-mime', mimeType: 'text/html', bytes: image },
+  ].map((asset) => ({
+    ...asset,
+    byteLength: asset.bytes.length,
+    sha256: createHash('sha256').update(asset.bytes).digest('hex'),
+  }));
   const logicalBytes = Buffer.byteLength(JSON.stringify(body)),
-    sha = relationalInputDigest(body, [], logicalBytes);
+    sha = relationalInputDigest(
+      body,
+      assets.map(({ bytes: _bytes, ...asset }) => asset),
+      logicalBytes,
+    );
   const origin = { sourceId: 'legacy', originalId: 'old-input' };
   const common = {
     occurredAt: 500,
@@ -913,6 +938,13 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
           "INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES('partial','m1',1,'partial',?,?,?)",
         )
         .run(sha, logicalBytes, JSON.stringify(body));
+      for (const asset of assets) {
+        sqlite
+          .prepare(
+            "INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES('partial',?,?,?,?,?)",
+          )
+          .run(asset.assetId, asset.mimeType, asset.byteLength, asset.sha256, asset.bytes);
+      }
       sqlite
         .prepare(
           "INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,accepted_at,source_event_id) VALUES('past','m1','partial',NULL,'historical','generate','historical',1,'unknown',500,?)",
@@ -925,18 +957,67 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
         .run(result.events[2].eventId);
     })
     .immediate();
+  const before = sqlite.serialize();
   const recovered = store.readMemberInput('past', 'm1');
   assert.equal(recovered.recoverable, false);
   assert.equal(recovered.input.input, '');
   assert.equal(recovered.input.parameters.negative_prompt, null);
   assert.equal(Object.hasOwn(recovered.input.parameters, 'seed'), false);
+  assert.equal(Object.hasOwn(recovered.input.parameters, 'n_samples'), false);
+  assert.equal(Object.hasOwn(recovered.input, 'action'), false);
+  assert.equal(recovered.assets.length, 4);
+  assert.equal(
+    recovered.assets.find((asset) => asset.slot === 'parameters.image').url,
+    '/api/member/requests/past/inputs/parameters.image',
+  );
+  assert.deepEqual(store.readMemberAsset('past', 'm1', 'parameters.image'), {
+    mimeType: 'image/png',
+    bytes: image,
+  });
+  assert.deepEqual(
+    store.readMemberAsset('past', 'm1', 'parameters.reference_image_multiple.0').bytes,
+    assets[2].bytes,
+  );
+  for (const slot of ['parameters.mask', 'parameters.director_reference_images.0']) {
+    assert.throws(
+      () => store.readMemberAsset('past', 'm1', slot),
+      (error) => error.statusCode === 410 && error.code === 'input_unavailable',
+    );
+  }
+  for (const [memberId, slot] of [
+    ['m2', 'parameters.image'],
+    ['m1', 'parameters.image/../../private'],
+    ['m1', 'parameters.reference_image_multiple.1'],
+  ]) {
+    assert.throws(
+      () => store.readMemberAsset('past', memberId, slot),
+      (error) => error.statusCode === 404,
+    );
+  }
   assert.throws(
     () => store.readJobInput('past-job'),
     (error) => error.statusCode === 410,
   );
   assert.throws(
-    () => store.readMemberAsset('past', 'm1', 'parameters.image'),
+    () => store.readMemberContext('past', 'm1'),
     (error) => error.statusCode === 410,
+  );
+  assert.ok(sqlite.serialize().equals(before), '所有读取和拒绝都不得改变来源或投影');
+  mutate(sqlite, 'input_assets', () => {
+    const corrupt = Buffer.from(image);
+    corrupt[0] ^= 1;
+    sqlite
+      .prepare("UPDATE input_assets SET bytes=? WHERE input_id='partial' AND asset_id='image'")
+      .run(corrupt);
+  });
+  assert.throws(
+    () => store.readMemberAsset('past', 'm1', 'parameters.image'),
+    (error) => error.statusCode === 410 && error.code === 'input_unavailable',
+  );
+  sqlite.prepare("UPDATE members SET auth_epoch=NULL WHERE id='m1'").run();
+  assert.throws(
+    () => store.readMemberAsset('past', 'm1', 'parameters.reference_image_multiple.0'),
+    (error) => error.statusCode === 401,
   );
 });
 

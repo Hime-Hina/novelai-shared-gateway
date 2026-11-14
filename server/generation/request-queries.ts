@@ -67,17 +67,15 @@ export function jobAccountCost(job: Pick<StoreItem, 'accountCost'>): number {
 }
 
 export function jobDurationMs(
-  job: Pick<StoreItem, 'createdAt' | 'status' | 'completedAt' | 'updatedAt'>,
+  job: { createdAt?: string | null; status?: string | null; completedAt?: string | null },
   now = Date.now(),
 ) {
   const started = Date.parse(job.createdAt || '');
-  if (!started) {
-    return 0;
+  if (!Number.isFinite(started)) {
+    return null;
   }
-  const ended = ['done', 'failed'].includes(job.status!)
-    ? Date.parse(job.completedAt || job.updatedAt || '')
-    : now;
-  return !ended || ended < started ? 0 : ended - started;
+  const ended = ['done', 'failed'].includes(job.status!) ? Date.parse(job.completedAt || '') : now;
+  return !Number.isFinite(ended) || ended < started ? null : ended - started;
 }
 
 export function generationRequestForErrorLog(

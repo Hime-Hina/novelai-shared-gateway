@@ -705,7 +705,7 @@ test('观察型分配绑定有效采纳并按观察和资源仅消费一次，�
           ),
         )();
         if (mode === 'invalid-adoption' || mode === 'readopt-old') {
-          assert.equal(walletWrites, 2, '先应用两个钱包，再由真正的采纳检查拒绝');
+          assert.equal(walletWrites, 0, '原同步决定检查在钱包写入前拒绝无效采纳');
         }
         assert.equal(databaseState(target), unchanged);
         if (mode !== 'later-commit' && mode !== 'readopt-old') {
@@ -1216,6 +1216,48 @@ test('观察、恢复与资金 SQL 故障被外层捕获仍整笔回滚，原票
   await f.fund('atomic-funding', body, NOW + 12);
   assert.equal(db.prepare('SELECT remaining FROM pending_funding').get().remaining, '100');
   assert.deepEqual(db.pragma('foreign_key_check'), []);
+});
+
+test('容量报告保存原 owner 精确 signed delta，正负与已知零均可完整重放，错值不改变原账', async (t) => {
+  const f = await setup(t);
+  for (const [index, v5, expected] of [
+    [0, '50.000000000001', '29.999999999999'],
+    [1, '60.000000000001', '-10'],
+    [2, '60.000000000001', '0'],
+  ]) {
+    const snapshot = f.db.serialize(),
+      result = await f.observe({ v5UsagePercent: v5 }, NOW + 10 + index),
+      stored = readRelationalCommit(f.db, result.commitSeq),
+      fact = stored.events.find((e) => e.eventType === 'V5CapacityObserved');
+    assert.equal(fact.payload.delta, expected);
+    for (const invalid of ['0.0000000000001', '1', null, undefined]) {
+      if (invalid === expected) {
+        continue;
+      }
+      const target = new Database(snapshot);
+      try {
+        target.pragma('foreign_keys=ON');
+        const quotas = new RelationalQuotaStore(target),
+          before = databaseState(target),
+          bad = structuredClone(stored);
+        for (const events of [bad.events, bad.command.events]) {
+          events.find((e) => e.eventType === 'V5CapacityObserved').payload.delta = invalid;
+        }
+        target.transaction(() => assert.throws(() => quotas.replayQuotaCommit(bad)))();
+        assert.equal(databaseState(target), before);
+        target.transaction(() => quotas.replayQuotaCommit(stored))();
+        assert.deepEqual(
+          target.prepare('SELECT v5_capacity_gap FROM operating_state').get(),
+          f.db.prepare('SELECT v5_capacity_gap FROM operating_state').get(),
+        );
+        const committed = target.serialize();
+        target.transaction(() => assert.equal(quotas.replayQuotaCommit(stored).replayed, true))();
+        assert.deepEqual(target.serialize(), committed);
+      } finally {
+        target.close();
+      }
+    }
+  }
 });
 
 test('收据在 SQLite 关闭重开后仍按原规范请求去重，已完成匹配不需要在线 pending 行', async (t) => {

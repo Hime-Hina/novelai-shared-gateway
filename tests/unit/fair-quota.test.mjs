@@ -43,6 +43,37 @@ function fixture(percent = 80) {
 const request = { model: 'nai-diffusion-5', width: 1024, height: 1024, steps: 23 };
 const job = (id, r = request) => ({ id, request: { ...r } });
 
+test('同一共享配置计数器在分组和原成员调账两条路径均不能超过安全上界', () => {
+  const db = fixture();
+  db.users = members.map((id) => ({ id, enabled: true }));
+  db.settings.fairQuota.configVersion = Number.MAX_SAFE_INTEGER - 1;
+  configureFairGroups(db, db.settings.fairQuota.groups, { now: NOW });
+  assert.equal(db.settings.fairQuota.configVersion, Number.MAX_SAFE_INTEGER);
+  const before = structuredClone(db);
+  assert.throws(
+    () => configureFairGroups(db, db.settings.fairQuota.groups, { now: NOW }),
+    /安全边界/,
+  );
+  assert.deepEqual(db, before);
+  assert.throws(
+    () =>
+      manageFairMember(
+        db,
+        {
+          action: 'transfer-quota',
+          fromUserId: 'a',
+          toUserId: 'b',
+          resource: 'anlasFixed',
+          amount: 1,
+          expectedConfigVersion: Number.MAX_SAFE_INTEGER,
+        },
+        NOW,
+      ),
+    /安全边界/,
+  );
+  assert.deepEqual(db, before);
+});
+
 test('窄金融视图复用恢复顺序、份额与游标，不需要旧配置历史、用户或任务正文', () => {
   const db = fixture(),
     s = db.settings.fairQuota;

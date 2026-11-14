@@ -36,7 +36,6 @@ import {
 } from './generation/delivery.ts';
 import {
   completeGenerationCommand,
-  isNovelAiCapacityError,
   reconcileGenerationReviewsCommand,
   recoverPendingGenerationResultsCommand,
   reserveQueuedGeneration,
@@ -56,13 +55,11 @@ import {
 import { JobPreviews } from './generation/job-previews.ts';
 import { launcherSubscription } from './quota/launcher-subscription.ts';
 import { reconcileMemberSessionOwner } from './members/authentication.ts';
-import {
-  closeMemberGenerationStreams,
-  createMemberGenerationHttp,
-  memberGenerationError,
-} from './generation/member-http.ts';
+import { closeMemberGenerationStreams, memberGenerationError } from './generation/member-http.ts';
+import { createLegacyMemberGenerationHttp } from './generation/legacy-member-http.ts';
 import { handleMemberRoutes } from './members/http-routes.ts';
-import { createNativeHttp } from './protocols/native-http.ts';
+import { nativeGenerationError } from './protocols/native-http.ts';
+import { createLegacyNativeHttp } from './generation/legacy-native-http.ts';
 import { imageExtension } from './protocols/native-stream.ts';
 import {
   OfficialKeyJobs,
@@ -91,16 +88,21 @@ import {
 } from './protocols/novelai-client.ts';
 import {
   errorDetailMessage,
+  isNovelAiCapacityError,
   isAbortError,
   isInsufficientBalanceError,
   isTimeoutResultMessage,
   publicErrorMessage,
 } from './http/public-errors.ts';
+import { selectErrorLogJobs, publicErrorLog } from './reports/generation-errors.ts';
 import { privateAccessAllowed } from './http/public-hosts.ts';
 import {
   physicalAccountLoad as countPhysicalAccountLoad,
   createGenerationControls,
   createQueueDispatcher,
+  accountInflightTimeoutMs,
+  novelAiGenerateTimeoutMs,
+  runningJobTimeoutDelay,
 } from './generation/queue-dispatch.ts';
 import { ImageStorage, R2Storage, r2Config, storedImagePath } from './storage/r2-storage.ts';
 import { PikPakStorage, pikpakConfig } from './storage/pikpak-storage.ts';
@@ -270,9 +272,10 @@ const openAiQueuePollMs = 650;
 
 const jobStreamProgress = new Map<string, Progress>();
 const jobPreviews = new JobPreviews();
-const handleMemberGeneration = createMemberGenerationHttp({
+const handleMemberGeneration = createLegacyMemberGenerationHttp({
   store,
   admit: admitGeneration,
+  cancelGenerationRequest: (requestId, memberId) => cancelGenerationRequest(requestId, memberId),
   budget: generationPayloadBudget,
   imageStorage,
   previews: jobPreviews,
@@ -344,7 +347,7 @@ const accountQuotaRefresh = createAccountQuotaRefresh({
 });
 const { refreshEnabled: refreshEnabledAccountQuotas, fetch: fetchNovelAiAccountQuotaWithTimeout } =
   accountQuotaRefresh;
-const nativeHttp = createNativeHttp({
+const nativeHttp = createLegacyNativeHttp({
   store,
   admitGeneration,
   readJson,
@@ -460,12 +463,8 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
         String(req.url || '').split('?')[0],
       )
     ) {
-      const message = publicErrorMessage(
-        (error as GatewayError).message || 'Internal server error',
-      );
-      const code = Number((error as GatewayError).statusCode);
-      const statusCode = Number.isInteger(code) && code >= 400 && code <= 599 ? code : 500;
-      sendJson(res, statusCode, { message, statusCode, error: message });
+      const payload = nativeGenerationError(error);
+      sendJson(res, payload.statusCode, payload.body);
       return;
     }
     if (req.url?.startsWith('/v1/')) {
@@ -2190,35 +2189,6 @@ function shouldUseJobStreamProgress(job: Partial<StoreItem> = {}) {
   );
 }
 
-function runningJobTimeoutDelay(job: Partial<StoreItem> = {}) {
-  const deadline = jobDeadlineTimestamp(job);
-  const delays = [novelAiGenerateTimeoutMs()];
-  if (deadline) {
-    delays.push(Math.max(1, deadline - Date.now()));
-  }
-  return Math.max(1, Math.min(...delays));
-}
-
-function jobDeadlineTimestamp(job: Partial<StoreItem> = {}) {
-  const deadline = Date.parse(job.deadlineAt || '');
-  return Number.isFinite(deadline) && deadline > 0 ? deadline : 0;
-}
-
-function novelAiGenerateTimeoutMs() {
-  const configured = Number(process.env.NOVELAI_GENERATE_TIMEOUT_MS || 0);
-  if (Number.isFinite(configured) && configured > 0) {
-    return Math.max(1000, Math.floor(configured));
-  }
-  return Math.max(1, accountInflightTimeoutMs() - 1000);
-}
-
-function accountInflightTimeoutMs() {
-  const configured = Number(process.env.ACCOUNT_INFLIGHT_TIMEOUT_MS || 10 * 60 * 1000);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(1000, Math.floor(configured))
-    : 10 * 60 * 1000;
-}
-
 async function generateWithBoundAccount(
   reservation: Reservation,
   request: ExecutionRequest,
@@ -2582,92 +2552,14 @@ function hourlyUsageStatsByDay(jobs: StoreItem[], days = usageChartDays) {
 }
 
 function errorLogs(jobs: StoreItem[], db: Partial<StoreDatabase> = {}, limit = 100) {
-  const cutoff = Date.now() - errorLogRetentionMs;
-  return jobs
-    .filter((job) => job.status === 'failed')
-    .filter(isAccountErrorLogJob)
-    .filter((job) => {
-      const timestamp = Date.parse(job.updatedAt || job.createdAt || '');
-      return timestamp && timestamp >= cutoff;
-    })
-    .sort(
-      (a, b) =>
-        Date.parse(b.updatedAt || b.createdAt || '') - Date.parse(a.updatedAt || a.createdAt || ''),
-    )
-    .slice(0, limit)
-    .map((job) => publicErrorLog(job, db));
-}
-
-function isAccountErrorLogJob(job: StoreItem) {
-  if (!job?.accountId) {
-    return false;
-  }
-  const text = `${job.error || ''}\n${job.errorDetail || ''}`;
-  if (isNovelAiCapacityError({ message: text })) {
-    return false;
-  }
-  if (
-    /all NovelAI accounts are busy|server busy|direct generate timeout|AbortError|operation was aborted/i.test(
-      text,
-    )
-  ) {
-    return false;
-  }
-  if (/job deadline expired|stale timeout|queued job exceeded|running job exceeded/i.test(text)) {
-    return false;
-  }
-  if (/invalid user token|invalid STA1N|密钥额度不足|用户额度不足/i.test(text)) {
-    return false;
-  }
-  return true;
-}
-
-function publicErrorLog(job: StoreItem, db: Partial<StoreDatabase> = {}) {
-  const request = generationRequestForErrorLog(store, job);
-  const account =
-    job.accountId && Array.isArray(db.accounts)
-      ? db.accounts!.find((item) => item.id === job.accountId)
-      : null;
-  return {
-    id: job.id,
-    source: job.source || 'web',
-    userToken: maskToken(job.userToken || ''),
-    accountId: job.accountId || '',
-    accountRouteId: account?.routeId || 0,
-    status: job.status,
-    error: publicErrorMessage(job.error || ''),
-    errorDetail: errorDetailMessage(job.errorDetail || job.error || ''),
-    retryCount: Number(job.retryCount || 0),
-    cost: Number(job.cost || 0),
-    accountCost: jobAccountCost(job),
-    queueTotal: Number(job.queueTotal || 0),
-    durationMs: jobDurationMs(job),
-    request: errorLogRequest(request),
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    completedAt: job.completedAt || (['done', 'failed'].includes(job.status!) ? job.updatedAt : ''),
-    beijingDate: beijingDateKey(Date.parse(job.updatedAt || job.createdAt || '')),
-  };
-}
-
-function errorLogRequest(request: RequestSummary = {}) {
-  return {
-    tag: request.tag || '',
-    prompt: request.prompt || '',
-    artist: request.artist || '',
-    negative: request.negative || '',
-    model: request.model || '',
-    size: request.size || '',
-    width: request.width || 0,
-    height: request.height || 0,
-    requestedSteps: request.requestedSteps ?? request.steps ?? 0,
-    routedSteps: request.steps ?? 0,
-    scale: request.scale ?? '',
-    cfg: request.cfg ?? '',
-    sampler: request.sampler || '',
-    noiseSchedule: request.noiseSchedule || '',
-    seed: request.seed ?? '',
-  };
+  return selectErrorLogJobs(jobs, Date.now() - errorLogRetentionMs, limit).map((job) => {
+    const account = db.accounts?.find((item) => item.id === job.accountId);
+    return publicErrorLog(job, generationRequestForErrorLog(store, job), {
+      maskedUserToken: job.userToken == null ? null : maskToken(job.userToken),
+      accountRouteId: account?.routeId ?? null,
+      durationMs: jobDurationMs(job),
+    });
+  });
 }
 
 function recentBeijingDateKeys(days: number) {

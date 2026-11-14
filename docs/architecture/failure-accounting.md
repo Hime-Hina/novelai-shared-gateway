@@ -93,6 +93,16 @@ F03 本片当时尚未覆盖“文件写成后、SQLite 提交前崩溃”的孤
 
 历史事件只返回白名单投影：事件身份/类型/时间、任务与成员身份和安全用户名、资源金额及候选关系、证据等级、关联事件/收据、操作人，以及策略变更前后值。不会返回提示词、成员 Key、Discord 令牌或原始上游错误。运营视图的 `gapEventIds.v5` 对应 V5 当前差额事件；待匹配注资只返回收据、来源资源、归属、剩余金额和登记/快照时间等必要字段。
 
+共同展示入口是本模块的 `publicFailureEvent()` 和 `failureAccountingAlerts()`：它们接收已解析的窄数据，不读写数据库，也不重算另一套聚合。既有 `queryFailureAccounting()` 继续负责原 SQL 汇总、原时序分页与解析，事件白名单和软告警只在上述入口维护；后续关系读取复用它们。该提取本身不表示关系损耗查询、诊断保存或完整恢复已接入。
+
+关系金额在汇总及告警比较期间保留规范 12 位定点文本；原 `failureAccountingAlerts()` 共同边界以 BigInt 和原 number 阈值的精确十进制比例比较，完成后才允许转兼容 DTO number。旧在线 number 沿原生 number 比较，不因历史超过 12 位小数而拒绝。`V5CapacityObserved.delta` 保存原 quota owner 的实际 signed 变化（相等时原已知 0），投影核对原运营账前后值；不能以当前容量或 difference 代替历史变化。新 `ResourceGapObserved.amount` 是本次下降 `observedAmount`，没有原累计金额来源的历史 DTO `amount` 为 NULL；旧 Opening 不凭 header 或当前账补造变化金额。
+
+新格式的只读入口是 `RelationalReportStore.readFailureAccounting()`：事务内读取原窗口薄尝试/候选、原聚合事实和至多 51 条分页事实，当前运营账/政策/待匹配收据由 quota store 原读取 owner 提供；没有绑定账户基线时明确 503。风险累计和事实到白名单的转换继续归本模块，原 `generation/accounting.ts` 的候选“金额已知”判定由原结案与报告共用。候选每池取最大值再跨尝试累计，金额未知单列 `unknownAmounts`；没有原时间的保留尝试另列 `unknownTimeAttempts`，不放进某一天。`coverage=retained-facts` 明确仅统计保留事实，不把缺失历史称为完整零损耗。聚合只累计本次 Anlas 下降及原正 V5 delta，恢复/核销/迟到不重复计风险，也不将两类风险相加。
+
+分页游标绑定 history ID、原十进制 commit seq 与 event index，序号以 BigInt 进入 SQL，不按 JS number 排序或从当前时间重建顺序。估计结案只展示实际 `ReviewClosed.status=estimated_closed`；`result_recovered` 由原 LateResultRecovered 及其关联 loss/closure 展示，不能再伪造一次估计结案。原政策 before 从该事实之前的最后权威政策读取，未知 NULL，不借当前政策补值。现有事件金额的 NULL 和明确 0 分开；归档以外的来源和责任仍由迁移/归档清单承接。此入口尚未接新 HTTP 总装配，不从旧 JsonStore fallback。
+
+迟到结果的 closure 关联属于历史角色：同一请求、成员、账户、attempt 和 loss 已存在先前 estimated closure 时保留它；未曾估计时只关联该 LateResult 同笔之后的实际 result_recovered closure。不能用当前 attempt.closure_event_id 覆盖原结案。后者继续服务当前核对状态，报告从不可变原事实取历史关系，不新增来源影子或持久派生列。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和 `charge.fixed` / `charge.purchased`；历史没有分池字段时为 `null`，不伪造为零。`me.lateResults` 从 SQLite 本人完整历史按 `lateResultAt` 倒序取至多 10 条，字段为 `id/model/createdAt/lateResultAt/imageUrl/charge`。签发前同时验证有效成员、任务所属 Key 和图片所属 Key，缺失或不匹配的图片不签发。沿用现有 15 分钟签名链接，不在 URL 放 Key；成员 Cookie 的 `/api/member` 路径不会阻止领取 `/api/images/.../content`。领取保留原失败状态和分池退款，不发上游请求，也不再次扣款。
 
 `0003_failure_accounting_queries.sql` 只添加三个索引：损耗类型/时间、按顺序分页的损耗历史部分索引、成员迟到结果 JSON 表达式部分索引。数据库当前共有 4 条迁移。Drizzle Kit 对 JSON 表达式的转义已按 schema 意图校准；分页显式使用有序部分索引，避免规划器转而按类型扫描后将整段历史排序。滚动汇总在 SQLite 内计算，只将有限标量和当前页事件载入 JS。部署前仍须备份，迁移只能向前；不对生产执行 schema push。

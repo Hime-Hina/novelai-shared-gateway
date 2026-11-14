@@ -21,6 +21,40 @@ export interface RunningControl {
 }
 type PhysicalControls = ReadonlyMap<string, { accountId: string }>;
 type Settings = Partial<StoreDatabase['settings']>;
+interface GenerationControlJob {
+  id?: string;
+  requestId?: string;
+  payloadBytes?: number;
+  accountId?: string;
+  deadlineAt?: string | number | null;
+}
+
+export function accountInflightTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
+  const configured = Number(env.ACCOUNT_INFLIGHT_TIMEOUT_MS || 10 * 60 * 1000);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1000, Math.floor(configured))
+    : 10 * 60 * 1000;
+}
+export function novelAiGenerateTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
+  const configured = Number(env.NOVELAI_GENERATE_TIMEOUT_MS || 0);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1000, Math.floor(configured));
+  }
+  return Math.max(1, accountInflightTimeoutMs(env) - 1000);
+}
+export function runningJobTimeoutDelay(
+  job: { deadlineAt?: string | number | null } = {},
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now(),
+) {
+  const deadline =
+    typeof job.deadlineAt === 'number' ? job.deadlineAt : Date.parse(job.deadlineAt || '');
+  const delays = [novelAiGenerateTimeoutMs(env)];
+  if (Number.isFinite(deadline) && deadline > 0) {
+    delays.push(Math.max(1, deadline - now));
+  }
+  return Math.max(1, Math.min(...delays));
+}
 
 export function physicalAccountLoad(controls: PhysicalControls, accountId: string) {
   let count = 0;
@@ -62,10 +96,11 @@ export function nextSharedAccountReadyDelay(
 }
 
 export function createGenerationControls(options: {
-  timeoutDelay(job: Partial<StoreItem>): number;
+  timeoutDelay(job: GenerationControlJob): number;
   schedule(): void;
+  controls?: Map<string, RunningControl>;
 }) {
-  const controls = new Map<string, RunningControl>();
+  const controls = options.controls ?? new Map<string, RunningControl>();
   function abortRunningJob(jobId: string, reason = 'direct generate timeout') {
     const control = controls.get(jobId);
     if (!control) {
@@ -78,7 +113,7 @@ export function createGenerationControls(options: {
     }
     return true;
   }
-  function createRunningJobControl(job: Partial<StoreItem> = {}) {
+  function createRunningJobControl(job: GenerationControlJob = {}) {
     const controller = new AbortController();
     let resolveDone = () => {};
     const control: RunningControl = {
