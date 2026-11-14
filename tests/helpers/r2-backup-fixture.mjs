@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { initializeRetainedSources } from '../../server/storage/retained-sources.ts';
 
 export async function backupFixture(t, root) {
   const preserve = Boolean(root);
@@ -13,6 +14,8 @@ export async function backupFixture(t, root) {
     t.after(() => rm(root, { recursive: true, force: true }));
   }
   const cloud = path.join(root, 'cloud');
+  const registry = path.join(root, 'retained-sources');
+  await initializeRetainedSources(registry);
   await mkdir(cloud);
   const envFile = path.join(root, 'r2.env'),
     keyFile = path.join(root, 'backup.key'),
@@ -90,12 +93,23 @@ export async function backupFixture(t, root) {
   const cli = path.join(scriptsLink, 'r2-backup.mjs'),
     run = promisify(execFile);
   const call = (args, env = {}) =>
-    run(process.execPath, ['--import', pathToFileURL(preload).href, cli, ...args], {
-      windowsHide: true,
-      env: { ...process.env, R2_TEST_FAIL_READ: '0', ...env },
-    });
+    run(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(preload).href,
+        cli,
+        ...args,
+        ...(args[0] === 'upload' ? [registry] : []),
+      ],
+      {
+        windowsHide: true,
+        env: { ...process.env, R2_TEST_FAIL_READ: '0', ...env },
+      },
+    );
   return {
     root,
+    registry,
     cloud,
     envFile,
     keyFile,
