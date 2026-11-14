@@ -1,7 +1,10 @@
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
-import { authenticateMemberApiKey } from '../members/authentication.ts';
+import {
+  authenticateMemberApiKey,
+  withAuthenticatedMemberApiKey,
+} from '../members/authentication.ts';
 import { gatewayKeyFrom } from '../members/http-request.ts';
 import { requireDiscordMembership, type DiscordDependencies } from '../members/discord-auth.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -95,8 +98,17 @@ export function createRelationalOpenAiHttp(deps: {
         env,
         discordFetch: deps.discordFetch,
       });
-      const current = members.readMember(member.id);
-      if (current?.status !== 'active') {
+      const current = await withAuthenticatedMemberApiKey(
+        members,
+        token,
+        (authorized) => {
+          // Discord IO 后目录读取与生成都重核原 Key 和当前 ready，不能只检查成员仍 active。
+          assertRelationalStorageReady(sqlite);
+          return members.readMember(authorized.id);
+        },
+        env,
+      );
+      if (!current) {
         fail(401, 'invalid token.');
       }
       const admissionVersion = current.admissionEpoch;

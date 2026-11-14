@@ -74,6 +74,7 @@ async function fixture(t, options = {}) {
           connection: 'keep-alive',
         });
       },
+      ...options.httpDependencies,
     },
   });
   return {
@@ -730,4 +731,72 @@ test('OpenAI显式缓存保留原normalized尺寸标签，不扩大为仅wire等
   assert.equal(f.upstream.calls[1].body.parameters.width, 128);
   assert.equal(f.upstream.calls[0].body.parameters.height, 128);
   assert.equal(f.upstream.calls[1].body.parameters.height, 128);
+});
+
+test('OpenAI目录在Discord实际IO后重核原Key与ready，成员仍active不能替代凭据', async (t) => {
+  for (const change of ['rotate', 'ready']) {
+    await t.test(change, async (t) => {
+      const env = {
+        DISCORD_CLIENT_ID: '123456789012345678',
+        DISCORD_CLIENT_SECRET: 'synthetic-discord-private-secret',
+        DISCORD_GUILD_ID: '1134557553011998840',
+        PUBLIC_BASE_URL: 'https://synthetic.example',
+      };
+      let entered, release;
+      const waiting = new Promise((resolve) => {
+          entered = resolve;
+        }),
+        barrier = new Promise((resolve) => {
+          release = resolve;
+        });
+      t.after(() => release());
+      const f = await fixture(t, {
+        env,
+        httpDependencies: {
+          async discordFetch(url) {
+            assert.equal(f.db.inTransaction, false);
+            assert.match(String(url), /users\/@me\/guilds\/.+\/member$/);
+            entered();
+            await barrier;
+            return Response.json({ user: { id: '123456789012345679' } });
+          },
+        },
+      });
+      await f.members.discordAuthenticationTransaction((tx) => {
+        const member = tx.readMember('m1');
+        member.discord = {
+          id: '123456789012345679',
+          guildId: env.DISCORD_GUILD_ID,
+          accessToken: 'synthetic-private-discord-access',
+          refreshToken: 'synthetic-private-discord-refresh',
+          expiresAt: Date.now() + 86400000,
+          checkedAt: 0,
+          member: true,
+        };
+        tx.saveAuthentication(member);
+      });
+      const pending = fetch(f.origin + '/v1/models', {
+        headers: { authorization: `Bearer ${keys.m1}` },
+      });
+      await waiting;
+      if (change === 'rotate') {
+        f.db.transaction(() => f.members.replaceMemberApiKey('m1', 'STA1N-openai-current'))();
+      } else {
+        f.db.prepare("UPDATE projection_state SET status='building'").run();
+      }
+      release();
+      const response = await pending;
+      assert.equal(response.status, change === 'rotate' ? 401 : 500, await response.text());
+      assert.equal(f.upstream.calls.length, 0);
+      if (change === 'rotate') {
+        const before = databaseState(f.db),
+          healthy = await fetch(f.origin + '/v1/models', {
+            headers: { authorization: 'Bearer STA1N-openai-current' },
+          });
+        assert.equal(healthy.status, 200);
+        await healthy.arrayBuffer();
+        assert.equal(databaseState(f.db), before);
+      }
+    });
+  }
 });
