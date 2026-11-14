@@ -1,7 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { fixture, meta, NOW, keys, databaseState } from '../helpers/relational-generation.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  fixture,
+  meta,
+  NOW,
+  keys,
+  databaseState,
+  installReady,
+} from '../helpers/relational-generation.mjs';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
@@ -158,13 +168,22 @@ test('真实在线首次配置显式保存原政策，随后账户首绑和官�
     configVersion: 3,
   });
   t.mock.method(Date, 'now', () => NOW + 3);
+  const parent = fs.realpathSync(os.tmpdir()),
+    dir = fs.mkdtempSync(path.join(parent, 'novelai-groups-ready-'));
+  t.after(() => {
+    const resolved = fs.realpathSync(dir);
+    assert.ok(resolved.startsWith(parent + path.sep));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  });
+  await installReady({ db, dir });
   await ownerAccountCommand(
     accounts,
     authorize,
     meta('enable', NOW + 3, 'm1'),
     { kind: 'enable', accountId: 'a' },
     async (_pst, _proxy, _id, start) => {
-      await start?.();
+      const activate = await start?.();
+      activate?.();
       return {
         tier: 3,
         subscriptionActive: true,

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   NOW,
   keys,
@@ -8,6 +11,7 @@ import {
   openingFacts,
   fixture,
   databaseState,
+  installReady,
 } from '../helpers/relational-generation.mjs';
 import {
   initializeRelationalStorage,
@@ -17,10 +21,7 @@ import { RelationalMemberStore } from '../../server/storage/relational-member-st
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import {
-  RelationalQuotaStore,
-  relationalQuotaFacts,
-} from '../../server/storage/relational-quota-store.ts';
+import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
 import {
   withAuthenticatedMemberApiKey,
@@ -29,6 +30,11 @@ import {
   logoutMemberSession,
 } from '../../server/members/authentication.ts';
 import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
+import {
+  relationalPrivateStateSha256,
+  relationalSnapshotSha256,
+  restoreRelationalPrivateSnapshot,
+} from '../../server/storage/relational-private-restore.ts';
 import { accountQuotaResult, accountQuotaErrorResult } from '../../server/quota/account-refresh.ts';
 import {
   appendRelationalCommit,
@@ -85,7 +91,8 @@ function commandFixture(
       { ...meta(id, Date.now(), 'm1'), ...overrides.metadata },
       input,
       async (pst, _proxy, _id, start) => {
-        await start?.();
+        const activate = await start?.();
+        activate?.();
         queries++;
         assert.equal(db.inTransaction, false);
         assert.equal(pst, db.prepare('SELECT pst FROM upstream_credentials').get().pst);
@@ -99,11 +106,13 @@ function commandFixture(
         accounts.prepareAccountCommand(metadata, input, member),
       );
     // 此窄 owner 夹具明确模拟实际发起；单独准备不得推进观察顺序。
-    return 'prepared' in prepared
-      ? authorize((member) =>
-          accounts.startAccountEnable(metadata, input, prepared.prepared, member),
-        )
-      : prepared;
+    if (!('prepared' in prepared)) {
+      return prepared;
+    }
+    const authorized = await authorize((member) =>
+      accounts.startAccountEnable(metadata, input, prepared.prepared, member),
+    );
+    return 'start' in authorized ? authorized.start() : authorized;
   };
   const complete = (
     id,
@@ -136,6 +145,54 @@ function commandFixture(
       response = value;
     },
   };
+}
+function privateDirectory(t) {
+  const parent = fs.realpathSync(os.tmpdir()),
+    dir = fs.mkdtempSync(path.join(parent, 'novelai-account-command-'));
+  fs.chmodSync(dir, 0o700);
+  t.after(() => {
+    const resolved = fs.realpathSync(dir);
+    assert.ok(resolved.startsWith(parent + path.sep));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  });
+  return dir;
+}
+async function online(t, f) {
+  assert.throws(() => assertRelationalStorageReady(f.db), /incomplete/);
+  await installReady({ db: f.db, dir: privateDirectory(t) });
+  assertRelationalStorageReady(f.db);
+  return f;
+}
+// 原私有 checkpoint 也从空 building 回放，再恢复明确选定的 same-cut 私有字节；不改 ready 状态。
+function buildingCheckpoint(t, bytes) {
+  const source = new Database(bytes),
+    target = new Database(':memory:');
+  try {
+    initializeRelationalStorage(
+      target,
+      source.prepare('SELECT history_id id FROM projection_state WHERE id=1').get().id,
+    );
+    const replayer = new RelationalCommitReplayer(target),
+      inputs = new RelationalInputStore(source);
+    for (const { seq } of source
+      .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() => replayer.replayCommit(readRelationalCommit(source, seq), inputs))();
+    }
+    const filename = path.join(privateDirectory(t), 'selected.sqlite');
+    fs.writeFileSync(filename, bytes, { mode: 0o600 });
+    target.transaction(() =>
+      restoreRelationalPrivateSnapshot(target, filename, relationalSnapshotSha256(filename)),
+    )();
+    assert.equal(target.prepare('SELECT status FROM projection_state').get().status, 'building');
+    assert.equal(relationalPrivateStateSha256(target), relationalPrivateStateSha256(source));
+    return target;
+  } catch (error) {
+    target.close();
+    throw error;
+  } finally {
+    source.close();
+  }
 }
 async function fresh(t) {
   const db = new Database(':memory:');
@@ -184,7 +241,7 @@ async function fresh(t) {
 }
 
 test('账户真实首绑保持暂停与未知额度，核验一次分配并保存可回放的观察身份', async (t) => {
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   const registered = await f.run('register-account', registration);
   assert.deepEqual(registered.receipt, { accountId: 'a', enabled: false });
   assert.equal(account(f.db).credential_epoch, 1);
@@ -219,7 +276,7 @@ test('账户真实首绑保持暂停与未知额度，核验一次分配并保�
     /idempotency conflict/,
   );
   await assert.rejects(f.run('second-account', { ...registration, accountId: 'b' }), /首次注册/);
-  assert.throws(() => assertRelationalStorageReady(f.db), /incomplete/);
+  assertRelationalStorageReady(f.db);
 });
 
 test('原首注册安全意图完整保留绑定，缺绑定/重复/逆序不能被合法完整envelope藏掉', async (t) => {
@@ -338,7 +395,7 @@ test('账户命令拒绝未知操作和额外字段，授权与拥有者事务�
 });
 
 test('暂停与轮换保留权益、代次单调，重领原启用回执不会重新启用或查询', async (t) => {
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   await f.run('register', registration);
   await f.run('enable', mutation('enable'));
   const wallet = f.db.prepare('SELECT * FROM wallets ORDER BY member_id').all();
@@ -407,7 +464,7 @@ test('当前授权在原回执和网络等待后重核，旧 Key、Cookie、epoc
       assert.equal(f.queries(), 0);
     });
   }
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   await f.run('register', registration);
   f.query(async () => {
     f.env.OWNER_USER_ID = 'm2';
@@ -420,7 +477,7 @@ test('当前授权在原回执和网络等待后重核，旧 Key、Cookie、epoc
 test('暂停、凭据 A→B→A、配置变化或较新观察使等待中的核验失效', async (t) => {
   for (const mode of ['pause', 'rotate', 'new-ticket', 'new-observation', 'policy']) {
     await t.test(mode, async (t) => {
-      const f = await fresh(t);
+      const f = await online(t, await fresh(t));
       await f.run('register', registration);
       f.query(async () => {
         if (mode === 'pause') {
@@ -462,7 +519,7 @@ test('无效 Opus 与查询失败保留观察和失败回执，重领不查上�
     null,
   ]) {
     await t.test(JSON.stringify(patch), async (t) => {
-      const f = await fresh(t);
+      const f = await online(t, await fresh(t));
       await f.run('register', registration);
       if (patch) {
         f.response(rawQuota(patch));
@@ -492,7 +549,7 @@ test('无效 Opus 与查询失败保留观察和失败回执，重领不查上�
 
 test('已启用账户重新核验遇到封禁后先提交失败事实再报错，原回执和回放均阻止派发', async (t) => {
   const original = await fixture(t, { env: { OWNER_USER_ID: 'm1' } }),
-    f = commandFixture(t, original.db, original.members);
+    f = await online(t, commandFixture(t, original.db, original.members));
   await original.accept('banned');
   const before = f.db.serialize();
   f.query(async () => {
@@ -513,13 +570,14 @@ test('已启用账户重新核验遇到封禁后先提交失败事实再报错�
       )
       .get().seq,
     stored = readRelationalCommit(f.db, seq),
-    target = new Database(before);
+    target = buildingCheckpoint(t, before);
   try {
     target.pragma('foreign_keys=ON');
     const quotas = new RelationalQuotaStore(target, {}),
       accounts = new RelationalAccountStore(target, quotas, new Map(), {});
     target.transaction(() => accounts.replayAccountCommit(stored))();
-    assert.equal(databaseState(target), databaseState(f.db));
+    assert.equal(businessState(target), businessState(f.db));
+    assert.equal(relationalPrivateStateSha256(target), relationalPrivateStateSha256(f.db));
     assert.throws(
       () =>
         target.transaction(() =>
@@ -543,7 +601,7 @@ test('核验等待期间正常生成收尾不改变可用性代次，成功观�
   for (const mode of ['valid', 'banned']) {
     await t.test(mode, async (t) => {
       const original = await fixture(t, { env: { OWNER_USER_ID: 'm1' } }),
-        f = commandFixture(t, original.db, original.members);
+        f = await online(t, commandFixture(t, original.db, original.members));
       await original.accept('finishing');
       original.dispatch('finishing-0');
       const previousSource = account(f.db).source_event_id;
@@ -576,7 +634,7 @@ test('核验等待期间正常生成收尾不改变可用性代次，成功观�
 
 test('非法期限核验的失败资格在后续恢复仍阻止真实派发，合法空值和数字字符串 tier 保留', async (t) => {
   const original = await fixture(t, { env: { OWNER_USER_ID: 'm1' } }),
-    f = commandFixture(t, original.db, original.members);
+    f = await online(t, commandFixture(t, original.db, original.members));
   await original.accept('invalid-expiry');
   f.response(rawQuota({ subscriptionExpiresAt: 'malformed-expiration' }));
   await assert.rejects(f.run('invalid-expiry', mutation('enable')), { statusCode: 409 });
@@ -606,7 +664,7 @@ test('非法期限核验的失败资格在后续恢复仍阻止真实派发，�
 test('超过观察有效期的网络结果和等待期间撤销的 Cookie 均不能启用', async (t) => {
   for (const mode of ['expired-query', 'revoked-cookie']) {
     await t.test(mode, async (t) => {
-      const f = await fresh(t);
+      const f = await online(t, await fresh(t));
       await f.run('register', registration);
       const user = await withAuthenticatedMemberApiKey(
           f.members,
@@ -648,7 +706,7 @@ test('轮换同时检查真实物理槽和预扣，逻辑退款不提前释放�
   for (const mode of ['physical-only', 'reservation-only', 'refunded-physical']) {
     await t.test(mode, async (t) => {
       const original = await fixture(t, { env: { OWNER_USER_ID: 'm1' } }),
-        f = commandFixture(t, original.db, original.members);
+        f = await commandFixture(t, original.db, original.members);
       if (mode !== 'physical-only') {
         await original.accept('active');
         original.dispatch('active-0');
@@ -677,6 +735,9 @@ test('私有凭据、后续成员钱包或启用事实故障在外层捕获后�
   for (const mode of ['register-secret', 'rotate-secret', 'enable-wallet', 'enable-availability']) {
     await t.test(mode, async (t) => {
       const f = await fresh(t);
+      if (mode.startsWith('enable-')) {
+        await online(t, f);
+      }
       if (mode !== 'register-secret') {
         await f.run('register', registration);
       }
@@ -749,7 +810,11 @@ function businessState(db) {
           .map((row) =>
             Object.fromEntries(
               Object.entries(row)
-                .filter(([key]) => name !== 'members' || key !== 'auth_epoch')
+                .filter(
+                  ([key]) =>
+                    (name !== 'members' || key !== 'auth_epoch') &&
+                    (name !== 'projection_state' || key !== 'status'),
+                )
                 .map(([key, value]) => [key, typeof value === 'bigint' ? String(value) : value]),
             ),
           ),
@@ -758,7 +823,7 @@ function businessState(db) {
 }
 
 test('原完整提交从空库重建账户、观察和权益，保留原回执且不恢复私有认证', async (t) => {
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   await f.run('register', registration);
   await f.run('enable', mutation('enable'));
   await f.run('pause', mutation('pause'));
@@ -767,25 +832,14 @@ test('原完整提交从空库重建账户、观察和权益，保留原回执�
   const target = new Database(':memory:');
   try {
     initializeRelationalStorage(target, 'account-history');
-    const members = new RelationalMemberStore(target),
-      quotas = new RelationalQuotaStore(target, {}),
-      accounts = new RelationalAccountStore(target, quotas, new Map(), {}),
-      generations = new RelationalGenerationStore(target, {});
+    const replayer = new RelationalCommitReplayer(target),
+      inputs = new RelationalInputStore(f.db);
     const commits = f.db
       .prepare('SELECT CAST(commit_seq AS TEXT) AS n FROM commits ORDER BY commit_seq')
       .all()
       .map(({ n }) => readRelationalCommit(f.db, n));
     for (const stored of commits) {
-      const apply = () =>
-        target.transaction(() => {
-          if (stored.events[0].eventType === 'MemberRegistered') {
-            return members.replayMemberCommit(stored);
-          }
-          if (stored.events.some((e) => e.eventType === 'ImportSourceRegistered')) {
-            return generations.replayGenerationCommit(stored);
-          }
-          return accounts.replayAccountCommit(stored);
-        })();
+      const apply = () => target.transaction(() => replayer.replayCommit(stored, inputs))();
       apply();
       const checkpoint = target.serialize();
       assert.equal(apply().replayed, true);
@@ -811,7 +865,7 @@ test('原完整提交从空库重建账户、观察和权益，保留原回执�
 });
 
 test('回放拒绝错误观察身份、旧代次、旧序号、伪首绑和未知事实，外层捕获后保持原切点', async (t) => {
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   const beforeRegister = f.db.serialize(),
     registered = await f.run('register', registration),
     beforeEnable = f.db.serialize(),
@@ -826,7 +880,7 @@ test('回放拒绝错误观察身份、旧代次、旧序号、伪首绑和未�
   ]) {
     await t.test(mode, (t) => {
       const isRegister = mode.startsWith('registration') || mode.startsWith('binding'),
-        target = new Database(isRegister ? beforeRegister : beforeEnable),
+        target = buildingCheckpoint(t, isRegister ? beforeRegister : beforeEnable),
         stored = structuredClone(
           readRelationalCommit(f.db, isRegister ? registered.commitSeq : enabled.commitSeq),
         );
@@ -867,7 +921,7 @@ test('回放拒绝错误观察身份、旧代次、旧序号、伪首绑和未�
 
 test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交可断点重复回放', async (t) => {
   const original = await fixture(t, { env: { OWNER_USER_ID: 'm1' } }),
-    f = commandFixture(t, original.db, original.members),
+    f = await online(t, commandFixture(t, original.db, original.members)),
     old = f.quotas.beginQuotaObservation('a', NOW);
   await original.accept('mixed', { samples: 2 });
   original.dispatch('mixed-0');
@@ -903,9 +957,13 @@ test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交�
   f.now(NOW + 20);
   await f.run('enable-current', mutation('enable'));
   assert.ok(BigInt(f.quotas.readAccountQuota('a').observedSequence) > 9007199254740993n);
-  const credentialTarget = new Database(beforeRotation);
+  const credentialTarget = buildingCheckpoint(t, beforeRotation);
   try {
     credentialTarget.pragma('foreign_keys=ON');
+    assert.equal(
+      credentialTarget.prepare('SELECT COUNT(*) n FROM upstream_credentials').get().n,
+      1,
+    );
     const quotas = new RelationalQuotaStore(credentialTarget, {}),
       accounts = new RelationalAccountStore(credentialTarget, quotas, new Map(), {});
     credentialTarget.transaction(() =>
@@ -921,32 +979,13 @@ test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交�
   const target = new Database(':memory:');
   try {
     initializeRelationalStorage(target, 'generation-history');
-    const members = new RelationalMemberStore(target),
-      quotas = new RelationalQuotaStore(target, {}),
-      accounts = new RelationalAccountStore(target, quotas, new Map(), {}),
-      generations = new RelationalGenerationStore(target, {}),
-      inputs = new RelationalInputStore(target);
-    const accountIds = new Set(['rotate-B', 'rotate-current', 'enable-current']);
+    const replayer = new RelationalCommitReplayer(target);
     const commits = f.db
       .prepare('SELECT CAST(commit_seq AS TEXT) AS n FROM commits ORDER BY commit_seq')
       .all()
       .map(({ n }) => readRelationalCommit(f.db, n));
     const replay = (stored) =>
-      target.transaction(() => {
-        if (stored.events[0].eventType === 'MemberRegistered') {
-          return members.replayMemberCommit(stored);
-        }
-        if (accountIds.has(stored.command.commandId)) {
-          return accounts.replayAccountCommit(stored);
-        }
-        if (stored.events.every((event) => relationalQuotaFacts.has(event.eventType))) {
-          return quotas.replayQuotaCommit(stored);
-        }
-        if (stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-          return inputs.replayAcceptedInput(original.inputs, stored.events[0].commitSeq);
-        }
-        return generations.replayGenerationCommit(stored);
-      })();
+      target.transaction(() => replayer.replayCommit(stored, original.inputs))();
     for (const stored of commits) {
       replay(stored);
       const checkpoint = target.serialize();
@@ -964,7 +1003,7 @@ test('真实轮换隔离旧观察成功/失败和旧尝试冷却，混合提交�
 test('账户准备不领取票，实际开始前凭据或授权变化不发查询、不写观察，健康新调用可重试', async (t) => {
   for (const mode of ['credential', 'owner'])
     await t.test(mode, async (t) => {
-      const f = await fresh(t);
+      const f = await online(t, await fresh(t));
       await f.run('start-register', registration);
       let calls = 0;
       const metadata = meta('before-start', NOW, 'm1'),
@@ -981,7 +1020,8 @@ test('账户准备不领取票，实际开始前凭据或授权变化不发查�
             else f.env.OWNER_USER_ID = 'm2';
             const before = databaseState(f.db);
             try {
-              await start();
+              const activate = await start();
+              activate?.();
               calls++;
               return rawQuota();
             } finally {
@@ -1004,7 +1044,7 @@ test('账户准备不领取票，实际开始前凭据或授权变化不发查�
 });
 
 test('账户准备与实际start之间已有同键原回执时零raw IO返回，不按后来可用性重决定', async (t) => {
-  const f = await fresh(t);
+  const f = await online(t, await fresh(t));
   await f.run('concurrent-register', registration);
   const input = mutation('enable');
   let raw = 0,
@@ -1018,7 +1058,8 @@ test('账户准备与实际start之间已有同键原回执时零raw IO返回，
       committed = await f.run('same-command', input);
       const before = databaseState(f.db);
       try {
-        await start();
+        const activate = await start();
+        activate?.();
         raw++;
         return rawQuota();
       } finally {

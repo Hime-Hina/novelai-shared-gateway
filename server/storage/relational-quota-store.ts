@@ -2039,6 +2039,48 @@ export class RelationalQuotaStore {
       ...this.readOfficialQuotaV5(accountId),
     };
   }
+  quotaObservationCanEnable(p: RelationalPayloads['QuotaObserved'], now: number) {
+    return (
+      p.errorCode === null &&
+      isQuotaSnapshotFresh(p.observedAt, now) &&
+      isUsableOpus(
+        {
+          enabled: true,
+          quotaTier: p.quotaTier,
+          subscriptionActive: p.subscriptionActive,
+          subscriptionExpiresAt: iso(p.subscriptionExpiresAt),
+        },
+        now,
+      )
+    );
+  }
+  readAccountEnableProof(accountId: string, now: number) {
+    const account = this.account(accountId),
+      q = this.readAccountQuota(accountId);
+    if (
+      account.enabled !== 1 ||
+      !q.observationEventId ||
+      q.observedCredentialEpoch !== account.epoch ||
+      q.quotaErrorCode !== null
+    ) {
+      return null;
+    }
+    const original = this.fact(q.observationEventId),
+      connection = relationalAccountConnectionSource(this.sqlite, accountId);
+    if (
+      original.type !== 'QuotaObserved' ||
+      original.accountId !== accountId ||
+      !connection ||
+      original.payload.connectionSourceEventId !== connection ||
+      !this.quotaObservationCanEnable(
+        original.payload as unknown as RelationalPayloads['QuotaObserved'],
+        now,
+      )
+    ) {
+      return null;
+    }
+    return q.observationEventId;
+  }
   beginQuotaObservation(
     accountId: string,
     startedAt = Date.now(),
@@ -2073,7 +2115,7 @@ export class RelationalQuotaStore {
     startedAt: number,
   ): Ticket {
     if (
-      !this.sqlite.inTransaction ||
+      this.sqlite.inTransaction ||
       source.credentialEpoch !== 1 ||
       !Number.isSafeInteger(startedAt) ||
       startedAt < 0

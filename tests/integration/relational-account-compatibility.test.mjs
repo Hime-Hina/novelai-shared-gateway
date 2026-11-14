@@ -34,6 +34,7 @@ import {
   relationalReplayFacts,
 } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { withAuthenticatedMemberApiKey } from '../../server/members/authentication.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { relationalAccountConnectionSource } from '../../server/storage/relational-account-connection.ts';
@@ -43,8 +44,15 @@ import {
   restoreRelationalPrivateSnapshot,
 } from '../../server/storage/relational-private-restore.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
-import { accountQuotaResult, accountQuotaErrorResult } from '../../server/quota/account-refresh.ts';
-import { ownerAccountCommand } from '../../server/members/owner-operations.ts';
+import {
+  accountQuotaResult,
+  accountQuotaErrorResult,
+  createAccountQuotaQuery,
+} from '../../server/quota/account-refresh.ts';
+import {
+  ownerAccountCommand,
+  adminAccountBatchCommand,
+} from '../../server/members/owner-operations.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
 
 const official = () => ({
@@ -57,9 +65,9 @@ const official = () => ({
   v5UsageIsNegative: false,
   v5UsageTimeUntilNextPercent: 600,
 });
-function setup(f, controls = new Map()) {
-  const quotas = new RelationalQuotaStore(f.db),
-    accounts = new RelationalAccountStore(f.db, quotas, controls),
+function setup(f, controls = new Map(), env = {}) {
+  const quotas = new RelationalQuotaStore(f.db, env),
+    accounts = new RelationalAccountStore(f.db, quotas, controls, env),
     configure = (id, changes, actor = null) =>
       f.db.transaction(() =>
         accounts.prepareAccountCommand(
@@ -84,6 +92,10 @@ function publicPrefix(t, f, until) {
     target.transaction(() => owner.replayCommit(readRelationalCommit(f.db, seq), inputs))();
   }
   return { target, owner, inputs };
+}
+function startAccountOutsideSql(f, accounts, ...args) {
+  const authorized = f.db.transaction(() => accounts.startAccountEnable(...args))();
+  return 'start' in authorized ? authorized.start() : authorized;
 }
 function resequence(stored, target) {
   const versions = new Map();
@@ -214,6 +226,7 @@ test('管理员组合proxy与enable实际发起只用目标连接，最终单提
   const f = await fixture(t),
     { accounts } = setup(f),
     proxy = 'socks5://127.0.0.1:19001';
+  await installReady(f);
   const input = {
     kind: 'configure',
     accountId: 'a',
@@ -226,7 +239,8 @@ test('管理员组合proxy与enable实际发起只用目标连接，最终单提
     assert.equal(url, proxy);
     assert.equal(id, 'a');
     calls++;
-    await start();
+    const activate = await start();
+    activate?.();
     return official();
   };
   f.db.exec(
@@ -333,6 +347,7 @@ test('新配置真实完整提交与唯一ready安装均要求已注册owner，�
 test('合法完整envelope仍拒跨角色连接ref、同笔未来配置与缺失当前401决定，outercatch原子回滚后可健康重试', async (t) => {
   const f = await fixture(t),
     { accounts, quotas, configure } = setup(f);
+  await installReady(f);
   const ticket = quotas.beginQuotaObservation('a', NOW);
   const observation = f.db.transaction(() =>
     quotas.recordQuotaObservation(
@@ -362,7 +377,8 @@ test('合法完整envelope仍拒跨角色连接ref、同笔未来配置与缺失
       changes: { proxyUrl: 'socks5://127.0.0.1:19001', enabled: true },
     },
     async (_pst, _url, _id, start) => {
-      await start();
+      const activate = await start();
+      activate?.();
       return official();
     },
     () => NOW + 3,
@@ -1024,6 +1040,7 @@ test('非绑定真实官方观察与启用保留原值，不能同步/分配或�
       null,
     ),
   )();
+  await installReady(f);
   const pool = () =>
       JSON.stringify([
         f.db.prepare('SELECT * FROM sharing_policy').all(),
@@ -1080,7 +1097,8 @@ test('非绑定真实官方观察与启用保留原值，不能同步/分配或�
     admin('passive-enable'),
     { kind: 'configure', accountId: 'extra', changes: { enabled: true } },
     async (_pst, _proxy, _id, start) => {
-      await start();
+      const activate = await start();
+      activate?.();
       return official();
     },
     () => NOW + 2,
@@ -1166,35 +1184,33 @@ test('新增核验只能使用实际owner准备/开始对象，伪造克隆与ex
   assert.equal(Object.isFrozen(prepared), true);
   assert.equal(Object.isFrozen(prepared.registration), true);
   for (const fake of [{ ...prepared }, Object.create(prepared), { ...prepared, accountId: 'a' }]) {
-    f.db.transaction(() =>
-      assert.throws(() => accounts.startAccountEnable(metadata, input, fake, null), /新账户准备/),
-    )();
+    assert.throws(
+      () => startAccountOutsideSql(f, accounts, metadata, input, fake, null),
+      /新账户准备/,
+    );
     assert.equal(databaseState(f.db), before);
   }
-  f.db.transaction(() =>
-    assert.throws(
-      () =>
-        quotas.beginAccountRegistrationObservation(
-          {
-            accountId: 'a',
-            credentialEpoch: 1,
-            pst: 'synthetic-upstream-pst',
-            proxyUrl: '',
-            connectionSourceEventId: 'opening-account',
-          },
-          NOW,
-        ),
-      /新账户身份或来源已经存在/,
-    ),
-  )();
-  const started = f.db.transaction(() =>
-    accounts.startAccountEnable(metadata, input, prepared, null),
-  )().ticket;
+  assert.throws(
+    () =>
+      quotas.beginAccountRegistrationObservation(
+        {
+          accountId: 'a',
+          credentialEpoch: 1,
+          pst: 'synthetic-upstream-pst',
+          proxyUrl: '',
+          connectionSourceEventId: 'opening-account',
+        },
+        NOW,
+      ),
+    /新账户身份或来源已经存在/,
+  );
+  const started = startAccountOutsideSql(f, accounts, metadata, input, prepared, null).ticket;
   assert.equal(started.sequence, '1');
   assert.equal(Object.isFrozen(started), true);
-  f.db.transaction(() =>
-    assert.throws(() => accounts.startAccountEnable(metadata, input, prepared, null), /新账户准备/),
-  )();
+  assert.throws(
+    () => startAccountOutsideSql(f, accounts, metadata, input, prepared, null),
+    /新账户准备/,
+  );
   f.db.transaction(() =>
     assert.throws(
       () =>
@@ -1225,9 +1241,7 @@ test('新增核验只能使用实际owner准备/开始对象，伪造克隆与ex
   )();
   const secondMetadata = { ...metadata, commandId: 'released-capability' },
     second = prepare(secondMetadata.commandId).prepared,
-    secondTicket = f.db.transaction(() =>
-      accounts.startAccountEnable(secondMetadata, input, second, null),
-    )().ticket;
+    secondTicket = startAccountOutsideSql(f, accounts, secondMetadata, input, second, null).ticket;
   assert.equal(
     secondTicket.sequence,
     '1',
@@ -1266,12 +1280,8 @@ test('新增核验只能使用实际owner准备/开始对象，伪造克隆与ex
       .prepared,
     newPrep = f.db.transaction(() => accounts.prepareAccountCommand(newMeta, newerInput, null))()
       .prepared,
-    oldTicket = f.db.transaction(() =>
-      accounts.startAccountEnable(oldMeta, newerInput, oldPrep, null),
-    )().ticket,
-    newTicket = f.db.transaction(() =>
-      accounts.startAccountEnable(newMeta, newerInput, newPrep, null),
-    )().ticket;
+    oldTicket = startAccountOutsideSql(f, accounts, oldMeta, newerInput, oldPrep, null).ticket,
+    newTicket = startAccountOutsideSql(f, accounts, newMeta, newerInput, newPrep, null).ticket;
   assert.equal(oldTicket.sequence, '1');
   assert.equal(newTicket.sequence, '2');
   accounts.releaseAccountRegistration(oldPrep);
@@ -1325,7 +1335,8 @@ test('新增actual-start外层授权事务尾失败即使没返回ticket，也�
       metadata,
       input,
       async (_pst, _proxy, _id, start) => {
-        await start();
+        const activate = await start();
+        activate?.();
         raw++;
         return official();
       },
@@ -1337,8 +1348,7 @@ test('新增actual-start外层授权事务尾失败即使没返回ticket，也�
   assert.equal(databaseState(f.db), before);
   const prepared = f.db.transaction(() => accounts.prepareAccountCommand(metadata, input, null))()
       .prepared,
-    ticket = f.db.transaction(() => accounts.startAccountEnable(metadata, input, prepared, null))()
-      .ticket;
+    ticket = startAccountOutsideSql(f, accounts, metadata, input, prepared, null).ticket;
   assert.equal(ticket.sequence, '1');
   accounts.releaseAccountRegistration(prepared);
   assert.equal(databaseState(f.db), before);
@@ -1368,7 +1378,8 @@ test('新增真实核验的三事实完整闭包与原连接角色分别验证�
       metadata,
       input,
       async (_pst, _proxy, _id, start) => {
-        await start();
+        const activate = await start();
+        activate?.();
         return official();
       },
       () => NOW,
@@ -1431,4 +1442,761 @@ test('新增真实核验的三事实完整闭包与原连接角色分别验证�
       );
     });
   }
+});
+
+async function accountBatchFixture(t) {
+  const f = await fixture(t),
+    { accounts, quotas, configure } = setup(f, new Map(), { OWNER_USER_ID: 'm1' }),
+    admin = (id) => ({ ...meta(id), actorKind: 'admin', actorId: 'local-admin' }),
+    authorize = async (run) => f.db.transaction(() => run(null))();
+  f.db.transaction(() =>
+    accounts.prepareAccountCommand(
+      admin('batch-register-extra'),
+      {
+        kind: 'register',
+        accountId: 'extra',
+        displayName: 'Extra',
+        token: 'pst-batch-extra',
+        weight: 1,
+        configVersion: quotas.readQuotaConfiguration().configVersion,
+        bind: false,
+      },
+      null,
+    ),
+  )();
+  await installReady(f);
+  let clock = NOW + 1000;
+  const calls = [],
+    query = (raw = async () => official()) =>
+      createAccountQuotaQuery({
+        now: () => clock,
+        logger: { log() {} },
+        fetchQuota: async (token, ...rest) => {
+          assert.equal(f.db.inTransaction, false);
+          calls.push(token);
+          return raw(token, ...rest);
+        },
+      });
+  return {
+    ...f,
+    accounts,
+    quotas,
+    configure,
+    admin,
+    authorize,
+    calls,
+    query,
+    advance(ms) {
+      clock += ms;
+    },
+    get clock() {
+      return clock;
+    },
+    run(id, input, fetch = query()) {
+      return adminAccountBatchCommand(
+        accounts,
+        authorize,
+        { ...admin(id), recordedAt: clock },
+        input,
+        fetch,
+        () => clock,
+      );
+    },
+  };
+}
+
+test('账户批次真实两观察同一提交应用全体启用与小数weight，旧回执不被当前值重造且回放无私有', async (t) => {
+  const f = await accountBatchFixture(t),
+    input = { ids: ['extra', 'unknown', 'a', 'a'], mode: 'enable', weight: 2.5 },
+    beforeSeq = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n,
+    result = await f.run('batch-all-valid', input),
+    stored = readRelationalCommit(f.db, result.commitSeq);
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(result.receipt, {
+    accountIds: ['a', 'extra'],
+    checked: 2,
+    ok: 2,
+    failed: 0,
+    ignored: 0,
+  });
+  assert.equal(f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n, beforeSeq + 1);
+  assert.deepEqual(
+    f.db.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    [
+      { id: 'a', enabled: 1, weight: 2.5 },
+      { id: 'extra', enabled: 1, weight: 2.5 },
+    ],
+  );
+  assert.equal(stored.events.filter((e) => e.eventType === 'QuotaObserved').length, 2);
+  assert.equal(stored.events.filter((e) => e.eventType === 'AvailabilityChanged').length, 2);
+  f.configure('batch-later-profile', { weight: 3, enabled: false });
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  const prior = await f.run('batch-all-valid', input, () =>
+    assert.fail('old receipt must not fetch'),
+  );
+  assert.equal(prior.replayed, true);
+  assert.deepEqual(prior.receipt, result.receipt);
+  await assert.rejects(
+    f.run('batch-all-valid', { ...input, weight: 3 }, () =>
+      assert.fail('conflicting intent cannot fetch'),
+    ),
+    { statusCode: 409, code: 'idempotency_conflict' },
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  t.mock.method(globalThis, 'fetch', () => assert.fail('batch public replay cannot fetch'));
+  const { target, owner, inputs } = publicPrefix(t, f, stored.events[0].commitSeq);
+  target.transaction(() => owner.replayCommit(stored, inputs))();
+  assert.equal(relationalPrivateStateEmpty(target), true);
+  assert.deepEqual(
+    target.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    [
+      { id: 'a', enabled: 1, weight: 2.5 },
+      { id: 'extra', enabled: 1, weight: 2.5 },
+    ],
+  );
+  const unchanged = databaseState(target),
+    total = target.prepare('SELECT total_changes() n').get().n;
+  assert.equal(target.transaction(() => owner.replayCommit(stored, inputs))().replayed, true);
+  assert.equal(databaseState(target), unchanged);
+  assert.equal(target.prepare('SELECT total_changes() n').get().n, total);
+  f.db.prepare("UPDATE projection_state SET status='building'").run();
+  const building = databaseState(f.db);
+  await assert.rejects(
+    f.run('batch-all-valid', input, () => assert.fail('unready old receipt cannot fetch')),
+    /Relational projection is incomplete/,
+  );
+  assert.equal(databaseState(f.db), building);
+});
+
+test('账户批次任一真实官方失败只保存观察和原安全暂停，不部分应用请求启用weight', async (t) => {
+  const f = await accountBatchFixture(t),
+    input = { ids: ['a', 'extra'], mode: 'enable', weight: 9 };
+  await f.run('batch-prior-enable', { ids: ['a', 'extra'], mode: 'enable' });
+  f.advance(11 * 60 * 1000);
+  const before = f.db.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    seq = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n;
+  await assert.rejects(
+    f.run(
+      'batch-failed',
+      input,
+      f.query(async (token) => {
+        if (token === 'pst-batch-extra') {
+          throw Object.assign(new Error('账号已封禁'), { upstreamStatus: 403 });
+        }
+        return official();
+      }),
+    ),
+    { statusCode: 409, message: '未核验到全部有效 Opus，批量启用和权重未应用' },
+  );
+  const stored = readRelationalCommit(f.db, String(seq + 1));
+  assert.equal(stored.events.filter((e) => e.eventType === 'QuotaObserved').length, 2);
+  assert.equal(
+    stored.events.some((e) => e.eventType === 'AccountConfigurationChanged'),
+    false,
+  );
+  assert.equal(
+    stored.events.some((e) => e.eventType === 'AvailabilityChanged' && e.payload.enabled),
+    false,
+  );
+  assert.deepEqual(
+    f.db.prepare('SELECT id,enabled,weight FROM upstream_accounts ORDER BY id').all(),
+    [before[0], { ...before[1], enabled: 0 }],
+  );
+  const unchanged = databaseState(f.db),
+    calls = f.calls.length;
+  await assert.rejects(
+    f.run('batch-failed', input, () => assert.fail('saved failure must not fetch')),
+    { statusCode: 409 },
+  );
+  assert.equal(databaseState(f.db), unchanged);
+  assert.equal(f.calls.length, calls);
+  const { target, owner, inputs } = publicPrefix(t, f, stored.events[0].commitSeq);
+  target.transaction(() => owner.replayCommit(stored, inputs))();
+  assert.equal(
+    target.prepare("SELECT enabled FROM upstream_accounts WHERE id='a'").get().enabled,
+    1,
+  );
+  assert.equal(
+    target.prepare("SELECT enabled FROM upstream_accounts WHERE id='extra'").get().enabled,
+    0,
+  );
+  assert.equal(relationalPrivateStateEmpty(target), true);
+});
+
+test('账户批次当前真实fresh no-op不重新GET，缺真实Opening来源和当前凭据错误不冒充资格', async (t) => {
+  const f = await accountBatchFixture(t);
+  await f.run('batch-fresh-first', { ids: ['a'], mode: 'enable' });
+  const calls = f.calls.length;
+  await f.run('batch-mixed-fresh', { ids: ['a', 'extra'], mode: 'enable' });
+  assert.equal(f.calls.length, calls + 1);
+  await f.run('batch-weight-is-not-noop', { ids: ['a', 'extra'], mode: 'enable', weight: 1.25 });
+  assert.equal(f.calls.length, calls + 3);
+  const before = databaseState(f.db);
+  const noop = await f.run(
+    'batch-all-noop',
+    { ids: ['a', 'extra'], mode: 'enable', weight: 1.25 },
+    () => assert.fail('fresh noop cannot GET'),
+  );
+  assert.equal(noop.ignored, true);
+  assert.equal(databaseState(f.db), before);
+  const source = f.db
+    .prepare("SELECT observation_event_id id FROM account_quota_state WHERE account_id='a'")
+    .get().id;
+  assert.equal(f.quotas.readAccountEnableProof('a', f.clock), source);
+  f.db
+    .prepare("UPDATE account_quota_state SET quota_error_code='invalid_key' WHERE account_id='a'")
+    .run();
+  assert.equal(f.quotas.readAccountEnableProof('a', f.clock), null);
+});
+
+test('账户批次第二实际start失败或较早来源CAS变化，首个真实GET也不能留下半批观察', async (t) => {
+  for (const mode of ['unstarted-busy', 'prior-source-changed']) {
+    await t.test(mode, async (t) => {
+      const f = await accountBatchFixture(t),
+        original = f.query();
+      let expected = databaseState(f.db),
+        invocations = 0;
+      const query = async (...args) => {
+        if (++invocations === 2 && mode === 'unstarted-busy') {
+          throw Object.assign(new Error('账户额度查询仍在进行'), { statusCode: 409 });
+        }
+        const result = await original(...args);
+        if (invocations === 1 && mode === 'prior-source-changed') {
+          f.configure('batch-competing-connection', { proxyUrl: 'socks5://localhost:1080' });
+          expected = databaseState(f.db);
+        }
+        return result;
+      };
+      await assert.rejects(
+        f.run('batch-precondition', { ids: ['a', 'extra'], mode: 'observe' }, query),
+        { statusCode: 409 },
+      );
+      assert.equal(f.calls.length, 1);
+      assert.equal(databaseState(f.db), expected);
+    });
+  }
+});
+
+test('账户批次第二投影SQL尾错外catch全表回滚，健康同键重试只保留一次完整批次', async (t) => {
+  const f = await accountBatchFixture(t),
+    input = { ids: ['a', 'extra'], mode: 'enable', weight: 4.5 };
+  let firstProjected = false,
+    privateDeleted = false;
+  f.db.function('batch_projection_seen', (n) => {
+    firstProjected = n === 1;
+    return 0;
+  });
+  f.db.function('batch_private_seen', (n) => {
+    privateDeleted = n === 0;
+    return 0;
+  });
+  f.db.exec(
+    `CREATE TEMP TRIGGER batch_second_tail AFTER UPDATE ON account_quota_state WHEN NEW.account_id='extra' BEGIN SELECT batch_projection_seen((SELECT COUNT(*) FROM account_quota_state WHERE account_id='a' AND observed_at=${f.clock})); DELETE FROM upstream_credentials WHERE account_id='a'; SELECT batch_private_seen((SELECT COUNT(*) FROM upstream_credentials WHERE account_id='a')); SELECT RAISE(ABORT,'batch second tail'); END`,
+  );
+  const before = databaseState(f.db);
+  await assert.rejects(f.run('batch-tail', input), /batch second tail/);
+  assert.equal(firstProjected, true);
+  assert.equal(privateDeleted, true, 'fault tail actually changed private data before rollback');
+  assert.equal(databaseState(f.db), before);
+  f.db.exec('DROP TRIGGER batch_second_tail');
+  const result = await f.run('batch-tail', input),
+    same = databaseState(f.db);
+  assert.equal(result.events.filter((e) => e.eventType === 'QuotaObserved').length, 2);
+  assert.equal(
+    (await f.run('batch-tail', input, () => assert.fail('duplicate cannot fetch'))).replayed,
+    true,
+  );
+  assert.equal(databaseState(f.db), same);
+});
+
+test('账户批次完整envelope删目标/可用性/配置/金融、乱序或错连接均拒绝，common与窄回放相同闭包', async (t) => {
+  const f = await accountBatchFixture(t),
+    result = await f.run('batch-closure', { ids: ['a', 'extra'], mode: 'enable', weight: 2.5 }),
+    stored = readRelationalCommit(f.db, result.commitSeq),
+    owned = new Set(['QuotaObserved', 'AvailabilityChanged', 'AccountConfigurationChanged']);
+  assert.ok(
+    stored.events.some((e) => !owned.has(e.eventType)),
+    'must reach real bound financial completeness',
+  );
+  for (const mode of [
+    'target',
+    'availability',
+    'configuration',
+    'financial',
+    'duplicate',
+    'order',
+    'connection',
+  ]) {
+    await t.test(mode, async (t) => {
+      for (const narrow of [false, true]) {
+        const { target, owner, inputs } = publicPrefix(t, f, stored.events[0].commitSeq),
+          bad = structuredClone(stored);
+        if (mode === 'target') {
+          bad.events = bad.events.filter((e) => e.accountId !== 'extra');
+        } else if (mode === 'availability') {
+          bad.events = bad.events.filter((e) => e.eventType !== 'AvailabilityChanged');
+        } else if (mode === 'configuration') {
+          bad.events = bad.events.filter((e) => e.eventType !== 'AccountConfigurationChanged');
+        } else if (mode === 'financial') {
+          bad.events = bad.events.filter((e) => owned.has(e.eventType));
+        } else if (mode === 'duplicate') {
+          bad.events.push({
+            ...bad.events.find((e) => e.eventType === 'QuotaObserved'),
+            eventId: 'batch-duplicate-observed',
+          });
+        } else if (mode === 'order') {
+          bad.events.reverse();
+        } else {
+          const observation = bad.events.find(
+            (e) => e.eventType === 'QuotaObserved' && e.accountId === 'extra',
+          );
+          observation.payload.connectionSourceEventId = stored.events.find(
+            (e) => e.eventType === 'QuotaObserved' && e.accountId === 'a',
+          ).payload.connectionSourceEventId;
+        }
+        resequence(bad, target);
+        const before = databaseState(target),
+          account = new RelationalAccountStore(target, new RelationalQuotaStore(target), new Map());
+        const replay = (commit) =>
+          target.transaction(() =>
+            narrow ? account.replayAccountCommit(commit) : owner.replayCommit(commit, inputs),
+          )();
+        target.transaction(() =>
+          assert.throws(
+            () => replay(bad),
+            mode === 'connection'
+              ? { message: '观察代次或序号已经过期', statusCode: 409 }
+              : undefined,
+          ),
+        )();
+        assert.equal(databaseState(target), before);
+        replay(stored);
+        assert.equal(relationalPrivateStateEmpty(target), true);
+      }
+    });
+  }
+});
+
+test('账户批次不能把改变weight伪装fresh no-op，合法完整envelope仍需本次真实核验', async (t) => {
+  const f = await accountBatchFixture(t);
+  await f.run('batch-proof-before-weight', { ids: ['a'], mode: 'enable' });
+  const proof = f.quotas.readAccountEnableProof('a', f.clock),
+    result = await f.run('batch-real-weight-change', {
+      ids: ['a', 'extra'],
+      mode: 'enable',
+      weight: 2,
+    }),
+    stored = readRelationalCommit(f.db, result.commitSeq),
+    bad = structuredClone(stored),
+    intent = bad.command.receipt.accountIntent;
+  assert.equal(typeof proof, 'string');
+  assert.equal(stored.events.filter((e) => e.eventType === 'QuotaObserved').length, 2);
+  intent.outcomes[0] = { freshObservationEventId: proof, availability: null };
+  bad.events = bad.events.filter(
+    (e) => e.accountId !== 'a' || e.eventType === 'AccountConfigurationChanged',
+  );
+  Object.assign(bad.command.receipt, { checked: 1, ok: 1, failed: 0 });
+  for (const narrow of [false, true]) {
+    const { target, owner, inputs } = publicPrefix(t, f, stored.events[0].commitSeq),
+      account = new RelationalAccountStore(target, new RelationalQuotaStore(target), new Map()),
+      altered = resequence(structuredClone(bad), target),
+      before = databaseState(target);
+    target.transaction(() =>
+      assert.throws(
+        () => (narrow ? account.replayAccountCommit(altered) : owner.replayCommit(altered, inputs)),
+        /批量 no-op 缺少当前真实有效的原观察/,
+      ),
+    )();
+    assert.equal(databaseState(target), before);
+    target.transaction(() => owner.replayCommit(stored, inputs))();
+  }
+});
+
+test('账户批次fresh no-op不能夹带别的合法金融同步，资金原序切点不能冒本批实际观察', async (t) => {
+  const f = await accountBatchFixture(t);
+  await f.run('batch-real-proofs', { ids: ['a', 'extra'], mode: 'enable' });
+  f.advance(1000);
+  const proofs = ['a', 'extra'].map((id) => f.quotas.readAccountEnableProof(id, f.clock));
+  assert.ok(proofs.every((id) => typeof id === 'string'));
+  const funding = f.db.transaction(() =>
+      f.quotas.manageQuotaFunding(
+        { ...f.admin('batch-other-sync'), recordedAt: f.clock },
+        'a',
+        {
+          action: 'operating-register-funding',
+          receipt: 'batch-unrelated-funding',
+          resource: 'anlasFixed',
+          amount: 10,
+        },
+        null,
+      ),
+    )(),
+    stored = readRelationalCommit(f.db, funding.commitSeq),
+    firstManual = stored.events.findIndex((e) => e.eventType === 'FundingRegistered'),
+    bad = structuredClone(stored);
+  assert.ok(firstManual > 0);
+  bad.events = bad.events.slice(0, firstManual);
+  assert.ok(bad.events.some((e) => e.eventType === 'RefillApplied'));
+  bad.command.receipt = {
+    accountIds: ['a', 'extra'],
+    checked: 0,
+    ok: 0,
+    failed: 0,
+    ignored: 0,
+    accountIntent: {
+      kind: 'batch',
+      ids: ['a', 'extra'],
+      mode: 'enable',
+      applied: true,
+      outcomes: proofs.map((id) => ({ freshObservationEventId: id, availability: null })),
+    },
+  };
+  for (const narrow of [false, true]) {
+    const { target, owner, inputs } = publicPrefix(t, f, stored.events[0].commitSeq),
+      account = new RelationalAccountStore(target, new RelationalQuotaStore(target), new Map()),
+      altered = resequence(structuredClone(bad), target),
+      before = databaseState(target);
+    target.transaction(() =>
+      assert.throws(
+        () => (narrow ? account.replayAccountCommit(altered) : owner.replayCommit(altered, inputs)),
+        /批量账户原回执、目标或事实范围不符/,
+      ),
+    )();
+    assert.equal(databaseState(target), before);
+    target.transaction(() => owner.replayCommit(stored, inputs))();
+  }
+});
+
+test('实际start授权事务尾错不能作废唯一已发且正等待末次授权的真实GET', async (t) => {
+  const f = await accountBatchFixture(t),
+    events = new EventEmitter();
+  let rawCalls = 0,
+    phase = 0,
+    release,
+    entered;
+  const held = new Promise((resolve) => {
+      release = resolve;
+    }),
+    reached = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    refresh = createRelationalAccountQuotaRefresh({
+      sqlite: f.db,
+      quotas: f.quotas,
+      events,
+      now: () => f.clock,
+      logger: { log() {}, error() {} },
+      fetchQuota: async () => {
+        rawCalls++;
+        return official();
+      },
+    }),
+    authorizeOld = async (run) => {
+      if (++phase === 3) {
+        entered();
+        await held;
+      }
+      return f.db.transaction(() => run(null))();
+    },
+    pending = ownerAccountCommand(
+      f.accounts,
+      authorizeOld,
+      { ...f.admin('batch-original-real-query'), recordedAt: f.clock },
+      { kind: 'observe', accountId: 'a' },
+      refresh.fetch,
+      () => f.clock,
+    );
+  t.after(async () => {
+    release();
+    await pending.catch(() => {});
+    await refresh.stop();
+  });
+  await reached;
+  const before = databaseState(f.db),
+    authorizeFault = async (run) =>
+      f.db.transaction(() => {
+        const result = run(null);
+        if ('start' in result) {
+          f.db.prepare('SELECT * FROM missing_actual_start_tail').get();
+        }
+        return result;
+      })();
+  await assert.rejects(
+    adminAccountBatchCommand(
+      f.accounts,
+      authorizeFault,
+      { ...f.admin('batch-no-real-start'), recordedAt: f.clock },
+      { ids: ['a', 'extra'], mode: 'observe' },
+      refresh.fetch,
+      () => f.clock,
+    ),
+    /no such table: missing_actual_start_tail/,
+  );
+  assert.equal(rawCalls, 1, 'failed callback never invoked another raw query');
+  assert.equal(databaseState(f.db), before);
+  release();
+  const old = await pending;
+  assert.deepEqual(old.receipt, { checked: 1, ok: 1, failed: 0, ignored: 0 });
+});
+
+test('实际query在授权SQL返回后真实queue停止，必须在native激活领号与raw之前拒绝', async (t) => {
+  const f = await accountBatchFixture(t),
+    events = new EventEmitter(),
+    runtime = createRelationalQueueRuntime({
+      sqlite: f.db,
+      dataDir: f.dir,
+      inputs: f.inputs,
+      generations: f.generations,
+      controls: new Map(),
+      events,
+      env: { OWNER_USER_ID: 'm1' },
+    });
+  await runtime.start();
+  let raw = 0,
+    stopped;
+  const refresh = createRelationalAccountQuotaRefresh({
+    sqlite: f.db,
+    quotas: f.quotas,
+    events,
+    runtime,
+    now: () => f.clock,
+    logger: { log() {}, error() {} },
+    fetchQuota: async () => {
+      raw++;
+      return official();
+    },
+  });
+  t.after(async () => {
+    await runtime.stop();
+    await refresh.stop();
+    await refresh.pending;
+  });
+  const before = databaseState(f.db),
+    floor = BigInt(f.quotas.readAccountQuota('a').observedSequence),
+    authorize = async (run) => {
+      const result = f.db.transaction(() => run(null))();
+      if ('start' in result) {
+        stopped = runtime.stop();
+      }
+      return result;
+    };
+  let error;
+  try {
+    await ownerAccountCommand(
+      f.accounts,
+      authorize,
+      { ...f.admin('runtime-stopped-start'), recordedAt: f.clock },
+      { kind: 'observe', accountId: 'a' },
+      refresh.fetch,
+      () => f.clock,
+    );
+  } catch (value) {
+    error = value;
+  }
+  await stopped;
+  assert.equal(
+    raw,
+    0,
+    'a ready database cannot authorize new quota IO after the actual queue stops',
+  );
+  assert.equal(error?.statusCode, 503);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(
+    f.quotas.beginQuotaObservation('a', f.clock).sequence,
+    String(floor + 1n),
+    'no phantom sequence before the only actual start',
+  );
+});
+
+test('实际start闭包SQL外一次激活，过期owner与ready和跨owner原准备均不能领号，late prior零IO', async (t) => {
+  for (const mode of ['sql-once', 'owner-epoch', 'ready', 'foreign', 'late-prior']) {
+    await t.test(mode, async (t) => {
+      const f = await accountBatchFixture(t),
+        input = { kind: 'observe', accountId: 'a' },
+        metadata = { ...f.admin('native-' + mode), recordedAt: f.clock };
+      if (mode === 'foreign') {
+        const registration = {
+            kind: 'register',
+            accountId: 'foreign-prepared',
+            displayName: 'foreign',
+            token: 'pst-foreign-prepared',
+            configVersion: 1,
+            bind: false,
+            enabled: true,
+          },
+          prepared = f.db.transaction(() =>
+            f.accounts.prepareAccountCommand(metadata, registration, null),
+          )().prepared,
+          own = f.db.transaction(() =>
+            f.accounts.startAccountEnable(metadata, registration, prepared, null),
+          )(),
+          foreign = new RelationalAccountStore(f.db, f.quotas, new Map(), { OWNER_USER_ID: 'm1' }),
+          other = f.db.transaction(() =>
+            foreign.startAccountEnable(metadata, registration, prepared, null),
+          )(),
+          before = databaseState(f.db);
+        assert.throws(() => other.start(), /新账户准备/);
+        f.accounts.releaseAccountRegistration(prepared);
+        assert.throws(() => own.start(), /新账户准备/);
+        assert.equal(databaseState(f.db), before);
+        return;
+      }
+      const ownerMetadata = mode === 'owner-epoch' ? meta('native-owner', f.clock, 'm1') : metadata,
+        authorize =
+          mode === 'owner-epoch'
+            ? (run) =>
+                withAuthenticatedMemberApiKey(f.members, keys.m1, run, { OWNER_USER_ID: 'm1' })
+            : f.authorize,
+        prepared = await authorize((actor) =>
+          f.accounts.prepareAccountCommand(ownerMetadata, input, actor),
+        ),
+        cap = await authorize((actor) =>
+          f.accounts.startAccountEnable(ownerMetadata, input, prepared.prepared, actor),
+        );
+      assert.equal(typeof cap.start, 'function');
+      if (mode === 'sql-once') {
+        const before = databaseState(f.db),
+          floor = BigInt(f.quotas.readAccountQuota('a').observedSequence);
+        f.db.transaction(() => assert.throws(() => cap.start(), /授权事务成功结束后/))();
+        assert.equal(databaseState(f.db), before);
+        assert.equal(cap.start().ticket.sequence, String(floor + 1n));
+        assert.throws(() => cap.start(), /只能开始一次/);
+      } else if (mode === 'owner-epoch') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(f.admin('native-disable-owner'), 'm1', 'disabled', null),
+        )();
+        const before = databaseState(f.db);
+        assert.throws(() => cap.start(), { statusCode: 403 });
+        assert.equal(databaseState(f.db), before);
+      } else if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='building'").run();
+        const before = databaseState(f.db);
+        assert.throws(() => cap.start(), /Relational projection is incomplete/);
+        assert.equal(databaseState(f.db), before);
+      } else {
+        const winner = await ownerAccountCommand(
+            f.accounts,
+            f.authorize,
+            metadata,
+            input,
+            f.query(),
+            () => f.clock,
+          ),
+          before = databaseState(f.db),
+          changes = f.db.prepare('SELECT total_changes() n').get().n,
+          prior = cap.start();
+        assert.equal(prior.result.replayed, true);
+        assert.deepEqual(prior.result.receipt, winner.receipt);
+        assert.equal(f.calls.length, 1);
+        assert.equal(databaseState(f.db), before);
+        assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+      }
+    });
+  }
+});
+
+test('实际query自动观察同样在最终真实runtime gate之后才领号，不把停机拒绝当官方失败', async (t) => {
+  const f = await accountBatchFixture(t),
+    events = new EventEmitter(),
+    runtime = createRelationalQueueRuntime({
+      sqlite: f.db,
+      dataDir: f.dir,
+      inputs: f.inputs,
+      generations: f.generations,
+      controls: new Map(),
+      events,
+      env: { OWNER_USER_ID: 'm1' },
+    });
+  await runtime.start();
+  const original = runtime.assertAccepting;
+  let raw = 0,
+    stopping;
+  t.mock.method(runtime, 'assertAccepting', () => {
+    stopping = runtime.stop();
+    return original();
+  });
+  const refresh = createRelationalAccountQuotaRefresh({
+    sqlite: f.db,
+    quotas: f.quotas,
+    events,
+    runtime,
+    now: () => f.clock,
+    logger: { log() {}, error() {} },
+    fetchQuota: async () => {
+      raw++;
+      return official();
+    },
+  });
+  t.after(async () => {
+    await runtime.stop();
+    await refresh.stop();
+    await refresh.pending;
+  });
+  const before = databaseState(f.db),
+    count = f.db.prepare('SELECT COUNT(*) n FROM commits').get().n,
+    floor = BigInt(f.quotas.readAccountQuota('a').observedSequence);
+  try {
+    await refresh.refreshEnabled();
+  } catch (error) {
+    assert.equal(error.statusCode, 503);
+  }
+  await stopping;
+  assert.notEqual(runtime.status, 'running');
+  assert.equal(raw, 0);
+  assert.equal(
+    f.db.prepare('SELECT COUNT(*) n FROM commits').get().n,
+    count,
+    'runtime stop rejection cannot become a fake official observation',
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.quotas.beginQuotaObservation('a', f.clock).sequence, String(floor + 1n));
+});
+
+test('实际query授权等待已超截止的cap不得迟到激活，raw0且不隐藏消耗中央序号', async (t) => {
+  const f = await accountBatchFixture(t);
+  let raw = 0,
+    entered,
+    release;
+  const reached = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    held = new Promise((resolve) => {
+      release = resolve;
+    }),
+    query = createAccountQuotaQuery({
+      now: () => f.clock,
+      requestTimeoutMs: 50,
+      logger: { log() {} },
+      fetchQuota: async () => {
+        raw++;
+        return official();
+      },
+    }),
+    authorize = async (run) => {
+      const result = f.db.transaction(() => run(null))();
+      if ('start' in result) {
+        entered();
+        await held;
+      }
+      return result;
+    },
+    before = databaseState(f.db),
+    floor = BigInt(f.quotas.readAccountQuota('a').observedSequence),
+    pending = ownerAccountCommand(
+      f.accounts,
+      authorize,
+      { ...f.admin('expired-before-activation'), recordedAt: f.clock },
+      { kind: 'observe', accountId: 'a' },
+      query,
+      () => f.clock,
+    );
+  await reached;
+  await assert.rejects(pending, { code: 'QUOTA_REQUEST_TIMEOUT' });
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(raw, 0);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.quotas.beginQuotaObservation('a', f.clock).sequence, String(floor + 1n));
 });

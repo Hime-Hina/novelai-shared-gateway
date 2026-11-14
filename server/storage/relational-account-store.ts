@@ -82,6 +82,17 @@ type AccountConfiguration = {
 type AccountIntent =
   | { kind: 'bulk'; ids: string[]; weight?: number; enabled?: false }
   | {
+      kind: 'batch';
+      ids: string[];
+      mode: 'observe' | 'enable';
+      weight?: number;
+      applied: boolean;
+      outcomes: {
+        freshObservationEventId: string | null;
+        availability: { enabled: boolean; reason: string } | null;
+      }[];
+    }
+  | {
       kind: 'register';
       accountId: string;
       displayName: string;
@@ -111,6 +122,14 @@ export type AccountEnableTicket = ReturnType<RelationalQuotaStore['beginQuotaObs
   registration?: { displayName: string; weight: number };
 };
 export type AccountEnablePreparation = Omit<AccountEnableTicket, 'sequence' | 'startedAt'>;
+export type AdminAccountBatch = { ids: string[]; mode: 'observe' | 'enable'; weight?: number };
+export type AccountBatchPreparation = {
+  sources: (AccountEnablePreparation & { freshObservationEventId: string | null })[];
+};
+type AccountObservationStarted =
+  { result: RelationalCommitResult } | { ticket: AccountEnableTicket };
+type AccountObservationStart =
+  { result: RelationalCommitResult } | { start: () => AccountObservationStarted };
 
 type Account = {
   id: string;
@@ -719,6 +738,249 @@ export class RelationalAccountStore {
       return { result };
     });
   }
+  private batchCommand(metadata: AccountCommandMetadata, input: AdminAccountBatch) {
+    if (
+      !input ||
+      Object.keys(input).some((key) => !['ids', 'mode', 'weight'].includes(key)) ||
+      !['observe', 'enable'].includes(input.mode) ||
+      !Array.isArray(input.ids) ||
+      input.ids.some((id) => typeof id !== 'string' || !id || id.includes('\0')) ||
+      (input.mode === 'enable' && !input.ids.length) ||
+      (input.weight !== undefined &&
+        (input.mode !== 'enable' ||
+          !Number.isFinite(input.weight) ||
+          input.weight < 1 ||
+          input.weight > 100))
+    ) {
+      fail('批量账户核验参数无效', 400);
+    }
+    return { ...metadata, fingerprint: domainDigest({ command: metadata.fingerprint, input }) };
+  }
+  private batchTargets(input: AdminAccountBatch) {
+    const ids = new Set(input.ids),
+      selected = this.managementAccounts([]).filter((a) => !ids.size || ids.has(a.id));
+    if (!selected.length) {
+      fail(ids.size ? 'no matching accounts found.' : 'no accounts found.', ids.size ? 404 : 400);
+    }
+    return selected;
+  }
+  private authorizeBatch(metadata: AccountCommandMetadata, actor: MemberUser | null) {
+    this.authorize(metadata, actor);
+    if (actor !== null || metadata.actorKind !== 'admin') {
+      fail('只有本地管理员可以批量核验账户', 403);
+    }
+    assertRelationalStorageReady(this.sqlite);
+  }
+  prepareAccountBatch(
+    metadata: AccountCommandMetadata,
+    input: AdminAccountBatch,
+    actor: MemberUser | null,
+  ): { result: RelationalCommitResult } | { prepared: AccountBatchPreparation } {
+    return this.owned(() => {
+      this.authorizeBatch(metadata, actor);
+      const command = this.batchCommand(metadata, input),
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return { result: prior };
+      }
+      return {
+        prepared: {
+          sources: this.batchTargets(input).map((account) => ({
+            ...this.quotas.prepareQuotaObservation(account.id),
+            availabilityEventId: this.availabilityEventId(account.id),
+            configVersion: this.policy().version,
+            authEpoch: null,
+            commandId: command.commandId,
+            fingerprint: command.fingerprint,
+            freshObservationEventId:
+              input.mode === 'enable' &&
+              (input.weight === undefined || input.weight === account.weight)
+                ? this.quotas.readAccountEnableProof(account.id, metadata.recordedAt)
+                : null,
+          })),
+        },
+      };
+    });
+  }
+  private batchSources(
+    command: AccountCommandMetadata,
+    input: AdminAccountBatch,
+    prepared: AccountBatchPreparation,
+  ) {
+    const targets = this.batchTargets(input).map((a) => a.id);
+    if (
+      !prepared ||
+      !Array.isArray(prepared.sources) ||
+      canonicalJson(targets) !== canonicalJson(prepared.sources.map((s) => s.accountId))
+    ) {
+      fail('批量账户核验的原目标已变化');
+    }
+    for (const source of prepared.sources) {
+      const { current } = this.enableSource(
+        command,
+        { kind: input.mode, accountId: source.accountId },
+        source,
+        null,
+      );
+      if (
+        !current ||
+        source.configVersion !== this.policy().version ||
+        (source.freshObservationEventId !== null &&
+          (input.mode !== 'enable' ||
+            this.quotas.readAccountEnableProof(source.accountId, command.recordedAt) !==
+              source.freshObservationEventId))
+      ) {
+        fail('批量账户核验期间原来源或资格已变化');
+      }
+    }
+  }
+  private accountObservationStart(run: () => AccountObservationStarted): AccountObservationStart {
+    let used = false;
+    return {
+      start: () => {
+        if (used || this.sqlite.inTransaction) {
+          fail('实际观察必须在授权事务成功结束后开始，且只能开始一次');
+        }
+        used = true;
+        return run();
+      },
+    };
+  }
+  startAccountBatchObservation(
+    metadata: AccountCommandMetadata,
+    input: AdminAccountBatch,
+    prepared: AccountBatchPreparation,
+    accountId: string,
+    actor: MemberUser | null,
+  ): AccountObservationStart {
+    return this.owned(() => {
+      this.authorizeBatch(metadata, actor);
+      const command = this.batchCommand(metadata, input),
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return { result: prior };
+      }
+      this.batchSources(command, input, prepared);
+      const source = prepared.sources.find((s) => s.accountId === accountId);
+      if (!source || source.freshObservationEventId !== null) {
+        fail('该目标没有需要实际发起的原观察');
+      }
+      return this.accountObservationStart(() => {
+        this.authorizeBatch(metadata, actor);
+        const prior = readRelationalReceipt(this.sqlite, command);
+        if (prior) {
+          return { result: prior };
+        }
+        this.batchSources(command, input, prepared);
+        return {
+          ticket: {
+            ...source,
+            ...this.quotas.beginQuotaObservation(accountId, metadata.recordedAt, source),
+          },
+        };
+      });
+    });
+  }
+  completeAccountBatch(
+    metadata: AccountCommandMetadata,
+    input: AdminAccountBatch,
+    prepared: AccountBatchPreparation,
+    observations: { ticket: AccountEnableTicket; result: QuotaResult }[],
+    actor: MemberUser | null,
+  ) {
+    return this.owned(() => {
+      this.authorizeBatch(metadata, actor);
+      const command = this.batchCommand(metadata, input),
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      this.batchSources(command, input, prepared);
+      const queried = prepared.sources.filter((s) => s.freshObservationEventId === null);
+      if (
+        canonicalJson(queried.map((s) => s.accountId)) !==
+        canonicalJson(observations.map((o) => o.ticket.accountId))
+      ) {
+        fail('批量核验缺少原完整有序观察');
+      }
+      const plan = (enable: boolean) =>
+        observations.map(({ ticket, result }, i) => {
+          const source = queried[i]!;
+          if (
+            source.commandId !== ticket.commandId ||
+            source.fingerprint !== ticket.fingerprint ||
+            source.pst !== ticket.pst ||
+            source.proxyUrl !== ticket.proxyUrl ||
+            source.connectionSourceEventId !== ticket.connectionSourceEventId ||
+            source.credentialEpoch !== ticket.credentialEpoch
+          ) {
+            fail('批量观察不是原准备的实际来源');
+          }
+          const events = this.quotas.planQuotaObservation(command, ticket, result, enable);
+          if (!events) {
+            fail('批量观察已经过期，整笔请求未提交');
+          }
+          return events;
+        });
+      let planned = plan(input.mode === 'enable');
+      const valid = planned.every((events) =>
+          events.some((e) => e.eventType === 'AvailabilityChanged' && e.payload.enabled),
+        ),
+        applied = input.mode === 'enable' && valid;
+      if (input.mode === 'enable' && !applied) {
+        // 任一官方核验失败，只保存实际观察及原安全决定，不部分应用整组请求。
+        planned = plan(false);
+      }
+      const intent: Extract<AccountIntent, { kind: 'batch' }> = {
+          kind: 'batch',
+          ids: prepared.sources.map((s) => s.accountId),
+          mode: input.mode,
+          ...(input.weight !== undefined ? { weight: input.weight } : {}),
+          applied,
+          outcomes: prepared.sources.map((source) => {
+            const index = queried.findIndex((s) => s.accountId === source.accountId),
+              availability = planned[index]?.find((e) => e.eventType === 'AvailabilityChanged');
+            return {
+              freshObservationEventId: source.freshObservationEventId,
+              availability:
+                availability?.eventType === 'AvailabilityChanged'
+                  ? { enabled: availability.payload.enabled, reason: availability.payload.reason }
+                  : null,
+            };
+          }),
+        },
+        observed = planned
+          .flat()
+          .filter(
+            (e): e is Extract<RelationalEventInput, { eventType: 'QuotaObserved' }> =>
+              e.eventType === 'QuotaObserved',
+          ),
+        events = [
+          ...this.planBatchDecisions(command, intent, observed),
+          ...planned
+            .flat()
+            .filter((e) => !['QuotaObserved', 'AvailabilityChanged'].includes(e.eventType)),
+        ],
+        counts = {
+          checked: observations.length,
+          ok: observations.filter((o) => o.result.ok).length,
+          failed: observations.filter((o) => !o.result.ok).length,
+          ignored: 0,
+        },
+        failed = input.mode === 'enable' && !applied,
+        receipt = {
+          accountIds: intent.ids,
+          ...counts,
+          ...(failed
+            ? { error: { statusCode: 409, message: '未核验到全部有效 Opus，批量启用和权重未应用' } }
+            : {}),
+        };
+      if (!events.length) {
+        return { ignored: true as const, receipt };
+      }
+      return this.commit(command, events, undefined, receipt, intent);
+    });
+  }
   configureAccounts(
     metadata: AccountCommandMetadata,
     input: { ids: string[]; weight?: number; enabled?: false },
@@ -816,6 +1078,111 @@ export class RelationalAccountStore {
       }
     }
     return { accountIds: selected.map((account) => account.id), events };
+  }
+  private planBatchDecisions(
+    metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
+    intent: Extract<AccountIntent, { kind: 'batch' }>,
+    observations: Extract<RelationalEventInput, { eventType: 'QuotaObserved' }>[],
+  ) {
+    if (
+      Object.keys(intent).some(
+        (key) => !['kind', 'ids', 'mode', 'weight', 'applied', 'outcomes'].includes(key),
+      ) ||
+      !['observe', 'enable'].includes(intent.mode) ||
+      typeof intent.applied !== 'boolean' ||
+      !Array.isArray(intent.ids) ||
+      !intent.ids.length ||
+      !Array.isArray(intent.outcomes) ||
+      intent.outcomes.length !== intent.ids.length ||
+      (intent.weight !== undefined &&
+        (!Number.isFinite(intent.weight) || intent.weight < 1 || intent.weight > 100)) ||
+      (intent.mode === 'observe' && (intent.applied || intent.weight !== undefined)) ||
+      canonicalJson(this.batchTargets(intent).map((a) => a.id)) !== canonicalJson(intent.ids)
+    ) {
+      fail('批量账户原安全意图或目标顺序无效');
+    }
+    const events: RelationalEventInput[] =
+      intent.applied && intent.weight !== undefined
+        ? this.planBulkAccounts(metadata, { kind: 'bulk', ids: intent.ids, weight: intent.weight })
+            .events
+        : [];
+    let queried = 0,
+      allValid = true;
+    for (const [index, accountId] of intent.ids.entries()) {
+      const outcome = intent.outcomes[index]!,
+        account = this.account(accountId);
+      if (
+        !outcome ||
+        Object.keys(outcome).some(
+          (key) => !['freshObservationEventId', 'availability'].includes(key),
+        ) ||
+        (outcome.freshObservationEventId !== null &&
+          (typeof outcome.freshObservationEventId !== 'string' ||
+            !outcome.freshObservationEventId)) ||
+        (outcome.availability !== null &&
+          (!outcome.availability ||
+            Object.keys(outcome.availability).some((key) => !['enabled', 'reason'].includes(key)) ||
+            typeof outcome.availability.enabled !== 'boolean' ||
+            typeof outcome.availability.reason !== 'string' ||
+            !outcome.availability.reason))
+      ) {
+        fail('批量账户原观察后果无效');
+      }
+      if (outcome.freshObservationEventId !== null) {
+        if (
+          intent.mode !== 'enable' ||
+          (intent.weight !== undefined && intent.weight !== account.weight) ||
+          outcome.availability !== null ||
+          this.quotas.readAccountEnableProof(accountId, metadata.recordedAt) !==
+            outcome.freshObservationEventId
+        ) {
+          fail('批量 no-op 缺少当前真实有效的原观察');
+        }
+        continue;
+      }
+      const observed = observations[queried++];
+      if (
+        !observed?.eventId ||
+        observed.payload.accountId !== accountId ||
+        observed.accountId !== accountId
+      ) {
+        fail('批量账户缺少完整有序的原实际观察');
+      }
+      const valid = this.quotas.quotaObservationCanEnable(observed.payload, metadata.recordedAt);
+      allValid &&= valid;
+      if (
+        (intent.applied &&
+          (!valid ||
+            outcome.availability?.enabled !== true ||
+            outcome.availability.reason !== 'verified_opus')) ||
+        (!intent.applied && outcome.availability?.enabled === true) ||
+        (outcome.availability?.enabled === false && account.enabled !== 1)
+      ) {
+        fail('批量账户不能部分应用原请求或伪造安全暂停');
+      }
+      events.push(
+        ...this.planMutation(
+          metadata,
+          {
+            kind: 'mutation',
+            accountId,
+            profile: false,
+            connectionChanged: false,
+            credentialChanged: false,
+            observe: true,
+            availability: outcome.availability,
+          },
+          observed,
+        ),
+      );
+    }
+    if (
+      observations.length !== queried ||
+      (intent.mode === 'enable' && intent.applied !== allValid)
+    ) {
+      fail('批量启用必须保留原全体资格及全部观察决定');
+    }
+    return events;
   }
   private planRegistration(
     metadata: Pick<AccountCommandMetadata, 'recordedAt' | 'policyVersion' | 'pricingVersion'>,
@@ -934,6 +1301,11 @@ export class RelationalAccountStore {
         accountIds?: unknown;
         enabled?: unknown;
         accountIntent?: AccountIntent;
+        checked?: unknown;
+        ok?: unknown;
+        failed?: unknown;
+        ignored?: unknown;
+        error?: unknown;
       },
       intent = saved?.accountIntent,
       owned = events.filter((event) =>
@@ -993,6 +1365,60 @@ export class RelationalAccountStore {
         fail('批量账户完整目标与原安全意图不符');
       }
       expected.push(...planned.events);
+    } else if (intent.kind === 'batch') {
+      const observed = owned.filter(
+          (e): e is Extract<RelationalEvent, { eventType: 'QuotaObserved' }> =>
+            e.eventType === 'QuotaObserved',
+        ),
+        // 合法金融事实仍须属于本批实际观察；fresh no-op 不能夹带另一命令的同步。
+        observedAccounts = new Set(observed.map((e) => e.accountId)),
+        failed = intent.mode === 'enable' && !intent.applied,
+        error = saved.error as { statusCode?: unknown; message?: unknown } | undefined;
+      if (
+        row.actorKind !== 'admin' ||
+        Object.keys(saved).some(
+          (key) =>
+            ![
+              'accountIds',
+              'accountIntent',
+              'checked',
+              'ok',
+              'failed',
+              'ignored',
+              'error',
+            ].includes(key),
+        ) ||
+        canonicalJson(saved.accountIds as Json) !== canonicalJson(intent.ids) ||
+        saved.checked !== observed.length ||
+        saved.ok !== observed.filter((e) => e.payload.errorCode === null).length ||
+        saved.failed !== observed.filter((e) => e.payload.errorCode !== null).length ||
+        saved.ignored !== 0 ||
+        (failed
+          ? !error ||
+            error.statusCode !== 409 ||
+            typeof error.message !== 'string' ||
+            !error.message
+          : error !== undefined) ||
+        events.some(
+          (e) =>
+            !intent.ids?.includes(e.accountId ?? '') ||
+            (!owned.includes(e) &&
+              (!observedAccounts.has(e.accountId) ||
+                ![
+                  'QuotaStatusChanged',
+                  'QuotaBaselineAdopted',
+                  'RefillApplied',
+                  'AllocationApplied',
+                  'V5CapacityObserved',
+                  'ResourceGapObserved',
+                  'ReturnClassified',
+                  'FundingReceived',
+                ].includes(e.eventType))),
+        )
+      ) {
+        fail('批量账户原回执、目标或事实范围不符');
+      }
+      expected.push(...this.planBatchDecisions(metadata, intent, observed));
     } else if (intent.kind === 'register') {
       if (
         Object.keys(intent).some(
@@ -1219,7 +1645,7 @@ export class RelationalAccountStore {
     input: Extract<OwnerAccountMutation, { kind: 'enable' | 'observe' | 'configure' | 'register' }>,
     prepared: AccountEnablePreparation,
     member: MemberUser | null,
-  ): { result: RelationalCommitResult } | { ticket: AccountEnableTicket } {
+  ): AccountObservationStart {
     return this.owned(() => {
       this.authorize(metadata, member);
       if (input.kind === 'register') {
@@ -1230,33 +1656,41 @@ export class RelationalAccountStore {
       if (prior) {
         return { result: prior };
       }
-      if (input.kind === 'register') {
-        const source = this.registrationSource(command, input, prepared, member, false),
-          issued = this.quotas.beginAccountRegistrationObservation(
-            {
-              accountId: prepared.accountId,
-              credentialEpoch: prepared.credentialEpoch,
-              pst: prepared.pst,
-              proxyUrl: prepared.proxyUrl,
-              connectionSourceEventId: prepared.connectionSourceEventId,
-            },
-            metadata.recordedAt,
-          ),
-          ticket: AccountEnableTicket = Object.freeze({ ...prepared, ...issued });
-        source.ticket = ticket;
-        this.#registrations.set(ticket, source);
-        return { ticket };
-      }
-      const { account, current } = this.enableSource(command, input, prepared, member);
-      if (!current) {
-        fail('额度查询发起前原连接已变化');
-      }
-      return {
-        ticket: {
-          ...prepared,
-          ...this.quotas.beginQuotaObservation(account.id, metadata.recordedAt, prepared),
-        },
-      };
+      return this.accountObservationStart(() => {
+        this.authorize(metadata, member);
+        assertRelationalStorageReady(this.sqlite);
+        const prior = readRelationalReceipt(this.sqlite, command);
+        if (prior) {
+          return { result: prior };
+        }
+        if (input.kind === 'register') {
+          const source = this.registrationSource(command, input, prepared, member, false),
+            issued = this.quotas.beginAccountRegistrationObservation(
+              {
+                accountId: prepared.accountId,
+                credentialEpoch: prepared.credentialEpoch,
+                pst: prepared.pst,
+                proxyUrl: prepared.proxyUrl,
+                connectionSourceEventId: prepared.connectionSourceEventId,
+              },
+              metadata.recordedAt,
+            ),
+            ticket: AccountEnableTicket = Object.freeze({ ...prepared, ...issued });
+          source.ticket = ticket;
+          this.#registrations.set(ticket, source);
+          return { ticket };
+        }
+        const { account, current } = this.enableSource(command, input, prepared, member);
+        if (!current) {
+          fail('额度查询发起前原连接已变化');
+        }
+        return {
+          ticket: {
+            ...prepared,
+            ...this.quotas.beginQuotaObservation(account.id, metadata.recordedAt, prepared),
+          },
+        };
+      });
     });
   }
   completeAccountEnable(

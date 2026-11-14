@@ -5,7 +5,10 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import { domainDigest } from '../events/domain-events.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
-import { RelationalAccountStore } from '../storage/relational-account-store.ts';
+import {
+  RelationalAccountStore,
+  type AccountCommandMetadata,
+} from '../storage/relational-account-store.ts';
 import type { createAccountQuotaQuery } from '../quota/account-refresh.ts';
 import { RelationalQuotaStore, type QuotaPolicyChange } from '../storage/relational-quota-store.ts';
 import { RelationalRequestStore } from '../storage/relational-request-store.ts';
@@ -48,6 +51,7 @@ import {
   adminAccountPatch,
   collectValues,
   ownerAccountCommand,
+  adminAccountBatchCommand,
   selectSharedAccount,
   ownerStatisticsRange,
   summarizeOwnerUsage,
@@ -275,30 +279,18 @@ export function createRelationalManagementHttp(deps: {
         fail(400, 'account ids are required.');
       }
       if (changes.enabled === true) {
-        const selected = await authorize(() =>
-          accounts.readAccountManagementDirectory().filter((account) => ids.includes(account.id)),
-        );
-        if (!selected.length) {
-          fail(404, 'no matching accounts found.');
-        }
-        if (
-          selected.length !== 1 ||
-          selected[0]!.id !==
-            (await authorize(() => accounts.readSharedAccountManagementProfile()))?.id
-        ) {
-          fail(409, '批量启用未绑定账户尚未接入真实 Opus 核验');
-        }
-        await ownerAccountCommand(
-          accounts,
-          authorize,
-          metadata,
-          { kind: 'configure', accountId: selected[0]!.id, changes },
-          deps.queryAccountQuota,
-          now,
-        );
+        const saved = await adminAccountBatchCommand(
+            accounts,
+            authorize,
+            metadata,
+            { ids, mode: 'enable', weight: changes.weight },
+            deps.queryAccountQuota,
+            now,
+          ),
+          selected = (saved.receipt as { accountIds: string[] }).accountIds;
         replyMemberJson(res, 200, {
           accounts: await authorize((actor) =>
-            selected.map((account) => accounts.readAdminAccountProfile(account.id, false, actor)),
+            selected.map((id) => accounts.readAdminAccountProfile(id, false, actor)),
           ),
         });
         return true;
@@ -334,23 +326,6 @@ export function createRelationalManagementHttp(deps: {
         ) {
           fail(400, '仅可刷新当前共享账户');
         }
-      } else {
-        const ids = collectValues(body.ids || body.accounts),
-          selected = await authorize(() =>
-            accounts
-              .readAccountManagementDirectory()
-              .filter((account) => !ids.length || ids.includes(account.id)),
-          );
-        if (!selected.length) {
-          fail(
-            ids.length ? 404 : 400,
-            ids.length ? 'no matching accounts found.' : 'no accounts found.',
-          );
-        }
-        if (selected.length !== 1) {
-          fail(409, '尚不支持多账户刷新');
-        }
-        profile = selected[0]!;
       }
       const actorId = commandActorId,
         actorKind = ownerRoute ? 'member' : 'admin',
@@ -358,38 +333,76 @@ export function createRelationalManagementHttp(deps: {
         command: ReturnType<typeof managementCommand> = adminRoute
           ? { actorId, actorKind }
           : managementCommand(req, actorId, operation, body, actorKind),
-        result = await ownerAccountCommand(
-          accounts,
-          authorize,
-          {
-            commandId: command.commandId ?? randomUUID(),
-            fingerprint:
-              command.fingerprint ?? domainDigest({ operation, requestId: randomUUID() }),
-            actorId,
-            actorKind,
-            recordedAt: now(),
-            correlationId: null,
-            causationId: null,
-            policyVersion: 'account-observation-v1',
-            pricingVersion: 'none',
-          },
-          { kind: 'observe', accountId: profile.id },
-          deps.queryAccountQuota,
-          now,
-        );
-      if (ownerRoute && command.commandId && 'ignored' in result) {
-        // 原 keyed 零事实命令同样为409，不为过期查询编造可重领事实。
+        metadata: AccountCommandMetadata = {
+          commandId: command.commandId ?? randomUUID(),
+          fingerprint: command.fingerprint ?? domainDigest({ operation, requestId: randomUUID() }),
+          actorId,
+          actorKind,
+          recordedAt: now(),
+          correlationId: null,
+          causationId: null,
+          policyVersion: 'account-observation-v1',
+          pricingVersion: 'none',
+        };
+      if (adminRoute) {
+        const ids = collectValues(body.ids || body.accounts),
+          selected = await authorize(() =>
+            accounts
+              .readAccountManagementDirectory()
+              .filter((a) => !ids.length || ids.includes(a.id)),
+          );
+        // 单目标保留原 nonkeyed 过期结果 ignored；多目标必须整批拒绝，不能保存半批。
+        if (selected.length !== 1) {
+          const result = await adminAccountBatchCommand(
+              accounts,
+              authorize,
+              metadata,
+              { ids, mode: 'observe' },
+              deps.queryAccountQuota,
+              now,
+            ),
+            { accountIds, ...counts } = result.receipt as {
+              accountIds: string[];
+              checked: number;
+              ok: number;
+              failed: number;
+              ignored: number;
+            };
+          replyMemberJson(res, 200, {
+            ...counts,
+            accounts: await authorize((actor) =>
+              accountIds.map((id) => accounts.readAdminAccountProfile(id, true, actor)),
+            ),
+          });
+          return true;
+        }
+        profile = selected[0]!;
+      }
+      const result = await ownerAccountCommand(
+        accounts,
+        authorize,
+        metadata,
+        { kind: 'observe', accountId: profile!.id },
+        deps.queryAccountQuota,
+        now,
+      );
+      if (command.commandId && 'ignored' in result) {
         fail(409, '操作已被更新或未产生可提交事实，请刷新后确认结果');
       }
-      const response = adminRoute
-        ? {
-            ...(result.receipt as object),
-            accounts: [
-              await authorize((actor) => accounts.readAdminAccountProfile(profile.id, true, actor)),
-            ],
-          }
-        : result.receipt;
-      replyMemberJson(res, 200, response);
+      replyMemberJson(
+        res,
+        200,
+        adminRoute
+          ? {
+              ...(result.receipt as object),
+              accounts: [
+                await authorize((actor) =>
+                  accounts.readAdminAccountProfile(profile!.id, true, actor),
+                ),
+              ],
+            }
+          : result.receipt,
+      );
       return true;
     }
     if (accountPatchRoute) {

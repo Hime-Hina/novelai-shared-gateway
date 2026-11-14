@@ -300,6 +300,7 @@ interface AccountQuotaRefreshOptions<T> {
   publicAccount(account: StoreItem): T;
   publicErrorMessage(message: unknown): string;
   logger?: Pick<Console, 'log' | 'error'>;
+  assertAccepting?(): void;
 }
 interface RefreshResult<T> {
   checked: number;
@@ -312,7 +313,7 @@ interface RefreshResult<T> {
 export function createAccountQuotaQuery(
   options: Pick<
     AccountQuotaRefreshOptions<unknown>,
-    'now' | 'logger' | 'fetchQuota' | 'env' | 'requestTimeoutMs'
+    'now' | 'logger' | 'fetchQuota' | 'env' | 'requestTimeoutMs' | 'assertAccepting'
   >,
 ) {
   const clock = options.now || Date.now;
@@ -322,13 +323,19 @@ export function createAccountQuotaQuery(
     token: string | undefined,
     proxyUrl: unknown = '',
     accountId: string | null = null,
-    onStart?: () => void | Promise<void>,
+    onStart?: () => void | (() => void) | Promise<void | (() => void)>,
   ) => {
     const startedAt = performance.now();
     let started = false;
     try {
       const quota = await withQuotaRequestDeadline(async (signal) => {
-        await onStart?.();
+        const activate = await onStart?.();
+        signal.throwIfAborted();
+        // 授权 SQL 已成功结束；此后同步激活/领号与 raw 间不再让出执行，拒绝真正停机后的新 IO。
+        options.assertAccepting?.();
+        if (typeof activate === 'function') {
+          activate();
+        }
         started = true;
         return fetchQuota(token!, options.env || process.env, { signal, proxyUrl });
       }, options.requestTimeoutMs ?? 15_000);
