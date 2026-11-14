@@ -220,6 +220,16 @@ export function createRelationalManagementHttp(deps: {
           expectedConfigVersion: body.expectedConfigVersion as number,
           redistributeRemaining: body.redistributeRemaining as boolean | undefined,
         };
+      if (body.action === 'discord-invite') {
+        const result = await authorize((member) => {
+          if (!discordLoginEnabled(env)) {
+            fail(409, 'Discord 登录未启用');
+          }
+          return members.createMemberDiscordInvite(body.userId, member, now());
+        });
+        replyMemberJson(res, 200, result);
+        return true;
+      }
       if (body.action === 'member-key') {
         const result = await authorize(() => {
           if (typeof body.userId !== 'string') {

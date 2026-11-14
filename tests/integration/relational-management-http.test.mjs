@@ -14,6 +14,7 @@ import {
   image,
 } from '../helpers/relational-generation.mjs';
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
+import { createRelationalMemberAuthenticationHttp } from '../../server/members/relational-authentication-http.ts';
 import { assertAdminToken, matchesAdminToken } from '../../server/http/admin-access.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
 import {
@@ -4418,4 +4419,470 @@ test('credentials非keyed私有变更由选定SHA同cut联合恢复，业务回�
   } finally {
     network.mock.restore();
   }
+});
+
+const invitationBody = (userId = 'invite-target') => ({ action: 'discord-invite', userId });
+async function setupInvitation(t, options = {}) {
+  const f = await setup(t, {
+      ...options,
+      beforeReady: async (f, env) => {
+        f.db.transaction(() =>
+          f.members.registerMember(meta('register-invite-target'), {
+            memberId: 'invite-target',
+            displayName: 'invited member',
+            apiKey: 'synthetic-invite-target-key',
+          }),
+        )();
+        await options.beforeReady?.(f, env);
+      },
+    }),
+    notifier = relationalStateNotificationsFor(f.db, f.events);
+  return {
+    ...f,
+    notifier,
+    liveMembers: new RelationalMemberStore(f.db, f.env, notifier),
+    get clock() {
+      return f.clock;
+    },
+  };
+}
+function invitationInvariant(f) {
+  return Object.fromEntries(
+    [
+      'commits',
+      'domain_events',
+      'stream_heads',
+      'generation_requests',
+      'generation_jobs',
+      'generation_attempts',
+      'charges',
+      'wallets',
+      'account_quota_state',
+      'idempotency_keys',
+      'members',
+      'member_sessions',
+      'api_keys',
+      'password_credentials',
+    ].map((name) => [
+      name,
+      f.db.prepare(`SELECT * FROM ${name} ORDER BY rowid`).safeIntegers().all(),
+    ]),
+  );
+}
+function inviteNotices(f) {
+  const notices = [];
+  f.events.on('commit', (event) => {
+    assert.equal(f.db.inTransaction, false);
+    notices.push({ event, profile: f.liveMembers.readManagementMemberProfile('invite-target') });
+  });
+  return notices;
+}
+
+test('Discord邀请真实POST仅返回原私有DTO，每次新操作替换；同ms同目录0额外notice，expiry变更提交后一次', async (t) => {
+  const f = await setupInvitation(t),
+    notices = inviteNotices(f),
+    before = invitationInvariant(f),
+    headers = {
+      'idempotency-key': ['ignored invalid key', 'ignored duplicate'],
+      'x-member-activity': '1',
+    },
+    first = await f.call(owner, { method: 'POST', headers, body: invitationBody() });
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(Object.keys(first.body), ['code', 'expiresAt']);
+  assert.match(first.body.code, /^[A-Za-z0-9_-]{32}$/);
+  assert.equal(first.body.expiresAt, f.clock + 7 * 86400000);
+  assert.equal(first.headers.get('set-cookie'), null);
+  assert.equal(f.db.serialize().includes(Buffer.from(first.body.code)), false);
+  assert.equal(notices.length, 1);
+  assert.deepEqual(notices[0].event.collections, ['users']);
+  assert.deepEqual(notices[0].event.memberIds, ['invite-target']);
+  assert.equal(notices[0].profile.inviteExpiresAt, first.body.expiresAt);
+  assert.ok(!JSON.stringify(notices).includes(first.body.code));
+  const repeated = await f.call(owner, { method: 'POST', headers, body: invitationBody() });
+  assert.equal(repeated.status, 200, repeated.text);
+  assert.notEqual(repeated.body.code, first.body.code);
+  assert.equal(repeated.body.expiresAt, first.body.expiresAt);
+  assert.equal(notices.length, 1, '新的原码不是公共目录字段，不能为同ms相同安全DTO额外发通知');
+  f.advance(1);
+  const third = await f.call(admin, {
+    method: 'POST',
+    headers: { ...headers, 'x-admin-token': adminToken },
+    body: invitationBody(),
+  });
+  assert.equal(third.status, 200, third.text);
+  assert.notEqual(third.body.code, repeated.body.code);
+  assert.equal(third.body.expiresAt, first.body.expiresAt + 1);
+  assert.equal(notices.length, 2);
+  assert.deepEqual(notices[1].event.collections, ['users']);
+  assert.equal(notices[1].profile.inviteExpiresAt, third.body.expiresAt);
+  assert.deepEqual(invitationInvariant(f), before);
+  for (const [userId, status] of [
+    ['m2', 409],
+    ['missing', 404],
+    [null, 404],
+    [42, 404],
+    [{ id: 'invite-target' }, 404],
+  ]) {
+    assert.equal(
+      (await f.call(owner, { method: 'POST', body: invitationBody(userId) })).status,
+      status,
+    );
+  }
+  assert.equal(
+    (
+      await f.call(owner, {
+        method: 'POST',
+        member: 'm2',
+        body: { ...invitationBody(), actorKind: 'admin', actorId: 'm1' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await f.call(admin, { method: 'POST', body: invitationBody() })).status, 403);
+  const actor = await authenticateMemberApiKey(f.liveMembers, keys.m1);
+  f.notifier.commit(() =>
+    f.db.transaction(() =>
+      f.liveMembers.setMemberStatus(
+        meta('disable-invitation-target', f.clock, 'm1'),
+        'invite-target',
+        'disabled',
+        actor,
+      ),
+    )(),
+  );
+  const saved = databaseState(f.db);
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 404);
+  assert.equal(databaseState(f.db), saved);
+  for (const key of ['DISCORD_GUILD_ID', 'DISCORD_CLIENT_ID', 'DISCORD_CLIENT_SECRET']) {
+    f.env[key] = '';
+  }
+  assert.equal(
+    (
+      await f.call(admin, {
+        method: 'POST',
+        headers: { 'x-admin-token': adminToken },
+        body: invitationBody(),
+      })
+    ).status,
+    409,
+  );
+  assert.equal(databaseState(f.db), saved);
+});
+
+test('Discord邀请canonical私有owner拒缺actor/非owner/旧epoch，不能由metadata自证', async (t) => {
+  const f = await setupInvitation(t),
+    actor = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+    other = await authenticateMemberApiKey(f.liveMembers, keys.m2),
+    before = databaseState(f.db),
+    notices = inviteNotices(f);
+  for (const candidate of [undefined, other, { actorKind: 'admin', actorId: 'local-admin' }]) {
+    assert.throws(
+      () =>
+        f.notifier.commit(() =>
+          f.db.transaction(() =>
+            f.liveMembers.createMemberDiscordInvite('invite-target', candidate, f.clock),
+          )(),
+        ),
+      { statusCode: 403 },
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  const prepared = await f.liveMembers.prepareMemberCredentials('m1', {
+    username: 'invite.current.owner',
+    password: 'synthetic-invite-owner-new-password',
+  });
+  f.notifier.commit(() =>
+    f.db.transaction(() => f.liveMembers.setMemberCredentials(prepared, actor))(),
+  );
+  const changed = databaseState(f.db),
+    count = notices.length;
+  assert.throws(
+    () =>
+      f.notifier.commit(() =>
+        f.db.transaction(() =>
+          f.liveMembers.createMemberDiscordInvite('invite-target', actor, f.clock),
+        )(),
+      ),
+    { statusCode: 403 },
+  );
+  assert.equal(databaseState(f.db), changed);
+  assert.equal(notices.length, count);
+  const current = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+    accepted = f.notifier.commit(() =>
+      f.db.transaction(() =>
+        f.liveMembers.createMemberDiscordInvite('invite-target', current, f.clock),
+      )(),
+    );
+  assert.match(accepted.code, /^[A-Za-z0-9_-]{32}$/);
+});
+
+test('Discord邀请慢正文后重核实际Cookie/epoch/owner/ready/admin，拒绝不签发邀请或续Cookie', async (t) => {
+  for (const mode of ['cookie', 'epoch', 'owner', 'ready', 'admin-query']) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setupInvitation(t, { onBodyRead: () => begin?.() }),
+        notices = inviteNotices(f),
+        started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        endpoint = mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner,
+        held = await holdPolicyBody(t, f, endpoint, started, {}, invitationBody());
+      if (mode === 'cookie') {
+        await logoutMemberSession(f.liveMembers, f.sessions.m1.token);
+      } else if (mode === 'epoch') {
+        const actor = await authenticateMemberApiKey(f.liveMembers, keys.m1),
+          prepared = await f.liveMembers.prepareMemberCredentials('m1', {
+            username: 'held.invite.owner',
+            password: 'synthetic-held-invite-password',
+          });
+        f.notifier.commit(() =>
+          f.db.transaction(() => f.liveMembers.setMemberCredentials(prepared, actor))(),
+        );
+      } else if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed' WHERE id=1").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const invites = f.db.prepare('SELECT * FROM discord_invites').all(),
+        cut = f.db.prepare('SELECT COUNT(*) n FROM commits').get().n,
+        result = await held.finish();
+      assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.deepEqual(f.db.prepare('SELECT * FROM discord_invites').all(), invites);
+      assert.equal(f.db.prepare('SELECT COUNT(*) n FROM commits').get().n, cut);
+      assert.equal(
+        notices.filter(
+          ({ event }) =>
+            event.collections.includes('users') && event.memberIds.includes('invite-target'),
+        ).length,
+        0,
+      );
+    });
+  }
+});
+
+test('Discord邀请私有SQL尾错/外catch全表回滚0notice，健康重试新操作且不存receipt', async (t) => {
+  const f = await setupInvitation(t),
+    notices = inviteNotices(f);
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 200);
+  f.advance(1);
+  const before = databaseState(f.db),
+    expiry = f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt,
+    count = notices.length;
+  f.db.exec(
+    "CREATE TEMP TRIGGER invitation_tail_fault AFTER UPDATE ON discord_invites BEGIN SELECT RAISE(ABORT,'invitation tail fault'); END",
+  );
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 500);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(notices.length, count);
+  f.notifier.commit(() =>
+    f.db.transaction(() => {
+      try {
+        f.liveMembers.createMemberDiscordInvite('invite-target', null, f.clock);
+      } catch (error) {
+        assert.match(error.message, /invitation tail fault/);
+      }
+    })(),
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, expiry);
+  assert.equal(notices.length, count);
+  f.db.exec('DROP TRIGGER invitation_tail_fault');
+  const retried = await f.call(owner, { method: 'POST', body: invitationBody() });
+  assert.equal(retried.status, 200, retried.text);
+  assert.equal(retried.body.expiresAt, expiry + 1);
+  assert.equal(notices.length, count + 1);
+});
+
+test('Discord邀请新码替换/一次性兑现复用真实OAuth owner，consume尾错回滚后可重新授权且仅提交一次通知', async (t) => {
+  let f;
+  const discordFetch = async (url) => {
+    assert.equal(f.db.inTransaction, false);
+    if (url.endsWith('/oauth2/token')) {
+      return Response.json({
+        access_token: 'synthetic-invitation-access',
+        refresh_token: 'synthetic-invitation-refresh',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'identify guilds.members.read',
+      });
+    }
+    return Response.json(
+      url.endsWith('/users/@me')
+        ? { id: '555555555555555555' }
+        : { user: { id: '555555555555555555' } },
+    );
+  };
+  f = await setupInvitation(t, { discordFetch });
+  const auth = createRelationalMemberAuthenticationHttp({
+      sqlite: f.db,
+      events: f.events,
+      env: f.env,
+      discordFetch,
+    }),
+    notices = inviteNotices(f);
+  f.setHandler(
+    async (req, res, url) => (await auth(req, res, url)) || (await f.handle(req, res, url)),
+  );
+  const headers = { host: 'management.example', origin: 'https://management.example' },
+    start = async (code) => {
+      const r = await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: code },
+        headers,
+      });
+      assert.equal(r.status, 200, r.text);
+      return {
+        state: new URL(r.body.authorizationUrl).searchParams.get('state'),
+        cookie: r.headers.get('set-cookie').split(';')[0],
+      };
+    },
+    finish = (pending) =>
+      f.call(
+        '/api/member/discord/callback?' +
+          new URLSearchParams({ state: pending.state, code: 'synthetic-grant-code' }),
+        { headers: { ...headers, cookie: pending.cookie, origin: 'https://discord.com' } },
+      );
+  const first = await f.call(owner, { method: 'POST', body: invitationBody() }),
+    oldFlow = await start(first.body.code),
+    second = await f.call(owner, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'same-does-not-replay' },
+      body: invitationBody(),
+    });
+  assert.equal((await finish(oldFlow)).status, 403);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: first.body.code },
+        headers,
+      })
+    ).status,
+    403,
+  );
+  const flow = await start(second.body.code),
+    before = databaseState(f.db),
+    count = notices.length;
+  f.db.exec(
+    "CREATE TEMP TRIGGER invitation_consume_fault AFTER DELETE ON discord_invites WHEN OLD.member_id='invite-target' BEGIN SELECT RAISE(ABORT,'invitation consume fault'); END",
+  );
+  const failed = await finish(flow);
+  assert.equal(failed.status, 500, failed.text);
+  assert.equal((failed.headers.get('set-cookie') || '').includes('nai_member_session='), false);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(notices.length, count);
+  f.db.exec('DROP TRIGGER invitation_consume_fault');
+  const done = await finish(await start(second.body.code));
+  assert.equal(done.status, 303, done.text);
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, null);
+  assert.equal(
+    f.liveMembers.readManagementMemberProfile('invite-target').discordId,
+    '555555555555555555',
+  );
+  assert.equal(notices.length, count + 1);
+  assert.ok(notices.at(-1).event.collections.includes('users'));
+  assert.ok(notices.at(-1).event.collections.includes('sessions'));
+  assert.equal(notices.at(-1).profile.inviteExpiresAt, null);
+  assert.equal((await finish(flow)).status, 400);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: second.body.code },
+        headers,
+      })
+    ).status,
+    403,
+  );
+  assert.equal((await f.call(owner, { method: 'POST', body: invitationBody() })).status, 409);
+  assert.ok(
+    !JSON.stringify(f.db.prepare('SELECT payload FROM domain_events').all()).includes(
+      second.body.code,
+    ),
+  );
+});
+
+test('Discord邀请过期保留私有原期限；公开回放不恢复邀请，匹配选定私有源SHA才恢复同一摘要', async (t) => {
+  const f = await setupInvitation(t),
+    issued = await f.call(owner, { method: 'POST', body: invitationBody() });
+  assert.equal(issued.status, 200, issued.text);
+  const sourcePath = path.join(f.dir, 'selected-invitation.sqlite');
+  await f.db.backup(sourcePath);
+  const sealed = new Database(sourcePath);
+  sealed.pragma('journal_mode=DELETE');
+  sealed.close();
+  const sourceSha256 = relationalSnapshotSha256(sourcePath),
+    originalInvite = f.db.prepare('SELECT * FROM discord_invites').all(),
+    target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db);
+  let fetches = 0;
+  t.mock.method(globalThis, 'fetch', () => {
+    fetches++;
+    assert.fail('invitation public replay cannot fetch');
+  });
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  for (const name of [
+    'discord_invites',
+    'discord_bindings',
+    'api_keys',
+    'member_sessions',
+    'upstream_credentials',
+  ]) {
+    assert.equal(target.prepare(`SELECT COUNT(*) n FROM ${name}`).get().n, 0);
+  }
+  assert.equal(
+    target.prepare('SELECT COUNT(*) n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  await verifyAndInstallRelationalStorage(target, { ...f.selected, sourcePath, sourceSha256 });
+  assert.deepEqual(target.prepare('SELECT * FROM discord_invites').all(), originalInvite);
+  assert.equal(fetches, 0);
+  const restoredAuth = createRelationalMemberAuthenticationHttp({
+    sqlite: target,
+    events: new EventEmitter(),
+    env: f.env,
+    discordFetch: () => assert.fail('valid invite start must stay offline'),
+  });
+  f.setHandler(restoredAuth);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: issued.body.code },
+        headers: { host: 'management.example', origin: 'https://management.example' },
+      })
+    ).status,
+    200,
+  );
+  const expiry = issued.body.expiresAt;
+  f.advance(expiry - f.clock + 1);
+  const auth = createRelationalMemberAuthenticationHttp({
+    sqlite: f.db,
+    events: f.events,
+    env: f.env,
+    discordFetch: () => assert.fail('expired invite must reject before OAuth network'),
+  });
+  f.setHandler(auth);
+  assert.equal(
+    (
+      await f.call('/api/member/discord/start', {
+        method: 'POST',
+        body: { invite: issued.body.code },
+        headers: { host: 'management.example', origin: 'https://management.example' },
+      })
+    ).status,
+    403,
+  );
+  assert.equal(f.liveMembers.readManagementMemberProfile('invite-target').inviteExpiresAt, expiry);
+  assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
 });

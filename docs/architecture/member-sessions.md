@@ -3,6 +3,9 @@
 T3 新格式接入继续复用 `members/authentication.ts` 的规则。存储通过 `memberSessionTransaction()`
 提供当前成员、会话和 owner 配置的窄事务视图；旧运行时仅在存储边界映射原 SQL 字段。
 新格式将凭据、会话和 `member_auth_state` 作为私有当前状态恢复，业务事实不能复活这些认证材料。
+
+管理 `discord-invite` 沿原非 keyed 私有操作：当前 owner Cookie/资格或本机 admin 在正文后重验授权，存储在同一事务重新核对实际 actor、当前启用状态及 auth epoch。未启用 Discord 为 409；目标须存在、启用且尚未绑定，沿原 owner 返回 404/409。成功返回原 `{code,expiresAt}`，只持久化原 7 天邀请摘要和截止，不追加公共 secret、事件、回执或结果缓存。再次请求是新操作，会替换旧摘要，即使附相同 Idempotency-Key 也不能据此复取原明文。旧码/过期码不能兑现；OAuth state、指定服务器验证和一次性绑定仍由原 Discord owner 完成，公共回放不恢复邀请，选定私有快照按真实源保留。
+
 真实登录/退出共用原 HTTP handler；T4 的受理回调要求同一真实 SQLite 事务，不接受旧串行队列替代。
 Discord 的邀请、登录和刷新继续由 `members/discord-auth.ts` 决定，经 `discordAuthenticationTransaction()`
 保存私有绑定/授权与非秘密资格事实。网络验证在 SQL 事务外完成，受理事务按同一五分钟规则复核当前资格。

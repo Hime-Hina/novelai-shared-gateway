@@ -783,7 +783,7 @@ async function discordFixture(t, filename) {
       req.end(body === undefined ? undefined : JSON.stringify(body));
     });
   const invite = (id = 'm1', now) =>
-    db.transaction(() => members.createMemberDiscordInvite(id, now))();
+    db.transaction(() => members.createMemberDiscordInvite(id, null, now))();
   const start = async (code) => {
     const response = await call('/api/member/discord/start', {
       body: code ? { invite: code } : {},

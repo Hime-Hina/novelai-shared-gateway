@@ -1989,6 +1989,22 @@ Discord 启用时保留新建服务端随机密码/更新 409。目标登录名�
 
 根在资金、权益并集 `cdbff71` 上整合，保留所有原管理分派、完整追加测试及单一私有 verifier；三条后继内部初始化 fixture 显式传可信本地 admin/null，不放宽业务调用授权或负向省略参数用例。十一条受影响集成文件同次 **347/347、零跳过，63.566 秒**，日志 `H:/TEMP/novelai-credentials-root-joint.log`；backend 类型、architecture、可信实际 main `88d2c26` migration 已通过，合并保留证明 `H:/TEMP/novelai-credentials-root-merge.json`。此后继不借 b427 全量、编译包或 CI；note 表示、邀请并集与最终同候选发布验收继续完成。
 
+### 9.78 管理 Discord 邀请的私有操作接入
+
+从固定 `6477ac620f646b33cfd2e1da79b3742f87103eec` 独立接续，只接原两个 member-management POST literal 的 `discord-invite`。原 Web inviteMember 只消费 `{code,expiresAt}` 并提示重新生成撤销旧码；HTTP 在正文后调用现 owner/admin authorize，保留 Discord 未启用 409，成员/绑定/期限/随机码与一次性兑现全部复用原 Discord owner。该分支在 generic managementCommand 前，忽略原 header；每次新请求是真实新私有操作，不新增公共事件、幂等 receipt 或私有结果缓存，不将邀请原码/摘要放入业务事实。POST 不续 Cookie。
+
+MemberStore.createMemberDiscordInvite 必须显式接当前 MemberUser 或 trusted admin 的 NULL，省略拒绝；同一 owning transaction 内经共享 authorizePrivateCommand→原 authorizeOwnerCommand 核对真实当前 owner/epoch。该窄 helper 同时供并行 credentials 私有 setter 使用，不复刻授权政策；旧离线建源 primitive caller 显式标记 NULL，不增 ready/Discord 配置开关来解释历史。正文目标非字符串沿原 pure.find 返回 404，不能变成 SQLite bind 错误。来源/跨对象/回滚与原邀请兑现反例由真实合法 ready HTTP、原认证事务和完整公共/选定私有恢复验证；固定证据随后追加。本片不实现其他管理 action、sole 切换或发布。
+
+实际原 6477 probe 已证实：建邀请使目录 inviteExpiresAt 从 NULL 变为已知期限，但旧通知为 0。现 trackPrivateMember 只在原 SELECT 中 JOIN discord_invites 并把原目录已有的可空 inviteExpiresAt 纳入安全 member 比较，不含 code/hash、持久派生状态或新 event/kind。创建、expiry 实际改变或原 OAuth 消耗邀请回到 NULL 时，最外层成功提交后目录通知一次；同毫秒换码但相同安全 DTO 不额外通知。私有 SQL 尾错即使在外层 catch 后继续提交，期限/全 private-public 表与通知仍保持原值。原凭据/授权/会话比较和通知 owner 均未另写一套。
+
+Node22 新真实 ready/localhost 专项 11/11（含五项慢正文），管理 HTTP、原认证 HTTP、安全目录、成员 owner、状态通知五文件同次 125/125、零跳过，39.638 秒。覆盖两 literal owner/admin、坏/重复 Idempotency-Key 仍新操作、原 DTO/七天期限、非字符串/停用/已绑定拒绝、当前 actor/core 旧 epoch 拒绝、Cookie/epoch/owner/ready/admin 在真实慢正文间撤权、POST 不续期、创建和 OAuth consume 的 SQL 尾错全回滚及健康重试。原 invite1 的 OAuth flow 在新 invite2 替换后不可兑现；成功绑定消费后原码/原 state 仍拒绝。完整 public commit 回放不生成邀请/认证或 fetch，匹配真实 source SHA 的唯一 installer 恢复原摘要，真实 Auth HTTP start 接受恢复后的原码；过期仍按原 owner 拒绝，源封存摘要不变。
+
+类型、architecture、默认及可信 6477 migration、受影响格式与 diff 检查通过。隔离 TEMP 删除 canonical actor guard、改用旧 Cookie actor 快照、去掉安全 expiry 比较、误将 invite hash 纳入通知比较，分别由真实原断言精确识别；恢复后 11/11。旧 6477 probe 的 0!=1 红与新 probe 绿保留，原函数调用按有意收窄的 API 显式标记 trusted admin，未手造 ready 或成功 stub。日志 `H:/TEMP/novelai-discord-invite-http-union-final.log`、`novelai-discord-invite-negative-evidence.json` 与同前缀 notice-before/after。固定独审另绑定候选；没有 full/build/compiled/Node24/native 安装、sole 或生产动作，不借父并集结果。
+
+固定 `e1f94967730c2e7ea77210d9bd48c941bdd03128` 独审通过：原十一专项与新增六反例同次 **17/17、零跳过**，实际 OAuth 慢 token IO 中替换邀请拒绝旧 state/旧码，新码恰一次兑现；相同业务 cut 的两份合法私有源只恢复所选 SHA，错源零写。嵌套 expiry SQL 尾错不留状态或通知，同期限换码仍零目录通知；漏当前 actor 与误将私有码摘要放入安全比较两个负控精准失败，恢复后通过。九条差异路径、三十一原方法和九权威文件有精确绑定，报告 `H:/TEMP/novelai-discord-invite-independent-e1f9496-20261114/INDEPENDENT-REVIEW.md`（SHA256 `e5f68cfb3e949ddd455e6953dece6f89ce7305b24bdab9d684caf2c0bfc37d46`）。
+
+根在 credentials `f0eb284` 上整合，只追加原邀请十行 early branch、原私有邀请签名/授权和安全 expiry 比较，两个私有命令共用一份 verifier；原资金/权益/政策/组/Key 分派保留。全部十四条原测试编辑与双方完整追加块保留，合并证明 `H:/TEMP/novelai-invite-root-merge.json`；十二条受影响集成文件同次 **361/361、零跳过，71.771 秒**，类型、architecture、可信实际 main `88d2c26` migration 通过，日志 `H:/TEMP/novelai-invite-root-{joint,type,static}.log`。没有把本后继计入 b427 的完整后端、编译包或 CI；后续新 sole、账户保留行为、私有 note 和最终同候选整体恢复/发布仍需完成。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
