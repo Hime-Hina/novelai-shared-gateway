@@ -60,11 +60,13 @@ export function createRelationalQueueRuntime(options: {
     now = options.now ?? Date.now;
   const previews = options.previews ?? new JobPreviews();
   const active = new Map<string, Active>();
-  let phase: 'created' | 'starting' | 'running' | 'stopping' | 'stopped' | 'faulted' = 'created';
+  let phase: 'created' | 'starting' | 'prepared' | 'running' | 'stopping' | 'stopped' | 'faulted' =
+    'created';
   let timer: ReturnType<typeof setTimeout> | null = null,
     scheduledAt = 0,
     ticking = false;
-  let startup: Promise<void> | null = null;
+  let preparation: Promise<void> | null = null,
+    startup: Promise<void> | null = null;
   let shutdown: Promise<void> | null = null;
   const controls = createGenerationControls({
     controls: options.controls,
@@ -442,9 +444,38 @@ export function createRelationalQueueRuntime(options: {
       }
       expire();
       if (phase === 'starting') {
-        phase = 'running';
-        schedule();
+        assertRelationalStorageReady(sqlite);
+        phase = 'prepared';
       }
+    } catch (error) {
+      fault(error);
+      throw error;
+    }
+  }
+  // 恢复只收尾原事实；监听前不建timer，也不取得新的派发资格。
+  function prepare() {
+    if (['stopping', 'stopped', 'faulted'].includes(phase)) {
+      return Promise.reject(new Error('Executor cannot be restarted in place.'));
+    }
+    if (preparation) {
+      return preparation;
+    }
+    phase = 'starting';
+    preparation = initialize();
+    return preparation;
+  }
+  function activate() {
+    if (phase !== 'prepared' && phase !== 'running') {
+      throw new Error('Executor must finish preparation before activation.');
+    }
+    try {
+      // 恢复完成与监听成功之间可能等待；只在当前 ready 下开放原调度器。
+      assertRelationalStorageReady(sqlite);
+      if (phase === 'running') {
+        return;
+      }
+      phase = 'running';
+      schedule();
     } catch (error) {
       fault(error);
       throw error;
@@ -456,6 +487,8 @@ export function createRelationalQueueRuntime(options: {
     schedule,
     tick,
     activePayloadBytes: () => inputs.activePayloadBytes(controls.controls.values()),
+    prepare,
+    activate,
     start() {
       if (['stopping', 'stopped', 'faulted'].includes(phase)) {
         return Promise.reject(new Error('Executor cannot be restarted in place.'));
@@ -463,11 +496,12 @@ export function createRelationalQueueRuntime(options: {
       if (startup) {
         return startup;
       }
-      if (phase !== 'created') {
-        return Promise.reject(new Error('Executor cannot be restarted in place.'));
-      }
-      phase = 'starting';
-      startup = initialize();
+      // 现有调用者仍是一段式启动；sole 使用 prepare→成功监听→activate。
+      startup = prepare().then(() => {
+        if (phase === 'prepared') {
+          activate();
+        }
+      });
       return startup;
     },
     stop() {
@@ -476,16 +510,17 @@ export function createRelationalQueueRuntime(options: {
       }
       phase = 'stopping';
       clearTimer();
-      emitStoreEvent(options.events, 'close');
       shutdown = (async () => {
-        if (startup) {
+        if (preparation) {
           try {
-            await startup;
+            await preparation;
           } catch {}
         }
         await Promise.all([...controls.controls.values()].map((control) => control.done));
         phase = 'stopped';
       })();
+      // 先登记关闭promise；同步close监听者重入stop也必须复用同一次关闭。
+      emitStoreEvent(options.events, 'close');
       return shutdown;
     },
     get status() {

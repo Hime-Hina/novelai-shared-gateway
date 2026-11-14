@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createServer } from 'node:http';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import path from 'node:path';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
@@ -228,6 +228,217 @@ test('只有正式installer就绪库可启动，物理Map和关闭通知复用�
   await live.stop();
   await live.stop();
   assert.equal(closed, 1);
+});
+
+test('准备完成不建调度timer，真实listen失败仍无派发，stop后不能重启或激活', async (t) => {
+  const f = await setup(t);
+  await f.accept('listener-failure', { steps: 30 });
+  await f.ready();
+  const runtime = f.runtime(),
+    before = databaseState(f.db),
+    timers = [],
+    originalTimer = globalThis.setTimeout,
+    mocked = t.mock.method(globalThis, 'setTimeout', (...args) => {
+      timers.push(args[1]);
+      return originalTimer(...args);
+    });
+  const prepared = runtime.prepare();
+  assert.equal(runtime.prepare(), prepared);
+  await prepared;
+  runtime.schedule();
+  runtime.tick();
+  mocked.mock.restore();
+  const occupied = createServer(),
+    failed = createServer();
+  await new Promise((resolve) => occupied.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    await new Promise((resolve) => occupied.close(resolve));
+  });
+  const failure = once(failed, 'error');
+  failed.listen(occupied.address().port, '127.0.0.1');
+  const [error] = await failure;
+  assert.equal(error.code, 'EADDRINUSE');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(f.calls, 0);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM generation_attempts').get().n, 0);
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(timers, []);
+  assert.equal(runtime.status, 'prepared');
+  let closed = 0,
+    reentrant;
+  f.events.on('close', () => closed++);
+  f.events.once('close', () => {
+    reentrant = runtime.stop();
+  });
+  const stopping = runtime.stop();
+  assert.equal(closed, 1);
+  assert.equal(stopping, runtime.stop());
+  assert.equal(reentrant, stopping);
+  await runtime.stop();
+  assert.equal(closed, 1);
+  assert.equal(runtime.status, 'stopped');
+  assert.throws(() => runtime.activate(), /preparation/);
+  await assert.rejects(runtime.prepare(), /restarted/);
+  await assert.rejects(runtime.start(), /restarted/);
+  runtime.schedule();
+  runtime.tick();
+  assert.equal(f.calls, 0);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('真实listen成功后才激活原派发器，prepare/activate/start重入均不重复执行，完整回放无网络', async (t) => {
+  let frontend;
+  const f = await setup(t, (_req, res) => {
+    assert.equal(frontend.listening, true);
+    res.writeHead(200, { 'content-type': 'image/webp' });
+    res.end(image);
+  });
+  await f.accept('listener-success', { steps: 30 });
+  await f.ready();
+  const runtime = f.runtime();
+  frontend = createServer((_req, res) => res.end(runtime.status));
+  t.after(async () => {
+    if (frontend.listening) {
+      await new Promise((resolve) => frontend.close(resolve));
+    }
+  });
+  assert.throws(() => runtime.activate(), /preparation/);
+  const prepared = runtime.prepare();
+  assert.throws(() => runtime.activate(), /preparation/);
+  assert.equal(frontend.listening, false);
+  await prepared;
+  assert.equal(frontend.listening, false);
+  assert.equal(runtime.status, 'prepared');
+  assert.equal(f.calls, 0);
+  frontend.once('listening', () => runtime.activate());
+  await new Promise((resolve) => frontend.listen(0, '127.0.0.1', resolve));
+  assert.equal(
+    await (await fetch(`http://127.0.0.1:${frontend.address().port}`)).text(),
+    'running',
+  );
+  await waitFor(() => f.calls === 1 && runtime.controls.size === 0);
+  assert.equal(
+    f.db.prepare("SELECT status FROM generation_jobs WHERE id='listener-success-0'").get().status,
+    'done',
+  );
+  const before = databaseState(f.db);
+  runtime.activate();
+  runtime.activate();
+  assert.equal(runtime.prepare(), prepared);
+  assert.equal(runtime.start(), runtime.start());
+  await runtime.start();
+  runtime.tick();
+  await runtime.stop();
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.calls, 1);
+  replayAll(t, f);
+});
+
+test('prepared激活重核实际ready，撤回后fault且无timer/派发，不可借旧prepare重入', async (t) => {
+  for (const stage of ['prepared', 'running']) {
+    await t.test(stage, async (t) => {
+      const f = await setup(t);
+      await f.accept('ready-activation', { steps: 30 });
+      await f.ready();
+      const runtime = f.runtime();
+      await runtime.prepare();
+      if (stage === 'running') {
+        runtime.activate();
+      }
+      f.db.prepare("UPDATE projection_state SET status='building'").run();
+      const before = databaseState(f.db);
+      assert.throws(() => runtime.activate(), /incomplete/);
+      assert.equal(runtime.status, 'faulted');
+      runtime.schedule();
+      runtime.tick();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(f.calls, 0);
+      assert.equal(databaseState(f.db), before);
+      await assert.rejects(runtime.prepare(), /restarted/);
+      await assert.rejects(runtime.start(), /restarted/);
+      await runtime.stop();
+      assert.equal(runtime.status, 'stopped');
+    });
+  }
+});
+
+test('prepare真实原文件恢复未完不监听，stop等实际IO且完成后不激活余图', async (t) => {
+  const f = await setup(t);
+  await f.accept('prepare-stop', { samples: 2, steps: 30 });
+  f.dispatch('prepare-stop-0');
+  const descriptor = describeStoredResult('prepare-stop-image', 'generate', {
+    mimeType: 'image/webp',
+    buffer: image,
+  });
+  f.db.transaction(() =>
+    f.generations.prepareGenerationResult(
+      meta('prepare-stop-original', NOW + 2),
+      'prepare-stop-0',
+      descriptor,
+      f.response(NOW + 2),
+    ),
+  )();
+  await publishStoredResult(f.dir, descriptor, image);
+  await f.ready();
+  let release, entered;
+  const gate = new Promise((resolve) => {
+      release = resolve;
+    }),
+    reading = new Promise((resolve) => {
+      entered = resolve;
+    }),
+    originalOpen = fsPromises.open;
+  let paused = false;
+  const mocked = t.mock.method(fsPromises, 'open', async (...args) => {
+    const handle = await originalOpen(...args);
+    if (path.resolve(String(args[0])) === path.resolve(path.join(f.dir, descriptor.file))) {
+      const read = handle.readFile.bind(handle);
+      handle.readFile = async (...values) => {
+        const bytes = await read(...values);
+        if (!paused) {
+          paused = true;
+          assert.equal(f.db.inTransaction, false);
+          entered();
+          await gate;
+        }
+        return bytes;
+      };
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  f.beforeStop(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+    release();
+  });
+  const runtime = f.runtime(),
+    frontend = createServer(),
+    preparing = runtime.prepare();
+  await reading;
+  assert.equal(runtime.status, 'starting');
+  assert.equal(frontend.listening, false);
+  assert.throws(() => runtime.activate(), /preparation/);
+  let stopped = false;
+  const stopping = runtime.stop().then(() => {
+    stopped = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stopped, false);
+  assert.equal(f.calls, 0);
+  release();
+  await preparing;
+  await stopping;
+  assert.equal(runtime.status, 'stopped');
+  assert.equal(f.calls, 0);
+  assert.equal(f.generations.readCharge('prepare-stop-0').status, 'settled');
+  assert.equal(
+    f.db.prepare("SELECT status FROM generation_jobs WHERE id='prepare-stop-1'").get().status,
+    'queued',
+  );
+  assert.equal(frontend.listening, false);
+  assert.throws(() => runtime.activate(), /preparation/);
+  replayAll(t, f);
 });
 
 test('真实HTTP/PST与冷输入执行，SQL外发布本地字节、原子结算后才推进余图', async (t) => {
