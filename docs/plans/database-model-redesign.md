@@ -1981,11 +1981,11 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 本片先基于 sole `b3b0df5` 的独立工作树实施打包，不改变该候选尚未闭环的晚到受理/关闭排空问题。最终并集仍须同步其已审修复及后继格式，重新绑定同一源码与实际发布制品；本节局部证据不代表整体 D4、Linux CI 或生产切换完成。
 
-运行依赖由实际导入决定：普通 `server/index.js`、离线 `bootstrap.mjs`/`restore-relational.mjs`，以及现备份服务调用的 `r2-backup.mjs`、隔离测试 systemd unit 调用的 `mock-novelai.mjs` 是五个真实入口。现 TypeScript 编译器仍负责后缀改写和发射；`package-backend.mjs` 使用已安装的 TypeScript parser 遍历实际发射 JS 的 import/export、字面动态 import 和模块 URL，只保留递归运行闭包。目录或 data-dir URL 不构成复制边，计算型 import、缺失文件、未改写 TS、越过发射根目录及非生产依赖先拒绝。全图核实后才清除受控输出中其余发射和旧构建残留，没有旧词黑名单、第二套业务 owner 或长期维护的模块清单。
+运行依赖由实际导入决定：普通 `server/index.js`、离线 `bootstrap.mjs`/`restore-relational.mjs`，以及现备份服务调用的 `r2-backup.mjs`、隔离测试 systemd unit 调用的 `mock-novelai.mjs` 是五个真实入口。现 TypeScript 编译器仍负责后缀改写和发射；`package-backend.mjs` 使用已安装的 TypeScript parser 遍历实际发射 JS 的 import/export、字面动态 import 和模块 URL，只保留递归运行闭包。目录或 data-dir URL 不构成复制边，计算型 import、缺失文件、未改写 TS、越过发射根目录及非生产依赖先拒绝。全图核实后才清除受控输出中其余发射和旧构建残留。输出根、依赖物理路径及执行器包父目录均以 realpath 核对；父目录链接不能将依赖解析或清理动作引到包外，原文件保持。没有旧词黑名单、第二套业务 owner 或长期维护的模块清单。
 
 普通包 metadata 只提供 `start`、`bootstrap`、`restore`，无开发依赖；Docker 和执行器只复制其 JS。执行器先清理自己 `.output/server/node_modules/novelai-shared-gateway` 下的旧生成包，不再叠加源 scripts 或旧 migration 资产。`r2-backup.mjs` 仅把现 R2 owner 的计算型 JS/TS fallback 改成同编译规则的静态导入，原加密、上传、保留与不覆盖行为不变。普通 Linux release 不再附带只支持旧 JsonStore 的一次性 `bridge-owner-session.mjs`；历史源码和生产发布记录不改写。独立固定旧工具的 19 项检查、仓库 35 份旧 SQL/journal 和可信 migration 基线均保持原样，普通包不再为旧 worker 保留这些资产。
 
-`tests/unit/package-backend.test.mjs` 用真实临时文件核对循环/动态/模块 URL 的完整依赖、残留清除及先拒绝后不破坏输出；带旧词但实际依赖的模块仍保留。执行器复制的原脚本也在独立夹具运行，确保不混入源脚本/旧迁移、清除上一轮旧脚本。初轮与原六项 R2 backup 检查联合 14/14；随后补充计算型模块 URL 拒绝，最终包装专项 9/9。原 70 MiB、认证和 CLI 不覆盖等断言均保留，不以 mock 结果替代真实云验收。
+`tests/unit/package-backend.test.mjs` 用真实临时文件核对循环/动态/模块 URL 的完整依赖、残留清除及先拒绝后不破坏输出；带旧词但实际依赖的模块仍保留。执行器复制的原脚本也在独立夹具运行，确保不混入源脚本/旧迁移、清除上一轮旧脚本。初轮与原六项 R2 backup 检查联合 14/14；随后补充计算型模块 URL 和真实父目录链接反例，最终包装专项 10/10。原 70 MiB、认证和 CLI 不覆盖等断言均保留，不以 mock 结果替代真实云验收。
 
 `tests/deployment/normal-package.test.mjs` 只从选定普通包加载 JS，子进程禁 TypeScript 并在 IO 前拒绝离线或非明确回环网络；同一检查用于本地后端、Node 24 和 CI 解包后的 release。覆盖实际 CLI fresh bootstrap 保持暂停且零观察、真实普通 child 启动、管理员显式查询后启用、Key quota/launcher HTTP、重启、完整公共回放不恢复认证、错误私有 cut 原子拒绝、所选私有快照经唯一 installer ready、实际 restore CLI 及同目标不覆盖。missing、旧格式、合法 building 与错误 schema hash 均不得监听、联网或改写数据库。新测试只核对这条发布/恢复链，不替代 Native/OpenAI/Direct 生成、Docker/Nuxt 或各 owner 的业务验收。
 

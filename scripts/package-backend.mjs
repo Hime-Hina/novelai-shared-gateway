@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, rm, lstat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, realpath, rm, lstat } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,7 +14,14 @@ export async function packageBackend(root = fileURLToPath(new URL('../', import.
       'scripts/r2-backup.mjs',
       'scripts/mock-novelai.mjs',
     ],
-    files = new Set();
+    files = new Set(),
+    physicalOutput = await realpath(output);
+  if (
+    !(await lstat(output)).isDirectory() ||
+    path.relative(path.join(await realpath(root), '.output/backend'), physicalOutput) !== ''
+  ) {
+    throw new Error('Linked or outside generated backend directory.');
+  }
   while (pending.length) {
     const name = path.normalize(pending.pop());
     if (files.has(name)) continue;
@@ -24,6 +31,9 @@ export async function packageBackend(root = fileURLToPath(new URL('../', import.
     }
     if (!(await lstat(filename)).isFile()) {
       throw new Error(`Runtime dependency is not a regular file: ${name}`);
+    }
+    if (path.relative(path.join(physicalOutput, name), await realpath(filename)) !== '') {
+      throw new Error(`Linked or outside runtime dependency: ${name}`);
     }
     const source = await readFile(filename, 'utf8');
     files.add(name);

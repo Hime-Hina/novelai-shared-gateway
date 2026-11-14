@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, realpath, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -7,8 +7,18 @@ const rootDir = path.resolve(executorDir, '..');
 const outputDir = path.join(executorDir, '.output', 'server');
 const packageDir = path.join(outputDir, 'node_modules', 'novelai-shared-gateway');
 
-if (!packageDir.startsWith(path.join(executorDir, '.output') + path.sep)) {
-  throw new Error('Invalid generated executor package directory.');
+const physicalOutput = path.join(await realpath(executorDir), '.output', 'server');
+if (path.relative(physicalOutput, await realpath(outputDir)) !== '') {
+  throw new Error('Linked or outside generated executor directory.');
+}
+await mkdir(path.dirname(packageDir), { recursive: true });
+if (
+  path.relative(
+    path.join(physicalOutput, 'node_modules'),
+    await realpath(path.dirname(packageDir)),
+  ) !== ''
+) {
+  throw new Error('Linked or outside generated executor package directory.');
 }
 // Rebuilding must not leave an older normal package's scripts or legacy assets in the release.
 await rm(packageDir, { recursive: true, force: true });

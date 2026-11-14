@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -138,4 +138,31 @@ test('执行器复制同一普通包，重建删除旧产物且不再混入源�
     await files(path.join(f.root, 'executor/.output/server/node_modules/novelai-shared-gateway')),
     [...(await files(f.output)), 'LICENSE', 'NOTICE.md', 'UPSTREAM-LICENSE'].sort(),
   );
+  const generatedModules = path.join(f.root, 'executor/.output/server/node_modules');
+  assert.ok(path.resolve(generatedModules).startsWith(f.root + path.sep));
+  await rm(generatedModules, { recursive: true });
+  await put('outside/novelai-shared-gateway/sentinel.txt', 'retain this external file');
+  await symlink(path.join(f.root, 'outside'), generatedModules, 'junction');
+  const rejected = spawnSync(process.execPath, ['executor/scripts/package-runtime.mjs'], {
+    cwd: f.root,
+    encoding: 'utf8',
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /outside|linked/i);
+  assert.equal(
+    await readFile(path.join(f.root, 'outside/novelai-shared-gateway/sentinel.txt'), 'utf8'),
+    'retain this external file',
+  );
+});
+
+test('发射目录内的父目录链接不能将包内依赖解析到包外，也不能在清理时触及原文件', async (t) => {
+  const f = await fixture(t),
+    outside = path.join(f.root, 'outside');
+  await mkdir(outside);
+  await writeFile(path.join(outside, 'module.js'), 'export const value = 1;');
+  await symlink(outside, path.join(f.output, 'server/linked'), 'junction');
+  await f.put('server/runtime.js', "import './linked/module.js';");
+  await assert.rejects(packageBackend(f.root), /outside|linked/i);
+  assert.equal(await readFile(path.join(outside, 'module.js'), 'utf8'), 'export const value = 1;');
+  assert.ok((await files(f.output)).includes('server/storage/sqlite-store.js'));
 });
