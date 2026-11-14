@@ -519,9 +519,9 @@ CREATE TABLE idempotency_keys (
   PRIMARY KEY (original_member_id, operation, key_hash),
   CHECK (request_id IS NULL OR request_id = original_request_id),
   CHECK (resolution != 'live' OR
-    (request_id IS NOT NULL AND commit_seq IS NOT NULL AND context_id IS NOT NULL)),
-  CHECK ((commit_seq IS NOT NULL AND archived_receipt IS NULL)
-    OR (commit_seq IS NULL AND archived_receipt IS NOT NULL)),
+    (request_id IS NOT NULL AND context_id IS NOT NULL
+      AND (commit_seq IS NOT NULL OR archived_receipt IS NOT NULL))),
+  CHECK (commit_seq IS NULL OR archived_receipt IS NULL),
   FOREIGN KEY (request_id, original_member_id) REFERENCES generation_requests(id, member_id)
 ) STRICT;
 

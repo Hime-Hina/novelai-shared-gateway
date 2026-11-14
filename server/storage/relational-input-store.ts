@@ -156,6 +156,7 @@ export const relationalInputFacts = new Set<RelationalEvent['eventType']>([
   'RequestAliasRegistered',
   'OpeningInputRecorded',
   'OpeningRequestRecorded',
+  'OpeningIdempotencyRecorded',
 ]);
 
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
@@ -245,6 +246,24 @@ export class RelationalInputStore {
     }
   }
 
+  private assertContextRegisteredBefore(contextId: string, event: RelationalEvent) {
+    if (
+      !this.sqlite
+        .prepare(
+          `SELECT 1 FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered'
+      AND (commit_seq < ? OR (commit_seq = ? AND event_index < ?)) LIMIT 1`,
+        )
+        .get(
+          `context:${contextId}`,
+          BigInt(event.commitSeq),
+          BigInt(event.commitSeq),
+          event.eventIndex,
+        )
+    ) {
+      unavailable();
+    }
+  }
+
   private insertContext(contextId: string, context: RelationalNormalizationContext) {
     this.sqlite
       .prepare('INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)')
@@ -324,6 +343,27 @@ export class RelationalInputStore {
       },
       { randomSeed: seedMode === 'random', noCache },
     );
+  }
+
+  private idempotencyIntentFingerprint(
+    prepared: Parameters<RelationalInputStore['preparedFingerprint']>[0],
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+    confirmation: MemberGenerationConfirmation | null,
+  ) {
+    const requestFingerprint = this.preparedFingerprint(prepared, seedMode, noCache);
+    if (prepared.context.kind !== 'member') {
+      return requestFingerprint;
+    }
+    if (!noCache || confirmation === null) {
+      unavailable();
+    }
+    try {
+      assertMemberGenerationIntent(confirmation, requestFingerprint);
+    } catch {
+      unavailable();
+    }
+    return memberGenerationIntentFingerprint({ requestFingerprint }, confirmation);
   }
 
   readGenerationReuseProof(jobId: string) {
@@ -976,26 +1016,12 @@ export class RelationalInputStore {
     }
     for (const alias of aliases) {
       const a = alias.payload;
-      const requestFingerprint = this.preparedFingerprint(
+      const intentFingerprint = this.idempotencyIntentFingerprint(
         { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
         p.seedMode,
         a.noCache,
+        p.confirmation,
       );
-      let intentFingerprint = requestFingerprint;
-      if (context.kind === 'member') {
-        if (!a.noCache || p.confirmation === null) {
-          unavailable();
-        }
-        try {
-          assertMemberGenerationIntent(p.confirmation, requestFingerprint);
-        } catch {
-          unavailable();
-        }
-        intentFingerprint = memberGenerationIntentFingerprint(
-          { requestFingerprint },
-          p.confirmation,
-        );
-      }
       if (
         a.memberId !== p.memberId ||
         alias.memberId !== p.memberId ||
@@ -1372,6 +1398,33 @@ export class RelationalInputStore {
             event.occurredAt,
             event.eventId,
           );
+      } else if (event.eventType === 'OpeningIdempotencyRecorded') {
+        const p = event.payload;
+        this.assertOpeningIdempotency(event);
+        this.sqlite
+          .prepare(
+            `INSERT INTO idempotency_keys(
+          original_member_id,operation,key_hash,intent_fingerprint,original_request_id,
+          original_job_id,original_command_id,request_id,commit_seq,context_id,resolution,
+          origin_ref,archived_receipt,created_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)`,
+          )
+          .run(
+            p.originalMemberId,
+            p.operation,
+            p.keyHash,
+            p.intentFingerprint,
+            p.originalRequestId,
+            p.originalJobId,
+            p.originalCommandId,
+            p.requestId,
+            p.contextId,
+            p.resolution,
+            p.originRef,
+            p.archivedReceipt === null ? null : canonicalJson(p.archivedReceipt),
+            p.createdAt,
+            event.eventId,
+          );
       }
     }
   }
@@ -1395,7 +1448,9 @@ export class RelationalInputStore {
     const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
     const opening = stored.events.some(
       (event) =>
-        event.eventType === 'OpeningInputRecorded' || event.eventType === 'OpeningRequestRecorded',
+        event.eventType === 'OpeningInputRecorded' ||
+        event.eventType === 'OpeningRequestRecorded' ||
+        event.eventType === 'OpeningIdempotencyRecorded',
     );
     if (
       opening &&
@@ -1406,6 +1461,7 @@ export class RelationalInputStore {
             relationalInputFacts.has(event.eventType) &&
             event.eventType !== 'OpeningInputRecorded' &&
             event.eventType !== 'OpeningRequestRecorded' &&
+            event.eventType !== 'OpeningIdempotencyRecorded' &&
             event.eventType !== 'ContextRegistered',
         ))
     ) {
@@ -1479,21 +1535,7 @@ export class RelationalInputStore {
         assertRequestSeedMode(p);
         inputs.set(p.inputId, input);
         if (p.contextId !== null) {
-          if (
-            !this.sqlite
-              .prepare(
-                `SELECT 1 FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered'
-                  AND (commit_seq < ? OR (commit_seq = ? AND event_index < ?)) LIMIT 1`,
-              )
-              .get(
-                `context:${p.contextId}`,
-                BigInt(event.commitSeq),
-                BigInt(event.commitSeq),
-                event.eventIndex,
-              )
-          ) {
-            unavailable();
-          }
+          this.assertContextRegisteredBefore(p.contextId, event);
           const context = contexts.get(p.contextId) ?? source.context(p.contextId);
           assertRequestSeedMode(p, context);
           if (input.row.completeness === 'complete') {
@@ -1630,6 +1672,16 @@ export class RelationalInputStore {
         if (!replayed) {
           this.applyAcceptedEvents([event]);
         }
+      } else if (event.eventType === 'OpeningIdempotencyRecorded') {
+        if (replayed) {
+          this.readOpeningGenerationIdempotency(
+            event.payload.originalMemberId,
+            event.payload.operation,
+            event.payload.keyHash,
+          );
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
       } else if (event.eventType === 'RequestAliasRegistered') {
         if (replayed) {
           const p = event.payload;
@@ -1735,6 +1787,8 @@ export class RelationalInputStore {
           [string, string, string],
           {
             intentFingerprint: string;
+            memberId: string;
+            operation: string;
             keyHash: string;
             sourceEventId: string;
             originalCommandId: string;
@@ -1744,16 +1798,196 @@ export class RelationalInputStore {
             contextId: string | null;
             commitSeq: string | null;
             resolution: 'live' | 'archived' | 'unavailable';
+            originRef: string;
+            archivedReceipt: string | null;
+            createdAt: number;
           }
         >(
-          `SELECT intent_fingerprint AS intentFingerprint,key_hash AS keyHash,source_event_id AS sourceEventId,
+          `SELECT original_member_id AS memberId,operation,intent_fingerprint AS intentFingerprint,key_hash AS keyHash,source_event_id AS sourceEventId,
       original_command_id AS originalCommandId,
       original_request_id AS originalRequestId,original_job_id AS originalJobId,request_id AS requestId,
-      context_id AS contextId,CAST(commit_seq AS TEXT) AS commitSeq,resolution FROM idempotency_keys
+      context_id AS contextId,CAST(commit_seq AS TEXT) AS commitSeq,resolution,
+      origin_ref AS originRef,archived_receipt AS archivedReceipt,created_at AS createdAt FROM idempotency_keys
       WHERE original_member_id=? AND operation=? AND key_hash=?`,
         )
         .get(memberId, operation, keyHash) || null
     );
+  }
+
+  private assertOpeningIdempotency(
+    event: Extract<RelationalEvent, { eventType: 'OpeningIdempotencyRecorded' }>,
+  ) {
+    const p = event.payload;
+    assertRelationalOpeningSource(this.sqlite, event);
+    if (
+      event.memberId !== p.originalMemberId ||
+      event.accountId !== null ||
+      event.streamId !== `idempotency:${p.originalMemberId}:${p.operation}:${p.keyHash}` ||
+      p.commitSeq !== null
+    ) {
+      unavailable();
+    }
+    const command = readRelationalCommit(this.sqlite, event.commitSeq).command;
+    if (command.actorKind !== 'system' || command.actorId !== null) {
+      unavailable();
+    }
+    if (p.requestId !== null) {
+      const request = this.request(p.requestId, p.originalMemberId);
+      if (request.operation !== p.operation) {
+        unavailable();
+      }
+    }
+    if (p.contextId !== null) {
+      this.context(p.contextId);
+      this.assertContextRegisteredBefore(p.contextId, event);
+    }
+    if (p.resolution !== 'live') {
+      return null;
+    }
+    if (
+      p.noCache === null ||
+      p.seedMode === null ||
+      p.requestId === null ||
+      p.contextId === null ||
+      p.archivedReceipt === null
+    ) {
+      unavailable();
+    }
+    const request = this.request(p.requestId, p.originalMemberId),
+      input = this.requestInput(request),
+      context = this.context(p.contextId);
+    if (request.retired_at !== null || input.row.completeness !== 'complete') {
+      unavailable();
+    }
+    assertRequestSeedMode({ operation: p.operation, seedMode: p.seedMode }, context);
+    const assets = this.assertCompleteInput(input, context, request.sample_count),
+      jobs = this.sqlite
+        .prepare<
+          [string],
+          {
+            id: string;
+            sample_index: number;
+            retired_at: number | null;
+            status: string;
+            artifact_id: string | null;
+          }
+        >(
+          'SELECT id,sample_index,retired_at,status,artifact_id FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+        )
+        .all(p.requestId);
+    if (
+      jobs.length !== request.sample_count ||
+      jobs[0]?.id !== p.originalJobId ||
+      jobs.some((job, index) => job.sample_index !== index || job.retired_at !== null)
+    ) {
+      unavailable();
+    }
+    const seed = this.jobSeed(p.requestId, jobs[0].id);
+    if (p.operation === 'generate' && seed === null) {
+      unavailable();
+    }
+    for (const job of jobs) {
+      const expected =
+        p.operation === 'generate' ? relationalChildSeed(seed!, job.sample_index, context) : null;
+      if (this.jobSeed(p.requestId, job.id) !== expected) {
+        unavailable();
+      }
+    }
+    const confirmation =
+      request.confirmation === null
+        ? null
+        : (JSON.parse(request.confirmation) as MemberGenerationConfirmation);
+    if (
+      p.intentFingerprint !==
+      this.idempotencyIntentFingerprint(
+        { body: input.body!, assets, context, firstSeed: seed, sampleCount: request.sample_count },
+        p.seedMode,
+        p.noCache,
+        confirmation,
+      )
+    ) {
+      unavailable();
+    }
+    const cached =
+      typeof p.archivedReceipt === 'object' &&
+      !Array.isArray(p.archivedReceipt) &&
+      Object.hasOwn(p.archivedReceipt, 'cacheHit');
+    if (
+      cached &&
+      (p.noCache ||
+        context.kind === 'member' ||
+        p.operation !== 'generate' ||
+        jobs.length !== 1 ||
+        jobs[0].status !== 'done' ||
+        jobs[0].artifact_id === null)
+    ) {
+      unavailable();
+    }
+    if (
+      canonicalJson(p.archivedReceipt) !==
+      canonicalJson({
+        requestId: p.requestId,
+        jobIds: jobs.map((job) => job.id),
+        ...(cached ? { cacheHit: true } : {}),
+      })
+    ) {
+      unavailable();
+    }
+    return context;
+  }
+
+  // 来源角色决定读哪份原回执；绝不因在线 commit 缺失而猜为历史回执。
+  readOpeningGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
+    const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
+    if (!mapping) {
+      unavailable();
+    }
+    const source = this.sqlite
+      .prepare<[string], { seq: string; eventType: string }>(
+        'SELECT CAST(commit_seq AS TEXT) AS seq,event_type AS eventType FROM domain_events WHERE event_id=?',
+      )
+      .get(mapping.sourceEventId);
+    if (source?.eventType === 'RequestAliasRegistered') {
+      return null;
+    }
+    if (source?.eventType !== 'OpeningIdempotencyRecorded') {
+      unavailable();
+    }
+    const event = readRelationalCommit(this.sqlite, source.seq).events.find(
+      (event) => event.eventId === mapping.sourceEventId,
+    );
+    if (event?.eventType !== 'OpeningIdempotencyRecorded') {
+      unavailable();
+    }
+    const p = event.payload;
+    if (
+      canonicalJson(mapping) !==
+      canonicalJson({
+        memberId: p.originalMemberId,
+        operation: p.operation,
+        keyHash: p.keyHash,
+        intentFingerprint: p.intentFingerprint,
+        originalCommandId: p.originalCommandId,
+        originalRequestId: p.originalRequestId,
+        originalJobId: p.originalJobId,
+        requestId: p.requestId,
+        contextId: p.contextId,
+        commitSeq: p.commitSeq,
+        resolution: p.resolution,
+        originRef: p.originRef,
+        archivedReceipt: p.archivedReceipt === null ? null : canonicalJson(p.archivedReceipt),
+        createdAt: p.createdAt,
+        sourceEventId: event.eventId,
+      })
+    ) {
+      unavailable();
+    }
+    return {
+      mapping,
+      event,
+      context: this.assertOpeningIdempotency(event),
+      receipt: p.archivedReceipt,
+    };
   }
 
   assertAcceptedGenerationIntent(
@@ -1815,16 +2049,20 @@ export class RelationalInputStore {
 
   readGenerationIdempotencyContext(memberId: string, operation: string, keyHash: string) {
     const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
-    if (
-      !mapping ||
-      mapping.resolution !== 'live' ||
-      !mapping.requestId ||
-      !mapping.contextId ||
-      !mapping.commitSeq
-    ) {
+    if (!mapping || mapping.resolution !== 'live' || !mapping.requestId || !mapping.contextId) {
       unavailable();
     }
     this.ownedRequest(mapping.requestId, memberId);
+    const opening = this.readOpeningGenerationIdempotency(memberId, operation, keyHash);
+    if (opening) {
+      if (!opening.context) {
+        unavailable();
+      }
+      return opening.context;
+    }
+    if (!mapping.commitSeq) {
+      unavailable();
+    }
     this.assertAcceptedGenerationIntent(
       mapping.requestId,
       memberId,
@@ -2008,6 +2246,7 @@ export class RelationalInputStore {
   ) {
     const assets = this.validatedAssets(input, context);
     assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
+    return assets;
   }
 
   // 历史种子只按原事实/已知 context 核对；缺正文不使已知 literal 变为未知或当前默认。

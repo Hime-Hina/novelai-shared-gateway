@@ -555,6 +555,25 @@ export class RelationalGenerationStore {
     if (metadata.actorKind !== 'member' || member?.status !== 'active' || !member.epoch) {
       fail('成员授权已失效', 401);
     }
+    const opening = this.inputs.readOpeningGenerationIdempotency(
+      mapping.memberId,
+      mapping.operation,
+      mapping.keyHash,
+    );
+    if (opening) {
+      const p = opening.event.payload;
+      if (
+        canonicalJson(mapping) !== canonicalJson(opening.mapping) ||
+        p.resolution !== 'live' ||
+        p.originalMemberId !== metadata.actorId ||
+        p.originalCommandId !== metadata.commandId ||
+        p.intentFingerprint !== metadata.fingerprint ||
+        opening.receipt === null
+      ) {
+        fail('原请求的任务或回执不可领取；再次生成须使用新操作键。', 410);
+      }
+      return { replayed: true, events: [], receipt: opening.receipt };
+    }
     const prior = readRelationalReceipt(this.sqlite, metadata);
     const cacheHit =
       prior &&

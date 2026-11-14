@@ -27,7 +27,10 @@ import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 interface Dependencies {
   sqlite: Database.Database;
   members: RelationalMemberStore;
-  inputs: Pick<RelationalInputStore, 'readGenerationIdempotency' | 'readMemberContext'>;
+  inputs: Pick<
+    RelationalInputStore,
+    'readGenerationIdempotency' | 'readGenerationIdempotencyContext'
+  >;
   generations: Pick<
     RelationalGenerationStore,
     'acceptGeneration' | 'readAcceptedGenerationReceipt'
@@ -73,7 +76,11 @@ export function createRelationalMemberGenerationAdmission(deps: Dependencies) {
           fail(410, 'result_unavailable', '原请求已归档或不可领取；再次生成须使用新操作键。');
         }
         const original = mapping
-          ? deps.inputs.readMemberContext(mapping.requestId!, member.id)
+          ? deps.inputs.readGenerationIdempotencyContext(
+              member.id,
+              String(input.operation),
+              keyHash,
+            )
           : null;
         if (original && original.kind !== 'member') {
           fail(409, 'idempotency_conflict', '操作键已用于另一种生成意图。');

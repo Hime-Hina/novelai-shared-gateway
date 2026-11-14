@@ -735,6 +735,8 @@ export const relationalPayloadParsers = {
     originalRequestId: id,
     originalJobId: id,
     originalCommandId: id,
+    noCache: nullable(bool),
+    seedMode: nullable(choices('fixed', 'random', 'not_applicable')),
     requestId: nullable(id),
     commitSeq: nullable(sequence),
     contextId: nullable(id),
@@ -917,9 +919,15 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   }
   if (header.eventType === 'OpeningIdempotencyRecorded') {
     if (
-      (row.commitSeq === null) === (row.archivedReceipt === null) ||
+      row.commitSeq !== null ||
       (row.resolution === 'live' &&
-        (row.requestId === null || row.commitSeq === null || row.contextId === null)) ||
+        (row.requestId === null ||
+          row.contextId === null ||
+          row.archivedReceipt === null ||
+          row.noCache === null ||
+          row.seedMode === null)) ||
+      (row.seedMode !== null &&
+        (row.operation === 'generate') === (row.seedMode === 'not_applicable')) ||
       (row.requestId !== null && row.requestId !== row.originalRequestId)
     ) {
       invalid();
