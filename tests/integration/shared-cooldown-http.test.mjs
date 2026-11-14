@@ -2,24 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
 import {
-  JsonStore,
-  applyEventProjection,
-  verifyEventProjections,
-} from '../../server/storage/sqlite-store.ts';
-import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { copyProtectedFacts, replayDomainEvents } from '../../server/events/event-store.ts';
+  childFixture,
+  launchGateway,
+  enableAccount,
+  query,
+  assertChildPublicReplay,
+} from '../helpers/relational-child.mjs';
+import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const model = 'nai-diffusion-4-5-full';
 async function listen(server) {
   server.listen(0, '127.0.0.1');
@@ -37,61 +29,21 @@ async function until(predicate, timeout = 10000) {
 }
 
 async function fixture(t, { hold = false } = {}) {
-  // 只使用新建数据库和 localhost 模拟上游；不加载 .env 或继承外部服务配置。
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'nai-shared-cooldown-http-'));
-  const adminToken = 'synthetic-admin-cooldown-http-only';
-  const initialized = await bootstrap({
-    env: {
-      ADMIN_TOKEN: adminToken,
-      NOVELAI_TOKEN: 'pst-synthetic-cooldown-only',
-      DATA_DIR: dataDir,
-    },
-    log() {},
-  });
-  const member = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts[0];
-  const seeded = new JsonStore(dataDir);
-  await seeded.init();
-  try {
-    await seeded.update(
-      (db) => {
-        const account = db.accounts[0],
-          observation = {
-            quotaTier: 3,
-            subscriptionActive: true,
-            subscriptionExpiresAt: Date.now() + 86400000,
-            quotaPoints: 10000,
-            quotaFixed: 10000,
-            quotaPurchased: 0,
-            v5UsagePercent: 100,
-            v5UsageIsNegative: false,
-            v5UsageTimeUntilNextPercent: 0,
-            quotaCheckedAt: new Date().toISOString(),
-            upstreamStatus: 'active',
-          };
-        Object.assign(account, observation);
-        recordDomainEvent(db, {
-          eventType: 'QuotaObserved',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          payload: { kind: 'official', accountId: account.id, observation },
-        });
-        syncFairQuota(db);
-      },
-      { immediate: true },
-    );
-  } finally {
-    await seeded.close();
-  }
-  const audit = new Database(path.join(dataDir, 'library.sqlite'), {
-    readonly: true,
-    fileMustExist: true,
-  });
+  const fixture = await childFixture(t, 'shared-cooldown-http'),
+    member = fixture.members[0];
   const jobs = () =>
-    audit
-      .prepare('SELECT data FROM jobs')
-      .all()
-      .map((row) => JSON.parse(row.data));
-  const account = () => JSON.parse(audit.prepare('SELECT data FROM accounts').get().data);
+    query(
+      fixture,
+      `SELECT j.*,r.member_id AS member_id FROM generation_jobs j
+    JOIN generation_requests r ON r.id=j.request_id ORDER BY j.queue_seq`,
+    );
+  const account = () =>
+    query(
+      fixture,
+      `SELECT a.*,q.observed_v5,q.observed_anlas_fixed,q.observed_anlas_purchased,
+    q.seconds_per_percent FROM upstream_accounts a JOIN account_quota_state q ON q.account_id=a.id WHERE a.id=?`,
+      fixture.accountId,
+    )[0];
   let release;
   const released = new Promise((resolve) => {
     release = resolve;
@@ -142,78 +94,18 @@ async function fixture(t, { hold = false } = {}) {
     res.writeHead(429, { 'content-type': 'application/json', 'Retry-After': '300' });
     res.end(JSON.stringify({ message: 'Concurrent generation is locked' }));
   });
-  const upstreamPort = await listen(upstream),
-    reservation = http.createServer(),
-    port = await listen(reservation);
-  await new Promise((resolve) => reservation.close(resolve));
-  const base = `http://127.0.0.1:${port}`;
-  const env = Object.fromEntries(
-    ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-      .filter((key) => process.env[key])
-      .map((key) => [key, process.env[key]]),
-  );
-  Object.assign(env, {
-    ADMIN_TOKEN: adminToken,
-    DATA_DIR: dataDir,
-    HOST: '127.0.0.1',
-    PORT: String(port),
-    PUBLIC_BASE_URL: base,
-    PUBLIC_HOST: 'gateway.example',
-    OPENAI_CHAT_TIMEOUT_MS: '15000',
-    NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-  });
-  let child,
-    exited,
-    output = '';
-  const record = (chunk) => {
-    output = (output + chunk.toString()).slice(-16000);
-  };
+  const upstreamPort = await listen(upstream);
+  let server, base;
   const start = async () => {
-    child = spawn(process.execPath, ['server/index.ts'], {
-      cwd: root,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+    server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, {
+      PUBLIC_HOST: 'gateway.example',
+      OPENAI_CHAT_TIMEOUT_MS: '15000',
     });
-    exited = once(child, 'exit');
-    child.stdout.on('data', record);
-    child.stderr.on('data', record);
-    await new Promise((resolve, reject) => {
-      const cleanup = () => {
-        clearTimeout(timer);
-        child.stdout.off('data', ready);
-        child.off('exit', failed);
-        child.off('error', failed);
-      };
-      const ready = (chunk) => {
-        if (chunk.toString().includes('Nai2API listening')) {
-          cleanup();
-          resolve();
-        }
-      };
-      const failed = (cause) => {
-        cleanup();
-        reject(new Error(`synthetic gateway failed ${cause}: ${output}`));
-      };
-      const timer = setTimeout(() => failed('startup timeout'), 15000);
-      child.stdout.on('data', ready);
-      child.once('exit', failed);
-      child.once('error', failed);
-    });
+    base = server.origin;
   };
-  const stop = async (signal = 'SIGTERM') => {
-    if (child?.exitCode === null && child?.signalCode === null) {
-      child.kill(signal);
-    }
-    if (exited) {
-      await exited;
-    }
-  };
+  const stop = async (signal) => (signal === 'SIGKILL' ? server.kill() : server.stop());
   t.after(async () => {
     release();
-    await stop();
-    audit.close();
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
   });
@@ -243,31 +135,42 @@ async function fixture(t, { hold = false } = {}) {
     return response.json();
   };
   await start();
-  const fairQuota = () =>
-    JSON.parse(audit.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value)
-      .fairQuota;
-  const financialState = () => {
-    const state = fairQuota();
-    return {
-      balances: state.balances,
-      reservations: state.reservations,
-      snapshot: state.snapshot,
-      lastRefillAt: state.lastRefillAt,
-      records: Object.fromEntries(
-        [
-          'jobs',
-          'ledger',
-          'generation_requests',
-          'generation_idempotency',
-          'fair_quota_settlements',
-        ].map((table) => [table, audit.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]),
-      ),
-    };
+  await enableAccount(fixture, server);
+  const quotaSummary = () => {
+    const db = new Database(fixture.filename, { readonly: true });
+    try {
+      return new RelationalQuotaStore(db, fixture.env).readMemberQuotaSummary(
+        member.user_id,
+        Date.now(),
+      );
+    } finally {
+      db.close();
+    }
   };
+  const financialState = () => ({
+    quota: query(
+      fixture,
+      `SELECT baseline_event_id,refill_cursor_at,settlement_cursor_at,unallocated_v5,
+      fallback_fixed,fallback_purchased,shared_v5_debt,pending_v5_debit,pending_fixed_debit,pending_purchased_debit,
+      pending_fallback_v5,pending_fallback_fixed,pending_fallback_purchased FROM account_quota_state WHERE account_id=?`,
+      fixture.accountId,
+    ),
+    records: Object.fromEntries(
+      [
+        'wallets',
+        'charges',
+        'operating_state',
+        'generation_jobs',
+        'generation_attempts',
+        'generation_requests',
+        'idempotency_keys',
+      ].map((table) => [table, query(fixture, `SELECT * FROM ${table} ORDER BY rowid`)]),
+    ),
+  });
   const quotaEvents = (db) =>
     db
       .prepare(
-        "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' ORDER BY commit_seq, event_index",
+        "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' ORDER BY commit_seq,event_index",
       )
       .all();
   return {
@@ -277,7 +180,7 @@ async function fixture(t, { hold = false } = {}) {
     sharedStatus,
     jobs,
     account,
-    fairQuota,
+    quotaSummary,
     calls,
     release,
     financialState,
@@ -288,40 +191,31 @@ async function fixture(t, { hold = false } = {}) {
       wire = overrides;
       const response = await call('/api/admin/accounts/quota', {
         body: { ids: [account().id] },
-        headers: { 'x-admin-token': adminToken },
+        headers: { 'x-admin-token': fixture.env.ADMIN_TOKEN },
       });
       assert.equal(response.status, 200, await response.clone().text());
       return response.json();
     },
     privateEvidence() {
       return {
-        log: output,
-        events: quotaEvents(audit),
+        log: server.output,
+        events: query(
+          fixture,
+          "SELECT payload FROM domain_events WHERE event_type='QuotaObserved' ORDER BY commit_seq,event_index",
+        ),
       };
     },
-    verifyReplay() {
-      const target = new Database(':memory:');
-      try {
-        migrateStorage(target);
-        copyProtectedFacts(audit, target);
-        replayDomainEvents(audit, target, { project: applyEventProjection });
-        target.transaction(() => verifyEventProjections(target))();
-        assert.deepEqual(quotaEvents(target), quotaEvents(audit));
-        assert.deepEqual(
-          target.prepare('SELECT data FROM accounts').get(),
-          audit.prepare('SELECT data FROM accounts').get(),
-        );
-        const receipts = (db) =>
-          db.prepare('SELECT command_id, receipt FROM event_commits ORDER BY commit_seq').all();
-        assert.deepEqual(receipts(target), receipts(audit));
-      } finally {
-        target.close();
-      }
-    },
+    verifyReplay: () => assertChildPublicReplay(fixture),
+    attempts: () => query(fixture, 'SELECT * FROM generation_attempts ORDER BY rowid'),
+    charges: () => query(fixture, 'SELECT * FROM charges ORDER BY rowid'),
+    cooldownFacts: () =>
+      query(
+        fixture,
+        "SELECT payload FROM domain_events WHERE event_type='CooldownChanged' ORDER BY commit_seq,event_index",
+      ).map((row) => JSON.parse(row.payload)),
     assertAlive() {
-      assert.equal(child.exitCode, null);
-      assert.equal(child.signalCode, null);
-      assert.doesNotMatch(output, /ERR_HTTP_HEADERS_SENT/);
+      assert.equal(server.exit, null);
+      assert.doesNotMatch(server.output, /ERR_HTTP_HEADERS_SENT/);
     },
   };
 }
@@ -359,21 +253,23 @@ test(
     assert.ok(requestId);
     const saved = gateway.account(),
       [job] = gateway.jobs(),
-      deadline = saved.cooldownUntil;
+      deadline = new Date(saved.cooldown_until).toISOString();
     const firstRemaining = assertRetryAfter(first, deadline, before, after);
     assert.ok(firstRemaining > 120 && firstRemaining <= 300);
-    assert.equal(saved.cooldownReason, 'upstream_retry_after');
-    assert.equal(saved.capacityStrikeCount, 1);
-    assert.equal(saved.failures, 1);
-    assert.equal(saved.inFlight, 0);
+    assert.equal(saved.cooldown_reason, 'upstream_retry_after');
+    assert.equal(saved.capacity_strikes, 1);
+    assert.equal(gateway.jobs().filter((job) => job.status === 'failed').length, 1);
+    assert.equal(gateway.jobs().filter((job) => job.status === 'running').length, 0);
     assert.equal(job.status, 'failed');
-    assert.equal(job.errorStatus, 429);
-    assert.equal(job.requestId, requestId);
-    assert.equal(job.upstreamHttpStatus, 429);
-    assert.equal(job.upstreamRetryAfterUntil, deadline);
-    assert.equal(job.sharedCooldown.until, deadline);
-    assert.equal(job.sharedCooldown.kind, 'capacity');
-    assert.equal(job.fairCharge.status, 'refunded');
+    assert.equal(job.error_status, 429);
+    assert.equal(job.request_id, requestId);
+    assert.equal(gateway.attempts()[0].upstream_http_status, 429);
+    assert.equal(gateway.attempts()[0].job_id, job.id);
+    assert.equal(gateway.charges()[0].status, 'refunded');
+    const cooldown = gateway.cooldownFacts().at(-1);
+    assert.equal(new Date(cooldown.cooldownUntil).toISOString(), deadline);
+    assert.equal(cooldown.completionKind, 'capacity');
+    assert.equal(cooldown.attemptId, gateway.attempts()[0].id);
     assert.equal(gateway.calls.length, 1);
     const checkShared = async () => {
       const status = await gateway.sharedStatus();
@@ -396,9 +292,9 @@ test(
       await response.json();
       assert.equal(response.headers.get('x-nai-request-id'), requestId);
       assert.ok(assertRetryAfter(response, deadline, started, ended) < firstRemaining);
-      assert.equal(gateway.account().cooldownUntil, deadline);
-      assert.equal(gateway.account().capacityStrikeCount, 1);
-      assert.equal(gateway.account().failures, 1);
+      assert.equal(new Date(gateway.account().cooldown_until).toISOString(), deadline);
+      assert.equal(gateway.account().capacity_strikes, 1);
+      assert.equal(gateway.jobs().filter((job) => job.status === 'failed').length, 1);
       assert.equal(gateway.jobs().length, 1);
       assert.deepEqual(gateway.jobs()[0], job);
       assert.equal(gateway.calls.length, 1);
@@ -409,6 +305,8 @@ test(
     await checkShared();
     await replay();
     gateway.assertAlive();
+    await gateway.stop();
+    gateway.verifyReplay();
   },
 );
 
@@ -496,7 +394,7 @@ test(
       );
     }
     assert.deepEqual(gateway.privateEvidence().events.slice(0, history.length), history);
-    assert.equal(gateway.account().v5UsagePercent, null);
+    assert.equal(gateway.account().observed_v5, null);
     await gateway.stop();
     gateway.verifyReplay();
     await gateway.start();
@@ -512,6 +410,8 @@ test(
     await gateway.observeQuota();
     assert.equal((await gateway.sharedStatus()).status, 'cooldown');
     gateway.assertAlive();
+    await gateway.stop();
+    gateway.verifyReplay();
   },
 );
 
@@ -523,9 +423,9 @@ test('无效上游余额分别写为未知且禁止 V5 HTTP 预留，有效零�
     parameters: { width: 1024, height: 1024, steps: 23, seed: 7, n_samples: 1 },
   };
   const fields = [
-    ['v5UsagePercent', { usage: { percent: null } }],
-    ['quotaFixed', { trainingStepsLeft: { fixedTrainingStepsLeft: false } }],
-    ['quotaPurchased', { trainingStepsLeft: { purchasedTrainingSteps: [] } }],
+    ['observed_v5', { usage: { percent: null } }],
+    ['observed_anlas_fixed', { trainingStepsLeft: { fixedTrainingStepsLeft: false } }],
+    ['observed_anlas_purchased', { trainingStepsLeft: { purchasedTrainingSteps: [] } }],
   ];
   for (const [field, overrides] of fields) {
     await t.test(field, { timeout: 25000 }, async (t) => {
@@ -534,7 +434,7 @@ test('无效上游余额分别写为未知且禁止 V5 HTTP 预留，有效零�
       const before = gateway.financialState();
       await gateway.observeQuota({ overrides });
       const saved = gateway.account(),
-        fair = gateway.fairQuota(),
+        fair = gateway.quotaSummary(),
         shared = await gateway.sharedStatus();
       const denied = await gateway.call('/ai/generate-image', { body, key: field });
       const error = await denied.json();
@@ -551,15 +451,17 @@ test('无效上游余额分别写为未知且禁止 V5 HTTP 预留，有效零�
         overrides: { usage: { percent: 0, timeUntilNextPercent: [] } },
       });
       const recovered = gateway.account();
-      assert.equal(recovered.v5UsagePercent, 0);
-      assert.equal(recovered.quotaPurchased, 0);
-      assert.equal(recovered.v5UsageTimeUntilNextPercent, null);
-      assert.equal(gateway.fairQuota().status, 'active');
+      assert.equal(recovered.observed_v5, '0');
+      assert.equal(recovered.observed_anlas_purchased, '0');
+      assert.equal(recovered.seconds_per_percent, null);
+      assert.equal(gateway.quotaSummary().status, 'active');
       assert.equal((await gateway.sharedStatus()).status, 'active');
       const depleted = await gateway.call('/ai/generate-image', { body, key: 'known-zero' });
       assert.equal(depleted.status, 402);
       await depleted.json();
       assert.equal(gateway.calls.length, 0);
+      await gateway.stop();
+      gateway.verifyReplay();
     });
   }
 });
@@ -587,11 +489,11 @@ test(
     await until(() => gateway.calls.length === 1);
     assert.equal(gateway.jobs()[0].status, 'running');
     const held = gateway.financialState();
-    assert.equal(Object.values(held.reservations)[0].status, 'reserved');
+    assert.equal(held.records.charges[0].status, 'reserved');
     await gateway.observeQuota({
       overrides: { trainingStepsLeft: { fixedTrainingStepsLeft: false } },
     });
-    assert.equal(gateway.fairQuota().status, 'unknown_balance');
+    assert.equal(gateway.quotaSummary().status, 'unknown_balance');
     assert.equal((await gateway.sharedStatus()).status, 'unknown_balance');
     assert.deepEqual(gateway.financialState(), held);
     gateway.release();
@@ -605,12 +507,14 @@ test(
     const content = chunks.map((chunk) => chunk.choices[0].delta.content || '').join('');
     assert.match(content, /NAI 暂时限制此共享账户的并发/);
     assert.match(content, /<\/think>/);
-    assert.equal(gateway.jobs()[0].errorStatus, 429);
-    assert.equal(gateway.account().capacityStrikeCount, 1);
+    assert.equal(gateway.jobs()[0].error_status, 429);
+    assert.equal(gateway.account().capacity_strikes, 1);
     assert.equal(gateway.calls.length, 1);
     const healthy = await gateway.call('/api/member/login-options');
     assert.equal(healthy.status, 200);
     await healthy.json();
     gateway.assertAlive();
+    await gateway.stop();
+    gateway.verifyReplay();
   },
 );
