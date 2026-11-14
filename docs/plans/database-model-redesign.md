@@ -1527,6 +1527,8 @@ OpeningIdempotency 的 `commitSeq` 只指新时间线中真正的原在线提交
 
 四个 TEMP 负控分别跳过原 intent proof、误取 import receipt、偷用 target context、恢复旧必须有 receipt 的 CHECK；各在真实业务断言精确失败，源字节恢复后专项重验。日志为 `H:\TEMP\novelai-opening-idempotency-{focused,source,core,negative-*}.log`。类型、架构、默认及可信 `77c117c` 迁移历史、格式与差异检查通过；真实 v5 fixture 的 hash 为 `a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd`，当前门禁零写拒绝其完整旧 DDL。事件版本、live DDL、覆盖与 ready 无 owner 负例增量均须维护者复核；后者换成当前真实剩余 Attempt，不留已实现幂等充当占位。独立复核仍须绑定最终固定提交，未跑 full、编译包、Node 24、共享 native 重建、云端或生产迁移。
 
+固定 `4d928f1` 后继续核对历史重复与当前领取边界，复现合法 JobHistoryRetired 后原 Opening key 完整提交重复错误触发现时 retired gate。后继仍共用全部来源、projection、保护正文、child、原 seed/intent/receipt 证明，仅在现受控 factory 的历史 replayed 分支排除当前退休资格；初次导入与公开当前 reader 始终使用严格现资格，不对 caller 暴露开关。现退休 owner 保留原薄键整行，重复继续严格核对原 source/projection，不因退休而允许任意 resolution 改写。新反例通过真实失败/当前 owner 退休后验证历史重复零写，当前领取仍拒绝；初版夹具遗漏显式 aborted、或在无私有认证的 business target 上检查当前授权，均修正夹具后才得到有效原红，没有放宽 auth/replay 门禁。新专项与原退休/共同回放/ready 四文件 83/83，四个负控在此后继再次精确失败，源字节恢复后专项 9/9，零跳过；类型、架构、可信 `4d928f1` 迁移、格式/差异通过。最终增量证据为 `H:\TEMP\novelai-opening-idempotency-{retired-before,retired-focused,final-core,negative-*}.log`，不沿用前置 201 项冒充新候选完整重跑。
+
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
 
 ## 10. 事实依据与修订

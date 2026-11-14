@@ -1400,7 +1400,7 @@ export class RelationalInputStore {
           );
       } else if (event.eventType === 'OpeningIdempotencyRecorded') {
         const p = event.payload;
-        this.assertOpeningIdempotency(event);
+        this.assertOpeningIdempotency(event, false);
         this.sqlite
           .prepare(
             `INSERT INTO idempotency_keys(
@@ -1674,10 +1674,11 @@ export class RelationalInputStore {
         }
       } else if (event.eventType === 'OpeningIdempotencyRecorded') {
         if (replayed) {
-          this.readOpeningGenerationIdempotency(
+          this.openingGenerationIdempotency(
             event.payload.originalMemberId,
             event.payload.operation,
             event.payload.keyHash,
+            true,
           );
         } else {
           this.applyAcceptedEvents([event]);
@@ -1816,6 +1817,7 @@ export class RelationalInputStore {
 
   private assertOpeningIdempotency(
     event: Extract<RelationalEvent, { eventType: 'OpeningIdempotencyRecorded' }>,
+    replayed: boolean,
   ) {
     const p = event.payload;
     assertRelationalOpeningSource(this.sqlite, event);
@@ -1856,7 +1858,7 @@ export class RelationalInputStore {
     const request = this.request(p.requestId, p.originalMemberId),
       input = this.requestInput(request),
       context = this.context(p.contextId);
-    if (request.retired_at !== null || input.row.completeness !== 'complete') {
+    if ((!replayed && request.retired_at !== null) || input.row.completeness !== 'complete') {
       unavailable();
     }
     assertRequestSeedMode({ operation: p.operation, seedMode: p.seedMode }, context);
@@ -1878,7 +1880,9 @@ export class RelationalInputStore {
     if (
       jobs.length !== request.sample_count ||
       jobs[0]?.id !== p.originalJobId ||
-      jobs.some((job, index) => job.sample_index !== index || job.retired_at !== null)
+      jobs.some(
+        (job, index) => job.sample_index !== index || (!replayed && job.retired_at !== null),
+      )
     ) {
       unavailable();
     }
@@ -1938,6 +1942,15 @@ export class RelationalInputStore {
 
   // 来源角色决定读哪份原回执；绝不因在线 commit 缺失而猜为历史回执。
   readOpeningGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
+    return this.openingGenerationIdempotency(memberId, operation, keyHash, false);
+  }
+
+  private openingGenerationIdempotency(
+    memberId: string,
+    operation: string,
+    keyHash: string,
+    replayed: boolean,
+  ) {
     const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
     if (!mapping) {
       unavailable();
@@ -1985,7 +1998,7 @@ export class RelationalInputStore {
     return {
       mapping,
       event,
-      context: this.assertOpeningIdempotency(event),
+      context: this.assertOpeningIdempotency(event, replayed),
       receipt: p.archivedReceipt,
     };
   }

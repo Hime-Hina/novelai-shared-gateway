@@ -33,6 +33,7 @@ import { nativeGenerationError } from '../../server/protocols/native-http.ts';
 import {
   authenticateMemberApiKey,
   createMemberSession,
+  withAuthenticatedMemberApiKey,
 } from '../../server/members/authentication.ts';
 import { JobPreviews } from '../../server/generation/job-previews.ts';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
@@ -287,6 +288,42 @@ test('Opening未知tombstone没有原receipt也保留旧键且拒live，不猜�
   }
   const target = rebuild(t, f.db);
   assert.equal(target.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n, 2);
+});
+
+test('原Opening key完整提交在后续合法退休后仍可历史重复零写，当前POST资格仍拒绝', async (t) => {
+  const env = { OWNER_USER_ID: 'm1' },
+    f = await fixture(t, { env });
+  f.accept('original');
+  const key = definition(f, 'original'),
+    saved = append(f, [key.event]);
+  f.fail('original-0', { aborted: false, errorCode: 'synthetic_failure', errorStatus: 500 });
+  await withAuthenticatedMemberApiKey(
+    f.members,
+    'synthetic-key-m1',
+    (actor) =>
+      f.generations.retireJobHistory(
+        meta('retire-original', NOW + 90000, actor.id),
+        ['original-0'],
+        actor,
+        new Map(),
+      ),
+    env,
+  );
+  const target = rebuild(t, f.db),
+    before = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  assert.throws(
+    () => f.inputs.readGenerationIdempotencyContext('m1', 'generate', key.payload.keyHash),
+    (e) => e.code === 'input_unavailable',
+  );
+  target.transaction(() =>
+    new RelationalCommitReplayer(target).replayCommit(
+      readRelationalCommit(f.db, saved.commitSeq),
+      f.inputs,
+    ),
+  )();
+  assert.equal(databaseState(target), before);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
 });
 
 test('Opening每键显式原fixed/random与noCache决定独立于目标first intent，不能从同seed猜模式', async (t) => {
