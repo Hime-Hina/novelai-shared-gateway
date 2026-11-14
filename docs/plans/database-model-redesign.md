@@ -1791,6 +1791,18 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 根在已审 owner GET/政策并集上整合，MemberStore 与专项保持 0b 的精确 Git 字节；真实成员管理、原成员与接单三文件 72/72、零跳过，6.893 秒。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式与 diff 通过，日志 `H:/TEMP/novelai-member-owner-root-{joint,type,static,format}.log`。新增的 owner 能力仅此两命令，既有 admission 与 system 边界不扩张；后续 HTTP 传参/总装配仍须实际验证。
 
+### 9.66 组预览与提交共用只读规划
+
+基于固定根 `0ad2c03`，仅补 `RelationalQuotaStore.previewGroups()` 及现 `configureGroups()` 的共同输入/规划提取；不接 HTTP、成员/账户命令或启动入口。来源仍为当前组版本、同账户原钱包/基线/责任及原 quota owner。预览复用当前 owner/admin verifier，只需服务器 actor/recordedAt，不制造 command ID 或持久回执；其调用仍属于真实当前认证事务。元数据不能独立证明 HTTP 权限。
+
+输入形状仍先于提交原 receipt 检查，原 receipt 仍先于新的当前版本/空闲/来源规划。共同规划保持原 `managementView()`、`configureFairGroups()`、按旧组恢复再切换权重及 `syncBoundFairQuota()` 的调用顺序；只有提交才转换事实、消费原组来源和写 projection。预览在独立 SQL 读视图上的临时金融对象规划，不调用提交后回滚，也不新增算法、派生表或事件。预览返回原 configVersion、改后 groups/users quota 和显式 redistributeRemaining；提交仍以原版本重新规划。展示复用 `fairQuotaSummary()` 与既有 fallback/status 窄补充，本次规划产生的核对决定不能被更早已提交的状态覆盖。
+
+原空闲规则同时适用：held/排队/运行拒绝，paused 可调整；未知恢复时间保持 NULL，真实零不丢失。未归组正额钱包仍占原池容量，不能通过排除成员抹去原权益；同池重新纳入零权重后保留其原钱包，不伪造可恢复 room。实际已结算 V5 fallback 的历史分池金额、最新真实核对状态与其它成员隔离，均由原 owner 组装，不从旧 DTO 或当前报价补值。
+
+新增 `relational-group-preview.test.mjs` 覆盖当前 Key 事务内开启 SQLite query_only 的预览、全表摘要/total_changes/commit 零写、重复预览、与实际配置后每个原 quota DTO 完整一致、旧版本/非法输入/role/epoch/self-asserted metadata 拒绝、真实 held/paused/未知/零/三池重分/旧权重恢复、未绑定首次配置、未归组正钱包及真正 fallback/观察来源。认证本身先取得原 IMMEDIATE 事务；SQLite 不允许在 query_only 下开始这个写锁，因此只读约束从预览入口开启并覆盖其全部 SQL，不把认证取锁失败冒称预览写入。
+
+作者新专项 12/12，与原 groups/member-rights 三文件同次 149/149、零跳过，6.361 秒，日志 `H:/TEMP/novelai-group-preview-union.log`；原提交的幂等、末 SQL 故障回滚与完整公共回放反例保持。TEMP 精确旧根缺预览入口的合法用例 1 fail；预览插入实际 no-op UPDATE，query_only 的八场景全部拒绝（含父 9 fail）；删除预览当前授权则隐私边界用例 1 fail，恢复同字节候选 12/12。证据在 `H:/TEMP/novelai-group-preview-negative-20261114/`。backend 类型、architecture、默认与可信根 `0ad2c03` 迁移历史、190 个语法文件通过，格式/diff 随候选固定。未执行 full/build/compiled/Node24/native 或生产；关系 preview POST、全管理入口和整体切换继续分片，独立审查待固定候选。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
