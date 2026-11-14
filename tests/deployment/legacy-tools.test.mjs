@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import {
   copyFile,
   lstat,
+  link,
   mkdtemp,
   mkdir,
   readFile,
@@ -85,7 +86,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-const [bundle, sourceDirectory, imagePath] = process.argv.slice(2);
+const [bundle, sourceDirectory, imagePath, variant] = process.argv.slice(2);
 const { JsonStore } = await import(pathToFileURL(path.join(bundle, 'server/storage/sqlite-store.ts')).href);
 const { appendDomainCommit } = await import(pathToFileURL(path.join(bundle, 'server/events/event-store.ts')).href);
 const require = createRequire(path.join(bundle, 'package.json')), Database = require('better-sqlite3');
@@ -94,6 +95,13 @@ const store = new JsonStore(sourceDirectory);
 await store.init();
 const at = '2026-11-01T00:00:00.000Z', secret = 'private-legacy-package-prompt', key = 'private-legacy-package-key';
 const image = await readFile(imagePath);
+const remote = { bucket: 'synthetic-bucket', key: 'images/artifact/original', sha256: sha256(image), byteLength: image.length, verifiedAt: at };
+let r2;
+if (variant === 'r2-text') { r2 = 'malformed-synthetic-reference'; }
+if (variant === 'r2-array') { r2 = []; }
+if (variant === 'r2-false') { r2 = false; }
+if (variant === 'r2-object') { r2 = remote; }
+if (variant === 'pik-false') { r2 = { ...remote, pikpak: false }; }
 try {
   await store.write({ settings: store.db.settings, accounts: [], cards: [], ledger: [],
     users: [{ id: 'member', token: key, enabled: true }],
@@ -103,7 +111,7 @@ try {
         request: { model: 'nai-diffusion-4-5-full', prompt: secret, operationParameters: { discordGrant: key } } }],
     images: [{ id: 'artifact', jobId: 'job', token: key, base64: image.toString('base64'), prompt: secret,
       operation: 'generate', mimeType: 'image/webp', byteLength: image.length, sha256: sha256(image),
-      file: 'images/artifact.webp', createdAt: at }],
+      file: 'images/artifact.webp', createdAt: at, r2 }],
   });
   store.sqlite.prepare('INSERT INTO generation_idempotency VALUES(?,?,?,?,?,?,?,?)').run(
     'member', 'generate', sha256('synthetic-key'), sha256('synthetic-intent'), JSON.stringify({ defaultNegative: secret }), 'job', null, at,
@@ -271,6 +279,105 @@ seal.close();
   const corruptImage = audit('--artifact=artifact', '--data-dir=' + corruptRoot);
   assert.notEqual(corruptImage.status, 0);
   assert.equal(corruptImage.stdout, '');
+  for (const variant of ['r2-text', 'r2-array', 'r2-false', 'pik-false', 'r2-object']) {
+    const variantDirectory = path.join(directory, 'metadata-' + variant);
+    const made = run(fixture, [bundle, variantDirectory, imagePath, variant], directory);
+    assert.equal(made.status, 0, made.stderr);
+    const filename = path.join(variantDirectory, 'library.sqlite'),
+      original = await readFile(filename);
+    const checked = run(
+      script,
+      ['--source=' + filename, '--source-sha256=' + sha256(original), '--artifact=artifact'],
+      directory,
+    );
+    if (variant === 'r2-object') {
+      assert.equal(checked.status, 0, checked.stderr);
+      assert.equal(JSON.parse(checked.stdout).lookup.r2.bucket, 'synthetic-bucket');
+    } else {
+      assert.notEqual(checked.status, 0, variant);
+      assert.equal(checked.stdout, '');
+    }
+    assert.deepEqual(await readFile(filename), original);
+  }
+  if (process.platform === 'win32') {
+    const outputs = path.join(directory, 'windows-outputs');
+    await mkdir(outputs);
+    const alias = path.join(outputs, 'source-alias.sqlite');
+    await link(sourcePath, alias);
+    const statBefore = await lstat(sourcePath, { bigint: true });
+    for (const options of [
+      ['--request=' + history.inputRef, '--output=' + alias + ':blocked-stream'],
+      ['--command=original-generation-receipt', '--output=' + alias + ':blocked-stream'],
+      [
+        '--artifact=artifact',
+        '--data-dir=' + sourceDirectory,
+        '--output=' + alias + ':blocked-stream',
+      ],
+      ['--export=' + alias + ':blocked-stream'],
+      ['--request=' + history.inputRef, '--output=' + path.join(outputs, 'NUL.json')],
+      ['--request=' + history.inputRef, '--output=' + path.join(outputs, 'CONOUT$')],
+      ['--request=' + history.inputRef, '--output=' + path.join(outputs, 'trailing.json.')],
+    ]) {
+      const refused = audit(...options);
+      assert.notEqual(refused.status, 0, options.join(' '));
+      assert.equal(refused.stdout, '');
+    }
+    assert.equal((await lstat(sourcePath, { bigint: true })).mtimeNs, statBefore.mtimeNs);
+    await assert.rejects(readFile(sourcePath + ':blocked-stream'), { code: 'ENOENT' });
+  }
+  const raceRoot = path.join(directory, 'race-root'),
+    raceOutside = path.join(directory, 'race-outside');
+  await mkdir(path.join(raceRoot, 'images'), { recursive: true });
+  await mkdir(raceOutside);
+  await writeFile(path.join(raceRoot, 'images/artifact.webp'), image);
+  await writeFile(path.join(raceOutside, 'artifact.webp'), image);
+  const raceGuard = path.join(directory, 'swap-ancestor.mjs');
+  await writeFile(
+    raceGuard,
+    `
+import fs from 'node:fs';
+import path from 'node:path';
+import { syncBuiltinESMExports } from 'node:module';
+const target = path.resolve(process.env.LEGACY_RACE_FILE), original = fs.lstatSync;
+let changed = false;
+fs.lstatSync = function(filename, options) {
+  if (!changed && path.resolve(String(filename)) === target) {
+    changed = true;
+    const directory = path.dirname(target);
+    fs.renameSync(directory, directory + '.held');
+    fs.symlinkSync(process.env.LEGACY_RACE_OUTSIDE, directory, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  return original.call(this, filename, options);
+};
+syncBuiltinESMExports();
+`,
+  );
+  const raced = spawnSync(
+    process.execPath,
+    [
+      '--import',
+      pathToFileURL(raceGuard).href,
+      script,
+      '--source=' + sourcePath,
+      '--source-sha256=' + sha256(before),
+      '--artifact=artifact',
+      '--data-dir=' + raceRoot,
+    ],
+    {
+      cwd: directory,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        NODE_PATH: '',
+        LEGACY_RACE_FILE: path.join(raceRoot, 'images/artifact.webp'),
+        LEGACY_RACE_OUTSIDE: raceOutside,
+      },
+    },
+  );
+  assert.notEqual(raced.status, 0);
+  assert.equal(raced.stdout, '');
+  assert.deepEqual(await readFile(path.join(raceRoot, 'images.held/artifact.webp')), image);
+  assert.deepEqual(await readFile(path.join(raceOutside, 'artifact.webp')), image);
   assert.deepEqual(await readFile(sourcePath), before);
   assert.deepEqual(await readFile(path.join(sourceDirectory, 'images/artifact.webp')), imageBefore);
   assert.deepEqual(await readdir(sourceDirectory), sourceEntries);

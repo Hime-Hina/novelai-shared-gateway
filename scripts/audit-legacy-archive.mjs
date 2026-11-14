@@ -13,7 +13,6 @@ import {
   realpathSync,
   readSync,
   writeFileSync,
-  writeSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,6 +115,14 @@ function standalone(filename) {
 }
 
 function metadata(value, fields) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  ) {
+    fail();
+  }
   return Object.fromEntries(
     Object.entries(fields).map(([key, type]) => {
       const item = value[key] ?? null;
@@ -131,7 +138,7 @@ function metadata(value, fields) {
 }
 function artifactMetadata(row) {
   const value = JSON.parse(row.data),
-    r2 = value.r2;
+    r2 = value.r2 ?? null;
   const descriptor = metadata(value, {
     jobId: 'string',
     memberId: 'string',
@@ -156,17 +163,10 @@ function artifactMetadata(row) {
       fail();
     }
   }
-  if (r2?.pikpak?.url) {
-    const url = new URL(r2.pikpak.url);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
-      fail();
-    }
-  }
-  return {
-    id: row.id,
-    ...descriptor,
-    r2: r2
-      ? metadata(r2, {
+  const remote =
+    r2 === null
+      ? null
+      : metadata(r2, {
           bucket: 'string',
           key: 'string',
           byteLength: 'number',
@@ -174,14 +174,25 @@ function artifactMetadata(row) {
           verifiedAt: 'string',
           localRemovedAt: 'string',
           removedAt: 'string',
-        })
-      : null,
-    pikpak: r2?.pikpak
-      ? {
-          ...metadata(r2.pikpak, { url: 'string', uploadedAt: 'string' }),
-          encoding: 'brotli',
-        }
-      : null,
+        });
+  let pikpak = null;
+  if (r2 !== null && r2.pikpak !== undefined && r2.pikpak !== null) {
+    pikpak = {
+      ...metadata(r2.pikpak, { url: 'string', uploadedAt: 'string' }),
+      encoding: 'brotli',
+    };
+  }
+  if (pikpak?.url) {
+    const url = new URL(pikpak.url);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      fail();
+    }
+  }
+  return {
+    id: row.id,
+    ...descriptor,
+    r2: remote,
+    pikpak,
     externalBytesChecked: false,
   };
 }
@@ -193,6 +204,86 @@ function originalOrder(row) {
     fail();
   }
   return row.originalOrder;
+}
+function newOutputPath(requested) {
+  const resolved = path.resolve(requested),
+    root = path.parse(resolved).root;
+  if (!path.basename(resolved) || /[\\/]$/.test(requested)) {
+    fail();
+  }
+  if (process.platform === 'win32') {
+    // drive/UNC 根仍合法；根后的任意冒号都不是新普通文件或目录，而可能是 NTFS stream。
+    if (
+      /^\\\\[.?]\\/.test(resolved) ||
+      resolved
+        .slice(root.length)
+        .split(path.sep)
+        .some(
+          (part) =>
+            /[<>:"|?*\x00-\x1f]/.test(part) ||
+            /[ .]$/.test(part) ||
+            /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(
+              part.split('.')[0].trimEnd(),
+            ),
+        )
+    ) {
+      fail();
+    }
+  }
+  return path.join(realpathSync(path.dirname(resolved)), path.basename(resolved));
+}
+function archiveOutputPath(requested, source, dataDir) {
+  const filename = newOutputPath(requested),
+    directory = path.dirname(filename);
+  if (
+    within(physicalRoot, directory) ||
+    within(path.dirname(realpathSync(source)), directory) ||
+    (dataDir && within(realpathSync(dataDir), directory))
+  ) {
+    fail();
+  }
+  return filename;
+}
+function assertOutputFile(output, empty = false) {
+  const current = fstatSync(output.handle, { bigint: true }),
+    named = lstatSync(output.filename, { bigint: true });
+  if (
+    !current.isFile() ||
+    !named.isFile() ||
+    named.isSymbolicLink() ||
+    current.nlink !== 1n ||
+    named.nlink !== 1n ||
+    current.dev !== named.dev ||
+    current.ino !== named.ino ||
+    (empty && current.size !== 0n)
+  ) {
+    fail();
+  }
+}
+function createOutputFile(requested) {
+  const filename = newOutputPath(requested),
+    handle = openSync(
+      filename,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW || 0),
+      0o600,
+    );
+  const output = { filename, handle };
+  try {
+    assertOutputFile(output, true);
+    return output;
+  } catch (error) {
+    closeSync(handle);
+    throw error;
+  }
+}
+function writeOutputFile(requested, bytes) {
+  const output = createOutputFile(requested);
+  try {
+    writeFileSync(output.handle, bytes);
+    assertOutputFile(output);
+  } finally {
+    closeSync(output.handle);
+  }
 }
 function generationReceipt(receipt, assertPublicDomainFact) {
   assertPublicDomainFact(receipt, 'receipt');
@@ -406,17 +497,42 @@ function readLocalArtifact(dataDir, artifact, describeStoredResult) {
   }
   const directory = realpathSync(dataDir),
     file = path.resolve(dataDir, artifact.file);
-  if (!within(path.resolve(dataDir), file) || !within(directory, realpathSync(file))) {
-    fail();
-  }
+  const root = lstatSync(directory, { bigint: true });
+  const assertLocation = () => {
+    const currentRoot = lstatSync(directory, { bigint: true });
+    if (
+      !root.isDirectory() ||
+      !currentRoot.isDirectory() ||
+      currentRoot.isSymbolicLink() ||
+      root.dev !== currentRoot.dev ||
+      root.ino !== currentRoot.ino ||
+      realpathSync(dataDir) !== directory ||
+      !within(path.resolve(dataDir), file) ||
+      !within(directory, realpathSync(file))
+    ) {
+      fail();
+    }
+  };
+  assertLocation();
   const before = lstatSync(file, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink() || before.size !== BigInt(artifact.byteLength)) {
     fail();
   }
+  assertLocation();
   const handle = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
   try {
-    const opened = fstatSync(handle, { bigint: true });
-    if (before.dev !== opened.dev || before.ino !== opened.ino) {
+    const opened = fstatSync(handle, { bigint: true }),
+      named = lstatSync(file, { bigint: true });
+    assertLocation();
+    if (
+      !opened.isFile() ||
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      before.dev !== opened.dev ||
+      before.ino !== opened.ino ||
+      named.dev !== opened.dev ||
+      named.ino !== opened.ino
+    ) {
       fail();
     }
     const bytes = readFileSync(handle),
@@ -425,7 +541,12 @@ function readLocalArtifact(dataDir, artifact, describeStoredResult) {
         mimeType: artifact.mimeType,
         buffer: bytes,
       });
+    const finalName = lstatSync(file, { bigint: true });
+    assertLocation();
     if (
+      finalName.dev !== opened.dev ||
+      finalName.ino !== opened.ino ||
+      finalName.isSymbolicLink() ||
       opened.size !== after.size ||
       opened.mtimeNs !== after.mtimeNs ||
       opened.ctimeNs !== after.ctimeNs ||
@@ -489,6 +610,12 @@ try {
         !(values.artifact && values['data-dir']))
     ) {
       fail();
+    }
+    if (values.output) {
+      newOutputPath(values.output);
+    }
+    if (values.export) {
+      newOutputPath(values.export);
     }
     standalone(source);
     const originalHash = await digest(source);
@@ -625,24 +752,17 @@ try {
         };
         let emit = () => {};
         if (values.export) {
-          const requested = path.resolve(values.export);
-          exportDirectory = path.join(
-            realpathSync(path.dirname(requested)),
-            path.basename(requested),
-          );
-          if (within(physicalRoot, exportDirectory)) {
-            fail();
-          }
+          exportDirectory = archiveOutputPath(values.export, source);
           // 只向全新私有目录输出白名单清单；原文、令牌和诊断正文留在封存源内。
           mkdirSync(exportDirectory, { mode: 0o700 });
           const files = Object.fromEntries(
             ['inputs', 'artifacts'].map((kind) => {
-              const handle = openSync(path.join(exportDirectory, kind + '.jsonl'), 'wx', 0o600);
-              handles.push(handle);
-              return [kind, handle];
+              const output = createOutputFile(path.join(exportDirectory, kind + '.jsonl'));
+              handles.push(output);
+              return [kind, output];
             }),
           );
-          emit = (kind, value) => writeSync(files[kind], JSON.stringify(value) + '\n');
+          emit = (kind, value) => writeFileSync(files[kind].handle, JSON.stringify(value) + '\n');
         }
         const input = db.prepare('SELECT member_id,payload FROM generation_requests WHERE id=?');
         const context = db.prepare('SELECT payload FROM generation_contexts WHERE context_ref=?');
@@ -795,9 +915,22 @@ try {
         return result;
       })();
     } finally {
-      db.close();
-      for (const handle of handles) {
-        closeSync(handle);
+      let invalidOutput = false;
+      try {
+        db.close();
+      } finally {
+        for (const output of handles) {
+          try {
+            assertOutputFile(output);
+          } catch {
+            invalidOutput = true;
+          } finally {
+            closeSync(output.handle);
+          }
+        }
+        if (invalidOutput) {
+          fail();
+        }
       }
     }
     if (values['data-dir']) {
@@ -809,29 +942,16 @@ try {
     }
     standalone(source);
     if (values.output) {
-      const output = path.resolve(values.output),
-        directory = realpathSync(path.dirname(output));
-      if (
-        within(physicalRoot, directory) ||
-        within(path.dirname(realpathSync(source)), directory) ||
-        (values['data-dir'] && within(realpathSync(values['data-dir']), directory))
-      ) {
-        fail();
-      }
-      writeFileSync(path.join(directory, path.basename(output)), selected.bytes, {
-        flag: 'wx',
-        mode: 0o600,
-      });
+      writeOutputFile(archiveOutputPath(values.output, source, values['data-dir']), selected.bytes);
       selected.report.output = {
         byteLength: selected.bytes.length,
         sha256: sha256(selected.bytes),
       };
     }
     if (values.export) {
-      writeFileSync(
+      writeOutputFile(
         path.join(exportDirectory, 'audit.json'),
         JSON.stringify(report, null, 2) + '\n',
-        { flag: 'wx', mode: 0o600 },
       );
     }
     console.log(JSON.stringify(report));
