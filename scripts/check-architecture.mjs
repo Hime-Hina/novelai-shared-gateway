@@ -114,6 +114,7 @@ const mutations = new Set([
   'restoreRelationalPrivateSnapshot',
   'verifyAndInstallRelationalStorage',
   'prepareAccountCommand',
+  'startAccountEnable',
   'completeAccountEnable',
   'ownerAccountCommand',
   'ownerOperation',

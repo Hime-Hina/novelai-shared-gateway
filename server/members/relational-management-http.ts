@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import { domainDigest } from '../events/domain-events.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
+import { RelationalAccountStore } from '../storage/relational-account-store.ts';
+import type { createAccountQuotaQuery } from '../quota/account-refresh.ts';
 import { RelationalQuotaStore, type QuotaPolicyChange } from '../storage/relational-quota-store.ts';
 import { RelationalRequestStore } from '../storage/relational-request-store.ts';
 import { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
@@ -39,6 +41,8 @@ import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
 import { quotaNumber } from '../quota/eligibility.ts';
 import {
   safeAccount,
+  ownerAccountPatch,
+  ownerAccountCommand,
   selectSharedAccount,
   ownerStatisticsRange,
   summarizeOwnerUsage,
@@ -56,6 +60,9 @@ export function createRelationalManagementHttp(deps: {
   controls: Parameters<typeof physicalAccountLoad>[0];
   assertAdmin(req: IncomingMessage, url: URL): void;
   readServiceResources?: typeof readServiceResources;
+  queryAccountQuota?: ReturnType<typeof createAccountQuotaQuery>;
+  // 与定时观察共用同一实例及 query，保持实际发起顺序和真实网络占用。
+  quotas?: RelationalQuotaStore;
   env?: NodeJS.ProcessEnv;
   discordFetch?: DiscordDependencies['discordFetch'];
   now?(): number;
@@ -65,20 +72,29 @@ export function createRelationalManagementHttp(deps: {
   assertRelationalStorageReady(sqlite);
   const notifications = relationalStateNotificationsFor(sqlite, deps.events),
     members = new RelationalMemberStore(sqlite, env, notifications),
-    quotas = new RelationalQuotaStore(sqlite, env),
+    quotas = deps.quotas ?? new RelationalQuotaStore(sqlite, env),
+    accounts = new RelationalAccountStore(sqlite, quotas, deps.controls, env),
     requests = new RelationalRequestStore(sqlite),
     generations = new RelationalGenerationStore(sqlite, env),
     reports = new RelationalReportStore(sqlite),
     configuration = new RelationalConfigurationStore(sqlite);
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
-    const memberManagementRoute = url.pathname === '/api/member/owner/member-management',
+    const accountRoute = url.pathname.match(/^\/api\/(member\/owner|admin)\/accounts\/([^/]+)$/),
+      accountPatchRoute = req.method === 'PATCH' && Boolean(accountRoute),
+      memberManagementRoute = url.pathname === '/api/member/owner/member-management',
       summaryRoute = url.pathname === '/api/member/owner/summary',
       statisticsRoute = url.pathname === '/api/member/owner/statistics',
-      ownerRoute = memberManagementRoute || summaryRoute || statisticsRoute,
-      adminRoute = url.pathname === '/api/admin/member-management';
+      ownerRoute =
+        memberManagementRoute ||
+        summaryRoute ||
+        statisticsRoute ||
+        (accountPatchRoute && accountRoute![1] === 'member/owner'),
+      adminRoute =
+        url.pathname === '/api/admin/member-management' ||
+        (accountPatchRoute && accountRoute![1] === 'admin');
     if (
       (!ownerRoute && !adminRoute) ||
-      !['GET', 'POST'].includes(req.method!) ||
+      (!['GET', 'POST'].includes(req.method!) && !accountPatchRoute) ||
       (req.method === 'POST' && !memberManagementRoute && !adminRoute)
     ) {
       return false;
@@ -98,6 +114,7 @@ export function createRelationalManagementHttp(deps: {
     };
     assertAccess();
     let authorize: <T>(read: (member: MemberUser | null) => T) => Promise<T>;
+    let commandActorId = 'local-admin';
     if (ownerRoute) {
       const token = memberCookie(req),
         session = await authenticateMemberSession(members, token, env, now());
@@ -109,6 +126,7 @@ export function createRelationalManagementHttp(deps: {
       }
       const memberId = session.user.id,
         epoch = session.user.memberAuth?.version;
+      commandActorId = memberId;
       await requireDiscordMembership(session.user, {
         store: members,
         env,
@@ -152,13 +170,80 @@ export function createRelationalManagementHttp(deps: {
           assertAccess();
           return read(null);
         };
-        return req.method === 'POST'
+        return req.method !== 'GET'
           ? notifications.commit(() => sqlite.transaction(write).immediate())
           : sqlite.transaction(write)();
       };
     }
+    if (accountPatchRoute) {
+      const body = await readMemberJson(req),
+        input = ownerAccountPatch(decodeURIComponent(accountRoute![2]!), body),
+        actorId = commandActorId,
+        actorKind = ownerRoute ? 'member' : 'admin',
+        operation = `PATCH:${url.pathname}`,
+        command = managementCommand(req, actorId, operation, body, actorKind);
+      const result = await ownerAccountCommand(
+        accounts,
+        authorize,
+        {
+          commandId: command.commandId ?? randomUUID(),
+          fingerprint: command.fingerprint ?? domainDigest({ operation, body }),
+          actorId,
+          actorKind,
+          recordedAt: now(),
+          correlationId: null,
+          causationId: null,
+          policyVersion: 'account-management-v1',
+          pricingVersion: 'none',
+        },
+        input,
+        deps.queryAccountQuota,
+        now,
+      );
+      replyMemberJson(res, 200, result.receipt);
+      return true;
+    }
     if (req.method === 'POST') {
-      const body = await readMemberJson(req);
+      const body = await readMemberJson(req),
+        groupInput = {
+          groups: body.groups,
+          expectedConfigVersion: body.expectedConfigVersion as number,
+          redistributeRemaining: body.redistributeRemaining as boolean | undefined,
+        };
+      if (body.action === 'member-key') {
+        const result = await authorize(() => {
+          if (typeof body.userId !== 'string') {
+            fail(404, '成员不存在');
+          }
+          const target = members.readMember(body.userId);
+          if (!target || target.status === 'removed') {
+            fail(404, '成员不存在');
+          }
+          const apiKey = members.readMemberApiKey(target.id);
+          if (apiKey === null) {
+            fail(503, '成员 Key 尚未恢复，请联系管理员');
+          }
+          return { apiKey };
+        });
+        // 原操作只领取当前私有值；不生成/轮换 Key，也不保存含秘密的业务回执。
+        replyMemberJson(res, 200, result);
+        return true;
+      }
+      if (body.action === 'preview-groups') {
+        const preview = await authorize((member) =>
+          quotas.previewGroups(
+            {
+              actorId: member?.id ?? 'local-admin',
+              actorKind: member ? 'member' : 'admin',
+              recordedAt: now(),
+            },
+            groupInput,
+            member,
+          ),
+        );
+        replyMemberJson(res, 200, preview);
+        return true;
+      }
       if (
         ![
           'fallback-policy',
@@ -166,13 +251,14 @@ export function createRelationalManagementHttp(deps: {
           'loss-alert-policy',
           'member-status',
           'member-admission',
+          'groups',
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
       }
       const receipt = await authorize((member) => {
         const actorId = member?.id ?? 'local-admin',
-          actorKind = member ? 'member' : 'admin',
+          actorKind: 'member' | 'admin' = member ? 'member' : 'admin',
           operation = `member-management:${body.action}`,
           command = managementCommand(req, actorId, operation, body, actorKind),
           metadata: Parameters<RelationalMemberStore['setMemberStatus']>[0] = {
@@ -217,7 +303,11 @@ export function createRelationalManagementHttp(deps: {
           ).receipt as { id: string; acceptingJobs: boolean; cancelledJobIds: string[] };
           return { ...saved, cancelledCount: saved.cancelledJobIds.length };
         }
-        return quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member).receipt;
+        return (
+          body.action === 'groups'
+            ? quotas.configureGroups(metadata, groupInput, member)
+            : quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member)
+        ).receipt;
       });
       replyMemberJson(res, 200, receipt);
       return true;

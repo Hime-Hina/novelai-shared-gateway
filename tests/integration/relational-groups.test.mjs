@@ -163,16 +163,19 @@ test('真实在线首次配置显式保存原政策，随后账户首绑和官�
     authorize,
     meta('enable', NOW + 3, 'm1'),
     { kind: 'enable', accountId: 'a' },
-    async () => ({
-      tier: 3,
-      subscriptionActive: true,
-      subscriptionExpiresAt: null,
-      points: 8000,
-      fixed: '8000',
-      purchased: '0',
-      v5UsagePercent: '80',
-      v5UsageTimeUntilNextPercent: 0,
-    }),
+    async (_pst, _proxy, _id, start) => {
+      await start?.();
+      return {
+        tier: 3,
+        subscriptionActive: true,
+        subscriptionExpiresAt: null,
+        points: 8000,
+        fixed: '8000',
+        purchased: '0',
+        v5UsagePercent: '80',
+        v5UsageTimeUntilNextPercent: 0,
+      };
+    },
   );
   assert.deepEqual(
     wallets(db).map((wallet) => wallet.v5_available),

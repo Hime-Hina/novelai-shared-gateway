@@ -40,7 +40,9 @@ export function createRelationalAccountQuotaRefresh(options: {
         throw new Error('Quota queries cannot hold a SQL transaction across network IO.');
       }
       if (physical) {
-        throw new Error('The current account quota request has not finished.');
+        throw Object.assign(new Error('The current account quota request has not finished.'), {
+          statusCode: 409,
+        });
       }
       const request = Promise.resolve().then(() => rawFetch(...args));
       physical = request;
@@ -61,7 +63,9 @@ export function createRelationalAccountQuotaRefresh(options: {
       throw new Error('Quota queries require the owning transaction to finish first.');
     }
     if (physical || querying) {
-      throw new Error('The current account quota request has not finished.');
+      throw Object.assign(new Error('The current account quota request has not finished.'), {
+        statusCode: 409,
+      });
     }
     const request = query(...args);
     querying = request;
@@ -85,22 +89,39 @@ export function createRelationalAccountQuotaRefresh(options: {
       // Deadline 只结束等待；同一共享账户的真实请求未结束时不累积下一轮。
       return { checked: 0, ok: 0, failed: 0, ignored: 0 };
     }
-    const account = sqlite
-      .prepare<[], { id: string }>(
-        `SELECT a.id FROM sharing_policy p JOIN upstream_accounts a ON a.id=p.bound_account_id
+    const enabledAccount = () =>
+      sqlite
+        .prepare<[], { id: string }>(
+          `SELECT a.id FROM sharing_policy p JOIN upstream_accounts a ON a.id=p.bound_account_id
         WHERE p.id=1 AND a.enabled=1`,
-      )
-      .get();
+        )
+        .get();
+    const account = enabledAccount();
     if (!account) {
       return { checked: 0, ok: 0, failed: 0, ignored: 0 };
     }
-    const ticket = quotas.beginQuotaObservation(account.id, clock()),
-      at = new Date(ticket.startedAt).toISOString();
+    const source = quotas.prepareQuotaObservation(account.id);
+    let ticket: ReturnType<RelationalQuotaStore['beginQuotaObservation']> | undefined;
     let result: QuotaResult;
     try {
-      result = accountQuotaResult(account.id, await fetch(ticket.pst, '', account.id), at);
+      const quota = await fetch(source.pst, '', account.id, () => {
+        assertRelationalStorageReady(sqlite);
+        if (enabledAccount()?.id !== account.id) {
+          throw Object.assign(new Error('自动额度查询发起前绑定或启用状态已变化'), {
+            statusCode: 409,
+          });
+        }
+        ticket = quotas.beginQuotaObservation(account.id, clock(), source);
+      });
+      if (!ticket) {
+        throw new Error('Quota refresh did not start its observation.');
+      }
+      result = accountQuotaResult(account.id, quota, new Date(ticket.startedAt).toISOString());
     } catch (error) {
-      result = accountQuotaErrorResult(account.id, error, at);
+      if (!ticket) {
+        throw error;
+      }
+      result = accountQuotaErrorResult(account.id, error, new Date(ticket.startedAt).toISOString());
     }
     const identity = [ticket.accountId, ticket.credentialEpoch, ticket.sequence, ticket.startedAt];
     const committed = notifications.commit(() =>
@@ -117,7 +138,7 @@ export function createRelationalAccountQuotaRefresh(options: {
             policyVersion: 'quota-observation-v1',
             pricingVersion: NATIVE_PRICING_VERSION,
           },
-          ticket,
+          ticket!,
           result,
         ),
       )(),
