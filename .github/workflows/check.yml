@@ -51,6 +51,16 @@ jobs:
       - name: Verify production backup and retention with synthetic data
         run: python3 tests/deployment/backup-production.test.py
       - run: pnpm test
+      - name: Verify fixed legacy archive package on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          legacy_source=3caba3dfa0b5d9f582acabfc02e36e7db4af038f
+          if ! git cat-file -e "$legacy_source^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$legacy_source"
+          fi
+          test "$(git rev-parse --verify "$legacy_source^{commit}")" = "$legacy_source"
+          node --test tests/deployment/legacy-tools.test.mjs
 
   web-and-package:
     needs: classify-changes

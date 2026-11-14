@@ -24,7 +24,7 @@ async function listen(server) {
 }
 
 test(
-  '请求 API 的 Bearer/Cookie 同归属查询、CSRF 取消、签名领取与受理请求 ID',
+  '请求 API 的 Bearer/Cookie 跨秒同归属查询、CSRF 取消、真实签名领取与受理请求 ID',
   { timeout: 20000 },
   async (t) => {
     let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-request-api-'));
@@ -193,18 +193,79 @@ test(
     });
     assert.equal(login.status, 200);
     const cookie = login.headers.get('set-cookie').split(';')[0];
-    const bearer = await call('/api/requests/owned-parent', { key: newKey });
-    const member = await call('/api/member/requests/owned-parent', { cookie });
+    const bearerStartedAt = Date.now(),
+      bearer = await call('/api/requests/owned-parent', { key: newKey });
     assert.equal(bearer.status, 200);
-    assert.equal(member.status, 200);
     const expected = await bearer.json(),
-      actual = await member.json();
-    assert.deepEqual(actual, expected);
+      bearerReturnedAt = Date.now(),
+      issued = new URL(expected.jobs[0].imageUrl, base),
+      nextSecond = (Number(issued.searchParams.get('expires')) - 900 + 1) * 1000;
+    // 真正跨过签发秒，不能依赖两个独立读取恰好发生在同一秒。
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, nextSecond - Date.now()) + 10));
+    const memberStartedAt = Date.now(),
+      member = await call('/api/member/requests/owned-parent', { cookie });
+    assert.equal(member.status, 200);
+    const actual = await member.json(),
+      memberReturnedAt = Date.now();
+    const businessSnapshot = ({ revision, jobs, ...snapshot }) => {
+      assert.match(revision, /^[a-f0-9]{64}$/);
+      return {
+        ...snapshot,
+        jobs: jobs.map((job) => {
+          const url = job.imageUrl ? new URL(job.imageUrl, base) : null;
+          url?.searchParams.delete('expires');
+          url?.searchParams.delete('signature');
+          return { ...job, imageUrl: url?.href || '' };
+        }),
+      };
+    };
+    // revision 含本次领取链接；只排除其签发参数，路径及其余业务字段仍须精确一致。
+    assert.deepEqual(businessSnapshot(actual), businessSnapshot(expected));
+    assert.ok(
+      Number(new URL(actual.jobs[0].imageUrl, base).searchParams.get('expires')) >
+        Number(issued.searchParams.get('expires')),
+      '两个真实读取必须跨过签名签发秒',
+    );
+    assert.notEqual(actual.revision, expected.revision);
     assert.equal(actual.jobs[1].imageUrl, '');
     assert.equal(actual.jobs[2].imageUrl, '');
-    const image = await fetch(base + actual.jobs[0].imageUrl);
-    assert.equal(image.status, 200);
-    assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+    for (const [snapshot, startedAt, returnedAt] of [
+      [expected, bearerStartedAt, bearerReturnedAt],
+      [actual, memberStartedAt, memberReturnedAt],
+    ]) {
+      const signed = new URL(snapshot.jobs[0].imageUrl, base),
+        expires = Number(signed.searchParams.get('expires'));
+      assert.equal(signed.origin, base);
+      assert.equal(signed.pathname, '/api/images/owned-image/content');
+      assert.deepEqual([...signed.searchParams.keys()].sort(), ['expires', 'signature']);
+      assert.match(signed.searchParams.get('signature'), /^[a-f0-9]{64}$/);
+      assert.ok(expires >= Math.floor(startedAt / 1000) + 900);
+      assert.ok(expires <= Math.floor(returnedAt / 1000) + 900);
+      const image = await fetch(signed);
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get('content-type'), 'image/png');
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
+      const foreign = new URL(signed),
+        changedExpiry = new URL(signed),
+        changedSignature = new URL(signed);
+      foreign.pathname = '/api/images/foreign-image/content';
+      changedExpiry.searchParams.set('expires', String(expires - 1));
+      const signature = signed.searchParams.get('signature');
+      changedSignature.searchParams.set(
+        'signature',
+        `${signature[0] === '0' ? '1' : '0'}${signature.slice(1)}`,
+      );
+      for (const [forbidden, key] of [
+        [foreign, newKey],
+        [changedExpiry, credentials[1].api_key],
+        [changedSignature, credentials[1].api_key],
+      ]) {
+        const response = await fetch(forbidden, { headers: { authorization: `Bearer ${key}` } });
+        assert.equal(response.status, 403);
+        await response.arrayBuffer();
+      }
+      assert.equal((await call(signed.pathname, { key: credentials[1].api_key })).status, 403);
+    }
     assert.equal(
       (await call('/api/requests/owned-parent', { key: credentials[1].api_key })).status,
       404,

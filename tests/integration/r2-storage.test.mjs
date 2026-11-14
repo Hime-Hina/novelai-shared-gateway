@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -97,6 +99,77 @@ async function fixture(t) {
     storage = new ImageStorage(dataDir, remote, (id) => store.findImage(id));
   return { dataDir, store, remote, storage, objects, calls, controls, seed };
 }
+
+test('冷归档删除前使用完整dev/ino与纳秒时间；同大小同毫秒替身保留，原文件正常归档', async (t) => {
+  for (const changed of ['ino', 'mtimeNs', 'dev', 'same']) {
+    await t.test(changed, async (t) => {
+      const f = await fixture(t),
+        image = await f.seed(`identity_${changed}`),
+        filename = path.join(f.store.dataDir, image.file),
+        originalLstat = fs.lstat,
+        originalGet = f.remote.get.bind(f.remote),
+        ino = 6917529027678021698n,
+        dev = 9007199254740992n,
+        time = 1800000000000000000n;
+      assert.equal(Number(ino), Number(ino + 1n));
+      assert.equal(Number(dev), Number(dev + 1n));
+      assert.equal(Number(time), Number(time + 100n));
+      let afterRead = false;
+      const normalize = (value) => {
+        const absolute = path.resolve(String(value));
+        return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+      };
+      t.mock.method(fs, 'lstat', async (name, options) => {
+        const value = await originalLstat(name, options);
+        if (normalize(name) === normalize(filename)) {
+          const currentIno = ino + (afterRead && changed === 'ino' ? 1n : 0n),
+            currentDev = dev + (afterRead && changed === 'dev' ? 1n : 0n),
+            currentTime = time + (afterRead && changed === 'mtimeNs' ? 100n : 0n);
+          value.ino = options?.bigint ? currentIno : Number(currentIno);
+          value.dev = options?.bigint ? currentDev : Number(currentDev);
+          value.size = options?.bigint ? BigInt(png.length) : png.length;
+          value.mtimeMs = options?.bigint ? currentTime / 1000000n : Number(currentTime) / 1000000;
+          value.mtimeNs = currentTime;
+        }
+        return value;
+      });
+      syncBuiltinESMExports();
+      const replacement = Buffer.from(png);
+      replacement[replacement.length - 1] ^= 1;
+      t.mock.method(f.remote, 'get', async (...args) => {
+        const bytes = await originalGet(...args);
+        if (!afterRead && changed !== 'same') {
+          if (changed !== 'mtimeNs') {
+            await fs.unlink(filename);
+          }
+          await writeFile(filename, replacement);
+        }
+        afterRead = true;
+        return bytes;
+      });
+      try {
+        if (changed === 'same') {
+          assert.equal(await archiveColdImage(f.store, f.remote, () => true, now), true);
+          await assert.rejects(readFile(filename), { code: 'ENOENT' });
+          assert.ok((await f.store.findImage(image.id)).r2.localRemovedAt);
+        } else {
+          await assert.rejects(
+            archiveColdImage(f.store, f.remote, () => true, now),
+            /Local image changed/,
+          );
+          assert.deepEqual(await readFile(filename), replacement);
+          const preserved = await f.store.findImage(image.id);
+          assert.ok(preserved.r2.verifiedAt);
+          assert.equal(preserved.r2.localRemovedAt, undefined);
+          assert.ok(preserved.r2Error);
+        }
+      } finally {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      }
+    });
+  }
+});
 
 test('R2 配置与签名限定账户、S3作用域及条件写，不输出凭据', () => {
   assert.equal(r2Config({}), null);

@@ -526,6 +526,7 @@ Windows，Node 22.23.4，pnpm 10.32.1；独立 Node 24.22.1 环境复用同版�
 - **唯一正文**：input schema 固定为 1，只存实际协议正文的一种表示。实际 seed 属于 child，样本数属于 parent，兼容 DTO 和出站 Base64 仅在读取/执行边界临时展开；不存顶层参数别名、`nativeParameters` 或旧 DTO 备份。确有不同语义的展示词和原请求 steps 独立保存；已知空字符串、显式 NULL 与缺失值不互相覆盖。partial/unavailable 开账输入仅保留真实已知字段，不能派发或按当前默认值补造。
 - **BLOB**：沿原图、蒙版、V3/V4 Vibe 和 V4.5 Precise 的既有槽位保存原字节，正文仅引用 input 内的 asset ID。单 input 内先比长度/SHA，再比实际字节去重；不按全局摘要跨请求或跨成员合并。读取正文只查附件元数据，不查 BLOB；附件和执行冷读取核验实际长度、SHA、MIME 与保存的原限制，事件和普通列表没有字节或全文。V5 仍沿用原协议支持范围，不放开 Vibe/Precise。
 - **首次上下文**：context schema 固定为 1，按 member/native/direct 三种封闭定义保存规范化版本、原枚举/限制、随机种子意图及 direct 首次 defaults；不接受整个 settings 或认证对象。`(schema_version, sha256)` 唯一且复核内容相同后复用原 ID；事实锚定摘要。重启及当前 defaults/枚举变化不覆盖已保存定义，重试可读取首次上下文；后续改变定义结构须显式处理版本。
+- **原注册绑定**：每条 `ContextRegistered` / `InputRegistered` 必须是该 stream 唯一的原注册 event，并逐条复核本次 schema、SHA 与 input 字节计数；不能借同 ID 的首条事实替后来矛盾或重复注册背书。普通 v3 受理反例见 [`relational-content-registration.test.mjs`](../../tests/integration/relational-content-registration.test.mjs)：当前 Key 事务捕获错误后全库不变，完整业务回放同样拒绝，原合法提交仍可继续并重复零写入。修复前同摘要重复 context 与错误摘要 context 均被接受；重复 input 在旧 v3 仅撞底层 UNIQUE，现由同一 Input owner 在复制前拒绝。未改事件格式、DDL 或旧 SQL。
 - **事务和预算**：调用者持有事务并先重验当前授权；当前停用、移除或私有 auth epoch 未恢复时拒绝公开读取/受理。暂停新接单允许原命令重领。首次提交原子保存输入、上下文、父子引用及四类事实；SQL 失败即使被调用者捕获也不留半笔。预算取实际展开协议字节与旧规范 DTO 字节的较大值，沿用现有单请求/活动限制，不因 Base64 改 BLOB 而扩大容量。
 - **有界回放**：`replayAcceptedInput()` 从只读 source 校验并复制原输入、上下文、BLOB 和受理事实，按完整提交断点续跑，重复提交零写入。调用者先恢复稳定成员及当前私有认证快照；业务事实不携带或复活 `auth_epoch`。此入口只接受 T2 的四类事实，不代替 T4 账务/生命周期重建或 T7 A/B 转换器，完成后仍为 building。
 
@@ -815,6 +816,42 @@ Windows / Node 22.23.4 副本专项 18/18，直接编译 JavaScript 同专项 18
 相同 DDL 检查放回原 `7a75afd` schema，分别在 br CHECK 和共享对象 UNIQUE 约束失败；当前通过。编译代码仅移除同对象引用核对时，相同错误编码拒绝用例因未拒绝而失败；恢复原核对后通过。原架构守卫运行相同断言为原 111 项通过、新二十项预期失败。日志位于 `H:\TEMP\novelai-db-replicas-20261114`。
 
 独立复审先复现可变 `PikPak.config.url` 自报 B、固定 WebDAV client 实际仍请求 A，却把 B 标为 verified 的反例；修复落在既有 IO owner 的不可变配置/客户端绑定，并核对 R2 同类别名。修复后的独立五文件与四项额外反例 71/71，十二个产品/守卫/测试文件 hash 与最终候选逐一一致，原失败和合法实例轮换证据保存在 `H:\TEMP\novelai-replicas-independent-review`。远端同候选 CI 和维护者最终审核另行记录。该技术通过范围不含 OpeningReplica/gzip 字节恢复、归档引用与源删除、自动冷热调度、ready、实际发布包或生产切换；#49 继续开放。
+
+### 9.18 T7 前置：固定旧格式的独立只读工具包
+
+#51 的旧格式解释承接先独立于 A/B 转换准备。`scripts/package-legacy-tools.mjs` 从实际生产旧版本 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f` 的 Git 对象导出源码、SQL/journal 和原 package/lock，使用固定 pnpm 的离线生产依赖及已安装的同版本原生 SQLite 绑定组装平台专属 tar。原 SQL、journal 和源码不重编、不重写；正常在线发布和 CI 未为本工具增加旧模型入口。
+
+包保留 `SOURCE_PACKAGE.json`、`SOURCE_LOCK.yaml`；运行 package/锁文件仅裁剪成独立离线工具的生产依赖。`LEGACY_TOOLS.json` 保存固定 source commit/tree、原 metadata 摘要、Node/平台/ABI 及逐文件摘要。构建先验证独立目录，再对实际 tar 解包目录验证；不会用开发工作树 junction 的成功替代解包验收。消费方先验证发布 tar 的外部 SHA-256，再执行包内检查；清单本身不提供签名或来源认证。
+
+构建需完整 Git 历史中已有上述对象、Node 22.23.4、pnpm 10.32.1 和已安装的同版本 SQLite 原生依赖；离线 store 缺项或原生 ABI 不符时拒绝，不回源下载。包不内置 Node，运行时必须匹配构建清单的平台、架构、Node 与 ABI。
+
+```sh
+node scripts/package-legacy-tools.mjs --output=/private/new-legacy-tools-output
+tar -xzf /private/new-legacy-tools-output/novelai-legacy-tools-3caba3d-PLATFORM-ARCH.tar.gz -C /private/unpacked
+node /private/unpacked/legacy-tools/scripts/audit-legacy-archive.mjs --verify-package
+node /private/unpacked/legacy-tools/scripts/audit-legacy-archive.mjs --source=/sealed/library.sqlite --export=/private/new-archive-manifests
+node --test tests/deployment/legacy-tools.test.mjs
+```
+
+审计只接收已封存、无 WAL/SHM/journal sidecar 的 DELETE 模式单文件快照；若备份仍为 WAL 模式，先另建工作副本并完成一致性封存，不让工具 checkpoint 或升级原始归档。SQLite 主库句柄始终为 `readonly`，旧 SQL 仅用于独立内存参考库核对表结构和原 migration journal/hash；不调用 `JsonStore.init()`。复用固定旧 owner 的 `verifyEventProjections()` 核对已有影子行、流摘要与冷凭据；该 owner 所需 TEMP 表仅在内存，核对期间暂时关闭 `query_only`，主库只读权限不变，结束立即恢复。源文件及目录前后保持不变。
+
+包身份以实际物理根目录为边界：每个清单文件及链接的祖先解析后都必须仍在同一包内，合法的包内别名保留；先完成路径和摘要验证，再导入 SQLite 等包内依赖。导出沿用同一物理边界，解析已存在父目录后仅创建新目录，不能经包外 junction/symlink 别名把文件写入包内。摘要相同不能替代目录归属。
+
+当前归档切点取 `event_clock` 与 `projection_versions.core` 的同值 ready 游标；完整提交必须从 1 连续到该切点，逐提交事件数/索引继续由原 `readDomainCommits()` 核对，流头还须关联该历史中的原末事件。`event_authority.commitSeq` 是原启用切点，不作为后续当前游标。缺失中间提交、clock/core 失配或非 ready 的快照均拒绝，不将仍可读取的提交列表当作完整历史。
+
+通用记录的 SQL 稳定 ID 是当前行身份，users/accounts/cards/jobs/images/ledger 的 JSON ID 必须与之相同；业务归属继续由固定事实及原投影 owner 核对。产物清单使用 SQL ID，私有产物输入还须匹配原 artifact 流的 ID、成员、输入引用和摘要，不能把两个各自合法但关联错误的行导出为同一产物。未知 writer、格式、原资产漂移、残缺完整提交、受保护内容关系或摘要冲突均拒绝。
+
+默认 stdout 仅给聚合与来源摘要。显式 `--export` 只写全新私有目录，输出输入/上下文/诊断的身份及摘要和 Local/R2/PikPak 声明清单；提示词、Base64、凭据与诊断原文仍在封存源内。导出的上传/核验时间是原记录声明；工具不访问网络、监听 HTTP、派发任务、上传或删除对象，也不把该清单宣称为外部原图字节核验。失败导出没有最终 `audit.json` 成功回执。
+
+验收入口为 [`tests/deployment/legacy-tools.test.mjs`](../../tests/deployment/legacy-tools.test.mjs)：实际构建/解包后加载包内依赖，以固定旧 owner 创建合成归档，核对受保护输入和产物清单、原 SQL/journal 字节及源文件不变；新 writer 拒旧源、固定旧迁移 guard/审计工具拒新格式，损坏 writer、migration hash、输入、产物私有摘要和包内 SQL 均有拒绝反例。它只交付旧解释器与审计资产承接，不实现 A/B 转换、全库恢复、ready 安装、外部归档恢复或生产切换。
+
+初版 8 项通过后，独立审查复现包祖先链接、导出别名、缺完整中间提交和 JSON/SQL 产物身份冲突仍被接受。本轮从上述物理路径、完整切点和稳定身份边界修正，并保留包内/包外别名、同类 users/jobs ID、私有输入归属和依赖尚未验证即执行的反例。新增回归在初版审计器 SHA-256 `a28c45d3fd4c1a7cee814cdf6ab5047661afff076096e36d918818a3ca309726` 下统计为 17 项中 7 通过、10 失败（含父项，9 个新增拒绝子例均错误接受）；修正后的最终 Windows / Node 22.23.4 实际打包、解包和反例共 19/19 通过，零跳过。
+
+当前架构、以可信 main `1f60907` 为基线的旧迁移历史、后端类型、新文件语法和固定格式检查通过。日志保留在本机 `H:\TEMP\novelai-legacy-pre-review-fix-negative.log` 与 `H:\TEMP\novelai-legacy-review-fix-final.log`。没有重跑完整后端、取得 Linux 包证据、审计真实归档或访问外部存储；这些结果不替代后续统一候选的 CI、独立复审与恢复闭环。
+
+维护者已授权单独增加 Linux 产物证据。后续 CI 提交在原 backend job 的 `pnpm test` 后顺序执行该 deployment 用例，不塞入并发测试 glob；浅 checkout 缺固定旧 commit 时只 fetch 上述 immutable SHA，仍缺失或取得不符即失败，不改用 main/HEAD。Linux 使用 action 已安装的 pnpm 命令并保留精确版本守卫，不要求 Corepack 在线填缓存。既有门禁、超时、旧 SQL/journal 及在线发布包均不变；此 CI 增量仍需维护者复核，实际 Linux 通过以固定新 head 的运行记录为准。
+
+CI 小片的本地定向验证覆盖实际 workflow bootstrap：缺对象精确取回、已有对象不再 fetch、取回失败拒绝；Bash 语法和 YAML 解析通过。更新后的 Windows 包再次完成实际 tar/解包自检，审计器与 19 项验收代码均与前一固定修复提交字节相同。这些是准备证据，不能替代 Linux job 的实际执行。
 
 ### 9.19 跨 owner 完整提交回放前置
 
@@ -1268,6 +1305,12 @@ v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败�
 [PR #63 的 CI 43504209676](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43504209676) 六项全绿。head `3d2bafd` 与 CI merge `ab87f46` 同 tree `78ab61fa4ff8462ed8f824f14f35d188c204f209`；Linux 后端 1723 项中 1720 通过、3 项平台/环境条件跳过，Nuxt→executor 16/16、包内真实 HTTP 4/4、三个 Docker 构建及发布 tar 解压检查通过。实际发布 artifact `14075607338` 的 ZIP 为 55,482,045 B，SHA256 `93b1417c282896fe959b3a5a2dc27206ccc4dea8969880a8538c738beedbf50c`。跨 owner 独审三项覆盖实际 401 与原键/轮换、非零恢复和输入 SQL 故障回滚、真实迟到结果及业务事件/私有快照联合恢复，产品及整合夹具均核对，无剩余 finding。候选仍含旧在线入口、旧 reader 和 35 项 SQL/journal 资产；其编译 reader、包内旧模型用例和绿色 CI 均不能写成 D4 退出、选定迁移或生产切换完成。
 
 后续 #64 的首轮 Linux CI 发现原会话重启夹具在释放预选端口后被并行监听抢占，`EADDRINUSE` 并非期限/撤销断言失败。已将固定 `5cf9835` 的测试修正逐字回补本分支：真实 gateway 使用原已支持的 `PORT=0`，现有离线 preload 只观察真实 listening 并通过 IPC 回报当次地址。未改生产监听、原超时、外联阻断、会话/SSE 断言或条件跳过，也未增加端口重试。该固定测试独审通过，Windows 原八项 7 通过、1 项原 SIGTERM 跳过；文件 SHA256 `ea4b531d32a7a3e51e7f316cb8d3561536b3f46fc7c7d101ffdf636ec92be14e`，证据 `H:\TEMP\novelai-session-port-review-5cf9835-20261114\INDEPENDENT-REVIEW.md`。修正后的本候选仍由新的 CI 验证，前置 `3d2bafd` 的结果不替代后继验证。
+
+[PR #63 后继 CI 43509538675](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43509538675) 另暴露原请求 HTTP 测试的跨秒假设：Bearer 与 Cookie 查询各自重新签发 15 分钟图片链接，链接进入内容 `revision`，因此不能断言两个独立读取的完整字节相等。专项沿真实 `server/index.ts`、签名 owner 和 Local 原图，强制跨过签发秒；原深等稳定失败于 `expires/signature/revision`，修正只从比较中排除这三项瞬时值，保留所有其他 DTO 字段及 URL 来源和路径的精确一致，并断言两个真实 revision 均为 64 位十六进制且不同。分别领取两条原签名 URL，核对 15 分钟期限、PNG 类型与原始字节；分别篡改路径、期限、签名并以合法非归属 Key 验证拒绝，原 CSRF、取消、重复取消、未知/跨成员请求、Key 撤销及受理请求 ID 断言不变。未改生产 revision、时钟、签名、超时或重试。原红例 `H:\TEMP\novelai-request-snapshot-cross-second-before.log` 保留，修正后的请求三文件源码专项 5/5、零跳过，日志 `H:\TEMP\novelai-request-snapshot-cross-second-union.log`；类型、架构、默认及可信 `858e6a2` 迁移历史通过。该局部测试修正不代替候选的新 CI、统一发布包或新关系运行时总装配验收。
+
+固定接续业务候选 b893949e248a179eb62ef34f29f40b0945c4c3ba 已同步实际 main 88d2c26（含获准合并的 #62），并纳入两项独立复审的精确文件身份修复、上述跨秒测试和共同 Input 注册修复。私有恢复的 dev/ino 与冷归档删除前的 dev/ino/size/mtimeNs 均保持 BigInt 精度，不把两个真实不同文件误判相同，也不删除 IO 期间被替换的原图路径。共同输入 owner 将本次 Context/Input 注册的唯一事件 ID、schema、SHA 和长度绑定到原受保护内容，普通受理与完整回放一致拒绝错配和重复，不跳过 INSERT 或新增 applied 状态。独立检查分别为私有身份 2 项、冷归档 21 项、注册 16 项，报告位于本地 novelai-configuration-INDEPENDENT-REVIEW.md、novelai-cold-identity-independent-20261114/review.md 和 novelai-registration-independent-20261114/review.md。
+
+同一 b893949 的 Windows 完整后端为 1,739 项：1,734 通过、5 项原条件跳过、0 失败，216.637 秒；类型、架构、默认及真实 main 迁移历史、全库格式和差异检查通过。Input/replay/ready 三文件 69/69 与另行运行的新注册 6/6、私有/冷归档 36/36、真实跨秒 HTTP 1/1 均通过，不合称一次 75 项运行。父独立负控只恢复原完整响应深等，准确失败于签名与 revision。由该 Git 对象实际构建的 JavaScript 在 Node 22.23.4 和隔离 Node 24.22.1 各通过注册/私有恢复/冷归档 42/42、零跳过；535 个导出文件逐项匹配原 Git blob，两个各 169 文件运行目录、112 个实际产品文件、35 个旧迁移资产与原生绑定 hash 均保持，运行时无自有 TypeScript，未重编共享依赖。证据为 H:/TEMP/novelai-followup-b893949-full.log 和 H:/TEMP/novelai-followup-compiled-b893949/VALIDATION.md。云 HTTP 为 mock，真实客户端与临时文件结果不称为真实云端验收；后续 Linux CI、v4 配置/权益/缓存/Opening、sole 总装配及同规模恢复仍各按实际固定候选继续，不沿用这批结果宣称整体完成。
 
 ### 9.42 #31：成员子任务历史与迟到结果的关系只读入口
 
