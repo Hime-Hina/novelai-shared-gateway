@@ -40,6 +40,7 @@ import { deliverDirectGeneration, generationErrorImage } from './delivery.ts';
 import { generationCost, jobDurationMs } from './request-queries.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -51,6 +52,7 @@ export function createRelationalDirectHttp(deps: {
   previews: JobPreviews;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   readNormalizationDefaults(): NonNullable<Parameters<typeof requestNormalizationDefaults>[0]>;
   readJson(req: DirectHttpRequest, limit: number): Promise<unknown>;
   imageUrl(artifactId: string): string;
@@ -87,6 +89,7 @@ export function createRelationalDirectHttp(deps: {
       inputs,
       generations,
       payloadBudget: deps.payloadBudget,
+      runtime: deps.runtime,
       replicas: deps.replicas,
       env,
       now,
@@ -282,6 +285,7 @@ export function createRelationalDirectHttp(deps: {
               token,
               replicas: deps.replicas,
               events: deps.events,
+              runtime: deps.runtime,
               env,
               now,
             });

@@ -32,6 +32,8 @@ import { relationalSnapshotSha256 } from '../../server/storage/relational-privat
 
 const NOW = 1800000000000,
   keys = { m1: 'synthetic-key-m1', m2: 'synthetic-key-m2' };
+// 仅无调度器的命令/投影夹具声明运行期；真实 HTTP lifecycle/sole 用真实 queue runtime。
+const commandOnlyRuntime = Object.freeze({ status: 'running', assertAccepting() {} });
 const image = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
 const zero = () => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 function databaseState(db) {
@@ -420,6 +422,7 @@ async function fixture(t, options = {}) {
     publish,
     fail,
     controls,
+    commandOnlyRuntime,
   };
 }
 
@@ -444,4 +447,4 @@ export async function installReady(f) {
   return selected;
 }
 
-export { NOW, keys, image, zero, meta, openingFacts, databaseState, fixture };
+export { NOW, keys, image, zero, meta, openingFacts, databaseState, fixture, commandOnlyRuntime };

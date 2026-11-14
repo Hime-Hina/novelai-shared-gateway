@@ -342,6 +342,26 @@ async function start(handler: http.RequestListener) {
         }
       }
       await Promise.allSettled([...handlers]);
+      // close() 发起时仍 active 的 keep-alive，后来完成后才成为 idle；先等实际响应结束再清闲连接。
+      await Promise.all(
+        [...requests.keys()].map(
+          (res) =>
+            new Promise<void>((resolve) => {
+              if (res.writableFinished || res.destroyed) {
+                resolve();
+                return;
+              }
+              const done = () => {
+                res.off('finish', done);
+                res.off('close', done);
+                resolve();
+              };
+              res.once('finish', done);
+              res.once('close', done);
+            }),
+        ),
+      );
+      server?.closeIdleConnections();
       await disconnected;
       sqlite.close();
     })();
@@ -400,6 +420,7 @@ async function start(handler: http.RequestListener) {
         env,
         quotas,
         queryAccountQuota: refresh.fetch,
+        runtime: queue,
         readJson,
         sendJson,
         sendImage,

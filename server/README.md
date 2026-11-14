@@ -17,7 +17,7 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 | Host、来源 IP、API 白名单及公开错误       | `http/`；`prompt-api-settings.ts` 仅保留现有管理摘要的配置规范化与脱敏，不提供提示词转换服务                               |
 | 调用热力图、服务资源与 R2 分析            | `reports/`                                                                                                                 |
 
-根 `gateway-runtime.ts` 只装配当前关系 owner 和 HTTP/进程生命周期，`index.ts` 与 Nitro 的两个既有 caller 不变。它要求已存在的完整新格式 ready 数据库，不在线初始化或转换旧库；磁盘预检、实际监听后激活与关闭等待见[第 9.74 节](../docs/plans/database-model-redesign.md#974-唯一关系运行入口装配)。OpenAI 解析和 Native/OpenAI/Direct transport 归现有 `protocols/`，关系 HTTP 绑定归 `generation/relational-*-http.ts` 及 `members/relational-*-http.ts`；图片分享签名由 `http/public-image.ts` 的同一进程实例提供。后续规则仍由原 `members/`/`quota/`/`reports/` owner 实现，默认数据位置仍是仓库根下 `data/`。旧 SQL、journal 和快照字节不变；普通发布包范围、旧子进程夹具及全部管理动作尚待后继完成，此候选不是生产切换验收。
+根 `gateway-runtime.ts` 只装配当前关系 owner 和 HTTP/进程生命周期，`index.ts` 与 Nitro 的两个既有 caller 不变。它要求已存在的完整新格式 ready 数据库，不在线初始化或转换旧库；磁盘预检、实际监听后激活与关闭等待见[第 9.75 节](../docs/plans/database-model-redesign.md#975-唯一关系运行入口装配)。OpenAI 解析和 Native/OpenAI/Direct transport 归现有 `protocols/`，关系 HTTP 绑定归 `generation/relational-*-http.ts` 及 `members/relational-*-http.ts`；图片分享签名由 `http/public-image.ts` 的同一进程实例提供。后续规则仍由原 `members/`/`quota/`/`reports/` owner 实现，默认数据位置仍是仓库根下 `data/`。旧 SQL、journal 和快照字节不变；普通发布包范围、旧子进程夹具及全部管理动作尚待后继完成，此候选不是生产切换验收。
 
 个人配额和四个启动器订阅 GET 的关系绑定归 `quota/relational-quota-http.ts`，只组合 Quota/Gen 原窄读，sole 用同一 `protocols/quota-http.ts` 五路径判定。当前 Key→Discord IO→原稳定身份/epoch/ready 的授权回调归 `members/relational-api-key-access.ts`，Bearer 父请求查询与取消也复用它。金融估算仍归 Quota owner，PUBLIC/Host/CORS 仍归中央路由；薄 HTTP 不续 Cookie、不恢复官方 PST 模式。
 
