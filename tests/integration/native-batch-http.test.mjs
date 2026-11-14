@@ -68,6 +68,8 @@ test(
     const calls = [],
       upstreamEvents = [],
       releases = new Map();
+    let holdReopenQuota = false,
+      releaseReopenQuota;
     const upstreamEvent = (seed, event, details = {}) => {
       upstreamEvents.push({ seed, event, at: new Date().toISOString(), ...details });
       if (upstreamEvents.length > 40) {
@@ -76,6 +78,9 @@ test(
     };
     const upstream = http.createServer(async (req, res) => {
       if (req.url === '/user/data') {
+        if (holdReopenQuota) {
+          await new Promise((resolve) => (releaseReopenQuota = resolve));
+        }
         res.setHeader('content-type', 'application/json');
         res.end(
           JSON.stringify({
@@ -259,6 +264,7 @@ test(
     };
     const stop = async (signal) => (signal === 'SIGKILL' ? server.kill() : server.stop());
     t.after(async () => {
+      releaseReopenQuota?.();
       for (const release of releases.values()) {
         release();
       }
@@ -699,16 +705,66 @@ test(
       }
     }
     await rename(rebuiltPath, fixture.filename);
-    const restoredCut = factCounts();
+    // sole 启动会立即真实刷新额度；持有该 IO，单独证明原回执领取零写。
+    holdReopenQuota = true;
     await start();
+    await until(() => releaseReopenQuota, 'restored child automatic quota request held');
+    const restoredCut = factCounts(),
+      restoredSeq = query(fixture, 'SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits')[0]
+        .seq,
+      receiptWallets = query(fixture, 'SELECT * FROM wallets ORDER BY account_id,member_id'),
+      receiptAttempts = query(fixture, 'SELECT * FROM generation_attempts ORDER BY id');
     const recovered = await post(replayBody, 1, { accept: 'application/json', key: bKey });
     assert.equal(recovered.status, 200);
     assert.equal(recovered.headers.get('x-nai-request-id'), bId);
     assert.deepEqual(await recovered.json(), bResult);
     assert.equal(calls.length, beforeMissing);
     assert.deepEqual(factCounts(), restoredCut);
+    assert.deepEqual(
+      query(fixture, 'SELECT * FROM wallets ORDER BY account_id,member_id'),
+      receiptWallets,
+    );
+    assert.deepEqual(
+      query(fixture, 'SELECT * FROM generation_attempts ORDER BY id'),
+      receiptAttempts,
+    );
     assert.deepEqual(bSettlements(), settledB);
+    holdReopenQuota = false;
+    releaseReopenQuota();
+    await until(
+      () => query(fixture, 'SELECT COUNT(*) AS n FROM commits')[0].n > restoredCut.at(-1),
+      'restored child automatic quota observation commits after receipt',
+    );
     await stop();
+    const audit = new Database(fixture.filename, { readonly: true });
+    try {
+      const later = audit
+        .prepare(
+          'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq>CAST(? AS INTEGER) ORDER BY commit_seq',
+        )
+        .all(restoredSeq);
+      assert.equal(later.length, 1);
+      const observed = readRelationalCommit(audit, later[0].seq);
+      assert.match(observed.command.commandId, /^quota-refresh:/);
+      assert.equal(observed.command.actorKind, 'system');
+      assert.equal(observed.command.actorId, null);
+      assert.equal(observed.events[0].eventType, 'QuotaObserved');
+      assert.equal(observed.events[0].accountId, fixture.accountId);
+      assert.equal(observed.events[0].payload.accountId, fixture.accountId);
+      assert.equal(
+        observed.events[0].payload.credentialEpoch,
+        audit
+          .prepare('SELECT credential_epoch FROM upstream_accounts WHERE id=?')
+          .get(fixture.accountId).credential_epoch,
+      );
+      t.diagnostic(
+        'restored receipt zero-write; later live quota refresh: ' +
+          observed.events.map((event) => event.eventType).join(','),
+      );
+    } finally {
+      audit.close();
+    }
+    assert.deepEqual(bSettlements(), settledB);
     assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
     assert.deepEqual(calls, [100, 4294967295, 101, 0, 300, 301, 400]);
     assert.ok(

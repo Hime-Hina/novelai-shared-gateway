@@ -2243,13 +2243,15 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 原模型、1024 尺寸、23 步、seed `100/4294967295/300/400` 与原 HTTP body 保持。A 四图和 B 两图按 `A1→B1→A2→B2` 交错，uint32 尾值下一张仍为 0；A 第二张真实失败/退款，其后余图没有 attempt 或 charge。实际门闩观察断开等待后首图仍 running/reserved、上游未关闭且下一图尚未派发；释放后成功，SIGKILL 再启动仅续原 queued child，原 queue_seq 不变。原 ZIP/JSON、WebP、SSE/MessagePack、同键协商重领、接收 JSON 头后断线、参数冲突零写、100ms 仅 HTTP 超时以及 Local 丢失 410 零再发断言保留；原 150s/45s/90s/5s 上限不延长。旧 JsonStore 种值、旧热缓存开关和旧表审计退出，输入由 InputStore 冷读，费用/尝试/成员归属改读真实关系，不构造兼容旧 DTO。
 
-最后仅归还先前移走的同一原图，按原 artifact SHA256/长度和原 bytes 复核；真实停完所有 child 后封存同一切点。完整提交和唯一 Input owner 回放产生的目标必须私有全空，再由官方选定 sourceSHA 和唯一 installer 逐一核原 Local bytes、完整公共/私有状态并成为 ready；不复制私有表/列名单或维护第二套公共摘要。随后关闭数据库，将这个合法重建库放回同一临时 DATA_DIR，再由实际 child 重开，使用原 Key 领取原 B 回执、ID 与图片，attempt、提交、费用和上游次数不增加，选定源 SHA 仍不变。预期完整调用序列保持七次，九个 job、七个 attempt；这些都来自本次真实正常受理，不是历史 parentless 或 Opening 形状的替代。旧历史去向仍按未决 A/B 与独立旧工具证据处理。
+最后仅归还先前移走的同一原图，按原 artifact SHA256/长度和原 bytes 复核；真实停完所有 child 后封存同一切点。完整提交和唯一 Input owner 回放产生的目标必须私有全空，再由官方选定 sourceSHA 和唯一 installer 逐一核原 Local bytes、完整公共/私有状态并成为 ready；不复制私有表/列名单或维护第二套公共摘要。随后关闭数据库，将这个合法重建库放回同一临时 DATA_DIR，再由实际 child 重开。启动时真实官方额度 GET 持有网络门闩，原 Key 领取原 B 回执、ID 与图片，前后完整计数、原钱包、attempt 和费用不变，生成上游次数不增加；释放该查询后，合法自动观察提交按原 owner 另行核对，选定源 SHA 始终不变。预期完整生成调用序列保持七次，九个 job、七个 attempt；这些都来自本次真实正常受理，不是历史 parentless 或 Opening 形状的替代。旧历史去向仍按未决 A/B 与独立旧工具证据处理。
 
-首轮 42.085 秒失败原样保留：新加 `events.once(request,'close')` 会因刻意 `destroy()` 的 ECONNRESET 拒绝 Promise，即使原 error listener 忽略该预期错误。相同 Node 的纯标准库 `error→close` 复现明确区分 once 拒绝与原 close listener 成功；后继只将这个观察器改为等待 close 的 Promise，保留所有业务断言，不吞非预期 fetch 失败，不把夹具失败记成产品 500、超时或已确认漏洞。真实完整执行与静态证据在固定候选交接中记录。
+首轮 42.084 秒失败原样保留：新加 `events.once(request,'close')` 会因刻意 `destroy()` 的 ECONNRESET 拒绝 Promise，即使原 error listener 忽略该预期错误。相同 Node 的纯标准库 `error→close` 复现明确区分 once 拒绝与原 close listener 成功；后继只将这个观察器改为等待 close 的 Promise，保留所有业务断言，不吞非预期 fetch 失败，不把夹具失败记成产品 500、超时或已确认漏洞。真实完整执行与静态证据在固定候选交接中记录。
 
 第二轮 63.512 秒在原图路径断言短路：新 replica.object_key 是文件名，不是旧 image.file 的完整相对路径。产品角色没有矛盾；夹具改从实际 ReplicaStore 的原发布来源读取只读 Local descriptor/ticket，继续核原 images 边界、MIME、SHA 和长度，不复制 namespace 或文件名算法。两轮失败源码/SHA/日志均单独保留，不累加为通过。后继普通合入固定 root `5ca121f`，消费已审 fair/Note/9.85 和当前权威私有列来源；相对该并集仍只有此测试与两份文档，产品、共享 helper 和历史 SQL 字节不改。
 
 第三轮 65.073 秒已到达完整公共/私有及真实 Local 的唯一 ready 验证，随后新增的“原库 sidecar 必须不存在”夹具条件失败。同 Node/ABI 的最小 SQLite 探针确认：writer 关闭清除 WAL 后，readonly 打开原 WAL header 并 backup、关闭仍会留下 WAL/SHM。修正只在所有 child/数据库已关闭后，将原库与存在的 sidecar 整组归档到原临时目录同前缀，只有确实不存在的文件允许缺席；其他错误继续拒绝，不删除旧 WAL、手改业务或让重建库套用旧 WAL。这仍是夹具生命周期错误，原红及探针各自保留，不标产品问题或整体通过。
+
+第四轮 65.775 秒已在合法重建库的真实 child 领取原 B 图片，新增的“重开前到领取后所有提交都不变”条件误计立即启动的自动额度观察：真实 source/role 小探针确认，单独的 `quota-refresh` 系统命令产生 `QuotaObserved/V5CapacityObserved/QuotaBaselineAdopted`，并非回执重建任务。新断言在真实 quota GET 已进入但未响应时取原状态，严格核回执前后零写，再 release 原响应，读完整提交核原系统 actor、账户及凭据代次；不关自动刷新、改日期、允许任意“+3”或复制事件白名单。小探针实际合法 bootstrap/child/Native 原键、全表摘要零变及独立观察为 **1/1、零跳过，2.006 秒**；它的两个准备错误（流式模拟错误返回 PNG、误把 envelope.command 当成 envelope 根字段）也单独封存，不计产品红或替代完整原文件。
 
 ## 10. 事实依据与修订
 
