@@ -11,6 +11,7 @@ import {
   NOW,
   meta,
   databaseState,
+  image,
 } from '../helpers/relational-generation.mjs';
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
 import { assertAdminToken, matchesAdminToken } from '../../server/http/admin-access.ts';
@@ -18,6 +19,7 @@ import { publicErrorMessage } from '../../server/http/public-errors.ts';
 import {
   createMemberSession,
   authenticateMemberApiKey,
+  authenticateMemberSession,
   logoutMemberSession,
   withAuthenticatedMemberApiKey,
   prepareMemberCredentials,
@@ -35,6 +37,11 @@ import { verifyAndInstallRelationalStorage } from '../../server/storage/relation
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { createGenerationControls } from '../../server/generation/queue-dispatch.ts';
 import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
+import {
+  setup as setupNative,
+  input as nativeInput,
+  waitFor as waitNative,
+} from '../helpers/relational-api-http.mjs';
 
 const admin = '/api/admin/member-management',
   owner = '/api/member/owner/member-management',
@@ -1307,8 +1314,8 @@ test('政策POST保留原单ASCII幂等键、JSON、版本与本站边界，未�
   assert.equal(databaseState(f.db), before);
   assert.equal(seen.length, 0);
 });
-async function holdPolicyBody(t, f, endpoint, started, headers = {}) {
-  const text = JSON.stringify(freePolicy()),
+async function holdPolicyBody(t, f, endpoint, started, headers = {}, body = freePolicy()) {
+  const text = JSON.stringify(body),
     request = httpRequest(f.origin + endpoint, {
       method: 'POST',
       headers: {
@@ -1473,4 +1480,445 @@ test('政策POST末尾SQL故障全表回滚无通知，同键重试及完整公�
   assert.equal(databaseState(target), rebuilt);
   assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
   assert.equal(network, 0);
+});
+const memberStatus = (enabled, userId = 'm2') => ({ action: 'member-status', userId, enabled });
+const memberAdmission = (acceptingJobs, userId = 'm2') => ({
+  action: 'member-admission',
+  userId,
+  acceptingJobs,
+});
+
+test('成员管理POST用当前owner身份映射旧DTO，同键返回原状态且不复活Cookie或覆盖后来恢复', async (t) => {
+  const f = await setup(t),
+    seen = policyNotifications(f),
+    headers = { 'idempotency-key': 'member-state', 'x-member-activity': '1' },
+    originalKey = f.members.readMemberApiKey('m2'),
+    disabled = await f.call(owner, {
+      method: 'POST',
+      headers,
+      body: { ...memberStatus(false), actorKind: 'admin', actorId: 'forged' },
+    });
+  assert.equal(disabled.status, 200, disabled.text);
+  assert.deepEqual(disabled.body, { id: 'm2', enabled: false });
+  assert.equal(disabled.headers.get('set-cookie'), null);
+  assert.equal(
+    await authenticateMemberSession(f.members, f.sessions.m2.token, f.env, f.clock),
+    null,
+  );
+  assert.equal(await authenticateMemberApiKey(f.members, originalKey), null);
+  const stoppedDisabled = await f.call(owner, { method: 'POST', body: memberAdmission(false) });
+  assert.equal(stoppedDisabled.status, 200, stoppedDisabled.text);
+  assert.equal(stoppedDisabled.body.acceptingJobs, false);
+  const enabled = await f.call(owner, { method: 'POST', body: memberStatus(true) });
+  assert.equal(enabled.status, 200, enabled.text);
+  assert.deepEqual(enabled.body, { id: 'm2', enabled: true });
+  assert.equal(f.members.readMemberApiKey('m2'), originalKey);
+  assert.equal((await f.call(owner, { method: 'POST', body: memberAdmission(true) })).status, 200);
+  const fresh = await createMemberSession(
+      f.members,
+      await authenticateMemberApiKey(f.members, originalKey),
+      f.env,
+      f.clock,
+    ),
+    before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    again = await f.call(owner, {
+      method: 'POST',
+      headers,
+      body: { ...memberStatus(false), actorKind: 'admin', actorId: 'forged' },
+    });
+  assert.equal(again.status, 200, again.text);
+  assert.deepEqual(again.body, disabled.body);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.ok(await authenticateMemberSession(f.members, fresh.token, f.env, f.clock));
+  assert.equal(
+    (await f.call(owner, { method: 'POST', headers, body: memberStatus(true) })).status,
+    409,
+  );
+  const stop = await f.call(owner, { method: 'POST', headers, body: memberAdmission(false) });
+  assert.equal(stop.status, 200, stop.text);
+  assert.deepEqual(stop.body, {
+    id: 'm2',
+    acceptingJobs: false,
+    cancelledJobIds: [],
+    cancelledCount: 0,
+  });
+  const epoch = f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch,
+    resume = await f.call(admin, {
+      method: 'POST',
+      headers: { 'x-admin-token': adminToken },
+      body: memberAdmission(true),
+    });
+  assert.equal(resume.status, 200, resume.text);
+  assert.deepEqual(resume.body, {
+    id: 'm2',
+    acceptingJobs: true,
+    cancelledJobIds: [],
+    cancelledCount: 0,
+  });
+  const resumed = databaseState(f.db),
+    count = seen.length;
+  assert.deepEqual(
+    (await f.call(owner, { method: 'POST', headers, body: memberAdmission(false) })).body,
+    stop.body,
+  );
+  assert.equal(databaseState(f.db), resumed);
+  assert.equal(seen.length, count);
+  assert.equal(
+    f.db.prepare("SELECT accepting_jobs FROM members WHERE id='m2'").get().accepting_jobs,
+    1,
+  );
+  assert.equal(
+    f.db.prepare("SELECT auth_epoch FROM members WHERE id='m2'").get().auth_epoch,
+    epoch,
+  );
+  assert.ok(await authenticateMemberSession(f.members, fresh.token, f.env, f.clock));
+  assert.equal(f.resourceCalls, 0);
+  assert.equal(seen.length, 6);
+  const command = f.db
+    .prepare(
+      "SELECT actor_kind,actor_id FROM commits WHERE command_id LIKE 'management:%' ORDER BY commit_seq LIMIT 1",
+    )
+    .get();
+  assert.deepEqual(command, { actor_kind: 'member', actor_id: 'm1' });
+});
+
+test('成员POST严格保留boolean/目标404与当前owner自停用，admin应急启停不复活旧owner Cookie', async (t) => {
+  const f = await setup(t),
+    before = databaseState(f.db);
+  for (const [body, status] of [
+    [memberStatus('false'), 400],
+    [memberAdmission('false'), 400],
+    [memberStatus(false, null), 404],
+    [memberAdmission(false, null), 404],
+    [memberStatus(false, ''), 404],
+    [memberAdmission(false, ''), 404],
+    [memberStatus(false, 3), 404],
+    [memberAdmission(false, 3), 404],
+    [memberStatus(false, 'missing'), 404],
+    [memberAdmission(false, 'missing'), 404],
+    [memberStatus(false, 'm1'), 409],
+  ]) {
+    const response = await f.call(owner, { method: 'POST', body });
+    assert.equal(response.status, status, response.text);
+    assert.equal(databaseState(f.db), before);
+  }
+  const forged = await f.call(owner, {
+    method: 'POST',
+    member: 'm2',
+    body: {
+      ...memberStatus(false),
+      member: { id: 'm1' },
+      actorKind: 'admin',
+      actorId: 'local-admin',
+    },
+  });
+  assert.equal(forged.status, 403, forged.text);
+  assert.equal(databaseState(f.db), before);
+  for (const enabled of [false, true]) {
+    const response = await f.call(admin, {
+      method: 'POST',
+      headers: { 'x-admin-token': adminToken },
+      body: memberStatus(enabled, 'm1'),
+    });
+    assert.equal(response.status, 200, response.text);
+    assert.deepEqual(response.body, { id: 'm1', enabled });
+    assert.equal(response.headers.get('set-cookie'), null);
+  }
+  assert.equal((await f.call()).status, 401);
+  const fresh = await createMemberSession(
+    f.members,
+    await authenticateMemberApiKey(f.members, keys.m1),
+    f.env,
+    f.clock,
+  );
+  assert.equal((await f.call(owner, { cookie: fresh.token })).status, 200);
+});
+
+function assertMemberManagementPublicReplay(t, f) {
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  let io = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    io++;
+    throw Error('public member replay must not fetch');
+  });
+  for (const { seq } of commits)
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), f.inputs))();
+  for (const table of [
+    'generation_requests',
+    'generation_jobs',
+    'charges',
+    'wallets',
+    'commits',
+    'domain_events',
+    'stream_heads',
+  ])
+    assert.deepEqual(
+      target
+        .prepare('SELECT * FROM ' + table + ' ORDER BY rowid')
+        .safeIntegers()
+        .all(),
+      f.db
+        .prepare('SELECT * FROM ' + table + ' ORDER BY rowid')
+        .safeIntegers()
+        .all(),
+      table,
+    );
+  const publicMembers = (db) =>
+    db
+      .prepare(
+        'SELECT id,status,accepting_jobs,admission_epoch,source_event_id FROM members ORDER BY id',
+      )
+      .all();
+  assert.deepEqual(publicMembers(target), publicMembers(f.db));
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'upstream_credentials',
+    'member_sessions',
+    'discord_bindings',
+  ])
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0, table);
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const before = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits)
+    target.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), f.inputs).replayed, true),
+    )();
+  assert.equal(databaseState(target), before);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(io, 0);
+}
+
+test('成员POST末SQL故障全private/public回滚无通知，原键可重试并完整公共回放', async (t) => {
+  for (const action of ['member-status', 'member-admission'])
+    await t.test(action, async (t) => {
+      const f = await setup(t, {
+          beforeReady:
+            action === 'member-admission'
+              ? async (f) => {
+                  f.accept('member-stop-rollback', { memberId: 'm2', samples: 2 });
+                }
+              : undefined,
+        }),
+        seen = policyNotifications(f),
+        body = action === 'member-status' ? memberStatus(false) : memberAdmission(false),
+        headers = { 'idempotency-key': 'member-rollback' };
+      if (action === 'member-status')
+        f.db.exec(
+          "CREATE TRIGGER fail_member_tail AFTER DELETE ON member_sessions WHEN OLD.member_id='m2' BEGIN SELECT RAISE(ABORT,'synthetic private member tail'); END",
+        );
+      else
+        f.db.exec(
+          "CREATE TRIGGER fail_member_tail AFTER UPDATE OF status ON generation_jobs WHEN NEW.status='failed' BEGIN SELECT RAISE(ABORT,'synthetic cancel member tail'); END",
+        );
+      const before = databaseState(f.db),
+        failed = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(failed.status, 500, failed.text);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(seen.length, 0);
+      f.db.exec('DROP TRIGGER fail_member_tail');
+      const success = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(success.status, 200, success.text);
+      assert.equal(seen.length, 1);
+      if (action === 'member-status')
+        assert.equal(
+          await authenticateMemberSession(f.members, f.sessions.m2.token, f.env, f.clock),
+          null,
+        );
+      else {
+        assert.equal(success.body.cancelledCount, 2);
+        assert.equal(success.body.cancelledJobIds.length, 2);
+      }
+      const after = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+      assert.deepEqual((await f.call(owner, { method: 'POST', headers, body })).body, success.body);
+      assert.equal(databaseState(f.db), after);
+      assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+      assert.equal(seen.length, 1);
+      assertMemberManagementPublicReplay(t, f);
+    });
+});
+
+test('成员旧回执慢正文后仍核当前Cookie，不用客户端member/actor授信', async (t) => {
+  for (const body of [memberStatus(false), memberAdmission(false)])
+    await t.test(body.action, async (t) => {
+      let begin;
+      const f = await setup(t, { onBodyRead: () => begin?.() }),
+        headers = { 'idempotency-key': 'held-policy' },
+        first = await f.call(owner, { method: 'POST', headers, body });
+      assert.equal(first.status, 200, first.text);
+      const started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(t, f, owner, started, headers, body);
+      await logoutMemberSession(f.members, f.sessions.m1.token);
+      const before = databaseState(f.db),
+        response = await held.finish();
+      assert.equal(response.status, 401, response.text);
+      assert.equal(response.headers['set-cookie'], undefined);
+      assert.equal(databaseState(f.db), before);
+    });
+});
+test('真实Native队列physical pending时禁用409，停止仅取消waiting且恢复不复活旧child', async (t) => {
+  const env = { OWNER_USER_ID: 'm1' },
+    n = await setupNative(t, { env, seconds: 0 });
+  const handle = createRelationalManagementHttp({
+      sqlite: n.db,
+      events: n.events,
+      controls: n.controls,
+      dataDir: n.dir,
+      env,
+      now: () => n.clock,
+      assertAdmin: (req, url) => assertAdminToken(req, url, adminToken, env),
+    }),
+    server = createServer(async (req, res) => {
+      try {
+        if (await handle(req, res, new URL(req.url, `http://${req.headers.host}`))) return;
+        res.writeHead(404);
+        res.end();
+      } catch (error) {
+        res.writeHead(error.statusCode || 500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: publicErrorMessage(error.message) }));
+      }
+    });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+  const origin = `http://127.0.0.1:${server.address().port}`,
+    manage = async (body, key) => {
+      const response = await fetch(origin + admin, {
+        method: 'POST',
+        headers: {
+          origin,
+          'content-type': 'application/json',
+          'x-admin-token': adminToken,
+          ...(key ? { 'idempotency-key': key } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  n.upstream.release = release;
+  n.upstream.handler = async (_req, res) => {
+    await gate;
+    res.writeHead(200, { 'content-type': 'image/webp' });
+    res.end(image);
+  };
+  const running = n.call(nativeInput({ n_samples: 2, seed: 42 }), {
+    member: 'm2',
+    key: 'managed-running',
+  });
+  running.catch(() => {});
+  await waitNative(() => n.upstream.calls.length === 1 && n.controls.size === 1);
+  const waiting = n.call(nativeInput({ seed: 43 }), { member: 'm2', key: 'managed-waiting' }),
+    other = n.call(nativeInput({ seed: 44 }), { member: 'm1', key: 'managed-other' });
+  waiting.catch(() => {});
+  other.catch(() => {});
+  await waitNative(
+    () =>
+      n.db
+        .prepare("SELECT COUNT(*) AS n FROM generation_jobs WHERE status IN ('queued','pending')")
+        .get().n === 3,
+  );
+  const control = [...n.controls.values()][0],
+    live = n.db.prepare("SELECT id FROM generation_jobs WHERE status='running'").get().id,
+    charges = n.db.prepare('SELECT * FROM charges ORDER BY rowid').all(),
+    wallets = n.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(),
+    before = databaseState(n.db);
+  assert.equal((await manage(memberStatus(false))).status, 409);
+  assert.equal(databaseState(n.db), before);
+  const stopped = await manage(memberAdmission(false), 'native-stop');
+  assert.equal(stopped.status, 200, JSON.stringify(stopped.body));
+  assert.equal(stopped.body.cancelledCount, 2);
+  assert.equal(stopped.body.cancelledJobIds.length, 2);
+  for (const id of stopped.body.cancelledJobIds)
+    assert.deepEqual(
+      n.db.prepare('SELECT status,cancellation_reason FROM generation_jobs WHERE id=?').get(id),
+      { status: 'failed', cancellation_reason: 'member_stopped' },
+    );
+  assert.equal(
+    n.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(live).status,
+    'running',
+  );
+  assert.deepEqual(n.db.prepare('SELECT * FROM charges ORDER BY rowid').all(), charges);
+  assert.deepEqual(n.db.prepare('SELECT * FROM wallets ORDER BY member_id').all(), wallets);
+  assert.equal(n.controls.size, 1);
+  assert.equal(control.controller.signal.aborted, false);
+  assert.equal(
+    n.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE r.member_id='m1' AND j.status='queued'",
+      )
+      .get().n,
+    1,
+  );
+  assert.equal(
+    (await n.call(nativeInput({ seed: 45 }), { member: 'm2', key: 'stopped-new' })).status,
+    403,
+  );
+  const cancelled = await Promise.race([
+    waiting,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(Error('Native cancellation was not delivered')), 5000).unref(),
+    ),
+  ]);
+  assert.equal(cancelled.status, 409, cancelled.buffer.toString());
+  assert.equal((await manage(memberAdmission(true), 'native-resume')).status, 200);
+  assert.equal(
+    n.db.prepare("SELECT admission_epoch FROM members WHERE id='m2'").get().admission_epoch,
+    1,
+  );
+  release();
+  const partial = await running;
+  assert.equal(partial.status, 200, partial.buffer.toString());
+  assert.equal(partial.headers.get('x-nai-partial'), 'true');
+  assert.equal(partial.headers.get('x-nai-image-count'), '1');
+  assert.equal(
+    n.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(live).status,
+    'done',
+  );
+  assert.equal(n.upstream.calls.length, 1);
+  n.advance();
+  assert.equal((await other).status, 200);
+  const resumed = databaseState(n.db),
+    duplicate = await manage(memberAdmission(false), 'native-stop');
+  assert.deepEqual(duplicate.body, stopped.body);
+  assert.equal(databaseState(n.db), resumed);
+  assert.equal(
+    n.db.prepare("SELECT accepting_jobs FROM members WHERE id='m2'").get().accepting_jobs,
+    1,
+  );
+  n.advance();
+  const fresh = await n.call(nativeInput({ seed: 99 }), {
+    member: 'm2',
+    key: 'fresh-after-resume',
+  });
+  assert.equal(fresh.status, 200, fresh.buffer.toString());
+  assert.equal(n.upstream.calls.length, 3);
+  for (const id of stopped.body.cancelledJobIds)
+    assert.equal(
+      n.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(id).status,
+      'failed',
+    );
+  assert.equal((await manage(memberStatus(false), 'idle-disable')).status, 200);
+  assertMemberManagementPublicReplay(t, n);
 });

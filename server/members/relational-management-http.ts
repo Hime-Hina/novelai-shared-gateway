@@ -48,7 +48,7 @@ function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 
-// 管理读取和政策命令共用当前授权，业务规则继续由各自 owner 拥有。
+// 管理读取和命令共用当前授权，业务规则继续由各自 owner 拥有。
 export function createRelationalManagementHttp(deps: {
   sqlite: Database.Database;
   events: EventEmitter;
@@ -160,9 +160,13 @@ export function createRelationalManagementHttp(deps: {
     if (req.method === 'POST') {
       const body = await readMemberJson(req);
       if (
-        !['fallback-policy', 'free-image-policy', 'loss-alert-policy'].includes(
-          body.action as string,
-        )
+        ![
+          'fallback-policy',
+          'free-image-policy',
+          'loss-alert-policy',
+          'member-status',
+          'member-admission',
+        ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
       }
@@ -170,9 +174,8 @@ export function createRelationalManagementHttp(deps: {
         const actorId = member?.id ?? 'local-admin',
           actorKind = member ? 'member' : 'admin',
           operation = `member-management:${body.action}`,
-          command = managementCommand(req, actorId, operation, body, actorKind);
-        return quotas.configureQuotaPolicy(
-          {
+          command = managementCommand(req, actorId, operation, body, actorKind),
+          metadata: Parameters<RelationalMemberStore['setMemberStatus']>[0] = {
             commandId: command.commandId ?? randomUUID(),
             fingerprint: command.fingerprint ?? domainDigest({ operation, body }),
             actorId,
@@ -180,12 +183,41 @@ export function createRelationalManagementHttp(deps: {
             recordedAt: now(),
             correlationId: null,
             causationId: null,
-            policyVersion: 'quota-policy-v1',
+            policyVersion: ['member-status', 'member-admission'].includes(body.action as string)
+              ? 'member-management-v1'
+              : 'quota-policy-v1',
             pricingVersion: 'none',
-          },
-          body as QuotaPolicyChange,
-          member,
-        ).receipt;
+          };
+        if (body.action === 'member-status') {
+          if (typeof body.enabled !== 'boolean') {
+            fail(400, 'enabled 必须为布尔值');
+          }
+          if (typeof body.userId !== 'string' || !body.userId) {
+            fail(404, '成员不存在');
+          }
+          const saved = members.setMemberStatus(
+            metadata,
+            body.userId,
+            body.enabled ? 'active' : 'disabled',
+            member,
+          ).receipt as { memberId: string };
+          return { id: saved.memberId, enabled: body.enabled };
+        }
+        if (body.action === 'member-admission') {
+          if (typeof body.acceptingJobs !== 'boolean') {
+            fail(400, 'acceptingJobs 必须为布尔值');
+          }
+          if (typeof body.userId !== 'string' || !body.userId) {
+            fail(404, '成员不存在');
+          }
+          const saved = members.changeMemberAdmission(
+            metadata,
+            { memberId: body.userId, acceptingJobs: body.acceptingJobs },
+            member,
+          ).receipt as { id: string; acceptingJobs: boolean; cancelledJobIds: string[] };
+          return { ...saved, cancelledCount: saved.cancelledJobIds.length };
+        }
+        return quotas.configureQuotaPolicy(metadata, body as QuotaPolicyChange, member).receipt;
       });
       replyMemberJson(res, 200, receipt);
       return true;

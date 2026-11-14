@@ -1825,6 +1825,18 @@ Node22 新合法 ready/localhost 专项 12/12，与原 Request HTTP、Quota/laun
 
 根在 `7451495` 已审并集上整合，QuotaStore 与新 preview 测试保持 `1db7b1f` 的精确字节，两个文档保留已审内容。组预览、组命令和成员权益三文件同次 149/149、零跳过，6.233 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移历史、四文件格式及 diff 检查通过。日志 `H:/TEMP/novelai-group-preview-root-{joint,type,static,format}.log`。该结果仅覆盖当前源码并集，不沿用 `0ad2c03` 的全量或发布包结论。
 
+### 9.70 成员启停与接单 POST 的关系接入
+
+从固定 `5987606`（已审管理读取/三政策/当前 owner 成员命令）独立接续同一管理 factory，只增加两条字面 member-management 路径的 `member-status` 与 `member-admission`。前者直接使用已审 `MemberStore.setMemberStatus(metadata,id,status,currentMember)`，HTTP 仅按原回执 memberId 与指纹绑定的布尔意图映射 `{id,enabled}`；不读当前状态冒充历史回包。后者使用既有 `changeMemberAdmission()`，保留原 receipt 并按原 delivery 添加 cancelledCount。正文 bool 及缺失目标的旧 400/404 保留，业务 busy、自停用、代次和跨 Member/Gen 取消规则不复制到 HTTP；disabled 目标仍可管理，admin 应急仍受原 busy 约束。
+
+复用现完整正文指纹、服务器 actor/UUID/time、Cookie/Discord/稳定 ID/epoch/owner/ready 的正文后复核及同 notifier 外层事务。POST 不续 Cookie，客户端 member/actor/meta 不授予权限；旧 receipt 也经过当前授权。没有账户/凭据/邀请/资金/分组命令、新 writer factory、业务事实或 DDL；政策原路径和 GET scope 不变，PATCH 并集另由原账户 owner 承担。
+
+真实合法 installer 及 localhost 管理验证旧回包、原键零写/409、后来恢复不被旧 receipt 覆盖、停用撤销原 Cookie/Key 后恢复不复活 Cookie、当前 owner 自停用 409 与 admin 健康应急对照。实际 Native HTTP+共同调度+Local reader 保留未返回的物理上游请求：busy 停用 409、停止只取消两个 waiting child、另一成员 queued 和 running/原 charge/钱包/未 abort control 均保留；取消及时回传 Native 409，恢复不重建旧 child，在途原图正常形成部分成功，后来新请求正常执行。网络端点仅为 localhost 合成上游，不称为真实 NovelAI 或云验收。
+
+私有 Cookie DELETE 尾故障发生在原 status/fact/epoch 已写之后，取消尾故障发生在原 AdmissionChanged 已应用之后；两者均全 private/public/事实/回执/游标回滚、零通知，移除故障后同键成功。完整公共提交从零回放并重复零写，保留原成员/任务/收费与回执，不生私有认证或 fetch。移除新路由、用当前状态替代原 receipt 和缓存正文前会话的三种临时退化均在原业务断言失败；恢复原字节后再验证。Windows Node 22 新增用例 9/9（含实际 Native 1/1）；管理 HTTP、成员命令、接单与旧 member-routes 四文件同次 107/107、零跳过。三种退化的原业务拒绝断言均精准失败，恢复源码后四文件通过；类型、架构、默认/可信 `5987606` migration、190 文件语法及局部格式/diff 检查通过。独立审查待固定候选；无 full/build/compiled/Node24/native 安装、sole 或生产操作。
+
+根在 `b339eb2` 组预览与订阅读取并集上整合，管理 factory 与 HTTP 测试保持 `fbf7707` 的精确字节，两个契约文档保留已审内容。管理 HTTP、成员 owner、接单和旧路由四文件同次 107/107、零跳过，44.373 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移、四文件格式及 diff 通过。日志 `H:/TEMP/novelai-management-members-root-{joint,type,static,format}.log`。完整全量、实际编译和发布物另验，未将新命令源码检查称为 sole 已接入。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
