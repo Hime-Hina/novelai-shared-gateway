@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
+  constants,
   closeSync,
   createReadStream,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -113,17 +115,349 @@ function standalone(filename) {
   }
 }
 
+function metadata(value, fields) {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, type]) => {
+      const item = value[key] ?? null;
+      if (
+        item !== null &&
+        (typeof item !== type || (type === 'number' && !Number.isFinite(item)))
+      ) {
+        fail();
+      }
+      return [key, item];
+    }),
+  );
+}
+function artifactMetadata(row) {
+  const value = JSON.parse(row.data),
+    r2 = value.r2;
+  const descriptor = metadata(value, {
+    jobId: 'string',
+    memberId: 'string',
+    operation: 'string',
+    mimeType: 'string',
+    byteLength: 'number',
+    sha256: 'string',
+    file: 'string',
+    createdAt: 'string',
+  });
+  for (const part of [descriptor, r2]) {
+    if (
+      part?.sha256 != null &&
+      (typeof part.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(part.sha256))
+    ) {
+      fail();
+    }
+    if (
+      part?.byteLength != null &&
+      (!Number.isSafeInteger(part.byteLength) || part.byteLength < 0)
+    ) {
+      fail();
+    }
+  }
+  if (r2?.pikpak?.url) {
+    const url = new URL(r2.pikpak.url);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+      fail();
+    }
+  }
+  return {
+    id: row.id,
+    ...descriptor,
+    r2: r2
+      ? metadata(r2, {
+          bucket: 'string',
+          key: 'string',
+          byteLength: 'number',
+          sha256: 'string',
+          verifiedAt: 'string',
+          localRemovedAt: 'string',
+          removedAt: 'string',
+        })
+      : null,
+    pikpak: r2?.pikpak
+      ? {
+          ...metadata(r2.pikpak, { url: 'string', uploadedAt: 'string' }),
+          encoding: 'brotli',
+        }
+      : null,
+    externalBytesChecked: false,
+  };
+}
+function originalOrder(row) {
+  if (
+    typeof row.originalOrder !== 'string' ||
+    !/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(row.originalOrder)
+  ) {
+    fail();
+  }
+  return row.originalOrder;
+}
+function generationReceipt(receipt, assertPublicDomainFact) {
+  assertPublicDomainFact(receipt, 'receipt');
+  const allowed = new Set(['id', 'requestId', 'jobIds', 'count', 'cacheHit']);
+  if (
+    !receipt ||
+    Array.isArray(receipt) ||
+    typeof receipt !== 'object' ||
+    Object.keys(receipt).some((key) => !allowed.has(key)) ||
+    !Array.isArray(receipt.jobIds) ||
+    !receipt.jobIds.length ||
+    receipt.jobIds.some((id) => typeof id !== 'string' || !id) ||
+    (receipt.id !== undefined && typeof receipt.id !== 'string') ||
+    (receipt.requestId !== undefined &&
+      receipt.requestId !== null &&
+      typeof receipt.requestId !== 'string') ||
+    (receipt.count !== undefined && receipt.count !== receipt.jobIds.length) ||
+    (receipt.cacheHit !== undefined && typeof receipt.cacheHit !== 'boolean')
+  ) {
+    fail();
+  }
+}
+function protectedRequest(payload, assertPublicDomainFact) {
+  const content = /^(?:prompt|fullPrompt|negativePrompt|negative_prompt|uc|base64|errorDetail)$/i;
+  const check = (value) => {
+    if (Array.isArray(value)) {
+      return value.map(check);
+    }
+    if (!value || typeof value !== 'object') {
+      return value;
+    }
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, item]) => {
+        if (
+          /discord|session|grant|credential|clientSecret|secretAccessKey|privateKey|^headers$|^auth$/i.test(
+            key,
+          )
+        ) {
+          fail();
+        }
+        if (content.test(key)) {
+          if (item !== null && typeof item !== 'string') {
+            fail();
+          }
+          return [];
+        }
+        return [[key, check(item)]];
+      }),
+    );
+  };
+  // 只为显式私有文件保留原正文；原公开事实校验继续拒绝认证角色，不改写原字节。
+  assertPublicDomainFact(check(JSON.parse(payload)), 'protected-input');
+}
+function requestEvidence(db, id) {
+  const row = db.prepare('SELECT * FROM generation_requests WHERE id=?').get(id);
+  const source = db
+    .prepare(
+      `SELECT event_id,CAST(commit_seq AS TEXT) AS commit_seq,event_index,event_type,payload
+    FROM domain_events WHERE (event_type='RequestAccepted' AND json_extract(payload,'$.inputRef')=?)
+    OR (event_type='OpeningStateRecorded' AND stream_kind='request' AND json_extract(payload,'$.state.request.inputRef')=?)
+    ORDER BY commit_seq,event_index LIMIT 1`,
+    )
+    .get(id, id);
+  if (!row || !source) {
+    fail();
+  }
+  const saved = JSON.parse(source.payload),
+    fact = source.event_type === 'RequestAccepted' ? saved : saved.state.request;
+  if (
+    fact.memberId !== row.member_id ||
+    fact.inputSha256 !== sha256(row.payload) ||
+    row.payload_bytes !== Buffer.byteLength(row.payload)
+  ) {
+    fail();
+  }
+  const fields = metadata(row, {
+    id: 'string',
+    member_id: 'string',
+    source: 'string',
+    operation: 'string',
+    created_at: 'string',
+  });
+  return {
+    row,
+    report: {
+      kind: 'request',
+      id: fields.id,
+      memberId: fields.member_id,
+      source: fields.source,
+      operation: fields.operation,
+      createdAt: fields.created_at,
+      byteLength: row.payload_bytes,
+      sha256: sha256(row.payload),
+      sourceEventId: source.event_id,
+      sourceCommitSeq: source.commit_seq,
+      sourceEventIndex: source.event_index,
+    },
+  };
+}
+function lookup(db, values, owners, assertPublicDomainFact) {
+  if (values.request) {
+    const input = requestEvidence(db, values.request);
+    if (values.output) {
+      protectedRequest(input.row.payload, assertPublicDomainFact);
+    }
+    return { report: input.report, bytes: Buffer.from(input.row.payload) };
+  }
+  if (values.command) {
+    const original = owners.readCommandReceipt(db, values.command),
+      row = db
+        .prepare('SELECT receipt,event_count,recorded_at FROM event_commits WHERE command_id=?')
+        .get(values.command);
+    if (!original || !row) {
+      fail();
+    }
+    if (
+      typeof row.recorded_at !== 'string' ||
+      !Number.isSafeInteger(row.event_count) ||
+      row.event_count < 1
+    ) {
+      fail();
+    }
+    if (values.output) {
+      generationReceipt(original.receipt, assertPublicDomainFact);
+    }
+    return {
+      report: {
+        kind: 'command',
+        commandId: values.command,
+        commitSeq: original.commitSeq,
+        recordedAt: row.recorded_at,
+        eventCount: row.event_count,
+        receiptSha256: sha256(row.receipt),
+        receiptBytes: Buffer.byteLength(row.receipt),
+      },
+      bytes: Buffer.from(row.receipt),
+    };
+  }
+  if (values.job) {
+    const row = db
+      .prepare('SELECT id,CAST(order_value AS TEXT) AS originalOrder,data FROM jobs WHERE id=?')
+      .get(values.job);
+    if (!row) {
+      fail();
+    }
+    const job = JSON.parse(row.data),
+      stream = owners.readStreamProjection(db, `request:${job.requestId || `legacy-${row.id}`}`);
+    if (!stream?.projection.jobs?.[row.id]) {
+      fail();
+    }
+    const fact = metadata(stream.projection.jobs[row.id], { memberId: 'string' }),
+      { inputRef } = metadata(stream.projection.request || {}, { inputRef: 'string' });
+    if (inputRef !== null) {
+      requestEvidence(db, inputRef);
+    }
+    return {
+      report: {
+        kind: 'job',
+        ...metadata(job, {
+          id: 'string',
+          requestId: 'string',
+          imageId: 'string',
+          model: 'string',
+          status: 'string',
+          createdAt: 'string',
+          completedAt: 'string',
+          diagnosticId: 'string',
+          queueTotal: 'number',
+        }),
+        memberId: fact.memberId,
+        inputRef,
+        originalOrder: originalOrder(row),
+        streamLastCommitSeq: stream.lastCommitSeq,
+        streamLastEventId: stream.lastEventId,
+      },
+    };
+  }
+  if (values.artifact) {
+    const row = db
+        .prepare('SELECT id,CAST(order_value AS TEXT) AS originalOrder,data FROM images WHERE id=?')
+        .get(values.artifact),
+      stream = owners.readStreamProjection(db, `artifact:${values.artifact}`);
+    if (!row || !stream) {
+      fail();
+    }
+    return {
+      report: {
+        kind: 'artifact',
+        ...artifactMetadata(row),
+        ...metadata(stream.projection, { memberId: 'string' }),
+        originalOrder: originalOrder(row),
+        streamLastCommitSeq: stream.lastCommitSeq,
+        streamLastEventId: stream.lastEventId,
+        localContentVerified: false,
+      },
+    };
+  }
+  return null;
+}
+function readLocalArtifact(dataDir, artifact, describeStoredResult) {
+  if (
+    typeof artifact.file !== 'string' ||
+    !artifact.file ||
+    !Number.isSafeInteger(artifact.byteLength) ||
+    artifact.byteLength < 1 ||
+    artifact.byteLength > 64 * 1024 * 1024 ||
+    typeof artifact.sha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(artifact.sha256)
+  ) {
+    fail();
+  }
+  const directory = realpathSync(dataDir),
+    file = path.resolve(dataDir, artifact.file);
+  if (!within(path.resolve(dataDir), file) || !within(directory, realpathSync(file))) {
+    fail();
+  }
+  const before = lstatSync(file, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || before.size !== BigInt(artifact.byteLength)) {
+    fail();
+  }
+  const handle = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+  try {
+    const opened = fstatSync(handle, { bigint: true });
+    if (before.dev !== opened.dev || before.ino !== opened.ino) {
+      fail();
+    }
+    const bytes = readFileSync(handle),
+      after = fstatSync(handle, { bigint: true }),
+      observed = describeStoredResult(artifact.id, artifact.operation, {
+        mimeType: artifact.mimeType,
+        buffer: bytes,
+      });
+    if (
+      opened.size !== after.size ||
+      opened.mtimeNs !== after.mtimeNs ||
+      opened.ctimeNs !== after.ctimeNs ||
+      observed.sha256 !== artifact.sha256 ||
+      observed.byteLength !== artifact.byteLength
+    ) {
+      fail();
+    }
+    return bytes;
+  } finally {
+    closeSync(handle);
+  }
+}
+
 try {
   const { values } = parseArgs({
     options: {
       source: { type: 'string' },
       export: { type: 'string' },
       'verify-package': { type: 'boolean' },
+      job: { type: 'string' },
+      request: { type: 'string' },
+      command: { type: 'string' },
+      artifact: { type: 'string' },
+      output: { type: 'string' },
+      'data-dir': { type: 'string' },
+      'source-sha256': { type: 'string' },
     },
   });
   const manifest = await verifyPackage();
   if (values['verify-package']) {
-    if (values.source || values.export) {
+    if (Object.keys(values).some((key) => key !== 'verify-package')) {
       fail();
     }
     console.log(
@@ -141,22 +475,46 @@ try {
       );
     }
     const source = path.resolve(values.source);
+    const selectors = ['job', 'request', 'command', 'artifact'].filter(
+      (key) => values[key] !== undefined,
+    );
+    if (
+      Object.values(values).some((value) => typeof value === 'string' && !value) ||
+      selectors.length > 1 ||
+      (values.export && selectors.length) ||
+      (values['data-dir'] && !values.artifact) ||
+      (values.output &&
+        !values.request &&
+        !values.command &&
+        !(values.artifact && values['data-dir']))
+    ) {
+      fail();
+    }
     standalone(source);
     const originalHash = await digest(source);
+    if (
+      (selectors.length && values['source-sha256'] !== originalHash) ||
+      (values['source-sha256'] !== undefined && values['source-sha256'] !== originalHash)
+    ) {
+      fail();
+    }
     const [
       { migrateStorage, readCompatibleEventAuthority },
       owners,
-      { canonicalJson, domainDigest, assertDomainEvent },
+      { canonicalJson, domainDigest, assertDomainEvent, assertPublicDomainFact },
       { verifyEventProjections },
+      { describeStoredResult },
     ] = await Promise.all([
       import('../server/storage/sqlite-migrations.ts'),
       import('../server/events/event-store.ts'),
       import('../server/events/domain-events.ts'),
       import('../server/storage/sqlite-store.ts'),
+      import('../server/storage/result-files.ts'),
     ]);
     const db = new Database(source, { readonly: true, fileMustExist: true });
     const handles = [];
     let report;
+    let selected;
     let exportDirectory;
     try {
       db.pragma('temp_store=MEMORY');
@@ -427,59 +785,12 @@ try {
           });
         }
         for (const row of db.prepare('SELECT id,data FROM images ORDER BY id').iterate()) {
-          const value = JSON.parse(row.data),
-            r2 = value.r2;
-          const pick = (object, keys) =>
-            Object.fromEntries(
-              keys.map((key) => {
-                const value = object?.[key] ?? null;
-                if (value !== null && !['string', 'number', 'boolean'].includes(typeof value)) {
-                  fail();
-                }
-                return [key, value];
-              }),
-            );
-          if (r2?.pikpak?.url) {
-            const namespace = new URL(r2.pikpak.url);
-            if (
-              namespace.protocol !== 'https:' ||
-              namespace.username ||
-              namespace.password ||
-              namespace.search ||
-              namespace.hash
-            ) {
-              fail();
-            }
-          }
           result.artifacts++;
-          emit('artifacts', {
-            id: row.id,
-            ...pick(value, [
-              'jobId',
-              'memberId',
-              'operation',
-              'mimeType',
-              'byteLength',
-              'sha256',
-              'file',
-              'createdAt',
-            ]),
-            r2: r2
-              ? pick(r2, [
-                  'bucket',
-                  'key',
-                  'byteLength',
-                  'sha256',
-                  'verifiedAt',
-                  'localRemovedAt',
-                  'removedAt',
-                ])
-              : null,
-            pikpak: r2?.pikpak
-              ? { ...pick(r2.pikpak, ['url', 'uploadedAt']), encoding: 'brotli' }
-              : null,
-            externalBytesChecked: false,
-          });
+          emit('artifacts', artifactMetadata(row));
+        }
+        selected = lookup(db, values, owners, assertPublicDomainFact);
+        if (selected) {
+          result.lookup = selected.report;
         }
         return result;
       })();
@@ -489,8 +800,32 @@ try {
         closeSync(handle);
       }
     }
+    if (values['data-dir']) {
+      selected.bytes = readLocalArtifact(values['data-dir'], selected.report, describeStoredResult);
+      selected.report.localContentVerified = true;
+    }
     if ((await digest(source)) !== originalHash) {
       fail();
+    }
+    standalone(source);
+    if (values.output) {
+      const output = path.resolve(values.output),
+        directory = realpathSync(path.dirname(output));
+      if (
+        within(physicalRoot, directory) ||
+        within(path.dirname(realpathSync(source)), directory) ||
+        (values['data-dir'] && within(realpathSync(values['data-dir']), directory))
+      ) {
+        fail();
+      }
+      writeFileSync(path.join(directory, path.basename(output)), selected.bytes, {
+        flag: 'wx',
+        mode: 0o600,
+      });
+      selected.report.output = {
+        byteLength: selected.bytes.length,
+        sha256: sha256(selected.bytes),
+      };
     }
     if (values.export) {
       writeFileSync(
