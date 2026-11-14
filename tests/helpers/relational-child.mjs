@@ -8,6 +8,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { bootstrap } from '../../scripts/bootstrap.mjs';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import {
+  relationalPrivateTables,
+  relationalPrivateMemberColumns,
+  relationalPrivateStateEmpty,
+  sameRelationalRows,
+} from '../../server/storage/relational-private-restore.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 export async function childFixture(t, label) {
@@ -137,4 +147,60 @@ export async function enableAccount(fixture, child) {
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
   assert.equal(body.enabled, true);
+}
+
+export function assertChildPublicReplay(fixture) {
+  assert.ok(
+    fixture.children.every((child) => child.exit),
+    'offline replay requires every actual child stopped',
+  );
+  const source = new Database(fixture.filename, { readonly: true }),
+    target = new Database(':memory:');
+  const actualFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = () => {
+    fetches++;
+    throw new Error('public replay denied network before IO');
+  };
+  try {
+    initializeRelationalStorage(
+      target,
+      source.prepare('SELECT history_id FROM projection_state WHERE id=1').get().history_id,
+    );
+    const inputs = new RelationalInputStore(source),
+      replayer = new RelationalCommitReplayer(target);
+    for (const { seq } of source
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() => replayer.replayCommit(readRelationalCommit(source, seq), inputs))();
+    }
+    const privateNames = new Set(relationalPrivateTables.map(([name]) => name));
+    for (const { name } of source
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name",
+      )
+      .all()) {
+      if (privateNames.has(name)) {
+        continue;
+      }
+      // Same current exclusions as Ready.assertSameTables/privateQueries. The pending Note
+      // private-column owner must replace this with its canonical projection when it lands.
+      const columns = source.prepare(`PRAGMA table_info("${name}")`).all(),
+        selected = columns.filter(
+          (column) =>
+            !(name === 'projection_state' && column.name === 'status') &&
+            !(name === 'members' && relationalPrivateMemberColumns.includes(column.name)),
+        ),
+        keys = columns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk);
+      assert.ok(keys.length, `${name} requires its canonical primary identity`);
+      const sql = `SELECT ${selected.map((column) => `"${column.name}"`).join(',')} FROM "${name}" ORDER BY ${keys.map((column) => `"${column.name}"`).join(',')}`;
+      assert.equal(sameRelationalRows(source, target, sql), true, name);
+    }
+    assert.equal(relationalPrivateStateEmpty(target), true);
+  } finally {
+    globalThis.fetch = actualFetch;
+    source.close();
+    target.close();
+  }
+  assert.equal(fetches, 0);
 }

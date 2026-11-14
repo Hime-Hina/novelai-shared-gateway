@@ -1,3 +1,4 @@
+import { createPublicImageAccess } from '../../server/http/public-image.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
@@ -629,7 +630,11 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
         res.end(buffer);
       },
     }),
-    handleMember = createRelationalMemberGenerationHttp({ ...deps, scheduleQueueDrain() {} }),
+    handleMember = createRelationalMemberGenerationHttp({
+      ...deps,
+      publicImageUrl: createPublicImageAccess({}, () => NOW + 1000).imageUrl,
+      scheduleQueueDrain() {},
+    }),
     server = createServer(async (req, res) => {
       try {
         const url = new URL(req.url, `http://${req.headers.host}`);
