@@ -283,6 +283,8 @@ owner 管理需会话和角色，管理员路径需本机隧道与管理员凭�
 
 关系账户 `PATCH /api/member/owner/accounts/:id` 与 `PATCH /api/admin/accounts/:id` 当前只接受一个字段：完整 PST `token` 或布尔 `enabled`。只操作当前绑定账户；PST 轮换先检查该账户所有成员的 reserved 责任与实际物理 controls，再更新私有凭据并保持暂停。启用必须经原 query owner 的真实额度响应、有效 Opus 和最新观察核验；网络在 SQL 外，完成时重核当前 owner Cookie/epoch/ready 或本地 admin、原绑定/政策/可用性来源与 credential epoch。两个角色都不支持绕过核验启用。总装配须注入与定时刷新相同的 QuotaStore 和 `sharedRefresh.fetch`；没有实际 query 能力时启用为 503，暂停和 PST 轮换不查网络。
 
+观察票号只代表原 query owner 已取得实际槽并准备调用 raw fetch 的发起；账户准备只保留私有来源，不领取票号。手动启用与自动刷新都在同一个 query 的 actual-start 回调重核来源、领取精确序号和时点，再发起网络。发起前的本机繁忙、缺能力或授权/凭据变化不是官方失败：不新增观察、提交、回执或 observed-seq，也不作废唯一已发的请求；繁忙为 409。已发后的真实网络失败或超时才沿原失败 owner 保存观察；截止结束不释放尚未 settle 的 raw 物理占用。命中旧回执先通过当前授权，繁忙不阻挡零 IO 重领。
+
 本片关系 PATCH 的成功回包明确收窄为 AccountStore 已保存的 `{accountId,enabled}`，失败观察的原 receipt 含 `{error:{statusCode,message}}` 并以对应错误返回；不再返回旧 owner `safeAccount` 或 admin `publicAccount` 宽 DTO。现 Web PATCH 不消费正文，展示继续从已鉴权读取接口取得。`Idempotency-Key` 沿原 actor/路径操作隔离与指纹，同一原回执须先通过当前授权；命中后不查网络、不按后来配置/余额重算，也不覆盖后续暂停或轮换。没有幂等键仍是新命令；PST 只进私有表，不进事实、回执或日志。这些 PATCH 不续期 Cookie。
 
 原 admin 的 `name`、`proxyUrl|socksProxy|proxy` 和 `weight` 写入/宽 DTO、显式 PST/代理 reveal 仍是未完成迁移项，不属于 D4 已确认退出范围。当前 PATCH 明确 400 拒绝这些字段，不静默丢失、不用环境默认代理冒充已保存来源；字段/读取及所选源保全的后继见数据库计划第 9.68 节。bulk 账户 PATCH、注册 POST、额度刷新 POST、admin summary/reveal 与唯一在线装配不由本片实现。

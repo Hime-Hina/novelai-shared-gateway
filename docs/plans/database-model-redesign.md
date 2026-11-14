@@ -664,7 +664,7 @@ T4 的同一业务提交需要将退款和核对事实互相引用，因此新�
 
 第二阶段由 [`storage/relational-quota-store.ts`](../../server/storage/relational-quota-store.ts) 接入当前关系状态：读取当前分组、三资源钱包、活动预扣、最新观察/对账基线、运营账及至多 100 条待匹配收据，在原 owner 的窄金融视图上收集业务决定，再映射为 v2 事实和关系投影。使用原命令收集器，不重建旧 users/jobs 或加载旧配置/账本历史；Anlas 合计仅在瞬时算术视图计算，不增加磁盘金融 DTO、累计计数或第二套算法。生成终态改用此处唯一额度列映射，原预扣/退款约束继续保留。
 
-`beginQuotaObservation()` 取得当前 PST、凭据代次、精确票号和实际发起时间，原 `createAccountQuotaQuery()` 在事务外取数；`recordQuotaObservation()` 在事务内再次核对最新票、当前凭据和持久高水位。过期票零写入，同一提交回执不再次发起网络请求，PST 不进事件或回执。后台执行与人工 owner 刷新复用原授权入口，普通成员不能提交观察或恢复命令。失败仅保存原查询 owner 的安全状态码，保留上次有效余额与时间；未知值仍为 NULL，封禁按原规则停用。最新观察与账务基线分别引用，所有预扣结清且观察不早于结算后才推进基线；不会把在途余额下降归因于任一任务。
+`prepareQuotaObservation()` 只取得当前私有来源，不领号；原 query owner 已取得实际槽后，`beginQuotaObservation()` 才校对该来源并取得精确票号和实际发起时间，原 `createAccountQuotaQuery()` 在事务外取数；`recordQuotaObservation()` 在事务内再次核对最新票、当前凭据和持久高水位。过期票零写入，同一提交回执不再次发起网络请求，PST 不进事件或回执。后台执行与人工 owner 刷新复用原授权入口，普通成员不能提交观察或恢复命令。失败仅保存原查询 owner 的安全状态码，保留上次有效余额与时间；未知值仍为 NULL，封禁按原规则停用。最新观察与账务基线分别引用，所有预扣结清且观察不早于结算后才推进基线；不会把在途余额下降归因于任一任务。
 
 恢复由原 owner 限定旧窗口、固定精度和来源容量，保存原起止游标、来源观察、预算、偿债、容量缺口及分配决定，重复执行不重发。运营 V5 也占来源容量，满额期间不储蓄恢复预算。空基线只有在钱包、运营资产、预扣及待核对状态确实为空时才能首次分配；已有权益或不完整基线不会被重新开账。旧原型或迁移的未知基线需要 T7 明确处置，不在这里猜测并激活。
 
@@ -1793,7 +1793,7 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 ### 9.68 当前绑定账户的双角色 PATCH
 
-本片从固定 `5987606085c0fdef0991c98916bebf016037d068` 的独立工作树接入两个既有账户路径，只扩 `relational-management-http` 的 PATCH 分派，复用同一当前 owner Cookie/Discord/epoch/ready 与 local admin 的 authorize 闭包。`ownerAccountPatch` 从原 `ownerOperation` 提取严格单 `token|enabled` 规则；PST/暂停/启用仍由 `ownerAccountCommand` → AccountStore prepare/complete → QuotaStore 原观察规划提交，没有第二套资格或金额规则。完成时钟可注入，其他调用默认仍为 `Date.now`。既有业务事实、schema/格式、SQL/journal 和回放能力不变。
+本片从固定 `5987606085c0fdef0991c98916bebf016037d068` 的独立工作树接入两个既有账户路径，只扩 `relational-management-http` 的 PATCH 分派，复用同一当前 owner Cookie/Discord/epoch/ready 与 local admin 的 authorize 闭包。`ownerAccountPatch` 从原 `ownerOperation` 提取严格单 `token|enabled` 规则；PST/暂停/启用仍由 `ownerAccountCommand` → AccountStore prepare/start/complete → QuotaStore 原观察规划提交，没有第二套资格或金额规则。完成时钟可注入，其他调用默认仍为 `Date.now`。既有业务事实、schema/格式、SQL/journal 和回放能力不变。
 
 正文和真实网络均在 SQL 外。管理 factory 可注入与自动刷新相同的 QuotaStore 与 `queryAccountQuota=sharedRefresh.fetch`，防止两个 owner 实例各自发同序票；未配置 query 的启用在 prepare 后 503 fail closed，不提交失败观察，暂停/轮换无需网络。prepare 和 complete 每次都重进真实当前授权事务；admin PATCH 与 POST 一样由唯一 notifier 的 immediate 事务持有，异常外层捕获也不能留下半笔事实、回执、私有 PST、投影或通知。启用沿原有效 Opus、观察时效/顺序、PST/epoch、绑定/政策/可用性来源复核，失败观察按原 owner 保存原失败回执后报错，不把失败伪装成成功。
 
@@ -1806,6 +1806,12 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 - 旧 `weight` 在 add/PATCH/bulk 中 clamp 1..100 并由 publicAccount 返回；当前唯一绑定账户 dispatch 只看绑定、实际容量与 controls，不按账户 weight 选账号，且新模型没有权威列/事实。该兼容字段仍需后续基于其实际单账户用途落实，不能默认为 1 冒充迁移来源，也不能自行扩展多账户调度。
 
 当前两角色遇上述字段明确 400。bulk PATCH、账户注册 POST、单/批额度刷新 POST、admin summary/reveal 与 sole 总装配另行接续；本片不自动执行 bootstrap 后的额度联网或生产切换。新专项目标为合法 ready/Local 与 localhost mock 真实 query，等待撤权/轮换/暂停/政策改变、最新票号、失败 Opus、外层捕获 SQL 尾错、单通知/重复零写和完整公共回放无私有复活；mock 不代表真实官方端点验收。
+
+后续独立审查用实际 `createRelationalAccountQuotaRefresh.fetch` 发现 P2：316 在唯一自动 GET 仍在途时，手动 enable 先领了新票、随即被本机 busy 拒绝，却保存一笔未发 GET 的失败观察；原唯一成功 GET 因此 ignored。故 `316fcce` / 文档 `2c47058` 不能作为通过审查的上线候选；裸 query 的既有 20 项及 139 项不会证明该真实组合正确。原独立测试逐字断言在本修复树先红，未修改其业务断言，仅把证据 JSON 路径改到自己的 TEMP。
+
+根因修复将准备与实际发起分开：AccountStore prepare 只返回私有来源，`startAccountEnable` 在 query 已取得共享槽后重新进入当前授权事务并领票；原 query 增加只供 owner 的 actual-start 回调，本机拒绝不按官方错误分类/落库。自动 producer 同样在这个回调中重核 ready、当前绑定启用账户和 exact 私有凭据来源，再领号；不会用两个 producer 各自的准备时间打乱真实发起顺序。PST/epoch 检查归同一 QuotaStore 来源 owner，绑定/可用性/政策/成员授权归原账户 owner，完成时最新票与高水位检查继续保留。已发出的网络失败/timeout 仍按原规则提交，raw 即使吞 abort 也占槽到真实 settle；未发请求的 busy 不保存回执，原键可在槽释放后真实重试。旧回执在 prepare 当前授权后先返回，不接触 query，busy 不阻挡重领。
+
+新增 `startAccountEnable` 是实际写能力，只在既有 guard Set 登记该名字和两个直接调用反例；原已受限账户模块路径/CI/基线不改，维护者仍需复核守卫增量。低层单元夹具明确调用实际 start；旧“授权准备便让已发查询 ignored”的错误回归改为保留唯一真实响应，之后真正 start 才领取下一票，保留同钟/回拨、>2^53、旧代次与最新响应的其他原序反例。没有简单删掉序号核验、HTTP busy bool、另一把 barrier、新持久状态、第二 query 或已启用免核验捷径。
 
 产品固定 `26aa31868a94f7ca59aeea92073fbe1c3b82e713`，仅测试增强后继 `316fccec195538983a1e4276401ee41b450e9e43` 不改产品字节。新账户 HTTP 专项 20/20；产品固定点的原账户、账户管理目录/自动刷新、旧 owner 与新管理 HTTP 五文件同次 139/139、零跳过，32.477 秒（`H:/TEMP/novelai-account-patch-final-context.log`）。后继增强 admin 一次真实通知/重复零通知断言后，20/20 在恢复正确候选的隔离树复验。三项 TEMP 错误实现逐一识别：忽略共享 QuotaStore 时旧观察错误 200≠409；删除完成授权的 ready 检查时真实网络等待后错误 200≠500；admin PATCH 不经 notifier 时真实提交通知 3≠4。错误变体均只在隔离 TEMP，源恢复逐字 Git 匹配。初版 admin 负控指出了正例未断言通知的覆盖缺口，316 只补该断言，并非产品修复；不将该初次绿色变体写成验证通过。
 

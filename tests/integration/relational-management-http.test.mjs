@@ -35,6 +35,7 @@ import { verifyAndInstallRelationalStorage } from '../../server/storage/relation
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { createGenerationControls } from '../../server/generation/queue-dispatch.ts';
 import { accountQuotaResult, createAccountQuotaQuery } from '../../server/quota/account-refresh.ts';
+import { createRelationalAccountQuotaRefresh } from '../../server/quota/relational-account-refresh.ts';
 import { fetchNovelAiAccountQuota } from '../../server/protocols/novelai-client.ts';
 import { relationalStateNotificationsFor } from '../../server/events/relational-state-notifications.ts';
 
@@ -1528,8 +1529,9 @@ async function accountPatchFixture(t, options = {}) {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
+  const quotaEnv = { NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${server.address().port}` };
   const query = createAccountQuotaQuery({
-    env: { NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${server.address().port}` },
+    env: quotaEnv,
     now: () => f.clock,
     logger: { log: (...args) => logs.push(args), error: (...args) => logs.push(args) },
     fetchQuota: (...args) => {
@@ -1566,6 +1568,7 @@ async function accountPatchFixture(t, options = {}) {
     logs,
     patch,
     query,
+    quotaEnv,
     quotas,
     get notifications() {
       return notifications;
@@ -1990,4 +1993,134 @@ test('账户PATCH与实际共享QuotaStore发起顺序一致，晚发票据使�
   assert.equal(databaseState(f.db), before);
   assert.equal(f.notifications, notifications + 1);
   assert.equal(f.calls.length, calls);
+});
+
+async function sharedAccountPatch(f, t, options = {}) {
+  const refresh = createRelationalAccountQuotaRefresh({
+    sqlite: f.db,
+    quotas: f.quotas,
+    events: f.events,
+    env: { ...f.env, ...f.quotaEnv },
+    now: () => f.clock,
+    logger: { log() {}, error() {} },
+    ...options,
+  });
+  f.setHandler(
+    createRelationalManagementHttp({
+      sqlite: f.db,
+      quotas: f.quotas,
+      queryAccountQuota: refresh.fetch,
+      events: f.events,
+      controls: f.controls,
+      dataDir: f.dir,
+      env: f.env,
+      now: () => f.clock,
+      assertAdmin: (req, url) => assertAdminToken(req, url, adminToken, f.env),
+    }),
+  );
+  t.after(() => refresh.stop());
+  return refresh;
+}
+
+test('账户PATCH实际shared query繁忙无GET不得领票或伪观察，唯一原成功响应与busy旧receipt保持有效', async (t) => {
+  const f = await accountPatchFixture(t),
+    refresh = await sharedAccountPatch(f, t);
+  const saved = await f.patch({ enabled: true }, { key: 'original-success' });
+  assert.equal(saved.status, 200, saved.text);
+  let release, enter;
+  const gate = new Promise((r) => (release = r)),
+    entered = new Promise((r) => (enter = r));
+  f.upstream.onQuery = async () => {
+    enter();
+    await gate;
+  };
+  const original = refresh.refreshEnabled();
+  await entered;
+  try {
+    const before = databaseState(f.db),
+      calls = f.calls.length;
+    const busy = await f.patch({ enabled: true }, { key: 'busy-must-not-save' });
+    assert.equal(busy.status, 409, busy.text);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, calls);
+    assert.deepEqual(
+      (await f.patch({ enabled: true }, { key: 'original-success' })).body,
+      saved.body,
+    );
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, calls);
+    release();
+    assert.deepEqual(await original, { checked: 1, ok: 1, failed: 0, ignored: 0 });
+  } finally {
+    release();
+  }
+  f.upstream.onQuery = null;
+  assert.equal(
+    (await f.patch({ enabled: true }, { key: 'busy-must-not-save' })).status,
+    200,
+    'local rejection saved no receipt, same key can actually start',
+  );
+  assert.equal(f.calls.length, 3);
+});
+
+test('账户PATCH已发真实query超时可提交失败观察，raw吞abort仍占槽且stop等实际HTTPsettle', async (t) => {
+  const f = await accountPatchFixture(t),
+    refresh = await sharedAccountPatch(f, t, {
+      requestTimeoutMs: 100,
+      fetchQuota: (token, env, options) =>
+        fetchNovelAiAccountQuota(token, env, { ...options, signal: undefined }),
+    });
+  let release, enter;
+  const gate = new Promise((r) => (release = r)),
+    entered = new Promise((r) => (enter = r));
+  f.upstream.onQuery = async () => {
+    enter();
+    await gate;
+  };
+  const pending = f.patch({ enabled: true }, { key: 'timed-real-query' });
+  await entered;
+  try {
+    const timeout = await pending;
+    assert.equal(timeout.status, 409, timeout.text);
+    assert.equal(f.calls.length, 1);
+    const before = databaseState(f.db),
+      observed = f.db
+        .prepare(
+          "SELECT CAST(observed_sequence AS TEXT) seq FROM account_quota_state WHERE account_id='a'",
+        )
+        .get().seq;
+    assert.equal((await f.patch({ enabled: true }, { key: 'busy-after-deadline' })).status, 409);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, 1);
+    assert.deepEqual(
+      (await f.patch({ enabled: true }, { key: 'timed-real-query' })).body,
+      timeout.body,
+    );
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.calls.length, 1);
+    let stopped = false;
+    refresh.stop();
+    const stop = refresh.pending.then(() => (stopped = true));
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(stopped, false);
+    assert.ok(refresh.pending);
+    release();
+    await stop;
+    assert.equal(stopped, true);
+    assert.equal(refresh.pending, null);
+    assert.equal(databaseState(f.db), before, 'late raw success cannot rewrite timed observation');
+    f.upstream.onQuery = null;
+    assert.equal((await f.patch({ enabled: true }, { key: 'busy-after-deadline' })).status, 200);
+    assert.ok(
+      BigInt(
+        f.db
+          .prepare(
+            "SELECT CAST(observed_sequence AS TEXT) seq FROM account_quota_state WHERE account_id='a'",
+          )
+          .get().seq,
+      ) > BigInt(observed),
+    );
+  } finally {
+    release();
+  }
 });

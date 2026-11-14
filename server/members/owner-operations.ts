@@ -3,6 +3,7 @@ import type {
   RelationalAccountStore,
   AccountCommandMetadata,
   OwnerAccountMutation,
+  AccountEnableTicket,
 } from '../storage/relational-account-store.ts';
 import type { MemberUser } from './authentication.ts';
 import {
@@ -360,7 +361,10 @@ function accountCommandResult(result: RelationalCommitResult) {
 
 // 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
 export async function ownerAccountCommand(
-  store: Pick<RelationalAccountStore, 'prepareAccountCommand' | 'completeAccountEnable'>,
+  store: Pick<
+    RelationalAccountStore,
+    'prepareAccountCommand' | 'startAccountEnable' | 'completeAccountEnable'
+  >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
   input: OwnerAccountMutation,
@@ -382,15 +386,43 @@ export async function ownerAccountCommand(
   if (!query) {
     fail(503, '账户额度查询尚未配置');
   }
-  const { ticket } = prepared;
-  let observation;
+  let ticket: AccountEnableTicket | undefined,
+    prior: RelationalCommitResult | undefined,
+    observation;
   try {
+    const quota = await query(prepared.prepared.pst, '', prepared.prepared.accountId, async () => {
+      const started = await authorize((member) =>
+        store.startAccountEnable(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          member,
+        ),
+      );
+      if (!started) {
+        fail(401, '会话已失效，请重新登录');
+      }
+      if ('result' in started) {
+        prior = started.result;
+        throw new Error('Account command already completed.');
+      }
+      ticket = started.ticket;
+    });
+    if (!ticket) {
+      throw new Error('Account quota query did not start its observation.');
+    }
     observation = accountQuotaResult(
       ticket.accountId,
-      await query(ticket.pst, '', ticket.accountId),
+      quota,
       new Date(ticket.startedAt).toISOString(),
     );
   } catch (error) {
+    if (prior) {
+      return accountCommandResult(prior);
+    }
+    if (!ticket) {
+      throw error;
+    }
     observation = accountQuotaErrorResult(
       ticket.accountId,
       error,
@@ -401,7 +433,7 @@ export async function ownerAccountCommand(
     store.completeAccountEnable(
       { ...metadata, recordedAt: now() },
       input,
-      ticket,
+      ticket!,
       observation,
       member,
     ),

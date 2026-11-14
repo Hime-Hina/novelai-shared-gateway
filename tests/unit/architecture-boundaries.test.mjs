@@ -636,3 +636,16 @@ test('mixed writer modules retain pure named readers and type-only capability de
     );
   }
 });
+
+for (const filename of [
+  'server/generation/request-queries.ts',
+  'server/protocols/native-http.ts',
+]) {
+  test(`${filename} rejects actual account observation start`, () => {
+    assert.ok(
+      checkSource(filename, 'accounts.startAccountEnable(metadata,input,source,actor);').some(
+        (error) => error.includes('write call startAccountEnable'),
+      ),
+    );
+  });
+}
