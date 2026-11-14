@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import { fixture, meta, NOW, databaseState } from '../helpers/relational-generation.mjs';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { domainDigest } from '../../server/events/domain-events.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
@@ -326,6 +327,7 @@ test('新Opening不能进入合法ready，原完整提交重复仍零写', async
     opened = command(f.db, 'before-ready', [funding(), storage()]);
   f.db.transaction(() => replay.appendCommit(opened))();
   const sourcePath = path.join(f.dir, 'selected-opening.sqlite');
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const source = new Database(sourcePath);
   source.pragma('journal_mode=DELETE');
