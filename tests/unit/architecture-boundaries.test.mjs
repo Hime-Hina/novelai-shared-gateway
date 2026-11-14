@@ -11,6 +11,24 @@ const writerFactories = [
   ['createLegacyNativeHttp', '../generation/legacy-native-http.ts'],
   ['createRelationalMemberAuthenticationHttp', '../members/relational-authentication-http.ts'],
   ['handleMemberAuthenticationRoutes', '../members/authentication-http.ts'],
+  ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
+  ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
+  ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
+];
+
+// 同一已登记写命令的混合来源；只限制整模块能力，保留明确的纯 named reader。
+const mixedWriterSources = [
+  ['ownerAccountCommand', '../members/owner-operations.ts'],
+  ['applyOperatingFunding', '../quota/operating-accounting.ts'],
+  ['withAuthenticatedMemberSession', '../members/authentication.ts'],
+  ['setMemberAdmission', '../generation/queue-policy.ts'],
+  ['prepareGenerationResult', '../generation/execution.ts'],
+  ['closeGenerationReview', '../generation/accounting.ts'],
+  ['configureFreeImages', '../quota/free-image-policy.ts'],
+  ['updateLossAlertPolicy', '../quota/failure-accounting.ts'],
+  ['appendDomainCommit', '../events/event-store.ts'],
+  ['beginDomainCommand', '../events/domain-events.ts'],
+  ['JsonStore', '../storage/sqlite-store.ts'],
 ];
 
 for (const filename of [
@@ -24,6 +42,47 @@ for (const filename of [
           filename,
           `import * as writer from '${modulePath}'; const run = writer.${name}; run(deps);`,
         ).some((error) => /write capability/.test(error)),
+      );
+    });
+  }
+  for (const [name, modulePath] of mixedWriterSources) {
+    const invoke = name === 'JsonStore' ? 'new run(dataDir);' : 'run(deps);';
+    for (const source of [
+      `import * as writer from '${modulePath}'; const run = writer.${name}; ${invoke}`,
+      `const writer = await import('${modulePath.replace('.ts', '.js')}'); const run = writer.${name}; ${invoke}`,
+    ]) {
+      test(`${filename} rejects captured mixed writer ${name}: ${source}`, () => {
+        assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+      });
+    }
+  }
+  for (const [name, modulePath] of [
+    ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
+    ['ownerOperation', '../members/owner-operations.ts'],
+  ]) {
+    test(`${filename} rejects named and injected ${name}`, () => {
+      assert.ok(
+        checkSource(filename, `import { ${name} as run } from '${modulePath}'; run(deps);`).length,
+      );
+      assert.ok(checkSource(filename, `deps.${name}(input);`).length);
+    });
+  }
+  for (const [name, modulePath] of writerFactories.slice(-3)) {
+    test(`${filename} rejects dynamic capture of ${name}`, () => {
+      const source = `const writer = await import('${modulePath.replace('.ts', '.js')}'); const run = writer.${name}; run(deps);`;
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
+  for (const modulePath of [
+    '../members/relational-read-http.ts',
+    '../members/owner-operations.ts',
+    '../quota/operating-accounting.ts',
+  ]) {
+    test(`${filename} rejects writer star re-export ${modulePath}`, () => {
+      assert.ok(
+        checkSource(filename, `export * from '${modulePath}';`).some((error) =>
+          /write capability/.test(error),
+        ),
       );
     });
   }
@@ -460,5 +519,49 @@ test('type-only dependencies, pure readers, transport guards and executor assemb
     ],
   ]) {
     assert.deepEqual(checkSource(filename, source), [], filename);
+  }
+});
+
+test('mixed writer modules retain pure named readers and type-only capability descriptions', () => {
+  for (const filename of [
+    'server/generation/request-queries.ts',
+    'server/protocols/native-http.ts',
+  ]) {
+    for (const [name, modulePath] of [
+      ['summarizeOwnerUsage', '../members/owner-operations.ts'],
+      ['ownerAccountConfiguration', '../members/owner-operations.ts'],
+      ['readOperatingAccount', '../quota/operating-accounting.ts'],
+      ['isOwner', '../members/authentication.ts'],
+      ['queueDeadline', '../generation/queue-policy.ts'],
+      ['generationJobDeadline', '../generation/execution.ts'],
+      ['generationChargeResources', '../generation/accounting.ts'],
+      ['freeImageSuccessWarningThreshold', '../quota/free-image-policy.ts'],
+      ['memberCharge', '../quota/failure-accounting.ts'],
+    ]) {
+      assert.deepEqual(
+        checkSource(filename, `import { ${name} as read } from '${modulePath}'; read(input);`),
+        [],
+      );
+    }
+    for (const [name, modulePath] of [...writerFactories, ...mixedWriterSources]) {
+      assert.deepEqual(
+        checkSource(filename, `import { type ${name} as Capability } from '${modulePath}';`),
+        [],
+      );
+      assert.deepEqual(checkSource(filename, `export type * from '${modulePath}';`), []);
+    }
+  }
+  for (const [name, modulePath] of [
+    ['canonicalJson', '../events/domain-events.ts'],
+    ['readCommandReceipt', '../events/event-store.ts'],
+    ['createId', '../storage/sqlite-store.ts'],
+  ]) {
+    assert.deepEqual(
+      checkSource(
+        'server/protocols/native-http.ts',
+        `import { ${name} as read } from '${modulePath}'; read(input);`,
+      ),
+      [],
+    );
   }
 });

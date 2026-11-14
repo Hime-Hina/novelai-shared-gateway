@@ -1434,6 +1434,10 @@ Node 22.23.4 新专项 20/20，与原刷新运行/乱序三文件联合 45/45，
 
 权益独审另确认原 fair-share writer 模块的 namespace/dynamic 捕获在 protocol 中仍能漏过检查，query 已有同类限制。最小修正仅把该既有模块的星号来源限制同时应用到 protocol，命名导入的纯 fairQuotaSummary 仍合法；没有扩展检查框架或改变远端权限。原共同矩阵新增 namespace 捕获、动态捕获及整模块重导出六例，修前 276 通过、3 个 protocol 反例失败，修后 279/279；实际全树 architecture 通过。日志为 H:/TEMP/novelai-quota-captured-protocol-guard-before.log 与 -after.log。该守卫增量仍需维护者复核，不作为 agent 权限沙箱，也不代替权益和整合验收。
 
+接续 `b6e5f48` 的有界来源清单确认，成员 read HTTP 已持 visible me 续期和私有认证写能力，却尚未登记；ownerOperation 也是实际管理写入口。原 Set 仅补这两个真实名字，并把 read HTTP、已登记的 API admission/OpenAI HTTP factory 补入原 writer 模块匹配。对既有已登记 mutation 的实际定义来源作有限核对后，owner-operations、operating-accounting、authentication、queue-policy、generation execution/accounting、free-image-policy、failure-accounting 及旧 event-store/domain-events/sqlite-store 的混合模块整包也含写命令，namespace/dynamic 捕获不能当只读依赖；现星号来源规则一次并入这些具体 owner，不添加别名数据流或 AST 检查框架。原明确纯 named reader、type-only、纯 transport、宿主及离线 owner 仍合法，旧 query 对 legacy store/event 模块的更强限制不放宽。该有限清单只核当前真实 factory 和登记 mutation 的定义来源，不将守卫当作完整权限沙箱。
+
+原同一 `checkSource` 矩阵在旧守卫为 298 通过、60 失败，修正后 358/358、零跳过；反例包含真实 factory 的 named/injected 调用、namespace/dynamic 捕获及三重点 owner 的整包重导出，正边覆盖混合 owner 的纯 named readers 和 type-only 能力描述。原红例用可信 `b6e5f48` 守卫逐字复跑，未通过修改业务或放宽断言转绿；证据为 `H:\TEMP\novelai-writer-guard-independent-b680f81-20261114\guard-before-exact.log`、同目录 `guard-after.log` 及有界清单。实际全树 architecture 通过，业务 owner、CI、旧 SQL/journal、可信基线和远端保护未变。此守卫增量须维护者独立复核，统一 full、发布包及生产切换仍由父任务候选验收。
+
 ### 9.47 当前规范化配置的显式来源和保护恢复
 
 本片从固定 `3d2bafd7` 接续，只交付 sole 新在线运行时必需的当前配置 owner；不增加当前无 caller 的管理 CRUD，不恢复 PromptAPI 执行/秘密，不选择 A/B 迁移路线。实际旧读取需要三项顶层默认值和八项 defaults，成员入口还需要原 `publicBaseUrl` 回退值。规则继续归 `requestNormalizationDefaults()`、`normalizeNovelAiRequest()` 与 `memberPublicBaseUrl()`，未把当前程序默认、旧请求首次 context 或整个 settings 当作来源。
