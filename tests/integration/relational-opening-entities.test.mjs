@@ -285,6 +285,43 @@ test('Opening 活动任务必须有原完整输入/上下文/实际种子，pend
   assert.equal(new RelationalInputStore(target).readJobInput('old-job').seed, 42);
 });
 
+test('Opening 已退休父请求不能新增活动child，原退休历史仍保留', async (t) => {
+  const f = await source(t),
+    before = databaseState(f.db);
+  for (const status of ['pending', 'queued']) {
+    for (const retiredParent of [true, false]) {
+      assert.throws(
+        () =>
+          open(f, {
+            request: { retiredAt: retiredParent ? 0 : null },
+            job: {
+              status,
+              queueSeq: status === 'queued' ? '100' : null,
+              artifactId: null,
+              completedAt: null,
+              retiredAt: retiredParent ? null : 0,
+            },
+            withArtifact: false,
+          }),
+        /生命周期/,
+      );
+      assert.equal(databaseState(f.db), before);
+    }
+  }
+  open(f, { request: { retiredAt: 0 }, job: { retiredAt: 0 } });
+  const target = empty(t);
+  rebuild(target, f.db);
+  assert.equal(
+    target.prepare("SELECT retired_at FROM generation_requests WHERE id='old-request'").get()
+      .retired_at,
+    0,
+  );
+  assert.equal(
+    target.prepare("SELECT retired_at FROM generation_jobs WHERE id='old-job'").get().retired_at,
+    0,
+  );
+});
+
 test('Opening REAL种子仍按原已知context分工校验，inactive未知NULL不补值', async (t) => {
   const native = await source(t),
     before = databaseState(native.db);

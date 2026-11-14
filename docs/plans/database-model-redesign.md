@@ -1515,6 +1515,8 @@ Job/Artifact 循环引用保留原完整提交顺序。Gen 在同一 projector �
 
 本片专项 11/11：两种原事件顺序、未知/零和有限 Direct literal、原执行资格、真实普通发布后的 cached 历史链接、缺 future artifact、跨成员/操作/input/attempt、第二次 SQL 写后外层 catch 全表/原事实/回执/游标回滚与合法重试、完整回放零网络/无私有认证、重复零写。真正 Local publisher 与既有副本 owner 的合成产物走唯一 installer，实际字节缺失/损坏则 building 全表及源 SHA 不变；真实 R2/PikPak 端点与旧源迁移不在该证据范围。隔离负控分别移除 future-artifact 闭包、Artifact 反向护栏、活动冷读取和已知 context 种子校验，四项均精准出现 Missing expected exception。实际旧 `2b78de5` 的 event 4 和官方观察 `ce017a3` 的 event 5 原 DDL/常量分别从同一 Git 源解析，带正确旧 hash 的库仍被当前格式/ready 门禁零写拒绝；未以改写当前 SQL 版本号冒充旧库。作者九文件联合 184/184、零跳过，类型、架构、默认和可信 `1ceaa1d` 迁移历史、格式、语法与差异检查通过。日志为 `H:\TEMP\novelai-opening-entities-{format5-final,negative-*,format}.log`，独立复核须绑定最终固定提交；未跑 full、编译包、Node 24、共享 native 重建或生产操作。
 
+独审在 `bb0b60b` 确认退休生命周期缺口：OpeningRequest.retiredAt=0 的父请求仍能新增合法 pending child，原冷读取成功不是活动执行资格。修正只让 Gen 的现活动 gate 同时读取并核对原父请求 retired_at；pending/queued/running 的父请求或 job 任一已退休都拒绝，inactive 退休历史仍能完整回放，尚未退休的同成员原产物继续可由其他合法 job 引用。作者反例先得到 Missing expected exception，再覆盖 pending/queued 的父/job 双向检查和真实零退休时间；本片与原历史退休两文件 32/32、零跳过，日志 `H:\TEMP\novelai-opening-entities-retired-parent-{before,after}.log`，独立复审须绑定修正后的固定提交。
+
 两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。

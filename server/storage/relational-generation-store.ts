@@ -2419,8 +2419,8 @@ export class RelationalGenerationStore {
         case 'OpeningJobRecorded': {
           const p = e.payload,
             request = this.sqlite
-              .prepare<[string], { memberId: string; operation: string }>(
-                'SELECT member_id AS memberId,operation FROM generation_requests WHERE id=?',
+              .prepare<[string], { memberId: string; operation: string; retiredAt: number | null }>(
+                'SELECT member_id AS memberId,operation,retired_at AS retiredAt FROM generation_requests WHERE id=?',
               )
               .get(p.requestId);
           if (
@@ -2429,7 +2429,7 @@ export class RelationalGenerationStore {
             e.accountId !== null ||
             (request.operation !== 'generate' && p.actualSeed !== null) ||
             (['pending', 'queued', 'running'].includes(p.status) &&
-              (p.retiredAt !== null || p.artifactId !== null))
+              (request.retiredAt !== null || p.retiredAt !== null || p.artifactId !== null))
           ) {
             fail('开账任务与原请求/生命周期角色不符');
           }
