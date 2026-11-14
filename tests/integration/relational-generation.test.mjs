@@ -120,7 +120,7 @@ test('派发重新核对当前授权、观察代次、私有凭据与物理槽�
   db.prepare('UPDATE upstream_accounts SET credential_epoch=1').run();
   db.prepare('DELETE FROM upstream_credentials').run();
   unchanged(() => f.dispatch('guarded-0'), /私有凭据/);
-  db.prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)').run(
+  db.prepare("INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,'')").run(
     'a',
     'synthetic-upstream-pst',
   );

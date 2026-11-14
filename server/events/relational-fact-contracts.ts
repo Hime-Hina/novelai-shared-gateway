@@ -297,6 +297,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     accountId: id,
     credentialEpoch: positive,
+    connectionSourceEventId: id,
     candidateMode: choices('known', 'alternatives', 'unknown'),
     upstreamCandidates: list(candidate),
   }),
@@ -437,11 +438,18 @@ export const relationalPayloadParsers = {
   AccountRegistered: fields({
     accountId: id,
     displayName: string,
+    weight: number,
     enabled: bool,
     credentialEpoch: positive,
   }),
   AccountBound: fields({ accountId: nullable(id), configVersion: integer }),
   CredentialRotated: fields({ accountId: id, beforeEpoch: positive, credentialEpoch: positive }),
+  AccountConfigurationChanged: fields({
+    accountId: id,
+    displayName: string,
+    weight: nullable(number),
+    connectionChanged: bool,
+  }),
   AvailabilityChanged: fields({
     accountId: id,
     enabled: bool,
@@ -463,6 +471,7 @@ export const relationalPayloadParsers = {
     ...officialQuotaV5Fields,
     accountId: id,
     credentialEpoch: positive,
+    connectionSourceEventId: id,
     sequence,
     observedAt: integer,
     quotaTier: nullable(integer),
@@ -616,6 +625,7 @@ export const relationalPayloadParsers = {
   OpeningAccountRecorded: fields({
     accountId: id,
     displayName: string,
+    weight: nullable(number),
     enabled: bool,
     credentialEpoch: positive,
     cooldownUntil: nullable(integer),
@@ -688,6 +698,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     accountId: id,
     credentialEpoch: nullable(positive),
+    connectionSourceEventId: nullable(id),
     authorizedAt: nullable(integer),
     response,
     candidateMode: choices('known', 'alternatives', 'unknown'),
@@ -784,6 +795,7 @@ export const relationalFactStreams = {
   account: [
     'GroupBalancesRedistributed',
     'AccountRegistered',
+    'AccountConfigurationChanged',
     'CredentialRotated',
     'AvailabilityChanged',
     'CooldownChanged',
@@ -899,6 +911,15 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   if (
     header.eventType === 'CredentialRotated' &&
     row.credentialEpoch !== (row.beforeEpoch as number) + 1
+  ) {
+    invalid();
+  }
+  if (
+    ['AccountRegistered', 'OpeningAccountRecorded', 'AccountConfigurationChanged'].includes(
+      header.eventType,
+    ) &&
+    row.weight !== null &&
+    ((row.weight as number) < 1 || (row.weight as number) > 100)
   ) {
     invalid();
   }

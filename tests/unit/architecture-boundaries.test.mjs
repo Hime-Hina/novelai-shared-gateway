@@ -507,6 +507,7 @@ for (const filename of [
       'applyQuotaEvents',
       'replayQuotaCommit',
       'prepareAccountCommand',
+      'configureAccounts',
       'completeAccountEnable',
       'ownerAccountCommand',
       'replayAccountCommit',

@@ -106,9 +106,9 @@ export interface ManagementAccount {
   quotaCheckedAt?: string;
   quotaError?: string;
   name?: string;
-  token?: string;
-  proxyUrl?: string;
-  weight?: number;
+  token?: string | null;
+  proxyUrl?: string | null;
+  weight?: number | null;
 }
 export interface ManagementSummary {
   accounts: ManagementAccount[];

@@ -5,7 +5,7 @@ import type { RelationalFact, RelationalPayloads } from './relational-fact-contr
 export { parseRelationalFact } from './relational-fact-contracts.ts';
 export type { RelationalFact, RelationalPayloads } from './relational-fact-contracts.ts';
 
-export const RELATIONAL_EVENT_SCHEMA_VERSION = 6;
+export const RELATIONAL_EVENT_SCHEMA_VERSION = 7;
 
 // 生命周期类型直接来自同一字段校验表，不能另维护一份可漂移的写入接口。
 export type RelationalLifecyclePayloads = Pick<
