@@ -3,6 +3,7 @@ import type { GenerationRequestState } from '../generation/request-queries.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { memberCharge } from '../quota/failure-accounting.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import type { SharedJobCounts } from '../quota/shared-status.ts';
 
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
 function fail(statusCode: number, code: string, message: string): never {
@@ -121,6 +122,30 @@ export class RelationalRequestStore {
     if (member?.status !== 'active' || !member.authEpoch) {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
+  }
+
+  readSharedJobCounts(memberId: string, now: number): SharedJobCounts {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      fail(400, 'invalid_parameters', '共享状态时间无效。');
+    }
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      // 当前组驱动既有 member/request 索引，避免轮询从全部已退组历史扫描起。
+      return this.sqlite
+        .prepare<[number, number], SharedJobCounts>(
+          `SELECT COUNT(*) FILTER (WHERE j.status='running') AS running,
+          COUNT(*) FILTER (WHERE j.status='queued') AS queued,
+          COUNT(*) FILTER (WHERE j.status='pending') AS pending,
+          CASE WHEN COUNT(*) FILTER (WHERE j.status='failed' AND j.completed_at IS NULL)>0
+            THEN NULL ELSE COUNT(*) FILTER (
+              WHERE j.status='failed' AND j.completed_at BETWEEN ? AND ?)
+          END AS recentFailures
+        FROM group_members g CROSS JOIN generation_requests r ON r.member_id=g.member_id
+        CROSS JOIN generation_jobs j ON j.request_id=r.id
+        WHERE r.retired_at IS NULL AND j.retired_at IS NULL`,
+        )
+        .get(now - 3600000, now)!;
+    })();
   }
 
   private requestState(request: RequestRow, memberId: string): GenerationRequestState {

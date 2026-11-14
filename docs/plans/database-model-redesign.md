@@ -1555,6 +1555,22 @@ Node 22.23.4 的合法 ready/真实 localhost Direct 专项 23 项与原 JobPrev
 
 固定 `940d036388c92905244258d53670a2f0dea75eb9` 独立技术复审通过：原 Direct HTTP 23/23 与独立反例 9/9 分别运行、零跳过，15 文件按 Git blob 与 SHA256 绑定；报告为 `H:\TEMP\novelai-direct-http-independent-20261114\INDEPENDENT-REVIEW.md`。整合时把新 Direct MemberStore 接到同一数据库/事件对象的 notifier 第三参，并将新 factory 纳入既有整模块写能力闭包。新增真实 Discord 资格撤销反例，精确核对只有原 `MemberEligibilityChanged` 提交、受影响成员收到一次事务后 session 通知，既有任务、钱包和收费不变；连同 Direct、OpenAI、Native、成员读取、通知、旧格式及架构七文件 497/497、零跳过，日志 `H:\TEMP\novelai-direct-notifier-root-final-union.log`。类型、架构、可信实际 main `88d2c26` 迁移与 diff 检查通过；后继整合仍须完整后端、编译与发布包联验。
 
+### 9.55 共享状态薄来源与既有成员 SSE 接合
+
+本片接续实际 `2b510fcc07355d278bf8c59a569a06d6e1dfd655` 的已审通知边界，官方 V5 两原标量依赖 `ce017a3c1205176d58ee9676507b06dd9fddfee7`（含其 `2704262` 前置；270 单点曾有错误金融假设，不作通过候选）。只接 `GET /api/member/shared-status` 与 `shared-events`，不替换 sole 装配，不新增数据库列、统计缓存、通知 registry 或持久 cursor，不改变金融公式。
+
+`QuotaStore.readSharedStatusSource` 仅读当前绑定/官方/原 baseline、实际 reserved 存在性与原 settlement/cooldown，复用现账户安全映射和同一个 `quotaAvailability`/展示 owner；当前 PST 仅 EXISTS 布尔，当前 epoch 与原 observed epoch 分开核对。官方展示 V5 的百分比和 negative 标志只用 `readOfficialQuotaV5` 两原事实字段，未知保留 null，禁止从 financial v5 的符号/零值猜测。原 financial state/account 提取仍保持修正版不推断 negative，原金额/恢复 owner 不变。未绑定按原 ambiguous/pending 规则，不将候选池额度公开。
+
+`RequestStore.readSharedJobCounts` 从当前 `group_members → generation_requests.member_id → generation_jobs` 读取薄状态，排除退休 parent/child，不按 Key、正文、BLOB 或 header 统计。失败时间原 completed_at 的闭一小时窗口含真实 0；任一保留失败的完成时间未知时 `recentFailures=null`，现数值 formatter 显示未知。SQL 以当前组外层驱动原 member/request 索引，工作量仍随当前组保留历史增长；没有声称常数时间。未知薄行的故障注入只验证 NULL 表示，现基线尚未交付 Opening 实体 writer，不能称该输入通过合法 Opening/ready 安装。
+
+两个真实 Cookie GET 在 Discord IO 后进入现认证事务核对当前会话、稳定成员和 ready，不新增续期点。SSE 仅将原 transport 从旧成员 HTTP 提取共用，原每成员 3/全局 100、200ms 合并/持续最多 1 秒、2 秒权限检查、15 秒心跳、64KiB 背压、resync 和关闭语义保留；工厂使用同 DB/emitter 的长期 notifier 作为原 hub key。实际 logout 只唤醒本人授权，回滚和原 receipt 不广播；401/403 auth-expired，临时故障普通 EOF，不把断线冒充会话失效。
+
+验收使用真实 SQLite、完整提交和选定私有快照、原 Local 字节与合法 installer；成员 Cookie 调用新共享 GET，Native HTTP 和真实队列调用本机合成上游并接同一 notifier。金融/任务读取零写与认证的真实观察写入分开描述；查询不发 Key、PST、内部成员列表或正文。定向和独立审查证据在固定候选后记录，同候选发布物、Node24、全量、真实外云、生产切换与 sole 装配仍由父任务收尾。
+
+作者 Node22 源码定向七文件 81/81、零跳过，覆盖已审原官方标量、原成员 SSE/背压与新关系通知，以及真实 GET/Native 队列/SSE 的回滚幽灵、receipt 零通知、本人/他人/owner、当前 Cookie/Discord IO/ready、临时 503 与 3/100 连接边界。加强真实 held/settled 和 SQL 计划检查后，两新关系文件另按同一产品复验；SQLite 使用 `idx_requests_member_time` 和原 job request/sample 唯一索引搜索，不扫描全部 request/job。首次更严格断言误写了 job 索引名，保留原失败，改为要求真实 `request_id` 索引搜索而不强制等价索引名。Web 原条件的 NULL 反例先红，现 presentation 11/11；backend/Web 类型、架构、默认及可信 `2b510fcc` 迁移历史、178 文件语法、改动格式和 diff 通过。日志位于 `H:\TEMP\novelai-shared-final-source.log`、`novelai-shared-plan-correct-source.log`、`novelai-shared-unknown-ui-final.log`；后续固定候选与独审将另追加。Web Guidance 已检索 nullable 状态/数值显示两个主题，无适用指南，复用原 formatter。
+
+固定 `0de0e050a9eb9e79483617d4405a142f23e8962e` 独立复审 19/19、零跳过，15 文件与候选 Git blob/SHA256 一致；错误的新 wrapper/hub 与 IO 前 Cookie 缓存两个负控分别被真实连接身份和多泄一帧断言识别。报告 `H:\TEMP\novelai-shared-independent-20261114\review-0de.md`。与已审 Direct、Opening Input 和官方原值 v5 汇合后，关系读取/通知/API 七文件 109/109，原成员 transport 4/4，Web presentation 11/11；backend/Web 类型、架构、可信 main `88d2c26` 迁移与 diff 通过。以上为后继窄联合，不冒充前置 `6dfc972` 的完整后端或编译产物验证，sole 与容量仍待验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

@@ -254,7 +254,7 @@ test('真实 HTTP 保留 Cookie/Origin/方法/当前撤销及 ready 边界，不
   assert.equal((await f.call('/api/member/history')).status, 401);
   assert.equal(f.signed.length, signed);
   assert.equal(databaseState(f.db), before);
-  assert.equal((await f.call('/api/member/shared-status', { member: 'm2' })).status, 404);
+  assert.equal((await f.call('/api/member/not-implemented', { member: 'm2' })).status, 404);
   f.db.prepare("UPDATE projection_state SET status='building' WHERE id=1").run();
   const notReady = databaseState(f.db);
   assert.equal((await f.call('/api/member/history', { member: 'm2' })).status, 500);

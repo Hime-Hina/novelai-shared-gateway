@@ -50,11 +50,8 @@ import {
   type DiscordAuthenticationStore,
 } from './discord-auth.ts';
 import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting.ts';
-import {
-  stateEventsFor,
-  mergeStateEvents,
-  stateInvalidation,
-} from '../events/state-notifications.ts';
+import type { stateEventsFor } from '../events/state-notifications.ts';
+import { streamMemberSharedEvents } from './shared-events.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
 import { handleMemberReadRoutes, publicMemberProfile } from './read-http.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
@@ -147,9 +144,6 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
     revalidate: () => Promise<boolean>,
   ): Promise<boolean>;
 }
-type PublishedEvent = Parameters<Parameters<ReturnType<typeof stateEventsFor>['subscribe']>[0]>[0];
-
-const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => {
   throw Object.assign(new Error(message), { statusCode });
 };
@@ -763,131 +757,19 @@ export async function handleMemberRoutes(
     return true;
   }
   if (url.pathname === '/api/member/shared-events') {
-    if (res.destroyed || res.writableEnded) {
-      return true;
-    }
-    if (
-      (statusStreams.get(user.id) || 0) >= 3 ||
-      [...statusStreams.values()].reduce((n, v) => n + v, 0) >= 100
-    ) {
-      error(429, '状态连接过多，请关闭多余页面');
-    }
-    statusStreams.set(user.id, (statusStreams.get(user.id) || 0) + 1);
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-store',
-      'x-accel-buffering': 'no',
-      connection: 'keep-alive',
+    await streamMemberSharedEvents(res, {
+      memberId: user.id,
+      store,
+      readCurrent: async () => {
+        const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
+        if (!viewer) {
+          return null;
+        }
+        await requireDiscordMembership(viewer, deps);
+        const state = await store.update((db) => sharedAccountStatus(db), { persist: false });
+        return { memberId: viewer.id, owner: isOwner(viewer, env), state };
+      },
     });
-    res.flushHeaders?.();
-    const hub = stateEventsFor(store);
-    let closed = false,
-      timer: ReturnType<typeof setTimeout> | undefined,
-      previous = '',
-      heartbeat = 0,
-      running = false,
-      requested = false,
-      resync = true,
-      pending: PublishedEvent | undefined;
-    let unsubscribe = () => {};
-    const stop = () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      clearTimeout(timer);
-      unsubscribe();
-      res.off('close', stop);
-      res.off('error', stop);
-      const count = (statusStreams.get(user.id) || 1) - 1;
-      if (count) {
-        statusStreams.set(user.id, count);
-      } else {
-        statusStreams.delete(user.id);
-      }
-    };
-    res.once('close', stop);
-    res.once('error', stop);
-    const wake = (event?: PublishedEvent): void => {
-      if (closed) {
-        return;
-      }
-      if (event) {
-        pending = mergeStateEvents(pending, event);
-      }
-      requested = true;
-      clearTimeout(timer);
-      if (!running) {
-        void tick();
-      }
-    };
-    const tick = async () => {
-      running = true;
-      try {
-        while (requested && !closed) {
-          requested = false;
-          const event = pending || hub.current(),
-            full = resync;
-          pending = undefined;
-          resync = false;
-          const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
-          if (viewer) {
-            await requireDiscordMembership(viewer, deps);
-          }
-          const state = viewer
-            ? await store.update((db) => sharedAccountStatus(db), { persist: false })
-            : null;
-          if (closed) {
-            return;
-          }
-          if (!state) {
-            res.write('event: auth-expired\ndata: {}\n\n');
-            res.end();
-            stop();
-            return;
-          }
-          const text = JSON.stringify(state);
-          if (text !== previous) {
-            res.write(`event: shared-status\ndata: ${text}\n\n`);
-            previous = text;
-            heartbeat = Date.now();
-          }
-          const invalidation = stateInvalidation(event, viewer!.id, isOwner(viewer, env), full);
-          if (invalidation) {
-            res.write(`event: state-invalidated\ndata: ${JSON.stringify(invalidation)}\n\n`);
-            heartbeat = Date.now();
-          }
-          if (Date.now() - heartbeat > 15000) {
-            res.write(': keepalive\n\n');
-            heartbeat = Date.now();
-          }
-          if (res.writableLength > 65536) {
-            res.end();
-            stop();
-            return;
-          }
-        }
-      } catch (error) {
-        if (!closed) {
-          if ([401, 403].includes((error as { statusCode?: number }).statusCode!)) {
-            res.write('event: auth-expired\ndata: {}\n\n');
-          }
-          res.end();
-          stop();
-        }
-      } finally {
-        running = false;
-        if (!closed) {
-          timer = setTimeout(() => wake(), 2000);
-          timer.unref?.();
-        }
-      }
-    };
-    unsubscribe = hub.subscribe(wake, () => {
-      res.end();
-      stop();
-    });
-    wake();
     return true;
   }
   if (

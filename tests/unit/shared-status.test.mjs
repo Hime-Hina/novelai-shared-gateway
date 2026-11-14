@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedAccountStatus } from '../../server/quota/shared-status.ts';
+import {
+  sharedAccountStatus,
+  publicSharedAccountStatus,
+} from '../../server/quota/shared-status.ts';
 const NOW = 1800000000000;
 function fixture() {
   return {
@@ -29,6 +32,26 @@ function fixture() {
     jobs: [],
   };
 }
+test('共同展示owner保留未知失败与真实官方透支原值，不读取或修改来源私有字段', () => {
+  const db = fixture(),
+    before = structuredClone(db);
+  db.accounts[0].v5UsageIsNegative = true;
+  const status = publicSharedAccountStatus(
+    {
+      accounts: db.accounts,
+      boundAccountId: 'opus',
+      baseline: {},
+      counts: { running: 1, queued: 0, pending: 0, recentFailures: null },
+    },
+    NOW,
+  );
+  assert.equal(status.recentFailures, null);
+  assert.equal(status.v5Percent, 80);
+  assert.equal(status.v5IsNegative, true);
+  assert.equal(status.running, 1);
+  assert.equal(db.accounts[0].token, before.accounts[0].token);
+  assert.equal(JSON.stringify(status).includes('secret'), false);
+});
 test('白名单返回只读汇总，没有上游与成员隐私', () => {
   const db = fixture();
   db.accounts[0].quotaError = 'private upstream error';

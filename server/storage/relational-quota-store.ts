@@ -83,6 +83,7 @@ import {
   quotaNumber,
   quotaAvailability,
 } from '../quota/eligibility.ts';
+import type { SharedStatusSource } from '../quota/shared-status.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -93,6 +94,19 @@ type GenerationFailureSource = {
   aborted: boolean;
   response: RelationalPayloads['ResponseEvidenceRecorded']['response'];
 };
+type QuotaAccountSnapshot = Pick<
+  Quota,
+  | 'quotaTier'
+  | 'subscriptionActive'
+  | 'subscriptionExpiresAt'
+  | 'observedAt'
+  | 'observedCredentialEpoch'
+  | 'quotaErrorCode'
+  | 'observedV5'
+  | 'observedAnlasFixed'
+  | 'observedAnlasPurchased'
+  | 'secondsPerPercent'
+>;
 export type QuotaPolicyChange =
   | { action: 'fallback-policy'; enabled: boolean }
   | {
@@ -566,6 +580,98 @@ export class RelationalQuotaStore {
       })),
     };
   }
+  private quotaAccount(
+    a: { id: string; enabled: number; epoch: number },
+    q: QuotaAccountSnapshot,
+  ): FairAccount {
+    // 金融金额不是原 negative 标量；snapshot 自行处理数值边界，不能从符号伪造原信息。
+    return {
+      id: a.id,
+      enabled: a.enabled === 1,
+      quotaTier: q.quotaTier,
+      subscriptionActive: q.subscriptionActive,
+      subscriptionExpiresAt: iso(q.subscriptionExpiresAt),
+      quotaCheckedAt: iso(q.observedAt),
+      quotaError: q.observedCredentialEpoch === a.epoch ? q.quotaErrorCode : 'credential_changed',
+      v5UsagePercent: q.observedV5,
+      quotaFixed: q.observedAnlasFixed,
+      quotaPurchased: q.observedAnlasPurchased,
+      v5UsageTimeUntilNextPercent: q.secondsPerPercent,
+    };
+  }
+  readSharedStatusSource(): Omit<SharedStatusSource, 'counts'> {
+    return this.sqlite.transaction(() => {
+      const boundAccountId =
+        this.sqlite
+          .prepare<[], { accountId: string | null }>(
+            'SELECT bound_account_id AS accountId FROM sharing_policy WHERE id=1',
+          )
+          .get()?.accountId ?? null;
+      type Row = Omit<QuotaAccountSnapshot, 'subscriptionActive'> & {
+        id: string;
+        enabled: number;
+        epoch: number;
+        configured: number;
+        quotaAccountId: string | null;
+        subscriptionActive: number | null;
+        cooldownUntil: number | null;
+        cooldownReason: string | null;
+        baselineEventId: string | null;
+        settlementCursorAt: number | null;
+      };
+      const rows = this.sqlite
+        .prepare<[string | null, string | null], Row>(
+          `SELECT a.id,a.enabled,a.credential_epoch AS epoch,
+          EXISTS(SELECT 1 FROM upstream_credentials c WHERE c.account_id=a.id AND c.pst!='') AS configured,
+          a.cooldown_until AS cooldownUntil,a.cooldown_reason AS cooldownReason,
+          q.account_id AS quotaAccountId,q.quota_tier AS quotaTier,
+          q.subscription_active AS subscriptionActive,q.subscription_expires_at AS subscriptionExpiresAt,
+          q.observed_at AS observedAt,q.observed_credential_epoch AS observedCredentialEpoch,
+          q.quota_error_code AS quotaErrorCode,q.observed_v5 AS observedV5,
+          q.observed_anlas_fixed AS observedAnlasFixed,q.observed_anlas_purchased AS observedAnlasPurchased,
+          q.seconds_per_percent AS secondsPerPercent,q.baseline_event_id AS baselineEventId,
+          q.settlement_cursor_at AS settlementCursorAt
+        FROM upstream_accounts a LEFT JOIN account_quota_state q ON q.account_id=a.id
+        WHERE ? IS NULL OR a.id=? ORDER BY a.id`,
+        )
+        .all(boundAccountId, boundAccountId);
+      const bound = rows.find((row) => row.id === boundAccountId);
+      if (bound && bound.quotaAccountId === null) {
+        fail('共享账户额度来源尚未恢复', 503);
+      }
+      return {
+        boundAccountId,
+        accounts: rows.map((row) => {
+          const account = this.quotaAccount(row, {
+            ...row,
+            subscriptionActive:
+              row.subscriptionActive === null ? null : row.subscriptionActive === 1,
+          });
+          return {
+            ...account,
+            // 原展示标量来自原事实，金融 v5=0 不能反推原透支百分比/标志。
+            ...this.readOfficialQuotaV5(row.id),
+            quotaError: row.configured === 1 ? account.quotaError : 'credential_unavailable',
+            cooldownUntil: iso(row.cooldownUntil),
+            cooldownReason: row.cooldownReason,
+          };
+        }),
+        baseline: {
+          at: bound?.baselineEventId
+            ? iso(this.observation(bound.baselineEventId, bound.id).at)
+            : null,
+          held:
+            boundAccountId !== null &&
+            !!this.sqlite
+              .prepare(
+                "SELECT 1 FROM charges WHERE original_account_id=? AND status='reserved' LIMIT 1",
+              )
+              .get(boundAccountId),
+          lastSettlementAt: bound?.settlementCursorAt ?? undefined,
+        },
+      };
+    })();
+  }
   private state(accountId: string) {
     const q = this.readAccountQuota(accountId),
       a = this.account(accountId);
@@ -641,20 +747,7 @@ export class RelationalQuotaStore {
           ];
         }),
     );
-    // 金融金额不是原 negative 标量；snapshot 自行处理数值边界，不能从符号伪造原信息。
-    const account: FairAccount = {
-      id: accountId,
-      enabled: a.enabled === 1,
-      quotaTier: q.quotaTier,
-      subscriptionActive: q.subscriptionActive,
-      subscriptionExpiresAt: iso(q.subscriptionExpiresAt),
-      quotaCheckedAt: iso(q.observedAt),
-      quotaError: q.observedCredentialEpoch === a.epoch ? q.quotaErrorCode : 'credential_changed',
-      v5UsagePercent: q.observedV5,
-      quotaFixed: q.observedAnlasFixed,
-      quotaPurchased: q.observedAnlasPurchased,
-      v5UsageTimeUntilNextPercent: q.secondsPerPercent,
-    };
+    const account = this.quotaAccount(a, q);
     let snapshot = null;
     if (q.baselineEventId) {
       const old = this.observation(q.baselineEventId, accountId);

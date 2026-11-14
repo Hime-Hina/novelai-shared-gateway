@@ -273,6 +273,10 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见数据库计划第 9.49 节。
 
+关系 `shared-status` 与 `shared-events` 复用同一 `sharedAccountStatus` 展示规则、状态优先级和公开白名单。账户来源只含当前 bound/official、原观察 baseline、预扣存在性、原 settlement 时点与冷却；PST 只查询当前私有行是否存在且非空，不返回原文。当前 credential epoch 与原观察不符或当前 PST 缺失仍是同步异常，不能因旧 official 或 ready 就报告可用。原 V5 百分比及 negative 标志分别来自原官方事实，未知为 null，不能从金融金额的零值或符号反推。
+
+共享任务数取当前组的稳定成员及未退休 parent/child，不按当前 Key 关联，不加载输入正文或附件。`recentFailures` 是原完成时刻落在闭区间 `[now-1h,now]` 的失败数；当前可见失败历史若存在未知完成时刻，则返回 null，页面沿现未知数值格式展示，不伪装成完整的零失败。真实时刻 0 有效，不借导入 header、父受理日或当前更新时间补值。两个共享 GET 均不续期；在 Discord IO 后以当前 Cookie 和 ready 读取，每轮 SSE 同样复核。统计和可用性查询不提交金融、任务或回执；原认证/Discord 观察仍有各自真实持久化边界。具体接入和验证边界见数据库计划第 9.55 节。
+
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
