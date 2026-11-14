@@ -1390,6 +1390,12 @@ OpeningFundingRecorded 复用原 FundingRegistered 的列、目标枚举与事�
 
 后续保护内容沿原 InputStore 的摘要、长度、成员和 BLOB 校验读取/复制；OpeningRequest 的原 acceptedAt、未知 model/context 与 OpeningJob 的未知 createdAt、实际零值、原期限保持原表示。Job.artifact 的 deferred FK 不能替代同笔原角色核对；坏图关系必须在保存点内拒绝，使外层 catch 仍可提交无关事务。副本行可表达原 metadata，不等于实际可读：现 Local canonical identity、R2 受约束 identity、PikPak sha.br 有对应 byte owner；gzip、任意旧 Local 路径或 PikPak 任意 key 没有现成 reader，不能标成已验证恢复。ready 始终核对真正可读原字节。
 
+第二片从已整合配置与精确文件身份的 `ae772153` 接续，并先复用已独审的登记修复 `5ea2e519`：实际七个 owner 从 64/73 增至 66/73，只新增 OpeningInputRecorded 与 OpeningRequestRecorded。现 InputStore 的同一个完整提交 projector 继续核原保护源、唯一登记 eventId、schema/SHA/长度与实际 BLOB；Opening 来源复用原 event-store guard，原 ContextRegistered 规则保持。新 `stageOpeningInput()` / `stageOpeningContext()` 只接受 building 原事务，调用者须与 Opening 完整提交共用保存点；它们保存明确的新格式内容，不解释旧输入、不读取当前默认、不在事件中保存正文。普通受理、Opening 暂存与离线复制共用同一实际 context/input INSERT。
+
+OpeningRequest 复用原请求行写入，显式保存原 acceptedAt/retiredAt；partial 的缺省或 NULL model/operation 不伪造为当前值，已有非空字段与请求元数据冲突仍拒绝。完整正文继续走原严格 parser，配置专用 profile 不能冒充首次生成上下文。请求可引用已登记旧 input 或同笔先登记内容，但不能在原 input 之前投影，也不能从源的未来提交借 ContextRegistered。原 seed/n_samples 不在规范正文中，不据正文或缓存目标推断原 seedMode/sampleCount，不创建不存在的 job。
+
+新增专项 13/13；输入、登记、前片 Opening、完整回放和 ready 六文件 102/102，零跳过。反例覆盖原零/未知/附件、complete 与同笔首次 context、unavailable、缺行/同长坏 BLOB/完整回执错源、重复登记/原顺序、第二次写后 SQL 错误外层 catch 全表/事实/回执/游标回滚及重试、实际唯一 installer 和 ready 后重复零写/新回放拒绝。回放无网络、无私有 Key/PST；原 partial 附件读取复用已合入的 `a87e8de`，没有另加兼容路径。TEMP 恢复旧严格字段比较后合法 partial 精确失败；删掉 context 先行核对后未来提交反例精确出现 Missing expected exception，源码恢复后重新验证。证据在本地 `H:\TEMP\novelai-opening-input-{before,after,focused,negative-*}.log`。backend 类型、架构、默认和可信 `ae772153` 旧迁移历史及差异检查通过；不改 DDL、旧 SQL/journal 或事件版本，未跑 full、编译包或 Node 24。覆盖清单仅增加这两个真实 owner，独立审查与同候选整合验证仍须完成。
+
 两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。

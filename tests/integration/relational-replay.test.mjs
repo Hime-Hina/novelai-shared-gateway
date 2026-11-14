@@ -236,7 +236,7 @@ test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () =>
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 64);
+  assert.equal(relationalReplayFacts().size, 66);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
@@ -244,12 +244,10 @@ test('覆盖只来自七个实际 owner，未实现事实仍明确拒绝', () =>
     [
       'FundsTransferred',
       'CachedResultLinked',
-      'OpeningRequestRecorded',
       'OpeningJobRecorded',
       'OpeningAttemptRecorded',
       'OpeningArtifactRecorded',
       'OpeningReplicaRecorded',
-      'OpeningInputRecorded',
       'OpeningIdempotencyRecorded',
     ].sort(),
   );
