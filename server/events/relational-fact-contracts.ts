@@ -1,5 +1,5 @@
 import { canonicalJson, assertPublicDomainFact, type Json } from './domain-events.ts';
-import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
+import { parseAmount, formatAmount, AMOUNT_SCALE } from '../quota/resource-amounts.ts';
 import { parseMemberGenerationConfirmation } from '../generation/member-contract.ts';
 
 type Parser<T> = (value: unknown) => T;
@@ -31,6 +31,17 @@ const amount: Parser<string> = (value) => {
 const nonnegative: Parser<string> = (value) => {
   const result = amount(value);
   return parseAmount(result) >= 0n ? result : invalid();
+};
+const nonnegativeNumber: Parser<number> = (value) => {
+  const result = number(value);
+  return result >= 0 ? result : invalid();
+};
+const policyInteger: Parser<string> = (value) => {
+  const result = nonnegative(value),
+    units = parseAmount(result);
+  return units % AMOUNT_SCALE === 0n && units <= BigInt(Number.MAX_SAFE_INTEGER) * AMOUNT_SCALE
+    ? result
+    : invalid();
 };
 const hash: Parser<string> = (value) => {
   const result = string(value);
@@ -201,16 +212,16 @@ const policyFields = {
   freeWarningThreshold: nullable(positive),
   freeHardLimit: nullable(positive),
   lossPolicyVersion: positive,
-  lossV5_24h: nonnegative,
-  lossFixed24h: nonnegative,
-  lossFixed30d: nonnegative,
+  lossV5_24h: nonnegativeNumber,
+  lossFixed24h: policyInteger,
+  lossFixed30d: policyInteger,
   lossMemberAttempts24h: integer,
 };
 const replicaFields = {
   artifactId: id,
   storageTargetId: id,
   objectKey: id,
-  encoding: choices('identity', 'gzip'),
+  encoding: choices('identity', 'gzip', 'br'),
   uploadedAt: nullable(integer),
   verifiedAt: nullable(integer),
   deletedAt: nullable(integer),
@@ -378,9 +389,9 @@ export const relationalPayloadParsers = {
   }),
   LossPolicyChanged: fields({
     version: positive,
-    v5_24h: nonnegative,
-    fixed24h: nonnegative,
-    fixed30d: nonnegative,
+    v5_24h: nonnegativeNumber,
+    fixed24h: policyInteger,
+    fixed30d: policyInteger,
     memberAttempts24h: integer,
   }),
   AccountRegistered: fields({
@@ -595,6 +606,7 @@ export const relationalPayloadParsers = {
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
+    createdAt: nullable(integer),
     sampleIndex: integer,
     actualSeed: nullable(integer),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),

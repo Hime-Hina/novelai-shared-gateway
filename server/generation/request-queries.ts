@@ -164,7 +164,7 @@ export function publicGenerationRequest(
     index: job.sampleIndex,
     status: job.status,
     model: job.model || '',
-    createdAt: job.createdAt || '',
+    createdAt: job.createdAt,
     updatedAt: job.updatedAt || '',
     completedAt: job.completedAt || '',
     error:

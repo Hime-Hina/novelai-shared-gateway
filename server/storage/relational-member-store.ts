@@ -56,6 +56,14 @@ function fail(statusCode: number, message: string): never {
 }
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 
+export const relationalMemberFacts = new Set<RelationalEvent['eventType']>([
+  'MemberRegistered',
+  'OpeningMemberRecorded',
+  'MemberStatusChanged',
+  'AdmissionChanged',
+  'MemberEligibilityChanged',
+]);
+
 // 私有认证不是业务投影；这里只有稳定 ID 的窄查询和事务，不提供 users/通用 update。
 export class RelationalMemberStore
   implements MemberPasswordStore, MemberApiKeyStore, DiscordAuthenticationStore
@@ -201,6 +209,11 @@ export class RelationalMemberStore
     };
   }
 
+  private replaceAuthenticationEpoch(memberId: string, epoch: string | null) {
+    this.sqlite.prepare('UPDATE members SET auth_epoch=? WHERE id=?').run(epoch, memberId);
+    this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+  }
+
   private insertCredentials(memberId: string, credentials: MemberCredentials) {
     if (
       !credentials ||
@@ -226,10 +239,7 @@ export class RelationalMemberStore
       }
       throw error;
     }
-    this.sqlite
-      .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-      .run(credentials.version, memberId);
-    this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+    this.replaceAuthenticationEpoch(memberId, credentials.version);
   }
 
   setMemberCredentials(prepared: PreparedMemberCredentials) {
@@ -390,10 +400,7 @@ export class RelationalMemberStore
       });
       this.applyMemberEvents(result.events);
       if (status === 'disabled') {
-        this.sqlite
-          .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-          .run(randomBytes(16).toString('hex'), memberId);
-        this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+        this.replaceAuthenticationEpoch(memberId, randomBytes(16).toString('hex'));
       }
       return result;
     });
@@ -439,25 +446,28 @@ export class RelationalMemberStore
     }
   }
 
+  applyReplayedMemberEvent(event: RelationalEvent) {
+    this.assertMemberCommandTransaction();
+    this.applyMemberEvents([event]);
+    if (
+      (event.eventType === 'MemberStatusChanged' && event.payload.status !== 'active') ||
+      (event.eventType === 'MemberEligibilityChanged' && event.payload.eligible === false)
+    ) {
+      // 重放只撤销，不制造 epoch；后续 active/资格恢复不能复活旧 Cookie 或 Key。
+      this.replaceAuthenticationEpoch(event.payload.memberId, null);
+    }
+  }
+
   replayMemberCommit(stored: StoredRelationalCommit) {
     return this.owningTransaction(() => {
-      if (
-        stored.events.some(
-          (event) =>
-            ![
-              'MemberRegistered',
-              'OpeningMemberRecorded',
-              'MemberStatusChanged',
-              'AdmissionChanged',
-              'MemberEligibilityChanged',
-            ].includes(event.eventType),
-        )
-      ) {
+      if (stored.events.some((event) => !relationalMemberFacts.has(event.eventType))) {
         throw new Error('Member replay requires complete member-only commits.');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
-        this.applyMemberEvents(result.events);
+        for (const event of result.events) {
+          this.applyReplayedMemberEvent(event);
+        }
       }
       return result;
     });
@@ -507,10 +517,7 @@ export class RelationalMemberStore
         .run(user.id);
     }
     if (current.memberAuth?.version !== user.memberAuth?.version) {
-      this.sqlite
-        .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-        .run(user.memberAuth?.version ?? null, user.id);
-      this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(user.id);
+      this.replaceAuthenticationEpoch(user.id, user.memberAuth?.version ?? null);
     }
     if (user.discordInvite) {
       this.sqlite

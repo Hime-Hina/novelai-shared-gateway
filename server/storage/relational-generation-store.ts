@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
+import { RelationalCommitReplayer } from './relational-replay.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
+import { RelationalReplicaStore } from './relational-replica-store.ts';
 import type Database from 'better-sqlite3';
 import { canonicalJson } from '../events/domain-events.ts';
 import {
-  appendRelationalCommit,
   readRelationalCommit,
   readRelationalReceipt,
-  replayRelationalCommit,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import {
@@ -78,7 +78,7 @@ type Completion = Pick<
   'kind' | 'retryAfterUntil'
 >;
 
-const generationFacts = new Set<RelationalEvent['eventType']>([
+export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
   'OpeningAccountRecorded',
   'OpeningGroupRecorded',
@@ -190,11 +190,13 @@ export class RelationalGenerationStore {
   private sqlite: Database.Database;
   private inputs: RelationalInputStore;
   private quotas: RelationalQuotaStore;
+  private replicas: RelationalReplicaStore;
   private env: NodeJS.ProcessEnv;
   constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.quotas = new RelationalQuotaStore(sqlite, env);
+    this.replicas = new RelationalReplicaStore(sqlite);
     this.env = env;
     this.inputs = new RelationalInputStore(sqlite, env);
   }
@@ -310,6 +312,11 @@ export class RelationalGenerationStore {
       fail('任务命令归属不符', 403);
     }
   }
+  private authorizeResult(metadata: Metadata) {
+    if (metadata.actorKind !== 'system' || metadata.actorId !== null) {
+      fail('结果准备与发布只接受执行器 IO', 403);
+    }
+  }
   private event(
     fact: RelationalFact,
     job: Job | null,
@@ -325,6 +332,8 @@ export class RelationalGenerationStore {
       streamId = `artifact:${fact.payload.artifactId}`;
     } else if (kind === 'request' && job) {
       streamId = `request:${job.requestId}`;
+    } else if (kind === 'storage' && 'storageTargetId' in fact.payload) {
+      streamId = `storage:${fact.payload.storageTargetId}`;
     } else {
       throw new Error('Generation command has an unsupported stream owner.');
     }
@@ -354,14 +363,12 @@ export class RelationalGenerationStore {
           .get(e.streamId)?.v || '0';
     }
     const { policyVersion, pricingVersion, ...command } = metadata;
-    const result = appendRelationalCommit(this.sqlite, {
+    return new RelationalCommitReplayer(this.sqlite, this).appendCommit({
       ...command,
       receipt,
       expectedVersions,
       events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
     });
-    this.applyEvents(result.events);
-    return result;
   }
   private nextQueueSeq(): string {
     return String(
@@ -1052,8 +1059,8 @@ export class RelationalGenerationStore {
     response: Response,
   ) {
     return this.owned(() => {
+      this.authorizeResult(metadata);
       const job = this.job(jobId);
-      this.authorize(metadata, job, true);
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -1137,8 +1144,8 @@ export class RelationalGenerationStore {
   }
   completeGeneration(metadata: Metadata, jobId: string, publication: Publication) {
     return this.owned(() => {
+      this.authorizeResult(metadata);
       const job = this.job(jobId);
-      this.authorize(metadata, job, true);
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -1160,7 +1167,9 @@ export class RelationalGenerationStore {
         fail('发布结果与准备凭据不符');
       }
       const response = this.currentResponse(job, attempt);
+      const local = this.replicas.planLocalArtifactPublication(publication, metadata.recordedAt);
       const events: RelationalEventInput[] = [
+        ...(local.target ? [this.event(local.target, null, null, metadata.recordedAt)] : []),
         this.event(
           {
             eventType: 'ArtifactPublished',
@@ -1179,6 +1188,7 @@ export class RelationalGenerationStore {
           attempt.accountId,
           metadata.recordedAt,
         ),
+        this.event(local.replica, job, null, metadata.recordedAt),
       ];
       if (job.status === 'running' && charge.status === 'reserved') {
         events.push(
@@ -1616,8 +1626,14 @@ export class RelationalGenerationStore {
       fail('产物与原任务/输入/尝试归属不符');
     }
   }
-  private applyEvents(events: RelationalEvent[]): void {
-    for (const e of events) {
+  createGenerationProjector(events: RelationalEvent[]) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation projection requires the owning transaction.');
+    }
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Generation projection requires the owning transaction.');
+      }
       if (
         e.eventType.startsWith('Opening') &&
         'origin' in e.payload &&
@@ -2232,18 +2248,11 @@ export class RelationalGenerationStore {
         default:
           throw new Error(`Generation replay cannot apply another owner's fact: ${e.eventType}`);
       }
-    }
+    };
   }
   replayGenerationCommit(stored: StoredRelationalCommit) {
-    return this.owned(() => {
-      if (stored.events.some((e) => !generationFacts.has(e.eventType))) {
-        throw new Error('Generation replay requires complete generation/accounting commits.');
-      }
-      const result = replayRelationalCommit(this.sqlite, stored);
-      if (!result.replayed) {
-        this.applyEvents(result.events);
-      }
-      return result;
-    });
+    return this.owned(() =>
+      new RelationalCommitReplayer(this.sqlite, this).replayGenerationCommit(stored),
+    );
   }
 }

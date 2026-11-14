@@ -14,7 +14,7 @@ import type {
   RelationalFact,
 } from '../events/relational-events.ts';
 import { relationalFactStream } from '../events/relational-fact-contracts.ts';
-import type { MemberUser } from '../members/authentication.ts';
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
 import {
   assertOwnerAccountPst,
   assertOwnerAccountCredentialChangeAllowed,
@@ -61,6 +61,12 @@ function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 
+export const relationalAccountFacts = new Set<RelationalEvent['eventType']>([
+  'AccountRegistered',
+  'AccountBound',
+  'CredentialRotated',
+]);
+
 // 业务决定复用账户/额度 owner；这里只保存私有凭据、事实和同笔关系投影。
 export class RelationalAccountStore {
   private sqlite: Database.Database;
@@ -86,28 +92,14 @@ export class RelationalAccountStore {
     return this.sqlite.transaction(run)();
   }
   private authorize(metadata: AccountCommandMetadata, member: MemberUser | null) {
-    if (metadata.actorKind === 'admin' && member === null) {
-      return;
-    }
     const current =
       member &&
       this.sqlite
-        .prepare<[string], { status: string; auth_epoch: string | null }>(
-          'SELECT status,auth_epoch FROM members WHERE id=?',
+        .prepare<[string], { status: string; authEpoch: string | null }>(
+          'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
         )
         .get(member.id);
-    if (
-      metadata.actorKind !== 'member' ||
-      !member ||
-      metadata.actorId !== member.id ||
-      member.id !== this.env.OWNER_USER_ID ||
-      !member.enabled ||
-      !member.memberAuth?.version ||
-      current?.status !== 'active' ||
-      current.auth_epoch !== member.memberAuth.version
-    ) {
-      fail('账户配置需要当前 owner 或本地管理员授权', 403);
-    }
+    assertCurrentOwnerCommand(metadata, member, current, this.env);
   }
   private command(metadata: AccountCommandMetadata, input: OwnerAccountMutation) {
     // 轮换的秘密不进入事实；命令意图摘要仍区分不同 PST，防止同键不同操作。
@@ -407,83 +399,84 @@ export class RelationalAccountStore {
       )
       .run(event.payload.accountId, event.eventId);
   }
-  private applyAccountEvents(events: RelationalEvent[]) {
-    let index = 0;
-    for (; index < events.length; index++) {
-      const event = events[index];
-      if (relationalQuotaFacts.has(event.eventType)) {
+  applyAccountEvent(event: RelationalEvent) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Account projection requires the owning transaction.');
+    }
+    switch (event.eventType) {
+      case 'AccountRegistered': {
+        const p = event.payload;
+        if (
+          p.enabled ||
+          p.credentialEpoch !== 1 ||
+          this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
+        ) {
+          fail('首次账户注册必须暂停且使用初始代次');
+        }
+        this.sqlite
+          .prepare(
+            `INSERT INTO upstream_accounts(id,display_name,enabled,credential_epoch,ordinary_strikes,capacity_strikes,source_event_id)
+            VALUES(?,?,0,1,0,0,?)`,
+          )
+          .run(p.accountId, p.displayName, event.eventId);
+        this.registerQuota(event);
         break;
       }
-      switch (event.eventType) {
-        case 'AccountRegistered': {
-          const p = event.payload;
-          if (
-            p.enabled ||
-            p.credentialEpoch !== 1 ||
-            this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
-          ) {
-            fail('首次账户注册必须暂停且使用初始代次');
-          }
-          this.sqlite
-            .prepare(
-              `INSERT INTO upstream_accounts(id,display_name,enabled,credential_epoch,ordinary_strikes,capacity_strikes,source_event_id)
-            VALUES(?,?,0,1,0,0,?)`,
-            )
-            .run(p.accountId, p.displayName, event.eventId);
-          this.registerQuota(event);
-          break;
+      case 'AccountBound': {
+        const p = event.payload,
+          policy = this.policy();
+        if (
+          policy.accountId !== null ||
+          p.accountId === null ||
+          p.configVersion !== policy.version + 1
+        ) {
+          fail('首次绑定的原政策或账户不符');
         }
-        case 'AccountBound': {
-          const p = event.payload,
-            policy = this.policy();
-          if (
-            policy.accountId !== null ||
-            p.accountId === null ||
-            p.configVersion !== policy.version + 1
-          ) {
-            fail('首次绑定的原政策或账户不符');
-          }
-          this.account(p.accountId);
-          this.sqlite
-            .prepare(
-              'UPDATE sharing_policy SET bound_account_id=?,config_version=?,source_event_id=? WHERE id=1',
-            )
-            .run(p.accountId, p.configVersion, event.eventId);
-          break;
-        }
-        case 'CredentialRotated': {
-          const p = event.payload,
-            account = this.boundAccount(p.accountId);
-          if (p.beforeEpoch !== account.epoch) {
-            fail('凭据轮换的原代次不符');
-          }
-          assertOwnerAccountCredentialChangeAllowed(
-            0,
-            Boolean(
-              this.sqlite
-                .prepare(
-                  "SELECT 1 FROM charges WHERE original_account_id=? AND status='reserved' LIMIT 1",
-                )
-                .get(account.id),
-            ),
-          );
-          // 业务回放撤销旧私有 PST；只有当前命令或匹配切点的私有快照能提供新值。
-          this.sqlite
-            .prepare('DELETE FROM upstream_credentials WHERE account_id=?')
-            .run(account.id);
-          this.sqlite
-            .prepare(
-              'UPDATE upstream_accounts SET credential_epoch=?,enabled=0,source_event_id=? WHERE id=?',
-            )
-            .run(p.credentialEpoch, event.eventId, account.id);
-          break;
-        }
-        default:
-          fail(`Unsupported account projection ${event.eventType}`);
+        this.account(p.accountId);
+        this.sqlite
+          .prepare(
+            'UPDATE sharing_policy SET bound_account_id=?,config_version=?,source_event_id=? WHERE id=1',
+          )
+          .run(p.accountId, p.configVersion, event.eventId);
+        break;
       }
+      case 'CredentialRotated': {
+        const p = event.payload,
+          account = this.boundAccount(p.accountId);
+        if (p.beforeEpoch !== account.epoch) {
+          fail('凭据轮换的原代次不符');
+        }
+        assertOwnerAccountCredentialChangeAllowed(
+          0,
+          Boolean(
+            this.sqlite
+              .prepare(
+                "SELECT 1 FROM charges WHERE original_account_id=? AND status='reserved' LIMIT 1",
+              )
+              .get(account.id),
+          ),
+        );
+        // 业务回放撤销旧私有 PST；只有当前命令或匹配切点的私有快照能提供新值。
+        this.sqlite.prepare('DELETE FROM upstream_credentials WHERE account_id=?').run(account.id);
+        this.sqlite
+          .prepare(
+            'UPDATE upstream_accounts SET credential_epoch=?,enabled=0,source_event_id=? WHERE id=?',
+          )
+          .run(p.credentialEpoch, event.eventId, account.id);
+        break;
+      }
+      default:
+        fail(`Unsupported account projection ${event.eventType}`);
     }
-    if (index < events.length) {
-      this.quotas.applyQuotaEvents(events.slice(index));
+  }
+  private applyAccountEvents(events: RelationalEvent[]) {
+    const applyQuota = this.quotas.createQuotaProjector(events);
+    for (const event of events) {
+      if (relationalQuotaFacts.has(event.eventType)) {
+        applyQuota(event);
+      } else {
+        this.applyAccountEvent(event);
+      }
     }
   }
   replayAccountCommit(stored: StoredRelationalCommit) {
@@ -492,7 +485,7 @@ export class RelationalAccountStore {
         stored.events.some(
           (event) =>
             !relationalQuotaFacts.has(event.eventType) &&
-            !['AccountRegistered', 'AccountBound', 'CredentialRotated'].includes(event.eventType),
+            !relationalAccountFacts.has(event.eventType),
         )
       ) {
         fail('Account replay requires one complete account/quota commit');

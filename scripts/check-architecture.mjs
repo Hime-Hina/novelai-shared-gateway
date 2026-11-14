@@ -10,6 +10,10 @@ const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/p
 const mutations = new Set([
   'configureFairQuota',
   'configureFairGroups',
+  'configureAnlasFallback',
+  'configureFreeImages',
+  'updateLossAlertPolicy',
+  'configureQuotaPolicy',
   'manageFairMember',
   'manageOperatingFunding',
   'applyOperatingFunding',
@@ -49,6 +53,14 @@ const mutations = new Set([
   'closeGenerationReview',
   'replayGenerationCommit',
   'recoverRelationalGenerationResults',
+  'registerStorageTarget',
+  'beginArtifactReplica',
+  'recordArtifactReplica',
+  'applyReplicaEvents',
+  'replayReplicaCommit',
+  'copyRelationalArtifactReplica',
+  'verifyRelationalArtifactReplica',
+  'planLocalArtifactPublication',
   'beginQuotaObservation',
   'recordQuotaObservation',
   'refillQuota',
@@ -64,6 +76,13 @@ const mutations = new Set([
   'replayAccountCommit',
   'planQuotaObservation',
   'registerAccountQuota',
+  'createInputProjector',
+  'createGenerationProjector',
+  'createQuotaProjector',
+  'applyAccountEvent',
+  'applyReplayedMemberEvent',
+  'replayCommit',
+  'appendCommit',
 ]);
 const persistence = new Set([
   'update',
@@ -132,7 +151,7 @@ export function checkSource(filename, text) {
     if (
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
-          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-event-store|storage\/relational-(?:input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

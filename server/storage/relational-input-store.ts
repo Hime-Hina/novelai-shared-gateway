@@ -93,6 +93,13 @@ function assertRequestBody(
   }
 }
 
+export const relationalInputFacts = new Set<RelationalEvent['eventType']>([
+  'InputRegistered',
+  'ContextRegistered',
+  'RequestAccepted',
+  'JobAccepted',
+]);
+
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
 export class RelationalInputStore {
   private sqlite: Database.Database;
@@ -560,128 +567,170 @@ export class RelationalInputStore {
     }
   }
 
-  // T2 的有界重放：调用者先恢复成员基线；这里只有输入/上下文及受理引用，不接管账务 reducer。
+  createInputProjector(
+    source: RelationalInputStore,
+    stored: ReturnType<typeof readRelationalCommit>,
+    replayed: boolean,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Input projection requires the owning import transaction.');
+    }
+    const commitSeq = stored.events[0]?.commitSeq;
+    if (
+      !commitSeq ||
+      canonicalJson(readRelationalCommit(source.sqlite, commitSeq)) !== canonicalJson(stored)
+    ) {
+      unavailable();
+    }
+    const contexts = new Map<string, RelationalNormalizationContext>();
+    const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
+    for (const event of stored.events) {
+      if (event.eventType === 'ContextRegistered') {
+        contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+      }
+      if (event.eventType === 'RequestAccepted') {
+        const context =
+            contexts.get(event.payload.contextId) ?? source.context(event.payload.contextId),
+          input =
+            inputs.get(event.payload.inputId) ??
+            source.input(event.payload.inputId, event.payload.memberId);
+        if (input.row.member_id !== event.payload.memberId) {
+          unavailable();
+        }
+        contexts.set(event.payload.contextId, context);
+        this.assertAcceptedEvents(stored.events, input.body, context);
+      }
+      if (event.eventType === 'InputRegistered') {
+        inputs.set(
+          event.payload.inputId,
+          source.input(event.payload.inputId, event.payload.memberId),
+        );
+      }
+    }
+    if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
+      unavailable();
+    }
+    const content = [...inputs].map(([inputId, input]) => ({
+      inputId,
+      ...input,
+      assets: input.assets.map((asset) => ({
+        ...asset,
+        bytes: source.asset(inputId, asset).bytes,
+      })),
+    }));
+
+    const copyContext = (contextId: string) => {
+      const context = contexts.get(contextId);
+      if (!context) {
+        unavailable();
+      }
+      const existing = this.sqlite
+        .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+        .get(contextId);
+      if (existing) {
+        if (canonicalJson(this.context(contextId)) !== canonicalJson(context)) {
+          unavailable();
+        }
+      } else {
+        if (replayed) {
+          unavailable();
+        }
+        this.sqlite
+          .prepare(
+            'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
+          )
+          .run(contextId, domainDigest(context), canonicalJson(context));
+      }
+    };
+    const byInput = new Map(content.map((input) => [input.inputId, input]));
+    const copyInput = (inputId: string) => {
+      const input = byInput.get(inputId);
+      if (!input) {
+        unavailable();
+      }
+      if (replayed) {
+        const existing = this.input(input.inputId, input.row.member_id);
+        if (
+          canonicalJson(existing) !==
+          canonicalJson({
+            row: input.row,
+            body: input.body,
+            assets: input.assets.map(({ bytes: _bytes, ...asset }) => asset),
+          })
+        ) {
+          unavailable();
+        }
+        for (const asset of input.assets) {
+          if (!this.asset(input.inputId, asset).bytes.equals(asset.bytes)) {
+            unavailable();
+          }
+        }
+        return;
+      }
+      this.sqlite
+        .prepare(
+          'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
+        )
+        .run(
+          input.row.id,
+          input.row.member_id,
+          input.row.schema_version,
+          input.row.completeness,
+          input.row.sha256,
+          input.row.logical_bytes,
+          input.row.body,
+        );
+      const insert = this.sqlite.prepare(
+        'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
+      );
+      for (const asset of input.assets) {
+        insert.run(
+          input.inputId,
+          asset.assetId,
+          asset.mimeType,
+          asset.byteLength,
+          asset.sha256,
+          asset.bytes,
+        );
+      }
+    };
+    return (event: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Input projection requires the owning import transaction.');
+      }
+      if (event.eventType === 'ContextRegistered') {
+        copyContext(event.payload.contextId);
+      } else if (event.eventType === 'InputRegistered') {
+        copyInput(event.payload.inputId);
+      } else if (event.eventType === 'RequestAccepted') {
+        copyContext(event.payload.contextId);
+        if (!replayed) {
+          this.applyAcceptedEvents([event]);
+        }
+      } else if (event.eventType === 'JobAccepted') {
+        if (!replayed) {
+          this.applyAcceptedEvents([event]);
+        }
+      } else {
+        throw new Error("Input projection cannot apply another owner's facts.");
+      }
+    };
+  }
+
+  // T2 的窄回放继续使用原完整提交和相同输入规则，不拆分混合提交。
   replayAcceptedInput(source: RelationalInputStore, commitSeq: string) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Input replay requires the owning import transaction.');
     }
     return this.sqlite.transaction(() => {
       const stored = readRelationalCommit(source.sqlite, commitSeq);
-      if (
-        stored.events.some(
-          (event) =>
-            !['InputRegistered', 'ContextRegistered', 'RequestAccepted', 'JobAccepted'].includes(
-              event.eventType,
-            ),
-        )
-      ) {
+      if (stored.events.some((event) => !relationalInputFacts.has(event.eventType))) {
         throw new Error("Input replay cannot apply another owner's facts.");
       }
-      const contexts = new Map<string, RelationalNormalizationContext>();
-      const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
-      for (const event of stored.events) {
-        if (event.eventType === 'ContextRegistered') {
-          contexts.set(event.payload.contextId, source.context(event.payload.contextId));
-        }
-        if (event.eventType === 'RequestAccepted') {
-          const context =
-              contexts.get(event.payload.contextId) ?? source.context(event.payload.contextId),
-            input =
-              inputs.get(event.payload.inputId) ??
-              source.input(event.payload.inputId, event.payload.memberId);
-          if (input.row.member_id !== event.payload.memberId) {
-            unavailable();
-          }
-          contexts.set(event.payload.contextId, context);
-          this.assertAcceptedEvents(stored.events, input.body, context);
-        }
-        if (event.eventType === 'InputRegistered') {
-          inputs.set(
-            event.payload.inputId,
-            source.input(event.payload.inputId, event.payload.memberId),
-          );
-        }
-      }
-      if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-        unavailable();
-      }
-      const content = [...inputs].map(([inputId, input]) => ({
-        inputId,
-        ...input,
-        assets: input.assets.map((asset) => ({
-          ...asset,
-          bytes: source.asset(inputId, asset).bytes,
-        })),
-      }));
       const result = replayRelationalCommit(this.sqlite, stored);
-      for (const [contextId, context] of contexts) {
-        const existing = this.sqlite
-          .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
-          .get(contextId);
-        if (existing) {
-          if (canonicalJson(this.context(contextId)) !== canonicalJson(context)) {
-            unavailable();
-          }
-        } else {
-          if (result.replayed) {
-            unavailable();
-          }
-          this.sqlite
-            .prepare(
-              'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-            )
-            .run(contextId, domainDigest(context), canonicalJson(context));
-        }
-      }
-      for (const input of content) {
-        if (result.replayed) {
-          const existing = this.input(input.inputId, input.row.member_id);
-          if (
-            canonicalJson(existing) !==
-            canonicalJson({
-              row: input.row,
-              body: input.body,
-              assets: input.assets.map(({ bytes: _bytes, ...asset }) => asset),
-            })
-          ) {
-            unavailable();
-          }
-          for (const asset of input.assets) {
-            if (!this.asset(input.inputId, asset).bytes.equals(asset.bytes)) {
-              unavailable();
-            }
-          }
-          continue;
-        }
-        this.sqlite
-          .prepare(
-            'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
-          )
-          .run(
-            input.row.id,
-            input.row.member_id,
-            input.row.schema_version,
-            input.row.completeness,
-            input.row.sha256,
-            input.row.logical_bytes,
-            input.row.body,
-          );
-        const insert = this.sqlite.prepare(
-          'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
-        );
-        for (const asset of input.assets) {
-          insert.run(
-            input.inputId,
-            asset.assetId,
-            asset.mimeType,
-            asset.byteLength,
-            asset.sha256,
-            asset.bytes,
-          );
-        }
-      }
-      if (!result.replayed) {
-        this.applyAcceptedEvents(result.events);
+      const apply = this.createInputProjector(source, stored, result.replayed);
+      for (const event of stored.events) {
+        apply(event);
       }
       return result;
     })();

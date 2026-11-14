@@ -64,6 +64,40 @@ function usage(): Usage {
 }
 
 describe('ManagementUsage', () => {
+  it('未知金额不按零相加，缺少收费事实与明确缓存未扣款分开展示', async () => {
+    const data = usage();
+    data.totals.fixed = null;
+    data.totals.v5 = null;
+    data.recent = [
+      {
+        ...data.recent[0]!,
+        id: 'unknown',
+        model: null,
+        createdAt: null,
+        resource: null,
+        chargeStatus: null,
+      },
+      { ...data.recent[0]!, id: 'cached', resource: null, chargeStatus: null, knownNoCharge: true },
+    ];
+    const wrapper = await mountSuspended(ManagementUsage, {
+      props: { data, days: 0, loading: false },
+    });
+    expect(wrapper.get('#usageAnlas').text()).toBe('未知');
+    expect(wrapper.get('#usageV5').text()).toBe('未知');
+    expect(wrapper.get('#usagePools').text()).toBe('订阅 未知 · 购买 4');
+    const records = wrapper.get('#usageRecent').findAll('tbody tr');
+    expect(records[0]!.text()).toContain('扣费未知');
+    expect(records[0]!.text()).toContain('未知模型');
+    expect(records[1]!.text()).toContain('未扣款');
+    const table = wrapper
+      .findAllComponents(NDataTable)
+      .find((item) => item.attributes('id') === 'usageRecent')!;
+    table.vm.filter({ model: [''] });
+    await nextTick();
+    expect(wrapper.get('#usageRecent').findAll('tbody tr')).toHaveLength(1);
+    expect(wrapper.get('#usageRecent tbody').text()).toContain('扣费未知');
+  });
+
   it('后台刷新不在工具栏外插入新块，也不移除已有数据', async () => {
     const wrapper = await mountSuspended(ManagementUsage, {
       props: { data: usage(), days: 7, loading: false },

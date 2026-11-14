@@ -18,6 +18,9 @@ function amount(name: string, nullable = false): string {
 }
 
 const fact = 'source_event_id TEXT NOT NULL REFERENCES domain_events(event_id)';
+// 开账事实时刻不能冒充未知的原实体创建时间；所有查询共用此角色解释。
+const jobCreatedAtSql = `CASE WHEN event_type = 'OpeningJobRecorded'
+  THEN json_extract(payload, '$.createdAt') ELSE occurred_at END`;
 
 export const RELATIONAL_SCHEMA_SQL = `
 CREATE TABLE app_meta (
@@ -57,6 +60,13 @@ CREATE TABLE domain_events (
   UNIQUE (commit_seq, event_index),
   UNIQUE (stream_id, stream_version)
 ) STRICT;
+
+CREATE VIEW generation_job_origins AS
+SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
+  json_extract(payload, '$.requestId') AS request_id, ${jobCreatedAtSql} AS created_at
+FROM domain_events WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
+  WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
 
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
@@ -184,7 +194,8 @@ CREATE TABLE sharing_policy (
   free_warning_threshold INTEGER CHECK (free_warning_threshold > 0),
   free_hard_limit INTEGER CHECK (free_hard_limit > 0),
   loss_policy_version INTEGER NOT NULL CHECK (loss_policy_version > 0),
-  ${amount('loss_v5_24h')},
+  -- 这是只用于告警比较的原生 number 阈值，不是钱包金额。
+  loss_v5_24h REAL NOT NULL CHECK (loss_v5_24h >= 0 AND loss_v5_24h <= 1.7976931348623157e308),
   ${amount('loss_fixed_24h')},
   ${amount('loss_fixed_30d')},
   loss_member_attempts_24h INTEGER NOT NULL CHECK (loss_member_attempts_24h >= 0),
@@ -453,16 +464,16 @@ CREATE TABLE artifact_replicas (
   artifact_id TEXT NOT NULL REFERENCES artifacts(id),
   storage_target_id TEXT NOT NULL REFERENCES storage_targets(id),
   object_key TEXT NOT NULL,
-  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip')),
+  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip', 'br')),
   uploaded_at INTEGER,
   verified_at INTEGER,
   deleted_at INTEGER,
   last_error_code TEXT,
   ${fact},
   PRIMARY KEY (artifact_id, storage_target_id),
-  UNIQUE (storage_target_id, object_key),
   CHECK (verified_at IS NULL OR uploaded_at IS NOT NULL)
 ) STRICT;
+CREATE INDEX idx_replica_object ON artifact_replicas(storage_target_id, object_key);
 
 CREATE TABLE idempotency_keys (
   original_member_id TEXT NOT NULL,

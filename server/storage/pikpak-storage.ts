@@ -13,6 +13,7 @@ export interface PikPakConfig {
   username: string;
   password: string;
 }
+type PikPakImage = Pick<R2Image, 'key' | 'byteLength' | 'sha256' | 'pikpak'>;
 
 export function pikpakConfig(env: NodeJS.ProcessEnv = process.env): PikPakConfig | null {
   const {
@@ -114,17 +115,20 @@ export function readPikPakQuota(env: NodeJS.ProcessEnv = process.env) {
 }
 
 export class PikPakStorage {
-  readonly config: PikPakConfig;
+  readonly config: Readonly<PikPakConfig>;
   readonly client: WebDAVClient;
   constructor(config: PikPakConfig) {
-    this.config = config;
-    this.client = createClient(config.url, {
-      username: config.username,
-      password: config.password,
+    // 配置与实际客户端共享不可变快照；轮换目录或凭据必须替换整个实例。
+    this.config = Object.freeze({ ...config });
+    Object.defineProperty(this, 'config', { writable: false, configurable: false });
+    this.client = createClient(this.config.url, {
+      username: this.config.username,
+      password: this.config.password,
     });
+    Object.defineProperty(this, 'client', { writable: false, configurable: false });
   }
 
-  private filename(image: R2Image) {
+  private filename(image: PikPakImage) {
     if (
       typeof image.key !== 'string' ||
       !/^images\/[A-Za-z0-9_-]{1,128}\/[a-f0-9]{64}$/.test(image.key) ||
@@ -140,7 +144,7 @@ export class PikPakStorage {
     return `${image.sha256}.br`;
   }
 
-  async put(image: R2Image, buffer: Buffer): Promise<number> {
+  async put(image: PikPakImage, buffer: Buffer): Promise<number> {
     const filename = this.filename(image);
     if (
       buffer.length !== image.byteLength ||
@@ -162,7 +166,7 @@ export class PikPakStorage {
     return compressed.length;
   }
 
-  async get(image: R2Image): Promise<Buffer> {
+  async get(image: PikPakImage): Promise<Buffer> {
     const filename = this.filename(image);
     const response = await this.client.customRequest(filename, {
       method: 'GET',

@@ -1,3 +1,7 @@
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
+import { domainDigest } from '../events/domain-events.ts';
+import { configureFreeImages, type FreeImagePolicy } from '../quota/free-image-policy.ts';
+import { updateLossAlertPolicy, type LossAlertPolicy } from '../quota/failure-accounting.ts';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -23,6 +27,7 @@ import {
   syncBoundFairQuota,
   manageOperatingFunding,
   fairQuotaSnapshot,
+  configureAnlasFallback,
   type FairQuotaSyncState,
   type FairAccount,
   type ResourceAmounts,
@@ -50,6 +55,32 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
   policyVersion: string;
   pricingVersion: string;
 };
+export type QuotaPolicyChange =
+  | { action: 'fallback-policy'; enabled: boolean }
+  | {
+      action: 'free-image-policy';
+      expectedVersion: number;
+      policy: Omit<FreeImagePolicy, 'version'>;
+    }
+  | {
+      action: 'loss-alert-policy';
+      expectedVersion: number;
+      policy: Omit<LossAlertPolicy, 'version'>;
+    };
+type SharingPolicy = {
+  enabled: number;
+  configVersion: number;
+  fallback: number;
+  freeVersion: number;
+  freeEnabled: number;
+  warningThreshold: number | null;
+  hardLimit: number | null;
+  lossVersion: number;
+  v5_24h: number;
+  fixed24h: string;
+  fixed30d: string;
+  memberAttempts24h: number;
+};
 export type AccountQuota = Omit<RelationalPayloads['OpeningQuotaRecorded'], 'origin'>;
 type Quota = AccountQuota;
 type Ticket = {
@@ -66,6 +97,9 @@ function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 export const relationalQuotaFacts = new Set<RelationalEvent['eventType']>([
+  'FallbackPolicyChanged',
+  'FreePolicyChanged',
+  'LossPolicyChanged',
   'QuotaObserved',
   'QuotaStatusChanged',
   'AvailabilityChanged',
@@ -591,6 +625,133 @@ export class RelationalQuotaStore {
     });
     this.applyQuotaEvents(result.events);
     return result;
+  }
+  private sharingPolicy(): SharingPolicy {
+    const row = this.sqlite
+      .prepare<[], SharingPolicy>(
+        `SELECT enabled,config_version AS configVersion,auto_anlas_fallback AS fallback,
+      free_policy_version AS freeVersion,free_enabled AS freeEnabled,free_warning_threshold AS warningThreshold,free_hard_limit AS hardLimit,
+      loss_policy_version AS lossVersion,loss_v5_24h AS v5_24h,loss_fixed_24h AS fixed24h,loss_fixed_30d AS fixed30d,
+      loss_member_attempts_24h AS memberAttempts24h FROM sharing_policy WHERE id=1`,
+      )
+      .get();
+    if (!row) {
+      fail('共享政策尚未初始化', 503);
+    }
+    return row;
+  }
+  configureQuotaPolicy(metadata: Metadata, input: QuotaPolicyChange, member: MemberUser | null) {
+    return this.owned(() => {
+      const current =
+        member &&
+        this.sqlite
+          .prepare<[string], { status: string; authEpoch: string | null }>(
+            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+          )
+          .get(member.id);
+      assertCurrentOwnerCommand(metadata, member, current, this.env);
+      if (!metadata.actorId) {
+        fail('政策命令缺少操作人身份', 400);
+      }
+      if (
+        !input ||
+        !['fallback-policy', 'free-image-policy', 'loss-alert-policy'].includes(input.action)
+      ) {
+        fail('政策操作无效', 400);
+      }
+      const command = {
+          ...metadata,
+          fingerprint: domainDigest({ command: metadata.fingerprint, input }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const currentPolicy = this.sharingPolicy();
+      let fact: RelationalFact, receipt: Json;
+      if (input.action === 'fallback-policy') {
+        const view = {
+          settings: {
+            fairQuota: {
+              enabled: currentPolicy.enabled === 1,
+              autoAnlasFallback: currentPolicy.fallback === 1,
+            },
+          },
+        };
+        receipt = configureAnlasFallback(
+          view,
+          input.enabled,
+          metadata.actorId,
+          metadata.recordedAt,
+        );
+        fact = {
+          eventType: 'FallbackPolicyChanged',
+          payload: {
+            enabled: view.settings.fairQuota.autoAnlasFallback,
+            configVersion: currentPolicy.configVersion,
+          },
+        };
+      } else if (input.action === 'free-image-policy') {
+        const view = {
+          settings: {
+            fairQuota: {
+              freeImagePolicy: {
+                version: currentPolicy.freeVersion,
+                enabled: currentPolicy.freeEnabled === 1,
+                warningThreshold: currentPolicy.warningThreshold,
+                hardLimit: currentPolicy.hardLimit,
+              },
+            },
+          },
+          ledger: [],
+        };
+        const policy = configureFreeImages(view, input, metadata.actorId, metadata.recordedAt);
+        fact = { eventType: 'FreePolicyChanged', payload: policy };
+        receipt = { policy: { ...policy } };
+      } else {
+        const view = {
+          settings: {
+            fairQuota: {
+              lossAlertPolicy: {
+                version: currentPolicy.lossVersion,
+                v5Points24h: currentPolicy.v5_24h,
+                fixedAnlas24h: Number(currentPolicy.fixed24h),
+                fixedAnlas30d: Number(currentPolicy.fixed30d),
+                memberAttempts24h: currentPolicy.memberAttempts24h,
+              },
+            },
+          },
+          ledger: [],
+        };
+        const policy = updateLossAlertPolicy(view, input, metadata.actorId, metadata.recordedAt);
+        fact = {
+          eventType: 'LossPolicyChanged',
+          payload: {
+            version: policy.version,
+            v5_24h: policy.v5Points24h,
+            fixed24h: formatAmount(parseAmount(policy.fixedAnlas24h)),
+            fixed30d: formatAmount(parseAmount(policy.fixedAnlas30d)),
+            memberAttempts24h: policy.memberAttempts24h,
+          },
+        };
+        receipt = { policy: { ...policy } };
+      }
+      return this.commit(
+        command,
+        [
+          {
+            ...fact,
+            streamId: 'sharing:default',
+            accountId: null,
+            memberId: null,
+            occurredAt: metadata.recordedAt,
+            policyVersion: metadata.policyVersion,
+            pricingVersion: metadata.pricingVersion,
+          },
+        ],
+        receipt,
+      );
+    });
   }
   beginQuotaObservation(accountId: string, startedAt = Date.now()): Ticket {
     const a = this.account(accountId),
@@ -1200,14 +1361,56 @@ export class RelationalQuotaStore {
     }
     return formatAmount(next);
   }
-  applyQuotaEvents(events: RelationalEvent[]) {
+  createQuotaProjector(events: RelationalEvent[]) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Quota projection requires the owning transaction.');
     }
     const sources = new Map(events.map((e) => [e.eventId, e]));
     const consumed = new Set<string>();
     const observationResources = new Map<string, Set<string>>();
-    for (const e of events) {
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Quota projection requires the owning transaction.');
+      }
+      if (
+        e.eventType === 'FallbackPolicyChanged' ||
+        e.eventType === 'FreePolicyChanged' ||
+        e.eventType === 'LossPolicyChanged'
+      ) {
+        if (e.streamId !== 'sharing:default' || e.accountId !== null || e.memberId !== null) {
+          fail('政策事实不属于当前共享流');
+        }
+        const policy = this.sharingPolicy();
+        if (e.eventType === 'FallbackPolicyChanged') {
+          if (!policy.enabled || e.payload.configVersion !== policy.configVersion) {
+            fail('fallback 政策与当前共享配置不符');
+          }
+          this.sqlite
+            .prepare('UPDATE sharing_policy SET auto_anlas_fallback=?,source_event_id=? WHERE id=1')
+            .run(Number(e.payload.enabled), e.eventId);
+        } else if (e.eventType === 'FreePolicyChanged') {
+          const p = e.payload;
+          if (p.version !== policy.freeVersion + 1) {
+            fail('免费图片政策版本已经变化');
+          }
+          this.sqlite
+            .prepare(
+              'UPDATE sharing_policy SET free_policy_version=?,free_enabled=?,free_warning_threshold=?,free_hard_limit=?,source_event_id=? WHERE id=1',
+            )
+            .run(p.version, Number(p.enabled), p.warningThreshold, p.hardLimit, e.eventId);
+        } else {
+          const p = e.payload;
+          if (p.version !== policy.lossVersion + 1) {
+            fail('损耗告警政策版本已经变化');
+          }
+          this.sqlite
+            .prepare(
+              'UPDATE sharing_policy SET loss_policy_version=?,loss_v5_24h=?,loss_fixed_24h=?,loss_fixed_30d=?,loss_member_attempts_24h=?,source_event_id=? WHERE id=1',
+            )
+            .run(p.version, p.v5_24h, p.fixed24h, p.fixed30d, p.memberAttempts24h, e.eventId);
+        }
+        return;
+      }
       if (
         !relationalQuotaFacts.has(e.eventType) ||
         !e.accountId ||
@@ -1625,6 +1828,12 @@ export class RelationalQuotaStore {
         default:
           fail(`Unsupported quota projection ${e.eventType}`);
       }
+    };
+  }
+  applyQuotaEvents(events: RelationalEvent[]) {
+    const apply = this.createQuotaProjector(events);
+    for (const event of events) {
+      apply(event);
     }
   }
   private configuration(version: number) {
