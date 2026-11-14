@@ -4644,7 +4644,12 @@ test('credentials Discord新建用原随机密码且更新409，私有owner拒un
     ).id,
     'm2',
   );
-  assert.equal((await credentialPost(f, credentials({ note: 'old note field' }))).status, 400);
+  const noted = await credentialPost(
+    f,
+    credentials({ username: 'discord.with.note', note: 'old note field' }),
+  );
+  assert.equal(noted.status, 200, noted.text);
+  assert.equal(f.members.readManagementMemberProfile(noted.body.id).note, 'old note field');
 });
 
 test('credentials KDF完成后重核Cookie/owner/ready和target epoch，正文及密码工作均在SQL外', async (t) => {
@@ -4845,27 +4850,12 @@ test('credentials非keyed私有变更由选定SHA同cut联合恢复，业务回�
     body = credentials({ groupId: 'g' }),
     created = await credentialPost(f, body);
   assert.equal(created.status, 200, created.text);
-  const backup = async (name) => {
-    const filename = path.join(f.dir, name + '.sqlite');
-    await f.db.backup(filename);
-    const sealed = new Database(filename);
-    sealed.pragma('journal_mode=DELETE');
-    sealed.close();
-    return {
-      sourcePath: filename,
-      sourceSha256: relationalSnapshotSha256(filename),
-      historyId: 'generation-history',
-      finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get()
-        .seq,
-      replicas: { dataDir: f.dir },
-    };
-  };
-  const old = await backup('credentials-private-old'),
+  const old = await sealManagementPrivateSource(f, 'credentials-private-old'),
     hashBefore = relationalPrivateStateSha256(f.db),
     reset = { ...body, userId: created.body.id, password: 'synthetic-reset-private-password' };
   delete reset.groupId;
   assert.equal((await credentialPost(f, reset)).status, 200);
-  const selected = await backup('credentials-private-current');
+  const selected = await sealManagementPrivateSource(f, 'credentials-private-current');
   assert.equal(old.finalCommitSeq, selected.finalCommitSeq);
   assert.notEqual(old.sourceSha256, selected.sourceSha256);
   assert.notEqual(relationalPrivateStateSha256(f.db), hashBefore);
@@ -5375,19 +5365,167 @@ test('Discord邀请过期保留私有原期限；公开回放不恢复邀请，�
   assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
 });
 
-test('私有备注新建沿原120码元与默认规则，GET不借displayName且不公开原备注', async (t) => {
+async function sealManagementPrivateSource(f, name) {
+  const filename = path.join(f.dir, name + '.sqlite');
+  await f.db.backup(filename);
+  const sealed = new Database(filename);
+  sealed.pragma('journal_mode=DELETE');
+  sealed.close();
+  return {
+    sourcePath: filename,
+    sourceSha256: relationalSnapshotSha256(filename),
+    historyId: 'generation-history',
+    finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get().seq,
+    replicas: { dataDir: f.dir },
+  };
+}
+
+test('私有备注新建保留原默认、空值和120码元，GET不借displayName且无公开备注', async (t) => {
   const f = await setup(t, { env: passwordEnvironment }),
-    value = 'private-note-' + 'x'.repeat(108) + '😀',
-    expected = String(value || '管理员创建的成员').slice(0, 120),
-    body = credentials({ username: 'private.note.boundary', note: value }),
-    created = await credentialPost(f, body);
+    fallback = '管理员创建的成员',
+    cases = [
+      ['n'.repeat(119) + '😀', 'n'.repeat(119) + String.fromCharCode(0xd83d)],
+      [undefined, fallback],
+      [null, fallback],
+      ['', fallback],
+      [false, fallback],
+      [0, fallback],
+      ['  ', '  '],
+      [12, '12'],
+      [true, 'true'],
+      [[], ''],
+      [{}, '[object Object]'],
+      ['z'.repeat(121), 'z'.repeat(120)],
+    ];
+  let notices = [];
+  f.events.on('commit', (event) => notices.push(event));
+  for (const [index, [value, expected]] of cases.entries()) {
+    const body = credentials({ username: 'private.note.' + index, note: value }),
+      created = await credentialPost(f, body);
+    assert.equal(created.status, 200, created.text);
+    assert.deepEqual(created.body, { id: created.body.id, username: body.username });
+    const state = await f.call(admin, { headers: { 'x-admin-token': adminToken } });
+    assert.equal(state.status, 200, state.text);
+    const member = state.body.users.find((user) => user.id === created.body.id);
+    assert.equal(member.note, expected);
+    assert.equal(member.displayName, body.username);
+    assert.equal(member.username, body.username);
+    assert.equal(
+      f.db.prepare('SELECT note_json FROM members WHERE id=?').get(created.body.id).note_json,
+      JSON.stringify(expected),
+    );
+    const row = f.db
+        .prepare('SELECT CAST(commit_seq AS TEXT) seq,payload FROM domain_events WHERE stream_id=?')
+        .get('member:' + created.body.id),
+      stored = readRelationalCommit(f.db, row.seq),
+      payload = JSON.parse(row.payload);
+    assert.equal(Object.hasOwn(payload, 'note'), false);
+    assert.equal(Object.hasOwn(payload, 'note_json'), false);
+    assert.equal(Object.values(payload).includes(expected), false);
+    assert.notEqual(stored.command.fingerprint, domainDigest(body));
+    if (index === 0) {
+      const {
+          events: _events,
+          expectedVersions: _versions,
+          receipt: _receipt,
+          ...command
+        } = stored.command,
+        before = databaseState(f.db),
+        changes = f.db.prepare('SELECT total_changes() n').get().n;
+      const prior = f.db.transaction(() =>
+        f.members.registerMember(
+          {
+            ...command,
+            policyVersion: stored.events[0].policyVersion,
+            pricingVersion: stored.events[0].pricingVersion,
+          },
+          {
+            memberId: created.body.id,
+            displayName: 'ignored new label',
+            apiKey: 'ignored-new-key',
+            note: 'must not replace saved private note',
+          },
+          null,
+        ),
+      )();
+      assert.equal(prior.replayed, true);
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+    }
+  }
+  assert.equal(f.members.readManagementMemberProfile('m1').note, null);
+  assert.equal(f.members.readManagementMemberProfile('m2').note, null);
+  assert.equal(JSON.stringify(notices).includes('n'.repeat(119)), false);
+});
+
+test('私有备注已有credentials原样忽略任何note，密码照常重置但无编辑清除或公开回执', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment }),
+    known = credentials({ username: 'note.original', note: 'private original note' }),
+    created = await credentialPost(f, known);
   assert.equal(created.status, 200, created.text);
-  assert.deepEqual(created.body, { id: created.body.id, username: body.username });
-  const state = await f.call(admin, { headers: { 'x-admin-token': adminToken } });
-  assert.equal(state.status, 200, state.text);
-  const member = state.body.users.find((user) => user.id === created.body.id);
-  assert.equal(member.note, expected);
-  assert.equal(member.displayName, body.username);
-  assert.equal(member.username, body.username);
-  assert.equal(f.db.prepare('SELECT note_json FROM members WHERE id=?').get(created.body.id).note_json, JSON.stringify(expected));
+  const id = created.body.id,
+    key = f.members.readMemberApiKey(id),
+    session = await createMemberSession(
+      f.members,
+      await f.members.loginMemberPassword(known.username, known.password),
+      f.env,
+      f.clock,
+    ),
+    cut = f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n;
+  for (const [index, ignored] of [
+    'different private note',
+    '',
+    null,
+    { toString: 'not callable' },
+  ].entries()) {
+    const body = credentials({
+        userId: id,
+        username: 'note.updated.' + index,
+        password: 'synthetic-new-note-password-' + index,
+        note: ignored,
+      }),
+      result = await credentialPost(f, body, {
+        headers: { 'idempotency-key': 'still-not-a-note-command' },
+      });
+    assert.equal(result.status, 200, result.text);
+    assert.deepEqual(result.body, { id, username: body.username });
+    const profile = f.members.readManagementMemberProfile(id);
+    assert.equal(profile.note, known.note);
+    assert.equal(profile.displayName, known.username);
+    assert.equal(profile.username, body.username);
+    assert.equal(f.members.readMemberApiKey(id), key);
+    assert.equal((await f.members.loginMemberPassword(body.username, body.password)).id, id);
+  }
+  assert.equal(await authenticateMemberSession(f.members, session.token, f.env, f.clock), null);
+  assert.equal(f.db.prepare('SELECT MAX(commit_seq) n FROM commits').get().n, cut);
+});
+
+test('私有备注随真实组创建SQL尾错整笔回滚无通知，健康重试只保存一份', async (t) => {
+  const f = await setup(t, { env: passwordEnvironment, beforeReady: credentialGroups }),
+    body = credentials({
+      username: 'note.group.creation',
+      note: 'private group note',
+      groupId: 'g',
+    });
+  let seen = false,
+    notices = 0;
+  f.events.on('commit', () => notices++);
+  f.db.function('note_group_tail_seen', (count) => {
+    seen = count === 1;
+    return 0;
+  });
+  f.db.exec(
+    "CREATE TEMP TRIGGER note_group_tail AFTER UPDATE ON sharing_policy BEGIN SELECT note_group_tail_seen((SELECT COUNT(*) FROM members WHERE id NOT IN ('m1','m2') AND note_json IS NOT NULL)); SELECT RAISE(ABORT,'note group tail'); END",
+  );
+  const before = databaseState(f.db);
+  assert.equal((await credentialPost(f, body)).status, 500);
+  assert.equal(seen, true, '真实尾故障发生在私有备注已写之后');
+  assert.equal(databaseState(f.db), before);
+  assert.equal(notices, 0);
+  f.db.exec('DROP TRIGGER note_group_tail');
+  const success = await credentialPost(f, body);
+  assert.equal(success.status, 200, success.text);
+  assert.deepEqual(success.body, { id: success.body.id, username: body.username, groupId: 'g' });
+  assert.equal(f.members.readManagementMemberProfile(success.body.id).note, body.note);
+  assert.equal(notices, 1);
 });

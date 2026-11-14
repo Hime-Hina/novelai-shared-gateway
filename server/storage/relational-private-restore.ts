@@ -44,7 +44,9 @@ export function relationalPrivateStateSha256(sqlite: Database.Database): string 
 export function relationalPrivateStateEmpty(sqlite: Database.Database): boolean {
   return (
     !sqlite
-      .prepare('SELECT 1 FROM members WHERE auth_epoch IS NOT NULL OR note_json IS NOT NULL LIMIT 1')
+      .prepare(
+        'SELECT 1 FROM members WHERE auth_epoch IS NOT NULL OR note_json IS NOT NULL LIMIT 1',
+      )
       .get() &&
     relationalPrivateTables.every(
       ([table]) => !sqlite.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(),

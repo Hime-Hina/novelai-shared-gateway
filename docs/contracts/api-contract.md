@@ -245,7 +245,7 @@ F12 在收取上游响应头时将有效 `Retry-After`（秒数或 HTTP 日期�
 
 成员管理 `POST action=credentials` 保留原私有、非 keyed 契约：新建返回 `{id,username,groupId?}`，生成私有 Key；更新已有成员密码返回 `{id,username}`，保留原 Key、换认证代次并撤销 Cookie。原入口未承诺 `Idempotency-Key`，此操作仍忽略该 header：同一 prepared 对象的 CAS 重复拒绝 401，不重装旧材料；新 HTTP 请求是明确的新重置，不伪造可领取旧认证的回执。密码、salt/hash、Key 及其秘密意图摘要不写公共事实/回执；更新只改变私有状态，联合恢复必须选择实际 SHA 匹配、业务切点一致的私有快照，同业务 cut 的不同 private hash 不能互换。
 
-密码派生在 SQL 外，最终经同一当前 owner Cookie/稳定 ID/epoch/ready 或本机 admin 授权回调；私有 setter 还复核实际 actor 的当前 owner 身份和 DB epoch，省略 actor 不默认管理员。新建可不入组；给 `groupId` 时复用原全组 owner 同事务加入，原 held/active 409、预算/权重与失败整笔回滚规则不变。Discord 启用时新建使用服务端随机密码，已有成员更新仍为 409。私有凭据操作不续 Cookie；分发 Key 和邀请码由各自原读取/私有入口承担，不由 credentials 回包泄露。旧 `note` 有真实 API 来源但当前模型尚无表示，本候选明确 400 并保留为未完成项，不当作 D4 已退能力。
+密码派生在 SQL 外，最终经同一当前 owner Cookie/稳定 ID/epoch/ready 或本机 admin 授权回调；私有 setter 还复核实际 actor 的当前 owner 身份和 DB epoch，省略 actor 不默认管理员。新建可不入组；给 `groupId` 时复用原全组 owner 同事务加入，原 held/active 409、预算/权重与失败整笔回滚规则不变。Discord 启用时新建使用服务端随机密码，已有成员更新仍为 409。私有凭据操作不续 Cookie；分发 Key 和邀请码由各自原读取/私有入口承担，不由 credentials 回包泄露。`note` 保留原私有语义：仅新建时按 `String(body.note || '管理员创建的成员').slice(0,120)` 保存；已有成员更新忽略 note（包括空值和对象），没有编辑或清除动作。备注独立于 displayName/username，使用已预留的单个私有 JSON-string 标量精确保留 UTF-16；不进入公共事实、回执或秘密意图摘要。只有真实旧 bootstrap caller 另以原 username 提供已知初值，其他未知保持 NULL。
 
 ## 其他现有客户端接口
 
@@ -323,7 +323,7 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 关系管理 GET 已提供独立适配：`/api/admin/member-management` 保留本机 Host、私有访问边界和当前管理员 capability；`PUBLIC_MODE=true` 时 query `adminToken` 不授予权限。`/api/member/owner/member-management` 只接受当前 owner Cookie/Discord 身份，外部 IO 后再核对同一稳定 ID、认证代次、当前 owner 与 ready。只有该精确 owner 路径的可见、无 query GET 沿原会话 owner 续期；静态 admin、普通读取、带 query 的 heatmap/losses 都不续期，字面 `/api/member/owner/summary` 不是本接口别名。
 
-默认摘要保留 groups/status/shared/政策版本、公共地址、成员 quota/freeImages 与最近 30 条状态统计。username 只取当前登录名，缺失为 NULL；displayName 单独提供，不能替代登录身份。当前模型没有 note 事实，返回 NULL，不冒充空备注。disabled 成员仍可管理，removed 不在当前名单，原历史按各报告 owner 保留。最近统计按原 Job 创建时间选取，保留真实 0 和未知 NULL，排除退休 parent/child；不以父受理时间或导入时间替代。读取允许真实在途预扣，不提交钱包、任务或配置；Discord 资格观察和可见续期仍有原有私有写入边界。
+默认摘要保留 groups/status/shared/政策版本、公共地址、成员 quota/freeImages 与最近 30 条状态统计。username 只取当前登录名，缺失为 NULL；displayName 单独提供，不能替代登录身份。note 只取当前受保护来源：未知或未恢复为 NULL，已知空字符串仍为空，不借 displayName 或 username 补值。管理窄目录白名单由原七字段显式扩为 id/displayName/status/acceptingJobs/username/discordId/inviteExpiresAt/note 八字段，未加入认证秘密。公共回放仅恢复业务身份、备注仍未知；选定同业务 cut 且 SHA 匹配的私有快照才恢复备注，已有任何已知私有备注的目标不能被不同源覆盖。disabled 成员仍可管理，removed 不在当前名单，原历史按各报告 owner 保留。最近统计按原 Job 创建时间选取，保留真实 0 和未知 NULL，排除退休 parent/child；不以父受理时间或导入时间替代。读取允许真实在途预扣，不提交钱包、任务或配置；Discord 资格观察和可见续期仍有原有私有写入边界。
 
 服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
 

@@ -95,16 +95,16 @@ erDiagram
     SHARING_GROUPS ||--o{ GROUP_MEMBERS : "包含成员"
 ```
 
-| 实体                   | 核心字段和约束                                                                                                |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `members`              | 稳定 ID、展示名、active/disabled/removed、accepting_jobs、auth_epoch、admission_epoch；业务状态与认证资料分离 |
-| `password_credentials` | member_id 唯一、登录名、密码验证材料                                                                          |
-| `api_keys`             | member_id 唯一、Key 摘要、按产品决定保存的可恢复秘密；当前不新增多 Key 管理功能                               |
-| `discord_bindings`     | member_id、唯一 Discord 身份、授权材料、资格观察；网络失败不等于资格撤销                                      |
-| `discord_invites`      | member_id、唯一邀请码摘要和到期；私有当前状态，不保存邀请码正文，不由业务回放恢复                             |
-| `member_sessions`      | Token 摘要、member_id、auth_epoch、owner 绑定、固定期限                                                       |
-| `sharing_groups`       | 稳定组 ID、名称、份额；当前四组作为政策约束                                                                   |
-| `group_members`        | member_id 唯一、group_id、组内权重；全局有效份额计算得到                                                      |
+| 实体                   | 核心字段和约束                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `members`              | 稳定 ID、展示名、active/disabled/removed、accepting_jobs、auth_epoch、admission_epoch；私有 note_json 与认证资料由选定快照恢复 |
+| `password_credentials` | member_id 唯一、登录名、密码验证材料                                                                                           |
+| `api_keys`             | member_id 唯一、Key 摘要、按产品决定保存的可恢复秘密；当前不新增多 Key 管理功能                                                |
+| `discord_bindings`     | member_id、唯一 Discord 身份、授权材料、资格观察；网络失败不等于资格撤销                                                       |
+| `discord_invites`      | member_id、唯一邀请码摘要和到期；私有当前状态，不保存邀请码正文，不由业务回放恢复                                              |
+| `member_sessions`      | Token 摘要、member_id、auth_epoch、owner 绑定、固定期限                                                                        |
+| `sharing_groups`       | 稳定组 ID、名称、份额；当前四组作为政策约束                                                                                    |
+| `group_members`        | member_id 唯一、group_id、组内权重；全局有效份额计算得到                                                                       |
 
 移除成员撤销认证并执行已确认的权益转移，保留最小历史身份。转移余额不转移原请求和原图所有权。owner 继续采用现有部署配置与身份规则，本次不新增通用 RBAC。
 
@@ -2134,6 +2134,26 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 首片固定 `39b1c3b3b76abc06a5512557bef69720509e88db` 独审确认同一完整提交 P2，保持 NOTPASS：合法重签 envelope 删去某 bulk 目标全部事实或全部暂停事实，原 receipt 仍声称两目标完成；同根因扩查的单账户组合丢配置、首注册丢绑定也被接受。绿色955不能替代此闭包。后继独立分支在内部安全 receipt 保存原公开意图（目标、weight/false、应有连接/凭据变化或bind），不存秘密、摘要或before profile；AccountStore三个局部规划由在线与共同/窄回放复用，按原序前态校完整有序全集/唯一性。mixed no-op 不能被强迫伪造事实；全no-op非keyed200零持久化。外部DTO仅去内部intent，仍取原存外部字段，不借当前值重造旧回包。独立初始化/分组的 AccountBound 仍由其所属完整政策规划及原四条件校验，不强迫它伪装账户注册。
 
 该闭包修复作者原四红程序原字节仅imports loader重绑后4/4，七受影响文件292/292、零skip56.994s，类型/架构通过；原观测来源 guard 单独移除后 observed-role 精准失败，不被新闭包掩盖。共同/窄校验各自停用负控分别15失败/5失败，恢复新与来源矩阵25/25；future-configuration 现在只证明完整意图/后果顺序闭包，单独来源角色仍由 dispatch-role/observed-role 实际拒因证明，不混算。日志为同TEMP的 closure-original-fixed-final.log、closure-seven-final.log、closure-negative-evidence.json。该修复不改事件7/DDL/hash/旧SQL，不混默认true后继；固定后独立复审及父新候选完整验收继续。
+
+### 9.84 原私有成员备注的登记、读取与联合恢复
+
+原入口事实与最小表示已只读核定于 `H:/TEMP/novelai-member-note-scope-20261114/SCOPE.md`：credentials 仅新建写 `String(body.note || '管理员创建的成员').slice(0,120)`；已有更新忽略 note，Web 只显示/筛选，不提供编辑清除；旧 bootstrap 的 note 是原 username。旧备注由受保护 users 快照保留，不是 MemberRegistered/Opening 业务事实。不能以 D4 为由删除、长期返回 400，或把现 displayName 冒充原备注。
+
+本片从固定 de52 准备真实 HTTP 400 反例，再合入父给定不可变 `258e6b34ecc4bdf1c1d3e00df02417576aaea11b`。该基础保留 credentials/invite 一份当前 owner verifier 与全部管理分派，含正式 PASS 6708、event7 及预留 note_json；不是全功能联合验收，已知无关 SOCKS admission 夹具缺 actual runtime 的修复不借本片补伪能力。Schema/facts/Account 不改，父基础的 proxy 来源校验和整表私有列拷贝保留。
+
+唯一新增持久信息是已预留 members.note_json 的实际私有值。MemberStore 在原当前授权/旧回执/容量之后，沿真实注册同事务保存 JSON 字符串；未知留 SQL NULL，已知空保存 JSON 空串。该编码保留原 JS slice120 可产生的孤立代理，裸 SQLite TEXT 的真实12项表示试验已有精确失败与 JSON 全通过。目录原七字段显式加 note，username/displayName仍各有原来源；认证适配也只用真实已知 note，不再借公共展示名补原备注，不创建密码身份。损坏私有标量只报固定503，不把原内容带入错误。
+
+HTTP仅新建提供旧表达式结果，已有 credentials 继续忽略任何 note；不增加编辑、清除、keyed 命令或秘密回执。新建/可选组沿原 KDF在SQL外、当前原Cookie/stableID/epoch/ready复核、原 financial owner/savepoint/notifier原子提交。Bootstrap仅真实对应caller显式保存原username；其他注册不加管理员默认。私有 metadata候选可识别备注变化，但不入授权串、不因备注单独撤会话，SSE不发原文。
+
+privateQueries/摘要/相等/empty 与复制扩原 members 私有字段组，notes非NULL即非空，即使已知值为空串、epoch和其余私有表均空。完整公共回放留noteNULL且不重生认证；ready公共shadow只排除auth_epoch与note_json，所有业务字段继续核对，最终私有比对仍覆盖note。选定源SHA/全原历史/稳定成员/业务切点和只读/别名/版本门禁不变；不同私有源不可覆盖既有私有状态，恢复尾错外层捕获仍整笔回滚。没有新note事实、表、cursor、兼容模式或手标ready。
+
+新增实际反例覆盖十二类创建值/120码元、旧重置忽略/Key不变/Cookie撤销、目录八字段及query_only损坏无原文503、真实组尾SQL故障在备注已写后全表回滚/零通知、同cut仅备注不同的合成备份SHA与私有摘要、仅已知空note目标拒覆盖、选定源真实Local与唯一installerready、私有复制写过更早epoch/备注后的尾错、公共及私有重复零写，以及旧Key/Cookie撤销后含note恢复仍不复活。合成另一来源用于验证保护边界，不宣称新增在线备注编辑或伪造历史。原400证据与两处恢复夹具错误（未真实初始化Config、ready后误调building-only私有入口）分开保留；修正夹具沿正式init/installer，未放宽产品门禁。
+
+Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 bootstrap 五文件同次 **216/216、零跳过，67.005 秒**，日志 `H:/TEMP/novelai-member-notes-984-20261115/owner-context-final.log`。第一次 215 项仅原“note不支持400”断言过期；现改为独立新用户名的合法 note200 与实际值，不改成碰撞409或删原权限断言。backend 类型、architecture、默认与可信88迁移、局部格式/diff 通过。原合法 HTTP400失败证据保持。
+
+四种仅TEMP错误实现分别识别：只知空note被当成empty的布尔反例；直接放行非空私有目标时实际恢复缺少应有拒绝；把note当公共shadow字段时真实installer拒members不等；把未知note补displayName时目录值错。四变体各在原业务断言失败，未加载/语法失败不计；finally恢复字节后两对应原目标再次通过。源/日志/原表达式12项程序摘要与固定交接在 `H:/TEMP/novelai-member-notes-984-20261115/`。基础258的无关Account SOCKS夹具修复、Root报告/备份后继及最终并集另验，216不是完整后端或发布产物验收。
+
+无 full/build/compiled/Node24/native/install、真实云端或生产操作。独立审查由非作者另验，整体发布/迁移/sole切换不借本片单项测试宣称完成。
 
 ## 10. 事实依据与修订
 
