@@ -228,6 +228,14 @@ const replicaFields = {
   lastErrorCode: nullable(id),
 };
 
+const sharingGroups = list(
+  fields({
+    groupId: id,
+    name: string,
+    share: number,
+    members: list(fields({ memberId: id, weight: number })),
+  }),
+);
 export const relationalPayloadParsers = {
   InputRegistered: fields({
     inputId: id,
@@ -377,14 +385,20 @@ export const relationalPayloadParsers = {
   SharingConfigured: fields({
     ...policyFields,
     redistributeRemaining: bool,
-    groups: list(
-      fields({
-        groupId: id,
-        name: string,
-        share: number,
-        members: list(fields({ memberId: id, weight: number })),
-      }),
-    ),
+    groups: sharingGroups,
+  }),
+  MemberTransferred: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
+    boundAccountId: nullable(id),
+    configVersion: integer,
+  }),
+  MemberRemoved: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
+    boundAccountId: nullable(id),
+    configVersion: integer,
+    groups: sharingGroups,
   }),
   GroupBalancesRedistributed: fields({
     accountId: id,
@@ -488,10 +502,12 @@ export const relationalPayloadParsers = {
   }),
   FundsTransferred: fields({
     accountId: id,
-    fromMemberId: nullable(id),
-    toMemberId: nullable(id),
+    configurationEventId: id,
+    configVersion: integer,
+    fromMemberId: id,
+    toMemberId: id,
     resources,
-    reason: choices('transfer', 'member_removal', 'operator_share', 'operator_return'),
+    reason: choices('transfer', 'member_removal'),
   }),
   FundingRegistered: fields(fundingFields),
   FundingReceived: fields({
@@ -733,6 +749,8 @@ export const relationalFactStreams = {
   ],
   sharing: [
     'SharingConfigured',
+    'MemberTransferred',
+    'MemberRemoved',
     'FallbackPolicyChanged',
     'FreePolicyChanged',
     'LossPolicyChanged',

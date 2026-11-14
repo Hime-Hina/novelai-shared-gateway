@@ -242,6 +242,12 @@ export interface FairQuotaDatabase {
   jobs?: AccountingJob[] | Record<string, AccountingJob> | null;
   ledger?: unknown[];
 }
+export type FairMemberQuotaState = Omit<FairQuotaState, 'v5Reconciliation'> & {
+  v5Reconciliation?: Pick<V5Reconciliation, 'status'>;
+};
+export type FairMemberQuotaDatabase = Omit<FairQuotaDatabase, 'settings'> & {
+  settings?: { fairQuota?: FairMemberQuotaState | null };
+};
 export type FairQuotaSummaryState = FairQuotaSyncState &
   Pick<FairQuotaState, 'autoAnlasFallback' | 'fallbackTotalsByUser'>;
 type ConfiguredDatabase = FairQuotaDatabase & { settings: { fairQuota: FairQuotaState } };
@@ -257,7 +263,7 @@ interface GroupOptions {
   redistributeRemaining?: unknown;
   actorId?: string;
 }
-interface MemberChange {
+export interface MemberChange {
   action?: string;
   expectedConfigVersion?: unknown;
   fromUserId?: string;
@@ -982,7 +988,19 @@ export function manageFairMember(
   if (body.action !== 'preview-delete-member') {
     inheritDomainCommand(db, draft);
   }
-  const s = syncFairQuota(draft, now);
+  syncFairQuota(draft, now);
+  return applyFairMemberChange(db, draft, body, now);
+}
+
+// 已同步的独立管理 view 与旧包装入口共用同一决定；摘要只需要原核对状态。
+export function applyFairMemberChange(
+  db: FairMemberQuotaDatabase & { users: FairUser[] },
+  draft: FairMemberQuotaDatabase & { users: FairUser[] },
+  body: MemberChange,
+  now: number,
+) {
+  assertFairQuotaIdle(draft);
+  const s = draft.settings?.fairQuota;
   if (!s?.enabled) {
     fail('共享账本尚未配置', 409);
   }

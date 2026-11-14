@@ -672,6 +672,10 @@ export class RelationalMemberStore
             event.eventId,
           );
       } else if (event.eventType === 'MemberStatusChanged') {
+        const current = this.readMember(event.payload.memberId);
+        if (!current || current.status === 'removed') {
+          fail(409, '成员身份已移除或不存在，不能重新激活');
+        }
         this.sqlite
           .prepare('UPDATE members SET status=?,source_event_id=? WHERE id=?')
           .run(event.payload.status, event.eventId, event.payload.memberId);
@@ -705,6 +709,26 @@ export class RelationalMemberStore
     }
   }
 
+  assertMemberRemovalCommit(events: RelationalEvent[]) {
+    this.assertMemberCommandTransaction();
+    const decisions = events.filter((event) => event.eventType === 'MemberRemoved'),
+      removed = events.filter(
+        (event) => event.eventType === 'MemberStatusChanged' && event.payload.status === 'removed',
+      );
+    if (!decisions.length && !removed.length) return;
+    if (
+      decisions.length !== 1 ||
+      removed.length !== 1 ||
+      decisions[0].eventType !== 'MemberRemoved' ||
+      removed[0].eventType !== 'MemberStatusChanged' ||
+      removed[0].payload.memberId !== decisions[0].payload.sourceMemberId ||
+      removed[0].eventIndex <= decisions[0].eventIndex ||
+      removed[0].occurredAt !== decisions[0].occurredAt
+    ) {
+      fail(409, '成员身份移除必须属于同笔原权益移除决定');
+    }
+  }
+
   replayMemberCommit(stored: StoredRelationalCommit) {
     return this.owningTransaction(() => {
       if (stored.events.some((event) => !relationalMemberFacts.has(event.eventType))) {
@@ -712,6 +736,7 @@ export class RelationalMemberStore
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
+        this.assertMemberRemovalCommit(result.events);
         this.assertMemberAdmissionCommit(result.events, result.receipt);
         for (const event of result.events) {
           this.applyReplayedMemberEvent(event, result.events);

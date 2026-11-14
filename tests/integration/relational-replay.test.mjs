@@ -234,13 +234,12 @@ test('覆盖只来自六个实际 owner，未实现事实仍明确拒绝', () =>
     owners.reduce((sum, facts) => sum + facts.size, 0),
     relationalReplayFacts().size,
   );
-  assert.equal(relationalReplayFacts().size, 61);
+  assert.equal(relationalReplayFacts().size, 64);
   assert.deepEqual(
     Object.keys(relationalPayloadParsers)
       .filter((name) => !relationalReplayFacts().has(name))
       .sort(),
     [
-      'FundsTransferred',
       'OpeningFundingRecorded',
       'CachedResultLinked',
       'OpeningRequestRecorded',
@@ -499,13 +498,16 @@ test('完整提交缺失、重排、不同历史、checkpoint 及未实现 owner
       bad.historyId = 'different';
     },
     (bad) => {
-      bad.events[2].eventType = 'FundsTransferred';
+      bad.events[2].eventType = 'OpeningFundingRecorded';
       bad.events[2].payload = {
         accountId: 'a',
-        fromMemberId: 'm1',
-        toMemberId: 'm2',
-        resources: { v5: '1', anlasFixed: '0', anlasPurchased: '0' },
-        reason: 'transfer',
+        receipt: 'unsupported-opening-funding',
+        resource: 'anlasFixed',
+        destination: 'members',
+        remaining: '1',
+        registeredAt: NOW,
+        snapshotAt: NOW,
+        origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-funding' },
       };
       resequence(bad, r.db);
     },
