@@ -1674,7 +1674,7 @@ admin 保留严格本机 Host、原 privateAccessAllowed/同源及每次 assertA
 
 服务资源使用原实际 FS/进程/卷 owner，允许同一平台能力注入；测试区分真实 FS 与受控等待 callback，未声称读取真实 Discord/R2/PikPak 云端，也不以在线副本引用数或字节冒充云容量。heatmap 与 losses 复用原 report SQL/参数 owner，损耗仍为每页 50 条、history 绑定的原 cursor。跨 IO 撤销授权时不发 users/resources，读取不提交金融/任务/配置；原 Discord 观察、当前 owner 配置协调和精确可见续期的私有写入单独保留。
 
-本片新增工厂含认证/续期能力，仅在现架构 mutations 名单登记这一实际名字，沿 query/protocol 的原 named/injected 矩阵增加两例；旧守卫 0/2，新守卫 2/2，没有放宽 import 或增加另一框架。这一守卫增量及当前 nullable DTO 契约须维护者复核。
+本片新增工厂含认证/续期能力。初稿 `5332164` 只登记 mutation 名字和 named/injected 两例，独审确认整模块来源漏项：namespace/dynamic/require/export-star 在 query/protocol 共八条仍被放行，独立 14 例仅 6 通过，因此初稿不能视为通过。最小后继沿现 members writer-module 正则补管理模块，把实际工厂加入中央 writerFactories，并将原 dynamic 的尾部 slice 改为整表（与已审 Raw 修复相同），不新增框架或放宽 import。新仓库矩阵先 2/6（四条真实拒绝缺失）再 6/6，全部架构用例 416/416；独审原脚本字节不变的 14 例全部通过，type-only 描述仍合法。业务源逐字不变；此守卫增量及当前 nullable DTO 契约仍须维护者复核。
 
 Windows Node 22 源码管理 HTTP 及九个相关文件共 461/461；随后将测试客户端收紧为真实 Node HTTP（保留实际 Host/Origin），补核配置 PUBLIC_HOST 的合法 owner 与本机 admin 区分，管理专项最终 17/17、零跳过。全部正常源先由原业务命令/Opening owner 建立，再经唯一 installer 的完整 shadow、选定私有与真实 Local 文件核对进入 ready；近期统计的 0/NULL/退休/跨成员用实际 Opening 实体和 29 条真实失败验证。五项临时退化分别移除 IO 后当前 session 检查、以 displayName 冒充 username、改用父受理时间排序、缓存 admin 授权及移除严格本机 Host，均在原业务断言精准失败，恢复原字节后 17/17。热力图 nullable 登录名的 Nuxt 用例先出现 NULL label 反例，最小稳定 ID 回退后 11/11；backend/web type、架构、语法、默认与可信 `8b11fa6` 迁移历史和局部格式检查通过。日志及逐文件 hash 随固定候选交独立审查；未运行本片 full/compiled/Node 24，未切主入口、未提供 admin 原始 Key/PST reveal 或写命令，也不借前置 CI 宣称新管理 GET 总体验收完成。
 
