@@ -78,6 +78,7 @@ async function setup(t, options = {}) {
   let drains = 0;
   const handle = createRelationalMemberGenerationHttp({
     sqlite: f.db,
+    runtime: f.commandOnlyRuntime,
     payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
     events,
     previews,

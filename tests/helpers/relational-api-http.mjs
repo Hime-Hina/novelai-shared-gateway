@@ -108,6 +108,7 @@ export async function setup(t, options = {}) {
   const replicas = { dataDir: f.dir };
   const handle = (options.createHttp ?? createRelationalNativeHttp)({
     sqlite: f.db,
+    runtime,
     events,
     previews,
     payloadBudget: budget,

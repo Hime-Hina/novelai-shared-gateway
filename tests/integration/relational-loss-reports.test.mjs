@@ -221,26 +221,36 @@ test('当前政策与原政策审计分开，资金回执/运营余额复用实�
   await withAuthenticatedMemberApiKey(
     f.members,
     keys.m1,
-    () =>
-      f.quotas.manageQuotaFunding(meta('contribute', NOW + 11, 'm1'), 'a', {
-        action: 'operating-contribute',
-        receipt: 'original-receipt',
-        resource: 'anlasFixed',
-        amount: 7,
-      }),
+    (member) =>
+      f.quotas.manageQuotaFunding(
+        meta('contribute', NOW + 11, 'm1'),
+        'a',
+        {
+          action: 'operating-contribute',
+          receipt: 'original-receipt',
+          resource: 'anlasFixed',
+          amount: 7,
+        },
+        member,
+      ),
     env,
   );
   await withAuthenticatedMemberApiKey(
     f.members,
     keys.m1,
-    () =>
-      f.quotas.manageQuotaFunding(meta('register', NOW + 12, 'm1'), 'a', {
-        action: 'operating-register-funding',
-        receipt: 'pending-receipt',
-        resource: 'anlasFixed',
-        amount: 5,
-        destination: 'operating',
-      }),
+    (member) =>
+      f.quotas.manageQuotaFunding(
+        meta('register', NOW + 12, 'm1'),
+        'a',
+        {
+          action: 'operating-register-funding',
+          receipt: 'pending-receipt',
+          resource: 'anlasFixed',
+          amount: 5,
+          destination: 'operating',
+        },
+        member,
+      ),
     env,
   );
   const before = databaseState(f.db),
@@ -274,7 +284,7 @@ test('实际返回/纠正/核销/扣款确认按原资源事实展示，缺累�
       withAuthenticatedMemberApiKey(
         f.members,
         keys.m1,
-        () => f.quotas.manageQuotaFunding(meta(id, at, 'm1'), 'a', body),
+        (member) => f.quotas.manageQuotaFunding(meta(id, at, 'm1'), 'a', body, member),
         env,
       );
   f.observe('return-gap', { fixed: '7900' }, NOW + 10);

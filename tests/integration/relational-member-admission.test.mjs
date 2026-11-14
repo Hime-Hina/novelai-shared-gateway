@@ -77,6 +77,7 @@ function bridge(f, overrides = {}) {
   return createRelationalMemberGenerationAdmission({
     ...f,
     sqlite: f.db,
+    runtime: f.commandOnlyRuntime,
     payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
     env: {},
     now: () => NOW,

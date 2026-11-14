@@ -81,7 +81,11 @@ function assertSameTables(
     const selected = columns.filter(
       (column) =>
         !(name === 'projection_state' && column.name === 'status') &&
-        !(!includePrivate && name === 'members' && column.name === 'auth_epoch'),
+        !(
+          !includePrivate &&
+          name === 'members' &&
+          ['auth_epoch', 'note_json'].includes(column.name)
+        ),
     );
     const keys = columns.filter((column) => column.pk).sort((a, b) => a.pk - b.pk);
     if (!keys.length) {

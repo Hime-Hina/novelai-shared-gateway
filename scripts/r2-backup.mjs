@@ -1,10 +1,11 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { constants, createReadStream, createWriteStream, existsSync, realpathSync } from 'node:fs';
+import { constants, createReadStream, createWriteStream, realpathSync } from 'node:fs';
 import { copyFile, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
+import { R2Storage, r2Config, fileChecksums } from '../server/storage/r2-storage.ts';
 
 const magic = Buffer.from('NAIR2B1\0');
 export function encryptBackup(archive, key) {
@@ -78,10 +79,6 @@ async function main() {
   if (!['upload', 'download'].includes(mode) || !input || !output || !envFile || !keyFile) {
     throw new Error('Invalid backup arguments');
   }
-  const runtime = existsSync(new URL('../server/storage/r2-storage.js', import.meta.url))
-    ? '../server/storage/r2-storage.js'
-    : '../server/storage/r2-storage.ts';
-  const { R2Storage, r2Config, fileChecksums } = await import(runtime);
   const config = r2Config(parseEnv(await readFile(envFile, 'utf8')));
   if (!config) {
     throw new Error('R2 configuration is required');

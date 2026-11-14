@@ -488,6 +488,14 @@ export function createRelationalQueueRuntime(options: {
   }
   return {
     controls: controls.controls,
+    assertAccepting() {
+      if (phase !== 'running') {
+        throw Object.assign(new Error('服务正在关闭或尚未就绪，请稍后重试。'), {
+          statusCode: 503,
+          code: 'generation_unavailable',
+        });
+      }
+    },
     previews,
     schedule,
     tick,
@@ -533,3 +541,8 @@ export function createRelationalQueueRuntime(options: {
     },
   };
 }
+
+export type RelationalGenerationLifecycle = Pick<
+  ReturnType<typeof createRelationalQueueRuntime>,
+  'status' | 'assertAccepting'
+>;

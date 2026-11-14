@@ -778,13 +778,18 @@ test('two costs 100 with aggregate uncovered 150 never infer per-loss budgets or
     f.db.transaction(() =>
       assert.throws(
         () =>
-          quotas.manageQuotaFunding(meta(`cover-${name}`, NOW + 20, 'm1'), 'a', {
-            action: 'operating-cover-loss',
-            receipt: `cover-${name}`,
-            resource: 'anlasFixed',
-            amount: 1,
-            lossEventId: `${name}-OpeningAttemptRecorded`,
-          }),
+          quotas.manageQuotaFunding(
+            { ...meta(`cover-${name}`, NOW + 20), actorKind: 'admin' },
+            'a',
+            {
+              action: 'operating-cover-loss',
+              receipt: `cover-${name}`,
+              resource: 'anlasFixed',
+              amount: 1,
+              lossEventId: `${name}-OpeningAttemptRecorded`,
+            },
+            null,
+          ),
         /损耗记录不存在|资源不符/,
       ),
     )();

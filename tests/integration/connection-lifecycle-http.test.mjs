@@ -2,22 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtemp, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { syncFairQuota } from '../../server/quota/fair-share.ts';
 import { nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { webJobRequestSummary } from '../../server/generation/batch-requests.ts';
-import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
+import { childFixture, launchGateway, enableAccount, query } from '../helpers/relational-child.mjs';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
   'base64',
@@ -51,41 +38,13 @@ const openAiBody = (label, stream = false) => ({
 });
 
 test(
-  'direct/OpenAI 超时与断线只结束连接，完整父请求和旧 inline 队列在强杀后继续，缓存响应不变',
+  'direct/OpenAI 超时与断线只结束连接，完整父请求在强杀后继续，缓存响应不变',
   { timeout: 150000 },
   async (t) => {
-    let dataDir = await mkdtemp(path.join(tmpdir(), 'nai-connection-http-'));
-    const adminToken = 'synthetic-admin-for-connection-lifecycle';
-    const initialized = await bootstrap({
-      env: {
-        ADMIN_TOKEN: adminToken,
-        NOVELAI_TOKEN: 'pst-synthetic-offline-connection-only',
-        DATA_DIR: dataDir,
-      },
-      log() {},
-    });
-    const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-    dataDir = await createLegacyDatabaseFixture(dataDir);
-    const store = new JsonStore(dataDir);
-    await store.init();
-    const db = await store.read();
-    const observation = {
-      quotaTier: 3,
-      subscriptionActive: true,
-      subscriptionExpiresAt: Date.now() + 86400000,
-      quotaFixed: 10000,
-      quotaPurchased: 0,
-      v5UsagePercent: 100,
-      quotaCheckedAt: new Date().toISOString(),
-    };
-    Object.assign(db.accounts[0], observation, {
-      cooldownUntil: new Date(Date.now() + 30000).toISOString(),
-    });
-    syncFairQuota(db);
-    await store.write(db);
-    await store.close();
-    const audit = new Database(path.join(dataDir, 'library.sqlite'), { readonly: true });
-    t.after(() => audit.close());
+    const fixture = await childFixture(t, 'connection-http'),
+      credentials = fixture.members;
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => (releaseFirst = resolve));
     const calls = [];
     let quotaCalls = 0;
     const upstream = http.createServer(async (req, res) => {
@@ -110,88 +69,41 @@ test(
         chunks.push(chunk);
       }
       const payload = JSON.parse(Buffer.concat(chunks));
-      calls.push(Date.now());
+      calls.push({ at: Date.now(), payload });
+      if (calls.length === 1) await firstGate;
       res.writeHead(200, {
         'content-type': req.url.endsWith('-stream') ? 'application/octet-stream' : 'image/png',
       });
       res.end(req.url.endsWith('-stream') ? nativeImagesMsgpack([png]) : png);
     });
-    const upstreamPort = await listen(upstream),
-      reservation = http.createServer();
-    const port = await listen(reservation);
-    await new Promise((resolve) => reservation.close(resolve));
-    const base = `http://127.0.0.1:${port}`;
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
-    );
-    Object.assign(env, {
-      ADMIN_TOKEN: adminToken,
-      DATA_DIR: dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      DIRECT_GENERATE_TIMEOUT_MS: '100',
-      OPENAI_CHAT_TIMEOUT_MS: '100',
-      QUEUE_MAX_PAYLOAD_BYTES: String(512 * 1024),
-      NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-      NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    });
-    let child,
-      exited,
-      output = '';
+    const upstreamPort = await listen(upstream);
+    let server, base;
     const start = async () => {
-      child = spawn(process.execPath, ['server/index.ts'], {
-        cwd: root,
-        env,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+      server = await launchGateway(fixture, `http://127.0.0.1:${upstreamPort}`, {
+        DIRECT_GENERATE_TIMEOUT_MS: '100',
+        OPENAI_CHAT_TIMEOUT_MS: '100',
+        QUEUE_MAX_PAYLOAD_BYTES: String(512 * 1024),
       });
-      exited = once(child, 'exit');
-      child.stderr.on('data', (chunk) => {
-        output += chunk.toString();
-      });
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error('synthetic gateway startup timeout: ' + output)),
-          15000,
-        );
-        child.stdout.on('data', (chunk) => {
-          output += chunk.toString();
-          if (chunk.toString().includes('Nai2API listening')) {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-        child.once('exit', (code) => {
-          clearTimeout(timer);
-          reject(new Error(`synthetic gateway exited ${code}: ${output}`));
-        });
-      });
-    };
-    const stop = async (signal = 'SIGTERM') => {
-      if (child?.exitCode === null && child?.signalCode === null) {
-        child.kill(signal);
-      }
-      if (exited) {
-        await exited;
-      }
+      base = server.origin;
     };
     t.after(async () => {
-      await stop();
+      releaseFirst();
       upstream.closeAllConnections();
       await new Promise((resolve) => upstream.close(resolve));
     });
     const rows = () =>
-      audit
-        .prepare('SELECT data FROM jobs')
-        .all()
-        .map((row) => JSON.parse(row.data));
+      query(
+        fixture,
+        `SELECT j.*,r.member_id AS memberId,r.source,r.accepted_at AS createdAt,
+      r.id AS requestId,j.queue_seq AS queueSeq,j.deadline_at AS deadlineAt,j.artifact_id AS imageId,
+      j.error_code AS error,j.error_status AS errorStatus FROM generation_jobs j
+      JOIN generation_requests r ON r.id=j.request_id ORDER BY j.queue_seq`,
+      );
     const safeText = (value, limit) => {
       let text = String(value || '');
       for (const secret of [
-        adminToken,
-        'pst-synthetic-offline-connection-only',
+        fixture.env.ADMIN_TOKEN,
+        fixture.env.NOVELAI_TOKEN,
         ...credentials.flatMap((member) => [member.api_key, member.password]),
       ]) {
         text = text.replaceAll(secret, '[redacted]');
@@ -201,10 +113,9 @@ test(
     // 只输出合成样本的状态与时间，区分失败终态、停止派发和仍在前进；不延长等待阈值。
     const diagnostic = () => ({
       calls: calls.length,
-      callOffsetsMs: calls.map((at) => at - calls[0]),
+      callOffsetsMs: calls.map(({ at }) => at - calls[0].at),
       quotaCalls,
-      childExit: child?.exitCode,
-      childSignal: child?.signalCode,
+      childExit: server?.exit,
       jobs: rows().map((job) => ({
         id: job.id,
         source: job.source,
@@ -216,19 +127,8 @@ test(
         completedAt: job.completedAt,
         upstreamHttpStatus: job.upstreamHttpStatus,
       })),
-      accounts: audit
-        .prepare('SELECT data FROM accounts')
-        .all()
-        .map((row) => {
-          const account = JSON.parse(row.data);
-          return {
-            inFlight: account.inFlight,
-            cooldownUntil: account.cooldownUntil,
-            quotaCheckedAt: account.quotaCheckedAt,
-            quotaError: safeText(account.quotaError, 250),
-          };
-        }),
-      outputTail: safeText(output, 5000),
+      accounts: query(fixture, 'SELECT id,enabled,cooldown_until FROM upstream_accounts'),
+      outputTail: safeText(server?.output, 5000),
     });
     const post = (body, member = 0) =>
       fetch(base + '/v1/chat/completions', {
@@ -252,6 +152,8 @@ test(
         seed: String(seed),
       });
     await start();
+    await enableAccount(fixture, server);
+    assert.equal(quotaCalls, 1);
 
     assert.equal((await post('{')).status, 400);
     assert.equal((await post('x'.repeat(2 * 1024 * 1024 + 1))).status, 413);
@@ -290,30 +192,61 @@ test(
     assert.match(events, /连接超时/);
     assert.match(events, /data: \[DONE\]/);
     assert.equal(rows().length, 3);
-    assert.ok(
-      rows().every(
-        (job) =>
-          job.status === 'queued' &&
-          !job.deadlineAt &&
-          job.requestId &&
-          !job.request.prompt &&
-          !job.request.tag,
-      ),
+    assert.equal(calls.length, 1, 'delivery timeouts cannot release the physical upstream slot');
+    assert.equal(rows()[0].status, 'running');
+    assert.equal(
+      rows()[0].deadlineAt,
+      null,
+      '100ms delivery timeout cannot persist a task deadline',
+    );
+    const physical = query(
+      fixture,
+      'SELECT authorized_at,credential_epoch,upstream_completed_at FROM generation_attempts',
+    )[0];
+    assert.ok(physical.authorized_at <= Date.now());
+    assert.equal(
+      physical.credential_epoch,
+      query(
+        fixture,
+        'SELECT credential_epoch FROM upstream_accounts WHERE id=?',
+        fixture.accountId,
+      )[0].credential_epoch,
+    );
+    assert.equal(calls[0].payload.parameters.seed, 501);
+    assert.equal(physical.upstream_completed_at, null);
+    assert.equal(
+      query(fixture, "SELECT count(*) AS n FROM charges WHERE status='reserved'")[0].n,
+      1,
     );
     assert.ok(
-      rows().every((job) => Date.parse(job.queueExpiresAt) - Date.parse(job.createdAt) > 590000),
+      rows()
+        .slice(1)
+        .every((job) => job.status === 'queued' && job.deadlineAt === null),
     );
-    const parents = audit.prepare('SELECT * FROM generation_requests').all();
+    assert.ok(rows().every((job) => job.queue_expires_at - job.createdAt > 590000));
+    const parents = query(
+      fixture,
+      `SELECT r.*,i.body FROM generation_requests r
+      JOIN generation_inputs i ON i.id=r.input_id`,
+    );
     assert.equal(parents.length, 3);
-    assert.ok(parents.some((parent) => JSON.parse(parent.payload).tag === prompt));
+    assert.ok(
+      parents.some((parent) => {
+        const body = JSON.parse(parent.body);
+        return (body.displayPrompt ?? body.input) === prompt;
+      }),
+    );
     assert.ok(
       parents.every(
         (parent) =>
-          !parent.payload.includes(credentials[0].api_key) &&
-          !parent.payload.includes('/generate?'),
+          !parent.body.includes(credentials[0].api_key) && !parent.body.includes('/generate?'),
       ),
     );
     assert.equal(parents.filter((parent) => parent.source === 'openai').length, 2);
+    assert.ok(
+      rows().every((job) => !('prompt' in job) && !('tag' in job)),
+      'job projection contains no inline input',
+    );
 
     for (const [index, endpoint, value] of [
       [0, direct('direct disconnected', 502, 1), null],
@@ -339,122 +272,74 @@ test(
       assert.equal(rows().length, 4 + index);
     }
     const acceptedIds = rows().map((job) => job.id);
-    assert.equal(calls.length, 0);
-    await stop('SIGKILL');
-    const legacy = new JsonStore(dataDir);
-    await legacy.init();
-    for (const [index, source] of ['direct', 'openai'].entries()) {
-      const request = {
-        model: 'nai-diffusion-4-5-full',
-        width: 1024,
-        height: 1024,
-        steps: 23,
-        seed: 801 + index,
-        prompt: `legacy ${source}`,
-        tag: `legacy ${source}`,
-        sampler: 'k_euler_ancestral',
-      };
-      const id = `legacy-${source}`,
-        inputRef = `legacy-input:${id}`,
-        createdAt = new Date().toISOString();
-      const payload = JSON.stringify({ legacyInline: true, request });
-      // The stopped synthetic fixture imports an old protected input before its opening fact; this is not runtime admission.
-      legacy.sqlite
-        .prepare(
-          'INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)',
-        )
-        .run(
-          inputRef,
-          credentials[3].user_id,
-          source,
-          'generate',
-          createdAt,
-          Buffer.byteLength(payload),
-          payload,
-        );
-      await legacy.update(
-        (db) => {
-          db.accounts[0].cooldownUntil = '';
-          recordDomainEvent(db, {
-            eventType: 'CooldownChanged',
-            streamId: `account:${db.accounts[0].id}`,
-            payload: { cooldownUntil: '' },
-          });
-          const job = {
-            id,
-            source,
-            userToken: credentials[3].api_key,
-            status: 'queued',
-            request,
-            queueSeq: legacy.nextQueueSequence(),
-            queueExpiresAt: new Date(Date.now() + 600000).toISOString(),
-            createdAt,
-          };
-          db.jobs.push(job);
-          const { userToken, ...facts } = job;
-          recordDomainEvent(db, {
-            eventType: 'OpeningStateRecorded',
-            streamId: `request:legacy-${id}`,
-            payload: {
-              state: {
-                request: {
-                  requestId: null,
-                  memberId: credentials[3].user_id,
-                  source,
-                  inputRef,
-                  inputSha256: createHash('sha256').update(payload).digest('hex'),
-                  legacy: true,
-                },
-                jobs: {
-                  [id]: {
-                    ...facts,
-                    memberId: credentials[3].user_id,
-                    request: webJobRequestSummary(request),
-                    legacyInputRef: inputRef,
-                    legacyInlineInput: true,
-                  },
-                },
-                artifacts: {},
-                aliases: [],
-                freeUsage: {},
-              },
-            },
-          });
-        },
-        { immediate: true, dirtyRows: { jobs: [id], accounts: [legacy.db.accounts[0].id] } },
-      );
-    }
-    await legacy.close();
+    assert.equal(calls.length, 1);
+    assert.equal(
+      rows()[3].memberId,
+      credentials[1].user_id,
+      'Direct query token wins over another Bearer member',
+    );
+    assert.ok(
+      rows()
+        .slice(4)
+        .every((job) => job.memberId === credentials[2].user_id),
+    );
+    releaseFirst();
+    await until(() => rows()[0].status === 'done', 5000, diagnostic);
+    const originalInput = query(fixture, 'SELECT * FROM generation_inputs ORDER BY id'),
+      originalContext = query(fixture, 'SELECT * FROM normalization_contexts ORDER BY id');
+    assert.equal(
+      query(fixture, "SELECT count(*) AS n FROM charges WHERE status='settled'")[0].n,
+      1,
+    );
+    await server.kill();
     await start();
+    assert.deepEqual(query(fixture, 'SELECT * FROM generation_inputs ORDER BY id'), originalInput);
+    assert.deepEqual(
+      query(fixture, 'SELECT * FROM normalization_contexts ORDER BY id'),
+      originalContext,
+    );
     await until(
       () => {
         const jobs = rows();
         if (jobs.some((job) => job.status === 'failed')) {
           assert.fail('synthetic connection lifecycle job failed: ' + JSON.stringify(diagnostic()));
         }
-        return jobs.length === 8 && jobs.every((job) => job.status === 'done');
+        return jobs.length === 6 && jobs.every((job) => job.status === 'done');
       },
       100000,
       diagnostic,
     );
-    assert.equal(calls.length, 8);
+    assert.equal(calls.length, 6);
     assert.ok(acceptedIds.every((id) => rows().find((job) => job.id === id)?.imageId));
-    assert.equal(rows().find((job) => job.id === 'legacy-direct').requestId, undefined);
+    const charges = query(fixture, 'SELECT * FROM charges');
+    assert.equal(charges.length, 6);
     assert.ok(
-      rows()
-        .filter((job) => job.id.startsWith('legacy-'))
-        .every((job) => job.payloadBytes > 0),
+      charges.every(
+        (charge) => charge.status === 'settled' && charge.original_account_id === fixture.accountId,
+      ),
+    );
+    assert.equal(query(fixture, 'SELECT count(*) AS n FROM generation_attempts')[0].n, 6);
+    assert.ok(
+      query(fixture, 'SELECT * FROM wallets').every(
+        (wallet) => wallet.account_id === fixture.accountId,
+      ),
     );
     const hit = await fetch(base + cachedPath);
     assert.equal(hit.status, 200);
     assert.equal(hit.headers.get('x-cache'), 'hit');
     assert.ok(hit.headers.get('x-nai-request-id'));
     assert.deepEqual(Buffer.from(await hit.arrayBuffer()), png);
-    assert.equal(calls.length, 8);
-    assert.equal(rows().length, 9);
+    assert.equal(calls.length, 6);
+    assert.equal(rows().length, 7);
+    assert.equal(
+      query(fixture, 'SELECT count(*) AS n FROM charges')[0].n,
+      6,
+      'cache delivery cannot charge again',
+    );
+    await server.stop();
     assert.equal(
       rows().filter((job) => job.source === 'direct' && job.status === 'done').length,
-      4,
+      3,
     );
   },
 );

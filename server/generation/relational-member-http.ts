@@ -26,6 +26,7 @@ import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import { publicGenerationRequest } from './request-queries.ts';
 import { cancelRelationalGenerationRequest } from './relational-request-http.ts';
 import type { JobPreviews } from './job-previews.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 interface Dependencies {
   sqlite: Database.Database;
@@ -33,6 +34,7 @@ interface Dependencies {
   previews: JobPreviews;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   scheduleQueueDrain(): void;
   env?: NodeJS.ProcessEnv;
   discordFetch?: DiscordDependencies['discordFetch'];
@@ -60,6 +62,7 @@ export function createRelationalMemberGenerationHttp(deps: Dependencies) {
       inputs,
       generations,
       payloadBudget: deps.payloadBudget,
+      runtime: deps.runtime,
       env,
       now: deps.now,
     });

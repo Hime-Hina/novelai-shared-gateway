@@ -20,6 +20,7 @@ import { createRelationalNativeAdmission } from './relational-native-admission.t
 import { createRelationalApiDelivery } from './relational-api-delivery.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 export function createRelationalNativeHttp(deps: {
   sqlite: Database.Database;
@@ -27,6 +28,7 @@ export function createRelationalNativeHttp(deps: {
   previews: JobPreviews;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   readJson(req: NativeHttpRequest, limit: number): Promise<unknown>;
   sendImage: NativeHttpDependencies['sendImage'];
   schedule(): void;
@@ -52,6 +54,7 @@ export function createRelationalNativeHttp(deps: {
     inputs,
     generations,
     payloadBudget: deps.payloadBudget,
+    runtime: deps.runtime,
     replicas: deps.replicas,
     env,
     now: deps.now,
@@ -80,6 +83,7 @@ export function createRelationalNativeHttp(deps: {
         env,
         replicas: deps.replicas,
         events: deps.events,
+        runtime: deps.runtime,
         now: deps.now,
       });
       try {

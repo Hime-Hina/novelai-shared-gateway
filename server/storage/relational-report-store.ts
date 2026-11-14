@@ -6,7 +6,13 @@ import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import { RelationalInputStore } from './relational-input-store.ts';
 import { selectErrorLogJobs, publicErrorLog } from '../reports/generation-errors.ts';
-import { jobDurationMs } from '../generation/request-queries.ts';
+import { jobDurationMs, generationCost } from '../generation/request-queries.ts';
+import {
+  buildUsageDays,
+  finalizeStats,
+  isStatsExcludedJob,
+  type AdminJobStats,
+} from '../reports/admin-statistics.ts';
 import { relationalFailureTimeSql, relationalFailurePredicate } from './relational-schema.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
 import { parseRelationalFact } from '../events/relational-events.ts';
@@ -22,6 +28,33 @@ import {
 } from '../quota/failure-accounting.ts';
 
 type ActivityQuery = Parameters<Parameters<typeof readActivityHeatmap>[0]['readActivityDays']>[0];
+// 只读原受理、终态及原账户关系；不能借最新投影来源或收费资源重造旧 display cost。
+const adminJobs = `WITH summary_jobs AS (
+  SELECT j.id,j.status,r.model,origin.created_at AS createdAt,j.completed_at AS terminalAt,
+    COALESCE(attempt.account_id,original.account_id) AS accountId,j.error_code AS error,
+    CASE WHEN EXISTS (SELECT 1 FROM domain_events accepted
+      WHERE accepted.stream_id='request:'||r.id AND accepted.event_type='JobAccepted'
+        AND json_extract(accepted.payload,'$.jobId')=j.id)
+      THEN ${generationCost()} ELSE NULL END AS displayCost,
+    (SELECT json_extract(failure.payload,'$.diagnosticId') FROM domain_events failure
+      WHERE failure.stream_id='request:'||r.id AND failure.member_id=r.member_id
+        AND failure.event_type='JobFailed' AND json_extract(failure.payload,'$.jobId')=j.id) AS diagnosticId,
+    EXISTS(SELECT 1 FROM domain_events cancelled JOIN json_each(cancelled.payload,'$.jobIds') item
+      WHERE cancelled.stream_id='request:'||r.id AND cancelled.member_id=r.member_id
+        AND cancelled.event_type='WaitingJobsCancelled' AND item.value=j.id) AS serverCancellation
+  FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+  JOIN generation_job_origins origin ON origin.stream_id='request:'||r.id
+    AND origin.job_id=j.id AND origin.request_id=r.id
+  LEFT JOIN generation_attempts attempt ON attempt.job_id=j.id
+  LEFT JOIN artifacts artifact ON artifact.id=j.artifact_id AND artifact.member_id=r.member_id
+  LEFT JOIN generation_attempts original ON original.id=artifact.original_attempt_id
+  WHERE j.retired_at IS NULL AND r.retired_at IS NULL
+)`;
+type UsageDay = ReturnType<typeof buildUsageDays>[number];
+type NullableUsageHour = Omit<UsageDay['hours'][number], keyof AdminJobStats | 'credits'> &
+  AdminJobStats & { credits: number | null };
+type NullableUsageDay = Omit<UsageDay, keyof AdminJobStats | 'credits' | 'hours'> &
+  AdminJobStats & { credits: number | null; hours: NullableUsageHour[] };
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
 function timestamp(value: string): number {
   if (!activityDate(value)) {
@@ -124,6 +157,217 @@ export class RelationalReportStore {
   constructor(sqlite: Database.Database) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+  }
+
+  readLogicalArtifactCount() {
+    return this.sqlite
+      .prepare<[], { total: number }>(
+        'SELECT COUNT(*) AS total FROM artifacts WHERE retired_at IS NULL',
+      )
+      .get()!.total;
+  }
+
+  readAdminSummaryStats(now = Date.now()) {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      throw Object.assign(new Error('管理统计时间无效。'), { statusCode: 400 });
+    }
+    return this.sqlite.transaction(() => {
+      const hour = now - 3600000,
+        minute = now - 60000,
+        request = this.sqlite
+          .prepare<[number], { total: number; unknown: number }>(
+            `${adminJobs}
+          SELECT COUNT(*) FILTER (WHERE createdAt>=?) AS total,
+            COUNT(*) FILTER (WHERE createdAt IS NULL) AS unknown FROM summary_jobs`,
+          )
+          .get(minute)!,
+        generation = this.sqlite
+          .prepare<[number, number, number, number], { total: number; unknown: number }>(
+            `${adminJobs}
+          SELECT COUNT(*) FILTER (WHERE terminalAt>=? AND terminalAt<=? AND displayCost>=1) AS total,
+            COUNT(*) FILTER (WHERE terminalAt IS NULL OR (terminalAt>=? AND terminalAt<=? AND displayCost IS NULL)) AS unknown
+          FROM summary_jobs WHERE status='done'`,
+          )
+          .get(minute, now, minute, now)!,
+        totals: Pick<AdminJobStats, 'done' | 'failed'> = { done: 0, failed: 0 },
+        accounts = new Map<string, Pick<AdminJobStats, 'done' | 'failed'>>();
+      const add = (
+        status: 'done' | 'failed',
+        accountId: string | null,
+        count: number,
+        unknown: boolean,
+      ) => {
+        totals[status] = unknown || totals[status] === null ? null : totals[status]! + count;
+        if (accountId && (count || unknown)) {
+          const item = accounts.get(accountId) ?? { done: 0, failed: 0 };
+          item[status] = unknown || item[status] === null ? null : item[status]! + count;
+          accounts.set(accountId, item);
+        }
+      };
+      const counted = this.sqlite
+        .prepare<
+          [number, number],
+          {
+            status: 'done' | 'failed';
+            accountId: string | null;
+            error: string | null;
+            total: number;
+            unknown: number;
+          }
+        >(
+          `${adminJobs}
+        SELECT status,accountId,error,COUNT(*) FILTER (WHERE createdAt>=?) AS total,
+          COUNT(*) FILTER (WHERE createdAt IS NULL) AS unknown FROM summary_jobs
+        WHERE status IN ('done','failed') AND (createdAt>=? OR createdAt IS NULL) GROUP BY status,accountId,error`,
+        )
+        .all(hour, hour);
+      for (const row of counted) {
+        if (
+          row.status === 'done' ||
+          (row.unknown && !isStatsExcludedJob({ status: row.status, error: row.error }))
+        ) {
+          add(row.status, row.accountId, row.status === 'done' ? row.total : 0, row.unknown > 0);
+        }
+      }
+      const inputs = new RelationalInputStore(this.sqlite),
+        failed = this.sqlite
+          .prepare<
+            [number],
+            {
+              id: string;
+              accountId: string | null;
+              error: string | null;
+              diagnosticId: string | null;
+              serverCancellation: number;
+            }
+          >(
+            `${adminJobs} SELECT id,accountId,error,diagnosticId,serverCancellation
+          FROM summary_jobs WHERE status='failed' AND createdAt>=?`,
+          )
+          .all(hour);
+      // 成本只随一小时内创建的失败数增长；原诊断存在时仍须完整校验，损坏不能降为未知。
+      let diagnosticRowsRead = 0;
+      for (const row of failed) {
+        const detail =
+          row.diagnosticId === null
+            ? null
+            : inputs.readGenerationDiagnostic(row.diagnosticId, row.id);
+        if (row.diagnosticId !== null) {
+          diagnosticRowsRead++;
+        }
+        const excluded = isStatsExcludedJob({
+          status: 'failed',
+          error: row.error,
+          errorDetail: detail,
+        });
+        if (!excluded) {
+          add('failed', row.accountId, 1, detail === null && row.serverCancellation !== 1);
+        }
+      }
+      const speed: Record<'v45' | 'v5', { seconds: number | null; count: number | null }> = {
+        v45: { seconds: null, count: 0 },
+        v5: { seconds: null, count: 0 },
+      };
+      const speeds = this.sqlite
+        .prepare<
+          [number],
+          {
+            version: 'v45' | 'v5' | null;
+            total: number;
+            duration: number | null;
+            unknown: number;
+          }
+        >(
+          `${adminJobs} SELECT CASE WHEN model LIKE 'nai-diffusion-5%' THEN 'v5'
+          WHEN model LIKE 'nai-diffusion-4-5%' THEN 'v45' END AS version,
+        COUNT(*) FILTER (WHERE terminalAt IS NOT NULL AND createdAt IS NOT NULL) AS total,
+        SUM(MAX(0,(julianday(terminalAt/1000.0,'unixepoch')-julianday(createdAt/1000.0,'unixepoch'))*86400.0)) AS duration,
+        COUNT(*) FILTER (WHERE terminalAt IS NULL OR createdAt IS NULL OR model IS NULL) AS unknown
+        FROM summary_jobs WHERE status='done' AND (terminalAt>=? OR terminalAt IS NULL)
+          AND (model LIKE 'nai-diffusion-5%' OR model LIKE 'nai-diffusion-4-5%' OR model IS NULL)
+        GROUP BY version`,
+        )
+        .all(hour);
+      for (const row of speeds) {
+        const versions = row.version === null ? (['v45', 'v5'] as const) : [row.version];
+        for (const version of versions) {
+          if (row.unknown || row.version === null) {
+            speed[version] = { seconds: null, count: null };
+          } else if (speed[version].count !== null) {
+            speed[version] = {
+              count: row.total,
+              seconds: row.total ? Math.max(0, (row.duration ?? 0) / row.total) : null,
+            };
+          }
+        }
+      }
+      const usage = this.sqlite
+          .prepare<
+            [number],
+            {
+              date: string | null;
+              hour: number | null;
+              status: string;
+              count: number;
+              credits: number | null;
+              unknown: number;
+            }
+          >(
+            `${adminJobs} SELECT strftime('%Y-%m-%d',terminalAt/1000.0,'unixepoch','+8 hours') AS date,
+        CAST(strftime('%H',terminalAt/1000.0,'unixepoch','+8 hours') AS INTEGER) AS hour,status,
+        SUM(CASE WHEN status='failed' OR displayCost>=1 THEN 1 ELSE 0 END) AS count,
+        SUM(CASE WHEN status='done' THEN displayCost ELSE 0 END) AS credits,
+        COUNT(*) FILTER (WHERE status='done' AND displayCost IS NULL) AS unknown
+        FROM summary_jobs WHERE status IN ('done','failed') AND terminalAt>=?
+        GROUP BY date,hour,status`,
+          )
+          .all(now - 7 * 86400000),
+        days: NullableUsageDay[] = buildUsageDays(usage, now, 7);
+      const unknown = (
+        bucket: AdminJobStats & { credits: number | null },
+        status: 'done' | 'failed',
+      ) => {
+        bucket[status] = null;
+        if (status === 'done') {
+          bucket.credits = null;
+        }
+        Object.assign(bucket, finalizeStats(bucket));
+      };
+      for (const row of usage) {
+        if (row.unknown) {
+          const day = days.find((item) => item.date === row.date);
+          if (day && row.hour !== null) {
+            unknown(day, 'done');
+            unknown(day.hours[row.hour], 'done');
+          }
+        }
+      }
+      const missingTimes = this.sqlite
+        .prepare<[], { status: 'done' | 'failed' }>(
+          `${adminJobs}
+        SELECT DISTINCT status FROM summary_jobs WHERE status IN ('done','failed') AND terminalAt IS NULL`,
+        )
+        .all();
+      for (const { status } of missingTimes) {
+        for (const day of days) {
+          unknown(day, status);
+          for (const bucket of day.hours) {
+            unknown(bucket, status);
+          }
+        }
+      }
+      return {
+        requestStats1m: { total: request.unknown ? null : request.total },
+        generationStats1m: { total: generation.unknown ? null : generation.total },
+        jobStats1h: finalizeStats(totals),
+        accountStats1h: Object.fromEntries(
+          [...accounts].map(([id, value]) => [id, finalizeStats(value)]),
+        ),
+        generationSpeed1h: speed,
+        usageHourlyDays: days,
+        diagnosticRowsRead,
+      };
+    })();
   }
 
   readFailureAccounting(before: string | null, now = Date.now()) {

@@ -781,6 +781,41 @@ test('Direct缓存实际资格IO中stop/resume不能借旧admission epoch追加�
   assertReplay(t, f);
 });
 
+test('POST原键Local真丢失410且不重生，正常及恢复原字节仍202零新事实', async (t) => {
+  const f = await fixture(t),
+    body = input({ nocache: true }),
+    key = 'post-local-original';
+  const accepted = await f.post(body, { key });
+  assert.equal(accepted.status, 202, accepted.buffer.toString());
+  const original = json(accepted);
+  await waitFor(
+    () =>
+      f.controls.size === 0 &&
+      f.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(original.id).status ===
+        'done',
+  );
+  const before = databaseState(f.db),
+    healthy = await f.post(body, { key });
+  assert.equal(healthy.status, 202, healthy.buffer.toString());
+  const done = json(healthy);
+  assert.equal(done.id, original.id);
+  assert.equal(done.status, 'done');
+  assert.equal(databaseState(f.db), before);
+  const file = path.join(f.dir, `images/${done.imageId}.webp`);
+  await fs.rename(file, file + '.saved');
+  const missing = await f.post(body, { key });
+  assert.equal(missing.status, 410, missing.buffer.toString());
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.upstream.calls.length, 1);
+  await fs.rename(file + '.saved', file);
+  const restored = await f.post(body, { key });
+  assert.equal(restored.status, 202, restored.buffer.toString());
+  assert.equal(json(restored).id, original.id);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.upstream.calls.length, 1);
+  assertReplay(t, f);
+});
+
 test('Direct原键云承诺缺配置不重生，原图片错误SVG与job/image503保持同一原结果', async (t) => {
   const f = await fixture(t),
     body = input(),

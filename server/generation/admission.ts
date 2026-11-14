@@ -1,12 +1,10 @@
 import type { IncomingMessage } from 'node:http';
-import {
-  createId,
-  hashObject,
-  generationContextRef,
-  type JsonStore,
-  type StoreDatabase,
-  type StoreItem,
-  type StoredGenerationRequest,
+import { createId, hashObject } from '../storage/record-values.ts';
+import type {
+  JsonStore,
+  StoreDatabase,
+  StoreItem,
+  StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
 import {
   estimateFairQuota,
@@ -22,6 +20,7 @@ import {
   webJobRequestSummary,
 } from './batch-requests.ts';
 import {
+  generationContextRef,
   generationRequestFingerprint,
   requestNormalizationDefaults,
   requestCacheKey,

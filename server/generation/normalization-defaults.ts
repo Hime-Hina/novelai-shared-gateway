@@ -1,6 +1,26 @@
 import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import { requestNormalizationDefaults } from './request-fingerprint.ts';
 
+export const defaultArtist2_5D = `0.9::misaka_12003-gou ::, dino_(dinoartforame), wanke, liduke, year 2025, realistic, 4k, -2::green ::, textless version, The image is highly intricate finished drawn. Only the character's face is in anime style, but their body is in realistic style. 1.35::A highly finished photo-style artwork that has lively color, graphic texture, realistic skin surface, and lifelike flesh with little obliques::. 1.63::photorealistic::, 1.63::photo(medium)::, \\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,, very aesthetic, masterpiece, no text,`;
+
+// 首次安装沿用当前实际默认值；历史迁移必须显式导入选定来源。
+export const initialNormalizationDefaults = {
+  defaultModel: 'nai-diffusion-4-5-full',
+  defaultArtist: defaultArtist2_5D,
+  defaultNegative:
+    '{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{{missing legs}},mutated hands,{{{mutation}}},normal quality,poorly drawn face,poorly drawn hands,signature,text,{{too many fingers}},{{{ugly}}},username,watermark,worst quality',
+  defaults: {
+    size: '绔栧浘',
+    width: 832,
+    height: 1216,
+    steps: 28,
+    scale: 6,
+    cfg: 0,
+    sampler: 'k_dpmpp_2m_sde',
+    noiseSchedule: 'karras',
+  },
+};
+
 export interface NormalizationDefaultsProfile {
   kind: 'normalization-defaults';
   values: ReturnType<typeof requestNormalizationDefaults>;

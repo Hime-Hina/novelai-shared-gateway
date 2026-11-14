@@ -14,6 +14,7 @@ import type { GenerationPayloadClaim } from './admission.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import type { RelationalReplicaReadConfiguration } from '../storage/relational-replica-store.ts';
 import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -55,6 +56,7 @@ export function createRelationalApiGenerationAdmission(deps: {
   >;
   replicas: RelationalReplicaReadConfiguration;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   env?: NodeJS.ProcessEnv;
   now?(): number;
 }) {
@@ -132,6 +134,8 @@ export function createRelationalApiGenerationAdmission(deps: {
                 throw error;
               }
             }
+            // 原回执仍可领取；所有新 accept/reuse（含缓存 IO 返回）都在此原授权事务核当前运行期。
+            deps.runtime.assertAccepting();
             const current = deps.members.readMember(member.id);
             if (!current || current.status !== 'active') {
               fail(401, 'invalid_token', 'invalid token.');
