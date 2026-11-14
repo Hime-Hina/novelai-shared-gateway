@@ -246,7 +246,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
 }
 
 export function selectSharedAccount<T extends { id: string }>(
-  accounts: T[],
+  accounts: readonly T[],
   boundAccountId: string | null | undefined,
 ) {
   return (
@@ -290,7 +290,7 @@ export function ownerAccountConfiguration<T extends OwnerAccount>(
     body: change.kind === 'token' ? { token: change.token, enabled: false } : { enabled: false },
   };
 }
-function safeAccount(a: OwnerAccount | null | undefined) {
+export function safeAccount(a: OwnerAccount | null | undefined) {
   return (
     a && {
       id: a.id,
@@ -304,6 +304,20 @@ function safeAccount(a: OwnerAccount | null | undefined) {
       quotaError: a.quotaError ? '官方额度同步失败，请重新验证凭据' : '',
     }
   );
+}
+
+export function ownerStatisticsRange(params: URLSearchParams, now: number) {
+  const days = Number(params.get('days') || 7);
+  if (![0, 1, 7, 30, 365].includes(days)) {
+    fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+  }
+  const since =
+    days === 0
+      ? ''
+      : new Date(
+          Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
+        ).toISOString();
+  return { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
 }
 
 export function assertOwnerAccountCredentialChangeAllowed(
@@ -389,22 +403,11 @@ export async function ownerOperation(
   const path = url.pathname.slice('/api/member/owner'.length),
     { store } = deps;
   if (path === '/statistics' && method === 'GET') {
-    const days = Number(url.searchParams.get('days') || 7);
-    if (![0, 1, 7, 30, 365].includes(days)) {
-      fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
-    }
-    const now = Date.now(),
-      since =
-        days === 0
-          ? ''
-          : new Date(
-              Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
-            ).toISOString();
+    const range = ownerStatisticsRange(url.searchParams, Date.now());
     // 既有响应的 days 是逐日统计数组，会覆盖查询范围的天数；保持键顺序和输出形态。
-    const range = { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
     return {
       ...range,
-      ...summarizeOwnerUsage(await store.readOwnerJobRows(since, new Date(now).toISOString())),
+      ...summarizeOwnerUsage(await store.readOwnerJobRows(range.since, range.until)),
     };
   }
   // 原回执仍受当前授权约束；命中后不再触发外部额度查询或重新决定账户配置。

@@ -1745,6 +1745,24 @@ PR #66 固定 `8b11fa6b4ec70b02b8e5110cab0a553fc35d9416`，基于 #65 `b472b652e
 
 该固定候选的远端 [CI 43586396178](https://github.com/Hime-Hina/novelai-shared-gateway/actions/runs/43586396178) 后续六项全部成功；实际 checkout 合并提交 `fb15b055ffbc80eca68be3c576d1704a20331369`，Git tree `7edf842fa01f6e78faa0cd426678a8af28510231` 与 8b 完全一致。Linux 后端 2278 项为 2275 pass、3 个原有条件 skip、0 fail，203.521 秒，另旧工具 19/19；Web 151、executor 3、Nuxt/进程隔离 16、真实发布包 Docker HTTP 4，原 Node24 reader、三 Docker build 和离线检查均通过。实际 artifact `14109844173` 下载 ZIP 为 55,512,623 B，SHA256 `28ac39332fcb6d06e0aa86099f44518f4f2de84a1fd9fab22a9ab4d6ffd6e4ac`；其中 tar 为 55,511,946 B，SHA256 `51846f8298ef63fd117c312303fd5f262cdb11ff648b944619fa851e5b846277`，与包内 sha256 文件相符。安全聚合证据 `H:/TEMP/novelai-v6-pr66-release/CI-VERIFICATION.json`、`verified-artifact.json` 和原 workflow/job logs；这是该固定树的真实 CI 测试制品，不是后继源、生产部署或云端验收。
 
+### 9.62 owner 账户摘要与用量统计 GET
+
+只接实际 `/api/member/owner/summary` 与 `/api/member/owner/statistics`，复用第 9.60 节同一管理 HTTP 的当前 Cookie、Discord、稳定 member/epoch、owner、ready、私网及同源授权。新路径不会续期；原可见且无 query 的 `GET /owner/member-management` 活动续期条件不变。异步资格或报表读取后必须重新授权，失败不返回先前读出的数据。
+
+summary 由 QuotaStore 的共享账户/原官方观察窄来源、原 `selectSharedAccount` 和安全账户 mapper 生成。多个未绑定候选不猜账户，未知官方数值仍为 NULL；物理 inFlight 必须来自装配共同 controls，不能用 SQL running 行或固定 0。statistics 使用 ReportStore 原 Job 起点及收费事实、`summarizeOwnerUsage` 和原 UTC+8 范围规则，只允许全部、1、7、30、365 天；响应 `days` 保持既有逐日数组覆盖范围数字的形态。统计登录标签取原 `password_credentials.username`，不把 displayName 当登录身份；缺用户名继续使用旧报表标签，稳定成员 ID 仍是分组身份。
+
+没有新命令、事件、持久派生状态或旧 Store 适配；普通读取不加载输入/产物正文，不触外部生成/存储。合法 ready、真实 HTTP、0/NULL/未知费用及日期、真实物理槽、当前撤销、范围边界、完整公共回放与选定私有恢复的可运行证据在固定候选后追加；这里只说明本片契约，不代表其已验收。
+
+Windows Node 22 源码管理 HTTP、旧 owner、关系报表及账户目录四文件 54/54、零跳过；新管理 HTTP 本文件含 32 项。初始两个新 GET 均在真实 HTTP 返回 404 的断言失败，接入后通过；合法 fixture 只经原唯一 installer 进入 ready。真实 controls 保留 SQL 已终态后的物理槽，另账户槽不计入所选账户。受控窄来源另核多个未绑候选、缺绑定目标不猜选及唯一未绑候选，不冒充持久配置变更。原官方 V5 未知与实际观察 0 分开，兼容 DTO 的 Anlas 在边界由原 quotaNumber 转 number/NULL，当前凭据缺失只用原安全错误提示。所有范围及非法 days、原 days 数组、登录名/展示名区别、原 Job 0/NULL 与未知费用、退休和跨成员历史均有反例；完整公共回放不带私有用户名，选定私有恢复后原 Cookie 可读取，关闭重开仍相同。
+
+新两路由沿实际 Discord IO 后重核 owner/epoch/ready，statistics 的异步窄读后再核当前 owner/Cookie/ready；不会返回旧 accounts/recent。业务窄 reader 在 query_only 下通过，实际 HTTP 比较全表摘要及 total_changes 零实际变化；不把原认证事务的零行维护语句冒称完全没有写 SQL。报表 SQL 捕获只选原 username，不读密码 salt/hash、PST 或输入/产物正文，输出无凭据。原 HTTP 初次 query_only 试验被既有认证维护正确拒绝，未修改认证规则来消除该试验限制。
+
+隔离 TEMP 仅改物理槽为 0、用展示名冒充登录名、移除报表 await 后授权、放宽新路径续期的四种错误实现，均在原业务断言明确失败；正常副本同组通过，产品源字节不变。最终四文件 54/54 为 18.352 秒，证据为 `H:\TEMP\novelai-owner-read-http-context-final.log` 与 `H:\TEMP\novelai-owner-read-http-negative-4ee1aabd-85e0-455d-9c3f-41b24994b00f\results.json`。类型、架构、默认及可信实际 main `88d2c26` 迁移历史、187 文件语法和局部格式检查通过，静态日志索引为 `H:\TEMP\novelai-owner-read-http-static.json`。现工厂名/模块沿第 9.60 节登记，既有工厂来源守卫缺口的独立 `db5f320` 修复由父并集，未在本片另改守卫。未跑 full/compiled/Node 24 或三包构建，未切 sole，也未接 POST、admin summary/reveal 或云验收；固定候选的独立审查仍单独记录。
+
+固定 `750c78a0b196002b1ca5910e9eea0b6025de8c23` 独立技术复审通过，原四文件 54/54 加四条实际 HTTP 反例共 58/58、零跳过。成功 Discord 资格观察可正常产生 MemberEligibilityChanged，新 summary/statistics 即便活动 header 也不续 Cookie、原 management 仍续；真实 Opening child 在 UTC+8 日界前 1ms/当日/未来 1ms 的来源时间与不同父受理时间区分；原报表 await 后实际轮换认证 epoch 返回 401、撤 PUBLIC Host 返回 404。使用父受理时间或移除末尾授权的隔离错误实现分别精准失败，恢复原字节重绿。五文件 Git blob/SHA 与十二个不变授权/schema/replay/ready/sole/guard 来源已绑定，原 safeAccount/select/summarize 正文相同。报告 `H:/TEMP/novelai-owner-read-independent-evidence/INDEPENDENT-REVIEW.md`、`reviewed-files.json`；root 保留 db5 的模块守卫与实际 controls Map，并在合入政策后继时仍限定 POST 只在两条 member-management 字面路径。
+
+根在冻结 `0ad2c03` 后整合本片，原 owner 操作/管理/报表/账户窄读四文件同次 54/54、零跳过，18.270 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式和 diff 通过，工厂、原 owner 提取和管理专项与 750 精确字节相同。Report 保留原已审 OpeningAttempt 风险逻辑，仅在原统计查询补登录名列；日志 `H:/TEMP/novelai-owner-read-root-{joint,type,static,format}.log`。第一次命令预检发现不存在的 unit 路径并在 test runner 前退出，未当成产品反例或测试通过；随后核实原 integration 路径，以上结果仅指真实四文件执行。后继政策/Member owner/订阅及统一发布仍另验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

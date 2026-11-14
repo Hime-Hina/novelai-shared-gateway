@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 import { EventEmitter, once } from 'node:events';
 import Database from 'better-sqlite3';
+import path from 'node:path';
 import {
   fixture,
   installReady,
@@ -32,9 +33,13 @@ import { readRelationalCommit } from '../../server/events/relational-event-store
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
+import { createGenerationControls } from '../../server/generation/queue-dispatch.ts';
+import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
 
 const admin = '/api/admin/member-management',
   owner = '/api/member/owner/member-management',
+  summary = '/api/member/owner/summary',
+  statistics = '/api/member/owner/statistics',
   adminToken = 'synthetic-private-admin-token';
 async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {}) {
   const currentEnv = {
@@ -79,13 +84,15 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {})
   }
   await beforeReady?.(f, currentEnv);
   const selected = await installReady(f),
-    events = new EventEmitter();
+    events = new EventEmitter(),
+    controls = new Map();
   let activeHandle,
     adminChecks = 0,
     resourceCalls = 0;
   const handle = createRelationalManagementHttp({
       sqlite: f.db,
       events,
+      controls,
       dataDir: f.dir,
       env: currentEnv,
       discordFetch,
@@ -158,6 +165,7 @@ async function setup(t, { env = {}, beforeReady, resources, discordFetch } = {})
     sessions,
     selected,
     events,
+    controls,
     handle,
     setHandler(next) {
       activeHandle = next;
@@ -301,6 +309,8 @@ test('可见且精确无query owner管理摘要沿原owner续期，其余GET不�
     owner + '?view=heatmap',
     owner + '?view=losses',
     admin,
+    summary,
+    statistics,
   ]) {
     const headers = {
         'x-admin-token': adminToken,
@@ -314,10 +324,250 @@ test('可见且精确无query owner管理摘要沿原owner续期，其余GET不�
       renewed,
     );
   }
+});
+
+test('owner summary保持原安全形态、官方未知与真实物理槽，不续期或读取资源', async (t) => {
+  const f = await setup(t),
+    running = createGenerationControls({
+      controls: f.controls,
+      timeoutDelay: () => 60000,
+      schedule() {},
+    }),
+    control = running.createRunningJobControl({ id: 'physical-after-terminal', accountId: 'a' }),
+    other = running.createRunningJobControl({ id: 'other-account', accountId: 'other' });
+  t.after(() => {
+    running.finishRunningJobControl('physical-after-terminal', control);
+    running.finishRunningJobControl('other-account', other);
+  });
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    result = await f.call(summary + '?revealTokens=1&view=heatmap', {
+      headers: { 'x-member-activity': '1' },
+    });
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.body, {
+    accounts: [
+      {
+        id: 'a',
+        enabled: true,
+        inFlight: 1,
+        quotaTier: 3,
+        quotaFixed: 8000,
+        quotaPurchased: 0,
+        v5UsagePercent: null,
+        quotaCheckedAt: new Date(NOW).toISOString(),
+        quotaError: '',
+      },
+    ],
+  });
+  assert.equal(result.headers.get('set-cookie'), null);
+  assert.equal(f.resourceCalls, 0);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  running.finishRunningJobControl('physical-after-terminal', control);
+  assert.equal((await f.call(summary)).body.accounts[0].inFlight, 0);
+  f.db.pragma('query_only=ON');
+  const actual = new RelationalQuotaStore(f.db, f.env).readSharedStatusSource();
+  assert.equal(actual.accounts.length, 1);
+  f.db.pragma('query_only=OFF');
+  // 控制窄来源的候选集合，仅检适配器不猜选；不冒充一次持久配置变更。
+  let selectedSource = actual;
+  t.mock.method(RelationalQuotaStore.prototype, 'readSharedStatusSource', () => selectedSource);
+  for (const [boundAccountId, accounts, expected] of [
+    [null, [...actual.accounts, { ...actual.accounts[0], id: 'b' }], []],
+    ['missing-account', actual.accounts, []],
+    [null, actual.accounts, ['a']],
+  ]) {
+    selectedSource = { ...actual, boundAccountId, accounts };
+    const value = await f.call(summary);
+    assert.equal(value.status, 200, value.text);
+    assert.deepEqual(
+      value.body.accounts.map((account) => account.id),
+      expected,
+    );
+  }
+  assert.equal(databaseState(f.db), before);
+});
+
+test('owner statistics沿原UTC+8范围及days数组，登录名不借展示名且读取零写', async (t) => {
+  const f = await setup(t, {
+      beforeReady: async (f) => {
+        const prepared = await f.members.prepareMemberCredentials('m2', {
+          username: 'actual.login',
+          password: 'synthetic-owner-statistics-password',
+        });
+        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        f.accept('named-history', { memberId: 'm2' });
+        f.fail('named-history-0', { aborted: false });
+      },
+    }),
+    before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  const prepare = f.db.prepare.bind(f.db),
+    queries = [];
+  t.mock.method(f.db, 'prepare', (sql) => {
+    queries.push(sql);
+    return prepare(sql);
+  });
+  for (const days of [0, 1, 7, 30, 365]) {
+    const result = await f.call(statistics + '?days=' + days, {
+      headers: { 'x-member-activity': '1' },
+    });
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.body.timezone, 'Asia/Shanghai');
+    const start =
+      Math.floor((f.clock + 8 * 3600000) / 86400000) * 86400000 -
+      8 * 3600000 -
+      (days - 1) * 86400000;
+    assert.equal(result.body.since, days === 0 ? '' : new Date(start).toISOString());
+    assert.equal(result.body.until, new Date(f.clock).toISOString());
+    assert.ok(Array.isArray(result.body.days));
+    assert.equal(result.body.coverage, 'retained-records');
+    assert.equal(result.body.members.find((row) => row.id === 'm2').label, 'actual.login');
+    assert.equal(result.body.members.find((row) => row.id === 'm1').label, '已移除成员');
+    assert.equal(result.headers.get('set-cookie'), null);
+  }
+  for (const days of ['2', '-1', 'Infinity', 'NaN', '366']) {
+    assert.equal((await f.call(statistics + '?days=' + days)).status, 400);
+  }
+  assert.equal((await f.call(statistics + '?days=01')).status, 200);
+  assert.equal((await f.call(statistics + '?view=losses')).status, 200);
+  assert.equal(f.resourceCalls, 0);
+  f.db.pragma('query_only=ON');
   assert.equal(
-    (await f.call('/api/member/owner/summary', { headers: { 'x-member-activity': '1' } })).status,
-    404,
+    (await new RelationalReportStore(f.db).readOwnerJobRows('', new Date(f.clock).toISOString()))
+      .length,
+    2,
   );
+  f.db.pragma('query_only=OFF');
+  const usageQueries = queries.filter((sql) =>
+    sql.includes('FROM generation_jobs j JOIN generation_requests r'),
+  );
+  assert.ok(usageQueries.length >= 5);
+  assert.ok(usageQueries.every((sql) => /p\.username/.test(sql)));
+  assert.ok(
+    usageQueries.every(
+      (sql) =>
+        !/generation_inputs|input_assets|normalization_contexts|\.body\b|\.data\b|password_hash|salt|\bpst\b|\btoken\b/i.test(
+          sql,
+        ),
+    ),
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('owner summary真实官方0不补未知值，当前凭据错误只返回原安全提示', async (t) => {
+  const f = await setup(t),
+    quotas = new RelationalQuotaStore(f.db, f.env),
+    ticket = quotas.beginQuotaObservation('a', f.clock),
+    result = accountQuotaResult(
+      'a',
+      {
+        tier: 3,
+        subscriptionActive: true,
+        fixed: 0,
+        purchased: 0,
+        v5UsagePercent: 0,
+        v5UsageIsNegative: false,
+        v5UsageTimeUntilNextPercent: 0,
+      },
+      new Date(f.clock).toISOString(),
+    );
+  f.db.transaction(() =>
+    quotas.recordQuotaObservation(meta('owner-summary-zero', f.clock), ticket, result),
+  )();
+  const before = databaseState(f.db),
+    response = await f.call(summary);
+  assert.equal(response.status, 200, response.text);
+  assert.equal(response.body.accounts[0].v5UsagePercent, 0);
+  assert.equal(response.body.accounts[0].quotaFixed, 0);
+  assert.equal(response.body.accounts[0].quotaPurchased, 0);
+  assert.equal(databaseState(f.db), before);
+  // 模拟选定私有内容缺失；查询不能据公共余额伪称凭据有效或泄出原错误。
+  f.db.prepare("DELETE FROM upstream_credentials WHERE account_id='a'").run();
+  const missing = await f.call(summary + '?revealTokens=1');
+  assert.equal(missing.status, 200, missing.text);
+  assert.equal(missing.body.accounts[0].quotaError, '官方额度同步失败，请重新验证凭据');
+  assert.ok(!missing.text.includes('credential_unavailable'));
+  assert.ok(!missing.text.includes('synthetic-upstream-pst'));
+});
+
+test('新增owner GET沿同一实际Cookie/owner/同源门禁，POST和admin别名不开放', async (t) => {
+  const f = await setup(t),
+    before = databaseState(f.db);
+  for (const route of [summary, statistics]) {
+    assert.equal((await f.call(route, { member: 'm2' })).status, 403);
+    assert.equal((await f.call(route, { cookie: '' })).status, 401);
+    assert.equal(
+      (await f.call(route, { headers: { origin: 'https://cross.invalid' } })).status,
+      404,
+    );
+    assert.equal((await f.call(route, { method: 'POST' })).status, 404);
+    assert.equal(
+      (
+        await f.call(route.replace('/member/owner', '/admin'), {
+          headers: { 'x-admin-token': adminToken },
+        })
+      ).status,
+      404,
+    );
+  }
+  assert.equal(databaseState(f.db), before);
+});
+
+test('新增owner GET在真实Discord IO后重核owner、epoch和ready，不返回旧摘要', async (t) => {
+  for (const route of [summary, statistics]) {
+    for (const kind of ['owner', 'epoch', 'ready']) {
+      await t.test(route + ':' + kind, async (t) => {
+        let f,
+          calls = 0;
+        f = await setup(t, {
+          discordFetch: async () => {
+            calls++;
+            assert.equal(f.db.inTransaction, false);
+            if (kind === 'owner') f.env.OWNER_USER_ID = 'm2';
+            if (kind === 'epoch') {
+              const prepared = await f.members.prepareMemberCredentials('m1', {
+                username: 'rotated.owner',
+                password: 'synthetic-rotated-owner-password',
+              });
+              f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+            }
+            if (kind === 'ready') f.db.prepare("UPDATE projection_state SET status='failed'").run();
+            return Response.json({ user: { id: '222222222222222222' } });
+          },
+        });
+        f.advance(6 * 60000);
+        const result = await f.call(route);
+        assert.equal(calls, 1);
+        assert.equal(result.status, kind === 'ready' ? 500 : 401, result.text);
+        assert.equal(Object.hasOwn(result.body, 'accounts'), false);
+        assert.equal(Object.hasOwn(result.body, 'totals'), false);
+        assert.equal(f.resourceCalls, 0);
+      });
+    }
+  }
+});
+
+test('statistics异步窄读取后仍核当前授权，IO不占SQL事务', async (t) => {
+  for (const kind of ['owner', 'cookie', 'ready']) {
+    await t.test(kind, async (t) => {
+      const f = await setup(t),
+        original = RelationalReportStore.prototype.readOwnerJobRows;
+      t.mock.method(RelationalReportStore.prototype, 'readOwnerJobRows', async function (...args) {
+        const rows = await original.apply(this, args);
+        assert.equal(f.db.inTransaction, false);
+        if (kind === 'owner') f.env.OWNER_USER_ID = 'm2';
+        if (kind === 'cookie') await logoutMemberSession(f.members, f.sessions.m1.token);
+        if (kind === 'ready') f.db.prepare("UPDATE projection_state SET status='failed'").run();
+        return rows;
+      });
+      const result = await f.call(statistics);
+      assert.equal(result.status, kind === 'ready' ? 500 : 401, result.text);
+      assert.equal(Object.hasOwn(result.body, 'recent'), false);
+    });
+  }
 });
 
 test('真实资源FS等待后撤Cookie/owner/ready仍拒绝管理metadata，不保存旧权限', async (t) => {
@@ -567,6 +817,11 @@ test('losses真实51笔原政策审计走50条cursor分页，同source视图不�
 });
 
 test('管理当前private metadata只随选定一致性快照恢复，公共回放不复活登录/Key', async (t) => {
+  let target, reopened;
+  t.after(() => {
+    if (target?.open) target.close();
+    if (reopened?.open) reopened.close();
+  });
   const credentials = await prepareMemberCredentials({
       username: 'named.actual',
       password: 'synthetic-management-password',
@@ -581,11 +836,18 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
             credentials,
           }),
         )();
+        const prepared = await f.members.prepareMemberCredentials('m2', {
+          username: 'stats.actual',
+          password: 'synthetic-restored-statistics-password',
+        });
+        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        f.accept('named-stats', { memberId: 'm2' });
+        f.fail('named-stats-0', { aborted: false });
       },
     }),
-    target = new Database(':memory:');
+    targetPath = path.join(f.dir, 'management-restored.sqlite');
+  target = new Database(targetPath);
   initializeRelationalStorage(target, 'generation-history');
-  t.after(() => target.close());
   const replay = new RelationalCommitReplayer(target),
     inputs = new RelationalInputStore(f.db);
   for (const { seq } of f.db
@@ -598,9 +860,16 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
   assert.equal(beforePrivate.username, null);
   assert.equal(beforePrivate.displayName, 'm1');
   assert.equal(target.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
+  assert.equal(
+    (
+      await new RelationalReportStore(target).readOwnerJobRows('', new Date(f.clock).toISOString())
+    ).find((row) => row.memberId === 'm2').username,
+    '已移除成员',
+  );
   const deps = {
     sqlite: target,
     events: new EventEmitter(),
+    controls: f.controls,
     dataDir: f.dir,
     env: f.env,
     now: () => f.clock,
@@ -617,6 +886,11 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
   assert.equal(named.username, 'named.actual');
   assert.equal(named.displayName, 'm1');
   assert.equal(original.username, null);
+  const statisticsView = await f.call(statistics + '?days=0'),
+    summaryView = await f.call(summary);
+  assert.equal(statisticsView.status, 200, statisticsView.text);
+  assert.equal(statisticsView.body.members.find((row) => row.id === 'm2').label, 'stats.actual');
+  assert.deepEqual(summaryView.body, (await f.call(summary)).body);
   for (const secret of [
     'synthetic-management-password',
     'synthetic-named-key',
@@ -625,8 +899,16 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
     f.sessions.m1.token,
     'synthetic-upstream-pst',
   ])
-    assert.ok(!view.text.includes(secret));
+    assert.ok(
+      ![view.text, statisticsView.text, summaryView.text].some((text) => text.includes(secret)),
+    );
   assert.equal(databaseState(target), before);
+  target.close();
+  reopened = new Database(targetPath);
+  f.setHandler(createRelationalManagementHttp({ ...deps, sqlite: reopened }));
+  assert.deepEqual((await f.call(statistics + '?days=0')).body, statisticsView.body);
+  assert.deepEqual((await f.call(summary)).body, summaryView.body);
+  assert.equal(databaseState(reopened), before);
 });
 
 test('最近30条只用原Job时间，未知与真实0不借父受理时间，排除退休且隔离成员', async (t) => {
@@ -756,6 +1038,24 @@ test('最近30条只用原Job时间，未知与真实0不借父受理时间，�
       .get().created_at,
     null,
   );
+  const all = await f.call(statistics + '?days=0'),
+    today = await f.call(statistics + '?days=1');
+  assert.equal(all.status, 200, all.text);
+  assert.equal(all.body.totals.total, 32);
+  assert.equal(all.body.totals.v5, null);
+  assert.equal(all.body.totals.fixed, null);
+  assert.equal(all.body.totals.purchased, null);
+  const unknown = all.body.recent.find((row) => row.id === 'historical-unknown'),
+    zero = all.body.recent.find((row) => row.id === 'historical-zero');
+  assert.equal(unknown.createdAt, null);
+  assert.equal(unknown.amount, null);
+  assert.equal(unknown.chargeStatus, null);
+  assert.equal(unknown.knownNoCharge, false);
+  assert.equal(zero.createdAt, '1970-01-01T00:00:00.000Z');
+  assert.equal(today.status, 200, today.text);
+  assert.equal(today.body.totals.total, 30);
+  assert.ok(today.body.recent.every((row) => !row.id.startsWith('historical-')));
+  assert.ok(!all.body.recent.some((row) => row.id === 'existing-0'));
   assert.equal(databaseState(f.db), before);
 });
 

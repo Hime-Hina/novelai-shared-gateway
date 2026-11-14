@@ -26,16 +26,25 @@ import { resolveMemberPublicBaseUrl } from './read-http.ts';
 import { publicSharedAccountStatus } from '../quota/shared-status.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
+import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
+import { quotaNumber } from '../quota/eligibility.ts';
+import {
+  safeAccount,
+  selectSharedAccount,
+  ownerStatisticsRange,
+  summarizeOwnerUsage,
+} from './owner-operations.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 
-// 这里只接既有两个管理 GET，业务命令继续由各自 owner 拥有。
+// 这里只接既有管理 GET，业务命令继续由各自 owner 拥有。
 export function createRelationalManagementHttp(deps: {
   sqlite: Database.Database;
   events: EventEmitter;
   dataDir: string;
+  controls: Parameters<typeof physicalAccountLoad>[0];
   assertAdmin(req: IncomingMessage, url: URL): void;
   readServiceResources?: typeof readServiceResources;
   env?: NodeJS.ProcessEnv;
@@ -56,7 +65,10 @@ export function createRelationalManagementHttp(deps: {
     reports = new RelationalReportStore(sqlite),
     configuration = new RelationalConfigurationStore(sqlite);
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
-    const ownerRoute = url.pathname === '/api/member/owner/member-management',
+    const memberManagementRoute = url.pathname === '/api/member/owner/member-management',
+      summaryRoute = url.pathname === '/api/member/owner/summary',
+      statisticsRoute = url.pathname === '/api/member/owner/statistics',
+      ownerRoute = memberManagementRoute || summaryRoute || statisticsRoute,
       adminRoute = url.pathname === '/api/admin/member-management';
     if ((!ownerRoute && !adminRoute) || req.method !== 'GET') {
       return false;
@@ -116,7 +128,7 @@ export function createRelationalManagementHttp(deps: {
         return result.value;
       };
       await authorize(() => null);
-      if (req.headers['x-member-activity'] === '1' && !url.search) {
+      if (memberManagementRoute && req.headers['x-member-activity'] === '1' && !url.search) {
         await renewMemberCookie(req, res, members, env);
       }
     } else {
@@ -126,7 +138,36 @@ export function createRelationalManagementHttp(deps: {
           return read();
         })();
     }
-    if (url.searchParams.get('view') === 'heatmap') {
+    if (summaryRoute) {
+      const data = await authorize(() => {
+        const source = quotas.readSharedStatusSource(),
+          account = selectSharedAccount(source.accounts, source.boundAccountId);
+        return {
+          accounts: account
+            ? [
+                safeAccount({
+                  ...account,
+                  enabled: account.enabled === true,
+                  inFlight: physicalAccountLoad(deps.controls, account.id),
+                  quotaFixed: quotaNumber(account.quotaFixed),
+                  quotaPurchased: quotaNumber(account.quotaPurchased),
+                  quotaCheckedAt:
+                    typeof account.quotaCheckedAt === 'string' ? account.quotaCheckedAt : undefined,
+                }),
+              ]
+            : [],
+        };
+      });
+      replyMemberJson(res, 200, data);
+    } else if (statisticsRoute) {
+      const range = ownerStatisticsRange(url.searchParams, now()),
+        rows = await reports.readOwnerJobRows(range.since, range.until);
+      replyMemberJson(
+        res,
+        200,
+        await authorize(() => ({ ...range, ...summarizeOwnerUsage(rows) })),
+      );
+    } else if (url.searchParams.get('view') === 'heatmap') {
       const data = await readActivityHeatmap(
         reports,
         url.searchParams,
