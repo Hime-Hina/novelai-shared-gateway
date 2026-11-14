@@ -497,7 +497,9 @@ test('Discord 真 IO 后当前 Key 转归、撤销、auth epoch 或 ready 变化
           f.db.transaction(() => f.members.replaceMemberApiKey('m1', 'replacement-m1'))(),
         );
       } else if (change === 'epoch') {
-        f.notifier.commit(() => f.db.transaction(() => f.members.setMemberCredentials(prepared))());
+        f.notifier.commit(() =>
+          f.db.transaction(() => f.members.setMemberCredentials(prepared, null))(),
+        );
       } else {
         f.db.prepare("UPDATE projection_state SET status='building' WHERE id=1").run();
       }

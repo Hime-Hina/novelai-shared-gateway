@@ -123,7 +123,7 @@ async function privateState(f) {
     username: 'private.member',
     password: 'synthetic-password-12345',
   });
-  f.db.transaction(() => f.members.setMemberCredentials(credentials))();
+  f.db.transaction(() => f.members.setMemberCredentials(credentials, null))();
   f.db
     .prepare(
       `INSERT INTO discord_bindings(member_id,discord_id,guild_id,access_token,refresh_token,expires_at,checked_at,eligible)

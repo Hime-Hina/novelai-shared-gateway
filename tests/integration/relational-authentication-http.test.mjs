@@ -34,7 +34,7 @@ async function setup(t, env = {}) {
   const f = await fixture(t),
     username = `http.member.${++sequence}`;
   const prepared = await f.members.prepareMemberCredentials('m1', { username, password });
-  f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+  f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
   await f.accept('existing');
   f.dispatch('existing-0', NOW);
   await f.publish('existing-0');

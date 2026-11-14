@@ -527,7 +527,7 @@ test('当前 owner Key/Cookie 和 epoch 先于重领；旧 Key、退出、普通
     username: 'owner.history',
     password: 'synthetic-password-history',
   });
-  f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+  f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
   before = databaseState(f.db);
   f.db.transaction(() =>
     assert.throws(

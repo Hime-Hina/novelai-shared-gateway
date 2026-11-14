@@ -381,7 +381,7 @@ test('me 实际 held 期间仍读当前金融摘要，recent30 按 child 跨31�
           username: 'profile.canonical',
           password: 'synthetic-profile-password',
         });
-        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        f.db.transaction(() => f.members.setMemberCredentials(prepared, null))();
         for (let i = 0; i < 31; i++)
           await f.accept(`page-${String(i).padStart(2, '0')}`, { now: NOW + 20000 + i });
         assert.ok(f.dispatch('page-00-0', NOW + 20001).dispatch);
