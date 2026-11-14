@@ -589,6 +589,9 @@ export class RelationalQuotaStore {
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
     };
   }
+  readBoundAccountId() {
+    return this.sharingPolicy().accountId;
+  }
   readSharedStatusSource(): Omit<SharedStatusSource, 'counts'> {
     return this.sqlite.transaction(() => {
       const boundAccountId =
@@ -2486,7 +2489,7 @@ export class RelationalQuotaStore {
       !receipt ||
       Array.isArray(receipt) ||
       typeof receipt !== 'object' ||
-      !('eventId' in receipt)
+      !('eventId' in receipt || 'funding' in receipt || 'duplicate' in receipt)
     ) {
       return null;
     }
@@ -2540,7 +2543,7 @@ export class RelationalQuotaStore {
   }
   manageQuotaFunding(
     metadata: FundingMetadata,
-    accountId: string,
+    accountId: string | null,
     body: OperatingFundingInput,
     member: MemberUser | null,
   ) {
@@ -2564,7 +2567,7 @@ export class RelationalQuotaStore {
         }
         return { ...prior, response };
       }
-      if (this.sharingPolicy().accountId !== accountId) {
+      if (!accountId || this.sharingPolicy().accountId !== accountId) {
         fail('资金操作只接受当前绑定共享账户');
       }
       const view = this.state(accountId);

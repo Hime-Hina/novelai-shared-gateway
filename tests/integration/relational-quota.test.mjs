@@ -1685,6 +1685,21 @@ test('资金原始重复结果随真实同步提交绑定新键，无事实只�
     f.db.prepare("SELECT 1 FROM commits WHERE command_id='key-without-facts'").get(),
     undefined,
   );
+  await withAuthenticatedMemberApiKey(f.members, keys.m1, (member) => {
+    const metadata = { ...meta('unused', NOW + 10, 'm1'), fingerprint: domainDigest(body) };
+    assert.deepEqual(
+      f.quotas.manageQuotaFunding({ ...metadata, commandId: 'business-first' }, null, body, member)
+        .response,
+      first.response,
+    );
+    for (const accountId of [null, 'another-account']) {
+      assert.throws(
+        () => f.quotas.manageQuotaFunding(metadata, accountId, body, member),
+        /当前绑定共享账户/,
+      );
+    }
+  });
+  assert.equal(databaseState(f.db), before);
 
   const walletBefore = wallet(f),
     duplicate = await run('business-sync', body, NOW + 11);
@@ -1788,6 +1803,9 @@ test('资金回放同owner证明旧false及新true原来源，错结果全回滚
       delete receipt.duplicate;
     },
     (receipt) => {
+      delete receipt.eventId;
+    },
+    (receipt) => {
       receipt.accountId = 'other-account';
     },
     (receipt) => {
@@ -1827,10 +1845,13 @@ test('资金回放同owner证明旧false及新true原来源，错结果全回滚
           .prepare('SELECT CAST(commit_seq AS TEXT) AS n FROM commits ORDER BY commit_seq')
           .all()
           .map(({ n }) => readRelationalCommit(f.db, n));
-      if (legacyReceipt)
+      if (legacyReceipt) {
         delete commits.find((commit) => commit.events[0].commitSeq === first.commitSeq).command
           .receipt.duplicate;
-      for (const commit of commits) db.transaction(() => replayer.replayCommit(commit, source))();
+      }
+      for (const commit of commits) {
+        db.transaction(() => replayer.replayCommit(commit, source))();
+      }
       assert.deepEqual(
         db.prepare('SELECT * FROM wallets ORDER BY rowid').all(),
         f.db.prepare('SELECT * FROM wallets ORDER BY rowid').all(),
@@ -1847,8 +1868,9 @@ test('资金回放同owner证明旧false及新true原来源，错结果全回滚
         false,
       );
       assert.equal(new RelationalQuotaStore(db).assertFundingReceipt(duplicate).duplicate, true);
-      for (const [table] of relationalPrivateTables)
+      for (const [table] of relationalPrivateTables) {
         assert.equal(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, table);
+      }
       assert.ok(
         db
           .prepare('SELECT auth_epoch AS epoch FROM members')
@@ -1857,8 +1879,9 @@ test('资金回放同owner证明旧false及新true原来源，错结果全回滚
       );
       const before = databaseState(db),
         changes = db.prepare('SELECT total_changes() AS n').get().n;
-      for (const commit of commits)
+      for (const commit of commits) {
         db.transaction(() => assert.equal(replayer.replayCommit(commit, source).replayed, true))();
+      }
       assert.equal(databaseState(db), before);
       assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
     } finally {

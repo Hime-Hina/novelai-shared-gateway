@@ -38,6 +38,7 @@ import { publicSharedAccountStatus } from '../quota/shared-status.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
+import type { OperatingFundingInput } from '../quota/operating-accounting.ts';
 import { quotaNumber } from '../quota/eligibility.ts';
 import {
   safeAccount,
@@ -51,6 +52,13 @@ import {
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
+const operatingActions = [
+  'operating-contribute',
+  'operating-register-funding',
+  'operating-cover-loss',
+  'operating-reconcile-return',
+  'operating-confirm-debits',
+];
 
 // 管理读取和命令共用当前授权，业务规则继续由各自 owner 拥有。
 export function createRelationalManagementHttp(deps: {
@@ -252,6 +260,7 @@ export function createRelationalManagementHttp(deps: {
           'member-status',
           'member-admission',
           'groups',
+          ...operatingActions,
         ].includes(body.action as string)
       ) {
         fail(400, '尚未接入此管理操作');
@@ -274,6 +283,17 @@ export function createRelationalManagementHttp(deps: {
               : 'quota-policy-v1',
             pricingVersion: 'none',
           };
+        if (operatingActions.includes(body.action as string)) {
+          if (!env.OWNER_USER_ID || (body.userId && body.userId !== env.OWNER_USER_ID)) {
+            fail(403, '只能从运营者本人已归属份额划入');
+          }
+          return quotas.manageQuotaFunding(
+            { ...metadata, commandId: command.commandId },
+            quotas.readBoundAccountId(),
+            body as OperatingFundingInput,
+            member,
+          ).response;
+        }
         if (body.action === 'member-status') {
           if (typeof body.enabled !== 'boolean') {
             fail(400, 'enabled 必须为布尔值');

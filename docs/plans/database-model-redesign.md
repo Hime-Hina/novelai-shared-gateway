@@ -1931,11 +1931,15 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 ### 9.74 运营资金 HTTP 接入的原结果与幂等来源
 
-只接既有两个 member-management POST 中五个 `operating-*` action，继续复用原 `manageOperatingFunding`、同步金融规划和当前 owner/admin 授权，不扩展账户选择、金融算法或共享 surface。本人划入固定部署 owner，账户固定当前 bound，正文不能自报 actor、命令、时间或另选资金来源。当前批次首先修复该入口的核心接缝，HTTP 薄绑定待同一审查候选补齐。
+只接既有两个 member-management POST 中五个 `operating-*` action，继续复用原 `manageOperatingFunding`、同步金融规划和当前 owner/admin 授权，不扩展账户选择、金融算法或共享 surface。本人划入固定部署 owner，账户固定当前 bound，正文不能自报 actor、命令、时间或另选资金来源。HTTP 沿现同一 authorize/notifier，Body IO 后复核当前 owner/Cookie/epoch 或本机 admin/ready，再薄绑定 quota 命令。预览、member-key、成员、账户 PATCH 和组/政策分派均保留；POST 仍只在两个 member-management literal 开放，不续 Cookie。
 
 实际旧 JsonStore/localhost 对照证明：首键首次返回 false，重复首键仍 false；同时间相同业务收据的新键无事实为 409；推进同步时点后，新键以原 `RefillApplied` 等真实事实提交，原结果为 true，重复该键仍 true，换正文 409。原关系实现却丢弃同步事实，返回旧提交且未保存新键，随后相同新键的其他意图可以执行。反例与实际旧控制在本地 `H:/TEMP/novelai-operating-contract-20261114/contract-before.log`。
 
-修复仅在 QuotaStore 资金入口允许无 commandId，复用当前 owner verifier 并先于原 receipt；有事实保存原业务 duplicate，无事实不建立 keyed receipt。旧无标志的合法回执须由同提交原人工决定证明 false，不增加默认猜测；公共和额度完整回放共用同一来源验证。专项覆盖无事实/有事实两条分支、首次 true 后原键重领/换正文、owner/epoch、同步尾 SQL 外层捕获回滚、旧 false 与新 true 完整回放且私有空/零网络。当前六文件核心联合 188/188、零跳过，日志 `H:/TEMP/novelai-operating-core-union.log`；尚非 HTTP、独立复审或发布验收。后续同类资金 HTTP 只在现管理 dispatcher 绑定该命令，不在传输层重建金额或收据规则。
+修复仅在 QuotaStore 资金入口允许无 commandId，复用当前 owner verifier 并先于原 receipt；有事实保存原业务 duplicate，无事实不建立 keyed receipt。旧无标志的合法回执须由同提交原人工决定证明 false，不增加默认猜测；公共和额度完整回放共用同一来源验证。HTTP 通过同 owner 的窄 `readBoundAccountId()` 读取原绑定，不为取一个 ID 构建 shared-status/金融 DTO 或读取 PST。原 receipt 在新绑定/金融规划前返回；NULL 或其他池只拒绝新决定，不制造空串账户或选择任意候选。没有新增事件类型、SQL、算法、持久状态、通知 registry 或架构守卫。
+
+新增核心四项和真实 ready/localhost 九项涵盖五 action 的原回包、固定 owner 钱包/当前 bound、未来登记不贷钱包、真实观察后扣款确认、原当前差额纠正和同池核销、首 true 后原键重领/换正文 409，以及五 action 正文等待中的 Cookie/epoch/owner/ready/admin 撤销。原认证协调可发 sessions 撤销通知，不能把它冒称业务幽灵；拒绝没有金融/任务/回执写入或金融通知。原生 SQLite 第二钱包尾错由外层捕获后全表与命令/游标不变，健康重试只发一次整笔通知；完整公共回放保持金融/事实/回执一致，私有认证为空、零网络，重复回放 total_changes 为零。
+
+六文件核心联合 188/188、九项新增 HTTP 及最终四项核心 13/13 均为零跳过，具体日志 `H:/TEMP/novelai-operating-core-union.log`、`novelai-operating-http-second.log`、`novelai-operating-final-focused.log`。原管理 HTTP/额度/权益/开账/共同回放七文件同候选 **297/297、零跳过，54.143 秒**，`H:/TEMP/novelai-operating-final-union.log`；backend 类型、architecture、默认与可信固定 b427 迁移、193 文件语法、十三文件格式和 diff 通过。独立技术复审另登记；未运行 full/build/compiled/Node24/native 或生产，不沿用父相关证据。后续同类资金 HTTP 只在现管理 dispatcher 绑定该命令，不在传输层重建金额或收据规则。
 
 ## 10. 事实依据与修订
 
