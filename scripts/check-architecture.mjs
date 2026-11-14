@@ -31,6 +31,8 @@ const mutations = new Set([
   'initializeRelationalStorage',
   'persistAcceptedInput',
   'stageGenerationDiagnostic',
+  'stageOpeningInput',
+  'stageOpeningContext',
   'initializeGatewayConfiguration',
   'stageNormalizationDefaultsProfile',
   'createNormalizationDefaultsProjector',

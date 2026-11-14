@@ -239,6 +239,8 @@ for (const filename of [
     ['direct ready installation', 'verifyAndInstallRelationalStorage(raw,source);'],
     ['current configuration initialization', 'initializeGatewayConfiguration(metadata,input);'],
     ['protected defaults stage', 'stageNormalizationDefaultsProfile(values);'],
+    ['opening input stage', 'stageOpeningInput(input);'],
+    ['opening context stage', 'stageOpeningContext(id,context);'],
     ['protected defaults projection', 'createNormalizationDefaultsProjector(source,commit,false);'],
     ['configuration projection', 'createConfigurationProjector(commit,source,false);'],
     [

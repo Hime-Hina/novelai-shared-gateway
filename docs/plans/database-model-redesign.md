@@ -1396,6 +1396,8 @@ OpeningRequest 复用原请求行写入，显式保存原 acceptedAt/retiredAt�
 
 新增专项 13/13；输入、登记、前片 Opening、完整回放和 ready 六文件 102/102，零跳过。反例覆盖原零/未知/附件、complete 与同笔首次 context、unavailable、缺行/同长坏 BLOB/完整回执错源、重复登记/原顺序、第二次写后 SQL 错误外层 catch 全表/事实/回执/游标回滚及重试、实际唯一 installer 和 ready 后重复零写/新回放拒绝。回放无网络、无私有 Key/PST；原 partial 附件读取复用已合入的 `a87e8de`，没有另加兼容路径。TEMP 恢复旧严格字段比较后合法 partial 精确失败；删掉 context 先行核对后未来提交反例精确出现 Missing expected exception，源码恢复后重新验证。证据在本地 `H:\TEMP\novelai-opening-input-{before,after,focused,negative-*}.log`。backend 类型、架构、默认和可信 `ae772153` 旧迁移历史及差异检查通过；不改 DDL、旧 SQL/journal 或事件版本，未跑 full、编译包或 Node 24。覆盖清单仅增加这两个真实 owner，独立审查与同候选整合验证仍须完成。
 
+守卫后继只在原 mutations 集合登记新增的 `stageOpeningInput` 和 `stageOpeningContext`。虽然 InputStore 模块来源原已受约束，查询/protocol 中未限定的同名直接调用仍须明确拦截；沿原矩阵新增四个反例，旧守卫为 269 通过/4 失败，补齐名称后 273/273，原只读 type-only/transport/装配对照不变。日志为 `H:\TEMP\novelai-opening-input-guard-{before,after}.log`。这是需要维护者复核的写能力守卫增量，没有放宽原检查或新增框架，`42afee1` 的业务产品保持冻结。
+
 两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
