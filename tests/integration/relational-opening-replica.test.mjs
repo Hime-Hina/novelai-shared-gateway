@@ -155,7 +155,7 @@ test('OpeningReplica 由原 owner 保存已知零、未知和原 locator；完�
         f.artifactId,
         p.storageTargetId,
         [
-          { verifiedAt: 0 },
+          { uploadedAt: null, verifiedAt: 0 },
           { uploadedAt: null },
           { deletedAt: 0, lastErrorCode: 'historical-error' },
         ][i],
@@ -170,6 +170,7 @@ test('OpeningReplica 由原 owner 保存已知零、未知和原 locator；完�
     assert.equal(row.encoding, 'gzip');
   }
   assert.equal(store.readArtifactReplica(f.artifactId, a.storageTargetId).verifiedAt, 0);
+  assert.equal(store.readArtifactReplica(f.artifactId, a.storageTargetId).uploadedAt, null);
   assert.equal(store.readArtifactReplica(f.artifactId, b.storageTargetId).uploadedAt, null);
   assert.equal(store.readArtifactReplica(f.artifactId, c.storageTargetId).deletedAt, 0);
   const noNetwork = t.mock.method(globalThis, 'fetch', () => assert.fail('replay must not do IO'));
@@ -267,10 +268,10 @@ test('完整 Opening envelope 拒绝错 source/member/account/target/顺序和�
     ],
     ['duplicate-pair', [event('OpeningStorageTargetRecorded', p), replica, replica]],
     [
-      'verified-without-upload',
+      'negative-verified-time',
       [
         event('OpeningStorageTargetRecorded', p),
-        opening(f.artifactId, p.storageTargetId, { uploadedAt: null, verifiedAt: 0 }),
+        opening(f.artifactId, p.storageTargetId, { uploadedAt: null, verifiedAt: -1 }),
       ],
     ],
   ];
