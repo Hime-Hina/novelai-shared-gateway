@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { fixture, meta, keys, NOW, image } from '../helpers/relational-generation.mjs';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { assertRelationalStorageReady } from '../../server/storage/relational-storage.ts';
 import {
   sameRelationalRows,
@@ -26,6 +27,7 @@ const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 async function selected(f, name = 'selected') {
   const source = path.join(f.dir, `${name}.sqlite`);
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(source);
   const seal = new Database(source);
   seal.pragma('journal_mode=DELETE');

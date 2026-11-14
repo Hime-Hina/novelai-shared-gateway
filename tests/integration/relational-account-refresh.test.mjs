@@ -5,6 +5,7 @@ import { once, EventEmitter } from 'node:events';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { fixture, NOW, meta, keys, databaseState } from '../helpers/relational-generation.mjs';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { createRelationalAccountQuotaRefresh } from '../../server/quota/relational-account-refresh.ts';
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
@@ -50,6 +51,7 @@ async function setup(t, options = {}) {
     f.db.prepare('UPDATE upstream_credentials SET pst=?').run(initialPst);
   }
   const sourcePath = path.join(f.dir, 'refresh-source.sqlite');
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const sealed = new Database(sourcePath);
   sealed.pragma('journal_mode=DELETE');

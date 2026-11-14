@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import path from 'node:path';
 import { fixture, meta, keys, NOW, databaseState } from '../helpers/relational-generation.mjs';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import {
   authenticateMemberApiKey,
   createMemberSession,
@@ -34,6 +35,7 @@ async function setup(t, { env = {}, beforeReady, discordFetch } = {}) {
       NOW,
     );
   const sourcePath = path.join(f.dir, 'read-http-selected.sqlite');
+  initializeFixtureConfiguration(f.db);
   await f.db.backup(sourcePath);
   const sealed = new Database(sourcePath);
   sealed.pragma('journal_mode=DELETE');
