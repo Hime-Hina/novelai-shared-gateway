@@ -326,7 +326,7 @@ test('认证 HTTP 保留Only Discord、一次性state/Cookie/Host及仅callback�
     ).status,
     403,
   );
-  const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1'))().code;
+  const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null))().code;
   const pending = await f.start(invite);
   const invalid = await f.finish(pending, { cookie: 'nai_discord_state=wrong' });
   assert.equal(invalid.status, 400);
@@ -360,7 +360,7 @@ test('认证 HTTP 保留Only Discord、一次性state/Cookie/Host及仅callback�
 
 test('认证 HTTP OAuth网络或当前成员状态变化后不签发会话，错误响应不泄漏远端原文', async (t) => {
   const f = await setup(t, discordEnv),
-    invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1'))().code;
+    invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null))().code;
   f.upstream.fail = true;
   const unavailable = await f.finish(await f.start(invite));
   assert.equal(unavailable.status, 503);

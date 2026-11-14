@@ -133,10 +133,16 @@ export class RelationalMemberStore
       const member = this.sqlite
         .prepare<
           [string],
-          { auth_epoch: string | null; key_hash: string | null; username: string | null }
+          {
+            auth_epoch: string | null;
+            key_hash: string | null;
+            username: string | null;
+            inviteExpiresAt: number | null;
+          }
         >(
-          `SELECT m.auth_epoch,k.key_hash,p.username FROM members m
+          `SELECT m.auth_epoch,k.key_hash,p.username,i.expires_at AS inviteExpiresAt FROM members m
         LEFT JOIN api_keys k ON k.member_id=m.id LEFT JOIN password_credentials p ON p.member_id=m.id
+        LEFT JOIN discord_invites i ON i.member_id=m.id
         WHERE m.id=?`,
         )
         .get(memberId);
@@ -158,6 +164,7 @@ export class RelationalMemberStore
             ? {
                 key: member.key_hash,
                 username: member.username,
+                inviteExpiresAt: member.inviteExpiresAt,
               }
             : null,
         ),
@@ -409,7 +416,20 @@ export class RelationalMemberStore
     return row.recoverable_key;
   }
 
-  private authorizeOwnerCommand(metadata: MemberCommand, actor: MemberUser | null) {
+  private authorizePrivateCommand(actor: MemberUser | null | undefined) {
+    if (actor === undefined) {
+      fail(403, '私有变更需要当前 owner 或本地管理员授权');
+    }
+    this.authorizeOwnerCommand(
+      { actorKind: actor ? 'member' : 'admin', actorId: actor?.id ?? 'local-admin' },
+      actor,
+    );
+  }
+
+  private authorizeOwnerCommand(
+    metadata: Pick<MemberCommand, 'actorKind' | 'actorId'>,
+    actor: MemberUser | null,
+  ) {
     const current =
       actor &&
       this.sqlite
@@ -877,8 +897,12 @@ export class RelationalMemberStore
     });
   }
 
-  createMemberDiscordInvite(memberId: string, now = Date.now()) {
+  createMemberDiscordInvite(memberId: unknown, actor: MemberUser | null, now = Date.now()) {
     return this.owningTransaction(() => {
+      this.authorizePrivateCommand(actor);
+      if (typeof memberId !== 'string' || !memberId) {
+        fail(404, '成员不存在或已停用');
+      }
       const user = this.authenticationMember(memberId);
       const result = createDiscordInvite({ users: user ? [user] : [] }, memberId, now);
       this.saveDiscordAuthentication(user!);

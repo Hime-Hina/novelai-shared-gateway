@@ -62,7 +62,7 @@ test('管理目录按稳定ID分开同名成员，保留Key-only未知身份且q
   const keyOnly = await authenticateMemberApiKey(f.members, keys.m1);
   assert.equal(keyOnly.id, 'm1');
   const session = await createMemberSession(f.members, keyOnly, {}, NOW),
-    invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', NOW))(),
+    invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null, NOW))(),
     inviteHash = f.db
       .prepare("SELECT code_hash FROM discord_invites WHERE member_id='m1'")
       .get().code_hash,
@@ -151,7 +151,7 @@ test('disabled仍是管理目标，实际权益移除后不再列出；未知与
     inviteExpiresAt: null,
   });
   assert.equal(f.members.readManagementMemberProfiles().length, 2);
-  const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', NOW))(),
+  const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null, NOW))(),
     stop = new Error('rollback expiry source fault'),
     before = databaseState(f.db);
   assert.throws(
@@ -203,7 +203,7 @@ test('重开保持目录；完整业务回放不补私有用户名/绑定，选�
     user.discord = { id: '222222222222222222', guildId: '1134557553011998840' };
     tx.saveAuthentication(user);
   });
-  f.db.transaction(() => f.members.createMemberDiscordInvite('m1', NOW))();
+  f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null, NOW))();
   const expected = f.members.readManagementMemberProfiles(),
     sourcePath = path.join(f.dir, 'directory-selected.sqlite');
   await f.db.backup(sourcePath);
