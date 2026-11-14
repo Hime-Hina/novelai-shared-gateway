@@ -1791,6 +1791,18 @@ owner 本人停用的原 409 规则归入状态命令；admin/system 保留应�
 
 根在已审 owner GET/政策并集上整合，MemberStore 与专项保持 0b 的精确 Git 字节；真实成员管理、原成员与接单三文件 72/72、零跳过，6.893 秒。backend 类型、architecture、可信实际 main `88d2c26` 迁移、格式与 diff 通过，日志 `H:/TEMP/novelai-member-owner-root-{joint,type,static,format}.log`。新增的 owner 能力仅此两命令，既有 admission 与 system 边界不扩张；后续 HTTP 传参/总装配仍须实际验证。
 
+### 9.71 成员门户 heatmap GET 的关系接入
+
+Portal 首页的 `LazyCallHeatmap endpoint="heatmap"` 实际调用 `/api/member/heatmap`，含 operation 切换与 SSE 失效后的 dates 增量。关系成员读取工厂只接回这条既有 GET，复用 ReportStore 和 `readActivityHeatmap` 原 UTC+8 一年范围、参数检查、状态分类及 retained-records DTO。成员过滤只能来自已认证 Cookie 的当前稳定 ID，禁止所有 memberId query 参数；正文、API Key 或 owner 配置都不能改读域，owner 在普通成员路径也只看本人。
+
+沿同一个 Cookie/Discord/active/认证 epoch/ready 授权边界，读取前取得真实 actor，Report await 后再次复核当前身份与 ready 再返回。heatmap 不续期、不签图片 URL、不读取 prompt/BLOB、不提交金融或任务状态；Discord 真实观察的既有私有/资格事实仍属于认证 owner，不假称这些必要观察零写。原 Job 时间与 Opening 有来源的 0/NULL 继续由同一 report SQL 解释，未知不填父受理、导入或当前日期。没有新算法、缓存、事件、表、授权层或旧 Store 适配；可区分反例与固定验证随后追加。
+
+Windows Node 22 源码新 heatmap 9/9；原成员读取、Shared HTTP、关系报表和旧热力图 HTTP 四文件 46/46、零跳过，26.628 秒。两个最初路由反例均在真实 localhost HTTP 的 404 断言失败后转绿。真实三操作、原 generate 默认/UTC+8 日期增量及非法参数、GET 正文/Key query/Authorization 不扩成员范围、原 Key 转给他人后 Cookie 仍按稳定成员、取消与真实历史退休均有运行证据。Opening 的原 0 在包含它的范围内计一次，NULL 不计且不改源值；未把父受理时间充当 child 起点。完整公共回放的 Key/密码/PST/Discord/会话和认证代次均为空，匹配选定私有/保护输入经唯一 installer 后恢复本人结果，磁盘重开一致。
+
+报表真实 SQL 异步返回后退出、密码代次轮换、停用及 ready 故障均拒绝返回旧桶，IO 不持有 SQL 事务。真实 Discord 临时 503 和等待中退出不读取 report 或签图，金融/任务行不变，既有认证观察可正常保存。带真实输入附件的业务 SQL 捕获未加载 input/context/BLOB，普通缓存认证查询比较全库序列化与 total_changes 零变化且无 Set-Cookie；没有为 query_only 放宽原认证维护。工厂直接拒非 GET 的 403 沿原行为，sole 的 api-surface 仍只允许 GET，未在本片改变 HTTP 白名单或管理路由。
+
+隔离副本放开 member filter、删除末次授权、用父受理时间替换原 child 时间、让 heatmap 续期的四种变体均在原业务 ERR_ASSERTION 失败，正常副本 9/9；证据为 `H:\TEMP\novelai-member-heatmap-context.log` 和 `H:\TEMP\novelai-member-heatmap-negative-2dfb7fab-eaed-42c4-b8c3-a41ece90c8ae\results.json`。类型、架构、默认及可信 main `88d2c26` 迁移历史、语法和改动格式/diff 随固定候选核对。初次含附件夹具的旧 JSON 摘要 helper 不支持 BLOB，已仅在新用例改用真实 SQLite serialize 比较，没有修改产品来绕过该测试表示限制。未跑 full/build/compiled/Node 24 或生产/云端；此 GET 接线不表示 sole 已切换，独立审查随后绑定固定源码。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

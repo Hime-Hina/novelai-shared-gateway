@@ -6,6 +6,7 @@ import { RelationalMemberStore } from '../storage/relational-member-store.ts';
 import { RelationalRequestStore } from '../storage/relational-request-store.ts';
 import { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
 import { RelationalQuotaStore } from '../storage/relational-quota-store.ts';
+import { RelationalReportStore } from '../storage/relational-report-store.ts';
 import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 import {
   authenticateMemberSession,
@@ -19,6 +20,7 @@ import { assertMemberSameOrigin, memberCookie, replyMemberJson } from './http-re
 import { handleMemberReadRoutes, publicMemberProfile } from './read-http.ts';
 import { publicSharedAccountStatus } from '../quota/shared-status.ts';
 import { streamMemberSharedEvents } from './shared-events.ts';
+import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -40,11 +42,13 @@ export function createRelationalMemberReadHttp(deps: {
     requests = new RelationalRequestStore(sqlite),
     generations = new RelationalGenerationStore(sqlite, env),
     quotas = new RelationalQuotaStore(sqlite, env),
+    reports = new RelationalReportStore(sqlite),
     now = deps.now ?? Date.now;
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
     if (
       ![
         '/api/member/history',
+        '/api/member/heatmap',
         '/api/member/key',
         '/api/member/me',
         '/api/member/shared-status',
@@ -60,6 +64,7 @@ export function createRelationalMemberReadHttp(deps: {
     if (!session) {
       fail(401, '请先登录');
     }
+    const epoch = session.user.memberAuth?.version;
     await requireDiscordMembership(session.user, {
       store: members,
       env,
@@ -80,7 +85,7 @@ export function createRelationalMemberReadHttp(deps: {
         env,
         (member, expiresAt) => {
           assertRelationalStorageReady(sqlite);
-          if (member.id !== session.user.id) {
+          if (member.id !== session.user.id || member.memberAuth?.version !== epoch) {
             fail(401, '登录已失效，请重新登录');
           }
           return { value: read(member, expiresAt) };
@@ -102,6 +107,17 @@ export function createRelationalMemberReadHttp(deps: {
         at,
       );
     };
+    if (url.pathname === '/api/member/heatmap') {
+      const memberId = await authorize((member) => member.id),
+        data = await readActivityHeatmap(
+          reports,
+          url.searchParams,
+          { memberId, allowMemberFilter: false },
+          now(),
+        );
+      replyMemberJson(res, 200, await authorize(() => data));
+      return true;
+    }
     if (url.pathname === '/api/member/shared-status') {
       replyMemberJson(res, 200, await authorize((member) => sharedStatus(member.id)));
       return true;
