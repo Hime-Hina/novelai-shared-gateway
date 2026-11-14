@@ -800,3 +800,24 @@ WebDAV 使用[Connected Apps 传输额度](https://mypikpak.com/en-US/help-cente
 最终 HTTP 产物检查，以及同时包含正式和测试 unit 的发布包校验。业务候选不因此自动
 替换为新构建；当时尚未获准切换。后续 2026-10-19 的定时授权见本文开头，实际切换
 及线上验收结果须在执行后另行记录，不能把准备记录当作已经上线。
+
+## 保留源登记工具（9.93首片，未部署）
+
+此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放仍关闭，不能用一个新空registry推断旧保留物不存在。完整契约归[数据库计划9.93](../plans/database-model-redesign.md#993-保留源登记与捕获保护首片未开放源删除)。
+
+正常发布包新增 `scripts/retained-sources.mjs`。`backup-production.py`默认选择备份目录的同级`<备份目录名>-retained-sources`，所以生产路径对应`/var/backups/novelai-shared-gateway-retained-sources`，不进入`daily-*`轮换。该目录必须先由部署者显式init且保留私有权限；丢失/损坏时备份捕获在SQLite前拒绝，不自动重建。此首片并未执行该生产init。
+
+```sh
+printf '{}' | node /verified/package/scripts/retained-sources.mjs init /private/retained-sources
+printf '{}' | node /verified/package/scripts/retained-sources.mjs read /private/retained-sources
+```
+
+CLI读取stdin JSON，错误不输出源内容或秘密。实际Python调用begin/describe/bind/checkpoint/publish，R2调用同一owner；无source删除命令。独立旧archive只能按固定只读工具产出的原audit/artifacts.jsonl及整源SHA登记，不在线加载旧Store；未知字段与外部字节核验不足保持unknown。`archive`请求使用`source/manifest/dependencies`三个已选私有路径，不更改原件或导入旧解释器。
+
+每份新业务snapshot含`retained-catalog/`及其独立SHA侧件；普通manifest内容先固定，checkpoint包含当次preparing责任及既有证明，所以不自循环。整个snapshot继续由原tar/AES-GCM/回读和外部`r2-backup.json`绑定。单独一个可改的SHA侧件不是认证依据；灾后必须先按原远端receipt下载并验证包，再使用其checkpoint和SHA向**全新**私有目录执行`restore`。该命令不覆盖已有registry，也不把preparing/unknown提升为完整覆盖；本地目录真实发布后才可凭原manifest/source SHA执行`publish`。
+
+registry的不可变manifest/依赖证明不在local daily退休时删除，remote hold独立保留。远端结果不明、capturing kill、SQL或文件失败都不得按年龄/PID清除pin。lease恢复只清已结束的短metadata进程且严格匹配原文件身份，不等于capture/PUT已经结束。灾后漏掉checkpoint之后的新登记时仍unknown，须重核全部保留源；不能就此开自动释放。Windows功能检查不代表POSIX目录fsync/断电持久性或生产恢复门禁。
+
+lease恢复还要求Linux host/platform、boot ID及PID namespace与当前域精确相同；跨WSL/container、foreign或无法证明同域均拒绝。Windows记录不可证明域，不能用本机PID不存在接管；必要时从外部验证过的checkpoint向全新目录恢复，并保留未完责任。checkpoint的独立类型标记不是自认证，仍须原包/receipt的外部SHA；restore不接受带lease/recovery文件的输入。
+
+远端hold另绑定实际R2 account/bucket namespace。失败上传的preparing不会因过期消失：只有同可证Linux PID域的原uploader已退出、原source/object绑定一致、当前完整listing及七份保留对象全部通过GCM后，原R2 owner才可先标retiring，再凭实际DELETE完成退休。Windows/未知域保持pin，保留份数可超过七份；cutover/archive不随daily轮换。不可变manifest/依赖JSONL副本是remote-only时离线重算引用所需的证明，维护成本为每个来源一份元数据及checkpoint复制；没有另存对象目录或派生refcount。该协议依赖私有目录和合作的单机caller，不宣称可抵抗任意外部文件替换或分布式writer。

@@ -2269,6 +2269,31 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 根在 `5ca121f` 上普通合入全部七路径先决与修复；六个非plan文件逐个重算共同基线并集，保留原账户连接/格式7和9.85状态原因 guard，旧格式SQL/journal/DDL不变。仅额外删除helper已失效的两行“Note待接合”注释，没有改变其运行字节。副本owner整文件 **24/24、零跳过，7.758秒**；sole所选复制、两个queued唤醒、真实物理占用、48MiB背压、晚领和quota/生成重启交点 **19/19、零跳过，48.909秒**，共43 distinct。类型、architecture、默认与可信 main88 迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-replica-root-preservation.json`，日志 `H:/TEMP/novelai-replica-root-{owner,sole,type,architecture,default-migration,trusted-migration,syntax,format}.log`。这仍是复制保持源及关闭顺序验收，尚无归档/备份引用清单、source DELETE、最终实际发行物、真实云端或容量/生产释放结论。
 
+### 9.93 保留源登记与捕获保护（首片，未开放源删除）
+
+在固定 `bb308a5` 上接续9.87，只实现实际备份producer及只读保护reader。当前数据库不能推导旧snapshot、remote-only备份或独立archive仍保留的引用，故在日常轮换域外保存一份私有registry；不增加DDL、业务事实、refcount或第二份对象状态。来源身份绑定原manifest/整SQLite SHA；新格式依赖由Replica/Gen现owner按100行分页派生，含退休artifact原承诺和未发布prepared原descriptor；原final/part语义继续归文件owner。旧格式不在线解释，固定旧工具的audit/artifacts.jsonl仅按原SHA登记，未知来源仍为opaque/unknown。
+
+| 契约项      | 唯一来源与允许变化                                                                                                                                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 登记        | `storage/retained-sources.ts` 保存registryId/revision、始终unknown的coverage、source身份及local/remote/archive各自hold。状态仅preparing/retained/retiring/retired。immutable manifest与依赖JSONL证明副本共用sourceId，local轮换不丢remote-only的离线pin依据           |
+| 捕获        | Python在真实SQLite backup前，先经同一CLI持久化preparing。封存manifest和源SHA后绑定证明，checkpoint随业务包保存，再沿原rename发布目录并凭原manifest/源SHA确认retained。失败/kill留下责任，不按PID/年龄自动解pin                                                        |
+| lease       | 短wx nonce lease只覆盖fs元数据变更，不跨SQLite或网络IO；fsync后原子发布。恢复需原inode/内容SHA/registryId/revision/nonce一致且原metadata进程不存在；alive/EPERM均拒。清lease不取消任何preparing/retiring或宣称外部IO结束                                              |
+| 各自退休    | local daily先候选retiring，原rmtree实际成功后确认；remote在原PUT前preparing、GCM回读及receipt保存后retained，原remote删除确认后才退休。未知结果仍pin。本地七份轮换不解除remote、cutover或archive；过期不等于消失                                                      |
+| 灾后        | checkpoint包含registry及不可变证明副本，不将自身SHA写回自身manifest。它与普通manifest一起受原完整tar/GCM/回读及外部receipt保护。凭已验证包给出的checkpoint SHA向全新目录恢复，不覆盖已有catalog；恢复可能仍preparing/unknown，必须用实际原manifest/源SHA显式reconcile |
+| fail closed | 缺catalog不自动初始化为空；schema/manifest/SHA/namespace/依赖或coverage未知不解释为零引用。本片无coverage-complete、enable-release、source DELETE、删除表/事实或新的D8期限                                                                                            |
+
+首次init是部署者显式离线动作，不自动代表旧保留物盘点完成。旧manifest和artifact清单可重算自绑定的固定source；不可变证明副本的维护成本是每次捕获/保留物退休及灾后恢复都核同一source身份。目录权限为私有；Node Windows标准库不具等同POSIX的目录fsync，Windows仅核功能和进程崩溃，不宣称断电安全删除。后续任何物理释放必须先满足平台持久性与完整保留源域，不借本片绿例批准。
+
+PID只在同一主机/PID namespace有意义。Linux lease另绑定实际host/platform、boot ID及`/proc/self/ns/pid`；当前域不能证明或不一致时，即使nonce/inode相同且本机该PID不存在，也拒绝接管。Windows标准库不能证明该域，本片恢复lease一律拒绝，不能借Hybrid功能证据冒称Linux正向恢复。checkpoint有独立类型标记且不包含lease；restore拒绝输入中的lease/recovery文件，只保留preparing/retiring数据责任，不导入活锁或自动清pin。
+
+远端身份绑定实际R2 account/bucket namespace、原key、密文SHA和长度；同物理key不能登记第二份独立hold。失败上传的preparing只能由原R2 owner在当前完整listing及拟保留七份全部GCM核验后收敛：原source binding/明文archive SHA/namespace/object必须匹配，且可证明原uploader属于当前Linux PID域并已退出。此时先转retiring仍pin，原DELETE成功或原owner可证明404后才retired。Windows或未知域拒绝这一步，可能保留多于七份；不能以年龄、同名key、PID不存在或一次上传成功代替上述证明。旧listed备份只登记opaque存在，不伪造上传者或已知依赖；cutover/archive不进入daily自动退休。
+
+实际入口为既有`backup-production.py`、`r2-backup.mjs`及一个必要`retained-sources.mjs` CLI；普通包仅追加该实际CLI seed。SQLite格式/归属继续由现owner检查，旧基本备份与显式verify保留；新捕获不含图片，不进入旧清理器的manifest改写路径。未完成的checkpoint之后新增来源也不能在灾后恢复成完整coverage，必须重新核对登记域。
+
+当前Node22源码两文件同批13/13、零跳过、16.926秒：登记五项、原R2六项及新增namespace/过期preparing两项。原R2六个test body及四个加密函数逐字保留；Python原八方法的47条原assert调用保留。Linux CPython3.12.12在WSL ext4跑原七项及新增capture barrier/kill、checkpoint proof publish和缺catalog三项，10/10、250.303秒；原真实ready/加密R2/完整public replay/selected-private installer一项在NTFS夹具和Windows Node22桥下1/1、9.720秒，并实际从认证后的远端包提取checkpoint、移走原catalog后独立恢复。桥只转换所选CLI的路径字段，未改业务值、原场景或超时。上述是两种明确环境的源码检查，不合称Linux Node正例。
+
+删去域校验的TEMP错误实现使用原foreign-domain断言，精准报`Missing expected rejection`；原实现控制恢复1/1，产品字节始终未改。Windows远端7+1坏+7健康序列确实完成最后七份GCM GET，因无法证明uploader域而保持preparing/十五份且零DELETE；受支持Linux Node22上的同域恢复及成功收敛、Linux RSS条件分支、POSIX目录fsync/断电、编译发布物、实云和生产仍未验。旧首次10项及短Python4项日志保留为前置范围，不冒充最新结果。backend类型、架构、可信bb308a5迁移历史、局部格式和差异检查通过；完整命令/源码与工具摘要见`H:/TEMP/novelai-retained-sources-20261115/`交接。独立审查待固定候选完成，下一片继续持久删除责任与原IO闭环，当前全部source仍保留。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
