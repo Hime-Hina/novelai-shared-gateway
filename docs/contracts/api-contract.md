@@ -293,6 +293,8 @@ Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先�
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
 
+`POST /api/admin/fair-quota` 保留原首配/重确认语义：2MiB JSON 只消费四个不同且当前启用的 `memberIds`，顺序也是原账本决定的一部分；忽略额外字段和 `Idempotency-Key`，不执行分组或政策更新。已有账本须与原完整成员顺序相同，仅同步原绑定金融状态；未知历史顺序不能按 ID 或组排序猜测。首次配置按原 owner 创建四个等份单成员组，无可用 Opus 时 pending、多个时 ambiguous，只有唯一真实 eligible 账户才同笔绑定和同步。响应仍为 `{status,members,globalConcurrency:4}`，无 Cookie。HTTP 在读取正文后重核管理员、同源和 ready；共享配置、绑定、补缺零钱包和金融决定同笔提交/回放，失败不留下部分状态，无决定时不造空提交。
+
 关系账户 `PATCH /api/member/owner/accounts/:id` 保留 owner 仅对当前绑定账户单字段完整 PST `token` 或布尔 `enabled` 的权限。`PATCH /api/admin/accounts/:id` 恢复原 admin 的组合 `name`、`weight`、`proxyUrl|socksProxy|proxy`、`token`、`enabled` 配置；名称沿原 String/slice80，投影以单个 JSON string 列 `display_name_json` 保留合法孤立代理，三写者与两窄读统一 stringify/parse，不从事件另补读值。权重沿原 Number/clamp1–100，合法小数保真。name/weight/proxy 允许原 held 和实际 physical 请求在途，proxy 不自动暂停；只有 PST 真轮换检查原账户所有成员 reserved 与实际 controls，再原子保存 PST/已选代理并暂停。代理真变更但当前 PST 缺失时为 503 零写，可同一组合提交新 PST 与代理，不接受成功后丢值。
 
 `POST /api/admin/accounts` 已接显式 `enabled:false` 的原新增暂停账户，包括在已绑定账户旁新增第二账户，返回 201 与原 mask 账户字段，不改变共享绑定或启用第二调度。`PATCH /api/admin/accounts` 保留原 ids/accounts 数组或单值解析、过滤不存在 ID、无命中404；weight 小数及 enabled:false 同一完整提交、整笔回滚，返回 `{accounts}`。单个当前绑定账户 enabled:true 复用真实 Opus 核验。原 POST 的 enabled 默认 true、非绑定账户真实观察与单/批启用尚待后继分离观察和单绑定金融同步，不把目前拒绝视为批准的功能退役，也不先保存暂停账户再异步假装原子成功。admin 集合命令同样非 keyed，当前授权先行，无秘密公共回执。

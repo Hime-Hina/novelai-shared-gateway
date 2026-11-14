@@ -19,6 +19,7 @@ import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentic
 import {
   assertOwnerAccountPst,
   assertOwnerAccountCredentialChangeAllowed,
+  assertOwnerAccountInitialBinding,
   ownerAccountConfiguration,
   selectSharedAccount,
   maskToken,
@@ -1231,12 +1232,16 @@ export class RelationalAccountStore {
       VALUES(?,'0','0','0','0','0','0','0','0',?)`,
       )
       .run(event.payload.accountId, event.eventId);
+    this.ensureMemberWallets(event.payload.accountId, event.eventId);
+  }
+  private ensureMemberWallets(accountId: string, sourceEventId: string) {
     this.sqlite
       .prepare(
         `INSERT INTO wallets(account_id,member_id,v5_available,anlas_fixed_available,anlas_purchased_available,source_event_id)
-      SELECT ?,member_id,'0','0','0',? FROM group_members`,
+      SELECT ?,member_id,'0','0','0',? FROM group_members WHERE true
+      ON CONFLICT(account_id,member_id) DO NOTHING`,
       )
-      .run(event.payload.accountId, event.eventId);
+      .run(accountId, sourceEventId);
   }
   applyAccountEvent(event: RelationalEvent) {
     if (!this.sqlite.inTransaction) {
@@ -1271,19 +1276,17 @@ export class RelationalAccountStore {
       case 'AccountBound': {
         const p = event.payload,
           policy = this.policy();
-        if (
-          policy.accountId !== null ||
-          p.accountId === null ||
-          p.configVersion !== policy.version + 1
-        ) {
-          fail('首次绑定的原政策或账户不符');
-        }
-        this.account(p.accountId);
+        assertOwnerAccountInitialBinding(
+          policy,
+          p,
+          !!this.sqlite.prepare('SELECT 1 FROM upstream_accounts WHERE id=?').get(p.accountId),
+        );
         this.sqlite
           .prepare(
             'UPDATE sharing_policy SET bound_account_id=?,config_version=?,source_event_id=? WHERE id=1',
           )
           .run(p.accountId, p.configVersion, event.eventId);
+        this.ensureMemberWallets(p.accountId, event.eventId);
         break;
       }
       case 'CredentialRotated': {

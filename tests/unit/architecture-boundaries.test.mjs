@@ -497,6 +497,7 @@ for (const filename of [
       'manageQuotaFunding',
       'configureQuotaPolicy',
       'configureGroups',
+      'configureMemberIds',
       'manageMemberQuota',
       'assertGroupCommit',
       'configureAnlasFallback',

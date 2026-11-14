@@ -121,9 +121,9 @@ function openingFacts({
       eventType: 'OpeningGroupRecorded',
       payload: { groupId: 'g', name: 'shared', share: 1, origin },
     },
-    ...['m1', 'm2'].map((memberId) => ({
+    ...['m1', 'm2'].map((memberId, memberOrdinal) => ({
       eventType: 'OpeningGroupMemberRecorded',
-      payload: { memberId, groupId: 'g', weight: 1, origin },
+      payload: { memberId, groupId: 'g', weight: 1, memberOrdinal, origin },
     })),
     {
       eventType: 'OpeningPolicyRecorded',
