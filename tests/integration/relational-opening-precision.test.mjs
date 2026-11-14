@@ -288,6 +288,15 @@ test('已知原parent只返回其证明；0和已知历史操作仍原值，薄�
     ),
     false,
   );
+  const originQuery = queries.find((sql) => sql.includes('FROM generation_request_origins o'));
+  assert.ok(originQuery);
+  assert.ok(
+    f.db
+      .prepare(`EXPLAIN QUERY PLAN ${originQuery}`)
+      .all('request:structural-container', 'structural-container')
+      .some((row) => row.detail.includes('stream_id=?')),
+    '薄来源读取必须复用既有stream索引，不能逐child扫描整个事件历史',
+  );
   assert.equal(
     f.db
       .prepare("SELECT accepted_at FROM generation_requests WHERE id='structural-container'")
