@@ -1432,6 +1432,18 @@ Node 22.23.4 新专项 8/8、配置/输入/完整回放/ready/格式/架构七�
 
 独立复审已按固定配置 `9f546567` 与文档后继 `ef9b4b8` 收尾，配置产品无新增 finding；单独配置先经原 8 项及独立 4 项 12/12，再仅在 TEMP 合入精确私有恢复修复 `7c7652bc`，最终配置 8 项、独立 5 项和文件身份 2 项共 15/15，零跳过。额外反例核对同 profile SHA 但不同来源/地址的完整提交拒绝、current 错指真实成员事实不修复、真实 AFTER INSERT 后外层 catch 全表回滚、ready 原回执零写及管理员/新命令拒绝、两边同缺 current 拒绝，以及原省略默认值的 raw 意图确实使用首次 A 重归一化、current B 同键冲突。隔离副本只删除 `assertCut` 的一行 current 读取后，原业务断言精确失败为 `Missing expected rejection`（0/1），已解除 Number 文件号提前误拒的遮蔽。独立报告和文件摘要分别为 `H:\TEMP\novelai-configuration-INDEPENDENT-REVIEW.md`、`H:\TEMP\novelai-configuration-reviewed-files.json`，最终日志为 `H:\TEMP\novelai-configuration-and-bigint-15-final.log`，负控为 `H:\TEMP\novelai-configuration-independent-negative\no-current.log`。该复审没有修改产品或执行 full；实际 sole/R08 HTTP、同候选发布物和总体恢复验收仍由父任务接续。
 
+### 9.49 #52：成员 me 的当前授权、预算估算与关系历史读取
+
+本片以统一实际 `d0a008a12770a2de132a061147b8315a7740d40c` 和独立摘要产品 `bc502b48c288418970cdf1216c93dbad7d75a7bf` 为依赖，本地仅保留 config 更强的 v2/v3 同时拒绝 v4 测试，与父整合 `900b38e` 产品树一致。新增接入只覆盖 `GET /api/member/me`；不扩展 shared-status/SSE、owner 摘要、权益命令、OpenAI 或 sole 总装配。独立摘要的实际 offgroup 正额钱包预算问题仍由同一金融 owner 的后继修复收尾，HTTP 不复制该规则或吞掉其 503。
+
+真实调用链仍为 SameOrigin、Cookie、Discord IO、原可见 me 续期点，再进入当前会话事务重核成员/ready。`withAuthenticatedMemberSession()` 仅把原已验证的 expiresAt 同用户交给回调，无第二套 session 查询或认证 registry；profile 使用回调里的 canonical 用户/owner/截止与 `MemberStore.readMember()` 的当前接单状态。普通 me 不续期，history/key 即使带活动头也不续期，既有可见无 query owner 摘要续期规则不变。visible me 复用原 `renewMemberCookie()`，持久续期失败不发 Cookie 或签发 URL；资格 owner 原本的观察/撤销及合法 visible 续期各有自身持久边界，不能宣称这些操作都全库零写。
+
+金融读取只调用一次 `QuotaStore.readMemberQuotaSummary(memberId, now)`，原独立 `syncBoundFairQuota` 估算和 `fairQuotaSummary` 保留完整 DTO、真实 fallback/status、关闭政策 null、held 合法与基线不可用 503；不拼另一份完整数据库或重算金融值。免费量以 Gen 的窄 `readMemberFreeImageUsage()` 复用原 freeUsage/policy，当前 active/private epoch 读取与原报价共用同一个 guard，关闭免费政策时警告继续由该唯一 owner gate。请求 recent30 和 late10 直接复用第 9.42 节的稳定成员/原产物/退款/找回证据读取，不做当前 Key 或 imageIds 二次纠偏，不读输入正文/BLOB。`publicMemberProfile()` 只抽原 me 白名单并同时供旧 HTTP 复用；保留 jobs.imageId、原金额 number 和未知/真实 0，不增派生持久状态。
+
+源码专项通过实际 localhost handler、真实命令/Local 字节、匹配私有快照与唯一 verifier 合法 ready：31 父 child recent30、真实 held 预扣、独立恢复估算、普通读取全表不变、visible 续期/数据库截止/Cookie、真实续期 SQL 故障外层回滚、已注销会话不可复活、11 条真实失败退款后找回取 late10、真实 V5 fallback 结算与完整原 summary DTO 对照、原创建时间 0、SQL 无输入正文/BLOB。canonical username 来自实际密码 owner，不从显示名或 ID 补值。NULL 时间/模型、旧合法 number 与私有字段白名单由纯展示和现关系查询反例覆盖；尚未支持 Opening 实体的历史 NULL 不冒称已经通过真实 ready/HTTP 导入。URL capability 本片只记录合法本人产物调用，不把该格式记录器称作真实签名或 sole 图像端点验收。
+
+Node 22.23.4 profile/read/summary 与原认证、真实成员 HTTP、child 历史七文件联合 43/43、零跳过，日志 `H:\TEMP\novelai-member-profile-v4-seven-source.log`。backend 类型、架构、默认及可信 `88d2c26` 迁移历史、受影响格式/语法和差异检查通过；旧 me 缺产物的 imageId 继续为空串，不把关系内部无引用的 NULL 扩成另一个公开格式。完整后端、发布包、Node 24、通知接合及同候选实际总装配继续由父任务统一验收，不借用前置 CI 宣称本片整体上线完成。
+
 ### 9.50 全业务 Opening owner 与来源闭包
 
 本片从固定 `3d2bafd` 只接新格式 Opening 的业务投影，不解释旧源、不选择 A/B，也不另建迁移器。九类缺口为 Funding、Input、Request、Job、Attempt、Artifact、StorageTarget、Replica 和 Idempotency；正常缓存链接与成员资金命令由各自 owner 接续。依赖顺序为登记来源→保护 Input/Context→Request→Job→Attempt/Charge→Artifact→Replica，幂等来源最后核对；Funding 与 StorageTarget 可以先独立交付。原完整提交仍只保存一次，所有 owner 严格原事件顺序共用同一保存点，不排序或拆开再调用窄 replay。

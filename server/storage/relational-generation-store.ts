@@ -355,6 +355,26 @@ export class RelationalGenerationStore {
       { env: this.env },
     );
   }
+  private memberGenerationAccess(memberId: string) {
+    const member = this.sqlite
+      .prepare<
+        [string],
+        { status: string; authEpoch: string | null; accepting: number; version: number }
+      >(
+        'SELECT status,auth_epoch AS authEpoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
+      )
+      .get(memberId);
+    if (member?.status !== 'active' || !member.authEpoch) {
+      fail('成员授权已失效', 401);
+    }
+    return member;
+  }
+  readMemberFreeImageUsage(memberId: string, now = Date.now()): FreeImageUsage {
+    return this.sqlite.transaction(() => {
+      this.memberGenerationAccess(memberId);
+      return this.freeUsage(memberId, this.policy(), now);
+    })();
+  }
   quoteMemberGeneration(
     memberId: string,
     normalized: NormalizedMemberGeneration,
@@ -362,17 +382,7 @@ export class RelationalGenerationStore {
     activePayloadBytes: number,
   ) {
     return this.sqlite.transaction(() => {
-      const member = this.sqlite
-        .prepare<
-          [string],
-          { status: string; authEpoch: string | null; accepting: number; version: number }
-        >(
-          'SELECT status,auth_epoch AS authEpoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
-        )
-        .get(memberId);
-      if (member?.status !== 'active' || !member.authEpoch) {
-        fail('成员授权已失效', 401);
-      }
+      const member = this.memberGenerationAccess(memberId);
       const policy = this.policy();
       let state: FairQuotaReservationState | undefined;
       let unavailable: unknown;

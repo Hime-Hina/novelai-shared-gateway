@@ -56,7 +56,7 @@ import {
   stateInvalidation,
 } from '../events/state-notifications.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
-import { handleMemberReadRoutes } from './read-http.ts';
+import { handleMemberReadRoutes, publicMemberProfile } from './read-http.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { readR2Backups, readR2Operations } from '../reports/r2-analytics.ts';
 import { readPikPakQuota } from '../storage/pikpak-storage.ts';
@@ -148,17 +148,6 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
   ): Promise<boolean>;
 }
 type PublishedEvent = Parameters<Parameters<ReturnType<typeof stateEventsFor>['subscribe']>[0]>[0];
-interface MemberMePayload {
-  jobs: { id: string; imageId: string; imageUrl?: string }[];
-  lateResults?: {
-    id: string;
-    model: string;
-    createdAt?: string | null;
-    lateResultAt: string;
-    imageUrl: string;
-    charge: ReturnType<typeof memberCharge>;
-  }[];
-}
 
 const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => {
@@ -923,7 +912,7 @@ export async function handleMemberRoutes(
     return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload: MemberMePayload = await store.update(
+    const payload = await store.update(
       (db) => {
         const draft = estimateFairQuota(db, Date.now());
         return {
@@ -958,17 +947,20 @@ export async function handleMemberRoutes(
     ]);
     for (const job of payload.jobs) {
       job.imageId = ownedImages.get(job.id) || '';
-      job.imageUrl = job.imageId ? deps.publicImageUrl(job.imageId) : '';
     }
-    payload.lateResults = lateResults.map((job) => ({
+    const ownedLate = lateResults.map((job) => ({
       id: job.id,
       model: job.model || '',
       createdAt: job.createdAt,
       lateResultAt: job.lateResultAt,
-      imageUrl: deps.publicImageUrl(job.imageId),
+      imageId: job.imageId,
       charge: memberCharge(job.charge),
     }));
-    reply(res, 200, payload);
+    reply(
+      res,
+      200,
+      publicMemberProfile({ ...payload, lateResults: ownedLate }, deps.publicImageUrl),
+    );
     return true;
   }
   error(404, 'not found.');

@@ -19,13 +19,29 @@ import { relationalSnapshotSha256 } from '../../server/storage/relational-privat
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
 
-async function setup(t, { env = {}, beforeReady, discordFetch } = {}) {
+async function setup(
+  t,
+  {
+    env = {},
+    beforeReady,
+    discordFetch,
+    seconds = 0,
+    v5 = '40',
+    secondV5 = '40',
+    fallback = false,
+    openingAt = NOW,
+    now = () => NOW + 30000,
+  } = {},
+) {
   const cleanup = [],
-    f = await fixture({ after: (fn) => cleanup.push(fn) }, { seconds: 0, env }),
+    f = await fixture(
+      { after: (fn) => cleanup.push(fn) },
+      { seconds, v5, secondV5, fallback, openingAt, env },
+    ),
     sessions = {};
-  await f.accept('existing');
-  f.dispatch('existing-0');
-  await f.publish('existing-0');
+  await f.accept('existing', { now: openingAt });
+  f.dispatch('existing-0', openingAt + 1);
+  await f.publish('existing-0', openingAt + 3);
   await beforeReady?.(f);
   for (const id of ['m1', 'm2'])
     sessions[id] = await createMemberSession(
@@ -58,7 +74,7 @@ async function setup(t, { env = {}, beforeReady, discordFetch } = {}) {
     get publicBaseUrl() {
       return configuration.publicBaseUrl;
     },
-    now: () => NOW + 30000,
+    now,
     // 本测试只记录已授权 URL capability 调用；15 分钟签名及图片端点总装配另验。
     publicImageUrl: (id) => {
       signed.push(id);
@@ -237,7 +253,7 @@ test('真实 HTTP 保留 Cookie/Origin/方法/当前撤销及 ready 边界，不
   assert.equal((await f.call('/api/member/history')).status, 401);
   assert.equal(f.signed.length, signed);
   assert.equal(databaseState(f.db), before);
-  assert.equal((await f.call('/api/member/me', { member: 'm2' })).status, 404);
+  assert.equal((await f.call('/api/member/shared-status', { member: 'm2' })).status, 404);
   f.db.prepare("UPDATE projection_state SET status='building' WHERE id=1").run();
   const notReady = databaseState(f.db);
   assert.equal((await f.call('/api/member/history', { member: 'm2' })).status, 500);
@@ -322,7 +338,7 @@ test('免费用量原owner在策略关闭后仍保留成功事实而不展示已
   f.dispatch('free-0');
   await f.publish('free-0');
   // 校验现唯一内部 usage owner；当前报价只消费 usage，不对外发布此 DTO。
-  const usage = () => f.generations.freeUsage('m1', f.generations.policy(), NOW + 10010);
+  const usage = () => f.generations.readMemberFreeImageUsage('m1', NOW + 10010);
   assert.equal(usage().warning, true);
   const quotas = new RelationalQuotaStore(f.db, env);
   await withAuthenticatedMemberApiKey(
@@ -345,6 +361,197 @@ test('免费用量原owner在策略关闭后仍保留成功事实而不展示已
   assert.equal(result.enabled, false);
   assert.equal(result.successful, 1);
   assert.equal(result.warning, false);
+  assert.equal(databaseState(f.db), before);
+  assert.throws(() => f.generations.readMemberFreeImageUsage('missing', NOW + 10010), {
+    statusCode: 401,
+  });
+  f.db.transaction(() =>
+    f.members.setMemberStatus(meta('disable-free-reader'), 'm1', 'disabled'),
+  )();
+  assert.throws(() => usage(), { statusCode: 401 });
+});
+
+test('me 实际 held 期间仍读当前金融摘要，recent30 按 child 跨31父，不修改业务账务', async (t) => {
+  const env = { QUEUE_MAX_ACTIVE_PER_MEMBER: '40', QUEUE_MAX_ACTIVE_GLOBAL: '40' },
+    f = await setup(t, {
+      env,
+      beforeReady: async (f) => {
+        const prepared = await f.members.prepareMemberCredentials('m1', {
+          username: 'profile.canonical',
+          password: 'synthetic-profile-password',
+        });
+        f.db.transaction(() => f.members.setMemberCredentials(prepared))();
+        for (let i = 0; i < 31; i++)
+          await f.accept(`page-${String(i).padStart(2, '0')}`, { now: NOW + 20000 + i });
+        assert.ok(f.dispatch('page-00-0', NOW + 20001).dispatch);
+      },
+    }),
+    before = databaseState(f.db),
+    result = await f.call('/api/member/me?memberId=m2');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.username, 'profile.canonical');
+  assert.equal(result.body.owner, false);
+  assert.equal(result.body.acceptingJobs, true);
+  assert.equal(result.body.sessionExpiresAt, f.sessions.m1.expiresAt);
+  assert.equal(result.body.jobs.length, 30);
+  assert.equal(result.body.jobs[0].id, 'page-30-0');
+  assert.equal(result.body.jobs.at(-1).id, 'page-01-0');
+  assert.ok(result.body.jobs.every((job) => job.imageId === '' && job.imageUrl === ''));
+  assert.equal(
+    result.body.quota.anlasFixedAvailable,
+    Number(f.generations.readWallet('a', 'm1').anlasFixed),
+  );
+  assert.equal(
+    result.body.quota.anlasFixedReserved,
+    Number(f.generations.readCharge('page-00-0').anlasFixed),
+  );
+  assert.equal(result.body.quota.anlasFixedReserved > 0, true);
+  assert.equal(result.headers.has('set-cookie'), false);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('me 当前恢复估算沿原summary owner，普通读取零写，仅visible me续期且续期失败不发Cookie', async (t) => {
+  let clock = NOW + 300000;
+  t.mock.method(Date, 'now', () => clock);
+  const f = await setup(t, { seconds: 600, now: () => clock }),
+    before = databaseState(f.db),
+    quiet = await f.call('/api/member/me');
+  assert.equal(quiet.status, 200);
+  assert.equal(quiet.body.quota.v5Available > Number(f.generations.readWallet('a', 'm1').v5), true);
+  assert.equal(quiet.headers.has('set-cookie'), false);
+  assert.equal(databaseState(f.db), before);
+  const visible = await f.call('/api/member/me', { headers: { 'x-member-activity': '1' } });
+  assert.equal(visible.status, 200);
+  assert.equal(visible.body.sessionExpiresAt > quiet.body.sessionExpiresAt, true);
+  assert.ok(visible.headers.has('set-cookie'));
+  clock += 1000;
+  for (const path of ['/api/member/history', '/api/member/key']) {
+    assert.equal(
+      (await f.call(path, { headers: { 'x-member-activity': '1' } })).headers.has('set-cookie'),
+      false,
+    );
+  }
+  assert.equal(
+    (await f.call('/api/member/me')).body.sessionExpiresAt,
+    visible.body.sessionExpiresAt,
+  );
+  f.db
+    .exec(`CREATE TEMP TRIGGER fail_profile_renew BEFORE UPDATE OF expires_at ON main.member_sessions
+    BEGIN SELECT RAISE(ABORT,'synthetic profile renewal persistence failure'); END`);
+  const beforeFailure = databaseState(f.db),
+    signed = f.signed.length,
+    failed = await f.call('/api/member/me', { headers: { 'x-member-activity': '1' } });
+  assert.equal(failed.status, 500);
+  assert.equal(failed.headers.has('set-cookie'), false);
+  assert.equal(f.signed.length, signed);
+  assert.equal(databaseState(f.db), beforeFailure);
+  f.db.exec('DROP TRIGGER fail_profile_renew');
+  await logoutMemberSession(f.members, f.sessions.m1.token);
+  const revoked = await f.call('/api/member/me', { headers: { 'x-member-activity': '1' } });
+  assert.equal(revoked.status, 401);
+  assert.equal(revoked.headers.has('set-cookie'), false);
+});
+
+test('me actual late10 保留原退款/失败与 jobs.imageId，只公开本人原结果和现免费owner值', async (t) => {
+  const f = await setup(t, {
+      now: () => NOW + 300000,
+      beforeReady: async (f) => {
+        for (let i = 0; i < 11; i++) {
+          const id = `profile-late-${String(i).padStart(2, '0')}`,
+            at = NOW + 20000 + i * 20000;
+          await f.accept(id, { now: at });
+          f.dispatch(`${id}-0`, at + 1);
+          f.fail(`${id}-0`, { aborted: false }, at + 2);
+          await f.publish(`${id}-0`, at + 3);
+        }
+        await f.accept('profile-foreign', { memberId: 'm2', now: NOW + 250000 });
+      },
+    }),
+    before = databaseState(f.db),
+    result = await f.call('/api/member/me');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.lateResults.length, 10);
+  assert.equal(result.body.lateResults[0].id, 'profile-late-10-0');
+  assert.equal(result.body.lateResults.at(-1).id, 'profile-late-01-0');
+  assert.ok(
+    result.body.lateResults.every(
+      (job) => job.charge.status === 'refunded' && !Object.hasOwn(job, 'imageId'),
+    ),
+  );
+  const job = result.body.jobs.find((job) => job.id === 'profile-late-10-0');
+  assert.equal(job.status, 'failed');
+  assert.equal(job.imageId, 'artifact-profile-late-10-0');
+  assert.equal(job.imageUrl, '/configured-image/artifact-profile-late-10-0');
+  assert.equal(result.body.quota.freeImages.enabled, false);
+  assert.equal(result.body.quota.freeImages.warning, false);
+  for (const secret of [
+    'profile-foreign',
+    'synthetic-key',
+    'private generation prompt',
+    'synthetic-upstream-pst',
+    'memberAuth',
+    'authEpoch',
+  ]) {
+    assert.equal(result.text.includes(secret), false);
+  }
+  assert.equal(databaseState(f.db), before);
+});
+
+test('me 实际fallback结算沿同一金融owner公开完整summary及免费owner，读取不回写', async (t) => {
+  const f = await setup(t, {
+      v5: '0',
+      fallback: true,
+      beforeReady: async (f) => {
+        await f.accept('profile-fallback', {
+          model: 'nai-diffusion-5-full',
+          steps: 23,
+          now: NOW + 20000,
+        });
+        assert.ok(f.dispatch('profile-fallback-0', NOW + 20001).dispatch);
+        await f.publish('profile-fallback-0', NOW + 20003);
+      },
+    }),
+    charge = f.generations.readCharge('profile-fallback-0'),
+    quota = new RelationalQuotaStore(f.db).readMemberQuotaSummary('m1', NOW + 30000),
+    before = databaseState(f.db),
+    result = await f.call('/api/member/me');
+  assert.equal(charge.billingMode, 'anlas_fallback');
+  assert.equal(charge.status, 'settled');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.quota.localAnlasFallbackFixedSpent, Number(charge.anlasFixed));
+  assert.equal(result.body.quota.localFallbackV5Equivalent, Number(charge.v5Equivalent));
+  assert.deepEqual(result.body.quota, {
+    ...quota,
+    freeImages: f.generations.readMemberFreeImageUsage('m1', NOW + 30000),
+  });
+  assert.equal(result.headers.has('set-cookie'), false);
+  assert.equal(databaseState(f.db), before);
+});
+
+test('me 保留真实原创建时间0，普通profile查询不读输入正文或附件BLOB且全表不变', async (t) => {
+  const f = await setup(t, { openingAt: 0 }),
+    before = databaseState(f.db),
+    statements = [],
+    prepare = f.db.prepare;
+  let result;
+  f.db.prepare = function (sql) {
+    statements.push(sql);
+    return prepare.call(this, sql);
+  };
+  try {
+    result = await f.call('/api/member/me');
+  } finally {
+    f.db.prepare = prepare;
+  }
+  assert.equal(result.status, 200);
+  assert.equal(result.body.jobs[0].createdAt, new Date(0).toISOString());
+  assert.equal(result.body.jobs[0].imageId, 'artifact-existing-0');
+  assert.equal(result.body.jobs[0].imageUrl, '/configured-image/artifact-existing-0');
+  assert.equal(
+    statements.some((sql) => /generation_inputs|input_assets|\bbody\b|\bbytes\b/i.test(sql)),
+    false,
+  );
+  assert.equal(result.headers.has('set-cookie'), false);
   assert.equal(databaseState(f.db), before);
 });
 
