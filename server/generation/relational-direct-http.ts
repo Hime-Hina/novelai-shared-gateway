@@ -37,7 +37,7 @@ import { requestNormalizationDefaults } from './request-fingerprint.ts';
 import { createRelationalApiGenerationAdmission } from './relational-api-admission.ts';
 import { createRelationalApiDelivery } from './relational-api-delivery.ts';
 import { deliverDirectGeneration, generationErrorImage } from './delivery.ts';
-import { generationCost, jobDurationMs } from './request-queries.ts';
+import { publicRelationalJob } from './request-queries.ts';
 import type { JobPreviews } from './job-previews.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
@@ -176,31 +176,12 @@ export function createRelationalDirectHttp(deps: {
     const snapshot = (jobId: string, memberId: string | null) => {
       const job = ownedJob(jobId, memberId),
         input = inputs.readErrorLogRequest(jobId);
-      return {
-        id: job.id,
-        source: job.source,
-        requestId: job.requestId,
-        status: job.status,
-        prompt: input.tag,
-        model: job.model,
-        requestedSteps: input.requestedSteps,
-        routedSteps: input.steps,
-        accountId: job.accountId,
-        accountRouteId: null,
-        cost: job.currentAccepted ? generationCost() : null,
-        accountCost: null,
+      return publicRelationalJob(job, input, {
+        imageUrl: deps.imageUrl,
+        errorMessage: (message) => publicErrorMessage(message, { generation: true }),
         generationProgress: deps.previews.frames.get(jobId)?.progress ?? {},
-        imageId: job.imageId ?? '',
-        imageUrl: job.imageId ? deps.imageUrl(job.imageId) : '',
-        lateResultAvailable: job.lateResultAvailable,
-        error: publicErrorMessage(job.errorCode || '', { generation: true }),
-        queuePosition: job.queuePosition,
-        queuedCount: job.queuedCount,
-        durationMs: jobDurationMs(job, now()),
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-        completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status) ? null : ''),
-      };
+        now: now(),
+      });
     };
     const createDelivery = () =>
       createRelationalApiDelivery({

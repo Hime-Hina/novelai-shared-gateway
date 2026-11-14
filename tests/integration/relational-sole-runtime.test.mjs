@@ -1224,6 +1224,27 @@ test('实际sole新入口仅新owner；暂停bootstrap零自动查询，真实Co
   for (const secret of [member.password, member.api_key, f.env.NOVELAI_TOKEN, f.env.ADMIN_TOKEN]) {
     assert.ok(!management.bytes.toString().includes(secret));
   }
+  const adminSummary = await call(server, '/api/admin/summary', {
+    headers: { 'x-admin-token': f.env.ADMIN_TOKEN },
+  });
+  assert.equal(adminSummary.status, 200, adminSummary.bytes.toString());
+  assert.equal(adminSummary.headers.get('set-cookie'), null);
+  const summary = JSON.parse(adminSummary.bytes.toString());
+  assert.equal(Object.keys(summary).length, 13);
+  assert.equal(summary.userCount, f.credentials.accounts.length);
+  assert.equal(summary.accounts.length, 1);
+  assert.equal(Object.keys(summary.accounts[0]).length, 28);
+  assert.equal(summary.accounts[0].enabled, false);
+  assert.equal(summary.imageCount, 0);
+  for (const secret of [member.password, member.api_key, f.env.NOVELAI_TOKEN, f.env.ADMIN_TOKEN]) {
+    assert.ok(!adminSummary.bytes.toString().includes(secret));
+  }
+  const revealedSummary = await call(server, '/api/admin/summary?revealTokens=1', {
+    headers: { 'x-admin-token': f.env.ADMIN_TOKEN },
+  });
+  assert.equal(revealedSummary.status, 200, revealedSummary.bytes.toString());
+  assert.equal(JSON.parse(revealedSummary.bytes.toString()).accounts[0].token, f.env.NOVELAI_TOKEN);
+  assert.equal((await call(server, '/api/admin/summary', { headers: { cookie } })).status, 403);
   assert.equal((await call(server, '/v1/models', { token: member.api_key })).status, 200);
   assert.equal((await call(server, '/api/me/quota', { token: member.api_key })).status, 200);
   assert.equal((await call(server, '/api/me/quota', { token: f.env.NOVELAI_TOKEN })).status, 401);

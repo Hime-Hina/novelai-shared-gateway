@@ -2267,7 +2267,31 @@ Node22 管理 HTTP、八字段目录、私有恢复、成员 core、真实 boots
 
 固定 `638a0a34c06b90ff78cbdcefc91206b4b698df35` 非作者复审通过，报告 `H:/TEMP/novelai-replica-shutdown-independent-20261115/INDEPENDENT-REVIEW.md`，SHA256 `28c56bc571b9e03d22d7a37f26a12b29f27015a64d59996631a426f5244bb6a9`。原四例及新增随机新键真实quota等待一例，共五个独立场景通过。外部 spawn preload 补强六个实际服务child的IO前localhost guard后，同四例 **4/4、零跳过，5.782秒**、同quota例 **1/1、零跳过，2.808秒**再次通过，不增加unique数。首轮仅显式localhost配置的限制及原绿另存，原程序608、helper、250ms、mock clock、旧cb3红/JSON297205均原字节保留；两轮观察逐字段相同。该复审不把作者14项或两个逆序变体重算为独立执行。
 
-根在 `5ca121f` 上普通合入全部七路径先决与修复；六个非plan文件逐个重算共同基线并集，保留原账户连接/格式7和9.85状态原因 guard，旧格式SQL/journal/DDL不变。仅额外删除helper已失效的两行“Note待接合”注释，没有改变其运行字节。副本owner整文件 **24/24、零跳过，7.758秒**；sole所选复制、两个queued唤醒、真实物理占用、48MiB背压、晚领和quota/生成重启交点 **19/19、零跳过，48.909秒**，共43 distinct。类型、architecture、默认与可信 main88 迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-replica-root-preservation.json`，日志 `H:/TEMP/novelai-replica-root-{owner,sole,type,architecture,default-migration,trusted-migration,syntax,format}.log`。这仍是复制保持源及关闭顺序验收，尚无归档/备份引用清单、source DELETE、最终实际发行物、真实云端或容量/生产释放结论。
+根在 `5ca121f` 上普通合入全部七路径先决与修复；六个非plan文件逐个重算共同基线并集，保留原账户连接/格式7和9.85状态原因 guard，旧格式SQL/journal/DDL不变。仅额外删除helper已失效的两行“Note待接合”注释，没有改变其运行逻辑。副本owner整文件 **24/24、零跳过，7.758秒**；sole所选复制、两个queued唤醒、真实物理占用、48MiB背压、晚领和quota/生成重启交点 **19/19、零跳过，48.909秒**，共43 distinct。类型、architecture、默认与可信 main88 迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-replica-root-preservation.json`，日志 `H:/TEMP/novelai-replica-root-{owner,sole,type,architecture,default-migration,trusted-migration,syntax,format}.log`。这仍是复制保持源及关闭顺序验收，尚无归档/备份引用清单、source DELETE、最终实际发行物、真实云端或容量/生产释放结论。
+
+### 9.88 完整 admin summary 的关系薄装配
+
+原完整范围以 `H:/TEMP/novelai-admin-summary-scope-20261114/SCOPE.md` 固定：旧 exact GET `/api/admin/summary` 是十三字段，Web 当前只用 accounts 不构成删其余字段或 reveal 的授权。原规则分别归 Report838（child 窗口、display cost、小时桶、逻辑产物计数、错误）和 Request（全局失败50条）、Account6708（当前宽配置、mask/reveal、物理占用）、Configuration（唯一11标量 profile/stored URL）、Quota（当前共享配置/有证据成员原序）、Member（排除removed的计数）。本片不改 Schema/fact/金额命令或账户、fair-quota、sole 生命周期写路径。
+
+基础是已审 Note b50（包含c2），普通合入已审 fair-quota 4da；唯一管理 route 分派冲突同时保留两条完整路径。新增 exact admin GET 复用现 factory 的当前授权回调，先授权再读统计，await 返回后再次复核当前 admin/Host/private/同源/PUBLIC/ready，之后才从同一当前事务读 mask/reveal PST/proxy。仅字面 revealTokens=1；owner Cookie/Key不变成admin，PUBLIC query不授权。无新缓存/registry/状态、刷新或通知，不清真实仍未结束的 control。原进程 imageUrl/JobPreviews 由现 shared 实例传入，所有实际 factory caller 同批显式补齐。
+
+完整十三顶层逐项组装；Report 的 diagnosticRowsRead 和内部 accountStats1h map 不对外扩字段。Account 原 getter 实际29字段（含额外cooldownReason），summary仅静态剥该额外字段，保持旧exact28，其他账户响应不改。Member新增一条COUNT，避免为计数读取私有note/username。Direct现任务映射只原样移到原 request-queries 纯函数，同 Direct 和失败列表共用；来源/NULL、generationCost真实0、输入、时间、late、队列、签名与预览语义不变，不造第二套旧Job DTO或Store。
+
+settings只返回真实profile/stored URL与Quota只读配置。缺少选定来源的serviceName/costPerImage/maxCacheImages/accountConcurrency/mockWhenNoAccount/promptApi明确NULL，不把默认空PromptAPI冒充已知未配置；fairQuota无policy为NULL，有policy只给真实配置和原有证据成员顺序，不调managementView、不做idle/sync/refill或拼旧完整金融状态。NULL并不是丢弃原迁移来源/功能的批准，原任意设置、缺失历史、完整迁移与发布条件仍须后续闭合。
+
+新增真实localhost/唯一installer ready专项先12项通过，再加无policy/原非字典四成员顺序后同次13/13、零skip、7.930秒。覆盖13/28精确键和值、已知Anlas收费却display cost0、late后的原失败时点、真实逻辑两图/非副本、UTC+8统计、物理control未被清、query_only/全表/total_changes/通知零变；真实admin/Host/private/PUBLIC/ready等待后失效、IO前不读私有getter、等待中实际PST/proxy轮换后只给当前值、失败50原受理序与错误时序分开、51st输入不可用、公共回放无auth、选定快照合法ready/重开、统计故障不补零/吐秘密。原试跑的五处夹具错误（取错收费资源、ready既有500预期、非法PST、immutable输入写故障、异步清理顺序）单独保留并修在夹具，未放宽业务/ready/不可变校验。
+
+随后普通合入父固定 `5ca121fb76a6f63a011a48bae630789f7f976302`，保留其唯一私有member列常量、Ready与childhelper共同来源以及原请求/错误分类。公开URL类型只同步既有ManagementSummary的stored publicBaseUrl为string或NULL，未改界面。补真实合法Opening的原ctime/completed/cost未知、导入header不能补值；第二个真实paused非bound账户取合法ID `toString`。原新装配直接索引普通accountStats对象导致该无样本账户继承prototype函数，实际HTTP精准缺stats1h；Report原Map/fromEntries的有样本累加本就安全，只在薄查询加Object.hasOwn，保同例中原a账户done1/failed1与toString真0。原红/同例1绿均保留，没有限制合法ID或新增字典框架。
+
+按父独占source槽排期，新增summary（含上述Opening）/完整Direct/admin报告/必要管理GET与真实Native控制/公平配置入口五文件选定同次 **69/69、零skip、17.641秒**，实际完整argv及日志 `selected-joint-first.log` 在 `H:/TEMP/novelai-admin-summary-988-20261115/`；不是盲重跑全450/234。backend类型、architecture、默认与可信88历史通过。原b50精确导出仅叠同字节新测试，合法请求实际404≠200，证明入口此前缺失。
+
+固定技术394697d的TEMP单点负控分别识别：只漏最终auth复核但保留SQL事务时五种撤权实际200（含父6失败）；给原members排序、把request计数当generation、给未知serviceName补旧默认各1失败。原首次“删整个authorize连事务也删”被Account owning-transaction先500拦，另存且不计目标反例；精确负控到达对应业务断言。finally逐字恢复后对应八项8/8通过，产品/测试最终摘要绑定独立交接。没有修改root/冻结父候选或用外网失败作通过依据。
+
+当前源测试槽已释放，固定非作者独审和最终sole/发行物/迁移联合验收另计，不借69项标整体完成。未full/build/compiled/Node24/native/install、真实外部云或生产；Web仅一个nullable类型行，本片不借后端类型检查宣称Web发布验证。
+
+固定文档 `0dfe6404f4f501436e78a7492de7a074edec0743` / 技术 `394697d534c7e57522bee0884ae72a9060acd2cc` 已由非作者独立复审通过，报告 `H:/TEMP/novelai-admin-summary-independent-0dfe-20261115/INDEPENDENT-REVIEW.md`，SHA256 `61acc858a415bf9831f32d595d147b720d38052ec58fa54a5d72204685d67bef`。三个独立真实localhost/SQLite例 **3/3、零跳过，1.532秒**，核原时间0与unknown、正金融费用仍display0、真实当前PST/代理与物理control，以及等待中PUBLIC撤权后零私有读。十二路径/608导出源/十二权威源逐字绑定，Direct23字段与原getter/授权保留。作者69及四个负控未重标独立执行，两个初始review fixture值错误另存。Web可空类型闭包单独strict noEmit通过，未运行完整Nuxt类型与构建。
+
+根在已审复制/关闭 `bb308a5` 上普通整合，十一非plan文件逐字等于0dfe；配置/成员/额度只新增原窄读，原命令与Source/guard保持。新增唯一sole实际HTTP验收放在原暂停bootstrap门禁场景：完整13字段与28账户字段、真实成员数量/暂停状态/逻辑图0、默认不泄秘密、显式reveal当前PST、Cookie不变admin、无SetCookie，且既有零上游/全部原门禁断言保留。完整新摘要文件 **14/14、零跳过，9.300秒**，该真实sole场景 **1/1、零跳过，2.004秒**。类型、architecture、默认及可信 main88迁移、200文件语法及变更格式通过；证明 `H:/TEMP/novelai-admin-summary-root-preservation.json`，日志 `H:/TEMP/novelai-admin-summary-root-*`。这是真实源码sole路径，尚非最终编译/发行物/Nuxt整套或迁移/容量/真实云端验收，不借旧Web ac9的失败记录翻案。
 
 ## 10. 事实依据与修订
 

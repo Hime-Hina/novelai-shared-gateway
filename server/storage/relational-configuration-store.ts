@@ -102,6 +102,21 @@ export class RelationalConfigurationStore {
     })();
   }
 
+  readAdminSettings() {
+    const current = this.readCurrent();
+    return {
+      serviceName: null,
+      costPerImage: null,
+      maxCacheImages: null,
+      accountConcurrency: null,
+      publicBaseUrl: current.publicBaseUrl,
+      mockWhenNoAccount: null,
+      // 没有选定的旧 PromptAPI 来源，不能把默认空配置冒充已知未配置。
+      promptApi: null,
+      ...current.normalizationDefaults,
+    };
+  }
+
   initializeGatewayConfiguration(
     metadata: Metadata,
     input: { normalizationDefaults: unknown; publicBaseUrl: string | null; originRef: string },

@@ -335,6 +335,14 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
 
+`GET /api/admin/summary` 保留独立的完整十三字段：settings、userCount、accounts、imageCount、imageTotal、cacheImageCount、requestStats1m、generationStats1m、jobStats1h、generationSpeed1h、usageHourlyDays、errorLogs、jobs。只接受当前本机 admin capability；owner Cookie、成员 Key/Bearer 不授予管理员权限，PUBLIC 模式下 query adminToken 仍不授权。统计读取在授权后进行，任何 await 返回后重新断言当前 admin、Host、private/同源、PUBLIC 和 ready，再读取当前账户 PST/proxy。默认沿原函数 mask，只有字面 `revealTokens=1` 显式揭示当前值；没有缓存等待前的旧秘密。GET 不续 Cookie、不刷新官方额度、不清物理 Map、不提交账务/配置或发 commit 通知。关系统计每次读真实 SQL，`fresh=1` 不引入第二套缓存或旧库 fallback。
+
+settings 仅从选定的专用 profile 返回 defaultModel/defaultArtist/defaultNegative 三个标量与 defaults 内八个标量（共十一项），以及实际保存的 publicBaseUrl。fairQuota 只取真实 enabled/boundAccountId、原 ordered members（未知为 NULL）、groups/configVersion 和 fallback/free/loss 政策；无共享配置时整个 fairQuota 为 NULL。不能从 ID 排序或当前组的拼接推造原成员顺序。没有保存来源的 serviceName、costPerImage、maxCacheImages、accountConcurrency、mockWhenNoAccount、promptApi 明确为 NULL；NULL 既不是旧默认值，也不授权丢弃旧迁移来源、永久删除功能或新增配置写入。
+
+accounts 保留旧摘要二十八字段，沿 Account owner 当前宽 getter 组装，只剥该 getter 额外的 cooldownReason；其余账户接口不变。真实物理 inFlight 来自同一 controls Map。未知 lifetime total/failures、route、trial、lastUsedAt 等保留 owner 的 NULL，不拿一小时值或当前 bound 账户补值；stats1h 按原 accountId 组合报告窗口，真实无样本为零，历史来源不足仍为 NULL。成员总数包含 disabled、排除 removed，只读 COUNT，不为计数读取私有备注或登录材料。
+
+三个图片计数别名共用未退休逻辑 artifact 数，不是副本数、文件数或云容量。其余统计完全复用报告 owner 的原 child/创建时间/终态时间/旧 display cost/排除条件和 UTC+8 桶；当前 generationCost() 的真实 0 与 Opening 未保存的 cost 不混同，不用真实资源预扣或当前报价替换。errorLogs 复用七天安全来源、至多100条；jobs 按原受理序先选至多50条失败任务再冷读输入，未知原顺序仍保留来源限制。任务展示与 Direct 用同一纯映射、同一进程图片签名及瞬时预览，未知费用/route/时间不补值，late 后继不改原失败时点。完整公共回放不恢复认证或私有账户连接，私有内容仍只由选定同切点快照恢复。旧任意设置和缺失历史的补全、sole 与发行物验收继续是迁移和上线条件，不因十三键已接通视为完成。
+
 关系管理 POST 目前接 `fallback-policy`、`free-image-policy`、`loss-alert-policy`、`member-status`、`member-admission`、`groups`、`transfer-quota`、`delete-member` 和下述五个运营资金 action；规则与回包继续归原政策、成员、组和资金 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按实际 actorKind、稳定 actorId 和操作隔离并绑定完整原正文；合法成员 ID `local-admin` 与同名本机管理员作用域独立；重复返回原回包且零写，冲突为 409，缺键的新决定由服务生成命令 ID。POST 不续 Cookie；业务事实与私有当前状态、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原决定，不联网或恢复私有认证；政策字段与版本反例见数据库计划第 9.64 节，其他 action 尚未接入。
 
 同两个 member-management POST 的 `discord-invite` 保留原非 keyed 私有邀请操作：正文后重验当前 owner/admin、epoch/ready，未启用 Discord 为 409，目标不存在/停用为 404、已绑定为 409；返回原 `{code,expiresAt}`，只保存七天邀请摘要及截止。每次新请求都生成新码并撤销旧码，附带的 Idempotency-Key 不参与该操作，也不生成公共事件、receipt 或私有明文结果缓存。OAuth state、失效与一次性兑现仍由原 Discord owner 校验；公共回放不恢复邀请，匹配选定私有源才能恢复原摘要/截止。管理目录仅因可空 inviteExpiresAt 实际变化在最外层成功提交后通知，同毫秒换码且安全目录未变不额外通知；原码/摘要不放进通知。

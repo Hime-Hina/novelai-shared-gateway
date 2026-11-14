@@ -289,6 +289,13 @@ export class RelationalMemberStore
   }
 
   // 仅提供管理展示来源，不代表 caller 已有管理权；实际 HTTP 仍核当前会话/owner/admin。
+  readManagementMemberCount() {
+    return this.sqlite
+      .prepare<[], { total: number }>(
+        "SELECT COUNT(*) AS total FROM members WHERE status!='removed'",
+      )
+      .get()!.total;
+  }
   readManagementMemberProfiles(): RelationalMemberManagementProfile[] {
     return this.sqlite
       .prepare<[], ManagementProfileRow>(

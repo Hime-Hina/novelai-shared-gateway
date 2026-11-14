@@ -14,6 +14,8 @@ import {
   image,
 } from '../helpers/relational-generation.mjs';
 import { createRelationalManagementHttp } from '../../server/members/relational-management-http.ts';
+import { JobPreviews } from '../../server/generation/job-previews.ts';
+import { createPublicImageAccess } from '../../server/http/public-image.ts';
 import { createRelationalMemberAuthenticationHttp } from '../../server/members/relational-authentication-http.ts';
 import { assertAdminToken, matchesAdminToken } from '../../server/http/admin-access.ts';
 import { publicErrorMessage } from '../../server/http/public-errors.ts';
@@ -114,7 +116,9 @@ async function setup(
   await beforeReady?.(f, currentEnv);
   const selected = await installReady(f),
     events = new EventEmitter(),
-    controls = new Map();
+    controls = new Map(),
+    previews = new JobPreviews(),
+    imageUrl = createPublicImageAccess(currentEnv, () => clock).imageUrl;
   let activeHandle,
     adminChecks = 0,
     resourceCalls = 0;
@@ -122,6 +126,8 @@ async function setup(
       sqlite: f.db,
       events,
       controls,
+      previews,
+      imageUrl,
       dataDir: f.dir,
       env: currentEnv,
       discordFetch,
@@ -214,6 +220,8 @@ async function setup(
     selected,
     events,
     controls,
+    previews,
+    imageUrl,
     handle,
     setHandler(next) {
       activeHandle = next;
@@ -918,6 +926,8 @@ test('管理当前private metadata只随选定一致性快照恢复，公共回�
     sqlite: target,
     events: new EventEmitter(),
     controls: f.controls,
+    previews: f.previews,
+    imageUrl: f.imageUrl,
     dataDir: f.dir,
     env: f.env,
     now: () => f.clock,
@@ -1817,6 +1827,8 @@ test('真实Native队列physical pending时禁用409，停止仅取消waiting且
       sqlite: n.db,
       events: n.events,
       controls: n.controls,
+      previews: n.previews,
+      imageUrl: createPublicImageAccess(env, () => n.clock).imageUrl,
       dataDir: n.dir,
       env,
       now: () => n.clock,
@@ -2493,6 +2505,8 @@ async function sharedAccountPatch(f, t, options = {}) {
       queryAccountQuota: refresh.fetch,
       events: f.events,
       controls: f.controls,
+      previews: f.previews,
+      imageUrl: f.imageUrl,
       dataDir: f.dir,
       env: f.env,
       now: () => f.clock,
