@@ -303,6 +303,8 @@ owner 管理需会话和角色，管理员路径需本机隧道与管理员凭�
 
 owner 关系 PATCH 的 `{accountId,enabled}` / `{error:{statusCode,message}}` 保存回执仍为第 9.68 节的外部 DTO 收窄提案，不能称为原 `safeAccount` 字节兼容；现 Web 不消费其正文，最终维护者复核须明确该差异。owner 的 Idempotency-Key 按真实 actor/路径隔离，当前授权后才返回原回执，零 IO 且不按后来配置/余额重造结果。admin 宽配置沿旧实际非 keyed 契约，不因该头产生可领取私有结果或可猜测的代理/PST 公共摘要；新 HTTP 是新管理决定。admin PATCH 返回当前原宽字段和默认 mask；未保存的原历史计数、routeId、trial、stats/时点等为 NULL，不伪造零/默认权重。两角色都不续 Cookie。
 
+账户内部业务回执另保存最小 `accountIntent`，用于从原序前态验证完整目标及应有注册/绑定/配置/凭据轮换/观察/可用性后果：bulk 保存原规范 ids 与公开 weight/false 意图，配置只声明公开输入与应有连接/凭据变化布尔，注册声明应有 bind。它不含 PST、代理或其可猜测摘要，不存 before/current profile。在线、共同回放与账户窄回放复用账户 owner 的同一规划/校验，不能只凭幸存事实仍合法就接受遗漏。bulk mixed no-op 目标保留于原意图并从前态判定无需事实，全 no-op admin 非 keyed 请求 200 零持久化；原已保存命令重复仍先当前授权后领取原回执。外部 owner 回包仅剥去该内部字段，保留原先保存的外部字段，不读当前账户假装旧结果；admin 仍由当前权限读取 mask DTO。
+
 `POST /api/member/owner/accounts/quota` 仅接当前绑定账户的单个 ids，返回原 `{checked,ok,failed,ignored}`；刷新不启用已暂停账户。owner 的有事实成功/失败保存原 counts 回执，当前授权后重领不重新查询；原 keyed 过期零事实请求仍为 409。`POST /api/admin/accounts/quota` 保留原非 keyed 及 raw accounts 回包（受当前本机 admin 授权，PST/代理不进公共回执），缺省/空 ids 选当前账户。等待中连接已变的 nonkeyed 请求为 ignored 零事实；实际 slot busy 不领票、不制造观察，也不作废唯一已发请求。
 
 代理只由选定私有来源保存；NULL 未知不能默认为直连，空串表示来源明确无代理。代理 A→B→A 仍取得新事件来源，旧查询和旧 401/403 不影响当前连接；原尝试的收费、退款和同账户容量责任仍归原 owner。完整公共回放不恢复代理或 PST，选定 SHA/同 cut 私有快照经唯一 ready 安装核对；格式升级与 localhost 真 SOCKS/TLS 验证见第 9.80 节。name/proxy/weight 不是 D4 退出项。完整 admin summary/reveal GET 聚合、上述非绑定观察/启用及新建默认启用、旧源转换和唯一在线装配仍由后继接续；只交 accounts 数据不能称为完成 `/api/admin/summary`。

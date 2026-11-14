@@ -2131,6 +2131,10 @@ CI/关键断言变更须维护者复核：普通 backend/解包 release/Node 24 
 
 根在新 sole/正常包并集 `de809e2` 上整合，七条产品/测试/helper 路径逐字等于固定 059，计划保留双方完整追加块，证明 `H:/TEMP/novelai-child-http-root-preservation.json`。两个真实 child 与 Direct/OpenAI 四文件串行同次 **55/55、零跳过，101.859 秒**；类型、architecture、可信实际 main `88d2c26` migration 与变更格式通过，日志 `H:/TEMP/novelai-child-http-root-{joint,type,static}.log`。旧工具源码/两行接线保持作者实际打包 22 项的字节，未重跑不变的 187 秒套件。此后继没有自己的完整后端、编译双 runtime、实际新正常发布物/CI，不借旧 b427/b2 结论；其余原 child/Nuxt/Docker 与账户闭包修复、查询、迁移和最终同版本验收继续接续。
 
+首片固定 `39b1c3b3b76abc06a5512557bef69720509e88db` 独审确认同一完整提交 P2，保持 NOTPASS：合法重签 envelope 删去某 bulk 目标全部事实或全部暂停事实，原 receipt 仍声称两目标完成；同根因扩查的单账户组合丢配置、首注册丢绑定也被接受。绿色955不能替代此闭包。后继独立分支在内部安全 receipt 保存原公开意图（目标、weight/false、应有连接/凭据变化或bind），不存秘密、摘要或before profile；AccountStore三个局部规划由在线与共同/窄回放复用，按原序前态校完整有序全集/唯一性。mixed no-op 不能被强迫伪造事实；全no-op非keyed200零持久化。外部DTO仅去内部intent，仍取原存外部字段，不借当前值重造旧回包。独立初始化/分组的 AccountBound 仍由其所属完整政策规划及原四条件校验，不强迫它伪装账户注册。
+
+该闭包修复作者原四红程序原字节仅imports loader重绑后4/4，七受影响文件292/292、零skip56.994s，类型/架构通过；原观测来源 guard 单独移除后 observed-role 精准失败，不被新闭包掩盖。共同/窄校验各自停用负控分别15失败/5失败，恢复新与来源矩阵25/25；future-configuration 现在只证明完整意图/后果顺序闭包，单独来源角色仍由 dispatch-role/observed-role 实际拒因证明，不混算。日志为同TEMP的 closure-original-fixed-final.log、closure-seven-final.log、closure-negative-evidence.json。该修复不改事件7/DDL/hash/旧SQL，不混默认true后继；固定后独立复审及父新候选完整验收继续。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
