@@ -1550,6 +1550,15 @@ OpeningIdempotency 的 `commitSeq` 只指新时间线中真正的原在线提交
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
 
 固定 `77c117c8e741f08898b58121c043de8dc32aa4ff` 的 Job/Artifact 独立复审 17/17，真实旧 v4/v5 DDL/hash 拒绝另 2/2；原 `bb0` 将退休父请求恢复为活动 child 并通过唯一 installer 的反例已拒绝，原历史非活动行仍保留。固定 `ed985cfc467c05c0d7b27c2a2437cdbae0d24220` 的幂等独立轻量验证四组共 24/24：原回执/自己的定义、文件 IO 后 Key/ready、恶意完整 cut 同投影及退休后的历史重复均覆盖。后者修复 `4d` 重复时误用当前领取资格的缺口；重复仍核不可变原内容/意图/回执，当前领取和首次导入仍拒退休目标。报告和文件摘要在 `H:\TEMP\novelai-opening-entities-independent-evidence`、`H:\TEMP\novelai-opening-idem-independent-evidence`。与当前候选管理窄读、Shared 和运行时汇合，事件 6 的十文件 190/190、零跳过，类型、架构和可信实际 main 迁移通过；当前 73/75 仍只缺 Attempt/Replica，不代替最终全套、转换器或切换验收。
+OpeningReplicaRecorded 由既有 ReplicaStore 接续完整提交回放，复用同一来源先行规则、不可变 artifact/member/target 关系和同对象 SHA/长度/encoding 约束；首次 Opening 不覆盖已有 artifact/target 对。明确的 objectKey、encoding、uploadedAt/verifiedAt/deletedAt 和 error 原样保留，可空时间或 error 未知保持 NULL，已知零不替换为导入时间。verified 非空必须已有 uploaded 的关系继续由原公共 parser 和 DDL 拒绝，不猜原上传时间。退休产物及 deleted 副本仅保存历史来源，不发起 IO、不复活在线领取、不删除原件。
+
+历史 locator 不重写为当前路径，也不由当前部署配置补历史 namespace。原 R08 持久承诺资格保持：已 verified 的 R2 或已 uploaded 的 PikPak 仍可被原键及新缓存引用；配置缺失或旧 locator 不可读时，领取返回 503，不重新生成。当前 reader 和后台票据只在 IO 前拒绝不能解释的定位，普通生命周期还核对原 locator/encoding 不可变，不能用 UPSERT 假称移位。唯一 ready 安装必须沿实际可读原字节核对；仅有不支持的历史引用时拒绝并保持源/目标原值，另有真实 Local 来源可验证时不把旧引用宣称为已实读。选定 converter 仍须实际重发布或保全独立归档来源，本片不完成该迁移责任。
+
+该增量基于格式 5 的 `6dfc972`，专属 `relational-opening-replica.test.mjs` 21/21；连原 Replica、cache-reference、R08 与 ready 五文件 106/106。正常 ArtifactPublished 前缀接完整 Opening 副本事实，验证来源/member/target/顺序、SQL 第二行已写后外层捕获全表回滚、原完整 envelope/窄回放/重开及重复零写。真实 R08 新旧缓存键继续命中同一产物，坏领取不创建第二次 attempt；canonical Opening 上传只在原 IO owner 实际 mock 回读后标 verified。隔离负控分别漏来源核对、locator 不变、票据定位、同对象约束以及把持久承诺当 cache miss，全部被原业务断言抓住，四项 Missing expected exception、一项 false≠true；产品源未改，日志在 `H:\TEMP\novelai-opening-replica-negative\`。类型、架构、默认与可信 `88d2c26` 旧迁移历史检查通过；未执行 full、编译包、Node 24 或真实云端验证，未声称尚待整合的 Job/Artifact Opening 或后续格式 6 联验完成。副本 owner 登记扩展须随固定候选独立复核，公共事实覆盖清单由最终并集按实际 owner 更新。
+
+初始 `e8e3102` 的独审发现 deleted 副本仍能取得后台票据：作为目的先 PUT 后 SQL 拒绝，作为源可 GET 并上传 PikPak。固定 `ecf749825becbcfc5f1bb895d4ef103c0830c265` 在共同 begin/checked 票据边界拒绝 deleted，并将原 R2 来源预检整体前移至目的预留和 IO try 之前，来源失格不伪记目的 IO 故障；已上传 PikPak 的零 IO 重领不依赖旧 R2。原 26 项与独立 4 项同次 30/30，四文件 hash 绑定，最终仅文档 `3affb56` 已重绑；报告 `H:\TEMP\novelai-opening-replica-independent-20261114\review-ecf7498.md`。根以该最终三技术文件的精确 Git 字节汇合格式 6，保留普通持久缓存承诺与已审 Job/Artifact/幂等 owner，实际支持清单更新为 74/75，仅 Attempt 未实现。该清单变化属于真实 owner 增量，须随候选维护者复核，不能以计数代替后续联合验证和迁移验收。
+
+格式 6 的 OpeningReplica、幂等、Job/Artifact、共同回放、唯一 ready 和 R08 六文件联合 129/129、零跳过；backend 类型、架构、可信实际 main `88d2c26` 迁移及差异检查通过，日志 `H:\TEMP\novelai-opening-replica-v6-root-union.log`。最终 Replica 三技术文件与受审 `3affb56` 原字节相同，没有带入 `e8` 已否决中间实现；本段只登记该联合，不沿用格式 5 的 full/编译结果作为格式 6 验收。
 
 ### 9.52 新格式最外层提交后状态通知
 
