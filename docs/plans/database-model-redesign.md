@@ -1609,7 +1609,13 @@ Cookie 取消块只窄提取为 `cancelRelationalGenerationRequest`：当前 ACL
 
 验收使用合法 installer 的真实 SQLite/Local 字节、现 Native/Direct factory 与真实队列 coordinator、本机合成上游。测试组合给新请求入口和原 Direct image reader 注入同一个真实 `createPublicImageAccess`，领取签名 URL 得到原图字节且坏签名拒绝；不是用签名桩替代联验，也不宣称真实外云或 sole 发布。慢正文拒绝的全表对照显式停止后台 coordinator，避免把独立的真实派发误判为被拒取消的写入；两 child 运行/取消则保持 coordinator 开启，实际 running 结算、waiting 不再派发。实际 strict active alias 沿原 requestId，退款后的迟到图保留、历史退休后不可取消；完整公共提交回放精确保持任务、charge、wallet、artifact 与原 receipt，不访问网络或复活 Key/PST/authEpoch。
 
-作者 Node22 新真实 HTTP 专项 15 项、原 Cookie 回归与架构矩阵三文件同次 418/418、零跳过；backend 类型、架构、默认及可信 `c8e20b0` 迁移历史、182 文件语法、改动格式/diff 通过。旧守卫基线在同一 TEMP 矩阵中两项 type-only 正例通过、十项新实际写能力捕获漏例失败；现守卫 12/12。作者临时移除初始 stableMember/authEpoch 对比，原慢正文转归与代次变化两项精确变红（含父计数 3 fail），撤 Key/ready 正分支仍过，恢复产品后联合检查全绿。日志为 `H:\TEMP\novelai-request-http-candidate-source.log`、`novelai-request-http-original-identity-negative.log` 和 `novelai-request-http-guard-negative-20261114\before.log`/`after.log`。初轮夹具纠正了旧 setup 已换 Key 导致的失效 accept closure、原 notifier 外层要求和把真实并发派发当作拒绝写入的错误对照，未绕过原 owner 或 ready；当前受理走真实 NativeAdmission。固定候选的独立复审及父同候选发布仍另行记录，没有运行 full/compiled/Node24 或原始外云。
+初次 Node22 新真实 HTTP 15 项、原 Cookie 回归与架构矩阵三文件同次 418/418、零跳过，其中架构 394 项随后被独审确认存在下面的覆盖退化，不能据此称门禁完成。backend 类型、架构静态扫描、默认及可信 `c8e20b0` 迁移历史、182 文件语法、改动格式/diff 通过。旧守卫基线在同一 TEMP 矩阵中两项 type-only 正例通过、十项新实际写能力捕获漏例失败；现守卫 12/12。作者临时移除初始 stableMember/authEpoch 对比，原慢正文转归与代次变化两项精确变红（含父计数 3 fail），撤 Key/ready 正分支仍过，恢复产品后联合检查全绿。日志为 `H:\TEMP\novelai-request-http-candidate-source.log`、`novelai-request-http-original-identity-negative.log` 和 `novelai-request-http-guard-negative-20261114\before.log`/`after.log`。初轮夹具纠正了旧 setup 已换 Key 导致的失效 accept closure、原 notifier 外层要求和把真实并发派发当作拒绝写入的错误对照，未绕过原 owner 或 ready；当前受理走真实 NativeAdmission。固定候选的独立复审及父同候选发布仍另行记录，没有运行 full/compiled/Node24 或原始外云。
+
+固定 `3da8db3fd09b42906ce505423dce3b4fbada9b09` 的独立业务反例未发现新 HTTP 问题，但确认 P2 验证退化：新增两个 writer 后，原 `writerFactories.slice(-3)` 把原 Direct/OpenAI 的两 caller 共四条动态捕获案例移出；错误 checker 放行该两个模块动态 import 时，3da 的架构 394 项仍全绿，精确父基线原矩阵却有四个实际断言失败。生产守卫当时仍正确，不能把这是测试遗漏误称现有 writer 逃逸。原独立负控和日志保留于 `H:\TEMP\novelai-request-http-independent-20261114\negative-dynamic-guard.patch`、`negative-current-architecture.log`、`negative-baseline-architecture.log`。
+
+修复仅把该一行改为直接遍历实际 writerFactories 全表，动态捕获与既有 namespace 一样稳定覆盖全部 15 项×两 caller，不再按尾部位置选择；没有新增检查框架或修改生产 checker/HTTP。原同一 Direct/OpenAI 放行负控现在精准产生四个失败（其余 414 项通过）；再对全部动态 import 放行的 TEMP checker 运行这 30 条原矩阵，30/30 实际断言失败，恢复正确 checker 则 30/30 通过。type-only 和纯 named reader 正例保留在最终全矩阵。证据位于 `H:\TEMP\novelai-request-http-dynamic-fixed-20261114\original-four-negative.log`、`all-dynamic-negative.log`、`all-dynamic-fixed.log`；修复固定产品及独审闭环随后记录，维护者仍需复核这一测试门禁变更。
+
+修复后新 HTTP 15、原 Cookie 9 与最终架构矩阵 418 同次 442/442、零跳过，日志为同目录 `final-joint.log`；架构静态扫描、改动格式与 diff 通过。生产 checker、HTTP、原专属 HTTP 测试及 API 契约与 3da 固定源相同，仅本测试循环及这段证据修订；原失效的 394 全绿不再作为最终门禁依据。独立业务验证与修复后继绑定另由原 reviewer 完成，未运行 full/compiled/Node24。
 
 ## 10. 事实依据与修订
 
