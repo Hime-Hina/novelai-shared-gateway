@@ -17,7 +17,7 @@ HTTP 网关、成员鉴权、共享额度账本与持久化模块。来源和非
 | Host、来源 IP、API 白名单及公开错误       | `http/`；`prompt-api-settings.ts` 仅保留现有管理摘要的配置规范化与脱敏，不提供提示词转换服务                               |
 | 调用热力图、服务资源与 R2 分析            | `reports/`                                                                                                                 |
 
-根 `gateway-runtime.ts` 负责装配和 HTTP/进程生命周期，但仍包含 OpenAI 请求解析、账号管理与统计适配。后续真实需求触及这些规则时，分别归入现有 `protocols/`、`members/`/`quota/`、`reports/` owner；不按文件行数机械拆分。默认数据位置仍为仓库根下的 `data/`。SQL、journal 和快照仍在 `migrations/`，文件字节与版本不因源码移动变化。没有旧平铺模块的转发或重导出。
+根 `gateway-runtime.ts` 负责装配和 HTTP/进程生命周期，仍包含账号管理与统计适配。OpenAI 解析和 Native/OpenAI/Direct 客户端 transport 归现有 `protocols/`，关系 HTTP 绑定归 `generation/relational-*-http.ts`；图片分享签名由 `http/public-image.ts` 的同一进程实例提供，原 sole caller 继续注入原实际能力，尚未因此切换 sole 启动入口。后续真实需求触及其他规则时，分别归入现有 `members/`/`quota/`、`reports/` owner；不按文件行数机械拆分。默认数据位置仍为仓库根下的 `data/`。SQL、journal 和快照仍在 `migrations/`，文件字节与版本不因源码移动变化。没有旧平铺模块的转发或重导出。
 
 SQLite 句柄、语句、热缓存和内部持久化过程是 `JsonStore` 的私有实现；查询/协议使用实际读取方法的窄类型，业务变更经现有命令提交。运行时只通过活动任务判断和瞬时进度方法访问热任务，不为每帧进度追加业务事件。`architecture:check` 固定纯金额/reducer、查询、Web 和装配入口的依赖方向；`migration:check` 比较可信 Git 基线的历史 SQL 字节和 journal 前缀。检查范围、命令和维护者复核要求见 [开发与验证](../CONTRIBUTING.md)，这些检查不代替远端权限与强制合并保护。
 

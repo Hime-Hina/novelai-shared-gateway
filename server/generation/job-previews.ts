@@ -24,11 +24,12 @@ type PreviewResponse = Pick<
   ServerResponse,
   'destroyed' | 'writableEnded' | 'writableNeedDrain' | 'writeHead' | 'write' | 'end' | 'once'
 >;
+type PreviewSubscription = { response: PreviewResponse; write(message: string): void };
 
 // Only the latest preview of each running job lives here. Never persisted.
 export class JobPreviews {
   frames = new Map<string, PreviewFrame>();
-  listeners = new Map<string, Set<PreviewResponse>>();
+  listeners = new Map<string, Set<PreviewSubscription>>();
   watchers = new Map<string, Set<PreviewWatcher>>();
   closed = false;
 
@@ -54,38 +55,57 @@ export class JobPreviews {
     };
   }
 
-  subscribe(token: string, res: PreviewResponse): void {
+  subscribe(
+    token: string,
+    res: PreviewResponse,
+    authorize?: (write: () => void) => void | Promise<void>,
+  ): () => void {
     if (this.closed) {
       res.end();
-      return;
+      return () => {};
     }
     res.writeHead(200, {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       'x-accel-buffering': 'no',
     });
-    res.write(': connected\n\n');
-    const listeners = this.listeners.get(token) || new Set<PreviewResponse>();
-    listeners.add(res);
+    const guarded = (write: () => void) => {
+      try {
+        Promise.resolve(authorize ? authorize(write) : write()).catch(() => res.end());
+      } catch {
+        res.end();
+      }
+    };
+    const listener: PreviewSubscription = {
+      response: res,
+      write: (message) =>
+        guarded(() => {
+          if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) {
+            res.write(message);
+          }
+        }),
+    };
+    const listeners = this.listeners.get(token) || new Set<PreviewSubscription>();
+    listeners.add(listener);
     this.listeners.set(token, listeners);
     const heartbeat = setInterval(() => {
-      if (!res.destroyed && !res.writableNeedDrain) {
-        res.write(': keepalive\n\n');
-      }
+      listener.write(': keepalive\n\n');
     }, 15000);
     heartbeat.unref();
     res.once('close', () => {
       clearInterval(heartbeat);
-      listeners.delete(res);
+      listeners.delete(listener);
       if (!listeners.size) {
         this.listeners.delete(token);
       }
     });
+    listener.write(': connected\n\n');
     for (const frame of this.frames.values()) {
       if (frame.token === token) {
-        this.send(res, frame);
+        this.send(listener, frame);
       }
     }
+    return () => guarded(() => {});
   }
 
   closeSubscriptions(): void {
@@ -94,7 +114,7 @@ export class JobPreviews {
     }
     this.closed = true;
     for (const listeners of this.listeners.values()) {
-      for (const res of listeners) {
+      for (const { response: res } of listeners) {
         if (!res.destroyed && !res.writableEnded) {
           res.end();
         }
@@ -138,8 +158,8 @@ export class JobPreviews {
       return;
     }
     const message = this.message(frame);
-    for (const res of listeners) {
-      this.send(res, frame, message);
+    for (const listener of listeners) {
+      this.send(listener, frame, message);
     }
   }
 
@@ -151,11 +171,9 @@ export class JobPreviews {
     })}\n\n`;
   }
 
-  send(res: PreviewResponse, frame: PreviewFrame, message?: string): void {
+  send(listener: PreviewSubscription, frame: PreviewFrame, message?: string): void {
     // Slow/disconnected clients must not block generation or queue old frames.
-    if (!res.destroyed && !res.writableEnded && !res.writableNeedDrain) {
-      res.write(message || this.message(frame));
-    }
+    listener.write(message || this.message(frame));
   }
 
   clear(jobId: string): void {

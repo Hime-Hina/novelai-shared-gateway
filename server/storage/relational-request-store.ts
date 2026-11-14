@@ -378,4 +378,59 @@ export class RelationalRequestStore {
       return job;
     })();
   }
+
+  // 旧客户端 detail 的薄事实；HTTP 当前 Key/admin ACL 先于保护输入冷读。
+  readApiJob(jobId: string) {
+    const job = this.sqlite
+      .prepare<
+        [string],
+        JobRow & {
+          memberId: string;
+          source: string;
+          seed: number | null;
+          accountId: string | null;
+          currentAccepted: number;
+          currentEventType: string;
+          queuePosition: number;
+          queuedCount: number;
+          retiredAt: number | null;
+          requestRetiredAt: number | null;
+        }
+      >(
+        `SELECT ${jobColumns},r.member_id AS memberId,r.source,j.actual_seed AS seed,
+      COALESCE(attempt.account_id,original.account_id) AS accountId,e.event_type AS currentEventType,
+      EXISTS(SELECT 1 FROM domain_events accepted WHERE accepted.event_type='JobAccepted'
+        AND accepted.stream_id='request:'||r.id AND json_extract(accepted.payload,'$.jobId')=j.id) AS currentAccepted,
+      CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
+        WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) ELSE 0 END AS queuePosition,
+      (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
+      j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt
+      ${jobFrom} LEFT JOIN generation_attempts attempt ON attempt.job_id=j.id
+      LEFT JOIN generation_attempts original ON original.id=a.original_attempt_id
+      WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      fail(404, 'job_not_found', 'job not found.');
+    }
+    return {
+      ...job,
+      createdAt: iso(job.createdAt),
+      updatedAt: job.currentEventType === 'OpeningJobRecorded' ? null : iso(job.updatedAt),
+      completedAt: iso(job.completedAt),
+      lateResultAvailable: job.lateResultAvailable === 1,
+    };
+  }
+
+  readApiArtifact(artifactId: string) {
+    const artifact = this.sqlite
+      .prepare<[string], { memberId: string; retiredAt: number | null }>(
+        'SELECT member_id AS memberId,retired_at AS retiredAt FROM artifacts WHERE id=?',
+      )
+      .get(artifactId);
+    if (!artifact) {
+      fail(404, 'artifact_not_found', 'image not found.');
+    }
+    return artifact;
+  }
 }

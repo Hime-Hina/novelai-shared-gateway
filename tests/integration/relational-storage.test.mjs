@@ -18,6 +18,7 @@ import { RelationalInputStore } from '../../server/storage/relational-input-stor
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
 import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
+import { createRelationalDirectHttp } from '../../server/generation/relational-direct-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
@@ -122,6 +123,14 @@ for (const previous of [
     );
     assert.throws(
       () => createRelationalNativeHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalOpenAiHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalDirectHttp({ sqlite }),
       /Unsupported relational database format/,
     );
     assert.deepEqual(sqlite.serialize(), before);

@@ -257,6 +257,10 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 
 OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓存等价规则，支持完成产物复用与活动任务合并。模型目录保留 Bearer、query `token` 和 `x-user-token` 的原 Key 来源与优先序；POST 生图仍仅接受 Bearer Key。原中央入口已经认证的管理员可读目录，此只读权限不授予生图写入能力。
 
+Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先限量读取 2 MiB 正文，再以 `body.token` 优先于原 header/query Key 来源确定身份；管理员只读凭据、Cookie 和独立 PST 不能替代 writer 的成员 Key。无键 Direct 只复用完成缓存，有键 Direct 与 POST jobs 可合并活动任务，`nocache=1/true` 禁用复用。Direct 显式 seed 保持原任意有限 Number（包括 `0/-1/-2/1.5/4294967296`），省略或空串才是随机意图；NaN/正负 Infinity 沿原错误图片拒绝。这是本地网关语义，模拟上游回归不证明真实 NAI 支持所有取值。
+
+新关系入口没有与旧 `users.balance` 同义的单值，故不发送 `x-balance`，不以 0 或三池折算值代替。移除此 header 不处置历史余额权益；其迁移或封存责任仍按 D4 保留。任务 detail 的 `accountRouteId/accountCost` 无原来源时为 null，`accountId` 只取实际尝试或原产物来源；新接单 `cost=0` 沿原兼容定义，历史未知不套 0。原创建、更新或完成时间缺失时保持 null，不使用开账时间冒充。实际入口接入与未切换范围见[数据库计划第 9.53 节](../plans/database-model-redesign.md#953-52direct-与异步任务-http-关系接入)。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界

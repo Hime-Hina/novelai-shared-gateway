@@ -4,7 +4,7 @@ import type {
   GenerationQueueReservation as QueueReservation,
   GenerationContent as GeneratedImage,
 } from './generation/execution.ts';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdir, open, readdir, rm, writeFile } from 'node:fs/promises';
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from 'node:http';
 import http from 'node:http';
@@ -70,6 +70,8 @@ import {
 } from './protocols/official-key-jobs.ts';
 import { parseOpenAiImageRequest } from './protocols/openai-chat.ts';
 import { createOpenAiHttp, openAiGenerationError } from './protocols/openai-http.ts';
+import { createDirectHttp, directRequestErrorImage } from './protocols/direct-http.ts';
+import { createPublicImageAccess } from './http/public-image.ts';
 import {
   ownerAccountConfiguration,
   assertOwnerAccountCredentialChangeAllowed,
@@ -291,6 +293,8 @@ const usageChartDays = 7;
 const errorLogRetentionMs = usageChartDays * 24 * 60 * 60 * 1000;
 const accountQuotaRefreshIntervalMs = 60 * 1000;
 const accountQuotaRequestTimeoutMs = 15 * 1000;
+const { imageUrl: publicImageUrl, validSignature: validPublicImageSignature } =
+  createPublicImageAccess();
 
 const { publicJob, publicJobSnapshot } = createJobPresentation({
   store,
@@ -367,6 +371,101 @@ const openAiHttp = createOpenAiHttp({
   imageMarkdown: openAiImageMarkdown,
   sendJson,
   timeoutMs: openAiChatTimeoutMs,
+});
+const directHttp = createDirectHttp<GatewayRequest>({
+  readJson,
+  acceptJob: async (req, url, body) => {
+    const token = String(body.token || tokenFrom(req, url) || '');
+    if (isOfficialKey(token)) {
+      return createOfficialJob(token, body, url.pathname === '/api/web/jobs');
+    }
+    const job = await createJob(token, body, {
+      frontend: url.pathname === '/api/web/jobs',
+      generationPayloadClaim: req.generationPayloadClaim,
+      idempotencyKey: req.generationIdempotencyKey,
+    });
+    scheduleQueueDrain();
+    const snapshot = await store.findJobContext(job.id);
+    return publicJob(snapshot?.job || job, snapshot);
+  },
+  generate: (req, res, url) =>
+    handleDirectGenerate(url, res, req.generationPayloadClaim, req.generationIdempotencyKey),
+  subscribe: async (req, res, url) => {
+    const token = tokenFrom(req, url);
+    if (isOfficialKey(token)) {
+      await officialKeyInfo(token);
+      jobPreviews.subscribe(officialKeyOwner(token), res);
+      return;
+    }
+    const user = await store.readUserByToken(token);
+    if (!user || user.enabled === false) {
+      throw httpError(401, 'invalid token.');
+    }
+    jobPreviews.subscribe(token, res);
+  },
+  readJob: async (req, url, id) => {
+    const token = tokenFrom(req, url);
+    if (id.startsWith('job_pst_')) {
+      return officialJobs.snapshot(officialJobs.get(id, token));
+    }
+    const snapshot = await store.findJobContext(id),
+      job = snapshot?.job;
+    if (!job) {
+      throw httpError(404, 'job not found.');
+    }
+    if (job.userToken !== token && !isAdmin(req, url)) {
+      throw httpError(403, 'forbidden.');
+    }
+    return publicJob(job, snapshot);
+  },
+  readJobContent: async (req, res, url, id) => {
+    const token = tokenFrom(req, url);
+    if (id.startsWith('job_pst_')) {
+      const job = officialJobs.get(id, token);
+      if (job.status !== 'done') {
+        throw httpError(409, job.error || 'job is not finished.');
+      }
+      await sendStoredImage(res, 200, job.image);
+      return;
+    }
+    const snapshot = await store.findJobContext(id),
+      job = snapshot?.job;
+    if (!job) {
+      throw httpError(404, 'job not found.');
+    }
+    if (job.userToken !== token && !isAdmin(req, url)) {
+      throw httpError(403, 'forbidden.');
+    }
+    if (job.status === 'done' && job.imageId) {
+      const image = await store.findImage(job.imageId);
+      if (image) {
+        await sendStoredImage(res, 200, image);
+        return;
+      }
+    }
+    if (job.status !== 'failed') {
+      throw httpError(409, 'job is not finished.');
+    }
+    const image = buildErrorImage(
+      publicErrorMessage(job.error || 'Generation failed', { generation: true }),
+    );
+    sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
+  },
+  readImageContent: async (req, res, url, id) => {
+    const image = await store.findImage(id);
+    if (!image) {
+      throw httpError(404, 'image not found.');
+    }
+    if (
+      !validPublicImageSignature(url) &&
+      !isAdmin(req, url) &&
+      image.token !== tokenFrom(req, url)
+    ) {
+      throw httpError(403, 'forbidden.');
+    }
+    await sendStoredImage(res, 200, image);
+  },
+  sendJson,
 });
 
 // 旧入口与 Nitro listener 共用一个宿主；恢复完成前不监听，监听成功后才派发。
@@ -450,18 +549,12 @@ export async function handleGatewayRequest(req: GatewayRequest, res: GatewayResp
       sendJson(res, payload.statusCode, payload);
       return;
     }
-    if (
-      /^\/generate(?:\?|$)/.test(req.url || '') &&
-      !(
-        process.env.PUBLIC_MODE === 'true' &&
-        [401, 403].includes((error as GatewayError).statusCode!)
-      )
-    ) {
-      const image = buildErrorImage(
-        publicErrorMessage((error as GatewayError).message || 'Generation failed'),
-      );
-      sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
-      return;
+    if (/^\/generate(?:\?|$)/.test(req.url || '')) {
+      const image = directRequestErrorImage(error, process.env.PUBLIC_MODE === 'true');
+      if (image) {
+        sendImage(res, image.statusCode, image.mimeType, image.buffer, image.headers);
+        return;
+      }
     }
     if (
       /^\/(?:v1\/)?ai\/(?:generate-image(?:-stream)?|encode-vibe|upscale)$/.test(
@@ -556,37 +649,6 @@ async function migrateInlineImages() {
   }
 }
 // PUBLIC_SELF_USE_GUARD
-// 图片签名使用进程随机密钥；重启失效，不暴露账户或网关密钥。
-const publicImageSecret = randomBytes(32);
-function publicImageMac(pathname: string, expires: string) {
-  return createHmac('sha256', publicImageSecret).update(`${pathname}\n${expires}`).digest('hex');
-}
-function publicImageUrl(id: string) {
-  const pathname = `/api/images/${encodeURIComponent(id)}/content`;
-  if (process.env.PUBLIC_MODE !== 'true') {
-    return pathname;
-  }
-  const expires = String(Math.floor(Date.now() / 1000) + 900);
-  return `${pathname}?expires=${expires}&signature=${publicImageMac(pathname, expires)}`;
-}
-function validPublicImageSignature(url: URL) {
-  if (!/^\/api\/images\/[^/]+\/content$/.test(url.pathname)) {
-    return false;
-  }
-  const expires = url.searchParams.get('expires') || '';
-  const signature = url.searchParams.get('signature') || '';
-  if (!/^\d{10}$/.test(expires) || !/^[a-f0-9]{64}$/.test(signature)) {
-    return false;
-  }
-  const now = Math.floor(Date.now() / 1000);
-  if (Number(expires) < now || Number(expires) > now + 900) {
-    return false;
-  }
-  return timingSafeEqual(
-    Buffer.from(signature, 'hex'),
-    Buffer.from(publicImageMac(url.pathname, expires), 'hex'),
-  );
-}
 async function publicSelfUseGuard(
   req: GatewayRequest,
   res: GatewayResponse,
@@ -936,117 +998,7 @@ async function route(req: GatewayRequest, res: GatewayResponse) {
     return;
   }
 
-  if (method === 'POST' && ['/api/jobs', '/api/web/jobs'].includes(url.pathname)) {
-    const body = await readJson(req);
-    if (body.edit) {
-      throw httpError(400, '图片编辑功能已移除，请刷新页面后重试。');
-    }
-    const token = String(body.token || tokenFrom(req, url) || '');
-    if (isOfficialKey(token)) {
-      sendJson(res, 202, await createOfficialJob(token, body, url.pathname === '/api/web/jobs'));
-      return;
-    }
-    const job = await createJob(token, body, {
-      frontend: url.pathname === '/api/web/jobs',
-      generationPayloadClaim: req.generationPayloadClaim,
-      idempotencyKey: req.generationIdempotencyKey,
-    });
-    scheduleQueueDrain();
-    const snapshot = await store.findJobContext(job.id);
-    sendJson(res, 202, publicJob(snapshot?.job || job, snapshot));
-    return;
-  }
-
-  if (method === 'GET' && url.pathname === '/api/jobs/events') {
-    const token = tokenFrom(req, url);
-    if (isOfficialKey(token)) {
-      await officialKeyInfo(token);
-      jobPreviews.subscribe(officialKeyOwner(token), res);
-      return;
-    }
-    const user = await store.readUserByToken(token);
-    if (!user || user.enabled === false) {
-      throw httpError(401, 'invalid token.');
-    }
-    jobPreviews.subscribe(token, res);
-    return;
-  }
-
-  if (method === 'GET' && /^\/api\/jobs\/[^/]+\/content$/.test(url.pathname)) {
-    const id = decodeURIComponent(url.pathname.split('/').at(-2) || '');
-    const token = tokenFrom(req, url);
-    if (id.startsWith('job_pst_')) {
-      const job = officialJobs.get(id, token);
-      if (job.status !== 'done') {
-        throw httpError(409, job.error || 'job is not finished.');
-      }
-      await sendStoredImage(res, 200, job.image);
-      return;
-    }
-    const snapshot = await store.findJobContext(id);
-    const job = snapshot?.job;
-    if (!job) {
-      throw httpError(404, 'job not found.');
-    }
-    if (job.userToken !== token && !isAdmin(req, url)) {
-      throw httpError(403, 'forbidden.');
-    }
-    if (job.status === 'done' && job.imageId) {
-      const image = await store.findImage(job.imageId!);
-      if (image) {
-        await sendStoredImage(res, 200, image);
-        return;
-      }
-    }
-    if (job.status !== 'failed') {
-      throw httpError(409, 'job is not finished.');
-    }
-    const image = buildErrorImage(
-      publicErrorMessage(job.error || 'Generation failed', { generation: true }),
-    );
-    sendImage(res, 200, image.mimeType, image.buffer, { 'x-error': '1' });
-    return;
-  }
-
-  if (method === 'GET' && url.pathname.startsWith('/api/jobs/')) {
-    const id = decodeURIComponent(url.pathname.split('/').pop() || '');
-    const token = tokenFrom(req, url);
-    if (id.startsWith('job_pst_')) {
-      sendJson(res, 200, officialJobs.snapshot(officialJobs.get(id, token)));
-      return;
-    }
-    const snapshot = await store.findJobContext(id);
-    const job = snapshot?.job;
-    if (!job) {
-      throw httpError(404, 'job not found.');
-    }
-    if (job.userToken !== token && !isAdmin(req, url)) {
-      throw httpError(403, 'forbidden.');
-    }
-    sendJson(res, 200, publicJob(job, snapshot));
-    return;
-  }
-
-  if (method === 'GET' && url.pathname.startsWith('/api/images/')) {
-    const id = decodeURIComponent(url.pathname.split('/').at(-2) || '');
-    const image = await store.findImage(id);
-    if (!image) {
-      throw httpError(404, 'image not found.');
-    }
-    // 签名是限时分享凭据；失效后仅图片所属成员或管理员可读取。
-    if (
-      !validPublicImageSignature(url) &&
-      !isAdmin(req, url) &&
-      image.token !== tokenFrom(req, url)
-    ) {
-      throw httpError(403, 'forbidden.');
-    }
-    await sendStoredImage(res, 200, image);
-    return;
-  }
-
-  if (method === 'GET' && url.pathname === '/generate') {
-    await handleDirectGenerate(url, res, req.generationPayloadClaim, req.generationIdempotencyKey);
+  if (await directHttp(req, res, url)) {
     return;
   }
 

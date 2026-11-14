@@ -1513,6 +1513,24 @@ Node 22.23.4 新关系反例 10/10，含保存点失败被 catch 后仍只广播
 
 修复固定 `d2bd015016c8ada3fbac5df7053f4eaa6fee23c2` 已独立技术复审通过：新关系 15、原 hub 5 及原独立 5 项同次 25/25，零跳过，两条原红闭合，真实注销加签发、Key ABA/no-op、同步监听者重入和跨 MemberStore 实例保留。精确 `e7cf9675` R08 与最终通知增量另有真实 alias-only/原回执/完整离线回放联合 1/1；它是限定场景的精确来源联合，不替代父候选全库整合。18 个固定改动文件 SHA/Gitblob 全匹配，独立源保持 clean。报告为 `H:\TEMP\novelai-state-events-independent-20261114\REVIEW-PASS-d2.md`，同目录 `fixed-d2-focused.log`、`joint-e7-fixed-d2-alias.log`、`reviewed-files-d2.json` 及 `joint-e7-fixed-d2-files.json` 分别保留执行和联合范围。该 PASS 未把前驱 71/289 重标为最终全量，未执行 full/compiled/Node24/真实外端点或声称新 shared-events 已接通；同候选发布、SSE/sole 装配及维护者审查仍由父任务接续。
 
+### 9.53 #52：Direct 与异步任务 HTTP 关系接入
+
+本片从 OpenAI 固定片 `b95e724` 的独立工作树继续，先接入其已独审的当前 Key/ready 修复 `2a058f6`、`159c2b1`，再并入已独审的共同 finite seed owner `5442f31`；不从尚未固定的 Opening 或配置工作树取源。外部行为继续归 [API 契约](../contracts/api-contract.md#其他现有客户端接口)：`protocols/direct-http.ts` 只保留原 POST jobs、Direct 图片与 job/image/preview 路由分派，旧 sole runtime 仍向同一 transport 注入原实际能力。关系 adapter 使用第 9.46 节同一当前 Key/epoch/首次 context、GF/alias/receipt、R08 缓存与真实 replica reader，不建兼容 JsonStore 或第二套缓存规则。新 factory 不接 blocked `/api/web/jobs`，也不延续客户端 PST 独立执行模式。
+
+GET `/generate` 保留 query.token 身份、28 步上限、默认可缓存、原图和 200 SVG 错误；无键只找完成产物，有键可活动合并。POST `/api/jobs` 保留先限量读取 2 MiB 正文、body.token 优先、原 allowPurchasedAnlas/noCache 和无键活动合并，返回 202 完整任务 detail。正文尚未读完时不能借 header Key 代替未知 body 身份；当前 Key 在读完后的真实认证及每次受理事务中复核，缓存资格 IO 后继续按先前捕获的 admission epoch 拒绝 stop/resume。原键先于新准入重领，不改变原事实、seed 或首次 defaults；新意图才读取必需的配置 owner 注入。
+
+共同 seed owner 保持 Direct 任意有限 Number 和单 child 恒等，Native/member 原 uint32 与多 child wrap 不变。本片实际 localhost GET 已逐值验证 `0/-1/-2/1.5/4294967296` 从原请求到队列上游参数、actual_seed、冷输入及十四张公开表完整提交回放都原值保持；NaN/正负 Infinity 按原 200 SVG/x-error 拒绝且零受理，省略 seed 的随机原键保存首次实际值。输入、seed 和缓存事实没有在 transport 私有特判或重新随机化。旧 actual GET 探针与这些测试都使用隔离模拟上游，不宣称真实 NAI 支持全部取值。
+
+`http/public-image.ts` 将原相邻签名函数原样归为单一进程 owner，旧 sole 与新平台注入同一实例；HMAC、15 分钟、时序安全比较和重启失效的 secret 生命周期不变，没有新增 secret 配置或持久副本。签名继续是可转交的只读 capability，不绑定或因原 Key 撤销而失效。普通成员在 actual file IO 前后都核当前 Key、ready 与归属；已认证 admin 仅由平台只读能力注入，不给 writer 伪造 Key。JobPreviews 沿原唯一 listener 集合、节流、背压和计时清理，在真正 write 的当前 Key 事务内发送；稳定 memberID 订阅不会让旧 Key 在后续上游帧、心跳或 commit 检查后继续读取。即时无帧撤销由父任务同 runtime notifier 的 MemberStore 第三参并集接入，本片不新建通知注册表或裸 emit 规则。
+
+RequestStore 的 `readApiJob/readApiArtifact` 只提供原 job、产物、真实 attempt/source 及队列的薄事实，HTTP ACL 先于 InputStore 原保护输入冷读。新接单 cost=0 引用原 generationCost 兼容定义，accountRouteId/accountCost 无同义来源时返回 null；accountId 仅取本 attempt 或原产物 attempt，历史未知不借当前 bound 推断。Opening 缺原更新时间时不使用开账 event 时间冒充，完整历史 Opening 的 HTTP 汇合仍待其实际 owner 接入后验证。失败 job content 仍是 200 错误 SVG，即使 actual coordinator 已找回迟到原图；image 入口可领真实迟到 bytes，原失败、退款和完成时间保留。新关系没有旧 users.balance 的同义 scalar，故不发 x-balance；D4 不因此清零历史余额权益，迁移/封存责任仍保留，旧 adapter 继续发送原已知值。
+
+Node 22.23.4 的合法 ready/真实 localhost Direct 专项 23 项与原 JobPreviews 4 项联合 27/27、零跳过（`H:\TEMP\direct-http-final-local.log`）；原 sole 连接/幂等 HTTP 两项 2/2（`H:\TEMP\direct-http-original-compat.log`），原 startup 10 秒断言不变。覆盖同键零写、默认/显式缓存和活动合并差别、真实 refill/input/最后 alias SQL 失败全回滚、Key/正文/资格 IO/文件 IO/ready 撤销、实际上游预览与每帧当前事务、busy/timeout/SVG、断线后物理输入与预扣继续持有、迟到退款保留、原图/真实签名 ACL、持久云承诺缺配置不重生，以及完整业务回放 fetch=0且不复活私有 Key/PST/epoch。R2 场景沿真实 client/复制确认 owner，仅传输 mock，不称为实云验收。
+
+新增 writer 符号 `createRelationalDirectHttp` 追加原架构守卫，并保留 query/protocol alias-import 拒绝；正确旧 v3 与整数 seed v4 DDL/hash 都在 factory 进入前拒绝。原连接 helper 与架构反例联合 246/246，共同 OpenAI/Native cache/Key/rollback 与旧格式拒绝八项 8/8（`H:\TEMP\direct-http-final-shared-guards.log`、`H:\TEMP\direct-http-final-owner-shared.log`），架构、可信 `e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01` 的迁移历史、类型、改动格式和 diff 检查通过；各组有重叠，不相加作为独立用例数。这些窄 owner、签名提取与守卫须同候选独审。新 factory 仍由 sole 注入配置、签名实例和已保护 admin 能力，未替换总启动入口；full、编译包、Node 24 和生产切换均由父任务统一排期，不以本片 HTTP 通过声明整个 #52、D4 或恢复工作完成。
+
+固定 `940d036388c92905244258d53670a2f0dea75eb9` 独立技术复审通过：原 Direct HTTP 23/23 与独立反例 9/9 分别运行、零跳过，15 文件按 Git blob 与 SHA256 绑定；报告为 `H:\TEMP\novelai-direct-http-independent-20261114\INDEPENDENT-REVIEW.md`。整合时把新 Direct MemberStore 接到同一数据库/事件对象的 notifier 第三参，并将新 factory 纳入既有整模块写能力闭包。新增真实 Discord 资格撤销反例，精确核对只有原 `MemberEligibilityChanged` 提交、受影响成员收到一次事务后 session 通知，既有任务、钱包和收费不变；连同 Direct、OpenAI、Native、成员读取、通知、旧格式及架构七文件 497/497、零跳过，日志 `H:\TEMP\novelai-direct-notifier-root-final-union.log`。类型、架构、可信实际 main `88d2c26` 迁移与 diff 检查通过；后继整合仍须完整后端、编译与发布包联验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

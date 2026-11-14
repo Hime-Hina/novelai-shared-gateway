@@ -14,6 +14,7 @@ const writerFactories = [
   ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
   ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
   ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
+  ['createRelationalDirectHttp', '../generation/relational-direct-http.ts'],
   ['relationalStateNotificationsFor', '../events/relational-state-notifications.ts'],
 ];
 
@@ -302,6 +303,11 @@ for (const filename of [
         'API raw admission writer',
         '../generation/relational-api-admission.ts',
         'createRelationalApiGenerationAdmission',
+      ],
+      [
+        'relational Direct HTTP writer',
+        '../generation/relational-direct-http.ts',
+        'createRelationalDirectHttp',
       ],
       [
         'relational OpenAI HTTP writer',
