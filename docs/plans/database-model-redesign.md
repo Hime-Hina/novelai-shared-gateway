@@ -2295,7 +2295,7 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 ### 9.95 旧 Native 历史的精确归档承接证据
 
-本片基于 `a87f9279`，只改 `tests/helpers/legacy-inline-archive.mjs`、`tests/deployment/legacy-tools.test.mjs` 与对应 API/本节，不改产品、076 CLI/包、CI、guard 或新模型。旧包仍固定 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f`，原 helper 的 direct/openai 和原 deployment 主源/防写反例保留。新窄 `verifyLegacyNativeArchive()` 同时由标准打包测试与 cached-bundle 新夹具预检调用；包验证、私有进程 env 与原 15 秒 CLI runner 只提取为两 caller 共用，不添加查询框架或在线兼容入口。
+本片基于 `a87f9279`，首片改 `tests/helpers/legacy-inline-archive.mjs`、`tests/deployment/legacy-tools.test.mjs` 与对应 API/本节；真实红到场后另获准 `scripts/audit-legacy-archive.mjs` 的唯一窄读取修复。旧 server、包/CI、guard、新模型及冻结 076 原件不改。旧包仍固定 `3caba3dfa0b5d9f582acabfc02e36e7db4af038f`，原 helper 的 direct/openai 和原 deployment 主源/防写反例保留。新窄 `verifyLegacyNativeArchive()` 同时由标准打包测试与 cached-bundle 新夹具预检调用；包验证、私有进程 env 与原 15 秒 CLI runner 只提取为两 caller 共用，不添加查询框架或在线兼容入口。
 
 来源是 `a87f9279` 原 `native-http.test.mjs`，Git blob `eb781db5810a2e1339e5eff44bf59675538a3549`、原文件 SHA `35d0f9e209c3b19a3c64f2b2553d8d8fa1ad5086dcaecab9d0df9159e3f4fb7d`。web902 保留原完整 tag/prompt/artist/negative/model、steps 28、seed 902、cfg 0 等字段及 279 B JSON/SHA `6a103a29b15b35c4b9014d70e7e7f18a9ab4b921c7ba6960635436d7eaa84787`，按原旧 owner 产生实际 queueSeq，再与原 Opening 交叉核对；保存的物理排序 `-1000` 按 SQLite 原文本读取。没有补 901 父、count 或 normalization context，未把单条归档核对称为逆物理顺序重启已完成。
 
@@ -2305,7 +2305,7 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 原 cached 076 新夹具短预检已真实到场，30.937 秒，原每次 15 秒期限不变。web902 输入、失败输入、原 `{}`/键绑定/诊断摘要、真实 Opening command 和 done/图片 NULL 元数据均通过，唯一业务失败为 NULL operation PNG 的 `--artifact --data-dir` 实读；Node 把该子例及父项计为 2 fail，不能当两个独立问题。日志 `H:/TEMP/novelai-native-archive-20261115/cached-before.log`、原源码/argv `cached-before-source.json` 与 helper/入口原件保留。原封源 SHA `578487aecac79d617353fdb747bf260086ccc5057812b856e7c48af53aeb7e01`，每个 CLI 调用后先核 DB 字节、目录和原图不变，再核退出状态；失败 stdout 为空。旧工具文件 SHA 仍为 `fb6ef6ad8afe52189bc8e4e6955a0cf34a0ed10456fca9a2ee0f4ed368f8ddb2`。
 
-根因是 076 `readLocalArtifact()` 把原未知 operation 传给固定旧 `describeStoredResult()`，后者是发布 descriptor owner，要求 generate/upscale/encode-vibe 枚举，该原形状不能靠补 generate 获得通过。父任务已另授 `scripts/audit-legacy-archive.mjs` 的唯一窄读取修复：原身份/路径/fd/namespace/摘要防护保持，未知 operation 且已保存 image MIME 只沿固定纯图片 validator 验证，不猜 unknown binary 为 Vibe，也不改旧 server、新模型、包/CI 或 076 原件。当前尚未实施/验证该修复，标准新包运行另等独占槽。
+根因是 076 `readLocalArtifact()` 把原未知 operation 传给固定旧 `describeStoredResult()`，后者是发布 descriptor owner，要求 generate/upscale/encode-vibe 枚举，该原形状不能靠补 generate 获得通过。最小修复仅使 operation 为 NULL 且已保存 png/jpeg/webp MIME 的原图沿固定 `validateImageBytes()`、实际 MIME、原 SHA/长度验证；known operation 沿原 describe，unknown binary 仍拒，输出 operation 不猜补。保留原身份/路径/fd/namespace/摘要防护，并把固定旧 descriptor 已有的三项 imageId 条件提到共同读资格检查；不改旧 server、新模型、包/CI 或 076 原件。新增自洽坏图、unknown binary 及同一路径合法原图/非法 imageId 的最小反例，各先核原源 metadata 审计成功再检查实读拒绝。当前完成静态实现，修后实际 source 与标准新包运行另等独占槽；不会手改旧 manifest 让缓存包冒充新候选。
 
 ## 10. 事实依据与修订
 

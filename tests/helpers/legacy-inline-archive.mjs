@@ -216,23 +216,24 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
     const sourceDirectory = path.join(directory, 'native-history-source'),
       legacyKey = 'synthetic-legacy-private-error',
       privateMarker = 'synthetic-private-generation-diagnostic';
-    const made = spawnSync(
-      process.execPath,
-      ['--input-type=module', '-', bundle, sourceDirectory],
-      {
-        cwd: directory,
-        env,
-        encoding: 'utf8',
-        timeout: 15000,
-        windowsHide: true,
-        input: `
+    const makeSource = (selectedDirectory, imageVariant = 'original') =>
+      spawnSync(
+        process.execPath,
+        ['--input-type=module', '-', bundle, selectedDirectory, imageVariant],
+        {
+          cwd: directory,
+          env,
+          encoding: 'utf8',
+          timeout: 15000,
+          windowsHide: true,
+          input: `
           import { mkdir, writeFile } from 'node:fs/promises';
           import { createHash, randomUUID } from 'node:crypto';
           import { createRequire } from 'node:module';
           import path from 'node:path';
           import { pathToFileURL } from 'node:url';
           globalThis.fetch = () => { throw new Error('legacy Native fixture denied network before IO'); };
-          const [bundle, sourceDirectory] = process.argv.slice(2);
+          const [bundle, sourceDirectory, imageVariant] = process.argv.slice(2);
           const { JsonStore, hashObject } = await import(pathToFileURL(path.join(bundle, 'server/storage/sqlite-store.ts')).href);
           const { parseNativeImageRequest } = await import(pathToFileURL(path.join(bundle, 'server/protocols/native-image.ts')).href);
           const { generationRequestFingerprint } = await import(pathToFileURL(path.join(bundle, 'server/generation/request-fingerprint.ts')).href);
@@ -244,17 +245,26 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
           const nativeRequest = parseNativeImageRequest(${JSON.stringify(body)});
           const error = "ENOENT: no such file or directory, open '" + path.join(sourceDirectory, ${JSON.stringify(privateMarker)}) + "'";
           const png = Buffer.from(${JSON.stringify(png.toString('base64'))}, 'base64');
+          const imageId = imageVariant === 'invalid-id' ? 'invalid.id' : 'img-access-owner';
+          const mimeType = imageVariant === 'unknown-binary' ? 'application/octet-stream' : 'image/png';
+          let imageBytes = png;
+          if (imageVariant === 'bad-image') {
+            imageBytes = Buffer.from(png);
+            imageBytes[0] ^= 1;
+          } else if (imageVariant === 'unknown-binary') {
+            imageBytes = Buffer.alloc(128, 0x78);
+          }
           const webPayload = ${JSON.stringify(webPayload)}, webRequest = JSON.parse(webPayload).request;
           const store = new JsonStore(sourceDirectory);
           await store.init();
           try {
             await mkdir(path.join(sourceDirectory, 'images'), { recursive: true });
-            await writeFile(path.join(sourceDirectory, 'images/img-access-owner.png'), png);
+            await writeFile(path.join(sourceDirectory, 'images/img-access-owner.png'), imageBytes);
             await store.write({ settings: store.db.settings, cards: [], ledger: [],
               accounts: [{ id: accountId, token: 'pst-synthetic-native-archive-only', enabled: false }],
               users: [{ id: memberId, token: key, enabled: true }],
-              images: [{ id: 'img-access-owner', token: key, mimeType: 'image/png', file: 'images/img-access-owner.png', byteLength: png.length, sha256: digest(png) }],
-              jobs: [{ id: 'job-access-owner', userToken: key, status: 'done', imageId: 'img-access-owner', createdAt: new Date().toISOString() },
+              images: [{ id: imageId, token: key, mimeType, file: 'images/img-access-owner.png', byteLength: imageBytes.length, sha256: digest(imageBytes) }],
+              jobs: [{ id: 'job-access-owner', userToken: key, status: 'done', imageId, createdAt: new Date().toISOString() },
                 { id: 'job-legacy-private-error', source: 'novelai-native', userToken: key, accountId, status: 'failed', request: nativeRequest,
                   error, errorStatus: 500, errorDetail: 'Error: ' + error + '\\n    at synthetic-history',
                   createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), completedAt: new Date().toISOString() }] });
@@ -285,8 +295,9 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
           sealed.pragma('journal_mode=DELETE');
           sealed.close();
         `,
-      },
-    );
+        },
+      );
+    const made = makeSource(sourceDirectory);
     assert.equal(made.status, 0, made.stderr);
     const filename = path.join(sourceDirectory, 'library.sqlite'),
       before = await readFile(filename),
@@ -501,11 +512,56 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
     assert.equal(located.localContentVerified, true);
     assert.equal(located.externalBytesChecked, false);
     assert.equal(located.mimeType, 'image/png');
+    for (const field of ['jobId', 'operation', 'createdAt']) {
+      assert.equal(located[field], null, field);
+    }
     assert.equal(located.sha256, sha256(png));
     assert.equal(located.byteLength, png.length);
     assert.deepEqual(await readFile(imageOutput), png);
     assert.deepEqual(await readFile(filename), before);
     assert.deepEqual(await readdir(sourceDirectory), entries);
     assert.deepEqual(await readFile(imagePath), png);
+    for (const variant of ['bad-image', 'unknown-binary', 'invalid-id']) {
+      await subtest.test(`未知操作保留原 ${variant} 拒绝边界`, async () => {
+        const selectedDirectory = path.join(directory, 'native-' + variant),
+          made = makeSource(selectedDirectory, variant);
+        assert.equal(made.status, 0, made.stderr);
+        const filename = path.join(selectedDirectory, 'library.sqlite'),
+          before = await readFile(filename),
+          entries = await readdir(selectedDirectory),
+          file = path.join(selectedDirectory, 'images/img-access-owner.png'),
+          bytes = await readFile(file),
+          imageId = variant === 'invalid-id' ? 'invalid.id' : 'img-access-owner',
+          args = [
+            script,
+            '--source=' + filename,
+            '--source-sha256=' + sha256(before),
+            '--artifact=' + imageId,
+          ],
+          described = run(args);
+        assert.equal(described.status, 0, described.stderr);
+        const metadata = JSON.parse(described.stdout).lookup;
+        assert.equal(metadata.operation, null);
+        assert.equal(metadata.localContentVerified, false);
+        assert.equal(metadata.sha256, sha256(bytes));
+        assert.equal(metadata.byteLength, bytes.length);
+        assert.equal(
+          metadata.mimeType,
+          variant === 'unknown-binary' ? 'application/octet-stream' : 'image/png',
+        );
+        const output = path.join(directory, 'native-rejected-' + variant),
+          refused = run([...args, '--data-dir=' + selectedDirectory, '--output=' + output]);
+        assert.notEqual(
+          refused.status,
+          0,
+          'self-consistent declarations do not replace image/ID/operation validation',
+        );
+        assert.equal(refused.stdout, '');
+        await assert.rejects(readFile(output), { code: 'ENOENT' });
+        assert.deepEqual(await readFile(filename), before);
+        assert.deepEqual(await readdir(selectedDirectory), entries);
+        assert.deepEqual(await readFile(file), bytes);
+      });
+    }
   });
 }
