@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, writeFile, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile, mkdir, rm, rename } from 'node:fs/promises';
 import { createServer, request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,10 +16,16 @@ import { RelationalGenerationStore } from '../../server/storage/relational-gener
 import { createRelationalNativeAdmission } from '../../server/generation/relational-native-admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
 import { describeStoredResult } from '../../server/storage/result-files.ts';
-import { image, meta } from '../helpers/relational-generation.mjs';
+import {
+  image,
+  meta,
+  commandOnlyRuntime,
+  databaseState,
+} from '../helpers/relational-generation.mjs';
 import { authenticateMemberApiKey } from '../../server/members/authentication.ts';
 
 const root = fileURLToPath(new URL('../../', import.meta.url)),
+  databaseModule = import.meta.resolve('better-sqlite3'),
   delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitFor(predicate, message = 'sole condition', timeout = 15000) {
   const until = Date.now() + timeout;
@@ -98,7 +104,7 @@ async function upstream(t) {
           );
         } else {
           res.writeHead(200, { 'content-type': 'image/webp' });
-          res.end(image);
+          res.end(state.bytes ?? image);
         }
       } finally {
         state.active--;
@@ -254,6 +260,14 @@ function query(f, sql, ...args) {
     db.close();
   }
 }
+function fullState(f) {
+  const db = new Database(f.filename, { readonly: true });
+  try {
+    return databaseState(db);
+  } finally {
+    db.close();
+  }
+}
 async function prepareEnabled(t, f) {
   f.upstream = await upstream(t);
   const server = await (await launch(t, f)).ready();
@@ -270,6 +284,7 @@ async function acceptQueued(f) {
     member = members.readMember(f.credentials.accounts[0].user_id),
     admit = createRelationalNativeAdmission({
       sqlite: db,
+      runtime: commandOnlyRuntime,
       members,
       inputs,
       generations,
@@ -333,6 +348,357 @@ async function leaveRecoveryFiles(t, f, kind) {
     'actual native journal/WAL header',
   );
 }
+
+function lifecycleIoHook(kind, closeProof) {
+  const hooks = {
+    cache: [
+      '/server/storage/result-files.ts',
+      'export async function storedResultReferenceAvailable(dataDir: string, pending: unknown) {',
+    ],
+    body: [
+      '/server/gateway-runtime.ts',
+      "return JSON.parse(Buffer.concat(chunks).toString('utf8'));",
+    ],
+    memberBody: [
+      '/server/generation/member-http.ts',
+      "return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;",
+    ],
+    receipt: ['/server/generation/relational-api-admission.ts', 'const result = completed.result;'],
+  };
+  const [file, marker] = hooks[kind];
+  return String.raw`
+    let armed=false,release;
+    globalThis.__soleLifecycleIo=async()=>{
+      if(!armed)return; armed=false;process.send?.({stage:'held'});
+      await new Promise(resolve=>release=resolve);
+    };
+    process.on('message',message=>{
+      if(message==='arm-io')armed=true;
+      if(message==='release-io')release?.();
+    });
+    const {EventEmitter}=await import('node:events'),emit=EventEmitter.prototype.emit;
+    let drained=false;
+    EventEmitter.prototype.emit=function(name,...args){
+      if(name==='drained'){drained=true;process.send?.({stage:'drained'});}
+      return Reflect.apply(emit,this,[name,...args]);
+    };
+    const {default:Database}=await import(${JSON.stringify(databaseModule)}),close=Database.prototype.close;
+    const {writeFileSync}=await import('node:fs');
+    Database.prototype.close=function(...args){
+      const value=Reflect.apply(close,this,args);
+      if(drained){writeFileSync(${JSON.stringify(closeProof)},'closed');process.send?.({stage:'db-closed'});}
+      return value;
+    };
+    registerHooks({load(url,context,next){
+      const result=next(url,context);
+      if(!url.endsWith(${JSON.stringify(file)}))return result;
+      const marker=${JSON.stringify(marker)},source=String(result.source);
+      if(!source.includes(marker))throw Error('sole lifecycle test IO marker missing');
+      const insertion=${JSON.stringify(kind === 'cache' ? marker + '\n await globalThis.__soleLifecycleIo?.();' : 'await globalThis.__soleLifecycleIo?.();\n' + marker)};
+      return {...result,source:source.replace(marker,insertion)};
+    }});
+  `;
+}
+function watchLifecycleIo(server) {
+  const stages = [];
+  server.child.on('message', (message) => {
+    if (message?.stage) {
+      stages.push(message.stage);
+    }
+  });
+  return stages;
+}
+
+test('关闭期间完成正文或cache资格IO不得新增受理；drained后仍交付原错误协议', async (t) => {
+  for (const kind of ['body', 'memberBody', 'cache', 'cache-hit']) {
+    await t.test(kind, async (t) => {
+      const f = await fresh(t);
+      f.upstream = await upstream(t);
+      const closeProof = path.join(f.dir, 'actual-db-close');
+      const server = await (
+        await launch(t, f, {
+          hook: lifecycleIoHook(kind === 'cache-hit' ? 'cache' : kind, closeProof),
+          env: { SHUTDOWN_GRACE_MS: '2000' },
+        })
+      ).ready();
+      await enable(f, server);
+      const token = f.credentials.accounts[0].api_key,
+        route = `/generate?token=${token}&tag=lifecycle-cache&width=128&height=128&steps=23&seed=55`;
+      let memberBody, cookie;
+      if (kind === 'memberBody') {
+        const member = f.credentials.accounts[0],
+          login = await call(server, '/api/member/login', {
+            body: { username: member.username, password: member.password },
+          });
+        assert.equal(login.status, 200, login.bytes.toString());
+        cookie = login.headers.get('set-cookie').split(';')[0];
+        memberBody = { operation: 'generate', ...nativeInput() };
+        delete memberBody.action;
+        const quote = await call(server, '/api/member/generation/quote', {
+          headers: { cookie },
+          body: memberBody,
+        });
+        assert.equal(quote.status, 200, quote.bytes.toString());
+        const quoted = quote.json();
+        memberBody.confirmation = {
+          requestFingerprint: quoted.requestFingerprint,
+          versions: quoted.versions,
+          maxPerJob: quoted.charges.perJob[0].resources,
+          maxTotal: quoted.charges.total,
+        };
+      }
+      if (kind.startsWith('cache')) {
+        assert.deepEqual((await call(server, route)).bytes, image);
+        if (kind === 'cache') {
+          const [filename] = await readdir(path.join(f.dataDir, 'images'));
+          await rename(
+            path.join(f.dataDir, 'images', filename),
+            path.join(f.dir, 'held-cache-result'),
+          );
+        }
+      }
+      const before = fullState(f),
+        stages = watchLifecycleIo(server);
+      server.child.send('arm-io');
+      const outgoing =
+        kind === 'memberBody'
+          ? call(server, '/api/member/generation/requests', {
+              headers: { cookie, 'idempotency-key': 'closing-cookie' },
+              body: memberBody,
+            })
+          : kind.startsWith('cache')
+            ? call(server, route)
+            : call(server, '/ai/generate-image', { token, body: nativeInput() });
+      const pending = outgoing.then(
+        (value) => ({ value }),
+        (error) => ({ error: error.code }),
+      );
+      await waitFor(() => stages.includes('held'));
+      server.child.send('shutdown');
+      await waitFor(() => stages.includes('drained'));
+      server.child.send('release-io');
+      const wire = await pending;
+      assert.ok(
+        wire.value,
+        'completed HTTP must finish before database/process close: ' + JSON.stringify(wire),
+      );
+      if (kind.startsWith('cache')) {
+        assert.equal(wire.value.status, 200);
+        assert.equal(wire.value.headers.get('x-error'), '1');
+        assert.notEqual(wire.value.headers.get('x-timeout'), '1');
+      } else {
+        assert.equal(wire.value.status, 503, wire.value.bytes.toString());
+      }
+      await server.finished;
+      assert.equal(server.exit.code, 0, server.stderr);
+      assert.equal(
+        await readFile(closeProof, 'utf8'),
+        'closed',
+        'actual SQLite must close after HTTP, not the force-exit timer',
+      );
+      assert.equal(
+        fullState(f),
+        before,
+        'public/private projections and receipts must all remain unchanged',
+      );
+      assert.deepEqual(
+        query(f, 'SELECT status FROM generation_jobs ORDER BY rowid').map((row) => row.status),
+        kind.startsWith('cache') ? ['done'] : [],
+      );
+      assert.equal(f.upstream.generation, kind.startsWith('cache') ? 1 : 0);
+    });
+  }
+});
+
+test('关闭等待真实Local大结果背压和完整响应后才close主库，不截断active bytes', async (t) => {
+  const f = await fresh(t);
+  f.upstream = await upstream(t);
+  // 合法RIFF未知块保留原像素和MIME，放大真实Local响应；仍由原结果owner完整核验。
+  const chunk = Buffer.alloc(48 * 1024 * 1024 + 8, 0x61);
+  chunk.write('JUNK');
+  chunk.writeUInt32LE(chunk.length - 8, 4);
+  const bytes = Buffer.concat([image, chunk]);
+  bytes.writeUInt32LE(bytes.length - 8, 4);
+  describeStoredResult('large-proof', 'generate', { mimeType: 'image/webp', buffer: bytes });
+  f.upstream.bytes = bytes;
+  const closeProof = path.join(f.dir, 'large-response-db-close'),
+    hook =
+      lifecycleIoHook('receipt', closeProof) +
+      String.raw`
+      const {ServerResponse}=await import('node:http'),end=ServerResponse.prototype.end;
+      let releaseResponse;
+      process.on('message',message=>{if(message==='release-response')releaseResponse?.();});
+      ServerResponse.prototype.end=function(...args){
+        if(this.req.url.startsWith('/api/images/')&&Buffer.isBuffer(args[0])&&args[0].length>1024*1024){
+          this.cork();
+          const accepted=this.write(args[0]);
+          releaseResponse=()=>{this.uncork();Reflect.apply(end,this,[]);};
+          process.send?.({stage:'large-response-buffered',backpressure:!accepted,buffered:this.writableLength});
+          return this;
+        }
+        return Reflect.apply(end,this,args);
+      };
+    `,
+    server = await (await launch(t, f, { hook, env: { SHUTDOWN_GRACE_MS: '2000' } })).ready();
+  await enable(f, server);
+  const token = f.credentials.accounts[0].api_key,
+    generated = await call(server, '/api/jobs', {
+      token,
+      body: { tag: 'large-result', width: 128, height: 128, steps: 23, seed: 55 },
+    });
+  assert.equal(generated.status, 202, generated.bytes.subarray(0, 100).toString());
+  await waitFor(
+    () => query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='done'")[0].n === 1,
+  );
+  const artifact = query(f, 'SELECT id FROM artifacts')[0].id;
+  let req, incoming, buffered;
+  const stages = watchLifecycleIo(server);
+  server.child.on('message', (message) => {
+    if (message?.stage === 'large-response-buffered') {
+      buffered = message;
+    }
+  });
+  const pending = new Promise((resolve, reject) => {
+    req = request(
+      server.origin + `/api/images/${artifact}/content`,
+      { headers: { authorization: `Bearer ${token}` } },
+      (res) => {
+        res.pause();
+        resolve(res);
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  t.after(() => {
+    incoming?.destroy();
+    req.destroy();
+  });
+  await waitFor(() => buffered);
+  assert.equal(buffered.backpressure, true, 'real native Writable.write must report backpressure');
+  assert.ok(
+    buffered.buffered >= bytes.length,
+    'actual response bytes remain buffered before shutdown',
+  );
+  server.child.send('shutdown');
+  await waitFor(() => stages.includes('drained'));
+  await delay(100);
+  assert.equal(server.exit, null, 'paused large HTTP response is still active');
+  await assert.rejects(readFile(closeProof), { code: 'ENOENT' });
+  server.child.send('release-response');
+  const wire = await pending;
+  assert.ok(wire.value, 'real HTTP must not be truncated by shutdown: ' + String(wire.error));
+  incoming = wire.value;
+  assert.equal(incoming.statusCode, 200);
+  assert.equal(Number(incoming.headers['content-length']), bytes.length);
+  await delay(50);
+  const chunks = [];
+  for await (const chunk of incoming) {
+    chunks.push(chunk);
+  }
+  assert.deepEqual(Buffer.concat(chunks), bytes);
+  await server.finished;
+  assert.equal(server.exit.code, 0, server.stderr);
+  assert.equal(await readFile(closeProof, 'utf8'), 'closed');
+});
+
+test('原queued和done回执晚于drained建立领取仍读当前终态；queued及时结束HTTP且重启继续', async (t) => {
+  for (const kind of ['queued', 'done']) {
+    await t.test(kind, async (t) => {
+      const f = await fresh(t);
+      f.upstream = await upstream(t);
+      const closeProof = path.join(f.dir, 'actual-db-close');
+      const server = await (
+        await launch(t, f, {
+          hook: lifecycleIoHook('receipt', closeProof),
+          env: {
+            SHUTDOWN_GRACE_MS: '2000',
+            DIRECT_GENERATE_TIMEOUT_MS: '100',
+          },
+        })
+      ).ready();
+      await enable(f, server);
+      let release;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      t.after(() => release());
+      const token = f.credentials.accounts[0].api_key,
+        route = `/generate?token=${token}&tag=existing-${kind}&width=128&height=128&steps=23&seed=55`,
+        headers = { 'idempotency-key': 'original-' + kind };
+      let running;
+      if (kind === 'queued') {
+        f.upstream.hold = () => gate;
+        running = call(server, '/ai/generate-image', { token, body: nativeInput() });
+        await waitFor(() => f.upstream.active === 1);
+      }
+      const original = await call(server, route, { headers });
+      if (kind === 'queued') {
+        assert.equal(original.headers.get('x-timeout'), '1');
+      } else {
+        assert.deepEqual(original.bytes, image);
+      }
+      const stages = watchLifecycleIo(server);
+      server.child.send('arm-io');
+      const late = call(server, route, { headers }).then(
+        (value) => ({ value }),
+        (error) => ({ error: error.code }),
+      );
+      await waitFor(() => stages.includes('held'));
+      const before = query(f, 'SELECT COUNT(*) n FROM commits')[0].n;
+      server.child.send('shutdown');
+      release();
+      await waitFor(() => stages.includes('drained'));
+      const settled = fullState(f);
+      server.child.send('release-io');
+      const wire = await late;
+      assert.ok(
+        wire.value,
+        'old receipt must not miss current shutdown state: ' + JSON.stringify(wire),
+      );
+      assert.equal(wire.value.status, 200, wire.value.bytes.toString());
+      if (kind === 'queued') {
+        assert.equal(wire.value.headers.get('x-error'), '1');
+        assert.notEqual(wire.value.headers.get('x-timeout'), '1');
+        const result = await running;
+        assert.equal(result.status, 200, result.bytes.toString());
+        assert.deepEqual(Buffer.from(result.json().images[0].image, 'base64'), image);
+      } else {
+        assert.deepEqual(wire.value.bytes, image);
+        assert.equal(wire.value.headers.get('x-error'), null);
+        assert.equal(query(f, 'SELECT COUNT(*) n FROM commits')[0].n, before);
+      }
+      await server.finished;
+      assert.equal(server.exit.code, 0, server.stderr);
+      assert.equal(
+        await readFile(closeProof, 'utf8'),
+        'closed',
+        'actual SQLite must close after HTTP, not the force-exit timer',
+      );
+      assert.equal(
+        fullState(f),
+        settled,
+        'late old receipt must not add facts or change any projection/private row',
+      );
+      assert.deepEqual(
+        query(f, 'SELECT status FROM generation_jobs ORDER BY rowid').map((row) => row.status),
+        kind === 'queued' ? ['done', 'queued'] : ['done'],
+      );
+      assert.equal(f.upstream.generation, 1);
+      if (kind === 'queued') {
+        const restarted = await (await launch(t, f)).ready();
+        await waitFor(
+          () => query(f, "SELECT COUNT(*) n FROM generation_jobs WHERE status='done'")[0].n === 2,
+        );
+        assert.equal(f.upstream.generation, 2);
+        await restarted.stop();
+      }
+    });
+  }
+});
 
 test('实际sole新入口仅新owner；暂停bootstrap零自动查询，真实Cookie/Key/Host/Origin/admin门禁', async (t) => {
   const f = await fresh(t);
@@ -588,7 +954,7 @@ test('真正EADDRINUSE发生前不activate已合法受理的queued任务', async
     before,
   );
   const changed = await launch(t, f, {
-    hook: `import Database from 'better-sqlite3'; import {Server} from 'node:http';
+    hook: `import Database from ${JSON.stringify(databaseModule)}; import {Server} from 'node:http';
       const listen = Server.prototype.listen;
       Server.prototype.listen=function(...args){const callback=args.pop();return listen.call(this,...args,()=>{
         const db=new Database(${JSON.stringify(f.filename)});db.prepare("UPDATE projection_state SET status='building'").run();db.close();callback();
@@ -597,6 +963,11 @@ test('真正EADDRINUSE发生前不activate已合法受理的queued任务', async
   await changed.finished;
   assert.notEqual(changed.exit.code, 0);
   assert.equal(changed.origin, null);
+  assert.equal(
+    query(f, 'SELECT status FROM projection_state')[0].status,
+    'building',
+    'fault must reach the actual listening callback',
+  );
   assert.equal(
     f.upstream.generation,
     0,

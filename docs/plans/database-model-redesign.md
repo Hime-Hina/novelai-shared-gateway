@@ -1955,7 +1955,7 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 根在 `d646286` Account/heatmap/Key 并集上整合，组预览与 Key 读取都留在命令分派前，成员、组与政策分别调用各自原 owner；保留所有共同基线测试修改与完整追加块，只合并相同慢正文 helper。共同 helper 和新 unit 精确等于 9b9，QuotaStore 保持原根字节。六文件同次 **185/185、零跳过，47.191 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、七文件格式和 diff 通过，日志 `H:/TEMP/novelai-groups-http-root-{joint,type,static,format}.log`，合并证明 `root-test-merge.json` 在同前缀。原 8cb 全量和 0ad 编译/CI 不能替代该新并集的后续统一验证。
 
-### 9.74 唯一关系运行入口装配
+### 9.75 唯一关系运行入口装配
 
 基于已审固定根 `8cb09ef`，合并 `69d7bb5`（含 `3a18d8b` 的真实离线 bootstrap）及后继固定根 `b42719d` 的 Account actual-start、Member heatmap、管理 Key/Groups。只替换 `gateway-runtime.ts`，保留根 `server/index.ts` 与 Nitro/executor 的 `startGateway/handleGatewayRequest`，删除 JsonStore、旧在线开账、OfficialKeyJobs、inline 搬移和旧 cold/backup 循环的装配；独立旧解释/归档工具未改，D8 留存政策不变。没有环境切回旧库、在线初始化、自动迁移或 ready bypass。普通发布包仍发射旧资产，整体 D4 退出不能仅凭此次入口删除判完成。
 
@@ -1963,7 +1963,7 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 一个 canonical QuotaStore、sharedRefresh.fetch、controls Map、emitter、payload budget、previews、配置和 Local/R2/Pik reader 配置接入既有 HTTP factories。管理启用与后台观察共享实际 query slot/onStart 票号；暂停 bootstrap 不自动查询。Cookie/Discord、当前代次、Host/Origin/PUBLIC、STA1N 前缀和协议 error 仍由原 helper/factory 核对。进程只有一个签名能力，OpenAI 沿原绝对 URL，签名可转交且重启失效。`/api/admin/ping` 只复用实际 admin capability；尚无新 factory 的 admin summary/reveal 及其它未交付操作明确不可用，不虚构旧 DTO。
 
-生命周期按原 queue `prepare` → 实际监听成功 → 再核当前 ready → `activate` → 唯一 refresh loop。EADDRINUSE、prepared 字节损坏、监听期间 ready 失效都不派发。关闭先禁止新请求并 stop 调度，等待真实 physical controls 和 raw quota Promise；共同 result-waiter 在 drained 时先冷读终态，再仅结束仍 waiting 的 HTTP，既有 handler/响应结束后才关 DB。真实反例已发现旧统一 503 会抢掉已 done Native 文件领取，故在唯一 waiter 增加最小 drain，由 API delivery 监听，不复制任务判定或取消 queued 业务。重启继续原 queued 事实。
+生命周期按原 queue `prepare` → 实际监听成功 → 再核当前 ready → `activate` → 唯一 refresh loop。EADDRINUSE、prepared 字节损坏、监听期间 ready 失效都不派发。关闭先禁止新请求并 stop 调度，等待真实 physical controls 和 raw quota Promise；API delivery 冷读真实终态，仍非终态才读取同一个 runtime 的当前 stopped phase 返回内部不可用；drained 仅唤醒冷读，不代表持久或瞬时状态权威。既有 handler 与实际 response finish/close 结束后才清理真正 idle keep-alive，等待 server close 再关 DB。真实反例曾发现统一 503 会抢掉已 done Native 文件领取，最初一次性 waiter.drain 又遗漏晚注册；现删除该第二套事件即状态逻辑，不复制任务判定或取消 queued 业务。重启继续原 queued 事实。
 
 新增 `tests/integration/relational-sole-runtime.test.mjs` 启动实际 `server/index.ts` 子进程，并在模块加载层拒绝旧 SQLite owner。合法 source 全由真 bootstrap/命令/installer 形成，无手动 ready。真实 localhost mock 上游覆盖暂停启动零 GET、admin 启用实际查询、Native/Raw/Local/OpenAI/Direct、原回执零写、Cookie/非 owner/秘密白名单、Host/Origin/PUBLIC/admin、真实登记但非 STA1N Key、签名重启、真实 EADDR、损坏 prepared、关闭 raw/physical/HTTP 与 queued 重启。另以 SIGKILL 留下真实 committed-WAL-only 新 cut 和 hot journal，正确恢复；错 hash 仅在 WAL 或有 hot journal 的源仍拒绝且原全部字节不变。Windows 子进程关闭用测试 IPC 触发实际 SIGTERM handler，不冒称 Windows 原生发送 POSIX signal。
 
@@ -1976,6 +1976,18 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 首次固定 `b9feee4` 后自核原装配发现 HTTP 领取误用物理 `NOVELAI_GENERATE_TIMEOUT_MS`，遗漏原 Direct `DIRECT_GENERATE_TIMEOUT_MS`（默认 60 秒）与 Native/OpenAI `OPENAI_CHAT_TIMEOUT_MS`（默认 10 分钟）；该固定不能视为最终通过。最小后继只恢复原两参数，物理超时仍归原 queue owner。新增真实 Direct/Native/OpenAI 短领取期限、上游仍 running 后实际完成的三例：原 b9 同一脚本四项全红（含父），错误接受真正 500ms 后的产物而非预期 100ms 领取超时；修复四项绿。负证据 `H:/TEMP/novelai-sole-negative-20261114/physical-timeout-original-b9.log`，修复 `H:/TEMP/novelai-sole-runtime-timeouts.log`；没有把 HTTP 期限变成退款或物理槽释放。
 
 该最小后继的完整 sole child+inert 源码最终 **23/23、零 skip，64.880 秒**（`H:/TEMP/novelai-sole-runtime-source-timeout-fixed.log`）；类型/architecture/可信 88 migration/格式及 diff 再验通过。原四文件 101 项对应的 waiter/API delivery 产品逐字未变，不为此次平台期限参数重复该矩阵；先前三类负控仍准确绑定 b9 原产品，新增期限负控也直接运行 b9 原产品，不把历史副本说成最终发布包。最终 fixed、独立复审和后继同候选构建分别记录。
+
+固定 `b3b0df5` 独审为 **NOTPASS**：完整 Direct GET 停在真实缓存资格 FS-await，关闭后一次 drained 已发生，放行 IO 却仍新受理 queued 并晚建 waiter，最终 2 秒强退/ECONNRESET。原真实 Native 两 child 及未关闭 cache miss 正向合法，不能靠假取消、重复事件或延长期限修复。原报告 `H:/TEMP/novelai-sole-runtime-independent-b3-20261114/INDEPENDENT-REVIEW.md`（SHA256 `175a9c04dd35bd13f1cebec38c90712d8621f31529ae3fb401ea2343c8a899e5`），首稿 d615 与正确 Direct 协议的 bbe107 脚本、原 JSON/日志分别冻结。Direct 内部不可用仍由原 wrapper 映为 HTTP200+x-error，非 x-timeout；新合同明确 closing 后不应多出 queued，原稿最后 done+queued 预期只能在保留原件的后继改为 done，不修改原 Wire 失败断言。
+
+最小后继直接复用 queue 的 phase，新增只读 `RelationalGenerationLifecycle` 能力（现 getter status + 同 owner 的 assertAccepting），作为 Native/OpenAI/Direct 共同 API admission、Cookie member admission 及 delivery 的必填依赖。普通 sole 传同一真实 queue 对象，四个实际 HTTP factory 显式传递；没有生产默认 running、另一个 latch/持久 marker 或新 factory。两受理桥在原当前 auth/ready/旧 receipt 检查后，在每次真正的新 accept/reuse 所属事务内检查 phase，包括 cache IO 返回后的第二次执行。原合法 receipt 和已 done 字节不因此拒绝；晚建的 nonterminal waiter 从当前 stopped phase 立即得到原不可用协议。完整公共回放不经过在线生命周期，也不触发外部 IO/复活私有认证。
+
+纯命令/投影或停止调度后准备取消测试源的夹具显式使用 commandOnlyRuntime mock；现实际 API helper 和 sole 生命周期专项均传真实 queue，不用常 running mock 验证 HTTP 生命周期。新增同 cut 全表（含私有、事实、回执、钱包和输入）不变对照、完整正文和 Cookie 正文 IO、cache miss/hit 两条新受理拒绝、原 queued/done receipt 晚于 drained 建领取、真实 running→done 字节、原 queued 重启职责与共享 phase 各阶段反例。
+
+收尾新增同步落盘证明主 DB.close 真正发生，不能用 force timer 的 exit0 充当干净关闭。该检查确认已返 HTTP 的 keep-alive 曾使 server.close 等到强退；现等真实响应 finish/close 后才调用 Node closeIdleConnections，不关 active 连接、不延 grace。48MiB 合法 WebP 经真 owner 发布与 Local reader，测试只用 Node cork/write 扩大原响应窗口，先证明 write=false/writableLength 覆盖原 bytes 的真实背压已到场；drained 后主库未关，放行实际响应并延迟读取仍逐字完整，最后才出现主 DB.close 的同步证据。仅暂停读取的旧 16/48MiB 草稿可能已全被 OS 接收，没有证明 active，明确不算背压反例。
+
+关键断言补证需维护者复核：b3 的 listen-time ready 子对照曾在 data: preload 用 bare better-sqlite3 import，实际先 ERR_UNSUPPORTED_RESOLVE_REQUEST，不能把 exit/零派发算业务到场。当前改用已 resolve 的绝对模块 URL，并先断言 projection_state 确实在实际 listen callback 被改为 building，再断言不 activate。真实 EADDR 主对照及 WAL/hot journal 不受影响。旧 b3 报告/日志不覆盖，新固定独审需带此 addendum；schema/hash/FK/ready guard 本身不降级。
+
+该生命周期后继最终源码 sole+inert **32/32、零 skip，75.283 秒**；受理/成员 HTTP/Raw 取消三文件 **41/41、零 skip，14.282 秒**；Queue/Native/OpenAI/Direct/Opening 幂等/退休/Shared 七文件与原完整回放同次 **144/144、零 skip，67.604 秒**。证据分别 `H:/TEMP/novelai-sole-lifecycle-{source-final,bridges-fixed,owner-joint}.log`。隔离 `H:/TEMP/novelai-sole-lifecycle-negative-20261114` 的四个精确负控分别移除 API 新受理 guard、Member guard、delivery 当前状态和 response finish 等待：依次 1pass/4fail、3/2、1/2、0/1（含父计数），均在对应真实业务断言失败，最后一项已返回完整大 bytes 但主 DB.close 证据缺失，不能用 exit0 冒充干净关闭。四个原件在 finally 还原，`results.json` 绑定被改模块的原 SHA。backend type、architecture、默认/可信88 migration、局部格式/语法/diff 另核；未跑 full/build/compiled/Node24/安装/云/生产。独立复审与后继发布物仍只绑定各自最终候选，不继承 b3 的未通过结论。
 
 ### 9.79 普通 JavaScript 发布包的唯一运行闭包与 CI 探针
 

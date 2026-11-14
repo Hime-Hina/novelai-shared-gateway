@@ -607,6 +607,7 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
     budget = createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
     deps = {
       sqlite: f.db,
+      runtime: f.commandOnlyRuntime,
       events,
       previews,
       payloadBudget: budget,

@@ -12,6 +12,7 @@ import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 import { publicErrorMessage } from '../http/public-errors.ts';
 import { createJobResultWaiter } from './result-waiter.ts';
 import type { GenerationDeliveryResult } from './delivery.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -26,6 +27,7 @@ export function createRelationalApiDelivery(deps: {
   replicas: RelationalReplicaReadConfiguration;
   events: EventEmitter;
   env: NodeJS.ProcessEnv;
+  runtime: RelationalGenerationLifecycle;
   now?(): number;
 }) {
   const { sqlite, members, requests, token, env } = deps;
@@ -67,6 +69,10 @@ export function createRelationalApiDelivery(deps: {
           };
         }
         if (job.status !== 'done') {
+          // 先读真实终态；晚于 drained 才注册的 waiter 也读取同一当前 phase，不依赖事件记忆。
+          if (deps.runtime.status === 'stopped') {
+            return { error: '服务正在关闭，请稍后重试。', statusCode: 503 };
+          }
           return null;
         }
         const artifact = await authorize((memberId) => requests.readMemberResult(jobId, memberId));
@@ -81,9 +87,8 @@ export function createRelationalApiDelivery(deps: {
     },
   });
   const refresh = () => delivery.refresh();
-  const drain = () => void delivery.drain();
   deps.events.on('commit', refresh);
-  deps.events.on('drained', drain);
+  deps.events.on('drained', refresh);
   return {
     readJob: (jobId: string) =>
       authorize((memberId) => requests.readMemberJobDelivery(jobId, memberId)),
@@ -126,7 +131,7 @@ export function createRelationalApiDelivery(deps: {
     },
     close() {
       deps.events.off('commit', refresh);
-      deps.events.off('drained', drain);
+      deps.events.off('drained', refresh);
     },
   };
 }

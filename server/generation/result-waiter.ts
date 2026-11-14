@@ -105,12 +105,5 @@ export function createJobResultWaiter(deps: {
         void readResult(jobId);
       }
     },
-    async drain() {
-      // 执行器已无物理任务；先领取真实终态，再结束仍未派发的 HTTP 等待，不取消业务任务。
-      await Promise.all([...waiters.keys()].map(readResult));
-      for (const jobId of waiters.keys()) {
-        notifyJobWaiters(jobId, { error: '服务正在关闭，请稍后重试。', statusCode: 503 });
-      }
-    },
   };
 }

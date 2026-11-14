@@ -23,6 +23,7 @@ import {
 import { prepareRelationalInput } from './relational-input.ts';
 import type { createGenerationPayloadBudget } from './payload-budget.ts';
 import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
+import type { RelationalGenerationLifecycle } from './relational-queue-runtime.ts';
 
 interface Dependencies {
   sqlite: Database.Database;
@@ -36,6 +37,7 @@ interface Dependencies {
     'acceptGeneration' | 'readAcceptedGenerationReceipt'
   >;
   payloadBudget: ReturnType<typeof createGenerationPayloadBudget>;
+  runtime: RelationalGenerationLifecycle;
   env?: NodeJS.ProcessEnv;
   now?(): number;
 }
@@ -108,6 +110,8 @@ export function createRelationalMemberGenerationAdmission(deps: Dependencies) {
           }
           return deps.generations.readAcceptedGenerationReceipt(metadata, mapping);
         }
+        // 正文/认证 IO 后的新受理核当前执行器；关闭不影响合法旧键的原回执。
+        deps.runtime.assertAccepting();
         const request = {
           ...materializeMemberGeneration(normalized),
           clientContract: 'member-generation-v1',
