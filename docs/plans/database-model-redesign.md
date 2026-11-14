@@ -1408,6 +1408,8 @@ OpeningFundingRecorded 复用原 FundingRegistered 的列、目标枚举与事�
 
 Node 22.23.4 新关系反例 10/10，含保存点失败被 catch 后仍只广播最终成员、注册前私有基线、owner 绑定仅影响对应成员、私有 logout/epoch/Discord 撤销、签发/续期/私有 token 刷新零广播、立即重入鉴权、原 child 上海日期与原 0 时刻、响应更新不重算日期、同库/hub 身份及真实 SQL 索引/不读保护内容；与原 hub、旧存储通知和活动统计四文件共 35/35。成员/Native/auth/read HTTP、队列 runtime 与额度刷新六文件 71/71，架构专项 289/289，均零跳过。原旧通知专项识别了提取时丢失失败日志的问题，已保留固定安全文本日志并同组重跑通过。backend 类型、架构、默认及可信 `d0a008a` 迁移历史、168 文件语法、改动格式和 diff 通过。日志为 `H:\TEMP\novelai-state-notifications-core-final.log`、`novelai-state-notifications-http-runtime-final.log`、`novelai-state-notifications-architecture.log`。错误实现负控、精确 R08 联合与独立复审另绑定固定产品；本片未运行 full、编译产物、Node24、真实外端点或生产变更。
 
+技术产品固定 `d7d98b7a1d5ff94b0031ae0f480d5bf46b6657db`。独立 TEMP 归档先以原 10/10 作对照，再分别只改一处：把本次 cut 前界错误包含上笔、把私有候选一律当成功、改用本笔 header 日、广播时保留旧收集上下文，原同一组分别出现 7、4、2、1 个实际行为失败；没有加载或语法失败。删除新 writer 模块来源登记时，原架构 289 项中 8 个捕获反例准确失败。原 source/guard 最后恢复 SHA 并记录在 `H:\TEMP\novelai-state-notifications-negative-d7d98b7-20261114\negative-evidence.json`。18 改动文件的固定 Gitblob/SHA 为 `H:\TEMP\novelai-state-notifications-d7d98b7-reviewed-files.json`，实现/验证交接为 `H:\TEMP\novelai-state-notifications-REVIEW-HANDOFF.md`；独立复审正在同一技术产品进行，不把作者负控冒充独立结论。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
