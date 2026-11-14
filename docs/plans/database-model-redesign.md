@@ -1652,6 +1652,18 @@ Node 22.23.4 新专项 3/3，连原账户生命周期、owner 管理与启动器
 
 固定 `cea3128c0ed055ea2f2e015fe473f2a782d03baf` 独立复审 5/5、零跳过，四文件 Git blob/SHA256 匹配；原注册 2000、后续轮换 clock 0、暂停与同名新候选的对照仍只用真实初始时间和原 bound 身份，纯公共回放无 PST，query_only/全表/total_changes 均零写。错取当前 source 事件时间的 TEMP 负控两例精准失败，报告 `H:\TEMP\novelai-account-management-independent-cea3128-20261114\INDEPENDENT-REVIEW.md`。与原账户、启动器、成员目录和 Shared 五文件汇合 60/60，类型、架构、可信实际 main 迁移和差异检查通过；实际管理/显式 reveal 授权与最终发布包另验。
 
+### 9.54 核心 v4 候选的统一验证
+
+固定业务源 c73a6e738d70b7c12da93164fb157fc479478018 汇合已审当前配置、严格原缓存等价、成员权益及身份子事实上下文、同账户全部钱包责任、真实 me/OpenAI 接入与共同 ready 复核、有限 Direct seed 表示和写入口来源守卫。各片独审报告与原错误实现反例仍按第 9 章对应 owner 保留；没有合入尚未审结的完整 Opening 输入、通知及 Direct/shared/SSE 后继，也没有扩展 #62 的维护者合并授权。
+
+Windows 完整后端在前置 f3dd59ccb91aa51d97b4317835b376e3220bebf8 为 2,021 项：2,016 通过、5 项原条件跳过、0 失败，216.152 秒。f3dd→c73 只改计划、原架构守卫与其矩阵，业务源码相同；新守卫矩阵 362/362，后端类型、实际全树 architecture、默认及可信 main 88d2c26 迁移历史、174 文件语法、完整格式和 diff 均通过。不把前置完整测试改写为新 head 重新运行；远端同候选 CI 继续给出完整结果。
+
+从 c73 的实际 Git 对象独立导出并构建，真实编译 JavaScript 的 21 个整合文件在 Node 22.23.4 与隔离 ABI137 Node 24.22.1 各 423/423、零跳过，分别 115.373/114.872 秒；包含实际 localhost HTTP/调度、原完整提交与私有恢复、合法 ready 和真实编译 restore CLI。559 个源码逐项匹配原 Git blob，122 个实际产品文件、35 个历史迁移资产、两个各 201 文件运行目录及原生绑定摘要前后不变；仅测试/helper 的模块入口改为 .js，运行时无自有 TypeScript，禁用 strip-types，未安装或重编共享依赖。报告、清单和日志为 H:/TEMP/novelai-v4-compiled-c73a6e7/VALIDATION.md 及同目录 matrix/manifest/run/after-hashes 文件。
+
+同一 c73 三包由另一 agent 验证：Web 类型、150/150 单元与生产构建；executor 类型、3/3 单元、含 backend/Nitro/runtime package 的实际构建，均零跳过。559 个 tracked hash、HEAD 与分支前后一致；原初次环境缺少子包依赖链接的类型失败单列保留，只复用现安装依赖并核本候选 workspace 链接，没有 install/rebuild。报告和实际构建日志在 H:/TEMP/novelai-v4-c73-packages-report.md；构建工具警告不作为产品失败，也不掩盖未执行的 Docker/Nuxt E2E。
+
+此批仍是中间核心候选。官方 V5 原百分比/负值标记的不可逆来源缺口由后继事实表示修复；新通知、Direct/shared/SSE、完整 Opening、选定迁移路线、旧在线路径与普通包清除、真实外部端点、同规模恢复/容量及切换验收继续推进。普通 sole 入口和历史 SQL 仍存在；Mock 云传输不称为真实云验证，没有生产迁移、删除或切换，也没有手标 ready。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
