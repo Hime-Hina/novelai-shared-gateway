@@ -301,7 +301,9 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 服务资源默认使用实际进程/数据目录/磁盘读取，资源 IO 完成后才在当前授权事务中组装数据库摘要。未知 R2/PikPak 总占用不由在线副本引用字节推断，本片不提供这两项云容量。`view=heatmap` 与 `view=losses` 继续复用原参数、报告 SQL 和每页 50 条历史 cursor，不为读取新增持久派生状态。管理读取范围及发布验收见数据库计划第 9.60 节，sole 运行入口仍未切换。
 
-关系管理 POST 目前只接 `fallback-policy`、`free-image-policy` 和 `loss-alert-policy`；字段、版本、阈值和回包继续归原 quota 政策 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行政策命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按原 actor/操作隔离并绑定完整原正文；重复返回原回包且零写，冲突为 409，缺键由服务生成新命令 ID。POST 不续 Cookie；政策事实、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原政策决定，不联网或恢复私有认证；其他 action 尚未接入，具体反例见数据库计划第 9.64 节。
+关系管理 POST 的 `fallback-policy`、`free-image-policy` 和 `loss-alert-policy` 三政策，字段、版本、阈值和回包继续归原 quota 政策 owner。正文 IO 后重新检查当前 admin 或 owner Cookie/Discord/epoch/ready，再在同一事务执行政策命令和领取原回执。owner 以真实 member 身份提交，admin 以本机 capability 对应身份提交，不接受正文自报 actor。复用原管理命令元数据：可选单个 `Idempotency-Key` 为 1–128 可见 ASCII 字节，键按原 actor/操作隔离并绑定完整原正文；重复返回原回包且零写，冲突为 409，缺键由服务生成新命令 ID。POST 不续 Cookie；政策事实、投影、回执和游标共同回滚，通知只在实际最外层提交成功后发出。公共完整回放只恢复原政策决定，不联网或恢复私有认证；具体反例见数据库计划第 9.64 节。
+
+两个精确 `POST /api/admin/member-management`、`POST /api/member/owner/member-management` 另接原只读 `member-key`，正文 `{action:'member-key',userId}` 在 IO 后经相同当前 admin/owner 授权事务读取 exact 当前私有 Key，返回 `{apiKey}` 和 `no-store`，不续 Cookie。已停用目标仍可管理，目标不存在或已移除为 404，私有 Key 未恢复或摘要校验失败为 503。读取不创建或轮换 Key、不追加业务事实/命令/回执，也不因 `Idempotency-Key` 保存或重领秘密；同 header 的下一次调用仍是当前读取，不把后来 Key 伪装成原回执。认证自身依法发生的 Discord 观察或会话撤销仍沿原 owner；业务读取本身零写、零通知，公共回放不会恢复私有 Key。范围及反例见数据库计划第 9.73 节。
 
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 

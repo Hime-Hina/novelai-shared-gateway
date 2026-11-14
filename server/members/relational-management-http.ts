@@ -159,6 +159,25 @@ export function createRelationalManagementHttp(deps: {
     }
     if (req.method === 'POST') {
       const body = await readMemberJson(req);
+      if (body.action === 'member-key') {
+        const result = await authorize(() => {
+          if (typeof body.userId !== 'string') {
+            fail(404, '成员不存在');
+          }
+          const target = members.readMember(body.userId);
+          if (!target || target.status === 'removed') {
+            fail(404, '成员不存在');
+          }
+          const apiKey = members.readMemberApiKey(target.id);
+          if (apiKey === null) {
+            fail(503, '成员 Key 尚未恢复，请联系管理员');
+          }
+          return { apiKey };
+        });
+        // 原操作只领取当前私有值；不生成/轮换 Key，也不保存含秘密的业务回执。
+        replyMemberJson(res, 200, result);
+        return true;
+      }
       if (
         !['fallback-policy', 'free-image-policy', 'loss-alert-policy'].includes(
           body.action as string,
