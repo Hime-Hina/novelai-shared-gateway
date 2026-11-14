@@ -1997,11 +1997,11 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 旧测试的默认 artist/scale 离线改写没有当前配置更新 API 的等价来源，不能以 SQL 改 profile 冒充在线操作。child 改验首次 input/context 字节跨真实重启不变；现 `relational-direct-http` 与 `relational-openai-http` 组件测试继续实际改变 `readNormalizationDefaults` 返回值并证明同键仍使用首次 context，这是组件验收，不声称新增正常配置更新入口，也不将默认值行为列为 D4 退役。
 
-原两项 `legacy-direct`/`legacy-openai` inline source 的身份、input SHA 和完整保护正文转到独立旧工具：`tests/helpers/legacy-inline-archive.mjs` 由现 `tests/deployment/legacy-tools.test.mjs` 在实际解包后无条件调用，沿原 CI legacy tool 步骤执行，不运行旧 main。同一真实旧库还通过普通新 child 证明格式拒绝、源字节和目录不变、无旧模块加载/网络/监听。本地只消费已审 `07624c6` 实际 bundle，先校验 manifest 和工具自身 `--verify-package`；该查找能力依赖父任务并入已审 621/076，未在本片重新打包或运行旧工具全套，不能把已有 bundle 的证据当成本片源码发布包验收。
+原两项 `legacy-direct`/`legacy-openai` inline source 的身份、input SHA 和完整保护正文转到独立旧工具：`tests/helpers/legacy-inline-archive.mjs` 由现 `tests/deployment/legacy-tools.test.mjs` 在实际解包后无条件调用，沿原 CI legacy tool 步骤执行，不运行旧 main。同一真实旧库还通过普通新 child 证明格式拒绝、源字节和目录不变、无旧模块加载/网络/监听。先消费已审 `07624c6` 实际 bundle，以 manifest 和工具自身 `--verify-package` 核身份；随后按父任务明确授权并入原审 076，CLI 与运维正文逐字不变，deployment 对 076 只有 helper 的 import+调用两行，导航保留并集。最终在本源码实际运行仓库标准 legacy tool 打包/解包与全套检查，不用缓存 bundle 代替 CI 接线。
 
 迁移保留下来的“原已完成 Local 文件丢失后 POST 同键必须 410”在真实 child 揭示 9.53 漏口：GET/Native/OpenAI 重领已调用原 `ApiDelivery.validateReplay`，POST `/api/jobs` 只返回 snapshot。现将原 GET 校验移到同文件共享 accept 的 `result.replayed` 分支，复用原当前 Key/ready/引用资格 owner；新受理不增加这项检查。原 child 的 202≠410 修前日志留存，窄真实 owner 用例另验正常重领 202、真丢失 410、恢复原字节 202，均原 id、零新事实、零新派发/收费，并完整回放。无 schema/历史 SQL/金融或缓存等价规则变更。后续新 child 复用同 helper；受理和交付规则仍修改对应实际 owner。
 
-当前候选 Node22 源码定向结果：两组 child 同次串行 **2/2、零 skip、78.070 秒**（53.625/23.759 秒）；Direct/OpenAI 组件及其共同 owner 回归 **53/53、零 skip、14.496 秒**，包含当前默认值改变后的首次 context 和完整回放。已审实际旧 bundle 的两输入与普通新入口拒绝对照 **4/4、零 skip、8.328 秒**（含父计数），没有重跑旧包 19 全套。仅删除新增共享重领校验的隔离负控在新窄用例精准失败 `202 != 410`，原 source 逐字还原；child 迁移初期的表示/事务夹具错误和真实产品修前红日志均保留，不计通过。backend type、architecture、默认及可信 `46462a3` migration、九文件格式、六 MJS 语法与 diff 检查通过。未跑 full/build/compiled/package/CI/Node24/安装/真实云或生产；独立审查与父并集另行绑定。
+当前候选 Node22 源码定向结果：两组 child 同次串行 **2/2、零 skip、78.070 秒**（53.625/23.759 秒）；Direct/OpenAI 组件及其共同 owner 回归 **53/53、零 skip、14.496 秒**，包含当前默认值改变后的首次 context 和完整回放。已审实际旧 bundle 的两输入与普通新入口拒绝对照先完成 **4/4、零 skip、8.328 秒**（含父计数）；合入 076 后本源码标准 `tests/deployment/legacy-tools.test.mjs` 实际打包、解包及原 19+新增三项共 **22/22、零 skip、187.264 秒**，不与前面的缓存 bundle 四项重复合算。仅删除新增共享重领校验的隔离负控在新窄用例精准失败 `202 != 410`，原 source 逐字还原；child 迁移初期的表示/事务夹具错误和真实产品修前红日志均保留，不计通过。backend type、architecture、默认及可信 `46462a3` migration、变更文件格式、MJS 语法与 diff 检查通过。除这次明确获授权的标准旧工具打包套件外，未跑 full/backend 或 executor build/compiled/完整 CI/Node24/安装或重建共享 native/真实云或生产；独立审查与父并集另行绑定。
 
 ## 10. 事实依据与修订
 
