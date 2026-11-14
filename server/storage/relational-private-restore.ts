@@ -186,8 +186,8 @@ export function openRelationalSnapshot(
   }
   const filename = path.resolve(sourcePath);
   if (target.name !== ':memory:' && existsSync(target.name)) {
-    const sourceFile = statSync(filename),
-      targetFile = statSync(target.name);
+    const sourceFile = statSync(filename, { bigint: true }),
+      targetFile = statSync(target.name, { bigint: true });
     if (sourceFile.dev === targetFile.dev && sourceFile.ino === targetFile.ino) {
       invalid();
     }
