@@ -11,12 +11,12 @@ import { singleGenerationRequest } from './batch-requests.ts';
 
 export interface GenerationRequestState {
   id: string;
-  source: string;
-  operation: string;
-  createdAt: string;
+  source: string | null;
+  operation: string | null;
+  createdAt: string | null;
   jobs: {
     id: string;
-    sampleIndex: number;
+    sampleIndex: number | null;
     status: string | null;
     model: string | null;
     createdAt: string | null;
@@ -202,10 +202,10 @@ export function publicGenerationRequest(
     id: job.id,
     index: job.sampleIndex,
     status: job.status,
-    model: job.model || '',
+    model: job.model,
     createdAt: job.createdAt,
-    updatedAt: job.updatedAt || '',
-    completedAt: job.completedAt || '',
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt,
     error:
       options.errorMessage?.(job.error || '') ||
       classifiedGenerationFailureMessage(job.error) ||

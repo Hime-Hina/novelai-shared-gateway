@@ -90,7 +90,12 @@ async function history(
         event.occurredAt = boundary - day;
         if (opening) {
           event.eventType = 'OpeningRequestRecorded';
-          Object.assign(event.payload, { acceptedAt: boundary - day, retiredAt: null, origin });
+          Object.assign(event.payload, {
+            originalRequestId: event.payload.requestId,
+            acceptedAt: boundary - day,
+            retiredAt: null,
+            origin,
+          });
         }
       } else if (event.eventType === 'JobAccepted') {
         event.occurredAt =
@@ -570,6 +575,7 @@ function openingJob(
           streamId: 'request:' + id,
           payload: {
             requestId: id,
+            originalRequestId: id,
             memberId: 'm1',
             inputId: id,
             contextId: null,

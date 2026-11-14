@@ -14,12 +14,18 @@ import {
   databaseState,
 } from '../helpers/relational-generation.mjs';
 import { RelationalRequestStore } from '../../server/storage/relational-request-store.ts';
+import { RelationalReportStore } from '../../server/storage/relational-report-store.ts';
 import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import { relationalInputDigest } from '../../server/generation/relational-input.ts';
 import { memberCharge } from '../../server/quota/failure-accounting.ts';
+import {
+  publicGenerationRequest,
+  publicRelationalJob,
+} from '../../server/generation/request-queries.ts';
+import { cancelRelationalGenerationRequest } from '../../server/generation/relational-request-http.ts';
 import {
   appendRelationalCommit,
   readRelationalCommit,
@@ -46,7 +52,344 @@ const options = (change = {}) => ({
 const ids = (page) => page.jobs.map((job) => job.id);
 const hasCode = (code) => (error) => error.code === code;
 
-// 查询用的有来源 partial 开账夹具。Opening 实体写 owner 尚未交付，不能把此夹具称为迁移/ready 验证。
+// 显式合成的封存原行先于映射：没有原父/操作/位置的字段不能由新容器或数组位置补出。
+// 该形状复用旧 result-recovery 的 parentless 行；不是原503份来源的迁移验收。
+function recordRetainedRows(f, source) {
+  const sourceId = 'retained-read-source',
+    sourceSha256 = createHash('sha256').update(JSON.stringify(source)).digest('hex'),
+    manifestSha256 = createHash('sha256')
+      .update(
+        JSON.stringify({
+          sourceSha256,
+          mappings: source.jobs.map((job) => ({
+            originalJobId: job.id,
+            memberId: 'm1',
+            requestId: `container:${job.id}`,
+            inputId: `unavailable:${job.id}`,
+            artifactId: job.imageId,
+          })),
+        }),
+      )
+      .digest('hex'),
+    at = NOW + 900000,
+    stamp = (row, field) => (row?.[field] == null ? null : Date.parse(row[field])),
+    event = (eventType, streamId, payload, memberId = 'm1') => ({
+      eventType,
+      streamId,
+      payload,
+      memberId,
+      accountId: null,
+      occurredAt: at,
+      policyVersion: 'retained-source',
+      pricingVersion: 'retained-source',
+    });
+  return f.db.transaction(() => {
+    const inputs = new RelationalInputStore(f.db),
+      events = [
+        event(
+          'ImportSourceRegistered',
+          `import:${sourceId}`,
+          {
+            sourceId,
+            sourceSha256,
+            sourceCommit: 'synthetic-retained-rows',
+            cutoffSeq: '0',
+            cutoffAt: at,
+            manifestSha256,
+            route: 'B',
+          },
+          null,
+        ),
+      ];
+    for (const original of source.jobs) {
+      const parent = source.requests.find((row) => row.id === original.requestId),
+        originalImage = source.images.find((row) => row.id === original.imageId),
+        requestId = `container:${original.id}`,
+        inputId = `unavailable:${original.id}`,
+        origin = { sourceId, originalId: original.id };
+      assert.equal(original.userToken, keys.m1);
+      assert.equal(originalImage.token, original.userToken);
+      events.push(
+        event('OpeningInputRecorded', `input:${inputId}`, {
+          ...inputs.stageOpeningInput({
+            inputId,
+            memberId: 'm1',
+            completeness: 'unavailable',
+            body: null,
+            logicalBytes: 0,
+            assets: [],
+          }),
+          origin,
+        }),
+        event('OpeningRequestRecorded', `request:${requestId}`, {
+          requestId,
+          originalRequestId: parent?.id ?? null,
+          memberId: 'm1',
+          inputId,
+          contextId: null,
+          source: parent?.source ?? null,
+          operation: parent?.operation ?? null,
+          model: parent?.model ?? null,
+          sampleCount: parent?.sampleCount ?? null,
+          seedMode: 'unknown',
+          confirmation: null,
+          acceptedAt: stamp(parent, 'acceptedAt'),
+          retiredAt: null,
+          origin: { sourceId, originalId: parent?.id ?? original.id },
+        }),
+        event('OpeningJobRecorded', `request:${requestId}`, {
+          jobId: original.id,
+          requestId,
+          createdAt: stamp(original, 'createdAt'),
+          sampleIndex: original.sampleIndex ?? null,
+          actualSeed: original.actualSeed ?? null,
+          status: original.status,
+          queueSeq: null,
+          queueExpiresAt: null,
+          deadlineAt: null,
+          admissionEpoch: original.admissionEpoch ?? null,
+          artifactId: originalImage.id,
+          cacheKey: null,
+          completedAt: stamp(original, 'completedAt'),
+          errorCode: null,
+          errorStatus: null,
+          cancellationReason: null,
+          lateResultAt: null,
+          freeSucceededAt: null,
+          freeWarningThreshold: null,
+          retiredAt: null,
+          origin,
+        }),
+        event('OpeningArtifactRecorded', `artifact:${originalImage.id}`, {
+          artifactId: originalImage.id,
+          memberId: 'm1',
+          inputId,
+          originalAttemptId: null,
+          operation: originalImage.operation ?? null,
+          mimeType: originalImage.mimeType,
+          byteLength: image.length,
+          sha256: createHash('sha256').update(image).digest('hex'),
+          publishedAt: stamp(originalImage, 'publishedAt'),
+          retiredAt: null,
+          origin: { sourceId, originalId: originalImage.id },
+        }),
+      );
+    }
+    const { policyVersion: _p, pricingVersion: _v, ...metadata } = meta('retained-read-rows', at);
+    return new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...metadata,
+        fingerprint: manifestSha256,
+        events,
+        receipt: null,
+        expectedVersions: Object.fromEntries(events.map((e) => [e.streamId, '0'])),
+      },
+      inputs,
+    );
+  })();
+}
+
+test('历史原行缺父不产生公开批次，已知父的NULL时间/位置分页与已知0各自保真且只读', async (t) => {
+  const f = await fixture(t),
+    source = {
+      jobs: [
+        {
+          id: 'orphan',
+          userToken: keys.m1,
+          status: 'done',
+          imageId: 'image-orphan',
+          createdAt: iso(0),
+        },
+        {
+          id: 'parent-a',
+          requestId: 'original-a',
+          userToken: keys.m1,
+          status: 'done',
+          imageId: 'image-parent-a',
+          createdAt: iso(0),
+        },
+        {
+          id: 'parent-b',
+          requestId: 'original-b',
+          userToken: keys.m1,
+          status: 'done',
+          imageId: 'image-parent-b',
+          createdAt: iso(0),
+        },
+        {
+          id: 'parent-zero',
+          requestId: 'original-zero',
+          userToken: keys.m1,
+          status: 'done',
+          imageId: 'image-parent-zero',
+          sampleIndex: 0,
+          completedAt: iso(0),
+          createdAt: iso(0),
+        },
+      ],
+      requests: [
+        { id: 'original-a' },
+        { id: 'original-b' },
+        {
+          id: 'original-zero',
+          source: 'direct',
+          operation: 'generate',
+          acceptedAt: iso(0),
+          sampleCount: 1,
+        },
+      ],
+      images: ['orphan', 'parent-a', 'parent-b', 'parent-zero'].map((id) => ({
+        id: `image-${id}`,
+        token: keys.m1,
+        mimeType: 'image/webp',
+        file: `images/${id}.webp`,
+        createdAt: iso(0),
+        ...(id === 'parent-zero' ? { operation: 'generate' } : {}),
+      })),
+    },
+    original = structuredClone(source),
+    stored = recordRetainedRows(f, source),
+    requests = new RelationalRequestStore(f.db),
+    inputs = new RelationalInputStore(f.db);
+  assert.deepEqual(source, original);
+  const requestFacts = stored.events.filter((e) => e.eventType === 'OpeningRequestRecorded');
+  assert.equal(
+    requestFacts.find((e) => e.payload.requestId === 'container:orphan').payload.originalRequestId,
+    null,
+  );
+  assert.equal(
+    requestFacts.find((e) => e.payload.requestId === 'container:orphan').payload.acceptedAt,
+    null,
+  );
+  assert.ok(
+    stored.events
+      .filter((e) => e.eventType === 'OpeningArtifactRecorded')
+      .every((e) => e.payload.publishedAt === null),
+    'image createdAt is not publication time',
+  );
+  await f.accept('current');
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() n').get().n;
+  f.db.pragma('query_only=ON');
+  try {
+    const orphan = requests.readApiJob('orphan');
+    assert.equal(orphan.requestId, null);
+    assert.equal(orphan.source, null);
+    assert.equal(orphan.createdAt, iso(0));
+    assert.equal(orphan.completedAt, null);
+    assert.equal(orphan.sampleIndex, null);
+    assert.equal(requests.readMemberResult('orphan', 'm1').operation, null);
+    assert.equal(requests.readMemberJobDelivery('orphan', 'm1').requestId, null);
+    assert.throws(
+      () => requests.readMemberRequest('container:orphan', 'm1'),
+      hasCode('request_not_found'),
+    );
+    assert.throws(
+      () =>
+        f.db.transaction(() =>
+          cancelRelationalGenerationRequest(requests, f.generations, 'container:orphan', 'm1', NOW),
+        )(),
+      hasCode('request_not_found'),
+    );
+    assert.throws(
+      () => inputs.readMemberInput('container:orphan', 'm1'),
+      hasCode('input_unavailable'),
+    );
+    const pageIds = [];
+    let cursor = null;
+    do {
+      const page = requests.readMemberRequests('m1', 1, cursor);
+      pageIds.push(...page.requests.map((r) => r.id));
+      cursor = page.before;
+    } while (cursor);
+    assert.deepEqual(pageIds, [
+      'current',
+      'container:parent-zero',
+      'container:parent-b',
+      'container:parent-a',
+    ]);
+    const unknown = publicGenerationRequest(requests.readMemberRequest('container:parent-a', 'm1'));
+    assert.equal(unknown.createdAt, null);
+    assert.equal(unknown.source, null);
+    assert.equal(unknown.operation, null);
+    assert.equal(unknown.jobs[0].index, null);
+    assert.equal(unknown.jobs[0].completedAt, null);
+    assert.equal(unknown.jobs[0].charge, null);
+    assert.equal(
+      publicGenerationRequest(requests.readMemberRequest('container:parent-zero', 'm1')).jobs[0]
+        .index,
+      0,
+    );
+    const dto = publicRelationalJob(orphan, inputs.readErrorLogRequest('orphan'), {
+      imageUrl: (id) => `/image/${id}`,
+      errorMessage: () => '',
+      now: NOW,
+    });
+    assert.equal(dto.requestId, null);
+    assert.equal(dto.source, null);
+    assert.equal(dto.cost, null);
+    assert.equal(dto.durationMs, null);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.db.prepare('SELECT total_changes() n').get().n, changes);
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+});
+
+test('历史未知操作不计generate，未知完成/无charge不冒免费或导入日，原job创建0保留统计', async (t) => {
+  const f = await fixture(t),
+    source = {
+      jobs: [
+        {
+          id: 'unknown-operation',
+          userToken: keys.m1,
+          status: 'done',
+          imageId: 'unknown-operation-image',
+          createdAt: iso(0),
+        },
+      ],
+      requests: [],
+      images: [
+        {
+          id: 'unknown-operation-image',
+          token: keys.m1,
+          mimeType: 'image/webp',
+          file: 'images/unknown.webp',
+          createdAt: iso(0),
+        },
+      ],
+    };
+  recordRetainedRows(f, source);
+  const reports = new RelationalReportStore(f.db),
+    before = databaseState(f.db);
+  f.db.pragma('query_only=ON');
+  try {
+    const rows = await reports.readOwnerJobRows('', iso(NOW));
+    assert.equal(rows[0].createdAt, iso(0));
+    assert.equal(rows[0].chargeStatus, null);
+    assert.equal(rows[0].amount, null);
+    assert.equal(rows[0].knownNoCharge, false);
+    assert.deepEqual(
+      await reports.readActivityDays({
+        since: iso(0),
+        until: iso(NOW),
+        memberId: null,
+        operation: 'generate',
+        dates: null,
+      }),
+      [],
+    );
+    const stats = reports.readAdminSummaryStats(NOW);
+    assert.equal(stats.requestStats1m.total, 0);
+    assert.equal(stats.generationStats1m.total, null);
+    assert.ok(stats.usageHourlyDays.every((day) => day.done === null));
+    assert.equal(databaseState(f.db), before);
+  } finally {
+    f.db.pragma('query_only=OFF');
+  }
+});
+
+// 查询夹具也经原 Opening owner 保存完整提交；不把薄读测试冒称迁移或 ready 验证。
 function opening(f, name, createdAt, { model = null, charge = false, lateResultAt = null } = {}) {
   const origin = { sourceId: 'synthetic-opening', originalId: name },
     body = { operation: 'generate', model, input: null, parameters: {} },
@@ -103,6 +446,7 @@ function opening(f, name, createdAt, { model = null, charge = false, lateResultA
         streamId: `request:${name}`,
         payload: {
           requestId: name,
+          originalRequestId: name,
           memberId: 'm1',
           inputId: name,
           contextId: null,
@@ -140,44 +484,24 @@ function opening(f, name, createdAt, { model = null, charge = false, lateResultA
     });
   const { policyVersion: _policy, pricingVersion: _price, ...metadata } = meta(`opening-${name}`);
   f.db.transaction(() => {
-    const result = appendRelationalCommit(f.db, {
-      ...metadata,
-      expectedVersions: Object.fromEntries(events.map((event) => [event.streamId, '0'])),
-      receipt: null,
-      events,
+    const inputs = new RelationalInputStore(f.db);
+    inputs.stageOpeningInput({
+      inputId: name,
+      memberId: 'm1',
+      completeness: 'partial',
+      body,
+      logicalBytes,
+      assets: [],
     });
-    f.db
-      .prepare(
-        `INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body)
-      VALUES(?,'m1',1,'partial',?,?,?)`,
-      )
-      .run(name, sha256, logicalBytes, JSON.stringify(body));
-    f.db
-      .prepare(
-        `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,
-      sample_count,seed_mode,accepted_at,source_event_id) VALUES(?,'m1',?,NULL,'historical','generate',?,1,'unknown',?,?)`,
-      )
-      .run(name, name, model, NOW + 800000, result.events[1].eventId);
-    if (job.artifactId)
-      f.db
-        .prepare(
-          `INSERT INTO artifacts(id,member_id,input_id,operation,mime_type,byte_length,sha256,published_at,source_event_id)
-      VALUES(?,'m1',?,'generate','image/webp',?,?,?,?)`,
-        )
-        .run(
-          job.artifactId,
-          name,
-          image.length,
-          events[3].payload.sha256,
-          lateResultAt,
-          result.events[3].eventId,
-        );
-    f.db
-      .prepare(
-        `INSERT INTO generation_jobs(id,request_id,sample_index,status,completed_at,admission_epoch,artifact_id,late_result_at,source_event_id)
-      VALUES(?,?,0,'failed',0,0,?,?,?)`,
-      )
-      .run(job.jobId, name, job.artifactId, lateResultAt, result.events[2].eventId);
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...metadata,
+        expectedVersions: Object.fromEntries(events.map((event) => [event.streamId, '0'])),
+        receipt: null,
+        events,
+      },
+      inputs,
+    );
     if (charge) {
       // 已归档收费凭据不再保有 job FK，仍保留稳定 original job/member 归属与原已知零金额。
       const version = f.db
@@ -185,46 +509,47 @@ function opening(f, name, createdAt, { model = null, charge = false, lateResultA
           "SELECT CAST(stream_version AS TEXT) AS n FROM stream_heads WHERE stream_id='account:a'",
         )
         .get().n;
-      const proof = appendRelationalCommit(f.db, {
-        ...metadata,
-        commandId: `charge-${name}`,
-        expectedVersions: { 'account:a': version },
-        receipt: null,
-        events: [
-          {
-            ...common,
-            eventId: `charge-proof-${name}`,
-            eventType: 'OpeningChargeRecorded',
-            streamId: 'account:a',
-            accountId: 'a',
-            payload: {
-              originalJobId: job.jobId,
-              originalMemberId: 'm1',
-              originalAccountId: 'a',
-              jobId: null,
-              walletAccountId: null,
-              walletMemberId: null,
-              attemptId: null,
-              status: 'refunded',
-              resolution: 'archived',
-              originRef: `old-${name}`,
-              resources: { v5: '0', anlasFixed: '0', anlasPurchased: '0' },
-              billingMode: 'anlas',
-              estimated: null,
-              v5Equivalent: '0',
-              sharedV5Reserved: '0',
-              configVersion: 1,
-              reservedAt: 0,
-              terminalAt: 0,
-              reservationEventId: `charge-proof-${name}`,
-              terminalEventId: `charge-proof-${name}`,
-              origin,
+      new RelationalCommitReplayer(f.db).appendCommit(
+        {
+          ...metadata,
+          commandId: `charge-${name}`,
+          expectedVersions: { 'account:a': version },
+          receipt: null,
+          events: [
+            {
+              ...common,
+              eventId: `charge-proof-${name}`,
+              eventType: 'OpeningChargeRecorded',
+              streamId: 'account:a',
+              accountId: 'a',
+              payload: {
+                originalJobId: job.jobId,
+                originalMemberId: 'm1',
+                originalAccountId: 'a',
+                jobId: null,
+                walletAccountId: null,
+                walletMemberId: null,
+                attemptId: null,
+                status: 'refunded',
+                resolution: 'archived',
+                originRef: `old-${name}`,
+                resources: { v5: '0', anlasFixed: '0', anlasPurchased: '0' },
+                billingMode: 'anlas',
+                estimated: null,
+                v5Equivalent: '0',
+                sharedV5Reserved: '0',
+                configVersion: 1,
+                reservedAt: 0,
+                terminalAt: 0,
+                reservationEventId: `charge-proof-${name}`,
+                terminalEventId: `charge-proof-${name}`,
+                origin,
+              },
             },
-          },
-        ],
-      });
-      const project = f.generations.createGenerationProjector(proof.events);
-      for (const event of proof.events) project(event);
+          ],
+        },
+        inputs,
+      );
     }
   })();
 }
