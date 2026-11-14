@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fixture, meta, keys, NOW, databaseState } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
@@ -69,6 +69,7 @@ async function setup(
     configuration = { publicBaseUrl: 'https://entry.example/root///' };
   const handle = createRelationalMemberReadHttp({
     sqlite: f.db,
+    events: new EventEmitter(),
     env,
     discordFetch,
     get publicBaseUrl() {
@@ -253,7 +254,7 @@ test('真实 HTTP 保留 Cookie/Origin/方法/当前撤销及 ready 边界，不
   assert.equal((await f.call('/api/member/history')).status, 401);
   assert.equal(f.signed.length, signed);
   assert.equal(databaseState(f.db), before);
-  assert.equal((await f.call('/api/member/shared-status', { member: 'm2' })).status, 404);
+  assert.equal((await f.call('/api/member/not-implemented', { member: 'm2' })).status, 404);
   f.db.prepare("UPDATE projection_state SET status='building' WHERE id=1").run();
   const notReady = databaseState(f.db);
   assert.equal((await f.call('/api/member/history', { member: 'm2' })).status, 500);

@@ -257,6 +257,10 @@ OpenAI SSE 进度轮询仅读取 child 小摘要，断线立即清理本连接�
 
 OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓存等价规则，支持完成产物复用与活动任务合并。模型目录保留 Bearer、query `token` 和 `x-user-token` 的原 Key 来源与优先序；POST 生图仍仅接受 Bearer Key。原中央入口已经认证的管理员可读目录，此只读权限不授予生图写入能力。
 
+Direct `/generate` 的实际 writer 只取 query `token`。`POST /api/jobs` 先限量读取 2 MiB 正文，再以 `body.token` 优先于原 header/query Key 来源确定身份；管理员只读凭据、Cookie 和独立 PST 不能替代 writer 的成员 Key。无键 Direct 只复用完成缓存，有键 Direct 与 POST jobs 可合并活动任务，`nocache=1/true` 禁用复用。Direct 显式 seed 保持原任意有限 Number（包括 `0/-1/-2/1.5/4294967296`），省略或空串才是随机意图；NaN/正负 Infinity 沿原错误图片拒绝。这是本地网关语义，模拟上游回归不证明真实 NAI 支持所有取值。
+
+新关系入口没有与旧 `users.balance` 同义的单值，故不发送 `x-balance`，不以 0 或三池折算值代替。移除此 header 不处置历史余额权益；其迁移或封存责任仍按 D4 保留。任务 detail 的 `accountRouteId/accountCost` 无原来源时为 null，`accountId` 只取实际尝试或原产物来源；新接单 `cost=0` 沿原兼容定义，历史未知不套 0。原创建、更新或完成时间缺失时保持 null，不使用开账时间冒充。实际入口接入与未切换范围见[数据库计划第 9.53 节](../plans/database-model-redesign.md#953-52direct-与异步任务-http-关系接入)。
+
 以上接口不实现 OpenAI Images、文本模型推理或聊天工具调用语义。共享模式还明确不开放官方的 `augment-image`、`suggest-tags`、`/ai/generate`、`/ai/generate-stream`、`/oa/v1/*`、`/user/data` 和账户登录/持久令牌管理；返回404不是透传失败。旧兑换/合并、图库管理、整库导入导出等也被共享路由白名单挡住。
 
 ## 门户与管理的迁移边界
@@ -269,9 +273,15 @@ OpenAI 默认 `nocache=1`；显式允许缓存时沿用原规范化请求的缓�
 
 关系 `me` 在 Discord 等待后重新核对当前 Cookie、成员及 ready，返回当前认证用户名、owner 身份、会话截止和接单状态；有在途预扣时仍允许读取。金融摘要复用原 `fairQuotaSummary` 及独立恢复估算，缺少真实金融基线按 owner 返回 503，不补零；免费使用量复用同一免费政策 owner。最近 30 个 child 与原迟到 10 个结果按稳定成员和原产物归属读取，不加载输入正文或附件。原创建时间、模型未知时保留 null，真实时间 0 保留；`me.jobs.imageId` 继续公开，迟到摘要只返回领取 URL。仅符合上述条件的可见 `me` 复用原续期入口，history/key 和其他查询不续期；具体接入与验证边界见数据库计划第 9.49 节。
 
+关系 `shared-status` 与 `shared-events` 复用同一 `sharedAccountStatus` 展示规则、状态优先级和公开白名单。账户来源只含当前 bound/official、原观察 baseline、预扣存在性、原 settlement 时点与冷却；PST 只查询当前私有行是否存在且非空，不返回原文。当前 credential epoch 与原观察不符或当前 PST 缺失仍是同步异常，不能因旧 official 或 ready 就报告可用。原 V5 百分比及 negative 标志分别来自原官方事实，未知为 null，不能从金融金额的零值或符号反推。
+
+共享任务数取当前组的稳定成员及未退休 parent/child，不按当前 Key 关联，不加载输入正文或附件。`recentFailures` 是原完成时刻落在闭区间 `[now-1h,now]` 的失败数；当前可见失败历史若存在未知完成时刻，则返回 null，页面沿现未知数值格式展示，不伪装成完整的零失败。真实时刻 0 有效，不借导入 header、父受理日或当前更新时间补值。两个共享 GET 均不续期；在 Discord IO 后以当前 Cookie 和 ready 读取，每轮 SSE 同样复核。统计和可用性查询不提交金融、任务或回执；原认证/Discord 观察仍有各自真实持久化边界。具体接入和验证边界见数据库计划第 9.55 节。
+
 `shared-events` 保留 `event: shared-status`，R01 增加提交后的 `state-invalidated`：只含 `bootId/version/scopes/updatedAt/resync`。200ms 合并、持续变化最多等待1秒；每次重连主动 resync，版本允许因权限过滤跳号。scopes 为 shared、本人 member、已鉴权 owner，不能据失效事件取得其他成员数据。每2秒权限/时间边界检查和15秒保活保留；会话失效发 `auth-expired` 后关闭，每成员最多3连接、全局100连接。成员与管理摘要 GET 只在副本估算额度，不触发账本写入或通知循环。详见[状态事件](../architecture/state-events.md)。它与 Native 生图流、OpenAI SSE、任务预览 SSE 是四种不同用途，不可互换。
 
 owner 管理需会话和角色，管理员路径需本机隧道与管理员凭据；用户管理、分组、额度、账户凭据维护依现有管理接口执行。F09 后分组预览与保存必须带编辑开始时的整数 `expectedConfigVersion`，缺失/过期409。共享白名单允许的 OPTIONS 不代表该身份有操作权限；浏览器成员接口还执行同源检查。
+
+关系成员目录为上述管理摘要提供安全原来源：稳定 `id`、`displayName`、`status`、`acceptingJobs`、`username`、`discordId` 和 `inviteExpiresAt`。展示名与登录身份不同，用户名只取原绑定，Key-only 或未恢复绑定时为 null；不以展示名或 ID 冒充用户名。Discord ID 只表示已保存绑定，不承诺当前资格；邀请只返回原截止，缺失为 null，真实 0 不丢弃。当前管理名单与单成员管理资料排除已 removed 的历史身份，disabled 仍可管理；删除后审计历史由其他查询 owner 保留。目录不含金融/任务派生值或任何 Key、密码材料、认证 epoch、授权 grant、会话、邀请原码或摘要，不等于旧 users 集合，也不恢复 `/api/users`。读取本身不授予 caller 权限，实际 HTTP 仍核当前 Cookie/owner 或平台 admin 边界；具体能力与验收见数据库计划 9.57。
 
 F04 为这两个成员管理入口新增 `action='member-admission'`、`userId` 与布尔 `acceptingJobs`。停止接单在同一事务设置禁止状态、取消未派发任务并退款；已取得派发资格的 running 任务仍可正常完成。恢复不会复活已取消任务或旧 Native 批次剩余图片，登录与历史查询不受该状态影响。成员 `me` 和管理员成员列表新增 `acceptingJobs`；取消任务仍使用现有 `failed` 状态。默认成员/全局未完成上限分别为4/16，排队等待十分钟，参数和当前只计已创建子任务的边界见 [README](../../README.md#额度语义与限制)。
 

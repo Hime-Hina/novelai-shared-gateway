@@ -14,6 +14,8 @@ const writerFactories = [
   ['createRelationalMemberReadHttp', '../members/relational-read-http.ts'],
   ['createRelationalApiGenerationAdmission', '../generation/relational-api-admission.ts'],
   ['createRelationalOpenAiHttp', '../generation/relational-openai-http.ts'],
+  ['createRelationalDirectHttp', '../generation/relational-direct-http.ts'],
+  ['relationalStateNotificationsFor', '../events/relational-state-notifications.ts'],
 ];
 
 // 同一已登记写命令的混合来源；只限制整模块能力，保留明确的纯 named reader。
@@ -30,6 +32,43 @@ const mixedWriterSources = [
   ['beginDomainCommand', '../events/domain-events.ts'],
   ['JsonStore', '../storage/sqlite-store.ts'],
 ];
+
+for (const filename of [
+  'server/generation/request-queries.ts',
+  'server/protocols/native-http.ts',
+]) {
+  for (const source of [
+    "import {relationalStateNotificationsFor as run} from '../events/relational-state-notifications.ts'; run(raw,events);",
+    "const module=await import('../events/relational-state-notifications.js'); const commit=module.relationalStateNotificationsFor; commit(raw,events);",
+    "export * from '../events/relational-state-notifications.ts';",
+    "const module=require('../events/relational-state-notifications.js'); const run=module.relationalStateNotificationsFor; run(raw,events);",
+    "import {emitStoreEvent as emit} from '../events/state-notifications.ts'; emit(events,'commit',{});",
+    "import * as notifications from '../events/state-notifications.ts'; const emit=notifications.emitStoreEvent; emit(events,'commit',{});",
+    "const notifications=await import('../events/state-notifications.js'); const emit=notifications.emitStoreEvent; emit(events,'commit',{});",
+  ]) {
+    test(`${filename} rejects notification transaction capability ${source}`, () => {
+      assert.ok(checkSource(filename, source).some((error) => /write capability/.test(error)));
+    });
+  }
+  test(`${filename} allows notification type-only read`, () => {
+    assert.deepEqual(
+      checkSource(
+        filename,
+        "import type {RelationalStateNotifications} from '../events/relational-state-notifications.ts';",
+      ),
+      [],
+    );
+  });
+  test(`${filename} allows named existing read mapper`, () => {
+    assert.deepEqual(
+      checkSource(
+        filename,
+        "import {stateInvalidation} from '../events/state-notifications.ts'; stateInvalidation(event,id,false);",
+      ),
+      [],
+    );
+  });
+}
 
 for (const filename of [
   'server/generation/request-queries.ts',
@@ -266,6 +305,11 @@ for (const filename of [
         'createRelationalApiGenerationAdmission',
       ],
       [
+        'relational Direct HTTP writer',
+        '../generation/relational-direct-http.ts',
+        'createRelationalDirectHttp',
+      ],
+      [
         'relational OpenAI HTTP writer',
         '../generation/relational-openai-http.ts',
         'createRelationalOpenAiHttp',
@@ -338,6 +382,8 @@ for (const filename of [
     ['direct ready installation', 'verifyAndInstallRelationalStorage(raw,source);'],
     ['current configuration initialization', 'initializeGatewayConfiguration(metadata,input);'],
     ['protected defaults stage', 'stageNormalizationDefaultsProfile(values);'],
+    ['opening input stage', 'stageOpeningInput(input);'],
+    ['opening context stage', 'stageOpeningContext(id,context);'],
     ['protected defaults projection', 'createNormalizationDefaultsProjector(source,commit,false);'],
     ['configuration projection', 'createConfigurationProjector(commit,source,false);'],
     [

@@ -1,3 +1,7 @@
+import {
+  assertRelationalStateNotifications,
+  type RelationalStateNotifications,
+} from '../events/relational-state-notifications.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -61,6 +65,35 @@ export interface PreparedMemberCredentials {
   expectedAuthEpoch: string;
   credentials: MemberCredentials;
 }
+export interface RelationalMemberManagementProfile {
+  id: string;
+  displayName: string;
+  status: 'active' | 'disabled';
+  acceptingJobs: boolean;
+  username: string | null;
+  discordId: string | null;
+  inviteExpiresAt: number | null;
+}
+type ManagementProfileRow = Omit<RelationalMemberManagementProfile, 'acceptingJobs'> & {
+  acceptingJobs: number;
+};
+const managementProfileSelect = `SELECT m.id,m.display_name AS displayName,m.status,
+  m.accepting_jobs AS acceptingJobs,p.username,d.discord_id AS discordId,
+  i.expires_at AS inviteExpiresAt FROM members m
+  LEFT JOIN password_credentials p ON p.member_id=m.id
+  LEFT JOIN discord_bindings d ON d.member_id=m.id
+  LEFT JOIN discord_invites i ON i.member_id=m.id`;
+function managementProfile(row: ManagementProfileRow): RelationalMemberManagementProfile {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.status,
+    acceptingJobs: row.acceptingJobs === 1,
+    username: row.username,
+    discordId: row.discordId,
+    inviteExpiresAt: row.inviteExpiresAt,
+  };
+}
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
@@ -80,10 +113,63 @@ export class RelationalMemberStore
 {
   private sqlite: Database.Database;
   private env: NodeJS.ProcessEnv;
-  constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
+  private notifications?: RelationalStateNotifications;
+  constructor(
+    sqlite: Database.Database,
+    env: NodeJS.ProcessEnv = process.env,
+    notifications?: RelationalStateNotifications,
+  ) {
     assertRelationalStorageFormat(sqlite);
+    if (notifications) {
+      assertRelationalStateNotifications(sqlite, notifications);
+    }
     this.sqlite = sqlite;
     this.env = env;
+    this.notifications = notifications;
+  }
+
+  private trackPrivateMember(memberId: string): void {
+    this.notifications?.trackMember(memberId, () => {
+      const member = this.sqlite
+        .prepare<
+          [string],
+          { auth_epoch: string | null; key_hash: string | null; username: string | null }
+        >(
+          `SELECT m.auth_epoch,k.key_hash,p.username FROM members m
+        LEFT JOIN api_keys k ON k.member_id=m.id LEFT JOIN password_credentials p ON p.member_id=m.id
+        WHERE m.id=?`,
+        )
+        .get(memberId);
+      const sessions = this.sqlite
+        .prepare<
+          [string],
+          { tokenHash: string; authEpoch: string; ownerBinding: string | null; expiresAt: number }
+        >(
+          'SELECT token_hash AS tokenHash,auth_epoch AS authEpoch,owner_binding AS ownerBinding,expires_at AS expiresAt FROM member_sessions WHERE member_id=? ORDER BY token_hash',
+        )
+        .all(memberId);
+      const discord = this.sqlite
+        .prepare('SELECT discord_id,guild_id,eligible FROM discord_bindings WHERE member_id=?')
+        .get(memberId);
+      const owner = this.readOwner();
+      return {
+        member: JSON.stringify(
+          member
+            ? {
+                key: member.key_hash,
+                username: member.username,
+              }
+            : null,
+        ),
+        authorization: JSON.stringify({
+          epoch: member?.auth_epoch ?? null,
+          key: member?.key_hash ?? null,
+          discord: discord ?? null,
+          owner: owner?.ownerUserId === memberId ? owner : null,
+        }),
+        sessions,
+      };
+    });
   }
 
   private owningTransaction<T>(write: () => T): T {
@@ -180,6 +266,25 @@ export class RelationalMemberStore
     );
   }
 
+  // 仅提供管理展示来源，不代表 caller 已有管理权；实际 HTTP 仍核当前会话/owner/admin。
+  readManagementMemberProfiles(): RelationalMemberManagementProfile[] {
+    return this.sqlite
+      .prepare<[], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.status!='removed' ORDER BY m.id`,
+      )
+      .all()
+      .map(managementProfile);
+  }
+
+  readManagementMemberProfile(memberId: string): RelationalMemberManagementProfile | null {
+    const row = this.sqlite
+      .prepare<[string], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.id=? AND m.status!='removed'`,
+      )
+      .get(memberId);
+    return row ? managementProfile(row) : null;
+  }
+
   async loginMemberPassword(username: unknown, password: unknown): Promise<MemberUser> {
     const credential = this.sqlite
       .prepare<[string], { member_id: string; salt: string | null; password_hash: string | null }>(
@@ -222,11 +327,13 @@ export class RelationalMemberStore
   }
 
   private replaceAuthenticationEpoch(memberId: string, epoch: string | null) {
+    this.trackPrivateMember(memberId);
     this.sqlite.prepare('UPDATE members SET auth_epoch=? WHERE id=?').run(epoch, memberId);
     this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
   }
 
   private insertCredentials(memberId: string, credentials: MemberCredentials) {
+    this.trackPrivateMember(memberId);
     if (
       !credentials ||
       typeof credentials.username !== 'string' ||
@@ -266,6 +373,7 @@ export class RelationalMemberStore
   }
 
   private replaceKey(memberId: string, key: string) {
+    this.trackPrivateMember(memberId);
     if (typeof key !== 'string' || !key || key.length > 4096 || key.includes('\0')) {
       fail(400, '成员 Key 格式无效');
     }
@@ -359,6 +467,8 @@ export class RelationalMemberStore
         )
         .get()!.count;
       assertMemberRegistrationCapacity(count);
+      // 注册的初始私有状态是“不存在”，不能在 public 行插入后才拍基线。
+      this.trackPrivateMember(input.memberId);
       const result = this.commitMember(metadata, input.memberId, {
         eventType: 'MemberRegistered',
         payload: {
@@ -763,6 +873,7 @@ export class RelationalMemberStore
   }
 
   private saveDiscordAuthentication(user: DiscordUser, evidence?: 'login' | 'observation') {
+    this.trackPrivateMember(user.id);
     this.assertMemberCommandTransaction();
     const current = this.authenticationMember(user.id);
     if (!current || current.enabled !== true) {
@@ -888,7 +999,8 @@ export class RelationalMemberStore
     if (this.sqlite.inTransaction) {
       throw new Error('Authentication requires its own commit before returning success.');
     }
-    return this.sqlite.transaction(run).immediate();
+    const commit = () => this.sqlite.transaction(run).immediate();
+    return this.notifications ? this.notifications.commit(commit) : commit();
   }
 
   async memberApiKeyTransaction<T>(
@@ -927,6 +1039,14 @@ export class RelationalMemberStore
           previous.ownerUserId !== owner.ownerUserId ||
           previous.guildId !== owner.guildId
         ) {
+          const affected = this.sqlite
+            .prepare<[string, string], { member_id: string }>(
+              'SELECT DISTINCT member_id FROM member_sessions WHERE owner_binding IS NOT NULL OR member_id IN (?,?)',
+            )
+            .all(previous?.ownerUserId ?? owner.ownerUserId, owner.ownerUserId);
+          for (const row of affected) {
+            this.trackPrivateMember(row.member_id);
+          }
           if (previous) {
             this.sqlite
               .prepare(
@@ -947,10 +1067,19 @@ export class RelationalMemberStore
           ? options.memberSessionDelete()
           : options.memberSessionDelete;
       if (remove) {
+        const session = this.readMemberSessionState(remove);
+        if (session) {
+          this.trackPrivateMember(session.memberId);
+        }
         this.sqlite.prepare('DELETE FROM member_sessions WHERE token_hash=?').run(remove);
       }
       const row = options.memberSession?.();
       if (row) {
+        this.notifications?.markSessionCleanup({
+          memberId: row.memberId,
+          authEpoch: row.authEpoch,
+          createdAt: row.createdAt,
+        });
         this.sqlite.prepare('DELETE FROM member_sessions WHERE expires_at<=?').run(row.createdAt);
         this.sqlite
           .prepare('DELETE FROM member_sessions WHERE member_id=? AND auth_epoch!=?')

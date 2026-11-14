@@ -1,3 +1,5 @@
+import type { EventEmitter } from 'node:events';
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
@@ -15,6 +17,8 @@ import { renewMemberCookie } from './authentication-http.ts';
 import { requireDiscordMembership, type DiscordDependencies } from './discord-auth.ts';
 import { assertMemberSameOrigin, memberCookie, replyMemberJson } from './http-request.ts';
 import { handleMemberReadRoutes, publicMemberProfile } from './read-http.ts';
+import { publicSharedAccountStatus } from '../quota/shared-status.ts';
+import { streamMemberSharedEvents } from './shared-events.ts';
 
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
@@ -22,6 +26,7 @@ function fail(statusCode: number, message: string): never {
 
 export function createRelationalMemberReadHttp(deps: {
   sqlite: Database.Database;
+  events: EventEmitter;
   publicBaseUrl: string;
   publicImageUrl(imageId: string): string;
   env?: NodeJS.ProcessEnv;
@@ -30,13 +35,22 @@ export function createRelationalMemberReadHttp(deps: {
 }) {
   const { sqlite, env = process.env } = deps;
   assertRelationalStorageReady(sqlite);
-  const members = new RelationalMemberStore(sqlite, env),
+  const notifications = relationalStateNotificationsFor(sqlite, deps.events),
+    members = new RelationalMemberStore(sqlite, env, notifications),
     requests = new RelationalRequestStore(sqlite),
     generations = new RelationalGenerationStore(sqlite, env),
     quotas = new RelationalQuotaStore(sqlite, env),
     now = deps.now ?? Date.now;
   return async (req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> => {
-    if (!['/api/member/history', '/api/member/key', '/api/member/me'].includes(url.pathname)) {
+    if (
+      ![
+        '/api/member/history',
+        '/api/member/key',
+        '/api/member/me',
+        '/api/member/shared-status',
+        '/api/member/shared-events',
+      ].includes(url.pathname)
+    ) {
       return false;
     }
     assertRelationalStorageReady(sqlite);
@@ -78,6 +92,45 @@ export function createRelationalMemberReadHttp(deps: {
       }
       return result.value;
     };
+    const sharedStatus = (memberId: string) => {
+      const at = now();
+      return publicSharedAccountStatus(
+        {
+          ...quotas.readSharedStatusSource(),
+          counts: requests.readSharedJobCounts(memberId, at),
+        },
+        at,
+      );
+    };
+    if (url.pathname === '/api/member/shared-status') {
+      replyMemberJson(res, 200, await authorize((member) => sharedStatus(member.id)));
+      return true;
+    }
+    if (url.pathname === '/api/member/shared-events') {
+      // 建流前正常报告来源不可用；每轮仍重新授权读取，不缓存首次的身份或快照。
+      await authorize((member) => sharedStatus(member.id));
+      await streamMemberSharedEvents(res, {
+        memberId: session.user.id,
+        store: notifications,
+        readCurrent: async () => {
+          const current = await authenticateMemberSession(members, token, env, now());
+          if (!current) {
+            return null;
+          }
+          await requireDiscordMembership(current.user, {
+            store: members,
+            env,
+            discordFetch: deps.discordFetch,
+          });
+          return authorize((member) => ({
+            memberId: member.id,
+            owner: isOwner(member, env),
+            state: sharedStatus(member.id),
+          }));
+        },
+      });
+      return true;
+    }
     if (url.pathname === '/api/member/me') {
       const profile = await authorize((member, expiresAt) => {
         const current = members.readMember(member.id),

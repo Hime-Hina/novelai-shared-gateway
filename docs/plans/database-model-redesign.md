@@ -189,6 +189,12 @@ erDiagram
 
 `RefillApplied` 的预算、偿债、容量恢复和成员分配保存原 owner 的决定，回放验证来源、原游标、资源与金额关系，不重新运行当前政策。适配接口若只有时间而不足以确定来源，应从命令上下文显式传递角色对应的事件 ID；不能为所有事实统一设置“旧观察优先”或“新观察优先”。同时间、不同有效序号的新观察应能保存，基线是否推进仍按原条件决定（[#44](https://github.com/Hime-Hina/novelai-shared-gateway/issues/44)）。
 
+官方展示原值与金融 V5 定点值分别表达。`QuotaObserved` 和 `OpeningQuotaRecorded` 必填可空 `v5UsagePercent: number | null`、`v5UsageIsNegative: boolean | null`，保存原查询归一化 owner 决定后的官方标量；80/true 与 0/false 虽有相同金融 0，仍须可逆区分。既有 `v5` / `observedV5`、钱包和金融决定维持原规则，不把官方 number 当作 12 位钱包金额或在回放时重算后覆盖事实。Opening 无原证据时明确 NULL，不从金融符号、0、当前默认值或后来的观察补造 false/0。
+
+失败查询遵守原 `accountQuotaPatch`：保留此前实际已知官方值及原观察时点，事实仍标记失败，不宣称取得新成功观察。金融视图不能用金额正负反推原 negative：真实原 JsonStore 成功保存 -5/false 后遇到网络失败仍保留该值；新命令必须一致，不能延续有损适配把金融 -5 改成 0。金融 snapshot 本身负责数值边界；不改写已存历史事实，也不增加新的分配规则。完整提交按本事实之前的原账户流切点核对此保留来源，不能借同笔后来观察或金融 0 冒充原官方值。`readOfficialQuotaV5(accountId)` 只读原事实两个标量，SharedSource 薄绑定，不增派生投影列、状态缓存或 settings 副本。本必填契约使用明确预发布事件 4→5 格式门禁，正确旧 v4 完整 DDL/hash 也必须零写拒绝；输入/context 各自 schema 版本不变，旧 SQL/journal 不改。
+
+本片完整产品固定 `ce017a3c1205176d58ee9676507b06dd9fddfee7`（含两原标量及事件 v5）。[官方原值专项](../../tests/integration/relational-official-v5.test.mjs) 覆盖真实原 JsonStore/刷新 owner 的成功→ECONNRESET 对照、80/true 与 0/false、独立 NULL/0 和 finite 精度、同毫秒来源、同完整提交失败前切点、完整/重复回放及原生后段 SQL 故障被外层捕获仍全表回滚。成功查询但金融字段不完整仍保留真实成功分类；网络失败才保留此前原值，不混淆两种角色。旧 `2704262` 把有损视图的失败金融 0 当作正向断言，已由真实原 owner 反例纠正；修复只删除四处金融符号→原 flag 推断，不改写已存事实或另外运行一套资金算法。Node 22.23.4 专项 20/20、相关七文件 205/205，类型、架构、可信 main `88d2c264` 的迁移历史与 diff 检查通过。独立复审 24/24（20 专项及 4 独立场景），确认金融值单独偷用同笔后来观察也被原子拒绝。以上为局部源码证据，尚待新 v5 并集的完整套件、编译产物、真实端点及切换验收。
+
 #### 3.3.2 分配预算与有限来源消费
 
 `AllocationApplied.sourceEventId` 必须说明分配的实际来源。`sourceResources` 如保留，是原决定的可核对预算；对已有明确金额的有限来源，它不能成为另一份独立权威。不能仅证明“分配总额不超过分配自己填写的预算”。当前直接有限来源的契约如下：
@@ -1145,6 +1151,18 @@ TEMP 负对照脚本 `H:\TEMP\novelai-runtime-admission-negative-controls.mjs` �
 
 已并入父任务独审的 `6ab8047` 共同前置：只读 quote 和 canonical accept/dispatch 复用原 quota 恢复 owner，协调器不加 refill hook。首次派发和失败继续使用同一个 GenStore 及原不可变 dispatch 对象，实际错误/abort reason 交给原诊断 owner 脱敏，不克隆私有票据；中断恢复没有该瞬时能力时不伪造诊断来源。失败各实际 caller 显式传 signal/`isAbortError()` 的 aborted，未派发和无活跃 promise 的重启中断明确 false，helper 不加默认值。保留原 finishGenerationFailure 的 capacity/statusCode/abort/500 状态选择。新合入诊断的一个 NULL 完成时间用例需明确传原 dispatch 的 attempt/epoch；其原隔离当前凭据/钱包断言保持，已有 knownCompletedAt T4 调用不变。第 9.35 节固定修复独审后，当前 epoch 的生成 401/403 失效与事件 v3 已进入父任务并集 `39941f8`；实际协调器的两条 HTTP 耦合验收见该节末段，不伪造官方额度观察。完整受影响回归和整合候选上线证据继续绑定最终固定版本。新增协调器属于写能力，架构守卫变化须维护者连同本片复核；本片不表示 #52、全部协议装配、迁移或生产切换完成。
 
+sole 启动生命周期从固定 `2f90094450c73fa3f49feccccfd63008f3ee50cc` 补齐窄边界。现实际调用者为协调器专项和 `tests/helpers/relational-api-http.mjs`，仍保留一段式 `start()` 的同一缓存 Promise、自动派发及重入语义；尚未修改生产 gateway。新增 `prepare()` 复用原 initialize 的 ready、真实准备字节恢复、中断/期限/核对处理，最后重核 ready 后仅转 prepared，不创建调度 timer、不派发；`activate()` 只能在准备完成后重核当前 ready，转 running 并调用原 schedule。sole 以后应 await prepare，再创建/成功监听 HTTP，监听失败只 stop，不调用 start 偷渡激活。恢复未完、fault、停止阶段不可激活，prepared 的外部 schedule/tick 也不生效；已 running 的重复激活也核当前 ready，但不另建 timer。没有新配置、持久阶段、派发器或 runtime 层。
+
+stop 仍关闭原事件一次、清 timer 并等实际 controls.done，另等待唯一 preparation Promise，使真实恢复文件 IO 未结束时不会提前关闭数据库。同步 close 监听者重入的反例先精准失败于两次 close 和不同 pending Promise；仅将原 close 通知移到 shutdown Promise 赋值之后，仍同步通知并复用同一关闭（`H:\TEMP\runtime-activation-stop-close-before.log`、`runtime-activation-stop-reentry-before.log`）。准备期间 stop 后，原已知准备的合法恢复可完成，但不会进入 prepared/running 或派发余图；初始化失败、ready 在监听前撤下均 fault 且无调度，不允许原对象重启。原业务 owner、费用、输入、退款、物理 raw/吞 abort、冷却和完整提交不改。
+
+新增四组真实合法 ready/localhost 检查：实际 EADDRINUSE 监听失败后 upstream/attempt/新事实均为零且 prepare 未建 timer；成功监听后才经原 coordinator 发真实 HTTP、发布 Local bytes；prepared/已 running 后撤回 ready 均拒绝激活；实际 FileHandle.readFile 已读原准备 bytes 后暂停，未暴露 HTTP且 stop 继续等原 IO，释放后只恢复原结算、不派余图。保留原 start 的同 Promise 重入和停止/初始化错误场景；原成功/失败/物理 pending、吞 abort、恢复及新阶段路径的完整业务回放继续 fetch=0、源零写和不恢复私有认证。前驱四项和整份 32/34 的日志保留，不冒充最终验证。
+
+独立 TEMP 来源仅把 initialize 的 prepared 转移换回旧 running+schedule，同一真实监听失败反例精准失败于实际 upstream `1 != 0`；仅移除 activate 的 ready 门禁，prepared/running 同一检查均精准失败 `Missing expected exception`，含父计数 3 fail。前驱原日志为 `H:\TEMP\runtime-activation-negative-auto-dispatch.log`、`runtime-activation-negative-ready.log`，补 running 重入后的版本为 `runtime-activation-negative-auto-dispatch-final.log`、`runtime-activation-negative-ready-final.log`。两者均非加载失败，TEMP 负控不修改作者工作树，恢复后的产品 SHA-256 与相应候选一致。本片仍只交付协调器生命周期能力，不将简单 localhost 监听探针写成最终 sole HTTP/发布物通过；完整/full、编译包、Node 24 和生产切换由父任务统一排期，固定候选需独立审查。
+
+最终作者候选整份协调器专项 34/34、零跳过（`H:\TEMP\runtime-activation-queue-candidate.log`），Native/OpenAI/Direct 的既有一段式 start 实际 HTTP caller 三项 3/3（`runtime-activation-start-callers.log`），backend 类型、架构、可信 `2f90094450c73fa3f49feccccfd63008f3ee50cc` 的 migration、三改动文件格式及 diff 检查通过。`H:\TEMP\runtime-activation-negative-candidate.mjs` 在固定基线 TEMP 副本仅加载相同产品/测试，正向六项 6/6；分别恢复旧自动激活、去当前 ready、恢复 close 先于 Promise 的三个最小错误实现，都精准失败于原实际 upstream `1 != 0`、预期异常缺失、close `2 != 1`。原作者产品不变，TEMP 最终恢复；四份日志及逐变异/原产品/测试 SHA-256 见 `runtime-activation-candidate-negative-evidence.json`。未运行 full、编译包、Node 24 或真实外部端点，固定后独审与最终 sole 装配由父任务接续。
+
+固定 `b8cabce1a881d91db76e2d20737303ba0b96540f` 独立复审通过：新增七项与作者窄六项分别 7/7、6/6，三类错误实现精准失败；三文件 Git blob/SHA256 绑定在 `H:\TEMP\novelai-runtime-activation-independent\reviewed-files.json`，报告同目录 `INDEPENDENT-REVIEW.md`。根 v5 联合首轮 123 项中 Native 断线等待上游命中原五秒期限而失败；隔离原场景 1/1、同组六文件诊断副本 123/123、再次运行未改动原六文件 123/123 均通过，保留首轮失败且未认定原因已修复，没有改超时或断言。日志与精确诊断入口见 `H:\TEMP\novelai-runtime-native-disconnect-diagnosis\CHECKPOINT.md`；类型、架构和可信 main 迁移通过，后续同候选 full/CI 仍须覆盖该原场景。
+
 ### 9.32 人工历史退休：薄标记、保护和完整回放
 
 本片从统一固定 `29924b9` 实现人工历史退休，不新增 D8 期限或自动任务，不依赖尚未选定的完整 archive authority，也不暴露 Local/R2/PikPak 物理删除。旧人工删图可能随后移除 Local 文件；新入口只撤下在线展示/领取，字节继续保护，后续物理释放仍须第 5 节的归档引用闭包与明确授权。
@@ -1491,9 +1509,148 @@ OpeningFundingRecorded 复用原 FundingRegistered 的列、目标枚举与事�
 
 后续保护内容沿原 InputStore 的摘要、长度、成员和 BLOB 校验读取/复制；OpeningRequest 的原 acceptedAt、未知 model/context 与 OpeningJob 的未知 createdAt、实际零值、原期限保持原表示。Job.artifact 的 deferred FK 不能替代同笔原角色核对；坏图关系必须在保存点内拒绝，使外层 catch 仍可提交无关事务。副本行可表达原 metadata，不等于实际可读：现 Local canonical identity、R2 受约束 identity、PikPak sha.br 有对应 byte owner；gzip、任意旧 Local 路径或 PikPak 任意 key 没有现成 reader，不能标成已验证恢复。ready 始终核对真正可读原字节。
 
-两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
+第二片从已整合配置与精确文件身份的 `ae772153` 接续，并先复用已独审的登记修复 `5ea2e519`：实际七个 owner 从 64/73 增至 66/73，只新增 OpeningInputRecorded 与 OpeningRequestRecorded。现 InputStore 的同一个完整提交 projector 继续核原保护源、唯一登记 eventId、schema/SHA/长度与实际 BLOB；Opening 来源复用原 event-store guard，原 ContextRegistered 规则保持。新 `stageOpeningInput()` / `stageOpeningContext()` 只接受 building 原事务，调用者须与 Opening 完整提交共用保存点；它们保存明确的新格式内容，不解释旧输入、不读取当前默认、不在事件中保存正文。普通受理、Opening 暂存与离线复制共用同一实际 context/input INSERT。
+
+OpeningRequest 复用原请求行写入，显式保存原 acceptedAt/retiredAt；partial 的缺省或 NULL model/operation 不伪造为当前值，已有非空字段与请求元数据冲突仍拒绝。完整正文继续走原严格 parser，配置专用 profile 不能冒充首次生成上下文。请求可引用已登记旧 input 或同笔先登记内容，但不能在原 input 之前投影，也不能从源的未来提交借 ContextRegistered。原 seed/n_samples 不在规范正文中，不据正文或缓存目标推断原 seedMode/sampleCount，不创建不存在的 job。
+
+新增专项 13/13；输入、登记、前片 Opening、完整回放和 ready 六文件 102/102，零跳过。反例覆盖原零/未知/附件、complete 与同笔首次 context、unavailable、缺行/同长坏 BLOB/完整回执错源、重复登记/原顺序、第二次写后 SQL 错误外层 catch 全表/事实/回执/游标回滚及重试、实际唯一 installer 和 ready 后重复零写/新回放拒绝。回放无网络、无私有 Key/PST；原 partial 附件读取复用已合入的 `a87e8de`，没有另加兼容路径。TEMP 恢复旧严格字段比较后合法 partial 精确失败；删掉 context 先行核对后未来提交反例精确出现 Missing expected exception，源码恢复后重新验证。证据在本地 `H:\TEMP\novelai-opening-input-{before,after,focused,negative-*}.log`。backend 类型、架构、默认和可信 `ae772153` 旧迁移历史及差异检查通过；不改 DDL、旧 SQL/journal 或事件版本，未跑 full、编译包或 Node 24。覆盖清单仅增加这两个真实 owner，独立审查与同候选整合验证仍须完成。
+
+守卫后继只在原 mutations 集合登记新增的 `stageOpeningInput` 和 `stageOpeningContext`。虽然 InputStore 模块来源原已受约束，查询/protocol 中未限定的同名直接调用仍须明确拦截；沿原矩阵新增四个反例，旧守卫为 269 通过/4 失败，补齐名称后 273/273，原只读 type-only/transport/装配对照不变。日志为 `H:\TEMP\novelai-opening-input-guard-{before,after}.log`。这是需要维护者复核的写能力守卫增量，没有放宽原检查或新增框架，`42afee1` 的业务产品保持冻结。
+
+独立审查在 `161bafb` 确认一项完整内容缺口：已知原 Native context 的 complete img2img 输入，image/png 附件实际不是图片但 SHA/长度自洽，原暂存→业务提交→完整回放→唯一 installer 错误接受为 ready，原领取 owner 才拒绝。首个修正 `2e0b972` 从现 `readJobInput()` 小提取实际附件读取与 `validateRelationalAssetBytes()` 循环，让 complete 且具有原 context 的 OpeningRequest 复用；partial opaque、unknown/context-null 历史仍按原表示保留。该增量的 MIME/字节对照与九文件为 14/14、404/404，零跳过，但独审随后确认它未闭合完整 Native 语义，不能当作本片 PASS。原独立红例保留在 `H:\TEMP\novelai-opening-input-independent-20261114`，该阶段作者日志为 `novelai-opening-input-image-{negative,fixed,focused}.log`。
+
+同一根因的后续反例包括原保存 Native parameterNames 不允许的字段仍被接受，以及 generate/not_applicable、upscale/fixed 两个已知角色矛盾。修正回到完整 known-context 边界：新纯 `assertRelationalCompleteInput()` 让 Native/member 用保存的原 parser 枚举、limits 和默认定义，Direct 仅复用原 build owner；随后与原 build/recoveredInput 的规范 wire 往返核对，不复制白名单或用 Native 收窄 Direct。普通输入回放与 Opening 共用；原操作/已知 seedMode 不变量抽为同一小断言，unknown 不猜。规范正文故意没有 seed/count：纯 assert 的局部副本只用确定的校验 seed 及事实显式 sampleCount，不调用随机数、不改原 body、摘要、回执或持久事实；实际可执行 seed 仍由 Job 原事实验证。此断言不重跑当前在线载荷预算。
+
+新专项 16/16；正确尺寸的真实合成 PNG 先走原 Native owner 生成规范 img2img 正文，另有伪图片/错误 MIME、原枚举比当前更窄、非法已知值、原 Direct scale 20/原 sampler 范围、unknown 种子模式和完整回放对照。TEMP 分别删掉完整校验、偷用当前 Native 默认、移除已知模式关系，各精确 0/1 Missing expected exception，源字节恢复后九文件联合 406/406，零跳过；类型、架构、可信 `ae772153` 旧迁移历史、格式与差异检查通过。固定源独立复核仍待完成，不借 `161bafb` / `2e0b972` 的旧绿结论。最终作者日志为 `H:\TEMP\novelai-opening-input-complete-{after,focused,negative-*}.log`；未跑 full、编译包、Node 24 或生产操作。
+
+后续主动核对实际 Direct caller 又识别 `2b78de5` 的角色缺口：`normalizeNovelAiRequest()` 原 DTO 没有 nativeParameters，而校验重建时带上它，使原 build 误走透传分支并接受额外字段。最小可运行原观察见 `H:\TEMP\novelai-opening-direct-parameter-probe.mjs/.log`。修正先并入已审 `c73a6e7`（R08 与有限 Direct seed），从原 `relationalInputCacheKey()` 小抽 `directInputRequest()`，缓存与完整校验共用唯一 scalar→原 DTO 映射；保持原对象插入顺序、profile 中原 sampler/size/cost/字段存在性、原 cache key 和预算。完整校验不携 nativeParameters 或 action，走原 recoveredInput/build；未知字段、非法类型和伪 img2img 均拒绝，原 scale 20、legacy sampler 和空提示仍可通过。历史缺 cacheSelection 可核正文，但仍不具缓存来源，不补 profile。
+
+该合并没有改 input/context schema 1，全部 restore 调用显式传原 context，Direct 真正 literal seed 与 Native/member 回绕继续复用已审 owner。普通暂存/Opening/复制共用同一 input/context SQL；当前实际覆盖 70/75，剩余五类 Opening 未放行。ready 的无 owner 反例改为真实剩余归档幂等事实，不把已完成 request 继续当占位。新 Opening 与 R08 两文件 44/44，连输入/完整回放/ready 五文件 113/113，零跳过；恢复透传 DTO 的隔离负控精确出现 Missing expected exception。类型、架构、可信 `c73a6e7` 旧迁移历史、格式与差异检查通过，日志为 `H:\TEMP\novelai-opening-direct-{final,union-focused,shared-negative}.log`。本段是局部源码证据，独立复核须绑定最终固定提交；不沿用 `2b78de5` 的通过结论，未执行 full、共享 native 重建、真实云端或生产操作。
+
+第三片增加现 Gen owner 的 OpeningJobRecorded / OpeningArtifactRecorded，覆盖从 70/75 增至 72/75，剩余 Attempt、Replica 和 Idempotency 继续明确拒绝。Job 使用原请求的成员、操作和原事实种子，保留未知 createdAt/actualSeed、真实零、队列期限、完成/退休时间；不创建原尝试、预扣或默认成本。pending/queued 必须能由原 InputStore 冷读取完整输入、首次 context 和真实 seed。REAL 列仅是存储表示，已知 Native/member context 的 inactive seed 仍用原 child-seed owner 核 uint32，Direct 保留已审的有限 literal；unknown NULL 不补值。running 还缺原 Attempt/Charge 未决责任 owner，本片明确拒绝而不伪造完整运行态。
+
+Job/Artifact 循环引用保留原完整提交顺序。Gen 在同一 projector 内按 artifact ID 建本笔原事实索引，Job 只能引用已存在或本笔唯一声明的同成员/操作产物；缺失或错归属在保存点内拒绝，不能把失败拖到外层 deferred FK 提交。原 DDL 的 Job BEFORE trigger 实际阻挡了合法 future artifact，因此仅将它的存在性留给原 deferred FK：目标已经存在时仍核成员，并为 Artifact INSERT/UPDATE 增加反向成员护栏。Artifact 的已知原 attempt 必须与真实原 job/account/input/operation 及该 job 的产物链接吻合，未知只存 NULL；合法 cached job 可以引用同成员另一个原 job 的产物，不冒充原尝试、不重收费用。这是开发期 DDL/hash 及覆盖断言变更，须维护者复核；不改旧 migration SQL/journal，不授权生产 DDL，也不手补旧库 hash。并集沿已审官方观察字段使用 event schema 5，input/context schema 1 不变。
+
+本片专项 11/11：两种原事件顺序、未知/零和有限 Direct literal、原执行资格、真实普通发布后的 cached 历史链接、缺 future artifact、跨成员/操作/input/attempt、第二次 SQL 写后外层 catch 全表/原事实/回执/游标回滚与合法重试、完整回放零网络/无私有认证、重复零写。真正 Local publisher 与既有副本 owner 的合成产物走唯一 installer，实际字节缺失/损坏则 building 全表及源 SHA 不变；真实 R2/PikPak 端点与旧源迁移不在该证据范围。隔离负控分别移除 future-artifact 闭包、Artifact 反向护栏、活动冷读取和已知 context 种子校验，四项均精准出现 Missing expected exception。实际旧 `2b78de5` 的 event 4 和官方观察 `ce017a3` 的 event 5 原 DDL/常量分别从同一 Git 源解析，带正确旧 hash 的库仍被当前格式/ready 门禁零写拒绝；未以改写当前 SQL 版本号冒充旧库。作者九文件联合 184/184、零跳过，类型、架构、默认和可信 `1ceaa1d` 迁移历史、格式、语法与差异检查通过。日志为 `H:\TEMP\novelai-opening-entities-{format5-final,negative-*,format}.log`，独立复核须绑定最终固定提交；未跑 full、编译包、Node 24、共享 native 重建或生产操作。
+
+独审在 `bb0b60b` 确认退休生命周期缺口：OpeningRequest.retiredAt=0 的父请求仍能新增合法 pending child，原冷读取成功不是活动执行资格。修正只让 Gen 的现活动 gate 同时读取并核对原父请求 retired_at；pending/queued/running 的父请求或 job 任一已退休都拒绝，inactive 退休历史仍能完整回放，尚未退休的同成员原产物继续可由其他合法 job 引用。作者反例先得到 Missing expected exception，再覆盖 pending/queued 的父/job 双向检查和真实零退休时间；本片与原历史退休两文件 32/32、零跳过，日志 `H:\TEMP\novelai-opening-entities-retired-parent-{before,after}.log`，独立复审须绑定修正后的固定提交。
+
+OpeningIdempotency 的 `commitSeq` 只指新时间线中真正的原在线提交，不是旧源序号或 import 提交。本片 Opening 一律保存 NULL，旧序号审计由原 origin/archive 保留；非 NULL 明确拒绝，不能借新库同号 commit 背书。普通在线 alias 仍引用真实 commit、不复制 receipt。Opening 的 `noCache` / `seedMode` 是 required nullable 的原来访决定，不从目标 job/当前默认推断；live 必须两者已知，保存真实原 typed archivedReceipt，并由原 Input/Gen owner 核完整保护正文、该键自己的首次 context、原 child 全集/首 job、成员/操作、原命令身份、未退役与原 intent/receipt 关系。member 继续核原 confirmation。读取只按明确 Opening source 角色走原回执，不使用在线 commit 缺失后的 fallback，也不把 import 回执当原操作。明确 archived/unavailable 的已消费键可保持未知模式与 NULL 原回执，仍拒绝 POST 复用，不能为导入 tombstone 捏造 receipt；13 个真实旧键的最终 converter 政策继续待维护者决定。
+
+这些必填事实与 live 约束变更统一把未发布关系 event 5 升至 6，后继同轮 Attempt 必要事实并用 6；input/context schema 1、旧 SQL/journal 不变。真实 `bb0b60b` 的完整 v5 DDL/hash 固定为 fixture，旧目标须从空 building 重建，不手补 hash、不加兼容开关。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
+
+幂等片由同一个 Input projector 拥有 OpeningIdempotencyRecorded，原完整提交/来源原序/保存点不变，当前实际覆盖 73/75（Attempt 与 Replica 在本分支仍缺 owner）。首次 context 先行检查与 OpeningRequest 共用，原在线和 Opening 的 member/API 意图证明共用现 fingerprint/confirmation owner；只投影原薄键及已有 archived_receipt，不另建原 commit、认证能力或长期恢复 marker。Gen 在当前授权事务内先按 sourceEventId 明确区分 Opening 与在线 alias，再取原 typed receipt；Opening 结果不捏造新时间线 commitSeq。成员重领也改走每键 context reader，保留普通在线同键的原证明。live 缺正文、完整 child、原实际 seed 或明确模式时拒绝；完整保护内容及关联不是凭几份相等摘要互相背书。
+
+源码专项 8/8，连原输入/实体、Gen、全业务回放、ready、格式、成员重领、R08、真实 Native HTTP 与事实契约十一文件 201/201、零跳过。新真实 localhost Native Key HTTP 返回原 Local 字节，member Cookie HTTP 202 领取原两 child；每键 context 可以与 target request 首次 context 不同，fixed/random 与 noCache 明确保存且同实际 seed 不倒猜。原键重领全库及 total_changes 不变；改模式/费用确认 409、未知无回执键 410、撤销当前 Key 401。第二个 key 已写后故障被外层 catch 仍全表/事实/回执/游标回滚并可重试；完整业务回放 0 fetch、0 Key/PST。恶意 source 在完整 cut 下同时篡改原意图与相同 projection，仍被全 replay/唯一 installer 拒绝，目标保持 building、全表与选定源 SHA 不变；未用缺行或错误 cut 作为拒绝证据。
+
+四个 TEMP 负控分别跳过原 intent proof、误取 import receipt、偷用 target context、恢复旧必须有 receipt 的 CHECK；各在真实业务断言精确失败，源字节恢复后专项重验。日志为 `H:\TEMP\novelai-opening-idempotency-{focused,source,core,negative-*}.log`。类型、架构、默认及可信 `77c117c` 迁移历史、格式与差异检查通过；真实 v5 fixture 的 hash 为 `a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd`，当前门禁零写拒绝其完整旧 DDL。事件版本、live DDL、覆盖与 ready 无 owner 负例增量均须维护者复核；后者换成当前真实剩余 Attempt，不留已实现幂等充当占位。独立复核仍须绑定最终固定提交，未跑 full、编译包、Node 24、共享 native 重建、云端或生产迁移。
+
+固定 `4d928f1` 后继续核对历史重复与当前领取边界，复现合法 JobHistoryRetired 后原 Opening key 完整提交重复错误触发现时 retired gate。后继仍共用全部来源、projection、保护正文、child、原 seed/intent/receipt 证明，仅在现受控 factory 的历史 replayed 分支排除当前退休资格；初次导入与公开当前 reader 始终使用严格现资格，不对 caller 暴露开关。现退休 owner 保留原薄键整行，重复继续严格核对原 source/projection，不因退休而允许任意 resolution 改写。新反例通过真实失败/当前 owner 退休后验证历史重复零写，当前领取仍拒绝；初版夹具遗漏显式 aborted、或在无私有认证的 business target 上检查当前授权，均修正夹具后才得到有效原红，没有放宽 auth/replay 门禁。新专项与原退休/共同回放/ready 四文件 83/83，四个负控在此后继再次精确失败，源字节恢复后专项 9/9，零跳过；类型、架构、可信 `4d928f1` 迁移、格式/差异通过。最终增量证据为 `H:\TEMP\novelai-opening-idempotency-{retired-before,retired-focused,final-core,negative-*}.log`，不沿用前置 201 项冒充新候选完整重跑。
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。
+
+固定 `77c117c8e741f08898b58121c043de8dc32aa4ff` 的 Job/Artifact 独立复审 17/17，真实旧 v4/v5 DDL/hash 拒绝另 2/2；原 `bb0` 将退休父请求恢复为活动 child 并通过唯一 installer 的反例已拒绝，原历史非活动行仍保留。固定 `ed985cfc467c05c0d7b27c2a2437cdbae0d24220` 的幂等独立轻量验证四组共 24/24：原回执/自己的定义、文件 IO 后 Key/ready、恶意完整 cut 同投影及退休后的历史重复均覆盖。后者修复 `4d` 重复时误用当前领取资格的缺口；重复仍核不可变原内容/意图/回执，当前领取和首次导入仍拒退休目标。报告和文件摘要在 `H:\TEMP\novelai-opening-entities-independent-evidence`、`H:\TEMP\novelai-opening-idem-independent-evidence`。与当前候选管理窄读、Shared 和运行时汇合，事件 6 的十文件 190/190、零跳过，类型、架构和可信实际 main 迁移通过；当前 73/75 仍只缺 Attempt/Replica，不代替最终全套、转换器或切换验收。
+OpeningReplicaRecorded 由既有 ReplicaStore 接续完整提交回放，复用同一来源先行规则、不可变 artifact/member/target 关系和同对象 SHA/长度/encoding 约束；首次 Opening 不覆盖已有 artifact/target 对。明确的 objectKey、encoding、uploadedAt/verifiedAt/deletedAt 和 error 原样保留，可空时间或 error 未知保持 NULL，已知零不替换为导入时间。verified 非空必须已有 uploaded 的关系继续由原公共 parser 和 DDL 拒绝，不猜原上传时间。退休产物及 deleted 副本仅保存历史来源，不发起 IO、不复活在线领取、不删除原件。
+
+历史 locator 不重写为当前路径，也不由当前部署配置补历史 namespace。原 R08 持久承诺资格保持：已 verified 的 R2 或已 uploaded 的 PikPak 仍可被原键及新缓存引用；配置缺失或旧 locator 不可读时，领取返回 503，不重新生成。当前 reader 和后台票据只在 IO 前拒绝不能解释的定位，普通生命周期还核对原 locator/encoding 不可变，不能用 UPSERT 假称移位。唯一 ready 安装必须沿实际可读原字节核对；仅有不支持的历史引用时拒绝并保持源/目标原值，另有真实 Local 来源可验证时不把旧引用宣称为已实读。选定 converter 仍须实际重发布或保全独立归档来源，本片不完成该迁移责任。
+
+该增量基于格式 5 的 `6dfc972`，专属 `relational-opening-replica.test.mjs` 21/21；连原 Replica、cache-reference、R08 与 ready 五文件 106/106。正常 ArtifactPublished 前缀接完整 Opening 副本事实，验证来源/member/target/顺序、SQL 第二行已写后外层捕获全表回滚、原完整 envelope/窄回放/重开及重复零写。真实 R08 新旧缓存键继续命中同一产物，坏领取不创建第二次 attempt；canonical Opening 上传只在原 IO owner 实际 mock 回读后标 verified。隔离负控分别漏来源核对、locator 不变、票据定位、同对象约束以及把持久承诺当 cache miss，全部被原业务断言抓住，四项 Missing expected exception、一项 false≠true；产品源未改，日志在 `H:\TEMP\novelai-opening-replica-negative\`。类型、架构、默认与可信 `88d2c26` 旧迁移历史检查通过；未执行 full、编译包、Node 24 或真实云端验证，未声称尚待整合的 Job/Artifact Opening 或后续格式 6 联验完成。副本 owner 登记扩展须随固定候选独立复核，公共事实覆盖清单由最终并集按实际 owner 更新。
+
+初始 `e8e3102` 的独审发现 deleted 副本仍能取得后台票据：作为目的先 PUT 后 SQL 拒绝，作为源可 GET 并上传 PikPak。固定 `ecf749825becbcfc5f1bb895d4ef103c0830c265` 在共同 begin/checked 票据边界拒绝 deleted，并将原 R2 来源预检整体前移至目的预留和 IO try 之前，来源失格不伪记目的 IO 故障；已上传 PikPak 的零 IO 重领不依赖旧 R2。原 26 项与独立 4 项同次 30/30，四文件 hash 绑定，最终仅文档 `3affb56` 已重绑；报告 `H:\TEMP\novelai-opening-replica-independent-20261114\review-ecf7498.md`。根以该最终三技术文件的精确 Git 字节汇合格式 6，保留普通持久缓存承诺与已审 Job/Artifact/幂等 owner，实际支持清单更新为 74/75，仅 Attempt 未实现。该清单变化属于真实 owner 增量，须随候选维护者复核，不能以计数代替后续联合验证和迁移验收。
+
+格式 6 的 OpeningReplica、幂等、Job/Artifact、共同回放、唯一 ready 和 R08 六文件联合 129/129、零跳过；backend 类型、架构、可信实际 main `88d2c26` 迁移及差异检查通过，日志 `H:\TEMP\novelai-opening-replica-v6-root-union.log`。最终 Replica 三技术文件与受审 `3affb56` 原字节相同，没有带入 `e8` 已否决中间实现；本段只登记该联合，不沿用格式 5 的 full/编译结果作为格式 6 验收。
+
+### 9.52 新格式最外层提交后状态通知
+
+本片从 `d0a008a` 接续，遵守[提交后状态通知](../architecture/state-events.md)的原 StateEvent/hub/SSE 合同。`relationalStateNotificationsFor(sqlite,events)` 为同库和同一个真实 EventEmitter 返回唯一长期通知对象；可直接交给 `stateEventsFor()`，不能每请求另包 `{events}`。新工厂及安全 emitter 的可写能力登记、namespace/dynamic/re-export 反例须维护者复核；没有修改事件/表/SQL、增设持久通知游标或另一个业务 writer。
+
+成员 Key/Cookie/Discord 和经它们授权的管理命令在 `RelationalMemberStore.authenticationTransaction()` 的原同步顶层 COMMIT 后通知；系统队列和额度刷新围住各自原同步 transaction。Gen/Quota/Account/Member 内部保存点、完整回放和 ready 不广播，原网络和文件 IO 不入 SQL。本次调用前后只有瞬时 64 位 cut，按最终完整提交确定公开失效；外层回滚和被 catch 的失败保存点不留幽灵事件，原 receipt/alias-only 无新增可见状态不作业务广播。MemberStore 对本次触及成员保留原/最终窄认证比较，真实私有撤销即使无公共事实也以 sessions 唤醒鉴权；签发、续期及无变化读取不广播。
+
+活动失效复用热力图的 child 原 `generation_job_origins` 与稳定 member/date 配对，点查使用原 stream 索引；不按当前 Key、parent、当前 header 或“今天”猜归属/日期，不冷读正文/BLOB/诊断。响应证据、image reference 和普通时间更新不因其被提交就重算热力图。安全 rawListeners 派发复用同一 helper，监听器 throw/reject 不改变已提交结果或阻断其他订阅者；广播前释放本次收集上下文，允许监听器立即重入当前鉴权。
+
+本片只接通实际关系写路径到既有 hub，不增加尚未完成的 shared-status/shared-events 路由或 sole 生产装配。base 尚无 R08 alias-only 命令 owner，相关零广播必须在精确固定 R08 并集上验证，不能用 raw append 伪造业务验收。源码反例和定向证据在固定候选后补齐，未将其写为全量、实际发布物或线上切换通过。
+
+Node 22.23.4 新关系反例 10/10，含保存点失败被 catch 后仍只广播最终成员、注册前私有基线、owner 绑定仅影响对应成员、私有 logout/epoch/Discord 撤销、签发/续期/私有 token 刷新零广播、立即重入鉴权、原 child 上海日期与原 0 时刻、响应更新不重算日期、同库/hub 身份及真实 SQL 索引/不读保护内容；与原 hub、旧存储通知和活动统计四文件共 35/35。成员/Native/auth/read HTTP、队列 runtime 与额度刷新六文件 71/71，架构专项 289/289，均零跳过。原旧通知专项识别了提取时丢失失败日志的问题，已保留固定安全文本日志并同组重跑通过。backend 类型、架构、默认及可信 `d0a008a` 迁移历史、168 文件语法、改动格式和 diff 通过。日志为 `H:\TEMP\novelai-state-notifications-core-final.log`、`novelai-state-notifications-http-runtime-final.log`、`novelai-state-notifications-architecture.log`。错误实现负控、精确 R08 联合与独立复审另绑定固定产品；本片未运行 full、编译产物、Node24、真实外端点或生产变更。
+
+技术产品固定 `d7d98b7a1d5ff94b0031ae0f480d5bf46b6657db`。独立 TEMP 归档先以原 10/10 作对照，再分别只改一处：把本次 cut 前界错误包含上笔、把私有候选一律当成功、改用本笔 header 日、广播时保留旧收集上下文，原同一组分别出现 7、4、2、1 个实际行为失败；没有加载或语法失败。删除新 writer 模块来源登记时，原架构 289 项中 8 个捕获反例准确失败。原 source/guard 最后恢复 SHA 并记录在 `H:\TEMP\novelai-state-notifications-negative-d7d98b7-20261114\negative-evidence.json`。18 改动文件的固定 Gitblob/SHA 为 `H:\TEMP\novelai-state-notifications-d7d98b7-reviewed-files.json`，实现/验证交接为 `H:\TEMP\novelai-state-notifications-REVIEW-HANDOFF.md`；独立复审正在同一技术产品进行，不把作者负控冒充独立结论。
+
+独立审查随后识别 P2：失败私有保存点留下候选后，同一真实签发事务新增会话或删除已过期旧会话，整个 session 集合比较会误报撤销。原独立 5 项中 3 绿、这两项红；原日志保留，未把 `d7`/文档后继当作独审通过。修复只把非会话授权与原会话身份/有效期分开，最终比较原会话的消失/变权；成员 owner 在原签发清理点给出本次实际时间、成员和 epoch 条件，新增签发、过期及旧 epoch 清理不构成撤销。清理角色在同库 notifier 的共同外层上下文，支持候选来自 MemberStore A、真实签发/清理由 B 执行。真实旧 Cookie 注销与新签发同笔仍只唤醒本人，不禁合法事务组合、不丢弃失败候选、不改变原 SQL/认证决定。两红回归另补同一路径的旧 epoch 行清理；在原 `d7` 归档中三个子例均红（含父计数 4 fail），注销加签发正对照绿。修复后新关系专项 15/15、加原 hub 20/20，作者仅重定向原独立脚本 imports 后 5/5；backend 类型、架构、默认及可信 `d0a008a` 迁移、改动格式与 diff 通过。证据为 `H:\TEMP\novelai-state-events-P2-original-confirmation.log`、`novelai-state-events-P2-regression-red.log`、`novelai-state-events-P2-complete-role-red.log`、`novelai-state-events-P2-fixed-targeted.log` 和 `novelai-state-events-P2-author-fixed-5.log`；修复候选另交独立冻结复审，没有重跑 full/71 HTTP/289 架构专项冒充本次证据。
+
+修复固定 `d2bd015016c8ada3fbac5df7053f4eaa6fee23c2` 已独立技术复审通过：新关系 15、原 hub 5 及原独立 5 项同次 25/25，零跳过，两条原红闭合，真实注销加签发、Key ABA/no-op、同步监听者重入和跨 MemberStore 实例保留。精确 `e7cf9675` R08 与最终通知增量另有真实 alias-only/原回执/完整离线回放联合 1/1；它是限定场景的精确来源联合，不替代父候选全库整合。18 个固定改动文件 SHA/Gitblob 全匹配，独立源保持 clean。报告为 `H:\TEMP\novelai-state-events-independent-20261114\REVIEW-PASS-d2.md`，同目录 `fixed-d2-focused.log`、`joint-e7-fixed-d2-alias.log`、`reviewed-files-d2.json` 及 `joint-e7-fixed-d2-files.json` 分别保留执行和联合范围。该 PASS 未把前驱 71/289 重标为最终全量，未执行 full/compiled/Node24/真实外端点或声称新 shared-events 已接通；同候选发布、SSE/sole 装配及维护者审查仍由父任务接续。
+
+### 9.53 #52：Direct 与异步任务 HTTP 关系接入
+
+本片从 OpenAI 固定片 `b95e724` 的独立工作树继续，先接入其已独审的当前 Key/ready 修复 `2a058f6`、`159c2b1`，再并入已独审的共同 finite seed owner `5442f31`；不从尚未固定的 Opening 或配置工作树取源。外部行为继续归 [API 契约](../contracts/api-contract.md#其他现有客户端接口)：`protocols/direct-http.ts` 只保留原 POST jobs、Direct 图片与 job/image/preview 路由分派，旧 sole runtime 仍向同一 transport 注入原实际能力。关系 adapter 使用第 9.46 节同一当前 Key/epoch/首次 context、GF/alias/receipt、R08 缓存与真实 replica reader，不建兼容 JsonStore 或第二套缓存规则。新 factory 不接 blocked `/api/web/jobs`，也不延续客户端 PST 独立执行模式。
+
+GET `/generate` 保留 query.token 身份、28 步上限、默认可缓存、原图和 200 SVG 错误；无键只找完成产物，有键可活动合并。POST `/api/jobs` 保留先限量读取 2 MiB 正文、body.token 优先、原 allowPurchasedAnlas/noCache 和无键活动合并，返回 202 完整任务 detail。正文尚未读完时不能借 header Key 代替未知 body 身份；当前 Key 在读完后的真实认证及每次受理事务中复核，缓存资格 IO 后继续按先前捕获的 admission epoch 拒绝 stop/resume。原键先于新准入重领，不改变原事实、seed 或首次 defaults；新意图才读取必需的配置 owner 注入。
+
+共同 seed owner 保持 Direct 任意有限 Number 和单 child 恒等，Native/member 原 uint32 与多 child wrap 不变。本片实际 localhost GET 已逐值验证 `0/-1/-2/1.5/4294967296` 从原请求到队列上游参数、actual_seed、冷输入及十四张公开表完整提交回放都原值保持；NaN/正负 Infinity 按原 200 SVG/x-error 拒绝且零受理，省略 seed 的随机原键保存首次实际值。输入、seed 和缓存事实没有在 transport 私有特判或重新随机化。旧 actual GET 探针与这些测试都使用隔离模拟上游，不宣称真实 NAI 支持全部取值。
+
+`http/public-image.ts` 将原相邻签名函数原样归为单一进程 owner，旧 sole 与新平台注入同一实例；HMAC、15 分钟、时序安全比较和重启失效的 secret 生命周期不变，没有新增 secret 配置或持久副本。签名继续是可转交的只读 capability，不绑定或因原 Key 撤销而失效。普通成员在 actual file IO 前后都核当前 Key、ready 与归属；已认证 admin 仅由平台只读能力注入，不给 writer 伪造 Key。JobPreviews 沿原唯一 listener 集合、节流、背压和计时清理，在真正 write 的当前 Key 事务内发送；稳定 memberID 订阅不会让旧 Key 在后续上游帧、心跳或 commit 检查后继续读取。即时无帧撤销由父任务同 runtime notifier 的 MemberStore 第三参并集接入，本片不新建通知注册表或裸 emit 规则。
+
+RequestStore 的 `readApiJob/readApiArtifact` 只提供原 job、产物、真实 attempt/source 及队列的薄事实，HTTP ACL 先于 InputStore 原保护输入冷读。新接单 cost=0 引用原 generationCost 兼容定义，accountRouteId/accountCost 无同义来源时返回 null；accountId 仅取本 attempt 或原产物 attempt，历史未知不借当前 bound 推断。Opening 缺原更新时间时不使用开账 event 时间冒充，完整历史 Opening 的 HTTP 汇合仍待其实际 owner 接入后验证。失败 job content 仍是 200 错误 SVG，即使 actual coordinator 已找回迟到原图；image 入口可领真实迟到 bytes，原失败、退款和完成时间保留。新关系没有旧 users.balance 的同义 scalar，故不发 x-balance；D4 不因此清零历史余额权益，迁移/封存责任仍保留，旧 adapter 继续发送原已知值。
+
+Node 22.23.4 的合法 ready/真实 localhost Direct 专项 23 项与原 JobPreviews 4 项联合 27/27、零跳过（`H:\TEMP\direct-http-final-local.log`）；原 sole 连接/幂等 HTTP 两项 2/2（`H:\TEMP\direct-http-original-compat.log`），原 startup 10 秒断言不变。覆盖同键零写、默认/显式缓存和活动合并差别、真实 refill/input/最后 alias SQL 失败全回滚、Key/正文/资格 IO/文件 IO/ready 撤销、实际上游预览与每帧当前事务、busy/timeout/SVG、断线后物理输入与预扣继续持有、迟到退款保留、原图/真实签名 ACL、持久云承诺缺配置不重生，以及完整业务回放 fetch=0且不复活私有 Key/PST/epoch。R2 场景沿真实 client/复制确认 owner，仅传输 mock，不称为实云验收。
+
+新增 writer 符号 `createRelationalDirectHttp` 追加原架构守卫，并保留 query/protocol alias-import 拒绝；正确旧 v3 与整数 seed v4 DDL/hash 都在 factory 进入前拒绝。原连接 helper 与架构反例联合 246/246，共同 OpenAI/Native cache/Key/rollback 与旧格式拒绝八项 8/8（`H:\TEMP\direct-http-final-shared-guards.log`、`H:\TEMP\direct-http-final-owner-shared.log`），架构、可信 `e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01` 的迁移历史、类型、改动格式和 diff 检查通过；各组有重叠，不相加作为独立用例数。这些窄 owner、签名提取与守卫须同候选独审。新 factory 仍由 sole 注入配置、签名实例和已保护 admin 能力，未替换总启动入口；full、编译包、Node 24 和生产切换均由父任务统一排期，不以本片 HTTP 通过声明整个 #52、D4 或恢复工作完成。
+
+固定 `940d036388c92905244258d53670a2f0dea75eb9` 独立技术复审通过：原 Direct HTTP 23/23 与独立反例 9/9 分别运行、零跳过，15 文件按 Git blob 与 SHA256 绑定；报告为 `H:\TEMP\novelai-direct-http-independent-20261114\INDEPENDENT-REVIEW.md`。整合时把新 Direct MemberStore 接到同一数据库/事件对象的 notifier 第三参，并将新 factory 纳入既有整模块写能力闭包。新增真实 Discord 资格撤销反例，精确核对只有原 `MemberEligibilityChanged` 提交、受影响成员收到一次事务后 session 通知，既有任务、钱包和收费不变；连同 Direct、OpenAI、Native、成员读取、通知、旧格式及架构七文件 497/497、零跳过，日志 `H:\TEMP\novelai-direct-notifier-root-final-union.log`。类型、架构、可信实际 main `88d2c26` 迁移与 diff 检查通过；后继整合仍须完整后端、编译与发布包联验。
+
+### 9.55 共享状态薄来源与既有成员 SSE 接合
+
+本片接续实际 `2b510fcc07355d278bf8c59a569a06d6e1dfd655` 的已审通知边界，官方 V5 两原标量依赖 `ce017a3c1205176d58ee9676507b06dd9fddfee7`（含其 `2704262` 前置；270 单点曾有错误金融假设，不作通过候选）。只接 `GET /api/member/shared-status` 与 `shared-events`，不替换 sole 装配，不新增数据库列、统计缓存、通知 registry 或持久 cursor，不改变金融公式。
+
+`QuotaStore.readSharedStatusSource` 仅读当前绑定/官方/原 baseline、实际 reserved 存在性与原 settlement/cooldown，复用现账户安全映射和同一个 `quotaAvailability`/展示 owner；当前 PST 仅 EXISTS 布尔，当前 epoch 与原 observed epoch 分开核对。官方展示 V5 的百分比和 negative 标志只用 `readOfficialQuotaV5` 两原事实字段，未知保留 null，禁止从 financial v5 的符号/零值猜测。原 financial state/account 提取仍保持修正版不推断 negative，原金额/恢复 owner 不变。未绑定按原 ambiguous/pending 规则，不将候选池额度公开。
+
+`RequestStore.readSharedJobCounts` 从当前 `group_members → generation_requests.member_id → generation_jobs` 读取薄状态，排除退休 parent/child，不按 Key、正文、BLOB 或 header 统计。失败时间原 completed_at 的闭一小时窗口含真实 0；任一保留失败的完成时间未知时 `recentFailures=null`，现数值 formatter 显示未知。SQL 以当前组外层驱动原 member/request 索引，工作量仍随当前组保留历史增长；没有声称常数时间。未知薄行的故障注入只验证 NULL 表示，现基线尚未交付 Opening 实体 writer，不能称该输入通过合法 Opening/ready 安装。
+
+两个真实 Cookie GET 在 Discord IO 后进入现认证事务核对当前会话、稳定成员和 ready，不新增续期点。SSE 仅将原 transport 从旧成员 HTTP 提取共用，原每成员 3/全局 100、200ms 合并/持续最多 1 秒、2 秒权限检查、15 秒心跳、64KiB 背压、resync 和关闭语义保留；工厂使用同 DB/emitter 的长期 notifier 作为原 hub key。实际 logout 只唤醒本人授权，回滚和原 receipt 不广播；401/403 auth-expired，临时故障普通 EOF，不把断线冒充会话失效。
+
+验收使用真实 SQLite、完整提交和选定私有快照、原 Local 字节与合法 installer；成员 Cookie 调用新共享 GET，Native HTTP 和真实队列调用本机合成上游并接同一 notifier。金融/任务读取零写与认证的真实观察写入分开描述；查询不发 Key、PST、内部成员列表或正文。定向和独立审查证据在固定候选后记录，同候选发布物、Node24、全量、真实外云、生产切换与 sole 装配仍由父任务收尾。
+
+作者 Node22 源码定向七文件 81/81、零跳过，覆盖已审原官方标量、原成员 SSE/背压与新关系通知，以及真实 GET/Native 队列/SSE 的回滚幽灵、receipt 零通知、本人/他人/owner、当前 Cookie/Discord IO/ready、临时 503 与 3/100 连接边界。加强真实 held/settled 和 SQL 计划检查后，两新关系文件另按同一产品复验；SQLite 使用 `idx_requests_member_time` 和原 job request/sample 唯一索引搜索，不扫描全部 request/job。首次更严格断言误写了 job 索引名，保留原失败，改为要求真实 `request_id` 索引搜索而不强制等价索引名。Web 原条件的 NULL 反例先红，现 presentation 11/11；backend/Web 类型、架构、默认及可信 `2b510fcc` 迁移历史、178 文件语法、改动格式和 diff 通过。日志位于 `H:\TEMP\novelai-shared-final-source.log`、`novelai-shared-plan-correct-source.log`、`novelai-shared-unknown-ui-final.log`；后续固定候选与独审将另追加。Web Guidance 已检索 nullable 状态/数值显示两个主题，无适用指南，复用原 formatter。
+
+固定 `0de0e050a9eb9e79483617d4405a142f23e8962e` 独立复审 19/19、零跳过，15 文件与候选 Git blob/SHA256 一致；错误的新 wrapper/hub 与 IO 前 Cookie 缓存两个负控分别被真实连接身份和多泄一帧断言识别。报告 `H:\TEMP\novelai-shared-independent-20261114\review-0de.md`。与已审 Direct、Opening Input 和官方原值 v5 汇合后，关系读取/通知/API 七文件 109/109，原成员 transport 4/4，Web presentation 11/11；backend/Web 类型、架构、可信 main `88d2c26` 迁移与 diff 通过。以上为后继窄联合，不冒充前置 `6dfc972` 的完整后端或编译产物验证，sole 与容量仍待验。
+
+### 9.56 启动器订阅与当前政策窄读
+
+四个既有 GET 路径 `/user/subscription`、`/v1/user/subscription`、`/ai/user/subscription`、`/v1/ai/user/subscription` 仍共用 `quota/launcher-subscription` 的个人展示规则。本片先交付关系读取能力，不接入旧 gateway 的总装配。成员启用与已入共享组的 403 边界、Anlas 保守整数化、个人 V5 百分点和恢复秒数只在原展示 owner 维护；旧数据库入口与关系入口共用抽出的窄 DTO 函数。`QuotaStore.readLauncherSubscription(memberId, now)` 先核当前成员状态，再复用 `readMemberQuotaSummary` 的独立恢复估算，从该摘要的确切 `boundAccountId` 薄读订阅资格和已知到期时间，不借另一池或后来绑定的期限。缺失期限保持原 inactive/tier 0/expiresAt 0；已知零值、余额和失败不互相替代。DTO 不携成员/上游标识、私有认证或其他成员钱包。
+
+读取不写金融事实、配置、游标或钱包，也不执行命令或网络。真实 held 允许读取预扣后的个人余额，缺金融基线继续 503；未绑定且已配置的成员保持原零余额 inactive 展示。公开展示事实可以完整回放，私有认证不随之恢复；原展示 owner 不以 PST 或 ready 判定 active，因此该 DTO 不能充当调度、认证或 ready 证明。实际 HTTP 调用者仍须按当前 Key/Cookie 与授权 owner 执行校验。
+
+`readQuotaConfiguration()` 只返回当前 `groups/configVersion/autoAnlasFallback/freeImagePolicy/lossAlertPolicy`，供既有 owner/admin 政策 UI 的后续薄绑定复用，不构造 users/jobs/tokens/settings 兼容集合。版本、nullable 免费阈值及 REAL 损耗阈值来自原政策列，不用当前默认补历史；原 managementView 与损耗报告共用同一字段映射。该配置读取独立于绑定、金融基线及空闲守卫，未初始化仍 503，政策修改继续归既有命令 owner。
+
+验收使用原 `launcherSubscription` 逐字段对照、真实观察期限、另一池合法 Opening、当前成员停用/非成员、真实预扣和账户暂停、未绑定真实配置/政策命令与完整公共回放。`PRAGMA query_only` 下执行每类读取并比较全表摘要，区分未知期限与真实零余额、队友余额与本人余额，保留高精度政策和 NULL，不触及旧 SQL、格式版本、依赖或生产数据。实际四 aliases、管理 HTTP、通知及同候选完整发布验收留给后续总装配。
+
+Node 22.23.4 新关系专项 4/4 与原展示专项 7/7，连摘要、政策、组、报告、损耗报告和运营账务八文件 156/156，零跳过；类型、架构、默认及可信 `88d2c26` 迁移历史、受影响格式和差异检查通过。日志 `H:\TEMP\novelai-launcher-configuration-context.log`、`novelai-launcher-configuration-type.log` 与 `novelai-launcher-configuration-static.log`。未跑 full、compiled、Node 24 或真实四别名 HTTP；独立审查和统一候选验收由父任务接续。
+
+固定 `2a417850580bd7995d3ae32023da9d6dd8bd47fa` 独立复审 13/13、零跳过，五文件按 Git blob/SHA256 绑定，报告 `H:\TEMP\novelai-launcher-management-independent-20261114\INDEPENDENT-REVIEW.md`。独立测试将 48 组余额/账户边界与精确固定的提取前 launcher 全字段对照，并在真实观察/SQLite/query_only 下核对原毫秒期限、本人余额和重复零写。与 Shared/官方原值/权益汇合后六文件 128/128，报告/损耗/金融摘要三文件另 24/24，类型、架构、可信实际 main 迁移与 diff 通过；不把分组数量相加作一次全套，也不代替四个实际 HTTP 别名和最终 sole 的验收。
+
+### 9.57 管理成员安全目录与单成员资料
+
+本片从实际 `6dfc97211e3c1e29549a6659a5e539c6be61ec51` 独立接续，只在 MemberStore 新增 `readManagementMemberProfiles()` 与 `readManagementMemberProfile(id)`。真实调用者为 owner/admin 的 member-management 摘要及 ManagementMembers/Groups；现仓库没有实际 `/api/users` 路由，admin summary 也只消费成员总数。本片不添加 HTTP、管理写命令、金融/任务 view、旧 users 对象或 schema。
+
+安全白名单只读 members 的稳定 ID、display_name、active/disabled 状态和 accepting_jobs，原 password_credentials.username、discord_bindings.discord_id 及 discord_invites.expires_at。展示名不同于登录身份，缺用户名/绑定/邀请截止保留 null，真实截止 0 有效；绑定不冒充当前 Discord 资格。SQL 只选这些 metadata，不加载 Key、密码、auth epoch、grant、session、邀请码或摘要。removed 身份不再作为当前管理目标，列表排除且单资料返回 null；其原历史仍由各自审计 owner 保留。同名资料仍以稳定 ID 分开，不能据目录内容或同名把 caller 当 owner。
+
+现注册 owner 对当前非 removed 成员有 200 上界，真实管理组件本地分页并同时用全名单选择分组/转交目标，因此本片不新造分页框架，也不默默 LIMIT 丢行。目录方法不做 HTTP 授权、不续期/写认证或钱包、不访问网络；后续实际管理 HTTP 在当前认证边界内组合本片 metadata、现 Quota 配置/摘要和 Request/Gen 活动来源，不重建旧 users/settings。反例覆盖 query_only/全表零写、同展示名不同 ID、Key-only、disabled/removed、原绑定及未知/0、重开和业务/私有恢复边界，固定证据随后追加。
+
+Node22 新目录 3/3，与原成员认证及权益三文件共 102/102、零跳过；类型、架构、默认和可信 `6dfc972` 迁移、179 文件语法、改动格式及 diff 通过。独立 TEMP 同字节新用例只把 `username` 的 null 错补为 displayName，三项均出现实际断言失败，排除把两种身份混用的错误实现；作者源未改。证据为 `H:\TEMP\novelai-member-directory-context.log`、`novelai-member-directory-negative-fallback.log`。首轮无观察时间的绑定夹具误请求 login 资格事实，被原 parser 正确拒绝，改用原仅私有保存路径保留未知观察，不放宽事实验证。邀请截止 0 亦明确属于回滚的私有行表示故障检查，不冒称一次真实签发。完整业务回放仅恢复公共身份；原用户名/Discord/邀请 metadata 必须由匹配选定私有快照恢复。这里没有完成管理 HTTP 或其授权/续期、发布物/全量或生产验收；独立复审另绑定固定产品。
+
+技术固定 `e028451880970972e7aa140d8a8edf7b3b5ed2a0` 独立复审 6/6、零跳过，四文件 Git blob/SHA 与作者源一致。稳定 ID/登录名/展示名碰撞、真实 Discord 撤销后的 metadata、同一公共 cut 两套选定私有用户名、业务回放认证为空和 query_only 全表/total_changes 零写均有独立反例；按 username 错查身份的 TEMP 负控准确失败。报告 `H:\TEMP\novelai-member-directory-independent-20261114\INDEPENDENT-REVIEW.md`。与成员/权益/真实读取/通知/Shared 六文件汇合 142/142，类型、架构、可信实际 main 迁移和 diff 通过；管理 HTTP 权限和最终发布仍另验。
+
+### 9.58 账户管理安全 metadata 窄读
+
+现共享 surface 允许 admin/owner 的 summary GET 和账户 PATCH，不恢复旧账户 GET 或设置 API。`ManagementUpstream` 只消费 ID、启用状态、物理 inFlight 及官方额度字段；额度、政策和真实物理占用仍由既有 QuotaStore、配置读和共同 controls 提供。本片仅在 AccountStore 提供 `readAccountManagementDirectory()`、`readAccountManagementProfile(accountId)` 与 `readSharedAccountManagementProfile()`，返回 `{id,name,enabled,credentialEpoch,createdAt}`。当前名称/启用/代次来自已有账户投影，原创建时间只取同账户最初 AccountRegistered 的 occurredAt，保留真实 0；Opening 未保存原创建时间，返回 NULL，不能借导入、冷却、暂停或凭据轮换的时间补值。未知账户 profile 返回 NULL，列表按稳定 ID 排序，不补 routeId、weight、旧累计计数或代理配置。
+
+共享选择只抽出原 owner 的 `selectSharedAccount(accounts, boundAccountId)`：优先确切当前绑定；只有未绑定且唯一候选才使用该候选。多个未绑账户、缺失的绑定目标均不猜选，名称、启用或读取顺序不能替代账户身份。旧 owner 配置/摘要继续复用这一处规则，关系读不构造旧 settings/users/jobs/tokens 数据库。
+
+普通 SQL 与输出均不取 PST、grant、credentialRef 或私有代理 URL，也不生成掩码或新增 reveal 开关。既有 admin summary 确有 `?revealTokens=1` 经现 admin 入口与 assertAdmin 保护后显式返回 PST/代理 URL 的功能；现 owner summary 即使携该参数也始终脱敏。该真实 admin caller 须在后续管理 HTTP 装配中使用独立、当前受保护的私有能力保留，不能把秘密字段混入本片普通列表，亦不能默认为已移除。此处不改 HTTP 授权、写命令、ready 或事实格式。
+
+专项以真实首次注册、暂停、凭据轮换和原完整公共回放，另以 Opening 同名多账户、原创建未知、已暂停账户真实任务收尾的 CooldownChanged 来源验证字段；原账户创建时间不随当前 source_event_id 改变。每种窄读均在 `PRAGMA query_only` 下比较全表摘要，并捕获实际 SQL 拒绝访问私有认证表/列；点查与创建来源使用原稳定 ID/流版本索引，不新建缓存、投影列或索引。当前能力不等于 admin/owner HTTP 总装配、显式 reveal 授权或同候选发布验收。
+
+Node 22.23.4 新专项 3/3，连原账户生命周期、owner 管理与启动器配置四文件 62/62，零跳过；类型、架构、默认及可信 `88d2c26` 迁移历史、受影响格式和差异检查通过。日志 `H:\TEMP\novelai-account-management-context.log`、`novelai-account-management-type.log` 和 `novelai-account-management-static.log`。未跑 full、compiled、Node 24、管理 HTTP 或显式 reveal；固定源码的独立复审与父统一装配仍待接续。
+
+固定 `cea3128c0ed055ea2f2e015fe473f2a782d03baf` 独立复审 5/5、零跳过，四文件 Git blob/SHA256 匹配；原注册 2000、后续轮换 clock 0、暂停与同名新候选的对照仍只用真实初始时间和原 bound 身份，纯公共回放无 PST，query_only/全表/total_changes 均零写。错取当前 source 事件时间的 TEMP 负控两例精准失败，报告 `H:\TEMP\novelai-account-management-independent-cea3128-20261114\INDEPENDENT-REVIEW.md`。与原账户、启动器、成员目录和 Shared 五文件汇合 60/60，类型、架构、可信实际 main 迁移和差异检查通过；实际管理/显式 reveal 授权与最终发布包另验。
 
 ### 9.54 核心 v4 候选的统一验证
 

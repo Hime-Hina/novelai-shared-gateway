@@ -322,6 +322,7 @@ export async function deliverDirectGeneration(
       response: Response,
     ): Promise<GenerationDeliveryResult | null>;
     timeoutMs: number;
+    now?(): number;
     sendStoredImage(
       res: Response,
       status: number,
@@ -342,12 +343,16 @@ export async function deliverDirectGeneration(
   if (accepted.cached) {
     await deps.sendStoredImage(res, 200, accepted.cached, {
       'x-cache': 'hit',
-      'x-balance': String(accepted.balance),
+      ...(Object.hasOwn(accepted, 'balance') ? { 'x-balance': String(accepted.balance) } : {}),
     });
     return;
   }
   try {
-    const result = await deps.waitForJobResult(accepted.id, Date.now() + deps.timeoutMs, res);
+    const result = await deps.waitForJobResult(
+      accepted.id,
+      (deps.now?.() ?? Date.now()) + deps.timeoutMs,
+      res,
+    );
     if (res.destroyed) {
       return;
     }
@@ -363,7 +368,9 @@ export async function deliverDirectGeneration(
     }
     await deps.sendStoredImage(res, 200, result.saved, {
       'x-cache': accepted.cacheHit ? 'hit' : 'miss',
-      'x-balance': String((accepted.replayed ? accepted.balance : result.balance) ?? ''),
+      ...(Object.hasOwn(accepted.replayed ? accepted : result, 'balance')
+        ? { 'x-balance': String((accepted.replayed ? accepted.balance : result.balance) ?? '') }
+        : {}),
     });
   } catch (error) {
     if (res.destroyed) {

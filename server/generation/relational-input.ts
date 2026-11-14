@@ -7,6 +7,7 @@ import {
 } from '../protocols/novelai-client.ts';
 import {
   nativeNormalizationContext,
+  parseNativeImageRequest,
   parseNativeAuxiliaryRequest,
   validateImageBytes,
   validateVibeEncodingBytes,
@@ -90,35 +91,12 @@ export function relationalInputCacheKey(
     return null;
   }
   validateRelationalInputBody(input.body);
-  const selection = input.body.cacheSelection as {
-      size: string;
-      cost?: number | null;
-      purchaseField: boolean;
-      sampler?: string;
-    },
-    parameters = input.body.parameters as Record<string, unknown>,
-    prompt = input.body.input as string,
-    tag = (input.body.displayPrompt ?? prompt) as string,
-    artist = directArtist(prompt, tag);
-  // 顺序沿原 normalizeNovelAiRequest 返回值；requestedSteps 原 owner 明确不参与缓存。
-  const request = {
-    tag,
-    prompt,
-    artist,
-    model: input.body.model,
-    negative: parameters.negative_prompt,
-    width: parameters.width,
-    height: parameters.height,
-    size: selection.size,
-    steps: parameters.steps,
-    scale: parameters.scale,
-    cfg: parameters.cfg_rescale,
-    sampler: selection.sampler ?? parameters.sampler,
-    noiseSchedule: parameters.noise_schedule,
-    seed: input.firstSeed,
-    cost: selection.cost,
-    ...(selection.purchaseField ? { allowPurchasedAnlas: input.body.allowPurchasedAnlas } : {}),
-  };
+  const parameters = input.body.parameters as Record<string, unknown>,
+    request = directInputRequest(
+      input.body,
+      input.firstSeed,
+      input.body.cacheSelection as DirectCacheSelection,
+    );
   const rebuilt = buildNovelAiParameters({
     ...request,
     normalizationContext: { native: input.context.native },
@@ -129,6 +107,43 @@ export function relationalInputCacheKey(
     return null;
   }
   return requestCacheKey(memberId, request, seedMode === 'fixed' ? input.firstSeed : '');
+}
+
+interface DirectCacheSelection {
+  size: string;
+  cost?: number | null;
+  purchaseField: boolean;
+  sampler?: string;
+}
+
+function directInputRequest(
+  body: Record<string, unknown>,
+  seed: number | null,
+  selection?: DirectCacheSelection,
+) {
+  const parameters = body.parameters as Record<string, unknown>,
+    prompt = body.input as string,
+    tag = (body.displayPrompt ?? prompt) as string,
+    artist = directArtist(prompt, tag);
+  // 顺序沿原 normalizeNovelAiRequest 返回值；requestedSteps 原 owner 明确不参与缓存。
+  return {
+    tag,
+    prompt,
+    artist,
+    model: body.model,
+    negative: parameters.negative_prompt,
+    width: parameters.width,
+    height: parameters.height,
+    size: selection?.size,
+    steps: parameters.steps,
+    scale: parameters.scale,
+    cfg: parameters.cfg_rescale,
+    sampler: selection?.sampler ?? parameters.sampler,
+    noiseSchedule: parameters.noise_schedule,
+    seed,
+    cost: selection?.cost,
+    ...(selection?.purchaseField ? { allowPurchasedAnlas: body.allowPurchasedAnlas } : {}),
+  };
 }
 
 function directArtist(prompt: string, tag: string): string {
@@ -318,6 +333,63 @@ export function relationalInputDigest(
   });
 }
 
+function canonicalGenerationWire(request: RecoverableRequest, native: NativeNormalizationContext) {
+  const parameters = buildNovelAiParameters({
+      ...request,
+      normalizationContext: { native },
+    } as ProviderRequest),
+    wire = recoveredInput({ ...request, nativeParameters: parameters });
+  if (!wire) {
+    invalid();
+  }
+  return wire;
+}
+
+// seed/count 不在规范正文中；这里只用临时确定值校验与种子无关的原定义，不恢复历史意图。
+export function assertRelationalCompleteInput(
+  body: Record<string, unknown>,
+  assets: (RelationalInputAsset & { bytes: Buffer })[],
+  context: RelationalNormalizationContext,
+  sampleCount: number,
+) {
+  const wire = restoreRelationalWire(body, assets, 0, sampleCount, context),
+    native = inputNativeContext(context);
+  let expected: Record<string, unknown> | null;
+  if (wire.operation === 'generate') {
+    if (context.kind === 'direct') {
+      // Direct 的原 DTO 没有 nativeParameters；不能借透传分支为外加字段背书。
+      expected = recoveredInput({
+        ...directInputRequest(body, 0),
+        normalizationContext: { native },
+        allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+        sampleCount,
+      } as RecoverableRequest);
+    } else {
+      const { operation: _operation, ...nativeBody } = wire;
+      expected = canonicalGenerationWire(
+        {
+          ...parseNativeImageRequest(nativeBody, native),
+          allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+        },
+        native,
+      );
+    }
+  } else {
+    const { operation, ...nativeBody } = wire,
+      request = parseNativeAuxiliaryRequest(nativeBody, operation, native);
+    if (request.sampleCount !== sampleCount) {
+      invalid();
+    }
+    expected = recoveredInput({
+      ...request,
+      allowPurchasedAnlas: wire.allowPurchasedAnlas === true,
+    });
+  }
+  if (canonicalJson(expected) !== canonicalJson(wire)) {
+    invalid();
+  }
+}
+
 export function prepareRelationalInput(
   request: RecoverableRequest,
   capturedContext: RelationalNormalizationContext,
@@ -346,14 +418,7 @@ export function prepareRelationalInput(
     }
     relationalChildSeed(firstSeed, 0, context);
     // 复用实际出站构造器，随后正文只留一种参数表示；seed/count 归 child/parent。
-    const parameters = buildNovelAiParameters({
-      ...request,
-      normalizationContext: { native },
-    } as ProviderRequest);
-    const cleaned = recoveredInput({ ...request, nativeParameters: parameters });
-    if (!cleaned) {
-      invalid();
-    }
+    const cleaned = canonicalGenerationWire(request, native);
     wire.parameters = cleaned.parameters;
     (wire.parameters as Record<string, unknown>).n_samples = sampleCount;
   }

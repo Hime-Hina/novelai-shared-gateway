@@ -245,11 +245,17 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
   };
 }
 
-function sharedAccount<T extends OwnerAccount>(db: OwnerDatabase<T>) {
+export function selectSharedAccount<T extends { id: string }>(
+  accounts: T[],
+  boundAccountId: string | null | undefined,
+) {
   return (
-    db.accounts.find((a) => a.id === db.settings.fairQuota?.boundAccountId) ||
-    (!db.settings.fairQuota?.boundAccountId && db.accounts.length === 1 ? db.accounts[0] : null)
+    accounts.find((account) => account.id === boundAccountId) ||
+    (!boundAccountId && accounts.length === 1 ? accounts[0] : null)
   );
+}
+function sharedAccount<T extends OwnerAccount>(db: OwnerDatabase<T>) {
+  return selectSharedAccount(db.accounts, db.settings.fairQuota?.boundAccountId);
 }
 export function ownerAccountConfiguration<T extends OwnerAccount>(
   db: OwnerDatabase<T>,

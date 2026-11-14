@@ -18,6 +18,7 @@ import { RelationalInputStore } from '../../server/storage/relational-input-stor
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
 import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
+import { createRelationalDirectHttp } from '../../server/generation/relational-direct-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
@@ -26,13 +27,13 @@ for (const previousVersion of [2, 3])
   test(
     '旧关系事件 v' +
       previousVersion +
-      ' 原型的正确旧 hash 也不能通过 v4 格式门禁，不手补字段或 hash',
+      ' 原型的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash',
     (t) => {
       const sqlite = new Database(':memory:');
       t.after(() => sqlite.close());
       sqlite.pragma('foreign_keys=ON');
       const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
-        'CHECK (schema_version = 4)',
+        'CHECK (schema_version = ' + RELATIONAL_EVENT_SCHEMA_VERSION + ')',
         'CHECK (schema_version = ' + previousVersion + ')',
       );
       assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
@@ -75,6 +76,11 @@ for (const previous of [
     name: 'relational-schema-v4-integer-seed.json',
     commit: 'e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01',
     sha256: '94ebf80c768c334466ef21bec0c01df6ae5f58b30792cd037ff6820d0511b796',
+  },
+  {
+    name: 'relational-schema-v5.json',
+    commit: 'bb0b60b80a967b695189b3dd11c13672b0e4fefd',
+    sha256: 'a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd',
   },
 ]) {
   test(`旧原型 ${previous.name} 的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash`, (t) => {
@@ -122,6 +128,14 @@ for (const previous of [
     );
     assert.throws(
       () => createRelationalNativeHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalOpenAiHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalDirectHttp({ sqlite }),
       /Unsupported relational database format/,
     );
     assert.deepEqual(sqlite.serialize(), before);

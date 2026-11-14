@@ -1,3 +1,5 @@
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
+import { emitStoreEvent } from '../events/state-notifications.ts';
 import { randomUUID } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import type Database from 'better-sqlite3';
@@ -43,13 +45,14 @@ export function createRelationalQueueRuntime(options: {
   generations: RelationalGenerationStore;
   inputs: RelationalInputStore;
   controls: Map<string, RunningControl>;
-  events: Pick<EventEmitter, 'emit'>;
+  events: EventEmitter;
   previews?: JobPreviews;
   env?: NodeJS.ProcessEnv;
   now?(): number;
   onError?(event: { code: string; jobId?: string }): void;
 }) {
   const { sqlite, generations: store, inputs } = options;
+  const notifications = relationalStateNotificationsFor(sqlite, options.events);
   if (!(options.controls instanceof Map) || typeof options.events?.emit !== 'function') {
     throw new TypeError('Shared physical controls and commit events are required.');
   }
@@ -57,11 +60,13 @@ export function createRelationalQueueRuntime(options: {
     now = options.now ?? Date.now;
   const previews = options.previews ?? new JobPreviews();
   const active = new Map<string, Active>();
-  let phase: 'created' | 'starting' | 'running' | 'stopping' | 'stopped' | 'faulted' = 'created';
+  let phase: 'created' | 'starting' | 'prepared' | 'running' | 'stopping' | 'stopped' | 'faulted' =
+    'created';
   let timer: ReturnType<typeof setTimeout> | null = null,
     scheduledAt = 0,
     ticking = false;
-  let startup: Promise<void> | null = null;
+  let preparation: Promise<void> | null = null,
+    startup: Promise<void> | null = null;
   let shutdown: Promise<void> | null = null;
   const controls = createGenerationControls({
     controls: options.controls,
@@ -76,18 +81,6 @@ export function createRelationalQueueRuntime(options: {
         ...(jobId ? { jobId } : {}),
       });
     } catch {}
-  };
-  const emit = (event: 'commit' | 'close') => {
-    try {
-      options.events.emit(event);
-    } catch (error) {
-      report(error);
-    }
-  };
-  const notify = (...results: (RelationalCommitResult | null | undefined)[]) => {
-    if (results.some((result) => result && !result.replayed)) {
-      emit('commit');
-    }
   };
   const metadata = (state: State, name: string, intent: object): Metadata => ({
     commandId: `executor:${name}:${state.attemptId ?? state.id}`,
@@ -156,39 +149,40 @@ export function createRelationalQueueRuntime(options: {
     completion?: GenerationPhysicalCompletion,
     error?: unknown,
   ) {
-    const results = sqlite
-      .transaction(() => {
-        const results: RelationalCommitResult[] = [];
-        if (run) {
-          const observed = response(run);
+    notifications.commit(() =>
+      sqlite
+        .transaction(() => {
+          const results: RelationalCommitResult[] = [];
+          if (run) {
+            const observed = response(run);
+            results.push(
+              store.recordGenerationResponse(
+                metadata(state, `${name}-response`, { observed, completion: completion ?? null }),
+                state.id,
+                observed,
+                completion,
+              ),
+            );
+          }
+          const failure = {
+            errorCode: code,
+            errorStatus: status,
+            aborted,
+            ...(run ? { evidence: { requestStarted: !!run.timing.upstreamStartedAt } } : {}),
+            ...(completion ? { completion } : {}),
+            ...(run ? { diagnostic: { dispatch: run.dispatch, error } } : {}),
+          };
           results.push(
-            store.recordGenerationResponse(
-              metadata(state, `${name}-response`, { observed, completion: completion ?? null }),
+            store.failGeneration(
+              metadata(state, name, { code, status, aborted, completion: completion ?? null }),
               state.id,
-              observed,
-              completion,
+              failure,
             ),
           );
-        }
-        const failure = {
-          errorCode: code,
-          errorStatus: status,
-          aborted,
-          ...(run ? { evidence: { requestStarted: !!run.timing.upstreamStartedAt } } : {}),
-          ...(completion ? { completion } : {}),
-          ...(run ? { diagnostic: { dispatch: run.dispatch, error } } : {}),
-        };
-        results.push(
-          store.failGeneration(
-            metadata(state, name, { code, status, aborted, completion: completion ?? null }),
-            state.id,
-            failure,
-          ),
-        );
-        return results;
-      })
-      .immediate();
-    notify(...results);
+          return results;
+        })
+        .immediate(),
+    );
     previews.clear(state.id);
   }
   async function runGeneration(run: Active) {
@@ -218,7 +212,7 @@ export function createRelationalQueueRuntime(options: {
       });
       run.phase = 'commit';
       descriptor = describeStoredResult(randomUUID(), run.state.operation, image);
-      notify(
+      notifications.commit(() =>
         sqlite
           .transaction(() =>
             store.prepareGenerationResult(
@@ -240,7 +234,7 @@ export function createRelationalQueueRuntime(options: {
           // 已取得完整产物后的本地失败保留准备/原预扣；重启先恢复，不能冒充新的上游失败。
           fault(failure, run.state.id);
         } else if (descriptor && !failure) {
-          notify(
+          notifications.commit(() =>
             sqlite
               .transaction(() =>
                 store.completeGeneration(
@@ -282,7 +276,7 @@ export function createRelationalQueueRuntime(options: {
             );
           } else {
             const observed = response(run);
-            notify(
+            notifications.commit(() =>
               sqlite
                 .transaction(() =>
                   store.recordGenerationResponse(
@@ -334,7 +328,7 @@ export function createRelationalQueueRuntime(options: {
     }
     for (const id of store.readDueGenerationReviewIds(now())) {
       const state = store.readGenerationExecutionState(id);
-      notify(
+      notifications.commit(() =>
         sqlite
           .transaction(() => store.closeGenerationReview(metadata(state, 'review-close', {}), id))
           .immediate(),
@@ -370,18 +364,20 @@ export function createRelationalQueueRuntime(options: {
             policyVersion: versions.billingPolicy,
             pricingVersion: versions.pricing,
           };
-          const result = sqlite
-            .transaction(() =>
-              store.dispatchGeneration(
-                meta,
-                { jobId: id, accountId, attemptId: randomUUID() },
-                {
-                  dispatchEnabled: () => phase === 'running',
-                  physicalAccountLoad: (id) => physicalAccountLoad(controls.controls, id),
-                },
-              ),
-            )
-            .immediate();
+          const result = notifications.commit(() =>
+            sqlite
+              .transaction(() =>
+                store.dispatchGeneration(
+                  meta,
+                  { jobId: id, accountId, attemptId: randomUUID() },
+                  {
+                    dispatchEnabled: () => phase === 'running',
+                    physicalAccountLoad: (id) => physicalAccountLoad(controls.controls, id),
+                  },
+                ),
+              )
+              .immediate(),
+          );
           if (result.dispatch) {
             const control = controls.createRunningJobControl({ ...state, accountId });
             const run: Active = {
@@ -392,7 +388,6 @@ export function createRelationalQueueRuntime(options: {
               phase: 'preflight',
             };
             active.set(id, run);
-            notify('commitSeq' in result ? result : null);
             void runGeneration(run);
           }
         } catch (error) {
@@ -430,9 +425,6 @@ export function createRelationalQueueRuntime(options: {
       if (recovered.fileMissing || recovered.unresolved) {
         throw new Error('Prepared results require recovery before dispatch.');
       }
-      if (recovered.completed) {
-        emit('commit');
-      }
       let afterId = '';
       for (;;) {
         const ids = store.readInterruptedGenerationIds(afterId);
@@ -452,9 +444,38 @@ export function createRelationalQueueRuntime(options: {
       }
       expire();
       if (phase === 'starting') {
-        phase = 'running';
-        schedule();
+        assertRelationalStorageReady(sqlite);
+        phase = 'prepared';
       }
+    } catch (error) {
+      fault(error);
+      throw error;
+    }
+  }
+  // 恢复只收尾原事实；监听前不建timer，也不取得新的派发资格。
+  function prepare() {
+    if (['stopping', 'stopped', 'faulted'].includes(phase)) {
+      return Promise.reject(new Error('Executor cannot be restarted in place.'));
+    }
+    if (preparation) {
+      return preparation;
+    }
+    phase = 'starting';
+    preparation = initialize();
+    return preparation;
+  }
+  function activate() {
+    if (phase !== 'prepared' && phase !== 'running') {
+      throw new Error('Executor must finish preparation before activation.');
+    }
+    try {
+      // 恢复完成与监听成功之间可能等待；只在当前 ready 下开放原调度器。
+      assertRelationalStorageReady(sqlite);
+      if (phase === 'running') {
+        return;
+      }
+      phase = 'running';
+      schedule();
     } catch (error) {
       fault(error);
       throw error;
@@ -466,6 +487,8 @@ export function createRelationalQueueRuntime(options: {
     schedule,
     tick,
     activePayloadBytes: () => inputs.activePayloadBytes(controls.controls.values()),
+    prepare,
+    activate,
     start() {
       if (['stopping', 'stopped', 'faulted'].includes(phase)) {
         return Promise.reject(new Error('Executor cannot be restarted in place.'));
@@ -473,11 +496,12 @@ export function createRelationalQueueRuntime(options: {
       if (startup) {
         return startup;
       }
-      if (phase !== 'created') {
-        return Promise.reject(new Error('Executor cannot be restarted in place.'));
-      }
-      phase = 'starting';
-      startup = initialize();
+      // 现有调用者仍是一段式启动；sole 使用 prepare→成功监听→activate。
+      startup = prepare().then(() => {
+        if (phase === 'prepared') {
+          activate();
+        }
+      });
       return startup;
     },
     stop() {
@@ -486,16 +510,17 @@ export function createRelationalQueueRuntime(options: {
       }
       phase = 'stopping';
       clearTimer();
-      emit('close');
       shutdown = (async () => {
-        if (startup) {
+        if (preparation) {
           try {
-            await startup;
+            await preparation;
           } catch {}
         }
         await Promise.all([...controls.controls.values()].map((control) => control.done));
         phase = 'stopped';
       })();
+      // 先登记关闭promise；同步close监听者重入stop也必须复用同一次关闭。
+      emitStoreEvent(options.events, 'close');
       return shutdown;
     },
     get status() {

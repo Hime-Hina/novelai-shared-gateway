@@ -25,8 +25,13 @@ export interface SharedStatus {
   cooldownUntil: string | null;
   cooldownReason: string | null;
   quotaSyncError: boolean;
-  recentFailures: number;
+  recentFailures: number | null;
 }
+
+export type SharedJobCounts = Pick<
+  SharedStatus,
+  'running' | 'queued' | 'pending' | 'recentFailures'
+>;
 
 type Rows<T> = T[] | Record<string, T> | null | undefined;
 interface StatusUser {
@@ -40,7 +45,7 @@ interface StatusJob {
   failedAt?: unknown;
   updatedAt?: unknown;
 }
-interface StatusAccount {
+export interface StatusAccount {
   id: string;
   enabled?: unknown;
   subscriptionActive?: unknown;
@@ -55,6 +60,12 @@ interface StatusAccount {
   quotaPurchased?: unknown;
   cooldownUntil?: unknown;
   cooldownReason?: unknown;
+}
+export interface SharedStatusSource {
+  accounts: readonly StatusAccount[];
+  boundAccountId: string | null;
+  baseline: NonNullable<Parameters<typeof quotaAvailability>[2]>;
+  counts: SharedJobCounts;
 }
 interface StatusDatabase {
   settings?: {
@@ -97,6 +108,36 @@ export function sharedAccountStatus(
       .map((u) => u.token),
   );
   const jobs = rows(db?.jobs).filter((j) => tokens.has(j.userToken));
+  return publicSharedAccountStatus(
+    {
+      accounts: rows(db?.accounts),
+      boundAccountId: state?.boundAccountId ?? null,
+      baseline: {
+        at: state?.snapshot?.at,
+        held: Object.values(state?.reservations || {}).some(
+          (charge) => charge.status === 'reserved',
+        ),
+        lastSettlementAt: state?.lastSettlementAt,
+      },
+      counts: {
+        running: jobs.filter((j) => j.status === 'running').length,
+        queued: jobs.filter((j) => j.status === 'queued').length,
+        pending: jobs.filter((j) => j.status === 'pending').length,
+        recentFailures: jobs.filter((j) => {
+          const at = timestamp(j.completedAt ?? j.failedAt ?? j.updatedAt);
+          return j.status === 'failed' && at !== null && at <= now && at >= now - 3600000;
+        }).length,
+      },
+    },
+    now,
+  );
+}
+
+// 原资格、优先级和白名单只在这一展示 owner 组装；关系读取仅提供真实安全来源与计数。
+export function publicSharedAccountStatus(
+  { accounts, boundAccountId, baseline, counts }: SharedStatusSource,
+  now = Date.now(),
+): SharedStatus {
   const base: SharedStatus = {
     status: 'pending_opus',
     subscriptionActive: null,
@@ -108,40 +149,33 @@ export function sharedAccountStatus(
     refillSecondsPerPercent: null,
     anlasFixed: null,
     anlasPurchased: null,
-    running: jobs.filter((j) => j.status === 'running').length,
-    queued: jobs.filter((j) => j.status === 'queued').length,
-    pending: jobs.filter((j) => j.status === 'pending').length,
+    running: counts.running,
+    queued: counts.queued,
+    pending: counts.pending,
     concurrencyLimit: sharedAccountConcurrency(),
     cooldownUntil: null,
     cooldownReason: null,
     quotaSyncError: false,
-    recentFailures: jobs.filter((j) => {
-      const at = timestamp(j.completedAt ?? j.failedAt ?? j.updatedAt);
-      return j.status === 'failed' && at !== null && at <= now && at >= now - 3600000;
-    }).length,
+    recentFailures: counts.recentFailures,
   };
   // 未绑定时不挑选其他上游账户，防止把试用池资料带入共享状态。
-  if (!state?.boundAccountId) {
+  if (!boundAccountId) {
     return {
       ...base,
       status:
-        rows(db?.accounts).filter((account) => isUsableOpus(account, now)).length > 1
+        accounts.filter((account) => isUsableOpus(account, now)).length > 1
           ? 'ambiguous_opus'
           : 'pending_opus',
     };
   }
-  const account = rows(db?.accounts).find((a) => a.id === state.boundAccountId);
+  const account = accounts.find((a) => a.id === boundAccountId);
   if (!account) {
     return { ...base, status: 'inactive_opus' };
   }
   const checked = timestamp(account.quotaCheckedAt),
     expires = timestamp(account.subscriptionExpiresAt),
     cooldown = timestamp(account.cooldownUntil);
-  const availability = quotaAvailability(account, now, {
-    at: state?.snapshot?.at,
-    held: Object.values(state?.reservations || {}).some((charge) => charge.status === 'reserved'),
-    lastSettlementAt: state?.lastSettlementAt,
-  });
+  const availability = quotaAvailability(account, now, baseline);
   const stale = !isQuotaSnapshotFresh(account.quotaCheckedAt, now) || availability === 'stale';
   const quotaSyncError = Boolean(account.quotaError);
   const v5 = number(account.v5UsagePercent),

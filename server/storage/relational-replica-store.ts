@@ -59,6 +59,7 @@ type Phase = 'reserved' | 'uploaded' | 'verified' | 'local_verified' | 'failed';
 export const relationalReplicaFacts = new Set<RelationalEvent['eventType']>([
   'StorageTargetRegistered',
   'OpeningStorageTargetRecorded',
+  'OpeningReplicaRecorded',
   'ArtifactReplicaRecorded',
   'ArtifactHistoryRetired',
 ]);
@@ -385,9 +386,18 @@ export class RelationalReplicaStore {
     if (row) {
       const { sourceEventId, ...payload } = row;
       const source = this.source(sourceEventId);
+      let original: Replica;
+      if (source.eventType === 'ArtifactReplicaRecorded') {
+        original = source.payload;
+      } else if (source.eventType === 'OpeningReplicaRecorded') {
+        assertRelationalOpeningSource(this.sqlite, source);
+        const { origin: _origin, ...replica } = source.payload;
+        original = replica;
+      } else {
+        fail('副本缺少原登记事实');
+      }
       if (
-        source.eventType !== 'ArtifactReplicaRecorded' ||
-        canonicalJson(source.payload) !== canonicalJson(payload) ||
+        canonicalJson(original) !== canonicalJson(payload) ||
         source.memberId !== this.readArtifact(artifactId).memberId
       ) {
         fail('副本当前行与原事实不一致');
@@ -520,11 +530,7 @@ export class RelationalReplicaStore {
       return null;
     }
     const artifact = this.readArtifact(artifactId),
-      target = this.readStorageTarget(current.target.storageTargetId),
-      location = replicaLocation(artifact.descriptor, kind);
-    if (replica.objectKey !== location.objectKey || replica.encoding !== location.encoding) {
-      fail('副本读取定位或编码不属于原产物');
-    }
+      target = this.readStorageTarget(current.target.storageTargetId);
     return {
       artifact,
       target,
@@ -581,15 +587,31 @@ export class RelationalReplicaStore {
     ) {
       fail('副本目标已不属于当前配置');
     }
+    const replica = this.readTicketReplica(artifactId, storageTargetId),
+      location = replicaLocation(artifact.descriptor, target.kind);
+    // 历史定位仍是持久引用承诺，但不能让当前 IO 或后续 UPSERT 冒充改写了它。
+    if (
+      replica &&
+      (replica.objectKey !== location.objectKey || replica.encoding !== location.encoding)
+    ) {
+      fail('副本读取定位或编码不属于原产物');
+    }
     const ticket = Object.freeze({ artifactId, storageTargetId });
     this.tickets.set(ticket, {
       configuration: current.fingerprint,
       artifactSource: artifact.sourceEventId,
       targetSource: target.sourceEventId,
-      replicaSource: this.readArtifactReplica(artifactId, storageTargetId)?.sourceEventId || null,
+      replicaSource: replica?.sourceEventId || null,
       background,
     });
     return ticket;
+  }
+  private readTicketReplica(artifactId: string, storageTargetId: string) {
+    const replica = this.readArtifactReplica(artifactId, storageTargetId);
+    if (replica?.deletedAt != null) {
+      fail('已删除副本不能领取读取或复制票据');
+    }
+    return replica;
   }
   private checkedTicket(ticket: Ticket) {
     const issued = this.tickets.get(ticket);
@@ -611,14 +633,16 @@ export class RelationalReplicaStore {
     ) {
       fail('副本票据的来源或配置已变化');
     }
-    return { issued, artifact, target };
+    return {
+      issued,
+      artifact,
+      target,
+      replica: this.readTicketReplica(ticket.artifactId, ticket.storageTargetId),
+    };
   }
   assertArtifactReplicaTicket(ticket: Ticket) {
-    const { issued } = this.checkedTicket(ticket);
-    if (
-      (this.readArtifactReplica(ticket.artifactId, ticket.storageTargetId)?.sourceEventId ||
-        null) !== issued.replicaSource
-    ) {
+    const { issued, replica } = this.checkedTicket(ticket);
+    if ((replica?.sourceEventId || null) !== issued.replicaSource) {
       fail('副本票据已被另一提交替换');
     }
   }
@@ -734,11 +758,18 @@ export class RelationalReplicaStore {
               'INSERT INTO storage_targets(id,kind,namespace,credential_ref,source_event_id) VALUES(?,?,?,?,?)',
             )
             .run(p.storageTargetId, p.kind, p.namespace, p.credentialRef, event.eventId);
-        } else if (event.eventType === 'ArtifactReplicaRecorded') {
+        } else if (
+          event.eventType === 'ArtifactReplicaRecorded' ||
+          event.eventType === 'OpeningReplicaRecorded'
+        ) {
           const p = event.payload,
             artifact = this.readArtifact(p.artifactId),
             target = this.readStorageTarget(p.storageTargetId),
             previous = this.readArtifactReplica(p.artifactId, p.storageTargetId);
+          const opening = event.eventType === 'OpeningReplicaRecorded';
+          if (opening) {
+            assertRelationalOpeningSource(this.sqlite, event);
+          }
           const location = replicaLocation(artifact.descriptor, target.kind);
           const firstReservation =
             !previous &&
@@ -774,14 +805,18 @@ export class RelationalReplicaStore {
             p.lastErrorCode !== null &&
             /^[A-Z0-9_]{1,64}$/.test(p.lastErrorCode);
           if (
-            artifact.retiredAt !== null ||
             event.memberId !== artifact.memberId ||
             event.accountId !== null ||
-            p.deletedAt !== null ||
-            p.objectKey !== location.objectKey ||
-            p.encoding !== location.encoding ||
-            previous?.deletedAt != null ||
-            !(firstReservation || firstLocal || upload || verification || failed)
+            (opening
+              ? previous !== null
+              : artifact.retiredAt !== null ||
+                p.deletedAt !== null ||
+                p.objectKey !== location.objectKey ||
+                p.encoding !== location.encoding ||
+                (previous !== null &&
+                  (previous.objectKey !== p.objectKey || previous.encoding !== p.encoding)) ||
+                previous?.deletedAt != null ||
+                !(firstReservation || firstLocal || upload || verification || failed))
           ) {
             fail('副本来源、编码或状态迁移不一致');
           }
@@ -790,7 +825,7 @@ export class RelationalReplicaStore {
               'SELECT 1 FROM artifact_replicas r JOIN artifacts a ON a.id=r.artifact_id WHERE r.storage_target_id=? AND r.object_key=? AND r.deleted_at IS NULL AND (a.sha256!=? OR a.byte_length!=? OR r.encoding!=?) LIMIT 1',
             )
             .get(p.storageTargetId, p.objectKey, artifact.sha256, artifact.byteLength, p.encoding);
-          if (conflict) {
+          if (p.deletedAt === null && conflict) {
             fail('同一物理对象的内容或编码冲突');
           }
           this.sqlite

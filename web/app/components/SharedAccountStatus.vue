@@ -77,7 +77,8 @@ const problems = computed(() => {
     s.quotaSyncError && '官方余额同步异常',
     s.stale &&
       (s.officialCheckedAt ? '余额数据已过期，请勿作为当前余量' : '尚无共享 Opus 的官方余额数据'),
-    s.recentFailures > 0 && `最近一小时失败 ${number(s.recentFailures)} 次`,
+    (s.recentFailures === null || s.recentFailures > 0) &&
+      `最近一小时失败 ${number(s.recentFailures)} 次`,
   ].filter(Boolean);
 });
 function stopTimer() {

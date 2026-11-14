@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import http from 'node:http';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -79,7 +79,12 @@ async function setup(t, env = {}) {
       ? Response.json({ user: { id: '222222222222222222' } })
       : new Response('', { status: 404 });
   };
-  const handle = createRelationalMemberAuthenticationHttp({ sqlite: f.db, env, discordFetch });
+  const handle = createRelationalMemberAuthenticationHttp({
+    sqlite: f.db,
+    events: new EventEmitter(),
+    env,
+    discordFetch,
+  });
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);

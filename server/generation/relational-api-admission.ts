@@ -24,7 +24,7 @@ export interface RelationalApiAdmissionOptions {
   key: string | null | undefined;
   admissionVersion: number;
   operation: 'generate' | 'upscale' | 'encode-vibe';
-  source: 'novelai-native' | 'openai';
+  source: 'novelai-native' | 'openai' | 'direct' | 'web';
   seedMode: 'fixed' | 'random' | 'not_applicable';
   noCache: boolean;
   correlationId?: string;
@@ -191,7 +191,7 @@ export function createRelationalApiGenerationAdmission(deps: {
               });
             } else {
               const cacheKey =
-                options.source === 'openai'
+                options.source !== 'novelai-native'
                   ? deps.inputs.generationInputIntent(
                       member.id,
                       request,
@@ -242,7 +242,10 @@ export function createRelationalApiGenerationAdmission(deps: {
             context: search.context,
             seedMode: search.seedMode,
             noCache: false,
-            allowActive: options.source === 'openai',
+            allowActive:
+              options.source === 'openai' ||
+              options.source === 'web' ||
+              (options.source === 'direct' && Boolean(options.key)),
           },
           deps.replicas,
         );

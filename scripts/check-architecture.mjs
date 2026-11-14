@@ -9,6 +9,8 @@ const assembly = new Set(['server/index.ts', 'executor/start.mjs', 'executor/gat
 const webTransport = new Set(['server/http/api-surface.ts', 'server/generation/payload-budget.ts']);
 const mutations = new Set([
   'JsonStore',
+  'emitStoreEvent',
+  'relationalStateNotificationsFor',
   'configureFairQuota',
   'configureFairGroups',
   'configureAnlasFallback',
@@ -35,6 +37,8 @@ const mutations = new Set([
   'initializeRelationalStorage',
   'persistAcceptedInput',
   'stageGenerationDiagnostic',
+  'stageOpeningInput',
+  'stageOpeningContext',
   'initializeGatewayConfiguration',
   'stageNormalizationDefaultsProfile',
   'createNormalizationDefaultsProjector',
@@ -53,6 +57,7 @@ const mutations = new Set([
   'createRelationalNativeAdmission',
   'createRelationalApiGenerationAdmission',
   'createRelationalOpenAiHttp',
+  'createRelationalDirectHttp',
   'createRelationalNativeHttp',
   'createLegacyNativeHttp',
   'memberApiKeyTransaction',
@@ -188,11 +193,11 @@ export function checkSource(filename, text) {
       ((query || protocol) &&
         (names.some((name) => mutations.has(name)) ||
           // 混合 owner 的整模块含已登记写命令；明确的纯 named reader 继续允许。
-          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events)|storage\/sqlite-store)\.(?:ts|js)$/.test(
+          (/(?:quota\/(?:fair-share|operating-accounting|free-image-policy|failure-accounting)|members\/(?:owner-operations|authentication)|generation\/(?:queue-policy|execution|accounting)|events\/(?:event-store|domain-events|state-notifications)|storage\/sqlite-store)\.(?:ts|js)$/.test(
             target,
           ) &&
             names.includes('*')) ||
-          /(?:events\/relational-event-store|members\/(?:(?:relational-)?authentication-http|relational-read-http)|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|api-admission|openai-http|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
+          /(?:events\/relational-(?:event-store|state-notifications)|members\/(?:(?:relational-)?authentication-http|relational-read-http)|generation\/(?:relational-(?:member-(?:admission|http)|native-(?:admission|http)|api-admission|openai-http|direct-http|queue-runtime)|legacy-(?:member|native)-http)|quota\/relational-account-refresh|storage\/relational-(?:configuration-store|input-store|member-store|generation-store|quota-store|account-store|result-recovery|private-restore|replay|replica-store|replica-io|ready|storage))\.(?:ts|js)$/.test(
             target,
           ))) ||
       (query &&

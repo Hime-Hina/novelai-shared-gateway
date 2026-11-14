@@ -19,6 +19,7 @@ import {
   assertOwnerAccountPst,
   assertOwnerAccountCredentialChangeAllowed,
   ownerAccountConfiguration,
+  selectSharedAccount,
 } from '../members/owner-operations.ts';
 import { physicalAccountLoad } from '../generation/queue-dispatch.ts';
 import { RelationalQuotaStore, relationalQuotaFacts } from './relational-quota-store.ts';
@@ -57,6 +58,13 @@ type Account = {
   epoch: number;
   pst: string | null;
 };
+export interface AccountManagementProfile {
+  id: string;
+  name: string;
+  enabled: boolean;
+  credentialEpoch: number;
+  createdAt: number | null;
+}
 function fail(message: string, statusCode = 409): never {
   throw Object.assign(new Error(message), { statusCode });
 }
@@ -84,6 +92,36 @@ export class RelationalAccountStore {
     this.controls = controls;
     this.env = env;
     this.quotas = quotas;
+  }
+  private managementAccounts(parameters: [] | [string]): AccountManagementProfile[] {
+    // 账户当前来源会随轮换或冷却改变；原创建时间只来自注册，Opening 的导入时间不是创建时间。
+    const rows = this.sqlite
+      .prepare<string[], Omit<AccountManagementProfile, 'enabled'> & { enabled: number }>(
+        `SELECT a.id,a.display_name AS name,a.enabled,a.credential_epoch AS credentialEpoch,
+        (SELECT CASE WHEN e.event_type='AccountRegistered' THEN e.occurred_at ELSE NULL END
+          FROM domain_events e WHERE e.stream_id='account:'||a.id
+          AND e.event_type IN ('AccountRegistered','OpeningAccountRecorded')
+          ORDER BY e.stream_version LIMIT 1) AS createdAt
+        FROM upstream_accounts a ${parameters.length ? 'WHERE a.id=?' : ''} ORDER BY a.id`,
+      )
+      .all(...parameters);
+    return rows.map((row) => ({ ...row, enabled: row.enabled === 1 }));
+  }
+  readAccountManagementDirectory() {
+    return this.managementAccounts([]);
+  }
+  readAccountManagementProfile(accountId: string) {
+    return this.managementAccounts([accountId])[0] ?? null;
+  }
+  readSharedAccountManagementProfile() {
+    return this.sqlite.transaction(() => {
+      const policy = this.sqlite
+        .prepare<[], { boundAccountId: string | null }>(
+          'SELECT bound_account_id AS boundAccountId FROM sharing_policy WHERE id=1',
+        )
+        .get();
+      return selectSharedAccount(this.managementAccounts([]), policy?.boundAccountId);
+    })();
   }
   private owned<T>(run: () => T): T {
     if (!this.sqlite.inTransaction) {

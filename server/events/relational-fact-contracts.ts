@@ -152,7 +152,13 @@ const chargeFields = {
   reservationEventId: id,
   terminalEventId: nullable(id),
 };
+// 原官方标量与金融定点值不是同一表示；未知历史须明确为 null。
+const officialQuotaV5Fields = {
+  v5UsagePercent: nullable(number),
+  v5UsageIsNegative: nullable(bool),
+};
 const quotaFields = {
+  ...officialQuotaV5Fields,
   accountId: id,
   status: id,
   observationEventId: nullable(id),
@@ -454,6 +460,7 @@ export const relationalPayloadParsers = {
     capacityLastErrorAt: nullable(integer),
   }),
   QuotaObserved: fields({
+    ...officialQuotaV5Fields,
     accountId: id,
     credentialEpoch: positive,
     sequence,
@@ -728,6 +735,8 @@ export const relationalPayloadParsers = {
     originalRequestId: id,
     originalJobId: id,
     originalCommandId: id,
+    noCache: nullable(bool),
+    seedMode: nullable(choices('fixed', 'random', 'not_applicable')),
     requestId: nullable(id),
     commitSeq: nullable(sequence),
     contextId: nullable(id),
@@ -910,9 +919,15 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   }
   if (header.eventType === 'OpeningIdempotencyRecorded') {
     if (
-      (row.commitSeq === null) === (row.archivedReceipt === null) ||
+      row.commitSeq !== null ||
       (row.resolution === 'live' &&
-        (row.requestId === null || row.commitSeq === null || row.contextId === null)) ||
+        (row.requestId === null ||
+          row.contextId === null ||
+          row.archivedReceipt === null ||
+          row.noCache === null ||
+          row.seedMode === null)) ||
+      (row.seedMode !== null &&
+        (row.operation === 'generate') === (row.seedMode === 'not_applicable')) ||
       (row.requestId !== null && row.requestId !== row.originalRequestId)
     ) {
       invalid();

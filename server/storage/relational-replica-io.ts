@@ -194,8 +194,23 @@ export async function copyRelationalArtifactReplica(
   if (artifact.retiredAt !== null) {
     throw new Error('Retired artifacts cannot start replica copies.');
   }
+  const planned = store.readConfiguredStorageTarget(kind);
+  let row = store.readArtifactReplica(artifactId, planned.storageTargetId);
+  let source: { ticket: Ticket; key: string } | undefined;
+  // 来源资格先于目的预留；没有开始 IO 的拒绝不冒充目的副本故障。
+  // 已上传的 PikPak 重领只核原目的，不重新要求已经不参与本次 IO 的 R2。
+  if (kind === 'pikpak' && row?.uploadedAt == null) {
+    const sourceTarget = store.readConfiguredStorageTarget('r2'),
+      sourceReplica = store.readArtifactReplica(artifactId, sourceTarget.storageTargetId);
+    if (sourceReplica?.verifiedAt == null) {
+      throw new Error('PikPak requires the original verified R2 source.');
+    }
+    source = {
+      ticket: store.beginArtifactReplica(artifactId, sourceTarget.storageTargetId),
+      key: sourceReplica.objectKey,
+    };
+  }
   const destination = target(sqlite, store, artifactId, kind, now);
-  let row = store.readArtifactReplica(artifactId, destination.storageTargetId);
   let ticket = store.beginArtifactReplica(artifactId, destination.storageTargetId);
   if (row && row.uploadedAt !== null) {
     if (kind === 'r2' && (row.verifiedAt === null || row.lastErrorCode !== null)) {
@@ -241,20 +256,14 @@ export async function copyRelationalArtifactReplica(
         artifact.mimeType,
       );
     } else {
-      const source = target(sqlite, store, artifactId, 'r2', now),
-        sourceReplica = store.readArtifactReplica(artifactId, source.storageTargetId);
-      if (sourceReplica?.verifiedAt == null) {
-        throw new Error('PikPak requires the original verified R2 source.');
-      }
-      const sourceTicket = store.beginArtifactReplica(artifactId, source.storageTargetId);
       const object = {
         bucket: configuration.r2!.config.bucket,
-        key: sourceReplica.objectKey,
+        key: source!.key,
         sha256: artifact.sha256,
         byteLength: artifact.byteLength,
       };
       const bytes = await configuration.r2!.get(object);
-      store.assertArtifactReplicaTicket(sourceTicket);
+      store.assertArtifactReplicaTicket(source!.ticket);
       store.assertArtifactReplicaTicket(ticket);
       await configuration.pikpak!.put(object, bytes);
     }

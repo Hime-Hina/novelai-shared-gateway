@@ -3,6 +3,7 @@ import type { GenerationRequestState } from '../generation/request-queries.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { memberCharge } from '../quota/failure-accounting.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import type { SharedJobCounts } from '../quota/shared-status.ts';
 
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
 function fail(statusCode: number, code: string, message: string): never {
@@ -121,6 +122,30 @@ export class RelationalRequestStore {
     if (member?.status !== 'active' || !member.authEpoch) {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
+  }
+
+  readSharedJobCounts(memberId: string, now: number): SharedJobCounts {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      fail(400, 'invalid_parameters', '共享状态时间无效。');
+    }
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      // 当前组驱动既有 member/request 索引，避免轮询从全部已退组历史扫描起。
+      return this.sqlite
+        .prepare<[number, number], SharedJobCounts>(
+          `SELECT COUNT(*) FILTER (WHERE j.status='running') AS running,
+          COUNT(*) FILTER (WHERE j.status='queued') AS queued,
+          COUNT(*) FILTER (WHERE j.status='pending') AS pending,
+          CASE WHEN COUNT(*) FILTER (WHERE j.status='failed' AND j.completed_at IS NULL)>0
+            THEN NULL ELSE COUNT(*) FILTER (
+              WHERE j.status='failed' AND j.completed_at BETWEEN ? AND ?)
+          END AS recentFailures
+        FROM group_members g CROSS JOIN generation_requests r ON r.member_id=g.member_id
+        CROSS JOIN generation_jobs j ON j.request_id=r.id
+        WHERE r.retired_at IS NULL AND j.retired_at IS NULL`,
+        )
+        .get(now - 3600000, now)!;
+    })();
   }
 
   private requestState(request: RequestRow, memberId: string): GenerationRequestState {
@@ -377,5 +402,60 @@ export class RelationalRequestStore {
       }
       return job;
     })();
+  }
+
+  // 旧客户端 detail 的薄事实；HTTP 当前 Key/admin ACL 先于保护输入冷读。
+  readApiJob(jobId: string) {
+    const job = this.sqlite
+      .prepare<
+        [string],
+        JobRow & {
+          memberId: string;
+          source: string;
+          seed: number | null;
+          accountId: string | null;
+          currentAccepted: number;
+          currentEventType: string;
+          queuePosition: number;
+          queuedCount: number;
+          retiredAt: number | null;
+          requestRetiredAt: number | null;
+        }
+      >(
+        `SELECT ${jobColumns},r.member_id AS memberId,r.source,j.actual_seed AS seed,
+      COALESCE(attempt.account_id,original.account_id) AS accountId,e.event_type AS currentEventType,
+      EXISTS(SELECT 1 FROM domain_events accepted WHERE accepted.event_type='JobAccepted'
+        AND accepted.stream_id='request:'||r.id AND json_extract(accepted.payload,'$.jobId')=j.id) AS currentAccepted,
+      CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
+        WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) ELSE 0 END AS queuePosition,
+      (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
+      j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt
+      ${jobFrom} LEFT JOIN generation_attempts attempt ON attempt.job_id=j.id
+      LEFT JOIN generation_attempts original ON original.id=a.original_attempt_id
+      WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      fail(404, 'job_not_found', 'job not found.');
+    }
+    return {
+      ...job,
+      createdAt: iso(job.createdAt),
+      updatedAt: job.currentEventType === 'OpeningJobRecorded' ? null : iso(job.updatedAt),
+      completedAt: iso(job.completedAt),
+      lateResultAvailable: job.lateResultAvailable === 1,
+    };
+  }
+
+  readApiArtifact(artifactId: string) {
+    const artifact = this.sqlite
+      .prepare<[string], { memberId: string; retiredAt: number | null }>(
+        'SELECT member_id AS memberId,retired_at AS retiredAt FROM artifacts WHERE id=?',
+      )
+      .get(artifactId);
+    if (!artifact) {
+      fail(404, 'artifact_not_found', 'image not found.');
+    }
+    return artifact;
   }
 }

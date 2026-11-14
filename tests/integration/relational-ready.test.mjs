@@ -290,37 +290,54 @@ test('选择源须有明确非零完整切点，未实现事实与无原事实�
           appendRelationalCommit(f.db, {
             ...command,
             expectedVersions: {
-              'request:unsupported-opening': '0',
+              'request:complete': f.db
+                .prepare(
+                  'SELECT CAST(stream_version AS TEXT) AS v FROM stream_heads WHERE stream_id=?',
+                )
+                .get('request:complete').v,
             },
             receipt: { opening: true },
             events: [
               {
-                // 合法 opening request 身份/来源仍没有业务投影 owner；不能借新 cache owner 绕过 ready。
-                eventType: 'OpeningRequestRecorded',
-                streamId: 'request:unsupported-opening',
+                // 合法原尝试仍缺 owner；已完成幂等不能继续充当缺口占位。
+                eventType: 'OpeningAttemptRecorded',
+                streamId: 'request:complete',
                 memberId: 'm1',
-                accountId: null,
+                accountId: 'a',
                 occurredAt: NOW + 20,
                 policyVersion,
                 pricingVersion,
                 payload: {
-                  requestId: 'unsupported-opening',
-                  memberId: 'm1',
-                  inputId: f.db
-                    .prepare("SELECT input_id FROM generation_requests WHERE id='complete'")
-                    .get().input_id,
-                  contextId: f.db
-                    .prepare("SELECT context_id FROM generation_requests WHERE id='complete'")
-                    .get().context_id,
-                  source: 'legacy-archive',
-                  operation: 'generate',
-                  model: 'nai-diffusion-4-5-full',
-                  sampleCount: 1,
-                  seedMode: 'fixed',
-                  confirmation: null,
-                  acceptedAt: NOW,
-                  retiredAt: null,
-                  origin: { sourceId: 'synthetic-opening', originalId: 'unsupported-request' },
+                  attemptId: 'unsupported-original-attempt',
+                  jobId: 'complete-0',
+                  accountId: 'a',
+                  credentialEpoch: null,
+                  authorizedAt: null,
+                  response: {
+                    dispatchState: 'unknown',
+                    upstreamStartedAt: null,
+                    upstreamHeadersAt: null,
+                    upstreamCompletedAt: null,
+                    upstreamHttpStatus: null,
+                  },
+                  candidateMode: 'unknown',
+                  upstreamCandidates: [],
+                  actualConsumption: null,
+                  reviewStatus: null,
+                  firstUnknownAt: null,
+                  reviewDeadlineAt: null,
+                  reviewClosedAt: null,
+                  lossEventId: null,
+                  closureEventId: null,
+                  preparedArtifactId: null,
+                  preparedFile: null,
+                  preparedMimeType: null,
+                  preparedByteLength: null,
+                  preparedSha256: null,
+                  origin: {
+                    sourceId: 'synthetic-opening',
+                    originalId: 'unsupported-original-attempt',
+                  },
                 },
               },
             ],

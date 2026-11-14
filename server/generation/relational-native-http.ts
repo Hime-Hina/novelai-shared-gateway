@@ -1,3 +1,4 @@
+import { relationalStateNotificationsFor } from '../events/relational-state-notifications.ts';
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
@@ -37,7 +38,11 @@ export function createRelationalNativeHttp(deps: {
 }) {
   const { sqlite, env = process.env } = deps;
   assertRelationalStorageReady(sqlite);
-  const members = new RelationalMemberStore(sqlite, env),
+  const members = new RelationalMemberStore(
+      sqlite,
+      env,
+      relationalStateNotificationsFor(sqlite, deps.events),
+    ),
     inputs = new RelationalInputStore(sqlite, env),
     generations = new RelationalGenerationStore(sqlite, env),
     requests = new RelationalRequestStore(sqlite);
@@ -98,12 +103,6 @@ export function createRelationalNativeHttp(deps: {
             const batch = await admit(options);
             if (batch.replayed) {
               await delivery.validateReplay(batch.jobIds);
-            } else {
-              try {
-                deps.events.emit('commit');
-              } catch {
-                /* 失效通知不能改变已提交受理结果。 */
-              }
             }
             return batch;
           },
