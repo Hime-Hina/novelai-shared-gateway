@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import Database from 'better-sqlite3';
@@ -8,7 +9,10 @@ import { fixture, meta, NOW } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
-import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import {
+  initializeRelationalStorage,
+  assertRelationalStorageFormat,
+} from '../../server/storage/relational-storage.ts';
 import {
   appendRelationalCommit,
   readRelationalCommit,
@@ -22,10 +26,12 @@ import {
 import {
   prepareRelationalInput,
   assertRelationalCompleteInput,
+  assertRelationalInputDefinition,
   relationalInputCacheKey,
 } from '../../server/generation/relational-input.ts';
 import {
   parseNativeImageRequest,
+  parseNativeAuxiliaryRequest,
   nativeNormalizationContext,
   crc32,
 } from '../../server/protocols/native-image.ts';
@@ -478,27 +484,35 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
     { ...saved.parameters, width: 127 },
   ]) {
     const body = { ...saved, parameters };
-    assert.throws(() =>
-      append(
-        f,
-        {
-          inputId: 'invalid-definition',
-          completeness: 'complete',
-          body,
-          assets: [],
-          logicalBytes: Buffer.byteLength(JSON.stringify(body)),
-        },
-        [request('invalid-definition', { model: original.model, contextId: original.context_id })],
-      ),
-    );
-    assert.equal(databaseState(f.db), before);
+    for (const sampleCount of [1, null]) {
+      assert.throws(() =>
+        append(
+          f,
+          {
+            inputId: 'invalid-definition',
+            completeness: 'complete',
+            body,
+            assets: [],
+            logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+          },
+          [
+            request('invalid-definition', {
+              model: original.model,
+              contextId: original.context_id,
+              sampleCount,
+            }),
+          ],
+        ),
+      );
+      assert.equal(databaseState(f.db), before);
+    }
   }
   const oldNative = JSON.parse(
     f.db.prepare('SELECT body FROM normalization_contexts WHERE id=?').get(original.context_id)
       .body,
   ).native;
   oldNative.parameterNames = oldNative.parameterNames.filter((name) => name !== 'sm');
-  const appendOldDefinition = (body) =>
+  const appendOldDefinition = (body, sampleCount = 1) =>
     f.db.transaction(() => {
       const inputs = new RelationalInputStore(f.db),
         registered = event(
@@ -526,15 +540,21 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
           request('old-definition', {
             model: original.model,
             contextId: 'original-old-definition',
+            sampleCount,
           }),
         ]),
         inputs,
       );
     })();
-  assert.throws(() =>
-    appendOldDefinition({ ...saved, parameters: { ...saved.parameters, sm: false } }),
-  );
-  assert.equal(databaseState(f.db), before);
+  for (const sampleCount of [1, null]) {
+    assert.throws(() =>
+      appendOldDefinition(
+        { ...saved, parameters: { ...saved.parameters, sm: false } },
+        sampleCount,
+      ),
+    );
+    assert.equal(databaseState(f.db), before);
+  }
   appendOldDefinition(saved);
   const context = {
       kind: 'direct',
@@ -572,7 +592,7 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
       context.native,
     ),
   );
-  const appendDirect = (body) =>
+  const appendDirect = (body, sampleCount = 1) =>
     f.db.transaction(() => {
       const store = new RelationalInputStore(f.db),
         registered = event(
@@ -594,7 +614,11 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
         command(f.db, 'direct-original-definition', [
           registered,
           input,
-          request('original-direct', { model: prepared.body.model, contextId: prepared.contextId }),
+          request('original-direct', {
+            model: prepared.body.model,
+            contextId: prepared.contextId,
+            sampleCount,
+          }),
         ]),
         store,
       );
@@ -604,12 +628,39 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
     { ...prepared.body.parameters, not_a_direct_parameter: true },
     { ...prepared.body.parameters, scale: false },
   ]) {
-    assert.throws(() => appendDirect({ ...prepared.body, parameters }));
+    for (const sampleCount of [1, null]) {
+      assert.throws(() => appendDirect({ ...prepared.body, parameters }, sampleCount));
+      assert.equal(databaseState(f.db), beforeDirect);
+    }
+  }
+  for (const sampleCount of [1, null]) {
+    assert.throws(() => appendDirect({ ...prepared.body, action: 'img2img' }, sampleCount));
     assert.equal(databaseState(f.db), beforeDirect);
   }
-  assert.throws(() => appendDirect({ ...prepared.body, action: 'img2img' }));
-  assert.equal(databaseState(f.db), beforeDirect);
   appendDirect(prepared.body);
+  const directUnknown = request('original-direct', {
+    requestId: 'unknown-direct',
+    model: prepared.body.model,
+    contextId: prepared.contextId,
+    sampleCount: null,
+    origin: { ...origin, originalId: 'original-unknown-direct' },
+  });
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).appendCommit(
+      command(f.db, 'unknown-direct', [directUnknown]),
+      f.inputs,
+    ),
+  )();
+  assert.equal(f.inputs.readMemberInput('unknown-direct', 'm1').recoverable, false);
+  assert.equal(
+    f.db.prepare("SELECT sample_count FROM generation_requests WHERE id='unknown-direct'").get()
+      .sample_count,
+    null,
+  );
+  assert.doesNotThrow(() =>
+    assertRelationalInputDefinition(prepared.body, prepared.assets, context),
+  );
+  assert.throws(() => assertRelationalCompleteInput(prepared.body, prepared.assets, context, 2));
   const historicalBody = structuredClone(prepared.body);
   delete historicalBody.cacheSelection;
   const historicalBefore = structuredClone(historicalBody);
@@ -655,6 +706,195 @@ test('Opening complete 按保存的Native定义拒绝未知字段/非法值；Di
       .get().seed_mode,
     'unknown',
   );
+});
+
+test('Opening未知数量仍核原Medium及辅助操作正文，局部校验不写回数量或seed', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  const context = f.inputs.readMemberContext('definition', 'm1'),
+    contextId = f.db
+      .prepare("SELECT context_id FROM generation_requests WHERE id='definition'")
+      .get().context_id,
+    image = png().toString('base64'),
+    definitions = [
+      parseNativeImageRequest(
+        {
+          input: 'known Medium body',
+          model: 'nai-diffusion-5-full-medium',
+          action: 'generate',
+          parameters: { width: 128, height: 128, seed: 7, n_samples: 2 },
+        },
+        context.native,
+      ),
+      parseNativeAuxiliaryRequest(
+        { image, model: context.native.vibeModels[0] },
+        'encode-vibe',
+        context.native,
+      ),
+      parseNativeAuxiliaryRequest({ image }, 'upscale', context.native),
+    ];
+  for (const definition of definitions) {
+    const prepared = prepareRelationalInput(definition, context),
+      operation = prepared.body.operation,
+      beforeBody = structuredClone(prepared.body),
+      invalid = structuredClone(prepared.body),
+      id = `body-${operation}`;
+    if (operation === 'generate') {
+      invalid.parameters.steps = context.native.mediumProfile.steps + 1;
+      for (const key of ['seed', 'n_samples']) {
+        const illegal = structuredClone(prepared.body);
+        illegal.parameters[key] = 7;
+        assert.throws(() => assertRelationalInputDefinition(illegal, prepared.assets, context));
+      }
+    } else if (operation === 'encode-vibe') {
+      invalid.information_extracted = 2;
+    } else {
+      invalid.declared_blur_sigma = 0.2;
+    }
+    const options = {
+        inputId: id,
+        completeness: 'complete',
+        logicalBytes: prepared.logicalBytes,
+        assets: prepared.assets,
+      },
+      requestOptions = {
+        operation,
+        model: prepared.body.model,
+        contextId,
+        seedMode: operation === 'generate' ? 'fixed' : 'not_applicable',
+      },
+      before = databaseState(f.db);
+    for (const sampleCount of [1, null]) {
+      assert.throws(() =>
+        append(f, { ...options, body: invalid }, [request(id, { ...requestOptions, sampleCount })]),
+      );
+      assert.equal(databaseState(f.db), before);
+    }
+    assert.doesNotThrow(() =>
+      assertRelationalInputDefinition(prepared.body, prepared.assets, context),
+    );
+    assert.deepEqual(prepared.body, beforeBody);
+    append(f, { ...options, body: prepared.body }, [
+      request(id, { ...requestOptions, sampleCount: null }),
+    ]);
+    const copied = f.inputs.readMemberInput(`request-${id}`, 'm1');
+    assert.equal(copied.recoverable, false);
+    assert.equal(
+      f.db.prepare('SELECT sample_count FROM generation_requests WHERE id=?').get(`request-${id}`)
+        .sample_count,
+      null,
+    );
+    if (operation === 'generate') {
+      assert.equal(Object.hasOwn(copied.input.parameters, 'n_samples'), false);
+      assert.equal(Object.hasOwn(copied.input.parameters, 'seed'), false);
+    }
+  }
+  const target = empty(t);
+  replayUntil(target, f.db);
+  assert.deepEqual(
+    target
+      .prepare("SELECT sample_count FROM generation_requests WHERE id LIKE 'request-body-%'")
+      .all(),
+    [{ sample_count: null }, { sample_count: null }, { sample_count: null }],
+  );
+});
+
+test('Opening未知数量的完整坏来源不能公共回放或安装ready，已知正文规则不因NULL缺席', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  initializeFixtureConfiguration(f.db);
+  const original = f.db.prepare("SELECT * FROM generation_requests WHERE id='definition'").get(),
+    body = JSON.parse(
+      f.db.prepare('SELECT body FROM generation_inputs WHERE id=?').get(original.input_id).body,
+    );
+  body.parameters.not_an_original_parameter = 123;
+  // 合成不可信来源的完整facts/projection，不能让缺行/错误cut遮住正文校验。
+  const stored = f.db.transaction(() => {
+      const payload = f.inputs.stageOpeningInput({
+          inputId: 'untrusted-body',
+          memberId: 'm1',
+          completeness: 'complete',
+          body,
+          logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+          assets: [],
+        }),
+        openingRequest = request('untrusted-body', {
+          requestId: 'untrusted-request',
+          model: original.model,
+          contextId: original.context_id,
+          seedMode: 'fixed',
+          sampleCount: null,
+        }),
+        result = appendRelationalCommit(
+          f.db,
+          command(f.db, 'untrusted-body-source', [
+            event('OpeningInputRecorded', { ...payload, origin }),
+            openingRequest,
+          ]),
+        ),
+        p = openingRequest.payload;
+      f.db
+        .prepare(
+          `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,
+      sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          p.requestId,
+          p.memberId,
+          p.inputId,
+          p.contextId,
+          p.source,
+          p.operation,
+          p.model,
+          p.sampleCount,
+          p.seedMode,
+          null,
+          p.acceptedAt,
+          p.retiredAt,
+          result.events[1].eventId,
+        );
+      return result;
+    })(),
+    target = empty(t);
+  replayUntil(target, f.db, stored.commitSeq);
+  const before = databaseState(target),
+    invalidDefinition = (error) =>
+      error.statusCode === 422 && /not_an_original_parameter/.test(error.message);
+  target.exec('CREATE TEMP TABLE sentinel(value INTEGER)');
+  target.transaction(() => {
+    assert.throws(
+      () =>
+        new RelationalCommitReplayer(target).replayCommit(
+          readRelationalCommit(f.db, stored.commitSeq),
+          f.inputs,
+        ),
+      invalidDefinition,
+    );
+    target.prepare('INSERT INTO sentinel VALUES(1)').run();
+  })();
+  assert.equal(databaseState(target), before);
+  assert.equal(target.prepare('SELECT COUNT(*) AS n FROM sentinel').get().n, 1);
+  const sourcePath = path.join(f.dir, 'untrusted-definition.sqlite');
+  await f.db.backup(sourcePath);
+  const sealed = new Database(sourcePath);
+  sealed.pragma('journal_mode=DELETE');
+  sealed.close();
+  const sourceSha256 = relationalSnapshotSha256(sourcePath),
+    untrusted = databaseState(f.db);
+  await assert.rejects(
+    verifyAndInstallRelationalStorage(f.db, {
+      sourcePath,
+      sourceSha256,
+      historyId: 'generation-history',
+      finalCommitSeq: stored.commitSeq,
+      replicas: { dataDir: f.dir },
+    }),
+    invalidDefinition,
+  );
+  assert.equal(f.db.prepare('SELECT status FROM projection_state').get().status, 'building');
+  assert.equal(databaseState(f.db), untrusted);
+  assert.equal(relationalSnapshotSha256(sourcePath), sourceSha256);
 });
 
 test('Opening 请求操作与已知种子模式遵守同一原角色，unknown保持未知', async (t) => {
@@ -927,6 +1167,125 @@ test('Opening 原保护内容进入唯一ready安装；安装后新Opening窄回
   })();
   assert.equal(databaseState(target), before);
   assert.equal(relationalSnapshotSha256(sourcePath), selected.sourceSha256);
+});
+
+test('Opening未知数量与已知数量共享complete正文和BLOB，不降级或复制输入', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  const original = f.inputs.readMemberContext('definition', 'm1'),
+    image = png(),
+    prepared = prepareRelationalInput(
+      parseNativeImageRequest(
+        {
+          model: 'nai-diffusion-4-5-full',
+          input: 'known body',
+          action: 'img2img',
+          parameters: {
+            width: 128,
+            height: 128,
+            steps: 30,
+            seed: 7,
+            n_samples: 2,
+            image: image.toString('base64'),
+            strength: 0.7,
+          },
+        },
+        original.native,
+      ),
+      original,
+    );
+  const shared = 'shared-complete',
+    contextId = f.db
+      .prepare("SELECT context_id FROM generation_requests WHERE id='definition'")
+      .get().context_id;
+  append(
+    f,
+    {
+      inputId: shared,
+      completeness: 'complete',
+      body: prepared.body,
+      logicalBytes: prepared.logicalBytes,
+      assets: prepared.assets,
+    },
+    [
+      request(shared, {
+        requestId: 'known-count',
+        model: prepared.body.model,
+        contextId,
+        sampleCount: 2,
+        seedMode: 'fixed',
+      }),
+      request(shared, {
+        requestId: 'unknown-count',
+        model: prepared.body.model,
+        sampleCount: null,
+        seedMode: 'fixed',
+      }),
+    ],
+  );
+  const input = f.inputs.readMemberInput('unknown-count', 'm1');
+  assert.equal(input.recoverable, false);
+  assert.equal(Object.hasOwn(input.input.parameters, 'n_samples'), false);
+  assert.equal(input.assets.length, 1);
+  assert.deepEqual(
+    f.inputs.readMemberAsset('unknown-count', 'm1', 'parameters.image').bytes,
+    image,
+  );
+  assert.equal(
+    f.db.prepare('SELECT completeness FROM generation_inputs WHERE id=?').get(shared).completeness,
+    'complete',
+  );
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT COUNT(DISTINCT input_id) AS n FROM generation_requests WHERE id IN ('known-count','unknown-count')",
+      )
+      .get().n,
+    1,
+  );
+  const target = empty(t);
+  replayUntil(target, f.db);
+  assert.equal(
+    target.prepare("SELECT sample_count FROM generation_requests WHERE id='unknown-count'").get()
+      .sample_count,
+    null,
+  );
+  assert.deepEqual(
+    target.prepare('SELECT * FROM input_assets WHERE input_id=?').all(shared),
+    f.db.prepare('SELECT * FROM input_assets WHERE input_id=?').all(shared),
+  );
+});
+
+test('Opening未知数量格式拒绝正确旧5ca DDL/hash，不修改原临时库或旧历史', (t) => {
+  const old = JSON.parse(
+      readFileSync(new URL('../fixtures/relational-schema-v7-known-count.json', import.meta.url)),
+    ),
+    db = new Database(':memory:');
+  t.after(() => db.close());
+  assert.equal(old.sourceCommit, '5ca121fb76a6f63a011a48bae630789f7f976302');
+  assert.equal(createHash('sha256').update(old.sql).digest('hex'), old.schemaSha256);
+  db.exec(old.sql);
+  const insert = db.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+  insert.run('database_format', 'novelai-relational-v1');
+  insert.run('schema_sha256', old.schemaSha256);
+  insert.run(
+    'event_authority',
+    JSON.stringify({ version: old.writerVersion, minimumWriterVersion: old.writerVersion }),
+  );
+  db.prepare(
+    "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-five-ca',?,0,'building')",
+  ).run(old.reducerVersion);
+  assert.equal(
+    db
+      .prepare('PRAGMA table_info(generation_requests)')
+      .all()
+      .find((c) => c.name === 'sample_count').notnull,
+    1,
+  );
+  const before = db.serialize();
+  assert.throws(() => assertRelationalStorageFormat(db), /Unsupported relational database format/);
+  assert.throws(() => new RelationalInputStore(db), /Unsupported relational database format/);
+  assert.deepEqual(db.serialize(), before);
 });
 
 test('Opening 复制后请求SQL失败：外层捕获仍回滚全表/完整提交，原提交可重试', async (t) => {

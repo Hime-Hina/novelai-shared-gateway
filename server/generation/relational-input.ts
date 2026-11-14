@@ -345,8 +345,27 @@ function canonicalGenerationWire(request: RecoverableRequest, native: NativeNorm
   return wire;
 }
 
-// seed/count 不在规范正文中；这里只用临时确定值校验与种子无关的原定义，不恢复历史意图。
+// 仅核已保存正文定义。局部单图/seed0校验帧不代表原数量/种子，不返回wire或补写事实。
+export function assertRelationalInputDefinition(
+  body: Record<string, unknown>,
+  assets: (RelationalInputAsset & { bytes: Buffer })[],
+  context: RelationalNormalizationContext,
+): void {
+  validateRelationalInputBody(body);
+  assertInputWireDefinition(body, assets, context, 1);
+}
+
+// 完整原请求仍用原数量；实际seed与首次意图由原受理/child/幂等owner核对。
 export function assertRelationalCompleteInput(
+  body: Record<string, unknown>,
+  assets: (RelationalInputAsset & { bytes: Buffer })[],
+  context: RelationalNormalizationContext,
+  sampleCount: number,
+) {
+  assertInputWireDefinition(body, assets, context, sampleCount);
+}
+
+function assertInputWireDefinition(
   body: Record<string, unknown>,
   assets: (RelationalInputAsset & { bytes: Buffer })[],
   context: RelationalNormalizationContext,

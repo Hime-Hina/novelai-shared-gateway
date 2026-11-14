@@ -670,7 +670,7 @@ export const relationalPayloadParsers = {
     source: id,
     operation,
     model: nullable(id),
-    sampleCount: positive,
+    sampleCount: nullable(positive),
     seedMode: choices('fixed', 'random', 'not_applicable', 'unknown'),
     confirmation,
     acceptedAt: integer,

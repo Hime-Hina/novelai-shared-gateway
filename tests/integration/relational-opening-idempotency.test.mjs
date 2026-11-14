@@ -14,12 +14,14 @@ import {
   image,
 } from '../helpers/relational-generation.mjs';
 import { domainDigest, canonicalJson } from '../../server/events/domain-events.ts';
+import { parseRelationalFact } from '../../server/events/relational-fact-contracts.ts';
 import {
   readRelationalCommit,
   appendRelationalCommit,
 } from '../../server/events/relational-event-store.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { generationIdempotencyKeyHash } from '../../server/generation/admission.ts';
 import {
@@ -135,20 +137,29 @@ function definition(f, id, rawKey = id, patch = {}) {
     },
   };
 }
-function rebuild(t, source) {
-  const target = new Database(':memory:');
+function rebuild(t, source, filename = ':memory:') {
+  const target = new Database(filename);
   initializeRelationalStorage(target, 'generation-history');
-  t.after(() => target.close());
+  t.after(() => {
+    if (target.open) {
+      target.close();
+    }
+  });
   const replay = new RelationalCommitReplayer(target),
     inputs = new RelationalInputStore(source);
-  for (const { seq } of source
-    .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
-    .all()) {
-    target.transaction(() => replay.replayCommit(readRelationalCommit(source, seq), inputs))();
+  try {
+    for (const { seq } of source
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      target.transaction(() => replay.replayCommit(readRelationalCommit(source, seq), inputs))();
+    }
+  } catch (error) {
+    target.close();
+    throw error;
   }
   return target;
 }
-function opened(f, id, count = 2) {
+function opened(f, id, count = 2, requestChanges = {}, jobChanges = {}) {
   const original = f.db.prepare('SELECT * FROM generation_requests WHERE id=?').get(id),
     events = [
       {
@@ -169,10 +180,11 @@ function opened(f, id, count = 2) {
           acceptedAt: 0,
           retiredAt: null,
           origin: origin('original-request'),
+          ...requestChanges,
         },
       },
     ];
-  for (let i = 0; i < count; i++)
+  for (let i = 0; i < count; i++) {
     events.push({
       eventType: 'OpeningJobRecorded',
       streamId: `request:opened-${id}`,
@@ -199,8 +211,10 @@ function opened(f, id, count = 2) {
         freeWarningThreshold: null,
         retiredAt: null,
         origin: origin(`original-job-${i}`),
+        ...jobChanges,
       },
     });
+  }
   return append(f, events, 'import-entities');
 }
 
@@ -546,12 +560,150 @@ test('恶意完整source同时换原意图和projection仍不能全回放或经�
   assert.equal(target.prepare('SELECT COUNT(*) AS n FROM idempotency_keys').get().n, 1);
 });
 
-test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt，改变模式/当前凭据拒绝', async (t) => {
+test('Opening未知数量的活动任务和live原键由真实共同owner拒绝，已知数量上界保留', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  const accepted = f.db
+      .prepare(
+        "SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE command_id='accept-definition'",
+      )
+      .get(),
+    normal = readRelationalCommit(f.db, accepted.seq).events.find(
+      (e) => e.eventType === 'RequestAccepted',
+    );
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: normal.eventType,
+      payload: { ...normal.payload, sampleCount: null },
+    }),
+  );
+  const before = databaseState(f.db);
+  for (const status of ['pending', 'queued']) {
+    assert.throws(
+      () =>
+        opened(
+          f,
+          'definition',
+          1,
+          { sampleCount: null },
+          {
+            status,
+            queueSeq: status === 'queued' ? '1234' : null,
+          },
+        ),
+      /active job requires complete input and first context/,
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  assert.throws(
+    () => opened(f, 'definition', 1, {}, { sampleIndex: 1 }),
+    /sample index exceeds accepted request/,
+  );
+  assert.equal(databaseState(f.db), before);
+  opened(f, 'definition', 1, { sampleCount: null }, { status: 'failed', completedAt: 0 });
+  const key = definition(f, 'definition', 'unprovable-live', {
+    originalRequestId: 'opened-definition',
+    requestId: 'opened-definition',
+    originalJobId: 'opened-definition-0',
+    archivedReceipt: { requestId: 'opened-definition', jobIds: ['opened-definition-0'] },
+  });
+  const terminal = databaseState(f.db);
+  assert.throws(
+    () => append(f, [key.event]),
+    (e) => e.code === 'input_unavailable',
+  );
+  assert.equal(databaseState(f.db), terminal);
+  for (const status of ['pending', 'queued', 'running']) {
+    assert.throws(
+      () =>
+        f.db
+          .prepare(
+            "UPDATE generation_jobs SET status=?,queue_seq=1234 WHERE id='opened-definition-0'",
+          )
+          .run(status),
+      /active job requires complete input and first context/,
+    );
+    assert.equal(databaseState(f.db), terminal);
+  }
+});
+
+test('Opening未知数量末SQL故障被外层捕获仍完整回滚，原提交重放零写', async (t) => {
+  const f = await fixture(t);
+  f.accept('definition');
+  let seen = 0;
+  f.db.function('saw_unknown_count', (count) => {
+    assert.equal(count, null);
+    seen++;
+    return 1;
+  });
+  f.db.exec(`CREATE TEMP TABLE sentinel(value INTEGER);
+    CREATE TEMP TRIGGER fail_unknown_request AFTER INSERT ON main.generation_requests
+    WHEN NEW.id='opened-definition' BEGIN SELECT saw_unknown_count(NEW.sample_count);
+    SELECT RAISE(ABORT,'unknown-count SQL tail'); END`);
+  const before = databaseState(f.db);
+  f.db.transaction(() => {
+    assert.throws(
+      () =>
+        opened(
+          f,
+          'definition',
+          1,
+          { sampleCount: null },
+          {
+            status: 'failed',
+            completedAt: 0,
+          },
+        ),
+      /unknown-count SQL tail/,
+    );
+    f.db.prepare('INSERT INTO sentinel VALUES(1)').run();
+  })();
+  assert.equal(seen, 1);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT COUNT(*) AS n FROM sentinel').get().n, 1);
+  f.db.exec('DROP TRIGGER fail_unknown_request');
+  const result = opened(
+      f,
+      'definition',
+      1,
+      { sampleCount: null },
+      { status: 'failed', completedAt: 0 },
+    ),
+    committed = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).replayCommit(
+      readRelationalCommit(f.db, result.commitSeq),
+      f.inputs,
+    ),
+  )();
+  assert.equal(databaseState(f.db), committed);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+});
+
+test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt，未知数量共享正文不恢复原请求', async (t) => {
+  const transport = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (input, options) => {
+    assert.equal(new URL(input).hostname, '127.0.0.1', '禁止非loopback IO');
+    return transport(input, options);
+  });
   const f = await fixture(t, { seconds: 0 });
   f.accept('native');
   f.dispatch('native-0', NOW);
   await f.publish('native-0');
   f.accept('member', { member: true, samples: 2 });
+  const unknown = opened(
+    f,
+    'member',
+    1,
+    { sampleCount: null },
+    {
+      status: 'done',
+      completedAt: 0,
+      artifactId: 'artifact-native-0',
+      sampleIndex: 7,
+    },
+  );
   const native = definition(f, 'native', 'native-key'),
     member = definition(f, 'member', 'member-key');
   // 每键自己的原 context 可以不同于 target request，不能借目标的首次默认定义。
@@ -562,10 +714,10 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
   const tombstone = {
     ...native.payload,
     keyHash: generationIdempotencyKeyHash('unknown-key'),
-    originalRequestId: 'missing-original',
-    originalJobId: 'missing-child',
-    requestId: null,
-    contextId: null,
+    originalRequestId: 'opened-member',
+    originalJobId: 'opened-member-0',
+    requestId: 'opened-member',
+    contextId: member.payload.contextId,
     noCache: null,
     seedMode: null,
     resolution: 'unavailable',
@@ -602,7 +754,34 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
     {},
     NOW,
   );
-  await installReady(f);
+  initializeFixtureConfiguration(f.db);
+  const restoredPath = path.join(f.dir, 'unknown-count-restored.sqlite'),
+    restored = rebuild(t, f.db, restoredPath);
+  try {
+    assert.equal(restored.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
+    assert.equal(
+      restored.prepare("SELECT auth_epoch FROM members WHERE id='m1'").get().auth_epoch,
+      null,
+    );
+    const selected = await installReady(f);
+    await verifyAndInstallRelationalStorage(restored, selected);
+  } finally {
+    restored.close();
+  }
+  const reopened = new Database(restoredPath);
+  try {
+    assert.equal(reopened.prepare('SELECT status FROM projection_state').get().status, 'ready');
+    assert.equal(
+      (await authenticateMemberApiKey(new RelationalMemberStore(reopened), apiKey)).id,
+      'm1',
+    );
+    assert.equal(
+      new RelationalInputStore(reopened).readMemberInput('opened-member', 'm1').recoverable,
+      false,
+    );
+  } finally {
+    reopened.close();
+  }
   const events = new EventEmitter(),
     previews = new JobPreviews(),
     budget = createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
@@ -687,6 +866,59 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
   assert.equal(reply.replayed, true);
   assert.equal(databaseState(f.db), before);
   assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  const cookie = { cookie: `nai_member_session=${session.token}`, origin: url },
+    knownInputResponse = await fetch(url + '/api/member/requests/member/input', {
+      headers: cookie,
+    }),
+    unknownInputResponse = await fetch(url + '/api/member/requests/opened-member/input', {
+      headers: cookie,
+    });
+  assert.equal(knownInputResponse.status, 200);
+  assert.equal(unknownInputResponse.status, 200);
+  const knownInput = await knownInputResponse.json(),
+    unknownInput = await unknownInputResponse.json();
+  assert.equal(knownInput.recoverable, true);
+  assert.equal(knownInput.input.parameters.n_samples, 2);
+  assert.equal(unknownInput.recoverable, false);
+  assert.equal(Object.hasOwn(unknownInput.input.parameters, 'n_samples'), false);
+  assert.equal(f.inputs.readJobSeed('opened-member-0'), 42);
+  const unknownSnapshot = await fetch(url + '/api/member/requests/opened-member', {
+    headers: cookie,
+  });
+  assert.equal(unknownSnapshot.status, 200);
+  const savedUnknown = await unknownSnapshot.json();
+  assert.equal(savedUnknown.counts.total, 1);
+  assert.equal(savedUnknown.jobs[0].index, 7);
+  const unknownContent = await fetch(url + '/api/member/jobs/opened-member-0/content', {
+    headers: cookie,
+  });
+  assert.equal(unknownContent.status, 200);
+  assert.deepEqual(Buffer.from(await unknownContent.arrayBuffer()), image);
+  assert.equal(
+    f.db.prepare("SELECT sample_count FROM generation_requests WHERE id='opened-member'").get()
+      .sample_count,
+    null,
+  );
+  assert.equal(
+    f.db
+      .prepare(
+        "SELECT COUNT(DISTINCT input_id) AS n FROM generation_requests WHERE id IN ('member','opened-member')",
+      )
+      .get().n,
+    1,
+  );
+  assert.throws(
+    () => f.inputs.readJobInput('opened-member-0'),
+    (e) => e.code === 'input_unavailable',
+  );
+  f.db.transaction(() =>
+    new RelationalCommitReplayer(f.db).replayCommit(
+      readRelationalCommit(f.db, unknown.commitSeq),
+      f.inputs,
+    ),
+  )();
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
   const changed = await submit(
     '/ai/generate-image',
     { ...body(native), action: 'generate', parameters: { ...native.wire.parameters, seed: -1 } },
@@ -717,7 +949,48 @@ test('合法ready真实Native Key及member Cookie HTTP重领原Opening receipt�
   );
   assert.equal(unavailable.status, 410);
   await unavailable.arrayBuffer();
+  const blockedMember = await submit(
+    '/api/member/generation/requests',
+    {
+      ...body(member),
+      operation: 'generate',
+      confirmation: member.confirmation,
+    },
+    { ...cookie, 'idempotency-key': 'unknown-key' },
+  );
+  assert.equal(blockedMember.status, 410);
+  await blockedMember.arrayBuffer();
   assert.equal(databaseState(f.db), before);
+  const copiedBody = {
+    ...unknownInput.input,
+    parameters: { ...unknownInput.input.parameters, seed: 42, n_samples: 2 },
+  };
+  const quoted = await submit('/api/member/generation/quote', copiedBody, cookie);
+  assert.equal(quoted.status, 200);
+  const quote = await quoted.json(),
+    copied = await submit(
+      '/api/member/generation/requests',
+      {
+        ...copiedBody,
+        confirmation: {
+          requestFingerprint: quote.requestFingerprint,
+          versions: quote.versions,
+          maxPerJob: quote.charges.perJob[0].resources,
+          maxTotal: quote.charges.total,
+        },
+      },
+      { ...cookie, 'idempotency-key': 'copied-known-new-intent' },
+    );
+  assert.equal(copied.status, 202);
+  const copiedReceipt = await copied.json();
+  assert.equal(copiedReceipt.replayed, false);
+  assert.equal(copiedReceipt.jobIds.length, 2);
+  assert.notEqual(copiedReceipt.requestId, 'opened-member');
+  assert.equal(
+    f.db.prepare("SELECT sample_count FROM generation_requests WHERE id='opened-member'").get()
+      .sample_count,
+    null,
+  );
   f.db.transaction(() => f.members.replaceMemberApiKey('m1', 'replacement-current-key'))();
   const revokedState = databaseState(f.db),
     revoked = await submit(

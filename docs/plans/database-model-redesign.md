@@ -2343,6 +2343,32 @@ settings只返回真实profile/stored URL与Quota只读配置。缺少选定来�
 
 根在 `a87f927` 的已审复制/停机及完整汇总上普通整合：运行时逐字等于根源加上述七行，会话文件逐字等于396，两个既有计划小节完整保留。真实角色变更、稳定 Cookie 和原 sole 鉴权/管理汇总交点 **3/3、零跳过，11.597 秒**，包含实际故障阶段/回滚而非只断言启动失败；八次实际 child 均在入口前显式加载 loopback socket/fetch guard。类型、architecture、默认及可信 main88 迁移、201 文件语法和变更格式通过；保留证明 `H:/TEMP/novelai-member-session-root-preservation.json`，日志 `H:/TEMP/novelai-member-session-root-*`。启动仅调用原认证 owner；后续相似会话规则仍在该 owner 维护。尚未执行最终同根 full/发行物、Node24、Linux SIGTERM、实云或生产迁移与切换。
 
+### 9.92 Opening 原请求数量未知的独立表示
+
+本片从固定 `bb308a5af1a0f49de5594fc9681c755fc251451a` 接续，仅让 `OpeningRequestRecorded.sampleCount` 和请求列允许 NULL。正常受理仍为正数；原数量归 Request，complete 只描述规范 body/槽位，不包含 seed/count。同成员的已知 count 请求与未知 count 终态请求可共享原 complete Input、BLOB、context 和已知 seed，不降级或复制内容，不以 child 数量/位置/当前默认补原数量。旧归档解释和 A/B/13键/会话决定不在本片。
+
+数量必需的原完整 wire 校验仍归 InputStore 的同一完整请求边界，live 原键及执行复用该拒 NULL；活动 DDL guard要求已知数量。未知请求保已知字段/安全附件/原结果，input GET为 recoverable=false 且无补造 n_samples，编辑为新意图仍用明确新数量、新键、当前报价确认。原收费/退款/原回执及完整 source/cut/member 证明不变；正常已知数量 index 上界保留。
+
+格式仍同一个未发布 event7/writer5，唯一 DDL hash 随可空列及活动保护变化；准确旧5ca DDL/hash夹具从固定 Git 原件导出，由原格式 guard拒绝，不改旧SQL/journal、不手改ready或添加在线旧库fallback。没有新增 writer/architecture 白名单；DDL和关键反例增量仍需维护者复核。Node22 原两完整 Opening 文件同次 **29/29、零 skip，5.148 秒**（`H:/TEMP/novelai-opening-unknown-count-evidence-20261115/source-owner.log`）；原五条聚焦另为 **5/5、零 skip，2.426 秒**，两者重叠不相加。实际同 complete Input 的 A=count2/B=NULL、B 仅一个原位置7的 child及已知context/seed，Cookie 原query/input与Local字节、Native/Member原键410零重发、显式新键/count2的当前quote/confirm受理均通过；完整公共回放不复活私有Key/epoch、匹配selected private与唯一installer、磁盘close/reopen、共享BLOB/缺context安全读取、活动/live拒NULL、末SQL被外catch的全回滚与原提交重复0写均覆盖。
+
+TEMP 精确源两项语义负控分别把投影NULL改为1、用TypeScript非空断言绕过共同knownSampleCount，分别在实际fact/row读取关系和ready/HTTP后的readJobInput业务断言失败（后者Missing expected exception），没有把parser/加载/错误DDL前置拦截算目标。原字节finally还原、九路径SHA全同，恢复后原五项 **5/5**；`negative-evidence.json` / `reproduce-negatives.py` 与各日志绑定。准确旧5ca DDL/hash夹具来自固定Git原件，现guard拒绝且原临时库字节不变。
+
+类型、architecture、默认/可信88 migration、改动格式/MJS语法/diff检查通过。首轮测试句柄cleanup顺序的Windows EBUSY和次轮误读业务receipt.commitSeq/公开DTO sampleIndex两类测试准备错误及原字节均封存，不计作产品业务红；修正为及时close、真实command_id→TEXTseq、原公开index后通过。没有full/build/compiled/Node24/新native/真实云或生产操作；独立复审与父并集待固定候选，A/B、13旧键、旧会话决定不被本片批准。
+
+#### 9.92.1 独审修正：未知数量不豁免已知正文定义
+
+`7ae35a3` 保持 NOTPASS。独立反例在同一原捕获 Native context/complete body 只增加未知参数，原严格 helper及 known-count Opening 均拒绝且全表不变，NULL 分支却只核附件而接受；其完整公共重建后，实际唯一installer还安装了ready。原观察的ready不是验收通过，独审报告与原反例/首日志保存在 `H:/TEMP/novelai-opening-unknown-count-independent-20261115/`，原作者29绿不能覆盖该P2。
+
+后继在原 `generation/relational-input.ts` 提取唯一私有严格parser→canonical wire往返，原完整入口仍传原数量，原实际seed/首次意图关系仍归原owner；新增void的正文定义入口供数量未知但context已知时复用。仅用局部固定seed0/单图帧检查与数量/seed无关的原正文定义，不返回wire、不改body/hash、qty、事实或DTO，不把通过该校验当完整原请求/活动/live证明。InputStore未知分支沿原BLOB/slot/MIME校验后调用它；有来源的Native/member、Medium、Direct广范围及辅助操作规则不再缺席。缺首次context仍是原安全只读未知，不用当前定义补历史。
+
+此为已证正确性缺口所需第5产品owner范围，未增状态/兼容模式/私有来源/Schema或event版本；DDL hash仍为2314a5a3…c5be7c8a，旧SQL/journal与架构门禁不变。原共享A knowncount/B NULL、已知context/seed/原图/收费与恢复门禁同候选回归。作者 Node22 两完整 Opening 文件 **31/31、零 skip，5.480 秒**，包含原29控制与新增Medium/辅助操作和自洽坏来源两项。原独审坏参数程序四文件逐SHA不改，作者首次复跑 **1/1、零 skip**；这不是非作者复审。Native/旧保存参数名、Direct、Medium、encode-vibe/upscale 在known/NULL下同拒坏正文；Direct原宽范围及真实数量2拒绝保留，定义局部校验前后body/hash/count/seed不写回。坏来源facts/projection/cut齐全，完整公共重放在原参数422处全表回滚，实际unique installer仍building，target及封存source SHA不变。
+
+TEMP仅撤回未知分支的定义校验调用，原独审同程序精准 Missing expected exception；finally恢复五路径SHA全同后原程序再 **1/1**。证据 `H:/TEMP/novelai-opening-input-definition-fix-20261115/` 的source-owner-first、original-negative-fixed-first、removed-definition-call-negative、removed-definition-restored-control日志与manifest/owner-body-comparison。首个新Medium夹具误用Native normalized DTO没有的operation而在fact parser失败，已按prepare.body.operation的实际owner修正；首日志/字节保留，不算正文规则业务红。原严格实现体提取前后逐字相同，类型、architecture、默认/可信88 migration、格式/语法/diff通过；原7ae NOTPASS记录不覆盖。未做full/build/compiled/Node24/native/真实云/生产或真实旧源读取；最终非作者复审待固定后继。
+
+固定后继 `909ea326c25d4e4a504f847512150379e4369503` 已由原非作者独审 **PASS**，报告 `H:/TEMP/novelai-opening-unknown-count-fixed-909ea32-20261115/INDEPENDENT-REVIEW.md`，SHA256 `83ae4c3d5e2c6117837c374d8fed790e991315ab2d84ae689bdfe03b36fc78da`。同一次真实运行两完整 Opening31、原独立三例与新增 matching-source/outercatch 一例，共 **35/35、零跳过，7.866 秒**；原坏参数程序逐字不变，完整恶意 facts/projection/cut 同源仍在正文422处使公共回放全回滚、唯一installer拒绝且building/私有/源SHA不变。四 worker 均在导入前加载低层guard，仅一个执行原 localhost13fetch/2socket，其余无IO，全组零外联。原7ae NOTPASS及错误ready观察保持原记录。
+
+根在 `5e62968` 上接入整个 lineage，九个非plan路径逐字等于909，含五个实际产品owner及准确旧格式fixture；原会话/复制/Native/汇总源与四个原计划小节保留，仅将9.92移到事实修订前。两完整Opening与完整汇总的实际新DDL交点 **45/45、零跳过，14.574 秒**；类型、architecture、默认与可信main88迁移、201文件语法和变更格式通过。证明 `H:/TEMP/novelai-opening-definition-root-preservation.json`，日志 `H:/TEMP/novelai-opening-definition-root-*`。格式仍未发布event7/writer5，DDL SHA256 `2314a5a3e20179083ca93a8a886ff8aaa83205ce395069b447a54a76c5be7c8a`；原61bc库由现格式guard拒绝，不能在线改ready或绕过旧hash。尚无同根最终发行矩阵/实际迁移与容量/真实端点或生产切换证据；类似正文定义规则仍在唯一 relational-input owner 维护。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
