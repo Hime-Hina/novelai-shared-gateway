@@ -1326,6 +1326,28 @@ v3 后继复核发现原 Native 把重领前所有非 401 的实际读取失败�
 
 实际 EXPLAIN 对成员、child request、事件 stream、收费/产物主键使用 SEARCH，子任务原时点排序使用临时 B-tree；统计和排序成本随该成员保留历史增长，不宣称全历史常数时间。本片复用现索引，不改 schema 或旧 SQL/journal。查询捕获与全表摘要证明普通页、recent30、非空 q 和迟到读取均不读输入正文/BLOB、不访问网络、不写数据库或回填 DTO。Node 22.23.4 新专项 6/6、相关 query/retirement/reports/failure/free owner 六文件联合 50/50，零跳过；backend 和真实 Web 消费者类型、架构、默认及可信 `e89408b8747c1b3f4065edead5f0e6b5f616f934` 迁移历史、改动格式和语法检查通过。日志为 `H:\TEMP\novelai-member-history-final-source.log`、`novelai-member-history-six-files.log`、`novelai-member-history-web-types.log` 与 `novelai-member-history-q-scope.log`。完整后端、编译包、Node 24、真实 HTTP 总装配与正式切换由父任务统一候选验收，本片未接入或宣称成员 HTTP 完成。
 
+### 9.43 #47：成员转账、移除与只读预览
+
+规则归原 `manageFairMember`，转账/删除/预览共用其同步后决定与摘要，不另写份额转移公式。转账保持组拓扑但仍递增一次 configVersion；移除按原全局份额把源成员权益转给显式接收者，已分组接收者可暂时超过 V5 容量，启用的未分组接收者继承原位置/权重。预览使用独立 view，只返回原预览结果，不追加事实、回执、游标或私有写入。原结果包含 configVersion、groups、transferred、autoJoined、shareChanges、users 和原角色字段，没有 status。
+
+新增真实 sharing 决定 `MemberTransferred` / `MemberRemoved`，保存源成员、接收者、原绑定和新配置代次；只有移除保存原 owner 的最终组拓扑，转账不重复未变化的组快照。复用 account 流 `FundsTransferred`，补 configurationEventId/configVersion，保存同一原账户的三资源金额及不可交换的源/目标角色；不继续支持无生产者的 operator_share/operator_return 资金转移占位。绑定存在时必须有唯一同笔资金子事实，未绑定的真正零权益删除不造账户/钱包/资金来源。移除还须有同笔相符的 MemberStatusChanged(removed)，member owner 只撤销私有认证，不生成或恢复 epoch。
+
+当前 owner Key/Cookie 与本地管理员沿原认证边界；当前身份/owner/epoch 在回执前复核，完整原意图计算指纹，同键重领原回执不再同步/转账，异意图冲突。owner 路由不得删除/预览删除当前 owner，保留本地管理员原应急边界。原 expectedConfigVersion、全局排队/运行/预留空闲规则，以及真实物理 promise 和涉及源/接收者的未发布准备/未决核对共同保护未结责任。删除检查源成员全部账户余额：不属于本次原绑定/成员组的非零权利不能搬入当前池。旧 charge/input/free/审计来源及身份不物理删除，源钱包转移后原行清零保留，组身份保持。
+
+命令在自己保存点内规划原 owner、追加一次共同提交并原序投影，失败被外层捕获也全部回滚。完整提交从实际成员命令入口核对原同步决定，删光金融前缀仍失败；原角色、配置、资金、移除身份、回执与顺序均须相符。回放用该原序切点的同 owner 核验保存的原决定，不用后来的组/成员最新来源重判旧授权，不以重算值替代保存值，不做网络/对象 I/O，不复活私有认证。
+
+验收须覆盖转账三池/容量/尾数与配置上界、删除已分组/未分组继承/源未分组/最后成员、未绑定零权益、其他账户遗留权利和每类未决责任；Key/Cookie/owner 变更/退出/旧 epoch/本地管理员、原键重领与异意图、预览全表零写入、原生后段 SQL 故障和完整原序/重复恢复，以及删除/改动任一父子决定或移除回执的合法 envelope 反例。新事实必填契约与 R08 共用未发布事件 v4，唯一常量生成 DDL CHECK/hash；正确 v3 原型 DDL/hash 仍拒绝，不加在线兼容或改写旧 SQL。当前实现仍是 building 阶段能力，不代表成员管理 HTTP 已接入或生产已切换。
+
+实施产品固定 `903f64610190d874515d92b18db8c5abd5e00e11`，依赖独立只读摘要产品 `bc502b48c288418970cdf1216c93dbad7d75a7bf`。摘要入口 `readMemberQuotaSummary(memberId, now)` 复用同一金融 view、`syncBoundFairQuota` 和 `fairQuotaSummary`；允许 held，在独立内存 view 估算恢复，SQL/事实/游标不写入。fallback 累计来自 settled 的原账户/原成员 charge，以定点累加；专用 partial index 的 EXPLAIN 须为索引 SEARCH。风险状态只读取实际 V5CapacityObserved.status，未有来源仍为 pending；缺少正额钱包金融基线由唯一 quota owner 返回 503，关闭或未配置保持原 null。
+
+Node 22.23.4 源码验证：新权益/摘要、私有恢复及凭据失效四文件 121/121；共同回放、分组、分配权利与架构负例四文件 372/372；只读摘要独立产品树四文件 85/85。类型、架构、可信实际 main `88d2c2646fb053fa252e90f4d3eb6670911a3554` 的迁移历史与 diff 检查通过。关键反例包括三池尾数与容量、MAX_SAFE 版本边界、完整同步前缀/资金/身份/回执/原意图篡改、源责任与物理收尾、当前 Cookie/Key/owner/epoch、真实第二钱包 SQL 故障及末段私有撤销故障；外层捕获后全表仍不变。新增三个写能力名称的架构门禁及对应直接/别名负例须维护者复核；未放宽已有金额、授权或回滚断言。以上为局部源码证据，尚待独立复审与汇合候选的完整套件、编译产物、Node 24 和 HTTP/切换验收。
+
+独立审查进一步复现身份子事实的上下文缺口：保持原角色、完整 envelope 和回执，仅把 MemberStatusChanged(removed) 的 accountId、policyVersion 或 pricingVersion 换成无关值仍能保存身份撤销。修复 `57d06e4178b895bac972f5c0216e424727fd8eca` 在唯一 member owner 要求 accountId=null 且政策/价格版本与原 MemberRemoved 相同，不重核后来的授权或在 quota 复制关系规则。三反例加入完整提交 mutation 矩阵；权益/共同回放/私有恢复三文件 113/113，类型和架构检查通过，等待独立原字节反例复核。
+
+原账户的钱包责任与当前组资格必须分开。真实 Opening 保留 a/m1=50、a/m2=50 且只有 m1 在组时，原 state 的 group_members JOIN 漏计 m2，真实一分钟恢复把总权利错误增至 100.1。独立修复产品 `8221f0417e1668f3646cc4922f569f5ff5515779` 让原金融 view、完整组转换检查与生成公共 V5 总量计入同原账户所有钱包，其他账户不混池；原分配/恢复参与者、新派发、转账及运营资格仍是当前 members。原移除接收者是否继承位置也依据 members，既有钱包行不重置。没有新增持久派生状态、恢复公式、事实或另一格式版本。
+
+保留原 configureFairGroups/assertFairGroupTransition 的正额权益保护：此类 Opening 形状必须先明确纳组/权益归属再调整组，不能绕过检查后重建 balances 丢掉原权益；在此之前物理预算仍须准确计全部钱包。新 `relational-wallet-rights.test.mjs` 11/11，覆盖真实恢复、剩余 room、零旧钱包与其他池、净充值不分旧成员、资格拒绝、旧零钱包继承、原序及重复回放、完整 Refill 造额反例和原生游标后段故障外层捕获全表回滚；两核心反例在固定旧产品 903f646 的隔离树为 0/2，修复为绿。十文件上下文 381/381，类型、架构、可信 main 88d2c264 迁移、格式及 diff 检查通过；独立复审和并集候选重验证仍待完成。
+
 ### 9.44 R08：活动别名与原产物缓存复用
 
 本片从 `555172f` 接续，并入已审 Native/历史并集 `3d2bafd` 后交付窄 owner 能力；不装配整个 direct/OpenAI transport。D4 仅退出 cards 与客户端 PST 独立路径，仍保留共享显式缓存。GenStore 的 `findReusableGeneration()` 只查询原 cache key 的有界候选并在 SQL 外检查引用资格；`reuseGeneration()` 在当前认证事务内重核成员/接单 epoch、当前共享 readiness 与原来源，原键回执先于新准入。Native 始终 noCache=true；OpenAI 默认 true、显式允许才复用；direct 无键只找完成缓存，有键和旧 POST jobs 仍可活动合并，caller 用明确 allowActive 保留这个差别。

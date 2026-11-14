@@ -214,6 +214,12 @@ for (const filename of [
     ['credential persistence', 'memberStore.setMemberCredentials(prepared);'],
     ['member admission command', 'memberStore.changeMemberAdmission(command,input,actor);'],
     ['member admission commit', 'memberStore.assertMemberAdmissionCommit(events,receipt);'],
+    ['member removal commit', 'memberStore.assertMemberRemovalCommit(events);'],
+    ['member quota decision owner', 'applyFairMemberChange(view,draft,input,now);'],
+    [
+      'aliased member decision owner',
+      "import { applyFairMemberChange as change } from '../quota/fair-share.ts'; change(view,draft,input,now);",
+    ],
     ['queue admission owner', 'setMemberAdmission(view,id,false,refund);'],
     [
       'business replayer construction',
@@ -339,6 +345,7 @@ for (const filename of [
       'manageQuotaFunding',
       'configureQuotaPolicy',
       'configureGroups',
+      'manageMemberQuota',
       'assertGroupCommit',
       'configureAnlasFallback',
       'configureFreeImages',
