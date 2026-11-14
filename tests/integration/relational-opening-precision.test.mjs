@@ -23,12 +23,17 @@ import { RELATIONAL_EVENT_SCHEMA_VERSION } from '../../server/events/relational-
 // 与旧503夹具相同的原行粒度：只有child创建日和文件创建日，没有原parent或发布/完成时点。
 // 此处的稳定member映射是选定来源的显式证明，不从文件MIME/ID/日期推断业务字段。
 const original = Object.freeze({
-  job: { id: 'historical-job', status: 'done', imageId: 'historical-image', createdAt: 0 },
+  job: {
+    id: 'historical-job',
+    status: 'done',
+    imageId: 'historical-image',
+    createdAt: '1970-01-01T00:00:00.000Z',
+  },
   image: {
     id: 'historical-image',
     mimeType: 'image/webp',
     file: 'images/historical-image.webp',
-    createdAt: 0,
+    createdAt: '1970-01-01T00:00:00.000Z',
   },
   stableMemberId: 'm1',
 });
@@ -100,7 +105,7 @@ function appendOpening(f, options = {}) {
       event('OpeningJobRecorded', {
         jobId: original.job.id,
         requestId: 'structural-container',
-        createdAt: original.job.createdAt,
+        createdAt: Date.parse(original.job.createdAt),
         sampleIndex: null,
         actualSeed: null,
         status: original.job.status,
@@ -163,7 +168,7 @@ function empty(t) {
   return db;
 }
 
-test('原parentless行只形成当前FK容器；创建零不冒完成、受理、发布时点或PNG操作', async (t) => {
+test('原parentless行只形成当前FK容器；创建零不冒完成、受理、发布时点或文件MIME操作', async (t) => {
   const f = await fixture(t);
   for (const key of ['requestId', 'source', 'operation', 'sampleIndex', 'completedAt']) {
     assert.equal(Object.hasOwn(original.job, key), false);
