@@ -724,7 +724,9 @@ export function createRelationalManagementHttp(deps: {
             );
             return {
               ...profile,
-              stats1h: stats.accountStats1h[id] ?? finalizeStats({ done: 0, failed: 0 }),
+              stats1h: Object.hasOwn(stats.accountStats1h, id)
+                ? stats.accountStats1h[id]
+                : finalizeStats({ done: 0, failed: 0 }),
             };
           }),
           imageCount,
