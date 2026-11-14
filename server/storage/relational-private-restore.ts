@@ -18,7 +18,7 @@ export const relationalPrivateTables = [
   ['upstream_credentials', 'account_id'],
 ] as const;
 const privateQueries = [
-  'SELECT id,auth_epoch FROM members ORDER BY id',
+  'SELECT id,auth_epoch,note_json FROM members ORDER BY id',
   ...relationalPrivateTables.map(([table, key]) => `SELECT * FROM ${table} ORDER BY ${key}`),
 ];
 
@@ -43,7 +43,11 @@ export function relationalPrivateStateSha256(sqlite: Database.Database): string 
 
 export function relationalPrivateStateEmpty(sqlite: Database.Database): boolean {
   return (
-    !sqlite.prepare('SELECT 1 FROM members WHERE auth_epoch IS NOT NULL LIMIT 1').get() &&
+    !sqlite
+      .prepare(
+        'SELECT 1 FROM members WHERE auth_epoch IS NOT NULL OR note_json IS NOT NULL LIMIT 1',
+      )
+      .get() &&
     relationalPrivateTables.every(
       ([table]) => !sqlite.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(),
     )
@@ -227,7 +231,7 @@ export function restoreRelationalPrivateSnapshot(
         if (source.prepare('PRAGMA foreign_key_check').get()) {
           invalid();
         }
-        const epochs = privateQueries[0],
+        const privateMembers = privateQueries[0],
           equal = sameRelationalPrivateState(source, target);
         const empty = relationalPrivateStateEmpty(target);
         if (!equal && !empty) {
@@ -235,11 +239,13 @@ export function restoreRelationalPrivateSnapshot(
         }
         let privateRows = 0;
         if (!equal) {
-          const update = target.prepare('UPDATE members SET auth_epoch=? WHERE id=?');
+          const update = target.prepare('UPDATE members SET auth_epoch=?,note_json=? WHERE id=?');
           for (const row of source
-            .prepare<[], { id: string; auth_epoch: string | null }>(epochs)
+            .prepare<[], { id: string; auth_epoch: string | null; note_json: string | null }>(
+              privateMembers,
+            )
             .iterate()) {
-            update.run(row.auth_epoch, row.id);
+            update.run(row.auth_epoch, row.note_json, row.id);
           }
           for (const [table] of relationalPrivateTables) {
             const fields = source.prepare(`PRAGMA table_info(${table})`).all() as {

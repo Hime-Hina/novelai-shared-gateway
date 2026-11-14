@@ -152,6 +152,7 @@ test('真实新空库离线建立四成员/暂停账户/零账本，由唯一ins
         member.user_id,
       );
       assert.equal((await authenticateMemberApiKey(members, member.api_key)).id, member.user_id);
+      assert.equal(members.readManagementMemberProfile(member.user_id).note, member.username);
       assert.equal(
         policy.groups.find((group) => group.members.includes(member.user_id)).memberWeights[
           member.user_id
@@ -222,6 +223,10 @@ test('完整公共回放认证为空，匹配同cut选定私有及保护profile�
     assert.equal(target.prepare('SELECT COUNT(*) n FROM api_keys').get().n, 0);
     assert.equal(target.prepare('SELECT COUNT(*) n FROM password_credentials').get().n, 0);
     assert.equal(target.prepare('SELECT COUNT(*) n FROM upstream_credentials').get().n, 0);
+    assert.equal(
+      target.prepare('SELECT COUNT(*) n FROM members WHERE note_json IS NOT NULL').get().n,
+      0,
+    );
     assert.equal(
       target.prepare('SELECT COUNT(*) n FROM members WHERE auth_epoch IS NOT NULL').get().n,
       0,

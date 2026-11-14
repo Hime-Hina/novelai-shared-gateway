@@ -30,6 +30,7 @@ const password = 'synthetic-directory-password',
     'username',
     'discordId',
     'inviteExpiresAt',
+    'note',
   ];
 
 function registerNamed(f) {
@@ -39,6 +40,7 @@ function registerNamed(f) {
       displayName: 'm1',
       apiKey: namedKey,
       credentials,
+      note: 'private directory note',
     }),
   )();
 }
@@ -97,11 +99,13 @@ test('管理目录按稳定ID分开同名成员，保留Key-only未知身份且q
       username: null,
       discordId: null,
       inviteExpiresAt: invite.expiresAt,
+      note: null,
     });
     assert.equal(rows[2].username, 'original.login');
     assert.equal(rows[2].displayName, 'm1');
     assert.equal(rows[2].discordId, '222222222222222222');
     assert.equal(rows[2].inviteExpiresAt, null);
+    assert.equal(rows[2].note, 'private directory note');
     assert.equal(f.members.readManagementMemberProfile('original.login'), null);
     assert.equal(f.members.readManagementMemberProfile("m1' OR 1=1 --"), null);
   } finally {
@@ -149,6 +153,7 @@ test('disabled仍是管理目标，实际权益移除后不再列出；未知与
     username: null,
     discordId: null,
     inviteExpiresAt: null,
+    note: null,
   });
   assert.equal(f.members.readManagementMemberProfiles().length, 2);
   const invite = f.db.transaction(() => f.members.createMemberDiscordInvite('m1', null, NOW))(),
@@ -231,6 +236,7 @@ test('重开保持目录；完整业务回放不补私有用户名/绑定，选�
       username: null,
       discordId: null,
       inviteExpiresAt: null,
+      note: null,
     })),
   );
   assert.equal(databaseState(target), beforePrivate);
@@ -241,4 +247,39 @@ test('重开保持目录；完整业务回放不补私有用户名/绑定，选�
   target.pragma('query_only=ON');
   assert.deepEqual(members.readManagementMemberProfiles(), expected);
   assert.equal(databaseState(target), restored);
+});
+
+test('私有备注损坏仅报固定503，query_only读取不泄露原文或改写任何行', async (t) => {
+  const f = await fixture(t);
+  registerNamed(f);
+  for (const value of [
+    'synthetic-private-corrupt-note',
+    JSON.stringify({ private: 'synthetic-private-corrupt-note' }),
+    'null',
+    '12',
+    '[]',
+  ]) {
+    // 合成损坏输入以验证读边界；正常DDL禁止这些值，不提供备注编辑能力。
+    f.db.pragma('ignore_check_constraints=ON');
+    f.db.prepare('UPDATE members SET note_json=? WHERE id=?').run(value, 'named');
+    f.db.pragma('ignore_check_constraints=OFF');
+    const before = databaseState(f.db),
+      count = f.db.prepare('SELECT total_changes() n').get().n;
+    f.db.pragma('query_only=ON');
+    try {
+      assert.throws(
+        () => f.members.readManagementMemberProfile('named'),
+        (error) => {
+          assert.equal(error.statusCode, 503);
+          assert.equal(error.message, '成员私有备注校验失败');
+          assert.equal(error.message.includes('synthetic-private-corrupt-note'), false);
+          return true;
+        },
+      );
+      assert.equal(databaseState(f.db), before);
+      assert.equal(f.db.prepare('SELECT total_changes() n').get().n, count);
+    } finally {
+      f.db.pragma('query_only=OFF');
+    }
+  }
 });

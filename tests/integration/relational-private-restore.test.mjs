@@ -7,7 +7,14 @@ import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { readFile, readdir, copyFile, link } from 'node:fs/promises';
 import path from 'node:path';
-import { fixture, meta, keys, NOW, databaseState } from '../helpers/relational-generation.mjs';
+import {
+  fixture,
+  meta,
+  keys,
+  NOW,
+  databaseState,
+  installReady,
+} from '../helpers/relational-generation.mjs';
 import {
   readRelationalCommit,
   replayRelationalCommit,
@@ -22,7 +29,10 @@ import { RelationalCommitReplayer } from '../../server/storage/relational-replay
 import {
   restoreRelationalPrivateSnapshot,
   openRelationalSnapshot,
+  relationalPrivateStateEmpty,
+  relationalPrivateStateSha256,
 } from '../../server/storage/relational-private-restore.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import {
   authenticateMemberApiKey,
   authenticateMemberSession,
@@ -67,6 +77,21 @@ function rebuild(t, saved, changeCommit = () => {}) {
 
 const restore = (db, saved) =>
   db.transaction(() => restoreRelationalPrivateSnapshot(db, saved.filename, saved.sha256))();
+
+function registerPrivateNote(f, note) {
+  return f.db.transaction(() =>
+    f.members.registerMember(
+      { ...meta('register-private-note'), actorKind: 'admin', actorId: 'local-admin' },
+      {
+        memberId: 'private-note-member',
+        displayName: 'separate public label',
+        apiKey: 'synthetic-private-note-key',
+        note,
+      },
+      null,
+    ),
+  )();
+}
 
 test('快照以完整64位dev/ino区分相邻大编号，真实硬链接同文件仍拒绝', async (t) => {
   const f = await fixture(t),
@@ -180,8 +205,9 @@ test('同切点业务重放后从选定备份恢复当前私有状态，重复�
 });
 
 test('同业务提交号的不同私有备份不可互换，旧 Key/Cookie 不会覆盖当前撤销状态', async (t) => {
-  const f = await fixture(t),
-    { current } = await privateState(f),
+  const f = await fixture(t);
+  registerPrivateNote(f, 'private note preserved with revoked credentials');
+  const { current } = await privateState(f),
     old = await snapshot(f, 'before-revocation');
   const cut = f.db.prepare('SELECT MAX(commit_seq) AS seq FROM commits').get().seq;
   f.db.transaction(() => f.members.replaceMemberApiKey('m1', 'private-new-key'))();
@@ -192,6 +218,10 @@ test('同业务提交号的不同私有备份不可互换，旧 Key/Cookie 不�
   assert.equal(f.db.prepare('SELECT MAX(commit_seq) AS seq FROM commits').get().seq, cut);
   assert.notEqual(old.sha256, saved.sha256);
   restore(target.db, saved);
+  assert.equal(
+    target.members.readManagementMemberProfile('private-note-member').note,
+    'private note preserved with revoked credentials',
+  );
   const before = target.db.serialize();
   target.db.transaction(() =>
     assert.throws(
@@ -378,4 +408,136 @@ test('读取期间源字节被外部改变时回滚本次私有恢复，不能�
   )();
   assert.equal(databaseState(db), before);
   assert.notEqual(sha256(await readFile(saved.filename)), saved.sha256);
+});
+
+test('私有备注同cut不同SHA精确选源，public回放未知；仅已知空note也不是可覆盖空目标', async (t) => {
+  const f = await fixture(t),
+    original = 'n'.repeat(119) + String.fromCharCode(0xd83d);
+  registerPrivateNote(f, original);
+  f.accept('note-ready-image');
+  f.dispatch('note-ready-image-0');
+  await f.publish('note-ready-image-0');
+  await installReady(f);
+  const saved = await snapshot(f, 'note-original'),
+    alternate = path.join(f.dir, 'note-alternate.sqlite');
+  await copyFile(saved.filename, alternate);
+  // 合成另一份同业务cut的私有来源；不是新增在线备注编辑或伪造公共历史。
+  const changed = new Database(alternate);
+  changed
+    .prepare('UPDATE members SET note_json=? WHERE id=?')
+    .run(JSON.stringify(''), 'private-note-member');
+  changed.close();
+  const alternateSaved = { filename: alternate, sha256: sha256(await readFile(alternate)) };
+  assert.notEqual(alternateSaved.sha256, saved.sha256);
+  const a = rebuild(t, saved),
+    b = rebuild(t, saved),
+    collision = rebuild(t, saved),
+    noteMember = 'private-note-member';
+  assert.equal(a.members.readManagementMemberProfile(noteMember).note, null);
+  assert.equal(relationalPrivateStateEmpty(a.db), true);
+  assert.equal(await authenticateMemberApiKey(a.members, 'synthetic-private-note-key'), null);
+  const current = new Database(saved.filename, { readonly: true }),
+    alternateReader = new Database(alternate, { readonly: true });
+  try {
+    assert.equal(
+      current.prepare('SELECT MAX(commit_seq) n FROM commits').get().n,
+      alternateReader.prepare('SELECT MAX(commit_seq) n FROM commits').get().n,
+    );
+    assert.notEqual(
+      relationalPrivateStateSha256(current),
+      relationalPrivateStateSha256(alternateReader),
+    );
+  } finally {
+    current.close();
+    alternateReader.close();
+  }
+  const network = t.mock.method(globalThis, 'fetch', () =>
+      assert.fail('note recovery must stay offline'),
+    ),
+    cut = f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) n FROM commits').get().n,
+    install = (target, source) =>
+      verifyAndInstallRelationalStorage(target, {
+        sourcePath: source.filename,
+        sourceSha256: source.sha256,
+        historyId: 'generation-history',
+        finalCommitSeq: cut,
+        replicas: { dataDir: f.dir },
+      });
+  const before = databaseState(a.db);
+  await assert.rejects(
+    install(a.db, { filename: alternate, sha256: saved.sha256 }),
+    /Private|snapshot/i,
+  );
+  assert.equal(databaseState(a.db), before);
+  assert.equal(a.db.prepare('SELECT status FROM projection_state').get().status, 'building');
+  collision.db
+    .prepare('UPDATE members SET note_json=? WHERE id=?')
+    .run(JSON.stringify(''), noteMember);
+  assert.equal(collision.members.readManagementMemberProfile(noteMember).note, '');
+  assert.equal(relationalPrivateStateEmpty(collision.db), false);
+  const protectedEmpty = databaseState(collision.db);
+  assert.throws(() => restore(collision.db, saved), /Private snapshot/);
+  assert.equal(databaseState(collision.db), protectedEmpty);
+  assert.equal(
+    await authenticateMemberApiKey(collision.members, 'synthetic-private-note-key'),
+    null,
+  );
+  restore(a.db, saved);
+  const installed = databaseState(a.db),
+    count = a.db.prepare('SELECT total_changes() n').get().n;
+  restore(a.db, saved);
+  assert.equal(databaseState(a.db), installed);
+  assert.equal(a.db.prepare('SELECT total_changes() n').get().n, count);
+  const replay = new RelationalCommitReplayer(a.db),
+    inputs = new RelationalInputStore(f.db);
+  for (const { seq } of f.db
+    .prepare('SELECT CAST(commit_seq AS TEXT) seq FROM commits ORDER BY commit_seq')
+    .all()) {
+    a.db.transaction(() =>
+      assert.equal(replay.replayCommit(readRelationalCommit(f.db, seq), inputs).replayed, true),
+    )();
+  }
+  assert.equal(databaseState(a.db), installed);
+  assert.equal(a.db.prepare('SELECT total_changes() n').get().n, count);
+  await install(a.db, saved);
+  await install(b.db, alternateSaved);
+  assertRelationalStorageReady(a.db);
+  assertRelationalStorageReady(b.db);
+  assert.equal(a.members.readManagementMemberProfile(noteMember).note, original);
+  assert.equal(b.members.readManagementMemberProfile(noteMember).note, '');
+  assert.equal(sha256(await readFile(saved.filename)), saved.sha256);
+  assert.equal(sha256(await readFile(alternate)), alternateSaved.sha256);
+  assert.equal(network.mock.callCount(), 0);
+});
+
+test('私有备注复制尾SQL失败被外层捕获仍回滚此前epoch/备注，全目标不变后可健康恢复', async (t) => {
+  const f = await fixture(t);
+  registerPrivateNote(f, 'private note rollback');
+  const saved = await snapshot(f),
+    target = rebuild(t, saved);
+  let reached = false;
+  target.db.function('note_restore_tail_seen', (count) => {
+    reached = count === 3;
+    return 0;
+  });
+  target.db.exec(
+    "CREATE TEMP TRIGGER note_restore_tail AFTER UPDATE OF note_json ON members WHEN NEW.id='private-note-member' BEGIN SELECT note_restore_tail_seen((SELECT CASE WHEN note_json IS NOT NULL THEN (SELECT COUNT(*) FROM members WHERE auth_epoch IS NOT NULL) ELSE 0 END FROM members WHERE id='private-note-member')); SELECT RAISE(ABORT,'note restore tail'); END",
+  );
+  const before = databaseState(target.db);
+  target.db.transaction(() =>
+    assert.throws(
+      () => restoreRelationalPrivateSnapshot(target.db, saved.filename, saved.sha256),
+      /note restore tail/,
+    ),
+  )();
+  assert.equal(reached, true, 'note与更早成员epoch确已写入后才故障');
+  assert.equal(databaseState(target.db), before);
+  assert.equal(relationalPrivateStateEmpty(target.db), true);
+  target.db.exec('DROP TRIGGER note_restore_tail');
+  restore(target.db, saved);
+  assert.equal(
+    target.members.readManagementMemberProfile('private-note-member').note,
+    'private note rollback',
+  );
+  assert.equal(target.db.prepare('SELECT status FROM projection_state').get().status, 'building');
 });

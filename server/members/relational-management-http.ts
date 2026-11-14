@@ -497,9 +497,6 @@ export function createRelationalManagementHttp(deps: {
           if (hasGroup && (typeof body.groupId !== 'string' || updating)) {
             fail(400, '只有创建新成员时可以指定 groupId');
           }
-          if (body.note !== undefined) {
-            fail(400, '当前成员模型尚未支持备注');
-          }
           if (updating && typeof body.userId !== 'string') {
             fail(404, '账户不存在或未启用');
           }
@@ -545,6 +542,7 @@ export function createRelationalManagementHttp(deps: {
             {
               memberId,
               displayName: credentials.username,
+              note: String(body.note || '管理员创建的成员').slice(0, 120),
               apiKey: `STA1N-${randomBytes(18).toString('base64url')}`,
               credentials,
             },
@@ -734,7 +732,7 @@ export function createRelationalManagementHttp(deps: {
               id: profile.id,
               username: profile.username,
               displayName: profile.displayName,
-              note: null,
+              note: profile.note,
               enabled: profile.status === 'active',
               acceptingJobs: profile.acceptingJobs,
               discordId: profile.discordId,
