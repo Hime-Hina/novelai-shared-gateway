@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { readFileSync, readdirSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -304,9 +304,7 @@ export async function verifyLegacyNativeArchive(t, bundle, directory) {
       entries = await readdir(sourceDirectory),
       imagePath = path.join(sourceDirectory, 'images/img-access-owner.png');
     subtest.diagnostic(`sealed original Native source SHA256 ${sha256(before)}`);
-    const require = createRequire(path.join(bundle, 'package.json')),
-      Database = require('better-sqlite3'),
-      original = new Database(filename, { readonly: true });
+    const original = new Database(filename, { readonly: true });
     let memberId,
       failed,
       done,
