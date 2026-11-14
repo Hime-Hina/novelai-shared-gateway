@@ -189,7 +189,7 @@ function accountEvent(fact, accountId = 'a') {
     commitSeq: '1',
     eventIndex: 0,
     streamVersion: '1',
-    schemaVersion: 3,
+    schemaVersion: 4,
     correlationId: null,
     causationId: null,
     amountVersion: 'decimal-12-v1',

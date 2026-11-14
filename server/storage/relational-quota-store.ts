@@ -43,6 +43,10 @@ import {
   assertFairGroupTransition,
   allocateFairGroupAmount,
   planFairQuotaAllocation,
+  assertFairQuotaIdle,
+  fairQuotaSummary,
+  type FairQuotaSummaryState,
+  type FairUser,
   type FairQuotaState,
   type FairQuotaDatabase,
   type FairGroup,
@@ -594,7 +598,7 @@ export class RelationalQuotaStore {
         v5UsageTimeUntilNextPercent: old.seconds,
       });
     }
-    const financial: FairQuotaSyncState = {
+    const financial = {
       enabled: policy.enabled === 1,
       boundAccountId: accountId,
       members: configuration.members,
@@ -622,7 +626,7 @@ export class RelationalQuotaStore {
       fallbackBuffer: { fixed: q.fallbackFixed, purchased: q.fallbackPurchased },
       sharedV5Debt: q.sharedV5Debt,
       operating: this.operating(accountId),
-    };
+    } satisfies FairQuotaSyncState;
     const ops = financial.operating!;
     const knownAmounts = [
       ...Object.values(ops.available),
@@ -649,7 +653,7 @@ export class RelationalQuotaStore {
           knownAmounts.some((n) => parseAmount(n) !== 0n))) ||
       (snapshot && (snapshot.v5 === null || snapshot.anlas === null))
     ) {
-      fail('缺少金融基线，不能重新分配已有钱包');
+      fail('缺少金融基线，不能重新分配已有钱包', 503);
     }
     return { q, account, db: { settings: { fairQuota: financial }, ledger: [] as unknown[] } };
   }
@@ -729,6 +733,148 @@ export class RelationalQuotaStore {
         .get(member.id);
     assertCurrentOwnerCommand(metadata, member, current, this.env);
   }
+  private managementView() {
+    const hasPolicy = !!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1').get(),
+      policy = hasPolicy ? this.sharingPolicy() : null;
+    const configuration = this.groupState(),
+      financial = policy?.accountId ? this.state(policy.accountId) : null;
+    if (financial) {
+      assertFairQuotaIdle(financial.db);
+    }
+    const state: FairQuotaState | null = policy
+      ? {
+          ...(financial?.db.settings.fairQuota ?? {
+            enabled: policy.enabled === 1,
+            boundAccountId: null,
+            ...configuration,
+            balances: Object.fromEntries(
+              configuration.members.map((id) => [
+                id,
+                {
+                  v5Available: '0',
+                  anlasFixedAvailable: '0',
+                  anlasPurchasedAvailable: '0',
+                  anlasAvailable: '0',
+                },
+              ]),
+            ),
+            snapshot: null,
+            spent: {
+              ...zero(),
+              anlas: '0',
+              fallbackFixed: '0',
+              fallbackPurchased: '0',
+              fallbackV5: '0',
+            },
+            creditedV5: '0',
+            lastRefillAt: 0,
+            lastSettlementAt: 0,
+            status: 'pending_opus',
+            unallocatedV5: '0',
+            fallbackBuffer: { fixed: '0', purchased: '0' },
+            sharedV5Debt: '0',
+          }),
+          version: 2,
+          configVersion: policy.configVersion,
+          configurationHistory: [],
+          fallbackTotalsByUser: {},
+          // 同一原 owner 已拒绝实际预留；管理决定不需要伪造完整收费对象。
+          reservations: {},
+          autoAnlasFallback: policy.fallback === 1,
+          freeImagePolicy: {
+            version: policy.freeVersion,
+            enabled: policy.freeEnabled === 1,
+            warningThreshold: policy.warningThreshold,
+            hardLimit: policy.hardLimit,
+          },
+          lossAlertPolicy: {
+            version: policy.lossVersion,
+            v5Points24h: policy.v5_24h,
+            fixedAnlas24h: Number(policy.fixed24h),
+            fixedAnlas30d: Number(policy.fixed30d),
+            memberAttempts24h: policy.memberAttempts24h,
+          },
+        }
+      : null;
+    const db: FairQuotaDatabase & { users: FairUser[] } = {
+      settings: { fairQuota: state },
+      accounts: financial ? [financial.account] : [],
+      users: this.sqlite
+        .prepare<[], { id: string; enabled: number }>(
+          "SELECT id,(status='active') AS enabled FROM members WHERE status!='removed' ORDER BY id",
+        )
+        .all()
+        .map((user) => ({ id: user.id, enabled: user.enabled === 1 })),
+      jobs: this.sqlite
+        .prepare<[], { id: string; status: string }>(
+          "SELECT id,status FROM generation_jobs WHERE status IN ('queued','pending','running')",
+        )
+        .all(),
+      ledger: [],
+    };
+    return { db, financial, policy };
+  }
+  private enrichQuotaSummary(state: FairQuotaSummaryState, memberId?: string) {
+    state.fallbackTotalsByUser = {};
+    const selected = memberId === undefined ? '' : ' AND original_member_id=?',
+      parameters =
+        memberId === undefined ? [state.boundAccountId] : [state.boundAccountId, memberId];
+    for (const charge of this.sqlite
+      .prepare<
+        (string | null)[],
+        {
+          memberId: string;
+          fixed: string;
+          purchased: string;
+          v5: string;
+        }
+      >(
+        `SELECT original_member_id AS memberId,anlas_fixed AS fixed,anlas_purchased AS purchased,
+            v5_equivalent AS v5 FROM charges WHERE original_account_id=? AND billing_mode='anlas_fallback' AND status='settled'${selected}`,
+      )
+      .iterate(...parameters)) {
+      const total = state.fallbackTotalsByUser[charge.memberId] ?? {
+        fixed: '0',
+        purchased: '0',
+        v5Equivalent: '0',
+      };
+      total.fixed = formatAmount(parseAmount(total.fixed) + parseAmount(charge.fixed));
+      total.purchased = formatAmount(parseAmount(total.purchased) + parseAmount(charge.purchased));
+      total.v5Equivalent = formatAmount(parseAmount(total.v5Equivalent) + parseAmount(charge.v5));
+      state.fallbackTotalsByUser[charge.memberId] = total;
+    }
+    if (state.boundAccountId) {
+      const latest = this.sqlite
+        .prepare<[string], { payload: string }>(
+          `SELECT payload FROM domain_events
+          WHERE stream_id=? AND event_type='V5CapacityObserved' ORDER BY stream_version DESC LIMIT 1`,
+        )
+        .get(`account:${state.boundAccountId}`);
+      if (latest) {
+        const saved = JSON.parse(latest.payload) as RelationalPayloads['V5CapacityObserved'];
+        state.v5Reconciliation = { status: saved.status };
+      }
+    }
+  }
+  readMemberQuotaSummary(memberId: string, now: number) {
+    return this.sqlite.transaction(() => {
+      if (!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1 AND enabled=1').get())
+        return null;
+      const policy = this.sharingPolicy();
+      if (!policy.accountId)
+        return fairQuotaSummary(this.managementView().db, { id: memberId }, now);
+      const view = this.state(policy.accountId),
+        state: FairQuotaSummaryState = {
+          ...view.db.settings.fairQuota,
+          autoAnlasFallback: policy.fallback === 1,
+          fallbackTotalsByUser: {},
+        },
+        db = { settings: { fairQuota: state }, ledger: [] as unknown[] };
+      this.enrichQuotaSummary(state, memberId);
+      syncBoundFairQuota(db, view.account, now);
+      return fairQuotaSummary(db, { id: memberId }, now);
+    })();
+  }
   configureGroups(
     metadata: Metadata,
     input: { groups: unknown; expectedConfigVersion: number; redistributeRemaining?: boolean },
@@ -768,86 +914,13 @@ export class RelationalQuotaStore {
       ) {
         fail('分组版本缺失或已变化，请保留草稿并刷新后重新编辑');
       }
-      const configuration = this.groupState(),
-        financial = policy?.accountId ? this.state(policy.accountId) : null;
       if (
         !policy?.accountId &&
         this.sqlite.prepare('SELECT 1 FROM upstream_accounts LIMIT 1').get()
       ) {
         fail('未绑定账户须先完成账户配置');
       }
-      const state: FairQuotaState | null = policy
-        ? {
-            ...(financial?.db.settings.fairQuota ?? {
-              enabled: policy.enabled === 1,
-              boundAccountId: null,
-              ...configuration,
-              balances: Object.fromEntries(
-                configuration.members.map((id) => [
-                  id,
-                  {
-                    v5Available: '0',
-                    anlasFixedAvailable: '0',
-                    anlasPurchasedAvailable: '0',
-                    anlasAvailable: '0',
-                  },
-                ]),
-              ),
-              snapshot: null,
-              spent: {
-                ...zero(),
-                anlas: '0',
-                fallbackFixed: '0',
-                fallbackPurchased: '0',
-                fallbackV5: '0',
-              },
-              creditedV5: '0',
-              lastRefillAt: 0,
-              lastSettlementAt: 0,
-              status: 'pending_opus',
-              unallocatedV5: '0',
-              fallbackBuffer: { fixed: '0', purchased: '0' },
-              sharedV5Debt: '0',
-            }),
-            version: 2,
-            configVersion: policy.configVersion,
-            configurationHistory: [],
-            fallbackTotalsByUser: {},
-            // 原分组 owner 的 idle 断言先拒绝预留；合法路径不读取窄预留之外的派发字段。
-            reservations: (financial?.db.settings.fairQuota.reservations ??
-              {}) as FairQuotaState['reservations'],
-            autoAnlasFallback: policy.fallback === 1,
-            freeImagePolicy: {
-              version: policy.freeVersion,
-              enabled: policy.freeEnabled === 1,
-              warningThreshold: policy.warningThreshold,
-              hardLimit: policy.hardLimit,
-            },
-            lossAlertPolicy: {
-              version: policy.lossVersion,
-              v5Points24h: policy.v5_24h,
-              fixedAnlas24h: Number(policy.fixed24h),
-              fixedAnlas30d: Number(policy.fixed30d),
-              memberAttempts24h: policy.memberAttempts24h,
-            },
-          }
-        : null;
-      const db: FairQuotaDatabase = {
-        settings: { fairQuota: state },
-        accounts: financial ? [financial.account] : [],
-        users: this.sqlite
-          .prepare<[], { id: string; enabled: number }>(
-            "SELECT id,(status='active') AS enabled FROM members WHERE status!='removed' ORDER BY id",
-          )
-          .all()
-          .map((user) => ({ id: user.id, enabled: user.enabled === 1 })),
-        jobs: this.sqlite
-          .prepare<[], { id: string; status: string }>(
-            "SELECT id,status FROM generation_jobs WHERE status IN ('queued','pending','running')",
-          )
-          .all(),
-        ledger: [],
-      };
+      const { db, financial } = this.managementView();
       const planned = this.capture({ db }, () => {
           const result = configureFairGroups(db, input.groups, {
             now: metadata.recordedAt,

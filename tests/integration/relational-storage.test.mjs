@@ -16,12 +16,12 @@ import { parseAmount } from '../../server/quota/resource-amounts.ts';
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
 
-test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v3 格式门禁，不手补字段或 hash', (t) => {
+test('旧关系事件 v2 原型的正确旧 hash 也不能通过 v4 格式门禁，不手补字段或 hash', (t) => {
   const sqlite = new Database(':memory:');
   t.after(() => sqlite.close());
   sqlite.pragma('foreign_keys=ON');
   const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
-    'CHECK (schema_version = 3)',
+    'CHECK (schema_version = 4)',
     'CHECK (schema_version = 2)',
   );
   assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
@@ -78,7 +78,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 3,
+    schema_version: 4,
     occurred_at: 1000,
     account_id: null,
     member_id: null,
