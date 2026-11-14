@@ -4,6 +4,8 @@ import Database from 'better-sqlite3';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import {
   fixture,
   meta,
@@ -21,7 +23,11 @@ import { RelationalGenerationStore } from '../../server/storage/relational-gener
 import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
 import { RelationalReportStore } from '../../server/storage/relational-report-store.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
-import { relationalPrivateTables } from '../../server/storage/relational-private-restore.ts';
+import {
+  relationalPrivateTables,
+  relationalSnapshotSha256,
+} from '../../server/storage/relational-private-restore.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { createRelationalQueueRuntime } from '../../server/generation/relational-queue-runtime.ts';
 import { accountQuotaResult } from '../../server/quota/account-refresh.ts';
@@ -367,6 +373,271 @@ test('Opening running requires one actual Job→Attempt→Charge closure in orig
     f.generations.readGenerationExecutionState(result.jobId).eventId,
     'running-OpeningAttemptRecorded',
   );
+});
+
+test('never-dispatched pending/queued Opening children cannot own attempts; done original attempts stay valid', async (t) => {
+  const f = await source(t);
+  for (const status of ['pending', 'queued']) {
+    const before = databaseState(f.db);
+    f.db.transaction(() =>
+      assert.throws(
+        () =>
+          open(f, {
+            name: `unstarted-${status}`,
+            noCharge: true,
+            job: {
+              status,
+              queueSeq: status === 'queued' ? '2' : null,
+              completedAt: null,
+              errorCode: null,
+              errorStatus: null,
+            },
+            attempt: { reviewStatus: null, actualConsumption: { ...zero, anlasFixed: '100' } },
+          }),
+        /未派发开账任务不能已有尝试/,
+      ),
+    )();
+    assert.equal(databaseState(f.db), before);
+  }
+  const descriptor = describeStoredResult('done-artifact', 'generate', {
+    mimeType: 'image/webp',
+    buffer: image,
+  });
+  const result = open(f, {
+    name: 'done',
+    job: {
+      status: 'done',
+      artifactId: descriptor.imageId,
+      completedAt: 0,
+      errorCode: null,
+      errorStatus: null,
+    },
+    attempt: { reviewStatus: null },
+    charge: { status: 'settled' },
+    mutate: (events) => {
+      events.push({
+        eventId: 'done-OpeningArtifactRecorded',
+        eventType: 'OpeningArtifactRecorded',
+        streamId: 'artifact:done-artifact',
+        memberId: 'm1',
+        accountId: 'a',
+        occurredAt: NOW + 10,
+        policyVersion: 'original-policy',
+        pricingVersion: 'original-price',
+        payload: {
+          artifactId: descriptor.imageId,
+          memberId: 'm1',
+          inputId: 'done-input',
+          originalAttemptId: 'done-attempt',
+          operation: 'generate',
+          mimeType: descriptor.mimeType,
+          byteLength: descriptor.byteLength,
+          sha256: descriptor.sha256,
+          publishedAt: 0,
+          retiredAt: null,
+          origin: { sourceId: 'synthetic-opening', originalId: 'done-original-artifact' },
+        },
+      });
+    },
+  });
+  assert.equal(f.generations.readCharge(result.jobId).status, 'settled');
+  assert.equal(
+    f.db
+      .prepare('SELECT original_attempt_id AS attempt FROM artifacts WHERE id=?')
+      .get(descriptor.imageId).attempt,
+    result.attemptId,
+  );
+  rebuild(t, f.db);
+});
+
+test('known not_sent cannot own an artifact or a recovered result; identical unknown history stays valid', async (t) => {
+  const f = await source(t);
+  for (const role of ['done-artifact', 'failed-artifact', 'result-recovered']) {
+    for (const dispatchState of ['not_sent', 'unknown']) {
+      const name = `${role}-${dispatchState}`,
+        descriptor = describeStoredResult(`${name}-artifact`, 'generate', {
+          mimeType: 'image/webp',
+          buffer: image,
+        });
+      const before = databaseState(f.db);
+      let job = {};
+      if (role === 'done-artifact') {
+        job = {
+          status: 'done',
+          artifactId: descriptor.imageId,
+          errorCode: null,
+          errorStatus: null,
+        };
+      } else if (role === 'failed-artifact') {
+        job = { artifactId: descriptor.imageId };
+      }
+      const importRole = () =>
+        open(f, {
+          name,
+          job,
+          attempt: {
+            reviewStatus: role === 'result-recovered' ? 'result_recovered' : null,
+            response: { ...response, dispatchState },
+          },
+          charge: role === 'done-artifact' ? { status: 'settled' } : {},
+          mutate: (events) => {
+            if (role !== 'result-recovered') {
+              events.push({
+                eventId: `${name}-OpeningArtifactRecorded`,
+                eventType: 'OpeningArtifactRecorded',
+                streamId: `artifact:${descriptor.imageId}`,
+                memberId: 'm1',
+                accountId: 'a',
+                occurredAt: NOW + 10,
+                policyVersion: 'original-policy',
+                pricingVersion: 'original-price',
+                payload: {
+                  artifactId: descriptor.imageId,
+                  memberId: 'm1',
+                  inputId: `${name}-input`,
+                  originalAttemptId: `${name}-attempt`,
+                  operation: 'generate',
+                  mimeType: descriptor.mimeType,
+                  byteLength: descriptor.byteLength,
+                  sha256: descriptor.sha256,
+                  publishedAt: 0,
+                  retiredAt: null,
+                  origin: {
+                    sourceId: 'synthetic-opening',
+                    originalId: `${name}-original-artifact`,
+                  },
+                },
+              });
+            }
+          },
+        });
+      if (dispatchState === 'not_sent') {
+        f.db.transaction(() => assert.throws(importRole, /未发送|原尝试\/任务\/输入角色不符/))();
+        assert.equal(databaseState(f.db), before);
+      } else {
+        const result = importRole();
+        assert.equal(
+          f.db
+            .prepare('SELECT dispatch_state AS state FROM generation_attempts WHERE id=?')
+            .get(result.attemptId).state,
+          'unknown',
+        );
+      }
+    }
+  }
+  rebuild(t, f.db);
+});
+
+test('ready and preparation reader reject unexecutable archived prepared sources without changing source, target or Local bytes', async (t) => {
+  for (const kind of [
+    'missing-charge',
+    'already-recovered',
+    'archived-charge',
+    'not-sent-evidence',
+  ]) {
+    const f = await source(t),
+      result = open(f, {
+        prepared: true,
+        noCharge: kind === 'missing-charge',
+        attempt: { reviewStatus: kind === 'already-recovered' ? 'result_recovered' : 'pending' },
+        charge: kind === 'archived-charge' ? { resolution: 'archived' } : {},
+      });
+    if (kind === 'not-sent-evidence') {
+      f.db.transaction(() =>
+        f.generations.recordGenerationResponse(meta('original-not-sent-evidence'), result.jobId, {
+          ...response,
+          dispatchState: 'not_sent',
+        }),
+      )();
+    }
+    await publishStoredResult(f.dir, result.descriptor, image);
+    initializeFixtureConfiguration(f.db);
+    const selected = path.join(f.dir, 'unexecutable-source.sqlite');
+    await f.db.backup(selected);
+    const seal = new Database(selected);
+    seal.pragma('journal_mode=DELETE');
+    seal.close();
+    const sha = relationalSnapshotSha256(selected),
+      before = databaseState(f.db),
+      targetBytes = f.db.serialize();
+    const reason = /任务或收费已经终结|原核对状态不能再次恢复结果|实际任务、尝试与原预扣不一致/;
+    assert.throws(() => f.generations.readGenerationResultPreparation(result.jobId), reason);
+    f.db.transaction(() =>
+      assert.throws(
+        () =>
+          f.generations.completeGeneration(meta(`reject-${kind}`), result.jobId, result.descriptor),
+        reason,
+      ),
+    )();
+    await assert.rejects(
+      verifyAndInstallRelationalStorage(f.db, {
+        sourcePath: selected,
+        sourceSha256: sha,
+        historyId: 'generation-history',
+        finalCommitSeq: f.db
+          .prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits')
+          .get().seq,
+        replicas: { dataDir: f.dir },
+      }),
+      reason,
+    );
+    assert.equal(f.db.prepare('SELECT status FROM projection_state').get().status, 'building');
+    assert.equal(databaseState(f.db), before);
+    assert.ok(f.db.serialize().equals(targetBytes));
+    assert.equal(relationalSnapshotSha256(selected), sha);
+    assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file)), image);
+  }
+});
+
+test('ready shares the real running prepared completion closure and original coordinator settles only its original charge', async (t) => {
+  const f = await source(t),
+    result = open(f, {
+      prepared: true,
+      job: { status: 'running', completedAt: null, errorCode: null, errorStatus: null },
+      attempt: { reviewStatus: null },
+    });
+  await publishStoredResult(f.dir, result.descriptor, image);
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual(
+    f.generations.readGenerationResultPreparation(result.jobId).descriptor,
+    result.descriptor,
+  );
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  await installReady(f);
+  const wallet = f.generations.readWallet('a', 'm1');
+  const run = createRelationalQueueRuntime({
+    sqlite: f.db,
+    dataDir: f.dir,
+    generations: f.generations,
+    inputs: f.inputs,
+    controls: new Map(),
+    events: new EventEmitter(),
+    now: () => NOW + 20,
+    env: {},
+  });
+  const fetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = () => {
+    calls++;
+    assert.fail('prepared recovery must not resend');
+  };
+  try {
+    await run.start();
+    await run.stop();
+    assert.equal(f.generations.readCharge(result.jobId).status, 'settled');
+    assert.deepEqual(f.generations.readWallet('a', 'm1'), wallet);
+    assert.equal(
+      f.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(result.jobId).status,
+      'done',
+    );
+    assert.equal(calls, 0);
+    rebuild(t, f.db);
+  } finally {
+    await run.stop();
+    globalThis.fetch = fetch;
+  }
 });
 
 test('OpeningAttempt SQL failure is atomic under an outer catch; retry and full original repeat write once', async (t) => {

@@ -1650,10 +1650,7 @@ export class RelationalGenerationStore {
   }
   readGenerationResultPreparation(jobId: string) {
     const job = this.job(jobId),
-      attempt = this.attempt(jobId);
-    if (!attempt || job.artifactId) {
-      fail('任务没有待恢复的准备结果');
-    }
+      { attempt } = this.generationCompletion(job);
     const opening = readRelationalOpeningAttempt(this.sqlite, attempt.id);
     const sources = this.sqlite
       .prepare<[string, string], { eventId: string; commitSeq: string }>(
@@ -1820,19 +1817,7 @@ export class RelationalGenerationStore {
       if (prior) {
         return prior;
       }
-      const attempt = this.attempt(jobId),
-        charge = this.readCharge(jobId);
-      if (
-        !attempt ||
-        !charge ||
-        job.retiredAt !== null ||
-        charge.attemptId !== attempt.id ||
-        !['running', 'failed'].includes(job.status) ||
-        job.artifactId ||
-        charge.status === 'settled'
-      ) {
-        fail('任务或收费已经终结');
-      }
+      const { attempt, charge } = this.generationCompletion(job);
       assertStoredResultDescriptor(publication);
       if (canonicalJson(publication) !== canonicalJson(this.prepared(job, attempt))) {
         fail('发布结果与准备凭据不符');
@@ -2361,7 +2346,81 @@ export class RelationalGenerationStore {
       fail('核对责任缺少原尝试来源');
     }
   }
+  // ready 的只读 prepared 检查与真正发布共用完成前置；不运行发布/结算来试探可恢复性。
+  private generationCompletion(job: Job) {
+    const attempt = this.attempt(job.id),
+      charge = this.readCharge(job.id);
+    if (
+      !attempt ||
+      !charge ||
+      job.retiredAt !== null ||
+      charge.attemptId !== attempt.id ||
+      !['running', 'failed'].includes(job.status) ||
+      job.artifactId ||
+      attempt.dispatchState === 'not_sent' ||
+      charge.status === 'settled'
+    ) {
+      fail('任务或收费已经终结');
+    }
+    if (job.status === 'running' && charge.status === 'reserved') {
+      this.reservedCharge(job.id, charge.reservationEventId);
+      this.quotas.readAccountQuota(charge.originalAccountId);
+    } else if (job.status === 'failed' && charge.status === 'refunded') {
+      const original = this.chargeSource(job, attempt, charge);
+      if (
+        original.eventType === 'OpeningChargeRecorded' &&
+        charge.terminalEventId === original.eventId
+      ) {
+        if (
+          original.payload.status !== 'refunded' ||
+          original.payload.terminalEventId !== original.eventId ||
+          original.payload.terminalAt !== charge.terminalAt
+        ) {
+          fail('原退款缺少自身开账终态来源');
+        }
+      } else {
+        const terminal = this.sqlite
+          .prepare<[string], { seq: string }>(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+          )
+          .get(charge.terminalEventId ?? '');
+        const refund =
+          terminal &&
+          readRelationalCommit(this.sqlite, terminal.seq).events.find(
+            (e) => e.eventId === charge.terminalEventId,
+          );
+        if (
+          refund?.eventType !== 'GenerationRefunded' ||
+          refund.payload.jobId !== job.id ||
+          refund.payload.reservationEventId !== charge.reservationEventId ||
+          refund.memberId !== job.memberId ||
+          refund.accountId !== charge.originalAccountId ||
+          refund.streamId !== `account:${charge.originalAccountId}` ||
+          refund.occurredAt !== charge.terminalAt
+        ) {
+          fail('准备恢复缺少原同任务退款来源');
+        }
+      }
+      if (attempt.lossEventId) {
+        this.assertReviewAnchor(job, attempt);
+        if (!['pending', 'estimated_closed'].includes(attempt.reviewStatus ?? '')) {
+          fail('原核对状态不能再次恢复结果');
+        }
+      }
+    } else {
+      fail('任务和收费终态不一致');
+    }
+    if (charge.billingMode === 'free' && job.freeSucceededAt === null) {
+      this.policy();
+    }
+    return { attempt, charge };
+  }
   private reservation(event: RelationalEvent, jobId: string, reservationEventId: string): Charge {
+    const charge = this.reservedCharge(jobId, reservationEventId);
+    this.eventJob(event, jobId, charge.originalAccountId);
+    return charge;
+  }
+  private reservedCharge(jobId: string, reservationEventId: string): Charge {
     const c = this.readCharge(jobId);
     if (
       !c ||
@@ -2372,7 +2431,7 @@ export class RelationalGenerationStore {
     ) {
       fail('原预扣不存在、身份不符或已经终结');
     }
-    const job = this.eventJob(event, jobId, c.originalAccountId),
+    const job = this.job(jobId),
       a = this.attempt(jobId);
     if (
       job.memberId !== c.originalMemberId ||
@@ -2383,44 +2442,86 @@ export class RelationalGenerationStore {
     ) {
       fail('实际任务、尝试与原预扣不一致');
     }
-    const anchor = this.sqlite
-      .prepare<
-        [string],
-        { event_type: string; account_id: string | null; member_id: string | null; seq: string }
-      >(
-        'SELECT event_type,account_id,member_id,CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
-      )
-      .get(reservationEventId);
+    const original = this.chargeSource(job, a, c);
+    if (original.eventType === 'OpeningChargeRecorded' && original.payload.status !== 'reserved') {
+      fail('原预扣开账状态不是在途');
+    }
+    return c;
+  }
+  private chargeSource(job: Job, attempt: Attempt, charge: Charge) {
     if (
-      !anchor ||
-      !['QuotaReserved', 'OpeningChargeRecorded'].includes(anchor.event_type) ||
-      anchor.account_id !== c.originalAccountId ||
-      anchor.member_id !== c.originalMemberId
+      charge.resolution !== 'live' ||
+      charge.jobId !== job.id ||
+      charge.originalJobId !== job.id ||
+      charge.originalMemberId !== job.memberId ||
+      charge.originalAccountId !== attempt.accountId ||
+      charge.attemptId !== attempt.id ||
+      !this.readWallet(charge.originalAccountId, charge.originalMemberId)
+    ) {
+      fail('实际任务、尝试与原预扣不一致');
+    }
+    const anchor = this.sqlite
+      .prepare<[string], { seq: string }>(
+        'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+      )
+      .get(charge.reservationEventId);
+    const original =
+      anchor &&
+      readRelationalCommit(this.sqlite, anchor.seq).events.find(
+        (e) => e.eventId === charge.reservationEventId,
+      );
+    if (
+      !original ||
+      (original.eventType !== 'QuotaReserved' && original.eventType !== 'OpeningChargeRecorded') ||
+      original.accountId !== charge.originalAccountId ||
+      original.memberId !== job.memberId ||
+      original.streamId !== `account:${charge.originalAccountId}`
     ) {
       fail('原预扣事实归属不符');
     }
-    if (anchor.event_type === 'OpeningChargeRecorded') {
-      const snapshot = readRelationalCommit(this.sqlite, anchor.seq).events.find(
-        (e) => e.eventId === reservationEventId,
-      );
+    if (original.eventType === 'OpeningChargeRecorded') {
+      const snapshot = original;
       if (
-        snapshot?.eventType !== 'OpeningChargeRecorded' ||
-        snapshot.payload.status !== 'reserved' ||
+        (snapshot.payload.status !== 'reserved' && snapshot.payload.status !== charge.status) ||
         snapshot.payload.reservationEventId !== snapshot.eventId ||
         snapshot.payload.resolution !== 'live' ||
-        snapshot.payload.originalJobId !== c.originalJobId ||
-        snapshot.payload.jobId !== jobId ||
-        snapshot.payload.originalMemberId !== c.originalMemberId ||
-        snapshot.payload.originalAccountId !== c.originalAccountId ||
-        snapshot.payload.attemptId !== a.id ||
-        canonicalJson(snapshot.payload.resources) !==
-          canonicalJson({ v5: c.v5, anlasFixed: c.anlasFixed, anlasPurchased: c.anlasPurchased })
+        snapshot.payload.originalJobId !== job.id ||
+        snapshot.payload.jobId !== job.id ||
+        snapshot.payload.originalMemberId !== job.memberId ||
+        snapshot.payload.originalAccountId !== charge.originalAccountId ||
+        snapshot.payload.walletMemberId !== job.memberId ||
+        snapshot.payload.walletAccountId !== charge.originalAccountId ||
+        snapshot.payload.attemptId !== attempt.id ||
+        snapshot.payload.reservedAt !== charge.reservedAt
       ) {
         fail('预扣消费缺少自身原开账角色');
       }
       assertRelationalOpeningSource(this.sqlite, snapshot);
+    } else if (
+      original.payload.jobId !== job.id ||
+      original.payload.memberId !== job.memberId ||
+      original.payload.accountId !== charge.originalAccountId ||
+      original.occurredAt !== charge.reservedAt
+    ) {
+      fail('预扣消费缺少自身原在线角色');
     }
-    return c;
+    const p = original.payload;
+    if (
+      canonicalJson(p.resources) !==
+        canonicalJson({
+          v5: charge.v5,
+          anlasFixed: charge.anlasFixed,
+          anlasPurchased: charge.anlasPurchased,
+        }) ||
+      p.billingMode !== charge.billingMode ||
+      p.estimated !== charge.estimated ||
+      p.v5Equivalent !== charge.v5Equivalent ||
+      p.sharedV5Reserved !== charge.sharedV5Reserved ||
+      p.configVersion !== charge.configVersion
+    ) {
+      fail('原预扣金额或计费来源不符');
+    }
+    return original;
   }
   private adjustWallet(
     accountId: string,
@@ -2672,8 +2773,17 @@ export class RelationalGenerationStore {
           ) {
             fail('开账尝试与原任务/账户角色不符或已存在');
           }
+          if (job.status === 'pending' || job.status === 'queued') {
+            fail('未派发开账任务不能已有尝试');
+          }
           if (p.reviewStatus !== null && job.status !== 'failed') {
             fail('原核对责任必须属于失败任务');
+          }
+          if (
+            p.response.dispatchState === 'not_sent' &&
+            (job.status === 'done' || p.reviewStatus === 'result_recovered')
+          ) {
+            fail('未发送原尝试不能证明成功或找回结果');
           }
           if (job.status === 'running') {
             const original = events.find(
@@ -2771,9 +2881,10 @@ export class RelationalGenerationStore {
                   inputId: string;
                   operation: string;
                   artifactId: string | null;
+                  dispatchState: Response['dispatchState'];
                 }
               >(
-                `SELECT a.account_id AS accountId,r.member_id AS memberId,r.input_id AS inputId,r.operation,j.artifact_id AS artifactId
+                `SELECT a.account_id AS accountId,r.member_id AS memberId,r.input_id AS inputId,r.operation,j.artifact_id AS artifactId,a.dispatch_state AS dispatchState
               FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
               JOIN generation_requests r ON r.id=j.request_id WHERE a.id=?`,
               )
@@ -2784,7 +2895,8 @@ export class RelationalGenerationStore {
               original.memberId !== p.memberId ||
               original.inputId !== p.inputId ||
               original.operation !== p.operation ||
-              original.artifactId !== p.artifactId
+              original.artifactId !== p.artifactId ||
+              original.dispatchState === 'not_sent'
             ) {
               fail('开账产物与已知原尝试/任务/输入角色不符');
             }

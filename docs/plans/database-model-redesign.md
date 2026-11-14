@@ -1545,6 +1545,16 @@ Attempt owner 在同一 Gen projector 内接入，当前实际覆盖 74/75，剩
 
 十一文件最终相关回归 249/249，类型、架构、默认/可信 `ed985cfc` 迁移历史、所改文件格式及差异检查通过。四个隔离 TEMP 负控分别恢复 NULL 擦成本、把未知空候选当免费、跳过 running 闭包、跳过原授权证明，均在对应实际断言失败；精确候选源恢复后 18/18。证据为 `H:\TEMP\novelai-opening-attempt-{focused-final,union-final,typecheck,architecture,migration,format}.log`、`negative-{positive,erase-cost,unknown-free,missing-closure,missing-authorization,restored}.log` 与 `negative-evidence.json`。这些是作者局部源码验证，独审须绑定最终 fixed SHA；未跑 full、编译包、Node 24、依赖/native 重建、真实云端或生产操作，所选旧源 converter/归档责任和 sole 总装配仍由总任务接续。
 
+OpeningAttempt 的生命周期还须与原 Job 状态相符：pending/queued 是尚未派发的 child，不得已有原尝试；不能因历史已知成本或未知 Charge 就把已尝试实体变成可再次派发的 child。running 仍须原序 Job→Attempt→Charge 完整闭包，done/failed 原终态历史继续保留。独审 `e5be603` 的真实反例证明 pending/queued 携 Attempt 可以通过唯一 installer，却在原 runtime 派发时因已有尝试 fault；修正归 Attempt owner 的受理前置，不在 runtime 添加兼容或重新派发规则。
+
+已知 `not_sent` 证明原尝试物理未发，不能作为 done 自有产物或 result_recovered 的来源；Attempt 与 Artifact 两边核已知关系，unknown 同形状仍保留，不据时间、报价或免费模式猜测。缺 Charge 的 failed 归档若另有原 prepared 描述，原事实/真实字节仍可留在 building/归档，但唯一 installer 必须在 ready 前复用 Gen 原可完成前置及原 reservation/refund 来源只读核对，不能把实际必然恢复失败的组合标 ready。该核对与真实 completeGeneration 共用 owner，不运行发布、退款或结算，不加另一套规则/状态；原 coordinator 的启动 failclosed 保留。不能跳过 prepared、删除原字节、猜退款或手置启动成功；所选上线源须实际补齐可证的原 Charge 责任，不足的原证据继续归档，不让运营者选择来发明历史事实。
+
+上述三类独审缺口的后继只修改 Gen、专项及本节，不改事件 6/DDL、输入、Quota、runtime 或 ready 的遍历规则。原 `reservation()` 的真实预扣读取抽为 `reservedCharge()` / `chargeSource()`，保留事件 header 边界，并显式核 live、原 job/attempt/member/account/wallet、原资源与计费事实；普通退款按其真实 account 流、原 reservation 和终态时刻核对，Opening 退款只用自身 snapshot 终态锚。只读 `generationCompletion()` 与实际 `completeGeneration()` 共用：running/reserved 复用原预扣与 quota 来源，failed/refunded 核原退款与可再次恢复的核对状态；缺 Charge、archived Charge、already result_recovered 或已知 not_sent 均不能完成 prepared 动作。现 `readGenerationResultPreparation()` 调用同一前置，ready 的既有遍历因而在安装前拒绝，未通过试跑发布/结算探测可恢复性。
+
+新专项 22/22，覆盖 pending/queued 外层 catch 零写、done/failed/running 正例、两个 owner 的 not_sent 独立护栏及同形 unknown 保真；缺/archived Charge、已恢复及后续真实 not_sent 证据的 prepared，在 getter/实际 complete/唯一 installer 三口都拒绝，building 全表/目标序列化字节、选定源 SHA 与真实 Local bytes 不变。完整 live/reserved prepared 走合法 ready 与原 coordinator 实际结算一次，不再扣钱包、不 fetch；原 refunded/late 回归继续保留。审查者七个原脚本及 fixture 未改字节，仅用 TEMP loader 把固定源码 import 前缀改绑候选，11/11 通过；原 pending/queued 反例先按同样改绑得到真实 runtime fault 的 0/2 红。相关七文件 161/161、零跳过，类型、架构、默认/可信 `ed985cfc` 迁移、格式及差异检查通过。五个 TEMP 负控分别去除未派发 gate、Attempt-not_sent、Artifact-not_sent、getter 的共用 gate、实际 complete 的共用 gate，均在对应业务断言失败，精确源恢复后 22/22 与原八个反例/正对照 8/8。
+
+证据为 `H:\TEMP\novelai-opening-attempt-followup-{before,focused-wip,reviewer-original-final,union-final,typecheck,architecture,migration,migration-default,format}.log`、`followup-negative-{positive,external-positive,unstarted,attempt-not-sent,artifact-not-sent,reader-gate,complete-gate,restored,external-restored}.log` 及 `H:\TEMP\novelai-opening-attempt-followup-negative-evidence.json`。前置 e5 的四负控 JSON 准确位置为 `H:\TEMP\novelai-opening-attempt-negative-evidence.json`，不在 e5 交接子目录。当前结论仍是作者局部源码验证，独审须绑定后继 fixed SHA；未跑 full、编译包、Node 24、依赖/native 重建、真实云端或生产操作。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
