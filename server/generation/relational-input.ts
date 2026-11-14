@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson, domainDigest } from '../events/domain-events.ts';
-import { buildNovelAiParameters, type ProviderRequest } from '../protocols/novelai-client.ts';
+import {
+  buildNovelAiParameters,
+  type ProviderRequest,
+  type NormalizedImageRequest,
+} from '../protocols/novelai-client.ts';
 import {
   nativeNormalizationContext,
   parseNativeAuxiliaryRequest,
@@ -15,7 +19,7 @@ import {
   type RecoverableRequest,
   type MemberNormalizationContext,
 } from './member-contract.ts';
-import { requestNormalizationDefaults } from './request-fingerprint.ts';
+import { requestNormalizationDefaults, requestCacheKey } from './request-fingerprint.ts';
 import { generationPayloadLimits } from './payload-budget.ts';
 import { MEMBER_NORMALIZATION_FORMAT } from './capabilities.ts';
 
@@ -45,6 +49,80 @@ export interface PreparedRelationalInput {
   wireBytes: number;
   sampleCount: number;
   firstSeed: number | null;
+}
+
+// 复用旧 direct 缓存等价；出站丢掉的原选择只取保存值，不按当前默认反推。
+export function relationalInputCacheKey(
+  memberId: string,
+  input: Pick<PreparedRelationalInput, 'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'>,
+  seedMode: 'fixed' | 'random' | 'not_applicable',
+): string | null {
+  if (
+    input.body.operation !== 'generate' ||
+    input.sampleCount !== 1 ||
+    seedMode === 'not_applicable' ||
+    input.context.kind !== 'direct' ||
+    input.body.cacheSelection === undefined
+  ) {
+    return null;
+  }
+  validateRelationalInputBody(input.body);
+  const selection = input.body.cacheSelection as {
+      size: string;
+      cost?: number | null;
+      purchaseField: boolean;
+      sampler?: string;
+    },
+    parameters = input.body.parameters as Record<string, unknown>,
+    prompt = input.body.input as string,
+    tag = (input.body.displayPrompt ?? prompt) as string,
+    artist = directArtist(prompt, tag);
+  // 顺序沿原 normalizeNovelAiRequest 返回值；requestedSteps 原 owner 明确不参与缓存。
+  const request = {
+    tag,
+    prompt,
+    artist,
+    model: input.body.model,
+    negative: parameters.negative_prompt,
+    width: parameters.width,
+    height: parameters.height,
+    size: selection.size,
+    steps: parameters.steps,
+    scale: parameters.scale,
+    cfg: parameters.cfg_rescale,
+    sampler: selection.sampler ?? parameters.sampler,
+    noiseSchedule: parameters.noise_schedule,
+    seed: input.firstSeed,
+    cost: selection.cost,
+    ...(selection.purchaseField ? { allowPurchasedAnlas: input.body.allowPurchasedAnlas } : {}),
+  };
+  const rebuilt = buildNovelAiParameters({
+    ...request,
+    normalizationContext: { native: input.context.native },
+  } as ProviderRequest);
+  delete rebuilt.seed;
+  delete rebuilt.n_samples;
+  if (input.body.action !== 'generate' || canonicalJson(rebuilt) !== canonicalJson(parameters)) {
+    return null;
+  }
+  return requestCacheKey(memberId, request, seedMode === 'fixed' ? input.firstSeed : '');
+}
+
+function directArtist(prompt: string, tag: string): string {
+  if (prompt === tag) {
+    return '';
+  }
+  if (tag === '') {
+    return prompt;
+  }
+  if (!prompt.endsWith('\n' + tag)) {
+    invalid();
+  }
+  const artist = prompt.slice(0, -(tag.length + 1));
+  if (!artist) {
+    invalid();
+  }
+  return artist;
 }
 
 function invalid(): never {
@@ -303,6 +381,28 @@ export function prepareRelationalInput(
     if (request.requestedSteps !== undefined && request.requestedSteps !== request.steps) {
       body.requestedSteps = request.requestedSteps;
     }
+    const direct = request as RecoverableRequest &
+      Partial<Pick<NormalizedImageRequest, 'artist' | 'size' | 'cost'>>;
+    if (context.kind === 'direct' && typeof direct.size === 'string') {
+      if (
+        typeof direct.tag !== 'string' ||
+        typeof direct.artist !== 'string' ||
+        directArtist(direct.prompt!, direct.tag) !== direct.artist ||
+        (direct.cost !== undefined && typeof direct.cost !== 'number') ||
+        (direct.allowPurchasedAnlas !== undefined &&
+          typeof direct.allowPurchasedAnlas !== 'boolean')
+      ) {
+        invalid();
+      }
+      body.cacheSelection = {
+        size: direct.size,
+        ...(direct.cost !== undefined
+          ? { cost: Number.isFinite(direct.cost) ? direct.cost : null }
+          : {}),
+        purchaseField: direct.allowPurchasedAnlas !== undefined,
+        ...(direct.sampler !== parameters.sampler ? { sampler: direct.sampler } : {}),
+      };
+    }
   }
   const contextSha256 = domainDigest(context);
   const metadata = assets.map(({ bytes: _bytes, ...asset }) => asset);
@@ -413,6 +513,7 @@ export function validateRelationalInputBody(body: Record<string, unknown>, compl
       'allowPurchasedAnlas',
       'displayPrompt',
       'requestedSteps',
+      'cacheSelection',
     ]);
     if (
       typeof body.input !== 'string' ||
@@ -425,6 +526,25 @@ export function validateRelationalInputBody(body: Record<string, unknown>, compl
         (typeof body.requestedSteps !== 'number' || !Number.isFinite(body.requestedSteps)))
     ) {
       invalid();
+    }
+    if (body.cacheSelection !== undefined) {
+      const selection = body.cacheSelection;
+      if (!object(selection)) {
+        invalid();
+      }
+      keys(selection, ['size', 'cost', 'purchaseField', 'sampler']);
+      if (
+        typeof selection.size !== 'string' ||
+        typeof selection.purchaseField !== 'boolean' ||
+        (!selection.purchaseField && body.allowPurchasedAnlas !== false) ||
+        (selection.cost !== undefined &&
+          selection.cost !== null &&
+          (typeof selection.cost !== 'number' || !Number.isFinite(selection.cost))) ||
+        (selection.sampler !== undefined && typeof selection.sampler !== 'string')
+      ) {
+        invalid();
+      }
+      directArtist(body.input as string, (body.displayPrompt ?? body.input) as string);
     }
   } else {
     keys(
@@ -502,6 +622,7 @@ export function restoreRelationalWire(
   }
   delete wire.displayPrompt;
   delete wire.requestedSteps;
+  delete wire.cacheSelection;
   if (wire.operation === 'generate') {
     if (seed === null || !Number.isSafeInteger(seed) || seed < 0 || seed > 4294967295) {
       invalid();

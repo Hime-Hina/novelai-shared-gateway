@@ -1,3 +1,4 @@
+import { requestCacheKey } from './generation/request-fingerprint.ts';
 import type {
   GenerationReservation as Reservation,
   GenerationQueueReservation as QueueReservation,
@@ -24,7 +25,6 @@ import {
   generationIntent,
   isNoCache,
   readGenerationIdempotencyKey,
-  requestCacheKey,
   type GenerationIntent,
 } from './generation/admission.ts';
 import {

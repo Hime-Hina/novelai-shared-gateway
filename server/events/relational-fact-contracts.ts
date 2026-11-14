@@ -563,6 +563,7 @@ export const relationalPayloadParsers = {
     keyHash: hash,
     intentFingerprint: hash,
     noCache: bool,
+    seedMode: choices('fixed', 'random', 'not_applicable'),
     requestId: id,
     jobId: id,
     contextId: id,
