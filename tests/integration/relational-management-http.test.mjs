@@ -2572,3 +2572,266 @@ test('账户PATCH已发真实query超时可提交失败观察，raw吞abort仍�
     release();
   }
 });
+
+test('member-key 真实owner/admin只读当前Key，原header不造回执或复活轮换前私有值', async (t) => {
+  const f = await setup(t, {
+      discordFetch: () => {
+        throw Error('unexpected member-key Discord IO');
+      },
+    }),
+    seen = policyNotifications(f),
+    body = { action: 'member-key', userId: 'm2' },
+    headers = { 'idempotency-key': 'reused-read-header', 'x-member-activity': '1' };
+  for (const [route, extra] of [
+    [owner, {}],
+    [admin, { 'x-admin-token': adminToken }],
+  ]) {
+    const before = databaseState(f.db),
+      changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+      result = await f.call(route, { method: 'POST', headers: { ...headers, ...extra }, body });
+    assert.equal(result.status, 200, result.text);
+    assert.deepEqual(result.body, { apiKey: keys.m2 });
+    assert.equal(result.headers.get('cache-control'), 'no-store');
+    assert.equal(result.headers.get('set-cookie'), null);
+    assert.equal(databaseState(f.db), before);
+    assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  }
+  const changedKey = 'synthetic-current-private-m2-key';
+  f.db.transaction(() => f.members.replaceMemberApiKey('m2', changedKey))();
+  const before = databaseState(f.db);
+  for (const key of ['reused-read-header', '', 'not a command key']) {
+    const result = await f.call(owner, {
+      method: 'POST',
+      headers: { 'idempotency-key': key },
+      body,
+    });
+    assert.equal(result.status, 200, result.text);
+    assert.deepEqual(result.body, { apiKey: changedKey });
+    assert.ok(!result.text.includes(keys.m2));
+  }
+  assert.equal(databaseState(f.db), before);
+  f.db.transaction(() =>
+    f.members.setMemberStatus(meta('key-disabled-target'), 'm2', 'disabled'),
+  )();
+  const disabled = databaseState(f.db),
+    result = await f.call(owner, { method: 'POST', body });
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.body, { apiKey: changedKey });
+  assert.equal(databaseState(f.db), disabled);
+  for (const userId of ['missing-member', '', null, 2, {}]) {
+    const missing = await f.call(owner, { method: 'POST', body: { action: 'member-key', userId } });
+    assert.equal(missing.status, 404, missing.text);
+  }
+  assert.equal((await f.call(owner, { member: 'm2', method: 'POST', body })).status, 401);
+  assert.equal((await f.call(admin, { method: 'POST', body })).status, 403);
+  assert.equal(seen.length, 0);
+  assert.equal(f.resourceCalls, 0);
+  const sourceFacts =
+    JSON.stringify(f.db.prepare('SELECT receipt FROM commits').all()) +
+    JSON.stringify(f.db.prepare('SELECT payload FROM domain_events').all());
+  assert.ok(!sourceFacts.includes(changedKey));
+  assert.ok(!sourceFacts.includes(keys.m2));
+  const target = new Database(':memory:');
+  t.after(() => target.close());
+  initializeRelationalStorage(target, 'generation-history');
+  const replay = new RelationalCommitReplayer(target),
+    inputs = new RelationalInputStore(f.db),
+    commits = f.db
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all();
+  let network = 0;
+  t.mock.method(globalThis, 'fetch', () => {
+    network++;
+    throw Error('key replay must not fetch');
+  });
+  for (const { seq } of commits) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  const restoredMembers = new RelationalMemberStore(target);
+  assert.equal(restoredMembers.readMemberApiKey('m2'), null);
+  for (const table of [
+    'api_keys',
+    'password_credentials',
+    'member_sessions',
+    'member_auth_state',
+    'discord_bindings',
+    'discord_invites',
+    'upstream_credentials',
+  ]) {
+    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n, 0);
+  }
+  assert.equal(
+    target.prepare('SELECT COUNT(*) AS n FROM members WHERE auth_epoch IS NOT NULL').get().n,
+    0,
+  );
+  const rebuilt = databaseState(target),
+    changes = target.prepare('SELECT total_changes() AS n').get().n;
+  for (const { seq } of commits) {
+    target.transaction(() => replay.replayCommit(readRelationalCommit(f.db, seq), inputs))();
+  }
+  assert.equal(databaseState(target), rebuilt);
+  assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(network, 0);
+});
+
+test('member-key 慢正文只在末次当前授权后读取，保留epoch/owner/ready/admin边界', async (t) => {
+  for (const mode of ['rotated-target', 'epoch-ABA', 'owner', 'ready', 'admin-query']) {
+    await t.test(mode, async (t) => {
+      let begin;
+      const f = await setup(t, {
+          onBodyRead: () => begin?.(),
+          discordFetch: () => {
+            throw Error('unexpected member-key Discord IO');
+          },
+        }),
+        seen = policyNotifications(f),
+        started = new Promise((resolve) => {
+          begin = resolve;
+        }),
+        held = await holdPolicyBody(
+          t,
+          f,
+          mode === 'admin-query' ? admin + '?adminToken=' + adminToken : owner,
+          started,
+          {},
+          { action: 'member-key', userId: 'm2' },
+        );
+      if (mode === 'rotated-target') {
+        f.db.transaction(() =>
+          f.members.replaceMemberApiKey('m2', 'synthetic-new-target-key-after-body'),
+        )();
+      } else if (mode === 'epoch-ABA') {
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('key-owner-disable'), 'm1', 'disabled'),
+        )();
+        f.db.transaction(() =>
+          f.members.setMemberStatus(meta('key-owner-enable'), 'm1', 'active'),
+        )();
+      } else if (mode === 'owner') {
+        f.env.OWNER_USER_ID = 'm2';
+      } else if (mode === 'ready') {
+        f.db.prepare("UPDATE projection_state SET status='failed' WHERE id=1").run();
+      } else {
+        f.env.PUBLIC_MODE = 'true';
+      }
+      const cut = f.db
+          .prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits')
+          .get().seq,
+        keysBefore = f.db.prepare('SELECT * FROM api_keys ORDER BY member_id').all(),
+        result = await held.finish();
+      if (mode === 'rotated-target') {
+        assert.equal(result.status, 200, result.text);
+        assert.deepEqual(JSON.parse(result.text), {
+          apiKey: 'synthetic-new-target-key-after-body',
+        });
+      } else {
+        assert.equal(result.status, mode === 'ready' ? 500 : 401, result.text);
+        assert.ok(!result.text.includes(keys.m2));
+      }
+      assert.equal(result.headers['set-cookie'], undefined);
+      assert.equal(
+        f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get().seq,
+        cut,
+      );
+      assert.deepEqual(f.db.prepare('SELECT * FROM api_keys ORDER BY member_id').all(), keysBefore);
+      assert.ok(
+        seen.every(({ event }) =>
+          event.collections.every((c) => ['members', 'sessions'].includes(c)),
+        ),
+      );
+    });
+  }
+});
+
+test('member-key 私有恢复不足/校验损坏/移除目标拒绝，SQL末尾失败不回包或制造私有回执', async (t) => {
+  for (const mode of ['missing-private', 'corrupt-private', 'removed', 'sql-tail']) {
+    await t.test(mode, async (t) => {
+      const f = await setup(t, {
+          discordFetch: () => {
+            throw Error('unexpected member-key Discord IO');
+          },
+          beforeReady:
+            mode === 'removed'
+              ? async (f, env) => {
+                  const quotas = new RelationalQuotaStore(f.db, env);
+                  f.db.transaction(() =>
+                    quotas.manageMemberQuota(
+                      { ...meta('remove-key-target'), actorKind: 'admin', actorId: 'local-admin' },
+                      {
+                        action: 'delete-member',
+                        userId: 'm2',
+                        transferToUserId: 'm1',
+                        expectedConfigVersion: 1,
+                      },
+                      null,
+                      new Map(),
+                    ),
+                  )();
+                }
+              : undefined,
+        }),
+        seen = policyNotifications(f);
+      // 合法 ready 之后模拟原私有材料故障，不声称这种坏源通过过 installer。
+      if (mode === 'missing-private') {
+        f.db.prepare("DELETE FROM api_keys WHERE member_id='m2'").run();
+      }
+      if (mode === 'corrupt-private') {
+        f.db.prepare("UPDATE api_keys SET key_hash=? WHERE member_id='m2'").run('f'.repeat(64));
+      }
+      const before = databaseState(f.db);
+      let tail = false,
+        readMock,
+        transactionMock;
+      const transaction = f.db.transaction,
+        read = RelationalMemberStore.prototype.readMemberApiKey;
+      if (mode === 'sql-tail') {
+        readMock = t.mock.method(
+          RelationalMemberStore.prototype,
+          'readMemberApiKey',
+          function (...args) {
+            const value = read.apply(this, args);
+            tail = true;
+            return value;
+          },
+        );
+        transactionMock = t.mock.method(f.db, 'transaction', function (write) {
+          return transaction.call(this, (...args) => {
+            const value = write(...args);
+            if (tail) {
+              tail = false;
+              this.prepare('SELECT * FROM missing_member_key_tail_table').get();
+            }
+            return value;
+          });
+        });
+      }
+      const body = { action: 'member-key', userId: 'm2' },
+        response = await f.call(owner, {
+          method: 'POST',
+          body,
+          headers: { 'idempotency-key': 'read-tail' },
+        });
+      assert.equal(
+        response.status,
+        mode === 'removed' ? 404 : mode === 'sql-tail' ? 500 : 503,
+        response.text,
+      );
+      assert.ok(!response.text.includes(keys.m2));
+      assert.equal(databaseState(f.db), before);
+      assert.equal(seen.length, 0);
+      if (mode === 'sql-tail') {
+        readMock.mock.restore();
+        transactionMock.mock.restore();
+        const retry = await f.call(owner, {
+          method: 'POST',
+          body,
+          headers: { 'idempotency-key': 'read-tail' },
+        });
+        assert.equal(retry.status, 200, retry.text);
+        assert.deepEqual(retry.body, { apiKey: keys.m2 });
+        assert.equal(databaseState(f.db), before);
+        assert.equal(seen.length, 0);
+      }
+    });
+  }
+});

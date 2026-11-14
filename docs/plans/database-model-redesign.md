@@ -1883,6 +1883,24 @@ Windows Node 22 源码新 heatmap 9/9；原成员读取、Shared HTTP、关系�
 
 根在 `6477ac6` 账户实际发起边界并集上整合，MemberRead factory 和测试保持 eaf 精确字节；原四文件同次 46/46、零跳过，32.458 秒。类型、architecture、可信实际 main `88d2c26` 迁移、三文件格式及 diff 通过，日志 `H:/TEMP/novelai-member-heatmap-root-{joint,type,static,format}.log`。该源码阶段不表示普通启动入口或新发布包已采用 Member heatmap。
 
+### 9.73 管理成员 Key 的只读领取
+
+固定根 `74514953c7b8ea8d2237f339ba8888632d9ae6bb` 上追原 `http-routes.ts` 的 `member-key`：它是 `persist:false` 读取当前 user.token，不是换 Key。原 keyedManagementActions 和 Web delivery 均不为此操作发命令键；管理契约也明确秘密不进入公共回执。因此本片不接 `replaceMemberApiKey`，不新增私有结果缓存或秘密回执，不能把原 Key 的撤销后重生或当前值包装成原 receipt。
+
+仅两个现管理 POST literal，在读完原 32KiB JSON 后、政策 `managementCommand` 分支之前，复用同一 `authorize` 当前 admin 或 owner Cookie/Discord/epoch/ready 事务。以原 MemberStore.readMember 检查稳定目标存在且未 removed，再以 readMemberApiKey 核对 digest 读取 exact 当前私有值；disabled 仍可管理，未知/removed 为 404，私有材料缺失或损坏为 503。回包沿原 no-store JSON，不续 Cookie、不写事实/命令/回执、不主动发通知；同 idempotency header 的后续调用是新读取。原授权自身可能合法保存 Discord 观察或撤销会话，不能将其误计为 Key 读取的业务写入。
+
+没有新 owner、事实/DDL/schema、认证/金融规则或 guard 改动。现政策命令和管理 GET 后半保持原字节，未来组预览也须保留在命令分派前。普通 sole 切换、其他成员认证/邀请/删除/账户管理及上线不属于本片。
+
+新真实合法 ready/localhost 反例覆盖 owner/admin 当前读取、旧 header 跨真实 Key 轮换读取当前值且零写、disabled 与 unknown/removed、慢正文间 owner epoch ABA/owner/ready/admin 公私边界变化、私有恢复不足/摘要损坏、实际 SQL 在回调已读 Key 后但事务返回前失败无回包/幽灵通知及健康重试。公共完整回放不复活七类私有认证、member epoch 保持 NULL，重复回放 total_changes 为零。原根缺 action 的同新增用例 12/12 失败，首次绿 12/12；后续固定验证和错误实现负控据实际日志补录，不将夹具修正算产品通过。
+
+Node22 新专项 12/12；与原管理 HTTP、成员自身读取、成员认证 core、关系通知四文件同次 99/99、零跳过，25.384 秒，日志 `H:/TEMP/novelai-member-key-http-joint.log`。同最终测试仅移除 action，12/12 均因未接入的 400 失败；只绕过正文后 authorize，真实慢正文四个撤权边界均错误回包，父计 5 fail、目标轮换正例 1 pass，恢复产品后联合 99 项通过。类型、architecture、默认及可信根 7451495 migration、格式、语法和 diff 检查通过；完整 full/build/compiled/native/生产未运行。静态比对确认产品只加 19 行只读分支，原政策/GET 后半及八个 core/caller 文件字节不变。
+
+首次夹具预期将 admin-query 原 401 误写为 403；SQL 故障后使用 restoreAll 还误撤销 Date.now，导致额外 Discord 重新核验和 401，均未算产品失败或端点验收。改为局部还原故障 mock，所有新增夹具显式拒绝外部 Discord，最终结果只依赖合法原缓存授权。失败日志保留 `H:/TEMP/novelai-member-key-http-after-first.log`，负控与静态比对在 `H:/TEMP/novelai-member-key-http-evidence-20261114/`；独立复审另记，不把作者结果冒称独审。
+
+固定 `ce7c5f55a41a395793e5e72eb820a554e8f18531` 独审通过：原十二项与新增七项同次 19/19、零跳过，10.452 秒。实际 HTTP 核对精确目标、Cookie/Key/admin 权限不能互代、慢正文期间真实 target Key 轮换、真实 logout 与 Key 仍有效的区别、epoch ABA 和 PUBLIC query/header 规则。移除末次授权的负控使原 logout 脚本 200 而非 401，恢复后通过；五文件精确 Git/raw 绑定，八个相连 owner/caller 不变。报告 `H:/TEMP/novelai-member-key-independent-ce7c5f5-20261114/INDEPENDENT-REVIEW.md`；没有把作者四文件 99 项冒称独审新跑。
+
+根在 `6fc9de3` 的 Account/Member heatmap 并集上整合，删除新只读十九行后 factory 逐字等于前一根；双方全部测试编辑和追加块均保留，完全相同的慢正文 helper 只保留一份。四文件同次 **139/139、零跳过，52.822 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式及 diff 通过。日志 `H:/TEMP/novelai-member-key-root-{joint,type,static,format}.log`，`root-merge.json` 为同前缀的合并保留证明。本片不轮换 Key、不产生秘密回执，后续组预览等只读动作仍须在管理命令分派前；最终编译、发布物与 sole 另验。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

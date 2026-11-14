@@ -313,6 +313,8 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 `member-status` 接 `userId` 与布尔 `enabled`，返回原 `{id,enabled}`；`member-admission` 接 `userId` 与布尔 `acceptingJobs`，返回原 `{id,acceptingJobs,cancelledJobIds,cancelledCount}`。无效布尔为 400，缺失或不存在目标为 404，不将数字或对象强转成成员 ID。同键重领返回原状态/取消结果，不覆盖后来恢复；停用和恢复不复活旧 Cookie。owner 本人停用 409、未结清任务/预扣的忙碌检查及 admin 原应急能力都复用成员状态 owner。停止接单保留 running 和原预扣，仅由原取消 owner 处理 queued/pending；恢复不复活旧 child，当前 disabled 目标仍可管理。实际 Native/队列、私有与业务回滚及公共回放证据见数据库计划第 9.70 节。
 
+两个精确 `POST /api/admin/member-management`、`POST /api/member/owner/member-management` 另接原只读 `member-key`，正文 `{action:'member-key',userId}` 在 IO 后经相同当前 admin/owner 授权事务读取 exact 当前私有 Key，返回 `{apiKey}` 和 `no-store`，不续 Cookie。已停用目标仍可管理，目标不存在或已移除为 404，私有 Key 未恢复或摘要校验失败为 503。读取不创建或轮换 Key、不追加业务事实/命令/回执，也不因 `Idempotency-Key` 保存或重领秘密；同 header 的下一次调用仍是当前读取，不把后来 Key 伪装成原回执。认证自身依法发生的 Discord 观察或会话撤销仍沿原 owner；业务读取本身零写、零通知，公共回放不会恢复私有 Key。范围及反例见数据库计划第 9.73 节。
+
 成员 `me.jobs` 增加签名 `imageUrl` 和退款分池 `charge.fixed/purchased`；旧记录分池未知时为 `null`。`me.lateResults` 返回本人按找回时间排序的最近 10 个结果，覆盖冷历史。签发前同时核对当前启用成员、任务与图片归属，不扩大登录 Cookie 路径或在 URL 中传成员 Key；领取链接沿用 15 分钟有效期，刷新页面可重新取得。
 
 成员 `GET /api/member/history` 按子任务分页，保留 `page/pageSize/total/until` 与创建时间、模型、状态排序；`q` 只按字面搜索任务 ID 和模型，不搜索提示词或输入参数。关系读取的原创建时间、模型或估算标志缺少来源时保持 `null`，已知时间 0 不变；未知原创建时间仍属于保留历史，不借用开账日或父受理日。`GET /api/member/key` 从当前私有 owner 返回 exact 当前 Key 和明确部署配置生成的单个 `/v1` 入口，缺少可恢复 Key 为 503，不通过 GET 创建。关系只读绑定的两个入口均不续期，也不以 Bearer 代替 Cookie；现可见 `me` 与无 query 的 owner 摘要续期规则不变。实际总装配与签名端点验收范围见数据库计划第 9.45 节。
