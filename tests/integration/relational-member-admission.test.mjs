@@ -317,7 +317,11 @@ test('完整受理提交联合受保护输入回放，薄键首child不能替换
   forgedSource.exec(appendOnly);
   initializeRelationalStorage(rejectedTarget, 'generation-history');
   const rejectedReplay = new RelationalCommitReplayer(rejectedTarget);
-  for (const seq of ['1', '2', '3']) {
+  for (const { seq } of forgedSource
+    .prepare(
+      'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq<? ORDER BY commit_seq',
+    )
+    .all(BigInt(first.commitSeq))) {
     rejectedTarget.transaction(() =>
       rejectedReplay.replayCommit(
         readRelationalCommit(forgedSource, seq),
@@ -583,7 +587,11 @@ test('原规范输入约束指纹及确认，互相一致的伪B摘要不能覆�
       assert.equal(databaseState(forged), beforeSource);
       initializeRelationalStorage(target, 'generation-history');
       const replay = new RelationalCommitReplayer(target);
-      for (const seq of ['1', '2', '3']) {
+      for (const { seq } of forged
+        .prepare(
+          'SELECT CAST(commit_seq AS TEXT) AS seq FROM commits WHERE commit_seq<? ORDER BY commit_seq',
+        )
+        .all(BigInt(first.commitSeq))) {
         target.transaction(() => replay.replayCommit(readRelationalCommit(forged, seq), source))();
       }
       const beforeTarget = databaseState(target);
