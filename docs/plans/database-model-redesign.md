@@ -1292,6 +1292,10 @@ Node 22.23.4 新关系 Native HTTP 12/12、原 sole Native HTTP 18/18、关系 o
 
 独立审查发现 `c0fb9ec` 的两类共同来源缺口：同 ID 后补矛盾 ContextRegistered 被接受，重复旧 InputRegistered 在线接受却不能从空库完整恢复。共同 v3 修复 `5ea2e51` 已独立通过 16/16，普通受理与同提交重复注册均在原 Input owner 逐本次 eventId/唯一性/schema/SHA/bytes 拒绝；在本片接回为 `326b33e`，没有 alias 特判或跳过重复 INSERT。严格旧 key 回归新增同出站但 size、artist/tag 拆分、cost presence、被改写 sampler、purchase presence 不同的五组实际 owner 反例；先前出站匹配实现五组均错误命中活动请求，修后活动/完成缓存均 miss，真正相同旧 key 仍正常命中并完整回放。缓存投影还必须经原出站 owner 重建出完全相同参数，任意额外 Native 参数不能被忽略后进入 direct 缓存。cost 的缺失/空串/NULL/false/零/非有限 JSON 值、空 artist/tag、多行和同文本，以及新增控制元数据不改变旧 key 均有对照。当前源码专项 27/27，连普通注册、input、共同 replay、ready、Native admission、storage 与 event 八文件 127/127、零跳过，类型和架构检查通过；首轮覆盖清单遗漏本片实际新增 CachedResultLinked，按精确 owner 集合修为 62，未删未实现 owner 拒绝断言。原负控和复跑日志为 `H:\TEMP\novelai-r08-strict-key-original.log`、`novelai-r08-strict-cache.log` 和 `novelai-r08-strict-regression.log`。主片固定后的独立复审仍待完成，不把这些局部结果作为整体通过。
 
+后续自审及独立反例在 `0db25df` 同时确认：缓存 stage 先把来访 seed 替为产物实际 seed，再核指纹，导致当前 Key 下 fixed 43 配原 fixed 42 的 metadata 会错误接受；真实 HTTP 虽已按来访 raw 算指纹，canonical owner 仍须自己核真实入参。修复只调整原 stage：先用 incoming Prepared 复核原 GF、严格缓存键及载荷下界，验证后随机缓存命中仅采用原结果 seed，不重新 prepare 改写来访 logicalBytes。合法 fixed 42、random 777 引用原 actual 42、来访更长 seed 的原预算和完整回放均保留对照；原红/绿日志为 `H:\TEMP\novelai-r08-incoming-seed-before.log` / `-after.log`。`0db25df` 不作为最终通过候选。
+
+seed 修复后同一源码八文件重新验证 128/128、零跳过，backend type、architecture、可信 main `88d2c26` migration 与改动格式/差异检查通过；最终固定候选仍交独立复审，不沿用 `0db25df` 作为通过证据。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

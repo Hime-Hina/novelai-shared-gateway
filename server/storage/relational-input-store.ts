@@ -250,26 +250,26 @@ export class RelationalInputStore {
       throw new Error('Generation reuse requires the owning transaction.');
     }
     const original = this.readGenerationReuseProof(input.sourceJobId),
-      prepared = prepareRelationalInput(
-        input.cached ? { ...input.request, seed: original.prepared.firstSeed } : input.request,
-        input.context,
-        this.env,
-      );
+      incoming = prepareRelationalInput(input.request, input.context, this.env);
     if (
       !Number.isSafeInteger(admissionEpoch) ||
       admissionEpoch < 0 ||
       input.noCache !== false ||
       input.context.kind === 'member' ||
       original.job.memberId !== input.memberId ||
-      prepared.sampleCount !== 1 ||
-      prepared.body.operation !== 'generate' ||
+      incoming.sampleCount !== 1 ||
+      incoming.body.operation !== 'generate' ||
       !['fixed', 'random'].includes(input.seedMode) ||
       (input.idempotency !== undefined && input.idempotency.noCache !== false) ||
-      this.preparedFingerprint(prepared, input.seedMode, false) !== metadata.fingerprint ||
-      relationalInputCacheKey(input.memberId, prepared, input.seedMode) !== original.job.cacheKey
+      this.preparedFingerprint(incoming, input.seedMode, false) !== metadata.fingerprint ||
+      relationalInputCacheKey(input.memberId, incoming, input.seedMode) !== original.job.cacheKey
     ) {
       unavailable();
     }
+    const prepared =
+      input.cached && input.seedMode === 'random'
+        ? { ...incoming, firstSeed: original.prepared.firstSeed }
+        : incoming;
     const common = {
       memberId: input.memberId,
       accountId: null,

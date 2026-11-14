@@ -1065,3 +1065,63 @@ test('同出站但旧缓存key不同的原选择不能合并活动请求或缓�
     });
   }
 });
+
+test('缓存owner先验证真实来访fixed seed，不能用原产物seed替换后让错误metadata背书；random仍引用原实际seed', async (t) => {
+  const f = await setup(t),
+    ctx = f.context();
+  await f.acceptCachedSource('source');
+  f.dispatch('source-0');
+  await f.publish('source-0');
+  const artifact = f.db
+      .prepare('SELECT artifact_id AS id FROM generation_jobs WHERE id=?')
+      .get('source-0').id,
+    args = f.reuseArgs('forged-fixed-seed', 'source-0', f.request(), ctx, 'fixed', artifact),
+    before = databaseState(f.db);
+  args[1].request = f.request({ seed: 43 });
+  await assert.rejects(
+    f.authorize(() => f.generations.reuseGeneration(...args)),
+    /意图|来源|复用|输入/,
+  );
+  assert.equal(databaseState(f.db), before);
+  const good = await f.reuse('valid-fixed-seed', 'source-0', f.request(), ctx, 'fixed', artifact);
+  assert.equal(good.receipt.cacheHit, true);
+
+  await f.acceptCachedSource('random-source', f.request(), ctx, 'random');
+  f.dispatch('random-source-0', NOW + 20000);
+  await f.publish('random-source-0');
+  const randomArtifact = f.db
+    .prepare('SELECT artifact_id AS id FROM generation_jobs WHERE id=?')
+    .get('random-source-0').id;
+  const randomIncoming = f.request({ seed: 777 }),
+    incomingBytes = prepareRelationalInput(randomIncoming, ctx).logicalBytes,
+    sourceBytes = f.db
+      .prepare(
+        'SELECT i.logical_bytes AS n FROM generation_inputs i JOIN generation_requests r ON r.input_id=i.id WHERE r.id=?',
+      )
+      .get('random-source').n;
+  assert.ok(incomingBytes > sourceBytes);
+  const random = await f.reuse(
+    'valid-random-seed',
+    'random-source-0',
+    randomIncoming,
+    ctx,
+    'random',
+    randomArtifact,
+  );
+  assert.equal(random.receipt.cacheHit, true);
+  assert.equal(
+    f.db
+      .prepare('SELECT actual_seed AS seed FROM generation_jobs WHERE id=?')
+      .get('valid-random-seed-0').seed,
+    42,
+  );
+  assert.equal(
+    f.db
+      .prepare(
+        'SELECT i.logical_bytes AS n FROM generation_inputs i JOIN generation_requests r ON r.input_id=i.id WHERE r.id=?',
+      )
+      .get('valid-random-seed').n,
+    incomingBytes,
+  );
+  replay(t, f);
+});
