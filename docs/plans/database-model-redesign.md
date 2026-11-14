@@ -1945,6 +1945,32 @@ backend 类型、architecture、默认与可信根 `5987606` migration 历史、
 
 根在 `b42719d` 上合入该片，追加本证据前 staged tree 与独审 9d 候选 tree 完全相同，工作字节无额外差异；因此复用该固定源已完成的 297 项、独立 17 项和类型/架构/历史/格式结果，不把重复执行或后继文档当作新行为验证。证明 `H:/TEMP/novelai-operating-root-preservation.json`。新增后继不在 b427 的完整后端、编译矩阵、CI 或发布物证据内；最终并集统一验证另行完成。
 
+### 9.77 权益转账、删除与只读预览的管理 HTTP
+
+从固定 `8cb09ef4e69a3441d1beb83d1bc4166338f1cfde` 追原 http-routes / manageFairMember / Web transfer与delete dialog，原三 action 与第 9.43 节的 `RelationalQuotaStore.manageMemberQuota` 已具有同一金融规则与回包。本片只在两个现管理 POST 加薄分派，直接交完整业务 body、当前授权 callback member 和实际 deps.controls；原 Member/Quota/planner/私有撤销/共同 replay 不变，不复制份额/金额/组规则或完整 draft 模型。
+
+正文 IO 后沿现 authorize 重核 current admin 或同一 owner Cookie/稳定成员/epoch/Discord/ready；写沿原 managementCommand 的完整原 body 与 actor 元数据，再由原 owner 在 prior 前核当前权限。预览不调用 managementCommand，只有现 owner 签名需要的临时服务 metadata，不持久化或领取客户端键；原 owner 在独立 view 上计划，直接返回无 receipt 包装的原 DTO，SQL、事实、游标、钱包及通知均零写。原 configVersion 保留，真正提交仍复核。现 actorKind/合法 ID 隔离 helper 的父后继另行合并，本片不重复改、也不禁合法成员 ID。
+
+转账保留原 source/receiver/account/resource/amount，资金只转一次；删除由同一完整提交保存 MemberRemoved + 原 FundsTransferred + MemberStatusChanged(removed)，原 member owner 将 auth_epoch 置 NULL 并撤会话，原私有记录可保留但不能登录/再次启用。旧 receipt 仍先核当前权限，重领不再同步、转钱或复活私有认证。原 owner 自删/预览自删限制、本机 admin 应急、全局 waiting/held/原池/未决核对和当前实际 physical Map 均由原 owner 处理。
+
+新增源码目标覆盖真实合法 ready/localhost 的转账、query_only 预览与实删 DTO 等价，完整原回执/异意图、源与接收者原 ID、金额/版本/自删/admin、等待/预留和同一物理 Map 的拒绝与释放、SQL 目标钱包及私有 session 删除末端故障的全表回滚/零通知/健康重试、慢正文 epoch ABA/logout/owner/ready/admin 撤权先于旧 prior。公共完整提交回放比较组/金融/任务/原成员表，不联网、不复活七类私有认证，重复 total_changes 为零。原真实 Native/mock 上游/队列在途场景也验证三个 action 均拒绝；另终态 SQL 但物理 Map 未收尾的区分例使用原 createGenerationControls 的待完成 promise，明确不冒充实际外部上游挂起。
+
+固定前必要检查和错误实现负控按后续日志补录；原未接 action 的同新增目标 15/15 失败，薄接入首次 15/15 通过。初次测试重复导入既有 authenticateMemberSession 导致加载失败已移除，保留独立日志而不计入负控；TypeScript 条件 metadata 使用原 managementCommand ReturnType 明确仅类型，不添加默认规则。独立审查、父并集、sole/发布/生产切换另验，不沿用前驱 full 或 ce7 的 Key 读取证据。
+
+Node22 最终原管理 HTTP、权益 owner、成员 core 与关系通知四文件同次 179/179、零跳过，25.383 秒，`H:/TEMP/novelai-member-rights-http-joint.log`。类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式、语法和 diff 通过。仅让 preview 也读取管理命令键，真实预览被非法 header 误拒为 400，单例准确失败；仅把实际 Map 换成空 Map，waiting/held 两正拒绝仍过、物理收尾场景错误返回 200，父计 2 fail/2 pass。两变体均在本隔离工作树 finally 恢复原字节后运行最终 179；证据 `H:/TEMP/novelai-member-rights-http-evidence-20261114/{negative-evidence.json,static-comparisons.json}`。原授权前半和 member-status/admission/政策/GET 后半逐字不变，九个业务 owner/caller 文件保持根字节；没有 full/build/compiled/native/install 或生产操作。
+
+#### 9.77.1 与已审身份范围、账户、Key、Groups 的固定并集
+
+原 `eecee54d874c717b50f53e223dcc551ebe0d36d4` 及其 15/179 项证据保持冻结。该旧父的共同 helper 存在已确认身份范围碰撞，不能作为本片最终依赖；本后继在独立分支合入已审根 `b42719d30c387912ec768ed9f1f7a85ae5d7099e`。相对该根仍仅原五条 HTTP/测试/文档路径，未改金融或私有撤销规则。现 Key、Groups 预览和删除预览均在写命令分派之前；写入的 managementCommand 调用保持根原样，按当前真实 actorKind 隔离合法稳定 ID，删除预览只构造原 owner 所需瞬时 metadata。第 9.77 节的条件 ReturnType 描述仅属于原冻结版本，本后继已无需该条件类型。
+
+`management-command` helper 与单元逐字等于已审 `9b9ee86993386aad67fbc9c8ba70259d97a7c245`；十四条 owner/helper/guard 路径逐字等于 `b42719d`。Account PATCH/授权前半、Key 与 Groups 预览、原 member-status/admission/Groups/政策/GET 后半均保留根字节。双方管理 HTTP 测试的九个增量片段全部保留，三方合并证据和格式后复核在 `H:/TEMP/novelai-member-rights-union-evidence-20261114/{test-merge.json,static-comparisons.json}`；没有删除用例或以改断言消除冲突。
+
+Node22 新并集权益目标 15/15、零跳过；管理 HTTP、权益 owner、账户 owner、成员读取 HTTP、关系通知、管理命令六文件同次 **284/284、零跳过，64.999 秒**，日志 `H:/TEMP/novelai-member-rights-union-joint.log`。backend 类型、architecture、可信实际 main `88d2c26` migration 已通过；默认 migration、格式/语法/diff 与固定摘要在本次交接记录。原两项错误实现和原冻结日志保留，不冒称已在本后继重复运行。新并集仍须独立审查；不借前驱 full/compiled，未做安装、native 重编、真实云端、生产或 sole 切换。
+
+固定 `65c0751de7bc406b3fa94cbc8857c5c842bb0810` 权益 HTTP 独审通过：原十五项与原封存程序三条交叉反例同次 **18/18、零跳过**，两种错误实现精确失败、恢复后同次通过，另实际 Native/localhost 在途原场景 1/1。旧 receipt 在真实慢正文密码 epoch 撤销后先拒旧 Cookie，新 Cookie 可领取原结果且不重转后来停用目标；终态 SQL 仍有未结束物理 control 时仅原 receipt 可领，新预览/删除拒绝，释放后预览零写；删除 auth_epoch SQL 尾故障全公私回滚、零通知、同键健康重试与完整公共回放不复活认证。该 physical-only 独立对照使用原 control 的未结束 promise，不冒称真实上游；单独 Native 场景才是实际 localhost 端点。五个差异文件精确 Git/raw 绑定，十四权威/helper/guard、三十五历史资产保持 b427，剥离新增分派/名单后产品相同。报告 `H:/TEMP/novelai-member-rights-independent-20261114/INDEPENDENT-REVIEW.md`（SHA256 `932e13e0a6ead5ab589f46adfdd8521aebc1665389aae51bd47e838e1327fff2`），作者 284 项仅绑定、不冒称独审新跑。
+
+根在资金 `a2513ac` 并集上整合，保留资金和权益两个独立分派、原只读分支、全部非重叠测试编辑及两个完整追加块。管理 HTTP、权益、资金、账户、MemberRead、通知和 helper 七文件同次 **357/357、零跳过，84.640 秒**；类型、architecture、可信实际 main `88d2c26` 迁移、五文件格式及 diff 通过。日志 `H:/TEMP/novelai-member-rights-funding-root-{joint,type,static,format}.log`，合并证明 `H:/TEMP/novelai-member-rights-root-merge.json`。此后继不借 b427 的全量、编译包或 CI 验证；新并集整体发布验收另做。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：

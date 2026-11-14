@@ -252,6 +252,31 @@ export function createRelationalManagementHttp(deps: {
         replyMemberJson(res, 200, preview);
         return true;
       }
+      if (body.action === 'preview-delete-member') {
+        const preview = await authorize((member) =>
+          quotas.manageMemberQuota(
+            {
+              commandId: randomUUID(),
+              fingerprint: domainDigest({
+                operation: 'member-management:preview-delete-member',
+                body,
+              }),
+              actorId: member?.id ?? 'local-admin',
+              actorKind: member ? 'member' : 'admin',
+              recordedAt: now(),
+              correlationId: null,
+              causationId: null,
+              policyVersion: 'member-management-v1',
+              pricingVersion: 'none',
+            },
+            body as Parameters<RelationalQuotaStore['manageMemberQuota']>[1],
+            member,
+            deps.controls,
+          ),
+        );
+        replyMemberJson(res, 200, preview);
+        return true;
+      }
       if (
         ![
           'fallback-policy',
@@ -259,6 +284,8 @@ export function createRelationalManagementHttp(deps: {
           'loss-alert-policy',
           'member-status',
           'member-admission',
+          'transfer-quota',
+          'delete-member',
           'groups',
           ...operatingActions,
         ].includes(body.action as string)
@@ -278,7 +305,12 @@ export function createRelationalManagementHttp(deps: {
             recordedAt: now(),
             correlationId: null,
             causationId: null,
-            policyVersion: ['member-status', 'member-admission'].includes(body.action as string)
+            policyVersion: [
+              'member-status',
+              'member-admission',
+              'transfer-quota',
+              'delete-member',
+            ].includes(body.action as string)
               ? 'member-management-v1'
               : 'quota-policy-v1',
             pricingVersion: 'none',
@@ -293,6 +325,15 @@ export function createRelationalManagementHttp(deps: {
             body as OperatingFundingInput,
             member,
           ).response;
+        }
+        if (['transfer-quota', 'delete-member'].includes(body.action as string)) {
+          const result = quotas.manageMemberQuota(
+            metadata,
+            body as Parameters<RelationalQuotaStore['manageMemberQuota']>[1],
+            member,
+            deps.controls,
+          );
+          return 'receipt' in result ? result.receipt : result;
         }
         if (body.action === 'member-status') {
           if (typeof body.enabled !== 'boolean') {
