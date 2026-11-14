@@ -331,7 +331,7 @@ F03 的任务查询新增 `lateResultAvailable`。失败退款后找回完整产
 
 `GET /api/admin/summary` 保留独立的完整十三字段：settings、userCount、accounts、imageCount、imageTotal、cacheImageCount、requestStats1m、generationStats1m、jobStats1h、generationSpeed1h、usageHourlyDays、errorLogs、jobs。只接受当前本机 admin capability；owner Cookie、成员 Key/Bearer 不授予管理员权限，PUBLIC 模式下 query adminToken 仍不授权。统计读取在授权后进行，任何 await 返回后重新断言当前 admin、Host、private/同源、PUBLIC 和 ready，再读取当前账户 PST/proxy。默认沿原函数 mask，只有字面 `revealTokens=1` 显式揭示当前值；没有缓存等待前的旧秘密。GET 不续 Cookie、不刷新官方额度、不清物理 Map、不提交账务/配置或发 commit 通知。关系统计每次读真实 SQL，`fresh=1` 不引入第二套缓存或旧库 fallback。
 
-settings 仅从选定的专用 profile 返回 defaultModel/defaultArtist/defaultNegative/defaults 八个原规范化标量，以及实际保存的 publicBaseUrl。fairQuota 只取真实 enabled/boundAccountId、原 ordered members（未知为 NULL）、groups/configVersion 和 fallback/free/loss 政策；无共享配置时整个 fairQuota 为 NULL。不能从 ID 排序或当前组的拼接推造原成员顺序。没有保存来源的 serviceName、costPerImage、maxCacheImages、accountConcurrency、mockWhenNoAccount、promptApi 明确为 NULL；NULL 既不是旧默认值，也不授权丢弃旧迁移来源、永久删除功能或新增配置写入。
+settings 仅从选定的专用 profile 返回 defaultModel/defaultArtist/defaultNegative 三个标量与 defaults 内八个标量（共十一项），以及实际保存的 publicBaseUrl。fairQuota 只取真实 enabled/boundAccountId、原 ordered members（未知为 NULL）、groups/configVersion 和 fallback/free/loss 政策；无共享配置时整个 fairQuota 为 NULL。不能从 ID 排序或当前组的拼接推造原成员顺序。没有保存来源的 serviceName、costPerImage、maxCacheImages、accountConcurrency、mockWhenNoAccount、promptApi 明确为 NULL；NULL 既不是旧默认值，也不授权丢弃旧迁移来源、永久删除功能或新增配置写入。
 
 accounts 保留旧摘要二十八字段，沿 Account owner 当前宽 getter 组装，只剥该 getter 额外的 cooldownReason；其余账户接口不变。真实物理 inFlight 来自同一 controls Map。未知 lifetime total/failures、route、trial、lastUsedAt 等保留 owner 的 NULL，不拿一小时值或当前 bound 账户补值；stats1h 按原 accountId 组合报告窗口，真实无样本为零，历史来源不足仍为 NULL。成员总数包含 disabled、排除 removed，只读 COUNT，不为计数读取私有备注或登录材料。
 

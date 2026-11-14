@@ -112,7 +112,7 @@ export interface ManagementAccount {
 }
 export interface ManagementSummary {
   accounts: ManagementAccount[];
-  settings?: { publicBaseUrl?: string };
+  settings?: { publicBaseUrl?: string | null };
 }
 export interface ManagementUsageCounts {
   total: number;

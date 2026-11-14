@@ -249,6 +249,100 @@ function pauseStats(t, f) {
   return { started, release };
 }
 
+function openingUnknownFailure(f) {
+  f.db.transaction(() => {
+    const id = 'unknown-summary-history',
+      origin = { sourceId: 'synthetic-opening', originalId: id },
+      input = new RelationalInputStore(f.db),
+      body = { operation: 'generate', model: 'nai-diffusion-5-full', input: null, parameters: {} },
+      staged = input.stageOpeningInput({
+        inputId: id,
+        memberId: 'm1',
+        completeness: 'partial',
+        body,
+        logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+        assets: [],
+      }),
+      common = {
+        memberId: 'm1',
+        accountId: null,
+        occurredAt: NOW + 86400000,
+        policyVersion: 'historical',
+        pricingVersion: 'historical',
+      },
+      events = [
+        {
+          ...common,
+          eventType: 'OpeningInputRecorded',
+          streamId: 'input:' + id,
+          payload: { ...staged, origin },
+        },
+        {
+          ...common,
+          eventType: 'OpeningRequestRecorded',
+          streamId: 'request:' + id,
+          payload: {
+            requestId: id,
+            memberId: 'm1',
+            inputId: id,
+            contextId: null,
+            source: 'historical',
+            operation: 'generate',
+            model: body.model,
+            sampleCount: 1,
+            seedMode: 'unknown',
+            confirmation: null,
+            acceptedAt: NOW + 86400000,
+            retiredAt: null,
+            origin,
+          },
+        },
+        {
+          ...common,
+          eventType: 'OpeningJobRecorded',
+          streamId: 'request:' + id,
+          payload: {
+            jobId: id + '-0',
+            requestId: id,
+            createdAt: null,
+            sampleIndex: 0,
+            actualSeed: null,
+            status: 'failed',
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch: 0,
+            artifactId: null,
+            cacheKey: null,
+            completedAt: null,
+            errorCode: 'historical_failure',
+            errorStatus: 500,
+            cancellationReason: null,
+            lateResultAt: null,
+            freeSucceededAt: null,
+            freeWarningThreshold: null,
+            retiredAt: null,
+            origin,
+          },
+        },
+      ],
+      {
+        policyVersion: _p,
+        pricingVersion: _r,
+        ...metadata
+      } = meta('opening-summary-history', NOW + 86400000);
+    new RelationalCommitReplayer(f.db).appendCommit(
+      {
+        ...metadata,
+        events,
+        receipt: null,
+        expectedVersions: Object.fromEntries(events.map((event) => [event.streamId, '0'])),
+      },
+      input,
+    );
+  })();
+}
+
 test('完整admin summary实际13字段保留原统计与28账户来源，真实Map/未知设置且query_only零写', async (t) => {
   let amount;
   const f = await setup(t, {
@@ -279,6 +373,21 @@ test('完整admin summary实际13字段保留原统计与28账户来源，真实
         weight: 1.25,
         proxyUrl: 'socks5://demo:secret@127.0.0.1:19000',
       });
+      f.db.transaction(() =>
+        f.accounts.prepareAccountCommand(
+          { ...meta('summary-extra-account'), actorKind: 'admin', actorId: 'local-admin' },
+          {
+            kind: 'register',
+            accountId: 'toString',
+            displayName: 'paused extra',
+            token: 'pst-synthetic-extra',
+            configVersion: 1,
+            bind: false,
+            weight: 2.75,
+          },
+          null,
+        ),
+      )();
     },
   });
   const control = f.physical.createRunningJobControl({
@@ -300,7 +409,7 @@ test('完整admin summary实际13字段保留原统计与28账户来源，真实
   assert.equal(view.headers['cache-control'], 'no-store');
   assert.equal(view.headers['set-cookie'], undefined);
   assert.equal(view.body.userCount, 2);
-  assert.equal(view.body.accounts.length, 1);
+  assert.equal(view.body.accounts.length, 2);
   const account = view.body.accounts[0];
   sameKeys(account, accountKeys);
   assert.equal(account.name, '');
@@ -320,6 +429,14 @@ test('完整admin summary实际13字段保留原统计与28账户来源，真实
   ])
     assert.equal(account[key], null, key);
   assert.equal(account.trialStatusKnown, false);
+  const extra = view.body.accounts[1];
+  sameKeys(extra, accountKeys);
+  assert.equal(extra.id, 'toString');
+  assert.equal(extra.enabled, false);
+  assert.equal(extra.weight, 2.75);
+  assert.equal(extra.quotaTier, null);
+  assert.equal(extra.quotaPoints, null);
+  assert.deepEqual(extra.stats1h, { done: 0, failed: 0, total: 0, successRate: 0 });
   assert.equal(view.body.imageCount, 2);
   assert.equal(view.body.imageTotal, 2);
   assert.equal(view.body.cacheImageCount, 2);
@@ -545,6 +662,37 @@ test('admin summary失败列表先限原插入序50，历史未知数与错误�
   assert.equal(result.body.generationStats1m.total, 0);
   assert.equal(result.body.jobs[0].cost, 0);
   assert.equal(result.body.jobs[0].accountCost, null);
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.notifications, 0);
+});
+
+test('admin summary真实Opening未知time/cost不借导入时间、当前generationCost0或绑定账号补值', async (t) => {
+  const f = await setup(t, { beforeReady: openingUnknownFailure }),
+    before = databaseState(f.db),
+    result = await f.call();
+  assert.equal(result.status, 200, result.text);
+  assert.deepEqual(result.body.requestStats1m, { total: null });
+  assert.deepEqual(result.body.jobStats1h, {
+    done: 0,
+    failed: null,
+    total: null,
+    successRate: null,
+  });
+  assert.deepEqual(result.body.accounts[0].stats1h, {
+    done: 0,
+    failed: 0,
+    total: 0,
+    successRate: 0,
+  });
+  assert.equal(result.body.jobs.length, 1);
+  const job = result.body.jobs[0];
+  assert.equal(job.source, 'historical');
+  assert.equal(job.cost, null);
+  assert.equal(job.accountCost, null);
+  for (const key of ['createdAt', 'updatedAt', 'completedAt', 'durationMs', 'accountId'])
+    assert.equal(job[key], null, key);
+  assert.equal(job.prompt, null);
+  assert.equal(job.model, 'nai-diffusion-5-full');
   assert.equal(databaseState(f.db), before);
   assert.equal(f.notifications, 0);
 });
