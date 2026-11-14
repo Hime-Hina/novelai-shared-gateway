@@ -4,6 +4,7 @@ import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
 import { memberCharge } from '../quota/failure-accounting.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
 import type { SharedJobCounts } from '../quota/shared-status.ts';
+import { RelationalInputStore } from './relational-input-store.ts';
 
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
 function fail(statusCode: number, code: string, message: string): never {
@@ -23,7 +24,7 @@ interface JobRow {
   sampleIndex: number;
   createdAt: number | null;
   status: string;
-  updatedAt: number;
+  updatedAt: number | null;
   completedAt: number | null;
   cancellationReason: string | null;
   lateResultAt: number | null;
@@ -67,7 +68,10 @@ const lateResultPredicate = `j.status='failed' AND j.late_result_at IS NOT NULL
         (late.event_type='OpeningJobRecorded' AND json_extract(late.payload,'$.status')='failed'
           AND json_extract(late.payload,'$.lateResultAt')=j.late_result_at)))`;
 const jobColumns = `j.id,j.request_id AS requestId,r.model,j.sample_index AS sampleIndex,
-  origin.created_at AS createdAt,j.status,e.occurred_at AS updatedAt,
+  origin.created_at AS createdAt,j.status,
+  CASE WHEN j.status IN ('done','failed') THEN j.completed_at
+    WHEN e.event_type IN ('JobAccepted','JobQueued','DispatchAuthorized') THEN e.occurred_at
+    ELSE NULL END AS updatedAt,
   j.completed_at AS completedAt,j.cancellation_reason AS cancellationReason,
   j.late_result_at AS lateResultAt,j.error_code AS errorCode,a.id AS imageId,
   c.status AS chargeStatus,c.billing_mode AS billingMode,c.estimated,c.v5,
@@ -429,6 +433,35 @@ export class RelationalRequestStore {
     })();
   }
 
+  // 管理授权由 caller 持有；先选50个原顺序候选，才读取各自唯一规范输入。
+  readManagementFailedJobs(limit = 50) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      fail(400, 'invalid_failed_job_limit', '失败任务查询上限无效。');
+    }
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite
+        .prepare<[number], { id: string; orderKnown: number }>(
+          `SELECT j.id,(origin.event_type='JobAccepted') AS orderKnown
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        JOIN domain_events origin ON origin.stream_id='request:'||r.id
+          AND origin.event_type IN ('JobAccepted','OpeningJobRecorded')
+          AND json_extract(origin.payload,'$.jobId')=j.id
+          AND json_extract(origin.payload,'$.requestId')=r.id
+        WHERE j.status='failed' AND j.retired_at IS NULL AND r.retired_at IS NULL
+        ORDER BY (origin.event_type='JobAccepted') DESC,
+          CASE WHEN origin.event_type='JobAccepted' THEN origin.commit_seq END DESC,
+          CASE WHEN origin.event_type='JobAccepted' THEN origin.event_index END DESC,j.id DESC
+        LIMIT ?`,
+        )
+        .all(limit);
+      const inputs = new RelationalInputStore(this.sqlite);
+      return rows.map((row) => ({
+        ...this.readApiJob(row.id),
+        originalOrderKnown: row.orderKnown === 1,
+        request: inputs.readErrorLogRequest(row.id),
+      }));
+    })();
+  }
   // 旧客户端 detail 的薄事实；HTTP 当前 Key/admin ACL 先于保护输入冷读。
   readApiJob(jobId: string) {
     const job = this.sqlite
@@ -466,7 +499,7 @@ export class RelationalRequestStore {
     return {
       ...job,
       createdAt: iso(job.createdAt),
-      updatedAt: job.currentEventType === 'OpeningJobRecorded' ? null : iso(job.updatedAt),
+      updatedAt: iso(job.updatedAt),
       completedAt: iso(job.completedAt),
       lateResultAvailable: job.lateResultAvailable === 1,
     };

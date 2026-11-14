@@ -556,6 +556,8 @@ capture 凭据最多有效五分钟；过期后不得修改时间戳或删除 `.
 凭据、相关 systemd unit/drop-in 与运行版本标记。按用户要求，新快照不复制图片，
 manifest 明确标记 `imagesIncluded: false`；图片参数、归属、SHA-256 与 R2 位置仍在数据库。
 生成逐文件 SHA-256 清单并核验 SQLite 完整性，全部通过才发布备份目录。
+新关系库的完整提交、保护输入、配置 profile 与当前私有认证均随整库快照保存；
+日常流程不解释旧 `images.data`，也不清理 Local、R2 或 PikPak 的图片字节。
 
 自动保留最近七份 `daily-*`；`cutover-*` 和此前旧格式备份不自动删除。
 在线备份不会停止生产，在途任务仍遵守正常重启恢复及未知结果规则，不能据此保证恢复
@@ -568,7 +570,8 @@ sudo nice -n 10 ionice -c 3 python3 /opt/novelai-shared-gateway/backup.py
 sudo python3 /opt/novelai-shared-gateway/backup.py --label cutover
 # 只校验指定备份，不修改生产或读取云端图片。
 sudo python3 /opt/novelai-shared-gateway/backup.py --verify /var/backups/novelai-shared-gateway/具体备份目录
-# 仅清理已有持久 R2 校验凭据、且哈希一致的旧备份图片副本。
+# 独立旧归档操作：仅适用于获准的离线旧库及其备份；不适用于新关系库。
+# 仅清理已有持久 R2 校验凭据、且哈希一致的旧备份图片副本，不由 daily 调用。
 sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 ```
 
@@ -576,6 +579,10 @@ sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 `config/` 与 `systemd/` 按目标版本恢复到对应路径。不要把快照图片或数据库硬链接到
 将投入运行的恢复目录，否则后续原地修改会污染备份。备份权限与原数据目录的服务用户
 权限不同，正式恢复前须重新设置 `nai-gateway` 的归属与访问权限。
+新关系库应按[关系恢复工具](relational-recovery.md)将选定快照的完整业务和当前私有状态
+恢复到独立目标，经唯一 installer 核验后发布；不能手工设置 `ready`。
+`--verify` 对既有全图片旧备份仍核对原图片或原归档凭据；显式旧清理也保留原保护，
+两者不构成新关系副本的回收入口。新副本释放仍待归档引用权威与独立验收，本次不改变 D8 留存期限。
 
 执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
 使用 Standard 私有桶，凭据仅授予该桶对象读写；不启用公开访问。空闲时逐张处理生成超过

@@ -596,12 +596,12 @@ test('保存的私有SOCKS真实握手/TLS贯通自动观察、manual enable及�
   await runtime.start();
   const admit = createRelationalMemberGenerationAdmission({
     sqlite: f.db,
-    runtime,
     members: f.members,
     inputs: f.inputs,
     generations: f.generations,
     payloadBudget: createGenerationPayloadBudget(() => f.inputs.activePayloadBytes()),
     env,
+    runtime,
     now: () => clock,
   });
   for (const operation of ['generate', 'upscale', 'encode-vibe']) {

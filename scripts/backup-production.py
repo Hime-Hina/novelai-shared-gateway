@@ -238,8 +238,6 @@ def main():
             if (result / 'r2-backup.json').is_file():
                 print('Encrypted R2 business backup verified:', result.name)
             retain_daily_backups(result.parent)
-            count, size = clean_archived_images(Path('/var/lib/novelai-shared-gateway'), result.parent)
-            print('Verified duplicate backup images removed:', count, 'logical bytes:', size)
 
 
 if __name__ == '__main__':
