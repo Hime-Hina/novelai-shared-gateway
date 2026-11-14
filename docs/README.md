@@ -39,6 +39,7 @@
 
 - [正式发布与回退](operations/production-release.md)：当前发布记录、生产配置、备份及回退依据。
 - [隔离测试部署](operations/test-deployment.md)：测试环境、模拟上游、发布产物和阶段验收。
+- [独立旧归档精确查询](operations/legacy-archive-lookup.md)：固定旧包的原身份、原回执、保护输入与本地图审计，不接入在线运行时。
 
 ## 历史与证据
 
