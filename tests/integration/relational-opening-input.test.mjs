@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import Database from 'better-sqlite3';
 import { fixture, meta, NOW } from '../helpers/relational-generation.mjs';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
@@ -329,6 +330,81 @@ test('Opening complete 可与原捕获上下文同笔登记；晚登记上下文
     'ContextRegistered',
   );
   assert.equal(target.prepare('SELECT COUNT(*) AS n FROM generation_jobs').get().n, 0);
+});
+
+test('Opening complete 已知上下文必须核实际附件MIME和图像内容，不能只靠自洽SHA/长度', async (t) => {
+  const f = await fixture(t);
+  f.accept('known-image-context');
+  const original = f.db
+      .prepare("SELECT * FROM generation_requests WHERE id='known-image-context'")
+      .get(),
+    originalBody = JSON.parse(
+      f.db.prepare('SELECT body FROM generation_inputs WHERE id=?').get(original.input_id).body,
+    ),
+    complete = {
+      ...originalBody,
+      action: 'img2img',
+      parameters: { ...originalBody.parameters, image: { assetId: 'original' }, strength: 0.7 },
+    },
+    image = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url)),
+    before = databaseState(f.db);
+  for (const bytes of [asset.bytes, image]) {
+    assert.throws(() =>
+      append(
+        f,
+        {
+          inputId: 'complete-image',
+          completeness: 'complete',
+          body: complete,
+          logicalBytes: Buffer.byteLength(JSON.stringify(complete)) + bytes.length,
+          assets: [
+            {
+              ...asset,
+              mimeType: 'image/png',
+              bytes,
+              byteLength: bytes.length,
+              sha256: createHash('sha256').update(bytes).digest('hex'),
+            },
+          ],
+        },
+        [request('complete-image', { model: original.model, contextId: original.context_id })],
+      ),
+    );
+    assert.equal(databaseState(f.db), before);
+  }
+  append(
+    f,
+    {
+      inputId: 'complete-image',
+      completeness: 'complete',
+      body: complete,
+      logicalBytes: Buffer.byteLength(JSON.stringify(complete)) + image.length,
+      assets: [
+        {
+          ...asset,
+          mimeType: 'image/webp',
+          bytes: image,
+          byteLength: image.length,
+          sha256: createHash('sha256').update(image).digest('hex'),
+        },
+      ],
+    },
+    [request('complete-image', { model: original.model, contextId: original.context_id })],
+  );
+  assert.deepEqual(
+    new RelationalInputStore(f.db).readMemberAsset(
+      'request-complete-image',
+      'm1',
+      'parameters.image',
+    ).bytes,
+    image,
+  );
+  const target = empty(t);
+  replayUntil(target, f.db);
+  assert.deepEqual(
+    target.prepare("SELECT * FROM input_assets WHERE input_id='complete-image'").all(),
+    f.db.prepare("SELECT * FROM input_assets WHERE input_id='complete-image'").all(),
+  );
 });
 
 test('Opening 不能从源未来提交借首次上下文；完整合法envelope也不能提前投影', async (t) => {

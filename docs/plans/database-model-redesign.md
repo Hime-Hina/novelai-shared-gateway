@@ -1398,6 +1398,8 @@ OpeningRequest 复用原请求行写入，显式保存原 acceptedAt/retiredAt�
 
 守卫后继只在原 mutations 集合登记新增的 `stageOpeningInput` 和 `stageOpeningContext`。虽然 InputStore 模块来源原已受约束，查询/protocol 中未限定的同名直接调用仍须明确拦截；沿原矩阵新增四个反例，旧守卫为 269 通过/4 失败，补齐名称后 273/273，原只读 type-only/transport/装配对照不变。日志为 `H:\TEMP\novelai-opening-input-guard-{before,after}.log`。这是需要维护者复核的写能力守卫增量，没有放宽原检查或新增框架，`42afee1` 的业务产品保持冻结。
 
+独立审查在 `161bafb` 确认一项完整内容缺口：已知原 Native context 的 complete img2img 输入，image/png 附件实际不是图片但 SHA/长度自洽，原暂存→业务提交→完整回放→唯一 installer 错误接受为 ready，原领取 owner 才拒绝。修复从现 `readJobInput()` 小提取实际附件读取与 `validateRelationalAssetBytes()` 循环，让 complete 且具有原 context 的 OpeningRequest 复用；partial opaque、unknown/context-null 历史仍按原表示保留，不借当前默认或假 seed 验证。新增伪 PNG、实际 WebP 错声明 PNG、合法 WebP 及完整回放对照，新专项 14/14；含原输入/登记/生成/配置/Opening/回放/ready/架构的九文件 404/404，零跳过。TEMP 仅去掉 Opening 的该校验调用，新增反例精确出现 Missing expected exception；恢复同一源摘要后矩阵通过。类型、架构、可信 `ae772153` 迁移历史、格式与差异检查通过。原独立红例保留在 `H:\TEMP\novelai-opening-input-independent-20261114`，作者负控和修复日志为 `novelai-opening-input-image-{negative,fixed,focused}.log`；固定后仍须独立复核，不沿用前片通过结论。
+
 两个表示缺口已明确，不能默认补值：OpeningIdempotency 缺来访 noCache/seedMode，历史原 command/receipt 也不等于 import command/receipt。后续以原 receipt、原 context/intent proof 及明确已知的来访模式表达 live；未知只能 archived/unavailable，拒绝 POST 复用和缓存，不伪造原回执。OpeningAttempt 的原实际成本与 cut 时某一 loss 的未覆盖预算也不是同一事实：两项各损失 100、旧已覆盖 50 的全局未覆盖 150 不能确定覆盖归属，不能假定每项旧 coverage 为零。未证明的有限金额角色先保留未知并拒绝动作，所选 converter 必须保全未决责任的原证据。
 
 当全部 registry fact 都具有真实 owner 时，不为负例永久保留一项无 owner：保留 runtime assertSupported，验收改为事实/owner 完整覆盖，并在隔离副本删除一个真实 owner registration 后验证 installer 拒绝。若分片仍有真实未实现项，可继续使用真实剩余项；不新增占位事件、不删除验证。相关关键断言变化需维护者复核。

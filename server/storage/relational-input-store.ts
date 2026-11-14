@@ -1094,7 +1094,11 @@ export class RelationalInputStore {
           ) {
             unavailable();
           }
-          contexts.set(p.contextId, contexts.get(p.contextId) ?? source.context(p.contextId));
+          const context = contexts.get(p.contextId) ?? source.context(p.contextId);
+          if (input.row.completeness === 'complete') {
+            source.validatedAssets(input, context);
+          }
+          contexts.set(p.contextId, context);
         }
       }
       if (event.eventType === 'InputRegistered' || event.eventType === 'OpeningInputRecorded') {
@@ -1516,6 +1520,26 @@ export class RelationalInputStore {
     return { mimeType: descriptor.mimeType, bytes: row.bytes };
   }
 
+  private validatedAssets(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+  ) {
+    if (!input.body) {
+      unavailable();
+    }
+    const assets = input.assets.map((descriptor) => ({
+      ...descriptor,
+      bytes: this.asset(input.row.id, descriptor).bytes,
+    }));
+    for (const slot of relationalAssetSlots(input.body, assets)) {
+      const asset = assets.find(
+        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
+      )!;
+      validateRelationalAssetBytes(asset, slot.image, context);
+    }
+    return assets;
+  }
+
   readJobInput(jobId: string) {
     const job = this.sqlite
       .prepare<
@@ -1542,16 +1566,7 @@ export class RelationalInputStore {
       unavailable();
     }
     const context = this.context(job.context_id);
-    const assets = input.assets.map((descriptor) => ({
-      ...descriptor,
-      bytes: this.asset(job.input_id, descriptor).bytes,
-    }));
-    for (const slot of relationalAssetSlots(input.body, assets)) {
-      const asset = assets.find(
-        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
-      )!;
-      validateRelationalAssetBytes(asset, slot.image, context);
-    }
+    const assets = this.validatedAssets(input, context);
     const wire = restoreRelationalWire(input.body, assets, seed, 1);
     const request = relationalProviderRequest(wire, context);
     return {
