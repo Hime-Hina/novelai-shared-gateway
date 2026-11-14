@@ -156,6 +156,7 @@ type Ticket = {
   pst: string;
 };
 const resources = ['v5', 'anlasFixed', 'anlasPurchased'] as const;
+const unboundQuotaStatus = 'pending_opus';
 const zero = (): ResourceAmounts => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 const iso = (n: number | null) => (n === null ? undefined : new Date(n).toISOString());
 const observedAmount = (value: unknown) =>
@@ -950,7 +951,7 @@ export class RelationalQuotaStore {
             creditedV5: '0',
             lastRefillAt: 0,
             lastSettlementAt: 0,
-            status: 'pending_opus',
+            status: unboundQuotaStatus,
             unallocatedV5: '0',
             fallbackBuffer: { fixed: '0', purchased: '0' },
             sharedV5Debt: '0',
@@ -1033,6 +1034,18 @@ export class RelationalQuotaStore {
       }
     }
   }
+  readManagementQuotaStatus(now: number) {
+    return this.sqlite.transaction(() => {
+      const policy = this.sharingPolicy();
+      if (!policy.accountId) {
+        return unboundQuotaStatus;
+      }
+      const view = this.state(policy.accountId);
+      syncBoundFairQuota(view.db, view.account, now);
+      return view.db.settings.fairQuota.status;
+    })();
+  }
+
   readMemberQuotaSummary(memberId: string, now: number) {
     return this.sqlite.transaction(() => {
       if (!this.sqlite.prepare('SELECT 1 FROM sharing_policy WHERE id=1 AND enabled=1').get())

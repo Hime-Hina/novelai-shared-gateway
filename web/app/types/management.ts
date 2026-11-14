@@ -19,8 +19,9 @@ export interface ManagementGroup {
 }
 export interface ManagementUser {
   id: string;
-  username: string;
-  note: string;
+  username: string | null;
+  displayName?: string;
+  note: string | null;
   enabled: boolean;
   acceptingJobs: boolean;
   discordId: string | null;

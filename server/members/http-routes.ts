@@ -53,7 +53,11 @@ import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting
 import type { stateEventsFor } from '../events/state-notifications.ts';
 import { streamMemberSharedEvents } from './shared-events.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
-import { handleMemberReadRoutes, publicMemberProfile } from './read-http.ts';
+import {
+  handleMemberReadRoutes,
+  publicMemberProfile,
+  resolveMemberPublicBaseUrl,
+} from './read-http.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { readR2Backups, readR2Operations } from '../reports/r2-analytics.ts';
 import { readPikPakQuota } from '../storage/pikpak-storage.ts';
@@ -206,11 +210,7 @@ export function memberPublicBaseUrl(
   db: Pick<MemberDatabase, 'settings'>,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return (
-    env.PUBLIC_BASE_URL ||
-    db.settings.publicBaseUrl ||
-    (env.PUBLIC_HOST ? `https://${env.PUBLIC_HOST}` : '')
-  );
+  return resolveMemberPublicBaseUrl(db.settings.publicBaseUrl, env);
 }
 
 export async function handleMemberRoutes(

@@ -1717,6 +1717,24 @@ Cookie 取消块只窄提取为 `cancelRelationalGenerationRequest`：当前 ACL
 
 根整合在完整格式 6 的 `8b11fa6` 上保持该五个技术文件与 6a 的精确字节；API 契约保留根已有成员目录约束并追加原 Bearer 约束，计划合并已审后继证据。原 Bearer、Cookie 和全表架构三文件同次 442/442、零跳过，11.931 秒；backend 类型、architecture、可信实际 main `88d2c26` 迁移历史、格式与 diff 通过，日志 `H:/TEMP/novelai-request-http-root-joint.log` 及同前缀 type/static/format。该局部结果未包含独立四例，不能把两组相加写成新一轮整合；后继 OpeningAttempt 和管理 GET 仍分支审查，新的全量与实际发布物另验。
 
+### 9.60 管理摘要、热力图与损耗 GET 的关系接入
+
+本片从实际 `dc35269` 开始，按依赖接入已审统一 `8b11fa6`（Opening 实体/幂等/副本、格式 6）；只提供独立 `createRelationalManagementHttp()`，不切换 sole、不实现 POST。两条既有路径为 `/api/admin/member-management` 与 `/api/member/owner/member-management`，默认摘要及 `view=heatmap/losses` 的字段/分页继续由原消费方和 owner 定义。没有旧 users/accounts/settings Store 适配集合、事件格式或 SQL/journal 增量。
+
+管理 metadata 只由现 Member 安全目录提供，disabled 可管理、removed 不再列为当前目标；username 与 displayName 分开，缺登录名/Discord/邀请截止为 NULL，note 无现模型事实也明确 NULL。客户端声明同步 nullable，热力图的无登录名选项显示稳定 ID，不把 displayName 冒充登录名。Quota 配置、每人金融摘要和免费使用量、共享状态、当前公共地址分别复用原 owner；顶层 quota status 在 QuotaStore 内独立估算，未绑定沿同一 owner 原有 pending 定义，不借任意成员或 Shared 展示状态。RequestStore 新管理窄读复用同一共享 SQL，并按原 Job 时间取最近 30 条，原 0/NULL、退休和成员边界不从父受理/导入时间猜测。Gen 仅增加管理 freeUsage 薄封装，让 disabled 的历史计数可读，原成员准入检查不变。
+
+admin 保留严格本机 Host、原 privateAccessAllowed/同源及每次 assertAdmin；仅将旧 token 判断/断言纯提到 `http/admin-access.ts`，原 secret 加载、精确比较、PUBLIC query 拒绝与 401/403 不变。owner 沿原 Cookie/Discord/isOwner 和当前 session 事务，Discord/资源 IO 后重新核对原稳定 ID/epoch、当前 owner 和 ready，再读取摘要。没有保存旧 authorized 布尔或在资源等待前读取并返回旧 metadata。续期按实际原代码保留精确可见、无 query owner member-management；普通 GET、带 query 的各 view 与静态 admin 均不续，复用原 renewMemberCookie，不自己计算期限。精确条件同步原 session 契约，避免把管理摘要误写成字面 owner/summary。
+
+服务资源使用原实际 FS/进程/卷 owner，允许同一平台能力注入；测试区分真实 FS 与受控等待 callback，未声称读取真实 Discord/R2/PikPak 云端，也不以在线副本引用数或字节冒充云容量。heatmap 与 losses 复用原 report SQL/参数 owner，损耗仍为每页 50 条、history 绑定的原 cursor。跨 IO 撤销授权时不发 users/resources，读取不提交金融/任务/配置；原 Discord 观察、当前 owner 配置协调和精确可见续期的私有写入单独保留。
+
+本片新增工厂含认证/续期能力。初稿 `5332164` 只登记 mutation 名字和 named/injected 两例，独审确认整模块来源漏项：namespace/dynamic/require/export-star 在 query/protocol 共八条仍被放行，独立 14 例仅 6 通过，因此初稿不能视为通过。最小后继沿现 members writer-module 正则补管理模块，把实际工厂加入中央 writerFactories，并将原 dynamic 的尾部 slice 改为整表（与已审 Raw 修复相同），不新增框架或放宽 import。新仓库矩阵先 2/6（四条真实拒绝缺失）再 6/6，全部架构用例 416/416；独审原脚本字节不变的 14 例全部通过，type-only 描述仍合法。业务源逐字不变；此守卫增量及当前 nullable DTO 契约仍须维护者复核。
+
+Windows Node 22 源码管理 HTTP 及九个相关文件共 461/461；随后将测试客户端收紧为真实 Node HTTP（保留实际 Host/Origin），补核配置 PUBLIC_HOST 的合法 owner 与本机 admin 区分，管理专项最终 17/17、零跳过。全部正常源先由原业务命令/Opening owner 建立，再经唯一 installer 的完整 shadow、选定私有与真实 Local 文件核对进入 ready；近期统计的 0/NULL/退休/跨成员用实际 Opening 实体和 29 条真实失败验证。五项临时退化分别移除 IO 后当前 session 检查、以 displayName 冒充 username、改用父受理时间排序、缓存 admin 授权及移除严格本机 Host，均在原业务断言精准失败，恢复原字节后 17/17。热力图 nullable 登录名的 Nuxt 用例先出现 NULL label 反例，最小稳定 ID 回退后 11/11；backend/web type、架构、语法、默认与可信 `8b11fa6` 迁移历史和局部格式检查通过。日志及逐文件 hash 随固定候选交独立审查；未运行本片 full/compiled/Node 24，未切主入口、未提供 admin 原始 Key/PST reveal 或写命令，也不借前置 CI 宣称新管理 GET 总体验收完成。
+
+固定 `db5f32041717f32000353bc311f8541d5a6d398d` 独立技术复审通过：原管理 HTTP 17、独立实际 HTTP 4、架构 416 与独立 capability 14 同次 451/451、零跳过，十七文件 Git blob/SHA 绑定。原八条整模块漏拦由 6 pass/8 fail 闭合为 14/14；放行旧 Direct/OpenAI dynamic 的同类错误 checker 仍精准四条失败，旧保护未被新条目挤掉。独立 HTTP 验证真实 FS 等待时 Cookie 到期、owner A→B→A 新签发不能复活旧 Cookie、精确活动续期/回拨/截止与无业务广播、FS 后撤 Host 404、实际本机 admin 在 query_only 下零写 200。报告 `H:/TEMP/novelai-management-http-independent-20261114/INDEPENDENT-REVIEW.md` 与 `reviewed-files-db5f320.json`；前置 533 保持 NOT PASS，root 与 Raw 的并集保留两个实际模块来源和中央全表循环，不能借本片结果给后继源或 sole 背书。
+
+根在实际 75/75 与 Raw 已审并集上整合该片：八文件管理/Raw/Cookie/安全目录/启动器/Shared/全表架构同次 488/488、零跳过，42.225 秒；backend/Web 类型、architecture、可信实际 main `88d2c26` 迁移、改动格式及 diff 通过，Nuxt CallHeatmap 11/11。原相同工厂与管理薄源不改，Gen 保留已审 Attempt completion helper 并只追加管理 freeUsage，守卫合并两来源与中央十六个实际 writer 条目，未恢复位置 slice。日志 `H:/TEMP/novelai-management-http-root-{joint,type,static,web-type,web-heatmap,format}.log`。这是根局部整合结果；新完整后端、编译及发布包另验，未将本片用于实际尚未接入的 POST/owner summary/sole 或真实云容量。
+
 ### 9.61 格式 6 核心固定候选的统一验证
 
 PR #66 固定 `8b11fa6b4ec70b02b8e5110cab0a553fc35d9416`，基于 #65 `b472b652eb6ccb77a9983c39502d7ecb2e915faa`，只包括本节之前已审的通知、Direct/Shared、管理窄读与 74/75 Opening owner；后继 Attempt、Bearer 及管理 HTTP 不在该固定源内。完整后端 2278 项：2273 通过、5 个原有条件跳过、0 失败，233.536 秒，原 Native 断连用例通过但第一次局部等待超时的原因仍未证明。日志 `H:/TEMP/novelai-v6-8b11fa6-full.log`。全库格式、architecture、可信实际 main `88d2c26` 迁移历史、backend 类型、186 个 JS/MJS 语法与 diff 通过，历史 SQL/journal 未变。
