@@ -23,6 +23,57 @@ const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
 
+test('job与OpeningJob的公共seed基型保留有限Number/NULL，Native范围由真实输入owner核验', () => {
+  const base = {
+    jobId: 'j',
+    requestId: 'r',
+    sampleIndex: 0,
+    actualSeed: null,
+    status: 'pending',
+    queueSeq: null,
+    queueExpiresAt: null,
+    deadlineAt: null,
+    admissionEpoch: 0,
+    cacheKey: null,
+  };
+  for (const eventType of ['JobAccepted', 'OpeningJobRecorded']) {
+    const payload =
+      eventType === 'JobAccepted'
+        ? base
+        : {
+            ...base,
+            createdAt: null,
+            artifactId: null,
+            completedAt: null,
+            errorCode: null,
+            errorStatus: null,
+            cancellationReason: null,
+            lateResultAt: null,
+            freeSucceededAt: null,
+            freeWarningThreshold: null,
+            retiredAt: null,
+            origin,
+          };
+    for (const actualSeed of [
+      null,
+      0,
+      -1,
+      -2,
+      1.5,
+      4294967296,
+      Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+      Number.MIN_VALUE,
+    ]) {
+      const fact = { eventType, payload: { ...payload, actualSeed } };
+      assert.deepEqual(parseRelationalFact(fact), fact);
+    }
+    for (const actualSeed of [NaN, Infinity, -Infinity, '42', undefined]) {
+      assert.throws(() => parseRelationalFact({ eventType, payload: { ...payload, actualSeed } }));
+    }
+  }
+});
+
 test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', () => {
   const payload = {
     memberId: 'm',

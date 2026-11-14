@@ -527,12 +527,17 @@ Windows，Node 22.23.4，pnpm 10.32.1；独立 Node 24.22.1 环境复用同版�
 - **BLOB**：沿原图、蒙版、V3/V4 Vibe 和 V4.5 Precise 的既有槽位保存原字节，正文仅引用 input 内的 asset ID。单 input 内先比长度/SHA，再比实际字节去重；不按全局摘要跨请求或跨成员合并。读取正文只查附件元数据，不查 BLOB；附件和执行冷读取核验实际长度、SHA、MIME 与保存的原限制，事件和普通列表没有字节或全文。V5 仍沿用原协议支持范围，不放开 Vibe/Precise。
 - **首次上下文**：context schema 固定为 1，按 member/native/direct 三种封闭定义保存规范化版本、原枚举/限制、随机种子意图及 direct 首次 defaults；不接受整个 settings 或认证对象。`(schema_version, sha256)` 唯一且复核内容相同后复用原 ID；事实锚定摘要。重启及当前 defaults/枚举变化不覆盖已保存定义，重试可读取首次上下文；后续改变定义结构须显式处理版本。
 - **原注册绑定**：每条 `ContextRegistered` / `InputRegistered` 必须是该 stream 唯一的原注册 event，并逐条复核本次 schema、SHA 与 input 字节计数；不能借同 ID 的首条事实替后来矛盾或重复注册背书。普通 v3 受理反例见 [`relational-content-registration.test.mjs`](../../tests/integration/relational-content-registration.test.mjs)：当前 Key 事务捕获错误后全库不变，完整业务回放同样拒绝，原合法提交仍可继续并重复零写入。修复前同摘要重复 context 与错误摘要 context 均被接受；重复 input 在旧 v3 仅撞底层 UNIQUE，现由同一 Input owner 在复制前拒绝。未改事件格式、DDL 或旧 SQL。
+- **seed 来源边界**：旧 Direct 实际 GET 的 localhost 探针确认 0、-1、-2、1.5、4294967296 逐值受理、保存并下发，不取模；非有限值被原有限事实门禁整笔拒绝。新格式唯一 `actual_seed` 因此用有限 Number 的 REAL 表示，JobAccepted/OpeningJobRecorded 的公共基型只验证有限数或未知 NULL。`relationalChildSeed()` 依据已保存 context 保持 Direct 单 child 恒等语义，Native/member 仍验证 uint32 并复用原批次回绕；prepare、实际 child 事实、输入证明、冷执行恢复与完整回放共用该规则。Direct 的 -1 不改成 Native 随机意图，Native 原 -1 仍先由原 parser/物化 owner 处理。未知或 partial 不补上下文和当前默认。未发布事件仍为 v4，唯一 DDL hash 随 REAL 自然变化，正确旧整数 v4 DDL/hash 也在 read/write/listen 前拒绝；精确 fixture 来自 `e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01`，不重写旧 SQL/journal 或加入兼容开关。
 - **事务和预算**：调用者持有事务并先重验当前授权；当前停用、移除或私有 auth epoch 未恢复时拒绝公开读取/受理。暂停新接单允许原命令重领。首次提交原子保存输入、上下文、父子引用及四类事实；SQL 失败即使被调用者捕获也不留半笔。预算取实际展开协议字节与旧规范 DTO 字节的较大值，沿用现有单请求/活动限制，不因 Base64 改 BLOB 而扩大容量。
 - **有界回放**：`replayAcceptedInput()` 从只读 source 校验并复制原输入、上下文、BLOB 和受理事实，按完整提交断点续跑，重复提交零写入。调用者先恢复稳定成员及当前私有认证快照；业务事实不携带或复活 `auth_epoch`。此入口只接受 T2 的四类事实，不代替 T4 账务/生命周期重建或 T7 A/B 转换器，完成后仍为 building。
 
 [`relational-input.test.mjs`](../../tests/integration/relational-input.test.mjs) 覆盖 E04 和输入范围内的 E08：四图共用一份正文、相同原图/蒙版单份 BLOB；三类操作及 JSON/multipart、V3 原图/V4 编码、V4.5 Precise 和 V5 图生图；真实 HTTP mock 的出站语义/计价一致；wraparound 子 seed、首次上下文、跨成员与路径注入、隐私、预算、篡改拒绝、已退休 child、partial 开账，以及只读 source 的重开续跑和原字节回放。首轮用例识别了按当前枚举校验旧上下文、用 Native 清洗覆盖 direct 显式 NULL 的错误，现已在各自 owner 修正并保留回归断言；没有放宽原协议守卫。
 
 本地新格式仍是未发布候选；这次完善了上下文唯一性、输入版本和私有 auth epoch 的 DDL，先前 0.5 原型文件因 schema hash 不同会被拒绝，需重新建立空目标验证，不能手工改 hash 或重写旧库。旧格式 SQL/journal 和运行时 hash guard 未改，生产、归档、D4 退出及 D8 留存未在 T2 提前变更。
+
+Direct seed 表示反例沿既有 [`relational-queue-runtime.test.mjs`](../../tests/integration/relational-queue-runtime.test.mjs) 的真实 GenStore 受理、正式 installer、单协调器、localhost HTTP 客户端及 Local 发布验证八个有限值（含最大值与最小次正规值），并检查同键零写重领、原产物缓存复用不新增 attempt/charge、冷读与完整共同回放逐值一致。原候选八值中仅 0 通过，另外七值在 prepare 错误拒绝；修后非有限/Native 非法 seed 仍在当前 Key 事务拒绝且全表不变，Native 最大 uint32 的两 child 保持 `[4294967295,0]`，末段 SQL 故障外层捕获后也完整回滚。物理 REAL/有限事实/正确旧格式门禁与这些定向用例合计 15/15。原旧 Direct GET 探针和新协调器测试都仅证明本地网关边界，不宣称真实 NAI 接受这些 seed；新 Direct transport 的全链装配仍由后续工作承担。
+
+该片源码八文件联合 153/153、零跳过，backend type、architecture、可信 main `88d2c26` migration、改动格式和差异检查通过。证据为 `H:\TEMP\novelai-direct-seed-before.log`、`novelai-direct-seed-focused.log`、`novelai-direct-seed-regression.log`；实际旧 GET 的原链和有限额外值分别见 `novelai-direct-seed-owner-4n0d3L/REVIEW.md` 与 `novelai-direct-seed-owner-6dIATb/SEED-REPRESENTATION-PLAN.md`。没有执行 full、原生模块重编、生产迁移或切换；父整合候选还须与配置和 Opening 的完整内容校验一起复核。
 
 ### 9.4 T1/T2 增量的本地验证（2026-11-12）
 

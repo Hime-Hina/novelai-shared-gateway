@@ -273,7 +273,7 @@ CREATE TABLE generation_jobs (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES generation_requests(id),
   sample_index INTEGER NOT NULL CHECK (sample_index >= 0),
-  actual_seed INTEGER CHECK (actual_seed BETWEEN 0 AND 4294967295),
+  actual_seed REAL CHECK (actual_seed BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
   status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'done', 'failed')),
   queue_seq INTEGER UNIQUE CHECK (queue_seq > 0),
   queue_expires_at INTEGER,
