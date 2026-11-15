@@ -2562,6 +2562,10 @@ registry 的 coverage 仍 unknown、releaseAllowed 仍 false；这只证明现�
 
 固定只读片技术8d415108d98e326a53896a5153f19f66ed79f73d、文档后继452e0005b21b6fdeee4632366af2e2cac8136b59已通过非作者独审，报告 H:/TEMP/novelai-prepared-dependency-independent-452e000-20261115/INDEPENDENT-REVIEW.md，SHA256 a76399723bbf1c4f018a666638b7065846661e51585b3ede3cbe23cbb50bfea2。独立archive正例真实公共回放私有空、describe/registry非空来源、原final/part、三执行入口410及表/字节不变通过；normal正例与严格getter等值，真实SHA/长度投影变更由Gen原事实比较拒绝，非法filename由result-files身份校验拒绝，均外层回滚。独审首轮2项为1通过/1夹具预期错误、1.071秒；只修私有测试的owner层预期后，原失败项1/1、零跳过、0.677秒，原成功项未重跑。原程序/首红不改，不声称同轮2/2；SQL immutable的提前拒绝单列，不冒getter到场。Root从4cc8714普通整合整个452，实际共同基线13723ac，四份非plan路径保持受审原字节；coverage仍unknown、没有逐key释放、domainproof晋级或DELETE，根交点结果另见 H:/TEMP/novelai-prepared-dependency-root-preservation.json。
 
+### 9.100 固定 df0 候选的完整后端验证
+
+固定 `df0ac66c353af7c0142ed3f33b83545f7b60f665` 一次原并发 4 的 `pnpm test`：2,883 节点为 2,838 pass、40 fail、5 原 skip、0 cancel，318.3372094 秒；29 个顶层失败与 11 个子级失败不重复计数。原来源/守卫/native 绑定和实际进程退出已封存，严格实际 Node 环境白名单未取证。逐范围首次失败、证据摘要及资格说明统一见[完整源码验证记录](../history/database-model-full-source-20261115.md)；后继须保原反例修复并按固定候选复验，未将早期夹具拒绝或局部通过写成整体验收。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
