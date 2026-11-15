@@ -329,6 +329,18 @@ const emptyBalance = (): FairBalance => ({
   anlasFixedAvailable: '0',
   anlasPurchasedAvailable: '0',
 });
+// 成员 ID 是不透明键；缺项不读取原型，新增条目不触发 __proto__ setter。
+const memberValue = <T>(values: Record<string, T> | undefined, id: string): T | undefined =>
+  values && Object.hasOwn(values, id) ? values[id] : undefined;
+function setMemberValue<T>(values: Record<string, T>, id: string, value: T): T {
+  Object.defineProperty(values, id, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  return value;
+}
 function upgradeGroups<Reservation extends SyncReservation>(
   s: LegacyFairQuotaState<Reservation>,
 ): FairQuotaState<Reservation> {
@@ -342,7 +354,7 @@ function upgradeGroups<Reservation extends SyncReservation>(
   for (const group of s.groups) {
     group.share ??= 0.25;
     group.memberWeights = Object.fromEntries(
-      group.members.map((id) => [id, group.memberWeights?.[id] ?? 1]),
+      group.members.map((id) => [id, memberValue(group.memberWeights, id) ?? 1]),
     );
   }
   s.version = 2;
@@ -408,8 +420,13 @@ const weight = (s: FairQuotaSyncState, id: string): number => {
   if (!group) {
     return 0;
   }
-  const total = group.members.reduce((n, member) => n + (group.memberWeights?.[member] ?? 1), 0);
-  return total > 0 ? (group.share ?? 0.25) * ((group.memberWeights?.[id] ?? 1) / total) : 0;
+  const total = group.members.reduce(
+    (n, member) => n + (memberValue(group.memberWeights, member) ?? 1),
+    0,
+  );
+  return total > 0
+    ? (group.share ?? 0.25) * ((memberValue(group.memberWeights, id) ?? 1) / total)
+    : 0;
 };
 function normalizeCharge<
   Charge extends Pick<FairCharge, 'amount' | 'fixed' | 'purchased'> &
@@ -539,7 +556,10 @@ function exactWeights(s: Pick<FairQuotaSyncState, 'groups'>): { id: string; weig
   const lcm = (left: bigint, right: bigint): bigint => (left / gcd(left, right)) * right;
   const ratios = s.groups.flatMap((group) => {
     const share = decimalRatio(group.share),
-      members = group.members.map((id) => ({ id, ...decimalRatio(group.memberWeights[id] ?? 1) }));
+      members = group.members.map((id) => ({
+        id,
+        ...decimalRatio(memberValue(group.memberWeights, id) ?? 1),
+      }));
     const denominator = members.reduce((value, member) => lcm(value, member.denominator), 1n);
     const total = members.reduce(
       (value, member) => value + member.numerator * (denominator / member.denominator),
@@ -778,7 +798,7 @@ export function normalizeFairGroups(
     }
     const memberWeights: Record<string, number> = Object.fromEntries(
       (g.members as string[]).map((id) => {
-        const value = (g.memberWeights as Record<string, unknown> | undefined)?.[id] ?? 1;
+        const value = memberValue(g.memberWeights as Record<string, unknown> | undefined, id) ?? 1;
         if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1000000) {
           fail('成员权重必须介于 0 和 1000000', 400);
         }
@@ -837,7 +857,7 @@ export function assertFairGroupTransition(
     for (const group of groups) {
       for (const id of group.members) {
         const previous = state.groups?.find((old) => old.members.includes(id)),
-          balance = state.balances[id];
+          balance = memberValue(state.balances, id);
         if (previous && previous.id !== group.id && balance && positive(balance)) {
           fail('有余额成员跨组移动与剩余额度重分必须分两次执行', 409);
         }
@@ -897,7 +917,7 @@ export function configureFairGroups<Reservation extends SyncReservation>(
   const before = existing ? structuredClone(s.groups) : [],
     beforeBalances = existing ? structuredClone(s.balances) : {};
   const balances = Object.fromEntries(
-    [...members].map((id) => [id, s.balances[id] || emptyBalance()]),
+    [...members].map((id) => [id, memberValue(s.balances, id) || emptyBalance()]),
   );
   const redistributions: { groupId: string; resource: Resource; allocations: QuotaAllocation[] }[] =
     [];
@@ -1035,10 +1055,10 @@ export function applyFairMemberChange(
     shareChanges: { userId: string; beforeShare: number; afterShare: number }[] = [];
   const transferred: ResourceAmounts = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
   if (body.action === 'transfer-quota') {
-    if (!s.members.includes(target.id) || !s.balances[target.id]) {
+    if (!s.members.includes(target.id) || !memberValue(s.balances, target.id)) {
       fail('转账接收成员必须已加入共享分组', 400);
     }
-    if (!s.members.includes(source.id) || !s.balances[source.id]) {
+    if (!s.members.includes(source.id) || !memberValue(s.balances, source.id)) {
       fail('转出成员未加入共享分组', 400);
     }
     if (
@@ -1082,14 +1102,16 @@ export function applyFairMemberChange(
         fail('未分组接收成员必须已启用，才能继承共享份额', 400);
       }
       // 直接替换原位置与权重，不先增加成员分摊，避免其他成员份额发生短暂或永久改变。
-      const memberWeight = originalGroup.memberWeights[source.id] ?? 1;
+      const memberWeight = memberValue(originalGroup.memberWeights, source.id) ?? 1;
       originalGroup.members = originalGroup.members.map((id) =>
         id === source.id ? target.id : id,
       );
-      originalGroup.memberWeights[target.id] = memberWeight;
+      setMemberValue(originalGroup.memberWeights, target.id, memberWeight);
       delete originalGroup.memberWeights[source.id];
       s.members = s.members.map((id) => (id === source.id ? target.id : id));
-      s.balances[target.id] ||= emptyBalance();
+      if (!memberValue(s.balances, target.id)) {
+        setMemberValue(s.balances, target.id, emptyBalance());
+      }
       autoJoined = {
         userId: target.id,
         groupId: originalGroup.id,
@@ -1101,7 +1123,9 @@ export function applyFairMemberChange(
       fail('不能删除最后一名共享成员，请选择启用的未分组成员继承份额', 409);
     }
     for (const resource of Object.keys(transferred) as Resource[]) {
-      const amount = units(s.balances[source.id]?.[(resource + 'Available') as BalanceField]);
+      const amount = units(
+        memberValue(s.balances, source.id)?.[(resource + 'Available') as BalanceField],
+      );
       transferred[resource] = formatAmount(amount);
       s.balances[target.id][(resource + 'Available') as BalanceField] = formatAmount(
         units(s.balances[target.id][(resource + 'Available') as BalanceField]) + amount,
@@ -1114,7 +1138,9 @@ export function applyFairMemberChange(
     const finalShares = {
       ...originalShares,
       [source.id]: 0,
-      [target.id]: (originalShares[target.id] || 0) + (originalShares[source.id] || 0),
+      [target.id]:
+        (memberValue(originalShares, target.id) || 0) +
+        (memberValue(originalShares, source.id) || 0),
     };
     s.groups = s.groups.map((g) => {
       const members = g.members.filter((id) => id !== source.id);
@@ -1128,7 +1154,7 @@ export function applyFairMemberChange(
     shareChanges = [...new Set([...Object.keys(originalShares), source.id, target.id])].map(
       (userId) => ({
         userId,
-        beforeShare: originalShares[userId] || 0,
+        beforeShare: memberValue(originalShares, userId) || 0,
         afterShare: finalShares[userId] || 0,
       }),
     );
@@ -1309,7 +1335,7 @@ function v5RecoveryMembers(s: FairQuotaSyncState) {
     weights = Object.fromEntries(exactWeights(s).map((entry) => [entry.id, entry.weight]));
   return s.members.flatMap((id) => {
     const share = weight(s, id),
-      balance = s.balances[id];
+      balance = memberValue(s.balances, id);
     if (!(share > 0) || !balance) {
       return [];
     }
@@ -1329,7 +1355,7 @@ function distributeV5Recovery(
   let remaining = maxAmount(0n, delta),
     actual = 0n,
     participants = v5RecoveryMembers(s);
-  const allocations: Record<string, bigint> = {};
+  const allocations: Record<string, bigint> = Object.fromEntries(s.members.map((id) => [id, 0n]));
   while (remaining > 0n && participants.length) {
     const allocation = allocateAmount(remaining, participants);
     let credited = 0n;
@@ -1764,7 +1790,7 @@ export function previewFairQuotaCharge(
     s = draft.settings?.fairQuota;
   const account = rows(draft.accounts).find((entry) => entry.id === s?.boundAccountId);
   return decideFairQuotaCharge(
-    s?.members.includes(user.id) ? s.balances[user.id] : undefined,
+    s?.members.includes(user.id) ? memberValue(s.balances, user.id) : undefined,
     s?.autoAnlasFallback,
     account ? fairQuotaSnapshot(account) : null,
     request,
@@ -2092,11 +2118,13 @@ export function settleFairQuota(
           units(s.fallbackBuffer.purchased) + units(c.purchased),
         );
         s.sharedV5Debt = formatAmount(units(s.sharedV5Debt) + units(c.sharedV5Reserved));
-        const total = (s.fallbackTotalsByUser[c.userId] ||= {
-          fixed: '0',
-          purchased: '0',
-          v5Equivalent: '0',
-        });
+        const total =
+          memberValue(s.fallbackTotalsByUser, c.userId) ??
+          setMemberValue(s.fallbackTotalsByUser, c.userId, {
+            fixed: '0',
+            purchased: '0',
+            v5Equivalent: '0',
+          });
         total.fixed = formatAmount(units(total.fixed) + units(c.fixed));
         total.purchased = formatAmount(units(total.purchased) + units(c.purchased));
         total.v5Equivalent = formatAmount(units(total.v5Equivalent) + units(c.v5Equivalent));
@@ -2156,16 +2184,16 @@ export function fairQuotaSummary(
   if (!s?.enabled) {
     return null;
   }
-  const raw = s.members.includes(user.id) ? s.balances[user.id] : undefined,
+  const raw = s.members.includes(user.id) ? memberValue(s.balances, user.id) : undefined,
     b = raw,
     group = groupFor(s, user.id),
     share = weight(s, user.id);
-  const localFallback = s.fallbackTotalsByUser[user.id] || {
+  const localFallback = memberValue(s.fallbackTotalsByUser, user.id) || {
     fixed: '0',
     purchased: '0',
     v5Equivalent: '0',
   };
-  const capacity = amountNumber(capacities(s)[user.id] ?? 0n),
+  const capacity = amountNumber(memberValue(capacities(s), user.id) ?? 0n),
     available = amountNumber(units(b?.v5Available)),
     reserved = b ? amountNumber(held(s, user.id, 'v5')) : 0;
   const officialRate = s.snapshot?.seconds! > 0 ? 1 / s.snapshot!.seconds! : 0;

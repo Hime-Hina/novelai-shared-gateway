@@ -15,10 +15,13 @@ import {
   planFairQuotaReservation,
   previewFairQuotaReservations,
   fairQuotaSnapshot,
+  allocateFairGroupAmount,
 } from '../../server/quota/fair-share.ts';
+import { beginDomainCommand, finishDomainCommand } from '../../server/events/domain-events.ts';
+import { parseAmount } from '../../server/quota/resource-amounts.ts';
 const NOW = 1800000000000;
 const members = ['a', 'b', 'c', 'd'];
-function fixture(percent = 80) {
+function fixture(percent = 80, configuredMembers = members) {
   const db = {
     settings: {},
     accounts: [
@@ -36,12 +39,74 @@ function fixture(percent = 80) {
       },
     ],
   };
-  configureFairQuota(db, members);
+  configureFairQuota(db, configuredMembers);
   syncFairQuota(db, NOW);
   return db;
 }
 const request = { model: 'nai-diffusion-5', width: 1024, height: 1024, steps: 23 };
 const job = (id, r = request) => ({ id, request: { ...r } });
+
+for (const id of ['constructor', '__proto__', 'toString']) {
+  test(`不透明成员ID ${id} 的缺省权重与未分组摘要不读取原型`, () => {
+    const allocation = allocateFairGroupAmount(100n, {
+      id: 'g',
+      share: 1,
+      members: [id],
+      memberWeights: {},
+    });
+    assert.equal(Object.hasOwn(allocation, id), true);
+    assert.equal(allocation[id], 100n);
+    const summary = fairQuotaSummary(fixture(), { id }, NOW);
+    assert.equal(summary.member, false);
+    assert.equal(summary.v5Capacity, 0);
+    assert.equal(summary.localAnlasFallbackSpent, 0);
+  });
+
+  test(`不透明成员ID ${id} 的恢复事实与转扣累计保持自有条目`, (t) => {
+    const inherited = Reflect.get({}, id),
+      before = Object.getOwnPropertyDescriptors(inherited);
+    t.after(() => {
+      for (const field of ['fixed', 'purchased', 'v5Equivalent']) {
+        if (before[field]) {
+          Object.defineProperty(inherited, field, before[field]);
+        } else {
+          delete inherited[field];
+        }
+      }
+    });
+    const db = fixture(80, [id, 'b', 'c', 'd']);
+    beginDomainCommand(db);
+    syncFairQuota(db, NOW + 60000);
+    const refill = finishDomainCommand(db).events.find(
+      (e) => e.eventType === 'RefillApplied',
+    ).payload;
+    assert.deepEqual(
+      refill.allocations.find((e) => e.memberId === id),
+      { memberId: id, amount: '0.025' },
+    );
+    assert.equal(
+      refill.allocations.reduce((n, e) => n + parseAmount(e.amount), 0n),
+      parseAmount('0.1'),
+    );
+
+    const paid = fixture(100, [id, 'b', 'c', 'd']),
+      s = paid.settings.fairQuota;
+    s.autoAnlasFallback = true;
+    s.balances[id].v5Available = '0';
+    Object.assign(paid.accounts[0], { v5UsagePercent: 75, v5UsageTimeUntilNextPercent: 0 });
+    Object.assign(s.snapshot, { v5: '75', seconds: 0 });
+    const j = job('opaque-fallback'),
+      charge = reserveFairQuota(paid, { id }, j, paid.accounts[0], NOW);
+    settleFairQuota(paid, j, true, NOW + 1);
+    assert.equal(Object.hasOwn(s.fallbackTotalsByUser, id), true);
+    assert.deepEqual(s.fallbackTotalsByUser[id], {
+      fixed: charge.fixed,
+      purchased: charge.purchased,
+      v5Equivalent: charge.v5Equivalent,
+    });
+    assert.deepEqual(Object.getOwnPropertyDescriptors(inherited), before);
+  });
+}
 
 test('同一共享配置计数器在分组和原成员调账两条路径均不能超过安全上界', () => {
   const db = fixture();

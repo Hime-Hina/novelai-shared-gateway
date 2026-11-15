@@ -226,6 +226,46 @@ async function setup(
   return { db, dir, members, quotas, events, notices, selected, call, env };
 }
 
+for (const memberId of ['ordinary-target', 'constructor', '__proto__', 'toString']) {
+  test(`不透明成员ID ${memberId} 在合法ready首次绑定中创建真实钱包`, async (t) => {
+    const inherited = Reflect.get({}, memberId),
+      beforePrototype = inherited && Object.getOwnPropertyDescriptors(inherited);
+    t.after(() => {
+      if (!inherited) {
+        return;
+      }
+      for (const field of ['v5Available', 'anlasFixedAvailable', 'anlasPurchasedAvailable']) {
+        if (beforePrototype[field]) {
+          Object.defineProperty(inherited, field, beforePrototype[field]);
+        } else {
+          delete inherited[field];
+        }
+      }
+    });
+    const initialMembers = [memberId, 'm2', 'm3', 'm1'],
+      f = await setup(t, { accounts: 1, initialMembers });
+    assertRelationalStorageReady(f.db);
+    const before = databaseState(f.db),
+      response = await f.call();
+    if (response.status !== 200) {
+      assert.equal(databaseState(f.db), before);
+    }
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.deepEqual(response.body.members, initialMembers);
+    assert.deepEqual(
+      f.db
+        .prepare(
+          'SELECT v5_available AS v5,anlas_fixed_available AS fixed FROM wallets WHERE member_id=?',
+        )
+        .get(memberId),
+      { v5: '20', fixed: '2000' },
+    );
+    if (inherited) {
+      assert.deepEqual(Object.getOwnPropertyDescriptors(inherited), beforePrototype);
+    }
+  });
+}
+
 test('fair-quota真实ready首配0/1/多账户复用原pending/唯一绑定/ambiguous，顺序与钱包完整回放', async (t) => {
   for (const accounts of [0, 1, 2]) {
     await t.test(`${accounts} eligible`, async (t) => {
