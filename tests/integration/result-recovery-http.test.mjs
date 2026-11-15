@@ -16,6 +16,29 @@ import {
 } from '../helpers/relational-child.mjs';
 import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
 import { databaseState } from '../helpers/relational-generation.mjs';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { relationalFactStream } from '../../server/events/relational-fact-contracts.ts';
+import { domainDigest } from '../../server/events/domain-events.ts';
+import {
+  initializeRelationalStorage,
+  assertRelationalStorageReady,
+} from '../../server/storage/relational-storage.ts';
+import {
+  restoreRelationalPrivateSnapshot,
+  relationalSnapshotSha256,
+  readRelationalRecoveryState,
+  relationalPrivateStateEmpty,
+  sameRelationalPrivateState,
+} from '../../server/storage/relational-private-restore.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
+import {
+  assertReadableStoredResultDescriptor,
+  readStoredResultContent,
+} from '../../server/storage/result-files.ts';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -219,7 +242,14 @@ function assertOriginalCharge(actual, original) {
 }
 async function fixture(
   t,
-  { stage, operation = 'generate', hold = false, grace = 30000, lateRefund = false } = {},
+  {
+    stage,
+    operation = 'generate',
+    hold = false,
+    grace = 30000,
+    lateRefund = false,
+    enableOnStart = true,
+  } = {},
 ) {
   const cleanup = [],
     childFixtureState = await childFixture({ after: (fn) => cleanup.push(fn) }, 'result-recovery'),
@@ -302,7 +332,7 @@ async function fixture(
         : {}),
     });
     base = server.origin;
-    if (!enabled) {
+    if (enableOnStart && !enabled) {
       await enableAccount(childFixtureState, server);
       enabled = true;
     }
@@ -401,6 +431,313 @@ async function fixture(
     release: () => release?.(),
     exit: () => (server.exit ? Promise.resolve(server.exit) : once(server.child, 'exit')),
     child: () => server.child,
+  };
+}
+
+async function installColdHistory(f, images, jobs) {
+  const directory = f.childFixture.directory,
+    bootstrapPath = path.join(directory, 'cold-bootstrap-source.sqlite'),
+    importedPath = path.join(directory, 'cold-imported.sqlite'),
+    selectedPath = path.join(directory, 'cold-selected-source.sqlite'),
+    rebuiltPath = path.join(directory, 'cold-rebuilt.sqlite'),
+    originalPath = path.join(directory, 'cold-original-rows.json'),
+    inventoryPath = path.join(directory, 'cold-local-inventory.json'),
+    sourceId = 'synthetic-parentless-results',
+    memberId = f.members[0].user_id,
+    handles = [],
+    open = (filename, options) => {
+      const db = new Database(filename, options);
+      handles.push(db);
+      return db;
+    },
+    hash = (bytes) => createHash('sha256').update(bytes).digest('hex'),
+    seal = async (db, filename) => {
+      await db.backup(filename);
+      const sealed = open(filename);
+      sealed.pragma('journal_mode=DELETE');
+      sealed.close();
+      return relationalSnapshotSha256(filename);
+    },
+    rebuild = (target, source) => {
+      const replayer = new RelationalCommitReplayer(target),
+        inputs = new RelationalInputStore(source);
+      for (const { seq } of source
+        .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+        .all())
+        target.transaction(() =>
+          replayer.replayCommit(readRelationalCommit(source, seq), inputs),
+        )();
+    };
+  const actualFetch = globalThis.fetch;
+  let offlineFetches = 0;
+  globalThis.fetch = () => {
+    offlineFetches++;
+    throw new Error('offline cold history denied network before IO');
+  };
+  let originalSha256, inventorySha256, selectedSha256;
+  try {
+    const original = open(f.childFixture.filename, { readonly: true, fileMustExist: true });
+    const key = new RelationalMemberStore(original).readMemberApiKey(memberId);
+    assert.ok(
+      key &&
+        images.every((image) => image.token === key) &&
+        jobs.every((job) => job.userToken === key),
+      '原来源 Key 必须由选定私有来源精确映射到稳定成员，不打印秘密',
+    );
+    const bootstrapSha = await seal(original, bootstrapPath);
+    original.close();
+    const bootstrap = open(bootstrapPath, { readonly: true, fileMustExist: true }),
+      cut = readRelationalRecoveryState(bootstrap),
+      imported = open(importedPath);
+    initializeRelationalStorage(imported, cut.history_id);
+    rebuild(imported, bootstrap);
+    assert.equal(relationalPrivateStateEmpty(imported), true);
+    imported.transaction(() =>
+      restoreRelationalPrivateSnapshot(imported, bootstrapPath, bootstrapSha),
+    )();
+    assert.equal(sameRelationalPrivateState(bootstrap, imported), true);
+
+    // 原旧行及其成员映射属于受保护来源；公共事实只保存整份来源/清单摘要。
+    const originalBytes = Buffer.from(JSON.stringify({ images, jobs }));
+    originalSha256 = hash(originalBytes);
+    await writeFile(originalPath, originalBytes, { flag: 'wx', mode: 0o600 });
+    await mkdir(path.join(f.dataDir, 'images'), { recursive: true });
+    const inventory = [];
+    for (const image of images) {
+      const bytes = image.mimeType === 'image/png' ? png : vibe,
+        descriptor = {
+          imageId: image.id,
+          file: image.file,
+          operation: null,
+          mimeType: image.mimeType,
+          byteLength: bytes.length,
+          sha256: hash(bytes),
+        };
+      assertReadableStoredResultDescriptor(descriptor);
+      await writeFile(path.join(f.dataDir, image.file), bytes, { flag: 'wx', mode: 0o600 });
+      const actual = await readStoredResultContent(f.dataDir, descriptor);
+      assert.ok(actual);
+      assert.deepEqual(actual.buffer, bytes);
+      // 本次真实文件核验的时点，不是原上传/发布/完成日。
+      inventory.push({ descriptor, verifiedAt: Date.now() });
+    }
+    const inventoryBytes = Buffer.from(JSON.stringify({ sourceSha256: originalSha256, inventory }));
+    inventorySha256 = hash(inventoryBytes);
+    await writeFile(inventoryPath, inventoryBytes, { flag: 'wx', mode: 0o600 });
+    const recordedAt = Date.now(),
+      origin = (originalId) => ({ sourceId, originalId }),
+      event = (eventType, payload) => {
+        const kind = relationalFactStream(eventType),
+          field = {
+            import: 'sourceId',
+            input: 'inputId',
+            request: 'requestId',
+            artifact: 'artifactId',
+            storage: 'storageTargetId',
+          }[kind];
+        return {
+          eventType,
+          payload,
+          streamId: `${kind}:${payload[field]}`,
+          memberId: ['import', 'storage'].includes(kind) ? null : memberId,
+          accountId: null,
+          occurredAt: recordedAt,
+          policyVersion: 'historical-unknown',
+          pricingVersion: 'historical-unknown',
+        };
+      },
+      inputs = new RelationalInputStore(imported),
+      replayer = new RelationalCommitReplayer(imported),
+      append = (id, events) =>
+        replayer.appendCommit(
+          {
+            commandId: `cold-source:${id}`,
+            fingerprint: domainDigest(events),
+            actorKind: 'system',
+            actorId: null,
+            recordedAt,
+            correlationId: null,
+            causationId: null,
+            expectedVersions: Object.fromEntries(
+              events.map((e) => [
+                e.streamId,
+                imported
+                  .prepare(
+                    'SELECT CAST(stream_version AS TEXT) v FROM stream_heads WHERE stream_id=?',
+                  )
+                  .get(e.streamId)?.v ?? '0',
+              ]),
+            ),
+            receipt: { importedOriginalRows: true },
+            events,
+          },
+          inputs,
+        ),
+      target = new RelationalReplicaStore(imported, { dataDir: f.dataDir }).configuredTarget(
+        'local',
+      ).target;
+    assert.equal(target.namespace, 'images');
+    imported.transaction(() =>
+      append('source', [
+        event('ImportSourceRegistered', {
+          sourceId,
+          sourceSha256: originalSha256,
+          sourceCommit: '5e629689b0ed41c2df94b52db1dcb3646ffa7314',
+          cutoffSeq: '0',
+          cutoffAt: recordedAt,
+          manifestSha256: inventorySha256,
+          route: 'B',
+        }),
+        event('OpeningStorageTargetRecorded', { ...target, origin: origin('images') }),
+      ]),
+    )();
+    let finalCommit;
+    for (const [index, job] of jobs.entries())
+      imported.transaction(() => {
+        const image = images[index],
+          observed = inventory[index],
+          inputId = `cold-input-${image.id}`,
+          requestId = `cold-container-${image.id}`;
+        assert.equal(job.imageId, image.id);
+        finalCommit = append(job.id, [
+          event('OpeningInputRecorded', {
+            ...inputs.stageOpeningInput({
+              inputId,
+              memberId,
+              completeness: 'unavailable',
+              body: null,
+              logicalBytes: 0,
+              assets: [],
+            }),
+            origin: origin(job.id),
+          }),
+          event('OpeningRequestRecorded', {
+            requestId,
+            originalRequestId: null,
+            memberId,
+            inputId,
+            contextId: null,
+            source: null,
+            operation: null,
+            model: null,
+            sampleCount: null,
+            seedMode: 'unknown',
+            confirmation: null,
+            acceptedAt: null,
+            retiredAt: null,
+            origin: origin(job.id),
+          }),
+          event('OpeningJobRecorded', {
+            jobId: job.id,
+            requestId,
+            createdAt: Date.parse(job.createdAt),
+            sampleIndex: null,
+            actualSeed: null,
+            status: job.status,
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch: null,
+            artifactId: job.imageId,
+            cacheKey: null,
+            completedAt: null,
+            errorCode: null,
+            errorStatus: null,
+            cancellationReason: null,
+            lateResultAt: null,
+            freeSucceededAt: null,
+            freeWarningThreshold: null,
+            retiredAt: null,
+            origin: origin(job.id),
+          }),
+          event('OpeningArtifactRecorded', {
+            artifactId: image.id,
+            memberId,
+            inputId,
+            originalAttemptId: null,
+            operation: null,
+            mimeType: image.mimeType,
+            byteLength: observed.descriptor.byteLength,
+            sha256: observed.descriptor.sha256,
+            publishedAt: null,
+            retiredAt: null,
+            origin: origin(image.id),
+          }),
+          event('OpeningReplicaRecorded', {
+            artifactId: image.id,
+            storageTargetId: target.storageTargetId,
+            objectKey: path.posix.basename(image.file),
+            encoding: 'identity',
+            uploadedAt: null,
+            verifiedAt: observed.verifiedAt,
+            deletedAt: null,
+            lastErrorCode: null,
+            origin: origin(image.file),
+          }),
+        ]);
+      })();
+    for (const table of ['wallets', 'charges', 'operating_state'])
+      assert.deepEqual(
+        imported.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+        bootstrap.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+        '导入原终态不产生收费/退款/免费或钱包决定',
+      );
+    selectedSha256 = await seal(imported, selectedPath);
+    const selected = open(selectedPath, { readonly: true, fileMustExist: true }),
+      rebuilt = open(rebuiltPath);
+    initializeRelationalStorage(rebuilt, cut.history_id);
+    rebuild(rebuilt, selected);
+    assert.equal(relationalPrivateStateEmpty(rebuilt), true);
+    const changes = rebuilt.prepare('SELECT total_changes() n').get().n,
+      before = databaseState(rebuilt);
+    rebuilt.transaction(() =>
+      new RelationalCommitReplayer(rebuilt).replayCommit(
+        readRelationalCommit(selected, finalCommit.commitSeq),
+        new RelationalInputStore(selected),
+      ),
+    )();
+    assert.equal(databaseState(rebuilt), before);
+    assert.equal(rebuilt.prepare('SELECT total_changes() n').get().n, changes);
+    const installed = await verifyAndInstallRelationalStorage(rebuilt, {
+      sourcePath: selectedPath,
+      sourceSha256: selectedSha256,
+      historyId: cut.history_id,
+      finalCommitSeq: finalCommit.commitSeq,
+      replicas: { dataDir: f.dataDir },
+    });
+    assert.equal(installed.artifactsVerified, 503);
+    assertRelationalStorageReady(rebuilt);
+    assert.equal(sameRelationalPrivateState(selected, rebuilt), true);
+    assert.ok(new RelationalMemberStore(rebuilt).readMemberApiKey(memberId) === key);
+    assert.equal(relationalSnapshotSha256(selectedPath), selectedSha256);
+    rebuilt.pragma('journal_mode=DELETE');
+  } finally {
+    globalThis.fetch = actualFetch;
+    for (const db of handles.reverse()) if (db.open) db.close();
+  }
+  assert.equal(offlineFetches, 0);
+  assert.ok(handles.every((db) => !db.open));
+  assert.ok(f.childFixture.children.every((child) => child.exit));
+  const archived = path.join(directory, 'before-cold-restore.sqlite'),
+    fixtureRoot = path.resolve(directory) + path.sep;
+  for (const filename of [f.childFixture.filename, archived, rebuiltPath])
+    assert.ok(path.resolve(filename).startsWith(fixtureRoot));
+  await rename(f.childFixture.filename, archived);
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    try {
+      await rename(f.childFixture.filename + suffix, archived + suffix);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  await rename(rebuiltPath, f.childFixture.filename);
+  return {
+    originalPath,
+    originalSha256,
+    inventoryPath,
+    inventorySha256,
+    selectedPath,
+    selectedSha256,
   };
 }
 
@@ -701,45 +1038,99 @@ test(
   '超过500份结果的冷历史PNG和Vibe在重启后仍有记录、文件和真实签名领取',
   { timeout: 60000 },
   async (t) => {
-    assert.fail(
-      '9.98 原 parentless 历史表示尚未闭合；不得用旧 JsonStore 打开关系目标或补造受理/发布时点。',
-    );
-    const f = await fixture(t),
-      store = new JsonStore(f.dataDir);
-    await store.init();
-    await mkdir(path.join(f.dataDir, 'images'), { recursive: true });
+    const f = await fixture(t, { enableOnStart: false });
+    // 原5e夹具的原字段、503条数量和68/256字节原内容保持；没有原parent/操作/时间则不补。
     const entries = Array.from({ length: 503 }, (_, i) => ({
-      id: `synthetic-result-${i}`,
-      token: f.members[0].api_key,
-      mimeType: i === 502 ? 'application/octet-stream' : 'image/png',
-      file: `images/synthetic-result-${i}.${i === 502 ? 'bin' : 'png'}`,
-      createdAt: new Date(Date.now() - i * 1000).toISOString(),
-    }));
-    await Promise.all(
-      entries.map((image) =>
-        writeFile(path.join(f.dataDir, image.file), image.mimeType === 'image/png' ? png : vibe),
-      ),
-    );
-    const db = await store.read();
-    db.images = entries;
-    db.jobs = entries.map((image) => ({
-      id: `job-${image.id}`,
-      status: 'done',
-      userToken: f.members[0].api_key,
-      imageId: image.id,
-      createdAt: image.createdAt,
-    }));
-    await store.write(db);
-    await store.close();
+        id: `synthetic-result-${i}`,
+        token: f.members[0].api_key,
+        mimeType: i === 502 ? 'application/octet-stream' : 'image/png',
+        file: `images/synthetic-result-${i}.${i === 502 ? 'bin' : 'png'}`,
+        createdAt: new Date(Date.now() - i * 1000).toISOString(),
+      })),
+      jobs = entries.map((image) => ({
+        id: `job-${image.id}`,
+        status: 'done',
+        userToken: f.members[0].api_key,
+        imageId: image.id,
+        createdAt: image.createdAt,
+      }));
+    const source = await installColdHistory(f, entries, jobs);
     for (let restart = 0; restart < 2; restart++) {
       await f.start();
-      assert.equal(f.images().length, 503);
+      const before = f.databaseState();
+      assert.equal(f.artifacts().length, 503);
+      assert.equal(f.jobs().length, 503);
       assert.equal(f.generations(), 0);
-      await f.claim({ id: 'job-synthetic-result-501' }, png);
-      await f.claim({ id: 'job-synthetic-result-502' }, vibe);
-      assert.deepEqual(await readFile(path.join(f.dataDir, entries[501].file)), png);
-      assert.deepEqual(await readFile(path.join(f.dataDir, entries[502].file)), vibe);
+      assert.equal(f.query('SELECT COUNT(*) n FROM generation_attempts')[0].n, 0);
+      assert.equal(f.query('SELECT COUNT(*) n FROM charges')[0].n, 0);
+      assert.ok(
+        f
+          .jobs()
+          .every(
+            (job) =>
+              job.actual_seed === null &&
+              job.sample_index === null &&
+              job.completed_at === null &&
+              job.admission_epoch === null &&
+              job.operation === null,
+          ),
+      );
+      assert.ok(
+        f
+          .query('SELECT * FROM generation_requests')
+          .every(
+            (request) =>
+              request.source === null &&
+              request.operation === null &&
+              request.model === null &&
+              request.context_id === null &&
+              request.sample_count === null &&
+              request.accepted_at === null,
+          ),
+      );
+      assert.ok(
+        f
+          .artifacts()
+          .every(
+            (artifact) =>
+              artifact.operation === null &&
+              artifact.published_at === null &&
+              artifact.original_attempt_id === null,
+          ),
+      );
+      for (const index of [501, 502]) {
+        const image = entries[index],
+          expected = index === 502 ? vibe : png,
+          view = await f.claim({ id: `job-${image.id}` }, expected);
+        assert.equal(view.requestId, null, '内部FK容器不能冒原parent');
+        assert.equal(view.source, null);
+        assert.equal(view.model, null);
+        assert.equal(view.cost, null, '未知原费用不能变为新生成的0');
+        assert.equal(view.completedAt, null);
+        assert.equal(view.createdAt, image.createdAt);
+        assert.deepEqual(await readFile(path.join(f.dataDir, image.file)), expected);
+        const denied = await f.fetchLocal('/api/jobs/job-' + image.id, {
+          headers: { authorization: `Bearer ${f.members[1].api_key}` },
+        });
+        assert.equal(denied.status, 403);
+        await denied.arrayBuffer();
+      }
+      assert.equal(f.databaseState(), before, '真实冷读/签名/拒绝不写任务或资金');
+      assert.equal(
+        createHash('sha256')
+          .update(await readFile(source.originalPath))
+          .digest('hex'),
+        source.originalSha256,
+      );
+      assert.equal(
+        createHash('sha256')
+          .update(await readFile(source.inventoryPath))
+          .digest('hex'),
+        source.inventorySha256,
+      );
+      assert.equal(relationalSnapshotSha256(source.selectedPath), source.selectedSha256);
       await f.stop();
     }
+    assertChildPublicReplay(f.childFixture);
   },
 );
