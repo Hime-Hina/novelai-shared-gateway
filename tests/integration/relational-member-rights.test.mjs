@@ -188,6 +188,73 @@ for (const id of ['ordinary-target', 'constructor', '__proto__', 'toString']) {
     assertPublicTables(f.db, restored);
     assert.equal(restored.prepare('SELECT COUNT(*) AS n FROM api_keys').get().n, 0);
   });
+
+  test(
+    `不透明成员ID ${id} 的真实转扣与脱组历史累计由关系owner只读`,
+    { timeout: 10000 },
+    async (t) => {
+      const f = await setup(t, { fallback: true, v5: '0', secondV5: '0' }),
+        key = `synthetic-key-${id}`;
+      Object.defineProperty(keys, id, { value: key, enumerable: true, configurable: true });
+      t.after(() => {
+        delete keys[id];
+      });
+      f.db.transaction(() =>
+        f.members.registerMember(meta(`fallback-register-${id}`), {
+          memberId: id,
+          displayName: 'same display name',
+          apiKey: key,
+        }),
+      )();
+      await f.change(`fallback-inherit-${id}`, {
+        action: 'delete-member',
+        userId: 'm2',
+        transferToUserId: id,
+        expectedConfigVersion: 1,
+      });
+      t.diagnostic('inherited');
+      const jobId = `opaque-fallback-${id}`;
+      await f.accept(jobId, {
+        memberId: id,
+        model: 'nai-diffusion-5-full',
+        steps: 23,
+        now: NOW + 20,
+      });
+      t.diagnostic('accepted');
+      f.dispatch(`${jobId}-0`, NOW + 21);
+      await f.publish(`${jobId}-0`, NOW + 23);
+      t.diagnostic('published');
+      const charge = f.generations.readCharge(`${jobId}-0`);
+      assert.equal(charge.status, 'settled');
+      assert.equal(charge.billingMode, 'anlas_fallback');
+      const assertSummary = (member, at) => {
+        const before = databaseState(f.db),
+          changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+        const summary = f.quotas.readMemberQuotaSummary(id, at);
+        assert.equal(summary.member, member);
+        assert.equal(summary.localAnlasFallbackFixedSpent, Number(charge.anlasFixed));
+        assert.equal(summary.localFallbackV5Equivalent, Number(charge.v5Equivalent));
+        assert.equal(Object.getPrototypeOf(summary), Object.prototype);
+        assert.deepEqual(JSON.parse(JSON.stringify(summary)), summary);
+        assert.equal(databaseState(f.db), before);
+        assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+      };
+      assertSummary(true, NOW + 30);
+      t.diagnostic('active summary');
+      await f.change(
+        `fallback-remove-${id}`,
+        {
+          action: 'delete-member',
+          userId: id,
+          transferToUserId: 'm1',
+          expectedConfigVersion: 2,
+        },
+        NOW + 40,
+      );
+      t.diagnostic('removed');
+      assertSummary(false, NOW + 50);
+    },
+  );
 }
 async function configure(f, configured = groups(), expectedConfigVersion = 1, at = NOW + 1) {
   return withAuthenticatedMemberApiKey(

@@ -799,6 +799,8 @@ export class RelationalQuotaStore {
           },
         ]),
     );
+    // 金融 view 的成员索引允许缺钱包；原型属性不是已保存的余额。
+    Object.setPrototypeOf(balances, null);
     const reservations = Object.fromEntries(
       this.sqlite
         .prepare<
@@ -1127,7 +1129,7 @@ export class RelationalQuotaStore {
     return { ...view, db };
   }
   private enrichQuotaSummary(state: FairQuotaSummaryState, memberId?: string) {
-    state.fallbackTotalsByUser = {};
+    state.fallbackTotalsByUser = Object.create(null);
     const selected = memberId === undefined ? '' : ' AND original_member_id=?',
       parameters =
         memberId === undefined ? [state.boundAccountId] : [state.boundAccountId, memberId];
