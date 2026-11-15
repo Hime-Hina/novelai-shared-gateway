@@ -80,7 +80,13 @@ export async function addRetainedHistory({
         memberId: members[member].user_id,
         jobId: `${idPrefix}-${index}`,
         requestId: `${idPrefix}-request-${index}`,
+        originalRequestId: null,
         inputId: `${idPrefix}-input-${index}`,
+        source: 'novelai-native',
+        acceptedAt: null,
+        sampleCount: null,
+        sampleIndex: null,
+        admissionEpoch: null,
         createdAt,
         descriptor: describeStoredResult(`${idPrefix}-artifact-${index}`, 'generate', {
           mimeType: 'image/png',
@@ -93,6 +99,7 @@ export async function addRetainedHistory({
     await mkdir(path.join(path.dirname(filename), 'images'), { recursive: true });
     for (const record of records) {
       await publishStoredResult(path.dirname(filename), record.descriptor, image);
+      record.publishedAt = Date.now();
       record.completedAt = Date.now();
     }
     const snapshotAt = Date.now();
@@ -127,7 +134,7 @@ export async function addRetainedHistory({
         const origin = { sourceId, originalId: record.jobId };
         const local = new RelationalReplicaStore(target).planLocalArtifactPublication(
           record.descriptor,
-          record.completedAt,
+          record.publishedAt,
         );
         if (!storageTargetId) {
           storageTargetId = local.target.payload.storageTargetId;
@@ -160,16 +167,17 @@ export async function addRetainedHistory({
             'OpeningRequestRecorded',
             {
               requestId: record.requestId,
+              originalRequestId: record.originalRequestId,
               memberId: record.memberId,
               inputId: record.inputId,
               contextId: null,
-              source: 'novelai-native',
-              operation: 'generate',
+              source: record.source,
+              operation: record.body.operation,
               model: record.body.model,
-              sampleCount: 1,
+              sampleCount: record.sampleCount,
               seedMode: 'unknown',
               confirmation: null,
-              acceptedAt: record.createdAt,
+              acceptedAt: record.acceptedAt,
               retiredAt: null,
               origin,
             },
@@ -182,13 +190,13 @@ export async function addRetainedHistory({
               jobId: record.jobId,
               requestId: record.requestId,
               createdAt: record.createdAt,
-              sampleIndex: 0,
+              sampleIndex: record.sampleIndex,
               actualSeed: null,
               status: 'done',
               queueSeq: null,
               queueExpiresAt: null,
               deadlineAt: null,
-              admissionEpoch: 0,
+              admissionEpoch: record.admissionEpoch,
               artifactId: record.descriptor.imageId,
               cacheKey: null,
               completedAt: record.completedAt,
@@ -211,11 +219,11 @@ export async function addRetainedHistory({
               memberId: record.memberId,
               inputId: record.inputId,
               originalAttemptId: null,
-              operation: 'generate',
+              operation: record.descriptor.operation,
               mimeType: record.descriptor.mimeType,
               byteLength: record.descriptor.byteLength,
               sha256: record.descriptor.sha256,
-              publishedAt: record.completedAt,
+              publishedAt: record.publishedAt,
               retiredAt: null,
               origin,
             },
@@ -246,7 +254,30 @@ export async function addRetainedHistory({
         staged,
       );
     })();
-    // The original records know no attempt, charge, seed or free-use history; none is manufactured.
+    // 本次合成清单记录真实写图与构造完成时点，不补原受理、父请求、数量、位置或代次。
+    for (const record of records) {
+      assert.equal(staged.readOriginalRequestId(record.requestId), null);
+      assert.deepEqual(
+        target
+          .prepare(
+            `SELECT r.source,r.accepted_at,r.sample_count,j.sample_index,j.admission_epoch,
+            j.completed_at,a.published_at FROM generation_requests r
+            JOIN generation_jobs j ON j.request_id=r.id JOIN artifacts a ON a.id=j.artifact_id
+            WHERE j.id=?`,
+          )
+          .get(record.jobId),
+        {
+          source: record.source,
+          accepted_at: null,
+          sample_count: null,
+          sample_index: null,
+          admission_epoch: null,
+          completed_at: record.completedAt,
+          published_at: record.publishedAt,
+        },
+      );
+    }
+    // The synthetic records know no attempt, charge, seed or free-use history; none is manufactured.
     assert.equal(target.prepare('SELECT COUNT(*) n FROM charges').get().n, 0);
     assert.equal(target.prepare('SELECT COUNT(*) n FROM generation_attempts').get().n, 0);
     const selected = filename + '.retained-source';
