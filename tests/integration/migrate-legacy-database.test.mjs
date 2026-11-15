@@ -9,6 +9,7 @@ import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import {
   migrateLegacyDatabase,
   proveLegacyGenerationIntent,
+  readLegacyCutConfiguration,
 } from '../../scripts/migrate-legacy-database.mjs';
 import {
   nativeNormalizationContext,
@@ -22,9 +23,13 @@ import {
   generationIdempotencyKeyHash,
 } from '../../server/generation/admission.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/payload-budget.ts';
-import { cancelGenerationRequestCommand } from '../../server/generation/execution.ts';
+import {
+  cancelGenerationRequestCommand,
+  reserveQueuedGeneration,
+} from '../../server/generation/execution.ts';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { RelationalConfigurationStore } from '../../server/storage/relational-configuration-store.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
 import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
 import { domainDigest } from '../../server/events/domain-events.ts';
@@ -33,7 +38,7 @@ import { relationalPrivateStateEmpty } from '../../server/storage/relational-pri
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex'),
   sourceCommit = '3caba3dfa0b5d9f582acabfc02e36e7db4af038f';
 
-async function fixture(t, status = 'failed', parent = null) {
+async function fixture(t, status = 'failed', parent = null, artifact = null) {
   const directory = await mkdtemp(path.join(tmpdir(), 'nai-migrate-legacy-')),
     store = new JsonStore(path.join(directory, 'old'));
   t.after(async () => {
@@ -44,14 +49,16 @@ async function fixture(t, status = 'failed', parent = null) {
   await store.write({
     ...store.db,
     users: [
-      { id: 'member', name: '', token: 'synthetic-current-key', enabled: true, createdAt: 0 },
+      { id: 'member', name: '', token: 'STA1N-synthetic-current-key', enabled: true, createdAt: 0 },
     ],
+    images: artifact ? [artifact] : [],
     jobs: [
       {
         id: 'job',
         memberId: 'member',
-        userToken: 'synthetic-current-key',
+        userToken: 'STA1N-synthetic-current-key',
         status,
+        ...(artifact ? { imageId: artifact.id } : {}),
         source: 'novelai-native',
         createdAt: 0,
         request: { model: 'nai-diffusion-4-5-full', prompt: '', scale: 0 },
@@ -65,7 +72,7 @@ async function fixture(t, status = 'failed', parent = null) {
     seed.users = ['member', 'second', 'third', 'fourth'].map((id) => ({
       id,
       name: '',
-      token: id === 'member' ? 'synthetic-current-key' : `synthetic-${id}`,
+      token: id === 'member' ? 'STA1N-synthetic-current-key' : `synthetic-${id}`,
       enabled: true,
       createdAt: 0,
     }));
@@ -89,6 +96,9 @@ async function fixture(t, status = 'failed', parent = null) {
     );
     syncFairQuota(seed, acceptedAt);
     await store.write(seed);
+    if (parent.running) {
+      await store.enableEventAuthority();
+    }
     const admit = createGenerationAdmission({
       store,
       now: () => acceptedAt,
@@ -99,7 +109,7 @@ async function fixture(t, status = 'failed', parent = null) {
       cleanupStaleActiveJobs: async () => {},
     });
     originalReceipt = await admit({
-      identity: { token: 'synthetic-current-key' },
+      identity: { token: 'STA1N-synthetic-current-key' },
       request: null,
       source: 'novelai-native',
       batch: true,
@@ -112,11 +122,23 @@ async function fixture(t, status = 'failed', parent = null) {
         context: () => parent.context ?? { native: parent.native },
       }),
     });
-    await cancelGenerationRequestCommand(store, originalReceipt.requestId, 'member', {
-      now: () => acceptedAt + 1,
-    });
+    if (parent.running) {
+      const reservation = await reserveQueuedGeneration(store, originalReceipt.jobIds[0], {
+        now: () => acceptedAt + 1,
+        env: {},
+        dispatchEnabled: () => true,
+        physicalAccountLoad: () => 0,
+      });
+      assert.equal(reservation.job?.status, 'running');
+    } else {
+      await cancelGenerationRequestCommand(store, originalReceipt.requestId, 'member', {
+        now: () => acceptedAt + 1,
+      });
+    }
   }
-  await store.enableEventAuthority();
+  if (!parent?.running) {
+    await store.enableEventAuthority();
+  }
   const source = path.join(directory, 'source.sqlite');
   await store.sqlite.backup(source);
   const db = new Database(source);
@@ -164,7 +186,34 @@ async function fixture(t, status = 'failed', parent = null) {
         ),
       ].join(''),
     ),
-    artifactBytes = Buffer.alloc(0),
+    artifactRows = db.prepare('SELECT id,data FROM images ORDER BY id').all(),
+    artifactBytes = Buffer.from(
+      artifactRows
+        .map((row) => {
+          const image = JSON.parse(row.data);
+          return (
+            JSON.stringify({
+              id: row.id,
+              ...Object.fromEntries(
+                [
+                  'jobId',
+                  'memberId',
+                  'operation',
+                  'mimeType',
+                  'byteLength',
+                  'sha256',
+                  'file',
+                  'createdAt',
+                ].map((key) => [key, image[key] ?? null]),
+              ),
+              r2: null,
+              pikpak: null,
+              externalBytesChecked: false,
+            }) + '\n'
+          );
+        })
+        .join(''),
+    ),
     cut = db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM event_commits').get().seq,
     opening = db.prepare("SELECT value FROM app_meta WHERE key='event_opening'").get().value,
     events = db.prepare('SELECT COUNT(*) AS n FROM domain_events').get().n;
@@ -195,7 +244,7 @@ async function fixture(t, status = 'failed', parent = null) {
       contexts: contextRows.length,
       artifactInputs: 0,
       diagnostics: diagnosticRows.length,
-      artifacts: 0,
+      artifacts: artifactRows.length,
       networkCalls: 0,
       dispatches: 0,
       externalObjectBytesVerified: false,
@@ -205,7 +254,7 @@ async function fixture(t, status = 'failed', parent = null) {
           inputBytes,
           inputRows.length + contextRows.length + diagnosticRows.length,
         ),
-        artifacts: tuple('artifacts.jsonl', artifactBytes, 0),
+        artifacts: tuple('artifacts.jsonl', artifactBytes, artifactRows.length),
       },
     },
     audit = path.join(exports, 'audit.json'),
@@ -372,7 +421,26 @@ test('真实旧parent的两个child沿原定义导入唯一complete输入/contex
     assert.equal(parent.accepted_at, f.acceptedAt);
     assert.equal(parent.operation, 'generate');
     assert.equal(target.prepare('SELECT COUNT(*) AS n FROM generation_inputs').get().n, 1);
-    assert.equal(target.prepare('SELECT COUNT(*) AS n FROM normalization_contexts').get().n, 1);
+    assert.equal(
+      target
+        .prepare(
+          "SELECT COUNT(*) AS n FROM normalization_contexts WHERE json_extract(body,'$.kind')='native'",
+        )
+        .get().n,
+      1,
+    );
+    assert.equal(
+      target
+        .prepare(
+          "SELECT COUNT(*) AS n FROM normalization_contexts WHERE json_extract(body,'$.kind')='normalization-defaults'",
+        )
+        .get().n,
+      1,
+    );
+    assert.equal(
+      new RelationalConfigurationStore(target).readCurrent().normalizationDefaults.defaults.scale,
+      6,
+    );
     const input = target.prepare('SELECT * FROM generation_inputs').get();
     assert.equal(input.completeness, 'complete');
     assert.equal(JSON.parse(input.body).parameters.scale, 9);
@@ -446,6 +514,217 @@ test('原已保存完整参数但首次定义缺失的旧键保留原job/receipt
       target.prepare('SELECT completeness FROM generation_inputs').get().completeness,
       'partial',
     );
+    assert.equal(result.readyInstalled, false);
+    assert.equal(relationalPrivateStateEmpty(target), true);
+  } finally {
+    target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('唯一选定cut-config核对源/cut及原证明文件；旧remote DATA_DIR不变成本地输出或current ENV', async (t) => {
+  const f = await fixture(t),
+    proofs = {};
+  for (const name of ['sourceCapture', 'namespaceReceipt', 'identityReceipt']) {
+    const file = path.join(f.directory, name + '.json'),
+      bytes = Buffer.from(JSON.stringify({ syntheticProof: name }));
+    await writeFile(file, bytes);
+    proofs[name] = { file, sha256: hash(bytes) };
+  }
+  const captured = Date.now(),
+    value = {
+      format: 'novelai-legacy-cut-config-v1',
+      sourceSha256: f.options.sourceSha256,
+      cut: f.options.cut,
+      sourceCommit,
+      captureStartedAt: new Date(captured).toISOString(),
+      configuredOwnerUserId: 'synthetic-discord-owner',
+      configuredGuildId: 'synthetic-guild',
+      discordLoginEnabled: true,
+      sourceNamespaces: {
+        dataDir: '/remote/original-data',
+        r2AccountId: null,
+        r2Bucket: null,
+        pikpakUrl: null,
+      },
+      ...proofs,
+      localOriginal: null,
+    },
+    file = path.join(f.directory, 'selected-cut-config.json'),
+    bytes = Buffer.from(JSON.stringify(value));
+  await writeFile(file, bytes);
+  const selected = await readLegacyCutConfiguration(file, hash(bytes), f.options, captured + 1);
+  assert.equal(selected.sourceNamespaces.dataDir, '/remote/original-data');
+  assert.equal(selected.effectiveAt, captured + 1);
+  assert.equal(selected.configuredGuildId, 'synthetic-guild');
+  await assert.rejects(readLegacyCutConfiguration(file, '0'.repeat(64), f.options, captured + 1));
+  await assert.rejects(
+    readLegacyCutConfiguration(
+      file,
+      hash(bytes),
+      { ...f.options, cut: String(BigInt(f.options.cut) + 1n) },
+      captured + 1,
+    ),
+  );
+  await assert.rejects(readLegacyCutConfiguration(file, hash(bytes), f.options, captured));
+  const migrated = await migrateLegacyDatabase({
+      ...f.options,
+      cutConfig: file,
+      cutConfigSha256: hash(bytes),
+    }),
+    target = new Database(path.join(f.options.output, 'library.sqlite')),
+    rebuilt = new Database(':memory:');
+  try {
+    assert.equal(migrated.private.apiKeys, 1);
+    assert.equal(migrated.private.sessions, 0);
+    assert.equal(
+      target.prepare('SELECT recoverable_key FROM api_keys').get().recoverable_key,
+      'STA1N-synthetic-current-key',
+    );
+    assert.equal(
+      typeof target.prepare('SELECT auth_epoch FROM members').get().auth_epoch,
+      'string',
+    );
+    initializeRelationalStorage(
+      rebuilt,
+      target.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    const replayer = new RelationalCommitReplayer(rebuilt),
+      inputs = new RelationalInputStore(target);
+    for (const { seq } of target
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      rebuilt.transaction(() => replayer.replayCommit(readRelationalCommit(target, seq), inputs))();
+    }
+    assert.equal(relationalPrivateStateEmpty(rebuilt), true);
+    assert.equal(rebuilt.prepare('SELECT auth_epoch FROM members').get().auth_epoch, null);
+    assert.equal(migrated.readyInstalled, false);
+  } finally {
+    target.close();
+    rebuilt.close();
+  }
+
+  await writeFile(proofs.identityReceipt.file, 'changed original owner proof');
+  await assert.rejects(readLegacyCutConfiguration(file, hash(bytes), f.options, captured + 1));
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('真实在途与waiting同parent保留原尝试/三池预扣，同笔Job→Attempt→Charge且完整回放不造历史epoch', async (t) => {
+  const native = nativeNormalizationContext(),
+    request = parseNativeImageRequest(
+      {
+        input: 'original in flight',
+        model: 'nai-diffusion-5-full',
+        parameters: { width: 1024, height: 1024, steps: 23, seed: 99, n_samples: 2 },
+      },
+      native,
+    ),
+    f = await fixture(t, 'failed', { request, native, running: true }),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite')),
+    rebuilt = new Database(':memory:');
+  try {
+    assert.equal(result.findings.filter((row) => row.blocking).length, 0);
+    const jobs = target
+      .prepare('SELECT id,status FROM generation_jobs ORDER BY sample_index')
+      .all();
+    assert.deepEqual(jobs, [
+      { id: f.originalReceipt.jobIds[0], status: 'running' },
+      { id: f.originalReceipt.jobIds[1], status: 'pending' },
+    ]);
+    const attempt = target
+        .prepare('SELECT id,job_id,credential_epoch FROM generation_attempts')
+        .get(),
+      charge = target
+        .prepare('SELECT status,attempt_id,v5,anlas_fixed,anlas_purchased FROM charges')
+        .get();
+    assert.equal(attempt.job_id, jobs[0].id);
+    assert.equal(attempt.credential_epoch, null);
+    assert.equal(charge.status, 'reserved');
+    assert.equal(charge.attempt_id, attempt.id);
+    assert.ok(Number(charge.v5) > 0);
+    assert.equal(charge.anlas_fixed, '0');
+    assert.equal(charge.anlas_purchased, '0');
+    const roles = target
+      .prepare(
+        `SELECT CAST(commit_seq AS TEXT) AS seq,event_index,event_type FROM domain_events
+      WHERE event_type IN ('OpeningJobRecorded','OpeningAttemptRecorded','OpeningChargeRecorded')
+      ORDER BY commit_seq,event_index`,
+      )
+      .all();
+    assert.equal(new Set(roles.map((row) => row.seq)).size, 1);
+    assert.deepEqual(
+      roles.map((row) => row.event_type),
+      [
+        'OpeningJobRecorded',
+        'OpeningJobRecorded',
+        'OpeningAttemptRecorded',
+        'OpeningChargeRecorded',
+      ],
+    );
+    initializeRelationalStorage(
+      rebuilt,
+      target.prepare('SELECT history_id FROM projection_state').get().history_id,
+    );
+    const replayer = new RelationalCommitReplayer(rebuilt),
+      inputs = new RelationalInputStore(target);
+    for (const { seq } of target
+      .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+      .all()) {
+      rebuilt.transaction(() => replayer.replayCommit(readRelationalCommit(target, seq), inputs))();
+    }
+    for (const table of ['generation_jobs', 'generation_attempts', 'charges', 'wallets']) {
+      assert.deepEqual(
+        rebuilt.prepare('SELECT * FROM ' + table).all(),
+        target.prepare('SELECT * FROM ' + table).all(),
+      );
+    }
+    assert.equal(relationalPrivateStateEmpty(rebuilt), true);
+    assert.equal(result.readyInstalled, false);
+  } finally {
+    rebuilt.close();
+    target.close();
+  }
+  assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
+});
+
+test('旧parentless done的独立产物沿原稳定归属/未知operation与publication时间导入，结果bytes不冒充上游输入', async (t) => {
+  const original = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jf3sAAAAASUVORK5CYII=',
+      'base64',
+    ),
+    f = await fixture(t, 'done', null, {
+      id: 'original-artifact',
+      memberId: 'member',
+      token: 'STA1N-synthetic-current-key',
+      mimeType: 'image/png',
+      byteLength: original.length,
+      sha256: hash(original),
+      file: 'images/original-artifact.png',
+    }),
+    result = await migrateLegacyDatabase(f.options),
+    target = new Database(path.join(f.options.output, 'library.sqlite'));
+  try {
+    const artifact = target.prepare('SELECT * FROM artifacts').get(),
+      job = target.prepare('SELECT * FROM generation_jobs').get(),
+      input = target.prepare('SELECT * FROM generation_inputs WHERE id=?').get(artifact.input_id);
+    assert.equal(artifact.id, 'original-artifact');
+    assert.equal(artifact.member_id, 'member');
+    assert.equal(artifact.operation, null);
+    assert.equal(artifact.published_at, null);
+    assert.equal(artifact.original_attempt_id, null);
+    assert.equal(artifact.sha256, hash(original));
+    assert.equal(artifact.byte_length, original.length);
+    assert.equal(job.artifact_id, artifact.id);
+    assert.equal(job.status, 'done');
+    assert.equal(input.completeness, 'unavailable');
+    assert.equal(input.body, null);
+    assert.equal(target.prepare('SELECT count(*) AS n FROM input_assets').get().n, 0);
+    const replica = target
+      .prepare('SELECT uploaded_at,verified_at,deleted_at FROM artifact_replicas')
+      .get();
+    assert.deepEqual(replica, { uploaded_at: null, verified_at: null, deleted_at: null });
+    assert.ok(result.findings.some((row) => row.code === 'LOCAL_BYTES_NOT_VERIFIED'));
     assert.equal(result.readyInstalled, false);
     assert.equal(relationalPrivateStateEmpty(target), true);
   } finally {

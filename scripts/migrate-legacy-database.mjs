@@ -1,21 +1,35 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import Database from 'better-sqlite3';
 import { inventoryLegacyDatabase } from './database-model-inventory.mjs';
+import { mapLegacyFinance, assertLegacyFinanceProjection } from './migrate-legacy-finance.mjs';
+import { mapLegacyArtifacts } from './migrate-legacy-artifacts.mjs';
+import { migrateLegacyPrivate } from './migrate-legacy-private.mjs';
+import { RelationalConfigurationStore } from '../server/storage/relational-configuration-store.ts';
 import { domainDigest, canonicalJson } from '../server/events/domain-events.ts';
 import { relationalFactStream } from '../server/events/relational-fact-contracts.ts';
 import { RelationalInputStore } from '../server/storage/relational-input-store.ts';
 import { RelationalCommitReplayer } from '../server/storage/relational-replay.ts';
 import { initializeRelationalStorage } from '../server/storage/relational-storage.ts';
-import { readRetainedArchiveBinding } from '../server/storage/retained-sources.ts';
-import { readProjectedFairQuota } from '../server/events/event-store.ts';
+import {
+  readRetainedArchiveBinding,
+  retainedFileSha256,
+} from '../server/storage/retained-sources.ts';
+import {
+  readProjectedFairQuota,
+  readStreamProjection,
+  readArtifactInput,
+} from '../server/events/event-store.ts';
 import { freeImagePolicy } from '../server/quota/free-image-policy.ts';
 import { lossAlertPolicy } from '../server/quota/failure-accounting.ts';
 import { parseAmount, formatAmount } from '../server/quota/resource-amounts.ts';
 import { inputAssetSlots, decodeInputAsset } from '../server/generation/member-contract.ts';
-import { generationRequestFingerprint } from '../server/generation/request-fingerprint.ts';
+import {
+  generationRequestFingerprint,
+  requestNormalizationDefaults,
+} from '../server/generation/request-fingerprint.ts';
 import {
   parseRelationalNormalizationContext,
   prepareRelationalInput,
@@ -36,6 +50,116 @@ const time = (value) => {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 };
 
+export async function readLegacyCutConfiguration(filename, expectedSha256, selected, effectiveAt) {
+  if (typeof filename !== 'string' || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? '')) {
+    reject();
+  }
+  const stat = await lstat(filename);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) {
+    reject();
+  }
+  const bytes = await readFile(filename);
+  if (hash(bytes) !== expectedSha256) {
+    reject();
+  }
+  const config = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    keys = [
+      'format',
+      'sourceSha256',
+      'cut',
+      'sourceCommit',
+      'captureStartedAt',
+      'configuredOwnerUserId',
+      'configuredGuildId',
+      'discordLoginEnabled',
+      'sourceNamespaces',
+      'sourceCapture',
+      'namespaceReceipt',
+      'identityReceipt',
+      'localOriginal',
+    ];
+  if (
+    Object.keys(config).length !== keys.length ||
+    keys.some((key) => !Object.hasOwn(config, key)) ||
+    config.format !== 'novelai-legacy-cut-config-v1' ||
+    config.sourceSha256 !== selected.sourceSha256 ||
+    config.cut !== selected.cut ||
+    config.sourceCommit !== selected.sourceCommit ||
+    typeof config.configuredOwnerUserId !== 'string' ||
+    typeof config.configuredGuildId !== 'string' ||
+    typeof config.discordLoginEnabled !== 'boolean' ||
+    (config.configuredGuildId && !config.discordLoginEnabled) ||
+    !Number.isSafeInteger(effectiveAt) ||
+    effectiveAt <= (time(config.captureStartedAt) ?? Infinity)
+  ) {
+    reject();
+  }
+  const directory = path.dirname(path.resolve(filename));
+  for (const name of ['sourceCapture', 'namespaceReceipt', 'identityReceipt']) {
+    const proof = config[name];
+    if (
+      !proof ||
+      Object.keys(proof).length !== 2 ||
+      typeof proof.file !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(proof.sha256 ?? '')
+    ) {
+      reject();
+    }
+    const file = path.resolve(directory, proof.file),
+      info = await lstat(file);
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.size > 16777216 ||
+      (await retainedFileSha256(file)) !== proof.sha256
+    ) {
+      reject();
+    }
+  }
+  const namespaces = config.sourceNamespaces;
+  if (
+    !namespaces ||
+    Object.keys(namespaces).length !== 4 ||
+    !['dataDir', 'r2AccountId', 'r2Bucket', 'pikpakUrl'].every(
+      (name) =>
+        Object.hasOwn(namespaces, name) &&
+        (typeof namespaces[name] === 'string' || namespaces[name] === null),
+    )
+  ) {
+    reject();
+  }
+  const local = config.localOriginal;
+  if (local !== null) {
+    const pointer = local?.sourceArtifactRowPointer;
+    if (
+      !local ||
+      Object.keys(local).length !== 4 ||
+      typeof local.file !== 'string' ||
+      !local.file ||
+      !Number.isSafeInteger(local.byteLength) ||
+      local.byteLength < 1 ||
+      !/^[a-f0-9]{64}$/.test(local.sha256 ?? '') ||
+      !pointer ||
+      Object.keys(pointer).length !== 4 ||
+      typeof pointer.file !== 'string' ||
+      !pointer.file ||
+      !/^[a-f0-9]{64}$/.test(pointer.fileSha256 ?? '') ||
+      !Number.isSafeInteger(pointer.line) ||
+      pointer.line < 1 ||
+      !/^[a-f0-9]{64}$/.test(pointer.lineSha256 ?? '')
+    ) {
+      reject();
+    }
+  }
+  // 这些是原部署的 namespace；远端 dataDir 永不成为本地 target DATA_DIR。
+  return {
+    ...config,
+    selectedSha256: expectedSha256,
+    filename: path.resolve(filename),
+    effectiveAt,
+  };
+}
+
 // 本次新基线的事实 ID 可预分配；原实体 ID 与原审计来源不因此改变。
 export function migrationReferences(sourceSha256) {
   if (!/^[a-f0-9]{64}$/.test(sourceSha256)) {
@@ -46,8 +170,12 @@ export function migrationReferences(sourceSha256) {
     sourceSha256,
     sourceId,
     origin: (originalId) => ({ sourceId, originalId }),
-    eventId: (eventType, originalId) =>
-      `migration:${domainDigest({ sourceSha256, eventType, originalId })}`,
+    eventId: (eventType, originalId) => {
+      if (eventType === 'OpeningFundingReceiptRecorded') {
+        return originalId;
+      }
+      return `migration:${domainDigest({ sourceSha256, eventType, originalId })}`;
+    },
     memberIds: new Set(),
     accountIds: new Set(),
     jobIds: new Set(),
@@ -57,6 +185,8 @@ export function migrationReferences(sourceSha256) {
     inputsByJob: new Map(),
     inputsByArtifact: new Map(),
     requestProofs: new Map(),
+    artifactAttemptById: new Map(),
+    artifactHistoryById: new Map(),
   };
 }
 
@@ -134,6 +264,12 @@ function append(target, references, at, key, drafts) {
           break;
         case 'context':
           owner = draft.payload.contextId;
+          break;
+        case 'artifact':
+          owner = draft.payload.artifactId;
+          break;
+        case 'storage':
+          owner = draft.payload.storageTargetId;
           break;
         default:
           owner = draft.payload.requestId ?? draft.payload.inputId;
@@ -453,8 +589,8 @@ function sourceContextProof(original, mappings) {
 }
 
 // 每个真实 parent 的正文与 child 共用原来源；没有 parent 的 FK 容器不授予公开原请求身份。
-function appendLegacyRequests(source, target, references, at, findings) {
-  const inputs = new RelationalInputStore(target),
+function planLegacyRequests(source, references, findings) {
+  const plans = [],
     groups = sourceRequestGroups(source, references);
   for (const group of groups.values()) {
     const jobs = group.jobIds.map((id) => {
@@ -512,11 +648,7 @@ function appendLegacyRequests(source, target, references, at, findings) {
       hasActive = jobs.some(({ value }) => ['queued', 'pending', 'running'].includes(value.status));
     if (
       jobs.some(
-        ({ value }) =>
-          !['queued', 'pending', 'running', 'failed', 'done'].includes(value.status) ||
-          value.imageId ||
-          value.generationAttempt ||
-          value.resultPending,
+        ({ value }) => !['queued', 'pending', 'running', 'failed', 'done'].includes(value.status),
       ) ||
       (hasActive && (!proof?.prepared || count === null))
     ) {
@@ -524,112 +656,311 @@ function appendLegacyRequests(source, target, references, at, findings) {
       continue;
     }
     const inputId = group.originalRequestId || `legacy-job-input:${first.row.id}`;
-    target.transaction(() => {
-      const input = inputs.stageOpeningInput({ inputId, memberId, ...content }),
-        events = [];
-      let contextId = null;
-      if (proof?.prepared) {
-        contextId = proof.prepared.contextId;
-        if (!target.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(contextId)) {
-          const context = inputs.stageOpeningContext(contextId, proof.context);
-          events.push({
-            eventId: references.eventId('ContextRegistered', contextId),
-            eventType: 'ContextRegistered',
-            payload: context,
-          });
-        }
+    for (const { row, value: job } of jobs) {
+      references.jobIds.add(row.id);
+      if (typeof job.generationAttempt?.id === 'string') {
+        references.attemptIds.add(job.generationAttempt.id);
       }
-      events.push(
-        {
-          eventId: references.eventId('OpeningInputRecorded', inputId),
-          eventType: 'OpeningInputRecorded',
-          memberId,
-          payload: { ...input, origin: references.origin(protectedRow?.id || first.row.id) },
-        },
-        {
-          eventId: references.eventId('OpeningRequestRecorded', group.requestId),
-          eventType: 'OpeningRequestRecorded',
-          memberId,
-          payload: {
-            requestId: group.requestId,
-            originalRequestId: group.originalRequestId,
-            memberId,
-            inputId,
-            contextId,
-            source:
-              originalRow?.source ??
-              (typeof first.value.source === 'string' ? first.value.source : null),
-            operation,
-            model,
-            sampleCount: count,
-            seedMode: proof?.seedMode ?? 'unknown',
-            confirmation: original?.confirmation ?? null,
-            acceptedAt: originalRow ? time(originalRow.created_at) : null,
-            retiredAt: null,
-            origin: references.origin(group.originalRequestId || first.row.id),
-          },
-        },
-      );
-      for (const { row, value: job } of jobs) {
-        const seed =
-          typeof job.request?.seed === 'number'
-            ? job.request.seed
-            : group.originalRequestId
-              ? null
-              : original?.seed;
+      references.inputsByJob.set(row.id, { inputId, memberId, operation });
+    }
+    plans.push({
+      group,
+      jobs,
+      originalRow,
+      protectedRow,
+      original,
+      memberId,
+      proof,
+      proofs,
+      content,
+      operation,
+      model,
+      count,
+      inputId,
+    });
+  }
+  return plans;
+}
+
+// 先规划原身份，金融 mapper 再返回原尝试/预扣；三者共用一笔完整提交。
+function appendLegacyRequest(target, references, at, plan, financial, artifacts) {
+  const {
+      group,
+      jobs,
+      originalRow,
+      protectedRow,
+      original,
+      memberId,
+      proof,
+      proofs,
+      content,
+      operation,
+      model,
+      count,
+      inputId,
+    } = plan,
+    inputs = new RelationalInputStore(target),
+    first = jobs[0],
+    freeUsage = new Map(financial.expected.freeUsage.map((row) => [row.jobId, row]));
+  for (const { row } of jobs) {
+    if (freeUsage.has(row.id) && freeUsage.get(row.id).memberId !== memberId) {
+      reject();
+    }
+  }
+  target.transaction(() => {
+    const input = inputs.stageOpeningInput({ inputId, memberId, ...content }),
+      events = [];
+    let contextId = null;
+    if (proof?.prepared) {
+      contextId = proof.prepared.contextId;
+      if (!target.prepare('SELECT 1 FROM normalization_contexts WHERE id=?').get(contextId)) {
+        const context = inputs.stageOpeningContext(contextId, proof.context);
         events.push({
-          eventId: references.eventId('OpeningJobRecorded', row.id),
-          eventType: 'OpeningJobRecorded',
-          memberId,
-          payload: {
-            jobId: row.id,
-            requestId: group.requestId,
-            createdAt: time(job.createdAt),
-            sampleIndex:
-              Number.isSafeInteger(job.sampleIndex) && job.sampleIndex >= 0
-                ? job.sampleIndex
-                : null,
-            actualSeed: typeof seed === 'number' ? seed : null,
-            status: job.status,
-            queueSeq:
-              Number.isSafeInteger(job.queueSeq) && job.queueSeq > 0 ? String(job.queueSeq) : null,
-            queueExpiresAt: time(job.queueExpiresAt),
-            deadlineAt: time(job.deadlineAt),
-            admissionEpoch:
-              Number.isSafeInteger(job.jobAdmissionVersion) && job.jobAdmissionVersion >= 0
-                ? job.jobAdmissionVersion
-                : null,
-            artifactId: null,
-            cacheKey: typeof job.cacheKey === 'string' && job.cacheKey ? job.cacheKey : null,
-            completedAt: time(job.completedAt),
-            errorCode: typeof job.errorCode === 'string' && job.errorCode ? job.errorCode : null,
-            errorStatus:
-              Number.isSafeInteger(job.errorStatus) && job.errorStatus > 0 ? job.errorStatus : null,
-            cancellationReason:
-              typeof job.cancellationReason === 'string' && job.cancellationReason
-                ? job.cancellationReason
-                : null,
-            lateResultAt: null,
-            freeSucceededAt: null,
-            freeWarningThreshold: null,
-            retiredAt: null,
-            origin: references.origin(row.id),
-          },
+          eventId: references.eventId('ContextRegistered', contextId),
+          eventType: 'ContextRegistered',
+          payload: context,
         });
       }
-      append(target, references, at, `request:${group.requestId}`, events);
-      for (const { row } of jobs) {
-        references.jobIds.add(row.id);
-        references.inputsByJob.set(row.id, { inputId, memberId, operation });
-      }
-      references.requestProofs.set(group.requestId, {
-        inputId,
+    }
+    events.push(
+      {
+        eventId: references.eventId('OpeningInputRecorded', inputId),
+        eventType: 'OpeningInputRecorded',
         memberId,
-        contextId,
-        proofs,
-        originalRequestId: group.originalRequestId,
+        payload: { ...input, origin: references.origin(protectedRow?.id || first.row.id) },
+      },
+      {
+        eventId: references.eventId('OpeningRequestRecorded', group.requestId),
+        eventType: 'OpeningRequestRecorded',
+        memberId,
+        payload: {
+          requestId: group.requestId,
+          originalRequestId: group.originalRequestId,
+          memberId,
+          inputId,
+          contextId,
+          source:
+            originalRow?.source ??
+            (typeof first.value.source === 'string' ? first.value.source : null),
+          operation,
+          model,
+          sampleCount: count,
+          seedMode: proof?.seedMode ?? 'unknown',
+          confirmation: original?.confirmation ?? null,
+          acceptedAt: originalRow ? time(originalRow.created_at) : null,
+          retiredAt: null,
+          origin: references.origin(group.originalRequestId || first.row.id),
+        },
+      },
+    );
+    for (const { row, value: job } of jobs) {
+      const seed =
+        typeof job.request?.seed === 'number'
+          ? job.request.seed
+          : group.originalRequestId
+            ? null
+            : original?.seed;
+      events.push({
+        eventId: references.eventId('OpeningJobRecorded', row.id),
+        eventType: 'OpeningJobRecorded',
+        memberId,
+        payload: {
+          jobId: row.id,
+          requestId: group.requestId,
+          createdAt: time(job.createdAt),
+          sourceOrder: row.order_value,
+          displayCost:
+            Object.hasOwn(job, 'cost') && typeof job.cost === 'number' && Number.isFinite(job.cost)
+              ? job.cost
+              : null,
+          sampleIndex:
+            Number.isSafeInteger(job.sampleIndex) && job.sampleIndex >= 0 ? job.sampleIndex : null,
+          actualSeed: typeof seed === 'number' ? seed : null,
+          status: job.status,
+          queueSeq:
+            Number.isSafeInteger(job.queueSeq) && job.queueSeq > 0 ? String(job.queueSeq) : null,
+          queueExpiresAt: time(job.queueExpiresAt),
+          deadlineAt: time(job.deadlineAt),
+          admissionEpoch:
+            Number.isSafeInteger(job.jobAdmissionVersion) && job.jobAdmissionVersion >= 0
+              ? job.jobAdmissionVersion
+              : null,
+          artifactId:
+            typeof (job.imageId || job.lateResultImageId) === 'string' &&
+            (job.imageId || job.lateResultImageId)
+              ? job.imageId || job.lateResultImageId
+              : null,
+          cacheKey: typeof job.cacheKey === 'string' && job.cacheKey ? job.cacheKey : null,
+          completedAt: time(job.completedAt),
+          errorCode: typeof job.errorCode === 'string' && job.errorCode ? job.errorCode : null,
+          errorStatus:
+            Number.isSafeInteger(job.errorStatus) && job.errorStatus > 0 ? job.errorStatus : null,
+          cancellationReason:
+            typeof job.cancellationReason === 'string' && job.cancellationReason
+              ? job.cancellationReason
+              : null,
+          lateResultAt: time(job.lateResultAt),
+          freeSucceededAt: freeUsage.get(row.id)?.succeededAt ?? null,
+          freeWarningThreshold: freeUsage.get(row.id)?.warningThreshold ?? null,
+          retiredAt: null,
+          origin: references.origin(row.id),
+        },
       });
-    })();
+    }
+
+    const ids = new Set(jobs.map(({ row }) => row.id));
+    for (const fact of financial.facts) {
+      if (fact.eventType === 'OpeningAttemptRecorded' && ids.has(fact.payload.jobId)) {
+        events.push({ ...fact, streamId: `request:${group.requestId}` });
+      }
+    }
+    for (const fact of artifacts.facts) {
+      if (
+        fact.eventType === 'OpeningArtifactRecorded' &&
+        fact.payload.originalAttemptId !== null &&
+        jobs.some(({ value }) => value.generationAttempt?.id === fact.payload.originalAttemptId)
+      ) {
+        events.push(fact);
+      }
+    }
+    for (const fact of financial.facts) {
+      if (fact.eventType === 'OpeningChargeRecorded' && ids.has(fact.payload.jobId)) {
+        events.push(fact);
+      }
+    }
+    append(target, references, at, `request:${group.requestId}`, events);
+    references.requestProofs.set(group.requestId, {
+      inputId,
+      memberId,
+      contextId,
+      proofs,
+      originalRequestId: group.originalRequestId,
+    });
+  })();
+}
+
+// 原 artifact stream 的归属是旧 owner 已保存的 cut 事实；不从 cache visitor/当前 token 反推 creator。
+function planLegacyArtifacts(source, references, descriptors, cutConfiguration) {
+  const inputs = [],
+    storageTargets = [{ kind: 'local', namespace: 'images', originalId: 'storage:local' }];
+  if (
+    cutConfiguration?.sourceNamespaces.r2AccountId &&
+    cutConfiguration.sourceNamespaces.r2Bucket
+  ) {
+    storageTargets.push({
+      kind: 'r2',
+      namespace: `r2://${cutConfiguration.sourceNamespaces.r2AccountId}/${cutConfiguration.sourceNamespaces.r2Bucket}`,
+      originalId: 'storage:r2',
+    });
+  }
+  if (cutConfiguration?.sourceNamespaces.pikpakUrl) {
+    storageTargets.push({
+      kind: 'pikpak',
+      namespace: cutConfiguration.sourceNamespaces.pikpakUrl,
+      originalId: 'storage:pikpak',
+    });
+  }
+  for (const descriptor of descriptors) {
+    const original = readStreamProjection(source, `artifact:${descriptor.id}`)?.projection;
+    if (
+      !original ||
+      original.id !== descriptor.id ||
+      !references.memberIds.has(original.memberId)
+    ) {
+      continue;
+    }
+    if (descriptor.memberId !== null && descriptor.memberId !== original.memberId) {
+      reject();
+    }
+    const publicationRows = source
+        .prepare(
+          `SELECT event_type,occurred_at,payload FROM domain_events
+      WHERE event_type='ArtifactPublished' AND json_extract(payload,'$.artifact.id')=?
+      ORDER BY commit_seq,event_index LIMIT 2`,
+        )
+        .all(descriptor.id),
+      publication = publicationRows.length === 1 ? JSON.parse(publicationRows[0].payload) : null;
+    let input = null;
+    if (
+      publication &&
+      publication.memberId === original.memberId &&
+      publication.artifact.sha256 === descriptor.sha256 &&
+      publication.artifact.byteLength === descriptor.byteLength
+    ) {
+      input = references.inputsByJob.get(publication.jobId);
+      const attemptId = publication.artifact.attemptId;
+      if (input && attemptId !== null && references.attemptIds.has(attemptId)) {
+        references.artifactAttemptById.set(descriptor.id, {
+          attemptId,
+          artifactId: descriptor.id,
+          inputId: input.inputId,
+          memberId: input.memberId,
+          accountId: publication.accountId,
+        });
+      }
+      if (input) {
+        references.artifactHistoryById.set(descriptor.id, {
+          inputId: input.inputId,
+          memberId: input.memberId,
+          sha256: descriptor.sha256,
+          byteLength: descriptor.byteLength,
+          publishedAt: time(publicationRows[0].occurred_at),
+          retiredAt: time(original.retired?.at),
+        });
+      }
+    }
+    if (!input) {
+      const saved = original.artifactInputRef
+          ? readArtifactInput(source, original.artifactInputRef, original.artifactInputSha256)
+          : null,
+        request = {};
+      // base64 在 artifact_inputs 是原结果，不能成为上游 image 附件或新输入字节。
+      if (saved && Object.hasOwn(saved, 'fullPrompt')) {
+        request.prompt = saved.fullPrompt;
+      } else if (saved && Object.hasOwn(saved, 'prompt')) {
+        request.prompt = saved.prompt;
+      }
+      if (descriptor.operation !== null) {
+        request.operation = descriptor.operation;
+      }
+      const inputId = `legacy-artifact-input:${descriptor.id}`;
+      input = { inputId, memberId: original.memberId, operation: descriptor.operation };
+      inputs.push({ ...input, content: openingInput(request, null), originalId: descriptor.id });
+    }
+    if (!references.artifactHistoryById.has(descriptor.id)) {
+      references.artifactHistoryById.set(descriptor.id, {
+        inputId: input.inputId,
+        memberId: input.memberId,
+        sha256: descriptor.sha256,
+        byteLength: descriptor.byteLength,
+        publishedAt: null,
+        retiredAt: time(original.retired?.at),
+      });
+    }
+    references.inputsByArtifact.set(descriptor.id, input);
+  }
+  return {
+    inputs,
+    ...mapLegacyArtifacts(source, references, { artifacts: descriptors, storageTargets }),
+  };
+}
+
+function appendLegacyArtifactInputs(target, references, at, artifacts) {
+  const owner = new RelationalInputStore(target);
+  for (const input of artifacts.inputs) {
+    const payload = owner.stageOpeningInput({
+      inputId: input.inputId,
+      memberId: input.memberId,
+      ...input.content,
+    });
+    append(target, references, at, `artifact-input:${input.originalId}`, [
+      {
+        eventId: references.eventId('OpeningInputRecorded', input.inputId),
+        eventType: 'OpeningInputRecorded',
+        memberId: input.memberId,
+        payload: { ...payload, origin: references.origin(input.originalId) },
+      },
+    ]);
   }
 }
 
@@ -731,7 +1062,67 @@ function appendLegacyKeys(source, target, references, at, findings) {
   }
 }
 
+function appendLegacyConfiguration(source, target, references, at, findings) {
+  const row = source.prepare("SELECT value FROM app_settings WHERE key='settings'").get();
+  if (!row) {
+    findings.push({ code: 'CURRENT_CONFIGURATION_SOURCE_MISSING' });
+    return;
+  }
+  const settings = JSON.parse(row.value);
+  new RelationalConfigurationStore(target).initializeGatewayConfiguration(
+    {
+      commandId: `migration:${references.sourceId}:configuration`,
+      actorKind: 'system',
+      actorId: null,
+      recordedAt: at,
+      correlationId: null,
+      causationId: null,
+    },
+    {
+      normalizationDefaults: requestNormalizationDefaults(settings),
+      publicBaseUrl: typeof settings.publicBaseUrl === 'string' ? settings.publicBaseUrl : null,
+      originRef: `${references.sourceId}:app_settings:settings`,
+    },
+  );
+}
+
+function selectedPrivateRows(source, configuration, effectiveAt) {
+  const rows = (table) =>
+      source
+        .prepare(`SELECT id,token,data FROM ${table} ORDER BY id`)
+        .all()
+        .map((row) => ({ ...row, data: JSON.parse(row.data) })),
+    safeTime = (value) =>
+      typeof value === 'bigint' && value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)
+        ? Number(value)
+        : null,
+    ack = source.prepare("SELECT value FROM app_meta WHERE key='member_session_owner'").get();
+  return {
+    users: rows('users'),
+    accounts: rows('accounts'),
+    sessions: source
+      .prepare(
+        'SELECT token_hash,user_id,auth_version,created_at,expires_at,owner_binding FROM member_sessions ORDER BY token_hash',
+      )
+      .safeIntegers(true)
+      .all()
+      .map((row) => ({
+        ...row,
+        created_at: safeTime(row.created_at),
+        expires_at: safeTime(row.expires_at),
+      })),
+    sessionOwner: ack ? JSON.parse(ack.value) : null,
+    configuredOwner: {
+      ownerUserId: configuration.configuredOwnerUserId,
+      guildId: configuration.configuredGuildId,
+    },
+    discordLoginEnabled: configuration.discordLoginEnabled,
+    effectiveAt,
+  };
+}
+
 export async function migrateLegacyDatabase(options) {
+  const at = Date.now();
   if (
     !options ||
     !/^[a-f0-9]{64}$/.test(options.sourceSha256 ?? '') ||
@@ -795,6 +1186,13 @@ export async function migrateLegacyDatabase(options) {
   for (const line of inputLines) {
     JSON.parse(line);
   }
+  const descriptors = (await readFile(options.artifacts, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const cutConfiguration = options.cutConfig
+    ? await readLegacyCutConfiguration(options.cutConfig, options.cutConfigSha256, options, at)
+    : null;
   const output = path.resolve(options.output);
   await mkdir(output, { mode: 0o700 });
   const source = new Database(path.resolve(options.source), {
@@ -802,9 +1200,10 @@ export async function migrateLegacyDatabase(options) {
       fileMustExist: true,
     }),
     references = migrationReferences(options.sourceSha256),
-    at = Date.now(),
     findings = [];
-  let target;
+  let target,
+    financial,
+    privateResult = null;
   try {
     source.pragma('query_only=ON');
     target = new Database(path.join(output, 'library.sqlite'));
@@ -816,41 +1215,86 @@ export async function migrateLegacyDatabase(options) {
     if (cutoffAt === null) {
       reject();
     }
-    target.transaction(() => {
-      append(target, references, at, 'source', [
-        {
-          eventId: references.eventId('ImportSourceRegistered', references.sourceId),
-          eventType: 'ImportSourceRegistered',
-          payload: {
-            sourceId: references.sourceId,
-            sourceSha256: options.sourceSha256,
-            sourceCommit: options.sourceCommit,
-            cutoffSeq: options.cut,
-            cutoffAt,
-            manifestSha256: options.auditSha256,
-            route: 'B',
+    source.transaction(() =>
+      target.transaction(() => {
+        append(target, references, at, 'source', [
+          {
+            eventId: references.eventId('ImportSourceRegistered', references.sourceId),
+            eventType: 'ImportSourceRegistered',
+            payload: {
+              sourceId: references.sourceId,
+              sourceSha256: options.sourceSha256,
+              sourceCommit: options.sourceCommit,
+              cutoffSeq: options.cut,
+              cutoffAt,
+              manifestSha256: options.auditSha256,
+              route: 'B',
+            },
           },
-        },
-      ]);
-      const members = mapLegacyMembers(source, references);
-      findings.push(...members.findings);
-      if (members.facts.length) {
-        append(target, references, at, 'members', members.facts);
-      }
-      const accounts = mapLegacyAccounts(source, references);
-      findings.push(...accounts.findings);
-      if (accounts.facts.length) {
-        append(target, references, at, 'accounts', accounts.facts);
-      }
-      const sharing = mapLegacySharing(source, references);
-      findings.push(...sharing.findings);
-      if (sharing.facts.length) {
-        append(target, references, at, 'sharing', sharing.facts);
-      }
-    })();
-    appendLegacyRequests(source, target, references, at, findings);
-    appendLegacyKeys(source, target, references, at, findings);
-    findings.push({ code: 'FINANCIAL_PRIVATE_AND_REMAINING_PUBLIC_MAPPING_PENDING' });
+        ]);
+        appendLegacyConfiguration(source, target, references, at, findings);
+        const members = mapLegacyMembers(source, references);
+        findings.push(...members.findings);
+        if (members.facts.length) {
+          append(target, references, at, 'members', members.facts);
+        }
+        const accounts = mapLegacyAccounts(source, references);
+        findings.push(...accounts.findings);
+        if (accounts.facts.length) {
+          append(target, references, at, 'accounts', accounts.facts);
+        }
+        const sharing = mapLegacySharing(source, references);
+        findings.push(...sharing.findings);
+        if (sharing.facts.length) {
+          append(target, references, at, 'sharing', sharing.facts);
+        }
+        const requests = planLegacyRequests(source, references, findings);
+        const artifacts = planLegacyArtifacts(source, references, descriptors, cutConfiguration);
+        findings.push(...artifacts.findings);
+        financial = mapLegacyFinance(source, references);
+        findings.push(...financial.findings);
+        const baseline = financial.facts.filter(
+          (fact) =>
+            fact.eventType !== 'OpeningAttemptRecorded' &&
+            !(fact.eventType === 'OpeningChargeRecorded' && fact.payload.jobId !== null),
+        );
+        if (baseline.length) {
+          append(target, references, at, 'financial', baseline);
+        }
+        appendLegacyArtifactInputs(target, references, at, artifacts);
+        const artifactBaseline = artifacts.facts.filter(
+          (fact) =>
+            fact.eventType === 'OpeningStorageTargetRecorded' ||
+            (fact.eventType === 'OpeningArtifactRecorded' &&
+              fact.payload.originalAttemptId === null),
+        );
+        if (artifactBaseline.length) {
+          append(target, references, at, 'artifacts', artifactBaseline);
+        }
+        for (const request of requests) {
+          appendLegacyRequest(target, references, at, request, financial, artifacts);
+        }
+        const replicas = artifacts.facts.filter(
+          (fact) => fact.eventType === 'OpeningReplicaRecorded',
+        );
+        if (replicas.length) {
+          append(target, references, at, 'replicas', replicas);
+        }
+        assertLegacyFinanceProjection(target, financial.expected);
+        appendLegacyKeys(source, target, references, at, findings);
+        if (cutConfiguration) {
+          privateResult = migrateLegacyPrivate(
+            target,
+            selectedPrivateRows(source, cutConfiguration, at),
+            references,
+          );
+        }
+      })(),
+    )();
+    if (!cutConfiguration) {
+      findings.push({ code: 'SELECTED_PRIVATE_CONFIGURATION_REQUIRED' });
+    }
+    findings.push({ code: 'REMAINING_PUBLIC_RECONCILIATION_AND_READY_PENDING' });
     const report = {
       status: 'building',
       sourceSha256: options.sourceSha256,
@@ -860,6 +1304,10 @@ export async function migrateLegacyDatabase(options) {
       findings,
       imported: { members: references.memberIds.size, jobs: references.jobIds.size },
       readyInstalled: false,
+      financial: financial.expected,
+      private: privateResult,
+      effectiveAt: at,
+      cutConfigurationSha256: cutConfiguration?.selectedSha256 ?? null,
     };
     target.pragma('wal_checkpoint(TRUNCATE)');
     target.pragma('journal_mode=DELETE');
@@ -891,6 +1339,8 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         ['audit-sha256', 'auditSha256'],
         ['artifacts', 'artifacts'],
         ['output', 'output'],
+        ['cut-config', 'cutConfig'],
+        ['cut-config-sha256', 'cutConfigSha256'],
       ]),
       options = {};
     for (const argument of process.argv.slice(2)) {
