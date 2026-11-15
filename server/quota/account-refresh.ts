@@ -146,12 +146,7 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
   const failure = quotaFailure(error);
   const banned = failure.category === 'banned',
     outOfTrial = failure.category === 'out_of_trial';
-  let upstreamStatus = 'sync_error';
-  if (failure.httpStatus === 401) {
-    upstreamStatus = 'invalid_key';
-  } else if (failure.httpStatus === 403) {
-    upstreamStatus = 'access_denied';
-  }
+  const upstreamStatus = generationCredentialError(false, failure.httpStatus) ?? 'sync_error';
   let disableReason = '';
   if (banned) {
     disableReason = '账号已封禁';
@@ -174,6 +169,17 @@ export function accountQuotaErrorResult(id: string, error: unknown, now: string)
     disableAccount: banned || outOfTrial,
     disableReason,
   };
+}
+
+// 生成失败只确认当前凭据失效，不制造一次官方余额查询或刷新原观察时间。
+export function generationCredentialError(aborted: boolean, httpStatus: number | null) {
+  if (aborted) {
+    return null;
+  }
+  if (httpStatus === 401) {
+    return 'invalid_key' as const;
+  }
+  return httpStatus === 403 ? ('access_denied' as const) : null;
 }
 
 export type QuotaResult =
@@ -276,6 +282,11 @@ export function createQuotaObservationOrder() {
     current(identity: string, ticket: string) {
       return latest.get(identity) === BigInt(ticket);
     },
+    forget(identity: string, ticket: string) {
+      if (latest.get(identity) === BigInt(ticket)) {
+        latest.delete(identity);
+      }
+    },
   };
 }
 
@@ -289,6 +300,7 @@ interface AccountQuotaRefreshOptions<T> {
   publicAccount(account: StoreItem): T;
   publicErrorMessage(message: unknown): string;
   logger?: Pick<Console, 'log' | 'error'>;
+  assertAccepting?(): void;
 }
 interface RefreshResult<T> {
   checked: number;
@@ -301,7 +313,7 @@ interface RefreshResult<T> {
 export function createAccountQuotaQuery(
   options: Pick<
     AccountQuotaRefreshOptions<unknown>,
-    'now' | 'logger' | 'fetchQuota' | 'env' | 'requestTimeoutMs'
+    'now' | 'logger' | 'fetchQuota' | 'env' | 'requestTimeoutMs' | 'assertAccepting'
   >,
 ) {
   const clock = options.now || Date.now;
@@ -311,13 +323,22 @@ export function createAccountQuotaQuery(
     token: string | undefined,
     proxyUrl: unknown = '',
     accountId: string | null = null,
+    onStart?: () => void | (() => void) | Promise<void | (() => void)>,
   ) => {
     const startedAt = performance.now();
+    let started = false;
     try {
-      const quota = await withQuotaRequestDeadline(
-        (signal) => fetchQuota(token!, options.env || process.env, { signal, proxyUrl }),
-        options.requestTimeoutMs ?? 15_000,
-      );
+      const quota = await withQuotaRequestDeadline(async (signal) => {
+        const activate = await onStart?.();
+        signal.throwIfAborted();
+        // 授权 SQL 已成功结束；此后同步激活/领号与 raw 间不再让出执行，拒绝真正停机后的新 IO。
+        options.assertAccepting?.();
+        if (typeof activate === 'function') {
+          activate();
+        }
+        started = true;
+        return fetchQuota(token!, options.env || process.env, { signal, proxyUrl });
+      }, options.requestTimeoutMs ?? 15_000);
       logger.log(
         '[quota-query]',
         JSON.stringify({
@@ -332,6 +353,9 @@ export function createAccountQuotaQuery(
       );
       return quota;
     } catch (error) {
+      if (!started) {
+        throw error;
+      }
       const failure = quotaFailure(error);
       logger.log(
         '[quota-query]',
@@ -356,11 +380,6 @@ export function createAccountQuotaQuery(
 export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions<T>) {
   const { store } = options,
     clock = options.now || Date.now;
-  const logger = options.logger || console;
-  let pending: Promise<RefreshResult<T>> | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null,
-    started = false,
-    stopped = false;
   const observationOrder = createQuotaObservationOrder();
 
   const fetch = createAccountQuotaQuery(options);
@@ -454,23 +473,45 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     );
   }
 
-  function refreshEnabled(): Promise<RefreshResult<T>> {
+  const loop = createAccountQuotaRefreshLoop(async () => {
+    const db = await store.readCollections(['accounts']),
+      ids = db.accounts.filter((account) => account.enabled !== false).map((account) => account.id);
+    return ids.length
+      ? await refresh(ids)
+      : { checked: 0, ok: 0, failed: 0, ignored: 0, accounts: [] };
+  }, options);
+  return {
+    refresh,
+    refreshEnabled: loop.refreshEnabled,
+    fetch,
+    start: loop.start,
+    stop: loop.stop,
+    get pending() {
+      return loop.pending;
+    },
+  };
+}
+
+// 原自动轮询骨架；持久化和选取目标仍由各自实际 owner 的一轮刷新提供。
+export function createAccountQuotaRefreshLoop<
+  T extends { checked: number; ok: number; failed: number },
+>(
+  refresh: () => Promise<T>,
+  options: Pick<AccountQuotaRefreshOptions<unknown>, 'logger' | 'refreshIntervalMs'>,
+) {
+  const logger = options.logger || console;
+  let pending: Promise<T> | null = null,
+    timer: ReturnType<typeof setTimeout> | null = null,
+    started = false,
+    stopped = false;
+
+  function refreshEnabled(): Promise<T> {
     if (pending) {
       return pending;
     }
-    pending = (async () => {
-      try {
-        const db = await store.readCollections(['accounts']),
-          ids = db.accounts
-            .filter((account) => account.enabled !== false)
-            .map((account) => account.id);
-        return ids.length
-          ? await refresh(ids)
-          : { checked: 0, ok: 0, failed: 0, ignored: 0, accounts: [] };
-      } finally {
-        pending = null;
-      }
-    })();
+    pending = refresh().finally(() => {
+      pending = null;
+    });
     return pending;
   }
 
@@ -510,9 +551,7 @@ export function createAccountQuotaRefresh<T>(options: AccountQuotaRefreshOptions
     timer = null;
   }
   return {
-    refresh,
     refreshEnabled,
-    fetch,
     start,
     stop,
     get pending() {

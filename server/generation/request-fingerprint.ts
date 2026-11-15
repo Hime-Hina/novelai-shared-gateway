@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { buildNovelAiParameters } from '../protocols/novelai-client.ts';
 
+export const generationContextRef = (row: {
+  member_id: string;
+  operation: string;
+  key_hash: string;
+}): string => `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
+
 interface FingerprintRequest {
   operation?: string;
   action?: string;
@@ -22,6 +28,28 @@ type NormalizationSettings = {
     >
   > | null;
 };
+export type RequestNormalizationDefaults = Omit<NormalizationSettings, 'defaults'> & {
+  defaults: NonNullable<NormalizationSettings['defaults']>;
+};
+
+export function requestCacheKey<T extends object & { requestedSteps?: unknown; seed?: unknown }>(
+  owner: string,
+  request: T,
+  explicitSeed: unknown = '',
+): string {
+  const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        owner,
+        request: {
+          ...cacheRequest,
+          seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
+        },
+      }),
+    )
+    .digest('hex');
+}
 
 // 入口已验证 base64；这里按解码字节摘要，不再复制或拼接整段图片文本。
 function imageDigest(value: unknown): unknown {
@@ -91,7 +119,9 @@ export function generationRequestFingerprint(
     .digest('hex');
 }
 
-export function requestNormalizationDefaults(settings: NormalizationSettings = {}) {
+export function requestNormalizationDefaults(
+  settings: NormalizationSettings = {},
+): RequestNormalizationDefaults {
   const pick = (
     source: Record<string, unknown> | null | undefined,
     fields: string[],

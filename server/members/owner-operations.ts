@@ -3,19 +3,26 @@ import type {
   RelationalAccountStore,
   AccountCommandMetadata,
   OwnerAccountMutation,
+  AccountEnableTicket,
+  AccountEnablePreparation,
+  AdminAccountBatch,
 } from '../storage/relational-account-store.ts';
 import type { MemberUser } from './authentication.ts';
 import {
   accountQuotaResult,
   accountQuotaErrorResult,
   type createAccountQuotaQuery,
+  type QuotaResult,
 } from '../quota/account-refresh.ts';
 import type { FairAccount } from '../quota/fair-share.ts';
 import { isUsableOpus } from '../quota/eligibility.ts';
 import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { Json } from '../events/domain-events.ts';
+import { parseAmount, amountNumber } from '../quota/resource-amounts.ts';
+import { activityDate } from '../reports/activity-heatmap.ts';
+import { normalizeSocksProxyUrl } from '../protocols/novelai-client.ts';
 
-interface OwnerJobRow {
+export interface OwnerJobRow {
   id: string;
   memberId: string;
   username: string;
@@ -26,6 +33,7 @@ interface OwnerJobRow {
   upstreamStartedAt?: string | null;
   upstreamCompletedAt?: string | null;
   chargeStatus?: string | null;
+  knownNoCharge?: boolean;
   resource?: string | null;
   amount?: number | string | null;
   fixed?: number | string | null;
@@ -97,8 +105,7 @@ const fail: (statusCode: number, message: string) => never = (statusCode, messag
 };
 const dayMs = 86400000,
   offsetMs = 8 * 3600000;
-const day = (value: string | null): string =>
-  new Date(Date.parse(value as string) + offsetMs).toISOString().slice(0, 10);
+const day = (value: string | null): string => activityDate(value) || 'unknown';
 const seconds = (
   start: string | null | undefined,
   end: string | null | undefined,
@@ -116,14 +123,32 @@ const empty = () => ({
   running: 0,
   refunded: 0,
   free: 0,
-  v5: 0,
-  fixed: 0,
-  purchased: 0,
+  v5: 0n as bigint | null,
+  fixed: 0n as bigint | null,
+  purchased: 0n as bigint | null,
   waitSeconds: 0,
   waitCount: 0,
   generationSeconds: 0,
   generationCount: 0,
 });
+// 旧记录的 number 沿用账务 owner 的 nearest 读取规则；新关系文本仍严格保留 12 位精度。
+const usageAmount = (value: number | string) =>
+  parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact');
+function addResource(
+  total: UsageAccumulator,
+  resource: 'v5' | 'fixed' | 'purchased',
+  value: OwnerJobRow['amount'],
+) {
+  const parsed = value == null ? null : usageAmount(value);
+  total[resource] = total[resource] === null || parsed === null ? null : total[resource]! + parsed;
+}
+function resourceNumber(value: bigint | null): number | null {
+  if (value === null) {
+    return null;
+  }
+  const result = amountNumber(value);
+  return Number.isFinite(result) ? result : null;
+}
 function add(total: UsageAccumulator, job: OwnerJobRow): void {
   total.total++;
   if (['done', 'failed', 'queued', 'pending', 'running'].includes(job.status!)) {
@@ -137,12 +162,17 @@ function add(total: UsageAccumulator, job: OwnerJobRow): void {
       total.free++;
     }
     if (job.resource === 'v5') {
-      total.v5 += Number(job.amount) || 0;
+      addResource(total, 'v5', job.amount);
     }
     if (job.resource === 'anlas') {
-      total.fixed += Number(job.fixed) || 0;
-      total.purchased += Number(job.purchased) || 0;
+      addResource(total, 'fixed', job.fixed);
+      addResource(total, 'purchased', job.purchased);
     }
+  }
+  if (job.status === 'done' && !job.chargeStatus && job.knownNoCharge !== true) {
+    total.v5 = null;
+    total.fixed = null;
+    total.purchased = null;
   }
   const wait = seconds(job.createdAt, job.startedAt),
     generation = seconds(job.upstreamStartedAt, job.upstreamCompletedAt);
@@ -156,9 +186,21 @@ function add(total: UsageAccumulator, job: OwnerJobRow): void {
   }
 }
 function finish<T extends UsageAccumulator>(total: T) {
-  const { waitSeconds, waitCount, generationSeconds, generationCount, ...counts } = total;
+  const {
+    waitSeconds,
+    waitCount,
+    generationSeconds,
+    generationCount,
+    v5,
+    fixed,
+    purchased,
+    ...counts
+  } = total;
   return {
     ...counts,
+    v5: resourceNumber(v5),
+    fixed: resourceNumber(fixed),
+    purchased: resourceNumber(purchased),
     averageWaitSeconds: waitCount ? waitSeconds / waitCount : null,
     averageGenerationSeconds: generationCount ? generationSeconds / generationCount : null,
   };
@@ -174,7 +216,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
     for (const [map, key, label] of [
       [members, job.memberId, job.username],
       [models, job.model || 'unknown', job.model || '未知模型'],
-      [dates, day(job.createdAt), day(job.createdAt)],
+      [dates, day(job.createdAt), activityDate(job.createdAt) || '未知日期'],
     ] as const) {
       if (!map.has(key)) {
         map.set(key, { id: key, label, ...empty() });
@@ -183,6 +225,7 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
     }
   }
   return {
+    coverage: 'retained-records' as const,
     totals: finish(total),
     members: [...members.values()].map(finish),
     models: [...models.values()].map(finish),
@@ -197,20 +240,27 @@ export function summarizeOwnerUsage(rows: readonly OwnerJobRow[]) {
       waitSeconds: seconds(j.createdAt, j.startedAt),
       generationSeconds: seconds(j.upstreamStartedAt, j.upstreamCompletedAt),
       resource: j.resource,
-      amount: j.amount == null ? j.amount : Number(j.amount),
-      fixed: j.fixed == null ? j.fixed : Number(j.fixed),
-      purchased: j.purchased == null ? j.purchased : Number(j.purchased),
+      amount: j.amount == null ? j.amount : resourceNumber(usageAmount(j.amount)),
+      fixed: j.fixed == null ? j.fixed : resourceNumber(usageAmount(j.fixed)),
+      purchased: j.purchased == null ? j.purchased : resourceNumber(usageAmount(j.purchased)),
       chargeStatus: j.chargeStatus,
+      knownNoCharge: j.knownNoCharge,
       errorStatus: j.errorStatus,
     })),
   };
 }
 
-function sharedAccount<T extends OwnerAccount>(db: OwnerDatabase<T>) {
+export function selectSharedAccount<T extends { id: string }>(
+  accounts: readonly T[],
+  boundAccountId: string | null | undefined,
+) {
   return (
-    db.accounts.find((a) => a.id === db.settings.fairQuota?.boundAccountId) ||
-    (!db.settings.fairQuota?.boundAccountId && db.accounts.length === 1 ? db.accounts[0] : null)
+    accounts.find((account) => account.id === boundAccountId) ||
+    (!boundAccountId && accounts.length === 1 ? accounts[0] : null)
   );
+}
+function sharedAccount<T extends OwnerAccount>(db: OwnerDatabase<T>) {
+  return selectSharedAccount(db.accounts, db.settings.fairQuota?.boundAccountId);
 }
 export function ownerAccountConfiguration<T extends OwnerAccount>(
   db: OwnerDatabase<T>,
@@ -245,7 +295,7 @@ export function ownerAccountConfiguration<T extends OwnerAccount>(
     body: change.kind === 'token' ? { token: change.token, enabled: false } : { enabled: false },
   };
 }
-function safeAccount(a: OwnerAccount | null | undefined) {
+export function safeAccount(a: OwnerAccount | null | undefined) {
   return (
     a && {
       id: a.id,
@@ -261,6 +311,20 @@ function safeAccount(a: OwnerAccount | null | undefined) {
   );
 }
 
+export function ownerStatisticsRange(params: URLSearchParams, now: number) {
+  const days = Number(params.get('days') || 7);
+  if (![0, 1, 7, 30, 365].includes(days)) {
+    fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
+  }
+  const since =
+    days === 0
+      ? ''
+      : new Date(
+          Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
+        ).toISOString();
+  return { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
+}
+
 export function assertOwnerAccountCredentialChangeAllowed(
   physicalLoad: number,
   reserved: boolean,
@@ -270,27 +334,188 @@ export function assertOwnerAccountCredentialChangeAllowed(
   }
 }
 
+export function assertOwnerAccountInitialBinding(
+  policy: { accountId: string | null; version: number },
+  binding: { accountId: string | null; configVersion: number },
+  accountExists: boolean,
+): asserts binding is { accountId: string; configVersion: number } {
+  if (
+    policy.accountId !== null ||
+    binding.accountId === null ||
+    binding.configVersion !== policy.version + 1
+  ) {
+    fail(409, '首次绑定的原政策或账户不符');
+  }
+  if (!accountExists) {
+    fail(404, '上游账户不存在');
+  }
+}
+
 export function assertOwnerAccountPst(token: unknown): asserts token is string {
   if (typeof token !== 'string' || token.length > 4096 || !/^pst-[A-Za-z0-9_-]+$/.test(token)) {
     fail(400, '请输入完整 PST');
   }
 }
 
-function accountCommandResult(result: RelationalCommitResult) {
+// 两个账户 PATCH 入口共享原单字段规则；名称、代理与多账户权重不映射到当前模型。
+export function ownerAccountPatch(accountId: string, input: Record<string, unknown>) {
+  if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0]!)) {
+    fail(400, '只允许更新启用状态或 PST');
+  }
+  if ('token' in input) {
+    assertOwnerAccountPst(input.token);
+    return { kind: 'token' as const, accountId, token: input.token };
+  }
+  if (typeof input.enabled !== 'boolean') {
+    fail(400, 'enabled 必须为布尔值');
+  }
+  return { kind: input.enabled ? ('enable' as const) : ('pause' as const), accountId };
+}
+
+export function normalizeAccountProxyUrl(value: unknown = ''): string {
+  try {
+    return normalizeSocksProxyUrl(value);
+  } catch (error) {
+    fail(400, error instanceof Error ? error.message : 'invalid SOCKS5 proxy URL.');
+  }
+}
+
+export function adminAccountPatch(
+  accountId: string,
+  input: Record<string, unknown>,
+): Extract<OwnerAccountMutation, { kind: 'configure' }> {
+  const changes: Extract<OwnerAccountMutation, { kind: 'configure' }>['changes'] = {};
+  if (input.name !== undefined) {
+    changes.displayName = String(input.name).slice(0, 80);
+  }
+  if (input.weight !== undefined) {
+    const value = Number(input.weight);
+    changes.weight = Number.isFinite(value) ? Math.max(1, Math.min(100, value)) : 1;
+  }
+  if (input.proxyUrl !== undefined || input.socksProxy !== undefined || input.proxy !== undefined) {
+    changes.proxyUrl = normalizeAccountProxyUrl(
+      input.proxyUrl || input.socksProxy || input.proxy || '',
+    );
+  }
+  if (input.token !== undefined) {
+    changes.token = String(input.token).trim();
+    assertOwnerAccountPst(changes.token);
+  }
+  if (input.enabled !== undefined) {
+    if (typeof input.enabled !== 'boolean') {
+      fail(400, 'enabled 必须为布尔值');
+    }
+    changes.enabled = input.enabled;
+  }
+  return { kind: 'configure', accountId, changes };
+}
+
+export function collectValues(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item: unknown) => String(item).trim()).filter(Boolean);
+  }
+  if (value === undefined || value === null || value === '') {
+    return [];
+  }
+  return [String(value).trim()].filter(Boolean);
+}
+
+function accountCommandResult<T extends { receipt: Json }>(result: T): T {
   const receipt = result.receipt as { error?: { statusCode: number; message: string } };
   if (receipt.error) {
     fail(receipt.error.statusCode, receipt.error.message);
   }
+  if (
+    result.receipt &&
+    typeof result.receipt === 'object' &&
+    !Array.isArray(result.receipt) &&
+    'accountIntent' in result.receipt
+  ) {
+    // 内部原安全意图只用于完整回放；外部仍领取原先保存的字段，不从当前账户重造旧回包。
+    const { accountIntent: _intent, ...external } = result.receipt;
+    return { ...result, receipt: external };
+  }
   return result;
+}
+
+async function queryAccountObservation(
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  source: AccountEnablePreparation,
+  start: () => Promise<ReturnType<RelationalAccountStore['startAccountEnable']> | null>,
+): Promise<
+  { result: RelationalCommitResult } | { ticket: AccountEnableTicket; observation: QuotaResult }
+> {
+  if (!query) {
+    fail(503, '账户额度查询尚未配置');
+  }
+  let ticket: AccountEnableTicket | undefined, prior: RelationalCommitResult | undefined;
+  try {
+    const quota = await query(
+      source.pst,
+      source.configuration?.proxyUrl ?? source.proxyUrl,
+      source.accountId,
+      async () => {
+        const authorized = await start();
+        if (!authorized) {
+          fail(401, '会话已失效，请重新登录');
+        }
+        if ('result' in authorized) {
+          prior = authorized.result;
+          throw new Error('Account command already completed.');
+        }
+        return () => {
+          const started = authorized.start();
+          if ('result' in started) {
+            prior = started.result;
+            throw new Error('Account command already completed.');
+          }
+          ticket = started.ticket;
+        };
+      },
+    );
+    if (!ticket) {
+      throw new Error('Account quota query did not start its observation.');
+    }
+    return {
+      ticket,
+      observation: accountQuotaResult(
+        ticket.accountId,
+        quota,
+        new Date(ticket.startedAt).toISOString(),
+      ),
+    };
+  } catch (error) {
+    if (prior) {
+      return { result: prior };
+    }
+    if (!ticket) {
+      throw error;
+    }
+    return {
+      ticket,
+      observation: accountQuotaErrorResult(
+        ticket.accountId,
+        error,
+        new Date(ticket.startedAt).toISOString(),
+      ),
+    };
+  }
 }
 
 // 每次准备和落库都重新进入当前鉴权事务，网络期间不占写锁。
 export async function ownerAccountCommand(
-  store: Pick<RelationalAccountStore, 'prepareAccountCommand' | 'completeAccountEnable'>,
+  store: Pick<
+    RelationalAccountStore,
+    | 'prepareAccountCommand'
+    | 'startAccountEnable'
+    | 'completeAccountEnable'
+    | 'releaseAccountRegistration'
+  >,
   authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
   metadata: AccountCommandMetadata,
   input: OwnerAccountMutation,
-  query: ReturnType<typeof createAccountQuotaQuery>,
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  now: () => number = Date.now,
 ) {
   const prepared = await authorize((member) =>
     store.prepareAccountCommand(metadata, input, member),
@@ -301,31 +526,94 @@ export async function ownerAccountCommand(
   if ('result' in prepared) {
     return accountCommandResult(prepared.result);
   }
-  if (input.kind !== 'enable') {
-    throw new Error('Only account enablement may query upstream.');
-  }
-  const { ticket } = prepared;
-  let observation;
   try {
-    observation = accountQuotaResult(
-      ticket.accountId,
-      await query(ticket.pst, '', ticket.accountId),
-      new Date(ticket.startedAt).toISOString(),
+    if (
+      input.kind !== 'enable' &&
+      input.kind !== 'observe' &&
+      input.kind !== 'configure' &&
+      input.kind !== 'register'
+    ) {
+      throw new Error('Only account observation may query upstream.');
+    }
+    const observed = await queryAccountObservation(query, prepared.prepared, () =>
+      authorize((member) =>
+        store.startAccountEnable(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          member,
+        ),
+      ),
     );
-  } catch (error) {
-    observation = accountQuotaErrorResult(
-      ticket.accountId,
-      error,
-      new Date(ticket.startedAt).toISOString(),
+    if ('result' in observed) {
+      return accountCommandResult(observed.result);
+    }
+    const result = await authorize((member) =>
+      store.completeAccountEnable(
+        { ...metadata, recordedAt: now() },
+        input,
+        observed.ticket,
+        observed.observation,
+        member,
+      ),
     );
+    if (!result) {
+      fail(401, '会话已失效，请重新登录');
+    }
+    return accountCommandResult(result);
+  } finally {
+    if (input.kind === 'register') {
+      store.releaseAccountRegistration(prepared.prepared);
+    }
   }
-  const result = await authorize((member) =>
-    store.completeAccountEnable(
-      { ...metadata, recordedAt: Date.now() },
+}
+
+export async function adminAccountBatchCommand(
+  store: Pick<
+    RelationalAccountStore,
+    'prepareAccountBatch' | 'startAccountBatchObservation' | 'completeAccountBatch'
+  >,
+  authorize: <T>(write: (member: MemberUser | null) => T) => Promise<T | null>,
+  metadata: AccountCommandMetadata,
+  input: AdminAccountBatch,
+  query: ReturnType<typeof createAccountQuotaQuery> | undefined,
+  now: () => number = Date.now,
+) {
+  const prepared = await authorize((actor) => store.prepareAccountBatch(metadata, input, actor));
+  if (!prepared) {
+    fail(401, '会话已失效，请重新登录');
+  }
+  if ('result' in prepared) {
+    return accountCommandResult(prepared.result);
+  }
+  const observations: { ticket: AccountEnableTicket; result: QuotaResult }[] = [];
+  for (const source of prepared.prepared.sources) {
+    if (source.freshObservationEventId !== null) {
+      continue;
+    }
+    const result = await queryAccountObservation(query, source, () =>
+      authorize((actor) =>
+        store.startAccountBatchObservation(
+          { ...metadata, recordedAt: now() },
+          input,
+          prepared.prepared,
+          source.accountId,
+          actor,
+        ),
+      ),
+    );
+    if ('result' in result) {
+      return accountCommandResult(result.result);
+    }
+    observations.push({ ticket: result.ticket, result: result.observation });
+  }
+  const result = await authorize((actor) =>
+    store.completeAccountBatch(
+      { ...metadata, recordedAt: now() },
       input,
-      ticket,
-      observation,
-      member,
+      prepared.prepared,
+      observations,
+      actor,
     ),
   );
   if (!result) {
@@ -344,22 +632,11 @@ export async function ownerOperation(
   const path = url.pathname.slice('/api/member/owner'.length),
     { store } = deps;
   if (path === '/statistics' && method === 'GET') {
-    const days = Number(url.searchParams.get('days') || 7);
-    if (![0, 1, 7, 30, 365].includes(days)) {
-      fail(400, '统计范围仅支持全部、1、7、30 或 365 天');
-    }
-    const now = Date.now(),
-      since =
-        days === 0
-          ? ''
-          : new Date(
-              Math.floor((now + offsetMs) / dayMs) * dayMs - offsetMs - (days - 1) * dayMs,
-            ).toISOString();
+    const range = ownerStatisticsRange(url.searchParams, Date.now());
     // 既有响应的 days 是逐日统计数组，会覆盖查询范围的天数；保持键顺序和输出形态。
-    const range = { days, since, until: new Date(now).toISOString(), timezone: 'Asia/Shanghai' };
     return {
       ...range,
-      ...summarizeOwnerUsage(await store.readOwnerJobRows(since, new Date(now).toISOString())),
+      ...summarizeOwnerUsage(await store.readOwnerJobRows(range.since, range.until)),
     };
   }
   // 原回执仍受当前授权约束；命中后不再触发外部额度查询或重新决定账户配置。
@@ -377,19 +654,13 @@ export async function ownerOperation(
   const input = body!;
   const targetId = method === 'PATCH' ? /^\/accounts\/([^/]+)$/.exec(path)?.[1] : undefined;
   if (targetId) {
-    if (Object.keys(input).length !== 1 || !['token', 'enabled'].includes(Object.keys(input)[0])) {
-      fail(400, '只允许更新启用状态或 PST');
-    }
+    const patch = ownerAccountPatch(targetId, input);
     let change: OwnerAccountChange;
-    if ('token' in input) {
-      assertOwnerAccountPst(input.token);
-      change = { kind: 'token', token: input.token };
+    if (patch.kind === 'token') {
+      change = { kind: 'token', token: patch.token };
     } else {
-      if (typeof input.enabled !== 'boolean') {
-        fail(400, 'enabled 必须为布尔值');
-      }
       change = { kind: 'pause' };
-      if (input.enabled) {
+      if (patch.kind === 'enable') {
         let observation: EnableObservation = null;
         // 只查询已选中的共享账户。使用实际提交观察时返回的来源，网络等待不在写事务内。
         if (account?.id === targetId) {
@@ -445,4 +716,56 @@ export async function ownerOperation(
     };
   }
   fail(404, '未开放此管理操作');
+}
+
+export function maskToken(token = '') {
+  if (token.length <= 12) {
+    return token ? '******' : '';
+  }
+  return `${token.slice(0, 6)}...${token.slice(-4)}`;
+}
+
+export function accountTierText(tier: unknown, fallback = '会员未查询') {
+  if (tier === null || tier === undefined || tier === '') {
+    return fallback;
+  }
+  const value = Number(tier);
+  const tierNames: Record<number, string> = {
+    0: '无订阅',
+    1: 'Tablet 会员',
+    2: 'Scroll 会员',
+    3: 'Opus 会员',
+  };
+  if (Number.isFinite(value)) {
+    return tierNames[value] || `Tier ${value}`;
+  }
+  const key = String(tier).trim().toLowerCase();
+  return (
+    {
+      none: '无订阅',
+      paper: '无订阅',
+      tablet: 'Tablet 会员',
+      scroll: 'Scroll 会员',
+      opus: 'Opus 会员',
+    }[key] || String(tier)
+  );
+}
+
+export function maskProxyUrl(value: unknown = '') {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  try {
+    const url = new URL(text);
+    if (url.password) {
+      url.password = '******';
+    }
+    if (url.username) {
+      url.username = `${url.username.slice(0, 2)}***`;
+    }
+    return url.toString();
+  } catch {
+    return text.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:******@');
+  }
 }

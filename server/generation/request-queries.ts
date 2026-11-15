@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
+import { classifiedGenerationFailureMessage } from '../http/public-errors.ts';
 import type { JsonStore, StoreItem } from '../storage/sqlite-store.ts';
+import type { RelationalRequestStore } from '../storage/relational-request-store.ts';
+import type { RelationalInputStore } from '../storage/relational-input-store.ts';
 import {
   addMemberGenerationResources,
   memberGenerationChargeResources,
@@ -8,12 +11,12 @@ import { singleGenerationRequest } from './batch-requests.ts';
 
 export interface GenerationRequestState {
   id: string;
-  source: string;
-  operation: string;
-  createdAt: string;
+  source: string | null;
+  operation: string | null;
+  createdAt: string | null;
   jobs: {
     id: string;
-    sampleIndex: number;
+    sampleIndex: number | null;
     status: string | null;
     model: string | null;
     createdAt: string | null;
@@ -21,6 +24,8 @@ export interface GenerationRequestState {
     completedAt: string | null;
     error: string | null;
     errorCode?: string | null;
+    // 取消事实可已知而时点未知；独立旧格式 caller 仍只提供 cancelledAt。
+    cancelled?: boolean;
     cancelledAt: string | null;
     lateResultAvailable: boolean | number | null;
     imageId: string | null;
@@ -67,17 +72,53 @@ export function jobAccountCost(job: Pick<StoreItem, 'accountCost'>): number {
 }
 
 export function jobDurationMs(
-  job: Pick<StoreItem, 'createdAt' | 'status' | 'completedAt' | 'updatedAt'>,
+  job: { createdAt?: string | null; status?: string | null; completedAt?: string | null },
   now = Date.now(),
 ) {
   const started = Date.parse(job.createdAt || '');
-  if (!started) {
-    return 0;
+  if (!Number.isFinite(started)) {
+    return null;
   }
-  const ended = ['done', 'failed'].includes(job.status!)
-    ? Date.parse(job.completedAt || job.updatedAt || '')
-    : now;
-  return !ended || ended < started ? 0 : ended - started;
+  const ended = ['done', 'failed'].includes(job.status!) ? Date.parse(job.completedAt || '') : now;
+  return !Number.isFinite(ended) || ended < started ? null : ended - started;
+}
+
+// Direct 和管理列表展示同一已提交任务；未知历史不借当前计价或更新时间补值。
+export function publicRelationalJob(
+  job: ReturnType<RelationalRequestStore['readApiJob']>,
+  input: ReturnType<RelationalInputStore['readErrorLogRequest']>,
+  options: {
+    imageUrl(id: string): string;
+    errorMessage(message: string): string;
+    generationProgress?: unknown;
+    now: number;
+  },
+) {
+  return {
+    id: job.id,
+    source: job.source,
+    requestId: job.requestId,
+    status: job.status,
+    prompt: input.tag,
+    model: job.model,
+    requestedSteps: input.requestedSteps,
+    routedSteps: input.steps,
+    accountId: job.accountId,
+    accountRouteId: null,
+    cost: job.currentAccepted ? generationCost() : null,
+    accountCost: null,
+    generationProgress: options.generationProgress ?? {},
+    imageId: job.imageId ?? '',
+    imageUrl: job.imageId ? options.imageUrl(job.imageId) : '',
+    lateResultAvailable: job.lateResultAvailable,
+    error: options.errorMessage(job.errorCode || ''),
+    queuePosition: job.queuePosition,
+    queuedCount: job.queuedCount,
+    durationMs: jobDurationMs(job, options.now),
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status) ? null : ''),
+  };
 }
 
 export function generationRequestForErrorLog(
@@ -163,14 +204,16 @@ export function publicGenerationRequest(
     id: job.id,
     index: job.sampleIndex,
     status: job.status,
-    model: job.model || '',
-    createdAt: job.createdAt || '',
-    updatedAt: job.updatedAt || '',
-    completedAt: job.completedAt || '',
+    model: job.model,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    completedAt: job.completedAt ?? (['done', 'failed'].includes(job.status!) ? null : ''),
     error:
-      options.errorMessage?.(job.error || '') || (job.error ? '生成失败，请查看任务状态。' : ''),
+      options.errorMessage?.(job.error || '') ||
+      classifiedGenerationFailureMessage(job.error) ||
+      (job.error ? '生成失败，请查看任务状态。' : ''),
     errorCode: 'errorCode' in job ? job.errorCode || null : null,
-    cancelled: Boolean(job.cancelledAt),
+    cancelled: job.cancelled ?? Boolean(job.cancelledAt),
     lateResultAvailable: Boolean(job.lateResultAvailable),
     charge: job.fairCharge
       ? {

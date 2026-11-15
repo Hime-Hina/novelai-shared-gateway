@@ -556,6 +556,8 @@ capture 凭据最多有效五分钟；过期后不得修改时间戳或删除 `.
 凭据、相关 systemd unit/drop-in 与运行版本标记。按用户要求，新快照不复制图片，
 manifest 明确标记 `imagesIncluded: false`；图片参数、归属、SHA-256 与 R2 位置仍在数据库。
 生成逐文件 SHA-256 清单并核验 SQLite 完整性，全部通过才发布备份目录。
+新关系库的完整提交、保护输入、配置 profile 与当前私有认证均随整库快照保存；
+日常流程不解释旧 `images.data`，也不清理 Local、R2 或 PikPak 的图片字节。
 
 自动保留最近七份 `daily-*`；`cutover-*` 和此前旧格式备份不自动删除。
 在线备份不会停止生产，在途任务仍遵守正常重启恢复及未知结果规则，不能据此保证恢复
@@ -568,7 +570,8 @@ sudo nice -n 10 ionice -c 3 python3 /opt/novelai-shared-gateway/backup.py
 sudo python3 /opt/novelai-shared-gateway/backup.py --label cutover
 # 只校验指定备份，不修改生产或读取云端图片。
 sudo python3 /opt/novelai-shared-gateway/backup.py --verify /var/backups/novelai-shared-gateway/具体备份目录
-# 仅清理已有持久 R2 校验凭据、且哈希一致的旧备份图片副本。
+# 独立旧归档操作：仅适用于获准的离线旧库及其备份；不适用于新关系库。
+# 仅清理已有持久 R2 校验凭据、且哈希一致的旧备份图片副本，不由 daily 调用。
 sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 ```
 
@@ -576,8 +579,25 @@ sudo python3 /opt/novelai-shared-gateway/backup.py --clean-archived-images
 `config/` 与 `systemd/` 按目标版本恢复到对应路径。不要把快照图片或数据库硬链接到
 将投入运行的恢复目录，否则后续原地修改会污染备份。备份权限与原数据目录的服务用户
 权限不同，正式恢复前须重新设置 `nai-gateway` 的归属与访问权限。
+新关系库应按[关系恢复工具](relational-recovery.md)将选定快照的完整业务和当前私有状态
+恢复到独立目标，经唯一 installer 核验后发布；不能手工设置 `ready`。
+`--verify` 对既有全图片旧备份仍核对原图片或原归档凭据；显式旧清理也保留原保护，
+两者不构成新关系副本的回收入口。新副本释放仍待归档引用权威与独立验收，本次不改变 D8 留存期限。
 
-执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
+新关系候选的实际 sole 在成功监听并激活队列后，复用同一 R2/PikPak 客户端启动一个复制 timer：
+首轮 60 秒，一轮最多一个候选；真正新增上传/验证事实后 1 秒再试，否则 60 秒。
+当前 queue 必须 running、真实 physical Map 为空、SQL 无 queued/pending/running 或未发布 prepared 责任，
+且每次原 IO 票据的前后复核仍须当前 ready。关闭取消 timer，等待真正在途 IO 后才关闭数据库。
+仅为 PNG/JPEG/WebP 沿用 Local 超过 24 小时、R2 原 verifiedAt 超过七天或本站水位、失败一小时重试；
+BIN 不新增期限。本站水位只按当前目标的 identity 登记/预留物理 key 去重，
+不是整个云账户用量，也不把未知 gzip/br 物理长度当原图长度。
+
+新候选目前只复制和验证，**保留全部 Local/R2 来源**；PikPak 上传后不新增删除前 GET 或伪 verified。
+Opening Local 没有原 mock 标记时不自动复制，失败尝试时刻未知时不以开账时间代替；
+已知原 verifiedAt、无 error 且原定位受当前 reader 支持的 R2 可以复制到 PikPak。
+历史来源覆盖、源释放与容量回收仍须归档/备份引用权威和独立验收，此片没有生产部署或真实云端验收。
+
+既有旧执行器读取 `/etc/novelai-shared-gateway/r2.env` 中四个 `R2_*` 字段（见 `.env.example`）。
 使用 Standard 私有桶，凭据仅授予该桶对象读写；不启用公开访问。空闲时逐张处理生成超过
 24 小时的 PNG/JPEG/WebP，跳过 mock、活动及待恢复结果。先持久预留容量，条件 PUT 后
 GET 回读验证完整字节及 SHA-256，再持久化 R2 凭据，最后移除本地副本；失败保留副本并
@@ -780,3 +800,43 @@ WebDAV 使用[Connected Apps 传输额度](https://mypikpak.com/en-US/help-cente
 最终 HTTP 产物检查，以及同时包含正式和测试 unit 的发布包校验。业务候选不因此自动
 替换为新构建；当时尚未获准切换。后续 2026-10-19 的定时授权见本文开头，实际切换
 及线上验收结果须在执行后另行记录，不能把准备记录当作已经上线。
+
+## 保留源登记工具（9.93首片，未部署）
+
+此工具不授权生产捕获、轮换、删除或迁移；以下仅定义后续部署前的离线步骤。源释放仍关闭，不能用一个新空registry推断旧保留物不存在。完整契约归[数据库计划9.93](../plans/database-model-redesign.md#993-保留源登记与捕获保护首片未开放源删除)。
+
+正常发布包新增 `scripts/retained-sources.mjs`。`backup-production.py`默认选择备份目录的同级`<备份目录名>-retained-sources`，所以生产路径对应`/var/backups/novelai-shared-gateway-retained-sources`，不进入`daily-*`轮换。该目录必须先由部署者显式init且保留私有权限；丢失/损坏时备份捕获在SQLite前拒绝，不自动重建。此首片并未执行该生产init。
+
+```sh
+printf '{}' | node /verified/package/scripts/retained-sources.mjs init /private/retained-sources
+printf '{}' | node /verified/package/scripts/retained-sources.mjs read /private/retained-sources
+```
+
+CLI读取stdin JSON，错误不输出源内容或秘密。实际Python调用begin/describe/bind/checkpoint/publish，R2调用同一owner；无source删除命令。独立旧archive只能按固定只读工具产出的原audit/artifacts.jsonl及整源SHA登记，不在线加载旧Store；未知字段与外部字节核验不足保持unknown。`archive`请求使用`source/manifest/dependencies`三个已选私有路径，不更改原件或导入旧解释器。
+
+### 旧归档的选定导出证明
+
+`archive` 可在 registry 后增加独立的 `SELECTED_AUDIT_SHA256` 参数；stdin 仍只提供原三个路径。这个期望摘要必须由接收者以外的可信执行/交接预先选定，绑定实际工具包、原 source/cut 及这次实际导出的 audit 和两份 JSONL。不能从同一次 stdin、audit.toolSha256、同目录自报 manifest 或调用者自己重算的摘要取得认证。此 CLI 是本地私有操作者边界，没有 HTTP 接收口或通用签名认证；没有外部 pin 的旧报告仍可保存，但始终是未知来源覆盖。
+
+```sh
+printf '%s' '{"source":"/sealed/library.sqlite","manifest":"/selected/export/audit.json","dependencies":"/selected/export/artifacts.jsonl"}' | node /verified/package/scripts/retained-sources.mjs archive /private/retained-sources SELECTED_AUDIT_SHA256
+```
+
+| 约束       | 权威及允许变化                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 外部选定   | `retained-sources.ts` 先核 audit 原字节 SHA 等于独立参数，再核源完整文件 SHA。audit 的固定格式、原 source/tool/opening 摘要、完整 cut 和安全计数及两份固定 basename/长度/行数/SHA 元组必须完整。toolSha 自报本身不认证工具；不从当前配置补原来源。                              |
+| 本次消费   | 原 `artifacts.jsonl` 必须实际存在、basename 正确，按有界读取核 UTF8、换行行数、实际长度和 SHA；其元组必须与 audit 及产物计数一致。零行只接受真实存在的空文件和空摘要。inputs 仅保存 audit 中的共同元组，不声称本次重新读取 inputs bytes 或从 metadata 重算 opening/原正文摘要。 |
+| 保存与重读 | 复用原 `manifestSha256`、`dependenciesSha256` 和不可变 audit/产物清单副本，不加认证布尔、第二份 pin 或派生对象目录。读取、checkpoint、restore 继续核已存副本与共同元组，原交接文件移除也不能使保护丢失；有 exports 不等于独立来源已认证。旧无 exports 报告保持未知。            |
+| 失败保全   | CLI 先登记 durable preparing，再验证/复制，最后才 publish retained。错误不能删除 preparing 或发布成功；复制尾错可留下诊断文件，但 registry 的原 binding/hold 不得越过相应完成点。源与原清单不改，不把文件操作冒充 SQL/文件共同事务。                                            |
+
+有 exports 即声明一份必须存在的产物清单，未提供外部 pin 也不能省略该文件；保存后的 `dependenciesSha256` 必须等于 audit 元组且实文件通过核验，不能置 NULL 脱离证明。旧无 exports 报告仍保持未知。本片所有 `dependencies`、coverage 仍为 unknown、releaseAllowed 为 false，产物源 DELETE 为零。原物理 Local 根、R2 account/bucket 与 Pik namespace、未实读对象和保留源集合仍需各自来源事实；当前新副本不能重定向旧 source。接受一份精确的可信导出不等于完成物理覆盖或授予容量回收。
+
+验收沿原 retained 测试：外部固定 pin 正向；同源手写自洽空清单并重算 audit 仍与已选 pin 不符；同长篡改、错 cut/tool、缺元组/清单拒绝；可信真实空清单正向；复制确实完成后注入尾错仍保 preparing；原文件移除后 checkpoint/restore 的已存证明仍保护。当前实现与实际验证状态由后继交付证据记录，不将这些要求预写为已通过。
+
+每份新业务snapshot含`retained-catalog/`及其独立SHA侧件；普通manifest内容先固定，checkpoint包含当次preparing责任及既有证明，所以不自循环。整个snapshot继续由原tar/AES-GCM/回读和外部`r2-backup.json`绑定。单独一个可改的SHA侧件不是认证依据；灾后必须先按原远端receipt下载并验证包，再使用其checkpoint和SHA向**全新**私有目录执行`restore`。该命令不覆盖已有registry，也不把preparing/unknown提升为完整覆盖；本地目录真实发布后才可凭原manifest/source SHA执行`publish`。
+
+registry的不可变manifest/依赖证明不在local daily退休时删除，remote hold独立保留。远端结果不明、capturing kill、SQL或文件失败都不得按年龄/PID清除pin。lease恢复只清已结束的短metadata进程且严格匹配原文件身份，不等于capture/PUT已经结束。灾后漏掉checkpoint之后的新登记时仍unknown，须重核全部保留源；不能就此开自动释放。Windows功能检查不代表POSIX目录fsync/断电持久性或生产恢复门禁。
+
+lease恢复还要求Linux host/platform、boot ID及PID namespace与当前域精确相同；跨WSL/container、foreign或无法证明同域均拒绝。Windows记录不可证明域，不能用本机PID不存在接管；必要时从外部验证过的checkpoint向全新目录恢复，并保留未完责任。checkpoint的独立类型标记不是自认证，仍须原包/receipt的外部SHA；restore不接受带lease/recovery文件的输入。
+
+远端hold另绑定实际R2 account/bucket namespace。失败上传的preparing不会因过期消失：只有同可证Linux PID域的原uploader已退出、原source/object绑定一致、当前完整listing及七份保留对象全部通过GCM后，原R2 owner才可先标retiring，再凭实际DELETE完成退休。Windows/未知域保持pin，保留份数可超过七份；cutover/archive不随daily轮换。不可变manifest/依赖JSONL副本是remote-only时离线重算引用所需的证明，维护成本为每个来源一份元数据及checkpoint复制；没有另存对象目录或派生refcount。该协议依赖私有目录和合作的单机caller，不宣称可抵抗任意外部文件替换或分布式writer。

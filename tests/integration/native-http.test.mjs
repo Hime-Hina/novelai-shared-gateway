@@ -1,26 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rename } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
-import { bootstrap } from '../../scripts/bootstrap.mjs';
-import { JsonStore, hashObject } from '../../server/storage/sqlite-store.ts';
-import { generationRequestFingerprint } from '../../server/generation/request-fingerprint.ts';
-import { syncFairQuota, quoteFairRequest } from '../../server/quota/fair-share.ts';
+import { quoteFairRequest } from '../../server/quota/fair-share.ts';
 import { crc32, parseNativeImageRequest } from '../../server/protocols/native-image.ts';
 import { nativeImageMsgpack, nativeImagesMsgpack } from '../../server/protocols/native-stream.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
-import { webJobRequestSummary } from '../../server/generation/batch-requests.ts';
 import { readNativeEvents, readNativeSseEvents } from '../helpers/native-stream-client.mjs';
-import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
+import {
+  childFixture,
+  launchGateway,
+  enableAccount,
+  query,
+  assertChildPublicReplay,
+} from '../helpers/relational-child.mjs';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import { sharedAccountConcurrency } from '../../server/quota/shared-capacity.ts';
+import { relationalAccountConnectionSource } from '../../server/storage/relational-account-connection.ts';
 
-const root = fileURLToPath(new URL('../../', import.meta.url));
 // 合成图片和新建临时数据库；测试不会读取 .env、生产数据或请求真实 NAI。
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -47,7 +48,6 @@ const body = (model = 'nai-diffusion-5-full', extra = {}) => ({
     ...extra,
   },
 });
-const upstreamToken = 'pst-synthetic-offline-fixture-only';
 const privateMarker = 'synthetic-private-generation-diagnostic';
 const safeFailure = '生成失败，请稍后重试或联系管理员。';
 const legacyKey = 'synthetic-legacy-private-error';
@@ -102,86 +102,56 @@ async function* streamEvents(response) {
   }
 }
 
-async function nativeFixture(t, { legacy = false } = {}) {
-  const bootstrapDir = await mkdtemp(path.join(tmpdir(), 'nai-gateway-compat-'));
-  const adminToken = randomBytes(32).toString('hex');
-  const initialized = await bootstrap({
-    env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: bootstrapDir },
-    log() {},
-  });
-  const credentials = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
-  const dataDir = await createLegacyDatabaseFixture(bootstrapDir);
-  const legacyError = `ENOENT: no such file or directory, open '${path.join(bootstrapDir, privateMarker)}'`;
-  const legacyRequest = parseNativeImageRequest(body());
-  const seeded = new JsonStore(dataDir);
-  await seeded.init();
-  try {
-    const db = await seeded.read();
-    Object.assign(db.accounts[0], {
-      quotaTier: 3,
-      subscriptionActive: true,
-      subscriptionExpiresAt: Date.now() + 86400000,
-      quotaPoints: 10000,
-      quotaFixed: 10000,
-      quotaPurchased: 0,
-      v5UsagePercent: 100,
-      v5UsageIsNegative: false,
-      v5UsageTimeUntilNextPercent: 0,
-      quotaCheckedAt: new Date().toISOString(),
-      upstreamStatus: 'active',
+async function nativeFixture(t) {
+  const state = await childFixture(t, 'native-http'),
+    dataDir = state.dataDir,
+    credentials = state.members,
+    adminToken = state.env.ADMIN_TOKEN,
+    upstreamToken = state.env.NOVELAI_TOKEN,
+    privatePathError = `ENOENT: no such file or directory, open '${path.join(state.directory, privateMarker)}'`;
+  const read = (consume) => {
+    const sqlite = new Database(state.filename, { readonly: true });
+    try {
+      return consume(sqlite);
+    } finally {
+      sqlite.close();
+    }
+  };
+  const jobs = () =>
+    query(
+      state,
+      `SELECT j.*,r.source,r.model,r.member_id,a.id AS attempt_id,
+    a.account_id,a.upstream_http_status,a.actual_consumption,a.loss_event_id,c.status AS charge_status
+    FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+    LEFT JOIN generation_attempts a ON a.job_id=j.id LEFT JOIN charges c ON c.job_id=j.id ORDER BY j.rowid`,
+    );
+  const events = () =>
+    read((sqlite) =>
+      sqlite
+        .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+        .all()
+        .flatMap(({ seq }) => readRelationalCommit(sqlite, seq).events),
+    );
+  const charge = (jobId) => query(state, 'SELECT * FROM charges WHERE job_id=?', jobId)[0];
+  const diagnostic = (jobId) => {
+    const row = query(state, 'SELECT id FROM generation_diagnostics WHERE job_id=?', jobId)[0];
+    assert.ok(row, 'actual failed dispatch must retain its original protected diagnostic');
+    return read((sqlite) =>
+      new RelationalInputStore(sqlite).readGenerationDiagnostic(row.id, jobId),
+    );
+  };
+  const inputRequest = (jobId) =>
+    read((sqlite) => new RelationalInputStore(sqlite).readErrorLogRequest(jobId));
+  const memberInput = (requestId, memberId) =>
+    read((sqlite) => new RelationalInputStore(sqlite).readMemberInput(requestId, memberId));
+  const localArtifact = (artifactId) =>
+    read((sqlite) => {
+      const replicas = new RelationalReplicaStore(sqlite, { dataDir }),
+        source = replicas.beginArtifactRead(artifactId, 'local');
+      assert.ok(source);
+      replicas.assertArtifactReplicaTicket(source.ticket);
+      return source.artifact.descriptor;
     });
-    syncFairQuota(db);
-    if (legacy) {
-      // The file is the sole copy: renaming it below must exercise a real read failure, without an imported inline fallback.
-      await mkdir(path.join(dataDir, 'images'), { recursive: true });
-      await writeFile(path.join(dataDir, 'images', 'img-access-owner.png'), png);
-      db.images.push({
-        id: 'img-access-owner',
-        token: credentials[0].api_key,
-        mimeType: 'image/png',
-        file: 'images/img-access-owner.png',
-        byteLength: png.length,
-        sha256: createHash('sha256').update(png).digest('hex'),
-      });
-      db.jobs.push({
-        id: 'job-access-owner',
-        userToken: credentials[0].api_key,
-        status: 'done',
-        imageId: 'img-access-owner',
-        createdAt: new Date().toISOString(),
-      });
-      db.jobs.push({
-        id: 'job-legacy-private-error',
-        source: 'novelai-native',
-        userToken: credentials[0].api_key,
-        accountId: db.accounts[0].id,
-        status: 'failed',
-        request: legacyRequest,
-        error: legacyError,
-        errorStatus: 500,
-        errorDetail: `Error: ${legacyError}\n    at synthetic-history`,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString(),
-      });
-    }
-    await seeded.write(db);
-    if (legacy) {
-      seeded.persistGenerationIdempotency({
-        member_id: credentials[0].user_id,
-        operation: 'generate',
-        key_hash: hashObject(legacyKey),
-        fingerprint: generationRequestFingerprint(legacyRequest, { noCache: true }),
-        normalization_context: '{}',
-        job_id: 'job-legacy-private-error',
-        request_id: null,
-        created_at: new Date().toISOString(),
-      });
-    }
-  } finally {
-    await seeded.close();
-  }
-
   const calls = [];
   const mock = {
     scenario: t.name,
@@ -217,11 +187,6 @@ async function nativeFixture(t, { legacy = false } = {}) {
     previewGates.set(seed, gate);
     return gate;
   };
-  const auditReader = new Database(path.join(dataDir, 'library.sqlite'), {
-    readonly: true,
-    fileMustExist: true,
-  });
-  t.after(() => auditReader.close());
   const dispatchEvidence = [];
   const upstream = http.createServer(async (req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${upstreamToken}`);
@@ -246,20 +211,28 @@ async function nativeFixture(t, { legacy = false } = {}) {
     }
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     // 真正收到上游调用时就检查派发证据已提交，不能只在失败后补写一个看似完整的历史。
-    const running = auditReader
-      .prepare("SELECT data FROM jobs WHERE status = 'running'")
-      .all()
-      .map((row) => JSON.parse(row.data));
+    const running = query(
+      state,
+      `SELECT j.id AS job_id,j.request_id,j.queue_seq,r.member_id,
+      a.id AS attempt_id,a.account_id,a.credential_epoch,c.attempt_id AS charge_attempt_id,
+      c.status AS charge_status,c.wallet_member_id,c.wallet_account_id,c.reservation_event_id,
+      account_state.credential_epoch AS current_credential_epoch
+      FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+      JOIN generation_attempts a ON a.job_id=j.id JOIN charges c ON c.job_id=j.id
+      JOIN upstream_accounts account_state ON account_state.id=a.account_id WHERE j.status='running'`,
+    );
     dispatchEvidence.push(
-      running.map((job) => ({
-        queueSeq: job.queueSeq,
-        attempt: job.generationAttempt,
-        reservation: JSON.parse(
-          auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value,
-        ).fairQuota.reservations[job.id],
-        ledger: auditReader
-          .prepare('SELECT data FROM ledger WHERE id = ?')
-          .get(`${job.generationAttempt?.id}:generation_reserved`)?.data,
+      running.map((row) => ({
+        ...row,
+        connectionSourceEventId: read((sqlite) =>
+          relationalAccountConnectionSource(sqlite, row.account_id),
+        ),
+        original: read((sqlite) => {
+          const { seq } = sqlite
+            .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?')
+            .get(row.reservation_event_id);
+          return readRelationalCommit(sqlite, seq);
+        }),
       })),
     );
     const call = {
@@ -311,7 +284,7 @@ async function nativeFixture(t, { legacy = false } = {}) {
             mock.failStatus === 429
               ? 'Concurrent generation limit reached'
               : 'synthetic generation failure',
-          diagnostic: privateMarker,
+          diagnostic: privateMarker + ' ' + privatePathError,
           credential: upstreamToken,
         }),
       );
@@ -374,73 +347,23 @@ async function nativeFixture(t, { legacy = false } = {}) {
     res.end(stream ? nativeImagesMsgpack([image]) : image);
   });
   const upstreamPort = await listen(upstream);
-  const reservation = http.createServer();
-  const gatewayPort = await listen(reservation);
-  await new Promise((resolve) => reservation.close(resolve));
-  const baseUrl = `http://127.0.0.1:${gatewayPort}`;
-  const env = Object.fromEntries(
-    ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-      .filter((name) => process.env[name])
-      .map((name) => [name, process.env[name]]),
-  );
-  Object.assign(env, {
-    ADMIN_TOKEN: adminToken,
-    DATA_DIR: dataDir,
-    HOST: '127.0.0.1',
-    PORT: String(gatewayPort),
-    NOVELAI_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    NOVELAI_ACCOUNT_API_URL: `http://127.0.0.1:${upstreamPort}`,
-    PUBLIC_BASE_URL: baseUrl,
-    PUBLIC_HOST: 'gateway.example',
-    QUEUE_MAX_PAYLOAD_BYTES: String(1024 * 1024),
-  });
-  const child = spawn(process.execPath, ['server/index.ts'], {
-    cwd: root,
-    env,
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let runtimeOutput = '';
-  const record = (chunk) => {
-    runtimeOutput = (runtimeOutput + chunk.toString('utf8')).slice(-8000);
+  const env = { PUBLIC_HOST: 'gateway.example', QUEUE_MAX_PAYLOAD_BYTES: String(1024 * 1024) };
+  let server, baseUrl, gatewayPort;
+  const start = async () => {
+    server = await launchGateway(state, `http://127.0.0.1:${upstreamPort}`, env);
+    baseUrl = server.origin;
+    gatewayPort = Number(new URL(baseUrl).port);
   };
-  child.stdout.on('data', record);
-  child.stderr.on('data', record);
-  const stopped = once(child, 'exit');
-  const stop = async () => {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill();
-    }
-    await stopped;
-  };
+  const stop = () => server.stop();
   t.after(async () => {
     for (const gate of previewGates.values()) {
       gate.release();
     }
-    await stop();
     upstream.closeAllConnections();
     await new Promise((resolve) => upstream.close(resolve));
-    // 保留这次隔离生成的临时文件，便于复核，不执行批量删除。
   });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('公开版启动超时：' + runtimeOutput)), 15000);
-    const ready = (chunk) => {
-      if (chunk.toString().includes('Nai2API listening')) {
-        clearTimeout(timer);
-        child.stdout.off('data', ready);
-        resolve();
-      }
-    };
-    child.stdout.on('data', ready);
-    child.once('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.once('exit', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`公开版提前退出 ${code}：${runtimeOutput}`));
-    });
-  });
+  await start();
+  await enableAccount(state, server);
   const redact = (value) => {
     let text = String(value);
     for (const secret of [
@@ -457,9 +380,9 @@ async function nativeFixture(t, { legacy = false } = {}) {
       .replace(/nai_member_session=[A-Za-z0-9_-]+/g, 'nai_member_session=[redacted]');
   };
   const fetchFailure = (error, request) => {
-    let state;
+    let observed;
     try {
-      state = {
+      observed = {
         scenario: mock.scenario,
         observedAt: Date.now(),
         request,
@@ -486,64 +409,15 @@ async function nativeFixture(t, { legacy = false } = {}) {
           failAtOnResponse: call.failAtOnResponse,
           malformed: call.malformed,
         })),
-        jobs: auditReader
-          .prepare('SELECT data FROM jobs ORDER BY order_value DESC LIMIT 24')
-          .all()
-          .map((row) => {
-            const job = JSON.parse(row.data);
-            return Object.fromEntries(
-              [
-                'id',
-                'requestId',
-                'sampleIndex',
-                'status',
-                'queueSeq',
-                'createdAt',
-                'startedAt',
-                'updatedAt',
-                'completedAt',
-                'queueExpiresAt',
-                'upstreamStartedAt',
-                'upstreamHeadersAt',
-                'upstreamCompletedAt',
-                'upstreamHttpStatus',
-                'errorStatus',
-                'sharedCooldown',
-                'imageId',
-              ]
-                .map((key) => [key, job[key]])
-                .concat([
-                  ['model', job.request?.model],
-                  ['seed', job.request?.seed],
-                  ['chargeStatus', job.fairCharge?.status],
-                  ['resultPending', Boolean(job.resultPending)],
-                  ['error', String(job.error || '').slice(0, 300)],
-                ]),
-            );
-          }),
-        accounts: auditReader
-          .prepare('SELECT data FROM accounts')
-          .all()
-          .map((row) => {
-            const account = JSON.parse(row.data);
-            return Object.fromEntries(
-              [
-                'id',
-                'enabled',
-                'inFlight',
-                'cooldownUntil',
-                'cooldownReason',
-                'ordinaryStrikeCount',
-                'capacityStrikeCount',
-                'quotaCheckedAt',
-                'upstreamStatus',
-              ].map((key) => [key, account[key]]),
-            );
-          }),
-        child: { exitCode: child.exitCode, signalCode: child.signalCode },
+        jobs: jobs(),
+        accounts: query(
+          state,
+          'SELECT id,enabled,cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,credential_epoch FROM upstream_accounts',
+        ),
+        child: server.exit,
       };
     } catch (readError) {
-      state = {
+      observed = {
         scenario: mock.scenario,
         request,
         callsAfter: calls.length,
@@ -562,7 +436,7 @@ async function nativeFixture(t, { legacy = false } = {}) {
     };
     return new Error(
       redact(
-        `[native-http-state] ${JSON.stringify({ failure, state })}\nchild tail:\n${runtimeOutput}`,
+        `[native-http-state] ${JSON.stringify({ failure, state: observed })}\nchild tail:\n${server.output}`,
       ),
       { cause: error },
     );
@@ -603,75 +477,93 @@ async function nativeFixture(t, { legacy = false } = {}) {
   };
 
   return {
+    ...state,
     dataDir,
-    legacyError,
     adminToken,
+    upstreamToken,
     credentials,
     calls,
     mock,
     previewGate,
-    auditReader,
     dispatchEvidence,
-    baseUrl,
-    gatewayPort,
-    env,
     stop,
-    record,
+    reopen: start,
     fetchLocal,
     post,
     cookies,
     quota,
+    jobs,
+    events,
+    charge,
+    diagnostic,
+    inputRequest,
+    memberInput,
+    localArtifact,
+    get baseUrl() {
+      return baseUrl;
+    },
+    get gatewayPort() {
+      return gatewayPort;
+    },
   };
 }
 
-function checkAccounting({ auditReader, dispatchEvidence, calls }, jobs) {
-  const { fairQuota } = JSON.parse(
-    auditReader.prepare("SELECT value FROM app_settings WHERE key = 'settings'").get().value,
-  );
-  assert.deepEqual(fairQuota.reservations, {});
-  const settlements = auditReader
-    .prepare('SELECT charge FROM fair_quota_settlements')
-    .all()
-    .map((row) => JSON.parse(row.charge));
+function checkAccounting(fixture, jobs) {
+  const { dispatchEvidence, calls } = fixture;
+  const settlements = query(fixture, 'SELECT * FROM charges ORDER BY job_id');
   assert.ok(settlements.every((charge) => charge.status !== 'reserved'));
   assert.ok(jobs.every((job) => ['done', 'failed'].includes(job.status)));
   assert.equal(dispatchEvidence.length, calls.length);
   for (const dispatched of dispatchEvidence) {
     assert.equal(dispatched.length, 1);
-    assert.ok(Number.isSafeInteger(dispatched[0].queueSeq) && dispatched[0].queueSeq > 0);
-    assert.equal(dispatched[0].attempt.id, dispatched[0].reservation.attemptId);
-    assert.equal(dispatched[0].reservation.status, 'reserved');
-    assert.deepEqual(JSON.parse(dispatched[0].ledger).attempt, dispatched[0].attempt);
+    const row = dispatched[0];
+    assert.ok(Number.isSafeInteger(row.queue_seq) && row.queue_seq > 0);
+    assert.equal(row.attempt_id, row.charge_attempt_id);
+    assert.equal(row.charge_status, 'reserved');
+    assert.equal(row.wallet_member_id, row.member_id);
+    assert.equal(row.wallet_account_id, row.account_id);
+    assert.equal(row.credential_epoch, row.current_credential_epoch);
+    const reserved = row.original.events.find(
+        (event) => event.eventId === row.reservation_event_id,
+      ),
+      authorized = row.original.events.find((event) => event.eventType === 'DispatchAuthorized');
+    assert.equal(reserved.eventType, 'QuotaReserved');
+    assert.equal(reserved.payload.jobId, row.job_id);
+    assert.equal(reserved.payload.memberId, row.member_id);
+    assert.equal(reserved.payload.accountId, row.account_id);
+    assert.equal(authorized.payload.attemptId, row.attempt_id);
+    assert.equal(authorized.payload.jobId, row.job_id);
+    assert.equal(authorized.payload.accountId, row.account_id);
+    assert.equal(authorized.payload.credentialEpoch, row.credential_epoch);
+    assert.equal(authorized.payload.connectionSourceEventId, row.connectionSourceEventId);
+    assert.equal(authorized.memberId, row.member_id);
+    assert.equal(reserved.memberId, row.member_id);
+    assert.equal(authorized.commitSeq, reserved.commitSeq);
+    assert.ok(row.original.events.indexOf(reserved) < row.original.events.indexOf(authorized));
   }
-  const audit = auditReader
-    .prepare("SELECT data FROM ledger WHERE source LIKE 'generation_%'")
-    .all()
-    .map((row) => JSON.parse(row.data));
+  const audit = fixture.events();
   for (const job of jobs) {
     const refunds = audit.filter(
-      (event) => event.jobId === job.id && event.type === 'generation_refunded',
-    );
-    const losses = audit.filter(
-      (event) => event.jobId === job.id && event.type === 'generation_loss_suspected',
-    );
-    assert.equal(refunds.length, job.fairCharge?.status === 'refunded' ? 1 : 0);
-    if (!job.fairCharge || job.status === 'done') {
+        (event) => event.eventType === 'GenerationRefunded' && event.payload.jobId === job.id,
+      ),
+      losses = audit.filter(
+        (event) => event.eventType === 'ReviewOpened' && event.payload.attemptId === job.attempt_id,
+      );
+    assert.equal(refunds.length, job.charge_status === 'refunded' ? 1 : 0);
+    if (!job.charge_status || job.status === 'done') {
       assert.equal(losses.length, 0);
     }
     if (losses.length) {
       assert.equal(losses.length, 1);
-      assert.equal(losses[0].actualConsumed, null);
-      assert.equal(losses[0].response.upstreamHttpStatus, job.upstreamHttpStatus);
+      assert.equal(job.actual_consumption, null);
+      assert.equal(losses[0].payload.response.upstreamHttpStatus, job.upstream_http_status);
+      assert.equal(losses[0].eventId, job.loss_event_id);
     }
   }
   return { audit, settlements };
 }
-
 function checkSingleGeneration(fixture, status, settlementStatus) {
-  const jobs = fixture.auditReader
-    .prepare('SELECT data FROM jobs')
-    .all()
-    .map((row) => JSON.parse(row.data));
+  const jobs = fixture.jobs();
   assert.equal(fixture.calls.length, 1);
   assert.equal(jobs.length, 1);
   const [job] = jobs;
@@ -685,26 +577,31 @@ function checkSingleGeneration(fixture, status, settlementStatus) {
 }
 
 test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款与重启', { timeout: 240000 }, async (t) => {
-  const fixture = await nativeFixture(t, { legacy: true });
+  const fixture = await nativeFixture(t);
   const {
     dataDir,
-    legacyError,
     adminToken,
+    upstreamToken,
     credentials,
     calls,
     mock,
     previewGate,
-    auditReader,
+    jobs,
+    events,
+    charge,
+    diagnostic,
+    inputRequest,
+    memberInput,
+    localArtifact,
     baseUrl,
     gatewayPort,
-    env,
     stop,
-    record,
     fetchLocal,
     post,
     cookies,
     quota,
   } = fixture;
+  let savedImageJobId, failedReplayJobId;
 
   await t.test('后端旧门户及静态资源的 GET/HEAD 均为 404，无重定向或成功回退', async () => {
     for (const pathname of [
@@ -758,94 +655,6 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(calls.length, 0);
   });
 
-  await t.test('旧生成错误在查询、错误图片和幂等重放时不公开内部路径，管理员仍能诊断', async () => {
-    const headers = { authorization: `Bearer ${credentials[0].api_key}` };
-    const snapshot = await (
-      await fetchLocal('/api/jobs/job-legacy-private-error', { headers })
-    ).json();
-    assert.equal(snapshot.error, safeFailure);
-    const image = await fetchLocal('/api/jobs/job-legacy-private-error/content', { headers });
-    assert.equal(image.status, 200);
-    assert.equal(image.headers.get('x-error'), '1');
-    const svg = await image.text();
-    assert.ok(!svg.includes(privateMarker));
-    assert.ok(!svg.includes(dataDir));
-    const replay = await post('/ai/generate-image-stream', body(), credentials[0].api_key, {
-      'Idempotency-Key': legacyKey,
-    });
-    assert.equal(replay.status, 500);
-    assert.deepEqual(await replay.json(), {
-      message: safeFailure,
-      statusCode: 500,
-      error: safeFailure,
-    });
-    assert.equal(calls.length, 0);
-    const persisted = JSON.parse(
-      auditReader.prepare('SELECT data FROM jobs WHERE id = ?').get('job-legacy-private-error')
-        .data,
-    );
-    assert.equal(persisted.error, legacyError, '读取历史不能偷偷迁移或重写诊断');
-    const summary = await (
-      await fetchLocal('/api/admin/summary', { headers: { 'x-admin-token': adminToken } })
-    ).json();
-    const diagnostic = summary.errorLogs.find((item) => item.id === persisted.id);
-    assert.ok(diagnostic?.errorDetail.includes(privateMarker));
-  });
-
-  await t.test('已保存图片读取失败不在成员响应中公开 filesystem 路径', async () => {
-    const image = JSON.parse(
-      auditReader.prepare('SELECT data FROM images WHERE id = ?').get('img-access-owner').data,
-    );
-    const file = path.join(dataDir, image.file),
-      held = file + '.held';
-    await rename(file, held);
-    try {
-      const response = await fetchLocal('/api/jobs/job-access-owner/content', {
-        headers: { authorization: `Bearer ${credentials[0].api_key}` },
-      });
-      assert.equal(response.status, 500);
-      assert.deepEqual(await response.json(), { error: safeFailure });
-    } finally {
-      await rename(held, file);
-    }
-  });
-
-  await t.test('图片读取保留有效签名、本人及管理员访问，拒绝其他成员绕过过期签名', async () => {
-    const ownHeaders = { authorization: `Bearer ${credentials[0].api_key}` };
-    const otherHeaders = { authorization: `Bearer ${credentials[1].api_key}` };
-    const jobResponse = await fetchLocal('/api/jobs/job-access-owner', { headers: ownHeaders });
-    assert.equal(jobResponse.status, 200);
-    const signed = (await jobResponse.json()).imageUrl;
-    const unsigned = signed.split('?')[0];
-    const expired = new URL(signed, baseUrl);
-    expired.searchParams.set('expires', String(Math.floor(Date.now() / 1000) - 1));
-    const forged = new URL(signed, baseUrl);
-    forged.searchParams.set('signature', '0'.repeat(64));
-
-    for (const headers of [undefined, otherHeaders]) {
-      const response = await fetchLocal(signed, { headers });
-      assert.equal(response.status, 200);
-      assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
-    }
-    for (const pathname of [
-      unsigned,
-      expired.pathname + expired.search,
-      forged.pathname + forged.search,
-    ]) {
-      assert.equal((await fetchLocal(pathname)).status, 401);
-      assert.equal((await fetchLocal(pathname, { headers: otherHeaders })).status, 403);
-      assert.equal((await fetchLocal(pathname, { headers: ownHeaders })).status, 200);
-      assert.equal(
-        (await fetchLocal(pathname, { headers: { 'x-admin-token': adminToken } })).status,
-        200,
-      );
-    }
-    assert.equal(
-      (await fetchLocal('/api/images/img-access-owner/anything', { headers: ownHeaders })).status,
-      404,
-    );
-  });
-
   await t.test('路径、鉴权与跨域校验在生图前完成，私有站点业务不存在', async () => {
     for (const prefix of ['/ai/', '/v1/ai/']) {
       for (const operation of [
@@ -884,6 +693,12 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     }
     assert.equal(calls.length, 0);
     assert.equal((await fetchLocal('/api/member/owner/summary')).status, 401);
+    for (const pathname of ['/ai/generate-image', '/v1/ai/generate-image-stream']) {
+      const denied = await post(pathname, body(), upstreamToken);
+      assert.equal(denied.status, 401, '上游 PST 不能作为普通成员 Key 直连生成');
+      await denied.json();
+    }
+    assert.equal(calls.length, 0);
     for (const pathname of ['/discord', '/auth/discord/callback', '/api/carpool/teams']) {
       assert.equal((await fetchLocal(pathname)).status, 404);
     }
@@ -983,28 +798,29 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(response.status, 202);
     const accepted = await response.json();
     assert.equal(accepted.prompt, prompt);
-    const stored = JSON.parse(
-      auditReader.prepare('SELECT data FROM jobs WHERE id = ?').get(accepted.id).data,
+    savedImageJobId = accepted.id;
+    const stored = jobs().find((job) => job.id === accepted.id);
+    assert.ok(stored.request_id);
+    assert.ok(Number.isSafeInteger(stored.queue_seq) && stored.queue_seq > 0);
+    assert.equal(Object.hasOwn(stored, 'request'), false);
+    const parent = query(
+        fixture,
+        'SELECT * FROM generation_requests WHERE id=?',
+        stored.request_id,
+      )[0],
+      input = query(fixture, 'SELECT * FROM generation_inputs WHERE id=?', parent.input_id)[0];
+    assert.equal(parent.member_id, credentials[0].user_id);
+    const registered = events().find(
+      (event) => event.eventType === 'InputRegistered' && event.payload.inputId === input.id,
     );
-    assert.ok(stored.requestId);
-    assert.ok(Number.isSafeInteger(stored.queueSeq) && stored.queueSeq > 0);
-    assert.equal(stored.request.tag, undefined);
-    assert.equal(stored.request.prompt, undefined);
-    assert.equal(stored.request.negative, undefined);
-    const parent = auditReader
-      .prepare('SELECT * FROM generation_requests WHERE id = ?')
-      .get(stored.requestId);
+    assert.ok(registered);
+    assert.equal(input.logical_bytes, registered.payload.logicalBytes);
+    assert.equal(input.sha256, registered.payload.inputSha256);
     assert.equal(
-      parent.member_id,
-      credentials[0].id ||
-        JSON.parse(
-          auditReader.prepare('SELECT data FROM users WHERE token = ?').get(credentials[0].api_key)
-            .data,
-        ).id,
+      memberInput(parent.id, parent.member_id).input.input,
+      'synthetic artist\n' + prompt,
     );
-    assert.equal(parent.payload_bytes, Buffer.byteLength(parent.payload));
-    assert.equal(JSON.parse(parent.payload).prompt, 'synthetic artist\n' + prompt);
-    assert.ok(!parent.payload.includes(credentials[0].api_key));
+    assert.ok(!input.body.includes(credentials[0].api_key));
     let result;
     for (let attempt = 0; attempt < 200; attempt++) {
       result = await (
@@ -1027,6 +843,68 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     const rejected = await post('/api/jobs', { prompt: 'x'.repeat(2 * 1024 * 1024) });
     assert.equal(rejected.status, 413);
     assert.equal(calls.length, before + 1);
+  });
+
+  await t.test('已保存图片读取失败不在成员响应中公开 filesystem 路径', async () => {
+    const job = jobs().find((job) => job.id === savedImageJobId);
+    assert.ok(job);
+    const image = localArtifact(job.artifact_id),
+      file = path.join(dataDir, image.file),
+      held = file + '.held';
+    await rename(file, held);
+    try {
+      const response = await fetchLocal('/api/jobs/' + job.id + '/content', {
+        headers: { authorization: `Bearer ${credentials[0].api_key}` },
+      });
+      // 原图暂不可读使用已批准的503，公开正文仍保持原安全中文。
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), { error: safeFailure });
+    } finally {
+      await rename(held, file);
+    }
+  });
+
+  await t.test('图片读取保留有效签名、本人及管理员访问，拒绝其他成员绕过过期签名', async () => {
+    const ownHeaders = { authorization: `Bearer ${credentials[0].api_key}` };
+    const otherHeaders = { authorization: `Bearer ${credentials[1].api_key}` };
+    const jobResponse = await fetchLocal('/api/jobs/' + savedImageJobId, { headers: ownHeaders });
+    assert.equal(jobResponse.status, 200);
+    const signed = (await jobResponse.json()).imageUrl;
+    const unsigned = signed.split('?')[0];
+    const expired = new URL(signed, baseUrl);
+    expired.searchParams.set('expires', String(Math.floor(Date.now() / 1000) - 1));
+    const forged = new URL(signed, baseUrl);
+    forged.searchParams.set('signature', '0'.repeat(64));
+
+    for (const headers of [undefined, otherHeaders]) {
+      const response = await fetchLocal(signed, { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+    }
+    for (const pathname of [
+      unsigned,
+      expired.pathname + expired.search,
+      forged.pathname + forged.search,
+    ]) {
+      assert.equal((await fetchLocal(pathname)).status, 401);
+      assert.equal((await fetchLocal(pathname, { headers: otherHeaders })).status, 403);
+      assert.equal((await fetchLocal(pathname, { headers: ownHeaders })).status, 200);
+      assert.equal(
+        (await fetchLocal(pathname, { headers: { 'x-admin-token': adminToken } })).status,
+        200,
+      );
+    }
+    assert.equal(
+      (
+        await fetchLocal(
+          '/api/images/' +
+            jobs().find((job) => job.id === savedImageJobId).artifact_id +
+            '/anything',
+          { headers: ownHeaders },
+        )
+      ).status,
+      404,
+    );
   });
 
   await t.test(
@@ -1188,6 +1066,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       mock.failAt = calls.length + 1;
       const failed = await post('/ai/generate-image', body(), credentials[0].api_key, {
         accept: 'application/json',
+        'Idempotency-Key': legacyKey,
       });
       assert.equal(failed.status, 500);
       assert.match(failed.headers.get('content-type'), /application\/json/);
@@ -1196,15 +1075,14 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(failure.images, undefined);
       assert.deepEqual(failure, { message: failure.error, statusCode: 500, error: failure.error });
       assert.equal(failure.message, safeFailure);
-      const failedJob = JSON.parse(
-        auditReader
-          .prepare("SELECT data FROM jobs WHERE status = 'failed' ORDER BY created_at DESC LIMIT 1")
-          .get().data,
+      const failedJob = jobs().find(
+        (job) => job.request_id === failed.headers.get('x-nai-request-id'),
       );
-      assert.equal(failedJob.error, safeFailure);
-      assert.ok(failedJob.errorDetail.includes(privateMarker));
+      assert.ok(failedJob);
+      failedReplayJobId = failedJob.id;
+      assert.ok(diagnostic(failedJob.id).includes(privateMarker));
       const failedRequest = await (
-        await fetchLocal('/api/requests/' + failedJob.requestId, {
+        await fetchLocal('/api/requests/' + failedJob.request_id, {
           headers: { authorization: `Bearer ${credentials[0].api_key}` },
         })
       ).json();
@@ -1229,21 +1107,15 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.equal(first.samp_ix, 0);
       assert.deepEqual(Buffer.from(first.image), png);
       const batchRows = () =>
-        auditReader
-          .prepare('SELECT data FROM jobs WHERE request_id = ?')
-          .all(response.headers.get('x-nai-request-id'))
-          .map((row) => JSON.parse(row.data))
-          .sort((a, b) => a.sampleIndex - b.sampleIndex);
-      let jobs = batchRows();
-      assert.equal(jobs[0].status, 'done');
-      assert.ok(jobs[0].imageId);
-      const charge = (id) =>
-        JSON.parse(
-          auditReader.prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?').get(id)
-            .charge,
-        );
-      assert.equal(charge(jobs[0].id).status, 'settled');
-      assert.notEqual(jobs[1].status, 'done');
+        fixture
+          .jobs()
+          .filter((job) => job.request_id === response.headers.get('x-nai-request-id'))
+          .sort((a, b) => a.sample_index - b.sample_index);
+      let batchJobs = batchRows();
+      assert.equal(batchJobs[0].status, 'done');
+      assert.ok(batchJobs[0].artifact_id);
+      assert.equal(charge(batchJobs[0].id).status, 'settled');
+      assert.notEqual(batchJobs[1].status, 'done');
       assert.equal(calls.length, beforeCalls + 1, '首个final不能等第二张派发才发送');
       const preview = (await reader.next()).value;
       assert.equal(preview.event_type, 'intermediate');
@@ -1259,17 +1131,57 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.ok(failureFrame.message);
       assert.equal(failureFrame.code, '500');
       assert.equal((await reader.next()).done, true);
-      jobs = batchRows();
+      batchJobs = batchRows();
       assert.deepEqual(
-        jobs.map((job) => job.status),
+        batchJobs.map((job) => job.status),
         ['done', 'failed', 'failed'],
       );
-      assert.equal(charge(jobs[1].id).status, 'refunded');
-      assert.equal(jobs[2].generationAttempt, undefined);
+      assert.equal(charge(batchJobs[1].id).status, 'refunded');
+      assert.equal(batchJobs[2].attempt_id, null);
       assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
       assert.equal(calls.length, beforeCalls + 2);
     },
   );
+
+  await t.test('实际原失败在查询、错误图片和幂等重放时不公开内部路径，管理员仍能诊断', async () => {
+    const before = calls.length,
+      jobId = failedReplayJobId,
+      headers = { authorization: `Bearer ${credentials[0].api_key}` },
+      originalDetail = diagnostic(jobId);
+    const snapshot = await (await fetchLocal('/api/jobs/' + jobId, { headers })).json();
+    assert.equal(snapshot.error, safeFailure);
+    const image = await fetchLocal('/api/jobs/' + jobId + '/content', { headers });
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('x-error'), '1');
+    const svg = await image.text();
+    assert.ok(!svg.includes(privateMarker));
+    assert.ok(!svg.includes(dataDir));
+    const replay = await post('/ai/generate-image-stream', body(), credentials[0].api_key, {
+      'Idempotency-Key': legacyKey,
+    });
+    assert.equal(replay.status, 500);
+    assert.deepEqual(await replay.json(), {
+      message: safeFailure,
+      statusCode: 500,
+      error: safeFailure,
+    });
+    assert.equal(calls.length, before);
+    assert.equal(diagnostic(jobId), originalDetail, '公共读取不能重写原保护诊断');
+    const persisted = jobs().find((job) => job.id === jobId),
+      summary = await (
+        await fetchLocal('/api/admin/summary', { headers: { 'x-admin-token': adminToken } })
+      ).json(),
+      item = summary.errorLogs.find((entry) => entry.id === jobId);
+    assert.ok(item?.errorDetail.includes(privateMarker));
+    for (const field of ['retryCount', 'cost', 'accountCost', 'queueTotal']) {
+      assert.equal(persisted[field], undefined, '该存储角色没有原字段');
+      assert.equal(item[field], null, `${field}不能在HTTP读取时补零`);
+    }
+    const input = inputRequest(jobId);
+    assert.equal(item.request.requestedSteps, input.requestedSteps ?? null);
+    assert.equal(item.request.routedSteps, input.steps);
+    assert.equal(item.completedAt, new Date(persisted.completed_at).toISOString());
+  });
 
   await t.test(
     'SSE 部分失败和同键 JSON 重放只公开分类文案，原错误帧留作管理员诊断',
@@ -1304,22 +1216,20 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         code: '500',
       });
       assert.equal((await reader.next()).done, true);
-      const jobs = auditReader
-        .prepare('SELECT data FROM jobs WHERE request_id = ?')
-        .all(response.headers.get('x-nai-request-id'))
-        .map((row) => JSON.parse(row.data))
-        .sort((a, b) => a.sampleIndex - b.sampleIndex);
+      const jobs = fixture
+        .jobs()
+        .filter((job) => job.request_id === response.headers.get('x-nai-request-id'))
+        .sort((a, b) => a.sample_index - b.sample_index);
       assert.deepEqual(
         jobs.map((job) => job.status),
         ['done', 'failed'],
       );
-      assert.equal(jobs[1].error, safeFailure);
-      assert.ok(jobs[1].errorDetail.includes(privateMarker));
+      assert.ok(diagnostic(jobs[1].id).includes(privateMarker));
       const headers = { authorization: `Bearer ${credentials[0].api_key}` };
       const snapshot = await (await fetchLocal('/api/jobs/' + jobs[1].id, { headers })).json();
       assert.equal(snapshot.error, safeFailure);
       const batch = await (
-        await fetchLocal('/api/requests/' + jobs[1].requestId, { headers })
+        await fetchLocal('/api/requests/' + jobs[1].request_id, { headers })
       ).json();
       assert.equal(batch.jobs[1].error, safeFailure);
       const replay = await post('/v1/ai/generate-image', input, credentials[0].api_key, {
@@ -1333,13 +1243,7 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       assert.deepEqual(Buffer.from(result.images[0].image, 'base64'), png);
       assert.equal(calls.length, startCount + 2);
       assert.equal(before.anlasFixedAvailable - (await quota()).anlasFixedAvailable, 32);
-      const charges = jobs.map((job) =>
-        JSON.parse(
-          auditReader
-            .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?')
-            .get(job.id).charge,
-        ),
-      );
+      const charges = jobs.map((job) => charge(job.id));
       assert.deepEqual(
         charges.map((charge) => charge.status),
         ['settled', 'refunded'],
@@ -1558,196 +1462,77 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
     assert.equal(calls.length, mock.failAt);
   });
 
-  await stop();
-  const persisted = new JsonStore(dataDir);
-  await persisted.init();
-  try {
-    const snapshot = await persisted.readCollections(['accounts', 'jobs']);
-    assert.equal(snapshot.accounts[0].capacityConcurrencyLimit, 1);
-    const { audit, settlements } = checkAccounting(fixture, snapshot.jobs);
-    assert.ok(settlements.some((charge) => charge.status === 'settled'));
-    assert.ok(settlements.some((charge) => charge.status === 'refunded'));
-    assert.ok(
-      audit.some(
-        (event) =>
-          event.type === 'generation_loss_suspected' && event.response.upstreamHttpStatus === 200,
-      ),
-    );
-    const batch = snapshot.jobs.filter(
-      (job) => job.sampleIndex === 1 && job.fairCharge?.status === 'refunded',
-    )[0];
-    assert.ok(batch?.batchId);
-    assert.ok(
-      snapshot.jobs.some(
-        (job) => job.batchId === batch.batchId && job.sampleIndex === 0 && job.status === 'done',
-      ),
-    );
-    const request = {
-      tag: 'restart queued request',
-      prompt: 'restart queued request',
-      artist: '',
-      negative: '',
-      model: 'nai-diffusion-4-5-full',
-      width: 1024,
-      height: 1024,
-      steps: 28,
-      seed: 901,
-      sampler: 'k_euler_ancestral',
-      scale: 6,
-      cfg: 0,
-      noiseSchedule: 'karras',
-    };
-    const payload = JSON.stringify(request),
-      createdAt = new Date().toISOString();
-    const legacyInputRef = 'legacy-input:job-restart-legacy',
-      legacyPayload = JSON.stringify({ legacyInline: true, request: { ...request, seed: 902 } });
-    const parent = {
-      id: 'request-restart',
-      member_id: credentials[0].user_id,
-      source: 'web',
-      operation: 'generate',
-      created_at: createdAt,
-      payload_bytes: Buffer.byteLength(payload),
-      payload,
-    };
-    // The stopped synthetic fixture imports old protected inputs before their opening facts; this is not runtime admission.
-    const insertInput = persisted.sqlite.prepare(
-      'INSERT INTO generation_requests(id,member_id,source,operation,created_at,payload_bytes,payload) VALUES(?,?,?,?,?,?,?)',
-    );
-    insertInput.run(
-      legacyInputRef,
-      credentials[0].user_id,
-      'web',
-      'generate',
-      createdAt,
-      Buffer.byteLength(legacyPayload),
-      legacyPayload,
-    );
-    insertInput.run(
-      parent.id,
-      parent.member_id,
-      parent.source,
-      parent.operation,
-      parent.created_at,
-      parent.payload_bytes,
-      parent.payload,
-    );
-    await persisted.update(
-      (db) => {
-        const user = db.users.find((user) => user.token === credentials[0].api_key);
-        db.accounts[0].cooldownUntil = '';
-        recordDomainEvent(db, {
-          eventType: 'CooldownChanged',
-          streamId: `account:${db.accounts[0].id}`,
-          payload: { accountId: db.accounts[0].id, cooldownUntil: '' },
-        });
-        const common = {
-          source: 'web',
-          status: 'queued',
-          userToken: user.token,
-          createdAt,
-          updatedAt: createdAt,
-          jobAdmissionVersion: user.jobAdmissionVersion || 0,
-          cost: 0,
-          imageId: '',
-          queueExpiresAt: new Date(Date.now() + 60000).toISOString(),
-        };
-        db.jobs.unshift({
-          ...common,
-          id: 'job-restart-cold',
-          requestId: parent.id,
-          queueSeq: persisted.nextQueueSequence(),
-          request: { model: request.model, width: 1024, height: 1024, steps: 28, seed: 901 },
-        });
-        db.jobs.unshift({
-          ...common,
-          id: 'job-restart-legacy',
-          queueSeq: persisted.nextQueueSequence(),
-          request: { ...request, seed: 902 },
-        });
-        for (const id of ['job-restart-cold', 'job-restart-legacy']) {
-          const { userToken, ...job } = db.jobs.find((job) => job.id === id);
-          const inputRef = job.requestId || legacyInputRef;
-          recordDomainEvent(db, {
-            eventType: 'OpeningStateRecorded',
-            streamId: `request:${job.requestId || `legacy-${job.id}`}`,
-            payload: {
-              state: {
-                request: {
-                  requestId: job.requestId || null,
-                  memberId: user.id,
-                  source: 'web',
-                  operation: 'generate',
-                  createdAt,
-                  inputRef,
-                  inputSha256: createHash('sha256')
-                    .update(job.requestId ? payload : legacyPayload)
-                    .digest('hex'),
-                  legacy: true,
-                },
-                jobs: {
-                  [job.id]: {
-                    ...job,
-                    memberId: user.id,
-                    request: webJobRequestSummary(job.request),
-                    ...(!job.requestId
-                      ? { legacyInputRef: inputRef, legacyInlineInput: true }
-                      : {}),
-                  },
-                },
-                artifacts: {},
-                aliases: [],
-                freeUsage: {},
-              },
-            },
-          });
-        }
-      },
-      {
-        immediate: true,
-        dirtyRows: {
-          accounts: [snapshot.accounts[0].id],
-          jobs: ['job-restart-cold', 'job-restart-legacy'],
-        },
-      },
-    );
-    // 故意令历史顺序与排队顺序相反；重启后的真实派发仍须使用持久 queueSeq。
-    persisted.sqlite.exec(
-      "UPDATE jobs SET order_value = 1000 WHERE id = 'job-restart-cold'; UPDATE jobs SET order_value = -1000 WHERE id = 'job-restart-legacy';",
-    );
-  } finally {
-    await persisted.close();
-  }
+  assert.equal(sharedAccountConcurrency(), 1);
+  assert.equal(mock.maxActiveGenerations, 1);
+  const snapshot = jobs(),
+    { audit, settlements } = checkAccounting(fixture, snapshot);
+  assert.ok(settlements.some((item) => item.status === 'settled'));
+  assert.ok(settlements.some((item) => item.status === 'refunded'));
+  assert.ok(
+    audit.some(
+      (event) =>
+        event.eventType === 'ReviewOpened' && event.payload.response.upstreamHttpStatus === 200,
+    ),
+  );
+  const batch = snapshot.find((job) => job.sample_index === 1 && job.charge_status === 'refunded');
+  assert.ok(batch?.request_id);
+  assert.ok(
+    snapshot.some(
+      (job) =>
+        job.request_id === batch.request_id && job.sample_index === 0 && job.status === 'done',
+    ),
+  );
 
-  await t.test('独立进程重启后继续冷存网页任务，并兼容旧无 requestId 的 queued 记录', async () => {
+  // 两个正常请求真实受理于持久容量冷却期间；旧parentless/逆order_value源另归档，不能手造等价新父。
+  const request = {
+    tag: 'restart queued request',
+    prompt: 'restart queued request',
+    artist: '',
+    negative: '',
+    model: 'nai-diffusion-4-5-full',
+    width: 1024,
+    height: 1024,
+    steps: 28,
+    seed: 901,
+    sampler: 'k_euler_ancestral',
+    scale: 6,
+    cfg: 0,
+    noiseSchedule: 'karras',
+    nocache: true,
+  };
+  const restarting = [];
+  for (const seed of [901, 902]) {
+    const response = await post('/api/jobs', { ...request, seed });
+    assert.equal(response.status, 202, await response.clone().text());
+    const accepted = await response.json(),
+      job = jobs().find((row) => row.id === accepted.id);
+    assert.equal(job.status, 'queued');
+    assert.equal(job.source, 'web');
+    assert.equal(job.member_id, credentials[0].user_id);
+    assert.ok(Number.isSafeInteger(job.queue_seq) && job.queue_seq > 0);
+    assert.equal(memberInput(job.request_id, job.member_id).input.input, 'restart queued request');
+    restarting.push(job);
+  }
+  assert.ok(restarting[0].queue_seq < restarting[1].queue_seq);
+  await stop();
+  assertChildPublicReplay(fixture);
+  await t.test('独立进程重启后继续两个正常冷存网页任务，旧parentless源另归档', async () => {
     const before = calls.length;
-    const restarted = spawn(process.execPath, ['server/index.ts'], {
-      cwd: root,
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const exited = once(restarted, 'exit');
+    const { cooldown_until: cooldownUntil } = query(
+      fixture,
+      'SELECT cooldown_until FROM upstream_accounts WHERE id=?',
+      fixture.accountId,
+    )[0];
+    assert.ok(Number.isSafeInteger(cooldownUntil));
+    // 原容量锁的真实30s冷却自然到期；不清投影、不伪clock，仍在原240s总限内准备重启。
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, cooldownUntil - Date.now())));
+    await fixture.reopen();
     try {
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('重启超时')), 15000);
-        restarted.stdout.on('data', (chunk) => {
-          if (chunk.toString().includes('Nai2API listening')) {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-        restarted.stderr.on('data', record);
-        restarted.once('error', (error) => {
-          clearTimeout(timer);
-          reject(error);
-        });
-      });
-      for (const id of ['job-restart-cold', 'job-restart-legacy']) {
+      for (const original of restarting) {
         let job;
         for (let attempt = 0; attempt < 400; attempt++) {
           job = await (
-            await fetchLocal('/api/jobs/' + id, {
+            await fetchLocal('/api/jobs/' + original.id, {
               headers: { authorization: `Bearer ${credentials[0].api_key}` },
             })
           ).json();
@@ -1758,15 +1543,17 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
         }
         assert.equal(job.status, 'done', JSON.stringify(job));
         assert.equal(job.prompt, 'restart queued request');
+        assert.equal(jobs().find((row) => row.id === original.id).queue_seq, original.queue_seq);
       }
       assert.deepEqual(
         calls.slice(before).map((call) => call.payload.parameters.seed),
         [901, 902],
       );
+      assert.equal(calls.length, 17, '正常主流程保持原17次上游生成；归档与读取不能额外生成');
     } finally {
-      restarted.kill();
-      await exited;
+      await stop();
     }
+    assertChildPublicReplay(fixture);
   });
 });
 
@@ -1779,18 +1566,20 @@ test('上游 200 返回 HTML 也按失败退款，不保存为成功图片', asy
   assert.ok(response.status >= 400);
   assert.equal((await quota()).v5Available, before.v5Available);
   const { job, audit } = checkSingleGeneration(fixture, 'failed', 'refunded');
-  assert.ok(!job.imageId);
+  assert.ok(!job.artifact_id);
   assert.ok(
     audit.some(
       (event) =>
-        event.type === 'generation_loss_suspected' && event.response.upstreamHttpStatus === 200,
+        event.eventType === 'ReviewOpened' && event.payload.response.upstreamHttpStatus === 200,
     ),
   );
+  await fixture.stop();
+  assertChildPublicReplay(fixture);
 });
 
 test('direct 生图仍返回原图片，实际派发使用持久排队序号', async (subtest) => {
   const fixture = await nativeFixture(subtest);
-  const { credentials, fetchLocal, auditReader } = fixture;
+  const { credentials, fetchLocal } = fixture;
   const query = new URLSearchParams({
     token: credentials[0].api_key,
     prompt: 'direct queue sequence',
@@ -1806,9 +1595,17 @@ test('direct 生图仍返回原图片，实际派发使用持久排队序号', a
   assert.equal(response.status, 200);
   assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
   checkSingleGeneration(fixture, 'done', 'settled');
-  const row = auditReader.prepare("SELECT data, queue_seq FROM jobs WHERE source = 'direct'").get();
+  const row = fixture.jobs().find((job) => job.source === 'direct');
   assert.ok(Number.isSafeInteger(row.queue_seq) && row.queue_seq > 0);
-  assert.equal(JSON.parse(row.data).queueSeq, row.queue_seq);
+  assert.equal(
+    fixture
+      .events()
+      .find((event) => event.eventType === 'JobAccepted' && event.payload.jobId === row.id).payload
+      .queueSeq,
+    String(row.queue_seq),
+  );
+  await fixture.stop();
+  assertChildPublicReplay(fixture);
 });
 
 test('桌面客户端 multipart 别名与普通 ZIP 接口兼容', async (subtest) => {
@@ -1835,4 +1632,6 @@ test('桌面客户端 multipart 别名与普通 ZIP 接口兼容', async (subtes
   assert.equal(calls.at(-1).payload.parameters.uc_preset, undefined);
   assert.equal((await quota()).anlasFixedAvailable, before.anlasFixedAvailable);
   checkSingleGeneration(fixture, 'done', 'settled');
+  await fixture.stop();
+  assertChildPublicReplay(fixture);
 });

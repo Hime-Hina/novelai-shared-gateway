@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { RelationalCommitReplayer } from './relational-replay.ts';
+import { relationalAccountConnectionSource } from './relational-account-connection.ts';
 import { RelationalQuotaStore } from './relational-quota-store.ts';
+import { RelationalReplicaStore } from './relational-replica-store.ts';
 import type Database from 'better-sqlite3';
-import { canonicalJson } from '../events/domain-events.ts';
+import { canonicalJson, domainDigest } from '../events/domain-events.ts';
 import {
-  appendRelationalCommit,
   readRelationalCommit,
   readRelationalReceipt,
-  replayRelationalCommit,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import {
@@ -22,6 +24,9 @@ import type {
 import {
   planFairQuotaReservation,
   previewFairQuotaReservations,
+  quoteFairRequest,
+  decideFairQuotaCharge,
+  advanceFairQuotaReservation,
   fairQuotaSnapshot,
   type FairQuotaReservationState,
   type FairCharge,
@@ -49,6 +54,8 @@ import { nextPendingBatchJob } from '../generation/batch-requests.ts';
 import { memberGenerationCapabilities } from '../generation/capabilities.ts';
 import {
   parseMemberGenerationConfirmation,
+  buildMemberGenerationQuote,
+  type NormalizedMemberGeneration,
   assertMemberGenerationVersions,
   assertMemberGenerationCost,
   addMemberGenerationResources,
@@ -63,9 +70,31 @@ import {
   type RefundEvidence,
 } from '../generation/accounting.ts';
 import type { GenerationDispatchOptions } from '../generation/execution.ts';
-import { RelationalInputStore, type AcceptedInput } from './relational-input-store.ts';
+import {
+  RelationalInputStore,
+  type AcceptedInput,
+  type ReusedGenerationInput,
+} from './relational-input-store.ts';
+import { relationalArtifactReferenceAvailable } from './relational-replica-io.ts';
+import type { RelationalReplicaReadConfiguration } from './relational-replica-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
+import {
+  assertStoredResultDescriptor,
+  assertReadableStoredResultDescriptor,
+  type describeStoredResult,
+} from './result-files.ts';
+import { errorDetailMessage } from '../http/public-errors.ts';
+import { readRelationalOpeningAttempt } from './relational-generation-sources.ts';
+import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
+import {
+  assertHistoryRetirementControls,
+  assertRetirableRequest,
+  assertHistoryRetirementCommit,
+  historyRetirementIds,
+  historyRetirementFingerprint,
+  readHistoryJob,
+  type HistoryRetirementControls,
+} from './history-retirement.ts';
 
 type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -73,12 +102,26 @@ type Metadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt
 };
 type Response = RelationalPayloads['ResponseEvidenceRecorded']['response'];
 type Publication = ReturnType<typeof describeStoredResult>;
+type DispatchCapture = Readonly<{
+  jobId: string;
+  attemptId: string;
+  accountId: string;
+  credentialEpoch: number;
+  pst: string;
+  proxyUrl: string;
+  connectionSourceEventId: string;
+}>;
 type Completion = Pick<
   NonNullable<Parameters<typeof recordSharedCompletion>[2]>,
   'kind' | 'retryAfterUntil'
 >;
+export type GenerationPhysicalCompletion = Completion & {
+  attemptId: string;
+  credentialEpoch: number;
+  kind: NonNullable<Completion['kind']>;
+};
 
-const generationFacts = new Set<RelationalEvent['eventType']>([
+export const relationalGenerationFacts = new Set<RelationalEvent['eventType']>([
   'ImportSourceRegistered',
   'OpeningAccountRecorded',
   'OpeningGroupRecorded',
@@ -88,22 +131,28 @@ const generationFacts = new Set<RelationalEvent['eventType']>([
   'OpeningQuotaRecorded',
   'OpeningOperatingRecorded',
   'OpeningChargeRecorded',
+  'OpeningJobRecorded',
+  'OpeningAttemptRecorded',
+  'OpeningArtifactRecorded',
   'CooldownChanged',
   'QuotaReserved',
   'DispatchAuthorized',
   'ResponseEvidenceRecorded',
   'ArtifactPrepared',
   'ArtifactPublished',
+  'CachedResultLinked',
   'GenerationSettled',
   'GenerationRefunded',
   'JobCompleted',
   'JobFailed',
+  'DiagnosticRecorded',
   'WaitingJobsCancelled',
   'JobQueued',
   'FreeImageSucceeded',
   'ReviewOpened',
   'ReviewClosed',
   'LateResultRecovered',
+  'JobHistoryRetired',
 ]);
 const zero = (): ResourceAmounts => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 const iso = (value: number | null) => (value === null ? undefined : new Date(value).toISOString());
@@ -117,14 +166,15 @@ interface Job {
   requestId: string;
   memberId: string;
   inputId: string;
-  operation: Publication['operation'];
-  source: string;
+  operation: Publication['operation'] | null;
+  source: string | null;
+  acceptedAt: number | null;
   status: string;
-  sampleIndex: number;
+  sampleIndex: number | null;
   queueSeq: string | null;
   queueExpiresAt: number | null;
   deadlineAt: number | null;
-  admissionEpoch: number;
+  admissionEpoch: number | null;
   confirmation: string | null;
   memberStatus: string;
   authEpoch: string | null;
@@ -132,6 +182,7 @@ interface Job {
   currentAdmissionEpoch: number;
   artifactId: string | null;
   freeSucceededAt: number | null;
+  retiredAt: number | null;
 }
 interface Charge {
   originalJobId: string;
@@ -165,6 +216,8 @@ interface Attempt {
   upstreamCompletedAt: number | null;
   upstreamHttpStatus: number | null;
   upstreamCandidates: string;
+  candidateMode: RelationalPayloads['OpeningAttemptRecorded']['candidateMode'];
+  actualConsumption: string | null;
   reviewStatus: string | null;
   reviewDeadlineAt: number | null;
   lossEventId: string | null;
@@ -190,11 +243,15 @@ export class RelationalGenerationStore {
   private sqlite: Database.Database;
   private inputs: RelationalInputStore;
   private quotas: RelationalQuotaStore;
+  private replicas: RelationalReplicaStore;
   private env: NodeJS.ProcessEnv;
+  // 只绑定已返回的私有 IO 对象与原派发事实；弱引用不维持另一份 applied 状态。
+  private dispatchCaptures = new WeakMap<DispatchCapture, string>();
   constructor(sqlite: Database.Database, env: NodeJS.ProcessEnv = process.env) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
     this.quotas = new RelationalQuotaStore(sqlite, env);
+    this.replicas = new RelationalReplicaStore(sqlite, undefined, env);
     this.env = env;
     this.inputs = new RelationalInputStore(sqlite, env);
   }
@@ -208,10 +265,10 @@ export class RelationalGenerationStore {
     const row = this.sqlite
       .prepare<[string], Job>(
         `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,
-      r.input_id AS inputId,r.operation,r.source,j.status,j.sample_index AS sampleIndex,CAST(j.queue_seq AS TEXT) AS queueSeq,
+      r.input_id AS inputId,r.operation,r.source,r.accepted_at AS acceptedAt,j.status,j.sample_index AS sampleIndex,CAST(j.queue_seq AS TEXT) AS queueSeq,
       j.queue_expires_at AS queueExpiresAt,j.deadline_at AS deadlineAt,j.admission_epoch AS admissionEpoch,r.confirmation,
       m.status AS memberStatus,m.auth_epoch AS authEpoch,m.accepting_jobs AS acceptingJobs,m.admission_epoch AS currentAdmissionEpoch,
-      j.artifact_id AS artifactId,j.free_succeeded_at AS freeSucceededAt
+      j.artifact_id AS artifactId,j.free_succeeded_at AS freeSucceededAt,j.retired_at AS retiredAt
       FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id JOIN members m ON m.id=r.member_id WHERE j.id=?`,
       )
       .get(id);
@@ -252,6 +309,7 @@ export class RelationalGenerationStore {
           `SELECT id,job_id AS jobId,account_id AS accountId,credential_epoch AS credentialEpoch,
       dispatch_state AS dispatchState,upstream_started_at AS upstreamStartedAt,upstream_headers_at AS upstreamHeadersAt,
       upstream_completed_at AS upstreamCompletedAt,upstream_http_status AS upstreamHttpStatus,upstream_candidates AS upstreamCandidates,
+      candidate_mode AS candidateMode,actual_consumption AS actualConsumption,
       review_status AS reviewStatus,review_deadline_at AS reviewDeadlineAt,loss_event_id AS lossEventId,
       prepared_artifact_id AS preparedArtifactId,prepared_file AS preparedFile,prepared_mime_type AS preparedMimeType,
       prepared_byte_length AS preparedByteLength,prepared_sha256 AS preparedSha256 FROM generation_attempts WHERE job_id=?`,
@@ -305,9 +363,123 @@ export class RelationalGenerationStore {
       },
     };
   }
+  readMemberGenerationCapabilities(memberId: string) {
+    return memberGenerationCapabilities(
+      this.policyView(this.policy()),
+      { id: memberId },
+      { env: this.env },
+    );
+  }
+  private memberGenerationAccess(memberId: string) {
+    const member = this.sqlite
+      .prepare<
+        [string],
+        { status: string; authEpoch: string | null; accepting: number; version: number }
+      >(
+        'SELECT status,auth_epoch AS authEpoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
+      )
+      .get(memberId);
+    if (member?.status !== 'active' || !member.authEpoch) {
+      fail('成员授权已失效', 401);
+    }
+    return member;
+  }
+  readMemberFreeImageUsage(memberId: string, now = Date.now()): FreeImageUsage {
+    return this.sqlite.transaction(() => {
+      this.memberGenerationAccess(memberId);
+      return this.freeUsage(memberId, this.policy(), now);
+    })();
+  }
+  readManagementMemberFreeImageUsage(memberId: string, now: number): FreeImageUsage {
+    // 管理目录也含 disabled；当前管理授权归 HTTP，统计仍复用同一免费窗口 owner。
+    return this.sqlite.transaction(() => this.freeUsage(memberId, this.policy(), now))();
+  }
+  quoteMemberGeneration(
+    memberId: string,
+    normalized: NormalizedMemberGeneration,
+    now: number,
+    activePayloadBytes: number,
+  ) {
+    return this.sqlite.transaction(() => {
+      const member = this.memberGenerationAccess(memberId);
+      const policy = this.policy();
+      let state: FairQuotaReservationState | undefined;
+      let unavailable: unknown;
+      try {
+        if (!policy.boundAccountId) {
+          fail('共享账本尚未绑定账号', 503);
+        }
+        state = this.reservationState({ memberId }, policy.boundAccountId, now).state;
+        Object.assign(
+          state,
+          this.quotas.estimateGenerationQuota(policy.boundAccountId, memberId, now),
+        );
+      } catch (error) {
+        state = undefined;
+        unavailable = error;
+      }
+      const wallet = policy.boundAccountId
+        ? this.readWallet(policy.boundAccountId, memberId)
+        : null;
+      const balance = wallet
+        ? {
+            v5Available: wallet.v5,
+            anlasFixedAvailable: wallet.anlasFixed,
+            anlasPurchasedAvailable: wallet.anlasPurchased,
+          }
+        : undefined;
+      const quota = policy.boundAccountId
+        ? this.quotas.readAccountQuota(policy.boundAccountId)
+        : null;
+      const snapshot = quota
+        ? fairQuotaSnapshot({
+            id: quota.accountId,
+            quotaCheckedAt: iso(quota.observedAt),
+            v5UsagePercent: quota.observedV5,
+            quotaFixed: quota.observedAnlasFixed,
+            quotaPurchased: quota.observedAnlasPurchased,
+            v5UsageTimeUntilNextPercent: quota.secondsPerPercent,
+          })
+        : null;
+      return buildMemberGenerationQuote(normalized, {
+        now,
+        env: this.env,
+        versions: this.readMemberGenerationCapabilities(memberId).versions,
+        member: {
+          id: memberId,
+          enabled: true,
+          acceptingJobs: member.accepting === 1,
+          jobAdmissionVersion: member.version,
+        },
+        jobs: this.activeJobs(),
+        activePayloadBytes,
+        freeUsage: this.freeUsage(memberId, policy, now),
+        freeEnabled: policy.freeEnabled === 1,
+        preview: (request) =>
+          decideFairQuotaCharge(
+            state?.balance ?? balance,
+            policy.autoAnlasFallback === 1,
+            state?.snapshot ?? snapshot,
+            request,
+            now,
+          ),
+        reserve: (request) => {
+          if (!state) {
+            throw unavailable;
+          }
+          advanceFairQuotaReservation(state, planFairQuotaReservation(state, request, now));
+        },
+      });
+    })();
+  }
   private authorize(metadata: Metadata, job: Job, systemOnly = false) {
     if (metadata.actorKind === 'member' && (systemOnly || metadata.actorId !== job.memberId)) {
       fail('任务命令归属不符', 403);
+    }
+  }
+  private authorizeResult(metadata: Metadata) {
+    if (metadata.actorKind !== 'system' || metadata.actorId !== null) {
+      fail('结果准备与发布只接受执行器 IO', 403);
     }
   }
   private event(
@@ -325,6 +497,8 @@ export class RelationalGenerationStore {
       streamId = `artifact:${fact.payload.artifactId}`;
     } else if (kind === 'request' && job) {
       streamId = `request:${job.requestId}`;
+    } else if (kind === 'storage' && 'storageTargetId' in fact.payload) {
+      streamId = `storage:${fact.payload.storageTargetId}`;
     } else {
       throw new Error('Generation command has an unsupported stream owner.');
     }
@@ -354,14 +528,15 @@ export class RelationalGenerationStore {
           .get(e.streamId)?.v || '0';
     }
     const { policyVersion, pricingVersion, ...command } = metadata;
-    const result = appendRelationalCommit(this.sqlite, {
-      ...command,
-      receipt,
-      expectedVersions,
-      events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
-    });
-    this.applyEvents(result.events);
-    return result;
+    return new RelationalCommitReplayer(this.sqlite, this).appendCommit(
+      {
+        ...command,
+        receipt,
+        expectedVersions,
+        events: events.map((e) => ({ ...e, policyVersion, pricingVersion })),
+      },
+      this.inputs,
+    );
   }
   private nextQueueSeq(): string {
     return String(
@@ -381,6 +556,479 @@ export class RelationalGenerationStore {
       JOIN generation_requests r ON r.id=j.request_id WHERE j.status IN ('queued','pending','running')`,
       )
       .all();
+  }
+  hasActiveGenerationResponsibilities(): boolean {
+    return !!this.sqlite
+      .prepare(
+        `SELECT 1 WHERE EXISTS (
+      SELECT 1 FROM generation_jobs WHERE status IN ('queued','pending','running')) OR EXISTS (
+      SELECT 1 FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
+      WHERE a.prepared_artifact_id IS NOT NULL AND j.artifact_id IS NULL)`,
+      )
+      .get();
+  }
+  readAcceptedGenerationReceipt(
+    metadata: Pick<Metadata, 'commandId' | 'fingerprint' | 'actorKind' | 'actorId'>,
+    mapping: NonNullable<ReturnType<RelationalInputStore['readGenerationIdempotency']>>,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation receipt requires the current authenticated transaction.');
+    }
+    const member = this.sqlite
+      .prepare<[string | null], { status: string; epoch: string | null }>(
+        'SELECT status,auth_epoch AS epoch FROM members WHERE id=?',
+      )
+      .get(metadata.actorId);
+    if (metadata.actorKind !== 'member' || member?.status !== 'active' || !member.epoch) {
+      fail('成员授权已失效', 401);
+    }
+    const opening = this.inputs.readOpeningGenerationIdempotency(
+      mapping.memberId,
+      mapping.operation,
+      mapping.keyHash,
+    );
+    if (opening) {
+      const p = opening.event.payload;
+      if (
+        canonicalJson(mapping) !== canonicalJson(opening.mapping) ||
+        p.resolution !== 'live' ||
+        p.originalMemberId !== metadata.actorId ||
+        p.originalCommandId !== metadata.commandId ||
+        p.intentFingerprint !== metadata.fingerprint ||
+        opening.receipt === null
+      ) {
+        fail('原请求的任务或回执不可领取；再次生成须使用新操作键。', 410);
+      }
+      return { replayed: true, events: [], receipt: opening.receipt };
+    }
+    const prior = readRelationalReceipt(this.sqlite, metadata);
+    const cacheHit =
+      prior &&
+      readRelationalCommit(this.sqlite, prior.commitSeq).events.some(
+        (event) => event.eventType === 'CachedResultLinked',
+      );
+    const request = this.sqlite
+      .prepare<
+        [string | null],
+        {
+          memberId: string;
+          contextId: string | null;
+          sampleCount: number | null;
+          retiredAt: number | null;
+        }
+      >(
+        'SELECT member_id AS memberId,context_id AS contextId,sample_count AS sampleCount,retired_at AS retiredAt FROM generation_requests WHERE id=?',
+      )
+      .get(mapping.requestId);
+    const jobs = this.sqlite
+      .prepare<[string | null], { id: string; retiredAt: number | null }>(
+        'SELECT id,retired_at AS retiredAt FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+      )
+      .all(mapping.requestId);
+    if (
+      !prior ||
+      mapping.resolution !== 'live' ||
+      mapping.requestId !== mapping.originalRequestId ||
+      prior.commitSeq !== mapping.commitSeq ||
+      mapping.originalCommandId !== metadata.commandId ||
+      mapping.intentFingerprint !== metadata.fingerprint ||
+      request?.memberId !== metadata.actorId ||
+      request.retiredAt !== null ||
+      jobs.some((job) => job.retiredAt !== null) ||
+      jobs.length !== request.sampleCount ||
+      jobs[0]?.id !== mapping.originalJobId ||
+      canonicalJson(prior.receipt) !==
+        canonicalJson({
+          requestId: mapping.requestId,
+          jobIds: jobs.map((j) => j.id),
+          ...(cacheHit ? { cacheHit: true } : {}),
+        })
+    ) {
+      throw Object.assign(new Error('原请求的任务或回执不可领取；再次生成须使用新操作键。'), {
+        statusCode: 410,
+        code: 'result_unavailable',
+      });
+    }
+    this.inputs.assertAcceptedGenerationIntent(
+      mapping.requestId!,
+      metadata.actorId!,
+      prior.commitSeq,
+      mapping.keyHash,
+      mapping.sourceEventId,
+    );
+    return prior;
+  }
+  async findReusableGeneration(
+    input: Pick<ReusedGenerationInput, 'memberId' | 'request' | 'context' | 'seedMode'> & {
+      noCache: boolean;
+      allowActive: boolean;
+    },
+    configuration: RelationalReplicaReadConfiguration,
+  ) {
+    if (this.sqlite.inTransaction) {
+      throw new Error('Reuse lookup cannot hold a transaction across file IO.');
+    }
+    if (input.noCache || input.context.kind === 'member') {
+      return null;
+    }
+    const { cacheKey } = this.inputs.generationInputIntent(
+      input.memberId,
+      input.request,
+      input.context,
+      input.seedMode,
+      false,
+    );
+    if (!cacheKey) {
+      return null;
+    }
+    const cached = this.sqlite
+      .prepare<[string, string], { jobId: string; artifactId: string }>(
+        `SELECT j.id AS jobId,a.id AS artifactId FROM generation_jobs j
+       JOIN generation_requests r ON r.id=j.request_id JOIN generation_attempts t ON t.job_id=j.id
+       JOIN artifacts a ON a.original_attempt_id=t.id
+       WHERE j.cache_key=? AND r.member_id=? AND a.retired_at IS NULL ORDER BY a.published_at DESC,a.id DESC LIMIT 1`,
+      )
+      .all(cacheKey, input.memberId);
+    for (const candidate of cached) {
+      this.inputs.readGenerationReuseProof(candidate.jobId);
+      try {
+        if (
+          await relationalArtifactReferenceAvailable(
+            this.sqlite,
+            candidate.artifactId,
+            configuration,
+          )
+        ) {
+          return {
+            kind: 'artifact' as const,
+            sourceJobId: candidate.jobId,
+            artifactId: candidate.artifactId,
+          };
+        }
+      } catch {}
+    }
+    if (!input.allowActive) {
+      return null;
+    }
+    const active = this.sqlite
+      .prepare<[string, string], { id: string }>(
+        `SELECT j.id FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+       WHERE j.cache_key=? AND r.member_id=? AND r.retired_at IS NULL AND j.retired_at IS NULL
+       AND j.status IN ('queued','running') ORDER BY j.queue_seq DESC,j.id DESC LIMIT 1`,
+      )
+      .get(cacheKey, input.memberId);
+    if (!active) {
+      return null;
+    }
+    this.inputs.readGenerationReuseProof(active.id);
+    return { kind: 'active' as const, sourceJobId: active.id };
+  }
+
+  reuseGeneration(metadata: Metadata, input: ReusedGenerationInput) {
+    return this.owned(() => {
+      const member = this.sqlite
+        .prepare<
+          [string],
+          { status: string; epoch: string | null; accepting: number; version: number }
+        >(
+          'SELECT status,auth_epoch AS epoch,accepting_jobs AS accepting,admission_epoch AS version FROM members WHERE id=?',
+        )
+        .get(input.memberId);
+      if (
+        metadata.actorKind !== 'member' ||
+        metadata.actorId !== input.memberId ||
+        member?.status !== 'active' ||
+        !member.epoch
+      ) {
+        fail('成员授权已失效', 401);
+      }
+      if (input.noCache !== false) {
+        fail('缓存复用要求显式允许缓存', 400);
+      }
+      if (input.idempotency) {
+        const mapping = this.inputs.readGenerationIdempotency(
+          input.memberId,
+          'generate',
+          input.idempotency.keyHash,
+        );
+        if (mapping) {
+          if (mapping.intentFingerprint !== metadata.fingerprint) {
+            fail('操作键对应的意图已变化', 409);
+          }
+          return this.readAcceptedGenerationReceipt(
+            { ...metadata, commandId: mapping.originalCommandId },
+            mapping,
+          );
+        }
+      }
+      const prior = readRelationalReceipt(this.sqlite, metadata);
+      if (prior) {
+        if (!input.idempotency) {
+          return prior;
+        }
+        const mapping = this.inputs.readGenerationIdempotency(
+          input.memberId,
+          'generate',
+          input.idempotency.keyHash,
+        );
+        if (!mapping) {
+          fail('原操作键已不可领取', 410);
+        }
+        return this.readAcceptedGenerationReceipt(metadata, mapping);
+      }
+      assertMemberAcceptsJobs({
+        acceptingJobs: member.accepting === 1,
+        jobAdmissionVersion: member.version,
+      });
+      const source = this.job(input.sourceJobId),
+        policy = this.policy();
+      if (source.memberId !== input.memberId || !policy.enabled || !policy.boundAccountId) {
+        fail('共享账本尚未配置', 503);
+      }
+      if (input.cached) {
+        const artifact = this.replicas.readArtifact(input.cached.artifactId);
+        const origin = this.sqlite
+          .prepare<[string], { jobId: string }>(
+            'SELECT t.job_id AS jobId FROM artifacts a JOIN generation_attempts t ON t.id=a.original_attempt_id WHERE a.id=?',
+          )
+          .get(artifact.id);
+        if (
+          artifact.retiredAt !== null ||
+          artifact.memberId !== input.memberId ||
+          origin?.jobId !== source.id
+        ) {
+          fail('缓存产物不属于原来源');
+        }
+        const reference = this.replicas.readArtifactCacheReference(artifact.id);
+        if (!reference.persistent && !reference.local) {
+          fail('原产物没有可引用来源');
+        }
+      } else if (
+        source.retiredAt !== null ||
+        !['queued', 'running'].includes(source.status) ||
+        source.admissionEpoch !== member.version
+      ) {
+        fail('原活动任务已变化');
+      }
+      this.refillForGeneration(metadata, policy.boundAccountId);
+      const readiness = this.assertReuseReadiness(
+        source,
+        metadata.recordedAt,
+        input.cached ? undefined : source.admissionEpoch,
+      );
+      if (!readiness.account.pst) {
+        fail('上游私有凭据尚未恢复', 503);
+      }
+      const staged = this.inputs.stageGenerationReuse(metadata, input, member.version);
+      if (!staged.events.length) {
+        return { replayed: false, events: [], receipt: staged.receipt };
+      }
+      const events: RelationalEventInput[] = staged.events;
+      if (input.cached) {
+        events.push({
+          eventType: 'CachedResultLinked',
+          payload: { jobId: input.cached.jobId, artifactId: input.cached.artifactId },
+          streamId: `request:${input.cached.requestId}`,
+          memberId: input.memberId,
+          accountId: null,
+          occurredAt: metadata.recordedAt,
+          policyVersion: metadata.policyVersion,
+          pricingVersion: metadata.pricingVersion,
+        });
+      }
+      return this.commit(metadata, events, staged.receipt);
+    });
+  }
+  private assertReuseReadiness(job: Job, at: number, expectedAdmissionEpoch?: number | null) {
+    if (job.memberStatus !== 'active') {
+      fail('复用成员当前不可用', 403);
+    }
+    this.assertKnownExecution(job);
+    if (expectedAdmissionEpoch === null) {
+      fail('复用缺少原接单代次', 410);
+    }
+    assertMemberAcceptsJobs(
+      { acceptingJobs: job.acceptingJobs === 1, jobAdmissionVersion: job.currentAdmissionEpoch },
+      expectedAdmissionEpoch,
+    );
+    const policy = this.policy();
+    if (!policy.enabled || !policy.boundAccountId) {
+      fail('共享账本尚未配置', 503);
+    }
+    return this.reservationFacts(job, policy.boundAccountId, at);
+  }
+  readQueuedGenerationIds(limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number], { id: string }>(
+        "SELECT id FROM generation_jobs WHERE status='queued' ORDER BY queue_seq LIMIT ?",
+      )
+      .all(limit)
+      .map((row) => row.id);
+  }
+  private assertRuntimePage(afterId: string, limit: number) {
+    if (typeof afterId !== 'string' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new TypeError('Invalid generation runtime page.');
+    }
+  }
+  readInterruptedGenerationIds(afterId = '', limit = 100): string[] {
+    this.assertRuntimePage(afterId, limit);
+    return this.sqlite
+      .prepare<[string, number], { id: string }>(
+        `SELECT id FROM generation_jobs INDEXED BY idx_jobs_active_request
+        WHERE status IN ('queued','pending','running') AND status='running' AND id>? ORDER BY id LIMIT ?`,
+      )
+      .all(afterId, limit)
+      .map((row) => row.id);
+  }
+  readExpiredGenerationIds(now: number, limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number, number, number], { id: string }>(
+        `SELECT id FROM generation_jobs INDEXED BY idx_jobs_active_request WHERE status IN ('queued','pending','running') AND
+      (deadline_at<=? OR (status IN ('queued','pending') AND queue_expires_at<=?)) ORDER BY id LIMIT ?`,
+      )
+      .all(now, now, limit)
+      .map((row) => row.id);
+  }
+  readDueGenerationReviewIds(now: number, limit = 100): string[] {
+    this.assertRuntimePage('', limit);
+    return this.sqlite
+      .prepare<[number, number], { id: string }>(
+        `SELECT a.job_id AS id FROM generation_attempts a INDEXED BY idx_attempts_review
+        JOIN charges c ON c.job_id=a.job_id AND c.attempt_id=a.id AND c.status='refunded'
+        WHERE a.review_status='pending' AND a.review_deadline_at<=? ORDER BY a.review_deadline_at,a.job_id LIMIT ?`,
+      )
+      .all(now, limit)
+      .map((row) => row.id);
+  }
+  readGenerationReviewSource(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    if (!attempt) {
+      fail('核对责任缺少原尝试');
+    }
+    const source = this.assertReviewAnchor(job, attempt);
+    return {
+      id: job.id,
+      attemptId: attempt.id,
+      eventId: source.eventId,
+      policyVersion: source.policyVersion,
+      pricingVersion: source.pricingVersion,
+    };
+  }
+  readNextGenerationWakeAt(): number | null {
+    return this.sqlite
+      .prepare<[], { at: number | null }>(
+        `SELECT MIN(at) AS at FROM (
+      SELECT deadline_at AS at FROM generation_jobs INDEXED BY idx_jobs_active_request WHERE status IN ('queued','pending','running')
+      UNION ALL SELECT queue_expires_at FROM generation_jobs INDEXED BY idx_jobs_active_request
+      WHERE status IN ('queued','pending','running') AND status!='running'
+      UNION ALL SELECT a.review_deadline_at FROM generation_attempts a INDEXED BY idx_attempts_review
+      JOIN charges c ON c.job_id=a.job_id AND c.attempt_id=a.id AND c.status='refunded' WHERE a.review_status='pending'
+    )`,
+      )
+      .get()!.at;
+  }
+  readBoundGenerationAccount() {
+    const row = this.sqlite
+      .prepare<[], { id: string; enabled: number; cooldownUntil: number | null }>(
+        `SELECT a.id,a.enabled,a.cooldown_until AS cooldownUntil FROM upstream_accounts a
+      JOIN sharing_policy p ON p.bound_account_id=a.id WHERE p.id=1`,
+      )
+      .get();
+    return row ? { ...row, enabled: row.enabled === 1 } : null;
+  }
+  private assertKnownExecution(
+    job: Pick<
+      Job,
+      'requestId' | 'operation' | 'source' | 'acceptedAt' | 'sampleIndex' | 'admissionEpoch'
+    >,
+  ): asserts job is Pick<Job, 'requestId'> & {
+    operation: Publication['operation'];
+    source: string;
+    acceptedAt: number;
+    sampleIndex: number;
+    admissionEpoch: number;
+  } {
+    if (
+      job.operation === null ||
+      job.source === null ||
+      job.acceptedAt === null ||
+      job.sampleIndex === null ||
+      job.admissionEpoch === null ||
+      this.inputs.readOriginalRequestId(job.requestId) === null
+    ) {
+      fail('历史结构容器或未知元数据不能授权执行或发布', 410);
+    }
+  }
+  readGenerationExecutionState(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    this.assertKnownExecution(job);
+    const origin = this.sqlite
+      .prepare<
+        [string, string],
+        {
+          eventId: string;
+          eventType: string;
+          commitSeq: string;
+          policyVersion: string;
+          pricingVersion: string;
+        }
+      >(
+        `SELECT event_id AS eventId,event_type AS eventType,CAST(commit_seq AS TEXT) AS commitSeq,policy_version AS policyVersion,pricing_version AS pricingVersion
+      FROM domain_events WHERE stream_id=? AND (event_type IN ('RequestAccepted','OpeningRequestRecorded') OR
+      (event_type IN ('DispatchAuthorized','OpeningAttemptRecorded') AND json_extract(payload,'$.jobId')=?))
+      ORDER BY stream_version DESC LIMIT 1`,
+      )
+      .get(`request:${job.requestId}`, jobId);
+    const input = this.sqlite
+      .prepare<[string], { bytes: number }>(
+        'SELECT logical_bytes AS bytes FROM generation_inputs WHERE id=?',
+      )
+      .get(job.inputId);
+    if (!origin || !input) {
+      fail('任务执行缺少原输入或提交元数据', 410);
+    }
+    if (origin.eventType === 'OpeningAttemptRecorded') {
+      if (
+        !attempt ||
+        readRelationalOpeningAttempt(this.sqlite, attempt.id)?.eventId !== origin.eventId
+      ) {
+        fail('执行缺少原开账尝试来源');
+      }
+    } else if (origin.eventType === 'OpeningRequestRecorded') {
+      const event = readRelationalCommit(this.sqlite, origin.commitSeq).events.find(
+        (e) => e.eventId === origin.eventId,
+      );
+      if (
+        event?.eventType !== 'OpeningRequestRecorded' ||
+        event.payload.requestId !== job.requestId ||
+        event.payload.memberId !== job.memberId ||
+        event.payload.inputId !== job.inputId ||
+        event.payload.operation !== job.operation ||
+        event.memberId !== job.memberId ||
+        event.accountId !== null
+      ) {
+        fail('执行缺少原开账请求来源');
+      }
+      assertRelationalOpeningSource(this.sqlite, event);
+    }
+    const { eventType: _type, commitSeq: _seq, ...metadata } = origin;
+    return {
+      id: job.id,
+      requestId: job.requestId,
+      memberId: job.memberId,
+      operation: job.operation,
+      status: job.status,
+      deadlineAt: job.deadlineAt,
+      queueExpiresAt: job.queueExpiresAt,
+      payloadBytes: input.bytes,
+      attemptId: attempt?.id ?? null,
+      credentialEpoch: attempt?.credentialEpoch ?? null,
+      ...metadata,
+    };
   }
   acceptGeneration(metadata: Metadata, input: AcceptedInput) {
     return this.owned(() => {
@@ -428,11 +1076,7 @@ export class RelationalGenerationStore {
         const confirmation = parseMemberGenerationConfirmation(input.confirmation);
         assertMemberGenerationVersions(
           confirmation,
-          memberGenerationCapabilities(
-            this.policyView(this.policy()),
-            { id: input.memberId },
-            { env: this.env },
-          ).versions,
+          this.readMemberGenerationCapabilities(input.memberId).versions,
         );
         const request = { ...input.request, normalizationContext: input.context.member };
         if (typeof request.model !== 'string' || typeof request.prompt !== 'string') {
@@ -454,6 +1098,20 @@ export class RelationalGenerationStore {
           ),
         );
       }
+      {
+        const policy = this.policy();
+        if (!policy.boundAccountId) {
+          fail('共享账本尚未绑定账号', 503);
+        }
+        if (input.context.kind !== 'member') {
+          this.reservationState(
+            { memberId: input.memberId },
+            policy.boundAccountId,
+            metadata.recordedAt,
+          );
+        }
+        this.refillForGeneration(metadata, policy.boundAccountId);
+      }
       const result = this.inputs.persistAcceptedInput(metadata, {
         ...input,
         jobs: input.jobs.map((j, index) => ({
@@ -464,6 +1122,12 @@ export class RelationalGenerationStore {
           admissionEpoch: m.version,
         })),
       });
+      if (input.context.kind !== 'member') {
+        const policy = this.policy();
+        if (quoteFairRequest(this.inputs.readJobInput(input.jobs[0].jobId)).resource === 'free') {
+          assertFreeImageAdmission(this.freeUsage(input.memberId, policy, metadata.recordedAt));
+        }
+      }
       if (input.context.kind === 'member') {
         const policy = this.policy();
         if (!policy.boundAccountId) {
@@ -491,6 +1155,19 @@ export class RelationalGenerationStore {
       return result;
     });
   }
+  private refillForGeneration(metadata: Metadata, accountId: string): void {
+    // 恢复仍由原额度命令拥有；与受理/派发共用最外层事务，失败连恢复事实一起回滚。
+    this.quotas.refillQuota(
+      {
+        ...metadata,
+        commandId: `generation-refill:${domainDigest([metadata.commandId, accountId])}`,
+        fingerprint: domainDigest([metadata.fingerprint, accountId, metadata.recordedAt]),
+        actorKind: 'system',
+        actorId: null,
+      },
+      accountId,
+    );
+  }
   private freeUsage(memberId: string, policy: Policy, now: number): FreeImageUsage {
     const successes = this.sqlite
       .prepare<[string, number, number], { at: number; threshold: number | null }>(
@@ -514,7 +1191,10 @@ export class RelationalGenerationStore {
       reserved,
       warningThreshold: policy.warningThreshold,
       hardLimit: policy.hardLimit,
-      warning: policy.warningThreshold !== null && successes.length >= policy.warningThreshold,
+      warning:
+        policy.freeEnabled === 1 &&
+        policy.warningThreshold !== null &&
+        successes.length >= policy.warningThreshold,
       warnedAt:
         policy.warningThreshold === null
           ? null
@@ -523,14 +1203,21 @@ export class RelationalGenerationStore {
       waitingForSettlement: needed > 0 && !next,
     };
   }
-  private reservationState(job: Job, accountId: string, now: number) {
+  private reservationState(job: Pick<Job, 'memberId'>, accountId: string, now: number) {
+    const result = this.reservationFacts(job, accountId, now);
+    if (!result.account.pst || result.account.proxyUrl === null) {
+      fail('上游私有凭据尚未恢复', 503);
+    }
+    return result;
+  }
+  // 回放只复核已保存的公开金融事实；在线caller仍经 reservationState 的私有门禁。
+  private reservationFacts(job: Pick<Job, 'memberId'>, accountId: string, now: number) {
     const policy = this.policy();
-    if (
-      !policy.enabled ||
-      policy.boundAccountId !== accountId ||
-      !this.sqlite.prepare('SELECT 1 FROM group_members WHERE member_id=?').get(job.memberId)
-    ) {
-      fail('共享账本只能使用当前分组与绑定账号', 503);
+    if (!policy.enabled || policy.boundAccountId !== accountId) {
+      fail('共享账本只能使用当前绑定账号', 503);
+    }
+    if (!this.sqlite.prepare('SELECT 1 FROM group_members WHERE member_id=?').get(job.memberId)) {
+      fail('该 Key 未加入共享账本', 403);
     }
     const account = this.sqlite
       .prepare<
@@ -541,21 +1228,18 @@ export class RelationalGenerationStore {
           credentialEpoch: number;
           cooldownUntil: number | null;
           pst: string | null;
+          proxyUrl: string | null;
         }
       >(
-        `SELECT a.id,a.enabled,a.credential_epoch AS credentialEpoch,a.cooldown_until AS cooldownUntil,c.pst
+        `SELECT a.id,a.enabled,a.credential_epoch AS credentialEpoch,a.cooldown_until AS cooldownUntil,c.pst,c.proxy_url AS proxyUrl
       FROM upstream_accounts a LEFT JOIN upstream_credentials c ON c.account_id=a.id WHERE a.id=?`,
       )
       .get(accountId);
-    if (!account?.pst) {
-      fail('上游私有凭据尚未恢复', 503);
+    if (!account) {
+      fail('共享账号不存在', 503);
     }
     const q = this.quotas.readAccountQuota(accountId);
-    if (
-      q.observedCredentialEpoch !== account.credentialEpoch ||
-      !q.baselineEventId ||
-      q.status !== 'active'
-    ) {
+    if (q.observedCredentialEpoch !== account.credentialEpoch || !q.baselineEventId) {
       fail('账户额度基线不可用', 503);
     }
     const view = {
@@ -567,7 +1251,6 @@ export class RelationalGenerationStore {
       quotaError: q.quotaErrorCode,
       quotaCheckedAt: iso(q.observedAt),
       v5UsagePercent: q.observedV5,
-      v5UsageIsNegative: q.observedV5 !== null && parseAmount(q.observedV5) < 0n,
       quotaFixed: q.observedAnlasFixed,
       quotaPurchased: q.observedAnlasPurchased,
       v5UsageTimeUntilNextPercent: q.secondsPerPercent,
@@ -595,6 +1278,9 @@ export class RelationalGenerationStore {
     if (availability !== 'active') {
       fail(`共享 Opus 额度暂不可用：${availability}`, 503);
     }
+    if (q.status !== 'active') {
+      fail('账户额度基线不可用', 503);
+    }
     const wallet = this.readWallet(accountId, job.memberId);
     if (!wallet) {
       fail('成员钱包尚未恢复', 503);
@@ -609,7 +1295,7 @@ export class RelationalGenerationStore {
     }
     const total = this.sqlite
       .prepare<[string], { v5: string }>(
-        `SELECT w.v5_available AS v5 FROM wallets w JOIN group_members g ON g.member_id=w.member_id WHERE w.account_id=?`,
+        `SELECT w.v5_available AS v5 FROM wallets w WHERE w.account_id=?`,
       )
       .all(accountId)
       .reduce((sum, w) => sum + parseAmount(w.v5), 0n);
@@ -647,10 +1333,11 @@ export class RelationalGenerationStore {
   private dispatchPlan(
     job: Job,
     accountId: string,
-    now: number,
+    metadata: Metadata,
     controls: Pick<GenerationDispatchOptions, 'dispatchEnabled' | 'physicalAccountLoad'>,
   ) {
-    const { policy, account, state } = this.reservationState(job, accountId, now);
+    const now = metadata.recordedAt;
+    const { policy, account } = this.reservationState(job, accountId, now);
     const running = this.sqlite
       .prepare<[string], { n: number }>(
         `SELECT COUNT(*) AS n FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id WHERE a.account_id=? AND j.status='running'`,
@@ -667,6 +1354,8 @@ export class RelationalGenerationStore {
     ) {
       return null;
     }
+    this.refillForGeneration(metadata, accountId);
+    const { state } = this.reservationState(job, accountId, now);
     const request = this.inputs.readJobInput(job.id);
     const plan = planFairQuotaReservation(state, request, now);
     const charge = {
@@ -724,6 +1413,7 @@ export class RelationalGenerationStore {
       if (job.memberStatus !== 'active' || !job.authEpoch) {
         fail('成员授权已失效', 401);
       }
+      this.assertKnownExecution(job);
       assertMemberAcceptsJobs(
         { acceptingJobs: job.acceptingJobs === 1, jobAdmissionVersion: job.currentAdmissionEpoch },
         job.admissionEpoch,
@@ -734,7 +1424,7 @@ export class RelationalGenerationStore {
       ) {
         fail('任务已过期', 504);
       }
-      const planned = this.dispatchPlan(job, input.accountId, metadata.recordedAt, controls);
+      const planned = this.dispatchPlan(job, input.accountId, metadata, controls);
       if (!planned) {
         return { dispatch: null, queued: true };
       }
@@ -769,6 +1459,8 @@ export class RelationalGenerationStore {
                 jobId: job.id,
                 accountId: account.id,
                 credentialEpoch: account.credentialEpoch,
+                connectionSourceEventId: this.quotas.prepareQuotaObservation(account.id)
+                  .connectionSourceEventId,
                 candidateMode: 'alternatives',
                 upstreamCandidates: generationUpstreamCandidates(charge),
               },
@@ -781,16 +1473,21 @@ export class RelationalGenerationStore {
         { jobId: job.id, attemptId: input.attemptId, accountId: account.id },
       );
       // 只有首次提交返回可发送的私有快照；重领回执不能再次连接上游。
-      return {
-        ...result,
-        dispatch: {
-          jobId: job.id,
-          attemptId: input.attemptId,
-          accountId: account.id,
-          credentialEpoch: account.credentialEpoch,
-          pst: account.pst,
-        },
-      };
+      const dispatch = Object.freeze({
+        jobId: job.id,
+        attemptId: input.attemptId,
+        accountId: account.id,
+        credentialEpoch: account.credentialEpoch,
+        pst: account.pst!,
+        proxyUrl: account.proxyUrl!,
+        connectionSourceEventId: this.quotas.prepareQuotaObservation(account.id)
+          .connectionSourceEventId,
+      });
+      this.dispatchCaptures.set(
+        dispatch,
+        result.events.find((e) => e.eventType === 'DispatchAuthorized')!.eventId,
+      );
+      return { ...result, dispatch };
     });
   }
   private currentResponse(
@@ -850,6 +1547,22 @@ export class RelationalGenerationStore {
     }
     return next;
   }
+  private assertPhysicalCompletion(
+    attempt: Attempt,
+    completion: Completion | GenerationPhysicalCompletion,
+  ) {
+    const proof = completion as Partial<GenerationPhysicalCompletion>;
+    if (
+      !proof ||
+      proof.attemptId !== attempt.id ||
+      !Number.isSafeInteger(proof.credentialEpoch) ||
+      (proof.credentialEpoch ?? 0) <= 0 ||
+      proof.credentialEpoch !== attempt.credentialEpoch ||
+      !['ended', 'success', 'ordinary', 'capacity'].includes(proof.kind ?? '')
+    ) {
+      fail('物理结束证明不属于原尝试和凭据代次');
+    }
+  }
   private cooldown(
     job: Job,
     attempt: Attempt,
@@ -873,6 +1586,10 @@ export class RelationalGenerationStore {
       )
       .get(attempt.accountId);
     if (!row || row.epoch !== attempt.credentialEpoch) {
+      return [];
+    }
+    const opening = readRelationalOpeningAttempt(this.sqlite, attempt.id);
+    if (opening && opening.payload.authorizedAt === null) {
       return [];
     }
     const account = {
@@ -944,7 +1661,7 @@ export class RelationalGenerationStore {
     metadata: Metadata,
     jobId: string,
     response: Response,
-    completion: Completion = {},
+    completion?: Completion | GenerationPhysicalCompletion,
   ) {
     return this.owned(() => {
       const job = this.job(jobId);
@@ -958,6 +1675,14 @@ export class RelationalGenerationStore {
         fail('任务没有派发尝试');
       }
       const merged = this.mergeResponse(this.currentResponse(job, attempt), response);
+      if (
+        completion !== undefined &&
+        (merged.upstreamCompletedAt === null ||
+          'attemptId' in completion ||
+          'credentialEpoch' in completion)
+      ) {
+        this.assertPhysicalCompletion(attempt, completion);
+      }
       return this.commit(
         metadata,
         [
@@ -970,8 +1695,10 @@ export class RelationalGenerationStore {
             attempt.accountId,
             metadata.recordedAt,
           ),
-          ...(attempt.upstreamCompletedAt === null && merged.upstreamCompletedAt !== null
-            ? this.cooldown(job, attempt, metadata.recordedAt, completion)
+          // 显式 completion 来自已结束的物理 promise；不把断流结束冒充完整响应时间。
+          ...((attempt.upstreamCompletedAt === null && merged.upstreamCompletedAt !== null) ||
+          (completion !== undefined && merged.upstreamCompletedAt === null)
+            ? this.cooldown(job, attempt, metadata.recordedAt, completion ?? {})
             : []),
         ],
         { jobId, attemptId: attempt.id },
@@ -994,47 +1721,93 @@ export class RelationalGenerationStore {
   }
   readGenerationResultPreparation(jobId: string) {
     const job = this.job(jobId),
-      attempt = this.attempt(jobId);
-    if (!attempt || job.artifactId) {
-      fail('任务没有待恢复的准备结果');
+      { attempt } = this.generationCompletion(job);
+    const result = this.resultPreparationSource(job, attempt);
+    assertStoredResultDescriptor(result.descriptor);
+    if (canonicalJson(result.descriptor) !== canonicalJson(this.prepared(job, attempt))) {
+      fail('准备结果与原事实不一致');
     }
+    // 冷读复用输入 owner 的原请求/归属/摘要核验，不把当前关系行当作原授权。
+    this.inputs.readJobInput(jobId);
+    return { ...result, descriptor: result.descriptor };
+  }
+  // 只声明原 final/part 的保留依赖；归档描述符不证明字节存在或可执行/发布/ready。
+  readGenerationResultDependency(jobId: string) {
+    const job = this.job(jobId),
+      attempt = this.attempt(jobId);
+    if (!attempt || job.artifactId !== null) {
+      fail('任务没有未发布的准备结果');
+    }
+    const result = this.resultPreparationSource(job, attempt);
+    // 普通准备结果仍走原完成、严格描述符和执行输入检查，不借 nullable 口放宽。
+    if (result.event.eventType === 'ArtifactPrepared') {
+      return this.readGenerationResultPreparation(jobId);
+    }
+    assertReadableStoredResultDescriptor(result.descriptor);
+    if (
+      canonicalJson(result.descriptor) !== canonicalJson(this.preparationDescriptor(job, attempt))
+    ) {
+      fail('准备结果与原事实不一致');
+    }
+    this.inputs.readOriginalRequestId(job.requestId);
+    // 此现有只读口核完整 request、受保护输入摘要/归属与原 seed；不取得执行输入。
+    this.inputs.readErrorLogRequest(jobId);
+    return { ...result, descriptor: result.descriptor };
+  }
+  private resultPreparationSource(job: Job, attempt: Attempt) {
+    const opening = readRelationalOpeningAttempt(this.sqlite, attempt.id);
     const sources = this.sqlite
       .prepare<[string, string], { eventId: string; commitSeq: string }>(
         `SELECT event_id AS eventId,CAST(commit_seq AS TEXT) AS commitSeq FROM domain_events
         WHERE stream_id=? AND event_type='ArtifactPrepared' AND json_extract(payload,'$.attemptId')=?`,
       )
       .all(`request:${job.requestId}`, attempt.id);
-    if (sources.length !== 1) {
+    if (sources.length && opening && opening.payload.preparedArtifactId !== null) {
+      fail('准备结果不能有两个原来源');
+    }
+    if (
+      sources.length !== 1 &&
+      !(sources.length === 0 && opening && opening.payload.preparedArtifactId !== null)
+    ) {
       fail('准备结果缺少唯一的原事实');
     }
-    const event = readRelationalCommit(this.sqlite, sources[0].commitSeq).events.find(
-      (e) => e.eventId === sources[0].eventId,
-    );
+    const event = sources.length
+      ? readRelationalCommit(this.sqlite, sources[0].commitSeq).events.find(
+          (e) => e.eventId === sources[0].eventId,
+        )
+      : opening;
     if (
-      event?.eventType !== 'ArtifactPrepared' ||
+      !event ||
+      (event.eventType !== 'ArtifactPrepared' && event.eventType !== 'OpeningAttemptRecorded') ||
+      event.payload.attemptId !== attempt.id ||
+      event.streamId !== `request:${job.requestId}` ||
       event.accountId !== attempt.accountId ||
       event.memberId !== job.memberId
     ) {
       fail('准备结果事实归属不符');
     }
-    const descriptor = {
-      imageId: event.payload.artifactId,
-      file: event.payload.file,
-      operation: job.operation,
-      mimeType: event.payload.mimeType,
-      byteLength: event.payload.byteLength,
-      sha256: event.payload.sha256,
-    };
-    assertStoredResultDescriptor(descriptor);
-    if (canonicalJson(descriptor) !== canonicalJson(this.prepared(job, attempt))) {
-      fail('准备结果与原事实不一致');
-    }
-    // 冷读复用输入 owner 的原请求/归属/摘要核验，不把当前关系行当作原授权。
-    this.inputs.readJobInput(jobId);
+    const descriptor =
+      event.eventType === 'OpeningAttemptRecorded'
+        ? {
+            imageId: event.payload.preparedArtifactId,
+            file: event.payload.preparedFile,
+            operation: job.operation,
+            mimeType: event.payload.preparedMimeType,
+            byteLength: event.payload.preparedByteLength,
+            sha256: event.payload.preparedSha256,
+          }
+        : {
+            imageId: event.payload.artifactId,
+            file: event.payload.file,
+            operation: job.operation,
+            mimeType: event.payload.mimeType,
+            byteLength: event.payload.byteLength,
+            sha256: event.payload.sha256,
+          };
     return { attemptId: attempt.id, event, descriptor };
   }
-  private prepared(job: Job, attempt: Attempt): Publication {
-    const value = {
+  private preparationDescriptor(job: Job, attempt: Attempt) {
+    return {
       imageId: attempt.preparedArtifactId,
       file: attempt.preparedFile,
       operation: job.operation,
@@ -1042,6 +1815,9 @@ export class RelationalGenerationStore {
       byteLength: attempt.preparedByteLength,
       sha256: attempt.preparedSha256,
     };
+  }
+  private prepared(job: Job, attempt: Attempt): Publication {
+    const value = this.preparationDescriptor(job, attempt);
     assertStoredResultDescriptor(value);
     return value;
   }
@@ -1052,17 +1828,19 @@ export class RelationalGenerationStore {
     response: Response,
   ) {
     return this.owned(() => {
+      this.authorizeResult(metadata);
       const job = this.job(jobId);
-      this.authorize(metadata, job, true);
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
       }
+      this.assertKnownExecution(job);
       const attempt = this.attempt(jobId),
         charge = this.readCharge(jobId);
       if (
         !attempt ||
         !charge ||
+        job.retiredAt !== null ||
         !['running', 'failed'].includes(job.status) ||
         charge.status === 'settled'
       ) {
@@ -1137,30 +1915,21 @@ export class RelationalGenerationStore {
   }
   completeGeneration(metadata: Metadata, jobId: string, publication: Publication) {
     return this.owned(() => {
+      this.authorizeResult(metadata);
       const job = this.job(jobId);
-      this.authorize(metadata, job, true);
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
       }
-      const attempt = this.attempt(jobId),
-        charge = this.readCharge(jobId);
-      if (
-        !attempt ||
-        !charge ||
-        charge.attemptId !== attempt.id ||
-        !['running', 'failed'].includes(job.status) ||
-        job.artifactId ||
-        charge.status === 'settled'
-      ) {
-        fail('任务或收费已经终结');
-      }
+      const { attempt, charge, job: completionJob } = this.generationCompletion(job);
       assertStoredResultDescriptor(publication);
       if (canonicalJson(publication) !== canonicalJson(this.prepared(job, attempt))) {
         fail('发布结果与准备凭据不符');
       }
       const response = this.currentResponse(job, attempt);
+      const local = this.replicas.planLocalArtifactPublication(publication, metadata.recordedAt);
       const events: RelationalEventInput[] = [
+        ...(local.target ? [this.event(local.target, null, null, metadata.recordedAt)] : []),
         this.event(
           {
             eventType: 'ArtifactPublished',
@@ -1169,7 +1938,7 @@ export class RelationalGenerationStore {
               memberId: job.memberId,
               inputId: job.inputId,
               originalAttemptId: attempt.id,
-              operation: job.operation,
+              operation: publication.operation,
               mimeType: publication.mimeType,
               byteLength: publication.byteLength,
               sha256: publication.sha256,
@@ -1179,6 +1948,7 @@ export class RelationalGenerationStore {
           attempt.accountId,
           metadata.recordedAt,
         ),
+        this.event(local.replica, job, null, metadata.recordedAt),
       ];
       if (job.status === 'running' && charge.status === 'reserved') {
         events.push(
@@ -1226,7 +1996,7 @@ export class RelationalGenerationStore {
                 acceptingJobs: job.acceptingJobs === 1,
                 jobAdmissionVersion: job.currentAdmissionEpoch,
               },
-              job.admissionEpoch,
+              completionJob.admissionEpoch,
             );
           } catch {
             stopped = true;
@@ -1329,14 +2099,23 @@ export class RelationalGenerationStore {
     failure: {
       errorCode: string;
       errorStatus: number;
+      aborted: boolean;
       cancellationReason?: string;
       evidence?: RefundEvidence;
-      completion?: Completion;
+      completion?: Completion | GenerationPhysicalCompletion;
+      diagnostic?: { dispatch: DispatchCapture; error: unknown };
     },
   ) {
     return this.owned(() => {
       const job = this.job(jobId);
       this.authorize(metadata, job);
+      if (typeof failure.aborted !== 'boolean') {
+        fail('生成失败必须明确是否取消');
+      }
+      const capture = failure.diagnostic?.dispatch;
+      if (failure.diagnostic !== undefined) {
+        this.assertDiagnosticCapture(metadata, job, capture!);
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -1350,13 +2129,28 @@ export class RelationalGenerationStore {
       const attempt = this.attempt(jobId),
         charge = this.readCharge(jobId),
         events: RelationalEventInput[] = [];
-      const response = this.currentResponse(job, attempt, failure.evidence);
+      if (failure.completion !== undefined) {
+        if (!attempt) {
+          fail('物理结束缺少原尝试');
+        }
+        if (
+          attempt.upstreamCompletedAt === null ||
+          'attemptId' in failure.completion ||
+          'credentialEpoch' in failure.completion
+        ) {
+          this.assertPhysicalCompletion(attempt, failure.completion);
+        }
+      }
+      const response = this.currentResponse(job, attempt, failure.evidence),
+        responseEventId = randomUUID(),
+        failureEventId = randomUUID();
       if (charge) {
         if (charge.status !== 'reserved' || !attempt || charge.attemptId !== attempt.id) {
           fail('原预扣与尝试不一致');
         }
         const risk =
-          response.dispatchState !== 'not_sent' && JSON.parse(attempt.upstreamCandidates).length > 0
+          response.dispatchState !== 'not_sent' &&
+          (attempt.candidateMode === 'unknown' || JSON.parse(attempt.upstreamCandidates).length > 0)
             ? randomUUID()
             : null;
         events.push(
@@ -1365,7 +2159,17 @@ export class RelationalGenerationStore {
             job,
             attempt.accountId,
             metadata.recordedAt,
+            responseEventId,
           ),
+        );
+        events.push(
+          ...this.quotas.planGenerationCredentialFailure(metadata, {
+            attemptId: attempt.id,
+            responseEventId,
+            failureEventId,
+            aborted: failure.aborted,
+            response,
+          }),
           this.event(
             {
               eventType: 'GenerationRefunded',
@@ -1399,6 +2203,35 @@ export class RelationalGenerationStore {
       } else if (attempt || job.status === 'running') {
         fail('运行任务缺少原预扣');
       }
+      const secrets = capture ? [capture.pst, capture.proxyUrl] : [];
+      if (capture?.proxyUrl) {
+        const proxy = new URL(capture.proxyUrl);
+        for (const value of [proxy.username, proxy.password]) {
+          secrets.push(value);
+          try {
+            secrets.push(decodeURIComponent(value));
+          } catch {
+            // 原 SOCKS owner 会拒绝无效编码；错误捕获仍须退款，不能再次抛解码异常。
+          }
+        }
+      }
+      const diagnostic = capture
+        ? this.inputs.stageGenerationDiagnostic(
+            jobId,
+            errorDetailMessage(failure.diagnostic!.error, secrets),
+            metadata.recordedAt,
+          )
+        : null;
+      if (diagnostic) {
+        events.push(
+          this.event(
+            { eventType: 'DiagnosticRecorded', payload: diagnostic },
+            job,
+            attempt!.accountId,
+            metadata.recordedAt,
+          ),
+        );
+      }
       events.push(
         this.event(
           {
@@ -1408,13 +2241,15 @@ export class RelationalGenerationStore {
               errorCode: failure.errorCode,
               errorStatus: failure.errorStatus,
               cancellationReason: failure.cancellationReason ?? null,
-              diagnosticId: null,
+              diagnosticId: diagnostic?.diagnosticId ?? null,
+              aborted: failure.aborted,
               response,
             },
           },
           job,
           attempt?.accountId ?? null,
           metadata.recordedAt,
+          failureEventId,
         ),
         ...this.cancellation(
           job,
@@ -1424,11 +2259,44 @@ export class RelationalGenerationStore {
           metadata.recordedAt,
         ),
       );
-      if (attempt && response.upstreamCompletedAt !== null) {
-        events.push(...this.cooldown(job, attempt, metadata.recordedAt, failure.completion || {}));
+      if (attempt && (response.upstreamCompletedAt !== null || failure.completion !== undefined)) {
+        events.push(...this.cooldown(job, attempt, metadata.recordedAt, failure.completion ?? {}));
       }
       return this.commit(metadata, events, { jobId, status: 'failed', refunded: charge !== null });
     });
+  }
+  private assertDiagnosticCapture(metadata: Metadata, job: Job, capture: DispatchCapture) {
+    this.authorizeResult(metadata);
+    const eventId = this.dispatchCaptures.get(capture),
+      source =
+        eventId &&
+        this.sqlite
+          .prepare<[string], { seq: string }>(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+          )
+          .get(eventId),
+      event =
+        source &&
+        readRelationalCommit(this.sqlite, source.seq).events.find((e) => e.eventId === eventId),
+      attempt = this.attempt(job.id);
+    if (
+      !event ||
+      event.eventType !== 'DispatchAuthorized' ||
+      !attempt ||
+      capture.jobId !== job.id ||
+      capture.attemptId !== attempt.id ||
+      capture.accountId !== attempt.accountId ||
+      capture.credentialEpoch !== attempt.credentialEpoch ||
+      event.streamId !== `request:${job.requestId}` ||
+      event.memberId !== job.memberId ||
+      event.accountId !== attempt.accountId ||
+      event.payload.jobId !== job.id ||
+      event.payload.attemptId !== attempt.id ||
+      event.payload.accountId !== attempt.accountId ||
+      event.payload.credentialEpoch !== attempt.credentialEpoch
+    ) {
+      fail('诊断捕获缺少真实原派发票据', 403);
+    }
   }
   cancelWaitingGeneration(metadata: Metadata, requestId: string) {
     return this.owned(() => {
@@ -1460,6 +2328,57 @@ export class RelationalGenerationStore {
         this.cancellation(job, ids, 'request_cancelled', 409, metadata.recordedAt),
         { requestId, cancelledJobIds: ids },
       );
+    });
+  }
+  retireJobHistory(
+    metadata: Omit<Metadata, 'fingerprint'>,
+    jobIds: string[],
+    actor: MemberUser | null,
+    controls: HistoryRetirementControls,
+  ) {
+    return this.owned(() => {
+      const current =
+        actor &&
+        this.sqlite
+          .prepare<[string], { status: string; authEpoch: string | null }>(
+            'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+          )
+          .get(actor.id);
+      assertCurrentOwnerCommand(metadata, actor, current, this.env);
+      const ids = historyRetirementIds(jobIds),
+        command = { ...metadata, fingerprint: historyRetirementFingerprint('jobs', ids) },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      assertHistoryRetirementControls(controls);
+      const groups = new Map<string, string[]>();
+      for (const id of ids) {
+        const job = readHistoryJob(this.sqlite, id);
+        if (job.retiredAt !== null) {
+          fail('任务历史已经退休');
+        }
+        const group = groups.get(job.requestId) ?? [];
+        group.push(id);
+        groups.set(job.requestId, group);
+      }
+      const events: RelationalEventInput[] = [];
+      for (const requestId of [...groups.keys()].sort()) {
+        assertRetirableRequest(this.sqlite, requestId, controls);
+        const selected = groups.get(requestId)!;
+        events.push(
+          this.event(
+            {
+              eventType: 'JobHistoryRetired',
+              payload: { jobIds: selected, reason: 'owner_cleared_history' },
+            },
+            this.job(selected[0]),
+            null,
+            metadata.recordedAt,
+          ),
+        );
+      }
+      return this.commit(command, events, { retiredJobIds: ids });
     });
   }
   closeGenerationReview(metadata: Metadata, jobId: string) {
@@ -1514,7 +2433,112 @@ export class RelationalGenerationStore {
     }
     return job;
   }
+  private assertReviewAnchor(job: Job, attempt: Attempt) {
+    const opening = readRelationalOpeningAttempt(this.sqlite, attempt.id);
+    if (opening && attempt.lossEventId === opening.eventId) {
+      if (opening.payload.reviewStatus === null) {
+        fail('开账事实未证明原核对责任');
+      }
+      return opening;
+    }
+    const row = this.sqlite
+      .prepare<[string], { seq: string }>(
+        'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+      )
+      .get(attempt.lossEventId ?? '');
+    const source =
+      row &&
+      readRelationalCommit(this.sqlite, row.seq).events.find(
+        (e) => e.eventId === attempt.lossEventId,
+      );
+    if (
+      source?.eventType !== 'ReviewOpened' ||
+      source.payload.attemptId !== attempt.id ||
+      source.payload.lossEventId !== source.eventId ||
+      source.memberId !== job.memberId ||
+      source.accountId !== attempt.accountId ||
+      source.streamId !== `request:${job.requestId}`
+    ) {
+      fail('核对责任缺少原尝试来源');
+    }
+    return source;
+  }
+  // ready 的只读 prepared 检查与真正发布共用完成前置；不运行发布/结算来试探可恢复性。
+  private generationCompletion(job: Job) {
+    this.assertKnownExecution(job);
+    const attempt = this.attempt(job.id),
+      charge = this.readCharge(job.id);
+    if (
+      !attempt ||
+      !charge ||
+      job.retiredAt !== null ||
+      charge.attemptId !== attempt.id ||
+      !['running', 'failed'].includes(job.status) ||
+      job.artifactId ||
+      attempt.dispatchState === 'not_sent' ||
+      charge.status === 'settled'
+    ) {
+      fail('任务或收费已经终结');
+    }
+    if (job.status === 'running' && charge.status === 'reserved') {
+      this.reservedCharge(job.id, charge.reservationEventId);
+      this.quotas.readAccountQuota(charge.originalAccountId);
+    } else if (job.status === 'failed' && charge.status === 'refunded') {
+      const original = this.chargeSource(job, attempt, charge);
+      if (
+        original.eventType === 'OpeningChargeRecorded' &&
+        charge.terminalEventId === original.eventId
+      ) {
+        if (
+          original.payload.status !== 'refunded' ||
+          original.payload.terminalEventId !== original.eventId ||
+          original.payload.terminalAt !== charge.terminalAt
+        ) {
+          fail('原退款缺少自身开账终态来源');
+        }
+      } else {
+        const terminal = this.sqlite
+          .prepare<[string], { seq: string }>(
+            'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+          )
+          .get(charge.terminalEventId ?? '');
+        const refund =
+          terminal &&
+          readRelationalCommit(this.sqlite, terminal.seq).events.find(
+            (e) => e.eventId === charge.terminalEventId,
+          );
+        if (
+          refund?.eventType !== 'GenerationRefunded' ||
+          refund.payload.jobId !== job.id ||
+          refund.payload.reservationEventId !== charge.reservationEventId ||
+          refund.memberId !== job.memberId ||
+          refund.accountId !== charge.originalAccountId ||
+          refund.streamId !== `account:${charge.originalAccountId}` ||
+          refund.occurredAt !== charge.terminalAt
+        ) {
+          fail('准备恢复缺少原同任务退款来源');
+        }
+      }
+      if (attempt.lossEventId) {
+        this.assertReviewAnchor(job, attempt);
+        if (!['pending', 'estimated_closed'].includes(attempt.reviewStatus ?? '')) {
+          fail('原核对状态不能再次恢复结果');
+        }
+      }
+    } else {
+      fail('任务和收费终态不一致');
+    }
+    if (charge.billingMode === 'free' && job.freeSucceededAt === null) {
+      this.policy();
+    }
+    return { attempt, charge, job };
+  }
   private reservation(event: RelationalEvent, jobId: string, reservationEventId: string): Charge {
+    const charge = this.reservedCharge(jobId, reservationEventId);
+    this.eventJob(event, jobId, charge.originalAccountId);
+    return charge;
+  }
+  private reservedCharge(jobId: string, reservationEventId: string): Charge {
     const c = this.readCharge(jobId);
     if (
       !c ||
@@ -1525,7 +2549,7 @@ export class RelationalGenerationStore {
     ) {
       fail('原预扣不存在、身份不符或已经终结');
     }
-    const job = this.eventJob(event, jobId, c.originalAccountId),
+    const job = this.job(jobId),
       a = this.attempt(jobId);
     if (
       job.memberId !== c.originalMemberId ||
@@ -1536,21 +2560,86 @@ export class RelationalGenerationStore {
     ) {
       fail('实际任务、尝试与原预扣不一致');
     }
-    const anchor = this.sqlite
-      .prepare<
-        [string],
-        { event_type: string; account_id: string | null; member_id: string | null }
-      >('SELECT event_type,account_id,member_id FROM domain_events WHERE event_id=?')
-      .get(reservationEventId);
+    const original = this.chargeSource(job, a, c);
+    if (original.eventType === 'OpeningChargeRecorded' && original.payload.status !== 'reserved') {
+      fail('原预扣开账状态不是在途');
+    }
+    return c;
+  }
+  private chargeSource(job: Job, attempt: Attempt, charge: Charge) {
     if (
-      !anchor ||
-      !['QuotaReserved', 'OpeningChargeRecorded'].includes(anchor.event_type) ||
-      anchor.account_id !== c.originalAccountId ||
-      anchor.member_id !== c.originalMemberId
+      charge.resolution !== 'live' ||
+      charge.jobId !== job.id ||
+      charge.originalJobId !== job.id ||
+      charge.originalMemberId !== job.memberId ||
+      charge.originalAccountId !== attempt.accountId ||
+      charge.attemptId !== attempt.id ||
+      !this.readWallet(charge.originalAccountId, charge.originalMemberId)
+    ) {
+      fail('实际任务、尝试与原预扣不一致');
+    }
+    const anchor = this.sqlite
+      .prepare<[string], { seq: string }>(
+        'SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE event_id=?',
+      )
+      .get(charge.reservationEventId);
+    const original =
+      anchor &&
+      readRelationalCommit(this.sqlite, anchor.seq).events.find(
+        (e) => e.eventId === charge.reservationEventId,
+      );
+    if (
+      !original ||
+      (original.eventType !== 'QuotaReserved' && original.eventType !== 'OpeningChargeRecorded') ||
+      original.accountId !== charge.originalAccountId ||
+      original.memberId !== job.memberId ||
+      original.streamId !== `account:${charge.originalAccountId}`
     ) {
       fail('原预扣事实归属不符');
     }
-    return c;
+    if (original.eventType === 'OpeningChargeRecorded') {
+      const snapshot = original;
+      if (
+        (snapshot.payload.status !== 'reserved' && snapshot.payload.status !== charge.status) ||
+        snapshot.payload.reservationEventId !== snapshot.eventId ||
+        snapshot.payload.resolution !== 'live' ||
+        snapshot.payload.originalJobId !== job.id ||
+        snapshot.payload.jobId !== job.id ||
+        snapshot.payload.originalMemberId !== job.memberId ||
+        snapshot.payload.originalAccountId !== charge.originalAccountId ||
+        snapshot.payload.walletMemberId !== job.memberId ||
+        snapshot.payload.walletAccountId !== charge.originalAccountId ||
+        snapshot.payload.attemptId !== attempt.id ||
+        snapshot.payload.reservedAt !== charge.reservedAt
+      ) {
+        fail('预扣消费缺少自身原开账角色');
+      }
+      assertRelationalOpeningSource(this.sqlite, snapshot);
+    } else if (
+      original.payload.jobId !== job.id ||
+      original.payload.memberId !== job.memberId ||
+      original.payload.accountId !== charge.originalAccountId ||
+      original.occurredAt !== charge.reservedAt
+    ) {
+      fail('预扣消费缺少自身原在线角色');
+    }
+    const p = original.payload;
+    if (
+      canonicalJson(p.resources) !==
+        canonicalJson({
+          v5: charge.v5,
+          anlasFixed: charge.anlasFixed,
+          anlasPurchased: charge.anlasPurchased,
+        }) ||
+      p.billingMode !== charge.billingMode ||
+      p.estimated !== charge.estimated ||
+      p.v5Equivalent !== charge.v5Equivalent ||
+      p.sharedV5Reserved !== charge.sharedV5Reserved ||
+      p.configVersion !== charge.configVersion
+    ) {
+      fail('原预扣金额或计费来源不符');
+    }
+    return original;
   }
   private adjustWallet(
     accountId: string,
@@ -1604,11 +2693,18 @@ export class RelationalGenerationStore {
     const row = this.sqlite
       .prepare<
         [string],
-        { member_id: string; input_id: string; original_attempt_id: string | null }
-      >('SELECT member_id,input_id,original_attempt_id FROM artifacts WHERE id=?')
+        {
+          member_id: string;
+          input_id: string;
+          original_attempt_id: string | null;
+          retired_at: number | null;
+        }
+      >('SELECT member_id,input_id,original_attempt_id,retired_at FROM artifacts WHERE id=?')
       .get(artifactId);
     if (
       !row ||
+      job.retiredAt !== null ||
+      row.retired_at !== null ||
       row.member_id !== job.memberId ||
       row.input_id !== job.inputId ||
       row.original_attempt_id !== attemptId
@@ -1616,21 +2712,383 @@ export class RelationalGenerationStore {
       fail('产物与原任务/输入/尝试归属不符');
     }
   }
-  private applyEvents(events: RelationalEvent[]): void {
-    for (const e of events) {
+  createGenerationProjector(events: RelationalEvent[]) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation projection requires the owning transaction.');
+    }
+    if (!events.some((event) => event.eventType === 'RequestAccepted')) {
+      for (const alias of events.filter((event) => event.eventType === 'RequestAliasRegistered')) {
+        const job = this.eventJob(alias, alias.payload.jobId);
+        this.assertReuseReadiness(job, alias.occurredAt, job.admissionEpoch);
+      }
+    }
+    const diagnostics = events.filter((e) => e.eventType === 'DiagnosticRecorded'),
+      failures = events.filter((e) => e.eventType === 'JobFailed');
+    const openingArtifacts = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'OpeningArtifactRecorded' }>
+    >();
+    const openingAttempts = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'OpeningAttemptRecorded' }>
+    >();
+    const openingCharges = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'OpeningChargeRecorded' }>
+    >();
+    for (const event of events) {
+      if (event.eventType === 'OpeningAttemptRecorded') {
+        if (openingAttempts.has(event.payload.jobId)) {
+          fail('同笔开账尝试重复登记');
+        }
+        openingAttempts.set(event.payload.jobId, event);
+      }
+      if (event.eventType === 'OpeningChargeRecorded' && event.payload.jobId !== null) {
+        if (openingCharges.has(event.payload.jobId)) {
+          fail('同笔开账预扣重复登记');
+        }
+        openingCharges.set(event.payload.jobId, event);
+      }
+      if (event.eventType === 'OpeningArtifactRecorded') {
+        if (openingArtifacts.has(event.payload.artifactId)) {
+          fail('同笔开账产物重复登记');
+        }
+        openingArtifacts.set(event.payload.artifactId, event);
+      }
+    }
+    for (const diagnostic of diagnostics) {
+      const matched = failures.filter(
+        (e) => e.payload.diagnosticId === diagnostic.payload.diagnosticId,
+      );
       if (
-        e.eventType.startsWith('Opening') &&
-        'origin' in e.payload &&
-        !this.sqlite
-          .prepare(
-            "SELECT 1 FROM domain_events WHERE event_type='ImportSourceRegistered' AND stream_id=?",
-          )
-          .get(`import:${e.payload.origin.sourceId}`)
+        matched.length !== 1 ||
+        matched[0].payload.jobId !== diagnostic.payload.jobId ||
+        diagnostic.eventIndex >= matched[0].eventIndex
       ) {
-        fail('开账事实缺少已登记来源');
+        fail('诊断必须属于同笔原失败事实');
+      }
+    }
+    for (const failure of failures) {
+      if (
+        failure.payload.diagnosticId !== null &&
+        diagnostics.filter((e) => e.payload.diagnosticId === failure.payload.diagnosticId)
+          .length !== 1
+      ) {
+        fail('失败事实缺少同笔原诊断');
+      }
+    }
+    return (e: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Generation projection requires the owning transaction.');
+      }
+      if (e.eventType.startsWith('Opening')) {
+        assertRelationalOpeningSource(this.sqlite, e);
       }
       switch (e.eventType) {
+        case 'OpeningJobRecorded': {
+          const p = e.payload,
+            request = this.sqlite
+              .prepare<
+                [string],
+                {
+                  memberId: string;
+                  operation: Publication['operation'] | null;
+                  source: string | null;
+                  acceptedAt: number | null;
+                  retiredAt: number | null;
+                }
+              >(
+                'SELECT member_id AS memberId,operation,source,accepted_at AS acceptedAt,retired_at AS retiredAt FROM generation_requests WHERE id=?',
+              )
+              .get(p.requestId);
+          if (
+            !request ||
+            e.memberId !== request.memberId ||
+            e.accountId !== null ||
+            (request.operation !== null &&
+              request.operation !== 'generate' &&
+              p.actualSeed !== null) ||
+            (['pending', 'queued', 'running'].includes(p.status) &&
+              (request.retiredAt !== null || p.retiredAt !== null || p.artifactId !== null))
+          ) {
+            fail('开账任务与原请求/生命周期角色不符');
+          }
+          if (['pending', 'queued', 'running'].includes(p.status)) {
+            this.assertKnownExecution({
+              ...request,
+              requestId: p.requestId,
+              sampleIndex: p.sampleIndex,
+              admissionEpoch: p.admissionEpoch,
+            });
+          }
+          if (p.status === 'running') {
+            const a = openingAttempts.get(p.jobId),
+              c = openingCharges.get(p.jobId);
+            if (
+              !a ||
+              !c ||
+              !(e.eventIndex < a.eventIndex && a.eventIndex < c.eventIndex) ||
+              a.payload.reviewStatus !== null ||
+              a.payload.accountId !== c.payload.originalAccountId ||
+              a.accountId !== a.payload.accountId ||
+              a.memberId !== request.memberId ||
+              a.streamId !== e.streamId ||
+              c.payload.attemptId !== a.payload.attemptId ||
+              c.payload.resolution !== 'live' ||
+              c.payload.status !== 'reserved' ||
+              c.payload.originalJobId !== p.jobId ||
+              c.payload.originalMemberId !== request.memberId ||
+              c.payload.walletMemberId !== request.memberId ||
+              c.payload.walletAccountId !== a.payload.accountId ||
+              c.accountId !== a.payload.accountId ||
+              c.memberId !== request.memberId ||
+              c.payload.reservationEventId !== c.eventId ||
+              (a.payload.response.dispatchState !== 'not_sent' &&
+                a.payload.candidateMode !== 'unknown' &&
+                a.payload.upstreamCandidates.length === 0 &&
+                c.payload.billingMode !== 'free')
+            ) {
+              fail('运行态开账任务需要原序唯一尝试和真实预扣责任');
+            }
+          }
+          if (p.artifactId !== null) {
+            const existing = this.sqlite
+                .prepare<[string], { memberId: string; operation: string | null }>(
+                  'SELECT member_id AS memberId,operation FROM artifacts WHERE id=?',
+                )
+                .get(p.artifactId),
+              planned = openingArtifacts.get(p.artifactId),
+              artifact = existing ?? planned?.payload;
+            if (
+              !artifact ||
+              artifact.memberId !== request.memberId ||
+              (artifact.operation !== null &&
+                request.operation !== null &&
+                artifact.operation !== request.operation)
+            ) {
+              fail('开账任务缺少同成员/操作的唯一原产物');
+            }
+          }
+          this.sqlite
+            .prepare(
+              `INSERT INTO generation_jobs(id,request_id,sample_index,actual_seed,status,queue_seq,queue_expires_at,deadline_at,admission_epoch,artifact_id,cache_key,completed_at,error_code,error_status,cancellation_reason,late_result_at,free_succeeded_at,free_warning_threshold,retired_at,source_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              p.jobId,
+              p.requestId,
+              p.sampleIndex,
+              p.actualSeed,
+              p.status,
+              p.queueSeq === null ? null : BigInt(p.queueSeq),
+              p.queueExpiresAt,
+              p.deadlineAt,
+              p.admissionEpoch,
+              p.artifactId,
+              p.cacheKey,
+              p.completedAt,
+              p.errorCode,
+              p.errorStatus,
+              p.cancellationReason,
+              p.lateResultAt,
+              p.freeSucceededAt,
+              p.freeWarningThreshold,
+              p.retiredAt,
+              e.eventId,
+            );
+          this.inputs.readJobSeed(p.jobId);
+          if (['pending', 'queued', 'running'].includes(p.status)) {
+            this.inputs.readJobInput(p.jobId);
+          }
+          break;
+        }
+        case 'OpeningAttemptRecorded': {
+          const p = e.payload,
+            job = this.eventJob(e, p.jobId, p.accountId);
+          if (
+            (p.connectionSourceEventId !== null &&
+              p.connectionSourceEventId !==
+                relationalAccountConnectionSource(this.sqlite, p.accountId, e)) ||
+            e.streamId !== `request:${job.requestId}` ||
+            e.accountId !== p.accountId ||
+            this.attempt(job.id)
+          ) {
+            fail('开账尝试与原任务/账户角色不符或已存在');
+          }
+          if (job.status === 'pending' || job.status === 'queued') {
+            fail('未派发开账任务不能已有尝试');
+          }
+          if (p.reviewStatus !== null && job.status !== 'failed') {
+            fail('原核对责任必须属于失败任务');
+          }
+          if (
+            p.response.dispatchState === 'not_sent' &&
+            (job.status === 'done' || p.reviewStatus === 'result_recovered')
+          ) {
+            fail('未发送原尝试不能证明成功或找回结果');
+          }
+          if (job.status === 'running') {
+            const original = events.find(
+              (event) => event.eventType === 'OpeningJobRecorded' && event.payload.jobId === job.id,
+            );
+            if (!original || original.eventIndex >= e.eventIndex) {
+              fail('运行态尝试缺少同笔先行原任务');
+            }
+          }
+          const response = this.mergeResponse(
+            {
+              dispatchState: 'unknown',
+              upstreamStartedAt: null,
+              upstreamHeadersAt: null,
+              upstreamCompletedAt: null,
+              upstreamHttpStatus: null,
+            },
+            p.response,
+          );
+          if (canonicalJson(response) !== canonicalJson(p.response)) {
+            fail('开账响应证据自相矛盾');
+          }
+          if (p.preparedArtifactId !== null) {
+            // 归档描述符不授予执行权；getter/ready/complete 仍共用严格完成前置。
+            assertReadableStoredResultDescriptor({
+              imageId: p.preparedArtifactId,
+              file: p.preparedFile,
+              operation: job.operation,
+              mimeType: p.preparedMimeType,
+              byteLength: p.preparedByteLength,
+              sha256: p.preparedSha256,
+            });
+            if (p.response.dispatchState === 'not_sent') {
+              fail('未发送尝试不能有上游准备结果');
+            }
+          }
+          this.sqlite
+            .prepare(
+              `INSERT INTO generation_attempts(id,job_id,account_id,credential_epoch,authorized_at,
+            dispatch_state,upstream_started_at,upstream_headers_at,upstream_completed_at,upstream_http_status,
+            candidate_mode,upstream_candidates,actual_consumption,review_status,first_unknown_at,review_deadline_at,
+            review_closed_at,loss_event_id,closure_event_id,prepared_artifact_id,prepared_file,prepared_mime_type,
+            prepared_byte_length,prepared_sha256,source_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              p.attemptId,
+              p.jobId,
+              p.accountId,
+              p.credentialEpoch,
+              p.authorizedAt,
+              p.response.dispatchState,
+              p.response.upstreamStartedAt,
+              p.response.upstreamHeadersAt,
+              p.response.upstreamCompletedAt,
+              p.response.upstreamHttpStatus,
+              p.candidateMode,
+              canonicalJson(p.upstreamCandidates),
+              p.actualConsumption === null ? null : canonicalJson(p.actualConsumption),
+              p.reviewStatus,
+              p.firstUnknownAt,
+              p.reviewDeadlineAt,
+              p.reviewClosedAt,
+              p.reviewStatus === null ? null : e.eventId,
+              p.reviewStatus !== null && p.reviewStatus !== 'pending' ? e.eventId : null,
+              p.preparedArtifactId,
+              p.preparedFile,
+              p.preparedMimeType,
+              p.preparedByteLength,
+              p.preparedSha256,
+              e.eventId,
+            );
+          break;
+        }
+        case 'OpeningArtifactRecorded': {
+          const p = e.payload,
+            input = this.sqlite
+              .prepare<[string, string], { operation: unknown }>(
+                "SELECT json_extract(body,'$.operation') AS operation FROM generation_inputs WHERE id=? AND member_id=?",
+              )
+              .get(p.inputId, p.memberId);
+          if (!input || (input.operation !== null && input.operation !== p.operation)) {
+            fail('开账产物与原输入/操作归属不符');
+          }
+          if (p.originalAttemptId === null) {
+            if (e.accountId !== null) {
+              fail('未知原尝试的开账产物不能声明账户角色');
+            }
+          } else {
+            const original = this.sqlite
+              .prepare<
+                [string],
+                {
+                  accountId: string;
+                  memberId: string;
+                  inputId: string;
+                  operation: string | null;
+                  artifactId: string | null;
+                  dispatchState: Response['dispatchState'];
+                }
+              >(
+                `SELECT a.account_id AS accountId,r.member_id AS memberId,r.input_id AS inputId,r.operation,j.artifact_id AS artifactId,a.dispatch_state AS dispatchState
+              FROM generation_attempts a JOIN generation_jobs j ON j.id=a.job_id
+              JOIN generation_requests r ON r.id=j.request_id WHERE a.id=?`,
+              )
+              .get(p.originalAttemptId);
+            if (
+              !original ||
+              original.accountId !== e.accountId ||
+              original.memberId !== p.memberId ||
+              original.inputId !== p.inputId ||
+              (original.operation !== null &&
+                p.operation !== null &&
+                original.operation !== p.operation) ||
+              original.artifactId !== p.artifactId ||
+              original.dispatchState === 'not_sent'
+            ) {
+              fail('开账产物与已知原尝试/任务/输入角色不符');
+            }
+          }
+          this.sqlite
+            .prepare(
+              `INSERT INTO artifacts(id,member_id,input_id,original_attempt_id,operation,mime_type,byte_length,sha256,published_at,retired_at,source_event_id)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              p.artifactId,
+              p.memberId,
+              p.inputId,
+              p.originalAttemptId,
+              p.operation,
+              p.mimeType,
+              p.byteLength,
+              p.sha256,
+              p.publishedAt,
+              p.retiredAt,
+              e.eventId,
+            );
+          break;
+        }
+        case 'JobHistoryRetired': {
+          assertHistoryRetirementCommit(this.sqlite, e, 'jobs');
+          const jobs = e.payload.jobIds.map((id) => readHistoryJob(this.sqlite, id));
+          for (const job of jobs) {
+            if (job.retiredAt !== null) {
+              fail('任务历史已经退休');
+            }
+          }
+          assertRetirableRequest(this.sqlite, jobs[0].requestId);
+          for (const job of jobs) {
+            this.sqlite
+              .prepare('UPDATE generation_jobs SET retired_at=?,source_event_id=? WHERE id=?')
+              .run(e.occurredAt, e.eventId, job.id);
+          }
+          this.sqlite
+            .prepare(
+              `UPDATE generation_requests SET retired_at=?,source_event_id=? WHERE id=?
+            AND NOT EXISTS(SELECT 1 FROM generation_jobs WHERE request_id=? AND retired_at IS NULL)`,
+            )
+            .run(e.occurredAt, e.eventId, jobs[0].requestId, jobs[0].requestId);
+          break;
+        }
         case 'ImportSourceRegistered':
+          assertRelationalOpeningSource(this.sqlite, e);
           break;
         case 'CooldownChanged': {
           const p = e.payload;
@@ -1654,6 +3112,10 @@ export class RelationalGenerationStore {
               .get(a.accountId);
             if (a.epoch !== current?.epoch) {
               fail('旧凭据尝试不能修改新凭据冷却');
+            }
+            const opening = readRelationalOpeningAttempt(this.sqlite, p.attemptId);
+            if (opening && opening.payload.authorizedAt === null) {
+              fail('开账冷却缺少原授权证明');
             }
           }
           if (
@@ -1680,11 +3142,12 @@ export class RelationalGenerationStore {
           const p = e.payload;
           this.sqlite
             .prepare(
-              `INSERT INTO upstream_accounts(id,display_name,enabled,credential_epoch,cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,capacity_limited_until,capacity_last_error_at,source_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+              `INSERT INTO upstream_accounts(id,display_name_json,weight,enabled,credential_epoch,cooldown_until,cooldown_reason,ordinary_strikes,capacity_strikes,capacity_limited_until,capacity_last_error_at,source_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
             )
             .run(
               p.accountId,
-              p.displayName,
+              JSON.stringify(p.displayName),
+              p.weight,
               Number(p.enabled),
               p.credentialEpoch,
               p.cooldownUntil,
@@ -1775,6 +3238,31 @@ export class RelationalGenerationStore {
         }
         case 'OpeningChargeRecorded': {
           const p = e.payload;
+          if (
+            p.reservationEventId !== e.eventId ||
+            (p.status !== 'reserved' && p.terminalEventId !== e.eventId) ||
+            e.accountId !== p.originalAccountId ||
+            e.memberId !== p.originalMemberId ||
+            e.streamId !== `account:${p.originalAccountId}`
+          ) {
+            fail('开账预扣/终态锚必须是自身原 cut 事实');
+          }
+          if (p.status === 'reserved') {
+            const a = p.jobId === null ? null : this.attempt(p.jobId);
+            const j = p.jobId === null ? null : this.job(p.jobId);
+            if (
+              !a ||
+              !j ||
+              j.status !== 'running' ||
+              a.id !== p.attemptId ||
+              a.accountId !== p.originalAccountId ||
+              j.memberId !== p.originalMemberId ||
+              openingAttempts.get(j.id)?.payload.attemptId !== a.id ||
+              (openingAttempts.get(j.id)?.eventIndex ?? Infinity) >= e.eventIndex
+            ) {
+              fail('开账在途预扣缺少同笔原尝试闭包');
+            }
+          }
           this.sqlite
             .prepare(
               `INSERT INTO charges(original_job_id,original_member_id,original_account_id,job_id,wallet_account_id,wallet_member_id,attempt_id,status,resolution,origin_ref,v5,anlas_fixed,anlas_purchased,billing_mode,estimated,v5_equivalent,shared_v5_reserved,config_version,reserved_at,terminal_at,reservation_event_id,terminal_event_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -1864,12 +3352,20 @@ export class RelationalGenerationStore {
           const p = e.payload,
             job = this.eventJob(e, p.jobId, p.accountId),
             c = this.readCharge(job.id);
+          this.assertKnownExecution(job);
           if (
+            p.connectionSourceEventId !==
+              relationalAccountConnectionSource(this.sqlite, p.accountId, e) ||
             job.status !== 'queued' ||
             !c ||
             c.status !== 'reserved' ||
             c.originalAccountId !== p.accountId ||
             c.originalMemberId !== job.memberId ||
+            this.sqlite
+              .prepare<[string], { epoch: number }>(
+                'SELECT credential_epoch AS epoch FROM upstream_accounts WHERE id=?',
+              )
+              .get(p.accountId)?.epoch !== p.credentialEpoch ||
             c.attemptId ||
             this.attempt(job.id)
           ) {
@@ -1912,6 +3408,7 @@ export class RelationalGenerationStore {
           }
           const job = this.eventJob(e, row.job_id),
             a = this.attempt(job.id)!;
+          this.assertKnownExecution(job);
           const descriptor = {
             imageId: p.artifactId,
             file: p.file,
@@ -1923,6 +3420,7 @@ export class RelationalGenerationStore {
           assertStoredResultDescriptor(descriptor);
           if (
             a.preparedArtifactId ||
+            job.retiredAt !== null ||
             !['running', 'failed'].includes(job.status) ||
             p.response.dispatchState === 'not_sent'
           ) {
@@ -1948,7 +3446,9 @@ export class RelationalGenerationStore {
           }
           const job = this.job(a.job_id),
             attempt = this.attempt(job.id)!;
+          this.assertKnownExecution(job);
           if (
+            job.retiredAt !== null ||
             e.memberId !== job.memberId ||
             e.accountId !== attempt.accountId ||
             p.memberId !== job.memberId ||
@@ -1977,6 +3477,68 @@ export class RelationalGenerationStore {
               e.occurredAt,
               e.eventId,
             );
+          break;
+        }
+        case 'CachedResultLinked': {
+          const p = e.payload,
+            job = this.eventJob(e, p.jobId);
+          this.assertReuseReadiness(job, e.occurredAt, job.admissionEpoch);
+          const allowed = new Set([
+            'ContextRegistered',
+            'InputRegistered',
+            'RequestAccepted',
+            'JobAccepted',
+            'RequestAliasRegistered',
+            'CachedResultLinked',
+          ]);
+          if (
+            events.some((event) => !allowed.has(event.eventType)) ||
+            events.filter((event) => event.eventType === 'CachedResultLinked').length !== 1 ||
+            events.filter((event) => event.eventType === 'RequestAccepted').length !== 1 ||
+            events.filter((event) => event.eventType === 'JobAccepted').length !== 1 ||
+            e.accountId !== null ||
+            job.status !== 'pending' ||
+            job.queueSeq !== null ||
+            job.retiredAt !== null ||
+            job.memberStatus !== 'active' ||
+            !job.acceptingJobs ||
+            job.admissionEpoch !== job.currentAdmissionEpoch ||
+            this.attempt(job.id) ||
+            this.readCharge(job.id)
+          ) {
+            fail('缓存引用不能创建执行或费用');
+          }
+          const artifact = this.replicas.readArtifact(p.artifactId);
+          const original = this.sqlite
+            .prepare<[string], { attemptId: string; jobId: string }>(
+              'SELECT t.id AS attemptId,t.job_id AS jobId FROM artifacts a JOIN generation_attempts t ON t.id=a.original_attempt_id WHERE a.id=?',
+            )
+            .get(artifact.id);
+          if (
+            !original ||
+            artifact.retiredAt !== null ||
+            artifact.memberId !== job.memberId ||
+            artifact.operation !== job.operation
+          ) {
+            fail('缓存引用缺少真实原产物');
+          }
+          const origin = this.job(original.jobId);
+          if (artifact.memberId !== origin.memberId || artifact.inputId !== origin.inputId) {
+            fail('缓存产物与原输入归属不符');
+          }
+          const proof = this.inputs.readGenerationReuseProof(origin.id);
+          const current = this.inputs.readGenerationReuseProof(job.id);
+          if (
+            current.job.cacheKey !== proof.job.cacheKey ||
+            current.prepared.firstSeed !== proof.prepared.firstSeed
+          ) {
+            fail('缓存引用与原生成意图不符');
+          }
+          this.sqlite
+            .prepare(
+              "UPDATE generation_jobs SET status='done',artifact_id=?,completed_at=?,source_event_id=? WHERE id=?",
+            )
+            .run(artifact.id, e.occurredAt, e.eventId, job.id);
           break;
         }
         case 'GenerationSettled':
@@ -2074,6 +3636,21 @@ export class RelationalGenerationStore {
               .run(p.artifactId, e.occurredAt, e.eventId, job.id);
           }
           this.writeResponse(e, a.id, p.response);
+          break;
+        }
+        case 'DiagnosticRecorded': {
+          const job = this.eventJob(e, e.payload.jobId),
+            attempt = this.attempt(job.id),
+            charge = this.readCharge(job.id);
+          if (
+            !attempt ||
+            job.status !== 'running' ||
+            charge?.status !== 'refunded' ||
+            e.accountId !== attempt.accountId
+          ) {
+            fail('诊断必须绑定原在途尝试及原资源退款');
+          }
+          this.inputs.readGenerationDiagnostic(e.payload.diagnosticId, job.id);
           break;
         }
         case 'JobFailed': {
@@ -2193,7 +3770,7 @@ export class RelationalGenerationStore {
               opened.lossEventId !== e.eventId ||
               opened.deadlineAt < opened.firstUnknownAt ||
               opened.response.dispatchState === 'not_sent' ||
-              !JSON.parse(a.upstreamCandidates).length
+              (a.candidateMode !== 'unknown' && !JSON.parse(a.upstreamCandidates).length)
             ) {
               fail('未知消费核对起点不符');
             }
@@ -2204,6 +3781,7 @@ export class RelationalGenerationStore {
               .run(opened.firstUnknownAt, opened.deadlineAt, opened.lossEventId, e.eventId, a.id);
           } else {
             const closed = e.payload;
+            this.assertReviewAnchor(job, a);
             if (
               a.lossEventId !== closed.lossEventId ||
               !['pending', 'estimated_closed'].includes(a.reviewStatus || '') ||
@@ -2214,36 +3792,29 @@ export class RelationalGenerationStore {
             ) {
               fail('核对结案与保存的窗口/结果不符');
             }
+            const actual =
+              closed.actualConsumption === null
+                ? a.actualConsumption
+                : canonicalJson(closed.actualConsumption);
+            if (a.actualConsumption !== null && actual !== a.actualConsumption) {
+              fail('已知原上游消费不能被矛盾的核对事实覆盖');
+            }
             this.sqlite
               .prepare(
                 'UPDATE generation_attempts SET review_status=?,review_closed_at=?,closure_event_id=?,actual_consumption=?,source_event_id=? WHERE id=?',
               )
-              .run(
-                closed.status,
-                e.occurredAt,
-                e.eventId,
-                closed.actualConsumption === null ? null : canonicalJson(closed.actualConsumption),
-                e.eventId,
-                a.id,
-              );
+              .run(closed.status, e.occurredAt, e.eventId, actual, e.eventId, a.id);
           }
           break;
         }
         default:
           throw new Error(`Generation replay cannot apply another owner's fact: ${e.eventType}`);
       }
-    }
+    };
   }
-  replayGenerationCommit(stored: StoredRelationalCommit) {
-    return this.owned(() => {
-      if (stored.events.some((e) => !generationFacts.has(e.eventType))) {
-        throw new Error('Generation replay requires complete generation/accounting commits.');
-      }
-      const result = replayRelationalCommit(this.sqlite, stored);
-      if (!result.replayed) {
-        this.applyEvents(result.events);
-      }
-      return result;
-    });
+  replayGenerationCommit(stored: StoredRelationalCommit, sourceInputs?: RelationalInputStore) {
+    return this.owned(() =>
+      new RelationalCommitReplayer(this.sqlite, this).replayGenerationCommit(stored, sourceInputs),
+    );
   }
 }

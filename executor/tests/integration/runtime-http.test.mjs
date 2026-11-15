@@ -8,6 +8,7 @@ import { mkdtemp, readFile, readdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { addRetainedHistory, bootstrapPackaged } from './relational-fixture.mjs';
 
 // CI mounts only this test directory into the final image. Never fall back to source modules.
 const entry = process.env.EXECUTOR_TEST_ENTRY
@@ -25,37 +26,33 @@ function packaged(relative) {
   );
   return filename;
 }
-const { bootstrap } = await import(pathToFileURL(packaged('scripts/bootstrap.mjs')).href);
-const { JsonStore } = await import(pathToFileURL(packaged('server/storage/sqlite-store.js')).href);
-const { syncFairQuota } = await import(pathToFileURL(packaged('server/quota/fair-share.js')).href);
-const { createMemberSession } = await import(
-  pathToFileURL(packaged('server/members/authentication.js')).href
-);
-const { nativeImagesMsgpack } = await import(
-  pathToFileURL(packaged('server/protocols/native-stream.js')).href
-);
-const { recordDomainEvent } = await import(
-  pathToFileURL(packaged('server/events/domain-events.js')).href
-);
+const load = (relative) => import(pathToFileURL(packaged(relative)).href);
+const { RelationalMemberStore } = await load('server/storage/relational-member-store.js');
+const { RelationalRequestStore } = await load('server/storage/relational-request-store.js');
+const { RelationalReplicaStore } = await load('server/storage/relational-replica-store.js');
+const { assertRelationalStorageReady } = await load('server/storage/relational-storage.js');
+const { createMemberSession } = await load('server/members/authentication.js');
+const { nativeImagesMsgpack } = await load('server/protocols/native-stream.js');
 assert.equal(runtimeRequire.resolve('novelai-shared-gateway'), packaged('server/index.js'));
 const Database = runtimeRequire('better-sqlite3');
-const migrationJournal = JSON.parse(
-  await readFile(packaged('server/migrations/meta/_journal.json'), 'utf8'),
-);
 for (const name of [
   'server/gateway-runtime.js',
+  'server/storage/relational-replay.js',
+  'server/storage/relational-ready.js',
+  'server/generation/relational-native-http.js',
+  'scripts/bootstrap.mjs',
+  'scripts/restore-relational.mjs',
+  'scripts/r2-backup.mjs',
+])
+  await stat(packaged(name));
+for (const name of [
+  'server/storage/sqlite-store.js',
   'server/storage/sqlite-read-worker.js',
   'server/storage/sqlite-migrations.js',
-  'server/storage/sqlite-schema.js',
-  'server/events/event-store.js',
-  'server/generation/admission.js',
-  'server/http/api-surface.js',
-  'server/protocols/generation-pricing.js',
-  'server/protocols/v5-medium-rules.js',
-  'server/reports/activity-heatmap.js',
-  ...migrationJournal.entries.map((item) => `server/migrations/${item.tag}.sql`),
+  'scripts/replay-events.mjs',
+  'server/migrations',
 ]) {
-  await stat(packaged(name));
+  await assert.rejects(stat(path.join(packagedRoot, name)), { code: 'ENOENT' });
 }
 assert.deepEqual(
   (await readdir(path.join(packagedRoot, 'server'))).filter((name) => name.endsWith('.js')).sort(),
@@ -100,11 +97,19 @@ async function fixture(t, { owner = false } = {}) {
   const adminToken = 'synthetic-executor-admin-token-only';
   const internalToken = 'synthetic-executor-internal-token-only';
   const upstreamToken = 'pst-synthetic-executor-upstream-only';
-  const initialized = await bootstrap({
-    env: { ADMIN_TOKEN: adminToken, NOVELAI_TOKEN: upstreamToken, DATA_DIR: dataDir },
-    log() {},
-  });
-  const members = JSON.parse(await readFile(initialized.credentialPath, 'utf8')).accounts;
+  await bootstrapPackaged(
+    packaged('scripts/bootstrap.mjs'),
+    {
+      ...envBase(),
+      ADMIN_TOKEN: adminToken,
+      NOVELAI_TOKEN: upstreamToken,
+      DATA_DIR: dataDir,
+    },
+    t.signal,
+  );
+  const members = JSON.parse(
+    await readFile(path.join(dataDir, 'bootstrap-credentials.json'), 'utf8'),
+  ).accounts;
   const env = {
     ...envBase(),
     ADMIN_TOKEN: adminToken,
@@ -122,115 +127,60 @@ async function fixture(t, { owner = false } = {}) {
       PUBLIC_BASE_URL: 'https://executor.example',
     });
   }
-  const seeded = new JsonStore(dataDir),
+  const filename = path.join(dataDir, 'library.sqlite'),
+    seeded = new Database(filename),
     sessions = [];
-  await seeded.init();
+  seeded.pragma('foreign_keys=ON');
   try {
-    await seeded.update(
-      (db) => {
-        const account = db.accounts[0],
-          observation = {
-            quotaTier: 3,
-            subscriptionActive: true,
-            subscriptionExpiresAt: Date.now() + 86400000,
-            quotaFixed: 10000,
-            quotaPurchased: 0,
-            v5UsagePercent: 100,
-            quotaCheckedAt: new Date().toISOString(),
-          };
-        Object.assign(account, observation);
-        recordDomainEvent(db, {
-          eventType: 'QuotaObserved',
-          streamId: `account:${account.id}`,
-          accountId: account.id,
-          payload: { kind: 'official', accountId: account.id, observation },
-        });
-        syncFairQuota(db);
-        if (owner) {
-          db.users.forEach((user, index) => {
-            user.discord = {
-              id: String(222222222222222220n + BigInt(index)),
-              guildId: env.DISCORD_GUILD_ID,
-              member: true,
-              checkedAt: Date.now(),
-              accessToken: 'synthetic-discord-access',
-              refreshToken: 'synthetic-discord-refresh',
-              expiresAt: Date.now() + 3600000,
-            };
-            recordDomainEvent(db, {
-              eventType: 'MemberEligibilityChanged',
-              streamId: 'sharing:default',
-              memberId: user.id,
-              payload: {
-                memberId: user.id,
-                discord: {
-                  id: user.discord.id,
-                  guildId: user.discord.guildId,
-                  member: true,
-                  checkedAt: user.discord.checkedAt,
-                },
-              },
-            });
-          });
-        }
-        db.jobs = [0, 1, 1].map((member, index) => ({
-          id: `synthetic-retained-${index}`,
-          status: 'done',
-          source: 'novelai-native',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          userToken: db.users[member].token,
-          generationAttempt: {
-            id: `synthetic-history-attempt-${index}`,
-            memberId: db.users[member].id,
-          },
-          request: {
-            operation: 'generate',
-            model: nativeBody.model,
-            prompt: 'synthetic-private-history',
-          },
-        }));
-        for (const job of db.jobs) {
-          const { userToken, request, ...facts } = job,
-            memberId = db.users.find((user) => user.token === userToken).id;
-          recordDomainEvent(db, {
-            eventType: 'OpeningStateRecorded',
-            streamId: `request:legacy-${job.id}`,
-            memberId,
-            payload: {
-              state: {
-                request: { requestId: null, memberId },
-                jobs: {
-                  [job.id]: {
-                    ...facts,
-                    memberId,
-                    request: { operation: request.operation, model: request.model },
-                  },
-                },
-                artifacts: {},
-                aliases: [],
-                freeUsage: {},
-              },
-            },
-          });
-        }
-      },
-      { immediate: true },
-    );
+    const memberStore = new RelationalMemberStore(seeded, env);
     if (owner) {
-      for (const user of seeded.db.users.slice(0, 2)) {
-        sessions.push(await createMemberSession(seeded, user, env));
+      await memberStore.discordAuthenticationTransaction((transaction) => {
+        for (const [index, credentials] of members.entries()) {
+          const user = transaction.readMember(credentials.user_id);
+          user.discord = {
+            id: String(222222222222222220n + BigInt(index)),
+            guildId: env.DISCORD_GUILD_ID,
+            member: true,
+            checkedAt: Date.now(),
+            accessToken: 'synthetic-discord-access',
+            refreshToken: 'synthetic-discord-refresh',
+            expiresAt: Date.now() + 3600000,
+          };
+          transaction.saveAuthentication(user, 'login');
+        }
+      });
+      for (const member of members.slice(0, 2)) {
+        sessions.push(
+          await createMemberSession(
+            memberStore,
+            memberStore.authenticationMember(member.user_id),
+            env,
+          ),
+        );
       }
     }
   } finally {
-    await seeded.close();
+    seeded.close();
   }
+  await addRetainedHistory({
+    Database,
+    filename,
+    members,
+    load,
+    idPrefix: 'synthetic-retained',
+    prompt: 'synthetic-private-history',
+    image: png,
+  });
 
   // From this point only the child writes SQLite; parent assertions use a read-only connection.
   const audit = new Database(path.join(dataDir, 'library.sqlite'), {
     readonly: true,
     fileMustExist: true,
   });
+  audit.pragma('foreign_keys=ON');
+  const accountId = audit
+    .prepare('SELECT bound_account_id id FROM sharing_policy WHERE id=1')
+    .get().id;
   let generations = 0,
     unexpectedUpstream = 0,
     leakedInternalHeader = false,
@@ -353,6 +303,14 @@ globalThis.fetch = (input, options) => {
       child.once('exit', failed);
       child.once('error', failed);
     });
+    const enabled = await call('/api/admin/accounts/' + accountId, {
+      method: 'PATCH',
+      body: { enabled: true },
+      headers: { 'x-admin-token': adminToken, 'idempotency-key': 'artifact-fixture-enable' },
+    });
+    const reply = await enabled.text();
+    assert.equal(enabled.status, 200, reply);
+    assert.equal(JSON.parse(reply).enabled, true);
   };
   const call = (
     route,
@@ -384,10 +342,8 @@ globalThis.fetch = (input, options) => {
   };
   const checkStorage = () => {
     assert.equal(audit.pragma('integrity_check', { simple: true }), 'ok');
-    assert.equal(
-      audit.prepare('SELECT COUNT(*) AS n FROM __drizzle_migrations').get().n,
-      migrationJournal.entries.length,
-    );
+    audit.transaction(() => assertRelationalStorageReady(audit))();
+    assert.equal(audit.prepare('PRAGMA foreign_key_check').get(), undefined);
     assert.equal(unexpectedUpstream, 0);
     assert.equal(leakedInternalHeader, false);
     assert.equal(wrongUpstreamAuth, false);
@@ -457,10 +413,14 @@ function assertSafeHeatmap(value, members, total) {
 }
 
 test(
-  '实际产物的编译后 mock 可从 node_modules 启动，非编译脚本资源仍保留',
+  '实际产物的编译后 mock 可从 node_modules 启动，当前离线工具闭包完整',
   { timeout: 15000 },
   async (t) => {
-    for (const name of ['scripts/README.md', 'scripts/queue-baseline.py']) {
+    for (const name of [
+      'scripts/bootstrap.mjs',
+      'scripts/restore-relational.mjs',
+      'scripts/r2-backup.mjs',
+    ]) {
       await stat(packaged(name));
     }
     const child = spawn(
@@ -506,7 +466,7 @@ test(
 );
 
 test(
-  '实际 Nitro 产物保留鉴权、SQLite worker、Native 二进制与跨格式幂等，并正常结束 SSE',
+  '实际 Nitro 关系产物保留鉴权、聚合查询、Native 二进制与跨格式幂等，并正常结束 SSE',
   { timeout: 60000 },
   async (t) => {
     // Relative paths must be rejected before importing the runtime or opening any database/listener.
@@ -668,10 +628,11 @@ test(
     assert.equal(zip.readUInt16LE(eocd + 20), 0);
     assert.equal(zip.readUInt16LE(eocd + 10), 1);
     assert.equal(zip.readUInt32LE(eocd + 12) + zip.readUInt32LE(eocd + 16), eocd);
+    const requests = new RelationalRequestStore(gateway.audit);
     const jobs = gateway.audit
-      .prepare('SELECT data FROM jobs')
+      .prepare('SELECT id FROM generation_jobs')
       .all()
-      .map((row) => JSON.parse(row.data));
+      .map(({ id }) => requests.readApiJob(id));
     const job = jobs.find((item) => item.requestId === requestId);
     assert.ok(job);
     assert.equal(job.status, 'done');
@@ -687,26 +648,25 @@ test(
       assert.equal(image.status, 200);
       assert.deepEqual(Buffer.from(await image.arrayBuffer()), png);
     }
-    const image = JSON.parse(
-      gateway.audit.prepare('SELECT data FROM images WHERE id = ?').get(job.imageId).data,
-    );
+    const image = new RelationalReplicaStore(gateway.audit).readArtifact(job.imageId).descriptor;
     assert.match(image.file, /^images\/[A-Za-z0-9_-]+\.png$/);
     assert.deepEqual(await readFile(path.join(gateway.dataDir, image.file)), png);
     const counts = () =>
       [
-        'jobs',
-        'images',
+        'generation_jobs',
+        'artifacts',
         'generation_requests',
-        'generation_idempotency',
-        'fair_quota_settlements',
-        'ledger',
+        'idempotency_keys',
+        'charges',
+        'domain_events',
       ].map((table) => gateway.audit.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n);
     const originalCounts = counts();
-    const charge = JSON.parse(
-      gateway.audit
-        .prepare('SELECT charge FROM fair_quota_settlements WHERE job_id = ?')
-        .get(job.id).charge,
-    );
+    const charge = gateway.audit
+      .prepare(
+        `SELECT status,billing_mode AS resource,v5 AS amount,
+      anlas_fixed AS fixed,anlas_purchased AS purchased FROM charges WHERE original_job_id=?`,
+      )
+      .get(job.id);
     assert.equal(charge.resource, 'free');
     assert.equal(charge.status, 'settled');
     assert.equal(charge.amount, '0');
@@ -718,9 +678,9 @@ test(
     assert.equal(asJson.headers.get('x-nai-request-id'), requestId);
     assert.match(asJson.headers.get('vary'), /Accept/i);
     assert.deepEqual((await json(asJson, 200)).images, [
-      { image: png.toString('base64'), index: 0, seed: job.request.seed },
+      { image: png.toString('base64'), index: 0, seed: job.seed },
     ]);
-    assert.equal(job.request.seed, nativeBody.parameters.seed);
+    assert.equal(job.seed, nativeBody.parameters.seed);
     const unacceptable = await gateway.call('/ai/generate-image', {
       body: nativeBody,
       member: 0,

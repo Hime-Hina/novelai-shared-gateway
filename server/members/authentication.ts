@@ -1,3 +1,4 @@
+import type { RelationalCommand } from '../events/relational-events.ts';
 import { createHash, randomBytes, scrypt as derive, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { assertCurrentDiscordMembership } from './discord-auth.ts';
@@ -274,13 +275,13 @@ export function withAuthenticatedMemberSession<T>(
   store: MemberSessionCommandStore,
   token: unknown,
   env: NodeJS.ProcessEnv,
-  authorized: (user: MemberUser) => T,
+  authorized: (user: MemberUser, expiresAt: number) => T,
   now?: number,
 ) {
-  return checkMemberSession(store, token, env, now, false, (user) => {
+  return checkMemberSession(store, token, env, now, false, (user, expiresAt) => {
     store.assertMemberCommandTransaction();
     assertCurrentDiscordMembership(user, env);
-    return authorized(user);
+    return authorized(user, expiresAt);
   });
 }
 
@@ -386,6 +387,30 @@ export async function logoutMemberSession(
     await store.memberSessionTransaction(() => {}, {
       memberSessionDelete: tokenHash,
     });
+  }
+}
+
+// 调用者已进入当前 Key/Cookie 事务；原回执也不能绕过当前成员/owner 的复核。
+export function assertCurrentOwnerCommand(
+  actor: Pick<RelationalCommand, 'actorKind' | 'actorId'>,
+  member: MemberUser | null,
+  current: { status: string; authEpoch: string | null } | null | undefined,
+  env: NodeJS.ProcessEnv,
+): void {
+  if (actor.actorKind === 'admin' && member === null) {
+    return;
+  }
+  if (
+    actor.actorKind !== 'member' ||
+    !member ||
+    actor.actorId !== member.id ||
+    member.id !== env.OWNER_USER_ID ||
+    !member.enabled ||
+    !member.memberAuth?.version ||
+    current?.status !== 'active' ||
+    current.authEpoch !== member.memberAuth.version
+  ) {
+    fail(403, '管理命令需要当前 owner 或本地管理员授权');
   }
 }
 

@@ -3,11 +3,23 @@
 T3 新格式接入继续复用 `members/authentication.ts` 的规则。存储通过 `memberSessionTransaction()`
 提供当前成员、会话和 owner 配置的窄事务视图；旧运行时仅在存储边界映射原 SQL 字段。
 新格式将凭据、会话和 `member_auth_state` 作为私有当前状态恢复，业务事实不能复活这些认证材料。
+
+管理 `discord-invite` 沿原非 keyed 私有操作：当前 owner Cookie/资格或本机 admin 在正文后重验授权，存储在同一事务重新核对实际 actor、当前启用状态及 auth epoch。未启用 Discord 为 409；目标须存在、启用且尚未绑定，沿原 owner 返回 404/409。成功返回原 `{code,expiresAt}`，只持久化原 7 天邀请摘要和截止，不追加公共 secret、事件、回执或结果缓存。再次请求是新操作，会替换旧摘要，即使附相同 Idempotency-Key 也不能据此复取原明文。旧码/过期码不能兑现；OAuth state、指定服务器验证和一次性绑定仍由原 Discord owner 完成，公共回放不恢复邀请，选定私有快照按真实源保留。
+
 真实登录/退出共用原 HTTP handler；T4 的受理回调要求同一真实 SQLite 事务，不接受旧串行队列替代。
 Discord 的邀请、登录和刷新继续由 `members/discord-auth.ts` 决定，经 `discordAuthenticationTransaction()`
 保存私有绑定/授权与非秘密资格事实。网络验证在 SQL 事务外完成，受理事务按同一五分钟规则复核当前资格。
 本段不改变下面已发布接口的期限、Cookie、Discord 或撤销规则；逐阶段实现与验证见
 [数据库计划第 9.6 节](../plans/database-model-redesign.md#96-t3t4稳定身份私有凭据和会话事务)。
+
+关系成员注册和状态命令接受当前已认证 owner 的稳定成员及认证版本，复用
+`assertCurrentOwnerCommand()`，在同一 Key/Cookie 事务内、原回执之前复核当前
+owner 配置、启用状态及数据库中的认证版本；元数据不能自证身份。Discord 当前
+资格和 Cookie/Key 仍由原认证事务 owner 校验，传入成员快照不是独立的 HTTP 授权。
+owner 不得停用本人；本机 admin 和内部 system 的既有应急入口保留。停用的私有
+撤销与业务事实同笔提交，重新启用、重启及重领原回执均不恢复旧 Cookie 或旧认证版本。
+公共提交回放只恢复稳定身份与状态，不恢复私有凭据，也不重做在线授权或网络调用。
+这一存储接缝不表示管理 POST 已接入；范围和反例见数据库计划第 9.65 节。
 
 owner 连续 1 天未访问后过期，普通成员连续 7 天未访问后过期。有效会话的
 可见网页访问将截止时间重设为当前时间加各自期限，不在旧截止上累加天数。
@@ -16,6 +28,10 @@ owner 连续 1 天未访问后过期，普通成员连续 7 天未访问后过�
 Nuxt 与保留的旧网页只在可见时，为个人 `me` 或 owner 的管理摘要请求附加
 `X-Member-Activity: 1`。现有可见页面 30 秒补读也算访问；隐藏后停止补读。
 服务端仅在这两个 GET 入口完成同源检查、会话鉴权和 Discord 成员验证后续期。
+管理摘要特指精确 `/api/member/owner/member-management`，且 URL 无任何 query；
+字面 `/api/member/owner/summary`、静态 `/api/admin/member-management`、普通 GET，
+以及带 query 的 heatmap/losses 等读取都不属于此续期入口。续期继续复用原会话 owner，
+不自行计算期限；Discord 和服务资源 IO 后仍复核当前会话、owner/epoch 与 ready 才返回管理数据。
 普通 API 查询、客户端生图、SSE 心跳、后台标签页和 Discord token 刷新不续期。
 不使用鼠标轨迹判断活动，也没有另加心跳请求或浏览器存储中的登录令牌。
 

@@ -14,6 +14,6 @@ export default defineNitroConfig({
       ),
     },
   ],
-  // 业务模块使用真实文件树，保留 worker、迁移和静态资源的相对路径。
+  // 业务模块复用后端发布包的真实 JavaScript 文件树，不交给 Nitro 另行打包。
   rollupConfig: { external: [/^novelai-shared-gateway(?:\/|$)/] },
 });

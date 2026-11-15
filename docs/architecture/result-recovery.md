@@ -8,6 +8,16 @@
 
 ## 事件权威与启动
 
+本轮未发布关系候选的普通入口已改用唯一 `gateway-runtime.ts` 关系装配，保留 `startGateway/handleGatewayRequest`。启动只接受现存、当前 DDL/hash/writer/reducer 且完整 cut 为 ready 的数据库；不会在线开账、迁移或修补 ready。先在 DATA_DIR 的独占私有临时副本恢复 DB/WAL/journal 并调用现格式、ready/FK 与配置 owner，再核原文件及 sidecar 的 64KiB 流式 SHA256/BigInt 身份未变，才首次实际打开原库并复核。无效源不由 SQLite 打开，原 DB/sidecar 字节保持；预检确有 O(DB+WAL+journal) 临时磁盘与 IO 成本。DATA_DIR 必须具受保护 ACL，启动源必须单 writer 且静止；前后复核不声称消除不合作外部写入者的全部 TOCTOU。
+
+随后原结果 owner 恢复 prepared 文件，原执行器准备中断任务；只有实际 listen 成功并再次确认当前 ready，才激活原队列和唯一账户观察循环。端口占用、恢复故障和监听期间 ready 失效都不派发新任务。新受理在正文/缓存/认证 IO 后的原事务内核同一 queue 当前 phase，旧合法回执先于该新决定门禁。关闭停止调度并等待真实生成控制与 quota 原网络 Promise；drained 仅唤醒，领取 owner 先冷读终态，再从当前 stopped phase 结束非终态等待，晚注册同样适用。最后等 HTTP handler 和真实 response finish/close，清理 idle keep-alive 并等 server close，再关数据库，不能以强退 exit0 代替。关闭不会取消 queued 业务或伪造退款，重启仍按原事实执行。限时签名采用单进程密钥，重启失效。
+
+新格式已有 `ArtifactPrepared` 时，完整 final/part 由 `relational-result-recovery.ts` 完成原尝试；缺失、半写或损坏则保留原准备、预扣与未决责任，由 `relational-queue-runtime.ts` 拒绝监听，不能从缺少本地字节推断上游失败并退款。没有 prepared 的中断尝试才继续原 interrupted 处理。原 owner 的可运行反例见 `tests/integration/relational-result-recovery.test.mjs` 中缺失及损坏字节用例；本轮真实 HTTP 故障夹具的来源迁移见[计划 9.96](../plans/database-model-redesign.md#996-结果恢复-http-child-的关系夹具)。
+
+下文 `event_commits`、`JsonStore`、旧开账/inline 升级及 writer4 的说明属于旧格式的独立解释工具和历史 F10，不能据此启动新入口自动转换。新格式的完整提交、保护内容、选定私有快照与唯一 ready installer 见[离线恢复](../operations/relational-recovery.md)，同候选发布物与切换验收仍未完成。
+
+### 旧格式解释与历史启动
+
 账务和任务生命周期由 `domain_events` 的业务事实重建，`event_commits` 保存整笔提交的顺序与回执。钱包、预留、任务、冷结算和免费次数是同一 SQLite 事务内维护的投影；事件写入或投影失败会一起回滚。读路径不以查询为由补发恢复额度、初始化运营账或更新钱包。
 
 唯一执行器的启动顺序是：迁移并加载 SQLite；在首次领域写入前完成旧库 opening；创建结果目录，恢复已描述的完整产物，再清理其他中断/过期任务；完成旧 inline 图片迁移、配置应用等启动工作；最后 `enableEventAuthority()` 核对事件与关键投影、写入权威版本标记。只有切换成功，HTTP 才开始监听，队列才允许派发。投影、权威版本或迁移历史不匹配，以及仍未处置的 running 尝试会阻止切换，不能通过忽略核对结果继续写账本。
@@ -78,7 +88,7 @@ Vibe 编码作为非空 opaque 二进制处理，以原媒体类型、长度和 
 监听后才恢复队列。已退款任务找回结果仍保留 failed/退款，标注迟到可领取，
 不补扣、不复活取消的余图、不释放别的任务槽。
 
-缺失、半写、损坏或身份不符的结果不记成功，保留证据；旧 running 通过现有
+以下旧 writer 范围内，缺失、半写、损坏或身份不符的结果不记成功，保留证据；旧 running 通过现有
 未知结果流程幂等退款，损耗按 F03 分资源记录。没有对应描述的旧孤儿文件
 不自动认领。手动清请求日志跳过待恢复任务；默认历史裁剪也保留它们。
 配置 `NO_AUTO_DELETE=true` 时继续保护全部记录/文件，500 条默认缓存值
@@ -100,6 +110,8 @@ SIGTERM/SIGINT 先停止接收新请求和新派发，等待已开始的派发�
 宽限到期退出，持久任务和文件证据保留给下次启动恢复。强杀和进程异常不
 依赖退出回调。systemd 的停止超时须留出应用宽限及退出余量；F11/D01 实际
 拆服务和部署时再核验。不能靠启多个调度进程来实现共享账本的滚动重启。
+
+新格式离线 ready 安装要求受保护字节闭包已恢复：待恢复的准备结果由生成 owner 核验原描述、归属和输入，再只读核验存在的最终文件及 `.part`。至少一份完整且不存在原文件 owner 认定的冲突，才能安装；两者皆缺、半写或损坏时拒绝，保留原准备与责任，不自动发布、退款或把后续启动恢复当作本次成功。完整 final/part 可通过核对，但仍保留原运行中或未决状态，之后才由原恢复命令提交完成。该安装规则与实际验证见[数据库计划 9.23](../plans/database-model-redesign.md#923-50-离线完整核对与-ready-安装契约)。
 
 ## 同步、性能与保证边界
 

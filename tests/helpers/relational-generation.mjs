@@ -1,3 +1,4 @@
+import { initializeFixtureConfiguration } from './relational-configuration.mjs';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
@@ -25,9 +26,14 @@ import { domainDigest } from '../../server/events/domain-events.ts';
 import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
 import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
 import { quoteFairRequest } from '../../server/quota/fair-share.ts';
+import { randomUUID } from 'node:crypto';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
+import { relationalSnapshotSha256 } from '../../server/storage/relational-private-restore.ts';
 
 const NOW = 1800000000000,
   keys = { m1: 'synthetic-key-m1', m2: 'synthetic-key-m2' };
+// 仅无调度器的命令/投影夹具声明运行期；真实 HTTP lifecycle/sole 用真实 queue runtime。
+const commandOnlyRuntime = Object.freeze({ status: 'running', assertAccepting() {} });
 const image = await readFile(new URL('../fixtures/synthetic.webp', import.meta.url));
 const zero = () => ({ v5: '0', anlasFixed: '0', anlasPurchased: '0' });
 function databaseState(db) {
@@ -66,6 +72,7 @@ function meta(id, now = NOW, memberId = null) {
   };
 }
 function openingFacts({
+  openingAt = NOW,
   v5 = '40',
   secondV5 = v5,
   fixed = '4000',
@@ -87,16 +94,18 @@ function openingFacts({
         sourceSha256: 'a'.repeat(64),
         sourceCommit: '4161ea5',
         cutoffSeq: '2',
-        cutoffAt: NOW,
+        cutoffAt: openingAt,
         manifestSha256: 'b'.repeat(64),
         route: 'B',
       },
     },
     {
       eventType: 'OpeningAccountRecorded',
+      eventId: 'opening-account',
       payload: {
         accountId: 'a',
         displayName: 'shared',
+        weight: 1,
         enabled: true,
         credentialEpoch: 1,
         cooldownUntil: null,
@@ -112,9 +121,9 @@ function openingFacts({
       eventType: 'OpeningGroupRecorded',
       payload: { groupId: 'g', name: 'shared', share: 1, origin },
     },
-    ...['m1', 'm2'].map((memberId) => ({
+    ...['m1', 'm2'].map((memberId, memberOrdinal) => ({
       eventType: 'OpeningGroupMemberRecorded',
-      payload: { memberId, groupId: 'g', weight: 1, origin },
+      payload: { memberId, groupId: 'g', weight: 1, memberOrdinal, origin },
     })),
     {
       eventType: 'OpeningPolicyRecorded',
@@ -128,7 +137,7 @@ function openingFacts({
         freeWarningThreshold: freeLimit,
         freeHardLimit: freeLimit,
         lossPolicyVersion: 1,
-        lossV5_24h: '1',
+        lossV5_24h: 1,
         lossFixed24h: '100',
         lossFixed30d: '500',
         lossMemberAttempts24h: 3,
@@ -155,20 +164,23 @@ function openingFacts({
         accountId: 'a',
         status: 'active',
         observationEventId: 'opening-quota',
-        observedAt: NOW,
+        observedAt: openingAt,
         observedCredentialEpoch: 1,
         observedSequence: '9007199254740993',
         quotaTier: 3,
         subscriptionActive: true,
         subscriptionExpiresAt: null,
         quotaErrorCode: null,
+        // 原历史夹具只有金融值，不能据此伪造官方 flag；实际已知值由专项显式提供。
+        v5UsagePercent: null,
+        v5UsageIsNegative: null,
         observedV5: officialV5,
         observedAnlasFixed: officialFixed,
         observedAnlasPurchased: officialPurchased,
         secondsPerPercent: seconds,
         baselineEventId: baseline ? 'opening-quota' : null,
-        refillCursorAt: baseline ? NOW : null,
-        settlementCursorAt: NOW,
+        refillCursorAt: baseline ? openingAt : null,
+        settlementCursorAt: openingAt,
         unallocatedV5: '0',
         fallbackFixed: '0',
         fallbackPurchased: '0',
@@ -213,7 +225,7 @@ function openingFacts({
     return {
       ...f,
       streamId,
-      occurredAt: NOW,
+      occurredAt: openingAt,
       memberId: p.memberId ?? null,
       accountId: kind === 'account' ? 'a' : null,
       policyVersion: 'shared-quota-v1',
@@ -243,7 +255,7 @@ async function fixture(t, options = {}) {
     generations = new RelationalGenerationStore(db, options.env ?? {});
   for (const id of ['m1', 'm2']) {
     db.transaction(() =>
-      members.registerMember(meta(`register-${id}`), {
+      members.registerMember(meta(`register-${id}`, options.openingAt ?? NOW), {
         memberId: id,
         displayName: id,
         apiKey: keys[id],
@@ -254,7 +266,11 @@ async function fixture(t, options = {}) {
     seed.transaction(() => seedMembers.replayMemberCommit(readRelationalCommit(db, seq)))();
   }
   const events = openingFacts(options);
-  const { policyVersion: _policy, pricingVersion: _pricing, ...command } = meta('opening');
+  const {
+    policyVersion: _policy,
+    pricingVersion: _pricing,
+    ...command
+  } = meta('opening', options.openingAt ?? NOW);
   seed.transaction(() =>
     appendRelationalCommit(seed, {
       ...command,
@@ -265,7 +281,7 @@ async function fixture(t, options = {}) {
   )();
   db.transaction(() => generations.replayGenerationCommit(readRelationalCommit(seed, '3')))();
   // 私有当前凭据不在开账事实中，测试显式模拟受保护快照恢复。
-  db.prepare('INSERT INTO upstream_credentials(account_id,pst) VALUES(?,?)').run(
+  db.prepare("INSERT INTO upstream_credentials(account_id,pst,proxy_url) VALUES(?,?,'')").run(
     'a',
     'synthetic-upstream-pst',
   );
@@ -408,7 +424,29 @@ async function fixture(t, options = {}) {
     publish,
     fail,
     controls,
+    commandOnlyRuntime,
   };
 }
 
-export { NOW, keys, image, zero, meta, openingFacts, databaseState, fixture };
+// 在线适配测试也必须完整安装；building 业务 owner fixture 本身不自动取得在线资格。
+export async function installReady(f) {
+  const sourcePath = path.join(f.dir, `ready-source-${randomUUID()}.sqlite`);
+  initializeFixtureConfiguration(f.db);
+  await f.db.backup(sourcePath);
+  const source = new Database(sourcePath);
+  source.pragma('journal_mode=DELETE');
+  source.close();
+  const selected = {
+    sourcePath,
+    sourceSha256: relationalSnapshotSha256(sourcePath),
+    historyId: f.db.prepare('SELECT history_id id FROM projection_state WHERE id=1').get().id,
+    finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get()
+      .seq,
+    replicas: { dataDir: f.dir },
+  };
+  await verifyAndInstallRelationalStorage(f.db, selected);
+  assertRelationalStorageReady(f.db);
+  return selected;
+}
+
+export { NOW, keys, image, zero, meta, openingFacts, databaseState, fixture, commandOnlyRuntime };

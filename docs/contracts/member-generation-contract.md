@@ -249,6 +249,14 @@ V5/Anlas fallback 是互斥收费路径，不能把两者加起来显示成单�
 - **附件读取**：input 中的图片/编码字段使用本响应 assets 中的稳定槽位引用，assets 给出 slot、合法 MIME、长度和上述 Cookie 读取 URL。slot 只从该请求的已验证附件字段/数组索引映射，不拼任意磁盘路径；复用浏览器先读取字节再作为新 JSON/multipart 输入，不让服务器下载 URL。复用原 generation_requests 数据，不额外复制一套素材库。历史输入本来未保存则 recoverable=false，不能猜出原蒙版或提示词。
 - **产物读取**：新 Cookie 内容接口仅在存在完整可领取结果时返回 200 与实际 MIME/原始字节。未完成为 409 result_not_ready，失败无结果为 409 generation_failed，原产物被清理为 410 result_unavailable；他人或不存在的 job 为 404。退款后的完整迟到结果返回 200，不补扣。旧 `/api/jobs/:id/content` 的 SVG 错误图兼容行为保持，不复制到新接口。
 
+新关系格式的 request 状态继续区分父受理与 child 原创建时刻：job.createdAt 来自原 JobAccepted 事实，历史 Opening 仅使用有来源的可空 createdAt 字段；未知返回 NULL，不能回填父受理时间、开账/迁移日或 0。调用热力图不把未知日期归入任一天，owner 全部保留记录可显示“未知日期”分组。
+
+历史 partial 输入的 `recoverable=false` 表示无法完整还原首次生成语义，不代表已知字段或附件已经丢失。`input` 仍返回实际保存的已知字段、空串和 NULL，`assets` 仍列出该请求的已知白名单槽位；不补当前 Native 定义、action、seed 或 sampleCount。成员可以读取并复制这些已知内容，编辑为新意图后按当前规则重新报价、确认并使用新操作键；这不重放旧 POST、不继承原费用授权，也不允许旧 partial 任务派发。未保存正文的 unavailable 输入仍返回 `input=null` 和 `recoverable=false`。
+
+partial 附件领取仍核对当前成员、原 request/input 归属和来源摘要、槽位、同 input 的 BLOB 长度与 SHA。图片复用现有 PNG/JPEG/WebP 安全解码并核对保存 MIME；已知二进制只以 `application/octet-stream` 原样读取，不将它解释成已满足 Native/Vibe 派发条件。完整输入继续按保存的首次上下文校验，partial 字节读取不伪造该上下文。坏摘要、缺字节或无效内容返回 input_unavailable；非本人的请求或不存在的白名单槽位返回对应 404。
+
+历史 Opening 的原 requested `sampleCount` 可以为 NULL；它不等于已保存 child 数量。正文完整度与请求数量、首次 context、实际 seed 分别保存：已知数量的请求和未知数量的终态请求可以引用同一 complete 输入，不降级或复制正文。未知数量的请求仍可读取已知字段、白名单附件及原结果，但 `recoverable=false`，不注入 `n_samples`、不使用当前默认值；已知 context/seed 和原回执来源保持。正常受理、活动任务、live 旧键及完整原请求恢复必须有已知正数量；不能由 child 数量、位置或费用反推。复制后执行仍需显式完整新意图、新键和当前报价确认。 数量未知不放宽已知首次 context 下的 complete 正文规则；Native/member、Medium、Direct 和辅助操作仍共用原严格 parser/build 往返。定义校验的局部固定帧不代表原 seed/数量，不返回 wire、不补写事实或 DTO，也不授予原请求可恢复/活动/live 资格；缺 context 则保留原安全只读未知范围。
+
 所有请求/附件/产物都重复校验成员归属；停止接单成员仍可查看、取消等待及领取既有结果。合法会员会话失效时返回认证错误，不把它伪装成结果丢失。输入响应不泄漏内部账号、PST、会话、签名密钥或与该成员无关的规范化上下文。
 
 ## 7. 错误与传输契约

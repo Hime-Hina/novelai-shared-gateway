@@ -437,7 +437,13 @@ export function applyOperatingFunding(
   now = Date.now(),
 ): FundingResult {
   const s = db.settings?.fairQuota;
-  if (!s?.enabled || !s.snapshot || !actorId || !s.balances[actorId]) {
+  if (
+    !s?.enabled ||
+    !s.snapshot ||
+    !actorId ||
+    !s.members.includes(actorId) ||
+    !s.balances[actorId]
+  ) {
     error('需要已分组的运营者和已初始化账本');
   }
   const resource = body.resource as Resource,

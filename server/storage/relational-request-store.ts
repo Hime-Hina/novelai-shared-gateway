@@ -1,7 +1,10 @@
 import type Database from 'better-sqlite3';
 import type { GenerationRequestState } from '../generation/request-queries.ts';
 import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
+import { memberCharge } from '../quota/failure-accounting.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import type { SharedJobCounts } from '../quota/shared-status.ts';
+import { RelationalInputStore } from './relational-input-store.ts';
 
 const iso = (at: number | null) => (at === null ? null : new Date(at).toISOString());
 function fail(statusCode: number, code: string, message: string): never {
@@ -9,35 +12,116 @@ function fail(statusCode: number, code: string, message: string): never {
 }
 interface RequestRow {
   id: string;
-  source: string;
-  operation: string;
+  source: string | null;
+  operation: string | null;
   model: string | null;
-  acceptedAt: number;
+  acceptedAt: number | null;
 }
 interface JobRow {
   id: string;
-  sampleIndex: number;
+  requestId: string;
+  model: string | null;
+  sampleIndex: number | null;
+  createdAt: number | null;
   status: string;
-  updatedAt: number;
+  updatedAt: number | null;
   completedAt: number | null;
   cancellationReason: string | null;
   lateResultAt: number | null;
   errorCode: string | null;
   imageId: string | null;
-  chargeStatus: string | null;
-  billingMode: string | null;
+  chargeStatus: 'reserved' | 'settled' | 'refunded' | null;
+  billingMode: 'free' | 'v5' | 'anlas' | 'anlas_fallback' | null;
   estimated: number | null;
   v5: string | null;
   fixed: string | null;
   purchased: string | null;
+  v5Equivalent: string | null;
+  lateResultAvailable: number;
+}
+
+export interface MemberJobPageOptions {
+  page: number;
+  pageSize: number;
+  q: string;
+  status: string;
+  sort: string;
+  order: string;
+  until: string;
+}
+
+const jobFrom = `FROM generation_requests r JOIN generation_jobs j ON j.request_id=r.id
+  JOIN domain_events e ON e.event_id=j.source_event_id
+  LEFT JOIN generation_job_origins origin ON origin.stream_id='request:'||j.request_id
+    AND origin.job_id=j.id AND origin.request_id=j.request_id
+  LEFT JOIN charges c ON c.original_job_id=j.id AND c.original_member_id=r.member_id
+  LEFT JOIN artifacts a ON a.id=j.artifact_id AND a.member_id=r.member_id
+    AND a.retired_at IS NULL AND a.mime_type!='image/svg+xml'`;
+// 迟到必须保留原退款与原找回事实；后来的 source_event_id 只表示当前投影来源。
+const lateResultPredicate = `j.status='failed' AND j.late_result_at IS NOT NULL
+  AND c.status='refunded' AND a.id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM domain_events late WHERE late.stream_id='request:'||j.request_id
+      AND late.member_id=r.member_id AND json_extract(late.payload,'$.jobId')=j.id
+      AND json_extract(late.payload,'$.artifactId')=a.id AND (
+        (late.event_type='LateResultRecovered' AND late.occurred_at=j.late_result_at
+          AND json_extract(late.payload,'$.refundRetained')=1) OR
+        (late.event_type='OpeningJobRecorded' AND json_extract(late.payload,'$.status')='failed'
+          AND json_extract(late.payload,'$.lateResultAt')=j.late_result_at)))`;
+const jobColumns = `j.id,j.request_id AS requestId,r.model,j.sample_index AS sampleIndex,
+  origin.created_at AS createdAt,j.status,
+  CASE WHEN j.status IN ('done','failed') THEN j.completed_at
+    WHEN e.event_type IN ('JobAccepted','JobQueued','DispatchAuthorized') THEN e.occurred_at
+    ELSE NULL END AS updatedAt,
+  j.completed_at AS completedAt,j.cancellation_reason AS cancellationReason,
+  j.late_result_at AS lateResultAt,j.error_code AS errorCode,a.id AS imageId,
+  c.status AS chargeStatus,c.billing_mode AS billingMode,c.estimated,c.v5,
+  c.anlas_fixed AS fixed,c.anlas_purchased AS purchased,c.v5_equivalent AS v5Equivalent,
+  (${lateResultPredicate}) AS lateResultAvailable`;
+
+function jobCharge(job: JobRow) {
+  return job.chargeStatus
+    ? {
+        status: job.chargeStatus,
+        resource: job.billingMode === 'anlas_fallback' ? 'anlas' : job.billingMode!,
+        amount:
+          job.billingMode === 'v5'
+            ? job.v5!
+            : formatAmount(parseAmount(job.fixed!) + parseAmount(job.purchased!)),
+        fixed: job.fixed!,
+        purchased: job.purchased!,
+        estimated: job.estimated === null ? null : job.estimated === 1,
+        billingMode: job.billingMode,
+        v5Equivalent: job.v5Equivalent!,
+      }
+    : null;
+}
+
+function memberJob(job: JobRow, requestId: string | null) {
+  return {
+    id: job.id,
+    requestId,
+    createdAt: iso(job.createdAt),
+    model: job.model,
+    status: job.status,
+    lateResultAvailable: job.lateResultAvailable === 1,
+    imageId: job.imageId,
+    charge: memberCharge(jobCharge(job)),
+  };
 }
 
 // 只读取薄关系状态；完整输入和附件继续由 RelationalInputStore 按需校验。
 export class RelationalRequestStore {
   private sqlite: Database.Database;
+  private inputs: RelationalInputStore;
   constructor(sqlite: Database.Database) {
     assertRelationalStorageFormat(sqlite);
     this.sqlite = sqlite;
+    this.inputs = new RelationalInputStore(sqlite);
+  }
+
+  private publicRequestId(requestId: string) {
+    // 导入容器保留内部归属，但只有原受理/原父事实能授予公开父请求身份。
+    return this.inputs.readOriginalRequestId(requestId) === null ? null : requestId;
   }
 
   private assertMember(memberId: string): void {
@@ -51,58 +135,159 @@ export class RelationalRequestStore {
     }
   }
 
+  readSharedJobCounts(memberId: string, now: number): SharedJobCounts {
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      return this.readManagementSharedJobCounts(now);
+    })();
+  }
+
+  readManagementSharedJobCounts(now: number): SharedJobCounts {
+    if (!Number.isSafeInteger(now) || now < 0) {
+      fail(400, 'invalid_parameters', '共享状态时间无效。');
+    }
+    return this.sqlite.transaction(() => {
+      // 当前组驱动既有 member/request 索引，避免轮询从全部已退组历史扫描起。
+      return this.sqlite
+        .prepare<[number, number], SharedJobCounts>(
+          `SELECT COUNT(*) FILTER (WHERE j.status='running') AS running,
+          COUNT(*) FILTER (WHERE j.status='queued') AS queued,
+          COUNT(*) FILTER (WHERE j.status='pending') AS pending,
+          CASE WHEN COUNT(*) FILTER (WHERE j.status='failed' AND j.completed_at IS NULL)>0
+            THEN NULL ELSE COUNT(*) FILTER (
+              WHERE j.status='failed' AND j.completed_at BETWEEN ? AND ?)
+          END AS recentFailures
+        FROM group_members g CROSS JOIN generation_requests r ON r.member_id=g.member_id
+        CROSS JOIN generation_jobs j ON j.request_id=r.id
+        WHERE r.retired_at IS NULL AND j.retired_at IS NULL`,
+        )
+        .get(now - 3600000, now)!;
+    })();
+  }
+
+  readManagementRecentActivity(memberId: string) {
+    return this.sqlite
+      .prepare<
+        [string],
+        { total: number; done: number; failed: number; queued: number; running: number }
+      >(
+        `SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE status='done') AS done,
+      COUNT(*) FILTER (WHERE status='failed') AS failed,
+      COUNT(*) FILTER (WHERE status IN ('pending','queued')) AS queued,
+      COUNT(*) FILTER (WHERE status='running') AS running FROM (
+        SELECT j.status FROM generation_requests r JOIN generation_jobs j ON j.request_id=r.id
+        JOIN generation_job_origins origin ON origin.job_id=j.id AND origin.request_id=r.id
+        WHERE r.member_id=? AND r.retired_at IS NULL AND j.retired_at IS NULL
+        ORDER BY origin.created_at DESC,j.id DESC LIMIT 30
+      )`,
+      )
+      .get(memberId)!;
+  }
+
   private requestState(request: RequestRow, memberId: string): GenerationRequestState {
     const rows = this.sqlite
       .prepare<[string, string], JobRow>(
-        `SELECT j.id,j.sample_index AS sampleIndex,j.status,e.occurred_at AS updatedAt,
-        j.completed_at AS completedAt,j.cancellation_reason AS cancellationReason,
-        j.late_result_at AS lateResultAt,j.error_code AS errorCode,a.id AS imageId,
-        c.status AS chargeStatus,c.billing_mode AS billingMode,c.estimated,c.v5,
-        c.anlas_fixed AS fixed,c.anlas_purchased AS purchased
-        FROM generation_jobs j JOIN domain_events e ON e.event_id=j.source_event_id
-        LEFT JOIN charges c ON c.job_id=j.id
-        LEFT JOIN artifacts a ON a.id=j.artifact_id AND a.member_id=? AND a.retired_at IS NULL
-        WHERE j.request_id=? ORDER BY j.sample_index,j.id`,
+        `SELECT ${jobColumns} ${jobFrom}
+        WHERE r.member_id=? AND j.request_id=? AND j.retired_at IS NULL ORDER BY j.sample_index,j.id`,
       )
       .all(memberId, request.id);
-    const createdAt = iso(request.acceptedAt)!;
+    const createdAt = iso(request.acceptedAt);
     return {
       id: request.id,
       source: request.source,
       operation: request.operation,
       createdAt,
-      jobs: rows.map((job) => {
-        let fairCharge: GenerationRequestState['jobs'][number]['fairCharge'] = null;
-        if (job.chargeStatus) {
-          fairCharge = {
-            status: job.chargeStatus,
-            resource: job.billingMode === 'anlas_fallback' ? 'anlas' : job.billingMode!,
-            amount:
-              job.billingMode === 'v5'
-                ? job.v5!
-                : formatAmount(parseAmount(job.fixed!) + parseAmount(job.purchased!)),
-            fixed: job.fixed!,
-            purchased: job.purchased!,
-            estimated: job.estimated === null ? null : job.estimated === 1,
-          };
-        }
-        return {
-          id: job.id,
-          sampleIndex: job.sampleIndex,
-          status: job.status,
-          model: request.model,
-          createdAt,
-          updatedAt: iso(job.updatedAt),
-          completedAt: iso(job.completedAt),
-          error: job.errorCode,
-          errorCode: job.errorCode,
-          cancelledAt: job.cancellationReason ? iso(job.completedAt) : null,
-          lateResultAvailable: job.lateResultAt !== null,
-          imageId: job.imageId,
-          fairCharge,
-        };
-      }),
+      jobs: rows.map((job) => ({
+        id: job.id,
+        sampleIndex: job.sampleIndex,
+        status: job.status,
+        model: request.model,
+        createdAt: iso(job.createdAt),
+        updatedAt: iso(job.updatedAt),
+        completedAt: iso(job.completedAt),
+        error: job.errorCode,
+        errorCode: job.errorCode,
+        cancelled: job.cancellationReason !== null,
+        cancelledAt: job.cancellationReason ? iso(job.completedAt) : null,
+        lateResultAvailable: job.lateResultAvailable === 1,
+        imageId: job.imageId,
+        fairCharge: jobCharge(job),
+      })),
     };
+  }
+
+  readMemberJobPage(memberId: string, options: MemberJobPageOptions) {
+    const sort = { createdAt: 'origin.created_at', model: 'r.model', status: 'j.status' };
+    if (
+      !Number.isSafeInteger(options.page) ||
+      options.page < 1 ||
+      options.page > 1000000 ||
+      !Number.isSafeInteger(options.pageSize) ||
+      options.pageSize < 1 ||
+      options.pageSize > 100 ||
+      typeof options.q !== 'string' ||
+      options.q.length > 200 ||
+      !['', 'done', 'failed', 'running', 'queued', 'pending', 'late'].includes(options.status) ||
+      typeof options.sort !== 'string' ||
+      !Object.hasOwn(sort, options.sort) ||
+      !['asc', 'desc'].includes(options.order) ||
+      typeof options.until !== 'string' ||
+      !Number.isFinite(Date.parse(options.until)) ||
+      new Date(options.until).toISOString() !== options.until
+    ) {
+      fail(400, 'invalid_parameters', '历史查询参数无效。');
+    }
+    const params = {
+      memberId,
+      until: Date.parse(options.until),
+      status: options.status,
+      q: `%${options.q.replace(/[\\%_]/g, '\\$&')}%`,
+      limit: options.pageSize,
+      offset: (options.page - 1) * options.pageSize,
+    };
+    // 未知原创建时间不伪造为开账日，仍属于保留历史；SQLite 将 NULL 排在升序首/降序尾。
+    const from = `${jobFrom} WHERE r.member_id=@memberId
+      AND r.retired_at IS NULL AND j.retired_at IS NULL
+      AND (origin.created_at IS NULL OR origin.created_at<=@until)
+      AND (@status='' OR j.status=@status OR (@status='late' AND ${lateResultPredicate}))
+      AND (j.id LIKE @q ESCAPE '\\' OR r.model LIKE @q ESCAPE '\\')`;
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      const total = this.sqlite
+        .prepare<typeof params, { total: number }>(`SELECT COUNT(*) AS total ${from}`)
+        .get(params)!.total;
+      const rows = this.sqlite
+        .prepare<typeof params, JobRow>(
+          `SELECT ${jobColumns} ${from}
+        ORDER BY ${sort[options.sort as keyof typeof sort]} ${options.order === 'asc' ? 'ASC' : 'DESC'},
+          j.id DESC LIMIT @limit OFFSET @offset`,
+        )
+        .all(params);
+      return {
+        total,
+        page: options.page,
+        pageSize: options.pageSize,
+        until: options.until,
+        jobs: rows.map((job) => memberJob(job, this.publicRequestId(job.requestId))),
+      };
+    })();
+  }
+
+  readMemberLateResults(memberId: string) {
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      return this.sqlite
+        .prepare<[string], JobRow>(
+          `SELECT ${jobColumns} ${jobFrom} WHERE r.member_id=?
+        AND r.retired_at IS NULL AND j.retired_at IS NULL AND ${lateResultPredicate}
+        ORDER BY j.late_result_at DESC,j.id DESC LIMIT 10`,
+        )
+        .all(memberId)
+        .map((job) => ({
+          ...memberJob(job, this.publicRequestId(job.requestId)),
+          lateResultAt: iso(job.lateResultAt)!,
+        }));
+    })();
   }
 
   readMemberRequest(requestId: string, memberId: string): GenerationRequestState {
@@ -111,10 +296,10 @@ export class RelationalRequestStore {
       const request = this.sqlite
         .prepare<[string, string], RequestRow>(
           `SELECT id,source,operation,model,accepted_at AS acceptedAt
-          FROM generation_requests WHERE id=? AND member_id=?`,
+          FROM generation_requests WHERE id=? AND member_id=? AND retired_at IS NULL`,
         )
         .get(requestId, memberId);
-      if (!request) {
+      if (!request || this.publicRequestId(requestId) === null) {
         fail(404, 'request_not_found', '请求不存在。');
       }
       return this.requestState(request, memberId);
@@ -124,15 +309,15 @@ export class RelationalRequestStore {
   readMemberRequests(
     memberId: string,
     limit = 20,
-    before: { acceptedAt: number; id: string } | null = null,
+    before: { acceptedAt: number | null; id: string } | null = null,
   ) {
     if (
       !Number.isSafeInteger(limit) ||
       limit < 1 ||
       limit > 100 ||
       (before &&
-        (!Number.isSafeInteger(before.acceptedAt) ||
-          before.acceptedAt < 0 ||
+        ((before.acceptedAt !== null &&
+          (!Number.isSafeInteger(before.acceptedAt) || before.acceptedAt < 0)) ||
           typeof before.id !== 'string' ||
           !before.id))
     ) {
@@ -140,14 +325,34 @@ export class RelationalRequestStore {
     }
     return this.sqlite.transaction(() => {
       this.assertMember(memberId);
+      const parameters: unknown[] = [memberId];
+      let cursor = '';
+      if (before) {
+        if (before.acceptedAt === null) {
+          cursor = 'AND r.accepted_at IS NULL AND r.id<?';
+          parameters.push(before.id);
+        } else {
+          cursor = 'AND (r.accepted_at IS NULL OR (r.accepted_at,r.id)<(?,?))';
+          parameters.push(before.acceptedAt, before.id);
+        }
+      }
+      parameters.push(limit);
       const rows = this.sqlite
         .prepare<unknown[], RequestRow>(
-          `SELECT id,source,operation,model,accepted_at AS acceptedAt
-          FROM generation_requests WHERE member_id=? AND retired_at IS NULL
-          ${before ? 'AND (accepted_at,id)<(?,?)' : ''}
-          ORDER BY accepted_at DESC,id DESC LIMIT ?`,
+          `SELECT r.id,r.source,r.operation,r.model,r.accepted_at AS acceptedAt
+          FROM generation_requests r JOIN generation_request_origins origin
+            ON origin.stream_id='request:'||r.id AND origin.request_id=r.id
+            AND origin.original_request_id IS NOT NULL
+          WHERE r.member_id=? AND r.retired_at IS NULL ${cursor}
+          ORDER BY r.accepted_at DESC,r.id DESC LIMIT ?`,
         )
-        .all(...(before ? [memberId, before.acceptedAt, before.id, limit] : [memberId, limit]));
+        .all(...parameters);
+      // DESC 的 NULL 尾阶段用稳定 ID 继续，不借导入时点或数值 0 补出时间游标。
+      for (const row of rows) {
+        if (this.publicRequestId(row.id) === null) {
+          fail(503, 'request_source_mismatch', '原父请求来源不一致。');
+        }
+      }
       return {
         requests: rows.map((row) => this.requestState(row, memberId)),
         before:
@@ -164,15 +369,25 @@ export class RelationalRequestStore {
       const job = this.sqlite
         .prepare<
           [string, string],
-          { status: string; artifactId: string | null; lateResultAt: number | null }
+          {
+            status: string;
+            artifactId: string | null;
+            lateResultAt: number | null;
+            retiredAt: number | null;
+            requestRetiredAt: number | null;
+          }
         >(
-          `SELECT j.status,j.artifact_id AS artifactId,j.late_result_at AS lateResultAt
+          `SELECT j.status,j.artifact_id AS artifactId,j.late_result_at AS lateResultAt,
+          j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt
           FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
           WHERE j.id=? AND r.member_id=?`,
         )
         .get(jobId, memberId);
       if (!job) {
         fail(404, 'job_not_found', '任务不存在。');
+      }
+      if (job.retiredAt !== null || job.requestRetiredAt !== null) {
+        fail(410, 'result_unavailable', '原结果已不可领取。');
       }
       if (!job.artifactId) {
         if (['pending', 'queued', 'running'].includes(job.status)) {
@@ -189,7 +404,7 @@ export class RelationalRequestStore {
             artifactId: string;
             inputId: string;
             originalAttemptId: string | null;
-            operation: string;
+            operation: string | null;
             mimeType: string;
             byteLength: number;
             sha256: string;
@@ -205,5 +420,132 @@ export class RelationalRequestStore {
       }
       return artifact;
     })();
+  }
+
+  readMemberJobDelivery(jobId: string, memberId: string) {
+    return this.sqlite.transaction(() => {
+      this.assertMember(memberId);
+      const job = this.sqlite
+        .prepare<
+          [string, string],
+          {
+            status: string;
+            requestId: string;
+            seed: number | null;
+            artifactId: string | null;
+            error: string | null;
+            errorStatus: number | null;
+            cooldownUntil: number | null;
+            queuePosition: number | null;
+            queuedCount: number;
+            retiredAt: number | null;
+            requestRetiredAt: number | null;
+          }
+        >(
+          `SELECT j.status,j.request_id AS requestId,j.actual_seed AS seed,j.artifact_id AS artifactId,
+        j.error_code AS error,j.error_status AS errorStatus,j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt,
+        CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
+          WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) END AS queuePosition,
+        (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
+        (SELECT json_extract(e.payload,'$.cooldownUntil') FROM domain_events e
+          WHERE e.event_type='CooldownChanged' AND e.stream_id='account:'||a.account_id
+          AND json_extract(e.payload,'$.attemptId')=a.id ORDER BY e.stream_version DESC LIMIT 1) AS cooldownUntil
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        LEFT JOIN generation_attempts a ON a.job_id=j.id WHERE j.id=? AND r.member_id=?`,
+        )
+        .get(jobId, memberId);
+      if (!job) {
+        fail(404, 'job_not_found', '任务不存在。');
+      }
+      if (job.retiredAt !== null || job.requestRetiredAt !== null) {
+        fail(410, 'result_unavailable', '原结果已不可领取。');
+      }
+      return { ...job, requestId: this.publicRequestId(job.requestId) };
+    })();
+  }
+
+  // 管理授权由 caller 持有；先选50个原顺序候选，才读取各自唯一规范输入。
+  readManagementFailedJobs(limit = 50) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      fail(400, 'invalid_failed_job_limit', '失败任务查询上限无效。');
+    }
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite
+        .prepare<[number], { id: string; orderKnown: number }>(
+          `SELECT j.id,(origin.event_type='JobAccepted') AS orderKnown
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        JOIN domain_events origin ON origin.stream_id='request:'||r.id
+          AND origin.event_type IN ('JobAccepted','OpeningJobRecorded')
+          AND json_extract(origin.payload,'$.jobId')=j.id
+          AND json_extract(origin.payload,'$.requestId')=r.id
+        WHERE j.status='failed' AND j.retired_at IS NULL AND r.retired_at IS NULL
+        ORDER BY (origin.event_type='JobAccepted') DESC,
+          CASE WHEN origin.event_type='JobAccepted' THEN origin.commit_seq END DESC,
+          CASE WHEN origin.event_type='JobAccepted' THEN origin.event_index END DESC,j.id DESC
+        LIMIT ?`,
+        )
+        .all(limit);
+      const inputs = new RelationalInputStore(this.sqlite);
+      return rows.map((row) => ({
+        ...this.readApiJob(row.id),
+        originalOrderKnown: row.orderKnown === 1,
+        request: inputs.readErrorLogRequest(row.id),
+      }));
+    })();
+  }
+  // 旧客户端 detail 的薄事实；HTTP 当前 Key/admin ACL 先于保护输入冷读。
+  readApiJob(jobId: string) {
+    const job = this.sqlite
+      .prepare<
+        [string],
+        JobRow & {
+          memberId: string;
+          source: string | null;
+          seed: number | null;
+          accountId: string | null;
+          currentAccepted: number;
+          currentEventType: string;
+          queuePosition: number;
+          queuedCount: number;
+          retiredAt: number | null;
+          requestRetiredAt: number | null;
+        }
+      >(
+        `SELECT ${jobColumns},r.member_id AS memberId,r.source,j.actual_seed AS seed,
+      COALESCE(attempt.account_id,original.account_id) AS accountId,e.event_type AS currentEventType,
+      EXISTS(SELECT 1 FROM domain_events accepted WHERE accepted.event_type='JobAccepted'
+        AND accepted.stream_id='request:'||r.id AND json_extract(accepted.payload,'$.jobId')=j.id) AS currentAccepted,
+      CASE WHEN j.status='queued' THEN (SELECT COUNT(*) FROM generation_jobs q
+        WHERE q.status='queued' AND q.queue_seq<=j.queue_seq) ELSE 0 END AS queuePosition,
+      (SELECT COUNT(*) FROM generation_jobs q WHERE q.status='queued') AS queuedCount,
+      j.retired_at AS retiredAt,r.retired_at AS requestRetiredAt
+      ${jobFrom} LEFT JOIN generation_attempts attempt ON attempt.job_id=j.id
+      LEFT JOIN generation_attempts original ON original.id=a.original_attempt_id
+      WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      fail(404, 'job_not_found', 'job not found.');
+    }
+    return {
+      ...job,
+      requestId: this.publicRequestId(job.requestId),
+      createdAt: iso(job.createdAt),
+      updatedAt: iso(job.updatedAt),
+      completedAt: iso(job.completedAt),
+      lateResultAvailable: job.lateResultAvailable === 1,
+    };
+  }
+
+  readApiArtifact(artifactId: string) {
+    const artifact = this.sqlite
+      .prepare<[string], { memberId: string; retiredAt: number | null }>(
+        'SELECT member_id AS memberId,retired_at AS retiredAt FROM artifacts WHERE id=?',
+      )
+      .get(artifactId);
+    if (!artifact) {
+      fail(404, 'artifact_not_found', 'image not found.');
+    }
+    return artifact;
   }
 }

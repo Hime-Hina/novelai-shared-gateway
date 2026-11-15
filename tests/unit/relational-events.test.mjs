@@ -5,6 +5,7 @@ import { domainDigest } from '../../server/events/domain-events.ts';
 import {
   parseRelationalFact,
   parseRelationalEvent,
+  RELATIONAL_EVENT_SCHEMA_VERSION,
 } from '../../server/events/relational-events.ts';
 import {
   relationalPayloadParsers,
@@ -22,6 +23,127 @@ const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
 
+test('job与OpeningJob的公共seed基型保留有限Number/NULL，Native范围由真实输入owner核验', () => {
+  const base = {
+    jobId: 'j',
+    requestId: 'r',
+    sampleIndex: 0,
+    actualSeed: null,
+    status: 'pending',
+    queueSeq: null,
+    queueExpiresAt: null,
+    deadlineAt: null,
+    admissionEpoch: 0,
+    cacheKey: null,
+  };
+  for (const eventType of ['JobAccepted', 'OpeningJobRecorded']) {
+    const payload =
+      eventType === 'JobAccepted'
+        ? base
+        : {
+            ...base,
+            createdAt: null,
+            artifactId: null,
+            completedAt: null,
+            errorCode: null,
+            errorStatus: null,
+            cancellationReason: null,
+            lateResultAt: null,
+            freeSucceededAt: null,
+            freeWarningThreshold: null,
+            retiredAt: null,
+            origin,
+          };
+    for (const actualSeed of [
+      null,
+      0,
+      -1,
+      -2,
+      1.5,
+      4294967296,
+      Number.MAX_VALUE,
+      -Number.MAX_VALUE,
+      Number.MIN_VALUE,
+    ]) {
+      const fact = { eventType, payload: { ...payload, actualSeed } };
+      assert.deepEqual(parseRelationalFact(fact), fact);
+    }
+    for (const actualSeed of [NaN, Infinity, -Infinity, '42', undefined]) {
+      assert.throws(() => parseRelationalFact({ eventType, payload: { ...payload, actualSeed } }));
+    }
+  }
+});
+
+test('在线薄键事实显式保存noCache意图，不从seed或来源猜测', () => {
+  const payload = {
+    memberId: 'm',
+    operation: 'generate',
+    keyHash: hash,
+    intentFingerprint: hash,
+    requestId: 'r',
+    jobId: 'j',
+    contextId: 'c',
+    originalCommandId: 'command',
+    noCache: false,
+    seedMode: 'fixed',
+  };
+  for (const noCache of [false, true]) {
+    const fact = { eventType: 'RequestAliasRegistered', payload: { ...payload, noCache } };
+    assert.deepEqual(parseRelationalFact(fact), fact);
+  }
+  const { noCache: _, ...missing } = payload;
+  assert.throws(() =>
+    parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: missing }),
+  );
+  const { seedMode: _mode, ...withoutMode } = payload;
+  assert.throws(() =>
+    parseRelationalFact({ eventType: 'RequestAliasRegistered', payload: withoutMode }),
+  );
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'RequestAliasRegistered',
+      payload: { ...payload, seedMode: 'unknown' },
+    }),
+  );
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'RequestAliasRegistered',
+      payload: { ...payload, noCache: 0 },
+    }),
+  );
+});
+
+test('副本事实保留实际 identity/gzip/br 编码，PikPak Brotli 不能错标或被未知编码替代', () => {
+  const payload = {
+    artifactId: 'a',
+    storageTargetId: 's',
+    objectKey: 'original',
+    uploadedAt: 1,
+    verifiedAt: null,
+    deletedAt: null,
+    lastErrorCode: null,
+  };
+  for (const encoding of ['identity', 'gzip', 'br']) {
+    for (const eventType of ['ArtifactReplicaRecorded', 'OpeningReplicaRecorded']) {
+      const fact = {
+        eventType,
+        payload: {
+          ...payload,
+          encoding,
+          ...(eventType === 'OpeningReplicaRecorded' ? { origin } : {}),
+        },
+      };
+      assert.deepEqual(parseRelationalFact(fact), fact);
+    }
+  }
+  assert.throws(() =>
+    parseRelationalFact({
+      eventType: 'ArtifactReplicaRecorded',
+      payload: { ...payload, encoding: 'deflate' },
+    }),
+  );
+});
+
 test('资金与恢复事实保存来源预算、V5 本人划入和有符号回跳，不能放宽外部资金边界', () => {
   const allocation = {
     eventType: 'AllocationApplied',
@@ -35,6 +157,12 @@ test('资金与恢复事实保存来源预算、V5 本人划入和有符号回�
     },
   };
   assert.deepEqual(parseRelationalFact(allocation), allocation);
+  assert.throws(() =>
+    parseRelationalFact({
+      ...allocation,
+      payload: { ...allocation.payload, reason: 'redistribution' },
+    }),
+  );
   const { sourceEventId: _, ...withoutSource } = allocation.payload;
   assert.throws(() => parseRelationalFact({ ...allocation, payload: withoutSource }));
   const transfer = {
@@ -124,14 +252,14 @@ function accountEvent(fact, accountId = 'a') {
     commitSeq: '1',
     eventIndex: 0,
     streamVersion: '1',
-    schemaVersion: 2,
+    schemaVersion: RELATIONAL_EVENT_SCHEMA_VERSION,
     correlationId: null,
     causationId: null,
     amountVersion: 'decimal-12-v1',
   };
 }
 
-test('所有 v2 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
+test('所有 v4 事实都有唯一 stream owner；旧大状态、未知事实、隐私和额外字段被拒绝', () => {
   const owners = Object.values(relationalFactStreams).flat();
   assert.equal(new Set(owners).size, owners.length);
   assert.deepEqual([...owners].sort(), Object.keys(relationalPayloadParsers).sort());
@@ -208,8 +336,11 @@ test('金额只接受规范十进制，官方未知保持 null；资金来源与
     payload: {
       accountId: 'a',
       credentialEpoch: 3,
+      connectionSourceEventId: 'account-connection-source',
       sequence: '9007199254740993',
       observedAt: 10,
+      v5UsagePercent: null,
+      v5UsageIsNegative: null,
       quotaTier: null,
       subscriptionActive: null,
       subscriptionExpiresAt: null,
@@ -262,6 +393,8 @@ test('归档开账允许仅剩旧键/退款凭据，活动对象仍要求完整�
       originalRequestId: 'missing-request',
       originalJobId: 'missing-job',
       originalCommandId: 'missing-command',
+      noCache: null,
+      seedMode: null,
       requestId: null,
       commitSeq: null,
       contextId: null,

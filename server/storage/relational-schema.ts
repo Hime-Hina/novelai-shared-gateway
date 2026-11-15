@@ -18,6 +18,14 @@ function amount(name: string, nullable = false): string {
 }
 
 const fact = 'source_event_id TEXT NOT NULL REFERENCES domain_events(event_id)';
+// 开账事实时刻不能冒充未知的原实体创建时间；所有查询共用此角色解释。
+const jobCreatedAtSql = `CASE WHEN event_type = 'OpeningJobRecorded'
+  THEN json_extract(payload, '$.createdAt') ELSE occurred_at END`;
+// 失败报告与时间索引共用原失败角色，开账 header 仍只表示开账发生时刻。
+export const relationalFailureTimeSql = `CASE WHEN event_type='JobFailed' THEN occurred_at
+  ELSE json_extract(payload,'$.completedAt') END`;
+export const relationalFailurePredicate = `event_type IN ('JobFailed','OpeningJobRecorded')
+  AND (event_type='JobFailed' OR json_extract(payload,'$.status')='failed')`;
 
 export const RELATIONAL_SCHEMA_SQL = `
 CREATE TABLE app_meta (
@@ -58,9 +66,31 @@ CREATE TABLE domain_events (
   UNIQUE (stream_id, stream_version)
 ) STRICT;
 
+-- 当前FK容器不等于原父请求；原parent身份只来自唯一原接受事实，不按ID/时间推断。
+CREATE VIEW generation_request_origins AS
+SELECT stream_id, json_extract(payload, '$.requestId') AS request_id, event_id,
+  CASE WHEN event_type = 'RequestAccepted' THEN json_extract(payload, '$.requestId')
+    ELSE json_extract(payload, '$.originalRequestId') END AS original_request_id
+FROM domain_events WHERE event_type IN ('RequestAccepted', 'OpeningRequestRecorded');
+
+CREATE VIEW generation_job_origins AS
+SELECT stream_id, json_extract(payload, '$.jobId') AS job_id,
+  json_extract(payload, '$.requestId') AS request_id, ${jobCreatedAtSql} AS created_at
+FROM domain_events WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_created_time ON domain_events(${jobCreatedAtSql})
+  WHERE event_type IN ('JobAccepted', 'OpeningJobRecorded');
+CREATE INDEX idx_job_failure_time ON domain_events(${relationalFailureTimeSql} DESC,event_id DESC)
+  WHERE ${relationalFailurePredicate};
+CREATE INDEX idx_loss_aggregate_time ON domain_events(occurred_at)
+  WHERE event_type IN ('ResourceGapObserved','V5CapacityObserved');
+
 CREATE INDEX idx_quota_loss_coverage ON domain_events(
   json_extract(payload, '$.lossEventId'), json_extract(payload, '$.amount')
 ) WHERE event_type = 'OperatingLossCovered';
+
+CREATE INDEX idx_account_connection_source ON domain_events(stream_id,stream_version)
+WHERE member_id IS NULL AND (event_type IN ('AccountRegistered','OpeningAccountRecorded')
+  OR (event_type='AccountConfigurationChanged' AND json_extract(payload,'$.connectionChanged')=1));
 
 CREATE TABLE stream_heads (
   stream_id TEXT PRIMARY KEY,
@@ -81,6 +111,8 @@ CREATE TABLE projection_state (
 CREATE TABLE members (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
+  -- 旧私有备注保存 JSON string，保留原 JS UTF-16（包括合法 slice 产生的孤立代理）；NULL 为未知。
+  note_json TEXT CHECK (note_json IS NULL OR (json_valid(note_json) AND json_type(note_json)='text')),
   status TEXT NOT NULL CHECK (status IN ('active', 'disabled', 'removed')),
   accepting_jobs INTEGER NOT NULL CHECK (accepting_jobs IN (0, 1)),
   -- 认证 epoch 只由私有快照/认证命令维护；未恢复或撤销时 NULL，业务重放不得重建它。
@@ -156,7 +188,9 @@ CREATE INDEX idx_group_members_group ON group_members(group_id);
 
 CREATE TABLE upstream_accounts (
   id TEXT PRIMARY KEY,
-  display_name TEXT NOT NULL,
+  -- 原 JS.slice(0,80) 可产生孤立代理，JSON string 保留原 UTF-16 码元。
+  display_name_json TEXT NOT NULL CHECK (json_valid(display_name_json) AND json_type(display_name_json)='text'),
+  weight REAL CHECK (weight IS NULL OR (weight>=1 AND weight<=100)),
   enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
   credential_epoch INTEGER NOT NULL CHECK (credential_epoch > 0),
   cooldown_until INTEGER,
@@ -170,7 +204,8 @@ CREATE TABLE upstream_accounts (
 
 CREATE TABLE upstream_credentials (
   account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id),
-  pst TEXT NOT NULL
+  pst TEXT NOT NULL,
+  proxy_url TEXT
 ) STRICT;
 
 CREATE TABLE sharing_policy (
@@ -184,7 +219,8 @@ CREATE TABLE sharing_policy (
   free_warning_threshold INTEGER CHECK (free_warning_threshold > 0),
   free_hard_limit INTEGER CHECK (free_hard_limit > 0),
   loss_policy_version INTEGER NOT NULL CHECK (loss_policy_version > 0),
-  ${amount('loss_v5_24h')},
+  -- 这是只用于告警比较的原生 number 阈值，不是钱包金额。
+  loss_v5_24h REAL NOT NULL CHECK (loss_v5_24h >= 0 AND loss_v5_24h <= 1.7976931348623157e308),
   ${amount('loss_fixed_24h')},
   ${amount('loss_fixed_30d')},
   loss_member_attempts_24h INTEGER NOT NULL CHECK (loss_member_attempts_24h >= 0),
@@ -197,6 +233,13 @@ CREATE TABLE normalization_contexts (
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^a-f0-9]*'),
   body TEXT NOT NULL CHECK (json_valid(body) AND json_type(body) = 'object'),
   UNIQUE (schema_version, sha256)
+) STRICT;
+
+CREATE TABLE gateway_configuration (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  normalization_context_id TEXT NOT NULL REFERENCES normalization_contexts(id),
+  public_base_url TEXT,
+  ${fact}
 ) STRICT;
 
 CREATE TABLE generation_inputs (
@@ -227,13 +270,13 @@ CREATE TABLE generation_requests (
   member_id TEXT NOT NULL REFERENCES members(id),
   input_id TEXT NOT NULL,
   context_id TEXT REFERENCES normalization_contexts(id),
-  source TEXT NOT NULL,
-  operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
+  source TEXT,
+  operation TEXT CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
   model TEXT,
-  sample_count INTEGER NOT NULL CHECK (sample_count > 0),
+  sample_count INTEGER CHECK (sample_count > 0),
   seed_mode TEXT NOT NULL CHECK (seed_mode IN ('fixed', 'random', 'not_applicable', 'unknown')),
   confirmation TEXT CHECK (json_valid(confirmation) AND json_type(confirmation) = 'object'),
-  accepted_at INTEGER NOT NULL,
+  accepted_at INTEGER,
   retired_at INTEGER,
   ${fact},
   FOREIGN KEY (input_id, member_id) REFERENCES generation_inputs(id, member_id),
@@ -245,13 +288,13 @@ CREATE INDEX idx_requests_member_time ON generation_requests(member_id, accepted
 CREATE TABLE generation_jobs (
   id TEXT PRIMARY KEY,
   request_id TEXT NOT NULL REFERENCES generation_requests(id),
-  sample_index INTEGER NOT NULL CHECK (sample_index >= 0),
-  actual_seed INTEGER CHECK (actual_seed BETWEEN 0 AND 4294967295),
+  sample_index INTEGER CHECK (sample_index >= 0),
+  actual_seed REAL CHECK (actual_seed BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
   status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'done', 'failed')),
   queue_seq INTEGER UNIQUE CHECK (queue_seq > 0),
   queue_expires_at INTEGER,
   deadline_at INTEGER,
-  admission_epoch INTEGER NOT NULL CHECK (admission_epoch >= 0),
+  admission_epoch INTEGER CHECK (admission_epoch >= 0),
   artifact_id TEXT REFERENCES artifacts(id) DEFERRABLE INITIALLY DEFERRED,
   cache_key TEXT,
   completed_at INTEGER,
@@ -265,7 +308,7 @@ CREATE TABLE generation_jobs (
   ${fact},
   UNIQUE (request_id, sample_index),
   CHECK (status != 'queued' OR queue_seq IS NOT NULL),
-  CHECK (status != 'done' OR (artifact_id IS NOT NULL AND completed_at IS NOT NULL))
+  CHECK (status != 'done' OR artifact_id IS NOT NULL)
 ) STRICT;
 CREATE INDEX idx_jobs_queue ON generation_jobs(queue_seq) WHERE status = 'queued';
 CREATE INDEX idx_jobs_request_status ON generation_jobs(request_id, status);
@@ -273,6 +316,9 @@ CREATE INDEX idx_jobs_active_request ON generation_jobs(request_id, status)
   WHERE status IN ('queued','pending','running');
 CREATE INDEX idx_jobs_free_success ON generation_jobs(free_succeeded_at)
   WHERE free_succeeded_at IS NOT NULL;
+CREATE INDEX idx_jobs_artifact ON generation_jobs(artifact_id,request_id)
+  WHERE artifact_id IS NOT NULL;
+CREATE INDEX idx_jobs_cache ON generation_jobs(cache_key,request_id) WHERE cache_key IS NOT NULL;
 
 CREATE TABLE generation_attempts (
   id TEXT PRIMARY KEY,
@@ -307,13 +353,16 @@ CREATE TABLE generation_attempts (
       AND prepared_byte_length IS NULL AND prepared_sha256 IS NULL)
     OR (prepared_artifact_id IS NOT NULL AND prepared_file IS NOT NULL AND prepared_mime_type IS NOT NULL
       AND prepared_byte_length IS NOT NULL AND prepared_sha256 IS NOT NULL)),
-  CHECK (review_status IS NULL OR
-    (first_unknown_at IS NOT NULL AND review_deadline_at IS NOT NULL AND loss_event_id IS NOT NULL)),
+  CHECK (review_status IS NULL OR loss_event_id IS NOT NULL),
   UNIQUE (id, job_id, account_id)
 ) STRICT;
 CREATE INDEX idx_attempts_review ON generation_attempts(review_deadline_at)
   WHERE review_status = 'pending';
+CREATE INDEX idx_attempt_loss_time ON generation_attempts(first_unknown_at)
+  WHERE loss_event_id IS NOT NULL;
 CREATE INDEX idx_attempts_prepared ON generation_attempts(job_id)
+  WHERE prepared_artifact_id IS NOT NULL;
+CREATE INDEX idx_attempts_prepared_artifact ON generation_attempts(prepared_artifact_id,job_id)
   WHERE prepared_artifact_id IS NOT NULL;
 
 CREATE TABLE wallets (
@@ -365,6 +414,8 @@ CREATE TABLE charges (
 ) STRICT;
 CREATE INDEX idx_charges_reserved ON charges(original_account_id, original_member_id)
   WHERE status = 'reserved';
+CREATE INDEX idx_charges_fallback_summary ON charges(original_account_id, original_member_id)
+  WHERE billing_mode = 'anlas_fallback' AND status = 'settled';
 
 CREATE TABLE account_quota_state (
   account_id TEXT PRIMARY KEY REFERENCES upstream_accounts(id),
@@ -429,11 +480,11 @@ CREATE TABLE artifacts (
   member_id TEXT NOT NULL REFERENCES members(id),
   input_id TEXT NOT NULL,
   original_attempt_id TEXT UNIQUE REFERENCES generation_attempts(id),
-  operation TEXT NOT NULL CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
+  operation TEXT CHECK (operation IN ('generate', 'upscale', 'encode-vibe')),
   mime_type TEXT NOT NULL,
   byte_length INTEGER NOT NULL CHECK (byte_length > 0),
   sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^a-f0-9]*'),
-  published_at INTEGER NOT NULL,
+  published_at INTEGER,
   retired_at INTEGER,
   ${fact},
   FOREIGN KEY (input_id, member_id) REFERENCES generation_inputs(id, member_id)
@@ -453,16 +504,15 @@ CREATE TABLE artifact_replicas (
   artifact_id TEXT NOT NULL REFERENCES artifacts(id),
   storage_target_id TEXT NOT NULL REFERENCES storage_targets(id),
   object_key TEXT NOT NULL,
-  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip')),
+  encoding TEXT NOT NULL CHECK (encoding IN ('identity', 'gzip', 'br')),
   uploaded_at INTEGER,
   verified_at INTEGER,
   deleted_at INTEGER,
   last_error_code TEXT,
   ${fact},
-  PRIMARY KEY (artifact_id, storage_target_id),
-  UNIQUE (storage_target_id, object_key),
-  CHECK (verified_at IS NULL OR uploaded_at IS NOT NULL)
+  PRIMARY KEY (artifact_id, storage_target_id)
 ) STRICT;
+CREATE INDEX idx_replica_object ON artifact_replicas(storage_target_id, object_key);
 
 CREATE TABLE idempotency_keys (
   original_member_id TEXT NOT NULL,
@@ -483,9 +533,9 @@ CREATE TABLE idempotency_keys (
   PRIMARY KEY (original_member_id, operation, key_hash),
   CHECK (request_id IS NULL OR request_id = original_request_id),
   CHECK (resolution != 'live' OR
-    (request_id IS NOT NULL AND commit_seq IS NOT NULL AND context_id IS NOT NULL)),
-  CHECK ((commit_seq IS NOT NULL AND archived_receipt IS NULL)
-    OR (commit_seq IS NULL AND archived_receipt IS NOT NULL)),
+    (request_id IS NOT NULL AND context_id IS NOT NULL
+      AND (commit_seq IS NOT NULL OR archived_receipt IS NOT NULL))),
+  CHECK (commit_seq IS NULL OR archived_receipt IS NULL),
   FOREIGN KEY (request_id, original_member_id) REFERENCES generation_requests(id, member_id)
 ) STRICT;
 
@@ -509,23 +559,34 @@ BEGIN
   );
 END;
 CREATE TRIGGER job_artifact_owner_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs
-WHEN NEW.artifact_id IS NOT NULL
+WHEN NEW.artifact_id IS NOT NULL AND EXISTS (SELECT 1 FROM artifacts WHERE id=NEW.artifact_id)
 BEGIN
   SELECT RAISE(ABORT, 'job member does not own artifact') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN artifacts a ON a.member_id = r.member_id
     WHERE r.id = NEW.request_id AND a.id = NEW.artifact_id
   );
 END;
+CREATE TRIGGER artifact_job_owner_${operation.toLowerCase()} BEFORE ${operation} ON artifacts
+BEGIN
+  SELECT RAISE(ABORT, 'artifact member does not own linked job') WHERE EXISTS (
+    SELECT 1 FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+    WHERE j.artifact_id=NEW.id AND r.member_id != NEW.member_id
+  );
+END;
 CREATE TRIGGER job_input_${operation.toLowerCase()} BEFORE ${operation} ON generation_jobs
 BEGIN
   SELECT RAISE(ABORT, 'sample index exceeds accepted request') WHERE NOT EXISTS (
     SELECT 1 FROM generation_requests r
-    WHERE r.id = NEW.request_id AND NEW.sample_index < r.sample_count
+    WHERE r.id = NEW.request_id AND (NEW.sample_index IS NULL OR r.sample_count IS NULL OR NEW.sample_index < r.sample_count)
   );
   SELECT RAISE(ABORT, 'active job requires complete input and first context')
   WHERE NEW.status IN ('queued', 'pending', 'running') AND NOT EXISTS (
     SELECT 1 FROM generation_requests r JOIN generation_inputs i ON i.id = r.input_id
     WHERE r.id = NEW.request_id AND i.completeness = 'complete' AND r.context_id IS NOT NULL
+      AND r.sample_count IS NOT NULL AND r.source IS NOT NULL AND r.operation IS NOT NULL
+      AND r.accepted_at IS NOT NULL AND NEW.sample_index IS NOT NULL AND NEW.admission_epoch IS NOT NULL
+      AND EXISTS (SELECT 1 FROM generation_request_origins o
+        WHERE o.request_id=r.id AND o.stream_id='request:'||r.id AND o.original_request_id IS NOT NULL)
       AND r.seed_mode != 'unknown'
   );
 END;

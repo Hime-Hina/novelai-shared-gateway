@@ -49,7 +49,7 @@ export async function archiveColdImage(
     if (!directory.isDirectory() || directory.isSymbolicLink()) {
       throw new Error('Unsafe image directory');
     }
-    const info = await lstat(file).catch((error) => {
+    const info = await lstat(file, { bigint: true }).catch((error) => {
       if (error.code === 'ENOENT' && candidate.r2?.verifiedAt) {
         return null;
       }
@@ -59,8 +59,8 @@ export async function archiveColdImage(
       info &&
       (!info.isFile() ||
         info.isSymbolicLink() ||
-        info.size < 1 ||
-        info.size > MAX_STORED_IMAGE_BYTES)
+        info.size < 1n ||
+        info.size > BigInt(MAX_STORED_IMAGE_BYTES))
     ) {
       throw new Error('Invalid local image file');
     }
@@ -130,11 +130,12 @@ export async function archiveColdImage(
     );
     // Only release an identical local copy after the remote bytes and durable receipt are verified.
     if (info) {
-      const current = await lstat(file);
+      const current = await lstat(file, { bigint: true });
       if (
+        current.dev !== info.dev ||
         current.ino !== info.ino ||
         current.size !== info.size ||
-        current.mtimeMs !== info.mtimeMs
+        current.mtimeNs !== info.mtimeNs
       ) {
         throw new Error('Local image changed during archival');
       }

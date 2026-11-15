@@ -1,11 +1,12 @@
-import {
-  createId,
-  type JsonStore,
-  type PersistenceOptions,
-  type StoreDatabase,
-  type StoreItem,
-  type StoredGenerationRequest,
+import { createId } from '../storage/record-values.ts';
+import type {
+  JsonStore,
+  PersistenceOptions,
+  StoreDatabase,
+  StoreItem,
+  StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
+import { isNovelAiCapacityError, generationCapacityMessage } from '../http/public-errors.ts';
 import {
   reserveFairQuota,
   settleFairQuota,
@@ -1080,19 +1081,6 @@ export async function recoverPendingGenerationResultsCommand(
   return result;
 }
 
-export function isNovelAiCapacityError(error: unknown): boolean {
-  const failure = error as GenerationError;
-  if (Number(failure?.upstreamStatus) === 429) {
-    return true;
-  }
-  if ([401, 403].includes(Number(failure?.upstreamStatus))) {
-    return false;
-  }
-  return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(
-    String(failure?.message || error || ''),
-  );
-}
-
 export function sharedFailureKind(
   reservation: Pick<GenerationReservation, 'upstreamTiming' | 'failurePhase'>,
   error: unknown,
@@ -1147,7 +1135,7 @@ async function finishGenerationFailure(
   }
   let message: string;
   if (!aborted && capacity) {
-    message = 'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。';
+    message = generationCapacityMessage;
   } else if (!aborted && failure?.upstreamStatus === 401) {
     message = '共享 Opus Key 已失效，请联系管理员更新凭据';
   } else if (!aborted && failure?.upstreamStatus === 403) {

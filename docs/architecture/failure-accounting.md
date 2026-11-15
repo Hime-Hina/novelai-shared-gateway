@@ -50,6 +50,10 @@ V5 当前容量差额独立记录。整数官方快照保留一个百分点的�
 
 `receipt` 使用唯一业务标识，勿填写密钥；记录保存操作人、来源、资源和金额。V5 外部余额跳变与自然恢复不接受为外部新注资，只支持运营者本人份额划入。
 
+关系资金命令先在原认证事务复核真实当前 owner/member、认证 epoch 或本机 admin capability，再领取命令回执；来源账户只能是当前共享绑定，划入成员只能是配置中的 owner。业务收据的重复决定与 HTTP 幂等键是两个来源：原 `{eventId,duplicate}` 是第一次执行该命令时的结果，不能把命令重领标记当成业务 `duplicate`。新的键遇到相同业务收据时，若原同步产生真实金融事实，须连这些事实及 `duplicate:true` 一笔提交，后续同键重领保留 true，换正文为 409；若没有事实，则带新键为 409，无键允许零写返回业务重复，不制造空事实、空提交或新回执。
+
+已有未保存 `duplicate` 的原关系回执，只有引用的同账户人工资金决定确在同一提交且原 `funding.id` 相同时，才能证明原结果为 false；较早引用不能被猜成 false。新回执及这类原回执在在线重领和完整提交回放使用同一来源校验。无键但有真实事实的资金命令由服务生成命令 ID；此可选命令 ID 仅限本资金入口，不放宽其他写命令。金融事实、钱包/运营账、恢复游标和回执错误时共同回滚，公共回放不恢复私有认证或调用网络。
+
 ## 持久化与验证边界
 
 沿用现有 `store.update` 串行变更及同步 SQLite 提交，未增加通用存储写入规则。10 个生产同步入口显式纳入 ledger；派发同时提交与任务无直接关系的资源差额。管理预览、删除预览和启动器副本隔离 ledger，不能污染真实账本。
@@ -61,6 +65,8 @@ V5 当前容量差额独立记录。整数官方快照保留一个百分点的�
 只有已经判定无法交付、完成本地退款且上游消费未知的尝试才创建 `job.generationReview`。其中 `firstUnknownAt` 及 `deadlineAt = firstUnknownAt + 300000` 在首次失败事务中持久化；重复失败和重启不重置。明确未发送的取消不创建核对，正常 `running` 任务也不会因为经过五分钟就被这个流程标成失败。
 
 独立本地后台任务启动即检查，之后每十秒检查一次，每批至多 100 条。查询使用持久 jobs 的 JSON 表达式部分索引，覆盖冷历史，不依赖上游额度刷新、账户启用、网络通畅、派发冷却或是否存在后续调用。到期如有已登记且内容完整的本地产物，追加找回证据；否则结束核对并追加 `generation_loss_estimated`。它不会重新发送原请求。
+
+关系运行时的到期结案只从 Gen owner 已校验的原 `ReviewOpened` 或带核对责任的 `OpeningAttemptRecorded` 读取任务、尝试、因果事件及政策/计价版本；不借执行状态读取受保护输入或要求历史执行元数据完整。原任务、成员、账户和退款关联仍在同一结案事务复核；命令、事实、投影和回执一起回滚，重复命令零写入。未知原 parent、操作、受理时间、数量或序号不补成当前值，严格执行与发布校验继续拒绝这类历史任务。完整提交回放必须保留原退款、未知实耗和私有认证为空的边界。
 
 结案明确记录可支持的候选估值或“金额未定”、原首次时间、原截止时间、实际结案时间，以及 `operator_pending_attribution` 运营待承担状态。候选仍为互斥关系，`actualConsumed` 保持 `null`，没有证据时不写确认零消费。
 
@@ -92,6 +98,16 @@ F03 本片当时尚未覆盖“文件写成后、SQLite 提交前崩溃”的孤
 同一管理入口 `POST action=loss-alert-policy` 接收 `expectedVersion` 与上述四个可调阈值，返回 `{policy}`。版本与成员分组配置无关；过期版本返回 409。数值必须有限且非负，Anlas/次数必须为安全整数。阈值设置和 `loss_alert_policy_updated` 审计在同一 SQLite 事务提交；审计保留旧/新阈值和版本、服务端鉴权得到的操作人，失败则一起回滚。
 
 历史事件只返回白名单投影：事件身份/类型/时间、任务与成员身份和安全用户名、资源金额及候选关系、证据等级、关联事件/收据、操作人，以及策略变更前后值。不会返回提示词、成员 Key、Discord 令牌或原始上游错误。运营视图的 `gapEventIds.v5` 对应 V5 当前差额事件；待匹配注资只返回收据、来源资源、归属、剩余金额和登记/快照时间等必要字段。
+
+共同展示入口是本模块的 `publicFailureEvent()` 和 `failureAccountingAlerts()`：它们接收已解析的窄数据，不读写数据库，也不重算另一套聚合。既有 `queryFailureAccounting()` 继续负责原 SQL 汇总、原时序分页与解析，事件白名单和软告警只在上述入口维护；后续关系读取复用它们。该提取本身不表示关系损耗查询、诊断保存或完整恢复已接入。
+
+关系金额在汇总及告警比较期间保留规范 12 位定点文本；原 `failureAccountingAlerts()` 共同边界以 BigInt 和原 number 阈值的精确十进制比例比较，完成后才允许转兼容 DTO number。旧在线 number 沿原生 number 比较，不因历史超过 12 位小数而拒绝。`V5CapacityObserved.delta` 保存原 quota owner 的实际 signed 变化（相等时原已知 0），投影核对原运营账前后值；不能以当前容量或 difference 代替历史变化。新 `ResourceGapObserved.amount` 是本次下降 `observedAmount`，没有原累计金额来源的历史 DTO `amount` 为 NULL；旧 Opening 不凭 header 或当前账补造变化金额。
+
+新格式的只读入口是 `RelationalReportStore.readFailureAccounting()`：事务内读取原窗口薄尝试/候选、原聚合事实和至多 51 条分页事实，当前运营账/政策/待匹配收据由 quota store 原读取 owner 提供；没有绑定账户基线时明确 503。风险累计和事实到白名单的转换继续归本模块，原 `generation/accounting.ts` 的候选“金额已知”判定由原结案与报告共用。候选每池取最大值再跨尝试累计，金额未知单列 `unknownAmounts`；没有原时间的保留尝试另列 `unknownTimeAttempts`，不放进某一天。`coverage=retained-facts` 明确仅统计保留事实，不把缺失历史称为完整零损耗。聚合只累计本次 Anlas 下降及原正 V5 delta，恢复/核销/迟到不重复计风险，也不将两类风险相加。
+
+分页游标绑定 history ID、原十进制 commit seq 与 event index，序号以 BigInt 进入 SQL，不按 JS number 排序或从当前时间重建顺序。估计结案只展示实际 `ReviewClosed.status=estimated_closed`；`result_recovered` 由原 LateResultRecovered 及其关联 loss/closure 展示，不能再伪造一次估计结案。原政策 before 从该事实之前的最后权威政策读取，未知 NULL，不借当前政策补值。现有事件金额的 NULL 和明确 0 分开；归档以外的来源和责任仍由迁移/归档清单承接。此入口尚未接新 HTTP 总装配，不从旧 JsonStore fallback。
+
+迟到结果的 closure 关联属于历史角色：同一请求、成员、账户、attempt 和 loss 已存在先前 estimated closure 时保留它；未曾估计时只关联该 LateResult 同笔之后的实际 result_recovered closure。不能用当前 attempt.closure_event_id 覆盖原结案。后者继续服务当前核对状态，报告从不可变原事实取历史关系，不新增来源影子或持久派生列。
 
 成员 `me.jobs` 增加签名 `imageUrl` 和 `charge.fixed` / `charge.purchased`；历史没有分池字段时为 `null`，不伪造为零。`me.lateResults` 从 SQLite 本人完整历史按 `lateResultAt` 倒序取至多 10 条，字段为 `id/model/createdAt/lateResultAt/imageUrl/charge`。签发前同时验证有效成员、任务所属 Key 和图片所属 Key，缺失或不匹配的图片不签发。沿用现有 15 分钟签名链接，不在 URL 放 Key；成员 Cookie 的 `/api/member` 路径不会阻止领取 `/api/images/.../content`。领取保留原失败状态和分池退款，不发上游请求，也不再次扣款。
 

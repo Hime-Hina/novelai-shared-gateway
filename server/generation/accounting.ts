@@ -263,6 +263,35 @@ export function recordGenerationRefund(
   return refund;
 }
 
+export function generationCandidateAmountsKnown(
+  candidates: GenerationAttempt['upstreamCandidates'] | null | undefined,
+): boolean {
+  const validAmount = (amount: unknown): amount is string | number => {
+    try {
+      return (
+        (typeof amount === 'string' || typeof amount === 'number') &&
+        parseAmount(amount, 'nearest') >= 0n
+      );
+    } catch {
+      return false;
+    }
+  };
+  return (
+    Array.isArray(candidates) &&
+    candidates.length > 0 &&
+    candidates.every(
+      (candidate) =>
+        candidate.resources &&
+        Object.values(candidate.resources).length > 0 &&
+        Object.entries(candidate.resources).every(
+          ([resource, amount]) =>
+            ['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) && validAmount(amount),
+        ) &&
+        Object.values(candidate.resources).some((amount) => parseAmount(amount, 'nearest') > 0n),
+    )
+  );
+}
+
 export function closeGenerationReview(
   db: LedgerDatabase,
   job: AccountingJob,
@@ -279,29 +308,7 @@ export function closeGenerationReview(
   const attempt =
     job.generationAttempt || recordGenerationAttempt(db, job, job.fairCharge, null, now);
   const candidates = attempt.upstreamCandidates;
-  const validAmount = (amount: unknown): amount is string | number => {
-    try {
-      return (
-        (typeof amount === 'string' || typeof amount === 'number') &&
-        parseAmount(amount, 'nearest') >= 0n
-      );
-    } catch {
-      return false;
-    }
-  };
-  const usable =
-    Array.isArray(candidates) &&
-    candidates.length > 0 &&
-    candidates.every(
-      (candidate) =>
-        candidate.resources &&
-        Object.values(candidate.resources).length > 0 &&
-        Object.entries(candidate.resources).every(
-          ([resource, amount]) =>
-            ['v5', 'anlasFixed', 'anlasPurchased'].includes(resource) && validAmount(amount),
-        ) &&
-        Object.values(candidate.resources).some((amount) => parseAmount(amount, 'nearest') > 0n),
-    );
+  const usable = generationCandidateAmountsKnown(candidates);
   const event = appendEvent(db, attempt, 'generation_loss_estimated', now, {
     lossEventId: review.lossEventId,
     firstUnknownAt: review.firstUnknownAt,

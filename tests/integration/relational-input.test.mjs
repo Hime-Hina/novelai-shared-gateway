@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { createServer } from 'node:http';
@@ -9,6 +10,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
 import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
 import {
   appendRelationalCommit,
   readRelationalCommit,
@@ -377,15 +379,14 @@ test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不�
       .run(status, status === 'queued' ? 1 : null, `r1-${index}`);
   }
   assert.equal(store.activePayloadBytes(), bytes);
+  const shared = persist(accepted(normalized({ n_samples: 1 }), 'shared'), metadata('shared'));
+  assert.equal(
+    sqlite.prepare("SELECT sha256 FROM generation_inputs WHERE id='input-shared'").get().sha256,
+    sqlite.prepare("SELECT sha256 FROM generation_inputs WHERE id='input-r1'").get().sha256,
+  );
   // 只放大关系查询规模，来源引用复用夹具；不把这些行当作迁移或重建验收样本。
   sqlite.transaction(() => {
-    sqlite.exec(`INSERT INTO generation_requests
-      (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
-      SELECT 'shared',member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
-      FROM generation_requests WHERE id='r1';
-      INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id)
-      SELECT 'shared-child','shared',0,'pending',0,source_event_id FROM generation_requests WHERE id='shared';
-      WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<4096)
+    sqlite.exec(`WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<4096)
       INSERT INTO generation_requests
       (id,member_id,input_id,context_id,source,operation,sample_count,seed_mode,accepted_at,source_event_id)
       SELECT 'history-'||n,member_id,input_id,context_id,source,operation,1,seed_mode,accepted_at,source_event_id
@@ -403,9 +404,107 @@ test('活动预算只扫描活动 child 覆盖索引，按 parent 计数且不�
   t.diagnostic(plan);
   assert.match(plan, /SCAN generation_jobs USING COVERING INDEX idx_jobs_active_request/);
   assert.doesNotMatch(plan, /\bSCAN (?:r|generation_requests|i|generation_inputs)\b/);
+  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='shared'").run();
+  assert.equal(store.activePayloadBytes(), bytes);
+  const inputId = sqlite
+    .prepare("SELECT input_id FROM generation_requests WHERE id='r1'")
+    .get().input_id;
+  const parent = shared.events.find((event) => event.eventType === 'RequestAccepted');
+  const child = shared.events.find((event) => event.eventType === 'JobAccepted');
+  const origin = { sourceId: 'budget-shared-input', originalId: 'same-input-parent' };
+  const command = metadata('same-input');
+  const common = {
+    occurredAt: command.recordedAt,
+    memberId: parent.memberId,
+    accountId: null,
+    policyVersion: command.policyVersion,
+    pricingVersion: command.pricingVersion,
+  };
+  // 明确的合成开账来源，验证同一 input 跨 parent；不代表真实迁移或 ready。
+  const events = [
+    {
+      ...common,
+      memberId: null,
+      eventType: 'ImportSourceRegistered',
+      streamId: `import:${origin.sourceId}`,
+      payload: {
+        sourceId: origin.sourceId,
+        sourceSha256: domainDigest({ inputId, origin }),
+        sourceCommit: 'synthetic-active-input-budget',
+        cutoffSeq: shared.commitSeq,
+        cutoffAt: command.recordedAt,
+        manifestSha256: domainDigest(origin),
+        route: 'B',
+      },
+    },
+    {
+      ...common,
+      eventType: 'OpeningRequestRecorded',
+      streamId: `request:${origin.originalId}`,
+      payload: {
+        ...parent.payload,
+        requestId: origin.originalId,
+        originalRequestId: origin.originalId,
+        inputId,
+        acceptedAt: parent.occurredAt,
+        retiredAt: null,
+        origin,
+      },
+    },
+    {
+      ...common,
+      eventType: 'OpeningJobRecorded',
+      streamId: `request:${origin.originalId}`,
+      payload: {
+        ...child.payload,
+        jobId: 'same-input-child',
+        requestId: origin.originalId,
+        createdAt: child.occurredAt,
+        artifactId: null,
+        completedAt: null,
+        errorCode: null,
+        errorStatus: null,
+        cancellationReason: null,
+        lateResultAt: null,
+        freeSucceededAt: null,
+        freeWarningThreshold: null,
+        retiredAt: null,
+        origin: { ...origin, originalId: 'same-input-child' },
+      },
+    },
+  ];
+  sqlite
+    .transaction(() =>
+      new RelationalCommitReplayer(sqlite).appendCommit(
+        {
+          ...command,
+          actorKind: 'system',
+          actorId: null,
+          fingerprint: domainDigest(events),
+          expectedVersions: {
+            [`import:${origin.sourceId}`]: '0',
+            [`request:${origin.originalId}`]: '0',
+          },
+          receipt: null,
+          events,
+        },
+        store,
+      ),
+    )
+    .immediate();
+  assert.equal(
+    sqlite.prepare('SELECT input_id FROM generation_requests WHERE id=?').get(origin.originalId)
+      .input_id,
+    inputId,
+  );
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM generation_inputs').get().n, 2);
+  assert.equal(store.readOriginalRequestId(origin.originalId), origin.originalId);
+  assert.equal(store.activePayloadBytes(), bytes * 2);
   sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='r1'").run();
   assert.equal(store.activePayloadBytes(), bytes);
-  sqlite.prepare("UPDATE generation_jobs SET status='failed' WHERE request_id='shared'").run();
+  sqlite
+    .prepare('UPDATE generation_jobs SET status=? WHERE request_id=?')
+    .run('failed', origin.originalId);
   assert.equal(store.activePayloadBytes(), 0);
 });
 
@@ -816,16 +915,40 @@ for (const [label, extra] of [
   });
 }
 
-test('partial/unavailable 输入保留已知、空和 null，但不能进入执行或回填旧 DTO', (t) => {
+test('partial 输入可复制已知字段和已校验附件，缺首次上下文仍不能执行或补默认', (t) => {
   const { sqlite, store } = fixture(t),
     body = {
       operation: 'generate',
       model: 'historical',
       input: '',
-      parameters: { negative_prompt: null },
+      parameters: {
+        negative_prompt: null,
+        image: { assetId: 'image' },
+        mask: { assetId: 'wrong-mime' },
+        reference_image_multiple: [{ assetId: 'opaque' }],
+        director_reference_images: [{ assetId: 'unsafe-mime' }],
+      },
     };
+  const assets = [
+    { assetId: 'image', mimeType: 'image/png', bytes: image },
+    { assetId: 'wrong-mime', mimeType: 'image/jpeg', bytes: image },
+    {
+      assetId: 'opaque',
+      mimeType: 'application/octet-stream',
+      bytes: Buffer.from('saved opaque bytes, without a proven Native definition'),
+    },
+    { assetId: 'unsafe-mime', mimeType: 'text/html', bytes: image },
+  ].map((asset) => ({
+    ...asset,
+    byteLength: asset.bytes.length,
+    sha256: createHash('sha256').update(asset.bytes).digest('hex'),
+  }));
   const logicalBytes = Buffer.byteLength(JSON.stringify(body)),
-    sha = relationalInputDigest(body, [], logicalBytes);
+    sha = relationalInputDigest(
+      body,
+      assets.map(({ bytes: _bytes, ...asset }) => asset),
+      logicalBytes,
+    );
   const origin = { sourceId: 'legacy', originalId: 'old-input' };
   const common = {
     occurredAt: 500,
@@ -835,6 +958,21 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
     pricingVersion: 'historical',
   };
   const events = [
+    {
+      ...common,
+      memberId: null,
+      eventType: 'ImportSourceRegistered',
+      streamId: `import:${origin.sourceId}`,
+      payload: {
+        sourceId: origin.sourceId,
+        sourceSha256: sha,
+        sourceCommit: 'synthetic-partial-input-fixture',
+        cutoffSeq: '1',
+        cutoffAt: 500,
+        manifestSha256: domainDigest(origin),
+        route: 'B',
+      },
+    },
     {
       ...common,
       eventType: 'OpeningInputRecorded',
@@ -855,6 +993,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
       streamId: 'request:past',
       payload: {
         requestId: 'past',
+        originalRequestId: 'past',
         memberId: 'm1',
         inputId: 'partial',
         contextId: null,
@@ -876,6 +1015,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
       payload: {
         jobId: 'past-job',
         requestId: 'past',
+        createdAt: 500,
         sampleIndex: 0,
         actualSeed: null,
         status: 'failed',
@@ -903,7 +1043,7 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
         ...metadata('partial'),
         actorKind: 'system',
         actorId: null,
-        expectedVersions: { 'input:partial': '0', 'request:past': '0' },
+        expectedVersions: { 'import:legacy': '0', 'input:partial': '0', 'request:past': '0' },
         receipt: null,
         events,
       });
@@ -912,30 +1052,86 @@ test('partial/unavailable 输入保留已知、空和 null，但不能进入执�
           "INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES('partial','m1',1,'partial',?,?,?)",
         )
         .run(sha, logicalBytes, JSON.stringify(body));
+      for (const asset of assets) {
+        sqlite
+          .prepare(
+            "INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES('partial',?,?,?,?,?)",
+          )
+          .run(asset.assetId, asset.mimeType, asset.byteLength, asset.sha256, asset.bytes);
+      }
       sqlite
         .prepare(
           "INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,accepted_at,source_event_id) VALUES('past','m1','partial',NULL,'historical','generate','historical',1,'unknown',500,?)",
         )
-        .run(result.events[1].eventId);
+        .run(result.events[2].eventId);
       sqlite
         .prepare(
           "INSERT INTO generation_jobs(id,request_id,sample_index,status,admission_epoch,source_event_id) VALUES('past-job','past',0,'failed',0,?)",
         )
-        .run(result.events[2].eventId);
+        .run(result.events[3].eventId);
     })
     .immediate();
+  const before = sqlite.serialize();
   const recovered = store.readMemberInput('past', 'm1');
   assert.equal(recovered.recoverable, false);
   assert.equal(recovered.input.input, '');
   assert.equal(recovered.input.parameters.negative_prompt, null);
   assert.equal(Object.hasOwn(recovered.input.parameters, 'seed'), false);
+  assert.equal(Object.hasOwn(recovered.input.parameters, 'n_samples'), false);
+  assert.equal(Object.hasOwn(recovered.input, 'action'), false);
+  assert.equal(recovered.assets.length, 4);
+  assert.equal(
+    recovered.assets.find((asset) => asset.slot === 'parameters.image').url,
+    '/api/member/requests/past/inputs/parameters.image',
+  );
+  assert.deepEqual(store.readMemberAsset('past', 'm1', 'parameters.image'), {
+    mimeType: 'image/png',
+    bytes: image,
+  });
+  assert.deepEqual(
+    store.readMemberAsset('past', 'm1', 'parameters.reference_image_multiple.0').bytes,
+    assets[2].bytes,
+  );
+  for (const slot of ['parameters.mask', 'parameters.director_reference_images.0']) {
+    assert.throws(
+      () => store.readMemberAsset('past', 'm1', slot),
+      (error) => error.statusCode === 410 && error.code === 'input_unavailable',
+    );
+  }
+  for (const [memberId, slot] of [
+    ['m2', 'parameters.image'],
+    ['m1', 'parameters.image/../../private'],
+    ['m1', 'parameters.reference_image_multiple.1'],
+  ]) {
+    assert.throws(
+      () => store.readMemberAsset('past', memberId, slot),
+      (error) => error.statusCode === 404,
+    );
+  }
   assert.throws(
     () => store.readJobInput('past-job'),
     (error) => error.statusCode === 410,
   );
   assert.throws(
-    () => store.readMemberAsset('past', 'm1', 'parameters.image'),
+    () => store.readMemberContext('past', 'm1'),
     (error) => error.statusCode === 410,
+  );
+  assert.ok(sqlite.serialize().equals(before), '所有读取和拒绝都不得改变来源或投影');
+  mutate(sqlite, 'input_assets', () => {
+    const corrupt = Buffer.from(image);
+    corrupt[0] ^= 1;
+    sqlite
+      .prepare("UPDATE input_assets SET bytes=? WHERE input_id='partial' AND asset_id='image'")
+      .run(corrupt);
+  });
+  assert.throws(
+    () => store.readMemberAsset('past', 'm1', 'parameters.image'),
+    (error) => error.statusCode === 410 && error.code === 'input_unavailable',
+  );
+  sqlite.prepare("UPDATE members SET auth_epoch=NULL WHERE id='m1'").run();
+  assert.throws(
+    () => store.readMemberAsset('past', 'm1', 'parameters.reference_image_multiple.0'),
+    (error) => error.statusCode === 401,
   );
 });
 

@@ -63,6 +63,18 @@ const shared: SharedStatus = {
 };
 
 describe('成员展示组件', () => {
+  it('共享失败时间未知沿原格式化器显示未知，已知0仍不产生失败告警', async () => {
+    const wrapper = await mountSuspended(SharedAccountStatus, {
+      props: { state: { ...shared, recentFailures: null }, connection: 'open' },
+    });
+    wrappers.push(wrapper);
+    expect(wrapper.text()).toContain('最近一小时失败 未知 次');
+    await wrapper.setProps({ state: { ...shared, recentFailures: 0 } });
+    expect(wrapper.text()).not.toContain('最近一小时失败');
+    await wrapper.setProps({ state: { ...shared, recentFailures: 2 } });
+    expect(wrapper.text()).toContain('最近一小时失败 2 次');
+  });
+
   it('共享差额和免费图名额分别提示，在途占满时不承诺恢复时间', async () => {
     const current = structuredClone(profile);
     current.quota!.sharedBalanceRisk = {

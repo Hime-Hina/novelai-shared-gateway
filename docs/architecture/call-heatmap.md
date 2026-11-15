@@ -77,6 +77,12 @@ Naive UI 2.45.3 的小补丁修正稀疏数据的月份位置，短月份保留�
 `.gitattributes` 固定补丁 LF，锁文件记录精确字节 hash，避免 Windows／Linux
 安装不一致。许可见 `web/THIRD_PARTY_NOTICES.md`；上游无需补丁即可通过月份回归时移除。
 
+## 新关系格式接入
+
+关系查询使用唯一 `generation_job_origins` 事实视图：普通 JobAccepted 的 header 为原受理时刻；OpeningJobRecorded 的 header 是开账事实时间，原实体创建时间只看可空 payload.createdAt。NULL 保持未知，不使用父请求或迁移时刻代替，也不分到迁移日。日期窗口仍左闭右开、上海分桶、稀疏 retained-records 覆盖；退休行不混入当前展示记录。视图不保存派生行，时间局部索引只服务实际范围查询。
+
+该窄读取适配由 #31 后续片交付，真实 HTTP/SSE 装配和完整迁移仍属 #52/#51；阶段验证不覆盖线上切换。
+
 ## 当前验证记录
 
 - Nuxt SSR 会将页面动态依赖写成 HTML `prefetch`，匿名页面即使未挂载热力图仍会

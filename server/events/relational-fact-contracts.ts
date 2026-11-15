@@ -1,5 +1,5 @@
 import { canonicalJson, assertPublicDomainFact, type Json } from './domain-events.ts';
-import { parseAmount, formatAmount } from '../quota/resource-amounts.ts';
+import { parseAmount, formatAmount, AMOUNT_SCALE } from '../quota/resource-amounts.ts';
 import { parseMemberGenerationConfirmation } from '../generation/member-contract.ts';
 
 type Parser<T> = (value: unknown) => T;
@@ -31,6 +31,17 @@ const amount: Parser<string> = (value) => {
 const nonnegative: Parser<string> = (value) => {
   const result = amount(value);
   return parseAmount(result) >= 0n ? result : invalid();
+};
+const nonnegativeNumber: Parser<number> = (value) => {
+  const result = number(value);
+  return result >= 0 ? result : invalid();
+};
+const policyInteger: Parser<string> = (value) => {
+  const result = nonnegative(value),
+    units = parseAmount(result);
+  return units % AMOUNT_SCALE === 0n && units <= BigInt(Number.MAX_SAFE_INTEGER) * AMOUNT_SCALE
+    ? result
+    : invalid();
 };
 const hash: Parser<string> = (value) => {
   const result = string(value);
@@ -141,7 +152,13 @@ const chargeFields = {
   reservationEventId: id,
   terminalEventId: nullable(id),
 };
+// 原官方标量与金融定点值不是同一表示；未知历史须明确为 null。
+const officialQuotaV5Fields = {
+  v5UsagePercent: nullable(number),
+  v5UsageIsNegative: nullable(bool),
+};
 const quotaFields = {
+  ...officialQuotaV5Fields,
   accountId: id,
   status: id,
   observationEventId: nullable(id),
@@ -201,23 +218,37 @@ const policyFields = {
   freeWarningThreshold: nullable(positive),
   freeHardLimit: nullable(positive),
   lossPolicyVersion: positive,
-  lossV5_24h: nonnegative,
-  lossFixed24h: nonnegative,
-  lossFixed30d: nonnegative,
+  lossV5_24h: nonnegativeNumber,
+  lossFixed24h: policyInteger,
+  lossFixed30d: policyInteger,
   lossMemberAttempts24h: integer,
 };
 const replicaFields = {
   artifactId: id,
   storageTargetId: id,
   objectKey: id,
-  encoding: choices('identity', 'gzip'),
+  encoding: choices('identity', 'gzip', 'br'),
   uploadedAt: nullable(integer),
   verifiedAt: nullable(integer),
   deletedAt: nullable(integer),
   lastErrorCode: nullable(id),
 };
 
+const sharingGroups = list(
+  fields({
+    groupId: id,
+    name: string,
+    share: number,
+    members: list(fields({ memberId: id, weight: number })),
+  }),
+);
 export const relationalPayloadParsers = {
+  GatewayConfigurationInitialized: fields({
+    contextId: id,
+    contextSha256: hash,
+    publicBaseUrl: nullable(string),
+    originRef: id,
+  }),
   InputRegistered: fields({
     inputId: id,
     memberId: id,
@@ -230,7 +261,13 @@ export const relationalPayloadParsers = {
     contextSchemaVersion: choices(1),
     contextSha256: hash,
   }),
-  DiagnosticRecorded: fields({ diagnosticId: id, jobId: id, sha256: hash, createdAt: integer }),
+  DiagnosticRecorded: fields({
+    diagnosticId: id,
+    jobId: id,
+    sha256: hash,
+    byteLength: positive,
+    createdAt: integer,
+  }),
   RequestAccepted: fields({
     requestId: id,
     memberId: id,
@@ -247,7 +284,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     requestId: id,
     sampleIndex: integer,
-    actualSeed: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'done'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
@@ -260,6 +297,7 @@ export const relationalPayloadParsers = {
     jobId: id,
     accountId: id,
     credentialEpoch: positive,
+    connectionSourceEventId: id,
     candidateMode: choices('known', 'alternatives', 'unknown'),
     upstreamCandidates: list(candidate),
   }),
@@ -303,6 +341,7 @@ export const relationalPayloadParsers = {
     errorStatus: positive,
     cancellationReason: nullable(id),
     diagnosticId: nullable(id),
+    aborted: bool,
     response,
   }),
   LateResultRecovered: fields({
@@ -357,18 +396,32 @@ export const relationalPayloadParsers = {
     eligible: nullable(bool),
   }),
   SharingConfigured: fields({
-    enabled: bool,
+    ...policyFields,
+    redistributeRemaining: bool,
+    groups: sharingGroups,
+  }),
+  MemberTransferred: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
     boundAccountId: nullable(id),
     configVersion: integer,
   }),
-  GroupConfigured: fields({ groupId: id, name: string, share: number, configVersion: integer }),
-  GroupMemberAssigned: fields({
-    memberId: id,
-    groupId: id,
-    weight: number,
+  MemberRemoved: fields({
+    sourceMemberId: id,
+    targetMemberId: id,
+    boundAccountId: nullable(id),
     configVersion: integer,
+    memberIds: nullable(list(id)),
+    groups: sharingGroups,
   }),
-  GroupMemberRemoved: fields({ memberId: id, groupId: id, configVersion: integer }),
+  GroupBalancesRedistributed: fields({
+    accountId: id,
+    configurationEventId: id,
+    groupId: id,
+    configVersion: integer,
+    sourceResources: resources,
+    allocations: list(fields({ memberId: id, resources })),
+  }),
   FallbackPolicyChanged: fields({ enabled: bool, configVersion: integer }),
   FreePolicyChanged: fields({
     version: positive,
@@ -378,19 +431,26 @@ export const relationalPayloadParsers = {
   }),
   LossPolicyChanged: fields({
     version: positive,
-    v5_24h: nonnegative,
-    fixed24h: nonnegative,
-    fixed30d: nonnegative,
+    v5_24h: nonnegativeNumber,
+    fixed24h: policyInteger,
+    fixed30d: policyInteger,
     memberAttempts24h: integer,
   }),
   AccountRegistered: fields({
     accountId: id,
     displayName: string,
+    weight: number,
     enabled: bool,
     credentialEpoch: positive,
   }),
   AccountBound: fields({ accountId: nullable(id), configVersion: integer }),
   CredentialRotated: fields({ accountId: id, beforeEpoch: positive, credentialEpoch: positive }),
+  AccountConfigurationChanged: fields({
+    accountId: id,
+    displayName: string,
+    weight: nullable(number),
+    connectionChanged: bool,
+  }),
   AvailabilityChanged: fields({
     accountId: id,
     enabled: bool,
@@ -409,8 +469,10 @@ export const relationalPayloadParsers = {
     capacityLastErrorAt: nullable(integer),
   }),
   QuotaObserved: fields({
+    ...officialQuotaV5Fields,
     accountId: id,
     credentialEpoch: positive,
+    connectionSourceEventId: id,
     sequence,
     observedAt: integer,
     quotaTier: nullable(integer),
@@ -422,7 +484,18 @@ export const relationalPayloadParsers = {
     secondsPerPercent: nullable(number),
     errorCode: nullable(id),
   }),
-  QuotaStatusChanged: fields({ accountId: id, status: id }),
+  QuotaStatusChanged: fields({
+    accountId: id,
+    status: id,
+    generationFailure: nullable(
+      fields({
+        dispatchEventId: id,
+        responseEventId: id,
+        failureEventId: id,
+        errorCode: choices('invalid_key', 'access_denied'),
+      }),
+    ),
+  }),
   QuotaBaselineAdopted: fields({
     accountId: id,
     observationEventId: id,
@@ -444,7 +517,7 @@ export const relationalPayloadParsers = {
   }),
   AllocationApplied: fields({
     accountId: id,
-    reason: choices('opening', 'funding', 'redistribution'),
+    reason: choices('opening', 'funding'),
     sourceEventId: id,
     sourceResources: resources,
     allocations: list(fields({ memberId: id, resources })),
@@ -452,10 +525,12 @@ export const relationalPayloadParsers = {
   }),
   FundsTransferred: fields({
     accountId: id,
-    fromMemberId: nullable(id),
-    toMemberId: nullable(id),
+    configurationEventId: id,
+    configVersion: integer,
+    fromMemberId: id,
+    toMemberId: id,
     resources,
-    reason: choices('transfer', 'member_removal', 'operator_share', 'operator_return'),
+    reason: choices('transfer', 'member_removal'),
   }),
   FundingRegistered: fields(fundingFields),
   FundingReceived: fields({
@@ -503,6 +578,7 @@ export const relationalPayloadParsers = {
     accountId: id,
     observationEventId: id,
     capacityGap: nonnegative,
+    delta: amount,
     difference: amount,
     tolerance: nonnegative,
     status: choices('source_below_local', 'source_above_local', 'within_precision'),
@@ -519,6 +595,8 @@ export const relationalPayloadParsers = {
     operation,
     keyHash: hash,
     intentFingerprint: hash,
+    noCache: bool,
+    seedMode: choices('fixed', 'random', 'not_applicable'),
     requestId: id,
     jobId: id,
     contextId: id,
@@ -543,11 +621,18 @@ export const relationalPayloadParsers = {
     origin,
   }),
   OpeningGroupRecorded: fields({ groupId: id, name: string, share: number, origin }),
-  OpeningGroupMemberRecorded: fields({ memberId: id, groupId: id, weight: number, origin }),
+  OpeningGroupMemberRecorded: fields({
+    memberId: id,
+    groupId: id,
+    weight: number,
+    memberOrdinal: nullable(integer),
+    origin,
+  }),
   OpeningPolicyRecorded: fields({ ...policyFields, origin }),
   OpeningAccountRecorded: fields({
     accountId: id,
     displayName: string,
+    weight: nullable(number),
     enabled: bool,
     credentialEpoch: positive,
     cooldownUntil: nullable(integer),
@@ -579,29 +664,31 @@ export const relationalPayloadParsers = {
   }),
   OpeningRequestRecorded: fields({
     requestId: id,
+    originalRequestId: nullable(id),
     memberId: id,
     inputId: id,
     contextId: nullable(id),
-    source: id,
-    operation,
+    source: nullable(id),
+    operation: nullable(operation),
     model: nullable(id),
-    sampleCount: positive,
+    sampleCount: nullable(positive),
     seedMode: choices('fixed', 'random', 'not_applicable', 'unknown'),
     confirmation,
-    acceptedAt: integer,
+    acceptedAt: nullable(integer),
     retiredAt: nullable(integer),
     origin,
   }),
   OpeningJobRecorded: fields({
     jobId: id,
     requestId: id,
-    sampleIndex: integer,
-    actualSeed: nullable(integer),
+    createdAt: nullable(integer),
+    sampleIndex: nullable(integer),
+    actualSeed: nullable(number),
     status: choices('queued', 'pending', 'running', 'done', 'failed'),
     queueSeq: nullable(sequence),
     queueExpiresAt: nullable(integer),
     deadlineAt: nullable(integer),
-    admissionEpoch: integer,
+    admissionEpoch: nullable(integer),
     artifactId: nullable(id),
     cacheKey: nullable(hash),
     completedAt: nullable(integer),
@@ -619,17 +706,23 @@ export const relationalPayloadParsers = {
     jobId: id,
     accountId: id,
     credentialEpoch: nullable(positive),
+    connectionSourceEventId: nullable(id),
     authorizedAt: nullable(integer),
     response,
     candidateMode: choices('known', 'alternatives', 'unknown'),
     upstreamCandidates: list(candidate),
     actualConsumption: nullable(resources),
+    lossCoverageRemaining: fields({
+      v5: nullable(nonnegative),
+      anlasFixed: nullable(nonnegative),
+      anlasPurchased: nullable(nonnegative),
+    }),
     reviewStatus: nullable(choices('pending', 'estimated_closed', 'result_recovered')),
     firstUnknownAt: nullable(integer),
     reviewDeadlineAt: nullable(integer),
     reviewClosedAt: nullable(integer),
-    lossEventId: nullable(id),
-    closureEventId: nullable(id),
+    originalLossEventId: nullable(id),
+    originalClosureEventId: nullable(id),
     preparedArtifactId: nullable(id),
     preparedFile: nullable(id),
     preparedMimeType: nullable(id),
@@ -642,11 +735,11 @@ export const relationalPayloadParsers = {
     memberId: id,
     inputId: id,
     originalAttemptId: nullable(id),
-    operation,
+    operation: nullable(operation),
     mimeType: id,
     byteLength: positive,
     sha256: hash,
-    publishedAt: integer,
+    publishedAt: nullable(integer),
     retiredAt: nullable(integer),
     origin,
   }),
@@ -666,6 +759,8 @@ export const relationalPayloadParsers = {
     originalRequestId: id,
     originalJobId: id,
     originalCommandId: id,
+    noCache: nullable(bool),
+    seedMode: nullable(choices('fixed', 'random', 'not_applicable')),
     requestId: nullable(id),
     commitSeq: nullable(sequence),
     contextId: nullable(id),
@@ -685,6 +780,7 @@ export type RelationalFact = {
 }[keyof RelationalPayloads];
 
 export const relationalFactStreams = {
+  configuration: ['GatewayConfigurationInitialized'],
   member: [
     'MemberRegistered',
     'MemberStatusChanged',
@@ -694,9 +790,8 @@ export const relationalFactStreams = {
   ],
   sharing: [
     'SharingConfigured',
-    'GroupConfigured',
-    'GroupMemberAssigned',
-    'GroupMemberRemoved',
+    'MemberTransferred',
+    'MemberRemoved',
     'FallbackPolicyChanged',
     'FreePolicyChanged',
     'LossPolicyChanged',
@@ -706,7 +801,9 @@ export const relationalFactStreams = {
     'OpeningPolicyRecorded',
   ],
   account: [
+    'GroupBalancesRedistributed',
     'AccountRegistered',
+    'AccountConfigurationChanged',
     'CredentialRotated',
     'AvailabilityChanged',
     'CooldownChanged',
@@ -812,9 +909,6 @@ export function parseRelationalFact(value: unknown): RelationalFact {
       invalid();
     }
   }
-  if (typeof row.actualSeed === 'number' && row.actualSeed > 4294967295) {
-    invalid();
-  }
   if (
     (typeof row.share === 'number' && row.share < 0) ||
     (typeof row.weight === 'number' && row.weight < 0) ||
@@ -828,7 +922,13 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   ) {
     invalid();
   }
-  if (row.verifiedAt !== undefined && row.verifiedAt !== null && row.uploadedAt === null) {
+  if (
+    ['AccountRegistered', 'OpeningAccountRecorded', 'AccountConfigurationChanged'].includes(
+      header.eventType,
+    ) &&
+    row.weight !== null &&
+    ((row.weight as number) < 1 || (row.weight as number) > 100)
+  ) {
     invalid();
   }
   if (header.eventType === 'OpeningChargeRecorded') {
@@ -850,9 +950,15 @@ export function parseRelationalFact(value: unknown): RelationalFact {
   }
   if (header.eventType === 'OpeningIdempotencyRecorded') {
     if (
-      (row.commitSeq === null) === (row.archivedReceipt === null) ||
+      row.commitSeq !== null ||
       (row.resolution === 'live' &&
-        (row.requestId === null || row.commitSeq === null || row.contextId === null)) ||
+        (row.requestId === null ||
+          row.contextId === null ||
+          row.archivedReceipt === null ||
+          row.noCache === null ||
+          row.seedMode === null)) ||
+      (row.seedMode !== null &&
+        (row.operation === 'generate') === (row.seedMode === 'not_applicable')) ||
       (row.requestId !== null && row.requestId !== row.originalRequestId)
     ) {
       invalid();
@@ -915,18 +1021,23 @@ export function parseRelationalFact(value: unknown): RelationalFact {
     ].map((key) => row[key]);
     if (
       (prepared.some((entry) => entry !== null) && prepared.some((entry) => entry === null)) ||
-      (row.reviewStatus !== null &&
-        (row.firstUnknownAt === null || row.reviewDeadlineAt === null || row.lossEventId === null))
+      (row.reviewStatus === 'pending' &&
+        (row.reviewClosedAt !== null || row.originalClosureEventId !== null)) ||
+      (row.firstUnknownAt !== null &&
+        row.reviewDeadlineAt !== null &&
+        (row.reviewDeadlineAt as number) < (row.firstUnknownAt as number))
     ) {
       invalid();
     }
   }
-  if (
-    header.eventType === 'OpeningJobRecorded' &&
-    row.status === 'done' &&
-    (row.artifactId === null || row.completedAt === null)
-  ) {
-    invalid();
+  if (header.eventType === 'OpeningJobRecorded') {
+    if (
+      (row.status === 'done' && row.artifactId === null) ||
+      (['queued', 'pending', 'running'].includes(row.status as string) &&
+        (row.sampleIndex === null || row.admissionEpoch === null))
+    ) {
+      invalid();
+    }
   }
   return { eventType: header.eventType, payload } as RelationalFact;
 }

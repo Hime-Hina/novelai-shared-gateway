@@ -6,6 +6,7 @@ import {
   readRelationalReceipt,
   readRelationalCommit,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
 } from '../events/relational-event-store.ts';
 import {
   parseRelationalFact,
@@ -14,25 +15,41 @@ import {
   type RelationalPayloads,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { readRelationalRequestOrigin } from './relational-generation-sources.ts';
 import {
   prepareRelationalInput,
   parseRelationalNormalizationContext,
   relationalAssetSlots,
   relationalInputDigest,
   restoreRelationalWire,
+  relationalChildSeed,
   relationalProviderRequest,
+  relationalInputDisplay,
   validateRelationalInputBody,
   validateRelationalAssetBytes,
+  assertRelationalCompleteInput,
+  assertRelationalInputDefinition,
+  relationalInputCacheKey,
+  type PreparedRelationalInput,
   type RelationalInputAsset,
   type RelationalNormalizationContext,
 } from '../generation/relational-input.ts';
 import {
   memberInputAssetUrl,
+  assertMemberGenerationIntent,
+  memberGenerationIntentFingerprint,
   type RecoverableRequest,
   type MemberGenerationConfirmation,
 } from '../generation/member-contract.ts';
-import { singleGenerationRequest } from '../generation/batch-requests.ts';
+import { generationRequestFingerprint } from '../generation/request-fingerprint.ts';
 import { generationPayloadLimits } from '../generation/payload-budget.ts';
+import { validateImageBytes } from '../protocols/native-image.ts';
+import type { ErrorLogRequest } from '../reports/generation-errors.ts';
+import {
+  parseNormalizationDefaultsProfile,
+  prepareNormalizationDefaultsProfile,
+  configurationUnavailable,
+} from '../generation/normalization-defaults.ts';
 
 type CommandMetadata = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -47,6 +64,7 @@ export interface AcceptedInput {
   confirmation: MemberGenerationConfirmation | null;
   request: RecoverableRequest;
   context: RelationalNormalizationContext;
+  idempotency?: { keyHash: string; noCache: boolean };
   jobs: {
     jobId: string;
     status: 'queued' | 'pending';
@@ -56,6 +74,22 @@ export interface AcceptedInput {
     admissionEpoch: number;
     cacheKey: string | null;
   }[];
+}
+export interface ReusedGenerationInput {
+  memberId: string;
+  request: RecoverableRequest;
+  context: RelationalNormalizationContext;
+  seedMode: 'fixed' | 'random';
+  noCache: false;
+  idempotency?: { keyHash: string; noCache: false };
+  sourceJobId: string;
+  cached?: {
+    requestId: string;
+    jobId: string;
+    inputId: string;
+    source: string;
+    artifactId: string;
+  };
 }
 interface InputRow {
   id: string;
@@ -71,11 +105,14 @@ interface RequestRow {
   member_id: string;
   input_id: string;
   context_id: string | null;
-  operation: 'generate' | 'upscale' | 'encode-vibe';
+  operation: 'generate' | 'upscale' | 'encode-vibe' | null;
+  source: string | null;
+  accepted_at: number | null;
   model: string | null;
-  sample_count: number;
+  sample_count: number | null;
   seed_mode: string;
   confirmation: string | null;
+  retired_at: number | null;
 }
 function fail(statusCode: number, code: string, message: string): never {
   throw Object.assign(new Error(message), { statusCode, code });
@@ -83,15 +120,55 @@ function fail(statusCode: number, code: string, message: string): never {
 function unavailable(): never {
   return fail(410, 'input_unavailable', '原输入或首次上下文不可用。');
 }
+function knownSampleCount(sampleCount: number | null): number {
+  if (sampleCount === null) {
+    unavailable();
+  }
+  return sampleCount;
+}
+function diagnosticUnavailable(): never {
+  return fail(410, 'diagnostic_unavailable', '原诊断正文或来源不可用。');
+}
 
 function assertRequestBody(
   body: Record<string, unknown> | null,
-  expected: { operation: string; model: string | null },
+  expected: { operation: string | null; model: string | null },
 ): void {
-  if (body && (body.model !== expected.model || body.operation !== expected.operation)) {
+  if (
+    body &&
+    ((body.model != null && body.model !== expected.model) ||
+      (body.operation != null && body.operation !== expected.operation))
+  ) {
     unavailable();
   }
 }
+
+function assertRequestSeedMode(
+  request: { operation: string | null; seedMode: string },
+  context?: RelationalNormalizationContext,
+) {
+  if (
+    request.seedMode !== 'unknown' &&
+    ((request.operation !== null &&
+      (request.operation === 'generate') === (request.seedMode === 'not_applicable')) ||
+      (request.operation === 'generate' &&
+        context?.kind === 'member' &&
+        context.member.randomSeed !== (request.seedMode === 'random')))
+  ) {
+    unavailable();
+  }
+}
+
+export const relationalInputFacts = new Set<RelationalEvent['eventType']>([
+  'InputRegistered',
+  'ContextRegistered',
+  'RequestAccepted',
+  'JobAccepted',
+  'RequestAliasRegistered',
+  'OpeningInputRecorded',
+  'OpeningRequestRecorded',
+  'OpeningIdempotencyRecorded',
+]);
 
 // 只拥有新格式受保护内容和受理引用；调度、资格/报价及收费决定仍由 T3/T4 命令拥有。
 export class RelationalInputStore {
@@ -103,6 +180,577 @@ export class RelationalInputStore {
     this.env = env;
   }
 
+  // 离线调用者须把保护内容暂存与原 Opening 提交放在同一保存点；这里不解释旧格式。
+  stageOpeningInput(input: {
+    inputId: string;
+    memberId: string;
+    completeness: InputRow['completeness'];
+    body: Record<string, unknown> | null;
+    logicalBytes: number;
+    assets: (RelationalInputAsset & { bytes: Buffer })[];
+  }) {
+    this.assertOpeningStage();
+    return this.sqlite.transaction(() => {
+      const assets = input.assets.map(({ bytes: _bytes, ...asset }) => asset);
+      if (input.body === null) {
+        if (input.completeness !== 'unavailable' || input.logicalBytes !== 0 || assets.length) {
+          unavailable();
+        }
+      } else {
+        if (input.completeness === 'unavailable') {
+          unavailable();
+        }
+        validateRelationalInputBody(input.body, input.completeness === 'complete');
+        relationalAssetSlots(input.body, assets);
+      }
+      for (const asset of input.assets) {
+        if (
+          !Buffer.isBuffer(asset.bytes) ||
+          asset.bytes.length !== asset.byteLength ||
+          createHash('sha256').update(asset.bytes).digest('hex') !== asset.sha256
+        ) {
+          unavailable();
+        }
+      }
+      const payload = {
+        inputId: input.inputId,
+        memberId: input.memberId,
+        inputSchemaVersion: 1 as const,
+        completeness: input.completeness,
+        inputSha256:
+          input.body === null
+            ? null
+            : relationalInputDigest(input.body, assets, input.logicalBytes),
+        logicalBytes: input.logicalBytes,
+      };
+      this.insertInput({
+        row: {
+          id: input.inputId,
+          member_id: input.memberId,
+          schema_version: 1,
+          completeness: input.completeness,
+          sha256: payload.inputSha256,
+          logical_bytes: input.logicalBytes,
+          body: input.body === null ? null : canonicalJson(input.body),
+        },
+        assets: input.assets,
+      });
+      return payload;
+    })();
+  }
+
+  stageOpeningContext(contextId: string, value: RelationalNormalizationContext) {
+    this.assertOpeningStage();
+    const context = parseRelationalNormalizationContext(value);
+    this.insertContext(contextId, context);
+    return { contextId, contextSchemaVersion: 1 as const, contextSha256: domainDigest(context) };
+  }
+
+  private assertOpeningStage() {
+    if (
+      !this.sqlite.inTransaction ||
+      this.sqlite
+        .prepare<[], { status: string }>('SELECT status FROM projection_state WHERE id=1')
+        .get()?.status !== 'building'
+    ) {
+      throw new Error('Opening content requires the owning offline building transaction.');
+    }
+  }
+
+  private assertContextRegisteredBefore(contextId: string, event: RelationalEvent) {
+    if (
+      !this.sqlite
+        .prepare(
+          `SELECT 1 FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered'
+      AND (commit_seq < ? OR (commit_seq = ? AND event_index < ?)) LIMIT 1`,
+        )
+        .get(
+          `context:${contextId}`,
+          BigInt(event.commitSeq),
+          BigInt(event.commitSeq),
+          event.eventIndex,
+        )
+    ) {
+      unavailable();
+    }
+  }
+
+  private insertContext(contextId: string, context: RelationalNormalizationContext) {
+    this.sqlite
+      .prepare('INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)')
+      .run(contextId, domainDigest(context), canonicalJson(context));
+  }
+
+  private insertInput(input: {
+    row: InputRow;
+    assets: (RelationalInputAsset & { bytes: Buffer })[];
+  }) {
+    const row = input.row;
+    this.sqlite
+      .prepare(
+        'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
+      )
+      .run(
+        row.id,
+        row.member_id,
+        row.schema_version,
+        row.completeness,
+        row.sha256,
+        row.logical_bytes,
+        row.body,
+      );
+    const insert = this.sqlite.prepare(
+      'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
+    );
+    for (const asset of input.assets) {
+      insert.run(
+        row.id,
+        asset.assetId,
+        asset.mimeType,
+        asset.byteLength,
+        asset.sha256,
+        asset.bytes,
+      );
+    }
+  }
+
+  generationInputIntent(
+    memberId: string,
+    request: RecoverableRequest,
+    context: RelationalNormalizationContext,
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+  ) {
+    const prepared = prepareRelationalInput(request, context, this.env);
+    return {
+      fingerprint: this.preparedFingerprint(prepared, seedMode, noCache),
+      cacheKey: relationalInputCacheKey(memberId, prepared, seedMode),
+    };
+  }
+
+  private preparedFingerprint(
+    prepared: Pick<
+      PreparedRelationalInput,
+      'body' | 'assets' | 'context' | 'firstSeed' | 'sampleCount'
+    >,
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+  ) {
+    const request = relationalProviderRequest(
+      restoreRelationalWire(
+        prepared.body,
+        prepared.assets,
+        prepared.firstSeed,
+        prepared.sampleCount,
+        prepared.context,
+      ),
+      prepared.context,
+    );
+    return generationRequestFingerprint(
+      {
+        ...request,
+        operation: prepared.body.operation as string,
+        sampleCount: prepared.sampleCount,
+      },
+      { randomSeed: seedMode === 'random', noCache },
+    );
+  }
+
+  private idempotencyIntentFingerprint(
+    prepared: Parameters<RelationalInputStore['preparedFingerprint']>[0],
+    seedMode: AcceptedInput['seedMode'],
+    noCache: boolean,
+    confirmation: MemberGenerationConfirmation | null,
+  ) {
+    const requestFingerprint = this.preparedFingerprint(prepared, seedMode, noCache);
+    if (prepared.context.kind !== 'member') {
+      return requestFingerprint;
+    }
+    if (!noCache || confirmation === null) {
+      unavailable();
+    }
+    try {
+      assertMemberGenerationIntent(confirmation, requestFingerprint);
+    } catch {
+      unavailable();
+    }
+    return memberGenerationIntentFingerprint({ requestFingerprint }, confirmation);
+  }
+
+  readGenerationReuseProof(jobId: string) {
+    const job = this.sqlite
+      .prepare<
+        [string],
+        {
+          id: string;
+          requestId: string;
+          memberId: string;
+          cacheKey: string | null;
+          status: string;
+          retiredAt: number | null;
+        }
+      >(
+        `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.cache_key AS cacheKey,
+      j.status,j.retired_at AS retiredAt FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      unavailable();
+    }
+    const request = this.request(job.requestId, job.memberId);
+    if (
+      !request.context_id ||
+      request.sample_count !== 1 ||
+      !['fixed', 'random'].includes(request.seed_mode)
+    ) {
+      unavailable();
+    }
+    const input = this.requestInput(request),
+      context = this.context(request.context_id),
+      firstSeed = this.jobSeed(request.id, job.id);
+    if (!input.body || input.row.completeness !== 'complete' || firstSeed === null) {
+      unavailable();
+    }
+    const assets = input.assets.map((asset) => ({
+      ...asset,
+      bytes: this.asset(request.input_id, asset).bytes,
+    }));
+    const prepared = { body: input.body, assets, context, firstSeed, sampleCount: 1 };
+    const accepted = this.sqlite
+      .prepare<[string], { seq: string }>(
+        "SELECT CAST(commit_seq AS TEXT) AS seq FROM domain_events WHERE stream_id=? AND event_type='RequestAccepted' ORDER BY stream_version LIMIT 1",
+      )
+      .get(`request:${request.id}`);
+    if (!accepted) {
+      unavailable();
+    }
+    const stored = readRelationalCommit(this.sqlite, accepted.seq);
+    this.assertAcceptedEvents(stored.events, input.body, context, assets, stored.command);
+    if (
+      job.cacheKey === null ||
+      job.cacheKey !==
+        relationalInputCacheKey(job.memberId, prepared, request.seed_mode as 'fixed' | 'random')
+    ) {
+      unavailable();
+    }
+    return { job, request, input, prepared };
+  }
+
+  // 只在 generation 保存点暂存保护内容；事实与投影由同一个共同提交安装。
+  stageGenerationReuse(
+    metadata: CommandMetadata,
+    input: ReusedGenerationInput,
+    admissionEpoch: number,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Generation reuse requires the owning transaction.');
+    }
+    const original = this.readGenerationReuseProof(input.sourceJobId),
+      incoming = prepareRelationalInput(input.request, input.context, this.env);
+    if (
+      !Number.isSafeInteger(admissionEpoch) ||
+      admissionEpoch < 0 ||
+      input.noCache !== false ||
+      input.context.kind === 'member' ||
+      original.job.memberId !== input.memberId ||
+      incoming.sampleCount !== 1 ||
+      incoming.body.operation !== 'generate' ||
+      !['fixed', 'random'].includes(input.seedMode) ||
+      (input.idempotency !== undefined && input.idempotency.noCache !== false) ||
+      this.preparedFingerprint(incoming, input.seedMode, false) !== metadata.fingerprint ||
+      relationalInputCacheKey(input.memberId, incoming, input.seedMode) !== original.job.cacheKey
+    ) {
+      unavailable();
+    }
+    const prepared =
+      input.cached && input.seedMode === 'random'
+        ? { ...incoming, firstSeed: original.prepared.firstSeed }
+        : incoming;
+    const common = {
+      memberId: input.memberId,
+      accountId: null,
+      occurredAt: metadata.recordedAt,
+      policyVersion: metadata.policyVersion,
+      pricingVersion: metadata.pricingVersion,
+    };
+    const events: RelationalCommand['events'] = [];
+    if (!input.cached && !input.idempotency) {
+      return {
+        events,
+        receipt: { requestId: original.request.id, jobIds: [original.job.id] },
+        original,
+      };
+    }
+    const existing = this.sqlite
+      .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+      .get(prepared.contextId);
+    if (!existing) {
+      this.insertContext(prepared.contextId, prepared.context);
+      events.push({
+        ...common,
+        streamId: `context:${prepared.contextId}`,
+        eventType: 'ContextRegistered',
+        payload: {
+          contextId: prepared.contextId,
+          contextSchemaVersion: 1,
+          contextSha256: prepared.contextSha256,
+        },
+      });
+    } else if (
+      canonicalJson(this.context(prepared.contextId)) !== canonicalJson(prepared.context)
+    ) {
+      unavailable();
+    }
+    let requestId = original.request.id,
+      jobId = original.job.id;
+    if (input.cached) {
+      requestId = input.cached.requestId;
+      jobId = input.cached.jobId;
+      let inputId = original.request.input_id;
+      // 不同 requestedSteps/display 是已知来访内容；不能为引用原 input 而丢弃。
+      if (prepared.sha256 !== original.input.row.sha256) {
+        inputId = input.cached.inputId;
+        this.stagePreparedInput(inputId, input.memberId, prepared);
+        events.push({
+          ...common,
+          streamId: `input:${inputId}`,
+          eventType: 'InputRegistered',
+          payload: {
+            inputId,
+            memberId: input.memberId,
+            inputSchemaVersion: 1,
+            inputSha256: prepared.sha256,
+            logicalBytes: prepared.logicalBytes,
+          },
+        });
+      }
+      events.push(
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'RequestAccepted',
+          payload: {
+            requestId,
+            memberId: input.memberId,
+            inputId,
+            contextId: prepared.contextId,
+            source: input.cached.source,
+            operation: 'generate',
+            model: prepared.body.model as string,
+            sampleCount: 1,
+            seedMode: input.seedMode,
+            confirmation: null,
+          },
+        },
+        {
+          ...common,
+          streamId: `request:${requestId}`,
+          eventType: 'JobAccepted',
+          payload: {
+            jobId,
+            requestId,
+            sampleIndex: 0,
+            actualSeed: original.prepared.firstSeed,
+            status: 'done',
+            queueSeq: null,
+            queueExpiresAt: null,
+            deadlineAt: null,
+            admissionEpoch,
+            cacheKey: original.job.cacheKey,
+          },
+        },
+      );
+    }
+    if (input.idempotency) {
+      events.push({
+        ...common,
+        streamId: `request:${requestId}`,
+        eventType: 'RequestAliasRegistered',
+        payload: {
+          memberId: input.memberId,
+          operation: 'generate',
+          keyHash: input.idempotency.keyHash,
+          intentFingerprint: metadata.fingerprint,
+          noCache: false,
+          seedMode: input.seedMode,
+          requestId,
+          jobId,
+          contextId: prepared.contextId,
+          originalCommandId: metadata.commandId,
+        },
+      });
+    }
+    return {
+      events,
+      receipt: { requestId, jobIds: [jobId], ...(input.cached ? { cacheHit: true } : {}) },
+      original,
+    };
+  }
+
+  private stagePreparedInput(inputId: string, memberId: string, prepared: PreparedRelationalInput) {
+    this.insertInput({
+      row: {
+        id: inputId,
+        member_id: memberId,
+        schema_version: 1,
+        completeness: 'complete',
+        sha256: prepared.sha256,
+        logical_bytes: prepared.logicalBytes,
+        body: canonicalJson(prepared.body),
+      },
+      assets: prepared.assets,
+    });
+  }
+
+  // 只供 generation 原事务暂存；后续事实/投影失败必须随调用者的保存点一起回滚。
+  stageGenerationDiagnostic(jobId: string, detail: string, createdAt: number) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Diagnostic capture requires the owning generation transaction.');
+    }
+    if (
+      typeof detail !== 'string' ||
+      detail.length > 4000 ||
+      !Number.isSafeInteger(createdAt) ||
+      createdAt < 0
+    ) {
+      diagnosticUnavailable();
+    }
+    if (!detail) {
+      return null;
+    }
+    // SQLite TEXT 与摘要必须使用同一有效 UTF-8 表示，保留公共错误 owner 的原截断语义。
+    detail = Buffer.from(detail, 'utf8').toString('utf8');
+    const sha256 = createHash('sha256').update(detail).digest('hex'),
+      diagnosticId = `diagnostic:${domainDigest([jobId, sha256])}`,
+      byteLength = Buffer.byteLength(detail);
+    this.sqlite
+      .prepare(
+        'INSERT INTO generation_diagnostics(id,job_id,detail,sha256,created_at) VALUES(?,?,?,?,?)',
+      )
+      .run(diagnosticId, jobId, detail, sha256, createdAt);
+    return { diagnosticId, jobId, sha256, byteLength, createdAt };
+  }
+
+  // 管理详情/离线恢复共用；先按小元数据限制正文，再核原事实及实际 UTF-8 字节。
+  readGenerationDiagnostic(diagnosticId: string, jobId: string): string {
+    return this.sqlite.transaction(() => {
+      const row = this.sqlite
+        .prepare<
+          [string, string],
+          {
+            requestId: string;
+            memberId: string;
+            sha256: string;
+            createdAt: number;
+            byteLength: number;
+          }
+        >(
+          `SELECT j.request_id AS requestId,r.member_id AS memberId,d.sha256,d.created_at AS createdAt,
+        length(CAST(d.detail AS BLOB)) AS byteLength FROM generation_diagnostics d
+        JOIN generation_jobs j ON j.id=d.job_id JOIN generation_requests r ON r.id=j.request_id
+        WHERE d.id=? AND d.job_id=?`,
+        )
+        .get(diagnosticId, jobId);
+      if (!row || row.byteLength < 1 || row.byteLength > 16000) {
+        diagnosticUnavailable();
+      }
+      const matches = this.sqlite
+        .prepare<[string, string], { eventId: string; seq: string }>(
+          `SELECT event_id AS eventId,CAST(commit_seq AS TEXT) AS seq FROM domain_events
+        WHERE stream_id=? AND event_type='DiagnosticRecorded'
+          AND json_extract(payload,'$.diagnosticId')=? LIMIT 2`,
+        )
+        .all(`request:${row.requestId}`, diagnosticId);
+      if (matches.length !== 1) {
+        diagnosticUnavailable();
+      }
+      const event = readRelationalCommit(this.sqlite, matches[0].seq).events.find(
+        (e) => e.eventId === matches[0].eventId,
+      );
+      if (event?.eventType !== 'DiagnosticRecorded') {
+        diagnosticUnavailable();
+      }
+      const p = event.payload,
+        body = this.sqlite
+          .prepare<[string, string], { detail: string }>(
+            'SELECT detail FROM generation_diagnostics WHERE id=? AND job_id=?',
+          )
+          .get(diagnosticId, jobId);
+      if (
+        event.memberId !== row.memberId ||
+        p.jobId !== jobId ||
+        p.sha256 !== row.sha256 ||
+        p.createdAt !== row.createdAt ||
+        p.createdAt !== event.occurredAt ||
+        p.byteLength !== row.byteLength ||
+        !body ||
+        body.detail.length > 4000 ||
+        createHash('sha256').update(body.detail).digest('hex') !== p.sha256
+      ) {
+        diagnosticUnavailable();
+      }
+      return body.detail;
+    })();
+  }
+
+  createDiagnosticProjector(
+    source: RelationalInputStore,
+    stored: ReturnType<typeof readRelationalCommit>,
+    replayed: boolean,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Diagnostic projection requires the owning import transaction.');
+    }
+    if (
+      stored.command.actorKind !== 'system' ||
+      stored.command.actorId !== null ||
+      !stored.events.length ||
+      canonicalJson(readRelationalCommit(source.sqlite, stored.events[0].commitSeq)) !==
+        canonicalJson(stored)
+    ) {
+      diagnosticUnavailable();
+    }
+    const diagnostics = new Map(
+      stored.events
+        .filter((e) => e.eventType === 'DiagnosticRecorded')
+        .map((event) => [
+          event.eventId,
+          {
+            event,
+            detail: source.readGenerationDiagnostic(
+              event.payload.diagnosticId,
+              event.payload.jobId,
+            ),
+          },
+        ]),
+    );
+    return (event: RelationalEvent) => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Diagnostic projection requires the owning import transaction.');
+      }
+      const original = diagnostics.get(event.eventId);
+      if (
+        !original ||
+        event.eventType !== 'DiagnosticRecorded' ||
+        canonicalJson(event) !== canonicalJson(original.event)
+      ) {
+        diagnosticUnavailable();
+      }
+      const p = event.payload;
+      if (replayed || source.sqlite === this.sqlite) {
+        if (this.readGenerationDiagnostic(p.diagnosticId, p.jobId) !== original.detail) {
+          diagnosticUnavailable();
+        }
+      } else {
+        this.sqlite
+          .prepare(
+            'INSERT INTO generation_diagnostics(id,job_id,detail,sha256,created_at) VALUES(?,?,?,?,?)',
+          )
+          .run(p.diagnosticId, p.jobId, original.detail, p.sha256, p.createdAt);
+      }
+    };
+  }
+
   private ownedRequest(requestId: string, memberId: string): RequestRow {
     const member = this.sqlite
       .prepare<[string], { status: string; auth_epoch: string | null }>(
@@ -112,28 +760,23 @@ export class RelationalInputStore {
     if (member?.status !== 'active' || !member.auth_epoch) {
       fail(401, 'session_expired', '成员当前不可访问。');
     }
-    return this.request(requestId, memberId);
+    const request = this.request(requestId, memberId);
+    if (request.retired_at !== null || this.readOriginalRequestId(requestId) === null) {
+      unavailable();
+    }
+    return request;
   }
 
   private request(requestId: string, memberId: string): RequestRow {
     const request = this.sqlite
       .prepare<[string, string], RequestRow>(
-        'SELECT id,member_id,input_id,context_id,operation,model,sample_count,seed_mode,confirmation FROM generation_requests WHERE id=? AND member_id=?',
+        'SELECT id,member_id,input_id,context_id,source,operation,accepted_at,model,sample_count,seed_mode,confirmation,retired_at FROM generation_requests WHERE id=? AND member_id=?',
       )
       .get(requestId, memberId);
     if (!request) {
       fail(404, 'request_not_found', '请求不存在。');
     }
-    const registered = this.registeredFact(`request:${requestId}`, [
-      'RequestAccepted',
-      'OpeningRequestRecorded',
-    ]);
-    if (
-      registered.eventType !== 'RequestAccepted' &&
-      registered.eventType !== 'OpeningRequestRecorded'
-    ) {
-      unavailable();
-    }
+    const registered = readRelationalRequestOrigin(this.sqlite, requestId);
     const expected = registered.payload;
     if (
       expected.requestId !== request.id ||
@@ -141,6 +784,10 @@ export class RelationalInputStore {
       expected.inputId !== request.input_id ||
       expected.contextId !== request.context_id ||
       expected.operation !== request.operation ||
+      expected.source !== request.source ||
+      (registered.eventType === 'RequestAccepted'
+        ? registered.occurredAt
+        : registered.payload.acceptedAt) !== request.accepted_at ||
       expected.model !== request.model ||
       expected.sampleCount !== request.sample_count ||
       expected.seedMode !== request.seed_mode ||
@@ -149,6 +796,13 @@ export class RelationalInputStore {
       unavailable();
     }
     return request;
+  }
+
+  // 原parent身份只由唯一原接受事实证明；当前FK容器/时间/ID形状都不能代替它。
+  readOriginalRequestId(requestId: string): string | null {
+    const event = readRelationalRequestOrigin(this.sqlite, requestId);
+    this.request(requestId, event.payload.memberId);
+    return event.eventType === 'RequestAccepted' ? requestId : event.payload.originalRequestId;
   }
 
   private registeredFact(streamId: string, types: string[]) {
@@ -253,6 +907,11 @@ export class RelationalInputStore {
     events: RelationalCommand['events'],
     body: Record<string, unknown> | null,
     context: RelationalNormalizationContext,
+    assets: (RelationalInputAsset & { bytes: Buffer })[],
+    command: Pick<
+      RelationalCommand,
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
+    >,
   ): void {
     const requests = events.filter((event) => event.eventType === 'RequestAccepted');
     if (requests.length !== 1 || !body) {
@@ -261,12 +920,17 @@ export class RelationalInputStore {
     const accepted = requests[0],
       p = accepted.payload;
     assertRequestBody(body, p);
+    assertRequestSeedMode(p, context);
     const registered = events.filter((event) => event.eventType === 'InputRegistered');
+    const cached = events.filter((event) => event.eventType === 'CachedResultLinked');
     if (
-      registered.length !== 1 ||
-      registered[0].payload.inputId !== p.inputId ||
-      registered[0].payload.memberId !== p.memberId ||
-      registered[0].accountId !== null ||
+      (registered.length !== 1 && !(registered.length === 0 && cached.length === 1)) ||
+      registered.some(
+        (event) =>
+          event.payload.inputId !== p.inputId ||
+          event.payload.memberId !== p.memberId ||
+          event.accountId !== null,
+      ) ||
       events.some(
         (event) =>
           event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
@@ -287,11 +951,7 @@ export class RelationalInputStore {
           child.memberId !== p.memberId ||
           child.accountId !== null ||
           child.payload.sampleIndex !== index,
-      ) ||
-      (p.operation === 'generate') === (p.seedMode === 'not_applicable') ||
-      (p.operation === 'generate' &&
-        context.kind === 'member' &&
-        context.member.randomSeed !== (p.seedMode === 'random'))
+      )
     ) {
       unavailable();
     }
@@ -302,18 +962,163 @@ export class RelationalInputStore {
     for (const child of children) {
       const expected =
         p.operation === 'generate'
-          ? singleGenerationRequest(
-              { seed: seed!, nativeParameters: {} },
-              child.payload.sampleIndex,
-            ).seed
+          ? relationalChildSeed(seed!, child.payload.sampleIndex, context)
           : null;
       if (child.payload.actualSeed !== expected) {
+        unavailable();
+      }
+      if (
+        child.payload.cacheKey !== null &&
+        child.payload.cacheKey !==
+          relationalInputCacheKey(
+            p.memberId,
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+          )
+      ) {
+        unavailable();
+      }
+    }
+    if (
+      cached.length &&
+      (cached.length !== 1 ||
+        children.length !== 1 ||
+        cached[0].payload.jobId !== children[0].payload.jobId ||
+        children[0].payload.status !== 'done' ||
+        children[0].payload.queueSeq !== null ||
+        children[0].payload.cacheKey === null ||
+        p.confirmation !== null)
+    ) {
+      unavailable();
+    }
+    if (!cached.length && children.some((child) => child.payload.status === 'done')) {
+      unavailable();
+    }
+    if (
+      command.receipt &&
+      typeof command.receipt === 'object' &&
+      'cacheHit' in command.receipt &&
+      !cached.length
+    ) {
+      unavailable();
+    }
+    if (
+      cached.length &&
+      (context.kind === 'member' ||
+        events.some((event) => event.occurredAt !== command.recordedAt) ||
+        command.actorKind !== 'member' ||
+        command.actorId !== p.memberId ||
+        command.fingerprint !==
+          this.preparedFingerprint(
+            { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+            p.seedMode,
+            false,
+          ) ||
+        canonicalJson(command.receipt) !==
+          canonicalJson({
+            requestId: p.requestId,
+            jobIds: children.map((child) => child.payload.jobId),
+            cacheHit: true,
+          }))
+    ) {
+      unavailable();
+    }
+    const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
+    if (aliases.length > 1) {
+      unavailable();
+    }
+    for (const alias of aliases) {
+      const a = alias.payload;
+      const intentFingerprint = this.idempotencyIntentFingerprint(
+        { body, assets, context, firstSeed: seed, sampleCount: p.sampleCount },
+        p.seedMode,
+        a.noCache,
+        p.confirmation,
+      );
+      if (
+        a.memberId !== p.memberId ||
+        alias.memberId !== p.memberId ||
+        alias.accountId !== null ||
+        a.operation !== p.operation ||
+        a.seedMode !== p.seedMode ||
+        a.requestId !== p.requestId ||
+        a.jobId !== children[0].payload.jobId ||
+        a.contextId !== p.contextId ||
+        a.originalCommandId !== command.commandId ||
+        a.intentFingerprint !== command.fingerprint ||
+        a.intentFingerprint !== intentFingerprint ||
+        command.actorKind !== 'member' ||
+        command.actorId !== p.memberId ||
+        canonicalJson(command.receipt) !==
+          canonicalJson({
+            requestId: p.requestId,
+            jobIds: children.map((child) => child.payload.jobId),
+            ...(cached.length ? { cacheHit: true } : {}),
+          })
+      ) {
         unavailable();
       }
     }
   }
 
-  activePayloadBytes(): number {
+  private assertAliasOnlyEvents(
+    events: RelationalCommand['events'],
+    context: RelationalNormalizationContext,
+    command: Pick<
+      RelationalCommand,
+      'commandId' | 'fingerprint' | 'actorKind' | 'actorId' | 'receipt' | 'recordedAt'
+    >,
+    replayed: boolean,
+  ) {
+    const aliases = events.filter((event) => event.eventType === 'RequestAliasRegistered');
+    if (
+      aliases.length !== 1 ||
+      events.some(
+        (event) => !['ContextRegistered', 'RequestAliasRegistered'].includes(event.eventType),
+      )
+    ) {
+      unavailable();
+    }
+    const alias = aliases[0],
+      p = alias.payload;
+    if (
+      context.kind === 'member' ||
+      p.noCache !== false ||
+      p.operation !== 'generate' ||
+      !['fixed', 'random'].includes(p.seedMode) ||
+      alias.accountId !== null ||
+      alias.memberId !== p.memberId ||
+      command.actorKind !== 'member' ||
+      command.actorId !== p.memberId ||
+      p.originalCommandId !== command.commandId ||
+      command.fingerprint !== p.intentFingerprint ||
+      events.some((event) => event.occurredAt !== command.recordedAt) ||
+      events.some(
+        (event) =>
+          event.eventType === 'ContextRegistered' && event.payload.contextId !== p.contextId,
+      )
+    ) {
+      unavailable();
+    }
+    const original = this.readGenerationReuseProof(p.jobId);
+    const prepared = { ...original.prepared, context };
+    if (
+      original.request.id !== p.requestId ||
+      original.job.memberId !== p.memberId ||
+      (!replayed &&
+        (original.job.retiredAt !== null ||
+          original.request.retired_at !== null ||
+          !['queued', 'running'].includes(original.job.status))) ||
+      p.intentFingerprint !== this.preparedFingerprint(prepared, p.seedMode, false) ||
+      original.job.cacheKey !== relationalInputCacheKey(p.memberId, prepared, p.seedMode) ||
+      canonicalJson(command.receipt) !==
+        canonicalJson({ requestId: p.requestId, jobIds: [p.jobId] })
+    ) {
+      unavailable();
+    }
+  }
+
+  activePayloadBytes(inFlight: Iterable<{ requestId: string; payloadBytes: number }> = []): number {
     const row = this.sqlite
       .prepare<[], { bytes: number }>(
         `SELECT COALESCE(SUM(i.logical_bytes),0) AS bytes
@@ -322,10 +1127,35 @@ export class RelationalInputStore {
       JOIN generation_inputs i ON i.id=r.input_id`,
       )
       .get()!;
-    if (!Number.isSafeInteger(row.bytes) || row.bytes < 0) {
+    let bytes = row.bytes;
+    const held = new Set<string>();
+    for (const control of inFlight) {
+      if (typeof control.requestId !== 'string' || !control.requestId) {
+        throw new Error('Physical input has no original parent identity.');
+      }
+      if (held.has(control.requestId)) {
+        continue;
+      }
+      held.add(control.requestId);
+      const parent = this.sqlite
+        .prepare<[string], { bytes: number; active: number }>(
+          `SELECT i.logical_bytes AS bytes,EXISTS(SELECT 1 FROM generation_jobs j
+          WHERE j.request_id=r.id AND j.status IN ('queued','pending','running')) AS active
+          FROM generation_requests r JOIN generation_inputs i ON i.id=r.input_id WHERE r.id=?`,
+        )
+        .get(control.requestId);
+      if (!parent?.active) {
+        const heldBytes = parent?.bytes ?? control.payloadBytes;
+        if (!Number.isSafeInteger(heldBytes) || heldBytes < 0) {
+          throw new Error('Unsafe physical input byte total.');
+        }
+        bytes += heldBytes;
+      }
+    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
       throw new Error('Unsafe active input byte total.');
     }
-    return row.bytes;
+    return bytes;
   }
 
   // 必须由受理命令持有事务；这里不提供独立的正文写入或跨成员 blob 查找 API。
@@ -440,7 +1270,8 @@ export class RelationalInputStore {
             inputId: accepted.inputId,
             contextId: prepared.contextId,
             source: accepted.source,
-            operation: prepared.body.operation as RequestRow['operation'],
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
             model: prepared.body.model as string,
             sampleCount: prepared.sampleCount,
             seedMode: accepted.seedMode,
@@ -452,10 +1283,7 @@ export class RelationalInputStore {
         const actualSeed =
           prepared.firstSeed === null
             ? null
-            : singleGenerationRequest(
-                { seed: prepared.firstSeed, nativeParameters: {} },
-                sampleIndex,
-              ).seed;
+            : relationalChildSeed(prepared.firstSeed, sampleIndex, prepared.context);
         events.push({
           ...common,
           streamId: `request:${accepted.requestId}`,
@@ -468,46 +1296,46 @@ export class RelationalInputStore {
           },
         });
       });
-      this.assertAcceptedEvents(events, prepared.body, prepared.context);
+      if (accepted.idempotency !== undefined) {
+        events.push({
+          ...common,
+          streamId: `request:${accepted.requestId}`,
+          eventType: 'RequestAliasRegistered',
+          payload: {
+            memberId: accepted.memberId,
+            operation: prepared.body
+              .operation as RelationalPayloads['RequestAccepted']['operation'],
+            keyHash: accepted.idempotency.keyHash,
+            noCache: accepted.idempotency.noCache,
+            seedMode: accepted.seedMode,
+            intentFingerprint: metadata.fingerprint,
+            requestId: accepted.requestId,
+            jobId: accepted.jobs[0].jobId,
+            contextId: prepared.contextId,
+            originalCommandId: metadata.commandId,
+          },
+        });
+      }
+      const receipt = {
+        requestId: accepted.requestId,
+        jobIds: accepted.jobs.map((job) => job.jobId),
+      };
+      this.assertAcceptedEvents(events, prepared.body, prepared.context, prepared.assets, {
+        ...metadata,
+        receipt,
+      });
       const expectedVersions = Object.fromEntries(events.map((event) => [event.streamId, '0']));
       const { policyVersion: _policy, pricingVersion: _pricing, ...command } = metadata;
       const result = appendRelationalCommit(this.sqlite, {
         ...command,
         events,
         expectedVersions,
-        receipt: { requestId: accepted.requestId, jobIds: accepted.jobs.map((job) => job.jobId) },
+        receipt,
       });
       if (!contextExists) {
-        this.sqlite
-          .prepare(
-            'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-          )
-          .run(prepared.contextId, prepared.contextSha256, canonicalJson(prepared.context));
+        this.insertContext(prepared.contextId, prepared.context);
       }
-      this.sqlite
-        .prepare(
-          "INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,1,'complete',?,?,?)",
-        )
-        .run(
-          accepted.inputId,
-          accepted.memberId,
-          prepared.sha256,
-          prepared.logicalBytes,
-          canonicalJson(prepared.body),
-        );
-      const insertAsset = this.sqlite.prepare(
-        'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
-      );
-      for (const asset of prepared.assets) {
-        insertAsset.run(
-          accepted.inputId,
-          asset.assetId,
-          asset.mimeType,
-          asset.byteLength,
-          asset.sha256,
-          asset.bytes,
-        );
-      }
+      this.stagePreparedInput(accepted.inputId, accepted.memberId, prepared);
       this.applyAcceptedEvents(result.events);
       return result;
     })();
@@ -515,12 +1343,12 @@ export class RelationalInputStore {
 
   private applyAcceptedEvents(events: RelationalEvent[]): void {
     for (const event of events) {
-      if (event.eventType === 'RequestAccepted') {
+      if (event.eventType === 'RequestAccepted' || event.eventType === 'OpeningRequestRecorded') {
         const p = event.payload;
         this.sqlite
           .prepare(
-            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,source_event_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT INTO generation_requests(id,member_id,input_id,context_id,source,operation,model,sample_count,seed_mode,confirmation,accepted_at,retired_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           )
           .run(
             p.requestId,
@@ -533,7 +1361,10 @@ export class RelationalInputStore {
             p.sampleCount,
             p.seedMode,
             p.confirmation === null ? null : canonicalJson(p.confirmation),
-            event.occurredAt,
+            event.eventType === 'OpeningRequestRecorded'
+              ? event.payload.acceptedAt
+              : event.occurredAt,
+            event.eventType === 'OpeningRequestRecorded' ? event.payload.retiredAt : null,
             event.eventId,
           );
       } else if (event.eventType === 'JobAccepted') {
@@ -548,7 +1379,8 @@ export class RelationalInputStore {
             p.requestId,
             p.sampleIndex,
             p.actualSeed,
-            p.status,
+            // 缓存 done 意图必须与同笔 link 一起验证；SQL 中间 pending 只用于满足立即外键/CHECK。
+            p.status === 'done' ? 'pending' : p.status,
             p.queueSeq === null ? null : BigInt(p.queueSeq),
             p.queueExpiresAt,
             p.deadlineAt,
@@ -556,132 +1388,365 @@ export class RelationalInputStore {
             p.cacheKey,
             event.eventId,
           );
+      } else if (event.eventType === 'RequestAliasRegistered') {
+        const p = event.payload;
+        this.sqlite
+          .prepare(
+            `INSERT INTO idempotency_keys(
+          original_member_id,operation,key_hash,intent_fingerprint,original_request_id,
+          original_job_id,original_command_id,request_id,commit_seq,context_id,resolution,
+          origin_ref,archived_receipt,created_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,?,?,'live',?,NULL,?,?)`,
+          )
+          .run(
+            p.memberId,
+            p.operation,
+            p.keyHash,
+            p.intentFingerprint,
+            p.requestId,
+            p.jobId,
+            p.originalCommandId,
+            p.requestId,
+            BigInt(event.commitSeq),
+            p.contextId,
+            event.eventId,
+            event.occurredAt,
+            event.eventId,
+          );
+      } else if (event.eventType === 'OpeningIdempotencyRecorded') {
+        const p = event.payload;
+        this.assertOpeningIdempotency(event, false);
+        this.sqlite
+          .prepare(
+            `INSERT INTO idempotency_keys(
+          original_member_id,operation,key_hash,intent_fingerprint,original_request_id,
+          original_job_id,original_command_id,request_id,commit_seq,context_id,resolution,
+          origin_ref,archived_receipt,created_at,source_event_id)
+          VALUES(?,?,?,?,?,?,?,?,NULL,?,?,?,?,?,?)`,
+          )
+          .run(
+            p.originalMemberId,
+            p.operation,
+            p.keyHash,
+            p.intentFingerprint,
+            p.originalRequestId,
+            p.originalJobId,
+            p.originalCommandId,
+            p.requestId,
+            p.contextId,
+            p.resolution,
+            p.originRef,
+            p.archivedReceipt === null ? null : canonicalJson(p.archivedReceipt),
+            p.createdAt,
+            event.eventId,
+          );
       }
     }
   }
 
-  // T2 的有界重放：调用者先恢复成员基线；这里只有输入/上下文及受理引用，不接管账务 reducer。
+  createInputProjector(
+    source: RelationalInputStore,
+    stored: ReturnType<typeof readRelationalCommit>,
+    replayed: boolean,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Input projection requires the owning import transaction.');
+    }
+    const commitSeq = stored.events[0]?.commitSeq;
+    if (
+      !commitSeq ||
+      canonicalJson(readRelationalCommit(source.sqlite, commitSeq)) !== canonicalJson(stored)
+    ) {
+      unavailable();
+    }
+    const contexts = new Map<string, RelationalNormalizationContext>();
+    const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
+    const opening = stored.events.some(
+      (event) =>
+        event.eventType === 'OpeningInputRecorded' ||
+        event.eventType === 'OpeningRequestRecorded' ||
+        event.eventType === 'OpeningIdempotencyRecorded',
+    );
+    if (
+      opening &&
+      (stored.command.actorKind !== 'system' ||
+        stored.command.actorId !== null ||
+        stored.events.some(
+          (event) =>
+            relationalInputFacts.has(event.eventType) &&
+            event.eventType !== 'OpeningInputRecorded' &&
+            event.eventType !== 'OpeningRequestRecorded' &&
+            event.eventType !== 'OpeningIdempotencyRecorded' &&
+            event.eventType !== 'ContextRegistered',
+        ))
+    ) {
+      unavailable();
+    }
+    for (const event of stored.events) {
+      if (event.eventType === 'ContextRegistered') {
+        const p = event.payload,
+          context = source.context(p.contextId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type='ContextRegistered' LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          p.contextSchemaVersion !== 1 ||
+          p.contextSha256 !== domainDigest(context) ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        contexts.set(p.contextId, context);
+      }
+      if (event.eventType === 'RequestAccepted') {
+        const context =
+            contexts.get(event.payload.contextId) ?? source.context(event.payload.contextId),
+          input =
+            inputs.get(event.payload.inputId) ??
+            source.input(event.payload.inputId, event.payload.memberId);
+        if (input.row.member_id !== event.payload.memberId) {
+          unavailable();
+        }
+        contexts.set(event.payload.contextId, context);
+        source.assertCompleteInput(input, context, event.payload.sampleCount);
+        this.assertAcceptedEvents(
+          stored.events,
+          input.body,
+          context,
+          input.assets.map((asset) => ({
+            ...asset,
+            bytes: source.asset(event.payload.inputId, asset).bytes,
+          })),
+          stored.command,
+        );
+      }
+      if (event.eventType === 'OpeningRequestRecorded') {
+        assertRelationalOpeningSource(this.sqlite, event);
+        const p = event.payload,
+          input = inputs.get(p.inputId) ?? source.input(p.inputId, p.memberId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('RequestAccepted','OpeningRequestRecorded') LIMIT 2",
+            )
+            .all(event.streamId);
+        if (registrations.length !== 1 || registrations[0].eventId !== event.eventId) {
+          unavailable();
+        }
+        if (
+          stored.events.some(
+            (registered) =>
+              registered.eventIndex >= event.eventIndex &&
+              (registered.eventType === 'InputRegistered' ||
+                registered.eventType === 'OpeningInputRecorded') &&
+              registered.payload.inputId === p.inputId,
+          )
+        ) {
+          unavailable();
+        }
+        assertRequestBody(input.body, p);
+        assertRequestSeedMode(p);
+        inputs.set(p.inputId, input);
+        if (p.contextId !== null) {
+          this.assertContextRegisteredBefore(p.contextId, event);
+          const context = contexts.get(p.contextId) ?? source.context(p.contextId);
+          assertRequestSeedMode(p, context);
+          if (input.row.completeness === 'complete') {
+            if (p.sampleCount === null) {
+              assertRelationalInputDefinition(
+                input.body!,
+                source.validatedAssets(input, context),
+                context,
+              );
+            } else {
+              source.assertCompleteInput(input, context, p.sampleCount);
+            }
+          }
+          contexts.set(p.contextId, context);
+        }
+      }
+      if (event.eventType === 'InputRegistered' || event.eventType === 'OpeningInputRecorded') {
+        if (event.eventType === 'OpeningInputRecorded') {
+          assertRelationalOpeningSource(this.sqlite, event);
+        }
+        const p = event.payload,
+          input = source.input(p.inputId, p.memberId),
+          registrations = this.sqlite
+            .prepare<[string], { eventId: string }>(
+              "SELECT event_id AS eventId FROM domain_events WHERE stream_id=? AND event_type IN ('InputRegistered','OpeningInputRecorded') LIMIT 2",
+            )
+            .all(event.streamId);
+        if (
+          input.row.completeness !==
+            (event.eventType === 'OpeningInputRecorded'
+              ? event.payload.completeness
+              : 'complete') ||
+          p.inputSchemaVersion !== input.row.schema_version ||
+          p.inputSha256 !== input.row.sha256 ||
+          p.logicalBytes !== input.row.logical_bytes ||
+          registrations.length !== 1 ||
+          registrations[0].eventId !== event.eventId
+        ) {
+          unavailable();
+        }
+        inputs.set(p.inputId, input);
+      }
+      if (event.eventType === 'RequestAliasRegistered') {
+        contexts.set(event.payload.contextId, source.context(event.payload.contextId));
+      }
+    }
+    if (!opening && !stored.events.some((event) => event.eventType === 'RequestAccepted')) {
+      const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
+      if (!alias) {
+        unavailable();
+      }
+      this.assertAliasOnlyEvents(
+        stored.events,
+        contexts.get(alias.payload.contextId)!,
+        stored.command,
+        replayed,
+      );
+    }
+    const content = [...inputs].map(([inputId, input]) => ({
+      inputId,
+      ...input,
+      assets: input.assets.map((asset) => ({
+        ...asset,
+        bytes: source.asset(inputId, asset).bytes,
+      })),
+    }));
+
+    const copyContext = (contextId: string) => {
+      const context = contexts.get(contextId);
+      if (!context) {
+        unavailable();
+      }
+      const existing = this.sqlite
+        .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+        .get(contextId);
+      if (existing) {
+        if (canonicalJson(this.context(contextId)) !== canonicalJson(context)) {
+          unavailable();
+        }
+      } else {
+        if (replayed) {
+          unavailable();
+        }
+        this.insertContext(contextId, context);
+      }
+    };
+    const byInput = new Map(content.map((input) => [input.inputId, input]));
+    const copyInput = (inputId: string, existingOnly = false) => {
+      const input = byInput.get(inputId);
+      if (!input) {
+        unavailable();
+      }
+      if (replayed || existingOnly || source.sqlite === this.sqlite) {
+        const existing = this.input(input.inputId, input.row.member_id);
+        if (
+          canonicalJson(existing) !==
+          canonicalJson({
+            row: input.row,
+            body: input.body,
+            assets: input.assets.map(({ bytes: _bytes, ...asset }) => asset),
+          })
+        ) {
+          unavailable();
+        }
+        for (const asset of input.assets) {
+          if (!this.asset(input.inputId, asset).bytes.equals(asset.bytes)) {
+            unavailable();
+          }
+        }
+        return;
+      }
+      this.insertInput(input);
+    };
+    return (event: RelationalEvent): void => {
+      if (!this.sqlite.inTransaction) {
+        throw new Error('Input projection requires the owning import transaction.');
+      }
+      if (event.eventType === 'ContextRegistered') {
+        copyContext(event.payload.contextId);
+      } else if (
+        event.eventType === 'InputRegistered' ||
+        event.eventType === 'OpeningInputRecorded'
+      ) {
+        copyInput(event.payload.inputId);
+      } else if (event.eventType === 'OpeningRequestRecorded') {
+        const p = event.payload;
+        copyInput(p.inputId, true);
+        if (p.contextId !== null) {
+          copyContext(p.contextId);
+        }
+        if (replayed) {
+          this.request(p.requestId, p.memberId);
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
+      } else if (event.eventType === 'RequestAccepted') {
+        copyContext(event.payload.contextId);
+        if (!replayed) {
+          this.applyAcceptedEvents([event]);
+        }
+      } else if (event.eventType === 'JobAccepted') {
+        if (!replayed) {
+          this.applyAcceptedEvents([event]);
+        }
+      } else if (event.eventType === 'OpeningIdempotencyRecorded') {
+        if (replayed) {
+          this.openingGenerationIdempotency(
+            event.payload.originalMemberId,
+            event.payload.operation,
+            event.payload.keyHash,
+            true,
+          );
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
+      } else if (event.eventType === 'RequestAliasRegistered') {
+        if (replayed) {
+          const p = event.payload;
+          const mapping = this.readGenerationIdempotency(p.memberId, p.operation, p.keyHash);
+          if (
+            !mapping ||
+            mapping.intentFingerprint !== p.intentFingerprint ||
+            mapping.originalCommandId !== p.originalCommandId ||
+            mapping.requestId !== p.requestId ||
+            mapping.contextId !== p.contextId ||
+            mapping.originalJobId !== p.jobId ||
+            mapping.originalRequestId !== p.requestId ||
+            mapping.sourceEventId !== event.eventId ||
+            mapping.commitSeq !== event.commitSeq ||
+            mapping.resolution !== 'live'
+          ) {
+            unavailable();
+          }
+        } else {
+          this.applyAcceptedEvents([event]);
+        }
+      } else {
+        throw new Error("Input projection cannot apply another owner's facts.");
+      }
+    };
+  }
+
+  // T2 的窄回放继续使用原完整提交和相同输入规则，不拆分混合提交。
   replayAcceptedInput(source: RelationalInputStore, commitSeq: string) {
     if (!this.sqlite.inTransaction) {
       throw new Error('Input replay requires the owning import transaction.');
     }
     return this.sqlite.transaction(() => {
       const stored = readRelationalCommit(source.sqlite, commitSeq);
-      if (
-        stored.events.some(
-          (event) =>
-            !['InputRegistered', 'ContextRegistered', 'RequestAccepted', 'JobAccepted'].includes(
-              event.eventType,
-            ),
-        )
-      ) {
+      if (stored.events.some((event) => !relationalInputFacts.has(event.eventType))) {
         throw new Error("Input replay cannot apply another owner's facts.");
       }
-      const contexts = new Map<string, RelationalNormalizationContext>();
-      const inputs = new Map<string, ReturnType<RelationalInputStore['input']>>();
-      for (const event of stored.events) {
-        if (event.eventType === 'ContextRegistered') {
-          contexts.set(event.payload.contextId, source.context(event.payload.contextId));
-        }
-        if (event.eventType === 'RequestAccepted') {
-          const context =
-              contexts.get(event.payload.contextId) ?? source.context(event.payload.contextId),
-            input =
-              inputs.get(event.payload.inputId) ??
-              source.input(event.payload.inputId, event.payload.memberId);
-          if (input.row.member_id !== event.payload.memberId) {
-            unavailable();
-          }
-          contexts.set(event.payload.contextId, context);
-          this.assertAcceptedEvents(stored.events, input.body, context);
-        }
-        if (event.eventType === 'InputRegistered') {
-          inputs.set(
-            event.payload.inputId,
-            source.input(event.payload.inputId, event.payload.memberId),
-          );
-        }
-      }
-      if (!stored.events.some((event) => event.eventType === 'RequestAccepted')) {
-        unavailable();
-      }
-      const content = [...inputs].map(([inputId, input]) => ({
-        inputId,
-        ...input,
-        assets: input.assets.map((asset) => ({
-          ...asset,
-          bytes: source.asset(inputId, asset).bytes,
-        })),
-      }));
       const result = replayRelationalCommit(this.sqlite, stored);
-      for (const [contextId, context] of contexts) {
-        const existing = this.sqlite
-          .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
-          .get(contextId);
-        if (existing) {
-          if (canonicalJson(this.context(contextId)) !== canonicalJson(context)) {
-            unavailable();
-          }
-        } else {
-          if (result.replayed) {
-            unavailable();
-          }
-          this.sqlite
-            .prepare(
-              'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
-            )
-            .run(contextId, domainDigest(context), canonicalJson(context));
-        }
-      }
-      for (const input of content) {
-        if (result.replayed) {
-          const existing = this.input(input.inputId, input.row.member_id);
-          if (
-            canonicalJson(existing) !==
-            canonicalJson({
-              row: input.row,
-              body: input.body,
-              assets: input.assets.map(({ bytes: _bytes, ...asset }) => asset),
-            })
-          ) {
-            unavailable();
-          }
-          for (const asset of input.assets) {
-            if (!this.asset(input.inputId, asset).bytes.equals(asset.bytes)) {
-              unavailable();
-            }
-          }
-          continue;
-        }
-        this.sqlite
-          .prepare(
-            'INSERT INTO generation_inputs(id,member_id,schema_version,completeness,sha256,logical_bytes,body) VALUES(?,?,?,?,?,?,?)',
-          )
-          .run(
-            input.row.id,
-            input.row.member_id,
-            input.row.schema_version,
-            input.row.completeness,
-            input.row.sha256,
-            input.row.logical_bytes,
-            input.row.body,
-          );
-        const insert = this.sqlite.prepare(
-          'INSERT INTO input_assets(input_id,asset_id,mime_type,byte_length,sha256,bytes) VALUES(?,?,?,?,?,?)',
-        );
-        for (const asset of input.assets) {
-          insert.run(
-            input.inputId,
-            asset.assetId,
-            asset.mimeType,
-            asset.byteLength,
-            asset.sha256,
-            asset.bytes,
-          );
-        }
-      }
-      if (!result.replayed) {
-        this.applyAcceptedEvents(result.events);
+      const apply = this.createInputProjector(source, stored, result.replayed);
+      for (const event of stored.events) {
+        apply(event);
       }
       return result;
     })();
@@ -715,9 +1780,10 @@ export class RelationalInputStore {
       unavailable();
     }
     const projected = this.sqlite
-      .prepare<[string], { request_id: string; sample_index: number; actual_seed: number | null }>(
-        'SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?',
-      )
+      .prepare<
+        [string],
+        { request_id: string; sample_index: number | null; actual_seed: number | null }
+      >('SELECT request_id,sample_index,actual_seed FROM generation_jobs WHERE id=?')
       .get(fact.payload.jobId);
     if (
       projected &&
@@ -739,6 +1805,349 @@ export class RelationalInputStore {
     return this.context(request.context_id);
   }
 
+  readGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
+    return (
+      this.sqlite
+        .prepare<
+          [string, string, string],
+          {
+            intentFingerprint: string;
+            memberId: string;
+            operation: string;
+            keyHash: string;
+            sourceEventId: string;
+            originalCommandId: string;
+            originalRequestId: string;
+            originalJobId: string;
+            requestId: string | null;
+            contextId: string | null;
+            commitSeq: string | null;
+            resolution: 'live' | 'archived' | 'unavailable';
+            originRef: string;
+            archivedReceipt: string | null;
+            createdAt: number;
+          }
+        >(
+          `SELECT original_member_id AS memberId,operation,intent_fingerprint AS intentFingerprint,key_hash AS keyHash,source_event_id AS sourceEventId,
+      original_command_id AS originalCommandId,
+      original_request_id AS originalRequestId,original_job_id AS originalJobId,request_id AS requestId,
+      context_id AS contextId,CAST(commit_seq AS TEXT) AS commitSeq,resolution,
+      origin_ref AS originRef,archived_receipt AS archivedReceipt,created_at AS createdAt FROM idempotency_keys
+      WHERE original_member_id=? AND operation=? AND key_hash=?`,
+        )
+        .get(memberId, operation, keyHash) || null
+    );
+  }
+
+  private assertOpeningIdempotency(
+    event: Extract<RelationalEvent, { eventType: 'OpeningIdempotencyRecorded' }>,
+    replayed: boolean,
+  ) {
+    const p = event.payload;
+    assertRelationalOpeningSource(this.sqlite, event);
+    if (
+      event.memberId !== p.originalMemberId ||
+      event.accountId !== null ||
+      event.streamId !== `idempotency:${p.originalMemberId}:${p.operation}:${p.keyHash}` ||
+      p.commitSeq !== null
+    ) {
+      unavailable();
+    }
+    const command = readRelationalCommit(this.sqlite, event.commitSeq).command;
+    if (command.actorKind !== 'system' || command.actorId !== null) {
+      unavailable();
+    }
+    if (p.requestId !== null) {
+      const request = this.request(p.requestId, p.originalMemberId);
+      if (
+        request.operation !== p.operation ||
+        this.readOriginalRequestId(p.requestId) !== p.originalRequestId
+      ) {
+        unavailable();
+      }
+    }
+    if (p.contextId !== null) {
+      this.context(p.contextId);
+      this.assertContextRegisteredBefore(p.contextId, event);
+    }
+    if (p.resolution !== 'live') {
+      return null;
+    }
+    if (
+      p.noCache === null ||
+      p.seedMode === null ||
+      p.requestId === null ||
+      p.contextId === null ||
+      p.archivedReceipt === null
+    ) {
+      unavailable();
+    }
+    const request = this.request(p.requestId, p.originalMemberId),
+      input = this.requestInput(request),
+      context = this.context(p.contextId);
+    if ((!replayed && request.retired_at !== null) || input.row.completeness !== 'complete') {
+      unavailable();
+    }
+    assertRequestSeedMode({ operation: p.operation, seedMode: p.seedMode }, context);
+    const { assets, sampleCount } = this.assertCompleteInput(input, context, request.sample_count),
+      jobs = this.sqlite
+        .prepare<
+          [string],
+          {
+            id: string;
+            sample_index: number;
+            retired_at: number | null;
+            status: string;
+            artifact_id: string | null;
+          }
+        >(
+          'SELECT id,sample_index,retired_at,status,artifact_id FROM generation_jobs WHERE request_id=? ORDER BY sample_index',
+        )
+        .all(p.requestId);
+    if (
+      jobs.length !== sampleCount ||
+      jobs[0]?.id !== p.originalJobId ||
+      jobs.some(
+        (job, index) => job.sample_index !== index || (!replayed && job.retired_at !== null),
+      )
+    ) {
+      unavailable();
+    }
+    const seed = this.jobSeed(p.requestId, jobs[0].id);
+    if (p.operation === 'generate' && seed === null) {
+      unavailable();
+    }
+    for (const job of jobs) {
+      const expected =
+        p.operation === 'generate' ? relationalChildSeed(seed!, job.sample_index, context) : null;
+      if (this.jobSeed(p.requestId, job.id) !== expected) {
+        unavailable();
+      }
+    }
+    const confirmation =
+      request.confirmation === null
+        ? null
+        : (JSON.parse(request.confirmation) as MemberGenerationConfirmation);
+    if (
+      p.intentFingerprint !==
+      this.idempotencyIntentFingerprint(
+        { body: input.body!, assets, context, firstSeed: seed, sampleCount },
+        p.seedMode,
+        p.noCache,
+        confirmation,
+      )
+    ) {
+      unavailable();
+    }
+    const cached =
+      typeof p.archivedReceipt === 'object' &&
+      !Array.isArray(p.archivedReceipt) &&
+      Object.hasOwn(p.archivedReceipt, 'cacheHit');
+    if (
+      cached &&
+      (p.noCache ||
+        context.kind === 'member' ||
+        p.operation !== 'generate' ||
+        jobs.length !== 1 ||
+        jobs[0].status !== 'done' ||
+        jobs[0].artifact_id === null)
+    ) {
+      unavailable();
+    }
+    if (
+      canonicalJson(p.archivedReceipt) !==
+      canonicalJson({
+        requestId: p.requestId,
+        jobIds: jobs.map((job) => job.id),
+        ...(cached ? { cacheHit: true } : {}),
+      })
+    ) {
+      unavailable();
+    }
+    return context;
+  }
+
+  // 来源角色决定读哪份原回执；绝不因在线 commit 缺失而猜为历史回执。
+  readOpeningGenerationIdempotency(memberId: string, operation: string, keyHash: string) {
+    return this.openingGenerationIdempotency(memberId, operation, keyHash, false);
+  }
+
+  private openingGenerationIdempotency(
+    memberId: string,
+    operation: string,
+    keyHash: string,
+    replayed: boolean,
+  ) {
+    const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
+    if (!mapping) {
+      unavailable();
+    }
+    const source = this.sqlite
+      .prepare<[string], { seq: string; eventType: string }>(
+        'SELECT CAST(commit_seq AS TEXT) AS seq,event_type AS eventType FROM domain_events WHERE event_id=?',
+      )
+      .get(mapping.sourceEventId);
+    if (source?.eventType === 'RequestAliasRegistered') {
+      return null;
+    }
+    if (source?.eventType !== 'OpeningIdempotencyRecorded') {
+      unavailable();
+    }
+    const event = readRelationalCommit(this.sqlite, source.seq).events.find(
+      (event) => event.eventId === mapping.sourceEventId,
+    );
+    if (event?.eventType !== 'OpeningIdempotencyRecorded') {
+      unavailable();
+    }
+    const p = event.payload;
+    if (
+      canonicalJson(mapping) !==
+      canonicalJson({
+        memberId: p.originalMemberId,
+        operation: p.operation,
+        keyHash: p.keyHash,
+        intentFingerprint: p.intentFingerprint,
+        originalCommandId: p.originalCommandId,
+        originalRequestId: p.originalRequestId,
+        originalJobId: p.originalJobId,
+        requestId: p.requestId,
+        contextId: p.contextId,
+        commitSeq: p.commitSeq,
+        resolution: p.resolution,
+        originRef: p.originRef,
+        archivedReceipt: p.archivedReceipt === null ? null : canonicalJson(p.archivedReceipt),
+        createdAt: p.createdAt,
+        sourceEventId: event.eventId,
+      })
+    ) {
+      unavailable();
+    }
+    return {
+      mapping,
+      event,
+      context: this.assertOpeningIdempotency(event, replayed),
+      receipt: p.archivedReceipt,
+    };
+  }
+
+  assertAcceptedGenerationIntent(
+    requestId: string,
+    memberId: string,
+    commitSeq: string,
+    keyHash: string,
+    sourceEventId: string,
+  ): void {
+    const request = this.ownedRequest(requestId, memberId);
+    if (!request.context_id) {
+      unavailable();
+    }
+    const input = this.requestInput(request),
+      stored = readRelationalCommit(this.sqlite, commitSeq);
+    const accepted = stored.events.find((event) => event.eventType === 'RequestAccepted');
+    const alias = stored.events.find((event) => event.eventType === 'RequestAliasRegistered');
+    if (
+      alias?.payload.requestId !== requestId ||
+      alias.payload.memberId !== memberId ||
+      alias.payload.keyHash !== keyHash ||
+      alias.eventId !== sourceEventId
+    ) {
+      unavailable();
+    }
+    const mapping = this.readGenerationIdempotency(memberId, alias.payload.operation, keyHash);
+    if (
+      !mapping ||
+      mapping.contextId !== alias.payload.contextId ||
+      mapping.commitSeq !== commitSeq ||
+      mapping.originalCommandId !== alias.payload.originalCommandId ||
+      mapping.intentFingerprint !== alias.payload.intentFingerprint ||
+      mapping.originalJobId !== alias.payload.jobId ||
+      mapping.originalRequestId !== requestId ||
+      mapping.sourceEventId !== sourceEventId
+    ) {
+      unavailable();
+    }
+    if (!accepted) {
+      this.assertAliasOnlyEvents(
+        stored.events,
+        this.context(alias.payload.contextId),
+        stored.command,
+        true,
+      );
+      return;
+    }
+    if (accepted.payload.requestId !== requestId || accepted.payload.memberId !== memberId) {
+      unavailable();
+    }
+    this.assertAcceptedEvents(
+      stored.events,
+      input.body,
+      this.context(request.context_id),
+      input.assets.map((asset) => ({ ...asset, bytes: this.asset(request.input_id, asset).bytes })),
+      stored.command,
+    );
+  }
+
+  readGenerationIdempotencyContext(memberId: string, operation: string, keyHash: string) {
+    const mapping = this.readGenerationIdempotency(memberId, operation, keyHash);
+    if (!mapping || mapping.resolution !== 'live' || !mapping.requestId || !mapping.contextId) {
+      unavailable();
+    }
+    this.ownedRequest(mapping.requestId, memberId);
+    const opening = this.readOpeningGenerationIdempotency(memberId, operation, keyHash);
+    if (opening) {
+      if (!opening.context) {
+        unavailable();
+      }
+      return opening.context;
+    }
+    if (!mapping.commitSeq) {
+      unavailable();
+    }
+    this.assertAcceptedGenerationIntent(
+      mapping.requestId,
+      memberId,
+      mapping.commitSeq,
+      keyHash,
+      mapping.sourceEventId,
+    );
+    return this.context(mapping.contextId);
+  }
+
+  // 管理入口先鉴权、限量；这里共用原输入关系/摘要校验，不恢复附件或按当前默认生成参数。
+  readErrorLogRequest(jobId: string): ErrorLogRequest {
+    const job = this.sqlite
+      .prepare<[string], { requestId: string; memberId: string }>(
+        `SELECT j.request_id AS requestId,r.member_id AS memberId FROM generation_jobs j
+        JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!job) {
+      unavailable();
+    }
+    const request = this.request(job.requestId, job.memberId),
+      { body, row } = this.requestInput(request),
+      display = relationalInputDisplay(body, row.completeness === 'complete'),
+      parameters = (body?.parameters ?? {}) as Record<string, unknown>,
+      text = (value: unknown) => (typeof value === 'string' ? value : null),
+      numeric = (value: unknown) =>
+        typeof value === 'number' && Number.isFinite(value) ? value : null;
+    return {
+      tag: display.tag,
+      prompt: text(body?.input),
+      model: request.model,
+      width: numeric(parameters.width),
+      height: numeric(parameters.height),
+      requestedSteps: display.requestedSteps,
+      steps: numeric(parameters.steps),
+      negative: text(parameters.negative_prompt),
+      scale: numeric(parameters.scale),
+      cfg: numeric(parameters.cfg_rescale),
+      sampler: text(parameters.sampler),
+      noiseSchedule: text(parameters.noise_schedule),
+      seed: this.jobSeed(job.requestId, jobId),
+    };
+  }
+
   readMemberInput(requestId: string, memberId: string) {
     const request = this.ownedRequest(requestId, memberId),
       input = this.requestInput(request);
@@ -758,11 +2167,11 @@ export class RelationalInputStore {
         (slot.owner as Record<string | number, unknown>)[slot.key] = { slot: slot.slot };
       }
     }
-    let recoverable = input.row.completeness === 'complete';
-    if (recoverable) {
-      if (!request.context_id) {
-        unavailable();
-      }
+    let recoverable =
+      input.row.completeness === 'complete' &&
+      request.sample_count !== null &&
+      request.context_id !== null;
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
       this.context(request.context_id);
     }
     if (body?.operation === 'generate' && recoverable) {
@@ -778,6 +2187,7 @@ export class RelationalInputStore {
     if (body) {
       delete body.displayPrompt;
       delete body.requestedSteps;
+      delete body.cacheSelection;
     }
     return {
       contractVersion: 1,
@@ -795,10 +2205,13 @@ export class RelationalInputStore {
   readMemberAsset(requestId: string, memberId: string, slotName: string) {
     const request = this.ownedRequest(requestId, memberId),
       input = this.requestInput(request);
-    if (input.row.completeness !== 'complete' || !input.body || !request.context_id) {
+    if (!input.body) {
       unavailable();
     }
-    const context = this.context(request.context_id);
+    let context: RelationalNormalizationContext | null = null;
+    if (input.row.completeness === 'complete' && request.context_id !== null) {
+      context = this.context(request.context_id);
+    }
     const slot = relationalAssetSlots(input.body, input.assets).find(
       (entry) => entry.slot === slotName,
     );
@@ -808,7 +2221,22 @@ export class RelationalInputStore {
     const assetId = (slot.value as { assetId: string }).assetId;
     const descriptor = input.assets.find((asset) => asset.assetId === assetId)!;
     const asset = this.asset(request.input_id, descriptor);
-    validateRelationalAssetBytes({ ...descriptor, bytes: asset.bytes }, slot.image, context);
+    if (context) {
+      validateRelationalAssetBytes({ ...descriptor, bytes: asset.bytes }, slot.image, context);
+    } else {
+      // 历史已知字节可复制；缺首次定义不能补成 Native 派发资格。
+      try {
+        if (slot.image || asset.mimeType.startsWith('image/')) {
+          if (validateImageBytes(asset.bytes).mimeType !== asset.mimeType) {
+            unavailable();
+          }
+        } else if (asset.mimeType !== 'application/octet-stream') {
+          unavailable();
+        }
+      } catch {
+        unavailable();
+      }
+    }
     return asset;
   }
 
@@ -826,6 +2254,55 @@ export class RelationalInputStore {
       unavailable();
     }
     return { mimeType: descriptor.mimeType, bytes: row.bytes };
+  }
+
+  private validatedAssets(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+  ) {
+    if (!input.body) {
+      unavailable();
+    }
+    const assets = input.assets.map((descriptor) => ({
+      ...descriptor,
+      bytes: this.asset(input.row.id, descriptor).bytes,
+    }));
+    for (const slot of relationalAssetSlots(input.body, assets)) {
+      const asset = assets.find(
+        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
+      )!;
+      validateRelationalAssetBytes(asset, slot.image, context);
+    }
+    return assets;
+  }
+
+  private assertCompleteInput(
+    input: ReturnType<RelationalInputStore['input']>,
+    context: RelationalNormalizationContext,
+    sampleCount: number | null,
+  ) {
+    sampleCount = knownSampleCount(sampleCount);
+    const assets = this.validatedAssets(input, context);
+    assertRelationalCompleteInput(input.body!, assets, context, sampleCount);
+    return { assets, sampleCount };
+  }
+
+  // 历史种子只按原事实/已知 context 核对；缺正文不使已知 literal 变为未知或当前默认。
+  readJobSeed(jobId: string) {
+    const row = this.sqlite
+      .prepare<[string], { requestId: string; contextId: string | null }>(
+        `SELECT j.request_id AS requestId,r.context_id AS contextId FROM generation_jobs j
+         JOIN generation_requests r ON r.id=j.request_id WHERE j.id=?`,
+      )
+      .get(jobId);
+    if (!row) {
+      unavailable();
+    }
+    const seed = this.jobSeed(row.requestId, jobId);
+    if (seed !== null && row.contextId !== null) {
+      relationalChildSeed(seed, 0, this.context(row.contextId));
+    }
+    return seed;
   }
 
   readJobInput(jobId: string) {
@@ -848,33 +2325,120 @@ export class RelationalInputStore {
       unavailable();
     }
     const accepted = this.request(job.request_id, job.member_id);
+    if (this.readOriginalRequestId(job.request_id) === null) {
+      unavailable();
+    }
     const seed = this.jobSeed(job.request_id, jobId);
     const input = this.requestInput(accepted);
     if (!input.body || input.row.completeness !== 'complete') {
       unavailable();
     }
     const context = this.context(job.context_id);
-    const assets = input.assets.map((descriptor) => ({
-      ...descriptor,
-      bytes: this.asset(job.input_id, descriptor).bytes,
-    }));
-    for (const slot of relationalAssetSlots(input.body, assets)) {
-      const asset = assets.find(
-        (entry) => entry.assetId === (slot.value as { assetId: string }).assetId,
-      )!;
-      validateRelationalAssetBytes(asset, slot.image, context);
-    }
-    const wire = restoreRelationalWire(input.body, assets, seed, 1);
+    knownSampleCount(accepted.sample_count);
+    const assets = this.validatedAssets(input, context);
+    const wire = restoreRelationalWire(input.body, assets, seed, 1, context);
     const request = relationalProviderRequest(wire, context);
     return {
       ...request,
       sampleCount: 1,
       ...(wire.operation === 'generate'
         ? {
-            tag: (input.body.displayPrompt ?? wire.input) as string,
-            requestedSteps: (input.body.requestedSteps ?? request.steps) as number,
+            ...relationalInputDisplay(input.body, true),
           }
         : {}),
+    };
+  }
+
+  // 专用配置 profile 共享保护内容载体，不注册或放宽任何生成首次 context。
+  stageNormalizationDefaultsProfile(values: unknown) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Configuration content requires the owning transaction.');
+    }
+    const { body, contextId, contextSha256 } = prepareNormalizationDefaultsProfile(values);
+    if (Buffer.byteLength(body) > generationPayloadLimits(this.env).request) {
+      fail(413, 'configuration_too_large', '当前规范化配置超过载荷上限。');
+    }
+    const existing = this.sqlite
+      .prepare<[string], { id: string }>('SELECT id FROM normalization_contexts WHERE id=?')
+      .get(contextId);
+    if (existing) {
+      if (canonicalJson(this.readNormalizationDefaultsProfile(contextId, contextSha256)) !== body) {
+        configurationUnavailable();
+      }
+    } else {
+      this.sqlite
+        .prepare(
+          'INSERT INTO normalization_contexts(id,schema_version,sha256,body) VALUES(?,1,?,?)',
+        )
+        .run(contextId, contextSha256, body);
+    }
+    return { contextId, contextSha256 };
+  }
+
+  readNormalizationDefaultsProfile(contextId: string, contextSha256: string) {
+    const row = this.sqlite
+      .prepare<[string], { schemaVersion: number; sha256: string; body: string }>(
+        'SELECT schema_version AS schemaVersion,sha256,body FROM normalization_contexts WHERE id=?',
+      )
+      .get(contextId);
+    if (
+      !row ||
+      row.schemaVersion !== 1 ||
+      contextId !== `defaults_${contextSha256}` ||
+      row.sha256 !== contextSha256 ||
+      Buffer.byteLength(row.body) > generationPayloadLimits(this.env).request
+    ) {
+      configurationUnavailable();
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(row.body);
+    } catch {
+      configurationUnavailable();
+    }
+    const profile = parseNormalizationDefaultsProfile(value);
+    if (domainDigest(profile) !== contextSha256) {
+      configurationUnavailable();
+    }
+    return profile;
+  }
+
+  createNormalizationDefaultsProjector(
+    source: RelationalInputStore,
+    stored: ReturnType<typeof readRelationalCommit>,
+    replayed: boolean,
+  ) {
+    if (!this.sqlite.inTransaction) {
+      throw new Error('Configuration projection requires the owning transaction.');
+    }
+    const fact = stored.events[0];
+    if (
+      stored.events.length !== 1 ||
+      fact?.eventType !== 'GatewayConfigurationInitialized' ||
+      canonicalJson(readRelationalCommit(source.sqlite, fact.commitSeq)) !== canonicalJson(stored)
+    ) {
+      configurationUnavailable();
+    }
+    const original = source.readNormalizationDefaultsProfile(
+      fact.payload.contextId,
+      fact.payload.contextSha256,
+    );
+    return () => {
+      if (
+        replayed &&
+        !this.sqlite
+          .prepare('SELECT 1 FROM normalization_contexts WHERE id=?')
+          .get(fact.payload.contextId)
+      ) {
+        configurationUnavailable();
+      }
+      const copied = this.stageNormalizationDefaultsProfile(original.values);
+      if (
+        copied.contextId !== fact.payload.contextId ||
+        copied.contextSha256 !== fact.payload.contextSha256
+      ) {
+        configurationUnavailable();
+      }
     };
   }
 }

@@ -62,6 +62,30 @@ Last-Event-ID 的重连。没有事件历史或重放队列；重启换 bootId�
 
 ## 验证与后续边界
 
+新关系格式沿用同一 StateEvent、hub 与授权过滤。在线通知只围住既有同步最外层
+SQL 提交：成员 Key/Cookie/Discord 的 authenticationTransaction，以及执行器和额度
+刷新的实际 transaction。内部 owner 保存点和离线 replay/ready 不广播；网络和文件
+IO 仍在 SQL 外。通知适配器只读取本次成功提交前后瞬时 cut 之间最终存在的完整事实，
+不保存通知游标、不以回滚过的 JS hint 或 total_changes 推断成功。原回执、alias-only
+薄键、签发/续期和无变化认证不产生业务失效。
+
+活动日期使用热力图同一 child 原受理来源和稳定成员，不能使用本次 header、parent
+时间或当前 Key。私有撤销由成员 owner 比较本次触及成员的原/最终窄认证状态，只有
+实际变化才以 sessions 唤醒鉴权；回滚候选不广播。
+会话比较只识别原会话撤销/变权，新增签发不算撤销；签发清理使用成员 owner 原 SQL
+的时间、成员和凭据代次条件，不借当前时间或整个会话集合不相等来猜。执行器装配共享同一个通知对象与
+原 EventEmitter，stateEventsFor 也使用这个长期对象，不能每请求重新包装。提交后
+适配或监听器失败不改变已提交结果。关系通知边界及反例见数据库计划 9.52；新的
+shared-status/shared-events 由数据库计划 9.55 的新薄适配接入；sole 装配仍另行验收，
+本文不把旧 R01/N01 证据当作新格式 HTTP/SSE 验收。
+
+原成员 SSE transport 只提取一次供旧入口和新关系入口共用，连接计数、hub 合并、
+resync、背压、心跳、关闭和错误语义不另写一套。关系入口的工厂保留同库、同
+EventEmitter 的唯一长期 notifier，并把这个对象交给 stateEventsFor；每轮读取从
+当前 Cookie 开始，Discord IO 后在当前认证事务重核 ready、稳定成员和 owner。
+两个共享入口均不续期。临时 Discord/网络错误只结束连接；已确认的 401/403 才发
+auth-expired。金融/任务窄读不写库，合法 Discord 观察依旧属于原私有认证 owner。
+
 存储定向 38/38、服务端兼容 28/28、最后连接关闭边界核心 7/7、owner UI
 16/16、成员/连接/入口 19/19 通过。Windows 最终全量 457 项中 454 通过、
 3 项 Linux 专属测试跳过；首次全量发现一条旧测试依赖 GET 写账本，已改为

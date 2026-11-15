@@ -1,12 +1,10 @@
 import type { IncomingMessage } from 'node:http';
-import {
-  createId,
-  hashObject,
-  generationContextRef,
-  type JsonStore,
-  type StoreDatabase,
-  type StoreItem,
-  type StoredGenerationRequest,
+import { createId, hashObject } from '../storage/record-values.ts';
+import type {
+  JsonStore,
+  StoreDatabase,
+  StoreItem,
+  StoredGenerationRequest,
 } from '../storage/sqlite-store.ts';
 import {
   estimateFairQuota,
@@ -22,8 +20,10 @@ import {
   webJobRequestSummary,
 } from './batch-requests.ts';
 import {
+  generationContextRef,
   generationRequestFingerprint,
   requestNormalizationDefaults,
+  requestCacheKey,
 } from './request-fingerprint.ts';
 import {
   domainDigest,
@@ -119,7 +119,7 @@ export function generationIntent(
 ): GenerationIntent | null {
   return key
     ? {
-        keyHash: hashObject(key),
+        keyHash: generationIdempotencyKeyHash(key),
         operation: 'generate',
         randomSeed: false,
         noCache: false,
@@ -129,19 +129,8 @@ export function generationIntent(
     : null;
 }
 
-export function requestCacheKey(
-  token: string,
-  request: Request,
-  explicitSeed: unknown = '',
-): string {
-  const { requestedSteps: _requestedSteps, ...cacheRequest } = request;
-  return hashObject({
-    owner: token,
-    request: {
-      ...cacheRequest,
-      seed: explicitSeed === undefined || explicitSeed === '' ? '' : Number(explicitSeed),
-    },
-  });
+export function generationIdempotencyKeyHash(key: string): string {
+  return hashObject(key);
 }
 
 export function isNoCache(value: unknown): boolean {

@@ -7,6 +7,7 @@ import {
   type RelationalCommand,
   type RelationalEvent,
 } from './relational-events.ts';
+import { parseRelationalFact } from './relational-fact-contracts.ts';
 import {
   assertRelationalStorageFormat,
   RELATIONAL_REDUCER_VERSION,
@@ -353,6 +354,60 @@ export function readRelationalCommit(
   };
   assertCommand(command);
   return { historyId: history.history_id, eventCount: row.event_count, command, events };
+}
+
+// 来源登记是不可变事实；同笔尚未发生的登记不能为先前开账背书。
+export function assertRelationalOpeningSource(sqlite: Database.Database, event: RelationalEvent) {
+  let sourceId: string;
+  if (event.eventType === 'ImportSourceRegistered') {
+    sourceId = event.payload.sourceId;
+  } else if ('origin' in event.payload && event.eventType.startsWith('Opening')) {
+    sourceId = event.payload.origin.sourceId;
+  } else {
+    throw new Error('开账事实缺少明确的登记来源。');
+  }
+  const rows = sqlite
+    .prepare<
+      [string],
+      {
+        id: string;
+        seq: string;
+        index: number;
+        version: string;
+        memberId: string | null;
+        accountId: string | null;
+        payload: string;
+      }
+    >(
+      `SELECT event_id AS id,CAST(commit_seq AS TEXT) AS seq,event_index AS "index",
+      CAST(stream_version AS TEXT) AS version,member_id AS memberId,account_id AS accountId,payload
+      FROM domain_events WHERE stream_id=? AND event_type='ImportSourceRegistered' LIMIT 2`,
+    )
+    .all(`import:${sourceId}`);
+  const registered = rows[0];
+  if (
+    rows.length !== 1 ||
+    registered.version !== '1' ||
+    registered.memberId !== null ||
+    registered.accountId !== null
+  ) {
+    throw new Error('开账事实缺少唯一且先行的已登记来源。');
+  }
+  const fact = parseRelationalFact({
+    eventType: 'ImportSourceRegistered',
+    payload: JSON.parse(registered.payload),
+  });
+  if (
+    fact.eventType !== 'ImportSourceRegistered' ||
+    fact.payload.sourceId !== sourceId ||
+    (event.eventType === 'ImportSourceRegistered'
+      ? registered.id !== event.eventId ||
+        canonicalJson(fact.payload) !== canonicalJson(event.payload)
+      : BigInt(registered.seq) > BigInt(event.commitSeq) ||
+        (registered.seq === event.commitSeq && registered.index >= event.eventIndex))
+  ) {
+    throw new Error('开账事实与已登记来源或原提交顺序不符。');
+  }
 }
 
 // 重放只接受原完整提交；保留 ID/时间/回执及决定，不重新选择种子、报价或调用网络。

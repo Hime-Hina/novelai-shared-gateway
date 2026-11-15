@@ -41,9 +41,13 @@ export function freeImagePolicy(db: {
 }
 
 export function configureFreeImages(
-  db: FairQuotaDatabase,
+  db: {
+    settings: { fairQuota?: { freeImagePolicy?: FreeImagePolicy } | null };
+    ledger?: unknown[];
+  },
   body: { expectedVersion?: unknown; policy?: unknown },
   actorId: string,
+  now = Date.now(),
 ) {
   const before = freeImagePolicy(db),
     policy = body.policy as Partial<FreeImagePolicy> | null;
@@ -77,7 +81,7 @@ export function configureFreeImages(
   const evidence = {
     id: `free-image-policy:${after.version}`,
     type: 'free_image_policy_updated',
-    at: new Date().toISOString(),
+    at: new Date(now).toISOString(),
     actorId,
     before,
     after,

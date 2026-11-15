@@ -7,7 +7,8 @@ import {
   activateNextBatchJob,
   cancelWaitingBatchJobs,
 } from '../../server/generation/batch-requests.ts';
-import { createNativeHttp, nativeRequestDiagnostic } from '../../server/protocols/native-http.ts';
+import { nativeRequestDiagnostic } from '../../server/protocols/native-http.ts';
+import { createLegacyNativeHttp as createNativeHttp } from '../../server/generation/legacy-native-http.ts';
 import { nativeImageZip } from '../../server/protocols/native-stream.ts';
 import { JobPreviews } from '../../server/generation/job-previews.ts';
 import assert from 'node:assert/strict';

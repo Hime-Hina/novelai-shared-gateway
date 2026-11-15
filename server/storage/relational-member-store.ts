@@ -1,3 +1,7 @@
+import {
+  assertRelationalStateNotifications,
+  type RelationalStateNotifications,
+} from '../events/relational-state-notifications.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
@@ -6,13 +10,19 @@ import {
   type DiscordAuthenticationStore,
   type DiscordAuthenticationTransaction,
 } from '../members/discord-auth.ts';
-import { domainDigest } from '../events/domain-events.ts';
+import {
+  domainDigest,
+  canonicalJson,
+  beginDomainCommand,
+  finishDomainCommand,
+} from '../events/domain-events.ts';
 import {
   loginMember,
   normalizeMemberUsername,
   prepareMemberCredentials,
   assertMemberRegistrationCapacity,
   assertMemberCanDisable,
+  assertCurrentOwnerCommand,
   type MemberApiKeyStore,
   type MemberCredentials,
   type MemberPasswordStore,
@@ -26,14 +36,18 @@ import {
   appendRelationalCommit,
   readRelationalReceipt,
   replayRelationalCommit,
+  assertRelationalOpeningSource,
   type StoredRelationalCommit,
 } from '../events/relational-event-store.ts';
 import type {
   RelationalCommand,
   RelationalEvent,
   RelationalFact,
+  RelationalEventInput,
 } from '../events/relational-events.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
+import { setMemberAdmission, MEMBER_STOPPED_MESSAGE } from '../generation/queue-policy.ts';
+import { RelationalCommitReplayer } from './relational-replay.ts';
 
 type MemberCommand = Omit<RelationalCommand, 'events' | 'expectedVersions' | 'receipt'> & {
   policyVersion: string;
@@ -51,19 +65,133 @@ export interface PreparedMemberCredentials {
   expectedAuthEpoch: string;
   credentials: MemberCredentials;
 }
+export interface RelationalMemberManagementProfile {
+  id: string;
+  displayName: string;
+  status: 'active' | 'disabled';
+  acceptingJobs: boolean;
+  username: string | null;
+  discordId: string | null;
+  inviteExpiresAt: number | null;
+  note: string | null;
+}
+type ManagementProfileRow = Omit<RelationalMemberManagementProfile, 'acceptingJobs' | 'note'> & {
+  acceptingJobs: number;
+  noteJson: string | null;
+};
+const managementProfileSelect = `SELECT m.id,m.display_name AS displayName,m.status,
+  m.accepting_jobs AS acceptingJobs,p.username,d.discord_id AS discordId,
+  i.expires_at AS inviteExpiresAt,m.note_json AS noteJson FROM members m
+  LEFT JOIN password_credentials p ON p.member_id=m.id
+  LEFT JOIN discord_bindings d ON d.member_id=m.id
+  LEFT JOIN discord_invites i ON i.member_id=m.id`;
+function managementProfile(row: ManagementProfileRow): RelationalMemberManagementProfile {
+  return {
+    id: row.id,
+    displayName: row.displayName,
+    status: row.status,
+    acceptingJobs: row.acceptingJobs === 1,
+    username: row.username,
+    discordId: row.discordId,
+    inviteExpiresAt: row.inviteExpiresAt,
+    note: memberNote(row.noteJson),
+  };
+}
+function memberNote(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (typeof decoded === 'string') return decoded;
+  } catch {
+    // 校验失败不在错误中带出原私有备注。
+  }
+  fail(503, '成员私有备注校验失败');
+}
 function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+
+export const relationalMemberFacts = new Set<RelationalEvent['eventType']>([
+  'MemberRegistered',
+  'OpeningMemberRecorded',
+  'MemberStatusChanged',
+  'AdmissionChanged',
+  'MemberEligibilityChanged',
+]);
 
 // 私有认证不是业务投影；这里只有稳定 ID 的窄查询和事务，不提供 users/通用 update。
 export class RelationalMemberStore
   implements MemberPasswordStore, MemberApiKeyStore, DiscordAuthenticationStore
 {
   private sqlite: Database.Database;
-  constructor(sqlite: Database.Database) {
+  private env: NodeJS.ProcessEnv;
+  private notifications?: RelationalStateNotifications;
+  constructor(
+    sqlite: Database.Database,
+    env: NodeJS.ProcessEnv = process.env,
+    notifications?: RelationalStateNotifications,
+  ) {
     assertRelationalStorageFormat(sqlite);
+    if (notifications) {
+      assertRelationalStateNotifications(sqlite, notifications);
+    }
     this.sqlite = sqlite;
+    this.env = env;
+    this.notifications = notifications;
+  }
+
+  private trackPrivateMember(memberId: string): void {
+    this.notifications?.trackMember(memberId, () => {
+      const member = this.sqlite
+        .prepare<
+          [string],
+          {
+            auth_epoch: string | null;
+            key_hash: string | null;
+            username: string | null;
+            inviteExpiresAt: number | null;
+            note_json: string | null;
+          }
+        >(
+          `SELECT m.auth_epoch,k.key_hash,p.username,i.expires_at AS inviteExpiresAt,m.note_json FROM members m
+        LEFT JOIN api_keys k ON k.member_id=m.id LEFT JOIN password_credentials p ON p.member_id=m.id
+        LEFT JOIN discord_invites i ON i.member_id=m.id
+        WHERE m.id=?`,
+        )
+        .get(memberId);
+      const sessions = this.sqlite
+        .prepare<
+          [string],
+          { tokenHash: string; authEpoch: string; ownerBinding: string | null; expiresAt: number }
+        >(
+          'SELECT token_hash AS tokenHash,auth_epoch AS authEpoch,owner_binding AS ownerBinding,expires_at AS expiresAt FROM member_sessions WHERE member_id=? ORDER BY token_hash',
+        )
+        .all(memberId);
+      const discord = this.sqlite
+        .prepare('SELECT discord_id,guild_id,eligible FROM discord_bindings WHERE member_id=?')
+        .get(memberId);
+      const owner = this.readOwner();
+      return {
+        member: JSON.stringify(
+          member
+            ? {
+                key: member.key_hash,
+                username: member.username,
+                inviteExpiresAt: member.inviteExpiresAt,
+                note: member.note_json,
+              }
+            : null,
+        ),
+        authorization: JSON.stringify({
+          epoch: member?.auth_epoch ?? null,
+          key: member?.key_hash ?? null,
+          discord: discord ?? null,
+          owner: owner?.ownerUserId === memberId ? owner : null,
+        }),
+        sessions,
+      };
+    });
   }
 
   private owningTransaction<T>(write: () => T): T {
@@ -83,7 +211,7 @@ export class RelationalMemberStore
         [string],
         {
           id: string;
-          display_name: string;
+          note_json: string | null;
           status: string;
           auth_epoch: string | null;
           username: string | null;
@@ -98,7 +226,7 @@ export class RelationalMemberStore
           invite_expires_at: number | null;
         }
       >(
-        `SELECT m.id,m.display_name,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id,
+        `SELECT m.id,m.note_json,m.status,m.auth_epoch,p.username,d.discord_id,d.guild_id,
         d.access_token,d.refresh_token,d.expires_at,d.checked_at,d.eligible,
         i.code_hash,i.expires_at AS invite_expires_at FROM members m
       LEFT JOIN password_credentials p ON p.member_id=m.id
@@ -111,7 +239,7 @@ export class RelationalMemberStore
     }
     return {
       id: row.id,
-      note: row.display_name,
+      note: memberNote(row.note_json) ?? undefined,
       enabled: row.status === 'active',
       ...(row.auth_epoch
         ? {
@@ -160,6 +288,32 @@ export class RelationalMemberStore
     );
   }
 
+  // 仅提供管理展示来源，不代表 caller 已有管理权；实际 HTTP 仍核当前会话/owner/admin。
+  readManagementMemberCount() {
+    return this.sqlite
+      .prepare<[], { total: number }>(
+        "SELECT COUNT(*) AS total FROM members WHERE status!='removed'",
+      )
+      .get()!.total;
+  }
+  readManagementMemberProfiles(): RelationalMemberManagementProfile[] {
+    return this.sqlite
+      .prepare<[], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.status!='removed' ORDER BY m.id`,
+      )
+      .all()
+      .map(managementProfile);
+  }
+
+  readManagementMemberProfile(memberId: string): RelationalMemberManagementProfile | null {
+    const row = this.sqlite
+      .prepare<[string], ManagementProfileRow>(
+        `${managementProfileSelect} WHERE m.id=? AND m.status!='removed'`,
+      )
+      .get(memberId);
+    return row ? managementProfile(row) : null;
+  }
+
   async loginMemberPassword(username: unknown, password: unknown): Promise<MemberUser> {
     const credential = this.sqlite
       .prepare<[string], { member_id: string; salt: string | null; password_hash: string | null }>(
@@ -201,7 +355,14 @@ export class RelationalMemberStore
     };
   }
 
+  private replaceAuthenticationEpoch(memberId: string, epoch: string | null) {
+    this.trackPrivateMember(memberId);
+    this.sqlite.prepare('UPDATE members SET auth_epoch=? WHERE id=?').run(epoch, memberId);
+    this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+  }
+
   private insertCredentials(memberId: string, credentials: MemberCredentials) {
+    this.trackPrivateMember(memberId);
     if (
       !credentials ||
       typeof credentials.username !== 'string' ||
@@ -226,14 +387,12 @@ export class RelationalMemberStore
       }
       throw error;
     }
-    this.sqlite
-      .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-      .run(credentials.version, memberId);
-    this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+    this.replaceAuthenticationEpoch(memberId, credentials.version);
   }
 
-  setMemberCredentials(prepared: PreparedMemberCredentials) {
+  setMemberCredentials(prepared: PreparedMemberCredentials, actor: MemberUser | null) {
     return this.owningTransaction(() => {
+      this.authorizePrivateCommand(actor);
       const current = this.authenticationMember(prepared.memberId);
       if (current?.enabled !== true || current.memberAuth?.version !== prepared.expectedAuthEpoch) {
         fail(401, '成员认证状态已变化，请重新确认');
@@ -244,6 +403,7 @@ export class RelationalMemberStore
   }
 
   private replaceKey(memberId: string, key: string) {
+    this.trackPrivateMember(memberId);
     if (typeof key !== 'string' || !key || key.length > 4096 || key.includes('\0')) {
       fail(400, '成员 Key 格式无效');
     }
@@ -279,14 +439,30 @@ export class RelationalMemberStore
     return row.recoverable_key;
   }
 
-  private assertBusinessActor(metadata: MemberCommand) {
-    if (!['admin', 'system'].includes(metadata.actorKind)) {
-      fail(403, '成员变更需要管理命令');
+  private authorizePrivateCommand(actor: MemberUser | null | undefined) {
+    if (actor === undefined) {
+      fail(403, '私有变更需要当前 owner 或本地管理员授权');
     }
+    this.authorizeOwnerCommand(
+      { actorKind: actor ? 'member' : 'admin', actorId: actor?.id ?? 'local-admin' },
+      actor,
+    );
+  }
+  private authorizeOwnerCommand(
+    metadata: Pick<MemberCommand, 'actorKind' | 'actorId'>,
+    actor: MemberUser | null,
+  ) {
+    const current =
+      actor &&
+      this.sqlite
+        .prepare<[string], { status: string; authEpoch: string | null }>(
+          'SELECT status,auth_epoch AS authEpoch FROM members WHERE id=?',
+        )
+        .get(actor.id);
+    assertCurrentOwnerCommand(metadata, actor, current, this.env);
   }
 
   private commitMember(metadata: MemberCommand, memberId: string, fact: MemberFact) {
-    this.assertBusinessActor(metadata);
     const streamId = `member:${memberId}`;
     const version =
       this.sqlite
@@ -320,10 +496,14 @@ export class RelationalMemberStore
       displayName: string;
       apiKey: string;
       credentials?: MemberCredentials;
+      note?: string | null;
     },
+    actor: MemberUser | null = null,
   ) {
     return this.owningTransaction(() => {
-      this.assertBusinessActor(metadata);
+      if (metadata.actorKind !== 'system') {
+        this.authorizeOwnerCommand(metadata, actor);
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -331,12 +511,17 @@ export class RelationalMemberStore
       if (this.sqlite.prepare('SELECT 1 FROM members WHERE id=?').get(input.memberId)) {
         fail(409, '成员身份已存在');
       }
+      if (input.note !== undefined && input.note !== null && typeof input.note !== 'string') {
+        fail(400, '成员备注必须是已知字符串或未知值');
+      }
       const count = this.sqlite
         .prepare<[], { count: number }>(
           "SELECT COUNT(*) AS count FROM members WHERE status!='removed'",
         )
         .get()!.count;
       assertMemberRegistrationCapacity(count);
+      // 注册的初始私有状态是“不存在”，不能在 public 行插入后才拍基线。
+      this.trackPrivateMember(input.memberId);
       const result = this.commitMember(metadata, input.memberId, {
         eventType: 'MemberRegistered',
         payload: {
@@ -349,6 +534,11 @@ export class RelationalMemberStore
         },
       });
       this.applyMemberEvents(result.events);
+      if (input.note !== undefined) {
+        this.sqlite
+          .prepare('UPDATE members SET note_json=? WHERE id=?')
+          .run(input.note === null ? null : JSON.stringify(input.note), input.memberId);
+      }
       if (input.credentials) {
         this.insertCredentials(input.memberId, input.credentials);
       } else {
@@ -362,9 +552,23 @@ export class RelationalMemberStore
     });
   }
 
-  setMemberStatus(metadata: MemberCommand, memberId: string, status: 'active' | 'disabled') {
+  setMemberStatus(
+    metadata: MemberCommand,
+    memberId: string,
+    status: 'active' | 'disabled',
+    actor: MemberUser | null = null,
+  ) {
     return this.owningTransaction(() => {
-      this.assertBusinessActor(metadata);
+      if (metadata.actorKind !== 'system') {
+        this.authorizeOwnerCommand(metadata, actor);
+      }
+      if (
+        metadata.actorKind === 'member' &&
+        memberId === this.env.OWNER_USER_ID &&
+        status === 'disabled'
+      ) {
+        fail(409, '不能停用或删除当前 owner');
+      }
       const prior = readRelationalReceipt(this.sqlite, metadata);
       if (prior) {
         return prior;
@@ -390,19 +594,247 @@ export class RelationalMemberStore
       });
       this.applyMemberEvents(result.events);
       if (status === 'disabled') {
-        this.sqlite
-          .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-          .run(randomBytes(16).toString('hex'), memberId);
-        this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(memberId);
+        this.replaceAuthenticationEpoch(memberId, randomBytes(16).toString('hex'));
       }
       return result;
     });
   }
 
-  private applyMemberEvents(events: RelationalEvent[]) {
+  changeMemberAdmission(
+    metadata: MemberCommand,
+    input: { memberId: string; acceptingJobs: boolean },
+    actor: MemberUser | null,
+  ) {
+    return this.owningTransaction(() => {
+      this.authorizeOwnerCommand(metadata, actor);
+      if (
+        !metadata.actorId ||
+        !input ||
+        typeof input.memberId !== 'string' ||
+        !input.memberId ||
+        typeof input.acceptingJobs !== 'boolean' ||
+        Object.keys(input).some((key) => !['memberId', 'acceptingJobs'].includes(key))
+      ) {
+        fail(400, '成员接单命令无效');
+      }
+      const command = {
+          ...metadata,
+          fingerprint: domainDigest({ command: metadata.fingerprint, input }),
+        },
+        prior = readRelationalReceipt(this.sqlite, command);
+      if (prior) {
+        return prior;
+      }
+      const member = this.readMember(input.memberId);
+      if (!member || member.status === 'removed') {
+        fail(404, '成员不存在');
+      }
+      const jobs = this.sqlite
+          .prepare<[string], { id: string; requestId: string; memberId: string; status: string }>(
+            `SELECT j.id,j.request_id AS requestId,r.member_id AS memberId,j.status
+        FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+        WHERE r.member_id=? AND j.status IN ('queued','pending') ORDER BY j.rowid`,
+          )
+          .all(input.memberId),
+        view = {
+          users: [
+            {
+              id: member.id,
+              acceptingJobs: member.acceptingJobs === 1,
+              jobAdmissionVersion: member.admissionEpoch,
+            },
+          ],
+          jobs,
+        };
+      beginDomainCommand(view);
+      const receipt = setMemberAdmission(
+        view,
+        input.memberId,
+        input.acceptingJobs,
+        (_db, job) => {
+          if (
+            this.sqlite
+              .prepare(
+                `SELECT 1 FROM charges WHERE original_job_id=?
+          UNION ALL SELECT 1 FROM generation_attempts WHERE job_id=? LIMIT 1`,
+              )
+              .get(job.id, job.id)
+          ) {
+            fail(409, '等待意图不能持有预扣或派发尝试');
+          }
+        },
+        metadata.recordedAt,
+      );
+      const original = finishDomainCommand(view)!;
+      const events: RelationalEventInput[] = original.events.map((event) => {
+        let fact: MemberFact | Extract<RelationalFact, { eventType: 'WaitingJobsCancelled' }>;
+        if (event.eventType === 'AdmissionChanged') {
+          fact = {
+            eventType: 'AdmissionChanged',
+            payload: {
+              memberId: event.payload.memberId,
+              acceptingJobs: event.payload.acceptingJobs,
+              admissionEpoch: event.payload.jobAdmissionVersion,
+            },
+          };
+        } else if (event.eventType === 'WaitingJobsCancelled') {
+          fact = {
+            eventType: 'WaitingJobsCancelled',
+            payload: {
+              jobIds: event.payload.jobIds,
+              reason: event.payload.reason,
+              errorStatus: event.payload.errorStatus,
+              cancellationReason: event.payload.cancellationReason,
+            },
+          };
+        } else {
+          throw new Error('Admission owner emitted an unsupported fact.');
+        }
+        return {
+          ...fact,
+          streamId: event.eventType === 'AdmissionChanged' ? `member:${member.id}` : event.streamId,
+          memberId: member.id,
+          accountId: null,
+          occurredAt: metadata.recordedAt,
+          policyVersion: metadata.policyVersion,
+          pricingVersion: metadata.pricingVersion,
+        };
+      });
+      const expectedVersions: Record<string, string> = {};
+      for (const event of events) {
+        expectedVersions[event.streamId] =
+          this.sqlite
+            .prepare<[string], { version: string }>(
+              'SELECT CAST(stream_version AS TEXT) AS version FROM stream_heads WHERE stream_id=?',
+            )
+            .get(event.streamId)?.version || '0';
+      }
+      const { policyVersion: _policy, pricingVersion: _pricing, ...saved } = command;
+      return new RelationalCommitReplayer(this.sqlite).appendCommit({
+        ...saved,
+        expectedVersions,
+        receipt,
+        events,
+      });
+    });
+  }
+
+  assertMemberAdmissionCommit(events: RelationalEvent[], receipt: RelationalCommand['receipt']) {
+    this.assertMemberCommandTransaction();
+    const decisions = new Map<
+      string,
+      Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>
+    >();
+    for (const event of events) {
+      if (event.eventType === 'AdmissionChanged') {
+        decisions.set(event.payload.memberId, event);
+      } else if (
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.payload.cancellationReason === 'member_stopped'
+      ) {
+        const decision = event.memberId ? decisions.get(event.memberId) : undefined;
+        if (
+          !decision ||
+          decision.payload.acceptingJobs ||
+          !event.payload.jobIds.length ||
+          event.payload.reason !== MEMBER_STOPPED_MESSAGE ||
+          event.payload.errorStatus !== 409 ||
+          event.accountId !== null ||
+          event.occurredAt !== decision.occurredAt
+        ) {
+          fail(409, '停止接单取消必须保留同提交原停止决定');
+        }
+      }
+    }
+    // 原接单回执的判别字段绑定同一保存决定，不能删光事实后保存“成功停止”。
+    if (
+      receipt &&
+      !Array.isArray(receipt) &&
+      typeof receipt === 'object' &&
+      ('acceptingJobs' in receipt || ('id' in receipt && 'cancelledJobIds' in receipt))
+    ) {
+      const admission = events.filter((event) => event.eventType === 'AdmissionChanged');
+      const cancelled = events.flatMap((event) =>
+        event.eventType === 'WaitingJobsCancelled' &&
+        event.memberId === receipt.id &&
+        event.payload.cancellationReason === 'member_stopped'
+          ? event.payload.jobIds
+          : [],
+      );
+      if (
+        admission.length !== 1 ||
+        admission[0].payload.memberId !== receipt.id ||
+        admission[0].payload.acceptingJobs !== receipt.acceptingJobs ||
+        canonicalJson(cancelled) !== canonicalJson(receipt.cancelledJobIds)
+      ) {
+        fail(409, '接单回执必须匹配原完整接单决定');
+      }
+    }
+  }
+
+  private assertAdmissionChange(
+    event: Extract<RelationalEvent, { eventType: 'AdmissionChanged' }>,
+    completeEvents: RelationalEvent[],
+  ) {
+    const p = event.payload,
+      member = this.readMember(p.memberId);
+    if (
+      !member ||
+      member.status === 'removed' ||
+      event.streamId !== `member:${p.memberId}` ||
+      event.memberId !== p.memberId ||
+      event.accountId !== null ||
+      !Number.isSafeInteger(
+        member.admissionEpoch + (member.acceptingJobs === 1 && !p.acceptingJobs ? 1 : 0),
+      ) ||
+      p.admissionEpoch !==
+        member.admissionEpoch + (member.acceptingJobs === 1 && !p.acceptingJobs ? 1 : 0)
+    ) {
+      fail(409, '接单事实与原成员或代次不符');
+    }
+    if (p.acceptingJobs) {
+      return;
+    }
+    const waiting = this.sqlite
+        .prepare<[string], { id: string; requestId: string }>(
+          `SELECT j.id,j.request_id AS requestId FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id
+      WHERE r.member_id=? AND j.status IN ('queued','pending')`,
+        )
+        .all(p.memberId),
+      expected = new Map(waiting.map((job) => [job.id, job.requestId]));
+    for (const candidate of completeEvents.filter((item) => item.eventIndex > event.eventIndex)) {
+      if (candidate.eventType === 'AdmissionChanged' && candidate.payload.memberId === p.memberId) {
+        break;
+      }
+      if (
+        candidate.eventType !== 'WaitingJobsCancelled' ||
+        candidate.memberId !== p.memberId ||
+        candidate.payload.cancellationReason !== 'member_stopped'
+      ) {
+        continue;
+      }
+      if (candidate.payload.errorStatus !== 409 || candidate.accountId !== null) {
+        fail(409, '停止接单取消事实无效');
+      }
+      for (const id of candidate.payload.jobIds) {
+        if (!expected.has(id) || candidate.streamId !== `request:${expected.get(id)}`) {
+          fail(409, '停止接单取消集合与原等待意图不符');
+        }
+        expected.delete(id);
+      }
+    }
+    if (expected.size) {
+      fail(409, '停止接单缺少原等待意图的取消事实');
+    }
+  }
+
+  private applyMemberEvents(events: RelationalEvent[], completeEvents = events) {
     // 资格事实保留历史；业务回放不能把它还原成当前私有授权或认证 epoch。
     for (const event of events) {
       if (event.eventType === 'MemberRegistered' || event.eventType === 'OpeningMemberRecorded') {
+        if (event.eventType === 'OpeningMemberRecorded') {
+          assertRelationalOpeningSource(this.sqlite, event);
+        }
         const p = event.payload;
         this.sqlite
           .prepare(
@@ -419,10 +851,15 @@ export class RelationalMemberStore
             event.eventId,
           );
       } else if (event.eventType === 'MemberStatusChanged') {
+        const current = this.readMember(event.payload.memberId);
+        if (!current || current.status === 'removed') {
+          fail(409, '成员身份已移除或不存在，不能重新激活');
+        }
         this.sqlite
           .prepare('UPDATE members SET status=?,source_event_id=? WHERE id=?')
           .run(event.payload.status, event.eventId, event.payload.memberId);
       } else if (event.eventType === 'AdmissionChanged') {
+        this.assertAdmissionChange(event, completeEvents);
         this.sqlite
           .prepare(
             'UPDATE members SET accepting_jobs=?,admission_epoch=?,source_event_id=? WHERE id=?',
@@ -439,32 +876,64 @@ export class RelationalMemberStore
     }
   }
 
+  applyReplayedMemberEvent(event: RelationalEvent, completeEvents: RelationalEvent[]) {
+    this.assertMemberCommandTransaction();
+    this.applyMemberEvents([event], completeEvents);
+    if (
+      (event.eventType === 'MemberStatusChanged' && event.payload.status !== 'active') ||
+      (event.eventType === 'MemberEligibilityChanged' && event.payload.eligible === false)
+    ) {
+      // 重放只撤销，不制造 epoch；后续 active/资格恢复不能复活旧 Cookie 或 Key。
+      this.replaceAuthenticationEpoch(event.payload.memberId, null);
+    }
+  }
+
+  assertMemberRemovalCommit(events: RelationalEvent[]) {
+    this.assertMemberCommandTransaction();
+    const decisions = events.filter((event) => event.eventType === 'MemberRemoved'),
+      removed = events.filter(
+        (event) => event.eventType === 'MemberStatusChanged' && event.payload.status === 'removed',
+      );
+    if (!decisions.length && !removed.length) return;
+    if (
+      decisions.length !== 1 ||
+      removed.length !== 1 ||
+      decisions[0].eventType !== 'MemberRemoved' ||
+      removed[0].eventType !== 'MemberStatusChanged' ||
+      removed[0].payload.memberId !== decisions[0].payload.sourceMemberId ||
+      removed[0].eventIndex <= decisions[0].eventIndex ||
+      removed[0].occurredAt !== decisions[0].occurredAt ||
+      removed[0].accountId !== null ||
+      removed[0].policyVersion !== decisions[0].policyVersion ||
+      removed[0].pricingVersion !== decisions[0].pricingVersion
+    ) {
+      fail(409, '成员身份移除必须属于同笔原权益移除决定');
+    }
+  }
+
   replayMemberCommit(stored: StoredRelationalCommit) {
     return this.owningTransaction(() => {
-      if (
-        stored.events.some(
-          (event) =>
-            ![
-              'MemberRegistered',
-              'OpeningMemberRecorded',
-              'MemberStatusChanged',
-              'AdmissionChanged',
-              'MemberEligibilityChanged',
-            ].includes(event.eventType),
-        )
-      ) {
+      if (stored.events.some((event) => !relationalMemberFacts.has(event.eventType))) {
         throw new Error('Member replay requires complete member-only commits.');
       }
       const result = replayRelationalCommit(this.sqlite, stored);
       if (!result.replayed) {
-        this.applyMemberEvents(result.events);
+        this.assertMemberRemovalCommit(result.events);
+        this.assertMemberAdmissionCommit(result.events, result.receipt);
+        for (const event of result.events) {
+          this.applyReplayedMemberEvent(event, result.events);
+        }
       }
       return result;
     });
   }
 
-  createMemberDiscordInvite(memberId: string, now = Date.now()) {
+  createMemberDiscordInvite(memberId: unknown, actor: MemberUser | null, now = Date.now()) {
     return this.owningTransaction(() => {
+      this.authorizePrivateCommand(actor);
+      if (typeof memberId !== 'string' || !memberId) {
+        fail(404, '成员不存在或已停用');
+      }
       const user = this.authenticationMember(memberId);
       const result = createDiscordInvite({ users: user ? [user] : [] }, memberId, now);
       this.saveDiscordAuthentication(user!);
@@ -473,6 +942,7 @@ export class RelationalMemberStore
   }
 
   private saveDiscordAuthentication(user: DiscordUser, evidence?: 'login' | 'observation') {
+    this.trackPrivateMember(user.id);
     this.assertMemberCommandTransaction();
     const current = this.authenticationMember(user.id);
     if (!current || current.enabled !== true) {
@@ -507,10 +977,7 @@ export class RelationalMemberStore
         .run(user.id);
     }
     if (current.memberAuth?.version !== user.memberAuth?.version) {
-      this.sqlite
-        .prepare('UPDATE members SET auth_epoch=? WHERE id=?')
-        .run(user.memberAuth?.version ?? null, user.id);
-      this.sqlite.prepare('DELETE FROM member_sessions WHERE member_id=?').run(user.id);
+      this.replaceAuthenticationEpoch(user.id, user.memberAuth?.version ?? null);
     }
     if (user.discordInvite) {
       this.sqlite
@@ -601,7 +1068,8 @@ export class RelationalMemberStore
     if (this.sqlite.inTransaction) {
       throw new Error('Authentication requires its own commit before returning success.');
     }
-    return this.sqlite.transaction(run).immediate();
+    const commit = () => this.sqlite.transaction(run).immediate();
+    return this.notifications ? this.notifications.commit(commit) : commit();
   }
 
   async memberApiKeyTransaction<T>(
@@ -640,6 +1108,14 @@ export class RelationalMemberStore
           previous.ownerUserId !== owner.ownerUserId ||
           previous.guildId !== owner.guildId
         ) {
+          const affected = this.sqlite
+            .prepare<[string, string], { member_id: string }>(
+              'SELECT DISTINCT member_id FROM member_sessions WHERE owner_binding IS NOT NULL OR member_id IN (?,?)',
+            )
+            .all(previous?.ownerUserId ?? owner.ownerUserId, owner.ownerUserId);
+          for (const row of affected) {
+            this.trackPrivateMember(row.member_id);
+          }
           if (previous) {
             this.sqlite
               .prepare(
@@ -660,10 +1136,19 @@ export class RelationalMemberStore
           ? options.memberSessionDelete()
           : options.memberSessionDelete;
       if (remove) {
+        const session = this.readMemberSessionState(remove);
+        if (session) {
+          this.trackPrivateMember(session.memberId);
+        }
         this.sqlite.prepare('DELETE FROM member_sessions WHERE token_hash=?').run(remove);
       }
       const row = options.memberSession?.();
       if (row) {
+        this.notifications?.markSessionCleanup({
+          memberId: row.memberId,
+          authEpoch: row.authEpoch,
+          createdAt: row.createdAt,
+        });
         this.sqlite.prepare('DELETE FROM member_sessions WHERE expires_at<=?').run(row.createdAt);
         this.sqlite
           .prepare('DELETE FROM member_sessions WHERE member_id=? AND auth_epoch!=?')

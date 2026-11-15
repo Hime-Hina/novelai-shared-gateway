@@ -4,6 +4,28 @@ interface PublicError {
   name?: string;
   statusCode?: number;
   status?: number;
+  upstreamStatus?: number;
+}
+
+export function isNovelAiCapacityError(error: unknown): boolean {
+  const failure = error as PublicError;
+  if (Number(failure?.upstreamStatus) === 429) {
+    return true;
+  }
+  if ([401, 403].includes(Number(failure?.upstreamStatus))) {
+    return false;
+  }
+  return /NovelAI returned 429|statusCode["']?\s*:\s*429|Concurrent generation is locked|并发生成被锁定|concurrent generation/i.test(
+    String(failure?.message || error || ''),
+  );
+}
+
+export const generationCapacityMessage =
+  'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。';
+
+// 只转换已分类的安全码；原上游正文和未知码仍走各 caller 的既有白名单/通用错误。
+export function classifiedGenerationFailureMessage(code: unknown): string | undefined {
+  return code === 'upstream_capacity' ? generationCapacityMessage : undefined;
 }
 
 export const insufficientBalanceMessage = '密钥额度不足，无法生成图片。';
@@ -57,8 +79,11 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   if (quotaFailureMessages.has(text)) {
     return text;
   }
-  // File and SQL failures can also arise while reading completed images.
-  if (/^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)) {
+  // 完成图的文件、SQL 或承诺副本读取失败继续使用原公开文案。
+  if (
+    text === 'No confirmed artifact replica has readable original bytes.' ||
+    /^(?:Error:\s*)?(?:E[A-Z0-9_]+|SQLITE[A-Z0-9_]*)\s*:/.test(text)
+  ) {
     return generationFailure;
   }
   if (generation && /^NovelAI returned 401\b/.test(text)) {
@@ -87,6 +112,10 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
     return '服务器繁忙，请稍后再试。';
   }
   if (generation && text) {
+    const classified = classifiedGenerationFailureMessage(text);
+    if (classified) {
+      return classified;
+    }
     if (
       /(?:Anlas|额度|余额).*(?:不足|耗尽|保留边界)|未经明确授权|暂不能使用购买 Anlas/i.test(text)
     ) {
@@ -100,7 +129,7 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
       '服务器繁忙，请稍后再试。',
       '共享 Opus Key 已失效，请联系管理员更新凭据',
       '上游拒绝访问，请联系管理员重新验证 Opus',
-      'NAI 暂时限制此共享账户的并发；本次失败额度已退回，后续任务将按共享冷却时间派发。',
+      generationCapacityMessage,
       '共享 Opus 暂不可用，请稍后重试或联系管理员。',
       '绑定的 Opus 账号未启用',
       '共享账本尚未配置',
@@ -120,11 +149,16 @@ export function publicErrorMessage(message: unknown, { generation = false } = {}
   return text;
 }
 
-export function errorDetailMessage(error: unknown): string {
+export function errorDetailMessage(error: unknown, knownSecrets: readonly string[] = []): string {
   const value = error as PublicError;
-  return String(value?.stack || value?.message || error || '')
-    .trim()
-    .slice(0, 4000);
+  let detail = String(value?.stack || value?.message || error || '').trim();
+  // 原在途凭据只供捕获时精确脱敏，不能进入事件、回执或恢复状态。
+  for (const secret of knownSecrets) {
+    if (secret) {
+      detail = detail.replaceAll(secret, '[REDACTED]');
+    }
+  }
+  return detail.slice(0, 4000);
 }
 
 export function isAbortError(error: unknown): boolean {

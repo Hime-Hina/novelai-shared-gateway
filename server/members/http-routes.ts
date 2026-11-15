@@ -1,4 +1,15 @@
+import {
+  handleMemberAuthenticationRoutes,
+  renewMemberCookie as renewCookie,
+} from './authentication-http.ts';
+import {
+  memberCookie as cookie,
+  assertMemberSameOrigin as sameOrigin,
+  readMemberJson as json,
+  replyMemberJson as reply,
+} from './http-request.ts';
 import { createHash, randomBytes } from 'node:crypto';
+import { managementCommand } from '../http/management-command.ts';
 import { formatAmount, parseAmount } from '../quota/resource-amounts.ts';
 import {
   domainDigest,
@@ -10,20 +21,16 @@ import type { PersistenceOptions } from '../storage/sqlite-store.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   setMemberCredentials,
-  checkMemberLoginRate,
-  createMemberSession,
   authenticateMemberSession,
-  renewMemberSession,
-  logoutMemberSession,
   isOwner,
   type MemberSession,
-  type MemberSessionStore,
   type MemberPasswordStore,
   assertMemberRegistrationCapacity,
   assertMemberCanDisable,
 } from './authentication.ts';
 import {
   configureFairGroups,
+  configureAnlasFallback,
   fairQuotaSummary,
   estimateFairQuota,
   syncFairQuota,
@@ -37,23 +44,21 @@ import { configureFreeImages, freeImagePolicy } from '../quota/free-image-policy
 import { sharedAccountStatus } from '../quota/shared-status.ts';
 import {
   discordLoginEnabled,
-  discordConfig,
   createDiscordInvite,
-  beginDiscordLogin,
-  finishDiscordLogin,
   requireDiscordMembership,
   type DiscordUser,
   type DiscordDependencies,
   type DiscordAuthenticationStore,
 } from './discord-auth.ts';
-import { clientIp } from '../http/client-ip.ts';
 import { memberCharge, updateLossAlertPolicy } from '../quota/failure-accounting.ts';
-import {
-  stateEventsFor,
-  mergeStateEvents,
-  stateInvalidation,
-} from '../events/state-notifications.ts';
+import type { stateEventsFor } from '../events/state-notifications.ts';
+import { streamMemberSharedEvents } from './shared-events.ts';
 import { readActivityHeatmap } from '../reports/activity-heatmap.ts';
+import {
+  handleMemberReadRoutes,
+  publicMemberProfile,
+  resolveMemberPublicBaseUrl,
+} from './read-http.ts';
 import { readServiceResources } from '../reports/service-resources.ts';
 import { readR2Backups, readR2Operations } from '../reports/r2-analytics.ts';
 import { readPikPakQuota } from '../storage/pikpak-storage.ts';
@@ -144,24 +149,10 @@ interface MemberDependencies extends Omit<DiscordDependencies, 'store'> {
     revalidate: () => Promise<boolean>,
   ): Promise<boolean>;
 }
-type PublishedEvent = Parameters<Parameters<ReturnType<typeof stateEventsFor>['subscribe']>[0]>[0];
-interface MemberMePayload {
-  jobs: { id: string; imageId: string; imageUrl?: string }[];
-  lateResults?: {
-    id: string;
-    model: string;
-    createdAt?: string | null;
-    lateResultAt: string;
-    imageUrl: string;
-    charge: ReturnType<typeof memberCharge>;
-  }[];
-}
-
-const statusStreams = new Map<string, number>();
 const error: (statusCode: number, message: string) => never = (statusCode, message) => {
   throw Object.assign(new Error(message), { statusCode });
 };
-const cookieName = 'nai_member_session';
+
 const keyedManagementActions = new Set([
   'free-image-policy',
   'loss-alert-policy',
@@ -177,118 +168,6 @@ const keyedManagementActions = new Set([
   'member-admission',
   'groups',
 ]);
-function managementCommand(
-  req: IncomingMessage,
-  actorId: string,
-  operation: string,
-  body: Record<string, unknown>,
-): DomainCommandMetadata {
-  const key = req.headers['idempotency-key'];
-  if (key === undefined) {
-    return { actorId, actorKind: 'admin' };
-  }
-  if (
-    typeof key !== 'string' ||
-    !/^[\x21-\x7e]{1,128}$/.test(key) ||
-    req.rawHeaders.filter(
-      (value, index) => index % 2 === 0 && value.toLowerCase() === 'idempotency-key',
-    ).length !== 1
-  ) {
-    error(400, 'Idempotency-Key 必须是单个非空可见 ASCII 字符串，最多 128 字节');
-  }
-  // 键按已鉴权 actor 和操作隔离；指纹只取提交意图，不取新生成的事件或时间。
-  return {
-    actorId,
-    actorKind: 'admin',
-    commandId: `management:${domainDigest([actorId, operation, key])}`,
-    fingerprint: domainDigest({ operation, body }),
-  };
-}
-function cookie(req: IncomingMessage): string {
-  return (
-    String(req.headers.cookie || '')
-      .split(';')
-      .map((s) => s.trim())
-      .find((s) => s.startsWith(cookieName + '='))
-      ?.slice(cookieName.length + 1) || ''
-  );
-}
-function sameOrigin(req: IncomingMessage): void {
-  const host = String(req.headers.host || '');
-  const origin = req.headers.origin;
-  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
-  const expected = `${local ? 'http' : 'https'}://${host}`;
-  if ((origin && origin !== expected) || req.headers['sec-fetch-site'] === 'cross-site') {
-    throw Object.assign(new Error('此接口仅允许本站访问'), {
-      statusCode: 403,
-      code: 'origin_rejected',
-    });
-  }
-  if (!['GET', 'HEAD'].includes(req.method!) && origin !== expected) {
-    throw Object.assign(new Error('缺少本站 Origin'), { statusCode: 403, code: 'origin_rejected' });
-  }
-}
-function reply(res: ServerResponse, status: number, value: unknown): void {
-  const text = JSON.stringify(value);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(text),
-    'x-content-type-options': 'nosniff',
-  });
-  res.end(text);
-}
-async function json(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!String(req.headers['content-type'] || '').startsWith('application/json')) {
-    error(415, '仅接受 JSON');
-  }
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 32768) {
-      error(413, '请求过大');
-    }
-    chunks.push(chunk);
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    error(400, 'JSON 格式错误');
-  }
-  if (!value || Array.isArray(value) || typeof value !== 'object') {
-    error(400, '请求内容无效');
-  }
-  return value as Record<string, unknown>;
-}
-function setCookie(
-  req: IncomingMessage,
-  res: ServerResponse,
-  token: string,
-  expiresAt = 0,
-  additional: string[] = [],
-): void {
-  const local = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(req.headers.host || ''));
-  const maxAge = token ? Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000)) : 0;
-  const value = `${cookieName}=${token}; Path=/api/member; HttpOnly; SameSite=Strict; Max-Age=${maxAge}; Expires=${new Date(expiresAt).toUTCString()}${local ? '' : '; Secure'}`;
-  res.setHeader('Set-Cookie', additional.length ? [...additional, value] : value);
-}
-
-async function renewCookie(
-  req: IncomingMessage,
-  res: ServerResponse,
-  store: MemberStore,
-  env: NodeJS.ProcessEnv,
-) {
-  const session = await renewMemberSession(store, cookie(req), env);
-  if (!session) {
-    error(401, '登录已失效，请重新登录');
-  }
-  setCookie(req, res, cookie(req), session.expiresAt);
-  return session;
-}
-
 function recentActivity(db: MemberDatabase, user: MemberUser) {
   const jobs = db.jobs.filter((job) => job.userToken === user.token).slice(0, 30);
   return {
@@ -305,74 +184,7 @@ export function memberPublicBaseUrl(
   db: Pick<MemberDatabase, 'settings'>,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return (
-    env.PUBLIC_BASE_URL ||
-    db.settings.publicBaseUrl ||
-    (env.PUBLIC_HOST ? `https://${env.PUBLIC_HOST}` : '')
-  );
-}
-
-export async function handleMemberAuthenticationRoutes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  deps: { store: MemberPasswordStore; env?: NodeJS.ProcessEnv },
-): Promise<boolean> {
-  if (
-    req.method !== 'POST' ||
-    !['/api/member/login', '/api/member/logout'].includes(url.pathname)
-  ) {
-    return false;
-  }
-  sameOrigin(req);
-  const env = deps.env || process.env,
-    store = deps.store;
-  if (url.pathname === '/api/member/logout') {
-    await logoutMemberSession(store, cookie(req));
-    setCookie(req, res, '');
-    reply(res, 200, { ok: true });
-    return true;
-  }
-  if (discordLoginEnabled(env)) {
-    error(403, '本站仅允许 Discord 登录');
-  }
-  const body = await json(req);
-  checkMemberLoginRate(body.username, clientIp(req, env));
-  const user = await store.loginMemberPassword(body.username, body.password);
-  const session = await createMemberSession(store, user, env);
-  setCookie(req, res, session.token, session.expiresAt);
-  reply(res, 200, { ok: true, expiresAt: session.expiresAt });
-  return true;
-}
-
-export async function handleMemberDiscordAuthenticationRoutes(
-  req: IncomingMessage,
-  res: ServerResponse,
-  url: URL,
-  deps: DiscordDependencies & { store: MemberSessionStore },
-): Promise<boolean> {
-  const env = deps.env || process.env;
-  // OAuth 顶层回跳必然跨站，仅此 GET 路径改用一次性 state + 浏览器 Cookie 验证。
-  if (url.pathname === '/api/member/discord/callback' && req.method === 'GET') {
-    const user = await finishDiscordLogin(req, res, url, deps);
-    const session = await createMemberSession(deps.store, user, env);
-    // finishDiscordLogin 已确认配置并设置单个 state Cookie，保持两个 Cookie 的原顺序。
-    setCookie(req, res, session.token, session.expiresAt, [res.getHeader('Set-Cookie') as string]);
-    res.writeHead(303, {
-      location: discordConfig(env)!.origin + '/',
-      'cache-control': 'no-store',
-      'referrer-policy': 'no-referrer',
-    });
-    res.end();
-    return true;
-  }
-  if (url.pathname === '/api/member/discord/start' && req.method === 'POST') {
-    sameOrigin(req);
-    checkMemberLoginRate(null, clientIp(req, env));
-    reply(res, 200, await beginDiscordLogin(req, res, await json(req), deps));
-    return true;
-  }
-  return false;
+  return resolveMemberPublicBaseUrl(db.settings.publicBaseUrl, env);
 }
 
 export async function handleMemberRoutes(
@@ -389,7 +201,7 @@ export async function handleMemberRoutes(
   if (!member && !admin) {
     return false;
   }
-  if (await handleMemberDiscordAuthenticationRoutes(req, res, url, deps)) {
+  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
     return true;
   }
   const env = deps.env || process.env,
@@ -465,18 +277,6 @@ export async function handleMemberRoutes(
       reply(res, 200, result);
       return true;
     }
-  }
-  if (url.pathname === '/api/member/login-options' && req.method === 'GET') {
-    let config;
-    try {
-      config = discordConfig(env);
-    } catch {}
-    reply(res, 200, {
-      discord: discordEnabled,
-      ready: Boolean(config),
-      origin: config?.origin || null,
-    });
-    return true;
   }
   if (admin) {
     // 原私有管理 API 保持本机与密钥校验；owner 别名已经过独立会话鉴权。
@@ -650,36 +450,8 @@ export async function handleMemberRoutes(
       return true;
     }
     if (body.action === 'fallback-policy') {
-      if (typeof body.enabled !== 'boolean') {
-        error(400, 'enabled 必须为布尔值');
-      }
-      const enabled = body.enabled;
       const result = await updateManagement(
-        (db) => {
-          const state = db.settings.fairQuota;
-          if (!state?.enabled) {
-            error(409, '共享账本尚未配置');
-          }
-          state.autoAnlasFallback = enabled;
-          const at = Date.now();
-          state.policyHistory = [
-            ...(state.policyHistory || []),
-            { at, actor: 'administrator', autoAnlasFallback: enabled },
-          ].slice(-1000);
-          recordDomainEvent(db, {
-            eventType: 'PolicyChanged',
-            streamId: 'sharing:default',
-            occurredAt: at,
-            payload: {
-              policy: 'autoAnlasFallback',
-              value: enabled,
-              actorId,
-              actor: 'administrator',
-              at,
-            },
-          });
-          return { autoAnlasFallback: enabled };
-        },
+        (db) => configureAnlasFallback(db, body.enabled, actorId),
         { collections: ['settings'], immediate: true },
       );
       reply(res, 200, result);
@@ -903,9 +675,6 @@ export async function handleMemberRoutes(
     error(400, '不支持的管理操作');
   }
 
-  if (await handleMemberAuthenticationRoutes(req, res, url, deps)) {
-    return true;
-  }
   let session = await authenticateMemberSession(store, cookie(req), env);
   const user = session?.user as MemberUser | undefined;
   if (!user) {
@@ -962,188 +731,44 @@ export async function handleMemberRoutes(
     return true;
   }
   if (url.pathname === '/api/member/shared-events') {
-    if (res.destroyed || res.writableEnded) {
-      return true;
-    }
-    if (
-      (statusStreams.get(user.id) || 0) >= 3 ||
-      [...statusStreams.values()].reduce((n, v) => n + v, 0) >= 100
-    ) {
-      error(429, '状态连接过多，请关闭多余页面');
-    }
-    statusStreams.set(user.id, (statusStreams.get(user.id) || 0) + 1);
-    res.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-store',
-      'x-accel-buffering': 'no',
-      connection: 'keep-alive',
-    });
-    res.flushHeaders?.();
-    const hub = stateEventsFor(store);
-    let closed = false,
-      timer: ReturnType<typeof setTimeout> | undefined,
-      previous = '',
-      heartbeat = 0,
-      running = false,
-      requested = false,
-      resync = true,
-      pending: PublishedEvent | undefined;
-    let unsubscribe = () => {};
-    const stop = () => {
-      if (closed) {
-        return;
-      }
-      closed = true;
-      clearTimeout(timer);
-      unsubscribe();
-      res.off('close', stop);
-      res.off('error', stop);
-      const count = (statusStreams.get(user.id) || 1) - 1;
-      if (count) {
-        statusStreams.set(user.id, count);
-      } else {
-        statusStreams.delete(user.id);
-      }
-    };
-    res.once('close', stop);
-    res.once('error', stop);
-    const wake = (event?: PublishedEvent): void => {
-      if (closed) {
-        return;
-      }
-      if (event) {
-        pending = mergeStateEvents(pending, event);
-      }
-      requested = true;
-      clearTimeout(timer);
-      if (!running) {
-        void tick();
-      }
-    };
-    const tick = async () => {
-      running = true;
-      try {
-        while (requested && !closed) {
-          requested = false;
-          const event = pending || hub.current(),
-            full = resync;
-          pending = undefined;
-          resync = false;
-          const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
-          if (viewer) {
-            await requireDiscordMembership(viewer, deps);
-          }
-          const state = viewer
-            ? await store.update((db) => sharedAccountStatus(db), { persist: false })
-            : null;
-          if (closed) {
-            return;
-          }
-          if (!state) {
-            res.write('event: auth-expired\ndata: {}\n\n');
-            res.end();
-            stop();
-            return;
-          }
-          const text = JSON.stringify(state);
-          if (text !== previous) {
-            res.write(`event: shared-status\ndata: ${text}\n\n`);
-            previous = text;
-            heartbeat = Date.now();
-          }
-          const invalidation = stateInvalidation(event, viewer!.id, isOwner(viewer, env), full);
-          if (invalidation) {
-            res.write(`event: state-invalidated\ndata: ${JSON.stringify(invalidation)}\n\n`);
-            heartbeat = Date.now();
-          }
-          if (Date.now() - heartbeat > 15000) {
-            res.write(': keepalive\n\n');
-            heartbeat = Date.now();
-          }
-          if (res.writableLength > 65536) {
-            res.end();
-            stop();
-            return;
-          }
+    await streamMemberSharedEvents(res, {
+      memberId: user.id,
+      store,
+      readCurrent: async () => {
+        const viewer = (await authenticateMemberSession(store, cookie(req), env))?.user;
+        if (!viewer) {
+          return null;
         }
-      } catch (error) {
-        if (!closed) {
-          if ([401, 403].includes((error as { statusCode?: number }).statusCode!)) {
-            res.write('event: auth-expired\ndata: {}\n\n');
-          }
-          res.end();
-          stop();
-        }
-      } finally {
-        running = false;
-        if (!closed) {
-          timer = setTimeout(() => wake(), 2000);
-          timer.unref?.();
-        }
-      }
-    };
-    unsubscribe = hub.subscribe(wake, () => {
-      res.end();
-      stop();
-    });
-    wake();
-    return true;
-  }
-  if (url.pathname === '/api/member/key') {
-    const publicBase = await store.update((db) => memberPublicBaseUrl(db), { persist: false });
-    const base = publicBase.replace(/\/+$/, '');
-    reply(res, 200, {
-      apiKey: user.token,
-      baseUrl: base ? (base.endsWith('/v1') ? base : `${base}/v1`) : '',
+        await requireDiscordMembership(viewer, deps);
+        const state = await store.update((db) => sharedAccountStatus(db), { persist: false });
+        return { memberId: viewer.id, owner: isOwner(viewer, env), state };
+      },
     });
     return true;
   }
-  if (url.pathname === '/api/member/history') {
-    const query = url.searchParams,
-      page = Number(query.get('page') || 1),
-      pageSize = Number(query.get('pageSize') || 25);
-    const q = (query.get('q') || '').trim(),
-      status = query.get('status') || '',
-      sort = query.get('sort') || 'createdAt',
-      order = query.get('order') || 'desc';
-    const until = query.get('until') || new Date().toISOString();
-    if (
-      !Number.isSafeInteger(page) ||
-      page < 1 ||
-      page > 1000000 ||
-      !Number.isSafeInteger(pageSize) ||
-      pageSize < 1 ||
-      pageSize > 100 ||
-      q.length > 200 ||
-      !['', 'done', 'failed', 'running', 'queued', 'pending', 'late'].includes(status) ||
-      !['createdAt', 'model', 'status'].includes(sort) ||
-      !['asc', 'desc'].includes(order) ||
-      !Number.isFinite(Date.parse(until)) ||
-      new Date(until).toISOString() !== until
-    ) {
-      error(400, '历史查询参数无效');
-    }
-    const result = await store.readMemberJobPage(user, {
-      page,
-      pageSize,
-      q,
-      status,
-      sort,
-      order,
-      until,
-    });
-    reply(res, 200, {
-      ...result,
-      jobs: result.jobs.map(({ imageId, charge, ...job }) => ({
-        ...job,
-        imageUrl: imageId ? deps.publicImageUrl(imageId) : '',
-        charge: memberCharge(charge),
-      })),
-    });
+  if (
+    await handleMemberReadRoutes(req, res, url, {
+      publicImageUrl: deps.publicImageUrl,
+      readKey: async () => ({
+        apiKey: user.token,
+        publicBaseUrl: await store.update((db) => memberPublicBaseUrl(db), { persist: false }),
+      }),
+      readHistory: async (options) => {
+        const result = await store.readMemberJobPage(user, options);
+        return {
+          ...result,
+          jobs: result.jobs.map(({ charge, ...job }) => ({
+            ...job,
+            charge: memberCharge(charge),
+          })),
+        };
+      },
+    })
+  ) {
     return true;
   }
   if (url.pathname === '/api/member/me') {
-    const payload: MemberMePayload = await store.update(
+    const payload = await store.update(
       (db) => {
         const draft = estimateFairQuota(db, Date.now());
         return {
@@ -1178,17 +803,20 @@ export async function handleMemberRoutes(
     ]);
     for (const job of payload.jobs) {
       job.imageId = ownedImages.get(job.id) || '';
-      job.imageUrl = job.imageId ? deps.publicImageUrl(job.imageId) : '';
     }
-    payload.lateResults = lateResults.map((job) => ({
+    const ownedLate = lateResults.map((job) => ({
       id: job.id,
       model: job.model || '',
       createdAt: job.createdAt,
       lateResultAt: job.lateResultAt,
-      imageUrl: deps.publicImageUrl(job.imageId),
+      imageId: job.imageId,
       charge: memberCharge(job.charge),
     }));
-    reply(res, 200, payload);
+    reply(
+      res,
+      200,
+      publicMemberProfile({ ...payload, lateResults: ownedLate }, deps.publicImageUrl),
+    );
     return true;
   }
   error(404, 'not found.');

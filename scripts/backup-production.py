@@ -20,6 +20,23 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def registry_path(destination):
+    return destination.parent / (destination.name + '-retained-sources')
+
+
+def retained_sources(registry, operation, request=None):
+    script = Path(__file__).with_name('retained-sources.mjs')
+    node = os.environ.get('NODE_BINARY', 'node')
+    if not script.is_file():
+        runtime = Path('/opt/novelai-shared-gateway/current')
+        node = str(runtime / 'bin/node')
+        script = runtime / 'executor/.output/server/node_modules/novelai-shared-gateway/scripts/retained-sources.mjs'
+    result = subprocess.run([node, str(script), operation, str(registry)],
+                            input=json.dumps(request or {}), text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return json.loads(result.stdout)
+
+
 def safe_file(root, relative):
     parts = PurePosixPath(relative).parts
     if not parts or '\\' in relative or PurePosixPath(relative).is_absolute() or '..' in parts:
@@ -63,6 +80,13 @@ def verify(snapshot):
                 raise ValueError('Image differs from its stored result descriptor')
             if image.get('byteLength') is not None and file.stat().st_size != image['byteLength']:
                 raise ValueError('Image length differs from its stored result descriptor')
+    if 'retainedSource' in manifest:
+        expected = (snapshot / 'retained-catalog.sha256').read_text().strip()
+        if not re.fullmatch(r'[a-f0-9]{64}', expected) or digest(safe_file(snapshot, 'retained-catalog/registry.json')) != expected:
+            raise ValueError('Retained catalog checkpoint differs')
+        catalog = retained_sources(snapshot / 'retained-catalog', 'read', {'checkpointSha256': expected})
+        if catalog['registryId'] != manifest['retainedSource']['registryId']:
+            raise ValueError('Retained catalog belongs to another registry')
     return manifest
 
 
@@ -83,6 +107,9 @@ def clean_archived_images(source, destination):
         if not (snapshot / 'manifest.json').is_file():
             continue
         manifest = verify(snapshot)
+        if 'retainedSource' in manifest:
+            # 新捕获不含图片；不能由旧清理器改写已绑定的不可变manifest。
+            continue
         external = manifest.setdefault('r2Images', {})
         for relative, checksum in list(manifest['files'].items()):
             if not relative.startswith('data/images/'):
@@ -128,6 +155,9 @@ def backup(source, destination, configuration, *, label='daily'):
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(destination, 0o700)
     work = Path(tempfile.mkdtemp(prefix='.partial-', dir=destination))
+    registry = registry_path(destination)
+    # 责任先durable登记；失败留下preparing，不根据暂存目录年龄自动解保护。
+    capture = retained_sources(registry, 'begin', {'category': label, 'location': str(work)})
     try:
         (work / 'data').mkdir(mode=0o700)
         with closing(sqlite3.connect((source / 'library.sqlite').as_uri() + '?mode=ro', uri=True)) as live:
@@ -137,6 +167,9 @@ def backup(source, destination, configuration, *, label='daily'):
             output = work / relative
             output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             shutil.copyfile(original, output)
+        binding = retained_sources(registry, 'describe', {'source': str(work / 'data/library.sqlite'),
+                                                        'output': str(work / 'retained-dependencies.jsonl'),
+                                                        'dataDir': str(source)})
         files = {}
         for file in sorted(work.rglob('*')):
             if file.is_symlink():
@@ -147,19 +180,30 @@ def backup(source, destination, configuration, *, label='daily'):
                 with file.open('rb') as stream:
                     os.fsync(stream.fileno())
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
-        manifest = {'createdAt': stamp, 'source': str(source), 'imagesIncluded': False, 'files': files}
+        result = destination / (label + '-' + stamp)
+        manifest = {'createdAt': stamp, 'source': str(source), 'imagesIncluded': False, 'files': files,
+                    'retainedSource': {**capture, 'binding': binding}}
         with (work / 'manifest.json').open('x') as stream:
             json.dump(manifest, stream, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
+        checkpoint = retained_sources(registry, 'bind', {'sourceId': capture['sourceId'],
+                                           'manifest': str(work / 'manifest.json'),
+                                           'dependencies': str(work / 'retained-dependencies.jsonl'),
+                                           'location': str(result),
+                                           'checkpoint': str(work / 'retained-catalog')})
+        with (work / 'retained-catalog.sha256').open('x') as stream:
+            stream.write(checkpoint['sha256'] + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
         verify(work)
-        result = destination / (label + '-' + stamp)
         work.rename(result)
         directory = os.open(destination, os.O_RDONLY)
         try:
             os.fsync(directory)
         finally:
             os.close(directory)
+        retained_sources(registry, 'publish', {'sourceId': capture['sourceId'], 'location': str(result)})
         return result
     finally:
         if work.exists():
@@ -170,7 +214,11 @@ def retain_daily_backups(destination):
     # Call only after the new snapshot and its configured remote upload have succeeded.
     daily = sorted(p for p in destination.glob('daily-*') if not p.is_symlink() and (p / 'manifest.json').is_file())
     for old in daily[:-7]:
+        verify(old)
+        retirement = retained_sources(registry_path(destination), 'retire-local', {'location': str(old)})
         shutil.rmtree(old)
+        retained_sources(registry_path(destination), 'confirm-local',
+                         {'sourceId': retirement['sourceId'], 'holdId': retirement['holdId'], 'location': str(old)})
 
 
 def production_configuration():
@@ -201,7 +249,7 @@ def upload_business_backup(snapshot):
         return
     if not key_file.is_file():
         raise ValueError('Backup encryption key is missing')
-    verify(snapshot)
+    manifest = verify(snapshot)
     runtime = Path('/opt/novelai-shared-gateway/current')
     with tempfile.TemporaryDirectory(prefix='.r2-upload-', dir=snapshot.parent) as temporary:
         archive = Path(temporary) / 'business.tar.gz'
@@ -210,7 +258,9 @@ def upload_business_backup(snapshot):
         subprocess.run([str(runtime / 'bin/node'),
                         str(runtime / 'executor/.output/server/node_modules/novelai-shared-gateway/scripts/r2-backup.mjs'),
                         'upload', str(archive), str(snapshot / 'r2-backup.json'),
-                        str(env_file), str(key_file), snapshot.name],
+                        str(env_file), str(key_file), snapshot.name,
+                        str(registry_path(snapshot.parent)),
+                        manifest.get('retainedSource', {}).get('sourceId', '')],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if not (snapshot / 'r2-backup.json').is_file():
             raise ValueError('R2 upload did not produce a verified receipt')
@@ -238,8 +288,6 @@ def main():
             if (result / 'r2-backup.json').is_file():
                 print('Encrypted R2 business backup verified:', result.name)
             retain_daily_backups(result.parent)
-            count, size = clean_archived_images(Path('/var/lib/novelai-shared-gateway'), result.parent)
-            print('Verified duplicate backup images removed:', count, 'logical bytes:', size)
 
 
 if __name__ == '__main__':

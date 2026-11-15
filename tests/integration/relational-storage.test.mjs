@@ -1,17 +1,154 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import {
   initializeRelationalStorage,
   assertRelationalStorageReady,
+  assertRelationalStorageFormat,
   RELATIONAL_DATABASE_FORMAT,
   RELATIONAL_WRITER_VERSION,
 } from '../../server/storage/relational-storage.ts';
+import { RELATIONAL_SCHEMA_SQL } from '../../server/storage/relational-schema.ts';
 import { migrateStorage } from '../../server/storage/sqlite-migrations.ts';
 import { parseAmount } from '../../server/quota/resource-amounts.ts';
+import {
+  RELATIONAL_EVENT_SCHEMA_VERSION,
+  parseRelationalFact,
+} from '../../server/events/relational-events.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalGenerationStore } from '../../server/storage/relational-generation-store.ts';
+import { createRelationalNativeHttp } from '../../server/generation/relational-native-http.ts';
+import { createRelationalOpenAiHttp } from '../../server/generation/relational-openai-http.ts';
+import { createRelationalDirectHttp } from '../../server/generation/relational-direct-http.ts';
 
 const sha256 = 'a'.repeat(64);
 const fact = { source_event_id: 'e1' };
+
+for (const previousVersion of [2, 3])
+  test(
+    '旧关系事件 v' +
+      previousVersion +
+      ' 原型的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash',
+    (t) => {
+      const sqlite = new Database(':memory:');
+      t.after(() => sqlite.close());
+      sqlite.pragma('foreign_keys=ON');
+      const previousSchema = RELATIONAL_SCHEMA_SQL.replace(
+        'CHECK (schema_version = ' + RELATIONAL_EVENT_SCHEMA_VERSION + ')',
+        'CHECK (schema_version = ' + previousVersion + ')',
+      );
+      assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
+      sqlite.exec(previousSchema);
+      const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+      meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
+      meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
+      meta.run(
+        'event_authority',
+        JSON.stringify({
+          version: RELATIONAL_WRITER_VERSION,
+          minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+        }),
+      );
+      sqlite
+        .prepare(
+          "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
+        )
+        .run();
+      const before = sqlite.serialize();
+      assert.throws(
+        () => assertRelationalStorageFormat(sqlite),
+        /Unsupported relational database format/,
+      );
+      assert.throws(
+        () => assertRelationalStorageReady(sqlite),
+        /Unsupported relational database format/,
+      );
+      assert.deepEqual(sqlite.serialize(), before);
+    },
+  );
+
+for (const previous of [
+  {
+    name: 'relational-schema-v3.json',
+    commit: '3d2bafd7b19f329027ad081344a94dc20f4f51f2',
+    sha256: '95e48652ac9bd9064f960f6bb87f41fde48bbc303ccc3183c553dcdd43f7646b',
+  },
+  {
+    name: 'relational-schema-v4-integer-seed.json',
+    commit: 'e7cf9675ebbde690615b1b8ac7ba07fadc4a3a01',
+    sha256: '94ebf80c768c334466ef21bec0c01df6ae5f58b30792cd037ff6820d0511b796',
+  },
+  {
+    name: 'relational-schema-v5.json',
+    commit: 'bb0b60b80a967b695189b3dd11c13672b0e4fefd',
+    sha256: 'a014985cb52c8e038451d7dc9454e71a91623e26f0f1ce9a2545450a74cd42bd',
+  },
+  {
+    name: 'relational-schema-v6.json',
+    commit: 'b42719d30c387912ec768ed9f1f7a85ae5d7099e',
+    sha256: 'e131bf7ac1317832ee67371551e886949791dac68800afd2459c4b737b82e009',
+  },
+]) {
+  test(`旧原型 ${previous.name} 的正确旧 hash 也不能通过当前格式门禁，不手补字段或 hash`, (t) => {
+    const sqlite = new Database(':memory:');
+    t.after(() => sqlite.close());
+    sqlite.pragma('foreign_keys=ON');
+    // 固定实际 Git 的完整 DDL；不能由改写当前版本号或字段冒充正确旧库。
+    const old = JSON.parse(
+      readFileSync(new URL(`../fixtures/${previous.name}`, import.meta.url), 'utf8'),
+    );
+    assert.equal(old.sourceCommit, previous.commit);
+    assert.equal(old.sha256, previous.sha256);
+    const previousSchema = old.sql;
+    assert.equal(createHash('sha256').update(previousSchema).digest('hex'), old.sha256);
+    assert.notEqual(previousSchema, RELATIONAL_SCHEMA_SQL);
+    sqlite.exec(previousSchema);
+    const meta = sqlite.prepare('INSERT INTO app_meta(key,value) VALUES(?,?)');
+    meta.run('database_format', RELATIONAL_DATABASE_FORMAT);
+    meta.run('schema_sha256', createHash('sha256').update(previousSchema).digest('hex'));
+    meta.run(
+      'event_authority',
+      JSON.stringify({
+        version: RELATIONAL_WRITER_VERSION,
+        minimumWriterVersion: RELATIONAL_WRITER_VERSION,
+      }),
+    );
+    sqlite
+      .prepare(
+        "INSERT INTO projection_state(id,history_id,reducer_version,last_commit_seq,status) VALUES(1,'old-prototype',1,0,'building')",
+      )
+      .run();
+    const before = sqlite.serialize();
+    assert.throws(
+      () => assertRelationalStorageFormat(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => assertRelationalStorageReady(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(() => new RelationalInputStore(sqlite), /Unsupported relational database format/);
+    assert.throws(
+      () => new RelationalGenerationStore(sqlite),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalNativeHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalOpenAiHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.throws(
+      () => createRelationalDirectHttp({ sqlite }),
+      /Unsupported relational database format/,
+    );
+    assert.deepEqual(sqlite.serialize(), before);
+  });
+}
 
 function insert(sqlite, table, row) {
   const fields = Object.keys(row);
@@ -38,7 +175,7 @@ function event(overrides = {}) {
     stream_kind: 'test',
     stream_version: 1,
     event_type: 'TestBaselineRecorded',
-    schema_version: 2,
+    schema_version: RELATIONAL_EVENT_SCHEMA_VERSION,
     occurred_at: 1000,
     account_id: null,
     member_id: null,
@@ -58,7 +195,7 @@ function fixture(t) {
     fingerprint: sha256,
     actor_kind: 'system',
     recorded_at: 1000,
-    event_count: 1,
+    event_count: 3,
     receipt: '{"requestId":"r1"}',
   });
   insert(sqlite, 'domain_events', event());
@@ -81,7 +218,7 @@ function fixture(t) {
     });
     insert(sqlite, 'upstream_accounts', {
       id: `a${n}`,
-      display_name: `account ${n}`,
+      display_name_json: JSON.stringify(`account ${n}`),
       enabled: 1,
       credential_epoch: 1,
       ordinary_strikes: 0,
@@ -97,6 +234,35 @@ function fixture(t) {
       logical_bytes: 2,
       body: '{}',
     });
+    // 物理DDL夹具仍是building；只补原接受身份，不冒充完整受理/合法ready。
+    const accepted = parseRelationalFact({
+      eventType: 'RequestAccepted',
+      payload: {
+        requestId: `r${n}`,
+        memberId: `m${n}`,
+        inputId: `i${n}`,
+        contextId: 'ctx',
+        source: 'native',
+        operation: 'generate',
+        model: 'synthetic-model',
+        sampleCount: 2,
+        seedMode: 'fixed',
+        confirmation: null,
+      },
+    });
+    insert(
+      sqlite,
+      'domain_events',
+      event({
+        event_id: `request-source-${n}`,
+        event_index: n,
+        stream_id: `request:r${n}`,
+        stream_kind: 'request',
+        event_type: accepted.eventType,
+        member_id: `m${n}`,
+        payload: JSON.stringify(accepted.payload),
+      }),
+    );
     insert(sqlite, 'generation_requests', {
       id: `r${n}`,
       member_id: `m${n}`,
@@ -104,10 +270,12 @@ function fixture(t) {
       context_id: 'ctx',
       source: 'native',
       operation: 'generate',
+      model: 'synthetic-model',
       sample_count: 2,
       seed_mode: 'fixed',
       accepted_at: 1000,
       ...fact,
+      source_event_id: `request-source-${n}`,
     });
     insert(sqlite, 'generation_jobs', {
       id: `j${n}`,
@@ -187,6 +355,55 @@ function artifact(overrides = {}) {
     ...overrides,
   };
 }
+
+test('唯一actual_seed REAL保留有限Number及未知NULL，物理边界拒绝无穷值', (t) => {
+  const seeds = [
+    0,
+    -1,
+    -2,
+    1.5,
+    4294967296,
+    Number.MAX_VALUE,
+    -Number.MAX_VALUE,
+    Number.MIN_VALUE,
+    null,
+  ];
+  for (const [index, seed] of seeds.entries()) {
+    const sqlite = fixture(t);
+    insert(sqlite, 'generation_jobs', {
+      id: `seed-${index}`,
+      request_id: 'r1',
+      sample_index: 1,
+      actual_seed: seed,
+      status: 'pending',
+      admission_epoch: 0,
+      ...fact,
+    });
+    const row = sqlite
+      .prepare(
+        'SELECT actual_seed AS seed,typeof(actual_seed) AS type FROM generation_jobs WHERE id=?',
+      )
+      .get(`seed-${index}`);
+    assert.equal(row.seed, seed);
+    assert.equal(row.type, seed === null ? 'null' : 'real');
+  }
+  for (const seed of [Infinity, -Infinity]) {
+    const sqlite = fixture(t);
+    assert.throws(
+      () =>
+        insert(sqlite, 'generation_jobs', {
+          id: 'nonfinite',
+          request_id: 'r1',
+          sample_index: 1,
+          actual_seed: seed,
+          status: 'pending',
+          admission_epoch: 0,
+          ...fact,
+        }),
+      /CHECK/,
+    );
+  }
+});
 
 test('新格式独立初始化为 building，没有旧通用记录、正文影子或流投影', (t) => {
   const sqlite = database(t);
@@ -283,6 +500,7 @@ test('DDL 中断整笔回滚，空历史身份与外层事务不能创建半库'
 
 test('ready 门禁拒绝缺失游标、未来版本、DDL 漂移和关闭外键，保留 64 位游标', (t) => {
   const sqlite = fixture(t);
+  // 此处只测物理格式门禁，不能作为完整业务数据已由唯一installer安装的证据。
   sqlite.prepare("UPDATE projection_state SET status='ready'").run();
   assert.throws(() => assertRelationalStorageReady(sqlite), /incomplete/);
   sqlite.prepare('UPDATE projection_state SET last_commit_seq=1').run();
@@ -570,9 +788,82 @@ test('产物属于原成员，缓存复用保留原 input/attempt，上传确认
   };
   insert(sqlite, 'artifact_replicas', replica);
   assert.equal(sqlite.prepare('SELECT verified_at FROM artifact_replicas').get().verified_at, null);
+  // 历史存在承诺允许原uploaded未知、verified已知0；普通首次确认在Replica owner拒绝。
+  // 原正常reserved→verified及完整提交回滚反例见relational-replicas的Opening已确认R2用例。
+  sqlite.prepare('UPDATE artifact_replicas SET uploaded_at=NULL, verified_at=0').run();
+  assert.deepEqual(sqlite.prepare('SELECT uploaded_at,verified_at FROM artifact_replicas').get(), {
+    uploaded_at: null,
+    verified_at: 0,
+  });
+  assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
+});
+
+test('副本 DDL 保留 identity/gzip/br，未知编码被拒绝', (t) => {
+  const sqlite = fixture(t);
+  insert(sqlite, 'artifacts', artifact());
+  insert(sqlite, 'artifacts', artifact({ id: 'image2', member_id: 'm2', input_id: 'i2' }));
+  for (const encoding of ['identity', 'gzip', 'br']) {
+    insert(sqlite, 'storage_targets', {
+      id: encoding,
+      kind: 'pikpak',
+      namespace: `synthetic/${encoding}`,
+      ...fact,
+    });
+    insert(sqlite, 'artifact_replicas', {
+      artifact_id: 'image1',
+      storage_target_id: encoding,
+      object_key: 'same-object',
+      encoding,
+      uploaded_at: 1,
+      ...fact,
+    });
+  }
   assert.throws(
-    () => sqlite.prepare('UPDATE artifact_replicas SET uploaded_at=NULL, verified_at=2000').run(),
+    () =>
+      insert(sqlite, 'artifact_replicas', {
+        artifact_id: 'image2',
+        storage_target_id: 'gzip',
+        object_key: 'bad-encoding',
+        encoding: 'deflate',
+        ...fact,
+      }),
     /CHECK/,
+  );
+  assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
+});
+
+test('独立产物可引用同对象且按 target/key 索引查询，不以对象定位合并所有者', (t) => {
+  const sqlite = fixture(t);
+  insert(sqlite, 'artifacts', artifact());
+  insert(sqlite, 'artifacts', artifact({ id: 'image2', member_id: 'm2', input_id: 'i2' }));
+  insert(sqlite, 'storage_targets', { id: 'r2', kind: 'r2', namespace: 'synthetic/r2', ...fact });
+  for (const artifactId of ['image1', 'image2']) {
+    insert(sqlite, 'artifact_replicas', {
+      artifact_id: artifactId,
+      storage_target_id: 'r2',
+      object_key: 'same-object',
+      encoding: 'identity',
+      uploaded_at: 1,
+      ...fact,
+    });
+  }
+  assert.equal(
+    sqlite
+      .prepare(
+        "SELECT COUNT(*) AS n FROM artifact_replicas WHERE storage_target_id='r2' AND object_key='same-object'",
+      )
+      .get().n,
+    2,
+  );
+  assert.match(
+    JSON.stringify(
+      sqlite
+        .prepare(
+          "EXPLAIN QUERY PLAN SELECT artifact_id FROM artifact_replicas WHERE storage_target_id='r2' AND object_key='same-object'",
+        )
+        .all(),
+    ),
+    /idx_replica_object/,
   );
   assert.deepEqual(sqlite.pragma('foreign_key_check'), []);
 });
@@ -680,7 +971,7 @@ test('新活动键需要完整关系和原命令，事件顺序与子任务索�
     /UNIQUE/,
   );
   assert.throws(
-    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 1 })),
+    () => insert(sqlite, 'domain_events', event({ event_id: 'duplicate-stream', event_index: 3 })),
     /UNIQUE/,
   );
   assert.throws(

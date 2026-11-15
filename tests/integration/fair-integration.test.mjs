@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fair from '../../server/quota/fair-share.ts';
 import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
-import { createGenerationAdmission, requestCacheKey } from '../../server/generation/admission.ts';
+import { createGenerationAdmission } from '../../server/generation/admission.ts';
+import { requestCacheKey } from '../../server/generation/request-fingerprint.ts';
 import {
   reserveQueuedGeneration,
   refundGenerationJob,

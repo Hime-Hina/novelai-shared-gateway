@@ -1,3 +1,11 @@
+import { initialNormalizationDefaults } from '../generation/normalization-defaults.ts';
+import { generationContextRef } from '../generation/request-fingerprint.ts';
+import { createId } from './record-values.ts';
+export { generationContextRef } from '../generation/request-fingerprint.ts';
+export { createId, hashObject } from './record-values.ts';
+
+import { isStatsExcludedJob } from '../reports/admin-statistics.ts';
+import { emitStoreEvent } from '../events/state-notifications.ts';
 import { existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, unlink } from 'node:fs/promises';
 import crypto from 'node:crypto';
@@ -66,6 +74,7 @@ import { queryFailureAccounting } from '../quota/failure-accounting.ts';
 import { readFreeImageUsage as queryFreeImageUsage } from '../quota/free-image-policy.ts';
 import { activityDate } from '../reports/activity-heatmap.ts';
 import { R2_PIKPAK_THRESHOLD_BYTES, type R2Image } from './r2-storage.ts';
+import { canRetireJobHistory } from './history-retirement.ts';
 
 import type { SQLitePreparedQuery, SQLiteInsertValue } from 'drizzle-orm/sqlite-core';
 import type { FairQuotaState, FairCharge, FairAccount, FairUser } from '../quota/fair-share.ts';
@@ -96,9 +105,6 @@ type SqlRow = typeof recordTables.cards.$inferSelect &
   >;
 type GenerationRequest = typeof generationRequests.$inferInsert;
 type Idempotency = typeof generationIdempotency.$inferInsert;
-export const generationContextRef = (
-  row: Pick<Idempotency, 'member_id' | 'operation' | 'key_hash'>,
-): string => `generation-idempotency:${row.member_id}:${row.operation}:${row.key_hash}`;
 type MemberSession = typeof memberSessions.$inferInsert;
 interface SessionOwner {
   ownerUserId: string;
@@ -403,8 +409,6 @@ interface ImageClearOptions {
 type RemovedImages = StoreItem[] & { affectedJobIds?: string[] };
 
 export const MAX_CACHE_IMAGES_LIMIT = 4000000;
-export const MAX_FREE_STEPS = 28;
-export const defaultArtist2_5D = `0.9::misaka_12003-gou ::, dino_(dinoartforame), wanke, liduke, year 2025, realistic, 4k, -2::green ::, textless version, The image is highly intricate finished drawn. Only the character's face is in anime style, but their body is in realistic style. 1.35::A highly finished photo-style artwork that has lively color, graphic texture, realistic skin surface, and lifelike flesh with little obliques::. 1.63::photorealistic::, 1.63::photo(medium)::, \\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,, very aesthetic, masterpiece, no text,`;
 export const legacyDefaultArtist =
   'artist:ningen_mame,, noyu_(noyu23386566),, toosaka asagi,, location,\n20::best quality, absurdres, very aesthetic, detailed, masterpiece::,:,, very aesthetic, masterpiece, no text,';
 
@@ -430,20 +434,7 @@ const defaultSettings = {
     apiKey: '',
     model: '',
   },
-  defaultModel: 'nai-diffusion-4-5-full',
-  defaultArtist: defaultArtist2_5D,
-  defaultNegative:
-    '{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{{missing legs}},mutated hands,{{{mutation}}},normal quality,poorly drawn face,poorly drawn hands,signature,text,{{too many fingers}},{{{ugly}}},username,watermark,worst quality',
-  defaults: {
-    size: '绔栧浘',
-    width: 832,
-    height: 1216,
-    steps: MAX_FREE_STEPS,
-    scale: 6,
-    cfg: 0,
-    sampler: 'k_dpmpp_2m_sde',
-    noiseSchedule: 'karras',
-  },
+  ...structuredClone(initialNormalizationDefaults),
 };
 
 const defaultDb: StoreDatabase = {
@@ -506,19 +497,7 @@ export class JsonStore {
   }
 
   private emitStoreEvent(name: string, event?: unknown) {
-    // 通知错误不能把已提交的事务变成失败，也不能阻止其他订阅者。
-    for (const listener of this.events.rawListeners(name)) {
-      try {
-        const pending = listener.call(this.events, event);
-        if (pending?.then) {
-          Promise.resolve(pending).catch((error) =>
-            console.error('[runtime] Store event listener failed:', error),
-          );
-        }
-      } catch (error) {
-        console.error('[runtime] Store event listener failed:', error);
-      }
-    }
+    emitStoreEvent(this.events, name, event);
   }
 
   private notifyCommit(event: CommitDraft) {
@@ -846,7 +825,7 @@ export class JsonStore {
       }
       const active = [...linked.values()].some(
         ({ job }) =>
-          !this.canRetireJobHistory(job) ||
+          !canRetireJobHistory(job) ||
           (job.requestId &&
             this.sqlite!.prepare(
               "SELECT id FROM jobs WHERE request_id=? AND status IN ('queued','pending','running') LIMIT 1",
@@ -968,7 +947,7 @@ export class JsonStore {
           if (!job) {
             continue;
           }
-          if (!this.canRetireJobHistory(job)) {
+          if (!canRetireJobHistory(job)) {
             throw new Error(`Cannot retire active job or unresolved review: ${id}`);
           }
           const stream = `request:${job.requestId || `legacy-${id}`}`,
@@ -990,20 +969,6 @@ export class JsonStore {
         return retired;
       },
       { immediate: true, dirtyRows: (result) => ({ jobs: result }) },
-    );
-  }
-
-  private canRetireJobHistory(job: {
-    id: string;
-    status?: string | null;
-    resultPending?: unknown;
-    generationReview?: { status?: string } | null;
-  }): boolean {
-    return (
-      !!job.status &&
-      !['queued', 'pending', 'running'].includes(job.status) &&
-      !job.resultPending &&
-      job.generationReview?.status !== 'pending'
     );
   }
 
@@ -1041,7 +1006,7 @@ export class JsonStore {
       cursor = rows.at(-1)?.cursor || upperRow;
       const ids = rows
         .filter((row) =>
-          this.canRetireJobHistory({
+          canRetireJobHistory({
             ...row,
             generationReview: row.reviewStatus ? { status: row.reviewStatus } : null,
           }),
@@ -2146,7 +2111,7 @@ export class JsonStore {
         retired = new Set<string>();
       for (const job of db.jobs) {
         const updated = Date.parse(job.updatedAt || job.createdAt || '');
-        if (!this.canRetireJobHistory(job) || (updated && now - updated <= retainMs)) {
+        if (!canRetireJobHistory(job) || (updated && now - updated <= retainMs)) {
           continue;
         }
         const stream = `request:${job.requestId || `legacy-${job.id}`}`,
@@ -4488,15 +4453,6 @@ function numberOrNull(value: unknown) {
   return Number.isFinite(number) ? number : null;
 }
 
-function isStatsExcludedJob(job: Partial<StoreItem> = {}) {
-  if (job.status !== 'failed') {
-    return false;
-  }
-  return /insufficient balance|额度不足|余额不足/i.test(
-    `${job.error || ''}\n${job.errorDetail || ''}`,
-  );
-}
-
 function isErrorLoggableJob(job: Partial<StoreItem> = {}) {
   if (job.status !== 'failed' || !job.accountId) {
     return false;
@@ -5104,24 +5060,8 @@ export function normalizeDb(db: DatabaseInput = {}): StoreDatabase {
   };
 }
 
-export function createId(prefix = 'item') {
-  const random = crypto.randomBytes(5).toString('hex');
-  return `${prefix}_${Date.now().toString(36)}_${random}`;
-}
-
 export function createPublicToken(prefix = 'STD') {
   return `${prefix}-${crypto.randomBytes(18).toString('base64url')}`;
-}
-
-export function hashObject(value: unknown) {
-  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
-}
-
-export function maskToken(token = '') {
-  if (token.length <= 12) {
-    return token ? '******' : '';
-  }
-  return `${token.slice(0, 6)}...${token.slice(-4)}`;
 }
 
 function clampNumber(value: unknown, min: number, max: number) {

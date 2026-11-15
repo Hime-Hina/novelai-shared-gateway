@@ -5,8 +5,6 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
 import {
   FAILURE_EVENT_PREDICATE,
@@ -24,6 +22,8 @@ import { createGenerationAdmission } from '../../server/generation/admission.ts'
 import { createGenerationPayloadBudget } from '../../server/generation/batch-requests.ts';
 import { recordGenerationFailure } from '../../server/generation/execution.ts';
 import { createLegacyDatabaseFixture } from '../helpers/legacy-database-fixture.mjs';
+import { lateResultsHttpFixture } from '../helpers/relational-late-results.mjs';
+import { launchGateway, assertChildPublicReplay } from '../helpers/relational-child.mjs';
 
 const day = 86400000,
   iso = (time) => new Date(time).toISOString();
@@ -582,54 +582,34 @@ test(
       immediate: true,
     });
     await store.close();
-    // This scenario models imported cold history; bootstrap/fixture command history stays in its separate source.
-    const dataDir = await createLegacyDatabaseFixture(store.dataDir);
-    const listener = http.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
+    // Old incomplete/cross-owner rows remain archive evidence, not a ready database.
+    const archive = new JsonStore(await createLegacyDatabaseFixture(store.dataDir));
+    await archive.init();
+    t.after(() => archive.close());
+    assert.equal(
+      archive.sqlite.prepare("SELECT COUNT(*) n FROM jobs WHERE id LIKE 'filler-%'").get().n,
+      3100,
     );
-    Object.assign(env, {
-      ADMIN_TOKEN: 'synthetic-admin-for-local-result-test-12345',
-      DATA_DIR: dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      PUBLIC_HOST: 'gateway.example',
-      NOVELAI_API_URL: 'http://127.0.0.1:1',
-      NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1',
-    });
-    const child = spawn(process.execPath, ['server/index.ts'], {
-      cwd: fileURLToPath(new URL('../../', import.meta.url)),
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    t.after(async () => {
-      if (child.exitCode === null) {
-        child.kill();
-        await once(child, 'exit');
-      }
-    });
-    child.stderr.resume();
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
-      child.once('exit', (code) => {
-        clearTimeout(timer);
-        reject(new Error(`server exited ${code}`));
-      });
-      child.stdout.on('data', (chunk) => {
-        if (chunk.toString().includes('listening on')) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
-    });
-    const base = `http://127.0.0.1:${port}`,
+    assert.equal((await archive.readMemberLateResults(archive.db.users[0])).length, 10);
+    assert.deepEqual(
+      [
+        ...(await archive.readMemberImageIds(archive.db.users[0], [
+          'late-0',
+          'other',
+          'mismatch',
+          'deleted-image',
+        ])),
+      ],
+      [['late-0', 'image-late-0']],
+    );
+    const httpFixture = await lateResultsHttpFixture(t, png),
+      child = await launchGateway(
+        httpFixture,
+        'http://127.0.0.1:1',
+        { PUBLIC_HOST: 'gateway.example' },
+        10000,
+      ),
+      base = child.origin,
       headers = { origin: base, 'content-type': 'application/json' };
     async function me(username) {
       const login = await fetch(`${base}/api/member/login`, {
@@ -669,5 +649,7 @@ test(
       ['other'],
     );
     assert.ok(!JSON.stringify(alice).includes('private-prompt'));
+    await child.stop();
+    assertChildPublicReplay(httpFixture);
   },
 );

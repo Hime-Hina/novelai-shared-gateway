@@ -19,28 +19,44 @@ interface SubscriptionDatabase {
   settings?: FairQuotaDatabase['settings'];
 }
 
+type SubscriptionQuota = Pick<
+  NonNullable<ReturnType<typeof fairQuotaSummary>>,
+  | 'member'
+  | 'boundAccountId'
+  | 'status'
+  | 'v5Available'
+  | 'v5RefillLimited'
+  | 'v5RefillPerDay'
+  | 'anlasFixedAvailable'
+  | 'anlasPurchasedAvailable'
+>;
+
 const rows = (value: SubscriptionDatabase['accounts']): SubscriptionAccount[] =>
   Array.isArray(value) ? value : Object.values(value || {});
 const nonnegative = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 const wholeBalance = (value: unknown): number => Math.floor(nonnegative(value) + 1e-9);
 
-// 兼容启动器的官方字段名，内容仅表示调用者本地配额，不是共享上游的总余额。
-// 在副本中估算恢复，查询不改变真实余额、审计或配置，也不返回任何上游标识。
-export function launcherSubscription(
-  db: SubscriptionDatabase,
+export function assertLauncherSubscriptionMember(
   user: { id: string; enabled?: boolean } | null | undefined,
-  now = Date.now(),
-) {
+): asserts user is { id: string; enabled?: boolean } {
   if (!user || user.enabled === false) {
     throw Object.assign(new Error('成员未启用'), { statusCode: 403 });
   }
-  const draft = estimateFairQuota({ ...db, settings: db.settings || {} }, now);
-  const quota = fairQuotaSummary(draft, user, now);
+}
+
+// 兼容启动器的官方字段名，内容仅表示调用者本地配额，不是共享上游的总余额。
+// 两种存储共用展示规则；读取不能改变真实余额、审计或配置，也不返回上游标识。
+export function launcherSubscriptionFromQuota(
+  quota: SubscriptionQuota | null,
+  subscriptionAccount: SubscriptionAccount | undefined,
+  now = Date.now(),
+) {
   if (!quota?.member) {
     throw Object.assign(new Error('该用户未加入共享分组账本'), { statusCode: 403 });
   }
-  const account = rows(db.accounts).find((a) => a.id === quota.boundAccountId);
+  const account =
+    subscriptionAccount?.id === quota.boundAccountId ? subscriptionAccount : undefined;
   const expires = Math.floor((quotaTimestamp(account?.subscriptionExpiresAt) || 0) / 1000);
   // 官方兼容 DTO 必须携带可用的 expiresAt；缺失到期观测时不伪造订阅期限。
   const active =
@@ -71,4 +87,19 @@ export function launcherSubscription(
       timeUntilNextPercent: Number.isSafeInteger(recovery) ? recovery : 0,
     },
   };
+}
+
+export function launcherSubscription(
+  db: SubscriptionDatabase,
+  user: { id: string; enabled?: boolean } | null | undefined,
+  now = Date.now(),
+) {
+  assertLauncherSubscriptionMember(user);
+  const draft = estimateFairQuota({ ...db, settings: db.settings || {} }, now),
+    quota = fairQuotaSummary(draft, user, now);
+  return launcherSubscriptionFromQuota(
+    quota,
+    quota?.member ? rows(db.accounts).find((a) => a.id === quota.boundAccountId) : undefined,
+    now,
+  );
 }

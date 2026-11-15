@@ -10,12 +10,12 @@
 | [contracts](contracts/)       | 现有 API 行为及目标接口契约          |
 | [architecture](architecture/) | 服务边界、业务规则、数据流和前端接入 |
 | [operations](operations/)     | 测试部署、生产发布、备份与回退       |
-| [history](history/)           | 已完成阶段、评估、实测与性能基线     |
+| [history](history/)           | 阶段记录、评估、实测与决策材料       |
 
 ## 计划
 
-- [当前重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源、成员生成接口、工作包与验收。
-- [数据库与数据模型重构草案](plans/database-model-redesign.md)：需求、实体关系、数据所有权、一次迁移与历史归档开账备选；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。T1/T2、T3 认证与 PR #43 已审 T4 子集已合入 main；#47–#53 继续推进，新库仍为 building，现行网关未切换。
+- [架构重构计划](plans/architecture-refactor-plan.md)：单执行器、单 Opus、SQLite 下的事件溯源与成员生成接口目标、工作包及分阶段验收记录。
+- [数据库与数据模型重构](plans/database-model-redesign.md)：数据模型、owner、迁移与归档选择、当前实现及剩余验收的统一记录；观察/资金来源契约见 3.3，跨对象反例验收见 7.3。离线恢复与合法 ready 安装见[关系恢复指南](operations/relational-recovery.md)，实际部署和生产切换以[正式发布记录](operations/production-release.md)为准。
 - [后续扩展计划](plans/scaling-follow-up-plan.md)：多执行器、多账号/车队及数据库迁移，未纳入当前实施范围。
 
 ## 接口契约
@@ -27,7 +27,7 @@
 
 - [执行服务](architecture/executor-service.md)：Nuxt 与独立执行器的进程、权限和传输边界。
 - [请求生命周期](architecture/request-lifecycle.md)：持久请求、幂等、批次、取消、排队和冷却。
-- [结果恢复](architecture/result-recovery.md)：产物发布、结算与崩溃恢复保证。
+- [结果恢复](architecture/result-recovery.md)：原产物提交规则及独立旧工具的升级/重放说明；当前关系格式恢复见[运维指南](operations/relational-recovery.md)。
 - [失败退款与资源核对](architecture/failure-accounting.md)：本地退款、未知消费、运营损耗及核销。
 - [成员会话](architecture/member-sessions.md)：登录期限、续期、撤销与角色变化。
 - [状态通知](architecture/state-events.md)：事务后失效通知、授权过滤及两段 SSE。
@@ -39,6 +39,8 @@
 
 - [正式发布与回退](operations/production-release.md)：当前发布记录、生产配置、备份及回退依据。
 - [隔离测试部署](operations/test-deployment.md)：测试环境、模拟上游、发布产物和阶段验收。
+- [关系格式离线恢复](operations/relational-recovery.md)：完整提交与保护内容重建、所选私有快照及合法 ready 安装；不解释旧格式或执行生产切换。
+- [独立旧归档精确查询](operations/legacy-archive-lookup.md)：固定旧包的原身份、原回执、保护输入与本地图审计，不接入在线运行时。
 
 ## 历史与证据
 
@@ -50,6 +52,9 @@
 - [浏览器基线](history/browser-baseline.md)：首屏、缓存和浏览器验收证据。
 - [事件重构性能验证](history/refactor-performance-evidence.md)：对照方法、正式运行口径、容量和重放证据；小样本与正式结果分别标识。
 - [数据模型迁移前置盘点](history/database-model-preflight.md)：固定线上副本的聚合盘点、终态开账类别试验、实际回放覆盖及待决定的恢复范围；不代表正式迁移或切换验收。
+- [真实旧归档恢复验证](history/database-model-archive-recovery-20261114.md)：固定旧包的真实源审计、从零事件重建、资源测量及历史查询/审计来源缺口；不代表完整归档或新格式 ready。
+- [数据模型迁移选择](history/database-model-migration-decision.md)：A/B 与旧键、会话、缺图状态的四项待选材料、保留范围及选定后的执行顺序。
+- [数据模型完整源码验证](history/database-model-full-source-20261115.md)：固定 df0、b9、0094243 与 147aabd 四轮完整后端的实际失败阶段、封存证据与各轮环境资格；不是最终验收。
 - [Issue #14 后续验收](history/issue14-validation/summary-6d64fa1.json)：本轮候选、跨平台测试、原失败及日志摘要；实现和容量/权限限制见[计划第 16 节](plans/architecture-refactor-plan.md#16-issue-14-后续实现与验收2026-11-07)。
 
 新增文档放进对应目录并补充此索引；技术规则维护在所属文档，历史测量保留原日期和证据，不复制多个“当前版本”说明。

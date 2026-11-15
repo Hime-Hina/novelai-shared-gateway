@@ -135,9 +135,11 @@ export function signedR2Request(
 }
 
 export class R2Storage {
-  readonly config: R2Config;
+  readonly config: Readonly<R2Config>;
   constructor(config: R2Config) {
-    this.config = config;
+    // 不持有调用方可变配置别名；同一请求及票据使用同一实例的固定来源。
+    this.config = Object.freeze({ ...config });
+    Object.defineProperty(this, 'config', { writable: false, configurable: false });
   }
 
   private async request(

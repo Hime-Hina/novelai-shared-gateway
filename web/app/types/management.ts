@@ -19,8 +19,9 @@ export interface ManagementGroup {
 }
 export interface ManagementUser {
   id: string;
-  username: string;
-  note: string;
+  username: string | null;
+  displayName?: string;
+  note: string | null;
   enabled: boolean;
   acceptingJobs: boolean;
   discordId: string | null;
@@ -105,13 +106,13 @@ export interface ManagementAccount {
   quotaCheckedAt?: string;
   quotaError?: string;
   name?: string;
-  token?: string;
-  proxyUrl?: string;
-  weight?: number;
+  token?: string | null;
+  proxyUrl?: string | null;
+  weight?: number | null;
 }
 export interface ManagementSummary {
   accounts: ManagementAccount[];
-  settings?: { publicBaseUrl?: string };
+  settings?: { publicBaseUrl?: string | null };
 }
 export interface ManagementUsageCounts {
   total: number;
@@ -122,13 +123,14 @@ export interface ManagementUsageCounts {
   running: number;
   refunded: number;
   free: number;
-  v5: number;
-  fixed: number;
-  purchased: number;
+  v5: number | null;
+  fixed: number | null;
+  purchased: number | null;
   averageWaitSeconds: number | null;
   averageGenerationSeconds: number | null;
 }
 export interface ManagementUsage {
+  coverage?: 'retained-records';
   days: (ManagementUsageCounts & { id: string; label: string })[];
   since: string;
   until: string;
@@ -140,17 +142,18 @@ export interface ManagementUsage {
     id: string;
     memberId: string;
     username: string;
-    model: string;
+    model: string | null;
     status: string;
-    createdAt: string;
+    createdAt: string | null;
     waitSeconds: number | null;
     generationSeconds: number | null;
-    resource?: string;
+    resource?: string | null;
     amount?: number | null;
     fixed?: number | null;
     purchased?: number | null;
-    chargeStatus?: string;
-    errorStatus?: number;
+    chargeStatus?: string | null;
+    knownNoCharge?: boolean;
+    errorStatus?: number | null;
   }[];
 }
 export interface ManagementLossPolicy {
@@ -177,9 +180,9 @@ export interface ManagementLossEvent {
   operation?: string;
   model?: string;
   resource?: ManagementResource;
-  amount?: number;
-  observedAmount?: number;
-  delta?: number;
+  amount?: number | null;
+  observedAmount?: number | null;
+  delta?: number | null;
   resources?: Partial<ManagementResources>;
   upstreamCandidates?: { resources: Partial<ManagementResources>; amountSource?: string }[] | null;
   evidenceLevel?: string;
@@ -192,14 +195,16 @@ export interface ManagementLossEvent {
   firstUnknownAt?: string;
   deadlineAt?: string;
   closedAt?: string;
-  before?: ManagementLossPolicy;
+  before?: ManagementLossPolicy | null;
   after?: ManagementLossPolicy;
 }
 export interface ManagementLosses {
   asOf: string;
+  coverage?: 'retained-facts';
   policy: ManagementLossPolicy;
   alerts: ManagementAlert[];
   risk: {
+    unknownTimeAttempts?: number;
     last24h: { attempts: number; unknownAmounts: number; possible: ManagementResources };
     last30d: { attempts: number; unknownAmounts: number; possible: ManagementResources };
     aggregate: { last24h: ManagementResources; last30d: ManagementResources };

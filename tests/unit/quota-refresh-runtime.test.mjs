@@ -5,6 +5,7 @@ import { fetchNovelAiAccountQuota } from '../../server/protocols/novelai-client.
 import { normalizeDb } from '../../server/storage/sqlite-store.ts';
 import {
   createAccountQuotaRefresh,
+  createAccountQuotaQuery,
   createQuotaObservationOrder,
   accountQuotaPatch,
   accountQuotaErrorResult,
@@ -431,4 +432,38 @@ test('排队批次按账户实际发起查询分配顺序，而不是按整批�
   assert.equal(output.ok, 6);
   assert.equal(output.ignored, 0);
   assert.equal(f.db.accounts[5].quotaFixed, 10000);
+});
+
+test('query actual-start hook rejects local authorization before raw fetch or official failure logging', async () => {
+  let calls = 0,
+    logs = 0;
+  const local = Object.assign(new Error('local authorization rejected'), { statusCode: 403 });
+  const query = createAccountQuotaQuery({
+    fetchQuota: async () => {
+      calls++;
+      return quota;
+    },
+    logger: {
+      log() {
+        logs++;
+      },
+      error() {},
+    },
+  });
+  await assert.rejects(
+    query('synthetic-private', '', 'a', () => {
+      throw local;
+    }),
+    (error) => error === local,
+  );
+  assert.equal(calls, 0);
+  assert.equal(logs, 0);
+  assert.deepEqual(
+    await query('synthetic-private', '', 'a', () => {
+      assert.equal(calls, 0);
+    }),
+    quota,
+  );
+  assert.equal(calls, 1);
+  assert.equal(logs, 1);
 });
