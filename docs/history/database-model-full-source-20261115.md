@@ -82,3 +82,22 @@ sole 原 `DIRECT_GENERATE_TIMEOUT_MS=100` 未改。该次失败尚未进入 `:11
 | `REPORT.md` | `ec888e967807cdefe6602a15821208770753c87a5e6e5751ce9b70f8c4fcfafe` |
 | `FAILURES.md` | `b27f92032826125e74b25ffc4520b82dd393d9a9cff90140825d83762145cb35` |
 | `EVIDENCE-MANIFEST.json` | `fbfa1e11a404a9880849606db22cd2efe7e0fe5bc67f7d98a44dc90a15fd9ad7` |
+
+## 后继 147aabd 的第四次完整运行
+
+固定 `147aabd6f7996442d5c8d242379e080ff27afe19` 在另一真实 Git 隔离树运行一次原完整命令，仍为 44 unit、126 integration、并发 4 和原期限/断言/平台条件。实际 exit 1，TAP **343.8323078 秒**、Popen 344.407 秒：**2,917 节点为 2,908 pass、4 fail、零 cancelled、5 原 skip**。2,088 个顶层中三个 not-ok，另一个子级已计入四 fail；Native 父汇总不是独立业务根因。未过滤、重试或从旧结果扣减，完整后端仍未通过。
+
+原部分收费历史仍在 child 启动等待时退出 1，本轮没有更深的 SQLite/安全错误原因，尚未到签名图片领取及账务 oracle。Native 原 Local 缺图仍期望 500 而实际 503，后续安全正文断言未到；R2 在前置正文隐私断言之后的末尾原状态断言同样收到 503。500/503 按原决策材料等待裁定，不翻断言消红。
+
+本候选已包含 9.111 的两条 retained 产品路径和 9.112 的 done 前置修正，受影响源码逐字绑定到各自独审候选。原 sole queued/done 整例本轮 **14.9545624 秒通过**，仍保留 100 ms/40 s 及原断言；原 503 条冷历史 **55.6516313 秒通过**，仍在原 60 秒期限内。这些是本轮真实并发结果，不抹去早期失败，也不证明通用性能上界。
+
+617 个实际 tracked 文件及额外路径空集、Node/native/pnpm/控制前后相同，实际 before/after 源快照 SHA `d9f823407e5e5c6723ac096a9e096c184b5da297c355c4761261498d3d436abe`。初始 pnpm Node 的 16 个实际环境变量名与 Python 显式传入块相等；后代保留原 pnpm/合成夹具行为，不冒称所有后代只有 OS 环境。400 个 OS Node 身份由 343 个 self-exit 和 57 个实际父句柄退出闭合，13 个线程随实际 owner 关闭；主编排仍单列真实 argv/OS 证据。373 个 PID 数字的终态核对中 371 个已不存在、两个已被 svchost/Firefox 复用，未终止这些无关进程。实际测试及进程世代全部关闭后才释放运行槽。
+
+准备期曾在启动 Node 前遇到静态 matcher 错误，原记录保留；没有执行用例或在正式运行中修改控制。新证据独立封存于 `H:/TEMP/novelai-root-full-postclosure-147aabd-20261115/`，旧三轮原件不改。本轮不覆盖实际 emitted JS/Node24、Nitro/Web/Docker、真实云端、迁移或同规模恢复，后续按同候选实际产物另行验收。
+
+| 文件 | SHA256 |
+| --- | --- |
+| `REPORT.md` | `b138f969bdc80bff535aad8fd6dc2b9d36ad985c81ec69668d4e27a25ee6c6a5` |
+| `FAILURES.md` | `82d0deb2afd144f7638d83fb1be6aa912062fc09a4d9013ba686c8c2f5bda9f3` |
+| `EVIDENCE-MANIFEST.json` | `54915352223704110604165a1b3d948f5a5f990823bc68b84ffda47997a34af3` |
+| `full.log` | `4c2502af8714f9dbe36d6528f1640e84b3c54aa15a7e4d238cb985928cc0b1e9` |
