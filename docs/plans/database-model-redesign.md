@@ -2664,6 +2664,32 @@ Web/执行器固定 `7f6e789` 只改三份测试/夹具：原 Opening 未知元�
 
 617 项 Git/raw、Node/native/pnpm/preload/runner 前后一致；Python 显式环境块与初始 pnpm 的 16 个实际变量名相等，393 个实际 OS Node 身份和 13 个线程均有关闭证据，不误杀复用 PID。旧 df0 的环境限制、原日志和计数保留；新旧实际阶段、序列化资格及封存 SHA 统一见[两轮完整源码记录](../history/database-model-full-source-20261115.md)。本轮不覆盖正式发布包、Node24、Docker、同规模恢复/容量或生产切换。
 
+### 9.105 原协议整文件后继与冷历史诊断
+
+Native 固定 `bb510085` 普通同步原 `971b925` 到 b9 产品，仍为 test/API/plan 三路径，六个完整子例、七个 helper、原全部期限及主链 17 次生成断言保留。原整文件一次 18 节点为 16 pass、2 fail、零 skip，206.6972311 秒；唯一业务失败是原 Local 缺图要求 500、当前返回 503，另一失败是父用例汇总，该子例后面的安全正文断言未到。其余主子例及三项独立 top、真实 17 次 POST、901/902 重启次序、停止与完整公共回放均到场。非作者静态 Git/AST 与 15 份源绑定未发现新增保全问题，仍明确整体 NOTPASS/500–503 待决；Root 按原字节整合，未替用户改期望。证据 `H:/TEMP/novelai-native-http-bb51008-first-20261115/RESULT.md` 和 `H:/TEMP/novelai-native-http-independent-bb51008-20261115/INDEPENDENT-REVIEW.md`。
+
+R2 固定 `e5498e0d` 普通同步原 `184c41b` 到 7063 产品，原七行、五份原合法来源加一份显式 manifest 的六份 ready，以及两份原坏来源独立声明保留。原整文件一次 0/1、零 skip，4.3551474 秒，唯一红仍为末尾 500/503；此前 16 条实际字节路径、两份坏 checksum 的真正 installer/client 拒绝和 building/源/全表不变、ACL、停止和公共回放/私有空均到场。两次恢复是恢复 mock 响应后再读取，不能写成进程重启或快照灾后恢复；正文隐私断言在末尾状态失败之前已执行，与 Native 的顺序不同。非作者静态复审 54 份源/资产及原 AST 后未发现新增错误，仍 NOTPASS，Root 整合保原期望。这些是 localhost 与模拟 R2/Pik 客户端，不是实云端点。证据 `H:/TEMP/novelai-r2-history-e549-first-source-20261115/RESULT.md` 和 `H:/TEMP/novelai-r2-history-independent-e549-20261115/INDEPENDENT-REVIEW.md`。
+
+另以固定 b9 的私有只读阶段观察执行一次原 503 冷历史标题，原 60 秒、数量、事务、断言及 IO 保留，单例 1/1、零 skip，35.8832108 秒；两次真正监听约各 0.60 秒，503 原字节安装和最终回放完成。该轮 case 的 marker CPU 为 29.453 秒；installer 14.840/CPU 13.515 秒，内含 shadow replay 7.575/6.516 与 actual-bytes 6.343/6.110，不能重复加算。因此没有先用批量事务或延长期限遮挡 full 的取消，也没有从 solo 通过推断原并发问题消失。原 full 的 6 fail/1 cancel 记录不改，下一步只优化已测明的重复同步读取并按整合候选复验。证据 `H:/TEMP/novelai-cold503-diagnostic-b9-20261115/RESULT.md`。
+
+### 9.106 审查切片 B 的实际 CI 与依赖闭包
+
+[Draft #71](https://github.com/Hime-Hina/novelai-shared-gateway/pull/71) 固定 `ef607caf→de52e2a8`，48 路径（20 产品/20 测试/6 文档/2 CI），不更换 #70 或既有已审范围。真实 workflow `43682021832` 的 merge `94cbeb1b` 与 head tree 相同：Node24/Caddy/classify 成功，backend/Web/offline 失败。后端 2633 节点为 2596 pass、34 fail、3 skip，34 含 31 top 与 3 nested；Web 为 1 pass/14 fail，13 个子例同在旧夹具解析已退出正常包的 `sqlite-store.js` 时拒绝，尚未到实际生命周期。正常 JS 包步骤已成功，后续 Docker/发行步骤未执行，不能借步骤名或后继通过标整个 B 绿。
+
+该边界的格式 6 尚不能表达 G 才引入的 parentless/未知时间等合法历史；对应测试还分别依赖 C、E、G/H 及 H 后的关系夹具与核对修复。不能通过补假 parent/时间、把旧 owner 塞回正常包、降 writer guard 或挪入全部后继路径来让旧 head 看似完成。B 保持草稿与实际红证据，不作为独立可合并候选；后续可合并候选须具有已审依赖闭包并重新通过原完整门禁，当前分片 peer 只按相同 blob 和范围复用，维护者复核/合并授权不扩张。具体逐组 Git 与 CI 映射见 `H:/TEMP/novelai-batch-b-ci-static-20261115/REPORT.md`。
+
+### 9.107 副本建票的同步元数据复用
+
+冷历史诊断之后先用原合法 Local `uploadedAt=NULL/verifiedAt=0` installer 整例计数：固定 b9 一次 1/1，实际 15 次完整 commit 读取、16 次格式/schema 查询；IO 后四次来源复核有独立记录。最小后继 `24fdc701` 只在原 Replica owner 让 private `beginTicket` 返回本次已核的 ticket/artifact/target，两个原 caller 分别保持 bare ticket API 或复用这些值，删掉紧邻两次同步重读。所有配置、来源、退休、定位和 WeakMap 角色校验保留，IO 后 `checkedTicket/assert` 逐字未改；没有缓存、新持久状态、页 API、事件、DDL 或命令。
+
+原 reader 与 replica 两整文件共 38/38、零 skip，7.4790368 秒；同算法 after 原 Local 整例 1/1，实际 commit 15→13、格式/schema 16→14，仅 pre-IO 减少两次，post-IO 四次复核及 NULL/0 逐项相同。非作者独立正控 1/1；私有一位变异把读票误标为后台票，在真实字节读取/内容检查之后命中原缺 idle 的 409，正常脱敏成 503 并使原成功断言失败，未用 parser 早拒冒权限证明。独审技术通过；本片不称原 full 60 秒已修好，也不拿计数器毫秒差宣称提速。后续相似同步复用仍归 `RelationalReplicaStore` 的原 private 建票边界，不能跨 await 复用旧权威。证据 `H:/TEMP/novelai-replica-read-reuse-24fdc70-20261115/`、`H:/TEMP/novelai-replica-sync-count-after-24fdc70-20261115/RESULT.md` 及 `H:/TEMP/novelai-replica-read-reuse-independent-24fd-20261115/INDEPENDENT-REVIEW.md`。
+
+### 9.108 原切点读取 namespace 的进程与发布字节绑定
+
+原捕获没有私有环境/PID/inode，不能拿后来 env 文件直接补原 namespace。固定只读 metadata collector 的实际 systemd 统计确认 `EnvironmentFiles` 是合法多行；最小修正仅在该原 owner 保序重组并同步其原校验，其它重复/未知字段、路径、flags、大小和 failclosed 不变。新一次实际记录的进程启动于 `2026-11-09T17:41:12.800000Z`，早于原 cut，完整前后快照一致、release 为 `3caba3d`。随后读取正式记录独立选定的同一 GitHub artifact `13587062998`：ZIP 55,354,120 B/SHA `e5200071…57795`、唯一 tar 55,353,443 B/SHA `11ac1fbe…9754` 均匹配；只流读 entry/gateway/R2/Pik 四个 JS 成员，全部与该稳定进程文件摘要相同，未重建或执行发布包。
+
+四个捕获路径角色、9412 个原 R2 bucket 声明、6766 个显式 Pik 来源与该切点前进程的启动配置相符；2646 条无 Pik 声明和 230 条无 R2 声明不增加新承诺。结合原模块仅启动装配的配置来源，可选定该 startup namespace 用于原 cut16509 的只读盘点。原捕获缺少同时刻 PID/images inode 的限制仍保留，这不证明任何对象存在、原图完整、当前候选制品或切换；原 collector 的外部认证标记不改，不写 ready/业务状态。首次 connector 引用取回 403/0B 及随后同制品 gh 取回成功的原件分别保留，完整私有值只留受保护记录。证据 `H:/TEMP/novelai-original-namespace-authority-20261115/namespace-release-binding-3c-v1/artifact-gh-api-transfer-v1/HANDOFF-VERIFIED.md`。
+
 ## 10. 事实依据与修订
 
 本草案的当前行为依据固定在 `55e5826`，未来实施需重新核实实际 main：
