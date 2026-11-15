@@ -847,6 +847,10 @@ test('独立Opening每批至多100条且保原序完整回放，第二副本批�
         )
         .all(`migration:%:${key}%`);
     assert.deepEqual(
+      batches('artifact-inputs').map((row) => row.event_count),
+      [100, 2],
+    );
+    assert.deepEqual(
       batches('artifacts').map((row) => row.event_count),
       [100, 3],
     );
