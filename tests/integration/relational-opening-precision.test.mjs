@@ -468,7 +468,11 @@ test('实际c653旧DDL及正确旧hash被真实同event7 reader零写拒绝；�
   assert.notEqual(old.sql, prior.sql);
   assert.notEqual(old.sql, RELATIONAL_SCHEMA_SQL);
   const dir = await mkdtemp(path.join(tmpdir(), 'nai-same-event-hash-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(tmpdir()));
+    assert.ok(path.basename(path.resolve(dir)).startsWith('nai-same-event-hash-'));
+    return rm(dir, { recursive: true, force: true });
+  });
   // 复用已封实际旧 reader 原字节，仅给它供应同一封存包内的原 SQL，不改 header 或 writer。
   await writeFile(path.join(dir, 'package.json'), '{"type":"module"}');
   await writeFile(path.join(dir, 'relational-storage.ts'), prior.storageSource);
