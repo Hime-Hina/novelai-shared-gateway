@@ -24,7 +24,10 @@ import {
   beginDomainCommand,
   finishDomainCommand,
 } from '../../server/events/domain-events.ts';
-import { mapLegacyFinance } from '../../scripts/migrate-legacy-finance.mjs';
+import {
+  mapLegacyFinance,
+  assertLegacyFinanceProjection,
+} from '../../scripts/migrate-legacy-finance.mjs';
 import {
   initializeRelationalStorage,
   assertRelationalStorageFormat,
@@ -412,6 +415,7 @@ test('B finance preserves nonzero original pools, fallback debt, unbound account
     replayer.appendCommit(c, inputs);
   })();
   const q = new RelationalQuotaStore(db).readAccountQuota('a');
+  db.transaction(() => assertLegacyFinanceProjection(db, mapped.expected))();
   assert.equal(q.baselineEventId, a.baselineEventId);
   assert.equal(q.observationEventId, a.observationEventId);
   assert.equal(
@@ -436,6 +440,7 @@ test('B finance preserves nonzero original pools, fallback debt, unbound account
   target.transaction(() => replay.replayCommit(first))();
   target.transaction(() => replay.replayCommit(stored, inputs))();
   assert.equal(databaseState(target), databaseState(db));
+  target.transaction(() => assertLegacyFinanceProjection(target, mapped.expected))();
   const changes = target.prepare('SELECT total_changes() AS n').get().n;
   target.transaction(() => replay.replayCommit(stored, inputs))();
   assert.equal(target.prepare('SELECT total_changes() AS n').get().n, changes);
@@ -630,6 +635,68 @@ test('above-2^53 original decimal pools and unknown latest time remain exact ins
   );
   assert.equal(q.observedCredentialEpoch, null);
   assert.equal(q.observedSequence, null);
+});
+
+test('old-to-new reconciliation is query-only and rejects wrong pool, debt, deadline and an extra known-zero free success', async (t) => {
+  const f = await sourceFixture(t),
+    mapped = f.source.transaction(() => mapLegacyFinance(f.source, f.references))(),
+    db = new Database(':memory:');
+  t.after(() => db.close());
+  const c = initializeTarget(db, mapped),
+    { RelationalInputStore } = await import('../../server/storage/relational-input-store.ts'),
+    inputs = new RelationalInputStore(db);
+  db.transaction(() => {
+    inputs.stageOpeningInput({
+      inputId: 'retained-failed-input',
+      memberId: 'm1',
+      completeness: 'unavailable',
+      body: null,
+      logicalBytes: 0,
+      assets: [],
+    });
+    new RelationalCommitReplayer(db).appendCommit(c, inputs);
+  })();
+  const before = databaseState(db),
+    changes = db.prepare('SELECT total_changes() AS n').get().n;
+  db.transaction(() => {
+    db.pragma('query_only=ON');
+    try {
+      const checked = assertLegacyFinanceProjection(db, mapped.expected);
+      assert.deepEqual(checked, {
+        wallets: 8,
+        quotas: 2,
+        observations: 3,
+        operating: 2,
+        funding: 0,
+        charges: 2,
+        attempts: 1,
+        freeUsage: 0,
+      });
+    } finally {
+      db.pragma('query_only=OFF');
+    }
+  })();
+  assert.equal(db.prepare('SELECT total_changes() AS n').get().n, changes);
+  assert.equal(databaseState(db), before);
+  for (const [sql, category] of [
+    [
+      "UPDATE wallets SET anlas_fixed_available='1' WHERE account_id='a' AND member_id='m1'",
+      'wallets',
+    ],
+    ["UPDATE account_quota_state SET shared_v5_debt='0' WHERE account_id='a'", 'quotas'],
+    ['UPDATE generation_attempts SET review_deadline_at=review_deadline_at+1', 'attempts'],
+    ["UPDATE generation_jobs SET free_succeeded_at=0 WHERE id='failed-review'", 'freeUsage'],
+  ]) {
+    assert.throws(
+      () =>
+        db.transaction(() => {
+          db.prepare(sql).run();
+          assertLegacyFinanceProjection(db, mapped.expected);
+        })(),
+      new RegExp(`reconciliation mismatch: ${category}`),
+    );
+    assert.equal(databaseState(db), before);
+  }
 });
 
 test('real old gap and pending funding remain explicit blocking responsibilities instead of disappearing or becoming new spendable money', async (t) => {

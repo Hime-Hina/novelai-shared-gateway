@@ -250,6 +250,8 @@ erDiagram
 
 金融 mapper 仅接收主 converter 已盘点的 readonly/query_only 单一快照事务和统一 ID resolver，返回事实草稿、核对期望与安全 blocking findings；不另建 CLI、目标 SQL 写入器或迁移模式。观察与额度须在同一基线提交，运行态 Job→Attempt→Charge 须在原请求的同一完整开账提交；主 converter 负责组装并阻止含 finding 的结果安装 ready。免费滚动窗的原 succeeded_at/warning_threshold 交给同一个 Job mapper，不推算当前政策或清空；缺少可保留原任务关系时明确阻塞。
 
+旧源到新目标的金融核对复用 `assertLegacyFinanceProjection(target, expected)`：在同一目标快照事务只读比较完整主键集合、规范金额、NULL/已知 0、观察、原核对责任和免费窗口，不经 DTO number、不再运行分配或结算。它比较旧源 mapper 的期望与真实投影/原事实字段；唯一 installer 仍独立证明新完整事实到投影、保护内容与私有选源，两个方向不能互相替代。
+
 ### 3.4 命令、事件与幂等
 
 ```mermaid
