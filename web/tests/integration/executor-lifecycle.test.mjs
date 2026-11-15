@@ -9,7 +9,6 @@ import { mkdtemp, readFile, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createTestContext, loadFixture, buildFixture } from '@nuxt/test-utils/e2e';
 import {
   addRetainedHistory,
   bootstrapPackaged,
@@ -931,30 +930,36 @@ const lifecycleOptions = { timeout: 240000, concurrency: 2 };
 
 test('真实 Nuxt 与执行器的生命周期隔离和内部受理重试', lifecycleOptions, async (t) => {
   await stat(executorEntry); // A missing build is a failure; never substitute the legacy Node server.
-  const ctx = createTestContext({
-    rootDir: webRoot,
-    dev: false,
-    build: true,
-    browser: false,
-    server: false,
-    nuxtConfig: { compatibilityDate: '2026-10-17' },
-  });
-  t.after(async () => {
-    await ctx.nuxt?.close();
-    const testRoot = path.resolve(webRoot, '.nuxt', 'test');
-    const buildDir = path.resolve(ctx.nuxt?.options.buildDir || ctx.options.nuxtConfig.buildDir);
-    const inside = path.relative(testRoot, buildDir);
-    assert.ok(
-      inside && !inside.startsWith('..') && !path.isAbsolute(inside),
-      'only an isolated Nuxt test build may be removed',
-    );
-    for (const teardown of ctx.teardown || []) {
-      await teardown();
-    }
-  });
-  await loadFixture();
-  await buildFixture();
-  const nuxtEntry = path.join(ctx.nuxt.options.nitro.output.dir, 'server', 'index.mjs');
+  let nuxtEntry;
+  if (process.env.WEB_TEST_ENTRY) {
+    nuxtEntry = path.resolve(process.env.WEB_TEST_ENTRY);
+  } else {
+    const { createTestContext, loadFixture, buildFixture } = await import('@nuxt/test-utils/e2e');
+    const ctx = createTestContext({
+      rootDir: webRoot,
+      dev: false,
+      build: true,
+      browser: false,
+      server: false,
+      nuxtConfig: { compatibilityDate: '2026-10-17' },
+    });
+    t.after(async () => {
+      await ctx.nuxt?.close();
+      const testRoot = path.resolve(webRoot, '.nuxt', 'test');
+      const buildDir = path.resolve(ctx.nuxt?.options.buildDir || ctx.options.nuxtConfig.buildDir);
+      const inside = path.relative(testRoot, buildDir);
+      assert.ok(
+        inside && !inside.startsWith('..') && !path.isAbsolute(inside),
+        'only an isolated Nuxt test build may be removed',
+      );
+      for (const teardown of ctx.teardown || []) {
+        await teardown();
+      }
+    });
+    await loadFixture();
+    await buildFixture();
+    nuxtEntry = path.join(ctx.nuxt.options.nitro.output.dir, 'server', 'index.mjs');
+  }
   await stat(nuxtEntry);
 
   const initialUmask = process.umask();
