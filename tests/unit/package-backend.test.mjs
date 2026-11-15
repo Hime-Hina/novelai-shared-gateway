@@ -31,6 +31,12 @@ async function fixture(t) {
   await put('scripts/bootstrap.mjs', "await import('../server/shared.js');");
   await put('scripts/restore-relational.mjs', "import '../server/shared.js';");
   await put('scripts/r2-backup.mjs', "import '../server/shared.js';");
+  // 独立 CLI 的唯一依赖必须入包；空入口会使这个 owner 被裁掉，精确清单应识别它。
+  await put(
+    'scripts/retained-sources.mjs',
+    "export { retained } from '../server/storage/retained-sources.js';",
+  );
+  await put('server/storage/retained-sources.js', 'export const retained = true;');
   await put('scripts/mock-novelai.mjs', "import '../server/shared.js';");
   await put('server/storage/sqlite-store.js', 'throw new Error("unreachable old owner");');
   await put('server/migrations/old.sql', 'not a normal runtime asset');
@@ -65,10 +71,12 @@ test('普通包只保存真实入口和运维 CLI 的完整运行闭包，包含
     'scripts/mock-novelai.mjs',
     'scripts/r2-backup.mjs',
     'scripts/restore-relational.mjs',
+    'scripts/retained-sources.mjs',
     'server/index.js',
     'server/legacy-name.js',
     'server/runtime.js',
     'server/shared.js',
+    'server/storage/retained-sources.js',
     'server/worker.js',
   ]);
   const manifest = JSON.parse(await readFile(path.join(f.output, 'package.json'), 'utf8'));
@@ -86,7 +94,7 @@ test('普通包只保存真实入口和运维 CLI 的完整运行闭包，包含
 
 test('缺失、源TS、越界、计算依赖及dev-only依赖先拒绝，不能悄悄交付残缺发布包', async (t) => {
   for (const [source, error] of [
-    ["import './missing.js';", /ENOENT/],
+    ["import './missing.js';", /ENOENT.*[/\\]missing\.js/],
     ["import './shared.ts';", /Invalid packaged runtime dependency/],
     ["import '../../outside.js';", /Invalid packaged runtime dependency/],
     ['await import(process.env.RUNTIME_MODULE);', /literal dependency/],
