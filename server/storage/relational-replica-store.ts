@@ -641,7 +641,7 @@ export class RelationalReplicaStore {
   }
   beginArtifactReplica(artifactId: string, storageTargetId: string): Ticket {
     this.active();
-    return this.beginTicket(artifactId, storageTargetId, true);
+    return this.beginTicket(artifactId, storageTargetId, true).ticket;
   }
   beginArtifactRead(artifactId: string, kind: Kind) {
     const current = this.configuredTarget(kind);
@@ -658,13 +658,16 @@ export class RelationalReplicaStore {
     ) {
       return null;
     }
-    const artifact = this.readArtifact(artifactId),
-      target = this.readStorageTarget(current.target.storageTargetId);
+    const { artifact, target, ticket } = this.beginTicket(
+      artifactId,
+      current.target.storageTargetId,
+      false,
+    );
     return {
       artifact,
       target,
       replica,
-      ticket: this.beginTicket(artifactId, target.storageTargetId, false),
+      ticket,
     };
   }
   readArtifactCacheReference(artifactId: string) {
@@ -698,7 +701,7 @@ export class RelationalReplicaStore {
     }
     return { artifact, persistent: false, local };
   }
-  private beginTicket(artifactId: string, storageTargetId: string, background: boolean): Ticket {
+  private beginTicket(artifactId: string, storageTargetId: string, background: boolean) {
     const artifact = this.readArtifact(artifactId),
       target = this.readStorageTarget(storageTargetId),
       current = this.configuredTarget(target.kind);
@@ -731,7 +734,8 @@ export class RelationalReplicaStore {
       replicaSource: replica?.sourceEventId || null,
       background,
     });
-    return ticket;
+    // 同步建票时复用已核事实；IO 后仍由 checkedTicket 完整复核。
+    return { ticket, artifact, target };
   }
   private readTicketReplica(artifactId: string, storageTargetId: string) {
     const replica = this.readArtifactReplica(artifactId, storageTargetId);
