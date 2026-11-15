@@ -23,13 +23,16 @@ const reject = () => {
 // deletion, alternate transport or retry. Every successful local input remains after a later failure.
 export async function materializeLegacyOriginals(options) {
   const stat = await lstat(options.selection);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16777216) reject();
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16777216) {
+    reject();
+  }
   const bytes = await readFile(options.selection);
   if (
     !/^[a-f0-9]{64}$/.test(options.selectionSha256 ?? '') ||
     hash(bytes) !== options.selectionSha256
-  )
+  ) {
     reject();
+  }
   const selected = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     configuration = await readLegacyCutConfiguration(
       options.cutConfig,
@@ -45,12 +48,15 @@ export async function materializeLegacyOriginals(options) {
     ),
     directory = path.dirname(selection.filename),
     config = selection.originals.some((row) => row.file === null) ? r2Config() : null;
-  if (selection.originals.some((row) => row.file === null && row.r2 === null)) reject();
+  if (selection.originals.some((row) => row.file === null && row.r2 === null)) {
+    reject();
+  }
   if (
     selection.originals.some((row) => row.file === null) &&
     (!config || selection.namespace !== `r2://${config.accountId}/${config.bucket}`)
-  )
+  ) {
     reject();
+  }
   const storage = config ? new R2Storage(config) : null,
     output = path.resolve(options.output),
     completed = [],
@@ -79,11 +85,15 @@ export async function materializeLegacyOriginals(options) {
             : path.resolve(directory, row.file);
       assertReadableStoredResultDescriptor(pending);
       if (row.file === null) {
-        if (!row.r2 || !storage) reject();
+        if (!row.r2 || !storage) {
+          reject();
+        }
         await storage.getFile({ ...row.r2, byteLength: row.byteLength, sha256: row.sha256 }, file);
       }
       const info = await lstat(file);
-      if (!info.isFile() || info.isSymbolicLink() || info.size !== row.byteLength) reject();
+      if (!info.isFile() || info.isSymbolicLink() || info.size !== row.byteLength) {
+        reject();
+      }
       // Same MIME/length/SHA owner as B's canonical Local admission, including reused samples.
       assertStoredResultContent(pending, await readFile(file));
       const receipt = {
@@ -161,10 +171,14 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     for (const argument of process.argv.slice(2)) {
       const match = /^--([^=]+)=(.+)$/.exec(argument),
         key = match && names.get(match[1]);
-      if (!key || Object.hasOwn(options, key)) reject();
+      if (!key || Object.hasOwn(options, key)) {
+        reject();
+      }
       options[key] = match[2];
     }
-    if (Object.keys(options).length !== names.size) reject();
+    if (Object.keys(options).length !== names.size) {
+      reject();
+    }
     console.log(JSON.stringify(await materializeLegacyOriginals(options)));
   } catch (error) {
     console.error(

@@ -1280,11 +1280,17 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
     !Array.isArray(value) &&
     Object.keys(value).length === keys.length &&
     keys.every((key) => Object.hasOwn(value, key));
-  if (!configuration || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? '')) reject();
+  if (!configuration || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? '')) {
+    reject();
+  }
   const info = await lstat(filename);
-  if (!info.isFile() || info.isSymbolicLink() || info.size > 16777216) reject();
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 16777216) {
+    reject();
+  }
   const bytes = await readFile(filename);
-  if (hash(bytes) !== expectedSha256) reject();
+  if (hash(bytes) !== expectedSha256) {
+    reject();
+  }
   const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
     directory = path.dirname(path.resolve(filename));
   if (
@@ -1312,16 +1318,18 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
     value.namespaceReceipt.sha256 !== configuration.namespaceReceipt.sha256 ||
     !Array.isArray(value.originals) ||
     !value.originals.length
-  )
+  ) {
     reject();
+  }
   const checkReceipt = async (receipt) => {
     if (
       !exact(receipt, ['file', 'sha256']) ||
       typeof receipt.file !== 'string' ||
       !receipt.file ||
       !/^[a-f0-9]{64}$/.test(receipt.sha256 ?? '')
-    )
+    ) {
       reject();
+    }
     const file = path.resolve(directory, receipt.file),
       stat = await lstat(file);
     if (
@@ -1329,8 +1337,9 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
       stat.isSymbolicLink() ||
       stat.size > 16777216 ||
       (await retainedFileSha256(file)) !== receipt.sha256
-    )
+    ) {
       reject();
+    }
   };
   await checkReceipt(value.namespaceReceipt);
   const ids = new Set(),
@@ -1373,14 +1382,19 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
           row.r2.key.startsWith('images/') &&
           !/[\x00-\x1f\x7f]/.test(row.r2.key))
       )
-    )
+    ) {
       reject();
-    if (row.downloadReceipt !== null) await checkReceipt(row.downloadReceipt);
+    }
+    if (row.downloadReceipt !== null) {
+      await checkReceipt(row.downloadReceipt);
+    }
     const file = path.resolve(directory, pointer.file);
     let exported = exports.get(file);
     if (!exported) {
       const stat = await lstat(file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16777216) reject();
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16777216) {
+        reject();
+      }
       const data = await readFile(file),
         lines = [];
       let start = 0,
@@ -1393,15 +1407,17 @@ export async function readRescuedOriginals(filename, expectedSha256, selected, c
       exports.set(file, exported);
     }
     const line = exported.lines[pointer.line - 1];
-    if (pointer.fileSha256 !== exported.sha256 || !line || hash(line) !== pointer.lineSha256)
+    if (pointer.fileSha256 !== exported.sha256 || !line || hash(line) !== pointer.lineSha256) {
       reject();
+    }
     const descriptor = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(line));
     if (
       descriptor.id !== row.artifactId ||
       descriptor.sha256 !== row.sha256 ||
       descriptor.byteLength !== row.byteLength
-    )
+    ) {
       reject();
+    }
     descriptorsByArtifact.set(row.artifactId, descriptor);
     ids.add(row.artifactId);
   }
@@ -1433,16 +1449,20 @@ export async function materializeSelectedLocalOriginal(
 ) {
   const proofs = new Map(),
     selectedOriginals = [];
-  if (configuration?.localOriginal)
+  if (configuration?.localOriginal) {
     selectedOriginals.push({
       directory: path.dirname(configuration.filename),
       ...configuration.localOriginal,
     });
-  if (rescued)
+  }
+  if (rescued) {
     for (const row of rescued.originals) {
-      if (row.file === null) reject();
+      if (row.file === null) {
+        reject();
+      }
       selectedOriginals.push({ ...row, directory: path.dirname(rescued.filename) });
     }
+  }
   if (!selectedOriginals.length) {
     return proofs;
   }
@@ -1463,8 +1483,9 @@ export async function materializeSelectedLocalOriginal(
   }
   for (const selected of selectedOriginals) {
     const { directory, sourceArtifactRowPointer: pointer } = selected;
-    if (path.resolve(directory, pointer.file) !== rowFile || pointer.fileSha256 !== rowSha256)
+    if (path.resolve(directory, pointer.file) !== rowFile || pointer.fileSha256 !== rowSha256) {
       reject();
+    }
     // 选定 pointer 绑定原行完整 bytes（含其终止 LF）；不 trim、重编码或改用另一摘要。
     const line = lines[pointer.line - 1];
     if (!line || hash(line) !== pointer.lineSha256) {
@@ -1532,7 +1553,9 @@ export async function materializeSelectedLocalOriginal(
     await mkdir(path.join(output, 'images'), { mode: 0o700, recursive: true });
     await writeNewMigrationFile(path.join(output, file), bytes);
     const verified = await readStoredResultContent(output, pending);
-    if (!verified) reject();
+    if (!verified) {
+      reject();
+    }
     const tuple = {
         artifactId: descriptor.id,
         memberId: input.memberId,

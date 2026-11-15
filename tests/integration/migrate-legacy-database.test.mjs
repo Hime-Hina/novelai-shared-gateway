@@ -1551,11 +1551,12 @@ test('rescued batch preserves distinct same-SHA entities and actual planned owne
         ),
       )();
     }
-    for (const table of ['artifacts', 'artifact_replicas', 'generation_inputs'])
+    for (const table of ['artifacts', 'artifact_replicas', 'generation_inputs']) {
       assert.deepEqual(
         replay.prepare(`SELECT * FROM ${table}`).all(),
         db.prepare(`SELECT * FROM ${table}`).all(),
       );
+    }
     assert.equal(relationalPrivateStateEmpty(replay), true);
   } finally {
     db.close();
@@ -1589,21 +1590,38 @@ test('rescued intake rejects wrong cut/config/namespace/export/owner/input and b
     'input',
     'bytes',
     'half-pair',
-  ])
+  ]) {
     await t.test(kind, async () => {
       const value = structuredClone(selected.value),
         file = path.join(f.directory, `rescued-${kind}.json`),
         output = path.join(f.directory, `reject-${kind}`);
-      if (kind === 'cut') value.cut = String(BigInt(value.cut) + 1n);
-      if (kind === 'audit') value.auditSha256 = '0'.repeat(64);
-      if (kind === 'config') value.cutConfigurationSha256 = '0'.repeat(64);
-      if (kind === 'namespace') value.namespace = `r2://${'b'.repeat(32)}/other-bucket`;
-      if (kind === 'receipt') value.namespaceReceipt.sha256 = '0'.repeat(64);
-      if (kind === 'duplicate') value.originals.push(structuredClone(value.originals[0]));
-      if (kind === 'export')
+      if (kind === 'cut') {
+        value.cut = String(BigInt(value.cut) + 1n);
+      }
+      if (kind === 'audit') {
+        value.auditSha256 = '0'.repeat(64);
+      }
+      if (kind === 'config') {
+        value.cutConfigurationSha256 = '0'.repeat(64);
+      }
+      if (kind === 'namespace') {
+        value.namespace = `r2://${'b'.repeat(32)}/other-bucket`;
+      }
+      if (kind === 'receipt') {
+        value.namespaceReceipt.sha256 = '0'.repeat(64);
+      }
+      if (kind === 'duplicate') {
+        value.originals.push(structuredClone(value.originals[0]));
+      }
+      if (kind === 'export') {
         value.originals[0].sourceArtifactRowPointer.lineSha256 = '0'.repeat(64);
-      if (kind === 'owner') value.originals[0].memberId = 'another-member';
-      if (kind === 'input') value.originals[0].inputId = 'another-input';
+      }
+      if (kind === 'owner') {
+        value.originals[0].memberId = 'another-member';
+      }
+      if (kind === 'input') {
+        value.originals[0].inputId = 'another-input';
+      }
       if (kind === 'bytes') {
         value.originals[0].file = path.join(f.directory, 'broken.bin');
         await writeFile(value.originals[0].file, Buffer.alloc(bytes.length), { flag: 'wx' });
@@ -1625,6 +1643,7 @@ test('rescued intake rejects wrong cut/config/namespace/export/owner/input and b
         code: 'ENOENT',
       });
     });
+  }
   assert.deepEqual(await readFile(f.options.source), f.sourceBytes);
   assert.deepEqual(await readFile(selected.local), bytes);
 });
@@ -1674,8 +1693,11 @@ test('selected R2 preparation reuses local sample, serially calls original getFi
   t.after(() => {
     R2Storage.prototype.getFile = original;
     for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   });
   selected.value.originals[1].file = null;
@@ -1699,7 +1721,9 @@ test('selected R2 preparation reuses local sample, serially calls original getFi
   R2Storage.prototype.getFile = async function (descriptor, file) {
     calls.push(structuredClone(descriptor));
     assert.equal(this.config.bucket, 'selected-bucket');
-    if (calls.length === 2) throw new Error('synthetic first read failure');
+    if (calls.length === 2) {
+      throw new Error('synthetic first read failure');
+    }
     await writeFile(file, bytes, { flag: 'wx', mode: 0o600 });
   };
   await assert.rejects(
