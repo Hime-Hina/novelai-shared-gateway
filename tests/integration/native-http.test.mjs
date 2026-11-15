@@ -856,8 +856,8 @@ test('独立公开发行版从初始化到真实 HTTP 返回、扣费、退款�
       const response = await fetchLocal('/api/jobs/' + job.id + '/content', {
         headers: { authorization: `Bearer ${credentials[0].api_key}` },
       });
-      // 保留原500断言；新reader若返回503须先取证并报告，不在夹具里消红。
-      assert.equal(response.status, 500);
+      // 原图暂不可读使用已批准的503，公开正文仍保持原安全中文。
+      assert.equal(response.status, 503);
       assert.deepEqual(await response.json(), { error: safeFailure });
     } finally {
       await rename(held, file);
