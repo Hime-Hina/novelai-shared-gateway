@@ -621,13 +621,17 @@ test('Direct超时/断线只结束领取，保留原request/charge/物理输入�
   for (const mode of ['timeout', 'disconnect']) {
     await t.test(mode, async (t) => {
       const f = await fixture(t, { timeoutMs: 100 });
-      let release;
-      const gate = new Promise((resolve) => {
-        release = resolve;
-      });
+      let release, entered;
+      const started = new Promise((resolve) => {
+          entered = resolve;
+        }),
+        gate = new Promise((resolve) => {
+          release = resolve;
+        });
       f.upstream.release = release;
       t.after(() => release());
       f.upstream.handler = async (_req, res) => {
+        entered();
         await gate;
         res.writeHead(200, { 'content-type': 'image/webp' });
         res.end(image);
@@ -635,12 +639,10 @@ test('Direct超时/断线只结束领取，保留原request/charge/物理输入�
       const body = input({ nocache: 1 }),
         controller = new AbortController(),
         pending = f.direct(body, { key: 'connection', signal: controller.signal });
-      await waitFor(() => f.upstream.calls.length === 1);
-      const job = f.db
-        .prepare(
-          "SELECT j.id,r.id AS requestId FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE r.source='direct'",
-        )
-        .get();
+      await Promise.race([
+        started,
+        pending.then(() => assert.fail('Direct response returned before upstream started')),
+      ]);
       if (mode === 'timeout') {
         f.advance(101);
         const response = await pending;
@@ -651,6 +653,11 @@ test('Direct超时/断线只结束领取，保留原request/charge/物理输入�
         controller.abort();
         await assert.rejects(pending, (e) => e.name === 'AbortError');
       }
+      const job = f.db
+        .prepare(
+          "SELECT j.id,r.id AS requestId FROM generation_jobs j JOIN generation_requests r ON r.id=j.request_id WHERE r.source='direct'",
+        )
+        .get();
       await waitFor(() => f.events.listenerCount('commit') === 0);
       assert.equal(
         f.db.prepare('SELECT status FROM generation_jobs WHERE id=?').get(job.id).status,
