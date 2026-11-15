@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import {
   initializeRetainedSources,
   readRetainedSourceProtection,
+  readRetainedArchiveBinding,
   beginRetainedCapture,
   bindRetainedCapture,
   publishRetainedLocal,
@@ -105,8 +106,13 @@ export async function describeRetainedSnapshot(sourceFile, output, dataDir) {
   return { ...description, dependenciesSha256: await retainedFileSha256(output) };
 }
 async function main() {
-  const [mode, registry] = process.argv.slice(2);
-  if (!mode || !registry) {
+  const [mode, registry, expectedAuditSha256, ...extra] = process.argv.slice(2);
+  if (
+    !mode ||
+    !registry ||
+    extra.length ||
+    (expectedAuditSha256 !== undefined && mode !== 'archive')
+  ) {
     throw Error('Mode and registry are required.');
   }
   const raw = readFileSync(0, 'utf8');
@@ -230,27 +236,18 @@ async function main() {
       request.location,
     );
   } else if (mode === 'archive') {
-    const identity = JSON.parse(await readFile(request.manifest, 'utf8'));
-    const sourceSha256 = await retainedFileSha256(request.source);
-    if (identity.sourceSha256 !== sourceSha256) {
-      throw Error('Archive source mismatch.');
-    }
     const created = await beginRetainedCapture(registry, 'archive', path.resolve(request.source));
+    const binding = await readRetainedArchiveBinding(
+      request.source,
+      request.manifest,
+      request.dependencies,
+      expectedAuditSha256,
+    );
     await bindRetainedCapture(
       registry,
       created.sourceId,
       request.manifest,
-      {
-        format: identity.format === 'legacy-archive-audit-v1' ? 'legacy-export' : 'opaque',
-        sourceSha256,
-        manifestSha256: await retainedFileSha256(request.manifest),
-        dependenciesSha256: request.dependencies
-          ? await retainedFileSha256(request.dependencies)
-          : null,
-        dependencies: 'unknown',
-        historyId: null,
-        finalCommitSeq: identity.lastCommitSeq ?? null,
-      },
+      binding,
       request.dependencies,
     );
     result = await publishRetainedArchive(
