@@ -210,7 +210,10 @@ const observedAmount = (value: unknown) =>
   (typeof value === 'string' || typeof value === 'number') && Number.isFinite(Number(value))
     ? formatAmount(parseAmount(value, typeof value === 'number' ? 'nearest' : 'exact'))
     : null;
-function financialObservedV5(account: FairAccount, snapshot: ReturnType<typeof fairQuotaSnapshot>) {
+export function financialObservedV5(
+  account: FairAccount,
+  snapshot: ReturnType<typeof fairQuotaSnapshot>,
+) {
   return account.v5UsageIsNegative && snapshot.v5 !== null
     ? '0'
     : observedAmount(account.v5UsagePercent);
@@ -235,6 +238,7 @@ export const relationalQuotaFacts = new Set<RelationalEvent['eventType']>([
   'AllocationApplied',
   'FundingRegistered',
   'OpeningFundingRecorded',
+  'OpeningQuotaObservationRecorded',
   'FundingReceived',
   'ResourceGapObserved',
   'ReturnClassified',
@@ -374,6 +378,33 @@ export class RelationalQuotaStore {
       fail('开账额度缺少原事实或登记来源');
     }
     assertRelationalOpeningSource(this.sqlite, e);
+    if (e.payload.observationEventId !== null && e.payload.observationEventId !== e.eventId) {
+      const original = this.openingObservation(e.payload.observationEventId, e);
+      const expected = {
+        observedAt: original.observedAt,
+        observedCredentialEpoch: original.credentialEpoch,
+        observedSequence: original.sequence,
+        observedV5: original.v5,
+        observedAnlasFixed: original.anlasFixed,
+        observedAnlasPurchased: original.anlasPurchased,
+        secondsPerPercent: original.secondsPerPercent,
+        v5UsagePercent: original.v5UsagePercent,
+        v5UsageIsNegative: original.v5UsageIsNegative,
+      };
+      if (
+        Object.entries(expected).some(
+          ([key, value]) => e.payload[key as keyof typeof expected] !== value,
+        )
+      ) {
+        fail('开账最新观察与同源原字段或时点不符');
+      }
+    }
+    if (e.payload.baselineEventId !== null && e.payload.baselineEventId !== e.eventId) {
+      const original = this.openingObservation(e.payload.baselineEventId, e);
+      if (original.observedAt === null) {
+        fail('开账金融基线缺少原观察时间');
+      }
+    }
     const original = {
       id: e.payload.accountId,
       v5UsagePercent: e.payload.v5UsagePercent,
@@ -392,6 +423,30 @@ export class RelationalQuotaStore {
       ...p
     } = e.payload;
     this.insertAccountQuota(p, e.eventId);
+  }
+  private openingObservation(
+    id: string,
+    opening: Extract<RelationalEvent, { eventType: 'OpeningQuotaRecorded' }>,
+  ) {
+    const source = this.fact(id),
+      event = readRelationalCommit(this.sqlite, source.commitSeq).events.find(
+        (event) => event.eventId === id,
+      );
+    if (
+      !event ||
+      event.eventType !== 'OpeningQuotaObservationRecorded' ||
+      event.accountId !== opening.accountId ||
+      event.payload.accountId !== opening.payload.accountId ||
+      event.memberId !== null ||
+      event.streamId !== opening.streamId ||
+      event.commitSeq !== opening.commitSeq ||
+      event.eventIndex >= opening.eventIndex ||
+      event.payload.origin.sourceId !== opening.payload.origin.sourceId
+    ) {
+      fail('开账观察必须是同笔先行的同账户同登记来源');
+    }
+    assertRelationalOpeningSource(this.sqlite, event);
+    return event.payload;
   }
   private insertAccountQuota(p: AccountQuota, eventId: string) {
     this.sqlite
@@ -517,7 +572,10 @@ export class RelationalQuotaStore {
   private observation(id: string, accountId: string) {
     const e = this.fact(id),
       p = e.payload;
-    if (e.accountId !== accountId || !['QuotaObserved', 'OpeningQuotaRecorded'].includes(e.type)) {
+    if (
+      e.accountId !== accountId ||
+      !['QuotaObserved', 'OpeningQuotaRecorded', 'OpeningQuotaObservationRecorded'].includes(e.type)
+    ) {
       fail('额度来源不是同账户观察');
     }
     if (e.type === 'QuotaObserved') {
@@ -531,6 +589,19 @@ export class RelationalQuotaStore {
         anlasFixed: p.anlasFixed,
         anlasPurchased: p.anlasPurchased,
         seconds: p.secondsPerPercent,
+      };
+    }
+    if (e.type === 'OpeningQuotaObservationRecorded') {
+      const original = p as unknown as RelationalPayloads['OpeningQuotaObservationRecorded'];
+      if (original.observedAt === null) {
+        fail('基线缺少实际观察时间');
+      }
+      return {
+        at: original.observedAt,
+        v5: original.v5,
+        anlasFixed: original.anlasFixed,
+        anlasPurchased: original.anlasPurchased,
+        seconds: original.secondsPerPercent,
       };
     }
     const opening = p as unknown as RelationalPayloads['OpeningQuotaRecorded'];
@@ -3474,6 +3545,19 @@ export class RelationalQuotaStore {
     return (e: RelationalEvent): void => {
       if (!this.sqlite.inTransaction) {
         throw new Error('Quota projection requires the owning transaction.');
+      }
+      if (e.eventType === 'OpeningQuotaObservationRecorded') {
+        const openings = events.filter(
+          (event) =>
+            event.eventType === 'OpeningQuotaRecorded' &&
+            (event.payload.observationEventId === e.eventId ||
+              event.payload.baselineEventId === e.eventId),
+        );
+        if (openings.length !== 1 || openings[0]?.eventType !== 'OpeningQuotaRecorded') {
+          fail('历史观察必须属于同笔唯一开账额度');
+        }
+        this.openingObservation(e.eventId, openings[0]);
+        return;
       }
       if (e.eventType === 'MemberTransferred' || e.eventType === 'MemberRemoved') {
         const p = e.payload,
