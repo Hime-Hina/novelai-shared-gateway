@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, readFile, readdir, readlink } from 'node:fs/promises';
+import { lstat, readFile, readdir, readlink, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -8,6 +8,8 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const manifestName = 'MIGRATION_TOOLS.json';
 
 export async function migrationPackageFiles(directory) {
+  if (!(await lstat(directory)).isDirectory()) throw new Error('Invalid migration package root.');
+  const physicalRoot = await realpath(directory);
   const files = {};
   async function collect(current, prefix = '') {
     for (const name of (await readdir(current)).sort()) {
@@ -17,7 +19,7 @@ export async function migrationPackageFiles(directory) {
         info = await lstat(filename);
       if (info.isSymbolicLink()) {
         const link = await readlink(filename),
-          target = path.relative(directory, path.resolve(path.dirname(filename), link));
+          target = path.relative(physicalRoot, await realpath(filename));
         if (path.isAbsolute(link) || target === '..' || target.startsWith('..' + path.sep)) {
           throw new Error('Migration package contains an external link.');
         }

@@ -1,5 +1,16 @@
 import { constants } from 'node:fs';
-import { cp, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -86,17 +97,23 @@ try {
     '--format=tar',
     `--output=${path.join(work, 'source.tar')}`,
     sourceCommit,
-    ...inputs.filter((name) => !['server', 'scripts', 'tsconfig.backend.json'].includes(name)),
-    'server/migrations',
+    ...inputs,
   ]);
   run('tar', ['-xf', path.join(work, 'source.tar'), '-C', source]);
-  run(process.execPath, [
-    path.join(root, 'node_modules/typescript/bin/tsc'),
-    '-p',
-    path.join(root, 'tsconfig.backend.json'),
-    '--outDir',
-    compiled,
-  ]);
+  // 只编译固定 Git 输入；clean 状态仍可能有被 ignore 的私有源码。
+  const dependencies = path.join(source, 'node_modules');
+  await symlink(path.join(root, 'node_modules'), dependencies, 'junction');
+  try {
+    run(process.execPath, [
+      path.join(root, 'node_modules/typescript/bin/tsc'),
+      '-p',
+      path.join(source, 'tsconfig.backend.json'),
+      '--outDir',
+      compiled,
+    ]);
+  } finally {
+    await unlink(dependencies);
+  }
   const options = ['--config.allowUnusedPatches=true', '--config.ignoreScripts=true'];
   runPnpm([
     '--dir',

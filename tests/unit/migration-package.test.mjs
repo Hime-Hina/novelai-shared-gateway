@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -36,3 +36,23 @@ test('migration package verifies exact files and rejects changed or extra runtim
   await writeFile(path.join(directory, 'scripts/unrecorded.mjs'), 'export {};\n');
   await assert.rejects(verifyMigrationPackage(directory), /identity or bytes/);
 });
+
+test(
+  'migration package rejects links that escape through an internal directory alias',
+  {
+    skip: process.platform === 'win32',
+  },
+  async (t) => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'novelai-migration-manifest-test-'));
+    t.after(async () => {
+      assert.equal(path.dirname(path.resolve(directory)), path.resolve(tmpdir()));
+      assert.ok(path.basename(directory).startsWith('novelai-migration-manifest-test-'));
+      await rm(directory, { recursive: true, force: true });
+    });
+    const bundle = path.join(directory, 'bundle');
+    await mkdir(bundle);
+    await symlink('.', path.join(bundle, 'inside'));
+    await symlink('inside/..', path.join(bundle, 'escape'));
+    await assert.rejects(migrationPackageFiles(bundle), /external link/);
+  },
+);
