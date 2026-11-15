@@ -1090,17 +1090,51 @@ test('原queued和done回执晚于drained建立领取仍读当前终态；queued
       const token = f.credentials.accounts[0].api_key,
         route = `/generate?token=${token}&tag=existing-${kind}&width=128&height=128&steps=23&seed=55`,
         headers = { 'idempotency-key': 'original-' + kind };
-      let running;
+      let running, doneRequestId, doneBefore;
       if (kind === 'queued') {
         f.upstream.hold = () => gate;
         running = call(server, '/ai/generate-image', { token, body: nativeInput() });
         await waitFor(() => f.upstream.active === 1);
+      } else {
+        // 100ms 领取超时不取消实际生成；先证明同一原任务 done，再验关闭后的迟到领取。
+        f.upstream.hold = (req) => (req.url === '/user/data' ? undefined : gate);
+        let first;
+        try {
+          first = await call(server, route, { headers });
+          assert.equal(first.headers.get('x-timeout'), '1');
+          await waitFor(() => f.upstream.generation === 1);
+          assert.ok(f.upstream.active > 0);
+        } finally {
+          release();
+        }
+        doneRequestId = first.headers.get('x-nai-request-id');
+        assert.ok(doneRequestId);
+        const children = query(
+          f,
+          'SELECT id FROM generation_jobs WHERE request_id=?',
+          doneRequestId,
+        );
+        assert.equal(children.length, 1);
+        await waitFor(
+          () =>
+            query(
+              f,
+              "SELECT id FROM generation_jobs WHERE id=? AND request_id=? AND status='done' AND artifact_id IS NOT NULL",
+              children[0].id,
+              doneRequestId,
+            ).length === 1,
+        );
+        assert.equal(f.upstream.generation, 1);
+        doneBefore = fullState(f);
       }
       const original = await call(server, route, { headers });
       if (kind === 'queued') {
         assert.equal(original.headers.get('x-timeout'), '1');
       } else {
         assert.deepEqual(original.bytes, image);
+        assert.equal(original.headers.get('x-nai-request-id'), doneRequestId);
+        assert.equal(fullState(f), doneBefore, 'done receipt claim must not write or regenerate');
+        assert.equal(f.upstream.generation, 1);
       }
       const stages = watchLifecycleIo(server);
       server.child.send('arm-io');
