@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
 import Database from 'better-sqlite3';
 import { JsonStore } from '../../server/storage/sqlite-store.ts';
-import { describeStoredResult, publishStoredResult } from '../../server/storage/result-files.ts';
+import {
+  describeStoredResult,
+  publishStoredResult,
+  readStoredResultContent,
+} from '../../server/storage/result-files.ts';
 import {
   configureFairQuota,
   syncFairQuota,
@@ -19,6 +21,8 @@ import {
 import {
   closeGenerationReview,
   recordRecoveredGeneration,
+  generationChargeResources,
+  generationResponseEvidence,
   GENERATION_REVIEW_MS,
 } from '../../server/generation/accounting.ts';
 import { recordSharedCompletion } from '../../server/quota/shared-capacity.ts';
@@ -32,7 +36,27 @@ import {
   publicGenerationRequest,
   readOwnedGenerationRequest,
 } from '../../server/generation/request-queries.ts';
-import { recordDomainEvent } from '../../server/events/domain-events.ts';
+import { recordDomainEvent, domainDigest } from '../../server/events/domain-events.ts';
+import {
+  childFixture,
+  launchGateway,
+  query,
+  assertChildPublicReplay,
+} from '../helpers/relational-child.mjs';
+import { RelationalMemberStore } from '../../server/storage/relational-member-store.ts';
+import { RelationalAccountStore } from '../../server/storage/relational-account-store.ts';
+import { RelationalQuotaStore } from '../../server/storage/relational-quota-store.ts';
+import { RelationalInputStore } from '../../server/storage/relational-input-store.ts';
+import { RelationalReplicaStore } from '../../server/storage/relational-replica-store.ts';
+import { RelationalCommitReplayer } from '../../server/storage/relational-replay.ts';
+import { initializeRelationalStorage } from '../../server/storage/relational-storage.ts';
+import { readRelationalCommit } from '../../server/events/relational-event-store.ts';
+import {
+  restoreRelationalPrivateSnapshot,
+  relationalSnapshotSha256,
+} from '../../server/storage/relational-private-restore.ts';
+import { verifyAndInstallRelationalStorage } from '../../server/storage/relational-ready.ts';
+import { parseAmount, formatAmount } from '../../server/quota/resource-amounts.ts';
 
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
@@ -554,86 +578,524 @@ test(
         },
       },
     );
+    // 原 reserve/settle/complete 的实际保存行先封存，不能用新正常请求替代原 parentless 源。
+    const original = structuredClone(await store.read()),
+      sourceCut = store.sqlite
+        .prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM event_commits')
+        .get().seq,
+      originalSnapshot = path.join(store.dataDir, 'late-original-source.sqlite');
+    await store.sqlite.backup(originalSnapshot);
+    const originalSeal = new Database(originalSnapshot);
+    originalSeal.pragma('journal_mode=DELETE');
+    originalSeal.close();
+    const originalSha256 = relationalSnapshotSha256(originalSnapshot);
     await store.close();
-    const listener = http.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
-    const env = Object.fromEntries(
-      ['PATH', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE']
-        .filter((key) => process.env[key])
-        .map((key) => [key, process.env[key]]),
-    );
-    Object.assign(env, {
-      ADMIN_TOKEN: 'synthetic-admin-for-offline-review-12345',
-      DATA_DIR: store.dataDir,
-      HOST: '127.0.0.1',
-      PORT: String(port),
-      NOVELAI_API_URL: 'http://127.0.0.1:1',
-      NOVELAI_ACCOUNT_API_URL: 'http://127.0.0.1:1',
-      PUBLIC_HOST: 'gateway.example',
-    });
-    const child = spawn(process.execPath, ['server/index.ts'], {
-      cwd: fileURLToPath(new URL('../../', import.meta.url)),
-      env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    t.after(async () => {
-      if (child.exitCode === null) {
-        child.kill();
-        await once(child, 'exit');
-      }
-    });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => {
-      stderr = (stderr + chunk.toString('utf8')).slice(-8000);
-    });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`server startup timeout: ${stderr}`)), 10000);
-      child.once('exit', (code) => {
-        clearTimeout(timer);
-        reject(new Error(`server exited ${code}: ${stderr}`));
-      });
-      child.stdout.on('data', (chunk) => {
-        if (chunk.toString().includes('listening on')) {
-          clearTimeout(timer);
-          resolve();
+
+    const state = await childFixture(t, 'generation-review-late'),
+      bootstrapSnapshot = path.join(state.directory, 'bootstrap-selected.sqlite');
+    const bootstrapSource = new Database(state.filename, { readonly: true });
+    await bootstrapSource.backup(bootstrapSnapshot);
+    bootstrapSource.close();
+    const bootstrapSeal = new Database(bootstrapSnapshot);
+    bootstrapSeal.pragma('journal_mode=DELETE');
+    bootstrapSeal.close();
+    const bootstrapSha256 = relationalSnapshotSha256(bootstrapSnapshot);
+    state.dataDir = path.join(state.directory, 'restored');
+    state.filename = path.join(state.dataDir, 'library.sqlite');
+    state.env.DATA_DIR = state.dataDir;
+    await mkdir(state.dataDir);
+    const db = new Database(state.filename);
+    try {
+      // Bootstrap 的同 cut 公共+所选私有原样恢复为 building，再经 owner 导入本例原行。
+      const selected = new Database(bootstrapSnapshot, { readonly: true });
+      try {
+        initializeRelationalStorage(
+          db,
+          selected.prepare('SELECT history_id FROM projection_state WHERE id=1').get().history_id,
+        );
+        const replayer = new RelationalCommitReplayer(db),
+          inputs = new RelationalInputStore(selected);
+        for (const { seq } of selected
+          .prepare('SELECT CAST(commit_seq AS TEXT) AS seq FROM commits ORDER BY commit_seq')
+          .all()) {
+          db.transaction(() =>
+            replayer.replayCommit(readRelationalCommit(selected, seq), inputs),
+          )();
         }
-      });
-    });
-    const base = `http://127.0.0.1:${port}`,
-      headers = { host: 'gateway.example', authorization: 'Bearer STA1N-a' };
-    const response = await fetch(`${base}/api/jobs/review`, { headers });
-    assert.equal(response.status, 200);
-    const job = await response.json();
-    assert.equal(job.status, 'failed');
-    assert.equal(job.lateResultAvailable, true);
-    assert.ok(job.imageUrl);
-    const downloaded = await fetch(new URL(job.imageUrl, base), { headers });
-    assert.equal(downloaded.status, 200);
-    assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), png);
-    const reader = new Database(store.dbPath, { readonly: true });
-    t.after(() => reader.close());
-    for (let i = 0; i < 50; i++) {
-      const due = JSON.parse(
-        reader.prepare("SELECT data FROM jobs WHERE id = 'offline-due'").get().data,
-      );
-      if (due.generationReview.status === 'estimated_closed') {
-        break;
+        db.transaction(() =>
+          restoreRelationalPrivateSnapshot(db, bootstrapSnapshot, bootstrapSha256),
+        )();
+      } finally {
+        selected.close();
       }
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      const at = Date.now(),
+        command = (name, actorKind = 'system') => ({
+          commandId: `late-fixture:${name}`,
+          fingerprint: domainDigest(name),
+          actorKind,
+          actorId: actorKind === 'admin' ? 'local-admin' : null,
+          recordedAt: at,
+          correlationId: null,
+          causationId: null,
+          policyVersion: 'retained-source',
+          pricingVersion: 'retained-source',
+        }),
+        members = new RelationalMemberStore(db, state.env),
+        quotas = new RelationalQuotaStore(db),
+        accounts = new RelationalAccountStore(db, quotas, new Map(), state.env),
+        inputs = new RelationalInputStore(db),
+        replicas = new RelationalReplicaStore(db, { dataDir: state.dataDir });
+      db.transaction(() => {
+        // 这是当前测试入口的真实凭据注册，不把新 epoch/创建日当作旧尝试的元数据。
+        for (const user of original.users) {
+          members.registerMember(command(`member:${user.id}`), {
+            memberId: user.id,
+            displayName: user.id,
+            apiKey: user.token,
+          });
+        }
+        accounts.prepareAccountCommand(
+          command('disabled-account', 'admin'),
+          {
+            kind: 'register',
+            accountId: original.accounts[0].id,
+            displayName: 'Current disabled retained-source account',
+            token: state.env.NOVELAI_TOKEN,
+            configVersion: db
+              .prepare('SELECT config_version AS version FROM sharing_policy WHERE id=1')
+              .get().version,
+            bind: false,
+            enabled: false,
+          },
+          null,
+        );
+      })();
+      const oldImage = original.images.find(
+          (image) => image.id === original.jobs.find((job) => job.id === 'review').imageId,
+        ),
+        descriptor = {
+          imageId: oldImage.id,
+          file: oldImage.file,
+          operation: oldImage.operation,
+          mimeType: oldImage.mimeType,
+          byteLength: oldImage.byteLength,
+          sha256: oldImage.sha256,
+        },
+        content = await readStoredResultContent(store.dataDir, descriptor);
+      assert.ok(content);
+      await mkdir(path.join(state.dataDir, 'images'));
+      await writeFile(path.join(state.dataDir, descriptor.file), content.buffer);
+      assert.deepEqual((await readStoredResultContent(state.dataDir, descriptor)).buffer, png);
+      // 实际恢复读完成后的本次验证证据，不是旧图片 createdAt/publishedAt 的替身。
+      const verifiedAt = Date.now(),
+        sourceId = 'late-original-source',
+        local = db.transaction(() =>
+          replicas.planLocalArtifactPublication(descriptor, verifiedAt),
+        )(),
+        storageTargetId = local.replica.payload.storageTargetId,
+        manifest = {
+          originalSha256,
+          sourceCut,
+          localVerification: {
+            artifactId: oldImage.id,
+            storageTargetId,
+            verifiedAt,
+            sha256: descriptor.sha256,
+          },
+        },
+        events = [],
+        event = (eventType, streamId, payload, memberId = null, accountId = null) => ({
+          eventType,
+          streamId,
+          payload,
+          memberId,
+          accountId,
+          occurredAt: verifiedAt,
+          policyVersion: 'retained-source',
+          pricingVersion: 'retained-source',
+        }),
+        origin = (id) => ({ sourceId, originalId: id }),
+        stamp = (value) => (value == null ? null : Date.parse(value));
+      events.push(
+        event('ImportSourceRegistered', `import:${sourceId}`, {
+          sourceId,
+          sourceSha256: originalSha256,
+          sourceCommit: '3a15979fde2af494e7114f4a9f2192db72aad4e9',
+          cutoffSeq: sourceCut,
+          cutoffAt: at,
+          manifestSha256: domainDigest(manifest),
+          route: 'B',
+        }),
+      );
+      if (local.target) {
+        events.push(
+          event(local.target.eventType, `storage:${storageTargetId}`, local.target.payload),
+        );
+      }
+      db.transaction(() => {
+        for (const [memberId, balance] of Object.entries(before)) {
+          events.push(
+            event(
+              'OpeningWalletRecorded',
+              `account:${original.accounts[0].id}`,
+              {
+                accountId: original.accounts[0].id,
+                memberId,
+                available: {
+                  v5: balance.v5Available,
+                  anlasFixed: balance.anlasFixedAvailable,
+                  anlasPurchased: balance.anlasPurchasedAvailable,
+                },
+                origin: origin(`balance:${memberId}`),
+              },
+              memberId,
+              original.accounts[0].id,
+            ),
+          );
+        }
+        for (const job of original.jobs) {
+          const attempt = job.generationAttempt,
+            charge = job.fairCharge,
+            review = job.generationReview,
+            requestId = `retained-container:${job.id}`,
+            inputId = `retained-input:${job.id}`,
+            body = {
+              operation: attempt.operation,
+              model: job.request.model,
+              parameters: {
+                width: job.request.width,
+                height: job.request.height,
+                steps: job.request.steps,
+              },
+            },
+            response = generationResponseEvidence(job),
+            attemptEventId = `opening:${attempt.id}`,
+            chargeEventId = `opening-charge:${job.id}`;
+          assert.equal(Object.hasOwn(job, 'requestId'), false);
+          assert.equal(attempt.memberId, charge.userId);
+          assert.equal(attempt.accountId, charge.accountId);
+          assert.equal(review.deadlineAt, review.firstUnknownAt + GENERATION_REVIEW_MS);
+          events.push(
+            event(
+              'OpeningInputRecorded',
+              `input:${inputId}`,
+              {
+                ...inputs.stageOpeningInput({
+                  inputId,
+                  memberId: attempt.memberId,
+                  completeness: 'partial',
+                  body,
+                  logicalBytes: Buffer.byteLength(JSON.stringify(body)),
+                  assets: [],
+                }),
+                origin: origin(`input:${job.id}`),
+              },
+              attempt.memberId,
+            ),
+          );
+          events.push(
+            event(
+              'OpeningRequestRecorded',
+              `request:${requestId}`,
+              {
+                requestId,
+                originalRequestId: null,
+                memberId: attempt.memberId,
+                inputId,
+                contextId: null,
+                source: job.source,
+                operation: attempt.operation,
+                model: job.request.model,
+                sampleCount: null,
+                seedMode: 'unknown',
+                confirmation: null,
+                acceptedAt: null,
+                retiredAt: null,
+                origin: origin(job.id),
+              },
+              attempt.memberId,
+            ),
+          );
+          events.push(
+            event(
+              'OpeningJobRecorded',
+              `request:${requestId}`,
+              {
+                jobId: job.id,
+                requestId,
+                createdAt: stamp(job.createdAt),
+                sampleIndex: attempt.sampleIndex,
+                actualSeed: null,
+                status: job.status,
+                queueSeq: null,
+                queueExpiresAt: null,
+                deadlineAt: null,
+                admissionEpoch: null,
+                artifactId: job.imageId ?? null,
+                cacheKey: null,
+                completedAt: stamp(job.completedAt),
+                errorCode: null,
+                errorStatus: null,
+                cancellationReason: null,
+                lateResultAt: stamp(job.lateResultAt),
+                freeSucceededAt: null,
+                freeWarningThreshold: null,
+                retiredAt: null,
+                origin: origin(job.id),
+              },
+              attempt.memberId,
+            ),
+          );
+          events.push({
+            ...event(
+              'OpeningAttemptRecorded',
+              `request:${requestId}`,
+              {
+                attemptId: attempt.id,
+                jobId: job.id,
+                accountId: attempt.accountId,
+                credentialEpoch: null,
+                connectionSourceEventId: null,
+                authorizedAt: attempt.dispatchIntentAt,
+                response: {
+                  ...response,
+                  upstreamStartedAt: stamp(response.upstreamStartedAt),
+                  upstreamHeadersAt: stamp(response.upstreamHeadersAt),
+                  upstreamCompletedAt: stamp(response.upstreamCompletedAt),
+                },
+                candidateMode: attempt.candidateMode,
+                upstreamCandidates: attempt.upstreamCandidates,
+                actualConsumption: null,
+                lossCoverageRemaining: { v5: null, anlasFixed: null, anlasPurchased: null },
+                reviewStatus: review.status,
+                firstUnknownAt: review.firstUnknownAt,
+                reviewDeadlineAt: review.deadlineAt,
+                reviewClosedAt: review.closedAt,
+                originalLossEventId: review.lossEventId,
+                originalClosureEventId: review.closureEventId,
+                preparedArtifactId: null,
+                preparedFile: null,
+                preparedMimeType: null,
+                preparedByteLength: null,
+                preparedSha256: null,
+                origin: origin(attempt.id),
+              },
+              attempt.memberId,
+              attempt.accountId,
+            ),
+            eventId: attemptEventId,
+          });
+          events.push({
+            ...event(
+              'OpeningChargeRecorded',
+              `account:${charge.accountId}`,
+              {
+                originalJobId: job.id,
+                originalMemberId: charge.userId,
+                originalAccountId: charge.accountId,
+                jobId: job.id,
+                walletAccountId: charge.accountId,
+                walletMemberId: charge.userId,
+                attemptId: attempt.id,
+                status: charge.status,
+                resolution: 'live',
+                originRef: chargeEventId,
+                resources: generationChargeResources(charge),
+                billingMode: charge.billingMode ?? charge.resource,
+                estimated: charge.estimated ?? null,
+                // 原非fallback资源不使用这两列；契约固定为0，不代表未知fallback估值。
+                v5Equivalent: charge.billingMode === 'anlas_fallback' ? charge.v5Equivalent : '0',
+                sharedV5Reserved:
+                  charge.billingMode === 'anlas_fallback' ? charge.sharedV5Reserved : '0',
+                configVersion: charge.configVersion,
+                reservedAt: charge.reservedAt,
+                terminalAt: job.generationRefund.refundedAt,
+                reservationEventId: chargeEventId,
+                terminalEventId: chargeEventId,
+                origin: origin(`charge:${job.id}`),
+              },
+              charge.userId,
+              charge.accountId,
+            ),
+            eventId: chargeEventId,
+          });
+          if (job.imageId) {
+            assert.equal(job.imageId, oldImage.id);
+            const recovered = original.ledger.find(
+              (entry) => entry.type === 'generation_result_recovered' && entry.jobId === job.id,
+            );
+            assert.ok(recovered);
+            assert.equal(recovered.attemptId, attempt.id);
+            assert.equal(recovered.imageId, oldImage.id);
+            assert.equal(recovered.memberId, oldImage.memberId);
+            assert.equal(recovered.accountId, oldImage.accountId);
+            events.push(
+              event(
+                'OpeningArtifactRecorded',
+                `artifact:${oldImage.id}`,
+                {
+                  artifactId: oldImage.id,
+                  memberId: attempt.memberId,
+                  inputId,
+                  originalAttemptId: attempt.id,
+                  operation: oldImage.operation,
+                  mimeType: oldImage.mimeType,
+                  byteLength: oldImage.byteLength,
+                  sha256: oldImage.sha256,
+                  publishedAt: null,
+                  retiredAt: null,
+                  origin: origin(oldImage.id),
+                },
+                attempt.memberId,
+                attempt.accountId,
+              ),
+            );
+          }
+        }
+        events.push(
+          event(
+            'OpeningReplicaRecorded',
+            `artifact:${oldImage.id}`,
+            {
+              artifactId: oldImage.id,
+              storageTargetId,
+              objectKey: path.basename(oldImage.file),
+              encoding: 'identity',
+              uploadedAt: null,
+              verifiedAt,
+              deletedAt: null,
+              lastErrorCode: null,
+              origin: origin(`capture:${oldImage.id}`),
+            },
+            'a',
+          ),
+        );
+        new RelationalCommitReplayer(db).appendCommit(
+          {
+            ...command('opening'),
+            recordedAt: verifiedAt,
+            fingerprint: domainDigest(events),
+            receipt: { originalRows: original.jobs.map((job) => job.id) },
+            events,
+            expectedVersions: Object.fromEntries(
+              events.map((e) => [
+                e.streamId,
+                db
+                  .prepare(
+                    'SELECT CAST(stream_version AS TEXT) AS seq FROM stream_heads WHERE stream_id=?',
+                  )
+                  .get(e.streamId)?.seq ?? '0',
+              ]),
+            ),
+          },
+          inputs,
+        );
+      })();
+      const sealed = path.join(state.directory, 'late-selected.sqlite');
+      await db.backup(sealed);
+      const seal = new Database(sealed);
+      seal.pragma('journal_mode=DELETE');
+      seal.close();
+      await verifyAndInstallRelationalStorage(db, {
+        sourcePath: sealed,
+        sourceSha256: relationalSnapshotSha256(sealed),
+        historyId: db.prepare('SELECT history_id FROM projection_state WHERE id=1').get()
+          .history_id,
+        finalCommitSeq: db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) AS seq FROM commits').get()
+          .seq,
+        replicas: { dataDir: state.dataDir },
+      });
+    } finally {
+      db.close();
     }
-    assert.equal(
-      JSON.parse(reader.prepare("SELECT data FROM jobs WHERE id = 'offline-due'").get().data)
-        .generationReview.status,
-      'estimated_closed',
-    );
-    const settings = JSON.parse(
-      reader.prepare("SELECT value FROM app_settings WHERE key='settings'").get().value,
-    );
-    assert.deepEqual(settings.fairQuota.balances, before);
+    const walletsBefore = query(state, 'SELECT * FROM wallets ORDER BY account_id,member_id');
+    let upstreamCalls = 0;
+    const upstream = http.createServer((_req, res) => {
+      upstreamCalls++;
+      res.writeHead(500);
+      res.end();
+    });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    t.after(() => new Promise((resolve) => upstream.close(resolve)));
+    let startupTimer;
+    const server = await Promise.race([
+      launchGateway(state, `http://127.0.0.1:${upstream.address().port}`, {
+        PUBLIC_HOST: 'gateway.example',
+      }),
+      new Promise((_resolve, reject) => {
+        startupTimer = setTimeout(() => reject(new Error('server startup timeout')), 10000);
+      }),
+    ]).finally(() => clearTimeout(startupTimer));
+    try {
+      const base = server.origin,
+        headers = { host: 'gateway.example', authorization: 'Bearer STA1N-a' };
+      const response = await fetch(`${base}/api/jobs/review`, { headers });
+      assert.equal(response.status, 200);
+      const job = await response.json();
+      assert.equal(job.status, 'failed');
+      assert.equal(job.lateResultAvailable, true);
+      assert.ok(job.imageUrl);
+      const downloaded = await fetch(new URL(job.imageUrl, base), { headers });
+      assert.equal(downloaded.status, 200);
+      assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), png);
+      const withoutCookie = await fetch(new URL(job.imageUrl, base), {
+        headers: { host: 'gateway.example' },
+      });
+      assert.equal(withoutCookie.status, 200);
+      assert.deepEqual(Buffer.from(await withoutCookie.arrayBuffer()), png);
+      const other = await fetch(`${base}/api/jobs/review`, {
+        headers: { ...headers, authorization: 'Bearer STA1N-b' },
+      });
+      assert.equal(other.status, 403);
+      for (let i = 0; i < 50; i++) {
+        const due = query(
+          state,
+          "SELECT review_status FROM generation_attempts WHERE job_id='offline-due'",
+        )[0];
+        if (due.review_status === 'estimated_closed') {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.equal(
+        query(state, "SELECT review_status FROM generation_attempts WHERE job_id='offline-due'")[0]
+          .review_status,
+        'estimated_closed',
+      );
+      assert.deepEqual(
+        query(state, 'SELECT * FROM wallets ORDER BY account_id,member_id'),
+        walletsBefore,
+      );
+      const balances = Object.fromEntries(
+        query(
+          state,
+          'SELECT member_id AS id,v5_available AS v5Available,anlas_fixed_available AS anlasFixedAvailable,anlas_purchased_available AS anlasPurchasedAvailable FROM wallets WHERE account_id=? ORDER BY member_id',
+          original.accounts[0].id,
+        )
+          .filter(({ id }) => Object.hasOwn(before, id))
+          .map(({ id, ...balance }) => [
+            id,
+            {
+              ...balance,
+              anlasAvailable: formatAmount(
+                parseAmount(balance.anlasFixedAvailable) +
+                  parseAmount(balance.anlasPurchasedAvailable),
+              ),
+            },
+          ]),
+      );
+      assert.deepEqual(balances, before);
+      assert.equal(
+        query(state, 'SELECT enabled FROM upstream_accounts WHERE id=?', original.accounts[0].id)[0]
+          .enabled,
+        0,
+      );
+      assert.equal(upstreamCalls, 0);
+    } finally {
+      await server.stop();
+      assertChildPublicReplay(state);
+    }
   },
 );
 

@@ -926,6 +926,114 @@ test('OpeningAttempt SQL failure is atomic under an outer catch; retry and full 
   rebuild(t, f.db);
 });
 
+test('unknown historical execution metadata still permits atomic deadline review with its original source', async (t) => {
+  const f = await source(t),
+    result = open(f, {
+      unavailable: true,
+      request: {
+        originalRequestId: null,
+        contextId: null,
+        source: null,
+        operation: null,
+        model: null,
+        sampleCount: null,
+        seedMode: 'unknown',
+        acceptedAt: null,
+      },
+      job: { sampleIndex: null, actualSeed: null, admissionEpoch: null },
+      attempt: { firstUnknownAt: NOW - 300000, reviewDeadlineAt: NOW },
+    });
+  const denied = (error) => error.statusCode === 410 && /未知元数据/.test(error.message),
+    before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n,
+    original = ['charges', 'wallets', 'generation_requests', 'generation_jobs'].map((table) =>
+      f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    );
+  assert.throws(() => f.generations.readGenerationExecutionState(result.jobId), denied);
+  assert.deepEqual(f.generations.readDueGenerationReviewIds(NOW), [result.jobId]);
+  const context = f.generations.readGenerationReviewSource(result.jobId);
+  assert.deepEqual(context, {
+    id: result.jobId,
+    attemptId: result.attemptId,
+    eventId: 'old-OpeningAttemptRecorded',
+    policyVersion: 'original-policy',
+    pricingVersion: 'original-price',
+  });
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  const command = {
+    ...meta('close-unknown-review', NOW + 1),
+    causationId: context.eventId,
+    policyVersion: context.policyVersion,
+    pricingVersion: context.pricingVersion,
+  };
+  f.db.exec(
+    "CREATE TEMP TRIGGER review_tail AFTER UPDATE OF review_status ON generation_attempts WHEN NEW.id='old-attempt' BEGIN SELECT RAISE(ABORT,'review close tail'); END",
+  );
+  try {
+    f.db.transaction(() =>
+      assert.throws(
+        () => f.generations.closeGenerationReview(command, result.jobId),
+        (error) =>
+          error.code === 'SQLITE_CONSTRAINT_TRIGGER' && /review close tail/.test(error.message),
+      ),
+    )();
+  } finally {
+    f.db.exec('DROP TRIGGER review_tail');
+  }
+  assert.equal(databaseState(f.db), before);
+  const closed = f.db.transaction(() =>
+    f.generations.closeGenerationReview(command, result.jobId),
+  )();
+  const commit = readRelationalCommit(f.db, closed.commitSeq);
+  assert.equal(commit.events.length, 1);
+  assert.equal(commit.events[0].eventType, 'ReviewClosed');
+  assert.equal(commit.events[0].causationId, context.eventId);
+  assert.equal(commit.events[0].policyVersion, context.policyVersion);
+  assert.equal(commit.events[0].pricingVersion, context.pricingVersion);
+  assert.equal(commit.events[0].payload.actualConsumption, null);
+  assert.deepEqual(
+    ['charges', 'wallets', 'generation_requests', 'generation_jobs'].map((table) =>
+      f.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ),
+    original,
+  );
+  assert.deepEqual(f.generations.readDueGenerationReviewIds(NOW + 1), []);
+  const after = databaseState(f.db),
+    afterChanges = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual(
+    f.db.transaction(() => f.generations.closeGenerationReview(command, result.jobId))(),
+    { ...closed, replayed: true, events: [] },
+  );
+  assert.equal(databaseState(f.db), after);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, afterChanges);
+  assert.throws(() => f.generations.readGenerationExecutionState(result.jobId), denied);
+  rebuild(t, f.db);
+});
+
+test('ordinary deadline review metadata comes from the original ReviewOpened responsibility', async (t) => {
+  const f = await fixture(t);
+  f.accept('normal-review');
+  f.dispatch('normal-review-0');
+  const failed = f.fail('normal-review-0', { aborted: false }),
+    event = readRelationalCommit(f.db, failed.commitSeq).events.find(
+      (e) => e.eventType === 'ReviewOpened',
+    );
+  assert.ok(event);
+  const before = databaseState(f.db),
+    changes = f.db.prepare('SELECT total_changes() AS n').get().n;
+  assert.deepEqual(f.generations.readGenerationReviewSource('normal-review-0'), {
+    id: 'normal-review-0',
+    attemptId: event.payload.attemptId,
+    eventId: event.eventId,
+    policyVersion: event.policyVersion,
+    pricingVersion: event.pricingVersion,
+  });
+  assert.equal(databaseState(f.db), before);
+  assert.equal(f.db.prepare('SELECT total_changes() AS n').get().n, changes);
+  rebuild(t, f.db);
+});
+
 test('known actual consumption survives deadline close, conflicting non-NULL claims roll back, and unknown candidates retain risk', async (t) => {
   const f = await source(t),
     consumed = { ...zero, anlasFixed: '100' };

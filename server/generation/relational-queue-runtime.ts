@@ -82,7 +82,11 @@ export function createRelationalQueueRuntime(options: {
       });
     } catch {}
   };
-  const metadata = (state: State, name: string, intent: object): Metadata => ({
+  const metadata = (
+    state: Pick<State, 'id' | 'attemptId' | 'eventId' | 'policyVersion' | 'pricingVersion'>,
+    name: string,
+    intent: object,
+  ): Metadata => ({
     commandId: `executor:${name}:${state.attemptId ?? state.id}`,
     fingerprint: domainDigest({ jobId: state.id, ...intent }),
     actorKind: 'system',
@@ -332,7 +336,7 @@ export function createRelationalQueueRuntime(options: {
       );
     }
     for (const id of store.readDueGenerationReviewIds(now())) {
-      const state = store.readGenerationExecutionState(id);
+      const state = store.readGenerationReviewSource(id);
       notifications.commit(() =>
         sqlite
           .transaction(() => store.closeGenerationReview(metadata(state, 'review-close', {}), id))
