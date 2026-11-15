@@ -120,6 +120,8 @@ function appendOpening(f, options = {}) {
         ...(options.request ?? {}),
       }),
       event('OpeningJobRecorded', {
+        sourceOrder: null,
+        displayCost: null,
         jobId: original.job.id,
         requestId: 'structural-container',
         createdAt: Date.parse(original.job.createdAt),

@@ -23,6 +23,65 @@ const hash = 'a'.repeat(64),
   zero = { v5: '0', anlasFixed: '0', anlasPurchased: '0' };
 const origin = { sourceId: 'legacy-snapshot', originalId: 'old-id' };
 
+test('OpeningJob原始顺序和displayCost只接受有限原number或明确NULL', () => {
+  const payload = {
+    jobId: 'j',
+    requestId: 'r',
+    sourceOrder: null,
+    displayCost: null,
+    createdAt: null,
+    sampleIndex: null,
+    actualSeed: null,
+    status: 'failed',
+    queueSeq: null,
+    queueExpiresAt: null,
+    deadlineAt: null,
+    admissionEpoch: null,
+    artifactId: null,
+    cacheKey: null,
+    completedAt: null,
+    errorCode: null,
+    errorStatus: null,
+    cancellationReason: null,
+    lateResultAt: null,
+    freeSucceededAt: null,
+    freeWarningThreshold: null,
+    retiredAt: null,
+    origin,
+  };
+  for (const field of ['sourceOrder', 'displayCost']) {
+    for (const value of [null, -17.25, 0, 2.5, Number.MAX_VALUE]) {
+      const fact = { eventType: 'OpeningJobRecorded', payload: { ...payload, [field]: value } };
+      assert.deepEqual(parseRelationalFact(fact), fact);
+    }
+    for (const value of [undefined, '0', Infinity, -Infinity, NaN]) {
+      assert.throws(() =>
+        parseRelationalFact({
+          eventType: 'OpeningJobRecorded',
+          payload: { ...payload, [field]: value },
+        }),
+      );
+    }
+    const { [field]: _missing, ...missing } = payload;
+    assert.throws(() => parseRelationalFact({ eventType: 'OpeningJobRecorded', payload: missing }));
+    const normal = {
+      jobId: 'j',
+      requestId: 'r',
+      sampleIndex: 0,
+      actualSeed: 1,
+      status: 'pending',
+      queueSeq: null,
+      queueExpiresAt: null,
+      deadlineAt: null,
+      admissionEpoch: 0,
+      cacheKey: null,
+    };
+    assert.throws(() =>
+      parseRelationalFact({ eventType: 'JobAccepted', payload: { ...normal, [field]: 0 } }),
+    );
+  }
+});
+
 test('job与OpeningJob的公共seed基型保留有限Number/NULL，Native范围由真实输入owner核验', () => {
   const base = {
     jobId: 'j',
@@ -42,6 +101,8 @@ test('job与OpeningJob的公共seed基型保留有限Number/NULL，Native范围�
         ? base
         : {
             ...base,
+            sourceOrder: null,
+            displayCost: null,
             createdAt: null,
             artifactId: null,
             completedAt: null,

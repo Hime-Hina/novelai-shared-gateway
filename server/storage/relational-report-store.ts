@@ -35,7 +35,11 @@ const adminJobs = `WITH summary_jobs AS (
     CASE WHEN EXISTS (SELECT 1 FROM domain_events accepted
       WHERE accepted.stream_id='request:'||r.id AND accepted.event_type='JobAccepted'
         AND json_extract(accepted.payload,'$.jobId')=j.id)
-      THEN ${generationCost()} ELSE NULL END AS displayCost,
+      THEN ${generationCost()} ELSE (SELECT json_extract(opening.payload,'$.displayCost')
+        FROM domain_events opening WHERE opening.event_type='OpeningJobRecorded'
+          AND opening.stream_id='request:'||r.id AND opening.member_id=r.member_id
+          AND json_extract(opening.payload,'$.jobId')=j.id
+          AND json_extract(opening.payload,'$.requestId')=r.id) END AS displayCost,
     (SELECT json_extract(failure.payload,'$.diagnosticId') FROM domain_events failure
       WHERE failure.stream_id='request:'||r.id AND failure.member_id=r.member_id
         AND failure.event_type='JobFailed' AND json_extract(failure.payload,'$.jobId')=j.id) AS diagnosticId,

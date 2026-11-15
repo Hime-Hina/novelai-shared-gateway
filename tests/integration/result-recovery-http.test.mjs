@@ -628,6 +628,8 @@ async function installColdHistory(f, images, jobs) {
             origin: origin(job.id),
           }),
           event('OpeningJobRecorded', {
+            sourceOrder: null,
+            displayCost: null,
             jobId: job.id,
             requestId,
             createdAt: Date.parse(job.createdAt),

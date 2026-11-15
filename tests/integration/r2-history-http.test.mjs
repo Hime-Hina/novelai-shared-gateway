@@ -406,6 +406,8 @@ async function historicalFixture(t) {
               event(
                 'OpeningJobRecorded',
                 {
+                  sourceOrder: null,
+                  displayCost: null,
                   jobId: record.jobId,
                   requestId: record.requestId,
                   createdAt: record.createdAt,
