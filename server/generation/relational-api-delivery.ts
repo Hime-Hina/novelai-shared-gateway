@@ -1,14 +1,12 @@
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
-import { withAuthenticatedMemberApiKey } from '../members/authentication.ts';
-import type { RelationalMemberStore } from '../storage/relational-member-store.ts';
+import type { RelationalMemberApiKeyAuthorization } from '../members/relational-api-key-access.ts';
 import type { RelationalRequestStore } from '../storage/relational-request-store.ts';
 import {
   readRelationalArtifactContent,
   relationalArtifactReferenceAvailable,
 } from '../storage/relational-replica-io.ts';
 import type { RelationalReplicaReadConfiguration } from '../storage/relational-replica-store.ts';
-import { assertRelationalStorageReady } from '../storage/relational-storage.ts';
 import { publicErrorMessage } from '../http/public-errors.ts';
 import { createJobResultWaiter } from './result-waiter.ts';
 import type { GenerationDeliveryResult } from './delivery.ts';
@@ -18,34 +16,17 @@ function fail(statusCode: number, message: string): never {
   throw Object.assign(new Error(message), { statusCode });
 }
 
-// Native/OpenAI 领取都以当前 Key 冷读事实；外部 IO 不持 SQL 事务，读后再次鉴权。
+// 同一次请求的领取复用首鉴权身份/epoch；外部 IO 不持 SQL，读后仍核原身份与当前 Key。
 export function createRelationalApiDelivery(deps: {
   sqlite: Database.Database;
-  members: RelationalMemberStore;
   requests: RelationalRequestStore;
-  token: string;
+  authorize: RelationalMemberApiKeyAuthorization;
   replicas: RelationalReplicaReadConfiguration;
   events: EventEmitter;
-  env: NodeJS.ProcessEnv;
   runtime: RelationalGenerationLifecycle;
   now?(): number;
 }) {
-  const { sqlite, members, requests, token, env } = deps;
-  const authorize = async <T>(read: (memberId: string) => T): Promise<T> => {
-    const result = await withAuthenticatedMemberApiKey(
-      members,
-      token,
-      (member) => {
-        assertRelationalStorageReady(sqlite);
-        return { value: read(member.id) };
-      },
-      env,
-    );
-    if (!result) {
-      fail(401, 'invalid token.');
-    }
-    return result.value;
-  };
+  const { sqlite, requests, authorize } = deps;
   const readContent = async (jobId: string) => {
     const artifact = await authorize((memberId) => requests.readMemberResult(jobId, memberId));
     const content = await readRelationalArtifactContent(sqlite, artifact.artifactId, deps.replicas);

@@ -3,10 +3,10 @@ import { relationalStateNotificationsFor } from '../events/relational-state-noti
 import type { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
 import {
-  authenticateMemberApiKey,
-  withAuthenticatedMemberApiKey,
-} from '../members/authentication.ts';
-import { requireDiscordMembership, type DiscordDependencies } from '../members/discord-auth.ts';
+  authorizeRelationalMemberApiKey,
+  type RelationalMemberApiKeyAuthorization,
+} from '../members/relational-api-key-access.ts';
+import type { DiscordDependencies } from '../members/discord-auth.ts';
 import { gatewayKeyFrom } from '../members/http-request.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
 import { RelationalInputStore } from '../storage/relational-input-store.ts';
@@ -106,31 +106,15 @@ export function createRelationalDirectHttp(deps: {
     let token = direct
       ? String(url.searchParams.get('token') || '').trim()
       : gatewayKeyFrom(req, url);
-    const current = async <T>(read: (memberId: string) => T) => {
-      const value = await withAuthenticatedMemberApiKey(
-        members,
-        token,
-        (member) => {
-          assertRelationalStorageReady(sqlite);
-          return { value: read(member.id) };
-        },
-        env,
-      );
-      if (!value) {
-        fail(401, 'invalid token.');
-      }
-      return value.value;
-    };
+    let current: RelationalMemberApiKeyAuthorization = async () => fail(401, 'invalid token.');
     const authenticate = async () => {
       if (!token.startsWith('STA1N-')) {
         fail(401, 'Existing gateway key required.');
       }
-      const member = await authenticateMemberApiKey(members, token);
-      if (!member) {
-        fail(401, 'invalid token.');
-      }
-      await requireDiscordMembership(member, {
-        store: members,
+      current = await authorizeRelationalMemberApiKey({
+        sqlite,
+        members,
+        token,
         env,
         discordFetch: deps.discordFetch,
       });
@@ -186,13 +170,11 @@ export function createRelationalDirectHttp(deps: {
     const createDelivery = () =>
       createRelationalApiDelivery({
         sqlite,
-        members,
         requests,
-        token,
+        authorize: current,
         replicas: deps.replicas,
         events: deps.events,
         runtime: deps.runtime,
-        env,
         now,
       });
     const accept = async (
@@ -200,34 +182,39 @@ export function createRelationalDirectHttp(deps: {
       source: 'direct' | 'web',
       admissionVersion: number,
     ) => {
-      const result = await admit({
-        token,
-        key: req.generationIdempotencyKey,
-        admissionVersion,
-        operation: 'generate',
-        source,
-        seedMode: body.seed === undefined || body.seed === '' ? 'random' : 'fixed',
-        noCache: isNoCache(body.nocache),
-        claim,
-        context: () => ({
-          kind: 'direct',
-          native: nativeNormalizationContext(),
-          defaults: requestNormalizationDefaults(deps.readNormalizationDefaults()),
-        }),
-        normalize(context) {
-          if (context.kind !== 'direct') {
-            fail(409, '操作键已用于另一种生成意图。');
-          }
-          const normalized = normalizeNovelAiRequest(body, context.defaults, {
-            maxSteps: DIRECT_URL_MAX_STEPS,
-          });
-          return {
-            ...normalized,
-            ...(source === 'web' ? { allowPurchasedAnlas: body.allowPurchasedAnlas === true } : {}),
-            normalizationContext: { native: context.native },
-          };
+      const result = await admit(
+        {
+          token,
+          key: req.generationIdempotencyKey,
+          admissionVersion,
+          operation: 'generate',
+          source,
+          seedMode: body.seed === undefined || body.seed === '' ? 'random' : 'fixed',
+          noCache: isNoCache(body.nocache),
+          claim,
+          context: () => ({
+            kind: 'direct',
+            native: nativeNormalizationContext(),
+            defaults: requestNormalizationDefaults(deps.readNormalizationDefaults()),
+          }),
+          normalize(context) {
+            if (context.kind !== 'direct') {
+              fail(409, '操作键已用于另一种生成意图。');
+            }
+            const normalized = normalizeNovelAiRequest(body, context.defaults, {
+              maxSteps: DIRECT_URL_MAX_STEPS,
+            });
+            return {
+              ...normalized,
+              ...(source === 'web'
+                ? { allowPurchasedAnlas: body.allowPurchasedAnlas === true }
+                : {}),
+              normalizationContext: { native: context.native },
+            };
+          },
         },
-      });
+        current,
+      );
       if (result.replayed) {
         const delivery = createDelivery();
         try {

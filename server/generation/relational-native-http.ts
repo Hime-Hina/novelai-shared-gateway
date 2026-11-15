@@ -2,8 +2,11 @@ import { relationalStateNotificationsFor } from '../events/relational-state-noti
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
 import type { ServerResponse } from 'node:http';
-import { authenticateMemberApiKey } from '../members/authentication.ts';
-import { requireDiscordMembership, type DiscordDependencies } from '../members/discord-auth.ts';
+import {
+  authorizeRelationalMemberApiKey,
+  type RelationalMemberApiKeyAuthorization,
+} from '../members/relational-api-key-access.ts';
+import type { DiscordDependencies } from '../members/discord-auth.ts';
 import { RelationalMemberStore } from '../storage/relational-member-store.ts';
 import { RelationalInputStore } from '../storage/relational-input-store.ts';
 import { RelationalGenerationStore } from '../storage/relational-generation-store.ts';
@@ -75,12 +78,12 @@ export function createRelationalNativeHttp(deps: {
         String(req.headers.authorization || '')
           .match(/^Bearer\s+(.+)$/i)?.[1]
           ?.trim() || '';
+      let authorized: RelationalMemberApiKeyAuthorization;
+      const current: RelationalMemberApiKeyAuthorization = (read) => authorized(read);
       const delivery = createRelationalApiDelivery({
         sqlite,
-        members,
         requests,
-        token,
-        env,
+        authorize: current,
         replicas: deps.replicas,
         events: deps.events,
         runtime: deps.runtime,
@@ -89,22 +92,19 @@ export function createRelationalNativeHttp(deps: {
       try {
         const native = createNativeHttp({
           readMember: async (key) => {
-            const member = await authenticateMemberApiKey(members, key);
-            if (!member) {
-              return null;
-            }
-            await requireDiscordMembership(member, {
-              store: members,
+            authorized = await authorizeRelationalMemberApiKey({
+              sqlite,
+              members,
+              token: key,
               env,
               discordFetch: deps.discordFetch,
             });
-            const current = members.readMember(member.id);
-            return current?.status === 'active'
-              ? { admissionVersion: current.admissionEpoch }
-              : null;
+            return current((memberId) => ({
+              admissionVersion: members.readMember(memberId)!.admissionEpoch,
+            }));
           },
           admitNative: async (options) => {
-            const batch = await admit(options);
+            const batch = await admit(options, current);
             if (batch.replayed) {
               await delivery.validateReplay(batch.jobIds);
             }
