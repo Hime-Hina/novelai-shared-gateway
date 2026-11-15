@@ -78,7 +78,11 @@ import {
 import { relationalArtifactReferenceAvailable } from './relational-replica-io.ts';
 import type { RelationalReplicaReadConfiguration } from './relational-replica-store.ts';
 import { assertRelationalStorageFormat } from './relational-storage.ts';
-import { assertStoredResultDescriptor, type describeStoredResult } from './result-files.ts';
+import {
+  assertStoredResultDescriptor,
+  assertReadableStoredResultDescriptor,
+  type describeStoredResult,
+} from './result-files.ts';
 import { errorDetailMessage } from '../http/public-errors.ts';
 import { readRelationalOpeningAttempt } from './relational-generation-sources.ts';
 import { assertCurrentOwnerCommand, type MemberUser } from '../members/authentication.ts';
@@ -2897,8 +2901,8 @@ export class RelationalGenerationStore {
             fail('开账响应证据自相矛盾');
           }
           if (p.preparedArtifactId !== null) {
-            this.assertKnownExecution(job);
-            assertStoredResultDescriptor({
+            // 归档描述符不授予执行权；getter/ready/complete 仍共用严格完成前置。
+            assertReadableStoredResultDescriptor({
               imageId: p.preparedArtifactId,
               file: p.preparedFile,
               operation: job.operation,
@@ -2909,7 +2913,6 @@ export class RelationalGenerationStore {
             if (p.response.dispatchState === 'not_sent') {
               fail('未发送尝试不能有上游准备结果');
             }
-            this.inputs.readJobInput(job.id);
           }
           this.sqlite
             .prepare(

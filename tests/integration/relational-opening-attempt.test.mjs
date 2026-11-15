@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { initializeFixtureConfiguration } from '../helpers/relational-configuration.mjs';
 import {
   fixture,
@@ -83,9 +83,9 @@ function open(f, options = {}) {
         ...inputs.stageOpeningInput({
           inputId: `${name}-input`,
           memberId: 'm1',
-          completeness: 'complete',
-          body: JSON.parse(original.body),
-          logicalBytes: original.logical_bytes,
+          completeness: options.unavailable ? 'unavailable' : 'complete',
+          body: options.unavailable ? null : JSON.parse(original.body),
+          logicalBytes: options.unavailable ? 0 : original.logical_bytes,
           assets: [],
         }),
         origin: origin('input'),
@@ -107,6 +107,7 @@ function open(f, options = {}) {
       acceptedAt: 0,
       retiredAt: null,
       origin: origin('request'),
+      ...(options.request ?? {}),
     });
     const job = event('OpeningJobRecorded', {
       jobId,
@@ -589,6 +590,75 @@ test('ready and preparation reader reject unexecutable archived prepared sources
     assert.equal(relationalSnapshotSha256(selected), sha);
     assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file)), image);
   }
+});
+
+test('archived prepared NULL parent/operation/input stays in building and replay, never in ready or actual completion', async (t) => {
+  const f = await source(t),
+    result = open(f, {
+      prepared: true,
+      unavailable: true,
+      request: {
+        originalRequestId: null,
+        contextId: null,
+        source: null,
+        operation: null,
+        model: null,
+        sampleCount: null,
+        seedMode: 'unknown',
+        acceptedAt: null,
+      },
+      job: { sampleIndex: null, actualSeed: null, admissionEpoch: null, completedAt: null },
+    });
+  await writeFile(path.join(f.dir, result.descriptor.file), image);
+  const stored = f.db.prepare('SELECT * FROM generation_attempts WHERE id=?').get(result.attemptId);
+  assert.equal(stored.prepared_sha256, result.descriptor.sha256);
+  assert.equal(stored.prepared_file, result.descriptor.file);
+  assert.equal(f.inputs.readOriginalRequestId('old-request'), null);
+  const rebuilt = rebuild(t, f.db);
+  assert.deepEqual(
+    rebuilt.prepare('SELECT * FROM generation_attempts WHERE id=?').get(result.attemptId),
+    stored,
+  );
+  assert.equal(new RelationalInputStore(rebuilt).readOriginalRequestId('old-request'), null);
+  initializeFixtureConfiguration(f.db);
+  const selected = path.join(f.dir, 'unknown-prepared-source.sqlite');
+  await f.db.backup(selected);
+  const seal = new Database(selected);
+  seal.pragma('journal_mode=DELETE');
+  seal.close();
+  const sha = relationalSnapshotSha256(selected),
+    before = databaseState(f.db),
+    targetBytes = f.db.serialize();
+  const reason = (error) =>
+    error.statusCode === 410 && /历史结构容器或未知元数据不能授权执行或发布/.test(error.message);
+  assert.throws(() => f.generations.readGenerationResultPreparation(result.jobId), reason);
+  f.db.transaction(() =>
+    assert.throws(
+      () =>
+        f.generations.completeGeneration(
+          meta('unknown-prepared-complete'),
+          result.jobId,
+          result.descriptor,
+        ),
+      reason,
+    ),
+  )();
+  await assert.rejects(
+    verifyAndInstallRelationalStorage(f.db, {
+      sourcePath: selected,
+      sourceSha256: sha,
+      historyId: 'generation-history',
+      finalCommitSeq: f.db.prepare('SELECT CAST(MAX(commit_seq) AS TEXT) seq FROM commits').get()
+        .seq,
+      replicas: { dataDir: f.dir },
+    }),
+    reason,
+  );
+  assert.equal(f.db.prepare('SELECT status FROM projection_state').get().status, 'building');
+  assert.equal(databaseState(f.db), before);
+  assert.deepEqual(f.db.serialize(), targetBytes);
+  assert.equal(relationalSnapshotSha256(selected), sha);
+  assert.deepEqual(await readFile(path.join(f.dir, result.descriptor.file)), image);
 });
 
 test('ready shares the real running prepared completion closure and original coordinator settles only its original charge', async (t) => {
